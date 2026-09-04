@@ -5,4 +5,5 @@ import com.ruanzhu.doorhandlecatch.dto.LoginResponse;
 
 public interface AuthService {
     LoginResponse login(LoginRequest request);
+    LoginResponse refresh(String refreshToken);
 } 

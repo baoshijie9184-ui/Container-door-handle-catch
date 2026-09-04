@@ -23,6 +23,8 @@ public class JwtUtil {
 
     @Value("${jwt.expiration:86400}")
     private Long expiration;
+    @Value("${jwt.refresh-expiration:2592000}")
+    private Long refreshExpiration;
 
     private Key getSigningKey() {
         validateSecret();
@@ -46,7 +48,8 @@ public class JwtUtil {
 
     public String generateToken(String username) {
         Map<String, Object> claims = new HashMap<>();
-        return createToken(claims, username);
+        claims.put("type", "access");
+        return createToken(claims, username, expiration);
     }
 
     public String generateToken(Long userId, String username) {
@@ -55,17 +58,36 @@ public class JwtUtil {
         }
         Map<String, Object> claims = new HashMap<>();
         claims.put("uid", userId);
-        return createToken(claims, username);
+        claims.put("type", "access");
+        return createToken(claims, username, expiration);
     }
 
-    private String createToken(Map<String, Object> claims, String subject) {
+    public String generateRefreshToken(Long userId, String username) {
+        if (userId == null || userId <= 0) throw new IllegalArgumentException("userId must be positive");
+        Map<String, Object> claims = new HashMap<>();
+        claims.put("uid", userId);
+        claims.put("type", "refresh");
+        return createToken(claims, username, refreshExpiration);
+    }
+
+    private String createToken(Map<String, Object> claims, String subject, Long ttlSeconds) {
         return Jwts.builder()
                 .setClaims(claims)
                 .setSubject(subject)
                 .setIssuedAt(new Date(System.currentTimeMillis()))
-                .setExpiration(new Date(System.currentTimeMillis() + expiration * 1000))
+                .setExpiration(new Date(System.currentTimeMillis() + ttlSeconds * 1000))
                 .signWith(getSigningKey(), SignatureAlgorithm.HS256)
                 .compact();
+    }
+
+    public boolean isRefreshToken(String token) {
+        try { return "refresh".equals(parseClaims(token).get("type", String.class)); }
+        catch (Exception e) { return false; }
+    }
+
+    public boolean isAccessToken(String token) {
+        try { return "access".equals(parseClaims(token).get("type", String.class)); }
+        catch (Exception e) { return false; }
     }
 
     public String getUsernameFromToken(String token) {

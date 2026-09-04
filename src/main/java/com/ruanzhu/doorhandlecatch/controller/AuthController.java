@@ -31,12 +31,15 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class AuthController {
     public static final String AUTH_COOKIE_NAME = "DOOR_HANDLE_TOKEN";
+    public static final String REFRESH_COOKIE_NAME = "DOOR_HANDLE_REFRESH_TOKEN";
 
     private final AuthService authService;
     private final LoginRateLimiter loginRateLimiter;
 
     @Value("${jwt.expiration:86400}")
     private Long jwtExpirationSeconds;
+    @Value("${jwt.refresh-expiration:2592000}")
+    private Long refreshExpirationSeconds;
 
     @Value("${app.security.cookie-secure:false}")
     private Boolean cookieSecure;
@@ -61,9 +64,12 @@ public class AuthController {
             // 登录成功，清除失败记录
             loginRateLimiter.recordSuccess(clientIp);
             String token = response.getToken();
+            String refreshToken = response.getRefreshToken();
             response.setToken(null);
+            response.setRefreshToken(null);
             return ResponseEntity.ok()
                     .header(HttpHeaders.SET_COOKIE, buildAuthCookie(token, jwtExpirationSeconds).toString())
+                    .header(HttpHeaders.SET_COOKIE, buildRefreshCookie(refreshToken, refreshExpirationSeconds).toString())
                     .body(Result.success(response));
         } catch (Exception e) {
             // 登录失败，记录尝试
@@ -72,10 +78,24 @@ public class AuthController {
         }
     }
 
+    @PostMapping("/refresh")
+    public ResponseEntity<?> refresh(HttpServletRequest request) {
+        String token = extractRefreshToken(request);
+        LoginResponse response = authService.refresh(token);
+        String access = response.getToken();
+        String refresh = response.getRefreshToken();
+        response.setToken(null); response.setRefreshToken(null);
+        return ResponseEntity.ok()
+                .header(HttpHeaders.SET_COOKIE, buildAuthCookie(access, jwtExpirationSeconds).toString())
+                .header(HttpHeaders.SET_COOKIE, buildRefreshCookie(refresh, refreshExpirationSeconds).toString())
+                .body(Result.success(response));
+    }
+
     @PostMapping("/logout")
     public ResponseEntity<Result<Void>> logout() {
         return ResponseEntity.ok()
                 .header(HttpHeaders.SET_COOKIE, buildAuthCookie("", 0L).toString())
+                .header(HttpHeaders.SET_COOKIE, buildRefreshCookie("", 0L).toString())
                 .body(Result.success(null));
     }
 
@@ -139,4 +159,16 @@ public class AuthController {
                 .sameSite("Lax")
                 .build();
     }
-} 
+
+    private ResponseCookie buildRefreshCookie(String token, Long maxAgeSeconds) {
+        return ResponseCookie.from(REFRESH_COOKIE_NAME, token == null ? "" : token)
+                .httpOnly(true).secure(Boolean.TRUE.equals(cookieSecure)).path("/api/auth")
+                .maxAge(maxAgeSeconds == null ? 0L : maxAgeSeconds).sameSite("Lax").build();
+    }
+
+    private String extractRefreshToken(HttpServletRequest request) {
+        if (request.getCookies() != null) for (var c : request.getCookies())
+            if (REFRESH_COOKIE_NAME.equals(c.getName())) return c.getValue();
+        return request.getHeader("X-Refresh-Token");
+    }
+}

@@ -108,6 +108,7 @@ info:
 jwt:
   secret: ${JWT_SECRET:}
   expiration: ${JWT_EXPIRATION:604800}
+  refresh-expiration: ${JWT_REFRESH_EXPIRATION:2592000}
 
 model:
   upload-dir: ${MODEL_UPLOAD_DIR:${user.dir}/uploads/models}

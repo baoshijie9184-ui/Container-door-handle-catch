@@ -76,7 +76,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
                 boolean tenantMatches = userDetails instanceof TenantPrincipal principal
                         && userId.equals(principal.userId());
-                if (jwtUtil.validateToken(jwt) && tenantMatches) {
+                if (jwtUtil.validateToken(jwt) && jwtUtil.isAccessToken(jwt) && tenantMatches) {
                     log.debug("令牌有效，建立认证上下文");
                     UsernamePasswordAuthenticationToken authToken = new UsernamePasswordAuthenticationToken(
                             userDetails,

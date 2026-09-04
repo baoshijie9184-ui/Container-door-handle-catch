@@ -35,10 +35,12 @@ public class AuthServiceImpl implements AuthService {
             // 获取用户详细信息
             User user = userMapper.findByUsername(userDetails.getUsername());
             String token = jwtUtil.generateToken(user.getId(), user.getUsername());
+            String refreshToken = jwtUtil.generateRefreshToken(user.getId(), user.getUsername());
 
             LoginResponse response = new LoginResponse();
             response.setUserId(user.getId());
             response.setToken(token);
+            response.setRefreshToken(refreshToken);
             response.setUsername(user.getUsername());
             response.setEmail(user.getEmail());
             response.setPhone(user.getPhone());
@@ -51,4 +53,19 @@ public class AuthServiceImpl implements AuthService {
             throw new BusinessException("系统异常，请稍后再试");
         }
     }
-} 
+
+    @Override
+    public LoginResponse refresh(String refreshToken) {
+        if (refreshToken == null || !jwtUtil.validateToken(refreshToken) || !jwtUtil.isRefreshToken(refreshToken))
+            throw new BusinessException("刷新令牌无效或已过期");
+        Long userId = jwtUtil.getUserIdFromToken(refreshToken);
+        User user = userMapper.selectById(userId);
+        if (user == null) throw new BusinessException("用户不存在");
+        LoginResponse response = new LoginResponse();
+        response.setUserId(user.getId()); response.setUsername(user.getUsername());
+        response.setToken(jwtUtil.generateToken(user.getId(), user.getUsername()));
+        response.setRefreshToken(jwtUtil.generateRefreshToken(user.getId(), user.getUsername()));
+        response.setEmail(user.getEmail()); response.setPhone(user.getPhone());
+        return response;
+    }
+}
