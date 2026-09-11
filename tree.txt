@@ -1,0 +1,199 @@
+[INFO] Scanning for projects...
+[INFO] 
+[INFO] -------------------< com.ruanzhu:doorhandle-server >--------------------
+[INFO] Building doorhandle-server 0.0.1-SNAPSHOT
+[INFO]   from pom.xml
+[INFO] --------------------------------[ jar ]---------------------------------
+[INFO] 
+[INFO] --- dependency:3.6.1:tree (default-cli) @ doorhandle-server ---
+[INFO] com.ruanzhu:doorhandle-server:jar:0.0.1-SNAPSHOT
+[INFO] +- com.ruanzhu:doorhandle-framework:jar:0.0.1-SNAPSHOT:compile
+[INFO] |  +- org.springframework.boot:spring-boot-starter-cache:jar:3.2.4:compile
+[INFO] |  |  \- org.springframework:spring-context-support:jar:6.1.5:compile
+[INFO] |  |     \- org.springframework:spring-beans:jar:6.1.5:compile
+[INFO] |  +- org.springframework.boot:spring-boot-starter-data-redis:jar:3.2.4:compile
+[INFO] |  |  +- io.lettuce:lettuce-core:jar:6.3.2.RELEASE:compile
+[INFO] |  |  |  +- io.netty:netty-common:jar:4.1.107.Final:compile
+[INFO] |  |  |  +- io.netty:netty-handler:jar:4.1.107.Final:compile
+[INFO] |  |  |  |  +- io.netty:netty-resolver:jar:4.1.107.Final:compile
+[INFO] |  |  |  |  +- io.netty:netty-buffer:jar:4.1.107.Final:compile
+[INFO] |  |  |  |  +- io.netty:netty-transport-native-unix-common:jar:4.1.107.Final:compile
+[INFO] |  |  |  |  \- io.netty:netty-codec:jar:4.1.107.Final:compile
+[INFO] |  |  |  \- io.netty:netty-transport:jar:4.1.107.Final:compile
+[INFO] |  |  \- org.springframework.data:spring-data-redis:jar:3.2.4:compile
+[INFO] |  |     +- org.springframework.data:spring-data-keyvalue:jar:3.2.4:compile
+[INFO] |  |     |  \- org.springframework.data:spring-data-commons:jar:3.2.4:compile
+[INFO] |  |     +- org.springframework:spring-oxm:jar:6.1.5:compile
+[INFO] |  |     \- org.slf4j:slf4j-api:jar:2.0.12:compile
+[INFO] |  +- org.springframework.boot:spring-boot-starter-json:jar:3.2.4:compile
+[INFO] |  |  +- org.springframework:spring-web:jar:6.1.5:compile
+[INFO] |  |  +- com.fasterxml.jackson.core:jackson-databind:jar:2.15.4:compile
+[INFO] |  |  |  +- com.fasterxml.jackson.core:jackson-annotations:jar:2.15.4:compile
+[INFO] |  |  |  \- com.fasterxml.jackson.core:jackson-core:jar:2.15.4:compile
+[INFO] |  |  +- com.fasterxml.jackson.datatype:jackson-datatype-jdk8:jar:2.15.4:compile
+[INFO] |  |  +- com.fasterxml.jackson.datatype:jackson-datatype-jsr310:jar:2.15.4:compile
+[INFO] |  |  \- com.fasterxml.jackson.module:jackson-module-parameter-names:jar:2.15.4:compile
+[INFO] |  \- com.baomidou:mybatis-plus-spring-boot3-starter:jar:3.5.4:compile
+[INFO] |     +- com.baomidou:mybatis-plus:jar:3.5.4:compile
+[INFO] |     |  +- com.baomidou:mybatis-plus-core:jar:3.5.4:compile
+[INFO] |     |  +- com.baomidou:mybatis-plus-annotation:jar:3.5.4:compile
+[INFO] |     |  +- com.baomidou:mybatis-plus-extension:jar:3.5.4:compile
+[INFO] |     |  +- org.mybatis:mybatis:jar:3.5.13:compile
+[INFO] |     |  \- com.github.jsqlparser:jsqlparser:jar:4.6:compile
+[INFO] |     +- org.mybatis:mybatis-spring:jar:3.0.2:compile
+[INFO] |     +- com.baomidou:mybatis-plus-spring-boot-autoconfigure:jar:3.5.4:compile
+[INFO] |     \- org.springframework.boot:spring-boot-starter-jdbc:jar:3.2.4:compile
+[INFO] |        +- com.zaxxer:HikariCP:jar:5.0.1:compile
+[INFO] |        \- org.springframework:spring-jdbc:jar:6.1.5:compile
+[INFO] +- com.ruanzhu:doorhandle-module-system:jar:0.0.1-SNAPSHOT:compile
+[INFO] |  +- com.ruanzhu:doorhandle-common:jar:0.0.1-SNAPSHOT:compile
+[INFO] |  +- org.springframework.boot:spring-boot-starter-web:jar:3.2.4:compile
+[INFO] |  |  +- org.springframework.boot:spring-boot-starter-tomcat:jar:3.2.4:compile
+[INFO] |  |  |  +- org.apache.tomcat.embed:tomcat-embed-core:jar:10.1.19:compile
+[INFO] |  |  |  \- org.apache.tomcat.embed:tomcat-embed-websocket:jar:10.1.19:compile
+[INFO] |  |  \- org.springframework:spring-webmvc:jar:6.1.5:compile
+[INFO] |  |     \- org.springframework:spring-expression:jar:6.1.5:compile
+[INFO] |  +- org.springframework.boot:spring-boot-starter-security:jar:3.2.4:compile
+[INFO] |  |  +- org.springframework:spring-aop:jar:6.1.5:compile
+[INFO] |  |  +- org.springframework.security:spring-security-config:jar:6.2.3:compile
+[INFO] |  |  |  \- org.springframework.security:spring-security-core:jar:6.2.3:compile
+[INFO] |  |  |     \- org.springframework.security:spring-security-crypto:jar:6.2.3:compile
+[INFO] |  |  \- org.springframework.security:spring-security-web:jar:6.2.3:compile
+[INFO] |  +- org.springframework.boot:spring-boot-starter-validation:jar:3.2.4:compile
+[INFO] |  |  +- org.apache.tomcat.embed:tomcat-embed-el:jar:10.1.19:compile
+[INFO] |  |  \- org.hibernate.validator:hibernate-validator:jar:8.0.1.Final:compile
+[INFO] |  |     +- jakarta.validation:jakarta.validation-api:jar:3.0.2:compile
+[INFO] |  |     +- org.jboss.logging:jboss-logging:jar:3.5.3.Final:compile
+[INFO] |  |     \- com.fasterxml:classmate:jar:1.6.0:compile
+[INFO] |  +- io.jsonwebtoken:jjwt-api:jar:0.11.5:compile
+[INFO] |  +- io.jsonwebtoken:jjwt-impl:jar:0.11.5:runtime
+[INFO] |  \- io.jsonwebtoken:jjwt-jackson:jar:0.11.5:runtime
+[INFO] +- com.ruanzhu:doorhandle-module-infra:jar:0.0.1-SNAPSHOT:compile
+[INFO] |  \- com.aliyun.oss:aliyun-sdk-oss:jar:3.17.4:compile
+[INFO] |     +- org.apache.httpcomponents:httpclient:jar:4.5.13:compile
+[INFO] |     |  +- org.apache.httpcomponents:httpcore:jar:4.4.16:compile
+[INFO] |     |  \- commons-logging:commons-logging:jar:1.2:compile
+[INFO] |     +- org.jdom:jdom2:jar:2.0.6.1:compile
+[INFO] |     +- org.codehaus.jettison:jettison:jar:1.5.4:compile
+[INFO] |     +- com.aliyun:aliyun-java-sdk-core:jar:4.5.10:compile
+[INFO] |     |  +- com.google.code.gson:gson:jar:2.10.1:compile
+[INFO] |     |  +- javax.xml.bind:jaxb-api:jar:2.3.1:compile
+[INFO] |     |  |  \- javax.activation:javax.activation-api:jar:1.2.0:compile
+[INFO] |     |  +- org.jacoco:org.jacoco.agent:jar:runtime:0.8.5:compile
+[INFO] |     |  +- org.ini4j:ini4j:jar:0.5.4:compile
+[INFO] |     |  +- io.opentracing:opentracing-api:jar:0.33.0:compile
+[INFO] |     |  \- io.opentracing:opentracing-util:jar:0.33.0:compile
+[INFO] |     |     \- io.opentracing:opentracing-noop:jar:0.33.0:compile
+[INFO] |     +- com.aliyun:aliyun-java-sdk-ram:jar:3.1.0:compile
+[INFO] |     \- com.aliyun:aliyun-java-sdk-kms:jar:2.11.0:compile
+[INFO] +- com.ruanzhu:doorhandle-module-device:jar:0.0.1-SNAPSHOT:compile
+[INFO] |  \- org.springdoc:springdoc-openapi-starter-webmvc-ui:jar:2.3.0:compile
+[INFO] |     +- org.springdoc:springdoc-openapi-starter-webmvc-api:jar:2.3.0:compile
+[INFO] |     |  \- org.springdoc:springdoc-openapi-starter-common:jar:2.3.0:compile
+[INFO] |     |     \- io.swagger.core.v3:swagger-core-jakarta:jar:2.2.19:compile
+[INFO] |     |        +- io.swagger.core.v3:swagger-annotations-jakarta:jar:2.2.19:compile
+[INFO] |     |        +- io.swagger.core.v3:swagger-models-jakarta:jar:2.2.19:compile
+[INFO] |     |        \- jakarta.xml.bind:jakarta.xml.bind-api:jar:4.0.2:compile
+[INFO] |     |           \- jakarta.activation:jakarta.activation-api:jar:2.1.3:compile
+[INFO] |     \- org.webjars:swagger-ui:jar:5.10.3:compile
+[INFO] +- com.ruanzhu:doorhandle-module-model:jar:0.0.1-SNAPSHOT:compile
+[INFO] |  +- com.microsoft.onnxruntime:onnxruntime:jar:1.15.1:compile
+[INFO] |  \- org.openpnp:opencv:jar:4.7.0-0:compile
+[INFO] +- com.ruanzhu:doorhandle-module-detection:jar:0.0.1-SNAPSHOT:compile
+[INFO] |  +- com.ruanzhu:doorhandle-contracts:jar:0.0.1-SNAPSHOT:compile
+[INFO] |  \- org.springframework.kafka:spring-kafka:jar:3.1.3:compile
+[INFO] |     +- org.springframework:spring-context:jar:6.1.5:compile
+[INFO] |     +- org.springframework:spring-messaging:jar:6.1.5:compile
+[INFO] |     +- org.springframework:spring-tx:jar:6.1.5:compile
+[INFO] |     +- org.springframework.retry:spring-retry:jar:2.0.5:compile
+[INFO] |     +- org.apache.kafka:kafka-clients:jar:3.6.1:compile
+[INFO] |     |  +- com.github.luben:zstd-jni:jar:1.5.5-1:runtime
+[INFO] |     |  +- org.lz4:lz4-java:jar:1.8.0:runtime
+[INFO] |     |  \- org.xerial.snappy:snappy-java:jar:1.1.10.5:runtime
+[INFO] |     +- io.micrometer:micrometer-observation:jar:1.12.4:compile
+[INFO] |     |  \- io.micrometer:micrometer-commons:jar:1.12.4:compile
+[INFO] |     \- com.google.code.findbugs:jsr305:jar:3.0.2:runtime
+[INFO] +- com.ruanzhu:doorhandle-module-ai:jar:0.0.1-SNAPSHOT:compile
+[INFO] |  +- io.agentscope:agentscope-harness:jar:2.0.1:compile
+[INFO] |  |  +- io.agentscope:agentscope-core:jar:2.0.1:compile
+[INFO] |  |  |  +- com.github.victools:jsonschema-generator:jar:4.38.0:compile
+[INFO] |  |  |  +- com.github.victools:jsonschema-module-jackson:jar:4.38.0:compile
+[INFO] |  |  |  +- io.modelcontextprotocol.sdk:mcp:jar:0.17.0:compile
+[INFO] |  |  |  |  +- io.modelcontextprotocol.sdk:mcp-json-jackson2:jar:0.17.0:compile
+[INFO] |  |  |  |  |  \- io.modelcontextprotocol.sdk:mcp-json:jar:0.17.0:compile
+[INFO] |  |  |  |  \- io.modelcontextprotocol.sdk:mcp-core:jar:0.17.0:compile
+[INFO] |  |  |  +- com.squareup.okhttp3:okhttp:jar:4.12.0:compile
+[INFO] |  |  |  +- com.squareup.okhttp3:okhttp-jvm:jar:5.3.2:compile
+[INFO] |  |  |  |  +- com.squareup.okio:okio-jvm:jar:3.16.4:compile
+[INFO] |  |  |  |  \- org.jetbrains.kotlin:kotlin-stdlib:jar:1.9.23:compile
+[INFO] |  |  |  |     \- org.jetbrains:annotations:jar:13.0:compile
+[INFO] |  |  |  +- com.networknt:json-schema-validator:jar:2.0.0:compile
+[INFO] |  |  |  |  \- com.ethlo.time:itu:jar:1.14.0:compile
+[INFO] |  |  |  +- io.github.bonede:tree-sitter:jar:0.24.4:compile
+[INFO] |  |  |  +- io.github.bonede:tree-sitter-bash:jar:0.23.3:compile
+[INFO] |  |  |  +- io.opentelemetry:opentelemetry-api:jar:1.31.0:compile
+[INFO] |  |  |  |  \- io.opentelemetry:opentelemetry-context:jar:1.31.0:compile
+[INFO] |  |  |  \- io.opentelemetry.instrumentation:opentelemetry-reactor-3.1:jar:2.27.0-alpha:compile
+[INFO] |  |  |     +- io.opentelemetry.instrumentation:opentelemetry-instrumentation-api:jar:2.27.0:compile
+[INFO] |  |  |     |  +- io.opentelemetry:opentelemetry-api-incubator:jar:1.61.0-alpha:compile
+[INFO] |  |  |     |  \- io.opentelemetry.semconv:opentelemetry-semconv:jar:1.40.0:compile
+[INFO] |  |  |     +- io.opentelemetry.instrumentation:opentelemetry-instrumentation-api-incubator:jar:2.27.0-alpha:compile
+[INFO] |  |  |     \- io.opentelemetry.instrumentation:opentelemetry-instrumentation-annotations-support:jar:2.27.0-alpha:runtime
+[INFO] |  |  |        \- io.opentelemetry.semconv:opentelemetry-semconv-incubating:jar:1.40.0-alpha:runtime
+[INFO] |  |  +- com.fasterxml.jackson.dataformat:jackson-dataformat-yaml:jar:2.15.4:compile
+[INFO] |  |  +- org.apache.commons:commons-compress:jar:1.27.1:compile
+[INFO] |  |  |  \- org.apache.commons:commons-lang3:jar:3.13.0:compile
+[INFO] |  |  \- org.xerial:sqlite-jdbc:jar:3.43.2.0:compile
+[INFO] |  +- io.agentscope:agentscope-extensions-model-dashscope:jar:2.0.1:compile
+[INFO] |  |  +- com.alibaba:dashscope-sdk-java:jar:2.22.9:compile
+[INFO] |  |  |  +- io.reactivex.rxjava2:rxjava:jar:2.2.21:compile
+[INFO] |  |  |  +- org.jetbrains.kotlin:kotlin-stdlib-jdk8:jar:1.9.23:compile
+[INFO] |  |  |  |  \- org.jetbrains.kotlin:kotlin-stdlib-jdk7:jar:1.9.23:compile
+[INFO] |  |  |  +- com.squareup.okio:okio:jar:3.6.0:compile
+[INFO] |  |  |  +- com.squareup.okhttp3:logging-interceptor:jar:4.12.0:compile
+[INFO] |  |  |  \- com.squareup.okhttp3:okhttp-sse:jar:4.12.0:compile
+[INFO] |  |  \- io.projectreactor:reactor-core:jar:3.6.4:compile
+[INFO] |  |     \- org.reactivestreams:reactive-streams:jar:1.0.4:compile
+[INFO] |  \- io.agentscope:agentscope-agui-spring-boot-starter:jar:2.0.1:compile
+[INFO] |     \- io.agentscope:agentscope-spring-boot-starter:jar:2.0.1:compile
+[INFO] |        \- io.agentscope:agentscope:jar:2.0.1:compile
+[INFO] +- com.ruanzhu:doorhandle-module-app:jar:0.0.1-SNAPSHOT:compile
+[INFO] |  +- org.springframework.boot:spring-boot-starter-actuator:jar:3.2.4:compile
+[INFO] |  |  +- org.springframework.boot:spring-boot-actuator-autoconfigure:jar:3.2.4:compile
+[INFO] |  |  |  \- org.springframework.boot:spring-boot-actuator:jar:3.2.4:compile
+[INFO] |  |  \- io.micrometer:micrometer-jakarta9:jar:1.12.4:compile
+[INFO] |  |     \- io.micrometer:micrometer-core:jar:1.12.4:compile
+[INFO] |  |        +- org.hdrhistogram:HdrHistogram:jar:2.1.12:runtime
+[INFO] |  |        \- org.latencyutils:LatencyUtils:jar:2.0.3:runtime
+[INFO] |  +- org.apache.commons:commons-pool2:jar:2.12.0:compile
+[INFO] |  +- com.mysql:mysql-connector-j:jar:8.3.0:runtime
+[INFO] |  +- org.apache.poi:poi:jar:5.2.3:compile
+[INFO] |  |  +- commons-codec:commons-codec:jar:1.16.1:compile
+[INFO] |  |  +- org.apache.commons:commons-collections4:jar:4.4:compile
+[INFO] |  |  +- org.apache.commons:commons-math3:jar:3.6.1:compile
+[INFO] |  |  +- commons-io:commons-io:jar:2.11.0:compile
+[INFO] |  |  +- com.zaxxer:SparseBitSet:jar:1.2:compile
+[INFO] |  |  \- org.apache.logging.log4j:log4j-api:jar:2.21.1:compile
+[INFO] |  +- org.apache.poi:poi-ooxml:jar:5.2.3:compile
+[INFO] |  |  +- org.apache.poi:poi-ooxml-lite:jar:5.2.3:compile
+[INFO] |  |  +- org.apache.xmlbeans:xmlbeans:jar:5.1.1:compile
+[INFO] |  |  \- com.github.virtuald:curvesapi:jar:1.07:compile
+[INFO] |  \- io.github.cdimascio:dotenv-java:jar:3.0.0:compile
+[INFO] \- org.springframework.boot:spring-boot-starter:jar:3.2.4:compile
+[INFO]    +- org.springframework.boot:spring-boot:jar:3.2.4:compile
+[INFO]    +- org.springframework.boot:spring-boot-autoconfigure:jar:3.2.4:compile
+[INFO]    +- org.springframework.boot:spring-boot-starter-logging:jar:3.2.4:compile
+[INFO]    |  +- ch.qos.logback:logback-classic:jar:1.4.14:compile
+[INFO]    |  |  \- ch.qos.logback:logback-core:jar:1.4.14:compile
+[INFO]    |  +- org.apache.logging.log4j:log4j-to-slf4j:jar:2.21.1:compile
+[INFO]    |  \- org.slf4j:jul-to-slf4j:jar:2.0.12:compile
+[INFO]    +- jakarta.annotation:jakarta.annotation-api:jar:2.1.1:compile
+[INFO]    +- org.springframework:spring-core:jar:6.1.5:compile
+[INFO]    |  \- org.springframework:spring-jcl:jar:6.1.5:compile
+[INFO]    \- org.yaml:snakeyaml:jar:2.2:compile
+[INFO] ------------------------------------------------------------------------
+[INFO] BUILD SUCCESS
+[INFO] ------------------------------------------------------------------------
+[INFO] Total time:  12.910 s
+[INFO] Finished at: 2026-09-11T14:52:30+08:00
+[INFO] ------------------------------------------------------------------------

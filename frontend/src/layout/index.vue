@@ -29,7 +29,6 @@
             <el-icon><component :is="group.icon" /></el-icon>
             <template #title>
               <span>{{ group.items[0].label }}</span>
-              <small v-if="group.desc" class="nav-item-desc">{{ group.desc }}</small>
             </template>
           </el-menu-item>
           <el-sub-menu v-else :index="group.key" class="nav-group">
@@ -45,7 +44,6 @@
             >
               <template #title>
                 <span>{{ item.label }}</span>
-                <small v-if="item.desc" class="nav-item-desc">{{ item.desc }}</small>
               </template>
             </el-menu-item>
           </el-sub-menu>
@@ -136,8 +134,8 @@
       </button>
     </div>
 
-    <ChatAssistantLauncher @open="handleOpenAssistant" />
-    <ChatAssistantDrawer />
+    <ChatAssistantLauncher v-if="!isAgentChatRoute" @open="handleOpenAssistant" />
+    <ChatAssistantDrawer :full-screen="isAgentChatRoute" />
   </div>
 </template>
 
@@ -169,6 +167,7 @@ const route = useRoute()
 
 const collapsed = ref(false)
 const showBackTop = ref(false)
+const isAgentChatRoute = computed(() => route.path === '/agent/chat')
 
 const navGroups = [
   {
@@ -218,6 +217,15 @@ const navGroups = [
       { path: '/devices', label: '设备管理', desc: '采集与检测设备' },
       { path: '/device-records', label: '设备使用记录', desc: '设备调用与维护记录' },
       { path: '/employees', label: '人员管理', desc: '采集、检测、维修人员' }
+    ]
+  },
+  {
+    key: 'agent',
+    label: 'Agent智能系统',
+    icon: Operation,
+    items: [
+      { path: '/agent/chat', label: '智能对话助手', desc: '完整页面对话工作区' },
+      { path: '/agent/trace', label: 'Agent调用链路', desc: '查看智能体运行轨迹' }
     ]
   },
   {

@@ -51,6 +51,13 @@ public class OpsAgentServiceImpl implements OpsAgentService {
 
     @Override
     public AgentExecutionResult answer(String userPrompt, String username, Consumer<String> tokenConsumer) {
+        if (isModelIdentityQuestion(userPrompt)) {
+            return AgentExecutionResult.builder()
+                    .messageType("TEXT")
+                    .intent("OPS_QUERY")
+                    .content("我是当前系统配置的 Agent 智能助手，使用 DashScope 兼容接口上的 kimi-k3 大语言模型提供意图识别和对话服务。")
+                    .build();
+        }
         if (chatBusinessCatalogService.isBusinessMapQuestion(userPrompt)) {
             return AgentExecutionResult.builder()
                     .messageType("BUSINESS_CARD")
@@ -127,6 +134,13 @@ public class OpsAgentServiceImpl implements OpsAgentService {
                 || text.contains("系统业务")
                 || text.contains("所有业务")
                 || text.contains("能力");
+    }
+
+    private boolean isModelIdentityQuestion(String userPrompt) {
+        String text = userPrompt == null ? "" : userPrompt.toLowerCase();
+        return text.contains("你是什么模型") || text.contains("你是什么大语言模型")
+                || text.contains("你是哪个模型") || text.contains("大语言模型")
+                || text.contains("什么llm") || text.contains("你是谁");
     }
 
     private boolean isAgentHealthQuestion(String userPrompt) {

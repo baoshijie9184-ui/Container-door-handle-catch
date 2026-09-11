@@ -4,6 +4,7 @@ mem0 记忆服务 - 基于 FastAPI + mem0 + Chroma
 """
 
 import os
+import sys
 import logging
 from typing import Any, Optional
 from contextlib import asynccontextmanager
@@ -13,7 +14,12 @@ from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 
 # 加载 .env 文件
-load_dotenv("../.env")
+load_dotenv("../.env", override=True)
+
+# 优先加载指定的本地 Mem0 源码仓库，便于与项目内的服务封装联调。
+mem0_source_path = os.getenv("MEM0_SOURCE_PATH")
+if mem0_source_path and mem0_source_path not in sys.path:
+    sys.path.insert(0, mem0_source_path)
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
@@ -33,30 +39,27 @@ def required_env(name: str) -> str:
 
 def get_memory_config():
     """构建 mem0 配置"""
-    from mem0.configs.base import MemoryConfig
-    from mem0.configs.vector_stores.chroma import ChromaDbConfig
-    from mem0.configs.llms.deepseek import DeepSeekConfig
-
-    # DeepSeek 配置
-    deepseek_api_key = required_env("DEEPSEEK_API_KEY")
-    deepseek_base_url = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+    llm_api_key = required_env("DASHSCOPE_API_KEY")
+    llm_base_url = os.getenv("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+    llm_model = os.getenv("AGENTSCOPE_AI_MODEL", "dashscope:kimi-k3").split(":")[-1]
     embedding_api_key = required_env("EMBEDDING_API_KEY")
     embedding_base_url = os.getenv("EMBEDDING_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+    embedding_model = os.getenv("EMBEDDING_MODEL", "qwen3.7-text-embedding-flash")
 
     return {
         "llm": {
-            "provider": "deepseek",
+            "provider": "openai",
             "config": {
-                "model": "deepseek-v4-flash",
-                "api_key": deepseek_api_key,
-                "deepseek_base_url": deepseek_base_url,
-                "temperature": 0.1,
+                "model": llm_model,
+                "api_key": llm_api_key,
+                "openai_base_url": llm_base_url,
+                "is_reasoning_model": True,
             }
         },
         "embedder": {
             "provider": "openai",
             "config": {
-                "model": "text-embedding-v4",
+                "model": embedding_model,
                 "api_key": embedding_api_key,
                 "openai_base_url": embedding_base_url
             }
@@ -149,7 +152,7 @@ async def add_memory(request: AddMemoryRequest):
         result = memory_instance.add(
             request.content,
             user_id=request.user_id,
-            app_id=request.app_id,
+            agent_id=request.app_id,
             run_id=request.run_id,
             metadata=request.metadata,
         )
@@ -166,11 +169,11 @@ async def search_memories(request: SearchMemoryRequest):
     try:
         results = memory_instance.search(
             request.query,
-            filters={"AND": [
-                {"user_id": request.user_id},
-                {"app_id": request.app_id},
-                {"run_id": request.run_id},
-            ]},
+            filters={
+                "user_id": request.user_id,
+                "agent_id": request.app_id,
+                "run_id": request.run_id,
+            },
             top_k=request.top_k,
         )
         memories = []

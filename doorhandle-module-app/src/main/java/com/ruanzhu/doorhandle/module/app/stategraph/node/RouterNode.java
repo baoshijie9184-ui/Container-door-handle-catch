@@ -40,6 +40,19 @@ public class RouterNode implements Node {
         String content = state.getString(AgentState.KEY_USER_INPUT);
         StateUpdater.nextTurn(state);
 
+        // 身份问题属于对话能力本身，优先处理，避免业务模型/设备关键词或 LLM 误分类。
+        if (isModelIdentityQuestion(content)) {
+            AgentRouteDecision identity = new AgentRouteDecision();
+            identity.setIntent("OPS_QUERY");
+            identity.setTargetAgent("OPS");
+            identity.setConfirmationRequired(false);
+            identity.setNormalizedUserPrompt(content == null ? "" : content.trim().toLowerCase(Locale.ROOT));
+            state.set(AgentState.KEY_ROUTE_DECISION, identity);
+            state.set(AgentState.KEY_INTENT, "OPS_QUERY");
+            state.set(AgentState.KEY_CONVERSATION_PHASE, AgentState.PHASE_EXECUTING);
+            return state;
+        }
+
         // 尝试多轮 LLM 分类
         if (deepSeekProperties.isEnabled() && StringUtils.hasText(deepSeekProperties.getApiKey())) {
             try {
@@ -67,7 +80,14 @@ public class RouterNode implements Node {
         log.info("多轮意图: intent={} agent={} isAction={} slots={}", intent, targetAgent, isAction, slotUpdates);
 
         // LLM 分类纠偏：用关键字修正明显的误分类
-        targetAgent = correctAgentByKeywords(content, targetAgent);
+        // LLM 负责主路由；对身份类问题做语义安全校验，避免模型把“你是什么大语言模型”误判成业务模型/设备查询。
+        if (isModelIdentityQuestion(content)) {
+            targetAgent = "OPS";
+            intent = "CHITCHAT";
+            isAction = false;
+        } else {
+            targetAgent = correctAgentByKeywords(content, targetAgent);
+        }
         if (isAction && containsAny(content.toLowerCase(Locale.ROOT), "上传") && !containsAny(content.toLowerCase(Locale.ROOT), "开始检测", "启动检测")) {
             // "上传图片" 应该是 UPLOAD 流程，不是 START 流程
             if (slotUpdates != null && !slotUpdates.containsKey("folderPath") && !slotUpdates.containsKey("taskId")) {
@@ -266,5 +286,10 @@ public class RouterNode implements Node {
 
     private boolean isBusinessMapQuestion(String text) {
         return containsAny(text, "在哪", "入口", "页面", "菜单", "怎么用", "业务地图", "功能地图", "导航", "下一步");
+    }
+
+    private boolean isModelIdentityQuestion(String text) {
+        String normalized = text == null ? "" : text.toLowerCase(Locale.ROOT);
+        return containsAny(normalized, "你是什么模型", "你是什么大语言模型", "你是哪个模型", "什么llm", "什么大模型", "你是谁");
     }
 }

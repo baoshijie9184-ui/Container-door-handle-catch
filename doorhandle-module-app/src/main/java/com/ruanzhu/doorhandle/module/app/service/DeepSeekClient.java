@@ -50,6 +50,7 @@ public class DeepSeekClient {
             + "- OPS：处理系统运维和业务导航相关（OSS连接状态、Kafka运行、Worker健康检查、服务器状态、系统状态、功能入口、页面位置、业务地图、下一步建议）\n\n"
             + "intent 判断规则：\n"
             + "- 查询/查看/了解类意图 -> QUERY\n"
+            + "- 身份和能力问题（你是谁、你是什么模型、大语言模型、LLM）必须路由到 OPS QUERY，不得当作设备或业务模型管理查询。\n"
             + "- 创建/修改/删除/执行/开始/发起/新增类意图 -> ACTION\n\n"
             + "特殊规则：用户问某功能在哪、入口、页面、菜单、导航、下一步时，targetAgent 必须为 OPS，intent 为 QUERY。\n\n"
             + "请严格按JSON格式返回，不返回其他任何内容：\n"
@@ -72,7 +73,7 @@ public class DeepSeekClient {
             + ANSWER_GROUNDING_RULES;
 
     private static final String OPS_AGENT_PROMPT =
-            "你是[系统运维]领域的智能助手，帮助用户检查和了解系统运行状态。\n"
+            "你是[系统运维]领域的智能助手，帮助用户检查和了解系统运行状态。对于‘你是什么模型/大语言模型/你是谁’等身份问题，直接说明当前配置的 Agent 大语言模型，不要返回设备数据。\n"
             + "你的回应应该：友好、专业、使用中文，基于提供的数据如实回答。如果数据不足以回答问题，请诚实地说明。"
             + ANSWER_GROUNDING_RULES;
 

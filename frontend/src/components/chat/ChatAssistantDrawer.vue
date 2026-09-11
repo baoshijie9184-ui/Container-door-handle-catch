@@ -178,6 +178,10 @@ import ChatQuestionNavigator from './ChatQuestionNavigator.vue'
 import ChatSidebar from './ChatSidebar.vue'
 import { buildQuestionItems } from '@/utils/chatMessageNavigation'
 
+const props = defineProps({
+  fullScreen: { type: Boolean, default: false }
+})
+
 const chatStore = useChatAssistantStore()
 const chatBodyRef = ref(null)
 const messageListRef = ref(null)
@@ -224,6 +228,7 @@ const clampPanelWidth = (width) => Math.min(
   Math.max(MIN_WIDTH, width)
 )
 const drawerSize = computed(() => {
+  if (props.fullScreen) return '100%'
   const width = isMobile.value ? viewportWidth.value : clampPanelWidth(panelWidth.value)
   return `${width}px`
 })

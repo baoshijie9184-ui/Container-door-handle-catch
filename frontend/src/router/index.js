@@ -134,6 +134,18 @@ const routes = [
         meta: { title: '用户使用手册', requiresAuth: true, icon: 'Files' }
       },
       {
+        path: 'agent/chat',
+        name: 'agentChat',
+        component: () => import('../views/AgentChat.vue'),
+        meta: { title: '智能对话助手', requiresAuth: true, icon: 'Operation' }
+      },
+      {
+        path: 'agent/trace',
+        name: 'agentTrace',
+        component: () => import('../views/AgentTrace.vue'),
+        meta: { title: 'Agent调用链路', requiresAuth: true, icon: 'Operation' }
+      },
+      {
         path: 'test-upload',
         name: 'testUpload',
         component: () => import('../views/TestUpload.vue'),

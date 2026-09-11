@@ -22,7 +22,7 @@
 		<java.version>17</java.version>
 		<maven.compiler.source>17</maven.compiler.source>
 		<maven.compiler.target>17</maven.compiler.target>
-		<mybatis-plus.version>3.5.4</mybatis-plus.version>
+		<mybatis-plus.version>3.5.5</mybatis-plus.version>
 		<mybatis-spring.version>3.0.3</mybatis-spring.version>
 		<spring-boot.repackage.skip>true</spring-boot.repackage.skip>
 	</properties>

@@ -1,3 +1,4 @@
 confluent-kafka>=2.4.0
 oss2>=2.18.4
 python-dotenv>=1.0.0
+redis>=5.0.0

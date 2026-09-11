@@ -190,7 +190,11 @@ defineEmits(['send'])
 
 const payload = computed(() => {
   try {
-    return JSON.parse(props.message.content || '{}')
+    // Agent 可能在 JSON 后追加“来源：...”说明，先截取完整 JSON 对象再解析。
+    const raw = String(props.message.content || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '')
+    const start = raw.indexOf('{')
+    const end = raw.lastIndexOf('}')
+    return JSON.parse(start >= 0 && end > start ? raw.slice(start, end + 1) : raw)
   } catch {
     return {
       title: '业务卡片解析失败',
