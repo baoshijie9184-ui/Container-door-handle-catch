@@ -1,0 +1,24 @@
+{
+  "name": "doorhandle-agent-ui",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@agentscope-ai/chat": "^1.1.72",
+    "@agentscope-ai/design": "^1.0.32",
+    "@ant-design/icons": "^5.6.1",
+    "antd": "^5.27.0",
+    "lucide-react": "^1.40.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "vite": "^6.1.0"
+  }
+}

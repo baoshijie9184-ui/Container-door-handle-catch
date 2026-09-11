@@ -1,0 +1,85 @@
+HELP.md
+target/
+.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
+
+### STS ###
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+
+### IntelliJ IDEA ###
+.idea
+*.iws
+*.iml
+*.ipr
+
+### NetBeans ###
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+build/
+!**/src/main/**/build/
+!**/src/test/**/build/
+
+### VS Code ###
+.vscode/*
+!.vscode/settings.json
+
+### Environment ###
+.env
+.env.*
+!.env.example
+.env.local
+.env.*.local
+deploy/*.env
+!deploy/*.env.example
+
+### Runtime logs ###
+*.log
+*.err.log
+*.out.log
+hs_err_pid*.log
+logs/
+frontend/*.log
+frontend/vite-*.log
+
+### Temporary smoke-test artifacts ###
+tmp-*
+oss-smoke-test*.txt
+oss-test-backend.*.log
+
+### Uploaded/generated data ###
+uploads/
+result/
+ruanzhuss/
+mem0/
+
+### Frontend dependencies and local tooling ###
+node_modules/
+**/node_modules/
+dist/
+frontend/dist/
+frontend/.agents/
+frontend/chrome-headless-profile/
+frontend/home-preview.png
+frontend/tests/screenshots/
+memory_service/chroma_db/
+
+### Python cache ###
+__pycache__/
+**/__pycache__/
+*.py[cod]
+
+### Local brainstorming previews ###
+.superpowers/
+
+### Local Git worktrees ###
+.worktrees/

@@ -1,0 +1,46 @@
+name: doorhandlecatch
+
+x-backend-service: &backend-service
+  build:
+    context: .
+    dockerfile: deploy/backend/Dockerfile
+  env_file:
+    - ${DOORHANDLE_ENV_FILE:-deploy/docker.env.example}
+  environment:
+    SERVER_PORT: 8080
+  expose:
+    - "8080"
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+  volumes:
+    - doorhandle-runtime:/app/uploads
+  networks:
+    - doorhandle-network
+  restart: unless-stopped
+
+services:
+  backend-1:
+    <<: *backend-service
+  backend-2:
+    <<: *backend-service
+  nginx:
+    build:
+      context: .
+      dockerfile: deploy/nginx/Dockerfile
+    ports:
+      - "${NGINX_PORT:-80}:80"
+    depends_on:
+      backend-1:
+        condition: service_healthy
+      backend-2:
+        condition: service_healthy
+    networks:
+      - doorhandle-network
+    restart: unless-stopped
+
+volumes:
+  doorhandle-runtime:
+
+networks:
+  doorhandle-network:
+    driver: bridge

@@ -1,0 +1,361 @@
+﻿server:
+  port: 8080
+  servlet:
+    encoding:
+      charset: UTF-8
+      force: true
+      enabled: true
+
+spring:
+  application:
+    name: DoorHandleCatch
+  main:
+    banner-mode: console
+  mvc:
+    pathmatch:
+      matching-strategy: ant_path_matcher
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: ${DB_URL:jdbc:mysql://localhost:3306/doorhandledb?useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useUnicode=true&characterEncoding=utf8mb4&rewriteBatchedStatements=true&connectionCollation=utf8mb4_unicode_ci}
+    username: ${DB_USERNAME:root}
+    password: ${DB_PASSWORD:}
+    hikari:
+      connection-init-sql: SET NAMES utf8mb4
+      maximum-pool-size: ${DB_POOL_MAX_SIZE:20}
+      minimum-idle: ${DB_POOL_MIN_IDLE:5}
+      connection-timeout: ${DB_POOL_CONNECTION_TIMEOUT_MS:30000}
+      validation-timeout: ${DB_POOL_VALIDATION_TIMEOUT_MS:5000}
+      idle-timeout: ${DB_POOL_IDLE_TIMEOUT_MS:600000}
+      max-lifetime: ${DB_POOL_MAX_LIFETIME_MS:1800000}
+      pool-name: DoorHandleCatchHikariPool
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      database: ${REDIS_DATABASE:0}
+      timeout: ${REDIS_TIMEOUT:2s}
+      connect-timeout: ${REDIS_CONNECT_TIMEOUT:2s}
+      lettuce:
+        pool:
+          enabled: true
+          max-active: ${REDIS_POOL_MAX_ACTIVE:16}
+          max-idle: ${REDIS_POOL_MAX_IDLE:8}
+          min-idle: ${REDIS_POOL_MIN_IDLE:2}
+          max-wait: ${REDIS_POOL_MAX_WAIT:2s}
+  cache:
+    type: ${SPRING_CACHE_TYPE:simple}
+    cache-names: dashboard,model,device,employee,detection-task,chat-session
+  jackson:
+    date-format: yyyy-MM-dd HH:mm:ss
+    time-zone: GMT+8
+    default-property-inclusion: non_null
+    serialization:
+      fail-on-empty-beans: false
+  servlet:
+    multipart:
+      enabled: true
+      max-file-size: 500MB
+      max-request-size: 500MB
+      file-size-threshold: 2MB
+      location: ${java.io.tmpdir}
+  output:
+    ansi:
+      enabled: always
+
+mybatis-plus:
+  mapper-locations: classpath:mapper/*.xml
+  type-aliases-package: com.ruanzhu.doorhandle.module
+  global-config:
+    db-config:
+      schema: false
+      capital-mode: false
+    banner: false
+  configuration:
+    map-underscore-to-camel-case: true
+    call-setters-on-nulls: true
+    log-impl: ${MYBATIS_LOG_IMPL:org.apache.ibatis.logging.slf4j.Slf4jImpl}
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+  api-docs:
+    path: /v3/api-docs
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: when_authorized
+  info:
+    env:
+      enabled: true
+  health:
+    redis:
+      enabled: ${REDIS_HEALTH_ENABLED:false}
+
+info:
+  app:
+    name: DoorHandleCatch
+    description: 集装箱门把手工业缺陷检测平台
+    version: 0.0.1-SNAPSHOT
+
+jwt:
+  secret: ${JWT_SECRET:}
+  expiration: ${JWT_EXPIRATION:604800}
+  refresh-expiration: ${JWT_REFRESH_EXPIRATION:2592000}
+
+model:
+  upload-dir: ${MODEL_UPLOAD_DIR:${user.dir}/uploads/models}
+  max-upload-bytes: ${MODEL_MAX_UPLOAD_BYTES:209715200}
+
+detection:
+  upload-dir: ${DETECTION_UPLOAD_DIR:${user.dir}/uploads/images}
+  result-dir: ${DETECTION_RESULT_DIR:${user.dir}/uploads/results}
+  annotated-dir: ${DETECTION_ANNOTATED_DIR:${user.dir}/uploads/annotated}
+  max-images-per-batch: ${DETECTION_MAX_IMAGES_PER_BATCH:200}
+  max-image-bytes: ${DETECTION_MAX_IMAGE_BYTES:10485760}
+
+file:
+  upload:
+    path:
+      root: ${UPLOAD_ROOT_DIR:${user.dir}/uploads}
+      models: ${MODEL_UPLOAD_DIR:${user.dir}/uploads/models}
+      images: ${DETECTION_UPLOAD_DIR:${user.dir}/uploads/images}
+
+app:
+  security:
+    cookie-secure: ${APP_COOKIE_SECURE:false}
+  redis:
+    enabled: ${APP_REDIS_ENABLED:false}
+    key-prefix: ${APP_REDIS_KEY_PREFIX:doorhandlecatch}
+    default-ttl: ${APP_REDIS_DEFAULT_TTL:30m}
+    cache-ttls:
+      dashboard: ${APP_REDIS_TTL_DASHBOARD:5m}
+      model: ${APP_REDIS_TTL_MODEL:10m}
+      device: ${APP_REDIS_TTL_DEVICE:5m}
+      employee: ${APP_REDIS_TTL_EMPLOYEE:10m}
+      detection-task: ${APP_REDIS_TTL_DETECTION_TASK:2m}
+      chat-session: ${APP_REDIS_TTL_CHAT_SESSION:15m}
+  business-seed:
+    enabled: ${APP_BUSINESS_SEED_ENABLED:false}
+    continue-on-error: ${APP_BUSINESS_SEED_CONTINUE_ON_ERROR:false}
+    scripts:
+      - classpath:db/migration-V15-detection-fingerprint-work-unit.sql
+      - classpath:db/migration-V14-security-reliability-hardening.sql
+      - classpath:db/migration-V13-business-seed-data-normalization.sql
+      - classpath:db/business-seed-new-features.sql
+      - classpath:db/business-seed-more-features.sql
+      - classpath:db/business-seed-trace-rich.sql
+  cors:
+    allowed-origins: ${APP_CORS_ALLOWED_ORIGINS:http://localhost:3001,http://127.0.0.1:3001,http://localhost:3002,http://127.0.0.1:3002,http://localhost:3003,http://127.0.0.1:3003,http://localhost:3004,http://127.0.0.1:3004,http://localhost:5173,http://127.0.0.1:5173,http://localhost:8080}
+    allowed-methods: ${APP_CORS_ALLOWED_METHODS:GET,POST,PUT,DELETE,OPTIONS,HEAD}
+    allowed-headers: ${APP_CORS_ALLOWED_HEADERS:*}
+    exposed-headers: ${APP_CORS_EXPOSED_HEADERS:Authorization,Content-Type}
+    allow-credentials: ${APP_CORS_ALLOW_CREDENTIALS:true}
+    max-age: ${APP_CORS_MAX_AGE:3600}
+  upload:
+    dir: ${DETECTION_UPLOAD_DIR:${user.dir}/uploads/images}
+  models:
+    dir: ${MODEL_UPLOAD_DIR:${user.dir}/uploads/models}
+  default:
+    model: ${DEFAULT_MODEL_FILE:2f051822-fa0e-4803-9561-ede47fe3b362.onnx}
+  kafka:
+    enabled: ${APP_KAFKA_ENABLED:true}
+    bootstrap-servers: ${APP_KAFKA_BOOTSTRAP_SERVERS:10.20.144.118:9092}
+    send-timeout-ms: ${APP_KAFKA_SEND_TIMEOUT_MS:10000}
+    consumer-group: ${APP_KAFKA_CONSUMER_GROUP:doorhandlecatch-detection}
+    topics:
+      task-created: ${APP_KAFKA_TOPIC_TASK_CREATED:detection.task.created}
+      task-finished: ${APP_KAFKA_TOPIC_TASK_FINISHED:detection.task.finished}
+      task-progress: ${APP_KAFKA_TOPIC_TASK_PROGRESS:detection.task.progress}
+  detection-worker:
+    enabled: ${APP_DETECTION_WORKER_ENABLED:true}
+    deployment: ${APP_DETECTION_WORKER_DEPLOYMENT:remote}
+    label: ${APP_DETECTION_WORKER_LABEL:remote-python-worker}
+
+aliyun:
+  oss:
+    endpoint: ${ALIYUN_OSS_ENDPOINT:https://oss-cn-beijing.aliyuncs.com}
+    bucket-name: ${ALIYUN_OSS_BUCKET:handlecatchs}
+    access-key-id: ${ALIYUN_OSS_ACCESS_KEY_ID:}
+    access-key-secret: ${ALIYUN_OSS_ACCESS_KEY_SECRET:}
+    upload-url-expire-minutes: 15
+    preview-url-expire-minutes: 30
+    base-prefix: detection
+
+chat-assistant:
+  enabled: ${CHAT_ASSISTANT_ENABLED:true}
+  default-session-suffix: ${CHAT_ASSISTANT_DEFAULT_SESSION_SUFFIX:default}
+  max-history-messages: ${CHAT_ASSISTANT_MAX_HISTORY_MESSAGES:30}
+  max-requests-per-minute: ${CHAT_ASSISTANT_MAX_REQUESTS_PER_MINUTE:30}
+  max-scan-depth: ${CHAT_ASSISTANT_MAX_SCAN_DEPTH:4}
+  max-scan-files: ${CHAT_ASSISTANT_MAX_SCAN_FILES:200}
+  voice-transcribe-url: ${CHAT_ASSISTANT_VOICE_TRANSCRIBE_URL:}
+  voice-connect-timeout-ms: ${CHAT_ASSISTANT_VOICE_CONNECT_TIMEOUT_MS:1500}
+  voice-read-timeout-ms: ${CHAT_ASSISTANT_VOICE_READ_TIMEOUT_MS:15000}
+  voice-max-bytes: ${CHAT_ASSISTANT_VOICE_MAX_BYTES:10485760}
+  voice-transcribe-allowed-hosts: ${CHAT_ASSISTANT_VOICE_TRANSCRIBE_ALLOWED_HOSTS:localhost,127.0.0.1,::1}
+  rag-enabled: ${CHAT_ASSISTANT_RAG_ENABLED:true}
+  rag-query-rewrite-enabled: ${CHAT_ASSISTANT_RAG_QUERY_REWRITE_ENABLED:true}
+  rag-rerank-enabled: ${CHAT_ASSISTANT_RAG_RERANK_ENABLED:true}
+  rag-top-k: ${CHAT_ASSISTANT_RAG_TOP_K:4}
+  rag-candidate-multiplier: ${CHAT_ASSISTANT_RAG_CANDIDATE_MULTIPLIER:3}
+  rag-chunk-size: ${CHAT_ASSISTANT_RAG_CHUNK_SIZE:900}
+  rag-max-context-chars: ${CHAT_ASSISTANT_RAG_MAX_CONTEXT_CHARS:2600}
+  chroma-enabled: ${CHAT_ASSISTANT_CHROMA_ENABLED:true}
+  chroma-base-url: ${CHAT_ASSISTANT_CHROMA_BASE_URL:http://localhost:8000}
+  chroma-tenant: ${CHAT_ASSISTANT_CHROMA_TENANT:default_tenant}
+  chroma-database: ${CHAT_ASSISTANT_CHROMA_DATABASE:default_database}
+  chroma-collection: ${CHAT_ASSISTANT_CHROMA_COLLECTION:door_handle_assistant_knowledge}
+  chroma-token: ${CHAT_ASSISTANT_CHROMA_TOKEN:}
+  chroma-embedding-dimension: ${CHAT_ASSISTANT_CHROMA_EMBEDDING_DIMENSION:256}
+  chroma-connect-timeout-ms: ${CHAT_ASSISTANT_CHROMA_CONNECT_TIMEOUT_MS:1000}
+  chroma-read-timeout-ms: ${CHAT_ASSISTANT_CHROMA_READ_TIMEOUT_MS:3000}
+  rag-sources:
+    - classpath:rag/system-user-guide.md
+    - classpath:rag/assistant-rag-guide.md
+    - file:docs/system-user-guide.md
+    - file:docs/chroma-rag-setup.md
+    - file:README.md
+  allowed-scan-roots:
+    - ${CHAT_ASSISTANT_ALLOWED_SCAN_ROOT:${user.dir}/uploads}
+  blocked-path-keywords:
+    - .ssh
+    - .gnupg
+    - .aws
+    - .azure
+    - .kube
+    - .docker
+    - appdata
+    - windows
+    - program files
+    - system32
+    - node_modules
+    - .git
+
+agent:
+  graph:
+    guard:
+      max-execution-ms: ${AGENT_GRAPH_GUARD_MAX_EXECUTION_MS:15000}
+      max-visits-per-node: ${AGENT_GRAPH_GUARD_MAX_VISITS_PER_NODE:4}
+      max-repeat-route: ${AGENT_GRAPH_GUARD_MAX_REPEAT_ROUTE:3}
+      max-trace-size: ${AGENT_GRAPH_GUARD_MAX_TRACE_SIZE:24}
+
+conversation:
+  max-recent-messages: ${CONV_MAX_RECENT_MSGS:10}
+  summary-enabled: ${CONV_SUMMARY_ENABLED:true}
+  summary-trigger-count: ${CONV_SUMMARY_TRIGGER:8}
+
+deepseek:
+  enabled: ${DEEPSEEK_ENABLED:true}
+  api-key: ${DEEPSEEK_API_KEY:}
+  base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}
+  model: ${DEEPSEEK_MODEL:deepseek-v4-flash}
+  temperature: 0.3
+  chat-temperature: 0.7
+
+# AgentScope 平台适配开关。各项默认关闭，按需在 .env 或部署环境变量中开启。
+agent-platform:
+  event-bridge:
+    enabled: ${AGENT_EVENT_BRIDGE_ENABLED:false}
+    provider: ${AGENT_EVENT_BRIDGE_PROVIDER:local}
+    endpoint: ${AGENT_EVENT_BRIDGE_ENDPOINT:}
+    api-key: ${AGENT_EVENT_BRIDGE_API_KEY:}
+  a2a:
+    enabled: ${AGENT_A2A_ENABLED:false}
+    endpoint: ${AGENT_A2A_ENDPOINT:}
+    api-key: ${AGENT_A2A_API_KEY:}
+  responses:
+    enabled: ${AGENT_RESPONSES_ENABLED:false}
+    base-url: ${AGENT_RESPONSES_BASE_URL:https://api.openai.com/v1}
+    api-key: ${OPENAI_API_KEY:}
+    model: ${OPENAI_MODEL:gpt-4o-mini}
+  model:
+    provider: ${AGENT_MODEL_PROVIDER:dashscope}
+    fallback-provider: ${AGENT_MODEL_FALLBACK_PROVIDER:deepseek}
+    timeout: ${AGENT_MODEL_TIMEOUT:60s}
+    max-retries: ${AGENT_MODEL_MAX_RETRIES:2}
+    dashscope:
+      api-key: ${DASHSCOPE_API_KEY:}
+      base-url: ${DASHSCOPE_BASE_URL:https://dashscope.aliyuncs.com/api/v1}
+      model: ${AGENTSCOPE_AI_MODEL:dashscope:qwen-plus}
+    deepseek:
+      api-key: ${DEEPSEEK_API_KEY:}
+      base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}
+      model: ${DEEPSEEK_MODEL:deepseek-v4-flash}
+    glm:
+      api-key: ${GLM_API_KEY:}
+      base-url: ${GLM_BASE_URL:https://open.bigmodel.cn/api/paas/v4}
+      model: ${GLM_MODEL:glm-4-flash}
+  memory:
+    redis-enabled: ${AGENT_MEMORY_REDIS_ENABLED:false}
+    mem0-enabled: ${AGENT_MEMORY_MEM0_ENABLED:false}
+    mem0-base-url: ${MEM0_BASE_URL:http://localhost:8888}
+    mem0-api-key: ${MEM0_API_KEY:}
+  vector-store:
+    provider: ${AGENT_VECTOR_PROVIDER:milvus}
+    enabled: ${AGENT_VECTOR_ENABLED:false}
+    uri: ${VECTOR_STORE_URI:http://localhost:19530}
+    token: ${VECTOR_STORE_TOKEN:}
+    collection: ${VECTOR_STORE_COLLECTION:doorhandle_knowledge}
+  workspace:
+    root: ${AGENT_WORKSPACE_ROOT:${user.dir}/.agentscope/workspace}
+    sandbox: ${AGENT_WORKSPACE_SANDBOX:local}
+  observability:
+    otel-enabled: ${OTEL_ENABLED:false}
+    otel-endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:4317}
+    langfuse-enabled: ${LANGFUSE_ENABLED:false}
+    langfuse-public-key: ${LANGFUSE_PUBLIC_KEY:}
+    langfuse-secret-key: ${LANGFUSE_SECRET_KEY:}
+    langfuse-host: ${LANGFUSE_HOST:http://localhost:3000}
+  max-tokens: 2048
+  connect-timeout-ms: ${DEEPSEEK_CONNECT_TIMEOUT_MS:3000}
+  read-timeout-ms: ${DEEPSEEK_READ_TIMEOUT_MS:12000}
+
+mem0:
+  service-url: ${MEM0_SERVICE_URL:http://localhost:8081}
+  enabled: ${MEM0_ENABLED:true}
+  connect-timeout-ms: ${MEM0_CONNECT_TIMEOUT_MS:2000}
+  read-timeout-ms: ${MEM0_READ_TIMEOUT_MS:5000}
+
+# AgentScope Java 2.0.1 + AG-UI（与官方 v2 文档对应）。密钥通过 DASHSCOPE_API_KEY 注入，不写入配置文件。
+agentscope:
+  ai:
+    enabled: ${AGENTSCOPE_AI_ENABLED:false}
+    model: ${AGENTSCOPE_AI_MODEL:dashscope:qwen-plus}
+    agent-id: ${AGENTSCOPE_AI_AGENT_ID:doorhandle-assistant}
+    name: ${AGENTSCOPE_AI_NAME:doorhandle-assistant}
+    workspace: ${AGENTSCOPE_AI_WORKSPACE:${user.dir}/.agentscope/workspace}
+    max-iters: ${AGENTSCOPE_AI_MAX_ITERS:12}
+    enable-reasoning: ${AGENTSCOPE_AI_ENABLE_REASONING:false}
+    emit-token-usage: ${AGENTSCOPE_AI_EMIT_TOKEN_USAGE:false}
+  agui:
+    path-prefix: ${AGENTSCOPE_AGUI_PATH_PREFIX:/agui}
+    cors-enabled: ${AGENTSCOPE_AGUI_CORS_ENABLED:false}
+    run-timeout: ${AGENTSCOPE_AGUI_RUN_TIMEOUT:10m}
+    default-agent-id: ${AGENTSCOPE_AI_AGENT_ID:doorhandle-assistant}
+    enable-path-routing: ${AGENTSCOPE_AGUI_PATH_ROUTING:true}
+    agent-id-header: ${AGENTSCOPE_AGUI_AGENT_ID_HEADER:X-Agent-Id}
+    emit-state-events: ${AGENTSCOPE_AGUI_EMIT_STATE_EVENTS:true}
+    emit-tool-call-args: ${AGENTSCOPE_AGUI_EMIT_TOOL_CALL_ARGS:true}
+    emit-token-usage: ${AGENTSCOPE_AI_EMIT_TOKEN_USAGE:false}
+    enable-reasoning: ${AGENTSCOPE_AI_ENABLE_REASONING:false}
+    interrupt-on-disconnect: ${AGENTSCOPE_AGUI_INTERRUPT_ON_DISCONNECT:true}
+
+logging:
+  level:
+    root: ${LOG_LEVEL_ROOT:INFO}
+    com.ruanzhu.doorhandle: ${LOG_LEVEL_APP:INFO}
+    org.springframework.security: ${LOG_LEVEL_SECURITY:INFO}
+    org.springframework.web: ${LOG_LEVEL_WEB:INFO}
+    org.springframework.jdbc: ${LOG_LEVEL_JDBC:INFO}
+  charset:
+    console: UTF-8
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"

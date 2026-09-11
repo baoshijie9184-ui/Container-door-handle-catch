@@ -1,0 +1,11 @@
+* { box-sizing: border-box; }
+body { margin: 0; font-family: Inter, "PingFang SC", sans-serif; background: #f5f7fb; }
+.agent-shell { min-height: 100vh; background: radial-gradient(circle at 20% 0%, #eaf3ff, transparent 40%), #f5f7fb; }
+.agent-header { height: 68px; padding: 0 7%; display: flex; align-items: center; gap: 12px; background: rgba(255,255,255,.82); border-bottom: 1px solid #e8edf5; }
+.agent-header h3 { margin: 0; }
+.agent-main { width: min(1180px, 92vw); margin: 30px auto; display: grid; grid-template-columns: 1fr 250px; gap: 20px; }
+.chat-panel, aside { background: rgba(255,255,255,.9); border: 1px solid #e7edf6; border-radius: 18px; box-shadow: 0 12px 40px rgba(24,56,96,.08); }
+.chat-panel { min-height: 650px; display: flex; flex-direction: column; padding: 22px; }
+.bubble-list { flex: 1; overflow: auto; padding: 10px 4px 24px; }
+aside { height: fit-content; padding: 22px; line-height: 1.8; }
+@media (max-width: 800px) { .agent-main { grid-template-columns: 1fr; } aside { display: none; } }

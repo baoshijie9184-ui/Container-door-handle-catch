@@ -1,0 +1,6 @@
+{
+    "python.defaultInterpreterPath": "D:\\ruanjian\\anaconda3\\envs\\leetcode\\python.exe",
+    "python.terminal.activateEnvironment": true,
+    "java.compile.nullAnalysis.mode": "automatic",
+    "java.configuration.updateBuildConfiguration": "interactive"
+}

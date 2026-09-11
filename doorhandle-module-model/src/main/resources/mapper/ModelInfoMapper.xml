@@ -1,0 +1,117 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.ruanzhu.doorhandle.module.model.mapper.ModelInfoMapper">
+
+    <resultMap id="BaseResultMap" type="com.ruanzhu.doorhandle.module.model.entity.ModelInfo">
+        <id column="model_id" property="modelId"/>
+        <result column="model_name" property="modelName"/>
+        <result column="version" property="version"/>
+        <result column="model_path" property="modelPath"/>
+        <result column="upload_time" property="uploadTime"/>
+        <result column="update_description" property="updateDescription"/>
+        <result column="status" property="status"/>
+        <result column="is_default" property="isDefault"/>
+        <result column="creator" property="creator"/>
+        <result column="published_at" property="publishedAt"/>
+        <result column="last_used_at" property="lastUsedAt"/>
+        <result column="usage_count" property="usageCount"/>
+        <result column="validation_status" property="validationStatus"/>
+        <result column="validation_message" property="validationMessage"/>
+        <result column="mlops_status" property="mlopsStatus"/>
+        <result column="evaluation_dataset" property="evaluationDataset"/>
+        <result column="precision_score" property="precisionScore"/>
+        <result column="recall_score" property="recallScore"/>
+        <result column="map_score" property="mapScore"/>
+        <result column="f1_score" property="f1Score"/>
+        <result column="avg_inference_ms" property="avgInferenceMs"/>
+        <result column="compatibility_note" property="compatibilityNote"/>
+        <result column="deployment_strategy" property="deploymentStrategy"/>
+        <result column="canary_percent" property="canaryPercent"/>
+        <result column="ab_group" property="abGroup"/>
+        <result column="rollback_from_model_id" property="rollbackFromModelId"/>
+    </resultMap>
+
+    <insert id="insert" parameterType="com.ruanzhu.doorhandle.module.model.entity.ModelInfo">
+        INSERT INTO model_management (
+            model_id, model_name, version, model_path, upload_time, update_description,
+            status, is_default, creator, published_at, last_used_at, usage_count, validation_status, validation_message,
+            mlops_status, evaluation_dataset, precision_score, recall_score, map_score, f1_score,
+            avg_inference_ms, compatibility_note, deployment_strategy, canary_percent, ab_group, rollback_from_model_id
+        )
+        VALUES (
+            #{modelId}, #{modelName}, #{version}, #{modelPath}, #{uploadTime}, #{updateDescription},
+            #{status}, #{isDefault}, #{creator}, #{publishedAt}, #{lastUsedAt}, #{usageCount}, #{validationStatus}, #{validationMessage},
+            #{mlopsStatus}, #{evaluationDataset}, #{precisionScore}, #{recallScore}, #{mapScore}, #{f1Score},
+            #{avgInferenceMs}, #{compatibilityNote}, #{deploymentStrategy}, #{canaryPercent}, #{abGroup}, #{rollbackFromModelId}
+        )
+    </insert>
+
+    <select id="selectByModelId" parameterType="java.lang.Integer" resultMap="BaseResultMap">
+        SELECT model_id, model_name, version, model_path, upload_time, update_description,
+               status, is_default, creator, published_at, last_used_at, usage_count, validation_status, validation_message,
+               mlops_status, evaluation_dataset, precision_score, recall_score, map_score, f1_score,
+               avg_inference_ms, compatibility_note, deployment_strategy, canary_percent, ab_group, rollback_from_model_id
+        FROM model_management
+        WHERE model_id = #{modelId}
+    </select>
+
+    <select id="selectByModelNameAndVersion" resultMap="BaseResultMap">
+        SELECT model_id, model_name, version, model_path, upload_time, update_description,
+               status, is_default, creator, published_at, last_used_at, usage_count, validation_status, validation_message,
+               mlops_status, evaluation_dataset, precision_score, recall_score, map_score, f1_score,
+               avg_inference_ms, compatibility_note, deployment_strategy, canary_percent, ab_group, rollback_from_model_id
+        FROM model_management
+        WHERE model_name = #{modelName} AND version = #{version}
+    </select>
+
+    <select id="selectAll" resultMap="BaseResultMap">
+        SELECT model_id, model_name, version, model_path, upload_time, update_description,
+               status, is_default, creator, published_at, last_used_at, usage_count, validation_status, validation_message,
+               mlops_status, evaluation_dataset, precision_score, recall_score, map_score, f1_score,
+               avg_inference_ms, compatibility_note, deployment_strategy, canary_percent, ab_group, rollback_from_model_id
+        FROM model_management
+        ORDER BY is_default DESC, upload_time DESC
+    </select>
+
+    <select id="selectNextModelId" resultType="java.lang.Integer">
+        SELECT COALESCE(MAX(model_id), 0) + 1
+        FROM model_management
+    </select>
+
+    <update id="updateModelRecord" parameterType="com.ruanzhu.doorhandle.module.model.entity.ModelInfo">
+        UPDATE model_management
+        SET
+            model_name = #{modelName},
+            version = #{version},
+            model_path = #{modelPath},
+            upload_time = #{uploadTime},
+            update_description = #{updateDescription},
+            status = #{status},
+            is_default = #{isDefault},
+            creator = #{creator},
+            published_at = #{publishedAt},
+            last_used_at = #{lastUsedAt},
+            usage_count = #{usageCount},
+            validation_status = #{validationStatus},
+            validation_message = #{validationMessage},
+            mlops_status = #{mlopsStatus},
+            evaluation_dataset = #{evaluationDataset},
+            precision_score = #{precisionScore},
+            recall_score = #{recallScore},
+            map_score = #{mapScore},
+            f1_score = #{f1Score},
+            avg_inference_ms = #{avgInferenceMs},
+            compatibility_note = #{compatibilityNote},
+            deployment_strategy = #{deploymentStrategy},
+            canary_percent = #{canaryPercent},
+            ab_group = #{abGroup},
+            rollback_from_model_id = #{rollbackFromModelId}
+        WHERE model_id = #{modelId}
+    </update>
+
+    <delete id="deleteById" parameterType="java.lang.Integer">
+        DELETE FROM model_management
+        WHERE model_id = #{modelId}
+    </delete>
+
+</mapper> 

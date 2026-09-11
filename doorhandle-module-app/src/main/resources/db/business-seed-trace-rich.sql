@@ -1,0 +1,81 @@
+-- Rich business seed data for work-order and batch trace pages.
+-- Safe to re-run: deterministic task_id/workflow_uuid values with upserts.
+
+SET NAMES utf8mb4;
+SET CHARACTER SET utf8mb4;
+SET character_set_connection = utf8mb4;
+SET character_set_client = utf8mb4;
+SET character_set_results = utf8mb4;
+
+INSERT INTO `detection_task` (
+    `task_id`, `workflow_uuid`, `task_type`, `batch_no`, `work_order_no`, `flow_status`,
+    `quality_station`, `assignee`, `assignment_remark`, `assigned_at`, `due_at`,
+    `status`, `stage`, `model_id`, `model_version`, `threshold`, `capture_date`, `region`,
+    `collector`, `device_name`, `image_folder_name`, `total_images`, `processed_images`,
+    `successful_images`, `failed_images`, `source_oss_prefix`, `result_oss_prefix`, `result_json_oss_key`,
+    `statistics_json`, `defect_evidence_json`, `defect_count`, `primary_defect_type`, `max_defect_severity`,
+    `review_status`, `review_conclusion`, `severity_level`, `confirmed_defect_count`, `false_positive_count`,
+    `review_remark`, `reviewer`, `reviewed_at`, `disposition_status`, `disposition_action`,
+    `disposition_remark`, `disposition_operator`, `disposed_at`, `recheck_required`,
+    `rework_result`, `rework_operator`, `rework_remark`, `rework_completed_at`, `created_by`,
+    `created_at`, `started_at`, `finished_at`, `updated_at`
+) VALUES
+('biz_trace_wo_sh_001_a','91000000-0000-4000-8000-000000000001','BATCH','BATCH-SH-A-20260615-001','WO-SH-A-001','CONFIRMED','QA-SH-01','李四','同工单已确认缺陷','2026-06-15 10:12:00','2026-06-15 13:00:00','COMPLETED','COMPLETED',101,'prod-2026.06',0.6200,'2026-06-15','上海','张三','DEV-0001','A-001-R2',1800,1800,1798,2,'business/trace/sh-a-001-a/original/','business/trace/sh-a-001-a/result/','business/trace/sh-a-001-a/result.json','{"normal":1798,"defect":2,"rust":1,"bend":1}','[{"imageKey":"business/trace/sh-a-001-a/original/001.jpg","previewKey":"business/trace/sh-a-001-a/result/001.jpg","defectType":"RUST","severity":"MAJOR","confidence":0.918,"bbox":{"x":122,"y":86,"w":61,"h":47},"area":2867,"position":"handle-base"}]',2,'RUST','MAJOR','REVIEWED','CONFIRMED_DEFECT','MAJOR',2,0,'同工单锈蚀确认','李四','2026-06-15 10:28:00','PENDING',NULL,NULL,NULL,NULL,1,NULL,NULL,NULL,NULL,'admin','2026-06-15 10:06:00','2026-06-15 10:07:00','2026-06-15 10:11:00','2026-06-15 10:28:00'),
+('biz_trace_wo_sh_001_b','91000000-0000-4000-8000-000000000002','BATCH','BATCH-SH-A-20260615-001','WO-SH-A-001','REWORK_REQUIRED','QA-SH-02','王五','同工单返工中','2026-06-15 10:15:00','2026-06-15 15:00:00','COMPLETED','COMPLETED',102,'canary-2026.06-a',0.6500,'2026-06-15','上海','张三','DEV-0006','A-001-R3',2100,2100,2099,1,'business/trace/sh-a-001-b/original/','business/trace/sh-a-001-b/result/','business/trace/sh-a-001-b/result.json','{"normal":2099,"defect":1,"deformation":1}','[{"imageKey":"business/trace/sh-a-001-b/original/001.jpg","previewKey":"business/trace/sh-a-001-b/result/001.jpg","defectType":"DEFORMATION","severity":"MAJOR","confidence":0.901,"bbox":{"x":172,"y":100,"w":80,"h":58},"area":4640,"position":"lock-seat"}]',1,'DEFORMATION','MAJOR','REVIEWED','CONFIRMED_DEFECT','MAJOR',1,0,'同工单变形返工','王五','2026-06-15 10:35:00','DISPOSED','REWORK','安排返工校正','质检主管','2026-06-15 10:42:00',1,'IN_PROGRESS','返工一组','返工处理中',NULL,'admin','2026-06-15 10:08:00','2026-06-15 10:09:00','2026-06-15 10:14:00','2026-06-15 10:42:00'),
+('biz_trace_wo_sh_001_c','91000000-0000-4000-8000-000000000003','BATCH','BATCH-SH-A-20260615-001','WO-SH-A-001','RELEASED','QA-SH-03','张强','同工单误报放行','2026-06-15 09:50:00','2026-06-15 12:00:00','COMPLETED','COMPLETED',101,'prod-2026.06',0.6200,'2026-06-15','上海','张三','DEV-0008','A-001-R4',1600,1600,1600,0,'business/trace/sh-a-001-c/original/','business/trace/sh-a-001-c/result/','business/trace/sh-a-001-c/result.json','{"normal":1600,"defect":0,"false_positive":1}','[{"imageKey":"business/trace/sh-a-001-c/original/001.jpg","previewKey":"business/trace/sh-a-001-c/result/001.jpg","defectType":"SCRATCH","severity":"MINOR","confidence":0.612,"bbox":{"x":80,"y":72,"w":38,"h":25},"area":950,"position":"reflection"}]',1,'SCRATCH','MINOR','REVIEWED','FALSE_POSITIVE','MINOR',0,1,'反光误报，放行','张强','2026-06-15 10:06:00','DISPOSED','RELEASE','复核合格放行','质检主管','2026-06-15 10:08:00',0,NULL,NULL,NULL,NULL,'admin','2026-06-15 09:42:00','2026-06-15 09:43:00','2026-06-15 09:48:00','2026-06-15 10:08:00'),
+('biz_trace_batch_sh_001_d','91000000-0000-4000-8000-000000000004','BATCH','BATCH-SH-A-20260615-001','WO-SH-A-TRACE-EXTRA','PENDING_REVIEW','QA-SH-04','刘一','同批次不同工单待复核','2026-06-15 10:18:00','2026-06-15 14:30:00','COMPLETED','COMPLETED',103,'ab-2026.06-b',0.6800,'2026-06-15','上海','张三','DEV-0005','A-001-R5',1900,1900,1897,3,'business/trace/sh-a-001-d/original/','business/trace/sh-a-001-d/result/','business/trace/sh-a-001-d/result.json','{"normal":1897,"defect":3,"missing_part":1,"rust":2}','[{"imageKey":"business/trace/sh-a-001-d/original/001.jpg","previewKey":"business/trace/sh-a-001-d/result/001.jpg","defectType":"MISSING_PART","severity":"CRITICAL","confidence":0.949,"bbox":{"x":210,"y":118,"w":86,"h":72},"area":6192,"position":"pin-hole"}]',3,'MISSING_PART','CRITICAL','PENDING',NULL,'CRITICAL',0,0,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,0,NULL,NULL,NULL,NULL,'admin','2026-06-15 10:10:00','2026-06-15 10:11:00','2026-06-15 10:17:00','2026-06-15 10:18:00')
+ON DUPLICATE KEY UPDATE
+    `workflow_uuid` = VALUES(`workflow_uuid`),
+    `batch_no` = VALUES(`batch_no`),
+    `work_order_no` = VALUES(`work_order_no`),
+    `flow_status` = VALUES(`flow_status`),
+    `quality_station` = VALUES(`quality_station`),
+    `assignee` = VALUES(`assignee`),
+    `assignment_remark` = VALUES(`assignment_remark`),
+    `assigned_at` = VALUES(`assigned_at`),
+    `due_at` = VALUES(`due_at`),
+    `status` = VALUES(`status`),
+    `stage` = VALUES(`stage`),
+    `model_id` = VALUES(`model_id`),
+    `model_version` = VALUES(`model_version`),
+    `threshold` = VALUES(`threshold`),
+    `capture_date` = VALUES(`capture_date`),
+    `region` = VALUES(`region`),
+    `collector` = VALUES(`collector`),
+    `device_name` = VALUES(`device_name`),
+    `image_folder_name` = VALUES(`image_folder_name`),
+    `total_images` = VALUES(`total_images`),
+    `processed_images` = VALUES(`processed_images`),
+    `successful_images` = VALUES(`successful_images`),
+    `failed_images` = VALUES(`failed_images`),
+    `source_oss_prefix` = VALUES(`source_oss_prefix`),
+    `result_oss_prefix` = VALUES(`result_oss_prefix`),
+    `result_json_oss_key` = VALUES(`result_json_oss_key`),
+    `statistics_json` = VALUES(`statistics_json`),
+    `defect_evidence_json` = VALUES(`defect_evidence_json`),
+    `defect_count` = VALUES(`defect_count`),
+    `primary_defect_type` = VALUES(`primary_defect_type`),
+    `max_defect_severity` = VALUES(`max_defect_severity`),
+    `review_status` = VALUES(`review_status`),
+    `review_conclusion` = VALUES(`review_conclusion`),
+    `severity_level` = VALUES(`severity_level`),
+    `confirmed_defect_count` = VALUES(`confirmed_defect_count`),
+    `false_positive_count` = VALUES(`false_positive_count`),
+    `review_remark` = VALUES(`review_remark`),
+    `reviewer` = VALUES(`reviewer`),
+    `reviewed_at` = VALUES(`reviewed_at`),
+    `disposition_status` = VALUES(`disposition_status`),
+    `disposition_action` = VALUES(`disposition_action`),
+    `disposition_remark` = VALUES(`disposition_remark`),
+    `disposition_operator` = VALUES(`disposition_operator`),
+    `disposed_at` = VALUES(`disposed_at`),
+    `recheck_required` = VALUES(`recheck_required`),
+    `rework_result` = VALUES(`rework_result`),
+    `rework_operator` = VALUES(`rework_operator`),
+    `rework_remark` = VALUES(`rework_remark`),
+    `rework_completed_at` = VALUES(`rework_completed_at`),
+    `created_by` = VALUES(`created_by`),
+    `created_at` = VALUES(`created_at`),
+    `started_at` = VALUES(`started_at`),
+    `finished_at` = VALUES(`finished_at`),
+    `updated_at` = VALUES(`updated_at`);

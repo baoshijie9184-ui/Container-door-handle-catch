@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.ruanzhu.doorhandle.module.device.mapper.DeviceUsageRecordMapper">
+
+    <!-- 根据条件查询设备使用记录 -->
+    <select id="selectRecordsByConditions" parameterType="java.util.Map" resultType="com.ruanzhu.doorhandle.module.device.entity.DeviceUsageRecord">
+        SELECT *
+        FROM device_usage_record
+        <where>
+            <if test="deviceId != null">
+                AND device_id = #{deviceId}
+            </if>
+            <if test="deviceCode != null and deviceCode != ''">
+                AND device_code LIKE CONCAT('%', #{deviceCode}, '%')
+            </if>
+            <if test="employeeName != null and employeeName != ''">
+                AND employee_name LIKE CONCAT('%', #{employeeName}, '%')
+            </if>
+            <if test="employeeNumber != null and employeeNumber != ''">
+                AND employee_number LIKE CONCAT('%', #{employeeNumber}, '%')
+            </if>
+            <if test="statusList != null and statusList.size() > 0">
+                AND status IN
+                <foreach collection="statusList" item="statusVal" open="(" separator="," close=")">
+                    #{statusVal}
+                </foreach>
+            </if>
+            <if test="startTimeBegin != null">
+                AND start_time &gt;= #{startTimeBegin}
+            </if>
+            <if test="startTimeEnd != null">
+                AND start_time &lt;= #{startTimeEnd}
+            </if>
+        </where>
+        ORDER BY start_time DESC
+        LIMIT #{offset}, #{limit}
+    </select>
+
+    <!-- 根据条件统计设备使用记录数量 -->
+    <select id="countRecordsByConditions" parameterType="java.util.Map" resultType="java.lang.Integer">
+        SELECT COUNT(*)
+        FROM device_usage_record
+        <where>
+            <if test="deviceId != null">
+                AND device_id = #{deviceId}
+            </if>
+            <if test="deviceCode != null and deviceCode != ''">
+                AND device_code LIKE CONCAT('%', #{deviceCode}, '%')
+            </if>
+            <if test="employeeName != null and employeeName != ''">
+                AND employee_name LIKE CONCAT('%', #{employeeName}, '%')
+            </if>
+            <if test="employeeNumber != null and employeeNumber != ''">
+                AND employee_number LIKE CONCAT('%', #{employeeNumber}, '%')
+            </if>
+            <if test="statusList != null and statusList.size() > 0">
+                AND status IN
+                <foreach collection="statusList" item="statusVal" open="(" separator="," close=")">
+                    #{statusVal}
+                </foreach>
+            </if>
+            <if test="startTimeBegin != null">
+                AND start_time &gt;= #{startTimeBegin}
+            </if>
+            <if test="startTimeEnd != null">
+                AND start_time &lt;= #{startTimeEnd}
+            </if>
+        </where>
+    </select>
+</mapper> 

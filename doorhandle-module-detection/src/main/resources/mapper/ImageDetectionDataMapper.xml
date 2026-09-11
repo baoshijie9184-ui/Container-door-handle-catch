@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.ruanzhu.doorhandle.module.detection.mapper.ImageDetectionDataMapper">
+
+    <resultMap id="BaseResultMap" type="com.ruanzhu.doorhandle.module.detection.entity.ImageDetectionData">
+        <id column="id" property="id"/>
+        <result column="folder_path" property="folderPath"/>
+        <result column="result_path" property="resultPath"/>
+        <result column="annotated_images_path" property="annotatedImagesPath"/>
+        <result column="detected_images_count" property="detectedImagesCount"/>
+        <result column="detection_instances_count" property="detectionInstancesCount"/>
+        <result column="normal_count" property="normalCount"/>
+        <result column="bent_count" property="bentCount"/>
+        <result column="deformed_count" property="deformedCount"/>
+        <result column="rusty_count" property="rustyCount"/>
+        <result column="missing_count" property="missingCount"/>
+        <result column="compromised_count" property="compromisedCount"/>
+        <result column="miss_detection_rate" property="missDetectionRate"/>
+        <result column="start_time" property="startTime"/>
+
+        <result column="finished_at" property="finishedAt"/>
+        <result column="model_id" property="modelId"/>
+    </resultMap>
+
+    <insert id="insert" parameterType="com.ruanzhu.doorhandle.module.detection.entity.ImageDetectionData" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO image_detection_data (
+            folder_path, result_path, annotated_images_path, detected_images_count, detection_instances_count,
+            normal_count, bent_count, deformed_count, rusty_count, missing_count, compromised_count, miss_detection_rate, start_time,
+            finished_at, model_id
+        ) VALUES (
+            #{folderPath}, #{resultPath}, #{annotatedImagesPath}, #{detectedImagesCount}, #{detectionInstancesCount},
+            #{normalCount}, #{bentCount}, #{deformedCount}, #{rustyCount}, #{missingCount}, #{compromisedCount}, #{missDetectionRate}, #{startTime},
+            #{finishedAt}, #{modelId}
+        )
+    </insert>
+
+    <select id="selectById" parameterType="java.lang.Long" resultMap="BaseResultMap">
+        SELECT 
+            id, folder_path, result_path, annotated_images_path, detected_images_count, detection_instances_count,
+            normal_count, bent_count, deformed_count, rusty_count, missing_count, compromised_count, miss_detection_rate, start_time, finished_at, model_id
+        FROM image_detection_data
+        WHERE id = #{id}
+    </select>
+
+    <select id="selectAll" resultMap="BaseResultMap">
+        SELECT 
+            id, folder_path, result_path, annotated_images_path, detected_images_count, detection_instances_count,
+            normal_count, bent_count, deformed_count, rusty_count, missing_count, compromised_count, miss_detection_rate, start_time, finished_at, model_id
+        FROM image_detection_data
+        ORDER BY start_time DESC
+    </select>
+
+    <update id="updateDetectionDataRecord" parameterType="com.ruanzhu.doorhandle.module.detection.entity.ImageDetectionData">
+        UPDATE image_detection_data
+        SET
+            folder_path = #{folderPath},
+            result_path = #{resultPath},
+            annotated_images_path = #{annotatedImagesPath},
+            detected_images_count = #{detectedImagesCount},
+            detection_instances_count = #{detectionInstancesCount},
+            normal_count = #{normalCount},
+            bent_count = #{bentCount},
+            deformed_count = #{deformedCount},
+            rusty_count = #{rustyCount},
+            missing_count = #{missingCount},
+            compromised_count = #{compromisedCount},
+            miss_detection_rate = #{missDetectionRate},
+            start_time = #{startTime},
+            finished_at = #{finishedAt},
+            model_id = #{modelId}
+        WHERE id = #{id}
+    </update>
+
+    <delete id="deleteById" parameterType="java.lang.Long">
+        DELETE FROM image_detection_data
+        WHERE id = #{id}
+    </delete>
+
+</mapper> 

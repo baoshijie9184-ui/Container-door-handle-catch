@@ -1,0 +1,870 @@
+/* ═══════════════════════════════════════════════════════════════════════
+   DoorHandle Catch — 全局设计系统
+   工业检测智能控制台 · Data-Dense Dashboard 风格
+   ═══════════════════════════════════════════════════════════════════════ */
+
+:root {
+  /* ── 主色调 ── */
+  --app-primary: #2563eb;
+  --app-primary-hover: #1d4ed8;
+  --app-primary-active: #1e40af;
+  --app-primary-soft: rgba(37, 99, 235, 0.10);
+  --app-primary-light: rgba(37, 99, 235, 0.05);
+  --app-primary-glow: rgba(37, 99, 235, 0.18);
+  --app-primary-deep: #0f2f57;
+  --app-cyan: #0ea5e9;
+  --app-cyan-soft: rgba(14, 165, 233, 0.11);
+  --app-steel: #334155;
+  --app-steel-soft: rgba(51, 65, 85, 0.08);
+
+  /* ── 语义色 ── */
+  --app-success: #059669;
+  --app-success-soft: rgba(5, 150, 105, 0.10);
+  --app-success-light: rgba(5, 150, 105, 0.05);
+
+  --app-warning: #d97706;
+  --app-warning-soft: rgba(217, 119, 6, 0.10);
+  --app-warning-light: rgba(217, 119, 6, 0.05);
+
+  --app-danger: #dc2626;
+  --app-danger-soft: rgba(220, 38, 38, 0.10);
+  --app-danger-light: rgba(220, 38, 38, 0.05);
+
+  --app-info: #0891b2;
+  --app-info-soft: rgba(8, 145, 178, 0.10);
+
+  /* ── 中性色 ── */
+  --app-bg: #f1f5f9;
+  --app-bg-alt: #f8fafc;
+  --app-surface: rgba(255, 255, 255, 0.85);
+  --app-surface-strong: #ffffff;
+  --app-surface-muted: #f6f9fc;
+  --app-surface-hover: #f1f5f9;
+  --app-surface-glass: rgba(255, 255, 255, 0.78);
+  --app-surface-blueprint: rgba(239, 246, 255, 0.72);
+
+  --app-text: #0f172a;
+  --app-text-secondary: #475569;
+  --app-text-muted: #94a3b8;
+  --app-text-placeholder: #cbd5e1;
+
+  --app-border: rgba(15, 23, 42, 0.07);
+  --app-border-strong: rgba(15, 23, 42, 0.12);
+  --app-border-focus: rgba(37, 99, 235, 0.35);
+
+  /* ── 圆角 ── */
+  --app-radius-xs: 6px;
+  --app-radius-sm: 10px;
+  --app-radius-md: 14px;
+  --app-radius-lg: 20px;
+  --app-radius-xl: 28px;
+  --app-radius-full: 9999px;
+
+  /* ── 阴影层级 ── */
+  --app-shadow-xs: 0 1px 3px rgba(15, 23, 42, 0.04);
+  --app-shadow-sm: 0 2px 8px rgba(15, 23, 42, 0.05);
+  --app-shadow-md: 0 8px 24px rgba(15, 23, 42, 0.07);
+  --app-shadow-lg: 0 16px 48px rgba(15, 23, 42, 0.09);
+  --app-shadow-xl: 0 24px 64px rgba(15, 23, 42, 0.12);
+  --app-shadow-primary: 0 8px 24px rgba(37, 99, 235, 0.22);
+  --app-shadow-card-hover: 0 12px 36px rgba(15, 23, 42, 0.10);
+  --app-shadow-command: 0 18px 52px rgba(15, 47, 87, 0.14);
+  --app-shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.75);
+
+  /* ── 过渡 ── */
+  --app-transition-fast: 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+  --app-transition-base: 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+  --app-transition-slow: 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+  --app-ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  /* ── 间距 ── */
+  --app-space-xs: 4px;
+  --app-space-sm: 8px;
+  --app-space-md: 12px;
+  --app-space-lg: 16px;
+  --app-space-xl: 24px;
+  --app-space-2xl: 32px;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   全局重置
+   ═══════════════════════════════════════════════════════════════════════ */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  scroll-behavior: smooth;
+}
+
+html, body, #app {
+  min-height: 100%;
+  height: 100%;
+}
+
+body {
+  color: var(--app-text);
+  font-family: "Inter", "Segoe UI", "PingFang SC", "Microsoft YaHei", "Helvetica Neue", sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
+  background:
+    linear-gradient(rgba(37, 99, 235, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(37, 99, 235, 0.035) 1px, transparent 1px),
+    radial-gradient(ellipse at 0% 0%, rgba(37, 99, 235, 0.09), transparent 40%),
+    radial-gradient(ellipse at 100% 20%, rgba(14, 165, 233, 0.07), transparent 35%),
+    radial-gradient(ellipse at 70% 100%, rgba(5, 150, 105, 0.055), transparent 36%),
+    linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+  background-size: 42px 42px, 42px 42px, auto, auto, auto, auto;
+  background-attachment: fixed;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+img, svg, video {
+  display: block;
+  max-width: 100%;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--app-primary);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.skip-link {
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  z-index: 3000;
+  transform: translateY(-160%);
+  padding: 10px 14px;
+  border: 0;
+  border-radius: var(--app-radius-sm);
+  background: var(--app-primary);
+  color: #fff;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+  box-shadow: var(--app-shadow-lg);
+  transition: transform var(--app-transition-fast);
+}
+
+.skip-link:focus {
+  transform: translateY(0);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   滚动条美化
+   ═══════════════════════════════════════════════════════════════════════ */
+
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(15, 23, 42, 0.12);
+  border-radius: var(--app-radius-full);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(15, 23, 42, 0.22);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   通用面板样式
+   ═══════════════════════════════════════════════════════════════════════ */
+
+.app-panel {
+  position: relative;
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-lg);
+  box-shadow: var(--app-shadow-sm);
+  backdrop-filter: blur(16px);
+  transition: box-shadow var(--app-transition-base), border-color var(--app-transition-base);
+}
+
+.app-panel::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  box-shadow: var(--app-shadow-inset);
+}
+
+.app-panel.interactive:hover {
+  border-color: var(--app-border-strong);
+  box-shadow: var(--app-shadow-card-hover);
+}
+
+.command-panel {
+  position: relative;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 12% 12%, rgba(14, 165, 233, 0.16), transparent 32%),
+    radial-gradient(circle at 92% 6%, rgba(37, 99, 235, 0.14), transparent 30%),
+    linear-gradient(135deg, rgba(255, 255, 255, 0.94), rgba(239, 246, 255, 0.86));
+  border: 1px solid rgba(37, 99, 235, 0.12);
+  box-shadow: var(--app-shadow-command);
+}
+
+.command-panel::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(90deg, rgba(37, 99, 235, 0.08) 1px, transparent 1px),
+    linear-gradient(rgba(37, 99, 235, 0.08) 1px, transparent 1px);
+  background-size: 28px 28px;
+  mask-image: linear-gradient(120deg, transparent 0%, #000 18%, transparent 72%);
+  opacity: 0.45;
+}
+
+.industrial-kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--app-primary);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.industrial-kicker::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--app-success);
+  box-shadow: 0 0 0 6px var(--app-success-soft);
+}
+
+.metric-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 5px 10px;
+  border-radius: var(--app-radius-full);
+  background: var(--app-surface-blueprint);
+  border: 1px solid rgba(37, 99, 235, 0.10);
+  color: var(--app-steel);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.app-panel-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--app-text);
+  letter-spacing: -0.01em;
+}
+
+.app-panel-subtitle {
+  margin: 4px 0 0;
+  color: var(--app-text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   页面布局通用类
+   ═══════════════════════════════════════════════════════════════════════ */
+
+.page-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.page-hero {
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 24px 28px;
+  background:
+    radial-gradient(ellipse at 100% 0%, rgba(14, 165, 233, 0.14), transparent 50%),
+    radial-gradient(ellipse at 0% 0%, rgba(37, 99, 235, 0.10), transparent 48%),
+    linear-gradient(135deg, rgba(255,255,255,0.94), rgba(239,246,255,0.90));
+  border-radius: var(--app-radius-lg);
+  border: 1px solid rgba(37, 99, 235, 0.12);
+  box-shadow: var(--app-shadow-command);
+}
+
+.page-hero::after {
+  content: "";
+  position: absolute;
+  right: -90px;
+  bottom: -120px;
+  width: 300px;
+  height: 300px;
+  border: 1px solid rgba(37, 99, 235, 0.08);
+  border-radius: 50%;
+  background: repeating-radial-gradient(circle, rgba(37, 99, 235, 0.045) 0 2px, transparent 2px 18px);
+  pointer-events: none;
+}
+
+.page-hero-title {
+  margin: 0;
+  font-size: 28px;
+  font-weight: 800;
+  color: var(--app-text);
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+}
+
+.page-hero-text {
+  margin: 8px 0 0;
+  max-width: 640px;
+  color: var(--app-text-secondary);
+  line-height: 1.7;
+  font-size: 14px;
+}
+
+.page-hero-label {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 12px;
+  border-radius: var(--app-radius-full);
+  background: var(--app-primary-soft);
+  color: var(--app-primary);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+/* ── 统计摘要条 ── */
+
+.stats-bar {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.stats-bar-item {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 18px 20px;
+  border-radius: var(--app-radius-md);
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  box-shadow: var(--app-shadow-xs);
+  transition: box-shadow var(--app-transition-fast), transform var(--app-transition-fast);
+}
+
+.stats-bar-item:hover {
+  box-shadow: var(--app-shadow-sm);
+  transform: translateY(-1px);
+}
+
+.stats-bar-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  font-size: 20px;
+  flex-shrink: 0;
+
+  &.primary {
+    color: var(--app-primary);
+    background: var(--app-primary-soft);
+  }
+  &.success {
+    color: var(--app-success);
+    background: var(--app-success-soft);
+  }
+  &.warning {
+    color: var(--app-warning);
+    background: var(--app-warning-soft);
+  }
+  &.danger {
+    color: var(--app-danger);
+    background: var(--app-danger-soft);
+  }
+  &.info {
+    color: var(--app-info);
+    background: var(--app-info-soft);
+  }
+}
+
+.stats-bar-value {
+  font-size: 26px;
+  font-weight: 800;
+  color: var(--app-text);
+  line-height: 1.1;
+  letter-spacing: -0.01em;
+}
+
+.stats-bar-label {
+  margin-top: 2px;
+  font-size: 13px;
+  color: var(--app-text-secondary);
+}
+
+/* ── 工具栏 ── */
+
+.toolbar-panel {
+  padding: 16px 20px;
+}
+
+.toolbar-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.toolbar-grid .el-input,
+.toolbar-grid .el-select {
+  width: 200px;
+  max-width: 100%;
+}
+
+/* ── 表格面板 ── */
+
+.table-panel {
+  overflow: hidden;
+}
+
+.table-panel .el-card__body {
+  padding-top: 16px !important;
+}
+
+.panel-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.page-footer {
+  display: flex;
+  justify-content: center;
+  padding: 16px 0 0;
+}
+
+/* ── 操作按钮组 ── */
+
+.operation-buttons {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.operation-buttons .el-button {
+  margin-left: 0 !important;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Element Plus 全局覆盖
+   ═══════════════════════════════════════════════════════════════════════ */
+
+.el-card {
+  border: 1px solid var(--app-border) !important;
+  border-radius: var(--app-radius-md) !important;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.94)) !important;
+  box-shadow: var(--app-shadow-sm), var(--app-shadow-inset) !important;
+  transition: box-shadow var(--app-transition-base), transform var(--app-transition-base), border-color var(--app-transition-base);
+}
+
+.el-card:hover {
+  border-color: rgba(37, 99, 235, 0.14) !important;
+}
+
+.el-card__header {
+  padding: 20px 24px 0 !important;
+  border-bottom: 0 !important;
+}
+
+.el-card__body {
+  padding: 20px 24px !important;
+}
+
+/* 按钮 */
+.el-button {
+  border-radius: 10px !important;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  transition: all var(--app-transition-fast);
+}
+
+.el-button--primary {
+  --el-button-bg-color: var(--app-primary);
+  --el-button-border-color: var(--app-primary);
+  --el-button-hover-bg-color: var(--app-primary-hover);
+  --el-button-hover-border-color: var(--app-primary-hover);
+  --el-button-active-bg-color: var(--app-primary-active);
+  --el-button-active-border-color: var(--app-primary-active);
+  box-shadow: var(--app-shadow-primary);
+}
+
+.el-button--primary:hover {
+  box-shadow: 0 10px 28px rgba(37, 99, 235, 0.3);
+  transform: translateY(-1px);
+}
+
+.el-button--primary:active {
+  transform: translateY(0);
+}
+
+/* 输入框 */
+.el-input__wrapper,
+.el-select__wrapper,
+.el-textarea__inner {
+  border-radius: 10px !important;
+  transition: all var(--app-transition-fast);
+  box-shadow: var(--app-shadow-xs) !important;
+  border: 1px solid rgba(15, 23, 42, 0.04);
+}
+
+.el-input__wrapper:hover,
+.el-select__wrapper:hover {
+  box-shadow: var(--app-shadow-sm) !important;
+}
+
+.el-input__wrapper.is-focus,
+.el-select__wrapper.is-focused,
+.el-textarea__inner:focus {
+  border-color: var(--app-border-focus) !important;
+  box-shadow: 0 0 0 4px var(--app-primary-soft) !important;
+}
+
+/* 表格 */
+.el-table {
+  --el-table-border-color: var(--app-border);
+  --el-table-header-bg-color: #eef6ff;
+  --el-table-row-hover-bg-color: #f0f7ff;
+  color: var(--app-text-secondary);
+  border-radius: 14px;
+  overflow: hidden;
+}
+
+.el-table th.el-table__cell {
+  color: var(--app-steel);
+  font-weight: 800;
+  font-size: 12px;
+  letter-spacing: 0.045em;
+  text-transform: uppercase;
+  background: linear-gradient(180deg, #f5faff, #eef6ff);
+  border-bottom: 2px solid var(--app-border-strong);
+}
+
+.el-table td.el-table__cell {
+  border-bottom: 1px solid var(--app-border);
+}
+
+/* 菜单 */
+.el-menu {
+  border-right: 0 !important;
+  background: transparent !important;
+}
+
+.el-menu--collapse {
+  width: auto !important;
+}
+
+.el-menu-item,
+.el-sub-menu__title {
+  border-radius: 12px;
+  color: var(--app-text-secondary) !important;
+  margin: 3px 0;
+  height: 46px !important;
+  line-height: 46px !important;
+  transition: all var(--app-transition-fast);
+}
+
+.el-menu-item.is-active {
+  color: var(--app-primary) !important;
+  background: linear-gradient(90deg, var(--app-primary-soft), rgba(14, 165, 233, 0.05), transparent) !important;
+  font-weight: 600;
+}
+
+.el-menu-item:hover,
+.el-sub-menu__title:hover {
+  background: var(--app-surface-hover) !important;
+  color: var(--app-text) !important;
+}
+
+/* 分页 */
+.el-pagination {
+  justify-content: center;
+}
+
+.el-pagination.is-background .el-pager li:not(.is-disabled).is-active {
+  background-color: var(--app-primary) !important;
+  border-radius: 8px !important;
+}
+
+/* 标签 */
+.el-tag {
+  border-radius: 6px;
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.el-tabs__nav-wrap::after {
+  background-color: rgba(15, 23, 42, 0.07) !important;
+}
+
+.el-tabs__item {
+  font-weight: 700 !important;
+  color: var(--app-text-secondary) !important;
+}
+
+.el-tabs__item.is-active {
+  color: var(--app-primary) !important;
+}
+
+.el-tabs__active-bar {
+  height: 3px !important;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--app-primary), var(--app-cyan)) !important;
+}
+
+.el-radio-button__inner {
+  font-weight: 700;
+}
+
+.el-progress-bar__outer {
+  background-color: rgba(15, 23, 42, 0.08) !important;
+}
+
+/* 空状态 */
+.el-empty {
+  padding: 48px 0;
+}
+
+.el-empty__description {
+  color: var(--app-text-muted);
+  font-size: 14px;
+}
+
+/* 对话框 */
+.el-dialog {
+  border-radius: var(--app-radius-lg) !important;
+  overflow: hidden;
+}
+
+.el-dialog__header {
+  padding: 24px 24px 0 !important;
+}
+
+/* 消息提示 */
+.el-message {
+  border-radius: 12px !important;
+  box-shadow: var(--app-shadow-lg) !important;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Element Plus 全局覆盖
+   ═══════════════════════════════════════════════════════════════════════ */
+
+.el-card {
+  border-radius: var(--app-radius-md) !important;
+  border: 1px solid var(--app-border) !important;
+}
+
+.el-tabs__item.is-active {
+  color: var(--app-primary) !important;
+}
+
+.el-tabs__active-bar {
+  background: var(--app-primary) !important;
+}
+
+.el-button--primary {
+  background: var(--app-primary) !important;
+  border-color: var(--app-primary) !important;
+  box-shadow: var(--app-shadow-primary) !important;
+  border-radius: 10px !important;
+}
+
+.el-button--primary:hover {
+  background: var(--app-primary-hover) !important;
+}
+
+.el-tag {
+  border-radius: 6px;
+}
+
+.el-dialog {
+  border-radius: var(--app-radius-lg) !important;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   骨架屏动画
+   ═══════════════════════════════════════════════════════════════════════ */
+
+@keyframes skeleton-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+.skeleton {
+  background: linear-gradient(90deg, #e2e8f0 25%, #f1f5f9 50%, #e2e8f0 75%);
+  background-size: 200% 100%;
+  animation: skeleton-pulse 1.8s ease-in-out infinite;
+  border-radius: var(--app-radius-sm);
+}
+
+.skeleton-text {
+  height: 14px;
+  margin-bottom: 10px;
+}
+
+.skeleton-title {
+  height: 24px;
+  width: 60%;
+  margin-bottom: 14px;
+}
+
+.skeleton-avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+}
+
+.skeleton-card {
+  height: 120px;
+  border-radius: var(--app-radius-md);
+}
+
+.skeleton-chart {
+  height: 320px;
+  border-radius: var(--app-radius-md);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   动画系统
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* 页面进入动画 */
+@keyframes fade-in-up {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@keyframes scale-in {
+  from { opacity: 0; transform: scale(0.95); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+.animate-fade-in-up {
+  animation: fade-in-up 0.4s var(--app-ease-spring) both;
+}
+
+.animate-fade-in {
+  animation: fade-in 0.3s ease-out both;
+}
+
+.animate-scale-in {
+  animation: scale-in 0.25s var(--app-ease-spring) both;
+}
+
+/* 交错动画延迟 */
+@for $i from 1 through 12 {
+  .animate-stagger-#{$i} {
+    animation-delay: #{$i * 0.05}s;
+  }
+}
+
+/* 脉冲点 */
+@keyframes pulse-dot {
+  0%, 100% { box-shadow: 0 0 0 0 var(--app-success); }
+  50%      { box-shadow: 0 0 0 8px transparent; }
+}
+
+.pulse-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--app-success);
+  animation: pulse-dot 2s ease-in-out infinite;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   响应式
+   ═══════════════════════════════════════════════════════════════════════ */
+
+@media (max-width: 768px) {
+  .page-hero {
+    padding: 18px 20px;
+    flex-direction: column;
+  }
+
+  .page-hero-title {
+    font-size: 22px;
+  }
+
+  .stats-bar {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .toolbar-grid .el-input,
+  .toolbar-grid .el-select {
+    width: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

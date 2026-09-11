@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.2.4</version>
+        <relativePath/>
+    </parent>
+    <groupId>com.ruanzhu</groupId>
+    <artifactId>doorhandle-parent</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+    <packaging>pom</packaging>
+    <name>DoorHandleCatch</name>
+    <modules>
+        <module>doorhandle-dependencies</module>
+        <module>doorhandle-common</module>
+        <module>doorhandle-framework</module>
+        <module>doorhandle-contracts</module>
+        <module>doorhandle-module-system</module>
+        <module>doorhandle-module-infra</module>
+        <module>doorhandle-module-device</module>
+        <module>doorhandle-module-detection</module>
+        <module>doorhandle-module-model</module>
+        <module>doorhandle-module-ai</module>
+        <module>doorhandle-module-app</module>
+        <module>doorhandle-server</module>
+    </modules>
+    <properties>
+        <java.version>17</java.version>
+        <spring-boot.version>3.2.4</spring-boot.version>
+        <!-- 第三方平台版本统一在父 POM 管理；升级 AgentScope 只需修改此处。 -->
+        <agentscope.version>2.0.1</agentscope.version>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    </properties>
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-dependencies</artifactId>
+                <version>${spring-boot.version}</version>
+                <type>pom</type><scope>import</scope>
+            </dependency>
+            <!-- AgentScope Java BOM/组件没有统一 BOM，使用同一版本属性约束所有组件。 -->
+            <dependency>
+                <groupId>io.agentscope</groupId>
+                <artifactId>agentscope-harness</artifactId>
+                <version>${agentscope.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.agentscope</groupId>
+                <artifactId>agentscope-extensions-model-dashscope</artifactId>
+                <version>${agentscope.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.agentscope</groupId>
+                <artifactId>agentscope-agui-spring-boot-starter</artifactId>
+                <version>${agentscope.version}</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+    <build>
+        <pluginManagement>
+            <plugins>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-surefire-plugin</artifactId>
+                    <configuration>
+                        <!-- Windows 下项目盘符与 Maven 仓库盘符不同时，允许测试类路径使用绝对 URL。 -->
+                        <argLine>-Djdk.net.URLClassPath.disableClassPathURLCheck=true</argLine>
+                    </configuration>
+                </plugin>
+            </plugins>
+        </pluginManagement>
+    </build>
+</project>
