@@ -4,6 +4,7 @@
   <parent><groupId>com.ruanzhu</groupId><artifactId>doorhandle-parent</artifactId><version>0.0.1-SNAPSHOT</version></parent>
   <artifactId>doorhandle-module-device</artifactId>
   <dependencies>
+    <dependency><groupId>com.ruanzhu</groupId><artifactId>doorhandle-contracts</artifactId><version>${project.version}</version></dependency>
     <dependency><groupId>com.ruanzhu</groupId><artifactId>doorhandle-common</artifactId><version>${project.version}</version></dependency>
     <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-web</artifactId></dependency>
     <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-security</artifactId></dependency>

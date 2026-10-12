@@ -1,6 +1,6 @@
 # AgentScope 平台配置说明
 
-后端的 AgentScope Java 2.0.1 适配位于 `doorhandle-module-ai`，通过 `doorhandle-server` 暴露 AG-UI 接口，版本与官方 v2 文档保持一致。仓库只提交 `.env.example`，真实密钥请复制为根目录 `.env` 后手动填写，或交给部署平台的 Secret 管理。
+后端的 AgentScope Java 2.0.1 适配位于 `doorhandle-module-ai`，通过 `doorhandle-server` 暴露 AG-UI 接口。角色网关直接使用 AG-UI 扩展的请求处理器，先绑定登录身份再执行异步 Agent，不使用通用 Starter Controller。仓库只提交 `.env.example`，真实密钥请复制为根目录 `.env` 后手动填写，或交给部署平台的 Secret 管理。
 
 ## 最小启动配置
 
@@ -10,7 +10,9 @@ DASHSCOPE_API_KEY=你的阿里云百炼Key
 AGENTSCOPE_AI_MODEL=dashscope:qwen-plus
 ```
 
-启动后接口为 `POST /agui/run`；未开启 `AGENTSCOPE_AI_ENABLED` 时不会创建 AgentScope Agent Bean，便于没有 API Key 的开发环境启动。
+启动后接口为 `POST /agui/run`，需要检测系统登录态；`GET /agui/catalog` 返回当前角色能力。未开启 `AGENTSCOPE_AI_ENABLED` 时不装配角色网关和 Agent 工厂。Agent 按请求创建，避免不同用户共用单例对话状态。
+
+两类角色的实际工具范围及未完成事项见 [实施进度](agent-role-toolkit-progress.md)。当前接口超时为三分钟，只支持文本只读查询；Starter 的 server-side-memory、reasoning、state-events、run-timeout 等配置尚不由此网关读取，不能通过打开旧配置启用这些能力。
 
 ## 配置分组
 

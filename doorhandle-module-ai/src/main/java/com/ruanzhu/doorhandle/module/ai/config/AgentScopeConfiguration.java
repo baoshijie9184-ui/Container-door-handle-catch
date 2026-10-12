@@ -1,14 +1,14 @@
 package com.ruanzhu.doorhandle.module.ai.config;
 
-import io.agentscope.core.agent.Agent;
-import io.agentscope.core.tool.Toolkit;
-import io.agentscope.harness.agent.HarnessAgent;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.ruanzhu.doorhandle.contracts.agent.*;
+import com.ruanzhu.doorhandle.module.ai.agent.RoleAgentFactory;
+import com.ruanzhu.doorhandle.module.ai.tool.BusinessToolkitFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
-import java.nio.file.Path;
 
 /** AgentScope 装配入口；业务模块只依赖 Agent 接口，Server 不承载 Agent 实现。 */
 @Configuration
@@ -17,20 +17,13 @@ import java.nio.file.Path;
 public class AgentScopeConfiguration {
 
     @Bean
-    public Toolkit doorHandleAgentToolkit() {
-        return new Toolkit();
+    public BusinessToolkitFactory businessToolkitFactory(DetectionAgentReadApi detection,
+            ResourceAgentReadApi resources, ModelAgentReadApi models, ObjectMapper json) {
+        return new BusinessToolkitFactory(detection, resources, models, json);
     }
 
-    @Bean(name = "doorhandle-assistant")
-    public Agent doorHandleAgent(AgentScopeProperties properties, Toolkit toolkit) {
-        return HarnessAgent.builder()
-                .agentId(properties.getAgentId())
-                .name(properties.getName())
-                .sysPrompt(properties.getSystemPrompt())
-                .model(properties.getModel())
-                .toolkit(toolkit)
-                .workspace(Path.of(properties.getWorkspace().replace("${user.dir}", System.getProperty("user.dir"))))
-                .maxIters(properties.getMaxIters())
-                .build();
+    @Bean
+    public RoleAgentFactory roleAgentFactory(AgentScopeProperties properties, BusinessToolkitFactory toolkits) {
+        return new RoleAgentFactory(properties, toolkits);
     }
 }
