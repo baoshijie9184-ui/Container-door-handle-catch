@@ -34,6 +34,15 @@ foreach ($name in @('DEPLOY_KEY', 'DEPLOY_KNOWN_HOSTS')) {
     $value = [Environment]::GetEnvironmentVariable($name)
     if (-not $value -or -not (Test-Path -LiteralPath $value -PathType Leaf)) { throw "Missing Jenkins credential file: $name" }
 }
+# Jenkins temporary credentials inherit the workspace ACL on Windows. OpenSSH
+# rejects keys readable by other local accounts, so restrict this temporary file
+# to the identity executing this build before attempting authentication.
+$identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+$keyAcl = New-Object System.Security.AccessControl.FileSecurity
+$keyAcl.SetOwner($identity)
+$keyAcl.SetAccessRuleProtection($true, $false)
+$keyAcl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($identity, 'FullControl', 'Allow')))
+Set-Acl -LiteralPath $env:DEPLOY_KEY -AclObject $keyAcl
 $sshOptions = @('-i', $env:DEPLOY_KEY, '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes', '-o', "UserKnownHostsFile=$env:DEPLOY_KNOWN_HOSTS", '-o', 'ConnectTimeout=12', '-o', 'ServerAliveInterval=30', '-o', 'ServerAliveCountMax=3')
 if ($env:SSH_TRANSPORT -eq 'tls') {
     foreach ($name in @('OPENSSL_EXE', 'SSH_TLS_CA_FILE')) {
@@ -43,7 +52,7 @@ if ($env:SSH_TRANSPORT -eq 'tls') {
     }
     $openssl = (Resolve-Path -LiteralPath $env:OPENSSL_EXE).Path.Replace('\', '/')
     $tlsCa = (Resolve-Path -LiteralPath $env:SSH_TLS_CA_FILE).Path.Replace('\', '/')
-    $tlsProxy = 'ProxyCommand="{0}" s_client -quiet -connect %h:%p -servername doorhandle-ssh.local -CAfile "{1}" -verify_return_error -verify_hostname doorhandle-ssh.local' -f $openssl, $tlsCa
+    $tlsProxy = 'ProxyCommand="{0}" s_client -quiet -verify_quiet -connect %h:%p -servername doorhandle-ssh.local -CAfile "{1}" -verify_return_error -verify_hostname doorhandle-ssh.local' -f $openssl, $tlsCa
     $sshOptions += @('-o', $tlsProxy)
 } elseif ($env:SSH_TRANSPORT -ne 'direct') { throw 'SSH_TRANSPORT must be tls or direct' }
 $destination = "$user@$targetHost"
