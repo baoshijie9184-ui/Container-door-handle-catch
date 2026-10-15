@@ -12,7 +12,7 @@ pipeline {
     parameters {
         choice(name: 'ACTION', choices: ['verify-deploy', 'verify', 'rollback'], description: '验证发布、仅验证，或回滚到上一次成功发布')
         string(name: 'BUILD_WORKSPACE', defaultValue: 'D:/AI/lunwen1/DoorHandleCatch/work/jenkins/workspace', description: '专用工作区；不能使用开发源码目录')
-        string(name: 'DEPLOY_HOST', defaultValue: '', description: '原 ECS 当前公网 IP；节省停机后重新核对')
+        string(name: 'DEPLOY_HOST', defaultValue: "${params.DEPLOY_HOST ?: ''}", description: '原 ECS 当前公网 IP；保留最近一次配置，节省停机后重新核对')
         string(name: 'DEPLOY_PORT', defaultValue: '443', description: '当前已验证的 TLS/SSH 入口')
         choice(name: 'SSH_TRANSPORT', choices: ['tls', 'direct'], description: '当前网络使用校验证书的 TLS 传输；直连仅适用于允许普通 SSH 的网络')
         string(name: 'SSH_TLS_CA_FILE', defaultValue: 'D:/AI/lunwen1/DoorHandleCatch/work/cloud/ssh-tls/server.crt', description: '经云助手核验的服务器公有证书，不含私钥')
