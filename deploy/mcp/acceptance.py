@@ -55,6 +55,41 @@ async def main():
     report['fetchSucceeded']=True
     report['privateAddressDenied']=True
     report['cancelRevoked']=True
+    # Observe and cancel an actual running Stdio container, before its call completes.
+    credential=token(100003,'execute')
+    headers={'Authorization':'Bearer '+credential,'X-MCP-Gateway-Key':config['key']}
+    async with streamablehttp_client(base+'/mcp',headers=headers,timeout=35) as (read,write,_):
+        async with ClientSession(read,write) as client:
+            await client.initialize()
+            task=asyncio.create_task(client.call_tool('fetch',{'url':'https://httpbingo.org/delay/10','max_length':200}))
+            observed=None
+            for _ in range(80):
+                process=await asyncio.create_subprocess_exec('docker','ps','-q','--filter','label=doorhandle.mcp.owner=100003',stdout=asyncio.subprocess.PIPE)
+                output,_=await process.communicate()
+                if output.strip():
+                    detail=await asyncio.create_subprocess_exec('docker','inspect',output.decode().strip(),stdout=asyncio.subprocess.PIPE)
+                    raw,_=await detail.communicate()
+                    observed=json.loads(raw)[0]
+                    break
+                if task.done(): break
+                await asyncio.sleep(.1)
+            assert observed is not None, 'No active test container was observed'
+            host=observed['HostConfig']
+            assert observed['Config']['User']=='10001:10001' and host['ReadonlyRootfs'] and not host['Privileged']
+            assert not host['Binds'] and host['NetworkMode']=='doorhandlecatch-mcp-exec'
+            assert 'ALL' in host['CapDrop'] and host['Memory']==256*1024*1024 and host['PidsLimit']==64
+            names={value.split('=',1)[0] for value in observed['Config']['Env']}
+            assert not {'MCP_RUNNER_SECRET','OPENAI_API_KEY','DASHSCOPE_API_KEY','DB_PASSWORD','ALIYUN_OSS_ACCESS_KEY_SECRET'} & names
+            async with httpx.AsyncClient(trust_env=False,timeout=10) as http:
+                response=await http.post(base+'/cancel',headers=headers)
+                assert response.status_code==200
+            try:
+                result=await asyncio.wait_for(task,10)
+                assert result.isError, 'Cancelled process unexpectedly returned a successful result'
+            except Exception as error:
+                if isinstance(error, AssertionError): raise
+            report['activeCancellationVerified']=True
+            report['containerRestrictionsVerified']=True
     print(json.dumps(report))
 asyncio.run(main())
 '''

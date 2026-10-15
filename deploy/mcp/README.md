@@ -71,3 +71,27 @@ Higress DNS 注册使用带点的 `mcp-runner.ai.internal` 网络别名，standa
 ## 尚未覆盖
 
 当前只桥接固定 Fetch 的 Stdio→Streamable HTTP；外部 HTTP/SSE 服务的通用注册、任意 MCP 安装、Skill 脚本执行、工作区挂载与配额、多实例任务调度、容器逃逸防护和完整对抗评测仍需开发。停机后 Docker 重启会恢复常驻服务；临时 Fetch 容器无重启策略，由运行器回收。
+
+## 2026-10-15 服务器验收
+
+应用发布为 Jenkins `doorhandle-java` **#11 SUCCESS**，分支 `java-cloud`，代码 `746ff5e2fc98bcfcb261478576d7ed54a583920a`，当前目录 `/home/ecs-user/doorhandle-ci/releases/ci-11-746ff5e2fc98`。JUnit 汇总 565 项：542 通过、23 个可选检查跳过、0 失败；主站 54 项与独立 Agent UI 5 项 Node 测试、双前端生产构建通过。实际部署前另完成两个身份的原生 MCP 抓取和容器边界测试。
+
+| 检查 | 结果 |
+| --- | --- |
+| MCP 服务密钥、签名及 scope | 缺少服务密钥、签名被篡改及不适用范围被拒绝 |
+| 两个独立身份调用 | `100001`、`100002` 均通过实际隔离 Fetch 读取公开页面；属于基础设施测试身份，不替实际用户创建启用配置 |
+| 运行中的调用取消 | 实际观察运行容器后取消，工具返回错误，容器销毁；非 root、只读、无业务挂载与密钥、PID/内存限制通过检查 |
+| 网络出口 | 公开页面经代理成功；元数据、回环、私网、解析为回环的域名及 ECS 公网 IP 均被拒绝；直接公网连接失败 |
+| 主站人工确认及账号隔离 | 测试员工确认迁移后完成实际 SDK 握手；缺少许可确认返回 400，另一账号未安装时探测返回 403 |
+| 真实 Agent 端到端 | 新建会话 `sess_inspector.demo_de6bca70`，经真实模型、原生 Java MCP、Higress 和隔离容器抓取，回答包含 `Example Domain`；运行 `cee88113-5db3-469a-927d-a81262fca524` 完成并保存 CALL 审计 |
+| 回归与数据保留 | 四个演示账号查询通过，原批次仍为 100 成功 / 0 失败，11 项常驻服务健康，临时容器剩余 0 |
+
+测试员工 `inspector.demo` 保留网关模式安装，**保持停用**；其他三个演示账号保持未安装。进入“Agent智能系统 → MCP工具”可自行测试连接，再确认启用。
+
+同时修复了真实部署暴露的运行租约问题：JDBC 连接时区与 JVM/数据库时区不一致时，`Timestamp.toLocalDateTime()` 曾使新租约比数据库当前时间早 8 小时，MCP 因而被运行授权拒绝。日志、租约和运行时间现以 JDBC `LocalDateTime` 读取数据库的原始时间，不改历史记录；回归测试覆盖旧 Timestamp 读取发生 8 小时偏移的情形。真实完成运行的起止租约间隔已核实为 90 秒。
+
+模型网关转发及备用 DeepSeek 已实际响应。北京网络中默认灵算上游仍出现连接失败，现有模型管理自动切换到 DeepSeek；引入 Higress 并未解决该外部供应商的网络可达性。Mem0/Embedding 的独立供应商连接也不属于这次 AgentScope 模型工厂接入范围。通用模型凭证托管、网关 Token 配额及完整可观测性继续按后续任务推进。
+
+基础设施最终运行镜像为 `sha256:dd4ba96542f92d0dddd5772f706b96717fccd84110f40289b334dfc06da18f54`；部署修订补充了 init/运行器变更时的网关及出口重启依赖，并通过真实服务器 Compose 校验。基础设施验收脚本独立执行，不会因普通应用发布而自动调用公网或生成模型。
+
+证据在服务器 `/home/ecs-user/doorhandle-ci/state/`：`gateway-acceptance.log`、`gateway-egress-acceptance.log`、`gateway-app-acceptance.json`、`gateway-chat-trace.json`、`gateway-final-verification.json` 和 `gateway-lease-check.log`。本机保存 Jenkins 归档于 `work/jenkins/build-11-artifacts/`；这些运行证据和私有配置均不加入 Git。

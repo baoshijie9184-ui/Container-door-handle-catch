@@ -36,9 +36,9 @@ services:
     image: higress-registry.cn-hangzhou.cr.aliyuncs.com/higress/all-in-one:2.2.5@sha256:55f5fa3ec77d5c00c5622c05019e6deb030b195bb0efa7212eff3555c071bed0
     environment: {MODE: gateway, O11Y: "off", USE_PLUGIN_SERVER: "on", GATEWAY_CONCURRENCY: "2"}
     depends_on:
-      higress-config: {condition: service_completed_successfully}
-      mcp-runner: {condition: service_healthy}
-      mcp-egress: {condition: service_healthy}
+      higress-config: {condition: service_completed_successfully, restart: true}
+      mcp-runner: {condition: service_healthy, restart: true}
+      mcp-egress: {condition: service_healthy, restart: true}
     volumes: ["doorhandle-higress:/data"]
     networks: [doorhandle-network]
     mem_limit: 1g
@@ -88,7 +88,7 @@ services:
     image: ${MCP_EGRESS_IMAGE:?Set a verified immutable egress image ID}
     build: {context: ., dockerfile: deploy/mcp/Dockerfile.egress}
     depends_on:
-      higress-config: {condition: service_completed_successfully}
+      higress-config: {condition: service_completed_successfully, restart: true}
     volumes: ["doorhandle-mcp-egress:/etc/squid/server-config:ro"]
     # Copy only the generated public-address deny rule into the path referenced by squid.conf.
     entrypoint: ["sh", "-ec", "exec squid -N -f /etc/squid/squid.conf"]
