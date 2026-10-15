@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<flow-definition plugin="workflow-job">
+  <description>Java 单体测试、应用镜像发布与健康失败回滚；首次配置后先执行 ACTION=verify。</description>
+  <keepDependencies>false</keepDependencies><properties/>
+  <definition class="org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition" plugin="workflow-cps">
+    <scm class="hudson.plugins.git.GitSCM" plugin="git">
+      <configVersion>2</configVersion>
+      <userRemoteConfigs><hudson.plugins.git.UserRemoteConfig>
+        <url>https://github.com/baoshijie9184-ui/Container-door-handle-catch.git</url>
+      </hudson.plugins.git.UserRemoteConfig></userRemoteConfigs>
+      <branches><hudson.plugins.git.BranchSpec><name>*/java</name></hudson.plugins.git.BranchSpec></branches>
+      <doGenerateSubmoduleConfigurations>false</doGenerateSubmoduleConfigurations>
+      <submoduleCfg class="empty-list"/><extensions/>
+    </scm>
+    <scriptPath>Jenkinsfile</scriptPath><lightweight>true</lightweight>
+  </definition>
+  <triggers/><disabled>true</disabled>
+</flow-definition>

@@ -17,6 +17,8 @@
 
 ## 本地单体一键启动
 
+本机 Jenkins 自动验证及发布到现有 ECS 的入口为 `Jenkinsfile`，配置、凭据、发布范围和回滚方法见 [Jenkins CI/CD](script/jenkins/README.md)。
+
 双击项目根目录的 `start-local.cmd`，或执行 `./start-local.ps1`，启动中间件、Spring Boot 后端和两套前端。主站登录地址为 http://127.0.0.1:3001/#/login，打开主站根地址也会进入登录页，登录成功后进入首页。Agent UI 为 http://127.0.0.1:3003。停止使用 `stop-local.cmd` 或 `./stop-local.ps1`，共享 MySQL、Redis 服务保持运行。
 
 环境要求、重新构建参数、数据目录及日志排查见 [本地单体启动说明](docs/local-monolith-startup.md)。
