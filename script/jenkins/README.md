@@ -76,7 +76,9 @@ stunnel 为独立系统工具，采用 GPL-2.0-or-later 并有 OpenSSL 例外；
 
 ## 2026-10-15 完整构建发布验收
 
-实际任务 [doorhandle-java #4](http://127.0.0.1:18080/job/doorhandle-java/4/) 为 **SUCCESS**，耗时约 14 分 10 秒，北京时间 13:42 完成发布。提交 `b33e47b75ca2e7b3e6c9daa039c63c94e2aefa3b`，版本 `ci-4-b33e47b75ca2`。真实执行了 GitHub 检出、SSH 预检、全部测试、双前端生产构建、源码归档及摘要校验、SCP 上传、ECS Docker 构建、应用替换和健康检查。
+最终任务 [doorhandle-java #6](http://127.0.0.1:18080/job/doorhandle-java/6/) 为 **SUCCESS**，耗时约 6 分 46 秒，北京时间 13:55 完成发布。提交 `d81f0089d61fea8a8399a89145b38a87aaf03c9c`，当前版本 `ci-6-d81f0089d61f`。真实执行了 GitHub 检出、SSH 预检、全部测试、双前端生产构建、源码归档及摘要校验、SCP 上传、ECS Docker 构建、应用替换和健康检查，并确认旧发布构件在开始时已清除。
+
+首轮任务 [#4](http://127.0.0.1:18080/job/doorhandle-java/4/) 同样成功，耗时约 14 分 10 秒，版本 `ci-4-b33e47b75ca2`；包括较慢的 Node 基础镜像下载。#5 由 SCM 变化自动触发，确认了触发链路；为应用构件清理修复，在其发布前主动取消，由 #6 完整执行最新脚本。
 
 | 检查 | 结果 |
 | --- | --- |
@@ -88,11 +90,11 @@ stunnel 为独立系统工具，采用 GPL-2.0-or-later 并有 OpenSSL 例外；
 | 服务健康 | 八项常驻服务 healthy，数据库、缓存、队列、记忆与 worker 未重建 |
 | 四账号与页面 | 两名员工、两名主管登录及业务接口通过，检测历史、报告和 Agent 页面无脚本错误 |
 | 原有数据 | 原 100 张测试任务仍为 COMPLETED，100 成功、0 失败；PTH 摘要未变 |
-| 新任务闭环 | `det_20261015_054237_b5d631c2`，单张上传→Kafka→模型 105 CPU PTH→OSS 标注图/JSON→Java 落库成功，上传后约 4.2 秒完成 |
+| 新任务闭环 | #4 后 `det_20261015_054237_b5d631c2`、#6 后 `det_20261015_055612_ed359aa8` 均完成单张上传→Kafka→模型 105 CPU PTH→OSS 标注图/JSON→Java 落库；这些任务不构成推理性能基准 |
 
 前几次实跑暴露并修复了 checkout 返回值未注入分支/提交变量、Windows 临时 SSH 私钥继承过宽 ACL、旧 PowerShell 模块冲突；失败均发生在应用发布前。还保留了部署主机参数供轮询触发使用，并修正 Jenkins 自身地址为 18080，避免生成错误的 8080 链接。
 
-当前目录 `/home/ecs-user/doorhandle-ci/releases/ci-4-b33e47b75ca2`；`state/previous-directory` 保留原部署目录，`previous-images.yml` 已核对实际旧镜像 ID。**本轮未执行真实回滚切换**，不能将状态保留和脚本失败处理测试当作云端回滚演练。前端仍存在原有 peer dependency / 构建体积警告，不影响本次构建和页面验收；准确率、容量与模型供应商延迟另行评测。
+当前目录 `/home/ecs-user/doorhandle-ci/releases/ci-6-d81f0089d61f`；`state/previous-directory` 保留 #4 部署目录，`previous-images.yml` 已核对 #4 实际镜像 ID，最初 demo 镜像和目录也仍保留。**本轮未执行真实回滚切换**，不能将状态保留和脚本失败处理测试当作云端回滚演练。前端仍存在原有 peer dependency / 构建体积警告，不影响本次构建和页面验收；准确率、容量与模型供应商延迟另行评测。
 
 完整控制台日志、前后业务对比、页面截图和服务器核验放在 Git 忽略的 `work/jenkins/`，汇总为 `ci-deployment-acceptance-20261015.json`。这些记录不含私有环境配置或密钥。访问新版本可在项目根目录运行 `ssh -F work/cloud/ssh-config -N -L 127.0.0.1:18088:127.0.0.1:8088 doorhandle-bj`，然后打开 <http://127.0.0.1:18088/#/login>；本次已建立该本机隧道。
 
