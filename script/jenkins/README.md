@@ -33,7 +33,10 @@ Jenkins Credentials 配置：
 | 参数 | 当前配置 |
 | --- | --- |
 | `DEPLOY_HOST` | 从控制台核对的当前 ECS 公网 IP，默认空，停机再启动后重新检查 |
-| `DEPLOY_PORT` | 已验证的 SSH 端口，默认 22 |
+| `DEPLOY_PORT` | 已验证的 TLS/SSH 入口，默认 443 |
+| `SSH_TRANSPORT` | 当前网络使用 `tls`；普通 SSH 可达的网络可选择 `direct` |
+| `SSH_TLS_CA_FILE` | 云助手核对的服务器公有证书，默认项目 `work/cloud/ssh-tls/server.crt` |
+| `OPENSSL_EXE` | 现有 Git 客户端的 `D:/ruanjian/Git/usr/bin/openssl.exe` |
 | `REMOTE_ROOT` | `/home/ecs-user/doorhandle-ci`，新版本及状态目录 |
 | `REMOTE_RUNTIME` | `/home/ecs-user/doorhandle-release-20261014`，现有私有配置和模型上下文 |
 | `BUILD_WORKSPACE` | 专用 D 盘目录，默认项目 `work/jenkins/workspace`，不能填开发源码根目录 |
@@ -50,6 +53,24 @@ Jenkins Credentials 配置：
 - 严格核验 SSH 主机公钥；未知/变更公钥、连接重置均阻止发布。“实例运行中”不代表 SSH 或业务健康。
 - 这是单实例替换，后端更新可能短暂不可用；健康失败会尝试回滚。中断、服务器重启或回滚也失败时，需检查容器与状态记录，不能宣称零停机或事务回滚。
 - 仅本人可信分支可使用发布凭据。现有控制器直接构建只适合个人可信代码；多人接入时按官方建议设置独立构建节点、控制器执行器为 0。
+
+## 当前网络 SSH 连接修复
+
+2026-10-15：校园网下普通 SSH 在握手时重置，服务器同时记录客户端来源的重置，不能归因于密码或密钥。现使用 **本机 OpenSSL → ECS 443/stunnel → 本机回环 22/sshd**：TLS 验证云助手核对的公有证书及 `doorhandle-ssh.local` 名称，内部 SSH 继续严格核对原主机公钥并使用原私钥认证。不依赖 Clash、临时代理进程或新快捷方式。原 22 端口仍保留，443 安全组仅放行已核对的本机公网出口；网络出口变化时需要调整来源。
+
+在项目根目录连接：
+
+```powershell
+ssh -F .\work\cloud\ssh-config doorhandle-bj
+```
+
+预先核对 `HostName` 与当前公网 IP。以上配置、证书与私钥留在 Git 忽略的 `work/`；证书公钥可以分发，服务端私钥只保存在 ECS `/etc/doorhandle-ssh-tls/server.key`。不得关闭证书验证或 SSH 主机公钥验证。
+
+服务器组件由 `install-ssh-tls.sh` 通过云助手以 root 安装：Ubuntu 官方 `stunnel4` 包、独立 `doorhandle-ssh-tls.service`、最后应用的 `ssh.socket.d/zz-doorhandle-ssh-tls.conf`，明确同时监听 IPv4/IPv6 的 22 端口。脚本保留原配置快照，安装失败尝试恢复原监听。服务端证书有效期 365 天，续期后须通过可信渠道重新核对并更新客户端证书。`ecs-user` 已加入现有 `docker` 组，重新登录后可执行部署所需 Docker 命令。
+
+本轮真实验证：严格校验下的 SSH 登录、Docker/Compose 预检通过；1 MiB SCP 上传与下载 SHA-256 完全一致；错误 TLS 主机名被拒绝；八项原业务服务仍 healthy。这里只确认连接与传输，不能把它当成完整 Jenkins 构建发布已验收。
+
+stunnel 为独立系统工具，采用 GPL-2.0-or-later 并有 OpenSSL 例外；本轮没有复制或修改其源码，Ubuntu 包保留原版权声明。参考 [stunnel 手册](https://www.stunnel.org/manual.html)与[认证说明](https://www.stunnel.org/auth.html)。
 
 ## 开源依据
 
