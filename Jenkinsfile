@@ -24,7 +24,16 @@ pipeline {
     stages {
         stage('Checkout trusted branch') {
             steps {
-                script { if (isUnix()) { error('This pipeline requires the existing Windows Jenkins node.') } }
+                script {
+                    if (isUnix()) { error('This pipeline requires the existing Windows Jenkins node.') }
+                    def buildRoot = pwd().replace('\\', '/')
+                    dir('artifacts') {
+                        if (pwd().replace('\\', '/') != "${buildRoot}/artifacts") {
+                            error('Artifact cleanup must stay within this build workspace.')
+                        }
+                        deleteDir()
+                    }
+                }
                 script {
                     def revision = checkout scm
                     env.GIT_BRANCH = revision.GIT_BRANCH

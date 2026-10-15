@@ -10,7 +10,7 @@
 2. 发布前校验 SSH、公钥、私有配置与 Docker，不可达即失败，不自动启动 ECS。
 3. 本机执行 Maven `clean verify`、全部 Python 测试、Vue/React 测试及两套生产构建，失败则阻止发布。
 4. 用 `git archive HEAD` 打包提交内容及 SHA-256，通过 SSH/SCP 上传；忽略目录、私钥、权重、真实环境配置不进入归档。
-5. ECS 构建后端与 Web 镜像，使用固定 Compose 项目名复用卷；逐项检查健康，失败则尝试恢复实际旧镜像 ID。
+5. ECS 构建后端与 Web 镜像，使用固定 Compose 项目名复用卷；逐项检查健康，失败则尝试恢复实际旧镜像 ID。每次开始仅清空构建工作区内的 `artifacts/`，避免仅验证或早期失败的构建归档上次成功发布的状态。
 6. `ACTION=rollback` 回到上一次成功应用版本；失败会尝试恢复当前版本。不会回滚数据库或 OSS 文件。
 
 需要先把流水线和修改推到远程 `java`，Jenkins 才能获取。首次历史覆盖使用绑定已核对远程提交号的 `--force-with-lease`；之后通常 `git push origin java` 即可，不应每次强推。Jenkins 替代手工测试、构建和发布，不会自动上传未提交的本地修改。
