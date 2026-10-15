@@ -14,6 +14,8 @@ VERSION='2026.10.10'
 FETCH_SHA='d722c48bdc1de3e2a81727853bc490cf55c6c935e2038cdcad3c111b1d85db77'
 parser=argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--directory',required=True)
+parser.add_argument('--gateway-runtime',action='store_true',help='Include the reviewed HTTP bridge dependencies in the hashed installation')
+parser.add_argument('--package-index',choices=['https://pypi.org/simple','https://mirrors.aliyun.com/pypi/simple'],default='https://pypi.org/simple')
 args=parser.parse_args()
 folder=Path(args.directory).resolve()
 if not folder.is_dir() or (folder/'manifest.json').exists(): raise SystemExit('Expected fresh installation directory')
@@ -21,10 +23,12 @@ packages=folder/'packages';packages.mkdir()
 cache=folder/'cache';cache.mkdir()
 
 def run(command):
-    subprocess.run(command,check=True,timeout=420,cwd=folder)
+    subprocess.run(command,check=True,timeout=1200 if args.gateway_runtime else 420,cwd=folder)
 
-run([sys.executable,'-I','-m','pip','--isolated','download',f'mcp-server-fetch=={VERSION}',
-     '--only-binary=:all:','--index-url','https://pypi.org/simple','--dest',str(packages),
+requirements=[f'mcp-server-fetch=={VERSION}']
+if args.gateway_runtime: requirements += ['mcp==1.29.0','uvicorn==0.40.0','PyYAML==6.0.3']
+run([sys.executable,'-I','-m','pip','--isolated','download',*requirements,
+     '--only-binary=:all:','--index-url',args.package_index,'--dest',str(packages),
      '--cache-dir',str(cache),'--disable-pip-version-check'])
 wheels=list(packages.glob('*.whl'))
 if not wheels or len(wheels)>80 or sum(p.stat().st_size for p in wheels)>150*1024*1024:

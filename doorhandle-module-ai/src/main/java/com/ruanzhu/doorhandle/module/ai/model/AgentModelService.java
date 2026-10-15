@@ -65,6 +65,7 @@ public class AgentModelService {
     }
 
     private ProxyConfig proxy() {
+        if (gatewayEnabled()) return null;
         if (connections.getProxyUrl() == null || connections.getProxyUrl().isBlank()) return null;
         URI uri = URI.create(connections.getProxyUrl());
         if (uri.getHost() == null || uri.getPort() < 1 || uri.getUserInfo() != null
@@ -87,6 +88,7 @@ public class AgentModelService {
                 || base.getUserInfo() != null || base.getQuery() != null || base.getFragment() != null) {
             throw new IllegalArgumentException("模型基础地址格式不正确");
         }
+        String baseUrl = effectiveBaseUrl(entry.provider(), base);
         var execution = execution();
         var options = GenerateOptions.builder().maxTokens(connections.getMaxOutputTokens())
                 .executionConfig(execution).build();
@@ -94,23 +96,34 @@ public class AgentModelService {
             Map<String, String> headers = connections.getActorAuthorization() == null
                     || connections.getActorAuthorization().isBlank() ? Map.of()
                     : Map.of("x-openai-actor-authorization", connections.getActorAuthorization());
-            return OpenAIResponsesChatModel.builder().apiKey(config.getApiKey()).baseUrl(config.getBaseUrl())
+            return OpenAIResponsesChatModel.builder().apiKey(config.getApiKey()).baseUrl(baseUrl)
                     .modelName(config.getModel()).stream(true).strictTools(false).proxy(proxy())
                     .additionalHeaders(headers).generateOptions(GenerateOptions.builder()
                             .maxTokens(connections.getMaxOutputTokens()).executionConfig(execution)
                             .additionalBodyParam("store", connections.isStore()).build()).build();
         }
         if (entry.provider().equals("dashscope") && base.getPath().contains("compatible-mode")) {
-            return OpenAIChatModel.builder().apiKey(config.getApiKey()).baseUrl(config.getBaseUrl())
+            return OpenAIChatModel.builder().apiKey(config.getApiKey()).baseUrl(baseUrl)
                     .modelName(config.getModel()).stream(true).proxy(proxy()).generateOptions(options).build();
         }
         var context = ModelCreationContext.builder().apiKey(config.getApiKey())
-                .baseUrl(config.getBaseUrl()).stream(true).enableThinking(false)
+                .baseUrl(baseUrl).stream(true).enableThinking(false)
                 .cachePolicy(CachePolicy.DISABLED).component(GenerateOptions.class, options);
         if (proxy() != null) context.component(ProxyConfig.class, proxy());
         return ModelRegistry.resolve(id, context.build());
     }
 
+    private boolean gatewayEnabled() { return connections.getGatewayBaseUrl() != null && !connections.getGatewayBaseUrl().isBlank(); }
+    String effectiveBaseUrl(String provider, URI original) {
+        if (!gatewayEnabled()) return original.toString();
+        URI gateway = URI.create(connections.getGatewayBaseUrl());
+        if (!("http".equals(gateway.getScheme()) || "https".equals(gateway.getScheme())) || gateway.getHost() == null
+                || gateway.getUserInfo() != null || gateway.getQuery() != null || gateway.getFragment() != null
+                || !(gateway.getPath().isEmpty() || gateway.getPath().equals("/")))
+            throw new IllegalArgumentException("AI 网关地址格式不正确");
+        if (!List.of("openai", "deepseek", "dashscope").contains(provider)) throw new IllegalArgumentException("未知模型供应商");
+        return gateway.toString().replaceAll("/$", "") + "/llm/" + provider + original.getRawPath();
+    }
     private AgentModelProperties.Connection connection(String provider) {
         return switch (provider) {
             case "dashscope" -> connections.getDashscope();

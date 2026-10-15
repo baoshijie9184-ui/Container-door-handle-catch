@@ -65,6 +65,18 @@ class AgentModelServiceTest {
     }
     @AfterEach void stop() { server.stop(0); }
 
+    @Test void gatewayKeepsProviderPathsAndRejectsEmbeddedCredentials() {
+        connections.setGatewayBaseUrl("http://higress:8080");
+        var models = new AgentModelService(connections, agent);
+        assertThat(models.effectiveBaseUrl("openai",java.net.URI.create("https://example.com/v1")))
+                .isEqualTo("http://higress:8080/llm/openai/v1");
+        assertThat(models.effectiveBaseUrl("dashscope",java.net.URI.create("https://dashscope.aliyuncs.com/compatible-mode/v1")))
+                .isEqualTo("http://higress:8080/llm/dashscope/compatible-mode/v1");
+        connections.setGatewayBaseUrl("http://user:secret@higress:8080");
+        assertThatThrownBy(()->models.effectiveBaseUrl("openai",java.net.URI.create("https://example.com/v1")))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
     @Test void responsesBindsCredentialsHeadersStorageAndToolsThroughSdk() throws Exception {
         var models = new AgentModelService(connections, agent);
         var calls = new AtomicInteger();

@@ -1,0 +1,9 @@
+# syntax=docker/dockerfile:1
+FROM eclipse-temurin:17-jre-noble
+ARG UBUNTU_MIRROR=http://mirrors.cloud.aliyuncs.com/ubuntu
+RUN sed -i "s|http://archive.ubuntu.com/ubuntu|$UBUNTU_MIRROR|g; s|http://security.ubuntu.com/ubuntu|$UBUNTU_MIRROR|g" /etc/apt/sources.list.d/ubuntu.sources \
+    && apt-get update && apt-get install -y --no-install-recommends squid ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY deploy/mcp/squid.conf /etc/squid/squid.conf
+USER proxy
+CMD ["squid", "-N", "-f", "/etc/squid/squid.conf"]

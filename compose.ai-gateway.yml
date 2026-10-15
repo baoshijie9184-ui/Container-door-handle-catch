@@ -1,0 +1,117 @@
+# Optional server overlay. Prepare immutable images/config with deploy/mcp/README.md first.
+services:
+  backend:
+    environment:
+      AGENT_MCP_TRANSPORT: GATEWAY
+      AGENT_MCP_GATEWAY_URL: http://higress:8080/mcp/fetch
+      AGENT_MCP_GATEWAY_SECRET: ${AGENT_MCP_GATEWAY_SECRET:?Set a private signing secret}
+      AGENT_MCP_GATEWAY_KEY: ${AGENT_MCP_GATEWAY_KEY:?Set a private gateway key}
+      AGENT_MCP_GATEWAY_IMAGE: ${MCP_FETCH_IMAGE:?Set a verified immutable image ID}
+      AGENT_MODEL_GATEWAY_BASE_URL: http://higress:8080
+
+  higress-seed:
+    image: higress-registry.cn-hangzhou.cr.aliyuncs.com/higress/all-in-one:2.2.5@sha256:55f5fa3ec77d5c00c5622c05019e6deb030b195bb0efa7212eff3555c071bed0
+    entrypoint: ["sh", "-ec", "cp -an /opt/data/defaultConfig/. /data/"]
+    volumes: ["doorhandle-higress:/data"]
+    networks: [doorhandle-network]
+    restart: "no"
+
+  higress-config:
+    image: ${MCP_FETCH_IMAGE:?Set a verified immutable image ID}
+    user: "0:0"
+    entrypoint: ["/opt/fetch/.venv/bin/python", "/app/configure.py"]
+    environment:
+      AGENT_MCP_GATEWAY_KEY: ${AGENT_MCP_GATEWAY_KEY:?Set a private gateway key}
+      OPENAI_BASE_URL: ${AGENT_RESPONSES_BASE_URL:-https://api.openai.com/v1}
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
+      DASHSCOPE_BASE_URL: ${DASHSCOPE_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      MCP_SERVER_PUBLIC_IPS: ${MCP_SERVER_PUBLIC_IPS:?Set the server public addresses}
+    depends_on:
+      higress-seed: {condition: service_completed_successfully}
+    volumes: ["doorhandle-higress:/data", "doorhandle-mcp-egress:/egress"]
+    networks: [doorhandle-network]
+    restart: "no"
+
+  higress:
+    image: higress-registry.cn-hangzhou.cr.aliyuncs.com/higress/all-in-one:2.2.5@sha256:55f5fa3ec77d5c00c5622c05019e6deb030b195bb0efa7212eff3555c071bed0
+    environment: {MODE: gateway, O11Y: "off", USE_PLUGIN_SERVER: "on", GATEWAY_CONCURRENCY: "2"}
+    depends_on:
+      higress-config: {condition: service_completed_successfully}
+      mcp-runner: {condition: service_healthy}
+      mcp-egress: {condition: service_healthy}
+    volumes: ["doorhandle-higress:/data"]
+    networks: [doorhandle-network]
+    mem_limit: 1g
+    cpus: 1.0
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:15021/healthz/ready"]
+      interval: 15s
+      timeout: 5s
+      start_period: 60s
+      retries: 12
+    logging: {driver: json-file, options: {max-size: "10m", max-file: "3"}}
+    restart: unless-stopped
+
+  mcp-runner:
+    image: ${MCP_FETCH_IMAGE:?Set a verified immutable image ID}
+    build: {context: ., dockerfile: deploy/mcp/Dockerfile}
+    environment:
+      MCP_RUNNER_SECRET: ${AGENT_MCP_GATEWAY_SECRET:?Set a private signing secret}
+      MCP_FETCH_IMAGE: ${MCP_FETCH_IMAGE:?Set a verified immutable image ID}
+      MCP_EXEC_NETWORK: doorhandlecatch-mcp-exec
+      MCP_EGRESS_PROXY: http://mcp-egress:3128
+    group_add: ["${MCP_DOCKER_GID:?Set the server docker socket group ID}"]
+    # Only this fixed-command control service receives the socket. No agent/tool container does.
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /usr/bin/docker:/usr/local/bin/docker:ro
+    read_only: true
+    tmpfs: ["/tmp:rw,noexec,nosuid,nodev,size=32m,uid=10001,gid=10001"]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    init: true
+    pids_limit: 128
+    mem_limit: 256m
+    cpus: 0.5
+    networks: [doorhandle-network]
+    healthcheck:
+      test: ["CMD", "/opt/fetch/.venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health',timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    logging: {driver: json-file, options: {max-size: "5m", max-file: "2"}}
+    restart: unless-stopped
+
+  mcp-egress:
+    image: ${MCP_EGRESS_IMAGE:?Set a verified immutable egress image ID}
+    build: {context: ., dockerfile: deploy/mcp/Dockerfile.egress}
+    depends_on:
+      higress-config: {condition: service_completed_successfully}
+    volumes: ["doorhandle-mcp-egress:/etc/squid/server-config:ro"]
+    # Copy only the generated public-address deny rule into the path referenced by squid.conf.
+    entrypoint: ["sh", "-ec", "exec squid -N -f /etc/squid/squid.conf"]
+    read_only: true
+    tmpfs: ["/tmp:rw,noexec,nosuid,nodev,size=8m,uid=13,gid=13"]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 64
+    mem_limit: 128m
+    cpus: 0.25
+    networks: [mcp-exec, mcp-egress]
+    healthcheck:
+      test: ["CMD-SHELL", "test -s /tmp/squid.pid && kill -0 $$(cat /tmp/squid.pid)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    logging: {driver: json-file, options: {max-size: "5m", max-file: "2"}}
+    restart: unless-stopped
+
+volumes:
+  doorhandle-higress:
+  doorhandle-mcp-egress:
+networks:
+  mcp-exec:
+    name: doorhandlecatch-mcp-exec
+    internal: true
+  mcp-egress:
+    name: doorhandlecatch-mcp-egress

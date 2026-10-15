@@ -61,7 +61,7 @@ Agent 聊天已接通检测任务、质检记录、工作统计和报告草稿�
 
 “Agent智能系统 → 资源市场”收录国内外 11 个来源，支持 Agent/MCP/Skill 分类、搜索及官方入口，见 [资源市场接入](docs/Agent资源市场接入.md)。Skill ZIP 上传及上传来源创建流程已移除；技能演化保留业务运行经验提炼、规则 Eval、独立审核与版本治理。第一版公开链接下载已接入，见 [链接下载安装](docs/外部Skill链接下载与受控安装.md)；脚本附件执行和远程 Agent 接入仍未实现，见 [技能自学习](docs/Agent技能自学习与受控发布.md)。
 
-本地 Fetch MCP 已接入：“Agent智能系统 → MCP工具”，按账号下载固定包、创建隔离 Python 环境、保存版本/许可文件，人工安装确认后主动启用，由 AgentScope 原生 Stdio 握手和调用。需 V25 与 `AGENT_LOCAL_MCP_ENABLED=true`；其他 MCP、远程 Agent 尚未实现；公开链接 Skill 下载已有首版，见 [本地 Stdio MCP 接入](docs/本地StdioMCP接入.md)。
+Fetch MCP 已接入：“Agent智能系统 → MCP工具”，人工确认版本/许可后主动启用，保留账号隔离与审计。`java-cloud` 新增内网 Higress 与独立容器运行器：Java 通过原生 Streamable HTTP 调用，运行器每次在独立容器内启动固定 Stdio Fetch，公开网页出口经受限代理。需 V25 与 `AGENT_LOCAL_MCP_ENABLED=true`，旧安装需本人重新确认迁移。部署和边界见 [AI 网关与隔离 Fetch](deploy/mcp/README.md)，原 Stdio 模式见 [本地 MCP](docs/本地StdioMCP接入.md)。通用 MCP 和远程 Agent 注册尚未实现。
 
 ## 功能特点
 

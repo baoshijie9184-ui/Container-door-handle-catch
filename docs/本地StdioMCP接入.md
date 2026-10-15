@@ -1,5 +1,7 @@
 # 本地 Stdio MCP 接入
 
+> 2026-10-15 `java-cloud` 新增服务器网关模式，使用 Higress、原生 Streamable HTTP、独立 Fetch 容器及受限网络出口；用户目录保存注册清单，程序包保留在固定镜像。部署及当前边界以 [AI 网关与隔离 Fetch](../deploy/mcp/README.md) 为准。下文是此前 STDIO 模式的实现与验收记录，不能将 Windows 本人虚拟环境直接复制到服务器使用。
+
 更新日期：2026-10-13。当前 `java` 模块化单体新增第一种本地 MCP：Fetch 网页抓取。入口“Agent智能系统 → MCP工具”，路径 `/agent/mcp`。
 
 ## 使用方法

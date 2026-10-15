@@ -26,9 +26,13 @@ flock -n 9 || { echo 'Another deployment is in progress.' >&2; exit 3; }
 dc() {
     local dir=$1 override=$2
     shift 2
+    local overlays=()
+    if [[ -f "$runtime/deploy/ai-gateway.enabled" && -f "$dir/compose.ai-gateway.yml" ]]; then
+        overlays=(-f "$dir/compose.ai-gateway.yml")
+    fi
     docker compose --project-name "$project" --env-file "$envfile" \
         -f "$dir/compose.monolith.yml" -f "$dir/compose.cloud.yml" -f "$dir/compose.detection.yml" \
-        -f "$override" "$@"
+        "${overlays[@]}" -f "$override" "$@"
 }
 
 # Snapshot actual running image IDs, independent of a mutable tag or private env APP_IMAGE_TAG.

@@ -24,6 +24,7 @@ public class AgentModelProperties {
     private boolean store;
     private String actorAuthorization = "";
     private String proxyUrl = "";
+    private String gatewayBaseUrl = "";
     private Connection dashscope = new Connection("https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-plus");
     private Connection deepseek = new Connection("https://api.deepseek.com", "deepseek-flash");
     private Connection openai = new Connection("https://api.openai.com/v1", "gpt-4o-mini");
@@ -54,6 +55,8 @@ public class AgentModelProperties {
     public void setActorAuthorization(String value) { actorAuthorization = value; }
     public String getProxyUrl() { return proxyUrl; }
     public void setProxyUrl(String value) { proxyUrl = value; }
+    public String getGatewayBaseUrl() { return gatewayBaseUrl; }
+    public void setGatewayBaseUrl(String value) { gatewayBaseUrl = value; }
     public Connection getDashscope() { return dashscope; }
     public void setDashscope(Connection value) { dashscope = value; }
     public Connection getDeepseek() { return deepseek; }

@@ -275,6 +275,11 @@ mem0:
 # AgentScope Java 2.0.4 + AG-UI；模型凭证由 Spring Environment 绑定。
 agentscope:
   mcp:
+    transport: ${AGENT_MCP_TRANSPORT:STDIO}
+    gateway-url: ${AGENT_MCP_GATEWAY_URL:http://higress:8080/mcp/fetch}
+    gateway-secret: ${AGENT_MCP_GATEWAY_SECRET:}
+    gateway-key: ${AGENT_MCP_GATEWAY_KEY:}
+    gateway-image: ${AGENT_MCP_GATEWAY_IMAGE:}
     enabled: ${AGENT_LOCAL_MCP_ENABLED:false}
     python: ${AGENT_LOCAL_MCP_PYTHON:python}
     installer: ${AGENT_LOCAL_MCP_INSTALLER:${user.dir}/script/shell/install-local-fetch-mcp.py}
@@ -301,6 +306,7 @@ agentscope:
     emit-token-usage: ${AGENTSCOPE_AI_EMIT_TOKEN_USAGE:false}
   models:
     proxy-url: ${AGENT_MODEL_PROXY_URL:}
+    gateway-base-url: ${AGENT_MODEL_GATEWAY_BASE_URL:}
     timeout: ${AGENT_MODEL_TIMEOUT:60s}
     first-token-timeout: ${AGENT_MODEL_FIRST_TOKEN_TIMEOUT:15s}
     max-retries: ${AGENT_MODEL_MAX_RETRIES:2}
