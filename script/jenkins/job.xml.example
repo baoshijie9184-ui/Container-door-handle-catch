@@ -10,7 +10,12 @@
       </hudson.plugins.git.UserRemoteConfig></userRemoteConfigs>
       <branches><hudson.plugins.git.BranchSpec><name>*/java</name></hudson.plugins.git.BranchSpec></branches>
       <doGenerateSubmoduleConfigurations>false</doGenerateSubmoduleConfigurations>
-      <submoduleCfg class="empty-list"/><extensions/>
+      <submoduleCfg class="empty-list"/>
+      <extensions>
+        <hudson.plugins.git.extensions.impl.MessageExclusion>
+          <excludedMessage>(?s).*\[skip ci\].*</excludedMessage>
+        </hudson.plugins.git.extensions.impl.MessageExclusion>
+      </extensions>
     </scm>
     <scriptPath>Jenkinsfile</scriptPath><lightweight>true</lightweight>
   </definition>

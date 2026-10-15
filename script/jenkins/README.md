@@ -6,7 +6,7 @@
 
 ## 流水线
 
-1. 从 Git 检出可信 `java` 分支，每 5 分钟轮询，无需向公网开放本机 Webhook。按用户明确要求，用本地 `java` 覆盖原远程 `java`，旧远程提交保留为本地备份引用；不创建额外部署分支。
+1. 从 Git 检出可信 `java` 分支，每 5 分钟轮询，无需向公网开放本机 Webhook。任务模板与现有任务配置 Git MessageExclusion，明确包含 `[skip ci]` 的提交不触发轮询构建，手动构建仍可执行。按用户明确要求，用本地 `java` 覆盖原远程 `java`，旧远程提交保留为本地备份引用；不创建额外部署分支。
 2. 发布前校验 SSH、公钥、私有配置与 Docker，不可达即失败，不自动启动 ECS。
 3. 本机执行 Maven `clean verify`、全部 Python 测试、Vue/React 测试及两套生产构建，失败则阻止发布。
 4. 用 `git archive HEAD` 打包提交内容及 SHA-256，通过 SSH/SCP 上传；忽略目录、私钥、权重、真实环境配置不进入归档。
@@ -32,7 +32,7 @@ Jenkins Credentials 配置：
 
 | 参数 | 当前配置 |
 | --- | --- |
-| `DEPLOY_HOST` | 从控制台核对的当前 ECS 公网 IP，默认空，停机再启动后重新检查 |
+| `DEPLOY_HOST` | 首次为空，配置后保留最近一次地址供 SCM 触发使用；停机再启动后重新检查 |
 | `DEPLOY_PORT` | 已验证的 TLS/SSH 入口，默认 443 |
 | `SSH_TRANSPORT` | 当前网络使用 `tls`；普通 SSH 可达的网络可选择 `direct` |
 | `SSH_TLS_CA_FILE` | 云助手核对的服务器公有证书，默认项目 `work/cloud/ssh-tls/server.crt` |
@@ -42,7 +42,9 @@ Jenkins Credentials 配置：
 | `BUILD_WORKSPACE` | 专用 D 盘目录，默认项目 `work/jenkins/workspace`，不能填开发源码根目录 |
 | `PYTHON_EXE` | 现有隔离测试环境，默认 `D:/ruanjian/anaconda3/envs/leetcode/python.exe` |
 
-节点 PATH 需包含 Git、OpenSSH、Maven、Node/npm，Maven 使用 JDK 17。Python 环境需包含项目 Kafka/OSS、Mem0、ONNX、pytest 等测试依赖。ONNX 测试仅验证现有兼容实现，生产仍直接使用 PTH，不执行转换。真实模型/API 凭据只保留在服务器 `deploy/cloud.env`，不注入测试，不上传为 Jenkins 构件。
+节点 PATH 需包含 Git、OpenSSH、Maven、Node/npm 和本机已有的 PowerShell 7（`pwsh`），Maven 使用 JDK 17。Python 环境需包含项目 Kafka/OSS、Mem0、ONNX、pytest 等测试依赖。ONNX 测试仅验证现有兼容实现，生产仍直接使用 PTH，不执行转换。真实模型/API 凭据只保留在服务器 `deploy/cloud.env`，不注入测试，不上传为 Jenkins 构件。
+
+Windows 下 Jenkins 临时私钥可能继承工作区中的其他账号 ACL，OpenSSH 会拒绝使用；部署脚本在每次凭据绑定后将该临时文件限制为当前构建身份可访问。脚本使用 `pwsh`，避免 Windows PowerShell 5.1 与继承的 PowerShell 7 模块路径冲突。
 
 ## 部署与恢复边界
 
@@ -68,9 +70,31 @@ ssh -F .\work\cloud\ssh-config doorhandle-bj
 
 服务器组件由 `install-ssh-tls.sh` 通过云助手以 root 安装：Ubuntu 官方 `stunnel4` 包、独立 `doorhandle-ssh-tls.service`、最后应用的 `ssh.socket.d/zz-doorhandle-ssh-tls.conf`，明确同时监听 IPv4/IPv6 的 22 端口。脚本保留原配置快照，安装失败尝试恢复原监听。服务端证书有效期 365 天，续期后须通过可信渠道重新核对并更新客户端证书。`ecs-user` 已加入现有 `docker` 组，重新登录后可执行部署所需 Docker 命令。
 
-本轮真实验证：严格校验下的 SSH 登录、Docker/Compose 预检通过；1 MiB SCP 上传与下载 SHA-256 完全一致；错误 TLS 主机名被拒绝；八项原业务服务仍 healthy。这里只确认连接与传输，不能把它当成完整 Jenkins 构建发布已验收。
+连接修复阶段验证了严格校验下的 SSH 登录、Docker/Compose 预检、1 MiB SCP 往返 SHA-256 以及错误 TLS 名称被拒绝。后续完整 Jenkins 实跑已通过，见下面的验收记录。
 
 stunnel 为独立系统工具，采用 GPL-2.0-or-later 并有 OpenSSL 例外；本轮没有复制或修改其源码，Ubuntu 包保留原版权声明。参考 [stunnel 手册](https://www.stunnel.org/manual.html)与[认证说明](https://www.stunnel.org/auth.html)。
+
+## 2026-10-15 完整构建发布验收
+
+实际任务 [doorhandle-java #4](http://127.0.0.1:18080/job/doorhandle-java/4/) 为 **SUCCESS**，耗时约 14 分 10 秒，北京时间 13:42 完成发布。提交 `b33e47b75ca2e7b3e6c9daa039c63c94e2aefa3b`，版本 `ci-4-b33e47b75ca2`。真实执行了 GitHub 检出、SSH 预检、全部测试、双前端生产构建、源码归档及摘要校验、SCP 上传、ECS Docker 构建、应用替换和健康检查。
+
+| 检查 | 结果 |
+| --- | --- |
+| Java Maven clean verify | 486 项，22 项跳过，0 失败/错误 |
+| Python pytest | 59 项与 6 个子测试通过，JUnit 记录 65 项 |
+| Vue / React Node 测试 | 54 / 5 项全部通过 |
+| 本机及服务器双前端生产构建 | 全部成功 |
+| Docker 镜像 | 后端与 Web 均成功构建并使用本次版本标签 |
+| 服务健康 | 八项常驻服务 healthy，数据库、缓存、队列、记忆与 worker 未重建 |
+| 四账号与页面 | 两名员工、两名主管登录及业务接口通过，检测历史、报告和 Agent 页面无脚本错误 |
+| 原有数据 | 原 100 张测试任务仍为 COMPLETED，100 成功、0 失败；PTH 摘要未变 |
+| 新任务闭环 | `det_20261015_054237_b5d631c2`，单张上传→Kafka→模型 105 CPU PTH→OSS 标注图/JSON→Java 落库成功，上传后约 4.2 秒完成 |
+
+前几次实跑暴露并修复了 checkout 返回值未注入分支/提交变量、Windows 临时 SSH 私钥继承过宽 ACL、旧 PowerShell 模块冲突；失败均发生在应用发布前。还保留了部署主机参数供轮询触发使用，并修正 Jenkins 自身地址为 18080，避免生成错误的 8080 链接。
+
+当前目录 `/home/ecs-user/doorhandle-ci/releases/ci-4-b33e47b75ca2`；`state/previous-directory` 保留原部署目录，`previous-images.yml` 已核对实际旧镜像 ID。**本轮未执行真实回滚切换**，不能将状态保留和脚本失败处理测试当作云端回滚演练。前端仍存在原有 peer dependency / 构建体积警告，不影响本次构建和页面验收；准确率、容量与模型供应商延迟另行评测。
+
+完整控制台日志、前后业务对比、页面截图和服务器核验放在 Git 忽略的 `work/jenkins/`，汇总为 `ci-deployment-acceptance-20261015.json`。这些记录不含私有环境配置或密钥。访问新版本可在项目根目录运行 `ssh -F work/cloud/ssh-config -N -L 127.0.0.1:18088:127.0.0.1:8088 doorhandle-bj`，然后打开 <http://127.0.0.1:18088/#/login>；本次已建立该本机隧道。
 
 ## 开源依据
 
