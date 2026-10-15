@@ -92,7 +92,7 @@ public class JdbcAgentJournal implements AgentJournal {
     public List<EventView> events(AgentActor actor, String id, long after, int limit) {
         get(actor,id); if (after < 0) throw badRequest("事件游标不正确");
         return jdbc.query("SELECT sequence_no,event_type,occurred_at,payload_json FROM agent_run_event WHERE user_id=? AND run_id=? AND sequence_no>? ORDER BY sequence_no LIMIT ?",
-            (rs,n) -> new EventView(rs.getLong(1),rs.getString(2),rs.getTimestamp(3).toLocalDateTime(),readPayload(rs.getString(4))),actor.userId(),id,after,bounded(limit));
+            (rs,n) -> new EventView(rs.getLong(1),rs.getString(2),rs.getObject(3,LocalDateTime.class),readPayload(rs.getString(4))),actor.userId(),id,after,bounded(limit));
     }
     public RunView cancel(AgentActor actor, String id) {
         var view = get(actor,id); if (!"RUNNING".equals(view.status())) return view;
@@ -140,12 +140,12 @@ public class JdbcAgentJournal implements AgentJournal {
                 return;
             }
             String actual = tx.execute(transaction -> {
-                var rows=jdbc.queryForList("SELECT last_sequence,status,lease_expires_at FROM agent_run WHERE user_id=? AND run_id=? FOR UPDATE",userId,id);
+                var rows=jdbc.query("SELECT last_sequence,status,lease_expires_at FROM agent_run WHERE user_id=? AND run_id=? FOR UPDATE",
+                        (rs,n)->Map.<String,Object>of("last_sequence",rs.getLong(1),"status",rs.getString(2),"lease_expires_at",rs.getObject(3,LocalDateTime.class)),userId,id);
                 if (rows.isEmpty()) throw new IllegalStateException("运行不存在");
                 String current=rows.get(0).get("status").toString();
                 if (!"RUNNING".equals(current)) return current;
-                Object expiryValue=rows.get(0).get("lease_expires_at");
-                LocalDateTime expiry=expiryValue instanceof LocalDateTime date ? date : ((java.sql.Timestamp)expiryValue).toLocalDateTime();
+                LocalDateTime expiry=(LocalDateTime)rows.get(0).get("lease_expires_at");
                 if (expiredOnly && !expiry.isBefore(databaseNow())) return current;
                 long seq=((Number)rows.get(0).get("last_sequence")).longValue()+1;
                 insert(seq,"RUN_"+status,"{}");
@@ -178,8 +178,10 @@ public class JdbcAgentJournal implements AgentJournal {
         catch (Exception error) { throw new IllegalStateException("运行事件格式不正确"); }
     }
     private static final RowMapper<RunView> ROW=(rs,n)->new RunView(rs.getString("run_id"),rs.getString("session_id"),rs.getString("entry_point"),rs.getString("main_agent"),rs.getString("status"),
-            rs.getString("default_model"),rs.getString("policy_version"),rs.getTimestamp("started_at").toLocalDateTime(),rs.getTimestamp("ended_at")==null?null:rs.getTimestamp("ended_at").toLocalDateTime(),rs.getLong("last_sequence"));
-    private LocalDateTime databaseNow() { return jdbc.queryForObject("SELECT CURRENT_TIMESTAMP", java.sql.Timestamp.class).toLocalDateTime(); }
+            rs.getString("default_model"),rs.getString("policy_version"),rs.getObject("started_at",LocalDateTime.class),rs.getObject("ended_at",LocalDateTime.class),rs.getLong("last_sequence"));
+    // DATETIME/SQL leases use database wall-clock values. Timestamp would apply the
+    // connector/JVM timezone difference and could make a new lease expire eight hours ago.
+    private LocalDateTime databaseNow() { return jdbc.queryForObject("SELECT CURRENT_TIMESTAMP", LocalDateTime.class); }
     private void requireEnabled() { if(!enabled()) throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"运行日志未启用，请先执行数据库迁移"); }
     private static int bounded(int limit) { if(limit<1||limit>100) throw badRequest("分页大小必须在 1 到 100 之间"); return limit; }
     private static void validateId(String id) { if(id==null||!id.matches("[A-Za-z0-9_-]{1,128}")) throw badRequest("运行编号不正确"); }

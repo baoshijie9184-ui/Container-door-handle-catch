@@ -50,6 +50,8 @@ bash script/shell/provision-ai-gateway.sh \
 
 python3 deploy/mcp/acceptance.py \
   /home/ecs-user/doorhandle-release-20261014/deploy/cloud.env
+python3 deploy/mcp/egress-acceptance.py \
+  /home/ecs-user/doorhandle-release-20261014/deploy/cloud.env
 ```
 
 上面的 IP 行是配置内容示例，应写入服务器私有 env 文件。脚本构建两份镜像、生成随机服务密钥和签名密钥，先启动三项新基础服务；不会重启业务后端或替用户启用 MCP。私有配置自动保留一份权限为 0600 的备份，不能加入 Git。验收脚本验证网关鉴权、两个身份的真实 Fetch、内网拒绝、取消后凭证拒绝及容器清理，不调用收费生成模型。
@@ -61,6 +63,8 @@ touch /home/ecs-user/doorhandle-release-20261014/deploy/ai-gateway.enabled
 ```
 
 `deploy-remote.sh` 在标记和本次源码的 `compose.ai-gateway.yml` 同时存在时合并 overlay。应用发布仍只替换 backend/nginx；网关、运行器和出口镜像单独按本节升级。没有 overlay 的旧成功发布仍按原直连方式回滚，不自动删除网关资源。
+
+Higress DNS 注册使用带点的 `mcp-runner.ai.internal` 网络别名，standalone 的插件规则按 Ingress 名 `mcp-fetch` 匹配；不能直接照搬另一种部署模式的命名。镜像构建关闭随机 attestation，保留 `pin-<digest>` 标签，避免 Docker/containerd 在移动唯一标签后无法再按旧裸 ID 查找镜像。旧 pin 标签供回退使用，不能在仍有注册或容器引用时清理。
 
 模型工厂通过 `AGENT_MODEL_GATEWAY_BASE_URL=http://higress:8080` 接入，保留原供应商 API 路径、Bearer 和 Responses 附加头。余额不足、首响应超时、故障切换及熔断继续由现有模型管理执行，不再叠加网关重试。配置生成器只读取上游地址和 MCP 服务密钥，不把供应商密钥写入网关资源。
 

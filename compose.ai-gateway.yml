@@ -73,7 +73,9 @@ services:
     pids_limit: 128
     mem_limit: 256m
     cpus: 0.5
-    networks: [doorhandle-network]
+    networks:
+      doorhandle-network:
+        aliases: [mcp-runner.ai.internal]
     healthcheck:
       test: ["CMD", "/opt/fetch/.venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health',timeout=3)"]
       interval: 15s

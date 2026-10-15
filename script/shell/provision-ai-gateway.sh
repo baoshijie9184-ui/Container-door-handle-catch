@@ -12,12 +12,24 @@ envfile="$runtime/deploy/cloud.env"
 test -r "$envfile"
 test -r "$current/compose.monolith.yml"
 cd "$source_dir"
+# Docker/containerd may remove a bare image ID from lookup after its last tag moves.
+# Retain prior referenced images under a private immutable tag before rebuilding.
+python3 - "$envfile" <<'PY'
+import pathlib,re,subprocess,sys
+values=dict(line.split('=',1) for line in pathlib.Path(sys.argv[1]).read_text().splitlines() if re.match(r'^[A-Z_][A-Z_0-9]*=',line))
+for key,repo in [('MCP_FETCH_IMAGE','mcp-runtime'),('MCP_EGRESS_IMAGE','mcp-egress')]:
+    image=values.get(key,'')
+    if re.fullmatch('sha256:[a-f0-9]{64}',image):
+        subprocess.run(['docker','tag',image,'doorhandlecatch/'+repo+':pin-'+image[7:]],check=True)
+PY
 docker build --provenance=false --progress=plain -t doorhandlecatch/mcp-runtime:20261015 -f deploy/mcp/Dockerfile .
 docker build --provenance=false --progress=plain -t doorhandlecatch/mcp-egress:20261015 -f deploy/mcp/Dockerfile.egress .
 image=$(docker image inspect doorhandlecatch/mcp-runtime:20261015 --format '{{.Id}}')
 egress=$(docker image inspect doorhandlecatch/mcp-egress:20261015 --format '{{.Id}}')
 gid=$(stat -c %g /var/run/docker.sock)
 [[ "$image" =~ ^sha256:[a-f0-9]{64}$ && "$egress" =~ ^sha256:[a-f0-9]{64}$ && "$gid" =~ ^[0-9]+$ ]] || exit 2
+docker tag "$image" "doorhandlecatch/mcp-runtime:pin-${image#sha256:}"
+docker tag "$egress" "doorhandlecatch/mcp-egress:pin-${egress#sha256:}"
 # Private values stay in the server env file. Keep a mode-0600 pre-change backup.
 python3 - "$envfile" "$image" "$egress" "$gid" <<'PY'
 import datetime, os, pathlib, re, secrets, shutil, sys

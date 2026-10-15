@@ -29,7 +29,7 @@ def configure(root, env):
         target.write_text(yaml.safe_dump(value, sort_keys=False), encoding='utf-8')
     # Remove the default catch-all console route; management UI stays disabled.
     (root / 'ingresses/higress-console.yaml').unlink(missing_ok=True)
-    registries = [{'name': 'mcp-runner', 'type': 'dns', 'domain': 'mcp-runner', 'port': 8080}]
+    registries = [{'name': 'mcp-runner', 'type': 'dns', 'domain': 'mcp-runner.ai.internal', 'port': 8080}]
     def ingress(name, destination, path, annotations=None):
         value = resource('Ingress', name, {'ingressClassName': 'higress', 'rules': [{'http': {'paths': [{
             'path': path, 'pathType': 'ImplementationSpecific' if annotations else 'Prefix',
@@ -55,7 +55,7 @@ def configure(root, env):
         'phase': 'AUTHN', 'priority': 310, 'defaultConfigDisable': False,
         'defaultConfig': {'global_auth': False, 'in_header': True, 'in_query': False,
             'keys': ['x-mcp-gateway-key'], 'consumers': [{'name': 'doorhandle-backend', 'credential': key}]},
-        'matchRules': [{'ingress': ['higress-system/mcp-fetch'], 'config': {'allow': ['doorhandle-backend']}}]
+        'matchRules': [{'ingress': ['mcp-fetch'], 'config': {'allow': ['doorhandle-backend']}}]
     }, 'extensions.higress.io/v1alpha1'))
     target = root / 'configmaps/higress-config.yaml'
     config = yaml.safe_load(target.read_text())

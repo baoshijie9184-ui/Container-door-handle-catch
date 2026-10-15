@@ -28,6 +28,18 @@ class JdbcAgentJournalTest {
         journal=new JdbcAgentJournal(jdbc,new DataSourceTransactionManager(source),new ObjectMapper(),settings);journal.verifySchema();
     }
     private AgentJournal.Run begin(String session,String request) {return journal.begin(alice,session,"employee-main","CHAT",request,"fixture-model");}
+    @Test void leaseUsesDatabaseWallClockWhenLegacyTimestampReadsHaveAnotherTimeZone() {
+        var shifted=org.mockito.Mockito.spy(jdbc);
+        org.mockito.Mockito.doReturn(java.sql.Timestamp.valueOf(java.time.LocalDateTime.now().minusHours(8)))
+                .when(shifted).queryForObject("SELECT CURRENT_TIMESTAMP",java.sql.Timestamp.class);
+        var settings=new AgentJournalProperties();settings.setEnabled(true);
+        var tested=new JdbcAgentJournal(shifted,new DataSourceTransactionManager(jdbc.getDataSource()),new ObjectMapper(),settings);
+        var run=tested.begin(alice,"clock-session","employee-main","CHAT","clock-request","fixture-model");
+        assertThat(jdbc.queryForObject("SELECT TIMESTAMPDIFF(SECOND,CURRENT_TIMESTAMP,lease_expires_at) FROM agent_run WHERE run_id=?",Long.class,run.id())).isBetween(60L,95L);
+        tested.maintainLeases();
+        assertThat(tested.get(alice,run.id()).status()).isEqualTo("RUNNING");
+        run.finish("COMPLETED");
+    }
     @Test void dottedUsernameSessionCanRunAndReloadButPathAndQueryCharactersAreRejected() {
         String session="sess_inspector.demo_ab12cd34";var run=begin(session,"request-dot");run.finish("COMPLETED");
         assertThat(journal.list(alice,session,null,20)).extracting(AgentJournal.RunView::runId).containsExactly(run.id());
