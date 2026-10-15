@@ -8,7 +8,7 @@
         <p v-if="state.transport==='STREAMABLE_HTTP'">通过 AI 网关调用隔离容器 本人目录保存版本登记 包与许可证保留在固定运行镜像中</p><p v-else>包与依赖、隔离 Python 环境、版本清单及许可证保留在本人后端 Agent 目录 其他账号独立安装</p><p v-if="state.requiresMigration" class="error">运行环境已更新 请重新确认固定版本后启用</p>
         <p v-if="state.status==='PENDING_CONFIRM'">助手已提出安装提议 尚未下载或执行 请核对来源和许可证后确认</p>
         <p v-if="state.status==='INSTALLING'" role="status">正在后台准备运行环境并检查 MCP 握手 安装后仍需主动启用 可稍后刷新</p>
-        <p v-if="state.errorCode" class="error">{{ state.errorCode }} · 安装失败不会启用 请检查本人目录内 install.log</p>
+        <p v-if="state.errorCode" class="error">{{ state.errorCode }} · 安装失败不会启用 {{ state.transport==='STREAMABLE_HTTP'?'请刷新状态并联系管理员检查网关服务':'请检查本人目录内 install.log' }}</p>
         <div class="actions"><el-button v-if="['NOT_INSTALLED','PENDING_CONFIRM','ERROR'].includes(state.status)||state.requiresMigration" type="primary" :disabled="busy" @click="openInstall">安装到我的 Agent 目录</el-button><el-button v-if="state.status==='INSTALLED'&&!state.requiresMigration" :disabled="busy" @click="probe">测试 MCP 连接</el-button><el-button v-if="state.status==='INSTALLED'&&!state.requiresMigration" :type="state.enabled?'default':'primary'" :disabled="busy" @click="toggle">{{ state.enabled?'停用本人 MCP':'启用本人 MCP' }}</el-button></div>
         <p v-if="state.status==='INSTALLED'&&!state.requiresMigration">{{ state.enabled?'已启用 后续助手可读取你明确提供的公开网页':'尚未启用 助手不能调用' }}  · 每次调用结束清理运行环境 停用会关闭当前连接</p>
         <p v-if="probeResult" role="status">{{ probeResult }}</p>

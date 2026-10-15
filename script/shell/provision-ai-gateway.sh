@@ -12,8 +12,8 @@ envfile="$runtime/deploy/cloud.env"
 test -r "$envfile"
 test -r "$current/compose.monolith.yml"
 cd "$source_dir"
-docker build --progress=plain -t doorhandlecatch/mcp-runtime:20261015 -f deploy/mcp/Dockerfile .
-docker build --progress=plain -t doorhandlecatch/mcp-egress:20261015 -f deploy/mcp/Dockerfile.egress .
+docker build --provenance=false --progress=plain -t doorhandlecatch/mcp-runtime:20261015 -f deploy/mcp/Dockerfile .
+docker build --provenance=false --progress=plain -t doorhandlecatch/mcp-egress:20261015 -f deploy/mcp/Dockerfile.egress .
 image=$(docker image inspect doorhandlecatch/mcp-runtime:20261015 --format '{{.Id}}')
 egress=$(docker image inspect doorhandlecatch/mcp-egress:20261015 --format '{{.Id}}')
 gid=$(stat -c %g /var/run/docker.sock)

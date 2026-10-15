@@ -59,6 +59,9 @@ activate() {
     dc "$dir" "$images" up -d --no-deps --no-build --pull never --force-recreate --wait --wait-timeout 90 nginx || return 1
     dc "$dir" "$images" exec -T backend curl -fsS http://127.0.0.1:8080/actuator/health >/dev/null || return 1
     dc "$dir" "$images" exec -T nginx wget -q -O /dev/null http://127.0.0.1/nginx-health || return 1
+    if [[ -f "${runtime:-}/deploy/ai-gateway.enabled" && -f "$dir/compose.ai-gateway.yml" ]]; then
+        dc "$dir" "$images" exec -T backend curl -fsS http://higress:15021/healthz/ready >/dev/null || return 1
+    fi
 }
 
 if [[ "$action" == rollback ]]; then
