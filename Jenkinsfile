@@ -25,8 +25,10 @@ pipeline {
         stage('Checkout trusted branch') {
             steps {
                 script { if (isUnix()) { error('This pipeline requires the existing Windows Jenkins node.') } }
-                checkout scm
                 script {
+                    def revision = checkout scm
+                    env.GIT_BRANCH = revision.GIT_BRANCH
+                    env.GIT_COMMIT = revision.GIT_COMMIT
                     def branch = env.BRANCH_NAME ?: env.GIT_BRANCH ?: ''
                     if (!(branch in ['java', 'origin/java'])) {
                         error('Deployment job must check out a trusted deployment branch.')
