@@ -10,7 +10,7 @@ export const fetchSessionById = (sessionId) => request.get(`/api/chat-assistant/
 
 export const fetchSessionMessages = (sessionId) => request.get(`/api/chat-assistant/sessions/${sessionId}/messages`)
 
-export const fetchSessionCheckpoint = (sessionId) => request.get(`/api/chat-assistant/sessions/${sessionId}/checkpoint`)
+export const fetchSessionTrace = (sessionId) => request.get(`/api/chat-assistant/sessions/${sessionId}/trace`)
 
 export const fetchAgentHealth = () => request.get('/api/chat-assistant/agent-health')
 
@@ -22,7 +22,7 @@ export const togglePinSession = (sessionId, pinned) => request.put(`/api/chat-as
 
 export const deleteSession = (sessionId) => request.delete(`/api/chat-assistant/sessions/${sessionId}`)
 
-export const sendChatMessage = (payload) => request.post('/api/chat-assistant/messages', payload)
+export const sendChatMessage = (payload) => request.post('/api/chat-assistant/messages', payload, { timeout: 300000 })
 
 export const transcribeChatVoice = (audioBlob, filename = 'voice.webm') => {
   const form = new FormData()
@@ -51,6 +51,7 @@ export const streamChatMessage = async (payload, handlers = {}) => {
   const reader = response.body.getReader()
   const decoder = new TextDecoder('utf-8')
   let buffer = ''
+  let completed = false
 
   const dispatchBlock = (block) => {
     const lines = block.split(/\r?\n/)
@@ -73,21 +74,43 @@ export const streamChatMessage = async (payload, handlers = {}) => {
     handlers.onEvent?.(event, data)
     if (event === 'chunk') handlers.onChunk?.(data.content || '')
     if (event === 'status') handlers.onStatus?.(data.message || '')
-    if (event === 'done') handlers.onDone?.(data.messageResponse || data)
+    if (event === 'done') {
+      completed = true
+      handlers.onDone?.(data.messageResponse || data)
+    }
     if (event === 'error') handlers.onError?.(data)
   }
 
-  while (true) {
-    const { value, done } = await reader.read()
-    if (done) break
-    buffer += decoder.decode(value, { stream: true })
-    const blocks = buffer.split(/\r?\n\r?\n/)
-    buffer = blocks.pop() || ''
-    blocks.forEach(dispatchBlock)
-  }
-  if (buffer.trim()) {
-    dispatchBlock(buffer)
+  try {
+    while (true) {
+      const { value, done } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const blocks = buffer.split(/\r?\n\r?\n/)
+      buffer = blocks.pop() || ''
+      blocks.forEach(dispatchBlock)
+    }
+    buffer += decoder.decode()
+    if (buffer.trim()) dispatchBlock(buffer)
+    if (!completed) throw new Error('聊天连接提前结束，请刷新会话后再试')
+  } finally {
+    await reader.cancel().catch(() => {})
+    reader.releaseLock()
   }
 }
 
 export const confirmChatAction = (payload) => request.post('/api/chat-assistant/confirm', payload)
+
+// 持久事件补读只执行 GET，不发起模型或工具请求。
+export const fetchAgentRuns = (params = {}) => request.get('/api/agent/runs', { params })
+export const fetchAgentRun = (runId) => request.get(`/api/agent/runs/${encodeURIComponent(runId)}`)
+export const fetchAgentRunEvents = (runId, after = 0) => request.get(`/api/agent/runs/${encodeURIComponent(runId)}/events`, { params: { after, limit: 100 } })
+export const cancelAgentRun = (runId) => request.post(`/api/agent/runs/${encodeURIComponent(runId)}/cancel`, null, { headers: { 'X-Agent-Action': 'cancel' } })
+
+export const fetchAgentActions = (params = {}) => request.get('/api/agent/actions', { params })
+export const fetchAgentActionAudit = (id) => request.get(`/api/agent/actions/${encodeURIComponent(id)}/audit`)
+export const confirmAgentAction = (id, decision, version) => request.post(`/api/agent/actions/${encodeURIComponent(id)}/confirm`, { decision, version }, { headers: { 'X-Agent-Action': 'confirm' } })
+export const cancelAgentAction = (id, version) => request.post(`/api/agent/actions/${encodeURIComponent(id)}/cancel`, { version }, { headers: { 'X-Agent-Action': 'cancel' } })
+
+// 只读解析业务引用；刷新不会发起模型、草稿保存或审批。
+export const resolveAgentCards = (cards) => request.post('/api/agent/cards/resolve', { cards })

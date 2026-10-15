@@ -1,4 +1,7 @@
 import json
+import os
+import signal
+import threading
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -20,6 +23,12 @@ def create_oss_bucket(settings: KafkaWorkerSettings) -> Any:
 
 
 def default_detector(image_bytes: bytes, threshold: float) -> Tuple[Any, List[Dict[str, Any]]]:
+    if os.getenv("DETECTION_ENGINE", "deim") == "pth":
+        from pth_detection_engine import run_detection_on_image_bytes
+        return run_detection_on_image_bytes(image_bytes, threshold)
+    if os.getenv("DETECTION_ENGINE", "deim") == "onnx":
+        from onnx_detection_engine import run_detection_on_image_bytes
+        return run_detection_on_image_bytes(image_bytes, threshold)
     from detection_engine import run_detection_on_image_bytes
 
     return run_detection_on_image_bytes(image_bytes, threshold)
@@ -198,15 +207,22 @@ def process_created_event(
     task: DetectionTaskCreatedEvent,
     bucket: Any,
     detect_image_bytes: DetectionFunction,
+    expected_model_id: Optional[int] = None,
+    on_progress: Optional[Callable[[], None]] = None,
 ) -> DetectionTaskFinishedEvent:
     uploader = OssResultUploader(bucket)
     threshold = float(task.threshold) if task.threshold is not None else 0.5
     started_at = datetime.now(timezone.utc).astimezone().isoformat()
+    if expected_model_id is not None and task.model_id != expected_model_id:
+        return build_finished_event(task, "", [], {}, [], 0, len(task.original_keys), started_at,
+                                    "所选模型未部署到当前检测 Worker，请选择已部署模型")
     per_image_upload_items = []
     per_image_results = []
     failures: List[str] = []
 
     for object_key in task.original_keys:
+        if on_progress:
+            on_progress()
         relative_path = extract_relative_path(task.source_prefix, object_key)
         try:
             image_bytes = bucket.get_object(object_key).read()
@@ -220,6 +236,9 @@ def process_created_event(
             per_image_results.append(detection_payload)
         except Exception as exc:
             failures.append(f"{relative_path}: {exc}")
+        finally:
+            if on_progress:
+                on_progress()
 
     statistics = build_statistics(per_image_results, len(failures))
     statistics["totalImages"] = len(task.original_keys)
@@ -318,6 +337,18 @@ def run_worker() -> None:
 
     settings = load_settings()
     settings.validate()
+    from worker_health import write_health
+    write_health(False)
+    expected_model_id = None
+    if os.getenv("DETECTION_ENGINE", "deim") in {"onnx", "pth"}:
+        if os.getenv("DETECTION_ENGINE") == "pth":
+            from pth_detection_engine import ensure_model_loaded
+        else:
+            from onnx_detection_engine import ensure_model_loaded
+        expected_model_id = int(os.environ["DETECTION_MODEL_ID"])
+        if expected_model_id <= 0:
+            raise ValueError("DETECTION_MODEL_ID must identify the deployed model")
+        ensure_model_loaded()
     bucket = create_oss_bucket(settings)
     consumer = Consumer(
         {
@@ -325,15 +356,38 @@ def run_worker() -> None:
             "group.id": settings.consumer_group,
             "auto.offset.reset": "earliest",
             "enable.auto.commit": False,
+            "enable.auto.offset.store": False,
+            "max.poll.interval.ms": 900000,
         }
     )
     producer = Producer({"bootstrap.servers": settings.kafka_bootstrap_servers})
 
-    consumer.subscribe([settings.task_created_topic])
+    stopped = threading.Event()
+    assigned = False
+
+    def on_assign(client, partitions):
+        nonlocal assigned
+        client.assign(partitions)
+        assigned = bool(partitions)
+        write_health(assigned, expected_model_id)
+
+    def on_revoke(client, partitions):
+        nonlocal assigned
+        assigned = False
+        write_health(False, expected_model_id)
+
+    def heartbeat():
+        write_health(assigned, expected_model_id)
+
+    if threading.current_thread() is threading.main_thread():
+        signal.signal(signal.SIGTERM, lambda *_: stopped.set())
+        signal.signal(signal.SIGINT, lambda *_: stopped.set())
+    consumer.subscribe([settings.task_created_topic], on_assign=on_assign, on_revoke=on_revoke)
 
     try:
-        while True:
+        while not stopped.is_set():
             message = consumer.poll(1.0)
+            heartbeat()
             if message is None:
                 continue
             if message.error():
@@ -341,7 +395,7 @@ def run_worker() -> None:
 
             task = parse_created_event(message.value().decode("utf-8"))
             finished_payload = serialize_finished_event(
-                process_created_event(task, bucket, default_detector)
+                process_created_event(task, bucket, default_detector, expected_model_id, heartbeat)
             )
             publish_finished_and_commit(
                 producer,
@@ -353,6 +407,7 @@ def run_worker() -> None:
                 timeout_seconds=settings.delivery_timeout_seconds,
             )
     finally:
+        write_health(False, expected_model_id)
         consumer.close()
 
 

@@ -1,0 +1,14 @@
+torch==2.5.1+cpu
+torchvision==0.20.1+cpu
+numpy==1.26.4
+Pillow==11.3.0
+PyWavelets==1.8.0
+PyYAML==6.0.2
+scipy==1.15.3
+faster-coco-eval==1.8.0
+tensorboard==2.21.0
+calflops==0.3.2
+transformers==4.49.0
+confluent-kafka==2.10.1
+oss2==2.19.1
+python-dotenv==1.0.1

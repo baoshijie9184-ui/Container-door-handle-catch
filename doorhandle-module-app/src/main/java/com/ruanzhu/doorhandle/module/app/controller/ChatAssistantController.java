@@ -5,10 +5,9 @@ import com.ruanzhu.doorhandle.module.app.dto.chat.ChatConfirmActionRequest;
 import com.ruanzhu.doorhandle.module.app.dto.chat.ChatMessageResponse;
 import com.ruanzhu.doorhandle.module.app.dto.chat.ChatSendMessageRequest;
 import com.ruanzhu.doorhandle.module.app.dto.chat.ChatSessionResponse;
-import com.ruanzhu.doorhandle.module.app.dto.chat.CheckpointSnapshotResponse;
-import com.ruanzhu.doorhandle.module.app.dto.chat.AgentGraphHealthResponse;
-import com.ruanzhu.doorhandle.module.app.service.AgentOrchestratorService;
-import com.ruanzhu.doorhandle.module.app.service.AgentGraphRunMonitor;
+import com.ruanzhu.doorhandle.module.app.dto.chat.ConversationTraceResponse;
+import com.ruanzhu.doorhandle.contracts.agent.AgentConversationApi;
+import com.ruanzhu.doorhandle.module.app.service.ChatConversationService;
 import com.ruanzhu.doorhandle.module.app.service.ChatSessionService;
 import com.ruanzhu.doorhandle.module.app.service.SpeechTranscriptionService;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -30,9 +29,13 @@ import java.util.Map;
 public class ChatAssistantController {
 
     private final ChatSessionService chatSessionService;
-    private final AgentOrchestratorService agentOrchestratorService;
-    private final AgentGraphRunMonitor agentGraphRunMonitor;
+    private final ChatConversationService conversation;
     private final SpeechTranscriptionService speechTranscriptionService;
+
+    @ModelAttribute
+    public void preventPrivateChatCaching(jakarta.servlet.http.HttpServletResponse response) {
+        response.setHeader("Cache-Control", "no-store");
+    }
 
     // ---- 会话管理 ----
 
@@ -52,15 +55,15 @@ public class ChatAssistantController {
         return Result.success(chatSessionService.getSession(authentication.getName(), sessionId));
     }
 
-    @GetMapping("/sessions/{sessionId}/checkpoint")
-    public Result<CheckpointSnapshotResponse> getCheckpointSnapshot(Authentication authentication,
+    @GetMapping("/sessions/{sessionId}/trace")
+    public Result<ConversationTraceResponse> getExecutionTrace(Authentication authentication,
                                                                     @PathVariable String sessionId) {
-        return Result.success(chatSessionService.getCheckpointSnapshot(authentication.getName(), sessionId));
+        return Result.success(chatSessionService.getExecutionTrace(authentication.getName(), sessionId));
     }
 
     @GetMapping("/agent-health")
-    public Result<AgentGraphHealthResponse> getAgentGraphHealth() {
-        return Result.success(agentGraphRunMonitor.snapshot());
+    public Result<AgentConversationApi.Status> getAgentHealth(Authentication authentication) {
+        return Result.success(conversation.status(authentication.getName()));
     }
 
     @GetMapping("/sessions/{sessionId}/messages")
@@ -109,19 +112,19 @@ public class ChatAssistantController {
     @PostMapping("/messages")
     public Result<ChatMessageResponse> sendMessage(Authentication authentication,
                                                    @Valid @RequestBody ChatSendMessageRequest request) {
-        return Result.success(agentOrchestratorService.handleUserMessage(authentication.getName(), request));
+        return Result.success(conversation.handleUserMessage(authentication.getName(), request));
     }
 
     @PostMapping(value = "/messages/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter streamMessage(Authentication authentication,
                                     @Valid @RequestBody ChatSendMessageRequest request) {
-        return agentOrchestratorService.streamUserMessage(authentication.getName(), request);
+        return conversation.streamUserMessage(authentication.getName(), request);
     }
 
     @PostMapping("/confirm")
     public Result<ChatMessageResponse> confirm(Authentication authentication,
                                                @Valid @RequestBody ChatConfirmActionRequest request) {
-        return Result.success(agentOrchestratorService.confirmAction(authentication.getName(), request));
+        return Result.success(conversation.confirmAction(authentication.getName(), request));
     }
 
     @PostMapping(value = "/voice/transcribe", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)

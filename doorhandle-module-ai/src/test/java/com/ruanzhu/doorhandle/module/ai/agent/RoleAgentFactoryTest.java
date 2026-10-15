@@ -43,12 +43,41 @@ class RoleAgentFactoryTest {
         when(detection.tasks(employee, 1, 20, false)).thenReturn(new DetectionAgentReadApi.TaskPage(java.util.List.of(), 0, 1, 20));
         var factory = new RoleAgentFactory(properties, new BusinessToolkitFactory(detection,
                 mock(ResourceAgentReadApi.class), mock(ModelAgentReadApi.class), new ObjectMapper()));
-        var result = factory.create(employee, null).call("查询本人任务").block(java.time.Duration.ofSeconds(15));
-        assertThat(result.getTextContent()).contains("暂无检测任务");
+        try (var main = (io.agentscope.harness.agent.HarnessAgent) factory.create(employee, null)) {
+            var result = main.call("查询本人任务").block(java.time.Duration.ofSeconds(15));
+            assertThat(result.getTextContent()).contains("暂无检测任务");
+        }
         verify(detection).tasks(employee, 1, 20, false);
         assertThat(responses.get()).isEqualTo(4);
     }
 
+    @Test void supervisorProposalRunsThroughAgentScopeButStaffCannotRegisterIt() {
+        var actions=mock(com.ruanzhu.doorhandle.module.ai.action.AgentActionService.class);
+        when(actions.enabled()).thenReturn(true);
+        var command=new DetectionAssignmentApi.Command("task-1","站点A","alice",null,null);
+        var pending=new com.ruanzhu.doorhandle.module.ai.action.AgentActionService.View("action-1","run-1","session-1","ASSIGN_QUALITY_TASK","PENDING",1,command,new DetectionAssignmentApi.Values(null,null,null,null,"DETECTED"),null,null,null,null);
+        when(actions.propose(eq(supervisor),eq("run-1"),eq("proposal-1"),eq(command))).thenReturn(pending);
+        var model=mock(Model.class);when(model.getModelName()).thenReturn("proposal-fixture");
+        var step=new java.util.concurrent.atomic.AtomicInteger();
+        when(model.stream(anyList(),anyList(),any())).thenAnswer(inv->{
+            io.agentscope.core.message.ContentBlock block=switch(step.getAndIncrement()) {
+                case 0->io.agentscope.core.message.ToolUseBlock.builder().id("delegate-1").name("delegate_detection_quality").input(java.util.Map.of("question","提出任务质检分配")).content("{\"question\":\"提出任务质检分配\"}").build();
+                case 1->io.agentscope.core.message.ToolUseBlock.builder().id("proposal-1").name("propose_quality_assignment").input(java.util.Map.of("taskId","task-1","qualityStation","站点A","assignee","alice")).content("{\"taskId\":\"task-1\",\"qualityStation\":\"站点A\",\"assignee\":\"alice\"}").build();
+                default->io.agentscope.core.message.TextBlock.builder().text("提议待确认，尚未分配").build();
+            };
+            return reactor.core.publisher.Flux.just(io.agentscope.core.model.ChatResponse.builder().content(java.util.List.of(block)).build());
+        });
+        var settings=new AgentScopeProperties();settings.setWorkspace(workspace.toString());
+        var toolkit=new BusinessToolkitFactory(mock(DetectionAgentReadApi.class),mock(ResourceAgentReadApi.class),mock(ModelAgentReadApi.class),new ObjectMapper(),actions);
+        var factory=new RoleAgentFactory(settings,toolkit,id->model);
+        var run=mock(com.ruanzhu.doorhandle.module.ai.journal.AgentJournal.Run.class);when(run.id()).thenReturn("run-1");
+        try(var agent=(io.agentscope.harness.agent.HarnessAgent)factory.create(supervisor,null,new com.ruanzhu.doorhandle.module.ai.journal.AgentJournalMiddleware(run,supervisor,true))) {
+            assertThat(agent.call("将任务分配给员工").block(java.time.Duration.ofSeconds(10)).getTextContent()).contains("尚未分配");
+        }
+        verify(actions).propose(supervisor,"run-1","proposal-1",command);
+        assertThat(factory.definitions(employee)).allSatisfy(def->assertThat(def.tools()).doesNotContain("propose_quality_assignment"));
+        assertThatThrownBy(()->toolkit.create(employee,factory.definitions(supervisor).get(0),"run-1")).isInstanceOf(SecurityException.class);
+    }
     private RoleAgentFactory factory() {
         var properties = new AgentScopeProperties();
         properties.setWorkspace(workspace.toString());
@@ -67,12 +96,13 @@ class RoleAgentFactoryTest {
             models.when(() -> ModelRegistry.resolve(anyString())).thenReturn(mock(Model.class));
             var factory = factory();
             for (var actor : new AgentActor[]{employee, supervisor}) {
-                var first = factory.create(actor, null);
-                var second = factory.create(actor, null);
-                assertThat(first).isNotSameAs(second);
-                assertThat(first.getToolkit()).isNotSameAs(second.getToolkit());
-                assertThat(first.getToolkit().getToolNames()).containsExactlyInAnyOrderElementsOf(
-                        RoleAgentCatalog.specialists(actor).stream().map(d -> "delegate_" + d.id().replace('-', '_')).toList());
+                try (var first = (io.agentscope.harness.agent.HarnessAgent) factory.create(actor, null);
+                        var second = (io.agentscope.harness.agent.HarnessAgent) factory.create(actor, null)) {
+                    assertThat(first).isNotSameAs(second);
+                    assertThat(first.getToolkit()).isNotSameAs(second.getToolkit());
+                    assertThat(first.getToolkit().getToolNames()).containsExactlyInAnyOrderElementsOf(
+                            RoleAgentCatalog.specialists(actor).stream().map(d -> "delegate_" + d.id().replace('-', '_')).toList());
+                }
             }
         }
     }

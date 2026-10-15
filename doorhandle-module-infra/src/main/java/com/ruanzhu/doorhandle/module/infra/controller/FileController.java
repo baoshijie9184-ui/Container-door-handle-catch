@@ -32,6 +32,7 @@ import java.util.stream.Stream;
 public class FileController {
 
     private final SafePathResolver safePathResolver;
+    private final org.springframework.beans.factory.ObjectProvider<com.ruanzhu.doorhandle.module.infra.security.LocalDetectionFileAuthorization> detectionFiles;
 
     @Value("${detection.upload-dir:${user.dir}/uploads/images}")
     private String imageUploadDir;
@@ -52,21 +53,27 @@ public class FileController {
     public ResponseEntity<Resource> getImage(
             @PathVariable String folder,
             @PathVariable String fileName) {
-        return getFileResource(safePathResolver.resolveUnderBase(imageUploadDir, folder, fileName));
+        Path path=safePathResolver.resolveUnderBase(imageUploadDir, folder, fileName);
+        authorize(com.ruanzhu.doorhandle.module.infra.security.LocalDetectionFileAuthorization.Kind.IMAGE,path);
+        return getFileResource(path);
     }
 
     @GetMapping("/files/annotated/{folder}/{fileName:.+}")
     public ResponseEntity<Resource> getAnnotatedImage(
             @PathVariable String folder,
             @PathVariable String fileName) {
-        return getFileResource(safePathResolver.resolveUnderBase(annotatedDir, folder, fileName));
+        Path path=safePathResolver.resolveUnderBase(annotatedDir, folder, fileName);
+        authorize(com.ruanzhu.doorhandle.module.infra.security.LocalDetectionFileAuthorization.Kind.ANNOTATED,path);
+        return getFileResource(path);
     }
 
     @GetMapping("/files/results/{folder}/{fileName:.+}")
     public ResponseEntity<Resource> getResultFile(
             @PathVariable String folder,
             @PathVariable String fileName) {
-        return getFileResource(safePathResolver.resolveUnderBase(resultDir, folder, fileName));
+        Path path=safePathResolver.resolveUnderBase(resultDir, folder, fileName);
+        authorize(com.ruanzhu.doorhandle.module.infra.security.LocalDetectionFileAuthorization.Kind.RESULT,path);
+        return getFileResource(path);
     }
 
     @GetMapping("/files/models/{fileName:.+}")
@@ -78,6 +85,7 @@ public class FileController {
     public ResponseEntity<?> listAnnotatedImages(@PathVariable String folder) {
         try {
             Path folderPath = safePathResolver.resolveUnderBase(annotatedDir, folder);
+            authorize(com.ruanzhu.doorhandle.module.infra.security.LocalDetectionFileAuthorization.Kind.ANNOTATED,folderPath);
             if (!Files.exists(folderPath) || !Files.isDirectory(folderPath)) {
                 log.warn("Annotated folder does not exist: {}", folderPath);
                 return ResponseEntity.notFound().build();
@@ -93,7 +101,7 @@ public class FileController {
                                 "/api/files/annotated/" + folder + "/" + path.getFileName()))
                         .toList();
             }
-            return ResponseEntity.ok(files);
+            return ResponseEntity.ok().cacheControl(org.springframework.http.CacheControl.noStore()).body(files);
         } catch (IOException e) {
             log.error("Failed to list annotated images for folder {}", folder, e);
             return ResponseEntity.badRequest().build();
@@ -153,12 +161,19 @@ public class FileController {
             }
 
             return ResponseEntity.ok()
+                    .cacheControl(org.springframework.http.CacheControl.noStore())
                     .contentType(resolveMediaType(filePath.getFileName().toString()))
                     .body(resource);
         } catch (Exception e) {
             log.error("Failed to serve file {}", filePath, e);
             return ResponseEntity.badRequest().build();
         }
+    }
+
+    private void authorize(com.ruanzhu.doorhandle.module.infra.security.LocalDetectionFileAuthorization.Kind kind,Path path) {
+        var authorization=detectionFiles.getIfAvailable();
+        if(authorization==null) throw new org.springframework.security.access.AccessDeniedException("检测文件权限服务不可用");
+        authorization.authorize(kind,path);
     }
 
     private MediaType resolveMediaType(String fileName) {

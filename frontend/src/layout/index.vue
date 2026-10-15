@@ -113,7 +113,7 @@
             <div class="user-avatar">{{ userInitial }}</div>
             <div class="user-meta">
               <div class="user-name">{{ userStore.username || '企业用户' }}</div>
-              <div class="user-role">企业用户</div>
+              <div class="user-role">{{ userStore.identity?.departmentName || (userStore.role === 'SUPERVISOR' ? '企业主管' : '检测员工') }}</div>
             </div>
             <el-button type="danger" plain size="small" @click="handleLogout">退出登录</el-button>
           </div>
@@ -195,6 +195,7 @@ const navGroups = [
     icon: Search,
     items: [
       { path: '/quality/queue', label: '质检队列', desc: '待复核与处置闭环' },
+      { path: '/quality/reports', label: '报告与审批', desc: '个人草稿与主管审批' },
       { path: '/quality/evidence', label: '缺陷证据库', desc: '缺陷图片证据链' },
       { path: '/quality/work-order-trace', label: '工单追溯', desc: '按工单回溯检测链路' },
       { path: '/quality/batch-trace', label: '批次追溯', desc: '按批次追溯质量结果' }
@@ -216,7 +217,8 @@ const navGroups = [
     items: [
       { path: '/devices', label: '设备管理', desc: '采集与检测设备' },
       { path: '/device-records', label: '设备使用记录', desc: '设备调用与维护记录' },
-      { path: '/employees', label: '人员管理', desc: '采集、检测、维修人员' }
+      { path: '/employees', label: '人员管理', desc: '采集、检测、维修人员' },
+      { path: '/organization', label: '账号与组织', desc: '个人身份与账号关联' }
     ]
   },
   {
@@ -225,7 +227,12 @@ const navGroups = [
     icon: Operation,
     items: [
       { path: '/agent/chat', label: '智能对话助手', desc: '完整页面对话工作区' },
-      { path: '/agent/trace', label: 'Agent调用链路', desc: '查看智能体运行轨迹' }
+      { path: '/agent/trace', label: 'Agent调用链路', desc: '查看智能体运行轨迹' },
+      { path: '/agent/actions', label: '助手操作确认', desc: '核对分配提议与审计' },
+      { path: '/agent/skills', label: 'Agent技能演化', desc: '经验提炼与审核发布' },
+      { path: '/agent/markets', label: '资源市场', desc: '发现 Agent、MCP 与 Skill' },
+      { path: '/agent/memory', label: '个人记忆', desc: '本人记忆与保存设置' },
+      { path: '/agent/mcp', label: 'MCP工具', desc: '本人本地 Stdio 服务' }
     ]
   },
   {

@@ -4,10 +4,54 @@
 
 ## 系统架构
 
-- **前端**：Vue.js + Ant Design Vue
+- **前端**：Vue.js + Element Plus；独立 Agent UI 使用 React + Spark Design
 - **后端**：Spring Boot + MyBatis Plus
 - **数据库**：MySQL
-- **AI推理**：ONNX Runtime + OpenCV
+- **AI推理**：原始 PTH + PyTorch CPU worker（Kafka 调度），兼容既有 ONNX Runtime 路径
+
+## AgentScope 单体开发
+
+项目功能清单、已开发能力、未完成事项及后续任务见 [开发进展](开发进展.md)。
+
+当前 `java` 分支先完善模块化单体，再考虑微服务拆分。主站聊天和独立 AG-UI 均使用 AgentScope Java 2.0.4，旧 StateGraph 与独立 DeepSeek 客户端已移除。员工使用角色限定的只读工具；启用确认功能时，主管可提出质检分配提议并通过人工确认执行。模型配置与自动备用见 [平台配置](docs/agentscope-platform-config.md)，迁移边界、真实轨迹与验证记录见 [实施进度](docs/agent-role-toolkit-progress.md)。
+
+## 本地单体一键启动
+
+双击项目根目录的 `start-local.cmd`，或执行 `./start-local.ps1`，启动中间件、Spring Boot 后端和两套前端。主站登录地址为 http://127.0.0.1:3001/#/login，打开主站根地址也会进入登录页，登录成功后进入首页。Agent UI 为 http://127.0.0.1:3003。停止使用 `stop-local.cmd` 或 `./stop-local.ps1`，共享 MySQL、Redis 服务保持运行。
+
+环境要求、重新构建参数、数据目录及日志排查见 [本地单体启动说明](docs/local-monolith-startup.md)。
+
+员工、主管各两个可登录测试账号及密码见 [测试用户账号](docs/测试用户账号.md)。
+
+主管质检分配的提议、人工确认、审计与配置见 [AgentScope 操作确认](docs/agentscope-action-confirmation.md)。
+
+员工读取本人及分派任务、主管读取企业业务数据；聊天、记忆、操作确认仍按账号隔离。开源参考、实现范围和限制见 [多用户权限与数据范围方案](docs/多用户权限与数据范围方案.md)。
+
+账号与员工、部门关联已支持主管管理、员工查看本人身份、版本冲突和事务审计，入口为“产线资源 → 账号与组织”。新开发库先执行 V20；使用与验收见 [账号员工部门关联](docs/账号员工部门关联.md)。
+
+“质检追溯 → 报告与审批”已支持个人草稿、冻结提交、另一名主管预览确认、驳回/修订和已审批 Markdown 导出。新开发库先执行 V21；实现与边界见 [报告草稿与独立审批](docs/报告草稿与独立审批.md)。
+
+报告详情新增“状态同步”，支持 Kafka 交付状态、消费回执、自动重试及主管确认重新发送。需 V30 和 `APP_REPORT_EVENTS_ENABLED=true`，见 [报告事件交付与重试](docs/报告事件交付与重试.md)。
+
+AgentScope 新增报告专业 Agent，可查询授权报告和保存本人草稿，审批仍到业务页面。V22 保存草稿与原运行的关联，默认 Eval 更新为 30 项 v2 用例；见 [Agent 报告工具接入](docs/Agent报告工具接入.md)。报告迁移脚本现在同时检查/执行 V21、V22。
+
+Agent 聊天已接通检测任务、质检记录、工作统计和报告草稿结果卡片。主站持久保存文字及资源引用，刷新按当前权限重读业务数据；独立 React UI 接收同一版本的 AG-UI 自定义事件。卡片刷新不重放模型或写操作，详见 [Agent 业务卡片接入](docs/Agent业务卡片接入.md)。
+
+“Agent技能演化”已支持本人授权经验来源、Agent 提议私人 Skill 草稿、服务端结构/权限规则 Eval、独立主管审核发布、SDK 原生读取、版本回退、停用及 30/90 天维护。需 V23 和 `AGENT_SKILL_EVOLUTION_ENABLED=true`；真实模型语义质量尚未验收，见 [技能自学习与受控发布](docs/Agent技能自学习与受控发布.md)。
+
+两套聊天界面已支持输入 `/` 选择技能命令；`/skills` 查看当前角色可用技能，`/skill 技能名或skill-id 问题` 先核对并加载发布版本，再由 AgentScope 回答。命令加载有独立运行轨迹和版本审计，新增 `/skills install 链接` 生成页面确认入口；链接安装与卸载由页面明确操作。用法与验证见 [技能斜杠命令](docs/Agent技能斜杠命令.md)。
+
+主站与独立 Agent 页面已统一后端会话、历史、RAG 与账号范围 Mem0 记忆。React 支持选择、新建及刷新会话，刷新恢复数据库消息，详情见 [会话历史与记忆统一](docs/Agent会话历史与记忆统一.md)。
+
+新增“Agent智能系统 → 个人记忆”：查看本人记忆、控制读取与自动保存、预览确认删除及操作记录。两套聊天入口使用同一账号设置，需 V26 与内部 `MEM0_BRIDGE_TOKEN`；本机迁移脚本已配置。详情见 [个人长期记忆治理](docs/个人长期记忆治理.md)。
+
+个人记忆现已支持编辑原文、预览确认保存、版本冲突后保留草稿并重新核对，以及超过 100 条的连续分页读取。Mem0 保留独立 HTTP 服务边界，新增可选持久数据目录；后续部署准备见 [Mem0 服务器迁移准备](docs/Mem0服务器迁移准备.md)。
+
+固定 Agent 规则评测、实验报告与基线比较见 [Eval 使用说明](docs/agentscope-eval.md)，入口为 `./script/shell/run-agent-eval.ps1`。当前是模型脚本与隔离 H2 的规则评测，真实模型回答质量仍待后续验收。
+
+“Agent智能系统 → 资源市场”收录国内外 11 个来源，支持 Agent/MCP/Skill 分类、搜索及官方入口，见 [资源市场接入](docs/Agent资源市场接入.md)。Skill ZIP 上传及上传来源创建流程已移除；技能演化保留业务运行经验提炼、规则 Eval、独立审核与版本治理。第一版公开链接下载已接入，见 [链接下载安装](docs/外部Skill链接下载与受控安装.md)；脚本附件执行和远程 Agent 接入仍未实现，见 [技能自学习](docs/Agent技能自学习与受控发布.md)。
+
+本地 Fetch MCP 已接入：“Agent智能系统 → MCP工具”，按账号下载固定包、创建隔离 Python 环境、保存版本/许可文件，人工安装确认后主动启用，由 AgentScope 原生 Stdio 握手和调用。需 V25 与 `AGENT_LOCAL_MCP_ENABLED=true`；其他 MCP、远程 Agent 尚未实现；公开链接 Skill 下载已有首版，见 [本地 Stdio MCP 接入](docs/本地StdioMCP接入.md)。
 
 ## 功能特点
 
@@ -52,7 +96,7 @@ conda env update -n leetcode -f environment.yml
 # 执行前端自动化测试（需先启动前后端）
 .\scripts\run-python.ps1 frontend\tests\test_frontend.py
 
-# 执行 Python 智能体测试
+# 执行 AgentScope 在线冒烟检查（需配置测试账号，调用真实模型）
 .\scripts\run-python.ps1 scripts\diagnostics\agent_live_smoke.py
 
 # 启动 Kafka 检测 worker
@@ -138,25 +182,27 @@ cd frontend
 npm run dev
 ```
 
-### Nginx + Docker Compose 生产部署
+### Java 单体 Docker 部署
 
-项目提供 Nginx Web 服务器、API 反向代理和双 Spring Boot 实例负载均衡配置：
+当前推荐 `compose.monolith.yml`：一个 Java 后端和一个 Nginx，托管主站与独立 Agent UI，支持 AG-UI/SSE、OSS 上传和用户工作区持久化。MySQL、Redis、Kafka、检测 worker、Mem0 等仍按已有独立服务地址配置。
 
 Docker/Compose 使用独立的 `deploy/docker.env`，只覆盖容器访问数据库、Redis、Kafka 和外部服务所需的地址、开关、凭据及 JVM 参数；它与本地开发使用的根目录 `.env` 职责不同。
 
 ```powershell
 Copy-Item deploy/docker.env.example deploy/docker.env
 $env:DOORHANDLE_ENV_FILE = 'deploy/docker.env'
-docker compose -f compose.nginx.yml up -d --build
+docker compose --env-file deploy/docker.env -f compose.monolith.yml up -d --build
 ```
 
 请只提交两个 `.example` 模板，真实凭据不得提交。
 
-完整的环境变量、健康检查、SSE、故障切换和回滚说明见：
+默认访问 `http://127.0.0.1:8088/#/login`，Agent UI 为 `/agent-ui/`。环境变量、持久化、公网开放和回滚见：
 
 ```text
-docs/nginx-compose-deployment.md
+docs/docker-monolith-deployment.md
 ```
+
+原 `compose.nginx.yml` 与 [双实例部署说明](docs/nginx-compose-deployment.md) 保留为实验入口，不作为当前单体默认方案。
 
 ### 图像检测
 

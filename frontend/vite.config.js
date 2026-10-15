@@ -23,7 +23,8 @@ export default defineConfig({
     port: 3001,
     host: '0.0.0.0',
     strictPort: false,
-    open: true,
+    open: process.env.DOORHANDLE_DEV_OPEN_BROWSER === 'false' ? false : '/#/login',
+    fs: { strict: true, allow: [path.resolve(__dirname)] },
     watch: {
       ignored: ['**/dist/**']
     },

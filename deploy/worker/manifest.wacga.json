@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "format": "pth",
+  "modelFile": "best_stg2.pth",
+  "checkpointSha256": "eb10caf9fe5fa41e1ce0cfe2bcfaaa728ff44c4fa56f3c6994d6fadb66da434b",
+  "configSha256": "0600aa7c021341876b78e0bfb33e2ffc3eb292896d0299b0ec61116cb3c9e167",
+  "classNames": [
+    "Normal",
+    "Bent",
+    "Deformed",
+    "Rusty",
+    "Missing",
+    "Compromised"
+  ],
+  "sourceCategoryIds": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6
+  ],
+  "encoder": "HybridEncoderWACGAShrinkage"
+}

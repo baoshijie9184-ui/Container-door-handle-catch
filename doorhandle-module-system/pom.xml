@@ -4,6 +4,7 @@
   <parent><groupId>com.ruanzhu</groupId><artifactId>doorhandle-parent</artifactId><version>0.0.1-SNAPSHOT</version></parent>
   <artifactId>doorhandle-module-system</artifactId>
   <dependencies>
+    <dependency><groupId>com.ruanzhu</groupId><artifactId>doorhandle-contracts</artifactId><version>${project.version}</version></dependency>
     <dependency><groupId>com.ruanzhu</groupId><artifactId>doorhandle-common</artifactId><version>${project.version}</version></dependency>
     <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-web</artifactId></dependency>
     <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-security</artifactId></dependency>
@@ -14,6 +15,7 @@
     <dependency><groupId>io.jsonwebtoken</groupId><artifactId>jjwt-jackson</artifactId><version>0.11.5</version><scope>runtime</scope></dependency>
     <dependency><groupId>org.projectlombok</groupId><artifactId>lombok</artifactId><optional>true</optional></dependency>
     <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-test</artifactId><scope>test</scope></dependency>
+    <dependency><groupId>com.h2database</groupId><artifactId>h2</artifactId><scope>test</scope></dependency>
   </dependencies>
 </project>
 

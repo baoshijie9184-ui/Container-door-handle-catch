@@ -1,0 +1,53 @@
+# 叠加到 compose.monolith.yml + compose.cloud.yml；直接加载已验证的 PTH。
+services:
+  backend:
+    environment:
+      APP_DETECTION_WORKER_ENABLED: "true"
+      APP_DETECTION_WORKER_CONSUMER_GROUP: ${KAFKA_CONSUMER_GROUP:-doorhandlecatch-python}
+    depends_on:
+      detection-worker:
+        condition: service_healthy
+
+  detection-worker:
+    image: doorhandlecatch/detection-worker:${APP_IMAGE_TAG:-local}
+    build:
+      context: ${DETECTION_BUILD_CONTEXT:-./work/cloud/pth-worker-build}
+      dockerfile: Dockerfile
+      args:
+        PYTHON_BASE_IMAGE: ${DETECTION_PYTHON_BASE_IMAGE:-python:3.12-slim}
+        PIP_INDEX_URL: https://mirrors.aliyun.com/pypi/simple
+    environment:
+      DETECTION_ENGINE: pth
+      DETECTION_SOURCE_DIR: /opt/model-source
+      DETECTION_MODEL_MANIFEST: /models/manifest.json
+      DETECTION_MODEL_ID: ${DETECTION_MODEL_ID:?Set deployed DETECTION_MODEL_ID}
+      DETECTION_CPU_THREADS: ${DETECTION_CPU_THREADS:-2}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_CONSUMER_GROUP: ${KAFKA_CONSUMER_GROUP:-doorhandlecatch-python}
+      ALIYUN_OSS_ENDPOINT: ${ALIYUN_OSS_ENDPOINT:?Set OSS endpoint}
+      ALIYUN_OSS_BUCKET: ${ALIYUN_OSS_BUCKET:?Set OSS bucket}
+      ALIYUN_OSS_ACCESS_KEY_ID: ${ALIYUN_OSS_ACCESS_KEY_ID:?Set OSS access key}
+      ALIYUN_OSS_ACCESS_KEY_SECRET: ${ALIYUN_OSS_ACCESS_KEY_SECRET:?Set OSS secret}
+    group_add:
+      - "${DETECTION_MODEL_GID:-1000}"
+    volumes:
+      - type: bind
+        source: ${DETECTION_MODELS_DIR:?Set validated inference model directory}
+        target: /models
+        read_only: true
+        bind:
+          create_host_path: false
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+    init: true
+    mem_limit: 2g
+    cpus: 2.0
+    stop_grace_period: 90s
+    restart: unless-stopped
+    networks: [doorhandle-network]
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -52,9 +52,6 @@ public class EmployeeController {
         if (employee == null) {
             return Result.error("员工不存在");
         }
-        if (!"ACTIVE".equals(employee.getStatus())) {
-            return Result.error("休假或离职员工不能分配设备");
-        }
         return Result.success(employee);
     }
 

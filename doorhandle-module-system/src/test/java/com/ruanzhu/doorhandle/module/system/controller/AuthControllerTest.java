@@ -22,7 +22,7 @@ class AuthControllerTest {
     void loginSetsHttpOnlyJwtCookieForAuthenticatedFileRequests() {
         AuthService authService = mock(AuthService.class);
         LoginRateLimiter loginRateLimiter = mock(LoginRateLimiter.class);
-        AuthController controller = new AuthController(authService, loginRateLimiter);
+        AuthController controller = new AuthController(authService, loginRateLimiter, mock(com.ruanzhu.doorhandle.module.system.service.AccountIdentityService.class));
         ReflectionTestUtils.setField(controller, "jwtExpirationSeconds", 86400L);
         ReflectionTestUtils.setField(controller, "cookieSecure", false);
         LoginRequest request = new LoginRequest();
@@ -49,7 +49,7 @@ class AuthControllerTest {
     void loginCanMarkJwtCookieSecureForHttpsDeployments() {
         AuthService authService = mock(AuthService.class);
         LoginRateLimiter loginRateLimiter = mock(LoginRateLimiter.class);
-        AuthController controller = new AuthController(authService, loginRateLimiter);
+        AuthController controller = new AuthController(authService, loginRateLimiter, mock(com.ruanzhu.doorhandle.module.system.service.AccountIdentityService.class));
         ReflectionTestUtils.setField(controller, "jwtExpirationSeconds", 86400L);
         ReflectionTestUtils.setField(controller, "cookieSecure", true);
         LoginRequest request = new LoginRequest();

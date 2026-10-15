@@ -202,6 +202,7 @@ public class DetectionTaskController {
     }
 
     @PostMapping("/{taskId}/assignment")
+    @org.springframework.security.access.prepost.PreAuthorize("hasRole('SUPERVISOR')")
     public Result<DetectionTaskProgressResponse> assignQualityTask(
             @PathVariable String taskId,
             @Valid @RequestBody DetectionTaskAssignmentRequest request

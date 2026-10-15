@@ -31,7 +31,7 @@ public class RagKnowledgeService {
     private final ChatAssistantProperties properties;
     private final ResourceLoader resourceLoader;
     private final ChromaRagStoreService chromaRagStoreService;
-    private final DeepSeekClient deepSeekClient;
+    private final RagModelService ragModelService;
 
     private final List<KnowledgeChunk> chunks = new ArrayList<>();
     private final ConcurrentHashMap<String, CachedContext> contextCache = new ConcurrentHashMap<>();
@@ -108,7 +108,7 @@ public class RagKnowledgeService {
         if (!Boolean.TRUE.equals(properties.getRagQueryRewriteEnabled())) {
             return query;
         }
-        String rewritten = deepSeekClient.rewriteRagQuery(query);
+        String rewritten = ragModelService.rewriteRagQuery(query);
         if (StringUtils.hasText(rewritten) && !rewritten.equals(query)) {
             log.debug("RAG 查询重写: {} -> {}", query, rewritten);
             return rewritten;
@@ -200,7 +200,7 @@ public class RagKnowledgeService {
         List<String> candidates = documents.stream()
                 .map(doc -> doc.title() + "\n" + doc.content())
                 .toList();
-        List<Integer> indices = deepSeekClient.rerankRagCandidates(originalQuery + "\n检索重写：" + retrievalQuery, candidates, topK);
+        List<Integer> indices = ragModelService.rerankRagCandidates(originalQuery + "\n检索重写：" + retrievalQuery, candidates, topK);
         List<RagDocument> reranked = new ArrayList<>();
         for (Integer index : indices) {
             if (index != null && index >= 0 && index < documents.size()) {

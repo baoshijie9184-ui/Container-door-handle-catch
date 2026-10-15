@@ -102,8 +102,8 @@ test('tests\\chat-confirm-action-guard-contract.test.cjs', () => {
     assert.doesNotMatch(drawerSource, /const MAX_WIDTH\s*=/)
   })
 
-  test('assistant session sidebar defaults to compact mode on mobile', () => {
-    assert.match(drawerSource, /<ChatSidebar\s+:compact="isMobile"\s*\/>/)
+  test('assistant session sidebar receives the responsive compact setting', () => {
+    assert.match(drawerSource, /<ChatSidebar\s+:compact="compactSidebar"\s*\/>/)
     assert.match(sidebarSource, /defineProps\(\{[\s\S]*compact:/)
     assert.match(sidebarSource, /const collapsed = ref\(props\.compact\)/)
     assert.match(sidebarSource, /watch\(\(\) => props\.compact/)
@@ -161,13 +161,13 @@ test('tests\\business-trace-presets-contract.test.cjs', () => {
   const traceComposableSource = readFrontendFile('src', 'composables', 'useTraceReports.js')
   const businessSeedEmptyHintSource = readFrontendFile('src', 'components', 'BusinessSeedEmptyHint.vue')
   const userManualSource = readFrontendFile('src', 'views', 'UserManual.vue')
-  const dbReadmeSource = readProjectFile('src', 'main', 'resources', 'db', 'README.md')
+  const dbReadmeSource = readProjectFile('doorhandle-module-app', 'src', 'main', 'resources', 'db', 'README.md')
   const userGuideSource = readProjectFile('docs', 'system-user-guide.md')
   const businessSeedStartScript = readProjectFile('scripts', 'start-backend-with-business-seed.ps1')
   const businessSeedSources = [
-    readProjectFile('src', 'main', 'resources', 'db', 'business-seed-new-features.sql'),
-    readProjectFile('src', 'main', 'resources', 'db', 'business-seed-more-features.sql'),
-    readProjectFile('src', 'main', 'resources', 'db', 'business-seed-trace-rich.sql')
+    readProjectFile('doorhandle-module-app', 'src', 'main', 'resources', 'db', 'business-seed-new-features.sql'),
+    readProjectFile('doorhandle-module-app', 'src', 'main', 'resources', 'db', 'business-seed-more-features.sql'),
+    readProjectFile('doorhandle-module-app', 'src', 'main', 'resources', 'db', 'business-seed-trace-rich.sql')
   ]
   const normalizedPages = [
     readFrontendFile('src', 'views', 'ImageDetection.vue'),
@@ -178,7 +178,7 @@ test('tests\\business-trace-presets-contract.test.cjs', () => {
     readFrontendFile('src', 'views', 'inspection', 'InspectionHistory.vue'),
     readFrontendFile('src', 'views', 'inspection', 'InspectionWorkbench.vue')
   ]
-  const migrationSource = readProjectFile('src', 'main', 'resources', 'db', 'migration-V13-business-seed-data-normalization.sql')
+  const migrationSource = readProjectFile('doorhandle-module-app', 'src', 'main', 'resources', 'db', 'migration-V13-business-seed-data-normalization.sql')
 
   assert.match(presetSource, /businessWorkOrderNos/)
   assert.match(presetSource, /businessBatchNos/)

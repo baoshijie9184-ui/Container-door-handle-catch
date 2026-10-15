@@ -21,7 +21,6 @@ import org.springframework.security.web.authentication.UsernamePasswordAuthentic
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
-import org.springframework.web.servlet.config.annotation.ResourceHandlerRegistry;
 import org.springframework.web.servlet.config.annotation.ViewControllerRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
@@ -33,15 +32,6 @@ public class SecurityConfig implements WebMvcConfigurer {
 
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
     private final AppCorsProperties corsProperties;
-
-    @Value("${detection.upload-dir:${user.dir}/uploads/images}")
-    private String imageUploadDir;
-
-    @Value("${detection.annotated-dir:${user.dir}/uploads/annotated}")
-    private String annotatedDir;
-
-    @Value("${detection.result-dir:${user.dir}/uploads/results}")
-    private String resultDir;
 
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
@@ -99,24 +89,6 @@ public class SecurityConfig implements WebMvcConfigurer {
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
         source.registerCorsConfiguration("/**", configuration);
         return source;
-    }
-
-    @Override
-    public void addResourceHandlers(ResourceHandlerRegistry registry) {
-        // 暴露原图文件目录。
-        registry.addResourceHandler("/api/files/images/**")
-                .addResourceLocations("file:" + imageUploadDir + "/")
-                .setCachePeriod(3600);
-
-        // 暴露标注图文件目录。
-        registry.addResourceHandler("/api/files/annotated/**")
-                .addResourceLocations("file:" + annotatedDir + "/")
-                .setCachePeriod(3600);
-
-        // 暴露检测结果文件目录。
-        registry.addResourceHandler("/api/files/results/**")
-                .addResourceLocations("file:" + resultDir + "/")
-                .setCachePeriod(3600);
     }
 
     @Override

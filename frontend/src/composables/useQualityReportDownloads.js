@@ -44,7 +44,7 @@ export function useQualityReportDownloads({
       if (response.data?.code === 200) {
         const report = response.data.data
         downloadJsonReport(report, `quality-report-${safeFilePart(taskId)}-${reportTimestamp()}.json`)
-        ElMessage.success('质检报告已导出')
+        ElMessage.success('任务摘要已导出')
       } else {
         ElMessage.error(response.data?.message || '导出质检报告失败')
       }

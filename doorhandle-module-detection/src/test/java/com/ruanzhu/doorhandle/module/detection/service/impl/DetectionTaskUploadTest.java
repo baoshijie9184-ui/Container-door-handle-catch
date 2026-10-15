@@ -50,7 +50,7 @@ class DetectionTaskUploadTest {
     }
 
     @Test
-    void getTaskProgressAllowsTaskOwnedByAnotherUser() {
+    void getTaskProgressRejectsTaskOwnedByAnotherUser() {
         DetectionTask task = new DetectionTask();
         task.setTaskId("det_private");
         task.setCreatedBy("bob");
@@ -60,7 +60,8 @@ class DetectionTaskUploadTest {
                         List.of(new SimpleGrantedAuthority("ROLE_OPERATOR")))
         );
 
-        assertEquals("det_private", fixture.service.getTaskProgress("det_private").getTaskId());
+        org.junit.jupiter.api.Assertions.assertThrows(org.springframework.security.access.AccessDeniedException.class,
+                () -> fixture.service.getTaskProgress("det_private"));
     }
 
     @Test

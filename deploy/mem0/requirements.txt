@@ -1,0 +1,8 @@
+# 与本机桥接兼容的固定版本；服务使用 OpenAI 协议和本地 Chroma。
+mem0ai==2.0.19
+chromadb==1.5.9
+fastapi==0.135.2
+uvicorn==0.41.0
+python-dotenv==1.0.1
+openai==1.109.1
+pydantic==2.12.5

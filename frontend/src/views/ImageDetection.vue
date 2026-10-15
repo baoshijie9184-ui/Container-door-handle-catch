@@ -287,7 +287,7 @@
                     type="success"
                     @click.stop="downloadTaskQualityReport(task.taskId)"
                   >
-                    导出报告
+                    导出任务摘要
                   </el-button>
                   <el-button
                     v-if="task.stage === 'completed' || task.stage === 'failed'"
@@ -567,6 +567,7 @@
                     <el-button link size="small">查看结果 JSON</el-button>
                   </a>
                   <el-button link size="small" type="primary" @click="openTraceDialog(task.taskId)">追溯详情</el-button>
+                  <el-button link size="small" type="primary" @click="router.push({ path: '/quality/reports', query: { taskId: task.taskId } })">报告草稿</el-button>
                   <el-button link size="small" type="danger" @click="removeTask(task.taskId)">
                     <el-icon><Delete /></el-icon>移除
                   </el-button>
@@ -779,7 +780,7 @@
                 </div>
                 <div class="defect-card-actions">
                   <el-button size="small" type="primary" plain @click="openTraceDialog(task.taskId)">追溯详情</el-button>
-                  <el-button size="small" type="success" plain @click="downloadTaskQualityReport(task.taskId)">导出报告</el-button>
+                  <el-button size="small" type="success" plain @click="downloadTaskQualityReport(task.taskId)">导出任务摘要</el-button>
                   <el-button
                     v-if="canReviewTask(task)"
                     size="small"

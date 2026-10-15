@@ -1,4 +1,4 @@
-﻿server:
+server:
   port: 8080
   servlet:
     encoding:
@@ -175,6 +175,16 @@ app:
       task-created: ${APP_KAFKA_TOPIC_TASK_CREATED:detection.task.created}
       task-finished: ${APP_KAFKA_TOPIC_TASK_FINISHED:detection.task.finished}
       task-progress: ${APP_KAFKA_TOPIC_TASK_PROGRESS:detection.task.progress}
+  report-events:
+    enabled: ${APP_REPORT_EVENTS_ENABLED:false}
+    topic: ${APP_REPORT_EVENTS_TOPIC:detection.report.lifecycle.v1}
+    consumer-group: ${APP_REPORT_EVENTS_CONSUMER_GROUP:doorhandlecatch-report-receipts-v1}
+    batch-size: 20
+    poll-delay-ms: 2000
+    send-timeout-ms: 10000
+    lease-ms: 60000
+    retry-base-ms: 2000
+    retry-max-ms: 300000
   detection-worker:
     enabled: ${APP_DETECTION_WORKER_ENABLED:true}
     deployment: ${APP_DETECTION_WORKER_DEPLOYMENT:remote}
@@ -195,8 +205,6 @@ chat-assistant:
   default-session-suffix: ${CHAT_ASSISTANT_DEFAULT_SESSION_SUFFIX:default}
   max-history-messages: ${CHAT_ASSISTANT_MAX_HISTORY_MESSAGES:30}
   max-requests-per-minute: ${CHAT_ASSISTANT_MAX_REQUESTS_PER_MINUTE:30}
-  max-scan-depth: ${CHAT_ASSISTANT_MAX_SCAN_DEPTH:4}
-  max-scan-files: ${CHAT_ASSISTANT_MAX_SCAN_FILES:200}
   voice-transcribe-url: ${CHAT_ASSISTANT_VOICE_TRANSCRIBE_URL:}
   voice-connect-timeout-ms: ${CHAT_ASSISTANT_VOICE_CONNECT_TIMEOUT_MS:1500}
   voice-read-timeout-ms: ${CHAT_ASSISTANT_VOICE_READ_TIMEOUT_MS:15000}
@@ -224,44 +232,6 @@ chat-assistant:
     - file:docs/system-user-guide.md
     - file:docs/chroma-rag-setup.md
     - file:README.md
-  allowed-scan-roots:
-    - ${CHAT_ASSISTANT_ALLOWED_SCAN_ROOT:${user.dir}/uploads}
-  blocked-path-keywords:
-    - .ssh
-    - .gnupg
-    - .aws
-    - .azure
-    - .kube
-    - .docker
-    - appdata
-    - windows
-    - program files
-    - system32
-    - node_modules
-    - .git
-
-agent:
-  graph:
-    guard:
-      max-execution-ms: ${AGENT_GRAPH_GUARD_MAX_EXECUTION_MS:15000}
-      max-visits-per-node: ${AGENT_GRAPH_GUARD_MAX_VISITS_PER_NODE:4}
-      max-repeat-route: ${AGENT_GRAPH_GUARD_MAX_REPEAT_ROUTE:3}
-      max-trace-size: ${AGENT_GRAPH_GUARD_MAX_TRACE_SIZE:24}
-
-conversation:
-  max-recent-messages: ${CONV_MAX_RECENT_MSGS:10}
-  summary-enabled: ${CONV_SUMMARY_ENABLED:true}
-  summary-trigger-count: ${CONV_SUMMARY_TRIGGER:8}
-
-deepseek:
-  enabled: ${DEEPSEEK_ENABLED:true}
-  # 意图识别和回答统一走 OpenAI 兼容的大模型接口；未单独配置 DeepSeek 时复用 DashScope。
-  api-key: ${DEEPSEEK_API_KEY:${DASHSCOPE_API_KEY:}}
-  base-url: ${DEEPSEEK_BASE_URL:${DASHSCOPE_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}}
-  model: ${DEEPSEEK_MODEL:kimi-k3}
-  temperature: 0.3
-  chat-temperature: 0.7
-
 # AgentScope 平台适配开关。各项默认关闭，按需在 .env 或部署环境变量中开启。
 agent-platform:
   event-bridge:
@@ -273,28 +243,6 @@ agent-platform:
     enabled: ${AGENT_A2A_ENABLED:false}
     endpoint: ${AGENT_A2A_ENDPOINT:}
     api-key: ${AGENT_A2A_API_KEY:}
-  responses:
-    enabled: ${AGENT_RESPONSES_ENABLED:false}
-    base-url: ${AGENT_RESPONSES_BASE_URL:https://api.openai.com/v1}
-    api-key: ${OPENAI_API_KEY:}
-    model: ${OPENAI_MODEL:gpt-4o-mini}
-  model:
-    provider: ${AGENT_MODEL_PROVIDER:dashscope}
-    fallback-provider: ${AGENT_MODEL_FALLBACK_PROVIDER:deepseek}
-    timeout: ${AGENT_MODEL_TIMEOUT:60s}
-    max-retries: ${AGENT_MODEL_MAX_RETRIES:2}
-    dashscope:
-      api-key: ${DASHSCOPE_API_KEY:}
-      base-url: ${DASHSCOPE_BASE_URL:https://dashscope.aliyuncs.com/api/v1}
-      model: ${AGENTSCOPE_AI_MODEL:dashscope:qwen-plus}
-    deepseek:
-      api-key: ${DEEPSEEK_API_KEY:}
-      base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}
-      model: ${DEEPSEEK_MODEL:deepseek-v4-flash}
-    glm:
-      api-key: ${GLM_API_KEY:}
-      base-url: ${GLM_BASE_URL:https://open.bigmodel.cn/api/paas/v4}
-      model: ${GLM_MODEL:glm-4-flash}
   memory:
     redis-enabled: ${AGENT_MEMORY_REDIS_ENABLED:false}
     mem0-enabled: ${AGENT_MEMORY_MEM0_ENABLED:false}
@@ -316,18 +264,32 @@ agent-platform:
     langfuse-public-key: ${LANGFUSE_PUBLIC_KEY:}
     langfuse-secret-key: ${LANGFUSE_SECRET_KEY:}
     langfuse-host: ${LANGFUSE_HOST:http://localhost:3000}
-  max-tokens: 2048
-  connect-timeout-ms: ${DEEPSEEK_CONNECT_TIMEOUT_MS:3000}
-  read-timeout-ms: ${DEEPSEEK_READ_TIMEOUT_MS:12000}
 
 mem0:
   service-url: ${MEM0_SERVICE_URL:http://localhost:8081}
+  bridge-token: ${MEM0_BRIDGE_TOKEN:}
   enabled: ${MEM0_ENABLED:true}
   connect-timeout-ms: ${MEM0_CONNECT_TIMEOUT_MS:2000}
   read-timeout-ms: ${MEM0_READ_TIMEOUT_MS:5000}
 
-# AgentScope Java 2.0.1 + AG-UI（与官方 v2 文档对应）。密钥通过 DASHSCOPE_API_KEY 注入，不写入配置文件。
+# AgentScope Java 2.0.4 + AG-UI；模型凭证由 Spring Environment 绑定。
 agentscope:
+  mcp:
+    enabled: ${AGENT_LOCAL_MCP_ENABLED:false}
+    python: ${AGENT_LOCAL_MCP_PYTHON:python}
+    installer: ${AGENT_LOCAL_MCP_INSTALLER:${user.dir}/script/shell/install-local-fetch-mcp.py}
+  evolution:
+    enabled: ${AGENT_SKILL_EVOLUTION_ENABLED:false}
+    links:
+      enabled: ${AGENT_SKILL_LINK_ENABLED:false}
+      python: ${AGENT_SKILL_LINK_PYTHON:python}
+      quota-bytes: ${AGENT_SKILL_LINK_QUOTA_BYTES:67108864}
+      installer: ${AGENT_SKILL_LINK_INSTALLER:${user.dir}/script/shell/download-linked-skill.py}
+  actions:
+    enabled: ${AGENT_ACTION_CONFIRMATION_ENABLED:false}
+    allowed-origins: ${APP_CORS_ALLOWED_ORIGINS:http://127.0.0.1:3001,http://localhost:3001,http://127.0.0.1:3003,http://localhost:3003,http://127.0.0.1:8080,http://localhost:8080}
+  journal:
+    enabled: ${AGENT_RUN_JOURNAL_ENABLED:false}
   ai:
     enabled: ${AGENTSCOPE_AI_ENABLED:false}
     model: ${AGENTSCOPE_AI_MODEL:dashscope:qwen-plus}
@@ -337,6 +299,32 @@ agentscope:
     max-iters: ${AGENTSCOPE_AI_MAX_ITERS:12}
     enable-reasoning: ${AGENTSCOPE_AI_ENABLE_REASONING:false}
     emit-token-usage: ${AGENTSCOPE_AI_EMIT_TOKEN_USAGE:false}
+  models:
+    proxy-url: ${AGENT_MODEL_PROXY_URL:}
+    timeout: ${AGENT_MODEL_TIMEOUT:60s}
+    first-token-timeout: ${AGENT_MODEL_FIRST_TOKEN_TIMEOUT:15s}
+    max-retries: ${AGENT_MODEL_MAX_RETRIES:2}
+    max-output-tokens: ${AGENT_MODEL_MAX_OUTPUT_TOKENS:2048}
+    fallback-enabled: ${AGENT_MODEL_FALLBACK_ENABLED:false}
+    fallback-model: ${AGENT_MODEL_FALLBACK_MODEL:deepseek:deepseek-flash}
+    fallback-models: ${AGENT_MODEL_FALLBACK_MODELS:}
+    failure-threshold: ${AGENT_MODEL_FAILURE_THRESHOLD:2}
+    circuit-cooldown: ${AGENT_MODEL_CIRCUIT_COOLDOWN:60s}
+    quota-cooldown: ${AGENT_MODEL_QUOTA_COOLDOWN:5m}
+    store: ${AGENT_RESPONSES_STORE:false}
+    actor-authorization: ${AGENT_RESPONSES_ACTOR_AUTHORIZATION:}
+    dashscope:
+      api-key: ${DASHSCOPE_API_KEY:}
+      base-url: ${DASHSCOPE_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
+      model: ${DASHSCOPE_MODEL:qwen-plus}
+    deepseek:
+      api-key: ${DEEPSEEK_API_KEY:}
+      base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}
+      model: ${DEEPSEEK_MODEL:deepseek-flash}
+    openai:
+      api-key: ${OPENAI_API_KEY:}
+      base-url: ${AGENT_RESPONSES_BASE_URL:https://api.openai.com/v1}
+      model: ${OPENAI_MODEL:gpt-4o-mini}
   agui:
     path-prefix: ${AGENTSCOPE_AGUI_PATH_PREFIX:/agui}
     cors-enabled: ${AGENTSCOPE_AGUI_CORS_ENABLED:false}

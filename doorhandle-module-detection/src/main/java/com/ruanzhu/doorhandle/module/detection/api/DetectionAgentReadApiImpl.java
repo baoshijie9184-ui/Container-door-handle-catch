@@ -5,6 +5,8 @@ import com.ruanzhu.doorhandle.contracts.agent.AgentActor;
 import com.ruanzhu.doorhandle.contracts.agent.DetectionAgentReadApi;
 import com.ruanzhu.doorhandle.module.detection.entity.DetectionTask;
 import com.ruanzhu.doorhandle.module.detection.mapper.DetectionTaskMapper;
+import com.ruanzhu.doorhandle.module.detection.security.DetectionTaskAccessPolicy;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
@@ -13,7 +15,13 @@ import java.util.Map;
 @Service
 public class DetectionAgentReadApiImpl implements DetectionAgentReadApi {
     private final DetectionTaskMapper mapper;
-    public DetectionAgentReadApiImpl(DetectionTaskMapper mapper) { this.mapper = mapper; }
+    private final DetectionTaskAccessPolicy accessPolicy;
+    public DetectionAgentReadApiImpl(DetectionTaskMapper mapper) { this(mapper, new DetectionTaskAccessPolicy()); }
+    @Autowired
+    public DetectionAgentReadApiImpl(DetectionTaskMapper mapper, DetectionTaskAccessPolicy accessPolicy) {
+        this.mapper = mapper;
+        this.accessPolicy = accessPolicy;
+    }
 
     @Override
     public TaskPage tasks(AgentActor actor, int page, int size, boolean qualityOnly) {
@@ -48,13 +56,12 @@ public class DetectionAgentReadApiImpl implements DetectionAgentReadApi {
                 "COALESCE(SUM(defect_count),0) AS defectCount");
         var rows = mapper.selectMaps(query);
         Map<String, Object> counts = rows.isEmpty() ? Map.of() : rows.get(0);
-        return new Metrics(counts, from, to, actor.supervisor() ? "SINGLE_ENTERPRISE" : "CREATED_BY_CURRENT_USER");
+        return new Metrics(counts, from, to, actor.supervisor() ? "SINGLE_ENTERPRISE" : "OWNED_OR_ASSIGNED");
     }
 
     private QueryWrapper<DetectionTask> scope(AgentActor actor) {
-        if (actor == null) throw new SecurityException("缺少认证身份");
         QueryWrapper<DetectionTask> query = new QueryWrapper<>();
-        if (!actor.supervisor()) query.eq("created_by", actor.username());
+        accessPolicy.applyScope(query, actor);
         return query;
     }
 

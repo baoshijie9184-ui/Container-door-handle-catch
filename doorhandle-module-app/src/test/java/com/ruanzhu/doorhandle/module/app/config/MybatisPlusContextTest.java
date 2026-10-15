@@ -7,6 +7,7 @@ import com.baomidou.mybatisplus.autoconfigure.ConfigurationCustomizer;
 import com.baomidou.mybatisplus.autoconfigure.MybatisPlusPropertiesCustomizer;
 import com.baomidou.mybatisplus.extension.plugins.MybatisPlusInterceptor;
 import com.baomidou.mybatisplus.extension.plugins.inner.PaginationInnerInterceptor;
+import com.baomidou.mybatisplus.extension.plugins.inner.OptimisticLockerInnerInterceptor;
 import com.ruanzhu.doorhandle.module.detection.mapper.DetectionTaskMapper;
 import org.apache.ibatis.session.SqlSessionFactory;
 import org.junit.jupiter.api.Test;
@@ -36,9 +37,9 @@ class MybatisPlusContextTest {
             assertThat(context).doesNotHaveBean(MybatisPlusPropertiesCustomizer.class);
 
             MybatisPlusInterceptor interceptor = context.getBean(MybatisPlusInterceptor.class);
-            assertThat(interceptor.getInterceptors())
-                    .singleElement()
-                    .isInstanceOf(PaginationInnerInterceptor.class);
+            assertThat(interceptor.getInterceptors()).hasSize(2);
+            assertThat(interceptor.getInterceptors().get(0)).isInstanceOf(PaginationInnerInterceptor.class);
+            assertThat(interceptor.getInterceptors().get(1)).isInstanceOf(OptimisticLockerInnerInterceptor.class);
         });
     }
 }

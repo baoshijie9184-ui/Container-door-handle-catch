@@ -98,3 +98,18 @@ mysql -u用户名 -p密码 数据库名 < new_records.sql
 5. 三个类别的目标总数大于图片总数（一张图片可能有多个目标）
 6. 检测速度：每秒15张图片
 7. 图片总数范围：5000-20000张
+
+## AgentScope 运行日志迁移
+
+阶段 B 新增 `sql/mysql/migration-V16-agentscope-run-journal.sql`，classpath 副本在 AI 模块的 `src/main/resources/db` 中。该脚本只创建 agent_run 和 agent_run_event，不加入业务 seed 自动导入。先在项目业务库执行，再开启 AGENT_RUN_JOURNAL_ENABLED。接口、回退与验证见项目 `docs/agentscope-run-journal.md`。
+## 报告及 Agent 草稿来源
+
+V30 增加报告 outbox 租约/重试字段及两张回执表。归档和 classpath 副本一致；显式运行 `script/shell/migrate-local-report-events.py --apply`，本机 helper 检查列和索引后再执行，保留历史。开启 `APP_REPORT_EVENTS_ENABLED` 前完成迁移，详见 `docs/报告事件交付与重试.md`。
+
+当前运行需要根目录 `sql/mysql/migration-V21-quality-report-approval.sql` 与 `migration-V22-agent-report-origin.sql`，classpath 同名副本保持一致。两者只新增表，不由业务 seed 或统一启动入口自动执行。本机迁移脚本 `script/shell/migrate-local-reports.py --apply` 同时幂等执行两份脚本。实现与验证见项目 `docs/Agent报告工具接入.md`。
+
+V23 技能演化五表副本为 `migration-V23-agent-skill-evolution.sql`，归档在根 `sql/mysql`；本地显式执行 `script/shell/migrate-local-skills.py --apply` 并核对副本一致。运行不自动执行，关闭功能应保留版本与审计。
+
+V24 外部技能来源为 `migration-V24-external-skill-import.sql`，新增导入表和版本来源类型/引用，旧记录默认 RUN，不删除或改写历史。上述本机入口同时检查并执行 V23/V24，可重复运行；手工 V24 列变更前检查是否已存在。启用技能演化需两份迁移，ZIP 上传功能已移除；V24 元数据仅用于历史兼容，详见 `docs/Agent技能自学习与受控发布.md`。
+
+V25 `migration-V25-local-mcp.sql` 新增按账号隔离的固定 MCP 注册/安装状态与审计两表；根 SQL 与此副本一致。本机显式 `script/shell/migrate-local-mcp.py --apply`，重复执行不会覆盖已有行；启用 `AGENT_LOCAL_MCP_ENABLED` 时启动检查表。文件安装在用户 workspace，关闭功能保留状态、文件和审计，见 `docs/本地StdioMCP接入.md`。

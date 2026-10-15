@@ -1322,7 +1322,7 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
 
     private void applyOwnerFilter(LambdaQueryWrapper<DetectionTask> wrapper) {
         Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
-        accessPolicy.assertAuthenticated(authentication);
+        accessPolicy.applyScope(wrapper, authentication);
     }
 
     private ModelInfo resolveModelInfo(Integer modelId) {

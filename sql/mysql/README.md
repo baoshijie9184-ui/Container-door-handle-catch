@@ -9,6 +9,8 @@
 - `business-seed-trace-rich.sql`: 工单追溯与批次追溯业务预置数据，用于验证追溯链路。
 - `migration-V13-business-seed-data-normalization.sql`: 历史数据归一化脚本，用于清理已导入库里的旧标记和旧编号。
 - `migration-V14-security-reliability-hardening.sql`: 安全与幂等迁移，增加用户角色、检测调度标识和助手动作错误字段；升级现有数据库时必须先执行。
+- `migration-V18-test-users.sql`: 本地开发的员工、主管各两个测试账号；执行时会更新同名账号的密码和角色。账号及密码见 [测试用户账号](../../docs/测试用户账号.md)。
+- `migration-V19-agent-confirmation.sql`: 主管质检分配的持久确认与审计表，只新增表，不恢复执行旧助手动作。
 - `detection_records_500_samples.sql`: 包含500条检测记录的SQL文件。
 - `detection_records_generator.js`: 用于生成检测记录数据的JavaScript脚本。
 - `import_detection_records.bat`: Windows批处理文件，用于自动导入数据。
@@ -98,3 +100,11 @@ mysql -u用户名 -p密码 数据库名 < new_records.sql
 5. 三个类别的目标总数大于图片总数（一张图片可能有多个目标）
 6. 检测速度：每秒15张图片
 7. 图片总数范围：5000-20000张
+
+## AgentScope 运行日志迁移
+
+当前单体组织身份、报告审批和 Agent 草稿来源需依次执行 `migration-V20-account-employee-department.sql`、`migration-V21-quality-report-approval.sql`、`migration-V22-agent-report-origin.sql`。classpath 副本位于 App 模块，启动脚本不自动执行。V20 回填已有部门 ID、不猜测账号员工关联；V21、V22 新增报告流程及来源表。配置及回退边界见 [组织身份](../../docs/账号员工部门关联.md)、[报告审批](../../docs/报告草稿与独立审批.md)、[Agent 报告工具](../../docs/Agent报告工具接入.md)。
+
+阶段 B 新增 `sql/mysql/migration-V16-agentscope-run-journal.sql`，classpath 副本在 AI 模块的 `src/main/resources/db` 中。该脚本只创建 agent_run 和 agent_run_event，不加入业务 seed 自动导入。先在项目业务库执行，再开启 AGENT_RUN_JOURNAL_ENABLED。接口、回退与验证见项目 `docs/agentscope-run-journal.md`。
+
+V23 `migration-V23-agent-skill-evolution.sql` 新增本人来源授权、技能与不可变版本、规则 Eval、操作审计五表。开启演化前显式执行 `script/shell/migrate-local-skills.py --apply`，默认不启用功能；不自动删除历史或回滚表。见 [技能演化](../../docs/Agent技能自学习与受控发布.md)。

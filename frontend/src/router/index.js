@@ -5,7 +5,8 @@ const routes = [
   {
     path: '/',
     component: () => import('../layout/index.vue'),
-    redirect: '/home',
+    redirect: '/login',
+    meta: { requiresAuth: true },
     children: [
       {
         path: '/home',
@@ -42,6 +43,12 @@ const routes = [
         name: 'qualityQueue',
         component: () => import('../views/ImageDetection.vue'),
         meta: { title: '质检队列', requiresAuth: true, detectionTab: 'quality' }
+      },
+      {
+        path: 'quality/reports',
+        name: 'qualityReports',
+        component: () => import('../views/QualityReports.vue'),
+        meta: { title: '报告与审批', requiresAuth: true }
       },
       {
         path: 'quality/evidence',
@@ -98,6 +105,12 @@ const routes = [
         meta: { title: '新增人员', requiresAuth: true, parent: '人员管理' }
       },
       {
+        path: 'organization',
+        name: 'organization',
+        component: () => import('../views/Organization.vue'),
+        meta: { title: '账号与组织', requiresAuth: true, icon: 'User' }
+      },
+      {
         path: 'employees/:id',
         name: 'employeeDetail',
         component: () => import('../views/employee/EmployeeDetail.vue'),
@@ -145,6 +158,22 @@ const routes = [
         component: () => import('../views/AgentTrace.vue'),
         meta: { title: 'Agent调用链路', requiresAuth: true, icon: 'Operation' }
       },
+      {
+        path: 'agent/actions',
+        name: 'agentActions',
+        component: () => import('../views/AgentActions.vue'),
+        meta: { title: '助手操作确认', requiresAuth: true, icon: 'Operation' }
+      },
+      {
+        path: 'agent/skills', name: 'agentSkills', component: () => import('../views/AgentSkills.vue'),
+        meta: { title: 'Agent技能演化', requiresAuth: true, icon: 'Operation' }
+      },
+      {
+        path: 'agent/markets', name: 'agentMarkets', component: () => import('../views/AgentMarkets.vue'),
+        meta: { title: '资源市场', requiresAuth: true, icon: 'Operation' }
+      },
+      {path:'agent/memory',name:'agentMemory',component:()=>import('../views/AgentMemory.vue'),meta:{title:'个人记忆',requiresAuth:true}},
+      { path:'agent/mcp',name:'agentMcp',component:()=>import('../views/AgentMcp.vue'),meta:{title:'MCP 工具',requiresAuth:true,icon:'Operation'} },
       {
         path: 'test-upload',
         name: 'testUpload',
@@ -216,11 +245,6 @@ router.beforeEach(async (to, from, next) => {
       next({ name: 'login', query: { redirect: to.fullPath } })
       return
     }
-  }
-
-  if (to.name === 'login' && userStore.isAuthenticated) {
-    next({ name: 'home' })
-    return
   }
 
   if (from.name) startProgress()

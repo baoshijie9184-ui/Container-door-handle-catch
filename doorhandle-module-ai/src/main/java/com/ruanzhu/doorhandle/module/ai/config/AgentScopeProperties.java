@@ -5,7 +5,7 @@ import jakarta.validation.constraints.NotBlank;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.validation.annotation.Validated;
 
-/** AgentScope Java 运行配置。密钥只从 DASHSCOPE_API_KEY 环境变量读取。 */
+/** Agent runtime options. Model credentials are bound separately by AgentModelProperties. */
 @Validated
 @ConfigurationProperties(prefix = "agentscope.ai")
 public class AgentScopeProperties {

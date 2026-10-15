@@ -1,5 +1,7 @@
 # Single-Enterprise Shared Data Implementation Plan
 
+> Superseded on 2026-10-13. The current rule is employee-owned or assigned tasks, supervisor enterprise business scope, and private Agent resources per account. See [current multi-user scope](../../多用户权限与数据范围方案.md). Do not implement the shared-chat or identical-capabilities instructions below; they are historical planning content.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make every authenticated user share the same business and chat data with identical system capabilities while preserving creator attribution, authentication, auditability, and safe concurrent updates.

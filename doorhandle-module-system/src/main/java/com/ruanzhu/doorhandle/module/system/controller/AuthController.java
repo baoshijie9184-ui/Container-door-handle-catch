@@ -36,6 +36,8 @@ public class AuthController {
     private final AuthService authService;
     private final LoginRateLimiter loginRateLimiter;
 
+    private final com.ruanzhu.doorhandle.module.system.service.AccountIdentityService accountIdentities;
+
     @Value("${jwt.expiration:86400}")
     private Long jwtExpirationSeconds;
     @Value("${jwt.refresh-expiration:2592000}")
@@ -114,6 +116,7 @@ public class AuthController {
                 .findFirst().orElse("INSPECTOR"));
         if (authentication.getPrincipal() instanceof TenantPrincipal principal) {
             response.put("userId", principal.userId());
+            response.put("identity", accountIdentities.mine(principal));
         }
 
         return Result.success(response);

@@ -35,6 +35,9 @@ public class EmployeeServiceImpl extends ServiceImpl<EmployeeMapper, Employee> i
     
     @Autowired
     private DeviceUsageRecordService deviceUsageRecordService;
+
+    @Autowired
+    private com.ruanzhu.doorhandle.contracts.organization.OrganizationDirectoryApi organization;
     
     @Override
     public Page<Employee> findByPage(int page, int size, String name, String employeeNumber, String contact, 
@@ -69,19 +72,16 @@ public class EmployeeServiceImpl extends ServiceImpl<EmployeeMapper, Employee> i
     }
     
     @Override
-    @Cacheable(cacheNames = "employee", key = "'detail:' + #id", unless = "#result == null")
     public Employee getById(Long id) {
         return employeeMapper.selectById(id);
     }
     
     @Override
-    @Cacheable(cacheNames = "employee", key = "'type:' + #employeeType")
     public List<Employee> findByEmployeeType(String employeeType) {
         return employeeMapper.findByEmployeeType(employeeType);
     }
     
     @Override
-    @Cacheable(cacheNames = "employee", key = "'device:' + #deviceId", unless = "#result == null")
     public Employee getByDeviceId(Long deviceId) {
         return employeeMapper.getByDeviceId(deviceId);
     }
@@ -103,6 +103,7 @@ public class EmployeeServiceImpl extends ServiceImpl<EmployeeMapper, Employee> i
     @Transactional(rollbackFor = Exception.class)
     @CacheEvict(cacheNames = {"employee", "device", "dashboard"}, allEntries = true)
     public boolean add(Employee employee) {
+        normalizeDepartment(employee);
         // 设置创建时间和更新时间
         LocalDateTime now = LocalDateTime.now();
         employee.setCreatedTime(now);
@@ -122,6 +123,11 @@ public class EmployeeServiceImpl extends ServiceImpl<EmployeeMapper, Employee> i
         if (existing == null) {
             throw new com.ruanzhu.doorhandle.common.BusinessException(404, "员工不存在");
         }
+        if (employee.getDepartmentId() == null && employee.getDepartment() == null) {
+            employee.setDepartmentId(existing.getDepartmentId());
+            employee.setDepartment(existing.getDepartment());
+        }
+        normalizeDepartment(employee);
         if (employee.getStatus() != null && !"ACTIVE".equals(employee.getStatus())
                 && !deviceMapper.findByEmployeeId(employee.getId()).isEmpty()) {
             throw new com.ruanzhu.doorhandle.common.BusinessException(409, "员工仍有分配设备，请先完成设备归还");
@@ -142,11 +148,20 @@ public class EmployeeServiceImpl extends ServiceImpl<EmployeeMapper, Employee> i
     @Transactional(rollbackFor = Exception.class)
     @CacheEvict(cacheNames = {"employee", "device", "dashboard"}, allEntries = true)
     public boolean delete(Long id) {
+        // 与绑定使用同一员工行锁；外键是竞态下的最后一道保护。
+        employeeMapper.selectOne(new LambdaQueryWrapper<Employee>().eq(Employee::getId, id).last("FOR UPDATE"));
+        organization.assertEmployeeUnbound(id);
         // 先解除该员工关联的所有设备
         deviceMapper.removeEmployeeFromDevices(id);
         
         // 再删除员工
         return removeById(id);
+    }
+
+    private void normalizeDepartment(Employee employee) {
+        var department = organization.requireDepartment(employee.getDepartmentId(), employee.getDepartment());
+        employee.setDepartmentId(department.id());
+        employee.setDepartment(department.name());
     }
     
     @Override

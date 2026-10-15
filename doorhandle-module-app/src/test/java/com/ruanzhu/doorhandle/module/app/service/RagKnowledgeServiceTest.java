@@ -30,10 +30,10 @@ class RagKnowledgeServiceTest {
         properties.setRagTopK(2);
         properties.setRagMaxContextChars(1200);
 
-        DeepSeekClient deepSeekClient = mock(DeepSeekClient.class);
-        when(deepSeekClient.rewriteRagQuery(any())).thenAnswer(invocation -> invocation.getArgument(0));
-        when(deepSeekClient.rerankRagCandidates(any(), any(), anyInt())).thenReturn(List.of(0, 1));
-        RagKnowledgeService service = new RagKnowledgeService(properties, new DefaultResourceLoader(), mock(ChromaRagStoreService.class), deepSeekClient);
+        RagModelService ragModelService = mock(RagModelService.class);
+        when(ragModelService.rewriteRagQuery(any())).thenAnswer(invocation -> invocation.getArgument(0));
+        when(ragModelService.rerankRagCandidates(any(), any(), anyInt())).thenReturn(List.of(0, 1));
+        RagKnowledgeService service = new RagKnowledgeService(properties, new DefaultResourceLoader(), mock(ChromaRagStoreService.class), ragModelService);
         service.loadKnowledgeBase();
 
         String context = service.retrieveContext("质检队列有哪些状态，应该怎么处理返工复检");
@@ -52,10 +52,10 @@ class RagKnowledgeServiceTest {
         properties.setRagTopK(2);
         properties.setRagMaxContextChars(1600);
 
-        DeepSeekClient deepSeekClient = mock(DeepSeekClient.class);
-        when(deepSeekClient.rewriteRagQuery(any())).thenAnswer(invocation -> invocation.getArgument(0));
-        when(deepSeekClient.rerankRagCandidates(any(), any(), anyInt())).thenReturn(List.of(0, 1));
-        RagKnowledgeService service = new RagKnowledgeService(properties, new DefaultResourceLoader(), mock(ChromaRagStoreService.class), deepSeekClient);
+        RagModelService ragModelService = mock(RagModelService.class);
+        when(ragModelService.rewriteRagQuery(any())).thenAnswer(invocation -> invocation.getArgument(0));
+        when(ragModelService.rerankRagCandidates(any(), any(), anyInt())).thenReturn(List.of(0, 1));
+        RagKnowledgeService service = new RagKnowledgeService(properties, new DefaultResourceLoader(), mock(ChromaRagStoreService.class), ragModelService);
         service.loadKnowledgeBase();
 
         String context = service.retrieveContext("首次验收没有工单批次质检数据怎么办");
@@ -71,7 +71,7 @@ class RagKnowledgeServiceTest {
         properties.setRagEnabled(false);
         properties.setChromaEnabled(false);
 
-        RagKnowledgeService service = new RagKnowledgeService(properties, new DefaultResourceLoader(), mock(ChromaRagStoreService.class), mock(DeepSeekClient.class));
+        RagKnowledgeService service = new RagKnowledgeService(properties, new DefaultResourceLoader(), mock(ChromaRagStoreService.class), mock(RagModelService.class));
         service.loadKnowledgeBase();
 
         assertThat(service.retrieveContext("模型管理在哪里")).isEmpty();
@@ -86,11 +86,11 @@ class RagKnowledgeServiceTest {
         properties.setRagCandidateMultiplier(4);
         properties.setRagMaxContextChars(1600);
 
-        DeepSeekClient deepSeekClient = mock(DeepSeekClient.class);
-        when(deepSeekClient.rewriteRagQuery("助手文档怎么向量化")).thenReturn("智能助手 RAG Chroma 向量文档 查询重写 rerank");
-        when(deepSeekClient.rerankRagCandidates(any(), any(), anyInt())).thenReturn(List.of(0));
+        RagModelService ragModelService = mock(RagModelService.class);
+        when(ragModelService.rewriteRagQuery("助手文档怎么向量化")).thenReturn("智能助手 RAG Chroma 向量文档 查询重写 rerank");
+        when(ragModelService.rerankRagCandidates(any(), any(), anyInt())).thenReturn(List.of(0));
 
-        RagKnowledgeService service = new RagKnowledgeService(properties, new DefaultResourceLoader(), mock(ChromaRagStoreService.class), deepSeekClient);
+        RagKnowledgeService service = new RagKnowledgeService(properties, new DefaultResourceLoader(), mock(ChromaRagStoreService.class), ragModelService);
         service.loadKnowledgeBase();
 
         String context = service.retrieveContext("助手文档怎么向量化");
@@ -124,11 +124,11 @@ class RagKnowledgeServiceTest {
         properties.setRagCandidateMultiplier(2);
         properties.setRagMaxContextChars(2000);
 
-        DeepSeekClient deepSeekClient = mock(DeepSeekClient.class);
-        when(deepSeekClient.rewriteRagQuery(any())).thenAnswer(invocation -> invocation.getArgument(0));
-        when(deepSeekClient.rerankRagCandidates(any(), any(), anyInt())).thenReturn(List.of(1));
+        RagModelService ragModelService = mock(RagModelService.class);
+        when(ragModelService.rewriteRagQuery(any())).thenAnswer(invocation -> invocation.getArgument(0));
+        when(ragModelService.rerankRagCandidates(any(), any(), anyInt())).thenReturn(List.of(1));
 
-        RagKnowledgeService service = new RagKnowledgeService(properties, new DefaultResourceLoader(), mock(ChromaRagStoreService.class), deepSeekClient);
+        RagKnowledgeService service = new RagKnowledgeService(properties, new DefaultResourceLoader(), mock(ChromaRagStoreService.class), ragModelService);
         service.loadKnowledgeBase();
 
         String context = service.retrieveContext("平台检测质检模型设备管理入口");
@@ -146,18 +146,18 @@ class RagKnowledgeServiceTest {
         properties.setRagTopK(2);
         properties.setRagContextCacheTtlSeconds(60);
 
-        DeepSeekClient deepSeekClient = mock(DeepSeekClient.class);
-        when(deepSeekClient.rewriteRagQuery(any())).thenAnswer(invocation -> invocation.getArgument(0));
-        when(deepSeekClient.rerankRagCandidates(any(), any(), anyInt())).thenReturn(List.of(0, 1));
+        RagModelService ragModelService = mock(RagModelService.class);
+        when(ragModelService.rewriteRagQuery(any())).thenAnswer(invocation -> invocation.getArgument(0));
+        when(ragModelService.rerankRagCandidates(any(), any(), anyInt())).thenReturn(List.of(0, 1));
 
-        RagKnowledgeService service = new RagKnowledgeService(properties, new DefaultResourceLoader(), mock(ChromaRagStoreService.class), deepSeekClient);
+        RagKnowledgeService service = new RagKnowledgeService(properties, new DefaultResourceLoader(), mock(ChromaRagStoreService.class), ragModelService);
         service.loadKnowledgeBase();
 
         String first = service.retrieveContext("质检队列返工怎么处理");
         String second = service.retrieveContext("质检队列返工怎么处理");
 
         assertThat(second).isEqualTo(first);
-        verify(deepSeekClient, times(1)).rewriteRagQuery("质检队列返工怎么处理");
-        verify(deepSeekClient, times(1)).rerankRagCandidates(any(), any(), anyInt());
+        verify(ragModelService, times(1)).rewriteRagQuery("质检队列返工怎么处理");
+        verify(ragModelService, times(1)).rerankRagCandidates(any(), any(), anyInt());
     }
 }

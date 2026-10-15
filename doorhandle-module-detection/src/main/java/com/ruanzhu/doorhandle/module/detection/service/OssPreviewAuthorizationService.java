@@ -31,6 +31,7 @@ public class OssPreviewAuthorizationService {
         }
         accessPolicy.assertAuthenticated(authentication);
         LambdaQueryWrapper<DetectionTask> query = new LambdaQueryWrapper<>();
+        accessPolicy.applyScope(query, authentication);
         query.and(candidate -> candidate
                 .eq(DetectionTask::getResultJsonOssKey, key)
                 .or()
@@ -39,6 +40,7 @@ public class OssPreviewAuthorizationService {
                 .like(DetectionTask::getPreviewImageKeysJson, key));
 
         DetectionTask referencedTask = detectionTaskMapper.selectList(query).stream()
+                .filter(task -> accessPolicy.canAccess(task, authentication.getName(), accessPolicy.isAdmin(authentication)))
                 .filter(task -> references(task, key))
                 .findFirst()
                 .orElseThrow(this::denied);

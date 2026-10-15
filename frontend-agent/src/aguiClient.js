@@ -1,5 +1,5 @@
 // 仅把正文事件呈现为回答，工具参数和状态事件不能混进正文。
-export async function readAnswer(response, onChange) {
+export async function readAnswer(response, onChange, onCards) {
   if (!response.ok) throw new Error(response.status === 401 || response.status === 403 ? '请先登录检测系统' : `请求失败 (${response.status})`);
   if (!response.body) throw new Error('服务未返回流式响应');
   const reader = response.body.getReader();
@@ -13,6 +13,7 @@ export async function readAnswer(response, onChange) {
     const event = JSON.parse(data);
     if (event.type === 'RUN_ERROR') throw new Error(event.message || '智能助手执行失败');
     if (event.type === 'RUN_FINISHED') finished = true;
+    if (event.type === 'CUSTOM' && event.name === 'doorhandle.business-cards.v1') onCards?.(event.value);
     if (event.type === 'TEXT_MESSAGE_CONTENT' && typeof event.delta === 'string') {
       answer += event.delta;
       onChange(answer);

@@ -4,6 +4,7 @@
   <parent><groupId>com.ruanzhu</groupId><artifactId>doorhandle-parent</artifactId><version>0.0.1-SNAPSHOT</version></parent>
   <artifactId>doorhandle-server</artifactId>
   <dependencies>
+    <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-test</artifactId><scope>test</scope></dependency>
     <dependency><groupId>com.ruanzhu</groupId><artifactId>doorhandle-framework</artifactId><version>${project.version}</version></dependency>
     <dependency><groupId>com.ruanzhu</groupId><artifactId>doorhandle-module-system</artifactId><version>${project.version}</version></dependency>
     <dependency><groupId>com.ruanzhu</groupId><artifactId>doorhandle-module-infra</artifactId><version>${project.version}</version></dependency>
@@ -11,7 +12,7 @@
     <dependency><groupId>com.ruanzhu</groupId><artifactId>doorhandle-module-model</artifactId><version>${project.version}</version></dependency>
     <dependency><groupId>com.ruanzhu</groupId><artifactId>doorhandle-module-detection</artifactId><version>${project.version}</version></dependency>
     <dependency><groupId>com.ruanzhu</groupId><artifactId>doorhandle-module-ai</artifactId><version>${project.version}</version></dependency>
-    <!-- AI/Agent 仍保留在过渡模块，待 AgentScope Java 改造后再切换到 doorhandle-module-ai。 -->
+    <!-- App 只保留会话、项目、语音和知识检索适配；Agent 执行统一由 module-ai 提供。 -->
     <dependency><groupId>com.ruanzhu</groupId><artifactId>doorhandle-module-app</artifactId><version>${project.version}</version></dependency>
     <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter</artifactId></dependency>
   </dependencies>

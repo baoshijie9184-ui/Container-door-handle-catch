@@ -65,7 +65,8 @@ const { readFrontendFile, readProjectFile } = require('./helpers/project-source.
     assert.match(env, /APP_KAFKA_BOOTSTRAP_SERVERS=host\.docker\.internal:9092/)
     assert.match(env, /JWT_SECRET=replace-with-at-least-32-random-characters/)
     assert.doesNotMatch(env, /sk-[A-Za-z0-9]{16,}/)
-    assert.match(gitignore, /^deploy\/docker\.env$/m)
+    assert.match(gitignore, /^deploy\/\*\.env\r?$/m)
+    assert.match(gitignore, /^!deploy\/\*\.env\.example\r?$/m)
   })
 
   test('deployment guide documents standalone Compose fallback', () => {

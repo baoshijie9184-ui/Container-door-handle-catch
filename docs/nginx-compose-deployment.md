@@ -1,5 +1,7 @@
 # Nginx + Docker Compose 部署指南
 
+当前单机 Java 单体优先使用 [单体 Docker 部署](docker-monolith-deployment.md) 和 `compose.monolith.yml`。下文保留两个后端的实验方案，不代表微服务或跨服务器高可用。
+
 该方案启动一个 Nginx 网关和两个 Spring Boot 实例。Nginx 托管 Vue 静态资源，将 `/api` 请求按最少连接数分发至两个后端，并为智能助手 SSE 接口关闭代理缓冲。MySQL、Redis、Kafka、Mem0、OSS 和 DeepSeek 使用外部服务。
 
 ## 1. 前置条件

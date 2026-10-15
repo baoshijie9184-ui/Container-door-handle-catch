@@ -110,6 +110,7 @@
                 <div
                   v-for="sess in getProjectSessions(project.projectId)"
                   :key="sess.sessionId"
+                  :data-session-id="sess.sessionId"
                   class="session-item"
                   :class="{
                     active: sess.sessionId === store.sessionId,
@@ -244,6 +245,7 @@
               <div
                 v-for="sess in ungroupedSessions"
                 :key="sess.sessionId"
+                :data-session-id="sess.sessionId"
                 class="session-item"
                 :class="{
                   active: sess.sessionId === store.sessionId,
@@ -354,6 +356,7 @@
           <div
             v-for="sess in searchResults"
             :key="sess.sessionId"
+            :data-session-id="sess.sessionId"
             class="session-item"
             :class="{ active: sess.sessionId === store.sessionId }"
             @click="handleSwitchSession(sess.sessionId)"

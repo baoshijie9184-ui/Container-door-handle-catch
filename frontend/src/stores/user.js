@@ -7,12 +7,15 @@ import router from '../router'
 export const useUserStore = defineStore('user', () => {
   const username = ref(localStorage.getItem('username') || '')
   const role = ref(localStorage.getItem('role') || 'INSPECTOR')
+  const identity = ref(null)
   const isAuthenticated = ref(false)
   const hasCheckedAuth = ref(false)
   let redirectingToLogin = false
 
   const clearSession = () => {
     username.value = ''
+    role.value = 'INSPECTOR'
+    identity.value = null
     isAuthenticated.value = false
     hasCheckedAuth.value = true
     localStorage.removeItem('username')
@@ -70,6 +73,10 @@ export const useUserStore = defineStore('user', () => {
       
       localStorage.setItem('username', newUsername)
 
+      // 登录后向服务端刷新角色和员工身份，避免沿用上一账号的缓存角色。
+      await checkAuth()
+      if (!isAuthenticated.value) throw new Error('登录状态验证失败，请重试')
+
       return {
         username: newUsername
       }
@@ -111,6 +118,7 @@ export const useUserStore = defineStore('user', () => {
         localStorage.setItem('username', data.username)
       }
       if (data.role) { role.value = data.role; localStorage.setItem('role', data.role) }
+      identity.value = data.identity || null
       isAuthenticated.value = true
       hasCheckedAuth.value = true
       return true
@@ -127,6 +135,7 @@ export const useUserStore = defineStore('user', () => {
   return {
     username,
     role,
+    identity,
     isAuthenticated,
     hasCheckedAuth,
     login,

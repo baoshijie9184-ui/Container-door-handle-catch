@@ -1,0 +1,64 @@
+name: doorhandlecatch-monolith
+
+services:
+  backend:
+    image: doorhandlecatch/backend:${APP_IMAGE_TAG:-local}
+    build:
+      context: .
+      dockerfile: deploy/backend/Dockerfile
+    env_file:
+      - ${DOORHANDLE_ENV_FILE:-deploy/docker.env}
+    environment:
+      SERVER_PORT: 8080
+      AGENTSCOPE_AI_WORKSPACE: /app/.agentscope/workspace
+      AGENT_WORKSPACE_ROOT: /app/.agentscope/workspace
+    expose:
+      - "8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - doorhandle-uploads:/app/uploads
+      - doorhandle-agent-workspace:/app/.agentscope/workspace
+    init: true
+    stop_grace_period: 45s
+    mem_limit: 3g
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - doorhandle-network
+    restart: unless-stopped
+
+  nginx:
+    image: doorhandlecatch/web:${APP_IMAGE_TAG:-local}
+    build:
+      context: .
+      dockerfile: deploy/nginx/Dockerfile
+      args:
+        NGINX_CONFIG: deploy/nginx/nginx.monolith.conf
+    # 仅传 OSS 主机名，避免将后端数据库和模型凭据交给 Web 容器。
+    environment:
+      OSS_UPLOAD_HOST: ${OSS_UPLOAD_HOST:-oss-cn-beijing.aliyuncs.com}
+    ports:
+      - "${NGINX_BIND_ADDRESS:-127.0.0.1}:${NGINX_PORT:-8088}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - doorhandle-network
+    restart: unless-stopped
+
+volumes:
+  doorhandle-uploads:
+  doorhandle-agent-workspace:
+
+networks:
+  doorhandle-network:
+    driver: bridge

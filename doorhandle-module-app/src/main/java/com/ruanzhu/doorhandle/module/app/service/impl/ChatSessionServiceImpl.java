@@ -8,7 +8,7 @@ import com.ruanzhu.doorhandle.module.app.config.properties.ChatAssistantProperti
 import com.ruanzhu.doorhandle.module.app.dto.chat.ChatMessageResponse;
 import com.ruanzhu.doorhandle.module.app.dto.chat.ChatPendingActionPayload;
 import com.ruanzhu.doorhandle.module.app.dto.chat.ChatSessionResponse;
-import com.ruanzhu.doorhandle.module.app.dto.chat.CheckpointSnapshotResponse;
+import com.ruanzhu.doorhandle.module.app.dto.chat.ConversationTraceResponse;
 import com.ruanzhu.doorhandle.module.app.entity.ChatMessage;
 import com.ruanzhu.doorhandle.module.app.entity.ChatPendingAction;
 import com.ruanzhu.doorhandle.module.app.entity.ChatSession;
@@ -106,26 +106,17 @@ public class ChatSessionServiceImpl implements ChatSessionService {
     }
 
     @Override
-    public CheckpointSnapshotResponse getCheckpointSnapshot(String username, String sessionId) {
-        requireOwnedSession(username, sessionId);
-        ChatSession session = chatSessionMapper.selectCheckpointSnapshot(sessionId);
-        if (session == null) {
-            throw new BusinessException(404, "会话不存在");
+    public ConversationTraceResponse getExecutionTrace(String username, String sessionId) {
+        ChatSession session = requireOwnedSession(username, sessionId);
+        var response = new ConversationTraceResponse();
+        String traceJson = session.getStateJson();
+        if (StringUtils.hasText(traceJson)) try {
+            var tree = objectMapper.readTree(traceJson);
+            if ("AgentScope".equals(tree.path("framework").asText())) response = objectMapper.treeToValue(tree, ConversationTraceResponse.class);
+        } catch (JsonProcessingException ignored) {
+            response.setStatus("UNAVAILABLE");
         }
-        CheckpointSnapshotResponse response = new CheckpointSnapshotResponse();
-        response.setSessionId(session.getSessionId());
-        response.setCheckpointVersion(session.getCheckpointVersion() == null ? 0 : session.getCheckpointVersion());
-        response.setCheckpointNode(session.getCheckpointNode());
-        response.setCheckpointExitReason(session.getCheckpointExitReason());
-        response.setCheckpointUpdatedAt(session.getCheckpointUpdatedAt() == null
-                ? null
-                : session.getCheckpointUpdatedAt().format(TIME_FORMATTER));
-
-        String stateJson = session.getStateJson();
-        response.setHasState(StringUtils.hasText(stateJson));
-        response.setStateSize(stateJson == null ? 0 : stateJson.length());
-        response.setStateKeys(extractStateKeys(stateJson));
-        enrichGuardSnapshot(response, stateJson);
+        response.setSessionId(sessionId);
         return response;
     }
 
@@ -207,6 +198,10 @@ public class ChatSessionServiceImpl implements ChatSessionService {
                 .last("limit 1"));
         if (lastMsg != null && !lastMsg.isEmpty()) {
             String content = lastMsg.get(0).getContent();
+            if (com.ruanzhu.doorhandle.contracts.agent.AgentCards.MESSAGE_TYPE.equals(lastMsg.get(0).getMessageType())) {
+                try { content=objectMapper.readValue(content,com.ruanzhu.doorhandle.contracts.agent.AgentCards.Envelope.class).text(); }
+                catch(Exception ignored) {content="助手业务卡片";}
+            }
             response.setLastMessage(content != null && content.length() > 30 ? content.substring(0, 30) + "…" : content);
         }
 
@@ -383,101 +378,17 @@ public class ChatSessionServiceImpl implements ChatSessionService {
         return response;
     }
 
-    private void saveStateInternal(String sessionId, String stateJson) {
-        chatSessionMapper.updateCheckpoint(sessionId, stateJson, null, null);
-    }
-
     @Override
-    public void saveState(TenantContext tenant, String sessionId, String stateJson) {
+    public void saveExecutionTrace(TenantContext tenant, String sessionId, String traceJson) {
         requireOwnedSession(tenant, sessionId);
-        saveStateInternal(sessionId, stateJson);
+        chatSessionMapper.saveExecutionTrace(tenant.userId(), sessionId, traceJson);
     }
-
-    private String loadStateInternal(String sessionId) {
-        return chatSessionMapper.selectStateJson(sessionId);
-    }
-
-    @Override
-    public String loadState(TenantContext tenant, String sessionId) {
-        requireOwnedSession(tenant, sessionId);
-        return loadStateInternal(sessionId);
-    }
-
     private String writeJson(Object value) {
         try {
             return objectMapper.writeValueAsString(value);
         } catch (JsonProcessingException e) {
             throw new BusinessException("聊天动作序列化失败");
         }
-    }
-
-    private List<String> extractStateKeys(String stateJson) {
-        if (!StringUtils.hasText(stateJson)) {
-            return new ArrayList<>();
-        }
-        try {
-            Map<?, ?> state = objectMapper.readValue(stateJson, Map.class);
-            return state.keySet().stream()
-                    .map(String::valueOf)
-                    .sorted()
-                    .collect(Collectors.toList());
-        } catch (JsonProcessingException e) {
-            return List.of("_invalid_json");
-        }
-    }
-
-    private void enrichGuardSnapshot(CheckpointSnapshotResponse response, String stateJson) {
-        if (!StringUtils.hasText(stateJson)) {
-            return;
-        }
-        try {
-            Map<?, ?> state = objectMapper.readValue(stateJson, Map.class);
-            response.setGuardReason(asString(state.get("guard_reason")));
-            response.setGuardElapsedMs(asInteger(state.get("guard_elapsed_ms")));
-            response.setRouteRepeatCount(asInteger(state.get("route_repeat_count")));
-            response.setNodeTrace(asStringList(state.get("node_trace")));
-            response.setRouteTrace(asStringList(state.get("route_trace")));
-            response.setNodeVisitSummary(asVisitSummary(state.get("node_visit_count")));
-        } catch (JsonProcessingException ignored) {
-            response.setGuardReason("checkpoint_state_json_invalid");
-        }
-    }
-
-    private String asString(Object value) {
-        return value == null ? null : String.valueOf(value);
-    }
-
-    private List<String> asStringList(Object value) {
-        if (!(value instanceof List<?> list)) {
-            return new ArrayList<>();
-        }
-        return list.stream()
-                .map(String::valueOf)
-                .collect(Collectors.toList());
-    }
-
-    private Integer asInteger(Object value) {
-        if (value instanceof Number number) {
-            return number.intValue();
-        }
-        if (value instanceof String text) {
-            try {
-                return Integer.parseInt(text);
-            } catch (NumberFormatException ignored) {
-                return null;
-            }
-        }
-        return null;
-    }
-
-    private List<String> asVisitSummary(Object value) {
-        if (!(value instanceof Map<?, ?> visits)) {
-            return new ArrayList<>();
-        }
-        return visits.entrySet().stream()
-                .map(entry -> entry.getKey() + ":" + entry.getValue())
-                .sorted()
-                .collect(Collectors.toList());
     }
 
     private Long currentUserId() {

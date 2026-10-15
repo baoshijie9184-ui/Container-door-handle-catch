@@ -3,7 +3,7 @@ package com.ruanzhu.doorhandle.module.app.service;
 import com.ruanzhu.doorhandle.module.app.dto.chat.ChatMessageResponse;
 import com.ruanzhu.doorhandle.module.app.dto.chat.ChatPendingActionPayload;
 import com.ruanzhu.doorhandle.module.app.dto.chat.ChatSessionResponse;
-import com.ruanzhu.doorhandle.module.app.dto.chat.CheckpointSnapshotResponse;
+import com.ruanzhu.doorhandle.module.app.dto.chat.ConversationTraceResponse;
 import com.ruanzhu.doorhandle.module.app.entity.ChatPendingAction;
 import com.ruanzhu.doorhandle.module.system.security.TenantContext;
 
@@ -22,8 +22,8 @@ public interface ChatSessionService {
     /** 获取指定会话（含消息） */
     ChatSessionResponse getSession(String username, String sessionId);
 
-    /** 获取智能体 checkpoint 调试快照（不暴露完整 state_json） */
-    CheckpointSnapshotResponse getCheckpointSnapshot(String username, String sessionId);
+    /** 读取当前用户会话最近一次真实 AgentScope 执行轨迹。 */
+    ConversationTraceResponse getExecutionTrace(String username, String sessionId);
 
     /** 归档会话 */
     void archiveSession(String username, String sessionId);
@@ -58,7 +58,5 @@ public interface ChatSessionService {
 
     TenantContext resolveTenantForSystemCallback(String sessionId);
 
-    void saveState(TenantContext tenant, String sessionId, String stateJson);
-
-    String loadState(TenantContext tenant, String sessionId);
+    void saveExecutionTrace(TenantContext tenant, String sessionId, String traceJson);
 }

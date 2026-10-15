@@ -162,7 +162,7 @@ class ImageDetectionServiceImplTest {
     }
 
     @Test
-    void deleteDetectionDataAllowsForeignTaskForOperator() {
+    void deleteDetectionDataRejectsForeignTaskBeforeDeletingFilesOrRow() {
         SecurityContextHolder.getContext().setAuthentication(
                 new UsernamePasswordAuthenticationToken(
                         "alice",
@@ -173,9 +173,9 @@ class ImageDetectionServiceImplTest {
         task.setCreatedBy("bob");
         when(detectionTaskMapper.selectById(10L)).thenReturn(task);
 
-        imageDetectionService.deleteDetectionData(10L);
-
-        verify(detectionTaskMapper).deleteById(10L);
+        assertThrows(org.springframework.security.access.AccessDeniedException.class,
+                () -> imageDetectionService.deleteDetectionData(10L));
+        verify(detectionTaskMapper, never()).deleteById(10L);
     }
 
     @Test

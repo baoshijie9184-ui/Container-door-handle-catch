@@ -2,8 +2,10 @@ package com.ruanzhu.doorhandle.module.detection.service.impl;
 
 import com.ruanzhu.doorhandle.module.detection.service.DashboardService;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.cache.annotation.Cacheable;
 import org.springframework.jdbc.core.JdbcTemplate;
+import com.ruanzhu.doorhandle.module.detection.security.DetectionTaskAccessPolicy;
+import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
+
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDate;
@@ -22,22 +24,29 @@ public class DashboardServiceImpl implements DashboardService {
     @Autowired
     private JdbcTemplate jdbcTemplate;
 
+    @Autowired
+    private DetectionTaskAccessPolicy accessPolicy;
+
+    @Autowired
+    private NamedParameterJdbcTemplate scopedJdbc;
+
+
     private static final DateTimeFormatter DATE_FORMATTER = DateTimeFormatter.ofPattern("MM-dd");
 
     @Override
-    @Cacheable(cacheNames = "dashboard", key = "'stats'")
     public Map<String, Object> getStats() {
+        var scope = accessPolicy.currentSqlScope("");
         Map<String, Object> stats = new HashMap<>();
 
         // 从 detection_task 表统计 COMPLETED / PARTIAL_FAILED 的任务数
-        List<Integer> detectionCounts = jdbcTemplate.queryForList(
-            "SELECT COUNT(*) FROM detection_task WHERE status IN ('COMPLETED', 'PARTIAL_FAILED')", Integer.class);
+        List<Integer> detectionCounts = scopedJdbc.queryForList(
+            "SELECT COUNT(*) FROM detection_task WHERE status IN ('COMPLETED', 'PARTIAL_FAILED') AND " + scope.predicate(), scope.parameters(), Integer.class);
         Integer detectionCount = detectionCounts.isEmpty() ? 0 : detectionCounts.get(0);
 
         // 从 statistics_json 提取平均漏检率
-        List<Double> missRates = jdbcTemplate.queryForList(
+        List<Double> missRates = scopedJdbc.queryForList(
             "SELECT AVG(CAST(JSON_UNQUOTE(JSON_EXTRACT(statistics_json, '$.missDetectionRate')) AS DECIMAL(10,4))) " +
-            "FROM detection_task WHERE status IN ('COMPLETED', 'PARTIAL_FAILED') AND statistics_json IS NOT NULL", Double.class);
+            "FROM detection_task WHERE status IN ('COMPLETED', 'PARTIAL_FAILED') AND statistics_json IS NOT NULL AND " + scope.predicate(), scope.parameters(), Double.class);
         Double avgMissRate = missRates.isEmpty() ? null : missRates.get(0);
 
         List<Integer> employeeCounts = jdbcTemplate.queryForList(
@@ -57,8 +66,8 @@ public class DashboardServiceImpl implements DashboardService {
     }
 
     @Override
-    @Cacheable(cacheNames = "dashboard", key = "'trend:' + #timeRange")
     public Map<String, Object> getDetectionTrend(String timeRange) {
+        var scope = accessPolicy.currentSqlScope("");
         Map<String, Object> result = new HashMap<>();
         
         // 设置查询参数
@@ -107,7 +116,7 @@ public class DashboardServiceImpl implements DashboardService {
                 "SUM(" + jm + ") AS missing, " +
                 "SUM(" + jc + ") AS compromised " +
                 "FROM detection_task " +
-                "WHERE status IN ('COMPLETED', 'PARTIAL_FAILED') AND created_at IS NOT NULL ";
+                "WHERE status IN ('COMPLETED', 'PARTIAL_FAILED') AND created_at IS NOT NULL AND " + scope.predicate() + " ";
 
         // 添加时间过滤条件，"year"视图不限制时间范围
         if (!"year".equals(timeRange)) {
@@ -119,7 +128,7 @@ public class DashboardServiceImpl implements DashboardService {
                 "ORDER BY MIN(created_at)";
         
         // 执行查询
-        List<Map<String, Object>> queryResult = jdbcTemplate.queryForList(sql);
+        List<Map<String, Object>> queryResult = scopedJdbc.queryForList(sql, scope.parameters());
         
         // 处理查询结果
         List<Map<String, Object>> seriesData = new ArrayList<>();
@@ -239,8 +248,8 @@ public class DashboardServiceImpl implements DashboardService {
     }
 
     @Override
-    @Cacheable(cacheNames = "dashboard", key = "'distribution'")
     public Map<String, Object> getDetectionDistribution() {
+        var scope = accessPolicy.currentSqlScope("");
         Map<String, Object> result = new HashMap<>();
         List<Map<String, Object>> seriesList = new ArrayList<>();
         
@@ -252,9 +261,9 @@ public class DashboardServiceImpl implements DashboardService {
                     "SUM(COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(statistics_json, '$.classCounts.Rusty')) AS UNSIGNED), 0)) as rusty, " +
                     "SUM(COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(statistics_json, '$.classCounts.Missing')) AS UNSIGNED), 0)) as missing, " +
                     "SUM(COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(statistics_json, '$.classCounts.Compromised')) AS UNSIGNED), 0)) as compromised " +
-                    "FROM detection_task WHERE status IN ('COMPLETED', 'PARTIAL_FAILED')";
+                    "FROM detection_task WHERE status IN ('COMPLETED', 'PARTIAL_FAILED') AND " + scope.predicate();
         
-        Map<String, Object> data = jdbcTemplate.queryForMap(sql);
+        Map<String, Object> data = scopedJdbc.queryForMap(sql, scope.parameters());
         
         // 使用数据库查询结果
         Map<String, Object> normal = new HashMap<>();
@@ -294,8 +303,8 @@ public class DashboardServiceImpl implements DashboardService {
     }
 
     @Override
-    @Cacheable(cacheNames = "dashboard", key = "'region-stats'")
     public List<Map<String, Object>> getRegionStats() {
+        var scope = accessPolicy.currentSqlScope("");
         String sql = "SELECT " +
                 "CASE " +
                 "  WHEN region LIKE '%区' THEN '北京' " +
@@ -304,11 +313,11 @@ public class DashboardServiceImpl implements DashboardService {
                 "SUM(total_images) AS imageCount, " +
                 "COUNT(*) AS taskCount " +
                 "FROM detection_task " +
-                "WHERE status IN ('COMPLETED', 'PARTIAL_FAILED') " +
+                "WHERE status IN ('COMPLETED', 'PARTIAL_FAILED') AND " + scope.predicate() + " " +
                 "GROUP BY city " +
                 "ORDER BY imageCount DESC";
 
-        List<Map<String, Object>> queryResult = jdbcTemplate.queryForList(sql);
+        List<Map<String, Object>> queryResult = scopedJdbc.queryForList(sql, scope.parameters());
         List<Map<String, Object>> result = new ArrayList<>();
 
         for (Map<String, Object> row : queryResult) {
@@ -323,8 +332,8 @@ public class DashboardServiceImpl implements DashboardService {
     }
 
     @Override
-    @Cacheable(cacheNames = "dashboard", key = "'model-stats'")
     public List<Map<String, Object>> getModelStats() {
+        var scope = accessPolicy.currentSqlScope("t.");
         String sql = "SELECT " +
                 "m.model_id AS modelId, " +
                 "CONCAT(m.model_name, ' ', m.version) AS modelName, " +
@@ -332,12 +341,12 @@ public class DashboardServiceImpl implements DashboardService {
                 "COALESCE(SUM(t.total_images), 0) AS totalImages, " +
                 "COALESCE(AVG(CAST(JSON_UNQUOTE(JSON_EXTRACT(t.statistics_json, '$.missDetectionRate')) AS DECIMAL(10,4))), 0) AS avgMissRate " +
                 "FROM model_management m " +
-                "LEFT JOIN detection_task t ON m.model_id = t.model_id AND t.status IN ('COMPLETED', 'PARTIAL_FAILED') " +
+                "LEFT JOIN detection_task t ON m.model_id = t.model_id AND t.status IN ('COMPLETED', 'PARTIAL_FAILED') AND " + scope.predicate() + " " +
                 "GROUP BY m.model_id, m.model_name, m.version " +
                 "HAVING taskCount > 0 " +
                 "ORDER BY taskCount DESC";
 
-        List<Map<String, Object>> queryResult = jdbcTemplate.queryForList(sql);
+        List<Map<String, Object>> queryResult = scopedJdbc.queryForList(sql, scope.parameters());
         List<Map<String, Object>> result = new ArrayList<>();
 
         for (Map<String, Object> row : queryResult) {
@@ -354,22 +363,22 @@ public class DashboardServiceImpl implements DashboardService {
     }
 
     @Override
-    @Cacheable(cacheNames = "dashboard", key = "'quality-disposition-stats'")
     public Map<String, Object> getQualityDispositionStats() {
+        var scope = accessPolicy.currentSqlScope("");
         String summarySql = "SELECT 'summary' AS summary, " +
                 "COUNT(*) AS reviewedCount, " +
                 "SUM(CASE WHEN review_status = 'REVIEWED' AND (disposition_status IS NULL OR disposition_status = 'PENDING') THEN 1 ELSE 0 END) AS pendingDispositionCount, " +
                 "SUM(CASE WHEN disposition_status = 'DISPOSED' THEN 1 ELSE 0 END) AS disposedCount, " +
                 "SUM(CASE WHEN recheck_required = 1 THEN 1 ELSE 0 END) AS recheckRequiredCount " +
-                "FROM detection_task WHERE review_status = 'REVIEWED'";
-        List<Map<String, Object>> summaryRows = jdbcTemplate.queryForList(summarySql);
+                "FROM detection_task WHERE review_status = 'REVIEWED' AND " + scope.predicate();
+        List<Map<String, Object>> summaryRows = scopedJdbc.queryForList(summarySql, scope.parameters());
         Map<String, Object> summary = summaryRows.isEmpty() ? Map.of() : summaryRows.get(0);
 
         String actionSql = "SELECT disposition_action AS action, COUNT(*) AS count " +
                 "FROM detection_task " +
-                "WHERE disposition_status = 'DISPOSED' AND disposition_action IS NOT NULL " +
+                "WHERE disposition_status = 'DISPOSED' AND disposition_action IS NOT NULL AND " + scope.predicate() + " " +
                 "GROUP BY disposition_action";
-        List<Map<String, Object>> actionRows = jdbcTemplate.queryForList(actionSql);
+        List<Map<String, Object>> actionRows = scopedJdbc.queryForList(actionSql, scope.parameters());
         Map<String, Integer> actionCounts = new HashMap<>();
         for (Map<String, Object> row : actionRows) {
             Object action = row.get("action");
@@ -389,8 +398,8 @@ public class DashboardServiceImpl implements DashboardService {
     }
 
     @Override
-    @Cacheable(cacheNames = "dashboard", key = "'quality-workload'")
     public Map<String, Object> getQualityWorkload() {
+        var scope = accessPolicy.currentSqlScope("");
         String sql = "SELECT 'quality_workload' AS workload, " +
                 "SUM(CASE WHEN status IN ('COMPLETED', 'PARTIAL_FAILED') AND review_status = 'PENDING' THEN 1 ELSE 0 END) AS pendingReviewCount, " +
                 "SUM(CASE WHEN review_status = 'REVIEWED' AND (disposition_status IS NULL OR disposition_status = 'PENDING') THEN 1 ELSE 0 END) AS pendingDispositionCount, " +
@@ -398,8 +407,8 @@ public class DashboardServiceImpl implements DashboardService {
                 "SUM(CASE WHEN flow_status = 'REWORK_REQUIRED' THEN 1 ELSE 0 END) AS reworkRequiredCount, " +
                 "SUM(CASE WHEN flow_status = 'HOLD' THEN 1 ELSE 0 END) AS holdCount, " +
                 "SUM(CASE WHEN status = 'FAILED' OR flow_status = 'FAILED' THEN 1 ELSE 0 END) AS failedCount " +
-                "FROM detection_task";
-        List<Map<String, Object>> rows = jdbcTemplate.queryForList(sql);
+                "FROM detection_task WHERE " + scope.predicate();
+        List<Map<String, Object>> rows = scopedJdbc.queryForList(sql, scope.parameters());
         Map<String, Object> row = rows.isEmpty() ? Map.of() : rows.get(0);
 
         int pendingReviewCount = toInt(row.get("pendingReviewCount"));

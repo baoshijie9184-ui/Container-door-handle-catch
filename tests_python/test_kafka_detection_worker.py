@@ -4,7 +4,9 @@ from kafka_detection_worker import (
     build_defect_evidence,
     build_statistics,
     publish_finished_and_commit,
+    process_created_event,
 )
+from kafka_event_models import DetectionTaskCreatedEvent
 
 
 class FakeProducer:
@@ -99,3 +101,15 @@ def test_flush_timeout_does_not_commit():
         )
 
     assert consumer.committed == []
+
+
+def test_undeployed_model_fails_without_reading_or_mislabeling_images():
+    task=DetectionTaskCreatedEvent(event_id='e',event_type='DETECTION_TASK_CREATED',event_time='',
+        task_id='task',dispatch_id='dispatch',bucket_name='private',source_prefix='originals/',
+        original_keys=['originals/door.jpg'],model_id=99)
+    def forbidden_detector(*args):
+        pytest.fail('Must not run a different model under the requested model ID')
+    finished=process_created_event(task,object(),forbidden_detector,expected_model_id=12)
+    assert finished.status=='FAILED'
+    assert finished.successful_images==0 and finished.failed_images==1
+    assert finished.preview_keys==[] and finished.result_json_key==''

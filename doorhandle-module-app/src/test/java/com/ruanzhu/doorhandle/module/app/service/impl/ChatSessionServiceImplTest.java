@@ -68,6 +68,43 @@ class ChatSessionServiceImplTest {
     }
 
     @Test
+    void traceReadsSdkEventsButDoesNotPresentLegacyGraphStateAsATrace() {
+        ChatSession session = new ChatSession();
+        session.setSessionId("session-1");
+        session.setStateJson("{\"framework\":\"AgentScope\",\"runId\":\"run-1\",\"status\":\"COMPLETED\",\"events\":[{\"type\":\"TOOL_CALL\",\"agent\":\"employee-main\",\"tool\":\"delegate_detection_task\",\"elapsedMs\":17}]}");
+        when(chatSessionMapper.selectOne(any())).thenReturn(session);
+        var trace = chatSessionService.getExecutionTrace("alice", "session-1");
+        assertThat(trace.getSessionId()).isEqualTo("session-1");
+        assertThat(trace.getRunId()).isEqualTo("run-1");
+        assertThat(trace.getEvents()).singleElement().satisfies(event -> {
+            assertThat(event.tool()).isEqualTo("delegate_detection_task");
+            assertThat(event.elapsedMs()).isEqualTo(17);
+        });
+        session.setStateJson("{\"currentNode\":\"router\",\"messages\":[\"private old state\"]}");
+        trace = chatSessionService.getExecutionTrace("alice", "session-1");
+        assertThat(trace.getRunId()).isNull();
+        assertThat(trace.getEvents()).isEmpty();
+    }
+    @Test void sessionPreviewShowsCardAnswerInsteadOfProtocolOrResourceReferences() throws Exception {
+        var session=new ChatSession();session.setSessionId("session-card");session.setUsername("alice");session.setStatus("ACTIVE");
+        var message=new ChatMessage();message.setMessageType("AGENT_CARDS");
+        message.setContent(new ObjectMapper().writeValueAsString(new com.ruanzhu.doorhandle.contracts.agent.AgentCards.Envelope(1,"本人任务查询完成","run-1",List.of(new com.ruanzhu.doorhandle.contracts.agent.AgentCards.Reference("TASKS","get_task_detail",List.of("private-task-ref"),null)))));
+        when(chatSessionMapper.selectList(any())).thenReturn(List.of(session));when(chatMessageMapper.selectList(any())).thenReturn(List.of(message));
+        assertThat(chatSessionService.listUserSessions("alice").get(0).getLastMessage()).isEqualTo("本人任务查询完成");
+        message.setContent("invalid-card-json");assertThat(chatSessionService.listUserSessions("alice").get(0).getLastMessage()).isEqualTo("助手业务卡片");
+    }
+
+    @Test
+    void traceAccessAndPersistenceRejectAConversationOutsideTheOwnerScope() {
+        when(chatSessionMapper.selectOne(any())).thenReturn(null);
+        assertThatThrownBy(() -> chatSessionService.getExecutionTrace("alice", "other-session"))
+                .isInstanceOf(BusinessException.class);
+        assertThatThrownBy(() -> chatSessionService.saveExecutionTrace(new TenantContext(42L, "alice"), "other-session", "{}"))
+                .isInstanceOf(BusinessException.class);
+        verify(chatSessionMapper, never()).saveExecutionTrace(any(), any(), any());
+    }
+
+    @Test
     void shouldCreateDefaultSessionWhenMissing() {
         when(chatSessionMapper.selectList(any())).thenReturn(Collections.emptyList());
         when(chatSessionMapper.selectOne(any())).thenReturn(null);

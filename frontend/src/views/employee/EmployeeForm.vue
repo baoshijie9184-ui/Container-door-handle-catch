@@ -49,8 +49,10 @@
 
         <el-row :gutter="24">
           <el-col :span="12">
-            <el-form-item label="部门/班组" prop="department">
-              <el-input v-model="employeeForm.department" placeholder="请输入部门/班组" />
+            <el-form-item label="部门/班组" prop="departmentId">
+              <el-select v-model="employeeForm.departmentId" placeholder="请选择部门/班组" style="width: 100%">
+                <el-option v-for="item in departments" :key="item.id" :label="item.name" :value="item.id" />
+              </el-select>
             </el-form-item>
           </el-col>
           <el-col :span="12">
@@ -110,6 +112,7 @@ const userStore = useUserStore()
 const formRef = ref()
 const loading = ref(false)
 const formChanged = ref(false)
+const departments = ref([])
 
 const isEdit = computed(() => !!route.params.id)
 
@@ -120,6 +123,7 @@ const employeeForm = reactive({
   contact: '',
   gender: '男',
   department: '',
+  departmentId: null,
   employeeType: '',
   hireDate: new Date().toISOString().split('T')[0],
   status: 'ACTIVE',
@@ -168,8 +172,8 @@ const rules = {
     { required: true, message: '请输入联系方式', trigger: 'blur' },
     { validator: validateContact, trigger: 'blur' }
   ],
-  department: [
-    { required: true, message: '请输入部门/班组', trigger: 'blur' }
+  departmentId: [
+    { required: true, message: '请选择部门/班组', trigger: 'change' }
   ],
   employeeType: [
     { required: true, message: '请选择人员类型', trigger: 'change' }
@@ -202,6 +206,7 @@ const fetchEmployeeDetail = async () => {
     employeeForm.contact = employee.contact
     employeeForm.gender = employee.gender
     employeeForm.department = employee.department
+    employeeForm.departmentId = employee.departmentId
     employeeForm.employeeType = employee.employeeType
     employeeForm.hireDate = employee.hireDate
     employeeForm.status = employee.status
@@ -249,6 +254,13 @@ const submitForm = async () => {
 }
 
 onMounted(async () => {
+  try {
+    const response = await request.get('/api/organization/departments')
+    if (response.data?.code !== 200) throw new Error(response.data?.message)
+    departments.value = response.data.data || []
+  } catch {
+    ElMessage.error('部门加载失败，请刷新后重试')
+  }
   if (!userStore.hasCheckedAuth) await userStore.checkAuth()
   if (!['SUPERVISOR', 'ADMIN'].includes(String(userStore.role || '').toUpperCase())) {
     ElMessage.warning('仅主管可以维护员工资料')

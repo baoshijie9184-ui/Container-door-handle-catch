@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { ref, onScopeDispose } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
   archiveSession,
@@ -8,12 +8,11 @@ import {
   deleteSession as deleteSessionApi,
   fetchAgentHealth,
   fetchChatSession,
-  fetchSessionCheckpoint,
+  fetchSessionTrace,
   fetchSessionById,
   fetchSessionList,
   fetchSessionMessages,
   renameSession,
-  sendChatMessage,
   streamChatMessage,
   togglePinSession as togglePinSessionApi
 } from '@/api/chatAssistant'
@@ -46,8 +45,9 @@ export const useChatAssistantStore = defineStore('chatAssistant', () => {
 
   // Agent 诊断
   const agentHealth = ref(null)
-  const checkpointSnapshot = ref(null)
+  const executionTrace = ref(null)
   const diagnosticsLoading = ref(false)
+  let diagnosticsRequest = 0
 
   // 菜单状态
   const menuOpenId = ref(null)
@@ -66,6 +66,7 @@ export const useChatAssistantStore = defineStore('chatAssistant', () => {
     try {
       const response = await fetchSessionById(sid)
       const data = response.data?.data || {}
+      executionTrace.value = null
       sessionId.value = data.sessionId || sid
       sessionTitle.value = data.title || '智能助手'
       sessionStatus.value = data.status || 'ACTIVE'
@@ -259,35 +260,39 @@ export const useChatAssistantStore = defineStore('chatAssistant', () => {
     }
   }
 
-  /** 加载 Agent 健康和当前会话 checkpoint */
+  /** 加载 AgentScope 状态和当前会话执行轨迹 */
   const loadDiagnostics = async () => {
     if (!sessionId.value) {
       ElMessage.warning('请先选择一个会话')
       return
     }
     diagnosticsLoading.value = true
+    const sid = sessionId.value
+    const requestId = ++diagnosticsRequest
+    executionTrace.value = null
     try {
-      const [healthResult, checkpointResult] = await Promise.allSettled([
+      const [healthResult, traceResult] = await Promise.allSettled([
         fetchAgentHealth(),
-        fetchSessionCheckpoint(sessionId.value)
+        fetchSessionTrace(sid)
       ])
+      if (requestId !== diagnosticsRequest || sessionId.value !== sid) return
       if (healthResult.status === 'fulfilled') {
         agentHealth.value = healthResult.value.data?.data || null
       }
-      if (checkpointResult.status === 'fulfilled') {
-        checkpointSnapshot.value = checkpointResult.value.data?.data || null
+      if (traceResult.status === 'fulfilled') {
+        executionTrace.value = traceResult.value.data?.data || null
       }
-      if (healthResult.status === 'rejected' && checkpointResult.status === 'rejected') {
-        throw healthResult.reason || checkpointResult.reason
+      if (healthResult.status === 'rejected' && traceResult.status === 'rejected') {
+        throw healthResult.reason || traceResult.reason
       }
-      if (healthResult.status === 'rejected' || checkpointResult.status === 'rejected') {
+      if (healthResult.status === 'rejected' || traceResult.status === 'rejected') {
         ElMessage.warning('部分 Agent 诊断信息暂时不可用')
       }
     } catch (err) {
       console.error('[chat] 加载 Agent 诊断失败:', err)
       ElMessage.error(err.response?.data?.message || err.message || '加载 Agent 诊断失败')
     } finally {
-      diagnosticsLoading.value = false
+      if (requestId === diagnosticsRequest) diagnosticsLoading.value = false
     }
   }
 
@@ -369,13 +374,24 @@ export const useChatAssistantStore = defineStore('chatAssistant', () => {
 
   const open = async () => {
     visible.value = true
-    await bootstrap()
+    if (!loading.value && bootstrapped.value && sessionId.value) {
+      await loadSession(sessionId.value, true)
+      await loadSessionList()
+    } else await bootstrap()
   }
 
   const close = () => {
     visible.value = false
     stopPolling()
   }
+
+  const refreshOnFocus = () => {
+    if (visible.value && !loading.value && sessionId.value) {
+      loadSession(sessionId.value, true).catch(() => ElMessage.error('会话刷新失败 请重新打开助手'))
+    }
+  }
+  window.addEventListener('focus', refreshOnFocus)
+  onScopeDispose(() => window.removeEventListener('focus', refreshOnFocus))
 
   const buildPageContext = () => ({
     currentRoute: window.location.hash?.replace(/^#/, '') || '/',
@@ -452,21 +468,16 @@ export const useChatAssistantStore = defineStore('chatAssistant', () => {
       // 刷新会话列表（标题可能更新）
       await loadSessionList()
     } catch (error) {
+      assistantMsg.streaming = false
+      assistantMsg.statusText = ''
+      assistantMsg.statusPlaceholder = false
+      messages.value = [...messages.value]
       try {
-        const response = await sendChatMessage({
-          sessionId: sessionId.value,
-          content: text,
-          ...buildPageContext()
-        })
-        Object.assign(assistantMsg, response.data?.data || {}, { streaming: false, statusText: '', statusPlaceholder: false })
-        messages.value = [...messages.value]
         await loadSession(sessionId.value, true)
         await loadSessionList()
-      } catch (fallbackError) {
-        messages.value = messages.value.filter(m => m !== userMsg && m !== assistantMsg)
-        ElMessage.error(fallbackError.response?.data?.message || fallbackError.message || error.message || '发送消息失败')
-        throw fallbackError
-      }
+      } catch (_) { /* 保留当前显示，用户可手动刷新会话 */ }
+      ElMessage.error(error.response?.data?.message || error.message || '发送消息失败')
+      throw error
     } finally {
       loading.value = false
     }
@@ -545,7 +556,7 @@ export const useChatAssistantStore = defineStore('chatAssistant', () => {
     projects,
     projectsLoading,
     agentHealth,
-    checkpointSnapshot,
+    executionTrace,
     diagnosticsLoading,
     menuOpenId,
     projectMenuOpenId,

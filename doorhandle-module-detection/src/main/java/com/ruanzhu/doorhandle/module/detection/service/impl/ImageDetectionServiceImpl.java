@@ -91,7 +91,8 @@ public class ImageDetectionServiceImpl implements ImageDetectionService {
         }
 
         ModelInfo modelInfo = resolveModelInfo(modelId);
-        String folderName = "detect_" + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"));
+        String folderName = "detect_" + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"))
+                + "_" + UUID.randomUUID().toString().substring(0, 8);
         Path imageFolderPath = Paths.get(imageUploadDir, folderName).toAbsolutePath().normalize();
         Path resultFolderPath = Paths.get(resultDir, folderName).toAbsolutePath().normalize();
         Path annotatedFolderPath = Paths.get(annotatedDir, folderName).toAbsolutePath().normalize();
@@ -152,7 +153,7 @@ public class ImageDetectionServiceImpl implements ImageDetectionService {
     public List<DetectionTask> getAllDetectionData() {
         LambdaQueryWrapper<DetectionTask> wrapper = new LambdaQueryWrapper<>();
         Authentication authentication = currentAuthentication();
-        detectionTaskAccessPolicy.assertAuthenticated(authentication);
+        detectionTaskAccessPolicy.applyScope(wrapper, authentication);
         List<DetectionTask> tasks = detectionTaskMapper.selectList(wrapper);
         tasks.forEach(task -> detectionTaskAccessPolicy.assertCanAccess(task, authentication));
         return tasks;
@@ -202,7 +203,8 @@ public class ImageDetectionServiceImpl implements ImageDetectionService {
 
         try {
             ModelInfo modelInfo = resolveModelInfo(modelId);
-            String folderName = "detect_" + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"));
+            String folderName = "detect_" + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"))
+                + "_" + UUID.randomUUID().toString().substring(0, 8);
             Path uploadPath = Paths.get(uploadDir, folderName).toAbsolutePath().normalize();
             Path annotatedPath = Paths.get(annotatedDir, folderName).toAbsolutePath().normalize();
             Files.createDirectories(uploadPath);

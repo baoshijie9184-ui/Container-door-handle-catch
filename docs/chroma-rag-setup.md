@@ -80,9 +80,9 @@ rag-sources:
 2. 文档按标题和长度切分成知识片段。
 3. 使用本地确定性文本 embedding 生成固定维度向量。
 4. 将知识片段 upsert 到 Chroma collection。
-5. 用户提问时，DeepSeek 先将原始问题改写为检索查询。
+5. 用户提问时，AgentScope 当前模型先将原始问题改写为检索查询。
 6. 系统使用重写后的查询生成向量，并从 Chroma 查询更多候选片段。
-7. DeepSeek 对候选片段进行 rerank，选出最相关 TopK。
+7. AgentScope 当前模型对候选片段进行 rerank，选出最相关 TopK。
 8. 将 rerank 后的片段注入智能助手 Agent 上下文。
 9. Chroma 或 LLM 不可用时回退本地关键词检索和默认排序。
 
@@ -94,3 +94,5 @@ rag-sources:
 - Chroma 只存放系统知识片段，不存放用户 SSH key、数据库密码或 Token。
 - 智能助手已有敏感信息脱敏、请求限流和路径扫描白名单。
 - 智能助手已加入防幻觉规则：没有系统数据或知识库依据时，应明确说明缺少依据，不得编造任务、工单、批次、模型、设备、人员或检测结论。
+
+查询重写与 rerank 通过 `AgentTextApi` 使用统一模型管理和备用策略，不再创建独立 DeepSeek HTTP 客户端。AI 未启用或生成失败时继续使用原问题与本地排序。此检索支持目前在主站会话适配层使用，独立 AG-UI 入口未接入相同的 RAG/Mem0 上下文。

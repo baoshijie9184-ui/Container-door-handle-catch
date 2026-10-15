@@ -14,37 +14,37 @@
         </svg>
       </div>
       <p class="empty-title">工业检测助手在线</p>
-      <p class="empty-desc">我可以串联采集检测、缺陷证据、质检闭环、模型 MLOps、追溯报表和系统运维</p>
+      <p class="empty-desc">可以按账号权限查询检测任务、质检记录与工作统计 主管还可查询设备和模型列表</p>
 
       <div class="empty-section">
-        <p class="empty-section-label">常用操作</p>
+        <p class="empty-section-label">只读查询</p>
         <div class="empty-chips">
-          <button class="empty-chip action" @click="$emit('send', '上传本地图片文件夹进行检测')">
+          <button class="empty-chip action" @click="$emit('send', '查询最近的检测任务')">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-            上传检测
+            检测任务
           </button>
-          <button class="empty-chip action" @click="$emit('send', '开始检测')">
+          <button class="empty-chip action" @click="$emit('send', '查询检测任务的处理进度')">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-            开始检测
+            检测进度
           </button>
-          <button class="empty-chip action" @click="$emit('send', '查看待复核质检队列和返工复检任务')">
+          <button class="empty-chip action" @click="$emit('send', '查询我有权限查看的质检记录')">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
-            质检队列
+            质检记录
           </button>
-          <button class="empty-chip action danger" @click="$emit('send', '查看严重缺陷证据')">
+          <button class="empty-chip action danger" @click="$emit('send', '查询最近检测任务的缺陷数量')">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10.3 3.5 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.5a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
-            严重缺陷
+            缺陷统计
           </button>
         </div>
       </div>
 
       <div class="empty-section">
-        <p class="empty-section-label">一站式闭环</p>
+        <p class="empty-section-label">使用帮助</p>
         <div class="empty-chips">
-          <button class="empty-chip trace" @click="$emit('send', '缺陷证据库在哪个页面')">缺陷证据库</button>
-          <button class="empty-chip trace" @click="$emit('send', '查询批次 BATCH-001 的追溯报告')">批次追溯</button>
-          <button class="empty-chip trace" @click="$emit('send', '查询工单 WO-001 的检测闭环')">工单追溯</button>
-          <button class="empty-chip trace" @click="$emit('send', '查看 Agent checkpoint 和健康状态')">Agent健康</button>
+          <button class="empty-chip trace" @click="$emit('send', '缺陷统计库在哪个页面')">缺陷统计库</button>
+          <button class="empty-chip trace" @click="$emit('send', '批次追溯在哪个页面操作')">批次追溯</button>
+          <button class="empty-chip trace" @click="$emit('send', '工单追溯在哪个页面操作')">工单追溯</button>
+          <button class="empty-chip trace" @click="$emit('send', '如何查看 AgentScope 调用轨迹')">执行轨迹</button>
         </div>
       </div>
 
@@ -52,10 +52,10 @@
         <p class="empty-section-label">快速查询</p>
         <div class="empty-chips">
           <button class="empty-chip" @click="$emit('send', '显示系统业务地图和功能入口')">业务地图</button>
-          <button class="empty-chip" @click="$emit('send', '查看当前设备在线状态和采集告警')">设备采集</button>
-          <button class="empty-chip" @click="$emit('send', '查看模型评估指标、灰度发布和回滚状态')">模型MLOps</button>
-          <button class="empty-chip" @click="$emit('send', '生成本周质量处置统计和质检工作量报表')">质量报表</button>
-          <button class="empty-chip" @click="$emit('send', '检查OSS、Kafka和远程Worker运行状态')">运维链路</button>
+          <button class="empty-chip" @click="$emit('send', '查询我有权限查看的设备信息')">设备信息</button>
+          <button class="empty-chip" @click="$emit('send', '查询我有权限查看的模型列表')">模型列表</button>
+          <button class="empty-chip" @click="$emit('send', '查询本周工作统计')">工作统计</button>
+          <button class="empty-chip" @click="$emit('send', '当前助手支持哪些只读查询')">助手能力</button>
         </div>
       </div>
     </div>
@@ -88,6 +88,8 @@
             :busy="confirmingActionIds.has(item.actionId)"
             @confirm="handleConfirm"
           />
+
+          <AgentResultCards v-else-if="item.messageType === 'AGENT_CARDS'" :message="item" />
 
           <ChatBusinessCard
             v-else-if="item.messageType === 'BUSINESS_CARD'"
@@ -144,8 +146,10 @@
 </template>
 
 <script setup>
+import { skillInstallNavigation } from '../../utils/skillInstallNavigation'
 import { onUnmounted, ref } from 'vue'
 import ChatBusinessCard from './ChatBusinessCard.vue'
+import AgentResultCards from './AgentResultCards.vue'
 import ChatPendingActionCard from './ChatPendingActionCard.vue'
 import { buildChatMessageKey } from '@/utils/chatMessageNavigation'
 
@@ -211,6 +215,8 @@ const formatTime = (val) => {
 /** 轻量 markdown → HTML */
 const formatMessage = (text) => {
   if (!text) return ''
+  const install = skillInstallNavigation(text, window.location.href)
+  if (install) text = install.before + '[' + install.label + '](' + install.route + ')' + install.after
   let html = escapeHtml(text)
 
   // 代码块 ```...```
@@ -225,6 +231,7 @@ const formatMessage = (text) => {
   html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
 
   // 站内路由链接 [页面](#/path)
+  html = html.replace(/\[([^\]]+)]\((#\/agent\/skills\?installUrl=[A-Za-z0-9%_.+-]+)\)/g, '<a class="msg-route-link" href="$2">$1</a>')
   html = html.replace(/\[([^\]]+)]\((#\/[A-Za-z0-9/_?=&.-]+)\)/g, '<a class="msg-route-link" href="$2">$1</a>')
 
   // 无序列表 - item

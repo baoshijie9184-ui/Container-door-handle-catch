@@ -27,7 +27,7 @@
       </div>
       <!-- 侧边栏 + 主区域 -->
       <div class="chat-layout">
-        <ChatSidebar :compact="isMobile" />
+        <ChatSidebar :compact="compactSidebar" />
         <div class="chat-main" @click="closeSidebarMenu">
           <!-- 头部 -->
           <header class="chat-header">
@@ -45,6 +45,9 @@
               <h3 class="chat-header-title">{{ chatStore.sessionTitle }}</h3>
             </div>
             <div class="chat-header-actions">
+              <a class="chat-header-btn" href="#/agent/memory" title="个人记忆" @click="chatStore.close()">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h6a3 3 0 0 1 3 3v14a4 4 0 0 0-4-2H4zM20 4h-4a3 3 0 0 0-3 3v14a4 4 0 0 1 4-2h3z"/></svg>
+              </a>
               <button class="chat-header-btn diagnose-btn" @click="openDiagnostics" :disabled="chatStore.diagnosticsLoading" title="Agent诊断">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
                   <path d="M22 12h-4l-3 7-6-14-3 7H2"/>
@@ -79,6 +82,7 @@
               @confirm="handleConfirm"
               @send="handleSend"
             />
+            <AgentActionList v-if="chatStore.sessionId" :session-id="chatStore.sessionId" :refresh-key="chatStore.loading ? 'running' : chatStore.messages.at(-1)?.id || ''" />
           </div>
 
           <ChatQuestionNavigator
@@ -108,56 +112,56 @@
           </header>
 
           <section class="health-card">
-            <div class="health-status" :class="`status-${String(chatStore.agentHealth?.healthStatus || 'UNKNOWN').toLowerCase()}`">
+            <div class="health-status" :class="['READ_ONLY', 'CONFIRMABLE', 'DRAFTS'].includes(chatStore.agentHealth?.mode) ? 'status-healthy' : 'status-unknown'">
               <span class="health-dot"></span>
-              <strong>{{ chatStore.agentHealth?.healthStatus || 'UNKNOWN' }}</strong>
-              <small>{{ chatStore.agentHealth?.healthMessage || '暂无智能体运行数据' }}</small>
+              <strong>{{ chatStore.agentHealth?.framework || 'AgentScope' }}</strong>
+              <small>{{ chatStore.agentHealth?.reportDraftsEnabled ? '业务查询 · 本人报告草稿 · 审批需页面确认' : chatStore.agentHealth?.mode === 'CONFIRMABLE' ? '业务查询 · 主管分配需人工确认' : chatStore.agentHealth?.mode === 'READ_ONLY' ? '员工与主管角色助手 · 只读查询' : chatStore.agentHealth?.mode === 'DISABLED' ? '助手尚未启用' : '运行状态暂不可用' }}</small>
             </div>
             <div class="diagnostic-grid">
               <div>
-                <span>{{ chatStore.agentHealth?.totalRuns || 0 }}</span>
-                <small>总运行</small>
+                <span>{{ chatStore.agentHealth?.defaultModel || '暂无' }}</span>
+                <small>默认模型</small>
               </div>
               <div>
-                <span>{{ chatStore.agentHealth?.completedRuns || 0 }}</span>
-                <small>完成</small>
+                <span>{{ chatStore.executionTrace?.status || '暂无' }}</span>
+                <small>最近执行状态</small>
               </div>
               <div>
-                <span>{{ chatStore.agentHealth?.guardBreakRuns || 0 }}</span>
-                <small>守卫中断</small>
+                <span>{{ chatStore.executionTrace?.events?.length || 0 }}</span>
+                <small>记录事件</small>
               </div>
               <div>
-                <span>{{ formatRate(chatStore.agentHealth?.fallbackRate) }}</span>
-                <small>兜底率</small>
+                <span>{{ chatStore.executionTrace?.events?.at(-1)?.elapsedMs ?? '暂无' }}</span>
+                <small>最近事件时间 ms</small>
               </div>
             </div>
           </section>
 
           <section class="checkpoint-card">
             <div class="checkpoint-title">
-              <span>当前会话 Checkpoint</span>
+              <span>最近一次 AgentScope 执行</span>
               <button @click="chatStore.loadDiagnostics">刷新</button>
             </div>
             <dl>
               <div>
-                <dt>版本</dt>
-                <dd>{{ chatStore.checkpointSnapshot?.checkpointVersion ?? 0 }}</dd>
+                <dt>运行编号</dt>
+                <dd>{{ chatStore.executionTrace?.runId || '暂无' }}</dd>
               </div>
               <div>
-                <dt>节点</dt>
-                <dd>{{ chatStore.checkpointSnapshot?.checkpointNode || '暂无' }}</dd>
+                <dt>框架</dt>
+                <dd>{{ chatStore.executionTrace?.framework || 'AgentScope' }}</dd>
               </div>
               <div>
-                <dt>退出原因</dt>
-                <dd>{{ chatStore.checkpointSnapshot?.checkpointExitReason || '暂无' }}</dd>
+                <dt>状态</dt>
+                <dd>{{ chatStore.executionTrace?.status || '暂无执行记录' }}</dd>
               </div>
               <div>
                 <dt>更新时间</dt>
-                <dd>{{ chatStore.checkpointSnapshot?.checkpointUpdatedAt || '暂无' }}</dd>
+                <dd>{{ chatStore.executionTrace?.updatedAt || '暂无' }}</dd>
               </div>
             </dl>
             <p class="guard-reason">
-              守卫原因：{{ chatStore.checkpointSnapshot?.guardReason || chatStore.agentHealth?.lastGuardReason || '暂无' }}
+              仅展示服务器记录的事件，历史对话不会补造调用节点或耗时
             </p>
             <div v-if="routeTrace.length" class="route-trace">
               <span v-for="route in routeTrace" :key="route">{{ route }}</span>
@@ -174,6 +178,7 @@ import { computed, ref, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { useChatAssistantStore } from '@/stores/chatAssistant'
 import ChatComposer from './ChatComposer.vue'
 import ChatMessageList from './ChatMessageList.vue'
+import AgentActionList from './AgentActionList.vue'
 import ChatQuestionNavigator from './ChatQuestionNavigator.vue'
 import ChatSidebar from './ChatSidebar.vue'
 import { buildQuestionItems } from '@/utils/chatMessageNavigation'
@@ -189,8 +194,8 @@ const activeQuestionKey = ref('')
 const resizeTooltip = ref('拖拽调整面板宽度')
 const diagnosticsVisible = ref(false)
 const routeTrace = computed(() => {
-  const trace = chatStore.checkpointSnapshot?.routeTrace
-  return Array.isArray(trace) ? trace.slice(-8) : []
+  const trace = chatStore.executionTrace?.events
+  return Array.isArray(trace) ? trace.slice(-8).map(event => `${event.type} · ${event.tool || event.agent}`) : []
 })
 const questionItems = computed(() => buildQuestionItems(chatStore.messages))
 
@@ -232,6 +237,7 @@ const drawerSize = computed(() => {
   const width = isMobile.value ? viewportWidth.value : clampPanelWidth(panelWidth.value)
   return `${width}px`
 })
+const compactSidebar=computed(()=>isMobile.value||(!props.fullScreen&&clampPanelWidth(panelWidth.value)<700))
 
 const loadPanelWidth = () => {
   try {
@@ -350,11 +356,6 @@ const handleClear = async () => {
 const openDiagnostics = async () => {
   diagnosticsVisible.value = true
   await chatStore.loadDiagnostics()
-}
-
-const formatRate = (value) => {
-  const number = Number(value || 0)
-  return `${(number * 100).toFixed(1)}%`
 }
 
 const handleDrawerChange = (value) => {

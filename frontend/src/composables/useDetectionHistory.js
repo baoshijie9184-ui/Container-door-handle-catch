@@ -42,7 +42,7 @@ export function useDetectionHistory(taskStore, pollingStore) {
     try {
       const p = page || historyPage.value
       const s = size || historyPageSize.value
-      const result = await pollingStore.fetchTaskList(p, s, '', '', buildHistoryFilters())
+      const result = await pollingStore.fetchTaskList(p, s, historySearchKeyword.value.trim(), '', buildHistoryFilters())
       if (result) {
         historyRecords.value = (result.records || []).map(record => normalizeHistoryRecord(record, taskStore))
         historyTotal.value = result.total || 0

@@ -46,6 +46,10 @@ public class Employee {
     @TableField("department")
     private String department;
 
+    /** 稳定部门 ID；department 保留为兼容旧接口的名称快照。 */
+    @TableField("department_id")
+    private Long departmentId;
+
     /**
      * 员工类型：DETECTION-门把手检测人员，COLLECTION-门把手图片采集人员，MAINTENANCE-设备维修人员
      */

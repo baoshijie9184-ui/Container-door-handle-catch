@@ -1,63 +1,186 @@
-# 两类角色 Agent / Toolkit 实施进度
+# AgentScope 角色与会话迁移实施进度
 
-更新：2026-09-12。本文记录代码已实现的范围，业务设计文档中的完整工具清单仍是后续目标。
+更新：2026-10-13。实施分支：`java`。本阶段完善 Spring Boot 模块化单体，未拆分微服务。
 
-## 第一阶段：角色入口与只读工具
+## 已完成的迁移
 
-- `employee-main` / `supervisor-main` 根据 Spring Security 的 `TenantPrincipal` 和 `ROLE_INSPECTOR` / `ROLE_SUPERVISOR` 选择。
-- 兼容默认 `doorhandle-assistant` 入口，以及对应角色的 `employee-assistant` / `supervisor-assistant` 别名。员工指定主管 ID 会被拒绝；专业 Agent 不对外开放直接调用。
-- 主 Agent 使用 HarnessAgent，四个委派工具调用各专业 ReActAgent；每次请求、每个专业 Agent 创建独立 Toolkit，身份通过服务端闭包传递。
-- AI 模块只依赖 contracts 中的只读 API；检测、设备和模型模块实现门面，返回字段白名单 DTO，不暴露实体、内部路径或存储 Key。
-- 使用 AgentScope AG-UI 扩展的请求处理器，由项目 Controller 在进入异步执行前完成鉴权。不再使用通用 AG-UI Starter Controller。
+全部 Agent 在 `doorhandle-module-ai` 使用 AgentScope Java 2.0.4 实现，复用原生 HarnessAgent、ReActAgent、模型接口和 AG-UI 适配器。参考 [官方 2.0.4 Release](https://github.com/agentscope-ai/agentscope-java/releases/tag/v2.0.4)；依赖保留 Apache-2.0 许可证。本轮未新增运行依赖或复制第三方源码。
 
-| 角色 | 专业 Agent | 已注册工具 |
+删除 App 模块的旧 StateGraph、Router/HumanConfirm 等节点、四类旧专业服务、AgentOrchestrator、AgentGraphRunMonitor、ContextBuilder、DeepSeekClient 和聊天专用文件上传执行器，连同其专属配置、DTO 和旧测试。RAG、Mem0、会话/项目管理和语音转写保留为支持服务，不构成独立 Agent 框架。
+
+主站 Vue 保留聊天和历史会话界面，通过下列链路执行：
+
+`ChatAssistantController → AgentScopeChatServiceImpl → AgentConversationApi → AgentScopeConversationService → RoleAgentFactory → HarnessAgent → 专业 ReActAgent → BusinessToolkitFactory → 业务 contracts 门面`
+
+App 与 AI 之间通过 contracts 传递文本、服务端身份和脱敏事件，没有跨模块引用实现类。独立 React AG-UI 入口也使用同一工厂和模型服务。AI 未启用时主站返回不可用状态，不回退旧客户端。
+
+## 模型管理
+
+三个供应商由 `AgentModelService` 统一配置，当前本机默认 `openai-official:gpt-6.1-sol`，备用为 `deepseek:deepseek-flash → dashscope:kimi-k3`。`openai-official` 是 SDK Responses 适配器标识，实际兼容供应商为灵算，不据模型名推断底层来源。凭证在 Git 忽略的 `.env` 中。
+
+网络故障、首段高延迟、额度不足、凭证错误和特定 HTTP 状态可以进入备用链；已经输出文字、思考内容或工具调用后不重放当前模型请求。支持进程内冷却、单业务请求恢复探测和取消释放。主站前端流式请求失败也不自动重发整个问题，避免重复生成。
+
+RAG 改写和 rerank 通过 `AgentTextApi → AgentScopeTextService` 使用同一模型管理，无独立 HTTP 模型客户端；模型不可用时保留原问题和本地排序。配置详情与较早真实模型测试记录见 [平台配置](agentscope-platform-config.md)。
+
+## 角色与工具
+
+报告门面装配后，两类角色各增加第五个专业 Agent `report-assistant`，注册报告列表和详情查询；开启持久运行日志时增加本人草稿创建、编辑工具。提交、审批和导出不作为 Agent 工具注册，详见 [Agent 报告工具接入](Agent报告工具接入.md)。下表保留原四类专业能力。
+
+身份从 Spring Security 的 `TenantPrincipal` 捕获，使用 `ROLE_INSPECTOR` / `ROLE_SUPERVISOR`。员工与主管分别使用 `employee-main` / `supervisor-main`；默认 `doorhandle-assistant` 和角色别名兼容。员工指定主管 ID 会被拒绝，专业 Agent 不对外直接调用。
+
+主 Agent 按可用门面注册四个或五个委派工具，每次专业委派创建独立 ReActAgent 和 Toolkit。专业委派为本地工具调用，不宣称已接入 Harness 原生子 Agent 路由。文件、Shell、动态 Skills、默认工作区 Skills、内置子 Agent、SDK 会话持久化及自动记忆钩子均关闭。
+
+| 角色 | 专业 Agent | 已注册业务工具 |
 | --- | --- | --- |
 | 员工 | detection-task | get_my_detection_tasks、get_task_detail |
 | 员工 | quality-review | get_my_quality_records、get_task_detail |
-| 员工 | device-status | get_task_detail（仅任务记录中的设备名称） |
+| 员工 | device-status | get_task_detail（仅任务中的设备名称） |
 | 员工 | personal-analytics | get_my_work_metrics |
-| 主管 | detection-quality | search_detection_tasks、get_task_detail、get_quality_records |
+| 主管 | detection-quality | search_detection_tasks、get_task_detail、get_quality_records；开启确认配置时增加 propose_quality_assignment |
 | 主管 | resource-management | list_devices |
 | 主管 | model-ops | list_models |
 | 主管 | department-analytics | get_department_work_metrics |
 
-## 当前数据边界
+业务门面返回字段白名单 DTO，不暴露数据库实体、内部路径或对象存储 Key。员工 SQL 读取本人创建或当前分派任务，主管当前为单企业范围。账号、员工、部门关联已完成，但企业租户和部门数据权限未实现，不能声称多部门隔离。
 
-员工任务查询在 SQL 中强制 `created_by = 当前登录用户名`。尚未接入分配给本人但由他人创建的任务、审批后公共记录等扩展可见范围。
+质检记录包括历史记录，不是完整的待办队列。工作统计包含时间范围内任务数、图片数、已处理图片数和缺陷数量；缺陷数量不等于缺陷图片数，不能直接计算不良率。实时设备告警、模型灰度详情、报告导出和运维健康工具尚未注册；前端快捷提问已调整到实际查询与操作帮助范围。
 
-现有用户和任务结构缺少完整的租户、部门以及用户与员工绑定关系；主管统计明确标识 `SINGLE_ENTERPRISE`，不可将它称作多租户或多部门隔离。员工设备 Agent 目前只能读取本人任务的设备名称，实时设备状态、本人绑定设备和采集告警尚待身份关联补齐。
+## 会话、事件与取消
 
-质检工具返回有 review_status 的记录，包含历史记录，不能当作仅待办队列。统计工具返回指定创建时间窗口内的任务数、图片数、已处理图片数、缺陷数量；缺陷数量不等于缺陷图片数，不能直接计算不良率。
+主站按会话所有者从 MySQL 读取历史，最多带入 38 条历史文本和当前问题，过滤旧业务卡片。RAG/Mem0 参考信息作为不可信数据传入，不能覆盖系统规则。每轮 Agent 状态临时保存，不共享跨用户模型历史。聊天文本可跨重启延续；SDK 工具状态、中断执行和断点不恢复。
 
-## 会话与前端
+AG-UI 已接入主站持久会话门面，历史由数据库读取，并共用 RAG 与账号范围 Mem0 检索。拒绝客户端系统消息、工具消息、工具注册、状态和恢复指令。
 
-- `GET /agui/catalog` 返回当前身份可见的主 Agent 和专业能力。
-- `POST /agui/run`、`POST /agui/run/{agentId}` 接收 AG-UI 文本消息。
-- 会话与运行编号由服务端加用户命名空间；每轮新建 Agent，不共享模型历史。当前依赖前端提交最近对话，无重启后的服务端历史恢复。
-- 拒绝客户端工具、状态、恢复指令、系统消息及工具消息。只读工具不提供写操作确认绕行入口。
-- 同会话并发运行锁仅在本进程生效，尚无 Redis 分布式锁或跨重启幂等。
-- 新前端携带 HttpOnly Cookie、复用会话编号并逐块解析正文事件；工具参数不混入回答。
+两个入口共用 `AgentRunRegistry`，以用户、角色入口、会话编号互斥，正常完成、异常或取消后释放。开启数据库日志时增加数据库会话互斥、重复运行拒绝和过期租约中断标记；进程内回退仅约束当前进程。历史轨迹可跨重启读取，执行不自动恢复。主站保存用户问题后失败时，会保留问题记录，用户可以刷新会话查看。
 
-## 待实施
+`GET /api/chat-assistant/agent-health` 返回框架、只读/禁用模式与默认模型；`GET /api/chat-assistant/sessions/{sessionId}/trace` 返回最近一轮真实事件摘要。记录 runId、结果状态、更新时间及最多 200 条事件类型、Agent 名、工具名和相对开始时间，过滤文本增量、工具参数、返回正文、思考正文与原始异常。
 
-1. 用户—员工—部门关系与公共记录授权，补齐员工实时设备和采集告警工具。
-2. 上传、创建、重试、质检处置、主管审批：持久化确认动作、幂等键与版本校验后注册写工具。
-3. 图表、报告生成与导出、RAG 和角色专用 Skills。
-4. 服务端对话持久化、完整 Turn/Call 审计、跨实例并发控制及故障恢复。
-5. 两类角色分别进行真实模型、数据库和浏览器端到端验收。
+复用 `chat_session.state_json` 保存最新摘要，保留旧数据库列与历史聊天；旧 StateGraph JSON 不展示为 SDK 轨迹。页面不补造节点或耗时，加载失败与切换会话时清空旧轨迹，避免误导。关闭持久日志时仍只有该有限摘要。开启阶段 B 日志后，中间件会记录主运行和专业工具元数据、父调用 ID、结果状态与耗时；不保存工具正文。
 
-模型发布/回滚权限在原两份设计中有冲突，本阶段统一不注册这些写工具，不影响现有业务页面。
+## 人工确认与审计边界
 
-## 验证方式
+员工业务工具含查询及启用持久日志后的本人报告草稿保存；启用阶段 C 确认功能时，主管质检工具可保存分配提议，由受控确认接口执行。旧版待确认卡片可以取消，确认执行返回 410，不恢复旧图写动作。任务创建、上传、重试、质检处置、报告提交和审批、发布及回滚等操作仍通过业务页面执行。
+
+最新一轮执行摘要不是不可篡改审计或完整 Turn/Call 记录。阶段 B 日志和阶段 C 分配确认、参数摘要与事务审计已实施；当前另有第一版离线规则 Eval。独立审批、全业务审计、真实模型质量评测及完整平台仍按 [多 Agent 和工具集设计](../多agent和工具集设计.md) 后续实施。
+
+## 验证
+
+后端完整构建入口：
 
 ```powershell
-mvn -pl doorhandle-module-ai,doorhandle-module-detection -am test '-Dtest=RoleAgentFactoryTest,BusinessToolkitFactoryTest,AgentIdentityTest,RoleAgentControllerTest,DetectionAgentReadApiImplTest' '-Dsurefire.failIfNoSpecifiedTests=false'
-mvn -pl doorhandle-server -am test -DskipTests
+mvn -pl doorhandle-server -am clean verify
+```
+
+主站前端检查：
+
+```powershell
+cd frontend
+node --test tests/agentscope-stream.test.cjs tests/assistant-contracts.test.cjs tests/security-shell-contracts.test.cjs
+npm run build
+```
+
+独立 AG-UI 前端检查：
+
+```powershell
 cd frontend-agent
 node --test src/aguiClient.test.js
 npm run build
 ```
 
-自动化验证使用模型和业务门面的测试替身，不消耗真实模型额度；不能替代真实数据库和模型联调。
+需要真实数据库、登录账号和模型的手动冒烟检查：
 
-本轮验证结果：后端 14 项定向回归测试通过（包括主 Agent → 专业 Agent → Toolkit → 业务门面的完整调用，以及 MockMvc AG-UI 流式响应）；前端 2 项协议测试通过；Server 全模块编译与前端生产构建通过。前端构建仍有依赖包体积提示，尚未进行真实浏览器和数据库联调。
+```powershell
+$env:AGENT_SMOKE_USERNAME="你的员工或主管测试账号"
+./scripts/run-python.ps1 scripts/diagnostics/agent_live_smoke.py --question "查询最近的检测任务"
+```
+
+密码默认交互输入；该脚本创建聊天会话并调用真实模型，不执行业务写动作，也不验证回答事实准确性。本轮尚未运行此在线检查。
+
+## 本轮验证结果
+
+- `mvn -pl doorhandle-server -am clean verify` 完整通过：238 项测试，236 项通过，2 项需要显式启用的真实模型测试跳过，失败和错误均为 0。
+- 最终 Server Jar 的内部模块检查：包含统一模型与会话服务，没有 StateGraph、DeepSeekClient、旧编排器和旧专业服务类。
+- 主站 21 项相关检查、独立 AG-UI 2 项协议检查均通过；两套前端生产构建通过。
+- Playwright 使用接口测试替身检查轨迹事件、JSON 导出、空会话、会话切换、手机布局和断流不重发，6 项场景通过。该检查未连接真实业务数据库或模型。
+- 真实接口在线脚本的 `--help` 入口已验证，本轮未运行真实数据库和模型端到端检查。
+
+前端构建保留现有大包体积提示。SDK 2.0.4 在快速取消测试中仍输出一次 `onErrorDropped / CancellationException` 日志；取消状态、共享锁释放与后续运行检查通过，没有通过全局错误屏蔽隐藏该日志。测试证据在项目 `work/agentscope-final-verify.log`、`work/agentscope-verification-summary.json` 和 `work/agentscope-browser-result.json`，这些本机诊断产物不提交仓库。
+
+## 后续单体验收
+
+1. 真实业务数据库与模型的主站/AG-UI 端到端验收。
+2. 用户—员工—部门关系与扩展可见范围，补齐设备和采集告警工具。
+3. 写工具持久确认、幂等与业务审批，再开放上传、重试和质检操作。
+4. Turn/Call 审计、全量轨迹、Eval 样本与评测流程；补齐报告与角色 Skills。
+5. 边界与单体功能验收后，再拆分微服务与接入跨实例运行治理。
+
+
+## 阶段 B：持久运行与事件更新
+
+已经开发两个入口的持久运行日志、SDK 中间件的专业工具调用元数据、角色工具白名单审计、账号所属权读取、事件游标、取消、数据库会话互斥、AG-UI 重复请求拒绝和过期租约中断处理。主站轨迹页面增加历史选择、全部入口、分页补读与分页完整后导出。
+
+具体配置、迁移、接口、验证及边界见 [AgentScope 单体运行与事件日志](agentscope-run-journal.md)。本机业务库 `doorhandledb` 已执行 V16 新表迁移并开启运行日志，原业务表记录数保持一致，后端健康检查通过。阶段 B 仍未实现 SDK 断点续跑和通用后台任务；数据库消息历史统一已完成，见文末更新。
+
+阶段 B 验证：完整单体构建通过，当前报告 257 项通过、2 项付费模型检查跳过（含后续新增取消用例的定向回归）；MySQL 8.3 隔离库 7 项真实 JDBC 测试通过；主站 21 项相关检查、生产构建和 7 项浏览器替身场景通过。具体证据、功能开关与本机业务库迁移说明见运行日志文档。
+
+## 阶段 C：主管质检分配与持久确认
+
+第一项已增加主管的 `propose_quality_assignment`、持久提议与审计、原运行关联、账号隔离、有效期、参数与资源快照校验，以及确认事务。只允许保存提议的 SDK 工具与实际业务写入分开，员工不能注册该工具；主站新增“助手操作确认”和聊天内卡片，独立 Agent UI 跳转共用确认页。配置开启时模式为 `CONFIRMABLE`，员工 AG-UI 目录仍为 `READ_ONLY`。
+
+范围与验收见 [质检分配与人工确认](agentscope-action-confirmation.md)。其他 Agent 写工具、独立任务复核申请、完整业务审计和真实模型质量评测仍未完成；第一版离线规则 Eval 与独立报告审批已实现，见文末说明。
+
+### 多用户数据范围统一（2026-10-13）
+
+按用户选定规则，员工读取本人创建或当前分派任务，主管读取当前企业全部任务；私人聊天、记忆、运行与操作确认仍按账号隔离。已统一业务页面、旧记录接口、统计、Agent 查询及 OSS/本地文件授权，移除全局固定键的检测统计缓存和绕过控制器的上传目录静态映射。新本地检测目录使用随机后缀。重新分派后的权限撤销、三种账号接口与页面验证已通过。
+
+开源参考、实施范围、验收及剩余身份关系工作见 [多用户权限与数据范围方案](多用户权限与数据范围方案.md)。本次不新增企业租户或动态 RBAC 表，不修改历史任务所有者，也不移动原文件。
+
+## 阶段 C 后续：第一版离线 Eval（2026-10-13）
+
+新增固定 JSON 数据集、确定性规则评分、逐例结果与分类统计、必测完整性门槛、版本与源码摘要、可选基线比较和本地运行脚本。22 个用例调用真实 AgentScope 执行链、工具校验或确认事务；模型响应、业务门面与业务表使用合成 fixture 和隔离 H2。9 项评分及完整性测试确保未授权工具、意外副作用、缺失审计、必测跳过、重复结果和基线退化不能被通过率掩盖。
+
+评测还修正了员工授权事件的数据范围标签，改为与实际规则一致的 `OWNED_OR_ASSIGNED`。全部 22 项用例、9 项规则校验、脚本运行与基线拒绝行为已通过；全量 Maven verify 成功。此处不表示真实模型理解、业务 MySQL 权限、提示注入、并发容量、Langfuse 接入或完整 Eval 平台已验收。使用与证据见 [AgentScope Eval](agentscope-eval.md)。
+
+## 组织身份基础（2026-10-13）
+
+账号以稳定用户 ID 关联员工，员工以稳定部门 ID 关联部门。增加主管关联/解除/更换页面、员工本人身份页、版本冲突与重复绑定保护、必要事务审计和员工删除保护；登录后刷新角色与身份。详情见 [账号员工部门关联](账号员工部门关联.md)。该关联不改变既有 Agent 角色、工具白名单和任务范围；部门数据权限、动态 RBAC、独立任务复核申请及任务用户 ID 迁移仍待开发；报告独立审批见下节。
+
+## 报告草稿与独立审批（2026-10-13）
+
+新增私人草稿、冻结提交、独立主管审批预览和确认、驳回/撤回、历史修订与已审批 Markdown 导出。账号当前角色由系统 contracts 门面再次核对；版本、确认、任务依据、幂等、审计、确认消费和 outbox 均有事务校验。实现与边界见 [报告草稿与独立审批](报告草稿与独立审批.md)。报告审批是独立业务功能，未增加 Agent 自动审批工具，也不修改任务放行状态。事件已写 outbox，投递器、独立任务复核申请、会签和公共发布仍待开发。
+
+## Agent 报告工具（2026-10-13）
+
+报告查询和本人私人草稿创建/编辑已接入 AgentScope。草稿网关校验运行所属账号、主 Agent、运行状态和租约，事务保存报告来源；业务审计可链接原运行，私人运行仍按账号隔离。新增 V22 来源表及 30 项 v2 固定 Eval，详见 [实现与验收](Agent报告工具接入.md)。模型只获得受控报告摘要/依据，不能注册审批或导出工具。真实模型草稿质量和提示注入仍待独立评测。
+
+## Agent 业务结果卡片（2026-10-13）
+
+检测任务、质检记录、工作统计、报告查询及本人草稿结果已接入两套前端。卡片来自实际成功业务工具结果，主站以 `AGENT_CARDS` 保存文字及资源引用，刷新后重新鉴权读取当前数据；其他账号无法借卡片读取私人报告，重新分派后隐藏原员工无权访问的任务。既有人工确认卡片继续独立执行确认规则。点号账号生成的主站会话已修复持久日志兼容问题。接口、验证和完整 A2UI/AG-UI 历史等剩余边界见 [Agent 业务卡片接入](Agent业务卡片接入.md)。
+
+## 技能自学习与受控发布（2026-10-13）
+
+AgentScope 原生技能仓库/读取工具已接入发布版本，来源授权、提议与不可变版本、规则 Eval、独立主管审核、读取审计、回退停用及老化维护由应用服务与 V23 表治理。前端新增“Agent技能演化”。本机已迁移并启用；真实模型语义质量、经验收益和完整提示注入评测仍待单独实施。见 [技能自学习与受控发布](Agent技能自学习与受控发布.md)。
+
+## 外部 Agent/MCP/Skill 资源市场（2026-10-13）
+
+AI 模块提供只读、按登录角色校验的市场目录；Vue 主站新增“资源市场”，收录 11 个平台，支持分类、搜索、地区筛选、平台能力说明和固定官方链接。MCP 搜索接口与真正的服务市场分别标记。资源安装、凭证配置、外部 MCP 或 Agent 调用仍未开放，后续导入和运行权限须接入现有审批、工具与业务范围检查，见 [Agent资源市场接入](Agent资源市场接入.md)。
+
+## 移除外部 Skill ZIP 导入（2026-10-13）
+
+按用户要求已移除 ZIP 上传组件、上传/工具映射 API、包解析与来源创建服务。新草稿仅接受已授权业务运行；历史外部记录仅供查看及停用，不再评测、发布、回退启用或原生加载。经验提炼、审核和本地 Fetch MCP 保留。V24 历史表和版本来源列保留，不执行删库。Skill 链接自动下载尚未实现。
+
+## 本地 Fetch MCP（2026-10-13）
+
+V25 保存每账号安装状态、租约及审计；固定 Fetch wheel 与依赖下载、锁定、许可文件和 Python venv 存在用户 workspace。主 Agent 可提出私人待确认安装，人工核对后异步安装，主动启用后通过 SDK 原生 Stdio 调用公开网页。允许范围和角色中间件显式接入，停用关闭活动连接；没有开放 shell、任意包或远程 Hosted 地址。原网页调用不会计作业务经验来源。完整验证与局限见 [本地 Stdio MCP 接入](本地StdioMCP接入.md)。
+
+## Skill 斜杠命令（2026-10-13）
+
+主站和 React Agent 页面支持 `/` 菜单、`/help`、`/skills`、`/skills info`、`/skill 名称或skill-id 问题` 及直接名称别名。服务端明确核对并加载当前角色的发布版本，随后仍走原 HarnessAgent；只读目录和错误提示不调用模型。命令读取有独立 `COMMAND_LOAD` 审计和脱敏运行事件，私人草稿、停用和历史上传版本不可调用。实际 MySQL/SDK、两套界面及手机验收通过，样本已停用。外部自动安装/卸载尚未接入，详见 [技能斜杠命令](Agent技能斜杠命令.md)。
+
+## 会话历史与记忆统一（2026-10-13）
+
+AG-UI 改用 app 提供的 contracts 持久会话门面，两个入口共用历史、RAG、账号范围 Mem0、会话互斥和取消。React 增加会话选择、新建与刷新恢复，客户端历史不覆盖数据库历史，完成事件在回答保存后发送。原 P02 已完成；个人记忆管理与真实提炼效果仍待开发。范围及验证见 [会话历史与记忆统一](Agent会话历史与记忆统一.md)。
+
+## 个人长期记忆管理基础（2026-10-13）
+
+已开发本人记忆查看、读取/自动保存设置、删除预览确认、修订号、幂等及无正文审计。两个聊天入口共用实时账号设置，Python 桥接新增内部认证和原生所属权/摘要检查，旧无账号查询与删除已退役。V26 为新增设置和审计表，不删除历史记忆。编辑、更多分页、自动过期及真实提炼效果仍待开发，见 [个人长期记忆治理](个人长期记忆治理.md)。

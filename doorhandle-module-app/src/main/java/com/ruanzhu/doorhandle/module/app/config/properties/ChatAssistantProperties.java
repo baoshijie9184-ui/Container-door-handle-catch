@@ -16,8 +16,6 @@ public class ChatAssistantProperties {
     private String defaultSessionSuffix = "default";
     private Integer maxHistoryMessages = 30;
     private Integer maxRequestsPerMinute = 30;
-    private Integer maxScanDepth = 4;
-    private Integer maxScanFiles = 200;
     private String voiceTranscribeUrl = "";
     private Integer voiceConnectTimeoutMs = 1500;
     private Integer voiceReadTimeoutMs = 15000;
@@ -45,20 +43,5 @@ public class ChatAssistantProperties {
             "classpath:rag/system-user-guide.md",
             "file:docs/system-user-guide.md",
             "file:README.md"
-    ));
-    private List<String> allowedScanRoots = new ArrayList<>(List.of("${user.dir}/uploads"));
-    private List<String> blockedPathKeywords = new ArrayList<>(List.of(
-            ".ssh",
-            ".gnupg",
-            ".aws",
-            ".azure",
-            ".kube",
-            ".docker",
-            "appdata",
-            "windows",
-            "program files",
-            "system32",
-            "node_modules",
-            ".git"
     ));
 }

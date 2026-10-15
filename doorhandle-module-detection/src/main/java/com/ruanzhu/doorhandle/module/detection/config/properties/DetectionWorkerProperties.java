@@ -11,4 +11,5 @@ public class DetectionWorkerProperties {
     private boolean enabled = false;
     private String deployment = "remote";
     private String label = "remote-python-worker";
+    private String consumerGroup = "doorhandlecatch-python";
 }

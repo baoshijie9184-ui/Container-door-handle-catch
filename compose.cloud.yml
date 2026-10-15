@@ -1,0 +1,163 @@
+# 与 compose.monolith.yml 合并；数据库、缓存、队列和记忆服务均只开放到容器私网。
+services:
+  backend:
+    build:
+      args:
+        UBUNTU_MIRROR: http://mirrors.cloud.aliyuncs.com/ubuntu
+        MAVEN_MIRROR_URL: https://maven.aliyun.com/repository/public
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+      mem0:
+        condition: service_healthy
+      chroma:
+        condition: service_healthy
+
+  nginx:
+    build:
+      args:
+        NPM_REGISTRY: https://registry.npmmirror.com
+
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-doorhandledb}
+      MYSQL_USER: ${MYSQL_USER:-doorhandle}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?Set MYSQL_PASSWORD}
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+    volumes:
+      - doorhandle-mysql:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "MYSQL_PWD=\"$$MYSQL_ROOT_PASSWORD\" mysqladmin ping -h 127.0.0.1 -uroot --silent"]
+      interval: 10s
+      timeout: 5s
+      start_period: 60s
+      retries: 20
+    mem_limit: 2g
+    networks: [doorhandle-network]
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.4-alpine
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD}
+    command: ["sh", "-c", "exec redis-server --appendonly yes --requirepass \"$$REDIS_PASSWORD\""]
+    volumes:
+      - doorhandle-redis:/data
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$REDIS_PASSWORD\" redis-cli ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    mem_limit: 512m
+    networks: [doorhandle-network]
+    restart: unless-stopped
+
+  kafka-storage-init:
+    image: apache/kafka:4.2.2
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-ec"]
+    command: ["chown 1000:1000 /tmp/kraft-combined-logs"]
+    volumes:
+      - doorhandle-kafka:/tmp/kraft-combined-logs
+    networks: [doorhandle-network]
+    restart: "no"
+
+  kafka:
+    image: apache/kafka:4.2.2
+    hostname: kafka
+    depends_on:
+      kafka-storage-init:
+        condition: service_completed_successfully
+    environment:
+      CLUSTER_ID: MzQ2YmVhMDMtOWJjOC00Nj
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+      KAFKA_HEAP_OPTS: -Xms512m -Xmx1g
+    volumes:
+      - doorhandle-kafka:/tmp/kraft-combined-logs
+    healthcheck:
+      test: ["CMD", "/opt/kafka/bin/kafka-topics.sh", "--bootstrap-server", "kafka:9092", "--list"]
+      interval: 15s
+      timeout: 10s
+      start_period: 60s
+      retries: 20
+    mem_limit: 2g
+    networks: [doorhandle-network]
+    restart: unless-stopped
+
+  kafka-init:
+    image: apache/kafka:4.2.2
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        for topic in detection.task.created detection.task.finished detection.task.progress detection.report.lifecycle.v1; do
+          /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic "$$topic" --partitions 1 --replication-factor 1
+        done
+    networks: [doorhandle-network]
+    restart: "no"
+
+  chroma:
+    # 复用固定 Chroma 1.5.9 的 Python 运行镜像，保持客户端与服务端版本一致。
+    image: doorhandlecatch/mem0:${APP_IMAGE_TAG:-local}
+    command: ["chroma", "run", "--host", "0.0.0.0", "--port", "8000", "--path", "/data"]
+    environment:
+      IS_PERSISTENT: "TRUE"
+      ANONYMIZED_TELEMETRY: "FALSE"
+    volumes:
+      - doorhandle-chroma:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v2/heartbeat',timeout=4)"]
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 10
+    mem_limit: 1g
+    networks: [doorhandle-network]
+    restart: unless-stopped
+
+  mem0:
+    image: doorhandlecatch/mem0:${APP_IMAGE_TAG:-local}
+    build:
+      context: .
+      dockerfile: deploy/mem0/Dockerfile
+      args:
+        PIP_INDEX_URL: https://mirrors.aliyun.com/pypi/simple
+    # 仅注入记忆服务所需凭据。
+    environment:
+      MEM0_BRIDGE_TOKEN: ${MEM0_BRIDGE_TOKEN:?Set MEM0_BRIDGE_TOKEN}
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:?Set DASHSCOPE_API_KEY}
+      DASHSCOPE_BASE_URL: ${DASHSCOPE_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      DASHSCOPE_MODEL: ${DASHSCOPE_MODEL:-qwen-plus}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:?Set EMBEDDING_API_KEY}
+      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-qwen3.7-text-embedding-flash}
+    volumes:
+      - doorhandle-mem0:/data
+    mem_limit: 2g
+    networks: [doorhandle-network]
+    restart: unless-stopped
+
+volumes:
+  doorhandle-mysql:
+  doorhandle-redis:
+  doorhandle-kafka:
+  doorhandle-chroma:
+  doorhandle-mem0:

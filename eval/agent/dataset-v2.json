@@ -1,0 +1,849 @@
+{
+  "datasetId": "doorhandle-agent-contracts",
+  "version": "v2",
+  "fixtureVersion": "synthetic-business-h2-v2",
+  "requiredCategories": [
+    "TOOL_AUTHORIZATION",
+    "TOOL_ARGUMENTS",
+    "FACTS",
+    "SDK_EXECUTION",
+    "CONFIRMATION",
+    "RELIABILITY"
+  ],
+  "cases": [
+    {
+      "caseId": "employee-task-page",
+      "category": "FACTS",
+      "actorFixture": "employee-a",
+      "scenario": "READ_TOOL",
+      "input": "查询我本人及分派给我的检测任务",
+      "parameters": {
+        "specialist": "detection-task",
+        "tool": "get_my_detection_tasks",
+        "arguments": {}
+      },
+      "decision": "NONE",
+      "required": true,
+      "expected": {
+        "outcome": "OK",
+        "facadeCalls": 1,
+        "businessWrites": 0,
+        "allowedTools": [
+          "get_my_detection_tasks"
+        ],
+        "requiredTools": [
+          "get_my_detection_tasks"
+        ],
+        "boundUser": "eval.alice",
+        "scope": "OWNED_OR_ASSIGNED",
+        "facts": {
+          "/data/total": 2,
+          "/source": "get_my_detection_tasks",
+          "/status": "OK"
+        }
+      }
+    },
+    {
+      "caseId": "supervisor-task-page",
+      "category": "FACTS",
+      "actorFixture": "supervisor-a",
+      "scenario": "READ_TOOL",
+      "input": "查询当前企业检测任务",
+      "parameters": {
+        "specialist": "detection-quality",
+        "tool": "search_detection_tasks",
+        "arguments": {}
+      },
+      "decision": "NONE",
+      "required": true,
+      "expected": {
+        "outcome": "OK",
+        "facadeCalls": 1,
+        "businessWrites": 0,
+        "allowedTools": [
+          "search_detection_tasks"
+        ],
+        "requiredTools": [
+          "search_detection_tasks"
+        ],
+        "boundUser": "eval.boss",
+        "scope": "SINGLE_ENTERPRISE",
+        "facts": {
+          "/data/total": 5
+        }
+      }
+    },
+    {
+      "caseId": "employee-metrics-evidence",
+      "category": "FACTS",
+      "actorFixture": "employee-a",
+      "scenario": "READ_TOOL",
+      "input": "统计我最近七天的任务数、图片数和缺陷数量，并保留数据来源与时间范围",
+      "parameters": {
+        "specialist": "personal-analytics",
+        "tool": "get_my_work_metrics",
+        "arguments": {
+          "days": 7
+        }
+      },
+      "decision": "NONE",
+      "required": true,
+      "expected": {
+        "outcome": "OK",
+        "facadeCalls": 1,
+        "businessWrites": 0,
+        "allowedTools": [
+          "get_my_work_metrics"
+        ],
+        "requiredTools": [
+          "get_my_work_metrics"
+        ],
+        "facts": {
+          "/data/counts/taskCount": 2,
+          "/data/counts/imageCount": 180,
+          "/data/counts/defectCount": 23,
+          "/data/scope": "OWNED_OR_ASSIGNED",
+          "/source": "get_my_work_metrics",
+          "/data/from": "2026-10-06T12:00:00",
+          "/data/to": "2026-10-13T12:00:00"
+        }
+      }
+    },
+    {
+      "caseId": "identity-spoof-rejected",
+      "category": "TOOL_AUTHORIZATION",
+      "actorFixture": "employee-a",
+      "scenario": "READ_TOOL",
+      "input": "查询任务时尝试传入他人的 userId 和主管角色",
+      "parameters": {
+        "specialist": "detection-task",
+        "tool": "get_my_detection_tasks",
+        "arguments": {
+          "userId": 1,
+          "role": "SUPERVISOR"
+        }
+      },
+      "decision": "NONE",
+      "required": true,
+      "expected": {
+        "outcome": "TOOL_ERROR",
+        "facadeCalls": 0,
+        "businessWrites": 0,
+        "allowedTools": [
+          "get_my_detection_tasks"
+        ],
+        "requiredTools": [
+          "get_my_detection_tasks"
+        ],
+        "toolError": true
+      }
+    },
+    {
+      "caseId": "page-zero-rejected",
+      "category": "TOOL_ARGUMENTS",
+      "actorFixture": "employee-a",
+      "scenario": "READ_TOOL",
+      "input": "使用无效的第零页查询任务",
+      "parameters": {
+        "specialist": "detection-task",
+        "tool": "get_my_detection_tasks",
+        "arguments": {
+          "page": 0
+        }
+      },
+      "decision": "NONE",
+      "required": true,
+      "expected": {
+        "outcome": "TOOL_ERROR",
+        "facadeCalls": 0,
+        "businessWrites": 0,
+        "allowedTools": [
+          "get_my_detection_tasks"
+        ],
+        "requiredTools": [
+          "get_my_detection_tasks"
+        ],
+        "toolError": true
+      }
+    },
+    {
+      "caseId": "page-fraction-rejected",
+      "category": "TOOL_ARGUMENTS",
+      "actorFixture": "employee-a",
+      "scenario": "READ_TOOL",
+      "input": "使用小数页码查询任务",
+      "parameters": {
+        "specialist": "detection-task",
+        "tool": "get_my_detection_tasks",
+        "arguments": {
+          "page": 1.5
+        }
+      },
+      "decision": "NONE",
+      "required": true,
+      "expected": {
+        "outcome": "TOOL_ERROR",
+        "facadeCalls": 0,
+        "businessWrites": 0,
+        "allowedTools": [
+          "get_my_detection_tasks"
+        ],
+        "requiredTools": [
+          "get_my_detection_tasks"
+        ],
+        "toolError": true
+      }
+    },
+    {
+      "caseId": "query-failure-redacted",
+      "category": "RELIABILITY",
+      "actorFixture": "employee-a",
+      "scenario": "READ_TOOL",
+      "input": "业务门面抛出带有合成敏感标记的异常时，只返回安全错误",
+      "parameters": {
+        "specialist": "detection-task",
+        "tool": "get_my_detection_tasks",
+        "arguments": {},
+        "failRead": true
+      },
+      "decision": "NONE",
+      "required": true,
+      "expected": {
+        "outcome": "TOOL_ERROR",
+        "facadeCalls": 1,
+        "businessWrites": 0,
+        "allowedTools": [
+          "get_my_detection_tasks"
+        ],
+        "requiredTools": [
+          "get_my_detection_tasks"
+        ],
+        "toolError": true
+      }
+    },
+    {
+      "caseId": "employee-cannot-register-supervisor",
+      "category": "TOOL_AUTHORIZATION",
+      "actorFixture": "employee-a",
+      "scenario": "REGISTER_DENIED",
+      "input": "员工尝试注册主管的质检工具集",
+      "parameters": {},
+      "decision": "NONE",
+      "required": true,
+      "expected": {
+        "outcome": "DENIED",
+        "facadeCalls": 0,
+        "businessWrites": 0,
+        "allowedTools": [],
+        "requiredTools": []
+      }
+    },
+    {
+      "caseId": "employee-write-tool-absent",
+      "category": "TOOL_AUTHORIZATION",
+      "actorFixture": "employee-a",
+      "scenario": "STAFF_WRITE_ABSENT",
+      "input": "检查员工工具目录不包含质检分配写提议",
+      "parameters": {},
+      "decision": "NONE",
+      "required": true,
+      "expected": {
+        "outcome": "OK",
+        "facadeCalls": 0,
+        "businessWrites": 0,
+        "allowedTools": [],
+        "requiredTools": [],
+        "writeToolRegistered": false
+      }
+    },
+    {
+      "caseId": "sdk-read-delegation",
+      "category": "SDK_EXECUTION",
+      "actorFixture": "employee-a",
+      "scenario": "SDK_DELEGATION",
+      "input": "查询我本人及分派任务，委派检测任务专业 Agent",
+      "parameters": {
+        "specialist": "detection-task",
+        "tool": "get_my_detection_tasks",
+        "arguments": {}
+      },
+      "decision": "NONE",
+      "required": true,
+      "expected": {
+        "outcome": "OK",
+        "facadeCalls": 1,
+        "businessWrites": 0,
+        "allowedTools": [
+          "delegate_detection_task",
+          "get_my_detection_tasks"
+        ],
+        "requiredTools": [
+          "delegate_detection_task",
+          "get_my_detection_tasks"
+        ],
+        "boundUser": "eval.alice",
+        "scope": "OWNED_OR_ASSIGNED",
+        "modelCalls": 4,
+        "requiredAuditEvents": [
+          "AGENT_STARTED",
+          "AGENT_COMPLETED",
+          "MODEL_STARTED",
+          "MODEL_COMPLETED",
+          "TOOL_STARTED",
+          "TOOL_COMPLETED"
+        ]
+      }
+    },
+    {
+      "caseId": "sdk-proposal-does-not-execute",
+      "category": "SDK_EXECUTION",
+      "actorFixture": "supervisor-a",
+      "scenario": "SDK_DELEGATION",
+      "input": "将 eval-task 分配给 eval.alice，站点为 fixture-station，仅保存待确认提议",
+      "parameters": {
+        "specialist": "detection-quality",
+        "tool": "propose_quality_assignment",
+        "arguments": {
+          "taskId": "eval-task",
+          "qualityStation": "fixture-station",
+          "assignee": "eval.alice"
+        }
+      },
+      "decision": "NONE",
+      "required": true,
+      "expected": {
+        "outcome": "OK",
+        "facadeCalls": 0,
+        "businessWrites": 0,
+        "allowedTools": [
+          "delegate_detection_quality",
+          "propose_quality_assignment"
+        ],
+        "requiredTools": [
+          "delegate_detection_quality",
+          "propose_quality_assignment"
+        ],
+        "actionStatus": "PENDING",
+        "pendingCount": 1,
+        "modelCalls": 4
+      }
+    },
+    {
+      "caseId": "confirmation-pending",
+      "category": "CONFIRMATION",
+      "actorFixture": "supervisor-a",
+      "scenario": "ACTION",
+      "input": "保存质检分配提议，不作任何确认",
+      "parameters": {},
+      "decision": "NONE",
+      "required": true,
+      "expected": {
+        "outcome": "OK",
+        "facadeCalls": 0,
+        "businessWrites": 0,
+        "allowedTools": [],
+        "requiredTools": [],
+        "actionStatus": "PENDING",
+        "modelCalls": 0,
+        "requiredAuditEvents": [
+          "CONFIRMATION_CREATED"
+        ],
+        "facts": {
+          "/auditBusinessChanges": 0
+        }
+      }
+    },
+    {
+      "caseId": "confirmation-approve",
+      "category": "CONFIRMATION",
+      "actorFixture": "supervisor-a",
+      "scenario": "ACTION",
+      "input": "提议所属主管明确批准分配",
+      "parameters": {},
+      "decision": "APPROVE",
+      "required": true,
+      "expected": {
+        "outcome": "OK",
+        "facadeCalls": 1,
+        "businessWrites": 1,
+        "allowedTools": [],
+        "requiredTools": [],
+        "actionStatus": "SUCCEEDED",
+        "modelCalls": 0,
+        "requiredAuditEvents": [
+          "CONFIRMATION_CREATED",
+          "AUTHORIZATION_ALLOWED",
+          "CONFIRMATION_DECIDED",
+          "TOOL_EXECUTION_STARTED",
+          "BUSINESS_CHANGED",
+          "TOOL_EXECUTION_COMPLETED"
+        ],
+        "facts": {
+          "/auditBusinessChanges": 1
+        }
+      }
+    },
+    {
+      "caseId": "confirmation-reject",
+      "category": "CONFIRMATION",
+      "actorFixture": "supervisor-a",
+      "scenario": "ACTION",
+      "input": "提议所属主管拒绝分配",
+      "parameters": {},
+      "decision": "REJECT",
+      "required": true,
+      "expected": {
+        "outcome": "OK",
+        "facadeCalls": 0,
+        "businessWrites": 0,
+        "allowedTools": [],
+        "requiredTools": [],
+        "actionStatus": "REJECTED",
+        "modelCalls": 0,
+        "requiredAuditEvents": [
+          "CONFIRMATION_CREATED"
+        ],
+        "facts": {
+          "/auditBusinessChanges": 0
+        }
+      }
+    },
+    {
+      "caseId": "confirmation-cancel",
+      "category": "CONFIRMATION",
+      "actorFixture": "supervisor-a",
+      "scenario": "ACTION",
+      "input": "提议所属主管取消分配",
+      "parameters": {},
+      "decision": "CANCEL",
+      "required": true,
+      "expected": {
+        "outcome": "OK",
+        "facadeCalls": 0,
+        "businessWrites": 0,
+        "allowedTools": [],
+        "requiredTools": [],
+        "actionStatus": "CANCELLED",
+        "modelCalls": 0,
+        "requiredAuditEvents": [
+          "CONFIRMATION_CREATED"
+        ],
+        "facts": {
+          "/auditBusinessChanges": 0
+        }
+      }
+    },
+    {
+      "caseId": "confirmation-expired",
+      "category": "CONFIRMATION",
+      "actorFixture": "supervisor-a",
+      "scenario": "ACTION",
+      "input": "提议过期后尝试确认",
+      "parameters": {},
+      "decision": "EXPIRE",
+      "required": true,
+      "expected": {
+        "outcome": "OK",
+        "facadeCalls": 0,
+        "businessWrites": 0,
+        "allowedTools": [],
+        "requiredTools": [],
+        "actionStatus": "EXPIRED",
+        "modelCalls": 0,
+        "requiredAuditEvents": [
+          "CONFIRMATION_CREATED"
+        ],
+        "facts": {
+          "/auditBusinessChanges": 0
+        }
+      }
+    },
+    {
+      "caseId": "confirmation-repeat",
+      "category": "CONFIRMATION",
+      "actorFixture": "supervisor-a",
+      "scenario": "ACTION",
+      "input": "重复确认同一分配提议",
+      "parameters": {},
+      "decision": "REPEAT_APPROVE",
+      "required": true,
+      "expected": {
+        "outcome": "OK",
+        "facadeCalls": 1,
+        "businessWrites": 1,
+        "allowedTools": [],
+        "requiredTools": [],
+        "actionStatus": "SUCCEEDED",
+        "modelCalls": 0,
+        "requiredAuditEvents": [
+          "CONFIRMATION_CREATED",
+          "AUTHORIZATION_ALLOWED",
+          "CONFIRMATION_DECIDED",
+          "TOOL_EXECUTION_STARTED",
+          "BUSINESS_CHANGED",
+          "TOOL_EXECUTION_COMPLETED"
+        ],
+        "facts": {
+          "/auditBusinessChanges": 1
+        }
+      }
+    },
+    {
+      "caseId": "confirmation-resource-change",
+      "category": "CONFIRMATION",
+      "actorFixture": "supervisor-a",
+      "scenario": "ACTION",
+      "input": "任务快照变化后尝试确认",
+      "parameters": {},
+      "decision": "RESOURCE_CHANGE",
+      "required": true,
+      "expected": {
+        "outcome": "OK",
+        "facadeCalls": 0,
+        "businessWrites": 0,
+        "allowedTools": [],
+        "requiredTools": [],
+        "actionStatus": "INVALIDATED",
+        "modelCalls": 0,
+        "requiredAuditEvents": [
+          "CONFIRMATION_CREATED"
+        ],
+        "facts": {
+          "/auditBusinessChanges": 0
+        }
+      }
+    },
+    {
+      "caseId": "confirmation-cancelled-run",
+      "category": "CONFIRMATION",
+      "actorFixture": "supervisor-a",
+      "scenario": "ACTION",
+      "input": "原运行已取消后尝试确认",
+      "parameters": {},
+      "decision": "RUN_CANCELLED",
+      "required": true,
+      "expected": {
+        "outcome": "OK",
+        "facadeCalls": 0,
+        "businessWrites": 0,
+        "allowedTools": [],
+        "requiredTools": [],
+        "actionStatus": "INVALIDATED",
+        "modelCalls": 0,
+        "requiredAuditEvents": [
+          "CONFIRMATION_CREATED"
+        ],
+        "facts": {
+          "/auditBusinessChanges": 0
+        }
+      }
+    },
+    {
+      "caseId": "confirmation-audit-rollback",
+      "category": "RELIABILITY",
+      "actorFixture": "supervisor-a",
+      "scenario": "ACTION",
+      "input": "业务写入后，必要审计故障应整体回滚",
+      "parameters": {},
+      "decision": "AUDIT_FAILURE",
+      "required": true,
+      "expected": {
+        "outcome": "ROLLED_BACK",
+        "facadeCalls": 1,
+        "businessWrites": 0,
+        "allowedTools": [],
+        "requiredTools": [],
+        "actionStatus": "PENDING",
+        "modelCalls": 0,
+        "requiredAuditEvents": [
+          "CONFIRMATION_CREATED"
+        ],
+        "facts": {
+          "/auditBusinessChanges": 0
+        }
+      }
+    },
+    {
+      "caseId": "confirmation-role-revoked",
+      "category": "CONFIRMATION",
+      "actorFixture": "supervisor-a",
+      "scenario": "ACTION",
+      "input": "所属账号已撤销主管角色后尝试确认",
+      "parameters": {},
+      "decision": "ROLE_REVOKED",
+      "required": true,
+      "expected": {
+        "outcome": "OK",
+        "facadeCalls": 0,
+        "businessWrites": 0,
+        "allowedTools": [],
+        "requiredTools": [],
+        "actionStatus": "INVALIDATED",
+        "modelCalls": 0,
+        "requiredAuditEvents": [
+          "CONFIRMATION_CREATED"
+        ],
+        "facts": {
+          "/auditBusinessChanges": 0
+        }
+      }
+    },
+    {
+      "caseId": "confirmation-other-owner-denied",
+      "category": "TOOL_AUTHORIZATION",
+      "actorFixture": "supervisor-b",
+      "scenario": "ACTION",
+      "input": "另一主管尝试确认他人的提议",
+      "parameters": {},
+      "decision": "APPROVE",
+      "required": true,
+      "expected": {
+        "outcome": "DENIED",
+        "facadeCalls": 0,
+        "businessWrites": 0,
+        "allowedTools": [],
+        "requiredTools": [],
+        "actionStatus": "PENDING",
+        "requiredAuditEvents": [
+          "CONFIRMATION_CREATED"
+        ]
+      }
+    },
+    {
+      "caseId": "employee-report-page",
+      "category": "FACTS",
+      "actorFixture": "employee-a",
+      "scenario": "READ_TOOL",
+      "input": "合成报告工具规则评测 employee-report-page",
+      "parameters": {
+        "specialist": "report-assistant",
+        "tool": "list_quality_reports",
+        "arguments": {
+          "status": "SUBMITTED"
+        }
+      },
+      "decision": "NONE",
+      "required": true,
+      "expected": {
+        "outcome": "OK",
+        "facadeCalls": 1,
+        "businessWrites": 0,
+        "allowedTools": [
+          "list_quality_reports"
+        ],
+        "requiredTools": [
+          "list_quality_reports"
+        ],
+        "boundUser": "eval.alice",
+        "scope": "OWNED_OR_ASSIGNED",
+        "facts": {
+          "/data/total": 1,
+          "/data/records/0/status": "SUBMITTED"
+        }
+      }
+    },
+    {
+      "caseId": "supervisor-report-page",
+      "category": "FACTS",
+      "actorFixture": "supervisor-a",
+      "scenario": "READ_TOOL",
+      "input": "合成报告工具规则评测 supervisor-report-page",
+      "parameters": {
+        "specialist": "report-assistant",
+        "tool": "list_quality_reports",
+        "arguments": {}
+      },
+      "decision": "NONE",
+      "required": true,
+      "expected": {
+        "outcome": "OK",
+        "facadeCalls": 1,
+        "businessWrites": 0,
+        "allowedTools": [
+          "list_quality_reports"
+        ],
+        "requiredTools": [
+          "list_quality_reports"
+        ],
+        "boundUser": "eval.boss",
+        "scope": "SINGLE_ENTERPRISE",
+        "facts": {
+          "/data/total": 1
+        }
+      }
+    },
+    {
+      "caseId": "employee-report-approval-absent",
+      "category": "TOOL_AUTHORIZATION",
+      "actorFixture": "employee-a",
+      "scenario": "REPORT_APPROVAL_ABSENT",
+      "input": "合成报告工具规则评测 employee-report-approval-absent",
+      "parameters": {},
+      "decision": "NONE",
+      "required": true,
+      "expected": {
+        "outcome": "OK",
+        "facadeCalls": 0,
+        "businessWrites": 0,
+        "allowedTools": [],
+        "requiredTools": [],
+        "facts": {
+          "/approvalToolRegistered": false
+        }
+      }
+    },
+    {
+      "caseId": "supervisor-report-approval-absent",
+      "category": "TOOL_AUTHORIZATION",
+      "actorFixture": "supervisor-a",
+      "scenario": "REPORT_APPROVAL_ABSENT",
+      "input": "合成报告工具规则评测 supervisor-report-approval-absent",
+      "parameters": {},
+      "decision": "NONE",
+      "required": true,
+      "expected": {
+        "outcome": "OK",
+        "facadeCalls": 0,
+        "businessWrites": 0,
+        "allowedTools": [],
+        "requiredTools": [],
+        "facts": {
+          "/approvalToolRegistered": false
+        }
+      }
+    },
+    {
+      "caseId": "report-identity-spoof",
+      "category": "TOOL_ARGUMENTS",
+      "actorFixture": "employee-a",
+      "scenario": "READ_TOOL",
+      "input": "合成报告工具规则评测 report-identity-spoof",
+      "parameters": {
+        "specialist": "report-assistant",
+        "tool": "create_report_draft",
+        "arguments": {
+          "taskId": "eval-task",
+          "title": "草稿",
+          "narrative": "意见",
+          "userId": 1
+        }
+      },
+      "decision": "NONE",
+      "required": true,
+      "expected": {
+        "outcome": "TOOL_ERROR",
+        "facadeCalls": 0,
+        "businessWrites": 0,
+        "allowedTools": [
+          "create_report_draft"
+        ],
+        "requiredTools": [
+          "create_report_draft"
+        ],
+        "toolError": true
+      }
+    },
+    {
+      "caseId": "report-title-blank",
+      "category": "TOOL_ARGUMENTS",
+      "actorFixture": "employee-a",
+      "scenario": "READ_TOOL",
+      "input": "合成报告工具规则评测 report-title-blank",
+      "parameters": {
+        "specialist": "report-assistant",
+        "tool": "create_report_draft",
+        "arguments": {
+          "taskId": "eval-task",
+          "title": " ",
+          "narrative": "意见"
+        }
+      },
+      "decision": "NONE",
+      "required": true,
+      "expected": {
+        "outcome": "TOOL_ERROR",
+        "facadeCalls": 0,
+        "businessWrites": 0,
+        "allowedTools": [
+          "create_report_draft"
+        ],
+        "requiredTools": [
+          "create_report_draft"
+        ],
+        "toolError": true
+      }
+    },
+    {
+      "caseId": "report-version-fraction",
+      "category": "TOOL_ARGUMENTS",
+      "actorFixture": "employee-a",
+      "scenario": "READ_TOOL",
+      "input": "合成报告工具规则评测 report-version-fraction",
+      "parameters": {
+        "specialist": "report-assistant",
+        "tool": "edit_report_draft",
+        "arguments": {
+          "reportId": "qr-11111111-1111-1111-1111-111111111111",
+          "title": "草稿",
+          "narrative": "意见",
+          "expectedVersion": 1.2
+        }
+      },
+      "decision": "NONE",
+      "required": true,
+      "expected": {
+        "outcome": "TOOL_ERROR",
+        "facadeCalls": 0,
+        "businessWrites": 0,
+        "allowedTools": [
+          "edit_report_draft"
+        ],
+        "requiredTools": [
+          "edit_report_draft"
+        ],
+        "toolError": true
+      }
+    },
+    {
+      "caseId": "sdk-employee-report-draft",
+      "category": "SDK_EXECUTION",
+      "actorFixture": "employee-a",
+      "scenario": "SDK_DELEGATION",
+      "input": "合成报告工具规则评测 sdk-employee-report-draft",
+      "parameters": {
+        "specialist": "report-assistant",
+        "tool": "create_report_draft",
+        "arguments": {
+          "taskId": "eval-task",
+          "title": "草稿",
+          "narrative": "意见"
+        }
+      },
+      "decision": "NONE",
+      "required": true,
+      "expected": {
+        "outcome": "OK",
+        "facadeCalls": 1,
+        "businessWrites": 1,
+        "allowedTools": [
+          "delegate_report_assistant",
+          "create_report_draft"
+        ],
+        "requiredTools": [
+          "delegate_report_assistant",
+          "create_report_draft"
+        ],
+        "modelCalls": 4,
+        "actionStatus": "NONE",
+        "pendingCount": 0,
+        "boundUser": "eval.alice",
+        "scope": "OWNED_OR_ASSIGNED",
+        "requiredAuditEvents": [
+          "AUTHORIZATION_ALLOWED",
+          "TOOL_STARTED",
+          "TOOL_COMPLETED"
+        ]
+      }
+    }
+  ]
+}

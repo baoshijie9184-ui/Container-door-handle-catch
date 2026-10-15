@@ -1,5 +1,14 @@
 <template>
   <div class="composer">
+    <Transition name="slash-menu">
+      <section v-if="menuVisible" class="slash-menu" aria-label="技能命令建议">
+        <p>选择命令后填写问题 Enter 或 Tab 补全 Escape 关闭</p>
+        <div id="chat-skill-commands" role="listbox" aria-label="技能命令">
+          <button v-for="(item,index) in commandOptions" :id="'chat-skill-command-'+index" :key="item.value" type="button" role="option" :aria-selected="index===activeCommand" :class="{active:index===activeCommand}" @mousedown.prevent @click="selectCommand(item)"><strong>{{ item.label }}</strong><span>{{ item.description }}</span></button>
+        </div>
+      </section>
+    </Transition>
+    <p v-if="commandError && draft.startsWith('/')" class="command-error" role="status">{{ commandError }}</p>
     <!-- 快捷指令 chips -->
     <div class="quick-chips" v-if="!loading">
       <button
@@ -17,11 +26,14 @@
         ref="textareaRef"
         v-model="draft"
         class="composer-textarea"
-        :placeholder="loading ? '助手正在思考…' : '输入消息，例如：查看严重缺陷证据、批次追溯或模型灰度状态'"
+        :placeholder="loading ? '助手正在思考…' : '输入消息 或输入 / 选择技能命令'"
         :disabled="loading"
         rows="1"
-        @input="autoResize"
-        @keydown.enter.exact.prevent="handleSend"
+        :aria-expanded="menuVisible" aria-controls="chat-skill-commands" :aria-activedescendant="menuVisible ? 'chat-skill-command-'+activeCommand : undefined" aria-label="聊天消息或技能命令"
+        @input="handleInput"
+        @focus="refreshCommands"
+        @blur="menuDismissed=true"
+        @keydown="handleKey"
       />
       <button
         class="composer-voice"
@@ -55,9 +67,12 @@
 </template>
 
 <script setup>
-import { ref, nextTick, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, nextTick, onBeforeUnmount } from 'vue'
 import { ElMessage } from 'element-plus'
 import { transcribeChatVoice } from '@/api/chatAssistant'
+import request from '@/api/request'
+import { useUserStore } from '@/stores/user'
+import { filterSkillCommands } from '@/utils/skillCommands'
 
 const props = defineProps({
   loading: { type: Boolean, default: false }
@@ -65,6 +80,20 @@ const props = defineProps({
 
 const emit = defineEmits(['send'])
 const draft = ref('')
+const user=useUserStore(), commandCatalog=ref(null), commandError=ref(''), menuDismissed=ref(false), activeCommand=ref(0)
+const commandOptions=computed(()=>filterSkillCommands(commandCatalog.value,draft.value))
+const menuVisible=computed(()=>!props.loading&&!menuDismissed.value&&commandOptions.value.length>0)
+let commandGeneration=0
+async function refreshCommands(){const generation=++commandGeneration;commandCatalog.value=null;commandError.value='';try{const response=await request.get('/api/agent/commands');if(generation===commandGeneration)commandCatalog.value=response.data}catch{if(generation===commandGeneration){commandCatalog.value=null;commandError.value='技能目录暂不可用 可用 /help 查看命令帮助'}}}
+function handleInput(){menuDismissed.value=false;activeCommand.value=0;autoResize()}
+function selectCommand(item){draft.value=item.value.trimEnd()+' ';menuDismissed.value=true;activeCommand.value=0;nextTick(()=>{textareaRef.value?.focus();autoResize()})}
+function handleKey(event){if(event.isComposing||event.keyCode===229)return;if(menuVisible.value&&!event.shiftKey){
+  if(event.key==='Escape'){event.preventDefault();event.stopPropagation();menuDismissed.value=true;return}
+  if(event.key==='ArrowDown'||event.key==='ArrowUp'){event.preventDefault();activeCommand.value=(activeCommand.value+(event.key==='ArrowDown'?1:-1)+commandOptions.value.length)%commandOptions.value.length;return}
+  if(event.key==='Tab'||event.key==='Enter'){event.preventDefault();selectCommand(commandOptions.value[activeCommand.value]||commandOptions.value[0]);return}
+}if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();handleSend()}}
+watch(()=>[user.username,user.role],()=>{commandGeneration++;commandCatalog.value=null;draft.value='';menuDismissed.value=true;commandError.value=''})
+watch(commandOptions,options=>{if(activeCommand.value>=options.length)activeCommand.value=0})
 const recording = ref(false)
 const voiceTranscribing = ref(false)
 const voiceHint = ref('')
@@ -85,13 +114,13 @@ const voiceMimeOptions = [
 
 const quickChips = [
   { label: '业务地图', text: '显示系统业务地图和功能入口', icon: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>' },
-  { label: '缺陷证据', text: '查看严重缺陷证据', icon: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10.3 3.5 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.5a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>' },
-  { label: '质检队列', text: '查看待复核质检队列和返工复检任务', icon: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>' },
-  { label: '批次追溯', text: '查询批次 BATCH-001 的追溯报告', icon: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16"/><path d="M4 12h16"/><path d="M4 17h10"/><path d="M7 4v16"/></svg>' },
-  { label: '模型灰度', text: '查看模型评估指标、灰度发布和回滚状态', icon: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3v18"/><path d="M5 8h14"/><path d="M5 16h14"/></svg>' },
-  { label: '质量报表', text: '生成本周质量处置统计和质检工作量报表', icon: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>' },
-  { label: 'Agent健康', text: '查看 Agent checkpoint 和健康状态', icon: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M22 12h-4l-3 7-6-14-3 7H2"/><path d="M17 4h4v4"/></svg>' },
-  { label: '运维链路', text: '检查OSS、Kafka和远程Worker运行状态', icon: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>' }
+  { label: '缺陷统计', text: '查询最近检测任务的缺陷数量', icon: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10.3 3.5 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.5a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>' },
+  { label: '质检记录', text: '查询我有权限查看的质检记录', icon: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>' },
+  { label: '批次追溯', text: '批次追溯在哪个页面操作', icon: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16"/><path d="M4 12h16"/><path d="M4 17h10"/><path d="M7 4v16"/></svg>' },
+  { label: '模型列表', text: '查询我有权限查看的模型列表', icon: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3v18"/><path d="M5 8h14"/><path d="M5 16h14"/></svg>' },
+  { label: '工作统计', text: '查询本周工作统计', icon: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>' },
+  { label: '执行轨迹', text: '如何查看 AgentScope 调用轨迹', icon: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M22 12h-4l-3 7-6-14-3 7H2"/><path d="M17 4h4v4"/></svg>' },
+  { label: '助手能力', text: '当前助手支持哪些只读查询', icon: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>' }
 ]
 const textareaRef = ref(null)
 
@@ -230,6 +259,7 @@ const handleVoiceRecorded = async () => {
 }
 
 onBeforeUnmount(() => {
+  commandGeneration++
   clearRecordingTimer()
   if (mediaRecorder) {
     mediaRecorder.ondataavailable = null
@@ -247,11 +277,13 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .composer {
+  position: relative;
   padding: 8px 20px 16px;
   background: #ffffff;
   border-top: 1px solid rgba(15, 23, 42, 0.06);
   flex-shrink: 0;
 }
+.slash-menu{position:absolute;left:20px;right:20px;bottom:100%;z-index:20;max-height:320px;overflow:auto;background:white;border:1px solid #dce7f6;border-radius:14px;box-shadow:0 10px 28px #163c7020;padding:8px}.slash-menu p{font-size:11px;color:#64748b;padding:0 8px}.slash-menu button{display:flex;flex-direction:column;gap:4px;width:100%;text-align:left;background:white;color:#24354c;border:0;border-radius:8px;padding:10px;cursor:pointer;transition:background .15s,transform .15s}.slash-menu button span{font-size:12px;color:#64748b;overflow-wrap:anywhere}.slash-menu button.active,.slash-menu button:hover{background:#eef5ff}.slash-menu button:active{transform:scale(.99)}.slash-menu-enter-active,.slash-menu-leave-active{transition:opacity .15s,transform .15s}.slash-menu-enter-from,.slash-menu-leave-to{opacity:0;transform:translateY(5px)}.command-error{font-size:12px;color:#64748b}@media(prefers-reduced-motion:reduce){.slash-menu-enter-active,.slash-menu-leave-active,.slash-menu button{transition:none;transform:none!important}}
 
 /* ── 快捷指令 ── */
 .quick-chips {

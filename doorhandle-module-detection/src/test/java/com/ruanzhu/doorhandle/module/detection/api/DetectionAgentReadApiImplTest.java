@@ -15,17 +15,17 @@ class DetectionAgentReadApiImplTest {
     private final DetectionAgentReadApiImpl api = new DetectionAgentReadApiImpl(mapper);
     private final AgentActor employee = new AgentActor(1, "alice", AgentActor.Role.INSPECTOR);
 
-    @Test void employeeListAndDetailBothEnforceCreatedByInSql() {
+    @Test void employeeListAndDetailBothEnforceOwnedOrAssignedInSql() {
         when(mapper.selectCount(any())).thenReturn(0L);
         when(mapper.selectList(any(QueryWrapper.class))).thenReturn(List.of());
         api.tasks(employee, 1, 20, false);
         var captor = ArgumentCaptor.forClass(QueryWrapper.class);
         verify(mapper).selectList(captor.capture());
-        assertThat(captor.getValue().getSqlSegment()).contains("created_by");
+        assertThat(captor.getValue().getSqlSegment()).contains("(created_by", " OR assignee");
         assertThat(captor.getValue().getParamNameValuePairs()).containsValue("alice");
         assertThatThrownBy(() -> api.task(employee, "foreign-task")).isInstanceOf(SecurityException.class);
         verify(mapper).selectOne(captor.capture());
-        assertThat(captor.getValue().getSqlSegment()).contains("created_by", "task_id");
+        assertThat(captor.getValue().getSqlSegment()).contains("created_by", "assignee", "task_id");
         assertThat(captor.getValue().getParamNameValuePairs()).containsValues("alice", "foreign-task");
     }
     @Test void taskResponseDoesNotExposeStorageKeysOrSession() {

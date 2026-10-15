@@ -31,7 +31,7 @@
         <java.version>17</java.version>
         <spring-boot.version>3.2.4</spring-boot.version>
         <!-- 第三方平台版本统一在父 POM 管理；升级 AgentScope 只需修改此处。 -->
-        <agentscope.version>2.0.1</agentscope.version>
+        <agentscope.version>2.0.4</agentscope.version>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     </properties>
     <dependencyManagement>
@@ -55,6 +55,16 @@
             </dependency>
             <dependency>
                 <groupId>io.agentscope</groupId>
+                <artifactId>agentscope-extensions-model-openai</artifactId>
+                <version>${agentscope.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.agentscope</groupId>
+                <artifactId>agentscope-extensions-model-openai-official</artifactId>
+                <version>${agentscope.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.agentscope</groupId>
                 <artifactId>agentscope-agui-spring-boot-starter</artifactId>
                 <version>${agentscope.version}</version>
             </dependency>
@@ -68,7 +78,7 @@
                     <artifactId>maven-surefire-plugin</artifactId>
                     <configuration>
                         <!-- Windows 下项目盘符与 Maven 仓库盘符不同时，允许测试类路径使用绝对 URL。 -->
-                        <argLine>-Djdk.net.URLClassPath.disableClassPathURLCheck=true</argLine>
+                        <argLine>-Djdk.net.URLClassPath.disableClassPathURLCheck=true -Djava.io.tmpdir="${project.build.directory}"</argLine>
                     </configuration>
                 </plugin>
             </plugins>

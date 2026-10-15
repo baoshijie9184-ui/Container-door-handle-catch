@@ -1,7 +1,13 @@
 package com.ruanzhu.doorhandle.module.detection.service.impl;
 
 import org.junit.jupiter.api.Test;
-import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
+import com.ruanzhu.doorhandle.module.detection.security.DetectionTaskAccessPolicy;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.AfterEach;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.List;
@@ -13,21 +19,27 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 class DashboardServiceImplTest {
+    @BeforeEach void authenticate() {
+        SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(
+                "alice", "n/a", List.of(new SimpleGrantedAuthority("ROLE_INSPECTOR"))));
+    }
+    @AfterEach void clear() { SecurityContextHolder.clearContext(); }
 
     @Test
     void getQualityDispositionStatsSummarizesPendingAndDispositionActions() {
-        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        NamedParameterJdbcTemplate jdbcTemplate = mock(NamedParameterJdbcTemplate.class);
         DashboardServiceImpl dashboardService = new DashboardServiceImpl();
-        ReflectionTestUtils.setField(dashboardService, "jdbcTemplate", jdbcTemplate);
+        ReflectionTestUtils.setField(dashboardService, "scopedJdbc", jdbcTemplate);
+        ReflectionTestUtils.setField(dashboardService, "accessPolicy", new DetectionTaskAccessPolicy());
 
-        when(jdbcTemplate.queryForList(org.mockito.ArgumentMatchers.contains("summary")))
+        when(jdbcTemplate.queryForList(org.mockito.ArgumentMatchers.contains("summary"), org.mockito.ArgumentMatchers.eq(Map.of("scopeUsername", "alice"))))
                 .thenReturn(List.of(Map.of(
                         "reviewedCount", 8,
                         "pendingDispositionCount", 3,
                         "disposedCount", 5,
                         "recheckRequiredCount", 2
                 )));
-        when(jdbcTemplate.queryForList(org.mockito.ArgumentMatchers.contains("disposition_action")))
+        when(jdbcTemplate.queryForList(org.mockito.ArgumentMatchers.contains("disposition_action"), org.mockito.ArgumentMatchers.eq(Map.of("scopeUsername", "alice"))))
                 .thenReturn(List.of(
                         Map.of("action", "REWORK", "count", 2),
                         Map.of("action", "RELEASE", "count", 3)
@@ -52,11 +64,12 @@ class DashboardServiceImplTest {
 
     @Test
     void getQualityWorkloadSummarizesActionableInspectionQueues() {
-        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        NamedParameterJdbcTemplate jdbcTemplate = mock(NamedParameterJdbcTemplate.class);
         DashboardServiceImpl dashboardService = new DashboardServiceImpl();
-        ReflectionTestUtils.setField(dashboardService, "jdbcTemplate", jdbcTemplate);
+        ReflectionTestUtils.setField(dashboardService, "scopedJdbc", jdbcTemplate);
+        ReflectionTestUtils.setField(dashboardService, "accessPolicy", new DetectionTaskAccessPolicy());
 
-        when(jdbcTemplate.queryForList(org.mockito.ArgumentMatchers.contains("pendingReviewCount")))
+        when(jdbcTemplate.queryForList(org.mockito.ArgumentMatchers.contains("pendingReviewCount"), org.mockito.ArgumentMatchers.eq(Map.of("scopeUsername", "alice"))))
                 .thenReturn(List.of(Map.of(
                         "pendingReviewCount", 4,
                         "pendingDispositionCount", 3,

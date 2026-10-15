@@ -7,6 +7,9 @@ import com.ruanzhu.doorhandle.module.device.service.EmployeeService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
+import com.ruanzhu.doorhandle.module.detection.security.DetectionTaskAccessPolicy;
+import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
+
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -36,12 +39,20 @@ public class StatisticsController {
     
     @Autowired
     private JdbcTemplate jdbcTemplate;
+
+    @Autowired
+    private DetectionTaskAccessPolicy accessPolicy;
+
+    @Autowired
+    private NamedParameterJdbcTemplate scopedJdbc;
+
     
     /**
      * 检查detection_task表是否存在以及是否有数据
      */
     @GetMapping("/check-detection-records")
     public Result checkDetectionRecords() {
+        var scope = accessPolicy.currentSqlScope("");
         log.info("检查detection_task表状态");
 
         Map<String, Object> result = new HashMap<>();
@@ -55,16 +66,16 @@ public class StatisticsController {
             result.put("tableExists", count != null && count > 0);
 
             if (count != null && count > 0) {
-                Integer recordCount = jdbcTemplate.queryForObject(
-                    "SELECT COUNT(*) FROM detection_task",
-                    Integer.class
+                Integer recordCount = scopedJdbc.queryForObject(
+                    "SELECT COUNT(*) FROM detection_task WHERE " + scope.predicate(),
+                    scope.parameters(), Integer.class
                 );
 
                 result.put("recordCount", recordCount);
 
                 if (recordCount != null && recordCount > 0) {
-                    List<Map<String, Object>> sampleData = jdbcTemplate.queryForList(
-                        "SELECT * FROM detection_task LIMIT 1"
+                    List<Map<String, Object>> sampleData = scopedJdbc.queryForList(
+                        "SELECT * FROM detection_task WHERE " + scope.predicate() + " LIMIT 1", scope.parameters()
                     );
                     result.put("sampleData", sampleData);
                 }
@@ -158,6 +169,7 @@ public class StatisticsController {
      */
     @GetMapping("/detection-trend")
     public Result getDetectionTrend(@RequestParam(defaultValue = "month") String timeRange) {
+        var scope = accessPolicy.currentSqlScope("");
         log.info("获取检测记录趋势统计，时间范围: {}", timeRange);
 
         String dateFormat;
@@ -200,7 +212,7 @@ public class StatisticsController {
                     "SUM(" + jm + ") AS missing, " +
                     "SUM(" + jc + ") AS compromised " +
                     "FROM detection_task " +
-                    "WHERE status IN ('COMPLETED', 'PARTIAL_FAILED') AND created_at IS NOT NULL ";
+                    "WHERE status IN ('COMPLETED', 'PARTIAL_FAILED') AND created_at IS NOT NULL AND " + scope.predicate() + " ";
 
             if (!"year".equals(timeRange)) {
                 sql += "AND created_at >= DATE_SUB(CURRENT_DATE(), INTERVAL " + interval + ") ";
@@ -209,7 +221,7 @@ public class StatisticsController {
             sql += "GROUP BY " + groupBy + " " +
                     "ORDER BY MIN(created_at)";
 
-            List<Map<String, Object>> result = jdbcTemplate.queryForList(sql);
+            List<Map<String, Object>> result = scopedJdbc.queryForList(sql, scope.parameters());
 
             List<Map<String, Object>> processedResult = new ArrayList<>();
             for (Map<String, Object> row : result) {
@@ -259,10 +271,11 @@ public class StatisticsController {
      */
     @GetMapping("/detection-distribution")
     public Result getDetectionDistribution() {
+        var scope = accessPolicy.currentSqlScope("");
         log.info("获取检测结果分布统计");
 
         String jc = "COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(statistics_json, '$.classCounts.%s')) AS UNSIGNED), 0)";
-        String filter = " FROM detection_task WHERE status IN ('COMPLETED', 'PARTIAL_FAILED')";
+        String filter = " FROM detection_task WHERE status IN ('COMPLETED', 'PARTIAL_FAILED') AND " + scope.predicate();
 
         String sql = "SELECT '正常' AS result, SUM(" + String.format(jc, "Normal") + ") AS count" + filter +
                 " UNION ALL " +
@@ -276,7 +289,7 @@ public class StatisticsController {
                 " UNION ALL " +
                 "SELECT '结构损伤' AS result, SUM(" + String.format(jc, "Compromised") + ") AS count" + filter;
 
-        List<Map<String, Object>> result = jdbcTemplate.queryForList(sql);
+        List<Map<String, Object>> result = scopedJdbc.queryForList(sql, scope.parameters());
         log.info("查询到检测结果分布统计: {}", result);
 
         return Result.success(result);

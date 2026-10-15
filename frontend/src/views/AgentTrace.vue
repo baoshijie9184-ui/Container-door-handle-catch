@@ -1,60 +1,161 @@
 <template>
-  <div class="trace-shell">
-    <header class="session-header">
-      <div class="session-heading"><span class="live-dot"></span><div><h2>{{ store.sessionTitle || 'Agent 调用链路' }}</h2><p>{{ store.sessionId || '请选择一个对话' }}</p></div><span class="mode-chip">⌘ 标准模式</span></div>
-      <div><el-button class="dark-button" :loading="loading" @click="refresh">刷新</el-button><el-button class="dark-button primary" @click="exportTrace">⇩ Export</el-button></div>
+  <section class="agent-trace-page app-panel">
+    <header class="trace-header">
+      <div><h2>AgentScope 调用轨迹</h2><p>服务器记录的执行事件与运行历史</p></div>
+      <div><el-button :loading="store.diagnosticsLoading" @click="refresh">刷新</el-button><el-button type="primary" :disabled="!events.length || hasMoreEvents" @click="exportTrace">导出轨迹</el-button></div>
     </header>
-    <nav class="view-tabs"><button :class="{active:tab==='dialogue'}" @click="tab='dialogue'">对话</button><button :class="{active:tab==='trace'}" @click="tab='trace'">轨迹</button></nav>
-
-    <section v-if="tab==='dialogue'" class="dialogue-view">
-      <aside class="session-list"><div class="panel-caption">会话列表</div><button v-for="session in store.sessions" :key="session.sessionId" :class="{active:session.sessionId===store.sessionId}" @click="selectSession(session.sessionId)"><b>{{ session.title || '新对话' }}</b><small>{{ session.messageCount || 0 }} 条消息 · {{ shortDate(session.updatedAt) }}</small></button></aside>
-      <main class="conversation-panel"><div class="panel-caption">点击任意一轮查看该轮调用轨迹</div><button v-for="turn in turnsData" :key="turn.number" class="turn-card" @click="openTurnTrace(turn.number)"><span class="turn-index">Turn {{ turn.number }}</span><div class="dialogue-message"><span class="badge user">USER</span><p>{{ turn.user?.content }}</p></div><div v-if="turn.assistant" class="dialogue-message"><span class="badge assistant">ASSISTANT</span><p>{{ turn.assistant.content }}</p></div><span class="inspect-link">查看轨迹 →</span></button><el-empty v-if="!turnsData.length" description="暂无对话记录" /></main>
-    </section>
-
-    <template v-else>
-      <section class="trace-toolbar"><div class="metrics"><span>◷ <b>Duration</b> {{ durationLabel }}</span><span>▣ <b>Turns</b> {{ turnsData.length }}</span><span>▤ <b>Calls</b> {{ callCount }}</span><button @click="exportTrace">⇩ <b>Export</b></button></div><div class="turn-filter"><button :class="{active:focusedTurn===null}" @click="focusedTurn=null">全部</button><button v-for="turn in turnsData" :key="turn.number" :class="{active:focusedTurn===turn.number}" @click="focusedTurn=turn.number">T{{ turn.number }}</button></div><el-input v-model="search" class="trace-search" size="small" placeholder="⌕ 搜索" clearable /></section>
-      <section class="lane-overview"><div class="lane-labels"><span>Input</span><span>Model</span><span>Tools</span></div><div class="lane-grid"><div v-for="lane in ['input','model','tool']" :key="lane" class="lane-row"><i v-for="node in overviewNodes.filter(item=>item.lane===lane)" :key="node.id" :class="node.kind" :style="barStyle(node)" :title="`${node.title} · ${node.duration} ms`" @click="selectNode(node)"></i></div></div></section>
-      <div class="trace-workspace">
-        <main class="trace-stream">
-          <button v-if="showSystemNode" class="node-row system-row" :class="{selected:selected?.id===systemNode.id}" @click="selectNode(systemNode)"><span class="tree-rail"></span><span class="badge system">SYSTEM</span><b>{{ systemNode.title }}</b><small>{{ systemNode.preview }}</small></button>
-          <section v-for="turn in visibleTurns" :key="turn.number" class="turn-group"><div class="turn-divider"><span>Turn {{ turn.number }}</span></div><button v-for="node in turn.nodes" :key="node.id" class="node-row" :class="[{selected:selected?.id===node.id},node.kind]" @click="selectNode(node)"><span class="tree-rail"><i></i></span><span class="badge" :class="node.kind">{{ node.label }}</span><b>{{ node.title }}</b><small>{{ node.preview }}</small><time>{{ node.duration }} ms</time></button></section>
-          <el-empty v-if="!visibleTurns.length" description="没有匹配的调用节点" />
-        </main>
-        <aside class="detail-panel" :class="{empty:!selected}"><template v-if="selected"><header class="detail-header"><span class="badge" :class="selected.kind">{{ selected.label }}</span><b>Turn {{ selected.turn || 0 }} · Step {{ selected.step }}</b><button title="关闭" @click="selected=null">×</button></header><nav class="detail-tabs"><button v-for="name in detailTabs" :key="name" :class="{active:detailTab===name}" @click="detailTab=name">{{ name }}</button></nav><div class="detail-body"><template v-if="detailTab==='Summary'"><dl class="summary-grid"><dt>Hierarchy</dt><dd>{{ selected.hierarchy }}</dd><dt>Status</dt><dd><span class="status-dot"></span>{{ selected.status }}</dd><dt>Agent</dt><dd>{{ selected.agent }}</dd><dt>Node</dt><dd>{{ selected.nodeName }}</dd></dl><detail-block title="Payload" :value="selected.payload"/><detail-block title="Result" :value="selected.result"/><detail-block title="Schema" :value="selected.schema"/><detail-block title="Timing" :value="selected.timing"/></template><pre v-else>{{ pretty(selected[detailTab.toLowerCase()]) }}</pre></div></template><el-empty v-else description="选择一个节点查看调用详情" :image-size="70" /></aside>
-      </div>
-    </template>
-  </div>
+    <div class="trace-content">
+      <aside>
+        <h3>会话</h3>
+        <button v-for="session in store.sessions" :key="session.sessionId" class="session-button" :class="{ active: session.sessionId === store.sessionId }" @click="selectSession(session.sessionId)">
+          <strong>{{ session.title || '新对话' }}</strong><small>{{ session.messageCount || 0 }} 条消息</small>
+        </button>
+      </aside>
+      <main>
+        <template v-if="store.agentHealth?.runJournalEnabled">
+          <div class="history-toolbar">
+            <el-switch v-model="allRuns" active-text="全部入口运行" aria-label="全部入口运行" @change="changeHistoryScope" />
+            <el-select v-model="selectedRunId" placeholder="选择运行" :loading="historyLoading" @change="loadRun">
+              <el-option v-for="run in runs" :key="run.runId" :value="run.runId" :label="`${run.startedAt} · ${run.entryPoint} · ${run.status}`" />
+            </el-select>
+            <el-button :disabled="!hasMoreRuns" :loading="historyLoading" @click="loadRuns(true)">更早运行</el-button>
+            <el-button v-if="selectedRun?.status === 'RUNNING'" type="danger" :loading="cancelling" @click="cancelRun">取消运行</el-button>
+          </div>
+          <p v-if="historyError" role="alert" class="history-error">{{ historyError }}</p>
+          <p class="journal-note">事件按序号补读 不会重新执行模型或工具</p>
+        </template>
+        <div class="trace-summary"><el-tag>{{ store.agentHealth?.framework || 'AgentScope' }}</el-tag><span>{{ displayStatus }}</span><small>{{ displayUpdatedAt }}</small></div>
+        <p v-if="store.agentHealth?.runJournalEnabled ? selectedRunId : store.executionTrace?.runId" class="run-id">运行编号 {{ selectedRunId || store.executionTrace.runId }}</p>
+        <el-table v-if="events.length" :data="events" stripe>
+          <el-table-column label="序号" width="70"><template #default="{ row, $index }">{{ row.sequence || $index + 1 }}</template></el-table-column>
+          <el-table-column prop="type" label="事件" min-width="150" />
+          <el-table-column label="技能 / 命令" min-width="180"><template #default="{ row }">{{ row.skillId ? row.skillId + ' · v' + row.version : row.command || '—' }}</template></el-table-column>
+          <el-table-column prop="agent" label="Agent" min-width="160" />
+          <el-table-column prop="tool" label="工具" min-width="150" />
+          <el-table-column prop="callId" label="调用编号" min-width="140" />
+          <el-table-column prop="result" label="结果" min-width="110" />
+          <el-table-column prop="elapsedMs" label="运行后 ms" width="130" />
+        </el-table>
+        <el-button v-if="hasMoreEvents" :loading="eventsLoading" @click="loadMoreEvents">补读后续事件</el-button>
+        <el-empty v-if="!events.length" description="此会话暂无 AgentScope 轨迹，历史对话不会补造调用节点或耗时" />
+        <p v-if="selectedRun" class="journal-note">入口 {{ selectedRun.entryPoint }} · 会话 {{ selectedRun.sessionId }} · 默认模型 {{ selectedRun.defaultModel || '未记录' }}</p>
+        <AgentActionList v-if="selectedRunId" :run-id="selectedRunId" />
+        <h3>{{ selectedRun && selectedRun.sessionId !== store.sessionId ? '此运行的消息不在当前主站会话中' : '会话消息' }}</h3>
+        <div v-for="message in displayedMessages" :key="message.id" class="message-item" :class="message.role"><el-tag size="small">{{ message.role === 'user' ? '用户' : '助手' }}</el-tag><p>{{ message.content }}</p></div>
+      </main>
+    </div>
+  </section>
 </template>
-
 <script setup>
-import { computed, defineComponent, h, onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
+import { ElMessage } from 'element-plus'
+import { fetchAgentRuns, fetchAgentRun, fetchAgentRunEvents, cancelAgentRun } from '@/api/chatAssistant'
 import { useChatAssistantStore } from '@/stores/chatAssistant'
-const store=useChatAssistantStore(), loading=ref(false), tab=ref('trace'), search=ref(''), focusedTurn=ref(null), selected=ref(null), detailTab=ref('Summary')
-const detailTabs=['Summary','Payload','Result','Schema','Timing']
-const pretty=value=>typeof value==='string'?value:JSON.stringify(value??{},null,2)
-const DetailBlock=defineComponent({props:{title:String,value:[Object,Array,String,Number]},setup(props){const open=ref(false);return()=>h('section',{class:'detail-block'},[h('button',{onClick:()=>open.value=!open.value},[h('span',open.value?'⌄':'›'),props.title]),open.value?h('pre',pretty(props.value)):null])}})
-const shortDate=value=>value?String(value).replace('T',' ').slice(5,16):'--'
-const textPreview=(value,fallback='')=>String(value||fallback).replace(/\s+/g,' ').slice(0,110)
-const nodeDuration=(turn,step,kind)=>{const base=kind==='tool'?34:kind==='assistant'?680:kind==='context'?12:8;return base+((turn*17+step*11)%(kind==='assistant'?420:65))}
-const systemNode=computed(()=>({id:'system',turn:0,step:1,kind:'system',label:'SYSTEM',lane:'input',title:'Initial System Prompt',preview:'DoorHandleCatch 智能体运行策略、权限边界与工具说明',hierarchy:'Session › Initial System Prompt',status:'Completed',agent:'ORCHESTRATOR',nodeName:'system_prompt',duration:2,payload:{role:'system',mode:'standard',sessionId:store.sessionId},result:{state:'initialized',checkpointVersion:store.checkpointSnapshot?.checkpointVersion||0},schema:{role:'system',content:'string',mode:'standard'},timing:{started:store.messages?.[0]?.createdAt||store.checkpointSnapshot?.checkpointUpdatedAt,durationMs:2}}))
-const turnsData=computed(()=>{const turns=[];(store.messages||[]).forEach(message=>{if(message.role==='user')turns.push({number:turns.length+1,user:message,assistant:null});else if(message.role==='assistant'){if(!turns.length)turns.push({number:1,user:null,assistant:message});else turns.at(-1).assistant=message}});const checkpoint=store.checkpointSnapshot||{},route=checkpoint.routeTrace||[],visits=checkpoint.nodeTrace||[];return turns.map((turn,turnIndex)=>{let step=0;const intent=turn.assistant?.intent||'GENERAL',at=turn.user?.createdAt||turn.assistant?.createdAt||checkpoint.checkpointUpdatedAt;const make=(kind,label,title,preview,agent,nodeName,payload,result,schema={})=>{step++;const duration=nodeDuration(turn.number,step,kind);return{id:`t${turn.number}-${step}-${kind}`,turn:turn.number,step,kind,label,lane:kind==='tool'?'tool':kind==='assistant'?'model':'input',title,preview,hierarchy:`Turn ${turn.number} › ${agent} › ${title}`,status:'Completed',agent,nodeName,duration,payload,result,schema,timing:{started:at,durationMs:duration,source:kind==='tool'?'checkpoint trace':'session timestamps'}}};const nodes=[];if(turn.user)nodes.push(make('user','USER',textPreview(turn.user.content,'用户输入'),'用户消息进入智能体状态','USER','input',{content:turn.user.content,messageType:turn.user.messageType||'TEXT'},{accepted:true},{content:'string',pageContext:'object?'}));nodes.push(make('context','CONTEXT','Runtime context',`会话 ${store.sessionId} · 当前第 ${turn.number} 轮`,'ORCHESTRATOR','context_loader',{sessionId:store.sessionId,turn:turn.number},{stateKeys:checkpoint.stateKeys||[],stateSize:checkpoint.stateSize||0},{sessionId:'string',stateKeys:'string[]'}));nodes.push(make('context','CONTEXT','Memory & checkpoint',checkpoint.hasState?`恢复 checkpoint v${checkpoint.checkpointVersion}`:'使用当前会话消息上下文','MEMORY','checkpoint_restore',{checkpointNode:checkpoint.checkpointNode,nodeVisits:visits},{restored:Boolean(checkpoint.hasState),exitReason:checkpoint.checkpointExitReason},{checkpointVersion:'number',nodeTrace:'string[]'}));nodes.push(make('tool','TOOL','LLM intent router',`识别意图 ${intent}`,'ROUTER','intent_classifier',{query:turn.user?.content||'',candidates:['DETECTION','RESOURCE','REPORT','OPS','CHITCHAT']},{intent,route:intent},{query:'string',intent:'enum'}));if(turnIndex===turns.length-1&&route.length)route.forEach((entry,index)=>nodes.push(make('tool','TOOL',String(entry),`执行路由节点 ${index+1}/${route.length}`,intent,String(entry),{routeIndex:index,checkpointNode:checkpoint.checkpointNode},{completed:true,guardReason:checkpoint.guardReason},{node:'string',routeIndex:'number'})));else nodes.push(make('tool','TOOL',`${intent} agent`,`调用 ${intent} 专项智能体`,intent,'agent_execute',{intent,input:turn.user?.content||''},{messageType:turn.assistant?.messageType||'TEXT'},{intent:'string',response:'ChatMessage'}));if(turn.assistant)nodes.push(make('assistant','ASSISTANT','Assistant Message',textPreview(turn.assistant.content,'模型响应完成'),intent,'response_synthesis',{intent,model:'DashScope',stream:true},{content:turn.assistant.content,messageType:turn.assistant.messageType||'TEXT'},{role:'assistant',content:'string',intent:'string'}));return{...turn,nodes}})})
-const allNodes=computed(()=>[systemNode.value,...turnsData.value.flatMap(turn=>turn.nodes)]),overviewNodes=computed(()=>allNodes.value.filter(node=>node.kind!=='system')),callCount=computed(()=>allNodes.value.filter(node=>node.kind==='tool').length),totalDuration=computed(()=>allNodes.value.reduce((sum,node)=>sum+Number(node.duration||0),0)),durationLabel=computed(()=>totalDuration.value>=1000?`${(totalDuration.value/1000).toFixed(2)} s`:`${totalDuration.value} ms`)
-const showSystemNode=computed(()=>focusedTurn.value===null&&(!search.value||'initial system prompt'.includes(search.value.toLowerCase())))
-const visibleTurns=computed(()=>turnsData.value.filter(turn=>focusedTurn.value===null||turn.number===focusedTurn.value).map(turn=>({...turn,nodes:turn.nodes.filter(node=>!search.value||`${node.label} ${node.title} ${node.preview} ${node.agent}`.toLowerCase().includes(search.value.toLowerCase()))})).filter(turn=>turn.nodes.length))
-const barStyle=node=>{const index=Math.max(0,overviewNodes.value.findIndex(item=>item.id===node.id)),count=Math.max(overviewNodes.value.length,1);return{left:`${index/count*94}%`,width:`${Math.max(1.2,Math.min(5,node.duration/Math.max(totalDuration.value,1)*80))}%`}}
-const selectNode=node=>{selected.value=node;detailTab.value='Summary'}
-const openTurnTrace=turn=>{focusedTurn.value=turn;tab.value='trace';selected.value=turnsData.value.find(item=>item.number===turn)?.nodes[0]||null}
-const selectSession=async sid=>{await store.switchSession(sid);await store.loadDiagnostics();focusedTurn.value=null;selected.value=null}
-const refresh=async()=>{loading.value=true;try{await store.loadSessionList();await store.bootstrap(true);await store.loadDiagnostics();selected.value=allNodes.value.at(-1)||null}finally{loading.value=false}}
-const exportTrace=()=>{const payload={sessionId:store.sessionId,title:store.sessionTitle,durationMs:totalDuration.value,turns:turnsData.value.length,calls:callCount.value,checkpoint:store.checkpointSnapshot,nodes:allNodes.value},url=URL.createObjectURL(new Blob([JSON.stringify(payload,null,2)],{type:'application/json'})),anchor=document.createElement('a');anchor.href=url;anchor.download=`agent-trace-${store.sessionId||Date.now()}.json`;anchor.click();URL.revokeObjectURL(url)}
-onMounted(refresh)
+import AgentActionList from '@/components/chat/AgentActionList.vue'
+const store = useChatAssistantStore()
+const route = useRoute()
+const runs = ref([]), selectedRunId = ref(''), persistedEvents = ref([]), allRuns = ref(false)
+const historyLoading = ref(false), eventsLoading = ref(false), cancelling = ref(false)
+const hasMoreRuns = ref(false), hasMoreEvents = ref(false), historyError = ref('')
+let generation = 0
+const selectedRun = computed(() => runs.value.find(run => run.runId === selectedRunId.value))
+const displayedMessages = computed(() => selectedRun.value && selectedRun.value.sessionId !== store.sessionId ? [] : store.messages)
+const displayStatus = computed(() => (store.agentHealth?.runJournalEnabled ? selectedRun.value?.status : store.executionTrace?.status) || '暂无执行记录')
+const displayUpdatedAt = computed(() => store.agentHealth?.runJournalEnabled ? selectedRun.value?.endedAt || selectedRun.value?.startedAt : store.executionTrace?.updatedAt)
+const events = computed(() => store.agentHealth?.runJournalEnabled ? persistedEvents.value.map(event => ({ ...event.payload, type: event.type, sequence: event.sequence })) : store.executionTrace?.events || [])
+async function loadRuns(append = false) {
+  if (!store.agentHealth?.runJournalEnabled) return
+  const version = generation, sid = store.sessionId
+  historyLoading.value = true; historyError.value = ''
+  try {
+    const response = await fetchAgentRuns({ ...(allRuns.value ? {} : { sessionId: sid }), limit: 20, ...(append ? { beforeRunId: runs.value.at(-1)?.runId } : {}) })
+    if (version !== generation || sid !== store.sessionId) return
+    const rows = Array.isArray(response.data) ? response.data : []
+    runs.value = append ? [...runs.value, ...rows] : rows
+    hasMoreRuns.value = rows.length === 20
+    if (!append) {
+      selectedRunId.value = rows.some(run => run.runId === selectedRunId.value) ? selectedRunId.value : rows[0]?.runId || ''
+      historyLoading.value = false
+      await loadRun()
+    }
+  } catch (error) {
+    if (version === generation) historyError.value = error.response?.data?.message || '运行历史暂不可用 请刷新'
+  } finally { if (version === generation) historyLoading.value = false }
+}
+async function loadRun() {
+  generation++
+  persistedEvents.value = []; hasMoreEvents.value = false; historyError.value = ''
+  if (selectedRunId.value) await loadMoreEvents()
+}
+async function loadMoreEvents() {
+  const version = generation, id = selectedRunId.value
+  eventsLoading.value = true
+  try {
+    const response = await fetchAgentRunEvents(id, persistedEvents.value.at(-1)?.sequence || 0)
+    if (version !== generation || id !== selectedRunId.value) return
+    const rows = Array.isArray(response.data) ? response.data : []
+    const existing = new Set(persistedEvents.value.map(event => event.sequence))
+    persistedEvents.value = [...persistedEvents.value, ...rows.filter(event => !existing.has(event.sequence))]
+    hasMoreEvents.value = rows.length === 100
+  } catch (error) {
+    if (version === generation) historyError.value = error.response?.data?.message || '执行事件暂不可用 请刷新'
+  } finally { if (version === generation) eventsLoading.value = false }
+}
+async function refresh() {
+  await store.loadDiagnostics()
+  await loadRuns()
+}
+async function changeHistoryScope() {
+  generation++; selectedRunId.value = ''; runs.value = []; persistedEvents.value = []
+  hasMoreEvents.value = false; hasMoreRuns.value = false
+  await loadRuns()
+}
+async function selectSession(id) {
+  allRuns.value = false
+  generation++; selectedRunId.value = ''; runs.value = []; persistedEvents.value = []
+  hasMoreEvents.value = false; hasMoreRuns.value = false; eventsLoading.value = false; historyLoading.value = false
+  await store.switchSession(id); await refresh()
+}
+async function cancelRun() {
+  cancelling.value = true
+  try { await cancelAgentRun(selectedRunId.value); ElMessage.success('取消请求已处理'); await refresh() }
+  catch (error) { ElMessage.error(error.response?.data?.message || '取消未确认 请刷新状态') }
+  finally { cancelling.value = false }
+}
+function exportTrace() {
+  const data = store.agentHealth?.runJournalEnabled ? { framework: 'AgentScope', run: selectedRun.value, events: persistedEvents.value } : store.executionTrace
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a'); anchor.href = url; anchor.download = `agentscope-trace-${selectedRunId.value || store.sessionId}.json`; anchor.click()
+  URL.revokeObjectURL(url)
+}
+onMounted(async () => {
+  await store.bootstrap()
+  const linkedRun=typeof route.query.runId==='string'?route.query.runId:''
+  if(linkedRun)allRuns.value=true
+  await refresh()
+  if(linkedRun && store.agentHealth?.runJournalEnabled){
+    // 直接读取指定运行，不以第一页历史中是否包含它为授权依据。
+    try {
+      const response=await fetchAgentRun(linkedRun)
+      if(!runs.value.some(run=>run.runId===linkedRun))runs.value.unshift(response.data)
+      selectedRunId.value=linkedRun
+      await loadRun()
+    } catch(error) { historyError.value=error.response?.data?.message || '该运行不存在或无访问权限' }
+  }
+})
 </script>
-
 <style scoped>
-.trace-shell{--bg:#151619;--line:#33363d;min-height:calc(100vh - 116px);background:var(--bg);border:1px solid #292c31;border-radius:18px;color:#d9dde5;overflow:hidden;box-shadow:0 18px 50px rgba(0,0,0,.25)}.session-header{height:76px;padding:0 22px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line)}.session-heading{display:flex;align-items:center;gap:11px;min-width:0}.session-heading h2{font-size:16px;margin:0 0 5px;color:#f5f6f8}.session-heading p{margin:0;color:#727b89;font:11px monospace}.live-dot{width:8px;height:8px;border-radius:50%;background:#5dbb86;box-shadow:0 0 0 4px rgba(93,187,134,.1)}.mode-chip{color:#aeb5c0;font-size:12px}.dark-button{background:#25272c!important;border-color:#3a3d44!important;color:#c7cbd2!important}.dark-button.primary{color:#78aaff!important}.view-tabs{height:42px;display:flex;align-items:flex-end;gap:14px;padding:0 22px;border-bottom:1px solid var(--line)}.view-tabs button,.detail-tabs button,.metrics button,.turn-filter button{border:0;background:none;color:#9299a5;cursor:pointer}.view-tabs button{height:42px;padding:0 8px}.view-tabs button.active{color:#70a8ff;border-bottom:2px solid #4b8ff0}
-.dialogue-view{display:grid;grid-template-columns:250px 1fr;min-height:650px}.session-list{border-right:1px solid var(--line);padding:12px;background:#191a1e}.panel-caption{padding:8px 10px;color:#727b89;font-size:11px;letter-spacing:.1em}.session-list button{width:100%;display:block;text-align:left;border:0;border-radius:7px;background:transparent;color:#cbd0d8;padding:11px;cursor:pointer}.session-list button:hover,.session-list button.active{background:#292c32}.session-list small{display:block;color:#707987;margin-top:5px}.conversation-panel{padding:14px 20px}.turn-card{position:relative;display:block;width:100%;text-align:left;padding:14px 16px;margin-bottom:10px;border:1px solid #30333a;border-radius:8px;background:#1d1f23;color:#dce0e7;cursor:pointer}.turn-card:hover{border-color:#4a72a9;background:#21252c}.turn-index{font-size:10px;color:#707987}.dialogue-message{display:flex;gap:10px;align-items:flex-start;margin-top:11px}.dialogue-message p{margin:0;line-height:1.55;white-space:pre-wrap}.inspect-link{position:absolute;right:14px;top:12px;color:#6e9ee1;font-size:11px}
-.trace-toolbar{min-height:47px;padding:0 16px;display:flex;align-items:center;border-bottom:1px solid var(--line);gap:14px}.metrics{display:flex;gap:18px;color:#9ba2ad;font-size:12px;white-space:nowrap}.metrics b{font-weight:500;color:#bac0c9}.turn-filter{display:flex;gap:2px;margin-left:auto}.turn-filter button{padding:5px 7px;border-radius:4px;font-size:11px}.turn-filter button.active{background:#30435f;color:#82b2fa}.trace-search{width:190px}.trace-search :deep(.el-input__wrapper){background:#25272b;box-shadow:0 0 0 1px #3b3e45 inset}.trace-search :deep(.el-input__inner){color:#d9dde5}.lane-overview{height:70px;display:grid;grid-template-columns:62px 1fr;border-bottom:1px solid var(--line);background:#1b1d20}.lane-labels{padding:9px 10px;color:#7d8592;font-size:10px;line-height:18px}.lane-labels span{display:block}.lane-grid{padding:9px 16px 7px 0}.lane-row{height:18px;position:relative}.lane-row i{position:absolute;height:7px;top:5px;min-width:10px;border-radius:1px;background:#648dd0;cursor:pointer}.lane-row i.context{background:#55a877}.lane-row i.assistant{background:#9672ba}.lane-row i.tool{background:#db882c}.lane-row i:hover{filter:brightness(1.4)}
-.trace-workspace{display:grid;grid-template-columns:minmax(500px,1fr) 390px;height:calc(100vh - 356px);min-height:520px}.trace-stream{overflow:auto;background:#1c1e21}.turn-divider{height:25px;border-top:1px solid #30333a;border-bottom:1px solid #2b2e34;display:flex;align-items:center}.turn-divider span{font-size:9px;color:#6f7886;background:#272a30;padding:3px 8px}.node-row{position:relative;width:100%;height:43px;padding:0 12px 0 18px;display:grid;grid-template-columns:20px 78px minmax(120px,auto) 1fr 58px;align-items:center;gap:7px;border:0;border-bottom:1px solid #2e3136;background:transparent;color:#d7dbe2;text-align:left;cursor:pointer}.node-row:hover,.node-row.selected{background:#292d34}.node-row.selected:before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:#4b91ef}.node-row b{font-size:12px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.node-row small{color:#89919e;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.node-row time{font:10px monospace;color:#717b89;text-align:right}.system-row{grid-template-columns:20px 78px 170px 1fr 0}.tree-rail{position:relative;height:100%;border-left:1px solid #434750}.tree-rail i{position:absolute;left:-3px;top:18px;width:5px;height:5px;background:#777f8c;border-radius:50%}.badge{display:inline-block;width:max-content;border-radius:3px;padding:3px 7px;font-size:9px;font-weight:700;letter-spacing:.08em}.badge.system{background:#3d4045;color:#cbd0d8}.badge.user{background:#234d7e;color:#79b4ff}.badge.context{background:#1e5337;color:#6ed89b}.badge.assistant{background:#503963;color:#d0a8ef}.badge.tool{background:#56391d;color:#f2a044}
-.detail-panel{overflow:auto;border-left:1px solid #3a3d44;background:#202226}.detail-panel.empty{display:flex;align-items:center;justify-content:center}.detail-header{height:50px;padding:0 16px;display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--line)}.detail-header b{font-size:11px;color:#999faa}.detail-header button{margin-left:auto;background:none;border:0;color:#bbc0c8;font-size:20px;cursor:pointer}.detail-tabs{height:42px;padding:0 12px;display:flex;gap:7px;border-bottom:1px solid var(--line)}.detail-tabs button{padding:0 7px;font-size:11px}.detail-tabs button.active{color:#70a8ff;border-bottom:2px solid #4b8ff0}.detail-body{padding:15px}.summary-grid{display:grid;grid-template-columns:82px 1fr;gap:12px 8px;margin:0 0 14px;font-size:12px}.summary-grid dt{color:#7f8793}.summary-grid dd{margin:0;color:#d2d6dc;overflow-wrap:anywhere}.status-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#52bd82;margin-right:7px}:deep(.detail-block){border-top:1px solid #34373d}:deep(.detail-block>button){width:100%;padding:13px 2px;text-align:left;background:none;border:0;color:#cbd0d8;cursor:pointer}:deep(.detail-block>button span){display:inline-block;width:18px;color:#7f8793}.detail-body>pre,:deep(.detail-block pre){background:#17181b;border:1px solid #2d3036;border-radius:5px;color:#b9c9dc;padding:12px;font:11px/1.55 Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere;overflow:auto;margin:0 0 10px;max-height:460px}
-@media(max-width:1050px){.trace-workspace{grid-template-columns:1fr}.detail-panel{position:fixed;right:18px;top:120px;bottom:18px;width:min(390px,calc(100vw - 36px));z-index:20;box-shadow:-12px 0 35px rgba(0,0,0,.35)}.detail-panel.empty{display:none}.turn-filter{display:none}}@media(max-width:720px){.dialogue-view{grid-template-columns:1fr}.session-list{display:none}.trace-workspace{height:auto}.metrics span:first-child{display:none}.trace-search{width:130px}.session-heading p{display:none}}
+.agent-trace-page { padding: 24px; background: #fff; color: #182332; animation: trace-enter .2s ease-out }
+.trace-header { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 24px }
+.trace-header h2 { margin: 0 0 8px }.trace-header p, .run-id { color: #697789; font-size: 13px }
+.trace-content { display: grid; grid-template-columns: 230px minmax(0, 1fr); gap: 24px }
+.history-toolbar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 12px }.history-toolbar .el-select { width: min(100%, 340px) }.journal-note { color: #697789; font-size: 13px }.history-error { color: #bf3131; font-size: 13px }
+.trace-content main { min-width: 0 }.run-id { overflow-wrap: anywhere }
+.trace-content aside { border-right: 1px solid #e7edf5; padding-right: 16px }.session-button { width: 100%; border: 0; padding: 12px; border-radius: 8px; text-align: left; background: transparent; cursor: pointer; transition: background .15s, transform .15s }.session-button:hover { background: #f4f7fc; transform: scale(1.01) }.session-button.active { background: #eaf2ff; color: #1764cb }.session-button small { display: block; margin-top: 6px; color: #748091 }
+.trace-summary { display: flex; align-items: center; gap: 12px }.trace-summary small { color: #748091 }.message-item { padding: 16px; margin: 12px 0; background: #f7f9fc; border-radius: 10px }.message-item.user { background: #edf4ff }.message-item p { white-space: pre-wrap; overflow-wrap: anywhere; margin: 10px 0 0; line-height: 1.6 }
+@keyframes trace-enter { from { opacity: 0; transform: translateY(5px) } to { opacity: 1; transform: translateY(0) } }
+@media (max-width: 800px) { .trace-content { grid-template-columns: 1fr }.trace-content aside { border-right: 0 }.trace-header { align-items: flex-start; flex-direction: column } }
+@media (prefers-reduced-motion: reduce) { .agent-trace-page { animation: none }.session-button { transition: none }.session-button:hover { transform: none } }
 </style>
