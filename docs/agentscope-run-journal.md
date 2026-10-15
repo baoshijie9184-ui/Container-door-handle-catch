@@ -32,7 +32,7 @@ AGENT_RUN_JOURNAL_ENABLED=true
 
 重启后端。启用时启动检查日志表，缺表会提示执行迁移。主站的 `agent-health` 返回 `runJournalEnabled`；轨迹页面根据该值显示持久运行历史。关闭时保留已有主站最新轨迹摘要，运行日志 API 返回 503。关闭开关是回退方式，已记录事件保留，回退不删除表或数据。
 
-本机环境核验更新（2026-10-12）：业务库 `doorhandledb` 存在，之前的 1049 结论来自诊断脚本未处理 `.env` 地址外的引号，已纠正。现已向业务库执行 V16 新表迁移并开启 `AGENT_RUN_JOURNAL_ENABLED=true`，后端健康检查通过，迁移前后的原有业务表记录数一致。数据库地址、账号及历史数据保留。另已清理本机 `.env` 重复键，避免 dotenv-java 拒绝加载整份配置。迁移证据位于忽略的 `work/middlewares/database-migration-check.json`。此前隔离验证库 `doorhandle_agent_verify_ef8d5844c1` 仍保留，其信息记录于 `work/stage-b-mysql-fixture.json`。统一启动方式见 [本地单体启动说明](local-monolith-startup.md)。
+本机环境核验更新（2026-10-12）：业务库 `doorhandledb` 存在，之前的 1049 结论来自诊断脚本未处理 `.env` 地址外的引号，已纠正。现已向业务库执行 V16 新表迁移并开启 `AGENT_RUN_JOURNAL_ENABLED=true`，后端健康检查通过，迁移前后的原有业务表记录数一致。数据库地址、账号及历史数据保留。另已清理本机 `.env` 重复键，避免 dotenv-java 拒绝加载整份配置。迁移证据位于忽略的 `work/middlewares/database-migration-check.json`。此前隔离验证库 `doorhandle_agent_verify_ef8d5844c1` 仍保留，其信息记录于 `work/stage-b-mysql-fixture.json`。当前分支运行方式见 [服务器运行说明](服务器运行说明.md)。
 
 ## 所属权与接口
 

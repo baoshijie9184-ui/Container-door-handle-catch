@@ -2,13 +2,10 @@
 
 用于存放跨环境通用的启动、停止、数据库迁移、日志和诊断脚本。脚本应支持显式参数，并在执行破坏性操作前进行目标校验。
 
-本地 Windows 单体统一从项目根目录 `start-local.cmd` / `start-local.ps1` 启动，`stop-local.cmd` / `stop-local.ps1` 停止。使用说明见 [本地单体启动](../../docs/local-monolith-startup.md)。
+`java-cloud` 使用 ECS 上的 Docker Compose 服务，本地一键启停脚本已移除。连接、运行检查和发布边界见 [服务器运行说明](../../docs/服务器运行说明.md)。本目录中名称含 `local` 的迁移和诊断工具仍仅面向本机开发库，不可直接用于服务器业务库。
 
-- `start-local-project.ps1`：启动后端、中间件和两套前端，记录进程身份并等待健康状态。
-- `start-local-middlewares.ps1`：复用已有环境，启动 MySQL、Redis、项目内 Kafka、Chroma、Mem0，可选后端。
 - `ensure-local-kafka-topics.py`：只为本地 Kafka 创建缺失的项目主题。
 - `check-local-services.py`：读取 `.env` 并检查六项服务，不调用模型。
-- `stop-local-project.ps1`：核对进程身份后停止本项目记录的进程，保留共享 MySQL、Redis 服务和数据。
 - `run-agent-eval.ps1`：运行固定 Agent 规则数据集、生成 JSON/Markdown 报告，并可与指定基线逐例比较；不调用付费模型。见 [Eval 使用说明](../../docs/agentscope-eval.md)。
 ### 本机组织身份迁移
 

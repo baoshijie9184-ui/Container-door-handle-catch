@@ -8,7 +8,7 @@
       <userRemoteConfigs><hudson.plugins.git.UserRemoteConfig>
         <url>https://github.com/baoshijie9184-ui/Container-door-handle-catch.git</url>
       </hudson.plugins.git.UserRemoteConfig></userRemoteConfigs>
-      <branches><hudson.plugins.git.BranchSpec><name>*/java</name></hudson.plugins.git.BranchSpec></branches>
+      <branches><hudson.plugins.git.BranchSpec><name>*/java-cloud</name></hudson.plugins.git.BranchSpec></branches>
       <doGenerateSubmoduleConfigurations>false</doGenerateSubmoduleConfigurations>
       <submoduleCfg class="empty-list"/>
       <extensions>

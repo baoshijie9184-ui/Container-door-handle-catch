@@ -49,4 +49,4 @@ React 已增加会话选择、新建和刷新，支持 `?sessionId=已有会话�
 
 ## 启动与部署
 
-没有新增数据库表、迁移脚本或环境依赖。更新 Java 后端、React/Vue 前端和 `memory_service/main.py` 后使用 `start-local.ps1` 启动；已有 Mem0 进程需重启加载新的账号检索范围。部署时同时代理 `/agui` 和 `/api` 到同一个后端，并保留原 HttpOnly 登录 Cookie 的同源策略。主站 http://127.0.0.1:3001/#/login，Agent 页面 http://127.0.0.1:3003。
+没有新增数据库表、迁移脚本或环境依赖。更新 Java 后端和 React/Vue 前端后通过 Jenkins 发布；如果修改 `memory_service/main.py`，还需单独构建和更新 Mem0 镜像，当前应用流水线不会自动更新它。部署时同时代理 `/agui` 和 `/api` 到同一个后端，并保留原 HttpOnly 登录 Cookie 的同源策略。当前访问入口见 [服务器运行说明](服务器运行说明.md)。

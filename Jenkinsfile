@@ -39,8 +39,8 @@ pipeline {
                     env.GIT_BRANCH = revision.GIT_BRANCH
                     env.GIT_COMMIT = revision.GIT_COMMIT
                     def branch = env.BRANCH_NAME ?: env.GIT_BRANCH ?: ''
-                    if (!(branch in ['java', 'origin/java'])) {
-                        error('Deployment job must check out a trusted deployment branch.')
+                    if (!(branch in ['java-cloud', 'origin/java-cloud'])) {
+                        error('Deployment job must check out the trusted java-cloud branch.')
                     }
                     env.RELEASE_TAG = "ci-${env.BUILD_NUMBER}-${env.GIT_COMMIT.take(12)}"
                 }

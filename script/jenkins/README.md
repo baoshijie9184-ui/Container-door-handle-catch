@@ -6,18 +6,18 @@
 
 ## 流水线
 
-1. 从 Git 检出可信 `java` 分支，每 5 分钟轮询，无需向公网开放本机 Webhook。任务模板与现有任务配置 Git MessageExclusion，明确包含 `[skip ci]` 的提交不触发轮询构建，手动构建仍可执行。按用户明确要求，用本地 `java` 覆盖原远程 `java`，旧远程提交保留为本地备份引用；不创建额外部署分支。
+1. 从 Git 检出可信 `java-cloud` 分支，每 5 分钟轮询，无需向公网开放本机 Webhook。任务模板与现有任务配置 Git MessageExclusion，明确包含 `[skip ci]` 的提交不触发轮询构建，手动构建仍可执行。本分支从 `java` 签出；原 `java` 分支保留，切换本机编辑器分支不会改变 Jenkins 的 SCM 配置。
 2. 发布前校验 SSH、公钥、私有配置与 Docker，不可达即失败，不自动启动 ECS。
 3. 本机执行 Maven `clean verify`、全部 Python 测试、Vue/React 测试及两套生产构建，失败则阻止发布。
 4. 用 `git archive HEAD` 打包提交内容及 SHA-256，通过 SSH/SCP 上传；忽略目录、私钥、权重、真实环境配置不进入归档。
 5. ECS 构建后端与 Web 镜像，使用固定 Compose 项目名复用卷；逐项检查健康，失败则尝试恢复实际旧镜像 ID。每次开始仅清空构建工作区内的 `artifacts/`，避免仅验证或早期失败的构建归档上次成功发布的状态。
 6. `ACTION=rollback` 回到上一次成功应用版本；失败会尝试恢复当前版本。不会回滚数据库或 OSS 文件。
 
-需要先把流水线和修改推到远程 `java`，Jenkins 才能获取。首次历史覆盖使用绑定已核对远程提交号的 `--force-with-lease`；之后通常 `git push origin java` 即可，不应每次强推。Jenkins 替代手工测试、构建和发布，不会自动上传未提交的本地修改。
+需要先提交并推送到远程 `java-cloud`，Jenkins 才能获取：首次执行 `git push -u origin java-cloud`，之后通常 `git push` 即可。正常发布无需强推。Jenkins 替代手工测试、构建和发布，不会自动上传未提交的本地修改。
 
 ## 配置任务
 
-新建 Pipeline，例如 `doorhandle-java`，选择 **Pipeline script from SCM**：Git 地址为本项目 origin，Branch `*/java`，Script Path `Jenkinsfile`。`job.xml.example` 可用于创建任务，默认禁用，配置完成再启用；不要覆盖原有任务。GitHub 私有库需要另加只读仓库凭据。
+现有 Pipeline 继续使用 `doorhandle-java` 这个任务名，**Pipeline script from SCM** 的 Git 地址为本项目 origin，Branch 为 `*/java-cloud`，Script Path 为 `Jenkinsfile`。分支校验只允许 `java-cloud` 与 `origin/java-cloud`。切换已有任务时只修改 SCM 分支，保留凭据、参数和构建历史；`job.xml.example` 用于新建任务，默认禁用，不可用整份模板覆盖现有任务。GitHub 私有库需要另加只读仓库凭据。
 
 需要 Pipeline/Declarative、Git、Credentials Binding、SSH Credentials、JUnit、Timestamper 插件，不需要 Docker Pipeline。不要为本轮配置批量升级已有插件。
 

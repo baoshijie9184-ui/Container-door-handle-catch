@@ -19,6 +19,14 @@ work
 mem0
 memory_service/chroma_db
 **/__pycache__
+**/.pytest_cache
+artifacts
+tmp-*
+.claude
+ruanzhuss
+script/paper
+docs/examples
+**/*.docx
 **/.venv
 **/venv
 **/*.pem

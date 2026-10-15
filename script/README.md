@@ -8,6 +8,7 @@ script/
 ├── jenkins      Jenkins Pipeline、构建与发布脚本
 ├── idea         IntelliJ IDEA 运行/调试辅助配置
 ├── livekit-poc  LiveKit 语音/实时通信原型
+├── paper        论文生成与补充脚本，不参与应用部署
 └── shell        通用启动、停止、迁移和诊断脚本
 ```
 

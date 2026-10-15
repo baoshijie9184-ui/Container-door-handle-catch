@@ -80,6 +80,10 @@ memory_service/chroma_db/
 __pycache__/
 **/__pycache__/
 *.py[cod]
+.pytest_cache/
+
+### Reproducible build and CI output ###
+/artifacts/
 
 ### Local brainstorming previews ###
 .superpowers/
