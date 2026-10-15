@@ -44,18 +44,18 @@ pipeline {
                     sshUserPrivateKey(credentialsId: 'doorhandle-ecs-ssh', keyFileVariable: 'DEPLOY_KEY', usernameVariable: 'DEPLOY_USER'),
                     file(credentialsId: 'doorhandle-ecs-known-hosts', variable: 'DEPLOY_KNOWN_HOSTS')
                 ]) {
-                    powershell '& ./script/jenkins/pipeline.ps1 -Action Preflight'
+                    pwsh '& ./script/jenkins/pipeline.ps1 -Action Preflight'
                 }
             }
         }
         stage('Verify') {
             when { expression { params.ACTION != 'rollback' } }
-            steps { powershell '& ./script/jenkins/verify.ps1 -PythonExe $env:PYTHON_EXE' }
+            steps { pwsh '& ./script/jenkins/verify.ps1 -PythonExe $env:PYTHON_EXE' }
             post { always { junit testResults: '**/target/surefire-reports/TEST-*.xml,artifacts/python-tests.xml', allowEmptyResults: true } }
         }
         stage('Package source') {
             when { expression { params.ACTION == 'verify-deploy' } }
-            steps { powershell '& ./script/jenkins/pipeline.ps1 -Action Package' }
+            steps { pwsh '& ./script/jenkins/pipeline.ps1 -Action Package' }
         }
         stage('Deploy or rollback') {
             when { expression { params.ACTION != 'verify' } }
@@ -64,7 +64,7 @@ pipeline {
                     sshUserPrivateKey(credentialsId: 'doorhandle-ecs-ssh', keyFileVariable: 'DEPLOY_KEY', usernameVariable: 'DEPLOY_USER'),
                     file(credentialsId: 'doorhandle-ecs-known-hosts', variable: 'DEPLOY_KNOWN_HOSTS')
                 ]) {
-                    powershell '& ./script/jenkins/pipeline.ps1 -Action Publish'
+                    pwsh '& ./script/jenkins/pipeline.ps1 -Action Publish'
                 }
             }
         }
