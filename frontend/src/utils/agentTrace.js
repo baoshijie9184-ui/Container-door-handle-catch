@@ -55,7 +55,7 @@ export function traceDuration(value) {
   return `${(value / 1000).toFixed(value >= 10000 ? 1 : 2)} s`
 }
 export const traceTime = value => value ? String(value).replace('T', ' ').slice(0, 19) : '未记录'
-export const traceEntry = value => ({ CHAT: '主站对话', AGUI: '独立 Agent', 'AG-UI': '独立 Agent', CHAT_ASSISTANT: '主站对话' })[value] || value || '未记录入口'
+export const traceEntry = value => ({ CHAT: '主站对话', AGUI: '独立 Agent', CHILD: '专业子 Agent', 'AG-UI': '独立 Agent', CHAT_ASSISTANT: '主站对话' })[value] || value || '未记录入口'
 export function filterTraceEvents(events, category = 'ALL', query = '') {
   const needle = query.trim().toLowerCase()
   return events.filter(event => (category === 'ALL' || eventCategory(event.type) === category)

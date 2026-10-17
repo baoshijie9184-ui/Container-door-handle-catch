@@ -23,6 +23,8 @@
     <a v-if="item.data.runId&&/^[a-f0-9-]{36}$/.test(item.data.runId)" :href="'/#/agent/trace?runId='+encodeURIComponent(item.data.runId)">查看本次执行轨迹</a>
     <a v-if="['/detection','/agent/mcp'].includes(item.data.managementPath)" :href="'/#'+item.data.managementPath">打开原任务页面</a>
     <pre v-if="item.data.text">{{ item.data.text }}</pre>
+    <p v-if="item.kind==='EXECUTION'&&item.data.result">{{ item.data.result }}</p>
+    <button v-if="item.kind==='EXECUTION'&&['RUNNING','QUEUED','READY','WAITING_PLAN','WAITING_INPUT','WAITING_CHILD'].includes(item.status)" :disabled="busy" @click="cancelTask(item)">取消任务</button>
     <ol v-if="Array.isArray(item.data.tasks)"><li v-for="(task,index) in item.data.tasks" :key="index"><span>{{ task.status }}</span> {{ task.title }}<small v-if="task.evidenceCallId">证据 {{ task.evidenceCallId }}</small></li></ol>
     <template v-if="item.kind==='PLAN'&&item.status==='PENDING'"><textarea v-model="drafts[item.id]" placeholder="修改意见（要求修订时填写）" aria-label="计划修改意见" /><div class="wb-actions"><button :disabled="busy" @click="act(item,'approve-plan')">批准计划</button><button :disabled="busy||!drafts[item.id]?.trim()" @click="act(item,'revise-plan',{feedback:drafts[item.id]})">要求修订</button><button :disabled="busy" @click="act(item,'cancel')">取消计划</button></div><p class="wb-note">计划批准不代替业务审批</p></template>
     <template v-if="item.kind==='QUESTION'&&item.status==='PENDING'">
@@ -44,6 +46,7 @@
 </template>
 <script setup>
 import {ref,reactive,computed,watch,onBeforeUnmount} from 'vue'
+import {ElMessageBox} from 'element-plus'
 import {AgentWorkbenchClient,availableWorkbenchTabs,workbenchStatus,workbenchRows,tokenDisplay} from '@/utils/agentWorkbench'
 import '@/assets/agent-workbench.css'
 const props=defineProps({sessionId:String,messages:{type:Array,default:()=>[]}})
@@ -57,6 +60,7 @@ watch(()=>props.sessionId,session=>{error.value='';previewOpen.value=false;clien
 onBeforeUnmount(()=>{client.close();if(previewUrl.value)URL.revokeObjectURL(previewUrl.value)})
 async function run(action){const session=props.sessionId;busy.value=true;error.value='';try{const result=await action();return props.sessionId===session?result:undefined}catch(cause){if(props.sessionId===session)error.value=cause.message}finally{busy.value=false}}
 async function act(item,action,input){await run(()=>client.command(item,action,input));}
+async function cancelTask(item){try{await ElMessageBox.confirm('取消本任务及其活动子任务，已完成的操作不会回滚。排队消息仍按原设置处理。','取消任务',{confirmButtonText:'确认取消',cancelButtonText:'继续执行',type:'warning'});await act(item,'cancel')}catch{/* Dialog dismissal does not change the task. */}}
 function sessionHref(id){return '#/agent/chat?sessionId='+encodeURIComponent(id)}
 async function fork(id){const result=await run(()=>client.fork(id));if(result)window.location.assign(sessionHref(result.sessionId))}
 async function upload(event){const file=event.target.files?.[0];if(file)await run(()=>client.upload(file));event.target.value=''}

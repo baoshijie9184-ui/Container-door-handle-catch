@@ -28,6 +28,17 @@ class JdbcAgentJournalTest {
         journal=new JdbcAgentJournal(jdbc,new DataSourceTransactionManager(source),new ObjectMapper(),settings);journal.verifySchema();
     }
     private AgentJournal.Run begin(String session,String request) {return journal.begin(alice,session,"employee-main","CHAT",request,"fixture-model");}
+    @Test void professionalRunsUseAnInternalRoleScopedEntryWithoutOpeningPublicConversationEntries(){
+        var parent=begin("parent-session","parent-request");
+        var child=journal.beginChild(alice,"child-session","detection-task","child-request","fixture-model");
+        assertThat(journal.get(alice,child.id()).entryPoint()).isEqualTo("CHILD");
+        assertThat(journal.get(alice,child.id()).mainAgent()).isEqualTo("detection-task");
+        assertThatThrownBy(()->journal.begin(alice,"other","detection-task","CHAT","external-specialist","fixture-model")).hasMessageContaining("400");
+        assertThatThrownBy(()->journal.checkRequest(alice,"CHILD","external-child")).hasMessageContaining("400");
+        assertThatThrownBy(()->journal.beginChild(alice,"other","department-analytics","wrong-role","fixture-model")).hasMessageContaining("400");
+        assertThatThrownBy(()->journal.get(bob,child.id())).hasMessageContaining("404");
+        child.finish("COMPLETED");parent.finish("COMPLETED");
+    }
     @Test void leaseUsesDatabaseWallClockWhenLegacyTimestampReadsHaveAnotherTimeZone() {
         var shifted=org.mockito.Mockito.spy(jdbc);
         org.mockito.Mockito.doReturn(java.sql.Timestamp.valueOf(java.time.LocalDateTime.now().minusHours(8)))

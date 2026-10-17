@@ -23,6 +23,13 @@ async function fixture(overrides={}) {
   return {state,reader:createTraceReader(api,state,normalizeTraceEvents,traceCompleteness)}
 }
 
+test('professional traces read their authorized events without requesting a nonexistent main chat session',async()=>{
+ let sessionReads=0
+ const {state,reader}=await fixture({run:async id=>({data:run(id,{entryPoint:'CHILD',sessionId:'child-execution'})}),session:async()=>{sessionReads++;throw Error('not a chat session')}})
+ await reader.select('child-run')
+ assert.equal(sessionReads,0);assert.equal(state.selectedRun.runId,'child-run');assert.equal(state.events.length,1);assert.equal(state.messagesError,'');reader.dispose()
+})
+
 test('trace projection keeps explicit zeroes and removes unrecorded or sensitive payload fields', async()=>{
   const {normalizeTraceEvents,traceDuration}=await projection
   const rows=normalizeTraceEvents([event(1,'MODEL_COMPLETED',{durationMs:0,inputTokens:0,outputTokens:-1,agent:'main',apiKey:'secret',arguments:{url:'https://private'},reasoning:'private'})])

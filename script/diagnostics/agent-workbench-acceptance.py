@@ -12,6 +12,8 @@ OUT=ROOT/'work/agent-workbench';OUT.mkdir(parents=True,exist_ok=True)
 checks,errors,posts=[],[],[]
 def row(kind,status,data):return {'id':str(uuid.uuid4()),'kind':kind,'status':status,'revision':0,'data':data,'updatedAt':'2026-10-17 17:00:00'}
 items=[row('PLAN','PENDING',{'title':'批次分析计划','text':'查询授权批次，然后生成报告','tasks':[{'title':'查询批次','status':'pending'}]}),row('QUESTION','PENDING',{'text':'选择统计时间','questionType':'SINGLE','options':['今天','本周']}),row('QUESTION','PENDING',{'text':'选择缺陷类型','questionType':'MULTIPLE','options':['变形','缺失']}),row('QUESTION','PENDING',{'text':'填写批次编号','questionType':'TEXT'}),row('CHILD','COMPLETED',{'specialist':'detection-task','title':'专业任务','result':'已查询授权批次'}),row('EXECUTION','NEEDS_REVIEW',{'title':'中断的分析任务'}),row('USAGE','COMPLETED',{'basis':'UNAVAILABLE','inputTokens':None,'outputTokens':None,'durationMs':120,'systemTokens':42,'toolsTokens':80,'messageTokens':100})]
+items.append(row('EXECUTION','WAITING_CHILD',{'title':'等待专业任务的主任务'}))
+items.append(row('EXECUTION','COMPLETED',{'title':'结束的主任务','result':'主任务最终输出'}))
 file={'id':str(uuid.uuid4()),'name':'notes.html','contentType':'text/plain; charset=utf-8','bytes':50,'folder':'uploads'}
 files=[file]
 def api(route):
@@ -39,7 +41,7 @@ with sync_playwright() as playwright:
  browser=playwright.chromium.launch(headless=True);context=browser.new_context(viewport={'width':1600,'height':1050});context.route('**/api/**',api);context.route('**/agui/**',api)
  for kind,url in [('Vue','http://127.0.0.1:3011/#/agent/chat'),('React','http://127.0.0.1:5175/')]:
   for item in items:item['revision']=0
-  items[0]['status']='PENDING';items[1]['status']='PENDING';items[2]['status']='PENDING';items[3]['status']='PENDING';items[4]['status']='COMPLETED';items[5]['status']='NEEDS_REVIEW';files[:]=[file]
+  items[0]['status']='PENDING';items[1]['status']='PENDING';items[2]['status']='PENDING';items[3]['status']='PENDING';items[4]['status']='COMPLETED';items[5]['status']='NEEDS_REVIEW';items[7]['status']='WAITING_CHILD';files[:]=[file]
   page=context.new_page();page.on('pageerror',lambda error:errors.append(str(error)));page.goto(url);page.wait_for_load_state('networkidle')
   page.get_by_role('button',name='展开工作面板' if kind=='Vue' else '查看助手信息',exact=True).click()
   panel=page.get_by_role('region',name='Agent 持久工作台');expect(panel).to_be_visible()
@@ -61,6 +63,11 @@ with sync_playwright() as playwright:
   expect(child).to_contain_text('排队中')
   items[4]['status']='COMPLETED';items[4]['revision']+=1;panel.get_by_role('button',name='刷新',exact=True).click()
   check(kind+' background completion is announced',lambda:expect(panel.get_by_role('status',name='后台任务通知')).to_contain_text('专业任务：已完成'))
+  panel.get_by_role('button',name='后台任务',exact=True).click()
+  check(kind+' task center shows the main task result',lambda:expect(panel.locator('article').filter(has_text='结束的主任务')).to_contain_text('主任务最终输出'))
+  parent=panel.locator('article').filter(has_text='等待专业任务的主任务');parent.get_by_role('button',name='取消任务',exact=True).click()
+  confirmation=page.get_by_role('dialog');expect(confirmation).to_be_visible();confirmation.get_by_role('button',name='确认取消',exact=True).click()
+  check(kind+' waiting parent can be cancelled with confirmation',lambda:expect(parent).to_contain_text('已取消'))
   panel.get_by_role('button',name='用量',exact=True).click();check(kind+' unavailable token usage stays unknown',lambda:expect(panel).to_contain_text('未知 / 未知'))
   panel.get_by_role('button',name='恢复',exact=True).click();panel.get_by_role('button',name='确认从检查点恢复',exact=True).click();check(kind+' recovery is explicit and versioned',lambda:ensure(posts[-1]['body']['action']=='resume' and isinstance(posts[-1]['body']['revision'],int),'wrong recovery'))
   panel.get_by_role('button',name='分支',exact=True).click();check(kind+' fork view shows source navigation',lambda:expect(panel.get_by_text('返回来源会话',exact=True)).to_be_visible())

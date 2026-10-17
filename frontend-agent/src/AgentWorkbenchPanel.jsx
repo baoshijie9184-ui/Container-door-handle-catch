@@ -37,6 +37,8 @@ export function AgentWorkbenchPanel({sessionId,base='',messages=[],onFork,onRefe
     {typeof item.data.runId==='string'&&/^[a-f0-9-]{36}$/.test(item.data.runId)&&<a href={base+'/#/agent/trace?runId='+encodeURIComponent(item.data.runId)}>查看本次执行轨迹</a>}
     {['/detection','/agent/mcp'].includes(item.data.managementPath)&&<a href={base+'/#'+item.data.managementPath}>打开原任务页面</a>}
     {item.data.text&&<pre>{item.data.text}</pre>}
+    {item.kind==='EXECUTION'&&item.data.result&&<p>{item.data.result}</p>}
+    {item.kind==='EXECUTION'&&['RUNNING','QUEUED','READY','WAITING_PLAN','WAITING_INPUT','WAITING_CHILD'].includes(item.status)&&<button disabled={busy} onClick={()=>Modal.confirm({title:'取消任务',content:'取消本任务及其活动子任务，已完成的操作不会回滚。排队消息仍按原设置处理。',okText:'确认取消',cancelText:'继续执行',onOk:()=>act(item,'cancel')})}>取消任务</button>}
     {Array.isArray(item.data.tasks)&&<ol>{item.data.tasks.map((task,index)=><li key={index}><span>{task.status}</span> {task.title}{task.evidenceCallId&&<small>证据 {task.evidenceCallId}</small>}</li>)}</ol>}
     {item.kind==='PLAN'&&item.status==='PENDING'&&<><textarea value={drafts[item.id]||''} onChange={event=>draft(item.id,event.target.value)} placeholder="修改意见（要求修订时填写）" aria-label="计划修改意见"/><div className="wb-actions"><button disabled={busy} onClick={()=>act(item,'approve-plan')}>批准计划</button><button disabled={busy||!drafts[item.id]?.trim()} onClick={()=>act(item,'revise-plan',{feedback:drafts[item.id]})}>要求修订</button><button disabled={busy} onClick={()=>act(item,'cancel')}>取消计划</button></div><p className="wb-note">计划批准不代替业务审批</p></>}
     {item.kind==='QUESTION'&&item.status==='PENDING'&&<>

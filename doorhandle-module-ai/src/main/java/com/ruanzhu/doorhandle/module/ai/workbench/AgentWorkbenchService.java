@@ -172,7 +172,7 @@ public class AgentWorkbenchService implements AgentWorkbenchApi,AutoCloseable {
     }
     private void runChild(AgentActor actor,String session,WorkbenchStore.Row job){
         ReActAgent agent=null;Scope scope=null;AgentJournal.Run audit=null;boolean interrupted=false;
-        try{owned(actor,session);if(!store.require(actor.userId(),session,job.id()).status().equals("RUNNING"))return;audit=journal.begin(actor,"child-"+job.id(),(String)job.data().get("specialist"),"CHAT",UUID.randomUUID().toString(),"managed");
+        try{owned(actor,session);if(!store.require(actor.userId(),session,job.id()).status().equals("RUNNING"))return;audit=journal.beginChild(actor,"child-"+job.id(),(String)job.data().get("specialist"),UUID.randomUUID().toString(),"managed");
             var current=store.require(actor.userId(),session,job.id());if(!current.status().equals("RUNNING")){audit.finish("CANCELLED");return;}var attemptData=new LinkedHashMap<>(current.data());attemptData.put("runId",audit.id());store.update(current,"RUNNING",attemptData,"CHILD_ATTEMPT_STARTED");
             scope=new Scope(actor,session,job.id(),audit.id(),(String)job.data().get("specialist"));
             liveExecutions.put(job.id(),audit.id());
@@ -183,7 +183,7 @@ public class AgentWorkbenchService implements AgentWorkbenchApi,AutoCloseable {
             scope.repairState();
             String text=agent.call(List.of(new UserMessage((String)job.data().get("question"))),context).timeout(Duration.ofMinutes(10)).block().getTextContent();
             scope.finish("COMPLETED",text);audit.finish("COMPLETED");
-        }catch(RuntimeException error){interrupted=Thread.interrupted();if(scope!=null){if(scope.waiting())scope.checkpointStatus();else scope.finish("NEEDS_REVIEW","");}else{var current=store.require(actor.userId(),session,job.id());if(current.status().equals("RUNNING"))store.update(current,"NEEDS_REVIEW",current.data(),"CHILD_START_FAILED");}if(audit!=null)audit.finish("INTERRUPTED");}
+        }catch(RuntimeException error){interrupted=Thread.interrupted();org.slf4j.LoggerFactory.getLogger(getClass()).warn("专业任务未完成：item={}, errorType={}",job.id(),error.getClass().getSimpleName());if(scope!=null){if(scope.waiting())scope.checkpointStatus();else scope.finish("NEEDS_REVIEW","");}else{var current=store.require(actor.userId(),session,job.id());if(current.status().equals("RUNNING"))store.update(current,"NEEDS_REVIEW",current.data(),"CHILD_START_FAILED");}if(audit!=null)audit.finish(store.require(actor.userId(),session,job.id()).status().equals("CANCELLED")?"CANCELLED":"INTERRUPTED");}
         finally{interrupted=Thread.interrupted()||interrupted;try{if(agent!=null)agent.close();}finally{try{if(scope!=null)scope.release();}finally{releaseAttempt(job.id(),scope==null?"claim:"+job.revision():scope.runId());childSlots.release();try{wakeParent(actor,session,job.id());}catch(RuntimeException ignored){}if(interrupted)Thread.currentThread().interrupt();}}}
     }
     private void wakeParent(AgentActor actor,String session,String childId){var child=store.require(actor.userId(),session,childId);String parent=(String)child.data().get("parentId");var row=store.require(actor.userId(),session,parent);

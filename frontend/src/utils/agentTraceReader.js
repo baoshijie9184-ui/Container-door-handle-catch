@@ -32,6 +32,8 @@ export function createTraceReader(api, state, normalize, completeness) {
   async function loadMessages(run, version) {
     const request = ++messageVersion
     state.messages = []; state.messagesLoading = true; state.messagesError = ''
+    // Child execution IDs address workbench state, not standalone chat_session rows.
+    if (run.entryPoint === 'CHILD') { state.messagesLoading = false; return }
     try {
       const response = await api.session(run.sessionId)
       if (!valid(version) || request !== messageVersion) return

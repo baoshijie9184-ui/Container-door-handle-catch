@@ -19,6 +19,8 @@ public interface AgentJournal {
         void bindCancel(Runnable cancel);
     }
     Run begin(AgentActor actor, String sessionId, String mainAgent, String entryPoint, String requestKey, String defaultModel);
+    /** Internal professional execution; HTTP conversation entry points remain CHAT/AGUI only. */
+    default Run beginChild(AgentActor actor,String sessionId,String specialist,String requestKey,String model){return begin(actor,sessionId,specialist,"CHILD",requestKey,model);}
     List<RunView> list(AgentActor actor, String sessionId, String beforeRunId, int limit);
     RunView get(AgentActor actor, String runId);
     List<EventView> events(AgentActor actor, String runId, long after, int limit);

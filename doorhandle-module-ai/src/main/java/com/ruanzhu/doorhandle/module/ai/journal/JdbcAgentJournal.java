@@ -63,6 +63,15 @@ public class JdbcAgentJournal implements AgentJournal {
         if (actor == null || actor.userId() <= 0 || session == null || !session.matches("[A-Za-z0-9_.-]{1,128}")
                 || !com.ruanzhu.doorhandle.module.ai.agent.RoleAgentCatalog.mainId(actor).equals(main) || !Set.of("CHAT", "AGUI").contains(entry)
                 || request == null || !request.matches("[A-Za-z0-9_-]{1,128}")) throw badRequest("运行参数不正确");
+        return createRun(actor,session,main,entry,request,model);
+    }
+    @Override public Run beginChild(AgentActor actor,String session,String specialist,String request,String model){
+        if(!enabled())return AgentJournal.disabled().beginChild(actor,session,specialist,request,model);
+        if(actor==null||actor.userId()<=0||session==null||!session.matches("[A-Za-z0-9_.-]{1,128}")||request==null||!request.matches("[A-Za-z0-9_-]{1,128}")
+            ||com.ruanzhu.doorhandle.module.ai.agent.RoleAgentCatalog.specialists(actor,true,true,true).stream().noneMatch(definition->definition.id().equals(specialist)))throw badRequest("专业运行参数不正确");
+        return createRun(actor,session,specialist,"CHILD",request,model);
+    }
+    private Run createRun(AgentActor actor,String session,String main,String entry,String request,String model){
         String id = UUID.randomUUID().toString();
         Handle handle = new Handle(id, actor.userId());
         try {

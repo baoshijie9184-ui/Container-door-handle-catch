@@ -157,11 +157,15 @@ class AgentWorkbenchServiceTest {
         var scope=scope("查看任务");var toolkit=new Toolkit();scope.install(toolkit);toolkit.getTool("ask_user_question").callAsync(ToolCallParam.builder().toolUseBlock(new ToolUseBlock("q","ask_user_question",Map.of("text","批次","questionType","TEXT"))).input(Map.of("text","批次","questionType","TEXT")).build()).block();var question=item("QUESTION");
         assertThatThrownBy(()->service.command(alice,"s1",question.id(),0,UUID.randomUUID().toString(),"answer",Map.of("answer","A"))).hasMessageContaining("等待状态");scope.release();assertThat(service.command(alice,"s1",question.id(),0,UUID.randomUUID().toString(),"answer",Map.of("answer","A")).status()).isEqualTo("ANSWERED");
     }
-    @Test void specialistKeepsHistoryForFollowUpAndWakesOnlyItsOwnParent(){
+    @Test @Timeout(120) void specialistKeepsHistoryForFollowUpAndWakesOnlyItsOwnParent()throws Exception{
         service.close();var model=mock(Model.class);when(model.getModelName()).thenReturn("scripted-child");var observed=new CopyOnWriteArrayList<List<Msg>>();
         when(model.stream(anyList(),anyList(),any())).thenAnswer(inv->{observed.add(List.copyOf(inv.getArgument(0)));return Flux.just(ChatResponse.builder().content(List.of(TextBlock.builder().text("专业分析已完成").build())).build());});
         var toolkits=mock(BusinessToolkitFactory.class);when(toolkits.create(any(),any(),anyString())).thenAnswer(inv->new Toolkit());var roles=new RoleAgentFactory(new AgentScopeProperties(),toolkits,id->model);
-        var journal=mock(AgentJournal.class);when(journal.enabled()).thenReturn(true);when(journal.begin(any(),anyString(),anyString(),anyString(),anyString(),anyString())).thenAnswer(inv->{var run=mock(AgentJournal.Run.class);when(run.id()).thenReturn(UUID.randomUUID().toString());return run;});
+        String journalDdl=Files.readString(Path.of("src/main/resources/db/migration-V16-agentscope-run-journal.sql"));
+        if(!Boolean.getBoolean("workbench.mysql"))journalDdl=journalDdl.replace(" COLLATE utf8mb4_bin","").replace(" ENGINE=InnoDB DEFAULT CHARSET=utf8mb4","").replace("payload_json JSON","payload_json VARCHAR(8192)");
+        for(String statement:journalDdl.split(";"))if(!statement.isBlank())store.jdbc().execute(statement);
+        var journalSettings=new com.ruanzhu.doorhandle.module.ai.config.AgentJournalProperties();journalSettings.setEnabled(true);
+        var journal=new com.ruanzhu.doorhandle.module.ai.journal.JdbcAgentJournal(store.jdbc(),new DataSourceTransactionManager(store.jdbc().getDataSource()),new ObjectMapper(),journalSettings);journal.verifySchema();
         var provider=mock(ObjectProvider.class);when(provider.getObject()).thenReturn(app);service=new AgentWorkbenchService(store,properties,users,provider,roles,journal);
         var main=scope("查看任务");call(main,"start_background_task","child-1",Map.of("specialist","detection-task","question","查询批次 A"));service.dispatch();
         org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(30)).until(()->item("CHILD").status().equals("COMPLETED")&&item("EXECUTION").status().equals("READY"));
@@ -170,7 +174,9 @@ class AgentWorkbenchServiceTest {
         assertThat(observed).hasSize(2);assertThat(observed.get(1).stream().map(Msg::getTextContent).toList()).anyMatch(text->text!=null&&text.contains("查询批次 A")).anyMatch(text->text!=null&&text.contains("再补充缺陷类型"));
         var subscribed=new java.util.concurrent.atomic.AtomicBoolean();var cancelled=new java.util.concurrent.atomic.AtomicBoolean();when(model.stream(anyList(),anyList(),any())).thenReturn(Flux.<ChatResponse>never().doOnSubscribe(value->subscribed.set(true)).doOnCancel(()->cancelled.set(true)));
         child=item("CHILD");service.command(alice,"s1",child.id(),child.revision(),UUID.randomUUID().toString(),"child-message",Map.of("content","继续核对"));service.dispatch();org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(30)).untilTrue(subscribed);
-        child=item("CHILD");service.command(alice,"s1",child.id(),child.revision(),UUID.randomUUID().toString(),"cancel",Map.of());org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(15)).untilTrue(cancelled);assertThat(item("CHILD").status()).isEqualTo("CANCELLED");
+        child=item("CHILD");String cancelledRun=(String)child.data().get("runId");service.command(alice,"s1",child.id(),child.revision(),UUID.randomUUID().toString(),"cancel",Map.of());org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(15)).untilTrue(cancelled);assertThat(item("CHILD").status()).isEqualTo("CANCELLED");
+        org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(15)).until(()->journal.get(alice,cancelledRun).status().equals("CANCELLED"));
+        assertThat(journal.list(alice,"child-"+child.id(),null,20)).hasSize(3).allSatisfy(run->assertThat(run.entryPoint()).isEqualTo("CHILD"));
     }
     @Test void cancellingOneChildLeavesItsSiblingAndParentWaiting(){
         var main=scope("查看任务");call(main,"start_background_task","child-1",Map.of("specialist","detection-task","question","批次 A"));
