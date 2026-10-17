@@ -21,7 +21,8 @@
         {{ chip.label }}
       </button>
     </div>
-    <div class="composer-input-wrap">
+    <slot name="queue" />
+    <div class="composer-input-wrap gpt-composer-input">
       <TransitionGroup name="slash-menu" tag="div" class="composer-attachments" v-if="resources.files.length" aria-label="待发送附件">
         <div v-for="file in resources.files" :key="file.id" class="composer-attachment"><el-icon aria-hidden="true"><Document /></el-icon><span :title="file.name">{{ file.name }}</span><button type="button" :aria-label="'取消引用 '+file.name" @click="resourceClient.remove(file.id)"><el-icon><Close /></el-icon></button></div>
       </TransitionGroup>
@@ -41,10 +42,13 @@
       <div class="composer-toolbar">
         <input ref="fileInputRef" type="file" multiple hidden accept=".png,.jpg,.jpeg,.webp,.pdf,.txt,.md,.csv,.json,.html,.svg" @change="uploadFiles" />
         <button class="composer-add" type="button" aria-label="添加附件" title="上传会话私有文件" :disabled="!resources.ready||!resources.filesEnabled||resources.busy||loading" @click="fileInputRef?.click()"><el-icon><Plus /></el-icon></button>
+        <span class="composer-permission" title="工具按当前账号权限执行，敏感操作仍需人工确认"><el-icon aria-hidden="true"><Lock /></el-icon><span>按账号权限</span></span>
         <span v-if="resources.busy" class="composer-upload-status" role="status">正在保存</span>
-        <select aria-label="使用模型" :value="resources.modelId" :disabled="!resources.ready||resources.busy||modelLocked||loading" @change="selectModel"><option value="">系统默认 · 自动备用</option><option v-for="model in resources.models" :key="model.id" :value="model.id">{{ model.model }}</option></select>
+        <select aria-label="使用模型" :value="resources.modelId" :disabled="!resources.ready||resources.busy||modelLocked||loading" @change="selectModel"><option value="">系统默认</option><option v-for="model in resources.models" :key="model.id" :value="model.id">{{ model.model }}</option></select>
+        <span class="composer-context" title="使用本会话历史与已授权的资料"><el-icon aria-hidden="true"><Document /></el-icon><span>会话上下文</span></span>
       </div>
-      <button
+      <button v-if="run?.local&&run.runId&&!draft.trim()&&!resources.files.length" type="button" class="composer-stop" aria-label="停止任务" title="停止当前任务" @click="emit('stop')"><svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg></button>
+      <button v-else
         class="composer-voice"
         :class="{ recording, transcribing: voiceTranscribing }"
         :disabled="loading || voiceTranscribing"
@@ -83,14 +87,14 @@ import { transcribeChatVoice } from '@/api/chatAssistant'
 import request from '@/api/request'
 import { useUserStore } from '@/stores/user'
 import { filterSkillCommands } from '@/utils/skillCommands'
-import {Plus,Document,Close} from '@element-plus/icons-vue'
+import {Plus,Document,Close,Lock} from '@element-plus/icons-vue'
 import {ComposerResources} from '@/utils/composerResources'
 
 const props = defineProps({
-  loading: { type: Boolean, default: false },sessionId:String,modelLocked:Boolean
+  loading: { type: Boolean, default: false },sessionId:String,modelLocked:Boolean,run:Object
 })
 
-const emit = defineEmits(['send'])
+const emit = defineEmits(['send','stop'])
 const draft = ref('')
 const resources=ref({ready:false,files:[],models:[],modelId:'',busy:false,error:''}),fileInputRef=ref(null)
 const resourceClient=new ComposerResources({base:(import.meta.env.VITE_API_URL||'').replace(/\/$/,''),onState:value=>{resources.value=value}})
@@ -470,4 +474,7 @@ onBeforeUnmount(() => {
 .composer-send:active:not(:disabled), .quick-chip:active { transform: scale(.96); }
 .quick-chip:focus-visible, .composer-send:focus-visible, .composer-voice:focus-visible { outline: 2px solid #2563eb; outline-offset: 3px; }
 @media (max-width: 540px) { .composer { padding: 10px 12px 12px; } .quick-chips { gap: 5px; } .composer-input-wrap { padding-left: 12px; gap: 4px; } }
+</style>
+<style scoped>
+.composer{padding-top:8px}.composer :deep(.conversation-controls){margin:0 2px -7px;padding:6px 10px 12px;background:#f2f3f5;border-radius:18px 18px 6px 6px}.composer :deep(.conversation-queue){background:transparent;margin:0;max-height:150px}.gpt-composer-input{position:relative;z-index:1;border-radius:26px;padding:14px 14px 10px;gap:5px;background:#fff;border-color:#d9dde3;box-shadow:0 2px 10px #18223706;min-height:124px}.gpt-composer-input .composer-textarea{min-height:58px;padding:2px 2px 10px;font-size:14px}.composer-toolbar{gap:9px}.composer-toolbar select{margin-left:auto;font-size:12px;max-width:200px;text-overflow:ellipsis}.composer-permission,.composer-context{display:inline-flex;align-items:center;gap:5px;white-space:nowrap;font-size:12px;color:#64748b}.composer-context{border-left:1px solid #e2e5e9;padding-left:10px}.composer-context .el-icon{font-size:15px}.composer-voice{background:transparent;color:#697586}.composer-stop{display:grid;place-items:center;width:36px;height:36px;flex-shrink:0;border:0;border-radius:50%;background:#e4e7eb;color:#313842;cursor:pointer;transition:transform .15s}.composer-stop:hover{transform:scale(1.04)}.gpt-composer-input .composer-send.active{background:#202a37;color:#fff}.composer-permission .el-icon{font-size:15px}.composer-add{color:#424b58}.gpt-composer-input .composer-send,.gpt-composer-input .composer-voice{width:34px;height:34px}@media(max-width:600px){.composer-permission>span,.composer-context{display:none}.composer-toolbar select{max-width:160px;flex:1}.composer-toolbar{gap:3px}.gpt-composer-input{padding:12px 10px 9px}}@media(prefers-reduced-motion:reduce){.composer-stop{transition:none;transform:none!important}}
 </style>

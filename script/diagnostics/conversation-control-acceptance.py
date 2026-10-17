@@ -65,7 +65,7 @@ def input_posts():return [row for row in requests if row['method']=='POST' and r
 with sync_playwright() as p:
  browser=p.chromium.launch(headless=True);context=browser.new_context(viewport={'width':1600,'height':1050});context.route('**/api/**',api);context.route('**/agui/**',api)
  page=context.new_page();page.on('pageerror',lambda error:errors.append(str(error)));page.goto('http://127.0.0.1:3011/#/agent/chat');page.wait_for_load_state('networkidle')
- panel=page.get_by_role('region',name='Agent 执行控制');expect(panel).to_be_visible()
+ panel=page.get_by_role('region',name='Agent 执行控制');expect(panel).to_be_visible();panel.get_by_text('任务操作',exact=True).click()
  check('Vue control reflects the actual live phase',lambda:expect(panel.get_by_role('status')).to_have_text('执行中'))
  check('Vue partial reply is shown in the transcript',lambda:expect(page.get_by_text(run['text'],exact=True)).to_be_visible())
  check('pending input renders markup as plain text',lambda:ensure(panel.locator('img').count()==0 and not page.evaluate('window.controlInjected===true'),'HTML executed'))
@@ -108,7 +108,7 @@ with sync_playwright() as p:
  check('inline history popover stays within the mobile viewport',lambda:ensure(history.bounding_box()['x']>=0 and history.bounding_box()['x']+history.bounding_box()['width']<=391,'history overflow'))
  page.keyboard.press('Escape');check('inline history Escape returns keyboard focus',lambda:expect(nav).to_be_focused())
  agent=context.new_page();agent.on('pageerror',lambda error:errors.append(str(error)));agent.goto('http://127.0.0.1:5175/');agent.wait_for_load_state('networkidle')
- react=agent.get_by_role('region',name='Agent 执行控制');expect(react).to_be_visible()
+ react=agent.get_by_role('region',name='Agent 执行控制');expect(react).to_be_visible();react.get_by_text('任务操作',exact=True).click()
  check('React expanded session sidebar keeps its intended desktop width',lambda:ensure(agent.locator('.session-sidebar').bounding_box()['width']>=240,'sidebar compressed'))
  check('React control panel follows the conversation content width',lambda:ensure(react.bounding_box()['width']<=830,'controls stretched across workspace'))
  check('React sees the same paused run and pending messages',lambda:expect(react.get_by_role('status')).to_have_text('已暂停'))

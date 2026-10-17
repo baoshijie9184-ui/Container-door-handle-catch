@@ -1,5 +1,6 @@
 <template>
  <section v-if="state.enabled&&(pending.length||error||state.error||(state.run&&state.run.phase!=='IDLE'))" class="conversation-controls" aria-label="Agent 执行控制">
+  <details class="conversation-options"><summary>任务操作</summary>
   <div class="conversation-control-bar"><span role="status">{{ state.run?controlPhaseLabels[state.run.phase]:'状态待核对' }}</span><div><slot name="navigation" />
    <el-button v-if="state.run?.local&&state.run.phase==='RUNNING'" size="small" :icon="VideoPause" :disabled="busy" @click="command('pause')">暂停任务</el-button>
    <el-button v-if="state.run?.local&&['PAUSED','PAUSE_REQUESTED'].includes(state.run.phase)" size="small" :icon="VideoPlay" :disabled="busy" @click="command('resume')">继续任务</el-button>
@@ -8,6 +9,8 @@
   </div></div>
   <details class="control-help"><summary>执行说明</summary><p class="control-note">暂停在安全切点生效，当前调用可能继续完成；仅在服务进程存活期间继续。排队输入 15 分钟有效，失败不自动重试。</p></details>
   <div class="conversation-delivery"><label for="conversation-delivery-mode">发送方式</label><select id="conversation-delivery-mode" v-model="mode"><option value="NEXT_TURN">排到下一轮</option><option value="NEXT_STEP">引导当前任务</option></select><span>{{ mode==='NEXT_STEP'?'下一推理切点交付；本轮已结束时转入下一轮':'当前任务结束后按顺序处理' }}</span></div>
+  <details v-if="receipts.length" class="control-help"><summary>最近交付记录</summary><p v-for="item in receipts" :key="item.id" class="control-receipt">{{ item.mode==='NEXT_STEP'?'补充要求':'消息' }} · {{ inputStatusLabels[item.status] }} · {{ item.id.slice(0,8) }}</p></details>
+  </details>
   <p v-if="error||state.error" class="control-error" role="alert">{{ error||state.error }}</p>
   <p v-if="state.queueEnabled===false" class="queue-preference">消息排队已关闭，已有消息继续处理<button type="button" @click="client.setQueueEnabled(true)">开启排队</button></p>
   <TransitionGroup v-if="pending.length" name="queue-row" tag="ol" class="conversation-queue" aria-label="待处理消息">
@@ -20,7 +23,7 @@
     <el-dropdown trigger="click" :disabled="busy" @command="action=>action==='edit'?edit(item):client.setQueueEnabled(false)"><button type="button" class="queue-icon-button" aria-label="更多消息操作" title="更多消息操作" :disabled="busy"><el-icon aria-hidden="true"><MoreFilled /></el-icon></button><template #dropdown><el-dropdown-menu><el-dropdown-item command="edit" :icon="Edit">编辑消息</el-dropdown-item><el-dropdown-item command="close-queue" :icon="Close" :disabled="state.queueEnabled===false">关闭排队</el-dropdown-item></el-dropdown-menu></template></el-dropdown>
    </li>
   </TransitionGroup>
-  <details v-if="receipts.length" class="control-help"><summary>最近交付记录</summary><p v-for="item in receipts" :key="item.id" class="control-receipt">{{ item.mode==='NEXT_STEP'?'补充要求':'消息' }} · {{ inputStatusLabels[item.status] }} · {{ item.id.slice(0,8) }}</p></details>
+
   <el-dialog v-model="editing" title="编辑待处理消息" width="min(520px,calc(100vw - 32px))" append-to-body :close-on-click-modal="false"><el-input v-model="editText" type="textarea" :rows="4" :maxlength="editItem?.mode==='NEXT_STEP'?4000:8000" aria-label="待处理消息内容"/><template #footer><el-button @click="editing=false">取消</el-button><el-button type="primary" :disabled="busy||!editText.trim()" @click="saveEdit">保存修改</el-button></template></el-dialog>
  </section>
 </template>
@@ -44,5 +47,5 @@ function edit(item){editItem.value=item;editText.value=item.content;editing.valu
 async function saveEdit(){try{await mutate(()=>client.change(editItem.value,editText.value));editing.value=false}catch{/* 保留草稿 */}}
 async function withdraw(item){try{await mutate(()=>client.change(item,null))}catch{/* 结果已显示，不重试 */}}
 async function steer(item){try{await mutate(()=>client.steer(item))}catch{/* 保留同一条消息，不重发 */}}
-defineExpose({ready:async()=>{await ready;return client.enabled},submit:content=>mutate(()=>client.submit(content,mode.value))})
+defineExpose({ready:async()=>{await ready;return client.enabled},submit:content=>mutate(()=>client.submit(content,mode.value)),cancel:()=>command('cancel')})
 </script>

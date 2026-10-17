@@ -9,8 +9,8 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --index-url "$PIP_INDEX_URL" -r requirements.txt \
     && groupadd --gid 10001 app && useradd --uid 10001 --gid app --create-home app \
     && mkdir /data && chown app:app /data
-COPY memory_service/main.py /app/main.py
-COPY LICENSE /app/LICENSE
+COPY --chmod=0644 memory_service/main.py /app/main.py
+COPY --chmod=0644 LICENSE /app/LICENSE
 USER app
 EXPOSE 8081
 HEALTHCHECK --interval=15s --timeout=5s --start-period=90s --retries=10 \
