@@ -105,6 +105,8 @@ export const confirmChatAction = (payload) => request.post('/api/chat-assistant/
 export const fetchAgentRuns = (params = {}) => request.get('/api/agent/runs', { params })
 export const fetchAgentRun = (runId) => request.get(`/api/agent/runs/${encodeURIComponent(runId)}`)
 export const fetchAgentRunEvents = (runId, after = 0) => request.get(`/api/agent/runs/${encodeURIComponent(runId)}/events`, { params: { after, limit: 100 } })
+export const fetchAgentRunSources = (runId) => request.get(`/api/agent/runs/${encodeURIComponent(runId)}/sources`)
+export const exportAgentRunSources = (runId) => request.post(`/api/agent/runs/${encodeURIComponent(runId)}/sources/export`, { confirmed: true }, { responseType: 'arraybuffer', timeout: 35000, headers: { 'X-Agent-Action': 'export' } })
 export const cancelAgentRun = (runId) => request.post(`/api/agent/runs/${encodeURIComponent(runId)}/cancel`, null, { headers: { 'X-Agent-Action': 'cancel' } })
 
 export const fetchAgentActions = (params = {}) => request.get('/api/agent/actions', { params })

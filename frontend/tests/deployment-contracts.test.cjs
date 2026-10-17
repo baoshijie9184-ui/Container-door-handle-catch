@@ -134,7 +134,7 @@ test('tests\\layout-sidebar-fixed.test.cjs', () => {
 
   assert.match(
     source,
-    /\.layout-sidebar\s*\{[\s\S]*position:\s*sticky;[\s\S]*top:\s*18px;[\s\S]*height:\s*calc\(100vh - 36px\);[\s\S]*overflow-y:\s*auto;/,
+    /\.layout-sidebar\s*\{[\s\S]*height:\s*100%;[\s\S]*min-height:\s*0;[\s\S]*overflow-y:\s*auto;/,
     'layout-sidebar should stay pinned within the viewport'
   )
 

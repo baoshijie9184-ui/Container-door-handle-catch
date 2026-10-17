@@ -13,51 +13,17 @@
           <rect x="8" y="16" width="8" height="4" rx="2"/>
         </svg>
       </div>
-      <p class="empty-title">工业检测助手在线</p>
-      <p class="empty-desc">可以按账号权限查询检测任务、质检记录与工作统计 主管还可查询设备和模型列表</p>
-
-      <div class="empty-section">
-        <p class="empty-section-label">只读查询</p>
-        <div class="empty-chips">
-          <button class="empty-chip action" @click="$emit('send', '查询最近的检测任务')">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-            检测任务
-          </button>
-          <button class="empty-chip action" @click="$emit('send', '查询检测任务的处理进度')">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-            检测进度
-          </button>
-          <button class="empty-chip action" @click="$emit('send', '查询我有权限查看的质检记录')">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
-            质检记录
-          </button>
-          <button class="empty-chip action danger" @click="$emit('send', '查询最近检测任务的缺陷数量')">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10.3 3.5 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.5a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
-            缺陷统计
-          </button>
-        </div>
+      <span class="welcome-eyebrow">DOORHANDLE ASSISTANT</span>
+      <h2 class="empty-title">今天有什么需要我协助？</h2>
+      <p class="empty-desc">从检测到质检追溯，用对话连接你的工作</p>
+      <div class="welcome-prompts">
+        <button v-for="prompt in welcomePrompts" :key="prompt.title" class="welcome-prompt" @click="$emit('send', prompt.query)">
+          <span class="prompt-icon"><el-icon><component :is="prompt.icon" /></el-icon></span>
+          <strong>{{ prompt.title }}</strong><span>{{ prompt.description }}</span>
+          <el-icon class="prompt-arrow"><TopRight /></el-icon>
+        </button>
       </div>
-
-      <div class="empty-section">
-        <p class="empty-section-label">使用帮助</p>
-        <div class="empty-chips">
-          <button class="empty-chip trace" @click="$emit('send', '缺陷统计库在哪个页面')">缺陷统计库</button>
-          <button class="empty-chip trace" @click="$emit('send', '批次追溯在哪个页面操作')">批次追溯</button>
-          <button class="empty-chip trace" @click="$emit('send', '工单追溯在哪个页面操作')">工单追溯</button>
-          <button class="empty-chip trace" @click="$emit('send', '如何查看 AgentScope 调用轨迹')">执行轨迹</button>
-        </div>
-      </div>
-
-      <div class="empty-section">
-        <p class="empty-section-label">快速查询</p>
-        <div class="empty-chips">
-          <button class="empty-chip" @click="$emit('send', '显示系统业务地图和功能入口')">业务地图</button>
-          <button class="empty-chip" @click="$emit('send', '查询我有权限查看的设备信息')">设备信息</button>
-          <button class="empty-chip" @click="$emit('send', '查询我有权限查看的模型列表')">模型列表</button>
-          <button class="empty-chip" @click="$emit('send', '查询本周工作统计')">工作统计</button>
-          <button class="empty-chip" @click="$emit('send', '当前助手支持哪些只读查询')">助手能力</button>
-        </div>
-      </div>
+      <p class="welcome-note">按当前账号权限查询 · 输入 / 调用已启用技能</p>
     </div>
 
     <!-- 消息列表 -->
@@ -148,6 +114,7 @@
 <script setup>
 import { skillInstallNavigation } from '../../utils/skillInstallNavigation'
 import { onUnmounted, ref } from 'vue'
+import { Search, CircleCheck, DataAnalysis, Guide, TopRight } from '@element-plus/icons-vue'
 import ChatBusinessCard from './ChatBusinessCard.vue'
 import AgentResultCards from './AgentResultCards.vue'
 import ChatPendingActionCard from './ChatPendingActionCard.vue'
@@ -160,6 +127,13 @@ defineProps({
 })
 
 const emit = defineEmits(['confirm', 'send'])
+const welcomePrompts = [
+  { title: '查看检测进度', description: '找到最近任务与处理状态', query: '查询最近的检测任务和处理进度', icon: Search },
+  { title: '梳理质检记录', description: '汇总有权限查看的质检结果', query: '查询我有权限查看的质检记录', icon: CircleCheck },
+  { title: '了解工作统计', description: '整理本周检测与缺陷情况', query: '查询本周工作统计和缺陷数量', icon: DataAnalysis },
+  { title: '找到业务入口', description: '查看批次、工单与报告入口', query: '显示系统业务地图和功能入口', icon: Guide },
+]
+
 const listRef = ref(null)
 let highlightTimer = null
 
@@ -266,7 +240,7 @@ const escapeHtml = (str) => {
 .msg-list {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 24px;
 }
 
 /* ── 空状态 ── */
@@ -274,7 +248,9 @@ const escapeHtml = (str) => {
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 24px 12px;
+  justify-content: center;
+  min-height: 320px;
+  padding: 32px 8px 24px;
   text-align: center;
   position: relative;
 }
@@ -294,7 +270,7 @@ const escapeHtml = (str) => {
   height: 52px;
   border-radius: 16px;
   background: linear-gradient(135deg, #eef2ff, #e0e7ff);
-  color: #4f6ef7;
+  color: #2563eb;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -304,94 +280,30 @@ const escapeHtml = (str) => {
 }
 
 .empty-title {
-  margin: 0;
-  font-size: 16px;
-  font-weight: 700;
-  color: #0f172a;
+  margin: 10px 0 8px;
+  font-size: clamp(21px, 2.1vw, 30px);
+  font-weight: 650;
+  letter-spacing: -.04em;
+  color: #14223a;
 }
 
 .empty-desc {
-  margin: 4px 0 0;
-  font-size: 12px;
-  color: #94a3b8;
+  margin: 0;
+  font-size: 13px;
+  color: #68768a;
 }
 
-.empty-section {
-  width: 100%;
-  margin-top: 16px;
-}
-
-.empty-section-label {
-  margin: 0 0 8px;
-  font-size: 11px;
-  font-weight: 600;
-  color: #94a3b8;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-}
-
-.empty-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  justify-content: center;
-}
-
-.empty-chip {
-  min-height: 34px;
-  padding: 7px 12px;
-  border: 1px solid #e2e8f0;
-  border-radius: 10px;
-  background: #fff;
-  color: #475569;
-  font-size: 12px;
-  cursor: pointer;
-  transition: all 0.15s;
-  display: flex;
-  align-items: center;
-  gap: 5px;
-}
-
-.empty-chip:hover {
-  border-color: #4f6ef7;
-  color: #4f6ef7;
-  background: #f8faff;
-}
-
-.empty-chip.action {
-  background: linear-gradient(135deg, #eef2ff, #e0e7ff);
-  border-color: #c7d2fe;
-  color: #4338ca;
-  font-weight: 500;
-}
-
-.empty-chip.action:hover {
-  background: linear-gradient(135deg, #e0e7ff, #c7d2fe);
-  border-color: #a5b4fc;
-}
-
-.empty-chip.action.danger {
-  background: linear-gradient(135deg, #fff1f2, #ffe4e6);
-  border-color: #fecdd3;
-  color: #be123c;
-}
-
-.empty-chip.action.danger:hover {
-  background: linear-gradient(135deg, #ffe4e6, #fecdd3);
-  border-color: #fda4af;
-}
-
-.empty-chip.trace {
-  background: #f8fafc;
-  border-color: #dbeafe;
-  color: #1d4ed8;
-  font-weight: 600;
-}
-
-.empty-chip.trace:hover {
-  background: #eff6ff;
-  border-color: #93c5fd;
-}
+.welcome-eyebrow { margin-top: 6px; color: #2563eb; letter-spacing: .13em; font-size: 10px; font-weight: 700; }
+.welcome-prompts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; width: 100%; max-width: 600px; margin-top: 28px; }
+.welcome-prompt { position: relative; display: grid; grid-template-columns: 32px minmax(0, 1fr); gap: 5px 10px; padding: 18px; background: white; border: 1px solid #e7ebf1; border-radius: 14px; text-align: left; cursor: pointer; transition: border-color .18s, background .18s, transform .18s; }
+.welcome-prompt:hover { border-color: #a9c6ff; background: #f8faff; transform: translateY(-2px); }
+.welcome-prompt:active { transform: scale(.98); }
+.welcome-prompt strong { font-size: 13px; font-weight: 600; color: #24354e; padding-right: 10px; }
+.welcome-prompt > span:not(.prompt-icon) { grid-column: 2; font-size: 11px; line-height: 1.6; color: #68768a; }
+.prompt-icon { grid-row: span 2; display: grid; place-items: center; width: 32px; height: 32px; color: #2563eb; background: #eef4ff; border-radius: 9px; }
+.prompt-arrow { position: absolute; top: 18px; right: 14px; color: #8190a5; }
+.welcome-note { margin-top: 20px; font-size: 11px; color: #68768a; }
+@media (max-width: 540px) { .welcome-prompts { grid-template-columns: 1fr; margin-top: 20px; } .welcome-prompt { padding: 12px 14px; } .msg-empty { padding-top: 12px; } }
 
 /* ── 消息行 ── */
 .msg-row {
@@ -442,7 +354,7 @@ const escapeHtml = (str) => {
 
 .assistant-avatar {
   background: linear-gradient(135deg, #eef2ff, #e0e7ff);
-  color: #4f6ef7;
+  color: #2563eb;
 }
 
 .user-avatar {
@@ -451,7 +363,8 @@ const escapeHtml = (str) => {
 }
 
 .msg-body {
-  max-width: 85%;
+  max-width: calc(100% - 40px);
+  min-width: 0;
   display: flex;
   flex-direction: column;
 }
@@ -470,21 +383,22 @@ const escapeHtml = (str) => {
   border-radius: 16px;
   padding: 10px 14px;
   line-height: 1.6;
-  font-size: 13.5px;
+  font-size: 14px;
+  overflow-wrap: anywhere;
 }
 
 .msg-bubble.assistant {
   background: #ffffff;
   color: #1e293b;
   border-bottom-left-radius: 4px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  box-shadow: none;
 }
 
 .msg-bubble.user {
-  background: linear-gradient(135deg, #4f6ef7 0%, #3b5de7 100%);
-  color: #fff;
+  background: #eff4fc;
+  color: #1e293b;
   border-bottom-right-radius: 4px;
-  box-shadow: 0 2px 6px rgba(47, 107, 255, 0.18);
+  box-shadow: none;
 }
 
 .msg-content {

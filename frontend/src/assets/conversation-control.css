@@ -1,0 +1,29 @@
+.conversation-controls{margin:8px 16px 0;padding:10px 12px;border:1px solid #e4eaf3;border-radius:12px;background:#fff;color:#25354a;font-size:12px;animation:conversation-arrive .18s ease-out}
+.conversation-control-bar{display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap}
+.conversation-control-bar>span{font-weight:600;color:#245cc6}
+.conversation-control-bar>div{display:flex;gap:6px;flex-wrap:wrap}
+.control-note,.control-receipt{margin:6px 0 0;color:#708096;font-size:11px;line-height:1.65}
+.control-help{margin-top:6px;color:#708096;font-size:11px}.control-help summary{cursor:pointer;min-height:20px;line-height:20px}.control-help summary:focus-visible{outline:2px solid #2563eb;outline-offset:2px}
+.conversation-delivery{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px}
+.conversation-delivery select{border:1px solid #dce3ee;background:#f8faff;color:#244674;border-radius:6px;padding:5px}
+.conversation-delivery>span{color:#708096;font-size:11px}
+.control-error{color:#b33d3d;font-size:12px;line-height:1.65}
+.conversation-queue{list-style:none;padding:0;margin:8px -6px 0;max-height:170px;overflow:auto;border-radius:8px;background:#f6f8fb}
+.conversation-queue li{display:flex;gap:8px;min-height:42px;align-items:center;padding:4px 8px;animation:conversation-arrive .18s ease-out}
+.conversation-queue li+li{border-top:1px solid #e9edf3}
+.queue-entry-icon{flex-shrink:0;color:#8591a2;width:16px;font-size:16px}
+.conversation-queue .queue-content{flex:1;min-width:0;margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:13px;line-height:1.6;color:#39465a}
+.conversation-queue button,.queue-preference button{display:inline-flex;align-items:center;justify-content:center;gap:4px;flex-shrink:0;border:0;background:transparent;color:#65748a;border-radius:5px;padding:6px;min-height:30px;cursor:pointer;transition:transform .15s,background .15s,color .15s;font:inherit}
+.conversation-queue .queue-icon-button{width:30px;padding:6px;font-size:16px}
+.conversation-queue .queue-steer{font-size:12px}
+.conversation-queue .queue-steering-status{font-size:11px;color:#245cc6;white-space:nowrap}
+.conversation-queue button:hover,.queue-preference button:hover{transform:scale(1.03);background:#e8eef9;color:#245cc6}
+.conversation-queue button:active,.queue-preference button:active{transform:scale(.97)}
+.conversation-queue button:disabled{cursor:default;opacity:.4;transform:none;background:transparent}
+.conversation-queue button:focus-visible,.queue-preference button:focus-visible,.conversation-delivery select:focus-visible{outline:2px solid #2563eb;outline-offset:2px}
+.queue-preference{margin:6px 0;color:#708096;line-height:1.6}.queue-preference button{color:#245cc6;padding:2px 6px;margin-left:6px}
+.queue-row-enter-active,.queue-row-leave-active,.queue-row-move{transition:opacity .16s ease,transform .16s ease}
+.queue-row-enter-from,.queue-row-leave-to{opacity:0;transform:translateY(4px)}
+@keyframes conversation-arrive{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+@media(max-width:540px){.conversation-controls{margin:6px 10px 0;padding:8px}.conversation-delivery>span{flex-basis:100%}.conversation-queue li{gap:4px;min-height:44px;padding:4px 6px}.conversation-queue .queue-icon-button{width:32px;min-height:34px}}
+@media(prefers-reduced-motion:reduce){.conversation-controls,.conversation-queue li{animation:none}.conversation-queue button,.queue-preference button,.queue-row-enter-active,.queue-row-leave-active,.queue-row-move{transition:none}}

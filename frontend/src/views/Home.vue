@@ -32,40 +32,18 @@
 
     <!-- ═══ 真实内容 ═══ -->
     <template v-else>
-    <div role="status" style="margin-bottom:16px">
+    <div role="status" class="dashboard-refresh-note">
       <span>{{ refreshing ? '正在刷新…' : '每 30 秒自动刷新（后台页面暂停）' }}</span>
       <span v-if="lastUpdated"> · 最近全部更新成功：{{ lastUpdated }}</span>
       <el-alert v-if="failedSections.length" type="warning" :closable="false"
         :title="`加载失败：${failedSections.join('、')}。对应区域可能保留旧数据；首次加载失败的零值不代表真实统计，请刷新重试。`" />
     </div>
     <!-- ── 顶部 Hero + 运行态势 ── -->
-    <section class="app-panel" style="padding:20px;margin-bottom:20px">
-      <h3>{{ workUnitSummary?.scope === 'DEPARTMENT' ? '部门工作单元概览' : '我的工作单元概览' }}</h3>
-      <p>仅统计当前工作单元，不代表已审批公开检测记录；员工仅统计当前分配给自己的任务。</p>
-      <div v-if="workUnitSummary" class="hero-telemetry">
-        <span v-if="workUnitSummary.scope === 'DEPARTMENT'" class="metric-chip">待分配 {{ workUnitSummary.counts.WAITING }}</span>
-        <span class="metric-chip">已分配 {{ workUnitSummary.counts.ASSIGNED }}</span>
-        <span class="metric-chip">处理中 {{ workUnitSummary.counts.PROCESSING }}</span>
-        <span class="metric-chip">已提交待审核 {{ workUnitSummary.counts.SUBMITTED }}</span>
-      </div>
-      <p v-else>工作单元数据尚未加载成功。</p>
-    </section>
-    <section class="app-panel" style="padding:20px;margin-bottom:20px">
-      <h3>{{ duplicateSummary?.scope === 'DEPARTMENT' ? '部门重复图片复查' : '我的重复图片复查' }}</h3>
-      <p>统计已创建的未完成工单；员工仅查看分配给自己的复查工作。</p>
-      <div v-if="duplicateSummary" class="hero-telemetry">
-        <span v-if="duplicateSummary.scope === 'DEPARTMENT'" class="metric-chip">待分配 {{ duplicateSummary.counts.OPEN }}</span>
-        <span class="metric-chip">待对比 {{ duplicateSummary.counts.ASSIGNED }}</span>
-        <span class="metric-chip">对比中 {{ duplicateSummary.counts.COMPARING }}</span>
-        <span class="metric-chip">待审批 {{ duplicateSummary.counts.PENDING_APPROVAL }}</span>
-      </div>
-      <p v-else>复查工单数据尚未加载成功。</p>
-    </section>
     <section class="hero-grid animate-fade-in-up">
       <div class="hero-panel app-panel command-panel">
         <div class="hero-copy">
           <div class="industrial-kicker">Door Handle Inspection Center</div>
-          <h2 class="hero-title">集装箱门把手检测运营总览</h2>
+          <h2 class="hero-title">让每一次检测都有据可循</h2>
           <p class="hero-text">
             统一查看检测趋势、设备状态与人员分布，帮助现场团队更快定位异常、安排巡检和处理维护任务。
           </p>
@@ -86,6 +64,7 @@
             <el-icon style="margin-right:6px"><Setting /></el-icon>
             管理检测模型
           </el-button>
+          <el-button plain @click="router.push('/agent/chat')">向 AI 助手提问 <el-icon style="margin-left:4px"><ArrowRight /></el-icon></el-button>
         </div>
 
         <div class="hero-highlights">
@@ -179,6 +158,31 @@
         </div>
       </div>
     </section>
+
+    <div class="workflow-summaries">
+    <section class="workflow-summary app-panel">
+      <h3>{{ workUnitSummary?.scope === 'DEPARTMENT' ? '部门工作单元概览' : '我的工作单元概览' }}</h3>
+      <p>仅统计当前工作单元，不代表已审批公开检测记录；员工仅统计当前分配给自己的任务。</p>
+      <div v-if="workUnitSummary" class="hero-telemetry">
+        <span v-if="workUnitSummary.scope === 'DEPARTMENT'" class="metric-chip">待分配 {{ workUnitSummary.counts.WAITING }}</span>
+        <span class="metric-chip">已分配 {{ workUnitSummary.counts.ASSIGNED }}</span>
+        <span class="metric-chip">处理中 {{ workUnitSummary.counts.PROCESSING }}</span>
+        <span class="metric-chip">已提交待审核 {{ workUnitSummary.counts.SUBMITTED }}</span>
+      </div>
+      <p v-else>工作单元数据尚未加载成功。</p>
+    </section>
+    <section class="workflow-summary app-panel">
+      <h3>{{ duplicateSummary?.scope === 'DEPARTMENT' ? '部门重复图片复查' : '我的重复图片复查' }}</h3>
+      <p>统计已创建的未完成工单；员工仅查看分配给自己的复查工作。</p>
+      <div v-if="duplicateSummary" class="hero-telemetry">
+        <span v-if="duplicateSummary.scope === 'DEPARTMENT'" class="metric-chip">待分配 {{ duplicateSummary.counts.OPEN }}</span>
+        <span class="metric-chip">待对比 {{ duplicateSummary.counts.ASSIGNED }}</span>
+        <span class="metric-chip">对比中 {{ duplicateSummary.counts.COMPARING }}</span>
+        <span class="metric-chip">待审批 {{ duplicateSummary.counts.PENDING_APPROVAL }}</span>
+      </div>
+      <p v-else>复查工单数据尚未加载成功。</p>
+    </section>
+    </div>
 
     <!-- ── 图表 + 摘要区 ── -->
     <section class="content-grid">
@@ -1457,4 +1461,10 @@ function getModelUsagePercent(taskCount) {
   .chart { height: 260px; }
   .hl-value { font-size: 26px; }
 }
+.dashboard-refresh-note { margin-bottom: 16px; font-size: 11px; color: var(--app-text-muted); }
+.workflow-summaries { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin: 20px 0; }
+.workflow-summary { padding: 20px; min-width: 0; }
+.workflow-summary h3 { font-size: 14px; margin: 0 0 6px; }
+.workflow-summary p { font-size: 12px; line-height: 1.7; color: var(--app-text-muted); }
+@media (max-width: 900px) { .workflow-summaries { grid-template-columns: 1fr; } }
 </style>

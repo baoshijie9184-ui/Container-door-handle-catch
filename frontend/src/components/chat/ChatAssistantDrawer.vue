@@ -1,17 +1,15 @@
 <template>
-  <el-drawer
-    :model-value="chatStore.visible"
-    :size="drawerSize"
-    append-to-body
-    :with-header="false"
-    direction="rtl"
+  <component
+    :is="fullScreen ? 'section' : ElDrawer"
+    v-bind="containerProps"
+    :class="{ 'chat-workspace': fullScreen }"
     @close="chatStore.close()"
     @update:model-value="handleDrawerChange"
   >
     <div class="chat-panel">
       <!-- 拖拽手柄 -->
       <div
-        v-if="!isMobile"
+        v-if="!isMobile && !fullScreen"
         class="resize-handle"
         @mousedown.prevent="startResize"
         @touchstart.prevent="startResizeTouch"
@@ -26,7 +24,7 @@
         </div>
       </div>
       <!-- 侧边栏 + 主区域 -->
-      <div class="chat-layout">
+      <div class="chat-layout" ref="workspaceRef">
         <ChatSidebar :compact="compactSidebar" />
         <div class="chat-main" @click="closeSidebarMenu">
           <!-- 头部 -->
@@ -42,9 +40,16 @@
                   <rect x="8" y="16" width="8" height="4" rx="2"/>
                 </svg>
               </div>
-              <h3 class="chat-header-title">{{ chatStore.sessionTitle }}</h3>
+              <div class="chat-heading">
+                <h3 class="chat-header-title">{{ chatStore.sessionTitle }}</h3>
+                <p>检测与质检工作助手</p>
+              </div>
             </div>
             <div class="chat-header-actions">
+              <button v-if="fullScreen" ref="contextToggleRef" type="button" class="chat-header-btn context-toggle" :aria-label="contextOpen?'收起工作面板':'展开工作面板'" :aria-expanded="contextOpen" aria-controls="chat-workspace-context" @click="contextOpen=!contextOpen"><el-icon><Operation /></el-icon></button>
+              <a class="chat-header-btn" :href="'#/agent/trace?sessionId='+encodeURIComponent(chatStore.sessionId || '')" title="查看执行追溯" aria-label="查看执行追溯" @click="chatStore.close()">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="5" cy="6" r="2"/><circle cx="19" cy="6" r="2"/><circle cx="12" cy="18" r="2"/><path d="M7 6h10M5 8v2a3 3 0 0 0 3 3h4m7-5v2a3 3 0 0 1-3 3h-4v3"/></svg>
+              </a>
               <a class="chat-header-btn" href="#/agent/memory" title="个人记忆" @click="chatStore.close()">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h6a3 3 0 0 1 3 3v14a4 4 0 0 0-4-2H4zM20 4h-4a3 3 0 0 0-3 3v14a4 4 0 0 1 4-2h3z"/></svg>
               </a>
@@ -64,7 +69,7 @@
                   <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
                 </svg>
               </button>
-              <button class="chat-header-close" @click="chatStore.close()" title="关闭">
+              <button v-if="!fullScreen" class="chat-header-close" @click="chatStore.close()" title="关闭" aria-label="关闭助手">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
                   <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
                 </svg>
@@ -76,7 +81,7 @@
           <div class="chat-body" ref="chatBodyRef">
             <ChatMessageList
               ref="messageListRef"
-              :messages="chatStore.messages"
+              :messages="controlledMessages"
               :loading="chatStore.loading"
               :confirming-action-ids="chatStore.confirmingActionIds"
               @confirm="handleConfirm"
@@ -86,6 +91,7 @@
           </div>
 
           <ChatQuestionNavigator
+            v-if="!controlState.enabled"
             :questions="questionItems"
             :active-key="activeQuestionKey"
             :reset-key="`${chatStore.sessionId}-${chatStore.visible}`"
@@ -93,8 +99,13 @@
           />
 
           <!-- 输入区 -->
-          <ChatComposer :loading="chatStore.loading" @send="handleSend" />
+           <ConversationControls v-if="chatStore.sessionId" ref="conversationControlsRef" :session-id="chatStore.sessionId" @snapshot="controlState=$event" @refresh="chatStore.refreshControlHistory"><template #navigation><ChatQuestionNavigator inline :questions="questionItems" :active-key="activeQuestionKey" :reset-key="`${chatStore.sessionId}-${chatStore.visible}`" @locate="handleLocateQuestion" /></template></ConversationControls>
+           <ChatComposer ref="composerRef" :loading="chatStore.loading" @send="handleSend" />
         </div>
+        <button v-if="fullScreen&&contextOpen&&!contextDocked" class="context-scrim" type="button" aria-label="收起工作面板遮罩" @click="closeContext"></button>
+        <Transition name="workspace-context">
+          <AgentWorkspacePanel v-if="fullScreen&&contextOpen" id="chat-workspace-context" :class="{ 'context-floating': !contextDocked }" :title="chatStore.sessionTitle" :session-id="chatStore.sessionId" :messages="chatStore.messages" @reference="composerRef?.appendReference($event)" :trace="chatStore.executionTrace" :loading="chatStore.diagnosticsLoading" @close="closeContext" @refresh="chatStore.loadDiagnostics" />
+        </Transition>
       </div>
 
       <div v-if="diagnosticsVisible" class="diagnostics-mask" @click.self="diagnosticsVisible = false">
@@ -170,17 +181,21 @@
         </aside>
       </div>
     </div>
-  </el-drawer>
+  </component>
 </template>
 
 <script setup>
 import { computed, ref, watch, nextTick, onMounted, onUnmounted } from 'vue'
+import { ElDrawer } from 'element-plus'
 import { useChatAssistantStore } from '@/stores/chatAssistant'
 import ChatComposer from './ChatComposer.vue'
+import ConversationControls from './ConversationControls.vue'
 import ChatMessageList from './ChatMessageList.vue'
 import AgentActionList from './AgentActionList.vue'
 import ChatQuestionNavigator from './ChatQuestionNavigator.vue'
 import ChatSidebar from './ChatSidebar.vue'
+import AgentWorkspacePanel from './AgentWorkspacePanel.vue'
+import { Operation } from '@element-plus/icons-vue'
 import { buildQuestionItems } from '@/utils/chatMessageNavigation'
 
 const props = defineProps({
@@ -188,11 +203,20 @@ const props = defineProps({
 })
 
 const chatStore = useChatAssistantStore()
+const conversationControlsRef=ref(null),composerRef=ref(null),controlState=ref({enabled:false,run:null})
+const controlledMessages=computed(()=>controlState.value.run?.text&&controlState.value.run.phase!=='IDLE'?[...chatStore.messages,{role:'assistant',content:controlState.value.run.text,messageType:'TEXT',streaming:true}]:chatStore.messages)
 const chatBodyRef = ref(null)
 const messageListRef = ref(null)
 const activeQuestionKey = ref('')
 const resizeTooltip = ref('拖拽调整面板宽度')
 const diagnosticsVisible = ref(false)
+const workspaceRef=ref(null),contextToggleRef=ref(null),contextOpen=ref(false),workspaceWidth=ref(0)
+const contextDocked=computed(()=>workspaceWidth.value>=1000)
+watch(()=>controlState.value.run?.phase,phase=>{if(['WAITING_PLAN','WAITING_INPUT','AWAITING_RECOVERY'].includes(phase))contextOpen.value=true})
+let workspaceObserver
+const closeContext=()=>{contextOpen.value=false;nextTick(()=>contextToggleRef.value?.focus())}
+const contextKey=event=>{if(event.target?.closest?.('[role="dialog"]')||document.querySelector('.el-overlay-dialog .el-dialog[aria-modal="true"]'))return;if(event.key==='Escape'&&contextOpen.value&&!diagnosticsVisible.value)closeContext()}
+watch(contextOpen,async open=>{if(open){await nextTick();workspaceRef.value?.querySelector('#chat-workspace-context button')?.focus()}})
 const routeTrace = computed(() => {
   const trace = chatStore.executionTrace?.events
   return Array.isArray(trace) ? trace.slice(-8).map(event => `${event.type} · ${event.tool || event.agent}`) : []
@@ -238,6 +262,9 @@ const drawerSize = computed(() => {
   return `${width}px`
 })
 const compactSidebar=computed(()=>isMobile.value||(!props.fullScreen&&clampPanelWidth(panelWidth.value)<700))
+const containerProps = computed(() => props.fullScreen
+  ? { 'aria-label': '智能对话工作区' }
+  : { modelValue: chatStore.visible, size: drawerSize.value, appendToBody: true, withHeader: false, direction: 'rtl', class: 'assistant-drawer' })
 
 const loadPanelWidth = () => {
   try {
@@ -310,8 +337,11 @@ const handleViewportResize = () => {
 onMounted(() => {
   loadPanelWidth()
   window.addEventListener('resize', handleViewportResize)
+  window.addEventListener('keydown',contextKey)
+  if(props.fullScreen&&workspaceRef.value){workspaceObserver=new ResizeObserver(entries=>{workspaceWidth.value=entries[0].contentRect.width});workspaceObserver.observe(workspaceRef.value)}
 })
 onUnmounted(() => {
+  workspaceObserver?.disconnect();window.removeEventListener('keydown',contextKey)
   window.removeEventListener('resize', handleViewportResize)
   document.removeEventListener('mousemove', onMouseMove)
   document.removeEventListener('mouseup', onMouseUp)
@@ -334,6 +364,10 @@ watch(() => chatStore.visible, (val) => {
 })
 
 const handleSend = async (content) => {
+  const currentSession=chatStore.sessionId
+  await conversationControlsRef.value?.ready()
+  if(chatStore.sessionId!==currentSession)return
+  if(controlState.value.enabled){const session=chatStore.sessionId;try{await conversationControlsRef.value.submit(content)}catch{if(chatStore.sessionId===session)composerRef.value?.restoreDraft(content)}return}
   await chatStore.sendMessage(content)
   scrollToBottom()
 }
@@ -372,13 +406,15 @@ const handleDrawerChange = (value) => {
   height: 100%;
   display: flex;
   flex-direction: column;
-  background: #fafbfc;
+  background: #ffffff;
   position: relative;
 }
 
 .chat-layout {
   display: flex;
   height: 100%;
+  min-height: 0;
+  position: relative;
 }
 
 .chat-main {
@@ -386,6 +422,7 @@ const handleDrawerChange = (value) => {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
   position: relative;
 }
 
@@ -432,7 +469,7 @@ const handleDrawerChange = (value) => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 16px;
+  padding: 16px 22px;
   background: #fff;
   border-bottom: 1px solid rgba(15, 23, 42, 0.06);
   flex-shrink: 0;
@@ -456,8 +493,30 @@ const handleDrawerChange = (value) => {
 }
 
 .chat-avatar.ai {
-  background: linear-gradient(135deg, #eef2ff 0%, #e0e7ff 100%);
-  color: #4f6ef7;
+  background: #eff5ff;
+  color: #2563eb;
+}
+
+.chat-heading { min-width: 0; }
+.chat-heading p { margin: 3px 0 0; font-size: 11px; color: #64748b; }
+.chat-workspace { height: 100%; min-height: 0; overflow: hidden; border: 1px solid var(--app-border); border-radius: 18px; background: white; }
+.chat-workspace .chat-body { padding: 24px clamp(16px, 3vw, 48px) 12px; }
+.chat-workspace :deep(.msg-list), .chat-workspace :deep(.agent-actions) { max-width: 820px; margin-inline: auto; width: 100%; }
+.chat-workspace :deep(.composer) { padding: 12px clamp(16px, 3vw, 48px) 16px; }
+.chat-workspace :deep(.composer > *) { max-width: 820px; margin-inline: auto; }
+.chat-workspace :deep(.slash-menu) { max-width: min(820px, calc(100% - 32px)); }
+.chat-workspace :deep(.chat-sidebar) { width: 236px; }
+.chat-workspace :deep(.chat-sidebar.collapsed) { width: 42px; }
+.chat-workspace :deep(.workspace-context){flex:0 0 288px;width:288px;min-width:0}.chat-workspace :deep(.workspace-context.context-floating){position:absolute;inset:0 0 0 auto;width:min(310px,100%);z-index:26;box-shadow:-12px 0 40px #21355418}.context-scrim{position:absolute;inset:0;border:0;background:#17294036;z-index:25}.workspace-context-enter-active,.workspace-context-leave-active{transition:opacity .18s ease,transform .18s ease}.workspace-context-enter-from,.workspace-context-leave-to{opacity:0;transform:translateX(14px)}
+@media(prefers-reduced-motion:reduce){.workspace-context-enter-active,.workspace-context-leave-active{transition:none}}
+@media (max-width: 768px) {
+  .chat-workspace { border-radius: 12px; }
+  .chat-header { padding: 12px 14px; gap: 8px; }
+  .chat-header-btn, .chat-header-close { min-width: 32px; min-height: 32px; }
+  .chat-heading p { display: none; }
+  .chat-header-main { gap: 8px; overflow: hidden; }
+  .chat-header-title { font-size: 13px; }
+  .chat-header-actions a[title="个人记忆"], .chat-header-actions button[title="清空对话"] { display: none; }
 }
 
 .chat-header-title {

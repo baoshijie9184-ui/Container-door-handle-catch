@@ -1,0 +1,11 @@
+.agent-result .operation-metrics strong { font-size: 20px; }
+.agent-result .operation-disclosure { margin: 12px 0; }
+.agent-result .operation-disclosure summary { color: #1764cc; font-size: 12px; cursor: pointer; padding: 6px 0; }
+.agent-result .operation-disclosure summary:focus-visible { outline: 2px solid #1764cc; outline-offset: 3px; }
+.agent-result .operation-details { display: grid; gap: 8px; margin: 12px 0; font-size: 12px; }
+.agent-result .operation-details > div { display: grid; grid-template-columns: 100px minmax(0, 1fr); gap: 8px; }
+.agent-result .operation-details dt { color: #66758b; }
+.agent-result .operation-details dd { margin: 0; overflow-wrap: anywhere; }
+.agent-result .operation-disclosure[open] .operation-details { animation: operation-open .18s ease; }
+@keyframes operation-open { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .agent-result .operation-disclosure[open] .operation-details { animation: none; } }

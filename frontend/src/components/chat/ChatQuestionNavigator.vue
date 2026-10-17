@@ -1,5 +1,5 @@
 <template>
-  <div v-if="questions.length" ref="rootRef" class="question-navigator">
+  <div v-if="questions.length" ref="rootRef" class="question-navigator" :class="{ 'question-nav-inline': inline }">
     <button
       ref="triggerRef"
       type="button"
@@ -19,8 +19,8 @@
       <span class="question-nav-count">{{ questions.length }}</span>
     </button>
 
-    <transition name="question-popover">
-      <section v-if="open" id="chat-question-list" class="question-nav-popover" aria-label="当前会话历史提问">
+    <Teleport to="body" :disabled="!inline"><transition name="question-popover">
+      <section v-if="open" ref="popoverRef" id="chat-question-list" class="question-nav-popover" :class="{ 'question-nav-floating': inline }" aria-label="当前会话历史提问">
         <header>
           <strong>历史提问</strong>
           <span>当前会话 · {{ questions.length }} 条</span>
@@ -40,7 +40,7 @@
           </button>
         </div>
       </section>
-    </transition>
+    </transition></Teleport>
   </div>
 </template>
 
@@ -48,6 +48,7 @@
 import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 
 const props = defineProps({
+  inline: { type: Boolean, default: false },
   questions: { type: Array, default: () => [] },
   activeKey: { type: String, default: '' },
   resetKey: { type: [String, Number], default: '' }
@@ -55,6 +56,7 @@ const props = defineProps({
 
 const emit = defineEmits(['locate'])
 const rootRef = ref(null)
+const popoverRef = ref(null)
 const triggerRef = ref(null)
 const open = ref(false)
 
@@ -69,7 +71,7 @@ const selectQuestion = (key) => {
 }
 
 const handlePointerDown = (event) => {
-  if (open.value && rootRef.value && !rootRef.value.contains(event.target)) close()
+  if (open.value && rootRef.value && !rootRef.value.contains(event.target) && !popoverRef.value?.contains(event.target)) close()
 }
 
 const handleKeyDown = (event) => {
@@ -97,6 +99,7 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+.question-navigator.question-nav-inline{position:relative;top:auto;right:auto;transform:none;display:inline-flex}.question-nav-inline .question-nav-trigger{width:30px;height:28px;border-radius:6px;box-shadow:none}.question-nav-inline .question-nav-count{font-size:8px;min-width:12px;height:12px}.question-nav-inline .question-nav-popover{top:auto;bottom:36px;right:0}
 .question-navigator { position: absolute; right: 10px; top: 50%; z-index: 18; transform: translateY(-50%); }
 .question-nav-trigger { position: relative; width: 44px; height: 44px; border: 1px solid #dbe3ef; border-radius: 14px; background: rgba(255,255,255,.96); color: #52647a; display: grid; place-items: center; cursor: pointer; box-shadow: 0 8px 24px rgba(15,23,42,.14); transition: color .2s, border-color .2s, box-shadow .2s; }
 .question-nav-trigger:hover, .question-nav-trigger[aria-expanded="true"] { color: #3b5de7; border-color: #aab9ff; box-shadow: 0 10px 28px rgba(59,93,231,.2); }
@@ -117,4 +120,5 @@ onUnmounted(() => {
 .question-popover-enter-from, .question-popover-leave-to { opacity: 0; transform: translateY(-4px) scale(.98); }
 @media (max-width: 480px) { .question-navigator { right: 8px; } .question-nav-popover { right: -2px; width: min(272px, calc(100vw - 24px)); } }
 @media (prefers-reduced-motion: reduce) { .question-nav-trigger, .question-popover-enter-active, .question-popover-leave-active { transition: none; } }
+.question-nav-popover.question-nav-floating{position:fixed;right:16px;top:min(140px,20vh);bottom:auto;width:min(300px,calc(100vw - 32px));z-index:3000}
 </style>

@@ -156,7 +156,7 @@ const routes = [
         path: 'agent/trace',
         name: 'agentTrace',
         component: () => import('../views/AgentTrace.vue'),
-        meta: { title: 'Agent调用链路', requiresAuth: true, icon: 'Operation' }
+        meta: { title: 'Agent执行追溯', requiresAuth: true, icon: 'Operation' }
       },
       {
         path: 'agent/actions',

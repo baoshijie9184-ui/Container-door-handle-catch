@@ -11,6 +11,10 @@
 - `migration-V14-security-reliability-hardening.sql`: 安全与幂等迁移，增加用户角色、检测调度标识和助手动作错误字段；升级现有数据库时必须先执行。
 - `migration-V18-test-users.sql`: 本地开发的员工、主管各两个测试账号；执行时会更新同名账号的密码和角色。账号及密码见 [测试用户账号](../../docs/测试用户账号.md)。
 - `migration-V19-agent-confirmation.sql`: 主管质检分配的持久确认与审计表，只新增表，不恢复执行旧助手动作。
+- `migration-V31-agent-research-evidence.sql`: 依赖 V16，新增本人运行的网页来源与回答引用关联表；需显式开启调研来源登记，见 [调研来源与引用追溯](../../docs/Agent调研来源与引用追溯.md)。
+- `migration-V32-agent-research-storage.sql`: 依赖 V31，只新增账号配额锁与过期内容清理审计表；存储治理、清理默认关闭，不随迁移清空内容，见 [调研证据存储治理](../../docs/Agent调研证据存储治理.md)。
+- `migration-V33-agent-research-export.sql`: 依赖 V31，新增私有来源导出摘要审计表；导出默认关闭，用户确认且审计成功后交付 JSON，见 [来源导出与审计](../../docs/Agent调研来源导出与审计.md)。
+- `migration-V35-agent-research-export-limit.sql`: 依赖 V33，新增账号固定窗口计数表；限流默认关闭，额度和导出审计同事务提交，见 [导出限流](../../docs/Agent调研来源导出限流.md)。
 - `detection_records_500_samples.sql`: 包含500条检测记录的SQL文件。
 - `detection_records_generator.js`: 用于生成检测记录数据的JavaScript脚本。
 - `import_detection_records.bat`: Windows批处理文件，用于自动导入数据。
@@ -102,6 +106,12 @@ mysql -u用户名 -p密码 数据库名 < new_records.sql
 7. 图片总数范围：5000-20000张
 
 ## AgentScope 运行日志迁移
+
+V37 `migration-V37-agent-workbench.sql` 增加 AI 工作台状态、请求/审计及 SDK 检查点；V38 `migration-V38-agent-workspace.sql` 增加 App 文件引用、分支及审计。分别对应 AI/App classpath 副本，依赖 V16/V36。开发集成中，默认关闭，不自动应用到真实库，统一发布要求见 [八项能力实施](../../docs/Agent八项能力实施.md)。
+
+V36 `migration-V36-conversation-inbox.sql` 增加对话输入、账号锁及摘要审计三表，依赖既有会话表及 V16 运行日志；App classpath 副本保持一致。默认关闭，执行迁移后显式配置 `AGENT_CONVERSATION_CONTROL_ENABLED=true` 并保持运行日志开启，重启生效。不自动重放已领取消息或恢复 SDK 断点，见 [任务暂停与消息队列](../../docs/Agent任务暂停与消息队列.md)。
+
+V34 `migration-V34-mcp-install-queue.sql` 新增固定 Fetch 安装持久队列，先执行 V25，AI classpath 副本逐字节一致。功能默认关闭，需显式配置 `AGENT_MCP_DURABLE_INSTALL_ENABLED=true`；仅恢复确认有效期内等待任务，已领取任务不自动重放，不自动迁移或删除历史。见 [持久安装队列](../../docs/MCP安装持久队列与重启恢复.md)。
 
 当前单体组织身份、报告审批和 Agent 草稿来源需依次执行 `migration-V20-account-employee-department.sql`、`migration-V21-quality-report-approval.sql`、`migration-V22-agent-report-origin.sql`。classpath 副本位于 App 模块，启动脚本不自动执行。V20 回填已有部门 ID、不猜测账号员工关联；V21、V22 新增报告流程及来源表。配置及回退边界见 [组织身份](../../docs/账号员工部门关联.md)、[报告审批](../../docs/报告草稿与独立审批.md)、[Agent 报告工具](../../docs/Agent报告工具接入.md)。
 

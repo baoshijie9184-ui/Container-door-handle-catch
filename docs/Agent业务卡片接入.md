@@ -1,6 +1,6 @@
 # Agent 业务卡片接入
 
-当前 `java` 单体已接通 AgentScope 工具结果卡片。模型回复保持文字，卡片引用由后端观察实际业务工具返回生成；不解析模型生成的 JSON、HTML、布局、链接或操作指令。
+当前 `java-cloud` 模块化单体已接通 AgentScope 工具结果卡片。模型回复保持文字，卡片引用由后端观察实际业务工具返回生成；不解析模型生成的 JSON、HTML、布局、链接或操作指令。
 
 ## 已接入范围
 
@@ -11,6 +11,10 @@
 | 工作统计 | `get_my_work_metrics`、`get_department_work_metrics` | 当前权限及时间范围下的任务数、图片数、已处理图片、缺陷数量；不把缺陷数换算成不良图片率 |
 | 报告查询 | `list_quality_reports`、`get_quality_report` | 显示当前标题、状态、版本、任务及报告入口，不展示正文和依据全文 |
 | 报告草稿结果 | `create_report_draft`、`edit_report_draft` | 返回实际报告引用；私人草稿明确标注尚未提交或审批，提交、审批仍在独立业务页面进行 |
+| 设备运行状态 | `list_devices` | 主管查看使用、在线、PLC、相机、采集状态，按设备主键进入设备详情 |
+| 检测模型 | `list_models` | 主管查看名称、版本、发布状态及默认标记，进入模型详情抽屉；与 LLM 供应商目录区分 |
+| 采集告警 | `list_device_alerts`、`get_device_alert` | 主管查看当前告警处理状态、级别、类型和时间；有效关联进入设备详情，关联失效保留历史记录 |
+| 模型指标与发布配置 | `get_model_operations` | 主管查看登记指标、展开发布配置和使用记录，进入已有模型详情；不执行评估、发布或回滚 |
 
 既有主管质检分配确认卡片继续使用 `AgentActionList` 和持久 PendingAction，不使用业务结果卡片执行写操作。旧 `ChatBusinessCard` 仅兼容历史记录，旧 PendingAction 不能恢复图引擎执行。
 
@@ -38,7 +42,15 @@
 
 统计按引用中的天数重新计算当前范围，不恢复旧时刻的统计快照。报告卡片只返回明确的 Summary 字段，不能从旧标题、保存工具名或模型说法推定当前审批状态。卡片中只有固定业务页面链接和只读刷新按钮；页面内实际操作继续接受现有鉴权、版本、确认和审计规则。
 
+设备和检测模型卡片分别经 `ResourceAgentReadApi.device`、`ModelAgentReadApi.model` 重读，两个门面均要求主管身份；账号降为员工后，旧卡片立即在下次加载或刷新时返回通用不可用结果，不调用资源查询。设备主键以十进制字符串传递，覆盖 Java Long 正整数范围且不丢失 JavaScript 精度，不能使用可变的设备编号代替；模型主键限定为 Java Integer 正整数。引用禁止前导零、指数、小数、负数、越界和路径或查询字符。设备编号、模型名称及各状态仅在刷新响应内展示，引用不保存这些字段或内部路径。
+
+模型详情链接为 `#/models?modelId=<id>`，支持首次打开和当前列表页内切换。抽屉清空旧数据再读取，缺失或拒绝访问显示错误提示；关闭、离开或切换对象时使旧请求失效，延迟响应不能覆盖新对象。卡片不提供发布、切换默认模型、下载或删除按钮。这一轮复用既有表与版本 1 信封，不新增迁移。
+
 权限检查发生在加载和手动刷新时，不宣称页面持续实时接收权限撤销推送。文字回答和历史资源引用依然属于原用户私人聊天；本次没有清除历史聊天文字或重写既有记录。
+
+采集告警引用使用 `DEVICE_ALERTS` 与规范 Long 主键，经 `ResourceAgentReadApi.alert` 重读；没有告警处置按钮，告警状态不能推断设备实时健康。列表分页、默认筛选、摘要字段与审计边界见 [Agent 设备告警查询](Agent设备告警查询.md)。浏览器脚本现已扩展为设备、检测模型和告警共 78 项隔离 API 检查；下文 42 项是此前设备/模型扩展的历史验证记录。
+
+模型指标与发布配置引用为 `MODEL_OPERATIONS`，经主管模型门面读取当前登记值，异常值隐藏并提示核对，零值和缺失值分别展示。两套界面共用格式化规则，固定模型详情链接；配置记录不证明实际分流，见 [检测模型指标与发布配置查询](Agent检测模型指标与发布配置查询.md)。浏览器脚本已继续扩展该卡片，78 项是此前告警扩展时的历史检查数量。
 
 ## 联调发现并修复的兼容问题
 
@@ -48,13 +60,23 @@
 
 开发前核对 [AgentScope Java 2.0.4 发布记录](https://github.com/agentscope-ai/agentscope-java/releases/tag/v2.0.4)、[该版本工具文档](https://github.com/agentscope-ai/agentscope-java/blob/v2.0.4/docs/v2/en/docs/building-blocks/tool.md) 和 [Apache-2.0 许可证](https://github.com/agentscope-ai/agentscope-java/blob/v2.0.4/LICENSE)。保留现有 SDK、Vue/Element Plus 和 React/AgentScope Chat 依赖，无新增第三方运行库或复制开源实现。
 
+2026-10-16 设备/模型扩展继续使用已安装的 `@agentscope-ai/chat` 1.1.72 固定自定义卡片接口；核对 npm 包 `package.json` 的 Apache-2.0 声明和随包 README 的卡片扩展说明，参见 [包发布入口](https://www.npmjs.com/package/@agentscope-ai/chat)。沿用锁定版本与版权声明，没有因新增卡片升级依赖；包 README 中的旧开源计划时间不作为当前维护状态证明。当前仍是受控业务结果卡片，完整 A2UI 协议支持范围待 P08 后续验收。
+
 新卡片沿用白、蓝、黑色和开源按钮图标，正文与标题按文本渲染。Vue 卡片支持出现、移除过渡，按钮支持轻微缩放；两套前端支持 `prefers-reduced-motion`。固定响应式统计布局，不允许模型提供 HTML 或动态组件。
 
 React 使用现有 `@agentscope-ai/chat` 1.1.72 的 `Bubble.cards` 固定组件入口，该安装包声明 Apache-2.0。核对实际安装版本接口及实现后适配，避免把 React 元素交给默认 Markdown 正文渲染成 `[object Object]`。组件代码来自本项目，模型不能选择 component 或 code。
 
-本版本为项目固定业务卡片协议，未宣称实现完整 A2UI 标准。旧 `A2uiSurface.jsx` 仍未接入，本轮没有启用自由界面生成。设备/模型专用卡片、审批会签卡片和证据图片卡片仍待后续开发。
+本版本为项目固定业务卡片协议，未宣称实现完整 A2UI 标准。旧 `A2uiSurface.jsx` 仍未接入，本轮没有启用自由界面生成。设备/模型专用卡片已补齐；审批会签卡片、证据图片卡片和完整协议范围仍待后续开发。
 
 ## 验证
+
+2026-10-16 设备与检测模型卡片扩展：新增两类引用的边界校验、实际 SDK Harness → 专业 Agent → 业务工具 → 收集器测试，覆盖模型虚构编号不能生成引用、列表仅取前五条、旧角色重新鉴权及删除对象隐藏。两个资源门面的测试覆盖主管限制、主键与设备编号区分、Long 精度、模型文件路径排除和当前发布状态读取。
+
+完整 Maven `clean verify` 共 523 项，500 通过、23 项可选真实模型/数据库联调跳过，0 失败/错误。主站 Node 82 项与独立聊天 Node 5 项通过，两套生产构建成功，React 保留既有大包体积提示。证据 `work/resource-cards-full-verify.log`、`work/resource-cards-{vue,react}-tests.log`、`work/resource-cards-{vue,react}-build.log`。
+
+新增 `script/diagnostics/agent-resource-cards-acceptance.py`，使用完全隔离的 API 样本完成 42 项浏览器检查：两入口从历史引用恢复、文本转义、未知状态安全降级、手机布局、详情路由、刷新失败清空旧数据、权限撤销隐藏链接、重试和刷新恢复、详情抽屉真实打开、缺失与非法编号、延迟请求竞争。0 JavaScript 异常，未调用模型或业务写入。结果 `work/resource-cards/results.json`，桌面/手机截图 `work/resource-cards/{vue,react}-{desktop,mobile}.png` 已复核。测试临时前端进程已关闭。
+
+本轮未启动本地 MySQL、未对 ECS 发布或迁移，浏览器数据是测试样本；不能据此宣称云端真实设备/模型查询、实际 LLM 选工具或完整 A2UI 已验收。此前本机 MySQL 验收保留如下，其日期、范围与本轮区分。
 
 新增卡片收集、实时范围、报告摘要、统计白名单、HTTP 输入及身份、主站信封保存/文字历史恢复、实际 SDK 生成引用、AG-UI 事件顺序和点号会话回归检查。
 

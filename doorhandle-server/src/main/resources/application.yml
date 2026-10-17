@@ -157,7 +157,7 @@ app:
     allowed-origins: ${APP_CORS_ALLOWED_ORIGINS:http://localhost:3001,http://127.0.0.1:3001,http://localhost:3002,http://127.0.0.1:3002,http://localhost:3003,http://127.0.0.1:3003,http://localhost:3004,http://127.0.0.1:3004,http://localhost:5173,http://127.0.0.1:5173,http://localhost:8080}
     allowed-methods: ${APP_CORS_ALLOWED_METHODS:GET,POST,PUT,DELETE,OPTIONS,HEAD}
     allowed-headers: ${APP_CORS_ALLOWED_HEADERS:*}
-    exposed-headers: ${APP_CORS_EXPOSED_HEADERS:Authorization,Content-Type}
+    exposed-headers: ${APP_CORS_EXPOSED_HEADERS:Authorization,Content-Type,X-Content-SHA256,X-Export-Id,Retry-After}
     allow-credentials: ${APP_CORS_ALLOW_CREDENTIALS:true}
     max-age: ${APP_CORS_MAX_AGE:3600}
   upload:
@@ -274,6 +274,33 @@ mem0:
 
 # AgentScope Java 2.0.4 + AG-UI；模型凭证由 Spring Environment 绑定。
 agentscope:
+  conversation-control:
+    enabled: ${AGENT_CONVERSATION_CONTROL_ENABLED:false}
+  workbench:
+    enabled: ${AGENT_WORKBENCH_ENABLED:false}
+    plans: ${AGENT_WORKBENCH_PLANS:true}
+    questions: ${AGENT_WORKBENCH_QUESTIONS:true}
+    files: ${AGENT_WORKBENCH_FILES:true}
+    forks: ${AGENT_WORKBENCH_FORKS:true}
+    children: ${AGENT_WORKBENCH_CHILDREN:true}
+    jobs: ${AGENT_WORKBENCH_JOBS:true}
+    usage: ${AGENT_WORKBENCH_USAGE:true}
+    recovery: ${AGENT_WORKBENCH_RECOVERY:true}
+    storage-root: ${AGENT_WORKSPACE_ROOT:${user.dir}/.agentscope/workspace}/artifacts
+    max-file-bytes: ${AGENT_WORKBENCH_MAX_FILE_BYTES:26214400}
+    quota-bytes: ${AGENT_WORKBENCH_QUOTA_BYTES:524288000}
+    preview-bytes: ${AGENT_WORKBENCH_PREVIEW_BYTES:64000}
+  research:
+    enabled: ${AGENT_RESEARCH_EVIDENCE_ENABLED:false}
+    export-enabled: ${AGENT_RESEARCH_EXPORT_ENABLED:false}
+    export-rate-limit-enabled: ${AGENT_RESEARCH_EXPORT_RATE_LIMIT_ENABLED:false}
+    export-max-per-window: ${AGENT_RESEARCH_EXPORT_MAX_PER_WINDOW:5}
+    export-window-seconds: ${AGENT_RESEARCH_EXPORT_WINDOW_SECONDS:60}
+    governance-enabled: ${AGENT_RESEARCH_STORAGE_GOVERNANCE_ENABLED:false}
+    max-sources-per-user: ${AGENT_RESEARCH_MAX_SOURCES_PER_USER:500}
+    purge-enabled: ${AGENT_RESEARCH_EXPIRED_CONTENT_PURGE_ENABLED:false}
+    cleanup-batch-size: ${AGENT_RESEARCH_CLEANUP_BATCH_SIZE:100}
+    cleanup-delay-ms: ${AGENT_RESEARCH_CLEANUP_DELAY_MS:60000}
   mcp:
     transport: ${AGENT_MCP_TRANSPORT:STDIO}
     gateway-url: ${AGENT_MCP_GATEWAY_URL:http://higress:8080/mcp/fetch}
@@ -281,6 +308,7 @@ agentscope:
     gateway-key: ${AGENT_MCP_GATEWAY_KEY:}
     gateway-image: ${AGENT_MCP_GATEWAY_IMAGE:}
     enabled: ${AGENT_LOCAL_MCP_ENABLED:false}
+    durable-install-enabled: ${AGENT_MCP_DURABLE_INSTALL_ENABLED:false}
     python: ${AGENT_LOCAL_MCP_PYTHON:python}
     installer: ${AGENT_LOCAL_MCP_INSTALLER:${user.dir}/script/shell/install-local-fetch-mcp.py}
   evolution:
@@ -302,6 +330,14 @@ agentscope:
     name: ${AGENTSCOPE_AI_NAME:doorhandle-assistant}
     workspace: ${AGENTSCOPE_AI_WORKSPACE:${user.dir}/.agentscope/workspace}
     max-iters: ${AGENTSCOPE_AI_MAX_ITERS:12}
+    context-compaction:
+      enabled: ${AGENT_CONTEXT_COMPACTION_ENABLED:false}
+      trigger-messages: ${AGENT_CONTEXT_TRIGGER_MESSAGES:32}
+      trigger-tokens: ${AGENT_CONTEXT_TRIGGER_TOKENS:24000}
+      keep-messages: ${AGENT_CONTEXT_KEEP_MESSAGES:6}
+      max-summary-chars: ${AGENT_CONTEXT_MAX_SUMMARY_CHARS:6000}
+      timeout-seconds: ${AGENT_CONTEXT_TIMEOUT_SECONDS:12}
+      max-per-run: ${AGENT_CONTEXT_MAX_PER_RUN:3}
     enable-reasoning: ${AGENTSCOPE_AI_ENABLE_REASONING:false}
     emit-token-usage: ${AGENTSCOPE_AI_EMIT_TOKEN_USAGE:false}
   models:

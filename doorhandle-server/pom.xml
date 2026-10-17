@@ -5,6 +5,7 @@
   <artifactId>doorhandle-server</artifactId>
   <dependencies>
     <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-test</artifactId><scope>test</scope></dependency>
+    <dependency><groupId>com.h2database</groupId><artifactId>h2</artifactId><scope>test</scope></dependency>
     <dependency><groupId>com.ruanzhu</groupId><artifactId>doorhandle-framework</artifactId><version>${project.version}</version></dependency>
     <dependency><groupId>com.ruanzhu</groupId><artifactId>doorhandle-module-system</artifactId><version>${project.version}</version></dependency>
     <dependency><groupId>com.ruanzhu</groupId><artifactId>doorhandle-module-infra</artifactId><version>${project.version}</version></dependency>

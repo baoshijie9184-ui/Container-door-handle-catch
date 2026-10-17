@@ -177,7 +177,7 @@ Spark Design 是独立的组件与聊天体验库。官方仓库提供 `@agentsc
 
 来源：[2.0.1 上下文压缩](https://github.com/agentscope-ai/agentscope-java/blob/v2.0.1/docs/v2/en/docs/harness/compaction.md)、[当前上下文管理设计](https://java.agentscope.io/v2/en/docs/harness/context)。
 
-会话历史、模型工作上下文、业务状态和长期记忆是四种不同数据。压缩工作上下文不应删除完整审计历史；模型摘要不能替代数据库中的质检结论或审批结果。当前工厂关闭了压缩和卸载，启用前需验证所选版本的工作区与读取工具组合。
+会话历史、模型工作上下文、业务状态和长期记忆是四种不同数据。压缩工作上下文不应删除完整审计历史；模型摘要不能替代数据库中的质检结论或审批结果。2026-10-16 已补可选的主 Agent 运行内结构化摘要压缩，复用 2.0.4 原生切点，增加校验、失败回退与轨迹；默认关闭，文件卸载仍未开放，见 [上下文压缩](docs/Agent长对话上下文压缩.md)。
 
 **十二、Agent Middleware：智能体中间件**
 

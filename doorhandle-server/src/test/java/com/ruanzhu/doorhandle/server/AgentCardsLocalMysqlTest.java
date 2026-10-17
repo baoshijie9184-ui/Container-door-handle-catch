@@ -58,7 +58,8 @@ class AgentCardsLocalMysqlTest {
             var sessions=new ChatSessionServiceImpl(sql.getMapper(ChatSessionMapper.class),sql.getMapper(ChatMessageMapper.class),sql.getMapper(ChatPendingActionMapper.class),new ChatAssistantProperties(),json);
             String session=sessions.createSession(actor.username()).getSessionId();
             var detection=new DetectionAgentReadApiImpl(context.getBean(DetectionTaskMapper.class));
-            var toolkit=new BusinessToolkitFactory(detection,mock(ResourceAgentReadApi.class),mock(ModelAgentReadApi.class),json,null,context.getBean(AgentReportGateway.class));
+            var resources=mock(ResourceAgentReadApi.class);var models=mock(ModelAgentReadApi.class);
+            var toolkit=new BusinessToolkitFactory(detection,resources,models,json,null,context.getBean(AgentReportGateway.class));
             var model=mock(Model.class);when(model.getModelName()).thenReturn("scripted-card-mysql");var steps=new AtomicInteger();
             when(model.stream(anyList(),anyList(),any())).thenAnswer(inv->{int step=steps.getAndIncrement();String name=null;Map<String,Object> args=Map.of();
                 switch(step){
@@ -86,7 +87,7 @@ class AgentCardsLocalMysqlTest {
             SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(new TenantPrincipal(otherUser.getId(),otherUser.getUsername(),"",roles),null,roles));
             assertThatThrownBy(()->sessions.listMessages(other.username(),session)).isInstanceOf(com.ruanzhu.doorhandle.common.BusinessException.class);
             SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(new TenantPrincipal(user.getId(),user.getUsername(),"",roles),null,roles));
-            var cards=new AgentCardService(detection,beans.getBeanProvider(QualityReportAgentApi.class),context.getBean(BusinessUserDirectory.class));
+            var cards=new AgentCardService(detection,beans.getBeanProvider(QualityReportAgentApi.class),context.getBean(BusinessUserDirectory.class),resources,models);
             assertThat(cards.resolve(actor,envelope.cards())).allMatch(v->v.status().equals("OK"));
             jdbc.update("UPDATE detection_task SET assignee=?,updated_at=NOW() WHERE task_id=?",other.username(),revoked);
             var current=cards.resolve(actor,envelope.cards());assertThat(current.get(1).items()).isEmpty();assertThat(current.get(1).status()).isEqualTo("PARTIAL");

@@ -18,12 +18,14 @@ public class FetchMcpRuntime {
     private final LocalMcpProperties properties;private final ObjectMapper json;
     public FetchMcpRuntime(LocalMcpProperties properties,ObjectMapper json){if(!Set.of("STDIO","GATEWAY").contains(properties.getTransport()))throw new IllegalArgumentException("MCP_TRANSPORT_INVALID");this.properties=properties;this.json=json;}
     public Map<String,Object> install(Path directory)throws Exception {
+        if(Thread.currentThread().isInterrupted())throw new InterruptedException("INSTALL_INTERRUPTED");
         if(properties.isGateway()){var manifest=new McpGatewayClient(properties,json).install(directory);validate(directory,manifest);try(var session=open(directory,manifest)){}return manifest;}
         secure(directory);Files.createDirectories(directory);secure(directory);
         Path temp=directory.resolve("tmp"),home=directory.resolve("home");Files.createDirectories(temp);Files.createDirectories(home);
         var builder=new ProcessBuilder(properties.getPython(),"-I",properties.getInstaller().replace("${user.dir}",System.getProperty("user.dir")),"--directory",directory.toString());
         builder.directory(directory.toFile());builder.environment().clear();builder.environment().putAll(environment(directory));
         builder.redirectErrorStream(true).redirectOutput(directory.resolve("install.log").toFile());
+        if(Thread.currentThread().isInterrupted())throw new InterruptedException("INSTALL_INTERRUPTED");
         var process=builder.start();try{if(!process.waitFor(600,TimeUnit.SECONDS)){kill(process);throw new IllegalStateException("INSTALL_TIMEOUT");}if(process.exitValue()!=0)throw new IllegalStateException("INSTALL_FAILED");}
         catch(InterruptedException e){kill(process);Thread.currentThread().interrupt();throw e;}
         var manifest=json.readValue(Files.readString(directory.resolve("manifest.json")),new TypeReference<LinkedHashMap<String,Object>>(){});
@@ -50,6 +52,12 @@ public class FetchMcpRuntime {
         for(Object item:files){var entry=(Map<?,?>)item;var file=safeFile(directory,(String)entry.get("path"));if(!sha(Files.readAllBytes(file)).equals(entry.get("sha256")))throw new IllegalStateException("MCP_FILES_CHANGED");}
     }
     public String transport(){return properties.isGateway()?"STREAMABLE_HTTP":"STDIO";}
+    public String installationIdentity(){
+        var identity=new TreeMap<String,String>();identity.put("version",VERSION);identity.put("packageSha256",SHA);identity.put("transport",transport());
+        if(properties.isGateway()){identity.put("gatewayUrl",properties.getGatewayUrl());identity.put("image",properties.getGatewayImage());}
+        else{identity.put("python",properties.getPython());identity.put("installer",properties.getInstaller().replace("${user.dir}",System.getProperty("user.dir")));}
+        try{return sha(json.writeValueAsBytes(identity));}catch(Exception error){throw new IllegalStateException("INSTALL_RUNTIME_IDENTITY_INVALID");}
+    }
     public boolean compatible(Map<String,Object> manifest){return transport().equals(manifest.get("transport"))&&(!properties.isGateway()||properties.getGatewayImage().equals(manifest.get("image")));}
     public boolean requiresMigration(Map<String,Object> manifest){return !compatible(manifest);}
     public static Path safeFile(Path directory,String relative)throws Exception {if(relative==null||relative.contains("\\")||relative.contains(":")||relative.startsWith("/")||Arrays.asList(relative.split("/")).contains(".."))throw new IllegalStateException("MCP_PATH_INVALID");var result=directory.resolve(relative).normalize();if(!result.startsWith(directory))throw new IllegalStateException("MCP_PATH_INVALID");secure(result);return result;}

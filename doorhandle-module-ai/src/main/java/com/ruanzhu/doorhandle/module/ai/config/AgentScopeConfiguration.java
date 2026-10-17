@@ -28,8 +28,9 @@ public class AgentScopeConfiguration {
     @Bean
     public BusinessToolkitFactory businessToolkitFactory(DetectionAgentReadApi detection,
             ResourceAgentReadApi resources, ModelAgentReadApi models, ObjectMapper json, org.springframework.beans.factory.ObjectProvider<com.ruanzhu.doorhandle.module.ai.action.AgentActionService> actions,
-            org.springframework.beans.factory.ObjectProvider<com.ruanzhu.doorhandle.module.ai.report.AgentReportGateway> reports) {
-        return new BusinessToolkitFactory(detection, resources, models, json, actions.getIfAvailable(),reports.getIfAvailable());
+            org.springframework.beans.factory.ObjectProvider<com.ruanzhu.doorhandle.module.ai.report.AgentReportGateway> reports,
+            org.springframework.beans.factory.ObjectProvider<SystemHealthReadApi> health) {
+        return new BusinessToolkitFactory(detection, resources, models, json, actions.getIfAvailable(),reports.getIfAvailable(),health.getIfAvailable());
     }
 
     @Bean

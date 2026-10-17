@@ -77,6 +77,14 @@ export const useChatAssistantStore = defineStore('chatAssistant', () => {
     }
   }
 
+  const refreshControlHistory = async sid => {
+    try{
+      const response=await fetchSessionById(sid)
+      if(sessionId.value!==sid)return
+      const data=response.data?.data
+      if(data&&Array.isArray(data.messages)){messages.value=data.messages;sessionTitle.value=data.title||sessionTitle.value}
+    }catch{if(sessionId.value===sid)ElMessage.warning('会话消息暂不可读取，请刷新核对')}
+  }
   const bootstrap = async (force = false) => {
     if (bootstrapped.value && !force) return
     await Promise.all([loadSessionList(), loadProjectList()])
@@ -583,6 +591,7 @@ export const useChatAssistantStore = defineStore('chatAssistant', () => {
     open,
     close,
     sendMessage,
+    refreshControlHistory,
     confirmAction,
     retryLastMessage,
     clearConversation

@@ -55,7 +55,7 @@
         :class="{ active: draft.trim() && !loading }"
         :disabled="loading || !draft.trim()"
         @click="handleSend"
-        title="发送"
+        title="发送" aria-label="发送消息"
       >
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>
@@ -80,6 +80,7 @@ const props = defineProps({
 
 const emit = defineEmits(['send'])
 const draft = ref('')
+defineExpose({restoreDraft:value=>{if(!draft.value)draft.value=value},appendReference:value=>{if(/^@file:[a-f0-9-]{36}$/.test(value)){draft.value=(draft.value?draft.value.trimEnd()+' ':'')+value+' ';nextTick(()=>{textareaRef.value?.focus();autoResize()})}}})
 const user=useUserStore(), commandCatalog=ref(null), commandError=ref(''), menuDismissed=ref(false), activeCommand=ref(0)
 const commandOptions=computed(()=>filterSkillCommands(commandCatalog.value,draft.value))
 const menuVisible=computed(()=>!props.loading&&!menuDismissed.value&&commandOptions.value.length>0)
@@ -278,9 +279,8 @@ onBeforeUnmount(() => {
 <style scoped>
 .composer {
   position: relative;
-  padding: 8px 20px 16px;
+  padding: 12px 20px 16px;
   background: #ffffff;
-  border-top: 1px solid rgba(15, 23, 42, 0.06);
   flex-shrink: 0;
 }
 .slash-menu{position:absolute;left:20px;right:20px;bottom:100%;z-index:20;max-height:320px;overflow:auto;background:white;border:1px solid #dce7f6;border-radius:14px;box-shadow:0 10px 28px #163c7020;padding:8px}.slash-menu p{font-size:11px;color:#64748b;padding:0 8px}.slash-menu button{display:flex;flex-direction:column;gap:4px;width:100%;text-align:left;background:white;color:#24354c;border:0;border-radius:8px;padding:10px;cursor:pointer;transition:background .15s,transform .15s}.slash-menu button span{font-size:12px;color:#64748b;overflow-wrap:anywhere}.slash-menu button.active,.slash-menu button:hover{background:#eef5ff}.slash-menu button:active{transform:scale(.99)}.slash-menu-enter-active,.slash-menu-leave-active{transition:opacity .15s,transform .15s}.slash-menu-enter-from,.slash-menu-leave-to{opacity:0;transform:translateY(5px)}.command-error{font-size:12px;color:#64748b}@media(prefers-reduced-motion:reduce){.slash-menu-enter-active,.slash-menu-leave-active,.slash-menu button{transition:none;transform:none!important}}
@@ -314,8 +314,8 @@ onBeforeUnmount(() => {
 }
 
 .quick-chip:hover {
-  border-color: #4f6ef7;
-  color: #4f6ef7;
+  border-color: #2563eb;
+  color: #2563eb;
   background: #f8faff;
 }
 
@@ -328,14 +328,16 @@ onBeforeUnmount(() => {
   align-items: flex-end;
   gap: 8px;
   padding: 8px 10px 8px 16px;
-  border: 1.5px solid #e2e8f0;
+  border: 1px solid #dfe5ee;
   border-radius: 20px;
-  background: #f8fafc;
+  background: #ffffff;
+  box-shadow: 0 4px 18px rgba(25, 49, 85, .045);
+  min-height: 70px;
   transition: border-color 0.2s, box-shadow 0.2s;
 }
 
 .composer-input-wrap:focus-within {
-  border-color: #4f6ef7;
+  border-color: #2563eb;
   box-shadow: 0 0 0 3px rgba(79, 110, 247, 0.08);
   background: #fff;
 }
@@ -384,7 +386,7 @@ onBeforeUnmount(() => {
   border: none;
   border-radius: 50%;
   background: #eef2ff;
-  color: #4f6ef7;
+  color: #2563eb;
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -413,7 +415,7 @@ onBeforeUnmount(() => {
   width: 16px;
   height: 16px;
   border: 2px solid rgba(79, 110, 247, 0.25);
-  border-top-color: #4f6ef7;
+  border-top-color: #2563eb;
   border-radius: 999px;
   animation: voice-spin 0.8s linear infinite;
 }
@@ -423,7 +425,7 @@ onBeforeUnmount(() => {
 }
 
 .composer-send.active {
-  background: linear-gradient(135deg, #4f6ef7, #3b5de7);
+  background: linear-gradient(135deg, #2563eb, #1d4ed8);
   color: #fff;
   box-shadow: 0 2px 8px rgba(47, 107, 255, 0.25);
 }
@@ -440,7 +442,10 @@ onBeforeUnmount(() => {
 .composer-hint {
   margin: 6px 0 0;
   font-size: 11px;
-  color: #cbd5e1;
+  color: #68768a;
   text-align: center;
 }
+.composer-send:active:not(:disabled), .quick-chip:active { transform: scale(.96); }
+.quick-chip:focus-visible, .composer-send:focus-visible, .composer-voice:focus-visible { outline: 2px solid #2563eb; outline-offset: 3px; }
+@media (max-width: 540px) { .composer { padding: 10px 12px 12px; } .quick-chips { gap: 5px; } .composer-input-wrap { padding-left: 12px; gap: 4px; } }
 </style>

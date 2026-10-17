@@ -91,8 +91,8 @@ test('tests\\chat-confirm-action-guard-contract.test.cjs', () => {
   })
 
   test('assistant drawer recalculates its width from the current viewport', () => {
-    assert.match(drawerSource, /:size="drawerSize"/)
-    assert.match(drawerSource, /v-if="!isMobile"/)
+    assert.match(drawerSource, /size: drawerSize\.value/)
+    assert.match(drawerSource, /v-if="!isMobile && !fullScreen"/)
     assert.match(drawerSource, /const viewportWidth = ref\(window\.innerWidth\)/)
     assert.match(drawerSource, /const isMobile = computed\(/)
     assert.match(drawerSource, /const drawerSize = computed\(/)
@@ -109,9 +109,10 @@ test('tests\\chat-confirm-action-guard-contract.test.cjs', () => {
     assert.match(sidebarSource, /watch\(\(\) => props\.compact/)
   })
 
-  test('application shell uses fluid viewport-aware spacing', () => {
-    assert.match(layoutSource, /padding:\s*clamp\(/)
-    assert.match(layoutSource, /gap:\s*clamp\(/)
+  test('application shell adapts navigation to viewport width', () => {
+    assert.match(layoutSource, /compactNavigation/)
+    assert.match(layoutSource, /height:\s*100dvh/)
+    assert.match(layoutSource, /@media \(max-width: 640px\)/)
   })
 }
 

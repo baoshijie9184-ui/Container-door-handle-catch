@@ -15,6 +15,7 @@ deploy/*.env
 .codex
 .superpowers
 .worktrees
+deepseek-harness
 work
 mem0
 memory_service/chroma_db

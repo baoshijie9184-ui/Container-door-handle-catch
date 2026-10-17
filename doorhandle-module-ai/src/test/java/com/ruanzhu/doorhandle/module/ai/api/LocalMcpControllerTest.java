@@ -16,6 +16,31 @@ class LocalMcpControllerTest {
     final org.springframework.test.web.servlet.MockMvc mvc=MockMvcBuilders.standaloneSetup(new LocalMcpController(service)).build();
     final List<SimpleGrantedAuthority> roles=List.of(new SimpleGrantedAuthority("ROLE_INSPECTOR"));
     final UsernamePasswordAuthenticationToken auth=new UsernamePasswordAuthenticationToken(new TenantPrincipal(1L,"alice","",roles),null,roles);
+    @Test void removalRequiresAuthenticationHeaderExplicitConsentAndMatchingTarget()throws Exception{
+        String body="{\"expectedRevision\":2,\"operationId\":\"00000000-0000-0000-0000-000000000001\",\"confirmed\":true}";
+        String path="/api/agent/mcp/fetch/registration/remove";
+        mvc.perform(post(path).header("X-MCP-Action","update").contentType("application/json").content(body)).andExpect(status().isForbidden());
+        mvc.perform(post(path).principal(auth).contentType("application/json").content(body)).andExpect(status().isBadRequest());
+        for(String invalid:List.of(body.replace("true","false"),body.replace(",\"confirmed\":true",""),body.replace("00000000-0000-0000-0000-000000000001","other"),body.replace("\"expectedRevision\":2,",""),body.replace("\"expectedRevision\":2","\"expectedRevision\":-1")))
+            mvc.perform(post(path).principal(auth).header("X-MCP-Action","update").contentType("application/json").content(invalid)).andExpect(status().isBadRequest());
+        verifyNoInteractions(service);
+        when(service.removeRegistration(any(),eq(2),anyString(),eq(true))).thenReturn(Map.of("status","UNINSTALLED","enabled",false));
+        mvc.perform(post(path).principal(auth).header("X-MCP-Action","update").contentType("application/json").content(body))
+            .andExpect(status().isOk()).andExpect(header().string("Cache-Control","no-store")).andExpect(jsonPath("$.status").value("UNINSTALLED")).andExpect(jsonPath("$.enabled").value(false));
+        verify(service).removeRegistration(argThat(actor->actor.userId()==1),eq(2),eq("00000000-0000-0000-0000-000000000001"),eq(true));
+    }
+    @Test void cancelRequiresOwnerAuthenticationActionHeaderAndExplicitConfirmedTarget()throws Exception{
+        String body="{\"expectedRevision\":1,\"operationId\":\"00000000-0000-0000-0000-000000000001\",\"confirmed\":true}";
+        mvc.perform(post("/api/agent/mcp/fetch/install/cancel").header("X-MCP-Action","update").contentType("application/json").content(body)).andExpect(status().isForbidden());
+        mvc.perform(post("/api/agent/mcp/fetch/install/cancel").principal(auth).contentType("application/json").content(body)).andExpect(status().isBadRequest());
+        for(String invalid:List.of(body.replace("true","false"),body.replace("00000000-0000-0000-0000-000000000001","../other"),body.replace("\"expectedRevision\":1,","")))
+            mvc.perform(post("/api/agent/mcp/fetch/install/cancel").principal(auth).header("X-MCP-Action","update").contentType("application/json").content(invalid)).andExpect(status().isBadRequest());
+        verifyNoInteractions(service);
+        when(service.cancelInstallation(any(),eq(1),anyString(),eq(true))).thenReturn(Map.of("status","CANCELLED","enabled",false));
+        mvc.perform(post("/api/agent/mcp/fetch/install/cancel").principal(auth).header("X-MCP-Action","update").contentType("application/json").content(body))
+                .andExpect(status().isOk()).andExpect(header().string("Cache-Control","no-store")).andExpect(jsonPath("$.status").value("CANCELLED")).andExpect(jsonPath("$.enabled").value(false));
+        verify(service).cancelInstallation(argThat(actor->actor.userId()==1),eq(1),eq("00000000-0000-0000-0000-000000000001"),eq(true));
+    }
     @Test void anonymousAndMissingHeaderOrConsentCannotInstall()throws Exception{
         mvc.perform(get("/api/agent/mcp/fetch")).andExpect(status().isForbidden());
         String content="{\"expectedRevision\":0,\"requestId\":\"request-one\",\"licenseAccepted\":true}";

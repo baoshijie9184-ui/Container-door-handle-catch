@@ -47,7 +47,7 @@
         <div class="login-card-head">
           <span class="login-card-label">账号登录</span>
           <h2>进入控制台</h2>
-          <p class="login-card-desc">使用管理员账号登录管理平台</p>
+          <p class="login-card-desc">使用员工或主管账号，进入你的工作空间</p>
         </div>
 
         <el-form
@@ -200,7 +200,7 @@ const handleLogin = async () => {
   position: relative;
   min-height: 100vh;
   display: grid;
-  grid-template-columns: minmax(0, 1.2fr) minmax(440px, 480px);
+  grid-template-columns: minmax(0, 1fr) minmax(440px, 48%);
   overflow: hidden;
 }
 
@@ -217,7 +217,7 @@ const handleLogin = async () => {
   position: absolute;
   inset: 0;
   background:
-    linear-gradient(115deg, rgba(15, 23, 42, 0.82) 0%, rgba(15, 23, 42, 0.48) 55%, rgba(15, 23, 42, 0.3) 100%),
+    linear-gradient(115deg, rgba(15, 23, 42, 0.9) 0%, rgba(15, 23, 42, 0.72) 52%, rgba(15, 23, 42, 0.1) 52%),
     url('@/assets/images/image.png') center / cover no-repeat;
 }
 
@@ -335,14 +335,15 @@ const handleLogin = async () => {
   align-items: center;
   justify-content: center;
   padding: 36px;
+  background: #f8faff;
 }
 
 .login-card {
   width: 100%;
-  max-width: 400px;
+  max-width: 420px;
   padding: 36px 32px 28px;
   border-radius: 24px;
-  background: rgba(255, 255, 255, 0.88);
+  background: #ffffff;
   border: 1px solid rgba(255, 255, 255, 0.7);
   backdrop-filter: blur(20px);
   box-shadow:

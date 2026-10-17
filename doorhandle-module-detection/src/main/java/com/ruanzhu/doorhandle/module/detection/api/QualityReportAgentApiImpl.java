@@ -13,6 +13,11 @@ import java.util.*;
 @Service
 @Transactional(isolation=Isolation.READ_COMMITTED,rollbackFor=Exception.class)
 public class QualityReportAgentApiImpl implements QualityReportAgentApi {
+    @Override public java.util.Optional<WriteReceipt> receipt(AgentActor actor,String runId,String callId,String tool){
+        var rows=jdbc.queryForList("SELECT report_id,report_version FROM detection_report_agent_origin WHERE actor_user_id=? AND run_id=? AND call_id=? AND tool_name=?",actor.userId(),runId,callId,tool);
+        if(rows.isEmpty())return java.util.Optional.empty();String reportId=(String)rows.get(0).get("report_id");get(actor,reportId);
+        return java.util.Optional.of(new WriteReceipt(reportId,((Number)rows.get(0).get("report_version")).intValue(),tool,"DRAFT_WRITE_RECORDED"));
+    }
     private final QualityReportService reports;
     private final JdbcTemplate jdbc;
     public QualityReportAgentApiImpl(QualityReportService reports,JdbcTemplate jdbc){this.reports=reports;this.jdbc=jdbc;}

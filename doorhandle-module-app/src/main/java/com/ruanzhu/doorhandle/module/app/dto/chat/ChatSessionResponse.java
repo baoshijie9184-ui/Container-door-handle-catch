@@ -13,6 +13,8 @@ public class ChatSessionResponse {
     private String status;
     private boolean pinned;
     private String projectId;
+    private String sourceSessionId;
+    private Long forkMessageId;
     private String updatedAt;
     private int messageCount;
     private String lastMessage;

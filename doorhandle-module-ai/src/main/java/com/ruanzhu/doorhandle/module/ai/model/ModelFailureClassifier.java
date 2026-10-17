@@ -49,6 +49,17 @@ final class ModelFailureClassifier {
         return null;
     }
 
+    static String reason(Throwable error) {
+        var failure = classify(error);
+        if (failure == Failure.QUOTA || failure == Failure.AUTH) return failure.name();
+        var seen = Collections.newSetFromMap(new IdentityHashMap<Throwable, Boolean>());
+        for (Throwable cause = error; cause != null && seen.add(cause); cause = cause.getCause()) {
+            if (cause instanceof TimeoutException) return "TIMEOUT";
+            if (cause instanceof EmptyResponseException) return "EMPTY_RESPONSE";
+        }
+        return failure.name();
+    }
+
     private static boolean quotaText(String text) {
         if (text == null) return false;
         String value = text.toLowerCase(Locale.ROOT);

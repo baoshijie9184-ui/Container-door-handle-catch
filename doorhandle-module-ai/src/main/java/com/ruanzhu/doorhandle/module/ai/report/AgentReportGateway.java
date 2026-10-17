@@ -20,6 +20,8 @@ public class AgentReportGateway {
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transaction;
     private final ObjectMapper canonical;
+    private org.springframework.beans.factory.ObjectProvider<AgentWorkbenchApi> workbench;
+    @org.springframework.beans.factory.annotation.Autowired public void setWorkbench(org.springframework.beans.factory.ObjectProvider<AgentWorkbenchApi> workbench){this.workbench=workbench;}
     public AgentReportGateway(QualityReportAgentApi reports,AgentJournal journal,JdbcTemplate jdbc,PlatformTransactionManager manager,ObjectMapper json){
         this.reports=reports;this.journal=journal;this.jdbc=jdbc;this.transaction=new TransactionTemplate(manager);
         transaction.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
@@ -38,7 +40,9 @@ public class AgentReportGateway {
             var rows=jdbc.queryForList("SELECT user_id,main_agent,status,lease_expires_at FROM agent_run WHERE run_id=? FOR UPDATE",runId);
             if(rows.isEmpty())throw new SecurityException("运行不存在");
             var run=rows.get(0);
-            if(((Number)run.get("user_id")).longValue()!=actor.userId()||!com.ruanzhu.doorhandle.module.ai.agent.RoleAgentCatalog.mainId(actor).equals(run.get("main_agent"))
+            boolean permittedAgent=com.ruanzhu.doorhandle.module.ai.agent.RoleAgentCatalog.mainId(actor).equals(run.get("main_agent"))
+                    ||"report-assistant".equals(run.get("main_agent"))&&workbench!=null&&workbench.getIfAvailable()!=null&&workbench.getObject().permitsSpecialistWrite(actor,runId,"report-assistant");
+            if(((Number)run.get("user_id")).longValue()!=actor.userId()||!permittedAgent
                     ||!"RUNNING".equals(run.get("status")))throw new SecurityException("运行身份或状态不允许草稿写入");
             Long live=jdbc.queryForObject("SELECT COUNT(*) FROM agent_run WHERE run_id=? AND lease_expires_at>CURRENT_TIMESTAMP",Long.class,runId);
             if(live!=1)throw new SecurityException("运行租约已失效");

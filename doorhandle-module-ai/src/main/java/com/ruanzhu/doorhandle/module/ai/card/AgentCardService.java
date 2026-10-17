@@ -14,8 +14,11 @@ public class AgentCardService {
     private final DetectionAgentReadApi detection;
     private final ObjectProvider<QualityReportAgentApi> reports;
     private final BusinessUserDirectory users;
-    public AgentCardService(DetectionAgentReadApi detection,ObjectProvider<QualityReportAgentApi> reports,BusinessUserDirectory users) {
-        this.detection=detection;this.reports=reports;this.users=users;
+    private final ResourceAgentReadApi resources;
+    private final ModelAgentReadApi models;
+    public AgentCardService(DetectionAgentReadApi detection,ObjectProvider<QualityReportAgentApi> reports,BusinessUserDirectory users,
+                            ResourceAgentReadApi resources,ModelAgentReadApi models) {
+        this.detection=detection;this.reports=reports;this.users=users;this.resources=resources;this.models=models;
     }
     public List<AgentCards.View> resolve(AgentActor authenticated,List<AgentCards.Reference> refs) {
         if(refs==null||refs.size()>8)throw new IllegalArgumentException("卡片数量超出范围");
@@ -41,6 +44,10 @@ public class AgentCardService {
         for(String id:ref.ids()) {
             try {
                 if(ref.type().equals("TASKS"))items.add(detection.task(actor,id));
+                else if(ref.type().equals("DEVICES"))items.add(Objects.requireNonNull(resources.device(actor,Long.parseLong(id))));
+                else if(ref.type().equals("DEVICE_ALERTS"))items.add(Objects.requireNonNull(resources.alert(actor,Long.parseLong(id))));
+                else if(ref.type().equals("MODELS"))items.add(Objects.requireNonNull(models.model(actor,Integer.parseInt(id))));
+                else if(ref.type().equals("MODEL_OPERATIONS"))items.add(Objects.requireNonNull(models.operations(actor,Integer.parseInt(id))));
                 else {
                     var api=reports.getIfAvailable();if(api==null)throw new IllegalStateException();
                     items.add(api.get(actor,id).report()); // 明确排除正文、依据全文和审批凭证。

@@ -1,7 +1,8 @@
 <template>
-  <aside class="chat-sidebar" :class="{ collapsed: collapsed }">
+  <button v-if="compact && !collapsed" class="session-backdrop" type="button" aria-label="关闭会话列表" @click="collapsed = true"></button>
+  <aside class="chat-sidebar" :class="{ collapsed: collapsed, compact: compact }" @keydown.esc="collapsed = true">
     <!-- 折叠按钮 -->
-    <button class="sidebar-toggle" @click="collapsed = !collapsed" :title="collapsed ? '展开会话列表' : '收起会话列表'">
+    <button class="sidebar-toggle" @click="collapsed = !collapsed" :title="collapsed ? '展开会话列表' : '收起会话列表'" :aria-label="collapsed ? '展开会话列表' : '收起会话列表'" :aria-expanded="!collapsed">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
         <polyline v-if="collapsed" points="9 18 15 12 9 6" />
         <polyline v-else points="15 18 9 12 15 6" />
@@ -124,8 +125,8 @@
                 >
                   <div class="session-item-main">
                     <div class="session-title" v-if="editingId !== sess.sessionId" @dblclick.stop="startEdit(sess)">
-                      <span v-if="sess.pinned" class="pin-icon">📌</span>
-                      {{ sess.title }}
+                      <el-icon v-if="sess.pinned" class="pin-icon" aria-label="已置顶"><Position /></el-icon>
+                      {{ sess.title }} <button v-if="sess.sourceSessionId" type="button" class="session-source-link" title="返回分支来源会话" @click.stop="handleSwitchSession(sess.sourceSessionId)">分支来源</button>
                     </div>
                     <div class="session-title-edit" v-else @click.stop>
                       <input
@@ -259,8 +260,8 @@
               >
                 <div class="session-item-main">
                   <div class="session-title" v-if="editingId !== sess.sessionId" @dblclick.stop="startEdit(sess)">
-                    <span v-if="sess.pinned" class="pin-icon">📌</span>
-                    {{ sess.title }}
+                    <el-icon v-if="sess.pinned" class="pin-icon" aria-label="已置顶"><Position /></el-icon>
+                    {{ sess.title }} <button v-if="sess.sourceSessionId" type="button" class="session-source-link" title="返回分支来源会话" @click.stop="handleSwitchSession(sess.sourceSessionId)">分支来源</button>
                   </div>
                   <div class="session-title-edit" v-else @click.stop>
                     <input
@@ -363,8 +364,8 @@
           >
             <div class="session-item-main">
               <div class="session-title" v-if="editingId !== sess.sessionId">
-                <span v-if="sess.pinned" class="pin-icon">📌</span>
-                {{ sess.title }}
+                <el-icon v-if="sess.pinned" class="pin-icon" aria-label="已置顶"><Position /></el-icon>
+                {{ sess.title }} <button v-if="sess.sourceSessionId" type="button" class="session-source-link" title="返回分支来源会话" @click.stop="handleSwitchSession(sess.sourceSessionId)">分支来源</button>
               </div>
               <div class="session-preview" v-if="sess.lastMessage && editingId !== sess.sessionId">{{ sess.lastMessage }}</div>
               <div class="session-meta" v-if="editingId !== sess.sessionId">{{ sess.messageCount }} 条消息 · {{ formatTime(sess.updatedAt) }}</div>
@@ -423,6 +424,7 @@
 <script setup>
 import { ref, nextTick, computed, reactive, watch } from 'vue'
 import { useChatAssistantStore } from '@/stores/chatAssistant'
+import { Position } from '@element-plus/icons-vue'
 
 const props = defineProps({
   compact: {
@@ -461,11 +463,11 @@ const editingProject = ref(null)
 const projectForm = reactive({
   name: '',
   description: '',
-  color: '#4f6ef7'
+  color: '#2563eb'
 })
 
 const projectColors = [
-  '#4f6ef7', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6',
+  '#2563eb', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6',
   '#ec4899', '#06b6d4', '#84cc16', '#f97316', '#6366f1'
 ]
 
@@ -546,6 +548,7 @@ const handleSwitchSession = (sessionId) => {
   store.closeMenu()
   store.closeProjectMenu()
   store.switchSession(sessionId)
+  if (props.compact) collapsed.value = true
 }
 
 const startEdit = (sess) => {
@@ -694,7 +697,7 @@ const openCreateProjectModal = () => {
   editingProject.value = null
   projectForm.name = ''
   projectForm.description = ''
-  projectForm.color = '#4f6ef7'
+  projectForm.color = '#2563eb'
   showProjectModal.value = true
 }
 
@@ -703,7 +706,7 @@ const openEditProjectModal = (project) => {
   editingProject.value = project
   projectForm.name = project.name
   projectForm.description = project.description || ''
-  projectForm.color = project.color || '#4f6ef7'
+  projectForm.color = project.color || '#2563eb'
   showProjectModal.value = true
 }
 
@@ -745,17 +748,21 @@ const handleDeleteProject = async (projectId) => {
 .chat-sidebar {
   width: 260px;
   flex-shrink: 0;
-  background: #f0f2f5;
+  background: #f8f9fc;
   border-right: 1px solid rgba(15, 23, 42, 0.06);
   display: flex;
   flex-direction: column;
-  transition: width 0.2s;
+  transition: width 0.22s ease;
+  min-height: 0;
   position: relative;
 }
 
 .chat-sidebar.collapsed {
   width: 40px;
 }
+
+.chat-sidebar.compact:not(.collapsed) { position: absolute; inset: 0 auto 0 0; z-index: 32; width: min(260px, calc(100% - 40px)); box-shadow: 10px 0 30px #19315518; }
+.session-backdrop { position: absolute; inset: 0; z-index: 31; background: #19315530; border: 0; cursor: pointer; }
 
 .sidebar-toggle {
   position: absolute;
@@ -805,7 +812,7 @@ const handleDeleteProject = async (projectId) => {
 }
 
 .new-session-btn {
-  background: linear-gradient(135deg, #4f6ef7, #3b5de7);
+  background: linear-gradient(135deg, #2563eb, #3b5de7);
   box-shadow: 0 2px 6px rgba(79, 110, 247, 0.2);
 }
 
@@ -816,13 +823,13 @@ const handleDeleteProject = async (projectId) => {
 }
 
 .new-project-btn {
-  background: linear-gradient(135deg, #10b981, #059669);
-  box-shadow: 0 2px 6px rgba(16, 185, 129, 0.2);
+  background: #eaf0fb;
+  color: #42608d;
+  box-shadow: none;
 }
 
 .new-project-btn:hover {
-  background: linear-gradient(135deg, #34d399, #10b981);
-  box-shadow: 0 3px 10px rgba(16, 185, 129, 0.3);
+  background: #dfe9fa;
   transform: translateY(-1px);
 }
 
@@ -856,7 +863,7 @@ const handleDeleteProject = async (projectId) => {
 }
 
 .search-input:focus {
-  border-color: #4f6ef7;
+  border-color: #2563eb;
   box-shadow: 0 0 0 2px rgba(79, 110, 247, 0.15);
 }
 
@@ -1032,7 +1039,7 @@ const handleDeleteProject = async (projectId) => {
 
 .session-item.active {
   background: rgba(79, 110, 247, 0.12);
-  box-shadow: inset 3px 0 0 #4f6ef7;
+  box-shadow: inset 3px 0 0 #2563eb;
 }
 
 .session-item.dragging {
@@ -1064,7 +1071,7 @@ const handleDeleteProject = async (projectId) => {
   font-size: 13px;
   font-weight: 500;
   color: #1e293b;
-  border: 1px solid #4f6ef7;
+  border: 1px solid #2563eb;
   border-radius: 4px;
   padding: 2px 6px;
   outline: none;
@@ -1286,7 +1293,7 @@ const handleDeleteProject = async (projectId) => {
 
 .form-group input:focus,
 .form-group textarea:focus {
-  border-color: #4f6ef7;
+  border-color: #2563eb;
   box-shadow: 0 0 0 2px rgba(79, 110, 247, 0.15);
 }
 
@@ -1345,7 +1352,7 @@ const handleDeleteProject = async (projectId) => {
   padding: 8px 16px;
   border: none;
   border-radius: 6px;
-  background: #4f6ef7;
+  background: #2563eb;
   color: #fff;
   cursor: pointer;
   font-size: 13px;

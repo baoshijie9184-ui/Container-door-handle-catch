@@ -1,5 +1,5 @@
 <template>
-  <div class="layout-shell" :class="{ 'sidebar-collapsed': collapsed }">
+  <div class="layout-shell" :class="{ 'sidebar-collapsed': collapsed, 'is-agent-workspace': isAgentChatRoute, 'is-trace-workspace': route.path === '/agent/trace' }">
     <button class="skip-link" type="button" @click="skipToMainContent">跳到主要内容</button>
     <aside class="layout-sidebar app-panel" aria-label="系统导航">
       <div class="brand-block">
@@ -19,7 +19,7 @@
       </div>
 
       <div v-show="!collapsed" class="nav-section-label">业务导航</div>
-      <el-menu :default-active="activeMenu" router :collapse="collapsed" class="nav-menu">
+      <el-menu :default-active="activeMenu" router :collapse="collapsed || compactNavigation" class="nav-menu">
         <template v-for="group in navGroups" :key="group.key">
           <el-menu-item
             v-if="group.items.length === 1"
@@ -52,8 +52,8 @@
 
       <div v-show="!collapsed" class="sidebar-footer">
         <div class="footer-card">
-          <div class="footer-card-label">当前状态</div>
-          <div class="footer-card-title">系统在线运行</div>
+          <div class="footer-card-label">当前工作空间</div>
+          <div class="footer-card-title">企业质检协作</div>
           <div class="footer-card-desc">统一管理模型、检测、设备和人员数据</div>
           <div class="footer-card-meter">
             <span></span>
@@ -101,14 +101,9 @@
               使用手册
             </el-button>
           </router-link>
-          <div class="header-chip">
-            <span class="chip-dot pulse-dot"></span>
-            平台稳定运行
-          </div>
-          <div class="header-chip header-chip-blue">
-            <span class="scan-line"></span>
-            视觉检测链路就绪
-          </div>
+          <router-link v-if="!isAgentChatRoute" to="/agent/chat" class="assistant-entry-link">
+            <el-icon><ChatDotRound /></el-icon> AI 工作助手
+          </router-link>
           <div class="user-box app-panel">
             <div class="user-avatar">{{ userInitial }}</div>
             <div class="user-meta">
@@ -134,8 +129,8 @@
       </button>
     </div>
 
-    <ChatAssistantLauncher v-if="!isAgentChatRoute" @open="handleOpenAssistant" />
-    <ChatAssistantDrawer :full-screen="isAgentChatRoute" />
+    <ChatAssistantLauncher v-if="!isAgentChatRoute && route.path !== '/agent/trace'" @open="handleOpenAssistant" />
+    <ChatAssistantDrawer v-if="!isAgentChatRoute" />
   </div>
 </template>
 
@@ -157,6 +152,7 @@ import {
   DataAnalysis,
   Search,
   Files,
+  ChatDotRound,
   Operation
 } from '@element-plus/icons-vue'
 
@@ -166,6 +162,8 @@ const router = useRouter()
 const route = useRoute()
 
 const collapsed = ref(false)
+const compactNavigation = ref(window.innerWidth <= 1024)
+const updateNavigationWidth = () => { compactNavigation.value = window.innerWidth <= 1024 }
 const showBackTop = ref(false)
 const isAgentChatRoute = computed(() => route.path === '/agent/chat')
 
@@ -227,7 +225,7 @@ const navGroups = [
     icon: Operation,
     items: [
       { path: '/agent/chat', label: '智能对话助手', desc: '完整页面对话工作区' },
-      { path: '/agent/trace', label: 'Agent调用链路', desc: '查看智能体运行轨迹' },
+      { path: '/agent/trace', label: 'Agent执行追溯', desc: '查看调用过程与关联结果' },
       { path: '/agent/actions', label: '助手操作确认', desc: '核对分配提议与审计' },
       { path: '/agent/skills', label: 'Agent技能演化', desc: '经验提炼与审核发布' },
       { path: '/agent/markets', label: '资源市场', desc: '发现 Agent、MCP 与 Skill' },
@@ -338,11 +336,13 @@ function skipToMainContent() {
 }
 
 onMounted(() => {
+  window.addEventListener('resize', updateNavigationWidth)
   const main = document.querySelector('.layout-content')
   if (main) main.addEventListener('scroll', handleScroll, { passive: true })
 })
 
 onBeforeUnmount(() => {
+  window.removeEventListener('resize', updateNavigationWidth)
   const main = document.querySelector('.layout-content')
   if (main) main.removeEventListener('scroll', handleScroll)
 })
@@ -351,47 +351,42 @@ onBeforeUnmount(() => {
 <style lang="scss" scoped>
 .layout-shell {
   display: grid;
-  grid-template-columns: 280px minmax(0, 1fr);
+  grid-template-columns: 244px minmax(0, 1fr);
   height: 100vh;
-  padding: clamp(12px, 1.2vw, 18px);
-  gap: clamp(12px, 1.2vw, 18px);
+  height: 100dvh;
+  padding: 0;
+  gap: 0;
   overflow: hidden;
   transition: grid-template-columns 0.28s cubic-bezier(0.4, 0, 0.2, 1);
-  background:
-    radial-gradient(circle at 16px 16px, rgba(37, 99, 235, 0.08) 1px, transparent 1px);
-  background-size: 32px 32px;
+  background: var(--app-bg);
 }
 
 .layout-shell.sidebar-collapsed {
   grid-template-columns: 80px minmax(0, 1fr);
 }
+.layout-shell.sidebar-collapsed .brand-block { padding-inline: 0; justify-content: center; }
 
 .layout-sidebar {
   display: flex;
   flex-direction: column;
-  position: sticky;
-  top: 18px;
-  height: calc(100vh - 36px);
+  height: 100%;
+  min-height: 0;
   padding: 20px 14px;
   overflow-y: auto;
   overflow-x: hidden;
-  background:
-    radial-gradient(circle at 15% 0%, rgba(14, 165, 233, 0.16), transparent 34%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(239, 246, 255, 0.86)),
-    linear-gradient(135deg, rgba(37, 99, 235, 0.09), transparent 45%);
-  border-color: rgba(37, 99, 235, 0.12);
-  box-shadow: var(--app-shadow-command);
+  background: #ffffff;
+  border: 0;
+  border-right: 1px solid var(--app-border);
+  border-radius: 0;
+  box-shadow: none;
 }
 
 .brand-block {
   display: flex;
   align-items: center;
-  gap: 14px;
-  margin-bottom: 28px;
-  padding: 8px 10px;
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.45);
-  border: 1px solid rgba(37, 99, 235, 0.08);
+  gap: 12px;
+  margin-bottom: 24px;
+  padding: 6px 8px;
 }
 
 .brand-mark {
@@ -430,8 +425,8 @@ onBeforeUnmount(() => {
 }
 
 .brand-title {
-  font-size: 18px;
-  font-weight: 800;
+  font-size: 14px;
+  font-weight: 700;
   color: var(--app-text);
   letter-spacing: -0.02em;
 }
@@ -439,8 +434,8 @@ onBeforeUnmount(() => {
 .brand-subtitle {
   margin-top: 4px;
   color: var(--app-primary);
-  font-size: 12px;
-  font-weight: 700;
+  font-size: 10px;
+  font-weight: 500;
 }
 
 .nav-section-label {
@@ -532,17 +527,16 @@ onBeforeUnmount(() => {
 }
 
 .sidebar-footer {
-  margin-top: 18px;
+  margin-top: auto;
+  padding-top: 20px;
 }
 
 .footer-card {
   padding: 16px;
   border-radius: var(--app-radius-md);
-  background:
-    radial-gradient(circle at 15% 15%, rgba(56, 189, 248, 0.28), transparent 36%),
-    linear-gradient(135deg, #0f172a, #17395f 58%, #0f766e);
-  color: #fff;
-  box-shadow: var(--app-shadow-command);
+  background: #f5f8ff;
+  color: #334155;
+  border: 1px solid #e7eefb;
   overflow: hidden;
 }
 
@@ -567,6 +561,7 @@ onBeforeUnmount(() => {
 }
 
 .footer-card-meter {
+  display: none;
   height: 6px;
   margin-top: 14px;
   border-radius: 999px;
@@ -584,9 +579,10 @@ onBeforeUnmount(() => {
 
 .layout-main {
   min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  height: calc(100vh - 36px);
+  height: 100%;
   overflow: hidden;
   position: relative;
 }
@@ -594,11 +590,13 @@ onBeforeUnmount(() => {
 .layout-header {
   display: flex;
   justify-content: space-between;
-  align-items: flex-start;
-  gap: clamp(12px, 1.2vw, 18px);
-  margin-bottom: clamp(12px, 1.2vw, 18px);
-  padding: clamp(12px, 1.2vw, 18px) 8px 0;
-  position: relative;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 16px;
+  min-height: 84px;
+  padding: 16px 28px;
+  background: #ffffff;
+  border-bottom: 1px solid var(--app-border);
 }
 
 .header-left {
@@ -656,7 +654,7 @@ onBeforeUnmount(() => {
 
 .header-title {
   margin: 8px 0 0;
-  font-size: clamp(24px, 2vw, 32px);
+  font-size: 21px;
   line-height: 1.15;
   color: var(--app-text);
   letter-spacing: -0.03em;
@@ -693,8 +691,8 @@ onBeforeUnmount(() => {
 }
 
 .breadcrumb-current {
-  font-size: 28px;
-  font-weight: 800;
+  font-size: 21px;
+  font-weight: 700;
   color: var(--app-text);
   line-height: 1.15;
   letter-spacing: -0.025em;
@@ -780,7 +778,7 @@ onBeforeUnmount(() => {
 }
 
 .user-meta {
-  min-width: 96px;
+  min-width: 70px;
 }
 
 .user-name {
@@ -796,10 +794,10 @@ onBeforeUnmount(() => {
 
 .layout-content {
   min-width: 0;
+  min-height: 0;
   flex: 1;
   overflow-y: auto;
-  padding-right: 8px;
-  padding-bottom: 18px;
+  padding: 24px 28px;
   scroll-behavior: smooth;
 }
 
@@ -845,79 +843,38 @@ onBeforeUnmount(() => {
   }
 }
 
-@media (max-width: 1100px) {
-  .layout-shell {
-    grid-template-columns: 1fr;
-    height: auto;
-    overflow: visible;
-  }
-
-  .layout-shell.sidebar-collapsed {
-    grid-template-columns: 1fr;
-  }
-
-  .layout-sidebar {
-    position: static;
-    top: auto;
-    height: auto;
-    padding: 18px;
-    overflow: visible;
-  }
-
-  .layout-header {
-    flex-direction: column;
-  }
-
-  .header-actions {
-    width: 100%;
-    flex-wrap: wrap;
-  }
-
-  .layout-main {
-    height: auto;
-    overflow: visible;
-  }
-
-  .layout-content {
-    overflow: visible;
-    padding-right: 0;
-  }
-
-  .back-top-btn {
-    display: none;
-  }
+ .assistant-entry-link { display: inline-flex; align-items: center; gap: 7px; color: var(--app-primary); font-weight: 600; padding: 8px 12px; border-radius: 10px; background: #eff5ff; white-space: nowrap; transition: background .18s, transform .18s; }
+.assistant-entry-link:hover { background: #e2edff; transform: translateY(-1px); }
+.is-agent-workspace .layout-content, .is-trace-workspace .layout-content { overflow: hidden; padding: 18px 22px; }
+@media (max-width: 1200px) { .manual-entry-link { display: none; } .header-actions { gap: 10px; } }
+@media (max-width: 1024px) {
+  .layout-shell, .layout-shell.sidebar-collapsed { grid-template-columns: 72px minmax(0, 1fr); transition: none; }
+  .nav-menu.el-menu--collapse { width: 100% !important; }
+  .layout-sidebar { padding: 16px 8px; }
+  .brand-block { padding: 4px; justify-content: center; }
+  .brand-text, .nav-section-label, .sidebar-footer, .nav-item-desc { display: none !important; }
+  .nav-menu :deep(.el-sub-menu__title), .nav-menu :deep(.el-menu-item) { padding-left: 18px !important; }
+  .nav-menu :deep(.el-sub-menu__title > span), .nav-menu :deep(.el-menu-item > span), .nav-menu :deep(.el-sub-menu__icon-arrow) { display: none; }
+  .nav-menu :deep(.el-sub-menu .el-menu) { display: none; }
+  .layout-header { padding: 14px 18px; }
+  .layout-content { padding: 20px; }
+  .collapse-btn { display: none; }
 }
-
-@media (max-width: 768px) {
-  .layout-shell {
-    padding: 12px;
-    gap: 12px;
-  }
-
-  .header-title,
-  .breadcrumb-current {
-    font-size: 24px;
-  }
-
-  .user-box {
-    width: 100%;
-    justify-content: space-between;
-  }
-
-  .header-left {
-    width: 100%;
-  }
-
-  .header-actions {
-    align-items: stretch;
-  }
-
-  .header-chip {
-    justify-content: center;
-  }
-
-  .brand-block {
-    margin-bottom: 18px;
-  }
+@media (max-width: 640px) {
+  .layout-shell, .layout-shell.sidebar-collapsed { grid-template-columns: 56px minmax(0, 1fr); }
+  .layout-sidebar { padding: 12px 4px; }
+  .brand-mark { width: 36px; height: 36px; border-radius: 11px; font-size: 13px; }
+  .brand-block { padding: 0; margin-bottom: 16px; }
+  .nav-menu :deep(.el-sub-menu__title), .nav-menu :deep(.el-menu-item) { padding-left: 14px !important; }
+  .layout-header { min-height: 68px; padding: 12px; gap: 8px; }
+  .header-caption, .breadcrumb-link, .breadcrumb-sep, .user-meta, .assistant-entry-link { display: none; }
+  .header-title, .breadcrumb-current { font-size: 17px; }
+  .header-actions { gap: 4px; }
+  .user-box { padding: 0; border: 0; box-shadow: none; gap: 6px; background: transparent; }
+  .user-avatar { width: 30px; height: 30px; font-size: 12px; }
+  .user-box :deep(.el-button) { padding: 6px; font-size: 11px; }
+  .layout-content { padding: 12px; }
+  .is-agent-workspace .layout-content, .is-trace-workspace .layout-content { padding: 8px; }
+  .back-top-btn { display: none; }
 }
 </style>

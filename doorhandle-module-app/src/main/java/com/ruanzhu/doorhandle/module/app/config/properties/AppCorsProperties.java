@@ -29,7 +29,7 @@ public class AppCorsProperties {
 
     private List<String> allowedHeaders = List.of("*");
 
-    private List<String> exposedHeaders = List.of("Authorization", "Content-Type");
+    private List<String> exposedHeaders = List.of("Authorization", "Content-Type", "X-Content-SHA256", "X-Export-Id", "Retry-After");
 
     private Boolean allowCredentials = true;
 

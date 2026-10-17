@@ -38,7 +38,9 @@ public class AgentModelService {
         if (connections.isFallbackEnabled()) ids.addAll(fallbackIds());
         var candidates = new ArrayList<ManagedAgentModel.Candidate>();
         for (String modelId : ids) {
-            candidates.add(new ManagedAgentModel.Candidate(modelId, models.computeIfAbsent(modelId, this::create),
+            var entry = entries().stream().filter(info -> info.id().equals(modelId)).findFirst()
+                    .orElseThrow(() -> new IllegalArgumentException("未登记的模型 ID"));
+            candidates.add(new ManagedAgentModel.Candidate(modelId, entry.provider(), models.computeIfAbsent(modelId, this::create),
                     health.computeIfAbsent(modelId, ignored -> new ModelCircuit(connections.getFailureThreshold(),
                             connections.getCircuitCooldown(), connections.getQuotaCooldown()))));
         }

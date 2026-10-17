@@ -20,6 +20,8 @@ public class AgentScopeProperties {
     private int maxIters = 12;
     private boolean enableReasoning;
     private boolean emitTokenUsage;
+    private com.ruanzhu.doorhandle.module.ai.context.ContextCompactionSettings contextCompaction=new com.ruanzhu.doorhandle.module.ai.context.ContextCompactionSettings();
+    public com.ruanzhu.doorhandle.module.ai.context.ContextCompactionSettings getContextCompaction(){return contextCompaction;}
 
     public boolean isEnabled() { return enabled; }
     public void setEnabled(boolean enabled) { this.enabled = enabled; }

@@ -5,6 +5,9 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 @ConfigurationProperties(prefix="agentscope.mcp")
 public class LocalMcpProperties {
     private boolean enabled;
+    private boolean durableInstallEnabled;
+    public boolean isDurableInstallEnabled(){return durableInstallEnabled;}
+    public void setDurableInstallEnabled(boolean value){durableInstallEnabled=value;}
     private String python="python";
     private String installer="${user.dir}/script/shell/install-local-fetch-mcp.py";
     private String transport="STDIO";

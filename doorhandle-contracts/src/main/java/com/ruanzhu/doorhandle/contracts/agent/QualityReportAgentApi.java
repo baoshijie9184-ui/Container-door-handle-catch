@@ -11,6 +11,8 @@ public interface QualityReportAgentApi {
     record Origin(String requestId,String runId,String callId,String tool) {}
     record Draft(String taskId,String title,String narrative) {}
     record Edit(String reportId,int expectedVersion,String title,String narrative) {}
+    record WriteReceipt(String reportId,int savedVersion,String tool,String status) {}
+    default java.util.Optional<WriteReceipt> receipt(AgentActor actor,String runId,String callId,String tool){return java.util.Optional.empty();}
     Page list(AgentActor actor,int page,int size,String status,String keyword);
     Detail get(AgentActor actor,String reportId);
     Detail createDraft(AgentActor actor,Draft draft,Origin origin);

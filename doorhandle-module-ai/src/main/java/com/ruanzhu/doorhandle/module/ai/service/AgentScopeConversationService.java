@@ -30,15 +30,31 @@ public class AgentScopeConversationService implements AgentConversationApi {
     private final AgentRunRegistry registry;
     private final AgentScopeProperties properties;
     private final AgentJournal journal;
+    private final com.ruanzhu.doorhandle.module.ai.research.ResearchEvidenceService research;
+    private final com.ruanzhu.doorhandle.module.ai.control.ConversationControlRegistry controls;
+    private com.ruanzhu.doorhandle.module.ai.workbench.AgentWorkbenchService workbench;
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    public void setWorkbench(com.ruanzhu.doorhandle.module.ai.workbench.AgentWorkbenchService workbench){this.workbench=workbench;}
 
     public AgentScopeConversationService(RoleAgentFactory factory, AgentRunRegistry registry, AgentScopeProperties properties) {
         this(factory, registry, properties, AgentJournal.disabled());
     }
-    @org.springframework.beans.factory.annotation.Autowired
     public AgentScopeConversationService(RoleAgentFactory factory, AgentRunRegistry registry, AgentScopeProperties properties, AgentJournal journal) {
-        this.factory = factory; this.registry = registry; this.properties = properties; this.journal = journal;
+        this(factory,registry,properties,journal,null);
+    }
+    public AgentScopeConversationService(RoleAgentFactory factory, AgentRunRegistry registry, AgentScopeProperties properties, AgentJournal journal,
+            @org.springframework.lang.Nullable com.ruanzhu.doorhandle.module.ai.research.ResearchEvidenceService research) {
+        this(factory,registry,properties,journal,research,null);
+    }
+    @org.springframework.beans.factory.annotation.Autowired
+    public AgentScopeConversationService(RoleAgentFactory factory, AgentRunRegistry registry, AgentScopeProperties properties, AgentJournal journal,
+            @org.springframework.lang.Nullable com.ruanzhu.doorhandle.module.ai.research.ResearchEvidenceService research,
+            @org.springframework.lang.Nullable com.ruanzhu.doorhandle.module.ai.control.ConversationControlRegistry controls) {
+        this.factory = factory; this.registry = registry; this.properties = properties; this.journal = journal; this.research=research;
+        this.controls=controls;
     }
     @Override public Status status() { return new Status("AgentScope", factory.confirmationEnabled()?"CONFIRMABLE":factory.reportDraftsEnabled()||factory.evolutionEnabled()?"DRAFTS":"READ_ONLY", properties.getModel(), journal.enabled(),factory.reportsEnabled(),factory.reportDraftsEnabled()); }
+    @Override public int maxRunSeconds(){return controls==null?180:controls.maxRunSeconds();}
     @Override public void checkRequest(AgentActor actor, String entryPoint, String requestId) { journal.checkRequest(actor, entryPoint, requestId); }
 
     @Override public Run start(AgentActor actor, String sessionId, List<Message> history, String reference, Consumer<Event> consumer) {
@@ -70,22 +86,34 @@ public class AgentScopeConversationService implements AgentConversationApi {
         try { audit = journal.begin(actor, sessionId, main, entryPoint, requestId, properties.getModel()); }
         catch (RuntimeException error) { registry.release(session); throw error; }
         Agent agent;
+        final com.ruanzhu.doorhandle.module.ai.workbench.AgentWorkbenchService.Scope work;
+        try{work=workbench==null?null:workbench.prepare(actor,sessionId,history.get(history.size()-1).content(),audit.id());}
+        catch(RuntimeException error){try{audit.finish("ERROR");}finally{registry.release(session);}throw error;}
+        final com.ruanzhu.doorhandle.module.ai.control.ConversationControlRegistry.Handle control;
+        try{control=controls==null?null:controls.attach(actor,sessionId,audit);}
+        catch(RuntimeException error){try{if(work!=null){work.finish("NEEDS_REVIEW","");work.release();}audit.finish("ERROR");}finally{registry.release(session);}throw error;}
         var cards = new com.ruanzhu.doorhandle.module.ai.card.AgentCardCollector(new com.fasterxml.jackson.databind.ObjectMapper());
         try {
             var last=history.get(history.size()-1).content();
-            var command=last.stripLeading().startsWith("/")?factory.slashCommands().prepare(actor,last,audit):null;
+            var command=last.stripLeading().startsWith("/")&&!(work!=null&&last.stripLeading().startsWith("/plan"))?factory.slashCommands().prepare(actor,last,audit):null;
             if(command!=null&&command.reply()!=null){
                 consumer.accept(new Event("RUN_STARTED",main,null,null,0));
                 consumer.accept(new Event("TEXT_CHUNK",main,null,command.reply(),0));
                 consumer.accept(new Event("RUN_FINISHED",main,null,null,0));
                 audit.finish("COMPLETED");registry.release(session);
+                if(control!=null)control.close();
+                if(work!=null){work.finish("COMPLETED",command.reply());work.release();}
                 return new Run(CompletableFuture.completedFuture(command.reply()),()->{},audit.id());
             }
             if(command!=null){messages.set(messages.size()-1,new UserMessage(command.question()));
-                agent=factory.create(actor,main,journal.enabled()?new AgentJournalMiddleware(audit,actor,factory.confirmationEnabled(),factory.reportsEnabled(),factory.reportDraftsEnabled()):null,cards,command.skill());
-            }else agent = factory.create(actor, main, journal.enabled() ? new AgentJournalMiddleware(audit, actor, factory.confirmationEnabled(),factory.reportsEnabled(),factory.reportDraftsEnabled()) : null,cards);
+                var middleware=journal.enabled()?new AgentJournalMiddleware(audit,actor,factory.confirmationEnabled(),factory.reportsEnabled(),factory.reportDraftsEnabled()):null;
+                agent=work!=null?factory.create(actor,main,middleware,cards,command.skill(),control,work):control==null?factory.create(actor,main,middleware,cards,command.skill()):factory.create(actor,main,middleware,cards,command.skill(),control);
+            }else {
+                var middleware=journal.enabled()?new AgentJournalMiddleware(audit, actor, factory.confirmationEnabled(),factory.reportsEnabled(),factory.reportDraftsEnabled()):null;
+                agent=work!=null?factory.create(actor,main,middleware,cards,null,control,work):control==null?factory.create(actor,main,middleware,cards):factory.create(actor,main,middleware,cards,null,control);
+            }
         }
-        catch (RuntimeException error) { try { audit.finish("ERROR"); } finally { registry.release(session); } throw error; }
+        catch (RuntimeException error) { try { if(work!=null){work.finish("NEEDS_REVIEW","");work.release();}audit.finish("ERROR"); } finally { if(control!=null)control.close();registry.release(session); } throw error; }
 
         var result = new CompletableFuture<String>();
         var subscription = new AtomicReference<Disposable>();
@@ -94,28 +122,31 @@ public class AgentScopeConversationService implements AgentConversationApi {
         long started = System.nanoTime();
         Runnable cleanup = () -> {
             if (closed.compareAndSet(false, true)) {
+                if(control!=null)control.close();
                 try { AgentRuntime.close(agent); }
                 finally {
+                    if(work!=null)work.release();
                     var disposable = subscription.get(); if (disposable != null) disposable.dispose();
                     registry.release(session);
                 }
             }
         };
-        result.orTimeout(180, java.util.concurrent.TimeUnit.SECONDS);
+        result.orTimeout(controls==null?180:controls.maxRunSeconds(), java.util.concurrent.TimeUnit.SECONDS);
         result.whenComplete((value, error) -> {
             if (error != null) {
-                try { audit.finish(result.isCancelled() ? "CANCELLED" : "ERROR"); } finally { cleanup.run(); }
+                try { if(work!=null)work.finish(result.isCancelled()?"CANCELLED":"NEEDS_REVIEW","");audit.finish(result.isCancelled() ? "CANCELLED" : "ERROR"); } finally { cleanup.run(); }
             }
         });
-        audit.bindCancel(() -> { result.cancel(true); cleanup.run(); });
+        audit.bindCancel(() -> { if(work!=null)work.cancel();result.cancel(true); cleanup.run(); });
+        if(work!=null)work.bindCancel(()->{work.cancel();result.cancel(true);cleanup.run();});
         try {
             consumer.accept(new Event("RUN_STARTED", main, null, null, 0));
-            var runtime = RuntimeContext.builder().userId(Long.toString(actor.userId())).sessionId(session).build();
+            var runtime = RuntimeContext.builder().userId(Long.toString(actor.userId())).sessionId(work==null?session:work.sdkSession()).build();
             var stream = StreamOptions.builder().eventTypes(EventType.ALL).incremental(true)
                     .includeReasoningChunk(true).includeReasoningResult(true).includeActingChunk(false).build();
-            Disposable disposable = agent.stream(messages, stream)
+            Disposable disposable = agent.stream(work==null?messages:work.messages(messages), stream)
                     .contextWrite(context -> context.put(AgentBase.RUNTIME_CONTEXT_KEY, runtime))
-                    .subscribeOn(Schedulers.boundedElastic()).timeout(Duration.ofMinutes(3))
+                    .subscribeOn(Schedulers.boundedElastic()).timeout(Duration.ofSeconds(controls==null?180:controls.maxRunSeconds()))
                     .doFinally(signal -> cleanup.run()).subscribe(event -> {
                         if (closed.get()) return;
                         var source = event.getSource();
@@ -127,7 +158,7 @@ public class AgentScopeConversationService implements AgentConversationApi {
                         if (event.getType() == EventType.AGENT_RESULT && root) reply.set(message.getTextContent());
                         if (event.getType() == EventType.REASONING && root && !event.isLast()) {
                             String text = message.getTextContent();
-                            if (text != null && !text.isEmpty()) consumer.accept(new Event("TEXT_CHUNK", name, null, text, elapsed));
+                            if (text != null && !text.isEmpty()) {if(control!=null)control.text(text);consumer.accept(new Event("TEXT_CHUNK", name, null, text, elapsed));}
                         }
                         if (event.isLast() && event.getType() != EventType.AGENT_RESULT)
                             consumer.accept(new Event(event.getType().name(), name, null, null, elapsed));
@@ -136,6 +167,8 @@ public class AgentScopeConversationService implements AgentConversationApi {
                                 consumer.accept(new Event("TOOL_CALL", name, tool.getName(), null, elapsed));
                         }
                     }, error -> {
+                        if(work!=null&&work.waiting()){audit.finish("INTERRUPTED");result.complete(work.waitingReply());return;}
+                        if(work!=null)work.finish("NEEDS_REVIEW","");
                         try { if (!closed.get()) consumer.accept(new Event("RUN_ERROR", main, null, null, (System.nanoTime() - started) / 1_000_000)); }
                         catch (RuntimeException ignored) {}
                         result.completeExceptionally(new IllegalStateException("AgentScope 执行失败，请稍后重试"));
@@ -144,7 +177,10 @@ public class AgentScopeConversationService implements AgentConversationApi {
                         if (text == null || text.isBlank()) result.completeExceptionally(new IllegalStateException("AgentScope 未返回有效回答"));
                         else {
                             try {
+                                if(work!=null){text=work.resolveReply(text);if(work.waiting()){audit.finish("INTERRUPTED");result.complete(text);return;}}
+                                if(research!=null)research.recordAnswer(actor,audit.id(),text);
                                 consumer.accept(new Event("RUN_FINISHED", main, null, null, (System.nanoTime() - started) / 1_000_000));
+                                if(work!=null)work.finish("COMPLETED",text);
                                 audit.finish("COMPLETED");
                                 result.complete(text);
                             } catch (RuntimeException error) { result.completeExceptionally(new IllegalStateException("聊天通道已关闭")); }

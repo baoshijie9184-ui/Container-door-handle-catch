@@ -43,6 +43,9 @@ public class ChatSessionServiceImpl implements ChatSessionService {
     private final ChatPendingActionMapper chatPendingActionMapper;
     private final ChatAssistantProperties chatAssistantProperties;
     private final ObjectMapper objectMapper;
+    private org.springframework.beans.factory.ObjectProvider<org.springframework.jdbc.core.JdbcTemplate> workbenchJdbc;
+    @org.springframework.beans.factory.annotation.Value("${agentscope.workbench.enabled:false}") private boolean workbenchEnabled;
+    @org.springframework.beans.factory.annotation.Autowired public void setWorkbenchJdbc(org.springframework.beans.factory.ObjectProvider<org.springframework.jdbc.core.JdbcTemplate> jdbc){this.workbenchJdbc=jdbc;}
 
     @Override
     public ChatSessionResponse getOrCreateActiveSession(String username) {
@@ -184,6 +187,10 @@ public class ChatSessionServiceImpl implements ChatSessionService {
         response.setStatus(session.getStatus());
         response.setPinned(session.getPinned() != null && session.getPinned());
         response.setProjectId(session.getProjectId());
+        if(workbenchEnabled&&workbenchJdbc!=null&&workbenchJdbc.getIfAvailable()!=null){
+            var lineage=workbenchJdbc.getObject().queryForList("SELECT source_session_id,through_message_id FROM agent_session_fork WHERE user_id=? AND fork_session_id=?",session.getUserId(),session.getSessionId());
+            if(!lineage.isEmpty()){response.setSourceSessionId((String)lineage.get(0).get("source_session_id"));response.setForkMessageId(((Number)lineage.get(0).get("through_message_id")).longValue());}
+        }
         response.setUpdatedAt(session.getUpdatedAt() == null ? null : session.getUpdatedAt().format(TIME_FORMATTER));
 
         // 统计消息数

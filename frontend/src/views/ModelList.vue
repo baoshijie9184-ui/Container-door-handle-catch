@@ -237,6 +237,8 @@
     </el-dialog>
 
     <el-drawer v-model="detailDrawerVisible" title="模型详情" size="520px">
+      <p v-if="detailLoading" role="status">正在读取模型详情</p>
+      <p v-if="detailError" role="alert">{{ detailError }}</p>
       <template v-if="detailModel">
         <div class="detail-section">
           <div class="detail-grid">
@@ -416,7 +418,9 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from 'vue'
+import { useRoute } from 'vue-router'
+import { validResourceId } from '@/utils/agentCards'
 import request from '../api/request'
 import { ElMessage } from 'element-plus'
 
@@ -426,6 +430,11 @@ const total = ref(0)
 const selectedFile = ref(null)
 const detailDrawerVisible = ref(false)
 const detailModel = ref(null)
+const detailLoading = ref(false)
+const detailError = ref('')
+const selectedModelId = ref(null)
+const route = useRoute()
+let detailGeneration = 0
 const operationLogs = ref([])
 const operationLoading = ref(false)
 const evaluationDialogVisible = ref(false)
@@ -630,7 +639,10 @@ const handleEdit = (row) => {
 }
 
 const handleViewDetails = (row) => {
-  detailModel.value = { ...row }
+  detailGeneration++
+  selectedModelId.value = row.modelId
+  detailModel.value = null
+  detailError.value = ''
   operationLogs.value = []
   detailDrawerVisible.value = true
   fetchModelDetail(row.modelId)
@@ -659,18 +671,24 @@ const openRolloutDialog = (row) => {
 }
 
 const fetchModelDetail = (modelId) => {
+  const generation = detailGeneration
+  detailLoading.value = true
   request.get(`/api/model-info/${modelId}`)
     .then((response) => {
+      if (generation !== detailGeneration || selectedModelId.value !== modelId) return
       if (response.data.code === 200) {
         detailModel.value = response.data.data
       } else {
-        ElMessage.error(response.data.message || '获取模型详情失败')
+        detailModel.value = null
+        detailError.value = '模型不存在或当前无权访问 请重新查询'
       }
     })
-    .catch((error) => {
-      console.error('获取模型详情失败:', error)
-      ElMessage.error('获取模型详情失败')
+    .catch(() => {
+      if (generation !== detailGeneration || selectedModelId.value !== modelId) return
+      detailModel.value = null
+      detailError.value = '模型详情暂不可用 请稍后重新打开'
     })
+    .finally(() => { if (generation === detailGeneration) detailLoading.value = false })
 }
 
 const handleDelete = (modelId) => {
@@ -695,9 +713,11 @@ const handleDelete = (modelId) => {
 }
 
 const fetchOperationLogs = (modelId) => {
+  const generation = detailGeneration
   operationLoading.value = true
   request.get(`/api/models/${modelId}/operations`)
     .then((response) => {
+      if (generation !== detailGeneration || selectedModelId.value !== modelId) return
       if (response.data.code === 200) {
         operationLogs.value = response.data.data || []
       } else {
@@ -705,11 +725,12 @@ const fetchOperationLogs = (modelId) => {
       }
     })
     .catch((error) => {
+      if (generation !== detailGeneration || selectedModelId.value !== modelId) return
       console.error('获取操作日志失败:', error)
       ElMessage.error('获取操作日志失败')
     })
     .finally(() => {
-      operationLoading.value = false
+      if (generation === detailGeneration) operationLoading.value = false
     })
 }
 
@@ -894,6 +915,25 @@ const submitForm = () => {
   })
 }
 
+watch(detailDrawerVisible, visible => {
+  if (!visible) {
+    detailGeneration++
+    selectedModelId.value = null
+    detailModel.value = null
+    operationLogs.value = []
+    detailLoading.value = false
+    operationLoading.value = false
+    detailError.value = ''
+  }
+}, { flush: 'sync' })
+watch(() => route.query.modelId, id => {
+  if (validResourceId(id, 'MODELS')) handleViewDetails({ modelId: Number(id) })
+  else {
+    detailDrawerVisible.value = false
+    if (id != null) ElMessage.warning('模型编号不合法 请从模型列表重新选择')
+  }
+}, { immediate: true })
+onBeforeUnmount(() => { detailGeneration++ })
 onMounted(() => {
   fetchModelList()
 })

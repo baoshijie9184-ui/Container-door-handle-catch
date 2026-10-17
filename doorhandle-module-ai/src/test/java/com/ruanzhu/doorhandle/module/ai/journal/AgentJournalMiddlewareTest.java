@@ -61,4 +61,21 @@ class AgentJournalMiddlewareTest {
                 .isInstanceOf(IllegalStateException.class);
         assertThat(called.get()).isFalse();
     }
+    @Test void alertToolsRequireSupervisorAndSuccessfulAuthorizationAuditBeforeDispatch() {
+        for(String name:List.of("list_device_alerts","get_device_alert","get_model_operations","get_system_health")) {
+            var run=mock(AgentJournal.Run.class);var agent=mock(Agent.class);when(agent.getName()).thenReturn(name.equals("get_model_operations")?"model-ops":"resource-management");
+            var called=new java.util.concurrent.atomic.AtomicBoolean();
+            var input=new ActingInput(List.of(new ToolUseBlock("alert-call",name,Map.of(name.equals("get_model_operations")?"modelId":"alertId","PRIVATE_PARAMETER"))));
+            assertThatThrownBy(()->new AgentJournalMiddleware(run,actor).onActing(agent,RuntimeContext.empty(),input,i->{called.set(true);return Flux.empty();}).blockLast())
+                    .isInstanceOf(org.springframework.security.access.AccessDeniedException.class);
+            assertThat(called.get()).isFalse();
+            var boss=new AgentActor(2,"boss",AgentActor.Role.SUPERVISOR);reset(run);
+            new AgentJournalMiddleware(run,boss).onActing(agent,RuntimeContext.empty(),input,i->{called.set(true);return Flux.empty();}).blockLast();
+            assertThat(called.get()).isTrue();
+            verify(run).event(eq("AUTHORIZATION_ALLOWED"),argThat(p->name.equals(p.get("tool"))&&"SINGLE_ENTERPRISE".equals(p.get("scope"))&&!p.toString().contains("PRIVATE_PARAMETER")));
+            reset(run);called.set(false);doThrow(new IllegalStateException("audit unavailable")).when(run).event(anyString(),anyMap());
+            assertThatThrownBy(()->new AgentJournalMiddleware(run,boss).onActing(agent,RuntimeContext.empty(),input,i->{called.set(true);return Flux.empty();}).blockLast()).isInstanceOf(IllegalStateException.class);
+            assertThat(called.get()).isFalse();
+        }
+    }
 }

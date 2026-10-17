@@ -20,7 +20,14 @@ class AgentCardControllerTest {
         for(String input:List.of("{\"cards\":[],\"userId\":2}","{\"cards\":[{\"type\":\"TASKS\",\"tool\":\"get_task_detail\",\"ids\":[\"task-1\"],\"html\":\"<script>\"}]}",
                 "{\"cards\":[{\"type\":\"METRICS\",\"tool\":\"get_my_work_metrics\",\"ids\":[],\"days\":1.5}]}",
                 "{\"cards\":[{\"type\":\"TASKS\",\"tool\":\"approve_report\",\"ids\":[\"task-1\"]}]}",
-                "{\"cards\":[{\"type\":\"TASKS\",\"tool\":\"get_task_detail\",\"ids\":[\"../secret\"]}]}")) {
+                "{\"cards\":[{\"type\":\"TASKS\",\"tool\":\"get_task_detail\",\"ids\":[\"../secret\"]}]}",
+                "{\"cards\":[{\"type\":\"DEVICES\",\"tool\":\"list_models\",\"ids\":[\"1\"]}]}",
+                "{\"cards\":[{\"type\":\"DEVICES\",\"tool\":\"list_devices\",\"ids\":[1]}]}",
+                "{\"cards\":[{\"type\":\"MODELS\",\"tool\":\"list_models\",\"ids\":[\"2147483648\"]}]}",
+                "{\"cards\":[{\"type\":\"DEVICE_ALERTS\",\"tool\":\"resolve_alert\",\"ids\":[\"7\"]}]}",
+                "{\"cards\":[{\"type\":\"DEVICE_ALERTS\",\"tool\":\"get_device_alert\",\"ids\":[\"ALERT-code\"]}]}",
+                "{\"cards\":[{\"type\":\"MODEL_OPERATIONS\",\"tool\":\"publish_model\",\"ids\":[\"7\"]}]}",
+                "{\"cards\":[{\"type\":\"MODEL_OPERATIONS\",\"tool\":\"get_model_operations\",\"ids\":[\"2147483648\"]}]}")) {
             mvc.perform(post("/api/agent/cards/resolve").principal(auth).contentType("application/json").content(input)).andExpect(status().isBadRequest());
         }
         verifyNoInteractions(service);

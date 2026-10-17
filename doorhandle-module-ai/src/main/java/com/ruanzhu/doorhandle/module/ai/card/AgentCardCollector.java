@@ -45,6 +45,15 @@ public final class AgentCardCollector {
             } else if (AgentCards.REPORT_TOOLS.contains(tool)) {
                 var ids = tool.equals("list_quality_reports") ? ids(data.path("records"), "reportId") : List.of(data.path("report").path("reportId").asText());
                 ref = new AgentCards.Reference("REPORTS", tool, ids, null);
+            } else if (AgentCards.ALERT_TOOLS.contains(tool)) {
+                var ids = tool.equals("get_device_alert") ? List.of(data.path("alertId").asText()) : ids(data.path("items"), "alertId");
+                ref = new AgentCards.Reference("DEVICE_ALERTS", tool, ids, null);
+            } else if (AgentCards.DEVICE_TOOLS.contains(tool)) {
+                ref = new AgentCards.Reference("DEVICES", tool, ids(data, "deviceId"), null);
+            } else if (AgentCards.MODEL_OPERATION_TOOLS.contains(tool)) {
+                ref = new AgentCards.Reference("MODEL_OPERATIONS", tool, List.of(data.path("model").path("modelId").asText()), null);
+            } else if (AgentCards.MODEL_TOOLS.contains(tool)) {
+                ref = new AgentCards.Reference("MODELS", tool, ids(data, "modelId"), null);
             } else if (AgentCards.METRIC_TOOLS.contains(tool)) {
                 int days = input != null && input.get("days") instanceof Number n ? n.intValue() : 7;
                 ref = new AgentCards.Reference("METRICS", tool, List.of(), days);

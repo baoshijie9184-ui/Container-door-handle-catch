@@ -11,6 +11,16 @@ public final class AgentCards {
     public static final Set<String> TASK_TOOLS = Set.of("get_task_detail", "get_my_detection_tasks", "search_detection_tasks", "get_my_quality_records", "get_quality_records");
     public static final Set<String> METRIC_TOOLS = Set.of("get_my_work_metrics", "get_department_work_metrics");
     public static final Set<String> REPORT_TOOLS = Set.of("list_quality_reports", "get_quality_report", "create_report_draft", "edit_report_draft");
+    public static final Set<String> DEVICE_TOOLS = Set.of("list_devices");
+    public static final Set<String> MODEL_TOOLS = Set.of("list_models");
+    public static final Set<String> ALERT_TOOLS = Set.of("list_device_alerts", "get_device_alert");
+    public static final Set<String> MODEL_OPERATION_TOOLS = Set.of("get_model_operations");
+
+    public static boolean validResourceId(String id, long maximum) {
+        if (id == null || !id.matches("[1-9][0-9]{0,18}")) return false;
+        try { return Long.parseLong(id) <= maximum; }
+        catch (NumberFormatException ignored) { return false; }
+    }
 
     public record Reference(String type, String tool, List<String> ids, Integer days) {
         public Reference {
@@ -22,6 +32,10 @@ public final class AgentCards {
                 case "TASKS" -> TASK_TOOLS.contains(tool) && days == null && ids.stream().allMatch(id -> id.matches("[A-Za-z0-9_-]{1,128}"));
                 case "REPORTS" -> REPORT_TOOLS.contains(tool) && days == null && ids.stream().allMatch(id -> id.matches("qr-[a-f0-9-]{36}"));
                 case "METRICS" -> METRIC_TOOLS.contains(tool) && ids.isEmpty() && days != null && days >= 1 && days <= 366;
+                case "DEVICES" -> DEVICE_TOOLS.contains(tool) && days == null && ids.stream().allMatch(id -> validResourceId(id, Long.MAX_VALUE));
+                case "DEVICE_ALERTS" -> ALERT_TOOLS.contains(tool) && days == null && ids.stream().allMatch(id -> validResourceId(id, Long.MAX_VALUE));
+                case "MODELS" -> MODEL_TOOLS.contains(tool) && days == null && ids.stream().allMatch(id -> validResourceId(id, Integer.MAX_VALUE));
+                case "MODEL_OPERATIONS" -> MODEL_OPERATION_TOOLS.contains(tool) && days == null && ids.stream().allMatch(id -> validResourceId(id, Integer.MAX_VALUE));
                 default -> false;
             };
             if (!valid) throw new IllegalArgumentException("未登记卡片或参数不合法");

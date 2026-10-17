@@ -21,6 +21,8 @@ public class AgentJournalMiddleware implements MiddlewareBase {
     private final boolean reports,drafts;
     private com.ruanzhu.doorhandle.module.ai.evolution.SkillEvolutionService evolution;
     private com.ruanzhu.doorhandle.module.ai.mcp.LocalMcpService mcp;
+    private Set<String> workbenchTools=Set.of();
+    public AgentJournalMiddleware withWorkbench(Set<String> tools){this.workbenchTools=Set.copyOf(tools);return this;}
     public AgentJournalMiddleware(AgentJournal.Run run,AgentActor actor) { this(run,actor,false); }
     public AgentJournalMiddleware(AgentJournal.Run run,AgentActor actor,boolean confirmation) {this(run,actor,confirmation,false,false);}
     public AgentJournalMiddleware(AgentJournal.Run run,AgentActor actor,boolean confirmation,boolean reports,boolean drafts){this(run,actor,System.nanoTime(),null,confirmation,reports,drafts);}
@@ -31,6 +33,7 @@ public class AgentJournalMiddleware implements MiddlewareBase {
     public AgentJournalMiddleware withEvolution(com.ruanzhu.doorhandle.module.ai.evolution.SkillEvolutionService service){var next=new AgentJournalMiddleware(run,actor,began,parentCallId,confirmation,reports,drafts);next.evolution=service;next.mcp=mcp;return next;}
     public AgentJournalMiddleware withMcp(com.ruanzhu.doorhandle.module.ai.mcp.LocalMcpService service){var next=new AgentJournalMiddleware(run,actor,began,parentCallId,confirmation,reports,drafts);next.evolution=evolution;next.mcp=service;return next;}
     public String runId() { return run.id(); }
+    public void recordContext(String type,Map<String,Object> metadata){var payload=fields((String)metadata.get("agent"));payload.putAll(metadata);run.event(type,payload);}
     private Map<String,Object> fields(String agent) {
         var result=new LinkedHashMap<String,Object>();result.put("agent",agent);
         result.put("elapsedMs",(System.nanoTime()-began)/1_000_000);if(parentCallId!=null)result.put("parentCallId",parentCallId);return result;
@@ -45,20 +48,27 @@ public class AgentJournalMiddleware implements MiddlewareBase {
     }
     @Override public Flux<AgentEvent> onModelCall(Agent agent,RuntimeContext context,ModelCallInput input,Function<ModelCallInput,Flux<AgentEvent>> next) {
         return Flux.defer(()->{
-            long start=System.nanoTime();run.event("MODEL_STARTED",fields(agent.getName()));
-            return next.apply(input).doOnNext(event->{
+            long start=System.nanoTime();
+            String requestId=UUID.randomUUID().toString();
+            var initial=fields(agent.getName());initial.put("modelRequestId",requestId);run.event("MODEL_STARTED",initial);
+            var trace=new com.ruanzhu.doorhandle.module.ai.model.ModelAttemptTrace((type,metadata)->{
+                var payload=fields(agent.getName());payload.putAll(metadata);payload.put("modelRequestId",requestId);run.event(type,payload);
+            });
+            return Flux.defer(()->next.apply(input)).doOnNext(event->{
                 if(event instanceof ModelCallEndEvent end) {
-                    var payload=duration(agent,start);
+                    var payload=duration(agent,start);payload.put("modelRequestId",requestId);
                     if(end.getUsage()!=null) {payload.put("inputTokens",Math.max(0,end.getUsage().getInputTokens()));payload.put("outputTokens",Math.max(0,end.getUsage().getOutputTokens()));}
                     run.event("MODEL_COMPLETED",payload);
                 }
-            }).doOnError(error->run.event("MODEL_ERROR",duration(agent,start)))
-              .doFinally(signal->{if(signal==SignalType.CANCEL)recordCancellation("MODEL_CANCELLED",duration(agent,start));});
+            }).doOnError(error->{var payload=duration(agent,start);payload.put("modelRequestId",requestId);run.event("MODEL_ERROR",payload);})
+              .doFinally(signal->{if(signal==SignalType.CANCEL){var payload=duration(agent,start);payload.put("modelRequestId",requestId);recordCancellation("MODEL_CANCELLED",payload);}})
+              .contextWrite(contextValue->contextValue.put(com.ruanzhu.doorhandle.module.ai.model.ModelAttemptTrace.CONTEXT_KEY,trace));
         });
     }
     @Override public Flux<AgentEvent> onActing(Agent agent,RuntimeContext context,ActingInput input,Function<ActingInput,Flux<AgentEvent>> next) {
         return Flux.defer(()->{
             var allowed=new HashSet<String>();
+            allowed.addAll(workbenchTools);
             if(agent.getName().equals(RoleAgentCatalog.mainId(actor))) {
                 RoleAgentCatalog.specialists(actor,confirmation,reports,drafts).forEach(def->allowed.add("delegate_"+def.id().replace('-','_')));
                 if(evolution!=null){allowed.add(com.ruanzhu.doorhandle.module.ai.evolution.SkillEvolutionService.PROPOSE);allowed.add(com.ruanzhu.doorhandle.module.ai.evolution.SkillEvolutionService.LOAD);if(evolution.linksEnabled())allowed.add(com.ruanzhu.doorhandle.module.ai.evolution.SkillLinkProposalTool.NAME);}

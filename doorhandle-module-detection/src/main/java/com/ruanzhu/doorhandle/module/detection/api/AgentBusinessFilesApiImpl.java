@@ -1,0 +1,31 @@
+package com.ruanzhu.doorhandle.module.detection.api;
+
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.ruanzhu.doorhandle.contracts.agent.*;
+import com.ruanzhu.doorhandle.module.detection.mapper.DetectionTaskMapper;
+import com.ruanzhu.doorhandle.module.detection.entity.DetectionTask;
+import com.ruanzhu.doorhandle.module.detection.security.DetectionTaskAccessPolicy;
+import com.ruanzhu.doorhandle.module.infra.service.OssStorageService;
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import org.springframework.stereotype.Service;
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.util.*;
+
+@Service
+public class AgentBusinessFilesApiImpl implements AgentBusinessFilesApi {
+    private final DetectionTaskMapper tasks;private final DetectionTaskAccessPolicy access;private final QualityReportAgentApi reports;private final OssStorageService oss;
+    public AgentBusinessFilesApiImpl(DetectionTaskMapper tasks,DetectionTaskAccessPolicy access,QualityReportAgentApi reports,OssStorageService oss){this.tasks=tasks;this.access=access;this.reports=reports;this.oss=oss;}
+    private DetectionTask task(AgentActor actor,String id){var query=new QueryWrapper<DetectionTask>();access.applyScope(query,actor);var value=tasks.selectOne(query.eq("task_id",id));if(value==null)throw new SecurityException("任务不可访问");return value;}
+    private String path(String kind,String resource,String file){return "/api/agent/business-files/"+kind+"/"+resource+"/"+file;}
+    private static String id(String key){return UUID.nameUUIDFromBytes(key.getBytes(StandardCharsets.UTF_8)).toString();}
+    private Map<String,String> imageKeys(DetectionTask task){var result=new LinkedHashMap<String,String>();for(String json:List.of(Objects.toString(task.getOriginalImageKeysJson(),"[]"),Objects.toString(task.getPreviewImageKeysJson(),"[]")))try{List<String> keys=new ObjectMapper().readValue(json,new TypeReference<List<String>>(){});for(String key:keys.stream().limit(20).toList())if(key!=null&&!key.isBlank())result.put(id(key),key);}catch(Exception error){throw new IllegalStateException("任务图片目录不可读取");}return result;}
+    private void validate(String kind,String resource){if(!Set.of("DETECTION","REPORT").contains(kind)||resource==null||!resource.matches("[A-Za-z0-9_-]{1,128}"))throw new IllegalArgumentException("业务文件引用无效");}
+    @Override public List<Resource> list(AgentActor actor,String kind,String resource){validate(kind,resource);if(kind.equals("REPORT")){var report=reports.get(actor,resource);return List.of(new Resource(kind,resource,"report",report.report().title()+".md","text/plain; charset=utf-8",path(kind,resource,"report")));}
+        return imageKeys(task(actor,resource)).entrySet().stream().map(entry->{String key=entry.getValue(),name=key.substring(key.lastIndexOf('/')+1);String mime=name.toLowerCase(Locale.ROOT).endsWith(".png")?"image/png":name.toLowerCase(Locale.ROOT).endsWith(".webp")?"image/webp":"image/jpeg";return new Resource(kind,resource,entry.getKey(),name,mime,path(kind,resource,entry.getKey()));}).toList();
+    }
+    @Override public Delivery read(AgentActor actor,String kind,String resource,String file){validate(kind,resource);if(kind.equals("REPORT")){if(!file.equals("report"))throw new SecurityException("报告文件不可访问");var report=reports.get(actor,resource);return new Delivery(null,"# "+report.report().title()+"\n\n"+Objects.toString(report.narrative(),""),"text/plain; charset=utf-8");}
+        String key=imageKeys(task(actor,resource)).get(file);if(key==null)throw new SecurityException("图片不可访问");return new Delivery(oss.generateGetUrl(key,Duration.ofMinutes(2)).toString(),null,"image/jpeg");
+    }
+}

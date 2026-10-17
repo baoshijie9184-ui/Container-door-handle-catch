@@ -37,6 +37,8 @@ public class AgentScopeChatServiceImpl implements ChatConversationService, Agent
     private final ObjectMapper json;
     private final Set<String> active = ConcurrentHashMap.newKeySet();
     private final Map<Long, Deque<Long>> rateWindows = new ConcurrentHashMap<>();
+    private ObjectProvider<AgentWorkbenchApi> workbench;
+    @org.springframework.beans.factory.annotation.Autowired public void setWorkbench(ObjectProvider<AgentWorkbenchApi> workbench){this.workbench=workbench;}
 
     private AgentActor actor(String username) {
         var auth = SecurityContextHolder.getContext().getAuthentication();
@@ -62,6 +64,9 @@ public class AgentScopeChatServiceImpl implements ChatConversationService, Agent
     }
     @Override public ChatMessageResponse handleUserMessage(String username, ChatSendMessageRequest request) {
         return execute(actor(username), request, event -> {}, new AtomicReference<>(), new AtomicBoolean());
+    }
+    @Override public ChatMessageResponse handleQueuedMessage(String username,ChatSendMessageRequest request,String inputId,String entryPoint){
+        return execute(actor(username),request,event->{},new AtomicReference<>(),new AtomicBoolean(),"AGUI".equals(entryPoint)?inputId:null,event->{});
     }
     @Override public SseEmitter streamUserMessage(String username, ChatSendMessageRequest request) {
         var actor = actor(username); api();
@@ -168,7 +173,7 @@ public class AgentScopeChatServiceImpl implements ChatConversationService, Agent
             holder.set(run); if (run.runId() != null) runId = run.runId(); if (disconnected.get()) run.cancel().run();
             if (disconnected.get()) throw new CancellationException();
             sessions.appendUserMessage(tenant, sessionId, request.getContent());
-            String reply = run.result().get(185, TimeUnit.SECONDS);
+            String reply = run.result().get(Math.max(185,api.maxRunSeconds()+5), TimeUnit.SECONDS);
             if (disconnected.get()) throw new CancellationException();
             var cards = run.cards().get();
             String content = reply, messageType = "TEXT";
@@ -177,6 +182,7 @@ public class AgentScopeChatServiceImpl implements ChatConversationService, Agent
                 catch (Exception error) { log.warn("卡片编码失败，保留文字回答：errorType={}",error.getClass().getSimpleName()); }
             }
             var saved = sessions.appendAssistantMessage(tenant, sessionId, content, messageType, "AGENTSCOPE", null);
+            if(workbench!=null&&workbench.getIfAvailable()!=null&&saved.getId()!=null)workbench.getObject().turnSaved(actor,sessionId,saved.getId());
             try {
                 if(!command)memory.addMemoryAsync(tenant, sessionId, "用户: " + request.getContent() + "\n助手: " + reply,
                         Map.of("source", "agentscope-chat", "timestamp", System.currentTimeMillis()));

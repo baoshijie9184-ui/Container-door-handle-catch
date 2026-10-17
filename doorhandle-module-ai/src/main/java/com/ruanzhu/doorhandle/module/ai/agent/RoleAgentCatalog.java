@@ -19,8 +19,8 @@ public final class RoleAgentCatalog {
     public static List<Definition> specialists(AgentActor actor,boolean confirmation,boolean reports,boolean drafts) {
         var result=new java.util.ArrayList<Definition>(actor.supervisor() ? List.of(
                 new Definition("detection-quality", confirmation?"检测质检查询，提出需人工确认的质检分配":"检测质检管理，查询任务和质检记录", confirmation?List.of("search_detection_tasks", "get_task_detail", "get_quality_records","propose_quality_assignment"):List.of("search_detection_tasks", "get_task_detail", "get_quality_records")),
-                new Definition("resource-management", "设备资源查询", List.of("list_devices")),
-                new Definition("model-ops", "模型目录、版本和发布状态查询", List.of("list_models")),
+                new Definition("resource-management", "设备状态、采集告警及单体应用固定探针健康查询，不执行告警处置或运维修复", List.of("list_devices", "list_device_alerts", "get_device_alert", "get_system_health")),
+                new Definition("model-ops", "检测模型目录、登记评估指标和发布配置查询，不推断实际灰度流量或执行发布", List.of("list_models", "get_model_operations")),
                 new Definition("department-analytics", "当前单企业检测工作量统计", List.of("get_department_work_metrics")))
                 : List.of(
                 new Definition("detection-task", "本人及分派的检测任务和进度查询", List.of("get_my_detection_tasks", "get_task_detail")),
