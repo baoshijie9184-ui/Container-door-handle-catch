@@ -108,6 +108,8 @@ snapshot "$release/previous-images.yml" all
 snapshot "$release/runtime-images.yml" runtime
 export APP_IMAGE_TAG=$tag
 dc "$release" "$release/runtime-images.yml" config --quiet
+# The backup helper inherits this deployment's lock; failed backup prevents any app replacement.
+python3 "$release/script/docker/monolith-ops.py" backup --root "$root" --runtime "$runtime" --lock-fd 9
 # Only backend and web are rebuilt. Runtime PTH/Mem0 images are explicitly pinned above.
 dc "$release" "$release/runtime-images.yml" build backend nginx
 if ! activate "$release" "$release/runtime-images.yml"; then
@@ -121,3 +123,5 @@ cp "$release/previous-images.yml" "$root/state/previous-images.yml"
 printf '%s\n' "$previous" > "$root/state/previous-directory"
 printf '%s\n' "$release" > "$root/state/current-directory"
 echo "Release $tag passed application health checks."
+python3 "$release/script/docker/monolith-ops.py" prune --root "$root" --runtime "$runtime" --lock-fd 9 --keep 3 --apply \
+    || echo 'Application is healthy; old image cleanup needs review.' >&2
