@@ -13,8 +13,9 @@ WORKDIR /workspace/frontend-agent
 COPY frontend-agent/package*.json ./
 RUN --mount=type=cache,target=/root/.npm,sharing=locked npm ci --registry="$NPM_REGISTRY"
 COPY frontend-agent/ ./
-# React UI 复用主站的卡片、斜杠命令及链接校验模块。
+# React UI 复用主站契约及执行控制、持久工作台样式。
 COPY frontend/src/utils/ /workspace/frontend/src/utils/
+COPY frontend/src/assets/conversation-control.css frontend/src/assets/agent-workbench.css /workspace/frontend/src/assets/
 ENV VITE_AGENT_API_URL=/agui/run VITE_BUSINESS_LOGIN_URL=/#/login
 RUN npm run build -- --base=/agent-ui/
 
