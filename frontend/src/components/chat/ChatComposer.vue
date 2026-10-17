@@ -15,13 +15,16 @@
         v-for="chip in quickChips"
         :key="chip.text"
         class="quick-chip"
-        @click="$emit('send', chip.text)"
+        @click="sendPreset(chip.text)"
       >
         <span v-html="chip.icon"></span>
         {{ chip.label }}
       </button>
     </div>
     <div class="composer-input-wrap">
+      <TransitionGroup name="slash-menu" tag="div" class="composer-attachments" v-if="resources.files.length" aria-label="待发送附件">
+        <div v-for="file in resources.files" :key="file.id" class="composer-attachment"><el-icon aria-hidden="true"><Document /></el-icon><span :title="file.name">{{ file.name }}</span><button type="button" :aria-label="'取消引用 '+file.name" @click="resourceClient.remove(file.id)"><el-icon><Close /></el-icon></button></div>
+      </TransitionGroup>
       <textarea
         ref="textareaRef"
         v-model="draft"
@@ -35,6 +38,12 @@
         @blur="menuDismissed=true"
         @keydown="handleKey"
       />
+      <div class="composer-toolbar">
+        <input ref="fileInputRef" type="file" multiple hidden accept=".png,.jpg,.jpeg,.webp,.pdf,.txt,.md,.csv,.json,.html,.svg" @change="uploadFiles" />
+        <button class="composer-add" type="button" aria-label="添加附件" title="上传会话私有文件" :disabled="!resources.ready||!resources.filesEnabled||resources.busy||loading" @click="fileInputRef?.click()"><el-icon><Plus /></el-icon></button>
+        <span v-if="resources.busy" class="composer-upload-status" role="status">正在保存</span>
+        <select aria-label="使用模型" :value="resources.modelId" :disabled="!resources.ready||resources.busy||modelLocked||loading" @change="selectModel"><option value="">系统默认 · 自动备用</option><option v-for="model in resources.models" :key="model.id" :value="model.id">{{ model.model }}</option></select>
+      </div>
       <button
         class="composer-voice"
         :class="{ recording, transcribing: voiceTranscribing }"
@@ -53,7 +62,7 @@
       <button
         class="composer-send"
         :class="{ active: draft.trim() && !loading }"
-        :disabled="loading || !draft.trim()"
+        :disabled="loading || resources.busy || (!draft.trim()&&!resources.files.length)"
         @click="handleSend"
         title="发送" aria-label="发送消息"
       >
@@ -62,6 +71,7 @@
         </svg>
       </button>
     </div>
+    <p v-if="resources.error" class="command-error" role="alert">{{ resources.error }}</p>
     <p class="composer-hint">{{ voiceHint || 'Enter 发送 · Shift + Enter 换行' }}</p>
   </div>
 </template>
@@ -73,13 +83,21 @@ import { transcribeChatVoice } from '@/api/chatAssistant'
 import request from '@/api/request'
 import { useUserStore } from '@/stores/user'
 import { filterSkillCommands } from '@/utils/skillCommands'
+import {Plus,Document,Close} from '@element-plus/icons-vue'
+import {ComposerResources} from '@/utils/composerResources'
 
 const props = defineProps({
-  loading: { type: Boolean, default: false }
+  loading: { type: Boolean, default: false },sessionId:String,modelLocked:Boolean
 })
 
 const emit = defineEmits(['send'])
 const draft = ref('')
+const resources=ref({ready:false,files:[],models:[],modelId:'',busy:false,error:''}),fileInputRef=ref(null)
+const resourceClient=new ComposerResources({base:(import.meta.env.VITE_API_URL||'').replace(/\/$/,''),onState:value=>{resources.value=value}})
+watch(()=>props.sessionId,id=>resourceClient.open(id),{immediate:true})
+async function uploadFiles(event){const files=Array.from(event.target.files||[]);event.target.value='';try{await resourceClient.upload(files)}catch(error){resourceClient.publish({error:error.message})}}
+async function selectModel(event){try{await resourceClient.select(event.target.value)}catch{/* Keep the server-confirmed selection. */}finally{event.target.value=resources.value.modelId}}
+function sendPreset(text){if(props.loading||resources.value.busy)return;emit('send',resourceClient.content(text));resourceClient.clear()}
 defineExpose({restoreDraft:value=>{if(!draft.value)draft.value=value},appendReference:value=>{if(/^@file:[a-f0-9-]{36}$/.test(value)){draft.value=(draft.value?draft.value.trimEnd()+' ':'')+value+' ';nextTick(()=>{textareaRef.value?.focus();autoResize()})}}})
 const user=useUserStore(), commandCatalog=ref(null), commandError=ref(''), menuDismissed=ref(false), activeCommand=ref(0)
 const commandOptions=computed(()=>filterSkillCommands(commandCatalog.value,draft.value))
@@ -135,9 +153,10 @@ const autoResize = () => {
 }
 
 const handleSend = () => {
-  const value = draft.value.trim()
-  if (!value || props.loading) return
+  const value = resourceClient.content(draft.value)
+  if (!value || props.loading||resources.value.busy) return
   emit('send', value)
+  resourceClient.clear()
   draft.value = ''
   nextTick(() => {
     const el = textareaRef.value
@@ -260,6 +279,7 @@ const handleVoiceRecorded = async () => {
 }
 
 onBeforeUnmount(() => {
+  resourceClient.close()
   commandGeneration++
   clearRecordingTimer()
   if (mediaRecorder) {
@@ -325,6 +345,7 @@ onBeforeUnmount(() => {
 
 .composer-input-wrap {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-end;
   gap: 8px;
   padding: 8px 10px 8px 16px;
@@ -343,7 +364,7 @@ onBeforeUnmount(() => {
 }
 
 .composer-textarea {
-  flex: 1;
+  flex: 1 0 100%;width:100%;min-width:0;
   border: none;
   outline: none;
   resize: none;
@@ -355,6 +376,7 @@ onBeforeUnmount(() => {
   color: #1e293b;
   padding: 4px 0;
 }
+.composer-toolbar{display:flex;align-items:center;gap:8px;flex:1;min-width:0}.composer-toolbar select{max-width:210px;min-width:0;border:0;background:transparent;color:#475569;padding:7px;border-radius:8px;font:inherit;font-size:12px}.composer-add{display:grid;place-items:center;width:34px;height:34px;border:0;border-radius:9px;background:transparent;color:#475569;font-size:21px;cursor:pointer;transition:background .15s,transform .15s}.composer-add:hover:not(:disabled){background:#eff6ff;transform:scale(1.04)}.composer-add:disabled{opacity:.4;cursor:default}.composer-attachments{width:100%;display:flex;gap:6px;flex-wrap:wrap}.composer-attachment{display:flex;align-items:center;gap:5px;border:1px solid #dbe5f1;border-radius:10px;padding:5px 7px;max-width:220px;font-size:12px}.composer-attachment>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.composer-attachment button{border:0;background:none;cursor:pointer;color:#64748b}.composer-upload-status{font-size:11px;color:#64748b}@media(max-width:480px){.composer-toolbar select{max-width:170px}}@media(prefers-reduced-motion:reduce){.composer-add{transition:none;transform:none!important}}
 
 .composer-textarea::placeholder {
   color: #94a3b8;

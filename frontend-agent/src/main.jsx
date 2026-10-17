@@ -11,6 +11,7 @@ import { validCardReference } from '../../frontend/src/utils/agentCards';
 import { skillCommandOptions } from '../../frontend/src/utils/skillCommands';
 import { readSession, sessionItems } from './sessionClient';
 import { ConversationControls } from './ConversationControls';
+import {ComposerToolbar} from './ComposerToolbar';
 import { AgentWorkbenchPanel } from './AgentWorkbenchPanel';
 import { skillInstallNavigation } from '../../frontend/src/utils/skillInstallNavigation';
 
@@ -31,6 +32,7 @@ function App() {
   const [items, setItems] = useState([]);
   const [controlState,setControlState]=useState({enabled:false,run:null});
   const controlsRef=useRef(null);
+  const resourcesRef=useRef(null);
   const [sidebarOpen, setSidebarOpen] = useState(window.innerWidth > 900);
   const [infoOpen, setInfoOpen] = useState(false);
   const [infoTab,setInfoTab]=useState('workspace');
@@ -120,13 +122,14 @@ function App() {
   }, []);
 
   async function submit(text) {
-    const query = text.trim();
+    if(resourcesRef.current?.busy())return;
+    const query = resourcesRef.current?.content(text)||text.trim();
     const selectedSession=currentSession.current
     const controlled=await controlsRef.current?.ready()
     if(selectedSession!==currentSession.current)return
     if(controlled){
       if(!query)return;const sessionId=currentSession.current;setDraft('');
-      try{await controlsRef.current.submit(query)}catch{if(currentSession.current===sessionId)setDraft(current=>current||query)}return;
+      try{await controlsRef.current.submit(query);if(currentSession.current===sessionId)resourcesRef.current?.clear()}catch{if(currentSession.current===sessionId)setDraft(current=>current||query)}return;
     }
     if (!query || busy.current || sessionLoading || !threadId || !catalog) return;
     followTranscript.current=true;
@@ -140,6 +143,7 @@ function App() {
       const answer = await readAnswer(response, content => setItems(old => old.map(item => item.key === 'pending' ? { ...item, content, loading: false } : item)), value => {
         if (value?.version === 1 && Array.isArray(value.cards) && value.cards.length <= 8 && value.cards.every(validCardReference)) references = value.cards;
       });
+      resourcesRef.current?.clear();
       setItems((old) => [...old.filter((item) => item.key !== 'pending'), { key: crypto.randomUUID(), role: 'assistant', text: answer,
         content: references.length ? '' : answer,
         cards: references.length ? [{ code: 'BusinessResults', component: BusinessCardBubble, data: { text: answer, references, businessBase: LOGIN.replace(/#.*$/, '') } }] : undefined }]);
@@ -197,7 +201,7 @@ function App() {
             {sessionLoading ? <p className="loading-note" role="status">正在加载你的对话…</p> : items.length > 0 && <Bubble.List classNames={{wrapper: 'conversation-transcript', list: 'conversation-messages'}} items={displayedItems} />}
           </div>
           <ConversationControls ref={controlsRef} sessionId={threadId} base={CONVERSATION_CONTROLS} onSnapshot={setControlState} onRefresh={refreshControlHistory}/>
-          <div className="composer-area"><Sender ref={senderRef} disabled={!catalog||!threadId||sessionLoading} loading={loading} value={draft} onChange={setDraft} onFocus={()=>refreshCommands()} suggestions={skillCommandOptions(commandCatalog).map(item=>({value:item.value.slice(1).trim(),label:item.label+' · '+item.description}))} placeholder="输入问题 或输入 / 选择技能命令" onSubmit={submit} /><p className="command-hint">Enter 发送 · Shift + Enter 换行 · / 选择技能</p>{commandError&&draft.startsWith('/')&&<p className="command-hint" role="status">{commandError}</p>}</div>
+          <div className="composer-area"><div className="resource-input"><Sender className="harness-composer-sender" ref={senderRef} disabled={!catalog||!threadId||sessionLoading} loading={loading} value={draft} onChange={setDraft} onFocus={()=>refreshCommands()} suggestions={skillCommandOptions(commandCatalog).map(item=>({value:item.value.slice(1).trim(),label:item.label+' · '+item.description}))} placeholder="输入问题 或输入 / 选择技能命令" onSubmit={submit} /><ComposerToolbar ref={resourcesRef} sessionId={threadId} base={new URL(API,window.location.href).origin} locked={loading||!!controlState.run&&controlState.run.phase!=='IDLE'} onUpload={()=>setDraft(value=>value||'查看这些附件')}/></div><p className="command-hint">Enter 发送 · Shift + Enter 换行 · / 选择技能</p>{commandError&&draft.startsWith('/')&&<p className="command-hint" role="status">{commandError}</p>}</div>
         </section>
       </main>
       <aside id="agent-info" className="agent-info" aria-label="助手信息" hidden={!infoOpen}>

@@ -307,7 +307,7 @@
                     分派质检
                   </el-button>
                   <el-button
-                    v-if="task.flowStatus === 'PENDING_REVIEW'"
+                    v-if="canReviewTask(task)"
                     type="success"
                     size="small"
                     @click.stop="openReviewDialog(task)"

@@ -50,6 +50,25 @@ class AgentWorkbenchServiceTest {
     }
     @AfterEach void close(){if(service!=null)service.close();if(pool!=null)pool.close();}
     AgentWorkbenchService.Scope scope(String question){return service.prepare(alice,"s1",question,"run-1");}
+    @Test void modelSelectionIsOwnedVersionedAndFrozenDuringExecution(){
+        assertThat(service.modelSelection(alice,"s1").modelId()).isEmpty();
+        String model="deepseek:demo";var selected=service.selectModel(alice,"s1",model,0,"select-1",Set.of(model));
+        assertThat(service.selectModel(alice,"s1",model,0,"select-1",Set.of(model))).isEqualTo(selected);
+        assertThatThrownBy(()->service.selectModel(alice,"s1","arbitrary:url",selected.revision(),"bad",Set.of(model))).hasMessageContaining("400");
+        assertThatThrownBy(()->service.selectModel(alice,"s1","",0,"stale",Set.of(model))).hasMessageContaining("409");
+        var scope=scope("查看任务");assertThat(scope.modelId("default")).isEqualTo(model);
+        assertThatThrownBy(()->service.selectModel(alice,"s1","",selected.revision(),"active",Set.of(model))).hasMessageContaining("409");
+        assertThat(scope.modelId("default")).isEqualTo(model);scope.finish("COMPLETED","完成");scope.release();
+        service.selectModel(alice,"s1","",selected.revision(),"select-default",Set.of(model));assertThat(scope("查看模型").modelId("default")).isEqualTo("default");
+        doThrow(new org.springframework.security.access.AccessDeniedException("forbidden")).when(app).assertOwned(alice,"foreign");
+        assertThatThrownBy(()->service.modelSelection(alice,"foreign")).isInstanceOf(org.springframework.security.access.AccessDeniedException.class);
+    }
+    @Test void unapprovedPlanDoesNotAdvertiseProfessionalOrArtifactTools(){
+        var scope=scope("查询任务，不修改或审批");var toolkit=new Toolkit();
+        var delegate=mock(AgentTool.class);when(delegate.getName()).thenReturn("delegate_detection_quality");toolkit.registerAgentTool(delegate);scope.install(toolkit);
+        assertThat(toolkit.getToolNames()).contains("submit_plan","read_workspace_file").doesNotContain("delegate_detection_quality","start_background_task","create_artifact");
+        assertThat(scope.prompt()).contains("第一步调用 submit_plan");
+    }
     @Test void springRepositoryProxySupportsStartupQueriesPlansAndSdkState(){
         var target=store;
         try(var context=new org.springframework.context.support.GenericApplicationContext()){

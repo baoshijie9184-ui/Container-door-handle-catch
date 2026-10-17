@@ -1,5 +1,5 @@
 <template>
- <section v-if="state.enabled" class="conversation-controls" aria-label="Agent 执行控制">
+ <section v-if="state.enabled&&(pending.length||error||state.error||(state.run&&state.run.phase!=='IDLE'))" class="conversation-controls" aria-label="Agent 执行控制">
   <div class="conversation-control-bar"><span role="status">{{ state.run?controlPhaseLabels[state.run.phase]:'状态待核对' }}</span><div><slot name="navigation" />
    <el-button v-if="state.run?.local&&state.run.phase==='RUNNING'" size="small" :icon="VideoPause" :disabled="busy" @click="command('pause')">暂停任务</el-button>
    <el-button v-if="state.run?.local&&['PAUSED','PAUSE_REQUESTED'].includes(state.run.phase)" size="small" :icon="VideoPlay" :disabled="busy" @click="command('resume')">继续任务</el-button>

@@ -28,8 +28,8 @@ def test_add_and_search_scope_memories_by_user_app_and_run(monkeypatch):
         "run_id": "sess_abc",
     }
 
-    asyncio.run(main.add_memory(main.AddMemoryRequest(content="hello", **scope)))
-    asyncio.run(main.search_memories(main.SearchMemoryRequest(query="hello", top_k=3, **scope)))
+    main.add_memory(main.AddMemoryRequest(content="hello", **scope))
+    main.search_memories(main.SearchMemoryRequest(query="hello", top_k=3, **scope))
 
     assert fake.add_call[1]["user_id"] == scope["user_id"]
     assert fake.add_call[1]["agent_id"] == scope["app_id"]
@@ -65,9 +65,9 @@ def test_account_memory_spans_sessions_but_always_filters_user_and_application(m
     monkeypatch.setattr(main, "memory_instance", fake)
     for user in ("doorhandlecatch:user:42", "doorhandlecatch:user:43"):
         for session in ("sess_one", "sess_two"):
-            asyncio.run(main.search_memories(main.SearchMemoryRequest(
+            main.search_memories(main.SearchMemoryRequest(
                 user_id=user, app_id="doorhandlecatch", run_id=session,
-                query="报告习惯", scope="ACCOUNT", top_k=5)))
+                query="报告习惯", scope="ACCOUNT", top_k=5))
             assert fake.search_call[1]["filters"] == {"user_id": user, "agent_id": "doorhandlecatch"}
 
 

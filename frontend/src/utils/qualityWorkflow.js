@@ -100,7 +100,7 @@ export const canAssignQualityTask = (task) => {
 export const canReviewTask = (task) => {
   const reviewStatus = pickTaskValue(task, 'reviewStatus')
   const flowStatus = pickTaskValue(task, 'flowStatus')
-  return isQualityReadyTask(task) && reviewStatus === 'PENDING' && flowStatus === 'PENDING_REVIEW'
+  return isQualityReadyTask(task) && reviewStatus === 'PENDING' && ['PENDING_REVIEW','REVIEWING'].includes(flowStatus)
 }
 
 export const canDisposeTask = (task) => {

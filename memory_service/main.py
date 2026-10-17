@@ -182,7 +182,7 @@ def public_memory_item(row: dict) -> dict:
 
 
 @app.post("/memories/owned/get")
-async def get_owned_memory(request: OwnedMemoryGetRequest):
+def get_owned_memory(request: OwnedMemoryGetRequest):
     try:
         current = get_owned_record(request)
         return {"code": 200, "data": public_memory_item(current)}
@@ -194,7 +194,7 @@ async def get_owned_memory(request: OwnedMemoryGetRequest):
 
 
 @app.post("/memories/owned/list")
-async def list_owned_memories(request: OwnedMemoryListRequest):
+def list_owned_memories(request: OwnedMemoryListRequest):
     try:
         # Mem0 2.0.19 get_all 只有 top_k。使用当前 Chroma 的原生分页，避免每页全量扫描。
         collection = memory_instance.vector_store.collection
@@ -218,7 +218,7 @@ async def list_owned_memories(request: OwnedMemoryListRequest):
 
 
 @app.post("/memories/owned/delete")
-async def delete_owned_memory(request: OwnedMemoryDeleteRequest):
+def delete_owned_memory(request: OwnedMemoryDeleteRequest):
     try:
         with memory_write_lock:
             check_owned_version(request)
@@ -246,7 +246,7 @@ def check_owned_version(request: OwnedMemoryDeleteRequest) -> dict:
 
 
 @app.post("/memories/owned/update")
-async def update_owned_memory(request: OwnedMemoryUpdateRequest):
+def update_owned_memory(request: OwnedMemoryUpdateRequest):
     try:
         with memory_write_lock:
             check_owned_version(request)
@@ -305,7 +305,7 @@ async def health_check():
 
 
 @app.post("/memories/add", response_model=ApiResponse)
-async def add_memory(request: AddMemoryRequest):
+def add_memory(request: AddMemoryRequest):
     """添加记忆"""
     try:
         with memory_write_lock:
@@ -319,12 +319,12 @@ async def add_memory(request: AddMemoryRequest):
         logger.info(f"添加记忆成功: user={request.user_id}, ")
         return ApiResponse(data=result)
     except Exception as e:
-        logger.error(f"添加记忆失败: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.warning("添加记忆结果待核对: %s", type(e).__name__)
+        raise HTTPException(status_code=503, detail="Memory write outcome needs verification")
 
 
 @app.post("/memories/search", response_model=ApiResponse)
-async def search_memories(request: SearchMemoryRequest):
+def search_memories(request: SearchMemoryRequest):
     """搜索记忆"""
     try:
         filters = {"user_id": request.user_id, "agent_id": request.app_id}

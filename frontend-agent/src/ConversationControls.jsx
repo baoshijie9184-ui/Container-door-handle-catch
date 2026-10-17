@@ -12,8 +12,8 @@ export const ConversationControls=forwardRef(function Controls({sessionId,base,o
  async function mutate(action){setBusy(true);setError('');try{return await action()}catch(cause){setError(cause.message);throw cause}finally{setBusy(false)}}
  useImperativeHandle(ref,()=>({ready:async()=>{await ready.current;return client.current.enabled},submit:content=>mutate(()=>client.current.submit(content,mode))}),[mode]);
  async function command(action){try{await mutate(()=>client.current.command(action))}catch{/* Show the result and require a new explicit action. */}}
- if(!state.enabled)return null;
  const run=state.run,pending=state.inputs.filter(item=>item.status==='QUEUED').reverse();
+ if(!state.enabled||(!pending.length&&!error&&!state.error&&(!run||run.phase==='IDLE')))return null;
  return <section className="conversation-controls" aria-label="Agent 执行控制">
   <div className="conversation-control-bar"><span role="status">{run?controlPhaseLabels[run.phase]:'状态待核对'}</span><div>
    {run?.local&&run.phase==='RUNNING'&&<Button size="small" icon={<Pause size={13}/>} disabled={busy} onClick={()=>command('pause')}>暂停任务</Button>}
