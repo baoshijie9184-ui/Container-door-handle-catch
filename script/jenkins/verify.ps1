@@ -18,7 +18,7 @@ Invoke-Checked 'node.exe' (@('--test') + @(Get-ChildItem -LiteralPath frontend-a
 foreach ($frontend in @('frontend', 'frontend-agent')) {
     Push-Location -LiteralPath (Join-Path $root $frontend)
     try {
-        Invoke-Checked 'npm.cmd' @('ci', '--no-audit', '--no-fund')
+        Invoke-Checked 'npm.cmd' @('ci', '--prefer-offline', '--no-audit', '--no-fund')
         Invoke-Checked 'npm.cmd' @('run', 'build')
     } finally { Pop-Location }
 }

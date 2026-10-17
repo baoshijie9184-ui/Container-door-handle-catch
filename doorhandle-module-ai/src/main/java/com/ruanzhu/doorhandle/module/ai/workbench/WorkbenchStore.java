@@ -20,12 +20,14 @@ import java.util.function.Supplier;
 @ConditionalOnProperty(prefix="agentscope.workbench",name="enabled",havingValue="true")
 public class WorkbenchStore {
     record Row(String id,long user,String session,String kind,String status,long revision,Map<String,Object> data,String updated) {}
-    final JdbcTemplate jdbc;
+    private final JdbcTemplate jdbc;
     private final TransactionTemplate tx;
     private final ObjectMapper json;
     public WorkbenchStore(JdbcTemplate jdbc,PlatformTransactionManager manager,ObjectMapper json){
         this.jdbc=jdbc;this.json=json.copy().enable(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS).disable(SerializationFeature.INDENT_OUTPUT);tx=new TransactionTemplate(manager);tx.setTimeout(5);
     }
+    /** Access through a method so Spring repository proxies delegate to the initialized target. */
+    public JdbcTemplate jdbc(){return jdbc;}
     public <T>T locked(long user,Supplier<T> work){return tx.execute(status->{
         jdbc.update("INSERT INTO agent_workbench_owner(user_id) VALUES(?) ON DUPLICATE KEY UPDATE user_id=VALUES(user_id)",user);
         jdbc.queryForObject("SELECT user_id FROM agent_workbench_owner WHERE user_id=? FOR UPDATE",Long.class,user);return work.get();

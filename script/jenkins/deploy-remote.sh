@@ -111,6 +111,8 @@ dc "$release" "$release/runtime-images.yml" config --quiet
 # Only backend and web are rebuilt. Runtime PTH/Mem0 images are explicitly pinned above.
 dc "$release" "$release/runtime-images.yml" build backend nginx
 if ! activate "$release" "$release/runtime-images.yml"; then
+    # Keep startup evidence before replacing the failed container during rollback.
+    dc "$release" "$release/runtime-images.yml" logs --no-color --tail 200 backend > "$root/state/failed-$tag-backend.log" 2>&1 || true
     echo 'Deployment health check failed; restoring previous application images.' >&2
     activate "$previous" "$release/previous-images.yml" || { echo 'Restoration failed; manual recovery required.' >&2; exit 6; }
     exit 5

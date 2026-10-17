@@ -50,6 +50,23 @@ class AgentWorkbenchServiceTest {
     }
     @AfterEach void close(){if(service!=null)service.close();if(pool!=null)pool.close();}
     AgentWorkbenchService.Scope scope(String question){return service.prepare(alice,"s1",question,"run-1");}
+    @Test void springRepositoryProxySupportsStartupQueriesPlansAndSdkState(){
+        var target=store;
+        try(var context=new org.springframework.context.support.GenericApplicationContext()){
+            context.registerBean(org.springframework.dao.annotation.PersistenceExceptionTranslationPostProcessor.class);
+            context.registerBean(WorkbenchStore.class,()->target);
+            context.refresh();store=context.getBean(WorkbenchStore.class);
+            assertThat(org.springframework.aop.support.AopUtils.isCglibProxy(store)).isTrue();
+            var provider=mock(ObjectProvider.class);when(provider.getObject()).thenReturn(app);var journal=mock(AgentJournal.class);when(journal.enabled()).thenReturn(true);
+            service.close();service=new AgentWorkbenchService(store,properties,users,provider,factory,journal);service.validate();
+            var scope=scope("分析任务并生成文件");call(scope,"submit_plan","proxy-plan",Map.of("title","代理环境计划","text","先审阅再执行"));
+            assertThat(item("PLAN").status()).isEqualTo("PENDING");
+            var sdk=new JdbcWorkbenchStateStore(store);var state=AgentState.builder().userId("1").sessionId("proxy-sdk").context(List.of(new UserMessage("persistent"))).build();
+            assertThat(sdk.saveIfVersion("1","proxy-sdk","agent_state",state,0)).isEqualTo(1);
+            assertThat(sdk.getVersioned("1","proxy-sdk","agent_state",AgentState.class).value()).isNotNull();
+            service.recoverStale();
+        }
+    }
     @Test void onlyClearReadQueriesBypassPlanReviewAndCombinedOrArtifactRequestsDoNot(){assertThat(AgentWorkbenchService.simple("查看本人报告")).isTrue();assertThat(AgentWorkbenchService.simple("查询任务并导出 CSV")).isFalse();assertThat(AgentWorkbenchService.simple("列出任务然后分配质检")).isFalse();assertThat(AgentWorkbenchService.simple("请处理这个批次")).isFalse();assertThat(AgentWorkbenchService.simple("/plan 查看任务")).isFalse();}
     AgentWorkbenchApi.Item item(String kind){return service.list(alice,"s1").stream().filter(value->value.kind().equals(kind)).findFirst().orElseThrow();}
     ToolResultBlock call(AgentWorkbenchService.Scope scope,String tool,String id,Map<String,Object> input){var toolkit=new Toolkit();scope.install(toolkit);var result=toolkit.getTool(tool).callAsync(ToolCallParam.builder().toolUseBlock(new ToolUseBlock(id,tool,input)).input(input).build()).block();if(scope.waiting())scope.release();return result;}
@@ -59,7 +76,7 @@ class AgentWorkbenchServiceTest {
         var approved=service.command(alice,"s1",plan.id(),plan.revision(),request,"approve-plan",Map.of());assertThat(approved.status()).isEqualTo("APPROVED");
         assertThat(service.command(alice,"s1",plan.id(),plan.revision(),request,"approve-plan",Map.of())).isEqualTo(approved);
         assertThatThrownBy(()->service.command(alice,"s1",plan.id(),plan.revision(),UUID.randomUUID().toString(),"cancel",Map.of())).hasMessageContaining("409");
-        assertThat(store.jdbc.queryForObject("SELECT COUNT(*) FROM agent_workbench_audit WHERE action='APPROVE_PLAN'",Integer.class)).isEqualTo(1);
+        assertThat(store.jdbc().queryForObject("SELECT COUNT(*) FROM agent_workbench_audit WHERE action='APPROVE_PLAN'",Integer.class)).isEqualTo(1);
         assertThat(service.canDispatchInput(alice,"s1","unrelated-message")).isFalse();
         verify(app,never()).continueSession(any(),anyString(),anyString(),anyString());
     }
@@ -68,7 +85,7 @@ class AgentWorkbenchServiceTest {
         assertThatThrownBy(()->service.command(alice,"s1",question.id(),0,UUID.randomUUID().toString(),"answer",Map.of("answer","去年"))).hasMessageContaining("400");
         assertThat(service.command(alice,"s1",question.id(),0,UUID.randomUUID().toString(),"answer",Map.of("answer","本周")).status()).isEqualTo("ANSWERED");
         assertThatThrownBy(()->service.command(alice,"s1",question.id(),0,UUID.randomUUID().toString(),"answer",Map.of("answer","今天"))).hasMessageContaining("409");
-        assertThat(store.jdbc.queryForList("SELECT * FROM agent_workbench_audit").toString()).doesNotContain("选择时间范围","本周");
+        assertThat(store.jdbc().queryForList("SELECT * FROM agent_workbench_audit").toString()).doesNotContain("选择时间范围","本周");
     }
     @Test void cancellingAQuestionDoesNotGuessAnAnswerOrContinueTheParent(){
         var scope=scope("查看任务");call(scope,"ask_user_question","question-1",Map.of("text","哪个批次","questionType","TEXT"));var question=item("QUESTION");
@@ -105,8 +122,8 @@ class AgentWorkbenchServiceTest {
         assertThatThrownBy(()->service.command(alice,"s1",job.id(),job.revision(),UUID.randomUUID().toString(),"resume",Map.of())).hasMessageContaining("未知");assertThatThrownBy(()->wrapped.callAsync(input).block()).hasMessageContaining("执行尝试");verify(underlying,times(1)).callAsync(any());
     }
     @Test void auditFailureRollsBackInteractionStateAndRequestReceipt(){
-        var scope=scope("查看任务");call(scope,"ask_user_question","q",Map.of("text","批次","questionType","TEXT"));var question=item("QUESTION");store.jdbc.execute("ALTER TABLE agent_workbench_audit ADD CONSTRAINT deny_answer CHECK(action<>'ANSWER')");
-        assertThatThrownBy(()->service.command(alice,"s1",question.id(),0,UUID.randomUUID().toString(),"answer",Map.of("answer","PRIVATE"))).isInstanceOf(org.springframework.dao.DataAccessException.class);assertThat(item("QUESTION").status()).isEqualTo("PENDING");assertThat(store.jdbc.queryForObject("SELECT COUNT(*) FROM agent_workbench_request",Integer.class)).isZero();
+        var scope=scope("查看任务");call(scope,"ask_user_question","q",Map.of("text","批次","questionType","TEXT"));var question=item("QUESTION");store.jdbc().execute("ALTER TABLE agent_workbench_audit ADD CONSTRAINT deny_answer CHECK(action<>'ANSWER')");
+        assertThatThrownBy(()->service.command(alice,"s1",question.id(),0,UUID.randomUUID().toString(),"answer",Map.of("answer","PRIVATE"))).isInstanceOf(org.springframework.dao.DataAccessException.class);assertThat(item("QUESTION").status()).isEqualTo("PENDING");assertThat(store.jdbc().queryForObject("SELECT COUNT(*) FROM agent_workbench_request",Integer.class)).isZero();
     }
     @Test void realSdkYieldsAtQuestionAndResumesFromPersistedContext(){
         var scope=scope("查看任务");var model=mock(Model.class);when(model.getModelName()).thenReturn("scripted");var count=new AtomicInteger();when(model.stream(anyList(),anyList(),any())).thenAnswer(inv->count.getAndIncrement()==0?Flux.just(ChatResponse.builder().content(List.of(new ToolUseBlock("q1","ask_user_question",Map.of("text","哪个批次","questionType","TEXT")))).finishReason("tool_calls").build()):Flux.just(ChatResponse.builder().content(List.of(TextBlock.builder().text("最终回答").build())).build()));
@@ -132,8 +149,8 @@ class AgentWorkbenchServiceTest {
         assertThat(second.sdkSession()).isNotEqualTo(previous);assertThat(first.sdkSession()).isEqualTo(previous);assertThat(item("EXECUTION").status()).isEqualTo("RUNNING");second.release();
     }
     @Test void staleRemoteExecutionBecomesReviewableButLocalHeartbeatKeepsItsLease(){
-        var local=scope("查看任务");store.jdbc.update("UPDATE agent_workbench_item SET updated_at=? WHERE item_id=?",store.jdbc.queryForObject("SELECT CURRENT_TIMESTAMP(6)",java.time.LocalDateTime.class).minusMinutes(5),item("EXECUTION").id());service.recoverStale();assertThat(item("EXECUTION").status()).isEqualTo("RUNNING");
-        local.release();store.jdbc.update("UPDATE agent_workbench_item SET updated_at=? WHERE item_id=?",store.jdbc.queryForObject("SELECT CURRENT_TIMESTAMP(6)",java.time.LocalDateTime.class).minusMinutes(5),item("EXECUTION").id());service.recoverStale();assertThat(item("EXECUTION").status()).isEqualTo("NEEDS_REVIEW");
+        var local=scope("查看任务");store.jdbc().update("UPDATE agent_workbench_item SET updated_at=? WHERE item_id=?",store.jdbc().queryForObject("SELECT CURRENT_TIMESTAMP(6)",java.time.LocalDateTime.class).minusMinutes(5),item("EXECUTION").id());service.recoverStale();assertThat(item("EXECUTION").status()).isEqualTo("RUNNING");
+        local.release();store.jdbc().update("UPDATE agent_workbench_item SET updated_at=? WHERE item_id=?",store.jdbc().queryForObject("SELECT CURRENT_TIMESTAMP(6)",java.time.LocalDateTime.class).minusMinutes(5),item("EXECUTION").id());service.recoverStale();assertThat(item("EXECUTION").status()).isEqualTo("NEEDS_REVIEW");
         var interrupted=item("EXECUTION");assertThatThrownBy(()->service.command(alice,"s1",interrupted.id(),interrupted.revision(),UUID.randomUUID().toString(),"resume",Map.of())).hasMessageContaining("检查点");
     }
     @Test void answeringBeforeSdkHasCommittedItsWaitIsRejected(){
@@ -187,23 +204,23 @@ class AgentWorkbenchServiceTest {
     @org.junit.jupiter.params.ParameterizedTest @org.junit.jupiter.params.provider.ValueSource(strings={"before-model","before-effect","waiting","child"})
     @Timeout(75) @org.junit.jupiter.api.condition.EnabledIfSystemProperty(named="workbench.mysql",matches="true")
     void processDeathAtOtherBoundariesRequiresExplicitContinuationAndDoesNotInventEffects(String scenario)throws Exception{
-        haltProcess(scenario,Map.of("before-model",25,"before-effect",26,"waiting",27,"child",28).get(scenario));store.jdbc.update("UPDATE agent_workbench_item SET updated_at=? WHERE kind IN ('EXECUTION','CHILD')",store.jdbc.queryForObject("SELECT CURRENT_TIMESTAMP(6)",java.time.LocalDateTime.class).minusMinutes(5));service.recoverStale();
+        haltProcess(scenario,Map.of("before-model",25,"before-effect",26,"waiting",27,"child",28).get(scenario));store.jdbc().update("UPDATE agent_workbench_item SET updated_at=? WHERE kind IN ('EXECUTION','CHILD')",store.jdbc().queryForObject("SELECT CURRENT_TIMESTAMP(6)",java.time.LocalDateTime.class).minusMinutes(5));service.recoverStale();
         if(scenario.equals("waiting")){assertThat(item("EXECUTION").status()).isEqualTo("WAITING_INPUT");var question=item("QUESTION");service.command(alice,"s1",question.id(),question.revision(),"answer-after-restart","answer",Map.of("answer","batch-A"));assertThat(item("EXECUTION").status()).isEqualTo("READY");}
         else if(scenario.equals("child")){assertThat(item("EXECUTION").status()).isEqualTo("WAITING_CHILD");var child=item("CHILD");assertThat(child.status()).isEqualTo("NEEDS_REVIEW");service.command(alice,"s1",child.id(),child.revision(),"resume-child","resume",Map.of());assertThat(item("CHILD").status()).isEqualTo("QUEUED");}
         else{var job=item("EXECUTION");assertThat(job.status()).isEqualTo("NEEDS_REVIEW");if(scenario.equals("before-effect"))assertThatThrownBy(()->service.command(alice,"s1",job.id(),job.revision(),"resume-no-proof","resume",Map.of())).hasMessageContaining("未知");else{service.command(alice,"s1",job.id(),job.revision(),"resume-model","resume",Map.of());assertThat(item("EXECUTION").status()).isEqualTo("READY");}}
-        assertThat(store.jdbc.queryForObject("SELECT COUNT(*) FROM agent_workbench_crash_effect",Integer.class)).isZero();verify(app,never()).continueSession(any(),anyString(),anyString(),anyString());
+        assertThat(store.jdbc().queryForObject("SELECT COUNT(*) FROM agent_workbench_crash_effect",Integer.class)).isZero();verify(app,never()).continueSession(any(),anyString(),anyString(),anyString());
     }
     private void haltProcess(String scenario,int expectedExit)throws Exception{
-        store.jdbc.execute("DROP TABLE IF EXISTS agent_workbench_crash_effect");store.jdbc.execute("CREATE TABLE agent_workbench_crash_effect(id BIGINT PRIMARY KEY)");
+        store.jdbc().execute("DROP TABLE IF EXISTS agent_workbench_crash_effect");store.jdbc().execute("CREATE TABLE agent_workbench_crash_effect(id BIGINT PRIMARY KEY)");
         String javaExecutable=Path.of(System.getProperty("java.home"),"bin","java.exe").toString();String classpath=System.getProperty("surefire.test.class.path",System.getProperty("java.class.path"));
         var process=new ProcessBuilder(javaExecutable,"-cp",classpath,WorkbenchCrashProbe.class.getName(),scenario).redirectErrorStream(true).redirectOutput(Path.of("../work/workbench-mysql/crash-"+scenario+".log").toFile()).start();
         assertThat(process.waitFor(55,TimeUnit.SECONDS)).as("isolated JVM must exit at the injection point").isTrue();assertThat(process.exitValue()).isEqualTo(expectedExit);
     }
     private void crashAndRecover(String scenario,int expectedExit)throws Exception{
         haltProcess(scenario,expectedExit);
-        store.jdbc.update("UPDATE agent_workbench_item SET updated_at=? WHERE kind='EXECUTION'",store.jdbc.queryForObject("SELECT CURRENT_TIMESTAMP(6)",java.time.LocalDateTime.class).minusMinutes(5));service.recoverStale();var interrupted=item("EXECUTION");assertThat(interrupted.status()).isEqualTo("NEEDS_REVIEW");
+        store.jdbc().update("UPDATE agent_workbench_item SET updated_at=? WHERE kind='EXECUTION'",store.jdbc().queryForObject("SELECT CURRENT_TIMESTAMP(6)",java.time.LocalDateTime.class).minusMinutes(5));service.recoverStale();var interrupted=item("EXECUTION");assertThat(interrupted.status()).isEqualTo("NEEDS_REVIEW");
         if(scenario.equals("unknown")){assertThatThrownBy(()->service.command(alice,"s1",interrupted.id(),interrupted.revision(),UUID.randomUUID().toString(),"resume",Map.of())).hasMessageContaining("未知");}
         else{service.command(alice,"s1",interrupted.id(),interrupted.revision(),UUID.randomUUID().toString(),"resume",Map.of());var restored=service.prepare(alice,"s1","用户确认恢复","new-process-attempt");restored.repairState();var sdk=restored.stateStore().get("1",restored.sdkSession(),"agent_state",AgentState.class).orElseThrow();assertThat(sdk.getContext().stream().flatMap(msg->msg.getContentBlocks(ToolResultBlock.class).stream()).anyMatch(result->"durable-effect".equals(result.getId()))).isTrue();restored.release();}
-        assertThat(store.jdbc.queryForObject("SELECT COUNT(*) FROM agent_workbench_crash_effect",Integer.class)).isEqualTo(1);
+        assertThat(store.jdbc().queryForObject("SELECT COUNT(*) FROM agent_workbench_crash_effect",Integer.class)).isEqualTo(1);
     }
 }

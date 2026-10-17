@@ -11,7 +11,7 @@ public final class JdbcWorkbenchStateStore implements AgentStateStore {
     private final boolean sdkAttempt;private final Map<String,Lease> leases=new java.util.concurrent.ConcurrentHashMap<>();
     private static final class Lease {long latest;final Set<Long> versions=new HashSet<>();Lease(long version){latest=version;versions.add(version);}}
     public JdbcWorkbenchStateStore(WorkbenchStore store){this(store,false);}
-    public JdbcWorkbenchStateStore(WorkbenchStore store,boolean sdkAttempt){this.store=store;this.jdbc=store.jdbc;this.sdkAttempt=sdkAttempt;}
+    public JdbcWorkbenchStateStore(WorkbenchStore store,boolean sdkAttempt){this.store=store;this.jdbc=store.jdbc();this.sdkAttempt=sdkAttempt;}
     private String slot(String user,String session,String key){return user+":"+session+":"+key;}
     private long account(String user){if(user==null||!user.matches("[1-9][0-9]{0,18}"))throw new SecurityException("状态必须属于有效账号");return Long.parseLong(user);}
     private String encode(Object value){if(value instanceof AgentState state)return state.toJson();return store.encode(value);}
