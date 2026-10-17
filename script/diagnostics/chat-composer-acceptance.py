@@ -17,6 +17,7 @@ def api(route):
   return reply(route,choice)
  if path.endswith('/files') and req.method=='POST':
   assert req.headers['x-agent-action']=='workbench' and 'multipart/form-data' in req.headers['content-type'];uploads.append(path);return reply(route,{'id':fid,'name':'演示附件.md','bytes':17})
+ if path.endswith('/workbench'):return reply(route,{'files':[{'id':fid,'name':'演示附件.md','bytes':17,'contentType':'text/plain'}]})
  return namespace['api'](route)
 with sync_playwright() as p:
  browser=p.chromium.launch(headless=True)
@@ -29,6 +30,7 @@ with sync_playwright() as p:
   file=OUT/'演示附件.md';file.write_text('private document',encoding='utf8')
   with page.expect_file_chooser() as picker:page.get_by_role('button',name='添加附件',exact=True).click()
   picker.value.set_files(str(file));rail=page.get_by_label('待发送附件',exact=True);expect(rail).to_contain_text('演示附件.md');checks.append(kind+' plus opens native chooser and stores private attachment')
+  draft=page.get_by_role('textbox',name='聊天消息或技能命令') if kind=='vue' else page.get_by_placeholder('输入问题 或输入 / 选择技能命令');draft.fill('刷新后继续读取附件');page.reload();page.wait_for_load_state('networkidle');expect(draft).to_have_value('刷新后继续读取附件');expect(rail).to_contain_text('演示附件.md');checks.append(kind+' unsent text and authorized attachment restored after reload')
   namespace['run'].update(phase='RUNNING',runId=str(uuid.uuid4()),local=True,text='正在查询');namespace['inputs'].clear();namespace['inputs'].append({'id':str(uuid.uuid4()),'mode':'NEXT_TURN','status':'QUEUED','revision':0,'content':'后续补充要求'})
   expect(controls).to_be_visible(timeout=6000);expect(page.get_by_label('使用模型',exact=True)).to_be_disabled();expect(controls.get_by_role('button',name='更多消息操作')).to_be_visible();checks.append(kind+' active queue keeps steering and editing, model locked')
   editor=page.get_by_role('textbox',name='聊天消息或技能命令') if kind=='vue' else page.get_by_placeholder('输入问题 或输入 / 选择技能命令');editor.fill('读取附件');editor.press('Enter');expect(rail).not_to_be_visible();assert any('@file:'+fid in row['content'] for row in namespace['inputs']);checks.append(kind+' queued input carries server file reference')

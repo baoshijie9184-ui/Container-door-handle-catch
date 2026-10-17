@@ -156,6 +156,7 @@
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
+import {beijingDateTime} from '@/utils/beijingTime'
 import { ElMessage } from 'element-plus'
 
 import request from '../../api/request'
@@ -266,7 +267,7 @@ const getStatusType = (status) => {
   return typeMap[status] || 'info'
 }
 
-const formatDate = (dateStr) => new Date(dateStr).toLocaleString()
+const formatDate = value => value?beijingDateTime(value):''
 
 const fetchDevices = async () => {
   loading.value = true

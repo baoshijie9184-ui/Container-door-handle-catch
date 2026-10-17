@@ -425,6 +425,7 @@
 import { ref, nextTick, computed, reactive, watch } from 'vue'
 import { useChatAssistantStore } from '@/stores/chatAssistant'
 import { Position } from '@element-plus/icons-vue'
+import {relativeBeijingTime,businessTimestamp} from '@/utils/beijingTime'
 
 const props = defineProps({
   compact: {
@@ -490,7 +491,7 @@ const getProjectSessions = (projectId) => {
   sessions.sort((a, b) => {
     if (a.pinned && !b.pinned) return -1
     if (!a.pinned && b.pinned) return 1
-    return new Date(b.updatedAt) - new Date(a.updatedAt)
+    return businessTimestamp(b.updatedAt) - businessTimestamp(a.updatedAt)
   })
 
   return sessions
@@ -511,7 +512,7 @@ const ungroupedSessions = computed(() => {
   sessions.sort((a, b) => {
     if (a.pinned && !b.pinned) return -1
     if (!a.pinned && b.pinned) return 1
-    return new Date(b.updatedAt) - new Date(a.updatedAt)
+    return businessTimestamp(b.updatedAt) - businessTimestamp(a.updatedAt)
   })
 
   return sessions
@@ -530,7 +531,7 @@ const searchResults = computed(() => {
   results.sort((a, b) => {
     if (a.pinned && !b.pinned) return -1
     if (!a.pinned && b.pinned) return 1
-    return new Date(b.updatedAt) - new Date(a.updatedAt)
+    return businessTimestamp(b.updatedAt) - businessTimestamp(a.updatedAt)
   })
 
   return results
@@ -576,20 +577,7 @@ const cancelEdit = () => {
   editingId.value = null
 }
 
-const formatTime = (timeStr) => {
-  if (!timeStr) return ''
-  try {
-    const date = new Date(timeStr.replace(' ', 'T'))
-    const now = new Date()
-    const diff = now - date
-    if (diff < 60000) return '刚刚'
-    if (diff < 3600000) return Math.floor(diff / 60000) + ' 分钟前'
-    if (diff < 86400000) return Math.floor(diff / 3600000) + ' 小时前'
-    return timeStr.substring(5, 10)
-  } catch {
-    return timeStr ? timeStr.substring(5, 10) : ''
-  }
-}
+const formatTime = relativeBeijingTime
 
 // 拖拽处理
 const handleDragStart = (e, sessionId) => {

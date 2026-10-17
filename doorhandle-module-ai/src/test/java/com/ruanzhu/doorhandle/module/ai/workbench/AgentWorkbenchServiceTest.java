@@ -69,6 +69,14 @@ class AgentWorkbenchServiceTest {
         assertThat(toolkit.getToolNames()).contains("submit_plan","read_workspace_file").doesNotContain("delegate_detection_quality","start_background_task","create_artifact");
         assertThat(scope.prompt()).contains("第一步调用 submit_plan");
     }
+    @Test void backgroundTaskSchemaOnlyAdvertisesCurrentRoleAndItsCapabilities(){
+        var toolkit=new Toolkit();scope("查询本人任务").install(toolkit);
+        var schema=toolkit.getTool("start_background_task").getParameters();
+        assertThat(schema.get("required")).isEqualTo(List.of("specialist","question"));
+        var props=(Map<?,?>)schema.get("properties");var specialist=(Map<?,?>)props.get("specialist");
+        assertThat(specialist.get("enum")).isEqualTo(factory.definitions(alice).stream().map(RoleAgentCatalog.Definition::id).toList());
+        assertThat((String)specialist.get("description")).contains("get_task_detail","detection-task").doesNotContain("department-analytics","propose_quality_assignment");
+    }
     @Test void springRepositoryProxySupportsStartupQueriesPlansAndSdkState(){
         var target=store;
         try(var context=new org.springframework.context.support.GenericApplicationContext()){

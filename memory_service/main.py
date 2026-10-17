@@ -12,7 +12,7 @@ import json
 import threading
 from pathlib import Path
 from typing import Any, Optional, Literal
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -49,6 +49,17 @@ logging.getLogger("mem0.memory.main").addFilter(PrivateMemoryLogFilter())
 memory_instance = None
 # 当前本地桥接使用单进程；将人工更新、删除和自动提炼串行化。
 memory_write_lock = threading.RLock()
+
+
+@contextmanager
+def memory_write_slot():
+    # Do not park every FastAPI worker behind a long extraction, which would block reads again.
+    if not memory_write_lock.acquire(blocking=False):
+        raise HTTPException(status_code=503, detail="Memory write busy; operation not started", headers={"Retry-After": "2"})
+    try:
+        yield
+    finally:
+        memory_write_lock.release()
 
 
 def required_env(name: str) -> str:
@@ -116,7 +127,7 @@ async def lifespan(app: FastAPI):
         memory_instance = Memory.from_config(config)
         logger.info("mem0 记忆服务初始化完成")
     except Exception as e:
-        logger.error(f"mem0 初始化失败: {e}")
+        logger.error("mem0 初始化失败: %s", type(e).__name__)
         raise
 
     yield
@@ -220,7 +231,7 @@ def list_owned_memories(request: OwnedMemoryListRequest):
 @app.post("/memories/owned/delete")
 def delete_owned_memory(request: OwnedMemoryDeleteRequest):
     try:
-        with memory_write_lock:
+        with memory_write_slot():
             check_owned_version(request)
             memory_instance.delete(request.memory_id)
         return {"code": 200, "data": {"deleted": True}}
@@ -248,7 +259,7 @@ def check_owned_version(request: OwnedMemoryDeleteRequest) -> dict:
 @app.post("/memories/owned/update")
 def update_owned_memory(request: OwnedMemoryUpdateRequest):
     try:
-        with memory_write_lock:
+        with memory_write_slot():
             check_owned_version(request)
             # 原生 update 会重算向量，保持检索正文和索引一致，不调用提炼 LLM。
             memory_instance.update(request.memory_id, text=request.memory)
@@ -308,7 +319,7 @@ async def health_check():
 def add_memory(request: AddMemoryRequest):
     """添加记忆"""
     try:
-        with memory_write_lock:
+        with memory_write_slot():
             result = memory_instance.add(
                 request.content,
                 user_id=request.user_id,
@@ -318,6 +329,8 @@ def add_memory(request: AddMemoryRequest):
             )
         logger.info(f"添加记忆成功: user={request.user_id}, ")
         return ApiResponse(data=result)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.warning("添加记忆结果待核对: %s", type(e).__name__)
         raise HTTPException(status_code=503, detail="Memory write outcome needs verification")
@@ -345,8 +358,8 @@ def search_memories(request: SearchMemoryRequest):
             ))
         return ApiResponse(data=memories)
     except Exception as e:
-        logger.error(f"搜索记忆失败: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.warning("搜索记忆暂不可用: %s", type(e).__name__)
+        raise HTTPException(status_code=503, detail="Memory search is unavailable")
 
 
 @app.get("/memories/{user_id}")

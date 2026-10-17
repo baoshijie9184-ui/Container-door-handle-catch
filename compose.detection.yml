@@ -18,6 +18,7 @@ services:
         PIP_INDEX_URL: https://mirrors.aliyun.com/pypi/simple
     environment:
       DETECTION_ENGINE: pth
+      TZ: Asia/Shanghai
       DETECTION_SOURCE_DIR: /opt/model-source
       DETECTION_MODEL_MANIFEST: /models/manifest.json
       DETECTION_MODEL_ID: ${DETECTION_MODEL_ID:?Set deployed DETECTION_MODEL_ID}

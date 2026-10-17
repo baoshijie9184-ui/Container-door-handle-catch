@@ -192,6 +192,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
+import {beijingDateTime} from '@/utils/beijingTime'
 import { ElMessage } from 'element-plus'
 import request from '../../api/request'
 
@@ -254,7 +255,7 @@ const getEmployeeTypeName = (type) => {
 
 const formatDate = (dateStr) => {
   if (!dateStr) return '—'
-  return new Date(dateStr).toLocaleString()
+  return beijingDateTime(dateStr)
 }
 
 const fetchDevice = async () => {

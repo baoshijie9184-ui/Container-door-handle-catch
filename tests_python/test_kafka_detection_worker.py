@@ -113,3 +113,6 @@ def test_undeployed_model_fails_without_reading_or_mislabeling_images():
     assert finished.status=='FAILED'
     assert finished.successful_images==0 and finished.failed_images==1
     assert finished.preview_keys==[] and finished.result_json_key==''
+    # Even a worker running on a UTC host publishes explicit Beijing offsets.
+    assert finished.started_at.endswith('+08:00')
+    assert finished.finished_at.endswith('+08:00')

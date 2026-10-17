@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
+import {beijingDateTime,businessDate} from '../utils/beijingTime'
 
 export const CATEGORY_LABELS = {
   Normal: '正常',
@@ -166,8 +167,8 @@ export const useTaskStore = defineStore('task', () => {
     uploadedFiles: [],
     pollingTimer: null,
     logs: [],
-    createdAt: new Date().toLocaleString('zh-CN', { hour12: false }),
-    updatedAt: new Date().toLocaleString('zh-CN', { hour12: false }),
+    createdAt: beijingDateTime(),
+    updatedAt: beijingDateTime(),
     finishedAt: '',
     captureInfo: captureInfo || {}
   })
@@ -179,7 +180,7 @@ export const useTaskStore = defineStore('task', () => {
     if (idx === -1) return
     // 仅在 updates 未提供 updatedAt 时自动更新为当前时间
     if (!updates.updatedAt) {
-      updates.updatedAt = new Date().toLocaleString('zh-CN', { hour12: false })
+      updates.updatedAt = beijingDateTime()
     }
     Object.assign(taskList.value[idx], updates)
   }
@@ -190,11 +191,11 @@ export const useTaskStore = defineStore('task', () => {
     const task = taskList.value[idx]
     task.logs.unshift({
       id: `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
-      time: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+      time: beijingDateTime().slice(11),
       text
     })
     task.logs = task.logs.slice(0, 10)
-    task.updatedAt = new Date().toLocaleString('zh-CN', { hour12: false })
+    task.updatedAt = beijingDateTime()
   }
 
   const removeTask = (taskId) => {
@@ -275,13 +276,7 @@ export const useTaskStore = defineStore('task', () => {
   const formatAbsoluteTime = (dateStr) => {
     if (!dateStr) return ''
     try {
-      const d = new Date(dateStr)
-      if (isNaN(d.getTime())) return dateStr
-      const month = String(d.getMonth() + 1).padStart(2, '0')
-      const day = String(d.getDate()).padStart(2, '0')
-      const hour = String(d.getHours()).padStart(2, '0')
-      const min = String(d.getMinutes()).padStart(2, '0')
-      return `${month}-${day} ${hour}:${min}`
+      return beijingDateTime(dateStr).slice(5,16)||dateStr
     } catch { return dateStr }
   }
 
@@ -289,8 +284,8 @@ export const useTaskStore = defineStore('task', () => {
   const formatRelativeTime = (dateStr) => {
     if (!dateStr) return ''
     try {
-      const date = new Date(dateStr)
-      if (isNaN(date.getTime())) return dateStr
+      const date = businessDate(dateStr)
+      if (!date) return dateStr
       const now = new Date()
       const diffMs = now - date
       if (diffMs < 0) return formatAbsoluteTime(dateStr)

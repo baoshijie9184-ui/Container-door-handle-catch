@@ -421,6 +421,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
+import {beijingDateTime} from '@/utils/beijingTime'
 import * as echarts from 'echarts'
 import {
   User, Monitor, Warning, Search, Setting,
@@ -585,7 +586,7 @@ async function refreshAll() {
   try {
     await Promise.all([fetchDashboardStats(), fetchDeviceData(), fetchEmployeeData(), fetchModelStats(), fetchWorkUnitSummary(), fetchDuplicateSummary()])
     if (!disposed) await updateChartData()
-    if (!failedSections.value.length && charts.region) lastUpdated.value = new Date().toLocaleString('zh-CN')
+    if (!failedSections.value.length && charts.region) lastUpdated.value = beijingDateTime()
   } finally {
     pageLoading.value = false
     refreshing.value = false
@@ -601,7 +602,7 @@ async function initCharts() {
     charts.employeeStatus = echarts.init(employeeStatusChartRef.value)
     charts.region = echarts.init(regionChartRef.value)
   await updateChartData()
-  if (!failedSections.value.length) lastUpdated.value = new Date().toLocaleString('zh-CN')
+  if (!failedSections.value.length) lastUpdated.value = beijingDateTime()
 }
 
 async function updateChartData() {

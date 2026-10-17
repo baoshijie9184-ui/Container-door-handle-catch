@@ -19,3 +19,19 @@ test('assigned pending review remains actionable; completed reviews do not becom
  const workflow=await import('data:text/javascript;base64,'+Buffer.from(readFrontendFile('src','utils','qualityWorkflow.js')).toString('base64'));
  assert.equal(workflow.canReviewTask({status:'COMPLETED',reviewStatus:'PENDING',flowStatus:'REVIEWING'}),true);assert.equal(workflow.canReviewTask({status:'COMPLETED',reviewStatus:'REVIEWED',flowStatus:'CONFIRMED'}),false);
 });
+test('draft text and server file references survive refresh, are reauthorized and remain account/session scoped',async()=>{
+ const {ComposerResources}=await mod;const saved=new Map(),storage={setItem:(k,v)=>saved.set(k,v),getItem:k=>saved.get(k),removeItem:k=>saved.delete(k)};let account='alice',revoked=false;const file=new File(['test'],'mine.md');
+ const fetcher=async(path,options)=>path==='/api/auth/check'?response({code:200,data:{username:account,userId:account==='alice'?1:2}}):path.endsWith('/workbench')?response({files:revoked?[]:[{id:fid,name:'mine.md',bytes:4}]}):options.method?response({id:fid,name:'mine.md',bytes:4}):fixture(path);
+ const first=new ComposerResources({fetcher,storage});await first.open('same');first.draft('保留草稿');await first.upload([file]);first.close();
+ let text;const restored=new ComposerResources({fetcher,storage,onDraft:value=>{text=value}});await restored.open('same');assert.equal(text,'保留草稿');assert.equal(restored.state.files[0].id,fid);
+ await restored.open('different');assert.equal(text,'');assert.equal(restored.state.files.length,0);account='bob';await restored.open('same');assert.equal(text,'');assert.equal(restored.state.files.length,0);
+ account='alice';revoked=true;await restored.open('same');assert.equal(text,'保留草稿');assert.deepEqual(restored.state.files,[]);assert.match(restored.state.error,/权限已变化/);
+ restored.clear();assert.equal(saved.size,0);
+ restored.draft('x'.repeat(20001));assert.equal(restored.text.length,20001);assert.match(restored.state.draftWarning,/仅当前页面/);assert.equal(saved.size,0);restored.draft('short');assert.equal(restored.state.draftWarning,'');assert.equal(saved.size,1);
+});
+test('unknown upload keeps request identity across reload and is only retried when user reselects the file',async()=>{
+ const {ComposerResources}=await mod;const saved=new Map(),storage={setItem:(k,v)=>saved.set(k,v),getItem:k=>saved.get(k),removeItem:k=>saved.delete(k)};const posts=[];let fail=true;
+ const fetcher=async(path,options)=>{if(path==='/api/auth/check')return response({code:200,data:{username:'alice',userId:1}});if(options.method){posts.push(options.body.get('requestId'));if(fail)throw Error('network');return response({id:fid,name:'private.md',bytes:4})}return fixture(path)};
+ const first=new ComposerResources({fetcher,storage});await first.open('same');const file=new File(['test'],'private.md');await assert.rejects(first.upload([file]));first.close();
+ const next=new ComposerResources({fetcher,storage});await next.open('same');assert.equal(posts.length,1);fail=false;await next.upload([file]);assert.equal(posts[0],posts[1]);assert.equal(next.state.files[0].id,fid);
+});

@@ -2,7 +2,7 @@ import json
 import os
 import signal
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from dotenv import load_dotenv
@@ -13,6 +13,7 @@ from kafka_settings import KafkaWorkerSettings
 from oss_result_uploader import OssResultUploader
 
 DetectionFunction = Callable[[bytes, float], Tuple[Any, List[Dict[str, Any]]]]
+BUSINESS_TIMEZONE = timezone(timedelta(hours=8))
 
 
 def create_oss_bucket(settings: KafkaWorkerSettings) -> Any:
@@ -162,7 +163,7 @@ def build_finished_event(
     started_at: str,
     error_message: Optional[str] = None,
 ) -> DetectionTaskFinishedEvent:
-    now = datetime.now(timezone.utc).astimezone().isoformat()
+    now = datetime.now(BUSINESS_TIMEZONE).isoformat()
     status = "COMPLETED"
     if successful_images == 0 and failed_images > 0:
         status = "FAILED"
@@ -212,7 +213,7 @@ def process_created_event(
 ) -> DetectionTaskFinishedEvent:
     uploader = OssResultUploader(bucket)
     threshold = float(task.threshold) if task.threshold is not None else 0.5
-    started_at = datetime.now(timezone.utc).astimezone().isoformat()
+    started_at = datetime.now(BUSINESS_TIMEZONE).isoformat()
     if expected_model_id is not None and task.model_id != expected_model_id:
         return build_finished_event(task, "", [], {}, [], 0, len(task.original_keys), started_at,
                                     "所选模型未部署到当前检测 Worker，请选择已部署模型")

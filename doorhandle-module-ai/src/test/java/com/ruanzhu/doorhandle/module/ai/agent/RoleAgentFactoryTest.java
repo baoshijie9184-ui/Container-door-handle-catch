@@ -50,6 +50,27 @@ class RoleAgentFactoryTest {
         verify(detection).tasks(employee, 1, 20, false);
         assertThat(responses.get()).isEqualTo(4);
     }
+    @Test void taskSpecificQueryUsesTaskFacadeWithoutSubstitutingCompanyMetrics() {
+        for(var actor:java.util.List.of(employee,supervisor)) {
+            String specialist=actor.supervisor()?"detection-quality":"detection-task";
+            var model=mock(Model.class);when(model.getModelName()).thenReturn("task-detail-fixture");var step=new java.util.concurrent.atomic.AtomicInteger();
+            when(model.stream(anyList(),anyList(),any())).thenAnswer(inv->{
+                io.agentscope.core.message.ContentBlock block=switch(step.getAndIncrement()){
+                    case 0->io.agentscope.core.message.ToolUseBlock.builder().id("delegate-task").name("delegate_"+specialist.replace('-','_')).input(java.util.Map.of("question","只读查询任务 det_abc 的状态和缺陷总数")).content("{\"question\":\"只读查询任务 det_abc 的状态和缺陷总数\"}").build();
+                    case 1->io.agentscope.core.message.ToolUseBlock.builder().id("task-detail").name("get_task_detail").input(java.util.Map.of("taskId","det_abc")).content("{\"taskId\":\"det_abc\"}").build();
+                    default->io.agentscope.core.message.TextBlock.builder().text("任务 det_abc 已完成，缺陷总数 3；未提供类别分布").build();
+                };
+                return reactor.core.publisher.Flux.just(io.agentscope.core.model.ChatResponse.builder().content(java.util.List.of(block)).build());
+            });
+            var detection=mock(DetectionAgentReadApi.class);when(detection.task(actor,"det_abc")).thenReturn(new DetectionAgentReadApi.TaskView("det_abc","COMPLETED","PENDING_REVIEW","camera-1",1,1,3,"PENDING",null,null));
+            var settings=new AgentScopeProperties();settings.setWorkspace(workspace.toString());var toolkit=new BusinessToolkitFactory(detection,mock(ResourceAgentReadApi.class),mock(ModelAgentReadApi.class),new ObjectMapper());
+            try(var main=(io.agentscope.harness.agent.HarnessAgent)new RoleAgentFactory(settings,toolkit,id->model).create(actor,null)){
+                var delegate=main.getToolkit().getTool("delegate_"+specialist.replace('-','_'));assertThat(delegate.getDescription()).contains("get_task_detail");
+                assertThat(main.call("只读查询 det_abc 的状态和缺陷总数").block(java.time.Duration.ofSeconds(15)).getTextContent()).contains("缺陷总数 3");
+            }
+            verify(detection).task(actor,"det_abc");verify(detection,never()).metrics(any(),anyInt());verifyNoMoreInteractions(detection);
+        }
+    }
 
     @Test void supervisorProposalRunsThroughAgentScopeButStaffCannotRegisterIt() {
         var actions=mock(com.ruanzhu.doorhandle.module.ai.action.AgentActionService.class);

@@ -1,17 +1,14 @@
 import { ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { fetchQualityReport } from '../api/detection'
+import {beijingExportStamp} from '../utils/beijingTime'
 
 export const safeFilePart = (value) => String(value || 'unknown')
   .replace(/[\\/:*?"<>|\s]+/g, '-')
   .replace(/-+/g, '-')
   .replace(/^-|-$/g, '')
 
-export const reportTimestamp = () => {
-  const now = new Date()
-  const pad = (value) => String(value).padStart(2, '0')
-  return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`
-}
+export const reportTimestamp = () => beijingExportStamp()
 
 export const downloadJsonReport = (payload, fileName) => {
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' })

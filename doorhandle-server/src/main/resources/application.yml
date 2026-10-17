@@ -20,7 +20,7 @@ spring:
     username: ${DB_USERNAME:root}
     password: ${DB_PASSWORD:}
     hikari:
-      connection-init-sql: SET NAMES utf8mb4
+      connection-init-sql: SET time_zone = '+08:00', character_set_client = 'utf8mb4', character_set_connection = 'utf8mb4', character_set_results = 'utf8mb4'
       maximum-pool-size: ${DB_POOL_MAX_SIZE:20}
       minimum-idle: ${DB_POOL_MIN_IDLE:5}
       connection-timeout: ${DB_POOL_CONNECTION_TIMEOUT_MS:30000}
@@ -48,7 +48,7 @@ spring:
     cache-names: dashboard,model,device,employee,detection-task,chat-session
   jackson:
     date-format: yyyy-MM-dd HH:mm:ss
-    time-zone: GMT+8
+    time-zone: Asia/Shanghai
     default-property-inclusion: non_null
     serialization:
       fail-on-empty-beans: false

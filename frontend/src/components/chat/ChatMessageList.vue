@@ -65,7 +65,8 @@
 
           <!-- 普通消息气泡 -->
           <div v-else class="msg-bubble" :class="item.role">
-            <div class="msg-content" v-html="formatMessage(messageBodyContent(item.content))"></div>
+            <div class="msg-content" v-html="formatMessage(splitFileReferences(messageBodyContent(item.content),item.role).text)"></div>
+            <ChatFileReferences v-if="splitFileReferences(item.content,item.role).ids.length" :session-id="sessionId" :ids="splitFileReferences(item.content,item.role).ids" />
             <div v-if="messageSourceText(item.content)" class="msg-source-strip">
               <span class="msg-source-label">来源</span>
               <span class="msg-source-chip">{{ messageSourceText(item.content) }}</span>
@@ -116,11 +117,15 @@ import { skillInstallNavigation } from '../../utils/skillInstallNavigation'
 import { onUnmounted, ref } from 'vue'
 import { Search, CircleCheck, DataAnalysis, Guide, TopRight } from '@element-plus/icons-vue'
 import ChatBusinessCard from './ChatBusinessCard.vue'
+import ChatFileReferences from './ChatFileReferences.vue'
+import {splitFileReferences} from '@/utils/chatFileReferences'
+import {beijingClock} from '@/utils/beijingTime'
 import AgentResultCards from './AgentResultCards.vue'
 import ChatPendingActionCard from './ChatPendingActionCard.vue'
 import { buildChatMessageKey } from '@/utils/chatMessageNavigation'
 
 defineProps({
+  sessionId:String,
   messages: { type: Array, default: () => [] },
   loading: { type: Boolean, default: false },
   confirmingActionIds: { type: Object, default: () => new Set() }
@@ -173,18 +178,7 @@ const messageBodyContent = (content) => {
   return String(content || '').replace(SOURCE_PATTERN, '').trimEnd()
 }
 
-const formatTime = (val) => {
-  if (!val) return ''
-  try {
-    const d = new Date(val)
-    if (isNaN(d.getTime())) return val
-    const h = d.getHours().toString().padStart(2, '0')
-    const m = d.getMinutes().toString().padStart(2, '0')
-    return `${h}:${m}`
-  } catch {
-    return val
-  }
-}
+const formatTime = beijingClock
 
 /** 轻量 markdown → HTML */
 const formatMessage = (text) => {

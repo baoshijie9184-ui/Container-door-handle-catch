@@ -23,6 +23,8 @@ public class DoorHandleCatchApplication {
 	private static final Logger logger = LoggerFactory.getLogger(DoorHandleCatchApplication.class);
 
 	public static void main(String[] args) {
+		// 在创建业务 Bean 前统一 LocalDateTime、定时任务及日志的北京时间语义。
+		configureTimeZone();
 		// 设置默认编码为UTF-8
 		System.setProperty("file.encoding", "UTF-8");
 		System.setProperty("sun.jnu.encoding", "UTF-8");
@@ -34,6 +36,10 @@ public class DoorHandleCatchApplication {
 		ConfigurableApplicationContext context = SpringApplication.run(DoorHandleCatchApplication.class, args);
 		
 		logger.info("门把手检测系统后端已启动完成！");
+	}
+
+	static void configureTimeZone() {
+		java.util.TimeZone.setDefault(java.util.TimeZone.getTimeZone("Asia/Shanghai"));
 	}
 	
 	/**

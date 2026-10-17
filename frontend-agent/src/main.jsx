@@ -12,6 +12,8 @@ import { skillCommandOptions } from '../../frontend/src/utils/skillCommands';
 import { readSession, sessionItems } from './sessionClient';
 import { ConversationControls } from './ConversationControls';
 import {ComposerToolbar} from './ComposerToolbar';
+import {ChatFileReferences} from './ChatFileReferences';
+import {splitFileReferences} from '../../frontend/src/utils/chatFileReferences';
 import { AgentWorkbenchPanel } from './AgentWorkbenchPanel';
 import { skillInstallNavigation } from '../../frontend/src/utils/skillInstallNavigation';
 
@@ -90,7 +92,7 @@ function App() {
       let selected=id||list[0]?.sessionId;
       const session=selected?await readSession(await fetch(SESSIONS+'/'+encodeURIComponent(selected),{credentials:'include',cache:'no-store'})):await readSession(await fetch(SESSIONS,{method:'POST',credentials:'include'}));
       if(generation!==sessionGeneration.current)return;
-      currentSession.current=session.sessionId;setThreadId(session.sessionId);setSessions(list.some(s=>s.sessionId===session.sessionId)?list:[session,...list]);
+      if(currentSession.current!==session.sessionId)setDraft('');currentSession.current=session.sessionId;setThreadId(session.sessionId);setSessions(list.some(s=>s.sessionId===session.sessionId)?list:[session,...list]);
       const url=new URL(window.location.href);url.searchParams.set('sessionId',session.sessionId);window.history.replaceState(null,'',url.pathname+url.search+url.hash);
       followTranscript.current=true;setItems(sessionItems(session.messages,cardView));
     }catch(error){if(generation===sessionGeneration.current){setSessionError(error.message);setItems([]);setThreadId('');currentSession.current='';setSessions([]);}}
@@ -155,7 +157,7 @@ function App() {
   }
 
   const visibleItems=controlState.run?.text&&controlState.run.phase!=='IDLE'?[...items,{key:'control-preview',role:'assistant',content:controlState.run.text}]:items;
-  const displayedItems=visibleItems.map(item=>{if(item.role!=='assistant'||typeof item.content!=='string')return item;const link=skillInstallNavigation(item.content,LOGIN);return link?{...item,content:'',cards:[{code:'SkillInstallNavigation',component:SkillInstallLinkBubble,data:link}]}:item;});
+  const displayedItems=visibleItems.map(item=>{if(typeof item.content!=='string')return item;const files=splitFileReferences(item.content,item.role);if(files.ids.length)return {...item,content:'',cards:[{code:'ChatFileReferences',component:ChatFileReferences,data:{...files,sessionId:threadId,base:new URL(API,window.location.href).origin}}]};if(item.role!=='assistant')return item;const link=skillInstallNavigation(item.content,LOGIN);return link?{...item,content:'',cards:[{code:'SkillInstallNavigation',component:SkillInstallLinkBubble,data:link}]}:item;});
   const activeSession = sessions.find(session => session.sessionId === threadId);
   const prompts = [
     { icon: ScanLine, title: '查看检测进度', description: '最近任务与处理状态', query: '查询最近的检测任务和处理进度' },
@@ -201,7 +203,7 @@ function App() {
             {sessionLoading ? <p className="loading-note" role="status">正在加载你的对话…</p> : items.length > 0 && <Bubble.List classNames={{wrapper: 'conversation-transcript', list: 'conversation-messages'}} items={displayedItems} />}
           </div>
           <ConversationControls ref={controlsRef} sessionId={threadId} base={CONVERSATION_CONTROLS} onSnapshot={setControlState} onRefresh={refreshControlHistory}/>
-          <div className="composer-area"><div className="resource-input"><Sender className="harness-composer-sender" actions={()=>null} styles={{input:{minHeight:64}}} ref={senderRef} disabled={!catalog||!threadId||sessionLoading} loading={loading} value={draft} onChange={setDraft} onFocus={()=>refreshCommands()} suggestions={skillCommandOptions(commandCatalog).map(item=>({value:item.value.slice(1).trim(),label:item.label+' · '+item.description}))} placeholder="输入问题 或输入 / 选择技能命令" onSubmit={submit} /><ComposerToolbar ref={resourcesRef} sessionId={threadId} base={new URL(API,window.location.href).origin} locked={loading||!!controlState.run&&controlState.run.phase!=='IDLE'} run={controlState.run} draft={draft} onSend={submit} onStop={()=>controlsRef.current?.cancel()} disabled={!catalog||!threadId||sessionLoading} onUpload={()=>setDraft(value=>value||'查看这些附件')}/></div><p className="command-hint">Enter 发送 · Shift + Enter 换行 · / 选择技能</p>{commandError&&draft.startsWith('/')&&<p className="command-hint" role="status">{commandError}</p>}</div>
+          <div className="composer-area"><div className="resource-input"><Sender className="harness-composer-sender" actions={()=>null} styles={{input:{minHeight:64}}} ref={senderRef} disabled={!catalog||!threadId||sessionLoading} loading={loading} value={draft} onChange={setDraft} onFocus={()=>refreshCommands()} suggestions={skillCommandOptions(commandCatalog).map(item=>({value:item.value.slice(1).trim(),label:item.label+' · '+item.description}))} placeholder="输入问题 或输入 / 选择技能命令" onSubmit={submit} /><ComposerToolbar ref={resourcesRef} sessionId={threadId} base={new URL(API,window.location.href).origin} locked={loading||!!controlState.run&&controlState.run.phase!=='IDLE'} run={controlState.run} draft={draft} onDraft={setDraft} onSend={submit} onStop={()=>controlsRef.current?.cancel()} disabled={!catalog||!threadId||sessionLoading} onUpload={()=>setDraft(value=>value||'查看这些附件')}/></div><p className="command-hint">Enter 发送 · Shift + Enter 换行 · / 选择技能</p>{commandError&&draft.startsWith('/')&&<p className="command-hint" role="status">{commandError}</p>}</div>
         </section>
       </main>
       <aside id="agent-info" className="agent-info" aria-label="助手信息" hidden={!infoOpen}>

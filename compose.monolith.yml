@@ -10,6 +10,7 @@ services:
       - ${DOORHANDLE_ENV_FILE:-deploy/docker.env}
     environment:
       SERVER_PORT: 8080
+      TZ: Asia/Shanghai
       AGENTSCOPE_AI_WORKSPACE: /app/.agentscope/workspace
       AGENT_WORKSPACE_ROOT: /app/.agentscope/workspace
     expose:

@@ -82,6 +82,7 @@
             <ChatMessageList
               ref="messageListRef"
               :messages="controlledMessages"
+              :session-id="chatStore.sessionId"
               :loading="chatStore.loading"
               :confirming-action-ids="chatStore.confirmingActionIds"
               @confirm="handleConfirm"

@@ -77,6 +77,7 @@
       </button>
     </div>
     <p v-if="resources.error" class="command-error" role="alert">{{ resources.error }}</p>
+    <p v-if="resources.draftWarning" class="command-error" role="status">{{ resources.draftWarning }}</p>
     <p class="composer-hint">{{ voiceHint || 'Enter 发送 · Shift + Enter 换行' }}</p>
   </div>
 </template>
@@ -98,7 +99,8 @@ const props = defineProps({
 const emit = defineEmits(['send','stop'])
 const draft = ref('')
 const resources=ref({ready:false,files:[],models:[],modelId:'',busy:false,error:''}),fileInputRef=ref(null)
-const resourceClient=new ComposerResources({base:(import.meta.env.VITE_API_URL||'').replace(/\/$/,''),onState:value=>{resources.value=value}})
+const resourceClient=new ComposerResources({base:(import.meta.env.VITE_API_URL||'').replace(/\/$/,''),onState:value=>{resources.value=value},onDraft:value=>{draft.value=value}})
+watch(draft,value=>resourceClient.draft(value),{flush:'sync'})
 watch(()=>props.sessionId,id=>resourceClient.open(id),{immediate:true})
 async function uploadFiles(event){const files=Array.from(event.target.files||[]);event.target.value='';try{await resourceClient.upload(files)}catch(error){resourceClient.publish({error:error.message})}}
 async function selectModel(event){try{await resourceClient.select(event.target.value)}catch{/* Keep the server-confirmed selection. */}finally{event.target.value=resources.value.modelId}}
