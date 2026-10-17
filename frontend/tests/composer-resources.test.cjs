@@ -15,6 +15,11 @@ test('attachment is a private server ID and uncertain upload keeps its request I
 test('a late upload cannot attach a private file to another session',async()=>{
  const {ComposerResources}=await mod;let release;const client=new ComposerResources({fetcher:async(path,opts)=>opts.method?new Promise(resolve=>{release=()=>resolve(response({id:fid,name:'old.txt',bytes:1}))}):fixture(path)});await client.open('old');const upload=client.upload([new File(['x'],'old.txt')]);while(!release)await new Promise(resolve=>setImmediate(resolve));await client.open('new');release();await upload;assert.deepEqual(client.state.files,[]);assert.equal(client.session,'new');
 });
+test('definitively rejected uploads do not exhaust pending slots but unknown results keep their ID',async()=>{
+ const {ComposerResources}=await mod;let status=415;const client=new ComposerResources({fetcher:async(path,options)=>options.method?{ok:false,status}:fixture(path)});await client.open('mine');
+ for(let i=0;i<20;i++)await assert.rejects(client.upload([new File(['broken'],'bad'+i+'.pdf')]),/格式、编码或内容无效/);
+ assert.equal(client.pending.size,0);status=503;await assert.rejects(client.upload([new File(['unknown'],'uncertain.pdf')]));assert.equal(client.pending.size,1);
+});
 test('assigned pending review remains actionable; completed reviews do not become actionable',async()=>{
  const workflow=await import('data:text/javascript;base64,'+Buffer.from(readFrontendFile('src','utils','qualityWorkflow.js')).toString('base64'));
  assert.equal(workflow.canReviewTask({status:'COMPLETED',reviewStatus:'PENDING',flowStatus:'REVIEWING'}),true);assert.equal(workflow.canReviewTask({status:'COMPLETED',reviewStatus:'REVIEWED',flowStatus:'CONFIRMED'}),false);

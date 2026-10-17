@@ -39,6 +39,8 @@
 	</dependencyManagement>
 
 	<dependencies>
+		<dependency><groupId>org.apache.pdfbox</groupId><artifactId>pdfbox</artifactId><exclusions><exclusion><groupId>commons-logging</groupId><artifactId>commons-logging</artifactId></exclusion></exclusions></dependency>
+		<dependency><groupId>com.twelvemonkeys.imageio</groupId><artifactId>imageio-webp</artifactId></dependency>
 		<dependency><groupId>com.h2database</groupId><artifactId>h2</artifactId><scope>test</scope></dependency>
 		<dependency><groupId>com.ruanzhu</groupId><artifactId>doorhandle-framework</artifactId><version>${project.version}</version></dependency>
 		<dependency><groupId>com.ruanzhu</groupId><artifactId>doorhandle-common</artifactId><version>${project.version}</version></dependency>

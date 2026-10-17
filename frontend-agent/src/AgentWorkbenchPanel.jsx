@@ -1,19 +1,27 @@
 import React,{useEffect,useMemo,useRef,useState} from 'react';
 import {Modal} from 'antd';
+import {useReducedMotion,usePreviewEscape} from './useReducedMotion';
 import {AgentWorkbenchClient,availableWorkbenchTabs,workbenchStatus,workbenchRows,tokenDisplay} from '../../frontend/src/utils/agentWorkbench';
+import {readFilePreview,boundedTextPreview} from '../../frontend/src/utils/chatFileReferences';
 import '../../frontend/src/assets/agent-workbench.css';
+import '../../frontend/src/assets/chat-file-references.css';
 
 export function AgentWorkbenchPanel({sessionId,base='',messages=[],onFork,onReference}){
- const [state,setState]=useState({enabled:false,items:[],files:[],capabilities:{}}),[tab,setTab]=useState('PLAN'),[busy,setBusy]=useState(false),[error,setError]=useState(''),[drafts,setDrafts]=useState({}),[preview,setPreview]=useState(null);
- const client=useMemo(()=>new AgentWorkbenchClient({base,onState:setState}),[base]);const previewUrl=useRef('');
+ const reducedMotion=useReducedMotion();
+ const pdfNavigation=useRef(null);
+ const [state,setState]=useState({enabled:false,items:[],files:[],capabilities:{}}),[tab,setTab]=useState('PLAN'),[busy,setBusy]=useState(false),[error,setError]=useState(''),[drafts,setDrafts]=useState({}),[preview,setPreview]=useState(null),[previewError,setPreviewError]=useState('');
+ const client=useMemo(()=>new AgentWorkbenchClient({base,onState:setState}),[base]);const previewUrl=useRef(''),previewVersion=useRef(0);
  const [businessKind,setBusinessKind]=useState('DETECTION'),[businessId,setBusinessId]=useState('');
+ const closePreview=()=>{previewVersion.current++;setPreview(null);if(previewUrl.current)URL.revokeObjectURL(previewUrl.current);previewUrl.current=''};
+ usePreviewEscape(!!preview,closePreview,'workbench-file-preview-modal');
+ useEffect(()=>{if(preview?.type==='pdf')pdfNavigation.current?.focus()},[preview?.type,preview?.page,busy]);
  useEffect(()=>{setError('');setPreview(null);setDrafts({});client.open(sessionId);return()=>client.close()},[client,sessionId]);
  useEffect(()=>()=>{if(previewUrl.current)URL.revokeObjectURL(previewUrl.current)},[]);
- async function run(action){setBusy(true);setError('');try{return await action()}catch(cause){setError(cause.message)}finally{setBusy(false)}}
+ async function run(action){setBusy(true);setError('');try{return await action()}catch(cause){setError(cause.message);if([403,404].includes(cause.status)){previewVersion.current++;setPreview(null);if(previewUrl.current)URL.revokeObjectURL(previewUrl.current)}}finally{setBusy(false)}}
  const act=(item,action,input={})=>run(()=>client.command(item,action,input));
  function draft(id,value){setDrafts(current=>({...current,[id]:value}))}
- async function show(file,download=false){await run(async()=>{const blob=await client.content(file);if(previewUrl.current)URL.revokeObjectURL(previewUrl.current);previewUrl.current=URL.createObjectURL(blob);if(download){const link=document.createElement('a');link.href=previewUrl.current;link.download=file.name;link.click();return}if(file.contentType.startsWith('image/'))setPreview({type:'image',name:file.name,url:previewUrl.current});else if(file.contentType==='application/pdf')setPreview({type:'pdf',name:file.name,url:previewUrl.current});else setPreview({type:'text',name:file.name,text:await blob.slice(0,client.value.limits?.previewBytes||64000).text()})})}
- async function showBusiness(file){await run(async()=>{if(file.contentType.startsWith('image/'))setPreview({type:'image',name:file.name,url:client.base+file.previewPath});else setPreview({type:'text',name:file.name,text:(await (await client.read(file.previewPath)).text()).slice(0,client.value.limits?.previewBytes||64000)})})}
+ async function show(file,download=false,page=1){const version=++previewVersion.current;await run(async()=>{const generation=client.generation;if(download){const blob=await client.content(file),href=URL.createObjectURL(blob),link=document.createElement('a');link.href=href;link.download=file.name;link.click();setTimeout(()=>URL.revokeObjectURL(href),1000);return}const value=await readFilePreview(sessionId,file,{base:client.base,fetcher:client.fetcher,limit:client.value.limits?.previewBytes,page});if(generation!==client.generation||version!==previewVersion.current)return;if(previewUrl.current)URL.revokeObjectURL(previewUrl.current);previewUrl.current=value.kind==='text'?'':URL.createObjectURL(value.kind==='pdf'?value.blob:new Blob([value.blob],{type:file.contentType}));setPreviewError('');setPreview({...value,type:value.kind,file,name:file.name,url:previewUrl.current})})}
+ async function showBusiness(file){await run(async()=>{const generation=client.generation;const value=file.contentType.startsWith('image/')?{type:'image',url:client.base+file.previewPath}:{type:'text',text:await boundedTextPreview(await (await client.read(file.previewPath)).blob(),client.value.limits?.previewBytes)};if(generation===client.generation){setPreviewError('');setPreview({...value,name:file.name})}})}
  if(!state.enabled)return null;
  const rows=workbenchRows(state.items,tab);
  return <section className="agent-workbench" aria-label="Agent 持久工作台">
@@ -53,6 +61,6 @@ export function AgentWorkbenchPanel({sessionId,base='',messages=[],onFork,onRefe
    </article>)}
    {!rows.length&&<p className="wb-note">当前视图暂无记录</p>}
   </>}
-  <Modal open={!!preview} title={preview?.name||'文件预览'} onCancel={()=>setPreview(null)} footer={null} width="min(900px,90vw)">{preview?.type==='image'?<img src={preview.url} alt="本人工作区图片" className="wb-preview-image"/>:preview?.type==='pdf'?<iframe src={preview.url} sandbox="" title="PDF 预览" className="wb-preview-frame"/>:<pre style={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{preview?.text}</pre>}</Modal>
+  <Modal rootClassName="workbench-file-preview-modal" transitionName={reducedMotion?'':'ant-zoom'} maskTransitionName={reducedMotion?'':'ant-fade'} open={!!preview} title={preview?.name||'文件预览'} onCancel={closePreview} footer={null} width="min(900px,90vw)">{previewError&&<p role="alert">{previewError}</p>}{preview?.type==='pdf'&&<nav ref={pdfNavigation} tabIndex={-1} className="chat-file-pages" aria-label="PDF 页码"><button disabled={busy||preview.page===1} onClick={()=>show(preview.file,false,preview.page-1)}>上一页</button><span>第 {preview.page} / {preview.pages} 页</span><button disabled={busy||preview.page===preview.pages} onClick={()=>show(preview.file,false,preview.page+1)}>下一页</button><small>页面预览 · Agent 仅可读取文字层</small></nav>}{['image','pdf'].includes(preview?.type)?<img src={preview.url} alt="本人工作区页面预览" className="wb-preview-image" onError={()=>setPreviewError('图片预览失败，请下载原文件核对')}/>:<pre style={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{preview?.text}</pre>}</Modal>
  </section>
 }

@@ -46,6 +46,24 @@ class AgentWorkspaceServiceTest {
     }
     @Test void htmlAndSvgArePlainTextAndGeneratedJsonIsValidated(){var file=upload("html","page.html","<script>alert(1)</script>");assertThat(file.contentType()).startsWith("text/plain");assertThat(workspace.readText(alice,"s1",file.id())).contains("<script>");assertThatThrownBy(()->workspace.createArtifact(alice,"s1","artifact","bad.json","{bad}")).hasMessageContaining("400");assertThat(workspace.createArtifact(alice,"s1","csv","data.csv","name,count\na,2").folder()).isEqualTo("artifacts");}
     @Test void removalIsIdempotentAndDoesNotEraseAForkedReference(){var file=upload("one","one.md","hello");jdbc.update("INSERT INTO agent_workspace_file_ref(user_id,session_id,file_id) VALUES(?,?,?)",1,"forked",file.id());workspace.remove(alice,"s1",file.id(),"remove-1");workspace.remove(alice,"s1",file.id(),"remove-1");assertThat(workspace.files(alice,"s1")).isEmpty();assertThat(workspace.readText(alice,"forked",file.id())).isEqualTo("hello");assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM agent_workspace_audit WHERE action='FILE_UNLINKED'",Integer.class)).isEqualTo(1);}
+    @Test void pdfToolReadsRequireFreshAccountSessionAndDiskIntegrity()throws Exception{
+        var file=workspace.upload(alice,"s1","pdf","report.pdf",WorkspaceFileContentTest.pdf("PRIVATE-PDF-EVIDENCE"),"uploads");
+        assertThat(workspace.readText(alice,"s1",file.id())).contains("PRIVATE-PDF-EVIDENCE");
+        assertThatThrownBy(()->workspace.readText(bob,"bob-session",file.id())).hasMessageContaining("404");
+        assertThatThrownBy(()->workspace.readText(alice,"s2",file.id())).hasMessageContaining("404");
+        assertThatThrownBy(()->workspace.previewPdf(bob,"bob-session",file.id(),1)).hasMessageContaining("404");
+        when(users.current(1,"alice")).thenReturn(new BusinessUserDirectory.Identity(1,"alice",true));
+        assertThatThrownBy(()->workspace.readText(alice,"s1",file.id())).isInstanceOf(SecurityException.class);
+        when(users.current(1,"alice")).thenReturn(new BusinessUserDirectory.Identity(1,"alice",false));
+        var path=directory.resolve("users/1/"+file.id()+".bin");byte[] changed=Files.readAllBytes(path);changed[20]^=1;Files.write(path,changed);
+        assertThatThrownBy(()->workspace.readText(alice,"s1",file.id())).hasMessageContaining("409");
+    }
+    @Test void rejectedFilesDoNotCreateMetadataAuditOrPrivateFiles()throws Exception{
+        assertThatThrownBy(()->upload("bad-pdf","header.pdf","%PDF-1.4\nnot a document\n%%EOF")).hasMessageContaining("415");
+        assertThatThrownBy(()->upload("bad-json","bad.json","{} []")).hasMessageContaining("415");
+        assertThat(workspace.files(alice,"s1")).isEmpty();assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM agent_workspace_audit",Integer.class)).isZero();
+        try(var paths=Files.walk(directory)){assertThat(paths.filter(Files::isRegularFile).count()).isZero();}
+    }
     @Test void previewLimitIsConfigurableAndJsonValidationCannotBeBypassedByFilenameCase(){org.springframework.test.util.ReflectionTestUtils.setField(workspace,"previewBytes",4);var file=upload("text","text.txt","123456");assertThat(workspace.readText(alice,"s1",file.id())).startsWith("1234\n[内容已").doesNotContain("123456");assertThat(workspace.limits().get("previewBytes")).isEqualTo(4);assertThatThrownBy(()->workspace.createArtifact(alice,"s1","json","bad.JSON","{} trailing")).hasMessageContaining("400");}
     @Test void auditFailureRollsBackMetadataAndRemovesTheNewPrivateFile()throws Exception{jdbc.execute("ALTER TABLE agent_workspace_audit ADD CONSTRAINT reject_upload CHECK(action<>'FILE_CREATED')");assertThatThrownBy(()->upload("one","one.md","PRIVATE")).isInstanceOf(org.springframework.dao.DataAccessException.class);assertThat(workspace.files(alice,"s1")).isEmpty();try(var paths=Files.walk(directory)){assertThat(paths.filter(Files::isRegularFile).count()).isZero();}}
     @Test void forkCopiesOnlyTheFinishedPrefixAndOnlyFilesPresentAtThatTime(){

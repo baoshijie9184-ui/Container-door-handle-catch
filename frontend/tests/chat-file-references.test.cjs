@@ -19,3 +19,18 @@ test('metadata and each file read use private session endpoints; access denial n
  await assert.rejects(readReferencedFile('s',file,{fetcher:async()=>({ok:false})}),/无权/);
  await assert.rejects(readReferencedFile('s',{...file,id:'../../secret'},{fetcher}),/无效/);assert.equal(calls.length,2);
 });
+test('UTF-8 preview limits are explicit and never split multi-byte characters',async()=>{
+ const {boundedTextPreview}=await mod;const blob=new Blob(['A中𠀀B']);
+ assert.equal(await boundedTextPreview(blob,3),'A\n[内容已按预览上限截断，请下载查看完整文件]');
+ assert.equal(await boundedTextPreview(blob,7),'A中\n[内容已按预览上限截断，请下载查看完整文件]');
+ assert.equal(await boundedTextPreview(blob,9),'A中𠀀B');
+ await assert.rejects(boundedTextPreview(new Blob([new Uint8Array([0xff])])),/编码无效/);
+});
+test('PDF previews request authorized raster pages and reject malformed metadata or access revocation',async()=>{
+ const {readFilePreview}=await mod;const file={id,name:'report.pdf',contentType:'application/pdf'};let request;
+ const fetcher=async(url,options)=>{request={url,options};return new Response(new Uint8Array([137,80,78,71]),{headers:{'Content-Type':'image/png','X-PDF-Page':'2','X-PDF-Pages':'3'}})};
+ const preview=await readFilePreview('s/a',file,{fetcher,page:2});assert.equal(preview.page,2);assert.equal(preview.pages,3);assert.equal(preview.blob.type,'image/png');assert.match(request.url,/s%2Fa\/files\/.*\/preview\?page=2$/);assert.equal(request.options.credentials,'include');assert.equal(request.options.cache,'no-store');
+ await assert.rejects(readFilePreview('s',file,{fetcher:async()=>new Response('',{headers:{'Content-Type':'text/html'}})}),/响应无效/);
+ await assert.rejects(readFilePreview('s',file,{fetcher:async()=>new Response('',{status:403})}),error=>error.status===403);
+ await assert.rejects(readFilePreview('s',file,{fetcher,page:101}),/页码无效/);
+});
