@@ -1,6 +1,7 @@
 <template>
  <section v-if="state.enabled" class="agent-workbench" aria-label="Agent 持久工作台">
   <header><strong>任务工作台</strong><button type="button" :disabled="busy" @click="client.poll()">刷新</button></header>
+  <div role="status" aria-live="polite" aria-label="后台任务通知"><p v-for="notice in state.notifications||[]" :key="notice.id" class="wb-note">{{ notice.text }}</p></div>
   <nav aria-label="工作台视图"><button v-for="[key,label] in tabs" :key="key" type="button" :class="{active:tab===key}" :aria-pressed="tab===key" @click="tab=key">{{ label }}</button></nav>
   <p v-if="error||state.error" role="alert" class="wb-error">{{ error||state.error }}</p>
   <p v-if="tab==='RECOVERY'" class="wb-note">仅可恢复启用后保存了 SDK 检查点的任务；旧版历史记录不可续跑</p>

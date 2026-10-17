@@ -8,3 +8,15 @@ test('workbench projection validates private IDs, versions and files while prese
 test('unknown answers retain request identity and never automatically resubmit',async()=>{const {AgentWorkbenchClient}=await utility;let attempts=0;const posts=[];const client=new AgentWorkbenchClient({fetcher:async(path,options)=>{if(options.method){posts.push(JSON.parse(options.body));if(++attempts===1)throw Error('network')}return response(snapshot)}});client.session='s1';client.value.enabled=true;try{await assert.rejects(()=>client.command(snapshot.items[0],'answer',{answer:'A'}));assert.equal(posts.length,1);await client.command(snapshot.items[0],'answer',{answer:'A'});assert.equal(posts.length,2);assert.equal(posts[0].requestId,posts[1].requestId)}finally{client.close()}})
 test('late reads cannot replace the selected conversation',async()=>{const {AgentWorkbenchClient}=await utility;let release;const client=new AgentWorkbenchClient({fetcher:async path=>path.endsWith('/capabilities')?response({enabled:true}):path.includes('/old/')?new Promise(resolve=>release=()=>resolve(response(snapshot))):response({...snapshot,items:[]})});try{const old=client.open('old');await new Promise(resolve=>setImmediate(resolve));await client.open('new');release();await old;assert.equal(client.session,'new');assert.equal(client.value.items.length,0)}finally{client.close()}})
 test('missing usage stays unknown, and values are not presented as billing',async()=>{const {tokenDisplay,workbenchRows}=await utility;assert.equal(tokenDisplay(null),'未知');assert.equal(tokenDisplay(-1),'未知');assert.equal(tokenDisplay(0),'0');assert.equal(workbenchRows([{kind:'EXECUTION',status:'NEEDS_REVIEW'}],'RECOVERY').length,1)})
+
+test('background completion notifies once after an observed transition, without replaying history or crossing sessions',async()=>{
+ const {AgentWorkbenchClient}=await utility
+ let status='COMPLETED',revision=1
+ const client=new AgentWorkbenchClient({fetcher:async path=>response(path.endsWith('/capabilities')?{enabled:true}:{items:[{id,kind:'CHILD',status,revision,data:{title:'专业分析'}}],files:[]})})
+ try{await client.open('one');assert.deepEqual(client.value.notifications,[])
+  status='RUNNING';revision++;await client.poll();assert.deepEqual(client.value.notifications,[])
+  status='COMPLETED';revision++;await client.poll();assert.equal(client.value.notifications.length,1);assert.match(client.value.notifications[0].text,/专业分析：已完成/)
+  await client.poll();assert.equal(client.value.notifications.length,1)
+  await client.open('two');assert.deepEqual(client.value.notifications,[])
+ }finally{client.close()}
+})

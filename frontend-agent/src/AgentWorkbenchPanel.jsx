@@ -18,6 +18,7 @@ export function AgentWorkbenchPanel({sessionId,base='',messages=[],onFork,onRefe
  const rows=workbenchRows(state.items,tab);
  return <section className="agent-workbench" aria-label="Agent 持久工作台">
   <header><strong>任务工作台</strong><button type="button" disabled={busy} onClick={()=>client.poll()}>刷新</button></header>
+  <div role="status" aria-live="polite" aria-label="后台任务通知">{(state.notifications||[]).map(notice=><p key={notice.id} className="wb-note">{notice.text}</p>)}</div>
   <nav aria-label="工作台视图">{availableWorkbenchTabs(state.capabilities).map(([key,label])=><button key={key} type="button" className={tab===key?'active':''} aria-pressed={tab===key} onClick={()=>setTab(key)}>{label}</button>)}</nav>
   {(error||state.error)&&<p role="alert" className="wb-error">{error||state.error}</p>}
   {tab==='RECOVERY'&&<p className="wb-note">仅可恢复启用后保存了 SDK 检查点的任务；旧版历史记录不可续跑</p>}
