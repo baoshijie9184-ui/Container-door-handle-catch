@@ -47,8 +47,8 @@
         <select aria-label="使用模型" :value="resources.modelId" :disabled="!resources.ready||resources.busy||modelLocked||loading" @change="selectModel"><option value="">系统默认</option><option v-for="model in resources.models" :key="model.id" :value="model.id">{{ model.model }}</option></select>
         <span class="composer-context" title="使用本会话历史与已授权的资料"><el-icon aria-hidden="true"><Document /></el-icon><span>会话上下文</span></span>
       </div>
-      <button v-if="run?.local&&run.runId&&!draft.trim()&&!resources.files.length" type="button" class="composer-stop" aria-label="停止任务" title="停止当前任务" @click="emit('stop')"><svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg></button>
-      <button v-else
+
+      <button
         class="composer-voice"
         :class="{ recording, transcribing: voiceTranscribing }"
         :disabled="loading || voiceTranscribing"
@@ -63,7 +63,8 @@
         </svg>
         <span v-else class="voice-spinner"></span>
       </button>
-      <button
+      <button v-if="run?.local&&run.runId&&!draft.trim()&&!resources.files.length" type="button" class="composer-stop" aria-label="停止任务" title="停止当前任务" @click="emit('stop')"><svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg></button>
+      <button v-else
         class="composer-send"
         :class="{ active: draft.trim() && !loading }"
         :disabled="loading || resources.busy || (!draft.trim()&&!resources.files.length)"
@@ -71,7 +72,7 @@
         title="发送" aria-label="发送消息"
       >
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>
+          <path d="M12 19V5M5 12l7-7 7 7"/>
         </svg>
       </button>
     </div>

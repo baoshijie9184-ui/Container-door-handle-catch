@@ -32,6 +32,8 @@ with sync_playwright() as p:
   namespace['run'].update(phase='RUNNING',runId=str(uuid.uuid4()),local=True,text='正在查询');namespace['inputs'].clear();namespace['inputs'].append({'id':str(uuid.uuid4()),'mode':'NEXT_TURN','status':'QUEUED','revision':0,'content':'后续补充要求'})
   expect(controls).to_be_visible(timeout=6000);expect(page.get_by_label('使用模型',exact=True)).to_be_disabled();expect(controls.get_by_role('button',name='更多消息操作')).to_be_visible();checks.append(kind+' active queue keeps steering and editing, model locked')
   editor=page.get_by_role('textbox',name='聊天消息或技能命令') if kind=='vue' else page.get_by_placeholder('输入问题 或输入 / 选择技能命令');editor.fill('读取附件');editor.press('Enter');expect(rail).not_to_be_visible();assert any('@file:'+fid in row['content'] for row in namespace['inputs']);checks.append(kind+' queued input carries server file reference')
+  expect(page.get_by_role('button',name='发送消息',exact=True)).not_to_be_visible()
+  if kind=='vue':expect(page.get_by_role('button',name='语音输入',exact=True)).to_be_visible()
   page.get_by_role('button',name='停止任务',exact=True).click();expect(page.get_by_role('button',name='继续执行',exact=True)).to_be_visible();page.get_by_role('button',name='继续执行',exact=True).click();assert namespace['run']['phase']=='RUNNING';checks.append(kind+' composer stop requires explicit confirmation and preserves queue')
   page.screenshot(path=str(OUT/(kind+'-desktop.png')),full_page=True);page.set_viewport_size({'width':390,'height':844});assert page.evaluate('document.documentElement.scrollWidth<=innerWidth+1');expect(page.get_by_role('button',name='添加附件',exact=True)).to_be_visible();page.screenshot(path=str(OUT/(kind+'-mobile.png')),full_page=True);checks.append(kind+' mobile controls reachable')
   context.close()
