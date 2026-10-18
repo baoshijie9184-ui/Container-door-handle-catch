@@ -43,7 +43,7 @@ public class AgentJournalMiddleware implements MiddlewareBase {
             long start=System.nanoTime();run.event("AGENT_STARTED",fields(agent.getName()));
             var terminal=new java.util.concurrent.atomic.AtomicBoolean();
             return next.apply(input).doOnComplete(()->{if(terminal.compareAndSet(false,true))run.event("AGENT_COMPLETED",duration(agent,start));})
-                .doOnError(error->{if(terminal.compareAndSet(false,true))run.event("AGENT_ERROR",duration(agent,start));})
+                .doOnError(error->{if(terminal.compareAndSet(false,true))run.event(yielded(error)?"AGENT_YIELDED":"AGENT_ERROR",duration(agent,start));})
                 .doFinally(signal->{if(signal==SignalType.CANCEL&&terminal.compareAndSet(false,true))recordCancellation("AGENT_CANCELLED",duration(agent,start));});
         });
     }
@@ -61,7 +61,7 @@ public class AgentJournalMiddleware implements MiddlewareBase {
                     if(end.getUsage()!=null) {payload.put("inputTokens",Math.max(0,end.getUsage().getInputTokens()));payload.put("outputTokens",Math.max(0,end.getUsage().getOutputTokens()));}
                     run.event("MODEL_COMPLETED",payload);
                 }
-            }).doOnError(error->{var payload=duration(agent,start);payload.put("modelRequestId",requestId);run.event("MODEL_ERROR",payload);})
+            }).doOnError(error->{var payload=duration(agent,start);payload.put("modelRequestId",requestId);run.event(yielded(error)?"MODEL_YIELDED":"MODEL_ERROR",payload);})
               .doFinally(signal->{if(signal==SignalType.CANCEL){var payload=duration(agent,start);payload.put("modelRequestId",requestId);recordCancellation("MODEL_CANCELLED",payload);}})
               .contextWrite(contextValue->contextValue.put(com.ruanzhu.doorhandle.module.ai.model.ModelAttemptTrace.CONTEXT_KEY,trace));
         });
@@ -105,6 +105,7 @@ public class AgentJournalMiddleware implements MiddlewareBase {
         });
     }
     private Map<String,Object> duration(Agent agent,long start) {var payload=fields(agent.getName());payload.put("durationMs",(System.nanoTime()-start)/1_000_000);return payload;}
+    private static boolean yielded(Throwable error){return reactor.core.Exceptions.unwrap(error) instanceof com.ruanzhu.doorhandle.module.ai.workbench.AgentWorkbenchService.Yield;}
     private void recordCancellation(String type,Map<String,Object> payload) {
         // 运行的取消终态可能已先提交；迟到的取消钩子不能改变终态。
         try{run.event(type,payload);}catch(IllegalStateException ignored){}

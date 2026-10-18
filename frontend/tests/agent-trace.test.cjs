@@ -6,6 +6,13 @@ const projection = load('agentTrace.js'), readerModule = load('agentTraceReader.
 const event = (sequence,type,payload={}) => ({sequence,type,payload,occurredAt:'2026-10-16T12:00:00'})
 const run = (runId,extra={}) => ({runId,sessionId:'session-'+runId,status:'COMPLETED',lastSequence:1,...extra})
 const deferred = () => { let resolve,reject; const promise = new Promise((yes,no)=>{resolve=yes;reject=no}); return {promise,resolve,reject} }
+test('durable workbench waits appear as waiting without errors or provider attempts',async()=>{
+  const {normalizeTraceEvents,eventTitle,eventTone,traceModelRequests,traceSummary}=await projection
+  const rows=normalizeTraceEvents([event(1,'MODEL_STARTED',{agent:'main',modelRequestId:'deferred'}),event(2,'MODEL_YIELDED',{agent:'main',modelRequestId:'deferred'}),event(3,'AGENT_YIELDED',{agent:'main'})])
+  assert.equal(eventTitle(rows[1]),'任务等待中，未请求模型');assert.equal(eventTitle(rows[2]),'Agent 已保存进度并等待')
+  assert.equal(eventTone(rows[1].type),'primary');assert.equal(eventTone(rows[2].type),'primary')
+  assert.equal(traceSummary(rows,'INTERRUPTED').modelAttempts,0);assert.deepEqual(traceModelRequests(rows,'INTERRUPTED')[0].attempts,[])
+})
 test('context events expose counts and purpose without copying summary or raw history',async()=>{
   const {normalizeTraceEvents,eventCategory,eventTitle,filterTraceEvents,traceModelRequests}=await projection
   const rows=normalizeTraceEvents([event(1,'CONTEXT_COMPLETED',{purpose:'CONTEXT_COMPACTION',beforeMessages:32,afterMessages:7,beforeChars:24000,afterChars:3000,summary:'PRIVATE_SUMMARY',history:'PRIVATE_HISTORY'})])

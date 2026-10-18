@@ -56,6 +56,15 @@ class AgentJournalMiddlewareTest {
         upstream.tryEmitComplete();
         verify(run).event(eq("AGENT_COMPLETED"),anyMap());verify(run,never()).event(eq("AGENT_CANCELLED"),anyMap());
     }
+    @Test void persistedWorkbenchYieldIsWaitingRatherThanAnExecutionError() {
+        var run=mock(AgentJournal.Run.class);var agent=mock(Agent.class);when(agent.getName()).thenReturn("employee-main");
+        var middleware=new AgentJournalMiddleware(run,actor);
+        assertThatThrownBy(()->middleware.onAgent(agent,RuntimeContext.empty(),mock(AgentInput.class),input->Flux.error(new com.ruanzhu.doorhandle.module.ai.workbench.AgentWorkbenchService.Yield())).blockLast()).isInstanceOf(com.ruanzhu.doorhandle.module.ai.workbench.AgentWorkbenchService.Yield.class);
+        assertThatThrownBy(()->middleware.onModelCall(agent,RuntimeContext.empty(),mock(io.agentscope.core.middleware.ModelCallInput.class),input->Flux.error(new com.ruanzhu.doorhandle.module.ai.workbench.AgentWorkbenchService.Yield())).blockLast()).isInstanceOf(com.ruanzhu.doorhandle.module.ai.workbench.AgentWorkbenchService.Yield.class);
+        verify(run).event(eq("AGENT_YIELDED"),anyMap());verify(run).event(eq("MODEL_YIELDED"),anyMap());
+        verify(run,never()).event(eq("AGENT_ERROR"),anyMap());verify(run,never()).event(eq("MODEL_ERROR"),anyMap());
+        verify(run,never()).event(eq("AGENT_COMPLETED"),anyMap());verify(run,never()).event(eq("AGENT_CANCELLED"),anyMap());
+    }
     @Test void genuineCancellationAndFailureRetainTheirOwnTerminalEvidence() {
         var run=mock(AgentJournal.Run.class);var agent=mock(Agent.class);when(agent.getName()).thenReturn("employee-main");
         var middleware=new AgentJournalMiddleware(run,actor);

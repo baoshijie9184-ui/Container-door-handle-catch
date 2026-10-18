@@ -10,8 +10,8 @@ export const traceCategories = [
 const names = {
   PAUSE_REQUESTED:'请求暂停',RUN_PAUSED:'已到达暂停切点',RUN_RESUMED:'继续运行',STEERING_APPLIED:'已交付运行中补充要求',
   RUN_STARTED: '开始运行', RUN_COMPLETED: '运行完成', RUN_FAILED: '运行失败', RUN_ERROR: '运行失败', RUN_CANCELLED: '运行取消', RUN_INTERRUPTED: '运行中断',
-  AGENT_STARTED: 'Agent 开始处理', AGENT_COMPLETED: 'Agent 处理完成', AGENT_ERROR: 'Agent 处理异常', AGENT_CANCELLED: 'Agent 已取消',
-  MODEL_STARTED: '发起模型请求', MODEL_COMPLETED: '模型响应完成', MODEL_ERROR: '模型请求异常', MODEL_CANCELLED: '模型请求取消',
+  AGENT_STARTED: 'Agent 开始处理', AGENT_COMPLETED: 'Agent 处理完成', AGENT_ERROR: 'Agent 处理异常', AGENT_CANCELLED: 'Agent 已取消', AGENT_YIELDED: 'Agent 已保存进度并等待',
+  MODEL_STARTED: '发起模型请求', MODEL_COMPLETED: '模型响应完成', MODEL_ERROR: '模型请求异常', MODEL_CANCELLED: '模型请求取消', MODEL_YIELDED: '任务等待中，未请求模型',
   MODEL_ATTEMPT_STARTED: '请求候选模型', MODEL_ATTEMPT_COMPLETED: '候选模型响应完成', MODEL_ATTEMPT_ERROR: '候选模型请求失败', MODEL_ATTEMPT_CANCELLED: '候选模型请求取消',
   MODEL_CANDIDATE_SKIPPED: '跳过熔断模型', MODEL_FALLBACK_SELECTED: '转向备用候选',
   AUTHORIZATION_ALLOWED: '工具角色核验通过', AUTHORIZATION_DENIED: '工具角色核验拒绝',

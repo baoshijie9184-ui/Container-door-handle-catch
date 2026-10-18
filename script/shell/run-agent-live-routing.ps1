@@ -2,15 +2,18 @@
 param(
     [switch]$ExecuteLive,
     [ValidateSet('deepseek','dashscope')][string]$Provider = 'deepseek',
+    [ValidateSet('routing','workbench')][string]$Suite = 'routing',
+    [string]$WorkbenchMySqlConfig,
     [string]$MavenCommand
 )
 $ErrorActionPreference = 'Stop'
 if (-not $ExecuteLive) {
     Write-Host 'This evaluation calls a paid provider with synthetic business data.'
-    Write-Host 'Run with -ExecuteLive to execute the ten fixed cases. No automatic retry or fallback.'
+    Write-Host 'Run with -ExecuteLive; -Suite routing executes ten fixed cases, workbench verifies plan/async-child lifecycle. No automatic retry or fallback.'
     exit 0
 }
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
+if ($WorkbenchMySqlConfig -and $Suite -ne 'workbench') { throw 'WorkbenchMySqlConfig only applies to the workbench suite.' }
 if (-not (Test-Path -LiteralPath (Join-Path $projectRoot '.env'))) { throw 'Selected provider credentials must already exist in the private project .env.' }
 if (-not $MavenCommand) {
     $existing = Get-Command mvn.cmd -ErrorAction SilentlyContinue
@@ -42,17 +45,24 @@ foreach ($module in $modules) {
 }
 New-Item -ItemType Directory -Path (Join-Path $buildRoot 'eval') | Out-Null
 Copy-Item -LiteralPath (Join-Path $projectRoot 'eval/agent') -Destination (Join-Path $buildRoot 'eval') -Recurse
+$testClass = if ($Suite -eq 'workbench') { 'AgentWorkbenchLiveEvalTest' } else { 'AgentLiveRoutingEvalTest' }
+$enableProperty = if ($Suite -eq 'workbench') { '-Dagent.workbench.live=true' } else { '-Dagent.routing.live=true' }
 $arguments = @('-B','-f',(Join-Path $buildRoot 'pom.xml'),'-pl','doorhandle-module-ai','-am','test',
-    '-Dtest=AgentLiveRoutingEvalTest','-Dsurefire.failIfNoSpecifiedTests=false','-Dagent.routing.live=true',
+    "-Dtest=$testClass",'-Dsurefire.failIfNoSpecifiedTests=false',$enableProperty,
     "-Dagent.routing.project=$projectRoot","-Dagent.routing.output=$outputRoot","-Dagent.routing.provider=$Provider",
     "-Dagent.routing.commit=$commit","-Dagent.routing.dirty=$($dirty.ToString().ToLowerInvariant())")
+if ($WorkbenchMySqlConfig) { $arguments += "-Dagent.workbench.mysqlConfig=$((Resolve-Path -LiteralPath $WorkbenchMySqlConfig).Path)" }
 & $MavenCommand @arguments *> (Join-Path $runRoot 'maven.log')
 $buildExit = $LASTEXITCODE
 $reportPath = Join-Path $outputRoot 'report.json'
 if (-not (Test-Path -LiteralPath $reportPath)) { Write-Host "No live report produced. Inspect $runRoot/maven.log"; exit 1 }
 $report = Get-Content -LiteralPath $reportPath -Raw -Encoding UTF8 | ConvertFrom-Json
-$passed = @($report.results | Where-Object { $_.status -eq 'PASS' }).Count
-Write-Host "Live routing: $passed/$($report.declaredCases) passed; provider $($report.modelId); model requests $($report.modelRequests)"
+if ($Suite -eq 'workbench') {
+    Write-Host "Live workbench: gate=$($report.gatePassed); checks=$(@($report.checks).Count); database=$($report.databaseKind); provider=$($report.modelId); model requests=$($report.modelRequests)"
+} else {
+    $passed = @($report.results | Where-Object { $_.status -eq 'PASS' }).Count
+    Write-Host "Live routing: $passed/$($report.declaredCases) passed; provider $($report.modelId); model requests $($report.modelRequests)"
+}
 Write-Host "Private report: $reportPath"
 Write-Host 'Rule results are not human quality approval, production business authorization, or a bill.'
 if ($buildExit -ne 0 -or -not $report.gatePassed) { Write-Host 'Evaluation incomplete or failed. Inspect evidence; do not automatically repeat paid requests.'; exit 1 }
