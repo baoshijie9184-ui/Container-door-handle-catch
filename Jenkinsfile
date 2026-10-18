@@ -10,7 +10,8 @@ pipeline {
     }
     triggers { pollSCM('H/5 * * * *') }
     parameters {
-        choice(name: 'ACTION', choices: ['verify-deploy', 'verify', 'rollback'], description: '验证发布、仅验证，或回滚到上一次成功发布')
+        choice(name: 'ACTION', choices: ['verify-deploy', 'verify', 'rehearse', 'rollback'], description: '验证发布、仅验证、隔离真实应用升级回滚演练，或生产回滚')
+        booleanParam(name: 'REHEARSAL_KEEP', defaultValue: false, description: '仅在隔离演练全部通过后保留候选环境，供立即进行浏览器验收；不修改生产入口')
         string(name: 'BUILD_WORKSPACE', defaultValue: 'D:/AI/lunwen1/DoorHandleCatch/work/jenkins/workspace', description: '专用工作区；不能使用开发源码目录')
         string(name: 'DEPLOY_HOST', defaultValue: "${params.DEPLOY_HOST ?: ''}", description: '原 ECS 当前公网 IP；保留最近一次配置，节省停机后重新核对')
         string(name: 'DEPLOY_PORT', defaultValue: '22', description: '当前已验证的 SSH 端口；TLS 入口启用时显式指定对应端口')
@@ -63,11 +64,22 @@ pipeline {
             post { always { junit testResults: '**/target/surefire-reports/TEST-*.xml,artifacts/python-tests.xml', allowEmptyResults: true } }
         }
         stage('Package source') {
-            when { expression { params.ACTION == 'verify-deploy' } }
+            when { expression { params.ACTION in ['verify-deploy', 'rehearse'] } }
             steps { pwsh '& ./script/jenkins/pipeline.ps1 -Action Package' }
         }
+        stage('Rehearse application') {
+            when { expression { params.ACTION == 'rehearse' } }
+            steps {
+                withCredentials([
+                    sshUserPrivateKey(credentialsId: 'doorhandle-ecs-ssh', keyFileVariable: 'DEPLOY_KEY', usernameVariable: 'DEPLOY_USER'),
+                    file(credentialsId: 'doorhandle-ecs-known-hosts', variable: 'DEPLOY_KNOWN_HOSTS')
+                ]) {
+                    pwsh '& ./script/jenkins/pipeline.ps1 -Action Rehearse'
+                }
+            }
+        }
         stage('Deploy or rollback') {
-            when { expression { params.ACTION != 'verify' } }
+            when { expression { params.ACTION in ['verify-deploy', 'rollback'] } }
             steps {
                 withCredentials([
                     sshUserPrivateKey(credentialsId: 'doorhandle-ecs-ssh', keyFileVariable: 'DEPLOY_KEY', usernameVariable: 'DEPLOY_USER'),
