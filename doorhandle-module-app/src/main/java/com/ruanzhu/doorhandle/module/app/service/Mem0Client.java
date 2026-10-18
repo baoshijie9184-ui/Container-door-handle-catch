@@ -262,6 +262,7 @@ public class Mem0Client {
     }
     private HttpHeaders bridgeHeaders() {
         var headers = new HttpHeaders(); headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.set("X-Doorhandle-Memory-Protocol","2");
         if (bridgeToken != null && !bridgeToken.isBlank()) headers.set("X-Doorhandle-Memory-Token", bridgeToken);
         return headers;
     }

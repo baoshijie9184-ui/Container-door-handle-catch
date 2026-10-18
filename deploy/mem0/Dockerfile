@@ -1,5 +1,6 @@
 # syntax=docker/dockerfile:1
 FROM python:3.12-slim
+LABEL io.doorhandle.memory-protocol="2"
 WORKDIR /app
 ARG PIP_INDEX_URL=https://pypi.org/simple
 ENV PYTHONUNBUFFERED=1 PYTHONNOUSERSITE=1 MEM0_DATA_DIR=/data \

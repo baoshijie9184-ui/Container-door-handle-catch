@@ -29,6 +29,7 @@ class LifecycleStore:
                 cleanup_state TEXT NOT NULL, updated_at TEXT NOT NULL,
                 PRIMARY KEY(user_id,app_id,memory_id))""")
             db.execute("CREATE INDEX IF NOT EXISTS idx_memory_expiry ON memory_lifecycle(cleanup_state,auto_delete,expires_at)")
+            db.execute("UPDATE bridge_protocol_floor SET required_version=MAX(required_version,2) WHERE EXISTS(SELECT 1 FROM memory_lifecycle)")
             db.execute("""CREATE TABLE IF NOT EXISTS memory_cleanup_event (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, app_id TEXT NOT NULL,
                 memory_id TEXT NOT NULL, revision INTEGER NOT NULL, outcome TEXT NOT NULL, created_at TEXT NOT NULL)""")
@@ -65,6 +66,7 @@ class LifecycleStore:
                 raise ReceiptError(409, "Memory lifecycle changed; refresh before changing")
             row = db.execute("SELECT * FROM memory_lifecycle WHERE user_id=? AND app_id=? AND memory_id=?", (user, app, memory_id)).fetchone()
             self._event(db, row, "POLICY_CHANGED")
+            db.execute("UPDATE bridge_protocol_floor SET required_version=MAX(required_version,2)")
         return self.public(user, app, memory_id)
 
     @staticmethod

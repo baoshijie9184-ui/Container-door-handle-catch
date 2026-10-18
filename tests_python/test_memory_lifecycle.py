@@ -18,7 +18,7 @@ def setup(monkeypatch):
     fake = FakeMemory()
     monkeypatch.setattr(main, "memory_instance", fake)
     monkeypatch.setenv("MEM0_BRIDGE_TOKEN", "fixture")
-    return TestClient(main.app), fake, {"X-Doorhandle-Memory-Token": "fixture"}
+    return TestClient(main.app), fake, {"X-Doorhandle-Memory-Token": "fixture", "X-Doorhandle-Memory-Protocol":"2"}
 
 
 def policy(fake, **changes):

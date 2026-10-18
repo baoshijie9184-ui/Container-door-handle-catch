@@ -15,15 +15,15 @@ from pathlib import Path
 from typing import Any, Optional, Literal
 from contextlib import asynccontextmanager, contextmanager
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Header
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 from dotenv import load_dotenv
 try:
-    from .write_receipts import MemoryWriter, ReceiptError
+    from .write_receipts import MemoryWriter, ReceiptError, BRIDGE_PROTOCOL
     from .lifecycle import GovernedVectorStore, memory_digest
 except ImportError:  # Docker / start_server.py load main as a top-level module.
-    from write_receipts import MemoryWriter, ReceiptError
+    from write_receipts import MemoryWriter, ReceiptError, BRIDGE_PROTOCOL
     from lifecycle import GovernedVectorStore, memory_digest
 
 # 加载 .env 文件
@@ -230,10 +230,12 @@ class OwnedMemoryUpdateRequest(OwnedMemoryDeleteRequest):
         return value.strip()
 
 
-def public_memory_item(row: dict) -> dict:
-    return {"id": row["id"], "memory": row.get("memory", ""), "sourceSessionId": row.get("run_id"),
-            "createdAt": row.get("created_at"), "updatedAt": row.get("updated_at"), "digest": memory_digest(row),
-            "lifecycle": lifecycle_store().public(row.get("user_id"), row.get("agent_id"), row["id"])}
+def public_memory_item(row: dict, protocol="0") -> dict:
+    result={"id": row["id"], "memory": row.get("memory", ""), "sourceSessionId": row.get("run_id"),
+            "createdAt": row.get("created_at"), "updatedAt": row.get("updated_at"), "digest": memory_digest(row)}
+    if protocol == "2":
+        result["lifecycle"] = lifecycle_store().public(row.get("user_id"), row.get("agent_id"), row["id"])
+    return result
 
 
 def lifecycle_store():
@@ -307,10 +309,10 @@ def verify_memory_cleanup(request: OwnedMemoryGetRequest):
 
 
 @app.post("/memories/owned/get")
-def get_owned_memory(request: OwnedMemoryGetRequest):
+def get_owned_memory(request: OwnedMemoryGetRequest, protocol: Literal["0","1","2"] = Header("0", alias="X-Doorhandle-Memory-Protocol")):
     try:
         current = get_owned_record(request)
-        return {"code": 200, "data": public_memory_item(current)}
+        return {"code": 200, "data": public_memory_item(current, protocol)}
     except HTTPException:
         raise
     except Exception:
@@ -319,7 +321,7 @@ def get_owned_memory(request: OwnedMemoryGetRequest):
 
 
 @app.post("/memories/owned/list")
-def list_owned_memories(request: OwnedMemoryListRequest):
+def list_owned_memories(request: OwnedMemoryListRequest, protocol: Literal["0","1","2"] = Header("0", alias="X-Doorhandle-Memory-Protocol")):
     try:
         # Mem0 2.0.19 get_all 只有 top_k。使用当前 Chroma 的原生分页，避免每页全量扫描。
         collection = memory_instance.vector_store.collection
@@ -334,7 +336,7 @@ def list_owned_memories(request: OwnedMemoryListRequest):
             if payload and payload.get("user_id") == request.user_id and payload.get("agent_id") == request.app_id:
                 row = {key: payload.get(key) for key in ("user_id", "agent_id", "run_id", "created_at", "updated_at")}
                 row.update(id=id, memory=payload.get("data", ""))
-                items.append(public_memory_item(row))
+                items.append(public_memory_item(row, protocol))
         has_more = len(ids) > request.limit
         return {"code": 200, "data": {"items": items, "hasMore": has_more, "nextOffset": request.offset + request.limit if has_more else None}}
     except Exception:
@@ -436,7 +438,7 @@ class ApiResponse(BaseModel):
 @app.get("/health")
 async def health_check():
     """健康检查"""
-    return {"status": "ok", "service": "memory", "memory_scopes": ["SESSION", "ACCOUNT"], "governance": True, "owned_edit": True, "owned_pagination": True, "write_receipts": memory_writer is not None, "lifecycle": memory_writer is not None, "bridge_auth_configured": bool(os.getenv("MEM0_BRIDGE_TOKEN"))}
+    return {"status": "ok", "service": "memory", "memory_protocol": BRIDGE_PROTOCOL, "memory_scopes": ["SESSION", "ACCOUNT"], "governance": True, "owned_edit": True, "owned_pagination": True, "write_receipts": memory_writer is not None, "lifecycle": memory_writer is not None, "bridge_auth_configured": bool(os.getenv("MEM0_BRIDGE_TOKEN"))}
 
 
 @app.post("/memories/add", response_model=ApiResponse)
@@ -449,6 +451,8 @@ def add_memory(request: AddMemoryRequest):
         if result["status"] == "SUCCEEDED":
             return ApiResponse(data={"results": result["results"], "operation": result})
         if result["status"] == "RUNNING":
+            if request.request_id is None:
+                raise HTTPException(503, "Memory extraction is pending; not replayed", headers={"X-Memory-Operation-Started":"true"})
             return JSONResponse(status_code=202, content={"code": 202, "message": "Memory extraction is running", "data": {"operation": result}})
         return JSONResponse(status_code=409, content={"code": 409, "message": "Memory outcome needs verification; not replayed", "data": {"operation": result}})
     except ReceiptError as error:

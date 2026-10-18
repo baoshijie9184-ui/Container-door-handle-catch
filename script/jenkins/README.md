@@ -50,7 +50,7 @@ Windows 下 Jenkins 临时私钥可能继承工作区中的其他账号 ACL，Op
 
 ## 部署与恢复边界
 
-- 当前统一更新 **Java 后端、两套前端与 Mem0 私有桥接**。Mem0 镜像使用固定 SDK 依赖，启动成功后再替换后端；失败回滚同时恢复原 Mem0、后端和网页镜像。Chroma、PTH worker 和其他中间件继续复用已运行镜像。桥接回执与向量/历史共用既有卷，未决提炼在重启后只标记待核对，不重放。
+- 当前统一更新 **Java 后端、两套前端与 Mem0 私有桥接**。Mem0 镜像使用固定 SDK 依赖，先暂停后端和 Mem0 并读取持久协议要求，再核实桥接实际健康。回滚目标过旧时保留兼容 Mem0 原容器，只回滚后端和网页；其余情况正常替换桥接。核实通过才恢复后端；不可兼容时保持停止，不撤销记忆停用或回执保护。Chroma、PTH worker 和其他中间件继续复用已运行镜像。桥接回执与向量/历史共用既有卷，未决提炼在重启后只标记待核对，不重放。
 - 远端要求八项常驻服务健康；刚开机尚未就绪时稍后重跑。数据库迁移不自动执行，新增 SQL 须先核对兼容性和备份。
 - 每个任务禁止并发，服务器另用 `flock` 串行部署。新版本保存在 `REMOTE_ROOT/releases/ci-构建号-提交号`，`state/` 保存当前、上次目录及实际镜像 ID。
 - 沿用现有 Dockerfile 与云端源；构建网络失败不会切换应用。发布不执行 `down -v`、卷清理或数据库重建，不自动删除旧镜像或版本。
@@ -110,3 +110,5 @@ stunnel 为独立系统工具，采用 GPL-2.0-or-later 并有 OpenSSL 例外；
 - [Pipeline 与 pollSCM](https://www.jenkins.io/doc/book/pipeline/syntax/)
 - [控制器隔离](https://www.jenkins.io/doc/book/security/controller-isolation/)
 - [MIT 许可证](https://www.jenkins.io/license/)
+
+2026-10-18 回滚兼容保护：发布助手与 memory-compat.py 一同上传；支持故障应用回滚，但保留数据库健康门槛。state 记录实际桥接摘要、卷及只升不降的最低协议，Jenkins 构件记录是否保留桥接；被保留镜像加入清理保护。实际 Linux/Docker/ECS 演练尚未完成，见 [Mem0 跨版本回滚兼容保护](../../docs/Mem0跨版本回滚兼容保护.md)。

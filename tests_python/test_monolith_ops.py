@@ -110,6 +110,18 @@ def test_prune_protects_live_stopped_and_previous_images_and_only_old_app_tags(t
     assert old in result['protectedDigests'] and previous in result['protectedDigests']
 
 
+def test_prune_keeps_a_compatible_memory_image_even_without_a_container_reference(tmp_path,monkeypatch):
+    (tmp_path/'state').mkdir();pinned='sha256:'+'b'*64
+    (tmp_path/'state/memory-activation-images.yml').write_text('services:\n  mem0:\n    image: '+pinned+'\n')
+    rows=[{'Repository':'doorhandlecatch/mem0','Tag':f'ci-{n}-'+'e'*12,'ID':pinned if n==1 else 'sha256:'+str(n)*64} for n in range(1,5)]
+    def docker(*args,**kwargs):
+        if args[:2]==('ps','-aq'):return b''
+        if args[:2]==('image','inspect'):return next(row['ID'] for row in rows if row['Repository']+':'+row['Tag']==args[-1]).encode()
+        return '\n'.join(json.dumps(row) for row in rows).encode()
+    monkeypatch.setattr(ops,'docker',docker)
+    assert ops.prune_plan(tmp_path,3)['candidates']==[]
+
+
 def test_disk_backup_age_and_private_permissions_are_independent_health_signals(tmp_path,monkeypatch):
     runtime,_,_=fixture(monkeypatch,tmp_path)
     initial=ops.check(tmp_path,runtime);assert not initial['healthy'] and initial['backupAgeHours'] is None

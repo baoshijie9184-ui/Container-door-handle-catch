@@ -20,6 +20,9 @@ envfile="$runtime/deploy/cloud.env"
 export DOORHANDLE_ENV_FILE="$envfile"
 export DETECTION_BUILD_CONTEXT="$runtime/work/cloud/pth-worker-build"
 project=doorhandlecatch-monolith
+compat_helper="$(dirname "${BASH_SOURCE[0]}")/memory-compat.py"
+[[ -r "$compat_helper" ]] || { echo 'Memory compatibility helper is required.' >&2; exit 2; }
+memory_override=()
 exec 9>"$root/state/deploy.lock"
 flock -n 9 || { echo 'Another deployment is in progress.' >&2; exit 3; }
 
@@ -32,18 +35,20 @@ dc() {
     fi
     docker compose --project-name "$project" --env-file "$envfile" \
         -f "$dir/compose.monolith.yml" -f "$dir/compose.cloud.yml" -f "$dir/compose.detection.yml" \
-        "${overlays[@]}" -f "$override" "$@"
+        "${overlays[@]}" -f "$override" "${memory_override[@]}" "$@"
 }
 
 # Snapshot actual running image IDs, independent of a mutable tag or private env APP_IMAGE_TAG.
 snapshot() {
-    local file=$1 mode=$2 service cid image health
+    local file=$1 mode=$2 allow_unhealthy=${3:-no} service cid image health
     printf 'services:\n' > "$file"
     for service in backend nginx mysql redis kafka mem0 chroma detection-worker; do
         cid=$(docker ps -aq --filter "label=com.docker.compose.project=$project" --filter "label=com.docker.compose.service=$service")
         [[ -n "$cid" && "$cid" != *$'\n'* ]] || { echo "Expected one existing $service container." >&2; return 1; }
         health=$(docker inspect --format '{{.State.Status}}/{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$cid")
-        [[ "$health" == running/healthy ]] || { echo "$service is not healthy: $health" >&2; return 1; }
+        if [[ "$health" != running/healthy ]]; then
+            [[ "$allow_unhealthy" == yes && "$service" =~ ^(backend|nginx|mem0)$ ]] || { echo "$service is not healthy: $health" >&2; return 1; }
+        fi
         image=$(docker inspect --format '{{.Image}}' "$cid")
         [[ "$image" =~ ^sha256:[a-f0-9]{64}$ ]] || return 1
         if [[ "$mode" == all || "$service" == chroma || "$service" == detection-worker ]]; then
@@ -52,10 +57,27 @@ snapshot() {
     done
 }
 
+prepare_memory() {
+    local dir=$1 images=$2
+    memory_override=()
+    memory_action=$(dc "$dir" "$images" config --format json | python3 "$compat_helper" prepare --state "$root/state" --lock-fd 9) || return 1
+    [[ "$memory_action" == replace || "$memory_action" == preserve ]] || return 1
+    if [[ "$memory_action" == preserve ]]; then echo 'Retained the compatible memory bridge while rolling back application images.' >&2; fi
+    memory_override=(-f "$root/state/memory-activation-images.yml")
+}
+
+verify_memory() {
+    python3 "$compat_helper" verify --state "$root/state" --lock-fd 9
+}
+
 activate() {
     local dir=$1 images=$2
-    # The versioned memory bridge is part of the application; databases and PTH worker stay pinned.
-    dc "$dir" "$images" up -d --no-deps --no-build --pull never --wait --wait-timeout 240 mem0 || return 1
+    # Quiesce reads/writes, inspect the durable protocol floor, and pin an immutable compatible bridge.
+    prepare_memory "$dir" "$images" || return 1
+    if [[ "$memory_action" == replace ]]; then
+        dc "$dir" "$images" up -d --no-deps --no-build --pull never --wait --wait-timeout 240 mem0 || return 1
+    fi
+    verify_memory || return 1
     dc "$dir" "$images" up -d --no-deps --no-build --pull never --wait --wait-timeout 240 backend || return 1
     dc "$dir" "$images" up -d --no-deps --no-build --pull never --force-recreate --wait --wait-timeout 90 nginx || return 1
     dc "$dir" "$images" exec -T backend curl -fsS http://127.0.0.1:8080/actuator/health >/dev/null || return 1
@@ -70,7 +92,7 @@ if [[ "$action" == rollback ]]; then
     previous=$(cat "$root/state/previous-directory")
     [[ "$previous" == "$runtime" || "$previous" == "$root/releases/"* ]] || exit 2
     current=$(cat "$root/state/current-directory")
-    snapshot "$root/state/rollback-current.yml" all
+    snapshot "$root/state/rollback-current.yml" all yes
     if ! activate "$previous" "$root/state/previous-images.yml"; then
         echo 'Rollback health check failed; restoring current images.' >&2
         activate "$current" "$root/state/rollback-current.yml" || { echo 'Current release restoration also failed; manual recovery required.' >&2; exit 6; }

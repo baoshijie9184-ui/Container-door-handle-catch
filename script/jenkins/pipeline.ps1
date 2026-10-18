@@ -64,6 +64,7 @@ if ($Action -eq 'Preflight') {
 $remoteInbox = "$remoteRoot/inbox/$tag"
 Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "umask 077; mkdir -p '$remoteInbox'"))
 Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, 'script/jenkins/deploy-remote.sh', "${destination}:$remoteInbox/deploy-remote.sh"))
+Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, 'script/docker/memory-compat.py', "${destination}:$remoteInbox/memory-compat.py"))
 if ($env:ACTION -eq 'rollback') {
     Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "bash '$remoteInbox/deploy-remote.sh' rollback '$remoteRoot' '$runtime' '$tag'"))
 } elseif ($env:ACTION -eq 'verify-deploy') {
@@ -71,4 +72,8 @@ if ($env:ACTION -eq 'rollback') {
     Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, 'artifacts/source.tar.gz', "${destination}:$remoteInbox/source.tar.gz"))
     Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "bash '$remoteInbox/deploy-remote.sh' deploy '$remoteRoot' '$runtime' '$tag' '$sha'"))
 } else { throw 'Unknown pipeline ACTION' }
-@{ release = $tag; action = $env:ACTION; host = $targetHost; status = 'healthy' } | ConvertTo-Json | Set-Content -LiteralPath artifacts/deployment.json -Encoding UTF8
+$memoryTransitionText = Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "cat '$remoteRoot/state/memory-transition.json'"))
+$memoryTransition = ($memoryTransitionText -join "`n") | ConvertFrom-Json
+if ($memoryTransition.phase -ne 'VERIFIED') { throw 'Memory transition has not passed protocol verification' }
+$memoryTransition | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath artifacts/memory-transition.json -Encoding UTF8
+@{ release = $tag; action = $env:ACTION; host = $targetHost; status = 'healthy'; memoryProtocolRequired = $memoryTransition.requiredProtocol; memoryBridgePreserved = $memoryTransition.preserved } | ConvertTo-Json | Set-Content -LiteralPath artifacts/deployment.json -Encoding UTF8

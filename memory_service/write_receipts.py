@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 CST = timezone(timedelta(hours=8))
+BRIDGE_PROTOCOL = 2
 
 
 def now():
@@ -38,6 +39,7 @@ class ProcessFence:
         lock = path / "writer.lock"
         if lock.is_symlink():
             raise ValueError("Memory writer lock cannot be a link")
+        self.preexisting_lock = lock.exists()
         self.file = open(lock, "a+b")
         try:
             if os.name == "nt":
@@ -61,11 +63,23 @@ class ProcessFence:
 
 
 class ReceiptStore:
-    def __init__(self, directory):
+    def __init__(self, directory, require_existing=False):
         self.path = Path(directory) / "write-receipts.sqlite3"
         if self.path.is_symlink():
             raise ValueError("Memory receipts cannot be a link")
-        with closing(self.connect()) as db, db:
+        if require_existing and not self.path.is_file():
+            raise ValueError("An existing bridge journal is missing")
+        with closing(self.connect(create=True)) as db, db:
+            tables={row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if require_existing and 'memory_write_receipt' not in tables:
+                raise ValueError("An existing bridge journal is incomplete")
+            if 'bridge_protocol_floor' in tables:
+                rows=db.execute("SELECT required_version FROM bridge_protocol_floor WHERE id=1").fetchall()
+                if len(rows)!=1 or type(rows[0][0]) is not int or not 0<=rows[0][0]<=BRIDGE_PROTOCOL:
+                    raise ValueError("Stored memory protocol requires a newer bridge")
+                required={'memory_write_receipt'} if rows[0][0]>=1 else set()
+                if rows[0][0]>=2:required.update({'memory_lifecycle','memory_cleanup_event'})
+                if not required.issubset(tables):raise ValueError("Required memory protocol tables are missing")
             db.execute("PRAGMA journal_mode=WAL")
             db.execute("""CREATE TABLE IF NOT EXISTS memory_write_receipt (
                 user_id TEXT NOT NULL, app_id TEXT NOT NULL, request_id TEXT NOT NULL,
@@ -73,10 +87,13 @@ class ReceiptStore:
                 result_json TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL, deadline_at TEXT NOT NULL,
                 PRIMARY KEY(user_id,app_id,request_id))""")
+            db.execute("CREATE TABLE IF NOT EXISTS bridge_protocol_floor (id INTEGER PRIMARY KEY CHECK(id=1), required_version INTEGER NOT NULL)")
+            db.execute("INSERT OR IGNORE INTO bridge_protocol_floor VALUES(1,0)")
+            db.execute("UPDATE bridge_protocol_floor SET required_version=MAX(required_version,1) WHERE EXISTS(SELECT 1 FROM memory_write_receipt)")
         os.chmod(self.path, 0o600)
 
-    def connect(self):
-        db = sqlite3.connect(self.path, timeout=1)
+    def connect(self, create=False):
+        db = sqlite3.connect(self.path.absolute().as_uri()+('?mode=rwc' if create else '?mode=rw'), uri=True, timeout=1)
         db.row_factory = sqlite3.Row
         db.execute("PRAGMA synchronous=FULL")
         return db
@@ -96,6 +113,7 @@ class ReceiptStore:
         with closing(self.connect()) as db, db:
             db.execute("INSERT INTO memory_write_receipt(user_id,app_id,request_id,fingerprint,status,created_at,updated_at,deadline_at) VALUES(?,?,?,?,'RUNNING',?,?,?)",
                        (user, app, request_id, fingerprint, timestamp, timestamp, deadline))
+            db.execute("UPDATE bridge_protocol_floor SET required_version=MAX(required_version,1)")
 
     def finish(self, user, app, request_id, status, results=()):
         if status not in {"SUCCEEDED", "NEEDS_REVIEW", "NOT_STARTED"}:
@@ -149,7 +167,7 @@ class MemoryWriter:
     def __init__(self, directory, memory, write_lock, *, response_wait=3.0, operation_seconds=120):
         self.fence = ProcessFence(directory)
         try:
-            self.store = ReceiptStore(self.fence.path)
+            self.store = ReceiptStore(self.fence.path, require_existing=self.fence.preexisting_lock)
             self.store.interrupted()
             try:
                 from .lifecycle import LifecycleStore

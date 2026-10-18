@@ -517,7 +517,7 @@ def install_timers(root, runtime, apply=False):
 def prune_plan(root, keep=3):
     containers = docker('ps', '-aq').decode().split()
     protected = {row['Image'] for row in json.loads(docker('inspect', *containers))} if containers else set()
-    for path in [root/'state/previous-images.yml', *root.glob('releases/*/runtime-images.yml')]:
+    for path in [root/'state/previous-images.yml', root/'state/memory-activation-images.yml', *root.glob('releases/*/runtime-images.yml')]:
         if path.is_file():
             protected.update(re.findall(r'sha256:[a-f0-9]{64}', path.read_text(encoding='utf8')))
     records = [json.loads(line) for line in docker('image', 'ls', '--no-trunc', '--format', '{{json .}}').decode().splitlines()]
