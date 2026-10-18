@@ -82,7 +82,10 @@ public class MemoryPreferenceService {
     }
     private boolean reserveMutation(TenantContext owner,String memoryId,String action,String requestId,String fingerprint) {
         return Boolean.TRUE.equals(tx.execute(status->{
-            jdbc.update("INSERT IGNORE INTO agent_memory_audit(owner_user_id,action_name,outcome,request_key,memory_id,content_digest,created_at,updated_at) VALUES(?,?,'PENDING',?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",owner.userId(),action,requestId,memoryId,fingerprint);
+            // Duplicate INSERT IGNORE can hold shared locks that deadlock when
+            // every contender then upgrades to FOR UPDATE. Acquire the duplicate
+            // row's exclusive lock directly without changing its audit contents.
+            jdbc.update("INSERT INTO agent_memory_audit(owner_user_id,action_name,outcome,request_key,memory_id,content_digest,created_at,updated_at) VALUES(?,?,'PENDING',?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP) ON DUPLICATE KEY UPDATE id=id",owner.userId(),action,requestId,memoryId,fingerprint);
             var rows=jdbc.queryForList("SELECT action_name,memory_id,content_digest,outcome FROM agent_memory_audit WHERE owner_user_id=? AND request_key=? FOR UPDATE",owner.userId(),requestId);
             if(rows.size()!=1)throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"记忆操作审计暂不可用");
             var row=rows.get(0);

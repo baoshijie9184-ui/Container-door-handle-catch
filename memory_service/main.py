@@ -94,7 +94,6 @@ def get_memory_config():
                 "model": llm_model,
                 "api_key": llm_api_key,
                 "openai_base_url": llm_base_url,
-                "is_reasoning_model": True,
             }
         },
         "embedder": {
@@ -113,6 +112,17 @@ def get_memory_config():
             }
         }
     }
+    # The local development SDK adds this option; pinned PyPI 2.0.19 does not.
+    # Detect constructor support before initialization rather than retrying a
+    # partially initialized memory store after a TypeError.
+    import inspect
+    from mem0.configs.llms.openai import OpenAIConfig
+    if "is_reasoning_model" in inspect.signature(OpenAIConfig).parameters:
+        config["llm"]["config"]["is_reasoning_model"] = True
+    if llm_model.rsplit("/", 1)[-1] in {"kimi-k3", "kimi-k2.7-code"}:
+        # Pinned PyPI uses the general-model parameter path for Kimi. Its
+        # default temperature=0.1 is rejected by these thinking-only models.
+        config["llm"]["config"].update(temperature=1.0, top_p=0.95)
     # 服务器可将整个目录挂载为持久卷；未配置时保留本机既有路径。
     data_dir = os.getenv("MEM0_DATA_DIR")
     if data_dir:
@@ -133,8 +143,9 @@ def bounded_setting(name, default, minimum, maximum):
 def configure_provider_timeouts(memory):
     # The pinned Mem0 constructor does not forward a timeout to its OpenAI clients.
     timeout = bounded_setting("MEM0_PROVIDER_TIMEOUT_SECONDS", 15, 0.1, 120)
-    for provider in (memory.llm, memory.embedding_model):
-        provider.client = provider.client.with_options(timeout=timeout, max_retries=0)
+    extraction_timeout = bounded_setting("MEM0_EXTRACTION_TIMEOUT_SECONDS", 30, 0.1, 120)
+    memory.llm.client = memory.llm.client.with_options(timeout=extraction_timeout, max_retries=0)
+    memory.embedding_model.client = memory.embedding_model.client.with_options(timeout=timeout, max_retries=0)
 
 
 @asynccontextmanager

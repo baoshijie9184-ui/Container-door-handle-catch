@@ -16,15 +16,17 @@ import mem0.memory.main as sdk
 sdk.capture_event=lambda *a,**k:None
 sdk.lemmatize_for_bm25=lambda text:text
 sdk.extract_entities_batch=lambda texts:[[] for _ in texts]
-memory=Memory.from_config({
-    'llm':{'provider':'openai','config':{'api_key':'fixture','model':'fixture','openai_base_url':'http://127.0.0.1:1/v1'}},
-    'embedder':{'provider':'openai','config':{'api_key':'fixture','model':'fixture','embedding_dims':4,'openai_base_url':'http://127.0.0.1:1/v1'}},
-    'vector_store':{'provider':'chroma','config':{'path':'/tmp/review-smoke/chroma','collection_name':'review_smoke'}},'history_db_path':'/tmp/review-smoke/history.sqlite3'})
+os.environ.update({'DASHSCOPE_API_KEY':'fixture','EMBEDDING_API_KEY':'fixture','DASHSCOPE_BASE_URL':'http://127.0.0.1:1/v1',
+                   'EMBEDDING_BASE_URL':'http://127.0.0.1:1/v1','MEM0_LLM_MODEL':'kimi-k3','MEM0_DATA_DIR':'/tmp/review-smoke'})
+config=main.get_memory_config()
+config['embedder']['config'].update(model='fixture',embedding_dims=4)
+config['vector_store']['config']['collection_name']='review_smoke'
+memory=Memory.from_config(config)
 memory.embedding_model.embed=lambda *a,**k:[.1,.2,.3,.4]
 memory.embedding_model.embed_batch=lambda texts,*a,**k:[[.1,.2,.3,.4] for _ in texts]
 writer=MemoryWriter('/tmp/review-smoke/receipts',lambda:memory,threading.Lock())
 memory.vector_store=GovernedVectorStore(memory.vector_store,writer.lifecycle)
-user,app='doorhandlecatch:user:42','doorhandlecatch';calls=[];checks=[]
+user,app='doorhandlecatch:user:42','doorhandlecatch';calls=[];checks=['Production bridge-generated config accepted by installed SDK']
 def model(**kwargs):
     calls.append(1);body=json.loads(kwargs['messages'][1]['content'])
     return json.dumps({'labels':[{'id':r['id'],'label':'DUPLICATE'} for r in body['candidates']]})

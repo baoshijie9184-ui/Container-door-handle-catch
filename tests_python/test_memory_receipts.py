@@ -236,6 +236,7 @@ def test_provider_timeout_configuration_preserves_clients_and_disables_retries(m
     second = OpenAI(api_key="embedding-fixture", base_url="http://127.0.0.1:2/v1")
     memory = SimpleNamespace(llm=SimpleNamespace(client=first), embedding_model=SimpleNamespace(client=second))
     monkeypatch.setenv("MEM0_PROVIDER_TIMEOUT_SECONDS", ".2")
+    monkeypatch.setenv("MEM0_EXTRACTION_TIMEOUT_SECONDS", ".2")
     try:
         main.configure_provider_timeouts(memory)
         assert str(memory.llm.client.base_url) == "http://127.0.0.1:1/v1/" and memory.llm.client.api_key == "fixture-key"
@@ -261,6 +262,7 @@ def test_real_sdk_times_out_once_without_retrying(monkeypatch):
     http=http.server.ThreadingHTTPServer(("127.0.0.1",0),Handler)
     thread=threading.Thread(target=http.serve_forever,daemon=True);thread.start()
     monkeypatch.setenv("MEM0_PROVIDER_TIMEOUT_SECONDS", ".1")
+    monkeypatch.setenv("MEM0_EXTRACTION_TIMEOUT_SECONDS", ".1")
     client=openai.OpenAI(api_key="fixture-not-real",base_url=f"http://127.0.0.1:{http.server_port}/v1")
     memory=SimpleNamespace(llm=SimpleNamespace(client=client),embedding_model=SimpleNamespace(client=client))
     try:
@@ -268,6 +270,19 @@ def test_real_sdk_times_out_once_without_retrying(monkeypatch):
         with pytest.raises(openai.APITimeoutError): memory.llm.client.chat.completions.create(model="fixture",messages=[{"role":"user","content":"fixture"}])
         assert calls==["/v1/chat/completions"]
     finally: client.close();http.shutdown();http.server_close();thread.join(timeout=2)
+
+
+def test_extraction_deadline_is_independent_from_embedding_and_neither_client_retries(monkeypatch):
+    import openai
+    monkeypatch.setenv('MEM0_PROVIDER_TIMEOUT_SECONDS','.2')
+    monkeypatch.setenv('MEM0_EXTRACTION_TIMEOUT_SECONDS','30')
+    client=openai.OpenAI(api_key='fixture',base_url='http://127.0.0.1:1/v1')
+    memory=SimpleNamespace(llm=SimpleNamespace(client=client),embedding_model=SimpleNamespace(client=client))
+    try:
+        main.configure_provider_timeouts(memory)
+        assert memory.llm.client.timeout==30 and memory.embedding_model.client.timeout==.2
+        assert memory.llm.client.max_retries==memory.embedding_model.client.max_retries==0
+    finally:client.close()
 
 
 def test_native_mem0_and_real_chroma_confirm_results_and_swallowed_provider_failure(tmp_path, monkeypatch):

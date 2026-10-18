@@ -171,3 +171,20 @@ def test_server_data_directory_keeps_vector_and_history_together(monkeypatch,tmp
     config=main.get_memory_config()
     assert config['vector_store']['config']['path']==str(tmp_path/'memory-volume'/'chroma')
     assert config['history_db_path']==str(tmp_path/'memory-volume'/'history.db')
+
+
+def test_production_llm_constructor_accepts_generated_config_without_a_paid_request(monkeypatch,tmp_path):
+    import inspect
+    from mem0.configs.llms.openai import OpenAIConfig
+    from mem0.utils.factory import LlmFactory
+    for key in ('DASHSCOPE_API_KEY','EMBEDDING_API_KEY'):monkeypatch.setenv(key,'fixture-not-a-real-key')
+    monkeypatch.setenv('MEM0_DATA_DIR',str(tmp_path/'config-probe'))
+    for model in ['kimi-k3','kimi-k2.7-code','fixture-regular']:
+        monkeypatch.setenv('MEM0_LLM_MODEL',model)
+        config=main.get_memory_config()['llm']['config']
+        if model.startswith('kimi-'):assert config['temperature']==1.0 and config['top_p']==0.95
+        else:assert 'temperature' not in config and 'top_p' not in config
+        assert ('is_reasoning_model' in config)==('is_reasoning_model' in inspect.signature(OpenAIConfig).parameters)
+        client=LlmFactory.create('openai',config)
+        try:assert client.config.model==config['model']
+        finally:client.client.close()
