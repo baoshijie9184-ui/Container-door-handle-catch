@@ -144,3 +144,25 @@ def test_foreign_container_rejected_before_compose_down():
     run.config, run.project, run.ops = config(), PROJECT, Ops()
     run.dc = lambda *args: pytest.fail('Foreign container must not be removed')
     with pytest.raises(RuntimeError, match='container ownership'): run.cleanup()
+
+
+@pytest.mark.parametrize('existing', ['container', 'volume', 'network'])
+def test_rehearsal_requires_fresh_resources_before_restore(existing):
+    class Ops:
+        def docker(self, *args):
+            if args[0] == 'ps': return b'existing-id' if existing == 'container' else b''
+            if args[0] == existing: return (PROJECT+('_data' if existing == 'volume' else '-main')).encode()
+            return b''
+    run = rehearsal.Rehearsal.__new__(rehearsal.Rehearsal)
+    run.config, run.project, run.ops = config(), PROJECT, Ops()
+    with pytest.raises(RuntimeError, match='already exist'): run.require_fresh_resources()
+
+
+@pytest.mark.parametrize('data', ['', 'GROUP TOPIC PARTITION CURRENT-OFFSET LOG-END-OFFSET LAG',
+    'worker task 0 - 9 -', 'worker task 0 8 9 1', 'worker task 0 9 9 0\nworker other 1 5 8 3'])
+def test_missing_unknown_or_pending_worker_offsets_cannot_start_copied_detection(data):
+    with pytest.raises(RuntimeError): rehearsal.require_no_detection_backlog(data, 'worker')
+
+
+def test_every_worker_partition_requires_a_known_committed_end_offset():
+    rehearsal.require_no_detection_backlog('GROUP TOPIC PARTITION CURRENT-OFFSET LOG-END-OFFSET LAG\nworker task 0 9 9 0 - - -\nworker task 1 12 12 0 - - -', 'worker')

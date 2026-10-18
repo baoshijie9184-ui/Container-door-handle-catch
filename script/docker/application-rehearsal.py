@@ -16,6 +16,7 @@ import socket
 import subprocess
 import tarfile
 import time
+import traceback
 import urllib.error
 import urllib.request
 import uuid
@@ -141,6 +142,14 @@ def validate_isolation(config, project):
                     'Public rehearsal port rejected')
 
 
+def require_no_detection_backlog(output, group):
+    rows = [line.split() for line in output.splitlines() if line.split() and line.split()[0] == group]
+    require(bool(rows), 'Detection consumer offset is unknown; do not start a copied worker')
+    for row in rows:
+        require(len(row) >= 6 and all(part.isdigit() for part in row[2:6]) and row[3] == row[4] and int(row[5]) == 0,
+                'Detection backlog or unknown offset; do not replay copied work')
+
+
 class Rehearsal:
     def __init__(self, directory, config, ops, guard, baseline):
         self.directory, self.config, self.ops, self.guard = directory, config, ops, guard
@@ -197,6 +206,14 @@ with urllib.request.urlopen(request,timeout=40) as response:print(response.read(
         require(row['Config']['Labels'].get('com.docker.compose.project') == self.project, 'Container ownership differs')
         return row
 
+    def require_fresh_resources(self):
+        require(not self.ops.docker('ps', '-aq', '--filter', 'label=com.docker.compose.project='+self.project).strip(),
+                'Rehearsal containers already exist')
+        for kind in ('volume', 'network'):
+            existing = set(self.ops.docker(kind, 'ls', '--format', '{{.Name}}').decode().splitlines())
+            require(not existing.intersection(definition['name'] for definition in self.config.get(kind+'s', {}).values()),
+                    'Rehearsal resource already exists; refusing to restore into it')
+
     def production_unchanged(self):
         current = self.ops.inventory()
         stable = lambda rows: sorted((r['id'], r['image'], r['running'], json.dumps(r['mounts'], sort_keys=True)) for r in rows)
@@ -242,6 +259,7 @@ with urllib.request.urlopen(request,timeout=40) as response:print(response.read(
                 require((data.get('Labels') or {}).get('io.doorhandle.rehearsal') == self.project, 'Cleanup ownership differs')
         self.dc('down', '--volumes', '--remove-orphans', timeout=240)
         self.report['cleaned'] = True
+        self.report['kept'] = False
         self.persist()
 
 
@@ -377,6 +395,7 @@ def run(args):
         source.mkdir(mode=0o700)
         extract_source(archive, source)
         baseline = ops.inventory()
+        require(all(ops.healthy(row['id']) for row in baseline if row['running']), 'Production is unhealthy; defer resource-intensive rehearsal')
         env = {**os.environ, 'DOORHANDLE_ENV_FILE': str(runtime/'deploy/cloud.env'),
                'DETECTION_BUILD_CONTEXT': str(runtime/'work/cloud/pth-worker-build'), 'APP_IMAGE_TAG': args.tag}
         command = ['compose', '--project-name', project, '--env-file', str(runtime/'deploy/cloud.env')]
@@ -385,8 +404,9 @@ def run(args):
         config = json.loads(ops.docker(*command, 'config', '--format', 'json', env=env))
         config = isolated_config(config, project, args.port, manifest['images'], manifest['databaseName'])
         instance = Rehearsal(directory, config, ops, guard, baseline)
-        instance.report.update(snapshot=snapshot.name, release=args.tag, sourceSha256=args.source_sha256)
+        instance.report.update(snapshot=snapshot.name, release=args.tag, sourceSha256=args.source_sha256, port=args.port)
         instance.persist()
+        instance.require_fresh_resources()
         print(json.dumps({'project': project, 'phase': 'BUILDING', 'port': args.port}), flush=True)
         succeeded = False
         try:
@@ -429,6 +449,13 @@ def run(args):
                       "SELECT COUNT(*) FROM agent_workbench_item WHERE (kind='EXECUTION' AND status IN ('RUNNING','READY')) OR (kind='CHILD' AND status IN ('QUEUED','RUNNING'))",
                       "SELECT COUNT(*) FROM agent_mcp_install_job WHERE status IN ('QUEUED','RUNNING')"]
             instance.check('Backup has no automatically executable Agent or installation work', all(ops.db(mysql, sql).strip() == '0' for sql in checks))
+            instance.dc('up', '-d', '--no-build', '--pull', 'never', '--wait', '--wait-timeout', '180', 'kafka', timeout=210)
+            group = config['services']['detection-worker']['environment']['KAFKA_CONSUMER_GROUP']
+            require(isinstance(group, str) and re.fullmatch(r'[A-Za-z0-9_.-]{1,128}', group), 'Unexpected detection consumer group')
+            offsets = ops.docker('exec', instance.row('kafka')['Id'], '/opt/kafka/bin/kafka-consumer-groups.sh',
+                                 '--bootstrap-server', 'kafka:9092', '--describe', '--group', group, timeout=45).decode()
+            require_no_detection_backlog(offsets, group)
+            instance.check('Restored Kafka has committed zero-lag worker offsets; copied detection is not replayed', True)
             instance.dc('up', '-d', '--no-build', '--pull', 'never', '--wait', '--wait-timeout', '240', timeout=420)
             smoke(instance, args.port)
             marker = upload_marker(args.port)
@@ -453,6 +480,9 @@ def run(args):
             succeeded = True
         except BaseException:
             instance.report['failure'] = 'Rehearsal did not complete; inspect private evidence before retrying'
+            with (directory/'failure.log').open('x', encoding='utf8') as stream:
+                os.chmod(stream.name, 0o600)
+                stream.write(traceback.format_exc())
             instance.persist()
             raise
         finally:
