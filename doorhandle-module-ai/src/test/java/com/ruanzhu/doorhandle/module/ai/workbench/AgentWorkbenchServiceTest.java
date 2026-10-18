@@ -37,7 +37,8 @@ class AgentWorkbenchServiceTest {
         if(Boolean.getBoolean("workbench.mysql")){
             var config=new ObjectMapper().readTree(Path.of("../work/workbench-mysql/connection.json").toFile());String database=config.path("database").asText();
             if(!database.matches("doorhandle_wb_verify_[a-f0-9]{10}")||!config.path("url").asText().startsWith("jdbc:mysql://127.0.0.1:13308/"+database+"?"))throw new IllegalStateException("Only the isolated verification database is allowed");
-            pool=new com.zaxxer.hikari.HikariDataSource();pool.setJdbcUrl(config.path("url").asText()+"&connectTimeout=8000&socketTimeout=15000");pool.setUsername(config.path("username").asText());pool.setPassword(config.path("password").asText());pool.setMaximumPoolSize(8);pool.setMinimumIdle(1);source=pool;jdbc=new JdbcTemplate(source);
+            pool=new com.zaxxer.hikari.HikariDataSource();pool.setJdbcUrl(config.path("url").asText()+"&connectTimeout=8000&socketTimeout=15000");pool.setUsername(config.path("username").asText());pool.setPassword(config.path("password").asText());pool.setConnectionInitSql("SET time_zone = '+08:00'");pool.setMaximumPoolSize(8);pool.setMinimumIdle(1);source=pool;jdbc=new JdbcTemplate(source);
+            assertThat(jdbc.queryForObject("SELECT @@session.time_zone",String.class)).isEqualTo("+08:00");
             for(String table:List.of("agent_workbench_sdk_state","agent_workbench_request","agent_workbench_audit","agent_workbench_item","agent_workbench_owner"))jdbc.execute("DROP TABLE IF EXISTS "+table);
             ddl=Files.readString(Path.of("../sql/mysql/migration-V37-agent-workbench.sql")).replaceAll("(?m)^--.*$", "");
         }
@@ -235,9 +236,9 @@ class AgentWorkbenchServiceTest {
         var main=scope("查看任务");call(main,"start_background_task","child-1",Map.of("specialist","detection-task","question","批次 A"));var child=item("CHILD");var data=new LinkedHashMap<>(store.require(1,"s1",child.id()).data());data.put("runId","child-run");store.update(store.require(1,"s1",child.id()),"RUNNING",data,"TEST_STARTED");
         var specialist=service.new Scope(alice,"s1",child.id(),"child-run","detection-task");call(specialist,"ask_user_question","child-question",Map.of("text","缺少批次编号","questionType","TEXT"));var question=item("QUESTION");service.command(alice,"s1",question.id(),question.revision(),"cancel-question","cancel",Map.of());assertThat(store.require(1,"s1",child.id()).status()).isEqualTo("CANCELLED");assertThat(item("EXECUTION").status()).isEqualTo("READY");
     }
-    @Test @Timeout(75) @org.junit.jupiter.api.condition.EnabledIfSystemProperty(named="workbench.mysql",matches="true")
+    @Test @Timeout(180) @org.junit.jupiter.api.condition.EnabledIfSystemProperty(named="workbench.mysql",matches="true")
     void processDeathAfterCompletedToolRestoresSdkWithoutRepeatingTheEffect()throws Exception{crashAndRecover("completed",24);}
-    @Test @Timeout(75) @org.junit.jupiter.api.condition.EnabledIfSystemProperty(named="workbench.mysql",matches="true")
+    @Test @Timeout(180) @org.junit.jupiter.api.condition.EnabledIfSystemProperty(named="workbench.mysql",matches="true")
     void processDeathInsideWriteLeavesUnknownReceiptAndCannotBeReplayed()throws Exception{crashAndRecover("unknown",23);}
     @org.junit.jupiter.params.ParameterizedTest @org.junit.jupiter.params.provider.ValueSource(strings={"before-model","before-effect","waiting","child"})
     @Timeout(75) @org.junit.jupiter.api.condition.EnabledIfSystemProperty(named="workbench.mysql",matches="true")
@@ -250,15 +251,40 @@ class AgentWorkbenchServiceTest {
     }
     private void haltProcess(String scenario,int expectedExit)throws Exception{
         store.jdbc().execute("DROP TABLE IF EXISTS agent_workbench_crash_effect");store.jdbc().execute("CREATE TABLE agent_workbench_crash_effect(id BIGINT PRIMARY KEY)");
-        String javaExecutable=Path.of(System.getProperty("java.home"),"bin","java.exe").toString();String classpath=System.getProperty("surefire.test.class.path",System.getProperty("java.class.path"));
+        String javaExecutable=Path.of(System.getProperty("java.home"),"bin",System.getProperty("os.name").toLowerCase(Locale.ROOT).contains("win")?"java.exe":"java").toString();String classpath=System.getProperty("surefire.test.class.path",System.getProperty("java.class.path"));
         var process=new ProcessBuilder(javaExecutable,"-cp",classpath,WorkbenchCrashProbe.class.getName(),scenario).redirectErrorStream(true).redirectOutput(Path.of("../work/workbench-mysql/crash-"+scenario+".log").toFile()).start();
-        assertThat(process.waitFor(55,TimeUnit.SECONDS)).as("isolated JVM must exit at the injection point").isTrue();assertThat(process.exitValue()).isEqualTo(expectedExit);
+        try{assertThat(process.waitFor(55,TimeUnit.SECONDS)).as("isolated JVM must exit at the injection point").isTrue();assertThat(process.exitValue()).isEqualTo(expectedExit);}finally{if(process.isAlive()){process.destroyForcibly();process.waitFor(10,TimeUnit.SECONDS);}}
     }
     private void crashAndRecover(String scenario,int expectedExit)throws Exception{
         haltProcess(scenario,expectedExit);
         store.jdbc().update("UPDATE agent_workbench_item SET updated_at=? WHERE kind='EXECUTION'",store.jdbc().queryForObject("SELECT CURRENT_TIMESTAMP(6)",java.time.LocalDateTime.class).minusMinutes(5));service.recoverStale();var interrupted=item("EXECUTION");assertThat(interrupted.status()).isEqualTo("NEEDS_REVIEW");
-        if(scenario.equals("unknown")){assertThatThrownBy(()->service.command(alice,"s1",interrupted.id(),interrupted.revision(),UUID.randomUUID().toString(),"resume",Map.of())).hasMessageContaining("未知");}
-        else{service.command(alice,"s1",interrupted.id(),interrupted.revision(),UUID.randomUUID().toString(),"resume",Map.of());var restored=service.prepare(alice,"s1","用户确认恢复","new-process-attempt");restored.repairState();var sdk=restored.stateStore().get("1",restored.sdkSession(),"agent_state",AgentState.class).orElseThrow();assertThat(sdk.getContext().stream().flatMap(msg->msg.getContentBlocks(ToolResultBlock.class).stream()).anyMatch(result->"durable-effect".equals(result.getId()))).isTrue();restored.release();}
+        if(scenario.equals("unknown")){assertThatThrownBy(()->service.command(alice,"s1",interrupted.id(),interrupted.revision(),UUID.randomUUID().toString(),"resume",Map.of())).hasMessageContaining("未知");assertThat(item("EXECUTION").status()).isEqualTo("NEEDS_REVIEW");assertThat(store.jdbc().queryForObject("SELECT status FROM agent_workbench_item WHERE kind='TOOL'",String.class)).isEqualTo("UNKNOWN");verify(app,never()).continueSession(any(),anyString(),anyString(),anyString());}
+        else resumeKnownEffectThroughOneWinningSdkExecution(interrupted);
         assertThat(store.jdbc().queryForObject("SELECT COUNT(*) FROM agent_workbench_crash_effect",Integer.class)).isEqualTo(1);
+    }
+    private void resumeKnownEffectThroughOneWinningSdkExecution(AgentWorkbenchApi.Item interrupted)throws Exception{
+        String originalReceipt=store.jdbc().queryForObject("SELECT payload FROM agent_workbench_item WHERE kind='TOOL'",String.class);
+        var journal=mock(AgentJournal.class);when(journal.enabled()).thenReturn(true);var provider=mock(ObjectProvider.class);when(provider.getObject()).thenReturn(app);
+        var other=new AgentWorkbenchService(new WorkbenchStore(store.jdbc(),new DataSourceTransactionManager(pool),new ObjectMapper()),properties,users,provider,factory,journal);
+        var racers=Executors.newFixedThreadPool(2);
+        try{
+            var gate=new CountDownLatch(1);var statuses=new CopyOnWriteArrayList<String>();
+            var requests=new ArrayList<Future<?>>();
+            for(var candidate:List.of(service,other))requests.add(racers.submit(()->{gate.await();try{statuses.add(candidate.command(alice,"s1",interrupted.id(),interrupted.revision(),UUID.randomUUID().toString(),"resume",Map.of()).status());}catch(org.springframework.web.server.ResponseStatusException conflict){assertThat(conflict.getStatusCode().value()).isEqualTo(409);statuses.add("CONFLICT");}return null;}));
+            gate.countDown();for(var request:requests)request.get(30,TimeUnit.SECONDS);assertThat(statuses).containsExactlyInAnyOrder("READY","CONFLICT");
+            var admissionGate=new CountDownLatch(1);var admitted=new CopyOnWriteArrayList<AgentWorkbenchService.Scope>();var denied=new AtomicInteger();requests.clear();
+            for(var candidate:List.of(service,other))requests.add(racers.submit(()->{admissionGate.await();try{admitted.add(candidate.prepare(alice,"s1","用户确认恢复原任务，不重复写入","recovery-"+UUID.randomUUID()));}catch(org.springframework.web.server.ResponseStatusException conflict){assertThat(conflict.getStatusCode().value()).isEqualTo(409);denied.incrementAndGet();}return null;}));
+            admissionGate.countDown();for(var request:requests)request.get(30,TimeUnit.SECONDS);assertThat(admitted).hasSize(1);assertThat(denied.get()).isEqualTo(1);
+            var restored=admitted.get(0);restored.repairState();var calls=new AtomicInteger();var bodies=new AtomicInteger();
+            var model=mock(Model.class);when(model.getModelName()).thenReturn("scripted-process-recovery");
+            when(model.stream(anyList(),anyList(),any())).thenAnswer(inv->{List<Msg> messages=inv.getArgument(0);assertThat(messages.stream().flatMap(message->message.getContentBlocks(ToolResultBlock.class).stream()).filter(result->"durable-effect".equals(result.getId())).flatMap(result->result.getOutput().stream()).filter(TextBlock.class::isInstance).map(TextBlock.class::cast).map(TextBlock::getText).toList()).contains("effect committed");calls.incrementAndGet();return Flux.just(ChatResponse.builder().content(List.of(TextBlock.builder().text("已读取原执行证据并完成恢复，未重复写入").build())).finishReason("stop").build());});
+            var toolkit=new Toolkit();toolkit.registerAgentTool(new AgentTool(){public String getName(){return "write_effect";}public String getDescription(){return "test effect must not replay";}public Map<String,Object>getParameters(){return Map.of("type","object","properties",Map.of());}public Mono<ToolResultBlock>callAsync(ToolCallParam input){bodies.incrementAndGet();return Mono.error(new AssertionError("Completed effect was replayed"));}});restored.install(toolkit);
+            try(var agent=ReActAgent.builder().name("employee-main").model(model).toolkit(toolkit).middlewares(List.of(restored)).stateStore(restored.stateStore()).defaultSessionId(restored.sdkSession()).enablePendingToolRecovery(false).enableMetaTool(false).enableTaskList(false).build()){
+                String result=agent.call(List.of(new UserMessage("用户确认恢复原任务，不重复写入")),RuntimeContext.builder().userId("1").sessionId(restored.sdkSession()).build()).block(Duration.ofSeconds(60)).getTextContent();assertThat(result).contains("未重复写入");restored.finish("COMPLETED",result);
+            }finally{restored.release();}
+            assertThat(calls.get()).isEqualTo(1);assertThat(bodies.get()).isZero();assertThat(item("EXECUTION").status()).isEqualTo("COMPLETED");
+            assertThat(store.jdbc().queryForObject("SELECT payload FROM agent_workbench_item WHERE kind='TOOL'",String.class)).isEqualTo(originalReceipt);
+            assertThat(store.require(1,"s1",interrupted.id()).data().get("runId")).isNotEqualTo("crashed-attempt");verify(app,never()).continueSession(any(),anyString(),anyString(),anyString());
+        }finally{racers.shutdownNow();other.close();}
     }
 }

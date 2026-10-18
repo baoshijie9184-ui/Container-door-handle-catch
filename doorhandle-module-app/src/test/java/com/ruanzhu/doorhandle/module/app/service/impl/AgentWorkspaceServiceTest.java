@@ -17,18 +17,21 @@ import java.util.*;
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
+@Timeout(180)
 class AgentWorkspaceServiceTest {
     @TempDir Path directory;
     final AgentActor alice=new AgentActor(1,"alice",AgentActor.Role.INSPECTOR),bob=new AgentActor(2,"bob",AgentActor.Role.SUPERVISOR);
     JdbcTemplate jdbc;AgentWorkspaceService workspace;ChatSessionService sessions;BusinessUserDirectory users;
+    com.zaxxer.hikari.HikariDataSource pool;
     @BeforeEach void setup()throws Exception{
-        var source=new DriverManagerDataSource("jdbc:h2:mem:"+UUID.randomUUID()+";MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1","sa","");jdbc=new JdbcTemplate(source);
+        javax.sql.DataSource source=new DriverManagerDataSource("jdbc:h2:mem:"+UUID.randomUUID()+";MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1","sa","");jdbc=new JdbcTemplate(source);
         String ddl=Files.readString(Path.of("../sql/mysql/migration-V38-agent-workspace.sql")).replaceAll("(?m)^--.*$", "").replace(" COLLATE utf8mb4_bin","").replace(" ENGINE=InnoDB DEFAULT CHARSET=utf8mb4","")
             .replaceAll("(?m)^(\\s*)UNIQUE KEY (\\w+)\\s*(\\([^\\n]+\\))", "$1CONSTRAINT $2 UNIQUE $3").replaceAll("(?m)^\\s*KEY .*\\n","").replaceAll(",\\s*\\)",")");
         if(Boolean.getBoolean("workbench.mysql")){
             var config=new com.fasterxml.jackson.databind.ObjectMapper().readTree(Path.of("../work/workbench-mysql/connection.json").toFile());String database=config.path("database").asText();
             if(!database.matches("doorhandle_wb_verify_[a-f0-9]{10}")||!config.path("url").asText().startsWith("jdbc:mysql://127.0.0.1:13308/"+database+"?"))throw new IllegalStateException("Only the isolated verification database is allowed");
-            source=new DriverManagerDataSource(config.path("url").asText(),config.path("username").asText(),config.path("password").asText());jdbc=new JdbcTemplate(source);
+            pool=new com.zaxxer.hikari.HikariDataSource();pool.setJdbcUrl(config.path("url").asText()+"&connectTimeout=8000&socketTimeout=15000");pool.setUsername(config.path("username").asText());pool.setPassword(config.path("password").asText());pool.setConnectionInitSql("SET time_zone = '+08:00'");pool.setMaximumPoolSize(6);pool.setMinimumIdle(1);source=pool;jdbc=new JdbcTemplate(source);
+            assertThat(jdbc.queryForObject("SELECT @@session.time_zone",String.class)).isEqualTo("+08:00");
             for(String table:List.of("agent_workspace_file_ref","agent_workspace_file","agent_workspace_request","agent_workspace_owner","agent_session_fork","agent_workspace_audit","agent_workspace_business_ref"))jdbc.execute("DROP TABLE IF EXISTS "+table);
             ddl=Files.readString(Path.of("../sql/mysql/migration-V38-agent-workspace.sql")).replaceAll("(?m)^--.*$", "");
         }
@@ -36,6 +39,49 @@ class AgentWorkspaceServiceTest {
         users=mock(BusinessUserDirectory.class);when(users.current(1,"alice")).thenReturn(new BusinessUserDirectory.Identity(1,"alice",false));when(users.current(2,"bob")).thenReturn(new BusinessUserDirectory.Identity(2,"bob",true));
         sessions=mock(ChatSessionService.class);when(sessions.resolveTenantForSystemCallback(anyString())).thenAnswer(inv->new TenantContext(inv.<String>getArgument(0).equals("bob-session")?2L:1L,inv.<String>getArgument(0).equals("bob-session")?"bob":"alice"));
         var provider=mock(ObjectProvider.class);workspace=new AgentWorkspaceService(sessions,users,provider,jdbc,new DataSourceTransactionManager(source),directory.toString(),1024,2048);workspace.validate();
+    }
+    @AfterEach void close(){if(pool!=null)pool.close();else if(jdbc!=null)jdbc.execute("SHUTDOWN");}
+    private AgentWorkspaceService secondInstance(){var other=new AgentWorkspaceService(sessions,users,mock(ObjectProvider.class),jdbc,new DataSourceTransactionManager(jdbc.getDataSource()),directory.toString(),1024,2048);other.validate();return other;}
+    @Test void realFileFormatsRetainTheirBytesAndUnicodeMetadataAcrossInstances()throws Exception{
+        var content=new LinkedHashMap<String,byte[]>();
+        for(String format:List.of("png","jpeg")){var bytes=new java.io.ByteArrayOutputStream();assertThat(javax.imageio.ImageIO.write(new java.awt.image.BufferedImage(8,4,java.awt.image.BufferedImage.TYPE_INT_RGB),format,bytes)).isTrue();content.put("检测图片."+format,bytes.toByteArray());}
+        content.put("检测图片.webp",Base64.getDecoder().decode("UklGRh4AAABXRUJQVlA4TBEAAAAvAkAAAAdQqGaUsf+BiOh/AAA="));content.put("检测报告.pdf",WorkspaceFileContentTest.pdf("PRIVATE-ROUNDTRIP-EVIDENCE"));
+        for(var entry:Map.of("说明.txt","检测证据 原文","报告.md","# 检测报告\n待人工复核","结果.csv","编号,缺陷数\nA,7","检测𠀀.json","{\"编号\":\"一\",\"数量\":7}","源码.html","<script>NEVER_EXECUTE()</script>","源码.svg","<svg onload='NEVER_EXECUTE()'/>").entrySet())content.put(entry.getKey(),entry.getValue().getBytes(StandardCharsets.UTF_8));
+        var writer=new AgentWorkspaceService(sessions,users,mock(ObjectProvider.class),jdbc,new DataSourceTransactionManager(jdbc.getDataSource()),directory.toString(),4096,65536);writer.validate();
+        var reader=new AgentWorkspaceService(sessions,users,mock(ObjectProvider.class),jdbc,new DataSourceTransactionManager(jdbc.getDataSource()),directory.toString(),4096,65536);reader.validate();
+        int request=0;
+        for(var entry:content.entrySet()){
+            var file=writer.upload(alice,"s1","format-"+request++,entry.getKey(),entry.getValue(),"uploads");var stored=reader.requireFile(alice,"s1",file.id());
+            assertThat(stored.name()).isEqualTo(entry.getKey());assertThat(stored.bytes()).isEqualTo(entry.getValue().length);assertThat(stored.sha256()).isEqualTo(HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(entry.getValue())));assertThat(reader.bytes(alice,"s1",file.id())).isEqualTo(entry.getValue());
+            assertThatThrownBy(()->reader.bytes(bob,"bob-session",file.id())).hasMessageContaining("404");
+            if(stored.contentType().startsWith("image/"))assertThat(reader.readText(alice,"s1",file.id())).contains("尚未接入视觉识别或 OCR");
+            else if(stored.contentType().equals("application/pdf")){assertThat(reader.readText(alice,"s1",file.id())).contains("PRIVATE-ROUNDTRIP-EVIDENCE");var preview=reader.previewPdf(alice,"s1",file.id(),1);assertThat(preview.page()).isEqualTo(1);assertThat(javax.imageio.ImageIO.read(new java.io.ByteArrayInputStream(preview.png()))).isNotNull();}
+            else{assertThat(stored.contentType()).startsWith("text/plain");assertThat(reader.readText(alice,"s1",file.id())).isEqualTo(new String(entry.getValue(),StandardCharsets.UTF_8));}
+        }
+        assertThat(reader.files(alice,"s1")).hasSize(10);assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM agent_workspace_audit WHERE action='FILE_CREATED'",Integer.class)).isEqualTo(10);
+        try(var files=Files.walk(directory)){assertThat(files.filter(Files::isRegularFile).count()).isEqualTo(10);}
+    }
+    @Test void twoInstancesCannotBothConsumeTheLastAccountQuotaSlot()throws Exception{
+        upload("prefill","prefill.txt","x".repeat(1024));var other=secondInstance();var gate=new java.util.concurrent.CountDownLatch(1);var racers=java.util.concurrent.Executors.newFixedThreadPool(2);var outcomes=new java.util.concurrent.CopyOnWriteArrayList<Integer>();
+        try{
+            var tasks=new ArrayList<java.util.concurrent.Future<?>>();
+            for(int index=0;index<2;index++){int candidate=index;tasks.add(racers.submit(()->{gate.await();try{(candidate==0?workspace:other).upload(alice,candidate==0?"s1":"s2","last-"+candidate,"last-"+candidate+".txt","y".repeat(1024).getBytes(StandardCharsets.UTF_8),"uploads");outcomes.add(200);}catch(org.springframework.web.server.ResponseStatusException rejected){outcomes.add(rejected.getStatusCode().value());}return null;}));}
+            gate.countDown();for(var task:tasks)task.get(30,java.util.concurrent.TimeUnit.SECONDS);
+            assertThat(outcomes).containsExactlyInAnyOrder(200,413);assertThat(jdbc.queryForObject("SELECT SUM(byte_length) FROM agent_workspace_file WHERE user_id=1",Long.class)).isEqualTo(2048);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM agent_workspace_file WHERE user_id=1",Integer.class)).isEqualTo(2);assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM agent_workspace_audit WHERE user_id=1 AND action='FILE_CREATED'",Integer.class)).isEqualTo(2);
+            try(var files=Files.walk(directory)){assertThat(files.filter(Files::isRegularFile).count()).isEqualTo(2);}
+            assertThat(other.upload(bob,"bob-session","independent","other.txt","z".repeat(1024).getBytes(StandardCharsets.UTF_8),"uploads").bytes()).isEqualTo(1024);
+        }finally{racers.shutdownNow();}
+    }
+    @Test void concurrentSameRequestAcrossInstancesCreatesOneFileAndOneAudit()throws Exception{
+        var other=secondInstance();var gate=new java.util.concurrent.CountDownLatch(1);var racers=java.util.concurrent.Executors.newFixedThreadPool(2);var ids=new java.util.concurrent.CopyOnWriteArrayList<String>();
+        try{
+            var tasks=new ArrayList<java.util.concurrent.Future<?>>();
+            for(int index=0;index<6;index++){int candidate=index;tasks.add(racers.submit(()->{gate.await();ids.add((candidate%2==0?workspace:other).upload(alice,"s1","same-request","same.txt","same bytes".getBytes(StandardCharsets.UTF_8),"uploads").id());return null;}));}
+            gate.countDown();for(var task:tasks)task.get(30,java.util.concurrent.TimeUnit.SECONDS);
+            assertThat(ids).hasSize(6);assertThat(new HashSet<>(ids)).hasSize(1);assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM agent_workspace_file",Integer.class)).isEqualTo(1);assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM agent_workspace_audit WHERE action='FILE_CREATED'",Integer.class)).isEqualTo(1);
+            try(var files=Files.walk(directory)){assertThat(files.filter(Files::isRegularFile).count()).isEqualTo(1);}
+        }finally{racers.shutdownNow();}
     }
     WorkbenchSessionApi.File upload(String request,String name,String text){return workspace.upload(alice,"s1",request,name,text.getBytes(StandardCharsets.UTF_8),"uploads");}
     @Test void privateUploadIsIdempotentAndCannotBeReadThroughAnotherSessionOrAccount(){var file=upload("upload-1","notes.md","PRIVATE_NOTES");assertThat(upload("upload-1","notes.md","PRIVATE_NOTES")).isEqualTo(file);assertThat(workspace.readText(alice,"s1",file.id())).isEqualTo("PRIVATE_NOTES");assertThatThrownBy(()->workspace.bytes(bob,"bob-session",file.id())).hasMessageContaining("404");assertThatThrownBy(()->workspace.bytes(alice,"s2",file.id())).hasMessageContaining("404");assertThatThrownBy(()->upload("upload-1","notes.md","different")).hasMessageContaining("409");assertThat(jdbc.queryForList("SELECT * FROM agent_workspace_audit").toString()).doesNotContain("PRIVATE_NOTES");}
