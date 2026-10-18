@@ -1,5 +1,6 @@
 """Deployment protocol exercises; native SQLite probes and a stateful Docker protocol substitute."""
 import copy
+import hashlib
 import importlib.util
 import json
 import os
@@ -48,10 +49,19 @@ def test_probe_reads_uncheckpointed_wal_instead_of_ignoring_it(tmp_path):
     try:
         db.execute('PRAGMA journal_mode=WAL');db.execute('PRAGMA wal_autocheckpoint=0');db.execute('CREATE TABLE memory_write_receipt(id TEXT)');db.execute('CREATE TABLE memory_lifecycle(memory_id TEXT)');db.commit()
         db.execute("INSERT INTO memory_lifecycle VALUES('private-id')");db.commit()
+        originals={path.name:hashlib.sha256(path.read_bytes()).hexdigest() for path in store.iterdir()}
         result=probe(directory)
         assert result.returncode==0 and json.loads(result.stdout)['requiredProtocol']==2
         assert 'private-id' not in result.stdout
+        assert originals=={path.name:hashlib.sha256(path.read_bytes()).hexdigest() for path in store.iterdir()}
     finally:db.close()
+
+
+def test_probe_rejects_storage_larger_than_its_bounded_scratch(tmp_path):
+    directory=tmp_path/'data';store=directory/'bridge_receipts';store.mkdir(parents=True)
+    with (store/'write-receipts.sqlite3').open('wb') as stream:stream.truncate(192*1024*1024+1)
+    result=probe(directory)
+    assert result.returncode!=0 and 'cannot be verified' in result.stderr
 
 
 def test_probe_can_infer_existing_tables_without_a_floor_marker_and_rejects_corruption(tmp_path):
@@ -100,7 +110,9 @@ class Docker:
     def __call__(self,*args,**kwargs):
         self.calls.append(args)
         if args[0]=='ps':
-            service=args[-1].split('=')[-1];return ('\n'.join(k for k,v in self.rows.items() if v['Config']['Labels']['com.docker.compose.service']==service)).encode()
+            service=args[-1].split('=')[-1]
+            ids=[k for k,v in self.rows.items() if v['Config']['Labels']['com.docker.compose.service']==service]
+            return ('\n'.join(ids if '--no-trunc' in args else [value[:12] for value in ids])).encode()
         if args[0]=='inspect':return json.dumps([self.rows[args[1]]]).encode()
         if args[:2]==('image','inspect'):
             return json.dumps([{'Id':args[2],'Config':{'Labels':{guard.LABEL:str(self.protocols[args[2]])}}}]).encode()
@@ -109,6 +121,8 @@ class Docker:
         if args[0]=='run':
             assert not self.rows[BACKEND]['State']['Running'] and not self.rows[MEMORY]['State']['Running']
             assert args[args.index('--network')+1]=='none' and '--read-only' in args and '--pull' in args
+            assert args[args.index('--tmpfs')+1]=='/tmp:rw,nosuid,nodev,noexec,size=256m'
+            assert args[args.index('--memory')+1]=='384m' and args[args.index('--pids-limit')+1]=='64'
             assert args[args.index('--mount')+1]=='type=volume,src=project-memory,dst=/data,readonly'
             assert not any('PRIVATE_TOKEN' in str(arg) for arg in args)
             if self.probe_failed:raise guard.GuardError('probe failed')

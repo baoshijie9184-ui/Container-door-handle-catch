@@ -18,7 +18,7 @@ CID = re.compile(r'[a-f0-9]{64}')
 ZONE = dt.timezone(dt.timedelta(hours=8))
 
 # Run using the existing stopped bridge image, not a downloaded helper or an SDK entry point.
-PROBE = '''import os,sqlite3,json
+PROBE = '''import os,sqlite3,json,stat,tempfile,shutil
 from pathlib import Path
 from contextlib import closing
 try:
@@ -29,19 +29,37 @@ try:
  floor=0
  if not dbpath.exists() and (root/'bridge_receipts'/'writer.lock').exists():raise ValueError()
  if dbpath.exists():
-  with closing(sqlite3.connect(dbpath.as_uri()+'?mode=ro',uri=True,timeout=2)) as db:
-   db.execute('PRAGMA query_only=ON');db.execute('BEGIN')
-   tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-   if 'memory_write_receipt' not in tables:raise ValueError()
-   if 'bridge_protocol_floor' in tables:
-    rows=db.execute('SELECT required_version FROM bridge_protocol_floor WHERE id=1').fetchall()
-    if len(rows)!=1 or type(rows[0][0]) is not int or rows[0][0]<0:raise ValueError()
-    floor=rows[0][0]
-    required={'memory_write_receipt'} if floor>=1 else set()
-    if floor>=2:required.update({'memory_lifecycle','memory_cleanup_event'})
-    if not required.issubset(tables):raise ValueError()
-   for table,version in [('memory_write_receipt',1),('memory_lifecycle',2),('memory_cleanup_event',2)]:
-    if table in tables and db.execute('SELECT 1 FROM '+table+' LIMIT 1').fetchone():floor=max(floor,version)
+  # A WAL database with no existing shm file may need to create one even in
+  # mode=ro. Snapshot the quiesced source into bounded tmpfs; never make the
+  # original volume writable or use immutable (which can ignore committed WAL).
+  with tempfile.TemporaryDirectory(prefix='memory-protocol-') as scratch:
+   copied=Path(scratch)/dbpath.name
+   remaining=192*1024*1024
+   for original in (dbpath,dbpath.with_name(dbpath.name+'-wal')):
+    if original.is_symlink():raise ValueError()
+    if not original.exists():continue
+    with os.fdopen(os.open(original,os.O_RDONLY|getattr(os,'O_NOFOLLOW',0)),'rb') as source:
+     before=os.fstat(source.fileno())
+     if not stat.S_ISREG(before.st_mode) or before.st_size>remaining:raise ValueError()
+     remaining-=before.st_size
+     with (Path(scratch)/original.name).open('xb') as target:
+      shutil.copyfileobj(source,target,1024*1024)
+     after=os.fstat(source.fileno());current=original.stat()
+     identity=lambda row:(row.st_dev,row.st_ino,row.st_size,row.st_mtime_ns)
+     if identity(before)!=identity(after) or identity(before)!=identity(current):raise ValueError()
+   with closing(sqlite3.connect(copied.as_uri()+'?mode=ro',uri=True,timeout=2)) as db:
+    db.execute('PRAGMA query_only=ON');db.execute('BEGIN')
+    tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if 'memory_write_receipt' not in tables:raise ValueError()
+    if 'bridge_protocol_floor' in tables:
+     rows=db.execute('SELECT required_version FROM bridge_protocol_floor WHERE id=1').fetchall()
+     if len(rows)!=1 or type(rows[0][0]) is not int or rows[0][0]<0:raise ValueError()
+     floor=rows[0][0]
+     required={'memory_write_receipt'} if floor>=1 else set()
+     if floor>=2:required.update({'memory_lifecycle','memory_cleanup_event'})
+     if not required.issubset(tables):raise ValueError()
+    for table,version in [('memory_write_receipt',1),('memory_lifecycle',2),('memory_cleanup_event',2)]:
+     if table in tables and db.execute('SELECT 1 FROM '+table+' LIMIT 1').fetchone():floor=max(floor,version)
  print(json.dumps({'requiredProtocol':floor}))
 except Exception:
  raise SystemExit('Memory protocol storage cannot be verified')
@@ -95,7 +113,7 @@ def image(reference):
 
 
 def container(service):
-    ids = docker('ps','-aq','--filter',f'label=com.docker.compose.project={PROJECT}', '--filter',f'label=com.docker.compose.service={service}').decode().split()
+    ids = docker('ps','-aq','--no-trunc','--filter',f'label=com.docker.compose.project={PROJECT}', '--filter',f'label=com.docker.compose.service={service}').decode().split()
     if len(ids)!=1 or not CID.fullmatch(ids[0]):
         raise GuardError('Expected exactly one existing application container')
     row = json.loads(docker('inspect',ids[0]))[0]
@@ -141,6 +159,7 @@ def prepare(state, config):
         if type(minimum.get('requiredProtocol')) is not int or minimum['requiredProtocol']<0 or minimum.get('dataMount')!=mount:
             raise GuardError('Memory volume or stored protocol requirement changed')
         result=json.loads(docker('run','--rm','--pull','never','--network','none','--no-healthcheck','--read-only','--cap-drop','ALL',
+                                 '--tmpfs','/tmp:rw,nosuid,nodev,noexec,size=256m','--memory','384m','--cpus','1','--pids-limit','64',
                                  '--security-opt','no-new-privileges','--user','10001:10001','--mount',f"type=volume,src={mount['name']},dst={mount['destination']},readonly",
                                  '--env','MEM0_DATA_DIR='+data,'--entrypoint','python',current_id,'-B','-c',PROBE,timeout=30))
         floor=result.get('requiredProtocol')
