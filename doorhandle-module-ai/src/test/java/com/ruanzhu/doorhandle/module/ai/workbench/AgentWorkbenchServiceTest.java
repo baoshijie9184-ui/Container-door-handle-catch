@@ -171,6 +171,11 @@ class AgentWorkbenchServiceTest {
         var plan=item("PLAN");String originalTask=(String)store.require(1,"s1",item("EXECUTION").id()).data().get("logicalTaskId");service.command(alice,"s1",plan.id(),plan.revision(),UUID.randomUUID().toString(),"approve-plan",Map.of());
         var second=facade.start(alice,"s1",List.of(new AgentConversationApi.Message("user","按已批准的计划继续")),"",event->{});assertThat(second.result().get(30,TimeUnit.SECONDS)).isEqualTo("已按计划完成分析");assertThat(calls.get()).isEqualTo(2);assertThat(store.require(1,"s1",item("EXECUTION").id()).data().get("logicalTaskId")).isEqualTo(originalTask);
     }
+    @Test void completedTaskRetainsItsResultDespiteLateCancellationOrCleanupFailure(){
+        var completed=scope("查看任务");completed.finish("COMPLETED","original result");var saved=item("EXECUTION");
+        completed.cancel();completed.finish("NEEDS_REVIEW","");completed.finish("COMPLETED","late result");
+        var current=item("EXECUTION");assertThat(current.status()).isEqualTo("COMPLETED");assertThat(current.revision()).isEqualTo(saved.revision());assertThat(current.data().get("result")).isEqualTo("original result");completed.release();
+    }
     @Test void oldAttemptCannotOverwriteANewerTaskAndEachNewTaskHasItsOwnSdkSlot(){
         var first=scope("查看任务");String previous=first.sdkSession();first.finish("COMPLETED","done");first.release();var second=service.prepare(alice,"s1","查看报告","run-2");first.finish("NEEDS_REVIEW","");
         assertThat(second.sdkSession()).isNotEqualTo(previous);assertThat(first.sdkSession()).isEqualTo(previous);assertThat(item("EXECUTION").status()).isEqualTo("RUNNING");second.release();

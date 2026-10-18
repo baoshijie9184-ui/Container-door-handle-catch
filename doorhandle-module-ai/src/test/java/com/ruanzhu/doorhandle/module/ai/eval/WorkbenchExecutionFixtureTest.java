@@ -17,6 +17,70 @@ import static org.mockito.Mockito.*;
 class WorkbenchExecutionFixtureTest {
     @TempDir Path workspace;
     final ObjectMapper json=new ObjectMapper();
+    @Test @Timeout(90)
+    void simultaneousTraceCancellationAndSdkCompletionKeepMatchingDurableTerminals() throws Exception {
+        var ordinary=scripted();var held=mock(Model.class);when(held.getModelName()).thenReturn("scripted-terminal-race");
+        var response=new java.util.concurrent.atomic.AtomicReference<reactor.core.publisher.Sinks.One<ChatResponse>>();
+        when(held.stream(anyList(),anyList(),any())).thenAnswer(inv->{
+            List<ToolSchema> schemas=inv.getArgument(1);
+            if(schemas.stream().anyMatch(schema->schema.getName().equals("get_task_detail"))){var sink=reactor.core.publisher.Sinks.<ChatResponse>one();response.set(sink);return sink.asMono().flux();}
+            return ordinary.stream(inv.getArgument(0),inv.getArgument(1),inv.getArgument(2));
+        });
+        var racers=java.util.concurrent.Executors.newFixedThreadPool(2);
+        try(var f=new WorkbenchExecutionFixture(Path.of(System.getProperty("agent.eval.project","..")).toAbsolutePath().normalize(),workspace,"scripted-terminal-race",id->held,null)) {
+            for(int iteration=0;iteration<6;iteration++) {
+                String session="race-"+iteration;response.set(null);
+                f.start(f.employee,session,UUID.randomUUID().toString(),"查询任务 det_eval_employee 的状态").result().get(20,java.util.concurrent.TimeUnit.SECONDS);
+                f.waitFor(f.employee,session,"WAITING_CHILD",10);
+                org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(10)).until(()->{f.workbench.dispatch();return response.get()!=null;});
+                var child=f.item(f.employee,session,"CHILD");String run=(String)child.data().get("runId");var gate=new java.util.concurrent.CountDownLatch(1);var sink=response.get();
+                var cancel=racers.submit(()->{gate.await();f.journal.cancel(f.employee,run);return null;});
+                var complete=racers.submit(()->{gate.await();sink.tryEmitValue(ChatResponse.builder().content(List.of(TextBlock.builder().text("仅为执行竞争测试，不含业务查询结果").build())).finishReason("stop").build());return null;});
+                gate.countDown();cancel.get(15,java.util.concurrent.TimeUnit.SECONDS);complete.get(15,java.util.concurrent.TimeUnit.SECONDS);
+                org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(15)).until(()->Set.of("COMPLETED","CANCELLED").contains(f.item(f.employee,session,"CHILD").status())&&!f.journal.get(f.employee,run).status().equals("RUNNING")&&f.item(f.employee,session,"EXECUTION").status().equals("READY"));
+                assertThat(f.journal.get(f.employee,run).status()).isEqualTo(f.item(f.employee,session,"CHILD").status());
+                // This scenario ends at the child terminal; do not let a previous
+                // iteration's parent become unrelated work in the next race.
+                var parent=f.item(f.employee,session,"EXECUTION");
+                f.workbench.command(f.employee,session,parent.id(),parent.revision(),UUID.randomUUID().toString(),"cancel",Map.of());
+            }
+            assertThat(f.businessCalls).isEmpty();
+        } finally {racers.shutdownNow();}
+    }
+    @Test @Timeout(90)
+    void traceCancellationStopsOnlyItsChildAndParentCancellationStopsItsRemainingChild() throws Exception {
+        var ordinary=scripted();var held=mock(Model.class);when(held.getModelName()).thenReturn("scripted-cancellation");
+        var subscribed=java.util.concurrent.ConcurrentHashMap.<Long>newKeySet();var cancelled=java.util.concurrent.ConcurrentHashMap.<Long>newKeySet();
+        when(held.stream(anyList(),anyList(),any())).thenAnswer(inv->{
+            List<ToolSchema> schemas=inv.getArgument(1);
+            if(schemas.stream().anyMatch(schema->schema.getName().equals("get_task_detail"))) {
+                List<Msg> messages=inv.getArgument(0);long owner=messages.stream().map(Msg::getTextContent).anyMatch(text->text!=null&&text.contains("det_eval_supervisor"))?990002:990001;
+                return Flux.<ChatResponse>never().doOnSubscribe(value->subscribed.add(owner)).doOnCancel(()->cancelled.add(owner));
+            }
+            return ordinary.stream(inv.getArgument(0),inv.getArgument(1),inv.getArgument(2));
+        });
+        try(var f=new WorkbenchExecutionFixture(Path.of(System.getProperty("agent.eval.project","..")).toAbsolutePath().normalize(),workspace,"scripted-cancellation",id->held,null)) {
+            for(var actor:List.of(f.employee,f.supervisor)) {
+                String session="cancel-"+actor.userId();
+                f.start(actor,session,UUID.randomUUID().toString(),"查询任务 "+f.task(actor)+" 的状态").result().get(20,java.util.concurrent.TimeUnit.SECONDS);
+                f.waitFor(actor,session,"WAITING_CHILD",10);
+            }
+            org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(15)).until(()->{f.workbench.dispatch();return subscribed.size()==2;});
+            var employeeChild=f.item(f.employee,"cancel-990001","CHILD");String childRun=(String)employeeChild.data().get("runId");
+            assertThatThrownBy(()->f.journal.cancel(f.supervisor,childRun)).isInstanceOf(org.springframework.web.server.ResponseStatusException.class);
+            assertThat(cancelled).isEmpty();
+            f.journal.cancel(f.employee,childRun);
+            org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(15)).until(()->cancelled.contains(990001L)&&f.journal.get(f.employee,childRun).status().equals("CANCELLED"));
+            assertThat(f.item(f.employee,"cancel-990001","CHILD").status()).isEqualTo("CANCELLED");
+            assertThat(f.item(f.supervisor,"cancel-990002","CHILD").status()).isEqualTo("RUNNING");assertThat(cancelled).doesNotContain(990002L);
+            var parent=f.item(f.supervisor,"cancel-990002","EXECUTION");
+            f.workbench.command(f.supervisor,"cancel-990002",parent.id(),parent.revision(),UUID.randomUUID().toString(),"cancel",Map.of());
+            org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(15)).until(()->cancelled.contains(990002L));
+            assertThat(f.item(f.supervisor,"cancel-990002","EXECUTION").status()).isEqualTo("CANCELLED");
+            assertThat(f.item(f.supervisor,"cancel-990002","CHILD").status()).isEqualTo("CANCELLED");
+            assertThat(f.businessCalls).isEmpty();
+        }
+    }
     @Test @Timeout(480)
     void twoOwnersYieldThenDispatchRealProfessionalsAndRetainTheirPrivateHistory() throws Exception {
         var model=scripted();
