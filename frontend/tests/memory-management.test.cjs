@@ -1,6 +1,11 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path')
 const source=fs.readFileSync(path.join(__dirname,'../src/api/agentMemory.js'),'utf8')
 const apiPromise=import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`)
+test('verifying an extraction only queries its existing request identity with private credentials',async(t)=>{
+ const original=global.fetch,calls=[];t.after(()=>{global.fetch=original});global.fetch=async(url,options)=>{calls.push({url,options});return {ok:true,status:200,json:async()=>({status:'RUNNING'})}};
+ const api=await apiPromise;assert.equal((await api.verifyMemoryExtraction('a'.repeat(64))).status,'RUNNING');
+ assert.equal(calls[0].url,'/api/agent/memories/operations/'+'a'.repeat(64)+'/verify');assert.equal(calls[0].options.headers['X-Agent-Action'],'memory-verify');assert.equal(calls[0].options.body,undefined);assert.equal(calls[0].options.credentials,'include');assert.equal(calls[0].options.cache,'no-store');
+});
 
 test('memory reads support subsequent pages and carry private session/cache settings',async(t)=>{
   const calls=[],original=global.fetch

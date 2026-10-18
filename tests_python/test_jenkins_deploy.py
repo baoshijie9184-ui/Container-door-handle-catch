@@ -18,7 +18,7 @@ def git_bash():
     return shutil.which('bash') or pytest.skip('Bash not installed')
 
 
-@pytest.mark.parametrize('failed_step', [0, 1, 2, 3, 4])
+@pytest.mark.parametrize('failed_step', [0, 1, 2, 3, 4, 5])
 def test_health_failure_stops_activation_before_the_next_operation(failed_step):
     source = (Path(__file__).resolve().parents[1] / 'script/jenkins/deploy-remote.sh').read_text(encoding='utf-8')
     activate = re.search(r'^activate\(\) \{.*?^\}', source, flags=re.M | re.S).group()
@@ -30,4 +30,16 @@ if activate /release /snapshot; then result=0; else result=$?; fi
 printf '%s %s' "$result" "$count"
 '''
     result = subprocess.run([git_bash(), '-c', script], env={**os.environ, 'FAIL_STEP': str(failed_step)}, text=True, capture_output=True, timeout=15, check=True)
-    assert result.stdout == (f'1 {failed_step}' if failed_step else '0 4')
+    assert result.stdout == (f'1 {failed_step}' if failed_step else '0 5')
+
+
+def test_memory_bridge_is_healthy_before_backend_activation_and_uses_the_same_rollback_path():
+    source=(Path(__file__).resolve().parents[1]/'script/jenkins/deploy-remote.sh').read_text(encoding='utf8')
+    activate=re.search(r'^activate\(\) \{.*?^\}',source,flags=re.M|re.S).group()
+    script='set -euo pipefail\ndc() { printf "%s\\n" "$*" >&2; }\n'+activate+'\nactivate /release /snapshot'
+    result=subprocess.run([git_bash(),'-c',script],text=True,capture_output=True,timeout=15,check=True)
+    calls=result.stderr.splitlines()
+    assert len(calls)==5 and calls[0].endswith('240 mem0') and calls[1].endswith('240 backend')
+    assert all('--no-deps --no-build --pull never' in call for call in calls[:3])
+    assert 'activate "$previous" "$root/state/previous-images.yml"' in source
+    assert 'activate "$previous" "$release/previous-images.yml"' in source

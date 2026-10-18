@@ -98,3 +98,4 @@ best_stg2.pth
 wacga_shrinkage_seed42_60e_code_20261014.zip
 .agentscope/workspace/users/*/mcp/
 .agentscope/workspace/users/*/skill-downloads/
+/memory_service/bridge_state/

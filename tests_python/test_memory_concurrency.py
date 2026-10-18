@@ -46,7 +46,7 @@ def test_many_waiting_writes_are_rejected_without_starving_reads(monkeypatch):
             slow=asyncio.create_task(client.post('/memories/add',json=payload))
             try:
                 assert await asyncio.to_thread(started.wait,1)
-                replies=await asyncio.wait_for(asyncio.gather(*[client.post('/memories/add',json=payload) for _ in range(48)]),2)
+                replies=await asyncio.wait_for(asyncio.gather(*[client.post('/memories/add',json={**payload,'request_id':'other-'+str(i)}) for i in range(48)]),2)
                 assert all(reply.status_code==503 and reply.headers.get('Retry-After')=='2' and 'not started' in reply.json()['detail'] for reply in replies)
                 listing=await asyncio.wait_for(client.post('/memories/owned/list',json={'user_id':payload['user_id'],'app_id':'doorhandlecatch'}),1)
                 assert listing.status_code==200 and calls==[payload['user_id']]

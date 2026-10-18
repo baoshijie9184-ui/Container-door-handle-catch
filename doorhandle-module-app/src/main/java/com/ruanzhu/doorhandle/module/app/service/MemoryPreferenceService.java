@@ -44,13 +44,26 @@ public class MemoryPreferenceService {
         } catch(java.security.NoSuchAlgorithmException error) { throw new IllegalStateException("SHA-256 unavailable",error); }
         return reserveMutation(owner,memoryId,"UPDATE",request.requestId(),fingerprint);
     }
+    public boolean reserveAutomatic(TenantContext owner,String requestId,String fingerprint) {
+        return reserveMutation(owner,null,"AUTOSAVE",requestId,fingerprint);
+    }
+    public String automaticOutcome(TenantContext owner,String requestId) {
+        var rows=jdbc.queryForList("SELECT outcome FROM agent_memory_audit WHERE owner_user_id=? AND request_key=? AND action_name='AUTOSAVE'",owner.userId(),requestId);
+        if(rows.size()!=1)throw new ResponseStatusException(HttpStatus.NOT_FOUND,"提炼记录不存在或无权限");
+        return (String)rows.get(0).get("outcome");
+    }
+    public void reconcileAutomatic(TenantContext owner,String requestId,String state) {
+        automaticOutcome(owner,requestId);
+        if("SUCCEEDED".equals(state))jdbc.update("UPDATE agent_memory_audit SET outcome='SUCCEEDED',updated_at=CURRENT_TIMESTAMP WHERE owner_user_id=? AND request_key=? AND action_name='AUTOSAVE' AND outcome IN ('DISPATCHED','UNKNOWN')",owner.userId(),requestId);
+        else if("NEEDS_REVIEW".equals(state)||"NOT_STARTED".equals(state))jdbc.update("UPDATE agent_memory_audit SET outcome=?,updated_at=CURRENT_TIMESTAMP WHERE owner_user_id=? AND request_key=? AND action_name='AUTOSAVE' AND outcome IN ('DISPATCHED','UNKNOWN')","NOT_STARTED".equals(state)?"REJECTED":"UNKNOWN",owner.userId(),requestId);
+    }
     private boolean reserveMutation(TenantContext owner,String memoryId,String action,String requestId,String fingerprint) {
         return Boolean.TRUE.equals(tx.execute(status->{
             jdbc.update("INSERT IGNORE INTO agent_memory_audit(owner_user_id,action_name,outcome,request_key,memory_id,content_digest,created_at,updated_at) VALUES(?,?,'PENDING',?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",owner.userId(),action,requestId,memoryId,fingerprint);
             var rows=jdbc.queryForList("SELECT action_name,memory_id,content_digest,outcome FROM agent_memory_audit WHERE owner_user_id=? AND request_key=? FOR UPDATE",owner.userId(),requestId);
             if(rows.size()!=1)throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"记忆操作审计暂不可用");
             var row=rows.get(0);
-            if(!action.equals(row.get("action_name"))||!memoryId.equals(row.get("memory_id"))||!fingerprint.equals(row.get("content_digest")))throw new ResponseStatusException(HttpStatus.CONFLICT,"请求编号已用于其他操作、记忆或内容版本");
+            if(!action.equals(row.get("action_name"))||!java.util.Objects.equals(memoryId,row.get("memory_id"))||!fingerprint.equals(row.get("content_digest")))throw new ResponseStatusException(HttpStatus.CONFLICT,"请求编号已用于其他操作、记忆或内容版本");
             if("SUCCEEDED".equals(row.get("outcome")))return true;
             if(!"PENDING".equals(row.get("outcome")))throw new ResponseStatusException(HttpStatus.CONFLICT,"上次操作结果需要核对，请刷新后再操作");
             if(jdbc.update("UPDATE agent_memory_audit SET outcome='DISPATCHED',updated_at=CURRENT_TIMESTAMP WHERE owner_user_id=? AND request_key=? AND outcome='PENDING'",owner.userId(),requestId)!=1)
@@ -64,6 +77,6 @@ public class MemoryPreferenceService {
             throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"操作结果待核对，请刷新记忆列表");
     }
     public List<MemoryDtos.Audit> audit(TenantContext owner) {
-        return jdbc.query("SELECT * FROM agent_memory_audit WHERE owner_user_id=? ORDER BY id DESC LIMIT 50",(rs,n)->new MemoryDtos.Audit(rs.getLong("id"),rs.getString("action_name"),rs.getString("outcome"),rs.getString("memory_id"),(Integer)rs.getObject("preference_revision"),rs.getObject("read_enabled",Boolean.class),rs.getObject("save_enabled",Boolean.class),rs.getString("created_at"),rs.getString("updated_at")),owner.userId());
+        return jdbc.query("SELECT * FROM agent_memory_audit WHERE owner_user_id=? ORDER BY id DESC LIMIT 50",(rs,n)->new MemoryDtos.Audit(rs.getLong("id"),rs.getString("action_name"),rs.getString("outcome"),rs.getString("memory_id"),(Integer)rs.getObject("preference_revision"),rs.getObject("read_enabled",Boolean.class),rs.getObject("save_enabled",Boolean.class),rs.getString("created_at"),rs.getString("updated_at"),rs.getString("request_key")),owner.userId());
     }
 }

@@ -55,17 +55,25 @@ public class Mem0Client {
     public Map<String, Object> addMemory(TenantContext tenant, String sessionId,
                                          String content, Map<String, Object> metadata) {
         if (!allowed(tenant, false)) return Collections.emptyMap();
-        return addMemory(buildScope(tenant, sessionId), content, metadata);
+        var scope=buildScope(tenant,sessionId);
+        String sanitized=sensitiveDataSanitizer.sanitize(content);
+        String turn=metadata!=null&&metadata.get("turn_id")!=null?metadata.get("turn_id").toString():sanitized;
+        String requestId=sha256(tenant.mem0UserId()+"\u0000doorhandlecatch\u0000"+sessionId+"\u0000"+turn);
+        try {
+            if(preferences!=null&&preferences.reserveAutomatic(tenant,requestId,sha256(sanitized)))return Map.of("replayed",true);
+        }catch(RuntimeException error){log.warn("记忆提炼未派发，审计未通过：errorType={}",error.getClass().getSimpleName());return Collections.emptyMap();}
+        return addMemory(tenant,scope,sanitized,metadata,requestId);
     }
 
-    private Map<String, Object> addMemory(Map<String, Object> scope, String content,
-                                          Map<String, Object> metadata) {
+    private Map<String, Object> addMemory(TenantContext tenant,Map<String, Object> scope, String content,
+                                          Map<String, Object> metadata,String requestId) {
         if (!enabled) return Collections.emptyMap();
 
         try {
             Map<String, Object> body = new HashMap<>();
             body.putAll(scope);
-            body.put("content", sensitiveDataSanitizer.sanitize(content));
+            body.put("content", content);
+            body.put("request_id",requestId);
             if (metadata != null) {
                 body.put("metadata", metadata);
             }
@@ -82,16 +90,36 @@ public class Mem0Client {
             );
 
             if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
-                JsonNode data = response.getBody().get("data");
-                if (data != null) {
-                    log.info("记忆添加成功: userId={}", scope.get("user_id"));
+                if(!Set.of(200,202).contains(response.getStatusCode().value())||response.getBody().path("code").asInt()!=response.getStatusCode().value())throw new IllegalStateException("Memory receipt envelope is invalid");
+                JsonNode data = response.getBody().path("data");
+                String state=data.path("operation").path("status").asText();
+                if(!requestId.equals(data.path("operation").path("requestId").asText())||!Set.of("SUCCEEDED","RUNNING","NEEDS_REVIEW","NOT_STARTED").contains(state))throw new IllegalStateException("Memory receipt is missing");
+                if ("SUCCEEDED".equals(state)) {
+                    if(preferences!=null)preferences.deletionOutcome(tenant,requestId,"SUCCEEDED");
+                    log.info("记忆提炼已核对: userId={}", scope.get("user_id"));
                     return objectMapper.convertValue(data, Map.class);
                 }
+                log.info("记忆提炼等待核对: userId={},state={}",scope.get("user_id"),state);
+                return Map.of("requestId",requestId,"status",state);
             }
         } catch (Exception e) {
-            log.warn("添加记忆失败 (服务可能未启动): {}", e.getClass().getSimpleName());
+            boolean notStarted=e instanceof org.springframework.web.client.HttpStatusCodeException status&&(Set.of(400,422).contains(status.getStatusCode().value())||status.getStatusCode().value()==503&&status.getResponseHeaders()!=null&&"false".equals(status.getResponseHeaders().getFirst("X-Memory-Operation-Started")));
+            if(preferences!=null)try{preferences.deletionOutcome(tenant,requestId,notStarted?"REJECTED":"UNKNOWN");}catch(RuntimeException audit){log.warn("提炼回执待核对：errorType={}",audit.getClass().getSimpleName());}
+            log.warn("记忆提炼结果待核对，不自动重做：errorType={}", e.getClass().getSimpleName());
         }
         return Collections.emptyMap();
+    }
+
+    private static String sha256(String value){try{return HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(value.getBytes(java.nio.charset.StandardCharsets.UTF_8)));}catch(java.security.NoSuchAlgorithmException error){throw new IllegalStateException(error);}}
+
+    public com.ruanzhu.doorhandle.module.app.dto.chat.MemoryDtos.Extraction extractionReceipt(TenantContext owner,String requestId){
+        if(!enabled||bridgeToken==null||bridgeToken.isBlank())throw new org.springframework.web.server.ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"记忆回执服务尚未启用");
+        try{
+            var response=restTemplate().exchange(serviceUrl+"/memories/operations/get",HttpMethod.POST,new HttpEntity<>(Map.of("user_id",owner.mem0UserId(),"app_id","doorhandlecatch","request_id",requestId),bridgeHeaders()),JsonNode.class);
+            var root=response.getBody();if(root==null||root.path("code").asInt()!=200)throw new IllegalStateException();var data=root.path("data");String state=data.path("status").asText();
+            if(!requestId.equals(data.path("requestId").asText())||!Set.of("RUNNING","SUCCEEDED","NEEDS_REVIEW","NOT_STARTED").contains(state)||!data.path("results").isArray()||data.path("results").size()>100)throw new IllegalStateException();
+            return new com.ruanzhu.doorhandle.module.app.dto.chat.MemoryDtos.Extraction(requestId,state,"SUCCEEDED".equals(state)?data.path("results").size():null,data.path("updatedAt").asText(null));
+        }catch(Exception error){throw new org.springframework.web.server.ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"提炼回执暂不可用，请稍后核对；不会重新执行");}
     }
 
     /**

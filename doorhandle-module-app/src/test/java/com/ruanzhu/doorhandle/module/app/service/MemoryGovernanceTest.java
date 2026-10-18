@@ -20,6 +20,42 @@ class MemoryGovernanceTest {
         settings=new MemoryPreferenceService(jdbc,new DataSourceTransactionManager(data));bridge=mock(Mem0Client.class);service=new PersonalMemoryService(bridge,settings);
     }
     private MemoryDtos.Delete request(String key){return new MemoryDtos.Delete(key,"a".repeat(64),true);}
+    @Test void realHttpReceiptReconcilesTheDatabaseWithoutRepeatingExtraction()throws Exception{
+        var json=new com.fasterxml.jackson.databind.ObjectMapper();var key=new java.util.concurrent.atomic.AtomicReference<String>();var adds=new java.util.concurrent.atomic.AtomicInteger();var completed=new java.util.concurrent.atomic.AtomicBoolean();
+        var server=com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress("127.0.0.1",0),0);
+        server.createContext("/memories",exchange->{var body=json.readTree(exchange.getRequestBody());assertThat(body.path("user_id").asText()).isEqualTo(owner.mem0UserId());assertThat(exchange.getRequestHeaders().getFirst("X-Doorhandle-Memory-Token")).isEqualTo("fixture");
+            boolean add=exchange.getRequestURI().getPath().endsWith("/add");if(add){adds.incrementAndGet();key.set(body.path("request_id").asText());}
+            var receipt=Map.of("requestId",key.get(),"status",completed.get()?"SUCCEEDED":"RUNNING","results",completed.get()?List.of(Map.of("id","stored","event","ADD")):List.of(),"updatedAt","2026-10-18T12:00:00+08:00");
+            byte[] response=json.writeValueAsBytes(Map.of("code",add?202:200,"data",add?Map.of("operation",receipt):receipt));exchange.getResponseHeaders().set("Content-Type","application/json");exchange.sendResponseHeaders(add?202:200,response.length);exchange.getResponseBody().write(response);exchange.close();});server.start();
+        try{
+            var client=new Mem0Client(new com.ruanzhu.doorhandle.module.system.security.SensitiveDataSanitizer(),settings);org.springframework.test.util.ReflectionTestUtils.setField(client,"enabled",true);org.springframework.test.util.ReflectionTestUtils.setField(client,"bridgeToken","fixture");org.springframework.test.util.ReflectionTestUtils.setField(client,"serviceUrl","http://127.0.0.1:"+server.getAddress().getPort());
+            var metadata=Map.<String,Object>of("turn_id",10,"source","fixture");client.addMemory(owner,"session","PRIVATE_INPUT",metadata);assertThat(settings.automaticOutcome(owner,key.get())).isEqualTo("DISPATCHED");
+            client.addMemory(owner,"session","PRIVATE_INPUT",metadata);assertThat(adds).hasValue(1);
+            var actual=new PersonalMemoryService(client,settings);assertThat(actual.verifyExtraction(owner,key.get()).affectedMemories()).isNull();assertThat(settings.automaticOutcome(owner,key.get())).isEqualTo("DISPATCHED");completed.set(true);assertThat(actual.verifyExtraction(owner,key.get()).affectedMemories()).isEqualTo(1);assertThat(settings.automaticOutcome(owner,key.get())).isEqualTo("SUCCEEDED");
+            client.addMemory(owner,"session","PRIVATE_INPUT",metadata);assertThat(adds).hasValue(1);
+            assertThat(jdbc.queryForList("SELECT * FROM agent_memory_audit").toString()).doesNotContain("PRIVATE_INPUT");
+        }finally{server.stop(0);}
+    }
+    @Test void automaticWritesReserveOnceAndOnlyOwnedReceiptsCanResolveUnknownOutcomes(){
+        String key="b".repeat(64),digest="c".repeat(64);
+        assertThat(settings.reserveAutomatic(owner,key,digest)).isFalse();
+        assertThatThrownBy(()->settings.reserveAutomatic(owner,key,digest)).hasMessageContaining("409");
+        settings.deletionOutcome(owner,key,"UNKNOWN");
+        assertThatThrownBy(()->settings.reserveAutomatic(owner,key,digest)).hasMessageContaining("409");
+        assertThatThrownBy(()->service.verifyExtraction(other,key)).hasMessageContaining("404");verifyNoInteractions(bridge);
+        when(bridge.extractionReceipt(owner,key)).thenReturn(new MemoryDtos.Extraction(key,"SUCCEEDED",2,"2026-10-18T12:00:00+08:00"));
+        assertThat(service.verifyExtraction(owner,key).affectedMemories()).isEqualTo(2);
+        assertThat(settings.automaticOutcome(owner,key)).isEqualTo("SUCCEEDED");
+        assertThat(settings.reserveAutomatic(owner,key,digest)).isTrue();
+        assertThatThrownBy(()->settings.reserveAutomatic(owner,key,"d".repeat(64))).hasMessageContaining("409");
+        assertThat(settings.audit(owner)).singleElement().satisfies(row->{assertThat(row.action()).isEqualTo("AUTOSAVE");assertThat(row.requestId()).isEqualTo(key);});
+    }
+    @Test void aRunningReceiptDoesNotEraseUnknownOutcomeAndNotStartedIsARejection(){
+        String key="b".repeat(64);settings.reserveAutomatic(owner,key,"c".repeat(64));settings.deletionOutcome(owner,key,"UNKNOWN");
+        settings.reconcileAutomatic(owner,key,"RUNNING");assertThat(settings.automaticOutcome(owner,key)).isEqualTo("UNKNOWN");
+        settings.reconcileAutomatic(owner,key,"NOT_STARTED");assertThat(settings.automaticOutcome(owner,key)).isEqualTo("REJECTED");
+        assertThatThrownBy(()->settings.reconcileAutomatic(other,key,"SUCCEEDED")).hasMessageContaining("404");
+    }
     @Test void defaultsPreserveExistingPolicyAndOwnerRevisionGuardsConcurrentChanges(){
         assertThat(settings.get(owner)).isEqualTo(new MemoryDtos.Preference(true,true,0,null));
         var saved=settings.change(owner,new MemoryDtos.ChangePreference(0,false,false));assertThat(saved.revision()).isEqualTo(1);

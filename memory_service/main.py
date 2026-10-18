@@ -18,6 +18,10 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 from dotenv import load_dotenv
+try:
+    from .write_receipts import MemoryWriter, ReceiptError
+except ImportError:  # Docker / start_server.py load main as a top-level module.
+    from write_receipts import MemoryWriter, ReceiptError
 
 # 加载 .env 文件
 load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=True)
@@ -48,7 +52,8 @@ logging.getLogger("mem0.memory.main").addFilter(PrivateMemoryLogFilter())
 # mem0 实例（延迟初始化）
 memory_instance = None
 # 当前本地桥接使用单进程；将人工更新、删除和自动提炼串行化。
-memory_write_lock = threading.RLock()
+memory_write_lock = threading.Lock()
+memory_writer = None
 
 
 @contextmanager
@@ -115,24 +120,50 @@ def get_memory_config():
     return config
 
 
+def bounded_setting(name, default, minimum, maximum):
+    value = float(os.getenv(name, str(default)))
+    if not minimum <= value <= maximum:
+        raise ValueError("Invalid memory service timing configuration")
+    return value
+
+
+def configure_provider_timeouts(memory):
+    # The pinned Mem0 constructor does not forward a timeout to its OpenAI clients.
+    timeout = bounded_setting("MEM0_PROVIDER_TIMEOUT_SECONDS", 15, 0.1, 120)
+    for provider in (memory.llm, memory.embedding_model):
+        provider.client = provider.client.with_options(timeout=timeout, max_retries=0)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
-    global memory_instance
+    global memory_instance, memory_writer
     logger.info("正在初始化 mem0 记忆服务...")
-
+    writer = None
     try:
+        directory = Path(os.getenv("MEM0_DATA_DIR") or Path(__file__).parent / "bridge_state") / "bridge_receipts"
+        writer = MemoryWriter(directory, lambda: memory_instance, memory_write_lock,
+                                     response_wait=bounded_setting("MEM0_WRITE_RESPONSE_SECONDS", 3, 0.01, 4),
+                                     operation_seconds=bounded_setting("MEM0_WRITE_REVIEW_SECONDS", 120, 1, 1800))
         from mem0 import Memory
         config = get_memory_config()
         memory_instance = Memory.from_config(config)
+        configure_provider_timeouts(memory_instance)
+        memory_writer = writer
         logger.info("mem0 记忆服务初始化完成")
     except Exception as e:
+        if writer is not None:
+            writer.close(wait=False)
         logger.error("mem0 初始化失败: %s", type(e).__name__)
         raise
 
-    yield
-
-    logger.info("mem0 记忆服务关闭")
+    try:
+        yield
+    finally:
+        writer.close(wait=False)
+        if memory_writer is writer:
+            memory_writer = None
+        logger.info("mem0 记忆服务关闭")
 
 
 app = FastAPI(
@@ -275,17 +306,27 @@ def update_owned_memory(request: OwnedMemoryUpdateRequest):
 
 class AddMemoryRequest(BaseModel):
     """添加记忆请求"""
-    user_id: str = Field(..., description="用户ID")
-    app_id: str = Field(..., min_length=1, description="应用ID")
-    run_id: str = Field(..., min_length=1, description="会话ID")
-    content: str = Field(..., description="记忆内容")
+    user_id: str = Field(..., pattern=r"^doorhandlecatch:user:[1-9][0-9]*$", max_length=80)
+    app_id: Literal["doorhandlecatch"]
+    run_id: str = Field(..., min_length=1, max_length=128, description="会话ID")
+    content: str = Field(..., min_length=1, max_length=64000, description="记忆内容")
+    request_id: Optional[str] = Field(None, pattern=r"^[A-Za-z0-9_-]{1,64}$")
     metadata: Optional[dict] = Field(None, description="元数据")
+
+    @field_validator("metadata")
+    @classmethod
+    def validate_metadata(cls, value):
+        if value is not None and (set(value) - {"source", "timestamp", "turn_id"}
+                                  or any(not isinstance(item, (str, int, float, bool)) for item in value.values())
+                                  or len(json.dumps(value, ensure_ascii=False)) > 2000):
+            raise ValueError("Memory metadata is unsupported")
+        return value
 
 
 class SearchMemoryRequest(BaseModel):
     """搜索记忆请求"""
-    user_id: str = Field(..., min_length=1, description="用户ID")
-    app_id: str = Field(..., min_length=1, description="应用ID")
+    user_id: str = Field(..., pattern=r"^doorhandlecatch:user:[1-9][0-9]*$", max_length=80)
+    app_id: Literal["doorhandlecatch"]
     run_id: str = Field(..., min_length=1, description="会话ID")
     query: str = Field(..., description="搜索查询")
     top_k: int = Field(5, ge=1, le=20, description="返回数量")
@@ -312,28 +353,49 @@ class ApiResponse(BaseModel):
 @app.get("/health")
 async def health_check():
     """健康检查"""
-    return {"status": "ok", "service": "memory", "memory_scopes": ["SESSION", "ACCOUNT"], "governance": True, "owned_edit": True, "owned_pagination": True, "bridge_auth_configured": bool(os.getenv("MEM0_BRIDGE_TOKEN"))}
+    return {"status": "ok", "service": "memory", "memory_scopes": ["SESSION", "ACCOUNT"], "governance": True, "owned_edit": True, "owned_pagination": True, "write_receipts": memory_writer is not None, "bridge_auth_configured": bool(os.getenv("MEM0_BRIDGE_TOKEN"))}
 
 
 @app.post("/memories/add", response_model=ApiResponse)
 def add_memory(request: AddMemoryRequest):
     """添加记忆"""
     try:
-        with memory_write_slot():
-            result = memory_instance.add(
-                request.content,
-                user_id=request.user_id,
-                agent_id=request.app_id,
-                run_id=request.run_id,
-                metadata=request.metadata,
-            )
-        logger.info(f"添加记忆成功: user={request.user_id}, ")
-        return ApiResponse(data=result)
+        if memory_writer is None:
+            raise HTTPException(503, "Memory receipt storage is unavailable; operation not started", headers={"X-Memory-Operation-Started": "false"})
+        result = memory_writer.submit(request.user_id, request.app_id, request.run_id, request.content, request.metadata, request.request_id)
+        if result["status"] == "SUCCEEDED":
+            return ApiResponse(data={"results": result["results"], "operation": result})
+        if result["status"] == "RUNNING":
+            return JSONResponse(status_code=202, content={"code": 202, "message": "Memory extraction is running", "data": {"operation": result}})
+        return JSONResponse(status_code=409, content={"code": 409, "message": "Memory outcome needs verification; not replayed", "data": {"operation": result}})
+    except ReceiptError as error:
+        headers = {"Retry-After": "2"} if error.status == 503 else {}
+        if error.not_started:
+            headers["X-Memory-Operation-Started"] = "false"
+        raise HTTPException(error.status, error.detail, headers=headers)
     except HTTPException:
         raise
     except Exception as e:
         logger.warning("添加记忆结果待核对: %s", type(e).__name__)
         raise HTTPException(status_code=503, detail="Memory write outcome needs verification")
+
+
+class MemoryOperationRequest(BaseModel):
+    user_id: str = Field(..., pattern=r"^doorhandlecatch:user:[1-9][0-9]*$", max_length=80)
+    app_id: Literal["doorhandlecatch"]
+    request_id: str = Field(..., pattern=r"^[A-Za-z0-9_-]{1,64}$")
+
+
+@app.post("/memories/operations/get", response_model=ApiResponse)
+def memory_operation(request: MemoryOperationRequest):
+    if memory_writer is None:
+        raise HTTPException(503, "Memory receipt storage is unavailable")
+    try:
+        return ApiResponse(data=memory_writer.receipt(request.user_id, request.app_id, request.request_id))
+    except ReceiptError as error:
+        raise HTTPException(error.status, error.detail)
+    except Exception:
+        raise HTTPException(503, "Memory receipt storage is unavailable")
 
 
 @app.post("/memories/search", response_model=ApiResponse)

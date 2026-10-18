@@ -10,6 +10,27 @@ import java.util.Set;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class Mem0ClientTest {
+    @Test void anAcceptedExtractionIsPendingAndItsStableTurnIdIsSentWithoutFalseSuccess()throws Exception{
+        var json=new com.fasterxml.jackson.databind.ObjectMapper();var bodies=new java.util.ArrayList<com.fasterxml.jackson.databind.JsonNode>();
+        var preferences=org.mockito.Mockito.mock(MemoryPreferenceService.class);var owner=new TenantContext(42L,"alice");
+        org.mockito.Mockito.when(preferences.get(owner)).thenReturn(new com.ruanzhu.doorhandle.module.app.dto.chat.MemoryDtos.Preference(true,true,0,null));
+        var server=com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress("127.0.0.1",0),0);
+        server.createContext("/memories/add",exchange->{var body=json.readTree(exchange.getRequestBody());bodies.add(body);byte[] response=json.writeValueAsBytes(java.util.Map.of("code",202,"data",java.util.Map.of("operation",java.util.Map.of("requestId",body.path("request_id").asText(),"status","RUNNING"))));exchange.getResponseHeaders().set("Content-Type","application/json");exchange.sendResponseHeaders(202,response.length);exchange.getResponseBody().write(response);exchange.close();});server.start();
+        try{
+            var client=new Mem0Client(new SensitiveDataSanitizer(),preferences);org.springframework.test.util.ReflectionTestUtils.setField(client,"enabled",true);org.springframework.test.util.ReflectionTestUtils.setField(client,"bridgeToken","fixture");org.springframework.test.util.ReflectionTestUtils.setField(client,"serviceUrl","http://127.0.0.1:"+server.getAddress().getPort());
+            assertThat(client.addMemory(owner,"s1","private",java.util.Map.of("turn_id",12,"timestamp",1))).containsEntry("status","RUNNING");
+            client.addMemory(owner,"s1","private",java.util.Map.of("turn_id",12,"timestamp",2));
+            assertThat(bodies).hasSize(2);String id=bodies.get(0).path("request_id").asText();assertThat(id).matches("[a-f0-9]{64}");assertThat(bodies.get(1).path("request_id").asText()).isEqualTo(id);
+            org.mockito.Mockito.verify(preferences,org.mockito.Mockito.never()).deletionOutcome(org.mockito.Mockito.any(),org.mockito.Mockito.anyString(),org.mockito.Mockito.anyString());
+        }finally{server.stop(0);}
+    }
+    @Test void auditFailurePreventsCallingTheMemoryBridge(){
+        var preferences=org.mockito.Mockito.mock(MemoryPreferenceService.class);var owner=new TenantContext(42L,"alice");
+        org.mockito.Mockito.when(preferences.get(owner)).thenReturn(new com.ruanzhu.doorhandle.module.app.dto.chat.MemoryDtos.Preference(true,true,0,null));
+        org.mockito.Mockito.when(preferences.reserveAutomatic(org.mockito.Mockito.eq(owner),org.mockito.Mockito.anyString(),org.mockito.Mockito.anyString())).thenThrow(new IllegalStateException("fixture audit unavailable"));
+        var client=new Mem0Client(new SensitiveDataSanitizer(),preferences);org.springframework.test.util.ReflectionTestUtils.setField(client,"enabled",true);org.springframework.test.util.ReflectionTestUtils.setField(client,"serviceUrl","invalid-no-http-request");
+        assertThat(client.addMemory(owner,"s1","private",java.util.Map.of())).isEmpty();org.mockito.Mockito.verify(preferences,org.mockito.Mockito.never()).deletionOutcome(org.mockito.Mockito.any(),org.mockito.Mockito.anyString(),org.mockito.Mockito.anyString());
+    }
     @Test void disabledOrUnavailablePreferencesSkipBothRetrievalAndQueuedExtraction()throws Exception{
         var calls=new java.util.concurrent.atomic.AtomicInteger();
         var server=com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress("127.0.0.1",0),0);

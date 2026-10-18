@@ -19,5 +19,6 @@ public final class MemoryDtos {
                          @NotBlank @Size(max=4000) String memory, @AssertTrue boolean confirmed) {}
     public record Updated(boolean updated, boolean replayed) {}
     public record Audit(long id, String action, String outcome, String memoryId, Integer preferenceRevision,
-                        Boolean readEnabled, Boolean saveEnabled, String createdAt, String updatedAt) {}
+                        Boolean readEnabled, Boolean saveEnabled, String createdAt, String updatedAt, String requestId) {}
+    public record Extraction(String requestId,String status,Integer affectedMemories,String updatedAt) {}
 }

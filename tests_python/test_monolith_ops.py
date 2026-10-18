@@ -93,10 +93,11 @@ def test_snapshot_manifest_cannot_reference_files_outside_checked_inventory(tmp_
     with pytest.raises(ops.OpsError,match='volume map'):ops.verify(snapshot)
 
 
-def test_prune_protects_live_stopped_and_previous_images_and_only_old_app_tags(tmp_path,monkeypatch):
+@pytest.mark.parametrize('repository',['doorhandlecatch/backend','doorhandlecatch/mem0'])
+def test_prune_protects_live_stopped_and_previous_images_and_only_old_app_tags(tmp_path,monkeypatch,repository):
     (tmp_path/'state').mkdir();old='sha256:'+'c'*64;previous='sha256:'+'d'*64
     (tmp_path/'state/previous-images.yml').write_text('image: '+previous)
-    rows=[{'Repository':'doorhandlecatch/backend','Tag':f'ci-{n}-'+'e'*12,'ID':('sha256:'+str(n)*64 if n>4 else old if n==2 else previous if n==1 else 'sha256:'+'f'*64)} for n in range(1,7)]
+    rows=[{'Repository':repository,'Tag':f'ci-{n}-'+'e'*12,'ID':('sha256:'+str(n)*64 if n>4 else old if n==2 else previous if n==1 else 'sha256:'+'f'*64)} for n in range(1,7)]
     rows.append({'Repository':'mysql','Tag':'8.4','ID':'sha256:'+'9'*64})
     def docker(*args,**kwargs):
         if args[:2]==('ps','-aq'):return b'live stopped'
@@ -105,7 +106,7 @@ def test_prune_protects_live_stopped_and_previous_images_and_only_old_app_tags(t
         return '\n'.join(json.dumps(row) for row in rows).encode()
     monkeypatch.setattr(ops,'docker',docker)
     result=ops.prune_plan(tmp_path,3)
-    assert result['candidates']==['doorhandlecatch/backend:ci-3-'+'e'*12]
+    assert result['candidates']==[repository+':ci-3-'+'e'*12]
     assert old in result['protectedDigests'] and previous in result['protectedDigests']
 
 

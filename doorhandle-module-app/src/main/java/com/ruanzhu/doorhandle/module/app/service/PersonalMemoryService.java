@@ -12,6 +12,13 @@ import org.springframework.web.server.ResponseStatusException;
 public class PersonalMemoryService {
     private final Mem0Client memory;
     private final MemoryPreferenceService preferences;
+    public MemoryDtos.Extraction verifyExtraction(TenantContext owner,String requestId) {
+        if(requestId==null||!requestId.matches("[a-f0-9]{64}"))throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"提炼请求编号无效");
+        preferences.automaticOutcome(owner,requestId);
+        var receipt=memory.extractionReceipt(owner,requestId);
+        preferences.reconcileAutomatic(owner,requestId,receipt.status());
+        return receipt;
+    }
     public MemoryDtos.Item get(TenantContext owner,String id) {
         if(id==null||!id.matches("[A-Za-z0-9_-]{1,64}"))throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"记忆编号不正确");
         return memory.getOwned(owner,id);

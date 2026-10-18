@@ -13,6 +13,16 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 class PersonalMemoryControllerTest {
+    @Test void operationVerificationUsesThePrincipalAndNeverCallsASaveTool()throws Exception{
+        var memory=mock(PersonalMemoryService.class);var preferences=mock(MemoryPreferenceService.class);var owner=new TenantContext(42L,"alice");String id="a".repeat(64);
+        when(memory.verifyExtraction(owner,id)).thenReturn(new MemoryDtos.Extraction(id,"RUNNING",null,null));
+        var mvc=MockMvcBuilders.standaloneSetup(new PersonalMemoryController(memory,preferences)).build();
+        String path="/api/agent/memories/operations/"+id+"/verify";
+        mvc.perform(post(path).principal(auth("ROLE_SUPERVISOR"))).andExpect(status().isForbidden());
+        mvc.perform(post(path).header("X-Agent-Action","memory-verify")).andExpect(status().isUnauthorized());
+        mvc.perform(post(path).param("ownerUserId","43").header("X-Agent-Action","memory-verify").principal(auth("ROLE_SUPERVISOR"))).andExpect(status().isOk()).andExpect(header().string("Cache-Control","no-store")).andExpect(jsonPath("$.status").value("RUNNING"));
+        verify(memory).verifyExtraction(owner,id);verifyNoInteractions(preferences);
+    }
     private UsernamePasswordAuthenticationToken auth(String role){var roles=List.of(new SimpleGrantedAuthority(role));return new UsernamePasswordAuthenticationToken(new TenantPrincipal(42L,"alice","",roles),null,roles);}
     @Test void accountIsDerivedFromPrincipalEvenWhenSupervisorSuppliesAnotherOwner()throws Exception{
         var memory=mock(PersonalMemoryService.class);var preferences=mock(MemoryPreferenceService.class);var owner=new TenantContext(42L,"alice");

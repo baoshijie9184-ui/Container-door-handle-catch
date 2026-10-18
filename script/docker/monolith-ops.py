@@ -19,7 +19,7 @@ import uuid
 
 PROJECT = 'doorhandlecatch-monolith'
 ZONE = dt.timezone(dt.timedelta(hours=8))
-APP = re.compile(r'^doorhandlecatch/(backend|web):ci-([0-9]+)-[a-f0-9]{12}$')
+APP = re.compile(r'^doorhandlecatch/(backend|web|mem0):ci-([0-9]+)-[a-f0-9]{12}$')
 VOLUME = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_.-]{0,150}$')
 DIGEST = re.compile(r'^sha256:[a-f0-9]{64}$')
 
@@ -522,7 +522,7 @@ def prune_plan(root, keep=3):
             protected.update(re.findall(r'sha256:[a-f0-9]{64}', path.read_text(encoding='utf8')))
     records = [json.loads(line) for line in docker('image', 'ls', '--no-trunc', '--format', '{{json .}}').decode().splitlines()]
     candidates = []
-    for repository in ('doorhandlecatch/backend', 'doorhandlecatch/web'):
+    for repository in ('doorhandlecatch/backend', 'doorhandlecatch/web', 'doorhandlecatch/mem0'):
         images = [row for row in records if APP.fullmatch(row['Repository']+':'+row['Tag']) and row['Repository'] == repository]
         images.sort(key=lambda row: int(APP.fullmatch(row['Repository']+':'+row['Tag']).group(2)), reverse=True)
         for row in images[keep:]:

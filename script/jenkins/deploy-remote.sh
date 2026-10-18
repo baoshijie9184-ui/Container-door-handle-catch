@@ -46,7 +46,7 @@ snapshot() {
         [[ "$health" == running/healthy ]] || { echo "$service is not healthy: $health" >&2; return 1; }
         image=$(docker inspect --format '{{.Image}}' "$cid")
         [[ "$image" =~ ^sha256:[a-f0-9]{64}$ ]] || return 1
-        if [[ "$mode" == all || "$service" == mem0 || "$service" == chroma || "$service" == detection-worker ]]; then
+        if [[ "$mode" == all || "$service" == chroma || "$service" == detection-worker ]]; then
             printf '  %s:\n    image: %s\n' "$service" "$image" >> "$file"
         fi
     done
@@ -54,7 +54,8 @@ snapshot() {
 
 activate() {
     local dir=$1 images=$2
-    # No dependencies or initializer jobs are recreated; databases and worker remain untouched.
+    # The versioned memory bridge is part of the application; databases and PTH worker stay pinned.
+    dc "$dir" "$images" up -d --no-deps --no-build --pull never --wait --wait-timeout 240 mem0 || return 1
     dc "$dir" "$images" up -d --no-deps --no-build --pull never --wait --wait-timeout 240 backend || return 1
     dc "$dir" "$images" up -d --no-deps --no-build --pull never --force-recreate --wait --wait-timeout 90 nginx || return 1
     dc "$dir" "$images" exec -T backend curl -fsS http://127.0.0.1:8080/actuator/health >/dev/null || return 1
@@ -110,8 +111,8 @@ export APP_IMAGE_TAG=$tag
 dc "$release" "$release/runtime-images.yml" config --quiet
 # The backup helper inherits this deployment's lock; failed backup prevents any app replacement.
 python3 "$release/script/docker/monolith-ops.py" backup --root "$root" --runtime "$runtime" --lock-fd 9
-# Only backend and web are rebuilt. Runtime PTH/Mem0 images are explicitly pinned above.
-dc "$release" "$release/runtime-images.yml" build backend nginx
+# The memory protocol and backend are released together. Runtime PTH/Chroma remain pinned.
+dc "$release" "$release/runtime-images.yml" build backend nginx mem0
 if ! activate "$release" "$release/runtime-images.yml"; then
     # Keep startup evidence before replacing the failed container during rollback.
     dc "$release" "$release/runtime-images.yml" logs --no-color --tail 200 backend > "$root/state/failed-$tag-backend.log" 2>&1 || true

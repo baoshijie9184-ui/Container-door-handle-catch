@@ -19,6 +19,7 @@ deepseek-harness
 work
 mem0
 memory_service/chroma_db
+memory_service/bridge_state
 **/__pycache__
 **/.pytest_cache
 artifacts

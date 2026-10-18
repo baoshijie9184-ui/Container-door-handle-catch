@@ -185,7 +185,7 @@ public class AgentScopeChatServiceImpl implements ChatConversationService, Agent
             if(workbench!=null&&workbench.getIfAvailable()!=null&&saved.getId()!=null)workbench.getObject().turnSaved(actor,sessionId,saved.getId());
             try {
                 if(!command)memory.addMemoryAsync(tenant, sessionId, "用户: " + request.getContent() + "\n助手: " + reply,
-                        Map.of("source", "agentscope-chat", "timestamp", System.currentTimeMillis()));
+                        Map.of("source", "agentscope-chat", "timestamp", System.currentTimeMillis(),"turn_id",saved.getId()!=null?saved.getId():run.runId()));
             } catch (RuntimeException error) { log.warn("对话记忆保存失败：errorType={}", error.getClass().getSimpleName()); }
             state = "COMPLETED";
             return saved;
