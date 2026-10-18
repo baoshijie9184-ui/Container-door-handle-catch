@@ -4,6 +4,7 @@ import argparse
 import copy
 import datetime as dt
 import hashlib
+from html.parser import HTMLParser
 import http.cookiejar
 import importlib.util
 import json
@@ -241,6 +242,20 @@ with urllib.request.urlopen(request,timeout=40) as response:print(response.read(
         self.persist()
         return config
 
+    def verify_dispatch_index(self):
+        sql = "SELECT GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='agent_conversation_input' AND INDEX_NAME='idx_conversation_input_dispatch_owner';"
+        return self.ops.db(self.row('mysql')['Id'], sql).strip() == 'status,user_id,id'
+
+    def migrate_candidate(self, source):
+        # Fixed additive migration on the owned copy only; production publishing never invokes it.
+        file = source/'sql/mysql/migration-V39-conversation-owner-dispatch.sql'
+        mirror = source/'doorhandle-module-app/src/main/resources/db/migration-V39-conversation-owner-dispatch.sql'
+        require(file.read_bytes() == mirror.read_bytes(), 'Candidate V39 migration copies differ')
+        existing = self.ops.db(self.row('mysql')['Id'], "SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='agent_conversation_input' AND INDEX_NAME='idx_conversation_input_dispatch_owner';").strip()
+        if existing == '0':
+            self.ops.db(self.row('mysql')['Id'], file.read_text(encoding='utf8'))
+        self.check('Candidate V39 adds only the expected dispatch index', self.verify_dispatch_index())
+
     def cleanup(self):
         # Re-read labels, and revalidate the exact private config before deleting owned copies.
         validate_isolation(self.config, self.project)
@@ -286,13 +301,38 @@ class Client:
         return self.request('POST', '/api/auth/login', {'username': account, 'password': os.environ.get('DOORHANDLE_DEMO_PASSWORD', '123456')})
 
 
+def verify_ui_entries(client):
+    class Entry(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.ids, self.scripts = set(), []
+        def handle_starttag(self, tag, attrs):
+            attributes = dict(attrs)
+            if attributes.get('id'):
+                self.ids.add(attributes['id'])
+            if tag == 'script' and attributes.get('type') == 'module' and attributes.get('src'):
+                self.scripts.append(attributes['src'])
+    for path, node, prefix in (('/', 'app', '/assets/'), ('/agent-ui/', 'root', '/agent-ui/assets/')):
+        body = client.request('GET', path)
+        require(isinstance(body, bytes), 'UI entry is not an HTML resource')
+        entry = Entry()
+        entry.feed(body.decode('utf8'))
+        require(node in entry.ids and bool(entry.scripts), 'UI mount point or compiled module is missing')
+        for script in entry.scripts:
+            require(script.startswith(prefix) and not any(part in ('..', '.') for part in script.split('/')) and
+                    not any(char in script for char in ('\\', '?', '#', ':')), 'UI module is not a private same-origin asset')
+            module = client.request('GET', script)
+            require(isinstance(module, bytes) and len(module) >= 32 and not module.lstrip().lower().startswith((b'<!doctype', b'<html')),
+                    'Compiled UI module is unavailable or fell back to HTML')
+
+
 def smoke(run, port, marker=None):
     client = Client(port)
     for account in ('inspector.demo', 'inspector.demo2', 'supervisor.demo', 'supervisor.demo2'):
         client.login(account)
         require(client.request('GET', '/api/chat-assistant/sessions') is not None, 'Sessions unavailable')
     run.check('Four demo accounts can log in and read their own sessions', True)
-    require(b'<html' in client.request('GET', '/').lower() and b'<html' in client.request('GET', '/agent-ui/').lower(), 'UI entry missing')
+    verify_ui_entries(client)
     run.check('Vue and React production entry points served', True)
     client.login('inspector.demo')
     capabilities = client.request('GET', '/api/agent/workbench/capabilities')
@@ -460,6 +500,7 @@ def run(args):
             smoke(instance, args.port)
             marker = upload_marker(args.port)
             private_json(directory/'marker.json', marker)
+            instance.migrate_candidate(source)
             print(json.dumps({'project': project, 'phase': 'UPGRADING'}), flush=True)
             instance.activate(candidate, 'Upgrade')
             smoke(instance, args.port, marker)
@@ -467,6 +508,7 @@ def run(args):
             upgraded_memory = instance.row('mem0')['Id']
             print(json.dumps({'project': project, 'phase': 'ROLLING_BACK'}), flush=True)
             instance.activate(manifest['images'], 'Rollback')
+            instance.check('Application rollback preserves the additive V39 index', instance.verify_dispatch_index())
             smoke(instance, args.port, marker)
             instance.check('Legacy rollback retains the exact compatible memory bridge', instance.row('mem0')['Id'] == upgraded_memory)
             verify_memory_marker(instance, args.port, memory, legacy=True)

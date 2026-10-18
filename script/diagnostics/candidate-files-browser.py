@@ -130,6 +130,7 @@ print('owned-candidate-ready')
                     assert response.ok
                     path = '/#/agent/chat?sessionId='+state['id'] if entry == 'vue' else '/agent-ui/?sessionId='+state['id']
                     page.goto(base+path, wait_until='networkidle')
+                    check(entry+' uses standards mode and a mobile viewport', page.evaluate('document.compatMode==="CSS1Compat"&&document.querySelector("meta[name=viewport]")?.content.includes("width=device-width")'))
                     toggle = page.get_by_role('button', name='展开工作面板' if entry == 'vue' else '查看助手信息', exact=True)
                     if toggle.count() and toggle.is_visible():
                         toggle.click()

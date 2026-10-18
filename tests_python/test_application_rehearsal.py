@@ -166,3 +166,60 @@ def test_missing_unknown_or_pending_worker_offsets_cannot_start_copied_detection
 
 def test_every_worker_partition_requires_a_known_committed_end_offset():
     rehearsal.require_no_detection_backlog('GROUP TOPIC PARTITION CURRENT-OFFSET LOG-END-OFFSET LAG\nworker task 0 9 9 0 - - -\nworker task 1 12 12 0 - - -', 'worker')
+
+
+def ui_resources():
+    return {'/': b'<!doctype html><html><div id="app"></div><script type="module" src="/assets/vue.js"></script></html>',
+            '/agent-ui/': b'<script type="module" src="/agent-ui/assets/react.js"></script><div id="root"></div>',
+            '/assets/vue.js': b'/* real fixture module */ window.vueLoaded=true;',
+            '/agent-ui/assets/react.js': b'/* real fixture module */ window.reactLoaded=true;'}
+
+
+def test_smoke_accepts_legacy_react_fragment_and_requires_its_actual_module():
+    class Client:
+        def request(self, method, path): return ui_resources()[path]
+    rehearsal.verify_ui_entries(Client())
+
+
+@pytest.mark.parametrize('damage', ['missing-root', 'missing-script', 'external-script', 'traversal-script', 'empty-module', 'spa-fallback'])
+def test_entry_smoke_rejects_broken_or_external_module_resources(damage):
+    resources = ui_resources()
+    if damage == 'missing-root': resources['/agent-ui/'] = resources['/agent-ui/'].replace(b'id="root"', b'id="wrong"')
+    elif damage == 'missing-script': resources['/agent-ui/'] = b'<div id="root"></div>'
+    elif damage == 'external-script': resources['/agent-ui/'] = resources['/agent-ui/'].replace(b'/agent-ui/assets/react.js', b'https://outside.example/app.js')
+    elif damage == 'traversal-script': resources['/agent-ui/'] = resources['/agent-ui/'].replace(b'/agent-ui/assets/react.js', b'/agent-ui/assets/../private.js')
+    elif damage == 'empty-module': resources['/agent-ui/assets/react.js'] = b''
+    elif damage == 'spa-fallback': resources['/agent-ui/assets/react.js'] = resources['/']
+    class Client:
+        def request(self, method, path): return resources[path]
+    with pytest.raises(RuntimeError): rehearsal.verify_ui_entries(Client())
+
+
+@pytest.mark.parametrize('existing,signature,creates,passes', [('0','status,user_id,id',True,True),('3','status,user_id,id',False,True),('3','id,user_id,status',False,False)])
+def test_fixed_candidate_migration_checks_existing_index_before_creating(tmp_path, existing, signature, creates, passes):
+    root = Path(__file__).resolve().parents[1]
+    calls = []
+    class Ops:
+        def db(self, container, sql):
+            assert container == 'owned-copy'
+            calls.append(sql)
+            return existing if 'COUNT(*)' in sql else signature
+    run = rehearsal.Rehearsal.__new__(rehearsal.Rehearsal)
+    run.ops = Ops()
+    run.row = lambda service: {'Id': 'owned-copy'}
+    run.check = lambda name, condition: rehearsal.require(condition, name)
+    if passes: run.migrate_candidate(root)
+    else:
+        with pytest.raises(RuntimeError): run.migrate_candidate(root)
+    assert any('CREATE INDEX' in sql for sql in calls) == creates
+
+
+def test_migration_copy_mismatch_stops_before_any_database_operation(tmp_path):
+    file = tmp_path/'sql/mysql/migration-V39-conversation-owner-dispatch.sql'
+    mirror = tmp_path/'doorhandle-module-app/src/main/resources/db/migration-V39-conversation-owner-dispatch.sql'
+    for path in (file, mirror): path.parent.mkdir(parents=True)
+    file.write_text('CREATE INDEX expected;',encoding='utf8')
+    mirror.write_text('DIFFERENT;',encoding='utf8')
+    run = rehearsal.Rehearsal.__new__(rehearsal.Rehearsal)
+    run.row = lambda service: pytest.fail('Must not access a database when migration copies differ')
+    with pytest.raises(RuntimeError, match='copies differ'): run.migrate_candidate(tmp_path)

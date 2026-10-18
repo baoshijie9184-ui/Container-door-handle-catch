@@ -35,6 +35,8 @@ public class ConversationInboxService implements AgentSteeringInboxApi {
     @org.springframework.beans.factory.annotation.Autowired public void setWorkbench(ObjectProvider<AgentWorkbenchApi> workbench){this.workbench=workbench;}
     private final ThreadPoolExecutor workers=new ThreadPoolExecutor(2,2,0,TimeUnit.SECONDS,new SynchronousQueue<>(),r->{var t=new Thread(r,"agent-conversation-inbox");t.setDaemon(true);return t;});
     private final ScheduledExecutorService scheduler=Executors.newSingleThreadScheduledExecutor(r->{var t=new Thread(r,"agent-conversation-input-dispatch");t.setDaemon(true);return t;});
+    // Process-local scan position only; durable input claims and execution receipts remain in MySQL.
+    private long dispatchAfterUser,dispatchRoundMaxUser;
     public ConversationInboxService(JdbcTemplate jdbc,PlatformTransactionManager manager,ChatSessionService sessions,ChatConversationService chat,
             BusinessUserDirectory users,ObjectProvider<AgentConversationControlApi> control){
         this.jdbc=jdbc;this.sessions=sessions;this.chat=chat;this.users=users;this.control=control;
@@ -120,24 +122,43 @@ public class ConversationInboxService implements AgentSteeringInboxApi {
     public synchronized void dispatch(){
         if(workers.isShutdown())return;
         expire();if(workers.getActiveCount()>=2)return;
-        for(var candidate:jdbc.queryForList("SELECT * FROM agent_conversation_input WHERE status='QUEUED' ORDER BY id LIMIT 32")){
+        if(dispatchRoundMaxUser==0||dispatchAfterUser>=dispatchRoundMaxUser)startDispatchRound();
+        var owners=queuedOwnersAfter(dispatchAfterUser);
+        if(owners.isEmpty()&&dispatchAfterUser!=0){startDispatchRound();owners=queuedOwnersAfter(0);}
+        for(long owner:owners){
+            dispatchAfterUser=owner;
+            // Admission bounds each account to 16 pending/started messages. A busy account
+            // cannot hide every other account behind the old global 32-row frontier.
+            for(var candidate:jdbc.queryForList("SELECT * FROM agent_conversation_input WHERE user_id=? AND status='QUEUED' ORDER BY id LIMIT 16",owner)){
+                if(dispatch(candidate))return;
+            }
+        }
+    }
+    private void startDispatchRound(){
+        dispatchAfterUser=0;
+        // Fix this round's frontier so a continuous stream of new accounts cannot postpone wrapping forever.
+        dispatchRoundMaxUser=jdbc.queryForObject("SELECT COALESCE(MAX(user_id),0) FROM agent_conversation_input WHERE status='QUEUED'",Long.class);
+    }
+    private List<Long> queuedOwnersAfter(long after){
+        return jdbc.queryForList("SELECT DISTINCT user_id FROM agent_conversation_input WHERE status='QUEUED' AND user_id>? AND user_id<=? ORDER BY user_id LIMIT 32",Long.class,after,dispatchRoundMaxUser);
+    }
+    private boolean dispatch(Map<String,Object> candidate){
             long user=((Number)candidate.get("user_id")).longValue();String username=(String)candidate.get("username"),session=(String)candidate.get("session_id"),id=(String)candidate.get("input_id");
             AgentActor actor;
-            try{actor=owned(new AgentActor(user,username,AgentActor.Role.INSPECTOR),session);}catch(RuntimeException error){terminal(user,id,"FAILED","ACCOUNT_OR_SESSION_UNAVAILABLE");continue;}
+            try{actor=owned(new AgentActor(user,username,AgentActor.Role.INSPECTOR),session);}catch(RuntimeException error){terminal(user,id,"FAILED","ACCOUNT_OR_SESSION_UNAVAILABLE");return false;}
             var run=control.getObject().inspect(actor,session);
-            if(workbench!=null&&workbench.getIfAvailable()!=null&&!workbench.getObject().canDispatchInput(actor,session,id))continue;
-            if(!"IDLE".equals(run.phase()))continue;
+            if(workbench!=null&&workbench.getIfAvailable()!=null&&!workbench.getObject().canDispatchInput(actor,session,id))return false;
+            if(!"IDLE".equals(run.phase()))return false;
             Map<String,Object> claimed=tx.execute(status->{lock(user);var entry=row(user,id);if(!"QUEUED".equals(entry.get("status")))return null;
                 if(jdbc.queryForObject("SELECT COUNT(*) FROM agent_conversation_input WHERE user_id=? AND session_id=? AND status='STARTED'",Integer.class,user,session)>0)return null;
                 if(jdbc.queryForObject("SELECT COUNT(*) FROM agent_conversation_input WHERE input_id=? AND expires_at>CURRENT_TIMESTAMP",Integer.class,id)==0)return null;
                 if("NEXT_STEP".equals(entry.get("mode"))){jdbc.update("UPDATE agent_conversation_input SET mode='NEXT_TURN',target_run_id=NULL WHERE input_id=?",id);audit(entry,"FALLBACK_NEXT_TURN");}
                 jdbc.update("UPDATE agent_conversation_input SET status='STARTED',active_slot=1,content='',revision=revision+1,expires_at=?,updated_at=CURRENT_TIMESTAMP WHERE input_id=?",now().plusSeconds(control.getObject().maxRunSeconds()+10),id);audit(row(user,id),"STARTED");return entry;
             });
-            if(claimed==null)continue;
+            if(claimed==null)return false;
             try{workers.execute(()->execute(actor,session,id,(String)claimed.get("content"),(String)claimed.get("entry_point")));}
             catch(RejectedExecutionException error){terminal(user,id,"FAILED","EXECUTOR_UNAVAILABLE");}
-            return;
-        }
+            return true;
     }
     private void execute(AgentActor supplied,String session,String id,String content,String entryPoint){
         var previous=SecurityContextHolder.getContext();
@@ -158,5 +179,12 @@ public class ConversationInboxService implements AgentSteeringInboxApi {
             jdbc.update("UPDATE agent_conversation_input SET status='EXPIRED',active_slot=NULL,content='',revision=revision+1,updated_at=CURRENT_TIMESTAMP WHERE input_id=?",id);audit(row(user,id),"EXPIRED");});
     }}
     private static ResponseStatusException fail(int code,String message){return new ResponseStatusException(HttpStatus.valueOf(code),message);}
-    @PreDestroy public void close(){scheduler.shutdownNow();workers.shutdownNow();}
+    @PreDestroy public void close(){
+        scheduler.shutdownNow();workers.shutdown();
+        awaitShutdown(scheduler,2);awaitShutdown(workers,5);
+    }
+    private void awaitShutdown(ExecutorService executor,long seconds){
+        try{if(!executor.awaitTermination(seconds,TimeUnit.SECONDS))executor.shutdownNow();}
+        catch(InterruptedException error){executor.shutdownNow();Thread.currentThread().interrupt();}
+    }
 }

@@ -22,8 +22,9 @@ class ConversationInboxServiceTest {
     final AgentActor alice=new AgentActor(1,"alice",AgentActor.Role.INSPECTOR),bob=new AgentActor(2,"bob",AgentActor.Role.SUPERVISOR);
     JdbcTemplate jdbc;ChatSessionService sessions;ChatConversationService chat;BusinessUserDirectory users;AgentConversationControlApi control;
     ConversationInboxService inbox;final List<ConversationInboxService> services=new ArrayList<>();
+    javax.sql.DataSource source(){return new DriverManagerDataSource("jdbc:h2:mem:"+UUID.randomUUID()+";MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1","sa","");}
     @BeforeEach void setup()throws Exception{
-        var source=new DriverManagerDataSource("jdbc:h2:mem:"+UUID.randomUUID()+";MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1","sa","");jdbc=new JdbcTemplate(source);
+        jdbc=new JdbcTemplate(source());
         String ddl=Files.readString(Path.of("../sql/mysql/migration-V36-conversation-inbox.sql")).replaceAll("(?m)^--.*$", "").replaceAll(" COLLATE utf8mb4_bin","").replaceAll(" ENGINE=InnoDB DEFAULT CHARSET=utf8mb4","")
                 .replaceAll("(?m)^(\\s*)UNIQUE KEY (\\w+)\\s*(\\([^\\n]+\\))", "$1CONSTRAINT $2 UNIQUE $3").replaceAll("(?m)^\\s*KEY .*\\n","").replaceAll(",\\s*\\)",")").replace(" COLLATE=utf8mb4_bin","");
         for(String sql:ddl.split(";"))if(!sql.isBlank())jdbc.execute(sql);
@@ -34,10 +35,11 @@ class ConversationInboxServiceTest {
         when(control.inspect(any(),anyString())).thenAnswer(inv->new AgentConversationControlApi.View(inv.getArgument(1),null,"IDLE",0,false,""));when(control.maxRunSeconds()).thenReturn(1800);inbox=create();
     }
     ConversationInboxService create(){var provider=mock(ObjectProvider.class);when(provider.getIfAvailable()).thenReturn(control);when(provider.getObject()).thenReturn(control);var service=new ConversationInboxService(jdbc,new DataSourceTransactionManager(jdbc.getDataSource()),sessions,chat,users,provider);service.schema();services.add(service);return service;}
-    @AfterEach void close(){services.forEach(ConversationInboxService::close);SecurityContextHolder.clearContext();}
+    @AfterEach void close(){services.forEach(ConversationInboxService::close);SecurityContextHolder.clearContext();if(jdbc!=null&&jdbc.getDataSource() instanceof com.zaxxer.hikari.HikariDataSource pool)pool.close();}
     ConversationInboxService.Item enqueue(String text){return inbox.enqueue(alice,"s1",UUID.randomUUID().toString(),"NEXT_TURN",text);}
     String status(String id){return jdbc.queryForObject("SELECT status FROM agent_conversation_input WHERE input_id=?",String.class,id);}
-    void completed(String id){await().atMost(Duration.ofSeconds(3)).until(()->"COMPLETED".equals(status(id)));}
+    Duration executionWait(){return Duration.ofSeconds(3);}
+    void completed(String id){await().atMost(executionWait()).until(()->"COMPLETED".equals(status(id)));}
     void active(){when(control.inspect(any(),anyString())).thenReturn(new AgentConversationControlApi.View("s1","run-1","RUNNING",0,true,""));}
     @Test void promotingAPendingMessageKeepsItsIdentityDeadlineAndOriginalSubmissionReceipt(){
         var queued=enqueue("PROMOTE_ME");var deadline=jdbc.queryForMap("SELECT expires_at FROM agent_conversation_input").get("expires_at");active();
@@ -131,5 +133,65 @@ class ConversationInboxServiceTest {
     @Test void lastQuotaSlotIsSerializedAcrossConcurrentRequests()throws Exception{
         for(int i=0;i<15;i++)enqueue("pending-"+i);var workers=Executors.newFixedThreadPool(2);var start=new CountDownLatch(1);
         try{Callable<Integer> attempt=()->{start.await();try{enqueue("last");return 1;}catch(org.springframework.web.server.ResponseStatusException error){assertThat(error.getStatusCode().value()).isEqualTo(429);return 0;}};var first=workers.submit(attempt);var second=workers.submit(attempt);start.countDown();assertThat(first.get(4,TimeUnit.SECONDS)+second.get(4,TimeUnit.SECONDS)).isEqualTo(1);}finally{workers.shutdownNow();}
+    }
+    @Test void twoBusyAccountsCannotHideTheNextReadyAccountBehindThirtyTwoInputs(){
+        var charlie=new AgentActor(3,"charlie",AgentActor.Role.INSPECTOR);
+        when(users.current(3,"charlie")).thenReturn(new BusinessUserDirectory.Identity(3,"charlie",false));
+        when(sessions.resolveTenantForSystemCallback("charlie")).thenReturn(new TenantContext(3L,"charlie"));
+        when(control.inspect(any(),anyString())).thenAnswer(inv->{AgentActor actor=inv.getArgument(0);String session=inv.getArgument(1);return new AgentConversationControlApi.View(session,actor.userId()==3?null:"busy-run",actor.userId()==3?"IDLE":"RUNNING",0,false,"");});
+        for(int i=0;i<16;i++)enqueue("alice-wait-"+i);
+        for(int i=0;i<16;i++)inbox.enqueue(bob,"bob",UUID.randomUUID().toString(),"NEXT_TURN","bob-wait-"+i);
+        var ready=inbox.enqueue(charlie,"charlie",UUID.randomUUID().toString(),"NEXT_TURN","ready-charlie");
+        inbox.dispatch();completed(ready.id());
+        verify(chat,times(1)).handleUserMessage(eq("charlie"),argThat(request->"ready-charlie".equals(request.getContent())));
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM agent_conversation_input WHERE status='QUEUED'",Integer.class)).isEqualTo(32);
+    }
+    @Test void readyAccountsAlternateWhileTheirOwnMessagesStayInOrder(){
+        var delivered=new CopyOnWriteArrayList<String>();
+        when(chat.handleUserMessage(anyString(),any())).thenAnswer(inv->{delivered.add(inv.getArgument(0)+":"+((com.ruanzhu.doorhandle.module.app.dto.chat.ChatSendMessageRequest)inv.getArgument(1)).getContent());return null;});
+        var a1=enqueue("first");var a2=enqueue("second");var a3=enqueue("third");
+        var b1=inbox.enqueue(bob,"bob",UUID.randomUUID().toString(),"NEXT_TURN","first");
+        var b2=inbox.enqueue(bob,"bob",UUID.randomUUID().toString(),"NEXT_TURN","second");
+        inbox.dispatch();completed(a1.id());inbox.dispatch();completed(b1.id());
+        inbox.dispatch();completed(a2.id());inbox.dispatch();completed(b2.id());inbox.dispatch();completed(a3.id());
+        assertThat(delivered).containsExactly("alice:first","bob:first","alice:second","bob:second","alice:third");
+    }
+    @Test void moreThanThirtyTwoBusyOwnersAreVisitedInBoundedPages(){
+        when(control.inspect(any(),anyString())).thenAnswer(inv->{AgentActor actor=inv.getArgument(0);String session=inv.getArgument(1);return new AgentConversationControlApi.View(session,actor.userId()==34?null:"busy-run",actor.userId()==34?"IDLE":"RUNNING",0,false,"");});
+        ConversationInboxService.Item ready=null;
+        for(long user=1;user<=34;user++){
+            String name="owner-"+user,session="session-"+user;
+            var actor=new AgentActor(user,name,AgentActor.Role.INSPECTOR);
+            when(users.current(user,name)).thenReturn(new BusinessUserDirectory.Identity(user,name,false));
+            when(sessions.resolveTenantForSystemCallback(session)).thenReturn(new TenantContext(user,name));
+            ready=inbox.enqueue(actor,session,UUID.randomUUID().toString(),"NEXT_TURN","page-test");
+        }
+        inbox.dispatch();verifyNoInteractions(chat);inbox.dispatch();completed(ready.id());
+        verify(chat,times(1)).handleUserMessage(eq("owner-34"),any());
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM agent_conversation_input WHERE status='QUEUED'",Integer.class)).isEqualTo(33);
+    }
+    @Test void newlyArrivingAccountsCannotKeepTheRoundFromReturningToExistingAccounts(){
+        var first=enqueue("first");var second=enqueue("second");
+        var b=inbox.enqueue(bob,"bob",UUID.randomUUID().toString(),"NEXT_TURN","bob");
+        inbox.dispatch();completed(first.id());
+        when(users.current(3,"charlie")).thenReturn(new BusinessUserDirectory.Identity(3,"charlie",false));
+        when(sessions.resolveTenantForSystemCallback("charlie")).thenReturn(new TenantContext(3L,"charlie"));
+        var later=inbox.enqueue(new AgentActor(3,"charlie",AgentActor.Role.INSPECTOR),"charlie",UUID.randomUUID().toString(),"NEXT_TURN","later");
+        inbox.dispatch();completed(b.id());inbox.dispatch();completed(second.id());
+        assertThat(status(later.id())).isEqualTo("QUEUED");
+        inbox.dispatch();completed(later.id());
+    }
+    @Test void gracefulShutdownLetsAnAdmittedShortExecutionFinishBeforeClosingPersistence()throws Exception{
+        var entered=new CountDownLatch(1);var release=new CountDownLatch(1);
+        var interrupted=new java.util.concurrent.atomic.AtomicBoolean();
+        when(chat.handleUserMessage(anyString(),any())).thenAnswer(inv->{entered.countDown();try{release.await(3,TimeUnit.SECONDS);}catch(InterruptedException error){interrupted.set(true);throw new IllegalStateException(error);}return null;});
+        var input=enqueue("finish-before-shutdown");inbox.dispatch();assertThat(entered.await(2,TimeUnit.SECONDS)).isTrue();
+        var closer=Executors.newSingleThreadExecutor();
+        try{
+            var closing=closer.submit(inbox::close);
+            await().during(Duration.ofMillis(150)).atMost(Duration.ofSeconds(1)).until(()->!closing.isDone());
+            release.countDown();closing.get(3,TimeUnit.SECONDS);
+            assertThat(status(input.id())).isEqualTo("COMPLETED");assertThat(interrupted).isFalse();
+        }finally{release.countDown();closer.shutdownNow();}
     }
 }
