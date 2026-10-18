@@ -151,6 +151,11 @@ class MemoryWriter:
         try:
             self.store = ReceiptStore(self.fence.path)
             self.store.interrupted()
+            try:
+                from .lifecycle import LifecycleStore
+            except ImportError:
+                from lifecycle import LifecycleStore
+            self.lifecycle = LifecycleStore(self.store)
         except BaseException:
             self.fence.close(); raise
         self.memory, self.write_lock = memory, write_lock
@@ -235,3 +240,27 @@ class MemoryWriter:
         with self.mutex:
             if self.future is None or self.future.done():
                 self.fence.close()
+
+    def schedule_cleanup(self):
+        with self.mutex:
+            if self.closed or self.audit_unavailable.is_set() or not self.write_lock.acquire(blocking=False):
+                return False
+            try:
+                self.future = self.executor.submit(self._cleanup)
+            except BaseException:
+                self.write_lock.release()
+                raise
+            return True
+
+    def _cleanup(self):
+        try:
+            self.lifecycle.sweep(self.memory())
+        except Exception:
+            # Unknown completion-audit failures must also fence new extraction writes.
+            self.audit_unavailable.set()
+            logging.getLogger(__name__).warning("Memory cleanup receipt is unavailable")
+        finally:
+            self.write_lock.release()
+            with self.mutex:
+                if self.closed:
+                    self.fence.close()

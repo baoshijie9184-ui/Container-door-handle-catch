@@ -10,6 +10,24 @@ import java.util.Set;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class Mem0ClientTest {
+    @Test void lifecycleBridgeUsesPrivateRoutesAndRejectsMismatchedCompletionProof()throws Exception{
+        var json=new com.fasterxml.jackson.databind.ObjectMapper();var paths=new java.util.ArrayList<String>();var stale=new java.util.concurrent.atomic.AtomicBoolean();
+        var owner=new TenantContext(42L,"alice");var server=com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress("127.0.0.1",0),0);
+        server.createContext("/memories",exchange->{
+            var body=json.readTree(exchange.getRequestBody());String path=exchange.getRequestURI().getPath();paths.add(path);
+            assertThat(body.path("user_id").asText()).isEqualTo(owner.mem0UserId());assertThat(exchange.getRequestHeaders().getFirst("X-Doorhandle-Memory-Token")).isEqualTo("fixture");
+            var data=new com.ruanzhu.doorhandle.module.app.dto.chat.MemoryDtos.Lifecycle("mine",stale.get()?0:1,"EXCLUDED",null,false,"NONE",null);
+            byte[] response=json.writeValueAsBytes(java.util.Map.of("code",200,"data",path.endsWith("/list")?java.util.List.of(data):data));exchange.getResponseHeaders().set("Content-Type","application/json");exchange.sendResponseHeaders(200,response.length);exchange.getResponseBody().write(response);exchange.close();
+        });server.start();
+        try{
+            var client=new Mem0Client(new SensitiveDataSanitizer());org.springframework.test.util.ReflectionTestUtils.setField(client,"enabled",true);org.springframework.test.util.ReflectionTestUtils.setField(client,"bridgeToken","fixture");org.springframework.test.util.ReflectionTestUtils.setField(client,"serviceUrl","http://127.0.0.1:"+server.getAddress().getPort());
+            var request=new com.ruanzhu.doorhandle.module.app.dto.chat.MemoryDtos.ChangeLifecycle("key","a".repeat(64),0,"EXCLUDED",null,false,true);
+            assertThat(client.changeLifecycle(owner,"mine",request).revision()).isEqualTo(1);
+            assertThat(client.lifecycleHistory(owner)).hasSize(1);assertThat(client.verifyCleanup(owner,"mine").memoryId()).isEqualTo("mine");
+            stale.set(true);assertThat(org.assertj.core.api.Assertions.catchThrowable(()->client.changeLifecycle(owner,"mine",request))).isInstanceOf(org.springframework.web.server.ResponseStatusException.class);
+            assertThat(paths).containsExactly("/memories/owned/lifecycle","/memories/lifecycle/list","/memories/lifecycle/verify","/memories/owned/lifecycle");
+        }finally{server.stop(0);}
+    }
     @Test void anAcceptedExtractionIsPendingAndItsStableTurnIdIsSentWithoutFalseSuccess()throws Exception{
         var json=new com.fasterxml.jackson.databind.ObjectMapper();var bodies=new java.util.ArrayList<com.fasterxml.jackson.databind.JsonNode>();
         var preferences=org.mockito.Mockito.mock(MemoryPreferenceService.class);var owner=new TenantContext(42L,"alice");

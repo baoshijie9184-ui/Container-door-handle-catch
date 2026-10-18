@@ -20,6 +20,7 @@ def api(route):
         verified=state=='SUCCEEDED'
         return route.fulfill(json={'requestId':key,'status':state,'affectedMemories':2 if verified else None,'updatedAt':'2026-10-18T12:00:00+08:00'})
     if path.endswith('/preferences'):return route.fulfill(json={'readEnabled':True,'saveEnabled':True,'revision':0})
+    if path.endswith('/lifecycle'):return route.fulfill(json=[])
     if path.endswith('/audit'):return route.fulfill(json=[{'id':1,'action':'AUTOSAVE','requestId':key,'outcome':'SUCCEEDED' if verified else 'UNKNOWN','createdAt':'2026-10-18 12:00:00'}])
     return route.fulfill(json={'items':[{'id':'mine','memory':'<script>window.memoryInjected=true</script> 个人报告偏好','updatedAt':'2026-10-18T04:00:00Z','digest':'b'*64}],'hasMore':False})
 

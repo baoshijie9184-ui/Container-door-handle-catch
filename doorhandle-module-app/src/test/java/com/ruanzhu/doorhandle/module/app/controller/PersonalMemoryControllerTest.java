@@ -13,6 +13,17 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 class PersonalMemoryControllerTest {
+    @Test void lifecycleControlsCannotSelectAnotherAccountAndCleanupVerificationIsExplicit()throws Exception{
+        var memory=mock(PersonalMemoryService.class);var preferences=mock(MemoryPreferenceService.class);var owner=new TenantContext(42L,"alice");
+        var mvc=MockMvcBuilders.standaloneSetup(new PersonalMemoryController(memory,preferences)).build();
+        mvc.perform(get("/api/agent/memories/lifecycle").param("ownerUserId","43").principal(auth("ROLE_SUPERVISOR"))).andExpect(status().isOk()).andExpect(header().string("Cache-Control","no-store"));
+        verify(memory).lifecycleHistory(owner);
+        mvc.perform(post("/api/agent/memories/mine/cleanup/verify").principal(auth("ROLE_SUPERVISOR"))).andExpect(status().isForbidden());
+        mvc.perform(post("/api/agent/memories/mine/cleanup/verify").header("X-Agent-Action","memory-verify").principal(auth("ROLE_SUPERVISOR"))).andExpect(status().isOk());
+        verify(memory).verifyCleanup(owner,"mine");
+        mvc.perform(post("/api/agent/memories/mine/lifecycle").principal(auth("ROLE_SUPERVISOR")).contentType("application/json").content("{\"requestId\":\"key\",\"expectedDigest\":\""+"a".repeat(64)+"\",\"expectedRevision\":0,\"state\":\"EXCLUDED\",\"confirmed\":false}")).andExpect(status().isBadRequest());
+        verify(memory,never()).changeLifecycle(any(),any(),any());
+    }
     @Test void operationVerificationUsesThePrincipalAndNeverCallsASaveTool()throws Exception{
         var memory=mock(PersonalMemoryService.class);var preferences=mock(MemoryPreferenceService.class);var owner=new TenantContext(42L,"alice");String id="a".repeat(64);
         when(memory.verifyExtraction(owner,id)).thenReturn(new MemoryDtos.Extraction(id,"RUNNING",null,null));

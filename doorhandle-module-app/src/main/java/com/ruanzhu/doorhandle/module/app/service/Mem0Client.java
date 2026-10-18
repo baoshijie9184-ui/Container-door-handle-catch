@@ -186,6 +186,36 @@ public class Mem0Client {
     public com.ruanzhu.doorhandle.module.app.dto.chat.MemoryDtos.Page listOwned(TenantContext owner, int limit) {
         return listOwned(owner,limit,0);
     }
+    public com.ruanzhu.doorhandle.module.app.dto.chat.MemoryDtos.Lifecycle changeLifecycle(TenantContext owner,String id,com.ruanzhu.doorhandle.module.app.dto.chat.MemoryDtos.ChangeLifecycle request) {
+        var body=new HashMap<String,Object>();body.put("user_id",owner.mem0UserId());body.put("app_id","doorhandlecatch");body.put("memory_id",id);
+        body.put("expected_digest",request.expectedDigest());body.put("expected_revision",request.expectedRevision());body.put("state",request.state());body.put("expires_at",request.expiresAt());body.put("auto_delete",request.autoDelete());
+        var result=lifecycleDto(ownedRequest("lifecycle",body));
+        boolean sameExpiry=result.expiresAt()==null?request.expiresAt()==null:request.expiresAt()!=null&&java.time.OffsetDateTime.parse(result.expiresAt()).toInstant().equals(java.time.OffsetDateTime.parse(request.expiresAt()).toInstant());
+        if(!id.equals(result.memoryId())||result.revision()!=request.expectedRevision()+1||!request.state().equals(result.state())||request.autoDelete()!=result.autoDelete()||!sameExpiry)
+            throw new org.springframework.web.server.ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"记忆治理回执不匹配，请刷新核对");
+        return result;
+    }
+    public List<com.ruanzhu.doorhandle.module.app.dto.chat.MemoryDtos.Lifecycle> lifecycleHistory(TenantContext owner) {
+        var data=lifecycleRequest(owner,"list",null);
+        if(!data.isArray()||data.size()>50)throw new org.springframework.web.server.ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"记忆清理记录暂不可用");
+        var rows=new ArrayList<com.ruanzhu.doorhandle.module.app.dto.chat.MemoryDtos.Lifecycle>();for(var row:data)rows.add(lifecycleDto(row));return rows;
+    }
+    public com.ruanzhu.doorhandle.module.app.dto.chat.MemoryDtos.Lifecycle verifyCleanup(TenantContext owner,String id) {
+        var result=lifecycleDto(lifecycleRequest(owner,"verify",id));
+        if(!id.equals(result.memoryId()))throw new org.springframework.web.server.ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"清理回执不匹配");
+        return result;
+    }
+    private JsonNode lifecycleRequest(TenantContext owner,String operation,String id) {
+        var body=new HashMap<String,Object>();body.put("user_id",owner.mem0UserId());body.put("app_id","doorhandlecatch");if(id!=null)body.put("memory_id",id);
+        return bridgeRequest("/memories/lifecycle/"+operation,body);
+    }
+    private com.ruanzhu.doorhandle.module.app.dto.chat.MemoryDtos.Lifecycle lifecycleDto(JsonNode data) {
+        try {
+            var dto=objectMapper.treeToValue(data,com.ruanzhu.doorhandle.module.app.dto.chat.MemoryDtos.Lifecycle.class);
+            if(dto.memoryId()==null||!dto.memoryId().matches("[A-Za-z0-9_-]{1,64}")||dto.revision()<0||!Set.of("ACTIVE","EXCLUDED").contains(dto.state())||!Set.of("NONE","READY","RUNNING","SUCCEEDED","NEEDS_REVIEW").contains(dto.cleanupState()))throw new IllegalArgumentException();
+            return dto;
+        }catch(Exception error){throw new org.springframework.web.server.ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"记忆治理回执暂不可用，请刷新核对");}
+    }
     public com.ruanzhu.doorhandle.module.app.dto.chat.MemoryDtos.Page listOwned(TenantContext owner, int limit, int offset) {
         var data = ownedRequest("list", Map.of("user_id", owner.mem0UserId(), "app_id", "doorhandlecatch", "limit", limit,"offset",offset));
         try {
@@ -212,9 +242,12 @@ public class Mem0Client {
         if (!data.path("updated").asBoolean()) throw new org.springframework.web.server.ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"修改结果待核对，请刷新记忆列表");
     }
     private JsonNode ownedRequest(String operation, Map<String,Object> body) {
+        return bridgeRequest("/memories/owned/"+operation,body);
+    }
+    private JsonNode bridgeRequest(String path, Map<String,Object> body) {
         if (!enabled || bridgeToken == null || bridgeToken.isBlank()) throw new org.springframework.web.server.ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "记忆服务未启用或桥接认证未配置");
         try {
-            var response = restTemplate().exchange(serviceUrl + "/memories/owned/" + operation, HttpMethod.POST, new HttpEntity<>(body, bridgeHeaders()), JsonNode.class);
+            var response = restTemplate().exchange(serviceUrl + path, HttpMethod.POST, new HttpEntity<>(body, bridgeHeaders()), JsonNode.class);
             if (response.getBody() == null || response.getBody().path("code").asInt() != 200 || !response.getBody().has("data")) throw new IllegalStateException();
             return response.getBody().get("data");
         } catch (org.springframework.web.client.HttpClientErrorException error) {

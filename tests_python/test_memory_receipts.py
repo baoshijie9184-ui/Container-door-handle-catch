@@ -306,7 +306,7 @@ def test_startup_initializes_private_receipt_subdirectory_and_shutdown_releases_
     from mem0 import Memory as NativeMemory
     class Client:
         def with_options(self,**kwargs):return self
-    memory=SimpleNamespace(llm=SimpleNamespace(client=Client()),embedding_model=SimpleNamespace(client=Client()))
+    memory=SimpleNamespace(llm=SimpleNamespace(client=Client()),embedding_model=SimpleNamespace(client=Client()),vector_store=SimpleNamespace())
     monkeypatch.setattr(NativeMemory,'from_config',lambda config:memory)
     for name in ['DASHSCOPE_API_KEY','EMBEDDING_API_KEY']:monkeypatch.setenv(name,'fixture')
     monkeypatch.setenv('MEM0_DATA_DIR',str(tmp_path/'data'))

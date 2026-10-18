@@ -33,6 +33,9 @@ public class PersonalMemoryController {
     @PostMapping("/{id}/delete") public MemoryDtos.Deleted delete(Authentication auth,@PathVariable String id,@Valid @RequestBody MemoryDtos.Delete request){return memory.delete(owner(auth),id,request);}
     @PostMapping("/{id}/update") public MemoryDtos.Updated update(Authentication auth,@PathVariable String id,@Valid @RequestBody MemoryDtos.Update request){return memory.update(owner(auth),id,request);}
     @GetMapping("/audit") public List<MemoryDtos.Audit> audit(Authentication auth){return preferences.audit(owner(auth));}
+    @GetMapping("/lifecycle") public List<MemoryDtos.Lifecycle> lifecycle(Authentication auth){return memory.lifecycleHistory(owner(auth));}
+    @PostMapping("/{id}/lifecycle") public MemoryDtos.Lifecycle changeLifecycle(Authentication auth,@PathVariable String id,@Valid @RequestBody MemoryDtos.ChangeLifecycle request){return memory.changeLifecycle(owner(auth),id,request);}
+    @PostMapping("/{id}/cleanup/verify") public MemoryDtos.Lifecycle verifyCleanup(Authentication auth,@PathVariable String id,@RequestHeader(value="X-Agent-Action",defaultValue="")String action){if(!"memory-verify".equals(action))throw new ResponseStatusException(HttpStatus.FORBIDDEN,"清理核对请求无效");return memory.verifyCleanup(owner(auth),id);}
     @PostMapping("/operations/{requestId}/verify") public MemoryDtos.Extraction verify(Authentication auth,@PathVariable String requestId,@RequestHeader(value="X-Agent-Action",defaultValue="")String action){if(!"memory-verify".equals(action))throw new ResponseStatusException(HttpStatus.FORBIDDEN,"记忆核对请求无效");return memory.verifyExtraction(owner(auth),requestId);}
     @GetMapping("/{id}") public MemoryDtos.Item get(Authentication auth,@PathVariable String id){return memory.get(owner(auth),id);}
 }

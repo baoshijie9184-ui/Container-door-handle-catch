@@ -115,9 +115,9 @@ def http_health(url):
 def memory_health():
     response=http.get(v.get("MEM0_SERVICE_URL","http://127.0.0.1:8081").rstrip("/")+"/health",timeout=5)
     response.raise_for_status();data=response.json()
-    if not all(data.get(capability) for capability in ('governance','bridge_auth_configured','owned_edit','owned_pagination','write_receipts')):
+    if not all(data.get(capability) for capability in ('governance','bridge_auth_configured','owned_edit','owned_pagination','write_receipts','lifecycle')):
         raise RuntimeError('Restart the authenticated memory bridge with owned edit/pagination and durable write receipts')
-    return {'httpStatus':response.status_code,'governance':True,'bridgeAuthConfigured':True,'ownedEdit':True,'ownedPagination':True,'writeReceipts':True}
+    return {'httpStatus':response.status_code,'governance':True,'bridgeAuthConfigured':True,'ownedEdit':True,'ownedPagination':True,'writeReceipts':True,'lifecycle':True}
 
 
 check("MySQL", mysql_health)

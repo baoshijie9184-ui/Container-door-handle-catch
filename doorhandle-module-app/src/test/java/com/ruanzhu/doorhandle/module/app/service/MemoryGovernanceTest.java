@@ -20,6 +20,36 @@ class MemoryGovernanceTest {
         settings=new MemoryPreferenceService(jdbc,new DataSourceTransactionManager(data));bridge=mock(Mem0Client.class);service=new PersonalMemoryService(bridge,settings);
     }
     private MemoryDtos.Delete request(String key){return new MemoryDtos.Delete(key,"a".repeat(64),true);}
+    private MemoryDtos.ChangeLifecycle lifecycle(String key,boolean confirmed){return new MemoryDtos.ChangeLifecycle(key,"a".repeat(64),0,"EXCLUDED",null,false,confirmed);}
+    @Test void lifecycleRequiresConfirmationAndAuditsBeforeDispatch(){
+        assertThatThrownBy(()->service.changeLifecycle(owner,"mine",lifecycle("no-confirm",false))).hasMessageContaining("400");
+        verifyNoInteractions(bridge);assertThat(settings.audit(owner)).isEmpty();
+        var saved=new MemoryDtos.Lifecycle("mine",1,"EXCLUDED",null,false,"NONE",null);
+        when(bridge.changeLifecycle(owner,"mine",lifecycle("confirmed",true))).thenReturn(saved);
+        assertThat(service.changeLifecycle(owner,"mine",lifecycle("confirmed",true))).isSameAs(saved);
+        assertThat(settings.audit(owner)).singleElement().satisfies(a->{assertThat(a.action()).isEqualTo("LIFECYCLE");assertThat(a.outcome()).isEqualTo("SUCCEEDED");});
+        when(bridge.getOwned(owner,"mine")).thenReturn(new MemoryDtos.Item("mine","text",null,null,null,"a".repeat(64),saved));
+        assertThat(service.changeLifecycle(owner,"mine",lifecycle("confirmed",true))).isSameAs(saved);
+        verify(bridge,times(1)).changeLifecycle(any(),any(),any());
+        assertThatThrownBy(()->service.changeLifecycle(owner,"mine",new MemoryDtos.ChangeLifecycle("confirmed","a".repeat(64),0,"ACTIVE",null,false,true))).hasMessageContaining("409");
+    }
+    @Test void lifecycleAuditAndUnknownFailuresCannotRepeatRemoteMutation(){
+        when(bridge.changeLifecycle(any(),any(),any())).thenThrow(new IllegalStateException("PRIVATE_ERROR"));
+        assertThatThrownBy(()->service.changeLifecycle(owner,"mine",lifecycle("unknown",true))).hasMessageContaining("503").hasMessageNotContaining("PRIVATE_ERROR");
+        assertThatThrownBy(()->service.changeLifecycle(owner,"mine",lifecycle("unknown",true))).hasMessageContaining("409");
+        verify(bridge,times(1)).changeLifecycle(any(),any(),any());
+        jdbc.execute("DROP TABLE agent_memory_audit");clearInvocations(bridge);
+        assertThatThrownBy(()->service.changeLifecycle(owner,"mine",lifecycle("audit-failed",true))).isInstanceOf(org.springframework.dao.DataAccessException.class);verifyNoInteractions(bridge);
+    }
+    @Test void lifecycleRejectsMissingExpiryInvalidTimeAndInvalidStateBeforeAuditing(){
+        for(var request:List.of(new MemoryDtos.ChangeLifecycle("invalid","a".repeat(64),0,"ACTIVE",null,true,true),
+            new MemoryDtos.ChangeLifecycle("invalid","a".repeat(64),0,"ACTIVE","2020-01-01T00:00:00+08:00",true,true),
+            new MemoryDtos.ChangeLifecycle("invalid","a".repeat(64),0,"ACTIVE","2030-01-01T00:00:00",false,true),
+            new MemoryDtos.ChangeLifecycle("invalid","a".repeat(64),0,"DELETE_ALL",null,false,true)))
+            assertThatThrownBy(()->service.changeLifecycle(owner,"mine",request)).hasMessageContaining("400");
+        verifyNoInteractions(bridge);assertThat(settings.audit(owner)).isEmpty();
+        service.lifecycleHistory(other);service.verifyCleanup(other,"mine");verify(bridge).lifecycleHistory(other);verify(bridge).verifyCleanup(other,"mine");
+    }
     @Test void realHttpReceiptReconcilesTheDatabaseWithoutRepeatingExtraction()throws Exception{
         var json=new com.fasterxml.jackson.databind.ObjectMapper();var key=new java.util.concurrent.atomic.AtomicReference<String>();var adds=new java.util.concurrent.atomic.AtomicInteger();var completed=new java.util.concurrent.atomic.AtomicBoolean();
         var server=com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress("127.0.0.1",0),0);

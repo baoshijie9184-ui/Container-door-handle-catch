@@ -1,6 +1,14 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path')
 const source=fs.readFileSync(path.join(__dirname,'../src/api/agentMemory.js'),'utf8')
 const apiPromise=import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`)
+test('lifecycle changes require the supplied confirmation and cleanup checks only query their original identity',async(t)=>{
+ const original=global.fetch,calls=[];t.after(()=>{global.fetch=original});global.fetch=async(url,options)=>{calls.push({url,options});return {ok:true,status:200,json:async()=>({})}};
+ const api=await apiPromise,body={requestId:'unique',expectedDigest:'a'.repeat(64),expectedRevision:0,state:'EXCLUDED',expiresAt:null,autoDelete:false,confirmed:true};
+ await api.memoryLifecycle();await api.changeMemoryLifecycle('mine/id',body);await api.verifyMemoryCleanup('mine/id');
+ assert.equal(calls[0].url,'/api/agent/memories/lifecycle');assert.equal(calls[1].url,'/api/agent/memories/mine%2Fid/lifecycle');assert.deepEqual(JSON.parse(calls[1].options.body),body);
+ assert.equal(calls[2].url,'/api/agent/memories/mine%2Fid/cleanup/verify');assert.equal(calls[2].options.headers['X-Agent-Action'],'memory-verify');assert.equal(calls[2].options.body,undefined);
+ for(const call of calls){assert.equal(call.options.credentials,'include');assert.equal(call.options.cache,'no-store')}
+});
 test('verifying an extraction only queries its existing request identity with private credentials',async(t)=>{
  const original=global.fetch,calls=[];t.after(()=>{global.fetch=original});global.fetch=async(url,options)=>{calls.push({url,options});return {ok:true,status:200,json:async()=>({status:'RUNNING'})}};
  const api=await apiPromise;assert.equal((await api.verifyMemoryExtraction('a'.repeat(64))).status,'RUNNING');

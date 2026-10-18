@@ -47,6 +47,13 @@ public class MemoryPreferenceService {
     public boolean reserveAutomatic(TenantContext owner,String requestId,String fingerprint) {
         return reserveMutation(owner,null,"AUTOSAVE",requestId,fingerprint);
     }
+    public boolean reserveLifecycle(TenantContext owner,String memoryId,MemoryDtos.ChangeLifecycle request) {
+        try {
+            String value=request.expectedDigest()+"|"+request.expectedRevision()+"|"+request.state()+"|"+request.expiresAt()+"|"+request.autoDelete();
+            String digest=java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(value.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+            return reserveMutation(owner,memoryId,"LIFECYCLE",request.requestId(),digest);
+        }catch(java.security.NoSuchAlgorithmException error){throw new IllegalStateException(error);}
+    }
     public String automaticOutcome(TenantContext owner,String requestId) {
         var rows=jdbc.queryForList("SELECT outcome FROM agent_memory_audit WHERE owner_user_id=? AND request_key=? AND action_name='AUTOSAVE'",owner.userId(),requestId);
         if(rows.size()!=1)throw new ResponseStatusException(HttpStatus.NOT_FOUND,"提炼记录不存在或无权限");

@@ -10,6 +10,7 @@ import hashlib
 import hmac
 import json
 import threading
+import asyncio
 from pathlib import Path
 from typing import Any, Optional, Literal
 from contextlib import asynccontextmanager, contextmanager
@@ -20,8 +21,10 @@ from pydantic import BaseModel, Field, field_validator
 from dotenv import load_dotenv
 try:
     from .write_receipts import MemoryWriter, ReceiptError
+    from .lifecycle import GovernedVectorStore, memory_digest
 except ImportError:  # Docker / start_server.py load main as a top-level module.
     from write_receipts import MemoryWriter, ReceiptError
+    from lifecycle import GovernedVectorStore, memory_digest
 
 # 加载 .env 文件
 load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=True)
@@ -149,6 +152,8 @@ async def lifespan(app: FastAPI):
         config = get_memory_config()
         memory_instance = Memory.from_config(config)
         configure_provider_timeouts(memory_instance)
+        cleanup_interval = bounded_setting("MEM0_CLEANUP_INTERVAL_SECONDS", 60, 10, 3600)
+        memory_instance.vector_store = GovernedVectorStore(memory_instance.vector_store, writer.lifecycle)
         memory_writer = writer
         logger.info("mem0 记忆服务初始化完成")
     except Exception as e:
@@ -157,9 +162,21 @@ async def lifespan(app: FastAPI):
         logger.error("mem0 初始化失败: %s", type(e).__name__)
         raise
 
+    async def cleanup_loop():
+        while True:
+            await asyncio.sleep(cleanup_interval)
+            writer.schedule_cleanup()
+
+    cleaner = asyncio.create_task(cleanup_loop()) if os.getenv("MEM0_LIFECYCLE_CLEANUP_ENABLED", "true").lower() == "true" else None
     try:
         yield
     finally:
+        if cleaner:
+            cleaner.cancel()
+            try:
+                await cleaner
+            except asyncio.CancelledError:
+                pass
         writer.close(wait=False)
         if memory_writer is writer:
             memory_writer = None
@@ -213,14 +230,80 @@ class OwnedMemoryUpdateRequest(OwnedMemoryDeleteRequest):
         return value.strip()
 
 
-def memory_digest(item: dict) -> str:
-    version = {key: item.get(key) for key in ("id", "memory", "user_id", "agent_id", "run_id", "updated_at")}
-    return hashlib.sha256(json.dumps(version, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
-
-
 def public_memory_item(row: dict) -> dict:
     return {"id": row["id"], "memory": row.get("memory", ""), "sourceSessionId": row.get("run_id"),
-            "createdAt": row.get("created_at"), "updatedAt": row.get("updated_at"), "digest": memory_digest(row)}
+            "createdAt": row.get("created_at"), "updatedAt": row.get("updated_at"), "digest": memory_digest(row),
+            "lifecycle": lifecycle_store().public(row.get("user_id"), row.get("agent_id"), row["id"])}
+
+
+def lifecycle_store():
+    if memory_writer is None:
+        raise HTTPException(503, "Memory lifecycle storage is unavailable")
+    return memory_writer.lifecycle
+
+
+class OwnedLifecycleRequest(OwnedMemoryDeleteRequest):
+    expected_revision: int = Field(..., ge=0, le=2147483646)
+    state: Literal["ACTIVE", "EXCLUDED"]
+    expires_at: Optional[str] = Field(None, max_length=50)
+    auto_delete: bool = False
+
+    @field_validator("expires_at")
+    @classmethod
+    def validate_expiry(cls, value):
+        if value is None:
+            return None
+        from datetime import datetime, timedelta
+        try:
+            date = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if date.tzinfo is None or not datetime.now(date.tzinfo) < date <= datetime.now(date.tzinfo) + timedelta(days=3650):
+                raise ValueError()
+        except (ValueError, TypeError):
+            raise ValueError("Memory expiry must be a future date with timezone within ten years")
+        from datetime import timezone
+        return date.astimezone(timezone(timedelta(hours=8))).isoformat(timespec="microseconds")
+
+
+@app.post("/memories/owned/lifecycle")
+def change_memory_lifecycle(request: OwnedLifecycleRequest):
+    try:
+        if request.auto_delete and request.expires_at is None:
+            raise HTTPException(422, "Automatic removal requires a confirmed expiry")
+        with memory_write_slot():
+            current = check_owned_version(request)
+            result = lifecycle_store().change(request.user_id, request.app_id, current["id"], request.expected_revision,
+                                            request.expected_digest, request.state, request.expires_at, request.auto_delete)
+        return {"code": 200, "data": result}
+    except ReceiptError as error:
+        raise HTTPException(error.status, error.detail)
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(503, "Memory lifecycle result needs verification")
+
+
+@app.post("/memories/lifecycle/list")
+def list_memory_lifecycle(request: OwnedMemoryListRequest):
+    try:
+        return {"code": 200, "data": lifecycle_store().history(request.user_id, request.app_id)}
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(503, "Memory lifecycle history is unavailable")
+
+
+@app.post("/memories/lifecycle/verify")
+def verify_memory_cleanup(request: OwnedMemoryGetRequest):
+    try:
+        with memory_write_slot():
+            result = lifecycle_store().verify(memory_instance, request.user_id, request.app_id, request.memory_id)
+        return {"code": 200, "data": result}
+    except ReceiptError as error:
+        raise HTTPException(error.status, error.detail)
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(503, "Memory cleanup outcome needs verification")
 
 
 @app.post("/memories/owned/get")
@@ -353,7 +436,7 @@ class ApiResponse(BaseModel):
 @app.get("/health")
 async def health_check():
     """健康检查"""
-    return {"status": "ok", "service": "memory", "memory_scopes": ["SESSION", "ACCOUNT"], "governance": True, "owned_edit": True, "owned_pagination": True, "write_receipts": memory_writer is not None, "bridge_auth_configured": bool(os.getenv("MEM0_BRIDGE_TOKEN"))}
+    return {"status": "ok", "service": "memory", "memory_scopes": ["SESSION", "ACCOUNT"], "governance": True, "owned_edit": True, "owned_pagination": True, "write_receipts": memory_writer is not None, "lifecycle": memory_writer is not None, "bridge_auth_configured": bool(os.getenv("MEM0_BRIDGE_TOKEN"))}
 
 
 @app.post("/memories/add", response_model=ApiResponse)
@@ -412,6 +495,8 @@ def search_memories(request: SearchMemoryRequest):
         )
         memories = []
         for item in (results.get("results") or []):
+            if not lifecycle_store().allowed(request.user_id, request.app_id, item.get("id")):
+                continue
             memories.append(MemoryResponse(
                 id=item.get("id", ""),
                 memory=item.get("memory", ""),

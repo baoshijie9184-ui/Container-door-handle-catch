@@ -12,6 +12,31 @@ import org.springframework.web.server.ResponseStatusException;
 public class PersonalMemoryService {
     private final Mem0Client memory;
     private final MemoryPreferenceService preferences;
+    public java.util.List<MemoryDtos.Lifecycle> lifecycleHistory(TenantContext owner){return memory.lifecycleHistory(owner);}
+    public MemoryDtos.Lifecycle verifyCleanup(TenantContext owner,String id){validateId(id);return memory.verifyCleanup(owner,id);}
+    private void validateId(String id){if(id==null||!id.matches("[A-Za-z0-9_-]{1,64}"))throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"记忆编号不正确");}
+    public MemoryDtos.Lifecycle changeLifecycle(TenantContext owner,String id,MemoryDtos.ChangeLifecycle request){
+        validateId(id);
+        if(request==null||request.requestId()==null||!request.requestId().matches("[A-Za-z0-9_-]{1,64}")||!request.confirmed()
+            ||request.expectedDigest()==null||!request.expectedDigest().matches("[a-f0-9]{64}")||request.expectedRevision()==null||request.expectedRevision()<0
+            ||!java.util.Set.of("ACTIVE","EXCLUDED").contains(request.state()==null?"":request.state())||request.expiresAt()!=null&&request.expiresAt().length()>50)
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"请核对记忆及设置版本并明确确认");
+        if(request.autoDelete()&&request.expiresAt()==null)throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"自动清理需要设置有效期并确认");
+        if(request.expiresAt()!=null){
+            try{var date=java.time.OffsetDateTime.parse(request.expiresAt());var now=java.time.OffsetDateTime.now();if(!date.isAfter(now)||date.isAfter(now.plusDays(3650)))throw new IllegalArgumentException();}
+            catch(RuntimeException error){throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"有效期须为未来十年内带时区的时间");}
+        }
+        if(preferences.reserveLifecycle(owner,id,request)){
+            var current=memory.getOwned(owner,id).lifecycle();
+            if(current==null)throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"记忆治理回执缺失，请刷新核对");
+            return current;
+        }
+        MemoryDtos.Lifecycle saved;
+        try{saved=memory.changeLifecycle(owner,id,request);}
+        catch(ResponseStatusException error){preferences.deletionOutcome(owner,request.requestId(),error.getStatusCode().value()<500?"REJECTED":"UNKNOWN");throw error;}
+        catch(RuntimeException error){preferences.deletionOutcome(owner,request.requestId(),"UNKNOWN");throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"记忆治理结果待核对，请刷新");}
+        preferences.deletionOutcome(owner,request.requestId(),"SUCCEEDED");return saved;
+    }
     public MemoryDtos.Extraction verifyExtraction(TenantContext owner,String requestId) {
         if(requestId==null||!requestId.matches("[a-f0-9]{64}"))throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"提炼请求编号无效");
         preferences.automaticOutcome(owner,requestId);
