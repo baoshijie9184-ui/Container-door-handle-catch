@@ -22,7 +22,7 @@ class FakeMemory:
     def get_all(self,**kwargs):
         self.filters=kwargs['filters'];return {'results':list(self.rows.values())}
     def delete(self,id):self.deleted.append(id);self.rows.pop(id)
-    def update(self,id,*,text):
+    def update(self,id,text):
         self.updated.append((id,text));self.rows[id]['memory']=text;self.rows[id]['updated_at']='2026-10-14T16:00:00Z'
 
 
@@ -134,7 +134,8 @@ def test_chroma_paging_digest_matches_native_mem0_get_and_update(monkeypatch,cap
     from mem0.vector_stores.chroma import ChromaDB
     import mem0.memory.main as native_main
     monkeypatch.setattr(native_main,'capture_event',lambda *a,**k:None)
-    monkeypatch.setattr(native_main,'display_first_run_notice',lambda *a,**k:None)
+    if hasattr(native_main,'display_first_run_notice'):
+        monkeypatch.setattr(native_main,'display_first_run_notice',lambda *a,**k:None)
     monkeypatch.setattr(native_main,'extract_entities',lambda *a:[])
     monkeypatch.setattr(native_main,'lemmatize_for_bm25',lambda text:text)
     memory=Memory.__new__(Memory)

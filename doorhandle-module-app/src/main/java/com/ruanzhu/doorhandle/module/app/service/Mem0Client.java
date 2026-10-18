@@ -195,6 +195,37 @@ public class Mem0Client {
             throw new org.springframework.web.server.ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"记忆治理回执不匹配，请刷新核对");
         return result;
     }
+    public com.ruanzhu.doorhandle.module.app.dto.chat.MemoryDtos.Review startReview(TenantContext owner,String id,com.ruanzhu.doorhandle.module.app.dto.chat.MemoryDtos.StartReview request){
+        return reviewDto(reviewRequest(owner,"start",Map.of("memory_id",id,"request_id",request.requestId(),"expected_digest",request.expectedDigest(),"expected_revision",request.expectedRevision())),request.requestId());
+    }
+    public com.ruanzhu.doorhandle.module.app.dto.chat.MemoryDtos.Review getReview(TenantContext owner,String id){return reviewDto(reviewRequest(owner,"get",Map.of("request_id",id)),id);}
+    public List<com.ruanzhu.doorhandle.module.app.dto.chat.MemoryDtos.ReviewHistory> reviewHistory(TenantContext owner){
+        var data=reviewRequest(owner,"list",Map.of());
+        try{if(!data.isArray()||data.size()>20)throw new IllegalArgumentException();var rows=new ArrayList<com.ruanzhu.doorhandle.module.app.dto.chat.MemoryDtos.ReviewHistory>();
+            for(var row:data){var value=objectMapper.treeToValue(row,com.ruanzhu.doorhandle.module.app.dto.chat.MemoryDtos.ReviewHistory.class);if(value.id()==null||!value.id().matches("[A-Za-z0-9_-]{1,64}"))throw new IllegalArgumentException();rows.add(value);}return rows;
+        }catch(Exception error){throw new org.springframework.web.server.ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"记忆分析记录暂不可用");}
+    }
+    public com.ruanzhu.doorhandle.module.app.dto.chat.MemoryDtos.Review resolveReview(TenantContext owner,String id,com.ruanzhu.doorhandle.module.app.dto.chat.MemoryDtos.ResolveReview request){
+        return reviewDto(reviewRequest(owner,"resolve",Map.of("request_id",id,"decision_id",request.requestId(),"candidate_id",request.candidateId(),"expected_revision",request.expectedRevision(),"choice",request.choice())),id);
+    }
+    private JsonNode reviewRequest(TenantContext owner,String operation,Map<String,Object> values){
+        if(!enabled||bridgeToken==null||bridgeToken.isBlank())throw new org.springframework.web.server.ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"记忆分析服务尚未启用");
+        var body=new HashMap<String,Object>(values);body.put("user_id",owner.mem0UserId());body.put("app_id","doorhandlecatch");
+        try{var response=restTemplate().exchange(serviceUrl+"/memories/reviews/"+operation,HttpMethod.POST,new HttpEntity<>(body,bridgeHeaders()),JsonNode.class);
+            if(response.getBody()==null||!Set.of(200,202).contains(response.getStatusCode().value())||response.getBody().path("code").asInt()!=response.getStatusCode().value())throw new IllegalArgumentException();return response.getBody().path("data");
+        }catch(org.springframework.web.client.HttpClientErrorException error){if(error.getStatusCode().value()==404)throw new org.springframework.web.server.ResponseStatusException(HttpStatus.NOT_FOUND,"记忆或分析不存在或无权限");if(error.getStatusCode().value()==409)throw new org.springframework.web.server.ResponseStatusException(HttpStatus.CONFLICT,"记忆、控制或审阅版本已变化 请重新读取");throw new org.springframework.web.server.ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"记忆分析暂不可用 请稍后读取结果");}
+        catch(Exception error){throw new org.springframework.web.server.ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"记忆分析结果待核对 不会自动重新执行");}
+    }
+    private com.ruanzhu.doorhandle.module.app.dto.chat.MemoryDtos.Review reviewDto(JsonNode data,String id){
+        try{var row=objectMapper.treeToValue(data,com.ruanzhu.doorhandle.module.app.dto.chat.MemoryDtos.Review.class);
+            if(!id.equals(row.id())||row.sourceId()==null||!row.sourceId().matches("[A-Za-z0-9_-]{1,64}")||row.revision()<0||!Set.of("RUNNING","READY","FAILED","INTERRUPTED").contains(row.status())||row.candidates()==null||row.candidates().size()>5||row.decisions()==null||row.decisions().size()>5||!Set.of("PENDING","COMPLETE","UNAVAILABLE").contains(row.judgmentStatus()))throw new IllegalArgumentException();
+            if(row.source()!=null&&!row.sourceId().equals(row.source().id()))throw new IllegalArgumentException();
+            if(!Set.of("PROVIDER","UNKNOWN").contains(row.usageSource())||row.modelMillis()!=null&&row.modelMillis()<0)throw new IllegalArgumentException();
+            for(Integer tokens:new Integer[]{row.inputTokens(),row.outputTokens(),row.totalTokens()})if(tokens!=null&&tokens<0)throw new IllegalArgumentException();
+            for(var pair:row.candidates())if(pair.id()==null||!pair.id().matches("[A-Za-z0-9_-]{1,64}")||!Set.of("DUPLICATE","CONFLICT","RELATED","DISTINCT","UNSURE").contains(pair.label())||pair.similarity()==null||!Double.isFinite(pair.similarity())||pair.similarity() < -1||pair.similarity()>1||pair.item()!=null&&!pair.id().equals(pair.item().id()))throw new IllegalArgumentException();
+            for(var decision:row.decisions())if(decision.requestId()==null||!decision.requestId().matches("[A-Za-z0-9_-]{1,64}")||decision.candidateId()==null||!decision.candidateId().matches("[A-Za-z0-9_-]{1,64}")||decision.expectedRevision()<1||!Set.of("KEEP_SOURCE","KEEP_CANDIDATE","KEEP_BOTH").contains(decision.choice()))throw new IllegalArgumentException();return row;
+        }catch(Exception error){throw new org.springframework.web.server.ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"记忆分析返回格式无法核对");}
+    }
     public List<com.ruanzhu.doorhandle.module.app.dto.chat.MemoryDtos.Lifecycle> lifecycleHistory(TenantContext owner) {
         var data=lifecycleRequest(owner,"list",null);
         if(!data.isArray()||data.size()>50)throw new org.springframework.web.server.ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"记忆清理记录暂不可用");

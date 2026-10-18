@@ -244,6 +244,75 @@ def lifecycle_store():
     return memory_writer.lifecycle
 
 
+class StartReview(OwnedMemoryDeleteRequest):
+    request_id: str = Field(..., pattern=r'^[A-Za-z0-9_-]{1,64}$')
+    expected_revision: int = Field(..., ge=0, le=2147483646)
+
+
+class GetReview(BaseModel):
+    user_id: str = Field(..., pattern=r'^doorhandlecatch:user:[1-9][0-9]*$')
+    app_id: Literal['doorhandlecatch']
+    request_id: str = Field(..., pattern=r'^[A-Za-z0-9_-]{1,64}$')
+
+
+class ResolveReview(GetReview):
+    decision_id: str = Field(..., pattern=r'^[A-Za-z0-9_-]{1,64}$')
+    expected_revision: int = Field(..., ge=1, le=2147483646)
+    candidate_id: str = Field(..., pattern=r'^[A-Za-z0-9_-]{1,64}$')
+    choice: Literal['KEEP_SOURCE','KEEP_CANDIDATE','KEEP_BOTH']
+
+
+def review_projection(row):
+    return public_memory_item(row, '2')
+
+
+@app.post('/memories/reviews/start')
+def start_review(request: StartReview):
+    try:
+        if os.getenv('MEM0_DUPLICATE_REVIEW_ENABLED','true').lower()!='true':raise HTTPException(503,'New memory reviews are disabled; operation not started')
+        lifecycle_store()
+        if memory_writer.reviews.row(request.user_id,request.app_id,request.request_id) is None:
+            check_owned_version(request)
+            if lifecycle_store().public(request.user_id,request.app_id,request.memory_id)['revision']!=request.expected_revision or not lifecycle_store().allowed(request.user_id,request.app_id,request.memory_id):
+                raise HTTPException(409,'Memory lifecycle changed; read again')
+        result=memory_writer.submit_review(request.user_id,request.app_id,request.request_id,request.memory_id,request.expected_digest,request.expected_revision,review_projection)
+        return JSONResponse(status_code=202 if result['status']=='RUNNING' else 200,content={'code':202 if result['status']=='RUNNING' else 200,'data':result})
+    except ReceiptError as error:raise HTTPException(error.status,error.detail)
+    except HTTPException:raise
+    except Exception:raise HTTPException(503,'Memory review result needs verification')
+
+
+@app.post('/memories/reviews/get')
+def get_review(request: GetReview):
+    try:
+        lifecycle_store()
+        return {'code':200,'data':memory_writer.reviews.public(memory_instance,request.user_id,request.app_id,request.request_id,review_projection)}
+    except ReceiptError as error:raise HTTPException(error.status,error.detail)
+    except HTTPException:raise
+    except Exception:raise HTTPException(503,'Memory review is unavailable')
+
+
+@app.post('/memories/reviews/list')
+def list_reviews(request: OwnedMemoryListRequest):
+    try:
+        lifecycle_store()
+        return {'code':200,'data':memory_writer.reviews.history(request.user_id,request.app_id)}
+    except HTTPException:raise
+    except Exception:raise HTTPException(503,'Memory review history is unavailable')
+
+
+@app.post('/memories/reviews/resolve')
+def resolve_review(request: ResolveReview):
+    try:
+        lifecycle_store()
+        with memory_write_slot():
+            memory_writer.reviews.resolve(memory_instance,request.user_id,request.app_id,request.request_id,request.decision_id,request.expected_revision,request.candidate_id,request.choice)
+        return {'code':200,'data':memory_writer.reviews.public(memory_instance,request.user_id,request.app_id,request.request_id,review_projection)}
+    except ReceiptError as error:raise HTTPException(error.status,error.detail)
+    except HTTPException:raise
+    except Exception:raise HTTPException(503,'Memory review decision needs verification; not replayed')
+
+
 class OwnedLifecycleRequest(OwnedMemoryDeleteRequest):
     expected_revision: int = Field(..., ge=0, le=2147483646)
     state: Literal["ACTIVE", "EXCLUDED"]
@@ -378,7 +447,9 @@ def update_owned_memory(request: OwnedMemoryUpdateRequest):
         with memory_write_slot():
             check_owned_version(request)
             # 原生 update 会重算向量，保持检索正文和索引一致，不调用提炼 LLM。
-            memory_instance.update(request.memory_id, text=request.memory)
+            # Both the pinned PyPI SDK (data) and local SDK (text) accept the
+            # content as their second positional argument. Never retry a write.
+            memory_instance.update(request.memory_id, request.memory)
         return {"code": 200, "data": {"updated": True}}
     except HTTPException:
         raise

@@ -47,6 +47,22 @@ public class MemoryPreferenceService {
     public boolean reserveAutomatic(TenantContext owner,String requestId,String fingerprint) {
         return reserveMutation(owner,null,"AUTOSAVE",requestId,fingerprint);
     }
+    private String reviewFingerprint(String reviewId,int revision,String candidate,String choice){
+        try{return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest((reviewId+"|"+revision+"|"+candidate+"|"+choice).getBytes(java.nio.charset.StandardCharsets.UTF_8)));}
+        catch(java.security.NoSuchAlgorithmException error){throw new IllegalStateException(error);}
+    }
+    public boolean reserveReviewDecision(TenantContext owner,String source,String reviewId,MemoryDtos.ResolveReview request){
+        return reserveMutation(owner,source,"REVIEW_DECISION",request.requestId(),reviewFingerprint(reviewId,request.expectedRevision(),request.candidateId(),request.choice()));
+    }
+    public void reconcileReviewDecisions(TenantContext owner,MemoryDtos.Review review){
+        for(var decision:review.decisions())jdbc.update("UPDATE agent_memory_audit SET outcome='SUCCEEDED',updated_at=CURRENT_TIMESTAMP WHERE owner_user_id=? AND request_key=? AND action_name='REVIEW_DECISION' AND memory_id=? AND content_digest=? AND outcome IN ('DISPATCHED','UNKNOWN')",
+            owner.userId(),decision.requestId(),review.sourceId(),reviewFingerprint(review.id(),decision.expectedRevision(),decision.candidateId(),decision.choice()));
+    }
+    public void requireReviewDecision(TenantContext owner,MemoryDtos.Review review,MemoryDtos.ReviewDecision decision){
+        Integer count=jdbc.queryForObject("SELECT COUNT(*) FROM agent_memory_audit WHERE owner_user_id=? AND request_key=? AND action_name='REVIEW_DECISION' AND memory_id=? AND content_digest=? AND outcome='SUCCEEDED'",Integer.class,
+            owner.userId(),decision.requestId(),review.sourceId(),reviewFingerprint(review.id(),decision.expectedRevision(),decision.candidateId(),decision.choice()));
+        if(count==null||count!=1)throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"审阅决定的审计结果需要核对");
+    }
     public boolean reserveLifecycle(TenantContext owner,String memoryId,MemoryDtos.ChangeLifecycle request) {
         try {
             String value=request.expectedDigest()+"|"+request.expectedRevision()+"|"+request.state()+"|"+request.expiresAt()+"|"+request.autoDelete();

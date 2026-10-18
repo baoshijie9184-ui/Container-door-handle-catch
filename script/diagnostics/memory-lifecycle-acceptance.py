@@ -26,6 +26,7 @@ def api(route):
         if fault:return route.fulfill(status=fault,json={'message':'结果需要刷新核对'})
         controls.update({'revision':controls['revision']+1,'state':body['state'],'expiresAt':body['expiresAt'],'autoDelete':body['autoDelete'],'cleanupState':'READY' if body['autoDelete'] else 'NONE'})
         return route.fulfill(json=controls)
+    if path.endswith('/reviews'):return route.fulfill(json=[])
     if path.endswith('/preferences'):return route.fulfill(json={'readEnabled':True,'saveEnabled':True,'revision':0})
     if path.endswith('/audit'):return route.fulfill(json=[])
     if path.endswith('/lifecycle'):return route.fulfill(json=[{**controls,'memoryId':'removed','cleanupState':'NEEDS_REVIEW' if pending else 'SUCCEEDED'}])

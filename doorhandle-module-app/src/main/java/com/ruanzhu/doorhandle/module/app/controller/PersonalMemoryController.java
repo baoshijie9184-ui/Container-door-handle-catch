@@ -33,6 +33,10 @@ public class PersonalMemoryController {
     @PostMapping("/{id}/delete") public MemoryDtos.Deleted delete(Authentication auth,@PathVariable String id,@Valid @RequestBody MemoryDtos.Delete request){return memory.delete(owner(auth),id,request);}
     @PostMapping("/{id}/update") public MemoryDtos.Updated update(Authentication auth,@PathVariable String id,@Valid @RequestBody MemoryDtos.Update request){return memory.update(owner(auth),id,request);}
     @GetMapping("/audit") public List<MemoryDtos.Audit> audit(Authentication auth){return preferences.audit(owner(auth));}
+    @GetMapping("/reviews") public List<MemoryDtos.ReviewHistory> reviews(Authentication auth){return memory.reviewHistory(owner(auth));}
+    @GetMapping("/reviews/{id}") public MemoryDtos.Review review(Authentication auth,@PathVariable String id){return memory.getReview(owner(auth),id);}
+    @PostMapping("/{id}/reviews") public ResponseEntity<MemoryDtos.Review> startReview(Authentication auth,@PathVariable String id,@Valid @RequestBody MemoryDtos.StartReview request){var result=memory.startReview(owner(auth),id,request);return ResponseEntity.status("RUNNING".equals(result.status())?202:200).body(result);}
+    @PostMapping("/reviews/{id}/resolve") public MemoryDtos.Review resolveReview(Authentication auth,@PathVariable String id,@Valid @RequestBody MemoryDtos.ResolveReview request){return memory.resolveReview(owner(auth),id,request);}
     @GetMapping("/lifecycle") public List<MemoryDtos.Lifecycle> lifecycle(Authentication auth){return memory.lifecycleHistory(owner(auth));}
     @PostMapping("/{id}/lifecycle") public MemoryDtos.Lifecycle changeLifecycle(Authentication auth,@PathVariable String id,@Valid @RequestBody MemoryDtos.ChangeLifecycle request){return memory.changeLifecycle(owner(auth),id,request);}
     @PostMapping("/{id}/cleanup/verify") public MemoryDtos.Lifecycle verifyCleanup(Authentication auth,@PathVariable String id,@RequestHeader(value="X-Agent-Action",defaultValue="")String action){if(!"memory-verify".equals(action))throw new ResponseStatusException(HttpStatus.FORBIDDEN,"清理核对请求无效");return memory.verifyCleanup(owner(auth),id);}

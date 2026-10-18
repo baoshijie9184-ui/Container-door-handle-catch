@@ -19,6 +19,7 @@ def api(route):
         if unavailable:return route.fulfill(status=503,json={'message':'提炼回执暂不可用 请稍后核对 不会重新执行'})
         verified=state=='SUCCEEDED'
         return route.fulfill(json={'requestId':key,'status':state,'affectedMemories':2 if verified else None,'updatedAt':'2026-10-18T12:00:00+08:00'})
+    if path.endswith('/reviews'):return route.fulfill(json=[])
     if path.endswith('/preferences'):return route.fulfill(json={'readEnabled':True,'saveEnabled':True,'revision':0})
     if path.endswith('/lifecycle'):return route.fulfill(json=[])
     if path.endswith('/audit'):return route.fulfill(json=[{'id':1,'action':'AUTOSAVE','requestId':key,'outcome':'SUCCEEDED' if verified else 'UNKNOWN','createdAt':'2026-10-18 12:00:00'}])

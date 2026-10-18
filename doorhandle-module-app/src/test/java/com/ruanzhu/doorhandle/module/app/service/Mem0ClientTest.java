@@ -10,6 +10,41 @@ import java.util.Set;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class Mem0ClientTest {
+    @Test void reviewHttpBridgePreservesPendingStatesOwnershipVersionsAndUnknownUsage()throws Exception{
+        var json=new com.fasterxml.jackson.databind.ObjectMapper();var paths=new java.util.ArrayList<String>();var bodies=new java.util.ArrayList<com.fasterxml.jackson.databind.JsonNode>();
+        var payload=json.readTree("""
+                {"id":"review","sourceId":"mine","status":"RUNNING","revision":0,"source":null,"sourceStale":false,
+                "judgmentStatus":"PENDING","candidates":[],"decisions":[],"createdAt":"2026-10-18T12:00:00+08:00",
+                "updatedAt":"2026-10-18T12:00:00+08:00","searchLimit":20,"modelCalled":null,"modelName":null,
+                "modelMillis":null,"inputTokens":null,"outputTokens":null,"totalTokens":null,"usageSource":"UNKNOWN"}
+                """);
+        var response=new java.util.concurrent.atomic.AtomicReference<com.fasterxml.jackson.databind.JsonNode>(payload);
+        var owner=new TenantContext(42L,"alice");var server=com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress("127.0.0.1",0),0);
+        server.createContext("/memories/reviews",exchange->{
+            var body=json.readTree(exchange.getRequestBody());bodies.add(body);String path=exchange.getRequestURI().getPath();paths.add(path);
+            assertThat(body.path("user_id").asText()).isEqualTo(owner.mem0UserId());assertThat(body.path("app_id").asText()).isEqualTo("doorhandlecatch");
+            assertThat(exchange.getRequestHeaders().getFirst("X-Doorhandle-Memory-Token")).isEqualTo("fixture");assertThat(exchange.getRequestHeaders().getFirst("X-Doorhandle-Memory-Protocol")).isEqualTo("2");
+            int code=path.endsWith("start")?202:200;
+            Object data=path.endsWith("list")?java.util.List.of(java.util.Map.of("id","review","sourceId","mine","status","RUNNING","createdAt","2026-10-18T12:00:00+08:00")):response.get();
+            byte[] bytes=json.writeValueAsBytes(java.util.Map.of("code",code,"data",data));exchange.getResponseHeaders().set("Content-Type","application/json");exchange.sendResponseHeaders(code,bytes.length);exchange.getResponseBody().write(bytes);exchange.close();
+        });server.start();
+        try{
+            var client=new Mem0Client(new SensitiveDataSanitizer());org.springframework.test.util.ReflectionTestUtils.setField(client,"enabled",true);org.springframework.test.util.ReflectionTestUtils.setField(client,"bridgeToken","fixture");org.springframework.test.util.ReflectionTestUtils.setField(client,"serviceUrl","http://127.0.0.1:"+server.getAddress().getPort());
+            var pending=client.startReview(owner,"mine",new com.ruanzhu.doorhandle.module.app.dto.chat.MemoryDtos.StartReview("review","a".repeat(64),3));
+            assertThat(pending.status()).isEqualTo("RUNNING");assertThat(pending.inputTokens()).isNull();assertThat(pending.modelCalled()).isNull();
+            assertThat(bodies.get(0).path("expected_revision").asInt()).isEqualTo(3);assertThat(bodies.get(0).path("memory_id").asText()).isEqualTo("mine");
+            assertThat(client.reviewHistory(owner)).hasSize(1);assertThat(client.getReview(owner,"review").usageSource()).isEqualTo("UNKNOWN");
+            var ready=payload.deepCopy();((com.fasterxml.jackson.databind.node.ObjectNode)ready).put("status","READY").put("revision",1).put("judgmentStatus","COMPLETE").put("modelCalled",true).put("outputTokens",0).put("inputTokens",17).put("totalTokens",17).put("usageSource","PROVIDER");response.set(ready);
+            assertThat(client.getReview(owner,"review").outputTokens()).isZero();
+            var decision=new com.ruanzhu.doorhandle.module.app.dto.chat.MemoryDtos.ResolveReview("decision",1,"candidate","KEEP_BOTH",true);
+            client.resolveReview(owner,"review",decision);assertThat(bodies.get(bodies.size()-1).path("decision_id").asText()).isEqualTo("decision");assertThat(bodies.get(bodies.size()-1).path("request_id").asText()).isEqualTo("review");
+            var invalid=ready.deepCopy();((com.fasterxml.jackson.databind.node.ObjectNode)invalid).put("inputTokens",-1);response.set(invalid);
+            org.assertj.core.api.Assertions.assertThatThrownBy(()->client.getReview(owner,"review")).isInstanceOf(org.springframework.web.server.ResponseStatusException.class);
+            response.set(((com.fasterxml.jackson.databind.node.ObjectNode)ready.deepCopy()).put("id","another-review"));
+            org.assertj.core.api.Assertions.assertThatThrownBy(()->client.getReview(owner,"review")).isInstanceOf(org.springframework.web.server.ResponseStatusException.class);
+            assertThat(paths.subList(0,5)).containsExactly("/memories/reviews/start","/memories/reviews/list","/memories/reviews/get","/memories/reviews/get","/memories/reviews/resolve");
+        }finally{server.stop(0);}
+    }
     @Test void lifecycleBridgeUsesPrivateRoutesAndRejectsMismatchedCompletionProof()throws Exception{
         var json=new com.fasterxml.jackson.databind.ObjectMapper();var paths=new java.util.ArrayList<String>();var stale=new java.util.concurrent.atomic.AtomicBoolean();
         var owner=new TenantContext(42L,"alice");var server=com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress("127.0.0.1",0),0);

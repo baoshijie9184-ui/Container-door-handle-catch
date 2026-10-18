@@ -17,12 +17,13 @@
       <p v-if="listError" class="memory-error" role="alert">{{ listError }}</p>
       <TransitionGroup name="memory" tag="div">
         <article v-for="item in items" :key="item.id" class="memory-item">
-          <p class="memory-content">{{ item.memory }}</p><p class="memory-lifecycle-status">{{ lifecycleStatus(item.lifecycle) }}<template v-if="item.lifecycle?.expiresAt"> · 有效期 {{ beijingDateTime(item.lifecycle.expiresAt) }} 北京时间</template></p><footer><span>更新 {{ beijingDateTime(item.updatedAt||item.createdAt)||'时间未记录' }}</span><div class="memory-actions"><el-button :disabled="busy||loading||editor.visible||policy.visible" @click="openPolicy(item)">有效期与停用</el-button><el-button :disabled="busy||loading||editor.visible||policy.visible" @click="edit(item)">编辑记忆</el-button><el-button type="danger" plain :disabled="busy||loading||editor.visible||policy.visible" @click="remove(item)">删除记忆</el-button></div></footer>
+          <p class="memory-content">{{ item.memory }}</p><p class="memory-lifecycle-status">{{ lifecycleStatus(item.lifecycle) }}<template v-if="item.lifecycle?.expiresAt"> · 有效期 {{ beijingDateTime(item.lifecycle.expiresAt) }} 北京时间</template></p><footer><span>更新 {{ beijingDateTime(item.updatedAt||item.createdAt)||'时间未记录' }}</span><div class="memory-actions"><el-button :disabled="busy||loading||editor.visible||policy.visible" @click="duplicatePanel.open(item)">查找相似</el-button><el-button :disabled="busy||loading||editor.visible||policy.visible" @click="openPolicy(item)">有效期与停用</el-button><el-button :disabled="busy||loading||editor.visible||policy.visible" @click="edit(item)">编辑记忆</el-button><el-button type="danger" plain :disabled="busy||loading||editor.visible||policy.visible" @click="remove(item)">删除记忆</el-button></div></footer>
         </article>
       </TransitionGroup>
       <div class="memory-pagination"><span>已显示 {{ items.length }} 条{{ hasMore?' · 还有更多记忆':'' }}</span><el-button v-if="hasMore" :loading="loading" :disabled="loading||busy||editor.visible||policy.visible" @click="loadMore">读取更多</el-button></div>
       <p v-if="items.length">列表变化后可刷新重新核对 编辑或删除完成后回到首批记录</p>
     </section>
+    <MemoryDuplicateReview ref="duplicatePanel" @updated="refresh" />
     <details class="memory-lifecycle-history"><summary>有效期与清理记录</summary><p v-if="lifecycleError" role="alert">{{ lifecycleError }}</p><p v-if="!lifecycleHistory.length&&!lifecycleError">尚未设置有效期或停用记忆 既有记忆保持原样</p><article v-for="entry in lifecycleHistory" :key="entry.memoryId"><p>记忆 {{ entry.memoryId }} · {{ lifecycleStatus(entry) }} · {{ cleanupStatus(entry.cleanupState) }}<template v-if="entry.expiresAt"> · {{ beijingDateTime(entry.expiresAt) }} 到期</template></p><el-button v-if="entry.cleanupState==='NEEDS_REVIEW'" size="small" :disabled="busy||loading" @click="verifyCleanup(entry)">核对清理结果</el-button></article><p v-if="cleanupMessage" role="status">{{ cleanupMessage }}</p><p>到期后停止供助手检索 只有勾选自动清理并确认才会删除这条记忆 聊天与历史记录继续保留</p></details>
     <details class="memory-audit"><summary>本人最近操作记录</summary><p v-if="!audit.length">暂无操作记录</p><p v-for="record in audit" :key="record.id">{{ beijingDateTime(record.createdAt) }} · {{ action(record.action) }} · {{ outcome(record.outcome) }} <el-button v-if="record.action==='AUTOSAVE'&&record.requestId&&['DISPATCHED','UNKNOWN'].includes(record.outcome)" size="small" :disabled="busy||loading" @click="verifyExtraction(record)">核对提炼结果</el-button></p><p v-if="receiptMessage" role="status">{{ receiptMessage }}</p><p>核对只读取原提炼回执 不会重新执行保存 操作记录不保存记忆正文</p></details>
     <el-dialog v-model="policy.visible" title="记忆有效期与停用" class="memory-policy-dialog" width="min(640px, calc(100vw - 32px))" append-to-body :close-on-click-modal="false" :close-on-press-escape="!busy" :show-close="!busy" :before-close="closeEditor">
@@ -61,6 +62,8 @@
 <script setup>
 import {computed,onBeforeUnmount,onMounted,reactive,ref,watch} from 'vue'
 import {ElMessage,ElMessageBox} from 'element-plus'
+import MemoryDuplicateReview from '@/components/agent/MemoryDuplicateReview.vue'
+const duplicatePanel=ref(null)
 import {useUserStore} from '@/stores/user'
 import {beijingDateTime,businessTimestamp} from '@/utils/beijingTime'
 import {memoryPreferences,memoryList,memoryAudit,personalMemory,changeMemoryPreferences,deletePersonalMemory,updatePersonalMemory,verifyMemoryExtraction,memoryLifecycle,changeMemoryLifecycle,verifyMemoryCleanup} from '@/api/agentMemory'
@@ -79,7 +82,7 @@ async function verifyCleanup(entry){const actor=identity;busy.value=true;try{con
 const changed=computed(()=>settings.value&&(form.readEnabled!==settings.value.readEnabled||form.saveEnabled!==settings.value.saveEnabled))
 const canSave=computed(()=>editor.item&&editor.memory.trim().length>0&&editor.memory.length<=4000&&editor.memory.trim()!==editor.item.memory&&!editor.needsReload)
 const outcome=value=>({SUCCEEDED:'已完成',PENDING:'待处理',DISPATCHED:'处理中',UNKNOWN:'结果待核对',REJECTED:'未执行'}[value]||'待核对')
-const action=value=>({DELETE:'删除记忆',UPDATE:'编辑记忆',AUTOSAVE:'自动提炼记忆',LIFECYCLE:'修改有效期与停用',PREFERENCE_CHANGED:'修改设置'}[value]||'记忆操作')
+const action=value=>({DELETE:'删除记忆',UPDATE:'编辑记忆',AUTOSAVE:'自动提炼记忆',LIFECYCLE:'修改有效期与停用',REVIEW_DECISION:'审阅相似记忆',PREFERENCE_CHANGED:'修改设置'}[value]||'记忆操作')
 async function verifyExtraction(record){const actor=identity;busy.value=true;receiptMessage.value='';try{const receipt=await verifyMemoryExtraction(record.requestId);if(actor!==identity)return;receiptMessage.value=receipt.status==='SUCCEEDED'?'提炼已完成 已核对 '+receipt.affectedMemories+' 条结果':receipt.status==='RUNNING'?'提炼尚未获得完成回执 请稍后核对':'提炼结果需要人工核对 不会自动重新执行';await refresh()}catch(e){if(actor===identity)receiptMessage.value=e.message}finally{if(actor===identity)busy.value=false}}
 async function refresh(){
   const current=++generation;loading.value=true;error.value='';listError.value=''

@@ -34,3 +34,10 @@ test('confirmed edits send the version and retain HTTP conflict information for 
   assert.equal(calls[0].url,'/api/agent/memories/mine/update');assert.equal(calls[0].options.method,'POST')
   assert.deepEqual(JSON.parse(calls[0].options.body),payload)
 })
+
+test('semantic review starts explicitly and decisions carry confirmation and revision',async(t)=>{
+ const original=global.fetch,calls=[];t.after(()=>{global.fetch=original});global.fetch=async(url,options)=>{calls.push({url,options});return {ok:true,status:202,json:async()=>({status:'RUNNING'})}};
+ const api=await apiPromise;await api.memoryReviews();await api.startMemoryReview('mine/id',{requestId:'read',expectedDigest:'a'.repeat(64),expectedRevision:0});await api.memoryReview('read');await api.resolveMemoryReview('read',{requestId:'decision',expectedRevision:1,candidateId:'candidate',choice:'KEEP_SOURCE',confirmed:true});
+ assert.equal(calls[0].url,'/api/agent/memories/reviews');assert.equal(calls[1].url,'/api/agent/memories/mine%2Fid/reviews');assert.equal(calls[2].options.body,undefined);assert.equal(JSON.parse(calls[3].options.body).confirmed,true);assert.equal(JSON.parse(calls[3].options.body).expectedRevision,1);
+ for(const call of calls){assert.equal(call.options.credentials,'include');assert.equal(call.options.cache,'no-store')}
+});

@@ -12,6 +12,30 @@ import org.springframework.web.server.ResponseStatusException;
 public class PersonalMemoryService {
     private final Mem0Client memory;
     private final MemoryPreferenceService preferences;
+    public java.util.List<MemoryDtos.ReviewHistory> reviewHistory(TenantContext owner){return memory.reviewHistory(owner);}
+    public MemoryDtos.Review getReview(TenantContext owner,String id){validateId(id);var result=memory.getReview(owner,id);preferences.reconcileReviewDecisions(owner,result);return result;}
+    public MemoryDtos.Review startReview(TenantContext owner,String source,MemoryDtos.StartReview request){
+        validateId(source);
+        if(request==null||request.requestId()==null||!request.requestId().matches("[A-Za-z0-9_-]{1,64}")||request.expectedDigest()==null||!request.expectedDigest().matches("[a-f0-9]{64}")||request.expectedRevision()==null||request.expectedRevision()<0)
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"请重新读取记忆及控制版本");
+        if(!preferences.get(owner).readEnabled())throw new ResponseStatusException(HttpStatus.FORBIDDEN,"已关闭助手读取长期记忆 如需 AI 对比请先开启读取设置");
+        return memory.startReview(owner,source,request);
+    }
+    public MemoryDtos.Review resolveReview(TenantContext owner,String id,MemoryDtos.ResolveReview request){
+        validateId(id);
+        if(request==null||!request.confirmed()||request.requestId()==null||!request.requestId().matches("[A-Za-z0-9_-]{1,64}")||request.candidateId()==null||!request.candidateId().matches("[A-Za-z0-9_-]{1,64}")||request.expectedRevision()==null||request.expectedRevision()<1||!java.util.Set.of("KEEP_SOURCE","KEEP_CANDIDATE","KEEP_BOTH").contains(request.choice()==null?"":request.choice()))
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"请核对两条记忆及审阅版本并明确确认");
+        var current=memory.getReview(owner,id);
+        if(preferences.reserveReviewDecision(owner,current.sourceId(),id,request))return getReview(owner,id);
+        MemoryDtos.Review saved;MemoryDtos.ReviewDecision proof;
+        try{
+            saved=memory.resolveReview(owner,id,request);
+            proof=saved.decisions().stream().filter(row->request.requestId().equals(row.requestId())&&request.candidateId().equals(row.candidateId())&&request.choice().equals(row.choice())&&request.expectedRevision()==row.expectedRevision()).findFirst().orElseThrow();
+            if(!saved.sourceId().equals(current.sourceId()))throw new IllegalStateException();
+        }catch(ResponseStatusException error){preferences.deletionOutcome(owner,request.requestId(),error.getStatusCode().value()<500?"REJECTED":"UNKNOWN");throw error;}
+        catch(RuntimeException error){preferences.deletionOutcome(owner,request.requestId(),"UNKNOWN");throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"审阅处理结果待核对 请读取原分析 不会重新执行");}
+        preferences.reconcileReviewDecisions(owner,saved);preferences.requireReviewDecision(owner,saved,proof);return saved;
+    }
     public java.util.List<MemoryDtos.Lifecycle> lifecycleHistory(TenantContext owner){return memory.lifecycleHistory(owner);}
     public MemoryDtos.Lifecycle verifyCleanup(TenantContext owner,String id){validateId(id);return memory.verifyCleanup(owner,id);}
     private void validateId(String id){if(id==null||!id.matches("[A-Za-z0-9_-]{1,64}"))throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"记忆编号不正确");}

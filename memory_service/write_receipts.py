@@ -7,7 +7,7 @@ import re
 import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
-from contextlib import closing
+from contextlib import closing, nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -174,6 +174,11 @@ class MemoryWriter:
             except ImportError:
                 from lifecycle import LifecycleStore
             self.lifecycle = LifecycleStore(self.store)
+            try:
+                from .duplicate_review import ReviewStore
+            except ImportError:
+                from duplicate_review import ReviewStore
+            self.reviews = ReviewStore(self.store, self.lifecycle)
         except BaseException:
             self.fence.close(); raise
         self.memory, self.write_lock = memory, write_lock
@@ -233,7 +238,11 @@ class MemoryWriter:
         logger.addHandler(signal)
         try:
             memory = self.memory()
-            result = memory.add(content, user_id=user, agent_id=app, run_id=session, metadata=metadata)
+            store=getattr(memory,'vector_store',None)
+            context=store.account_extraction(user,app) if callable(getattr(store,'account_extraction',None)) else nullcontext()
+            # The SDK still writes the native source-session identity; only extraction's search is account-wide.
+            with context:
+                result = memory.add(content, user_id=user, agent_id=app, run_id=session, metadata=metadata)
             verified = safe_results(result, memory, user, app)
             if signal.failed.is_set():
                 raise ValueError("Mem0 reported an internal error")
@@ -258,6 +267,42 @@ class MemoryWriter:
         with self.mutex:
             if self.future is None or self.future.done():
                 self.fence.close()
+
+    def submit_review(self, user, app, request_id, source, digest, revision, project):
+        with self.mutex:
+            old=self.reviews.row(user,app,request_id)
+            if old:
+                if (old['source_id'],old['expected_digest'],old['expected_revision'])!=(source,digest,revision):
+                    raise ReceiptError(409,'Review identity already used')
+                return self.reviews.public(self.memory(),user,app,request_id,project)
+            if self.closed or self.audit_unavailable.is_set() or not self.write_lock.acquire(blocking=False):
+                raise ReceiptError(503,'Memory review busy; operation not started',not_started=True)
+            reserved=False
+            try:
+                self.reviews.reserve(user,app,request_id,source,digest,revision)
+                reserved=True
+                self.future=self.executor.submit(self._review,user,app,request_id)
+            except BaseException:
+                if reserved:
+                    try:self.reviews.finish(user,app,request_id,'FAILED',{})
+                    except Exception:self.audit_unavailable.set()
+                self.write_lock.release();raise
+            future=self.future
+        try:future.result(timeout=min(.2,self.response_wait))
+        except FutureTimeout:pass
+        return self.reviews.public(self.memory(),user,app,request_id,project)
+
+    def _review(self, user, app, id):
+        try:
+            result=self.reviews.analyze(self.memory(),user,app,id)
+            self.reviews.finish(user,app,id,'READY',result)
+        except Exception:
+            try:self.reviews.finish(user,app,id,'FAILED',{})
+            except Exception:self.audit_unavailable.set()
+        finally:
+            self.write_lock.release()
+            with self.mutex:
+                if self.closed:self.fence.close()
 
     def schedule_cleanup(self):
         with self.mutex:

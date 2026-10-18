@@ -2,6 +2,8 @@
 import hmac
 import logging
 import time
+import threading
+from contextlib import contextmanager
 from contextlib import closing
 from datetime import datetime
 
@@ -130,10 +132,32 @@ class GovernedVectorStore:
     """Filter native SDK retrieval and extraction context without changing stored vectors."""
     def __init__(self, delegate, lifecycle):
         self.delegate, self.lifecycle = delegate, lifecycle
+        self.scope = threading.local()
+
+    @contextmanager
+    def account_extraction(self, user, app):
+        prior=getattr(self.scope,'account',None)
+        self.scope.account=(user,app)
+        try:yield
+        finally:self.scope.account=prior
 
     def __getattr__(self, name):
         return getattr(self.delegate, name)
 
+    def get(self, vector_id):
+        try:
+            return self.delegate.get(vector_id=vector_id)
+        except IndexError:
+            # Pinned PyPI Chroma adapter indexes [0] for an absent ID. Independently
+            # verify absence; other store failures must remain failures, not "missing".
+            result=self.delegate.collection.get(ids=[vector_id],include=['metadatas'])
+            if result.get('ids')==[]:return None
+            raise
+
     def search(self, *args, **kwargs):
+        scope=getattr(self.scope,'account',None)
+        filters=kwargs.get('filters')
+        if scope and isinstance(filters,dict) and (filters.get('user_id'),filters.get('agent_id'))==scope:
+            kwargs={**kwargs,'filters':{key:value for key,value in filters.items() if key!='run_id'}}
         rows = self.delegate.search(*args, **kwargs)
         return [row for row in rows if row.payload and self.lifecycle.allowed(row.payload.get("user_id"), row.payload.get("agent_id"), row.id)]

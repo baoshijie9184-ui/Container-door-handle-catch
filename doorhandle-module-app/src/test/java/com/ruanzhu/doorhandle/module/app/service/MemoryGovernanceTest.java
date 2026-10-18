@@ -20,6 +20,41 @@ class MemoryGovernanceTest {
         settings=new MemoryPreferenceService(jdbc,new DataSourceTransactionManager(data));bridge=mock(Mem0Client.class);service=new PersonalMemoryService(bridge,settings);
     }
     private MemoryDtos.Delete request(String key){return new MemoryDtos.Delete(key,"a".repeat(64),true);}
+    private MemoryDtos.Review reviewResult(int revision,MemoryDtos.ReviewDecision... decisions){return new MemoryDtos.Review("review","mine","READY",revision,null,true,"COMPLETE",List.of(),List.of(decisions),null,null,20,true,"fixture",10L,null,null,null,"UNKNOWN");}
+    private MemoryDtos.ResolveReview resolve(String key,String choice){return new MemoryDtos.ResolveReview(key,1,"candidate",choice,true);}
+    @Test void semanticReviewRespectsReadPreferenceAndRejectsUnconfirmedDecisions(){
+        settings.change(owner,new MemoryDtos.ChangePreference(0,false,true));
+        assertThatThrownBy(()->service.startReview(owner,"mine",new MemoryDtos.StartReview("read","a".repeat(64),0))).hasMessageContaining("403");
+        assertThatThrownBy(()->service.resolveReview(owner,"review",new MemoryDtos.ResolveReview("no",1,"candidate","KEEP_SOURCE",false))).hasMessageContaining("400");
+        verifyNoInteractions(bridge);assertThat(settings.audit(owner)).hasSize(1);
+    }
+    @Test void reviewDecisionIsAuditedAndSuccessfulReplayDoesNotWriteAgain(){
+        var proof=new MemoryDtos.ReviewDecision("decision","candidate","KEEP_SOURCE",1,"2026-10-18T14:00:00+08:00");var completed=reviewResult(2,proof);
+        when(bridge.getReview(owner,"review")).thenReturn(reviewResult(1));when(bridge.resolveReview(owner,"review",resolve("decision","KEEP_SOURCE"))).thenReturn(completed);
+        assertThat(service.resolveReview(owner,"review",resolve("decision","KEEP_SOURCE"))).isSameAs(completed);
+        when(bridge.getReview(owner,"review")).thenReturn(completed);
+        service.resolveReview(owner,"review",resolve("decision","KEEP_SOURCE"));verify(bridge,times(1)).resolveReview(any(),any(),any());
+        assertThat(settings.audit(owner)).singleElement().satisfies(row->{assertThat(row.action()).isEqualTo("REVIEW_DECISION");assertThat(row.outcome()).isEqualTo("SUCCEEDED");});
+        assertThatThrownBy(()->service.resolveReview(owner,"review",resolve("decision","KEEP_BOTH"))).hasMessageContaining("409");
+    }
+    @Test void readingACommittedReviewReconcilesLostResponseWithoutRepeatingTheDecision(){
+        when(bridge.getReview(owner,"review")).thenReturn(reviewResult(1));when(bridge.resolveReview(any(),any(),any())).thenThrow(new IllegalStateException("PRIVATE_UPSTREAM"));
+        assertThatThrownBy(()->service.resolveReview(owner,"review",resolve("uncertain","KEEP_SOURCE"))).hasMessageContaining("503").hasMessageNotContaining("PRIVATE_UPSTREAM");
+        assertThatThrownBy(()->service.resolveReview(owner,"review",resolve("uncertain","KEEP_SOURCE"))).hasMessageContaining("409");
+        var result=reviewResult(2,new MemoryDtos.ReviewDecision("uncertain","candidate","KEEP_SOURCE",1,null));when(bridge.getReview(owner,"review")).thenReturn(result);
+        assertThat(service.getReview(owner,"review")).isSameAs(result);
+        service.resolveReview(owner,"review",resolve("uncertain","KEEP_SOURCE"));verify(bridge,times(1)).resolveReview(any(),any(),any());
+        assertThat(settings.audit(owner)).singleElement().satisfies(row->assertThat(row.outcome()).isEqualTo("SUCCEEDED"));
+        assertThat(settings.audit(other)).isEmpty();
+    }
+    @Test void decisionProofAndAuditFailuresNeverProduceSuccess(){
+        when(bridge.getReview(owner,"review")).thenReturn(reviewResult(1));when(bridge.resolveReview(any(),any(),any())).thenReturn(reviewResult(2,new MemoryDtos.ReviewDecision("wrong","candidate","KEEP_SOURCE",1,null)));
+        assertThatThrownBy(()->service.resolveReview(owner,"review",resolve("bad-proof","KEEP_SOURCE"))).hasMessageContaining("503");
+        assertThat(settings.audit(owner)).singleElement().satisfies(row->assertThat(row.outcome()).isEqualTo("UNKNOWN"));
+        jdbc.execute("DROP TABLE agent_memory_audit");clearInvocations(bridge);
+        assertThatThrownBy(()->service.resolveReview(owner,"review",resolve("no-audit","KEEP_SOURCE"))).isInstanceOf(org.springframework.dao.DataAccessException.class);
+        verify(bridge,never()).resolveReview(any(),any(),any());
+    }
     private MemoryDtos.ChangeLifecycle lifecycle(String key,boolean confirmed){return new MemoryDtos.ChangeLifecycle(key,"a".repeat(64),0,"EXCLUDED",null,false,confirmed);}
     @Test void lifecycleRequiresConfirmationAndAuditsBeforeDispatch(){
         assertThatThrownBy(()->service.changeLifecycle(owner,"mine",lifecycle("no-confirm",false))).hasMessageContaining("400");
