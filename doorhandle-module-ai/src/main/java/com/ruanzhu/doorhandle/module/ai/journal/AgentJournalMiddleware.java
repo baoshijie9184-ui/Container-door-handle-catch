@@ -41,9 +41,10 @@ public class AgentJournalMiddleware implements MiddlewareBase {
     @Override public Flux<AgentEvent> onAgent(Agent agent,RuntimeContext context,AgentInput input,Function<AgentInput,Flux<AgentEvent>> next) {
         return Flux.defer(()->{
             long start=System.nanoTime();run.event("AGENT_STARTED",fields(agent.getName()));
-            return next.apply(input).doOnComplete(()->run.event("AGENT_COMPLETED",duration(agent,start)))
-                .doOnError(error->run.event("AGENT_ERROR",duration(agent,start)))
-                .doFinally(signal->{if(signal==SignalType.CANCEL) recordCancellation("AGENT_CANCELLED",duration(agent,start));});
+            var terminal=new java.util.concurrent.atomic.AtomicBoolean();
+            return next.apply(input).doOnComplete(()->{if(terminal.compareAndSet(false,true))run.event("AGENT_COMPLETED",duration(agent,start));})
+                .doOnError(error->{if(terminal.compareAndSet(false,true))run.event("AGENT_ERROR",duration(agent,start));})
+                .doFinally(signal->{if(signal==SignalType.CANCEL&&terminal.compareAndSet(false,true))recordCancellation("AGENT_CANCELLED",duration(agent,start));});
         });
     }
     @Override public Flux<AgentEvent> onModelCall(Agent agent,RuntimeContext context,ModelCallInput input,Function<ModelCallInput,Flux<AgentEvent>> next) {

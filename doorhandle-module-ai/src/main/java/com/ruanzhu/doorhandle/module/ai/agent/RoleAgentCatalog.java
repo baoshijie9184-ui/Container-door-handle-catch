@@ -23,8 +23,8 @@ public final class RoleAgentCatalog {
                 new Definition("model-ops", "检测模型目录、登记评估指标和发布配置查询，不推断实际灰度流量或执行发布", List.of("list_models", "get_model_operations")),
                 new Definition("department-analytics", "按最近天数汇总当前单企业检测工作量；不支持单个任务明细、任务状态或单任务缺陷统计，这些应交给 detection-quality", List.of("get_department_work_metrics")))
                 : List.of(
-                new Definition("detection-task", "本人及分派的检测任务和进度查询", List.of("get_my_detection_tasks", "get_task_detail")),
-                new Definition("quality-review", "本人任务质检记录查询", List.of("get_my_quality_records", "get_task_detail")),
+                new Definition("detection-task", "本人及分派的检测任务查询；单任务进度、缺陷总数和当前复核状态/结论可一次获取", List.of("get_my_detection_tasks", "get_task_detail")),
+                new Definition("quality-review", "本人任务质检历史列表查询；单任务当前复核状态/结论用 get_task_detail，不等于历史列表", List.of("get_my_quality_records", "get_task_detail")),
                 new Definition("device-status", "查询本人任务关联的设备名称；暂不提供实时设备状态和绑定设备清单", List.of("get_task_detail")),
                 new Definition("personal-analytics", "按最近天数汇总本人及分派任务工作量；不支持单任务明细或状态，应交给 detection-task", List.of("get_my_work_metrics"))));
         if(reports)result.add(new Definition("report-assistant",actor.supervisor()?"查询授权报告与待审批列表，按明确请求保存本人草稿；审批请到报告页面人工确认":"查询本人报告，按明确请求编写或编辑本人草稿；提交审批请到报告页面",
@@ -39,7 +39,13 @@ public final class RoleAgentCatalog {
                 +"\n按所需事实和工具选择专业 Agent，不要仅凭‘统计’一词路由。提供 taskId 的单任务状态、缺陷总数、复核结论应使用具备 get_task_detail 的检测专业 Agent；时间范围的总体工作量才使用 work_metrics。"
                 +"委派时保留用户提供的编号、筛选、范围和只读限制。需要多个专业能力时分开委派，再核对范围汇总。"
                 +"子 Agent 缺少工具仅代表该专业的能力边界，不代表系统没有此能力：重新核对目录，并在已批准范围内交给有相应工具的专业 Agent；不得用企业总量代替单任务数据。"
+                +taskDetailGuide()
                 +"get_task_detail 只有任务缺陷总数，不含六分类分布。工具没有的字段应明确说明未知，不从总数推算类别。";
+    }
+    public static String taskDetailGuide() {
+        return "单任务的处理状态、缺陷总数、当前复核状态及复核结论已包含在一次 get_task_detail 结果中。"
+                +"同一任务同时询问这些字段时，只委派一个具备该工具的专业 Agent 并查询一次，不拆成检测和质检两次委派。"
+                +"仅在用户明确需要历史质检记录列表时才调用 get_my_quality_records/get_quality_records；这些是分页列表工具，没有 taskId 筛选参数，不能为单任务当前复核情况额外读取整个列表。";
     }
     public static String delegationDescription(Definition definition) {
         return definition.description()+"。可用业务工具："+String.join("、",definition.tools())+"。请在 question 中保留任务编号、时间范围和用户限制。";

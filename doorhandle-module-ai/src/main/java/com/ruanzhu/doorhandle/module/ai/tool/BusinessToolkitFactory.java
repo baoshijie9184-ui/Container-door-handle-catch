@@ -84,7 +84,7 @@ public class BusinessToolkitFactory {
         public String getName() { return name; }
         public String getDescription() {
             return switch (name) {
-                case "get_task_detail" -> "按 taskId 查询授权任务的进度、缺陷数量、复核状态及任务记录中的设备名称，不含实时设备状态";
+                case "get_task_detail" -> "按 taskId 一次查询授权任务的处理状态、进度、缺陷总数、当前复核状态、复核结论及任务记录中的设备名称。同一任务当前复核情况无需再查询质检历史列表；不含六分类分布或实时设备状态";
                 case "get_my_work_metrics", "get_department_work_metrics" -> "按任务创建时间统计最近 days 天的任务数、图片数和缺陷数量；缺陷数量不能当作缺陷图片数计算不良率";
                 case "get_my_quality_records", "get_quality_records" -> "分页查询有复核状态的质检记录，包含历史记录，不等同于待办队列";
                 case "list_devices" -> "主管分页查询设备在线及 PLC、相机、采集状态";

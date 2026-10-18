@@ -36,6 +36,7 @@ class AgentJournalMiddlewareTest {
             catch (RuntimeException error) { throw new AssertionError("Metadata events: "+events,error); }
         }
         assertThat(types).contains("AGENT_STARTED","AGENT_COMPLETED","AUTHORIZATION_ALLOWED","TOOL_STARTED","TOOL_COMPLETED","MODEL_STARTED");
+        assertThat(types).doesNotContain("AGENT_CANCELLED","AGENT_ERROR");
         assertThat(events.toString()).contains("employee-main","detection-task","delegate_detection_task","get_my_detection_tasks","query-1")
                 .doesNotContain("PRIVATE_QUESTION","PRIVATE_ANSWER","PRIVATE_USER_INPUT");
         assertThat(events).anySatisfy(payload -> {
@@ -45,6 +46,25 @@ class AgentJournalMiddlewareTest {
         assertThat(events.stream().filter(payload -> payload.containsKey("scope")).toList())
                 .isNotEmpty().allSatisfy(payload -> assertThat(payload.get("scope")).isEqualTo("OWNED_OR_ASSIGNED"));
         verify(detection).tasks(actor,1,20,false);
+    }
+    @Test void closeDuringCompletionCallbackDoesNotRecordASecondTerminalState() {
+        var run=mock(AgentJournal.Run.class);var agent=mock(Agent.class);when(agent.getName()).thenReturn("employee-main");
+        var subscription=new java.util.concurrent.atomic.AtomicReference<reactor.core.Disposable>();
+        doAnswer(inv->{subscription.get().dispose();return null;}).when(run).event(eq("AGENT_COMPLETED"),anyMap());
+        var upstream=reactor.core.publisher.Sinks.many().unicast().<io.agentscope.core.event.AgentEvent>onBackpressureBuffer();
+        subscription.set(new AgentJournalMiddleware(run,actor).onAgent(agent,RuntimeContext.empty(),mock(AgentInput.class),input->upstream.asFlux()).subscribe());
+        upstream.tryEmitComplete();
+        verify(run).event(eq("AGENT_COMPLETED"),anyMap());verify(run,never()).event(eq("AGENT_CANCELLED"),anyMap());
+    }
+    @Test void genuineCancellationAndFailureRetainTheirOwnTerminalEvidence() {
+        var run=mock(AgentJournal.Run.class);var agent=mock(Agent.class);when(agent.getName()).thenReturn("employee-main");
+        var middleware=new AgentJournalMiddleware(run,actor);
+        var subscription=middleware.onAgent(agent,RuntimeContext.empty(),mock(AgentInput.class),input->Flux.never()).subscribe();
+        subscription.dispose();subscription.dispose();
+        verify(run).event(eq("AGENT_CANCELLED"),anyMap());verify(run,never()).event(eq("AGENT_COMPLETED"),anyMap());
+        reset(run);
+        assertThatThrownBy(()->middleware.onAgent(agent,RuntimeContext.empty(),mock(AgentInput.class),input->Flux.error(new IllegalStateException("fixture"))).blockLast()).isInstanceOf(IllegalStateException.class);
+        verify(run).event(eq("AGENT_ERROR"),anyMap());verify(run,never()).event(eq("AGENT_CANCELLED"),anyMap());
     }
     @Test void anEmployeeCannotUseASupervisorToolAndDeniedCallNeverReachesTheNextHandler() {
         var run=mock(AgentJournal.Run.class);var agent=mock(Agent.class);when(agent.getName()).thenReturn("resource-management");
