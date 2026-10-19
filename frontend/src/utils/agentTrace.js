@@ -48,7 +48,7 @@ export function normalizeTraceEvents(rows, legacy = false) {
   }).sort((a, b) => a.sequence - b.sequence)
 }
 export const eventTitle = event => names[event.type] || event.type
-export const modelFailureLabel = value => ({ QUOTA: '额度或余额不足', AUTH: '供应商鉴权失败', TIMEOUT: '请求超时', EMPTY_RESPONSE: '未返回有效内容', TRANSIENT: '网络或供应商临时故障', OTHER: '其他错误', CIRCUIT_OPEN: '熔断冷却或探测占用' })[value] || value || '未记录'
+export const modelFailureLabel = value => ({ QUOTA: '额度或余额不足', AUTH: '供应商鉴权失败', TIMEOUT: '请求超时', CAPACITY: '模型请求繁忙', EMPTY_RESPONSE: '未返回有效内容', TRANSIENT: '网络或供应商临时故障', OTHER: '其他错误', CIRCUIT_OPEN: '熔断冷却或探测占用' })[value] || value || '未记录'
 export function traceDuration(value) {
   if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return '未记录'
   if (value < 1000) return `${Math.round(value)} ms`

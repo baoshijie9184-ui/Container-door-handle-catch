@@ -18,6 +18,13 @@ import static org.assertj.core.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
 class ManagedAgentModelTest {
+    @Test void boundedIoCapacityCanFallbackWithoutLeakingExecutorDetails() {
+        var primary=model();var fallback=model();
+        when(primary.stream(anyList(),anyList(),any())).thenReturn(Flux.error(new java.util.concurrent.RejectedExecutionException("private executor details")));
+        var reply=answer("backup");when(fallback.stream(anyList(),anyList(),any())).thenReturn(Flux.just(reply));
+        assertThat(route(new AgentModelProperties(),primary,fallback).stream(List.of(),List.of(),null).blockLast()).isSameAs(reply);
+        verify(fallback,times(1)).stream(anyList(),anyList(),any());
+    }
     private Model model() { var model = mock(Model.class); when(model.getModelName()).thenReturn("test-model"); return model; }
     private ChatResponse answer(String text) { return ChatResponse.builder().content(List.of(TextBlock.builder().text(text).build())).build(); }
     private ModelCircuit circuit() { return new ModelCircuit(2, Duration.ofSeconds(60), Duration.ofMinutes(5)); }

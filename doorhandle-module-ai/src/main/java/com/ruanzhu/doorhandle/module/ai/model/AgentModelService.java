@@ -5,7 +5,7 @@ import com.ruanzhu.doorhandle.module.ai.config.AgentScopeProperties;
 import io.agentscope.core.model.*;
 import io.agentscope.core.model.transport.ProxyConfig;
 import io.agentscope.extensions.model.openai.OpenAIChatModel;
-import io.agentscope.extensions.model.openaiofficial.OpenAIResponsesChatModel;
+import io.agentscope.extensions.model.openaiofficial.OpenAIResponsesIoBridge;
 import java.net.URI;
 import java.util.List;
 import java.util.Map;
@@ -15,11 +15,12 @@ import java.time.Duration;
 import java.util.concurrent.ConcurrentHashMap;
 
 /** Explicit Spring credential binding; no JVM environment or shared registry mutation. */
-public class AgentModelService {
+public class AgentModelService implements AutoCloseable {
     private final AgentModelProperties connections;
     private final AgentScopeProperties agent;
     private final Map<String, Model> models = new ConcurrentHashMap<>();
     private final Map<String, ModelCircuit> health = new ConcurrentHashMap<>();
+    private boolean closed;
 
     public AgentModelService(AgentModelProperties connections, AgentScopeProperties agent) {
         this.connections = connections;
@@ -32,7 +33,8 @@ public class AgentModelService {
             throw new IllegalArgumentException("模型重试或熔断阈值不正确");
     }
 
-    public Model resolve(String id) {
+    public synchronized Model resolve(String id) {
+        if (closed) throw new IllegalStateException("模型服务已关闭");
         var ids = new LinkedHashSet<String>();
         ids.add(id);
         if (connections.isFallbackEnabled()) ids.addAll(fallbackIds());
@@ -98,11 +100,10 @@ public class AgentModelService {
             Map<String, String> headers = connections.getActorAuthorization() == null
                     || connections.getActorAuthorization().isBlank() ? Map.of()
                     : Map.of("x-openai-actor-authorization", connections.getActorAuthorization());
-            return OpenAIResponsesChatModel.builder().apiKey(config.getApiKey()).baseUrl(baseUrl)
-                    .modelName(config.getModel()).stream(true).strictTools(false).proxy(proxy())
-                    .additionalHeaders(headers).generateOptions(GenerateOptions.builder()
+            return OpenAIResponsesIoBridge.create(config.getApiKey(),baseUrl,config.getModel(),proxy(),headers,
+                    GenerateOptions.builder()
                             .maxTokens(connections.getMaxOutputTokens()).executionConfig(execution)
-                            .additionalBodyParam("store", connections.isStore()).build()).build();
+                            .additionalBodyParam("store", connections.isStore()).build());
         }
         if (entry.provider().equals("dashscope") && base.getPath().contains("compatible-mode")) {
             return OpenAIChatModel.builder().apiKey(config.getApiKey()).baseUrl(baseUrl)
@@ -135,6 +136,13 @@ public class AgentModelService {
         };
     }
     private static boolean hasKey(AgentModelProperties.Connection c) { return c.getApiKey() != null && !c.getApiKey().isBlank(); }
+    @Override public synchronized void close() {
+        if (closed) return;
+        closed=true;
+        try {
+            for (Model model:models.values()) if(model instanceof OpenAIResponsesIoBridge bridge) bridge.close();
+        } finally { models.clear(); }
+    }
     public List<ModelInfo> entries() {
         return List.of(info("dashscope", "dashscope:", connections.getDashscope(),
                         connections.getDashscope().getBaseUrl().contains("compatible-mode") ? "CHAT_COMPLETIONS" : "DASHSCOPE"),

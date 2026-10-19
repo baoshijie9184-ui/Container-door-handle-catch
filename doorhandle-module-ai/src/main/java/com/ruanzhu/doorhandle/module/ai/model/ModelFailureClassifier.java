@@ -27,7 +27,8 @@ final class ModelFailureClassifier {
                     && (quotaText(http.code().orElse(null)) || quotaText(http.type().orElse(null))
                     || quotaText(http.body().toString()))) return Failure.QUOTA;
             transport |= cause instanceof TimeoutException || cause instanceof IOException
-                    || cause instanceof OpenAIIoException || cause instanceof EmptyResponseException;
+                    || cause instanceof OpenAIIoException || cause instanceof EmptyResponseException
+                    || cause instanceof java.util.concurrent.RejectedExecutionException;
         }
         if (status != null) {
             if (status == 402) return Failure.QUOTA;
@@ -55,6 +56,7 @@ final class ModelFailureClassifier {
         var seen = Collections.newSetFromMap(new IdentityHashMap<Throwable, Boolean>());
         for (Throwable cause = error; cause != null && seen.add(cause); cause = cause.getCause()) {
             if (cause instanceof TimeoutException) return "TIMEOUT";
+            if (cause instanceof java.util.concurrent.RejectedExecutionException) return "CAPACITY";
             if (cause instanceof EmptyResponseException) return "EMPTY_RESPONSE";
         }
         return failure.name();
