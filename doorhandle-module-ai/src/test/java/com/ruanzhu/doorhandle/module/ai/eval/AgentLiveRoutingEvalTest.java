@@ -45,7 +45,7 @@ class AgentLiveRoutingEvalTest {
         report.put("at",OffsetDateTime.now(ZoneOffset.ofHours(8)).toString());report.put("datasetVersion",dataset.version());report.put("datasetSha256",hash(datasetPath));
         report.put("modelId",modelId);report.put("sourceHashes",sourceHashes);report.put("gitCommit",System.getProperty("agent.routing.commit","UNKNOWN"));
         report.put("workingTreeDirty",System.getProperty("agent.routing.dirty","UNKNOWN"));
-        report.put("scorerVersion","live-routing-rules-v2");
+        report.put("scorerVersion","live-routing-rules-v3");
         report.put("scorerSha256",hash(project.resolve("doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/eval/LiveRoutingRules.java")));
         report.put("fixtureSha256",hash(project.resolve("doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/eval/AgentLiveRoutingEvalTest.java")));
         report.put("providerMode","REAL_PROVIDER_SYNTHETIC_BUSINESS");report.put("sdkVersion","2.0.4");report.put("fallbackEnabled",false);report.put("httpMaxAttempts",1);

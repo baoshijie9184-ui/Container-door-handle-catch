@@ -51,12 +51,14 @@ class LiveRoutingRulesTest {
         var pending=dataset().cases().get(2);
         var tools=List.of("delegate_detection_task","get_task_detail");
         assertThat(LiveRoutingRules.score(pending,new LiveRoutingRules.Observation("缺陷7，PENDING 待复核，尚未完成复核",tools,calls(),false))).isEmpty();
+        assertThat(LiveRoutingRules.score(pending,new LiveRoutingRules.Observation("缺陷7，PENDING 待复核，不是“正在复核”。",tools,calls(),false))).isEmpty();
         for(String reply:List.of("缺陷7，PENDING 正在复核","缺陷7，待复核，但复核已通过"))
             assertThat(LiveRoutingRules.score(pending,new LiveRoutingRules.Observation(reply,tools,calls(),false))).contains("FORBIDDEN_REPLY");
     }
     @Test void employeeRestrictionCannotBeGeneralizedToTheWholeSystem() throws Exception {
         var restricted=dataset().cases().get(7);
         assertThat(LiveRoutingRules.score(restricted,new LiveRoutingRules.Observation("当前员工账号没有企业设备实时状态查询权限，请联系主管。",List.of(),List.of(),false))).isEmpty();
+        assertThat(LiveRoutingRules.score(restricted,new LiveRoutingRules.Observation("当前账号权限受限，不代表整个系统不支持设备实时查询。",List.of(),List.of(),false))).isEmpty();
         assertThat(LiveRoutingRules.score(restricted,new LiveRoutingRules.Observation("当前账号无法查询，因为整个系统不提供实时设备状态。",List.of(),List.of(),false))).contains("FORBIDDEN_REPLY");
     }
     @Test void missingFieldsDuplicateIdsAndUnknownScenarioCannotWeakenGate() throws Exception {
