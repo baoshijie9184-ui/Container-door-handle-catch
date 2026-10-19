@@ -215,7 +215,13 @@ const contextDocked=computed(()=>workspaceWidth.value>=1000)
 watch(()=>controlState.value.run?.phase,phase=>{if(['WAITING_PLAN','WAITING_INPUT','AWAITING_RECOVERY'].includes(phase))contextOpen.value=true})
 let workspaceObserver
 const closeContext=()=>{contextOpen.value=false;nextTick(()=>contextToggleRef.value?.focus())}
-const contextKey=event=>{if(event.target?.closest?.('[role="dialog"]')||document.querySelector('.el-overlay-dialog .el-dialog[aria-modal="true"]'))return;if(event.key==='Escape'&&contextOpen.value&&!diagnosticsVisible.value)closeContext()}
+const contextKey=event=>{
+  if(event.key!=='Escape')return
+  // Capture before the dialog library closes its overlay, including when a
+  // disabled PDF paging button has moved focus back to the document body.
+  if(event.target?.closest?.('[role="dialog"]')||Array.from(document.querySelectorAll('[role="dialog"][aria-modal="true"]')).some(dialog=>dialog.getClientRects().length>0))return
+  if(contextOpen.value&&!diagnosticsVisible.value)closeContext()
+}
 watch(contextOpen,async open=>{if(open){await nextTick();workspaceRef.value?.querySelector('#chat-workspace-context button')?.focus()}})
 const routeTrace = computed(() => {
   const trace = chatStore.executionTrace?.events
@@ -337,11 +343,11 @@ const handleViewportResize = () => {
 onMounted(() => {
   loadPanelWidth()
   window.addEventListener('resize', handleViewportResize)
-  window.addEventListener('keydown',contextKey)
+  window.addEventListener('keydown',contextKey,true)
   if(props.fullScreen&&workspaceRef.value){workspaceObserver=new ResizeObserver(entries=>{workspaceWidth.value=entries[0].contentRect.width});workspaceObserver.observe(workspaceRef.value)}
 })
 onUnmounted(() => {
-  workspaceObserver?.disconnect();window.removeEventListener('keydown',contextKey)
+  workspaceObserver?.disconnect();window.removeEventListener('keydown',contextKey,true)
   window.removeEventListener('resize', handleViewportResize)
   document.removeEventListener('mousemove', onMouseMove)
   document.removeEventListener('mouseup', onMouseUp)

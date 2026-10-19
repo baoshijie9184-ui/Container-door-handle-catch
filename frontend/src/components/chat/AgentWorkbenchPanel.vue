@@ -41,11 +41,11 @@
    </article>
    <p v-if="!rows.length" class="wb-note">当前视图暂无记录</p>
   </template>
-  <el-dialog v-model="previewOpen" title="文件预览" append-to-body width="min(900px,90vw)"><p v-if="previewError" role="alert">{{ previewError }}</p><nav v-if="previewType==='pdf'" class="chat-file-pages" aria-label="PDF 页码"><button :disabled="busy||previewPage===1" @click="preview(previewFile,previewPage-1)">上一页</button><span>第 {{ previewPage }} / {{ previewPages }} 页</span><button :disabled="busy||previewPage===previewPages" @click="preview(previewFile,previewPage+1)">下一页</button><small>页面预览 · Agent 仅可读取文字层</small></nav><img v-if="['image','pdf'].includes(previewType)" :src="previewUrl" class="wb-preview-image" alt="本人工作区页面预览" @error="previewError='图片预览失败，请下载原文件核对'"/><pre v-else class="chat-file-preview-text">{{ previewText }}</pre></el-dialog>
+  <el-dialog v-model="previewOpen" title="文件预览" append-to-body width="min(900px,90vw)"><p v-if="previewError" role="alert">{{ previewError }}</p><nav v-if="previewType==='pdf'" ref="pdfNavigation" tabindex="-1" class="chat-file-pages" aria-label="PDF 页码"><button :disabled="busy||previewPage===1" @click="preview(previewFile,previewPage-1)">上一页</button><span>第 {{ previewPage }} / {{ previewPages }} 页</span><button :disabled="busy||previewPage===previewPages" @click="preview(previewFile,previewPage+1)">下一页</button><small>页面预览 · Agent 仅可读取文字层</small></nav><img v-if="['image','pdf'].includes(previewType)" :src="previewUrl" class="wb-preview-image" alt="本人工作区页面预览" @error="previewError='图片预览失败，请下载原文件核对'"/><pre v-else class="chat-file-preview-text">{{ previewText }}</pre></el-dialog>
  </section>
 </template>
 <script setup>
-import {ref,reactive,computed,watch,onBeforeUnmount} from 'vue'
+import {nextTick,ref,reactive,computed,watch,onBeforeUnmount} from 'vue'
 import {ElMessageBox} from 'element-plus'
 import {AgentWorkbenchClient,availableWorkbenchTabs,workbenchStatus,workbenchRows,tokenDisplay} from '@/utils/agentWorkbench'
 import {readFilePreview,boundedTextPreview} from '@/utils/chatFileReferences'
@@ -56,6 +56,8 @@ const emit=defineEmits(['reference'])
 const state=ref({enabled:false,items:[],files:[],capabilities:{}}),tab=ref('PLAN'),error=ref(''),busy=ref(false),drafts=reactive({}),selections=reactive({})
 const previewOpen=ref(false),previewUrl=ref(''),previewText=ref(''),previewType=ref('text')
 const previewFile=ref(null),previewPage=ref(1),previewPages=ref(1),previewError=ref('')
+const pdfNavigation=ref(null)
+watch([previewOpen,previewPage,busy],async()=>{if(previewOpen.value&&previewType.value==='pdf'&&!busy.value){await nextTick();pdfNavigation.value?.focus()}},{flush:'post'})
 let previewVersion=0
 watch(previewOpen,open=>{if(!open){previewVersion++;if(previewUrl.value)URL.revokeObjectURL(previewUrl.value);previewUrl.value=''}},{flush:'sync'})
 const businessKind=ref('DETECTION'),businessId=ref('')

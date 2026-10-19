@@ -14,6 +14,7 @@ import uuid
 from PIL import Image
 import requests
 from playwright.sync_api import sync_playwright, expect
+from candidate_environment import candidate_identity, probe_source, timestamp
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -26,9 +27,7 @@ def main():
     args = parser.parse_args()
     assert args.execute, 'Explicit --execute is required'
     candidate = json.loads(Path(args.candidate_report).read_text(encoding='utf-8-sig'))
-    assert candidate.get('passed') is True and candidate.get('kept') is True and candidate.get('productionChanged') is False
-    project = candidate['project']
-    assert re.fullmatch(r'doorhandle-rehearsal-[a-f0-9]{12}', project)
+    project = candidate_identity(candidate)
     port = candidate.get('port', 18089)
     assert port == 18089
     out = Path(args.directory).resolve()
@@ -37,19 +36,11 @@ def main():
     pdf = ROOT/'work/file-formats-verify/doorhandle-module-app/target/pdf-preview-acceptance.pdf'
     assert pdf.is_file(), 'Run WorkspaceFileContentTest in the isolated Maven workspace first'
     ssh = ['ssh', '-F', str(ROOT/'work/cloud/ssh-config'), '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10']
-    probe = subprocess.run(ssh+['doorhandle-bj', 'python3 -'], input='''import json,subprocess
-project='''+repr(project)+'''
-ids=subprocess.check_output(['docker','ps','-q','--filter','label=com.docker.compose.project='+project,'--filter','label=com.docker.compose.service=nginx']).decode().split()
-assert len(ids)==1
-row=json.loads(subprocess.check_output(['docker','inspect',ids[0]]))[0]
-assert row['Config']['Labels']['io.doorhandle.rehearsal']==project
-assert row['NetworkSettings']['Ports']['80/tcp']==[{'HostIp':'127.0.0.1','HostPort':'18089'}]
-print('owned-candidate-ready')
-''', capture_output=True, text=True, timeout=25)
+    probe = subprocess.run(ssh+['doorhandle-bj', 'python3 -'], input=probe_source(candidate), capture_output=True, text=True, timeout=25)
     assert probe.returncode == 0 and probe.stdout.strip() == 'owned-candidate-ready', 'Candidate identity/listener differs'
     with socket.socket() as listener:
         listener.bind(('127.0.0.1', port))
-    report = {'project': project, 'release': candidate['release'], 'passed': False, 'checks': [], 'pageErrors': [], 'sessions': {}}
+    report = {'startedAt': timestamp(), 'project': project, 'release': candidate['release'], 'sourceSha256': candidate['sourceSha256'], 'passed': False, 'checks': [], 'pageErrors': [], 'sessions': {}}
     def save():
         (out/'result.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf8')
     def check(name, condition):
@@ -111,7 +102,8 @@ print('owned-candidate-ready')
                 response.raise_for_status()
                 check(entry+' '+extension+' original bytes, name and hash retained',
                       response.content == body and file['name'] == name and file['sha256'] == hashlib.sha256(body).hexdigest() and
-                      response.headers.get('X-Content-Type-Options') == 'nosniff' and 'no-store' in response.headers.get('Cache-Control', ''))
+                      all(value.strip().lower() == 'nosniff' for value in response.headers.get('X-Content-Type-Options', '').split(',')) and
+                      'no-store' in {value.strip().lower() for value in response.headers.get('Cache-Control', '').split(',')})
                 if extension == 'pdf':
                     response = session.get(base+prefix+'/files/'+file['id']+'/preview?page=1', timeout=25)
                     check(entry+' real PDFBox preview is a rendered PNG', response.status_code == 200 and response.content.startswith(b'\x89PNG') and response.headers.get('X-PDF-Pages') == '2')
@@ -191,6 +183,7 @@ print('owned-candidate-ready')
                 browser.close()
         report['passed'] = True
     finally:
+        report['finishedAt'] = timestamp()
         save()
         if tunnel is not None and tunnel.poll() is None:
             tunnel.terminate()

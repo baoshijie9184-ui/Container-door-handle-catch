@@ -101,6 +101,16 @@ with sync_playwright() as p:
         workbench=page.get_by_role('region',name='Agent 持久工作台');expect(workbench).to_be_visible();workbench.get_by_role('button',name='文件产物',exact=True).click()
         workbench.locator('article').filter(has_text='验收.pdf').get_by_role('button',name='预览',exact=True).click()
         dialog=page.get_by_role('dialog',name='文件预览' if kind=='vue' else '验收.pdf',exact=True);expect(dialog).to_contain_text('第 1 / 2 页');dialog.get_by_role('button',name='下一页').click();expect(dialog).to_contain_text('第 2 / 2 页')
+        expect(dialog.get_by_role('navigation',name='PDF 页码')).to_be_focused()
+        page.keyboard.press('Escape');expect(dialog).not_to_be_visible();expect(workbench).to_be_visible()
+        checks.append(kind+' Escape after the last PDF page closes only the preview')
+        if kind=='vue':
+            page.keyboard.press('Escape');expect(workbench).not_to_be_visible()
+            page.get_by_role('button',name='展开工作面板',exact=True).click();expect(workbench).to_be_visible()
+            workbench.get_by_role('button',name='文件产物',exact=True).click()
+            checks.append(kind+' a separate Escape still closes the work panel')
+        workbench.locator('article').filter(has_text='验收.pdf').get_by_role('button',name='预览',exact=True).click()
+        expect(dialog).to_contain_text('第 1 / 2 页');dialog.get_by_role('button',name='下一页').click();expect(dialog).to_contain_text('第 2 / 2 页')
         denied=True;dialog.get_by_role('button',name='上一页').click();expect(dialog).not_to_be_visible();checks.append(kind+' workbench PDF navigation rechecks permission and closes revoked preview');denied=False
         card=rail.locator('article').filter(has_text='验收.pdf');card.get_by_role('button',name='预览',exact=True).click();dialog=page.get_by_role('dialog',name='消息附件预览',exact=True);expect(dialog).to_contain_text('第 1 / 2 页')
         denied=True;dialog.get_by_role('button',name='下一页').click();expect(dialog).not_to_be_visible();expect(card).not_to_be_visible();checks.append(kind+' message PDF page revocation removes filename and actions');denied=False
