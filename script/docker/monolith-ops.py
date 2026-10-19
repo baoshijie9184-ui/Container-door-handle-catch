@@ -476,7 +476,7 @@ def systemd_units(root, runtime, script, username):
                        'ProtectSystem=strict\nProtectHome=read-only\nReadWritePaths='+str(root)+'\n')
     return {
         'doorhandle-backup.service': service('DoorHandle private data backup', 'backup', True),
-        'doorhandle-backup.timer': marker+'[Unit]\nDescription=DoorHandle evening backup\n[Timer]\nOnCalendar=*-*-* 23:30:00 Asia/Shanghai\nPersistent=false\nAccuracySec=1min\n[Install]\nWantedBy=timers.target\n',
+        'doorhandle-backup.timer': marker+'[Unit]\nDescription=DoorHandle evening backup\n[Timer]\nOnCalendar=*-*-* 23:00:00 Asia/Shanghai\nPersistent=false\nAccuracySec=1min\n[Install]\nWantedBy=timers.target\n',
         'doorhandle-disk-check.service': service('DoorHandle disk, backup and credential permission checks', 'check'),
         'doorhandle-disk-check.timer': marker+'[Unit]\nDescription=DoorHandle operation health checks\n[Timer]\nOnBootSec=2min\nOnUnitInactiveSec=15min\n[Install]\nWantedBy=timers.target\n',
         'doorhandle-maintenance-recover.service': service('Resume interrupted DoorHandle maintenance', 'recover')+'[Install]\nWantedBy=multi-user.target\n',
@@ -511,7 +511,7 @@ def install_timers(root, runtime, apply=False):
             os.chmod(temporary, 0o644);os.replace(temporary, target)
         run(['systemctl', 'daemon-reload'])
         run(['systemctl', 'enable', 'doorhandle-maintenance-recover.service', 'doorhandle-disk-check.timer', 'doorhandle-backup.timer'])
-    return {'units': sorted(units), 'installed': apply, 'backupTime': '23:30 Asia/Shanghai', 'missedBackupRunsOnBoot': False}
+    return {'units': sorted(units), 'installed': apply, 'backupTime': '23:00 Asia/Shanghai', 'missedBackupRunsOnBoot': False}
 
 
 def prune_plan(root, keep=3):

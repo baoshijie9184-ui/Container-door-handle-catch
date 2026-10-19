@@ -177,8 +177,15 @@ def test_interrupted_maintenance_recovers_only_the_exact_original_container_iden
 def test_systemd_schedule_respects_beijing_midnight_shutdown_and_does_not_catch_up_on_boot():
     units=ops.systemd_units(PurePosixPath('/home/demo/ci'),PurePosixPath('/home/demo/runtime'),PurePosixPath('/home/demo/ci/releases/ci-1/script/docker/monolith-ops.py'),'demo')
     assert len(units)==5
-    assert '23:30:00 Asia/Shanghai' in units['doorhandle-backup.timer'] and 'Persistent=false' in units['doorhandle-backup.timer']
+    assert '23:00:00 Asia/Shanghai' in units['doorhandle-backup.timer'] and 'Persistent=false' in units['doorhandle-backup.timer']
     assert 'ExecStopPost=' in units['doorhandle-backup.service'] and ' recover ' in units['doorhandle-backup.service']
+    # Include timer accuracy, start timeout, termination and ExecStopPost recovery.
+    # A backup starting at 23:30 previously exhausted this midnight margin.
+    import re
+    hour,minute,second=map(int,re.search(r'OnCalendar=.* (\d+):(\d+):(\d+) Asia',units['doorhandle-backup.timer']).groups())
+    start=int(re.search(r'TimeoutStartSec=(\d+)',units['doorhandle-backup.service']).group(1))
+    stop=int(re.search(r'TimeoutStopSec=(\d+)',units['doorhandle-backup.service']).group(1))
+    assert hour*3600+minute*60+second+60+start+2*stop<=24*3600-15*60
     assert 'OnUnitInactiveSec=15min' in units['doorhandle-disk-check.timer']
     assert 'WantedBy=multi-user.target' in units['doorhandle-maintenance-recover.service']
     assert all('User=demo' in value and 'UMask=0077' in value for name,value in units.items() if name.endswith('.service'))

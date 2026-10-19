@@ -4,6 +4,9 @@ import importlib.util
 import io
 from pathlib import Path
 import tarfile
+import json
+import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -34,6 +37,96 @@ def sample():
 
 def config():
     return rehearsal.isolated_config(sample(), PROJECT, 18089, {'backend': 'sha256:'+'a'*64}, 'doorhandledb')
+
+
+@pytest.mark.parametrize('foreign', [None,'owner','session','content'])
+def test_native_upgrade_fixture_disables_llm_and_rejects_foreign_or_wrong_stored_results(monkeypatch,capsys,foreign):
+    payload={'owner':'demo-owner','session':'demo-session','requestId':'fixture-request','content':'synthetic fixture'}
+    observed=[]
+    memory=SimpleNamespace(llm=SimpleNamespace())
+    def add(content,**kwargs):
+        observed.append(kwargs)
+        assert kwargs['infer'] is False
+        return {'results':[{'id':'fixture-memory','event':'ADD'}]}
+    memory.add=add
+    memory.get=lambda id:{'id':id,'user_id':'foreign' if foreign=='owner' else payload['owner'],
+        'agent_id':'doorhandlecatch','run_id':'foreign' if foreign=='session' else payload['session'],
+        'memory':'wrong' if foreign=='content' else payload['content']}
+    def create(value):
+        assert value['llm']['config']['api_key']=='fixture-no-llm-credential'
+        return memory
+    monkeypatch.setitem(sys.modules,'mem0',SimpleNamespace(Memory=SimpleNamespace(from_config=create)))
+    monkeypatch.setitem(sys.modules,'main',SimpleNamespace(get_memory_config=lambda:{'llm':{'config':{'api_key':'private-provider-key'}}},configure_provider_timeouts=lambda value:None))
+    monkeypatch.setattr(sys,'stdin',io.StringIO(json.dumps(payload)))
+    if foreign:
+        with pytest.raises(AssertionError):exec(rehearsal.MEMORY_SEED,{})
+    else:
+        exec(rehearsal.MEMORY_SEED,{})
+        receipt=json.loads(capsys.readouterr().out)
+        assert receipt['memoryId']=='fixture-memory' and receipt['llmCalls']==0
+    assert len(observed)==1
+    with pytest.raises(RuntimeError,match='must not call an LLM'):memory.llm.generate_response()
+
+
+def test_seed_failure_restarts_only_its_owned_memory_service_and_preserves_unknown_identity(tmp_path):
+    calls=[]
+    class Ops:
+        def docker(self,*args,**kwargs):
+            calls.append(args)
+            return b''
+        def healthy(self,id):return id=='owned-memory'
+    run=rehearsal.Rehearsal.__new__(rehearsal.Rehearsal)
+    run.directory,run.project,run.config,run.ops=tmp_path,PROJECT,config(),Ops()
+    run.row=lambda service:{'Id':'owned-memory','Image':'sha256:'+'a'*64,'Config':{'Labels':{'io.doorhandle.rehearsal':PROJECT}}}
+    def fail(*args,**kwargs):raise RuntimeError('controlled seed failure')
+    run.dc=fail
+    with pytest.raises(RuntimeError,match='controlled seed failure'):run.seed_memory('owner','session')
+    receipt=json.loads((tmp_path/'memory-seed.json').read_text())
+    assert receipt['status']=='UNKNOWN' and receipt['requestId'] and receipt['session']=='session'
+    assert [c[0] for c in calls]==['stop','ps','start'] and calls[-1]==('start','owned-memory')
+
+
+def test_bridge_http_failure_has_a_private_classification_and_is_not_replayed(tmp_path):
+    calls=[]
+    class Ops:
+        def docker(self,*args,**kwargs):
+            calls.append(args)
+            return b'{"bridgeFailure":{"type":"HTTPError","status":503}}'
+    run=rehearsal.Rehearsal.__new__(rehearsal.Rehearsal)
+    run.directory,run.ops=tmp_path,Ops()
+    run.row=lambda service:{'Id':'owned-memory'}
+    with pytest.raises(RuntimeError,match='do not replay'):
+        run.bridge('/memories/add',{'request_id':'original-request','run_id':'session','content':'PRIVATE_TURN_TEXT'})
+    assert len(calls)==1
+    file=next(tmp_path.glob('bridge-*.json'));receipt=json.loads(file.read_text())
+    assert receipt['requestId']=='original-request' and receipt['status']=='FAILED' and receipt['failure']['status']==503
+    assert 'PRIVATE_TURN_TEXT' not in file.read_text()
+
+
+def test_memory_failure_archive_is_owned_read_only_and_redacts_provider_keys(tmp_path,monkeypatch):
+    import gzip,hashlib
+    calls=[];volume=PROJECT+'_memory'
+    row={'Id':'owned-memory','Config':{'Labels':{'io.doorhandle.rehearsal':PROJECT},'Env':['MEM0_BRIDGE_TOKEN=fixture-private-key']},
+         'Mounts':[{'Type':'volume','Name':volume}]}
+    class Ops:
+        def docker(self,*args,**kwargs):
+            calls.append(args)
+            if args[0]=='ps':return b'owned-memory'
+            if args[0]=='inspect':return json.dumps([row]).encode()
+            if args[:2]==('volume','inspect'):return json.dumps([{'Labels':{'io.doorhandle.rehearsal':PROJECT}}]).encode()
+            if args[0]=='run':kwargs['output'].write(gzip.compress(b'private native receipt'));return b''
+            return b''
+        def digest(self,path):return hashlib.sha256(path.read_bytes()).hexdigest()
+    monkeypatch.setattr(rehearsal.subprocess,'run',lambda *args,**kw:SimpleNamespace(stdout=b'failure token fixture-private-key'))
+    run=rehearsal.Rehearsal.__new__(rehearsal.Rehearsal)
+    run.directory,run.project,run.ops=tmp_path,PROJECT,Ops()
+    run.baseline=[{'service':'backend','image':'sha256:'+'a'*64}]
+    receipt=run.capture_memory_failure()
+    assert receipt['captured'] and len(receipt['snapshotSha256'])==64
+    assert 'fixture-private-key' not in (tmp_path/'memory-failure.log').read_text()
+    archive=next(c for c in calls if c[0]=='run')
+    assert 'none' in archive and 'type=volume,src='+volume+',dst=/source,readonly' in archive
+    assert not any(c[0] in ('rm','rmi') for c in calls)
 
 
 def test_config_replaces_credentials_networks_storage_and_listener_without_mutating_source():

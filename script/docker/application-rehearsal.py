@@ -3,6 +3,7 @@
 import argparse
 import copy
 import datetime as dt
+import gzip
 import hashlib
 from html.parser import HTMLParser
 import http.cookiejar
@@ -26,6 +27,33 @@ PROJECT = re.compile(r'^doorhandle-rehearsal-[a-f0-9]{12}$')
 TAG = re.compile(r'^ci-[0-9]+-[a-f0-9]{12}$')
 PRODUCTION = 'doorhandlecatch-monolith'
 ZONE = dt.timezone(dt.timedelta(hours=8))
+
+# A migration fixture uses the installed real Mem0 SDK and real embeddings,
+# without making a paid LLM extraction part of an upgrade/rollback prerequisite.
+# Live chat extraction is a separate acceptance gate.
+MEMORY_SEED = '''import json,sys,hashlib
+from mem0 import Memory
+import main
+value=json.load(sys.stdin)
+config=main.get_memory_config()
+config['llm']['config']['api_key']='fixture-no-llm-credential'
+memory=Memory.from_config(config)
+main.configure_provider_timeouts(memory)
+calls=[]
+def reject_llm(*args,**kwargs):
+    calls.append(True)
+    raise RuntimeError('The upgrade fixture must not call an LLM')
+memory.llm.generate_response=reject_llm
+result=memory.add(value['content'],user_id=value['owner'],agent_id='doorhandlecatch',run_id=value['session'],
+                  metadata={'source':'upgrade-rehearsal','fixture_request':value['requestId']},infer=False)
+assert isinstance(result,dict) and len(result.get('results',[]))==1
+item=result['results'][0]
+assert item.get('event')=='ADD'
+stored=memory.get(item['id'])
+assert stored.get('user_id')==value['owner'] and stored.get('agent_id')=='doorhandlecatch' and stored.get('run_id')==value['session']
+assert stored.get('memory')==value['content'] and not calls
+print(json.dumps({'memoryId':item['id'],'contentSha256':hashlib.sha256(stored['memory'].encode()).hexdigest(),'llmCalls':len(calls)}))
+'''
 
 
 def require(condition, message):
@@ -192,13 +220,103 @@ class Rehearsal:
 
     def bridge(self, path, body):
         require(path in ('/memories/add', '/memories/operations/get', '/memories/search'), 'Unsupported bridge diagnostic')
-        script = '''import json,os,sys,urllib.request
+        evidence=self.directory/('bridge-'+uuid.uuid4().hex+'.json')
+        receipt={'path':path,'requestId':body.get('request_id'),'session':body.get('run_id'),'status':'STARTING',
+                 'startedAt':dt.datetime.now(ZONE).isoformat()}
+        private_json(evidence,receipt)
+        script = '''import json,os,sys,urllib.request,urllib.error
 value=json.load(sys.stdin)
 request=urllib.request.Request('http://127.0.0.1:8081'+value['path'],data=json.dumps(value['body']).encode(),headers={'Content-Type':'application/json','x-doorhandle-memory-token':os.environ['MEM0_BRIDGE_TOKEN']})
-with urllib.request.urlopen(request,timeout=40) as response:print(response.read().decode())
+try:
+    with urllib.request.urlopen(request,timeout=40) as response:print(response.read().decode())
+except urllib.error.HTTPError as error:
+    print(json.dumps({'bridgeFailure':{'type':'HTTPError','status':error.code}}))
+except Exception as error:
+    print(json.dumps({'bridgeFailure':{'type':type(error).__name__}}))
 '''
-        return json.loads(self.ops.docker('exec', '-i', self.row('mem0')['Id'], 'python', '-B', '-c', script,
-                                         data=json.dumps({'path': path, 'body': body}).encode(), timeout=50))
+        try:
+            result=json.loads(self.ops.docker('exec','-i',self.row('mem0')['Id'],'python','-B','-c',script,
+                                             data=json.dumps({'path':path,'body':body}).encode(),timeout=50))
+            if 'bridgeFailure' in result:
+                receipt.update(status='FAILED',failure=result['bridgeFailure']);private_json(evidence,receipt)
+                raise RuntimeError('Memory bridge failed; inspect private request evidence, do not replay')
+            receipt['status']='RETURNED';private_json(evidence,receipt)
+            return result
+        except BaseException:
+            if receipt['status']=='STARTING':
+                receipt['status']='UNKNOWN';private_json(evidence,receipt)
+            raise
+
+    def seed_memory(self, owner, session):
+        row=self.row('mem0')
+        require(row['Config']['Labels'].get('io.doorhandle.rehearsal')==self.project,'Seed ownership differs')
+        value={'owner':owner,'session':session,'requestId':uuid.uuid4().hex,
+               'content':'隔离升级回滚样本：质检报告先列出缺陷分类，再列出整改建议。'}
+        receipt={'owner':owner,'session':session,'requestId':value['requestId'],'mode':'SDK_INFER_FALSE',
+                 'contentSha256':hashlib.sha256(value['content'].encode()).hexdigest(),'status':'STARTING',
+                 'startedAt':dt.datetime.now(ZONE).isoformat()}
+        evidence=self.directory/'memory-seed.json';private_json(evidence,receipt)
+        seed_config=copy.deepcopy(self.config);seed_config['services']['mem0']['image']=row['Image']
+        helper=self.project+'-seed-'+uuid.uuid4().hex[:12]
+        self.ops.docker('stop','--time','15',row['Id'],timeout=60)
+        try:
+            raw=self.dc('run','--rm','--no-deps','-T','--name',helper,'--entrypoint','python','mem0','-B','-c',MEMORY_SEED,
+                        config=seed_config,data=json.dumps(value).encode(),timeout=90)
+            result=json.loads(raw.decode().strip().splitlines()[-1])
+            require(result.get('llmCalls')==0 and result.get('contentSha256')==receipt['contentSha256']
+                    and re.fullmatch(r'[A-Za-z0-9_-]{1,64}',result.get('memoryId','')),'Native memory seed was not verified')
+            receipt.update(status='SUCCEEDED',**result);private_json(evidence,receipt)
+            return receipt
+        except BaseException:
+            receipt['status']='UNKNOWN';private_json(evidence,receipt);raise
+        finally:
+            # The client may time out before its one-off container exits. Stop
+            # that exact owned helper before allowing the main writer to return.
+            ids=self.ops.docker('ps','-aq','--filter','name=^'+helper+'$').decode().split()
+            if ids:
+                rows=json.loads(self.ops.docker('inspect',*ids))
+                require(len(rows)==1 and rows[0]['Config']['Labels'].get('io.doorhandle.rehearsal')==self.project,
+                        'Native seed helper ownership differs')
+                self.ops.docker('rm','-f',ids[0],timeout=40)
+            self.ops.docker('start',row['Id'],timeout=45)
+            deadline=time.monotonic()+180
+            while not self.ops.healthy(row['Id']):
+                require(time.monotonic()<deadline,'Owned memory service did not restart')
+                time.sleep(1)
+
+    def capture_memory_failure(self):
+        """Private evidence only; never put memory text or provider keys in CI artifacts."""
+        ids=self.ops.docker('ps','-aq','--filter','label=com.docker.compose.project='+self.project,
+                            '--filter','label=com.docker.compose.service=mem0').decode().split()
+        if not ids:return {'captured':True,'memoryContainerCreated':False}
+        require(len(ids)==1,'Failure memory ownership is ambiguous')
+        row=json.loads(self.ops.docker('inspect',ids[0]))[0]
+        require(row['Config']['Labels'].get('io.doorhandle.rehearsal')==self.project,'Failure memory ownership differs')
+        logs=subprocess.run(['docker','logs','--tail','150',row['Id']],stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=20).stdout.decode(errors='replace')
+        for item in row['Config'].get('Env',[]):
+            key,_,value=item.partition('=')
+            if re.search('KEY|TOKEN|SECRET|PASSWORD',key) and len(value)>=8:logs=logs.replace(value,'[REDACTED]')
+        with os.fdopen(os.open(self.directory/'memory-failure.log',os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600),'w',encoding='utf8') as stream:stream.write(logs)
+        self.ops.docker('stop','--time','15',row['Id'],timeout=60)
+        volumes=[v for v in row.get('Mounts',[]) if v['Type']=='volume']
+        require(len(volumes)==1 and volumes[0]['Name'].startswith(self.project+'_'),'Failure memory volume differs')
+        volume=volumes[0]['Name'];owned=json.loads(self.ops.docker('volume','inspect',volume))[0]
+        require(owned.get('Labels',{}).get('io.doorhandle.rehearsal')==self.project,'Failure volume ownership differs')
+        target=self.directory/'memory-failure.tar.gz'
+        limit=min(512*1024**2,shutil.disk_usage(self.directory).free-2*1024**3)
+        require(limit>1024**2,'Insufficient space to preserve failure evidence')
+        with os.fdopen(os.open(target,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600),'wb') as stream:
+            self.ops.docker('run','--rm','--network','none','--read-only','--cap-drop','ALL','--cap-add','DAC_OVERRIDE',
+                '--security-opt','no-new-privileges','--user','0','--mount','type=volume,src='+volume+',dst=/source,readonly',
+                '--entrypoint','tar',self.baseline_image(),'-czf','-','-C','/source','.',output=stream,timeout=120,file_limit=limit)
+        with gzip.open(target,'rb') as stream:
+            while stream.read(1024*1024):pass
+        return {'captured':True,'memoryContainerCreated':True,'snapshotSha256':self.ops.digest(target)}
+
+    def baseline_image(self):
+        image=next(row['image'] for row in self.baseline if row['service']=='backend')
+        require(re.fullmatch(r'sha256:[a-f0-9]{64}',image),'Failure helper image is invalid')
+        return image
 
     def row(self, service):
         ids = self.dc('ps', '-aq', service).decode().split()
@@ -368,17 +486,12 @@ def memory_marker(run, port):
     client = Client(port)
     identity = client.login('inspector.demo')
     owner = 'doorhandlecatch:user:'+str(identity['userId'])
-    request_id, session = uuid.uuid4().hex, 'rehearsal-'+uuid.uuid4().hex
-    response = run.bridge('/memories/add', {'user_id': owner, 'app_id': 'doorhandlecatch', 'run_id': session,
-                         'request_id': request_id, 'content': '请长期记住：我的质检报告偏好先列出缺陷分类，再列出整改建议。'})
-    deadline = time.monotonic()+100
-    operation = response['data'].get('operation', response['data'])
-    while operation['status'] == 'RUNNING' and time.monotonic() < deadline:
-        time.sleep(2)
-        operation = run.bridge('/memories/operations/get', {'user_id': owner, 'app_id': 'doorhandlecatch', 'request_id': request_id})['data']
-    require(operation['status'] == 'SUCCEEDED', 'Memory extraction outcome needs review; no replay attempted')
+    session='rehearsal-'+uuid.uuid4().hex
+    seeded=run.seed_memory(owner,session)
+    run.report.update(memoryFixtureMode='SDK_INFER_FALSE',memoryExtractionVerified=False)
+    run.check('Real Mem0 SDK fixture persists without an LLM extraction',seeded['status']=='SUCCEEDED' and seeded['llmCalls']==0)
     rows = client.request('GET', '/api/agent/memories')['items']
-    row = next((item for item in rows if item['sourceSessionId'] == session), None)
+    row = next((item for item in rows if item['id']==seeded['memoryId'] and item['sourceSessionId'] == session), None)
     require(row is not None and row.get('lifecycle') is not None, 'New memory was not independently read')
     change_id = uuid.uuid4().hex
     policy = client.request('POST', '/api/agent/memories/'+row['id']+'/lifecycle', {
@@ -525,10 +638,19 @@ def run(args):
             with (directory/'failure.log').open('x', encoding='utf8') as stream:
                 os.chmod(stream.name, 0o600)
                 stream.write(traceback.format_exc())
+            try:
+                instance.report['failureEvidence']=instance.capture_memory_failure()
+            except BaseException:
+                # An unknown result must remain inspectable even if its private
+                # archive cannot be exported. The failed copy is never promoted.
+                instance.report['failureEvidence']={'captured':False}
             instance.persist()
             raise
         finally:
-            if not args.keep or not succeeded:
+            preserve_failure=not succeeded and instance.report.get('failureEvidence',{}).get('captured') is False
+            if preserve_failure:
+                instance.report.update(kept=True,retainedForEvidence=True);instance.persist()
+            elif not args.keep or not succeeded:
                 instance.cleanup()
             instance.production_unchanged()
         instance.report.update(passed=True, finishedAt=dt.datetime.now(ZONE).isoformat(), kept=args.keep)
