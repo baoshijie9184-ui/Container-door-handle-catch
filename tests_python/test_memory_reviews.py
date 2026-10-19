@@ -183,11 +183,15 @@ def test_resolution_audit_failure_rolls_back_the_control_and_review_revision(nat
 def test_waiting_review_does_not_block_reads_and_duplicate_start_does_not_call_the_model_again(native):
     n=native;release=threading.Event();started=threading.Event();calls=[]
     original=n.memory.llm.generate_response
-    def slow(**kwargs):calls.append(1);started.set();assert release.wait(4);return original(**kwargs)
+    def slow(**kwargs):calls.append(1);started.set();assert release.wait(10);return original(**kwargs)
     n.memory.llm.generate_response=slow;n.writer.response_wait=.02
     body={'user_id':USER,'app_id':APP,'memory_id':n.source,'request_id':'pending','expected_digest':main.memory_digest(n.memory.get(n.source)),'expected_revision':0}
     try:
-        for _ in range(3):
+        result=n.http.post('/memories/reviews/start',json=body,headers=n.headers);assert result.status_code==202
+        # 202 acknowledges scheduling, not that Chroma lookup and model startup
+        # have already happened. Synchronize the actual waiting-model boundary.
+        assert started.wait(5)
+        for _ in range(2):
             result=n.http.post('/memories/reviews/start',json=body,headers=n.headers);assert result.status_code==202
         assert started.is_set() and calls==[1]
         assert n.http.get('/health').status_code==200
