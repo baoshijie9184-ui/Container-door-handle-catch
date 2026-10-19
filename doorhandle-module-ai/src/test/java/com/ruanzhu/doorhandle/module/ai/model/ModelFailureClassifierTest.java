@@ -10,7 +10,7 @@ import static org.assertj.core.api.Assertions.*;
 
 class ModelFailureClassifierTest {
     @Test void recognizesQuotaBodiesUnderDifferentStatusesAndWrappedExceptions() {
-        for (String body : new String[]{"insufficient_quota", "insufficient_balance", "Arrearage", "余额不足", "billing_hard_limit_reached"})
+        for (String body : new String[]{"insufficient_quota", "insufficient_balance", "Arrearage", "余额不足", "billing_hard_limit_reached", "AllocationQuota.FreeTierOnly."})
             for (int status : new int[]{400, 402, 403, 429})
                 assertThat(ModelFailureClassifier.classify(new IllegalStateException("wrapper", new HttpTransportException("upstream", status, body)))).isEqualTo(QUOTA);
         assertThat(ModelFailureClassifier.classify(new HttpTransportException("upstream", 402, ""))).isEqualTo(QUOTA);

@@ -19,11 +19,11 @@ AGENTSCOPE_AI_MODEL=dashscope:qwen-plus
 
 | 供应商 | 当前本地模型 | AgentScope 选择 ID | 协议 |
 | --- | --- | --- | --- |
-| DashScope / 阿里云百炼 | kimi-k3 | `dashscope:kimi-k3` | 当前使用百炼 OpenAI-compatible Chat Completions |
+| DashScope / 阿里云百炼 | qwen3.8-flash 及三个已登记备用 | `dashscope:qwen3.8-flash` 等 | 百炼 OpenAI-compatible Chat Completions |
 | DeepSeek | deepseek-flash | `deepseek:deepseek-flash` | Chat Completions + DeepSeek Formatter |
 | 灵算 OpenAI-compatible | gpt-6.1-sol | `openai-official:gpt-6.1-sol` | 原生 Responses |
 
-当前 `.env` 设置 `AGENTSCOPE_AI_MODEL=openai-official:gpt-6.1-sol`，角色主 Agent 与专业 Agent 都实际通过统一模型服务选择该模型。`openai-official:` 表示使用官方 Java SDK 的 Responses 适配器，不表示接口供应商是 OpenAI 官方。助手 React 页面展示当前模型和其他已配置模型；“已配置”仅表示配置中有凭证，不等于每个模型均已完成真实业务验收。
+当前私有配置已准备切换到 `dashscope:qwen3.8-flash`；生产仍运行原配置，待七项整体验收后统一发布。新模型、免费额度到期日、自动备用及验证范围见 [百炼免费额度模型接入](百炼免费额度模型接入.md)。`openai-official:` 表示使用官方 Java SDK 的 Responses 适配器，不表示接口供应商是 OpenAI 官方。助手 React 页面展示当前模型和其他已配置模型；“已配置”仅表示配置中有凭证，不等于每个模型均已完成真实业务验收。
 
 更换模型时同时核对供应商模型名和选择 ID，例如 `OPENAI_MODEL=gpt-6.1-sol` 与 `AGENTSCOPE_AI_MODEL=openai-official:gpt-6.1-sol`，修改 `.env` 后重启后端。当前不提供浏览器任意修改端点/密钥的接口；默认模型未登记或缺少凭证时启动失败，避免悄悄使用另一家供应商。
 

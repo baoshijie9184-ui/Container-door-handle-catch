@@ -143,6 +143,56 @@ class AgentModelServiceTest {
                 .containsEntry("deepseek-flash", "Bearer deepseek-fixture-key");
     }
 
+    @Test void sameProviderModelsUseTheirOwnNamesAndQuotaCircuits() throws Exception {
+        connections.getDashscope().setBaseUrl("http://127.0.0.1:" + server.getAddress().getPort() + "/compatible-mode/v1");
+        connections.getDashscope().setApiKey("shared-fixture-key");
+        connections.getDashscope().setModel("qwen3.8-flash");
+        connections.getDashscope().setAdditionalModels(List.of("glm-5.3", "qwen3.8-flash", "glm-5.3"));
+        connections.setFallbackEnabled(true);
+        connections.setFallbackModels(List.of("dashscope:qwen3.8-flash"));
+        connections.setAdditionalFallbackModels(List.of("dashscope:glm-5.3", "dashscope:glm-5.3"));
+        agent.setModel("dashscope:qwen3.8-flash");
+        var received = new CopyOnWriteArrayList<JsonNode>();
+        server.createContext("/compatible-mode/v1/chat/completions", exchange -> {
+            var request = json.readTree(exchange.getRequestBody()); received.add(request);
+            assertThat(exchange.getRequestHeaders().getFirst("Authorization")).isEqualTo("Bearer shared-fixture-key");
+            boolean quota = request.get("model").asText().equals("qwen3.8-flash");
+            byte[] body = quota
+                    ? "{\"error\":{\"code\":\"AllocationQuota.FreeTierOnly\",\"message\":\"free quota exhausted\"}}".getBytes(StandardCharsets.UTF_8)
+                    : json.writeValueAsBytes(Map.of("id", "backup", "object", "chat.completion", "created", 1,
+                            "model", "glm-5.3", "choices", List.of(Map.of("index", 0,
+                                    "message", Map.of("role", "assistant", "content", "OK"), "finish_reason", "stop"))));
+            exchange.getResponseHeaders().set("Content-Type", "application/json");
+            exchange.sendResponseHeaders(quota ? 403 : 200, body.length); exchange.getResponseBody().write(body); exchange.close();
+        });
+        try (var models = new AgentModelService(connections, agent)) {
+            for (int i = 0; i < 2; i++) {
+                var reply = models.resolve(agent.getModel()).stream(List.of(new UserMessage("Hello")), List.of(),
+                        GenerateOptions.builder().stream(false).build()).collectList().block(Duration.ofSeconds(10));
+                assertThat(reply).isNotEmpty();
+            }
+            assertThat(received).extracting(r -> r.get("model").asText()).containsExactly("qwen3.8-flash", "glm-5.3", "glm-5.3");
+            assertThat(received.get(0).get("enable_thinking").asBoolean()).isFalse();
+            assertThat(received.get(1).has("enable_thinking")).isFalse();
+            assertThat(models.entries()).filteredOn(m -> m.provider().equals("dashscope")).hasSize(2);
+            assertThat(models.entries()).filteredOn(ModelInfo -> ModelInfo.id().equals(agent.getModel())).singleElement()
+                    .satisfies(m -> { assertThat(m.lastFailure()).isEqualTo("QUOTA"); assertThat(m.healthState()).isEqualTo("OPEN"); });
+            assertThat(models.entries()).filteredOn(m -> m.model().equals("glm-5.3")).singleElement()
+                    .satisfies(m -> assertThat(m.healthState()).isEqualTo("CLOSED"));
+            assertThatThrownBy(() -> models.resolve("dashscope:browser-supplied-model")).isInstanceOf(IllegalArgumentException.class);
+            assertThat(json.writeValueAsString(models.catalog())).doesNotContain("shared-fixture-key", "apiKey", "baseUrl");
+        }
+    }
+
+    @Test void rejectsUnsafeOrUnboundedServerModelCatalog() {
+        for (String invalid : List.of("", " bad", "model?key=secret", "https://example.com/model")) {
+            connections.getDashscope().setAdditionalModels(List.of(invalid));
+            assertThatThrownBy(() -> new AgentModelService(connections, agent).entries()).isInstanceOf(IllegalArgumentException.class);
+        }
+        connections.getDashscope().setAdditionalModels(java.util.stream.IntStream.range(0, 16).mapToObj(i -> "model-" + i).toList());
+        assertThatThrownBy(() -> new AgentModelService(connections, agent).entries()).isInstanceOf(IllegalArgumentException.class);
+    }
+
     @Test void sdkQuotaErrorsUseTwoBackupsWithoutSdkRetriesAndShareHealthAcrossRequests() throws Exception {
         var primaryCalls = new AtomicInteger(); var deepseekCalls = new AtomicInteger(); var dashscopeCalls = new AtomicInteger();
         server.removeContext("/v1/responses");

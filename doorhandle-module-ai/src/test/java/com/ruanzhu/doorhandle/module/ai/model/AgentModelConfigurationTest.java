@@ -85,13 +85,16 @@ class AgentModelConfigurationTest {
                 "AGENT_MODEL_FALLBACK_ENABLED", "true", "AGENT_MODEL_FALLBACK_MODELS", "deepseek:deepseek-flash,dashscope:fixture-dashscope",
                 "DASHSCOPE_MODEL", "fixture-dashscope", "DASHSCOPE_API_KEY", "fixture-dashscope-key", "DEEPSEEK_API_KEY", "fixture-deepseek-key",
                 "AGENT_MODEL_FIRST_TOKEN_TIMEOUT", "12s", "AGENT_MODEL_QUOTA_COOLDOWN", "8m")));
+        sources.addFirst(new MapPropertySource("fixture-multi-model", Map.of("DASHSCOPE_ADDITIONAL_MODELS", "qwen3.8-flash,glm-5.3",
+                "AGENT_MODEL_ADDITIONAL_FALLBACK_MODELS", "dashscope:glm-5.3,dashscope:qwen3.8-flash")));
         for (var source : new YamlPropertySourceLoader().load("application", new FileSystemResource(root.resolve("doorhandle-server/src/main/resources/application.yml")))) sources.addLast(source);
         var binder = new Binder(ConfigurationPropertySources.get(environment), new PropertySourcesPlaceholdersResolver(environment));
         var connections = binder.bind("agentscope.models", Bindable.of(AgentModelProperties.class)).get();
         var agent = binder.bind("agentscope.ai", Bindable.of(AgentScopeProperties.class)).get();
         assertThat(connections.getQuotaCooldown()).isEqualTo(java.time.Duration.ofMinutes(8));
+        assertThat(connections.getDashscope().getAdditionalModels()).containsExactly("qwen3.8-flash", "glm-5.3");
         var models = new AgentModelService(connections, agent); models.resolve(agent.getModel());
-        assertThat(models.catalog().fallbackModels()).containsExactly("deepseek:deepseek-flash", "dashscope:fixture-dashscope");
+        assertThat(models.catalog().fallbackModels()).containsExactly("deepseek:deepseek-flash", "dashscope:fixture-dashscope", "dashscope:glm-5.3", "dashscope:qwen3.8-flash");
         assertThat(models.catalog().firstTokenTimeoutMs()).isEqualTo(12000);
     }
 }

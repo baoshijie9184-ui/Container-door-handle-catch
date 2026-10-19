@@ -58,6 +58,8 @@ public class AgentModelService implements AutoCloseable {
     private List<String> fallbackIds() {
         var list = connections.getFallbackModels();
         if (list == null || list.isEmpty()) list = List.of(connections.getFallbackModel());
+        list = new ArrayList<>(list);
+        if (connections.getAdditionalFallbackModels() != null) list.addAll(connections.getAdditionalFallbackModels());
         if (list.stream().anyMatch(id -> id == null || id.isBlank())) throw new IllegalArgumentException("备用模型 ID 不能为空");
         return List.copyOf(new LinkedHashSet<>(list));
     }
@@ -100,14 +102,18 @@ public class AgentModelService implements AutoCloseable {
             Map<String, String> headers = connections.getActorAuthorization() == null
                     || connections.getActorAuthorization().isBlank() ? Map.of()
                     : Map.of("x-openai-actor-authorization", connections.getActorAuthorization());
-            return OpenAIResponsesIoBridge.create(config.getApiKey(),baseUrl,config.getModel(),proxy(),headers,
+            return OpenAIResponsesIoBridge.create(config.getApiKey(),baseUrl,entry.model(),proxy(),headers,
                     GenerateOptions.builder()
                             .maxTokens(connections.getMaxOutputTokens()).executionConfig(execution)
                             .additionalBodyParam("store", connections.isStore()).build());
         }
         if (entry.provider().equals("dashscope") && base.getPath().contains("compatible-mode")) {
+            // Qwen 混合思考模型在非思考模式下兼容强制工具选择及非流式摘要调用。
+            if (entry.model().startsWith("qwen3.")) options = GenerateOptions.builder()
+                    .maxTokens(connections.getMaxOutputTokens()).executionConfig(execution)
+                    .additionalBodyParam("enable_thinking", false).build();
             return OpenAIChatModel.builder().apiKey(config.getApiKey()).baseUrl(baseUrl)
-                    .modelName(config.getModel()).stream(true).proxy(proxy()).generateOptions(options).build();
+                    .modelName(entry.model()).stream(true).proxy(proxy()).generateOptions(options).build();
         }
         var context = ModelCreationContext.builder().apiKey(config.getApiKey())
                 .baseUrl(baseUrl).stream(true).enableThinking(false)
@@ -144,16 +150,28 @@ public class AgentModelService implements AutoCloseable {
         } finally { models.clear(); }
     }
     public List<ModelInfo> entries() {
-        return List.of(info("dashscope", "dashscope:", connections.getDashscope(),
-                        connections.getDashscope().getBaseUrl().contains("compatible-mode") ? "CHAT_COMPLETIONS" : "DASHSCOPE"),
-                info("deepseek", "deepseek:", connections.getDeepseek(), "CHAT_COMPLETIONS"),
-                info("openai", "openai-official:", connections.getOpenai(), "RESPONSES"));
+        var result = new ArrayList<ModelInfo>();
+        register(result, "dashscope", "dashscope:", connections.getDashscope(),
+                connections.getDashscope().getBaseUrl().contains("compatible-mode") ? "CHAT_COMPLETIONS" : "DASHSCOPE");
+        register(result, "deepseek", "deepseek:", connections.getDeepseek(), "CHAT_COMPLETIONS");
+        register(result, "openai", "openai-official:", connections.getOpenai(), "RESPONSES");
+        return List.copyOf(result);
     }
-    private ModelInfo info(String provider, String prefix, AgentModelProperties.Connection c, String protocol) {
-        String id = prefix + c.getModel();
+    private void register(List<ModelInfo> result, String provider, String prefix,
+                          AgentModelProperties.Connection c, String protocol) {
+        var names = new LinkedHashSet<String>();
+        names.add(c.getModel());
+        if (c.getAdditionalModels() != null) names.addAll(c.getAdditionalModels());
+        if (names.size() > 16 || names.stream().anyMatch(name -> name == null
+                || !name.matches("[A-Za-z0-9][A-Za-z0-9._/\\-]{0,127}")))
+            throw new IllegalArgumentException("每个供应商最多登记 16 个合法模型名称");
+        for (String name : names) result.add(info(provider, prefix, c, protocol, name));
+    }
+    private ModelInfo info(String provider, String prefix, AgentModelProperties.Connection c, String protocol, String model) {
+        String id = prefix + model;
         var circuit = health.get(id);
         var state = circuit == null ? new ModelCircuit.Health("CLOSED", null, 0) : circuit.health();
-        return new ModelInfo(id, provider, c.getModel(), protocol, hasKey(c), id.equals(agent.getModel()),
+        return new ModelInfo(id, provider, model, protocol, hasKey(c), id.equals(agent.getModel()),
                 state.state(), state.lastFailure(), state.retryAfterSeconds());
     }
     public Catalog catalog() {

@@ -66,6 +66,7 @@ final class ModelFailureClassifier {
         if (text == null) return false;
         String value = text.toLowerCase(Locale.ROOT);
         return value.contains("insufficient_quota") || value.contains("insufficient_balance")
+                || value.contains("allocationquota.freetieronly")
                 || value.contains("insufficient balance") || value.contains("insufficient funds")
                 || value.contains("quota_exceeded") || value.contains("quota exceeded")
                 || value.contains("billing_hard_limit_reached") || value.contains("credit balance is too low")

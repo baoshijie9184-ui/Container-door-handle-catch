@@ -17,6 +17,7 @@ public class AgentModelProperties {
     private boolean fallbackEnabled;
     private String fallbackModel = "deepseek:deepseek-flash";
     private List<String> fallbackModels = List.of();
+    private List<String> additionalFallbackModels = List.of();
     private Duration firstTokenTimeout = Duration.ofSeconds(15);
     @Min(1) private int failureThreshold = 2;
     private Duration circuitCooldown = Duration.ofSeconds(60);
@@ -41,6 +42,8 @@ public class AgentModelProperties {
     public void setFallbackModel(String value) { fallbackModel = value; }
     public List<String> getFallbackModels() { return fallbackModels; }
     public void setFallbackModels(List<String> value) { fallbackModels = value; }
+    public List<String> getAdditionalFallbackModels() { return additionalFallbackModels; }
+    public void setAdditionalFallbackModels(List<String> value) { additionalFallbackModels = value; }
     public Duration getFirstTokenTimeout() { return firstTokenTimeout; }
     public void setFirstTokenTimeout(Duration value) { firstTokenTimeout = value; }
     public int getFailureThreshold() { return failureThreshold; }
@@ -68,6 +71,7 @@ public class AgentModelProperties {
         private String apiKey = "";
         private String baseUrl;
         private String model;
+        private List<String> additionalModels = List.of();
         public Connection() {}
         public Connection(String baseUrl, String model) { this.baseUrl = baseUrl; this.model = model; }
         public String getApiKey() { return apiKey; }
@@ -76,5 +80,7 @@ public class AgentModelProperties {
         public void setBaseUrl(String value) { baseUrl = value; }
         public String getModel() { return model; }
         public void setModel(String value) { model = value; }
+        public List<String> getAdditionalModels() { return additionalModels; }
+        public void setAdditionalModels(List<String> value) { additionalModels = value; }
     }
 }
