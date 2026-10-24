@@ -83,8 +83,6 @@
 .agent-workbench :is(.wb-usage-timing,.wb-context-estimates dl) dd { margin:0; color:var(--app-text,#0f172a); }
 .agent-workbench .wb-context-estimates { padding-top:10px; border-top:1px solid var(--app-border,#e2e8f0); }
 .agent-workbench .wb-context-estimates > summary { cursor:pointer; color:var(--app-text-secondary,#475569); font-size:12px; line-height:1.8; }
-.agent-workbench .wb-followup-label { display:block; margin:14px 0 0; font-size:12px; color:var(--app-text-secondary,#475569); }
-.agent-workbench article[data-kind=CHILD] > button { display:inline-flex; align-items:center; gap:5px; margin:6px 8px 6px 0; }
 @media(prefers-reduced-motion:reduce) { .agent-workbench .wb-folder-chevron,.agent-workbench .wb-upload input::file-selector-button { transition:none; } }
 .wb-preview-note { color:var(--app-text-secondary,#475569); font-size:12px; line-height:1.8; margin:0 0 16px; }
 :is(.workbench-file-preview-dialog,.workbench-file-preview-modal) :is(.el-dialog__title,.ant-modal-title) { display:block; padding-right:28px; overflow-wrap:anywhere; }

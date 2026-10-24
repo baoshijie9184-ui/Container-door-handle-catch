@@ -196,7 +196,6 @@
                 :key="task.taskId"
                 class="task-item"
                 :class="{ 'task-item-selected': selectedTaskId === task.taskId }"
-                @click="selectedTaskId = selectedTaskId === task.taskId ? null : task.taskId"
               >
                 <!-- 可折叠行 -->
                 <div class="task-item-main">
@@ -204,17 +203,16 @@
                     <span class="taskid-label">任务ID</span>
                     <code class="taskid-value">{{ task.taskId }}</code>
                   </div>
-                  <div class="task-item-row1">
+                  <button type="button" class="task-item-row1 task-item-toggle" :aria-expanded="selectedTaskId===task.taskId" :aria-controls="'workbench-task-detail-'+task.taskId" :aria-label="(selectedTaskId===task.taskId?'收起':'展开')+'任务详情：'+(task.folderName || task.taskId)" @click="selectedTaskId = selectedTaskId === task.taskId ? null : task.taskId">
                     <span class="task-item-folder">{{ task.folderName }}</span>
-                    <span class="task-item-count">{{ task.imageCount }} 张</span>
-                    <el-tag :type="taskTagType(task)" class="task-item-tag">{{ taskTagText(task) }}</el-tag>
+                    <StatusBadge domain="detection" :code="taskExecutionCode(task)" />
                     <el-icon
                       class="task-expand-icon"
                       :class="{ 'task-expand-icon-open': selectedTaskId === task.taskId }"
                     >
                       <ArrowDown />
                     </el-icon>
-                  </div>
+                  </button>
                   <div class="task-item-capture">
                     <span v-if="task.batchNo">批次：{{ task.batchNo }}</span>
                     <span v-if="task.workOrderNo">工单：{{ task.workOrderNo }}</span>
@@ -227,33 +225,14 @@
                     <span v-if="task.captureInfo.collector">{{ task.captureInfo.collector }}</span>
                     <span v-if="task.captureInfo.deviceName">{{ task.captureInfo.deviceName }}</span>
                   </div>
-                  <el-progress
-                    :percentage="task.progressPercent"
-                    :stroke-width="5"
-                    size="small"
-                    :status="task.progressPercent === 100 && task.stage === 'completed' ? 'success' : (task.stage === 'failed' ? 'exception' : 'active')"
-                    style="margin: 6px 0 2px;"
-                  />
-                  <div class="task-item-row2">
-                    <span class="task-item-status" :class="{
-                      'status-error': taskStatusDetail(task).type === 'error',
-                      'status-warn': taskStatusDetail(task).type === 'warn',
-                      'status-ok': taskStatusDetail(task).type === 'success'
-                    }">
-                      <el-icon v-if="taskStatusDetail(task).type === 'success'"><CircleCheck /></el-icon>
-                      <el-icon v-else-if="taskStatusDetail(task).type === 'warn' || taskStatusDetail(task).type === 'error'"><Warning /></el-icon>
-                      <el-icon v-else><Clock /></el-icon>
-                      {{ taskStatusDetail(task).text }}
-                    </span>
-                    <span class="task-item-time">{{ formatRelativeTime(task.updatedAt) }} · {{ formatAbsoluteTime(task.updatedAt) }}</span>
-                  </div>
+                  <TaskExecutionProgress :task="task" />
                   <QualityStageGuidance v-if="selectedTaskId === task.taskId" :task="task" />
                 </div>
 
                 <!-- 操作按钮 -->
                 <div class="task-item-actions">
                   <el-button
-                    v-if="task.stage === 'uploaded' && task.uploadedFiles.length"
+                    v-if="task.stage === 'uploaded' && Array.isArray(task.uploadedFiles) && task.uploadedFiles.length"
                     type="primary"
                     size="small"
                     :loading="task.stage === 'queued' || task.stage === 'detecting'"
@@ -286,9 +265,9 @@
                     link
                     size="small"
                     type="danger"
-                    @click.stop="removeTask(task.taskId)"
+                    :disabled="historyCacheBusy" @click.stop="clearHistoryTaskCache(task.taskId)"
                   >
-                    <el-icon><Delete /></el-icon>移除
+                    <el-icon><Delete /></el-icon>清除本机缓存
                   </el-button>
                   <el-button
                     v-if="canAssignQualityTask(task)"
@@ -325,18 +304,9 @@
                 </div>
 
                 <!-- 展开详情 -->
-                <div v-if="selectedTaskId === task.taskId" class="task-item-detail">
-                  <el-divider style="margin: 10px 0;" />
-                  <el-steps :current="taskStepIndex(task)" :status="task.stage === 'failed' ? 'error' : 'process'" size="small" style="margin-bottom: 10px;">
-                    <el-step title="已交给模型处理" :description="taskStepDesc(task, 0)" />
-                    <el-step title="模型正在检测" :description="taskStepDesc(task, 1)" />
-                    <el-step title="检测完成" :description="taskStepDesc(task, 2)" />
-                  </el-steps>
-
-                  <el-alert v-if="task.error" type="error" show-icon :title="task.error" style="margin-bottom: 10px;" />
-
-                  <div v-if="task.logs.length" class="task-log-block">
-                    <div class="task-log-head"><span>最近动态</span></div>
+                <div v-if="selectedTaskId === task.taskId" :id="'workbench-task-detail-'+task.taskId" class="task-item-detail">
+                  <div v-if="Array.isArray(task.logs) && task.logs.length" class="task-log-block">
+                    <div class="task-log-head"><span>最近动态 · 本机记录</span></div>
                     <div class="task-log-list">
                       <div v-for="log in task.logs" :key="log.id" class="task-log-item">
                         <span class="task-log-time">{{ log.time }}</span>
@@ -345,81 +315,7 @@
                     </div>
                   </div>
 
-                  <!-- 检测结果 -->
-                  <div v-if="task.result" class="task-result-inline">
-                    <el-alert
-                      :type="task.result.status === 'COMPLETED' ? 'success' : 'warning'"
-                      :title="task.result.status === 'COMPLETED' ? '检测已完成' : '任务已结束'"
-                      show-icon
-                      style="margin-bottom: 12px;"
-                    />
-                    <el-descriptions bordered :column="1" size="small" :label-style="{ width: '100px', whiteSpace: 'nowrap' }" :content-style="{ wordBreak: 'break-all' }">
-                      <el-descriptions-item label="任务编号"><code>{{ task.result.taskId }}</code></el-descriptions-item>
-                      <el-descriptions-item label="复核状态">
-                        <el-tag :type="reviewStatusTagType(task.reviewStatus || task.result.reviewStatus)">
-                          {{ reviewStatusText(task.reviewStatus || task.result.reviewStatus) }}
-                        </el-tag>
-                      </el-descriptions-item>
-                      <el-descriptions-item label="复核结论">
-                        {{ reviewConclusionText(task.reviewConclusion || task.result.reviewConclusion) }}
-                      </el-descriptions-item>
-                      <el-descriptions-item label="严重等级">
-                        <el-tag :type="severityTagType(task.severityLevel || task.result.severityLevel)">
-                          {{ severityText(task.severityLevel || task.result.severityLevel) }}
-                        </el-tag>
-                      </el-descriptions-item>
-                      <el-descriptions-item label="质检站点">
-                        {{ task.qualityStation || task.result.qualityStation || '--' }}
-                      </el-descriptions-item>
-                      <el-descriptions-item label="责任人">
-                        {{ task.assignee || task.result.assignee || '--' }}
-                      </el-descriptions-item>
-                      <el-descriptions-item label="质检截止">
-                        {{ task.dueAt || task.result.dueAt || '--' }}
-                      </el-descriptions-item>
-                      <el-descriptions-item label="确认缺陷">
-                        {{ task.confirmedDefectCount ?? task.result.confirmedDefectCount ?? 0 }} 个
-                      </el-descriptions-item>
-                      <el-descriptions-item label="误报反馈">
-                        {{ task.falsePositiveCount ?? task.result.falsePositiveCount ?? 0 }} 个
-                      </el-descriptions-item>
-                      <el-descriptions-item v-if="task.reviewRemark || task.result.reviewRemark" label="复核备注">
-                        {{ task.reviewRemark || task.result.reviewRemark }}
-                      </el-descriptions-item>
-                      <el-descriptions-item label="处置状态">
-                        {{ dispositionStatusText(task.dispositionStatus || task.result.dispositionStatus) }}
-                      </el-descriptions-item>
-                      <el-descriptions-item v-if="task.dispositionAction || task.result.dispositionAction" label="处置动作">
-                        {{ dispositionActionText(task.dispositionAction || task.result.dispositionAction) }}
-                      </el-descriptions-item>
-                      <el-descriptions-item v-if="task.reworkResult || task.result.reworkResult" label="返工结果">
-                        {{ task.reworkResult || task.result.reworkResult }}
-                      </el-descriptions-item>
-                      <el-descriptions-item label="结果JSON">
-                        <a v-if="task.result.resultJsonUrl" :href="task.result.resultJsonUrl" target="_blank">打开 detection_results.json</a>
-                        <span v-else>暂无</span>
-                      </el-descriptions-item>
-                    </el-descriptions>
-                    <div v-if="task.result.previewImages && task.result.previewImages.length" class="preview-grid" style="margin-top: 8px;">
-                      <div v-for="item in task.result.previewImages.slice(0, 4)" :key="item.imageName" class="preview-card">
-                        <div class="preview-title">{{ item.imageName }}</div>
-                        <div class="preview-images">
-                          <div class="preview-pane">
-                            <span>标注图</span>
-                            <img v-if="item.annotatedUrl" :src="item.annotatedUrl" :alt="item.imageName" />
-                            <div v-else class="preview-empty">暂无</div>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                    <div v-if="task.result.statistics" class="stats-block" style="margin-top: 10px;">
-                      <h4>检测统计</h4>
-                      <el-table :data="buildTaskStatistics(task.result.statistics)" size="small" border>
-                        <el-table-column prop="label" label="指标" width="160" show-overflow-tooltip />
-                        <el-table-column prop="value" label="数值" width="120" />
-                      </el-table>
-                    </div>
-                  </div>
+                  <TaskResultSnapshot v-if="task.result" :task-id="task.taskId" :result="task.result" @trace="openTraceDialog" />
                 </div>
               </div>
             </div>
@@ -892,7 +788,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import { useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowDown, CircleCheck, Clock, Delete, Download, Refresh, Search, Upload, VideoPlay, Warning } from '@element-plus/icons-vue'
+import { ArrowDown, Delete, Download, Refresh, Search, Upload, VideoPlay, Warning } from '@element-plus/icons-vue'
 import {
   fetchAvailableModels,
   fetchDetectionTaskTrace,
@@ -931,6 +827,9 @@ import BusinessSeedEmptyHint from '../components/BusinessSeedEmptyHint.vue'
 import CollectionEmptyState from '../components/CollectionEmptyState.vue'
 import TaskTracePanel from '../components/TaskTracePanel.vue'
 import SingleDetectionEvidence from '../components/SingleDetectionEvidence.vue'
+import TaskExecutionProgress from '../components/TaskExecutionProgress.vue'
+import TaskResultSnapshot from '../components/TaskResultSnapshot.vue'
+import {taskExecutionCode} from '../utils/taskExecutionPresentation'
 import '@/assets/task-trace-dialog.css'
 
 const userStore = useUserStore()
@@ -940,9 +839,7 @@ const uploadStore = useUploadStore()
 const pollingStore = usePollingStore()
 const { taskList, selectedTaskId } = storeToRefs(taskStore)
 const {
-  removeTask, taskTagType, taskTagText, taskStatusDetail, formatRelativeTime, formatAbsoluteTime,
-  taskStepIndex, taskStepDesc,
-  buildTaskStatistics, saveTaskList
+  removeTask, saveTaskList
 } = taskStore
 const { startTaskDetection, stopAllPolling, restoreFromSession, fetchTaskList, fetchTaskResults } = pollingStore
 const {
@@ -1024,10 +921,12 @@ const historyCacheBusy = ref(false)
 async function clearHistoryTaskCache(taskId) {
   if (historyCacheBusy.value || !taskId) return
   if (!Array.isArray(taskStore.taskList) || !taskStore.taskList.some(task => task.taskId === taskId)) return ElMessage.info('此任务当前没有本机任务缓存')
+  const scope=JSON.stringify([userStore.identity?.userId || userStore.username || '',userStore.role,userStore.isAuthenticated])
   historyCacheBusy.value = true
   try {
     await ElMessageBox.confirm(`清除任务 ${taskId} 的本机缓存？后端记录继续保留，服务器检测不会被取消；重新查询可能再次缓存。`,'清除本机任务缓存',{type:'warning',confirmButtonText:'清除本机缓存',cancelButtonText:'保留缓存'})
-    if (!detectionPageActive) return
+    if (!detectionPageActive || scope!==JSON.stringify([userStore.identity?.userId || userStore.username || '',userStore.role,userStore.isAuthenticated])) return
+    if (!taskStore.taskList.some(task=>task.taskId===taskId)) return ElMessage.info('此任务已不在当前本机缓存中，请重新读取核对')
     removeTask(taskId)
     ElMessage.success('已从本机任务缓存列表移出，后端记录保留')
   } catch (error) {
@@ -1792,25 +1691,22 @@ onBeforeUnmount(() => {
 
 .task-item {
   padding: 14px 16px;
-  border-radius: 16px;
-  border: 1px solid rgba(37, 99, 235, 0.08);
-  background:
-    linear-gradient(135deg, rgba(255, 255, 255, 0.96), rgba(248, 251, 255, 0.92));
-  cursor: pointer;
-  transition: border-color 180ms ease, background-color 180ms ease, box-shadow 180ms ease, transform 180ms ease;
+  border-radius: 12px;
+  border: 1px solid var(--app-border);
+  background: var(--app-surface);
+  transition: border-color 180ms ease, background-color 180ms ease;
 }
 
 .task-item:hover {
   border-color: rgba(37, 99, 235, 0.20);
   background: #fff;
-  box-shadow: var(--app-shadow-sm);
-  transform: translateY(-1px);
+  box-shadow: none;
 }
 
 .task-item-selected {
   border-color: var(--app-primary);
-  background: linear-gradient(135deg, #eff6ff, #ffffff);
-  box-shadow: 0 12px 28px rgba(37, 99, 235, 0.10);
+  background: var(--app-surface);
+  box-shadow: none;
 }
 
 .task-item-main {
@@ -1826,21 +1722,20 @@ onBeforeUnmount(() => {
 }
 
 .taskid-label {
-  font-size: 11px;
-  color: #94a3b8;
+  font-size: 12px;
+  color: var(--app-text-secondary);
   flex-shrink: 0;
 }
 
 .taskid-value {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--app-primary);
   background: var(--app-primary-soft);
   padding: 1px 6px;
   border-radius: 4px;
   font-family: 'SF Mono', 'Consolas', monospace;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap:anywhere;
 }
 
 .task-item-row1 {
@@ -1848,15 +1743,19 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 8px;
 }
+.task-item-toggle { width:100%; min-width:0; padding:6px 0; border:0; background:transparent; text-align:left; font:inherit; cursor:pointer; }
+.task-item-toggle:hover .task-item-folder { color:var(--app-primary); }
+.task-item-toggle:focus-visible { outline:2px solid var(--app-primary); outline-offset:4px; border-radius:4px; }
+.task-item-toggle > .business-status { flex-shrink:0; }
 
 .task-item-folder {
   font-weight: 600;
   color: var(--app-text);
   font-size: 14px;
   flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  min-width:0;
+  white-space:normal;
+  overflow-wrap:anywhere;
 }
 
 .task-item-capture {
@@ -1864,18 +1763,8 @@ onBeforeUnmount(() => {
   gap: 12px;
   margin-top: 4px;
   font-size: 12px;
-  color: #8b95a5;
+  color: var(--app-text-secondary);
   flex-wrap: wrap;
-}
-
-.task-item-capture span::before {
-  content: '·';
-  margin-right: 4px;
-}
-
-.task-item-capture span:first-child::before {
-  content: '';
-  margin-right: 0;
 }
 
 .task-item-count {
@@ -1894,7 +1783,7 @@ onBeforeUnmount(() => {
 .task-expand-icon {
   font-size: 12px;
   color: #b0b8c4;
-  transition: transform 0.25s;
+  transition: transform 180ms ease;
   flex-shrink: 0;
 }
 

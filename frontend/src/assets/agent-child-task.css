@@ -1,0 +1,18 @@
+.agent-workbench .wb-child-task { min-width:0; margin-top:14px; }
+.agent-workbench .wb-child-state { display:flex; align-items:flex-start; gap:8px; margin:0 0 12px; color:var(--app-text-secondary); font-size:12px; line-height:1.9; }
+.agent-workbench .wb-child-state > :is(svg,.el-icon) { flex-shrink:0; margin-top:3px; color:var(--app-primary); }
+.agent-workbench .wb-child-result { margin:16px 0; padding:14px 0; border-block:1px solid var(--app-border); }
+.agent-workbench .wb-child-result h4 { display:flex; align-items:center; gap:7px; margin:0 0 9px; color:var(--app-text); font-size:13px; line-height:1.8; font-weight:600; }
+.agent-workbench .wb-child-result h4 > :is(svg,.el-icon) { flex-shrink:0; color:var(--app-primary); }
+.agent-workbench .wb-child-result-note { margin:0 0 10px; color:var(--app-text-secondary); font-size:12px; line-height:1.9; }
+.agent-workbench .wb-child-excerpt { color:var(--app-text); font-size:13px; line-height:1.9; margin:0 0 12px; overflow-wrap:anywhere; }
+.agent-workbench .wb-child-result summary { width:fit-content; max-width:100%; color:var(--app-primary); font-size:12px; line-height:1.8; cursor:pointer; }
+.agent-workbench .wb-child-result pre { max-height:320px; padding:12px; margin:12px 0 0; overflow:auto; overscroll-behavior:contain; white-space:pre-wrap; overflow-wrap:anywhere; background:var(--app-bg); border-radius:7px; color:var(--app-text); font:13px/1.9 var(--app-font); }
+.agent-workbench .wb-child-followup > label { display:block; color:var(--app-text-secondary); font-size:12px; line-height:1.8; }
+.agent-workbench .wb-child-followup textarea { min-height:90px; font-size:13px; line-height:1.8; }
+.agent-workbench .wb-child-task button { display:inline-flex; align-items:center; gap:6px; min-height:34px; font-size:12px; line-height:1.8; }
+.agent-workbench .wb-child-cancel { margin-top:18px; padding-top:12px; border-top:1px solid var(--app-border); }
+.agent-workbench .wb-child-cancel > p { margin:0 0 10px; color:var(--app-text-secondary); font-size:12px; line-height:1.9; }
+.agent-workbench .wb-child-task :is(summary,pre,button,textarea):focus-visible { outline:2px solid var(--app-primary); outline-offset:3px; }
+@media(max-width:480px) { .agent-workbench .wb-child-followup > button { width:100%; justify-content:center; }.agent-workbench .wb-child-result pre { max-height:260px; } }
+@media(prefers-reduced-motion:reduce) { .agent-workbench .wb-child-task button,.agent-workbench .wb-child-task button:hover,.agent-workbench .wb-child-task button:active { transition:none; transform:none; } }

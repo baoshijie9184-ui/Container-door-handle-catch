@@ -31,7 +31,7 @@
     <div v-if="item.kind==='QUESTION'&&item.status==='ANSWERED'" class="wb-answer"><strong>已提交的回答</strong><p>{{ workbenchAnswer(item.data.answer) }}</p></div>
     <div v-if="item.kind==='PLAN'&&item.data.feedback" class="wb-answer"><strong>修订意见</strong><p>{{ item.data.feedback }}</p></div>
     <WorkbenchInteraction v-if="['PLAN','QUESTION'].includes(item.kind) && item.status === 'PENDING'" :item="item" :value="item.data.questionType === 'MULTIPLE' ? (selections[item.id] || []) : (drafts[item.id] || '')" :busy="busy" @update:value="updateInteraction(item, $event)" @command="act(item, $event.action, $event.input)" />
-    <template v-if="item.kind==='CHILD'"><p v-if="item.data.result" class="wb-output">{{ item.data.result }}</p><template v-if="['COMPLETED','RUNNING','QUEUED'].includes(item.status)"><label class="wb-followup-label">补充专业要求<textarea v-model="drafts[item.id]" :disabled="busy" aria-label="子 Agent 补充要求" placeholder="补充需要该专业任务分析的范围或重点" /></label><button class="wb-button-primary" :disabled="busy||!drafts[item.id]?.trim()" @click="act(item,'child-message',{content:drafts[item.id]})"><AppIcon name="Plus" :size="14" />追加专业要求</button><small v-if="item.status!=='COMPLETED'">追加要求在当前执行结束后继续处理</small></template><button v-if="['QUEUED','RUNNING','WAITING_INPUT','WAITING_PLAN','NEEDS_REVIEW'].includes(item.status)" :disabled="busy" @click="act(item,'cancel')">取消子任务</button></template>
+    <AgentChildTask v-if="item.kind==='CHILD'" :item="item" :value="drafts[item.id] || ''" :busy="busy" :available-views="tabs.map(([key])=>key)" @update:value="drafts[item.id]=$event" @command="act(item,'child-message',{content:$event})" @cancel="cancelChild(item)" @view="openWorkbenchView" />
     <AgentUsageSummary v-if="item.kind==='USAGE'" :data="item.data" />
     <AgentContextSummary v-if="item.kind==='CONTEXT'" :item="item" :files="state.files" :files-enabled="state.capabilities.files!==false" @open-files="openContextFiles" />
     <p v-if="item.kind==='TOOL_TIMING'">工具批次耗时 {{ tokens(item.data.durationMs) }} ms</p>
@@ -67,6 +67,7 @@ import AgentWorkbenchFiles from './AgentWorkbenchFiles.vue'
 import AgentUsageSummary from './AgentUsageSummary.vue'
 import AgentContextSummary from './AgentContextSummary.vue'
 import AgentForkPanel from './AgentForkPanel.vue'
+import AgentChildTask from './AgentChildTask.vue'
 import { contextStatusCode } from '@/utils/contextPresentation'
 import WorkbenchInteraction from './WorkbenchInteraction.vue'
 import {workbenchKind,workbenchTabIcon,workbenchInteractionStatus,workbenchTitle,workbenchEmpty,workbenchTime,taskListSummary,taskStepStatus,workbenchAnswer} from '@/utils/workbenchPresentation'
@@ -77,7 +78,8 @@ const props=defineProps({sessionId:String,messages:{type:Array,default:()=>[]}})
 const emit=defineEmits(['reference'])
 const state=ref({enabled:false,items:[],files:[],capabilities:{}}),tab=ref('PLAN'),error=ref(''),busy=ref(false),drafts=reactive({}),selections=reactive({})
 const workbenchTabs=ref(null)
-async function openContextFiles(){const session=props.sessionId;tab.value='FILE';await nextTick();if(props.sessionId===session && tab.value==='FILE')workbenchTabs.value?.querySelector('[aria-pressed="true"]')?.focus({preventScroll:true})}
+async function openWorkbenchView(view){if(!tabs.value.some(([key])=>key===view))return;const session=props.sessionId;tab.value=view;await nextTick();if(props.sessionId===session && tab.value===view)workbenchTabs.value?.querySelector('[aria-pressed="true"]')?.focus({preventScroll:true})}
+function openContextFiles(){return openWorkbenchView('FILE')}
 const recoveryChoices=reactive({})
 const previewOpen=ref(false),previewUrl=ref(''),previewText=ref(''),previewType=ref('text')
 const previewFile=ref(null),previewPage=ref(1),previewPages=ref(1),previewError=ref('')
@@ -102,6 +104,17 @@ async function resume(item){
  try{const input=recoveryPayload(item);if(Object.hasOwn(input,'replacementModelId'))await ElMessageBox.confirm(`将任务及未结束的专业任务改用 V${input.replacementConfigVersion} 的 ${input.replacementModelId||state.value.recoveryDefault}。已完成工具结果仍保留，未知写结果不会重新执行。`,'确认恢复模型',{confirmButtonText:'确认更换并恢复',cancelButtonText:'保留现状'});if(generation===client.generation)await act(item,'resume',input)}catch(cause){if(cause!=='cancel'&&cause!=='close')error.value=cause.message}
 }
 async function cancelTask(item){const generation=client.generation;try{await ElMessageBox.confirm('取消本任务及其活动子任务，已完成的操作不会回滚。排队消息仍按原设置处理。','取消任务',{confirmButtonText:'确认取消',cancelButtonText:'继续执行',type:'warning'});if(generation===client.generation)await act(item,'cancel')}catch{/* Dialog dismissal does not change the task. */}}
+async function cancelChild(item){
+ if(busy.value)return
+ const generation=client.generation
+ try{
+  await ElMessageBox.confirm(`取消所选专业任务 ${item.id}（V${item.revision}）？已完成的业务操作不会回滚，主任务和其他专业任务状态需分别核对。`,'取消此专业任务',{type:'warning',confirmButtonText:'确认取消此任务',cancelButtonText:'保留当前状态'})
+  if(generation!==client.generation || busy.value)return
+  const current=state.value.items.find(row=>row.id===item.id)
+  if(!current || current.kind!=='CHILD' || current.revision!==item.revision){error.value='子任务记录已变化，请重新核对后再确认取消';return}
+  await act(item,'cancel')
+ }catch(cause){if(generation===client.generation && !['cancel','close'].includes(cause))error.value='取消尚未确认，请重新核对子任务记录'}
+}
 async function attachBusiness(){if(busy.value||!state.value.loaded||!businessId.value.trim())return;await run(()=>client.attachBusiness(businessKind.value,businessId.value.trim()))}
 async function removeFile(file){
  const generation=client.generation
