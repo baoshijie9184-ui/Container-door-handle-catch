@@ -1,6 +1,16 @@
 // Display metadata only. Eligibility and authorization are always determined by the server.
 const entry = (label, tone = 'info', icon = 'Document') => ({ label, tone, icon })
 const domains = {
+  mcpAudit: {
+    PENDING: entry('待处理', 'warning', 'Clock'), STARTED: entry('已开始', 'info', 'Connection'),
+    DISPATCHED: entry('已派发', 'info', 'Connection'), RUNNING: entry('执行中', 'info', 'Connection'),
+    SUCCEEDED: entry('此项操作已完成', 'success', 'CircleCheck'), COMPLETED: entry('调用已结束', 'info', 'DocumentChecked'),
+    FAILED: entry('操作失败', 'danger', 'Warning'), ERROR: entry('调用异常', 'danger', 'Warning'),
+    CANCELLED: entry('已取消', 'info', 'Close'), EXPIRED: entry('租约已过期', 'warning', 'Clock'),
+    EXITED: entry('退出已核实', 'info', 'DocumentChecked'), REMOVED: entry('退出与清理已核实', 'success', 'DocumentChecked'),
+    UNVERIFIED: entry('退出未核实', 'warning', 'Search'), NEEDS_REVIEW: entry('待核对', 'warning', 'Search'),
+    UNKNOWN: entry('结果待核对', 'warning', 'Search')
+  },
   checklistRecord: { ACTIVE:entry('已保存清单','info','Tickets'), REFERENCE_ONLY:entry('仅供参考','neutral','DocumentCopy') },
   agentMode: { READ_ONLY:entry('只读查询','info','Search'), CONFIRMABLE:entry('操作需确认','info','Lock'), DRAFTS:entry('受控协作','info','Document'), DISABLED:entry('助手尚未启用','warning','Lock') },
   marketCapability: { AVAILABLE:entry('目录已核对','info','DocumentChecked'), INTERFACE_ONLY:entry('仅提供接口','warning','Connection'), UNVERIFIED:entry('尚待核对','info','Search'), OUT_OF_SCOPE:entry('目录范围之外','info','Document') },

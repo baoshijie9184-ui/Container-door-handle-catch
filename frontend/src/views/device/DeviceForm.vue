@@ -9,7 +9,7 @@
         <section class="managed-form-section" aria-labelledby="device-identity-heading">
           <div class="managed-form-section-heading"><AppIcon name="Monitor" :size="19" /><div><h2 id="device-identity-heading">设备识别信息</h2><p>编号用于查找设备，序列号用于核对实物；带星号为必填项。</p></div></div>
           <div class="device-form-grid">
-            <el-form-item label="设备编号" prop="deviceCode"><el-input v-model="form.deviceCode" placeholder="填写设备登记编号" maxlength="20" show-word-limit /><p class="managed-field-help">4–20 个字符，保存时仍由服务端校验唯一性。</p></el-form-item>
+            <el-form-item label="设备编号" prop="deviceCode"><el-input v-model="form.deviceCode" placeholder="填写设备登记编号" maxlength="20" show-word-limit aria-describedby="device-code-help" /><p id="device-code-help" class="managed-field-help">4–20 个字符，保存时仍由服务端校验唯一性。</p></el-form-item>
             <el-form-item label="设备类型" prop="deviceType"><el-select v-model="form.deviceType" placeholder="选择设备业务类型"><el-option v-for="item in deviceTypeOptions" :key="item.value" :label="item.label" :value="item.value" /></el-select></el-form-item>
             <el-form-item label="设备型号" prop="modelName"><el-input v-model="form.modelName" placeholder="填写实物型号或登记型号" /></el-form-item>
             <el-form-item label="序列号" prop="serialNumber"><el-input v-model="form.serialNumber" placeholder="填写实物序列号" /></el-form-item>

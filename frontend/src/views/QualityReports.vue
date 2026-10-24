@@ -51,6 +51,7 @@
           <p v-if="detail.previousReportId" class="muted">修订自报告 {{ detail.previousReportId }}</p>
           <h3><AppIcon name="Picture" :size="18" />本版检测依据</h3>
           <ReportBasis :source="detail.source" />
+          <ReportSnapshotIdentity :key="detail.reportId+':'+detail.version" :report="detail" />
           <h3><AppIcon name="Edit" :size="18" />编写意见</h3><p class="narrative">{{ detail.narrative || '未记录编写意见' }}</p>
           <el-alert v-if="detail.status === 'DRAFT'" title="保存草稿会更新任务依据，提交后本版本内容冻结" type="info" :closable="false" />
           <el-alert v-if="detail.decisionReason" :title="`审批意见：${detail.decisionReason}`" :type="detail.status === 'APPROVED' ? 'success' : 'warning'" :closable="false" />
@@ -96,6 +97,7 @@
         <h3>确认审批内容</h3><p>{{ preview.report.title }} · 版本 {{ preview.report.version }}</p>
         <p>依据任务 {{ preview.report.taskId }} · 编写账号 {{ preview.report.ownerUsername }}</p>
         <ReportBasis :source="preview.report.source" />
+        <ReportSnapshotIdentity :key="preview.report.reportId+':'+preview.report.version" :report="preview.report" />
         <p class="narrative">{{ preview.report.narrative }}</p>
         <p>决定：{{ decision === 'APPROVE' ? '审批通过' : '驳回' }} · {{ preview.reason }}</p>
         <p class="muted">审批记录将引用此快照，确认有效至 {{ reportTime(preview.expiresAt) }} · UTC+8</p>
@@ -115,6 +117,7 @@ import { useUserStore } from '../stores/user'
 import { beijingDateTime } from '../utils/beijingTime'
 import CollectionEmptyState from '../components/CollectionEmptyState.vue'
 import ReportBasis from '../components/ReportBasis.vue'
+import ReportSnapshotIdentity from '../components/ReportSnapshotIdentity.vue'
 import { knownCount } from '../utils/countPresentation'
 
 const reportTime = value => value ? beijingDateTime(value) || '时间格式未知' : '未记录'

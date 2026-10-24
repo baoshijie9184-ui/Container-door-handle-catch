@@ -84,7 +84,7 @@
           </header>
 
           <!-- 消息区 -->
-          <div class="chat-body" ref="chatBodyRef" @scroll.passive="handleTranscriptScroll">
+          <div class="chat-body transcript-reading-region" ref="chatBodyRef" tabindex="0" role="region" aria-label="对话消息，可在此区域滚动阅读" @scroll.passive="handleTranscriptScroll">
             <ChatMessageList
               ref="messageListRef"
               :messages="controlledMessages"
@@ -137,6 +137,7 @@ import AgentWorkspacePanel from './AgentWorkspacePanel.vue'
 import AgentDiagnostics from './AgentDiagnostics.vue'
 import { Operation } from '@element-plus/icons-vue'
 import { buildQuestionItems } from '@/utils/chatMessageNavigation'
+import { observeTranscriptLayout } from '@/utils/transcriptLayout'
 
 const props = defineProps({
   fullScreen: { type: Boolean, default: false }
@@ -327,6 +328,13 @@ const scrollToBottom = () => {
     }
   })
 }
+
+watch([chatBodyRef, () => chatStore.sessionId], ([viewport], _previous, onCleanup) => {
+  onCleanup(observeTranscriptLayout(viewport, {
+    isFollowing: () => followTranscript.value,
+    follow: scrollToBottom
+  }))
+}, { flush: 'post' })
 
 const returnToLatest = () => {
   followTranscript.value = true

@@ -6,6 +6,7 @@ import {readFilePreview,boundedTextPreview} from '../../frontend/src/utils/chatF
 import '../../frontend/src/assets/agent-workbench.css';
 import StatusBadge from './StatusBadge';
 import AgentWorkbenchFiles from './AgentWorkbenchFiles';
+import AgentFileImage from './AgentFileImage';
 import AgentUsageSummary from './AgentUsageSummary';
 import AgentContextSummary from './AgentContextSummary';
 import AgentForkPanel from './AgentForkPanel';
@@ -102,7 +103,7 @@ export function AgentWorkbenchPanel({sessionId,base='',messages=[],onFork,onRefe
    {previewError&&<p className="wb-error" role="alert">{previewError}</p>}{busy&&<p role="status">正在读取文件，请稍候</p>}
    {preview?.type==='pdf'&&<nav ref={pdfNavigation} tabIndex={-1} className="chat-file-pages" aria-label="PDF 页码"><button type="button" disabled={busy||preview.page===1} onClick={()=>show(preview.file,false,preview.page-1)}>上一页</button><span role="status">第 {preview.page} / {preview.pages} 页</span><button type="button" disabled={busy||preview.page===preview.pages} onClick={()=>show(preview.file,false,preview.page+1)}>下一页</button><small>页面预览 · Agent 仅可读取文字层</small></nav>}
    <p className="wb-preview-note">预览不执行文件内容。HTML/SVG 按源码展示，PDF 显示页面图片；下载可保留原文件。</p>
-   {['image','pdf'].includes(preview?.type)?<img src={preview.url} alt={(preview.name||'本人资料')+'页面预览'} className="wb-preview-image" onError={()=>setPreviewError('图片预览失败，请下载原文件核对')}/>:<pre className="chat-file-preview-text" tabIndex={0} aria-label="资料文本或源码预览">{preview?.text}</pre>}
+   {['image','pdf'].includes(preview?.type)?<AgentFileImage src={preview.url} name={preview.name} kind={preview.type} busy={busy} downloadable={!!preview.file?.id&&(state.files||[]).some(file=>file.id===preview.file.id)}/>:preview&&<pre className="chat-file-preview-text" tabIndex={0} aria-label="资料文本或源码预览">{preview.text}</pre>}
   </Modal>
  </section>
 }

@@ -11,8 +11,8 @@
           <div class="managed-form-section-heading"><AppIcon name="User" :size="19" /><div><h2 id="employee-identity-heading">身份与联系方式</h2><p>员工编号用于识别业务人员；登记姓名不作为账号授权依据。</p></div></div>
           <div class="device-form-grid">
             <el-form-item label="姓名" prop="name"><el-input v-model="employeeForm.name" placeholder="填写业务人员姓名" maxlength="20" show-word-limit /></el-form-item>
-            <el-form-item label="员工编号" prop="employeeNumber"><el-input v-model="employeeForm.employeeNumber" placeholder="填写员工登记编号" /><p class="managed-field-help">编号是否重复以保存时的服务端校验为准。</p></el-form-item>
-            <el-form-item label="联系方式" prop="contact"><el-input v-model="employeeForm.contact" placeholder="填写手机号或邮箱" autocomplete="off" /><p class="managed-field-help">用于业务联系，不会创建登录账号。</p></el-form-item>
+            <el-form-item label="员工编号" prop="employeeNumber"><el-input v-model="employeeForm.employeeNumber" placeholder="填写员工登记编号" aria-describedby="employee-number-help" /><p id="employee-number-help" class="managed-field-help">编号是否重复以保存时的服务端校验为准。</p></el-form-item>
+            <el-form-item label="联系方式" prop="contact"><el-input v-model="employeeForm.contact" placeholder="填写手机号或邮箱" autocomplete="off" aria-describedby="employee-contact-help" /><p id="employee-contact-help" class="managed-field-help">用于业务联系，不会创建登录账号。</p></el-form-item>
             <el-form-item label="性别"><el-select v-model="employeeForm.gender" placeholder="选择已登记性别"><el-option label="男" value="男" /><el-option label="女" value="女" /></el-select></el-form-item>
           </div>
         </section>

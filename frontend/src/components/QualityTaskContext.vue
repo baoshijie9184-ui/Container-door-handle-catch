@@ -10,12 +10,12 @@
 import { computed } from 'vue'
 import AppIcon from './AppIcon.vue'
 import StatusBadge from './StatusBadge.vue'
-import { knownCount } from '@/utils/countPresentation'
+import { qualityReviewCountText } from '@/utils/qualityRecords'
 import { beijingDateTime } from '@/utils/beijingTime'
 const props=defineProps({task:Object,operation:{type:String,default:'review'}})
 const value = key => props.task?.[key] ?? props.task?.result?.[key]
 const deadline=computed(()=>{const due=value('dueAt');return due?beijingDateTime(due)||'时间未记录':'未记录截止时间'})
-const confirmedDefects=computed(()=>knownCount(value('confirmedDefectCount'))?.toLocaleString('zh-CN')??'—')
+const confirmedDefects=computed(()=>qualityReviewCountText(value('reviewStatus'),value('confirmedDefectCount')))
 const operationIcon=computed(()=>({review:'Search',assignment:'User',disposition:'DocumentChecked',rework:'Edit'})[props.operation]||'Tickets')
 const operationNote=computed(()=>({
   review:'对照原图、模型输出及人工判断后提交复核。复核结论与任务放行、报告审批分别记录。',
@@ -30,11 +30,11 @@ const operationNote=computed(()=>({
 .quality-task-context header { display:flex; align-items:flex-start; flex-wrap:wrap; gap:10px; }
 .quality-context-icon { display:grid; place-items:center; flex:0 0 36px; height:36px; width:36px; border-radius:9px; color:var(--app-primary); background:var(--app-primary-soft); }
 .quality-task-context header > div { flex:1 1 180px; min-width:0; display:grid; gap:4px; }
-.quality-task-context header small { color:var(--app-text-muted); font-size:11px; }
+.quality-task-context header small { color:var(--app-text-secondary); font-size:12px; }
 .quality-task-context header strong { font-size:13px; font-weight:650; color:var(--app-text); overflow-wrap:anywhere; line-height:1.7; }
 .quality-task-context dl { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; margin:18px 0 0; }
 .quality-task-context dl > div { min-width:0; }
-.quality-task-context dt { font-size:11px; line-height:1.8; color:var(--app-text-muted); }
+.quality-task-context dt { font-size:12px; line-height:1.85; color:var(--app-text-secondary); }
 .quality-task-context dd { margin:4px 0 0; font-size:12px; line-height:1.8; color:var(--app-text); overflow-wrap:anywhere; }
 .quality-task-context p { margin:14px 0 0; padding-top:12px; border-top:1px solid var(--app-border); font-size:12px; color:var(--app-text-secondary); line-height:1.85; }
 @media(max-width:480px) { .quality-task-context { padding:12px; } .quality-task-context dl { grid-template-columns:minmax(0,1fr); gap:10px; } }

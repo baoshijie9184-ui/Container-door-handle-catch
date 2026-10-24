@@ -4,6 +4,7 @@ import { FileText, Image, ChartNoAxesCombined, LockKeyhole, Download } from 'luc
 import { useReducedMotion, usePreviewEscape } from './useReducedMotion';
 import { referencedFiles, readReferencedFile, readFilePreview } from '../../frontend/src/utils/chatFileReferences';
 import { composerAttachment } from '../../frontend/src/utils/composerPresentation';
+import AgentFileImage from './AgentFileImage';
 import '../../frontend/src/assets/chat-file-references.css';
 
 const fileIcons = { Picture:Image, DataAnalysis:ChartNoAxesCombined, Document:FileText };
@@ -13,7 +14,7 @@ export function ChatFileReferences({data}) {
   const {sessionId, ids, base = '', text = ''} = data;
   const reducedMotion = useReducedMotion(), pdfNavigation = useRef(null), pdfFocusPending = useRef(false);
   const [files,setFiles] = useState([]), [error,setError] = useState(''), [busy,setBusy] = useState(false), [loading,setLoading] = useState(false);
-  const [preview,setPreview] = useState(null), [retry,setRetry] = useState(0), [imageError,setImageError] = useState('');
+  const [preview,setPreview] = useState(null), [retry,setRetry] = useState(0);
   const generation = useRef(0), abort = useRef(null), url = useRef(''), previewVersion = useRef(0), readLock = useRef(false);
   function revoke() { if (url.current) URL.revokeObjectURL(url.current); url.current = ''; }
   function closePreview() { previewVersion.current++; pdfFocusPending.current = false; setPreview(null); revoke(); }
@@ -48,7 +49,7 @@ export function ChatFileReferences({data}) {
       }
       const value = await readFilePreview(sessionId,file,options);
       if (version !== generation.current || previewRequest !== previewVersion.current) return;
-      revoke(); setImageError('');
+      revoke();
       if (value.kind !== 'text') url.current = URL.createObjectURL(value.kind === 'pdf' ? value.blob : new Blob([value.blob],{type:file.contentType}));
       pdfFocusPending.current = value.kind === 'pdf';
       setPreview({...value,file,url:url.current});
@@ -75,11 +76,11 @@ export function ChatFileReferences({data}) {
     </section>
     <Modal rootClassName="chat-file-preview-modal" transitionName={reducedMotion ? '' : 'ant-zoom'} maskTransitionName={reducedMotion ? '' : 'ant-fade'} title={preview?.file?.name || '消息附件预览'} open={!!preview} footer={<div className="file-preview-actions"><Button onClick={closePreview}>关闭预览</Button><Button type="primary" disabled={busy || !preview?.file} icon={<Download size={15} aria-hidden="true"/>} onClick={() => read(preview.file,true)}>下载原文件</Button></div>} width="min(900px,90vw)" onCancel={closePreview}>
       <p className="file-preview-meta"><ReferenceIcon file={preview?.file || {}}/><span>{composerAttachment(preview?.file).type}</span><span>{composerAttachment(preview?.file).size}</span></p>
-      {(error || imageError) && <p className="chat-reference-preview-error" role="alert">{error || imageError}</p>}
+      {error && <p className="chat-reference-preview-error" role="alert">{error}</p>}
       {busy && <p role="status">正在读取文件，请稍候</p>}
       {preview?.kind === 'pdf' && <nav ref={pdfNavigation} tabIndex={-1} className="chat-file-pages" aria-label="PDF 页码"><button type="button" disabled={busy || preview.page === 1} onClick={() => read(preview.file,false,preview.page - 1)}>上一页</button><span role="status">第 {preview.page} / {preview.pages} 页</span><button type="button" disabled={busy || preview.page === preview.pages} onClick={() => read(preview.file,false,preview.page + 1)}>下一页</button><small>页面预览 · Agent 仅可读取文字层</small></nav>}
       <p className="chat-reference-preview-note">预览不执行文件内容；HTML/SVG 仅展示源码，PDF 显示页面图片。</p>
-      {['image','pdf'].includes(preview?.kind) ? <img src={preview.url} className="chat-file-image" alt={preview.file?.name || '会话附件预览'} onError={() => setImageError('图片预览失败，请下载原文件核对')}/> : <pre className="chat-file-preview-text" tabIndex={0} aria-label="附件文本或源码预览">{preview?.text}</pre>}
+      {['image','pdf'].includes(preview?.kind) ? <AgentFileImage src={preview.url} name={preview.file?.name} kind={preview.kind} busy={busy} downloadable/> : preview&&<pre className="chat-file-preview-text" tabIndex={0} aria-label="附件文本或源码预览">{preview.text}</pre>}
     </Modal>
   </>;
 }

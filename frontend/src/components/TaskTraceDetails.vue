@@ -10,7 +10,7 @@
     </section>
     <section aria-label="人工复核记录">
       <h4><AppIcon name="Search" :size="17" />人工复核</h4>
-      <dl><div><dt>复核状态</dt><dd><StatusBadge domain="review" :code="detail.reviewStatus" /></dd></div><div><dt>复核结论</dt><dd><StatusBadge domain="reviewConclusion" :code="detail.reviewConclusion" /></dd></div><div><dt>严重等级</dt><dd><StatusBadge domain="severity" :code="detail.severityLevel" /></dd></div><div><dt>已确认缺陷 / 误报数</dt><dd>{{ count(detail.confirmedDefectCount) }} / {{ count(detail.falsePositiveCount) }}</dd></div><div><dt>复核人</dt><dd>{{ detail.reviewer || '未记录' }}</dd></div><div><dt>复核时间 · UTC+8</dt><dd>{{ time(detail.reviewedAt) }}</dd></div><div v-if="detail.reviewRemark" class="trace-detail-wide"><dt>复核备注</dt><dd>{{ detail.reviewRemark }}</dd></div></dl>
+      <dl><div><dt>复核状态</dt><dd><StatusBadge domain="review" :code="detail.reviewStatus" /></dd></div><div><dt>复核结论</dt><dd><StatusBadge domain="reviewConclusion" :code="detail.reviewConclusion" /></dd></div><div><dt>严重等级</dt><dd><StatusBadge domain="severity" :code="detail.severityLevel" /></dd></div><div><dt>已确认缺陷 / 误报数</dt><dd v-if="detail.reviewStatus==='REVIEWED'">{{ qualityReviewCountText(detail.reviewStatus,detail.confirmedDefectCount) }} / {{ qualityReviewCountText(detail.reviewStatus,detail.falsePositiveCount) }}</dd><dd v-else>{{ qualityReviewCountText(detail.reviewStatus) }}</dd></div><div><dt>复核人</dt><dd>{{ detail.reviewer || '未记录' }}</dd></div><div><dt>复核时间 · UTC+8</dt><dd>{{ time(detail.reviewedAt) }}</dd></div><div v-if="detail.reviewRemark" class="trace-detail-wide"><dt>复核备注</dt><dd>{{ detail.reviewRemark }}</dd></div></dl>
     </section>
     <section aria-label="处置与返工记录">
       <h4><AppIcon name="DocumentChecked" :size="17" />处置与返工</h4>
@@ -22,11 +22,9 @@
 <script setup>
 import AppIcon from './AppIcon.vue'
 import StatusBadge from './StatusBadge.vue'
-import { knownCount } from '@/utils/countPresentation'
 import { beijingDateTime } from '@/utils/beijingTime'
-import { formatEvidenceConfidence } from '@/utils/qualityRecords'
+import { formatEvidenceConfidence, qualityReviewCountText } from '@/utils/qualityRecords'
 defineProps({ detail: { type: Object, required: true } })
-const count = value => knownCount(value)?.toLocaleString('zh-CN') ?? '—'
 const time = value => value ? beijingDateTime(value) || '时间格式未知' : '未记录'
 </script>
 <style scoped>

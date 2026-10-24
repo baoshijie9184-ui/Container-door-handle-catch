@@ -15,13 +15,12 @@
       <div class="memory-list-heading"><h3><AgentSectionIcon kind="memory" small />已保存记忆</h3><span>{{ loading && !items.length ? '正在读取' : listError && !items.length ? '读取未完成' : `已读取 ${items.length} 条` }}{{ items.length && hasMore ? '，还有更多' : '' }}</span></div><p>编辑或删除前请核对正文 原聊天记录继续保留 如需停止后续提取 请关闭自动保存</p>
       <CollectionEmptyState v-if="!items.length" :loading="loading" :error="listError" empty-title="暂无已保存记忆" empty-description="助手完成长期记忆提炼后，可在这里核对正文、纠正或停用。" @retry="refresh" />
       <p v-if="listError&&items.length" class="memory-error" role="alert">{{ listError }} · 已显示记录不代表全部记忆，请稍后重新读取。</p>
+      <div v-if="items.length||memoryQuery" class="memory-local-search"><label for="memory-local-query">查找已读取记忆<el-input id="memory-local-query" v-model="memoryQuery" clearable maxlength="200" placeholder="正文、记忆编号或来源会话" aria-label="仅查找本页已读取记忆，不调用模型"><template #prefix><AppIcon name="Search" :size="16" /></template></el-input></label><p role="status">{{ memoryQuery.trim() ? '匹配 '+visibleItems.length+' / 已读取 '+items.length+' 条' : '当前查找范围为本页已读取的 '+items.length+' 条' }}<span>查找不会读取更多记忆或运行相似分析。</span></p></div>
       <TransitionGroup name="memory" tag="div">
-        <article v-for="item in items" :key="item.id" class="memory-item">
-          <div class="memory-item-status"><StatusBadge domain="memoryLifecycle" :code="memoryLifecycleCode(item.lifecycle,clock)" /><small v-if="item.lifecycle?.expiresAt">有效期 {{ memoryTime(item.lifecycle.expiresAt) }} UTC+8</small></div>
-          <p class="memory-content">{{ item.memory }}</p><footer><span>更新 {{ memoryTime(item.updatedAt||item.createdAt) }}<template v-if="item.updatedAt||item.createdAt"> UTC+8</template></span><div class="memory-actions"><el-button :disabled="busy||loading||editor.visible||policy.visible" @click="duplicatePanel.open(item)"><AppIcon name="Search" :size="15" />查找相似</el-button><el-button :disabled="busy||loading||editor.visible||policy.visible" @click="openPolicy(item)"><AppIcon name="Clock" :size="15" />有效期与停用</el-button><el-button :disabled="busy||loading||editor.visible||policy.visible" @click="edit(item)"><AppIcon name="Edit" :size="15" />编辑记忆</el-button><el-button type="danger" plain :disabled="busy||loading||editor.visible||policy.visible" @click="remove(item)"><AppIcon name="Delete" :size="15" />删除记忆</el-button></div></footer>
-        </article>
+        <MemoryRecord v-for="item in visibleItems" :key="item.id" :item="item" :clock="clock" :disabled="busy||loading||editor.visible||policy.visible" @similar="duplicatePanel.open($event)" @policy="openPolicy" @edit="edit" @remove="remove" />
       </TransitionGroup>
-      <div class="memory-pagination"><span>已显示 {{ items.length }} 条{{ hasMore?' · 还有更多记忆':'' }}</span><el-button v-if="hasMore" :loading="loading" :disabled="loading||busy||editor.visible||policy.visible" @click="loadMore">读取更多</el-button></div>
+      <div v-if="items.length&&memoryQuery.trim()&&!visibleItems.length" class="memory-no-match"><AppIcon name="Search" :size="20" /><p>已读取的记忆中没有匹配项</p><el-button text type="primary" @click="memoryQuery=''">清空查找</el-button></div>
+      <div class="memory-pagination"><span>已读取 {{ items.length }} 条{{ memoryQuery.trim() ? ' · 当前匹配 '+visibleItems.length+' 条' : '' }}{{ hasMore?' · 还有更多记忆':'' }}</span><el-button v-if="hasMore" :loading="loading" :disabled="loading||busy||editor.visible||policy.visible" @click="loadMore">读取更多</el-button></div>
       <p v-if="items.length">列表变化后可刷新重新核对 编辑或删除完成后回到首批记录</p>
     </section>
     <MemoryDuplicateReview ref="duplicatePanel" @updated="refresh" />
@@ -41,7 +40,7 @@
       <p v-if="receiptMessage" role="status">{{ receiptMessage }}</p><p>核对只读取原提炼回执 不会重新执行保存 操作记录不保存记忆正文</p>
     </details>
     <el-dialog v-model="policy.visible" title="记忆有效期与停用" class="memory-policy-dialog" width="min(640px, calc(100vw - 32px))" append-to-body :close-on-click-modal="false" :close-on-press-escape="!busy" :show-close="!busy" :before-close="closeEditor">
-      <p class="memory-original">{{ policy.item?.memory }}</p>
+      <p class="memory-original" tabindex="0" aria-label="设置有效期的记忆完整原文">{{ policy.item?.memory }}</p>
       <template v-if="!policy.preview">
         <label class="memory-policy-field">检索状态<el-select v-model="policy.state" aria-label="记忆检索状态" :disabled="busy"><el-option label="正常使用" value="ACTIVE"/><el-option label="停用错误或重复记忆" value="EXCLUDED"/></el-select></label>
         <label class="memory-policy-field">有效期 北京时间<input v-model="policy.expiry" type="datetime-local" aria-label="记忆有效期 北京时间" :disabled="busy"/></label><p>留空表示长期保留 停用与过期的记忆不会进入后续检索 已进入上下文的内容无法撤回</p>
@@ -53,9 +52,9 @@
     </el-dialog>
     <el-dialog v-model="editor.visible" title="编辑长期记忆" class="memory-edit-dialog" width="min(640px, calc(100vw - 32px))" append-to-body :close-on-click-modal="false" :close-on-press-escape="!busy" :show-close="!busy" :before-close="closeEditor">
       <p>修改影响后续长期记忆检索 原聊天记录继续保留</p><p v-if="editor.item?.lifecycle?.state==='EXCLUDED'||editor.item?.lifecycle?.expiresAt&&businessTimestamp(editor.item.lifecycle.expiresAt)<=clock">这条记忆已停用或到期 修改正文不会自动恢复 请通过有效期与停用重新确认</p>
-      <h4>当前原文</h4><p class="memory-original">{{ editor.item?.memory }}</p>
+      <h4>当前原文</h4><p class="memory-original" tabindex="0" aria-label="修改前的完整记忆正文">{{ editor.item?.memory }}</p>
       <h4>{{ editor.preview?'待保存正文':'修改正文' }}</h4>
-      <p v-if="editor.preview" class="memory-preview">{{ editor.memory.trim() }}</p>
+      <p v-if="editor.preview" class="memory-preview" tabindex="0" aria-label="待确认保存的完整记忆正文">{{ editor.memory.trim() }}</p>
       <el-input v-else v-model="editor.memory" type="textarea" :rows="6" maxlength="4000" show-word-limit aria-label="修改记忆正文" :disabled="busy" />
       <p v-if="editor.error" role="alert" class="memory-error">{{ editor.error }}</p>
       <p v-if="editor.needsReload">草稿已保留 请先重新读取原文 核对结果后再预览确认</p>
@@ -78,9 +77,15 @@ import AgentSectionIcon from "@/components/chat/AgentSectionIcon.vue"
 import {computed,onBeforeUnmount,onMounted,reactive,ref,watch} from 'vue'
 import {ElMessage,ElMessageBox} from 'element-plus'
 import MemoryDuplicateReview from '@/components/agent/MemoryDuplicateReview.vue'
+import MemoryRecord from '@/components/agent/MemoryRecord.vue'
 import CollectionEmptyState from '@/components/CollectionEmptyState.vue'
 import {memoryLifecycleCode,memoryTime} from '@/utils/memoryPresentation'
 const duplicatePanel=ref(null)
+const memoryQuery=ref('')
+const visibleItems=computed(()=>{
+  const query=memoryQuery.value.trim().toLocaleLowerCase('zh-CN')
+  return query?items.value.filter(item=>[item.memory,item.id,item.sourceSessionId].some(value=>typeof value==='string'&&value.toLocaleLowerCase('zh-CN').includes(query))):items.value
+})
 import {useUserStore} from '@/stores/user'
 import {beijingDateTime,businessTimestamp} from '@/utils/beijingTime'
 import {memoryPreferences,memoryList,memoryAudit,personalMemory,changeMemoryPreferences,deletePersonalMemory,updatePersonalMemory,verifyMemoryExtraction,memoryLifecycle,changeMemoryLifecycle,verifyMemoryCleanup} from '@/api/agentMemory'
@@ -135,30 +140,36 @@ async function remove(item){
     await deletePersonalMemory(item.id,{expectedDigest:item.digest,requestId:crypto.randomUUID(),confirmed:true});if(current!==generation)return;ElMessage.success('本人记忆已删除');await refresh()
   }catch(e){if(current===generation){await refresh();if(actor===identity)error.value=e.message}}finally{if(actor===identity)busy.value=false}
 }
-function clearPrivateState(){generation++;identity++;receiptMessage.value='';cleanupMessage.value='';lifecycleHistory.value=[];lifecycleError.value='';Object.assign(policy,{visible:false,item:null,state:'ACTIVE',expiry:'',autoDelete:false,preview:false,error:'',needsReload:false});items.value=[];audit.value=[];settings.value=null;hasMore.value=false;nextOffset.value=null;busy.value=false;Object.assign(editor,{visible:false,item:null,memory:'',preview:false,error:'',needsReload:false})}
+function clearPrivateState(){generation++;identity++;memoryQuery.value='';receiptMessage.value='';cleanupMessage.value='';lifecycleHistory.value=[];lifecycleError.value='';Object.assign(policy,{visible:false,item:null,state:'ACTIVE',expiry:'',autoDelete:false,preview:false,error:'',needsReload:false});items.value=[];audit.value=[];settings.value=null;hasMore.value=false;nextOffset.value=null;busy.value=false;Object.assign(editor,{visible:false,item:null,memory:'',preview:false,error:'',needsReload:false})}
 watch(()=>user.username,()=>{auditError.value='';clearPrivateState();refresh()})
 onBeforeUnmount(()=>{clearInterval(clockTimer);clearPrivateState()})
 onMounted(()=>{clockTimer=setInterval(()=>clock.value=Date.now(),30000);refresh()})
 </script>
 <style scoped>
-.memory-page{padding:24px 24px 100px}.memory-page>header,.memory-item footer{display:flex;align-items:center;justify-content:space-between;gap:16px}.memory-page h2,.memory-page h3{color:#152942}.memory-page p,.memory-settings small{font-size:13px;color:#5a6b82;line-height:1.8}.memory-settings,.memory-list,.memory-audit{padding:20px;margin-top:20px;border:1px solid #dce6f4;border-radius:14px;background:#fff}.memory-settings label{display:flex;justify-content:space-between;align-items:center;gap:20px;padding:12px 0}.memory-settings small{display:block}.memory-item{padding:16px;margin:12px 0;border:1px solid #e0e9f5;border-radius:12px;background:#f7faff;overflow-wrap:anywhere}.memory-item .memory-content{white-space:pre-wrap;font-size:14px;color:#24364e}.memory-item footer span{font-size:12px;color:#6c7b90}.memory-lifecycle-history{padding:20px;margin-top:20px;border:1px solid #dce6f4;border-radius:14px;overflow-wrap:anywhere}.memory-lifecycle-history summary{cursor:pointer}.memory-lifecycle-history,.memory-audit{scroll-margin-block:100px}.memory-error{color:#b42318!important}.memory-audit summary{cursor:pointer}.memory-enter-active,.memory-leave-active,.memory-move{transition:opacity .18s ease,transform .18s ease}.memory-enter-from,.memory-leave-to{opacity:0;transform:translateY(5px)}.memory-page :deep(button){transition:transform .15s ease}.memory-page :deep(button:hover:not(:disabled)){transform:scale(1.02)}.memory-page :deep(button:active:not(:disabled)){transform:scale(.98)}@media(prefers-reduced-motion:reduce){.memory-enter-active,.memory-leave-active,.memory-move,.memory-page :deep(button){transition:none;transform:none!important}}@media(max-width:600px){.memory-page,.memory-settings,.memory-list,.memory-audit{padding:12px}.memory-page{padding-bottom:100px}.memory-page>header{align-items:flex-start}.memory-item footer{flex-wrap:wrap}}
+.memory-page{padding:24px 24px 100px}.memory-page>header{display:flex;align-items:center;justify-content:space-between;gap:16px}.memory-page h2,.memory-page h3{color:#152942}.memory-page p,.memory-settings small{font-size:13px;color:#5a6b82;line-height:1.8}.memory-settings,.memory-list,.memory-audit{padding:20px;margin-top:20px;border:1px solid #dce6f4;border-radius:14px;background:#fff}.memory-settings label{display:flex;justify-content:space-between;align-items:center;gap:20px;padding:12px 0}.memory-settings small{display:block}.memory-lifecycle-history{padding:20px;margin-top:20px;border:1px solid #dce6f4;border-radius:14px;overflow-wrap:anywhere}.memory-lifecycle-history summary{cursor:pointer}.memory-lifecycle-history,.memory-audit{scroll-margin-block:100px}.memory-error{color:#b42318!important}.memory-audit summary{cursor:pointer}.memory-enter-active,.memory-leave-active,.memory-move{transition:opacity .18s ease,transform .18s ease}.memory-enter-from,.memory-leave-to{opacity:0;transform:translateY(5px)}.memory-page :deep(button){transition:transform .15s ease}.memory-page :deep(button:hover:not(:disabled)){transform:scale(1.02)}.memory-page :deep(button:active:not(:disabled)){transform:scale(.98)}@media(prefers-reduced-motion:reduce){.memory-enter-active,.memory-leave-active,.memory-move,.memory-page :deep(button){transition:none;transform:none!important}}@media(max-width:600px){.memory-page,.memory-settings,.memory-list,.memory-audit{padding:12px}.memory-page{padding-bottom:100px}.memory-page>header{align-items:flex-start}}
 </style>
 
 <style scoped>
 .memory-list-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
 .memory-list-heading h3 { margin: 0; }
+.memory-local-search { display:flex; align-items:flex-end; flex-wrap:wrap; gap:12px 22px; margin:18px 0; }
+.memory-local-search > label { display:grid; gap:7px; flex:1 1 280px; min-width:0; max-width:440px; font-size:12px; line-height:1.85; color:var(--app-text-secondary); }
+.memory-local-search > p { display:grid; gap:3px; font-size:12px; line-height:1.85; color:var(--app-text-secondary); margin:0; }
+.memory-no-match { display:flex; align-items:center; justify-content:center; flex-wrap:wrap; gap:10px; padding:22px 12px; border-top:1px solid var(--app-border); }
+.memory-no-match > .el-icon { color:var(--app-primary); }
+.memory-no-match > p { color:var(--app-text-secondary); font-size:13px; margin:0; }
 .memory-list-heading > span, .memory-settings-actions > span { font-size: 12px; color: var(--app-text-secondary); line-height: 1.8; }
 .memory-settings-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 12px; }
 .memory-item-status { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-bottom: 8px; }
-.memory-item-status > small { color: var(--app-text-muted); font-size: 11px; line-height: 1.8; }
+.memory-item-status > small { color: var(--app-text-secondary); font-size: 12px; line-height: 1.85; }
 .memory-history-entry { margin: 14px 0; padding: 14px 0; border-bottom: 1px solid var(--app-border); }
 .memory-history-entry:last-of-type { border-bottom: 0; }
-.memory-record-id { display: block; margin-top: 8px; color: var(--app-text-muted); font-size: 11px; overflow-wrap: anywhere; }
+.memory-record-id { display: block; margin-top: 8px; color: var(--app-text-secondary); font-size: 12px; overflow-wrap: anywhere; }
 .memory-audit-entry { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 16px; padding: 14px 0; border-bottom: 1px solid var(--app-border); }
 .memory-audit-entry:last-of-type { border-bottom: 0; }
 .memory-audit-entry > div { flex: 1 1 180px; min-width: 0; display: grid; gap: 5px; }
 .memory-audit-entry strong { color: var(--app-text); font-size: 13px; font-weight: 550; }
-.memory-audit-entry small { color: var(--app-text-muted); font-size: 11px; overflow-wrap: anywhere; }
+.memory-audit-entry small { color: var(--app-text-secondary); font-size: 12px; overflow-wrap: anywhere; }
 .memory-audit summary, .memory-lifecycle-history summary { width: fit-content; max-width: 100%; color: var(--app-text); font-weight: 550; line-height: 1.8; }
 .memory-audit summary .el-icon, .memory-lifecycle-history summary .el-icon { margin-right: 6px; vertical-align: middle; color: var(--app-primary); }
 </style>
@@ -167,5 +178,5 @@ onMounted(()=>{clockTimer=setInterval(()=>clock.value=Date.now(),30000);refresh(
 </style>
 
 <style>
-.memory-policy-dialog .memory-policy-field{display:flex;flex-direction:column;gap:8px;margin:16px 0}.memory-policy-dialog input[type="datetime-local"]{min-width:0;width:100%;box-sizing:border-box;padding:10px;border:1px solid #dce6f4;border-radius:8px;font:inherit}.memory-policy-dialog p{font-size:13px;line-height:1.8;overflow-wrap:anywhere}.memory-policy-dialog .memory-original{white-space:pre-wrap;max-height:180px;overflow:auto;padding:12px;background:#f7faff;border-radius:8px}.memory-policy-dialog .memory-error{color:#b42318}.memory-policy-dialog .memory-policy-preview{padding:12px;border:1px solid #dce6f4;border-radius:8px}
+:is(.memory-edit-dialog,.memory-policy-dialog) :is(.memory-original,.memory-preview):focus-visible{outline:2px solid var(--app-primary);outline-offset:3px}:is(.memory-edit-dialog,.memory-policy-dialog) :is(.memory-original,.memory-preview){overscroll-behavior:contain}.memory-policy-dialog .memory-policy-field{display:flex;flex-direction:column;gap:8px;margin:16px 0}.memory-policy-dialog input[type="datetime-local"]{min-width:0;width:100%;box-sizing:border-box;padding:10px;border:1px solid #dce6f4;border-radius:8px;font:inherit}.memory-policy-dialog p{font-size:13px;line-height:1.8;overflow-wrap:anywhere}.memory-policy-dialog .memory-original{white-space:pre-wrap;max-height:180px;overflow:auto;padding:12px;background:#f7faff;border-radius:8px}.memory-policy-dialog .memory-error{color:#b42318}.memory-policy-dialog .memory-policy-preview{padding:12px;border:1px solid #dce6f4;border-radius:8px}
 </style>

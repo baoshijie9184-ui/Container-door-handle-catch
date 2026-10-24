@@ -3,7 +3,7 @@
   <el-drawer v-model="visible" title="模型文件记录" size="min(960px, 100vw)">
     <div class="model-files">
       <p class="model-files-note">按请求编号核对上传结果。删除模型登记会保留文件，这里不执行物理删除。</p>
-      <el-form class="model-files-query" @submit.prevent="load">
+      <el-form class="model-files-query" label-position="top" @submit.prevent="load">
         <el-form-item label="请求编号">
           <el-input v-model="requestId" clearable maxlength="128" placeholder="留空查看最近 50 条" aria-label="文件操作请求编号" />
         </el-form-item>
@@ -16,8 +16,9 @@
       <el-alert v-if="result && !result.enabled" title="文件意图登记尚未启用，历史文件不会自动补造记录" type="info" :closable="false" show-icon />
       <template v-if="result?.enabled">
         <el-tabs>
-          <el-tab-pane label="上传记录">
-            <el-table :data="result.uploads" row-key="fileId" v-loading="loading" empty-text="没有符合条件的上传记录">
+          <el-tab-pane :label="`上传记录（${result.uploads.length}）`">
+            <TableReadHint v-if="result.uploads.length" />
+            <el-table :scrollbar-tabindex="0" role="region" aria-label="已查询的模型上传文件记录" :data="result.uploads" row-key="fileId" v-loading="loading" empty-text="没有符合条件的上传记录">
               <el-table-column label="状态" min-width="155"><template #default="{row}"><StatusBadge domain="modelFile" :code="row.state" /></template></el-table-column>
               <el-table-column prop="requestId" label="请求编号" min-width="230" />
               <el-table-column prop="fileId" label="文件编号" min-width="230" />
@@ -28,8 +29,9 @@
             </el-table>
             <p class="model-files-note">预留状态可能包含未完成、部分写入或回执丢失，不能解释为没有文件。文件就绪不等于模型已登记。</p>
           </el-tab-pane>
-          <el-tab-pane label="保留文件">
-            <el-table :data="result.retained" row-key="retentionId" v-loading="loading" empty-text="没有符合条件的保留记录">
+          <el-tab-pane :label="`保留文件（${result.retained.length}）`">
+            <TableReadHint v-if="result.retained.length" />
+            <el-table :scrollbar-tabindex="0" role="region" aria-label="已查询的模型保留文件记录" :data="result.retained" row-key="retentionId" v-loading="loading" empty-text="没有符合条件的保留记录">
               <el-table-column label="状态" min-width="155"><template #default="{row}"><StatusBadge domain="modelFile" :code="row.state" /></template></el-table-column>
               <el-table-column prop="modelId" label="原模型编号" min-width="100" />
               <el-table-column prop="requestId" label="请求编号" min-width="230" />
@@ -52,6 +54,7 @@ import request from '@/api/request'
 import { beijingDateTime } from '@/utils/beijingTime'
 import { knownCount } from '@/utils/countPresentation'
 import { useUserStore } from '@/stores/user'
+import TableReadHint from '@/components/TableReadHint.vue'
 const userStore=useUserStore()
 const actor=computed(()=>JSON.stringify([userStore.identity?.userId || userStore.username || '',userStore.role,userStore.isAuthenticated]))
 const isSupervisor=computed(()=>userStore.isAuthenticated && userStore.role==='SUPERVISOR')
@@ -91,5 +94,5 @@ defineExpose({openForRequest})
 </script>
 
 <style scoped>
-.model-files{min-width:0}.model-files-query{display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap}.model-files-query :deep(.el-form-item){flex:1 1 280px}.model-files-note{color:#475569;line-height:1.7;overflow-wrap:anywhere}.model-files-error{color:#b91c1c;overflow-wrap:anywhere}.model-files :deep(.el-table .cell){overflow-wrap:anywhere}.model-files :deep(.el-button){transition:transform .15s ease}.model-files :deep(.el-button:active){transform:scale(.98)}@media(prefers-reduced-motion:reduce){.model-files :deep(.el-button){transition:none;transform:none}}
+.model-files{min-width:0}.model-files-query{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;margin:18px 0}.model-files-query :deep(.el-form-item){flex:1 1 280px;min-width:0;margin-bottom:0}.model-files-query :deep(.el-form-item__label){font-size:12px;line-height:1.85;color:var(--app-text-secondary);height:auto}.model-files-query>.el-button{margin:0;flex:none}.model-files-note{color:var(--app-text-secondary);font-size:12px;line-height:1.85;overflow-wrap:anywhere}.model-files-error{color:var(--app-danger);font-size:13px;line-height:1.85;overflow-wrap:anywhere}.model-files :deep(.el-table .cell){overflow-wrap:anywhere}.model-files :deep(.el-button){transition:transform .15s ease}.model-files :deep(.el-button:active){transform:scale(.98)}@media(prefers-reduced-motion:reduce){.model-files :deep(.el-button){transition:none;transform:none}}
 </style>

@@ -65,7 +65,7 @@
         </section>
         <h4 class="skill-detail-section-title"><AppIcon name="DocumentChecked" :size="17" />规则评测</h4><p class="skill-detail-note">规则通过仅表示这些检查项通过，业务适用性与隐私仍需独立人工审核。</p><p v-if="!selected.evaluations.length">尚无已登记的规则评测</p>
         <article v-for="(evaluation, index) in selected.evaluations" :key="index" class="skill-rule-record"><header><strong>版本 {{ evaluation.version_no??'未记录' }}</strong><StatusBadge domain="skillRule" :code="skillRuleState(evaluation.result?.passed)" /></header><details><summary>查看逐项规则</summary><ul><li v-for="(passed, rule) in evaluation.result?.checks||{}" :key="rule"><span :title="rule">{{ skillRuleLabel(rule) }}</span><StatusBadge domain="skillRule" :code="skillRuleState(passed)" /></li></ul></details></article>
-        <details class="skill-audit-history"><summary><AppIcon name="DocumentCopy" :size="16" />操作审计（{{ selected.audit.length }} 条已读取）</summary><p v-if="!selected.audit.length" class="skill-detail-note">本次未返回操作审计，不据此推断从未操作。</p><article v-for="(event,index) in selected.audit" :key="index" class="skill-audit-record"><strong>版本 {{ event.version_no??'未记录' }} · {{ event.action_name||'动作未记录' }}</strong><time>{{ skillTime(event.created_at) }} · UTC+8</time><p v-if="event.reason">{{ event.reason }}</p></article></details>
+        <details class="skill-audit-history"><summary><AppIcon name="DocumentCopy" :size="16" />操作审计（{{ selected.audit.length }} 条已读取）</summary><AgentOperationHistory :records="selected.audit" kind="skill" label="当前 Skill 可见版本的操作记录" scope-note="仅显示当前可见版本的动作记录；规则评测、独立审核和发布分别核对。私人运行入口仅在接口返回本人编号时提供。" /></details>
         <div v-if="owned && latest && !externalLatest" class="actions">
           <el-button v-if="['DRAFT','EVALUATED'].includes(latest?.status)" :disabled="busy" @click="perform('eval')">运行规则 Eval</el-button>
           <el-button v-if="latest?.status === 'EVALUATED'" type="primary" :disabled="busy" @click="perform('submit')">提交独立审核</el-button>
@@ -109,6 +109,7 @@
 <script setup>
 import AgentSectionIcon from "@/components/chat/AgentSectionIcon.vue"
 import AgentLifecycleGuide from '@/components/chat/AgentLifecycleGuide.vue'
+import AgentOperationHistory from '@/components/chat/AgentOperationHistory.vue'
 import CollectionEmptyState from '@/components/CollectionEmptyState.vue'
 import SkillVersionRecord from '@/components/chat/SkillVersionRecord.vue'
 import {skillTime,skillMaintenance,skillRuleState,skillRuleLabel,readSkillView} from '@/utils/skillPresentation'

@@ -52,10 +52,6 @@
 .learned-skill-dialog .skill-rule-record li > span:first-child { flex:1; min-width:100px; color:var(--app-text-secondary); overflow-wrap:anywhere; }
 .learned-skill-dialog .skill-audit-history { margin:24px 0; padding:14px 0; border-block:1px solid var(--app-border); }
 .learned-skill-dialog .skill-audit-history summary > .el-icon { color:var(--app-primary); vertical-align:middle; margin-right:6px; }
-.learned-skill-dialog .skill-audit-record { padding:13px 0; border-bottom:1px solid #edf1f6; display:grid; gap:5px; }
-.learned-skill-dialog .skill-audit-record strong { font-size:12px; font-weight:550; color:var(--app-text); overflow-wrap:anywhere; }
-.learned-skill-dialog .skill-audit-record time { color:var(--app-text-muted); font-size:11px; }
-.learned-skill-dialog .skill-audit-record p { margin:0; color:var(--app-text-secondary); white-space:pre-wrap; font-size:12px; }
 .learned-skill-dialog :is(.skill-rule-record,.skill-audit-history) summary:focus-visible { outline:2px solid var(--app-primary); outline-offset:3px; }
 #app .is-agent-section :is(.mcp-version-state,.mcp-pending-count) { display:inline-flex; align-items:center; flex-wrap:wrap; gap:7px; }
 #app .is-agent-section .mcp-version-pointer { padding:3px 7px; border-radius:5px; background:var(--app-primary-soft); color:var(--app-primary); font-size:11px; }
@@ -79,13 +75,7 @@
 #app .is-agent-section .probe-list li { display:flex; align-items:center; flex-wrap:wrap; gap:8px 12px; padding:9px 0; border-bottom:1px solid var(--app-border); }
 #app .is-agent-section .probe-list li > span:first-child { min-width:0; color:var(--app-text); overflow-wrap:anywhere; font-size:12px; }
 #app .is-agent-section .config-probe-note { flex-basis:100%; margin:0; font-size:12px; line-height:1.8; color:var(--app-text-secondary); }
-#app .is-agent-section .config-diff dt { font-size:13px; font-weight:550; color:var(--app-text); }
-#app .is-agent-section .config-diff dd { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; margin:8px 0 20px; }
-#app .is-agent-section .config-diff dd > div { min-width:0; }
-#app .is-agent-section .config-diff dd span { font-size:11px; color:var(--app-text-muted); }
-#app .is-agent-section .config-diff pre { max-height:180px; overflow:auto; margin:7px 0 0; padding:10px 12px; border:1px solid var(--app-border); border-radius:7px; background:var(--app-bg); color:var(--app-text); font-size:12px; line-height:1.8; white-space:pre-wrap; overflow-wrap:anywhere; }
-#app .is-agent-section .config-diff pre:focus-visible { outline:2px solid var(--app-primary); outline-offset:2px; }
-@media(max-width:700px) { #app .is-agent-section .config-diff dd { grid-template-columns:minmax(0,1fr); } }
+
 #app .is-agent-section .model-config-page { padding: 0; background: transparent; border: 0; box-shadow: none; }
 #app .is-agent-section :is(.memory-page, .mcp-page, .skills-page, .model-config-page) > header { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; }
 #app .is-agent-section :is(.memory-page, .mcp-page, .skills-page, .model-config-page) > header > div { flex: 1 1 280px; min-width: 0; }
@@ -104,9 +94,6 @@
 #app .is-agent-section .version-actions { gap: 8px; }
 #app .is-agent-section :is(.version-actions, .version-picker) .el-button + .el-button { margin-left: 0; }
 #app .is-agent-section .version-actions > span { flex-basis: 100%; line-height: 1.8; }
-#app .is-agent-section .config-diff summary { color: var(--app-text-secondary); line-height: 1.8; }
-#app .is-agent-section .config-diff { padding:16px; margin:16px 0; border:1px solid var(--app-border); border-radius:10px; background:var(--app-surface,#fff); font-size:13px; }
-#app .is-agent-section .config-diff summary { cursor:pointer; }
 #app .is-agent-section .config-version-review { margin:20px 0; padding-top:18px; border-top:1px solid var(--app-border); }
 #app .is-agent-section .config-version-review h3 { margin:0 0 8px; font-size:15px; }
 #app .is-agent-section .config-version-review > p { margin:0 0 16px; color:var(--app-text-secondary); font-size:12px; line-height:1.8; }
@@ -115,14 +102,10 @@
 #app .is-agent-section .config-review-facts dd { margin:0; min-width:0; color:var(--app-text); overflow-wrap:anywhere; }
 #app .is-agent-section .config-recorded-models { margin-top:16px; font-size:13px; }
 #app .is-agent-section .config-recorded-models summary { color:var(--app-text-secondary); cursor:pointer; }
-#app .is-agent-section .config-recorded-models ul { list-style:none; padding:0; max-height:260px; overflow:auto; }
-#app .is-agent-section .config-recorded-models li { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; padding:10px 0; border-bottom:1px solid var(--app-border); }
-#app .is-agent-section .config-recorded-models li > span:first-child { min-width:0; overflow-wrap:anywhere; }
 #app .is-agent-section .config-draft-note { display:flex; align-items:flex-start; gap:7px; padding:10px 12px; border-left:3px solid var(--app-warning,#d97706); border-radius:4px; color:var(--app-text-secondary); background:var(--app-warning-soft,#fffbeb); font-size:12px; line-height:1.8; }
 #app .is-agent-section .config-draft-note .el-icon { flex-shrink:0; margin-top:3px; }
 #app .is-agent-section :is(.trace-json,.trace-inspector):focus-visible { outline:2px solid var(--app-primary); outline-offset:-2px; }
 @media(max-width:600px) { #app .is-agent-section .config-review-facts { grid-template-columns:1fr; gap:4px; } #app .is-agent-section .config-review-facts dd { margin-bottom:10px; } }
-#app .is-agent-section .config-diff dt { font-weight: 600; color: var(--app-text); }
 #app .is-agent-section .config-editor .el-input-number { max-width: 100%; }
 #app .is-agent-section .fallback-order { margin-top: 8px; padding: 18px; border-radius: 10px; background: #f8fafc; }
 #app .is-agent-section .fallback-order li { padding-block: 8px; border-bottom: 1px solid var(--app-border); }
@@ -144,7 +127,7 @@
 .memory-review-dialog :is(.review-text, .review-usage) { overflow-wrap: anywhere; }
 #app .is-agent-section :is(.error, .memory-error, .action-error) { padding: 10px 12px; border-radius: 8px; background: var(--app-danger-soft); color: var(--app-danger); overflow-wrap: anywhere; line-height: 1.8; }
 #app .is-agent-section .server-card { padding: 22px; margin-block: 20px; }
-#app .is-agent-section :is(.server-card code, .download-source, .skill-detail code, .config-diff dd) { white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
+#app .is-agent-section :is(.server-card code, .download-source, .skill-detail code) { white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
 #app .is-agent-section .server-title { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 #app .is-agent-section .server-card p { font-size: 12px; line-height: 1.85; color: var(--app-text-secondary); margin-block: 9px; }
 #app .is-agent-section .server-card .error { color: var(--app-danger); }
@@ -294,7 +277,7 @@
   #app .is-agent-section .skill-link-form > label { flex-basis: 100%; }
   #app .is-agent-section .skill-link-form > .el-button { width: 100%; }
   #app .is-agent-section .config-editor { padding: 16px; }
-  #app .is-agent-section :is(.version-strip, .config-diff) { padding: 14px; }
+  #app .is-agent-section .version-strip { padding: 14px; }
   #app .is-agent-section .version-picker { align-items: stretch; }
   #app .is-agent-section .version-picker .el-select { flex: 1 1 100%; width: 100%; }
   #app .is-agent-section .fallback-order li > span { flex-basis: 100%; }

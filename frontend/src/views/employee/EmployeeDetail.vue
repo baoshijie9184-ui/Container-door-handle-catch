@@ -15,7 +15,7 @@
         </div>
         <div>
           <div class="stats-bar-value">{{ getStatusName(employee.status) }}</div>
-          <div class="stats-bar-label">当前状态</div>
+          <div class="stats-bar-label">在岗登记状态</div>
         </div>
       </div>
       <div class="stats-bar-item">
@@ -52,16 +52,14 @@
         <div class="panel-header">
           <div>
             <h3 class="app-panel-title">基本信息</h3>
-            <p class="app-panel-subtitle">人员注册信息与联系方式</p>
+            <p class="app-panel-subtitle">人员登记资料与联系方式</p>
           </div>
         </div>
       </template>
       <el-alert v-if="loadError && employee.id" :title="loadError+'；以下保留先前读取的资料，请刷新核对。'" type="error" show-icon :closable="false" />
       <CollectionEmptyState v-if="!employee.id" :loading="loading" :error="loadError" empty-title="未找到人员资料" empty-description="请返回列表核对员工编号和当前账号的访问范围。" @retry="refreshEmployee" />
       <div v-else class="employee-profile">
-        <div class="profile-avatar">
-          {{ (employee.name || '?').slice(0, 1).toUpperCase() }}
-        </div>
+        <div class="profile-avatar" aria-hidden="true"><AppIcon name="User" :size="26" /></div>
         <div class="profile-grid">
           <div class="profile-item">
             <span class="profile-label">姓名</span>
@@ -157,46 +155,7 @@
       </template>
       <el-alert v-if="collectionError && collectionRecords.length" :title="collectionError+'；下方保留先前读取的记录。'" type="error" show-icon :closable="false" />
       <div v-loading="collectionLoading">
-        <div v-if="collectionRecords.length > 0" class="record-list">
-          <div v-for="record in collectionRecords" :key="record.taskId" class="record-card">
-            <div class="record-card-header">
-              <div class="record-card-title">
-                <span class="record-folder">{{ record.folderName || record.taskId }}</span>
-                <StatusBadge domain="detection" :code="record.status" />
-              </div>
-              <code class="record-taskid">{{ record.taskId }}</code>
-            </div>
-            <div class="record-card-body">
-              <div class="record-meta-grid">
-                <div class="record-meta-item">
-                  <span class="meta-label">采集日期</span>
-                  <span class="meta-value">{{ record.captureDate || '—' }}</span>
-                </div>
-                <div class="record-meta-item">
-                  <span class="meta-label">地区</span>
-                  <span class="meta-value">{{ record.region || '—' }}</span>
-                </div>
-                <div class="record-meta-item">
-                  <span class="meta-label">设备</span>
-                  <span class="meta-value">{{ record.deviceName || '—' }}</span>
-                </div>
-                <div class="record-meta-item">
-                  <span class="meta-label">图片数量</span>
-                  <span class="meta-value meta-highlight">{{ record.totalImages ?? '—' }} 张</span>
-                </div>
-                <div class="record-meta-item">
-                  <span class="meta-label">创建时间</span>
-                  <span class="meta-value">{{ formatTime(record.createdAt) }}（UTC+8）</span>
-                </div>
-              </div>
-              <details v-if="record.sourceOssPrefix" class="record-oss">
-                <summary class="meta-label">查看存储记录</summary>
-                <code class="oss-path">{{ record.sourceOssPrefix }}</code>
-              </details>
-              <router-link class="detail-record-link" :to="{path:'/inspection/history',query:{keyword:record.taskId}}"><AppIcon name="Search" :size="14" />查看检测记录</router-link>
-            </div>
-          </div>
-        </div>
+        <CollectionTaskRecords v-if="collectionRecords.length > 0" :records="collectionRecords" counterpart="device" :context-key="employeeId + ':' + actor + ':' + employee.name" />
         <CollectionEmptyState v-else :loading="collectionLoading" :error="collectionError" empty-title="暂无采集记录" empty-description="人员的采集任务登记后，可在这里查看。" @retry="fetchCollectionRecords" />
       </div>
     </el-card>
@@ -212,6 +171,7 @@ import request from '../../api/request'
 import { useUserStore } from '../../stores/user'
 import { beijingDateTime } from '../../utils/beijingTime'
 import CollectionEmptyState from '../../components/CollectionEmptyState.vue'
+import CollectionTaskRecords from '../../components/CollectionTaskRecords.vue'
 import EmployeeDeviceAssignment from '../../components/EmployeeDeviceAssignment.vue'
 
 const router = useRouter()
@@ -380,15 +340,13 @@ watch([employeeId,actor],async()=>{
 }
 
 .profile-avatar {
-  width: 64px;
-  height: 64px;
-  border-radius: 18px;
+  width: 52px;
+  height: 52px;
+  border-radius: 12px;
   display: grid;
   place-items: center;
-  color: #fff;
-  font-weight: 800;
-  font-size: 24px;
-  background: linear-gradient(135deg, var(--app-primary), #4f8bff);
+  color: var(--app-primary);
+  background: var(--app-primary-soft);
   flex-shrink: 0;
 }
 
@@ -408,7 +366,7 @@ watch([employeeId,actor],async()=>{
 
 .profile-label {
   font-size: 12px;
-  color: var(--app-text-muted);
+  color: var(--app-text-secondary);
 }
 
 .profile-value {
@@ -433,121 +391,13 @@ watch([employeeId,actor],async()=>{
 @media (max-width: 768px) {
   .profile-grid {
     grid-template-columns: 1fr;
+    width: 100%;
   }
   .employee-profile {
     flex-direction: column;
   }
 }
 
-/* 采集记录卡片 */
-.record-list {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.record-card {
-  border: 1px solid var(--app-border, #e8ecef);
-  border-radius: 12px;
-  overflow: hidden;
-  background: #fafbfc;
-  transition: border-color 0.2s, box-shadow 0.2s;
-}
-
-.record-card:hover {
-  border-color: rgba(22, 119, 255, 0.2);
-  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.06);
-}
-
-.record-card-header {
-  padding: 14px 18px 10px;
-  border-bottom: 1px solid rgba(15, 23, 42, 0.04);
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 12px;
-}
-
-.record-card-title {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex: 1;
-  min-width: 0;
-}
-
-.record-folder {
-  font-weight: 600;
-  font-size: 14px;
-  color: #172033;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.record-taskid {
-  font-size: 11px;
-  color: #8b95a5;
-  font-family: 'SF Mono', 'Consolas', monospace;
-  background: rgba(15, 23, 42, 0.04);
-  padding: 2px 8px;
-  border-radius: 4px;
-  flex-shrink: 0;
-}
-
-.record-card-body {
-  padding: 14px 18px;
-}
-
-.record-meta-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-  gap: 12px 24px;
-}
-
-.record-meta-item {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-
-.meta-label {
-  font-size: 12px;
-  color: #8b95a5;
-  font-weight: 500;
-}
-
-.meta-value {
-  font-size: 14px;
-  color: #172033;
-  font-weight: 500;
-}
-
-.meta-highlight {
-  color: #1677ff;
-  font-weight: 600;
-  font-size: 15px;
-}
-
-.record-oss {
-  margin-top: 12px;
-  padding-top: 12px;
-  border-top: 1px solid rgba(15, 23, 42, 0.04);
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.oss-path {
-  font-size: 12px;
-  color: #1677ff;
-  background: rgba(22, 119, 255, 0.06);
-  padding: 6px 12px;
-  border-radius: 8px;
-  font-family: 'SF Mono', 'Consolas', monospace;
-  word-break: break-all;
-}
 .profile-value { overflow-wrap:anywhere; }
-@media(prefers-reduced-motion:reduce) { .record-card { transition:none; } }
+
 </style>

@@ -156,24 +156,30 @@ export const useChatAssistantStore = defineStore('chatAssistant', () => {
   /** 创建项目 */
   const createProject = async (data) => {
     try {
-      await createProjectApi(data)
+      const response = await createProjectApi(data)
+      if(response.data?.code!==200 || typeof response.data?.data?.projectId!=='string' || !response.data.data.projectId.trim())throw new Error('项目保存回执未完整返回')
       await loadProjectList()
       ElMessage.success('项目已创建')
+      return {acknowledged:true}
     } catch (err) {
       console.error('[chat] 创建项目失败:', err)
-      ElMessage.error('创建项目失败')
+      ElMessage.warning('创建结果待核对，请刷新项目列表')
+      return {acknowledged:false}
     }
   }
 
   /** 更新项目 */
   const updateProject = async (projectId, data) => {
     try {
-      await updateProjectApi(projectId, data)
+      const response = await updateProjectApi(projectId, data)
+      if(response.data?.code!==200 || String(response.data?.data?.projectId)!==String(projectId))throw new Error('项目保存回执未完整返回')
       await loadProjectList()
       ElMessage.success('项目已更新')
+      return {acknowledged:true}
     } catch (err) {
       console.error('[chat] 更新项目失败:', err)
-      ElMessage.error('更新项目失败')
+      ElMessage.warning('更新结果待核对，请刷新项目列表')
+      return {acknowledged:false}
     }
   }
 

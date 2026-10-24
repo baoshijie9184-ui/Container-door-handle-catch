@@ -43,8 +43,8 @@
    <p v-if="previewError" class="wb-error" role="alert">{{ previewError }}</p><p v-if="busy" role="status">正在读取文件，请稍候</p>
    <nav v-if="previewType==='pdf'" ref="pdfNavigation" tabindex="-1" class="chat-file-pages" aria-label="PDF 页码"><button type="button" :disabled="busy||previewPage===1" @click="preview(previewFile,previewPage-1)">上一页</button><span role="status">第 {{ previewPage }} / {{ previewPages }} 页</span><button type="button" :disabled="busy||previewPage===previewPages" @click="preview(previewFile,previewPage+1)">下一页</button><small>页面预览 · Agent 仅可读取文字层</small></nav>
    <p class="wb-preview-note">预览不执行文件内容。HTML/SVG 按源码展示，PDF 显示页面图片；下载可保留原文件。</p>
-   <img v-if="['image','pdf'].includes(previewType)" :src="previewUrl" class="wb-preview-image" :alt="(previewFile?.name||'本人资料')+'页面预览'" @error="previewError='图片预览失败，请下载原文件核对'"/>
-   <pre v-else class="chat-file-preview-text" tabindex="0" aria-label="资料文本或源码预览">{{ previewText }}</pre>
+   <AgentFileImage v-if="previewOpen&&['image','pdf'].includes(previewType)" :src="previewUrl" :name="previewFile?.name" :kind="previewType" :busy="busy" :downloadable="canDownloadPreview" />
+   <pre v-else-if="previewOpen" class="chat-file-preview-text" tabindex="0" aria-label="资料文本或源码预览">{{ previewText }}</pre>
    <template #footer><div class="file-preview-actions"><el-button @click="previewOpen=false">关闭预览</el-button><el-button v-if="canDownloadPreview" type="primary" :disabled="busy" @click="download(previewFile)"><AppIcon name="Download" :size="15" />下载原文件</el-button></div></template>
   </el-dialog>
  </section>
@@ -55,6 +55,7 @@ import {ElMessageBox} from 'element-plus'
 import {AgentWorkbenchClient,availableWorkbenchTabs,workbenchStatus,workbenchRows,tokenDisplay,recoveryInput} from '@/utils/agentWorkbench'
 import {composerAttachment} from '@/utils/composerPresentation'
 import AgentWorkbenchFiles from './AgentWorkbenchFiles.vue'
+import AgentFileImage from './AgentFileImage.vue'
 import AgentUsageSummary from './AgentUsageSummary.vue'
 import AgentContextSummary from './AgentContextSummary.vue'
 import AgentForkPanel from './AgentForkPanel.vue'

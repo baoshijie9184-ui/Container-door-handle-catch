@@ -26,7 +26,7 @@
   padding: 22px 18px 5px;
 }
 .agent-chat-page .sidebar-caption strong { font-size: 14px; font-weight: 650; }
-.agent-chat-page .sidebar-caption span { color: var(--agent-muted); font-size: 11px; }
+.agent-chat-page .sidebar-caption span { color: var(--app-text-secondary); font-size: 12px; }
 .agent-chat-page .sidebar-header { padding: 16px 12px 12px; }
 .agent-chat-page .sidebar-header .new-session-btn,
 .agent-shell .new-session.ant-btn {
@@ -47,7 +47,7 @@
 .agent-shell .session-item.selected { background: #eaf0fb; color: #254f9e; box-shadow: none; }
 .agent-chat-page .session-title { font-weight: 550; }
 .agent-chat-page .session-preview { color: var(--agent-muted); }
-.agent-chat-page .session-meta { font-size: 10px; }
+.agent-chat-page .session-meta { font-size: 12px; color:var(--app-text-secondary); }
 
 .agent-chat-page .chat-workspace .chat-header,
 .agent-shell.ant-layout .agent-header {
@@ -222,3 +222,5 @@
   .agent-chat-page .welcome-prompt:hover,
   .agent-shell .welcome-prompts > button:hover { transform: none; }
 }
+/* Named reading surfaces include the full page and the existing assistant drawer. */
+.transcript-reading-region:focus-visible { outline:2px solid var(--app-primary,#2563eb); outline-offset:-2px; }

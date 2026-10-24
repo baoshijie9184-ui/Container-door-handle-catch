@@ -1,8 +1,8 @@
 <template>
   <button v-if="compact && !collapsed" class="session-backdrop" type="button" aria-label="关闭会话列表" @click="collapsed = true"></button>
-  <aside class="chat-sidebar" :class="{ collapsed: collapsed, compact: compact }" @keydown.esc="collapsed = true">
+  <aside ref="sidebarRef" class="chat-sidebar" :class="{ collapsed: collapsed, compact: compact }" @keydown.esc="handleSidebarEscape">
     <!-- 折叠按钮 -->
-    <button class="sidebar-toggle" @click="collapsed = !collapsed" :title="collapsed ? '展开会话列表' : '收起会话列表'" :aria-label="collapsed ? '展开会话列表' : '收起会话列表'" :aria-expanded="!collapsed">
+    <button ref="sidebarToggleRef" type="button" class="sidebar-toggle" @click="collapsed = !collapsed" :title="collapsed ? '展开会话列表' : '收起会话列表'" :aria-label="collapsed ? '展开会话列表' : '收起会话列表'" :aria-expanded="!collapsed">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
         <polyline v-if="collapsed" points="9 18 15 12 9 6" />
         <polyline v-else points="15 18 9 12 15 6" />
@@ -38,7 +38,10 @@
             <line x1="21" y1="21" x2="16.65" y2="16.65" />
           </svg>
           <input
+            ref="searchInputRef"
             v-model="searchQuery"
+            maxlength="200"
+            @keydown.esc.stop.prevent="clearSearch"
             type="text"
             placeholder="搜索标题或摘要"
             aria-label="搜索已加载的对话标题或摘要"
@@ -130,7 +133,7 @@
                   @dragend="handleDragEnd"
                 >
                   <div class="session-item-main">
-                    <button v-if="editingId !== sess.sessionId" type="button" class="session-open" :aria-current="sess.sessionId === store.sessionId ? 'page' : undefined" :title="sessionTimestampLabel(sess) + '（UTC+8）'" @click="handleSwitchSession(sess.sessionId)" @dblclick.stop="startEdit(sess)">
+                    <button v-if="editingId !== sess.sessionId" type="button" class="session-open" :aria-current="sess.sessionId === store.sessionId ? 'page' : undefined" :title="(sess.title || '新对话') + ' · ' + sessionTimestampLabel(sess) + '（UTC+8）'" @click="handleSwitchSession(sess.sessionId)" @dblclick.stop="startEdit(sess)">
                     <span class="session-title">
                       <el-icon v-if="sess.pinned" class="pin-icon" aria-label="已置顶"><Position /></el-icon>
                       {{ sess.title || '新对话' }}
@@ -144,7 +147,7 @@
                         v-model="editingTitle"
                         @blur="finishEdit(sess.sessionId)"
                         @keydown.enter="finishEdit(sess.sessionId)"
-                        @keydown.escape="cancelEdit"
+                        @keydown.escape.stop.prevent="cancelEdit"
                         :maxlength="SESSION_TITLE_MAX_LENGTH"
                         class="title-edit-input"
                         aria-label="会话名称"
@@ -271,7 +274,7 @@
                 @dragend="handleDragEnd"
               >
                 <div class="session-item-main">
-                  <button v-if="editingId !== sess.sessionId" type="button" class="session-open" :aria-current="sess.sessionId === store.sessionId ? 'page' : undefined" :title="sessionTimestampLabel(sess) + '（UTC+8）'" @click="handleSwitchSession(sess.sessionId)" @dblclick.stop="startEdit(sess)">
+                  <button v-if="editingId !== sess.sessionId" type="button" class="session-open" :aria-current="sess.sessionId === store.sessionId ? 'page' : undefined" :title="(sess.title || '新对话') + ' · ' + sessionTimestampLabel(sess) + '（UTC+8）'" @click="handleSwitchSession(sess.sessionId)" @dblclick.stop="startEdit(sess)">
                   <span class="session-title">
                     <el-icon v-if="sess.pinned" class="pin-icon" aria-label="已置顶"><Position /></el-icon>
                     {{ sess.title || '新对话' }}
@@ -285,7 +288,7 @@
                       v-model="editingTitle"
                       @blur="finishEdit(sess.sessionId)"
                       @keydown.enter="finishEdit(sess.sessionId)"
-                      @keydown.escape="cancelEdit"
+                      @keydown.escape.stop.prevent="cancelEdit"
                       :maxlength="SESSION_TITLE_MAX_LENGTH"
                       class="title-edit-input"
                       aria-label="会话名称"
@@ -382,7 +385,7 @@
             :class="{ active: sess.sessionId === store.sessionId }"
           >
             <div class="session-item-main">
-              <button type="button" class="session-open" :aria-current="sess.sessionId === store.sessionId ? 'page' : undefined" :title="sessionTimestampLabel(sess) + '（UTC+8）'" @click="handleSwitchSession(sess.sessionId)">
+              <button type="button" class="session-open" :aria-current="sess.sessionId === store.sessionId ? 'page' : undefined" :title="(sess.title || '新对话') + ' · ' + sessionTimestampLabel(sess) + '（UTC+8）'" @click="handleSwitchSession(sess.sessionId)">
               <span class="session-title">
                 <el-icon v-if="sess.pinned" class="pin-icon" aria-label="已置顶"><Position /></el-icon>
                 {{ sess.title || '新对话' }}
@@ -407,42 +410,18 @@
         </div>
       </div>
 
-      <!-- 创建/编辑项目弹窗 -->
-      <div class="modal-overlay" v-if="showProjectModal" @click.self="closeProjectModal">
-        <div class="modal-content">
-          <h3 class="modal-title">{{ editingProject ? '编辑项目' : '创建项目' }}</h3>
-          <div class="modal-form">
-            <div class="form-group">
-              <label>项目名称</label>
-              <input v-model="projectForm.name" type="text" placeholder="输入项目名称" maxlength="50" />
-            </div>
-            <div class="form-group">
-              <label>项目描述</label>
-              <textarea v-model="projectForm.description" placeholder="输入项目描述（可选）" maxlength="200" rows="2"></textarea>
-            </div>
-            <div class="form-group">
-              <label>项目颜色</label>
-              <div class="color-picker">
-                <div
-                  v-for="color in projectColors"
-                  :key="color"
-                  class="color-option"
-                  :class="{ selected: projectForm.color === color }"
-                  :style="{ background: color }"
-                  @click="projectForm.color = color"
-                ></div>
-              </div>
-            </div>
-          </div>
-          <div class="modal-actions">
-            <button class="btn-cancel" @click="closeProjectModal">取消</button>
-            <button class="btn-confirm" @click="handleSaveProject" :disabled="!projectForm.name.trim()">
-              {{ editingProject ? '保存' : '创建' }}
-            </button>
-          </div>
-        </div>
-      </div>
     </template>
+      <!-- 创建/编辑项目弹窗：折叠侧栏时保留正在核对的内容 -->
+      <el-dialog v-model="showProjectModal" :title="editingProject ? '编辑会话项目' : '创建会话项目'" class="chat-project-dialog" append-to-body width="min(480px,94vw)" :close-on-click-modal="false" :close-on-press-escape="!projectBusy" :show-close="!projectBusy" :before-close="beforeProjectClose">
+        <p class="chat-project-note">项目用于整理本人的会话，不改变任务、业务资料或工具权限。</p>
+        <el-form id="chat-project-form" label-position="top" :disabled="projectBusy||projectUncertain" @submit.prevent="handleSaveProject">
+          <el-form-item label="项目名称" required><el-input v-model="projectForm.name" aria-label="会话项目名称" placeholder="填写便于查找的名称" maxlength="50" show-word-limit /></el-form-item>
+          <el-form-item label="项目描述"><el-input v-model="projectForm.description" type="textarea" aria-label="项目描述，可选" placeholder="补充用途或范围，可留空" maxlength="200" :rows="3" show-word-limit /></el-form-item>
+          <el-form-item label="项目颜色"><div class="chat-project-colors" role="group" aria-label="选择项目颜色"><button v-for="(color,index) in projectColors" :key="color" type="button" :disabled="projectBusy||projectUncertain" :style="{'--project-color':color}" :aria-pressed="projectForm.color===color" :aria-label="'颜色 '+(index+1)+' '+color" :title="color" @click="projectForm.color=color"><AppIcon v-if="projectForm.color===color" name="CircleCheck" :size="16" /><span v-else class="chat-project-color-dot"></span></button></div></el-form-item>
+        </el-form>
+        <p v-if="projectBusy" class="chat-project-note" role="status">正在等待项目保存回执，请勿重复提交。</p><p v-if="projectError" class="chat-project-error" role="alert">{{ projectError }}</p>
+        <template #footer><div class="chat-project-buttons"><el-button :disabled="projectBusy" @click="closeProjectModal">{{ projectUncertain ? '关闭后核对列表' : '取消' }}</el-button><el-button type="primary" native-type="submit" form="chat-project-form" :loading="projectBusy" :disabled="projectUncertain||!projectForm.name.trim()">{{ editingProject ? '保存项目' : '创建项目' }}</el-button></div></template>
+      </el-dialog>
   </aside>
 </template>
 
@@ -462,6 +441,7 @@ const props = defineProps({
 
 const store = useChatAssistantStore()
 const collapsed = ref(props.compact)
+const sidebarRef=ref(null),sidebarToggleRef=ref(null),searchInputRef=ref(null)
 const historyNow = ref(Date.now())
 let historyClock
 onMounted(() => { historyClock = window.setInterval(() => { historyNow.value = Date.now() }, 60000) })
@@ -493,6 +473,7 @@ const searchQuery = ref('')
 // 项目相关
 const expandedProjects = reactive({ __ungrouped__: true })
 const showProjectModal = ref(false)
+const projectBusy=ref(false),projectError=ref(''),projectUncertain=ref(false)
 const editingProject = ref(null)
 const projectForm = reactive({
   name: '',
@@ -578,6 +559,7 @@ const toggleProject = (projectId) => {
 
 const clearSearch = () => {
   searchQuery.value = ''
+  nextTick(()=>searchInputRef.value?.focus({preventScroll:true}))
 }
 
 const handleSwitchSession = (sessionId) => {
@@ -622,9 +604,27 @@ const finishEdit = async (sessionId) => {
 
 const cancelEdit = () => {
   if (renameBusy.value) return
+  const id=editingId.value
   editingId.value = null
   renameError.value = ''
   renameUncertain.value = false
+  nextTick(()=>Array.from(sidebarRef.value?.querySelectorAll('[data-session-id]')||[]).find(node=>node.dataset.sessionId===id)?.querySelector('.session-open')?.focus({preventScroll:true}))
+}
+
+function handleSidebarEscape(event) {
+  if(event.defaultPrevented || event.target?.closest?.('[role="dialog"]'))return
+  event.preventDefault();event.stopPropagation()
+  if(showProjectModal.value)return
+  if(editingId.value){cancelEdit();return}
+  if(store.menuOpenId || store.projectMenuOpenId){
+    const menu=event.target?.closest?.('.session-menu,.project-menu')
+    const trigger=menu?.parentElement?.querySelector('.session-more-btn,.project-menu-btn')
+    store.closeMenu();store.closeProjectMenu()
+    nextTick(()=>trigger?.focus({preventScroll:true}))
+    return
+  }
+  collapsed.value=true
+  nextTick(()=>sidebarToggleRef.value?.focus({preventScroll:true}))
 }
 
 // 拖拽处理
@@ -730,6 +730,8 @@ const handleRemoveFromProject = async (sessionId) => {
 
 // 项目弹窗
 const openCreateProjectModal = () => {
+  if(projectBusy.value)return
+  projectError.value='';projectUncertain.value=false
   editingProject.value = null
   projectForm.name = ''
   projectForm.description = ''
@@ -738,6 +740,8 @@ const openCreateProjectModal = () => {
 }
 
 const openEditProjectModal = (project) => {
+  if(projectBusy.value)return
+  projectError.value='';projectUncertain.value=false
   store.closeProjectMenu()
   editingProject.value = project
   projectForm.name = project.name
@@ -747,30 +751,23 @@ const openEditProjectModal = (project) => {
 }
 
 const closeProjectModal = () => {
+  if(projectBusy.value)return
   showProjectModal.value = false
   editingProject.value = null
 }
 
+const beforeProjectClose = done => { if(!projectBusy.value)done() }
 const handleSaveProject = async () => {
-  if (!projectForm.name.trim()) return
-
-  if (editingProject.value) {
-    await store.updateProject(editingProject.value.projectId, {
-      name: projectForm.name.trim(),
-      description: projectForm.description.trim(),
-      color: projectForm.color
-    })
-  } else {
-    await store.createProject({
-      name: projectForm.name.trim(),
-      description: projectForm.description.trim(),
-      color: projectForm.color
-    })
-  }
-
-  closeProjectModal()
+  if(projectBusy.value||projectUncertain.value||!projectForm.name.trim())return
+  projectBusy.value=true;projectError.value=''
+  const payload={name:projectForm.name.trim(),description:projectForm.description.trim(),color:projectForm.color}
+  try {
+    const result=editingProject.value?await store.updateProject(editingProject.value.projectId,payload):await store.createProject(payload)
+    if(result?.acknowledged){projectBusy.value=false;closeProjectModal()}
+    else {projectUncertain.value=true;projectError.value='保存结果尚未核对。请关闭后刷新项目列表核对，勿直接重复创建或保存。'}
+  } catch {projectUncertain.value=true;projectError.value='保存结果尚未核对，请先刷新项目列表核对，不会自动重新提交。'}
+  finally { projectBusy.value=false }
 }
-
 // 删除项目
 const handleDeleteProject = async (projectId) => {
   store.closeProjectMenu()
@@ -1269,141 +1266,6 @@ const handleDeleteProject = async (projectId) => {
   padding: 24px 0;
 }
 
-/* 弹窗样式 */
-.modal-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: rgba(0, 0, 0, 0.5);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 100;
-}
-
-.modal-content {
-  background: #fff;
-  border-radius: 12px;
-  padding: 20px;
-  width: 320px;
-  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.15);
-}
-
-.modal-title {
-  font-size: 16px;
-  font-weight: 600;
-  color: #1e293b;
-  margin: 0 0 16px 0;
-}
-
-.modal-form {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.form-group {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.form-group label {
-  font-size: 12px;
-  font-weight: 500;
-  color: #475569;
-}
-
-.form-group input,
-.form-group textarea {
-  padding: 8px 10px;
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
-  font-size: 13px;
-  color: #334155;
-  outline: none;
-  transition: all 0.2s;
-}
-
-.form-group input:focus,
-.form-group textarea:focus {
-  border-color: #2563eb;
-  box-shadow: 0 0 0 2px rgba(79, 110, 247, 0.15);
-}
-
-.form-group textarea {
-  resize: vertical;
-  min-height: 50px;
-}
-
-.color-picker {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.color-option {
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
-  cursor: pointer;
-  transition: all 0.15s;
-  border: 2px solid transparent;
-}
-
-.color-option:hover {
-  transform: scale(1.1);
-}
-
-.color-option.selected {
-  border-color: #1e293b;
-  box-shadow: 0 0 0 2px #fff, 0 0 0 4px #1e293b;
-}
-
-.modal-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  margin-top: 16px;
-}
-
-.btn-cancel {
-  padding: 8px 16px;
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
-  background: #fff;
-  color: #475569;
-  cursor: pointer;
-  font-size: 13px;
-  transition: all 0.15s;
-}
-
-.btn-cancel:hover {
-  background: #f1f5f9;
-}
-
-.btn-confirm {
-  padding: 8px 16px;
-  border: none;
-  border-radius: 6px;
-  background: #2563eb;
-  color: #fff;
-  cursor: pointer;
-  font-size: 13px;
-  transition: all 0.15s;
-}
-
-.btn-confirm:hover {
-  background: #3b5de7;
-}
-
-.btn-confirm:disabled {
-  background: #cbd5e1;
-  cursor: not-allowed;
-}
-
 .session-list::-webkit-scrollbar {
   width: 3px;
 }
@@ -1438,4 +1300,22 @@ const handleDeleteProject = async (projectId) => {
 .session-item:focus-within .session-more-btn { opacity: 1; }
 @media (hover: none) { .session-more-btn { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .session-item, .sidebar-history-heading button { transition: none; } .session-item.dragging { transform: none; } }
+</style>
+<style>
+.chat-project-dialog .el-dialog__body{max-height:65vh;max-height:65dvh;overflow:auto;overscroll-behavior:contain}
+.chat-project-dialog .el-dialog__title{display:block;padding-right:26px;overflow-wrap:anywhere}
+.chat-project-dialog .chat-project-note{font-size:12px;line-height:1.85;color:var(--app-text-secondary);margin:0 0 18px}
+.chat-project-dialog .chat-project-error{padding:10px 12px;border-left:3px solid var(--app-warning);background:var(--app-warning-soft);font-size:13px;line-height:1.85;color:var(--app-text);overflow-wrap:anywhere}
+.chat-project-colors{display:flex;align-items:center;flex-wrap:wrap;gap:10px;padding:4px}
+.chat-project-colors button{display:grid;place-items:center;width:32px;height:32px;padding:0;border:1px solid var(--app-border);border-radius:8px;background:white;color:var(--app-text);cursor:pointer;transition:border-color 180ms ease,transform 180ms ease}
+.chat-project-colors button[aria-pressed=true]{border:2px solid var(--app-primary);background:var(--app-primary-soft)}
+.chat-project-colors button>.el-icon{color:var(--project-color)}
+.chat-project-color-dot{display:block;width:18px;height:18px;border-radius:5px;background:var(--project-color)}
+.chat-project-colors button:hover:not(:disabled){border-color:var(--app-primary)}
+.chat-project-colors button:active:not(:disabled){transform:scale(.97)}
+.chat-project-colors button:disabled{cursor:not-allowed;opacity:.6}
+.chat-project-colors button:focus-visible{outline:2px solid var(--app-primary);outline-offset:3px}
+.chat-project-buttons{display:flex;justify-content:flex-end;align-items:center;flex-wrap:wrap;gap:8px}
+.chat-project-buttons>.el-button+.el-button{margin-left:0}
+@media(prefers-reduced-motion:reduce){.chat-project-colors button{transition:none}.chat-project-colors button:active:not(:disabled){transform:none}}
 </style>

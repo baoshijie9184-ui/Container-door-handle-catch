@@ -125,15 +125,8 @@ button:not(:disabled):active { transform: scale(.985); }
 #app .stats-bar-label { color: var(--app-text-muted); font-size: 12px; margin-top: 5px; }
 #app .layout-content :is(.form-page, .detail-page) { max-width: 1150px; }
 #app .detail-page .stats-bar-value { font-size: 20px; line-height: 1.5; overflow-wrap: anywhere; }
-#app .detail-page :is(.profile-value, .emp-value, .profile-remark p, .record-folder) { overflow-wrap: anywhere; min-width: 0; }
-#app .detail-page .record-card { border-color: var(--app-border); border-radius: 10px; background: white; box-shadow: none; }
-#app .detail-page .record-card:hover { box-shadow: none; transform: none; }
-#app .detail-page :is(.record-card-title, .record-card-header, .panel-header) { flex-wrap: wrap; gap: 10px; }
-#app .detail-page .record-oss { background: #f8fafc; padding: 10px 12px; border-radius: 8px; }
-#app .detail-page .record-oss summary { cursor: pointer; font-size: 12px; color: var(--app-text-muted); }
-#app .detail-page .record-oss code { display: block; margin-top: 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
-.detail-record-link { display: inline-flex; align-items: center; gap: 6px; margin-top: 12px; font-size: 12px; color: var(--app-primary); text-decoration: none; }
-.detail-record-link:hover { color: var(--app-primary-hover); text-decoration: underline; }
+#app .detail-page :is(.profile-value, .emp-value, .profile-remark p) { overflow-wrap: anywhere; min-width: 0; }
+#app .detail-page .panel-header { flex-wrap: wrap; gap: 10px; }
 #app .layout-content .el-descriptions__label { color: var(--app-text-secondary); font-weight: 550; background: #f8fafc; }
 #app .layout-content .el-descriptions__content { line-height: 1.8; overflow-wrap: anywhere; }
 #app .layout-content :is(.operations-page, .identity-page) { background: transparent; padding: 0; border-radius: 0; }
@@ -317,7 +310,7 @@ button:not(:disabled):active { transform: scale(.985); }
 .managed-form-section-heading p { margin:5px 0 0; color:var(--app-text-secondary); font-size:12px; line-height:1.85; overflow-wrap:anywhere; }
 .managed-form-section :is(.el-select,.el-date-editor.el-input) { width:100%; }
 .managed-form-section .el-form-item__content { align-content:flex-start; min-width:0; }
-.managed-field-help { flex:0 0 100%; margin:7px 0 0; color:var(--app-text-secondary); font-size:11px; line-height:1.85; overflow-wrap:anywhere; }
+.managed-field-help { flex:0 0 100%; margin:7px 0 0; color:var(--app-text-secondary); font-size:12px; line-height:1.85; overflow-wrap:anywhere; }
 .managed-field-help a { display:inline-block; margin-left:9px; color:var(--app-primary); text-underline-offset:3px; }
 .managed-field-help a:focus-visible { outline:2px solid var(--app-primary); outline-offset:3px; }
 .managed-form-actions { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:14px 20px; margin-top:14px; padding-top:20px; border-top:1px solid var(--app-border); }

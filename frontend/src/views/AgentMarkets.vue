@@ -26,25 +26,30 @@
       <div class="market-filter-footer"><label class="interface-filter"><input v-model="includeInterfaces" type="checkbox" />MCP 筛选同时包含仅提供接口的平台</label><el-button v-if="hasFilters" size="small" @click="resetFilters"><AppIcon name="Refresh" :size="14" />清空筛选</el-button></div>
     </section>
 
-    <div class="market-result-heading"><h3>收录平台</h3><p role="status" aria-live="polite">{{ loading ? '正在读取目录' : error ? '目录读取未完成' : catalog ? `当前筛选 ${filtered.length} / ${markets.length} 个平台` : '目录尚未读取' }}</p></div>
+    <div class="market-result-heading"><h3>收录平台</h3><p role="status" aria-live="polite">{{ catalogReadLabel }}</p></div>
+    <el-alert v-if="error && catalog" class="market-refresh-error" :title="error+'；下方为先前读取的目录，请稍后刷新。'" type="warning" show-icon :closable="false" />
     <p v-if="catalog" class="market-filter-note">搜索与类型数量仅覆盖本次目录，并沿用当前地区和关键词；不查询外部平台实时库存。</p>
     <TransitionGroup name="market-card" tag="div" class="market-grid" :aria-busy="loading">
       <article v-for="market in filtered" :key="market.id" class="market-item app-panel">
         <div class="card-top"><span class="market-symbol"><AppIcon :name="market.kind === '托管平台' ? 'Cpu' : 'Compass'" :size="21" /></span><span class="kind">{{ market.region }} · {{ market.kind }}</span></div>
         <h3>{{ market.name }}</h3><p class="summary">{{ market.summary || '简介尚未记录' }}</p>
         <dl class="market-capabilities"><div v-for="cap in market.capabilities" :key="cap.type"><dt><AppIcon :name="capabilityIcon(cap.type)" :size="15" />{{ capabilityName(cap.type) }}</dt><dd><StatusBadge domain="marketCapability" :code="cap.status" /></dd></div></dl>
-        <div class="card-actions"><el-button @click="selected = market"><AppIcon name="Document" :size="15" />查看能力与来源</el-button><a v-if="safeUrl(market.homepage)" :href="safeUrl(market.homepage)" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer" :aria-label="`前往${market.name}，新窗口打开`">平台入口<AppIcon name="TopRight" :size="15" /></a><span v-else class="market-link-unavailable">入口未记录</span></div>
+        <div class="card-actions"><el-button @click="selected = market"><AppIcon name="Document" :size="15" />查看能力与来源</el-button><a v-if="safeUrl(market.homepage)" :href="safeUrl(market.homepage)" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer" :aria-label="`前往${market.name}（${linkHost(market.homepage)}），新窗口打开`"><span>平台入口<small>{{ linkHost(market.homepage) }}</small></span><AppIcon name="TopRight" :size="15" /></a><span v-else class="market-link-unavailable">入口未记录</span></div>
       </article>
     </TransitionGroup>
-    <CollectionEmptyState v-if="!filtered.length" :loading="loading" :error="error" :filtered="hasFilters && !!catalog" empty-title="目录暂无可展示的平台" empty-description="可稍后重新读取目录，或前往已有 Skill 与固定 Fetch 管理入口。" @retry="refresh" @reset="resetFilters" />
+    <CollectionEmptyState v-if="!filtered.length" :loading="loading && !catalog" :error="catalog ? '' : error" :filtered="hasFilters && !!catalog" empty-title="目录暂无可展示的平台" empty-description="可稍后重新读取目录，或前往已有 Skill 与固定 Fetch 管理入口。" @retry="refresh" @reset="resetFilters" />
 
     <el-dialog :model-value="!!selected" append-to-body class="agent-market-dialog" :title="selected ? `${selected.name} · 能力与接入` : '平台能力与接入'" width="min(740px, 94vw)" @close="selected = null">
       <template v-if="selected">
         <p class="market-detail-summary">{{ selected.summary || '简介尚未记录' }}</p>
         <p class="market-detail-date">目录核对日期 {{ catalog?.verifiedOn || '未记录' }}，不是实时连通性检查。</p>
-        <section v-for="cap in selected.capabilities" :key="cap.type" class="capability-detail"><div class="capability-detail-heading"><h3><AppIcon :name="capabilityIcon(cap.type)" :size="17" />{{ capabilityName(cap.type) }}</h3><StatusBadge domain="marketCapability" :code="cap.status" /></div><p>{{ cap.note || '接入条件尚未记录，请核对来源。' }}</p><div class="capability-links"><template v-for="link in cap.links" :key="link.url"><a v-if="safeUrl(link.url)" :href="safeUrl(link.url)" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer" :aria-label="`${link.label}，新窗口打开`">{{ link.label }}<AppIcon name="TopRight" :size="14" /></a><span v-else class="market-link-unavailable">{{ link.label }}（入口不可用）</span></template></div></section>
+        <section v-for="cap in selected.capabilities" :key="cap.type" class="capability-detail">
+          <div class="capability-detail-heading"><h3><AppIcon :name="capabilityIcon(cap.type)" :size="17" />{{ capabilityName(cap.type) }}</h3><StatusBadge domain="marketCapability" :code="cap.status" /></div>
+          <p>{{ cap.note || '接入条件尚未记录，请核对来源。' }}</p>
+          <div class="capability-links"><template v-for="link in cap.links" :key="link.url"><a v-if="safeUrl(link.url)" :href="safeUrl(link.url)" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer" :aria-label="`${selected.name} ${link.label}（${linkHost(link.url)}），新窗口打开`"><span class="market-external-label">{{ link.label }}<small>{{ linkHost(link.url) }}</small></span><AppIcon name="TopRight" :size="14" /></a><span v-else class="market-link-unavailable">{{ link.label }}（入口不可用）</span></template></div>
+        </section>
         <p class="detail-note"><AppIcon name="Lock" :size="16" />浏览外部平台不改变本人已安装资源和工具权限。Skill 安装仍在技能管理中提交，普通提问不能代替敏感操作确认。</p>
-        <a v-if="safeUrl(selected.sourceUrl)" class="market-source-link" :href="safeUrl(selected.sourceUrl)" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">查看目录核对来源<AppIcon name="TopRight" :size="15" /></a><p v-else class="market-link-unavailable">核对来源入口未记录</p>
+        <a v-if="safeUrl(selected.sourceUrl)" class="market-source-link" :href="safeUrl(selected.sourceUrl)" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer" :aria-label="`${selected.name}的目录核对来源（${linkHost(selected.sourceUrl)}），新窗口打开`"><span class="market-external-label">查看目录核对来源<small>{{ linkHost(selected.sourceUrl) }}</small></span><AppIcon name="TopRight" :size="15" /></a><p v-else class="market-link-unavailable">核对来源入口未记录</p>
       </template>
       <template #footer><el-button @click="selected = null">关闭说明</el-button></template>
     </el-dialog>
@@ -52,12 +57,15 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import AgentSectionIcon from '@/components/chat/AgentSectionIcon.vue'
 import CollectionEmptyState from '@/components/CollectionEmptyState.vue'
 import request from '@/api/request'
+import { useUserStore } from '@/stores/user'
 
 const catalog = ref(null), loading = ref(false), error = ref(''), selected = ref(null)
+const userStore = useUserStore()
+const actor = computed(() => JSON.stringify([userStore.identity?.userId || userStore.username || '',userStore.role,userStore.isAuthenticated]))
 const type = ref('ALL'), region = ref('ALL'), keyword = ref(''), includeInterfaces = ref(false)
 const types = [{ value:'ALL', label:'全部平台', icon:'Compass' }, { value:'AGENT', label:'Agent 智能体', icon:'ChatDotRound' }, { value:'MCP', label:'MCP 工具', icon:'Connection' }, { value:'SKILL', label:'Skill 技能', icon:'Collection' }]
 const hasFilters = computed(() => !!(keyword.value.trim() || type.value !== 'ALL' || region.value !== 'ALL' || includeInterfaces.value))
@@ -72,11 +80,17 @@ const searched = computed(() => {
 })
 const countType = value => searched.value.filter(market => hasType(market, value)).length
 const filtered = computed(() => searched.value.filter(market => hasType(market, type.value)))
+const catalogReadLabel = computed(() => {
+  if (loading.value) return catalog.value ? '正在刷新，下方保留已读取目录' : '正在读取目录'
+  if (error.value) return catalog.value ? '刷新未完成，下方为先前读取目录' : '目录读取未完成'
+  return catalog.value ? `当前筛选 ${filtered.value.length} / ${markets.value.length} 个平台` : '目录尚未读取'
+})
 
 // Fixed catalog links only; no account metadata, search terms or credentials are added.
 function safeUrl(value) {
   try { const url = new URL(value); return url.protocol === 'https:' && !url.username && !url.password ? url.href : undefined } catch { return undefined }
 }
+function linkHost(value) { const url = safeUrl(value); return url ? new URL(url).host : '' }
 function readCatalog(value) {
   if (!value || !Array.isArray(value.markets)) throw new Error('市场目录未完整读取，请重新读取')
   const ids = new Set()
@@ -93,17 +107,20 @@ function readCatalog(value) {
 }
 let generation = 0
 async function refresh() {
-  if (loading.value) return
-  const current = ++generation
-  loading.value = true; error.value = ''; selected.value = null; catalog.value = null
+  if (loading.value || !userStore.isAuthenticated) return
+  const current = ++generation, stamp = actor.value
+  loading.value = true; error.value = ''; selected.value = null
   try {
     const response = await request.get('/api/agent/markets')
-    if (current === generation) catalog.value = readCatalog(response.data)
+    if (current === generation && stamp === actor.value) catalog.value = readCatalog(response.data)
   } catch (e) {
-    if (current === generation) error.value = e.response?.data?.message || e.message || '市场目录暂不可用，请稍后重新读取'
+    if (current === generation && stamp === actor.value) {
+      if ([401,403].includes(e.response?.status)) catalog.value = null
+      error.value = e.response?.data?.message || e.message || '市场目录暂不可用，请稍后重新读取'
+    }
   } finally { if (current === generation) loading.value = false }
 }
-onMounted(refresh)
+watch(actor, () => { generation++;loading.value=false;catalog.value=null;selected.value=null;error.value='';resetFilters();if(userStore.isAuthenticated)refresh() }, {immediate:true,flush:'post'})
 onBeforeUnmount(() => { generation++ })
 </script>
 
@@ -146,6 +163,7 @@ onBeforeUnmount(() => { generation++ })
 .market-result-heading h3 { font-size:15px; margin:0; }
 .market-result-heading p,.market-filter-note { font-size:12px; line-height:1.8; color:var(--app-text-secondary); margin:0; }
 .market-filter-note { margin-bottom:16px; }
+.market-refresh-error { margin-bottom:14px; }
 .market-grid { --market-card-width:calc((100% - 36px) / 3); display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:18px; position:relative; }
 .market-item { padding:20px; border:1px solid var(--app-border); display:flex; flex-direction:column; min-width:0; }
 .card-top { display:flex; align-items:center; justify-content:space-between; gap:10px; }
@@ -160,6 +178,9 @@ onBeforeUnmount(() => { generation++ })
 .market-capabilities dd { margin:0; }
 .card-actions { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px; border-top:1px solid var(--app-border); padding-top:14px; margin-top:auto; }
 .card-actions a { display:inline-flex; align-items:center; gap:5px; color:var(--app-primary); font-size:12px; text-decoration:none; }
+.card-actions a > span { display:grid; gap:2px; min-width:0; overflow-wrap:anywhere; }
+.card-actions a small { color:var(--app-text-secondary); font-size:12px; line-height:1.75; }
+.card-actions a > .el-icon { flex:none; }
 .card-actions .el-button { font-size:12px; }
 .market-link-unavailable { color:var(--app-text-secondary); font-size:12px; line-height:1.8; }
 .market-page :is(button,a,summary,input):focus-visible { outline:2px solid var(--app-primary); outline-offset:4px; border-radius:3px; }
@@ -182,6 +203,9 @@ onBeforeUnmount(() => { generation++ })
 .agent-market-dialog h3 .el-icon { color:var(--app-primary); }
 .agent-market-dialog .capability-links { display:flex; flex-wrap:wrap; gap:10px 18px; }
 .agent-market-dialog :is(.capability-links a,.market-source-link) { color:var(--app-primary); text-decoration:underline; text-underline-offset:3px; display:inline-flex; align-items:center; gap:5px; font-size:12px; line-height:1.8; }
+.agent-market-dialog .market-external-label { display:grid; gap:2px; min-width:0; overflow-wrap:anywhere; }
+.agent-market-dialog .market-external-label small { color:var(--app-text-secondary); font-size:12px; line-height:1.75; }
+.agent-market-dialog :is(.capability-links a,.market-source-link) > .el-icon { flex:none; }
 .agent-market-dialog .detail-note { display:flex; align-items:flex-start; gap:8px; padding:12px 14px; background:var(--app-primary-soft); color:var(--app-text-secondary); font-size:12px; line-height:1.85; border-radius:8px; }
 .agent-market-dialog .detail-note > .el-icon { margin-top:3px; color:var(--app-primary); flex-shrink:0; }
 .agent-market-dialog .market-link-unavailable { color:var(--app-text-secondary); font-size:12px; }

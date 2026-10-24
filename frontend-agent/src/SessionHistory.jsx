@@ -53,7 +53,7 @@ export function SessionHistory({ sessions, selectedId, disabled, currentTaskActi
   }
 
   return <>
-    <div className="session-search"><Input aria-label="搜索已加载会话" aria-describedby="session-history-search-scope" placeholder="搜索会话标题或摘要" value={query} onChange={event => setQuery(event.target.value)} prefix={<Search size={15} aria-hidden="true"/>} allowClear={{ clearIcon: <X size={13} aria-hidden="true"/> }}/></div>
+    <div className="session-search"><Input maxLength={200} onKeyDown={event=>{if(event.key==='Escape' && query){event.stopPropagation();setQuery('');}}} aria-label="搜索已加载会话" aria-describedby="session-history-search-scope" placeholder="搜索会话标题或摘要" value={query} onChange={event => setQuery(event.target.value)} prefix={<Search size={15} aria-hidden="true"/>} allowClear={{ clearIcon: <X size={13} aria-hidden="true"/> }}/></div>
     <p id="session-history-search-scope" className="session-search-scope">仅搜索当前账号已加载的标题和摘要</p>
     <div className="session-list-heading"><span>{query.trim() ? `匹配 ${count} 条` : '对话历史'}</span><Button type="text" title="重新读取会话列表" aria-label="重新读取会话列表" disabled={disabled || saving} loading={loading} onClick={onRefresh} icon={<RefreshCw size={14} aria-hidden="true"/>}/></div>
     {operationError && !editing && <p className="session-operation-error" role="alert">{operationError}</p>}

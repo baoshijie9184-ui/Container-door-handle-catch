@@ -27,6 +27,7 @@ import StatusBadge from './StatusBadge';
 import {readAgentRoleCatalog,readAgentModelCatalog} from '../../frontend/src/utils/agentCatalogPresentation';
 import { AgentErrorBoundary } from './AgentErrorBoundary';
 import {useReadableMessageRegions} from './useReadableMessageRegions';
+import {observeTranscriptLayout} from '../../frontend/src/utils/transcriptLayout';
 
 const API = import.meta.env.VITE_AGENT_API_URL || '/agui/run';
 const LOGIN = new URL(import.meta.env.VITE_BUSINESS_LOGIN_URL || '/#/login', window.location.href).toString();
@@ -131,6 +132,12 @@ function App() {
   }
   const [threadId,setThreadId]=useState('');
   useReadableMessageRegions(transcriptRef,threadId);
+  useEffect(()=>{
+    const viewport=transcriptRef.current;
+    return observeTranscriptLayout(viewport,{isFollowing:()=>followTranscript.current,follow:()=>{
+      if(transcriptRef.current===viewport && followTranscript.current)viewport.scrollTop=viewport.scrollHeight;
+    }});
+  },[threadId]);
   const [sessions,setSessions]=useState([]);
   const [sessionLoading,setSessionLoading]=useState(true);
   const [sessionError,setSessionError]=useState('');
@@ -252,7 +259,7 @@ function App() {
         <section className="chat-panel" aria-label="智能对话">
           <div className="session-toolbar"><Select aria-label="选择会话" value={threadId||undefined} options={sessions.map(s=>({value:s.sessionId,label:s.title||"智能助手对话"}))} onChange={loadSession} disabled={loading||sessionLoading} placeholder="选择会话" /><Button aria-label="新建对话" icon={<PlusOutlined aria-hidden="true" />} onClick={newSession} disabled={loading||sessionLoading}>新建</Button></div>
           {sessionError&&<p role="alert" className="session-error">{sessionError} <a href={LOGIN}>前往登录</a> · <button onClick={()=>loadSession(threadId)}>重试</button></p>}
-          <div ref={transcriptRef} className="bubble-list" onScroll={handleTranscriptScroll}>
+          <div ref={transcriptRef} className="bubble-list transcript-reading-region" tabIndex={0} role="region" aria-label="对话消息，可在此区域滚动阅读" onScroll={handleTranscriptScroll}>
             {!items.length && !sessionLoading && <div className="chat-welcome"><span className="welcome-symbol"><RobotOutlined /></span><span className="welcome-eyebrow">DOORHANDLE ASSISTANT</span><h2>今天，想先解决什么？</h2><p>查看检测结果、追溯质检任务，或一起梳理下一步</p><div className="welcome-prompts">{prompts.map(({icon: Icon,...prompt})=><button type="button" key={prompt.title} disabled={!catalog||!threadId} onClick={()=>prepareQuestion(prompt.query)}><span className="prompt-icon"><Icon size={19} /></span><strong>{prompt.title}</strong><span>{prompt.description}</span><ArrowUpRight className="prompt-arrow" size={15} /></button>)}</div></div>}
             {sessionLoading ? <p className="loading-note" role="status">正在加载你的对话…</p> : items.length > 0 && <Bubble.List classNames={{wrapper: 'conversation-transcript', list: 'conversation-messages'}} items={displayedItems} />}
           </div>
