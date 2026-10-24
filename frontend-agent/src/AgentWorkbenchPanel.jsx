@@ -16,9 +16,10 @@ import AgentRecoveryPanel from './AgentRecoveryPanel';
 import {recoveryReviewError} from '../../frontend/src/utils/recoveryPresentation';
 import {contextStatusCode} from '../../frontend/src/utils/contextPresentation';
 import WorkbenchInteraction from './WorkbenchInteraction';
+import WorkbenchInteractionRecord from './WorkbenchInteractionRecord';
 import {composerAttachment} from '../../frontend/src/utils/composerPresentation';
 import {FileText,FileCheck,Files,ListChecks,MessageSquare,Network,Activity,ChartNoAxesCombined,Clock,Copy,RefreshCw,Upload,Download,Image,TriangleAlert} from 'lucide-react';
-import {workbenchKind,workbenchTabIcon,workbenchInteractionStatus,workbenchTitle,workbenchEmpty,workbenchTime,workbenchAnswer} from '../../frontend/src/utils/workbenchPresentation';
+import {workbenchKind,workbenchTabIcon,workbenchInteractionStatus,workbenchTitle,workbenchEmpty,workbenchTime} from '../../frontend/src/utils/workbenchPresentation';
 import '../../frontend/src/assets/chat-file-references.css';
 
 const workbenchIcons={Document:FileText,DocumentChecked:FileCheck,Files,Tickets:ListChecks,ChatDotRound:MessageSquare,Connection:Network,Operation:Activity,DataAnalysis:ChartNoAxesCombined,Picture:Image,Clock,DocumentCopy:Copy,Refresh:RefreshCw,Upload,Warning:TriangleAlert};
@@ -83,12 +84,12 @@ export function AgentWorkbenchPanel({sessionId,base='',messages=[],onFork,onRefe
     {item.kind==='QUESTION'&&<p className="wb-purpose"><MessageSquare size={14} aria-hidden="true"/>补充任务信息，回答不等于业务授权</p>}{item.kind==='PLAN'&&<p className="wb-purpose"><FileCheck size={14} aria-hidden="true"/>审阅执行范围，业务操作仍需单独确认</p>}
     {typeof item.data.runId==='string'&&/^[a-f0-9-]{36}$/.test(item.data.runId)&&<a href={base+'/#/agent/trace?runId='+encodeURIComponent(item.data.runId)}>查看本次执行轨迹</a>}
     {['/detection','/agent/mcp','/agent/actions'].includes(item.data.managementPath)&&<a href={base+'/#'+item.data.managementPath}>打开原任务页面</a>}
-    {item.data.text&&item.kind!=='CONTEXT'&&(['PLAN','QUESTION'].includes(item.kind)?<p className="wb-reading-text">{item.data.text}</p>:<pre tabIndex={0} aria-label="工作记录正文">{item.data.text}</pre>)}
+    {['PLAN','QUESTION'].includes(item.kind)?<WorkbenchInteractionRecord key={item.id+':'+item.revision+':body'} item={item} part="body"/>:item.data.text&&item.kind!=='CONTEXT'&&<pre tabIndex={0} aria-label="工作记录正文">{item.data.text}</pre>}
     {item.kind==='EXECUTION'&&item.data.result&&<p className="wb-output">{item.data.result}</p>}
     {item.kind==='EXECUTION'&&['RUNNING','QUEUED','READY','WAITING_PLAN','WAITING_INPUT','WAITING_CHILD'].includes(item.status)&&<button disabled={busy} onClick={()=>cancelTask(item)}>取消任务</button>}
     <AgentTaskChecklist tasks={item.data.tasks} traceBase={base}/>
-    {item.kind==='QUESTION'&&item.status==='ANSWERED'&&<div className="wb-answer"><strong>已提交的回答</strong><p>{workbenchAnswer(item.data.answer)}</p></div>}
-    {item.kind==='PLAN'&&item.data.feedback&&<div className="wb-answer"><strong>修订意见</strong><p>{item.data.feedback}</p></div>}
+    {['PLAN','QUESTION'].includes(item.kind)&&<WorkbenchInteractionRecord key={item.id+':'+item.revision+':response'} item={item} part="response"/>}
+
     {['PLAN','QUESTION'].includes(item.kind)&&item.status==='PENDING'&&<WorkbenchInteraction item={item} value={drafts[item.id]??(item.data.questionType==='MULTIPLE'?[]:'')} busy={busy} onChange={value=>draft(item.id,value)} onCommand={(action,input)=>act(item,action,input)}/>}
     {item.kind==='CHILD'&&<AgentChildTask item={item} value={drafts[item.id]||''} busy={busy} recoveryShown={item.status==='NEEDS_REVIEW'} availableViews={availableWorkbenchTabs(state.capabilities).map(([key])=>key)} onChange={value=>draft(item.id,value)} onCommand={content=>act(item,'child-message',{content})} onCancel={()=>cancelChild(item)} onView={openWorkbenchView}/>}
     {item.kind==='USAGE'&&<AgentUsageSummary data={item.data}/>}

@@ -63,7 +63,7 @@
         <el-form label-position="top">
           <div class="input-block">
             <div class="input-block-title"><el-icon aria-hidden="true"><FolderOpened /></el-icon>选择图片文件夹</div>
-            <p class="upload-format-note">支持 JPG、JPEG、PNG 图片，可从文件夹中批量选择</p>
+            <p id="upload-image-format" class="upload-format-note">支持 JPG、JPEG、PNG 图片，可从文件夹中批量选择</p>
             <input
               ref="folderInput"
               type="file"
@@ -73,15 +73,12 @@
               style="display: none"
               @change="handleFolderSelect"
             />
-            <el-button type="primary" class="wide-button" :disabled="uploadingToOss" @click="triggerFolderSelect">
+            <el-button type="primary" class="wide-button" aria-describedby="upload-image-format" :disabled="uploadingToOss" @click="triggerFolderSelect">
               <el-icon><FolderOpened /></el-icon>
               选择图片文件夹
             </el-button>
 
-            <div class="folder-summary" v-if="folderInfo.imageCount">
-              <div>文件夹层级：{{ folderInfo.name }}</div>
-              <div>图片数：{{ folderInfo.imageCount }} 张</div>
-            </div>
+            <dl class="folder-summary" v-if="folderInfo.imageCount"><div><dt>所选文件夹层级</dt><dd>{{ folderInfo.name }}</dd></div><div><dt>图片数量</dt><dd>{{ folderInfo.imageCount }} 张</dd></div></dl>
             <p v-if="selectionNotice" class="upload-selection-note">{{ selectionNotice }}</p>
 
             <el-alert
@@ -91,22 +88,24 @@
               title="可识别文件夹层级中的采集信息，请在上传前核对"
               style="margin-top: 12px;"
             />
+            <SelectedImageFiles v-if="folderInfo.files.length" :files="folderInfo.files" :scope-key="accountScope()" />
           </div>
 
-          <div v-if="folderInfo.imageCount" class="capture-meta-form">
-            <el-form-item label="采集日期">
+          <div v-if="folderInfo.imageCount" class="capture-meta-form" role="group" aria-labelledby="upload-capture-heading" aria-describedby="upload-capture-scope">
+            <h2 id="upload-capture-heading" class="capture-meta-heading"><AppIcon name="Document" :size="17" />采集信息</h2>
+            <el-form-item label="采集日期" required>
               <el-date-picker
                 v-model="folderInfo.captureDate"
                 :disabled="uploadingToOss || uploadAttempted"
                 value-format="YYYY-MM-DD"
-                aria-label="选择采集日期" placeholder="选择采集日期"
+                aria-label="采集日期" placeholder="选择采集日期"
                 style="width: 100%"
               />
             </el-form-item>
-            <el-form-item label="地区">
-              <el-input v-model="folderInfo.region" :disabled="uploadingToOss || uploadAttempted" aria-label="例如 上海" placeholder="例如 上海" />
+            <el-form-item label="地区" required>
+              <el-input v-model="folderInfo.region" :disabled="uploadingToOss || uploadAttempted" aria-label="采集地区" placeholder="例如 上海" />
             </el-form-item>
-            <el-form-item label="采集员">
+            <el-form-item label="采集员" required>
               <el-select
                 v-model="folderInfo.collector"
                 aria-label="选择采集员" placeholder="选择采集员"
@@ -123,12 +122,12 @@
                   :label="`${emp.name} (${emp.employeeNumber || ''})`"
                 >
                   <span>{{ emp.name }}</span>
-                  <span style="color: #8b95a5; margin-left: 8px; font-size: 12px;">{{ emp.employeeNumber }}</span>
+                  <span class="capture-option-detail">{{ emp.employeeNumber }}</span>
                 </el-option>
               </el-select>
               <p v-if="employeeError" class="capture-read-error" role="alert">{{ employeeError }}<button type="button" :disabled="loadingEmployees || uploadingToOss" @click="fetchEmployees">重新读取</button></p>
             </el-form-item>
-            <el-form-item label="采集设备">
+            <el-form-item label="采集设备" required>
               <el-select
                 v-model="folderInfo.deviceName"
                 aria-label="选择采集设备" placeholder="选择采集设备"
@@ -145,16 +144,16 @@
                   :label="`${dev.deviceCode} ${dev.modelName || ''}`"
                 >
                   <span>{{ dev.deviceCode }}</span>
-                  <span style="color: #8b95a5; margin-left: 8px; font-size: 12px;">{{ dev.modelName }}</span>
+                  <span class="capture-option-detail">{{ dev.modelName }}</span>
                 </el-option>
               </el-select>
               <p v-if="deviceError" class="capture-read-error" role="alert">{{ deviceError }}<button type="button" :disabled="loadingDevices || uploadingToOss" @click="fetchDevices">重新读取</button></p>
             </el-form-item>
-            <el-form-item label="图片文件夹名称">
-              <el-input v-model="folderInfo.imageFolderName" :disabled="uploadingToOss || uploadAttempted" aria-label="例如 批次A" placeholder="例如 批次A" />
+            <el-form-item label="图片文件夹名称" required>
+              <el-input v-model="folderInfo.imageFolderName" :disabled="uploadingToOss || uploadAttempted" aria-label="图片文件夹名称" placeholder="例如 批次A" />
             </el-form-item>
           </div>
-          <p v-if="folderInfo.imageCount" class="upload-selection-note">人员与设备候选仅为本次已加载范围。采集信息作为来源记录，不改变账号身份或质检分派。</p>
+          <p v-if="folderInfo.imageCount" id="upload-capture-scope" class="upload-selection-note">人员与设备候选仅为本次已加载范围。采集信息作为来源记录，不改变账号身份或质检分派。</p>
 
           <p v-if="folderInfo.imageCount" class="upload-readiness" :data-ready="!missingCaptureFields.length"><AppIcon :name="missingCaptureFields.length ? 'Warning' : 'CircleCheck'" :size="16" />{{ missingCaptureFields.length ? '还需补全：'+missingCaptureFields.join('、') : '采集信息已填写，请核对后上传' }}</p>
           <el-button
@@ -336,6 +335,7 @@ import { fetchDevicesForSelect, fetchEmployeesForSelect } from '../api/resourceO
 import { useTaskStore, useUploadStore, usePollingStore } from '../stores/detectionTask'
 import { beijingDateTime } from '../utils/beijingTime'
 import CollectionEmptyState from '../components/CollectionEmptyState.vue'
+import SelectedImageFiles from '../components/SelectedImageFiles.vue'
 import { useUserStore } from '../stores/user'
 
 const taskStore = useTaskStore()
@@ -718,19 +718,21 @@ onMounted(async () => {
 }
 
 .input-block {
-  padding: 18px;
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  border-radius: 18px;
-  background: linear-gradient(180deg, rgba(248, 250, 252, 0.95), rgba(255, 255, 255, 0.9));
+  padding: 0 0 16px;
+  border-bottom: 1px solid var(--app-border);
   margin-bottom: 16px;
 }
 
 .input-block-title {
-  margin-bottom: 14px;
-  font-size: 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 7px;
+  font-size: 15px;
   font-weight: 600;
-  color: #172033;
+  color: var(--app-text);
 }
+.input-block-title > .el-icon { flex:0 0 auto; color:var(--app-primary); }
 
 .wide-button {
   width: 100%;
@@ -742,12 +744,17 @@ onMounted(async () => {
 
 .folder-summary {
   margin-top: 14px;
-  padding: 12px 14px;
-  border-radius: 14px;
-  background: #f8fafc;
-  color: #475569;
+  color: var(--app-text);
+  padding: 0;
+  font-size: 12px;
   line-height: 1.8;
 }
+.folder-summary > div { display:grid; gap:3px; margin-top:9px; min-width:0; }
+.folder-summary dt { color:var(--app-text-secondary); }
+.folder-summary dd { margin:0; overflow-wrap:anywhere; }
+.capture-meta-heading { display:flex; align-items:center; gap:7px; margin:0 0 14px; font-size:15px; font-weight:600; line-height:1.8; color:var(--app-text); }
+.capture-meta-heading > .el-icon { flex:0 0 auto; color:var(--app-primary); }
+.capture-option-detail { color:var(--app-text-secondary); margin-left:8px; font-size:12px; }
 
 .capture-meta-form {
   margin-top: 16px;
@@ -957,7 +964,7 @@ onMounted(async () => {
   }
 }
 @media(max-width:480px) { .history-search-bar { grid-template-columns:minmax(0,1fr); }.upload-history-filter:first-child { grid-column:auto; } }
-.upload-selection-note { margin:10px 0 14px; color:var(--app-text-muted); font-size:11px; line-height:1.8; overflow-wrap:anywhere; }
+.upload-selection-note { margin:10px 0 14px; color:var(--app-text-secondary); font-size:12px; line-height:1.8; overflow-wrap:anywhere; }
 .capture-read-error { flex-basis:100%; margin:8px 0 0; color:var(--app-warning); font-size:12px; line-height:1.8; overflow-wrap:anywhere; }
 .capture-read-error button, .upload-attempt-note button { display:inline-flex; align-items:center; border:0; border-radius:4px; padding:3px 0; margin-left:8px; color:var(--app-primary); background:transparent; font:inherit; cursor:pointer; }
 .upload-attempt-note { display:flex; align-items:flex-start; gap:9px; margin-top:14px; padding:13px; border-radius:9px; color:var(--app-text-secondary); background:var(--app-primary-light); font-size:12px; line-height:1.85; }

@@ -43,7 +43,7 @@ export function cardRoute(type, id) {
   return ''
 }
 
-export const cardTitle = card => card.type === 'MODEL_OPERATIONS' ? '模型指标与发布配置' : card.type === 'DEVICE_ALERTS' ? '采集告警' : card.type === 'DEVICES' ? '设备运行状态' : card.type === 'MODELS' ? '检测模型' : card.type === 'METRICS' ? '工作统计' : card.type === 'REPORTS' ? (['create_report_draft', 'edit_report_draft'].includes(card.tool) ? '报告草稿结果' : '报告查询') : ['get_my_quality_records', 'get_quality_records'].includes(card.tool) ? '质检记录' : '检测任务'
+export const cardTitle = card => card.type === 'MODEL_OPERATIONS' ? '模型指标与发布配置' : card.type === 'DEVICE_ALERTS' ? '采集告警' : card.type === 'DEVICES' ? '设备状态记录' : card.type === 'MODELS' ? '检测模型' : card.type === 'METRICS' ? '工作统计' : card.type === 'REPORTS' ? (['create_report_draft', 'edit_report_draft'].includes(card.tool) ? '报告草稿结果' : '报告查询') : ['get_my_quality_records', 'get_quality_records'].includes(card.tool) ? '质检记录' : '检测任务'
 
 const rolloutLabels = { FULL: '全量', CANARY: '灰度', AB_TEST: 'A/B 测试', ROLLBACK: '回滚' }
 const validationLabels = { PASSED: '校验通过', FAILED: '校验失败', PENDING: '待校验' }
@@ -83,7 +83,7 @@ export function modelOperationDetails(item) {
     { label: '登记发布时间 · UTC+8', value: operationDate(usage.publishedAt) },
   ]
 }
-const alertStatusLabels = { OPEN: '待处理', ACKNOWLEDGED: '已确认', RESOLVED: '已解决' }
+const alertStatusLabels = { OPEN: '待处理', ACKNOWLEDGED: '已确认', RESOLVED: '已登记解决' }
 const alertLevelLabels = { MINOR: '轻微', MAJOR: '严重', CRITICAL: '紧急' }
 const alertTypeLabels = { CAPTURE_EXCEPTION: '采集异常', HEARTBEAT_OFFLINE: '心跳离线' }
 export const alertStatus = status => Object.hasOwn(alertStatusLabels, status) ? alertStatusLabels[status] : '状态未知'
@@ -96,6 +96,11 @@ export const deviceStatus = status => Object.hasOwn(deviceStatusLabels, status) 
 export const cardScope = scope => scope === 'SINGLE_ENTERPRISE' ? '全企业' : scope === 'OWNED_OR_ASSIGNED' ? '本人及分派任务' : ''
 export const reportStatus = status => ({ DRAFT: '私人草稿', SUBMITTED: '待审批', APPROVED: '已审批', REJECTED: '已驳回', WITHDRAWN: '已撤回' }[status] || '状态未知')
 export const metricLabels = { taskCount: '任务数', imageCount: '图片数', processedImageCount: '已处理图片', defectCount: '缺陷数量' }
+export const cardDeviceFields = [
+  {key:'status',label:'使用登记',domain:'device'}, {key:'onlineStatus',label:'连通记录',domain:'deviceObservation'},
+  {key:'plcStatus',label:'PLC',domain:'deviceObservation'}, {key:'cameraStatus',label:'相机',domain:'deviceObservation'},
+  {key:'captureStatus',label:'采集',domain:'deviceObservation'}
+]
 
 export const cardIcon = card => ({ TASKS:'Tickets', METRICS:'DataAnalysis', REPORTS:'DocumentChecked', DEVICES:'Monitor', DEVICE_ALERTS:'Warning', MODELS:'Collection', MODEL_OPERATIONS:'DataAnalysis' })[card?.type] || 'Document'
 export const cardCount = value => knownCount(value)?.toLocaleString('zh-CN') ?? '—'

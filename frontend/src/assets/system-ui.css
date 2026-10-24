@@ -78,9 +78,6 @@ button:not(:disabled):active { transform: scale(.985); }
 .upload-flow strong { font-size: 13px; font-weight: 650; color: var(--app-text); }
 .upload-flow p { margin: 5px 0 0; font-size: 12px; color: var(--app-text-secondary); line-height: 1.7; overflow-wrap: anywhere; }
 .upload-flow a { color: var(--app-primary); text-decoration: underline; text-underline-offset: 3px; }
-#app .upload-container .input-block { border-color: var(--app-border); border-radius: 10px; background: #f8fafc; }
-#app .upload-container .input-block-title { display: flex; align-items: center; gap: 8px; font-size: 15px; margin-bottom: 7px; }
-#app .upload-container .input-block-title .el-icon { color: var(--app-primary); }
 .upload-format-note { font-size: 12px; line-height: 1.8; color: var(--app-text-secondary); margin: 0 0 14px; }
 .upload-readiness { display: flex; align-items: flex-start; gap: 6px; padding: 10px 12px; border-radius: 8px; color: var(--app-warning); background: var(--app-warning-soft); font-size: 12px; line-height: 1.8; }
 .upload-readiness .el-icon { flex-shrink: 0; margin-top: 3px; }

@@ -60,19 +60,7 @@
           >
             <AppIcon :name="isMobile ? 'Menu' : collapsed ? 'Expand' : 'Fold'" :size="20" />
           </button>
-          <nav v-if="breadcrumbs.length" class="breadcrumb-nav" aria-label="当前页面路径">
-            <template v-for="(crumb, idx) in breadcrumbs" :key="idx">
-              <span v-if="idx > 0" class="breadcrumb-sep" aria-hidden="true">/</span>
-              <router-link
-                v-if="crumb.path && idx < breadcrumbs.length - 1"
-                :to="crumb.path"
-                class="breadcrumb-link"
-              >
-                {{ crumb.label }}
-              </router-link>
-              <span v-else class="breadcrumb-current" :aria-current="idx===breadcrumbs.length-1 ? 'page' : undefined">{{ crumb.label }}</span>
-            </template>
-          </nav>
+          <AppBreadcrumbs v-if="breadcrumbs.length" :items="breadcrumbs" />
           <div v-else>
             <div class="header-caption">工业视觉检测平台</div>
             <h1 class="header-title">{{ currentPageTitle }}</h1>
@@ -121,6 +109,7 @@ import ChatAssistantDrawer from '@/components/chat/ChatAssistantDrawer.vue'
 import ChatAssistantLauncher from '@/components/chat/ChatAssistantLauncher.vue'
 import WorkspaceNavigation from '@/components/WorkspaceNavigation.vue'
 import AppAccountMenu from '@/components/AppAccountMenu.vue'
+import AppBreadcrumbs from '@/components/AppBreadcrumbs.vue'
 import {
   HomeFilled,
   Tickets,
@@ -540,7 +529,7 @@ onBeforeUnmount(() => {
 
 .header-left {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 14px;
   flex: 1;
   min-width: 0;
@@ -558,7 +547,7 @@ onBeforeUnmount(() => {
   box-shadow: var(--app-shadow-xs);
   cursor: pointer;
   flex-shrink: 0;
-  margin-top: 4px;
+  margin-top: 0;
   transition: background-color 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
 
   &:hover {
@@ -597,44 +586,6 @@ onBeforeUnmount(() => {
   line-height: 1.15;
   color: var(--app-text);
   letter-spacing: -0.03em;
-}
-
-/* 面包屑导航 */
-.breadcrumb-nav {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  padding-top: 4px;
-}
-
-.breadcrumb-sep {
-  color: var(--app-text-muted);
-  font-size: 14px;
-  user-select: none;
-}
-
-.breadcrumb-link {
-  font-size: 14px;
-  color: var(--app-text-secondary);
-  text-decoration: none;
-  transition: color 0.2s;
-
-  &:hover {
-    color: var(--app-primary);
-  }
-
-  &:focus-visible {
-    outline-offset: 4px;
-  }
-}
-
-.breadcrumb-current {
-  font-size: 21px;
-  font-weight: 700;
-  color: var(--app-text);
-  line-height: 1.15;
-  letter-spacing: -0.025em;
 }
 
 .header-actions {
@@ -763,8 +714,8 @@ onBeforeUnmount(() => {
   .brand-mark { width: 36px; height: 36px; border-radius: 11px; font-size: 13px; }
   .brand-block { padding: 0; margin-bottom: 16px; }
   .layout-header { min-height: 68px; padding: 12px; gap: 8px; }
-  .header-caption, .breadcrumb-link, .breadcrumb-sep, .assistant-entry-link { display: none; }
-  .header-title, .breadcrumb-current { font-size: 17px; }
+  .header-caption, .assistant-entry-link { display: none; }
+  .header-title { font-size: 17px; }
   .header-actions { gap: 4px; }
   .layout-content { padding: 12px; }
   .is-agent-workspace .layout-content, .is-trace-workspace .layout-content { padding: 8px; }
@@ -778,8 +729,6 @@ onBeforeUnmount(() => {
 .layout-header { min-height: 76px; background: white; border-bottom: 1px solid var(--app-border); }
 .header-actions { gap: 14px; }
 .workspace-scope { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; font-size: 12px; color: var(--app-text-secondary); }
-.breadcrumb-nav { flex-wrap: wrap; gap: 6px; }
-.breadcrumb-current { color: var(--app-text); font-weight: 600; }
 .layout-content { padding: 28px 32px; }
 .footer-card { box-shadow: none; border: 0; background: var(--app-bg); padding: 15px; }
 .footer-card-meter { display: none; }
@@ -795,7 +744,6 @@ onBeforeUnmount(() => {
   .collapse-btn { display: inline-flex; flex: 0 0 34px; width: 34px; height: 34px; }
   .layout-header { min-height: 62px; padding: 10px 12px; }
   .header-left { min-width: 0; gap: 10px; }
-  .breadcrumb-current { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 38vw; }
   .workspace-scope, .manual-entry-link { display: none; }
   .header-actions { gap: 8px; }
   .layout-content { padding: 18px 14px; }

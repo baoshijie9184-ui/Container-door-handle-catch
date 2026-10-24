@@ -2,7 +2,7 @@
   <div class="wb-interaction" :data-interaction="item.kind" :aria-busy="busy">
     <template v-if="item.kind === 'PLAN'">
       <details class="wb-plan-feedback">
-        <summary><AppIcon name="Edit" :size="14" />填写修订意见</summary>
+        <summary><AppIcon name="Edit" :size="14" />填写修订意见<span v-if="text.trim()" class="wb-feedback-draft">有未提交内容</span><AppIcon class="wb-feedback-chevron" name="ArrowDown" :size="13" /></summary>
         <label class="wb-input-label">需要调整的范围或步骤
           <textarea :value="text" :disabled="busy" :maxlength="WORKBENCH_RESPONSE_LIMIT" rows="3" placeholder="填写后可要求修订，计划修改后需要重新审阅" @input="$emit('update:value', $event.target.value)" />
         </label>
@@ -12,8 +12,8 @@
       <p v-if="text.trim()" class="wb-input-hint">修订意见尚未提交；批准计划仍按当前正文执行。</p>
       <div class="wb-actions">
         <button type="button" class="wb-button-primary" :disabled="busy" @click="command('approve-plan')"><AppIcon name="CircleCheck" :size="14" />批准计划</button>
-        <button type="button" :disabled="busy || !text.trim() || text.length > WORKBENCH_RESPONSE_LIMIT" @click="command('revise-plan', { feedback: text })">要求修订</button>
-        <button type="button" class="wb-button-quiet" :disabled="busy" @click="command('cancel')">取消计划</button>
+        <button type="button" :disabled="busy || !text.trim() || text.length > WORKBENCH_RESPONSE_LIMIT" @click="command('revise-plan', { feedback: text })"><AppIcon name="Edit" :size="14" />要求修订</button>
+        <button type="button" class="wb-button-quiet" :disabled="busy" @click="command('cancel')"><AppIcon name="Close" :size="14" />取消计划</button>
       </div>
     </template>
     <form v-else-if="item.kind === 'QUESTION'" @submit.prevent="answer">
@@ -32,7 +32,7 @@
         <p v-else class="wb-note">问题类型或选项不完整，请刷新核对；不会猜测回答。</p>
       </fieldset>
       <p class="wb-input-hint">{{ type === 'MULTIPLE' ? `已选择 ${Array.isArray(value) ? value.length : 0} 项 · ` : '' }}提交后继续原任务，回答不授予业务操作权限</p>
-      <div class="wb-actions"><button type="submit" class="wb-button-primary" :disabled="busy || !ready"><AppIcon name="ChatDotRound" :size="14" />提交回答</button><button type="button" class="wb-button-quiet" :disabled="busy" @click="command('cancel')">取消问题</button></div>
+      <div class="wb-actions"><button type="submit" class="wb-button-primary" :disabled="busy || !ready"><AppIcon name="ChatDotRound" :size="14" />提交回答</button><button type="button" class="wb-button-quiet" :disabled="busy" @click="command('cancel')"><AppIcon name="Close" :size="14" />取消问题</button></div>
     </form>
   </div>
 </template>

@@ -22,13 +22,12 @@
     <p v-if="item.kind==='PLAN'" class="wb-purpose"><AppIcon name="DocumentChecked" :size="14" />审阅执行范围，业务操作仍需单独确认</p>
     <a v-if="item.data.runId&&/^[a-f0-9-]{36}$/.test(item.data.runId)" :href="'/#/agent/trace?runId='+encodeURIComponent(item.data.runId)">查看本次执行轨迹</a>
     <a v-if="['/detection','/agent/mcp','/agent/actions'].includes(item.data.managementPath)" :href="'/#'+item.data.managementPath">打开原任务页面</a>
-    <p v-if="item.data.text && ['PLAN','QUESTION'].includes(item.kind)" class="wb-reading-text">{{ item.data.text }}</p>
+    <WorkbenchInteractionRecord v-if="['PLAN','QUESTION'].includes(item.kind)" :key="item.id+':'+item.revision+':body'" :item="item" part="body" />
     <pre v-else-if="item.data.text && item.kind!=='CONTEXT'" tabindex="0" aria-label="工作记录正文">{{ item.data.text }}</pre>
     <p v-if="item.kind==='EXECUTION'&&item.data.result" class="wb-output">{{ item.data.result }}</p>
     <button v-if="item.kind==='EXECUTION'&&['RUNNING','QUEUED','READY','WAITING_PLAN','WAITING_INPUT','WAITING_CHILD'].includes(item.status)" :disabled="busy" @click="cancelTask(item)">取消任务</button>
     <AgentTaskChecklist :tasks="Array.isArray(item.data.tasks)?item.data.tasks:undefined" />
-    <div v-if="item.kind==='QUESTION'&&item.status==='ANSWERED'" class="wb-answer"><strong>已提交的回答</strong><p>{{ workbenchAnswer(item.data.answer) }}</p></div>
-    <div v-if="item.kind==='PLAN'&&item.data.feedback" class="wb-answer"><strong>修订意见</strong><p>{{ item.data.feedback }}</p></div>
+    <WorkbenchInteractionRecord v-if="['PLAN','QUESTION'].includes(item.kind)" :key="item.id+':'+item.revision+':response'" :item="item" part="response" />
     <WorkbenchInteraction v-if="['PLAN','QUESTION'].includes(item.kind) && item.status === 'PENDING'" :item="item" :value="item.data.questionType === 'MULTIPLE' ? (selections[item.id] || []) : (drafts[item.id] || '')" :busy="busy" @update:value="updateInteraction(item, $event)" @command="act(item, $event.action, $event.input)" />
     <AgentChildTask v-if="item.kind==='CHILD'" :item="item" :value="drafts[item.id] || ''" :busy="busy" :recovery-shown="item.status==='NEEDS_REVIEW'" :available-views="tabs.map(([key])=>key)" @update:value="drafts[item.id]=$event" @command="act(item,'child-message',{content:$event})" @cancel="cancelChild(item)" @view="openWorkbenchView" />
     <AgentUsageSummary v-if="item.kind==='USAGE'" :data="item.data" />
@@ -65,7 +64,8 @@ import AgentRecoveryPanel from './AgentRecoveryPanel.vue'
 import {recoveryReviewError} from '@/utils/recoveryPresentation'
 import { contextStatusCode } from '@/utils/contextPresentation'
 import WorkbenchInteraction from './WorkbenchInteraction.vue'
-import {workbenchKind,workbenchTabIcon,workbenchInteractionStatus,workbenchTitle,workbenchEmpty,workbenchTime,workbenchAnswer} from '@/utils/workbenchPresentation'
+import WorkbenchInteractionRecord from './WorkbenchInteractionRecord.vue'
+import {workbenchKind,workbenchTabIcon,workbenchInteractionStatus,workbenchTitle,workbenchEmpty,workbenchTime} from '@/utils/workbenchPresentation'
 import {readFilePreview,boundedTextPreview} from '@/utils/chatFileReferences'
 import '@/assets/agent-workbench.css'
 import '@/assets/chat-file-references.css'

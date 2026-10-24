@@ -1,7 +1,7 @@
 import React,{forwardRef,useEffect,useImperativeHandle,useRef,useState} from 'react';
 import {Plus,FileText,Image as ImageIcon,ChartNoAxesCombined,X,ShieldCheck,MessageSquareText,Square,ArrowUp,WifiOff,TriangleAlert} from 'lucide-react';
 import {ComposerResources,modelLabel,selectedModelMissing} from '../../frontend/src/utils/composerResources.js';
-import {composerAttachment,composerDefaultModel,composerUploadHint} from '../../frontend/src/utils/composerPresentation';
+import {composerAttachment,composerDefaultModel,composerUploadHint,composerModelTitle} from '../../frontend/src/utils/composerPresentation';
 import '../../frontend/src/assets/composer-presentation.css';
 export const ComposerToolbar=forwardRef(function Toolbar({sessionId,base,locked,onUpload,run,draft='',onDraft,onSend,onStop,disabled},ref){
  const [state,setState]=useState({ready:false,files:[],models:[],modelId:'',busy:false,error:''});const input=useRef(null),client=useRef(null);
@@ -19,9 +19,9 @@ export const ComposerToolbar=forwardRef(function Toolbar({sessionId,base,locked,
    <input type="file" hidden multiple ref={input} accept=".png,.jpg,.jpeg,.webp,.pdf,.txt,.md,.csv,.json,.html,.svg" onChange={upload}/>
    <button type="button" aria-label="添加附件" title={composerUploadHint(state,disabled)} disabled={!state.ready||!state.filesEnabled||state.busy||disabled} onClick={()=>input.current.click()}><Plus size={19} aria-hidden="true"/></button>
    <span className="composer-permission" title="工具按当前账号权限执行，敏感操作仍需人工确认"><ShieldCheck size={15} aria-hidden="true"/><span>按账号权限</span></span>
-   <select aria-label="使用模型" title={locked?'当前任务使用的模型已固定，结束后可切换':'仅对当前会话的新任务生效'} value={state.modelId} disabled={!state.ready||state.busy||locked||disabled} onChange={event=>client.current.select(event.target.value).catch(()=>{})}><option value="">{composerDefaultModel(state)}</option>{selectedModelMissing(state)&&<option value={state.modelId} disabled>原选模型已不可用，请重新选择</option>}{state.models.map(model=><option key={model.id} value={model.id}>{modelLabel(model)}</option>)}</select>
+   <select aria-label="使用模型" title={composerModelTitle(state,locked,disabled)} value={state.modelId} disabled={!state.ready||state.busy||locked||disabled} onChange={event=>client.current.select(event.target.value).catch(()=>{})}><option value="">{composerDefaultModel(state)}</option>{selectedModelMissing(state)&&<option value={state.modelId} disabled>原选模型已不可用，请重新选择</option>}{state.models.map(model=><option key={model.id} value={model.id}>{modelLabel(model)}</option>)}</select>
    <span className="composer-context" title="使用本会话历史与已授权的资料"><MessageSquareText size={15} aria-hidden="true"/><span>会话上下文</span></span>
-   {state.busy&&<span role="status">处理中</span>}
+   {state.busy&&<span className="composer-upload-status" role="status">处理中</span>}
    {run?.local&&run.runId&&!draft.trim()&&!state.files.length?<button type="button" className="gpt-stop" aria-label="停止任务" title="停止当前任务" onClick={onStop}><Square size={14} fill="currentColor" aria-hidden="true"/></button>:<button type="button" className="gpt-send" aria-label="发送消息" title="发送消息" disabled={disabled||state.busy||(!draft.trim()&&!state.files.length)} onClick={()=>onSend(draft)}><ArrowUp size={18} aria-hidden="true"/></button>}
   </div>
   {state.error&&<p className="control-error" role="alert">{state.error}</p>}

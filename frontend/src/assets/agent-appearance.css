@@ -160,9 +160,9 @@
 .agent-chat-page .quick-chips { gap: 8px; margin-bottom: 10px; }
 .agent-chat-page .quick-chip { border-color: var(--agent-line); color: var(--agent-muted); background: #fff; border-radius: 8px; }
 .agent-chat-page .composer-toolbar select,
-.agent-shell .composer-resource-toolbar select { border-radius: 8px; background: var(--agent-soft); padding: 7px 9px; font-size: 11px; color: #475569; }
+.agent-shell .composer-resource-toolbar select { border-radius: 8px; background: var(--agent-soft); padding: 7px 9px; font-size: 12px; color: #475569; }
 .agent-chat-page .composer-hint,
-.agent-shell .command-hint { color: var(--agent-muted); font-size: 10px; margin-top: 10px; }
+.agent-shell .command-hint { color: var(--app-text-secondary); font-size: 12px; margin-top: 10px; }
 .agent-chat-page .gpt-composer-input .composer-send.active,
 .agent-shell .composer-resource-toolbar button.gpt-send:not(:disabled) { background: #253f69; box-shadow: none; }
 

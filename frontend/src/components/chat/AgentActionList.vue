@@ -33,16 +33,7 @@
         <dt>重试影响</dt><dd>{{ action.retry.impact }}</dd>
         <template v-if="action.execution"><dt>新派发编号</dt><dd>{{ action.execution.dispatchId }}</dd></template>
       </dl>
-      <dl v-else-if="action.command && action.before">
-        <dt>检测任务</dt><dd>{{ action.command.taskId }}</dd>
-        <dt>质检站点</dt><dd>{{ action.before.qualityStation || '未分配' }} → {{ action.command.qualityStation }}</dd>
-        <dt>责任人</dt><dd>{{ action.before.assignee || '未分配' }} → {{ action.command.assignee }}</dd>
-        <dt>责任人 ID</dt><dd>{{ action.before.assigneeUserId ?? '未知' }} → {{ action.command.assigneeUserId ?? '未知' }}</dd>
-        <dt>账号快照</dt><dd>{{ action.command.assigneeRevision || '历史提议未记录' }}</dd>
-        <template v-if="action.result?.after"><dt>分派操作人</dt><dd>{{ action.result.after.assignedByName || '未知' }} · ID {{ action.result.after.assignedByUserId ?? '未知' }}</dd><dt>分派身份版本</dt><dd>{{ action.result.after.assignmentRevision ?? '未知' }}</dd></template>
-        <dt>截止时间</dt><dd>{{ beijingDateTime(action.command.dueAt ?? null) || '未设置' }}</dd>
-        <dt v-if="action.command.assignmentRemark">备注</dt><dd v-if="action.command.assignmentRemark">{{ action.command.assignmentRemark }}</dd>
-      </dl>
+      <AgentAssignmentReview v-else-if="action.command && action.before" :key="action.actionId+':'+action.version" :action="action" />
       <p v-if="action.creation && action.status === 'EXECUTING'" class="action-note">已保存批准 正在准备检测文件 可刷新核对状态 不要重复提交</p>
       <p v-if="['RETRY_DETECTION', 'CREATE_DETECTION'].includes(action.operation) && action.status === 'SUCCEEDED'" class="action-note">已受理新的检测派发 不表示检测已完成 请到检测记录查看实际进度</p>
       <p v-if="action.reasonCode" class="action-note">{{ action.creation && action.reasonCode === 'EXECUTION_NEEDS_REVIEW' ? '图片传输或检测创建结果待核对 不会自动重传或重复提交' : reasons[action.reasonCode] || '操作未执行 请重新核对任务并生成提议' }}</p>
@@ -65,6 +56,7 @@ import { beijingDateTime } from '@/utils/beijingTime'
 import DetectionProposalImages from './DetectionProposalImages.vue'
 import DetectionCreationReview from './DetectionCreationReview.vue'
 import AgentActionAudit from './AgentActionAudit.vue'
+import AgentAssignmentReview from './AgentAssignmentReview.vue'
 import ProposalImageGallery from './ProposalImageGallery.vue'
 import { useUserStore } from '@/stores/user'
 const props = defineProps({ sessionId: String, runId: String, refreshKey: [String, Number], standalone: Boolean })

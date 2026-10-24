@@ -34,17 +34,18 @@
           <template v-else-if="card.type === 'DEVICES'">
             <div v-for="device in card.items || []" :key="device.deviceId" class="card-record">
               <a :href="cardRoute('DEVICES', device.deviceId)">{{ device.deviceCode || '设备 ' + device.deviceId }}</a>
-              <p>使用状态 {{ deviceStatus(device.status) }} · 连通状态 {{ deviceStatus(device.onlineStatus) }}</p>
-              <p>PLC {{ deviceStatus(device.plcStatus) }} · 相机 {{ deviceStatus(device.cameraStatus) }} · 采集 {{ deviceStatus(device.captureStatus) }}</p>
+              <dl class="card-device-states"><div v-for="field in cardDeviceFields" :key="field.key"><dt>{{ field.label }}</dt><dd><StatusBadge :domain="field.domain" :code="device[field.key]" /></dd></div></dl>
               <a class="record-action" :href="cardRoute('DEVICES', device.deviceId)">查看设备</a>
             </div>
+            <p class="card-note">状态来自本次读取的设备记录，不是持续监控或当前健康证明。</p>
           </template>
           <template v-else-if="card.type === 'DEVICE_ALERTS'">
             <div v-for="alert in card.items || []" :key="alert.alertId" class="card-record">
-              <strong>{{ alert.alertCode || '告警 ' + alert.alertId }}</strong>
-              <p>{{ alertType(alert.type) }} · {{ alertLevel(alert.level) }} · {{ alertStatus(alert.status) }}</p>
+              <div class="card-alert-heading"><strong>{{ alert.alertCode || '告警 ' + alert.alertId }}</strong><StatusBadge domain="deviceAlert" :code="alert.status" :label="alertStatus(alert.status)" /></div>
+              <div class="card-alert-classification"><span>{{ alertType(alert.type) }}</span><StatusBadge domain="deviceAlertLevel" :code="alert.level" :label="alertLevel(alert.level)" /></div>
               <p>设备 {{ alert.deviceCode || '未记录' }}</p>
-              <p>发生 {{ formatDate(alert.createdAt) }} · 记录更新 {{ formatDate(alert.updatedAt) }} · UTC+8</p>
+              <dl class="card-record-facts"><dt>发生 · UTC+8</dt><dd>{{ formatDate(alert.createdAt) }}</dd><dt>记录更新 · UTC+8</dt><dd>{{ formatDate(alert.updatedAt) }}</dd></dl>
+              <details class="card-alert-identity"><summary>核对告警编号与类型代码<AppIcon class="card-alert-chevron" name="ArrowDown" :size="13" /></summary><dl class="card-record-facts"><dt>告警 ID</dt><dd>{{ alert.alertId }}</dd><dt>设备 ID</dt><dd>{{ alert.deviceId || '未记录' }}</dd><dt>类型代码</dt><dd>{{ alert.type || '未记录' }}</dd></dl></details>
               <a v-if="cardRoute('DEVICES', alert.deviceId)" class="record-action" :href="cardRoute('DEVICES', alert.deviceId)">查看设备</a>
               <p v-else>设备关联已不可用</p>
             </div>
@@ -84,7 +85,7 @@ import AgentMarkdown from './AgentMarkdown.vue'
 import { beijingDateTime } from '@/utils/beijingTime'
 import { resolveAgentCards } from '@/api/chatAssistant'
 import { useUserStore } from '@/stores/user'
-import { parseAgentCardEnvelope, readResolvedAgentCards, cardIcon, cardCount, cardVersion, cardEmptyText, cardRoute, cardTitle, cardScope, reportStatus, metricLabels, modelStatus, deviceStatus, alertStatus, alertLevel, alertType, modelOperationMetrics, modelOperationDetails } from '@/utils/agentCards'
+import { parseAgentCardEnvelope, readResolvedAgentCards, cardIcon, cardCount, cardVersion, cardEmptyText, cardRoute, cardTitle, cardScope, reportStatus, metricLabels, cardDeviceFields, modelStatus, alertStatus, alertLevel, alertType, modelOperationMetrics, modelOperationDetails } from '@/utils/agentCards'
 const props = defineProps({ message: { type: Object, required: true } })
 const userStore = useUserStore()
 const actor = computed(() => JSON.stringify([userStore.identity?.userId || userStore.username || '',userStore.role,userStore.isAuthenticated]))

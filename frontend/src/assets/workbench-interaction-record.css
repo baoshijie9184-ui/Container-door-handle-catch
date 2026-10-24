@@ -1,0 +1,16 @@
+/* Read-only plan/question content shared by the Vue and React workbenches. */
+.agent-workbench .wb-interaction-record { margin:16px 0; min-width:0; }
+.wb-interaction-record > section { padding:12px 0; min-width:0; }
+.wb-interaction-record > section + section { border-top:1px solid var(--app-border); }
+.agent-workbench .wb-interaction-record h4 { display:flex; align-items:center; flex-wrap:wrap; gap:7px; margin:0 0 9px; font-size:12px; font-weight:550; line-height:1.8; color:var(--app-text-secondary); }
+.wb-interaction-record h4 > :is(svg,.el-icon) { flex:0 0 auto; color:var(--app-primary); }
+.wb-interaction-record h4 > span { margin-left:auto; color:var(--app-text-secondary); font-weight:400; }
+.agent-workbench .wb-interaction-record .wb-record-copy { min-width:0; color:var(--app-text); font-size:13px; line-height:1.9; overflow-wrap:anywhere; }
+.agent-workbench .wb-interaction-record .wb-record-copy p { margin:0; color:inherit; font:inherit; white-space:pre-wrap; overflow-wrap:anywhere; }
+.agent-workbench .wb-interaction-record .wb-record-copy ul { margin:0; padding:0 0 0 20px; font:inherit; color:inherit; }
+.agent-workbench .wb-interaction-record .wb-record-copy li { padding:5px 0; font:inherit; color:inherit; white-space:pre-wrap; overflow-wrap:anywhere; }
+.wb-interaction-record .wb-record-copy.is-long { max-height:360px; max-height:min(360px,45dvh); overflow:auto; overscroll-behavior:contain; padding:2px 7px 2px 2px; border-bottom:1px solid var(--app-border); scrollbar-gutter:stable; }
+.wb-interaction-record .wb-record-copy:focus-visible { outline:2px solid var(--app-primary); outline-offset:-2px; border-radius:3px; }
+.agent-workbench .wb-interaction-record .wb-record-reading-hint { display:flex; align-items:flex-start; gap:6px; margin:8px 0 0; font-size:12px; line-height:1.85; color:var(--app-text-secondary); overflow-wrap:anywhere; }
+.wb-interaction-record .wb-record-reading-hint > :is(svg,.el-icon) { flex:0 0 auto; margin-top:4px; }
+@media(max-width:480px) { .wb-interaction-record .wb-record-copy.is-long { max-height:300px; max-height:min(300px,42dvh); } }

@@ -58,7 +58,7 @@ const domains = {
   mcpEnabled: { ENABLED: entry('已启用', 'success', 'CircleCheck'), DISABLED: entry('未启用', 'info', 'Lock') },
   organizationBinding: { BIND: entry('关联员工','info','Connection'), UNBIND: entry('解除关联','warning','Lock'), REBIND: entry('更换员工','info','Connection') },
   usage: {
-    IN_USE: entry('使用中', 'info', 'Monitor'), '使用中': entry('使用中', 'info', 'Monitor'), RETURNED: entry('已归还', 'info', 'CircleCheck'),
+    IN_USE: entry('使用中', 'progress', 'Monitor'), '使用中': entry('使用中', 'progress', 'Monitor'), RETURNED: entry('已归还', 'info', 'CircleCheck'),
     '已归还': entry('已归还', 'info', 'CircleCheck')
   },
   detection: {
@@ -184,10 +184,22 @@ const domains = {
     ARCHIVED: entry('已归档'), DISABLED: entry('已停用'), FAILED: entry('失败', 'danger', 'Warning')
   },
   device: {
-    IN_USE: entry('使用中', 'success', 'CircleCheck'), ONLINE: entry('在线', 'success', 'CircleCheck'),
+    IN_USE: entry('使用中', 'progress', 'Monitor'), ONLINE: entry('在线', 'success', 'CircleCheck'),
     MAINTENANCE: entry('维护中', 'warning', 'Clock'), OFFLINE: entry('离线', 'info', 'Monitor'),
-    UNUSED: entry('未使用', 'info', 'Monitor'), IDLE: entry('空闲', 'info', 'Monitor'),
+    UNUSED: entry('未使用', 'info', 'Monitor'), IDLE: entry('未使用', 'info', 'Monitor'),
     SCRAPPED: entry('已报废', 'danger', 'Warning')
+  },
+  deviceObservation: {
+    ONLINE: entry('在线','success','Connection'), CONNECTED: entry('已连接','success','Connection'), NORMAL: entry('正常','success','CircleCheck'),
+    OFFLINE: entry('离线','warning','Monitor'), DISCONNECTED: entry('未连接','warning','Connection'), ERROR: entry('异常','danger','Warning'),
+    RUNNING: entry('运行中','progress','Operation'), CAPTURING: entry('采集中','progress','Picture'), STOPPED: entry('已停止','info','Monitor'), IDLE: entry('空闲','info','Monitor'),
+    UNKNOWN: entry('未知','info','Search')
+  },
+  deviceAlert: {
+    OPEN: entry('待处理','warning','Clock'), ACKNOWLEDGED: entry('已确认','info','DocumentChecked'), RESOLVED: entry('已登记解决','success','CircleCheck')
+  },
+  deviceAlertLevel: {
+    MINOR: entry('轻微','warning','Warning'), MAJOR: entry('严重','danger','Warning'), CRITICAL: entry('紧急','danger','Warning')
   },
   employee: {
     ACTIVE: entry('在岗', 'success', 'CircleCheck'), ON_LEAVE: entry('休假', 'warning', 'Clock'),

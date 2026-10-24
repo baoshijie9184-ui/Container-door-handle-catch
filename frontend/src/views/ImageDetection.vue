@@ -27,6 +27,7 @@
               <el-form-item label="选择模型（可选）">
                 <el-select
                   v-model="form.modelId"
+                  aria-describedby="detection-model-choice-note"
                   aria-label="选择检测模型，不选则由服务端选择" placeholder="不选则由服务端选择"
                   :loading="modelsLoading" :disabled="loadingSingle"
                   :no-data-text="modelsError ? '目录读取失败，请重新读取' : modelsLoading || !modelsLoaded ? '正在核对模型目录' : '目录没有返回模型，可由服务端选择'"
@@ -43,11 +44,13 @@
                 </el-select>
               </el-form-item>
               <p v-if="modelsError" class="detection-input-note is-warning" role="alert">{{ modelsError }}<button type="button" :disabled="modelsLoading || loadingSingle" @click="fetchModels">重新读取目录</button></p>
-              <p class="detection-input-note">{{ form.modelId ? '已选模型仅作为本次提交参数，实际执行版本请核对任务记录。' : '未指定模型时由服务端按现有配置选择，实际模型以任务记录为准。' }}</p>
+              <div v-if="form.modelId" class="detection-model-selection"><AppIcon name="Tickets" :size="17" /><div><strong>{{ selectedDetectionModel?.modelName || '所选模型名称尚未核对' }}</strong><span>模型 #{{ form.modelId }} · 版本 {{ selectedDetectionModel?.version || '未记录' }}</span><span v-if="!selectedDetectionModel">本次目录未找到此编号，提交时仍需由服务端核对。</span><span v-else-if="modelsError">以上保留上次读取的目录资料。</span></div><StatusBadge v-if="selectedDetectionModel" domain="model" :code="selectedDetectionModel.status" /></div>
+              <p id="detection-model-choice-note" class="detection-input-note">{{ form.modelId ? '已选模型仅作为本次提交参数，实际执行版本请核对任务记录。' : '未指定模型时由服务端按现有配置选择，实际模型以任务记录为准。' }}</p>
 
               <el-form-item label="置信度阈值">
-                <el-slider v-model="form.threshold" :disabled="loadingSingle" :min="0" :max="1" :step="0.01" aria-label="本次检测置信度阈值" />
-                <div class="threshold-text">当前阈值：{{ Math.round(form.threshold * 100) }}%</div>
+                <el-slider v-model="form.threshold" :disabled="loadingSingle" :min="0" :max="1" :step="0.01" :format-tooltip="value=>Math.round(value*100)+'%'" :format-value-text="value=>value.toFixed(2)+'，'+Math.round(value*100)+'%'" aria-label="本次检测置信度阈值，范围 0 至 1" aria-describedby="detection-threshold-note" />
+                <div class="threshold-text"><span>本次提交阈值</span><output aria-label="当前置信度阈值">{{ form.threshold.toFixed(2) }}<small>（{{ Math.round(form.threshold * 100) }}%）</small></output></div>
+                <p id="detection-threshold-note" class="detection-input-note">阈值是模型分数的筛选条件，不是准确率或人工结论。本页设置用于下一次单图或待检测任务提交，不会改写已经提交的任务。</p>
               </el-form-item>
 
               <div class="input-grid">
@@ -147,8 +150,12 @@
             </template>
             <!-- 搜索栏 -->
             <div class="task-search-bar">
+              <label class="workbench-task-filter" for="workbench-task-keyword"><span>任务或文件夹</span>
               <el-input
+                id="workbench-task-keyword"
+                ref="taskKeywordInput"
                 v-model="taskSearchKeyword"
+                maxlength="200"
                 aria-label="搜索任务ID或文件夹名…" placeholder="搜索任务ID或文件夹名…"
                 clearable
                 size="small"
@@ -156,18 +163,22 @@
               >
                 <template #prefix><el-icon><Search /></el-icon></template>
               </el-input>
+              </label>
+              <label class="workbench-task-filter" for="workbench-task-date"><span>最近更新日期 · UTC+8</span>
               <el-date-picker
+                id="workbench-task-date"
                 v-model="taskFilterDate"
-                aria-label="选择日期" placeholder="选择日期"
+                aria-label="按 UTC+8 最近更新日期筛选当前任务清单" placeholder="选择更新日期"
                 size="small"
                 class="task-date-picker"
                 value-format="YYYY-MM-DD"
                 clearable
               />
+              </label>
             </div>
             <!-- 筛选标签 -->
             <div v-if="taskList.length" class="task-filter-bar">
-              <el-radio-group v-model="taskFilter" size="small" >
+              <el-radio-group v-model="taskFilter" size="small" aria-label="按已登记处理阶段筛选当前任务清单">
                 <el-radio-button value="all">全部</el-radio-button>
                 <el-radio-button value="pending">待检测</el-radio-button>
                 <el-radio-button value="running">检测中</el-radio-button>
@@ -175,21 +186,10 @@
                 <el-radio-button value="failed">失败</el-radio-button>
               </el-radio-group>
             </div>
-            <el-empty
-              v-if="filteredTaskList.length === 0"
-              :description="taskList.length ? '没有匹配的任务' : '暂无检测任务'"
-              :image-size="64"
-            >
-              <template #default>
-                <BusinessSeedEmptyHint
-                  :title="taskList.length ? '没有匹配的任务' : '暂无检测任务'"
-                  description="可上传图片创建检测任务，已有记录也可以通过调整筛选条件查找。"
-                />
-                <router-link v-if="!taskList.length" to="/upload">
-                  <el-button type="primary" size="small">前往上传图片</el-button>
-                </router-link>
-              </template>
-            </el-empty>
+            <div class="workbench-task-scope"><p>{{ businessTraceScope }} · 匹配 {{ filteredTaskList.length }} / 当前清单 {{ taskList.length }} 条。仅筛选本机记录与最近一次读取合并的清单，完整历史请查看<router-link to="/inspection/history">检测记录</router-link>。</p><button v-if="hasTaskFilters" type="button" @click="clearTaskFilters(true)"><AppIcon name="Filter" :size="14" />清空筛选</button></div>
+            <p v-if="refreshingTasks && filteredTaskList.length" class="detection-input-note" role="status">正在读取任务记录，当前保留已有清单。</p>
+            <el-alert v-if="taskReadError && filteredTaskList.length" :title="taskReadError+'；当前保留已有清单，请重新读取后核对。'" type="warning" :closable="false" show-icon />
+            <template v-if="filteredTaskList.length===0"><CollectionEmptyState :loading="refreshingTasks || (!taskReadLoaded && !taskReadError)" :error="taskReadError" :filtered="hasTaskFilters" empty-title="当前清单暂无上传任务" empty-description="可上传图片创建任务；这里不是全部历史任务数量。" @retry="refreshTaskList" @reset="clearTaskFilters(true)" /><router-link v-if="!taskList.length && !refreshingTasks && taskReadLoaded && !taskReadError" class="workbench-upload-link" to="/upload"><AppIcon name="Upload" :size="16" />前往上传图片</router-link></template>
             <div v-else class="task-list">
               <div
                 v-for="task in filteredTaskList"
@@ -822,7 +822,6 @@ import { useDefectGallery } from '../composables/useDefectGallery'
 import { useTraceReports } from '../composables/useTraceReports'
 import { useDetectionHistory } from '../composables/useDetectionHistory'
 import { useQualityReportDownloads } from '../composables/useQualityReportDownloads'
-import BusinessSeedEmptyHint from '../components/BusinessSeedEmptyHint.vue'
 import CollectionEmptyState from '../components/CollectionEmptyState.vue'
 import TaskTracePanel from '../components/TaskTracePanel.vue'
 import SingleDetectionEvidence from '../components/SingleDetectionEvidence.vue'
@@ -950,7 +949,8 @@ const {
 const fileList = ref([])
 const modelList = ref([])
 const modelsLoading = ref(false), modelsLoaded = ref(false), modelsError = ref('')
-let modelReadVersion = 0, singleRunVersion = 0, detectionPageActive = true
+let modelReadVersion = 0, singleRunVersion = 0, taskReadVersion = 0, detectionPageActive = true
+const refreshingTasks = ref(false), taskReadLoaded = ref(false), taskReadError = ref('')
 const detectionResult = ref(null)
 const annotatedImageUrl = ref('')
 const loadingSingle = ref(false)
@@ -962,6 +962,12 @@ const singleStageCode = computed(() => singleDetectionStage.value === 'IDLE' && 
 const taskFilter = ref('all')
 const taskSearchKeyword = ref('')
 const taskFilterDate = ref('')
+const taskKeywordInput = ref(null)
+const hasTaskFilters = computed(()=>!!(taskSearchKeyword.value.trim() || taskFilterDate.value || taskFilter.value!=='all'))
+const clearTaskFilters = (restoreFocus=false)=>{
+  taskSearchKeyword.value='';taskFilterDate.value='';taskFilter.value='all'
+  if(restoreFocus){const version=taskReadVersion;nextTick(()=>{if(detectionPageActive && version===taskReadVersion)taskKeywordInput.value?.input?.focus({preventScroll:true})})}
+}
 const traceDialogVisible = ref(false)
 const traceLoading = ref(false)
 const traceDetail = ref(null)
@@ -988,6 +994,7 @@ const form = reactive({
   threshold: 0.5,
   imageFile: null
 })
+const selectedDetectionModel = computed(()=>modelList.value.find(model=>model.modelId===form.modelId))
 
 // 筛选任务列表
 const filteredTaskList = computed(() => {
@@ -1006,7 +1013,7 @@ const filteredTaskList = computed(() => {
   if (taskFilterDate.value) {
     list = list.filter(t => {
       const date = t.updatedAt || t.createdAt
-      return date && date.startsWith(taskFilterDate.value)
+      return date && formatBusinessTime(date).startsWith(taskFilterDate.value)
     })
   }
 
@@ -1144,6 +1151,9 @@ watch(() => JSON.stringify([userStore.identity?.userId || userStore.username || 
   modelsLoading.value = false
   modelsLoaded.value = false
   modelsError.value = '账号或权限已变化，请重新读取模型目录'
+  taskReadVersion++
+  refreshingTasks.value=false;taskReadLoaded.value=false;taskReadError.value='账号或权限已变化，请重新读取任务列表'
+  clearTaskFilters()
   singleDetectionMessage.value = '已清除本页原图与结果，原任务请到当前账号有权查看的检测记录核对。'
 }, { flush:'sync' })
 
@@ -1244,18 +1254,27 @@ const detectionModelOptionLabel = model => `${model.modelName || '未命名模�
 
 // ==================== 生命周期 ====================
 
-const refreshingTasks = ref(false)
-const refreshTaskList = async () => {
+const readWorkbenchTasks = async (notify=false) => {
+  if(!detectionPageActive || refreshingTasks.value || !userStore.isAuthenticated)return false
+  const version=++taskReadVersion,actor=JSON.stringify([userStore.identity?.userId || userStore.username || '',userStore.role,userStore.isAuthenticated])
+  const current=()=>detectionPageActive && version===taskReadVersion && actor===JSON.stringify([userStore.identity?.userId || userStore.username || '',userStore.role,userStore.isAuthenticated])
   refreshingTasks.value = true
+  taskReadError.value=''
   try {
-    await fetchTaskList()
-    ElMessage.success('任务列表已刷新')
+    const result=await fetchTaskList()
+    if(!current())return false
+    if(!result?.ok)throw new Error(result?.message || '任务记录暂不可读取')
+    taskReadLoaded.value=true
+    if(notify)ElMessage.success('任务记录已读取并合并到当前清单')
+    return true
   } catch (e) {
-    ElMessage.error('刷新失败')
+    if(current())taskReadError.value=e.message || '任务记录暂不可读取'
+    return false
   } finally {
-    refreshingTasks.value = false
+    if(current())refreshingTasks.value = false
   }
 }
+const refreshTaskList = ()=>readWorkbenchTasks(true)
 
 // All quality entry points share state guards and mutation feedback.
 const {
@@ -1340,7 +1359,7 @@ onMounted(async () => {
 
   fetchModels()
   await restoreFromSession()
-  await fetchTaskList()
+  await readWorkbenchTasks()
   fetchHistoryWithFilters()
   if (activeTab.value === 'quality') {
     loadQualityQueue()
@@ -1372,6 +1391,7 @@ onBeforeUnmount(() => {
   detectionPageActive = false
   modelReadVersion++
   singleRunVersion++
+  taskReadVersion++
   traceGeneration++
   traceReadController?.abort()
   // 不再停止轮询 — 轮询在 store 中，切换页面后继续
@@ -1643,9 +1663,19 @@ onBeforeUnmount(() => {
 }
 
 .threshold-text {
+  display:flex;
+  align-items:baseline;
+  justify-content:space-between;
+  flex-wrap:wrap;
+  gap:6px 12px;
+  width:100%;
   margin-top: 8px;
-  color: #5b6475;
+  color:var(--app-text-secondary);
+  font-size:12px;
+  line-height:1.8;
 }
+.threshold-text output { color:var(--app-primary); font-size:18px; font-weight:600; font-variant-numeric:tabular-nums; }
+.threshold-text output small { color:var(--app-text-secondary); font-size:12px; font-weight:400; }
 
 .task-card {
   overflow: hidden;
@@ -1659,23 +1689,28 @@ onBeforeUnmount(() => {
 
 /* 筛选标签栏 */
 .task-search-bar {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 10px;
+  display:grid;
+  grid-template-columns:minmax(0,1fr) minmax(165px,.85fr);
+  gap:12px;
+  margin-bottom:14px;
 }
-
-.task-search-input {
-  flex: 1;
-}
-
-.task-date-picker {
-  width: 130px;
-}
+.workbench-task-filter { display:grid; gap:6px; min-width:0; color:var(--app-text-secondary); font-size:12px; line-height:1.8; }
+.workbench-task-filter :is(.task-search-input,.task-date-picker) { width:100%; min-width:0; }
+.workbench-task-filter :deep(.el-date-editor.el-input) { width:100%; }
+.workbench-task-scope { display:flex; align-items:flex-start; flex-wrap:wrap; gap:8px 12px; margin:10px 0 14px; min-width:0; }
+.workbench-task-scope p { flex:1 1 200px; min-width:0; margin:0; color:var(--app-text-secondary); font-size:12px; line-height:1.85; overflow-wrap:anywhere; }
+.workbench-task-scope a { color:var(--app-primary); text-decoration:underline; text-underline-offset:3px; }
+.workbench-task-scope button { display:inline-flex; align-items:center; gap:5px; border:0; border-radius:4px; padding:2px 0; background:transparent; color:var(--app-primary); font:inherit; font-size:12px; line-height:1.8; cursor:pointer; transition:color 180ms ease; }
+.workbench-upload-link { display:flex; align-items:center; justify-content:center; gap:6px; width:fit-content; max-width:100%; margin:0 auto 20px; padding:8px 12px; border-radius:6px; background:var(--app-primary); color:white; text-decoration:none; font-size:13px; line-height:1.8; transition:background-color 180ms ease; }
+.workbench-upload-link:hover { background:var(--app-primary-hover); }
+.workbench-task-scope :is(button,a):focus-visible,.workbench-upload-link:focus-visible { outline:2px solid var(--app-primary); outline-offset:3px; }
+@media(max-width:560px) { .task-search-bar { grid-template-columns:minmax(0,1fr); } }
+@media(prefers-reduced-motion:reduce) { .workbench-task-scope button,.workbench-upload-link { transition:none; } }
 
 .task-filter-bar {
   margin-bottom: 12px;
   padding-bottom: 12px;
-  border-bottom: 1px solid rgba(15, 23, 42, 0.06);
+  border-bottom: 1px solid var(--app-border);
 }
 
 .task-filter-bar :deep(.el-radio-button__inner) {
@@ -2114,13 +2149,19 @@ onBeforeUnmount(() => {
 .quality-queue-responsibility strong { color:var(--app-text); font-size:13px; font-weight:550; overflow-wrap:anywhere; }
 .quality-queue-chip.active { background:var(--app-primary-soft); border-color:#aac3f6; box-shadow:none; transform:none; }
 .quality-queue-chip:focus-visible { outline:2px solid var(--app-primary); outline-offset:3px; }
-.detection-input-note { margin:0 0 14px; color:var(--app-text-muted); font-size:12px; line-height:1.8; overflow-wrap:anywhere; }
+.detection-input-note { margin:0 0 14px; color:var(--app-text-secondary); font-size:12px; line-height:1.8; overflow-wrap:anywhere; }
 .detection-input-note.is-warning { padding:9px 11px; border-radius:8px; color:var(--app-warning); background:var(--app-warning-soft); }
 .detection-input-note button { margin:4px 0 0; padding:2px 0; border:0; border-radius:4px; color:var(--app-primary); background:transparent; cursor:pointer; font:inherit; }
-.detection-model-option { display:flex; align-items:center; gap:10px; min-width:0; }.detection-model-option > span:first-child { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.detection-model-option > .business-status { flex:0 0 auto; font-size:11px; }
+.detection-model-option { display:flex; align-items:center; gap:10px; min-width:0; }.detection-model-option > span:first-child { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.detection-model-option > .business-status { flex:0 0 auto; font-size:12px; }
+.detection-model-selection { display:flex; align-items:flex-start; flex-wrap:wrap; gap:8px 10px; width:100%; margin:0 0 10px; padding:11px 0; border-top:1px solid var(--app-border); border-bottom:1px solid var(--app-border); }
+.detection-model-selection > .el-icon { flex:0 0 auto; margin-top:3px; color:var(--app-primary); }
+.detection-model-selection > div { display:grid; gap:4px; min-width:0; flex:1 1 150px; }
+.detection-model-selection strong { color:var(--app-text); font-size:13px; font-weight:550; line-height:1.8; overflow-wrap:anywhere; }
+.detection-model-selection > div > span { color:var(--app-text-secondary); font-size:12px; line-height:1.8; overflow-wrap:anywhere; }
+.detection-model-selection > .business-status { flex:0 0 auto; }
 .single-submission-summary { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:10px 18px; margin:0 0 16px; padding:12px 0; border-block:1px solid var(--app-border); }
 .single-submission-summary > div { min-width:0; }.single-submission-summary > div:first-child { grid-column:1/-1; }
-.single-submission-summary dt { color:var(--app-text-muted); font-size:11px; line-height:1.8; }
+.single-submission-summary dt { color:var(--app-text-secondary); font-size:12px; line-height:1.8; }
 .single-submission-summary dd { margin:4px 0 0; color:var(--app-text); font-size:12px; line-height:1.8; overflow-wrap:anywhere; }
 .single-task-links { display:flex; align-items:center; flex-wrap:wrap; gap:8px 18px; margin:0 0 16px; }
 .single-task-links > :is(a,button) { display:inline-flex; align-items:center; gap:5px; border:0; border-radius:5px; padding:5px 0; color:var(--app-primary); background:transparent; font-size:12px; font-family:inherit; text-decoration:none; cursor:pointer; }

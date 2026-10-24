@@ -21,10 +21,15 @@
     </section>
 
     <template v-if="isSupervisor">
-      <section class="toolbar-panel">
-        <div class="section-heading"><h2><AppIcon name="Collection" :size="19" />部门 / 班组 <small>{{ departmentsLoaded?departments.length+' 个':'数量待核对' }}</small></h2><el-button type="primary" :disabled="loading||saving||!!error||!!departmentReadError" @click="openDepartment"><AppIcon name="Plus" :size="16" />新增部门</el-button></div>
+      <section class="toolbar-panel" aria-labelledby="organization-department-heading">
+        <div class="section-heading"><h2 id="organization-department-heading" ref="departmentHeadingRef" tabindex="-1"><AppIcon name="Collection" :size="19" />部门 / 班组 <small>{{ departmentsLoaded?'已读取 '+departments.length+' 个':'数量待核对' }}</small></h2><el-button type="primary" :disabled="loading||saving||!!error||!!departmentReadError" @click="openDepartment"><AppIcon name="Plus" :size="16" />新增部门</el-button></div>
         <el-alert v-if="departmentReadError&&departments.length" :title="departmentReadError+'；保留先前读取的部门。'" type="error" :closable="false" />
-        <div v-if="departments.length" class="department-tags"><div v-for="d in departments" :key="d.id" class="organization-department"><AppIcon name="Collection" :size="16" /><span>{{ d.name||'部门名称未记录' }}</span><small>ID {{ d.id }}</small></div></div>
+        <template v-if="departments.length">
+          <label v-if="departments.length>6 || departmentQuery" class="department-local-query"><span><AppIcon name="Search" :size="14" />查找已读取部门</span><el-input ref="departmentSearchRef" v-model="departmentQuery" maxlength="200" clearable aria-label="按名称或编号查找本次已读取的部门" aria-describedby="organization-department-scope" placeholder="部门名称或 ID" /></label>
+          <p id="organization-department-scope" class="department-query-scope" :role="departmentQuery.trim() ? 'status' : undefined">{{ departmentQuery.trim() ? '匹配 '+departmentMatches.length+' / 已读取 '+departments.length+' 个部门。' : '这里只显示当前已读取的部门登记。' }}查找不重新读取或修改部门，也不改变人员关联。</p>
+          <div v-if="departmentMatches.length" class="department-read-region" :class="{'is-scrollable':departmentMatches.length>8}" :tabindex="departmentMatches.length>8 ? 0 : undefined" :role="departmentMatches.length>8 ? 'region' : undefined" :aria-label="departmentMatches.length>8 ? '本次已读取部门清单，可使用方向键滚动' : undefined"><ul class="department-tags" role="list"><li v-for="d in departmentMatches" :key="d.id" class="organization-department"><AppIcon name="Collection" :size="16" /><span>{{ d.name||'部门名称未记录' }}</span><small>部门 ID {{ d.id }}</small></li></ul></div>
+          <CollectionEmptyState v-else filtered filtered-title="本次已读部门中没有匹配项" filtered-description="可按完整名称、部分名称或部门编号查找；不会自动新增部门。" @reset="clearDepartmentQuery" />
+        </template>
         <CollectionEmptyState v-else :loading="loading" :error="departmentReadError||error" empty-title="尚未登记部门" empty-description="新增部门后，可在员工资料中选择关联；创建部门不会自动分配人员。" @retry="retryLoad" />
       </section>
       <section class="table-panel">
@@ -92,7 +97,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onBeforeUnmount, watch } from 'vue'
+import { ref, computed, nextTick, onBeforeUnmount, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import request from '../api/request'
 import { useUserStore } from '../stores/user'
@@ -104,7 +109,8 @@ const userStore = useUserStore()
 const mine = ref(null), accounts = ref([]), departments = ref([]), total = ref(null), page = ref(1), keyword = ref('')
 const loading = ref(false), error = ref(''), saving = ref(false)
 const accountError=ref(''),departmentReadError=ref(''),accountsLoaded=ref(false),departmentsLoaded=ref(false),appliedKeyword=ref('')
-const actor=computed(()=>JSON.stringify([userStore.username,userStore.role,userStore.isAuthenticated]))
+const departmentQuery=ref(''),departmentSearchRef=ref(null),departmentHeadingRef=ref(null)
+const actor=computed(()=>JSON.stringify([userStore.identity?.userId ?? null,userStore.username,userStore.role,userStore.isAuthenticated]))
 const isSupervisor = computed(() => userStore.isAuthenticated && mine.value?.role === 'SUPERVISOR')
 const lastLoad=ref(null),mutationReceipt=ref(null),uncertainBindings=ref(new Set()),uncertainDepartments=ref(new Set())
 let accountGeneration=0
@@ -117,6 +123,16 @@ function validList(value,key){
   return value
 }
 const departmentKey=value=>value.trim().normalize('NFC').toLowerCase()
+const departmentMatches=computed(()=>{
+  const query=departmentKey(departmentQuery.value)
+  return query ? departments.value.filter(department=>departmentKey((typeof department.name==='string' ? department.name : '')+' '+department.id).includes(query)) : departments.value
+})
+async function clearDepartmentQuery(){
+  const scope=actor.value
+  departmentQuery.value=''
+  await nextTick()
+  if(active && actor.value===scope)(departmentSearchRef.value?.input || departmentHeadingRef.value)?.focus({preventScroll:true})
+}
 const bindingDialog = ref(false), selectedAccount = ref(null), selectedEmployee = ref(null), bindingError = ref('')
 const employeeOptions = ref([]), employeeLoading = ref(false)
 const employeeError=ref(''),lastEmployeeQuery=ref(''),bindingUncertain=ref(false)
@@ -242,6 +258,7 @@ async function openAudit(row) {
 }
 watch(actor,()=>{
   generation++;employeeGeneration++;auditGeneration++;accountGeneration++
+  departmentQuery.value=''
   mine.value=null;accounts.value=[];departments.value=[];total.value=null;page.value=1;keyword.value='';loading.value=false;saving.value=false;error.value='';accountError.value='';departmentReadError.value='';accountsLoaded.value=false;departmentsLoaded.value=false;appliedKeyword.value='';lastLoad.value=null;mutationReceipt.value=null
   bindingDialog.value=false;departmentDialog.value=false;auditDialog.value=false;selectedAccount.value=null;selectedEmployee.value=null;employeeOptions.value=[];employeeLoading.value=false;employeeError.value='';bindingError.value='';bindingUncertain.value=false;departmentName.value='';departmentError.value='';departmentUncertain.value=false;auditRows.value=[];auditLoading.value=false;auditError.value='';auditUsername.value='';auditUserId.value=null;auditLoaded.value=false;uncertainBindings.value=new Set();uncertainDepartments.value=new Set()
   if(userStore.isAuthenticated)load('',1)
@@ -261,8 +278,15 @@ h2 { margin: 0 0 16px; font-size: 18px; color: #0f172a; }
 .section-heading, .account-toolbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
 .section-heading h2, .account-toolbar h2 { margin: 0; margin-right: auto; }
 .account-toolbar .el-input { width: 220px; }
-.department-tags { display: flex; gap: 8px; flex-wrap: wrap; }
-.organization-scope-note{display:flex;align-items:flex-start;gap:7px;margin:16px 0 0;color:var(--app-text-secondary);font-size:12px;line-height:1.9}.organization-scope-note>.el-icon{flex:0 0 auto;margin-top:4px}.section-heading h2 small{font-size:12px;font-weight:400;color:var(--app-text-secondary);margin-left:4px}.organization-department{display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:10px 12px;border:1px solid var(--app-border);border-radius:8px;background:var(--app-surface);font-size:13px;line-height:1.8;min-width:0}.organization-department>.el-icon{color:var(--app-primary)}.organization-department>span{overflow-wrap:anywhere;color:var(--app-text)}.organization-department>small{color:var(--app-text-muted);font-size:11px}.organization-account-query{display:grid;gap:6px;min-width:0}.organization-account-query label{font-size:11px;color:var(--app-text-secondary)}.organization-account-query .el-input{max-width:100%}.account-toolbar{align-items:flex-end}.organization-account-cell{display:grid;gap:5px;padding:3px 0;line-height:1.8;min-width:0}.organization-account-cell strong{font-size:13px;font-weight:550;color:var(--app-text);overflow-wrap:anywhere}.organization-account-cell small{font-size:11px;color:var(--app-text-secondary);overflow-wrap:anywhere}.organization-query-note{font-size:12px;line-height:1.8;padding:10px 18px;margin:0;border-left:3px solid #abc7f8;color:var(--app-text-secondary);background:var(--app-primary-light)}.organization-binding-target{display:flex;align-items:flex-start;gap:12px;padding:0 0 16px;border-bottom:1px solid var(--app-border);margin-bottom:16px}.organization-binding-target>.el-icon{color:var(--app-primary);padding:10px;background:var(--app-primary-soft);border-radius:10px;box-sizing:content-box;flex-shrink:0}.organization-binding-target>div{display:grid;gap:7px;min-width:0}.organization-binding-target strong{font-size:17px;line-height:1.6;color:var(--app-text);overflow-wrap:anywhere}.organization-binding-target small{font-size:12px;line-height:1.8;color:var(--app-text-secondary);overflow-wrap:anywhere}.organization-binding-change{display:flex;gap:7px;align-items:flex-start;color:var(--app-text-secondary);padding:10px 12px;border-left:3px solid #ddac55;background:var(--app-warning-light);border-radius:0 6px 6px 0;font-size:12px;line-height:1.9}.organization-binding-change>.el-icon{flex-shrink:0;margin-top:4px;color:var(--app-warning)}.organization-audit-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}.organization-audit-heading p{min-width:0;flex:1 1 260px;overflow-wrap:anywhere}.table-panel>.collection-heading{padding:13px 20px;font-size:12px;line-height:1.8}.organization-page :deep(.el-alert){margin-top:12px}
+.department-tags { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:0 18px; list-style:none; margin:0; padding:0; }
+.department-local-query { display:grid; gap:7px; margin:0 0 12px; max-width:420px; font-size:12px; line-height:1.8; color:var(--app-text-secondary); }
+.department-local-query > span { display:flex; align-items:center; gap:6px; }
+.department-query-scope { margin:0 0 14px; color:var(--app-text-secondary); font-size:12px; line-height:1.85; overflow-wrap:anywhere; }
+.department-read-region { min-width:0; }
+.department-read-region.is-scrollable { max-height:260px; max-height:min(260px,45dvh); overflow:auto; overscroll-behavior:contain; padding:2px; scrollbar-gutter:stable; }
+.department-read-region:focus-visible,#organization-department-heading:focus-visible { outline:2px solid var(--app-primary); outline-offset:-2px; border-radius:3px; }
+@media(max-width:560px) { .department-tags { grid-template-columns:minmax(0,1fr); } }
+.organization-scope-note{display:flex;align-items:flex-start;gap:7px;margin:16px 0 0;color:var(--app-text-secondary);font-size:12px;line-height:1.9}.organization-scope-note>.el-icon{flex:0 0 auto;margin-top:4px}.section-heading h2 small{font-size:12px;font-weight:400;color:var(--app-text-secondary);margin-left:4px}.organization-department{display:grid;grid-template-columns:20px minmax(0,1fr);gap:3px 8px;padding:12px 0;border-bottom:1px solid var(--app-border);font-size:13px;line-height:1.8;min-width:0}.organization-department>.el-icon{grid-row:1/span 2;align-self:start;margin-top:4px}.organization-department>small{grid-column:2}.organization-department>.el-icon{color:var(--app-primary)}.organization-department>span{overflow-wrap:anywhere;color:var(--app-text)}.organization-department>small{color:var(--app-text-secondary);font-size:12px}.organization-account-query{display:grid;gap:6px;min-width:0}.organization-account-query label{font-size:12px;color:var(--app-text-secondary)}.organization-account-query .el-input{max-width:100%}.account-toolbar{align-items:flex-end}.organization-account-cell{display:grid;gap:5px;padding:3px 0;line-height:1.8;min-width:0}.organization-account-cell strong{font-size:13px;font-weight:550;color:var(--app-text);overflow-wrap:anywhere}.organization-account-cell small{font-size:12px;color:var(--app-text-secondary);overflow-wrap:anywhere}.organization-query-note{font-size:12px;line-height:1.8;padding:10px 18px;margin:0;border-left:3px solid #abc7f8;color:var(--app-text-secondary);background:var(--app-primary-light)}.organization-binding-target{display:flex;align-items:flex-start;gap:12px;padding:0 0 16px;border-bottom:1px solid var(--app-border);margin-bottom:16px}.organization-binding-target>.el-icon{color:var(--app-primary);padding:10px;background:var(--app-primary-soft);border-radius:10px;box-sizing:content-box;flex-shrink:0}.organization-binding-target>div{display:grid;gap:7px;min-width:0}.organization-binding-target strong{font-size:17px;line-height:1.6;color:var(--app-text);overflow-wrap:anywhere}.organization-binding-target small{font-size:12px;line-height:1.8;color:var(--app-text-secondary);overflow-wrap:anywhere}.organization-binding-change{display:flex;gap:7px;align-items:flex-start;color:var(--app-text-secondary);padding:10px 12px;border-left:3px solid #ddac55;background:var(--app-warning-light);border-radius:0 6px 6px 0;font-size:12px;line-height:1.9}.organization-binding-change>.el-icon{flex-shrink:0;margin-top:4px;color:var(--app-warning)}.organization-audit-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}.organization-audit-heading p{min-width:0;flex:1 1 260px;overflow-wrap:anywhere}.table-panel>.collection-heading{padding:13px 20px;font-size:12px;line-height:1.8}.organization-page :deep(.el-alert){margin-top:12px}
 @media(max-width:640px){.identity-grid{grid-template-columns:minmax(0,1fr)}.organization-account-query{flex:1 1 100%}.organization-account-query .el-input{width:100%}.organization-department{width:100%;box-sizing:border-box}.organization-binding-target strong{font-size:16px}}
 .el-button { transition: transform 160ms ease; }
 .el-button:active { transform: scale(.98); }

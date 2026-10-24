@@ -175,7 +175,7 @@
     <el-drawer v-model="detailDrawerVisible" title="检测模型详情" size="min(740px,96vw)">
       <CollectionEmptyState v-if="!detailModel" :loading="detailLoading" :error="detailError" empty-title="模型详情尚未读取" empty-description="可重新读取相同模型，或关闭后从列表重新选择。" @retry="fetchModelDetail(selectedModelId)" />
       <template v-if="detailModel">
-        <DetectionModelDetails :model="detailModel" />
+        <DetectionModelDetails :key="String(detailModel.modelId)+':'+String(detailModel.version ?? '')" :model="detailModel" />
 
         <div class="detail-section">
           <div class="detail-header">
