@@ -39,7 +39,7 @@ public class RoleAgentController {
     public Map<String,Object> catalog(Authentication auth) {
         AgentActor actor=AgentIdentity.from(auth);
         return Map.ofEntries(Map.entry("mainAgent",RoleAgentCatalog.mainId(actor)),Map.entry("role",actor.role()),Map.entry("agents",factory.definitions(actor)),
-                Map.entry("mode",factory.confirmationEnabled()&&actor.supervisor()?"CONFIRMABLE":factory.reportDraftsEnabled()||factory.evolutionEnabled()||factory.mcpEnabled()?"DRAFTS":"READ_ONLY"),
+                Map.entry("mode",(factory.confirmationEnabled()&&actor.supervisor()||factory.retryEnabled())?"CONFIRMABLE":factory.reportDraftsEnabled()||factory.evolutionEnabled()||factory.mcpEnabled()?"DRAFTS":"READ_ONLY"),
                 Map.entry("reportsEnabled",factory.reportsEnabled()),Map.entry("reportDraftsEnabled",factory.reportDraftsEnabled()),
                 Map.entry("skillEvolutionEnabled",factory.evolutionEnabled()),Map.entry("localMcpEnabled",factory.mcpEnabled()),
                 Map.entry("sessionHistory","SERVER"),Map.entry("memoryScope","ACCOUNT"));

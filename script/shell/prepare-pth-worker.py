@@ -31,7 +31,7 @@ def main():
     hashes=json.loads((source/'MANIFEST_SHA256.json').read_text(encoding='utf-8'))
     if any(hashlib.sha256((source/name).read_bytes()).hexdigest()!=digest for name,digest in hashes.items()):
         raise ValueError('Training source hashes do not match')
-    files=['kafka_detection_worker.py','kafka_event_models.py','kafka_settings.py','oss_result_uploader.py',
+    files=['kafka_detection_worker.py','kafka_event_models.py','kafka_settings.py','detection_worker_receipts.py','oss_result_uploader.py',
            'pth_detection_engine.py','detection_image.py','worker_health.py','LICENSE']
     for name in files:shutil.copyfile(root/name,target/name)
     for name in ['Dockerfile','requirements.txt']:shutil.copyfile(root/'deploy/worker'/name,target/name)
@@ -49,6 +49,7 @@ def main():
     # Retain the existing DINOv3 terms alongside the supplied notices.
     dino_license=root/'deploy/worker/licenses/DINOv3-LICENSE.md'
     shutil.copyfile(dino_license,target/'DINOv3-LICENSE.md')
+    shutil.copyfile(root/'deploy/worker/licenses/PyMySQL-LICENSE.txt',target/'PyMySQL-LICENSE.txt')
     deployment=target/'deployment';deployment.mkdir(exist_ok=True)
     shutil.copyfile(root/'deploy/worker/manifest.wacga.json',deployment/'manifest.json')
     shutil.copyfile(root/'compose.detection.yml',deployment/'compose.detection.yml')

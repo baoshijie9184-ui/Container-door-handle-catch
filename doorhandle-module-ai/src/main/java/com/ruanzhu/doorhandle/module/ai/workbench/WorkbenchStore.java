@@ -64,6 +64,7 @@ public class WorkbenchStore {
     AgentWorkbenchApi.Item view(Row row){
         var safe=new LinkedHashMap<String,Object>();
         for(String key:List.of("title","text","tasks","options","answer","questionType","feedback","parentId","specialist","childSessionId","result","progress","phase","runId","logicalTaskId","inputTokens","outputTokens","cachedTokens","durationMs","firstContentMs","systemTokens","toolsTokens","messageTokens","beforeChars","afterChars","basis","modelId","provider","purpose","fileId","filename","throughMessageId","forkSessionId","sourceSessionId","evidenceRunId","evidenceCallId"))if(row.data().containsKey(key))safe.put(key,row.data().get(key));
+        for(String key:List.of("modelConfigVersion","modelDefault"))if(row.data().containsKey(key))safe.put(key,row.data().get(key));
         return new AgentWorkbenchApi.Item(row.id(),row.kind(),row.status(),row.revision(),safe,row.updated());
     }
     static ResponseStatusException fail(int status,String message){return new ResponseStatusException(HttpStatus.valueOf(status),message);}

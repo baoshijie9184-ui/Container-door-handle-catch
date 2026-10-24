@@ -56,5 +56,8 @@ public interface DetectionTaskService {
 
     DetectionTaskProgressResponse retryTask(String taskId);
 
+    /** Only called by the confirmed command facade inside its receipt transaction. */
+    DetectionTaskProgressResponse retryTaskForAgent(com.ruanzhu.doorhandle.contracts.agent.AgentActor actor, String taskId, String requestId);
+
     void markUploaded(String taskId, List<DetectionUploadedFileItem> uploadedFiles);
 }

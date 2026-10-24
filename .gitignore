@@ -41,6 +41,10 @@ build/
 .env.*.local
 deploy/*.env
 !deploy/*.env.example
+deploy/model-config-policy.json
+deploy/*master*.key
+deploy/*restore-proof.cms
+deploy/*master-key.cms
 
 ### Runtime logs ###
 *.log

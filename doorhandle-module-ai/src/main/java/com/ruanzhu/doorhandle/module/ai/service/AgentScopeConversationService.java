@@ -53,7 +53,7 @@ public class AgentScopeConversationService implements AgentConversationApi {
         this.factory = factory; this.registry = registry; this.properties = properties; this.journal = journal; this.research=research;
         this.controls=controls;
     }
-    @Override public Status status() { return new Status("AgentScope", factory.confirmationEnabled()?"CONFIRMABLE":factory.reportDraftsEnabled()||factory.evolutionEnabled()?"DRAFTS":"READ_ONLY", properties.getModel(), journal.enabled(),factory.reportsEnabled(),factory.reportDraftsEnabled()); }
+    @Override public Status status() { return new Status("AgentScope", (factory.confirmationEnabled()||factory.retryEnabled())?"CONFIRMABLE":factory.reportDraftsEnabled()||factory.evolutionEnabled()?"DRAFTS":"READ_ONLY", properties.getModel(), journal.enabled(),factory.reportsEnabled(),factory.reportDraftsEnabled()); }
     @Override public int maxRunSeconds(){return controls==null?180:controls.maxRunSeconds();}
     @Override public void checkRequest(AgentActor actor, String entryPoint, String requestId) { journal.checkRequest(actor, entryPoint, requestId); }
 
@@ -107,10 +107,11 @@ public class AgentScopeConversationService implements AgentConversationApi {
                 if(work!=null){work.finish("COMPLETED",command.reply());work.release();}
                 return new Run(CompletableFuture.completedFuture(command.reply()),()->{},audit.id());
             }
-            if(command!=null){messages.set(messages.size()-1,new UserMessage(command.question()));
+            if(command!=null){messages.set(messages.size()-1,new UserMessage(command.question()));if(work!=null)work.bindContextInput(messages,history.size()-1);
                 var middleware=journal.enabled()?new AgentJournalMiddleware(audit,actor,factory.confirmationEnabled(),factory.reportsEnabled(),factory.reportDraftsEnabled()):null;
                 agent=work!=null?factory.create(actor,main,middleware,cards,command.skill(),control,work):control==null?factory.create(actor,main,middleware,cards,command.skill()):factory.create(actor,main,middleware,cards,command.skill(),control);
             }else {
+                if(work!=null)work.bindContextInput(messages,history.size()-1);
                 var middleware=journal.enabled()?new AgentJournalMiddleware(audit, actor, factory.confirmationEnabled(),factory.reportsEnabled(),factory.reportDraftsEnabled()):null;
                 agent=work!=null?factory.create(actor,main,middleware,cards,null,control,work):control==null?factory.create(actor,main,middleware,cards):factory.create(actor,main,middleware,cards,null,control);
             }

@@ -46,6 +46,8 @@ public class ChatSessionServiceImpl implements ChatSessionService {
     private org.springframework.beans.factory.ObjectProvider<org.springframework.jdbc.core.JdbcTemplate> workbenchJdbc;
     @org.springframework.beans.factory.annotation.Value("${agentscope.workbench.enabled:false}") private boolean workbenchEnabled;
     @org.springframework.beans.factory.annotation.Autowired public void setWorkbenchJdbc(org.springframework.beans.factory.ObjectProvider<org.springframework.jdbc.core.JdbcTemplate> jdbc){this.workbenchJdbc=jdbc;}
+    private org.springframework.beans.factory.ObjectProvider<WorkspaceTurnSnapshotService> turnSnapshots;
+    @org.springframework.beans.factory.annotation.Autowired public void setTurnSnapshots(org.springframework.beans.factory.ObjectProvider<WorkspaceTurnSnapshotService> snapshots){turnSnapshots=snapshots;}
 
     @Override
     public ChatSessionResponse getOrCreateActiveSession(String username) {
@@ -100,6 +102,11 @@ public class ChatSessionServiceImpl implements ChatSessionService {
     public ChatSessionResponse createSession(String username) {
         // 标题将根据第一条消息动态更新
         return createSessionInternal(username, "新对话");
+    }
+
+    @Override
+    public ChatSessionResponse createForkSession(String username) {
+        return createSessionInternal(username, "新对话", false);
     }
 
     @Override
@@ -166,6 +173,10 @@ public class ChatSessionServiceImpl implements ChatSessionService {
     // ---- private helpers ----
 
     private ChatSessionResponse createSessionInternal(String username, String title) {
+        return createSessionInternal(username, title, true);
+    }
+
+    private ChatSessionResponse createSessionInternal(String username, String title, boolean greeting) {
         String sessionId = "sess_" + username + "_" + UUID.randomUUID().toString().substring(0, 8);
         ChatSession session = new ChatSession();
         session.setSessionId(sessionId);
@@ -176,7 +187,7 @@ public class ChatSessionServiceImpl implements ChatSessionService {
         session.setCreatedAt(LocalDateTime.now());
         session.setUpdatedAt(LocalDateTime.now());
         chatSessionMapper.insert(session);
-        saveMessage(sessionId, "assistant", "TEXT", "你好，我是系统智能助手。你可以直接告诉我想做检测、查设备、看报表，或者排查任务失败原因。", "GREETING", null);
+        if (greeting) saveMessage(sessionId, "assistant", "TEXT", "你好，我是系统智能助手。你可以直接告诉我想做检测、查设备、看报表，或者排查任务失败原因。", "GREETING", null);
         return buildSessionResponse(session, true);
     }
 
@@ -225,10 +236,15 @@ public class ChatSessionServiceImpl implements ChatSessionService {
     }
 
     @Override
+    @org.springframework.transaction.annotation.Transactional
     public ChatMessageResponse appendAssistantMessage(TenantContext tenant, String sessionId, String content,
                                                        String messageType, String intent, String actionId) {
         requireOwnedSession(tenant, sessionId);
-        return saveMessage(sessionId, "assistant", messageType, content, intent, actionId);
+        var snapshot=turnSnapshots==null?null:turnSnapshots.getIfAvailable();
+        if(snapshot!=null)snapshot.lockOwner(tenant.userId());
+        var saved=saveMessage(sessionId, "assistant", messageType, content, intent, actionId);
+        if(snapshot!=null&&!"AGENTSCOPE_FORK".equals(intent))snapshot.capture(tenant,sessionId,saved.getId());
+        return saved;
     }
 
     @Override

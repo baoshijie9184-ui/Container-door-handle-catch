@@ -1,0 +1,31 @@
+.agent-workbench .wb-fork-panel { min-width:0; color:var(--app-text); }
+.agent-workbench .wb-fork-guide { display:flex; align-items:flex-start; gap:8px; margin:14px 0 18px; color:var(--app-text-secondary); font-size:12px; line-height:1.9; }
+.agent-workbench .wb-fork-guide > :is(svg,.el-icon) { flex-shrink:0; margin-top:3px; color:var(--app-primary); }
+.agent-workbench .wb-fork-source { padding:12px 0 16px; margin:0 0 16px; border-bottom:1px solid var(--app-border); }
+.agent-workbench .wb-fork-source > strong { font-size:13px; font-weight:600; }
+.agent-workbench .wb-fork-source code { display:block; margin-top:7px; font-size:12px; color:var(--app-text-secondary); line-height:1.8; overflow-wrap:anywhere; }
+.agent-workbench .wb-fork-source > p { font-size:12px; color:var(--app-text-secondary); line-height:1.8; }
+.agent-workbench .wb-fork-panel button { display:inline-flex; align-items:center; justify-content:center; gap:6px; min-height:34px; font-size:12px; line-height:1.7; }
+.agent-workbench .wb-fork-query { display:grid; gap:7px; color:var(--app-text-secondary); font-size:12px; line-height:1.8; }
+.agent-workbench .wb-fork-query input { width:100%; min-width:0; padding:8px 10px; border:1px solid var(--app-border); border-radius:7px; color:var(--app-text); background:#fff; font:inherit; font-size:13px; line-height:1.7; }
+.agent-workbench .wb-fork-count { margin:10px 0 14px; color:var(--app-text-secondary); font-size:12px; line-height:1.8; }
+.agent-workbench .wb-fork-reply { padding:16px 0; border-top:1px solid var(--app-border); }
+.agent-workbench .wb-fork-reply.is-selected { border-top-color:var(--app-primary); }
+.agent-workbench .wb-fork-reply > header { display:flex; flex-wrap:wrap; justify-content:space-between; align-items:flex-start; gap:6px 12px; }
+.agent-workbench .wb-fork-reply > header strong { font-size:13px; line-height:1.8; font-weight:600; color:var(--app-text); overflow-wrap:anywhere; }
+.agent-workbench .wb-fork-reply > header span { color:var(--app-text-secondary); font-size:12px; line-height:1.8; }
+.agent-workbench .wb-fork-reply > p { margin:10px 0; color:var(--app-text-secondary); font-size:13px; line-height:1.9; white-space:pre-wrap; overflow-wrap:anywhere; }
+.agent-workbench .wb-fork-reply details { margin:10px 0 12px; }
+.agent-workbench .wb-fork-reply summary { width:fit-content; cursor:pointer; font-size:12px; line-height:1.8; color:var(--app-primary); }
+.agent-workbench .wb-fork-reply pre { max-height:240px; overflow:auto; overscroll-behavior:contain; padding:10px 12px; margin:10px 0; border-radius:6px; background:var(--app-bg); white-space:pre-wrap; overflow-wrap:anywhere; font:12px/1.9 var(--app-font); color:var(--app-text); }
+.agent-workbench .wb-fork-confirm { margin:16px 0; padding:12px; border-left:3px solid var(--app-primary); background:var(--app-primary-soft); }
+.agent-workbench .wb-fork-confirm > strong { font-size:13px; font-weight:600; line-height:1.8; color:var(--app-text); }
+.agent-workbench .wb-fork-confirm > p { font-size:12px; line-height:1.9; color:var(--app-text-secondary); overflow-wrap:anywhere; }
+.agent-workbench .wb-fork-confirm > div { display:flex; flex-wrap:wrap; gap:8px; }
+.agent-workbench .wb-fork-empty { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; padding:24px 12px; text-align:center; }
+.agent-workbench .wb-fork-empty > :is(svg,.el-icon) { color:var(--app-primary); }
+.agent-workbench .wb-fork-empty > strong { font-size:13px; line-height:1.8; font-weight:600; color:var(--app-text); }
+.agent-workbench .wb-fork-empty > p { margin:0; font-size:12px; line-height:1.9; color:var(--app-text-secondary); }
+.agent-workbench .wb-fork-panel :is(button,input,summary,pre):focus-visible { outline:2px solid var(--app-primary); outline-offset:3px; }
+@media(max-width:480px) { .agent-workbench .wb-fork-confirm > div > button { flex:1 1 auto; } }
+@media(prefers-reduced-motion:reduce) { .agent-workbench .wb-fork-panel button,.agent-workbench .wb-fork-panel button:hover,.agent-workbench .wb-fork-panel button:active { transition:none; transform:none; } }

@@ -1,21 +1,27 @@
 <template>
   <div class="page-shell upload-container">
-    <section class="page-hero upload-hero">
+    <PageHero class="page-hero upload-hero">
       <div>
         <span class="page-hero-label">Upload Workspace</span>
         <h1 class="page-hero-title">图片上传</h1>
         <p class="page-hero-text">
-          选择本地图片文件夹，填写采集信息，上传原图到 OSS。上传完成后前往「图像检测」页提交检测任务。
+          选择图片并核对采集信息。原图上传后，现有流程会自动提交检测；请到工作台核对实际进度与模型记录。
         </p>
       </div>
-    </section>
+    </PageHero>
+
+    <ol class="upload-flow" aria-label="图片上传与检测步骤">
+      <li><span class="upload-flow-icon"><AppIcon name="Picture" :size="20" /></span><div><strong>1 选择图片</strong><p>选择文件夹并核对采集信息</p></div></li>
+      <li><span class="upload-flow-icon"><AppIcon name="Upload" :size="20" /></span><div><strong>2 上传原图</strong><p>核对上传进度及自动提交回执</p></div></li>
+      <li><span class="upload-flow-icon"><AppIcon name="Search" :size="20" /></span><div><strong>3 核对检测</strong><p><router-link to="/inspection/workbench">查看实际进度与模型记录</router-link></p></div></li>
+    </ol>
 
     <!-- 断点续传提示卡片 -->
     <el-alert
       v-if="resumeTaskInfo"
       type="warning"
       show-icon
-      closable
+      :closable="!uploadingToOss"
       style="border-radius: 16px;"
       @close="dismissResume"
     >
@@ -31,10 +37,10 @@
             </div>
           </div>
           <div style="display: flex; gap: 8px;">
-            <el-button type="primary" size="small" @click="triggerResumeFolderSelect">
+            <el-button type="primary" size="small" :disabled="uploadingToOss" @click="triggerResumeFolderSelect">
               选择文件夹继续
             </el-button>
-            <el-button size="small" @click="dismissResume">放弃</el-button>
+            <el-button size="small" :disabled="uploadingToOss" @click="dismissResume">放弃续传</el-button>
           </div>
         </div>
       </template>
@@ -56,7 +62,8 @@
       <el-card class="upload-card" header="上传配置" shadow="never">
         <el-form label-position="top">
           <div class="input-block">
-            <div class="input-block-title">选择图片文件夹</div>
+            <div class="input-block-title"><el-icon aria-hidden="true"><FolderOpened /></el-icon>选择图片文件夹</div>
+            <p class="upload-format-note">支持 JPG、JPEG、PNG 图片，可从文件夹中批量选择</p>
             <input
               ref="folderInput"
               type="file"
@@ -66,7 +73,7 @@
               style="display: none"
               @change="handleFolderSelect"
             />
-            <el-button type="primary" class="wide-button" @click="triggerFolderSelect">
+            <el-button type="primary" class="wide-button" :disabled="uploadingToOss" @click="triggerFolderSelect">
               <el-icon><FolderOpened /></el-icon>
               选择图片文件夹
             </el-button>
@@ -75,12 +82,13 @@
               <div>文件夹层级：{{ folderInfo.name }}</div>
               <div>图片数：{{ folderInfo.imageCount }} 张</div>
             </div>
+            <p v-if="selectionNotice" class="upload-selection-note">{{ selectionNotice }}</p>
 
             <el-alert
               v-if="folderInfo.imageCount"
               type="info"
               show-icon
-              message="文件夹结构：采集时间 / 地区 / 采集员 / 采集设备 / 图片文件夹名称 / 图片"
+              title="可识别文件夹层级中的采集信息，请在上传前核对"
               style="margin-top: 12px;"
             />
           </div>
@@ -89,20 +97,22 @@
             <el-form-item label="采集日期">
               <el-date-picker
                 v-model="folderInfo.captureDate"
+                :disabled="uploadingToOss || uploadAttempted"
                 value-format="YYYY-MM-DD"
-                placeholder="选择采集日期"
+                aria-label="选择采集日期" placeholder="选择采集日期"
                 style="width: 100%"
               />
             </el-form-item>
             <el-form-item label="地区">
-              <el-input v-model="folderInfo.region" placeholder="例如 上海" />
+              <el-input v-model="folderInfo.region" :disabled="uploadingToOss || uploadAttempted" aria-label="例如 上海" placeholder="例如 上海" />
             </el-form-item>
             <el-form-item label="采集员">
               <el-select
                 v-model="folderInfo.collector"
-                placeholder="选择采集员"
+                aria-label="选择采集员" placeholder="选择采集员"
                 filterable
-                :filter-option="(input, option) => option.label.toLowerCase().includes(input.toLowerCase())"
+                :disabled="uploadingToOss || uploadAttempted"
+                :no-data-text="employeeError ? '候选读取失败，请重新读取' : loadingEmployees || !employeeLoaded ? '正在核对候选' : '当前已加载范围无候选'"
                 :loading="loadingEmployees"
                 clearable
               >
@@ -116,13 +126,15 @@
                   <span style="color: #8b95a5; margin-left: 8px; font-size: 12px;">{{ emp.employeeNumber }}</span>
                 </el-option>
               </el-select>
+              <p v-if="employeeError" class="capture-read-error" role="alert">{{ employeeError }}<button type="button" :disabled="loadingEmployees || uploadingToOss" @click="fetchEmployees">重新读取</button></p>
             </el-form-item>
             <el-form-item label="采集设备">
               <el-select
                 v-model="folderInfo.deviceName"
-                placeholder="选择采集设备"
+                aria-label="选择采集设备" placeholder="选择采集设备"
                 filterable
-                :filter-option="(input, option) => option.label.toLowerCase().includes(input.toLowerCase())"
+                :disabled="uploadingToOss || uploadAttempted"
+                :no-data-text="deviceError ? '候选读取失败，请重新读取' : loadingDevices || !deviceLoaded ? '正在核对候选' : '当前已加载范围无候选'"
                 :loading="loadingDevices"
                 clearable
               >
@@ -136,36 +148,39 @@
                   <span style="color: #8b95a5; margin-left: 8px; font-size: 12px;">{{ dev.modelName }}</span>
                 </el-option>
               </el-select>
+              <p v-if="deviceError" class="capture-read-error" role="alert">{{ deviceError }}<button type="button" :disabled="loadingDevices || uploadingToOss" @click="fetchDevices">重新读取</button></p>
             </el-form-item>
             <el-form-item label="图片文件夹名称">
-              <el-input v-model="folderInfo.imageFolderName" placeholder="例如 批次A" />
+              <el-input v-model="folderInfo.imageFolderName" :disabled="uploadingToOss || uploadAttempted" aria-label="例如 批次A" placeholder="例如 批次A" />
             </el-form-item>
           </div>
+          <p v-if="folderInfo.imageCount" class="upload-selection-note">人员与设备候选仅为本次已加载范围。采集信息作为来源记录，不改变账号身份或质检分派。</p>
 
+          <p v-if="folderInfo.imageCount" class="upload-readiness" :data-ready="!missingCaptureFields.length"><AppIcon :name="missingCaptureFields.length ? 'Warning' : 'CircleCheck'" :size="16" />{{ missingCaptureFields.length ? '还需补全：'+missingCaptureFields.join('、') : '采集信息已填写，请核对后上传' }}</p>
           <el-button
             type="primary"
             class="wide-button upload-action"
-            :disabled="!folderInfo.imageCount || uploadingToOss"
+            :disabled="!folderInfo.imageCount || uploadingToOss || !!missingCaptureFields.length || uploadAttempted"
             :loading="uploadingToOss"
             @click="handleUploadBatch"
             size="large"
           >
             <el-icon><UploadFilled /></el-icon>
-            {{ uploadingToOss ? '正在上传...' : '上传原图到 OSS' }}
+            {{ uploadingToOss ? '正在上传原图…' : uploadAttempted ? '本次上传已发起' : '上传原图' }}
           </el-button>
+          <div v-if="uploadAttempted" class="upload-attempt-note" role="status"><AppIcon name="Search" :size="17" /><div><strong>请在上传历史核对本次结果</strong><p>已发起不等于全部上传或检测完成。此处保留所选图片与采集信息，不自动重复提交；如需新建任务，请重新选择文件夹。</p><button type="button" :disabled="uploadingToOss" @click="resetBatchState">清空本次选择</button></div></div>
 
-          <div v-if="uploadingTask" class="upload-progress-card">
+          <Transition name="upload-feedback"><div v-if="uploadingTask" class="upload-progress-card">
             <div class="upload-progress-header">
               <span>{{ uploadingTask.folderName }}</span>
               <span>{{ uploadingTask.imageCount }} 张</span>
             </div>
             <el-progress
               :percentage="uploadingTask.progressPercent"
-              status="active"
               :stroke-width="8"
             />
             <p class="upload-progress-msg">{{ uploadingTask.message }}</p>
-          </div>
+          </div></Transition>
 
         </el-form>
       </el-card>
@@ -176,25 +191,30 @@
           <div class="card-title-row">
             <span>上传历史</span>
             <el-badge v-if="taskList.length" :value="taskList.length"  />
-            <el-button size="small" link :loading="refreshing" @click="refreshHistory" title="刷新上传历史">
+            <el-button size="small" link :loading="refreshing || historyLoading" @click="refreshHistory" title="刷新上传历史" aria-label="刷新上传历史">
               <template #icon><el-icon><Refresh /></el-icon></template>
             </el-button>
           </div>
         </template>
         <!-- 搜索和筛选栏 -->
         <div class="history-search-bar">
+          <label class="upload-history-filter" for="upload-history-keyword"><span>任务或文件夹</span>
           <el-input
+            id="upload-history-keyword"
             v-model="searchKeyword"
-            placeholder="搜索任务ID或文件夹名…"
+            aria-label="搜索任务ID或文件夹名…" placeholder="搜索任务ID或文件夹名…"
             clearable
             size="small"
             class="history-search-input"
           >
             <template #prefix><el-icon><Search /></el-icon></template>
           </el-input>
+          </label>
+          <label class="upload-history-filter" for="upload-history-status"><span>处理阶段</span>
           <el-select
+            id="upload-history-status"
             v-model="statusFilter"
-            placeholder="全部状态"
+            aria-label="全部状态" placeholder="全部状态"
             clearable
             size="small"
             class="history-status-select"
@@ -202,23 +222,36 @@
             <el-option label="全部状态" value="" />
             <el-option label="上传中" value="UPLOADING" />
             <el-option label="已上传" value="UPLOADED" />
+            <el-option label="已排队" value="QUEUED" />
             <el-option label="检测中" value="DETECTING" />
             <el-option label="已完成" value="COMPLETED" />
             <el-option label="失败" value="FAILED" />
           </el-select>
+          </label>
+          <label class="upload-history-filter" for="upload-history-date"><span>最近更新日期（UTC+8）</span>
           <el-date-picker
+            id="upload-history-date"
             v-model="filterDate"
-            placeholder="选择日期"
+            aria-label="选择日期" placeholder="选择日期"
             size="small"
             class="history-date-picker"
             value-format="YYYY-MM-DD"
             clearable
           />
+          </label>
         </div>
-        <el-empty
+        <p class="upload-history-cache-note">筛选仅作用于当前已加载记录。清除本机缓存不删除后端任务或图片，也不取消服务器检测；重新读取后可能再次显示。</p>
+        <div class="upload-history-scope"><span>{{ historyLoading ? '正在核对上传记录…' : `已加载 ${taskList.length} 条，当前匹配 ${uploadHistory.length} 条` }}</span><el-button v-if="hasHistoryFilters" link size="small" @click="resetHistoryFilters">清空筛选</el-button></div>
+        <el-alert v-if="historyError && uploadHistory.length" :title="historyError + '；以下为先前已加载的记录，请刷新核对。'" type="error" show-icon :closable="false" />
+        <CollectionEmptyState
           v-if="uploadHistory.length === 0"
-          description="暂无上传记录，选择文件夹开始上传"
-          :image-size="64"
+          :loading="historyLoading"
+          :error="historyError"
+          :filtered="hasHistoryFilters"
+          empty-title="暂无上传记录"
+          empty-description="选择图片文件夹并核对采集信息后，点击上传原图开始。"
+          @retry="refreshHistory"
+          @reset="resetHistoryFilters"
         />
         <div v-else class="history-list">
           <div
@@ -269,7 +302,7 @@
                 {{ taskStore.taskStatusDetail(task).text }}
               </span>
               <span class="history-item-time">
-                上传时间：
+                最近更新（UTC+8）：
                 <el-icon style="margin-right: 2px; font-size: 11px;"><Calendar /></el-icon>
                 {{ formatUploadTime(task.updatedAt || task.createdAt) }}
               </span>
@@ -279,13 +312,12 @@
               <router-link
                 v-if="task.stage === 'uploaded' || task.stage === 'queued' || task.stage === 'detecting' || task.stage === 'completed'"
                 :to="`/inspection/workbench?taskId=${task.taskId}`"
+                class="upload-next-link"
               >
-                <el-button link size="small">
-                  <el-icon><Right /></el-icon>前往检测
-                </el-button>
+                <el-icon aria-hidden="true"><Right /></el-icon>前往检测
               </router-link>
-              <el-button link size="small" type="danger" @click="taskStore.removeTask(task.taskId)">
-                <el-icon><Delete /></el-icon>移除
+              <el-button link size="small" :loading="removeCacheBusy===task.taskId" :disabled="uploadingToOss || !!removeCacheBusy" @click="removeCachedUploadTask(task)">
+                <el-icon><Delete /></el-icon>清除本机缓存
               </el-button>
             </div>
           </div>
@@ -296,14 +328,18 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref, toRaw } from 'vue'
+import { computed, onMounted, onBeforeUnmount, reactive, ref, toRaw } from 'vue'
 import { storeToRefs } from 'pinia'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { Calendar, CircleCheck, Clock, Delete, FolderOpened, Refresh, Right, Search, UploadFilled, Warning } from '@element-plus/icons-vue'
 import { fetchDevicesForSelect, fetchEmployeesForSelect } from '../api/resourceOptions'
 import { useTaskStore, useUploadStore, usePollingStore } from '../stores/detectionTask'
+import { beijingDateTime } from '../utils/beijingTime'
+import CollectionEmptyState from '../components/CollectionEmptyState.vue'
+import { useUserStore } from '../stores/user'
 
 const taskStore = useTaskStore()
+const userStore = useUserStore()
 const uploadStore = useUploadStore()
 const pollingStore = usePollingStore()
 const { uploadingToOss } = storeToRefs(uploadStore)
@@ -315,6 +351,26 @@ const employeeList = ref([])
 const deviceList = ref([])
 const loadingEmployees = ref(false)
 const loadingDevices = ref(false)
+const employeeError = ref(''), deviceError = ref(''), selectionNotice = ref(''), uploadAttempted = ref(false)
+const employeeLoaded = ref(false), deviceLoaded = ref(false)
+let pageActive = true, employeeRequest = 0, deviceRequest = 0
+const removeCacheBusy=ref('')
+const accountScope=()=>JSON.stringify([userStore.identity?.userId || userStore.username || '',userStore.role,userStore.isAuthenticated])
+async function removeCachedUploadTask(task){
+  const taskId=task?.taskId
+  if(!pageActive || uploadingToOss.value || removeCacheBusy.value || typeof taskId!=='string' || !/^[A-Za-z0-9_-]{1,128}$/.test(taskId))return
+  const scope=accountScope()
+  removeCacheBusy.value=taskId
+  try {
+    await ElMessageBox.confirm(`清除任务 ${taskId} 的本机缓存？后端任务与图片继续保留，服务器检测不会取消；重新读取后可能再次显示。`,'清除本机任务缓存',{type:'warning',confirmButtonText:'清除本机缓存',cancelButtonText:'保留缓存'})
+    if(!pageActive || scope!==accountScope() || uploadingToOss.value)return
+    if(!taskList.value.some(row=>row.taskId===taskId)){ElMessage.info('此任务已不在当前本机缓存中，请重新读取核对');return}
+    taskStore.removeTask(taskId)
+    ElMessage.success('已清除本机任务缓存，后端任务与图片保留')
+  } catch(error){if(pageActive && scope===accountScope() && !['cancel','close'].includes(error))ElMessage.error('本机缓存清理未完成，请重新读取核对')}
+  finally {removeCacheBusy.value=''}
+}
+onBeforeUnmount(() => { pageActive = false; employeeRequest++; deviceRequest++ })
 
 // 断点续传相关状态
 const resumeTaskInfo = ref(null) // { taskId, folderName, uploadedCount, totalCount }
@@ -323,6 +379,10 @@ const resumeTaskInfo = ref(null) // { taskId, folderName, uploadedCount, totalCo
 const searchKeyword = ref('')
 const statusFilter = ref('')
 const filterDate = ref('')
+const hasHistoryFilters = computed(() => !!(searchKeyword.value.trim() || statusFilter.value || filterDate.value))
+const historyLoading = ref(true)
+const historyError = ref('')
+const resetHistoryFilters = () => { searchKeyword.value = ''; statusFilter.value = ''; filterDate.value = '' }
 
 const folderInfo = reactive({
   name: '',
@@ -334,6 +394,11 @@ const folderInfo = reactive({
   imageFolderName: '',
   files: []
 })
+
+const missingCaptureFields = computed(() => [
+  ['captureDate', '采集日期'], ['region', '地区'], ['collector', '采集员'],
+  ['deviceName', '采集设备'], ['imageFolderName', '图片文件夹名称']
+].filter(([key]) => !String(folderInfo[key] || '').trim()).map(([, label]) => label))
 
 // 当前正在上传的任务
 const uploadingTask = computed(() => {
@@ -357,7 +422,7 @@ const uploadHistory = computed(() => {
   if (filterDate.value) {
     list = list.filter(t => {
       const date = t.updatedAt || t.createdAt
-      return date && date.startsWith(filterDate.value)
+      return date && beijingDateTime(date).startsWith(filterDate.value)
     })
   }
 
@@ -382,16 +447,20 @@ const uploadHistory = computed(() => {
 })
 
 const triggerFolderSelect = () => {
+  if (uploadingToOss.value) return
   folderInput.value?.click()
 }
 
 const handleFolderSelect = (event) => {
+  if (uploadingToOss.value) return
   const files = Array.from(event.target.files || [])
   const imageFiles = files.filter(file => ['image/jpeg', 'image/png', 'image/jpg'].includes(file.type))
   if (!imageFiles.length) {
     ElMessage.warning('所选文件夹中没有可用图片')
     return
   }
+  uploadAttempted.value = false
+  selectionNotice.value = `本次选入 ${imageFiles.length} 张图片${files.length > imageFiles.length ? `，另有 ${files.length - imageFiles.length} 个文件未列入本次上传` : ''}`
 
   const firstPath = imageFiles[0].webkitRelativePath || imageFiles[0].name
   const firstSegments = firstPath.split('/').filter(Boolean)
@@ -419,11 +488,12 @@ const handleFolderSelect = (event) => {
 }
 
 const handleUploadBatch = () => {
+  if (uploadingToOss.value || uploadAttempted.value) return
   if (!folderInfo.files.length) {
     ElMessage.error('请先选择图片文件夹')
     return
   }
-  if (!folderInfo.captureDate || !folderInfo.region || !folderInfo.collector || !folderInfo.deviceName || !folderInfo.imageFolderName) {
+  if (missingCaptureFields.value.length) {
     ElMessage.error('请先确认采集日期、地区、采集员、采集设备和图片文件夹名称')
     return
   }
@@ -446,13 +516,15 @@ const handleUploadBatch = () => {
     folderLabel: `${folderInfo.region || '未知'} / ${folderInfo.imageFolderName || '未命名'}`
   }
 
+  uploadAttempted.value = true
   uploadStore.uploadBatchToOss(filesData, captureInfo)
-
-  // 重置表单
-  resetBatchState()
 }
 
 const resetBatchState = () => {
+  if (uploadingToOss.value) return
+  uploadAttempted.value = false
+  selectionNotice.value = ''
+  if (folderInput.value) folderInput.value.value = ''
   folderInfo.name = ''
   folderInfo.imageCount = 0
   folderInfo.captureDate = ''
@@ -466,10 +538,12 @@ const resetBatchState = () => {
 // ==================== 断点续传 ====================
 
 const triggerResumeFolderSelect = () => {
+  if (uploadingToOss.value) return
   resumeFolderInput.value?.click()
 }
 
 const handleResumeFolderSelect = (event) => {
+  if (uploadingToOss.value) return
   const files = Array.from(event.target.files || [])
   const imageFiles = files.filter(file => ['image/jpeg', 'image/png', 'image/jpg'].includes(file.type))
   if (!imageFiles.length) {
@@ -514,16 +588,11 @@ const handleResumeFolderSelect = (event) => {
 
 // 格式化上传时间显示
 const formatUploadTime = (dateStr) => {
-  if (!dateStr) return ''
-  // dateStr 格式: 2026-05-26T17:20:06 或 2026-05-26T17:20:06.xxx
-  const match = dateStr.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/)
-  if (match) {
-    return `${match[1]} ${match[2]}`
-  }
-  return dateStr.substring(0, 16)
+  return dateStr ? beijingDateTime(dateStr) || '时间格式未知' : '未记录'
 }
 
 const dismissResume = () => {
+  if (uploadingToOss.value) return
   const info = resumeTaskInfo.value
   if (info) {
     taskStore.removeFileState(info.taskId)
@@ -540,45 +609,71 @@ const dismissResume = () => {
 // ==================== 数据加载 ====================
 
 const fetchEmployees = async () => {
+  if (!pageActive) return
+  const request = ++employeeRequest
   loadingEmployees.value = true
+  employeeError.value = ''
   try {
     const res = await fetchEmployeesForSelect()
-    if (res.data?.code === 200) {
-      const page = res.data.data
-      employeeList.value = page.records || page || []
-    }
+    if (!pageActive || request !== employeeRequest) return
+    const page = res.data?.data, rows = Array.isArray(page) ? page : page?.records
+    if (res.data?.code !== 200 || !Array.isArray(rows) || rows.some(row => !row || typeof row.name !== 'string')) throw new Error('员工候选格式不完整')
+    employeeList.value = rows
+    employeeLoaded.value = true
   } catch (err) {
-    console.error('加载员工列表失败:', err)
+    if (!pageActive || request !== employeeRequest) return
+    if ([401, 403].includes(err.response?.status)) { employeeList.value = []; employeeLoaded.value = false }
+    employeeError.value = '采集员候选暂不可读取，原有采集信息保留。'
   } finally {
-    loadingEmployees.value = false
+    if (pageActive && request === employeeRequest) loadingEmployees.value = false
   }
 }
 
 const fetchDevices = async () => {
+  if (!pageActive) return
+  const request = ++deviceRequest
   loadingDevices.value = true
+  deviceError.value = ''
   try {
     const res = await fetchDevicesForSelect()
-    if (res.data?.code === 200) {
-      const data = res.data.data
-      deviceList.value = data.records || data || []
-    }
+    if (!pageActive || request !== deviceRequest) return
+    const data = res.data?.data, rows = Array.isArray(data) ? data : data?.records
+    if (res.data?.code !== 200 || !Array.isArray(rows) || rows.some(row => !row || typeof row.deviceCode !== 'string')) throw new Error('设备候选格式不完整')
+    deviceList.value = rows
+    deviceLoaded.value = true
   } catch (err) {
-    console.error('加载设备列表失败:', err)
+    if (!pageActive || request !== deviceRequest) return
+    if ([401, 403].includes(err.response?.status)) { deviceList.value = []; deviceLoaded.value = false }
+    deviceError.value = '采集设备候选暂不可读取，原有采集信息保留。'
   } finally {
-    loadingDevices.value = false
+    if (pageActive && request === deviceRequest) loadingDevices.value = false
   }
 }
 
 // ==================== 生命周期 ====================
 
 const refreshing = ref(false)
+const loadUploadHistory = async () => {
+  if (!pageActive) return false
+  historyLoading.value = true
+  try {
+    const result = await pollingStore.fetchTaskList()
+    if (!pageActive) return false
+    if (!result?.ok) throw new Error(result?.message || '上传记录暂不可读取')
+    historyError.value = ''
+    return true
+  } catch (error) {
+    if (pageActive) historyError.value = error.message || '上传记录暂不可读取，请刷新核对'
+    return false
+  } finally {
+    if (pageActive) historyLoading.value = false
+  }
+}
 const refreshHistory = async () => {
+  if (refreshing.value || historyLoading.value) return
   refreshing.value = true
   try {
-    await pollingStore.fetchTaskList()
-    ElMessage.success('上传历史已刷新')
-  } catch (e) {
-    ElMessage.error('刷新失败')
+    if (await loadUploadHistory()) ElMessage.success('上传历史已刷新')
   } finally {
     refreshing.value = false
   }
@@ -588,10 +683,11 @@ onMounted(async () => {
   // 并行加载：任务列表 + 员工/设备选项
   await Promise.all([
     pollingStore.restoreFromSession(),
-    pollingStore.fetchTaskList(),
+    loadUploadHistory(),
     fetchEmployees(),
     fetchDevices()
   ])
+  if (!pageActive) return
   // 检查是否有未完成的上传任务
   const resumeList = taskStore.getResumeTaskList()
   if (resumeList.length > 0) {
@@ -710,22 +806,16 @@ onMounted(async () => {
 }
 
 .history-search-bar {
-  display: flex;
-  gap: 8px;
+  display: grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap: 12px;
   margin-bottom: 12px;
 }
-
-.history-search-input {
-  flex: 1;
-}
-
-.history-status-select {
-  width: 110px;
-}
-
-.history-date-picker {
-  width: 130px;
-}
+.upload-history-filter { display:grid; gap:7px; min-width:0; color:var(--app-text-secondary); font-size:12px; line-height:1.8; }
+.upload-history-filter:first-child { grid-column:1/-1; }
+.upload-history-filter :is(.history-search-input,.history-status-select,.history-date-picker) { width:100%; min-width:0; }
+.upload-history-filter :deep(.el-date-editor.el-input) { width:100%; }
+.upload-history-cache-note { margin:0 0 14px; color:var(--app-text-secondary); font-size:12px; line-height:1.9; }
 
 .history-list {
   display: flex;
@@ -734,18 +824,13 @@ onMounted(async () => {
 }
 
 .history-item {
-  padding: 14px 16px;
-  border-radius: 14px;
-  border: 1px solid rgba(15, 23, 42, 0.06);
-  background: #fafbfc;
-  transition: all 0.18s;
+  padding: 16px 0;
+  border-radius: 0;
+  border: 0;
+  border-bottom:1px solid var(--app-border);
+  background: var(--app-surface);
 }
-
-.history-item:hover {
-  border-color: rgba(22, 119, 255, 0.18);
-  background: rgba(22, 119, 255, 0.015);
-  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.04);
-}
+.history-item:last-child { border-bottom:0; }
 
 .history-item-taskid {
   display: flex;
@@ -871,4 +956,14 @@ onMounted(async () => {
     grid-template-columns: 1fr;
   }
 }
+@media(max-width:480px) { .history-search-bar { grid-template-columns:minmax(0,1fr); }.upload-history-filter:first-child { grid-column:auto; } }
+.upload-selection-note { margin:10px 0 14px; color:var(--app-text-muted); font-size:11px; line-height:1.8; overflow-wrap:anywhere; }
+.capture-read-error { flex-basis:100%; margin:8px 0 0; color:var(--app-warning); font-size:12px; line-height:1.8; overflow-wrap:anywhere; }
+.capture-read-error button, .upload-attempt-note button { display:inline-flex; align-items:center; border:0; border-radius:4px; padding:3px 0; margin-left:8px; color:var(--app-primary); background:transparent; font:inherit; cursor:pointer; }
+.upload-attempt-note { display:flex; align-items:flex-start; gap:9px; margin-top:14px; padding:13px; border-radius:9px; color:var(--app-text-secondary); background:var(--app-primary-light); font-size:12px; line-height:1.85; }
+.upload-attempt-note > .el-icon { flex:0 0 auto; margin-top:3px; color:var(--app-primary); }
+.upload-attempt-note > div { min-width:0; }.upload-attempt-note strong { font-size:12px; color:var(--app-text); font-weight:550; }
+.upload-attempt-note p { margin:5px 0 0; overflow-wrap:anywhere; }.upload-attempt-note button { margin:5px 0 0; }
+.capture-read-error button:disabled, .upload-attempt-note button:disabled { color:var(--app-text-muted); opacity:.6; cursor:default; }
+.capture-read-error button:focus-visible, .upload-attempt-note button:focus-visible { outline:2px solid var(--app-primary); outline-offset:3px; }
 </style>

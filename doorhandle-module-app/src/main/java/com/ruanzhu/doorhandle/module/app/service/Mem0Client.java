@@ -39,6 +39,10 @@ public class Mem0Client {
     @Value("${mem0.bridge-token:}")
     private String bridgeToken;
     private final ObjectMapper objectMapper = new ObjectMapper();
+    private org.springframework.beans.factory.ObjectProvider<com.ruanzhu.doorhandle.contracts.agent.ModelConfigurationApi> modelConfiguration;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setModelConfiguration(org.springframework.beans.factory.ObjectProvider<com.ruanzhu.doorhandle.contracts.agent.ModelConfigurationApi> value){modelConfiguration=value;}
+    private void requireCurrentMemoryModel(){if(modelConfiguration!=null){var config=modelConfiguration.getIfAvailable();if(config!=null)config.assertMemoryAvailable();}}
 
     public Mem0Client(SensitiveDataSanitizer sensitiveDataSanitizer) {
         this(sensitiveDataSanitizer, null);
@@ -55,6 +59,7 @@ public class Mem0Client {
     public Map<String, Object> addMemory(TenantContext tenant, String sessionId,
                                          String content, Map<String, Object> metadata) {
         if (!allowed(tenant, false)) return Collections.emptyMap();
+        requireCurrentMemoryModel();
         var scope=buildScope(tenant,sessionId);
         String sanitized=sensitiveDataSanitizer.sanitize(content);
         String turn=metadata!=null&&metadata.get("turn_id")!=null?metadata.get("turn_id").toString():sanitized;
@@ -196,6 +201,7 @@ public class Mem0Client {
         return result;
     }
     public com.ruanzhu.doorhandle.module.app.dto.chat.MemoryDtos.Review startReview(TenantContext owner,String id,com.ruanzhu.doorhandle.module.app.dto.chat.MemoryDtos.StartReview request){
+        requireCurrentMemoryModel();
         return reviewDto(reviewRequest(owner,"start",Map.of("memory_id",id,"request_id",request.requestId(),"expected_digest",request.expectedDigest(),"expected_revision",request.expectedRevision())),request.requestId());
     }
     public com.ruanzhu.doorhandle.module.app.dto.chat.MemoryDtos.Review getReview(TenantContext owner,String id){return reviewDto(reviewRequest(owner,"get",Map.of("request_id",id)),id);}

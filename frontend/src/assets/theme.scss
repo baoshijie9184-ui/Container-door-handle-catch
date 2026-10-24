@@ -3,88 +3,15 @@
    工业检测智能控制台 · Data-Dense Dashboard 风格
    ═══════════════════════════════════════════════════════════════════════ */
 
-:root {
-  /* ── 主色调 ── */
-  --app-primary: #2563eb;
-  --app-primary-hover: #1d4ed8;
-  --app-primary-active: #1e40af;
-  --app-primary-soft: rgba(37, 99, 235, 0.10);
-  --app-primary-light: rgba(37, 99, 235, 0.05);
-  --app-primary-glow: rgba(37, 99, 235, 0.18);
-  --app-primary-deep: #0f2f57;
-  --app-cyan: #0ea5e9;
-  --app-cyan-soft: rgba(14, 165, 233, 0.11);
-  --app-steel: #334155;
-  --app-steel-soft: rgba(51, 65, 85, 0.08);
-
-  /* ── 语义色 ── */
-  --app-success: #059669;
-  --app-success-soft: rgba(5, 150, 105, 0.10);
-  --app-success-light: rgba(5, 150, 105, 0.05);
-
-  --app-warning: #d97706;
-  --app-warning-soft: rgba(217, 119, 6, 0.10);
-  --app-warning-light: rgba(217, 119, 6, 0.05);
-
-  --app-danger: #dc2626;
-  --app-danger-soft: rgba(220, 38, 38, 0.10);
-  --app-danger-light: rgba(220, 38, 38, 0.05);
-
-  --app-info: #0891b2;
-  --app-info-soft: rgba(8, 145, 178, 0.10);
-
-  /* ── 中性色 ── */
-  --app-bg: #f6f8fb;
-  --app-bg-alt: #f8fafc;
-  --app-surface: #ffffff;
-  --app-surface-strong: #ffffff;
-  --app-surface-muted: #f6f9fc;
-  --app-surface-hover: #f1f5f9;
-  --app-surface-glass: rgba(255, 255, 255, 0.78);
-  --app-surface-blueprint: rgba(239, 246, 255, 0.72);
-
-  --app-text: #0f172a;
-  --app-text-secondary: #475569;
-  --app-text-muted: #68768a;
-  --app-text-placeholder: #cbd5e1;
-
-  --app-border: #e7ebf1;
-  --app-border-strong: rgba(15, 23, 42, 0.12);
-  --app-border-focus: rgba(37, 99, 235, 0.35);
-
-  /* ── 圆角 ── */
-  --app-radius-xs: 6px;
-  --app-radius-sm: 10px;
-  --app-radius-md: 14px;
-  --app-radius-lg: 20px;
-  --app-radius-xl: 28px;
-  --app-radius-full: 9999px;
-
-  /* ── 阴影层级 ── */
-  --app-shadow-xs: 0 1px 3px rgba(15, 23, 42, 0.04);
-  --app-shadow-sm: 0 2px 8px rgba(15, 23, 42, 0.05);
-  --app-shadow-md: 0 8px 24px rgba(15, 23, 42, 0.07);
-  --app-shadow-lg: 0 16px 48px rgba(15, 23, 42, 0.09);
-  --app-shadow-xl: 0 24px 64px rgba(15, 23, 42, 0.12);
-  --app-shadow-primary: 0 3px 8px rgba(37, 99, 235, 0.14);
-  --app-shadow-card-hover: 0 12px 36px rgba(15, 23, 42, 0.10);
-  --app-shadow-command: 0 4px 20px rgba(15, 47, 87, 0.045);
-  --app-shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.75);
-
-  /* ── 过渡 ── */
-  --app-transition-fast: 0.15s cubic-bezier(0.4, 0, 0.2, 1);
-  --app-transition-base: 0.22s cubic-bezier(0.4, 0, 0.2, 1);
-  --app-transition-slow: 0.35s cubic-bezier(0.4, 0, 0.2, 1);
-  --app-ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
-
-  /* ── 间距 ── */
-  --app-space-xs: 4px;
-  --app-space-sm: 8px;
-  --app-space-md: 12px;
-  --app-space-lg: 16px;
-  --app-space-xl: 24px;
-  --app-space-2xl: 32px;
+.quality-flow-hint {
+  margin-inline-start: 10px;
+  color: var(--app-text-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
 }
+
+
 
 /* ═══════════════════════════════════════════════════════════════════════
    全局重置
@@ -113,7 +40,7 @@ html, body, #app {
 
 body {
   color: var(--app-text);
-  font-family: "Inter", "Segoe UI", "PingFang SC", "Microsoft YaHei", "Helvetica Neue", sans-serif;
+  font-family: var(--app-font);
   font-size: 14px;
   line-height: 1.6;
   background: var(--app-bg);
@@ -229,7 +156,7 @@ select {
 .command-panel {
   position: relative;
   overflow: hidden;
-  background: linear-gradient(120deg, #ffffff 40%, #f1f6ff);
+  background: var(--app-surface);
   border: 1px solid var(--app-border);
   box-shadow: var(--app-shadow-command);
 }
@@ -305,8 +232,7 @@ select {
   align-items: flex-start;
   gap: 16px;
   padding: 24px 28px;
-  background:
-    linear-gradient(110deg, #ffffff 50%, #f3f7ff);
+  background: var(--app-surface);
   border-radius: var(--app-radius-lg);
   border: 1px solid rgba(37, 99, 235, 0.12);
   box-shadow: var(--app-shadow-command);
@@ -501,7 +427,7 @@ select {
   border-radius: 10px !important;
   font-weight: 600;
   letter-spacing: 0.01em;
-  transition: all var(--app-transition-fast);
+  transition: background-color var(--app-transition-fast), border-color var(--app-transition-fast), color var(--app-transition-fast), box-shadow var(--app-transition-fast), transform var(--app-transition-fast);
 }
 
 .el-button--primary {
@@ -528,7 +454,7 @@ select {
 .el-select__wrapper,
 .el-textarea__inner {
   border-radius: 10px !important;
-  transition: all var(--app-transition-fast);
+  transition: background-color var(--app-transition-fast), border-color var(--app-transition-fast), box-shadow var(--app-transition-fast);
   box-shadow: var(--app-shadow-xs) !important;
   border: 1px solid rgba(15, 23, 42, 0.04);
 }
@@ -582,21 +508,21 @@ select {
 .el-menu-item,
 .el-sub-menu__title {
   border-radius: 12px;
-  color: var(--app-text-secondary) !important;
+  color: var(--app-text-secondary);
   margin: 3px 0;
-  height: 46px !important;
-  line-height: 46px !important;
-  transition: all var(--app-transition-fast);
+  height: 46px;
+  line-height: 46px;
+  transition: background-color var(--app-transition-fast), color var(--app-transition-fast);
 }
 
 .el-menu-item.is-active {
   color: var(--app-primary) !important;
-  background: linear-gradient(90deg, var(--app-primary-soft), rgba(14, 165, 233, 0.05), transparent) !important;
+  background: var(--app-primary-soft) !important;
   font-weight: 600;
 }
 
-.el-menu-item:hover,
-.el-sub-menu__title:hover {
+.el-menu-item:not(.is-active):hover,
+.el-sub-menu:not(.is-active) > .el-sub-menu__title:hover {
   background: var(--app-surface-hover) !important;
   color: var(--app-text) !important;
 }
@@ -623,18 +549,19 @@ select {
 }
 
 .el-tabs__item {
-  font-weight: 700 !important;
+  font-weight: 550 !important;
   color: var(--app-text-secondary) !important;
 }
 
 .el-tabs__item.is-active {
   color: var(--app-primary) !important;
+  font-weight: 650 !important;
 }
 
 .el-tabs__active-bar {
   height: 3px !important;
   border-radius: 999px;
-  background: linear-gradient(90deg, var(--app-primary), var(--app-cyan)) !important;
+  background: var(--app-primary) !important;
 }
 
 .el-radio-button__inner {

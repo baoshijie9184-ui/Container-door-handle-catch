@@ -21,6 +21,72 @@ public class AgentModelService implements AutoCloseable {
     private final Map<String, Model> models = new ConcurrentHashMap<>();
     private final Map<String, ModelCircuit> health = new ConcurrentHashMap<>();
     private boolean closed;
+    private ModelConfigurationService configurations;
+    private static final int MAX_CACHED_VERSIONS = 16;
+    private final Map<Long, VersionClient> versions = new java.util.LinkedHashMap<>(16, .75f, true);
+    private final List<AutoCloseable> ownedResources = new ArrayList<>();
+    private static final class VersionClient {
+        final AgentModelService client;
+        int activeStreams;
+        VersionClient(AgentModelService client) { this.client = client; }
+    }
+    private java.util.function.Consumer<String> configurationGuard=id->{};
+    private org.springframework.data.redis.core.StringRedisTemplate circuitRedis;
+    private long circuitRevision;
+    public void setCircuitRedis(org.springframework.data.redis.core.StringRedisTemplate value){circuitRedis=value;}
+    public void setConfigurations(ModelConfigurationService value){configurations=value;}
+    public String currentDefault(){return configurations==null?agent.getModel():configurations.active().defaultModel();}
+    public Model resolveAt(String id,long revision){
+        if(configurations==null)return resolve(id);
+        long version=revision==0?configurations.active().version():revision;
+        configurations.assertUsable(version,id);
+        return new Model(){
+            public String getModelName(){return id;}
+            public reactor.core.publisher.Flux<ChatResponse> stream(List<io.agentscope.core.message.Msg> input,List<ToolSchema> tools,GenerateOptions options){
+                return reactor.core.publisher.Flux.using(() -> lease(version), holder -> {
+                    configurations.assertUsable(version,id);
+                    return holder.client.resolve(id).stream(input,tools,options);
+                }, AgentModelService.this::release);
+            }
+            public int getContextWindowSize(){return metadata(version,id).getContextWindowSize();}
+            public boolean supportsNativeStructuredOutput(){return metadata(version,id).supportsNativeStructuredOutput();}
+            public boolean supportsNativeStructuredOutputWithTools(){return metadata(version,id).supportsNativeStructuredOutputWithTools();}
+        };
+    }
+    private synchronized AgentModelService versionClient(long revision){
+        if(closed)throw new IllegalStateException("模型服务已关闭");
+        var existing = versions.get(revision);
+        if(existing != null) return existing.client;
+        if(versions.size() >= MAX_CACHED_VERSIONS){
+            var iterator = versions.entrySet().iterator();
+            boolean evicted = false;
+            while(iterator.hasNext()){
+                var candidate = iterator.next().getValue();
+                if(candidate.activeStreams == 0){ iterator.remove(); candidate.client.close(); evicted = true; break; }
+            }
+            if(!evicted)throw new IllegalStateException("模型版本执行资源已满，请稍后重试");
+        }
+        var snapshot=configurations.runtime(revision);var settings=new AgentScopeProperties();settings.setModel(snapshot.document().defaultModel());
+        var client=new AgentModelService(snapshot.properties(),settings);
+        if(circuitRedis==null)throw new RedisModelCircuit.Unavailable();
+        client.circuitRedis=circuitRedis;client.circuitRevision=revision;
+        client.configurationGuard=id->configurations.assertUsable(revision,id);
+        versions.put(revision,new VersionClient(client));
+        return client;
+    }
+    private synchronized VersionClient lease(long revision){versionClient(revision);var holder=versions.get(revision);holder.activeStreams++;return holder;}
+    private synchronized void release(VersionClient holder){holder.activeStreams--;}
+    private synchronized Model metadata(long revision,String id){return versionClient(revision).resolve(id);}
+    private Model guarded(String id,Model delegate){
+        if(delegate instanceof AutoCloseable resource)ownedResources.add(resource);
+        return new Model(){
+            public String getModelName(){return delegate.getModelName();}
+            public int getContextWindowSize(){return delegate.getContextWindowSize();}
+            public boolean supportsNativeStructuredOutput(){return delegate.supportsNativeStructuredOutput();}
+            public boolean supportsNativeStructuredOutputWithTools(){return delegate.supportsNativeStructuredOutputWithTools();}
+            public reactor.core.publisher.Flux<ChatResponse> stream(List<io.agentscope.core.message.Msg> input,List<ToolSchema> tools,GenerateOptions options){return reactor.core.publisher.Flux.defer(()->{configurationGuard.accept(id);return delegate.stream(input,tools,options);});}
+        };
+    }
 
     public AgentModelService(AgentModelProperties connections, AgentScopeProperties agent) {
         this.connections = connections;
@@ -34,6 +100,7 @@ public class AgentModelService implements AutoCloseable {
     }
 
     public synchronized Model resolve(String id) {
+        if(configurations!=null)return resolveAt(id,configurations.active().version());
         if (closed) throw new IllegalStateException("模型服务已关闭");
         var ids = new LinkedHashSet<String>();
         ids.add(id);
@@ -42,20 +109,20 @@ public class AgentModelService implements AutoCloseable {
         for (String modelId : ids) {
             var entry = entries().stream().filter(info -> info.id().equals(modelId)).findFirst()
                     .orElseThrow(() -> new IllegalArgumentException("未登记的模型 ID"));
-            candidates.add(new ManagedAgentModel.Candidate(modelId, entry.provider(), models.computeIfAbsent(modelId, this::create),
-                    health.computeIfAbsent(modelId, ignored -> new ModelCircuit(connections.getFailureThreshold(),
-                            connections.getCircuitCooldown(), connections.getQuotaCooldown()))));
+            candidates.add(new ManagedAgentModel.Candidate(modelId, entry.provider(), models.computeIfAbsent(modelId, key->guarded(key,create(key))),
+                    health.computeIfAbsent(modelId, this::circuit)));
         }
         return new ManagedAgentModel(candidates, GenerateOptions.builder()
                 .maxTokens(connections.getMaxOutputTokens()).executionConfig(execution()).build(), connections,
-                connections.isFallbackEnabled());
+                connections.isFallbackEnabled() || circuitRedis != null);
     }
+    private ModelCircuit circuit(String id){return circuitRedis==null?new ModelCircuit(connections.getFailureThreshold(),connections.getCircuitCooldown(),connections.getQuotaCooldown()):new RedisModelCircuit(circuitRedis,circuitRevision,id,connections.getFailureThreshold(),connections.getCircuitCooldown(),connections.getQuotaCooldown(),connections.getTimeout());}
 
     private static void positive(Duration value) {
         if (value == null || value.isNegative() || value.isZero() || value.compareTo(Duration.ofHours(1)) > 0)
             throw new IllegalArgumentException("模型超时和冷却时间必须在 0 到 1 小时之间");
     }
-    private List<String> fallbackIds() {
+    List<String> fallbackIds() {
         var list = connections.getFallbackModels();
         if (list == null || list.isEmpty()) list = List.of(connections.getFallbackModel());
         list = new ArrayList<>(list);
@@ -146,10 +213,11 @@ public class AgentModelService implements AutoCloseable {
         if (closed) return;
         closed=true;
         try {
-            for (Model model:models.values()) if(model instanceof OpenAIResponsesIoBridge bridge) bridge.close();
-        } finally { models.clear(); }
+            for (AutoCloseable resource:ownedResources)try{resource.close();}catch(Exception ignored){/* Never log provider exception bodies. */}
+        } finally { ownedResources.clear();models.clear();versions.values().forEach(holder->holder.client.close());versions.clear(); }
     }
     public List<ModelInfo> entries() {
+        if(configurations!=null){var active=configurations.active();var enabled=configurations.enabledIds(active.version());return versionClient(active.version()).entries().stream().map(info->new ModelInfo(info.id(),info.provider(),info.model(),info.protocol(),info.configured()&&enabled.contains(info.id()),info.id().equals(active.defaultModel()),info.healthState(),info.lastFailure(),info.retryAfterSeconds())).toList();}
         var result = new ArrayList<ModelInfo>();
         register(result, "dashscope", "dashscope:", connections.getDashscope(),
                 connections.getDashscope().getBaseUrl().contains("compatible-mode") ? "CHAT_COMPLETIONS" : "DASHSCOPE");
@@ -169,12 +237,13 @@ public class AgentModelService implements AutoCloseable {
     }
     private ModelInfo info(String provider, String prefix, AgentModelProperties.Connection c, String protocol, String model) {
         String id = prefix + model;
-        var circuit = health.get(id);
+        var circuit = circuitRedis==null?health.get(id):health.computeIfAbsent(id,this::circuit);
         var state = circuit == null ? new ModelCircuit.Health("CLOSED", null, 0) : circuit.health();
         return new ModelInfo(id, provider, model, protocol, hasKey(c), id.equals(agent.getModel()),
                 state.state(), state.lastFailure(), state.retryAfterSeconds());
     }
     public Catalog catalog() {
+        if(configurations!=null){var active=configurations.active();var document=configurations.runtime(active.version()).document();var fallback=document.fallbackEnabled()?document.fallbackModels().stream().filter(id->!id.equals(active.defaultModel())).toList():List.<String>of();return new Catalog(active.defaultModel(),document.fallbackEnabled(),fallback.isEmpty()?null:fallback.get(0),fallback,document.firstTokenTimeoutMs(),entries(),active.version());}
         var fallback = connections.isFallbackEnabled() ? fallbackIds().stream().filter(id -> !id.equals(agent.getModel())).toList() : List.<String>of();
         return new Catalog(agent.getModel(), connections.isFallbackEnabled(), fallback.isEmpty() ? null : fallback.get(0),
                 fallback, connections.getFirstTokenTimeout().toMillis(), entries());
@@ -182,5 +251,7 @@ public class AgentModelService implements AutoCloseable {
     public record ModelInfo(String id, String provider, String model, String protocol, boolean configured, boolean selected,
                             String healthState, String lastFailure, long retryAfterSeconds) {}
     public record Catalog(String selectedModel, boolean fallbackEnabled, String fallbackModel, List<String> fallbackModels,
-                          long firstTokenTimeoutMs, List<ModelInfo> models) {}
+                          long firstTokenTimeoutMs, List<ModelInfo> models,long configVersion) {
+        public Catalog(String selectedModel,boolean fallbackEnabled,String fallbackModel,List<String> fallbackModels,long firstTokenTimeoutMs,List<ModelInfo> models){this(selectedModel,fallbackEnabled,fallbackModel,fallbackModels,firstTokenTimeoutMs,models,0);}
+    }
 }

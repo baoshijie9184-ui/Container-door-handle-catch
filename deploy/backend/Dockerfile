@@ -1,4 +1,7 @@
 # syntax=docker/dockerfile:1
+# 仅构建 Java 后端镜像；MySQL/Redis/Kafka/Mem0/Chroma 在 compose.cloud.yml 定义。
+# 应用入口见 compose.monolith.yml；CPU PTH worker 见 compose.detection.yml。
+# 容器关系与编排顺序见 docs/docker-monolith-deployment.md。
 FROM maven:3.9.9-eclipse-temurin-17@sha256:f58d59b6273e785ac0a4477f6e9b5ba1d7731c75b906c0f7b34076f1851318cc AS build
 ARG MAVEN_MIRROR_URL=https://repo.maven.apache.org/maven2
 WORKDIR /workspace
@@ -35,6 +38,12 @@ RUN --mount=type=cache,target=/root/.m2,sharing=locked \
     && test "$#" -eq 1 && cp "$1" /out/app.jar
 
 FROM eclipse-temurin:17-jre-noble@sha256:07fa0356cf354c5252947575f42ed42aa6fd921f36438b7bc77ad81c31c537dd AS runtime
+LABEL io.doorhandle.model-config-format="1"
+LABEL io.doorhandle.assignment-json="2" io.doorhandle.assignment-identity="1"
+LABEL io.doorhandle.identity-review="1"
+LABEL io.doorhandle.identity-evidence="2"
+LABEL io.doorhandle.context-provenance="2"
+LABEL io.doorhandle.mcp-native-protocol="4"
 ARG UBUNTU_MIRROR=""
 # ONNX/OpenCV 使用 glibc；Python 仅供已受控的 Skill 下载和本地 Stdio MCP 安装器。
 RUN if [ -n "$UBUNTU_MIRROR" ]; then \
@@ -56,6 +65,8 @@ RUN mkdir -p /app/uploads /app/logs /app/.agentscope/workspace /app/script/shell
     && chown -R app:app /app
 COPY --from=build --chown=app:app /out/app.jar /app/app.jar
 COPY script/shell/install-local-fetch-mcp.py script/shell/download-linked-skill.py /app/script/shell/
+COPY script/shell/native-fetch-process.py /app/script/shell/native-fetch-process.py
+COPY script/shell/native-fetch-install.py /app/script/shell/native-fetch-install.py
 COPY README.md /app/README.md
 COPY LICENSE /app/LICENSE
 COPY docs/system-user-guide.md docs/chroma-rag-setup.md /app/docs/

@@ -10,8 +10,10 @@ pipeline {
     }
     triggers { pollSCM('H/5 * * * *') }
     parameters {
-        choice(name: 'ACTION', choices: ['verify-deploy', 'verify', 'rehearse', 'rollback'], description: '验证发布、仅验证、隔离真实应用升级回滚演练，或生产回滚')
+        choice(name: 'ACTION', choices: ['verify', 'verify-deploy', 'rehearse', 'rollback'], description: '默认仅验证；最终验收后才选择生产发布或回滚')
+        booleanParam(name: 'PRODUCTION_RELEASE_ENABLED', defaultValue: false, description: '开发阶段保持关闭；最终验收通过后才允许生产发布或回滚')
         booleanParam(name: 'REHEARSAL_KEEP', defaultValue: false, description: '仅在隔离演练全部通过后保留候选环境，供立即进行浏览器验收；不修改生产入口')
+        string(name: 'COMPATIBLE_BACKEND_IMAGE', defaultValue: '', description: '隔离演练可选：已存在且独立验收、支持身份/MCP 协议及写入暂停的旧版后端 sha256 镜像；不可使用候选冒充回滚基线')
         string(name: 'BUILD_WORKSPACE', defaultValue: 'D:/AI/lunwen1/DoorHandleCatch/work/jenkins/workspace', description: '专用工作区；不能使用开发源码目录')
         string(name: 'DEPLOY_HOST', defaultValue: "${params.DEPLOY_HOST ?: ''}", description: '原 ECS 当前公网 IP；保留最近一次配置，节省停机后重新核对')
         string(name: 'DEPLOY_PORT', defaultValue: "${params.DEPLOY_PORT ?: '443'}", description: '保留最近验证的 SSH 端口；当前使用 443 TLS 入口')
@@ -27,6 +29,9 @@ pipeline {
             steps {
                 script {
                     if (isUnix()) { error('This pipeline requires the existing Windows Jenkins node.') }
+                    if (params.ACTION in ['verify-deploy', 'rollback'] && !params.PRODUCTION_RELEASE_ENABLED) {
+                        error('Production publishing is disabled during development. Complete final acceptance before enabling the release action.')
+                    }
                     def buildRoot = pwd().replace('\\', '/')
                     dir('artifacts') {
                         if (pwd().replace('\\', '/') != "${buildRoot}/artifacts") {

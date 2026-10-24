@@ -17,6 +17,12 @@ public final class RoleAgentCatalog {
         return specialists(actor,confirmation,false,false);
     }
     public static List<Definition> specialists(AgentActor actor,boolean confirmation,boolean reports,boolean drafts) {
+        return specialists(actor,confirmation,reports,drafts,false);
+    }
+    public static List<Definition> specialists(AgentActor actor,boolean confirmation,boolean reports,boolean drafts,boolean retry) {
+        return specialists(actor,confirmation,reports,drafts,retry,false);
+    }
+    public static List<Definition> specialists(AgentActor actor,boolean confirmation,boolean reports,boolean drafts,boolean retry,boolean creation) {
         var result=new java.util.ArrayList<Definition>(actor.supervisor() ? List.of(
                 new Definition("detection-quality", confirmation?"检测质检查询，提出需人工确认的质检分配":"检测质检管理，查询任务和质检记录", confirmation?List.of("search_detection_tasks", "get_task_detail", "get_quality_records","propose_quality_assignment"):List.of("search_detection_tasks", "get_task_detail", "get_quality_records")),
                 new Definition("resource-management", "设备状态、采集告警及单体应用固定探针健康查询，不执行告警处置或运维修复", List.of("list_devices", "list_device_alerts", "get_device_alert", "get_system_health")),
@@ -27,6 +33,20 @@ public final class RoleAgentCatalog {
                 new Definition("quality-review", "本人任务质检历史列表查询；单任务当前复核状态/结论用 get_task_detail，不等于历史列表", List.of("get_my_quality_records", "get_task_detail")),
                 new Definition("device-status", "查询本人任务关联的设备名称；暂不提供实时设备状态和绑定设备清单", List.of("get_task_detail")),
                 new Definition("personal-analytics", "按最近天数汇总本人及分派任务工作量；不支持单任务明细或状态，应交给 detection-task", List.of("get_my_work_metrics"))));
+        if(retry) {
+            String target=actor.supervisor()?"detection-quality":"detection-task";
+            for(int i=0;i<result.size();i++)if(result.get(i).id().equals(target)) {
+                var current=result.get(i);var tools=new java.util.ArrayList<>(current.tools());tools.add("propose_detection_retry");
+                result.set(i,new Definition(current.id(),current.description()+"；按用户明确要求提出检测重试，仍需卡片人工确认",List.copyOf(tools)));
+            }
+        }
+        if(creation){
+            String target=actor.supervisor()?"detection-quality":"detection-task";
+            for(int i=0;i<result.size();i++)if(result.get(i).id().equals(target)){
+                var current=result.get(i);var tools=new java.util.ArrayList<>(current.tools());tools.add("propose_detection_creation");
+                result.set(i,new Definition(current.id(),current.description()+"；从当前会话图片提出新检测，先补齐采集信息，再人工确认",List.copyOf(tools)));
+            }
+        }
         if(reports)result.add(new Definition("report-assistant",actor.supervisor()?"查询授权报告与待审批列表，按明确请求保存本人草稿；审批请到报告页面人工确认":"查询本人报告，按明确请求编写或编辑本人草稿；提交审批请到报告页面",
                 drafts?List.of("list_quality_reports","get_quality_report","create_report_draft","edit_report_draft"):List.of("list_quality_reports","get_quality_report")));
         return List.copyOf(result);

@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+import io
+import zipfile
 
 spec=importlib.util.spec_from_file_location('linked_skill',Path(__file__).resolve().parents[1]/'script/shell/download-linked-skill.py')
 module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
@@ -40,9 +42,10 @@ class LinkedSkillDownloadTest(unittest.TestCase):
         for url in ['http://github.com/a/b/tree/main/skill','https://127.0.0.1/a/b/tree/main/skill','https://github.com@localhost/a/b/tree/main/skill','https://github.com/a/b/tree/main/../skill','https://github.com/a/b/tree/main/skill?token=secret','https://github.com/a/b/tree/main/skill#x']:
             with self.subTest(url=url):
                 with self.assertRaises(ValueError):module.source(url)
-    def test_modelscope_alias_maps_only_known_creator(self):
-        self.assertEqual(module.source(module.MODEL_SCOPE_CREATOR),('anthropics','skills','main','skills/skill-creator'))
-        with self.assertRaises(ValueError):module.source('https://modelscope.cn/skills/@other/example')
+    def test_market_links_parse_without_inventing_or_hardcoding_upstream_git(self):
+        self.assertEqual(module.source(module.MODEL_SCOPE_CREATOR),{'provider':'MODELSCOPE','id':'@anthropics/skill-creator'})
+        self.assertEqual(module.source('https://modelscope.cn/skills/@other/example')['id'],'@other/example')
+        self.assertEqual(module.source('https://skills.sh/fixtures/skills/fixture-reader')['provider'],'SKILLS_SH')
     def test_symlinks_and_git_blob_changes_fail_before_draft_creation(self):
         for transport in [Transport(symlink=True),Transport(tamper=True)]:
             with tempfile.TemporaryDirectory() as folder:
@@ -51,5 +54,63 @@ class LinkedSkillDownloadTest(unittest.TestCase):
         for value in ['../SKILL.md','scripts/CON.py','scripts//x.py','assets/name.','C:/outside','/absolute']:
             with self.assertRaises(ValueError):module.safe_path(value)
         with self.assertRaises(ValueError):module.license_type('All rights reserved')
+
+class MarketTransport(Transport):
+    def __init__(self, private=False, duplicate=False, symlink=False, license_content=LICENSE):
+        super().__init__();self.private=private;self.duplicate=duplicate;self.archive_calls=0
+        self.zip=io.BytesIO()
+        with zipfile.ZipFile(self.zip,'w',compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr('snapshot/SKILL.md',SKILL);archive.writestr('snapshot/LICENSE.txt',license_content)
+            script=zipfile.ZipInfo('snapshot/scripts/never-run.py');script.external_attr=(0o120777 if symlink else 0o100644)<<16
+            archive.writestr(script,b'raise RuntimeError("DO_NOT_RUN")')
+            if duplicate:archive.writestr('snapshot/other/SKILL.md',SKILL)
+    def document(self,url):
+        if 'modelscope.cn/openapi/' in url:
+            return {'success':True,'data':{'id':'@fixtures/fixture-reader','private':self.private,'license':'','source_url':'https://github.com/unproven/repository'}}
+        if url=='https://api.github.com/repos/fixtures/skills':return {'private':False,'default_branch':'main'}
+        return super().document(url)
+    def get(self,url,limit):
+        if 'skills.sh' in url:return b'<a href="https://github.com/fixtures/skills">Source</a>'
+        if 'modelscope.cn/skills/' in url:self.archive_calls+=1;return self.zip.getvalue()
+        return super().get(url,limit)
+
+class MarketSnapshotTest(unittest.TestCase):
+    def test_skills_page_resolves_verified_repo_to_exact_commit_and_directory(self):
+        with tempfile.TemporaryDirectory() as folder:
+            target=Path(folder)/'package';transport=MarketTransport()
+            module.download('https://skills.sh/fixtures/skills/fixture-reader',target,transport)
+            manifest=json.loads((target/'manifest.json').read_text())
+            self.assertEqual(manifest['provider'],'SKILLS_SH');self.assertEqual(manifest['commit'],COMMIT)
+            self.assertEqual(manifest['sourceIdentity'],'github:fixtures/skills/skills/fixture-reader')
+            self.assertTrue(all(COMMIT in url for url in transport.urls))
+    def test_unproven_page_repository_and_multiple_matching_directories_are_rejected(self):
+        class Unproven(MarketTransport):
+            def get(self,url,limit):return b'<a href="https://github.com/other/skills">Source</a>'
+        class Duplicate(MarketTransport):
+            def document(self,url):
+                value=super().document(url)
+                if '/git/trees/' in url:value['tree'].append({'path':'other/fixture-reader/SKILL.md'})
+                return value
+        for transport,reason in [(Unproven(),'MARKET_SOURCE_NOT_VERIFIED'),(Duplicate(),'SKILL_DIRECTORY_AMBIGUOUS')]:
+            with tempfile.TemporaryDirectory() as folder:
+                with self.assertRaisesRegex(ValueError,reason):module.download('https://skills.sh/fixtures/skills/fixture-reader',Path(folder)/'package',transport)
+    def test_native_archive_keeps_original_bytes_metadata_and_content_revision(self):
+        with tempfile.TemporaryDirectory() as folder:
+            target=Path(folder)/'package';transport=MarketTransport()
+            result=module.download('https://modelscope.cn/skills/@fixtures/fixture-reader',target,transport)
+            manifest=json.loads((target/'manifest.json').read_text())
+            self.assertIsNone(manifest['commit']);self.assertEqual(manifest['revisionKind'],'CONTENT_SNAPSHOT')
+            self.assertEqual((target/'_source/archive.zip').read_bytes(),transport.zip.getvalue())
+            self.assertEqual(result['snapshotSha256'],hashlib.sha256(transport.zip.getvalue()).hexdigest())
+            self.assertEqual(manifest['sourceVersion'],'snapshot-sha256:'+result['snapshotSha256'])
+            self.assertTrue((target/'scripts/never-run.py').exists());self.assertFalse(manifest['scriptsExecutable'])
+    def test_private_or_unknown_license_and_unsafe_native_archives_fail_closed(self):
+        for transport,reason in [(MarketTransport(private=True),'PUBLIC_SKILL_METADATA_REQUIRED'),(MarketTransport(duplicate=True),'SKILL_DIRECTORY_AMBIGUOUS'),(MarketTransport(symlink=True),'LINKS_AND_SPECIAL_FILES_FORBIDDEN'),(MarketTransport(license_content=b'All rights reserved'),'SUPPORTED_LICENSE_REQUIRED')]:
+            with tempfile.TemporaryDirectory() as folder:
+                with self.assertRaisesRegex(ValueError,reason):module.download('https://modelscope.cn/skills/@fixtures/fixture-reader',Path(folder)/'package',transport)
+                if transport.private:self.assertEqual(transport.archive_calls,0)
+    def test_encoded_credentials_and_port_market_urls_are_rejected(self):
+        for url in ['https://skills.sh:443/fixtures/skills/fixture-reader','https://skills.sh/fixtures/skills/%2e%2e','https://modelscope.cn/skills/@fixtures/fixture-reader?token=hidden','https://modelscope.cn@localhost/skills/@fixtures/fixture-reader']:
+            with self.assertRaises(ValueError):module.source(url)
 
 if __name__=='__main__':unittest.main()

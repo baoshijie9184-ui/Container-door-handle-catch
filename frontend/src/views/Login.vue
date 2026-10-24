@@ -1,145 +1,78 @@
 <template>
   <div class="login-page">
-    <!-- 动态背景 -->
-    <div class="login-backdrop">
-      <div class="backdrop-overlay"></div>
-      <div class="backdrop-grid"></div>
-    </div>
-
-    <!-- 左侧展示区 -->
-    <section class="login-showcase">
-      <div class="showcase-inner animate-fade-in-up">
-        <span class="login-badge">DoorHandleCatch Console</span>
-        <h1>集装箱门把手检测<br/>智能管理平台</h1>
-        <p>
-          统一管理检测任务、设备状态、人员分配与模型版本，让现场采集、缺陷识别与运维协同更高效。
-        </p>
-
-        <div class="showcase-grid">
-          <div class="showcase-card animate-stagger-1">
-            <div class="showcase-card-icon">
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
-            </div>
-            <strong>智能检测</strong>
-            <span>AI 模型自动识别门把手弯曲、形变、锈蚀、缺失等六类缺陷</span>
-          </div>
-          <div class="showcase-card animate-stagger-2">
-            <div class="showcase-card-icon">
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
-            </div>
-            <strong>运行总览</strong>
-            <span>首页仪表盘实时展示检测趋势、设备状态和人员分布数据</span>
-          </div>
-          <div class="showcase-card animate-stagger-3">
-            <div class="showcase-card-icon">
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-            </div>
-            <strong>协同管理</strong>
-            <span>人员、设备与模型三位一体，减少跨系统切换和沟通成本</span>
-          </div>
+    <section class="login-showcase" aria-label="系统介绍">
+      <a class="login-brand" href="#/login"><span class="login-brand-mark"><AppIcon name="Picture" :size="23" /></span><span>DoorHandle Catch<small>集装箱门把手质量管理</small></span></a>
+      <div class="showcase-inner">
+        <span class="login-product-label">工业视觉检测与协作</span>
+        <h1>从一张原图<br />到有据可查的质量结论</h1>
+        <p>连接图片采集、缺陷检测、人工复核与报告，让现场团队在同一个工作空间协作。</p>
+        <HandleInspectionGraphic />
+        <div class="login-capabilities">
+          <span><AppIcon name="Picture" :size="17" />图片检测</span>
+          <span><AppIcon name="CircleCheck" :size="17" />人工质检</span>
+          <span><AppIcon name="ChatDotRound" :size="17" />智能助手</span>
         </div>
       </div>
+      <p class="login-scope-note"><AppIcon name="Lock" :size="15" />员工查看本人及分派任务，主管查看企业业务</p>
     </section>
-
-    <!-- 右侧登录面板 -->
-    <section class="login-panel">
-      <div class="login-card animate-scale-in">
-        <div class="login-card-head">
-          <span class="login-card-label">账号登录</span>
-          <h2>进入控制台</h2>
-          <p class="login-card-desc">使用员工或主管账号，进入你的工作空间</p>
-        </div>
-
-        <el-form
-          ref="loginFormRef"
-          :model="loginForm"
-          :rules="rules"
-          label-position="top"
-          class="login-form"
-          @submit.prevent="handleLogin"
-        >
+    <section class="login-panel" aria-labelledby="login-title">
+      <div class="login-card">
+        <span class="login-card-icon"><AppIcon name="User" :size="25" /></span>
+        <h2 id="login-title">登录工作空间</h2>
+        <p class="login-card-desc">使用你的员工或主管账号继续</p>
+        <el-alert v-if="loginError" id="login-error" ref="loginErrorRef" tabindex="-1" :title="loginError" type="error" :closable="false" show-icon role="alert" />
+        <p v-if="!online" class="login-inline-note is-warning" role="status"><AppIcon name="Connection" :size="15" />浏览器报告网络已断开，请核对连接。恢复后不会自动提交登录。</p>
+        <el-form ref="loginFormRef" :model="loginForm" :rules="rules" :disabled="loading || loginAccepted" label-position="top" class="login-form" :aria-busy="loading" @submit.prevent="handleLogin">
           <el-form-item label="用户名" prop="username">
-            <el-input
-              v-model="loginForm.username"
-              placeholder="请输入用户名"
-              size="large"
-              :prefix-icon="UserIcon"
-              autocomplete="username"
-            />
+            <el-input v-model="loginForm.username" name="username" placeholder="请输入用户名" size="large" :prefix-icon="UserIcon" autocomplete="username" autocapitalize="none" :spellcheck="false" :disabled="loading" :aria-describedby="loginError ? 'login-error' : undefined" />
           </el-form-item>
-
           <el-form-item label="密码" prop="password">
-            <el-input
-              v-model="loginForm.password"
-              type="password"
-              placeholder="请输入密码"
-              size="large"
-              show-password
-              :prefix-icon="LockIcon"
-              autocomplete="current-password"
-              @keyup.enter="handleLogin"
-            />
+            <el-input v-model="loginForm.password" name="password" type="password" placeholder="请输入密码" size="large" show-password :prefix-icon="LockIcon" autocomplete="current-password" :disabled="loading" :aria-describedby="[loginError ? 'login-error' : '', capsLock ? 'login-caps-lock' : ''].filter(Boolean).join(' ') || undefined" @keydown="updateCapsLock" @keyup="updateCapsLock" @blur="capsLock = false" />
           </el-form-item>
-
-          <div class="login-options">
-            <el-checkbox v-model="rememberMe">记住我</el-checkbox>
-            <el-link type="primary" :underline="false" @click="showForgotDialog = true">忘记密码？</el-link>
-          </div>
-
-          <el-form-item class="login-form-actions">
-            <el-button
-              type="primary"
-              :loading="loading"
-              class="login-button"
-              size="large"
-              native-type="submit"
-              @click="handleLogin"
-            >
-              <template v-if="!loading">登录系统</template>
-            </el-button>
-          </el-form-item>
+          <p v-if="capsLock" id="login-caps-lock" class="login-inline-note is-warning" role="status"><AppIcon name="Warning" :size="15" />大写锁定已开启，请注意密码大小写</p>
+          <div class="login-options"><el-checkbox v-model="rememberMe" :disabled="loading" aria-describedby="login-remember-note">记住账号</el-checkbox><el-button link type="primary" :disabled="loading" @click="showForgotDialog = true">忘记密码</el-button></div>
+          <p id="login-remember-note" class="login-remember-note">仅记住用户名，不保存密码</p>
+          <p v-if="!preferenceAvailable || !userStore.displayCacheAvailable" class="login-inline-note" role="status"><AppIcon name="Document" :size="14" />浏览器暂不能保存账号偏好，本次登录仍可继续</p>
+          <el-button v-if="!loginAccepted" type="primary" :loading="loading" class="login-button" size="large" native-type="submit"><span>{{ loading ? '正在登录' : '登录系统' }}</span><AppIcon v-if="!loading" name="ArrowRight" :size="17" /></el-button>
+          <router-link v-else class="login-open-workspace" to="/home">{{ loading ? '正在打开工作空间' : '重新打开工作空间' }}<AppIcon name="ArrowRight" :size="17" /></router-link>
         </el-form>
-
-        <div class="login-card-footer">
-          <span>集装箱门把手检测智能管理软件 v0.1</span>
-        </div>
+        <p class="login-card-footer"><AppIcon name="Lock" :size="14" />账号权限与操作记录随登录身份生效</p>
       </div>
+      <span class="login-timezone">业务时间统一使用北京时间 UTC+8</span>
     </section>
-
-    <!-- 忘记密码弹窗 -->
-    <el-dialog v-model="showForgotDialog" title="找回密码" width="400px">
-      <p style="line-height:1.8;color:#475569;">
-        如需重置密码，请联系系统管理员：<br/>
-        <strong>邮箱：</strong>admin@doorhandle.com<br/>
-        <strong>电话：</strong>400-800-8888
-      </p>
-      <template #footer>
-        <el-button type="primary" @click="showForgotDialog = false">我知道了</el-button>
-      </template>
+    <el-dialog v-model="showForgotDialog" title="找回密码" width="min(440px, 94vw)" class="login-password-help">
+      <div class="password-help-heading"><AppIcon name="Key" :size="21" /><strong>联系企业主管或系统管理员</strong></div>
+      <p class="password-help">请提供需要核对的用户名，由有权限的管理员处理账号与密码问题。当前页面不支持自行重置。</p>
+      <template #footer><el-button type="primary" @click="showForgotDialog = false">知道了</el-button></template>
     </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { ref, reactive, shallowRef, onMounted } from 'vue'
+import { ref, reactive, nextTick, onMounted, onUnmounted } from 'vue'
+import { User as UserIcon, Lock as LockIcon } from '@element-plus/icons-vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useUserStore } from '@/stores/user'
+import HandleInspectionGraphic from '@/components/HandleInspectionGraphic.vue'
+import { readAccountPreference, writeAccountPreference } from '@/utils/accountPreferences'
 
 const router = useRouter()
 const userStore = useUserStore()
 const loading = ref(false)
+const loginError = ref('')
+const loginAccepted = ref(false)
 const loginFormRef = ref(null)
+const loginErrorRef = ref(null)
+const online = ref(typeof navigator === 'undefined' || navigator.onLine !== false)
+const capsLock = ref(false)
+const preferenceAvailable = ref(true)
 const rememberMe = ref(false)
 const showForgotDialog = ref(false)
+let pageActive = true
 
-const UserIcon = shallowRef({ render() { return null } })
-const LockIcon = shallowRef({ render() { return null } })
-
-import('@element-plus/icons-vue').then(mod => {
-  UserIcon.value = mod.User
-  LockIcon.value = mod.Lock
-})
+function updateNetwork() { online.value = navigator.onLine !== false }
+function updateCapsLock(event) { capsLock.value = event.getModifierState?.('CapsLock') === true }
 
 const loginForm = reactive({
   username: '',
@@ -147,11 +80,20 @@ const loginForm = reactive({
 })
 
 onMounted(() => {
-  const saved = localStorage.getItem('rememberedUser')
-  if (saved) {
-    loginForm.username = saved
+  window.addEventListener('online', updateNetwork)
+  window.addEventListener('offline', updateNetwork)
+  const saved = readAccountPreference('rememberedUser')
+  preferenceAvailable.value = saved.available
+  if (saved.value) {
+    loginForm.username = saved.value
     rememberMe.value = true
   }
+})
+onUnmounted(() => {
+  pageActive = false
+  window.removeEventListener('online', updateNetwork)
+  window.removeEventListener('offline', updateNetwork)
+  loginForm.password = ''
 })
 
 const rules = {
@@ -164,27 +106,33 @@ const rules = {
 }
 
 const handleLogin = async () => {
-  if (!loginFormRef.value) return
+  if (!loginFormRef.value || loading.value || loginAccepted.value) return
+  loginError.value = ''
+  loading.value = true
 
   try {
     await loginFormRef.value.validate()
   } catch {
+    loading.value = false
+    await nextTick()
+    if (pageActive) loginFormRef.value?.$el?.querySelector('.el-form-item.is-error input')?.focus()
     return
   }
-
-  loading.value = true
+  if (!pageActive) return
 
   try {
-    await userStore.login(loginForm)
-    if (rememberMe.value) {
-      localStorage.setItem('rememberedUser', loginForm.username)
-    } else {
-      localStorage.removeItem('rememberedUser')
-    }
-    ElMessage.success('登录成功，欢迎回来')
-    router.push('/home')
+    await userStore.login({ username: loginForm.username, password: loginForm.password })
+    if (!pageActive) return
+    loginAccepted.value = true
+    preferenceAvailable.value = writeAccountPreference('rememberedUser', rememberMe.value ? loginForm.username : null)
+    if (preferenceAvailable.value && userStore.displayCacheAvailable) ElMessage.success('登录成功，欢迎回来')
+    else ElMessage.warning('已登录，浏览器暂不能保存账号偏好，下次可能需要重新填写用户名')
+    await router.push('/home')
   } catch (error) {
-    ElMessage.error(error.message || '登录失败，请稍后重试')
+    if (!pageActive) return
+    loginError.value = loginAccepted.value ? '登录已完成，但工作空间暂未打开。请重新打开工作空间，不需要重复提交密码。' : error.message || '登录失败，请检查账号信息或稍后重试'
+    await nextTick()
+    loginErrorRef.value?.$el?.focus()
   } finally {
     loading.value = false
   }
@@ -192,285 +140,46 @@ const handleLogin = async () => {
 </script>
 
 <style scoped>
-/* ═══════════════════════════════════════════════════════════
-   登录页 — 全屏分栏布局
-   ═══════════════════════════════════════════════════════════ */
-
-.login-page {
-  position: relative;
-  min-height: 100vh;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(440px, 48%);
-  overflow: hidden;
-}
-
-/* ── 动态背景 ── */
-
-.login-backdrop {
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  pointer-events: none;
-}
-
-.backdrop-overlay {
-  position: absolute;
-  inset: 0;
-  background:
-    linear-gradient(115deg, rgba(15, 23, 42, 0.9) 0%, rgba(15, 23, 42, 0.72) 52%, rgba(15, 23, 42, 0.1) 52%),
-    url('@/assets/images/image.png') center / cover no-repeat;
-}
-
-.backdrop-grid {
-  position: absolute;
-  inset: 0;
-  background-image:
-    linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px);
-  background-size: 60px 60px;
-  mask-image: radial-gradient(ellipse at 30% 50%, black 40%, transparent 70%);
-}
-
-/* ── 左侧展示区 ── */
-
-.login-showcase {
-  position: relative;
-  z-index: 1;
-  display: flex;
-  align-items: center;
-  padding: 72px 56px 72px 80px;
-  color: #f1f5f9;
-}
-
-.showcase-inner {
-  max-width: 600px;
-}
-
-.login-badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 6px 14px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.1);
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  backdrop-filter: blur(8px);
-}
-
-.login-showcase h1 {
-  margin: 24px 0 16px;
-  font-size: clamp(32px, 4.5vw, 48px);
-  line-height: 1.12;
-  font-weight: 800;
-  letter-spacing: -0.025em;
-  color: #ffffff;
-}
-
-.login-showcase p {
-  max-width: 540px;
-  margin: 0;
-  color: rgba(226, 232, 240, 0.8);
-  font-size: 15px;
-  line-height: 1.8;
-}
-
-/* ── 特性卡片 ── */
-
-.showcase-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 14px;
-  margin-top: 40px;
-}
-
-.showcase-card {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 20px 18px;
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  backdrop-filter: blur(12px);
-  transition: all var(--app-transition-base);
-}
-
-.showcase-card:hover {
-  background: rgba(255, 255, 255, 0.13);
-  border-color: rgba(255, 255, 255, 0.2);
-  transform: translateY(-2px);
-}
-
-.showcase-card-icon {
-  width: 40px;
-  height: 40px;
-  border-radius: 12px;
-  display: grid;
-  place-items: center;
-  background: rgba(255, 255, 255, 0.12);
-  color: rgba(255, 255, 255, 0.9);
-}
-
-.showcase-card strong {
-  font-size: 14px;
-  font-weight: 700;
-  color: #ffffff;
-}
-
-.showcase-card span {
-  color: rgba(203, 213, 225, 0.75);
-  font-size: 12px;
-  line-height: 1.65;
-}
-
-/* ── 右侧登录面板 ── */
-
-.login-panel {
-  position: relative;
-  z-index: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 36px;
-  background: #f8faff;
-}
-
-.login-card {
-  width: 100%;
-  max-width: 420px;
-  padding: 36px 32px 28px;
-  border-radius: 24px;
-  background: #ffffff;
-  border: 1px solid rgba(255, 255, 255, 0.7);
-  backdrop-filter: blur(20px);
-  box-shadow:
-    0 4px 24px rgba(15, 23, 42, 0.06),
-    0 24px 80px rgba(15, 23, 42, 0.12);
-}
-
-.login-card-head {
-  margin-bottom: 8px;
-}
-
-.login-card-head h2 {
-  margin: 8px 0 4px;
-  color: var(--app-text);
-  font-size: 28px;
-  font-weight: 800;
-  letter-spacing: -0.02em;
-}
-
-.login-card-label {
-  display: inline-flex;
-  align-items: center;
-  padding: 5px 12px;
-  border-radius: 999px;
-  background: var(--app-primary-soft);
-  color: var(--app-primary);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-}
-
-.login-card-desc {
-  margin: 0;
-  color: var(--app-text-muted);
-  font-size: 13px;
-}
-
-/* ── 表单 ── */
-
-.login-form {
-  margin-top: 24px;
-}
-
-.login-form :deep(.el-form-item__label) {
-  color: var(--app-text);
-  font-weight: 600;
-  font-size: 13px;
-  padding-bottom: 4px;
-}
-
-.login-options {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 8px;
-}
-
-.login-form-actions {
-  margin-top: 8px;
-  margin-bottom: 0;
-}
-
-.login-button {
-  width: 100%;
-  height: 48px;
-  font-size: 15px;
-  letter-spacing: 0.02em;
-}
-
-/* ── 底部 ── */
-
-.login-card-footer {
-  margin-top: 24px;
-  padding-top: 16px;
-  border-top: 1px solid var(--app-border);
-  text-align: center;
-}
-
-.login-card-footer span {
-  font-size: 12px;
-  color: var(--app-text-muted);
-}
-
-/* ── 响应式 ── */
-
-@media (max-width: 1100px) {
-  .login-page {
-    grid-template-columns: 1fr;
-  }
-
-  .login-showcase {
-    padding: 60px 28px 16px;
-    text-align: center;
-  }
-
-  .showcase-inner {
-    max-width: none;
-  }
-
-  .login-showcase p {
-    max-width: none;
-  }
-
-  .showcase-grid {
-    grid-template-columns: 1fr;
-    max-width: 400px;
-    margin: 32px auto 0;
-  }
-
-  .login-panel {
-    padding: 0 20px 32px;
-    align-items: flex-start;
-  }
-}
-
-@media (max-width: 640px) {
-  .login-showcase {
-    padding-top: 44px;
-  }
-
-  .login-showcase h1 {
-    font-size: 28px;
-  }
-
-  .login-card {
-    padding: 24px 20px 20px;
-    border-radius: 20px;
-  }
-}
+.login-page { min-height: 100vh; min-height: 100dvh; display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(400px, 1fr); background: white; }
+.login-showcase { display: flex; flex-direction: column; padding: 38px clamp(28px, 6vw, 90px); background: #f6f8fb; border-right: 1px solid var(--app-border); }
+.login-brand { display: flex; align-items: center; gap: 11px; font-size: 17px; font-weight: 700; color: var(--app-text); }
+.login-brand-mark { display: grid; place-items: center; width: 43px; height: 43px; background: var(--app-primary); border-radius: 12px; color: white; }
+.login-brand small { display: block; font-weight: 400; font-size: 11px; margin-top: 3px; color: var(--app-text-muted); }
+.showcase-inner { max-width: 560px; margin-block: auto; padding-block: 38px; }
+.login-product-label { color: var(--app-primary); font-size: 12px; font-weight: 600; }
+.showcase-inner h1 { margin: 18px 0 16px; color: var(--app-text); font-size: clamp(28px, 3vw, 42px); font-weight: 700; letter-spacing: -.04em; line-height: 1.38; }
+.showcase-inner > p { color: var(--app-text-secondary); font-size: 14px; line-height: 1.9; max-width: 39em; }
+.login-capabilities { display: flex; flex-wrap: wrap; gap: 18px; }
+.login-capabilities span, .login-scope-note, .login-card-footer { display: flex; align-items: center; gap: 7px; color: var(--app-text-secondary); font-size: 12px; }
+.login-capabilities .el-icon { color: var(--app-primary); }
+.login-scope-note { font-size: 11px; padding-top: 18px; border-top: 1px solid var(--app-border); }
+.login-panel { position: relative; display: flex; flex-direction: column; justify-content: center; align-items: center; padding: 52px 32px; }
+.login-card { width: 100%; max-width: 365px; animation: login-reveal 200ms ease both; }
+.login-card-icon { width: 49px; height: 49px; display: grid; place-items: center; background: var(--app-primary-soft); color: var(--app-primary); border-radius: 14px; margin-bottom: 22px; }
+.login-card h2 { font-size: 27px; font-weight: 700; letter-spacing: -.025em; }
+.login-card-desc { margin: 8px 0 26px; font-size: 13px; color: var(--app-text-muted); }
+.login-card .el-alert { margin-bottom: 20px; }
+.login-form :deep(.el-input__wrapper) { min-height: 46px; box-shadow: 0 0 0 1px var(--app-border) inset; background: white; }
+.login-form :deep(.el-input__wrapper.is-focus) { box-shadow: 0 0 0 1px var(--app-primary) inset, 0 0 0 3px #2563eb10; }
+.login-form :deep(.el-form-item) { margin-bottom: 23px; }
+.login-options { display:flex; align-items:center; justify-content:space-between; margin:0 0 3px; gap:12px; }
+.login-remember-note { margin:0 0 18px; color:var(--app-text-muted); font-size:11px; line-height:1.7; }
+.login-inline-note { display:flex; align-items:flex-start; gap:7px; margin:0 0 15px; padding:9px 10px; border-radius:7px; color:var(--app-text-secondary); background:var(--app-info-soft); font-size:12px; line-height:1.8; overflow-wrap:anywhere; }
+.login-inline-note > .el-icon { flex:0 0 auto; margin-top:3px; }
+.login-inline-note.is-warning { color:var(--app-warning); background:var(--app-warning-soft); }
+.login-open-workspace { display:flex; align-items:center; justify-content:space-between; gap:12px; width:100%; min-height:46px; box-sizing:border-box; padding:11px 18px; border-radius:8px; color:white; background:var(--app-primary); font-size:14px; text-decoration:none; }
+.login-open-workspace:hover { background:var(--app-primary-hover); }
+.login-form :deep(.el-form-item.is-error .el-input__wrapper) { box-shadow:0 0 0 1px var(--app-danger) inset; }
+.login-card .el-alert:focus-visible { outline:2px solid var(--app-danger); outline-offset:3px; }
+.password-help-heading { display:flex; align-items:center; gap:9px; margin:4px 0 12px; color:var(--app-text); font-size:14px; line-height:1.7; }
+.password-help-heading > .el-icon { flex:0 0 auto; color:var(--app-primary); }
+.login-page :is(button,a,input):focus-visible { outline:2px solid var(--app-primary); outline-offset:3px; }
+.login-button { width: 100%; height: 46px; justify-content: space-between; padding-inline: 18px; box-shadow: none; }
+.login-card-footer { margin-top: 24px; justify-content: center; font-size: 11px; line-height: 1.7; }
+.login-timezone { position: absolute; bottom: 24px; font-size: 11px; color: var(--app-text-muted); }
+.password-help { color: var(--app-text-secondary); line-height: 1.8; }
+@keyframes login-reveal { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
+@media(max-width: 850px) { .login-page { grid-template-columns: 1fr; } .login-showcase { padding: 24px; border-right: 0; border-bottom: 1px solid var(--app-border); } .showcase-inner, .login-scope-note { display: none; } .login-panel { padding: 44px 24px 70px; flex: 1; } .login-brand { font-size: 15px; } .login-card h2 { font-size: 25px; } }
+@media(max-width:420px) { .login-panel { padding-inline:20px; }.login-card-footer { align-items:flex-start; }.login-card-footer .el-icon { flex:0 0 auto; margin-top:3px; }.login-timezone { position:static; margin-top:30px; text-align:center; line-height:1.7; } }
+@media(prefers-reduced-motion: reduce) { .login-card { animation: none; } }
 </style>

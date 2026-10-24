@@ -1,0 +1,49 @@
+/* Authenticated detection proposal previews in Vue and React. */
+.proposal-originals { min-width: 0; margin-block: 14px; }
+.proposal-originals-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+.proposal-originals-toolbar > span { color: var(--app-text-secondary, #475569); font-size: 12px; line-height: 1.8; }
+.proposal-originals-toolbar > button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; }
+.proposal-originals .proposal-originals-note { font-size: 12px; line-height: 1.8; color: var(--app-text-secondary, #475569); overflow-wrap: anywhere; margin: 10px 0; }
+.proposal-originals .proposal-originals-error { padding: 10px 12px; border-left: 3px solid #d97706; background: #fffbeb; color: #92400e; font-size: 12px; line-height: 1.8; overflow-wrap: anywhere; }
+.proposal-gallery { margin: 16px 0; min-width: 0; }
+.proposal-gallery .proposal-gallery-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px 12px; margin-bottom: 10px; }
+.proposal-gallery .proposal-gallery-heading strong { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--app-text, #0f172a); font-weight: 550; }
+.proposal-gallery .proposal-gallery-heading strong > :is(svg, .el-icon) { color: var(--app-primary, #2563eb); flex-shrink: 0; }
+.proposal-gallery .proposal-gallery-heading > span { color: var(--app-text-secondary, #475569); font-size: 12px; }
+.proposal-gallery .proposal-gallery-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(130px, 100%), 1fr)); gap: 12px; max-height: 340px; overflow-y: auto; padding: 3px; overscroll-behavior-y: contain; scrollbar-gutter: stable; }
+.proposal-gallery figure { min-width: 0; margin: 0; }
+.proposal-gallery .proposal-image-button { display: block; position: relative; width: 100%; height: 116px; padding: 0; border: 1px solid var(--app-border, #e2e8f0); border-radius: 8px; overflow: hidden; background: #f6f8fb; cursor: zoom-in; }
+.proposal-gallery .proposal-image-button img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.proposal-gallery .proposal-image-overlay { position: absolute; display: inline-flex; align-items: center; gap: 4px; right: 5px; bottom: 5px; max-width: calc(100% - 10px); padding: 3px 6px; border-radius: 5px; background: #ffffffed; color: var(--app-text-secondary, #475569); font-size: 11px; line-height: 1.6; transition: color 180ms ease, background-color 180ms ease; }
+.proposal-gallery .proposal-image-button:hover .proposal-image-overlay { background: #fff; color: var(--app-primary, #2563eb); }
+.proposal-gallery figcaption { display: grid; gap: 3px; margin-top: 7px; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+.proposal-gallery figcaption > strong { color: var(--app-text, #0f172a); font-size: 12px; font-weight: 500; }
+.proposal-gallery figcaption > span { color: var(--app-text-secondary, #475569); font-size: 11px; }
+.proposal-image-fallback { display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 7px; min-height: 116px; padding: 12px; background: #f8fafc; color: var(--app-text-secondary, #475569); font-size: 12px; line-height: 1.7; text-align: center; overflow-wrap: anywhere; }
+.proposal-image-fallback > :is(svg, .el-icon) { color: #b45309; flex-shrink: 0; }
+.proposal-gallery .proposal-image-fallback { border: 1px solid var(--app-border, #e2e8f0); border-radius: 8px; }
+.proposal-zoom-fallback { min-height: 260px; border-radius: 8px; }
+.proposal-image-details { display: grid; gap: 6px; color: var(--app-text, #0f172a); overflow-wrap: anywhere; }
+.proposal-image-details > strong { font-size: 15px; font-weight: 600; line-height: 1.8; }
+.proposal-image-details > span, .proposal-preview-note { font-size: 12px; line-height: 1.8; color: var(--app-text-secondary, #475569); }
+.proposal-preview-note { margin: 12px 0; overflow-wrap: anywhere; }
+.proposal-zoom-frame { min-height: 180px; background: #f6f8fb; border-radius: 8px; padding: 10px; }
+.proposal-zoom-frame > .proposal-preview-note { margin: 0 0 8px; text-align: center; }
+.proposal-zoom-frame > img { display: block; width: 100%; max-height: 55vh; max-height: 55dvh; object-fit: contain; }
+.proposal-image-digest { margin-top: 16px; font-size: 12px; line-height: 1.8; }
+.proposal-image-digest > summary { cursor: pointer; color: var(--app-text-secondary, #475569); }
+.proposal-image-digest > code { display: block; margin-top: 8px; overflow-wrap: anywhere; white-space: normal; color: var(--app-text-secondary, #475569); }
+.proposal-preview-actions, .proposal-preview-actions > div { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.proposal-preview-actions { justify-content: space-between; }
+.proposal-preview-actions .el-button + .el-button { margin-left: 0; }
+.proposal-image-dialog.el-dialog { display: flex; flex-direction: column; margin-block: 5vh; max-height: 90vh; max-height: 90dvh; }
+.proposal-image-dialog .el-dialog__body { min-height: 0; max-height: 65vh; max-height: 65dvh; overflow: auto; overscroll-behavior: contain; }
+.proposal-image-dialog :is(.el-dialog__header, .el-dialog__footer) { flex-shrink: 0; }
+.proposal-image-dialog .el-dialog__title { display: block; padding-right: 28px; overflow-wrap: anywhere; font-size: 16px; line-height: 1.8; }
+.proposal-image-modal .ant-modal-content { display: flex; flex-direction: column; max-height: 90vh; max-height: 90dvh; }
+.proposal-image-modal .ant-modal-body { min-height: 0; max-height: 65vh; max-height: 65dvh; overflow: auto; overscroll-behavior: contain; }
+.proposal-image-modal :is(.ant-modal-header, .ant-modal-footer) { flex-shrink: 0; }
+.proposal-image-modal .ant-modal-title { padding-right: 28px; overflow-wrap: anywhere; line-height: 1.8; }
+:is(.proposal-gallery, .proposal-image-dialog, .proposal-image-modal) :is(button, summary, [tabindex]):focus-visible { outline: 2px solid var(--app-primary, #2563eb); outline-offset: 3px; }
+@media (max-width: 480px) { .proposal-gallery .proposal-gallery-grid { gap: 10px; } .proposal-preview-actions { align-items: flex-start; } .proposal-preview-actions button { min-height: 36px; } }
+@media (prefers-reduced-motion: reduce) { .proposal-gallery .proposal-image-overlay { transition: none; } }

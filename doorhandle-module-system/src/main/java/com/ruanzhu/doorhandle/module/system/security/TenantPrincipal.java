@@ -6,7 +6,7 @@ import org.springframework.security.core.userdetails.UserDetails;
 import java.util.Collection;
 
 public record TenantPrincipal(Long userId, String username, String password,
-                              Collection<? extends GrantedAuthority> authorities) implements UserDetails {
+                              Collection<? extends GrantedAuthority> authorities) implements UserDetails, com.ruanzhu.doorhandle.contracts.security.BusinessPrincipal {
     public TenantContext tenantContext() { return new TenantContext(userId, username); }
     @Override public Collection<? extends GrantedAuthority> getAuthorities() { return authorities; }
     @Override public String getPassword() { return password; }

@@ -25,10 +25,11 @@ public final class SkillVersionComparison {
                 else{deletions++;if(lines.size()<200)lines.add(new Line("REMOVE",i+1,null,a[i]));i++;}
             }
         }
-        return new View(before.version(),after.version(),Objects.toString(before.evidence().get("commit"),""),Objects.toString(after.evidence().get("commit"),""),
+        return new View(before.version(),after.version(),revision(before.evidence()),revision(after.evidence()),
                 List.copyOf(added),List.copyOf(removed),List.copyOf(changed),!before.instructions().equals(after.instructions()),!before.description().equals(after.description()),
                 large?"SIDE_BY_SIDE":"LINE_DIFF",List.copyOf(lines),insertions,deletions,large||insertions+deletions>lines.size());
     }
+    private static String revision(Map<String,Object> evidence){return Objects.toString(evidence.get("commit"),Objects.toString(evidence.get("sourceVersion"),"未知"));}
     private static Map<String,String> files(Map<String,Object> evidence){
         var result=new LinkedHashMap<String,String>();if(evidence.get("files") instanceof List<?> files)for(var value:files)if(value instanceof Map<?,?> file&&file.get("path") instanceof String path&&file.get("sha256") instanceof String hash)result.put(path,hash);return result;
     }

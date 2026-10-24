@@ -5,7 +5,7 @@ export const initialTraceState = () => ({ runs: [], selectedRun: null, events: [
 const message = (error, fallback) => error?.response?.status === 404 ? '该记录不存在或无访问权限' : error?.response?.data?.message || fallback
 export function createTraceReader(api, state, normalize, completeness) {
   let listVersion = 0, runVersion = 0, messageVersion = 0, evidenceVersion = 0, disposed = false
-  let eventsPending = false, refreshing = false
+  let eventsPending = false, refreshing = false, historyScope = null
   const valid = version => !disposed && version === runVersion
   function clearSelection() {
     runVersion++; messageVersion++; evidenceVersion++; eventsPending = false; refreshing = false
@@ -81,18 +81,28 @@ export function createTraceReader(api, state, normalize, completeness) {
     finally { if (valid(version)) state.detailLoading = false }
   }
   async function history({ sessionId, all = false, append = false } = {}) {
+    if (disposed) return
+    const scope = JSON.stringify([all, all ? null : sessionId || null])
+    const sameScope = scope === historyScope
+    const appendRecords = append && sameScope
     const request = ++listVersion
-    if (!append) { state.runs = []; state.hasMoreRuns = false }
+    if (!sameScope) { state.runs = []; state.hasMoreRuns = false }
+    historyScope = scope
     state.historyLoading = true; state.historyError = ''
     try {
-      const response = await api.list({ ...(all ? {} : { sessionId }), limit: 20, ...(append ? { beforeRunId: state.runs.at(-1)?.runId } : {}) })
+      const response = await api.list({ ...(all ? {} : { sessionId }), limit: 20, ...(appendRecords ? { beforeRunId: state.runs.at(-1)?.runId } : {}) })
       if (disposed || request !== listVersion) return
       if (!Array.isArray(response.data)) throw new Error('INVALID_RUNS')
       const rows = response.data.filter(run => typeof run?.runId === 'string')
-      const seen = new Set(append ? state.runs.map(run => run.runId) : [])
-      state.runs = [...(append ? state.runs : []), ...rows.filter(run => { if (seen.has(run.runId)) return false; seen.add(run.runId); return true })]
+      const seen = new Set(appendRecords ? state.runs.map(run => run.runId) : [])
+      state.runs = [...(appendRecords ? state.runs : []), ...rows.filter(run => { if (seen.has(run.runId)) return false; seen.add(run.runId); return true })]
       state.hasMoreRuns = rows.length === 20
-    } catch (error) { if (!disposed && request === listVersion) state.historyError = message(error, '运行历史暂不可用，请刷新') }
+    } catch (error) {
+      if (!disposed && request === listVersion) {
+        if ([401,403,404].includes(error?.response?.status)) { state.runs = []; state.hasMoreRuns = false; historyScope = null; clearSelection() }
+        state.historyError = message(error, '运行历史暂不可用，请刷新')
+      }
+    }
     finally { if (!disposed && request === listVersion) state.historyLoading = false }
   }
   async function refresh() {
@@ -107,7 +117,7 @@ export function createTraceReader(api, state, normalize, completeness) {
       state.selectedRun = response.data; state.detailError = ''
       const index = state.runs.findIndex(run => run.runId === id)
       if (index >= 0) state.runs[index] = response.data
-      await Promise.all([loadMore(), loadEvidence(response.data, version), ...(statusChanged ? [loadMessages(response.data, version)] : [])])
+      await Promise.all([loadMore(), loadEvidence(response.data, version), ...(statusChanged || state.messagesError ? [loadMessages(response.data, version)] : [])])
     } catch (error) {
       if (valid(version)) {
         // Revoked ownership must clear previously rendered data as well as the detail pane.
@@ -116,7 +126,7 @@ export function createTraceReader(api, state, normalize, completeness) {
       }
     } finally { if (valid(version)) refreshing = false }
   }
-  function reset() { listVersion++; clearSelection(); Object.assign(state, { runs: [], hasMoreRuns: false, historyLoading: false, historyError: '' }) }
+  function reset() { listVersion++; historyScope = null; clearSelection(); Object.assign(state, { runs: [], hasMoreRuns: false, historyLoading: false, historyError: '' }) }
   function dispose() { reset(); disposed = true }
   return { history, select, loadMore, loadEvidence, refresh, reset, dispose }
 }

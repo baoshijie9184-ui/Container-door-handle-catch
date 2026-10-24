@@ -27,7 +27,8 @@ class FakeConsumer:
     def __init__(self):
         self.committed = []
 
-    def commit(self, message):
+    def commit(self, message, asynchronous):
+        assert asynchronous is False
         self.committed.append(message)
 
 

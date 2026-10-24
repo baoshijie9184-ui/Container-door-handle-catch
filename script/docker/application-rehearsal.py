@@ -88,7 +88,7 @@ def extract_source(archive, destination):
         source.extractall(destination, filter='data')
 
 
-def isolated_config(config, project, port, images, database):
+def isolated_config(config, project, port, images, database, model_secret_source=None):
     """Flattened Compose config is private; rewrite every storage/network/credential identity."""
     require(bool(PROJECT.fullmatch(project)) and project != PRODUCTION, 'Invalid rehearsal identity')
     require(type(port) is int and 1024 <= port <= 65535, 'Invalid private rehearsal port')
@@ -142,18 +142,31 @@ def isolated_config(config, project, port, images, database):
             service['ports'] = [{'target': 80, 'published': str(port), 'host_ip': '127.0.0.1', 'protocol': 'tcp'}]
         if name in images:
             service['image'] = images[name]
-    validate_isolation(value, project)
+    if model_secret_source:
+        secret=value.get('secrets',{}).get('model_config_master_key',{})
+        require(secret.get('file')==model_secret_source,'Rehearsal key source differs from the external policy')
+        secret['name']=project+'_model_config_master_key'
+    validate_isolation(value, project, model_secret_source)
     return value
 
 
-def validate_isolation(config, project):
+def validate_isolation(config, project, model_secret_source=None):
     require(bool(PROJECT.fullmatch(project)) and config.get('name') == project, 'Rehearsal project differs')
-    require(not config.get('secrets') and not config.get('configs'), 'External Compose resources are unsupported')
+    require(not config.get('configs'), 'External Compose resources are unsupported')
+    secrets=config.get('secrets',{})
+    if model_secret_source:
+        require(set(secrets)=={'model_config_master_key'},'Only the explicitly approved model key can be referenced')
+        secret=secrets['model_config_master_key']
+        require(secret.get('file')==model_secret_source and not secret.get('external') and secret.get('name')==project+'_model_config_master_key','Shared or changed rehearsal Secret rejected')
+    else:
+        require(not secrets,'External Compose secrets require a verified model policy')
     for kind in ('volumes', 'networks'):
         for resource in config.get(kind, {}).values():
             require(not resource.get('external') and resource.get('name', '').startswith(project+('_' if kind == 'volumes' else '-')),
                     'Shared storage or network rejected')
     for name, service in config['services'].items():
+        for secret in service.get('secrets',[]):
+            require(model_secret_source and name in ('backend','mem0') and isinstance(secret,dict) and secret.get('source')=='model_config_master_key' and secret.get('target','model_config_master_key') in ('model_config_master_key','/run/secrets/model_config_master_key'),'Unexpected Secret recipient rejected')
         require(not service.get('network_mode') and not service.get('privileged') and not service.get('pid') and
                 not service.get('ipc') and not service.get('volumes_from') and not service.get('devices'), 'Host namespace rejected')
         for network in service.get('networks', {}):
@@ -180,11 +193,16 @@ def require_no_detection_backlog(output, group):
 
 
 class Rehearsal:
-    def __init__(self, directory, config, ops, guard, baseline):
+    def __init__(self, directory, config, ops, guard, baseline, model_secret_source=None):
         self.directory, self.config, self.ops, self.guard = directory, config, ops, guard
         self.project = config['name']
         self.guard.PROJECT = self.project  # Dedicated imported module, never the production guard process.
+        self.assignment_guard=module('rehearsal_assignment_guard',Path(__file__).with_name('assignment-compat.py'))
+        self.mcp_guard=module('rehearsal_mcp_guard',Path(__file__).with_name('mcp-compat.py'))
+        self.mcp_runtime=module('rehearsal_mcp_runtime',Path(__file__).with_name('mcp-runtime.py'))
         self.baseline = baseline
+        self.model_secret_source=model_secret_source
+        if model_secret_source:private_json(directory/'model-secret-reference.json',{'source':model_secret_source})
         self.state = directory/'state'
         self.state.mkdir(mode=0o700)
         self.file = directory/'compose.json'
@@ -205,7 +223,7 @@ class Rehearsal:
     def dc(self, *args, config=None, **kwargs):
         file = self.file
         if config is not None:
-            validate_isolation(config, self.project)
+            validate_isolation(config, self.project, self.model_secret_source)
             file = self.directory/'activation.json'
             private_json(file, config)
         try:
@@ -342,10 +360,37 @@ except Exception as error:
             self.persist()
         self.check('Production containers, images, mounts and running states unchanged', unchanged)
 
-    def activate(self, images, label):
+    def activate(self, images, label, assignment_writes=None, mcp_writes=None):
         config = copy.deepcopy(self.config)
         for service in ('backend', 'nginx', 'mem0'):
             config['services'][service]['image'] = images[service]
+        if assignment_writes is not None:
+            config['services']['backend']['environment']['DETECTION_ASSIGNMENT_WRITES_ENABLED']=str(assignment_writes).lower()
+        if mcp_writes is not None:
+            config['services']['backend']['environment']['AGENT_MCP_WRITES_ENABLED']=str(mcp_writes).lower()
+        # The rehearsal already holds the deployment maintenance lock. Check metadata before
+        # the memory helper quiesces any writer; a copied database is not exempt from its floor.
+        assignment=self.assignment_guard.guard(self.state,config,project=self.project,pin=True)
+        if self.model_secret_source:
+            for service in ('backend','mem0'):
+                image=json.loads(self.ops.docker('image','inspect',images[service]))[0]
+                require(image.get('Config',{}).get('Labels',{}).get('io.doorhandle.model-config-format')=='1','Rehearsal rollback image does not support governed credentials')
+        try:
+            runtime=self.mcp_runtime.prepare(self.state,config,project=self.project)
+            if runtime['action']!='disabled':
+                override=self.mcp_runtime.private_read(self.state,self.mcp_runtime.OVERRIDE)['services']
+                config['services']['mcp-runner']=override['mcp-runner']
+                config['services']['backend']['environment'].update(override['backend']['environment'])
+                self.mcp_runtime.applying(self.state,project=self.project)
+                self.dc('up','-d','--no-deps','--no-build','--pull','never','--wait','--wait-timeout','120','mcp-runner',config=config,timeout=150)
+                runtime=self.mcp_runtime.verify(self.state,project=self.project)
+            mcp=self.mcp_guard.guard(self.state,config,project=self.project,pin=True)
+        except Exception:
+            if (self.state/self.mcp_runtime.PRIVATE).exists():
+                pending=self.mcp_runtime.private_read(self.state,self.mcp_runtime.PRIVATE)
+                if pending.get('phase') in ('PREPARING','PREPARED','APPLYING','NEEDS_REVIEW'):
+                    self.mcp_runtime.recover(self.state,project=self.project)
+            raise
         mode = self.guard.prepare(self.state, config)
         record = self.guard.read_json(self.state/'memory-transition.json')
         config['services']['mem0']['image'] = record['selectedImage']
@@ -355,8 +400,12 @@ except Exception as error:
         self.dc('up', '-d', '--no-deps', '--no-build', '--pull', 'never', '--wait', '--wait-timeout', '240', 'backend', config=config, timeout=270)
         self.dc('up', '-d', '--no-deps', '--no-build', '--pull', 'never', '--force-recreate', '--wait', '--wait-timeout', '90', 'nginx', config=config, timeout=120)
         self.check(label+' uses the requested real backend', self.row('backend')['Image'] == images['backend'])
+        runtime=self.mcp_runtime.finalize(self.state,project=self.project)
         self.report.setdefault('transitions', []).append({'label': label, 'memoryPreserved': mode == 'preserve',
-                                                        'requiredProtocol': record['requiredProtocol'], 'backend': images['backend']})
+                                                        'requiredProtocol': record['requiredProtocol'], 'backend': images['backend'],
+                                                        'assignmentRequired':assignment['required'],'assignmentWrites':assignment['assignmentWrites'],
+                                                        'nativeMcpRequired':mcp['required'],'mcpWrites':mcp['writesEnabled'],'mcpCompatibilityDeclaredOnly':True,
+                                                        'runnerAction':runtime['action'],'runnerProtocol':runtime['requiredProtocol'],'runnerPoolVerified':runtime['poolVerified']})
         self.persist()
         return config
 
@@ -376,7 +425,7 @@ except Exception as error:
 
     def cleanup(self):
         # Re-read labels, and revalidate the exact private config before deleting owned copies.
-        validate_isolation(self.config, self.project)
+        validate_isolation(self.config, self.project, self.model_secret_source)
         ids = self.ops.docker('ps', '-aq', '--filter', 'label=com.docker.compose.project='+self.project).decode().split()
         if ids:
             containers = json.loads(self.ops.docker('inspect', *ids))
@@ -535,6 +584,11 @@ def run(args):
         snapshot = root/'backups'/args.snapshot if args.snapshot else next((p for p in snapshots if (p/'COMPLETE').is_file()), None)
         require(snapshot is not None and snapshot.parent == root/'backups' and snapshot.name.startswith('ops-'), 'Completed backup required')
         manifest = ops.verify(snapshot)
+        key_helper=ops.model_secret_helper()
+        key_setting=key_helper.load_settings(root,runtime)
+        if key_setting:key_helper.verify_reference(root,runtime,manifest.get('modelKeyEscrow',{}))
+        require(not manifest.get('modelKeyEscrow',{}).get('enabled') or key_setting is not None,'Encrypted candidate data requires its external key policy')
+        model_secret_source=key_setting['masterKeyFile'] if key_setting else None
         require(shutil.disk_usage(root).free > max(5*1024**3, manifest.get('estimatedBytes', 0)+3*1024**3), 'Insufficient rehearsal disk reserve')
         with socket.socket() as probe:
             probe.bind(('127.0.0.1', args.port))
@@ -554,10 +608,37 @@ def run(args):
         command = ['compose', '--project-name', project, '--env-file', str(runtime/'deploy/cloud.env')]
         for file in ('compose.monolith.yml', 'compose.cloud.yml', 'compose.detection.yml', 'compose.ai-gateway.yml'):
             command += ['-f', str(source/file)]
+        if model_secret_source:
+            env['MODEL_CONFIG_MASTER_KEY_SOURCE']=model_secret_source
+            command+=['-f',str(source/'compose.model-config.yml')]
         config = json.loads(ops.docker(*command, 'config', '--format', 'json', env=env))
-        config = isolated_config(config, project, args.port, manifest['images'], manifest['databaseName'])
-        instance = Rehearsal(directory, config, ops, guard, baseline)
+        config = isolated_config(config, project, args.port, manifest['images'], manifest['databaseName'], model_secret_source)
+        assignment_guard=module('rehearsal_assignment_input',Path(__file__).with_name('assignment-compat.py'))
+        desired_assignment_writes=assignment_guard.boolean(config['services']['backend']['environment'],'DETECTION_ASSIGNMENT_WRITES_ENABLED',True)
+        mcp_guard=module('rehearsal_mcp_input',Path(__file__).with_name('mcp-compat.py'))
+        desired_mcp_writes=mcp_guard.flag(config['services']['backend']['environment'],'AGENT_MCP_WRITES_ENABLED',True)
+        original_backend=mcp_guard.common.container(PRODUCTION,'backend')
+        require(original_backend['Image']==manifest['images']['backend'],'Backend changed after the selected backup; refresh the rehearsal baseline')
+        _,original_mcp_capability=mcp_guard.capability(original_backend['Image'])
+        baseline_mcp_writes=mcp_guard.flag(mcp_guard.common.environment(original_backend),'AGENT_MCP_WRITES_ENABLED',True) if original_mcp_capability>=2 else True
+        config['services']['backend']['environment']['AGENT_MCP_WRITES_ENABLED']=str(baseline_mcp_writes).lower()
+        if args.compatible_backend_image:
+            require(re.fullmatch(r'sha256:[a-f0-9]{64}',args.compatible_backend_image),'Compatible baseline must be an existing immutable backend image')
+            baseline_id,baseline_capabilities=assignment_guard.image(args.compatible_backend_image)
+            require(baseline_id==args.compatible_backend_image and baseline_capabilities['json']==2 and baseline_capabilities['identity']==1,'Baseline does not declare current assignment readers')
+            config['services']['backend']['image']=baseline_id
+            config['services']['backend']['environment']['DETECTION_ASSIGNMENT_WRITES_ENABLED']='false'
+            _,mcp_capability=mcp_guard.capability(baseline_id)
+            require(mcp_capability>=2,'A paused compatible baseline must declare the native MCP protocol and write gate')
+            config['services']['backend']['environment']['AGENT_MCP_WRITES_ENABLED']='false'
+            baseline_mcp_writes=False
+        if model_secret_source:
+            for service in ('backend','mem0'):
+                old_image=json.loads(ops.docker('image','inspect',config['services'][service]['image']))[0]
+                require(old_image.get('Config',{}).get('Labels',{}).get('io.doorhandle.model-config-format')=='1','Governed data requires a compatible baseline before any copied application is started')
+        instance = Rehearsal(directory, config, ops, guard, baseline, model_secret_source)
         instance.report.update(snapshot=snapshot.name, release=args.tag, sourceSha256=args.source_sha256, port=args.port)
+        instance.report.update(originalBackendImage=manifest['images']['backend'],compatibleBaselineBackend=config['services']['backend']['image'],assignmentBaselinePaused=bool(args.compatible_backend_image),mcpBaselinePaused=not baseline_mcp_writes)
         instance.persist()
         instance.require_fresh_resources()
         print(json.dumps({'project': project, 'phase': 'BUILDING', 'port': args.port}), flush=True)
@@ -575,6 +656,17 @@ def run(args):
             require(result.returncode == 0, 'Image build failed; inspect private image-build.log')
             candidate = {service: guard.image(build_config['services'][service]['image'])[0] for service in ('backend', 'nginx', 'mem0')}
             instance.report['candidateImages'] = candidate
+            _,candidate_capabilities=assignment_guard.image(candidate['backend'])
+            _,baseline_capabilities=assignment_guard.image(config['services']['backend']['image'])
+            intended_environment={**config['services']['backend']['environment'],'DETECTION_ASSIGNMENT_WRITES_ENABLED':str(desired_assignment_writes).lower()}
+            intended=assignment_guard.potential(intended_environment,candidate_capabilities)
+            require(all(baseline_capabilities[key]>=intended[key] for key in intended),'Prepare a compatible baseline before a rehearsal that activates new assignment formats')
+            _,candidate_mcp=mcp_guard.capability(candidate['backend'])
+            _,baseline_mcp=mcp_guard.capability(config['services']['backend']['image'])
+            intended_mcp={**config['services']['backend']['environment'],'AGENT_MCP_WRITES_ENABLED':str(desired_mcp_writes).lower()}
+            require(candidate_mcp>=mcp_guard.potential(intended_mcp) and baseline_mcp>=mcp_guard.potential(intended_mcp),'Prepare a compatible MCP baseline before activating native writers in rehearsal')
+            if args.compatible_backend_image:
+                require(candidate['backend']!=args.compatible_backend_image,'A candidate image cannot count as its own previous-version rollback evidence')
             instance.check('Three candidate images built from production Dockerfiles', True)
             print(json.dumps({'project': project, 'phase': 'RESTORING'}), flush=True)
             for logical, definition in config['volumes'].items():
@@ -601,7 +693,13 @@ def run(args):
             checks = ["SELECT COUNT(*) FROM agent_conversation_input WHERE status IN ('QUEUED','STARTED')",
                       "SELECT COUNT(*) FROM agent_workbench_item WHERE (kind='EXECUTION' AND status IN ('RUNNING','READY')) OR (kind='CHILD' AND status IN ('QUEUED','RUNNING'))",
                       "SELECT COUNT(*) FROM agent_mcp_install_job WHERE status IN ('QUEUED','RUNNING')"]
+            if ops.db(mysql,"SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name='agent_mcp_execution';").strip()=='1':
+                checks.append("SELECT COUNT(*) FROM agent_mcp_execution WHERE state<>'REMOVED'")
             instance.check('Backup has no automatically executable Agent or installation work', all(ops.db(mysql, sql).strip() == '0' for sql in checks))
+            if 'mcp-runner' in config['services']:
+                logical=next(value['source'] for value in config['services']['mcp-runner']['volumes'] if value['target']=='/var/lib/doorhandle-mcp')
+                journal=instance.mcp_runtime.probe({'State':{'Running':False}},config['volumes'][logical]['name'],config['services']['mcp-runner']['image'])
+                instance.check('Copied runner journal has no executable resources that could target production containers',journal['pending']==0)
             instance.dc('up', '-d', '--no-build', '--pull', 'never', '--wait', '--wait-timeout', '180', 'kafka', timeout=210)
             group = config['services']['detection-worker']['environment']['KAFKA_CONSUMER_GROUP']
             require(isinstance(group, str) and re.fullmatch(r'[A-Za-z0-9_.-]{1,128}', group), 'Unexpected detection consumer group')
@@ -609,23 +707,27 @@ def run(args):
                                  '--bootstrap-server', 'kafka:9092', '--describe', '--group', group, timeout=45).decode()
             require_no_detection_backlog(offsets, group)
             instance.check('Restored Kafka has committed zero-lag worker offsets; copied detection is not replayed', True)
+            assignment_guard.guard(instance.state,config,project=project,pin=True,allow_initial=True)
+            mcp_guard.guard(instance.state,config,project=project,pin=True,allow_initial=True)
             instance.dc('up', '-d', '--no-build', '--pull', 'never', '--wait', '--wait-timeout', '240', timeout=420)
             smoke(instance, args.port)
             marker = upload_marker(args.port)
             private_json(directory/'marker.json', marker)
             instance.migrate_candidate(source)
             print(json.dumps({'project': project, 'phase': 'UPGRADING'}), flush=True)
-            instance.activate(candidate, 'Upgrade')
+            instance.activate(candidate, 'Upgrade',assignment_writes=desired_assignment_writes,mcp_writes=desired_mcp_writes)
             smoke(instance, args.port, marker)
             memory = memory_marker(instance, args.port)
             upgraded_memory = instance.row('mem0')['Id']
             print(json.dumps({'project': project, 'phase': 'ROLLING_BACK'}), flush=True)
-            instance.activate(manifest['images'], 'Rollback')
+            rollback_images = dict(manifest['images'])
+            rollback_images['backend'] = config['services']['backend']['image']
+            instance.activate(rollback_images, 'Rollback', assignment_writes=False if args.compatible_backend_image else desired_assignment_writes,mcp_writes=baseline_mcp_writes)
             instance.check('Application rollback preserves the additive V39 index', instance.verify_dispatch_index())
             smoke(instance, args.port, marker)
             instance.check('Legacy rollback retains the exact compatible memory bridge', instance.row('mem0')['Id'] == upgraded_memory)
             verify_memory_marker(instance, args.port, memory, legacy=True)
-            current_config = instance.activate(candidate, 'Candidate reactivation')
+            current_config = instance.activate(candidate, 'Candidate reactivation', assignment_writes=desired_assignment_writes,mcp_writes=desired_mcp_writes)
             instance.dc('restart', 'backend', timeout=120)
             instance.dc('up', '-d', '--no-deps', '--no-build', '--pull', 'never', '--wait', '--wait-timeout', '240', 'backend', config=current_config, timeout=270)
             smoke(instance, args.port, marker)
@@ -667,6 +769,7 @@ def main():
     parser.add_argument('--source-sha256')
     parser.add_argument('--project', help='Exact owned identity, required for cleanup')
     parser.add_argument('--snapshot')
+    parser.add_argument('--compatible-backend-image')
     parser.add_argument('--port', type=int, default=18089)
     parser.add_argument('--keep', action='store_true', help='Keep an explicitly successful private candidate for immediate browser acceptance')
     args = parser.parse_args()
@@ -681,6 +784,9 @@ def main():
             instance.file = directory/'compose.json'
             require(not instance.file.is_symlink(), 'Invalid rehearsal config')
             instance.config = json.loads(instance.file.read_text())
+            secret_reference=directory/'model-secret-reference.json'
+            require(not secret_reference.is_symlink(),'Invalid private model Secret reference')
+            instance.model_secret_source=json.loads(secret_reference.read_text())['source'] if secret_reference.exists() else None
             instance.report = json.loads((directory/'result.json').read_text())
             instance.baseline = json.loads((directory/'production-baseline.json').read_text())
             instance.ops = module('cleanup_ops', Path(__file__).with_name('monolith-ops.py'))

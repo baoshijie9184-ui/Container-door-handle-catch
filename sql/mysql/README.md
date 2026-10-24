@@ -1,8 +1,22 @@
 # 检测记录与业务预置数据导入说明
 
+V59 `migration-V59-fetch-shared-images.sql` 新增共享镜像封存及一次性命令，为 MCP 执行增加可空镜像 ID，AI classpath 副本同步。需前置 V34/V47–V49/V58；默认关闭，未执行。原本地辅助脚本可显式选择 shared-images，不能直接用于服务器库，见 [共享镜像回收](../../docs/固定Fetch共享镜像回收.md)。
+
+V58 `migration-V58-native-fetch-install-evidence.sql` 为固定 Fetch 安装增加 transport/native pool 及逐安装预留字节字段，AI classpath 同名副本保持一致。依赖 V47/V48/V49，现阶段仅新增源码，未执行迁移。新原生安装开关默认关闭，旧镜像恢复兼容保护仍待补齐，见 [原生安装进程树回执](../../docs/固定Fetch原生安装进程树回执.md)。
+
 本文档介绍如何向数据库中导入检测记录和业务预置数据。项目中的种子 SQL 统一按真实业务数据处理，可直接用于工单、批次、质检、模型、设备等模块的联调和展示。
 
 ## 文件说明
+
+- `migration-V57-identity-reconciliation.sql`：依赖 V40/V55/V56，新增历史身份一致快照报告及差异明细，只保存观察，不自动回填或启用授权；Detection classpath 保存同一文本。`DETECTION_IDENTITY_RECONCILIATION_ENABLED=false`，未运行报告、编译、测试或迁移。见 [历史身份核对与迁移摘要](../../docs/历史身份快照核对与迁移摘要.md)。
+
+- `migration-V56-identity-binding-evidence.sql`：依赖 V40/V55，新增身份来源事件、当前指针及收集/激活模式。不开启授权、不认领历史任务；Detection classpath 保存同一文本。`DETECTION_IDENTITY_EVIDENCE_ENABLED=false`，源码未编译、测试或执行迁移，详见 [身份来源与回执导航](../../docs/身份来源保护与回执导航.md)。
+
+- `migration-V55-identity-mapping-review.sql`：依赖 V40，新增历史身份回填批次及不可变逐条回执，不自动回填或激活授权。Detection classpath 保存相同文本；新开关 `DETECTION_IDENTITY_REVIEW_ENABLED=false`，本轮未执行迁移、测试或构建。目标账号资料锁、版本及回滚要求见 [历史回填确认](../../docs/历史账号回填确认与批次回执.md)。
+
+- `migration-V54-assignment-identity.sql`：质检分派操作人、账号快照、独立身份修订和不可变元数据事件；不推断历史操作人。需 V40 及 `DETECTION_ASSIGNMENT_BINDING_ENABLED`，默认关闭。Detection classpath 有同名副本，未执行迁移，见 [分派身份](../../docs/质检分派固定账号与操作人.md)。
+
+- `migration-V53-detection-model-file-journal.sql`：检测模型上传意图及模型删除后的文件保留记录，需业务审计 V40；`MODEL_FILE_JOURNAL_ENABLED` 默认关闭。Model 模块 classpath 保存同名副本。本轮只新增文件，未执行迁移；启用与待开发范围见 [模型文件登记与保留](../../docs/检测模型文件登记与保留.md)。
 
 - `business-seed-new-features.sql`: 新功能业务预置数据，覆盖模型评估、设备采集、质检队列、缺陷证据等模块。
 - `business-seed-more-features.sql`: 扩展业务预置数据，覆盖更多设备状态、告警、工单流转和复核处置场景。

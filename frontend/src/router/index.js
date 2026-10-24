@@ -1,5 +1,6 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
 import { useUserStore } from '../stores/user'
+import { recordNavigationFailure, clearNavigationFailure } from '../utils/navigationFeedback'
 
 const routes = [
   {
@@ -78,19 +79,19 @@ const routes = [
         path: 'devices/add',
         name: 'deviceAdd',
         component: () => import('../views/device/DeviceForm.vue'),
-        meta: { title: '新增设备', requiresAuth: true, parent: '设备管理' }
+        meta: { title: '新增设备', requiresAuth: true, parent: '设备管理', parentPath: '/devices' }
       },
       {
         path: 'devices/:id',
         name: 'deviceDetail',
         component: () => import('../views/device/DeviceDetail.vue'),
-        meta: { title: '设备详情', requiresAuth: true, parent: '设备管理' }
+        meta: { title: '设备详情', requiresAuth: true, parent: '设备管理', parentPath: '/devices' }
       },
       {
         path: 'devices/edit/:id',
         name: 'deviceEdit',
         component: () => import('../views/device/DeviceForm.vue'),
-        meta: { title: '编辑设备', requiresAuth: true, parent: '设备管理' }
+        meta: { title: '编辑设备', requiresAuth: true, parent: '设备管理', parentPath: '/devices' }
       },
       {
         path: 'employees',
@@ -102,7 +103,7 @@ const routes = [
         path: 'employees/add',
         name: 'employeeAdd',
         component: () => import('../views/employee/EmployeeForm.vue'),
-        meta: { title: '新增人员', requiresAuth: true, parent: '人员管理' }
+        meta: { title: '新增人员', requiresAuth: true, parent: '人员管理', parentPath: '/employees' }
       },
       {
         path: 'organization',
@@ -114,13 +115,13 @@ const routes = [
         path: 'employees/:id',
         name: 'employeeDetail',
         component: () => import('../views/employee/EmployeeDetail.vue'),
-        meta: { title: '人员详情', requiresAuth: true, parent: '人员管理' }
+        meta: { title: '人员详情', requiresAuth: true, parent: '人员管理', parentPath: '/employees' }
       },
       {
         path: 'employees/edit/:id',
         name: 'employeeEdit',
         component: () => import('../views/employee/EmployeeForm.vue'),
-        meta: { title: '编辑人员', requiresAuth: true, parent: '人员管理' }
+        meta: { title: '编辑人员', requiresAuth: true, parent: '人员管理', parentPath: '/employees' }
       },
       {
         path: 'models',
@@ -132,7 +133,7 @@ const routes = [
         path: 'models/upload',
         name: 'modelUpload',
         component: () => import('../views/ModelUpload.vue'),
-        meta: { title: '上传模型', requiresAuth: true, parent: '模型管理' }
+        meta: { title: '上传模型', requiresAuth: true, supervisorOnly:true, parent: '模型管理', parentPath: '/models' }
       },
       {
         path: 'device-records',
@@ -172,13 +173,16 @@ const routes = [
         path: 'agent/markets', name: 'agentMarkets', component: () => import('../views/AgentMarkets.vue'),
         meta: { title: '资源市场', requiresAuth: true, icon: 'Operation' }
       },
+      {path:'agent/model-config',name:'agentModelConfig',component:()=>import('../views/AgentModelConfig.vue'),meta:{title:'Agent 模型配置',requiresAuth:true,supervisorOnly:true}},
+      {path:'operations/identity',name:'detectionIdentity',component:()=>import('../views/DetectionIdentity.vue'),meta:{title:'任务账号关联',requiresAuth:true,supervisorOnly:true}},
+      {path:'operations/audit',name:'operationsAudit',component:()=>import('../views/OperationsAudit.vue'),meta:{title:'操作审计',requiresAuth:true}},
       {path:'agent/memory',name:'agentMemory',component:()=>import('../views/AgentMemory.vue'),meta:{title:'个人记忆',requiresAuth:true}},
       { path:'agent/mcp',name:'agentMcp',component:()=>import('../views/AgentMcp.vue'),meta:{title:'MCP 工具',requiresAuth:true,icon:'Operation'} },
       {
         path: 'test-upload',
         name: 'testUpload',
         component: () => import('../views/TestUpload.vue'),
-        meta: { title: '测试上传', requiresAuth: true, hidden: true }
+        meta: { title: '兼容上传诊断', requiresAuth: true, hidden: true }
       },
       {
         path: '/:pathMatch(.*)*',
@@ -212,13 +216,20 @@ const detectionTabTitles = {
 
 // 页面加载进度条
 let progressTimer = null
+let progressFadeTimer = null
+let progressResetTimer = null
+function clearProgressTimers() {
+  clearInterval(progressTimer)
+  clearTimeout(progressFadeTimer)
+  clearTimeout(progressResetTimer)
+}
 function startProgress() {
+  clearProgressTimers()
   const bar = document.getElementById('nprogress-bar')
   if (!bar) return
   bar.style.width = '0%'
   bar.style.opacity = '1'
   let width = 0
-  clearInterval(progressTimer)
   progressTimer = setInterval(() => {
     if (width >= 70) { clearInterval(progressTimer); return }
     width += (70 - width) * 0.15 + 2
@@ -226,12 +237,12 @@ function startProgress() {
   }, 120)
 }
 function finishProgress() {
-  clearInterval(progressTimer)
+  clearProgressTimers()
   const bar = document.getElementById('nprogress-bar')
   if (!bar) return
   bar.style.width = '100%'
-  setTimeout(() => { bar.style.opacity = '0' }, 200)
-  setTimeout(() => { bar.style.width = '0%' }, 500)
+  progressFadeTimer = setTimeout(() => { bar.style.opacity = '0' }, 200)
+  progressResetTimer = setTimeout(() => { bar.style.width = '0%' }, 400)
 }
 
 router.beforeEach(async (to, from, next) => {
@@ -247,12 +258,24 @@ router.beforeEach(async (to, from, next) => {
     }
   }
 
+  if (to.meta.supervisorOnly && userStore.role !== 'SUPERVISOR') {
+    next({name:'home'})
+    return
+  }
   if (from.name) startProgress()
   next()
 })
 
-router.afterEach(() => {
+router.afterEach((to, from, failure) => {
   finishProgress()
+  if (!failure) clearNavigationFailure()
+  if (failure && from.meta?.title) document.title = from.meta.title
+})
+
+router.onError((error, to, from) => {
+  finishProgress()
+  if (from?.meta?.title) document.title = from.meta.title
+  recordNavigationFailure(to)
 })
 
 export default router

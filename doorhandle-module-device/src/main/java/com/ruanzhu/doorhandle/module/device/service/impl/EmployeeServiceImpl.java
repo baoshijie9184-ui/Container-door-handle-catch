@@ -102,6 +102,7 @@ public class EmployeeServiceImpl extends ServiceImpl<EmployeeMapper, Employee> i
     @Override
     @Transactional(rollbackFor = Exception.class)
     @CacheEvict(cacheNames = {"employee", "device", "dashboard"}, allEntries = true)
+    @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="EMPLOYEE",action="add",resource="arg0.id",version="arg0.version",supervisorOnly=true)
     public boolean add(Employee employee) {
         normalizeDepartment(employee);
         // 设置创建时间和更新时间
@@ -115,6 +116,7 @@ public class EmployeeServiceImpl extends ServiceImpl<EmployeeMapper, Employee> i
     @Override
     @Transactional(rollbackFor = Exception.class)
     @CacheEvict(cacheNames = {"employee", "device", "dashboard"}, allEntries = true)
+    @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="EMPLOYEE",action="update",resource="arg0.id",version="arg0.version",supervisorOnly=true)
     public boolean update(Employee employee) {
         if (employee == null || employee.getId() == null) {
             throw new com.ruanzhu.doorhandle.common.BusinessException(400, "员工编号不能为空");
@@ -147,6 +149,7 @@ public class EmployeeServiceImpl extends ServiceImpl<EmployeeMapper, Employee> i
     @Override
     @Transactional(rollbackFor = Exception.class)
     @CacheEvict(cacheNames = {"employee", "device", "dashboard"}, allEntries = true)
+    @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="EMPLOYEE",action="delete",supervisorOnly=true)
     public boolean delete(Long id) {
         // 与绑定使用同一员工行锁；外键是竞态下的最后一道保护。
         employeeMapper.selectOne(new LambdaQueryWrapper<Employee>().eq(Employee::getId, id).last("FOR UPDATE"));
@@ -167,6 +170,7 @@ public class EmployeeServiceImpl extends ServiceImpl<EmployeeMapper, Employee> i
     @Override
     @Transactional(rollbackFor = Exception.class)
     @CacheEvict(cacheNames = {"employee", "device", "dashboard"}, allEntries = true)
+    @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="EMPLOYEE",action="assignDeviceToEmployee",supervisorOnly=true)
     public boolean assignDeviceToEmployee(Long employeeId, Long deviceId) {
         // 验证员工和设备是否存在
         Employee employee = getById(employeeId);
@@ -243,6 +247,7 @@ public class EmployeeServiceImpl extends ServiceImpl<EmployeeMapper, Employee> i
     @Override
     @Transactional(rollbackFor = Exception.class)
     @CacheEvict(cacheNames = {"employee", "device", "dashboard"}, allEntries = true)
+    @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DEVICE",action="UNASSIGN_EMPLOYEE",supervisorOnly=true)
     public boolean unassignDevice(Long deviceId) {
         // 检查设备是否存在
         Device device = deviceMapper.selectById(deviceId);

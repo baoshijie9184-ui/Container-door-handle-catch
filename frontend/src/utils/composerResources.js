@@ -1,24 +1,49 @@
 // Both chat entrances use session-owned files and a versioned server model preference.
+export function modelLabel(model){const provider={dashscope:'百炼',deepseek:'DeepSeek 直连',openai:'OpenAI 兼容'}[model.provider]||model.provider;return provider?`${model.model} · ${provider}`:model.model}
+export function defaultModelLabel(state){const model=state.models.find(item=>item.id===state.defaultModelId);return model?'系统默认 · '+modelLabel(model):'系统默认'}
+export function selectedModelMissing(state){return !!state.modelId&&!state.models.some(model=>model.id===state.modelId)}
+function validSelection(value){if(typeof value?.modelId!=='string'||!Number.isSafeInteger(value.revision)||value.revision<0)throw Error('模型选择响应无效，请核对后再试');return value}
+function catalogState(catalog){if(!Array.isArray(catalog?.models))throw Error('模型目录暂不可用');return {models:catalog.models.filter(m=>m.configured===true&&typeof m.id==='string'&&typeof m.model==='string'),defaultModelId:typeof catalog.selectedModel==='string'?catalog.selectedModel:'',fallbackEnabled:catalog.fallbackEnabled===true}}
 export class ComposerResources {
- constructor({base='',fetcher=(...args)=>fetch(...args),onState=()=>{},onDraft=()=>{},storage}={}){Object.assign(this,{base,fetcher,onState,onDraft,storage});this.generation=0;this.pending=new Map();this.text='';this.edits=0;this.hydrated=false;this.state={ready:false,files:[],models:[],modelId:'',revision:0,busy:false,error:''}}
+ constructor({base='',fetcher=(...args)=>fetch(...args),onState=()=>{},onDraft=()=>{},storage}={}){Object.assign(this,{base,fetcher,onState,onDraft,storage});this.generation=0;this.pending=new Map();this.text='';this.edits=0;this.hydrated=false;this.state={ready:false,files:[],models:[],defaultModelId:'',fallbackEnabled:false,modelId:'',revision:0,busy:false,error:'',modelError:false,modelNotice:''}}
  publish(value){this.state={...this.state,...value};this.onState(this.state);if(Object.hasOwn(value,'files'))this.persist()}
  draft(text){const value=typeof text==='string'?text:'';if(value!==this.text){this.text=value;this.edits++;this.persist()}}
- persist(){if(!this.hydrated||!this.draftKey)return;const warning=this.text.length>20000?'草稿超过 20000 字，仅当前页面保留':'';if(this.state.draftWarning!==warning)this.publish({draftWarning:warning});try{const storage=this.storage??globalThis.sessionStorage,pending=[...this.pending].filter(([key])=>JSON.parse(key)[0]===this.session).slice(-16);if(warning){storage?.removeItem(this.draftKey);return}if(this.text||this.state.files.length||pending.length)storage?.setItem(this.draftKey,JSON.stringify({version:1,text:this.text,files:this.state.files.map(file=>file.id),pending}));else storage?.removeItem(this.draftKey)}catch{/* Storage disabled or full: current in-memory draft remains editable. */}}
+ persist(){
+  const setStorageWarning=message=>{if(this.state.storageWarning!==message)this.publish({storageWarning:message})};
+  if(!this.hydrated||!this.draftKey){setStorageWarning(this.text||this.state.files.length?'草稿暂时只保留在当前页面，关闭前请复制文字备份':'');return}
+  const warning=this.text.length>20000?'草稿超过 20000 字，仅当前页面保留':'';
+  if(this.state.draftWarning!==warning)this.publish({draftWarning:warning});
+  try{
+   const storage=this.storage??globalThis.sessionStorage,pending=[...this.pending].filter(([key])=>JSON.parse(key)[0]===this.session).slice(-16);
+   if(!storage)throw Error('DRAFT_STORAGE_UNAVAILABLE');
+   if(warning)storage.removeItem(this.draftKey);
+   else if(this.text||this.state.files.length||pending.length)storage.setItem(this.draftKey,JSON.stringify({version:1,text:this.text,files:this.state.files.map(file=>file.id),pending}));
+   else storage.removeItem(this.draftKey);
+   setStorageWarning('');
+  }catch{setStorageWarning('浏览器未能暂存草稿，请保留页面并复制文字备份；未确认的操作请先核对，不要重复提交')}
+ }
  path(){return '/api/agent/conversations/'+encodeURIComponent(this.session)}
  async request(path,options={}){const response=await this.fetcher(this.base+path,{credentials:'include',cache:'no-store',...options});if(!response.ok){const error=Error(response.status===409?'状态已变化，请刷新模型选择后再试':response.status===415?'文件格式、编码或内容无效，请核对后重新上传':response.status===429?'文件解析繁忙，请稍后重试':response.status===413?'文件大小、尺寸或账号配额超出限制':response.status===400?'文件类型或模型选择无效':'操作结果未确认，请刷新核对后手动重试');error.status=response.status;throw error}return response.json()}
- async open(session){const generation=++this.generation;this.session=session;this.hydrated=false;this.draftKey=null;this.text='';this.edits=0;this.onDraft('');this.publish({draftWarning:'',ready:false,files:[],models:[],modelId:'',revision:0,busy:false,error:''});if(!session)return;try{
+ async open(session){const generation=++this.generation;this.session=session;this.hydrated=false;this.draftKey=null;this.text='';this.edits=0;this.onDraft('');this.publish({draftWarning:'',ready:false,files:[],models:[],defaultModelId:'',fallbackEnabled:false,modelId:'',revision:0,busy:false,error:'',modelError:false,modelNotice:''});if(!session)return;try{
   const [cap,catalog,selection,identity]=await Promise.all([this.request('/api/agent/workbench/capabilities'),this.request('/agui/models'),this.request(this.path()+'/model-selection'),this.request('/api/auth/check').catch(()=>null)]);
   if(generation!==this.generation)return;if(!cap.enabled)return;
-  if(typeof selection.modelId!=='string'||!Number.isSafeInteger(selection.revision)||!Array.isArray(catalog.models))throw Error('模型选择格式无效');
+  validSelection(selection);const modelCatalog=catalogState(catalog);
   let cached=null,restored=[],warning='';const account=identity?.code===200?identity.data:null;
   if(typeof account?.username==='string'&&account.username){this.draftKey='doorhandle-composer:v1:'+JSON.stringify([account.userId??account.username,account.username,session]);try{const raw=(this.storage??globalThis.sessionStorage)?.getItem(this.draftKey);if(raw&&raw.length<48000){const value=JSON.parse(raw);if(value.version===1&&typeof value.text==='string'&&value.text.length<=20000&&Array.isArray(value.files)&&value.files.length<=8&&value.files.every(id=>typeof id==='string'&&/^[a-f0-9-]{36}$/.test(id)))cached=value}}catch{/* Unavailable storage does not disable chatting. */}}
   if(cached){if(Array.isArray(cached.pending))for(const entry of cached.pending.slice(0,16))try{const [key,id]=entry;if(typeof key==='string'&&key.length<1000&&JSON.parse(key)[0]===session&&typeof id==='string'&&/^[a-f0-9-]{36}$/.test(id))this.pending.set(key,id)}catch{/* Ignore invalid draft receipts. */}if(!this.edits){this.text=cached.text;this.onDraft(cached.text)}if(cached.files.length&&cap.files===true){try{const workbench=await this.request(this.path()+'/workbench');if(generation!==this.generation)return;if(!Array.isArray(workbench.files))throw Error();restored=cached.files.flatMap(id=>{const file=workbench.files.find(file=>file.id===id);return file&&typeof file.name==='string'&&Number.isSafeInteger(file.bytes)?[{id,name:file.name,bytes:file.bytes}]:[]});if(restored.length!==cached.files.length)warning='部分附件已移除或权限已变化，未恢复引用'}catch{warning='附件草稿尚未核对，请刷新重试';this.draftKey=null}}}
   if(generation!==this.generation)return;this.hydrated=true;
-  this.publish({ready:true,filesEnabled:cap.files===true,files:restored,models:catalog.models.filter(m=>m.configured===true&&typeof m.id==='string'&&typeof m.model==='string'),modelId:selection.modelId,revision:selection.revision,error:warning});
- }catch{/* Older backends keep their text composer. */}}
- async select(modelId){if(this.state.busy||!this.state.ready)throw Error('请等待当前操作');const generation=this.generation;const key=JSON.stringify([this.session,modelId,this.state.revision]);if(!this.pending.has(key))this.pending.set(key,crypto.randomUUID());this.persist();this.publish({busy:true,error:''});try{
-  const data=await this.request(this.path()+'/model-selection',{method:'POST',headers:{'Content-Type':'application/json','X-Agent-Action':'workbench'},body:JSON.stringify({modelId,revision:this.state.revision,requestId:this.pending.get(key)})});this.pending.delete(key);if(generation===this.generation)this.publish({modelId:data.modelId,revision:data.revision});
- }catch(error){if(generation===this.generation)this.publish({error:error.message});throw error}finally{if(generation===this.generation){this.persist();this.publish({busy:false})}}}
+  this.publish({...modelCatalog,ready:true,filesEnabled:cap.files===true,files:restored,modelId:selection.modelId,revision:selection.revision,error:warning});
+ }catch{if(generation===this.generation)this.publish({modelError:true,error:'模型选择暂不可用，可核对后重试；文字草稿仍保留'})}}
+ async refreshModels(){if(this.state.busy||!this.session)return;const generation=this.generation;this.publish({busy:true,error:'',modelNotice:''});try{
+  const [cap,catalog,selection]=await Promise.all([this.request('/api/agent/workbench/capabilities'),this.request('/agui/models'),this.request(this.path()+'/model-selection')]);
+  if(generation!==this.generation)return;if(!cap.enabled)throw Error('模型选择暂未启用');validSelection(selection);const modelCatalog=catalogState(catalog);
+  // Read back the server outcome; never replay a possibly committed selection automatically.
+  for(const key of this.pending.keys()){const parts=JSON.parse(key);if(parts.length===3&&parts[0]===this.session)this.pending.delete(key)}
+  this.publish({...modelCatalog,ready:true,filesEnabled:cap.files===true,modelId:selection.modelId,revision:selection.revision,modelError:false,modelNotice:'已核对当前会话的模型选择'});
+ }catch{if(generation===this.generation)this.publish({modelError:true,error:'模型选择尚未核对，请稍后再试'})}finally{if(generation===this.generation){this.persist();this.publish({busy:false})}}}
+ async select(modelId){if(this.state.busy||!this.state.ready)throw Error('请等待当前操作');const generation=this.generation;const key=JSON.stringify([this.session,modelId,this.state.revision]);if(!this.pending.has(key))this.pending.set(key,crypto.randomUUID());this.persist();this.publish({busy:true,error:'',modelNotice:''});try{
+  const data=validSelection(await this.request(this.path()+'/model-selection',{method:'POST',headers:{'Content-Type':'application/json','X-Agent-Action':'workbench'},body:JSON.stringify({modelId,revision:this.state.revision,requestId:this.pending.get(key)})}));this.pending.delete(key);if(generation===this.generation)this.publish({modelId:data.modelId,revision:data.revision,modelError:false,modelNotice:'已保存，仅对当前会话的新任务生效'});
+ }catch(error){if(generation===this.generation)this.publish({error:error.message,modelError:true,modelNotice:''});throw error}finally{if(generation===this.generation){this.persist();this.publish({busy:false})}}}
  async upload(files){if(this.state.busy||!this.state.ready||!this.state.filesEnabled)throw Error('文件工作区暂不可用');const generation=this.generation;if(files.length+this.state.files.length>8)throw Error('一条消息最多附加 8 个文件');this.publish({busy:true,error:''});try{
   for(const file of files){if(generation!==this.generation)break;if(file.size>26214400)throw Error('每个文件最多 25 MB');const digest=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',await file.arrayBuffer())),b=>b.toString(16).padStart(2,'0')).join('');if(generation!==this.generation)break;
    const key=JSON.stringify([this.session,file.name,file.size,digest]);if(!this.pending.has(key)){if(this.pending.size>=16)throw Error('存在未确认的上传，请先核对文件工作区');this.pending.set(key,crypto.randomUUID())}this.persist();

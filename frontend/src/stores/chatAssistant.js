@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ref, onScopeDispose } from 'vue'
+import { ref, watch, onScopeDispose } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
   archiveSession,
@@ -38,6 +38,8 @@ export const useChatAssistantStore = defineStore('chatAssistant', () => {
   // 多会话
   const sessions = ref([])
   const sessionsLoading = ref(false)
+  const sessionsError = ref('')
+  let sessionListRequest = 0
 
   // 项目
   const projects = ref([])
@@ -47,7 +49,18 @@ export const useChatAssistantStore = defineStore('chatAssistant', () => {
   const agentHealth = ref(null)
   const executionTrace = ref(null)
   const diagnosticsLoading = ref(false)
+  const diagnosticsErrors = ref({ health:'', trace:'' })
+  const diagnosticsLoaded = ref({ health:false, trace:false })
   let diagnosticsRequest = 0
+  const resetDiagnostics = () => {
+    diagnosticsRequest++
+    agentHealth.value = null; executionTrace.value = null
+    diagnosticsErrors.value = { health:'', trace:'' }
+    diagnosticsLoaded.value = { health:false, trace:false }
+    diagnosticsLoading.value = false
+  }
+  watch(sessionId, resetDiagnostics, { flush:'sync' })
+  onScopeDispose(resetDiagnostics)
 
   // 菜单状态
   const menuOpenId = ref(null)
@@ -66,7 +79,7 @@ export const useChatAssistantStore = defineStore('chatAssistant', () => {
     try {
       const response = await fetchSessionById(sid)
       const data = response.data?.data || {}
-      executionTrace.value = null
+      resetDiagnostics()
       sessionId.value = data.sessionId || sid
       sessionTitle.value = data.title || '智能助手'
       sessionStatus.value = data.status || 'ACTIVE'
@@ -109,14 +122,21 @@ export const useChatAssistantStore = defineStore('chatAssistant', () => {
 
   /** 加载会话列表 */
   const loadSessionList = async () => {
+    const request = ++sessionListRequest
     sessionsLoading.value = true
+    sessionsError.value = ''
     try {
       const response = await fetchSessionList()
-      sessions.value = response.data?.data || []
+      if (request !== sessionListRequest) return
+      const rows = response.data?.data
+      if (!Array.isArray(rows) || rows.some(row => !row || typeof row.sessionId !== 'string')) throw new Error('会话列表格式异常')
+      sessions.value = rows
     } catch (err) {
-      console.error('[chat] 加载会话列表失败:', err)
+      if (request !== sessionListRequest) return
+      if ([401, 403].includes(err.response?.status)) sessions.value = []
+      sessionsError.value = '会话列表暂不可读取，请重新读取。已有列表可能不是最新状态。'
     } finally {
-      sessionsLoading.value = false
+      if (request === sessionListRequest) sessionsLoading.value = false
     }
   }
 
@@ -234,10 +254,13 @@ export const useChatAssistantStore = defineStore('chatAssistant', () => {
         sessionTitle.value = title
       }
       ElMessage.success('重命名成功')
+      return { acknowledged: true }
     } catch (err) {
       console.error('[chat] 重命名会话失败:', err)
       const errMsg = err.response?.data?.message || err.message || '重命名失败'
       ElMessage.error(errMsg)
+      const status = err.response?.status
+      return { acknowledged: false, uncertain: !status || status === 408 || status >= 500 }
     }
   }
 
@@ -274,10 +297,13 @@ export const useChatAssistantStore = defineStore('chatAssistant', () => {
       ElMessage.warning('请先选择一个会话')
       return
     }
+    if (diagnosticsLoading.value) return
     diagnosticsLoading.value = true
     const sid = sessionId.value
     const requestId = ++diagnosticsRequest
-    executionTrace.value = null
+    agentHealth.value = null; executionTrace.value = null
+    diagnosticsErrors.value = { health:'', trace:'' }
+    diagnosticsLoaded.value = { health:false, trace:false }
     try {
       const [healthResult, traceResult] = await Promise.allSettled([
         fetchAgentHealth(),
@@ -285,20 +311,27 @@ export const useChatAssistantStore = defineStore('chatAssistant', () => {
       ])
       if (requestId !== diagnosticsRequest || sessionId.value !== sid) return
       if (healthResult.status === 'fulfilled') {
-        agentHealth.value = healthResult.value.data?.data || null
+        const body = healthResult.value.data, data = body?.data
+        if (body?.code === 200 && data && typeof data.framework === 'string' && typeof data.mode === 'string' && (data.defaultModel == null || typeof data.defaultModel === 'string')) {
+          agentHealth.value = data; diagnosticsLoaded.value.health = true
+        } else diagnosticsErrors.value.health = '服务配置信息未完整读取，请重新核对'
+      } else {
+        diagnosticsErrors.value.health = healthResult.reason?.response?.data?.message || '服务配置暂不可读取，请重试'
       }
       if (traceResult.status === 'fulfilled') {
-        executionTrace.value = traceResult.value.data?.data || null
+        const body = traceResult.value.data, data = body?.data
+        const validTrace = data?.sessionId === sid && ['runId','status','updatedAt','framework'].every(key => data[key] == null || typeof data[key] === 'string') && Array.isArray(data.events) && data.events.every(event => event && typeof event.type === 'string' && event.type.trim())
+        if (body?.code === 200 && validTrace) {
+          executionTrace.value = data; diagnosticsLoaded.value.trace = true
+          if (data.status === 'UNAVAILABLE') diagnosticsErrors.value.trace = '已保存的会话轨迹暂不可解析，请打开执行追溯核对'
+        } else diagnosticsErrors.value.trace = '会话轨迹未完整读取，请重新核对'
+      } else {
+        diagnosticsErrors.value.trace = traceResult.reason?.response?.data?.message || '会话轨迹暂不可读取，请重试'
       }
-      if (healthResult.status === 'rejected' && traceResult.status === 'rejected') {
-        throw healthResult.reason || traceResult.reason
+    } catch {
+      if (requestId === diagnosticsRequest && sessionId.value === sid) {
+        diagnosticsErrors.value = { health:'服务配置读取未完成，请重试', trace:'会话轨迹读取未完成，请重试' }
       }
-      if (healthResult.status === 'rejected' || traceResult.status === 'rejected') {
-        ElMessage.warning('部分 Agent 诊断信息暂时不可用')
-      }
-    } catch (err) {
-      console.error('[chat] 加载 Agent 诊断失败:', err)
-      ElMessage.error(err.response?.data?.message || err.message || '加载 Agent 诊断失败')
     } finally {
       if (requestId === diagnosticsRequest) diagnosticsLoading.value = false
     }
@@ -561,11 +594,14 @@ export const useChatAssistantStore = defineStore('chatAssistant', () => {
     confirmingActionIds,
     sessions,
     sessionsLoading,
+    sessionsError,
     projects,
     projectsLoading,
     agentHealth,
     executionTrace,
     diagnosticsLoading,
+    diagnosticsErrors,
+    diagnosticsLoaded,
     menuOpenId,
     projectMenuOpenId,
     bootstrap,

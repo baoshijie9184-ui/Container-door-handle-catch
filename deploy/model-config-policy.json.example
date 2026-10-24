@@ -1,0 +1,8 @@
+{
+  "schema": 1,
+  "enabled": true,
+  "masterKeyFile": "/home/ecs-user/doorhandle-secrets/model-config-master.key",
+  "backupDirectory": "/home/ecs-user/doorhandle-key-backups",
+  "recipientCertificate": "/home/ecs-user/doorhandle-secrets/model-key-recovery.crt",
+  "recipientSha256": "REPLACE_WITH_INDEPENDENTLY_VERIFIED_CERTIFICATE_DER_SHA256"
+}

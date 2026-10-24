@@ -1,7 +1,7 @@
-import { ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ref, onBeforeUnmount } from 'vue'
 import { fetchQualityQueue } from '../api/detection'
 import { normalizeQualityQueueRecord } from '../utils/qualityRecords'
+import { knownCount } from '../utils/countPresentation'
 
 export const qualityQueues = [
   { label: '全部待处理', value: 'ALL_ACTIONABLE', hint: '复核/处置/异常' },
@@ -22,28 +22,38 @@ export function useQualityQueue() {
   const activeQualityQueue = ref('ALL_ACTIONABLE')
   const qualityQueueLoading = ref(false)
   const qualityQueueRecords = ref([])
-  const qualityQueueTotal = ref(0)
+  const qualityQueueTotal = ref(null)
+  const qualityQueueError = ref('')
+  const qualityQueueLoaded = ref(false)
   const qualityQueuePage = ref(1)
   const qualityQueuePageSize = ref(10)
+  let generation = 0, requestedKey = '', active = true
+  onBeforeUnmount(() => { active = false; generation++ })
 
   const loadQualityQueue = async (page = qualityQueuePage.value) => {
+    if (!active) return
     const targetPage = resolvePageNumber(page, qualityQueuePage.value)
+    const queue = activeQualityQueue.value, size = qualityQueuePageSize.value
+    const request = ++generation, key = `${queue}:${targetPage}:${size}`
+    if (key !== requestedKey) { qualityQueueRecords.value = []; qualityQueueTotal.value = null; qualityQueueLoaded.value = false }
+    requestedKey = key
     qualityQueueLoading.value = true
+    qualityQueueError.value = ''
     try {
-      const response = await fetchQualityQueue(activeQualityQueue.value, targetPage, qualityQueuePageSize.value)
-      if (response.data?.code === 200) {
-        const data = response.data.data || {}
-        qualityQueueRecords.value = (data.records || []).map(normalizeQualityQueueRecord)
-        qualityQueueTotal.value = Number(data.total || 0)
-        qualityQueuePage.value = targetPage
-      } else {
-        ElMessage.error(response.data?.message || '获取质检队列失败')
-      }
+      const response = await fetchQualityQueue(queue, targetPage, size)
+      if (request !== generation || !active) return
+      const data = response.data?.data
+      if (response.data?.code !== 200 || !Array.isArray(data?.records) || data.records.some(row => !row || typeof row.taskId !== 'string')) throw new Error('质检队列返回内容不完整，请重新读取')
+      qualityQueueRecords.value = data.records.map(normalizeQualityQueueRecord)
+      qualityQueueTotal.value = knownCount(data.total)
+      qualityQueuePage.value = targetPage
+      qualityQueueLoaded.value = true
     } catch (error) {
-      console.error('获取质检队列失败:', error)
-      ElMessage.error(error.response?.data?.message || '获取质检队列失败')
+      if (request !== generation || !active) return
+      if ([401, 403].includes(error.response?.status)) { qualityQueueRecords.value = []; qualityQueueTotal.value = null; qualityQueueLoaded.value = false }
+      qualityQueueError.value = '质检队列暂不可读取，请重新读取；已有记录可能不是最新状态。'
     } finally {
-      qualityQueueLoading.value = false
+      if (request === generation && active) qualityQueueLoading.value = false
     }
   }
 
@@ -64,6 +74,8 @@ export function useQualityQueue() {
     qualityQueueLoading,
     qualityQueueRecords,
     qualityQueueTotal,
+    qualityQueueError,
+    qualityQueueLoaded,
     qualityQueuePage,
     qualityQueuePageSize,
     qualityQueues,

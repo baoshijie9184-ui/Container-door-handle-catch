@@ -328,6 +328,7 @@ class DetectionTaskUploadTest {
 
         when(fixture.detectionTaskMapper.selectOne(any())).thenReturn(task);
 
+        when(fixture.detectionTaskMapper.resetForRetry(any())).thenReturn(1);
         DetectionTaskProgressResponse response = fixture.service.retryTask("det_retry");
 
         assertEquals("UPLOADED", response.getStatus());
@@ -335,7 +336,7 @@ class DetectionTaskUploadTest {
         assertEquals("重新检测任务已提交", response.getMessage());
 
         ArgumentCaptor<DetectionTask> taskCaptor = ArgumentCaptor.forClass(DetectionTask.class);
-        verify(fixture.detectionTaskMapper).updateById(taskCaptor.capture());
+        verify(fixture.detectionTaskMapper).resetForRetry(taskCaptor.capture());
         DetectionTask retriedTask = taskCaptor.getValue();
         assertEquals("UPLOADED", retriedTask.getStatus());
         assertEquals("UPLOADED", retriedTask.getStage());

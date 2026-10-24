@@ -10,6 +10,10 @@ axios.interceptors.request.use(
       config.url = '/' + config.url
     }
 
+    if (config.method && !['get','head','options'].includes(config.method.toLowerCase())) {
+      config.headers = config.headers || {}
+      if (!config.headers['X-Request-ID']) config.headers['X-Request-ID'] = config.data?.requestId || crypto.randomUUID()
+    }
     return config
   },
   error => Promise.reject(error)

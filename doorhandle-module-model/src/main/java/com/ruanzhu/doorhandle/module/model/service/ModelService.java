@@ -29,7 +29,7 @@ public interface ModelService {
     ModelInfo updateModel(ModelInfo modelInfo);
 
     /**
-     * 删除模型
+     * 删除未被引用的模型登记；物理文件保留待核对回收，数据库回滚不能恢复已删除字节。
      * @param modelId 模型ID
      */
     void deleteModel(Integer modelId);

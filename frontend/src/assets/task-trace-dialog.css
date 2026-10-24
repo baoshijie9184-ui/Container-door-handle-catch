@@ -1,0 +1,11 @@
+/* Task trace is teleported to body; keep its scrolling and actions independent of page layout. */
+.task-trace-dialog.el-dialog { display: flex; flex-direction: column; max-height: 90vh; max-height: 90dvh; margin-block: 5vh; }
+.task-trace-dialog .el-dialog__header, .task-trace-dialog .el-dialog__footer { flex-shrink: 0; }
+.task-trace-dialog .el-dialog__title { display: block; padding-right: 28px; overflow-wrap: anywhere; font-size: 16px; line-height: 1.8; }
+.task-trace-dialog .el-dialog__body { min-height: 0; max-height: 65vh; max-height: 65dvh; overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.task-trace-dialog .task-trace-footer { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px 18px; width: 100%; }
+.task-trace-dialog .task-trace-footer > span { min-width: 0; color: var(--app-text-secondary, #475569); font-size: 12px; line-height: 1.8; overflow-wrap: anywhere; }
+.task-trace-dialog .task-trace-footer > div { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin-left: auto; }
+.task-trace-dialog .task-trace-footer .el-button + .el-button { margin-left: 0; }
+.task-trace-dialog .task-trace-footer button:focus-visible { outline: 2px solid var(--app-primary, #2563eb); outline-offset: 3px; }
+@media (max-width: 580px) { .task-trace-dialog .task-trace-footer > span { flex-basis: 100%; text-align: left; } .task-trace-dialog .task-trace-footer > div { margin-left: 0; justify-content: flex-start; } .task-trace-dialog .task-trace-footer button { min-height: 36px; } }

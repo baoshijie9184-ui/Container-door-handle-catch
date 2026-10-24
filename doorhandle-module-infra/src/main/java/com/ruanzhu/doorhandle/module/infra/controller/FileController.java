@@ -2,10 +2,12 @@ package com.ruanzhu.doorhandle.module.infra.controller;
 
 import com.ruanzhu.doorhandle.common.Result;
 import com.ruanzhu.doorhandle.common.SafePathResolver;
+import com.ruanzhu.doorhandle.contracts.agent.FileDelivery;
+import com.ruanzhu.doorhandle.contracts.files.*;
+import com.ruanzhu.doorhandle.module.infra.security.AuthorizedLocalFileResource;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.core.io.FileSystemResource;
 import org.springframework.core.io.Resource;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -22,7 +24,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Locale;
-import java.util.UUID;
 import java.util.stream.Stream;
 
 @RestController
@@ -32,7 +33,8 @@ import java.util.stream.Stream;
 public class FileController {
 
     private final SafePathResolver safePathResolver;
-    private final org.springframework.beans.factory.ObjectProvider<com.ruanzhu.doorhandle.module.infra.security.LocalDetectionFileAuthorization> detectionFiles;
+    private final org.springframework.beans.factory.ObjectProvider<LocalDetectionFilesApi> detectionFiles;
+    private final org.springframework.beans.factory.ObjectProvider<LocalModelFilesApi> modelFiles;
 
     @Value("${detection.upload-dir:${user.dir}/uploads/images}")
     private String imageUploadDir;
@@ -43,51 +45,55 @@ public class FileController {
     @Value("${detection.result-dir:${user.dir}/uploads/results}")
     private String resultDir;
 
-    @Value("${file.upload.path.models:${user.dir}/uploads/models}")
+    @Value("${model.upload-dir:${user.dir}/uploads/models}")
     private String modelUploadPath;
 
-    @Value("${model.max-upload-bytes:209715200}")
-    private long maxModelUploadBytes;
-
     @GetMapping("/files/images/{folder}/{fileName:.+}")
+    @FileDelivery(domain="DETECTION_IMAGE",resource="result.body.id",file="result.body.fileId",version="result.body.version",scope="ENTERPRISE")
     public ResponseEntity<Resource> getImage(
             @PathVariable String folder,
             @PathVariable String fileName) {
         Path path=safePathResolver.resolveUnderBase(imageUploadDir, folder, fileName);
-        authorize(com.ruanzhu.doorhandle.module.infra.security.LocalDetectionFileAuthorization.Kind.IMAGE,path);
-        return getFileResource(path);
+        return detectionResource(LocalDetectionFilesApi.Kind.IMAGE,Path.of(imageUploadDir),path);
     }
 
     @GetMapping("/files/annotated/{folder}/{fileName:.+}")
+    @FileDelivery(domain="DETECTION_ANNOTATION",resource="result.body.id",file="result.body.fileId",version="result.body.version",scope="ENTERPRISE")
     public ResponseEntity<Resource> getAnnotatedImage(
             @PathVariable String folder,
             @PathVariable String fileName) {
         Path path=safePathResolver.resolveUnderBase(annotatedDir, folder, fileName);
-        authorize(com.ruanzhu.doorhandle.module.infra.security.LocalDetectionFileAuthorization.Kind.ANNOTATED,path);
-        return getFileResource(path);
+        return detectionResource(LocalDetectionFilesApi.Kind.ANNOTATED,Path.of(annotatedDir),path);
     }
 
     @GetMapping("/files/results/{folder}/{fileName:.+}")
+    @FileDelivery(domain="DETECTION_RESULT",resource="result.body.id",file="result.body.fileId",version="result.body.version",scope="ENTERPRISE")
     public ResponseEntity<Resource> getResultFile(
             @PathVariable String folder,
             @PathVariable String fileName) {
         Path path=safePathResolver.resolveUnderBase(resultDir, folder, fileName);
-        authorize(com.ruanzhu.doorhandle.module.infra.security.LocalDetectionFileAuthorization.Kind.RESULT,path);
-        return getFileResource(path);
+        return detectionResource(LocalDetectionFilesApi.Kind.RESULT,Path.of(resultDir),path);
     }
 
     @GetMapping("/files/models/{fileName:.+}")
+    @org.springframework.security.access.prepost.PreAuthorize("hasRole('SUPERVISOR')")
+    @FileDelivery(domain="DETECTION_MODEL_DOWNLOAD",resource="result.body.id",file="result.body.fileId",version="result.body.version",scope="ENTERPRISE")
     public ResponseEntity<Resource> getModelFile(@PathVariable String fileName) {
-        return getFileResource(safePathResolver.resolveUnderBase(modelUploadPath, fileName));
+        Path path=safePathResolver.resolveUnderBase(modelUploadPath,fileName);
+        var owner=modelFiles.getIfAvailable();
+        if(owner==null) throw new org.springframework.security.access.AccessDeniedException("模型文件权限服务不可用");
+        var grant=owner.authorizeFile(path);
+        return getFileResource(Path.of(modelUploadPath),path,grant,()->owner.authorizeFile(path));
     }
 
     @GetMapping("/files/annotated/{folder}")
     public ResponseEntity<?> listAnnotatedImages(@PathVariable String folder) {
         try {
             Path folderPath = safePathResolver.resolveUnderBase(annotatedDir, folder);
-            authorize(com.ruanzhu.doorhandle.module.infra.security.LocalDetectionFileAuthorization.Kind.ANNOTATED,folderPath);
+            var owner=detectionOwner();
+            var folderGrant=owner.authorizeFile(LocalDetectionFilesApi.Kind.ANNOTATED,folderPath);
             if (!Files.exists(folderPath) || !Files.isDirectory(folderPath)) {
-                log.warn("Annotated folder does not exist: {}", folderPath);
+                log.warn("Authorized annotated folder is unavailable");
                 return ResponseEntity.notFound().build();
             }
 
@@ -96,49 +102,31 @@ public class FileController {
                 files = stream
                         .filter(Files::isRegularFile)
                         .filter(path -> isImageFile(path.getFileName().toString()))
+                        .filter(path -> {
+                            try { return owner.authorizeFile(LocalDetectionFilesApi.Kind.ANNOTATED,path).resourceId().equals(folderGrant.resourceId()); }
+                            catch(org.springframework.security.access.AccessDeniedException | SecurityException denied) { return false; }
+                        })
                         .map(path -> new FileInfo(
                                 path.getFileName().toString(),
-                                "/api/files/annotated/" + folder + "/" + path.getFileName()))
+                                org.springframework.web.util.UriComponentsBuilder.fromPath("/api/files/annotated").pathSegment(folder,path.getFileName().toString()).build().encode().toUriString()))
                         .toList();
             }
             return ResponseEntity.ok().cacheControl(org.springframework.http.CacheControl.noStore()).body(files);
         } catch (IOException e) {
-            log.error("Failed to list annotated images for folder {}", folder, e);
+            log.warn("Authorized annotated folder could not be listed");
             return ResponseEntity.badRequest().build();
         }
     }
 
     @PostMapping("/upload/model")
+    @org.springframework.web.bind.annotation.ResponseStatus(org.springframework.http.HttpStatus.GONE)
+    @org.springframework.security.access.prepost.PreAuthorize("hasRole('SUPERVISOR')")
     public Result<String> uploadModel(@RequestParam("file") MultipartFile file) {
-        if (file.isEmpty()) {
-            return Result.error("上传的文件不能为空");
-        }
-
-        String originalFilename = file.getOriginalFilename();
-        if (originalFilename == null || !originalFilename.toLowerCase(Locale.ROOT).endsWith(".onnx")) {
-            return Result.error("只能上传 ONNX 模型文件");
-        }
-        if (file.getSize() > maxModelUploadBytes) {
-            return Result.error("模型文件不能超过 " + formatBytes(maxModelUploadBytes));
-        }
-
-        try {
-            String fileExtension = originalFilename.substring(originalFilename.lastIndexOf('.')).toLowerCase(Locale.ROOT);
-            String newFilename = UUID.randomUUID() + fileExtension;
-            Path targetPath = safePathResolver.resolveUnderBase(modelUploadPath, newFilename);
-            Files.createDirectories(targetPath.getParent());
-            file.transferTo(targetPath);
-
-            String fileUrl = "/api/files/models/" + newFilename;
-            log.info("Model file uploaded: {}", fileUrl);
-            return Result.success(fileUrl);
-        } catch (IOException e) {
-            log.error("Failed to upload model file", e);
-            return Result.error("模型文件上传失败: " + e.getMessage());
-        }
+        return Result.error(410,"旧的未登记上传入口已停用，请使用 /api/models/upload 并提供模型名称、版本及文件");
     }
 
     @GetMapping("/direct/annotated/{folder}/{fileName:.+}")
+    @FileDelivery(domain="DETECTION_ANNOTATION",resource="result.body.id",file="result.body.fileId",version="result.body.version",scope="ENTERPRISE")
     public ResponseEntity<Resource> getDirectAnnotatedImage(
             @PathVariable String folder,
             @PathVariable String fileName) {
@@ -146,34 +134,39 @@ public class FileController {
     }
 
     @GetMapping("/direct/images/{folder}/{fileName:.+}")
+    @FileDelivery(domain="DETECTION_IMAGE",resource="result.body.id",file="result.body.fileId",version="result.body.version",scope="ENTERPRISE")
     public ResponseEntity<Resource> getDirectImage(
             @PathVariable String folder,
             @PathVariable String fileName) {
         return getImage(folder, fileName);
     }
 
-    private ResponseEntity<Resource> getFileResource(Path filePath) {
+    private ResponseEntity<Resource> detectionResource(LocalDetectionFilesApi.Kind kind,Path base,Path path) {
+        var owner=detectionOwner();var grant=owner.authorizeFile(kind,path);
+        return getFileResource(base,path,grant,()->owner.authorizeFile(kind,path));
+    }
+    private LocalDetectionFilesApi detectionOwner() {
+        var owner=detectionFiles.getIfAvailable();
+        if(owner==null) throw new org.springframework.security.access.AccessDeniedException("检测文件权限服务不可用");
+        return owner;
+    }
+    private ResponseEntity<Resource> getFileResource(Path base,Path filePath,BusinessFileGrant grant,java.util.function.Supplier<BusinessFileGrant> reauthorize) {
         try {
-            Resource resource = new FileSystemResource(filePath);
-            if (!resource.exists() || !resource.isReadable()) {
-                log.warn("File not found or unreadable: {}", filePath);
+            if (!Files.isRegularFile(filePath,java.nio.file.LinkOption.NOFOLLOW_LINKS) || !Files.isReadable(filePath)) {
                 return ResponseEntity.notFound().build();
             }
+            Resource resource = new AuthorizedLocalFileResource(base,filePath,grant,reauthorize);
 
             return ResponseEntity.ok()
                     .cacheControl(org.springframework.http.CacheControl.noStore())
+                    .header("X-Content-Type-Options","nosniff")
+                    .header("Content-Security-Policy","default-src 'none'; sandbox")
                     .contentType(resolveMediaType(filePath.getFileName().toString()))
                     .body(resource);
-        } catch (Exception e) {
-            log.error("Failed to serve file {}", filePath, e);
-            return ResponseEntity.badRequest().build();
+        } catch (IOException e) {
+            log.warn("Business file could not be prepared for delivery");
+            return ResponseEntity.notFound().build();
         }
-    }
-
-    private void authorize(com.ruanzhu.doorhandle.module.infra.security.LocalDetectionFileAuthorization.Kind kind,Path path) {
-        var authorization=detectionFiles.getIfAvailable();
-        if(authorization==null) throw new org.springframework.security.access.AccessDeniedException("检测文件权限服务不可用");
-        authorization.authorize(kind,path);
     }
 
     private MediaType resolveMediaType(String fileName) {
@@ -202,16 +195,6 @@ public class FileController {
                 || lowerCaseName.endsWith(".jpeg")
                 || lowerCaseName.endsWith(".png")
                 || lowerCaseName.endsWith(".gif");
-    }
-
-    private String formatBytes(long bytes) {
-        if (bytes >= 1024L * 1024L) {
-            return (bytes / 1024L / 1024L) + "MB";
-        }
-        if (bytes >= 1024L) {
-            return (bytes / 1024L) + "KB";
-        }
-        return bytes + "B";
     }
 
     public static class FileInfo {

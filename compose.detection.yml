@@ -4,6 +4,11 @@ services:
     environment:
       APP_DETECTION_WORKER_ENABLED: "true"
       APP_DETECTION_WORKER_CONSUMER_GROUP: ${KAFKA_CONSUMER_GROUP:-doorhandlecatch-python}
+      DETECTION_EXECUTION_COMMANDS_ENABLED: ${DETECTION_EXECUTION_COMMANDS_ENABLED:-false}
+      DETECTION_AGENT_CREATION_ENABLED: ${DETECTION_AGENT_CREATION_ENABLED:-false}
+      DETECTION_AGENT_BUSINESS_IMAGES_ENABLED: ${DETECTION_AGENT_BUSINESS_IMAGES_ENABLED:-false}
+      DETECTION_CREATION_TRANSFER_EVIDENCE_ENABLED: ${DETECTION_CREATION_TRANSFER_EVIDENCE_ENABLED:-false}
+      DETECTION_CREATION_REVIEW_ENABLED: ${DETECTION_CREATION_REVIEW_ENABLED:-false}
     depends_on:
       detection-worker:
         condition: service_healthy
@@ -25,6 +30,12 @@ services:
       DETECTION_CPU_THREADS: ${DETECTION_CPU_THREADS:-2}
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       KAFKA_CONSUMER_GROUP: ${KAFKA_CONSUMER_GROUP:-doorhandlecatch-python}
+      DETECTION_WORKER_RECEIPTS_ENABLED: ${DETECTION_EXECUTION_COMMANDS_ENABLED:-false}
+      DETECTION_RECEIPT_DB_HOST: mysql
+      DETECTION_RECEIPT_DB_PORT: "3306"
+      DETECTION_RECEIPT_DB_DATABASE: ${MYSQL_DATABASE:-doorhandledb}
+      DETECTION_RECEIPT_DB_USER: ${MYSQL_USER:-doorhandle}
+      DETECTION_RECEIPT_DB_PASSWORD: ${MYSQL_PASSWORD:?Set MYSQL_PASSWORD}
       ALIYUN_OSS_ENDPOINT: ${ALIYUN_OSS_ENDPOINT:?Set OSS endpoint}
       ALIYUN_OSS_BUCKET: ${ALIYUN_OSS_BUCKET:?Set OSS bucket}
       ALIYUN_OSS_ACCESS_KEY_ID: ${ALIYUN_OSS_ACCESS_KEY_ID:?Set OSS access key}
@@ -39,6 +50,8 @@ services:
         bind:
           create_host_path: false
     depends_on:
+      mysql:
+        condition: service_healthy
       kafka-init:
         condition: service_completed_successfully
     init: true

@@ -10,6 +10,9 @@
 **/.env
 **/.env.*
 deploy/*.env
+deploy/model-config-policy.json
+**/master-key.cms
+**/restore-proof.cms
 .agentscope
 .agents
 .codex

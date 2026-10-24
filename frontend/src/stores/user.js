@@ -3,10 +3,18 @@ import { ref } from 'vue'
 import request from '../api/request'
 import { ElMessage } from 'element-plus'
 import router from '../router'
+import { loginErrorMessage } from '../utils/loginError'
+import { readAccountPreference, writeAccountPreference } from '../utils/accountPreferences'
 
 export const useUserStore = defineStore('user', () => {
-  const username = ref(localStorage.getItem('username') || '')
-  const role = ref(localStorage.getItem('role') || 'INSPECTOR')
+  const usernameHint = readAccountPreference('username')
+  const roleHint = readAccountPreference('role')
+  const username = ref(usernameHint.value || '')
+  const role = ref(roleHint.value || 'INSPECTOR')
+  const displayCacheAvailable = ref(usernameHint.available && roleHint.available)
+  const saveDisplayHint = (key, value) => {
+    if (!writeAccountPreference(key, value)) displayCacheAvailable.value = false
+  }
   const identity = ref(null)
   const isAuthenticated = ref(false)
   const hasCheckedAuth = ref(false)
@@ -18,8 +26,8 @@ export const useUserStore = defineStore('user', () => {
     identity.value = null
     isAuthenticated.value = false
     hasCheckedAuth.value = true
-    localStorage.removeItem('username')
-    localStorage.removeItem('role')
+    saveDisplayHint('username', null)
+    saveDisplayHint('role', null)
   }
 
   // Cookie-only 登录态由后端 HttpOnly Cookie 保存，前端只维护显示状态。
@@ -71,7 +79,7 @@ export const useUserStore = defineStore('user', () => {
       hasCheckedAuth.value = true
       redirectingToLogin = false
       
-      localStorage.setItem('username', newUsername)
+      saveDisplayHint('username', newUsername)
 
       // 登录后向服务端刷新角色和员工身份，避免沿用上一账号的缓存角色。
       await checkAuth()
@@ -82,19 +90,7 @@ export const useUserStore = defineStore('user', () => {
       }
     } catch (error) {
       console.error('登录错误:', error)
-      if (error.response) {
-        const status = error.response.status
-        const message = error.response.data?.message || '未知错误'
-        
-        if (status === 401) {
-          throw new Error('用户名或密码错误')
-        } else if (status === 429) {
-          throw new Error('登录尝试次数过多，请稍后再试')
-        } else {
-          throw new Error(`登录失败: ${message}`)
-        }
-      }
-      throw error
+      throw new Error(loginErrorMessage(error))
     }
   }
 
@@ -115,9 +111,9 @@ export const useUserStore = defineStore('user', () => {
       const data = response.data?.data || {}
       if (data.username) {
         username.value = data.username
-        localStorage.setItem('username', data.username)
+        saveDisplayHint('username', data.username)
       }
-      if (data.role) { role.value = data.role; localStorage.setItem('role', data.role) }
+      if (data.role) { role.value = data.role; saveDisplayHint('role', data.role) }
       identity.value = data.identity || null
       isAuthenticated.value = true
       hasCheckedAuth.value = true
@@ -136,6 +132,7 @@ export const useUserStore = defineStore('user', () => {
     username,
     role,
     identity,
+    displayCacheAvailable,
     isAuthenticated,
     hasCheckedAuth,
     login,

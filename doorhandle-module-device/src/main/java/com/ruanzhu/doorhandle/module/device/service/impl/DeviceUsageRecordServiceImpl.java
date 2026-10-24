@@ -118,6 +118,7 @@ public class DeviceUsageRecordServiceImpl extends ServiceImpl<DeviceUsageRecordM
 
     @Override
     @Transactional
+    @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DEVICE_USAGE",action="createDeviceUsageRecord",resource="arg0.id",supervisorOnly=true)
     public void createDeviceUsageRecord(DeviceUsageRecord deviceUsageRecord) {
         log.info("创建设备使用记录: {}", deviceUsageRecord);
         
@@ -145,6 +146,7 @@ public class DeviceUsageRecordServiceImpl extends ServiceImpl<DeviceUsageRecordM
 
     @Override
     @Transactional
+    @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DEVICE_USAGE",action="updateDeviceUsageRecord",resource="arg0.id",supervisorOnly=true)
     public void updateDeviceUsageRecord(DeviceUsageRecord deviceUsageRecord) {
         log.info("更新设备使用记录: {}", deviceUsageRecord);
         
@@ -177,6 +179,7 @@ public class DeviceUsageRecordServiceImpl extends ServiceImpl<DeviceUsageRecordM
 
     @Override
     @Transactional
+    @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DEVICE_USAGE",action="deleteDeviceUsageRecord",supervisorOnly=true)
     public void deleteDeviceUsageRecord(Long id) {
         log.info("删除设备使用记录ID={}", id);
         
@@ -207,6 +210,7 @@ public class DeviceUsageRecordServiceImpl extends ServiceImpl<DeviceUsageRecordM
     }
 
     @Override
+    @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="RESOURCE",action="createRecord",supervisorOnly=true)
     public boolean createRecord(DeviceUsageRecord record) {
         if (record.getStartTime() == null) {
             record.setStartTime(LocalDateTime.now());
@@ -220,11 +224,13 @@ public class DeviceUsageRecordServiceImpl extends ServiceImpl<DeviceUsageRecordM
     }
 
     @Override
+    @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="RESOURCE",action="updateRecord",supervisorOnly=true)
     public boolean updateRecord(DeviceUsageRecord record) {
         return updateById(record);
     }
 
     @Override
+    @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="RESOURCE",action="deleteRecord",supervisorOnly=true)
     public boolean deleteRecord(Long id) {
         return removeById(id);
     }
@@ -284,6 +290,7 @@ public class DeviceUsageRecordServiceImpl extends ServiceImpl<DeviceUsageRecordM
 
     @Override
     @Transactional
+    @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="RESOURCE",action="createRecordOnAssign",supervisorOnly=true)
     public boolean createRecordOnAssign(Long deviceId, Long employeeId, String remarks) {
         if (deviceId == null || employeeId == null) {
             return false;
@@ -328,6 +335,7 @@ public class DeviceUsageRecordServiceImpl extends ServiceImpl<DeviceUsageRecordM
 
     @Override
     @Transactional
+    @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="RESOURCE",action="updateRecordOnUnassign",supervisorOnly=true)
     public boolean updateRecordOnUnassign(Long deviceId, String remarks) {
         if (deviceId == null) {
             return false;

@@ -1,0 +1,29 @@
+.agent-markdown { min-width: 0; color: inherit; font-size: 14px; line-height: 1.85; overflow-wrap: anywhere; }
+.agent-markdown > :first-child { margin-top: 0; }
+.agent-markdown > :last-child { margin-bottom: 0; }
+.agent-markdown :is(p, ul, ol, blockquote, .agent-code, .agent-markdown-table) { margin: 12px 0; }
+.agent-markdown :is(h2, h3, h4, h5, h6) { margin: 22px 0 10px; font-weight: 650; line-height: 1.5; color: var(--app-text); }
+.agent-markdown h2 { font-size: 20px; }.agent-markdown h3 { font-size: 17px; }.agent-markdown :is(h4, h5, h6) { font-size: 15px; }
+.agent-markdown .agent-inline { white-space: pre-wrap; }
+.agent-markdown :is(ul, ol) { padding-left: 24px; }
+.agent-markdown li + li { margin-top: 6px; }
+.agent-markdown blockquote { padding: 2px 0 2px 14px; border-left: 3px solid #bed2f7; color: var(--app-text-secondary); }
+.agent-markdown hr { border: 0; border-top: 1px solid var(--app-border); margin: 20px 0; }
+.agent-markdown a { color: var(--app-primary); text-decoration: underline; text-underline-offset: 3px; }
+.agent-markdown a:hover { color: var(--app-primary-hover); }
+.agent-markdown :not(pre) > code { padding: 2px 5px; border-radius: 4px; background: #edf1f7; color: var(--app-text); font: .9em Consolas, "Cascadia Code", monospace; }
+.agent-code { min-width: 0; max-width: 100%; border: 1px solid var(--app-border); border-radius: 10px; overflow: hidden; background: #f6f8fb; }
+.agent-code > header { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 12px; border-bottom: 1px solid var(--app-border); color: var(--app-text-secondary); font-size: 11px; background: #eef2f7; }
+.agent-code > header > span { min-width: 0; overflow-wrap: anywhere; }
+.agent-code button { display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0; padding: 5px 7px; border: 0; border-radius: 5px; color: var(--app-text-secondary); background: transparent; font: inherit; cursor: pointer; }
+.agent-code button:hover { background: white; color: var(--app-primary); }
+.agent-code pre { max-width: 100%; margin: 0; padding: 15px; overflow: auto; white-space: pre; tab-size: 2; font: 12px/1.75 Consolas, "Cascadia Code", monospace; }
+.agent-code code { color: var(--app-text); font: inherit; }
+.agent-code .agent-code-error { margin: 0; padding: 8px 12px; border-top: 1px solid var(--app-border); color: var(--app-warning); background: var(--app-warning-soft); font-size: 12px; }
+.agent-markdown-table { max-width: 100%; overflow-x: auto; border: 1px solid var(--app-border); border-radius: 8px; }
+.agent-markdown-table table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.agent-markdown-table :is(th, td) { min-width: 95px; padding: 9px 12px; border-bottom: 1px solid var(--app-border); text-align: left; vertical-align: top; }
+.agent-markdown-table th { color: var(--app-text-secondary); background: #f8fafc; font-weight: 650; }
+.agent-markdown-table tr:last-child td { border-bottom: 0; }
+.agent-markdown :is(button, a, pre, .agent-markdown-table):focus-visible { outline: 2px solid var(--app-primary); outline-offset: -2px; }
+@media(max-width:640px) { .agent-markdown h2 { font-size: 18px; }.agent-markdown h3 { font-size: 16px; }.agent-code pre { padding: 12px; } }

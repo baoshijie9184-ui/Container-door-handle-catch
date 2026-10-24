@@ -23,6 +23,11 @@ import java.util.Set;
 @Slf4j
 public class ModelInfoServiceImpl extends ServiceImpl<ModelInfoMapper, ModelInfo> implements ModelInfoService {
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.ruanzhu.doorhandle.module.model.service.ModelService modelService;
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.ruanzhu.doorhandle.module.model.service.ModelUploadFiles uploadFiles;
+
     private static final Set<String> SUPPORTED_DEPLOYMENT_STRATEGIES = Set.of("FULL", "CANARY", "AB_TEST", "ROLLBACK");
 
     @Override
@@ -65,26 +70,31 @@ public class ModelInfoServiceImpl extends ServiceImpl<ModelInfoMapper, ModelInfo
 
     @Override
     @CacheEvict(cacheNames = {"model", "dashboard"}, allEntries = true)
+    @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DETECTION_MODEL",action="saveModelInfo",supervisorOnly=true)
     public boolean saveModelInfo(ModelInfo modelInfo) {
-        log.info("保存模型信息: {}", modelInfo);
+        log.info("保存模型信息: modelId={}", modelInfo.getModelId());
+        uploadFiles.metadataPath(modelInfo.getModelPath(),null);
         return save(modelInfo);
     }
 
     @Override
     @CacheEvict(cacheNames = {"model", "dashboard"}, allEntries = true)
+    @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DETECTION_MODEL",action="updateModelInfo",supervisorOnly=true)
     public boolean updateModelInfo(ModelInfo modelInfo) {
-        log.info("更新模型信息: {}", modelInfo);
+        log.info("更新模型信息: modelId={}", modelInfo.getModelId());
         ModelInfo existing = getModelInfoByModelId(modelInfo.getModelId());
         if (existing == null) {
             return false;
         }
 
+        uploadFiles.metadataPath(modelInfo.getModelPath(),existing.getModelPath());
         mergeEditableFields(existing, modelInfo);
         return updateById(existing);
     }
 
     @Override
     @CacheEvict(cacheNames = {"model", "dashboard"}, allEntries = true)
+    @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DETECTION_MODEL",action="RECORD_EVALUATION",supervisorOnly=true)
     public boolean recordEvaluation(Integer modelId, ModelInfo evaluation) {
         log.info("记录模型评估指标: modelId={}, evaluation={}", modelId, evaluation);
         ModelInfo existing = getModelInfoByModelId(modelId);
@@ -113,6 +123,7 @@ public class ModelInfoServiceImpl extends ServiceImpl<ModelInfoMapper, ModelInfo
 
     @Override
     @CacheEvict(cacheNames = {"model", "dashboard"}, allEntries = true)
+    @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DETECTION_MODEL",action="CONFIGURE_ROLLOUT",supervisorOnly=true)
     public boolean configureRollout(Integer modelId, String deploymentStrategy, Integer canaryPercent,
                                     String abGroup, Integer rollbackFromModelId) {
         log.info("配置模型部署策略: modelId={}, strategy={}, canaryPercent={}, abGroup={}, rollbackFrom={}",
@@ -161,11 +172,12 @@ public class ModelInfoServiceImpl extends ServiceImpl<ModelInfoMapper, ModelInfo
 
     @Override
     @CacheEvict(cacheNames = {"model", "dashboard"}, allEntries = true)
+    @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DETECTION_MODEL",action="deleteModelInfoByModelId",supervisorOnly=true)
     public boolean deleteModelInfoByModelId(Integer modelId) {
         log.info("删除模型信息: modelId={}", modelId);
-        LambdaQueryWrapper<ModelInfo> queryWrapper = new LambdaQueryWrapper<>();
-        queryWrapper.eq(ModelInfo::getModelId, modelId);
-        return remove(queryWrapper);
+        if(baseMapper.selectByModelId(modelId)==null) return false;
+        modelService.deleteModel(modelId);
+        return true;
     }
 
     private void mergeEditableFields(ModelInfo existing, ModelInfo incoming) {

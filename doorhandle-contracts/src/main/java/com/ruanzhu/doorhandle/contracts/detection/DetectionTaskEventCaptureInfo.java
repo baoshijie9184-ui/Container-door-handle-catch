@@ -5,6 +5,8 @@ import lombok.Data;
 
 @Data
 @Builder
+@lombok.NoArgsConstructor
+@lombok.AllArgsConstructor
 public class DetectionTaskEventCaptureInfo {
     private String captureDate;
     private String region;

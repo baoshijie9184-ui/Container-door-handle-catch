@@ -1,35 +1,46 @@
 <template>
-  <div class="not-found-page">
+  <section class="not-found-page" aria-labelledby="not-found-title">
     <div class="nf-container">
+      <span class="nf-symbol"><AppIcon name="Search" :size="28" /></span>
       <div class="nf-code">404</div>
-      <h1 class="nf-title">页面未找到</h1>
+      <h1 id="not-found-title" class="nf-title">页面未找到</h1>
       <p class="nf-desc">
-        您访问的页面不存在，可能已被移动或删除。<br />
-        请检查链接是否正确，或返回首页继续操作。
+        当前地址没有对应页面，请核对链接，或从下方入口继续工作。
       </p>
       <div class="nf-actions">
         <el-button type="primary" size="large" @click="goHome">
-          返回首页
+          <AppIcon name="HomeFilled" />返回首页
         </el-button>
-        <el-button size="large" @click="goBack">
-          返回上一页
+        <el-button v-if="previousPage" size="large" @click="goBack">
+          <AppIcon name="ArrowLeft" />返回上一页
         </el-button>
       </div>
+      <nav class="nf-shortcuts" aria-label="常用工作入口"><router-link to="/inspection/workbench"><AppIcon name="Picture" :size="16" />检测工作台</router-link><router-link to="/inspection/history"><AppIcon name="Tickets" :size="16" />检测记录</router-link><router-link to="/agent/chat"><AppIcon name="ChatDotRound" :size="16" />Agent 对话</router-link></nav>
     </div>
-  </div>
+  </section>
 </template>
 
 <script setup>
-import { useRouter } from 'vue-router'
+import { computed } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 
 const router = useRouter()
+const route = useRoute()
+const previousPage = computed(() => {
+  if (!route.fullPath) return ''
+  const back = router.options.history.state.back
+  if (typeof back !== 'string' || !back.startsWith('/') || back.startsWith('//')) return ''
+  const destination = router.resolve(back)
+  return destination.fullPath !== route.fullPath && destination.matched.length && destination.name !== 'notFound' ? back : ''
+})
 
 function goHome() {
-  router.push('/home')
+  router.replace('/home')
 }
 
 function goBack() {
-  router.back()
+  if (previousPage.value) router.back()
+  else router.replace('/home')
 }
 </script>
 
@@ -44,17 +55,16 @@ function goBack() {
 
 .nf-container {
   text-align: center;
-  max-width: 520px;
+  max-width: 560px;
+  min-width: 0;
 }
+.nf-symbol { width: 60px; height: 60px; margin: 0 auto 24px; display: grid; place-items: center; color: var(--app-primary); background: var(--app-primary-soft); border-radius: 16px; }
 
 .nf-code {
-  font-size: 120px;
-  font-weight: 900;
+  font-size: clamp(80px, 15vw, 112px);
+  font-weight: 750;
   line-height: 1;
-  background: linear-gradient(135deg, #2f6bff 0%, #12a87a 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
+  color: var(--app-primary);
   letter-spacing: -0.02em;
 }
 
@@ -78,4 +88,10 @@ function goBack() {
   justify-content: center;
   flex-wrap: wrap;
 }
+.nf-actions .el-button + .el-button { margin-left:0; }
+.nf-shortcuts { display:flex; justify-content:center; flex-wrap:wrap; gap:12px 20px; margin-top:30px; padding-top:22px; border-top:1px solid var(--app-border); }
+.nf-shortcuts a { display:inline-flex; align-items:center; gap:6px; border-radius:5px; padding:4px 0; color:var(--app-text-secondary); font-size:12px; line-height:1.8; text-decoration:none; }
+.nf-shortcuts a:hover { color:var(--app-primary); }
+.nf-shortcuts a:focus-visible { outline:2px solid var(--app-primary); outline-offset:4px; }
+@media(max-width:480px) { .not-found-page { padding:30px 18px; }.nf-title { font-size:24px; }.nf-desc { font-size:13px; }.nf-actions > button { flex:1 1 auto; }.nf-shortcuts { gap:10px 16px; } }
 </style>

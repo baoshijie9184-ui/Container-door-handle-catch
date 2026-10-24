@@ -1,3 +1,6 @@
+# 应用基础编排：Java 后端 + 托管 Vue/React 的 Nginx。
+# ECS 完整环境合并 compose.cloud.yml；PTH 检测再合并 compose.detection.yml。
+# 中间件不放入 backend 镜像；服务关系见 docs/docker-monolith-deployment.md。
 name: doorhandlecatch-monolith
 
 services:

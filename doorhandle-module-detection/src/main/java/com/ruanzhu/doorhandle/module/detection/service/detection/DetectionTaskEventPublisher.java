@@ -1,6 +1,5 @@
 package com.ruanzhu.doorhandle.module.detection.service.detection;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ruanzhu.doorhandle.common.BusinessException;
 import com.ruanzhu.doorhandle.module.detection.config.properties.KafkaTaskProperties;
@@ -28,9 +27,8 @@ public class DetectionTaskEventPublisher {
             throw new BusinessException("Kafka 未启用，无法发送检测任务");
         }
         log.info(
-                "Publishing detection.task.created event. taskId={}, payload={}",
-                event.getTaskId(),
-                toJsonForLog(event)
+                "Publishing detection.task.created event. taskId={}, dispatchId={}, eventId={}",
+                event.getTaskId(), event.getDispatchId(), event.getEventId()
         );
         try {
             kafkaTemplate.send(
@@ -42,20 +40,12 @@ public class DetectionTaskEventPublisher {
             Thread.currentThread().interrupt();
             throw new BusinessException("Kafka 任务发送被中断: " + event.getTaskId());
         } catch (ExecutionException | TimeoutException ex) {
-            log.error("Kafka task publish failed. taskId={}", event.getTaskId(), ex);
+            log.error("Kafka task publish failed. taskId={}, errorType={}", event.getTaskId(), ex.getClass().getSimpleName());
             throw new BusinessException("Kafka 任务发送失败: " + event.getTaskId());
         } catch (RuntimeException ex) {
-            log.error("Kafka task send failed before acknowledgement. taskId={}", event.getTaskId(), ex);
+            log.error("Kafka task send failed before acknowledgement. taskId={}, errorType={}", event.getTaskId(), ex.getClass().getSimpleName());
             throw new BusinessException("Kafka 任务发送失败: " + event.getTaskId());
         }
     }
 
-    private String toJsonForLog(DetectionTaskCreatedEvent event) {
-        try {
-            return objectMapper.writeValueAsString(event);
-        } catch (JsonProcessingException ex) {
-            log.warn("Failed to serialize detection.task.created event for logging. taskId={}", event.getTaskId(), ex);
-            return "{\"taskId\":\"" + event.getTaskId() + "\",\"serialization\":\"failed\"}";
-        }
-    }
 }

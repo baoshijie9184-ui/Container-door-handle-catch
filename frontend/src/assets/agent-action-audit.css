@@ -1,0 +1,28 @@
+/* Shared by the Vue and React read-only action audit views. */
+.agent-action-list .action-audit { margin-top: 12px; border-top: 1px solid var(--app-border, #e2e8f0); padding-top: 8px; min-width: 0; }
+.agent-action-list .action-audit-toggle { display: inline-flex; align-items: center; gap: 6px; min-height: 34px; margin: 0; color: var(--app-primary, #2563eb); }
+.agent-action-list .action-audit-panel { margin-top: 8px; padding: 14px 0 0; border-top: 1px solid var(--app-border, #e2e8f0); animation: action-audit-open 180ms ease-out; }
+.agent-action-list .action-audit-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
+.agent-action-list .action-audit-heading > strong { color: var(--app-text, #0f172a); font-size: 13px; font-weight: 600; }
+.agent-action-list .action-audit-heading button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; }
+.agent-action-list .action-audit :is(.action-audit-hint, .action-audit-count, .action-audit-event-meta) { color: var(--app-text-secondary, #475569); font-size: 12px; line-height: 1.8; overflow-wrap: anywhere; }
+.agent-action-list .action-audit-hint { margin: 10px 0; }
+.agent-action-list .action-audit-hint code { font-size: 12px; overflow-wrap: anywhere; white-space: normal; }
+.agent-action-list .action-audit-read-state { margin: 10px 0; color: var(--app-primary, #2563eb); font-size: 12px; line-height: 1.8; }
+.agent-action-list .action-audit-error { margin: 10px 0; padding: 9px 11px; border-left: 3px solid #d97706; background: #fffbeb; color: #92400e; font-size: 12px; line-height: 1.8; }
+.agent-action-list .action-audit-events { max-height: 360px; max-height: min(360px, 50dvh); margin: 12px 0 0; padding: 0 8px 0 16px; list-style: none; overflow-y: auto; overscroll-behavior-y: contain; scrollbar-gutter: stable; }
+.agent-action-list .action-audit-events > li { position: relative; margin: 0; padding: 0 0 18px 16px; border-left: 1px solid var(--app-border, #e2e8f0); overflow-wrap: anywhere; }
+.agent-action-list .action-audit-events > li:last-child { padding-bottom: 4px; border-color: transparent; }
+.agent-action-list .action-audit-events > li::before { content: ''; position: absolute; top: 7px; left: -4px; width: 7px; height: 7px; border-radius: 50%; background: var(--app-primary, #2563eb); }
+.agent-action-list .action-audit-events > li[data-result="SUCCEEDED"]::before { background: #15803d; }
+.agent-action-list .action-audit-events > li:is([data-result="PENDING"], [data-result="NEEDS_REVIEW"])::before { background: #b45309; }
+.agent-action-list .action-audit-event-heading { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 6px 10px; }
+.agent-action-list .action-audit-event-heading > strong { font-size: 13px; font-weight: 550; line-height: 1.8; color: var(--app-text, #0f172a); }
+.agent-action-list .action-audit-event-meta { display: flex; flex-wrap: wrap; gap: 3px 10px; margin: 5px 0 0; }
+.agent-action-list .action-audit-reason, .agent-action-list .action-audit-empty { font-size: 12px; line-height: 1.8; color: var(--app-text-secondary, #475569); margin: 6px 0 0; white-space: pre-wrap; }
+.agent-action-list .action-audit :is(button, [tabindex]):focus-visible { outline: 2px solid var(--app-primary, #2563eb); outline-offset: 3px; }
+.action-audit-enter-active, .action-audit-leave-active { transition: opacity 180ms ease; }
+.action-audit-enter-from, .action-audit-leave-to { opacity: 0; }
+@keyframes action-audit-open { from { opacity: 0; } to { opacity: 1; } }
+@media (max-width: 480px) { .agent-action-list .action-audit-heading > button { min-height: 36px; } .agent-action-list .action-audit-events { padding-right: 2px; } }
+@media (prefers-reduced-motion: reduce) { .agent-action-list .action-audit-panel { animation: none; } .action-audit-enter-active, .action-audit-leave-active { transition: none; } }

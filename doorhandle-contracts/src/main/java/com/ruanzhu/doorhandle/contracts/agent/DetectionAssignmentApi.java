@@ -4,8 +4,14 @@ import java.time.LocalDateTime;
 
 /** 单体内原子分配门面；外部消息、上传和检测重试不属于此事务契约。 */
 public interface DetectionAssignmentApi {
-    record Command(String taskId, String qualityStation, String assignee, String dueAt, String assignmentRemark) {}
-    record Values(String qualityStation, String assignee, String dueAt, String assignmentRemark, String flowStatus) {}
+    record Command(String taskId, String qualityStation, String assignee, String dueAt, String assignmentRemark,
+                   Long assigneeUserId,String assigneeRevision) {
+        public Command(String taskId,String qualityStation,String assignee,String dueAt,String remark){this(taskId,qualityStation,assignee,dueAt,remark,null,null);}
+    }
+    record Values(String qualityStation, String assignee, String dueAt, String assignmentRemark, String flowStatus,
+                  Long assigneeUserId,Long assignedByUserId,String assignedByName,Long assignmentRevision) {
+        public Values(String station,String assignee,String due,String remark,String flow){this(station,assignee,due,remark,flow,null,null,null,null);}
+    }
     record Preview(Command command, Values before, String resourceVersion) {}
     record Applied(String taskId, Values after) {}
     Preview preview(AgentActor actor, Command command);

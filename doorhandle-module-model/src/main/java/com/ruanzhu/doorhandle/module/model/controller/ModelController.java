@@ -22,6 +22,16 @@ import java.util.List;
 public class ModelController {
 
     private final ModelService modelService;
+    private final org.springframework.beans.factory.ObjectProvider<com.ruanzhu.doorhandle.module.model.service.ModelFileJournal> fileJournals;
+
+    @GetMapping("/file-operations")
+    @PreAuthorize("hasRole('SUPERVISOR')")
+    public org.springframework.http.ResponseEntity<Result<com.ruanzhu.doorhandle.module.model.service.ModelFileJournal.View>> fileOperations(
+            @RequestParam(required=false) String requestId,@RequestParam(defaultValue="50") int size) {
+        var journal=fileJournals.getIfAvailable();
+        var view=journal==null?new com.ruanzhu.doorhandle.module.model.service.ModelFileJournal.View(false,List.of(),List.of()):journal.list(requestId,size);
+        return org.springframework.http.ResponseEntity.ok().cacheControl(org.springframework.http.CacheControl.noStore()).body(Result.success(view));
+    }
 
     /**
      * 上传 ONNX 模型
@@ -39,16 +49,17 @@ public class ModelController {
             @RequestParam("modelName") String modelName,
             @RequestParam("version") String version,
             @RequestParam(value = "updateDescription", required = false) String updateDescription) {
-        log.info("接收到模型上传请求: 文件名={}, 大小={}, 模型名={}, 版本={}", 
-                file.getOriginalFilename(), file.getSize(), modelName, version);
+        log.info("接收到模型上传请求: 大小={}", file.getSize());
         
         try {
             ModelInfo modelInfo = modelService.uploadModel(file, modelName, version, updateDescription);
-            log.info("模型上传成功: ID={}, 路径={}", modelInfo.getModelId(), modelInfo.getModelPath());
+            log.info("模型上传成功: ID={}", modelInfo.getModelId());
             return Result.success(modelInfo);
+        } catch (SecurityException forbidden) {
+            throw forbidden;
         } catch (Exception e) {
-            log.error("模型上传处理异常: {}", e.getMessage(), e);
-            return Result.error(500, "模型上传失败: " + e.getMessage());
+            log.warn("模型上传未确认，需按请求编号核对: {}",e.getClass().getSimpleName());
+            return Result.error(500, "模型上传未确认，请按请求编号核对文件记录和模型列表，不要自动重试");
         }
     }
 
@@ -144,9 +155,11 @@ public class ModelController {
             modelService.deleteModel(modelId);
             log.info("模型删除成功: ID={}", modelId);
             return Result.success();
+        } catch (SecurityException forbidden) {
+            throw forbidden;
         } catch (Exception e) {
-            log.error("模型删除异常: {}", e.getMessage(), e);
-            return Result.error(500, "模型删除失败: " + e.getMessage());
+            log.warn("模型删除未确认: ID={}, failure={}",modelId,e.getClass().getSimpleName());
+            return Result.error(500, "模型删除未确认，请核对模型列表和文件记录；不要自动重试");
         }
     }
 

@@ -40,6 +40,14 @@ public class SkillLinkStorage {
         if(owner<1)throw fail("存储身份不合法");Path directory=root.resolve("users").resolve(Long.toString(owner)).resolve("skill-downloads");
         checkParents(directory);return scan(directory).usage();
     }
+    /** Charge each active package once at its full bound, not its changing partial size plus another full reservation. */
+    long chargedUsage(long owner,Map<String,Long> reservations){
+        if(owner<1)throw fail("存储身份不合法");Path base=root.resolve("users").resolve(Long.toString(owner)).resolve("skill-downloads");checkParents(base);
+        var excluded=new ArrayList<Path>();for(String id:reservations.keySet())excluded.add(directory(owner,id));
+        long total=0;for(long bytes:reservations.values())total=Math.addExact(total,bytes);
+        for(Path path:scan(base).paths())if(Files.isRegularFile(path,LinkOption.NOFOLLOW_LINKS)&&excluded.stream().noneMatch(path::startsWith))try{total=Math.addExact(total,Files.size(path));}catch(java.io.IOException invalid){throw fail("存储文件暂不能核对");}
+        return total;
+    }
     private record Scan(List<Path> paths,Usage usage) {}
     private Scan scan(Path directory){
         if(!Files.exists(directory,LinkOption.NOFOLLOW_LINKS))return new Scan(List.of(),new Usage(0,0));
@@ -70,7 +78,8 @@ public class SkillLinkStorage {
     }
     @SuppressWarnings("unchecked")
     private void validate(Path directory,Map<String,Object> manifest)throws Exception{
-        if(!"LINK".equals(manifest.get("sourceType"))||!Objects.toString(manifest.get("commit"),"").matches("[a-f0-9]{40}")
+        SkillSourcePolicy.identity(manifest);
+        if(!"LINK".equals(manifest.get("sourceType"))
                 ||!Boolean.TRUE.equals(manifest.get("provenanceVerified"))||!Boolean.FALSE.equals(manifest.get("scriptsExecutable"))
                 ||!Boolean.FALSE.equals(manifest.get("resourcesReadable"))||!(manifest.get("licenses") instanceof Map<?,?> licenses)||licenses.isEmpty()
                 ||!Set.of("Apache-2.0","MIT","BSD").contains(manifest.get("license")))throw fail("技能来源或许可不合法");
@@ -86,9 +95,16 @@ public class SkillLinkStorage {
             if(total>4194304||!(file.get("bytes") instanceof Number size)||size.longValue()!=bytes.length||!bytesSha(bytes).equals(file.get("sha256")))throw fail("技能文件摘要校验失败");
         }
         if(!names.contains("skill.md"))throw fail("缺少技能正文");
+        if("CONTENT_SNAPSHOT".equals(manifest.get("revisionKind"))){
+            verifySnapshot(directory.resolve("_source/archive.zip"),manifest.get("archiveSha256"),4194304);
+            verifySnapshot(directory.resolve("_source/metadata.json"),manifest.get("metadataSha256"),262144);
+            if(!(manifest.get("archiveBytes") instanceof Number size)||size.longValue()!=Files.size(directory.resolve("_source/archive.zip")))throw fail("技能原始归档长度不一致");
+        }
+        if(scan(directory).usage().bytes()>5242880)throw fail("技能下载目录超过存储上限");
         String raw=Files.readString(directory.resolve("SKILL.md")).replace("\r\n","\n");int end=raw.indexOf("\n---",4);
         if(end<0||!raw.substring(end+4).stripLeading().equals(manifest.get("instructions")))throw fail("技能正文与清单不一致");
     }
+    private void verifySnapshot(Path path,Object expected,long max)throws Exception{checkParents(path);if(!Objects.toString(expected,"").matches("[a-f0-9]{64}")||!Files.isRegularFile(path,LinkOption.NOFOLLOW_LINKS)||Files.size(path)>max||!bytesSha(Files.readAllBytes(path)).equals(expected))throw fail("技能原始快照摘要不一致");}
     public Map<String,Object> verified(long owner,String id){
         var rows=jdbc.queryForList("SELECT status,manifest_json,manifest_sha256 FROM agent_skill_download WHERE download_id=? AND owner_user_id=?",id,owner);
         if(rows.isEmpty()||!Set.of("DOWNLOADED","DRAFT_CREATED").contains(rows.get(0).get("status")))throw fail("技能下载尚未完成或无权限");

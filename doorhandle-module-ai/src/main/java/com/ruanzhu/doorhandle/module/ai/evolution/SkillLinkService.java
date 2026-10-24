@@ -32,6 +32,7 @@ public class SkillLinkService {
     private final JdbcTemplate jdbc;private final TransactionTemplate tx;private final BusinessUserDirectory users;
     private final SkillLinkStorage storage;private final SkillEvolutionService evolution;private final ObjectMapper json;
     private final String python;private final Path installer;
+    private final SkillDownloadLeases leases;private final String instance=UUID.randomUUID().toString();
     private final ThreadPoolExecutor jobs=new ThreadPoolExecutor(2,2,0,TimeUnit.SECONDS,new ArrayBlockingQueue<>(8),r->{var t=new Thread(r,"skill-link-download");t.setDaemon(true);return t;});
     private final Set<Process> children=ConcurrentHashMap.newKeySet();
     private final Set<String> liveDownloads=ConcurrentHashMap.newKeySet();
@@ -39,9 +40,9 @@ public class SkillLinkService {
     public SkillLinkService(JdbcTemplate jdbc,PlatformTransactionManager manager,BusinessUserDirectory users,SkillLinkStorage storage,
             SkillEvolutionService evolution,ObjectMapper json,@Value("${agentscope.evolution.links.python:python}") String python,
             @Value("${agentscope.evolution.links.installer:${user.dir}/script/shell/download-linked-skill.py}") String installer){
-        this.jdbc=jdbc;this.tx=new TransactionTemplate(manager);this.users=users;this.storage=storage;this.evolution=evolution;this.json=json;this.python=python;this.installer=Path.of(installer).toAbsolutePath().normalize();
+        this.jdbc=jdbc;this.tx=new TransactionTemplate(manager);this.users=users;this.storage=storage;this.evolution=evolution;this.json=json;this.python=python;this.installer=Path.of(installer).toAbsolutePath().normalize();leases=new SkillDownloadLeases(jdbc,storage);
     }
-    @PostConstruct public void schema(){jdbc.queryForList("SELECT download_id,target_skill_id,expected_skill_revision FROM agent_skill_download WHERE 1=0");jdbc.queryForList("SELECT request_id FROM agent_skill_storage_command WHERE 1=0");if(quotaBytes<5242880)throw new IllegalStateException("Skill 存储配额至少为 5 MiB");}
+    @PostConstruct public void schema(){jdbc.queryForList("SELECT download_id,target_skill_id,expected_skill_revision FROM agent_skill_download WHERE 1=0");jdbc.queryForList("SELECT request_id FROM agent_skill_storage_command WHERE 1=0");leases.schema();if(quotaBytes<5242880)throw new IllegalStateException("Skill 存储配额至少为 5 MiB");}
     private AgentActor fresh(AgentActor actor){var current=users.current(actor.userId(),actor.username());return new AgentActor(current.userId(),current.username(),current.supervisor()?AgentActor.Role.SUPERVISOR:AgentActor.Role.INSPECTOR);}
     public Map<String,Object> start(AgentActor actor,Request request){return start(actor,request,null,null);}
     public Map<String,Object> upgrade(AgentActor actor,String skillId,UpgradeRequest request){
@@ -54,14 +55,12 @@ public class SkillLinkService {
         if(!current.supervisor()&&!current.role().name().equals(request.targetRole()))throw fail(403,"员工不能安装主管技能");
         String hash=storage.digest(targetSkillId==null?request:Map.of("request",request,"targetSkillId",targetSkillId,"expectedRevision",expectedRevision)),id="download-"+UUID.randomUUID();
         boolean created=Boolean.TRUE.equals(tx.execute(status->{
-            // Lock the owning account's persistent binding row is unnecessary: a unique request index handles concurrent replays.
+            leases.lock(current.userId());
             var existing=jdbc.queryForList("SELECT request_sha256 FROM agent_skill_download WHERE owner_user_id=? AND request_id=?",current.userId(),request.requestId());
             if(!existing.isEmpty()){if(!hash.equals(existing.get(0).get("request_sha256")))throw fail(409,"请求编号已用于不同的链接下载");return false;}
             if(targetSkillId!=null)evolution.assertLinkedUpgrade(current,targetSkillId,expectedRevision,request.url());
-            Long active=jdbc.queryForObject("SELECT COUNT(*) FROM agent_skill_download WHERE owner_user_id=? AND status='DOWNLOADING'",Long.class,current.userId());
-            if(active>=2)throw fail(429,"请等待已有下载完成");
-            if(storage.usage(current.userId()).bytes()+(active+1)*5242880L>quotaBytes)throw fail(413,"本人 Skill 存储配额不足 请清理未被版本引用的下载缓存");
-            jdbc.update("INSERT INTO agent_skill_download(download_id,owner_user_id,request_id,request_sha256,source_url,target_role,target_skill_id,expected_skill_revision,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,'DOWNLOADING',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",id,current.userId(),request.requestId(),hash,request.url(),request.targetRole(),targetSkillId,expectedRevision);return true;
+            leases.capacity(current.userId(),quotaBytes);
+            jdbc.update("INSERT INTO agent_skill_download(download_id,owner_user_id,request_id,request_sha256,source_url,target_role,target_skill_id,expected_skill_revision,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,'DOWNLOADING',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",id,current.userId(),request.requestId(),hash,request.url(),request.targetRole(),targetSkillId,expectedRevision);leases.reserve(current.userId(),id);return true;
         }));
         if(created){try{jobs.execute(()->download(current,id,request));}catch(RejectedExecutionException error){failed(current,id,"DOWNLOAD_QUEUE_FULL");}}
         return jdbc.queryForMap("SELECT download_id,status,skill_id,error_code,created_at,updated_at FROM agent_skill_download WHERE owner_user_id=? AND request_id=?",current.userId(),request.requestId());
@@ -69,51 +68,70 @@ public class SkillLinkService {
     public List<Map<String,Object>> list(AgentActor actor){var current=fresh(actor);return jdbc.queryForList("SELECT download_id,source_url,target_role,target_skill_id,status,skill_id,error_code,created_at,updated_at FROM agent_skill_download WHERE owner_user_id=? ORDER BY id DESC LIMIT 50",current.userId());}
     private void download(AgentActor actor,String id,Request request){Process process=null;
         try{
-            if(!Boolean.TRUE.equals(tx.execute(status->{var rows=jdbc.queryForList("SELECT status FROM agent_skill_download WHERE download_id=? AND owner_user_id=? FOR UPDATE",id,actor.userId());
-                if(rows.isEmpty()||!"DOWNLOADING".equals(rows.get(0).get("status")))return false;
+            if(!Boolean.TRUE.equals(tx.execute(status->{leases.lock(actor.userId());var rows=jdbc.queryForList("SELECT status FROM agent_skill_download WHERE download_id=? AND owner_user_id=? FOR UPDATE",id,actor.userId());
+                if(rows.isEmpty()||!"DOWNLOADING".equals(rows.get(0).get("status"))||!leases.claim(actor.userId(),id,instance))return false;
                 jdbc.update("UPDATE agent_skill_download SET updated_at=CURRENT_TIMESTAMP WHERE download_id=? AND owner_user_id=?",id,actor.userId());liveDownloads.add(id);return true;})))return;
             Path directory=storage.directory(actor.userId(),id);
             // Do not capture arbitrary installer output, credentials or environment into API error messages.
-            process=new ProcessBuilder(python,installer.toString(),"--url",request.url(),"--destination",directory.toString()).redirectOutput(ProcessBuilder.Redirect.DISCARD).redirectError(ProcessBuilder.Redirect.DISCARD).start();children.add(process);
-            if(!process.waitFor(180,TimeUnit.SECONDS)){process.destroyForcibly();throw new IllegalStateException("timeout");}
-            if(process.exitValue()!=0)throw new IllegalStateException("failed");
+            process=new ProcessBuilder(python,installer.toString(),"--url",request.url(),"--destination",directory.toString()).redirectError(ProcessBuilder.Redirect.DISCARD).start();children.add(process);
+            final Process launched=process;tx.executeWithoutResult(status->{leases.lock(actor.userId());leases.process(actor.userId(),id,instance,launched);});
+            if(!process.waitFor(180,TimeUnit.SECONDS))throw new IllegalStateException("timeout");
+            if(process.exitValue()!=0)throw new InstallerFailure(installerError(process));
             var manifest=storage.inspect(actor.userId(),id);
             if(!request.url().equals(manifest.get("sourceUrl")))throw new IllegalStateException("source mismatch");
             tx.executeWithoutResult(status->{
+                leases.lock(actor.userId());leases.seal(actor.userId(),id,instance);
                 int changed=jdbc.update("UPDATE agent_skill_download SET status='DOWNLOADED',manifest_json=?,manifest_sha256=?,updated_at=CURRENT_TIMESTAMP WHERE download_id=? AND owner_user_id=? AND status='DOWNLOADING'",write(manifest),storage.digest(manifest),id,actor.userId());
                 if(changed!=1)throw fail(409,"下载任务已变化");
                 var draft=evolution.createLinked(actor,id,request.targetRole());
                 jdbc.update("UPDATE agent_skill_download SET status=CASE WHEN status='NO_CHANGE' THEN status ELSE 'DRAFT_CREATED' END,skill_id=?,updated_at=CURRENT_TIMESTAMP WHERE download_id=? AND owner_user_id=?",draft.skillId(),id,actor.userId());
             });
-        }catch(Exception error){if(process!=null&&process.isAlive())process.destroyForcibly();if(error instanceof InterruptedException)Thread.currentThread().interrupt();failed(actor,id,"DOWNLOAD_OR_IMPORT_FAILED");}
+        }catch(Exception error){boolean interrupted=Thread.interrupted()||error instanceof InterruptedException;boolean exited=process==null||terminate(process);try{failed(actor,id,error instanceof InstallerFailure failure?failure.code:exited?"DOWNLOAD_OR_IMPORT_FAILED":"DOWNLOAD_EXIT_UNVERIFIED",exited);}finally{if(interrupted)Thread.currentThread().interrupt();}}
         finally{if(process!=null)children.remove(process);liveDownloads.remove(id);}
     }
-    private void failed(AgentActor actor,String id,String code){jdbc.update("UPDATE agent_skill_download SET status='ERROR',error_code=?,updated_at=CURRENT_TIMESTAMP WHERE download_id=? AND owner_user_id=? AND status='DOWNLOADING'",code,id,actor.userId());}
-    @org.springframework.scheduling.annotation.Scheduled(fixedDelay=60000) public void expire(){jdbc.update("UPDATE agent_skill_download SET status='ERROR',error_code='DOWNLOAD_LEASE_EXPIRED',updated_at=CURRENT_TIMESTAMP WHERE status='DOWNLOADING' AND updated_at<DATE_SUB(CURRENT_TIMESTAMP,INTERVAL 5 MINUTE)");}
-    public StorageStatus storage(AgentActor actor){var current=fresh(actor);var usage=storage.usage(current.userId());long reserved=jdbc.queryForObject("SELECT COUNT(*) FROM agent_skill_download WHERE owner_user_id=? AND status='DOWNLOADING'",Long.class,current.userId())*5242880L;return new StorageStatus(usage.bytes(),usage.files(),reserved,quotaBytes,Math.max(0,quotaBytes-usage.bytes()-reserved));}
+    private static final Set<String> SOURCE_ERRORS=Set.of("SOURCE_TIMEOUT","SOURCE_CONNECTION_FAILED","SOURCE_AUTHENTICATION_REQUIRED","REMOTE_FILE_UNAVAILABLE","MARKET_SOURCE_NOT_VERIFIED","PUBLIC_REPOSITORY_REQUIRED","PUBLIC_SKILL_METADATA_REQUIRED","SKILL_DIRECTORY_AMBIGUOUS","SKILL_DIRECTORY_NOT_FOUND","LICENSE_REQUIRED","PACKAGE_LICENSE_REQUIRED","SUPPORTED_LICENSE_REQUIRED","LICENSE_DECLARATION_MISMATCH","PACKAGE_LIMIT_EXCEEDED","PACKAGE_STORAGE_LIMIT","MARKET_SKILL_NAME_MISMATCH","LINKS_AND_SPECIAL_FILES_FORBIDDEN","REMOTE_BLOB_DIGEST_MISMATCH","SKILL_DISCOVERY_LIMIT");
+    private String installerError(Process process){try{byte[] value=process.getInputStream().readNBytes(4097);if(value.length<=4096){String code=json.readTree(value).path("errorCode").asText();if(SOURCE_ERRORS.contains(code))return code;}}catch(Exception ignored){}return "DOWNLOAD_OR_IMPORT_FAILED";}
+    private static final class InstallerFailure extends RuntimeException{final String code;InstallerFailure(String code){super(code);this.code=code;}}
+    private static boolean terminate(Process process){try{var descendants=process.descendants().toList();for(var child:descendants)if(child.isAlive())child.destroyForcibly();if(process.isAlive())process.destroyForcibly();return process.waitFor(5,TimeUnit.SECONDS)&&descendants.stream().noneMatch(ProcessHandle::isAlive);}catch(InterruptedException interrupted){Thread.currentThread().interrupt();return false;}catch(RuntimeException unverified){return false;}}
+    private void failed(AgentActor actor,String id,String code){failed(actor,id,code,true);}
+    private void failed(AgentActor actor,String id,String code,boolean exited){tx.executeWithoutResult(status->{leases.lock(actor.userId());leases.fail(actor.userId(),id,instance,exited,code);});}
+    @org.springframework.scheduling.annotation.Scheduled(fixedDelay=60000) public void expire(){
+        for(var row:jdbc.queryForList("SELECT download_id,owner_user_id FROM agent_skill_download_lease WHERE status IN ('RESERVED','RUNNING') AND lease_expires_at<CURRENT_TIMESTAMP ORDER BY lease_expires_at LIMIT 50"))tx.executeWithoutResult(status->{long owner=((Number)row.get("owner_user_id")).longValue();leases.lock(owner);leases.expire(owner,(String)row.get("download_id"));});
+        // Legacy executions have no trustworthy process receipt. Hold their reservation and never infer an exit from elapsed time.
+        for(var row:jdbc.queryForList("SELECT d.download_id,d.owner_user_id FROM agent_skill_download d LEFT JOIN agent_skill_download_lease l ON l.download_id=d.download_id WHERE d.status='DOWNLOADING' AND l.download_id IS NULL AND d.updated_at<TIMESTAMPADD(MINUTE,-5,CURRENT_TIMESTAMP) ORDER BY d.id LIMIT 50"))tx.executeWithoutResult(status->{long owner=((Number)row.get("owner_user_id")).longValue();leases.lock(owner);jdbc.update("UPDATE agent_skill_download SET status='NEEDS_REVIEW',error_code='DOWNLOAD_EXIT_UNVERIFIED',updated_at=CURRENT_TIMESTAMP WHERE owner_user_id=? AND download_id=? AND status='DOWNLOADING'",owner,row.get("download_id"));});
+    }
+    public StorageStatus storage(AgentActor actor){var current=fresh(actor);return tx.execute(status->{leases.lock(current.userId());var usage=storage.usage(current.userId());long charged=Math.max(usage.bytes(),leases.charged(current.userId()));return new StorageStatus(usage.bytes(),usage.files(),charged-usage.bytes(),quotaBytes,Math.max(0,quotaBytes-charged));});}
     public List<Map<String,Object>> cleanupAudit(AgentActor actor){var current=fresh(actor);return jdbc.queryForList("SELECT request_id,download_id,status,removed_bytes,removed_files,error_code,created_at,updated_at FROM agent_skill_storage_command WHERE owner_user_id=? ORDER BY id DESC LIMIT 50",current.userId());}
     public synchronized Map<String,Object> cleanup(AgentActor actor,String id,CleanupRequest request){
         var current=fresh(actor);if(!request.confirmed())throw fail(400,"请明确确认缓存清理");storage.directory(current.userId(),id);
         String hash=storage.digest(Map.of("downloadId",id,"request",request));
         boolean prepared=Boolean.TRUE.equals(tx.execute(status->{
+            leases.lock(current.userId());if(leases.held(current.userId()).containsKey(id))throw fail(409,"下载进程退出尚未核实，不能清理目录或释放预留配额");
             var commands=jdbc.queryForList("SELECT request_sha256,status FROM agent_skill_storage_command WHERE owner_user_id=? AND request_id=?",current.userId(),request.requestId());
             boolean resume=!commands.isEmpty();if(resume){if(!hash.equals(commands.get(0).get("request_sha256")))throw fail(409,"请求编号已用于不同清理");if(!"STARTED".equals(commands.get(0).get("status")))return false;}
             var rows=jdbc.queryForList("SELECT status FROM agent_skill_download WHERE download_id=? AND owner_user_id=? FOR UPDATE",id,current.userId());
             if(rows.isEmpty())throw fail(404,"下载记录不存在或无权限");
             if(liveDownloads.contains(id)||!(Set.of("ERROR","NO_CHANGE","DRAFT_CREATED","CLEANUP_ERROR").contains(rows.get(0).get("status"))||resume&&"PURGING".equals(rows.get(0).get("status"))))throw fail(409,"该下载当前不能清理");
-            Long references=jdbc.queryForObject("SELECT COUNT(*) FROM agent_skill_version WHERE source_type='LINK' AND source_import_id=?",Long.class,id);
-            if(references!=0)throw fail(409,"下载包仍被技能版本引用 请保留审核与回退所需文件");
+            if(hasReferences(id))throw fail(409,"下载包仍被技能版本引用 请保留审核与回退所需文件");
             if(!resume)jdbc.update("INSERT INTO agent_skill_storage_command(owner_user_id,request_id,request_sha256,download_id,status,created_at,updated_at) VALUES(?,?,?,?,'STARTED',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",current.userId(),request.requestId(),hash,id);
             jdbc.update("UPDATE agent_skill_download SET status='PURGING',updated_at=CURRENT_TIMESTAMP WHERE download_id=? AND owner_user_id=?",id,current.userId());return true;
         }));
-        if(prepared){try{var removed=storage.purge(current.userId(),id);tx.executeWithoutResult(status->{jdbc.update("UPDATE agent_skill_download SET status='PURGED',updated_at=CURRENT_TIMESTAMP WHERE download_id=? AND owner_user_id=? AND status='PURGING'",id,current.userId());jdbc.update("UPDATE agent_skill_storage_command SET status='COMPLETED',removed_bytes=?,removed_files=?,updated_at=CURRENT_TIMESTAMP WHERE owner_user_id=? AND request_id=?",removed.bytes(),removed.files(),current.userId(),request.requestId());});}
-            catch(Exception error){tx.executeWithoutResult(status->{jdbc.update("UPDATE agent_skill_download SET status='CLEANUP_ERROR',updated_at=CURRENT_TIMESTAMP WHERE download_id=? AND owner_user_id=? AND status='PURGING'",id,current.userId());jdbc.update("UPDATE agent_skill_storage_command SET status='ERROR',error_code='CLEANUP_RESULT_UNVERIFIED',updated_at=CURRENT_TIMESTAMP WHERE owner_user_id=? AND request_id=?",current.userId(),request.requestId());});}}
+        if(prepared){try{tx.executeWithoutResult(status->{
+                leases.lock(current.userId());var command=jdbc.queryForMap("SELECT status FROM agent_skill_storage_command WHERE owner_user_id=? AND request_id=? FOR UPDATE",current.userId(),request.requestId());
+                if(!"STARTED".equals(command.get("status")))return;
+                if(leases.held(current.userId()).containsKey(id))throw fail(409,"下载进程退出尚未核实");
+                var row=jdbc.queryForMap("SELECT status FROM agent_skill_download WHERE owner_user_id=? AND download_id=? FOR UPDATE",current.userId(),id);
+                if(!"PURGING".equals(row.get("status"))||hasReferences(id))throw fail(409,"下载包状态或版本引用已变化");
+                var removed=storage.purge(current.userId(),id);
+                jdbc.update("UPDATE agent_skill_download SET status='PURGED',updated_at=CURRENT_TIMESTAMP WHERE download_id=? AND owner_user_id=? AND status='PURGING'",id,current.userId());jdbc.update("UPDATE agent_skill_storage_command SET status='COMPLETED',removed_bytes=?,removed_files=?,updated_at=CURRENT_TIMESTAMP WHERE owner_user_id=? AND request_id=? AND status='STARTED'",removed.bytes(),removed.files(),current.userId(),request.requestId());
+            });}
+            catch(Exception error){tx.executeWithoutResult(status->{leases.lock(current.userId());jdbc.update("UPDATE agent_skill_download SET status='CLEANUP_ERROR',updated_at=CURRENT_TIMESTAMP WHERE download_id=? AND owner_user_id=? AND status='PURGING'",id,current.userId());jdbc.update("UPDATE agent_skill_storage_command SET status='ERROR',error_code='CLEANUP_RESULT_UNVERIFIED',updated_at=CURRENT_TIMESTAMP WHERE owner_user_id=? AND request_id=? AND status='STARTED'",current.userId(),request.requestId());});}}
         return jdbc.queryForMap("SELECT request_id,download_id,status,removed_bytes,removed_files,error_code FROM agent_skill_storage_command WHERE owner_user_id=? AND request_id=?",current.userId(),request.requestId());
     }
+    // A current locking read is required here: an earlier MySQL RR snapshot can predate a just-committed version.
+    private boolean hasReferences(String id){return !jdbc.queryForList("SELECT skill_id FROM agent_skill_version WHERE source_type='LINK' AND source_import_id=? LIMIT 1 FOR UPDATE",id).isEmpty();}
     public static void validateUrl(String value){
-        if("https://modelscope.cn/skills/@anthropics/skill-creator".equals(value)||"https://modelscope.cn/skills/@anthropics/skill-creator/".equals(value))return;
-        try{var url=URI.create(value);if(value.length()>1000||!"https".equals(url.getScheme())||!"github.com".equals(url.getRawAuthority())||url.getQuery()!=null||url.getFragment()!=null||!url.getRawPath().matches("/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/tree/[A-Za-z0-9_.-]+/(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+/?")||Arrays.stream(url.getPath().split("/")).anyMatch(p->p.equals(".")||p.equals("..")))throw new IllegalArgumentException();}
-        catch(Exception error){throw fail(400,"请使用公开 GitHub 的 Skill 目录链接；魔搭目前仅支持已核对的 skill-creator 来源");}
+        SkillSourcePolicy.parse(value);
     }
     @PreDestroy public void close(){jobs.shutdownNow();children.forEach(Process::destroyForcibly);}
     private String write(Object value){try{return json.writeValueAsString(value);}catch(Exception error){throw new IllegalStateException("技能下载清单编码失败");}}

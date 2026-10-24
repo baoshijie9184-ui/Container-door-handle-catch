@@ -49,6 +49,7 @@ final class ManagedAgentModel implements Model {
         return Flux.deferContextual(context -> attempt(0, messages, tools, enforced,
                         context.getOrDefault(ModelAttemptTrace.CONTEXT_KEY, ModelAttemptTrace.NONE),context.getOrDefault(ModelUsageTrace.CONTEXT_KEY,ModelUsageTrace.NONE)))
                 .onErrorMap(error -> {
+                    if(error instanceof RedisModelCircuit.Unavailable)return error;
                     log.warn("模型路由失败：model={}, reason={}, status={}", candidates.get(0).id(),
                             ModelFailureClassifier.classify(error), ModelFailureClassifier.status(error));
                     return new IllegalStateException("模型调用失败，请稍后重试（" + candidates.get(0).id() + "）");
@@ -121,7 +122,7 @@ final class ManagedAgentModel implements Model {
                             }
                         } catch (ModelAttemptTrace.RecordingException ignored) {
                             // 取消终态可能已经入库；取消回调不能重发请求。
-                        } finally { if (circuitEnabled) candidate.circuit().release(permit); }
+                        } finally { if (circuitEnabled) try{candidate.circuit().release(permit);}catch(RedisModelCircuit.Unavailable ignored){log.warn("模型恢复探测释放尚未核对，将等待租约到期");} }
                     });
         });
     }

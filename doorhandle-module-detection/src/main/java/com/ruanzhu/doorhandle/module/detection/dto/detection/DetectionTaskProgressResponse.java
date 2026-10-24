@@ -13,8 +13,11 @@ public class DetectionTaskProgressResponse {
     private String batchNo;
     private String workOrderNo;
     private String flowStatus;
+    /** Business-state hints only; execution still rechecks current account and task permissions. */
+    private java.util.List<DetectionQualityAction> qualityActions;
     private String qualityStation;
     private String assignee;
+    private Long assignmentRevision;
     private String assignmentRemark;
     private String assignedAt;
     private String dueAt;

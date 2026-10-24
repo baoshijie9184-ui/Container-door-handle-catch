@@ -56,8 +56,8 @@ def test_private_destinations_and_secret_urls_denied(url):
         runner.validate_arguments({'url': url}, resolver)
 
 
-def test_fixed_container_command_has_no_user_files_secrets_or_socket():
-    executor = runner.DockerExecutor(IMAGE, 'doorhandlecatch-mcp-exec', 'http://mcp-egress:3128')
+def test_fixed_container_command_has_no_user_files_secrets_or_socket(tmp_path):
+    executor = runner.DockerExecutor(IMAGE, 'doorhandlecatch-mcp-exec', 'http://mcp-egress:3128', tmp_path/'executions.sqlite3')
     identity = runner.decode_credential(credential(), SECRET)
     args = executor.arguments(identity, 'dh-mcp-'+'a'*32+'-'+'b'*32)
     assert '--read-only' in args and '--cap-drop=ALL' in args and '--memory=256m' in args

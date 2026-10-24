@@ -19,7 +19,7 @@ public class SkillLinkProposalTool implements AgentTool {
             var args=param.getInput();if(args==null||!args.keySet().equals(Set.of("url"))||!(args.get("url") instanceof String url))throw new IllegalArgumentException();
             SkillLinkService.validateUrl(url);
             String path="/#/agent/skills?installUrl="+URLEncoder.encode(url,StandardCharsets.UTF_8);
-            return Mono.just(ToolResultBlock.text("来源链接已核对 尚未下载或启用。请[打开本人技能页面确认下载]("+path+")，完成规则 Eval 并提交独立审核。脚本和附件当前不执行。"));
-        }catch(Exception error){return Mono.just(ToolResultBlock.error("来源不受支持 请使用公开 GitHub Skill 目录链接或魔搭 anthropics/skill-creator"));}
+            return Mono.just(ToolResultBlock.text("来源链接格式符合支持范围，远端内容和许可尚未核验，尚未下载或启用。请[打开本人技能页面确认下载]("+path+")，完成来源核验、规则 Eval 并提交独立审核。脚本和附件当前不执行。"));
+        }catch(Exception error){return Mono.just(ToolResultBlock.error("来源不受支持，请使用公开 GitHub Skill 目录、skills.sh 技能详情或魔搭 Skill 链接"));}
     }
 }

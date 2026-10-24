@@ -3,6 +3,14 @@ import vue from '@vitejs/plugin-vue'
 import path from 'path'
 import https from 'https'
 
+// Local frontend preview can use the existing SSH-forwarded server entry.
+// This is a Vite-only setting and is never included in the production bundle.
+const developmentApiTarget = process.env.DOORHANDLE_DEV_API_TARGET || 'http://127.0.0.1:8080'
+const previewOrigin = process.env.DOORHANDLE_DEV_API_TARGET ? new URL(developmentApiTarget).origin : null
+const forwardPreviewOrigin = (proxy) => {
+  if (previewOrigin) proxy.on('proxyReq', (request) => request.setHeader('Origin', previewOrigin))
+}
+
 // OSS 代理专用 Agent，复用连接避免每次 TCP/TLS 握手
 const ossAgent = new https.Agent({
   keepAlive: true,
@@ -30,12 +38,13 @@ export default defineConfig({
     },
     proxy: {
       '/api': {
-        target: 'http://127.0.0.1:8080',
+        target: developmentApiTarget,
         changeOrigin: true,
         secure: false,
         ws: true,
         rewrite: (path) => path,
         configure: (proxy) => {
+          forwardPreviewOrigin(proxy)
           proxy.on('error', (err) => {
             console.log('代理错误:', err)
           })
@@ -46,6 +55,11 @@ export default defineConfig({
             console.log('收到响应:', proxyRes.statusCode)
           })
         }
+      },
+      '/agui': {
+        target: developmentApiTarget,
+        changeOrigin: true,
+        configure: forwardPreviewOrigin,
       },
       '/oss-upload': {
         target: 'https://handlecatchs.oss-cn-beijing.aliyuncs.com',

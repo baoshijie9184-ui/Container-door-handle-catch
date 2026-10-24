@@ -1,6 +1,7 @@
 # syntax=docker/dockerfile:1
 FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
 LABEL io.doorhandle.memory-protocol="2"
+LABEL io.doorhandle.model-config-format="1"
 WORKDIR /app
 ARG PIP_INDEX_URL=https://pypi.org/simple
 ENV PYTHONUNBUFFERED=1 PYTHONNOUSERSITE=1 MEM0_DATA_DIR=/data \
@@ -10,7 +11,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --index-url "$PIP_INDEX_URL" -r requirements.txt \
     && groupadd --gid 10001 app && useradd --uid 10001 --gid app --create-home app \
     && mkdir /data && chown app:app /data
-COPY --chmod=0644 memory_service/main.py memory_service/write_receipts.py memory_service/lifecycle.py memory_service/duplicate_review.py /app/
+COPY --chmod=0644 memory_service/main.py memory_service/write_receipts.py memory_service/lifecycle.py memory_service/duplicate_review.py memory_service/model_config.py /app/
 COPY --chmod=0644 LICENSE /app/LICENSE
 USER app
 EXPOSE 8081

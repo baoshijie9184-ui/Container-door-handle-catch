@@ -1,31 +1,32 @@
 <template>
   <section class="agent-result" aria-label="助手业务结果">
-    <p class="result-answer">{{ envelope?.text || '此卡片消息无法解析 请重新查询' }}</p>
-    <template v-if="envelope">
+    <AgentMarkdown class="result-answer" :text="envelope?.text || '此卡片消息无法解析 请重新查询'" />
+    <template v-if="envelope?.cards.length">
+      <p class="result-freshness-note">回答保留生成时的内容，下方卡片按当前权限重新读取。</p>
       <header class="result-heading">
-        <span>业务数据按当前权限刷新</span>
-        <el-button size="small" :loading="loading" @click="refresh">刷新卡片</el-button>
+        <span><AppIcon name="Collection" :size="16" />业务卡片<span class="result-read-count">已有 {{ views.length }} / {{ envelope.cards.length }} 张回执</span></span>
+        <el-button size="small" :loading="loading" @click="refresh"><AppIcon name="Refresh" :size="14" />重新读取</el-button>
       </header>
-      <p v-if="error" class="result-error" role="alert">{{ error }}</p>
-      <p v-if="loading && !views.length" role="status">正在读取业务数据</p>
+      <p v-if="error" class="result-read-feedback" data-tone="warning" role="alert"><AppIcon name="Warning" :size="16" /><span>{{ error }}</span></p>
+      <p v-else class="result-read-feedback" :data-tone="loading ? 'loading' : 'info'" role="status"><AppIcon :name="loading ? 'Connection' : 'DocumentChecked'" :size="16" /><span>{{ loading ? views.length ? '正在重新核对，以下仍为上次读取的快照。' : '正在按当前账号权限读取业务数据。' : '下方为最近一次读取的快照，业务操作仍需进入对应页面核对。' }}</span></p>
       <TransitionGroup name="result-card" tag="div" class="result-cards">
         <article v-for="(card, index) in views" :key="index + ':' + card.tool" class="result-card" :aria-busy="loading">
-          <header><strong>{{ cardTitle(card) }}</strong><span class="scope-label">{{ cardScope(card.scope) }}</span></header>
+          <header><span class="result-card-symbol"><AppIcon :name="cardIcon(card)" :size="19" /></span><div class="result-card-heading"><strong>{{ cardTitle(card) }}</strong><small>{{ cardScope(card.scope) || '访问范围未返回' }}</small></div><StatusBadge domain="cardRead" :code="card.status" /></header>
           <template v-if="card.type === 'METRICS'">
-            <p class="card-period">{{ formatDate(card.from) }} 至 {{ formatDate(card.to) }}</p>
-            <div class="card-metrics"><div v-for="(label, key) in metricLabels" :key="key"><strong>{{ card.metrics?.[key] ?? '—' }}</strong><span>{{ label }}</span></div></div>
+            <p class="card-period">按任务创建时间 · {{ formatDate(card.from) }} 至 {{ formatDate(card.to) }} · UTC+8</p>
+            <div class="card-metrics"><div v-for="(label, key) in metricLabels" :key="key"><strong>{{ cardCount(card.metrics?.[key]) }}</strong><span>{{ label }}</span></div></div>
           </template>
           <template v-else-if="card.type === 'TASKS'">
             <div v-for="task in card.items || []" :key="task.taskId" class="card-record">
               <a :href="cardRoute('TASKS', task.taskId)">{{ task.taskId }}</a>
-              <p>状态 {{ task.status || '未知' }} · 图片 {{ task.processedImages ?? 0 }}/{{ task.totalImages ?? 0 }} · 缺陷 {{ task.defectCount ?? 0 }}</p>
-              <p>设备 {{ task.deviceName || '未记录' }} · 复核 {{ task.reviewStatus || '未复核' }}</p>
+              <p><StatusBadge domain="detection" :code="task.status" /> · 已处理 / 总图片 {{ cardCount(task.processedImages) }} / {{ cardCount(task.totalImages) }} · 缺陷 {{ cardCount(task.defectCount) }}</p>
+              <p>设备 {{ task.deviceName || '未记录' }} · <StatusBadge domain="review" :code="task.reviewStatus" /></p>
             </div>
           </template>
           <template v-else-if="card.type === 'REPORTS'">
             <div v-for="report in card.items || []" :key="report.reportId" class="card-record">
-              <a :href="cardRoute('REPORTS', report.reportId)">{{ report.title }}</a>
-              <p>{{ reportStatus(report.status) }} · 版本 {{ report.version }} · 任务 {{ report.taskId }}</p>
+              <a :href="cardRoute('REPORTS', report.reportId)">{{ report.title || '未命名报告' }}</a>
+              <p><StatusBadge domain="report" :code="report.status" :label="reportStatus(report.status)" /> · 版本 {{ cardVersion(report.version) }} · 任务 {{ report.taskId || '未记录' }}</p>
               <p v-if="report.status === 'DRAFT'" class="draft-note">私人草稿尚未提交或审批 请到报告页面核对</p>
               <a class="record-action" :href="cardRoute('REPORTS', report.reportId)">查看报告</a>
             </div>
@@ -33,7 +34,7 @@
           <template v-else-if="card.type === 'DEVICES'">
             <div v-for="device in card.items || []" :key="device.deviceId" class="card-record">
               <a :href="cardRoute('DEVICES', device.deviceId)">{{ device.deviceCode || '设备 ' + device.deviceId }}</a>
-              <p>{{ deviceStatus(device.status) }} · {{ deviceStatus(device.onlineStatus) }}</p>
+              <p>使用状态 {{ deviceStatus(device.status) }} · 连通状态 {{ deviceStatus(device.onlineStatus) }}</p>
               <p>PLC {{ deviceStatus(device.plcStatus) }} · 相机 {{ deviceStatus(device.cameraStatus) }} · 采集 {{ deviceStatus(device.captureStatus) }}</p>
               <a class="record-action" :href="cardRoute('DEVICES', device.deviceId)">查看设备</a>
             </div>
@@ -43,7 +44,7 @@
               <strong>{{ alert.alertCode || '告警 ' + alert.alertId }}</strong>
               <p>{{ alertType(alert.type) }} · {{ alertLevel(alert.level) }} · {{ alertStatus(alert.status) }}</p>
               <p>设备 {{ alert.deviceCode || '未记录' }}</p>
-              <p>发生 {{ formatDate(alert.createdAt) }} · 记录更新 {{ formatDate(alert.updatedAt) }}</p>
+              <p>发生 {{ formatDate(alert.createdAt) }} · 记录更新 {{ formatDate(alert.updatedAt) }} · UTC+8</p>
               <a v-if="cardRoute('DEVICES', alert.deviceId)" class="record-action" :href="cardRoute('DEVICES', alert.deviceId)">查看设备</a>
               <p v-else>设备关联已不可用</p>
             </div>
@@ -69,8 +70,9 @@
               <a class="record-action" :href="cardRoute('MODEL_OPERATIONS', String(item.model.modelId))">查看模型</a>
             </div>
           </template>
-          <p class="card-note" :class="{ 'result-error': card.status !== 'OK' }">{{ card.message }}</p>
-          <footer>更新 {{ formatDate(card.updatedAt) }}</footer>
+          <p v-if="card.type !== 'METRICS' && !card.items.length" class="card-empty"><AppIcon :name="card.status === 'OK' ? 'Files' : 'Warning'" :size="18" />{{ cardEmptyText(card) }}</p>
+          <p v-if="card.message" class="card-note" :class="{ 'result-error': card.status !== 'OK' }">{{ card.message }}</p>
+          <footer>卡片读取时间 {{ formatDate(card.updatedAt) }} · UTC+8</footer>
         </article>
       </TransitionGroup>
     </template>
@@ -78,27 +80,40 @@
 </template>
 <script setup>
 import { computed, ref, watch, onBeforeUnmount } from 'vue'
+import AgentMarkdown from './AgentMarkdown.vue'
+import { beijingDateTime } from '@/utils/beijingTime'
 import { resolveAgentCards } from '@/api/chatAssistant'
-import { parseAgentCardEnvelope, cardRoute, cardTitle, cardScope, reportStatus, metricLabels, modelStatus, deviceStatus, alertStatus, alertLevel, alertType, modelOperationMetrics, modelOperationDetails } from '@/utils/agentCards'
+import { useUserStore } from '@/stores/user'
+import { parseAgentCardEnvelope, readResolvedAgentCards, cardIcon, cardCount, cardVersion, cardEmptyText, cardRoute, cardTitle, cardScope, reportStatus, metricLabels, modelStatus, deviceStatus, alertStatus, alertLevel, alertType, modelOperationMetrics, modelOperationDetails } from '@/utils/agentCards'
 const props = defineProps({ message: { type: Object, required: true } })
+const userStore = useUserStore()
+const actor = computed(() => JSON.stringify([userStore.identity?.userId || userStore.username || '',userStore.role,userStore.isAuthenticated]))
 const envelope = computed(() => parseAgentCardEnvelope(props.message.content))
 const views = ref([]), loading = ref(false), error = ref('')
-let generation = 0
-const formatDate = value => value ? String(value).replace('T', ' ').slice(0, 19) : '—'
+let generation = 0, activeRead = null, disposed = false
+const formatDate = value => value ? beijingDateTime(value) || '时间格式未知' : '—'
 async function refresh() {
   const current = envelope.value
-  if (!current) return
+  if (disposed || !current?.cards.length || loading.value) return
+  if (!userStore.isAuthenticated) { views.value = []; error.value = '登录状态未确认，请重新核对账号后读取卡片。'; return }
   const version = ++generation
-  views.value = []; loading.value = true; error.value = ''
+  const controller = new AbortController()
+  activeRead = controller
+  loading.value = true; error.value = ''
   try {
-    const response = await resolveAgentCards(current.cards)
-    if (version === generation) views.value = response.data.cards
-  } catch {
-    if (version === generation) error.value = '卡片数据暂不可用 请检查登录状态后刷新'
-  } finally { if (version === generation) loading.value = false }
+    const response = await resolveAgentCards(current.cards, { signal:controller.signal })
+    if (version === generation) views.value = readResolvedAgentCards(response.data, current.cards)
+  } catch (failure) {
+    if (version !== generation) return
+    const status = failure.response?.status
+    if (status === 401 || status === 403) {
+      views.value = []
+      error.value = status === 401 ? '登录状态已失效，已清除旧卡片；请核对账号后重新读取。' : '当前账号无法读取这些卡片，已清除旧数据；请核对访问权限。'
+    } else error.value = views.value.length ? '本次读取未完成，以下保留上次读取的快照，不代表当前业务状态。可重新读取，不会重新执行业务操作。' : '业务卡片暂未读出，请重新读取。此操作只核对业务资料，不重新调用模型或执行审批。'
+  } finally { if (version === generation) { activeRead = null; loading.value = false } }
 }
-watch(() => props.message.content, () => { generation++; views.value = []; error.value = ''; loading.value = false; refresh() }, { immediate: true })
-onBeforeUnmount(() => generation++)
+watch(() => [props.message.content,actor.value], () => { generation++; activeRead?.abort(); activeRead = null; views.value = []; error.value = ''; loading.value = false; refresh() }, { immediate: true, flush:'sync' })
+onBeforeUnmount(() => { disposed = true; generation++; activeRead?.abort(); activeRead = null })
 </script>
 <style scoped>
 .model-operation .operation-metrics strong{font-size:20px}

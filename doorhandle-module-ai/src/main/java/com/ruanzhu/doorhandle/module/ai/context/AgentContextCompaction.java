@@ -39,36 +39,38 @@ public final class AgentContextCompaction implements MiddlewareBase {
     public AgentContextCompaction(ContextCompactionSettings settings,Model model,BiConsumer<String,Map<String,Object>> recorder){
         settings.validate();this.settings=settings;this.model=model;this.recorder=recorder;
     }
+    public record Compacted(List<Msg> messages,int cutoff,String summary) {}
+    public Mono<Optional<Compacted>> compact(RuntimeContext context,List<Msg> conversation,String agent,Consumer<Compacted> beforeApply){
+        if(attempts.get()>=settings.getMaxPerRun())return Mono.just(Optional.empty());
+        var rc=context==null?RuntimeContext.empty():context;var operation=new Operation(agent,conversation);
+        var config=CompactionConfig.builder().triggerMessages(settings.getTriggerMessages()).triggerTokens(settings.getTriggerTokens())
+                .keepTokens(0).keepMessages(settings.getKeepMessages()).flushBeforeCompact(false).offloadBeforeCompact(false)
+                .prune(null).truncateArgs(null).summaryPrompt(PROMPT).build();
+        return new ConversationCompactor(operation.summaryModel(),null).compactIfNeeded(rc,conversation,config,agent,rc.getSessionId()).map(result->{
+            if(operation.auditFailed.get())throw new IllegalStateException("上下文轨迹保存失败");
+            if(result.isEmpty())return Optional.<Compacted>empty();
+            var messages=new ArrayList<>(result.get());int cutoff=conversation.size()-(messages.size()-1);
+            if(cutoff<=0||messages.size()>=conversation.size()||!validSummary(operation.summary.get())||characters(messages)>=characters(conversation)
+                    ||!sourceIds(List.of(messages.get(0))).containsAll(sourceIds(conversation.subList(0,cutoff)))){
+                operation.record("CONTEXT_FAILED",Map.of("result","SUMMARY_REJECTED"));return Optional.<Compacted>empty();
+            }
+            var candidate=new Compacted(messages,cutoff,operation.summary.get());
+            beforeApply.accept(candidate);
+            operation.record("CONTEXT_COMPLETED",Map.of("result","APPLIED","afterMessages",messages.size(),"afterChars",characters(messages)));
+            return Optional.of(candidate);
+        });
+    }
     @Override public Flux<AgentEvent> onReasoning(Agent agent,RuntimeContext context,ReasoningInput input,Function<ReasoningInput,Flux<AgentEvent>> next){
         return Flux.defer(()->{
             if(!(agent instanceof ReActAgent react)||attempts.get()>=settings.getMaxPerRun())return next.apply(input);
-            var original=input.messages();
-            var system=original.stream().filter(msg->msg.getRole()==MsgRole.SYSTEM).toList();
-            var conversation=original.stream().filter(msg->msg.getRole()!=MsgRole.SYSTEM).toList();
-            var rc=context==null?RuntimeContext.empty():context;
-            var state=RuntimeContext.resolveAgentState(rc,react);
-            if(state==null)return next.apply(input);
-            var operation=new Operation(agent.getName(),conversation);
-            var config=CompactionConfig.builder().triggerMessages(settings.getTriggerMessages()).triggerTokens(settings.getTriggerTokens())
-                    .keepTokens(0).keepMessages(settings.getKeepMessages()).flushBeforeCompact(false).offloadBeforeCompact(false)
-                    .prune(null).truncateArgs(null).summaryPrompt(PROMPT).build();
-            return new ConversationCompactor(operation.summaryModel(),null).compactIfNeeded(rc,conversation,config,agent.getName(),rc.getSessionId())
-                    .flatMapMany(result->{
-                        if(operation.auditFailed.get())return Flux.error(new IllegalStateException("上下文轨迹保存失败"));
-                        if(result.isEmpty())return next.apply(input);
-                        var compacted=result.get();
-                        int cutoff=conversation.size()-(compacted.size()-1);
-                        if(cutoff<=0||compacted.size()>=conversation.size()||!validSummary(operation.summary.get())
-                                ||characters(compacted)>=characters(conversation)
-                                ||!sourceIds(List.of(compacted.get(0))).containsAll(sourceIds(conversation.subList(0,cutoff)))){
-                            operation.record("CONTEXT_FAILED",Map.of("result","SUMMARY_REJECTED"));
-                            return next.apply(input);
-                        }
-                        operation.record("CONTEXT_COMPLETED",Map.of("result","APPLIED","afterMessages",compacted.size(),"afterChars",characters(compacted)));
-                        state.contextMutable().clear();state.contextMutable().addAll(compacted);
-                        var messages=new ArrayList<>(system);messages.addAll(compacted);
-                        return next.apply(new ReasoningInput(messages,input.tools(),input.options()));
-                    });
+            var state=RuntimeContext.resolveAgentState(context==null?RuntimeContext.empty():context,react);if(state==null)return next.apply(input);
+            var system=input.messages().stream().filter(msg->msg.getRole()==MsgRole.SYSTEM).toList();
+            var conversation=input.messages().stream().filter(msg->msg.getRole()!=MsgRole.SYSTEM).toList();
+            return compact(context,conversation,agent.getName(),candidate->{}).flatMapMany(result->{
+                if(result.isEmpty())return next.apply(input);var compacted=result.get().messages();
+                state.contextMutable().clear();state.contextMutable().addAll(compacted);var messages=new ArrayList<>(system);messages.addAll(compacted);
+                return next.apply(new ReasoningInput(messages,input.tools(),input.options()));
+            });
         });
     }
     private boolean validSummary(String value){

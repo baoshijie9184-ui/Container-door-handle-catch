@@ -1,6 +1,6 @@
 package com.ruanzhu.doorhandle.module.ai.context;
 
-/** 主 Agent 单次运行内的摘要预算；不控制会话数据库和长期记忆。 */
+/** 每个主/子 Agent 的压缩预算；会话摘要持久化由独立 context-store 开关控制。 */
 public class ContextCompactionSettings {
     private boolean enabled;
     private int triggerMessages=32,triggerTokens=24000,keepMessages=6,maxSummaryChars=6000,timeoutSeconds=12,maxPerRun=3;

@@ -1,14 +1,28 @@
 <template>
-  <div class="layout-shell" :class="{ 'sidebar-collapsed': collapsed, 'is-agent-workspace': isAgentChatRoute, 'is-trace-workspace': route.path === '/agent/trace' }">
+  <div class="layout-shell" :class="{ 'sidebar-collapsed': collapsed, 'is-agent-section': isAgentSection, 'is-agent-workspace': isAgentChatRoute, 'is-trace-workspace': route.path === '/agent/trace' }">
     <button class="skip-link" type="button" @click="skipToMainContent">跳到主要内容</button>
-    <aside class="layout-sidebar app-panel" aria-label="系统导航">
+    <nav v-if="isAgentSection" class="agent-app-rail" aria-label="Agent 导航">
+      <router-link to="/home" class="agent-rail-brand" aria-label="返回业务系统" title="返回业务系统"><el-icon><HomeFilled /></el-icon></router-link>
+      <div class="agent-rail-links">
+        <el-tooltip v-for="item in agentNavigation" :key="item.path" :content="item.label" placement="right" :show-after="300">
+          <router-link :to="item.path" class="agent-rail-link" :class="{ selected: route.path === item.path }" :aria-current="route.path === item.path ? 'page' : undefined" :aria-label="item.label"><el-icon><component :is="item.icon" /></el-icon></router-link>
+        </el-tooltip>
+      </div>
+      <router-link to="/manual" class="agent-rail-link" aria-label="使用手册" title="使用手册"><el-icon><Files /></el-icon></router-link>
+      <el-dropdown trigger="click" placement="right-end">
+        <button type="button" class="agent-rail-account" :aria-label="'账号菜单 '+userStore.username" :title="userStore.username">{{ userInitial }}</button>
+        <template #dropdown><el-dropdown-menu><el-dropdown-item disabled>{{ userStore.username }}</el-dropdown-item><el-dropdown-item @click="router.push('/home')">返回业务系统</el-dropdown-item><el-dropdown-item divided @click="handleLogout">退出登录</el-dropdown-item></el-dropdown-menu></template>
+      </el-dropdown>
+    </nav>
+    <aside v-else id="system-sidebar" class="layout-sidebar app-panel" aria-label="系统导航">
       <div class="brand-block">
         <button
           class="brand-mark"
           type="button"
           :aria-label="collapsed ? '展开菜单' : '收起菜单'"
-          :aria-expanded="!collapsed"
-          @click="collapsed = !collapsed"
+          :aria-expanded="isMobile ? mobileNavVisible : !collapsed"
+          aria-controls="system-sidebar"
+          @click="toggleNavigation"
         >
           DH
         </button>
@@ -19,65 +33,39 @@
       </div>
 
       <div v-show="!collapsed" class="nav-section-label">业务导航</div>
-      <el-menu :default-active="activeMenu" router :collapse="collapsed || compactNavigation" class="nav-menu">
-        <template v-for="group in navGroups" :key="group.key">
-          <el-menu-item
-            v-if="group.items.length === 1"
-            :index="group.items[0].path"
-            class="nav-root-item"
-          >
-            <el-icon><component :is="group.icon" /></el-icon>
-            <template #title>
-              <span>{{ group.items[0].label }}</span>
-            </template>
-          </el-menu-item>
-          <el-sub-menu v-else :index="group.key" class="nav-group">
-            <template #title>
-              <el-icon><component :is="group.icon" /></el-icon>
-              <span>{{ group.label }}</span>
-            </template>
-            <el-menu-item
-              v-for="item in group.items"
-              :key="item.path"
-              :index="item.path"
-              class="nav-child-item"
-            >
-              <template #title>
-                <span>{{ item.label }}</span>
-              </template>
-            </el-menu-item>
-          </el-sub-menu>
-        </template>
-      </el-menu>
+      <WorkspaceNavigation :groups="visibleNavGroups" :active="activeMenu" :collapsed="collapsed" />
 
       <div v-show="!collapsed" class="sidebar-footer">
         <div class="footer-card">
           <div class="footer-card-label">当前工作空间</div>
-          <div class="footer-card-title">企业质检协作</div>
-          <div class="footer-card-desc">统一管理模型、检测、设备和人员数据</div>
-          <div class="footer-card-meter">
-            <span></span>
-          </div>
+          <div class="footer-card-title">{{ accountPresentation.workspace }}</div>
+          <div class="footer-card-desc">{{ accountPresentation.description }}</div>
         </div>
       </div>
     </aside>
 
+    <el-drawer v-model="mobileNavVisible" title="工作空间导航" direction="ltr" size="min(310px, 88vw)" class="mobile-system-navigation">
+      <div class="mobile-nav-scope"><AppIcon name="User" />{{ accountPresentation.role }} · {{ accountPresentation.scope }}</div>
+      <WorkspaceNavigation id="mobile-system-menu" :groups="visibleNavGroups" :active="activeMenu" :collapsed="false" @navigate="mobileNavVisible = false" />
+    </el-drawer>
+
     <div class="layout-main">
-      <header class="layout-header">
+      <header v-if="!isAgentChatRoute" class="layout-header">
         <div class="header-left">
           <button
             class="collapse-btn"
             type="button"
-            @click="collapsed = !collapsed"
-            :title="collapsed ? '展开菜单' : '收起菜单'"
-            :aria-label="collapsed ? '展开菜单' : '收起菜单'"
-            :aria-expanded="!collapsed"
+            @click="toggleNavigation"
+            :title="isMobile ? '打开系统导航' : collapsed ? '展开菜单' : '收起菜单'"
+            :aria-label="isMobile ? '打开系统导航' : collapsed ? '展开菜单' : '收起菜单'"
+            :aria-expanded="isMobile ? mobileNavVisible : !collapsed"
+            :aria-controls="isMobile ? 'mobile-system-menu' : 'system-sidebar'"
           >
-            <span class="collapse-icon" :class="{ rotated: collapsed }">&#x2039;&#x2039;</span>
+            <AppIcon :name="isMobile ? 'Menu' : collapsed ? 'Expand' : 'Fold'" :size="20" />
           </button>
-          <div v-if="breadcrumbs.length" class="breadcrumb-nav">
+          <nav v-if="breadcrumbs.length" class="breadcrumb-nav" aria-label="当前页面路径">
             <template v-for="(crumb, idx) in breadcrumbs" :key="idx">
-              <span v-if="idx > 0" class="breadcrumb-sep">/</span>
+              <span v-if="idx > 0" class="breadcrumb-sep" aria-hidden="true">/</span>
               <router-link
                 v-if="crumb.path && idx < breadcrumbs.length - 1"
                 :to="crumb.path"
@@ -85,9 +73,9 @@
               >
                 {{ crumb.label }}
               </router-link>
-              <span v-else class="breadcrumb-current" aria-current="page">{{ crumb.label }}</span>
+              <span v-else class="breadcrumb-current" :aria-current="idx===breadcrumbs.length-1 ? 'page' : undefined">{{ crumb.label }}</span>
             </template>
-          </div>
+          </nav>
           <div v-else>
             <div class="header-caption">工业视觉检测平台</div>
             <h1 class="header-title">{{ currentPageTitle }}</h1>
@@ -95,11 +83,9 @@
         </div>
 
         <div class="header-actions">
+          <span class="workspace-scope"><AppIcon name="User" :size="14" />{{ accountPresentation.scope }}</span>
           <router-link to="/manual" class="manual-entry-link">
-            <el-button class="manual-entry-btn" plain>
-              <el-icon><Files /></el-icon>
-              使用手册
-            </el-button>
+            <el-icon aria-hidden="true"><Files /></el-icon>使用手册
           </router-link>
           <router-link v-if="!isAgentChatRoute" to="/agent/chat" class="assistant-entry-link">
             <el-icon><ChatDotRound /></el-icon> AI 工作助手
@@ -108,7 +94,7 @@
             <div class="user-avatar">{{ userInitial }}</div>
             <div class="user-meta">
               <div class="user-name">{{ userStore.username || '企业用户' }}</div>
-              <div class="user-role">{{ userStore.identity?.departmentName || (userStore.role === 'SUPERVISOR' ? '企业主管' : '检测员工') }}</div>
+              <div class="user-role" :title="accountPresentation.role+(userStore.identity?.departmentName ? ' · '+userStore.identity.departmentName : '')">{{ accountPresentation.role }}<template v-if="userStore.identity?.departmentName"> · {{ userStore.identity.departmentName }}</template></div>
             </div>
             <el-button type="danger" plain size="small" @click="handleLogout">退出登录</el-button>
           </div>
@@ -117,15 +103,15 @@
 
       <main id="main-content" class="layout-content" tabindex="-1">
         <router-view v-slot="{ Component }">
-          <transition name="page-slide">
-            <component :is="Component" />
+          <transition name="page-slide" mode="out-in">
+            <component :is="Component" :key="route.params.id || undefined" />
           </transition>
         </router-view>
       </main>
 
       <!-- 回到顶部按钮 -->
       <button v-show="showBackTop" class="back-top-btn" type="button" @click="scrollToTop" title="回到顶部" aria-label="回到顶部">
-        <span class="back-top-arrow">&#x203A;</span>
+        <AppIcon name="ArrowUp" :size="19" />
       </button>
     </div>
 
@@ -135,12 +121,15 @@
 </template>
 
 <script setup>
-import { computed, ref, onMounted, onBeforeUnmount } from 'vue'
+import { computed, ref, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useUserStore } from '@/stores/user'
 import { useRouter, useRoute } from 'vue-router'
 import { useChatAssistantStore } from '@/stores/chatAssistant'
+import '@/assets/agent-section.css'
+import '@/assets/agent-unified.css'
 import ChatAssistantDrawer from '@/components/chat/ChatAssistantDrawer.vue'
 import ChatAssistantLauncher from '@/components/chat/ChatAssistantLauncher.vue'
+import WorkspaceNavigation from '@/components/WorkspaceNavigation.vue'
 import {
   HomeFilled,
   Tickets,
@@ -161,11 +150,36 @@ const chatAssistantStore = useChatAssistantStore()
 const router = useRouter()
 const route = useRoute()
 
-const collapsed = ref(false)
-const compactNavigation = ref(window.innerWidth <= 1024)
-const updateNavigationWidth = () => { compactNavigation.value = window.innerWidth <= 1024 }
+const navigationSize = () => window.innerWidth <= 640 ? 'MOBILE' : window.innerWidth <= 1024 ? 'COMPACT' : 'DESKTOP'
+const navigationRange = ref(navigationSize())
+const collapsed = ref(navigationRange.value === 'COMPACT')
+const isMobile = computed(() => navigationRange.value === 'MOBILE')
+const mobileNavVisible = ref(false)
+const updateNavigationWidth = () => {
+  const next = navigationSize()
+  if (next === navigationRange.value) return
+  navigationRange.value = next
+  if (next !== 'MOBILE') collapsed.value = next === 'COMPACT'
+  mobileNavVisible.value = false
+}
+const toggleNavigation = () => {
+  if (isMobile.value) mobileNavVisible.value = !mobileNavVisible.value
+  else collapsed.value = !collapsed.value
+}
+watch(() => route.fullPath, () => { mobileNavVisible.value = false })
 const showBackTop = ref(false)
 const isAgentChatRoute = computed(() => route.path === '/agent/chat')
+const isAgentSection = computed(() => route.path.startsWith('/agent/'))
+const agentNavigation = computed(() => [
+  { path:'/agent/chat', label:'智能对话', icon:ChatDotRound },
+  { path:'/agent/trace', label:'执行追溯', icon:DataAnalysis },
+  { path:'/agent/actions', label:'操作确认', icon:Tickets },
+  { path:'/agent/skills', label:'技能管理', icon:DocumentCopy },
+  { path:'/agent/markets', label:'资源市场', icon:Search },
+  { path:'/agent/memory', label:'个人记忆', icon:User },
+  { path:'/agent/mcp', label:'MCP 工具', icon:Monitor },
+  ...(userStore.role === 'SUPERVISOR' ? [{ path:'/agent/model-config', label:'模型配置', icon:Operation }] : [])
+])
 
 const navGroups = [
   {
@@ -205,7 +219,7 @@ const navGroups = [
     icon: Tickets,
     items: [
       { path: '/models', label: '模型管理', desc: '版本、发布、校验' },
-      { path: '/models/upload', label: '上传模型', desc: '导入新模型版本' }
+      { path: '/models/upload', label: '上传模型', desc: '导入新模型版本', supervisorOnly:true }
     ]
   },
   {
@@ -225,6 +239,9 @@ const navGroups = [
     icon: Operation,
     items: [
       { path: '/agent/chat', label: '智能对话助手', desc: '完整页面对话工作区' },
+      { path: '/agent/model-config', label: 'Agent 模型配置', desc: '版本策略与连接凭证', supervisorOnly:true },
+      { path: '/operations/identity', label: '任务账号关联', desc: '历史身份核对与迁移', supervisorOnly:true },
+      { path: '/operations/audit', label: '操作审计', desc: '业务变更与交付记录' },
       { path: '/agent/trace', label: 'Agent执行追溯', desc: '查看调用过程与关联结果' },
       { path: '/agent/actions', label: '助手操作确认', desc: '核对分配提议与审计' },
       { path: '/agent/skills', label: 'Agent技能演化', desc: '经验提炼与审核发布' },
@@ -244,6 +261,7 @@ const navGroups = [
   }
 ]
 
+const visibleNavGroups = computed(()=>navGroups.map(group=>({...group,items:group.items.filter(item=>!item.supervisorOnly || userStore.role==='SUPERVISOR')})).filter(group=>group.items.length))
 const menuTitleMap = navGroups
   .flatMap(group => group.items.map(item => [item.path, { ...item, group: group.label }]))
   .reduce((map, [path, item]) => {
@@ -277,20 +295,29 @@ const activeMenu = computed(() => {
 })
 
 const currentNavItem = computed(() => menuTitleMap[activeMenu.value])
-const currentPageTitle = computed(() => currentNavItem.value?.label || route.meta.title || '数据总览')
+const currentPageTitle = computed(() => (route.meta.parent ? route.meta.title : currentNavItem.value?.label) || route.meta.title || '数据总览')
+const accountPresentation = computed(() => {
+  if(userStore.role==='SUPERVISOR')return {role:'企业主管',scope:'企业业务',workspace:'企业质量工作空间',description:'查看企业任务，安排复核与处置'}
+  if(['INSPECTOR','OPERATOR'].includes(userStore.role))return {role:userStore.role==='INSPECTOR'?'检测员工':'业务员工',scope:'本人及分派任务',workspace:'我的检测工作空间',description:'查看本人及分派任务，跟进检测结果'}
+  return {role:userStore.role==='ADMIN'?'管理员':'角色尚未确认',scope:'按账号授权范围',workspace:'当前账号工作空间',description:'资料范围和可用操作以当前账号授权为准'}
+})
 
 // 面包屑导航
 const breadcrumbs = computed(() => {
   const crumbs = [{ label: '首页', path: '/home' }]
   const meta = route.meta
   if (route.path === '/home') return []
+  if (meta.parent) {
+    const parent=menuTitleMap[meta.parentPath] || Object.values(menuTitleMap).find(item=>item.label===meta.parent)
+    if(parent?.group)crumbs.push({label:parent.group})
+    crumbs.push({label:meta.parent,path:parent?.supervisorOnly&&userStore.role!=='SUPERVISOR'?undefined:meta.parentPath||parent?.path})
+    if(meta.title&&meta.title!==meta.parent)crumbs.push({label:meta.title})
+    return crumbs
+  }
   if (currentNavItem.value) {
     crumbs.push({ label: currentNavItem.value.group })
     crumbs.push({ label: currentNavItem.value.label })
     return crumbs
-  }
-  if (meta.parent) {
-    crumbs.push({ label: meta.parent })
   }
   if (meta.title && meta.title !== meta.parent) {
     crumbs.push({ label: meta.title })
@@ -323,7 +350,7 @@ function handleScroll() {
 function scrollToTop() {
   const main = document.querySelector('.layout-content')
   if (main) {
-    main.scrollTo({ top: 0, behavior: 'smooth' })
+    main.scrollTo({ top: 0, behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' })
   }
 }
 
@@ -332,7 +359,7 @@ function skipToMainContent() {
   const mainContent = document.getElementById('main-content')
   if (!main || !mainContent) return
   mainContent.focus({ preventScroll: true })
-  main.scrollTo({ top: 0, behavior: 'smooth' })
+  main.scrollTo({ top: 0, behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' })
 }
 
 onMounted(() => {
@@ -357,7 +384,7 @@ onBeforeUnmount(() => {
   padding: 0;
   gap: 0;
   overflow: hidden;
-  transition: grid-template-columns 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: grid-template-columns var(--app-transition-base);
   background: var(--app-bg);
 }
 
@@ -365,6 +392,7 @@ onBeforeUnmount(() => {
   grid-template-columns: 80px minmax(0, 1fr);
 }
 .layout-shell.sidebar-collapsed .brand-block { padding-inline: 0; justify-content: center; }
+.layout-shell.sidebar-collapsed .layout-sidebar { padding-inline:8px; }
 
 .layout-sidebar {
   display: flex;
@@ -391,26 +419,24 @@ onBeforeUnmount(() => {
 
 .brand-mark {
   border: 0;
-  width: 46px;
-  height: 46px;
-  border-radius: 14px;
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
   display: grid;
   place-items: center;
   font-family: inherit;
   font-weight: 800;
   font-size: 17px;
   color: #fff;
-  background:
-    radial-gradient(circle at 28% 20%, rgba(255, 255, 255, 0.34), transparent 28%),
-    linear-gradient(135deg, #0f2f57, var(--app-primary) 55%, var(--app-cyan));
-  box-shadow: 0 14px 34px rgba(15, 47, 87, 0.32);
+  background: var(--app-primary);
+  box-shadow: none;
   cursor: pointer;
   flex-shrink: 0;
   transition: transform var(--app-transition-fast), box-shadow var(--app-transition-fast);
 
   &:hover {
-    transform: scale(1.06);
-    box-shadow: 0 16px 34px rgba(37, 99, 235, 0.36);
+    transform: scale(1.025);
+    box-shadow: none;
   }
 
   &:focus-visible {
@@ -450,80 +476,7 @@ onBeforeUnmount(() => {
 
 .nav-menu {
   flex: 1;
-  border-right: 0 !important;
-
-  :deep(.el-menu-item) {
-    height: 48px;
-    line-height: 48px;
-    margin: 4px 0;
-    border-radius: 14px;
-    color: var(--app-text-secondary);
-    transition: all 0.2s;
-
-    &:hover {
-      background: rgba(15, 23, 42, 0.04);
-      color: var(--app-text);
-    }
-
-    &.is-active {
-      color: var(--app-primary) !important;
-      background:
-        linear-gradient(90deg, rgba(37, 99, 235, 0.16), rgba(14, 165, 233, 0.07), transparent) !important;
-      border: 1px solid rgba(37, 99, 235, 0.10);
-      font-weight: 800;
-      box-shadow: inset 3px 0 0 var(--app-primary);
-    }
-  }
-
-  :deep(.el-sub-menu__title) {
-    height: 48px;
-    line-height: 48px;
-    margin: 4px 0;
-    border-radius: 14px;
-    color: var(--app-text-secondary);
-    transition: all 0.2s;
-
-    &:hover {
-      background: rgba(15, 23, 42, 0.04);
-      color: var(--app-text);
-    }
-  }
-
-  :deep(.el-sub-menu.is-active > .el-sub-menu__title) {
-    color: var(--app-primary) !important;
-    background: rgba(37, 99, 235, 0.08) !important;
-    font-weight: 800;
-  }
-
-  :deep(.el-menu--inline) {
-    padding: 2px 0 8px 12px;
-  }
-}
-
-.nav-child-item {
-  min-height: 48px;
-}
-
-.nav-root-item,
-.nav-child-item {
-  :deep(.el-menu-tooltip__trigger),
-  :deep(.el-tooltip__trigger) {
-    width: 100%;
-  }
-}
-
-.nav-item-desc {
-  display: block;
-  margin-top: 2px;
-  color: var(--app-text-muted);
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 1.2;
-  transform: translateY(-2px);
-}
-
-.layout-shell.sidebar-collapsed .nav-item-desc {
-  display: none;
+  min-width: 0;
 }
 
 .sidebar-footer {
@@ -620,7 +573,7 @@ onBeforeUnmount(() => {
   cursor: pointer;
   flex-shrink: 0;
   margin-top: 4px;
-  transition: all 0.2s;
+  transition: background-color 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
 
   &:hover {
     background: rgba(47, 107, 255, 0.08);
@@ -636,7 +589,7 @@ onBeforeUnmount(() => {
 .collapse-icon {
   font-size: 16px;
   color: var(--app-text-secondary);
-  transition: transform 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: transform var(--app-transition-base);
   line-height: 1;
 
   &.rotated {
@@ -817,7 +770,7 @@ onBeforeUnmount(() => {
   cursor: pointer;
   display: grid;
   place-items: center;
-  transition: all 0.25s;
+  transition: background-color 200ms ease, border-color 200ms ease, box-shadow 200ms ease;
 
   &:hover {
     background: var(--app-primary);
@@ -848,24 +801,16 @@ onBeforeUnmount(() => {
 .is-agent-workspace .layout-content, .is-trace-workspace .layout-content { overflow: hidden; padding: 18px 22px; }
 @media (max-width: 1200px) { .manual-entry-link { display: none; } .header-actions { gap: 10px; } }
 @media (max-width: 1024px) {
-  .layout-shell, .layout-shell.sidebar-collapsed { grid-template-columns: 72px minmax(0, 1fr); transition: none; }
-  .nav-menu.el-menu--collapse { width: 100% !important; }
-  .layout-sidebar { padding: 16px 8px; }
-  .brand-block { padding: 4px; justify-content: center; }
-  .brand-text, .nav-section-label, .sidebar-footer, .nav-item-desc { display: none !important; }
-  .nav-menu :deep(.el-sub-menu__title), .nav-menu :deep(.el-menu-item) { padding-left: 18px !important; }
-  .nav-menu :deep(.el-sub-menu__title > span), .nav-menu :deep(.el-menu-item > span), .nav-menu :deep(.el-sub-menu__icon-arrow) { display: none; }
-  .nav-menu :deep(.el-sub-menu .el-menu) { display: none; }
+  .sidebar-collapsed .layout-sidebar { padding: 16px 8px; }
+  .sidebar-collapsed .brand-block { padding: 4px; justify-content: center; }
   .layout-header { padding: 14px 18px; }
   .layout-content { padding: 20px; }
-  .collapse-btn { display: none; }
 }
 @media (max-width: 640px) {
   .layout-shell, .layout-shell.sidebar-collapsed { grid-template-columns: 56px minmax(0, 1fr); }
   .layout-sidebar { padding: 12px 4px; }
   .brand-mark { width: 36px; height: 36px; border-radius: 11px; font-size: 13px; }
   .brand-block { padding: 0; margin-bottom: 16px; }
-  .nav-menu :deep(.el-sub-menu__title), .nav-menu :deep(.el-menu-item) { padding-left: 14px !important; }
   .layout-header { min-height: 68px; padding: 12px; gap: 8px; }
   .header-caption, .breadcrumb-link, .breadcrumb-sep, .user-meta, .assistant-entry-link { display: none; }
   .header-title, .breadcrumb-current { font-size: 17px; }
@@ -877,4 +822,39 @@ onBeforeUnmount(() => {
   .is-agent-workspace .layout-content, .is-trace-workspace .layout-content { padding: 8px; }
   .back-top-btn { display: none; }
 }
+</style>
+
+<style scoped>
+.brand-title { font-size: 15px; letter-spacing: -.02em; }
+.brand-subtitle { font-size: 12px; }
+.layout-header { min-height: 76px; background: white; border-bottom: 1px solid var(--app-border); }
+.header-actions { gap: 14px; }
+.workspace-scope { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; font-size: 12px; color: var(--app-text-secondary); }
+.breadcrumb-nav { flex-wrap: wrap; gap: 6px; }
+.breadcrumb-current { color: var(--app-text); font-weight: 600; }
+.layout-content { padding: 28px 32px; }
+.user-box { border: 0; background: transparent; box-shadow: none; padding: 0; gap: 10px; }
+.user-avatar { width: 34px; height: 34px; font-size: 13px; background: var(--app-primary-soft); color: var(--app-primary); border-radius: 10px; }
+.user-role { margin-top: 1px; font-size: 12px; }
+.user-box .el-button--danger { border-color: transparent; background: transparent; }
+.footer-card { box-shadow: none; border: 0; background: var(--app-bg); padding: 15px; }
+.footer-card-meter { display: none; }
+.back-top-btn { border-radius: 12px; width: 40px; height: 40px; box-shadow: var(--app-shadow-sm); color: var(--app-text-secondary); }
+.back-top-btn:hover { color: white; }
+@media(min-width: 641px) and (max-width: 1024px) {
+  .workspace-scope { display: none; }
+  .layout-content { padding: 22px; }
+}
+@media(max-width: 640px) {
+  .layout-shell, .layout-shell.sidebar-collapsed { grid-template-columns: minmax(0, 1fr); }
+  .layout-sidebar { display: none; }
+  .collapse-btn { display: inline-flex; flex: 0 0 34px; width: 34px; height: 34px; }
+  .layout-header { min-height: 62px; padding: 10px 12px; }
+  .header-left { min-width: 0; gap: 10px; }
+  .breadcrumb-current { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 38vw; }
+  .workspace-scope, .manual-entry-link, .user-box .user-avatar { display: none; }
+  .header-actions { gap: 8px; }
+  .layout-content { padding: 18px 14px; }
+}
+@media(prefers-reduced-motion: reduce) { .layout-shell, .brand-mark, .back-top-btn { transition: none; } .brand-mark:hover { transform:none; } }
 </style>

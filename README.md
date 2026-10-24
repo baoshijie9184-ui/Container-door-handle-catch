@@ -15,6 +15,8 @@ Agent 前端参照本地 DeepSeek Harness：会话侧栏、居中正文、右侧
 
 项目功能清单、已开发能力、未完成事项及后续任务见 [开发进展](开发进展.md)。
 
+已实现功能的用途、技术栈、模块划分及交付边界见 [系统功能说明](系统功能说明.md)。
+
 当前 `java-cloud` 分支用于服务器部署的模块化单体，微服务拆分另行推进。主站聊天和独立 AG-UI 均使用 AgentScope Java 2.0.4，旧 StateGraph 与独立 DeepSeek 客户端已移除。员工使用角色限定的只读工具；启用确认功能时，主管可提出质检分配提议并通过人工确认执行。模型配置与自动备用见 [平台配置](docs/agentscope-platform-config.md)，迁移边界、真实轨迹与验证记录见 [实施进度](docs/agent-role-toolkit-progress.md)。
 
 “Agent执行追溯 → 模型路由”可查看实际候选模型、接入标识、耗时、失败分类、备用选择及熔断跳过。主站、独立 Agent 和专业委派按模型请求编号关联，旧历史不从默认配置推断实际模型。实现与验证边界见 [模型调用路由追溯](docs/模型调用路由追溯.md)。
@@ -28,6 +30,10 @@ Agent 前端参照本地 DeepSeek Harness：会话侧栏、居中正文、右侧
 调研来源导出可选启用跨会话/实例的账号固定窗口限额，默认每窗口 60 秒 5 次，超限提示等待时间，失败与审计一起回滚。需 V35，默认关闭，见 [导出限流](docs/Agent调研来源导出限流.md)。
 
 长对话可选启用主 Agent 运行内的结构化摘要压缩，保留近期消息，失败回退，并记录独立模型路由与压缩轨迹。默认关闭，配置和范围见 [上下文压缩](docs/Agent长对话上下文压缩.md)。
+
+跨轮持久摘要、主/子 Agent 共享压缩、完成工具结果私有卸载及 Fork 附件快照已有新增实现，需 V44/V45，独立开关默认关闭。已随当前单体编译与两入口构建通过，专项验收、迁移和部署尚待完成，见 [持久上下文与受控卸载](docs/Agent持久上下文与受控卸载.md)。
+
+Skill 链接新增 skills.sh 源码解析、魔搭原生归档快照及 V46 持久下载配额/租约。已有公开下载、局部 MySQL 与回归结果，完整联调和发布仍待继续，见 [Skill 多来源与配额](docs/Skill多来源与持久下载配额.md)。
 
 固定 Fetch 的排队/执行中安装支持本人确认取消，事务审计后撤销登记并尽力中断，保留已有文件；可重新确认安装。见 [MCP 安装取消](docs/MCP安装取消与队列回收.md)。
 
@@ -45,7 +51,11 @@ Agent 对话支持安全切点暂停/继续、本人持久消息排队与逐条�
 
 本机 Jenkins 自动验证及发布到现有 ECS 的入口为 `Jenkinsfile`，配置、凭据、发布范围和回滚方法见 [Jenkins CI/CD](script/jenkins/README.md)。
 
+开发中的新版流水线默认仅验证并关闭生产发布；模型治理的 Secret 挂载、独立加密备份与离线恢复证明已有新增代码，尚未验证或启用。见 [模型密钥与发布接入](docs/模型主密钥备份与发布接入.md)。
+
 应用、中间件、记忆服务和 CPU PTH 检测 worker 均运行在北京 ECS。部署使用 `compose.monolith.yml`、`compose.cloud.yml` 和 `compose.detection.yml`，本分支已移除本地一键启动与停止脚本。
+
+后端 Dockerfile 只负责 Java 镜像；MySQL、Redis、Kafka、Mem0、Chroma 在 `compose.cloud.yml`。各 Compose 文件、初始化容器和网关之间的关系见 [容器与配置入口](docs/docker-monolith-deployment.md#容器与配置入口2026-10-22-整理)。
 
 在项目根目录建立访问隧道并保持终端运行：
 
@@ -58,6 +68,8 @@ ssh -F work/cloud/ssh-config -N -L 127.0.0.1:18088:127.0.0.1:8088 doorhandle-bj
 Jenkins 任务 `doorhandle-java` 跟踪远程 `java-cloud`，流水线只允许该可信分支。提交并推送后按 SCM 轮询触发构建发布，本机切换分支不会改变构建来源，详见运行说明。
 
 员工、主管各两个可登录测试账号及密码见 [测试用户账号](docs/测试用户账号.md)。
+
+两套聊天入口支持本人会话选择 LLM、恢复系统默认、刷新保留和异常后只读核对，使用与验证范围见 [会话模型切换](docs/Agent会话模型切换.md)。
 
 主管质检分配的提议、人工确认、审计与配置见 [AgentScope 操作确认](docs/agentscope-action-confirmation.md)。
 

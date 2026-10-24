@@ -45,6 +45,7 @@ public class QualityReportController {
     @PostMapping("/{id}/decision") @PreAuthorize("hasRole('SUPERVISOR')")
     public Result<View> decide(@AuthenticationPrincipal TenantPrincipal principal,@PathVariable String id,
             @RequestHeader(value="X-Report-Action",required=false) String header,@Valid @RequestBody Decision request){guard(header);return Result.success(service.decide(actor(principal),id,request));}
+    @com.ruanzhu.doorhandle.contracts.agent.FileDelivery(domain="QUALITY_REPORT",resource="arg1",scope="ENTERPRISE")
     @PostMapping("/{id}/export") public ResponseEntity<byte[]> export(@AuthenticationPrincipal TenantPrincipal principal,@PathVariable String id,
             @RequestHeader(value="X-Report-Action",required=false) String header){guard(header);return ResponseEntity.ok()
             .contentType(new MediaType("text","markdown",StandardCharsets.UTF_8)).cacheControl(CacheControl.noStore())

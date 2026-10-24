@@ -289,7 +289,7 @@ class DetectionTaskQualityTest {
     }
 
     @Test
-    void submitReworkResultStoresResultAndRoutesToRecheck() {
+    void submitReworkResultUsesAuthenticatedOperatorAndRoutesToRecheck() {
         DetectionTask task = new DetectionTask();
         task.setTaskId("det_rework");
         task.setStatus("COMPLETED");
@@ -310,14 +310,14 @@ class DetectionTaskQualityTest {
 
         assertEquals("RECHECK_REQUIRED", response.getFlowStatus());
         assertEquals("HANDLE_REPLACED", response.getReworkResult());
-        assertEquals("repair-user", response.getReworkOperator());
+        assertEquals("admin", response.getReworkOperator());
         assertEquals(Boolean.TRUE, response.getRecheckRequired());
 
         ArgumentCaptor<DetectionTask> taskCaptor = ArgumentCaptor.forClass(DetectionTask.class);
         verify(fixture.detectionTaskMapper).updateById(taskCaptor.capture());
         DetectionTask reworkedTask = taskCaptor.getValue();
         assertEquals("HANDLE_REPLACED", reworkedTask.getReworkResult());
-        assertEquals("repair-user", reworkedTask.getReworkOperator());
+        assertEquals("admin", reworkedTask.getReworkOperator());
         assertEquals("已更换门把手锁扣组件", reworkedTask.getReworkRemark());
         assertEquals("RECHECK_REQUIRED", reworkedTask.getFlowStatus());
         assertEquals("PENDING", reworkedTask.getReviewStatus());

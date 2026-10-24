@@ -4,7 +4,7 @@ import java.time.Duration;
 import java.util.function.LongSupplier;
 
 /** 进程内共享健康状态；冷却结束后只允许一个真实请求探测，不额外调用付费模型。 */
-final class ModelCircuit {
+class ModelCircuit {
     private final int threshold;
     private final Duration cooldown;
     private final Duration quotaCooldown;
@@ -23,7 +23,9 @@ final class ModelCircuit {
     ModelCircuit(int threshold, Duration cooldown, Duration quotaCooldown, LongSupplier nanoTime) {
         this.threshold = threshold; this.cooldown = cooldown; this.quotaCooldown = quotaCooldown; this.nanoTime = nanoTime;
     }
-    record Permit(long generation, boolean probe) {}
+    record Permit(long generation, boolean probe, String token) {
+        Permit(long generation,boolean probe){this(generation,probe,"");}
+    }
     record Health(String state, String lastFailure, long retryAfterSeconds) {}
 
     synchronized Permit acquire() {

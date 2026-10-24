@@ -25,7 +25,7 @@ public class DetectionRuntimeController {
     }
     @GetMapping("/quality-assignees")
     @PreAuthorize("hasAnyRole('SUPERVISOR','ADMIN')")
-    public Result<List<QualityAssigneeDirectory.Option>> assignees(@RequestParam(defaultValue="") @Size(max=50) String keyword) {
-        return Result.success(assignees.search(keyword));
+    public org.springframework.http.ResponseEntity<Result<List<QualityAssigneeDirectory.Option>>> assignees(@RequestParam(defaultValue="") @Size(max=50) String keyword) {
+        return org.springframework.http.ResponseEntity.ok().cacheControl(org.springframework.http.CacheControl.noStore()).body(Result.success(assignees.search(keyword)));
     }
 }

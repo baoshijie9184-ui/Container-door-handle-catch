@@ -5,6 +5,7 @@ import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import ChatAssistantDrawer from '@/components/chat/ChatAssistantDrawer.vue'
 import { useChatAssistantStore } from '@/stores/chatAssistant'
+import '@/assets/agent-appearance.css'
 const store = useChatAssistantStore()
 const route = useRoute()
 let active = true

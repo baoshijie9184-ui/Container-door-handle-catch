@@ -1,4 +1,5 @@
 // A projection of recorded metadata. Missing timing, usage and source text stay missing.
+import { beijingDateTime } from './beijingTime'
 const textFields = ['agent', 'tool', 'callId', 'parentCallId', 'scope', 'decision', 'policyVersion', 'result', 'command', 'status', 'skillId', 'sha256', 'modelRequestId', 'modelId', 'provider', 'model', 'failureReason', 'nextModelId', 'purpose', 'inputId']
 const numberFields = ['elapsedMs', 'durationMs', 'inputTokens', 'outputTokens', 'version', 'attempt', 'firstContentMs', 'httpStatus', 'beforeMessages', 'afterMessages', 'beforeChars', 'afterChars']
 export const traceCategories = [
@@ -8,6 +9,7 @@ export const traceCategories = [
   { value: 'CONTEXT', label: '上下文压缩' },
 ]
 const names = {
+  RUN_FINISHED:'运行结束记录', TEXT_CHUNK:'文本输出记录', TOOL_CALL:'工具调用记录',
   PAUSE_REQUESTED:'请求暂停',RUN_PAUSED:'已到达暂停切点',RUN_RESUMED:'继续运行',STEERING_APPLIED:'已交付运行中补充要求',
   RUN_STARTED: '开始运行', RUN_COMPLETED: '运行完成', RUN_FAILED: '运行失败', RUN_ERROR: '运行失败', RUN_CANCELLED: '运行取消', RUN_INTERRUPTED: '运行中断',
   AGENT_STARTED: 'Agent 开始处理', AGENT_COMPLETED: 'Agent 处理完成', AGENT_ERROR: 'Agent 处理异常', AGENT_CANCELLED: 'Agent 已取消', AGENT_YIELDED: 'Agent 已保存进度并等待',
@@ -22,7 +24,7 @@ const names = {
 }
 export function traceStatus(value) {
   return ({ RUNNING: '运行中', COMPLETED: '已完成', FAILED: '失败', CANCELLED: '已取消', INTERRUPTED: '已中断',
-    SUCCESS: '成功', ERROR: '异常', DENIED: '已拒绝', RECORDED: '仅有记录', INCOMPLETE: '未记录终态', PENDING: '等待结果' })[value] || value || '未记录'
+    SUCCESS: '成功', ERROR: '异常', DENIED: '已拒绝', RECORDED: '仅有记录', INCOMPLETE: '未记录终态', PENDING: '等待结果', SKIPPED: '已跳过 · 未请求', UNKNOWN: '状态未记录', UNAVAILABLE:'暂不可读取' })[value] || value || '未记录'
 }
 export function eventCategory(type = '') {
   if (type.startsWith('SKILL') || type.startsWith('COMMAND')) return 'SKILL'
@@ -54,7 +56,7 @@ export function traceDuration(value) {
   if (value < 1000) return `${Math.round(value)} ms`
   return `${(value / 1000).toFixed(value >= 10000 ? 1 : 2)} s`
 }
-export const traceTime = value => value ? String(value).replace('T', ' ').slice(0, 19) : '未记录'
+export const traceTime = value => value ? beijingDateTime(value) || '未记录' : '未记录'
 export const traceEntry = value => ({ CHAT: '主站对话', AGUI: '独立 Agent', CHILD: '专业子 Agent', 'AG-UI': '独立 Agent', CHAT_ASSISTANT: '主站对话' })[value] || value || '未记录入口'
 export function filterTraceEvents(events, category = 'ALL', query = '') {
   const needle = query.trim().toLowerCase()
@@ -82,13 +84,18 @@ export function traceCalls(events, runStatus) {
 }
 export function traceSummary(events, status) {
   const models = events.filter(event => event.type === 'MODEL_COMPLETED')
-  const sum = key => { const values = models.map(event => event.payload[key]).filter(value => typeof value === 'number'); return values.length ? values.reduce((a,b) => a+b, 0) : null }
+  const recorded = key => models.filter(event => typeof event.payload[key] === 'number' && Number.isFinite(event.payload[key]) && event.payload[key] >= 0)
+  // A partial sum must not look like complete usage. These are journal completion
+  // events, not a supplier invoice or a count of every upstream HTTP attempt.
+  const sum = key => models.length && recorded(key).length === models.length ? models.reduce((total,event) => total + event.payload[key], 0) : null
   return { events: events.length, tools: traceCalls(events, status).filter(call => call.events.some(event => event.type === 'TOOL_STARTED')).length,
     modelRequests: events.filter(event => event.type === 'MODEL_STARTED').length,
     modelAttempts: events.filter(event => event.type === 'MODEL_ATTEMPT_STARTED').length,
     fallbackSelections: events.filter(event => event.type === 'MODEL_FALLBACK_SELECTED').length,
     denied: events.filter(event => event.type === 'AUTHORIZATION_DENIED').length,
-    inputTokens: sum('inputTokens'), outputTokens: sum('outputTokens'), usageRecords: models.filter(event => event.payload.inputTokens != null || event.payload.outputTokens != null).length }
+    inputTokens: sum('inputTokens'), outputTokens: sum('outputTokens'), completedModels: models.length,
+    inputUsageRecords: recorded('inputTokens').length, outputUsageRecords: recorded('outputTokens').length,
+    usageRecords: models.filter(event => event.payload.inputTokens != null || event.payload.outputTokens != null).length }
 }
 export function traceModelRequests(events, runStatus) {
   const requests = new Map()

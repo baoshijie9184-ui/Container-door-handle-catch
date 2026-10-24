@@ -26,12 +26,12 @@ export const fetchDefectGallery = (params = {}) => request.get('/api/detection/t
   params
 })
 
-export const fetchDetectionTaskTrace = (taskId) => request.get(`/api/detection/tasks/${taskId}/trace`)
+export const fetchDetectionTaskTrace = (taskId, config = {}) => request.get(`/api/detection/tasks/${encodeURIComponent(taskId)}/trace`, config)
 
-export const fetchBatchTraceReport = (batchNo) => request.get('/api/detection/tasks/batch-trace', {
-  params: { batchNo }
+export const fetchBatchTraceReport = (batchNo, config = {}) => request.get('/api/detection/tasks/batch-trace', {
+  ...config, params: { ...config.params, batchNo }
 })
 
-export const fetchWorkOrderTraceReport = (workOrderNo) => request.get('/api/detection/tasks/work-order-trace', {
-  params: { workOrderNo }
+export const fetchWorkOrderTraceReport = (workOrderNo, config = {}) => request.get('/api/detection/tasks/work-order-trace', {
+  ...config, params: { ...config.params, workOrderNo }
 })

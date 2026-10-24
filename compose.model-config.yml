@@ -1,0 +1,21 @@
+# Explicit opt-in overlay, selected by the protected model-config-policy.json deployment guard.
+# File-backed Compose secrets retain host permissions: provision GID 10001 and mode 0640/0440 separately.
+# Never copy the key into an image, source tree, cloud.env, database dump or application volume.
+services:
+  backend:
+    environment:
+      AGENT_MODEL_CONFIG_ENABLED: "true"
+      OPERATIONS_AUDIT_ENABLED: "true"
+      MODEL_CONFIG_MASTER_KEY_FILE: /run/secrets/model_config_master_key
+    secrets:
+      - model_config_master_key
+  mem0:
+    environment:
+      MODEL_CONFIG_ENABLED: "true"
+      MODEL_CONFIG_MASTER_KEY_FILE: /run/secrets/model_config_master_key
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
+    secrets:
+      - model_config_master_key
+secrets:
+  model_config_master_key:
+    file: ${MODEL_CONFIG_MASTER_KEY_SOURCE:?Set an existing 256-bit Base64 Secret file outside the release directory}

@@ -88,4 +88,14 @@
             </plugins>
         </pluginManagement>
     </build>
+    <profiles>
+        <profile>
+            <id>isolated-verification</id>
+            <activation><property><name>doorhandle.isolated-verification</name><value>true</value></property></activation>
+            <build>
+                <!-- Keep local Maven bytecode separate from the IDE's incremental Java compiler. -->
+                <directory>${maven.multiModuleProjectDirectory}/work/maven-verification/${project.artifactId}</directory>
+            </build>
+        </profile>
+    </profiles>
 </project>

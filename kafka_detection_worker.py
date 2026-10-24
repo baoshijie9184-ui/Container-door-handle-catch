@@ -2,6 +2,8 @@ import json
 import os
 import signal
 import threading
+import time
+import logging
 from datetime import datetime, timezone, timedelta
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -11,6 +13,7 @@ load_dotenv()
 from kafka_event_models import DetectionTaskCreatedEvent, DetectionTaskFinishedEvent
 from kafka_settings import KafkaWorkerSettings
 from oss_result_uploader import OssResultUploader
+from detection_worker_receipts import MysqlDetectionReceipts, ReceiptPending, execute_once
 
 DetectionFunction = Callable[[bytes, float], Tuple[Any, List[Dict[str, Any]]]]
 BUSINESS_TIMEZONE = timezone(timedelta(hours=8))
@@ -330,14 +333,17 @@ def publish_finished_and_commit(
     if remaining != 0 or not delivery["completed"] or delivery["error"] is not None:
         reason = delivery["error"] if delivery["error"] is not None else remaining
         raise RuntimeError(f"finished event delivery failed: {reason}")
-    consumer.commit(message=source_message)
+    consumer.commit(message=source_message, asynchronous=False)
 
 
 def run_worker() -> None:
-    from confluent_kafka import Consumer, Producer
+    from confluent_kafka import Consumer, Producer, TopicPartition
 
     settings = load_settings()
     settings.validate()
+    receipts = MysqlDetectionReceipts.from_settings(settings) if settings.receipts_enabled else None
+    if receipts is not None:
+        receipts.validate_schema()
     from worker_health import write_health
     write_health(False)
     expected_model_id = None
@@ -365,6 +371,8 @@ def run_worker() -> None:
 
     stopped = threading.Event()
     assigned = False
+    pending = {}
+    next_receipt_check = 0.0
 
     def on_assign(client, partitions):
         nonlocal assigned
@@ -375,6 +383,8 @@ def run_worker() -> None:
     def on_revoke(client, partitions):
         nonlocal assigned
         assigned = False
+        for partition in partitions:
+            pending.pop((partition.topic, partition.partition), None)
         write_health(False, expected_model_id)
 
     def heartbeat():
@@ -385,28 +395,48 @@ def run_worker() -> None:
         signal.signal(signal.SIGINT, lambda *_: stopped.set())
     consumer.subscribe([settings.task_created_topic], on_assign=on_assign, on_revoke=on_revoke)
 
+    def handle_message(message, waiting=False):
+        task = parse_created_event(message.value().decode('utf-8'))
+        def operation():
+            return serialize_finished_event(
+                process_created_event(task, bucket, default_detector, expected_model_id, heartbeat))
+        if waiting:
+            finished_payload = receipts.completed(task)
+        else:
+            finished_payload = execute_once(task, receipts, operation) if receipts is not None else operation()
+        publish_finished_and_commit(
+            producer, consumer, source_message=message, topic=settings.task_finished_topic,
+            key=message.key() or task.task_id.encode('utf-8'), payload=finished_payload.encode('utf-8'),
+            timeout_seconds=settings.delivery_timeout_seconds)
+
     try:
         while not stopped.is_set():
             message = consumer.poll(1.0)
             heartbeat()
+            if pending and time.monotonic() >= next_receipt_check:
+                next_receipt_check = time.monotonic() + 5.0
+                for key, waiting in list(pending.items()):
+                    try:
+                        handle_message(waiting, waiting=True)
+                    except ReceiptPending:
+                        continue
+                    pending.pop(key, None)
+                    consumer.resume([TopicPartition(*key)])
             if message is None:
                 continue
             if message.error():
                 raise RuntimeError(str(message.error()))
 
-            task = parse_created_event(message.value().decode("utf-8"))
-            finished_payload = serialize_finished_event(
-                process_created_event(task, bucket, default_detector, expected_model_id, heartbeat)
-            )
-            publish_finished_and_commit(
-                producer,
-                consumer,
-                source_message=message,
-                topic=settings.task_finished_topic,
-                key=message.key() or task.task_id.encode("utf-8"),
-                payload=finished_payload.encode("utf-8"),
-                timeout_seconds=settings.delivery_timeout_seconds,
-            )
+            try:
+                handle_message(message)
+            except ReceiptPending:
+                # Do not acknowledge this input or commit a later offset on its
+                # partition. Other partitions remain available. Rebalance/restart
+                # recovers this wait from Kafka plus the durable receipt.
+                key = (message.topic(), message.partition())
+                pending[key] = message
+                consumer.pause([TopicPartition(*key)])
+                logging.warning('Detection partition paused for receipt reconciliation')
     finally:
         write_health(False, expected_model_id)
         consumer.close()

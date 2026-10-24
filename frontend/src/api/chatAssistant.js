@@ -110,9 +110,9 @@ export const exportAgentRunSources = (runId) => request.post(`/api/agent/runs/${
 export const cancelAgentRun = (runId) => request.post(`/api/agent/runs/${encodeURIComponent(runId)}/cancel`, null, { headers: { 'X-Agent-Action': 'cancel' } })
 
 export const fetchAgentActions = (params = {}) => request.get('/api/agent/actions', { params })
-export const fetchAgentActionAudit = (id) => request.get(`/api/agent/actions/${encodeURIComponent(id)}/audit`)
+export const fetchAgentActionAudit = (id, config = {}) => request.get(`/api/agent/actions/${encodeURIComponent(id)}/audit`, config)
 export const confirmAgentAction = (id, decision, version) => request.post(`/api/agent/actions/${encodeURIComponent(id)}/confirm`, { decision, version }, { headers: { 'X-Agent-Action': 'confirm' } })
 export const cancelAgentAction = (id, version) => request.post(`/api/agent/actions/${encodeURIComponent(id)}/cancel`, { version }, { headers: { 'X-Agent-Action': 'cancel' } })
 
 // 只读解析业务引用；刷新不会发起模型、草稿保存或审批。
-export const resolveAgentCards = (cards) => request.post('/api/agent/cards/resolve', { cards })
+export const resolveAgentCards = (cards, config = {}) => request.post('/api/agent/cards/resolve', { cards }, config)

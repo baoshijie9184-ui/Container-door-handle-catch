@@ -7,6 +7,12 @@ services:
       AGENT_MCP_GATEWAY_SECRET: ${AGENT_MCP_GATEWAY_SECRET:?Set a private signing secret}
       AGENT_MCP_GATEWAY_KEY: ${AGENT_MCP_GATEWAY_KEY:?Set a private gateway key}
       AGENT_MCP_GATEWAY_IMAGE: ${MCP_FETCH_IMAGE:?Set a verified immutable image ID}
+      AGENT_MCP_EXECUTION_RECEIPTS_ENABLED: ${AGENT_MCP_EXECUTION_RECEIPTS_ENABLED:-false}
+      AGENT_MCP_LIFECYCLE_ENABLED: ${AGENT_MCP_LIFECYCLE_ENABLED:-false}
+      AGENT_MCP_INSTALL_RECONCILIATION_ENABLED: ${AGENT_MCP_INSTALL_RECONCILIATION_ENABLED:-false}
+      AGENT_MCP_SHARED_IMAGE_CLEANUP_ENABLED: ${AGENT_MCP_SHARED_IMAGE_CLEANUP_ENABLED:-false}
+      AGENT_MCP_STORAGE_QUOTA_BYTES: ${AGENT_MCP_STORAGE_QUOTA_BYTES:-268435456}
+      MCP_FETCH_APPROVED_IMAGES: ${MCP_FETCH_APPROVED_IMAGES:-}
       AGENT_MODEL_GATEWAY_BASE_URL: http://higress:8080
 
   higress-seed:
@@ -58,13 +64,17 @@ services:
     environment:
       MCP_RUNNER_SECRET: ${AGENT_MCP_GATEWAY_SECRET:?Set a private signing secret}
       MCP_FETCH_IMAGE: ${MCP_FETCH_IMAGE:?Set a verified immutable image ID}
+      MCP_FETCH_APPROVED_IMAGES: ${MCP_FETCH_APPROVED_IMAGES:-}
       MCP_EXEC_NETWORK: doorhandlecatch-mcp-exec
       MCP_EGRESS_PROXY: http://mcp-egress:3128
+      MCP_EXECUTION_DB: /var/lib/doorhandle-mcp/executions.sqlite3
+      MCP_SHARED_IMAGE_CLEANUP_ENABLED: ${AGENT_MCP_SHARED_IMAGE_CLEANUP_ENABLED:-false}
     group_add: ["${MCP_DOCKER_GID:?Set the server docker socket group ID}"]
     # Only this fixed-command control service receives the socket. No agent/tool container does.
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - /usr/bin/docker:/usr/local/bin/docker:ro
+      - doorhandle-mcp-executions:/var/lib/doorhandle-mcp
     read_only: true
     tmpfs: ["/tmp:rw,noexec,nosuid,nodev,size=32m,uid=10001,gid=10001"]
     cap_drop: [ALL]
@@ -109,6 +119,7 @@ services:
     restart: unless-stopped
 
 volumes:
+  doorhandle-mcp-executions:
   doorhandle-higress:
   doorhandle-mcp-egress:
 networks:

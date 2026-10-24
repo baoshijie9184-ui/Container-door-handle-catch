@@ -1,0 +1,43 @@
+/* Shared owner-scoped creation reconciliation presentation; no execution rules in CSS. */
+.detection-transfer-reviews { margin-bottom: 22px; padding: 0; min-width: 0; color: var(--app-text, #0f172a); }
+.detection-transfer-reviews .transfer-heading, .detection-transfer-reviews .transfer-record-heading { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
+.detection-transfer-reviews .transfer-heading > strong { display: inline-flex; align-items: center; gap: 7px; font-size: 14px; font-weight: 600; }
+.detection-transfer-reviews .transfer-heading > strong > :is(svg, .el-icon) { color: var(--app-primary, #2563eb); flex-shrink: 0; }
+.detection-transfer-reviews .transfer-intro { margin: 9px 0 14px; max-width: 80ch; }
+.detection-transfer-reviews p { font-size: 12px; line-height: 1.85; color: var(--app-text-secondary, #475569); overflow-wrap: anywhere; }
+.detection-transfer-reviews .transfer-read-note { margin: 10px 0; padding: 10px 12px; background: var(--app-primary-soft, #eff6ff); border-radius: 7px; }
+.detection-transfer-reviews .transfer-error { padding: 10px 12px; background: #fffbeb; border-left: 3px solid #d97706; color: #92400e; }
+.detection-transfer-reviews .transfer-record { margin-top: 14px; padding: 16px; border: 1px solid var(--app-border, #e2e8f0); border-radius: 10px; background: #fff; }
+.detection-transfer-reviews .transfer-record[data-status="NEEDS_REVIEW"] { border-left: 3px solid #d97706; }
+.detection-transfer-reviews .transfer-record-heading > div { min-width: 0; flex: 1 1 120px; }
+.detection-transfer-reviews .transfer-record-heading small { display: block; color: var(--app-text-secondary, #475569); font-size: 11px; line-height: 1.7; margin-bottom: 4px; }
+.detection-transfer-reviews .transfer-record-heading strong { display: block; color: var(--app-text, #0f172a); font-size: 13px; font-weight: 600; line-height: 1.8; overflow-wrap: anywhere; }
+.detection-transfer-reviews .transfer-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 16px 0; padding-bottom: 14px; border-bottom: 1px solid var(--app-border, #e2e8f0); }
+.detection-transfer-reviews .transfer-metrics > div { min-width: 0; }
+.detection-transfer-reviews .transfer-metrics dt { color: var(--app-text-secondary, #475569); font-size: 11px; line-height: 1.8; }
+.detection-transfer-reviews .transfer-metrics dd { margin: 5px 0 0; color: var(--app-text, #0f172a); font-size: 15px; line-height: 1.7; font-weight: 600; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.detection-transfer-reviews .transfer-check-line { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
+.detection-transfer-reviews .transfer-check-line > span:last-child { font-size: 12px; line-height: 1.8; color: var(--app-text-secondary, #475569); }
+.detection-transfer-reviews .transfer-next-step { margin-block: 12px; }
+.detection-transfer-reviews .transfer-task-link { display: inline-flex; align-items: center; gap: 5px; margin-bottom: 8px; color: var(--app-primary, #2563eb); font-size: 12px; line-height: 1.8; text-underline-offset: 3px; }
+.detection-transfer-reviews .transfer-task-link:hover { text-decoration: underline; }
+.detection-transfer-reviews .transfer-evidence { margin-block: 12px; padding-bottom: 12px; border-bottom: 1px solid var(--app-border, #e2e8f0); font-size: 12px; }
+.detection-transfer-reviews .transfer-evidence summary { color: var(--app-text-secondary, #475569); cursor: pointer; line-height: 1.8; }
+.detection-transfer-reviews .transfer-evidence dl { display: grid; grid-template-columns: 70px minmax(0, 1fr); gap: 8px 10px; margin: 12px 0 0; }
+.detection-transfer-reviews .transfer-evidence dt { color: var(--app-text-secondary, #475569); line-height: 1.8; }
+.detection-transfer-reviews .transfer-evidence dd { margin: 0; overflow-wrap: anywhere; line-height: 1.8; }
+.detection-transfer-reviews code { font-size: 12px; white-space: normal; overflow-wrap: anywhere; }
+.detection-transfer-reviews .transfer-cost-note { display: flex; align-items: flex-start; gap: 7px; margin: 12px 0; color: #92400e; }
+.detection-transfer-reviews .transfer-cost-note > :is(svg, .el-icon) { flex-shrink: 0; margin-top: 4px; }
+.detection-transfer-reviews .transfer-buttons, .detection-transfer-reviews .transfer-decision-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.detection-transfer-reviews .transfer-buttons .el-button + .el-button, .detection-transfer-reviews .transfer-decision-actions .el-button + .el-button { margin-left: 0; }
+.detection-transfer-reviews .transfer-decision { margin-top: 14px; padding: 13px 14px; border-left: 3px solid var(--app-primary, #2563eb); background: var(--app-primary-soft, #eff6ff); border-radius: 7px; animation: transfer-decision-in 180ms ease-out; }
+.detection-transfer-reviews .transfer-decision[data-action="ABANDON"] { border-left-color: #dc2626; background: #fef2f2; }
+.detection-transfer-reviews .transfer-decision > strong { font-size: 13px; line-height: 1.8; }
+.detection-transfer-reviews .transfer-decision-actions { margin-top: 12px; }
+.detection-transfer-reviews :is(button, summary, a):focus-visible { outline: 2px solid var(--app-primary, #2563eb); outline-offset: 3px; }
+.detection-transfer-reviews button { transition: background-color 180ms ease, border-color 180ms ease, color 180ms ease, transform 150ms ease; }
+.detection-transfer-reviews button:not(:disabled):active { transform: scale(.985); }
+@keyframes transfer-decision-in { from { opacity: 0; } to { opacity: 1; } }
+@media (max-width: 480px) { .detection-transfer-reviews .transfer-record { padding: 14px; } .detection-transfer-reviews .transfer-buttons > button { flex: 1 1 auto; min-height: 36px; } .detection-transfer-reviews .transfer-decision-actions > button { min-height: 36px; } }
+@media (prefers-reduced-motion: reduce) { .detection-transfer-reviews .transfer-decision { animation: none; } .detection-transfer-reviews button { transition: none; transform: none; } }

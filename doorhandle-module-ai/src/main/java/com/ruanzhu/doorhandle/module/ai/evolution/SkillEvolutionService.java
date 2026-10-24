@@ -95,7 +95,7 @@ public class SkillEvolutionService {
                 if(!name.equals(skill.get("name"))||!targetRole.equals(skill.get("target_role")))throw fail(409,"升级不能改变技能名称或角色");
                 var oldManifest=linkStorage.verified(current.userId(),(String)previous.get("source_import_id"));
                 if(!repositoryIdentity(oldManifest).equals(repositoryIdentity(manifest)))throw fail(409,"升级来源必须仍是同一仓库的同一技能目录");
-                if(oldManifest.get("commit").equals(manifest.get("commit"))&&oldManifest.get("files").equals(manifest.get("files"))&&previous.get("content_sha256").equals(hash)){
+                if(SkillSourcePolicy.revision(oldManifest).equals(SkillSourcePolicy.revision(manifest))&&oldManifest.get("files").equals(manifest.get("files"))&&previous.get("content_sha256").equals(hash)){
                     jdbc.update("UPDATE agent_skill_download SET status='NO_CHANGE',skill_id=? WHERE download_id=? AND owner_user_id=?",id,downloadId,current.userId());
                     audit(id,num(skill,"latest_version"),current.userId(),"LINK_NO_CHANGE",expected,hash,"核对固定提交与包内容 未创建重复版本",null,null);return get(current,id);
                 }
@@ -114,18 +114,14 @@ public class SkillEvolutionService {
         var candidate=version(id,num(skill,"latest_version"));if(!"LINK".equals(candidate.get("source_type")))throw fail(400,"仅链接技能可以升级");
         if(!current.supervisor()&&!current.role().name().equals(skill.get("target_role")))throw fail(403,"当前角色不能升级此技能");return (String)skill.get("target_role");}
     public void assertLinkedUpgrade(AgentActor actor,String id,int expected,String sourceUrl){var current=fresh(actor);tx.executeWithoutResult(status->{var skill=lock(current,id,expected,true);var latest=version(id,num(skill,"latest_version"));upgradeEligible(current,skill,latest);verifyDigest(skill,latest);
-        String resolved=sourceUrl.startsWith("https://modelscope.cn/")?"https://github.com/anthropics/skills/tree/main/skills/skill-creator":sourceUrl;
-        var previous=linkStorage.verified(current.userId(),(String)latest.get("source_import_id"));if(!repositoryIdentity(previous).equals(repositoryIdentity(Map.of("resolvedUrl",resolved))))throw fail(409,"升级必须来自同一仓库的同一技能目录");});}
+        var previous=linkStorage.verified(current.userId(),(String)latest.get("source_import_id"));SkillSourcePolicy.assertUpgradeCandidate(previous,sourceUrl);});}
     private void upgradeEligible(AgentActor actor,Map<String,Object> skill,Map<String,Object> candidate){
         if(!"LINK".equals(candidate.get("source_type")))throw fail(400,"仅链接安装的技能可以从原来源升级");
         if(!actor.supervisor()&&!actor.role().name().equals(skill.get("target_role")))throw fail(403,"当前角色不能升级此技能");
         if("SUBMITTED".equals(candidate.get("status")))throw fail(409,"待审版本冻结 请等待审核后升级");
     }
     private String repositoryIdentity(Map<String,Object> manifest){
-        try{var url=java.net.URI.create((String)manifest.get("resolvedUrl"));var parts=url.getPath().split("/",6);
-            if(!"https".equals(url.getScheme())||!"github.com".equals(url.getRawAuthority())||url.getQuery()!=null||url.getFragment()!=null||parts.length!=6||!"tree".equals(parts[3]))throw new IllegalArgumentException();
-            return parts[1].toLowerCase(Locale.ROOT)+"/"+parts[2].toLowerCase(Locale.ROOT)+"/"+parts[5];
-        }catch(Exception error){throw fail(409,"固定来源目录无法核对");}
+        return SkillSourcePolicy.identity(manifest);
     }
     public SkillVersionComparison.View compareLinked(AgentActor actor,String id,int from,int to){var current=fresh(actor);
         if(from<1||to<1||from==to)throw fail(400,"请选择两个不同的技能版本");var view=get(current,id);

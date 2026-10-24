@@ -57,6 +57,7 @@ memory_instance = None
 # 当前本地桥接使用单进程；将人工更新、删除和自动提炼串行化。
 memory_write_lock = threading.Lock()
 memory_writer = None
+model_configuration = None
 
 
 @contextmanager
@@ -151,7 +152,7 @@ def configure_provider_timeouts(memory):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
-    global memory_instance, memory_writer
+    global memory_instance, memory_writer, model_configuration
     logger.info("正在初始化 mem0 记忆服务...")
     writer = None
     try:
@@ -165,6 +166,18 @@ async def lifespan(app: FastAPI):
         configure_provider_timeouts(memory_instance)
         cleanup_interval = bounded_setting("MEM0_CLEANUP_INTERVAL_SECONDS", 60, 10, 3600)
         memory_instance.vector_store = GovernedVectorStore(memory_instance.vector_store, writer.lifecycle)
+        if os.getenv("MODEL_CONFIG_ENABLED", "false").lower() == "true":
+            try:
+                from .model_config import LlmConfigurationStore
+            except ImportError:
+                from model_config import LlmConfigurationStore
+            model_configuration = LlmConfigurationStore(
+                directory.parent / "model_configuration", required_env("MODEL_CONFIG_MASTER_KEY_FILE"),
+                {"dashscope": os.getenv("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
+                 "deepseek": os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")},
+                lambda: memory_instance, memory_write_lock, create_configured_llm)
+            model_configuration.guard_environment(required_env("DASHSCOPE_API_KEY"))
+            model_configuration.restore()
         memory_writer = writer
         logger.info("mem0 记忆服务初始化完成")
     except Exception as e:
@@ -191,6 +204,7 @@ async def lifespan(app: FastAPI):
         writer.close(wait=False)
         if memory_writer is writer:
             memory_writer = None
+        model_configuration = None
         logger.info("mem0 记忆服务关闭")
 
 
@@ -204,13 +218,74 @@ app = FastAPI(
 
 @app.middleware("http")
 async def authenticate_memory_bridge(request: Request, call_next):
-    if request.url.path.startswith("/memories"):
+    if request.url.path.startswith(("/memories", "/internal/model-config")):
         token = os.getenv("MEM0_BRIDGE_TOKEN", "")
         if not token:
             return JSONResponse(status_code=503, content={"detail": "Memory bridge authentication is not configured"})
         if not hmac.compare_digest(request.headers.get("x-doorhandle-memory-token", "").encode("utf-8"), token.encode("utf-8")):
             return JSONResponse(status_code=401, content={"detail": "Memory bridge authentication required"})
     return await call_next(request)
+
+
+def create_configured_llm(data):
+    from mem0.utils.factory import LlmFactory
+    from mem0.configs.llms.openai import OpenAIConfig
+    import inspect
+    config = {"model": data["model"], "api_key": data["api_key"], "openai_base_url": data["base_url"]}
+    if "is_reasoning_model" in inspect.signature(OpenAIConfig).parameters:
+        config["is_reasoning_model"] = True
+    if data["model"].rsplit("/", 1)[-1] in {"kimi-k3", "kimi-k2.7-code"}:
+        config.update(temperature=1.0, top_p=0.95)
+    llm = LlmFactory.create("openai", config)
+    llm.client = llm.client.with_options(timeout=bounded_setting("MEM0_EXTRACTION_TIMEOUT_SECONDS", 30, .1, 120), max_retries=0)
+    return llm
+
+
+class PrepareModelConfiguration(BaseModel):
+    revision: int = Field(..., ge=1, le=9223372036854775807)
+    envelope: str = Field(..., min_length=40, max_length=20000, repr=False)
+
+
+class ApplyModelConfiguration(BaseModel):
+    revision: int = Field(..., ge=1, le=9223372036854775807)
+
+
+class RevokeModelCredential(BaseModel):
+    fingerprint: str = Field(..., pattern=r"^[a-f0-9]{64}$")
+
+
+def config_operation(action):
+    if model_configuration is None:
+        raise HTTPException(503, "Memory model configuration is disabled")
+    try:
+        return action(model_configuration)
+    except ReceiptError as error:
+        raise HTTPException(error.status, error.detail) from None
+    except Exception:
+        raise HTTPException(503, "Memory model configuration result needs verification") from None
+
+
+@app.post("/internal/model-config/prepare")
+def prepare_model_configuration(request: PrepareModelConfiguration):
+    config_operation(lambda store: store.prepare(request.revision, request.envelope))
+    return {"status": "PREPARED", "revision": request.revision}
+
+
+@app.post("/internal/model-config/apply")
+def apply_model_configuration(request: ApplyModelConfiguration):
+    config_operation(lambda store: store.apply(request.revision))
+    return {"status": "APPLIED", "revision": request.revision}
+
+
+@app.get("/internal/model-config/status")
+def model_configuration_status():
+    return {"revision": config_operation(lambda store: store.applied_revision())}
+
+
+@app.post("/internal/model-config/revoke")
+def revoke_model_credential(request: RevokeModelCredential):
+    config_operation(lambda store: store.revoke(request.fingerprint))
+    return {"status": "REVOKED"}
 
 
 class OwnedMemoryListRequest(BaseModel):

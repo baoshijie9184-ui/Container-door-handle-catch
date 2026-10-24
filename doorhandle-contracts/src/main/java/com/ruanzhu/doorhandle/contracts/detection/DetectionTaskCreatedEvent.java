@@ -8,6 +8,8 @@ import java.util.List;
 
 @Data
 @Builder
+@lombok.NoArgsConstructor
+@lombok.AllArgsConstructor
 public class DetectionTaskCreatedEvent {
     private String eventId;
     private String eventType;

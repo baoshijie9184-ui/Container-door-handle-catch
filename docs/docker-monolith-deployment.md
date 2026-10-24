@@ -1,5 +1,46 @@
 # Java 单体 Docker 部署
 
+## 容器与配置入口（2026-10-22 整理）
+
+`deploy/backend/Dockerfile` 定义 Java 后端镜像的构建过程，不是整个系统的容器清单。中间件通过 Compose 使用各自镜像，拥有独立进程、健康检查和数据卷；Java 业务模块仍在同一个 Spring Boot 应用中运行。
+
+| 配置文件 | 定义的服务或配置 | 用途 |
+| --- | --- | --- |
+| [`compose.monolith.yml`](../compose.monolith.yml) | `backend`、`nginx` | 应用基础编排；Nginx 同时托管 Vue 主站和 React Agent UI |
+| [`compose.cloud.yml`](../compose.cloud.yml) | `mysql`、`redis`、`kafka`、`mem0`、`chroma` | 云端中间件及记忆、向量服务，合并到基础编排 |
+| [`compose.detection.yml`](../compose.detection.yml) | `detection-worker` | CPU PyTorch/PTH 检测，合并到前两份文件 |
+| [`compose.ai-gateway.yml`](../compose.ai-gateway.yml) | `higress`、`mcp-runner`、`mcp-egress` | 可选 AI 网关与固定 Fetch 执行边界，需预先配置并显式启用 |
+| [`compose.model-config.yml`](../compose.model-config.yml) | 现有 `backend`、`mem0` 的环境配置与 Secret 挂载 | 开发中的模型治理配置，不增加服务容器，须由部署策略校验后选择 |
+
+`compose.cloud.yml` 另有 `kafka-storage-init`、`kafka-init`，网关编排另有 `higress-seed`、`higress-config`。它们执行初始化后成功退出，不计入常驻服务数。基础、云端和检测编排合计八个常驻服务；启用网关后合计十一个。这是源码定义的组成，不代表当前服务器已运行或健康。
+
+```mermaid
+flowchart LR
+    Browser[浏览器] --> Nginx[Nginx · Vue / React]
+    Nginx --> Backend[Spring Boot 模块化单体]
+    Backend --> MySQL[MySQL]
+    Backend --> Redis[Redis]
+    Backend --> Kafka[Kafka]
+    Backend --> Mem0[Mem0 长期记忆]
+    Backend --> Chroma[Chroma RAG]
+    Kafka --> Worker[CPU PTH worker]
+    Worker --> OSS[OSS 图片与结果]
+    Worker --> Kafka
+    Backend --> Higress[可选 Higress]
+    Higress --> Models[上游模型 API]
+    Higress --> Runner[固定 Fetch 运行器]
+```
+
+`backend`、`mysql`、`redis`、`kafka` 等名称也是私网服务地址。基础编排默认仅将 Nginx 映射到宿主机 `127.0.0.1:8088`，上述中间件和网关没有发布宿主机端口；浏览器通过 SSH 隧道访问 Nginx。MySQL、Redis、Kafka、Mem0、Chroma 分别使用持久卷，检测模型目录只读挂载到 worker。Mem0 和 Chroma 复用同一个 Python 镜像，但运行在两个容器，使用各自数据卷；不能据此把两者当作同一服务。
+
+现有 Jenkins 发布脚本 [`deploy-remote.sh`](../script/jenkins/deploy-remote.sh) 合并基础、云端、检测三份 Compose 文件，再根据私有启用标记选择网关配置，并根据受保护的模型配置策略选择 Secret 配置。日常发布沿用该流程；在编辑器中只打开某份 Dockerfile 不会改变 Jenkins 编排。模型 Secret 的启用条件见 [密钥与发布接入](模型主密钥备份与发布接入.md)。
+
+源码还新增 [分派数据格式与兼容回滚保护](分派数据格式与兼容回滚.md)，在停止后端之前核对实际镜像、身份数据和恢复基线，并记录分派写入是否暂停。该代码尚未运行，不能据此认定本轮镜像或中间件已经完成部署验收。
+
+`--env-file` 提供 Compose 的变量替换，`backend.env_file` 将配置传入后端容器，两者用途不同。发布脚本显式指定现有私有配置的绝对路径，不把凭据写进镜像或上述示意图。查看已存在容器及日志可沿用 [服务器运行说明](服务器运行说明.md#服务检查)，不要为查看中间件重新执行初始化、迁移或发布。
+
+本次只整理源码导航和部署说明，没有启动 Docker、构建镜像、执行配置检查、迁移或连接 ECS。下文带日期的验收结果属于对应历史版本。
+
 ## 2026-10-15 CPU PTH 检测补充
 
 服务器现已启用 `compose.detection.yml`，以 Python/PyTorch `2.5.1+cpu` 直接加载 `best_stg2.pth`。模型编号 105 已发布并设为默认，正常图片和 Missing 缺陷图片各完成一条真实上传、Kafka 推理、OSS 结果、Java 入库任务；八项服务 healthy。本节更新优先于下方 2026-10-14 的“worker 关闭”历史记录。服务器页面仍待恢复本机 SSH 隧道后验收，API 验收不能替代页面验收。

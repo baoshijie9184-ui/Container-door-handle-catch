@@ -262,7 +262,7 @@
           <el-input v-model="assignmentForm.qualityStation" placeholder="例如：质检站-1 / 产线A复核位" />
         </el-form-item>
         <el-form-item label="责任人">
-          <el-input v-model="assignmentForm.assignee" placeholder="请输入质检责任人" />
+          <QualityAssigneePicker v-model="assignmentForm.assignee" v-model:user-id="assignmentForm.assigneeUserId" v-model:revision="assignmentForm.assigneeRevision" />
         </el-form-item>
         <el-form-item label="截止时间">
           <el-date-picker
@@ -306,12 +306,12 @@
             <el-option label="正常放行" value="RELEASE" :disabled="!canReleaseDisposition(dispositionTask)" />
             <el-option label="返工处理" value="REWORK" />
             <el-option label="安排复检" value="RECHECK" />
-            <el-option label="暂挂观察" value="HOLD" />
+            <el-option label="暂挂观察" value="HOLD" :disabled="dispositionTask?.dispositionAction === 'HOLD'" />
             <el-option label="报废隔离" value="SCRAP" />
           </el-select>
         </el-form-item>
         <el-form-item label="需要复检">
-          <el-switch v-model="dispositionForm.recheckRequired" />
+          <el-switch v-model="dispositionForm.recheckRequired" :disabled="['RELEASE', 'SCRAP', 'RECHECK'].includes(dispositionForm.dispositionAction)" /><span v-if="dispositionForm.dispositionAction === 'REWORK'" class="quality-flow-hint">先回填返工结果，再进入复检</span>
         </el-form-item>
         <el-form-item label="处置备注">
           <el-input
@@ -337,7 +337,7 @@
         show-icon
         :closable="false"
         style="margin-bottom: 14px;"
-        :message="`任务 ${reworkTask.taskId} 当前待返工，请回填返工结果并决定是否进入复检。`"
+        :message="`任务 ${reworkTask.taskId} 当前待返工，请回填结果；原处置要求复检时须保留该要求。`"
       />
       <el-form :model="reworkForm" label-width="110px">
         <el-form-item label="返工结果">
@@ -349,10 +349,10 @@
           />
         </el-form-item>
         <el-form-item label="返工人员">
-          <el-input v-model="reworkForm.reworkOperator" placeholder="不填则使用当前登录用户" />
+          <el-input model-value="按当前登录账号记录" disabled />
         </el-form-item>
         <el-form-item label="需要复检">
-          <el-switch v-model="reworkForm.recheckRequired" />
+          <el-switch v-model="reworkForm.recheckRequired" :disabled="(reworkTask?.recheckRequired ?? reworkTask?.result?.recheckRequired) === true" /><span v-if="(reworkTask?.recheckRequired ?? reworkTask?.result?.recheckRequired) === true" class="quality-flow-hint">原处置要求复检，回填后仍需实际检测</span>
         </el-form-item>
         <el-form-item label="返工备注">
           <el-input
@@ -481,6 +481,7 @@
 </template>
 
 <script setup>
+import QualityAssigneePicker from '@/components/QualityAssigneePicker.vue'
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'

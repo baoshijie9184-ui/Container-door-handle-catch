@@ -1,31 +1,33 @@
 <template>
   <div class="composer">
     <Transition name="slash-menu">
-      <section v-if="menuVisible" class="slash-menu" aria-label="技能命令建议">
-        <p>选择命令后填写问题 Enter 或 Tab 补全 Escape 关闭</p>
-        <div id="chat-skill-commands" role="listbox" aria-label="技能命令">
-          <button v-for="(item,index) in commandOptions" :id="'chat-skill-command-'+index" :key="item.value" type="button" role="option" :aria-selected="index===activeCommand" :class="{active:index===activeCommand}" @mousedown.prevent @click="selectCommand(item)"><strong>{{ item.label }}</strong><span>{{ item.description }}</span></button>
+      <section v-if="menuVisible" ref="commandMenuRef" class="slash-menu" aria-label="技能命令建议">
+        <p>方向键选择 · Enter 或 Tab 补全 · Escape 关闭</p>
+        <div :id="commandListId" role="listbox" aria-label="技能命令">
+          <button v-for="(item,index) in commandOptions" :id="commandListId+'-'+index" :key="item.value" type="button" role="option" tabindex="-1" :aria-selected="index===activeCommand" :class="{active:index===activeCommand}" @mousedown.prevent @click="selectCommand(item)"><strong>{{ item.label }}</strong><span>{{ item.description }}</span></button>
         </div>
       </section>
     </Transition>
     <p v-if="commandError && draft.startsWith('/')" class="command-error" role="status">{{ commandError }}</p>
     <!-- 快捷指令 chips -->
-    <div class="quick-chips" v-if="!loading">
+    <div class="quick-chips" v-if="!loading && showPresets">
       <button
         v-for="chip in quickChips"
         :key="chip.text"
+        type="button"
         class="quick-chip"
         @click="sendPreset(chip.text)"
       >
-        <span v-html="chip.icon"></span>
+        <AppIcon :name="chip.icon" :size="14" />
         {{ chip.label }}
       </button>
     </div>
     <slot name="queue" />
     <div class="composer-input-wrap gpt-composer-input">
-      <TransitionGroup name="slash-menu" tag="div" class="composer-attachments" v-if="resources.files.length" aria-label="待发送附件">
-        <div v-for="file in resources.files" :key="file.id" class="composer-attachment"><el-icon aria-hidden="true"><Document /></el-icon><span :title="file.name">{{ file.name }}</span><button type="button" :aria-label="'取消引用 '+file.name" @click="resourceClient.remove(file.id)"><el-icon><Close /></el-icon></button></div>
+      <TransitionGroup name="slash-menu" tag="div" class="composer-attachments" v-if="resources.files.length" role="list" aria-label="本条消息的附件引用">
+        <div v-for="file in resources.files" :key="file.id" class="composer-attachment" role="listitem"><span class="composer-file-icon"><AppIcon :name="composerAttachment(file).icon" :size="18" /></span><span class="composer-file-copy"><strong :title="file.name">{{ file.name }}</strong><small>{{ composerAttachment(file).type }} · {{ composerAttachment(file).size }}</small></span><button type="button" :disabled="resources.busy||loading" :aria-label="'取消本条消息的附件引用 '+file.name" title="仅取消本次引用，不删除会话文件" @click="resourceClient.remove(file.id)"><el-icon aria-hidden="true"><Close /></el-icon></button></div>
       </TransitionGroup>
+      <p v-if="resources.files.length" class="composer-attachment-note">发送时引用这些会话文件，取消引用不会删除文件</p>
       <textarea
         ref="textareaRef"
         v-model="draft"
@@ -33,7 +35,7 @@
         :placeholder="loading ? '助手正在思考…' : '输入消息 或输入 / 选择技能命令'"
         :disabled="loading"
         rows="1"
-        :aria-expanded="menuVisible" aria-controls="chat-skill-commands" :aria-activedescendant="menuVisible ? 'chat-skill-command-'+activeCommand : undefined" aria-label="聊天消息或技能命令"
+        :aria-expanded="menuVisible" :aria-controls="menuVisible ? commandListId : undefined" :aria-activedescendant="menuVisible ? commandListId+'-'+activeCommand : undefined" aria-label="聊天消息或技能命令"
         @input="handleInput"
         @focus="refreshCommands"
         @blur="menuDismissed=true"
@@ -41,10 +43,10 @@
       />
       <div class="composer-toolbar">
         <input ref="fileInputRef" type="file" multiple hidden accept=".png,.jpg,.jpeg,.webp,.pdf,.txt,.md,.csv,.json,.html,.svg" @change="uploadFiles" />
-        <button class="composer-add" type="button" aria-label="添加附件" title="上传会话私有文件" :disabled="!resources.ready||!resources.filesEnabled||resources.busy||loading" @click="fileInputRef?.click()"><el-icon><Plus /></el-icon></button>
+        <button class="composer-add" type="button" aria-label="添加附件" :title="composerUploadHint(resources,loading)" :disabled="!resources.ready||!resources.filesEnabled||resources.busy||loading" @click="fileInputRef?.click()"><el-icon aria-hidden="true"><Plus /></el-icon></button>
         <span class="composer-permission" title="工具按当前账号权限执行，敏感操作仍需人工确认"><el-icon aria-hidden="true"><Lock /></el-icon><span>按账号权限</span></span>
-        <span v-if="resources.busy" class="composer-upload-status" role="status">正在保存</span>
-        <select aria-label="使用模型" :value="resources.modelId" :disabled="!resources.ready||resources.busy||modelLocked||loading" @change="selectModel"><option value="">系统默认</option><option v-for="model in resources.models" :key="model.id" :value="model.id">{{ model.model }}</option></select>
+        <span v-if="resources.busy" class="composer-upload-status" role="status">处理中</span>
+        <select aria-label="使用模型" :title="modelLocked?'当前任务使用的模型已固定，结束后可切换':'仅对当前会话的新任务生效'" :value="resources.modelId" :disabled="!resources.ready||resources.busy||modelLocked||loading" @change="selectModel"><option value="">{{ composerDefaultModel(resources) }}</option><option v-if="selectedModelMissing(resources)" :value="resources.modelId" disabled>原选模型已不可用，请重新选择</option><option v-for="model in resources.models" :key="model.id" :value="model.id">{{ modelLabel(model) }}</option></select>
         <span class="composer-context" title="使用本会话历史与已授权的资料"><el-icon aria-hidden="true"><Document /></el-icon><span>会话上下文</span></span>
       </div>
 
@@ -52,11 +54,13 @@
         class="composer-voice"
         :class="{ recording, transcribing: voiceTranscribing }"
         :disabled="loading || voiceTranscribing"
-        aria-label="语音输入"
+        type="button"
+        :aria-label="voiceTranscribing ? '正在识别语音' : recording ? '停止录音并识别' : '语音输入'"
+        :aria-pressed="recording"
         :title="recording ? '停止录音并识别' : '语音输入'"
         @click="toggleVoiceRecording"
       >
-        <svg v-if="!voiceTranscribing" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <svg v-if="!voiceTranscribing" aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3Z"/>
           <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
           <path d="M12 19v3"/>
@@ -65,39 +69,53 @@
       </button>
       <button v-if="run?.local&&run.runId&&!draft.trim()&&!resources.files.length" type="button" class="composer-stop" aria-label="停止任务" title="停止当前任务" @click="emit('stop')"><svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg></button>
       <button v-else
+        type="button"
         class="composer-send"
         :class="{ active: draft.trim() && !loading }"
         :disabled="loading || resources.busy || (!draft.trim()&&!resources.files.length)"
         @click="handleSend"
         title="发送" aria-label="发送消息"
       >
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M12 19V5M5 12l7-7 7 7"/>
         </svg>
       </button>
     </div>
     <p v-if="resources.error" class="command-error" role="alert">{{ resources.error }}</p>
+    <div class="model-selection-feedback"><span v-if="modelLocked" role="status">任务结束后可切换模型</span><span v-else-if="selectedModelMissing(resources)" role="status">原选模型已不在可用目录，请选择其他模型</span><span v-else-if="resources.modelNotice" role="status">{{ resources.modelNotice }}</span><span v-if="resources.ready&&resources.fallbackEnabled">请求失败时可使用备用模型，实际调用见执行轨迹</span><button v-if="resources.modelError" type="button" :disabled="resources.busy||loading" @click="resourceClient.refreshModels()">核对模型选择</button></div>
     <p v-if="resources.draftWarning" class="command-error" role="status">{{ resources.draftWarning }}</p>
+    <p v-if="resources.storageWarning" class="composer-state-note" data-tone="warning" role="status"><AppIcon name="Warning" :size="14" />{{ resources.storageWarning }}</p>
+    <p v-if="browserOffline" class="composer-state-note" data-tone="warning" role="status"><AppIcon name="Connection" :size="14" />浏览器报告网络离线，当前输入保留；恢复连接后请手动发送，不会自动重发。</p>
+    <p v-if="resources.ready&&!resources.filesEnabled" class="composer-state-note">当前服务未启用会话文件上传</p>
     <p class="composer-hint">{{ voiceHint || 'Enter 发送 · Shift + Enter 换行' }}</p>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, watch, nextTick, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, nextTick, onBeforeUnmount, getCurrentInstance } from 'vue'
 import { ElMessage } from 'element-plus'
 import { transcribeChatVoice } from '@/api/chatAssistant'
 import request from '@/api/request'
 import { useUserStore } from '@/stores/user'
 import { filterSkillCommands } from '@/utils/skillCommands'
 import {Plus,Document,Close,Lock} from '@element-plus/icons-vue'
-import {ComposerResources} from '@/utils/composerResources'
+import {ComposerResources,modelLabel,selectedModelMissing} from '@/utils/composerResources'
+import {composerAttachment,composerDefaultModel,composerUploadHint} from '@/utils/composerPresentation'
+import '@/assets/composer-presentation.css'
 
 const props = defineProps({
-  loading: { type: Boolean, default: false },sessionId:String,modelLocked:Boolean,run:Object
+  loading: { type: Boolean, default: false },sessionId:String,modelLocked:Boolean,run:Object,
+  showPresets: { type: Boolean, default: true }
 })
 
 const emit = defineEmits(['send','stop'])
 const draft = ref('')
+const commandListId='chat-skill-commands-'+getCurrentInstance().uid
+const commandMenuRef=ref(null)
+const browserOffline = ref(navigator.onLine === false)
+const updateBrowserConnection = () => { browserOffline.value = navigator.onLine === false }
+window.addEventListener('online',updateBrowserConnection)
+window.addEventListener('offline',updateBrowserConnection)
 const resources=ref({ready:false,files:[],models:[],modelId:'',busy:false,error:''}),fileInputRef=ref(null)
 const resourceClient=new ComposerResources({base:(import.meta.env.VITE_API_URL||'').replace(/\/$/,''),onState:value=>{resources.value=value},onDraft:value=>{draft.value=value}})
 watch(draft,value=>resourceClient.draft(value),{flush:'sync'})
@@ -111,7 +129,7 @@ const commandOptions=computed(()=>filterSkillCommands(commandCatalog.value,draft
 const menuVisible=computed(()=>!props.loading&&!menuDismissed.value&&commandOptions.value.length>0)
 let commandGeneration=0
 async function refreshCommands(){const generation=++commandGeneration;commandCatalog.value=null;commandError.value='';try{const response=await request.get('/api/agent/commands');if(generation===commandGeneration)commandCatalog.value=response.data}catch{if(generation===commandGeneration){commandCatalog.value=null;commandError.value='技能目录暂不可用 可用 /help 查看命令帮助'}}}
-function handleInput(){menuDismissed.value=false;activeCommand.value=0;autoResize()}
+function handleInput(){menuDismissed.value=false;activeCommand.value=0}
 function selectCommand(item){draft.value=item.value.trimEnd()+' ';menuDismissed.value=true;activeCommand.value=0;nextTick(()=>{textareaRef.value?.focus();autoResize()})}
 function handleKey(event){if(event.isComposing||event.keyCode===229)return;if(menuVisible.value&&!event.shiftKey){
   if(event.key==='Escape'){event.preventDefault();event.stopPropagation();menuDismissed.value=true;return}
@@ -120,6 +138,14 @@ function handleKey(event){if(event.isComposing||event.keyCode===229)return;if(me
 }if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();handleSend()}}
 watch(()=>[user.username,user.role],()=>{commandGeneration++;commandCatalog.value=null;draft.value='';menuDismissed.value=true;commandError.value=''})
 watch(commandOptions,options=>{if(activeCommand.value>=options.length)activeCommand.value=0})
+watch(()=>[menuVisible.value,activeCommand.value,commandOptions.value[activeCommand.value]?.value],async()=>{
+  await nextTick()
+  const menu=commandMenuRef.value,option=menu?.querySelector('[aria-selected="true"]')
+  if(!menuVisible.value||!menu||!option)return
+  const bounds=menu.getBoundingClientRect(),selected=option.getBoundingClientRect()
+  if(selected.top<bounds.top+8)menu.scrollTop-=bounds.top+8-selected.top
+  else if(selected.bottom>bounds.bottom-8)menu.scrollTop+=selected.bottom-bounds.bottom+8
+},{flush:'post'})
 const recording = ref(false)
 const voiceTranscribing = ref(false)
 const voiceHint = ref('')
@@ -139,14 +165,14 @@ const voiceMimeOptions = [
 ]
 
 const quickChips = [
-  { label: '业务地图', text: '显示系统业务地图和功能入口', icon: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>' },
-  { label: '缺陷统计', text: '查询最近检测任务的缺陷数量', icon: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10.3 3.5 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.5a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>' },
-  { label: '质检记录', text: '查询我有权限查看的质检记录', icon: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>' },
-  { label: '批次追溯', text: '批次追溯在哪个页面操作', icon: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16"/><path d="M4 12h16"/><path d="M4 17h10"/><path d="M7 4v16"/></svg>' },
-  { label: '模型列表', text: '查询我有权限查看的模型列表', icon: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3v18"/><path d="M5 8h14"/><path d="M5 16h14"/></svg>' },
-  { label: '工作统计', text: '查询本周工作统计', icon: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>' },
-  { label: '执行轨迹', text: '如何查看 AgentScope 调用轨迹', icon: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M22 12h-4l-3 7-6-14-3 7H2"/><path d="M17 4h4v4"/></svg>' },
-  { label: '助手能力', text: '当前助手支持哪些只读查询', icon: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>' }
+  { label: '业务地图', text: '显示系统业务地图和功能入口', icon: 'Collection' },
+  { label: '缺陷统计', text: '查询最近检测任务的缺陷数量', icon: 'DataAnalysis' },
+  { label: '质检记录', text: '查询我有权限查看的质检记录', icon: 'DocumentChecked' },
+  { label: '批次追溯', text: '批次追溯在哪个页面操作', icon: 'DocumentCopy' },
+  { label: '模型列表', text: '查询我有权限查看的模型列表', icon: 'Tickets' },
+  { label: '工作统计', text: '查询本周工作统计', icon: 'DataAnalysis' },
+  { label: '执行轨迹', text: '如何查看 AgentScope 调用轨迹', icon: 'Connection' },
+  { label: '助手能力', text: '当前助手支持哪些只读查询', icon: 'ChatDotRound' }
 ]
 const textareaRef = ref(null)
 
@@ -158,6 +184,7 @@ const autoResize = () => {
     el.style.height = Math.min(el.scrollHeight, 140) + 'px'
   })
 }
+watch(draft,autoResize,{flush:'post'})
 
 const handleSend = () => {
   const value = resourceClient.content(draft.value)
@@ -286,6 +313,8 @@ const handleVoiceRecorded = async () => {
 }
 
 onBeforeUnmount(() => {
+  window.removeEventListener('online',updateBrowserConnection)
+  window.removeEventListener('offline',updateBrowserConnection)
   resourceClient.close()
   commandGeneration++
   clearRecordingTimer()
@@ -480,4 +509,6 @@ onBeforeUnmount(() => {
 </style>
 <style scoped>
 .composer{padding-top:8px}.composer :deep(.conversation-controls){margin:0 2px -7px;padding:6px 10px 12px;background:#f2f3f5;border-radius:18px 18px 6px 6px}.composer :deep(.conversation-queue){background:transparent;margin:0;max-height:150px}.gpt-composer-input{position:relative;z-index:1;border-radius:26px;padding:14px 14px 10px;gap:5px;background:#fff;border-color:#d9dde3;box-shadow:0 2px 10px #18223706;min-height:124px}.gpt-composer-input .composer-textarea{min-height:58px;padding:2px 2px 10px;font-size:14px}.composer-toolbar{gap:9px}.composer-toolbar select{margin-left:auto;font-size:12px;max-width:200px;text-overflow:ellipsis}.composer-permission,.composer-context{display:inline-flex;align-items:center;gap:5px;white-space:nowrap;font-size:12px;color:#64748b}.composer-context{border-left:1px solid #e2e5e9;padding-left:10px}.composer-context .el-icon{font-size:15px}.composer-voice{background:transparent;color:#697586}.composer-stop{display:grid;place-items:center;width:36px;height:36px;flex-shrink:0;border:0;border-radius:50%;background:#e4e7eb;color:#313842;cursor:pointer;transition:transform .15s}.composer-stop:hover{transform:scale(1.04)}.gpt-composer-input .composer-send.active{background:#202a37;color:#fff}.composer-permission .el-icon{font-size:15px}.composer-add{color:#424b58}.gpt-composer-input .composer-send,.gpt-composer-input .composer-voice{width:34px;height:34px}@media(max-width:600px){.composer-permission>span,.composer-context{display:none}.composer-toolbar select{max-width:160px;flex:1}.composer-toolbar{gap:3px}.gpt-composer-input{padding:12px 10px 9px}}@media(prefers-reduced-motion:reduce){.composer-stop{transition:none;transform:none!important}}
+
+.model-selection-feedback{display:flex;flex-wrap:wrap;align-items:center;gap:4px 10px;font-size:11px;color:#64748b;margin-top:5px;overflow-wrap:anywhere}.model-selection-feedback:empty{display:none}.model-selection-feedback button{border:0;border-radius:6px;background:#eff6ff;color:#2563eb;padding:4px 8px;cursor:pointer;transition:background .15s,transform .15s}.model-selection-feedback button:hover:not(:disabled){background:#dbeafe;transform:scale(1.02)}.model-selection-feedback button:disabled{opacity:.5;cursor:wait}.model-selection-feedback button:focus-visible,select[aria-label="使用模型"]:focus-visible{outline:2px solid #2563eb;outline-offset:2px}@media(prefers-reduced-motion:reduce){.model-selection-feedback button{transition:none;transform:none!important}}
 </style>

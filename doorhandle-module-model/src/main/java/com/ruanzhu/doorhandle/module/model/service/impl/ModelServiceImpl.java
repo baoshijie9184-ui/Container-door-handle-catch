@@ -1,7 +1,6 @@
 package com.ruanzhu.doorhandle.module.model.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.ruanzhu.doorhandle.common.BusinessException;
 import com.ruanzhu.doorhandle.module.model.entity.ModelInfo;
 import com.ruanzhu.doorhandle.module.model.entity.ModelOperationLog;
@@ -9,23 +8,23 @@ import com.ruanzhu.doorhandle.module.model.mapper.ModelInfoMapper;
 import com.ruanzhu.doorhandle.module.model.mapper.ModelOperationLogMapper;
 import com.ruanzhu.doorhandle.module.model.service.ModelService;
 import com.ruanzhu.doorhandle.module.model.service.ModelValidationService;
+import com.ruanzhu.doorhandle.module.model.service.ModelUploadFiles;
+import com.ruanzhu.doorhandle.module.model.service.ModelRegistrationService;
+import com.ruanzhu.doorhandle.module.model.service.ModelFileJournal;
+import org.springframework.beans.factory.ObjectProvider;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.dao.DuplicateKeyException;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
 
-import java.io.File;
-import java.io.IOException;
 import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Locale;
-import java.util.UUID;
 
 @Service
 @RequiredArgsConstructor
@@ -35,9 +34,10 @@ public class ModelServiceImpl implements ModelService {
     private final ModelInfoMapper modelInfoMapper;
     private final ModelOperationLogMapper modelOperationLogMapper;
     private final ModelValidationService modelValidationService;
-
-    @Value("${model.upload-dir:${user.dir}/uploads/models}")
-    private String modelUploadDir;
+    private final ModelUploadFiles uploadFiles;
+    private final ModelRegistrationService registration;
+    private final ObjectProvider<ModelFileJournal> fileJournals;
+    private final com.ruanzhu.doorhandle.module.model.service.ModelMutationIdentity identity;
 
     @Value("${model.max-upload-bytes:209715200}")
     private long maxUploadBytes;
@@ -48,85 +48,31 @@ public class ModelServiceImpl implements ModelService {
             throw new BusinessException("上传文件不能为空");
         }
         validateOnnxFile(file);
+        if(modelName==null || modelName.isBlank() || modelName.length()>100 || version==null || version.isBlank() || version.length()>20
+                || (updateDescription!=null && updateDescription.length()>500)) throw new BusinessException("模型名称、版本或说明长度无效");
 
         ModelInfo existingModel = modelInfoMapper.selectByModelNameAndVersion(modelName, version);
         if (existingModel != null) {
             throw new BusinessException("模型名称和版本已存在");
         }
 
-        File modelDir = new File(modelUploadDir);
-        if (!modelDir.exists() && !modelDir.mkdirs()) {
-            throw new BusinessException("创建模型目录失败");
-        }
-
-        File destFile = null;
-        try {
-            String originalFilename = file.getOriginalFilename();
-            String fileExtension = originalFilename != null && originalFilename.contains(".")
-                    ? originalFilename.substring(originalFilename.lastIndexOf("."))
-                    : ".onnx";
-            String savedFilename = UUID.randomUUID() + fileExtension;
-            destFile = new File(modelDir, savedFilename);
-            file.transferTo(destFile);
-
-            ModelInfo insertedModel = insertWithRetry(modelName, version, updateDescription, destFile);
-
-            LambdaQueryWrapper<ModelInfo> queryWrapper = new LambdaQueryWrapper<>();
-            queryWrapper.eq(ModelInfo::getModelId, insertedModel.getModelId());
-            ModelInfo savedModel = modelInfoMapper.selectOne(queryWrapper);
-            if (savedModel == null) {
-                throw new BusinessException("模型信息保存失败");
-            }
-
-            savedModel.setUploadTime(LocalDateTime.now());
-            modelInfoMapper.updateModelRecord(savedModel);
-            return savedModel;
-        } catch (IOException e) {
-            deleteQuietly(destFile);
-            throw new BusinessException("保存模型文件失败: " + e.getMessage());
-        } catch (RuntimeException e) {
-            deleteQuietly(destFile);
-            throw e;
-        }
-    }
-
-    private ModelInfo insertWithRetry(String modelName, String version, String updateDescription, File destFile) {
-        DuplicateKeyException lastException = null;
-        ModelValidationService.ValidationResult validationResult = modelValidationService.validate(destFile.toPath());
-        for (int attempt = 0; attempt < 3; attempt++) {
-            ModelInfo modelInfo = new ModelInfo();
-            modelInfo.setModelId(modelInfoMapper.selectNextModelId());
-            modelInfo.setModelName(modelName);
-            modelInfo.setVersion(version);
-            modelInfo.setModelPath(destFile.getAbsolutePath());
-            modelInfo.setUploadTime(LocalDateTime.now());
-            modelInfo.setUpdateDescription(updateDescription);
-            modelInfo.setStatus("PASSED".equals(validationResult.status()) ? "READY" : "DRAFT");
-            modelInfo.setIsDefault(Boolean.FALSE);
-            modelInfo.setCreator(resolveCurrentUsername());
-            modelInfo.setUsageCount(0);
-            modelInfo.setValidationStatus(validationResult.status());
-            modelInfo.setValidationMessage(validationResult.message());
-            modelInfo.setMlopsStatus("UNASSESSED");
-            modelInfo.setDeploymentStrategy("FULL");
-            modelInfo.setCanaryPercent(100);
-            try {
-                modelInfoMapper.insert(modelInfo);
-                recordOperation(
-                        modelInfo.getModelId(),
-                        "UPLOAD",
-                        "上传模型: " + modelName + "@" + version + "，校验结果: " + validationResult.status()
-                );
-                return modelInfo;
-            } catch (DuplicateKeyException e) {
-                lastException = e;
-                log.warn("model_id 冲突，重试第 {} 次: {}", attempt + 1, e.getMessage());
+        var prepared=uploadFiles.write(file);
+        var validation=modelValidationService.validate(prepared.path());
+        uploadFiles.verify(prepared);
+        // Registration is a separate proxied SQL transaction; uncertainty must not trigger byte deletion.
+        for(int attempt=0;attempt<3;attempt++) {
+            try { return registration.register(prepared,modelName,version,updateDescription,validation); }
+            catch(ModelRegistrationService.IdentifierCollision collision) {
+                // This INSERT is known to have rolled back; the next proxy call obtains a fresh transaction.
+                // Upload bytes and validation are not replayed. Commit/audit/connection errors are not retried.
+                if(attempt==2) throw new BusinessException("模型编号冲突，文件保留待核对");
             }
         }
-        throw new BusinessException("模型信息保存失败: " + (lastException != null ? lastException.getMessage() : "model_id 冲突"));
+        throw new IllegalStateException("模型登记未完成");
     }
 
     @Override
+    @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DETECTION_MODEL",action="updateModel",supervisorOnly=true)
     public ModelInfo updateModel(ModelInfo modelInfo) {
         LambdaQueryWrapper<ModelInfo> queryWrapper = new LambdaQueryWrapper<>();
         queryWrapper.eq(ModelInfo::getModelId, modelInfo.getModelId());
@@ -143,9 +89,14 @@ public class ModelServiceImpl implements ModelService {
     }
 
     @Override
+    @org.springframework.transaction.annotation.Transactional(rollbackFor=Exception.class)
+    @org.springframework.cache.annotation.CacheEvict(cacheNames={"model","dashboard"},allEntries=true)
+    @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DETECTION_MODEL",action="deleteModel",supervisorOnly=true)
     public void deleteModel(Integer modelId) {
+        identity.supervisor();
         LambdaQueryWrapper<ModelInfo> queryWrapper = new LambdaQueryWrapper<>();
         queryWrapper.eq(ModelInfo::getModelId, modelId);
+        queryWrapper.last("FOR UPDATE");
 
         ModelInfo modelInfo = modelInfoMapper.selectOne(queryWrapper);
         if (modelInfo == null) {
@@ -155,18 +106,12 @@ public class ModelServiceImpl implements ModelService {
             throw new BusinessException("已被任务引用的模型不允许删除，请改为停用或归档");
         }
 
-        String modelPath = modelInfo.getModelPath();
-        if (StringUtils.hasText(modelPath)) {
-            File modelFile = new File(modelPath);
-            if (modelFile.exists() && !modelFile.delete()) {
-                log.warn("模型文件删除失败: {}", modelPath);
-            }
-        }
-
-        LambdaUpdateWrapper<ModelInfo> deleteWrapper = new LambdaUpdateWrapper<>();
-        deleteWrapper.eq(ModelInfo::getModelId, modelId);
-        modelInfoMapper.delete(deleteWrapper);
-        recordOperation(modelId, "DELETE", "删除模型文件与记录");
+        var journal=fileJournals.getIfAvailable();
+        if(journal!=null) journal.retain(modelInfo);
+        if(modelInfoMapper.deleteByModelId(modelId)!=1) throw new BusinessException("模型记录已变化");
+        // File retention is intentional even with the journal disabled. SQL rollback cannot restore bytes.
+        // model_operation_log has a foreign key to the deleted row. Durable deletion evidence belongs
+        // to the independent retention journal and operations audit, not an INSERT after parent deletion.
     }
 
     @Override
@@ -175,6 +120,7 @@ public class ModelServiceImpl implements ModelService {
     }
 
     @Override
+    @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DETECTION_MODEL",action="publishModel",supervisorOnly=true)
     public ModelInfo publishModel(Integer modelId) {
         ModelInfo modelInfo = requireModel(modelId);
         if ("ARCHIVED".equals(modelInfo.getStatus())) {
@@ -196,6 +142,7 @@ public class ModelServiceImpl implements ModelService {
     }
 
     @Override
+    @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DETECTION_MODEL",action="setDefaultModel",supervisorOnly=true)
     public ModelInfo setDefaultModel(Integer modelId) {
         ModelInfo modelInfo = requireModel(modelId);
         if (!"PUBLISHED".equals(modelInfo.getStatus())) {
@@ -210,6 +157,7 @@ public class ModelServiceImpl implements ModelService {
     }
 
     @Override
+    @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DETECTION_MODEL",action="DISABLE",supervisorOnly=true)
     public ModelInfo disableModel(Integer modelId) {
         ModelInfo modelInfo = requireModel(modelId);
         modelInfo.setStatus("DISABLED");
@@ -220,6 +168,7 @@ public class ModelServiceImpl implements ModelService {
     }
 
     @Override
+    @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DETECTION_MODEL",action="ARCHIVE",supervisorOnly=true)
     public ModelInfo archiveModel(Integer modelId) {
         ModelInfo modelInfo = requireModel(modelId);
         modelInfo.setStatus("ARCHIVED");
@@ -230,6 +179,7 @@ public class ModelServiceImpl implements ModelService {
     }
 
     @Override
+    @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DETECTION_MODEL",action="VALIDATE",supervisorOnly=true)
     public ModelInfo validateModel(Integer modelId) {
         ModelInfo modelInfo = requireModel(modelId);
         if (!StringUtils.hasText(modelInfo.getModelPath())) {
@@ -288,15 +238,6 @@ public class ModelServiceImpl implements ModelService {
         return bytes + "B";
     }
 
-    private void deleteQuietly(File file) {
-        if (file == null || !file.exists()) {
-            return;
-        }
-        if (!file.delete()) {
-            log.warn("清理模型临时文件失败: {}", file.getAbsolutePath());
-        }
-    }
-
     private ModelInfo requireModel(Integer modelId) {
         LambdaQueryWrapper<ModelInfo> queryWrapper = new LambdaQueryWrapper<>();
         queryWrapper.eq(ModelInfo::getModelId, modelId);
@@ -334,11 +275,7 @@ public class ModelServiceImpl implements ModelService {
         logEntry.setOperator(resolveCurrentUsername());
         logEntry.setOperationTime(LocalDateTime.now());
         logEntry.setRemark(remark);
-        try {
-            modelOperationLogMapper.insert(logEntry);
-        } catch (RuntimeException e) {
-            log.warn("模型操作日志记录失败: modelId={}, operationType={}", modelId, operationType, e);
-        }
+        if(modelOperationLogMapper.insert(logEntry)!=1) throw new IllegalStateException("模型操作日志未保存");
     }
 
     private String resolveCurrentUsername() {

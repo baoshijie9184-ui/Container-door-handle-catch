@@ -1,23 +1,23 @@
 <template>
   <div class="page-shell image-detection-container">
-    <section class="page-hero detection-hero command-panel">
+    <PageHero class="page-hero detection-hero command-panel">
       <div>
         <span class="industrial-kicker">Detection Workspace</span>
-        <h1 class="page-hero-title">图像检测中心</h1>
+        <h1 class="page-hero-title">{{ workspacePresentation.title }}</h1>
         <p class="page-hero-text">
-          这一版已经切到“OSS 直传原图 + Java 编排任务 + 远程 FastAPI 检测 + OSS 回传结果”的新链路。
+          {{ workspacePresentation.description }}
         </p>
         <div class="detection-flow-chips">
-          <span class="metric-chip">OSS 原图直传</span>
-          <span class="metric-chip">远程模型推理</span>
-          <span class="metric-chip">质检复核闭环</span>
+          <router-link to="/upload"><AppIcon name="Upload" :size="14" />采集上传</router-link>
+          <router-link to="/inspection/workbench"><AppIcon name="Picture" :size="14" />模型检测</router-link>
+          <router-link to="/quality/queue"><AppIcon name="CircleCheck" :size="14" />人工质检</router-link>
         </div>
       </div>
       <div class="hero-side-note">
-        <strong>操作建议</strong>
-        <span>单图与批量检测均通过 OSS 上传，并由 Kafka 调度远程模型推理。</span>
+        <strong><AppIcon name="DocumentChecked" :size="16" />保留检测依据</strong>
+        <span>模型结果供人工核对，放行、返工与报告审批按当前账号权限完成。</span>
       </div>
-    </section>
+    </PageHero>
 
     <el-tabs v-model="activeTab" class="workspace-tabs" @tab-change="handleTabChange">
       <el-tab-pane name="workspace" label="检测工作台">
@@ -27,22 +27,26 @@
               <el-form-item label="选择模型（可选）">
                 <el-select
                   v-model="form.modelId"
-                  placeholder="请选择模型，不选则使用默认模型"
+                  aria-label="选择检测模型，不选则由服务端选择" placeholder="不选则由服务端选择"
+                  :loading="modelsLoading" :disabled="loadingSingle"
+                  :no-data-text="modelsError ? '目录读取失败，请重新读取' : modelsLoading || !modelsLoaded ? '正在核对模型目录' : '目录没有返回模型，可由服务端选择'"
                   clearable
                 >
                   <el-option
                     v-for="model in modelList"
                     :key="model.modelId"
                     :value="model.modelId"
-                    :label="`${model.modelName} (v${model.version})`"
+                    :label="detectionModelOptionLabel(model)"
                   >
-                    {{ model.modelName }} (v{{ model.version }})
+                    <span class="detection-model-option"><span>{{ detectionModelOptionLabel(model) }}</span><StatusBadge domain="model" :code="model.status" /></span>
                   </el-option>
                 </el-select>
               </el-form-item>
+              <p v-if="modelsError" class="detection-input-note is-warning" role="alert">{{ modelsError }}<button type="button" :disabled="modelsLoading || loadingSingle" @click="fetchModels">重新读取目录</button></p>
+              <p class="detection-input-note">{{ form.modelId ? '已选模型仅作为本次提交参数，实际执行版本请核对任务记录。' : '未指定模型时由服务端按现有配置选择，实际模型以任务记录为准。' }}</p>
 
               <el-form-item label="置信度阈值">
-                <el-slider v-model="form.threshold" :min="0" :max="1" :step="0.01" />
+                <el-slider v-model="form.threshold" :disabled="loadingSingle" :min="0" :max="1" :step="0.01" aria-label="本次检测置信度阈值" />
                 <div class="threshold-text">当前阈值：{{ Math.round(form.threshold * 100) }}%</div>
               </el-form-item>
 
@@ -60,8 +64,9 @@
                         accept=".jpg,.jpeg,.png"
                         list-type="picture"
                         :limit="1"
+                        :disabled="loadingSingle"
                       >
-                        <el-button type="primary" class="wide-button">
+                        <el-button type="primary" class="wide-button" :disabled="loadingSingle">
                           <el-icon><Upload /></el-icon>
                           选择单张图片
                         </el-button>
@@ -77,7 +82,8 @@
                       <el-button
                         type="default"
                         class="wide-button secondary-action"
-                        :disabled="!form.imageFile"
+                        :disabled="!form.imageFile || singleStageCode === 'UNCONFIRMED'"
+                        :aria-describedby="singleStageCode === 'UNCONFIRMED' ? 'single-result-reconcile-note' : undefined"
                         :loading="loadingSingle"
                         @click="handleSingleDetection"
                       >
@@ -86,16 +92,13 @@
                       </el-button>
                     </div>
 
-                    <section class="single-detection-result" v-loading="loadingSingle" aria-live="polite">
+                    <section class="single-detection-result" :aria-busy="loadingSingle" aria-label="本次单图检测状态与结果">
                       <div class="single-result-heading">
                         <div>
-                          <span>Detection Result</span>
                           <strong>检测结果</strong>
                         </div>
                         <div class="single-result-tags">
-                          <el-tag type="primary" effect="plain">Kafka 远程</el-tag>
-                          <el-tag v-if="detectionResult" type="success" effect="light">检测完成</el-tag>
-                          <el-tag v-else-if="form.imageFile" type="info" effect="plain">等待检测</el-tag>
+                          <StatusBadge domain="singleDetection" :code="singleStageCode" />
                         </div>
                       </div>
 
@@ -103,38 +106,26 @@
                         <code v-if="singleDetectionTaskId" class="single-result-task-id">
                           {{ singleDetectionTaskId }}
                         </code>
-                        <span v-if="singleDetectionMessage">{{ singleDetectionMessage }}</span>
+                        <span v-if="singleDetectionMessage" role="status" aria-live="polite">{{ singleDetectionMessage }}</span>
                       </div>
+                      <dl v-if="singleSubmission" class="single-submission-summary"><div><dt>本次提交图片</dt><dd>{{ singleSubmission.fileName }}</dd></div><div><dt>提交模型选项</dt><dd>{{ singleSubmission.modelLabel }}</dd></div><div><dt>提交阈值</dt><dd>{{ formatEvidenceConfidence(singleSubmission.threshold) }}</dd></div></dl>
                       <el-alert
-                        v-if="singleDetectionStage === 'FAILED'"
-                        type="error"
+                        v-if="['FAILED','UNCONFIRMED'].includes(singleStageCode)"
+                        :type="singleStageCode === 'FAILED' ? 'error' : 'warning'"
                         :closable="false"
                         show-icon
                         :title="singleDetectionMessage"
                         class="single-result-error"
                       />
+                      <p v-if="singleStageCode === 'UNCONFIRMED'" id="single-result-reconcile-note" class="detection-input-note">连接或结果读取未完成不等于任务失败，请先<router-link to="/inspection/history">查看检测记录</router-link>。本页不会自动重新提交；选择新图片会开始新的提交。</p>
+                      <div v-if="singleDetectionTaskId" class="single-task-links"><button type="button" @click="openTraceDialog(singleDetectionTaskId)"><AppIcon name="Search" :size="14" />核对本次任务</button><router-link :to="{path:'/quality/reports',query:{taskId:singleDetectionTaskId}}">报告与审批</router-link></div>
 
-                      <template v-if="detectionResult">
-                        <div class="single-result-image">
-                          <img v-if="annotatedImageUrl" :src="annotatedImageUrl" alt="单图检测标注结果" />
-                          <el-empty v-else description="暂无标注图" :image-size="72" />
-                        </div>
-                        <el-descriptions bordered :column="1" size="small" class="single-result-meta">
-                          <el-descriptions-item label="检测类别">
-                            <el-tag :type="getCategoryType(detectionResult.category)">
-                              {{ getCategoryText(detectionResult.category) }}
-                            </el-tag>
-                          </el-descriptions-item>
-                          <el-descriptions-item label="置信度">
-                            {{ formatConfidence(detectionResult.confidence) }}
-                          </el-descriptions-item>
-                        </el-descriptions>
-                      </template>
+                      <SingleDetectionEvidence v-if="detectionResult" :task-id="singleDetectionTaskId" :file-name="singleSubmission?.fileName || ''" :original-url="detectionResult.processedImagePath" :annotation-url="annotatedImageUrl" :local-preview="fileList[0]?.url || ''" :category-label="getCategoryText(detectionResult.category)" :category-tone="getCategoryType(detectionResult.category)" :confidence-label="formatConfidence(detectionResult.confidence)" />
                       <template v-else-if="fileList[0]?.url">
                         <div class="single-result-image single-result-preview">
                           <img :src="fileList[0].url" alt="待检测图片预览" />
                         </div>
-                        <p class="single-result-hint">图片已就绪，点击“开始单图检测”查看标注结果</p>
+                        <p class="single-result-hint">{{ loadingSingle ? '当前图片正在处理，提交参数已锁定，请等待或核对任务记录。' : singleStageCode === 'UNCONFIRMED' ? '原图保留，先核对已有任务；不要根据预览推断检测已完成。' : '图片已选入，核对模型与阈值后开始检测' }}</p>
                       </template>
                       <el-empty v-else description="请先选择图片并开始检测" :image-size="88" />
                     </section>
@@ -149,7 +140,7 @@
               <div class="card-title-row">
                 <span>上传任务列表</span>
                 <el-badge v-if="taskList.length" :value="taskList.length"  />
-                <el-button size="small" link :loading="refreshingTasks" @click="refreshTaskList" title="刷新任务列表">
+                <el-button size="small" link :loading="refreshingTasks" @click="refreshTaskList" title="刷新任务列表" aria-label="刷新任务列表">
                   <template #icon><el-icon><Refresh /></el-icon></template>
                 </el-button>
               </div>
@@ -158,7 +149,7 @@
             <div class="task-search-bar">
               <el-input
                 v-model="taskSearchKeyword"
-                placeholder="搜索任务ID或文件夹名…"
+                aria-label="搜索任务ID或文件夹名…" placeholder="搜索任务ID或文件夹名…"
                 clearable
                 size="small"
                 class="task-search-input"
@@ -167,7 +158,7 @@
               </el-input>
               <el-date-picker
                 v-model="taskFilterDate"
-                placeholder="选择日期"
+                aria-label="选择日期" placeholder="选择日期"
                 size="small"
                 class="task-date-picker"
                 value-format="YYYY-MM-DD"
@@ -192,7 +183,7 @@
               <template #default>
                 <BusinessSeedEmptyHint
                   :title="taskList.length ? '没有匹配的任务' : '暂无检测任务'"
-                  description="可上传图片生成检测任务；首次验收完整业务闭环时，也可启用业务预置数据。"
+                  description="可上传图片创建检测任务，已有记录也可以通过调整筛选条件查找。"
                 />
                 <router-link v-if="!taskList.length" to="/upload">
                   <el-button type="primary" size="small">前往上传图片</el-button>
@@ -227,7 +218,7 @@
                   <div class="task-item-capture">
                     <span v-if="task.batchNo">批次：{{ task.batchNo }}</span>
                     <span v-if="task.workOrderNo">工单：{{ task.workOrderNo }}</span>
-                    <span v-if="task.flowStatus">流转：{{ flowStatusText(task.flowStatus) }}</span>
+                    <StatusBadge v-if="task.flowStatus" domain="flow" :code="task.flowStatus" :label="flowStatusText(task.flowStatus)" />
                     <span v-if="task.reviewStatus">复核：{{ reviewStatusText(task.reviewStatus) }}</span>
                     <span v-if="task.severityLevel">等级：{{ severityText(task.severityLevel) }}</span>
                   </div>
@@ -256,6 +247,7 @@
                     </span>
                     <span class="task-item-time">{{ formatRelativeTime(task.updatedAt) }} · {{ formatAbsoluteTime(task.updatedAt) }}</span>
                   </div>
+                  <QualityStageGuidance v-if="selectedTaskId === task.taskId" :task="task" />
                 </div>
 
                 <!-- 操作按钮 -->
@@ -341,7 +333,7 @@
                     <el-step title="检测完成" :description="taskStepDesc(task, 2)" />
                   </el-steps>
 
-                  <el-alert v-if="task.error" type="error" show-icon :message="task.error" style="margin-bottom: 10px;" />
+                  <el-alert v-if="task.error" type="error" show-icon :title="task.error" style="margin-bottom: 10px;" />
 
                   <div v-if="task.logs.length" class="task-log-block">
                     <div class="task-log-head"><span>最近动态</span></div>
@@ -357,7 +349,7 @@
                   <div v-if="task.result" class="task-result-inline">
                     <el-alert
                       :type="task.result.status === 'COMPLETED' ? 'success' : 'warning'"
-                      :message="task.result.status === 'COMPLETED' ? '检测已完成' : '任务已结束'"
+                      :title="task.result.status === 'COMPLETED' ? '检测已完成' : '任务已结束'"
                       show-icon
                       style="margin-bottom: 12px;"
                     />
@@ -437,165 +429,31 @@
       </el-tab-pane>
 
       <el-tab-pane name="history" label="检测记录">
-        <el-card class="detection-card" shadow="never">
-          <template #header>
-            <div class="card-title-row">
-              <span>检测记录</span>
-              <el-input
-                v-model="historySearchKeyword"
-                placeholder="搜索任务ID、文件夹名、地区、采集人…"
-                clearable
-                size="small"
-                style="width: 280px"
-                @change="onHistorySearch"
-                @keyup.enter="onHistorySearch"
-              />
-              <el-badge v-if="historyTotal" :value="historyTotal"  />
-            </div>
-          </template>
-          <!-- 高级筛选 -->
-          <div class="history-filter-bar">
-            <el-input v-model="historyFilterCollector" placeholder="采集人" clearable size="small" class="history-filter-input" @keyup.enter="fetchHistoryWithFilters">
-              <template #prefix><span style="font-size:11px;color:#94a3b8">采集人</span></template>
-            </el-input>
-            <el-input v-model="historyFilterDevice" placeholder="设备编号" clearable size="small" class="history-filter-input" @keyup.enter="fetchHistoryWithFilters">
-              <template #prefix><span style="font-size:11px;color:#94a3b8">设备</span></template>
-            </el-input>
-            <el-input v-model="historyFilterRegion" placeholder="地区" clearable size="small" class="history-filter-input" @keyup.enter="fetchHistoryWithFilters">
-              <template #prefix><span style="font-size:11px;color:#94a3b8">地区</span></template>
-            </el-input>
-            <el-button size="small" type="primary" @click="fetchHistoryWithFilters">查询</el-button>
-          </div>
-          <el-empty
-            v-if="historyTotal === 0 && !historyLoading"
-            description="暂无检测记录"
-            :image-size="64"
-          >
-            <template #default>
-              <BusinessSeedEmptyHint
-                title="暂无检测记录"
-                description="可上传图片生成检测任务；首次验收完整业务闭环时，也可启用业务预置数据。"
-              />
-              <router-link to="/upload">
-                <el-button type="primary" size="small">前往上传图片</el-button>
-              </router-link>
-            </template>
-          </el-empty>
-          <div v-else class="history-grid" v-loading="historyLoading">
-            <div v-for="task in historyRecords" :key="task.taskId" class="history-record-card">
-              <!-- 头部 -->
-              <div class="record-header">
-                <div class="record-header-left">
-                  <span class="record-folder">{{ task.folderName }}</span>
-                  <div class="record-taskid">{{ task.taskId }}</div>
-                  <div v-if="task.captureInfo" class="record-capture">
-                    <span v-if="task.batchNo">批次：{{ task.batchNo }}</span>
-                    <span v-if="task.workOrderNo">工单：{{ task.workOrderNo }}</span>
-                    <span v-if="task.flowStatus">流转：{{ flowStatusText(task.flowStatus) }}</span>
-                    <span v-if="task.reviewStatus">复核：{{ reviewStatusText(task.reviewStatus) }}</span>
-                    <span v-if="task.severityLevel">等级：{{ severityText(task.severityLevel) }}</span>
-                    <span v-if="task.captureInfo.captureDate">{{ task.captureInfo.captureDate }}</span>
-                    <span v-if="task.captureInfo.collector">{{ task.captureInfo.collector }}</span>
-                    <span v-if="task.captureInfo.deviceName">{{ task.captureInfo.deviceName }}</span>
-                  </div>
-                  <div v-if="task.sourceOssPrefix" class="record-oss-path">
-                    <span class="oss-path-label">存储路径</span>
-                    <code class="oss-path-value">{{ task.sourceOssPrefix }}</code>
-                  </div>
-                </div>
-                <el-tag v-if="task.stage === 'completed'" type="success">已完成</el-tag>
-                <el-tag v-else-if="task.stage === 'failed'" type="danger">失败</el-tag>
-                <el-tag v-else type="warning">部分失败</el-tag>
-              </div>
-
-              <!-- 统计数字 -->
-              <el-row :gutter="16" class="record-stats">
-                <el-col :span="6">
-                  <el-statistic title="图片总数" :value="task.imageCount || 0" value-style="font-size:18px" />
-                </el-col>
-                <el-col :span="6">
-                  <el-statistic title="成功" :value="task.result?.successfulImages || 0" value-style="font-size:18px;color:#389e0d" />
-                </el-col>
-                <el-col :span="6">
-                  <el-statistic title="失败" :value="task.result?.failedImages || 0" value-style="font-size:18px;color:#e84749" />
-                </el-col>
-                <el-col :span="6">
-                  <div style="text-align:center">
-                    <div style="font-size:12px;color:#8b95a5;margin-bottom:2px">检测时间</div>
-                    <div style="font-size:14px;color:#8b95a5">{{ formatRelativeTime(task.finishedAt || task.createdAt) }}</div>
-                    <div style="font-size:12px;color:#b0b8c4">{{ formatAbsoluteTime(task.finishedAt || task.createdAt) }}</div>
-                  </div>
-                </el-col>
-              </el-row>
-
-              <!-- 分类统计 -->
-              <div v-if="task.result?.statistics" class="record-classes">
-                <el-tag v-if="task.reviewConclusion" :type="reviewStatusTagType(task.reviewStatus)" style="margin:2px 4px 2px 0">
-                  {{ reviewConclusionText(task.reviewConclusion) }}
-                </el-tag>
-                <el-tag v-if="task.severityLevel" :type="severityTagType(task.severityLevel)" style="margin:2px 4px 2px 0">
-                  {{ severityText(task.severityLevel) }}
-                </el-tag>
-                <el-tag
-                  v-for="item in buildTaskStatistics(task.result.statistics).filter(s => s.value > 0)"
-                  :key="item.key"
-                  :type="getStatType(item.key)"
-                  style="margin:2px 4px 2px 0"
-                >
-                  {{ item.label }}: {{ item.value }}
-                </el-tag>
-              </div>
-
-              <!-- 预览图 -->
-              <div v-if="task.result?.previewImages?.length" class="record-preview">
-                <img
-                  v-for="item in task.result.previewImages.slice(0, 6)"
-                  :key="item.imageName"
-                  :src="item.annotatedUrl"
-                  :alt="item.imageName"
-                  :title="item.imageName"
-                  class="record-preview-img"
-                  @error="$event.target.alt='图片加载失败';$event.target.style.opacity='0.3';$event.target.style.border='2px dashed #ccc'"
-                />
-              </div>
-
-              <!-- 底部操作 -->
-              <div class="record-footer">
-                <span class="record-task-id">任务编号: {{ task.taskId }}</span>
-                <div class="record-actions">
-                  <a v-if="task.result?.resultJsonUrl" :href="task.result.resultJsonUrl" target="_blank">
-                    <el-button link size="small">查看结果 JSON</el-button>
-                  </a>
-                  <el-button link size="small" type="primary" @click="openTraceDialog(task.taskId)">追溯详情</el-button>
-                  <el-button link size="small" type="primary" @click="router.push({ path: '/quality/reports', query: { taskId: task.taskId } })">报告草稿</el-button>
-                  <el-button link size="small" type="danger" @click="removeTask(task.taskId)">
-                    <el-icon><Delete /></el-icon>移除
-                  </el-button>
-                </div>
-              </div>
-            </div>
-          </div>
-          <!-- 分页 -->
-          <div v-if="historyTotal > 0" class="history-pagination">
-            <el-pagination
-              v-model:current-page="historyPage"
-              v-model:page-size="historyPageSize"
-              :total="historyTotal"
-              :page-size-options="['10', '20', '50']"
-              layout="total, sizes, prev, pager, next, jumper"
-              @current-change="onHistoryPageChange"
-              @size-change="onHistorySizeChange"
-            />
-          </div>
+        <el-card class="detection-card history-page-card" shadow="never">
+          <template #header><div class="card-title-row"><span><AppIcon name="Tickets" :size="18" />检测记录</span><el-tag type="info" effect="plain">{{ historyLoading ? '正在读取任务与结果' : historyError ? '本次读取未完成' : historyTotal!==null ? `共 ${historyTotal} 条` : historyLoaded ? '总数未提供' : '数量尚未读取' }}</el-tag><el-button size="small" :loading="historyLoading" @click="refreshHistory"><AppIcon name="Refresh" :size="15" />刷新已读范围</el-button></div></template>
+          <p class="history-scope-note"><AppIcon name="Lock" :size="15" />{{ userStore.role==='SUPERVISOR' ? '企业业务范围' : userStore.role==='INSPECTOR' ? '本人及分派任务' : '当前账号有权访问的范围' }} · 检测完成与人工复核、放行、报告审批分别记录。</p>
+          <form class="history-query-form" @submit.prevent="onHistorySearch">
+            <label for="history-keyword" class="history-query-keyword">任务、文件夹、工单或批次<el-input id="history-keyword" v-model="historySearchKeyword" clearable placeholder="输入编号或文件夹关键词"><template #prefix><AppIcon name="Search" :size="15" /></template></el-input></label>
+            <label for="history-collector">采集人员<el-input id="history-collector" v-model="historyFilterCollector" clearable placeholder="输入采集人员" /></label>
+            <label for="history-device">设备名称<el-input id="history-device" v-model="historyFilterDevice" clearable placeholder="输入采集设备名称" /></label>
+            <label for="history-region">采集区域<el-input id="history-region" v-model="historyFilterRegion" clearable placeholder="输入采集区域" /></label>
+            <div class="history-query-actions"><el-button type="primary" native-type="submit" :loading="historyLoading"><AppIcon name="Search" :size="15" />查询</el-button><el-button v-if="hasHistoryFilters" @click="onHistoryReset"><AppIcon name="Refresh" :size="15" />重置</el-button></div>
+          </form>
+          <p v-if="historyLoaded" class="history-applied-query">已读取：{{ historyAppliedDescription }} · 第 {{ historyPage }} 页 · 本页 {{ historyRecords.length }} 条</p>
+          <p v-if="historyFiltersDirty && historyRecords.length" class="history-filter-note" role="status">输入条件已修改，下方仍为已读取范围；点击查询更新。刷新和翻页沿用已执行的条件。</p>
+          <el-alert v-if="historyError && historyRecords.length" :title="historyError+'；下方保留已读取资料，请重新核对。'" type="error" show-icon :closable="false" />
+          <div v-if="historyError && historyRecords.length" class="history-retry"><el-button size="small" :loading="historyLoading" @click="retryHistoryRead"><AppIcon name="Refresh" :size="14" />重读上次查询</el-button></div>
+          <CollectionEmptyState v-if="!historyRecords.length" :loading="historyLoading" :error="historyError" :filtered="historyLoaded ? Object.keys(historyAppliedFilters).length>0 : hasHistoryFilters" empty-title="暂无检测记录" empty-description="可从图片上传创建任务，或核对关键词与当前账号范围后重新查询。" @retry="retryHistoryRead" @reset="onHistoryReset" />
+          <div v-else class="history-records-grid"><DetectionHistoryCard v-for="task in historyRecords" :key="task.taskId" :task="task" :cached="Array.isArray(taskStore.taskList) && taskStore.taskList.some(cached=>cached.taskId===task.taskId)" :cache-busy="historyCacheBusy" :refreshing="historyLoading" @trace="openTraceDialog" @refresh="refreshHistory" @remove-cache="clearHistoryTaskCache" /></div>
+          <div v-if="historyTotal!==null" class="history-pagination"><el-pagination :current-page="historyPage" :page-size="historyPageSize" :total="historyTotal" :page-sizes="[10,20,50]" :disabled="historyLoading || !!historyError" layout="total, sizes, prev, pager, next, jumper" @current-change="onHistoryPageChange" @size-change="onHistorySizeChange" /></div>
         </el-card>
       </el-tab-pane>
-
       <el-tab-pane name="quality" label="质检队列">
         <el-card class="detection-card quality-queue-card" shadow="never">
           <template #header>
             <div class="card-title-row">
               <span>质检队列</span>
-              <el-tag type="info" effect="plain">{{ qualityQueueTotal }} 条待处理</el-tag>
+              <el-tag type="info" effect="plain">{{ qualityQueueTotal === null ? '总数尚未核对' : `${qualityQueueTotal} 条待处理` }}</el-tag>
               <el-button size="small" :loading="qualityQueueLoading" @click="loadQualityQueue()">
                 <el-icon><Refresh /></el-icon>
                 刷新
@@ -603,18 +461,22 @@
             </div>
           </template>
 
-          <div class="quality-queue-tabs">
+          <p class="quality-queue-scope"><AppIcon name="User" :size="15" />{{ userStore.role === 'SUPERVISOR' ? '企业业务范围' : userStore.role === 'INSPECTOR' ? '本人及分派任务' : '当前账号有权访问的范围' }} · 按所选处理阶段查看，不代表全部历史任务</p>
+          <div class="quality-queue-tabs" role="group" aria-label="按质检处理阶段筛选">
             <button
               v-for="queue in qualityQueues"
               :key="queue.value"
+              type="button"
               class="quality-queue-chip"
               :class="{ active: activeQualityQueue === queue.value }"
+              :aria-pressed="activeQualityQueue === queue.value"
               @click="switchQualityQueue(queue.value)"
             >
               <span>{{ queue.label }}</span>
               <small>{{ queue.hint }}</small>
             </button>
           </div>
+          <el-alert v-if="qualityQueueError && qualityQueueRecords.length" :title="qualityQueueError" type="warning" show-icon :closable="false" class="quality-queue-read-error" />
 
           <el-table
             v-loading="qualityQueueLoading"
@@ -624,27 +486,19 @@
             class="quality-queue-table"
           >
             <template #empty>
-              <BusinessSeedEmptyHint
-                title="当前队列暂无待处理任务"
-                description="如果是首次验收质检闭环，可开启业务预置数据后重启后端，再刷新队列。"
-              />
+              <CollectionEmptyState :loading="qualityQueueLoading || (!qualityQueueLoaded && !qualityQueueError)" :error="qualityQueueError" :filtered="activeQualityQueue !== 'ALL_ACTIONABLE'" empty-title="当前队列暂无待处理任务" empty-description="检测完成后可在待复核阶段查看；放行与报告审批分别处理。" @retry="loadQualityQueue()" @reset="switchQualityQueue('ALL_ACTIONABLE')" />
             </template>
-            <el-table-column prop="taskId" label="任务编号" min-width="185" show-overflow-tooltip />
-            <el-table-column prop="workOrderNo" label="工单" min-width="130" show-overflow-tooltip />
-            <el-table-column prop="batchNo" label="批次" min-width="150" show-overflow-tooltip />
-            <el-table-column prop="deviceName" label="设备" min-width="120" show-overflow-tooltip />
+            <el-table-column label="任务与来源" min-width="215"><template #default="{ row }"><div class="quality-queue-task"><button type="button" @click="openTraceDialog(row.taskId)">{{ row.taskId }}</button><span>工单 {{ row.workOrderNo || '未记录' }}</span><span>批次 {{ row.batchNo || '未记录' }}</span><small>设备 {{ row.deviceName || '未记录' }}</small></div></template></el-table-column>
             <el-table-column label="流转" min-width="130">
-              <template #default="{ row }">{{ flowStatusText(row.flowStatus) }}</template>
+              <template #default="{ row }"><StatusBadge domain="flow" :code="row.flowStatus" :label="flowStatusText(row.flowStatus)" /></template>
             </el-table-column>
             <el-table-column label="复核" min-width="115">
               <template #default="{ row }">
-                <el-tag :type="reviewStatusTagType(row.reviewStatus)" effect="plain">
-                  {{ reviewStatusText(row.reviewStatus) }}
-                </el-tag>
+                <StatusBadge domain="review" :code="row.reviewStatus" :label="reviewStatusText(row.reviewStatus)" />
               </template>
             </el-table-column>
             <el-table-column label="缺陷" width="90">
-              <template #default="{ row }">{{ row.defectCount || 0 }}</template>
+              <template #default="{ row }">{{ traceCount(row.defectCount) }}</template>
             </el-table-column>
             <el-table-column label="等级" width="100">
               <template #default="{ row }">
@@ -653,17 +507,15 @@
                 </el-tag>
               </template>
             </el-table-column>
-            <el-table-column label="责任人" min-width="130">
-              <template #default="{ row }">{{ row.assignee || '--' }}</template>
+            <el-table-column label="责任与截止" min-width="180">
+              <template #default="{ row }"><div class="quality-queue-responsibility"><strong>{{ row.assignee || '未分派' }}</strong><span>{{ row.dueAt ? formatBusinessTime(row.dueAt) || '时间格式未知' : '未设置截止时间' }}</span><small v-if="row.dueAt">北京时间 UTC+8</small></div></template>
             </el-table-column>
-            <el-table-column label="截止" min-width="150" show-overflow-tooltip>
-              <template #default="{ row }">{{ row.dueAt || '--' }}</template>
-            </el-table-column>
+            <el-table-column label="下一步" min-width="235"><template #default="{ row }"><QualityStageGuidance :task="row" /></template></el-table-column>
             <el-table-column label="操作" width="330" fixed="right">
               <template #default="{ row }">
                 <el-button link size="small" type="primary" @click="openTraceDialog(row.taskId)">追溯</el-button>
-                <el-button link size="small" type="success" @click="downloadTaskQualityReport(row.taskId)">报告</el-button>
-                <el-button link size="small" type="info" @click="openAssignmentDialog(row)">分派</el-button>
+                <el-button link size="small" type="info" :disabled="reportDownloading" @click="downloadTaskQualityReport(row.taskId)">任务摘要</el-button>
+                <el-tooltip v-if="userStore.role === 'SUPERVISOR'" :content="canAssignQualityTask(row) ? '选择责任人并确认分派' : qualityActionReason(row,'ASSIGN')" placement="top"><span><el-button link size="small" type="info" :disabled="!canAssignQualityTask(row)" @click="openAssignmentDialog(row)"><AppIcon name="User" :size="14" />分派</el-button></span></el-tooltip>
                 <el-button
                   v-if="canReviewTask(row)"
                   link
@@ -695,12 +547,13 @@
             </el-table-column>
           </el-table>
 
-          <div class="quality-pagination">
+          <p class="quality-queue-scope">任务摘要是当前记录导出，正式报告仍需在“报告与审批”独立核对。</p>
+          <div v-if="qualityQueueTotal !== null" class="quality-pagination">
             <el-pagination
               v-model:current-page="qualityQueuePage"
               v-model:page-size="qualityQueuePageSize"
               :total="qualityQueueTotal"
-              :page-size-options="[10, 20, 50]"
+              :page-sizes="[10, 20, 50]"
               layout="total, sizes, prev, pager, next"
               @current-change="loadQualityQueue"
               @size-change="onQualityQueueSizeChange"
@@ -713,8 +566,8 @@
         <el-card class="detection-card defect-gallery-card" shadow="never">
           <template #header>
             <div class="card-title-row">
-              <span>缺陷证据库</span>
-              <el-tag type="danger" effect="plain">{{ defectGalleryTotal }} 条缺陷任务</el-tag>
+              <span><AppIcon name="Picture" :size="18" />缺陷证据库</span>
+              <el-tag type="info" effect="plain">{{ defectGalleryLoading ? '读取中' : defectGalleryError ? '数量待核对' : defectGalleryTotal === null ? '数量尚未读取' : defectGalleryTotal+' 条缺陷任务' }}</el-tag>
               <el-button size="small" :loading="defectGalleryLoading" @click="loadDefectGallery()">
                 <el-icon><Refresh /></el-icon>
                 刷新
@@ -722,85 +575,80 @@
             </div>
           </template>
 
-          <div class="defect-filter-bar">
-            <el-input v-model="defectFilters.defectType" placeholder="缺陷类型，如 Rusty / scratch" clearable />
-            <el-select v-model="defectFilters.severityLevel" placeholder="严重等级" clearable>
+          <p class="defect-gallery-scope"><AppIcon name="Lock" :size="15" />{{ userStore.role === 'SUPERVISOR' ? '企业业务范围' : userStore.role === 'INSPECTOR' ? '本人及分派任务' : '当前账号有权访问的范围' }} · 每张卡片对应一个缺陷任务，预览图不代替人工复核。</p>
+          <form class="defect-filter-bar" @submit.prevent="searchDefectGallery">
+            <label for="defect-type-filter">主要缺陷类型<el-input id="defect-type-filter" v-model="defectFilters.defectType" placeholder="例如 Rusty / scratch" clearable /></label>
+            <label for="defect-severity-filter">严重等级<el-select id="defect-severity-filter" v-model="defectFilters.severityLevel" placeholder="全部等级" clearable>
               <el-option label="轻微 MINOR" value="MINOR" />
               <el-option label="一般 MAJOR" value="MAJOR" />
               <el-option label="严重 CRITICAL" value="CRITICAL" />
-            </el-select>
-            <el-input v-model="defectFilters.deviceName" placeholder="设备编号" clearable />
-            <el-input v-model="defectFilters.batchNo" placeholder="批次号" clearable />
-            <el-input-number v-model="defectFilters.modelId" :min="1" :precision="0" placeholder="模型ID" controls-position="right" />
-            <el-button type="primary" :loading="defectGalleryLoading" @click="searchDefectGallery">
+            </el-select></label>
+            <label for="defect-device-filter">设备名称<el-input id="defect-device-filter" v-model="defectFilters.deviceName" placeholder="输入采集设备名称" clearable /></label>
+            <label for="defect-batch-filter">批次编号<el-input id="defect-batch-filter" v-model="defectFilters.batchNo" placeholder="输入批次编号" clearable /></label>
+            <label for="defect-model-filter">检测模型编号<el-input-number id="defect-model-filter" v-model="defectFilters.modelId" :min="1" :precision="0" placeholder="模型编号" controls-position="right" /></label>
+            <div class="defect-filter-actions"><el-button type="primary" native-type="submit" :loading="defectGalleryLoading">
               <el-icon><Search /></el-icon>
               查询
             </el-button>
-            <el-button @click="resetDefectGalleryFilters">重置</el-button>
-          </div>
+            <el-button @click="resetDefectGalleryFilters"><AppIcon name="Refresh" :size="16" />重置</el-button></div>
+          </form>
+          <p v-if="defectFiltersDirty && defectGalleryRecords.length" class="defect-gallery-filter-note" role="status">筛选条件已修改，当前仍为上次读取的结果。点击查询或刷新后更新，再进行翻页。</p>
 
-          <el-empty
-            v-if="!defectGalleryRecords.length && !defectGalleryLoading"
-            description="暂无匹配的缺陷证据"
-            :image-size="88"
-          >
-            <BusinessSeedEmptyHint
-              title="暂无匹配的缺陷证据"
-              description="缺陷证据依赖检测任务、质检复核和证据 JSON。首次验收可先导入业务预置数据。"
-            />
-          </el-empty>
+          <el-alert v-if="defectGalleryError && defectGalleryRecords.length" :title="defectGalleryError + '；下方保留先前读取的记录，请刷新核对。'" type="error" show-icon :closable="false" />
+          <CollectionEmptyState v-if="!defectGalleryRecords.length" :loading="defectGalleryLoading" :error="defectGalleryError" :filtered="hasDefectFilters" empty-title="暂无缺陷证据" empty-description="检测后，可在这里查找缺陷任务，并通过追溯详情对照图片与人工结论。" @retry="loadDefectGallery()" @reset="resetDefectGalleryFilters" />
 
           <div v-else v-loading="defectGalleryLoading" class="defect-gallery-grid">
             <article v-for="task in defectGalleryRecords" :key="task.taskId" class="defect-evidence-card">
               <div class="defect-card-image">
-                <img v-if="resolveDefectPreview(task)" :src="resolveDefectPreview(task)" :alt="task.taskId" />
-                <div v-else class="preview-empty">暂无证据图</div>
+                <button v-if="resolveDefectPreview(task)" class="defect-preview-button" type="button" :aria-label="'查看任务 '+task.taskId+' 的图片对照'" @click="openTraceDialog(task.taskId)"><el-image :src="resolveDefectPreview(task)" :alt="'任务 '+task.taskId+' 证据预览'" fit="contain" loading="lazy"><template #error><div class="defect-preview-empty"><AppIcon name="Warning" :size="23" /><span>图片暂不可读取，可进入详情核对</span></div></template></el-image><span class="defect-preview-caption"><AppIcon name="Search" :size="14" />查看图片对照</span></button>
+                <div v-else class="preview-empty"><AppIcon name="Picture" :size="24" /><span>本次未读取到可用预览</span></div>
               </div>
               <div class="defect-card-body">
+                <QualityStageGuidance :task="task" />
                 <div class="defect-card-title">
                   <code>{{ task.taskId }}</code>
-                  <el-tag :type="severityTagType(task.maxDefectSeverity)" effect="dark">
-                    {{ severityText(task.maxDefectSeverity) }}
-                  </el-tag>
+                  <StatusBadge domain="severity" :code="task.maxDefectSeverity" :label="task.maxDefectSeverity ? severityText(task.maxDefectSeverity) : '等级未记录'" />
                 </div>
                 <div class="defect-card-meta">
                   <span>缺陷 {{ task.primaryDefectType || '--' }}</span>
-                  <span>数量 {{ task.defectCount || 0 }}</span>
+                  <span>检测缺陷 {{ traceCount(task.defectCount) }} 个</span>
                   <span>设备 {{ task.deviceName || '--' }}</span>
                   <span>批次 {{ task.batchNo || '--' }}</span>
                   <span>工单 {{ task.workOrderNo || '--' }}</span>
                 </div>
+                <dl class="defect-card-responsibility"><div><dt>责任人</dt><dd>{{ task.assignee || '未分派' }}</dd></div><div><dt>截止（UTC+8）</dt><dd>{{ task.dueAt ? displayBusinessTime(task.dueAt) : '未设置' }}</dd></div></dl>
                 <div v-if="task.defectEvidence?.length" class="defect-evidence-list">
                   <span
-                    v-for="evidence in task.defectEvidence.slice(0, 3)"
-                    :key="`${task.taskId}-${evidence.imageName}-${evidence.defectType}`"
+                    v-for="(evidence, evidenceIndex) in task.defectEvidence.slice(0, 3)"
+                    :key="`${task.taskId}-${evidenceIndex}`"
                   >
                     {{ evidence.imageName || '图片' }} · {{ evidence.defectType || '--' }} · {{ formatEvidenceConfidence(evidence.confidence) }}
                   </span>
                 </div>
                 <div class="defect-card-actions">
-                  <el-button size="small" type="primary" plain @click="openTraceDialog(task.taskId)">追溯详情</el-button>
-                  <el-button size="small" type="success" plain @click="downloadTaskQualityReport(task.taskId)">导出任务摘要</el-button>
-                  <el-button
-                    v-if="canReviewTask(task)"
+                  <el-button size="small" type="primary" plain @click="openTraceDialog(task.taskId)"><AppIcon name="Search" :size="15" />追溯详情</el-button>
+                  <el-button size="small" plain :disabled="reportDownloading" @click="downloadTaskQualityReport(task.taskId)"><AppIcon name="Download" :size="15" />任务摘要</el-button>
+                  <el-tooltip :content="canReviewTask(task) ? '核对图片与结论后提交人工复核' : qualityActionReason(task,'REVIEW')" placement="top"><span :tabindex="canReviewTask(task) ? undefined : 0" :aria-label="canReviewTask(task) ? undefined : qualityActionReason(task,'REVIEW')"><el-button
+                    :disabled="!canReviewTask(task)"
                     size="small"
                     type="warning"
                     plain
                     @click="openReviewDialog(normalizeQualityQueueRecord(task))"
                   >
                     复核
-                  </el-button>
+                  </el-button></span></el-tooltip>
                 </div>
               </div>
             </article>
           </div>
 
-          <div class="quality-pagination">
+          <div v-if="defectGalleryTotal!==null" class="quality-pagination">
             <el-pagination
               v-model:current-page="defectGalleryPage"
               v-model:page-size="defectGalleryPageSize"
               :total="defectGalleryTotal"
-              :page-size-options="[8, 12, 24]"
+              :page-sizes="[8, 12, 24]"
+              :disabled="defectGalleryLoading || defectFiltersDirty || !!defectGalleryError"
               layout="total, sizes, prev, pager, next"
               @current-change="loadDefectGallery"
               @size-change="onDefectGallerySizeChange"
@@ -813,183 +661,25 @@
         <el-card class="detection-card batch-trace-card" shadow="never">
           <template #header>
             <div class="card-title-row">
-              <span>工单追溯</span>
-              <el-tag v-if="workOrderTraceReport" type="success" effect="plain">
-                {{ workOrderTraceReport.workOrderNo }}
-              </el-tag>
+              <span><AppIcon name="Tickets" :size="18" />工单追溯</span>
               <el-button
                 v-if="workOrderTraceReport"
                 size="small"
-                type="success"
+                type="primary"
                 plain
+                :disabled="workOrderTraceLoading || !!workOrderTraceError"
+                title="导出当前已读工单摘要（JSON），不重新查询"
                 @click="downloadWorkOrderTraceReport"
               >
                 <el-icon><Download /></el-icon>
-                导出工单报告
+                导出已读工单摘要
               </el-button>
             </div>
           </template>
 
-          <div class="batch-trace-search">
-            <el-input
-              v-model="workOrderTraceNo"
-              placeholder="输入工单号，例如 WO-20260611-001"
-              clearable
-              size="large"
-              @keyup.enter="loadWorkOrderTraceReport"
-            >
-              <template #prefix><el-icon><Search /></el-icon></template>
-            </el-input>
-            <el-button type="primary" size="large" :loading="workOrderTraceLoading" @click="loadWorkOrderTraceReport">
-              查询工单
-            </el-button>
-          </div>
-          <div class="trace-sample-row">
-            <span>常用工单：</span>
-            <el-button
-              v-for="order in businessWorkOrderNos"
-              :key="order"
-              size="small"
-              plain
-              @click="loadBusinessWorkOrderTrace(order)"
-            >
-              {{ order }}
-            </el-button>
-          </div>
+          <BusinessTraceQuery v-model="workOrderTraceNo" kind="work-order" :requested-no="workOrderTraceRequestedNo" :loading="workOrderTraceLoading" :report="workOrderTraceReport" :error="workOrderTraceError" :examples="businessWorkOrderNos" :scope-label="businessTraceScope" @query="loadWorkOrderTraceReport" @refresh="refreshWorkOrderTraceReport" @example="loadBusinessWorkOrderTrace" />
 
-          <el-empty
-            v-if="!workOrderTraceReport && !workOrderTraceLoading"
-            description="输入工单号，或点击上方常用工单，可查看该工单覆盖的批次、设备、缺陷和质检闭环"
-            :image-size="88"
-          >
-            <BusinessSeedEmptyHint
-              title="暂无工单追溯结果"
-              description="可点击常用工单查询；如果仍无结果，请先导入业务预置数据。"
-            />
-          </el-empty>
-
-          <div v-else v-loading="workOrderTraceLoading" class="batch-trace-body">
-            <template v-if="workOrderTraceReport">
-              <div class="batch-summary-band">
-                <div>
-                  <span>工单</span>
-                  <strong>{{ workOrderTraceReport.workOrderNo }}</strong>
-                </div>
-                <div>
-                  <span>覆盖批次</span>
-                  <strong>{{ workOrderTraceReport.summary?.batchNos?.length || 0 }}</strong>
-                </div>
-                <div>
-                  <span>覆盖区域</span>
-                  <strong>{{ (workOrderTraceReport.summary?.regions || []).join('、') || '--' }}</strong>
-                </div>
-                <div>
-                  <span>生成时间</span>
-                  <strong>{{ workOrderTraceReport.generatedAt || '--' }}</strong>
-                </div>
-              </div>
-
-              <el-row :gutter="14" class="batch-metrics">
-                <el-col :xs="12" :sm="8" :md="4">
-                  <el-statistic title="任务数" :value="workOrderTraceReport.summary?.taskCount || 0" />
-                </el-col>
-                <el-col :xs="12" :sm="8" :md="4">
-                  <el-statistic title="图片总数" :value="workOrderTraceReport.inspection?.totalImages || 0" />
-                </el-col>
-                <el-col :xs="12" :sm="8" :md="4">
-                  <el-statistic title="缺陷数" :value="workOrderTraceReport.inspection?.defectCount || 0" />
-                </el-col>
-                <el-col :xs="12" :sm="8" :md="4">
-                  <el-statistic title="确认缺陷" :value="workOrderTraceReport.inspection?.confirmedDefectCount || 0" />
-                </el-col>
-                <el-col :xs="12" :sm="8" :md="4">
-                  <el-statistic title="缺陷率" :value="formatPercentValue(workOrderTraceReport.inspection?.defectRate)" suffix="%" />
-                </el-col>
-                <el-col :xs="12" :sm="8" :md="4">
-                  <el-statistic title="闭环率" :value="formatPercentValue(workOrderTraceReport.quality?.closureRate)" suffix="%" />
-                </el-col>
-              </el-row>
-
-              <div class="batch-section-grid">
-                <div class="batch-panel">
-                  <h3>质检闭环</h3>
-                  <div class="batch-quality-list">
-                    <div><span>待复核</span><strong>{{ workOrderTraceReport.quality?.pendingReview || 0 }}</strong></div>
-                    <div><span>已复核</span><strong>{{ workOrderTraceReport.quality?.reviewed || 0 }}</strong></div>
-                    <div><span>已处置</span><strong>{{ workOrderTraceReport.quality?.disposed || 0 }}</strong></div>
-                    <div><span>需返工</span><strong>{{ workOrderTraceReport.quality?.reworkRequired || 0 }}</strong></div>
-                    <div><span>需复检</span><strong>{{ workOrderTraceReport.quality?.recheckRequired || 0 }}</strong></div>
-                    <div><span>已关闭</span><strong>{{ workOrderTraceReport.quality?.closed || 0 }}</strong></div>
-                  </div>
-                </div>
-
-                <div class="batch-panel">
-                  <h3>工单上下文</h3>
-                  <div class="batch-context-tags">
-                    <el-tag v-for="batch in workOrderTraceReport.summary?.batchNos || []" :key="`wo-batch-${batch}`" type="success" effect="plain">
-                      批次 {{ batch }}
-                    </el-tag>
-                    <el-tag v-for="device in workOrderTraceReport.summary?.devices || []" :key="`wo-device-${device}`" effect="plain">
-                      设备 {{ device }}
-                    </el-tag>
-                    <el-tag v-for="collector in workOrderTraceReport.summary?.collectors || []" :key="`wo-collector-${collector}`" type="warning" effect="plain">
-                      采集员 {{ collector }}
-                    </el-tag>
-                    <el-tag v-for="model in workOrderTraceReport.summary?.models || []" :key="`wo-model-${model}`" type="info" effect="plain">
-                      模型 {{ model }}
-                    </el-tag>
-                  </div>
-                  <div class="batch-time-range">
-                    <span>创建：{{ workOrderTraceReport.timeRange?.createdFrom || '--' }} 至 {{ workOrderTraceReport.timeRange?.createdTo || '--' }}</span>
-                    <span>检测完成：{{ workOrderTraceReport.timeRange?.finishedTo || '--' }}</span>
-                    <span>最近更新：{{ workOrderTraceReport.timeRange?.lastUpdatedAt || '--' }}</span>
-                  </div>
-                </div>
-              </div>
-
-              <div class="batch-section-grid">
-                <div class="batch-panel">
-                  <h3>缺陷分布</h3>
-                  <el-table :data="mapDistributionRows(workOrderTraceReport.distribution?.defectType)" size="small" border empty-text="暂无缺陷">
-                    <el-table-column prop="name" label="缺陷类型" min-width="140" />
-                    <el-table-column prop="count" label="数量" width="90" />
-                  </el-table>
-                </div>
-                <div class="batch-panel">
-                  <h3>批次分布</h3>
-                  <el-table :data="mapDistributionRows(workOrderTraceReport.distribution?.status)" size="small" border empty-text="暂无状态">
-                    <el-table-column prop="name" label="任务状态" min-width="140" />
-                    <el-table-column prop="count" label="数量" width="90" />
-                  </el-table>
-                </div>
-              </div>
-
-              <div class="batch-panel">
-                <h3>工单任务明细</h3>
-                <el-table :data="workOrderTraceReport.records || []" size="small" border max-height="360">
-                  <el-table-column prop="taskId" label="任务编号" min-width="180" show-overflow-tooltip />
-                  <el-table-column prop="batchNo" label="批次" min-width="150" show-overflow-tooltip />
-                  <el-table-column prop="deviceName" label="设备" min-width="120" show-overflow-tooltip />
-                  <el-table-column label="状态" width="110">
-                    <template #default="{ row }">
-                      <el-tag :type="row.status === 'FAILED' ? 'danger' : 'success'" effect="plain">{{ row.status || '--' }}</el-tag>
-                    </template>
-                  </el-table-column>
-                  <el-table-column label="流转" min-width="140">
-                    <template #default="{ row }">{{ flowStatusText(row.flowStatus) }}</template>
-                  </el-table-column>
-                  <el-table-column prop="defectCount" label="缺陷" width="80" />
-                  <el-table-column prop="maxDefectSeverity" label="最高等级" width="110" />
-                  <el-table-column label="操作" width="170" fixed="right">
-                    <template #default="{ row }">
-                      <el-button link size="small" type="primary" @click="openTraceDialog(row.taskId)">追溯详情</el-button>
-                      <el-button link size="small" type="success" @click="downloadTaskQualityReport(row.taskId)">报告</el-button>
-                    </template>
-                  </el-table-column>
-                </el-table>
-              </div>
-            </template>
-          </div>
+          <TraceReportOverview v-if="workOrderTraceReport" :report="workOrderTraceReport" kind="work-order" :report-downloading="reportDownloading" @open-trace="openTraceDialog" @download-task="downloadTaskQualityReport" />
         </el-card>
       </el-tab-pane>
 
@@ -997,194 +687,35 @@
         <el-card class="detection-card batch-trace-card" shadow="never">
           <template #header>
             <div class="card-title-row">
-              <span>批次追溯</span>
-              <el-tag v-if="batchTraceReport" type="success" effect="plain">
-                {{ batchTraceReport.batchNo }}
-              </el-tag>
+              <span><AppIcon name="Collection" :size="18" />批次追溯</span>
               <el-button
                 v-if="batchTraceReport"
                 size="small"
-                type="success"
+                type="primary"
                 plain
+                :disabled="batchTraceLoading || !!batchTraceError"
+                title="导出当前已读批次摘要（JSON），不重新查询"
                 @click="downloadBatchTraceReport"
               >
                 <el-icon><Download /></el-icon>
-                导出批次报告
+                导出已读批次摘要
               </el-button>
             </div>
           </template>
 
-          <div class="batch-trace-search">
-            <el-input
-              v-model="batchTraceNo"
-              placeholder="输入批次号，例如 2026-06-11_SH_CAM01_A"
-              clearable
-              size="large"
-              @keyup.enter="loadBatchTraceReport"
-            >
-              <template #prefix><el-icon><Search /></el-icon></template>
-            </el-input>
-            <el-button type="primary" size="large" :loading="batchTraceLoading" @click="loadBatchTraceReport">
-              查询批次
-            </el-button>
-          </div>
-          <div class="trace-sample-row">
-            <span>常用批次：</span>
-            <el-button
-              v-for="batch in businessBatchNos"
-              :key="batch"
-              size="small"
-              plain
-              @click="loadBusinessBatchTrace(batch)"
-            >
-              {{ batch }}
-            </el-button>
-          </div>
+          <BusinessTraceQuery v-model="batchTraceNo" kind="batch" :requested-no="batchTraceRequestedNo" :loading="batchTraceLoading" :report="batchTraceReport" :error="batchTraceError" :examples="businessBatchNos" :scope-label="businessTraceScope" @query="loadBatchTraceReport" @refresh="refreshBatchTraceReport" @example="loadBusinessBatchTrace" />
 
-          <el-empty
-            v-if="!batchTraceReport && !batchTraceLoading"
-            description="输入批次号，或点击上方常用批次，可查看同批次任务、缺陷、质检和模型设备分布"
-            :image-size="88"
-          >
-            <BusinessSeedEmptyHint
-              title="暂无批次追溯结果"
-              description="可点击常用批次查询；如果仍无结果，请先导入业务预置数据。"
-            />
-          </el-empty>
-
-          <div v-else v-loading="batchTraceLoading" class="batch-trace-body">
-            <template v-if="batchTraceReport">
-              <div class="batch-summary-band">
-                <div>
-                  <span>批次</span>
-                  <strong>{{ batchTraceReport.batchNo }}</strong>
-                </div>
-                <div>
-                  <span>采集区域</span>
-                  <strong>{{ batchTraceReport.summary?.region || '--' }}</strong>
-                </div>
-                <div>
-                  <span>采集员</span>
-                  <strong>{{ batchTraceReport.summary?.collector || '--' }}</strong>
-                </div>
-                <div>
-                  <span>生成时间</span>
-                  <strong>{{ batchTraceReport.generatedAt || '--' }}</strong>
-                </div>
-              </div>
-
-              <el-row :gutter="14" class="batch-metrics">
-                <el-col :xs="12" :sm="8" :md="4">
-                  <el-statistic title="任务数" :value="batchTraceReport.summary?.taskCount || 0" />
-                </el-col>
-                <el-col :xs="12" :sm="8" :md="4">
-                  <el-statistic title="图片总数" :value="batchTraceReport.inspection?.totalImages || 0" />
-                </el-col>
-                <el-col :xs="12" :sm="8" :md="4">
-                  <el-statistic title="缺陷数" :value="batchTraceReport.inspection?.defectCount || 0" />
-                </el-col>
-                <el-col :xs="12" :sm="8" :md="4">
-                  <el-statistic title="确认缺陷" :value="batchTraceReport.inspection?.confirmedDefectCount || 0" />
-                </el-col>
-                <el-col :xs="12" :sm="8" :md="4">
-                  <el-statistic title="缺陷率" :value="formatPercentValue(batchTraceReport.inspection?.defectRate)" suffix="%" />
-                </el-col>
-                <el-col :xs="12" :sm="8" :md="4">
-                  <el-statistic title="闭环率" :value="formatPercentValue(batchTraceReport.quality?.closureRate)" suffix="%" />
-                </el-col>
-              </el-row>
-
-              <div class="batch-section-grid">
-                <div class="batch-panel">
-                  <h3>质检闭环</h3>
-                  <div class="batch-quality-list">
-                    <div><span>待复核</span><strong>{{ batchTraceReport.quality?.pendingReview || 0 }}</strong></div>
-                    <div><span>已复核</span><strong>{{ batchTraceReport.quality?.reviewed || 0 }}</strong></div>
-                    <div><span>已处置</span><strong>{{ batchTraceReport.quality?.disposed || 0 }}</strong></div>
-                    <div><span>需返工</span><strong>{{ batchTraceReport.quality?.reworkRequired || 0 }}</strong></div>
-                    <div><span>需复检</span><strong>{{ batchTraceReport.quality?.recheckRequired || 0 }}</strong></div>
-                    <div><span>已关闭</span><strong>{{ batchTraceReport.quality?.closed || 0 }}</strong></div>
-                  </div>
-                </div>
-
-                <div class="batch-panel">
-                  <h3>批次上下文</h3>
-                  <div class="batch-context-tags">
-                    <el-tag v-for="device in batchTraceReport.summary?.devices || []" :key="`device-${device}`" effect="plain">
-                      设备 {{ device }}
-                    </el-tag>
-                    <el-tag v-for="model in batchTraceReport.summary?.models || []" :key="`model-${model}`" type="info" effect="plain">
-                      模型 {{ model }}
-                    </el-tag>
-                    <el-tag v-for="order in batchTraceReport.summary?.workOrders || []" :key="`order-${order}`" type="warning" effect="plain">
-                      工单 {{ order }}
-                    </el-tag>
-                  </div>
-                  <div class="batch-time-range">
-                    <span>创建：{{ batchTraceReport.timeRange?.createdFrom || '--' }} 至 {{ batchTraceReport.timeRange?.createdTo || '--' }}</span>
-                    <span>检测完成：{{ batchTraceReport.timeRange?.finishedTo || '--' }}</span>
-                    <span>最近更新：{{ batchTraceReport.timeRange?.lastUpdatedAt || '--' }}</span>
-                  </div>
-                </div>
-              </div>
-
-              <div class="batch-section-grid">
-                <div class="batch-panel">
-                  <h3>缺陷分布</h3>
-                  <el-table :data="mapDistributionRows(batchTraceReport.distribution?.defectType)" size="small" border empty-text="暂无缺陷">
-                    <el-table-column prop="name" label="缺陷类型" min-width="140" />
-                    <el-table-column prop="count" label="数量" width="90" />
-                  </el-table>
-                </div>
-                <div class="batch-panel">
-                  <h3>严重等级</h3>
-                  <el-table :data="mapDistributionRows(batchTraceReport.distribution?.severity)" size="small" border empty-text="暂无等级">
-                    <el-table-column prop="name" label="等级" min-width="140" />
-                    <el-table-column prop="count" label="数量" width="90" />
-                  </el-table>
-                </div>
-              </div>
-
-              <div class="batch-panel">
-                <h3>批次任务明细</h3>
-                <el-table :data="batchTraceReport.records || []" size="small" border max-height="360">
-                  <el-table-column prop="taskId" label="任务编号" min-width="180" show-overflow-tooltip />
-                  <el-table-column prop="workOrderNo" label="工单" min-width="130" show-overflow-tooltip />
-                  <el-table-column prop="deviceName" label="设备" min-width="120" show-overflow-tooltip />
-                  <el-table-column label="状态" width="110">
-                    <template #default="{ row }">
-                      <el-tag :type="row.status === 'FAILED' ? 'danger' : 'success'" effect="plain">{{ row.status || '--' }}</el-tag>
-                    </template>
-                  </el-table-column>
-                  <el-table-column label="流转" min-width="140">
-                    <template #default="{ row }">{{ flowStatusText(row.flowStatus) }}</template>
-                  </el-table-column>
-                  <el-table-column prop="defectCount" label="缺陷" width="80" />
-                  <el-table-column prop="maxDefectSeverity" label="最高等级" width="110" />
-                  <el-table-column label="操作" width="170" fixed="right">
-                    <template #default="{ row }">
-                      <el-button link size="small" type="primary" @click="openTraceDialog(row.taskId)">追溯详情</el-button>
-                      <el-button link size="small" type="success" @click="downloadTaskQualityReport(row.taskId)">报告</el-button>
-                    </template>
-                  </el-table-column>
-                </el-table>
-              </div>
-            </template>
-          </div>
+          <TraceReportOverview v-if="batchTraceReport" :report="batchTraceReport" kind="batch" :report-downloading="reportDownloading" @open-trace="openTraceDialog" @download-task="downloadTaskQualityReport" />
         </el-card>
       </el-tab-pane>
     </el-tabs>
 
-    <el-dialog v-model="reviewDialogVisible" title="人工复核" width="560px">
-      <el-alert
-        v-if="reviewTask"
-        type="info"
-        show-icon
-        :closable="false"
-        style="margin-bottom: 14px;"
-        :message="`任务 ${reviewTask.taskId} 将记录质检结论、严重等级与误报反馈。`"
-      />
-      <el-form :model="reviewForm" label-width="110px">
+    <el-dialog v-model="reviewDialogVisible" class="quality-operation-dialog" title="人工复核" width="min(1100px, 96vw)" :close-on-click-modal="!reviewSubmitting" :close-on-press-escape="!reviewSubmitting" :show-close="!reviewSubmitting">
+      <QualityTaskContext :task="reviewTask" operation="review" />
+      <div class="quality-review-layout" :class="{ 'has-evidence': reviewEvidence.originals.length || reviewEvidence.annotations.length }">
+      <EvidenceComparison v-if="reviewEvidence.originals.length || reviewEvidence.annotations.length" :task-id="reviewTask?.taskId" :originals="reviewEvidence.originals" :annotations="reviewEvidence.annotations" />
+      <p v-else class="quality-feedback-note"><AppIcon name="Picture" :size="16" />当前未读取到可对照图片，请先查看任务追溯并核对原始资料。</p>
+      <el-form :model="reviewForm" label-position="top" :disabled="reviewSubmitting||qualityActionAcknowledged.review">
         <el-form-item label="复核结论">
           <el-select v-model="reviewForm.reviewConclusion" style="width: 100%">
             <el-option label="确认缺陷" value="CONFIRMED_DEFECT" />
@@ -1213,39 +744,36 @@
             :rows="3"
             maxlength="300"
             show-word-limit
-            placeholder="记录缺陷位置、人工判断依据或误报原因"
+            aria-label="记录缺陷位置、人工判断依据或误报原因" placeholder="记录缺陷位置、人工判断依据或误报原因"
           />
         </el-form-item>
       </el-form>
+      </div>
+      <el-alert v-if="qualityActionErrors.review" :title="qualityActionErrors.review" type="warning" show-icon :closable="false" />
+      <p v-if="!canReviewTask(reviewTask)" class="quality-feedback-note">{{ qualityActionReason(reviewTask,'REVIEW') }}</p>
       <template #footer>
-        <el-button @click="reviewDialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="reviewSubmitting" @click="submitTaskReview">提交复核</el-button>
+        <el-button :disabled="reviewSubmitting" @click="reviewDialogVisible = false"><AppIcon name="Close" :size="16" />取消</el-button>
+        <el-button :disabled="reviewSubmitting||!reviewTask?.taskId" @click="openTraceDialog(reviewTask.taskId)"><AppIcon name="Search" :size="15" />核对任务依据</el-button>
+        <el-button type="primary" :loading="reviewSubmitting" :disabled="qualityActionAcknowledged.review||!canReviewTask(reviewTask)" @click="submitTaskReview"><AppIcon name="DocumentChecked" :size="15" />提交复核</el-button>
       </template>
     </el-dialog>
 
-    <el-dialog v-model="assignmentDialogVisible" title="分派质检任务" width="560px">
-      <el-alert
-        v-if="assignmentTask"
-        type="info"
-        show-icon
-        :closable="false"
-        style="margin-bottom: 14px;"
-        :message="`任务 ${assignmentTask.taskId} 将分派到质检站点，后续由责任人完成复核与处置。`"
-      />
-      <el-form :model="assignmentForm" label-width="110px">
+    <el-dialog v-model="assignmentDialogVisible" class="quality-operation-dialog" title="分派质检任务" width="min(640px, 96vw)" :close-on-click-modal="!assignmentSubmitting" :close-on-press-escape="!assignmentSubmitting" :show-close="!assignmentSubmitting">
+      <QualityTaskContext :task="assignmentTask" operation="assignment" />
+      <el-form :model="assignmentForm" label-position="top" :disabled="assignmentSubmitting||qualityActionAcknowledged.assignment">
         <el-form-item label="质检站点">
-          <el-input v-model="assignmentForm.qualityStation" placeholder="例如：质检站-1 / 产线A复核位" />
+          <el-input v-model="assignmentForm.qualityStation" aria-label="例如：质检站-1 / 产线A复核位" placeholder="例如：质检站-1 / 产线A复核位" />
         </el-form-item>
         <el-form-item label="责任人">
-          <el-input v-model="assignmentForm.assignee" placeholder="请输入质检责任人" />
+          <QualityAssigneePicker v-model="assignmentForm.assignee" v-model:user-id="assignmentForm.assigneeUserId" v-model:revision="assignmentForm.assigneeRevision" :disabled="assignmentSubmitting||qualityActionAcknowledged.assignment" />
         </el-form-item>
-        <el-form-item label="截止时间">
+        <el-form-item label="截止时间 · UTC+8">
           <el-date-picker
             v-model="assignmentForm.dueAt"
             type="datetime"
             value-format="YYYY-MM-DD HH:mm:ss"
             format="YYYY-MM-DD HH:mm"
-            placeholder="选择质检截止时间"
+            aria-label="选择质检截止时间，北京时间 UTC+8" placeholder="选择质检截止时间（UTC+8）"
             style="width: 100%"
           />
         </el-form-item>
@@ -1256,37 +784,33 @@
             :rows="3"
             maxlength="1000"
             show-word-limit
-            placeholder="补充复核重点、缺陷疑点或产线要求"
+            aria-label="补充复核重点、缺陷疑点或产线要求" placeholder="补充复核重点、缺陷疑点或产线要求"
           />
         </el-form-item>
       </el-form>
+      <el-alert v-if="qualityActionErrors.assignment" :title="qualityActionErrors.assignment" type="warning" show-icon :closable="false" />
+      <p v-if="!canAssignQualityTask(assignmentTask)" class="quality-feedback-note">{{ qualityActionReason(assignmentTask,'ASSIGN') }}</p>
       <template #footer>
-        <el-button @click="assignmentDialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="assignmentSubmitting" @click="submitQualityAssignment">确认分派</el-button>
+        <el-button :disabled="assignmentSubmitting" @click="assignmentDialogVisible = false"><AppIcon name="Close" :size="16" />取消</el-button>
+        <el-button v-if="qualityActionErrors.assignment" :disabled="assignmentSubmitting" @click="openTraceDialog(assignmentTask.taskId)"><AppIcon name="Search" :size="15" />核对任务状态</el-button>
+        <el-button type="primary" :loading="assignmentSubmitting" :disabled="qualityActionAcknowledged.assignment||!canAssignQualityTask(assignmentTask)" @click="submitQualityAssignment"><AppIcon name="User" :size="15" />确认分派</el-button>
       </template>
     </el-dialog>
 
-    <el-dialog v-model="dispositionDialogVisible" title="质检处置" width="560px">
-      <el-alert
-        v-if="dispositionTask"
-        type="warning"
-        show-icon
-        :closable="false"
-        style="margin-bottom: 14px;"
-        :message="`任务 ${dispositionTask.taskId} 已完成复核，请选择放行、返工、复检、暂挂或报废。`"
-      />
-      <el-form :model="dispositionForm" label-width="110px">
+    <el-dialog v-model="dispositionDialogVisible" class="quality-operation-dialog" title="质检处置" width="min(640px, 96vw)" :close-on-click-modal="!dispositionSubmitting" :close-on-press-escape="!dispositionSubmitting" :show-close="!dispositionSubmitting">
+      <QualityTaskContext :task="dispositionTask" operation="disposition" />
+      <el-form :model="dispositionForm" label-position="top" :disabled="dispositionSubmitting||qualityActionAcknowledged.disposition">
         <el-form-item label="处置动作">
           <el-select v-model="dispositionForm.dispositionAction" style="width: 100%">
             <el-option label="正常放行" value="RELEASE" :disabled="!canReleaseDisposition(dispositionTask)" />
             <el-option label="返工处理" value="REWORK" />
             <el-option label="安排复检" value="RECHECK" />
-            <el-option label="暂挂观察" value="HOLD" />
+            <el-option label="暂挂观察" value="HOLD" :disabled="dispositionTask?.dispositionAction === 'HOLD'" />
             <el-option label="报废隔离" value="SCRAP" />
           </el-select>
         </el-form-item>
         <el-form-item label="需要复检">
-          <el-switch v-model="dispositionForm.recheckRequired" />
+          <el-switch v-model="dispositionForm.recheckRequired" :disabled="['RELEASE', 'SCRAP', 'RECHECK'].includes(dispositionForm.dispositionAction)" /><span v-if="dispositionForm.dispositionAction === 'REWORK'" class="quality-flow-hint">先回填返工结果，再进入复检</span>
         </el-form-item>
         <el-form-item label="处置备注">
           <el-input
@@ -1295,179 +819,83 @@
             :rows="3"
             maxlength="1000"
             show-word-limit
-            placeholder="记录处置依据、返工要求或隔离说明"
+            aria-label="记录处置依据、返工要求或隔离说明" placeholder="记录处置依据、返工要求或隔离说明"
           />
         </el-form-item>
       </el-form>
+      <p v-if="!canReleaseDisposition(dispositionTask)" class="quality-feedback-note"><AppIcon name="Lock" :size="15" />当前条件不允许直接放行，请核对复核结论及复检要求，并选择其他可用处置。</p>
+      <p v-if="dispositionForm.dispositionAction==='SCRAP'" class="quality-danger-note"><AppIcon name="Warning" :size="15" />本次将记录报废隔离处置，提交前请再次核对任务对象与隔离说明。</p>
+      <el-alert v-if="qualityActionErrors.disposition" :title="qualityActionErrors.disposition" type="warning" show-icon :closable="false" />
+      <p v-if="!canDisposeTask(dispositionTask)" class="quality-feedback-note">{{ qualityActionReason(dispositionTask,'DISPOSE') }}</p>
       <template #footer>
-        <el-button @click="dispositionDialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="dispositionSubmitting" @click="submitTaskDisposition">提交处置</el-button>
+        <el-button :disabled="dispositionSubmitting" @click="dispositionDialogVisible = false"><AppIcon name="Close" :size="16" />取消</el-button>
+        <el-button v-if="qualityActionErrors.disposition" :disabled="dispositionSubmitting" @click="openTraceDialog(dispositionTask.taskId)"><AppIcon name="Search" :size="15" />核对任务状态</el-button>
+        <el-button :type="dispositionForm.dispositionAction==='SCRAP'?'danger':'primary'" :loading="dispositionSubmitting" :disabled="qualityActionAcknowledged.disposition||!canDisposeTask(dispositionTask)" @click="submitTaskDisposition"><AppIcon name="DocumentChecked" :size="15" />{{ dispositionForm.dispositionAction==='SCRAP'?'确认报废隔离':dispositionForm.dispositionAction==='RELEASE'?'确认正常放行':'提交处置' }}</el-button>
       </template>
     </el-dialog>
 
-    <el-dialog v-model="reworkDialogVisible" title="返工结果回填" width="560px">
-      <el-alert
-        v-if="reworkTask"
-        type="info"
-        show-icon
-        :closable="false"
-        style="margin-bottom: 14px;"
-        :message="`任务 ${reworkTask.taskId} 当前待返工，请回填返工结果并决定是否进入复检。`"
-      />
-      <el-form :model="reworkForm" label-width="110px">
+    <el-dialog v-model="reworkDialogVisible" class="quality-operation-dialog" title="返工结果回填" width="min(640px, 96vw)" :close-on-click-modal="!reworkSubmitting" :close-on-press-escape="!reworkSubmitting" :show-close="!reworkSubmitting">
+      <QualityTaskContext :task="reworkTask" operation="rework" />
+      <el-form :model="reworkForm" label-position="top" :disabled="reworkSubmitting||qualityActionAcknowledged.rework">
         <el-form-item label="返工结果">
           <el-input
             v-model="reworkForm.reworkResult"
             type="textarea"
             :rows="3"
-            placeholder="例如：已更换门把手锁扣并完成表面清理"
+            aria-label="例如：已更换门把手锁扣并完成表面清理" placeholder="例如：已更换门把手锁扣并完成表面清理"
           />
         </el-form-item>
         <el-form-item label="返工人员">
-          <el-input v-model="reworkForm.reworkOperator" placeholder="不填则使用当前登录用户" />
+          <el-input model-value="按当前登录账号记录" disabled />
         </el-form-item>
         <el-form-item label="需要复检">
-          <el-switch v-model="reworkForm.recheckRequired" />
+          <el-switch v-model="reworkForm.recheckRequired" :disabled="(reworkTask?.recheckRequired ?? reworkTask?.result?.recheckRequired) === true" /><span v-if="(reworkTask?.recheckRequired ?? reworkTask?.result?.recheckRequired) === true" class="quality-flow-hint">原处置要求复检，回填后仍需实际检测</span>
         </el-form-item>
         <el-form-item label="返工备注">
           <el-input
             v-model="reworkForm.reworkRemark"
             type="textarea"
             :rows="3"
-            placeholder="补充返工证据、复检要求或异常说明"
+            aria-label="补充返工证据、复检要求或异常说明" placeholder="补充返工证据、复检要求或异常说明"
           />
         </el-form-item>
       </el-form>
+      <el-alert v-if="qualityActionErrors.rework" :title="qualityActionErrors.rework" type="warning" show-icon :closable="false" />
+      <p v-if="!canSubmitReworkResult(reworkTask)" class="quality-feedback-note">{{ qualityActionReason(reworkTask,'SUBMIT_REWORK') }}</p>
       <template #footer>
-        <el-button @click="reworkDialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="reworkSubmitting" @click="submitTaskRework">提交返工结果</el-button>
+        <el-button :disabled="reworkSubmitting" @click="reworkDialogVisible = false"><AppIcon name="Close" :size="16" />取消</el-button>
+        <el-button v-if="qualityActionErrors.rework" :disabled="reworkSubmitting" @click="openTraceDialog(reworkTask.taskId)"><AppIcon name="Search" :size="15" />核对任务状态</el-button>
+        <el-button type="primary" :loading="reworkSubmitting" :disabled="qualityActionAcknowledged.rework||!canSubmitReworkResult(reworkTask)" @click="submitTaskRework"><AppIcon name="DocumentChecked" :size="15" />提交返工结果</el-button>
       </template>
     </el-dialog>
 
-    <el-dialog v-model="traceDialogVisible" title="任务追溯详情" width="860px">
-      <div v-loading="traceLoading" class="trace-dialog-body">
-        <template v-if="traceDetail">
-          <el-descriptions bordered :column="2" size="small" class="trace-section">
-            <el-descriptions-item label="任务编号"><code>{{ traceDetail.taskId }}</code></el-descriptions-item>
-            <el-descriptions-item label="工作流">{{ traceDetail.workflowUuid || '--' }}</el-descriptions-item>
-            <el-descriptions-item label="批次">{{ traceDetail.batchNo || '--' }}</el-descriptions-item>
-            <el-descriptions-item label="工单">{{ traceDetail.workOrderNo || '--' }}</el-descriptions-item>
-            <el-descriptions-item label="流转状态">{{ flowStatusText(traceDetail.flowStatus) }}</el-descriptions-item>
-            <el-descriptions-item label="检测状态">{{ traceDetail.status || '--' }}</el-descriptions-item>
-            <el-descriptions-item label="采集日期">{{ traceDetail.captureDate || '--' }}</el-descriptions-item>
-            <el-descriptions-item label="地区">{{ traceDetail.region || '--' }}</el-descriptions-item>
-            <el-descriptions-item label="采集人">{{ traceDetail.collector || '--' }}</el-descriptions-item>
-            <el-descriptions-item label="设备">{{ traceDetail.deviceName || '--' }}</el-descriptions-item>
-            <el-descriptions-item label="图片批次">{{ traceDetail.imageFolderName || '--' }}</el-descriptions-item>
-            <el-descriptions-item label="质检站点">{{ traceDetail.qualityStation || '--' }}</el-descriptions-item>
-            <el-descriptions-item label="责任人">{{ traceDetail.assignee || '--' }}</el-descriptions-item>
-            <el-descriptions-item label="分派时间">{{ traceDetail.assignedAt || '--' }}</el-descriptions-item>
-            <el-descriptions-item label="质检截止">{{ traceDetail.dueAt || '--' }}</el-descriptions-item>
-            <el-descriptions-item label="模型">
-              {{ traceDetail.modelId ? `#${traceDetail.modelId}` : '--' }}
-              <span v-if="traceDetail.modelVersion"> / {{ traceDetail.modelVersion }}</span>
-            </el-descriptions-item>
-            <el-descriptions-item label="置信度阈值">{{ traceDetail.threshold ?? '--' }}</el-descriptions-item>
-            <el-descriptions-item label="复核结论">{{ reviewConclusionText(traceDetail.reviewConclusion) }}</el-descriptions-item>
-            <el-descriptions-item label="严重等级">
-              <el-tag :type="severityTagType(traceDetail.severityLevel)">{{ severityText(traceDetail.severityLevel) }}</el-tag>
-            </el-descriptions-item>
-            <el-descriptions-item label="缺陷/误报">
-              {{ traceDetail.confirmedDefectCount || 0 }} / {{ traceDetail.falsePositiveCount || 0 }}
-            </el-descriptions-item>
-            <el-descriptions-item label="复核人">{{ traceDetail.reviewer || '--' }}</el-descriptions-item>
-            <el-descriptions-item v-if="traceDetail.reviewRemark" label="复核备注" :span="2">
-              {{ traceDetail.reviewRemark }}
-            </el-descriptions-item>
-          </el-descriptions>
-
-          <div class="trace-section trace-paths">
-            <div>
-              <span>原图路径</span>
-              <code>{{ traceDetail.sourceOssPrefix || '--' }}</code>
-            </div>
-            <div>
-              <span>结果路径</span>
-              <code>{{ traceDetail.resultOssPrefix || '--' }}</code>
-            </div>
-            <div>
-              <span>结果 JSON</span>
-              <a v-if="traceDetail.resultJsonUrl" :href="traceDetail.resultJsonUrl" target="_blank">{{ traceDetail.resultJsonKey }}</a>
-              <code v-else>{{ traceDetail.resultJsonKey || '--' }}</code>
-            </div>
-          </div>
-
-          <el-row :gutter="12" class="trace-section">
-            <el-col :span="8">
-              <el-statistic title="图片总数" :value="traceDetail.totalImages || 0" />
-            </el-col>
-            <el-col :span="8">
-              <el-statistic title="成功" :value="traceDetail.successfulImages || 0" />
-            </el-col>
-            <el-col :span="8">
-              <el-statistic title="失败" :value="traceDetail.failedImages || 0" />
-            </el-col>
-          </el-row>
-
-          <div class="trace-section">
-            <h4>证据图片</h4>
-            <el-table :data="traceEvidenceRows" size="small" border max-height="220">
-              <el-table-column prop="type" label="类型" width="90" />
-              <el-table-column prop="imageName" label="文件名" min-width="160" show-overflow-tooltip />
-              <el-table-column prop="objectKey" label="OSS Key" min-width="260" show-overflow-tooltip />
-              <el-table-column label="预览" width="90">
-                <template #default="{ row }">
-                  <a v-if="row.previewUrl" :href="row.previewUrl" target="_blank">打开</a>
-                  <span v-else>--</span>
-                </template>
-              </el-table-column>
-            </el-table>
-          </div>
-
-          <div class="trace-section">
-            <h4>追溯时间线</h4>
-            <el-timeline>
-              <el-timeline-item
-                v-for="event in traceDetail.timeline || []"
-                :key="`${event.eventType}-${event.occurredAt}`"
-                :timestamp="event.occurredAt"
-              >
-                <strong>{{ event.eventName }}</strong>
-                <div class="trace-event-meta">{{ event.operator }} · {{ event.description }}</div>
-              </el-timeline-item>
-            </el-timeline>
-          </div>
-        </template>
-      </div>
-      <template #footer>
-        <el-button @click="traceDialogVisible = false">关闭</el-button>
-        <el-button
-          v-if="traceDetail?.taskId"
-          type="success"
-          :loading="reportDownloading"
-          @click="downloadTaskQualityReport(traceDetail.taskId)"
-        >
-          <el-icon><Download /></el-icon>
-          导出质检报告
-        </el-button>
-      </template>
+    <el-dialog v-model="traceDialogVisible" class="task-trace-dialog" title="任务追溯详情" width="min(1100px, 96vw)" append-to-body>
+      <TaskTracePanel ref="tracePanel" :detail="traceDetail" :loading="traceLoading" :error="traceError" @refresh="openTraceDialog(traceRequestedId)" />
+      <template #footer><div class="task-trace-footer"><span role="status">{{ traceLoading ? traceDetail ? '正在重新读取，保留上次资料' : '正在读取任务资料' : traceError ? traceDetail ? '读取未成功，仍为上次资料' : '任务详情尚未读取成功' : traceDetail ? '本次已读任务资料' : '尚未读取' }}</span><div><el-button v-if="traceDetail" text @click="tracePanel?.showOverview()">回到概览</el-button><el-button :loading="traceLoading" :disabled="!traceRequestedId || reportDownloading" @click="openTraceDialog(traceRequestedId)"><AppIcon name="Refresh" :size="15" />重新读取</el-button><el-button @click="traceDialogVisible = false">关闭</el-button><el-button v-if="traceDetail?.taskId" type="primary" :loading="reportDownloading" :disabled="traceLoading" @click="downloadTaskQualityReport(traceDetail.taskId)"><AppIcon name="Download" :size="15" />导出任务摘要</el-button></div></div></template>
     </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import QualityAssigneePicker from '@/components/QualityAssigneePicker.vue'
+import QualityStageGuidance from '@/components/QualityStageGuidance.vue'
+import QualityTaskContext from '@/components/QualityTaskContext.vue'
+import EvidenceComparison from '@/components/EvidenceComparison.vue'
+import TraceReportOverview from '@/components/TraceReportOverview.vue'
+import BusinessTraceQuery from '@/components/BusinessTraceQuery.vue'
+import DetectionHistoryCard from '@/components/DetectionHistoryCard.vue'
+import { knownCount } from '@/utils/countPresentation'
+import { useUserStore } from '../stores/user'
+import { beijingDateTime as formatBusinessTime } from '../utils/beijingTime'
+import { detectionPresentation } from '../utils/pagePresentation'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowDown, CircleCheck, Clock, Delete, Download, Refresh, Search, Upload, VideoPlay, Warning } from '@element-plus/icons-vue'
 import {
-  assignDetectionQualityTask,
-  disposeDetectionTask,
   fetchAvailableModels,
   fetchDetectionTaskTrace,
-  reviewDetectionTask,
-  submitDetectionReworkResult
 } from '../api/detection'
 import { detectSingleImageViaKafka } from '../services/singleImageKafkaDetection'
 import { useTaskStore, useUploadStore, usePollingStore, CATEGORY_LABELS, CATEGORY_COLORS, CATEGORY_ALIASES } from '../stores/detectionTask'
@@ -1478,6 +906,7 @@ import {
   canReleaseDisposition,
   canReviewTask,
   canSubmitReworkResult,
+  qualityActionReason,
   dispositionActionText,
   dispositionStatusText,
   flowStatusText,
@@ -1485,23 +914,27 @@ import {
   reviewStatusTagType,
   reviewStatusText,
   severityTagType,
-  severityText,
-  shouldDefaultRecheck
+  severityText
 } from '../utils/qualityWorkflow'
 import {
-  buildTraceEvidenceRows,
   formatEvidenceConfidence,
-  formatPercentValue,
   normalizeQualityQueueRecord,
   resolveDefectPreview
 } from '../utils/qualityRecords'
+import { useQualityTaskActions } from '../composables/useQualityTaskActions'
 import { useQualityQueue } from '../composables/useQualityQueue'
 import { useDefectGallery } from '../composables/useDefectGallery'
 import { useTraceReports } from '../composables/useTraceReports'
 import { useDetectionHistory } from '../composables/useDetectionHistory'
 import { useQualityReportDownloads } from '../composables/useQualityReportDownloads'
 import BusinessSeedEmptyHint from '../components/BusinessSeedEmptyHint.vue'
+import CollectionEmptyState from '../components/CollectionEmptyState.vue'
+import TaskTracePanel from '../components/TaskTracePanel.vue'
+import SingleDetectionEvidence from '../components/SingleDetectionEvidence.vue'
+import '@/assets/task-trace-dialog.css'
 
+const userStore = useUserStore()
+const businessTraceScope = computed(() => userStore.role === 'SUPERVISOR' ? '企业业务范围' : userStore.role === 'INSPECTOR' ? '本人及分派任务' : '当前账号有权查看的业务范围')
 const taskStore = useTaskStore()
 const uploadStore = useUploadStore()
 const pollingStore = usePollingStore()
@@ -1517,6 +950,8 @@ const {
   qualityQueueLoading,
   qualityQueueRecords,
   qualityQueueTotal,
+  qualityQueueError,
+  qualityQueueLoaded,
   qualityQueuePage,
   qualityQueuePageSize,
   qualityQueues,
@@ -1526,6 +961,9 @@ const {
 } = useQualityQueue()
 const {
   defectGalleryLoading,
+  defectGalleryError,
+  hasDefectFilters,
+  defectFiltersDirty,
   defectGalleryRecords,
   defectGalleryTotal,
   defectGalleryPage,
@@ -1540,18 +978,24 @@ const {
   workOrderTraceNo,
   workOrderTraceLoading,
   workOrderTraceReport,
+  workOrderTraceError,
   batchTraceNo,
   batchTraceLoading,
   batchTraceReport,
+  batchTraceError,
   businessWorkOrderNos,
   businessBatchNos,
   ensureDefaultWorkOrderNo,
   ensureDefaultBatchNo,
   loadWorkOrderTraceReport,
   loadBatchTraceReport,
+  refreshWorkOrderTraceReport,
+  workOrderTraceRequestedNo,
+  refreshBatchTraceReport,
+  batchTraceRequestedNo,
   loadBusinessWorkOrderTrace,
   loadBusinessBatchTrace
-} = useTraceReports()
+} = useTraceReports({ getAccountScope: () => [userStore.identity?.userId || userStore.username || '', userStore.role, userStore.isAuthenticated] })
 const {
   historySearchKeyword,
   historyFilterCollector,
@@ -1562,11 +1006,34 @@ const {
   historyTotal,
   historyRecords,
   historyLoading,
+  historyError,
+  historyLoaded,
+  historyFiltersDirty,
+  historyAppliedFilters,
+  hasHistoryFilters,
   fetchHistoryWithFilters,
   onHistorySearch,
+  onHistoryReset,
   onHistoryPageChange,
-  onHistorySizeChange
+  onHistorySizeChange,
+  refreshHistory,
+  retryHistoryRead
 } = useDetectionHistory(taskStore, pollingStore)
+const historyAppliedDescription = computed(() => Object.entries(historyAppliedFilters.value).map(([key,value]) => `${({keyword:'关键词',collector:'采集人员',deviceName:'设备名称',region:'采集区域'})[key] || key}：${value}`).join(' · ') || '全部条件')
+const historyCacheBusy = ref(false)
+async function clearHistoryTaskCache(taskId) {
+  if (historyCacheBusy.value || !taskId) return
+  if (!Array.isArray(taskStore.taskList) || !taskStore.taskList.some(task => task.taskId === taskId)) return ElMessage.info('此任务当前没有本机任务缓存')
+  historyCacheBusy.value = true
+  try {
+    await ElMessageBox.confirm(`清除任务 ${taskId} 的本机缓存？后端记录继续保留，服务器检测不会被取消；重新查询可能再次缓存。`,'清除本机任务缓存',{type:'warning',confirmButtonText:'清除本机缓存',cancelButtonText:'保留缓存'})
+    if (!detectionPageActive) return
+    removeTask(taskId)
+    ElMessage.success('已从本机任务缓存列表移出，后端记录保留')
+  } catch (error) {
+    if (detectionPageActive && !['cancel','close'].includes(error)) ElMessage.error('本机缓存清理未完成，请重新核对')
+  } finally { historyCacheBusy.value = false }
+}
 const {
   reportDownloading,
   downloadTaskQualityReport,
@@ -1576,40 +1043,39 @@ const {
   batchTraceNo,
   batchTraceReport,
   workOrderTraceNo,
-  workOrderTraceReport
+  workOrderTraceReport,
+  getAccountScope: () => [userStore.identity?.userId || userStore.username || '', userStore.role, userStore.isAuthenticated]
 })
 
 // ==================== 组件本地状态（UI 相关） ====================
 
 const fileList = ref([])
 const modelList = ref([])
+const modelsLoading = ref(false), modelsLoaded = ref(false), modelsError = ref('')
+let modelReadVersion = 0, singleRunVersion = 0, detectionPageActive = true
 const detectionResult = ref(null)
 const annotatedImageUrl = ref('')
 const loadingSingle = ref(false)
 const singleDetectionTaskId = ref('')
 const singleDetectionStage = ref('IDLE')
 const singleDetectionMessage = ref('')
+const singleSubmission = ref(null)
+const singleStageCode = computed(() => singleDetectionStage.value === 'IDLE' && form.imageFile ? 'READY' : String(singleDetectionStage.value || 'IDLE').toUpperCase())
 const taskFilter = ref('all')
 const taskSearchKeyword = ref('')
 const taskFilterDate = ref('')
-const reviewDialogVisible = ref(false)
-const reviewSubmitting = ref(false)
-const reviewTask = ref(null)
-const assignmentDialogVisible = ref(false)
-const assignmentSubmitting = ref(false)
-const assignmentTask = ref(null)
-const dispositionDialogVisible = ref(false)
-const dispositionSubmitting = ref(false)
-const dispositionTask = ref(null)
-const reworkDialogVisible = ref(false)
-const reworkSubmitting = ref(false)
-const reworkTask = ref(null)
 const traceDialogVisible = ref(false)
 const traceLoading = ref(false)
 const traceDetail = ref(null)
+const traceError = ref(''), traceRequestedId = ref(''), tracePanel = ref(null)
+let traceGeneration = 0, traceReadController
+watch(traceDialogVisible, open => { if (!open) { traceGeneration++; traceReadController?.abort(); traceReadController = null; traceLoading.value = false } }, { flush:'sync' })
+const displayBusinessTime = value => value ? formatBusinessTime(value) || '时间格式未知' : '未记录'
 const route = useRoute()
+watch(() => JSON.stringify([userStore.identity?.userId || userStore.username || '', userStore.role, userStore.isAuthenticated]), () => { traceGeneration++; traceReadController?.abort(); traceReadController = null; traceDetail.value = null; traceRequestedId.value = ''; traceError.value = ''; traceLoading.value = false; traceDialogVisible.value = false }, { flush: 'sync' })
 const router = useRouter()
 const activeTab = ref('workspace')
+const workspacePresentation = computed(() => detectionPresentation[activeTab.value] || detectionPresentation.workspace)
 const validTabs = ['workspace', 'history', 'quality', 'defect-gallery', 'work-order-trace', 'batch-trace']
 const tabRouteMap = {
   workspace: '/inspection/workbench',
@@ -1623,34 +1089,6 @@ const form = reactive({
   modelId: null,
   threshold: 0.5,
   imageFile: null
-})
-
-const reviewForm = reactive({
-  reviewConclusion: 'CONFIRMED_DEFECT',
-  severityLevel: 'MAJOR',
-  confirmedDefectCount: 0,
-  falsePositiveCount: 0,
-  reviewRemark: ''
-})
-
-const assignmentForm = reactive({
-  qualityStation: '质检站-1',
-  assignee: '',
-  dueAt: '',
-  assignmentRemark: ''
-})
-
-const dispositionForm = reactive({
-  dispositionAction: 'REWORK',
-  recheckRequired: false,
-  dispositionRemark: ''
-})
-
-const reworkForm = reactive({
-  reworkResult: '',
-  reworkOperator: '',
-  recheckRequired: true,
-  reworkRemark: ''
 })
 
 // 筛选任务列表
@@ -1688,16 +1126,7 @@ const filteredTaskList = computed(() => {
   return list
 })
 
-const traceEvidenceRows = computed(() => {
-  return buildTraceEvidenceRows(traceDetail.value)
-})
-
-const mapDistributionRows = (distribution) => {
-  if (!distribution) return []
-  return Object.entries(distribution)
-    .map(([name, count]) => ({ name, count }))
-    .sort((a, b) => Number(b.count || 0) - Number(a.count || 0))
-}
+const traceCount = value => knownCount(value)?.toLocaleString('zh-CN') ?? '—'
 
 const refreshQualityQueueIfVisible = async () => {
   if (activeTab.value === 'quality') {
@@ -1711,7 +1140,8 @@ const refreshDefectGalleryIfVisible = async () => {
   }
 }
 
-const handleTabChange = async (tabName) => {
+const handleTabChange = async (tabName, { fromRoute = false } = {}) => {
+  const startingRoute = route.fullPath
   if (tabName === 'quality' && !qualityQueueRecords.value.length) {
     await loadQualityQueue(1)
   }
@@ -1727,23 +1157,53 @@ const handleTabChange = async (tabName) => {
     await loadBatchTraceReport()
   }
   const targetPath = tabRouteMap[tabName]
-  if (targetPath && route.path !== targetPath) {
+  if (!fromRoute && targetPath && route.path !== targetPath && route.fullPath === startingRoute) {
     const { tab, ...query } = route.query
+    if (tabName !== 'history') delete query.keyword
+    if (tabName !== 'work-order-trace') delete query.workOrderNo
+    if (!['batch-trace','defect-gallery'].includes(tabName)) delete query.batchNo
     router.replace({ path: targetPath, query })
   }
 }
 
 const syncTabFromRoute = async () => {
-  const routeTab = String(route.query.tab || route.meta?.detectionTab || '')
-  if (validTabs.includes(routeTab) && activeTab.value !== routeTab) {
-    activeTab.value = routeTab
-    await handleTabChange(routeTab)
+  const text = value => typeof value === 'string' ? value.trim() : ''
+  const routeKeyword = text(route.query.keyword)
+  const configuredTab = String(route.query.tab || route.meta?.detectionTab || '')
+  if (!validTabs.includes(configuredTab) && route.path !== '/detection') return
+  const routeTab = routeKeyword ? 'history' : configuredTab
+  if (!validTabs.includes(routeTab)) return
+  const changed = activeTab.value !== routeTab
+  activeTab.value = routeTab
+  if (routeTab === 'work-order-trace' && text(route.query.workOrderNo)) {
+    const requested = text(route.query.workOrderNo)
+    workOrderTraceNo.value = requested
+    if (workOrderTraceReport.value?.workOrderNo !== requested) await loadWorkOrderTraceReport()
+    return
   }
+  if (routeTab === 'batch-trace' && text(route.query.batchNo)) {
+    const requested = text(route.query.batchNo)
+    batchTraceNo.value = requested
+    if (batchTraceReport.value?.batchNo !== requested) await loadBatchTraceReport()
+    return
+  }
+  if (routeTab === 'history' && routeKeyword) {
+    historySearchKeyword.value = routeKeyword
+    historyPage.value = 1
+    await fetchHistoryWithFilters(1)
+    return
+  }
+  if (changed) await handleTabChange(routeTab, { fromRoute:true })
 }
 
 watch(
-  () => [route.path, route.query.tab],
+  () => [route.path, route.query.tab, route.query.queue, route.query.workOrderNo, route.query.batchNo, route.query.keyword],
   () => {
+    const requestedQueue = String(route.query.queue || '')
+    if (qualityQueues.some(queue => queue.value === requestedQueue) && activeQualityQueue.value !== requestedQueue) {
+      activeQualityQueue.value = requestedQueue
+      if (activeTab.value === 'quality') loadQualityQueue(1)
+    }
     syncTabFromRoute()
   }
 )
@@ -1767,59 +1227,79 @@ const { handleUploadChange, handleRemove } = useSingleImageUploadPreview({
   fileList,
   detectionResult,
   annotatedImageUrl,
+  isLocked: () => loadingSingle.value,
   onReset: () => {
     singleDetectionTaskId.value = ''
     singleDetectionStage.value = 'IDLE'
     singleDetectionMessage.value = ''
+    singleSubmission.value = null
   }
 })
 
+watch(() => JSON.stringify([userStore.identity?.userId || userStore.username || '', userStore.role, userStore.isAuthenticated]), () => {
+  singleRunVersion++
+  loadingSingle.value = false
+  handleRemove()
+  form.modelId = null
+  modelReadVersion++
+  modelList.value = []
+  modelsLoading.value = false
+  modelsLoaded.value = false
+  modelsError.value = '账号或权限已变化，请重新读取模型目录'
+  singleDetectionMessage.value = '已清除本页原图与结果，原任务请到当前账号有权查看的检测记录核对。'
+}, { flush:'sync' })
+
 const handleSingleDetection = async () => {
+  if (loadingSingle.value || singleStageCode.value === 'UNCONFIRMED') return
   if (!form.imageFile) {
     ElMessage.error('请先选择图片')
     return
   }
 
   loadingSingle.value = true
+  const runVersion = ++singleRunVersion
+  const file = form.imageFile, modelId = form.modelId, threshold = form.threshold
+  const model = modelList.value.find(row => row.modelId === modelId)
+  singleSubmission.value = {fileName:file.name,threshold,modelLabel:modelId ? `${model?.modelName || '模型'} · #${modelId}${model?.version ? ' · '+model.version : ''}` : '由服务端选择，实际以任务记录为准'}
   detectionResult.value = null
   annotatedImageUrl.value = ''
+  singleDetectionTaskId.value = ''
   singleDetectionStage.value = 'CREATING'
-  singleDetectionMessage.value = '正在创建单图 Kafka 任务'
+  singleDetectionMessage.value = '正在登记单图检测任务'
 
   try {
     const result = await detectSingleImageViaKafka({
-      file: form.imageFile,
-      modelId: form.modelId,
-      threshold: form.threshold,
+      file, modelId, threshold,
       onStatus: ({ taskId, stage, message }) => {
+        if (!detectionPageActive || runVersion !== singleRunVersion) return
         singleDetectionTaskId.value = taskId || singleDetectionTaskId.value
         singleDetectionStage.value = stage || singleDetectionStage.value
         singleDetectionMessage.value = message || singleDetectionMessage.value
       }
     })
+    if (!detectionPageActive || runVersion !== singleRunVersion) return
     detectionResult.value = result
     annotatedImageUrl.value = result.annotatedImagePath
     singleDetectionTaskId.value = result.taskId
-    singleDetectionStage.value = 'COMPLETED'
-    singleDetectionMessage.value = 'Kafka 远程检测完成'
-    ElMessage.success('单图 Kafka 远程检测完成')
+    singleDetectionStage.value = result.status === 'PARTIAL_FAILED' ? 'PARTIAL_FAILED' : 'COMPLETED'
+    singleDetectionMessage.value = result.status === 'PARTIAL_FAILED' ? '检测返回部分失败，请核对任务记录' : '单图检测结果已返回，人工复核与报告审批仍需分别完成'
+    if (result.status === 'PARTIAL_FAILED') ElMessage.warning('检测结果包含失败项，请核对任务')
+    else ElMessage.success('单图检测结果已返回')
   } catch (error) {
-    console.error('单图 Kafka 检测失败:', error)
-    singleDetectionStage.value = 'FAILED'
-    singleDetectionMessage.value = error.message || 'Kafka 远程检测失败'
-    ElMessage.error(singleDetectionMessage.value)
+    if (!detectionPageActive || runVersion !== singleRunVersion) return
+    singleDetectionStage.value = error.taskFailed === true ? 'FAILED' : 'UNCONFIRMED'
+    singleDetectionMessage.value = error.message || '单图检测提交或结果尚未核对'
   } finally {
-    loadingSingle.value = false
+    if (detectionPageActive && runVersion === singleRunVersion) loadingSingle.value = false
   }
 }
 
 // ==================== 工具函数 ====================
 
 const formatConfidence = (confidence) => {
-  if (confidence === undefined || confidence === null) {
-    return '--'
-  }
-  return `${(Number(confidence) * 100).toFixed(2)}%`
+  if (!['number','string'].includes(typeof confidence) || typeof confidence === 'string' && !confidence.trim()) return '—'
+  const value = Number(confidence)
+  return Number.isFinite(value) && value >= 0 && value <= 1 ? `${(value * 100).toFixed(2)}%` : '—'
 }
 
 const normalizeCategory = (category) => {
@@ -1845,15 +1325,24 @@ const getCategoryText = (category) => {
 }
 
 const fetchModels = async () => {
+  if (!detectionPageActive) return
+  const readVersion = ++modelReadVersion
+  modelsLoading.value = true
+  modelsError.value = ''
   try {
     const response = await fetchAvailableModels()
-    if (response.data.code === 200) {
-      modelList.value = response.data.data || []
-    }
+    if (!detectionPageActive || readVersion !== modelReadVersion) return
+    const rows = response.data?.data
+    if (response.data?.code !== 200 || !Array.isArray(rows) || rows.some(row => !Number.isSafeInteger(row?.modelId) || row.modelId < 1)) throw new Error('模型目录返回内容不完整')
+    modelList.value = rows
+    modelsLoaded.value = true
   } catch (error) {
-    console.error('获取模型列表失败:', error)
-  }
+    if (!detectionPageActive || readVersion !== modelReadVersion) return
+    if ([401,403].includes(error.response?.status)) { modelList.value = []; modelsLoaded.value = false }
+    modelsError.value = '模型目录暂不可读取；未指定模型时仍由服务端按原配置选择，请核对任务记录。'
+  } finally { if (detectionPageActive && readVersion === modelReadVersion) modelsLoading.value = false }
 }
+const detectionModelOptionLabel = model => `${model.modelName || '未命名模型'}${model.version ? ' · '+model.version : ''} · #${model.modelId}`
 
 // ==================== 生命周期 ====================
 
@@ -1870,227 +1359,64 @@ const refreshTaskList = async () => {
   }
 }
 
-const applyTaskProgressUpdate = async (taskId, data, fallbackMessage) => {
-  taskStore.updateTask(taskId, {
-    flowStatus: data.flowStatus,
-    qualityStation: data.qualityStation,
-    assignee: data.assignee,
-    assignmentRemark: data.assignmentRemark,
-    assignedAt: data.assignedAt,
-    dueAt: data.dueAt,
-    reviewStatus: data.reviewStatus,
-    reviewConclusion: data.reviewConclusion,
-    severityLevel: data.severityLevel,
-    confirmedDefectCount: data.confirmedDefectCount,
-    falsePositiveCount: data.falsePositiveCount,
-    reviewRemark: data.reviewRemark,
-    reviewer: data.reviewer,
-    reviewedAt: data.reviewedAt,
-    dispositionStatus: data.dispositionStatus,
-    dispositionAction: data.dispositionAction,
-    dispositionRemark: data.dispositionRemark,
-    dispositionOperator: data.dispositionOperator,
-    disposedAt: data.disposedAt,
-    recheckRequired: data.recheckRequired,
-    reworkResult: data.reworkResult,
-    reworkOperator: data.reworkOperator,
-    reworkRemark: data.reworkRemark,
-    reworkCompletedAt: data.reworkCompletedAt,
-    message: data.message || fallbackMessage
-  })
-  await fetchTaskResults([taskId])
-}
+// All quality entry points share state guards and mutation feedback.
+const {
+  qualityActionErrors, qualityActionAcknowledged,
+  reviewDialogVisible, reviewSubmitting, reviewTask, reviewForm,
+  assignmentDialogVisible, assignmentSubmitting, assignmentTask, assignmentForm,
+  dispositionDialogVisible, dispositionSubmitting, dispositionTask, dispositionForm,
+  reworkDialogVisible, reworkSubmitting, reworkTask, reworkForm,
+  openReviewDialog, submitTaskReview, openAssignmentDialog, submitQualityAssignment,
+  openDispositionDialog, submitTaskDisposition, openReworkDialog, submitTaskRework
+} = useQualityTaskActions({
+  taskStore,
+  fetchTaskResults,
+  refreshQualityQueue: refreshQualityQueueIfVisible,
+  refreshDefectGallery: refreshDefectGalleryIfVisible
+})
 
-const openReviewDialog = (task) => {
-  reviewTask.value = task
-  reviewForm.reviewConclusion = task.reviewConclusion || 'CONFIRMED_DEFECT'
-  reviewForm.severityLevel = task.severityLevel || 'MAJOR'
-  reviewForm.confirmedDefectCount = task.confirmedDefectCount ?? 0
-  reviewForm.falsePositiveCount = task.falsePositiveCount ?? 0
-  reviewForm.reviewRemark = task.reviewRemark || ''
-  reviewDialogVisible.value = true
-}
-
-const submitTaskReview = async () => {
-  if (!reviewTask.value?.taskId) {
-    ElMessage.error('请选择需要复核的任务')
-    return
+const reviewEvidence = computed(() => {
+  const task = reviewTask.value
+  const previews = task?.previewImages || task?.result?.previewImages || []
+  const originals = task?.originalImages || task?.result?.originalImages || []
+  const annotations = Array.isArray(previews) ? previews.filter(image => image && typeof image === 'object') : []
+  return {
+    annotations,
+    originals: Array.isArray(originals) && originals.length ? originals : annotations
+      .filter(image => typeof image.originalUrl === 'string' && image.originalUrl)
+      .map(image => ({ imageName: image.imageName, previewUrl: image.originalUrl }))
   }
-
-  reviewSubmitting.value = true
-  try {
-    const response = await reviewDetectionTask(reviewTask.value.taskId, {
-      reviewConclusion: reviewForm.reviewConclusion,
-      severityLevel: reviewForm.severityLevel,
-      confirmedDefectCount: reviewForm.confirmedDefectCount,
-      falsePositiveCount: reviewForm.falsePositiveCount,
-      reviewRemark: reviewForm.reviewRemark
-    })
-    if (response.data?.code === 200) {
-      const data = response.data.data
-      await applyTaskProgressUpdate(reviewTask.value.taskId, data, '人工复核已完成')
-      await refreshQualityQueueIfVisible()
-      await refreshDefectGalleryIfVisible()
-      reviewDialogVisible.value = false
-      ElMessage.success('人工复核已提交')
-    } else {
-      ElMessage.error(response.data?.message || '人工复核提交失败')
-    }
-  } catch (error) {
-    console.error('人工复核提交失败:', error)
-    ElMessage.error(error.response?.data?.message || '人工复核提交失败')
-  } finally {
-    reviewSubmitting.value = false
-  }
-}
-
-const openAssignmentDialog = (task) => {
-  assignmentTask.value = task
-  assignmentForm.qualityStation = task.qualityStation || task.result?.qualityStation || '质检站-1'
-  assignmentForm.assignee = task.assignee || task.result?.assignee || ''
-  assignmentForm.dueAt = task.dueAt || task.result?.dueAt || ''
-  assignmentForm.assignmentRemark = task.assignmentRemark || task.result?.assignmentRemark || ''
-  assignmentDialogVisible.value = true
-}
-
-const submitQualityAssignment = async () => {
-  if (!assignmentTask.value?.taskId) {
-    ElMessage.error('请选择需要分派的任务')
-    return
-  }
-  if (!assignmentForm.qualityStation.trim() || !assignmentForm.assignee.trim()) {
-    ElMessage.warning('请填写质检站点和责任人')
-    return
-  }
-
-  assignmentSubmitting.value = true
-  try {
-    const response = await assignDetectionQualityTask(assignmentTask.value.taskId, {
-      qualityStation: assignmentForm.qualityStation,
-      assignee: assignmentForm.assignee,
-      dueAt: assignmentForm.dueAt,
-      assignmentRemark: assignmentForm.assignmentRemark
-    })
-    if (response.data?.code === 200) {
-      await applyTaskProgressUpdate(assignmentTask.value.taskId, response.data.data, '质检任务已分派')
-      await refreshQualityQueueIfVisible()
-      assignmentDialogVisible.value = false
-      ElMessage.success('质检任务已分派')
-    } else {
-      ElMessage.error(response.data?.message || '质检分派失败')
-    }
-  } catch (error) {
-    console.error('质检分派失败:', error)
-    ElMessage.error(error.response?.data?.message || '质检分派失败')
-  } finally {
-    assignmentSubmitting.value = false
-  }
-}
-
-const openDispositionDialog = (task) => {
-  dispositionTask.value = task
-  dispositionForm.dispositionAction = canReleaseDisposition(task) ? 'RELEASE' : 'REWORK'
-  dispositionForm.recheckRequired = shouldDefaultRecheck(task)
-  dispositionForm.dispositionRemark = task.dispositionRemark || ''
-  dispositionDialogVisible.value = true
-}
-
-const submitTaskDisposition = async () => {
-  if (!dispositionTask.value?.taskId) {
-    ElMessage.error('请选择需要处置的任务')
-    return
-  }
-  if (dispositionForm.dispositionAction === 'RELEASE' && !canReleaseDisposition(dispositionTask.value)) {
-    ElMessage.warning('确认缺陷或待复检任务不能直接放行，请选择返工、复检、暂挂或报废')
-    return
-  }
-
-  dispositionSubmitting.value = true
-  try {
-    const response = await disposeDetectionTask(dispositionTask.value.taskId, {
-      dispositionAction: dispositionForm.dispositionAction,
-      recheckRequired: dispositionForm.recheckRequired,
-      dispositionRemark: dispositionForm.dispositionRemark
-    })
-    if (response.data?.code === 200) {
-      await applyTaskProgressUpdate(dispositionTask.value.taskId, response.data.data, '质检处置已完成')
-      await refreshQualityQueueIfVisible()
-      dispositionDialogVisible.value = false
-      ElMessage.success('质检处置已提交')
-    } else {
-      ElMessage.error(response.data?.message || '质检处置提交失败')
-    }
-  } catch (error) {
-    console.error('质检处置提交失败:', error)
-    ElMessage.error(error.response?.data?.message || '质检处置提交失败')
-  } finally {
-    dispositionSubmitting.value = false
-  }
-}
-
-const openReworkDialog = (task) => {
-  reworkTask.value = task
-  reworkForm.reworkResult = task.reworkResult || ''
-  reworkForm.reworkOperator = task.reworkOperator || ''
-  reworkForm.recheckRequired = task.recheckRequired !== false
-  reworkForm.reworkRemark = task.reworkRemark || ''
-  reworkDialogVisible.value = true
-}
-
-const submitTaskRework = async () => {
-  if (!reworkTask.value?.taskId) {
-    ElMessage.error('请选择需要回填返工结果的任务')
-    return
-  }
-  if (!reworkForm.reworkResult.trim()) {
-    ElMessage.warning('请填写返工结果')
-    return
-  }
-
-  reworkSubmitting.value = true
-  try {
-    const response = await submitDetectionReworkResult(reworkTask.value.taskId, {
-      reworkResult: reworkForm.reworkResult,
-      reworkOperator: reworkForm.reworkOperator,
-      reworkRemark: reworkForm.reworkRemark,
-      recheckRequired: reworkForm.recheckRequired
-    })
-    if (response.data?.code === 200) {
-      await applyTaskProgressUpdate(reworkTask.value.taskId, response.data.data, '返工结果已提交')
-      await refreshQualityQueueIfVisible()
-      reworkDialogVisible.value = false
-      ElMessage.success('返工结果已提交')
-    } else {
-      ElMessage.error(response.data?.message || '返工结果提交失败')
-    }
-  } catch (error) {
-    console.error('返工结果提交失败:', error)
-    ElMessage.error(error.response?.data?.message || '返工结果提交失败')
-  } finally {
-    reworkSubmitting.value = false
-  }
-}
+})
 
 const openTraceDialog = async (taskId) => {
-  traceDialogVisible.value = true
-  traceLoading.value = true
-  traceDetail.value = null
+  if (typeof taskId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(taskId)) return
+  const generation = ++traceGeneration, sameTask = traceDetail.value?.taskId === taskId
+  traceReadController?.abort()
+  const controller = new AbortController(); traceReadController = controller
+  traceRequestedId.value = taskId; traceError.value = ''; traceDialogVisible.value = true; traceLoading.value = true
+  if (!sameTask) traceDetail.value = null
   try {
-    const response = await fetchDetectionTaskTrace(taskId)
-    if (response.data?.code === 200) {
-      traceDetail.value = response.data.data
+    const response = await fetchDetectionTaskTrace(taskId, { signal: controller.signal })
+    if (generation !== traceGeneration) return
+    const detail = response.data?.data
+    if (response.data?.code === 200 && detail && typeof detail === 'object' && !Array.isArray(detail) && detail.taskId === taskId && ['timeline','originalImages','previewImages'].every(key => detail[key] == null || Array.isArray(detail[key]))) {
+      traceDetail.value = detail
+      if (!sameTask) { await nextTick(); if (generation === traceGeneration) tracePanel.value?.resetScroll() }
     } else {
-      ElMessage.error(response.data?.message || '获取追溯详情失败')
+      if ([401, 403, 404].includes(response.data?.code)) traceDetail.value = null
+      traceError.value = response.data?.code === 200 ? '任务详情返回内容不完整或编号不匹配，请重新读取' : response.data?.message || '获取追溯详情失败'
     }
-  } catch (error) {
-    console.error('获取追溯详情失败:', error)
-    ElMessage.error(error.response?.data?.message || '获取追溯详情失败')
+  } catch (failure) {
+    if (generation !== traceGeneration || controller.signal.aborted) return
+    if ([401, 403, 404].includes(failure.response?.status)) traceDetail.value = null
+    traceError.value = failure.response?.data?.message || '任务资料暂不可读取，请重新核对服务与访问权限'
   } finally {
-    traceLoading.value = false
+    if (generation === traceGeneration) { traceReadController = null; traceLoading.value = false }
   }
 }
 
 onMounted(async () => {
+  const initialNavigation = route.fullPath
   const routeTab = String(route.query.tab || route.meta?.detectionTab || '')
   if (validTabs.includes(routeTab)) {
     activeTab.value = routeTab
@@ -2099,6 +1425,10 @@ onMounted(async () => {
   if (qualityQueues.some(queue => queue.value === queryQueue)) {
     activeQualityQueue.value = queryQueue
   }
+  const queryWorkOrderNo = typeof route.query.workOrderNo === 'string' ? route.query.workOrderNo.trim() : ''
+  const queryBatchNo = typeof route.query.batchNo === 'string' ? route.query.batchNo.trim() : ''
+  if (queryWorkOrderNo && activeTab.value === 'work-order-trace') workOrderTraceNo.value = queryWorkOrderNo
+  if (queryBatchNo && activeTab.value === 'batch-trace') batchTraceNo.value = queryBatchNo
   const queryKeyword = route.query.keyword
   if (queryKeyword) {
     activeTab.value = 'history'
@@ -2127,22 +1457,25 @@ onMounted(async () => {
     selectedTaskId.value = String(queryTaskId)
   }
 
-  const queryWorkOrderNo = route.query.workOrderNo
-  if (queryWorkOrderNo && activeTab.value === 'work-order-trace') {
+  if (route.fullPath === initialNavigation && queryWorkOrderNo && activeTab.value === 'work-order-trace') {
     activeTab.value = 'work-order-trace'
     workOrderTraceNo.value = String(queryWorkOrderNo)
-    await loadWorkOrderTraceReport()
+    if (workOrderTraceReport.value?.workOrderNo !== queryWorkOrderNo) await loadWorkOrderTraceReport()
   }
 
-  const queryBatchNo = route.query.batchNo
-  if (queryBatchNo && activeTab.value === 'batch-trace') {
+  if (route.fullPath === initialNavigation && queryBatchNo && activeTab.value === 'batch-trace') {
     activeTab.value = 'batch-trace'
     batchTraceNo.value = String(queryBatchNo)
-    await loadBatchTraceReport()
+    if (batchTraceReport.value?.batchNo !== queryBatchNo) await loadBatchTraceReport()
   }
 })
 
 onBeforeUnmount(() => {
+  detectionPageActive = false
+  modelReadVersion++
+  singleRunVersion++
+  traceGeneration++
+  traceReadController?.abort()
   // 不再停止轮询 — 轮询在 store 中，切换页面后继续
   // 只保存当前状态
   saveTaskList()
@@ -2332,12 +1665,11 @@ onBeforeUnmount(() => {
 .single-detection-result {
   min-width: 0;
   min-height: 320px;
-  padding: 16px;
-  border: 1px solid rgba(37, 99, 235, 0.14);
-  border-radius: 16px;
-  background:
-    linear-gradient(145deg, rgba(255, 255, 255, 0.98), rgba(241, 245, 249, 0.92));
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.85);
+  padding: 0 0 0 20px;
+  border: 0;
+  border-left: 1px solid var(--app-border);
+  border-radius: 0;
+  background: var(--app-surface);
 }
 
 .single-result-heading {
@@ -2348,21 +1680,13 @@ onBeforeUnmount(() => {
   margin-bottom: 12px;
 }
 
-.single-result-heading > div {
+.single-result-heading > div:first-child {
   display: grid;
   gap: 2px;
 }
 
-.single-result-heading span {
-  color: #64748b;
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-
 .single-result-heading strong {
-  color: #172033;
+  color: var(--app-text);
   font-size: 16px;
 }
 
@@ -2473,7 +1797,7 @@ onBeforeUnmount(() => {
   background:
     linear-gradient(135deg, rgba(255, 255, 255, 0.96), rgba(248, 251, 255, 0.92));
   cursor: pointer;
-  transition: all 0.18s;
+  transition: border-color 180ms ease, background-color 180ms ease, box-shadow 180ms ease, transform 180ms ease;
 }
 
 .task-item:hover {
@@ -2720,7 +2044,7 @@ onBeforeUnmount(() => {
   padding: 11px 12px;
   text-align: left;
   cursor: pointer;
-  transition: all 0.18s ease;
+  transition: border-color 180ms ease, background-color 180ms ease, box-shadow 180ms ease, transform 180ms ease;
 }
 
 .quality-queue-chip span {
@@ -2758,11 +2082,22 @@ onBeforeUnmount(() => {
 
 .defect-filter-bar {
   display: grid;
-  grid-template-columns: minmax(180px, 1.2fr) minmax(150px, 0.9fr) minmax(150px, 1fr) minmax(150px, 1fr) minmax(130px, 0.8fr) auto auto;
-  gap: 10px;
-  align-items: center;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  align-items: end;
   margin-bottom: 16px;
 }
+
+.defect-filter-bar > label { display:grid; gap:7px; min-width:0; font-size:12px; color:var(--app-text-secondary); line-height:1.8; }
+.defect-filter-bar :deep(.el-select),.defect-filter-bar :deep(.el-input-number) { width:100%; }
+.defect-filter-actions { display:flex; align-items:center; flex-wrap:wrap; gap:8px; min-height:32px; }
+.defect-filter-actions .el-button + .el-button { margin-left:0; }
+.defect-gallery-scope { display:flex; align-items:flex-start; gap:7px; margin:0 0 18px; color:var(--app-text-secondary); font-size:12px; line-height:1.85; }
+.defect-gallery-scope > .el-icon { color:var(--app-primary); flex-shrink:0; margin-top:3px; }
+.defect-gallery-filter-note { color:var(--app-text-secondary); font-size:12px; line-height:1.85; margin:0 0 16px; padding:10px 12px; background:var(--app-primary-soft); border-radius:7px; }
+.defect-card-image > .preview-empty { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; color:var(--app-text-secondary); font-size:12px; }
+.defect-gallery-card .card-title-row > span:first-child { display:inline-flex; align-items:center; gap:8px; }
+.defect-gallery-card .card-title-row > span:first-child .el-icon { color:var(--app-primary); }
 
 .defect-gallery-grid {
   display: grid;
@@ -2777,7 +2112,7 @@ onBeforeUnmount(() => {
   background:
     linear-gradient(135deg, #ffffff, #f8fbff);
   box-shadow: var(--app-shadow-sm);
-  transition: all var(--app-transition-fast);
+  transition: border-color var(--app-transition-fast), box-shadow var(--app-transition-fast), transform var(--app-transition-fast);
 }
 
 .defect-evidence-card:hover {
@@ -2905,12 +2240,6 @@ onBeforeUnmount(() => {
   text-align: center;
 }
 
-.single-result-layout {
-  display: grid;
-  grid-template-columns: 1.2fr 1fr;
-  gap: 20px;
-}
-
 .single-result-image {
   min-height: 220px;
   display: flex;
@@ -2931,229 +2260,25 @@ onBeforeUnmount(() => {
   max-height: 250px;
 }
 
-.single-result-meta {
-  margin-top: 12px;
-}
-
-/* 检测记录筛选栏 */
-.history-filter-bar {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 14px;
-  align-items: center;
-}
-
-.history-filter-input {
-  width: 160px;
-}
-
-/* 检测记录卡片 */
-.history-grid {
-  display: grid;
-  gap: 14px;
-}
-
-.history-pagination {
-  display: flex;
-  justify-content: center;
-  padding: 16px 0 4px;
-}
-
-.history-record-card {
-  padding: 18px 20px;
-  border-radius: 16px;
-  border: 1px solid rgba(15, 23, 42, 0.06);
-  background: #fafbfc;
-  transition: all 0.18s;
-}
-
-.history-record-card:hover {
-  border-color: rgba(22, 119, 255, 0.15);
-  box-shadow: 0 2px 10px rgba(15, 23, 42, 0.04);
-}
-
-.record-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 14px;
-}
-
-.record-header-left {
-  flex: 1;
-  min-width: 0;
-}
-
-.record-folder {
-  font-weight: 600;
-  color: #172033;
-  font-size: 15px;
-}
-
-.record-taskid {
-  font-size: 12px;
-  color: #8b95a5;
-  font-family: monospace;
-  margin-top: 2px;
-}
-
-.record-capture {
-  display: flex;
-  gap: 12px;
-  margin-top: 4px;
-  font-size: 12px;
-  color: #8b95a5;
-  flex-wrap: wrap;
-}
-
-.record-capture span::before {
-  content: '·';
-  margin-right: 4px;
-}
-
-.record-capture span:first-child::before {
-  content: '';
-  margin-right: 0;
-}
-
-.record-oss-path {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 4px;
-  font-size: 11px;
-}
-
-.oss-path-label {
-  color: #94a3b8;
-  flex-shrink: 0;
-}
-
-.oss-path-value {
-  font-size: 11px;
-  color: #1677ff;
-  background: rgba(22, 119, 255, 0.06);
-  padding: 1px 6px;
-  border-radius: 4px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.record-stats {
-  margin-bottom: 12px;
-  padding: 12px 0;
-  border-top: 1px solid rgba(15, 23, 42, 0.04);
-  border-bottom: 1px solid rgba(15, 23, 42, 0.04);
-}
-
-.record-stats :deep(.el-statistic__head) {
-  font-size: 12px;
-  margin-bottom: 2px;
-}
-
-.record-classes {
-  margin-bottom: 10px;
-}
-
-.record-preview {
-  display: flex;
-  gap: 6px;
-  overflow-x: auto;
-  padding: 4px 0 8px;
-  margin-bottom: 10px;
-}
-
-.record-preview-img {
-  width: 72px;
-  height: 72px;
-  border-radius: 10px;
-  object-fit: cover;
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  flex-shrink: 0;
-  background: #f0f0f0;
-}
-
-.record-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding-top: 10px;
-  border-top: 1px solid rgba(15, 23, 42, 0.04);
-}
-
-.record-task-id {
-  font-size: 11px;
-  color: #b0b8c4;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.record-actions {
-  display: flex;
-  gap: 4px;
-  flex-shrink: 0;
-}
-
-.record-actions :deep(.el-button.is-link) {
-  padding: 0 8px;
-  font-size: 12px;
-  height: 28px;
-}
-
+.history-page-card .card-title-row > span:first-child { display:inline-flex; align-items:center; gap:8px; }
+.history-page-card .card-title-row > span:first-child .el-icon { color:var(--app-primary); }
+.history-scope-note { display:flex; align-items:flex-start; gap:7px; margin:0 0 18px; color:var(--app-text-secondary); font-size:12px; line-height:1.85; }
+.history-scope-note > .el-icon { color:var(--app-primary); flex-shrink:0; margin-top:3px; }
+.history-query-form { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:14px; align-items:end; margin-bottom:18px; }
+.history-query-form > label { display:grid; gap:7px; min-width:0; color:var(--app-text-secondary); font-size:12px; line-height:1.8; }
+.history-query-keyword { grid-column:span 2; }
+.history-query-actions { display:flex; align-items:center; flex-wrap:wrap; gap:8px; min-height:32px; }
+.history-query-actions .el-button + .el-button { margin-left:0; }
+.history-applied-query { margin:0 0 14px; color:var(--app-text-secondary); font-size:12px; line-height:1.85; overflow-wrap:anywhere; }
+.history-filter-note { padding:10px 12px; margin:0 0 16px; border-radius:7px; background:var(--app-primary-soft); color:var(--app-text-secondary); font-size:12px; line-height:1.85; }
+.history-records-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); align-items:start; gap:18px; }
+.history-retry { margin:12px 0 18px; }
+.history-pagination { display:flex; justify-content:flex-end; padding:20px 0 4px; }
+.history-pagination :deep(.el-pagination) { flex-wrap:wrap; gap:8px; }
+@media(max-width:1100px) { .history-records-grid { grid-template-columns:minmax(0,1fr); } }
+@media(max-width:720px) { .history-query-form { grid-template-columns:minmax(0,1fr); } .history-query-keyword { grid-column:auto; } .history-pagination { justify-content:flex-start; } }
 .path-text {
   color: #172033;
-}
-
-.trace-dialog-body {
-  min-height: 180px;
-}
-
-.trace-section {
-  margin-bottom: 16px;
-}
-
-.trace-section h4 {
-  margin: 0 0 10px;
-  color: #172033;
-}
-
-.trace-paths {
-  display: grid;
-  gap: 8px;
-  padding: 12px;
-  border-radius: 12px;
-  background: #f8fafc;
-}
-
-.trace-paths div {
-  display: grid;
-  grid-template-columns: 88px minmax(0, 1fr);
-  gap: 8px;
-  align-items: center;
-}
-
-.trace-paths span {
-  color: #64748b;
-  font-size: 12px;
-}
-
-.trace-paths code,
-.trace-paths a {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: #1677ff;
-}
-
-.trace-event-meta {
-  margin-top: 4px;
-  color: #64748b;
-  font-size: 12px;
 }
 
 .batch-trace-card {
@@ -3177,135 +2302,28 @@ onBeforeUnmount(() => {
   font-size: 13px;
 }
 
-.batch-trace-body {
-  min-height: 220px;
-}
-
-.batch-summary-band {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 12px;
-  padding: 16px;
-  margin-bottom: 16px;
-  border-radius: 20px;
-  color: #fff;
-  background:
-    radial-gradient(circle at top left, rgba(255, 255, 255, 0.28), transparent 34%),
-    linear-gradient(135deg, #0f766e 0%, #164e63 56%, #172554 100%);
-}
-
-.batch-summary-band div {
-  display: grid;
-  gap: 4px;
-  min-width: 0;
-}
-
-.batch-summary-band span {
-  font-size: 12px;
-  color: rgba(255, 255, 255, 0.72);
-}
-
-.batch-summary-band strong {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 15px;
-}
-
-.batch-metrics {
-  margin-bottom: 16px;
-}
-
-.batch-metrics :deep(.el-col) {
-  margin-bottom: 12px;
-}
-
-.batch-metrics :deep(.el-statistic) {
-  padding: 14px;
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  border-radius: 16px;
-  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
-}
-
-.batch-section-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px;
-  margin-bottom: 14px;
-}
-
-.batch-panel {
-  padding: 16px;
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.86);
-}
-
-.batch-panel h3 {
-  margin: 0 0 12px;
-  font-size: 15px;
-  color: #172033;
-}
-
-.batch-quality-list {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.batch-quality-list div {
-  display: grid;
-  gap: 4px;
-  padding: 10px;
-  border-radius: 12px;
-  background: #f8fafc;
-}
-
-.batch-quality-list span,
-.batch-time-range span {
-  font-size: 12px;
-  color: #64748b;
-}
-
-.batch-quality-list strong {
-  font-size: 20px;
-  color: #0f172a;
-}
-
-.batch-context-tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-bottom: 12px;
-}
-
-.batch-time-range {
-  display: grid;
-  gap: 6px;
-}
-
+.trace-examples { margin:12px 0 20px; color:var(--app-text-secondary); font-size:12px; line-height:1.85; }
+.trace-examples summary { width:fit-content; cursor:pointer; }
+.trace-examples p { margin:9px 0; max-width:75ch; }
+.trace-examples summary:focus-visible { outline:2px solid var(--app-primary); outline-offset:4px; border-radius:3px; }
+.batch-trace-card .card-title-row > span:first-child { display:inline-flex; align-items:center; gap:8px; }
+.batch-trace-card .card-title-row > span:first-child .el-icon { color:var(--app-primary); }
 @media (max-width: 1080px) {
   .workspace-grid,
   .input-grid,
   .single-detection-workspace,
-  .single-result-layout,
   .preview-images,
-  .defect-filter-bar,
-  .batch-section-grid {
+  .defect-filter-bar {
     grid-template-columns: 1fr;
   }
 
-  .batch-summary-band {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
+  .defect-filter-bar { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .single-detection-result { padding:20px 0 0; border-left:0; border-top:1px solid var(--app-border); }
 }
 
 @media (max-width: 720px) {
   .batch-trace-search,
-  .defect-filter-bar,
-  .batch-summary-band,
-  .batch-quality-list {
+  .defect-filter-bar {
     grid-template-columns: 1fr;
   }
 
@@ -3313,4 +2331,29 @@ onBeforeUnmount(() => {
     grid-template-columns: 1fr;
   }
 }
+
+.quality-queue-scope { display:flex; align-items:flex-start; gap:7px; margin:8px 0 14px; color:var(--app-text-muted); font-size:12px; line-height:1.8; }
+.quality-queue-scope > .el-icon { flex:0 0 auto; margin-top:3px; color:var(--app-primary); }
+.quality-queue-read-error { margin-bottom:14px; }
+.quality-queue-task, .quality-queue-responsibility { display:grid; gap:4px; min-width:0; }
+.quality-queue-task button { width:fit-content; max-width:100%; padding:0; border:0; border-radius:3px; background:transparent; color:var(--app-primary); font-size:12px; font-weight:550; line-height:1.8; text-align:left; overflow-wrap:anywhere; cursor:pointer; }
+.quality-queue-task button:focus-visible { outline:2px solid var(--app-primary); outline-offset:3px; }
+.quality-queue-task span, .quality-queue-responsibility span { color:var(--app-text-secondary); font-size:12px; line-height:1.8; overflow-wrap:anywhere; }
+.quality-queue-task small, .quality-queue-responsibility small { color:var(--app-text-muted); font-size:11px; line-height:1.7; overflow-wrap:anywhere; }
+.quality-queue-responsibility strong { color:var(--app-text); font-size:13px; font-weight:550; overflow-wrap:anywhere; }
+.quality-queue-chip.active { background:var(--app-primary-soft); border-color:#aac3f6; box-shadow:none; transform:none; }
+.quality-queue-chip:focus-visible { outline:2px solid var(--app-primary); outline-offset:3px; }
+.detection-input-note { margin:0 0 14px; color:var(--app-text-muted); font-size:12px; line-height:1.8; overflow-wrap:anywhere; }
+.detection-input-note.is-warning { padding:9px 11px; border-radius:8px; color:var(--app-warning); background:var(--app-warning-soft); }
+.detection-input-note button { margin:4px 0 0; padding:2px 0; border:0; border-radius:4px; color:var(--app-primary); background:transparent; cursor:pointer; font:inherit; }
+.detection-model-option { display:flex; align-items:center; gap:10px; min-width:0; }.detection-model-option > span:first-child { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.detection-model-option > .business-status { flex:0 0 auto; font-size:11px; }
+.single-submission-summary { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:10px 18px; margin:0 0 16px; padding:12px 0; border-block:1px solid var(--app-border); }
+.single-submission-summary > div { min-width:0; }.single-submission-summary > div:first-child { grid-column:1/-1; }
+.single-submission-summary dt { color:var(--app-text-muted); font-size:11px; line-height:1.8; }
+.single-submission-summary dd { margin:4px 0 0; color:var(--app-text); font-size:12px; line-height:1.8; overflow-wrap:anywhere; }
+.single-task-links { display:flex; align-items:center; flex-wrap:wrap; gap:8px 18px; margin:0 0 16px; }
+.single-task-links > :is(a,button) { display:inline-flex; align-items:center; gap:5px; border:0; border-radius:5px; padding:5px 0; color:var(--app-primary); background:transparent; font-size:12px; font-family:inherit; text-decoration:none; cursor:pointer; }
+.single-task-links > :is(a,button):focus-visible, .detection-input-note button:focus-visible { outline:2px solid var(--app-primary); outline-offset:3px; }
+@media(max-width:480px) { .single-submission-summary { grid-template-columns:minmax(0,1fr); } }
+@media(max-width:580px) { .quality-queue-scope { font-size:11px; }.quality-pagination { justify-content:flex-start; overflow-x:auto; padding-bottom:5px; } }
 </style>

@@ -30,6 +30,8 @@ public class QualityReportService {
     private final DetectionTaskAccessPolicy policy;
     private final ObjectMapper json;
     private final ObjectMapper canonicalJson;
+    @org.springframework.beans.factory.annotation.Autowired private org.springframework.beans.factory.ObjectProvider<com.ruanzhu.doorhandle.contracts.agent.OperationsAuditApi> operationsAudit;
+    @org.springframework.beans.factory.annotation.Value("${operations.audit.enabled:false}") private boolean operationsAuditEnabled;
     public QualityReportService(QualityReportRepository reports,DetectionTaskMapper tasks,BusinessUserDirectory users,
             DetectionTaskAccessPolicy policy,ObjectMapper json) {
         this.reports=reports;this.tasks=tasks;this.users=users;this.policy=policy;this.json=json;
@@ -42,7 +44,7 @@ public class QualityReportService {
         if(status!=null&&!status.isBlank()&&!Set.of("DRAFT","SUBMITTED","APPROVED","REJECTED","WITHDRAWN").contains(status))fail(400,"报告状态不正确");
         var params=new HashMap<String,Object>();params.put("owner",actor.userId());params.put("username",actor.username());
         String where="(r.owner_user_id=:owner"+(actor.supervisor()?" OR r.status<>'DRAFT'":"")+")";
-        if(!actor.supervisor())where+=" AND (t.created_by=:username OR t.assignee=:username)";
+        if(!actor.supervisor())where+=" AND "+policy.actorPredicate("t.",policy.stableIdentityActive()?":owner":":username");
         if(status!=null&&!status.isBlank()){where+=" AND r.status=:status";params.put("status",status);}
         if(keyword!=null&&!keyword.isBlank()){where+=" AND (r.task_id LIKE :keyword OR r.title LIKE :keyword)";params.put("keyword","%"+keyword.trim()+"%");}
         var rows=reports.list(where,params,page,size);
@@ -62,6 +64,7 @@ public class QualityReportService {
         if(reports.jdbc().update("UPDATE detection_report_outbox SET delivery_status='RETRY',next_attempt_at=?,last_error_code=NULL WHERE report_id=? AND event_id=? AND delivery_status IN ('FAILED','RETRY') AND attempts=?",now(),id,eventId,request.expectedAttempts())!=1)
             fail(409,"事件已变化或正在发送，请刷新后重试");
         writeAudit(actor,row,"EVENT_RETRY",row.status(),"人工确认重新投递报告事件");
+        businessAudit(actor,row,"EVENT_RETRY",request.requestId());
         reports.jdbc().update("INSERT INTO detection_report_command(actor_user_id,request_id,command_sha256,report_id,response_json,created_at) VALUES(?,?,?,?,?,?)",actor.userId(),request.requestId(),digest,id,encode(view(row)),now());
         return events(actor,id);
     }
@@ -168,7 +171,7 @@ public class QualityReportService {
         return finish(actor,id,requestId,digest,previous==null?"CREATE":"REVISE",null,null,false);
     }
     private View finish(Identity actor,String id,String requestId,String digest,String action,String before,String reason,boolean event) {
-        var row=reports.get(id,false);writeAudit(actor,row,action,before,reason);var response=view(row);
+        var row=reports.get(id,false);writeAudit(actor,row,action,before,reason);businessAudit(actor,row,action,requestId);var response=view(row);
         reports.jdbc().update("INSERT INTO detection_report_command(actor_user_id,request_id,command_sha256,report_id,response_json,created_at) VALUES(?,?,?,?,?,?)",
                 actor.userId(),requestId,digest,id,encode(response),now());
         if(event) {
@@ -183,6 +186,13 @@ public class QualityReportService {
         if(reports.jdbc().update("INSERT INTO detection_report_audit(report_id,actor_user_id,actor_username,action,before_status,after_status,report_version,reason,snapshot_sha256,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
                 row.reportId(),actor.userId(),actor.username(),action,before,row.status(),row.version(),reason,row.snapshotSha256(),now())!=1)
             throw new IllegalStateException("报告审计写入失败");
+    }
+    /** Only new commands reach here; a duplicate command returns its immutable original response earlier. */
+    private void businessAudit(Identity actor,Row row,String action,String request){
+        if(!operationsAuditEnabled)return;
+        var api=operationsAudit==null?null:operationsAudit.getIfAvailable();if(api==null)throw new IllegalStateException("必要业务审计服务不可用");
+        String scope="DRAFT".equals(row.status())?"PRIVATE":"ENTERPRISE";
+        api.append(new com.ruanzhu.doorhandle.contracts.agent.OperationsAuditApi.Event(new com.ruanzhu.doorhandle.contracts.agent.AgentActor(actor.userId(),actor.username(),actor.supervisor()?com.ruanzhu.doorhandle.contracts.agent.AgentActor.Role.SUPERVISOR:com.ruanzhu.doorhandle.contracts.agent.AgentActor.Role.INSPECTOR),scope,"QUALITY_REPORT",action,row.reportId(),request,"APPLIED",(long)row.version()));
     }
     private View repeat(Identity actor,String requestId,String digest) {
         if(requestId==null||!requestId.matches("[A-Za-z0-9_-]{8,64}"))fail(400,"请求编号不正确");
@@ -202,7 +212,8 @@ public class QualityReportService {
         if(taskId==null||!taskId.matches("[A-Za-z0-9_-]{1,128}"))fail(400,"任务编号不正确");
         var query=new LambdaQueryWrapper<DetectionTask>().eq(DetectionTask::getTaskId,taskId);if(lock)query.last("FOR UPDATE");
         var task=tasks.selectOne(query);
-        if(!policy.canAccess(task,actor.username(),actor.supervisor()))fail(404,"任务不存在或无访问权限");return task;
+        var principal=new com.ruanzhu.doorhandle.contracts.agent.AgentActor(actor.userId(),actor.username(),actor.supervisor()?com.ruanzhu.doorhandle.contracts.agent.AgentActor.Role.SUPERVISOR:com.ruanzhu.doorhandle.contracts.agent.AgentActor.Role.INSPECTOR);
+        if(!policy.canAccess(task,principal))fail(404,"任务不存在或无访问权限");return task;
     }
     private Identity current(Identity actor){if(actor==null)throw new SecurityException("请先登录");return users.current(actor.userId(),actor.username());}
     private void owner(Identity actor,Row row){if(actor.userId()!=row.ownerUserId())throw new SecurityException("只有报告本人可以修改草稿或撤回");}

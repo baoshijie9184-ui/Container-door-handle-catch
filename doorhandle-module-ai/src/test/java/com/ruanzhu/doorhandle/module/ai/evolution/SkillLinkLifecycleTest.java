@@ -28,6 +28,8 @@ class SkillLinkLifecycleTest {
         jdbc.execute("CREATE TABLE agent_skill_download(download_id VARCHAR(64) PRIMARY KEY,owner_user_id BIGINT,status VARCHAR(32),target_role VARCHAR(32),manifest_json TEXT,manifest_sha256 CHAR(64),target_skill_id VARCHAR(64),expected_skill_revision INT,skill_id VARCHAR(64),request_id VARCHAR(64),request_sha256 CHAR(64),source_url VARCHAR(1000),created_at DATETIME,updated_at DATETIME)");
         String cleanupDdl=Files.readString(Path.of("../sql/mysql/migration-V29-skill-storage-cleanup.sql")).replace(" ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin","").replaceAll("(?m)^\\s*(?:UNIQUE )?KEY .*\\n","").replaceAll(",\\s*\\)","\n)");
         for(String statement:cleanupDdl.split(";"))if(!statement.isBlank())jdbc.execute(statement);
+        String leaseDdl=Files.readString(Path.of("../sql/mysql/migration-V46-skill-download-leases.sql")).replace(" COLLATE utf8mb4_bin","").replace(" ENGINE=InnoDB DEFAULT CHARSET=utf8mb4","").replaceAll("(?m)^\\s*(?:UNIQUE )?KEY .*\\n","").replaceAll(",\\s*\\)","\n)");
+        for(String statement:leaseDdl.split(";"))if(!statement.isBlank())jdbc.execute(statement);
         users=mock(BusinessUserDirectory.class);for(var actor:List.of(alice,bob,boss))when(users.current(actor.userId(),actor.username())).thenReturn(new BusinessUserDirectory.Identity(actor.userId(),actor.username(),actor.supervisor()));
         manager=new DataSourceTransactionManager(source);service=new SkillEvolutionService(jdbc,manager,json,users,mock(AgentJournal.class));storage=new SkillLinkStorage(jdbc,json,workspace.toString());service.linkStorage(storage);
         Path path=storage.directory(1,downloadId);Files.createDirectories(path);
@@ -66,10 +68,11 @@ class SkillLinkLifecycleTest {
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM agent_learned_skill",Long.class)).isZero();
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM agent_skill_version",Long.class)).isZero();
     }
-    @Test void sourcePolicyRejectsCredentialsPortsQueryAndArbitraryModelscopeAliases(){
+    @Test void sourcePolicyAcceptsMarketFormatsButDoesNotTreatThemAsVerifiedContents(){
         SkillLinkService.validateUrl("https://github.com/anthropics/skills/tree/main/skills/skill-creator");
         SkillLinkService.validateUrl("https://modelscope.cn/skills/@anthropics/skill-creator");
-        for(String url:List.of("http://github.com/a/b/tree/main/skill","https://github.com:443/a/b/tree/main/skill","https://github.com/a/b/tree/main/../skill","https://github.com/a/b/tree/main/skill?token=secret","https://modelscope.cn/skills/@unknown/example"))assertThatThrownBy(()->SkillLinkService.validateUrl(url)).hasMessageContaining("公开");
+        SkillLinkService.validateUrl("https://modelscope.cn/skills/@unknown/example");SkillLinkService.validateUrl("https://skills.sh/anthropics/skills/skill-creator");
+        for(String url:List.of("http://github.com/a/b/tree/main/skill","https://github.com:443/a/b/tree/main/skill","https://github.com/a/b/tree/main/../skill","https://github.com/a/b/tree/main/skill?token=secret","https://modelscope.cn/skills/@unknown/../example","https://skills.sh:443/anthropics/skills/skill-creator"))assertThatThrownBy(()->SkillLinkService.validateUrl(url)).hasMessageContaining("公开");
     }
     String upgradedPackage(SkillDtos.View view,String commit,String addition)throws Exception{
         String next="download-"+UUID.randomUUID();var manifest=new LinkedHashMap<String,Object>(storage.inspect(1,downloadId));

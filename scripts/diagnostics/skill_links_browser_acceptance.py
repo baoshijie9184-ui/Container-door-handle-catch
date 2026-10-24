@@ -43,12 +43,14 @@ with sync_playwright() as p:
         skill_id=row['skill_id'];artifact['downloadId']=download_id;artifact['skillId']=skill_id
         view=employee.request.get(base+'/api/agent/skills/'+skill_id).json();v=view['versions'][0];assert v['status']=='DRAFT' and view.get('activeVersion') is None
         assert v['evidence']['sourceType']=='LINK' and v['evidence']['provenanceVerified'] and not v['evidence']['scriptsExecutable']
-        assert len(v['evidence']['commit'])==40 and v['evidence']['licenses'];artifact['pinnedCommit']=v['evidence']['commit'];artifact['fileCount']=len(v['evidence']['files'])
+        assert v['evidence']['revisionKind']=='CONTENT_SNAPSHOT' and v['evidence'].get('commit') is None and v['evidence']['licenses']
+        assert len(v['evidence']['archiveSha256'])==64 and v['evidence']['sourceVersion']=='snapshot-sha256:'+v['evidence']['archiveSha256']
+        artifact['archiveSha256']=v['evidence']['archiveSha256'];artifact['fileCount']=len(v['evidence']['files'])
         assert boss.request.get(base+'/api/agent/skills/'+skill_id).status==404
         assert all(item['download_id']!=download_id for item in boss.request.get(base+'/api/agent/skills/links').json())
-        passed('real_modelscope_alias_download_is_pinned_licensed_private_and_idempotent')
+        passed('real_modelscope_native_archive_is_snapshotted_licensed_private_and_idempotent')
         page.get_by_role('button',name='刷新',exact=True).click();target=page.locator('.link-install-panel .el-table__body-wrapper tr').filter(has_text=url).first;expect(target).to_contain_text('下载完成 已保存');target.get_by_role('button',name='查看私人草稿').click()
-        dialog=page.get_by_role('dialog',name='技能详情与审核');expect(dialog).to_contain_text('固定提交');expect(dialog).to_contain_text('只存档');expect(dialog.get_by_role('button',name='运行规则 Eval')).to_be_visible();expect(dialog.get_by_role('button',name='提交独立审核')).to_have_count(0)
+        dialog=page.get_by_role('dialog',name='技能详情与审核');expect(dialog).to_contain_text('归档快照');expect(dialog).to_contain_text('只存档');expect(dialog.get_by_role('button',name='运行规则 Eval')).to_be_visible();expect(dialog.get_by_role('button',name='提交独立审核')).to_have_count(0)
         page.screenshot(path=str(root/'work/skill-links-desktop.png'),animations='disabled')
         passed('downloaded_original_skill_and_license_are_previewed_before_evaluation_or_submission')
         dialog.get_by_role('button',name='卸载此链接技能').click();page.get_by_role('button',name='确认卸载',exact=True).click();expect(dialog.get_by_role('button',name='卸载此链接技能')).to_have_count(0)

@@ -1,73 +1,106 @@
 <template>
   <section class="market-page" aria-labelledby="market-title">
     <header class="market-header">
-      <div><p class="eyebrow">AGENT RESOURCES</p><h2 id="market-title">资源市场</h2><p>发现智能体 工具服务与可复用技能</p></div>
-      <el-button :loading="loading" @click="refresh"><el-icon><Refresh /></el-icon>刷新目录</el-button>
+      <div><h2 id="market-title"><AgentSectionIcon kind="markets" />资源市场</h2><p>寻找 Agent、Skill 与 MCP 资源，核对来源后选择接入方式</p></div>
+      <el-button :loading="loading" @click="refresh"><AppIcon name="Refresh" :size="16" />刷新目录</el-button>
     </header>
-    <section class="market-intro app-panel">
-      <div><strong>{{ markets.length }} 个平台</strong><span v-if="catalog">最近核实 {{ catalog.verifiedOn }}</span></div>
-      <p>当前提供资源目录与官方入口 浏览后按资源详情选择接入方式</p>
-      <p class="integration-note">经验技能支持提炼与独立审核 本地 Fetch MCP 可按账号安装启用 外部 Skill 下载与远程 Agent 接入仍待开发</p>
-      <router-link to="/agent/skills">管理经验技能 <el-icon><ArrowRight /></el-icon></router-link>
-      <router-link to="/agent/mcp">管理本人本地 MCP <el-icon><ArrowRight /></el-icon></router-link>
+
+    <section class="market-intro" aria-label="资源目录与本系统的关系">
+      <div class="market-catalog-summary"><AppIcon name="Compass" :size="22" /><div><strong>{{ catalog ? `${markets.length} 个收录平台` : loading ? '正在读取资源目录' : '平台数量尚未读取' }}</strong><p>{{ catalog?.verifiedOn ? `目录核对日期 ${catalog.verifiedOn}` : '核对日期尚未读取' }}<span v-if="catalog?.version"> · 目录版本 {{ catalog.version }}</span></p></div></div>
+      <p class="integration-note">这是外部资源目录，收录与能力说明不代表已安装、通过审核或当前可连通。资源许可、账号条件和收费以来源详情为准。</p>
+      <div class="market-management-links">
+        <router-link to="/agent/skills"><AppIcon name="Collection" :size="18" /><span><strong>Skill 安装与审核</strong><small>从支持的公开链接下载为本人草稿</small></span><AppIcon name="ArrowRight" :size="15" /></router-link>
+        <router-link to="/agent/mcp"><AppIcon name="Connection" :size="18" /><span><strong>固定 Fetch MCP</strong><small>查看本人安装、启用与执行状态</small></span><AppIcon name="ArrowRight" :size="15" /></router-link>
+      </div>
+      <details class="market-integration-help"><summary>如何将资源用于当前系统</summary><ul><li>Skill：当前支持公开 GitHub 目录、skills.sh 技能详情和魔搭 Skill 链接。下载后仍需评测、独立审核及发布，不执行包内脚本。</li><li>MCP：当前管理入口仅支持已登记的固定 Fetch，不支持从市场任意注册 MCP 服务。</li><li>Agent：产品、模板与托管应用需分别核对部署及兼容方式，目录不提供一键导入。</li></ul></details>
     </section>
+
     <section class="market-filters" aria-label="市场筛选">
-      <div class="type-filters"><button v-for="option in types" :key="option.value" type="button" :class="{active: type === option.value}" :aria-pressed="type === option.value" @click="type = option.value">{{ option.label }} <span>{{ countType(option.value) }}</span></button></div>
-      <div class="search-filters"><el-input v-model="keyword" clearable placeholder="搜索平台或能力" aria-label="搜索平台或能力" :prefix-icon="Search" /><el-select v-model="region" aria-label="市场地区"><el-option label="全部地区" value="ALL" /><el-option label="国内" value="国内" /><el-option label="国际" value="国际" /></el-select></div>
-      <label class="interface-filter"><input v-model="includeInterfaces" type="checkbox" />包含仅提供 MCP 接口的平台</label>
+      <div class="search-filters">
+        <label for="market-search">平台或能力<el-input id="market-search" v-model="keyword" clearable placeholder="搜索名称、简介或能力说明" maxlength="128"><template #prefix><AppIcon name="Search" :size="16" /></template></el-input></label>
+        <label for="market-region">地区<el-select id="market-region" v-model="region" aria-label="市场地区"><el-option label="全部地区" value="ALL" /><el-option label="国内" value="国内" /><el-option label="国际" value="国际" /></el-select></label>
+      </div>
+      <div class="type-filters" role="group" aria-label="资源类型">
+        <button v-for="option in types" :key="option.value" type="button" :class="{ active:type === option.value }" :aria-pressed="type === option.value" @click="type = option.value"><AppIcon :name="option.icon" :size="16" />{{ option.label }}<span>{{ catalog ? countType(option.value) : '—' }}</span></button>
+      </div>
+      <div class="market-filter-footer"><label class="interface-filter"><input v-model="includeInterfaces" type="checkbox" />MCP 筛选同时包含仅提供接口的平台</label><el-button v-if="hasFilters" size="small" @click="resetFilters"><AppIcon name="Refresh" :size="14" />清空筛选</el-button></div>
     </section>
-    <p v-if="error" role="alert" class="market-error">{{ error }}</p>
-    <p class="result-count" role="status" aria-live="polite">{{ loading ? '正在读取目录' : '找到 ' + filtered.length + ' 个平台' }}</p>
+
+    <div class="market-result-heading"><h3>收录平台</h3><p role="status" aria-live="polite">{{ loading ? '正在读取目录' : error ? '目录读取未完成' : catalog ? `当前筛选 ${filtered.length} / ${markets.length} 个平台` : '目录尚未读取' }}</p></div>
+    <p v-if="catalog" class="market-filter-note">搜索与类型数量仅覆盖本次目录，并沿用当前地区和关键词；不查询外部平台实时库存。</p>
     <TransitionGroup name="market-card" tag="div" class="market-grid" :aria-busy="loading">
       <article v-for="market in filtered" :key="market.id" class="market-item app-panel">
-        <div class="card-top"><span class="market-symbol"><el-icon><component :is="market.kind === '托管平台' ? Cpu : Connection" /></el-icon></span><span class="kind">{{ market.region }} · {{ market.kind }}</span></div>
-        <h3>{{ market.name }}</h3><p class="summary">{{ market.summary }}</p>
-        <div class="capability-tags"><span v-for="cap in market.capabilities" :key="cap.type" :class="['capability-tag', cap.status === 'AVAILABLE' ? 'available' : 'uncertain']" :title="cap.note">{{ cap.type }} · {{ statusLabel(cap.status) }}</span></div>
-        <div class="card-actions"><a :href="safeUrl(market.homepage)" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer" :aria-label="'前往' + market.name + ' 新窗口打开'">前往平台 <el-icon><TopRight /></el-icon></a><el-button text @click="selected = market">能力与接入说明</el-button></div>
+        <div class="card-top"><span class="market-symbol"><AppIcon :name="market.kind === '托管平台' ? 'Cpu' : 'Compass'" :size="21" /></span><span class="kind">{{ market.region }} · {{ market.kind }}</span></div>
+        <h3>{{ market.name }}</h3><p class="summary">{{ market.summary || '简介尚未记录' }}</p>
+        <dl class="market-capabilities"><div v-for="cap in market.capabilities" :key="cap.type"><dt><AppIcon :name="capabilityIcon(cap.type)" :size="15" />{{ capabilityName(cap.type) }}</dt><dd><StatusBadge domain="marketCapability" :code="cap.status" /></dd></div></dl>
+        <div class="card-actions"><el-button @click="selected = market"><AppIcon name="Document" :size="15" />查看能力与来源</el-button><a v-if="safeUrl(market.homepage)" :href="safeUrl(market.homepage)" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer" :aria-label="`前往${market.name}，新窗口打开`">平台入口<AppIcon name="TopRight" :size="15" /></a><span v-else class="market-link-unavailable">入口未记录</span></div>
       </article>
     </TransitionGroup>
-    <el-empty v-if="!loading && !error && !filtered.length" description="没有匹配的平台 试试其他关键词或分类" />
-    <el-dialog :model-value="!!selected" append-to-body class="agent-market-dialog" title="平台能力与接入说明" width="min(740px, 94vw)" @close="selected = null">
+    <CollectionEmptyState v-if="!filtered.length" :loading="loading" :error="error" :filtered="hasFilters && !!catalog" empty-title="目录暂无可展示的平台" empty-description="可稍后重新读取目录，或前往已有 Skill 与固定 Fetch 管理入口。" @retry="refresh" @reset="resetFilters" />
+
+    <el-dialog :model-value="!!selected" append-to-body class="agent-market-dialog" :title="selected ? `${selected.name} · 能力与接入` : '平台能力与接入'" width="min(740px, 94vw)" @close="selected = null">
       <template v-if="selected">
-        <h3>{{ selected.name }}</h3><p>{{ selected.summary }}</p>
-        <section v-for="cap in selected.capabilities" :key="cap.type" class="capability-detail"><h4>{{ cap.type }} <span>{{ statusLabel(cap.status) }}</span></h4><p>{{ cap.note }}</p><a v-for="link in cap.links" :key="link.url" :href="safeUrl(link.url)" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">{{ link.label }} <el-icon><TopRight /></el-icon></a></section>
-        <p class="detail-note">市场收录不代表已接入本系统 Agent 产品或模板需核对部署方式 Skill 的许可、脚本与依赖需逐项检查 MCP 工具需明确角色与数据范围</p>
-        <a :href="safeUrl(selected.sourceUrl)" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">查看核实来源 <el-icon><TopRight /></el-icon></a>
+        <p class="market-detail-summary">{{ selected.summary || '简介尚未记录' }}</p>
+        <p class="market-detail-date">目录核对日期 {{ catalog?.verifiedOn || '未记录' }}，不是实时连通性检查。</p>
+        <section v-for="cap in selected.capabilities" :key="cap.type" class="capability-detail"><div class="capability-detail-heading"><h3><AppIcon :name="capabilityIcon(cap.type)" :size="17" />{{ capabilityName(cap.type) }}</h3><StatusBadge domain="marketCapability" :code="cap.status" /></div><p>{{ cap.note || '接入条件尚未记录，请核对来源。' }}</p><div class="capability-links"><template v-for="link in cap.links" :key="link.url"><a v-if="safeUrl(link.url)" :href="safeUrl(link.url)" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer" :aria-label="`${link.label}，新窗口打开`">{{ link.label }}<AppIcon name="TopRight" :size="14" /></a><span v-else class="market-link-unavailable">{{ link.label }}（入口不可用）</span></template></div></section>
+        <p class="detail-note"><AppIcon name="Lock" :size="16" />浏览外部平台不改变本人已安装资源和工具权限。Skill 安装仍在技能管理中提交，普通提问不能代替敏感操作确认。</p>
+        <a v-if="safeUrl(selected.sourceUrl)" class="market-source-link" :href="safeUrl(selected.sourceUrl)" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">查看目录核对来源<AppIcon name="TopRight" :size="15" /></a><p v-else class="market-link-unavailable">核对来源入口未记录</p>
       </template>
-      <template #footer><el-button @click="selected = null">关闭</el-button></template>
+      <template #footer><el-button @click="selected = null">关闭说明</el-button></template>
     </el-dialog>
   </section>
 </template>
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { ArrowRight, Connection, Cpu, Refresh, Search, TopRight } from '@element-plus/icons-vue'
+import AgentSectionIcon from '@/components/chat/AgentSectionIcon.vue'
+import CollectionEmptyState from '@/components/CollectionEmptyState.vue'
 import request from '@/api/request'
 
 const catalog = ref(null), loading = ref(false), error = ref(''), selected = ref(null)
 const type = ref('ALL'), region = ref('ALL'), keyword = ref(''), includeInterfaces = ref(false)
-const types = [{ value: 'ALL', label: '全部平台' }, { value: 'AGENT', label: 'Agent 智能体' }, { value: 'MCP', label: 'MCP 工具' }, { value: 'SKILL', label: 'Skill 技能' }]
+const types = [{ value:'ALL', label:'全部平台', icon:'Compass' }, { value:'AGENT', label:'Agent 智能体', icon:'ChatDotRound' }, { value:'MCP', label:'MCP 工具', icon:'Connection' }, { value:'SKILL', label:'Skill 技能', icon:'Collection' }]
+const hasFilters = computed(() => !!(keyword.value.trim() || type.value !== 'ALL' || region.value !== 'ALL' || includeInterfaces.value))
+function resetFilters() { keyword.value = ''; type.value = 'ALL'; region.value = 'ALL'; includeInterfaces.value = false }
 const markets = computed(() => catalog.value?.markets || [])
-const hasType = (market, value) => value === 'ALL' || market.capabilities.some(cap => cap.type === value && (cap.status === 'AVAILABLE' || (includeInterfaces.value && cap.status === 'INTERFACE_ONLY')))
-const countType = value => markets.value.filter(market => hasType(market, value)).length
-const filtered = computed(() => {
-  const term = keyword.value.trim().toLowerCase()
-  return markets.value.filter(market => hasType(market, type.value) && (region.value === 'ALL' || market.region === region.value) && (!term || [market.name, market.summary, market.kind, ...market.capabilities.map(cap => cap.note)].join(' ').toLowerCase().includes(term)))
+const capabilityName = value => types.find(item => item.value === value)?.label || '未标明类型'
+const capabilityIcon = value => types.find(item => item.value === value)?.icon || 'Document'
+const hasType = (market, value) => value === 'ALL' || market.capabilities.some(cap => cap.type === value && (cap.status === 'AVAILABLE' || (value === 'MCP' && includeInterfaces.value && cap.status === 'INTERFACE_ONLY')))
+const searched = computed(() => {
+  const term = keyword.value.trim().toLocaleLowerCase('zh-CN')
+  return markets.value.filter(market => (region.value === 'ALL' || market.region === region.value) && (!term || [market.name, market.summary, market.kind, ...market.capabilities.flatMap(cap => [capabilityName(cap.type), cap.note])].join(' ').toLocaleLowerCase('zh-CN').includes(term)))
 })
-const statusLabel = status => ({ AVAILABLE: '已核实', INTERFACE_ONLY: '仅接口', UNVERIFIED: '未核实', OUT_OF_SCOPE: '不在目录范围' }[status] || '未核实')
-// 目录只导航到固定 HTTPS 入口；不拼接用户关键词、身份或密钥到外部 URL。
+const countType = value => searched.value.filter(market => hasType(market, value)).length
+const filtered = computed(() => searched.value.filter(market => hasType(market, type.value)))
+
+// Fixed catalog links only; no account metadata, search terms or credentials are added.
 function safeUrl(value) {
   try { const url = new URL(value); return url.protocol === 'https:' && !url.username && !url.password ? url.href : undefined } catch { return undefined }
 }
+function readCatalog(value) {
+  if (!value || !Array.isArray(value.markets)) throw new Error('市场目录未完整读取，请重新读取')
+  const ids = new Set()
+  for (const market of value.markets) {
+    if (!market || typeof market.id !== 'string' || !market.id.trim() || ids.has(market.id) || typeof market.name !== 'string' || !market.name.trim() || typeof market.region !== 'string' || typeof market.kind !== 'string' || (market.summary != null && typeof market.summary !== 'string') || !Array.isArray(market.capabilities)) throw new Error('平台资料未完整读取，请重新读取')
+    ids.add(market.id)
+    const capabilities = new Set()
+    for (const cap of market.capabilities) {
+      if (!cap || !['AGENT','MCP','SKILL'].includes(cap.type) || capabilities.has(cap.type) || (cap.status != null && typeof cap.status !== 'string') || (cap.note != null && typeof cap.note !== 'string') || !Array.isArray(cap.links) || cap.links.some(link => !link || typeof link.label !== 'string' || typeof link.url !== 'string')) throw new Error('平台能力说明未完整读取，请重新读取')
+      capabilities.add(cap.type)
+    }
+  }
+  return value
+}
 let generation = 0
 async function refresh() {
+  if (loading.value) return
   const current = ++generation
   loading.value = true; error.value = ''; selected.value = null; catalog.value = null
   try {
     const response = await request.get('/api/agent/markets')
-    if (current === generation) catalog.value = response.data
+    if (current === generation) catalog.value = readCatalog(response.data)
   } catch (e) {
-    if (current === generation) error.value = e.response?.data?.message || '市场目录暂不可用 请稍后刷新'
+    if (current === generation) error.value = e.response?.data?.message || e.message || '市场目录暂不可用，请稍后重新读取'
   } finally { if (current === generation) loading.value = false }
 }
 onMounted(refresh)
@@ -75,9 +108,83 @@ onBeforeUnmount(() => { generation++ })
 </script>
 
 <style scoped>
-.market-page{max-width:1240px;margin:0 auto;color:#172437;min-width:0}.market-header{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:24px}.eyebrow{font-size:11px;letter-spacing:2px;color:#2463d8;font-weight:700}.market-header h2{font-size:28px;margin:8px 0}.market-header p:last-child{color:#69788c;font-size:14px}.market-intro{padding:22px 24px;border:1px solid #dbe6f8;background:linear-gradient(120deg,#fff,#f0f6ff);margin-bottom:24px}.market-intro>div{display:flex;gap:20px;align-items:center}.market-intro strong{font-size:19px}.market-intro span,.integration-note{color:#69788c;font-size:13px}.market-intro p{line-height:1.7}.market-intro a,.market-item a{color:#215fd0;text-decoration:none;font-weight:600;font-size:14px;display:inline-flex;align-items:center;gap:5px}.market-filters{display:flex;gap:16px;flex-wrap:wrap;align-items:center}.type-filters{display:flex;gap:6px;flex-wrap:wrap}.type-filters button{border:1px solid #e1e8f2;background:#fff;color:#5d6c80;padding:10px 14px;border-radius:9px;cursor:pointer;transition:background .18s,transform .18s,border-color .18s}.type-filters button.active{background:#eaf2ff;border-color:#b4cef6;color:#215fd0}.type-filters span{margin-left:5px;font-size:12px}.type-filters button:hover{transform:translateY(-1px)}.type-filters button:active{transform:scale(.98)}.type-filters button:focus-visible,a:focus-visible{outline:2px solid #2463d8;outline-offset:3px}.search-filters{display:flex;gap:10px;flex:1;min-width:270px}.search-filters .el-input{min-width:160px;flex:1}.search-filters .el-select{width:130px}.interface-filter{display:flex;align-items:center;gap:6px;font-size:13px;color:#68758b;width:100%;cursor:pointer}.result-count{font-size:13px;color:#69788c;margin:20px 0 14px}.market-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px;position:relative}.market-item{padding:22px;border:1px solid #e2eaf4;display:flex;flex-direction:column;min-width:0}.card-top{display:flex;align-items:center;justify-content:space-between;gap:8px}.market-symbol{display:flex;padding:10px;background:#edf4ff;color:#2463d8;border-radius:10px;font-size:23px}.kind{font-size:12px;color:#7b8798}.market-item h3{font-size:19px;margin:20px 0 8px}.summary{line-height:1.7;color:#69788c;font-size:14px;min-height:48px;margin:0 0 16px}.capability-tags{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:22px}.capability-tag{font-size:11px;padding:5px 7px;border-radius:5px;line-height:1.5}.available{color:#215fd0;background:#edf4ff}.uncertain{color:#778395;background:#f4f6f9}.card-actions{display:flex;justify-content:space-between;align-items:center;gap:8px;border-top:1px solid #edf1f6;padding-top:14px;margin-top:auto;flex-wrap:wrap}.card-actions .el-button{font-size:13px}.market-error{color:#b42318}.market-card-enter-active,.market-card-leave-active,.market-card-move{transition:opacity .2s,transform .2s}.market-card-enter-from,.market-card-leave-to{opacity:0;transform:translateY(8px)}.market-card-leave-active{position:absolute;pointer-events:none}
-@media(max-width:1100px){.market-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:620px){.market-header{align-items:flex-start}.market-header h2{font-size:24px}.market-grid{grid-template-columns:1fr}.market-intro{padding:18px}.market-intro>div{flex-wrap:wrap;gap:8px}.search-filters{min-width:0;width:100%;flex:auto}.market-item{padding:18px}.type-filters button{padding:9px 10px}.market-header .el-button{margin-top:10px}}@media(prefers-reduced-motion:reduce){.market-card-enter-active,.market-card-leave-active,.market-card-move,.type-filters button{transition:none}.market-card-enter-from,.market-card-leave-to{transform:none}.type-filters button:hover,.type-filters button:active{transform:none}}
+.market-page { max-width:1240px; margin:0 auto; color:var(--app-text); min-width:0; }
+.market-header { display:flex; justify-content:space-between; align-items:flex-start; gap:16px; margin-bottom:22px; }
+.market-header h2 { display:flex; align-items:center; gap:12px; margin:0; font-size:26px; }
+.market-header p { margin:10px 0 0; color:var(--app-text-secondary); font-size:13px; line-height:1.8; }
+.market-intro { padding:22px 24px; border:1px solid var(--app-border); border-radius:12px; background:white; }
+.market-catalog-summary { display:flex; align-items:flex-start; gap:10px; }
+.market-catalog-summary > .el-icon { margin-top:2px; color:var(--app-primary); flex-shrink:0; }
+.market-catalog-summary strong { font-size:16px; font-weight:650; }
+.market-catalog-summary p { margin:6px 0 0; color:var(--app-text-secondary); font-size:12px; line-height:1.8; overflow-wrap:anywhere; }
+.integration-note { margin:16px 0; max-width:80ch; font-size:13px; color:var(--app-text-secondary); line-height:1.85; }
+.market-management-links { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:18px; padding:16px 0; border-block:1px solid var(--app-border); }
+.market-management-links a { display:flex; align-items:center; gap:10px; min-width:0; color:var(--app-primary); text-decoration:none; }
+.market-management-links a > .el-icon { flex-shrink:0; }
+.market-management-links a > .el-icon:last-child { margin-left:auto; }
+.market-management-links a span { display:grid; gap:5px; min-width:0; }
+.market-management-links strong { font-size:13px; font-weight:600; }
+.market-management-links small { font-size:12px; line-height:1.75; color:var(--app-text-secondary); }
+.market-integration-help { margin-top:15px; color:var(--app-text-secondary); font-size:12px; line-height:1.85; }
+.market-integration-help summary { width:fit-content; cursor:pointer; }
+.market-integration-help ul { padding-left:20px; margin-bottom:0; }
+.market-integration-help li + li { margin-top:7px; }
+.market-filters { display:grid; gap:16px; margin-top:24px; }
+.search-filters { display:grid; grid-template-columns:minmax(0,1fr) 180px; gap:14px; max-width:760px; }
+.search-filters label { display:grid; gap:7px; min-width:0; color:var(--app-text-secondary); font-size:12px; }
+.search-filters .el-select { width:100%; }
+.type-filters { display:flex; gap:8px; flex-wrap:wrap; }
+.type-filters button { display:inline-flex; align-items:center; gap:7px; border:1px solid var(--app-border); background:white; color:var(--app-text-secondary); padding:9px 12px; border-radius:8px; cursor:pointer; font:inherit; font-size:12px; line-height:1.7; transition:background 180ms ease,border-color 180ms ease,transform 160ms ease; }
+.type-filters button.active { background:var(--app-primary-soft); border-color:#b7cdf9; color:var(--app-primary); }
+.type-filters button:hover { border-color:#b7cdf9; }
+.type-filters button:active { transform:scale(.98); }
+.type-filters button span { font-variant-numeric:tabular-nums; min-width:1ch; }
+.market-filter-footer { display:flex; align-items:center; flex-wrap:wrap; gap:12px; min-height:32px; }
+.interface-filter { display:inline-flex; align-items:flex-start; gap:7px; color:var(--app-text-secondary); font-size:12px; line-height:1.8; cursor:pointer; }
+.interface-filter input { accent-color:var(--app-primary); margin-top:4px; }
+.market-result-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; margin:24px 0 8px; }
+.market-result-heading h3 { font-size:15px; margin:0; }
+.market-result-heading p,.market-filter-note { font-size:12px; line-height:1.8; color:var(--app-text-secondary); margin:0; }
+.market-filter-note { margin-bottom:16px; }
+.market-grid { --market-card-width:calc((100% - 36px) / 3); display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:18px; position:relative; }
+.market-item { padding:20px; border:1px solid var(--app-border); display:flex; flex-direction:column; min-width:0; }
+.card-top { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+.market-symbol { display:inline-grid; place-items:center; width:38px; height:38px; background:var(--app-primary-soft); color:var(--app-primary); border-radius:10px; flex-shrink:0; }
+.kind { font-size:12px; line-height:1.7; color:var(--app-text-secondary); text-align:right; }
+.market-item h3 { font-size:18px; line-height:1.65; margin:16px 0 7px; overflow-wrap:anywhere; }
+.summary { line-height:1.85; color:var(--app-text-secondary); font-size:13px; margin:0 0 14px; overflow-wrap:anywhere; }
+.market-capabilities { display:grid; gap:9px; margin:0 0 20px; }
+.market-capabilities > div { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+.market-capabilities dt { display:inline-flex; align-items:center; gap:7px; color:var(--app-text-secondary); font-size:12px; }
+.market-capabilities dt .el-icon { color:var(--app-primary); }
+.market-capabilities dd { margin:0; }
+.card-actions { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px; border-top:1px solid var(--app-border); padding-top:14px; margin-top:auto; }
+.card-actions a { display:inline-flex; align-items:center; gap:5px; color:var(--app-primary); font-size:12px; text-decoration:none; }
+.card-actions .el-button { font-size:12px; }
+.market-link-unavailable { color:var(--app-text-secondary); font-size:12px; line-height:1.8; }
+.market-page :is(button,a,summary,input):focus-visible { outline:2px solid var(--app-primary); outline-offset:4px; border-radius:3px; }
+.market-card-enter-active,.market-card-leave-active,.market-card-move { transition:opacity 200ms ease,transform 200ms ease; }
+.market-card-enter-from,.market-card-leave-to { opacity:0; transform:translateY(6px); }
+.market-card-leave-active { position:absolute; width:var(--market-card-width); box-sizing:border-box; pointer-events:none; }
+@media(max-width:1100px) { .market-grid { --market-card-width:calc((100% - 18px) / 2); grid-template-columns:repeat(2,minmax(0,1fr)); } }
+@media(max-width:640px) { .market-header { flex-wrap:wrap; } .market-grid { --market-card-width:100%; } .market-grid,.market-management-links { grid-template-columns:minmax(0,1fr); } .market-intro,.market-item { padding:16px; } .search-filters { grid-template-columns:minmax(0,1fr); } .market-result-heading { flex-wrap:wrap; } .market-capabilities dt { flex-wrap:wrap; } }
+@media(prefers-reduced-motion:reduce) { .market-card-enter-active,.market-card-leave-active,.market-card-move,.type-filters button { transition:none; } .market-card-enter-from,.market-card-leave-to,.type-filters button:active { transform:none; } }
 </style>
+
 <style>
-.agent-market-dialog .el-dialog__body{max-height:65vh;overflow:auto;overflow-wrap:anywhere}.agent-market-dialog h3{margin-top:0}.agent-market-dialog .capability-detail{padding:14px 0;border-bottom:1px solid #edf1f6}.agent-market-dialog h4{margin:0;color:#172437}.agent-market-dialog h4 span{font-size:12px;font-weight:400;color:#69788c;margin-left:12px}.agent-market-dialog p{color:#68758b;line-height:1.7}.agent-market-dialog a{color:#215fd0;text-decoration:none;display:inline-flex;align-items:center;gap:5px;font-size:14px}.agent-market-dialog .detail-note{padding:12px;background:#f4f7fc;font-size:13px;border-radius:8px}@media(prefers-reduced-motion:reduce){.agent-market-dialog,.el-overlay:has(.agent-market-dialog){animation:none!important;transition:none!important}}
+.agent-market-dialog .el-dialog__body { max-height:65dvh; overflow:auto; overflow-wrap:anywhere; overscroll-behavior:contain; }
+.agent-market-dialog :is(.market-detail-summary,.capability-detail p) { color:var(--app-text-secondary); font-size:13px; line-height:1.85; }
+.agent-market-dialog .market-detail-summary { margin-top:0; }
+.agent-market-dialog .market-detail-date { margin:10px 0 20px; color:var(--app-text-secondary); font-size:12px; line-height:1.8; }
+.agent-market-dialog .capability-detail { padding:16px 0; border-top:1px solid var(--app-border); }
+.agent-market-dialog .capability-detail-heading { display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; }
+.agent-market-dialog h3 { display:flex; align-items:center; gap:8px; margin:0; color:var(--app-text); font-size:14px; }
+.agent-market-dialog h3 .el-icon { color:var(--app-primary); }
+.agent-market-dialog .capability-links { display:flex; flex-wrap:wrap; gap:10px 18px; }
+.agent-market-dialog :is(.capability-links a,.market-source-link) { color:var(--app-primary); text-decoration:underline; text-underline-offset:3px; display:inline-flex; align-items:center; gap:5px; font-size:12px; line-height:1.8; }
+.agent-market-dialog .detail-note { display:flex; align-items:flex-start; gap:8px; padding:12px 14px; background:var(--app-primary-soft); color:var(--app-text-secondary); font-size:12px; line-height:1.85; border-radius:8px; }
+.agent-market-dialog .detail-note > .el-icon { margin-top:3px; color:var(--app-primary); flex-shrink:0; }
+.agent-market-dialog .market-link-unavailable { color:var(--app-text-secondary); font-size:12px; }
+.agent-market-dialog a:focus-visible { outline:2px solid var(--app-primary); outline-offset:4px; border-radius:3px; }
+@media(prefers-reduced-motion:reduce) { .agent-market-dialog,.el-overlay:has(.agent-market-dialog) { animation:none!important; transition:none!important; } }
 </style>

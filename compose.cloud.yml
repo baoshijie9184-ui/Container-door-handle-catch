@@ -1,4 +1,7 @@
 # 与 compose.monolith.yml 合并；数据库、缓存、队列和记忆服务均只开放到容器私网。
+# 常驻中间件：mysql、redis、kafka、mem0、chroma。
+# kafka-storage-init、kafka-init 是一次性初始化容器，成功后退出属于正常状态。
+# Dockerfile 构建镜像，Compose 创建并连接容器；说明见 docs/docker-monolith-deployment.md。
 services:
   backend:
     build:

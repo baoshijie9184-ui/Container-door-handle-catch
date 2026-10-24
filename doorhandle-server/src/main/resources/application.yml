@@ -113,8 +113,27 @@ jwt:
 model:
   upload-dir: ${MODEL_UPLOAD_DIR:${user.dir}/uploads/models}
   max-upload-bytes: ${MODEL_MAX_UPLOAD_BYTES:209715200}
+  file-journal:
+    enabled: ${MODEL_FILE_JOURNAL_ENABLED:false}
 
 detection:
+  assignment-writes-enabled: ${DETECTION_ASSIGNMENT_WRITES_ENABLED:true}
+  creation:
+    business-images-enabled: ${DETECTION_AGENT_BUSINESS_IMAGES_ENABLED:false}
+    transfer-evidence-enabled: ${DETECTION_CREATION_TRANSFER_EVIDENCE_ENABLED:false}
+    review-enabled: ${DETECTION_CREATION_REVIEW_ENABLED:false}
+    enabled: ${DETECTION_AGENT_CREATION_ENABLED:false}
+  commands:
+    enabled: ${DETECTION_EXECUTION_COMMANDS_ENABLED:false}
+  identity:
+    enabled: ${DETECTION_STABLE_IDENTITY_ENABLED:false}
+    assignment-binding-enabled: ${DETECTION_ASSIGNMENT_BINDING_ENABLED:false}
+    review-enabled: ${DETECTION_IDENTITY_REVIEW_ENABLED:false}
+    evidence-enabled: ${DETECTION_IDENTITY_EVIDENCE_ENABLED:false}
+    missing-name-review-enabled: ${DETECTION_IDENTITY_MISSING_NAME_REVIEW_ENABLED:false}
+    reconciliation-enabled: ${DETECTION_IDENTITY_RECONCILIATION_ENABLED:false}
+    reconciliation-max-tasks: ${DETECTION_IDENTITY_RECONCILIATION_MAX_TASKS:20000}
+    reconciliation-max-reports: ${DETECTION_IDENTITY_RECONCILIATION_MAX_REPORTS:20}
   upload-dir: ${DETECTION_UPLOAD_DIR:${user.dir}/uploads/images}
   result-dir: ${DETECTION_RESULT_DIR:${user.dir}/uploads/results}
   annotated-dir: ${DETECTION_ANNOTATED_DIR:${user.dir}/uploads/annotated}
@@ -274,6 +293,9 @@ mem0:
 
 # AgentScope Java 2.0.4 + AG-UI；模型凭证由 Spring Environment 绑定。
 agentscope:
+  model-config:
+    enabled: ${AGENT_MODEL_CONFIG_ENABLED:false}
+    master-key-file: ${MODEL_CONFIG_MASTER_KEY_FILE:}
   conversation-control:
     enabled: ${AGENT_CONVERSATION_CONTROL_ENABLED:false}
   workbench:
@@ -308,7 +330,19 @@ agentscope:
     gateway-key: ${AGENT_MCP_GATEWAY_KEY:}
     gateway-image: ${AGENT_MCP_GATEWAY_IMAGE:}
     enabled: ${AGENT_LOCAL_MCP_ENABLED:false}
+    writes-enabled: ${AGENT_MCP_WRITES_ENABLED:true}
+    shared-image-cleanup-enabled: ${AGENT_MCP_SHARED_IMAGE_CLEANUP_ENABLED:false}
     durable-install-enabled: ${AGENT_MCP_DURABLE_INSTALL_ENABLED:false}
+    execution-receipts-enabled: ${AGENT_MCP_EXECUTION_RECEIPTS_ENABLED:false}
+    native-process-enabled: ${AGENT_MCP_NATIVE_PROCESS_ENABLED:false}
+    native-process-helper: ${AGENT_MCP_NATIVE_PROCESS_HELPER:${user.dir}/script/shell/native-fetch-process.py}
+    native-install-enabled: ${AGENT_MCP_NATIVE_INSTALL_ENABLED:false}
+    native-install-helper: ${AGENT_MCP_NATIVE_INSTALL_HELPER:${user.dir}/script/shell/native-fetch-install.py}
+    lifecycle-enabled: ${AGENT_MCP_LIFECYCLE_ENABLED:false}
+    install-reconciliation-enabled: ${AGENT_MCP_INSTALL_RECONCILIATION_ENABLED:false}
+    install-process-node-id: ${AGENT_MCP_INSTALL_PROCESS_NODE_ID:}
+    approved-gateway-images: ${MCP_FETCH_APPROVED_IMAGES:}
+    storage-quota-bytes: ${AGENT_MCP_STORAGE_QUOTA_BYTES:268435456}
     python: ${AGENT_LOCAL_MCP_PYTHON:python}
     installer: ${AGENT_LOCAL_MCP_INSTALLER:${user.dir}/script/shell/install-local-fetch-mcp.py}
   evolution:
@@ -323,6 +357,9 @@ agentscope:
     allowed-origins: ${APP_CORS_ALLOWED_ORIGINS:http://127.0.0.1:3001,http://localhost:3001,http://127.0.0.1:3003,http://localhost:3003,http://127.0.0.1:8080,http://localhost:8080}
   journal:
     enabled: ${AGENT_RUN_JOURNAL_ENABLED:false}
+  context-store:
+    enabled: ${AGENT_DURABLE_CONTEXT_ENABLED:false}
+    offload-enabled: ${AGENT_CONTEXT_OFFLOAD_ENABLED:false}
   ai:
     enabled: ${AGENTSCOPE_AI_ENABLED:false}
     model: ${AGENTSCOPE_AI_MODEL:dashscope:qwen-plus}
@@ -393,3 +430,9 @@ logging:
     console: UTF-8
   pattern:
     console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
+
+# Additive V40 foundation; enable audit before stable identity capture.
+operations:
+  audit:
+    enabled: ${OPERATIONS_AUDIT_ENABLED:false}
+    file-delivery-enabled: ${OPERATIONS_FILE_DELIVERY_AUDIT_ENABLED:false}

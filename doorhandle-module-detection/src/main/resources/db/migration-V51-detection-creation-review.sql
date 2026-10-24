@@ -1,0 +1,26 @@
+-- Explicit read-only reconciliation and decisions. Never authorizes another object PUT.
+CREATE TABLE IF NOT EXISTS detection_creation_review (
+ id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+ check_id VARCHAR(36) COLLATE utf8mb4_bin NOT NULL,
+ command_id VARCHAR(36) COLLATE utf8mb4_bin NOT NULL,
+ actor_user_id BIGINT NOT NULL,
+ request_id VARCHAR(128) COLLATE utf8mb4_bin NOT NULL,
+ expected_revision BIGINT NOT NULL,
+ action VARCHAR(24) NOT NULL,
+ source_check_id VARCHAR(36) COLLATE utf8mb4_bin NULL,
+ status VARCHAR(24) NOT NULL,
+ worker_token VARCHAR(36) COLLATE utf8mb4_bin NULL,
+ lease_until DATETIME(6) NULL,
+ checked_count INT NOT NULL DEFAULT 0,
+ verified_count INT NOT NULL DEFAULT 0,
+ evidence_json MEDIUMTEXT NULL,
+ evidence_sha256 CHAR(64) COLLATE utf8mb4_bin NULL,
+ completed_revision BIGINT NULL,
+ reason_code VARCHAR(64) NULL,
+ created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+ updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+ UNIQUE KEY uk_creation_review_id(check_id),
+ UNIQUE KEY uk_creation_review_request(actor_user_id,request_id),
+ KEY idx_creation_review_queue(status,id),
+ KEY idx_creation_review_command(command_id,id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

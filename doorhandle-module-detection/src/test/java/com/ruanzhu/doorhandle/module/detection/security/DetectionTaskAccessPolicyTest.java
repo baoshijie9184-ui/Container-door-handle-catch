@@ -9,9 +9,27 @@ import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class DetectionTaskAccessPolicyTest {
+    @Test void stableAuthorizationRechecksSupervisorRevocationForHttpAndAgentQueries(){
+        var identities=org.mockito.Mockito.mock(com.ruanzhu.doorhandle.module.detection.service.DetectionIdentityService.class);
+        var fresh=new com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory.Identity(7,"boss",false);
+        org.mockito.Mockito.when(identities.current(7,"boss")).thenReturn(fresh);
+        org.mockito.Mockito.when(identities.current("boss")).thenReturn(fresh);
+        org.mockito.Mockito.when(identities.active()).thenReturn(true);
+        org.mockito.Mockito.when(identities.predicate("","{0}")).thenReturn("(created_user_id={0} OR (assignee_user_id={0} AND assignee_identity_name=assignee))");
+        var policy=new DetectionTaskAccessPolicy();policy.setIdentities(identities);
+        var authorities=List.of(new SimpleGrantedAuthority("ROLE_SUPERVISOR"));
+        var principal=new com.ruanzhu.doorhandle.module.system.security.TenantPrincipal(7L,"boss","",authorities);
+        var auth=new UsernamePasswordAuthenticationToken(principal,null,authorities);
+        assertThat(policy.isAdmin(auth)).isFalse();
+        assertThatThrownBy(()->policy.assertCanAccess(taskOwnedBy("alice"),auth)).isInstanceOf(org.springframework.security.access.AccessDeniedException.class);
+        var query=new com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<DetectionTask>();
+        policy.applyScope(query,new com.ruanzhu.doorhandle.contracts.agent.AgentActor(7,"boss",com.ruanzhu.doorhandle.contracts.agent.AgentActor.Role.SUPERVISOR));
+        assertThat(query.getSqlSegment()).contains("created_user_id","assignee_user_id");assertThat(query.getParamNameValuePairs()).containsValue(7L);
+    }
 
     private final DetectionTaskAccessPolicy policy = new DetectionTaskAccessPolicy();
 

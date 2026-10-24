@@ -23,8 +23,24 @@ project=doorhandlecatch-monolith
 compat_helper="$(dirname "${BASH_SOURCE[0]}")/memory-compat.py"
 [[ -r "$compat_helper" ]] || { echo 'Memory compatibility helper is required.' >&2; exit 2; }
 memory_override=()
+mcp_override=()
+mcp_recovery_done=false
+mcp_manual_recovery=false
+assignment_helper="$(dirname "${BASH_SOURCE[0]}")/assignment-compat.py"
+[[ -r "$assignment_helper" ]] || { echo 'Assignment compatibility helper is required.' >&2; exit 2; }
+mcp_helper="$(dirname "${BASH_SOURCE[0]}")/mcp-compat.py"
+[[ -r "$mcp_helper" ]] || { echo 'Native MCP compatibility helper is required.' >&2; exit 2; }
+runtime_helper="$(dirname "${BASH_SOURCE[0]}")/mcp-runtime.py"
+[[ -r "$runtime_helper" ]] || { echo 'MCP runtime transition helper is required.' >&2; exit 2; }
 exec 9>"$root/state/deploy.lock"
 flock -n 9 || { echo 'Another deployment is in progress.' >&2; exit 3; }
+python3 "$runtime_helper" sync-publication --state "$root/state" --lock-fd 9
+secret_helper="$(dirname "${BASH_SOURCE[0]}")/model-secrets.py"
+[[ -r "$secret_helper" ]] || { echo 'Model Secret guard helper is required.' >&2; exit 2; }
+model_key_source=$(python3 "$secret_helper" source --root "$root" --runtime "$runtime")
+if [[ "$model_key_source" != disabled ]]; then
+    export MODEL_CONFIG_MASTER_KEY_SOURCE="$model_key_source"
+fi
 
 dc() {
     local dir=$1 override=$2
@@ -33,28 +49,50 @@ dc() {
     if [[ -f "$runtime/deploy/ai-gateway.enabled" && -f "$dir/compose.ai-gateway.yml" ]]; then
         overlays=(-f "$dir/compose.ai-gateway.yml")
     fi
+    if [[ "$model_key_source" != disabled ]]; then
+        [[ -r "$dir/compose.model-config.yml" ]] || { echo 'Release has no model Secret overlay; select a compatible version.' >&2; return 1; }
+        overlays+=(-f "$dir/compose.model-config.yml")
+    fi
     docker compose --project-name "$project" --env-file "$envfile" \
         -f "$dir/compose.monolith.yml" -f "$dir/compose.cloud.yml" -f "$dir/compose.detection.yml" \
-        "${overlays[@]}" -f "$override" "${memory_override[@]}" "$@"
+        "${overlays[@]}" -f "$override" "${memory_override[@]}" "${mcp_override[@]}" "$@"
 }
 
 # Snapshot actual running image IDs, independent of a mutable tag or private env APP_IMAGE_TAG.
 snapshot() {
-    local file=$1 mode=$2 allow_unhealthy=${3:-no} service cid image health
-    printf 'services:\n' > "$file"
-    for service in backend nginx mysql redis kafka mem0 chroma detection-worker; do
-        cid=$(docker ps -aq --filter "label=com.docker.compose.project=$project" --filter "label=com.docker.compose.service=$service")
-        [[ -n "$cid" && "$cid" != *$'\n'* ]] || { echo "Expected one existing $service container." >&2; return 1; }
-        health=$(docker inspect --format '{{.State.Status}}/{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$cid")
-        if [[ "$health" != running/healthy ]]; then
-            [[ "$allow_unhealthy" == yes && "$service" =~ ^(backend|nginx|mem0)$ ]] || { echo "$service is not healthy: $health" >&2; return 1; }
+    local file=$1 mode=$2 allow_unhealthy=${3:-no}
+    local options=()
+    if [[ "$allow_unhealthy" == yes ]]; then options=(--allow-unhealthy); fi
+    python3 "$runtime_helper" snapshot --state "$root/state" --lock-fd 9 --output "$file" --mode "$mode" "${options[@]}"
+}
+
+prepare_mcp_runtime() {
+    local dir=$1 images=$2 restoring=${3:-no} before after
+    local options=()
+    if [[ "$restoring" == yes ]]; then options=(--restore-unpublished); fi
+    mcp_override=()
+    before=$(python3 "$runtime_helper" status --state "$root/state" --lock-fd 9) || return 1
+    if ! mcp_action=$(dc "$dir" "$images" config --format json | python3 "$runtime_helper" prepare --state "$root/state" --lock-fd 9 "${options[@]}"); then
+        after=$(python3 "$runtime_helper" status --state "$root/state" --lock-fd 9) || { mcp_manual_recovery=true; return 1; }
+        if [[ "$before" != "$after" && "$after" == *:NEEDS_REVIEW ]]; then
+            if python3 "$runtime_helper" recover --state "$root/state" --lock-fd 9; then mcp_recovery_done=true; else mcp_manual_recovery=true; fi
+        elif [[ "$after" != NONE && "$after" != *:VERIFIED && "$after" != *:FINALIZED && "$after" != *:RESTORED ]]; then
+            mcp_manual_recovery=true
         fi
-        image=$(docker inspect --format '{{.Image}}' "$cid")
-        [[ "$image" =~ ^sha256:[a-f0-9]{64}$ ]] || return 1
-        if [[ "$mode" == all || "$service" == chroma || "$service" == detection-worker ]]; then
-            printf '  %s:\n    image: %s\n' "$service" "$image" >> "$file"
+        return 1
+    fi
+    [[ "$mcp_action" == replace || "$mcp_action" == preserve || "$mcp_action" == disabled ]] || return 1
+    mcp_override=(-f "$root/state/mcp-runtime-activation.json")
+    if [[ "$mcp_action" != disabled ]]; then
+        if ! python3 "$runtime_helper" applying --state "$root/state" --lock-fd 9 \
+            || ! dc "$dir" "$images" up -d --no-deps --no-build --pull never --wait --wait-timeout 120 mcp-runner \
+            || ! python3 "$runtime_helper" verify --state "$root/state" --lock-fd 9; then
+            if python3 "$runtime_helper" recover --state "$root/state" --lock-fd 9; then mcp_recovery_done=true; else mcp_manual_recovery=true; fi
+            return 1
         fi
-    done
+    fi
+    dc "$dir" "$images" config --format json | python3 "$mcp_helper" guard --state "$root/state" --lock-fd 9 --pin > "$root/state/mcp-transition.pending.json" || return 1
+    mv "$root/state/mcp-transition.pending.json" "$root/state/mcp-transition.json"
 }
 
 prepare_memory() {
@@ -71,7 +109,18 @@ verify_memory() {
 }
 
 activate() {
-    local dir=$1 images=$2
+    local dir=$1 images=$2 restoring=${3:-no}
+    mcp_override=()
+    memory_override=()
+    mcp_recovery_done=false
+    mcp_manual_recovery=false
+    # No application is stopped until metadata, reader declarations and the recovery baseline agree.
+    dc "$dir" "$images" config --format json | python3 "$assignment_helper" guard --state "$root/state" --lock-fd 9 --pin > "$root/state/assignment-transition.pending.json" || return 1
+    mv "$root/state/assignment-transition.pending.json" "$root/state/assignment-transition.json"
+    # Validate encrypted escrow + an offline signed restore proof and image format before stopping either writer.
+    dc "$dir" "$images" config --format json | python3 "$secret_helper" guard --root "$root" --runtime "$runtime" --pin > "$root/state/model-secret-transition.pending.json" || return 1
+    mv "$root/state/model-secret-transition.pending.json" "$root/state/model-secret-transition.json"
+    prepare_mcp_runtime "$dir" "$images" "$restoring" || return 1
     # Quiesce reads/writes, inspect the durable protocol floor, and pin an immutable compatible bridge.
     prepare_memory "$dir" "$images" || return 1
     if [[ "$memory_action" == replace ]]; then
@@ -94,13 +143,15 @@ if [[ "$action" == rollback ]]; then
     current=$(cat "$root/state/current-directory")
     snapshot "$root/state/rollback-current.yml" all yes
     if ! activate "$previous" "$root/state/previous-images.yml"; then
+        if [[ "$mcp_manual_recovery" == true ]]; then echo 'Runner recovery remains unverified; preserve volumes and transition evidence.' >&2; exit 6; fi
+        if [[ "$mcp_recovery_done" == true ]]; then echo 'Runner transition was restored; rollback was not published.' >&2; exit 5; fi
         echo 'Rollback health check failed; restoring current images.' >&2
-        activate "$current" "$root/state/rollback-current.yml" || { echo 'Current release restoration also failed; manual recovery required.' >&2; exit 6; }
+        activate "$current" "$root/state/rollback-current.yml" yes || { echo 'Current release restoration also failed; manual recovery required.' >&2; exit 6; }
+        python3 "$runtime_helper" aborted --state "$root/state" --lock-fd 9
         exit 5
     fi
-    cp "$root/state/rollback-current.yml" "$root/state/previous-images.yml"
-    printf '%s\n' "$current" > "$root/state/previous-directory"
-    printf '%s\n' "$previous" > "$root/state/current-directory"
+    python3 "$runtime_helper" publish --state "$root/state" --lock-fd 9 --current "$previous" --previous "$current" --images "$root/state/rollback-current.yml"
+    python3 "$runtime_helper" finalize --state "$root/state" --lock-fd 9
     echo 'Rollback passed application health checks.'
     exit 0
 fi
@@ -136,15 +187,17 @@ python3 "$release/script/docker/monolith-ops.py" backup --root "$root" --runtime
 # The memory protocol and backend are released together. Runtime PTH/Chroma remain pinned.
 dc "$release" "$release/runtime-images.yml" build backend nginx mem0
 if ! activate "$release" "$release/runtime-images.yml"; then
+    if [[ "$mcp_manual_recovery" == true ]]; then echo 'Runner recovery remains unverified; preserve volumes and transition evidence.' >&2; exit 6; fi
+    if [[ "$mcp_recovery_done" == true ]]; then echo 'Runner transition was restored; release was not published.' >&2; exit 5; fi
     # Keep startup evidence before replacing the failed container during rollback.
     dc "$release" "$release/runtime-images.yml" logs --no-color --tail 200 backend > "$root/state/failed-$tag-backend.log" 2>&1 || true
     echo 'Deployment health check failed; restoring previous application images.' >&2
-    activate "$previous" "$release/previous-images.yml" || { echo 'Restoration failed; manual recovery required.' >&2; exit 6; }
+    activate "$previous" "$release/previous-images.yml" yes || { echo 'Restoration failed; manual recovery required.' >&2; exit 6; }
+    python3 "$runtime_helper" aborted --state "$root/state" --lock-fd 9
     exit 5
 fi
-cp "$release/previous-images.yml" "$root/state/previous-images.yml"
-printf '%s\n' "$previous" > "$root/state/previous-directory"
-printf '%s\n' "$release" > "$root/state/current-directory"
+python3 "$runtime_helper" publish --state "$root/state" --lock-fd 9 --current "$release" --previous "$previous" --images "$release/previous-images.yml"
+python3 "$runtime_helper" finalize --state "$root/state" --lock-fd 9
 echo "Release $tag passed application health checks."
 python3 "$release/script/docker/monolith-ops.py" prune --root "$root" --runtime "$runtime" --lock-fd 9 --keep 3 --apply \
     || echo 'Application is healthy; old image cleanup needs review.' >&2

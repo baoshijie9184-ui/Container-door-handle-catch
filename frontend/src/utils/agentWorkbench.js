@@ -1,9 +1,16 @@
 export const workbenchTabs=[['PLAN','计划与任务'],['QUESTION','待回答'],['FILE','文件产物'],['CHILD','子 Agent'],['EXECUTION','后台任务'],['USAGE','用量'],['RECOVERY','恢复'],['FORK','分支']]
 export function availableWorkbenchTabs(capabilities={}){const keys={PLAN:'plans',QUESTION:'questions',FILE:'files',CHILD:'children',EXECUTION:'jobs',USAGE:'usage',RECOVERY:'recovery',FORK:'forks'};return workbenchTabs.filter(([key])=>capabilities[keys[key]]!==false)}
 export const workbenchStatus={PENDING:'待处理',APPROVED:'已批准',CHANGES_REQUESTED:'待修订',RUNNING:'执行中',READY:'待继续',QUEUED:'排队中',WAITING_PLAN:'等待审阅',WAITING_INPUT:'等待回答',WAITING_CHILD:'等待专业任务',COMPLETED:'已完成',CANCELLED:'已取消',NEEDS_REVIEW:'中断待核对',ANSWERED:'已回答',ACTIVE:'进行中',REFERENCE_ONLY:'仅供参考'}
+export function recoveryInput(choice='KEEP',state={}){
+ if(choice==='KEEP')return {}
+ if(state.recoveryModelError||state.recoveryModelsLoading||!Number.isSafeInteger(state.recoveryConfigVersion)||state.recoveryConfigVersion<1)throw Error('请先核对当前模型配置')
+ const modelId=choice==='CURRENT_DEFAULT'?state.recoveryDefault:choice
+ if(!state.recoveryModels?.some(model=>model.id===modelId))throw Error('所选恢复模型已不可用，请刷新模型列表')
+ return {replacementModelId:choice==='CURRENT_DEFAULT'?'':choice,replacementConfigVersion:state.recoveryConfigVersion}
+}
 export function workbenchNotifications(previous,current){const before=new Map(previous.map(row=>[row.id,row]));return current.filter(row=>['EXECUTION','CHILD'].includes(row.kind)&&['COMPLETED','CANCELLED','NEEDS_REVIEW'].includes(row.status)&&before.has(row.id)&&before.get(row.id).status!==row.status).map(row=>({id:row.id+':'+row.revision,text:(row.data.title||row.data.specialist||'后台任务')+'：'+workbenchStatus[row.status]}))}
 export function normalizeWorkbench(value){
- if(!Array.isArray(value?.items)||value.items.length>200||!Array.isArray(value.files)||value.files.length>200)throw Error('工作区响应格式无效')
+ if(!Array.isArray(value?.items)||value.items.length>256||!Array.isArray(value.files)||value.files.length>200)throw Error('工作区响应格式无效')
  const ids=new Set();const items=value.items.map(row=>{if(typeof row?.id!=='string'||! /^[a-f0-9-]{36}$/.test(row.id)||ids.has(row.id)||!Number.isSafeInteger(row.revision)||row.revision<0||typeof row.kind!=='string'||typeof row.status!=='string'||!row.data||typeof row.data!=='object'||Array.isArray(row.data))throw Error('工作项格式无效');ids.add(row.id);return {id:row.id,kind:row.kind,status:row.status,revision:row.revision,data:row.data,updatedAt:row.updatedAt}})
  const files=value.files.map(file=>{if(typeof file?.id!=='string'||! /^[a-f0-9-]{36}$/.test(file.id)||typeof file.name!=='string'||typeof file.contentType!=='string'||!Number.isSafeInteger(file.bytes)||file.bytes<0)throw Error('文件信息无效');return {id:file.id,name:file.name,contentType:file.contentType,bytes:file.bytes,folder:file.folder}})
  const businessFiles=(Array.isArray(value.businessFiles)?value.businessFiles:[]).filter(file=>['DETECTION','REPORT'].includes(file?.kind)&&typeof file.resourceId==='string'&&typeof file.fileId==='string'&&typeof file.name==='string'&&typeof file.previewPath==='string'&&/^\/api\/agent\/business-files\/(DETECTION|REPORT)\/[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+$/.test(file.previewPath))
@@ -14,9 +21,24 @@ export class AgentWorkbenchClient {
  constructor({base='',fetcher=(...args)=>globalThis.fetch(...args),onState=()=>{}}={}){Object.assign(this,{base,fetcher,onState});this.generation=0;this.pending=new Map();this.busy=false;this.value={enabled:false,items:[],files:[],capabilities:{}}}
  async read(path,options={}){const response=await this.fetcher(this.base+path,{credentials:'include',cache:'no-store',...options});if(!response.ok){const error=Error(response.status===409?'状态已变化，请刷新核对；不会自动重试':response.status===403?'当前账号无法执行此操作':response.status===415?'文件格式、编码或内容无效，请核对后重新上传':response.status===429?'文件解析繁忙，请稍后重试':response.status===413?'文件大小、尺寸或存储配额超出限制':'结果尚未确认，请刷新核对；不会自动重试');error.status=response.status;throw error}return response}
  publish(value){this.value={...this.value,...value};this.onState(this.value)}
- async open(session){clearTimeout(this.timer);const generation=++this.generation;this.session=session;this.publish({enabled:false,items:[],files:[],lineage:null,error:'',capabilities:{},notifications:[]});if(!session)return;try{const capability=await (await this.read('/api/agent/workbench/capabilities')).json();if(generation!==this.generation)return;if(capability.enabled===true){this.publish({enabled:true,capabilities:capability});await this.poll(generation)}}catch{/* Older backend: keep its existing workspace. */}}
+ async open(session){clearTimeout(this.timer);const generation=++this.generation;this.session=session;this.publish({sessionId:session,enabled:false,items:[],files:[],businessFiles:[],limits:null,loaded:false,loading:false,lineage:null,error:'',capabilities:{},notifications:[],recoveryModels:[],recoveryConfigVersion:0,recoveryDefault:'',recoveryModelError:'',recoveryModelsLoading:false});if(!session)return;try{const capability=await (await this.read('/api/agent/workbench/capabilities')).json();if(generation!==this.generation)return;if(capability.enabled===true){this.publish({enabled:true,capabilities:capability});await this.poll(generation);if(capability.modelConfig===true)await this.loadRecoveryModels(generation)}}catch{/* Older backend: keep its existing workspace. */}}
+ async loadRecoveryModels(generation=this.generation){
+  if(generation!==this.generation||!this.value.enabled)return
+  const readVersion=this.modelReadVersion=(this.modelReadVersion||0)+1
+  this.publish({recoveryModelsLoading:true,recoveryModelError:''})
+  try{const catalog=await (await this.read('/agui/models')).json();if(!Number.isSafeInteger(catalog.configVersion)||catalog.configVersion<1||!Array.isArray(catalog.models)||typeof catalog.selectedModel!=='string')throw Error('模型版本响应无效');const models=catalog.models.filter(model=>model.configured===true&&typeof model.id==='string'&&typeof model.model==='string').map(({id,model,provider})=>({id,model,provider}));if(generation===this.generation&&readVersion===this.modelReadVersion)this.publish({recoveryModels:models,recoveryConfigVersion:catalog.configVersion,recoveryDefault:catalog.selectedModel})}
+  catch{if(generation===this.generation&&readVersion===this.modelReadVersion)this.publish({recoveryModelError:'当前模型列表尚未核对，可刷新后再选择；未更改任务配置'})}
+  finally{if(generation===this.generation&&readVersion===this.modelReadVersion)this.publish({recoveryModelsLoading:false})}
+ }
  path(){return '/api/agent/conversations/'+encodeURIComponent(this.session)}
- async poll(generation=this.generation){clearTimeout(this.timer);const readVersion=this.readVersion=(this.readVersion||0)+1;try{const data=normalizeWorkbench(await (await this.read(this.path()+'/workbench')).json());if(generation===this.generation&&readVersion===this.readVersion)this.publish({...data,error:'',notifications:[...(this.value.notifications||[]),...workbenchNotifications(this.value.items,data.items)].slice(-3)})}catch(error){if(generation===this.generation&&readVersion===this.readVersion)this.publish({error:error.message})}finally{if(generation===this.generation&&readVersion===this.readVersion&&this.value.enabled)this.timer=setTimeout(()=>this.poll(generation),2500)}}
+ async poll(generation=this.generation){
+  if(generation!==this.generation||!this.value.enabled||!this.session)return
+  clearTimeout(this.timer);const readVersion=this.readVersion=(this.readVersion||0)+1
+  this.publish({loading:true})
+  try{const data=normalizeWorkbench(await (await this.read(this.path()+'/workbench')).json());if(generation===this.generation&&readVersion===this.readVersion)this.publish({...data,loaded:true,error:'',notifications:[...(this.value.notifications||[]),...workbenchNotifications(this.value.items,data.items)].slice(-3)})}
+  catch(error){if(generation===this.generation&&readVersion===this.readVersion)this.publish({error:error.message})}
+  finally{if(generation===this.generation&&readVersion===this.readVersion&&this.value.enabled){this.publish({loading:false});this.timer=setTimeout(()=>this.poll(generation),2500)}}
+ }
  async mutate(path,body,signature,form){if(this.busy)throw Error('正在提交，请稍候');if(!this.value.enabled)throw Error('工作台尚未启用');const generation=this.generation;if(!this.pending.has(signature)){if(this.pending.size>=16)throw Error('存在未核对的请求，请先刷新确认');this.pending.set(signature,crypto.randomUUID())}const requestId=this.pending.get(signature);this.busy=true;try{let payload;if(form){form.set('requestId',requestId);payload=form}else payload=JSON.stringify({...body,requestId});const response=await this.read(path,{method:'POST',headers:{'X-Agent-Action':'workbench',...(form?{}:{'Content-Type':'application/json'})},body:payload});const result=await response.json();this.pending.delete(signature);if(generation===this.generation)await this.poll(generation);return result}catch(error){if(form&&[400,413,415,429].includes(error.status))this.pending.delete(signature);throw error}finally{this.busy=false}}
  command(item,action,input={}){return this.mutate(this.path()+'/workbench/'+encodeURIComponent(item.id),{revision:item.revision,action,input},JSON.stringify([this.session,item.id,item.revision,action,input]))}
  fork(messageId){return this.mutate(this.path()+'/fork',{throughMessageId:Number(messageId)},JSON.stringify([this.session,'fork',messageId]))}
@@ -27,4 +49,6 @@ export class AgentWorkbenchClient {
  close(){this.generation++;clearTimeout(this.timer)}
 }
 export function workbenchRows(items,tab){if(tab==='PLAN')return items.filter(row=>['PLAN','TASKS','FORK_SNAPSHOT'].includes(row.kind));if(tab==='RECOVERY')return items.filter(row=>row.status==='NEEDS_REVIEW');if(tab==='EXECUTION')return items.filter(row=>['EXECUTION','CHILD','EXTERNAL_JOB'].includes(row.kind));if(tab==='USAGE')return items.filter(row=>['USAGE','CONTEXT','TOOL_TIMING'].includes(row.kind));return items.filter(row=>row.kind===tab)}
-export function tokenDisplay(value){return Number.isSafeInteger(value)&&value>=0?value.toLocaleString():'未知'}
+export function tokenDisplay(value){return Number.isSafeInteger(value)&&value>=0?value.toLocaleString('zh-CN'):'未知'}
+
+export function contextPhaseText(phase){return ({PERSISTED:'已保存摘要',OFFLOADED:'私有工具资料',CONTEXT_STARTED:'正在生成摘要',CONTEXT_COMPLETED:'已应用压缩',CONTEXT_FAILED:'保留原上下文',CONTEXT_CANCELLED:'摘要已取消'})[phase]||phase||'未知'}

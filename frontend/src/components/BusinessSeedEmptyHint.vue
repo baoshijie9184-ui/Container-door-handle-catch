@@ -1,10 +1,10 @@
 <template>
   <div class="business-seed-empty-hint">
+    <span class="empty-hint-symbol"><AppIcon name="Files" :size="25" /></span>
     <p class="business-seed-empty-hint__title">{{ title }}</p>
     <p class="business-seed-empty-hint__desc">
       {{ description }}
     </p>
-    <code>APP_BUSINESS_SEED_ENABLED=true</code>
     <router-link v-if="manualLink" to="/manual" class="business-seed-empty-hint__link">
       查看使用手册
     </router-link>
@@ -19,7 +19,7 @@ defineProps({
   },
   description: {
     type: String,
-    default: '如果是首次准备 demo/验收环境，可在后端启动前开启业务预置数据导入。'
+    default: '当前范围暂无记录。可以调整筛选条件，或创建新的业务记录后刷新。'
   },
   manualLink: {
     type: Boolean,
@@ -34,10 +34,13 @@ defineProps({
   flex-direction: column;
   align-items: center;
   gap: 6px;
-  max-width: 520px;
+  max-width: 480px;
+  padding: 24px 16px;
+  text-align: center;
   color: #64748b;
   line-height: 1.6;
 }
+.empty-hint-symbol { display: grid; place-items: center; width: 52px; height: 52px; border-radius: 14px; background: var(--app-primary-soft); color: var(--app-primary); margin-bottom: 8px; }
 
 .business-seed-empty-hint__title {
   margin: 0;
@@ -49,24 +52,15 @@ defineProps({
   margin: 0;
 }
 
-.business-seed-empty-hint code {
-  padding: 4px 9px;
-  border: 1px solid rgba(14, 165, 233, 0.22);
-  border-radius: 999px;
-  background: rgba(14, 165, 233, 0.08);
-  color: #0369a1;
-  font-size: 12px;
-}
-
 .business-seed-empty-hint__link {
-  color: #0f766e;
+  color: var(--app-primary);
   font-size: 12px;
   font-weight: 700;
   text-decoration: none;
 }
 
 .business-seed-empty-hint__link:hover {
-  color: #115e59;
+  color: var(--app-primary-hover);
   text-decoration: underline;
 }
 </style>

@@ -10,6 +10,7 @@
     </button>
 
     <template v-if="!collapsed">
+      <div class="sidebar-caption"><strong>DoorHandle <span class="sidebar-agent-label">Agent</span></strong><span>检测与质检工作空间</span></div>
       <!-- 新建按钮组 -->
       <div class="sidebar-header">
         <button class="new-session-btn" @click="store.newSession()">
@@ -39,10 +40,12 @@
           <input
             v-model="searchQuery"
             type="text"
-            placeholder="搜索对话..."
+            placeholder="搜索标题或摘要"
+            aria-label="搜索已加载的对话标题或摘要"
+            aria-describedby="sidebar-search-scope"
             class="search-input"
           />
-          <button v-if="searchQuery" class="search-clear" @click="clearSearch">
+          <button v-if="searchQuery" type="button" class="search-clear" aria-label="清除对话搜索" title="清除搜索" @click="clearSearch">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
               <line x1="18" y1="6" x2="6" y2="18" />
               <line x1="6" y1="6" x2="18" y2="18" />
@@ -51,10 +54,14 @@
         </div>
       </div>
 
+      <div class="sidebar-history-heading"><span>{{ searchQuery.trim() ? `匹配 ${searchResults.length} 条` : '对话历史' }}</span><button type="button" aria-label="重新读取会话列表" title="重新读取会话列表" :disabled="store.sessionsLoading" @click="store.loadSessionList()"><AppIcon name="Refresh" :size="15" /></button></div>
+      <p id="sidebar-search-scope" class="sidebar-search-scope">仅搜索当前账号已加载的标题和摘要</p>
+      <p v-if="store.sessionsError" class="sidebar-read-error" role="alert">{{ store.sessionsError }}</p>
+      <p v-if="renameError" class="sidebar-read-error" role="alert">{{ renameError }}<button v-if="renameUncertain" type="button" @click="cancelEdit(); store.loadSessionList()">关闭编辑并重新读取</button></p>
       <!-- 会话列表 -->
-      <div class="session-list">
+      <div class="session-list" :aria-busy="store.sessionsLoading">
         <!-- 项目分组 -->
-        <template v-if="!searchQuery">
+        <template v-if="!searchQuery.trim()">
           <!-- 有项目的会话 -->
           <template v-for="project in store.projects" :key="project.projectId">
             <div
@@ -64,16 +71,19 @@
               @dragleave="handleDragLeave"
               @drop="handleDrop($event, project.projectId)"
             >
-              <div class="project-header" @click="toggleProject(project.projectId)">
-                <div class="project-info">
+              <div class="project-header">
+                <button type="button" class="project-info project-disclosure" :aria-expanded="!!expandedProjects[project.projectId]" @click="toggleProject(project.projectId)">
+                  <AppIcon :name="expandedProjects[project.projectId] ? 'ArrowDown' : 'ArrowRight'" :size="12" />
                   <span class="project-color" :style="{ background: project.color }"></span>
                   <span class="project-name">{{ project.name }}</span>
                   <span class="project-count">{{ getProjectSessions(project.projectId).length }}</span>
-                </div>
+                </button>
                 <div class="project-actions">
                   <button
                     class="project-menu-btn"
                     title="项目操作"
+                    :aria-label="`项目操作：${project.name}`"
+                    :aria-expanded="store.projectMenuOpenId === project.projectId"
                     @click.stop="store.toggleProjectMenu(project.projectId)"
                   >
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
@@ -82,9 +92,6 @@
                       <circle cx="12" cy="19" r="1" />
                     </svg>
                   </button>
-                  <svg class="project-arrow" :class="{ expanded: expandedProjects[project.projectId] }" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-                    <polyline points="9 18 15 12 9 6" />
-                  </svg>
                 </div>
                 <!-- 项目下拉菜单 -->
                 <div class="project-menu" v-if="store.projectMenuOpenId === project.projectId" @click.stop>
@@ -121,13 +128,16 @@
                   draggable="true"
                   @dragstart="handleDragStart($event, sess.sessionId)"
                   @dragend="handleDragEnd"
-                  @click="handleSwitchSession(sess.sessionId)"
                 >
                   <div class="session-item-main">
-                    <div class="session-title" v-if="editingId !== sess.sessionId" @dblclick.stop="startEdit(sess)">
+                    <button v-if="editingId !== sess.sessionId" type="button" class="session-open" :aria-current="sess.sessionId === store.sessionId ? 'page' : undefined" :title="sessionTimestampLabel(sess) + '（UTC+8）'" @click="handleSwitchSession(sess.sessionId)" @dblclick.stop="startEdit(sess)">
+                    <span class="session-title">
                       <el-icon v-if="sess.pinned" class="pin-icon" aria-label="已置顶"><Position /></el-icon>
-                      {{ sess.title }} <button v-if="sess.sourceSessionId" type="button" class="session-source-link" title="返回分支来源会话" @click.stop="handleSwitchSession(sess.sourceSessionId)">分支来源</button>
-                    </div>
+                      {{ sess.title || '新对话' }}
+                    </span>
+                    <span v-if="sessionPreview(sess)" class="session-preview">{{ sessionPreview(sess) }}</span>
+                    <span class="session-meta">{{ sessionMetadata(sess, historyNow) }}</span>
+                    </button>
                     <div class="session-title-edit" v-else @click.stop>
                       <input
                         :ref="el => setEditInputRef(el, sess.sessionId)"
@@ -135,18 +145,21 @@
                         @blur="finishEdit(sess.sessionId)"
                         @keydown.enter="finishEdit(sess.sessionId)"
                         @keydown.escape="cancelEdit"
-                        maxlength="50"
+                        :maxlength="SESSION_TITLE_MAX_LENGTH"
                         class="title-edit-input"
+                        aria-label="会话名称"
+                        :disabled="renameBusy || renameUncertain"
                       />
                     </div>
-                    <div class="session-preview" v-if="sess.lastMessage && editingId !== sess.sessionId">{{ sess.lastMessage }}</div>
-                    <div class="session-meta" v-if="editingId !== sess.sessionId">{{ sess.messageCount }} 条消息 · {{ formatTime(sess.updatedAt) }}</div>
+                    <button v-if="sess.sourceSessionId && editingId !== sess.sessionId" type="button" class="session-source-link" title="返回分支来源会话" @click="handleSwitchSession(sess.sourceSessionId)"><AppIcon name="Connection" :size="12" />分支来源</button>
                   </div>
                   <!-- 更多操作按钮 -->
                   <div class="session-more-wrapper" v-if="editingId !== sess.sessionId">
                     <button
                       class="session-more-btn"
                       title="更多操作"
+                      :aria-label="`会话操作：${sess.title || '新对话'}`"
+                      :aria-expanded="store.menuOpenId === sess.sessionId"
                       @click.stop="store.toggleMenu(sess.sessionId)"
                     >
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
@@ -233,18 +246,18 @@
             @dragleave="handleDragLeave"
             @drop="handleDrop($event, '__ungrouped__')"
           >
-            <div class="project-header" @click="toggleProject('__ungrouped__')">
-              <div class="project-info">
+            <div class="project-header">
+              <button type="button" class="project-info project-disclosure" :aria-expanded="!!expandedProjects['__ungrouped__']" @click="toggleProject('__ungrouped__')">
+                <AppIcon :name="expandedProjects['__ungrouped__'] ? 'ArrowDown' : 'ArrowRight'" :size="12" />
                 <span class="project-name">未分组</span>
                 <span class="project-count">{{ ungroupedSessions.length }}</span>
-              </div>
-              <svg class="project-arrow" :class="{ expanded: expandedProjects['__ungrouped__'] }" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-                <polyline points="9 18 15 12 9 6" />
-              </svg>
+              </button>
             </div>
             <div class="project-sessions" v-if="expandedProjects['__ungrouped__']">
+              <template v-for="group in ungroupedHistory" :key="group.key">
+              <h3 class="session-date-heading">{{ group.label }}</h3>
               <div
-                v-for="sess in ungroupedSessions"
+                v-for="sess in group.sessions"
                 :key="sess.sessionId"
                 :data-session-id="sess.sessionId"
                 class="session-item"
@@ -256,13 +269,16 @@
                 draggable="true"
                 @dragstart="handleDragStart($event, sess.sessionId)"
                 @dragend="handleDragEnd"
-                @click="handleSwitchSession(sess.sessionId)"
               >
                 <div class="session-item-main">
-                  <div class="session-title" v-if="editingId !== sess.sessionId" @dblclick.stop="startEdit(sess)">
+                  <button v-if="editingId !== sess.sessionId" type="button" class="session-open" :aria-current="sess.sessionId === store.sessionId ? 'page' : undefined" :title="sessionTimestampLabel(sess) + '（UTC+8）'" @click="handleSwitchSession(sess.sessionId)" @dblclick.stop="startEdit(sess)">
+                  <span class="session-title">
                     <el-icon v-if="sess.pinned" class="pin-icon" aria-label="已置顶"><Position /></el-icon>
-                    {{ sess.title }} <button v-if="sess.sourceSessionId" type="button" class="session-source-link" title="返回分支来源会话" @click.stop="handleSwitchSession(sess.sourceSessionId)">分支来源</button>
-                  </div>
+                    {{ sess.title || '新对话' }}
+                  </span>
+                  <span v-if="sessionPreview(sess)" class="session-preview">{{ sessionPreview(sess) }}</span>
+                  <span class="session-meta">{{ sessionMetadata(sess, historyNow) }}</span>
+                  </button>
                   <div class="session-title-edit" v-else @click.stop>
                     <input
                       :ref="el => setEditInputRef(el, sess.sessionId)"
@@ -270,18 +286,21 @@
                       @blur="finishEdit(sess.sessionId)"
                       @keydown.enter="finishEdit(sess.sessionId)"
                       @keydown.escape="cancelEdit"
-                      maxlength="50"
+                      :maxlength="SESSION_TITLE_MAX_LENGTH"
                       class="title-edit-input"
+                      aria-label="会话名称"
+                      :disabled="renameBusy || renameUncertain"
                     />
                   </div>
-                  <div class="session-preview" v-if="sess.lastMessage && editingId !== sess.sessionId">{{ sess.lastMessage }}</div>
-                  <div class="session-meta" v-if="editingId !== sess.sessionId">{{ sess.messageCount }} 条消息 · {{ formatTime(sess.updatedAt) }}</div>
+                  <button v-if="sess.sourceSessionId && editingId !== sess.sessionId" type="button" class="session-source-link" title="返回分支来源会话" @click="handleSwitchSession(sess.sourceSessionId)"><AppIcon name="Connection" :size="12" />分支来源</button>
                 </div>
                 <!-- 更多操作按钮 -->
                 <div class="session-more-wrapper" v-if="editingId !== sess.sessionId">
                   <button
                     class="session-more-btn"
                     title="更多操作"
+                    :aria-label="`会话操作：${sess.title || '新对话'}`"
+                    :aria-expanded="store.menuOpenId === sess.sessionId"
                     @click.stop="store.toggleMenu(sess.sessionId)"
                   >
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
@@ -348,6 +367,7 @@
                   </div>
                 </div>
               </div>
+              </template>
             </div>
           </div>
         </template>
@@ -360,25 +380,30 @@
             :data-session-id="sess.sessionId"
             class="session-item"
             :class="{ active: sess.sessionId === store.sessionId }"
-            @click="handleSwitchSession(sess.sessionId)"
           >
             <div class="session-item-main">
-              <div class="session-title" v-if="editingId !== sess.sessionId">
+              <button type="button" class="session-open" :aria-current="sess.sessionId === store.sessionId ? 'page' : undefined" :title="sessionTimestampLabel(sess) + '（UTC+8）'" @click="handleSwitchSession(sess.sessionId)">
+              <span class="session-title">
                 <el-icon v-if="sess.pinned" class="pin-icon" aria-label="已置顶"><Position /></el-icon>
-                {{ sess.title }} <button v-if="sess.sourceSessionId" type="button" class="session-source-link" title="返回分支来源会话" @click.stop="handleSwitchSession(sess.sourceSessionId)">分支来源</button>
-              </div>
-              <div class="session-preview" v-if="sess.lastMessage && editingId !== sess.sessionId">{{ sess.lastMessage }}</div>
-              <div class="session-meta" v-if="editingId !== sess.sessionId">{{ sess.messageCount }} 条消息 · {{ formatTime(sess.updatedAt) }}</div>
+                {{ sess.title || '新对话' }}
+              </span>
+              <span v-if="sessionPreview(sess)" class="session-preview">{{ sessionPreview(sess) }}</span>
+              <span class="session-meta">{{ sessionMetadata(sess, historyNow) }}</span>
+              </button>
+              <button v-if="sess.sourceSessionId" type="button" class="session-source-link" title="返回分支来源会话" @click="handleSwitchSession(sess.sourceSessionId)"><AppIcon name="Connection" :size="12" />分支来源</button>
             </div>
           </div>
         </template>
 
         <!-- 空状态 -->
-        <div v-if="store.sessions.length === 0 && !store.sessionsLoading" class="session-empty">
-          暂无对话
+        <div v-if="store.sessionsLoading && !store.sessions.length" class="session-empty" role="status">
+          正在读取会话
         </div>
-        <div v-else-if="searchQuery && searchResults.length === 0" class="session-empty">
-          未找到匹配的对话
+        <div v-else-if="!store.sessions.length && !store.sessionsError" class="session-empty">
+          <AppIcon name="ChatDotRound" :size="24" /><strong>暂无会话历史</strong><span>新建对话，开始检测与质检工作</span>
+        </div>
+        <div v-else-if="searchQuery.trim() && !searchResults.length && !store.sessionsError" class="session-empty">
+          <AppIcon name="Search" :size="24" /><strong>没有匹配的会话</strong><button type="button" @click="clearSearch">清空搜索</button>
         </div>
       </div>
 
@@ -422,10 +447,11 @@
 </template>
 
 <script setup>
-import { ref, nextTick, computed, reactive, watch } from 'vue'
+import { ref, nextTick, computed, reactive, watch, onMounted, onUnmounted } from 'vue'
 import { useChatAssistantStore } from '@/stores/chatAssistant'
 import { Position } from '@element-plus/icons-vue'
-import {relativeBeijingTime,businessTimestamp} from '@/utils/beijingTime'
+import {businessTimestamp} from '@/utils/beijingTime'
+import {SESSION_TITLE_MAX_LENGTH, sessionHistoryGroups, sessionMetadata, sessionPreview, sessionTimestampLabel} from '@/utils/sessionPresentation'
 
 const props = defineProps({
   compact: {
@@ -436,6 +462,10 @@ const props = defineProps({
 
 const store = useChatAssistantStore()
 const collapsed = ref(props.compact)
+const historyNow = ref(Date.now())
+let historyClock
+onMounted(() => { historyClock = window.setInterval(() => { historyNow.value = Date.now() }, 60000) })
+onUnmounted(() => { window.clearInterval(historyClock) })
 
 watch(() => props.compact, (compact) => {
   collapsed.value = compact
@@ -444,6 +474,9 @@ watch(() => props.compact, (compact) => {
 // 重命名相关
 const editingId = ref(null)
 const editingTitle = ref('')
+const renameBusy = ref(false)
+const renameError = ref('')
+const renameUncertain = ref(false)
 const editInputRefs = {}
 
 const setEditInputRef = (el, sessionId) => {
@@ -537,6 +570,8 @@ const searchResults = computed(() => {
   return results
 })
 
+const ungroupedHistory = computed(() => sessionHistoryGroups(ungroupedSessions.value, '', historyNow.value))
+
 const toggleProject = (projectId) => {
   expandedProjects[projectId] = !expandedProjects[projectId]
 }
@@ -553,6 +588,8 @@ const handleSwitchSession = (sessionId) => {
 }
 
 const startEdit = (sess) => {
+  if (renameBusy.value || renameUncertain.value) return
+  renameError.value = ''
   editingId.value = sess.sessionId
   editingTitle.value = sess.title
   store.closeMenu()
@@ -566,18 +603,29 @@ const startEdit = (sess) => {
 }
 
 const finishEdit = async (sessionId) => {
+  if (renameBusy.value || renameUncertain.value || editingId.value !== sessionId) return
   const newTitle = editingTitle.value.trim()
   if (newTitle && newTitle !== store.sessions.find(s => s.sessionId === sessionId)?.title) {
-    await store.renameCurrentSession(sessionId, newTitle)
+    renameBusy.value = true
+    renameError.value = ''
+    try {
+      const result = await store.renameCurrentSession(sessionId, newTitle)
+      if (!result?.acknowledged) {
+        renameUncertain.value = result?.uncertain === true
+        renameError.value = renameUncertain.value ? '名称保存结果尚未核对，请先重新读取会话列表，不会自动重发。' : '名称未保存，请核对名称及当前账号权限。'
+        return
+      }
+    } finally { renameBusy.value = false }
   }
   editingId.value = null
 }
 
 const cancelEdit = () => {
+  if (renameBusy.value) return
   editingId.value = null
+  renameError.value = ''
+  renameUncertain.value = false
 }
-
-const formatTime = relativeBeijingTime
 
 // 拖拽处理
 const handleDragStart = (e, sessionId) => {
@@ -1364,4 +1412,30 @@ const handleDeleteProject = async (projectId) => {
   background: #cbd5e1;
   border-radius: 999px;
 }
+
+.sidebar-history-heading { display: flex; align-items: center; justify-content: space-between; padding: 8px 14px 0; color: #475569; font-size: 12px; }
+.sidebar-history-heading button { display: grid; place-items: center; width: 30px; height: 30px; border: 0; border-radius: 7px; background: transparent; color: #475569; cursor: pointer; transition: background-color 180ms, color 180ms; }
+.sidebar-history-heading button:hover:not(:disabled) { background: #eff6ff; color: #2563eb; }
+.sidebar-history-heading button:disabled { opacity: .5; cursor: wait; }
+.sidebar-search-scope { margin: 4px 14px 8px; color: #64748b; font-size: 11px; line-height: 1.6; }
+.sidebar-read-error { margin: 4px 12px 10px; padding: 9px 10px; border-radius: 8px; background: #fff7ed; color: #9a3412; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+.sidebar-read-error button { display: block; margin-top: 6px; border: 0; padding: 3px 0; color: #2563eb; background: transparent; font-size: inherit; text-align: left; cursor: pointer; }
+.project-disclosure { flex: 1; min-width: 0; border: 0; padding: 4px 0; background: transparent; color: inherit; text-align: left; font: inherit; cursor: pointer; }
+.project-disclosure .project-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-date-heading { margin: 14px 10px 5px; color: #64748b; font-size: 11px; font-weight: 500; }
+.session-item { align-items: flex-start; transition: background-color 180ms, box-shadow 180ms; }
+.session-open { display: flex; flex-direction: column; gap: 3px; width: 100%; min-width: 0; border: 0; padding: 3px 0; border-radius: 5px; color: #0f172a; background: transparent; text-align: left; font: inherit; cursor: pointer; }
+.session-open .session-title, .session-open .session-preview, .session-open .session-meta { display: block; width: 100%; min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: inherit; }
+.session-open .session-title { font-size: 13px; }
+.session-open .session-preview { color: #475569; font-size: 12px; line-height: 1.6; }
+.session-open .session-meta { color: #64748b; font-size: 11px; }
+.session-item-main > .session-source-link { display: inline-flex; align-items: center; gap: 4px; margin: 4px 0 0; }
+.session-empty { display: flex; flex-direction: column; align-items: center; gap: 10px; line-height: 1.8; }
+.session-empty > .el-icon { color: #2563eb; }
+.session-empty strong { font-weight: 550; color: #475569; }
+.session-empty button { border: 0; border-radius: 6px; padding: 6px 10px; color: #2563eb; background: #eff6ff; cursor: pointer; }
+.chat-sidebar button:focus-visible, .chat-sidebar input:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
+.session-item:focus-within .session-more-btn { opacity: 1; }
+@media (hover: none) { .session-more-btn { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .session-item, .sidebar-history-heading button { transition: none; } .session-item.dragging { transform: none; } }
 </style>

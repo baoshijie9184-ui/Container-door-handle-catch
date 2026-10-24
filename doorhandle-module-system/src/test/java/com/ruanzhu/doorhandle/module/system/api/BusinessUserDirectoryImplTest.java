@@ -5,6 +5,17 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.Mockito.*;
 class BusinessUserDirectoryImplTest {
+    @Test void identityBackfillRequiresAnExactUniqueAccount(){
+        var mapper=mock(UserMapper.class);var directory=new BusinessUserDirectoryImpl(mapper);
+        var exact=new User();exact.setId(1L);exact.setUsername("alice");var folded=new User();folded.setId(2L);folded.setUsername("Alice");
+        when(mapper.selectList(any(com.baomidou.mybatisplus.core.conditions.Wrapper.class))).thenReturn(java.util.List.of(folded));
+        assertThat(directory.findExactUserId("alice")).isNull();
+        when(mapper.selectList(any(com.baomidou.mybatisplus.core.conditions.Wrapper.class))).thenReturn(java.util.List.of(exact,folded));
+        assertThat(directory.findExactUserId("alice")).isEqualTo(1);
+        var duplicate=new User();duplicate.setId(3L);duplicate.setUsername("alice");
+        when(mapper.selectList(any(com.baomidou.mybatisplus.core.conditions.Wrapper.class))).thenReturn(java.util.List.of(exact,duplicate));
+        assertThat(directory.findExactUserId("alice")).isNull();
+    }
     @Test void revokedOrUnknownRoleDoesNotFallBackToInspector(){
         var mapper=mock(UserMapper.class);var directory=new BusinessUserDirectoryImpl(mapper);var user=new User();user.setUsername("alice");when(mapper.selectById(1L)).thenReturn(user);
         for(String role:new String[]{null,"USER","DISABLED","UNKNOWN"}){user.setRole(role);assertThatThrownBy(()->directory.current(1,"alice")).isInstanceOf(SecurityException.class);}

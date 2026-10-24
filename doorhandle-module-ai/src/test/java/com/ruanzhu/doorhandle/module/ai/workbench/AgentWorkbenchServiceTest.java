@@ -64,6 +64,61 @@ class AgentWorkbenchServiceTest {
         doThrow(new org.springframework.security.access.AccessDeniedException("forbidden")).when(app).assertOwned(alice,"foreign");
         assertThatThrownBy(()->service.modelSelection(alice,"foreign")).isInstanceOf(org.springframework.security.access.AccessDeniedException.class);
     }
+    private ModelConfigurationApi versionedModels(){
+        var configuration=mock(ModelConfigurationApi.class);
+        var provider=mock(ObjectProvider.class);when(provider.getIfAvailable()).thenReturn(configuration);when(provider.getObject()).thenReturn(configuration);
+        service.setModelConfigurations(provider);return configuration;
+    }
+    @Test void planContinuationKeepsCapturedModelVersionAfterAnAdministratorPublishes(){
+        var configuration=versionedModels();when(configuration.active()).thenReturn(new ModelConfigurationApi.Active(7,"dashscope:old","dashscope:memory"));
+        var original=scope("分析任务并生成报告");assertThat(original.modelConfigVersion()).isEqualTo(7);assertThat(original.modelId("fallback")).isEqualTo("dashscope:old");
+        call(original,"submit_plan","version-plan",Map.of("title","分析计划","text","先查询再汇总"));
+        when(configuration.active()).thenReturn(new ModelConfigurationApi.Active(8,"deepseek:new","dashscope:memory"));
+        var plan=item("PLAN");service.command(alice,"s1",plan.id(),plan.revision(),"approve-version-plan","approve-plan",Map.of());
+        var continued=service.prepare(alice,"s1","继续已批准计划","version-next-attempt");
+        assertThat(continued.modelConfigVersion()).isEqualTo(7);assertThat(continued.modelId("fallback")).isEqualTo("dashscope:old");
+        verify(configuration,times(2)).assertTaskConfiguration(7,"dashscope:old");continued.finish("COMPLETED","done");continued.release();
+        var next=service.prepare(alice,"s1","查看任务","new-logical-task");assertThat(next.modelConfigVersion()).isEqualTo(8);assertThat(next.modelId("fallback")).isEqualTo("deepseek:new");next.release();
+    }
+    @Test void invalidRecoveryModelRequiresExplicitSelectionAndDoesNotChangeUnrelatedChildren(){
+        var configuration=versionedModels();when(configuration.active()).thenReturn(new ModelConfigurationApi.Active(7,"dashscope:old","dashscope:memory"));
+        var original=scope("查看任务");
+        original.stateStore().saveIfVersion("1",original.sdkSession(),"agent_state",AgentState.builder().userId("1").sessionId(original.sdkSession()).context(List.of(new UserMessage("checkpoint"))).build(),0);
+        original.finish("NEEDS_REVIEW","");original.release();var interrupted=item("EXECUTION");
+        var child=store.create(1,"s1",UUID.randomUUID().toString(),"CHILD","NEEDS_REVIEW",Map.of("parentId",interrupted.id(),"parentTaskId",interrupted.data().get("logicalTaskId"),"logicalTaskId","current-child-task","modelConfigVersion",7,"modelDefault","dashscope:old","modelId",""));
+        var unrelated=store.create(1,"s1",UUID.randomUUID().toString(),"CHILD","NEEDS_REVIEW",Map.of("parentId",interrupted.id(),"parentTaskId","previous-parent-task","logicalTaskId","previous-child-task","modelConfigVersion",6,"modelDefault","dashscope:older","modelId",""));
+        doThrow(new IllegalStateException("credential revoked; choose again")).when(configuration).assertTaskConfiguration(7,"dashscope:old");
+        assertThatThrownBy(()->service.command(alice,"s1",interrupted.id(),interrupted.revision(),"invalid-model-resume","resume",Map.of())).hasMessageContaining("choose again");
+        assertThat(item("EXECUTION").status()).isEqualTo("NEEDS_REVIEW");
+        when(configuration.active()).thenReturn(new ModelConfigurationApi.Active(8,"deepseek:new","dashscope:memory"));
+        assertThatThrownBy(()->service.command(alice,"s1",interrupted.id(),interrupted.revision(),"stale-config-resume","resume",Map.of("replacementModelId","","replacementConfigVersion",7))).hasMessageContaining("配置已变化");
+        var resumed=service.command(alice,"s1",interrupted.id(),interrupted.revision(),"explicit-new-model","resume",Map.of("replacementModelId","","replacementConfigVersion",8));
+        assertThat(resumed.status()).isEqualTo("READY");
+        assertThat(((Number)store.require(1,"s1",child.id()).data().get("modelConfigVersion")).longValue()).isEqualTo(8);
+        assertThat(((Number)store.require(1,"s1",unrelated.id()).data().get("modelConfigVersion")).longValue()).isEqualTo(6);
+        assertThat(new JdbcWorkbenchStateStore(store).exists("1",original.sdkSession())).isTrue();
+        assertThat(service.command(alice,"s1",interrupted.id(),interrupted.revision(),"explicit-new-model","resume",Map.of("replacementModelId","","replacementConfigVersion",8))).isEqualTo(resumed);
+        assertThat((List<?>)store.require(1,"s1",interrupted.id()).data().get("modelConfigurationHistory")).hasSize(1);
+    }
+    @Test void separateAccountsAndConversationsKeepIndependentModelChoices(){
+        var bob=new AgentActor(2,"bob",AgentActor.Role.SUPERVISOR);
+        when(users.current(2,"bob")).thenReturn(new BusinessUserDirectory.Identity(2,"bob",true));
+        doAnswer(call->{AgentActor actor=call.getArgument(0);String session=call.getArgument(1);
+            if(!(actor.userId()==1&&Set.of("alice-1","alice-2").contains(session))&&!(actor.userId()==2&&session.equals("bob-1")))throw new org.springframework.security.access.AccessDeniedException("private session");return null;
+        }).when(app).assertOwned(any(),anyString());
+        var configured=Set.of("dashscope:flash","dashscope:max");
+        service.selectModel(alice,"alice-1","dashscope:flash",0,"same-request",configured);
+        service.selectModel(bob,"bob-1","dashscope:max",0,"same-request",configured);
+        assertThat(service.modelSelection(alice,"alice-1").modelId()).isEqualTo("dashscope:flash");
+        assertThat(service.modelSelection(alice,"alice-2")).isEqualTo(new AgentWorkbenchService.ModelSelection("",0));
+        assertThat(service.modelSelection(bob,"bob-1").modelId()).isEqualTo("dashscope:max");
+        assertThatThrownBy(()->service.modelSelection(bob,"alice-1")).isInstanceOf(org.springframework.security.access.AccessDeniedException.class);
+        assertThatThrownBy(()->service.selectModel(bob,"alice-1","dashscope:max",1,"cross-account",configured)).isInstanceOf(org.springframework.security.access.AccessDeniedException.class);
+        // A fresh execution reads the saved route rather than the global default.
+        var scope=service.prepare(alice,"alice-1","查看任务","route-test");
+        assertThat(scope.modelId("global-default")).isEqualTo("dashscope:flash");scope.finish("COMPLETED","done");scope.release();
+        assertThat(service.modelSelection(bob,"bob-1").modelId()).isEqualTo("dashscope:max");
+    }
     @Test void unapprovedPlanDoesNotAdvertiseProfessionalOrArtifactTools(){
         var scope=scope("查询任务，不修改或审批");var toolkit=new Toolkit();
         var delegate=mock(AgentTool.class);when(delegate.getName()).thenReturn("delegate_detection_quality");toolkit.registerAgentTool(delegate);scope.install(toolkit);

@@ -1,26 +1,20 @@
 <template>
-  <div class="pending-card">
+  <div class="pending-card" aria-label="历史待确认操作记录">
     <div class="pending-header">
       <span class="pending-icon">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
-          <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
-        </svg>
+        <AppIcon name="Lock" :size="16" />
       </span>
       <span class="pending-label">历史待确认操作</span>
     </div>
     <div class="pending-content">{{ message.content }}</div>
+    <p class="pending-note">此处保留旧版操作记录，不在聊天中执行。请到对应业务页面重新核对。</p>
     <div class="pending-actions">
-      <button class="pending-btn confirm" disabled>
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-          <polyline points="20 6 9 17 4 12"/>
-        </svg>
+      <button type="button" class="pending-btn confirm" disabled title="旧版操作不可在聊天中执行">
+        <AppIcon name="Document" :size="14" />
         请到业务页面执行
       </button>
-      <button class="pending-btn cancel" :disabled="busy" @click="$emit('confirm', message.actionId, false)">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-          <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-        </svg>
+      <button type="button" class="pending-btn cancel" :disabled="busy || !message.actionId" @click="$emit('confirm', message.actionId, false)">
+        <AppIcon name="Close" :size="14" />
         取消
       </button>
     </div>
@@ -36,16 +30,16 @@ defineProps({
 
 <style scoped>
 .pending-card {
-  background: linear-gradient(135deg, #fffbeb 0%, #fefce8 100%);
-  border: 1px solid rgba(251, 191, 36, 0.25);
-  border-radius: 16px;
+  background: var(--app-warning-light);
+  border: 1px solid #f3e1b9;
+  border-radius: 12px;
   padding: 16px;
-  box-shadow: 0 2px 8px rgba(251, 191, 36, 0.06);
-  animation: pending-in 0.3s cubic-bezier(0.4, 0, 0.2, 1) both;
+  box-shadow: none;
+  animation: pending-in 0.2s ease-out both;
 }
 
 @keyframes pending-in {
-  from { opacity: 0; transform: scale(0.96); }
+  from { opacity: 0; transform: translateY(3px); }
   to   { opacity: 1; transform: scale(1); }
 }
 
@@ -83,9 +77,11 @@ defineProps({
   line-height: 1.65;
   border: 1px solid rgba(0, 0, 0, 0.04);
 }
+.pending-note { margin: 10px 0 0; color: var(--app-warning); font-size: 12px; line-height: 1.8; }
 
 .pending-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 10px;
   margin-top: 14px;
 }
@@ -102,7 +98,7 @@ defineProps({
   align-items: center;
   justify-content: center;
   gap: 6px;
-  transition: all 0.2s;
+  transition: background-color .15s, color .15s, transform .15s;
 }
 
 .pending-btn:disabled {
@@ -112,12 +108,12 @@ defineProps({
 }
 
 .pending-btn.confirm {
-  background: linear-gradient(135deg, #4f6ef7, #3b5de7);
-  color: #fff;
-  box-shadow: 0 2px 8px rgba(47, 107, 255, 0.2);
+  background: var(--app-info-soft);
+  color: var(--app-text-secondary);
+  box-shadow: none;
 }
 
-.pending-btn.confirm:hover {
+.pending-btn.confirm:hover:not(:disabled) {
   box-shadow: 0 4px 14px rgba(47, 107, 255, 0.3);
   transform: translateY(-1px);
 }
@@ -127,8 +123,9 @@ defineProps({
   color: #64748b;
 }
 
-.pending-btn.cancel:hover {
+.pending-btn.cancel:hover:not(:disabled) {
   background: #e2e8f0;
   color: #475569;
 }
+@media(prefers-reduced-motion: reduce) { .pending-card { animation: none; }.pending-btn { transition: none; transform: none; } }
 </style>

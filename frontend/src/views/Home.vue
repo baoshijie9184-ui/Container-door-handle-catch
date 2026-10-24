@@ -36,23 +36,32 @@
       <span>{{ refreshing ? '正在刷新…' : '每 30 秒自动刷新（后台页面暂停）' }}</span>
       <span v-if="lastUpdated"> · 最近全部更新成功：{{ lastUpdated }}</span>
       <el-alert v-if="failedSections.length" type="warning" :closable="false"
-        :title="`加载失败：${failedSections.join('、')}。对应区域可能保留旧数据；首次加载失败的零值不代表真实统计，请刷新重试。`" />
+        :title="`加载失败：${failedSections.join('、')}。对应区域可能保留上次数据；未读取或缺失的指标显示 —，请刷新核对。`" />
     </div>
+    <p class="dashboard-data-note">检测统计按当前账号可访问任务汇总；设备与人员为全部登记资料。“—”表示尚未读取、字段缺失或无法计算，不代表零。</p>
+    <section class="quality-overview" aria-labelledby="quality-overview-title" :aria-busy="refreshing">
+      <header><div><h2 id="quality-overview-title">{{ userStore.role === 'SUPERVISOR' ? '企业质量待办' : '我的质量待办' }}</h2><p>按当前账号可访问任务统计 · 当前状态 · 时间 UTC+8</p></div><router-link to="/quality/queue"><AppIcon name="ArrowRight" :size="16" />全部质检任务</router-link></header>
+      <div class="quality-overview-grid">
+        <router-link v-for="metric in qualityMetrics" :key="metric.key" :to="{path:'/quality/queue',query:{queue:metric.queue}}" :data-tone="metric.tone"><span class="quality-overview-icon"><AppIcon :name="metric.icon" :size="20" /></span><span><strong>{{ qualityWorkload ? qualityWorkload[metric.key] : '—' }}</strong><small>{{ metric.label }}</small></span><AppIcon name="ArrowRight" :size="15" /></router-link>
+      </div>
+      <p v-if="!qualityWorkload" class="quality-overview-note">{{ failedSections.includes('质量待办') ? '质量待办暂不可读取，请刷新核对；缺失值不代表零。' : '正在读取质量待办…' }}</p>
+      <p v-else class="quality-overview-note">{{ failedSections.includes('质量待办') ? '本次刷新失败，以上保留上次数据，请刷新核对。' : '各类待办可能交叉，不能直接相加作为任务总数。' }}</p>
+    </section>
     <!-- ── 顶部 Hero + 运行态势 ── -->
     <section class="hero-grid animate-fade-in-up">
       <div class="hero-panel app-panel command-panel">
         <div class="hero-copy">
           <div class="industrial-kicker">Door Handle Inspection Center</div>
-          <h2 class="hero-title">让每一次检测都有据可循</h2>
+          <h2 class="hero-title">{{ userStore.role === 'SUPERVISOR' ? '企业质量工作台' : '我的检测工作台' }}</h2>
           <p class="hero-text">
-            统一查看检测趋势、设备状态与人员分布，帮助现场团队更快定位异常、安排巡检和处理维护任务。
+            {{ userStore.role === 'SUPERVISOR' ? '查看企业检测与质量情况，安排复核、跟进异常和设备维护。' : '查看本人及分派任务，跟进检测结果、质检处理和工作记录。' }}
           </p>
         </div>
 
         <div class="hero-telemetry">
-          <span class="metric-chip">在线设备 {{ deviceStatus.online }} 台</span>
-          <span class="metric-chip">在岗人员 {{ employeeStatus.active }} 人</span>
-          <span class="metric-chip">平均漏检率 {{ formatPercent(avgMissRate) }}</span>
+          <span class="metric-chip">使用中设备 {{ formatNumber(deviceStatus.inUse) }} 台</span>
+          <span class="metric-chip">在岗人员 {{ formatNumber(employeeStatus.active) }} 人</span>
+          <span class="metric-chip">登记设备 {{ formatNumber(totalDevices) }} 台</span>
         </div>
 
         <div class="hero-actions">
@@ -68,7 +77,7 @@
         </div>
 
         <div class="hero-highlights">
-          <div class="highlight-card hl-primary">
+          <div class="highlight-card hl-primary" role="link" tabindex="0" aria-label="查看检测记录" @click="router.push('/inspection/history')" @keydown.enter="router.push('/inspection/history')" @keydown.space.prevent="router.push('/inspection/history')">
             <div class="hl-header">
               <div class="hl-icon hl-icon-blue">
                 <el-icon><DataAnalysis /></el-icon>
@@ -78,24 +87,24 @@
             <strong class="hl-value">{{ formatNumber(totalDetections) }}</strong>
             <span class="hl-label">累计完成检测任务数（含部分失败）</span>
           </div>
-          <div class="highlight-card hl-success">
+          <div class="highlight-card hl-success" role="link" tabindex="0" aria-label="查看设备状态" @click="router.push('/devices')" @keydown.enter="router.push('/devices')" @keydown.space.prevent="router.push('/devices')">
             <div class="hl-header">
               <div class="hl-icon hl-icon-green">
                 <el-icon><Monitor /></el-icon>
               </div>
-              <span class="hl-trend up">{{ deviceStatus.online }} 在线</span>
+              <span class="hl-trend">{{ formatNumber(deviceStatus.inUse) }} 使用中</span>
             </div>
-            <strong class="hl-value">{{ onlineRate }}<small>%</small></strong>
-            <span class="hl-label">设备在线率</span>
+            <strong class="hl-value">{{ inUseRate ?? '—' }}<small v-if="inUseRate !== null">%</small></strong>
+            <span class="hl-label">登记设备使用率</span>
           </div>
-          <div class="highlight-card hl-warning">
+          <div class="highlight-card hl-warning" role="link" tabindex="0" aria-label="查看人员状态" @click="router.push('/employees')" @keydown.enter="router.push('/employees')" @keydown.space.prevent="router.push('/employees')">
             <div class="hl-header">
               <div class="hl-icon hl-icon-amber">
                 <el-icon><User /></el-icon>
               </div>
-              <span class="hl-trend">{{ employeeStatus.active }} 在岗</span>
+              <span class="hl-trend">{{ formatNumber(employeeStatus.active) }} 在岗</span>
             </div>
-            <strong class="hl-value">{{ employeeActiveRate }}<small>%</small></strong>
+            <strong class="hl-value">{{ employeeActiveRate ?? '—' }}<small v-if="employeeActiveRate !== null">%</small></strong>
             <span class="hl-label">人员在岗率</span>
           </div>
         </div>
@@ -105,53 +114,53 @@
         <div class="status-header">
           <div>
             <h3 class="app-panel-title">运行态势</h3>
-            <p class="app-panel-subtitle">实时运营摘要</p>
+            <p class="app-panel-subtitle">设备与人员登记状态，不表示实时在线心跳</p>
           </div>
-          <el-button text size="small" @click="refreshAll">
+          <el-button text size="small" :loading="refreshing" @click="refreshAll">
             <el-icon><Refresh /></el-icon>
             刷新
           </el-button>
         </div>
 
         <div class="status-list">
-          <div class="status-item interactive" @click="router.push('/devices')">
+          <div class="status-item interactive" role="link" tabindex="0" @click="router.push('/devices')" @keydown.enter="router.push('/devices')" @keydown.space.prevent="router.push('/devices')">
             <div class="si-indicator si-online">
-              <span class="pulse-dot"></span>
+              <el-icon><Monitor /></el-icon>
             </div>
             <div class="si-body">
-              <div class="si-title">设备在线 <em>{{ deviceStatus.online }}</em> 台</div>
+              <div class="si-title">设备使用中 <em>{{ formatNumber(deviceStatus.inUse) }}</em> 台</div>
               <div class="si-desc">
-                <span class="si-metric">离线 {{ deviceStatus.offline }}</span>
+                <span class="si-metric">离线 {{ formatNumber(deviceStatus.offline) }}</span>
                 <span class="si-sep">|</span>
-                <span class="si-metric">未使用 {{ deviceStatus.unused }}</span>
+                <span class="si-metric">未使用 {{ formatNumber(deviceStatus.unused) }}</span>
               </div>
-              <div class="si-bar"><div class="si-bar-fill" :style="{ width: onlineRate + '%' }"></div></div>
+              <div v-if="inUseRate !== null" class="si-bar" aria-hidden="true"><div class="si-bar-fill" :style="{ width: inUseRate + '%' }"></div></div>
             </div>
             <el-icon class="si-arrow"><ArrowRight /></el-icon>
           </div>
-          <div class="status-item interactive" @click="router.push('/devices')">
+          <div class="status-item interactive" role="link" tabindex="0" @click="router.push('/devices')" @keydown.enter="router.push('/devices')" @keydown.space.prevent="router.push('/devices')">
             <div class="si-indicator si-maintain">
               <el-icon><WarningFilled /></el-icon>
             </div>
             <div class="si-body">
-              <div class="si-title">维护关注 <em>{{ deviceStatus.maintenance }}</em> 台</div>
+              <div class="si-title">维护关注 <em>{{ formatNumber(deviceStatus.maintenance) }}</em> 台</div>
               <div class="si-desc">设备维护中，需安排检修</div>
-              <div class="si-bar"><div class="si-bar-fill si-bar-warn" :style="{ width: maintenanceRate + '%' }"></div></div>
+              <div v-if="maintenanceRate !== null" class="si-bar" aria-hidden="true"><div class="si-bar-fill si-bar-warn" :style="{ width: maintenanceRate + '%' }"></div></div>
             </div>
             <el-icon class="si-arrow"><ArrowRight /></el-icon>
           </div>
-          <div class="status-item interactive" @click="router.push('/employees')">
+          <div class="status-item interactive" role="link" tabindex="0" @click="router.push('/employees')" @keydown.enter="router.push('/employees')" @keydown.space.prevent="router.push('/employees')">
             <div class="si-indicator si-schedule">
               <el-icon><UserFilled /></el-icon>
             </div>
             <div class="si-body">
-              <div class="si-title">人员排班 <em>{{ employeeStatus.active }}</em> 人在岗</div>
+              <div class="si-title">人员状态 <em>{{ formatNumber(employeeStatus.active) }}</em> 人在岗</div>
               <div class="si-desc">
-                <span class="si-metric">休假 {{ employeeStatus.vacation }}</span>
+                <span class="si-metric">休假 {{ formatNumber(employeeStatus.vacation) }}</span>
                 <span class="si-sep">|</span>
-                <span class="si-metric">离职 {{ employeeStatus.resigned }}</span>
+                <span class="si-metric">离职 {{ formatNumber(employeeStatus.resigned) }}</span>
               </div>
-              <div class="si-bar"><div class="si-bar-fill si-bar-blue" :style="{ width: employeeActiveRate + '%' }"></div></div>
+              <div v-if="employeeActiveRate !== null" class="si-bar" aria-hidden="true"><div class="si-bar-fill si-bar-blue" :style="{ width: employeeActiveRate + '%' }"></div></div>
             </div>
             <el-icon class="si-arrow"><ArrowRight /></el-icon>
           </div>
@@ -164,23 +173,25 @@
       <h3>{{ workUnitSummary?.scope === 'DEPARTMENT' ? '部门工作单元概览' : '我的工作单元概览' }}</h3>
       <p>仅统计当前工作单元，不代表已审批公开检测记录；员工仅统计当前分配给自己的任务。</p>
       <div v-if="workUnitSummary" class="hero-telemetry">
-        <span v-if="workUnitSummary.scope === 'DEPARTMENT'" class="metric-chip">待分配 {{ workUnitSummary.counts.WAITING }}</span>
-        <span class="metric-chip">已分配 {{ workUnitSummary.counts.ASSIGNED }}</span>
-        <span class="metric-chip">处理中 {{ workUnitSummary.counts.PROCESSING }}</span>
-        <span class="metric-chip">已提交待审核 {{ workUnitSummary.counts.SUBMITTED }}</span>
+        <span v-if="workUnitSummary.scope === 'DEPARTMENT'" class="metric-chip">待分配 {{ formatNumber(workUnitSummary.counts.WAITING) }}</span>
+        <span class="metric-chip">已分配 {{ formatNumber(workUnitSummary.counts.ASSIGNED) }}</span>
+        <span class="metric-chip">处理中 {{ formatNumber(workUnitSummary.counts.PROCESSING) }}</span>
+        <span class="metric-chip">已提交待审核 {{ formatNumber(workUnitSummary.counts.SUBMITTED) }}</span>
       </div>
       <p v-else>工作单元数据尚未加载成功。</p>
+      <p v-if="workUnitSummary && failedSections.includes('工作单元')" role="status">本次刷新失败，保留上次统计，请刷新核对。</p>
     </section>
     <section class="workflow-summary app-panel">
       <h3>{{ duplicateSummary?.scope === 'DEPARTMENT' ? '部门重复图片复查' : '我的重复图片复查' }}</h3>
       <p>统计已创建的未完成工单；员工仅查看分配给自己的复查工作。</p>
       <div v-if="duplicateSummary" class="hero-telemetry">
-        <span v-if="duplicateSummary.scope === 'DEPARTMENT'" class="metric-chip">待分配 {{ duplicateSummary.counts.OPEN }}</span>
-        <span class="metric-chip">待对比 {{ duplicateSummary.counts.ASSIGNED }}</span>
-        <span class="metric-chip">对比中 {{ duplicateSummary.counts.COMPARING }}</span>
-        <span class="metric-chip">待审批 {{ duplicateSummary.counts.PENDING_APPROVAL }}</span>
+        <span v-if="duplicateSummary.scope === 'DEPARTMENT'" class="metric-chip">待分配 {{ formatNumber(duplicateSummary.counts.OPEN) }}</span>
+        <span class="metric-chip">待对比 {{ formatNumber(duplicateSummary.counts.ASSIGNED) }}</span>
+        <span class="metric-chip">对比中 {{ formatNumber(duplicateSummary.counts.COMPARING) }}</span>
+        <span class="metric-chip">待审批 {{ formatNumber(duplicateSummary.counts.PENDING_APPROVAL) }}</span>
       </div>
       <p v-else>复查工单数据尚未加载成功。</p>
+      <p v-if="duplicateSummary && failedSections.includes('复查工单')" role="status">本次刷新失败，保留上次统计，请刷新核对。</p>
     </section>
     </div>
 
@@ -192,16 +203,18 @@
           <div class="panel-header">
             <div>
               <h3 class="app-panel-title">检测趋势</h3>
-              <p class="app-panel-subtitle">查看不同时间范围下的检测量和结果结构变化</p>
+              <p class="app-panel-subtitle">{{ trendScopeLabel }} · 按任务创建日期分组，仅含完成及部分失败任务</p>
             </div>
-            <el-radio-group v-model="detectionTimeRange" size="small">
-              <el-radio-button label="week">近一周</el-radio-button>
-              <el-radio-button label="month">近一月</el-radio-button>
-              <el-radio-button label="year">近一年</el-radio-button>
+            <el-radio-group v-model="detectionTimeRange" size="small" aria-label="检测趋势统计范围">
+              <el-radio-button label="week">近 7 天</el-radio-button>
+              <el-radio-button label="month">近 12 个月</el-radio-button>
+              <el-radio-button label="year">全部年份</el-radio-button>
             </el-radio-group>
           </div>
         </template>
-        <div ref="detectionTrendChartRef" class="chart"></div>
+        <div ref="detectionTrendChartRef" class="chart" role="img" :aria-label="`${trendScopeLabel}检测趋势：左轴任务图片数，右轴各类目标数`" :aria-busy="trendLoading"></div>
+        <p class="dashboard-data-note">图片数与目标数单位不同，一张图片可以有多个目标；此时间范围仅作用于本图。</p>
+        <p v-if="detectionTimeRange==='month'" class="dashboard-data-note">月份标签沿用原统计记录，尚未包含年份；跨年明细请在检测历史核对。</p>
       </el-card>
 
       <!-- 快速状态 (右侧窄) -->
@@ -215,40 +228,40 @@
           </div>
         </template>
         <div class="quick-stats">
-          <div class="quick-stat-item" @click="router.push('/device-records')">
+          <div class="quick-stat-item" role="link" tabindex="0" @click="router.push('/inspection/history')" @keydown.enter="router.push('/inspection/history')" @keydown.space.prevent="router.push('/inspection/history')">
             <div class="qs-icon qs-icon-blue">
               <el-icon><DataAnalysis /></el-icon>
             </div>
             <div class="qs-content">
               <div class="qs-value">{{ formatNumber(totalDetections) }}</div>
-              <div class="qs-label">检测总量</div>
+              <div class="qs-label">累计完成任务（含部分失败）</div>
             </div>
           </div>
-          <div class="quick-stat-item" @click="router.push('/devices')">
+          <div class="quick-stat-item" role="link" tabindex="0" @click="router.push('/devices')" @keydown.enter="router.push('/devices')" @keydown.space.prevent="router.push('/devices')">
             <div class="qs-icon qs-icon-green">
               <el-icon><Monitor /></el-icon>
             </div>
             <div class="qs-content">
-              <div class="qs-value">{{ deviceStatus.online }}/{{ totalDevices }}</div>
-              <div class="qs-label">设备在线</div>
+              <div class="qs-value">{{ formatNumber(deviceStatus.inUse) }}/{{ formatNumber(totalDevices) }}</div>
+              <div class="qs-label">使用中 / 登记设备</div>
             </div>
           </div>
-          <div class="quick-stat-item" @click="router.push('/employees')">
+          <div class="quick-stat-item" role="link" tabindex="0" @click="router.push('/employees')" @keydown.enter="router.push('/employees')" @keydown.space.prevent="router.push('/employees')">
             <div class="qs-icon qs-icon-amber">
               <el-icon><User /></el-icon>
             </div>
             <div class="qs-content">
-              <div class="qs-value">{{ employeeStatus.active }}/{{ totalEmployees }}</div>
+              <div class="qs-value">{{ formatNumber(employeeStatus.active) }}/{{ formatNumber(totalEmployees) }}</div>
               <div class="qs-label">人员在岗</div>
             </div>
           </div>
-          <div class="quick-stat-item">
+          <div class="quick-stat-item" role="link" tabindex="0" @click="router.push('/employees')" @keydown.enter="router.push('/employees')" @keydown.space.prevent="router.push('/employees')">
             <div class="qs-icon qs-icon-red">
-              <el-icon><Warning /></el-icon>
+              <el-icon><User /></el-icon>
             </div>
             <div class="qs-content">
-              <div class="qs-value">{{ formatPercent(avgMissRate) }}</div>
-              <div class="qs-label">平均漏检率</div>
+              <div class="qs-value">{{ formatNumber(totalEmployees) }}</div>
+              <div class="qs-label">登记人员总数</div>
             </div>
           </div>
         </div>
@@ -260,11 +273,11 @@
           <div class="panel-header">
             <div>
               <h3 class="app-panel-title">地区图片采集量</h3>
-              <p class="app-panel-subtitle">各城市采集的图片数量和任务数统计</p>
+              <p class="app-panel-subtitle">当前账号可访问的累计完成任务（含部分失败），按登记地区分组</p>
             </div>
           </div>
         </template>
-        <div ref="regionChartRef" class="chart"></div>
+        <div ref="regionChartRef" class="chart" role="img" aria-label="登记地区的累计任务图片数与任务数"></div>
       </el-card>
 
       <!-- 检测结果分布 (右半) -->
@@ -273,11 +286,12 @@
           <div class="panel-header">
             <div>
               <h3 class="app-panel-title">检测结果分布</h3>
-              <p class="app-panel-subtitle">正常、弯曲、形变、锈蚀、缺失、结构损伤六类结果占比</p>
+              <p class="app-panel-subtitle">当前账号可访问的累计完成任务（含部分失败），六类检测目标占比</p>
             </div>
           </div>
         </template>
-        <div ref="detectionDistributionChartRef" class="chart"></div>
+        <div ref="detectionDistributionChartRef" class="chart" role="img" aria-label="六类检测目标累计分布，不代表人工复核结果"></div>
+        <p class="dashboard-data-note">按检测目标计数，非图片数或人工复核结论。</p>
       </el-card>
 
       <!-- 设备状态分布 -->
@@ -286,11 +300,11 @@
           <div class="panel-header">
             <div>
               <h3 class="app-panel-title">设备状态分布</h3>
-              <p class="app-panel-subtitle">在线、离线、维护与未使用状态汇总</p>
+              <p class="app-panel-subtitle">全部登记设备的当前状态：使用中、离线、维护与未使用</p>
             </div>
           </div>
         </template>
-        <div ref="deviceStatusChartRef" class="chart"></div>
+        <div ref="deviceStatusChartRef" class="chart" role="img" aria-label="登记设备的当前状态分布"></div>
       </el-card>
 
       <!-- 人员状态分布 -->
@@ -299,11 +313,11 @@
           <div class="panel-header">
             <div>
               <h3 class="app-panel-title">人员状态分布</h3>
-              <p class="app-panel-subtitle">在岗、休假、离职状态一目了然</p>
+              <p class="app-panel-subtitle">全部登记人员的当前状态：在岗、休假与离职</p>
             </div>
           </div>
         </template>
-        <div ref="employeeStatusChartRef" class="chart"></div>
+        <div ref="employeeStatusChartRef" class="chart" role="img" aria-label="登记人员的当前状态分布"></div>
       </el-card>
 
       <!-- 设备类型概览 -->
@@ -317,7 +331,7 @@
           </div>
         </template>
         <div class="summary-list">
-          <div v-for="item in topDevices" :key="item.label" class="summary-item interactive" @click="router.push('/devices')">
+          <div v-for="item in topDevices" :key="item.label" class="summary-item interactive" role="link" tabindex="0" @click="router.push('/devices')" @keydown.enter="router.push('/devices')" @keydown.space.prevent="router.push('/devices')">
             <div class="sm-left">
               <div class="sm-icon" :class="item.label.includes('采集') ? 'sm-icon-cyan' : 'sm-icon-indigo'">
                 <el-icon><Monitor /></el-icon>
@@ -329,10 +343,10 @@
               </div>
             </div>
             <div class="sm-value-block">
-              <div class="summary-value">{{ item.value }} <small>台</small></div>
-              <div class="sm-bar-track">
+              <div class="summary-value">{{ formatNumber(item.value) }} <small>台</small></div>
+              <div v-if="ratio(item.value, totalDevices) !== null" class="sm-bar-track" aria-hidden="true">
                 <div class="sm-bar-fill" :class="item.label.includes('采集') ? 'sm-bar-cyan' : 'sm-bar-indigo'"
-                  :style="{ width: totalDevices ? (item.value / totalDevices * 100) + '%' : '0%' }"></div>
+                  :style="{ width: ratio(item.value, totalDevices) + '%' }"></div>
               </div>
             </div>
             <el-icon class="sm-arrow"><ArrowRight /></el-icon>
@@ -351,7 +365,7 @@
           </div>
         </template>
         <div class="summary-list summary-list-horizontal">
-          <div v-for="(item, idx) in employeeTypeItems" :key="item.label" class="summary-item interactive" @click="router.push('/employees')">
+          <div v-for="(item, idx) in employeeTypeItems" :key="item.label" class="summary-item interactive" role="link" tabindex="0" @click="router.push('/employees')" @keydown.enter="router.push('/employees')" @keydown.space.prevent="router.push('/employees')">
             <div class="sm-left">
               <div class="sm-icon" :class="['sm-icon-green', 'sm-icon-blue', 'sm-icon-amber'][idx]">
                 <el-icon><User /></el-icon>
@@ -362,10 +376,10 @@
               </div>
             </div>
             <div class="sm-value-block">
-              <div class="summary-value">{{ item.value }} <small>人</small></div>
-              <div class="sm-bar-track">
+              <div class="summary-value">{{ formatNumber(item.value) }} <small>人</small></div>
+              <div v-if="ratio(item.value, totalEmployees) !== null" class="sm-bar-track" aria-hidden="true">
                 <div class="sm-bar-fill" :class="['sm-bar-green', 'sm-bar-blue', 'sm-bar-amber'][idx]"
-                  :style="{ width: totalEmployees ? (item.value / totalEmployees * 100) + '%' : '0%' }"></div>
+                  :style="{ width: ratio(item.value, totalEmployees) + '%' }"></div>
               </div>
             </div>
             <el-icon class="sm-arrow"><ArrowRight /></el-icon>
@@ -379,11 +393,13 @@
           <div class="panel-header">
             <div>
               <h3 class="app-panel-title">模型使用统计</h3>
-              <p class="app-panel-subtitle">各检测模型的使用次数、检测图片数和平均漏检率</p>
+              <p class="app-panel-subtitle">当前账号可访问的累计完成任务（含部分失败），按检测模型汇总</p>
             </div>
           </div>
         </template>
-        <div class="model-stats-grid">
+        <CollectionEmptyState v-if="!modelStats.length" :loading="modelStatsLoading" :error="failedSections.includes('模型') ? '模型使用统计暂不可读取，请重新读取。' : ''" empty-title="暂无模型使用记录" empty-description="完成检测任务后，在这里查看模型的累计使用情况。" @retry="fetchModelStats" />
+        <p v-else-if="failedSections.includes('模型')" class="dashboard-data-note" role="status">本次读取失败，保留上次模型统计，请刷新核对。</p>
+        <div v-if="modelStats.length" class="model-stats-grid">
           <div v-for="item in modelStats" :key="item.modelId" class="model-stat-card">
             <div class="model-stat-header">
               <div class="model-stat-icon">
@@ -394,24 +410,23 @@
             <div class="model-stat-metrics">
               <div class="model-metric">
                 <span class="model-metric-label">使用次数</span>
-                <span class="model-metric-value">{{ item.taskCount }} <small>次</small></span>
+                <span class="model-metric-value">{{ formatNumber(item.taskCount) }} <small>次</small></span>
               </div>
               <div class="model-metric">
                 <span class="model-metric-label">检测图片</span>
                 <span class="model-metric-value">{{ formatNumber(item.totalImages) }} <small>张</small></span>
               </div>
-              <div class="model-metric">
-                <span class="model-metric-label">平均漏检率</span>
-                <span class="model-metric-value" :class="item.avgMissRate > 5 ? 'text-danger' : 'text-success'">
-                  {{ item.avgMissRate.toFixed(2) }}%
-                </span>
-              </div>
             </div>
-            <div class="model-stat-bar">
+            <div v-if="getModelUsagePercent(item.taskCount) !== null" class="model-stat-bar" aria-hidden="true">
               <div class="model-stat-bar-fill" :style="{ width: getModelUsagePercent(item.taskCount) + '%' }"></div>
             </div>
           </div>
         </div>
+        <details class="dashboard-source-note">
+          <summary><AppIcon name="Warning" :size="15" />漏检率统计口径待核对</summary>
+          <p>历史任务的漏检率字段存在不同算法和单位，且接口可能将缺失值返回为零。这里保留原始字段供核对，不换算百分比，也不作为质量指标；人工结论请查看质检记录。</p>
+          <dl><dt>总览原始均值</dt><dd>{{ rawStatistic(avgMissRate) }}</dd><template v-for="item in modelStats" :key="item.modelId"><dt>{{ item.modelName }}</dt><dd>{{ rawStatistic(item.avgMissRate) }}</dd></template></dl>
+        </details>
       </el-card>
     </section>
     </template>
@@ -421,20 +436,44 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
+import { useUserStore } from '../stores/user'
 import {beijingDateTime} from '@/utils/beijingTime'
+import { knownCount } from '@/utils/countPresentation'
+import CollectionEmptyState from '@/components/CollectionEmptyState.vue'
 import * as echarts from 'echarts'
 import {
-  User, Monitor, Warning, Search, Setting,
+  User, Monitor, Search, Setting,
   DataAnalysis, Refresh, WarningFilled, UserFilled, ArrowRight
 } from '@element-plus/icons-vue'
 import request from '../api/request'
 import { getWorkUnitSummary, getDuplicateSummary } from '../api/dashboard'
 
 const router = useRouter()
+const userStore = useUserStore()
 
 const pageLoading = ref(true)
 const workUnitSummary = ref(null)
 const duplicateSummary = ref(null)
+const qualityWorkload = ref(null)
+const qualityMetrics = [
+  { key:'pendingReviewCount',label:'待复核',queue:'PENDING_REVIEW',icon:'Search',tone:'primary' },
+  { key:'pendingDispositionCount',label:'待处置',queue:'PENDING_DISPOSITION',icon:'CircleCheck',tone:'warning' },
+  { key:'reworkRequiredCount',label:'待返工',queue:'REWORK_REQUIRED',icon:'Edit',tone:'warning' },
+  { key:'recheckRequiredCount',label:'需复检',queue:'RECHECK_REQUIRED',icon:'Refresh',tone:'warning' },
+  { key:'holdCount',label:'暂挂',queue:'HOLD',icon:'Clock',tone:'warning' },
+  { key:'failedCount',label:'检测异常',queue:'FAILED',icon:'Warning',tone:'danger' }
+]
+
+async function fetchQualityWorkload() {
+  try {
+    const response = await dashboardRequest('质量待办', '/api/dashboard/quality-workload')
+    const counts = response.data?.data
+    if (!counts || qualityMetrics.some(metric => !Number.isSafeInteger(counts[metric.key]) || counts[metric.key] < 0)) throw new Error('质量待办统计不完整')
+    if (!disposed) qualityWorkload.value = Object.fromEntries(qualityMetrics.map(metric => [metric.key, counts[metric.key]]))
+  } catch {
+    if (!disposed && !failedSections.value.includes('质量待办')) failedSections.value.push('质量待办')
+  }
+}
 
 async function fetchDuplicateSummary() {
   try {
@@ -477,20 +516,29 @@ async function dashboardRequest(section, url, config) {
   }
 }
 
-const totalDetections = ref(0)
-const totalEmployees = ref(0)
-const totalDevices = ref(0)
-const avgMissRate = ref(0)
+function markSectionFailed(section) {
+  if (!failedSections.value.includes(section)) failedSections.value.push(section)
+}
+
+const totalDetections = ref(null)
+const totalEmployees = ref(null)
+const totalDevices = ref(null)
+const avgMissRate = ref(null)
 const detectionTimeRange = ref('month')
 const modelStats = ref([])
+const modelStatsLoading = ref(false)
+const trendLoading = ref(false)
+const trendScopeLabel = computed(() => ({ week: '近 7 天，按日', month: '近 12 个月，按月', year: '全部年份，按年' })[detectionTimeRange.value])
+let trendRequestGeneration = 0
+let renderedTrendRange = null
 
 const deviceStatus = reactive({
-  online: 0, offline: 0, maintenance: 0, unused: 0
+  inUse: null, offline: null, maintenance: null, unused: null
 })
 
 const employeeStatus = reactive({
-  active: 0, vacation: 0, resigned: 0,
-  detection: 0, collection: 0, maintenance: 0
+  active: null, vacation: null, resigned: null,
+  detection: null, collection: null, maintenance: null
 })
 
 const detectionTrendChartRef = ref(null)
@@ -507,6 +555,14 @@ const charts = reactive({
   region: null
 })
 
+const chartMotionPreference = window.matchMedia('(prefers-reduced-motion: reduce)')
+function chartMotionOptions() {
+  return { animation: !chartMotionPreference.matches, animationDuration: 200, animationDurationUpdate: 200 }
+}
+function updateChartMotion() {
+  Object.values(charts).forEach(chart => chart && chart.setOption(chartMotionOptions()))
+}
+
 const DETECTION_CATEGORY_LABELS = {
   Normal: '正常', Bent: '弯曲', Deformed: '形变',
   Rusty: '锈蚀', Missing: '缺失', Compromised: '结构损伤'
@@ -514,26 +570,15 @@ const DETECTION_CATEGORY_LABELS = {
 
 // ── 计算属性 ──
 
-const onlineRate = computed(() => {
-  if (!totalDevices.value) return '0.0'
-  return ((deviceStatus.online / totalDevices.value) * 100).toFixed(1)
-})
-
-const employeeActiveRate = computed(() => {
-  if (!totalEmployees.value) return '0.0'
-  return ((employeeStatus.active / totalEmployees.value) * 100).toFixed(1)
-})
-
-const maintenanceRate = computed(() => {
-  if (!totalDevices.value) return '0.0'
-  return ((deviceStatus.maintenance / totalDevices.value) * 100).toFixed(1)
-})
+const inUseRate = computed(() => ratio(deviceStatus.inUse, totalDevices.value))
+const employeeActiveRate = computed(() => ratio(employeeStatus.active, totalEmployees.value))
+const maintenanceRate = computed(() => ratio(deviceStatus.maintenance, totalDevices.value))
 
 const deviceTypeStats = reactive({
-  imageCapture: 0,
-  imageCaptureInUse: 0,
-  detection: 0,
-  detectionInUse: 0
+  imageCapture: null,
+  imageCaptureInUse: null,
+  detection: null,
+  detectionInUse: null
 })
 
 const topDevices = computed(() => [
@@ -541,13 +586,13 @@ const topDevices = computed(() => [
     label: '图片采集设备',
     value: deviceTypeStats.imageCapture,
     desc: '负责图像采集与上传',
-    meta: `使用中 ${deviceTypeStats.imageCaptureInUse} 台`
+    meta: `使用中 ${formatNumber(deviceTypeStats.imageCaptureInUse)} 台`
   },
   {
     label: '图像检测设备',
     value: deviceTypeStats.detection,
     desc: '负责执行图像检测任务',
-    meta: `使用中 ${deviceTypeStats.detectionInUse} 台`
+    meta: `使用中 ${formatNumber(deviceTypeStats.detectionInUse)} 台`
   }
 ])
 
@@ -562,6 +607,7 @@ const employeeTypeItems = computed(() => [
 watch(detectionTimeRange, () => updateDetectionTrendChart())
 
 onMounted(async () => {
+  chartMotionPreference.addEventListener('change', updateChartMotion)
   await refreshAll()
   if (disposed) return
   await initCharts()
@@ -573,6 +619,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   disposed = true
+  chartMotionPreference.removeEventListener('change', updateChartMotion)
   window.clearInterval(refreshTimer)
   window.removeEventListener('resize', resizeCharts)
   Object.values(charts).forEach(c => c && c.dispose())
@@ -584,9 +631,9 @@ async function refreshAll() {
   if (refreshing.value || disposed) return
   refreshing.value = true
   try {
-    await Promise.all([fetchDashboardStats(), fetchDeviceData(), fetchEmployeeData(), fetchModelStats(), fetchWorkUnitSummary(), fetchDuplicateSummary()])
+    await Promise.all([fetchDashboardStats(), fetchDeviceData(), fetchEmployeeData(), fetchModelStats(), fetchWorkUnitSummary(), fetchDuplicateSummary(), fetchQualityWorkload()])
     if (!disposed) await updateChartData()
-    if (!failedSections.value.length && charts.region) lastUpdated.value = beijingDateTime()
+    if (!failedSections.value.length && !trendLoading.value && charts.region) lastUpdated.value = beijingDateTime()
   } finally {
     pageLoading.value = false
     refreshing.value = false
@@ -602,7 +649,7 @@ async function initCharts() {
     charts.employeeStatus = echarts.init(employeeStatusChartRef.value)
     charts.region = echarts.init(regionChartRef.value)
   await updateChartData()
-  if (!failedSections.value.length) lastUpdated.value = beijingDateTime()
+  if (!failedSections.value.length && !trendLoading.value) lastUpdated.value = beijingDateTime()
 }
 
 async function updateChartData() {
@@ -615,10 +662,10 @@ async function fetchDashboardStats() {
   try {
     const res = await dashboardRequest('总览', '/api/dashboard/stats')
     const s = res.data?.data || {}
-    totalDetections.value = Number(s.detectionCount || 0)
-    totalEmployees.value = Number(s.employeeCount || 0)
-    totalDevices.value = Number(s.deviceCount || 0)
-    avgMissRate.value = Number(s.avgMissRate || 0)
+    if (disposed) return
+    totalDetections.value = knownCount(s.detectionCount)
+    avgMissRate.value = s.avgMissRate
+    if (totalDetections.value === null) markSectionFailed('总览')
   } catch { /* 保留旧值，统一显示失败提示。 */ }
 }
 
@@ -626,15 +673,17 @@ async function fetchDeviceData() {
   try {
     const res = await dashboardRequest('设备', '/api/devices/stats')
     const stats = res.data?.data || {}
-    deviceStatus.online = Number(stats.inUse || 0)
-    deviceStatus.offline = Number(stats.offline || 0)
-    deviceStatus.maintenance = Number(stats.maintenance || 0)
-    deviceStatus.unused = Number(stats.idle || 0)
-    totalDevices.value = Number(stats.total || 0)
-    deviceTypeStats.imageCapture = Number(stats.imageCapture || 0)
-    deviceTypeStats.imageCaptureInUse = Number(stats.imageCaptureInUse || 0)
-    deviceTypeStats.detection = Number(stats.detection || 0)
-    deviceTypeStats.detectionInUse = Number(stats.detectionInUse || 0)
+    if (disposed) return
+    deviceStatus.inUse = knownCount(stats.inUse)
+    deviceStatus.offline = knownCount(stats.offline)
+    deviceStatus.maintenance = knownCount(stats.maintenance)
+    deviceStatus.unused = knownCount(stats.idle)
+    totalDevices.value = knownCount(stats.total)
+    deviceTypeStats.imageCapture = knownCount(stats.imageCapture)
+    deviceTypeStats.imageCaptureInUse = knownCount(stats.imageCaptureInUse)
+    deviceTypeStats.detection = knownCount(stats.detection)
+    deviceTypeStats.detectionInUse = knownCount(stats.detectionInUse)
+    if ([totalDevices.value, ...Object.values(deviceStatus), ...Object.values(deviceTypeStats)].some(value => value === null)) markSectionFailed('设备')
   } catch { /* 保留旧值。 */ }
 }
 
@@ -642,21 +691,28 @@ async function fetchEmployeeData() {
   try {
     const res = await dashboardRequest('人员', '/api/employees/stats')
     const stats = res.data?.data || {}
-    employeeStatus.active = Number(stats.active || 0)
-    employeeStatus.vacation = Number(stats.vacation || 0)
-    employeeStatus.resigned = Number(stats.resigned || 0)
-    employeeStatus.detection = Number(stats.detection || 0)
-    employeeStatus.collection = Number(stats.collection || 0)
-    employeeStatus.maintenance = Number(stats.maintenance || 0)
-    totalEmployees.value = Number(stats.total || 0)
+    if (disposed) return
+    employeeStatus.active = knownCount(stats.active)
+    employeeStatus.vacation = knownCount(stats.vacation)
+    employeeStatus.resigned = knownCount(stats.resigned)
+    employeeStatus.detection = knownCount(stats.detection)
+    employeeStatus.collection = knownCount(stats.collection)
+    employeeStatus.maintenance = knownCount(stats.maintenance)
+    totalEmployees.value = knownCount(stats.total)
+    if ([totalEmployees.value, ...Object.values(employeeStatus)].some(value => value === null)) markSectionFailed('人员')
   } catch { /* 保留旧值。 */ }
 }
 
 async function fetchModelStats() {
+  if (modelStatsLoading.value || disposed) return
+  modelStatsLoading.value = true
   try {
     const res = await dashboardRequest('模型', '/api/dashboard/model-stats')
-    modelStats.value = res.data?.data || []
-  } catch { /* 保留旧值。 */ }
+    if (disposed) return
+    if (!Array.isArray(res.data?.data) || res.data.data.some(item => !item || typeof item !== 'object')) throw new Error('模型统计格式异常')
+    modelStats.value = res.data.data
+  } catch { if (!disposed) markSectionFailed('模型') }
+  finally { if (!disposed) modelStatsLoading.value = false }
 }
 
 // ── 图表更新 ──
@@ -669,17 +725,28 @@ const CHART_COLORS = {
 
 async function updateDetectionTrendChart() {
   if (!charts.detectionTrend) return
+  const generation = ++trendRequestGeneration
+  const timeRange = detectionTimeRange.value
+  trendLoading.value = true
+  // Clear the previous range immediately so it cannot appear under a new range label.
+  if (renderedTrendRange !== timeRange) charts.detectionTrend.setOption(buildEmptyOption('正在读取所选范围…'), true)
   try {
-    const res = await dashboardRequest('检测趋势', '/api/statistics/detection-trend', { params: { timeRange: detectionTimeRange.value } })
-    if (disposed) return
+    const res = await request.get('/api/statistics/detection-trend', { params: { timeRange } })
+    if (disposed || generation !== trendRequestGeneration) return
+    if (res.data?.code !== 200 || !Array.isArray(res.data?.data)) throw new Error('趋势统计格式异常')
+    failedSections.value = failedSections.value.filter(item => item !== '检测趋势')
     charts.detectionTrend.clear()
+    renderedTrendRange = timeRange
     const data = res.data?.data || []
     if (!data.length) { charts.detectionTrend.setOption(buildEmptyOption('暂无趋势数据')); return }
+    const countKeys = ['total', 'normal', 'bent', 'deformed', 'rusty', 'missing', 'compromised']
+    if (data.some(item => !item || countKeys.some(key => knownCount(item[key]) === null))) throw new Error('趋势统计字段不完整')
 
     const labels = data.map(i => i.date)
-    const pick = (k) => data.map(i => Number(i[k] || 0))
+    const pick = (k) => data.map(i => knownCount(i[k]))
 
     charts.detectionTrend.setOption({
+      ...chartMotionOptions(),
       color: [CHART_COLORS.blue, CHART_COLORS.green, CHART_COLORS.amber, CHART_COLORS.violet, CHART_COLORS.red, CHART_COLORS.purple, CHART_COLORS.cyan],
       tooltip: {
         trigger: 'axis',
@@ -695,14 +762,17 @@ async function updateDetectionTrendChart() {
         axisLine: { lineStyle: { color: '#e2e8f0' } },
         axisLabel: { color: '#94a3b8', fontSize: 11 }
       },
-      yAxis: {
-        type: 'value',
+      yAxis: [{
+        type: 'value', name: '图片数', minInterval: 1,
         splitLine: { lineStyle: { color: '#f1f5f9' } },
         axisLabel: { color: '#94a3b8', fontSize: 11 }
-      },
+      }, {
+        type: 'value', name: '目标数', minInterval: 1,
+        splitLine: { show: false }, axisLabel: { color: '#94a3b8', fontSize: 11 }
+      }],
       series: [
         {
-          name: '检测总量', type: 'line', smooth: true, symbolSize: 6,
+          name: '任务图片数', type: 'line', smooth: true, symbolSize: 6,
           lineStyle: { width: 3 }, symbol: 'circle',
           areaStyle: { color: new echarts.graphic.LinearGradient(0,0,0,1, [
             { offset: 0, color: 'rgba(37,99,235,0.18)' },
@@ -710,15 +780,23 @@ async function updateDetectionTrendChart() {
           ])},
           data: pick('total')
         },
-        { name: '正常', type: 'bar', stack: 'result', barMaxWidth: 14, itemStyle: { borderRadius: [4,4,0,0] }, data: pick('normal') },
-        { name: '弯曲', type: 'bar', stack: 'result', barMaxWidth: 14, data: pick('bent') },
-        { name: '形变', type: 'bar', stack: 'result', barMaxWidth: 14, data: pick('deformed') },
-        { name: '锈蚀', type: 'bar', stack: 'result', barMaxWidth: 14, data: pick('rusty') },
-        { name: '缺失', type: 'bar', stack: 'result', barMaxWidth: 14, data: pick('missing') },
-        { name: '结构损伤', type: 'bar', stack: 'result', barMaxWidth: 14, data: pick('compromised') }
+        { name: '正常', type: 'bar', yAxisIndex: 1, stack: 'result', barMaxWidth: 14, itemStyle: { borderRadius: [4,4,0,0] }, data: pick('normal') },
+        { name: '弯曲', type: 'bar', yAxisIndex: 1, stack: 'result', barMaxWidth: 14, data: pick('bent') },
+        { name: '形变', type: 'bar', yAxisIndex: 1, stack: 'result', barMaxWidth: 14, data: pick('deformed') },
+        { name: '锈蚀', type: 'bar', yAxisIndex: 1, stack: 'result', barMaxWidth: 14, data: pick('rusty') },
+        { name: '缺失', type: 'bar', yAxisIndex: 1, stack: 'result', barMaxWidth: 14, data: pick('missing') },
+        { name: '结构损伤', type: 'bar', yAxisIndex: 1, stack: 'result', barMaxWidth: 14, data: pick('compromised') }
       ]
     })
-  } catch { if (!disposed) charts.detectionTrend.setOption(buildEmptyOption('趋势加载失败，请重试'), true) }
+  } catch {
+    if (!disposed && generation === trendRequestGeneration) {
+      markSectionFailed('检测趋势')
+      renderedTrendRange = null
+      charts.detectionTrend.setOption(buildEmptyOption('趋势加载失败，请刷新重试'), true)
+    }
+  } finally {
+    if (!disposed && generation === trendRequestGeneration) trendLoading.value = false
+  }
 }
 
 async function updateDetectionDistributionChart() {
@@ -727,16 +805,20 @@ async function updateDetectionDistributionChart() {
     const res = await dashboardRequest('检测分布', '/api/statistics/detection-distribution')
     if (disposed) return
     charts.detectionDistribution.clear()
-    const resultMap = { 正常: 0, 弯曲: 0, 形变: 0, 锈蚀: 0, 缺失: 0, 结构损伤: 0 }
-    const data = res.data?.data || []
+    const resultMap = { 正常: null, 弯曲: null, 形变: null, 锈蚀: null, 缺失: null, 结构损伤: null }
+    const data = res.data?.data
+    if (!Array.isArray(data)) throw new Error('分布统计格式异常')
     if (!data.length) { charts.detectionDistribution.setOption(buildEmptyOption('暂无分布数据')); return }
+    if (data.every(item => item?.count == null)) { charts.detectionDistribution.setOption(buildEmptyOption('尚无已记录的分类统计')); return }
     data.forEach(item => {
       const label = DETECTION_CATEGORY_LABELS[item.result] || item.result
-      if (resultMap[label] !== undefined) resultMap[label] = Number(item.count || 0)
+      if (Object.hasOwn(resultMap, label)) resultMap[label] = knownCount(item.count)
     })
+    if (Object.values(resultMap).some(v => v === null)) throw new Error('分布统计字段不完整')
     if (Object.values(resultMap).every(v => v === 0)) { charts.detectionDistribution.setOption(buildEmptyOption('暂无分布数据')); return }
 
     charts.detectionDistribution.setOption({
+      ...chartMotionOptions(),
       color: [CHART_COLORS.green, CHART_COLORS.amber, CHART_COLORS.violet, CHART_COLORS.red, CHART_COLORS.purple, CHART_COLORS.cyan],
       tooltip: { trigger: 'item', backgroundColor: '#fff', borderColor: '#e2e8f0', textStyle: { color: '#0f172a' } },
       legend: { bottom: 0, textStyle: { color: '#5f728c', fontSize: 12 } },
@@ -755,12 +837,23 @@ async function updateDetectionDistributionChart() {
         ]
       }]
     })
-  } catch { if (!disposed) charts.detectionDistribution.setOption(buildEmptyOption('分布加载失败，请重试'), true) }
+  } catch { if (!disposed) { markSectionFailed('检测分布'); charts.detectionDistribution.setOption(buildEmptyOption('分布加载失败，请刷新重试'), true) } }
 }
 
 function updateDeviceStatusChart() {
   if (!charts.deviceStatus) return
+  charts.deviceStatus.clear()
+  const counts = Object.values(deviceStatus)
+  if (counts.some(value => value === null)) {
+    charts.deviceStatus.setOption(buildEmptyOption('设备状态统计尚未完整读取'), true)
+    return
+  }
+  if (counts.every(value => value === 0)) {
+    charts.deviceStatus.setOption(buildEmptyOption('暂无已登记的设备状态'), true)
+    return
+  }
   charts.deviceStatus.setOption({
+    ...chartMotionOptions(),
     color: [CHART_COLORS.blue, CHART_COLORS.slate, CHART_COLORS.amber, CHART_COLORS.pale],
     tooltip: { trigger: 'item', backgroundColor: '#fff', borderColor: '#e2e8f0', textStyle: { color: '#0f172a' } },
     legend: { bottom: 0, textStyle: { color: '#5f728c', fontSize: 12 } },
@@ -770,7 +863,7 @@ function updateDeviceStatusChart() {
       itemStyle: { borderRadius: 12, borderColor: '#fff', borderWidth: 3 },
       emphasis: { scaleSize: 8 },
       data: [
-        { name: '在线', value: deviceStatus.online },
+        { name: '使用中', value: deviceStatus.inUse },
         { name: '离线', value: deviceStatus.offline },
         { name: '维护中', value: deviceStatus.maintenance },
         { name: '未使用', value: deviceStatus.unused }
@@ -781,7 +874,18 @@ function updateDeviceStatusChart() {
 
 function updateEmployeeStatusChart() {
   if (!charts.employeeStatus) return
+  charts.employeeStatus.clear()
+  const counts = [employeeStatus.active, employeeStatus.vacation, employeeStatus.resigned]
+  if (counts.some(value => value === null)) {
+    charts.employeeStatus.setOption(buildEmptyOption('人员状态统计尚未完整读取'), true)
+    return
+  }
+  if (counts.every(value => value === 0)) {
+    charts.employeeStatus.setOption(buildEmptyOption('暂无已登记的人员状态'), true)
+    return
+  }
   charts.employeeStatus.setOption({
+    ...chartMotionOptions(),
     color: [CHART_COLORS.green, CHART_COLORS.amber, CHART_COLORS.slate],
     tooltip: { trigger: 'item', backgroundColor: '#fff', borderColor: '#e2e8f0', textStyle: { color: '#0f172a' } },
     legend: { bottom: 0, textStyle: { color: '#5f728c', fontSize: 12 } },
@@ -805,14 +909,17 @@ async function updateRegionChart() {
     const res = await dashboardRequest('地区采集', '/api/dashboard/region-stats')
     if (disposed) return
     charts.region.clear()
-    const data = res.data?.data || []
+    const data = res.data?.data
+    if (!Array.isArray(data)) throw new Error('地区统计格式异常')
     if (!data.length) { charts.region.setOption(buildEmptyOption('暂无地区数据')); return }
 
     const regions = data.map(i => i.region)
-    const imageCounts = data.map(i => i.imageCount)
-    const taskCounts = data.map(i => i.taskCount)
+    const imageCounts = data.map(i => knownCount(i.imageCount))
+    const taskCounts = data.map(i => knownCount(i.taskCount))
+    if ([...imageCounts, ...taskCounts].some(value => value === null)) throw new Error('地区统计字段不完整')
 
     charts.region.setOption({
+      ...chartMotionOptions(),
       color: [CHART_COLORS.cyan, CHART_COLORS.blue],
       tooltip: {
         trigger: 'axis',
@@ -858,11 +965,12 @@ async function updateRegionChart() {
         }
       ]
     })
-  } catch { if (!disposed) charts.region.setOption(buildEmptyOption('地区数据加载失败，请重试'), true) }
+  } catch { if (!disposed) { markSectionFailed('地区采集'); charts.region.setOption(buildEmptyOption('地区数据加载失败，请刷新重试'), true) } }
 }
 
 function buildEmptyOption(text) {
   return {
+    ...chartMotionOptions(),
     title: {
       text, left: 'center', top: 'center',
       textStyle: { color: '#94a3b8', fontSize: 14, fontWeight: 500 }
@@ -874,20 +982,27 @@ function buildEmptyOption(text) {
 
 function resizeCharts() { Object.values(charts).forEach(c => c && c.resize()) }
 
-function resetDeviceStatus() {
-  deviceStatus.online = deviceStatus.offline = deviceStatus.maintenance = deviceStatus.unused = 0
-  deviceTypeStats.imageCapture = deviceTypeStats.imageCaptureInUse = 0
-  deviceTypeStats.detection = deviceTypeStats.detectionInUse = 0
-}
-function resetEmployeeStatus() { employeeStatus.active = employeeStatus.vacation = employeeStatus.resigned = employeeStatus.detection = employeeStatus.collection = employeeStatus.maintenance = 0 }
+function formatNumber(value) { return knownCount(value)?.toLocaleString('zh-CN') ?? '—' }
 
-function formatNumber(v) { return Number(v || 0).toLocaleString('zh-CN') }
-function formatPercent(v) { return `${Number(v || 0).toFixed(2)}%` }
+function ratio(numerator, denominator) {
+  const count = knownCount(numerator)
+  const total = knownCount(denominator)
+  if (count === null || total === null || total === 0 || count > total) return null
+  return (count / total * 100).toFixed(1)
+}
+
+function rawStatistic(value) {
+  if (typeof value !== 'number' && typeof value !== 'string') return '未知'
+  if (typeof value === 'string' && !value.trim()) return '未知'
+  const number = Number(value)
+  return Number.isFinite(number) && number >= 0 ? `${number}（原始值，单位未统一）` : '未知'
+}
 
 function getModelUsagePercent(taskCount) {
-  if (!modelStats.value.length) return 0
-  const maxCount = Math.max(...modelStats.value.map(m => m.taskCount))
-  return maxCount ? (taskCount / maxCount * 100) : 0
+  if (!modelStats.value.length) return null
+  const counts = modelStats.value.map(model => knownCount(model.taskCount))
+  if (counts.some(value => value === null)) return null
+  return ratio(taskCount, Math.max(...counts))
 }
 </script>
 
@@ -917,9 +1032,7 @@ function getModelUsagePercent(taskCount) {
 .hero-panel {
   position: relative;
   overflow: hidden;
-  background:
-    radial-gradient(ellipse at 80% 0%, rgba(37,99,235,0.10), transparent 42%),
-    linear-gradient(135deg, rgba(255,255,255,0.96), rgba(239,246,255,0.94));
+  background: var(--app-surface);
 }
 
 /* Hero Badge */
@@ -966,23 +1079,14 @@ function getModelUsagePercent(taskCount) {
   overflow: hidden;
   padding: 18px;
   border-radius: 14px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(248, 250, 252, 0.90));
+  background: var(--app-surface);
   border: 1px solid rgba(37, 99, 235, 0.10);
-  transition: all var(--app-transition-fast);
+  transition: border-color var(--app-transition-fast), background-color var(--app-transition-fast), box-shadow var(--app-transition-fast), transform var(--app-transition-fast);
   box-shadow: var(--app-shadow-xs);
 }
 
 .highlight-card::after {
-  content: "";
-  position: absolute;
-  right: -28px;
-  top: -28px;
-  width: 84px;
-  height: 84px;
-  border-radius: 999px;
-  background: var(--app-primary-soft);
-  opacity: 0.72;
+  content: none;
 }
 
 .highlight-card:hover {
@@ -1054,10 +1158,9 @@ function getModelUsagePercent(taskCount) {
   gap: 14px;
   padding: 14px 16px;
   border-radius: 14px;
-  background:
-    linear-gradient(135deg, rgba(255, 255, 255, 0.88), rgba(248, 250, 252, 0.82));
+  background: var(--app-surface);
   border: 1px solid rgba(15, 23, 42, 0.05);
-  transition: all var(--app-transition-fast);
+  transition: border-color var(--app-transition-fast), background-color var(--app-transition-fast), box-shadow var(--app-transition-fast), transform var(--app-transition-fast);
 }
 .status-item.interactive {
   cursor: pointer;
@@ -1078,7 +1181,7 @@ function getModelUsagePercent(taskCount) {
   color: var(--app-text-muted);
   opacity: 0;
   transform: translateX(-4px);
-  transition: all var(--app-transition-fast);
+  transition: opacity var(--app-transition-fast), transform var(--app-transition-fast);
 }
 
 .si-indicator {
@@ -1126,7 +1229,7 @@ function getModelUsagePercent(taskCount) {
   height: 100%;
   border-radius: 2px;
   background: var(--app-success);
-  transition: width 0.6s var(--app-ease-spring);
+  transition: width var(--app-transition-base);
 }
 .si-bar-warn { background: var(--app-warning); }
 .si-bar-blue { background: var(--app-primary); }
@@ -1184,7 +1287,7 @@ function getModelUsagePercent(taskCount) {
   border-radius: 14px;
   background: var(--app-surface-muted);
   border: 1px solid transparent;
-  transition: all var(--app-transition-fast);
+  transition: border-color var(--app-transition-fast), background-color var(--app-transition-fast), box-shadow var(--app-transition-fast);
 }
 
 .model-stat-card:hover {
@@ -1259,8 +1362,8 @@ function getModelUsagePercent(taskCount) {
 .model-stat-bar-fill {
   height: 100%;
   border-radius: 3px;
-  background: linear-gradient(90deg, var(--app-primary), var(--app-primary-light));
-  transition: width 0.6s var(--app-ease-spring);
+  background: var(--app-primary);
+  transition: width var(--app-transition-base);
 }
 
 /* ── 快速状态 ── */
@@ -1278,10 +1381,10 @@ function getModelUsagePercent(taskCount) {
   gap: 14px;
   padding: 16px;
   border-radius: 14px;
-  background: linear-gradient(135deg, #fff, #f8fbff);
+  background: var(--app-surface);
   border: 1px solid rgba(37, 99, 235, 0.08);
   cursor: pointer;
-  transition: all var(--app-transition-fast);
+  transition: border-color var(--app-transition-fast), background-color var(--app-transition-fast), box-shadow var(--app-transition-fast), transform var(--app-transition-fast);
 }
 
 .quick-stat-item:hover {
@@ -1333,7 +1436,7 @@ function getModelUsagePercent(taskCount) {
   border-radius: 14px;
   background: var(--app-surface-muted);
   border: 1px solid transparent;
-  transition: all var(--app-transition-fast);
+  transition: border-color var(--app-transition-fast), background-color var(--app-transition-fast), transform var(--app-transition-fast);
 }
 .summary-item.interactive {
   cursor: pointer;
@@ -1352,7 +1455,7 @@ function getModelUsagePercent(taskCount) {
   color: var(--app-text-muted);
   opacity: 0;
   transform: translateX(-4px);
-  transition: all var(--app-transition-fast);
+  transition: opacity var(--app-transition-fast), transform var(--app-transition-fast);
 }
 
 .sm-left {
@@ -1423,7 +1526,7 @@ function getModelUsagePercent(taskCount) {
 .sm-bar-fill {
   height: 100%;
   border-radius: 2px;
-  transition: width 0.6s var(--app-ease-spring);
+  transition: width var(--app-transition-base);
 }
 .sm-bar-cyan   { background: #0891b2; }
 .sm-bar-indigo { background: #4f46e5; }
@@ -1463,6 +1566,13 @@ function getModelUsagePercent(taskCount) {
   .hl-value { font-size: 26px; }
 }
 .dashboard-refresh-note { margin-bottom: 16px; font-size: 11px; color: var(--app-text-muted); }
+.dashboard-data-note { margin: 0; color: var(--app-text-secondary); font-size: 12px; line-height: 1.75; overflow-wrap: anywhere; }
+.dashboard-source-note { margin-top: 20px; padding-top: 14px; border-top: 1px solid var(--app-border); color: var(--app-text-secondary); font-size: 12px; line-height: 1.8; }
+.dashboard-source-note summary { width: fit-content; max-width: 100%; cursor: pointer; color: var(--app-warning); font-weight: 550; }
+.dashboard-source-note summary .app-icon { margin-right: 5px; vertical-align: middle; }
+.dashboard-source-note p { max-width: 80ch; }
+.dashboard-source-note dl { display: grid; grid-template-columns: minmax(100px, 1fr) minmax(0, 2fr); gap: 8px 16px; max-width: 600px; }
+.dashboard-source-note :is(dt, dd) { margin: 0; overflow-wrap: anywhere; }
 .workflow-summaries { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin: 20px 0; }
 .workflow-summary { padding: 20px; min-width: 0; }
 .workflow-summary h3 { font-size: 14px; margin: 0 0 6px; }

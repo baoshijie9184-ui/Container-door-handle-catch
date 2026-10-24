@@ -25,6 +25,21 @@
 .queue-preference{margin:6px 0;color:#708096;line-height:1.6}.queue-preference button{color:#245cc6;padding:2px 6px;margin-left:6px}
 .queue-row-enter-active,.queue-row-leave-active,.queue-row-move{transition:opacity .16s ease,transform .16s ease}
 .queue-row-enter-from,.queue-row-leave-to{opacity:0;transform:translateY(4px)}
+.queue-count { margin:6px 3px 3px; color:var(--app-text-muted); font-size:11px; line-height:1.7; }
+.control-receipt { display:flex; align-items:center; flex-wrap:wrap; gap:7px; }
+.control-receipt > small { font-size:11px; color:var(--app-text-muted); }
+.control-edit-note { margin:0 0 14px; color:var(--app-text-secondary); font-size:12px; line-height:1.8; }
+.queue-edit-dialog.el-dialog { display:flex; flex-direction:column; max-height:90vh; max-height:90dvh; margin-top:5vh; margin-bottom:5vh; }
+.queue-edit-dialog .el-dialog__body,.queue-edit-modal .ant-modal-body { min-height:0; max-height:65vh; max-height:65dvh; overflow:auto; overscroll-behavior:contain; }
+.queue-edit-dialog :is(.el-dialog__header,.el-dialog__footer),.queue-edit-modal :is(.ant-modal-header,.ant-modal-footer) { flex-shrink:0; }
+.queue-edit-dialog .el-dialog__footer,.queue-edit-modal .ant-modal-footer { display:flex; align-items:center; justify-content:flex-end; flex-wrap:wrap; gap:8px; }
+.queue-edit-dialog .el-dialog__footer .el-button + .el-button,.queue-edit-modal .ant-modal-footer .ant-btn + .ant-btn { margin-inline-start:0; }
+.queue-edit-modal .ant-modal { top:5vh; padding-bottom:0; }
+.queue-edit-modal .ant-modal-content { display:flex; flex-direction:column; max-height:90vh; max-height:90dvh; }
+:is(.queue-edit-dialog,.queue-edit-modal) :is(.el-dialog__title,.ant-modal-title) { display:block; padding-right:28px; font-size:16px; line-height:1.8; overflow-wrap:anywhere; }
+:is(.queue-edit-dialog,.queue-edit-modal) .control-error { padding:10px 12px; border-radius:7px; background:var(--app-danger-soft); color:var(--app-danger); font-size:12px; line-height:1.85; overflow-wrap:anywhere; }
+:is(.queue-edit-dialog,.queue-edit-modal) .control-error[role=status] { background:var(--app-warning-soft); color:var(--app-warning); }
+.conversation-control-bar .business-status { font-weight:500; }
 @keyframes conversation-arrive{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
 @media(max-width:540px){.conversation-controls{margin:6px 10px 0;padding:8px}.conversation-delivery>span{flex-basis:100%}.conversation-queue li{gap:4px;min-height:44px;padding:4px 6px}.conversation-queue .queue-icon-button{width:32px;min-height:34px}}
 @media(prefers-reduced-motion:reduce){.conversation-controls,.conversation-queue li{animation:none}.conversation-queue button,.queue-preference button,.queue-row-enter-active,.queue-row-leave-active,.queue-row-move{transition:none}}

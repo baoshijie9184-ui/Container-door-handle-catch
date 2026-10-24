@@ -1,0 +1,2 @@
+/* Keep the existing import entry; both frontends share the reconciliation presentation. */
+@import '../../frontend/src/assets/detection-creation-review.css';

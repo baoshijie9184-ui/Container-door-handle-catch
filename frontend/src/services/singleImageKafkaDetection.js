@@ -1,4 +1,6 @@
 import request from '../api/request'
+import { beijingDateTime } from '../utils/beijingTime'
+import { readAccountPreference } from '../utils/accountPreferences'
 
 const POLL_INTERVAL_MS = 1500
 const POLL_TIMEOUT_MS = 120000
@@ -13,9 +15,9 @@ const requireSuccess = (response, fallbackMessage) => {
 }
 
 const buildCaptureInfo = (file) => ({
-  captureDate: new Date().toISOString().slice(0, 10),
+  captureDate: beijingDateTime(new Date()).slice(0, 10),
   region: '单图检测',
-  collector: localStorage.getItem('username') || 'web-user',
+  collector: readAccountPreference('username').value || 'web-user',
   deviceName: 'WEB-SINGLE-UPLOAD',
   imageFolderName: `single-${file.name}`
 })
@@ -25,7 +27,7 @@ const toOssProxyUrl = (putUrl) => {
   return `/oss-upload${url.pathname}${url.search}`
 }
 
-const mapCompletedResult = (taskId, result) => {
+const mapCompletedResult = (taskId, result, status) => {
   const summary = result.statistics?.singleImageResult
   const preview = result.previewImages?.[0]
   const confidenceMissing = summary?.confidence === null || summary?.confidence === undefined
@@ -34,6 +36,7 @@ const mapCompletedResult = (taskId, result) => {
   }
   return {
     taskId,
+    status,
     category: summary.category,
     confidence: Number(summary.confidence),
     annotatedImagePath: preview.annotatedUrl,
@@ -56,18 +59,19 @@ export const detectSingleImageViaKafka = async ({ file, modelId, threshold, onSt
     }]
   })
   const task = requireSuccess(createResponse, '创建单图 Kafka 任务失败')
+  if (typeof task?.taskId === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(task.taskId)) onStatus?.({taskId:task.taskId,stage:'CREATING',message:'任务已登记，正在核对上传资料'})
   const upload = task?.uploadUrls?.[0]
   if (!task?.taskId || !upload?.putUrl || !upload?.objectKey) {
     throw new Error('创建单图 Kafka 任务失败：上传信息不完整')
   }
 
-  onStatus?.({ taskId: task.taskId, stage: 'UPLOADING', message: '正在上传原图到 OSS' })
+  onStatus?.({ taskId: task.taskId, stage: 'UPLOADING', message: '正在上传原图' })
   await request.put(toOssProxyUrl(upload.putUrl), file, {
     headers: { 'Content-Type': file.type || 'application/octet-stream' },
     timeout: 30000
   })
 
-  onStatus?.({ taskId: task.taskId, stage: 'QUEUED', message: '原图已上传，正在提交 Kafka' })
+  onStatus?.({ taskId: task.taskId, stage: 'QUEUED', message: '原图已上传，正在提交检测' })
   const uploadedResponse = await request.post(`/api/detection/tasks/${task.taskId}/uploaded`, {
     modelId: modelId || null,
     threshold,
@@ -85,12 +89,14 @@ export const detectSingleImageViaKafka = async ({ file, modelId, threshold, onSt
       message: progress.message || ''
     })
     if (progress.status === 'FAILED') {
-      throw new Error(`${progress.errorMessage || progress.message || 'Kafka 远程检测失败'}，任务编号：${task.taskId}`)
+      const failure = new Error(`${progress.errorMessage || progress.message || '远程检测失败'}，任务编号：${task.taskId}`)
+      failure.taskFailed = true
+      throw failure
     }
     if (progress.status === 'COMPLETED' || progress.status === 'PARTIAL_FAILED') {
       const resultResponse = await request.get(`/api/detection/tasks/${task.taskId}/result`)
       const result = requireSuccess(resultResponse, '获取 Kafka 远程检测结果失败') || {}
-      return mapCompletedResult(task.taskId, result)
+      return mapCompletedResult(task.taskId, result, progress.status)
     }
     await wait(POLL_INTERVAL_MS)
   }

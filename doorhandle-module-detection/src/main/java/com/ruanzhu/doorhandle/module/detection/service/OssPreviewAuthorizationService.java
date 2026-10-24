@@ -40,7 +40,7 @@ public class OssPreviewAuthorizationService {
                 .like(DetectionTask::getPreviewImageKeysJson, key));
 
         DetectionTask referencedTask = detectionTaskMapper.selectList(query).stream()
-                .filter(task -> accessPolicy.canAccess(task, authentication.getName(), accessPolicy.isAdmin(authentication)))
+                .filter(task -> accessPolicy.canAccess(task, authentication))
                 .filter(task -> references(task, key))
                 .findFirst()
                 .orElseThrow(this::denied);

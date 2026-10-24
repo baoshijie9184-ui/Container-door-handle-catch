@@ -1,3 +1,6 @@
+import { beijingDateTime } from './beijingTime'
+import { knownCount } from './countPresentation'
+
 const taskTools = new Set(['get_task_detail', 'get_my_detection_tasks', 'search_detection_tasks', 'get_my_quality_records', 'get_quality_records'])
 const metricTools = new Set(['get_my_work_metrics', 'get_department_work_metrics'])
 const reportTools = new Set(['list_quality_reports', 'get_quality_report', 'create_report_draft', 'edit_report_draft'])
@@ -58,7 +61,7 @@ function operationCode(item, field, value, labels) {
   return typeof value === 'string' && Object.hasOwn(labels, value) ? labels[value] : '需核对'
 }
 const operationText = value => typeof value === 'string' && value.trim() ? value : '未记录'
-const operationDate = value => typeof value === 'string' && value ? value.replace('T', ' ').slice(0, 19) : '未记录'
+const operationDate = value => value ? beijingDateTime(value) || '时间格式未知' : '未记录'
 export function modelOperationMetrics(item) {
   return [['precisionScore', 'Precision'], ['recallScore', 'Recall'], ['mapScore', 'mAP'], ['f1Score', 'F1']].map(([field, label]) => ({
     label, value: operationNumber(item, field, item?.evaluation?.[field], 1, value => (value * 100).toLocaleString('zh-CN', { maximumFractionDigits: 4 }) + '%'),
@@ -76,8 +79,8 @@ export function modelOperationDetails(item) {
     { label: 'A/B 分组', value: operationText(rollout.abGroup) },
     { label: '回滚来源模型', value: operationNumber(item, 'rollbackFromModelId', rollout.rollbackFromModelId, 2147483647, value => '#' + value, true, 1) },
     { label: '登记使用次数', value: operationNumber(item, 'usageCount', usage.count, 2147483647, String, true) },
-    { label: '最近登记使用', value: operationDate(usage.lastUsedAt) },
-    { label: '登记发布时间', value: operationDate(usage.publishedAt) },
+    { label: '最近登记使用 · UTC+8', value: operationDate(usage.lastUsedAt) },
+    { label: '登记发布时间 · UTC+8', value: operationDate(usage.publishedAt) },
   ]
 }
 const alertStatusLabels = { OPEN: '待处理', ACKNOWLEDGED: '已确认', RESOLVED: '已解决' }
@@ -93,3 +96,39 @@ export const deviceStatus = status => Object.hasOwn(deviceStatusLabels, status) 
 export const cardScope = scope => scope === 'SINGLE_ENTERPRISE' ? '全企业' : scope === 'OWNED_OR_ASSIGNED' ? '本人及分派任务' : ''
 export const reportStatus = status => ({ DRAFT: '私人草稿', SUBMITTED: '待审批', APPROVED: '已审批', REJECTED: '已驳回', WITHDRAWN: '已撤回' }[status] || '状态未知')
 export const metricLabels = { taskCount: '任务数', imageCount: '图片数', processedImageCount: '已处理图片', defectCount: '缺陷数量' }
+
+export const cardIcon = card => ({ TASKS:'Tickets', METRICS:'DataAnalysis', REPORTS:'DocumentChecked', DEVICES:'Monitor', DEVICE_ALERTS:'Warning', MODELS:'Collection', MODEL_OPERATIONS:'DataAnalysis' })[card?.type] || 'Document'
+export const cardCount = value => knownCount(value)?.toLocaleString('zh-CN') ?? '—'
+export const cardVersion = value => knownCount(value)?.toLocaleString('zh-CN', {useGrouping:false}) ?? '未记录'
+export const cardEmptyText = card => card.status === 'UNAVAILABLE' ? '当前数据不可读取，请刷新核对' : card.status === 'PARTIAL' ? '部分资料不可读取或已无权访问，不表示没有业务记录' : '本次引用没有可展示记录，不代表全部业务为空'
+
+const object = value => !!value && typeof value === 'object' && !Array.isArray(value)
+const textFields = (value, fields) => fields.every(key => value[key] == null || typeof value[key] === 'string')
+const modelFields = value => object(value) && validResourceId(String(value.modelId), 'MODELS') && textFields(value, ['name','version','status'])
+function cardItemId(item, type) {
+  if (!object(item)) return ''
+  if (type === 'TASKS') return typeof item.taskId === 'string' && taskId.test(item.taskId) && textFields(item,['status','reviewStatus','deviceName']) ? item.taskId : ''
+  if (type === 'REPORTS') return typeof item.reportId === 'string' && reportId.test(item.reportId) && textFields(item,['title','status','taskId']) ? item.reportId : ''
+  if (type === 'DEVICES') return validResourceId(item.deviceId,type) && textFields(item,['deviceCode','status','onlineStatus','plcStatus','cameraStatus','captureStatus']) ? item.deviceId : ''
+  if (type === 'DEVICE_ALERTS') return validResourceId(item.alertId,type) && textFields(item,['alertCode','deviceId','deviceCode','type','level','status','createdAt','updatedAt']) ? item.alertId : ''
+  if (type === 'MODELS') return modelFields(item) ? String(item.modelId) : ''
+  if (type === 'MODEL_OPERATIONS') return modelFields(item.model) ? String(item.model.modelId) : ''
+  return ''
+}
+// The existing resolver returns one read-only view per controlled reference, in order.
+// Reject malformed or mismatched views instead of rendering a partial DTO as an empty success.
+export function readResolvedAgentCards(value, references) {
+  const fail = () => { throw new Error('业务卡片返回内容不完整，请刷新核对') }
+  if (!Array.isArray(references) || references.length > 8 || !references.every(validCardReference) || !object(value) || !Array.isArray(value.cards) || value.cards.length !== references.length) fail()
+  return value.cards.map((card,index) => {
+    const reference = references[index]
+    if (!object(card) || card.type !== reference.type || card.tool !== reference.tool || !['OK','PARTIAL','UNAVAILABLE'].includes(card.status) || !Array.isArray(card.items) || !object(card.metrics) || !textFields(card,['from','to','scope','message','updatedAt'])) fail()
+    if (card.type === 'METRICS') { if (card.items.length) fail() }
+    else {
+      if (card.items.length > reference.ids.length) fail()
+      const ids = card.items.map(item => cardItemId(item, card.type))
+      if (ids.some(id => !id || !reference.ids.includes(id)) || new Set(ids).size !== ids.length) fail()
+    }
+    return card
+  })
+}

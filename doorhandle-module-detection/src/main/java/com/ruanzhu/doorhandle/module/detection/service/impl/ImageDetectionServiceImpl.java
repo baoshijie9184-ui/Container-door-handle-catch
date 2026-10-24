@@ -39,9 +39,14 @@ import java.util.UUID;
 import java.util.stream.Stream;
 
 @Service
+@org.springframework.transaction.annotation.Transactional
 @RequiredArgsConstructor
 @Slf4j
 public class ImageDetectionServiceImpl implements ImageDetectionService {
+    private com.ruanzhu.doorhandle.module.detection.service.DetectionIdentityService identities;
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    public void setIdentities(com.ruanzhu.doorhandle.module.detection.service.DetectionIdentityService value){identities=value;}
+
 
     private final ModelInfoMapper modelInfoMapper;
     private final DetectionTaskMapper detectionTaskMapper;
@@ -128,6 +133,7 @@ public class ImageDetectionServiceImpl implements ImageDetectionService {
         task.setCreatedAt(LocalDateTime.now());
         task.setUpdatedAt(LocalDateTime.now());
         detectionTaskMapper.insert(task);
+        if(identities!=null)identities.recordCreation(task);
         if (modelInfo.getModelId() != null) {
             modelService.incrementUsageStats(modelInfo.getModelId(), LocalDateTime.now());
         }
@@ -259,6 +265,7 @@ public class ImageDetectionServiceImpl implements ImageDetectionService {
             task.setFinishedAt(LocalDateTime.now());
             task.setUpdatedAt(LocalDateTime.now());
             detectionTaskMapper.insert(task);
+        if(identities!=null)identities.recordCreation(task);
             if (modelInfo.getModelId() != null) {
                 modelService.incrementUsageStats(modelInfo.getModelId(), LocalDateTime.now());
             }

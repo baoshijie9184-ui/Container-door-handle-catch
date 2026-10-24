@@ -49,6 +49,7 @@ public class AccountIdentityService {
                 .eq(OrganizationBindingAudit::getUserId, userId).orderByDesc(OrganizationBindingAudit::getId).last("LIMIT 50"));
     }
     @Transactional(rollbackFor = Exception.class)
+    @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="ORGANIZATION",action="bind",resource="arg1",version="result.bindingVersion",supervisorOnly=true)
     public AccountIdentity bind(TenantPrincipal principal, Long userId, Long employeeId, Integer expectedVersion) {
         assertSupervisor(principal);
         if (userId == null || userId < 1 || (employeeId != null && employeeId < 1) || expectedVersion == null || expectedVersion < 0)

@@ -8,6 +8,42 @@ test('model choice is persisted through a versioned server command with stable r
  const {ComposerResources}=await mod;let fail=true;const posts=[];const client=new ComposerResources({fetcher:async(path,opts)=>{if(opts.method){posts.push(JSON.parse(opts.body));if(fail){fail=false;throw Error('network')}return response({modelId:'deepseek:demo',revision:1})}return fixture(path)}});
  await client.open('mine');assert.equal(client.state.models.length,1);await assert.rejects(client.select('deepseek:demo'));assert.equal(client.state.modelId,'');await client.select('deepseek:demo');assert.equal(posts[0].requestId,posts[1].requestId);assert.equal(posts[1].revision,0);assert.equal(client.state.modelId,'deepseek:demo');
 });
+
+test('model labels distinguish provider routes and show the actual default without changing selection',async()=>{
+ const {ComposerResources,modelLabel,defaultModelLabel,selectedModelMissing}=await mod;
+ const client=new ComposerResources({fetcher:async(path)=>path==='/agui/models'?response({selectedModel:'dashscope:flash',fallbackEnabled:true,models:[{id:'dashscope:flash',provider:'dashscope',model:'flash',configured:true},{id:'deepseek:flash',provider:'deepseek',model:'flash',configured:true}]}):fixture(path)});
+ await client.open('mine');assert.equal(client.state.modelId,'');assert.equal(defaultModelLabel(client.state),'系统默认 · flash · 百炼');assert.equal(client.state.fallbackEnabled,true);assert.equal(modelLabel(client.state.models[1]),'flash · DeepSeek 直连');assert.equal(selectedModelMissing({...client.state,modelId:'removed'}),true);
+});
+
+test('stale selection can be reconciled read-only without losing the draft or replaying a write',async()=>{
+ const {ComposerResources}=await mod;let selection={modelId:'',revision:0};let writes=0;
+ const client=new ComposerResources({fetcher:async(path,options)=>{if(options.method){writes++;selection={modelId:'deepseek:demo',revision:2};return response({},409)}return path.endsWith('/model-selection')?response(selection):fixture(path)}});
+ await client.open('mine');client.draft('保留未发送的问题');client.publish({files:[{id:fid,name:'private.md',bytes:4}]});await assert.rejects(client.select('deepseek:demo'));
+ assert.equal(client.state.modelError,true);assert.equal(client.state.modelId,'');await client.refreshModels();assert.equal(writes,1);assert.equal(client.state.modelId,'deepseek:demo');assert.equal(client.state.revision,2);assert.equal(client.state.modelError,false);assert.equal(client.text,'保留未发送的问题');assert.equal(client.state.files[0].id,fid);assert.equal(client.pending.size,0);
+});
+
+test('an uncertain switch is read back, and returning to system default persists with the current revision',async()=>{
+ const {ComposerResources}=await mod;let selection={modelId:'',revision:0},lost=true;const writes=[];
+ const client=new ComposerResources({fetcher:async(path,options)=>{if(options.method){const body=JSON.parse(options.body);writes.push(body);assert.equal(body.revision,selection.revision);selection={modelId:body.modelId,revision:selection.revision+1};if(lost){lost=false;throw Error('connection closed after commit')}return response(selection)}return path.endsWith('/model-selection')?response(selection):fixture(path)}});
+ await client.open('mine');await assert.rejects(client.select('deepseek:demo'));assert.equal(writes.length,1);await client.refreshModels();assert.equal(writes.length,1);assert.equal(client.state.modelId,'deepseek:demo');await client.select('');assert.equal(writes[1].revision,1);assert.equal(client.state.modelId,'');assert.match(client.state.modelNotice,/当前会话/);await client.open('mine');assert.equal(client.state.revision,2);assert.equal(client.state.modelNotice,'');
+});
+
+test('a late selection readback cannot overwrite another conversation',async()=>{
+ const {ComposerResources}=await mod;let release,hold=false;
+ const client=new ComposerResources({fetcher:async(path)=>hold&&path.includes('/old/model-selection')?new Promise(resolve=>{release=()=>resolve(response({modelId:'deepseek:demo',revision:3}))}):fixture(path)});
+ await client.open('old');hold=true;const readback=client.refreshModels();while(!release)await new Promise(resolve=>setImmediate(resolve));await client.open('new');release();await readback;assert.equal(client.state.modelId,'');assert.equal(client.state.revision,0);assert.equal(client.state.busy,false);assert.equal(client.state.modelNotice,'');
+});
+
+test('catalog failure is visible and read-only recovery leaves typed text intact',async()=>{
+ const {ComposerResources}=await mod;let down=true;
+ const client=new ComposerResources({fetcher:async(path)=>path==='/agui/models'&&down?response({},503):fixture(path)});
+ await client.open('mine');client.draft('继续编辑');assert.equal(client.state.ready,false);assert.equal(client.state.modelError,true);down=false;await client.refreshModels();assert.equal(client.state.ready,true);assert.equal(client.text,'继续编辑');
+});
+
+test('malformed selection receipts do not replace the last confirmed model or revision',async()=>{
+ const {ComposerResources}=await mod;const client=new ComposerResources({fetcher:async(path,options)=>options.method?response({modelId:123,revision:-1}):fixture(path)});
+ await client.open('mine');await assert.rejects(client.select('deepseek:demo'),/响应无效/);assert.equal(client.state.modelId,'');assert.equal(client.state.revision,0);assert.equal(client.state.modelError,true);assert.equal(client.pending.size,1);
+});
 test('attachment is a private server ID and uncertain upload keeps its request ID',async()=>{
  const {ComposerResources}=await mod;let fail=true;const ids=[];const client=new ComposerResources({fetcher:async(path,opts)=>{if(opts.method){ids.push(opts.body.get('requestId'));assert.equal(opts.headers['X-Agent-Action'],'workbench');if(fail){fail=false;throw Error('network')}return response({id:fid,name:'private.md',bytes:4})}return fixture(path)}});
  await client.open('mine');const file=new File(['test'],'private.md',{type:'text/markdown'});await assert.rejects(client.upload([file]));assert.equal(client.state.files.length,0);await client.upload([file]);assert.equal(ids[0],ids[1]);assert.equal(client.content('读取附件'),'读取附件\n@file:'+fid);assert.equal(client.content('@file:'+fid),'@file:'+fid);client.remove(fid);assert.equal(client.content(''),'');

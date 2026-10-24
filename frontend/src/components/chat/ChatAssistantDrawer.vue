@@ -11,6 +11,15 @@
       <div
         v-if="!isMobile && !fullScreen"
         class="resize-handle"
+        role="separator"
+        tabindex="0"
+        aria-label="调整助手面板宽度"
+        aria-orientation="vertical"
+        :aria-valuemin="MIN_WIDTH"
+        :aria-valuemax="maxPanelWidth"
+        :aria-valuenow="clampPanelWidth(panelWidth)"
+        :aria-valuetext="`${clampPanelWidth(panelWidth)} 像素，左右方向键调整，Home 最窄，End 最宽`"
+        @keydown="resizeWithKeyboard"
         @mousedown.prevent="startResize"
         @touchstart.prevent="startResizeTouch"
       >
@@ -50,21 +59,18 @@
               <a class="chat-header-btn" :href="'#/agent/trace?sessionId='+encodeURIComponent(chatStore.sessionId || '')" title="查看执行追溯" aria-label="查看执行追溯" @click="chatStore.close()">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="5" cy="6" r="2"/><circle cx="19" cy="6" r="2"/><circle cx="12" cy="18" r="2"/><path d="M7 6h10M5 8v2a3 3 0 0 0 3 3h4m7-5v2a3 3 0 0 1-3 3h-4v3"/></svg>
               </a>
-              <a class="chat-header-btn" href="#/agent/memory" title="个人记忆" @click="chatStore.close()">
+              <a class="chat-header-btn" href="#/agent/memory" title="个人记忆" aria-label="个人记忆" @click="chatStore.close()">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h6a3 3 0 0 1 3 3v14a4 4 0 0 0-4-2H4zM20 4h-4a3 3 0 0 0-3 3v14a4 4 0 0 1 4-2h3z"/></svg>
               </a>
-              <button class="chat-header-btn diagnose-btn" @click="openDiagnostics" :disabled="chatStore.diagnosticsLoading" title="Agent诊断">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-                  <path d="M22 12h-4l-3 7-6-14-3 7H2"/>
-                  <path d="M17 4h4v4"/>
-                </svg>
+              <button type="button" class="chat-header-btn diagnose-btn" @click="openDiagnostics" :disabled="chatStore.diagnosticsLoading || !chatStore.sessionId" title="助手诊断" aria-label="查看助手诊断">
+                <AppIcon name="DataAnalysis" :size="15" />
               </button>
-              <button class="chat-header-btn" @click="handleRetry" :disabled="chatStore.loading" title="重试最后一条消息">
+              <button type="button" class="chat-header-btn" @click="handleRetry" :disabled="chatStore.loading" title="重试最后一条消息" aria-label="重试最后一条消息">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                   <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
                 </svg>
               </button>
-              <button class="chat-header-btn" @click="handleClear" :disabled="chatStore.loading" title="清空对话">
+              <button type="button" class="chat-header-btn" @click="handleClear" :disabled="chatStore.loading" title="清空对话" aria-label="清空对话">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                   <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
                 </svg>
@@ -78,7 +84,7 @@
           </header>
 
           <!-- 消息区 -->
-          <div class="chat-body" ref="chatBodyRef">
+          <div class="chat-body" ref="chatBodyRef" @scroll.passive="handleTranscriptScroll">
             <ChatMessageList
               ref="messageListRef"
               :messages="controlledMessages"
@@ -91,6 +97,10 @@
             <AgentActionList v-if="chatStore.sessionId" :session-id="chatStore.sessionId" :refresh-key="chatStore.loading ? 'running' : chatStore.messages.at(-1)?.id || ''" />
           </div>
 
+          <div v-if="!followTranscript && controlledMessages.length" class="transcript-return">
+            <button type="button" @click="returnToLatest"><AppIcon name="ArrowDown" :size="16" />回到最新消息</button>
+          </div>
+
           <ChatQuestionNavigator
             v-if="!controlState.enabled"
             :questions="questionItems"
@@ -100,86 +110,15 @@
           />
 
           <!-- 输入区 -->
-           <ChatComposer ref="composerRef" :loading="chatStore.loading" :session-id="chatStore.sessionId" :run="controlState.run" :model-locked="!!controlState.run&&controlState.run.phase!=='IDLE'" @send="handleSend" @stop="conversationControlsRef?.cancel()"><template #queue><ConversationControls v-if="chatStore.sessionId" ref="conversationControlsRef" :session-id="chatStore.sessionId" @snapshot="controlState=$event" @refresh="chatStore.refreshControlHistory"><template #navigation><ChatQuestionNavigator inline :questions="questionItems" :active-key="activeQuestionKey" :reset-key="`${chatStore.sessionId}-${chatStore.visible}`" @locate="handleLocateQuestion" /></template></ConversationControls></template></ChatComposer>
+           <ChatComposer ref="composerRef" :show-presets="chatStore.messages.length > 0" :loading="chatStore.loading" :session-id="chatStore.sessionId" :run="controlState.run" :model-locked="!!controlState.run&&controlState.run.phase!=='IDLE'" @send="handleSend" @stop="conversationControlsRef?.cancel()"><template #queue><ConversationControls v-if="chatStore.sessionId" ref="conversationControlsRef" :session-id="chatStore.sessionId" @snapshot="controlState=$event" @refresh="chatStore.refreshControlHistory"><template #navigation><ChatQuestionNavigator inline :questions="questionItems" :active-key="activeQuestionKey" :reset-key="`${chatStore.sessionId}-${chatStore.visible}`" @locate="handleLocateQuestion" /></template></ConversationControls></template></ChatComposer>
         </div>
         <button v-if="fullScreen&&contextOpen&&!contextDocked" class="context-scrim" type="button" aria-label="收起工作面板遮罩" @click="closeContext"></button>
         <Transition name="workspace-context">
-          <AgentWorkspacePanel v-if="fullScreen&&contextOpen" id="chat-workspace-context" :class="{ 'context-floating': !contextDocked }" :title="chatStore.sessionTitle" :session-id="chatStore.sessionId" :messages="chatStore.messages" @reference="composerRef?.appendReference($event)" :trace="chatStore.executionTrace" :loading="chatStore.diagnosticsLoading" @close="closeContext" @refresh="chatStore.loadDiagnostics" />
+          <AgentWorkspacePanel v-if="fullScreen&&contextOpen" id="chat-workspace-context" :class="{ 'context-floating': !contextDocked }" :title="chatStore.sessionTitle" :session-id="chatStore.sessionId" :messages="chatStore.messages" @reference="composerRef?.appendReference($event)" :trace="chatStore.executionTrace" :loading="chatStore.diagnosticsLoading" :trace-loaded="chatStore.diagnosticsLoaded.trace" :trace-error="chatStore.diagnosticsErrors.trace" @close="closeContext" @refresh="chatStore.loadDiagnostics" />
         </Transition>
       </div>
 
-      <div v-if="diagnosticsVisible" class="diagnostics-mask" @click.self="diagnosticsVisible = false">
-        <aside class="diagnostics-panel" v-loading="chatStore.diagnosticsLoading">
-          <header class="diagnostics-head">
-            <div>
-              <p>Agent Diagnostics</p>
-              <h4>智能体运行诊断</h4>
-            </div>
-            <button class="chat-header-close" @click="diagnosticsVisible = false" title="关闭诊断">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-              </svg>
-            </button>
-          </header>
-
-          <section class="health-card">
-            <div class="health-status" :class="['READ_ONLY', 'CONFIRMABLE', 'DRAFTS'].includes(chatStore.agentHealth?.mode) ? 'status-healthy' : 'status-unknown'">
-              <span class="health-dot"></span>
-              <strong>{{ chatStore.agentHealth?.framework || 'AgentScope' }}</strong>
-              <small>{{ chatStore.agentHealth?.reportDraftsEnabled ? '业务查询 · 本人报告草稿 · 审批需页面确认' : chatStore.agentHealth?.mode === 'CONFIRMABLE' ? '业务查询 · 主管分配需人工确认' : chatStore.agentHealth?.mode === 'READ_ONLY' ? '员工与主管角色助手 · 只读查询' : chatStore.agentHealth?.mode === 'DISABLED' ? '助手尚未启用' : '运行状态暂不可用' }}</small>
-            </div>
-            <div class="diagnostic-grid">
-              <div>
-                <span>{{ chatStore.agentHealth?.defaultModel || '暂无' }}</span>
-                <small>默认模型</small>
-              </div>
-              <div>
-                <span>{{ chatStore.executionTrace?.status || '暂无' }}</span>
-                <small>最近执行状态</small>
-              </div>
-              <div>
-                <span>{{ chatStore.executionTrace?.events?.length || 0 }}</span>
-                <small>记录事件</small>
-              </div>
-              <div>
-                <span>{{ chatStore.executionTrace?.events?.at(-1)?.elapsedMs ?? '暂无' }}</span>
-                <small>最近事件时间 ms</small>
-              </div>
-            </div>
-          </section>
-
-          <section class="checkpoint-card">
-            <div class="checkpoint-title">
-              <span>最近一次 AgentScope 执行</span>
-              <button @click="chatStore.loadDiagnostics">刷新</button>
-            </div>
-            <dl>
-              <div>
-                <dt>运行编号</dt>
-                <dd>{{ chatStore.executionTrace?.runId || '暂无' }}</dd>
-              </div>
-              <div>
-                <dt>框架</dt>
-                <dd>{{ chatStore.executionTrace?.framework || 'AgentScope' }}</dd>
-              </div>
-              <div>
-                <dt>状态</dt>
-                <dd>{{ chatStore.executionTrace?.status || '暂无执行记录' }}</dd>
-              </div>
-              <div>
-                <dt>更新时间</dt>
-                <dd>{{ chatStore.executionTrace?.updatedAt || '暂无' }}</dd>
-              </div>
-            </dl>
-            <p class="guard-reason">
-              仅展示服务器记录的事件，历史对话不会补造调用节点或耗时
-            </p>
-            <div v-if="routeTrace.length" class="route-trace">
-              <span v-for="route in routeTrace" :key="route">{{ route }}</span>
-            </div>
-          </section>
-        </aside>
-      </div>
+      <AgentDiagnostics v-model="diagnosticsVisible" :session-id="chatStore.sessionId" :health="chatStore.agentHealth" :health-loaded="chatStore.diagnosticsLoaded.health" :health-error="chatStore.diagnosticsErrors.health" :trace="chatStore.executionTrace" :trace-loaded="chatStore.diagnosticsLoaded.trace" :trace-error="chatStore.diagnosticsErrors.trace" :loading="chatStore.diagnosticsLoading" @refresh="chatStore.loadDiagnostics" @navigate="chatStore.close()" />
     </div>
   </component>
 </template>
@@ -195,6 +134,7 @@ import AgentActionList from './AgentActionList.vue'
 import ChatQuestionNavigator from './ChatQuestionNavigator.vue'
 import ChatSidebar from './ChatSidebar.vue'
 import AgentWorkspacePanel from './AgentWorkspacePanel.vue'
+import AgentDiagnostics from './AgentDiagnostics.vue'
 import { Operation } from '@element-plus/icons-vue'
 import { buildQuestionItems } from '@/utils/chatMessageNavigation'
 
@@ -206,9 +146,10 @@ const chatStore = useChatAssistantStore()
 const conversationControlsRef=ref(null),composerRef=ref(null),controlState=ref({enabled:false,run:null})
 const controlledMessages=computed(()=>controlState.value.run?.text&&controlState.value.run.phase!=='IDLE'?[...chatStore.messages,{role:'assistant',content:controlState.value.run.text,messageType:'TEXT',streaming:true}]:chatStore.messages)
 const chatBodyRef = ref(null)
+const followTranscript = ref(true)
 const messageListRef = ref(null)
 const activeQuestionKey = ref('')
-const resizeTooltip = ref('拖拽调整面板宽度')
+const resizeTooltip = '拖拽或使用左右方向键调整面板宽度'
 const diagnosticsVisible = ref(false)
 const workspaceRef=ref(null),contextToggleRef=ref(null),contextOpen=ref(false),workspaceWidth=ref(0)
 const contextDocked=computed(()=>workspaceWidth.value>=1000)
@@ -223,18 +164,19 @@ const contextKey=event=>{
   if(contextOpen.value&&!diagnosticsVisible.value)closeContext()
 }
 watch(contextOpen,async open=>{if(open){await nextTick();workspaceRef.value?.querySelector('#chat-workspace-context button')?.focus()}})
-const routeTrace = computed(() => {
-  const trace = chatStore.executionTrace?.events
-  return Array.isArray(trace) ? trace.slice(-8).map(event => `${event.type} · ${event.tool || event.agent}`) : []
-})
 const questionItems = computed(() => buildQuestionItems(chatStore.messages))
 
 const handleLocateQuestion = (key) => {
+  const wasFollowing = followTranscript.value
+  followTranscript.value = false
   if (messageListRef.value?.locateMessage(key)) activeQuestionKey.value = key
+  else followTranscript.value = wasFollowing
 }
 
 watch(() => chatStore.sessionId, () => {
   activeQuestionKey.value = ''
+  followTranscript.value = true
+  scrollToBottom()
 })
 watch(() => chatStore.visible, (visible) => {
   if (!visible) activeQuestionKey.value = ''
@@ -288,7 +230,18 @@ const savePanelWidth = () => {
   } catch { /* ignore */ }
 }
 
+const resizeWithKeyboard = event => {
+  if (props.fullScreen || isMobile.value || event.altKey || event.ctrlKey || event.metaKey) return
+  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
+  event.preventDefault()
+  const step = event.shiftKey ? 64 : 16
+  const current = clampPanelWidth(panelWidth.value)
+  panelWidth.value = event.key === 'Home' ? MIN_WIDTH : event.key === 'End' ? maxPanelWidth.value : clampPanelWidth(current + (event.key === 'ArrowLeft' ? step : -step))
+  savePanelWidth()
+}
+
 const startResize = (e) => {
+  e.currentTarget?.focus({ preventScroll:true })
   resizing = true
   document.body.style.cursor = 'ew-resize'
   document.body.style.userSelect = 'none'
@@ -300,6 +253,7 @@ const startResizeTouch = (e) => {
   resizing = true
   document.addEventListener('touchmove', onTouchMove, { passive: false })
   document.addEventListener('touchend', onTouchEnd)
+  document.addEventListener('touchcancel', onTouchEnd)
 }
 
 const onMouseMove = (e) => {
@@ -329,6 +283,7 @@ const onTouchEnd = () => {
   resizing = false
   document.removeEventListener('touchmove', onTouchMove)
   document.removeEventListener('touchend', onTouchEnd)
+  document.removeEventListener('touchcancel', onTouchEnd)
   savePanelWidth()
 }
 
@@ -342,6 +297,7 @@ const handleViewportResize = () => {
 
 onMounted(() => {
   loadPanelWidth()
+  scrollToBottom()
   window.addEventListener('resize', handleViewportResize)
   window.addEventListener('keydown',contextKey,true)
   if(props.fullScreen&&workspaceRef.value){workspaceObserver=new ResizeObserver(entries=>{workspaceWidth.value=entries[0].contentRect.width});workspaceObserver.observe(workspaceRef.value)}
@@ -353,18 +309,36 @@ onUnmounted(() => {
   document.removeEventListener('mouseup', onMouseUp)
   document.removeEventListener('touchmove', onTouchMove)
   document.removeEventListener('touchend', onTouchEnd)
+  document.removeEventListener('touchcancel', onTouchEnd)
+  if (resizing) { document.body.style.cursor = ''; document.body.style.userSelect = ''; resizing = false }
 })
 
-// ─── 滚动到底部 ───
+// Follow new output only while the reader is already near the bottom.
+const handleTranscriptScroll = () => {
+  const body = chatBodyRef.value
+  if (body) followTranscript.value = body.scrollHeight - body.scrollTop - body.clientHeight < 72
+}
+
 const scrollToBottom = () => {
+  const sessionId = chatStore.sessionId
   nextTick(() => {
-    if (chatBodyRef.value) {
-      chatBodyRef.value.scrollTop = chatBodyRef.value.scrollHeight
+    if (followTranscript.value && sessionId === chatStore.sessionId && chatBodyRef.value) {
+      chatBodyRef.value.scrollTop = controlledMessages.value.length ? chatBodyRef.value.scrollHeight : 0
     }
   })
 }
 
-watch(() => chatStore.messages.length, scrollToBottom)
+const returnToLatest = () => {
+  followTranscript.value = true
+  scrollToBottom()
+}
+
+watch([
+  () => chatStore.messages.length,
+  () => chatStore.messages.at(-1)?.content?.length,
+  () => controlState.value.run?.text?.length,
+  () => chatStore.loading
+], scrollToBottom, { flush: 'post' })
 watch(() => chatStore.visible, (val) => {
   if (val) scrollToBottom()
 })
@@ -373,6 +347,7 @@ const handleSend = async (content) => {
   const currentSession=chatStore.sessionId
   await conversationControlsRef.value?.ready()
   if(chatStore.sessionId!==currentSession)return
+  returnToLatest()
   if(controlState.value.enabled){const session=chatStore.sessionId;try{await conversationControlsRef.value.submit(content)}catch{if(chatStore.sessionId===session)composerRef.value?.restoreDraft(content)}return}
   await chatStore.sendMessage(content)
   scrollToBottom()
@@ -384,6 +359,7 @@ const handleConfirm = async (actionId, confirmed) => {
 }
 
 const handleRetry = async () => {
+  returnToLatest()
   await chatStore.retryLastMessage()
   scrollToBottom()
 }
@@ -456,18 +432,20 @@ const handleDrawerChange = (value) => {
   align-items: center;
   justify-content: center;
   cursor: col-resize;
-  transition: all 0.25s;
+  transition: background-color 180ms ease, color 180ms ease, box-shadow 180ms ease;
 }
 
 .resize-knob:hover {
-  background: #4f6ef7;
+  background: var(--app-primary);
   color: #fff;
-  height: 56px;
   box-shadow: 0 0 8px rgba(79, 110, 247, 0.3);
 }
 
+.resize-handle:focus-visible { outline:2px solid var(--app-primary); outline-offset:-3px; border-radius:6px; }
+.resize-handle:focus-visible .resize-knob { background:var(--app-primary-soft); color:var(--app-primary); }
+
 .resize-knob:active {
-  background: #3b5de7;
+  background: var(--app-primary);
 }
 
 /* ── 头部 ── */
@@ -565,13 +543,13 @@ const handleDrawerChange = (value) => {
 }
 
 .diagnose-btn {
-  background: #ecfeff;
-  color: #0891b2;
+  background: var(--app-primary-soft);
+  color: var(--app-primary);
 }
 
 .diagnose-btn:hover {
-  background: #cffafe;
-  color: #0e7490;
+  background: #e8f0ff;
+  color: var(--app-primary);
 }
 
 .chat-header-btn:disabled {
@@ -579,208 +557,18 @@ const handleDrawerChange = (value) => {
   cursor: not-allowed;
 }
 
-/* ── Agent 诊断 ── */
-.diagnostics-mask {
-  position: absolute;
-  inset: 0;
-  z-index: 30;
-  display: flex;
-  justify-content: flex-end;
-  background: rgba(15, 23, 42, 0.18);
-  backdrop-filter: blur(2px);
-}
-
-.diagnostics-panel {
-  width: min(360px, 92%);
-  height: 100%;
-  padding: 16px;
-  display: grid;
-  align-content: start;
-  gap: 14px;
-  background:
-    linear-gradient(180deg, rgba(248, 250, 252, 0.98), rgba(255, 255, 255, 0.98)),
-    radial-gradient(circle at top right, rgba(6, 182, 212, 0.12), transparent 42%);
-  border-left: 1px solid rgba(148, 163, 184, 0.24);
-  box-shadow: -18px 0 40px rgba(15, 23, 42, 0.12);
-}
-
-.diagnostics-head {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  align-items: flex-start;
-}
-
-.diagnostics-head p {
-  margin: 0 0 4px;
-  color: #0891b2;
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.diagnostics-head h4 {
-  margin: 0;
-  color: #0f172a;
-  font-size: 17px;
-}
-
-.health-card,
-.checkpoint-card {
-  padding: 13px;
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.88);
-  border: 1px solid rgba(226, 232, 240, 0.92);
-  box-shadow: 0 10px 26px rgba(15, 23, 42, 0.05);
-}
-
-.health-status {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 4px 8px;
-  align-items: center;
-  padding: 10px;
-  border-radius: 14px;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-}
-
-.health-status strong {
-  color: #0f172a;
-  font-size: 14px;
-}
-
-.health-status small {
-  grid-column: 2;
-  color: #64748b;
-  line-height: 1.5;
-}
-
-.health-dot {
-  width: 9px;
-  height: 9px;
-  border-radius: 999px;
-  background: #94a3b8;
-  box-shadow: 0 0 0 5px rgba(148, 163, 184, 0.14);
-}
-
-.status-healthy .health-dot { background: #16a34a; box-shadow: 0 0 0 5px rgba(22, 163, 74, 0.14); }
-.status-warn .health-dot { background: #d97706; box-shadow: 0 0 0 5px rgba(217, 119, 6, 0.14); }
-.status-critical .health-dot { background: #dc2626; box-shadow: 0 0 0 5px rgba(220, 38, 38, 0.14); }
-
-.diagnostic-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-  margin-top: 10px;
-}
-
-.diagnostic-grid div {
-  padding: 10px;
-  border-radius: 13px;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-}
-
-.diagnostic-grid span {
-  display: block;
-  color: #0f172a;
-  font-size: 18px;
-  font-weight: 900;
-}
-
-.diagnostic-grid small {
-  display: block;
-  margin-top: 3px;
-  color: #64748b;
-  font-size: 11px;
-}
-
-.checkpoint-title {
-  display: flex;
-  justify-content: space-between;
-  gap: 10px;
-  align-items: center;
-  margin-bottom: 10px;
-}
-
-.checkpoint-title span {
-  color: #0f172a;
-  font-size: 13px;
-  font-weight: 850;
-}
-
-.checkpoint-title button {
-  min-height: 30px;
-  padding: 5px 10px;
-  border: 1px solid #bae6fd;
-  border-radius: 999px;
-  background: #f0f9ff;
-  color: #0369a1;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.checkpoint-card dl {
-  display: grid;
-  gap: 8px;
-  margin: 0;
-}
-
-.checkpoint-card dl div {
-  display: grid;
-  grid-template-columns: 70px 1fr;
-  gap: 8px;
-  align-items: start;
-}
-
-.checkpoint-card dt {
-  color: #94a3b8;
-  font-size: 11px;
-}
-
-.checkpoint-card dd {
-  margin: 0;
-  color: #334155;
-  font-size: 12px;
-  word-break: break-word;
-}
-
-.guard-reason {
-  margin: 12px 0 0;
-  padding: 9px 10px;
-  border-radius: 12px;
-  background: #fff7ed;
-  border: 1px dashed #fed7aa;
-  color: #9a3412;
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.route-trace {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 10px;
-}
-
-.route-trace span {
-  padding: 4px 7px;
-  border-radius: 999px;
-  background: #eef2ff;
-  color: #4338ca;
-  font-size: 10.5px;
-  font-weight: 750;
-}
-
 /* ── 消息区 ── */
 .chat-body {
   flex: 1;
   overflow-y: auto;
   padding: 20px 20px 8px;
-  scroll-behavior: smooth;
+  scroll-behavior: auto;
 }
+
+.transcript-return { display: flex; justify-content: center; height: 0; position: relative; z-index: 2; }
+.transcript-return button { display: inline-flex; align-items: center; gap: 6px; position: absolute; bottom: 12px; padding: 8px 14px; color: var(--app-primary, #2563eb); background: white; border: 1px solid var(--app-border, #e2e8f0); border-radius: 20px; box-shadow: 0 3px 12px #0f172a0d; font: inherit; font-size: 12px; cursor: pointer; transition: background-color 150ms ease, border-color 150ms ease; }
+.transcript-return button:hover { background: var(--app-primary-soft, #eff6ff); border-color: #b6cdfa; }
+.transcript-return button:focus-visible { outline: 2px solid var(--app-primary, #2563eb); outline-offset: 3px; }
 
 .chat-body::-webkit-scrollbar {
   width: 5px;

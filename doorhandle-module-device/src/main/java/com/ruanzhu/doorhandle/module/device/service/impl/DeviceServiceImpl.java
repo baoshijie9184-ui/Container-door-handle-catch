@@ -124,6 +124,7 @@ public class DeviceServiceImpl implements DeviceService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     @CacheEvict(cacheNames = {"device", "dashboard"}, allEntries = true)
+    @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DEVICE",action="createDevice",resource="result.id",version="result.version",supervisorOnly=true)
     public Device createDevice(Device device) {
         // 检查设备编号是否已存在
         Device existingDevice = deviceMapper.findByDeviceCode(device.getDeviceCode());
@@ -138,6 +139,7 @@ public class DeviceServiceImpl implements DeviceService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     @CacheEvict(cacheNames = {"device", "dashboard"}, allEntries = true)
+    @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DEVICE",action="updateDevice",version="result.version",supervisorOnly=true)
     public Device updateDevice(Long id, Device device) {
         // 检查设备是否存在
         Device existingDevice = deviceMapper.selectById(id);
@@ -167,6 +169,7 @@ public class DeviceServiceImpl implements DeviceService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     @CacheEvict(cacheNames = {"device", "dashboard"}, allEntries = true)
+    @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DEVICE",action="deleteDevice",supervisorOnly=true)
     public boolean deleteDevice(Long id) {
         // 检查设备是否存在
         Device existingDevice = deviceMapper.selectById(id);
@@ -181,6 +184,7 @@ public class DeviceServiceImpl implements DeviceService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     @CacheEvict(cacheNames = {"device", "dashboard"}, allEntries = true)
+    @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DEVICE",action="removeEmployeeFromDevice",supervisorOnly=true)
     public boolean removeEmployeeFromDevice(Long deviceId) {
         // 检查设备是否存在
         Device existingDevice = deviceMapper.selectById(deviceId);
@@ -334,6 +338,8 @@ public class DeviceServiceImpl implements DeviceService {
 
     @Override
     @CacheEvict(cacheNames = {"device", "dashboard"}, allEntries = true)
+    @Transactional(rollbackFor=Exception.class)
+    @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DEVICE_ALERT",action="ACKNOWLEDGE",supervisorOnly=true)
     public DeviceCaptureAlert acknowledgeAlert(Long alertId, DeviceAlertActionRequest request) {
         DeviceCaptureAlert alert = getAlert(alertId);
         alert.setStatus("ACKNOWLEDGED");
@@ -347,6 +353,8 @@ public class DeviceServiceImpl implements DeviceService {
 
     @Override
     @CacheEvict(cacheNames = {"device", "dashboard"}, allEntries = true)
+    @Transactional(rollbackFor=Exception.class)
+    @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DEVICE_ALERT",action="RESOLVE",supervisorOnly=true)
     public DeviceCaptureAlert resolveAlert(Long alertId, DeviceAlertActionRequest request) {
         DeviceCaptureAlert alert = getAlert(alertId);
         alert.setStatus("RESOLVED");

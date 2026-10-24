@@ -22,6 +22,9 @@ public class AgentJournalMiddleware implements MiddlewareBase {
     private com.ruanzhu.doorhandle.module.ai.evolution.SkillEvolutionService evolution;
     private com.ruanzhu.doorhandle.module.ai.mcp.LocalMcpService mcp;
     private Set<String> workbenchTools=Set.of();
+    private boolean detectionRetry, detectionCreation;
+    public AgentJournalMiddleware withDetectionCreation(boolean enabled){detectionCreation=enabled;return this;}
+    public AgentJournalMiddleware withDetectionRetry(boolean enabled){detectionRetry=enabled;return this;}
     public AgentJournalMiddleware withWorkbench(Set<String> tools){this.workbenchTools=Set.copyOf(tools);return this;}
     public AgentJournalMiddleware(AgentJournal.Run run,AgentActor actor) { this(run,actor,false); }
     public AgentJournalMiddleware(AgentJournal.Run run,AgentActor actor,boolean confirmation) {this(run,actor,confirmation,false,false);}
@@ -29,9 +32,9 @@ public class AgentJournalMiddleware implements MiddlewareBase {
     private AgentJournalMiddleware(AgentJournal.Run run,AgentActor actor,long began,String parentCallId,boolean confirmation,boolean reports,boolean drafts) {
         this.run=run;this.actor=actor;this.began=began;this.parentCallId=parentCallId;this.confirmation=confirmation;this.reports=reports;this.drafts=drafts;
     }
-    public AgentJournalMiddleware child(String callId) { var child=new AgentJournalMiddleware(run,actor,began,identifier(callId),confirmation,reports,drafts);child.evolution=evolution;child.mcp=mcp;return child; }
-    public AgentJournalMiddleware withEvolution(com.ruanzhu.doorhandle.module.ai.evolution.SkillEvolutionService service){var next=new AgentJournalMiddleware(run,actor,began,parentCallId,confirmation,reports,drafts);next.evolution=service;next.mcp=mcp;return next;}
-    public AgentJournalMiddleware withMcp(com.ruanzhu.doorhandle.module.ai.mcp.LocalMcpService service){var next=new AgentJournalMiddleware(run,actor,began,parentCallId,confirmation,reports,drafts);next.evolution=evolution;next.mcp=service;return next;}
+    public AgentJournalMiddleware child(String callId) { var child=new AgentJournalMiddleware(run,actor,began,identifier(callId),confirmation,reports,drafts);child.evolution=evolution;child.mcp=mcp;child.detectionRetry=detectionRetry;child.detectionCreation=detectionCreation;return child; }
+    public AgentJournalMiddleware withEvolution(com.ruanzhu.doorhandle.module.ai.evolution.SkillEvolutionService service){var next=new AgentJournalMiddleware(run,actor,began,parentCallId,confirmation,reports,drafts);next.evolution=service;next.mcp=mcp;next.detectionRetry=detectionRetry;next.detectionCreation=detectionCreation;return next;}
+    public AgentJournalMiddleware withMcp(com.ruanzhu.doorhandle.module.ai.mcp.LocalMcpService service){var next=new AgentJournalMiddleware(run,actor,began,parentCallId,confirmation,reports,drafts);next.evolution=evolution;next.mcp=service;next.detectionRetry=detectionRetry;next.detectionCreation=detectionCreation;return next;}
     public String runId() { return run.id(); }
     public void recordContext(String type,Map<String,Object> metadata){var payload=fields((String)metadata.get("agent"));payload.putAll(metadata);run.event(type,payload);}
     private Map<String,Object> fields(String agent) {
@@ -71,15 +74,17 @@ public class AgentJournalMiddleware implements MiddlewareBase {
             var allowed=new HashSet<String>();
             allowed.addAll(workbenchTools);
             if(agent.getName().equals(RoleAgentCatalog.mainId(actor))) {
-                RoleAgentCatalog.specialists(actor,confirmation,reports,drafts).forEach(def->allowed.add("delegate_"+def.id().replace('-','_')));
+                RoleAgentCatalog.specialists(actor,confirmation,reports,drafts,detectionRetry,detectionCreation).forEach(def->allowed.add("delegate_"+def.id().replace('-','_')));
                 if(evolution!=null){allowed.add(com.ruanzhu.doorhandle.module.ai.evolution.SkillEvolutionService.PROPOSE);allowed.add(com.ruanzhu.doorhandle.module.ai.evolution.SkillEvolutionService.LOAD);if(evolution.linksEnabled())allowed.add(com.ruanzhu.doorhandle.module.ai.evolution.SkillLinkProposalTool.NAME);}
                 if(mcp!=null){allowed.add(com.ruanzhu.doorhandle.module.ai.mcp.LocalMcpService.PROPOSE);if(mcp.available(actor))allowed.add(com.ruanzhu.doorhandle.module.ai.mcp.FetchMcpRuntime.TOOL);}
-            } else RoleAgentCatalog.specialists(actor,confirmation,reports,drafts).stream().filter(def->def.id().equals(agent.getName())).forEach(def->allowed.addAll(def.tools()));
+            } else RoleAgentCatalog.specialists(actor,confirmation,reports,drafts,detectionRetry,detectionCreation).stream().filter(def->def.id().equals(agent.getName())).forEach(def->allowed.addAll(def.tools()));
             for(var call:input.toolCalls()) {
                 var payload=fields(agent.getName());payload.put("callId",identifier(call.getId()));
                 boolean permitted=allowed.contains(call.getName());
                 payload.put("tool",permitted?call.getName():"unregistered");
                 payload.put("decision",permitted?"ALLOW":"DENY");payload.put("policyVersion","propose_quality_assignment".equals(call.getName())?com.ruanzhu.doorhandle.module.ai.action.AgentActionService.POLICY:com.ruanzhu.doorhandle.module.ai.report.ReportTools.NAMES.contains(call.getName())?com.ruanzhu.doorhandle.module.ai.report.AgentReportGateway.POLICY:"role-readonly-v1");
+                if(com.ruanzhu.doorhandle.module.ai.action.AgentActionService.RETRY_TOOL.equals(call.getName()))payload.put("policyVersion",com.ruanzhu.doorhandle.module.ai.action.AgentActionService.RETRY_POLICY);
+                if(com.ruanzhu.doorhandle.module.ai.action.AgentActionService.CREATE_TOOL.equals(call.getName()))payload.put("policyVersion",com.ruanzhu.doorhandle.module.ai.action.AgentActionService.CREATE_POLICY);
                 payload.put("scope",actor.supervisor()?"SINGLE_ENTERPRISE":"OWNED_OR_ASSIGNED");
                 if(Set.of(com.ruanzhu.doorhandle.module.ai.evolution.SkillEvolutionService.PROPOSE,com.ruanzhu.doorhandle.module.ai.evolution.SkillEvolutionService.LOAD).contains(call.getName()))payload.put("policyVersion",com.ruanzhu.doorhandle.module.ai.evolution.SkillEvolutionService.POLICY);
                 if(Set.of(com.ruanzhu.doorhandle.module.ai.mcp.LocalMcpService.PROPOSE,com.ruanzhu.doorhandle.module.ai.mcp.FetchMcpRuntime.TOOL).contains(call.getName())){payload.put("policyVersion",com.ruanzhu.doorhandle.module.ai.mcp.LocalMcpService.POLICY);payload.put("scope","USER_PRIVATE_MCP_PUBLIC_WEB");}

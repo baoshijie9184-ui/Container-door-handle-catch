@@ -1,24 +1,17 @@
 <template>
   <div class="page-shell detail-page">
-    <section class="page-hero">
-      <div>
-        <span class="page-hero-label">Employee Detail</span>
-        <h1 class="page-hero-title">{{ employee.name || '人员详情' }}</h1>
-        <p class="page-hero-text">
-          {{ employee.employeeNumber || '' }} · {{ employee.department || '' }}
-        </p>
-      </div>
-      <div class="panel-actions">
-        <el-button type="primary" @click="editEmployee">编辑人员</el-button>
-        <el-button @click="goBack">返回列表</el-button>
-      </div>
-    </section>
-
+    <PageHero :title="employee.name || '人员详情'" description="核对人员登记、设备关系与采集记录；人员业务岗位与登录账号权限分别管理。" icon="User">
+      <template #actions>
+        <el-button :loading="loading" @click="refreshEmployee"><AppIcon name="Refresh" :size="16" />刷新资料</el-button>
+        <el-button v-if="isSupervisor" type="primary" :disabled="loading || !!loadError || !employee.id" @click="editEmployee"><AppIcon name="Edit" :size="16" />编辑人员</el-button>
+        <el-button @click="goBack"><AppIcon name="ArrowLeft" :size="16" />返回列表</el-button>
+      </template>
+    </PageHero>
     <!-- 状态摘要 -->
     <section v-if="employee.id" class="stats-bar">
       <div class="stats-bar-item">
         <div class="stats-bar-icon" :class="statusIconClass">
-          <span style="font-size:20px;font-weight:700">{{ employee.status === 'ACTIVE' ? '✓' : employee.status === 'VACATION' ? '休' : '离' }}</span>
+          <AppIcon name="CircleCheck" :size="22" />
         </div>
         <div>
           <div class="stats-bar-value">{{ getStatusName(employee.status) }}</div>
@@ -27,7 +20,7 @@
       </div>
       <div class="stats-bar-item">
         <div class="stats-bar-icon info">
-          <span style="font-size:20px;font-weight:700">{{ employee.employeeType === 'COLLECTION' ? '采' : employee.employeeType === 'DETECTION' ? '检' : '维' }}</span>
+          <AppIcon name="User" :size="22" />
         </div>
         <div>
           <div class="stats-bar-value">{{ getEmployeeTypeName(employee.employeeType) }}</div>
@@ -36,16 +29,16 @@
       </div>
       <div class="stats-bar-item">
         <div class="stats-bar-icon primary">
-          <span style="font-size:20px;font-weight:700">{{ assignedDevices.length }}</span>
+          <AppIcon name="Monitor" :size="22" />
         </div>
         <div>
-          <div class="stats-bar-value">{{ assignedDevices.length }} 台</div>
+          <div class="stats-bar-value">{{ devicesKnown ? assignedDevices.length+' 台' : '—' }}</div>
           <div class="stats-bar-label">已分配设备</div>
         </div>
       </div>
       <div class="stats-bar-item">
         <div class="stats-bar-icon success">
-          <span style="font-size:20px;font-weight:700">{{ employee.employeeNumber ? employee.employeeNumber.replace(/[^0-9]/g, '').slice(-3) : '—' }}</span>
+          <AppIcon name="Document" :size="22" />
         </div>
         <div>
           <div class="stats-bar-value">{{ employee.employeeNumber || '—' }}</div>
@@ -63,7 +56,8 @@
           </div>
         </div>
       </template>
-      <el-empty v-if="!employee.id" description="未找到人员信息" />
+      <el-alert v-if="loadError && employee.id" :title="loadError+'；以下保留先前读取的资料，请刷新核对。'" type="error" show-icon :closable="false" />
+      <CollectionEmptyState v-if="!employee.id" :loading="loading" :error="loadError" empty-title="未找到人员资料" empty-description="请返回列表核对员工编号和当前账号的访问范围。" @retry="refreshEmployee" />
       <div v-else class="employee-profile">
         <div class="profile-avatar">
           {{ (employee.name || '?').slice(0, 1).toUpperCase() }}
@@ -101,9 +95,7 @@
           </div>
           <div class="profile-item">
             <span class="profile-label">状态</span>
-            <el-tag :type="getStatusType(employee.status)" effect="plain">
-              {{ getStatusName(employee.status) }}
-            </el-tag>
+            <StatusBadge domain="employee" :code="employee.status" :label="getStatusName(employee.status)" />
           </div>
         </div>
         <div v-if="employee.remark" class="profile-remark">
@@ -119,12 +111,13 @@
         <div class="panel-header">
           <div>
             <h3 class="app-panel-title">已分配设备</h3>
-            <p class="app-panel-subtitle">该人员当前使用的设备列表</p>
+            <p class="app-panel-subtitle">当前登记的设备关系，不代表设备实时在线。</p>
           </div>
-          <el-button type="primary" size="small" @click="assignDevices">分配设备</el-button>
+          <el-button size="small" :loading="deviceLoading" @click="fetchAssignedDevices"><AppIcon name="Refresh" :size="15" />刷新关系</el-button><el-button v-if="isSupervisor" type="primary" size="small" :disabled="loading || !!loadError || !employee.id" @click="assignDevices"><AppIcon name="Monitor" :size="15" />分配设备</el-button>
         </div>
       </template>
       <div v-loading="deviceLoading">
+        <el-alert v-if="deviceError && assignedDevices.length" :title="deviceError+'；下方保留先前读取的记录。'" type="error" show-icon :closable="false" />
         <el-table v-if="assignedDevices.length > 0" :data="assignedDevices" border>
           <template #empty>
             <el-empty description="暂无分配的设备" :image-size="80" />
@@ -138,18 +131,16 @@
           <el-table-column prop="modelName" label="型号" min-width="140" show-overflow-tooltip />
           <el-table-column label="状态" width="110">
             <template #default="{ row }">
-              <el-tag :type="(row.status === 'IN_USE' || row.status === '使用中') ? 'success' : 'info'" size="small">
-                {{ (row.status === 'IN_USE' || row.status === '使用中') ? '使用中' : (row.status === 'IDLE' || row.status === '未使用') ? '未使用' : row.status }}
-              </el-tag>
+              <StatusBadge domain="device" :code="row.status" />
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="130" fixed="right">
+          <el-table-column v-if="isSupervisor" label="操作" width="130" fixed="right">
             <template #default="{ row }">
-              <el-button size="small" type="danger" @click="unassignDevice(row.id)">解除分配</el-button>
+              <el-button size="small" type="danger" plain :disabled="loading || deviceLoading || !!deviceError || !!loadError" @click="unassignDevice(row.id)">解除分配</el-button>
             </template>
           </el-table-column>
         </el-table>
-        <el-empty v-else description="暂无分配的设备" :image-size="80" />
+        <CollectionEmptyState v-else :loading="deviceLoading" :error="deviceError" empty-title="暂无分配设备" empty-description="有权限的主管分配设备后，可在这里查看。" @retry="fetchAssignedDevices" />
       </div>
     </el-card>
 
@@ -159,20 +150,19 @@
         <div class="panel-header">
           <div>
             <h3 class="app-panel-title">采集记录</h3>
-            <p class="app-panel-subtitle">该人员的图片采集检测任务记录</p>
+            <p class="app-panel-subtitle">按登记姓名匹配，仍受当前账号任务权限约束；同名或更名需核对。最多读取 50 条。</p>
           </div>
-          <el-button size="small" @click="fetchCollectionRecords" :loading="collectionLoading">刷新</el-button>
+          <el-button size="small" @click="fetchCollectionRecords" :loading="collectionLoading"><AppIcon name="Refresh" :size="16" />刷新</el-button>
         </div>
       </template>
+      <el-alert v-if="collectionError && collectionRecords.length" :title="collectionError+'；下方保留先前读取的记录。'" type="error" show-icon :closable="false" />
       <div v-loading="collectionLoading">
         <div v-if="collectionRecords.length > 0" class="record-list">
           <div v-for="record in collectionRecords" :key="record.taskId" class="record-card">
             <div class="record-card-header">
               <div class="record-card-title">
                 <span class="record-folder">{{ record.folderName || record.taskId }}</span>
-                <el-tag :type="record.status === 'COMPLETED' ? 'success' : record.status === 'FAILED' ? 'danger' : 'info'" size="small" effect="plain">
-                  {{ record.status === 'COMPLETED' ? '已完成' : record.status === 'FAILED' ? '失败' : record.status }}
-                </el-tag>
+                <StatusBadge domain="detection" :code="record.status" />
               </div>
               <code class="record-taskid">{{ record.taskId }}</code>
             </div>
@@ -192,55 +182,56 @@
                 </div>
                 <div class="record-meta-item">
                   <span class="meta-label">图片数量</span>
-                  <span class="meta-value meta-highlight">{{ record.totalImages || 0 }} 张</span>
+                  <span class="meta-value meta-highlight">{{ record.totalImages ?? '—' }} 张</span>
                 </div>
                 <div class="record-meta-item">
                   <span class="meta-label">创建时间</span>
-                  <span class="meta-value">{{ record.createdAt || '—' }}</span>
+                  <span class="meta-value">{{ formatTime(record.createdAt) }}（UTC+8）</span>
                 </div>
               </div>
-              <div v-if="record.sourceOssPrefix" class="record-oss">
-                <span class="meta-label">OSS 存储路径</span>
+              <details v-if="record.sourceOssPrefix" class="record-oss">
+                <summary class="meta-label">查看存储记录</summary>
                 <code class="oss-path">{{ record.sourceOssPrefix }}</code>
-              </div>
+              </details>
+              <router-link class="detail-record-link" :to="{path:'/inspection/history',query:{keyword:record.taskId}}"><AppIcon name="Search" :size="14" />查看检测记录</router-link>
             </div>
           </div>
         </div>
-        <el-empty v-else description="暂无采集记录" :image-size="80" />
+        <CollectionEmptyState v-else :loading="collectionLoading" :error="collectionError" empty-title="暂无采集记录" empty-description="人员的采集任务登记后，可在这里查看。" @retry="fetchCollectionRecords" />
       </div>
     </el-card>
 
-    <!-- 分配设备对话框 -->
-    <el-dialog v-model="deviceDialog.visible" title="分配设备" width="560px">
-      <el-form label-width="80px">
-        <el-form-item label="选择设备">
-          <el-select v-model="deviceDialog.selectedDeviceId" placeholder="请选择要分配的设备" style="width: 100%">
-            <el-option
-              v-for="device in deviceDialog.deviceOptions"
-              :key="device.id"
-              :label="`${device.deviceCode} - ${device.modelName}`"
-              :value="device.id"
-            />
-          </el-select>
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="deviceDialog.visible = false">取消</el-button>
-        <el-button type="primary" @click="handleAssignDevice">确定分配</el-button>
-      </template>
-    </el-dialog>
+    <EmployeeDeviceAssignment :context-key="employeeId" ref="assignmentPanel" @changed="fetchAssignedDevices" />
   </div>
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, computed, watch, onBeforeUnmount } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import { ElMessage } from 'element-plus'
 import request from '../../api/request'
+import { useUserStore } from '../../stores/user'
+import { beijingDateTime } from '../../utils/beijingTime'
+import CollectionEmptyState from '../../components/CollectionEmptyState.vue'
+import EmployeeDeviceAssignment from '../../components/EmployeeDeviceAssignment.vue'
 
 const router = useRouter()
 const route = useRoute()
-const employeeId = route.params.id
+const userStore = useUserStore()
+const isSupervisor = computed(() => userStore.role === 'SUPERVISOR')
+const formatTime = value => value ? beijingDateTime(value) || '时间格式未知' : '未记录'
+const resourceId = value => typeof value==='number' && Number.isSafeInteger(value) && value>0 ? String(value) : typeof value==='string' && /^[1-9]\d*$/.test(value) ? value : ''
+const employeeId = computed(() => resourceId(route.params.id))
+const actor = computed(() => JSON.stringify([userStore.identity?.userId || userStore.username || '', userStore.role, userStore.isAuthenticated]))
+let pageActive = true
+const readVersion = { detail:0, devices:0, records:0 }
+const readContext = () => JSON.stringify([employeeId.value, actor.value])
+const currentRead = (channel, version, context) => pageActive && readVersion[channel]===version && readContext()===context
+onBeforeUnmount(() => { pageActive=false; Object.keys(readVersion).forEach(key => readVersion[key]++) })
+function readData(response) {
+  if(response.data?.code!==200) { const failure=new Error(response.data?.message || '资料读取未成功');failure.httpStatus=response.data?.code;throw failure }
+  return response.data.data
+}
+const accessDenied = error => [401,403].includes(error.response?.status || error.httpStatus)
 
 const employee = ref({})
 const loading = ref(true)
@@ -248,12 +239,9 @@ const assignedDevices = ref([])
 const deviceLoading = ref(false)
 const collectionRecords = ref([])
 const collectionLoading = ref(false)
+const loadError = ref(''), deviceError = ref(''), collectionError = ref(''), devicesKnown = ref(false)
 
-const deviceDialog = reactive({
-  visible: false,
-  deviceOptions: [],
-  selectedDeviceId: null
-})
+const assignmentPanel = ref(null)
 
 const employeeTypeOptions = [
   { value: 'DETECTION', label: '门把手检测人员' },
@@ -285,143 +273,90 @@ const getStatusName = (status) => {
 }
 
 const getStatusType = (status) => {
-  const map = { ACTIVE: 'success', RESIGNED: 'danger', VACATION: 'warning' }
+  const map = { ACTIVE: 'success', RESIGNED: 'info', VACATION: 'warning' }
   return map[status] || 'info'
 }
 
 const statusIconClass = computed(() => {
   const t = getStatusType(employee.value?.status)
-  return { success: t === 'success', warning: t === 'warning', danger: t === 'danger' }
+  return { success: t === 'success', warning: t === 'warning', slate: t === 'info' }
 })
 
 const fetchEmployeeDetail = async () => {
-  loading.value = true
+  if(!pageActive || !employeeId.value || !userStore.isAuthenticated)return false
+  const version=++readVersion.detail, context=readContext()
+  loading.value=true;loadError.value=''
   try {
-    const response = await request.get(`/api/employees/${employeeId}`)
-    if (response.data.code === 200) {
-      employee.value = response.data.data
-    } else {
-      ElMessage.error(response.data.message || '获取人员详情失败')
-    }
-  } catch (error) {
-    console.error('获取人员详情失败:', error)
-    ElMessage.error('获取人员详情失败')
-  } finally {
-    loading.value = false
-  }
+    const response=await request.get(`/api/employees/${employeeId.value}`)
+    if(!currentRead('detail',version,context))return false
+    const data=readData(response)
+    if(resourceId(data?.id)!==employeeId.value)throw new Error('人员编号未完整读取，请重新核对')
+    if(employee.value.name!==data.name){readVersion.records++;collectionRecords.value=[];collectionError.value='';collectionLoading.value=false}
+    employee.value=data
+    return true
+  } catch(error) {
+    if(!currentRead('detail',version,context))return false
+    if(accessDenied(error)){employee.value={};assignedDevices.value=[];collectionRecords.value=[];devicesKnown.value=false;readVersion.devices++;readVersion.records++;deviceLoading.value=false;collectionLoading.value=false}
+    loadError.value=error.response?.data?.message || error.message || '人员详情暂不可读取'
+    return false
+  } finally { if(currentRead('detail',version,context))loading.value=false }
 }
 
 const fetchAssignedDevices = async () => {
-  deviceLoading.value = true
+  if(!pageActive || !employeeId.value || !userStore.isAuthenticated)return
+  const version=++readVersion.devices, context=readContext()
+  deviceLoading.value=true;deviceError.value=''
   try {
-    const response = await request.get(`/api/employees/${employeeId}/devices`)
-    if (response.data.code === 200) {
-      assignedDevices.value = response.data.data || []
-    } else {
-      ElMessage.error(response.data.message || '获取设备列表失败')
-    }
-  } catch (error) {
-    console.error('获取设备列表失败:', error)
-    ElMessage.error('获取设备列表失败')
-  } finally {
-    deviceLoading.value = false
-  }
+    const response=await request.get(`/api/employees/${employeeId.value}/devices`)
+    if(!currentRead('devices',version,context))return
+    const data=readData(response), ids=new Set()
+    if(!Array.isArray(data))throw new Error('设备列表未完整读取')
+    for(const row of data){const key=resourceId(row?.id);if(!key || ids.has(key))throw new Error('设备编号未完整读取');ids.add(key)}
+    assignedDevices.value=data;devicesKnown.value=true
+  } catch(error) {
+    if(!currentRead('devices',version,context))return
+    if(accessDenied(error)){assignedDevices.value=[];devicesKnown.value=false}
+    deviceError.value=error.response?.data?.message || error.message || '设备列表暂不可读取'
+  } finally { if(currentRead('devices',version,context))deviceLoading.value=false }
 }
-
 const goBack = () => {
-  router.push({ name: 'EmployeeManagement' })
+  router.push({ name: 'employees' })
 }
 
 const editEmployee = () => {
-  router.push({ name: 'EmployeeEdit', params: { id: employeeId } })
+  router.push({ name: 'employeeEdit', params: { id: employeeId.value } })
 }
 
-const assignDevices = async () => {
-  try {
-    const response = await request.get('/api/devices/unassigned')
-    if (response.data.code === 200) {
-      deviceDialog.deviceOptions = response.data.data || []
-      if (deviceDialog.deviceOptions.length === 0) {
-        ElMessage.warning('当前没有可分配的设备')
-      }
-    } else {
-      ElMessage.error(response.data.message || '获取可用设备失败')
-      deviceDialog.deviceOptions = []
-    }
-    deviceDialog.selectedDeviceId = null
-    deviceDialog.visible = true
-  } catch (error) {
-    console.error('加载设备数据失败:', error)
-    ElMessage.error('加载设备数据失败')
-  }
-}
-
-const handleAssignDevice = async () => {
-  if (!deviceDialog.selectedDeviceId) {
-    ElMessage.warning('请选择要分配的设备')
-    return
-  }
-  try {
-    const response = await request.post(
-      `/api/employees/${employeeId}/assign-device/${deviceDialog.selectedDeviceId}`
-    )
-    if (response.data.code === 200) {
-      ElMessage.success('设备分配成功')
-      deviceDialog.visible = false
-      fetchAssignedDevices()
-    } else {
-      ElMessage.error(response.data.message || '设备分配失败')
-    }
-  } catch (error) {
-    console.error('设备分配失败:', error)
-    ElMessage.error('设备分配失败')
-  }
-}
-
-const unassignDevice = async (deviceId) => {
-  try {
-    const response = await request.delete(`/api/devices/${deviceId}/employee`)
-    if (response.data.code === 200) {
-      ElMessage.success('设备分配已解除')
-      fetchAssignedDevices()
-      if (deviceDialog.visible) {
-        const unassignedRes = await request.get('/api/devices/unassigned')
-        if (unassignedRes.data.code === 200) {
-          deviceDialog.deviceOptions = unassignedRes.data.data || []
-        }
-      }
-    } else {
-      ElMessage.error(response.data.message || '解除设备分配失败')
-    }
-  } catch (error) {
-    console.error('解除设备分配失败:', error)
-    ElMessage.error('解除设备分配失败')
-  }
-}
-
+const assignDevices = () => assignmentPanel.value?.openFor(employee.value.id || employeeId.value)
+const unassignDevice = deviceId => assignmentPanel.value?.openFor(employee.value.id || employeeId.value,{removeDeviceId:deviceId})
 const fetchCollectionRecords = async () => {
-  if (!employee.value.name) return
-  collectionLoading.value = true
+  if(!pageActive || !employee.value.name || !userStore.isAuthenticated)return
+  const version=++readVersion.records, context=readContext(), name=employee.value.name
+  collectionLoading.value=true;collectionError.value=''
   try {
-    const response = await request.get('/api/detection/tasks/by-collector', {
-      params: { collector: employee.value.name, page: 1, size: 50 }
-    })
-    if (response.data.code === 200) {
-      const data = response.data.data || {}
-      collectionRecords.value = data.records || data || []
-    }
-  } catch (error) {
-    console.error('获取采集记录失败:', error)
-  } finally {
-    collectionLoading.value = false
-  }
+    const response=await request.get('/api/detection/tasks/by-collector',{params:{collector:name,page:1,size:50}})
+    if(!currentRead('records',version,context) || employee.value.name!==name)return
+    const data=readData(response), rows=Array.isArray(data)?data:data?.records
+    if(!Array.isArray(rows) || rows.some(row=>!row || typeof row.taskId!=='string' || !row.taskId))throw new Error('采集记录未完整读取')
+    collectionRecords.value=rows
+  } catch(error) {
+    if(!currentRead('records',version,context) || employee.value.name!==name)return
+    if(accessDenied(error))collectionRecords.value=[]
+    collectionError.value=error.response?.data?.message || error.message || '采集记录暂不可读取'
+  } finally { if(currentRead('records',version,context))collectionLoading.value=false }
 }
 
-onMounted(async () => {
-  await fetchEmployeeDetail()
-  fetchAssignedDevices()
-  fetchCollectionRecords()
-})
+const refreshEmployee = async () => {
+  if(await fetchEmployeeDetail()){fetchAssignedDevices();fetchCollectionRecords()}
+}
+watch([employeeId,actor],async()=>{
+  Object.keys(readVersion).forEach(key=>readVersion[key]++)
+  employee.value={};assignedDevices.value=[];collectionRecords.value=[];devicesKnown.value=false
+  loadError.value='';deviceError.value='';collectionError.value='';loading.value=false;deviceLoading.value=false;collectionLoading.value=false
+  if(!employeeId.value){loadError.value='人员编号无效，请返回列表核对';return}
+  if(!userStore.isAuthenticated)return
+  await refreshEmployee()
+},{immediate:true,flush:'sync'})
 </script>
 
 <style scoped>
@@ -433,6 +368,7 @@ onMounted(async () => {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 12px;
 }
 
@@ -458,10 +394,10 @@ onMounted(async () => {
 
 .profile-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(180px, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px 36px;
   flex: 1;
-  min-width: 300px;
+  min-width: 0;
 }
 
 .profile-item {
@@ -529,6 +465,7 @@ onMounted(async () => {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 12px;
 }
 
@@ -611,4 +548,6 @@ onMounted(async () => {
   font-family: 'SF Mono', 'Consolas', monospace;
   word-break: break-all;
 }
+.profile-value { overflow-wrap:anywhere; }
+@media(prefers-reduced-motion:reduce) { .record-card { transition:none; } }
 </style>

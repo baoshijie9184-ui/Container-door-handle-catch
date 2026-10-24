@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import request from '../api/request'
 import { ElMessage } from 'element-plus'
 import { useTaskStore } from './taskStore'
+import { knownCount } from '../utils/countPresentation'
 
 export const usePollingStore = defineStore('polling', () => {
   // ==================== 全局轮询管理 ====================
@@ -82,6 +83,8 @@ export const usePollingStore = defineStore('polling', () => {
       message: progress.message || (normalizedStage === 'queued' ? '已交给模型处理，等待检测服务调度。' : (normalizedStage === 'detecting' ? '模型正在检测。' : '')),
       error: progressStatus === 'FAILED' ? (progress.message || '检测失败') : '',
       flowStatus: progress.flowStatus || '',
+      status: progress.status,
+      qualityActions: progress.qualityActions,
       reviewStatus: progress.reviewStatus || '',
       reviewConclusion: progress.reviewConclusion || '',
       severityLevel: progress.severityLevel || '',
@@ -92,6 +95,7 @@ export const usePollingStore = defineStore('polling', () => {
       reviewedAt: progress.reviewedAt || '',
       qualityStation: progress.qualityStation || '',
       assignee: progress.assignee || '',
+      assignmentRevision: progress.assignmentRevision ?? null,
       assignmentRemark: progress.assignmentRemark || '',
       assignedAt: progress.assignedAt || '',
       dueAt: progress.dueAt || '',
@@ -117,31 +121,35 @@ export const usePollingStore = defineStore('polling', () => {
         taskStore.updateTask(taskId, {
           result,
           stage: 'completed',
+          status: result.status,
+          flowStatus: result.flowStatus,
+          qualityActions: result.qualityActions,
           progressPercent: 100,
           message: '检测完成。',
-          reviewStatus: result.reviewStatus || progress.reviewStatus || '',
-          reviewConclusion: result.reviewConclusion || progress.reviewConclusion || '',
-          severityLevel: result.severityLevel || progress.severityLevel || '',
-          confirmedDefectCount: result.confirmedDefectCount || progress.confirmedDefectCount || 0,
-          falsePositiveCount: result.falsePositiveCount || progress.falsePositiveCount || 0,
-          reviewRemark: result.reviewRemark || progress.reviewRemark || '',
-          reviewer: result.reviewer || progress.reviewer || '',
-          reviewedAt: result.reviewedAt || progress.reviewedAt || '',
-          qualityStation: result.qualityStation || progress.qualityStation || '',
-          assignee: result.assignee || progress.assignee || '',
-          assignmentRemark: result.assignmentRemark || progress.assignmentRemark || '',
-          assignedAt: result.assignedAt || progress.assignedAt || '',
-          dueAt: result.dueAt || progress.dueAt || '',
-          dispositionStatus: result.dispositionStatus || progress.dispositionStatus || '',
-          dispositionAction: result.dispositionAction || progress.dispositionAction || '',
-          dispositionRemark: result.dispositionRemark || progress.dispositionRemark || '',
-          dispositionOperator: result.dispositionOperator || progress.dispositionOperator || '',
-          disposedAt: result.disposedAt || progress.disposedAt || '',
-          recheckRequired: result.recheckRequired || progress.recheckRequired || false,
-          reworkResult: result.reworkResult || progress.reworkResult || '',
-          reworkOperator: result.reworkOperator || progress.reworkOperator || '',
-          reworkRemark: result.reworkRemark || progress.reworkRemark || '',
-          reworkCompletedAt: result.reworkCompletedAt || progress.reworkCompletedAt || '',
+          reviewStatus: result.reviewStatus ?? '',
+          reviewConclusion: result.reviewConclusion ?? '',
+          severityLevel: result.severityLevel ?? '',
+          confirmedDefectCount: result.confirmedDefectCount ?? 0,
+          falsePositiveCount: result.falsePositiveCount ?? 0,
+          reviewRemark: result.reviewRemark ?? '',
+          reviewer: result.reviewer ?? '',
+          reviewedAt: result.reviewedAt ?? '',
+          qualityStation: result.qualityStation ?? '',
+          assignee: result.assignee ?? '',
+          assignmentRevision: result.assignmentRevision ?? null,
+          assignmentRemark: result.assignmentRemark ?? '',
+          assignedAt: result.assignedAt ?? '',
+          dueAt: result.dueAt ?? '',
+          dispositionStatus: result.dispositionStatus ?? '',
+          dispositionAction: result.dispositionAction ?? '',
+          dispositionRemark: result.dispositionRemark ?? '',
+          dispositionOperator: result.dispositionOperator ?? '',
+          disposedAt: result.disposedAt ?? '',
+          recheckRequired: result.recheckRequired ?? false,
+          reworkResult: result.reworkResult ?? '',
+          reworkOperator: result.reworkOperator ?? '',
+          reworkRemark: result.reworkRemark ?? '',
+          reworkCompletedAt: result.reworkCompletedAt ?? '',
           defectCount: result.defectCount || progress.defectCount || 0,
           primaryDefectType: result.primaryDefectType || progress.primaryDefectType || '',
           maxDefectSeverity: result.maxDefectSeverity || progress.maxDefectSeverity || '',
@@ -209,11 +217,12 @@ export const usePollingStore = defineStore('polling', () => {
       if (filters.deviceName) params.deviceName = filters.deviceName
       if (filters.region) params.region = filters.region
       const response = await request.get('/api/detection/tasks', { params })
-      if (!response.data || response.data.code !== 200) return { records: [], total: 0 }
+      if (!response.data || response.data.code !== 200) return { records: [], total: null, ok: false, httpStatus:response.data?.code || response.status, message: response.data?.message || '任务记录暂不可读取' }
 
-      const data = response.data.data || {}
-      const backendTasks = data.records || data || []
-      const total = data.total || backendTasks.length
+      const data = response.data.data
+      if (!Array.isArray(data?.records) || data.records.some(task => !task || typeof task.taskId !== 'string' || !task.taskId.trim()) || new Set(data.records.map(task=>task.taskId)).size !== data.records.length) return {records:[],total:null,ok:false,message:'任务列表结构未完整读取，请重新核对'}
+      const backendTasks = data.records
+      const total = knownCount(data.total)
 
       for (const bt of backendTasks) {
         const existingIdx = taskStore.findTaskIndex(bt.taskId)
@@ -226,6 +235,8 @@ export const usePollingStore = defineStore('polling', () => {
             batchNo: bt.batchNo || '',
             workOrderNo: bt.workOrderNo || '',
             flowStatus: bt.flowStatus || '',
+            status: bt.status,
+            qualityActions: bt.qualityActions,
             reviewStatus: bt.reviewStatus || '',
             reviewConclusion: bt.reviewConclusion || '',
             severityLevel: bt.severityLevel || '',
@@ -236,6 +247,7 @@ export const usePollingStore = defineStore('polling', () => {
             reviewedAt: bt.reviewedAt || '',
             qualityStation: bt.qualityStation || '',
             assignee: bt.assignee || '',
+            assignmentRevision: bt.assignmentRevision ?? null,
             assignmentRemark: bt.assignmentRemark || '',
             assignedAt: bt.assignedAt || '',
             dueAt: bt.dueAt || '',
@@ -291,30 +303,34 @@ export const usePollingStore = defineStore('polling', () => {
             error: bt.errorMessage || existing.error,
             batchNo: bt.batchNo || existing.batchNo || '',
             workOrderNo: bt.workOrderNo || existing.workOrderNo || '',
-            flowStatus: bt.flowStatus || existing.flowStatus || '',
-            reviewStatus: bt.reviewStatus || existing.reviewStatus || '',
-            reviewConclusion: bt.reviewConclusion || existing.reviewConclusion || '',
-            severityLevel: bt.severityLevel || existing.severityLevel || '',
-            confirmedDefectCount: bt.confirmedDefectCount ?? existing.confirmedDefectCount ?? 0,
-            falsePositiveCount: bt.falsePositiveCount ?? existing.falsePositiveCount ?? 0,
-            reviewRemark: bt.reviewRemark || existing.reviewRemark || '',
-            reviewer: bt.reviewer || existing.reviewer || '',
-            reviewedAt: bt.reviewedAt || existing.reviewedAt || '',
-            qualityStation: bt.qualityStation || existing.qualityStation || '',
-            assignee: bt.assignee || existing.assignee || '',
-            assignmentRemark: bt.assignmentRemark || existing.assignmentRemark || '',
-            assignedAt: bt.assignedAt || existing.assignedAt || '',
-            dueAt: bt.dueAt || existing.dueAt || '',
-            dispositionStatus: bt.dispositionStatus || existing.dispositionStatus || '',
-            dispositionAction: bt.dispositionAction || existing.dispositionAction || '',
-            dispositionRemark: bt.dispositionRemark || existing.dispositionRemark || '',
-            dispositionOperator: bt.dispositionOperator || existing.dispositionOperator || '',
-            disposedAt: bt.disposedAt || existing.disposedAt || '',
-            recheckRequired: bt.recheckRequired ?? existing.recheckRequired ?? false,
-            reworkResult: bt.reworkResult || existing.reworkResult || '',
-            reworkOperator: bt.reworkOperator || existing.reworkOperator || '',
-            reworkRemark: bt.reworkRemark || existing.reworkRemark || '',
-            reworkCompletedAt: bt.reworkCompletedAt || existing.reworkCompletedAt || '',
+            flowStatus: bt.flowStatus ?? '',
+            status: bt.status,
+            qualityActions: bt.qualityActions,
+            reviewStatus: bt.reviewStatus ?? '',
+            reviewConclusion: bt.reviewConclusion ?? '',
+            severityLevel: bt.severityLevel ?? '',
+            confirmedDefectCount: bt.confirmedDefectCount ?? 0,
+            falsePositiveCount: bt.falsePositiveCount ?? 0,
+            reviewRemark: bt.reviewRemark ?? '',
+            reviewer: bt.reviewer ?? '',
+            reviewedAt: bt.reviewedAt ?? '',
+            qualityStation: bt.qualityStation ?? '',
+            assignee: bt.assignee ?? '',
+            assignmentRevision: bt.assignmentRevision ?? null,
+            assignmentRemark: bt.assignmentRemark ?? '',
+            assignedAt: bt.assignedAt ?? '',
+            dueAt: bt.dueAt ?? '',
+            // A cleared server field ends the previous disposition; never revive the cached value.
+            dispositionStatus: bt.dispositionStatus ?? '',
+            dispositionAction: bt.dispositionAction ?? '',
+            dispositionRemark: bt.dispositionRemark ?? '',
+            dispositionOperator: bt.dispositionOperator ?? '',
+            disposedAt: bt.disposedAt ?? '',
+            recheckRequired: bt.recheckRequired ?? false,
+            reworkResult: bt.reworkResult ?? '',
+            reworkOperator: bt.reworkOperator ?? '',
+            reworkRemark: bt.reworkRemark ?? '',
+            reworkCompletedAt: bt.reworkCompletedAt ?? '',
             defectCount: bt.defectCount ?? existing.defectCount ?? 0,
             primaryDefectType: bt.primaryDefectType || existing.primaryDefectType || '',
             maxDefectSeverity: bt.maxDefectSeverity || existing.maxDefectSeverity || '',
@@ -337,10 +353,10 @@ export const usePollingStore = defineStore('polling', () => {
       // 确保全局轮询在有任务时运行
       ensurePolling()
 
-      return { records: backendTasks, total }
+      return { records: backendTasks, total, ok: true }
     } catch (err) {
       console.error('从后端加载任务列表失败:', err)
-      return { records: [], total: 0 }
+      return { records: [], total: null, ok: false, httpStatus:err.response?.status, message: '任务记录暂不可读取，请重新核对' }
     }
   }
 
@@ -366,13 +382,20 @@ export const usePollingStore = defineStore('polling', () => {
   // 批量获取任务结果（用于检测记录页面）
   const fetchTaskResults = async (taskIds) => {
     const taskStore = useTaskStore()
-    const promises = taskIds.map(async (taskId) => {
+    const requestedIds = [...new Set((Array.isArray(taskIds) ? taskIds : []).filter(id => typeof id === 'string' && id.trim()))]
+    const promises = requestedIds.map(async (taskId) => {
       try {
         const res = await request.get(`/api/detection/tasks/${taskId}/result`)
         if (res.data && res.data.code === 200) {
           const result = res.data.data
+          const invalidCollections = result && ['previewImages','defectEvidence'].some(key => result[key] != null && (!Array.isArray(result[key]) || result[key].some(item => !item || typeof item !== 'object' || Array.isArray(item))))
+          const invalidObjects = result && ['captureInfo','statistics'].some(key => result[key] != null && (typeof result[key] !== 'object' || Array.isArray(result[key])))
+          if (!result || result.taskId !== taskId || invalidCollections || invalidObjects) return { taskId,ok:false,message:'任务结果编号或预览资料未完整读取' }
           taskStore.updateTask(taskId, {
             result,
+            status: result.status,
+            flowStatus: result.flowStatus,
+            qualityActions: result.qualityActions,
             reviewStatus: result.reviewStatus || '',
             reviewConclusion: result.reviewConclusion || '',
             severityLevel: result.severityLevel || '',
@@ -383,6 +406,7 @@ export const usePollingStore = defineStore('polling', () => {
             reviewedAt: result.reviewedAt || '',
             qualityStation: result.qualityStation || '',
             assignee: result.assignee || '',
+            assignmentRevision: result.assignmentRevision ?? null,
             assignmentRemark: result.assignmentRemark || '',
             assignedAt: result.assignedAt || '',
             dueAt: result.dueAt || '',
@@ -401,10 +425,13 @@ export const usePollingStore = defineStore('polling', () => {
             maxDefectSeverity: result.maxDefectSeverity || '',
             defectEvidence: result.defectEvidence || []
           })
+          return { taskId,ok:true,result }
         }
-      } catch { /* 忽略 */ }
+        return { taskId,ok:false,httpStatus:res.data?.code || res.status,message:'任务结果暂不可读取，请重新核对' }
+      } catch (error) { return {taskId,ok:false,httpStatus:error.response?.status,message:'任务结果暂不可读取，请重新核对'} }
     })
-    await Promise.allSettled(promises)
+    const receipts = await Promise.allSettled(promises)
+    return receipts.map((receipt,index) => receipt.status === 'fulfilled' ? receipt.value : {taskId:requestedIds[index],ok:false,message:'任务结果读取未完成，请重新核对'})
   }
 
   return {

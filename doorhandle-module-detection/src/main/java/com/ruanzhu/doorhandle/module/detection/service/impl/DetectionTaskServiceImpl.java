@@ -39,6 +39,7 @@ import com.ruanzhu.doorhandle.module.detection.service.DetectionTaskService;
 import com.ruanzhu.doorhandle.module.model.service.ModelService;
 import com.ruanzhu.doorhandle.module.infra.service.OssStorageService;
 import com.ruanzhu.doorhandle.module.detection.security.DetectionTaskAccessPolicy;
+import com.ruanzhu.doorhandle.module.detection.service.detection.DetectionQualityWorkflow;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.cache.annotation.CacheEvict;
@@ -71,9 +72,39 @@ import java.util.UUID;
 import java.util.stream.Collectors;
 
 @Service
+@Transactional
 @RequiredArgsConstructor
 @Slf4j
 public class DetectionTaskServiceImpl implements DetectionTaskService {
+    private com.ruanzhu.doorhandle.module.detection.service.DetectionIdentityService identities;
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    public void setIdentities(com.ruanzhu.doorhandle.module.detection.service.DetectionIdentityService value){identities=value;}
+    private void saveIdentity(DetectionTask task){if(identities!=null)identities.sync(task);}
+    @org.springframework.beans.factory.annotation.Value("${detection.assignment-writes-enabled:true}") private boolean assignmentWrites=true;
+    private com.ruanzhu.doorhandle.contracts.agent.AgentUserDirectory assignmentUsers;
+    private com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory assignmentActors;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setAssignmentDirectory(com.ruanzhu.doorhandle.contracts.agent.AgentUserDirectory users,com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory actors){assignmentUsers=users;assignmentActors=actors;}
+    private com.ruanzhu.doorhandle.module.detection.service.detection.DetectionDispatchOutbox outbox;
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    public void setOutbox(com.ruanzhu.doorhandle.module.detection.service.detection.DetectionDispatchOutbox value){outbox=value;}
+    private void dispatch(DetectionTask task){
+        dispatch(task,null,null);
+    }
+    private void dispatch(DetectionTask task,com.ruanzhu.doorhandle.contracts.agent.AgentActor actor,String requestId){
+        if(outbox!=null){
+            task.setStatus("QUEUED");task.setStage("QUEUED");
+            if(detectionTaskMapper.updateById(task)!=1)throw new BusinessException("检测排队状态保存失败");
+            if(actor==null)outbox.enqueue(buildCreatedEvent(task));else outbox.enqueue(buildCreatedEvent(task),actor,requestId);
+            return;
+        }
+        if(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive()){
+            org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(new org.springframework.transaction.support.TransactionSynchronization(){
+                @Override public void afterCommit(){detectionTaskDispatchService.dispatchTaskAsync(task.getTaskId());}
+            });
+        }else detectionTaskDispatchService.dispatchTaskAsync(task.getTaskId());
+    }
+
 
     private static final Set<String> SUPPORTED_REVIEW_CONCLUSIONS = Set.of(
             "CONFIRMED_DEFECT", "FALSE_POSITIVE", "NORMAL_RELEASE", "NEEDS_RECHECK"
@@ -81,9 +112,6 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
     private static final Set<String> SUPPORTED_SEVERITY_LEVELS = Set.of("MINOR", "MAJOR", "CRITICAL");
     private static final Set<String> SUPPORTED_DISPOSITION_ACTIONS = Set.of(
             "RELEASE", "REWORK", "RECHECK", "HOLD", "SCRAP"
-    );
-    private static final Set<String> DISPOSITION_FLOW_STATUSES = Set.of(
-            "RELEASED", "REWORK_REQUIRED", "RECHECK_REQUIRED", "HOLD", "SCRAPPED"
     );
     private static final Set<String> SUPPORTED_UPLOAD_IMAGE_CONTENT_TYPES = Set.of(
             "image/jpeg", "image/png", "image/bmp", "image/x-ms-bmp", "application/octet-stream"
@@ -108,6 +136,7 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
 
     @Override
     @CacheEvict(cacheNames = {"detection-task", "dashboard", "model"}, allEntries = true)
+    @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DETECTION",action="createTask")
     public CreateDetectionTaskResponse createTask(CreateDetectionTaskRequest request) {
         if (!ossStorageService.isConfigured()) {
             throw new BusinessException("OSS 未配置，暂时无法创建云端检测任务");
@@ -171,6 +200,7 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
         task.setCreatedAt(now);
         task.setUpdatedAt(now);
         detectionTaskMapper.insert(task);
+        if(identities!=null)identities.recordCreation(task);
         if (modelInfo != null && modelInfo.getModelId() != null) {
             modelService.incrementUsageStats(modelInfo.getModelId(), now);
         }
@@ -189,6 +219,7 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
     }
 
     @Override
+    @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DETECTION",action="resumeUpload")
     public ResumeUploadResponse resumeUpload(String taskId, ResumeUploadRequest request) {
         DetectionTask task = getTask(taskId);
         if (!"UPLOADING".equals(task.getStatus())) {
@@ -220,6 +251,7 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
 
     @Override
     @CacheEvict(cacheNames = {"detection-task", "dashboard", "model"}, allEntries = true)
+    @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DETECTION",action="confirmUploaded")
     public DetectionTaskProgressResponse confirmUploaded(String taskId, DetectionTaskUploadedRequest request) {
         DetectionTask task = getTask(taskId);
         if (!Set.of("UPLOADING", "FAILED").contains(task.getStatus())) {
@@ -263,7 +295,7 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
         task.setErrorMessage(null);
         task.setUpdatedAt(now);
 
-        detectionTaskDispatchService.dispatchTaskAsync(taskId);
+        dispatch(task);
         return buildProgressResponse(task, "原图上传完成，已开始提交远程检测任务");
     }
 
@@ -304,9 +336,11 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
                 .batchNo(task.getBatchNo())
                 .workOrderNo(task.getWorkOrderNo())
                 .flowStatus(task.getFlowStatus())
+                .qualityActions(DetectionQualityWorkflow.actions(task))
                 .qualityStation(task.getQualityStation())
                 .assignee(task.getAssignee())
                 .assignmentRemark(task.getAssignmentRemark())
+                .assignmentRevision(assignmentRevision(task))
                 .assignedAt(formatDateTime(task.getAssignedAt()))
                 .dueAt(formatDateTime(task.getDueAt()))
                 .captureInfo(buildCaptureInfo(task))
@@ -392,6 +426,7 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
                 .qualityStation(task.getQualityStation())
                 .assignee(task.getAssignee())
                 .assignmentRemark(task.getAssignmentRemark())
+                .assignmentRevision(assignmentRevision(task))
                 .assignedAt(formatDateTime(task.getAssignedAt()))
                 .dueAt(formatDateTime(task.getDueAt()))
                 .status(task.getStatus())
@@ -618,30 +653,51 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
 
     @Override
     @CacheEvict(cacheNames = {"detection-task", "dashboard"}, allEntries = true)
+    @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DETECTION",action="advanceTaskFlow",supervisorOnly=true)
     public DetectionTaskProgressResponse advanceTaskFlow(String taskId, String targetFlowStatus) {
-        DetectionTask task = getTask(taskId);
+        if (!accessPolicy.isAdmin(SecurityContextHolder.getContext().getAuthentication())) {
+            throw new BusinessException(403, "仅主管可以归档任务");
+        }
+        DetectionTask task = getTaskForQualityMutation(taskId);
         String normalizedTarget = normalizeFlowStatus(targetFlowStatus);
-        validateFlowTransition(task.getFlowStatus(), normalizedTarget);
+        DetectionQualityWorkflow.assertGenericTransition(task, normalizedTarget);
+        if (normalizedTarget.equals(task.getFlowStatus())) {
+            return buildProgressResponse(task, "任务已经归档，未再次变更");
+        }
 
         task.setFlowStatus(normalizedTarget);
         task.setUpdatedAt(LocalDateTime.now());
         detectionTaskMapper.updateById(task);
+        saveIdentity(task);
         return buildProgressResponse(task, "任务已流转到 " + normalizedTarget);
     }
 
     @Override
     @CacheEvict(cacheNames = {"detection-task", "dashboard"}, allEntries = true)
+    @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DETECTION",action="assignQualityTask",supervisorOnly=true)
     public DetectionTaskProgressResponse assignQualityTask(String taskId, DetectionTaskAssignmentRequest request) {
-        DetectionTask task = getTask(taskId);
-        if (!"COMPLETED".equals(task.getStatus()) && !"PARTIAL_FAILED".equals(task.getStatus())) {
-            throw new BusinessException("只有已完成检测任务才能分派质检");
-        }
-        if (isFinalQualityClosed(task)) {
-            throw new BusinessException("已关闭任务不能重新分派质检");
-        }
+        if(!assignmentWrites)throw new BusinessException(503,"当前兼容模式暂停质检分派，请保留草稿并查询已有结果");
+        var authentication=SecurityContextHolder.getContext().getAuthentication();
+        var query=new LambdaQueryWrapper<DetectionTask>().eq(DetectionTask::getTaskId,taskId);
+        accessPolicy.applyScope(query,authentication);query.last("FOR UPDATE");
+        DetectionTask task=detectionTaskMapper.selectOne(query);
+        if(task==null)throw new BusinessException("任务不存在或无访问权限");
+        var operator=assignmentActors.authenticated();
+        assignmentUsers.assertSupervisor(new com.ruanzhu.doorhandle.contracts.agent.AgentActor(operator.userId(),operator.username(),operator.supervisor()?com.ruanzhu.doorhandle.contracts.agent.AgentActor.Role.SUPERVISOR:com.ruanzhu.doorhandle.contracts.agent.AgentActor.Role.INSPECTOR));
+        DetectionQualityWorkflow.assertAssignable(task);
         if (request == null || !StringUtils.hasText(request.getQualityStation()) || !StringUtils.hasText(request.getAssignee())) {
             throw new BusinessException("质检站点和责任人不能为空");
         }
+        var recipient=assignmentUsers.inspector(request.getAssignee().trim());
+        var identity=identities==null?null:identities.assignmentIdentity(taskId);
+        if(identity!=null && (request.getAssigneeUserId()==null||request.getAssigneeRevision()==null||request.getExpectedAssignmentRevision()==null))
+            throw new BusinessException(409,"分派需要已核对的账号和任务版本，请刷新后重新选择责任人");
+        if(request.getExpectedAssignmentRevision()!=null && (identity==null||!Objects.equals(request.getExpectedAssignmentRevision(),identity.revision())))
+            throw new BusinessException(409,"分派版本已变化，请刷新任务后重新确认");
+        if((request.getAssigneeUserId()!=null||request.getAssigneeRevision()!=null)
+                &&(!Objects.equals(request.getAssigneeUserId(),recipient.userId())||!Objects.equals(request.getAssigneeRevision(),recipient.revision())))
+            throw new com.ruanzhu.doorhandle.contracts.agent.DetectionAssignmentApi.ResourceChanged();
+        assignmentUsers.lockInspector(recipient);
 
         LocalDateTime now = LocalDateTime.now();
         task.setQualityStation(request.getQualityStation().trim());
@@ -649,24 +705,20 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
         task.setAssignmentRemark(request.getAssignmentRemark());
         task.setAssignedAt(now);
         task.setDueAt(parseDateTime(request.getDueAt(), null));
-        if (!"REWORK_REQUIRED".equals(task.getFlowStatus())) {
-            task.setFlowStatus("REVIEWING");
-        }
+        task.setFlowStatus(DetectionQualityWorkflow.assignedFlow(task));
         task.setUpdatedAt(now);
         detectionTaskMapper.updateById(task);
+        if(identities!=null)identities.recordAssignment(task,recipient);
+        saveIdentity(task);
         return buildProgressResponse(task, "质检任务已分派");
     }
 
     @Override
     @CacheEvict(cacheNames = {"detection-task", "dashboard"}, allEntries = true)
+    @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DETECTION",action="reviewTask")
     public DetectionTaskProgressResponse reviewTask(String taskId, DetectionReviewRequest request) {
-        DetectionTask task = getTask(taskId);
-        if (!"COMPLETED".equals(task.getStatus()) && !"PARTIAL_FAILED".equals(task.getStatus())) {
-            throw new BusinessException("只有已完成检测任务才能复核");
-        }
-        if (isQualityDisposed(task)) {
-            throw new BusinessException("已处置任务不能重复复核");
-        }
+        DetectionTask task = getTaskForQualityMutation(taskId);
+        DetectionQualityWorkflow.assertReviewable(task);
 
         String reviewConclusion = normalizeReviewConclusion(request == null ? null : request.getReviewConclusion());
         String severityLevel = normalizeSeverityLevel(request == null ? null : request.getSeverityLevel());
@@ -685,17 +737,20 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
         task.setFlowStatus("CONFIRMED");
         task.setUpdatedAt(LocalDateTime.now());
         detectionTaskMapper.updateById(task);
+        if(identities!=null)identities.recordPerformed(task,"reviewer");
+        saveIdentity(task);
         return buildProgressResponse(task, "人工复核已完成");
     }
 
     @Override
     @CacheEvict(cacheNames = {"detection-task", "dashboard"}, allEntries = true)
+    @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DETECTION",action="disposeTask")
     public DetectionTaskProgressResponse disposeTask(String taskId, DetectionDispositionRequest request) {
-        DetectionTask task = getTask(taskId);
-        validateDispositionReady(task);
-
+        DetectionTask task = getTaskForQualityMutation(taskId);
         String action = normalizeDispositionAction(request == null ? null : request.getDispositionAction());
-        validateDispositionAction(task, action);
+        boolean recheck = "RECHECK".equals(action)
+                || Boolean.TRUE.equals(request == null ? null : request.getRecheckRequired());
+        DetectionQualityWorkflow.assertDisposition(task, action, recheck);
 
         LocalDateTime now = LocalDateTime.now();
         task.setDispositionStatus("DISPOSED");
@@ -703,31 +758,30 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
         task.setDispositionRemark(request == null ? null : request.getDispositionRemark());
         task.setDispositionOperator(resolveCurrentUsername());
         task.setDisposedAt(now);
-        task.setRecheckRequired("RECHECK".equals(action) || Boolean.TRUE.equals(request == null ? null : request.getRecheckRequired()));
-        task.setFlowStatus(resolveDispositionFlowStatus(action, task.getRecheckRequired()));
+        task.setRecheckRequired(recheck);
+        task.setFlowStatus(resolveDispositionFlowStatus(action));
         task.setUpdatedAt(now);
         detectionTaskMapper.updateById(task);
+        if(identities!=null)identities.recordPerformed(task,"disposition");
+        saveIdentity(task);
 
         return buildProgressResponse(task, "质检处置已完成: " + action);
     }
 
     @Override
     @CacheEvict(cacheNames = {"detection-task", "dashboard"}, allEntries = true)
+    @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DETECTION",action="submitReworkResult")
     public DetectionTaskProgressResponse submitReworkResult(String taskId, DetectionReworkResultRequest request) {
-        DetectionTask task = getTask(taskId);
-        if (!"REWORK_REQUIRED".equals(task.getFlowStatus())) {
-            throw new BusinessException("只有待返工任务才能回填返工结果");
-        }
+        DetectionTask task = getTaskForQualityMutation(taskId);
         if (request == null || !StringUtils.hasText(request.getReworkResult())) {
             throw new BusinessException("返工结果不能为空");
         }
 
         LocalDateTime now = LocalDateTime.now();
         boolean recheckRequired = Boolean.TRUE.equals(request.getRecheckRequired());
+        DetectionQualityWorkflow.assertRework(task, recheckRequired);
         task.setReworkResult(request.getReworkResult().trim());
-        task.setReworkOperator(StringUtils.hasText(request.getReworkOperator())
-                ? request.getReworkOperator().trim()
-                : resolveCurrentUsername());
+        task.setReworkOperator(resolveCurrentUsername());
         task.setReworkRemark(request.getReworkRemark());
         task.setReworkCompletedAt(now);
         task.setRecheckRequired(recheckRequired);
@@ -740,15 +794,37 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
         task.setFlowStatus(recheckRequired ? "RECHECK_REQUIRED" : "PENDING_REVIEW");
         task.setUpdatedAt(now);
         detectionTaskMapper.updateById(task);
+        if(detectionTaskMapper.clearDispositionForRework(task.getTaskId())!=1)throw new BusinessException("返工后的处置状态清空未确认");
+        if(identities!=null)identities.clearPerformed(task,"disposition");
+        if(identities!=null)identities.recordPerformed(task,"rework");
+        saveIdentity(task);
         return buildProgressResponse(task, recheckRequired ? "返工结果已提交，等待复检" : "返工结果已提交，等待复核");
     }
 
     @Override
     @CacheEvict(cacheNames = {"detection-task", "dashboard", "model"}, allEntries = true)
+    @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DETECTION",action="retryTask")
     public DetectionTaskProgressResponse retryTask(String taskId) {
-        DetectionTask task = getTask(taskId);
+        DetectionTask task = getTaskForSystemLocked(taskId);
+        accessPolicy.assertCanAccess(task,SecurityContextHolder.getContext().getAuthentication());
         validateRetryable(task);
+        return retryPreparedTask(task,null,null);
+    }
 
+    @Override
+    @CacheEvict(cacheNames = {"detection-task", "dashboard", "model"}, allEntries = true)
+    public DetectionTaskProgressResponse retryTaskForAgent(com.ruanzhu.doorhandle.contracts.agent.AgentActor actor,String taskId,String requestId) {
+        if(outbox==null || !org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive())
+            throw new IllegalStateException("Agent 检测重试必须使用同事务消息与命令回执");
+        var query=new com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<DetectionTask>().eq("task_id",taskId);
+        accessPolicy.applyScope(query,actor);query.last("FOR UPDATE");
+        var task=detectionTaskMapper.selectOne(query);
+        if(task==null)throw new SecurityException("任务不存在或无访问权限");
+        validateRetryable(task);
+        return retryPreparedTask(task,actor,requestId);
+    }
+
+    private DetectionTaskProgressResponse retryPreparedTask(DetectionTask task,com.ruanzhu.doorhandle.contracts.agent.AgentActor actor,String requestId) {
         LocalDateTime now = LocalDateTime.now();
         task.setStatus("UPLOADED");
         task.setStage("UPLOADED");
@@ -784,14 +860,17 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
         task.setDispatchId(UUID.randomUUID().toString());
         task.setLastFinishedEventId(null);
         task.setUpdatedAt(now);
-        detectionTaskMapper.updateById(task);
+        if(detectionTaskMapper.resetForRetry(task)!=1)throw new BusinessException("重新检测状态保存失败");
+        if(identities!=null)identities.clearPerformed(task,"reviewer","disposition");
+        saveIdentity(task);
 
-        detectionTaskDispatchService.dispatchTaskAsync(taskId);
+        dispatch(task,actor,requestId);
         return buildProgressResponse(task, "重新检测任务已提交");
     }
 
     @Override
     @CacheEvict(cacheNames = {"detection-task", "dashboard"}, allEntries = true)
+    @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DETECTION",action="markUploaded")
     public void markUploaded(String taskId, List<DetectionUploadedFileItem> uploadedFiles) {
         DetectionTaskUploadedRequest request = new DetectionTaskUploadedRequest();
         request.setUploadedFiles(uploadedFiles);
@@ -864,6 +943,7 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
             task.setLastFinishedEventId(event.getEventId());
         }
         detectionTaskMapper.updateById(task);
+        saveIdentity(task);
 
         task.setProcessedImages(event.getTotalImages() != null ? event.getTotalImages() : task.getTotalImages());
         task.setSuccessfulImages(event.getSuccessfulImages() != null ? event.getSuccessfulImages() : 0);
@@ -897,6 +977,7 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
             }
         }
         detectionTaskMapper.updateById(task);
+        saveIdentity(task);
 
         // 检测完成通知：如果任务是从聊天助手创建的，发送通知消息
         notifyDetectionCompleted(task);
@@ -940,6 +1021,7 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
         task.setFinishedAt(LocalDateTime.now());
         task.setUpdatedAt(LocalDateTime.now());
         detectionTaskMapper.updateById(task);
+        saveIdentity(task);
     }
 
     public List<String> readJsonList(String json) {
@@ -1200,6 +1282,7 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
     private DetectionTaskProgressResponse buildProgressResponse(DetectionTask task, String messageOverride) {
         LocalDateTime updatedAt = task.getUpdatedAt() != null ? task.getUpdatedAt() : task.getCreatedAt();
         String folderName = buildFolderLabel(task);
+        var identity=identities==null?null:identities.assignmentIdentity(task.getTaskId());
         return DetectionTaskProgressResponse.builder()
                 .taskId(task.getTaskId())
                 .workflowUuid(task.getWorkflowUuid())
@@ -1208,8 +1291,10 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
                 .batchNo(task.getBatchNo())
                 .workOrderNo(task.getWorkOrderNo())
                 .flowStatus(task.getFlowStatus())
+                .qualityActions(DetectionQualityWorkflow.actions(task))
                 .qualityStation(task.getQualityStation())
                 .assignee(task.getAssignee())
+                .assignmentRevision(identity==null?null:identity.revision())
                 .assignmentRemark(task.getAssignmentRemark())
                 .assignedAt(formatDateTime(task.getAssignedAt()))
                 .dueAt(formatDateTime(task.getDueAt()))
@@ -1252,6 +1337,11 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
                 .imageFolderName(task.getImageFolderName())
                 .sourceOssPrefix(task.getSourceOssPrefix())
                 .build();
+    }
+
+    private Long assignmentRevision(DetectionTask task){
+        var identity=identities==null?null:identities.assignmentIdentity(task.getTaskId());
+        return identity==null?null:identity.revision();
     }
 
     private String buildFolderLabel(DetectionTask task) {
@@ -1297,6 +1387,15 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
     private DetectionTask getTask(String taskId) {
         DetectionTask task = getTaskForSystem(taskId);
         accessPolicy.assertCanAccess(task, SecurityContextHolder.getContext().getAuthentication());
+        return task;
+    }
+    /** Serialize business decisions against the same current, authorized task row. */
+    private DetectionTask getTaskForQualityMutation(String taskId) {
+        var query = new LambdaQueryWrapper<DetectionTask>().eq(DetectionTask::getTaskId, taskId);
+        accessPolicy.applyScope(query, SecurityContextHolder.getContext().getAuthentication());
+        query.last("FOR UPDATE");
+        DetectionTask task = detectionTaskMapper.selectOne(query);
+        if (task == null) throw new BusinessException(404, "任务不存在或无访问权限");
         return task;
     }
 
@@ -1430,74 +1529,20 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
         return action;
     }
 
-    private void validateDispositionReady(DetectionTask task) {
-        if (!"COMPLETED".equals(task.getStatus()) && !"PARTIAL_FAILED".equals(task.getStatus())) {
-            throw new BusinessException("只有已完成检测任务才能处置");
-        }
-        if (!"REVIEWED".equals(task.getReviewStatus())) {
-            throw new BusinessException("检测任务需先完成人工复核再处置");
-        }
-        if (isQualityDisposed(task)) {
-            throw new BusinessException("任务已完成质检处置，不能重复处置");
-        }
-    }
-
-    private void validateDispositionAction(DetectionTask task, String action) {
-        if ("RELEASE".equals(action)
-                && !"NORMAL_RELEASE".equals(task.getReviewConclusion())
-                && !"FALSE_POSITIVE".equals(task.getReviewConclusion())) {
-            throw new BusinessException("存在确认缺陷或待复检结论的任务不能直接放行");
-        }
-    }
-
     private void validateRetryable(DetectionTask task) {
-        boolean retryable = "FAILED".equals(task.getStatus())
-                || "FAILED".equals(task.getFlowStatus())
-                || "RECHECK_REQUIRED".equals(task.getFlowStatus())
-                || "REWORK_REQUIRED".equals(task.getFlowStatus());
-        if (!retryable) {
-            throw new BusinessException("当前任务状态不支持重新检测");
-        }
-        if (readJsonList(task.getOriginalImageKeysJson()).isEmpty()) {
-            throw new BusinessException("任务缺少原图证据，无法重新检测");
-        }
+        com.ruanzhu.doorhandle.module.detection.service.detection.DetectionRetryPolicy.assertEligible(task,objectMapper);
     }
 
-    private String resolveDispositionFlowStatus(String action, Boolean recheckRequired) {
-        if (Boolean.TRUE.equals(recheckRequired)) {
-            return "RECHECK_REQUIRED";
-        }
+    private String resolveDispositionFlowStatus(String action) {
+        // The chosen action determines the current phase. A future recheck must not skip rework.
         return switch (action) {
             case "RELEASE" -> "RELEASED";
             case "REWORK" -> "REWORK_REQUIRED";
             case "RECHECK" -> "RECHECK_REQUIRED";
             case "HOLD" -> "HOLD";
             case "SCRAP" -> "SCRAPPED";
-            default -> "DISPOSED";
+            default -> throw new BusinessException(400, "不支持的处置动作");
         };
-    }
-
-    private void validateFlowTransition(String currentFlowStatus, String targetFlowStatus) {
-        String current = StringUtils.hasText(currentFlowStatus) ? currentFlowStatus : "PENDING_REVIEW";
-        if (DISPOSITION_FLOW_STATUSES.contains(targetFlowStatus)) {
-            throw new BusinessException("处置类状态请通过质检处置接口流转");
-        }
-        Map<String, List<String>> allowedTransitions = Map.of(
-                "PENDING_REVIEW", List.of("REVIEWING", "CONFIRMED"),
-                "REVIEWING", List.of("CONFIRMED", "PENDING_REVIEW"),
-                "CONFIRMED", List.of("RELEASED", "REWORK_REQUIRED", "RECHECK_REQUIRED", "HOLD", "SCRAPPED", "ARCHIVED"),
-                "REWORK_REQUIRED", List.of("RECHECK_REQUIRED", "ARCHIVED"),
-                "RECHECK_REQUIRED", List.of("PENDING_REVIEW", "ARCHIVED"),
-                "HOLD", List.of("REWORK_REQUIRED", "RECHECK_REQUIRED", "RELEASED", "SCRAPPED", "ARCHIVED"),
-                "RELEASED", List.of("ARCHIVED"),
-                "SCRAPPED", List.of("ARCHIVED"),
-                "ARCHIVED", List.of(),
-                "FAILED", List.of("PENDING_REVIEW")
-        );
-        List<String> allowedTargets = allowedTransitions.getOrDefault(current, Collections.emptyList());
-        if (!allowedTargets.contains(targetFlowStatus)) {
-            throw new BusinessException("不允许从 " + current + " 流转到 " + targetFlowStatus);
-        }
     }
 
     private boolean hasQualityDecision(DetectionTask task) {

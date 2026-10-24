@@ -194,6 +194,7 @@ public class DetectionTaskController {
     }
 
     @PostMapping("/{taskId}/flow")
+    @org.springframework.security.access.prepost.PreAuthorize("hasAnyRole('SUPERVISOR','ADMIN')")
     public Result<DetectionTaskProgressResponse> advanceTaskFlow(
             @PathVariable String taskId,
             @RequestParam @NotBlank(message = "目标流转状态不能为空") String target

@@ -102,6 +102,16 @@ def write_json(path, value):
     os.replace(temporary, path)
 
 
+def model_secret_helper():
+    import importlib.util
+    file=Path(__file__).with_name('model-secrets.py')
+    if not file.is_file() or file.is_symlink():
+        raise OpsError('Model Secret backup helper is required')
+    spec=importlib.util.spec_from_file_location('doorhandle_model_secrets',file)
+    module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+    return module
+
+
 def checked_root(value):
     path = Path(value).resolve(strict=True)
     if path == Path(path.anchor) or not (path/'state').is_dir() or not (path/'releases').is_dir():
@@ -232,10 +242,14 @@ def check(root, runtime, minimum_gib=2, maximum_percent=85, maximum_backup_hours
         except (OSError, ValueError, AttributeError):
             pass
     disk_ok = usage.free >= minimum_gib*1024**3 and usage.used/usage.total*100 < maximum_percent
-    result = {'checkedAt': dt.datetime.now(ZONE).isoformat(), 'healthy': bool(disk_ok and private_ok and credentials['healthy'] and receipt_valid and age is not None and age <= maximum_backup_hours),
+    try:
+        model_key=model_secret_helper().status(root,runtime)
+    except Exception:
+        model_key={'healthy':False,'reason':'Model Secret policy, escrow or recovery proof requires review'}
+    result = {'checkedAt': dt.datetime.now(ZONE).isoformat(), 'healthy': bool(disk_ok and private_ok and credentials['healthy'] and model_key['healthy'] and receipt_valid and age is not None and age <= maximum_backup_hours),
               'disk': {'freeBytes': usage.free, 'usedPercent': round(usage.used/usage.total*100, 2), 'healthy': disk_ok},
               'privateConfigurationPermissions': private_ok, 'credentialConfiguration': credentials,
-              'backupAgeHours': age, 'backupReceiptValid': receipt_valid, 'backupContentChecked': False}
+              'backupAgeHours': age, 'backupReceiptValid': receipt_valid, 'backupContentChecked': False,'modelKey':model_key}
     write_json(root/'state/operations-health.json', result)
     return result
 
@@ -345,6 +359,14 @@ def backup(root, runtime, minimum_gib=2):
     private = runtime/'deploy/cloud.env'
     if not private_config_ok(private):
         raise OpsError('Private runtime configuration must have mode 0600')
+    try:
+        model_key=model_secret_helper().backup_key(root,runtime)
+        if model_key.get('enabled') and not model_key.get('decryptionVerified'):
+            raise OpsError('An offline model key restore proof is required before coordinated data backup')
+    except OpsError:
+        raise
+    except Exception as error:
+        raise OpsError('Model Secret escrow backup could not be bound to the data snapshot') from error
     rows = inventory()
     live = [row for row in rows if row['running']]
     for row in live:
@@ -370,7 +392,8 @@ def backup(root, runtime, minimum_gib=2):
     manifest = {'version': 1, 'project': PROJECT, 'createdAt': dt.datetime.now(ZONE).isoformat(),
                 'images': {row['service']: row['image'] for row in live}, 'volumes': {}, 'files': {}, 'estimatedBytes': estimated,
                 'externalBinds': [mount for row in live for mount in row['mounts'] if mount['type'] == 'bind'],
-                'externalObjectStorage': 'OSS objects remain external; preserve bucket data separately'}
+                'externalObjectStorage': 'OSS objects remain external; preserve bucket data separately',
+                'modelKeyEscrow':model_key}
     # A dump alone is not a cross-store snapshot. Briefly quiesce all application writers.
     record = {'version': 1, 'project': PROJECT, 'snapshot': target.name, 'phase': 'QUIESCING', 'containers': stopped}
     try:
@@ -574,8 +597,14 @@ print(json.dumps(result,sort_keys=True))
 '''
 
 
-def restore_drill(root, snapshot, helper_image=None):
+def restore_drill(root, snapshot, helper_image=None, runtime=None):
     manifest = verify(snapshot)
+    if manifest.get('modelKeyEscrow',{}).get('enabled'):
+        # A database/volume-only recovery cannot claim encrypted credentials are recoverable.
+        # The matching external key proof is checked separately; plaintext key is never copied into the snapshot.
+        if runtime is None:raise OpsError('Model key recovery requires the selected external runtime policy')
+        try:model_secret_helper().verify_reference(root,runtime,manifest['modelKeyEscrow'])
+        except Exception as error:raise OpsError('Snapshot external model key recovery proof is unavailable') from error
     if not (snapshot/'COMPLETE').is_file():
         raise OpsError('Only completed snapshots can be drilled')
     images = manifest.get('images', {})
@@ -676,8 +705,9 @@ def main():
             raise OpsError('Snapshot must be inside the release backup directory')
         if args.action == 'verify':
             verify(snapshot);print(json.dumps({'verified': True}));return
+        recovery_runtime=Path(args.runtime).resolve(strict=True) if args.runtime else None
         with maintenance_lock(root, args.lock_fd):
-            print(json.dumps(restore_drill(root, snapshot, args.helper_image)));return
+            print(json.dumps(restore_drill(root, snapshot, args.helper_image, recovery_runtime)));return
     if args.action == 'recover':
         with maintenance_lock(root, args.lock_fd):
             print(json.dumps(recover_maintenance(root)));return

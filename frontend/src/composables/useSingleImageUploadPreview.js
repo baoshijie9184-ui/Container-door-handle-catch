@@ -5,6 +5,7 @@ export const useSingleImageUploadPreview = ({
   fileList,
   detectionResult,
   annotatedImageUrl,
+  isLocked = () => false,
   onReset = () => {}
 }) => {
   let previewObjectUrl = ''
@@ -17,6 +18,7 @@ export const useSingleImageUploadPreview = ({
   }
 
   const handleUploadChange = (uploadFile) => {
+    if (isLocked()) return
     const file = uploadFile.raw
     if (!file) return
 
@@ -32,6 +34,7 @@ export const useSingleImageUploadPreview = ({
   }
 
   const handleRemove = () => {
+    if (isLocked()) return
     releasePreview()
     form.imageFile = null
     fileList.value = []

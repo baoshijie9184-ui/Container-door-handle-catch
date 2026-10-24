@@ -34,16 +34,19 @@ public class AgentScopeConfiguration {
     }
 
     @Bean
-    public AgentModelService agentModelService(AgentModelProperties connections, AgentScopeProperties properties) {
+    public AgentModelService agentModelService(AgentModelProperties connections, AgentScopeProperties properties,org.springframework.beans.factory.ObjectProvider<com.ruanzhu.doorhandle.module.ai.model.ModelConfigurationService> configurations,org.springframework.beans.factory.ObjectProvider<org.springframework.data.redis.core.StringRedisTemplate> redis) {
         var models = new AgentModelService(connections, properties);
-        models.resolve(properties.getModel()); // Fail at startup for an unknown default or missing credentials.
+        models.setConfigurations(configurations.getIfAvailable());
+        if(configurations.getIfAvailable()!=null)models.setCircuitRedis(redis.getObject());
+        models.resolve(models.currentDefault()); // Validate without generating a provider request.
         return models;
     }
 
     @Bean
     public RoleAgentFactory roleAgentFactory(AgentScopeProperties properties, BusinessToolkitFactory toolkits,
             AgentModelService models,org.springframework.beans.factory.ObjectProvider<com.ruanzhu.doorhandle.module.ai.evolution.SkillEvolutionService> evolution,
-            org.springframework.beans.factory.ObjectProvider<com.ruanzhu.doorhandle.module.ai.mcp.LocalMcpService> mcp) {
-        return new RoleAgentFactory(properties, toolkits, models::resolve,evolution.getIfAvailable(),mcp.getIfAvailable());
+            org.springframework.beans.factory.ObjectProvider<com.ruanzhu.doorhandle.module.ai.mcp.LocalMcpService> mcp,
+            org.springframework.beans.factory.ObjectProvider<com.ruanzhu.doorhandle.module.ai.context.DurableContextStore> contexts) {
+        var factory=new RoleAgentFactory(properties, toolkits, models::resolve,evolution.getIfAvailable(),mcp.getIfAvailable());factory.setVersionedModels(models::resolveAt,models::currentDefault);factory.setDurableContexts(contexts.getIfAvailable());return factory;
     }
 }

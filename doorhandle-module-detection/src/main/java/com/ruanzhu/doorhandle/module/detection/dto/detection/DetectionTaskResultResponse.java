@@ -14,8 +14,11 @@ public class DetectionTaskResultResponse {
     private String batchNo;
     private String workOrderNo;
     private String flowStatus;
+    /** State hints only; each mutation rechecks current account permissions. */
+    private List<DetectionQualityAction> qualityActions;
     private String qualityStation;
     private String assignee;
+    private Long assignmentRevision;
     private String assignmentRemark;
     private String assignedAt;
     private String dueAt;

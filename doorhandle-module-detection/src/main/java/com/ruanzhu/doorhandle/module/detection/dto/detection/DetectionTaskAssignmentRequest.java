@@ -8,4 +8,7 @@ public class DetectionTaskAssignmentRequest {
     private String assignee;
     private String dueAt;
     private String assignmentRemark;
+    private Long assigneeUserId;
+    private String assigneeRevision;
+    private Long expectedAssignmentRevision;
 }

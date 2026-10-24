@@ -21,6 +21,7 @@ public class OrganizationDepartmentService implements OrganizationDirectoryApi {
                 .stream().map(d -> new DepartmentIdentity(d.getId(), d.getName())).toList();
     }
     @Transactional
+    @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="ORGANIZATION",action="CREATE_DEPARTMENT",resource="result.id",supervisorOnly=true)
     public DepartmentIdentity create(String name) {
         if (name == null || name.isBlank() || name.trim().length() > 100) throw new BusinessException(400, "部门名称为 1 到 100 个字符");
         String normalized = name.trim();

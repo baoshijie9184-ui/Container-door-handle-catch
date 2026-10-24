@@ -99,6 +99,36 @@ class RoleAgentFactoryTest {
         assertThat(factory.definitions(employee)).allSatisfy(def->assertThat(def.tools()).doesNotContain("propose_quality_assignment"));
         assertThatThrownBy(()->toolkit.create(employee,factory.definitions(supervisor).get(0),"run-1")).isInstanceOf(SecurityException.class);
     }
+    @Test void retryProposalUsesActualSdkAndRoleSpecificSpecialistWithoutExecutingDetection() {
+        for(var actor:java.util.List.of(employee,supervisor)) {
+            var actions=mock(com.ruanzhu.doorhandle.module.ai.action.AgentActionService.class);
+            when(actions.enabled()).thenReturn(true);when(actions.retryEnabled()).thenReturn(true);
+            var preview=new DetectionExecutionApi.RetryPreview("task-1","a".repeat(64),"FAILED","FAILED","dispatch-old",12,new java.math.BigDecimal("0.5"),2,"重置结果和复核状态");
+            var pending=new com.ruanzhu.doorhandle.module.ai.action.AgentActionService.View("retry-1","run-1","session-1","RETRY_DETECTION","PENDING",1,null,null,null,null,null,null,preview,null);
+            when(actions.proposeRetry(actor,"run-1","retry-call","task-1")).thenReturn(pending);
+            var model=mock(Model.class);when(model.getModelName()).thenReturn("retry-fixture");var step=new java.util.concurrent.atomic.AtomicInteger();
+            String specialist=actor.supervisor()?"detection-quality":"detection-task";
+            when(model.stream(anyList(),anyList(),any())).thenAnswer(inv->{
+                io.agentscope.core.message.ContentBlock block=switch(step.getAndIncrement()) {
+                    case 0->io.agentscope.core.message.ToolUseBlock.builder().id("delegate-retry").name("delegate_"+specialist.replace('-','_')).input(java.util.Map.of("question","请为 task-1 提出重试，等待我确认")).content("{\"question\":\"请为 task-1 提出重试，等待我确认\"}").build();
+                    case 1->io.agentscope.core.message.ToolUseBlock.builder().id("retry-call").name("propose_detection_retry").input(java.util.Map.of("taskId","task-1")).content("{\"taskId\":\"task-1\"}").build();
+                    default->io.agentscope.core.message.TextBlock.builder().text("重试提议待确认，尚未派发检测").build();
+                };
+                return reactor.core.publisher.Flux.just(io.agentscope.core.model.ChatResponse.builder().content(java.util.List.of(block)).build());
+            });
+            var settings=new AgentScopeProperties();settings.setWorkspace(workspace.toString());
+            var toolkit=new BusinessToolkitFactory(mock(DetectionAgentReadApi.class),mock(ResourceAgentReadApi.class),mock(ModelAgentReadApi.class),new ObjectMapper(),actions);
+            var factory=new RoleAgentFactory(settings,toolkit,id->model);
+            var run=mock(com.ruanzhu.doorhandle.module.ai.journal.AgentJournal.Run.class);when(run.id()).thenReturn("run-1");
+            try(var main=(io.agentscope.harness.agent.HarnessAgent)factory.create(actor,null,new com.ruanzhu.doorhandle.module.ai.journal.AgentJournalMiddleware(run,actor,true))) {
+                assertThat(main.getToolkit().getTool("delegate_"+specialist.replace('-','_')).isReadOnly()).isFalse();
+                assertThat(main.call("请重试 task-1，先让我确认").block(java.time.Duration.ofSeconds(15)).getTextContent()).contains("尚未派发");
+            }
+            verify(actions).proposeRetry(actor,"run-1","retry-call","task-1");verify(actions,never()).decide(any(),any(),anyLong(),any());
+            verify(run,never()).event(eq("AUTHORIZATION_DENIED"),any());
+            assertThat(factory.definitions(actor).stream().filter(d->!d.id().equals(specialist)).flatMap(d->d.tools().stream())).doesNotContain("propose_detection_retry");
+        }
+    }
     private RoleAgentFactory factory() {
         var properties = new AgentScopeProperties();
         properties.setWorkspace(workspace.toString());

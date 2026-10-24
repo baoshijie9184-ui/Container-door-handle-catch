@@ -20,17 +20,17 @@ export const buildTraceEvidenceRows = (detail) => {
 }
 
 export const resolveDefectPreview = (task = {}) => {
-  const preview = task.previewImages?.find(item => item.annotatedUrl || item.previewUrl)
-  if (preview) return preview.annotatedUrl || preview.previewUrl
-  const evidencePreview = task.defectEvidence?.find(item => item.previewUrl || item.annotatedUrl)
-  if (evidencePreview) return evidencePreview.previewUrl || evidencePreview.annotatedUrl
-  const original = task.originalImages?.find(item => item.previewUrl)
-  return original?.previewUrl || ''
+  for (const [list,keys] of [[task?.previewImages,['annotatedUrl','previewUrl']],[task?.defectEvidence,['previewUrl','annotatedUrl']],[task?.originalImages,['previewUrl']]]) {
+    if (!Array.isArray(list)) continue
+    for (const item of list) for (const key of keys) if (typeof item?.[key] === 'string' && item[key].trim()) return item[key]
+  }
+  return ''
 }
 
 export const formatEvidenceConfidence = (value) => {
+  if ((typeof value !== 'number' && typeof value !== 'string') || (typeof value === 'string' && !value.trim())) return '—'
   const number = Number(value)
-  if (Number.isNaN(number)) return '--'
+  if (!Number.isFinite(number) || number < 0 || number > 1) return '—'
   return `${Math.round(number * 1000) / 10}%`
 }
 

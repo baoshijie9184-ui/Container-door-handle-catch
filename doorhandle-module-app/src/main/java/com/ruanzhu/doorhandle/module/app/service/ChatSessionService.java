@@ -19,6 +19,9 @@ public interface ChatSessionService {
     /** 创建新会话 */
     ChatSessionResponse createSession(String username);
 
+    /** 创建空分支会话；欢迎消息由原会话前缀完整继承。 */
+    ChatSessionResponse createForkSession(String username);
+
     /** 获取指定会话（含消息） */
     ChatSessionResponse getSession(String username, String sessionId);
 

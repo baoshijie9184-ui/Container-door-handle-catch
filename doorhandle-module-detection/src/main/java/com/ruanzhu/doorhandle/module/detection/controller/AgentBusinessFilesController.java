@@ -13,6 +13,11 @@ import java.net.URI;
 public class AgentBusinessFilesController {
     private final AgentBusinessFilesApi files;private final BusinessUserDirectory users;
     public AgentBusinessFilesController(AgentBusinessFilesApi files,BusinessUserDirectory users){this.files=files;this.users=users;}
+    @GetMapping("/api/agent/business-files/DETECTION/{resource}/originals") public ResponseEntity<?> originals(Authentication auth,@PathVariable String resource){
+        if(auth==null||!auth.isAuthenticated()||!(auth.getPrincipal() instanceof TenantPrincipal user))throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+        var identity=users.current(user.userId(),user.username());return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(files.originalImages(new AgentActor(identity.userId(),identity.username(),identity.supervisor()?AgentActor.Role.SUPERVISOR:AgentActor.Role.INSPECTOR),resource));
+    }
+    @FileDelivery(domain="AGENT_BUSINESS_FILE",resource="arg2",file="arg3",scope="PRIVATE")
     @GetMapping("/api/agent/business-files/{kind}/{resource}/{file}") public ResponseEntity<?> read(Authentication auth,@PathVariable String kind,@PathVariable String resource,@PathVariable String file){
         if(auth==null||!auth.isAuthenticated()||!(auth.getPrincipal() instanceof TenantPrincipal user))throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
         var identity=users.current(user.userId(),user.username());var actor=new AgentActor(identity.userId(),identity.username(),identity.supervisor()?AgentActor.Role.SUPERVISOR:AgentActor.Role.INSPECTOR);var delivery=files.read(actor,kind,resource,file);

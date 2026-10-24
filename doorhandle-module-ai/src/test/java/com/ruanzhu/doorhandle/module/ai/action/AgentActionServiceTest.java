@@ -118,4 +118,96 @@ class AgentActionServiceTest {
         for(String invalid:List.of("../secret","sess/user","sess?user=2"))assertThatThrownBy(()->actions.list(boss,invalid,null,50)).hasMessageContaining("400");
         assertThatThrownBy(()->actions.get(boss,"action.with.dot")).hasMessageContaining("400");assertThat(writes()).isZero();
     }
+    private DetectionExecutionApi retryFixture(){
+        var execution=mock(DetectionExecutionApi.class);
+        when(execution.previewRetry(any(),eq("task-1"))).thenReturn(retryPreview("a".repeat(64)));
+        when(execution.retry(any(),anyString(),anyString(),any())).thenAnswer(invocation->{
+            assertThat(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive()).isTrue();
+            jdbc.update("UPDATE fixture_task SET writes=writes+1");
+            return new DetectionExecutionApi.Receipt("command-1","RETRY","task-1","dispatch-new","QUEUED");
+        });
+        actions.setDetectionExecution(execution);return execution;
+    }
+    private DetectionExecutionApi.RetryPreview retryPreview(String version){
+        return new DetectionExecutionApi.RetryPreview("task-1",version,"FAILED","FAILED","dispatch-old",12,new java.math.BigDecimal("0.5"),2,"清空当前检测结果与复核、处置状态；不会自动放行");
+    }
+    @Test void employeeRetryProposalNeedsExplicitApprovalAndReusesOneCommand(){
+        var execution=retryFixture();jdbc.update("INSERT INTO agent_run VALUES('employee-run',3,'employee-session','COMPLETED')");
+        var pending=actions.proposeRetry(employee,"employee-run","retry-call","task-1");
+        assertThat(pending.command()).isNull();assertThat(pending.retry().imageCount()).isEqualTo(2);assertThat(pending.status()).isEqualTo("PENDING");
+        assertThat(writes()).isZero();verify(execution,never()).retry(any(),any(),any(),any());
+        assertThat(actions.proposeRetry(employee,"employee-run","retry-call","task-1").actionId()).isEqualTo(pending.actionId());
+        var done=actions.decide(employee,pending.actionId(),1,"APPROVE");
+        assertThat(done.execution().status()).isEqualTo("QUEUED");assertThat(done.status()).isEqualTo("SUCCEEDED");
+        assertThat(actions.decide(employee,pending.actionId(),1,"APPROVE")).isEqualTo(done);assertThat(writes()).isEqualTo(1);
+        verify(execution).retry(eq(employee),eq(pending.actionId()),eq(pending.actionId()),eq(new DetectionExecutionApi.RetryApproval("task-1","a".repeat(64))));
+        assertThat(actions.audit(employee,pending.actionId())).hasSize(6);verifyNoInteractions(assignments);
+    }
+    @Test void retrySnapshotChangeInvalidatesRatherThanApprovingChangedParameters(){
+        var execution=retryFixture();var pending=actions.proposeRetry(boss,"run-1","retry-call","task-1");
+        when(execution.previewRetry(boss,"task-1")).thenReturn(retryPreview("b".repeat(64)));
+        assertThat(actions.decide(boss,pending.actionId(),1,"APPROVE").reasonCode()).isEqualTo("RESOURCE_CHANGED");
+        assertThat(writes()).isZero();verify(execution,never()).retry(any(),any(),any(),any());
+    }
+    @Test void unknownRetryResultAndPermissionRevocationCannotExecute(){
+        var execution=retryFixture();var pending=actions.proposeRetry(boss,"run-1","retry-call","task-1");
+        when(execution.previewRetry(boss,"task-1")).thenThrow(new DetectionExecutionApi.NeedsReview());
+        assertThat(actions.decide(boss,pending.actionId(),1,"APPROVE").reasonCode()).isEqualTo("EXECUTION_NEEDS_REVIEW");
+        reset(execution);when(execution.previewRetry(any(),any())).thenReturn(retryPreview("b".repeat(64)));
+        var next=actions.proposeRetry(boss,"run-1","retry-call-2","task-1");
+        when(execution.previewRetry(any(),any())).thenThrow(new SecurityException());
+        assertThat(actions.decide(boss,next.actionId(),1,"APPROVE").reasonCode()).isEqualTo("ROLE_REVOKED");assertThat(writes()).isZero();
+    }
+    @Test void retryAuditFailureRollsBackDomainWriteAndKeepsPending(){
+        retryFixture();var pending=actions.proposeRetry(boss,"run-1","retry-call","task-1");
+        jdbc.execute("ALTER TABLE agent_action_audit ADD CONSTRAINT fixture_retry_fail_audit CHECK(event_type<>'TOOL_EXECUTION_COMPLETED')");
+        assertThatThrownBy(()->actions.decide(boss,pending.actionId(),1,"APPROVE")).isInstanceOf(org.springframework.dao.DataAccessException.class);
+        assertThat(writes()).isZero();assertThat(actions.get(boss,pending.actionId()).status()).isEqualTo("PENDING");assertThat(actions.audit(boss,pending.actionId())).hasSize(1);
+    }
+    @Test void retryUnknownCommandFailureIsNotConvertedToSuccessOrRepeatedByService(){
+        var execution=retryFixture();var pending=actions.proposeRetry(boss,"run-1","retry-call","task-1");
+        when(execution.retry(any(),any(),any(),any())).thenAnswer(inv->{jdbc.update("UPDATE fixture_task SET writes=writes+1");throw new IllegalStateException("injected uncertain commit");});
+        assertThatThrownBy(()->actions.decide(boss,pending.actionId(),1,"APPROVE")).hasMessage("injected uncertain commit");
+        assertThat(writes()).isZero();assertThat(actions.get(boss,pending.actionId()).status()).isEqualTo("PENDING");
+        verify(execution).retry(any(),eq(pending.actionId()),eq(pending.actionId()),any());
+    }
+    @Test void retryTamperedSnapshotIsRefusedAndStaleVersionCannotApprove(){
+        var execution=retryFixture();var pending=actions.proposeRetry(boss,"run-1","retry-call","task-1");
+        assertThatThrownBy(()->actions.decide(boss,pending.actionId(),2,"APPROVE")).hasMessageContaining("409");
+        jdbc.update("UPDATE agent_pending_action SET before_json=REPLACE(before_json,'0.5','0.9') WHERE action_id=?",pending.actionId());
+        assertThatThrownBy(()->actions.decide(boss,pending.actionId(),1,"APPROVE")).isInstanceOf(IllegalStateException.class);
+        assertThat(writes()).isZero();verify(execution,never()).retry(any(),any(),any(),any());
+    }
+    @Test void retryCrossAccountCancelAndTerminatedOriginNeverExecute(){
+        var execution=retryFixture();var pending=actions.proposeRetry(boss,"run-1","retry-call","task-1");
+        assertThatThrownBy(()->actions.decide(other,pending.actionId(),1,"APPROVE")).hasMessageContaining("404");
+        jdbc.update("UPDATE agent_run SET status='CANCELLED'");
+        assertThat(actions.decide(boss,pending.actionId(),1,"APPROVE").reasonCode()).isEqualTo("ORIGIN_RUN_TERMINATED");
+        jdbc.update("INSERT INTO agent_run VALUES('retry-run-2',1,'session-2','COMPLETED')");
+        var next=actions.proposeRetry(boss,"retry-run-2","retry-call","task-1");
+        assertThat(actions.decide(boss,next.actionId(),1,"CANCEL").status()).isEqualTo("CANCELLED");
+        verify(execution,never()).retry(any(),any(),any(),any());assertThat(writes()).isZero();
+    }
+    @Test void retryDisabledHasNoFallbackAndOriginalAssignmentStillReadable(){
+        var assignment=propose();assertThat(actions.retryEnabled()).isFalse();
+        assertThatThrownBy(()->actions.proposeRetry(boss,"run-1","retry-call","task-1")).hasMessageContaining("503");
+        assertThat(actions.get(boss,assignment.actionId()).command()).isEqualTo(command);assertThat(writes()).isZero();
+    }
+    @Test void retryHistoryRechecksBusinessVisibilityInsteadOfLeakingAnOldAuthorizedSnapshot(){
+        var execution=retryFixture();var pending=actions.proposeRetry(boss,"run-1","retry-call","task-1");
+        assertThat(actions.get(boss,pending.actionId()).retry().taskId()).isEqualTo("task-1");
+        doThrow(new SecurityException("access revoked")).when(execution).assertReadable(boss,"task-1");
+        assertThatThrownBy(()->actions.get(boss,pending.actionId())).isInstanceOf(SecurityException.class);
+        assertThat(actions.list(boss,null,null,50)).isEmpty();
+        assertThatThrownBy(()->actions.audit(boss,pending.actionId())).isInstanceOf(SecurityException.class);assertThat(writes()).isZero();
+    }
+    @Test void simultaneousRetryApprovalsProduceOneWrite() throws Exception {
+        retryFixture();var pending=actions.proposeRetry(boss,"run-1","retry-call","task-1");
+        var pool=Executors.newFixedThreadPool(2);var gate=new CyclicBarrier(2);
+        try {
+            Callable<String> confirm=()->{gate.await();return actions.decide(boss,pending.actionId(),1,"APPROVE").status();};
+            var first=pool.submit(confirm);var second=pool.submit(confirm);
+            assertThat(first.get(10,TimeUnit.SECONDS)).isEqualTo("SUCCEEDED");assertThat(second.get(10,TimeUnit.SECONDS)).isEqualTo("SUCCEEDED");assertThat(writes()).isEqualTo(1);
+        } finally {pool.shutdownNow();}
+    }
 }

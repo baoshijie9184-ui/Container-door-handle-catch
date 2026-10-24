@@ -1,10 +1,11 @@
 <template>
   <section class="memory-review-history">
-    <header><h3>相似记忆审阅</h3><el-button :loading="historyLoading" @click="history">读取最近分析</el-button></header>
+    <header><h3><AppIcon name="Search" :size="18" />相似记忆审阅</h3><el-button :loading="historyLoading" @click="history"><AppIcon name="Refresh" :size="15" />读取最近分析</el-button></header>
     <p>从记忆卡片选择查找相似 先对比正文 再决定是否停用 仅针对本人账号</p>
-    <p v-if="historyError" role="alert">{{ historyError }}</p>
-    <p v-else-if="!records.length">暂无分析记录 刷新和读取历史不会再次调用模型</p>
-    <div v-for="entry in records" :key="entry.id" class="review-history-row"><span>{{ beijingDateTime(entry.createdAt) }} · {{ status(entry.status) }}</span><el-button size="small" @click="openHistory(entry.id)">查看对比</el-button></div>
+    <p v-if="historyError" role="alert" class="review-error">{{ historyError }}</p>
+    <p v-else-if="historyLoading&&!records.length" role="status">正在读取最近分析…</p>
+    <p v-else-if="!records.length">暂无已读取的分析记录 读取历史不会再次调用模型</p>
+    <div v-for="entry in records" :key="entry.id" class="review-history-row"><span>{{ memoryTime(entry.createdAt) }}<template v-if="entry.createdAt"> UTC+8</template></span><StatusBadge domain="memoryReview" :code="entry.status" :label="status(entry.status)" /><el-button size="small" @click="openHistory(entry.id)"><AppIcon name="Search" :size="15" />查看对比</el-button></div>
     <el-dialog v-model="visible" title="相似记忆审阅" width="min(960px, calc(100vw - 32px))" class="memory-review-dialog" append-to-body :close-on-click-modal="false" :close-on-press-escape="!saving" :show-close="!saving" :before-close="close">
       <p v-if="error" role="alert" class="review-error">{{ error }}</p>
       <template v-if="!review">
@@ -15,7 +16,7 @@
         <el-button v-if="startId" :disabled="saving" @click="load(startId)">读取原分析结果</el-button>
       </template>
       <template v-else>
-        <div class="review-toolbar"><span role="status">{{ status(review.status) }}</span><el-button :disabled="saving" @click="load(review.id)">读取结果核对</el-button></div>
+        <div class="review-toolbar"><StatusBadge domain="memoryReview" :code="review.status" :label="status(review.status)" /><el-button :disabled="saving" @click="load(review.id)"><AppIcon name="Refresh" :size="15" />读取结果核对</el-button></div>
         <p v-if="review.status==='RUNNING'">正在后台分析 关闭后可从最近分析继续查看 不会重复发起</p>
         <p v-if="['FAILED','INTERRUPTED'].includes(review.status)">本次未完成 请核对服务后重新发起分析 不会自动重试模型</p>
         <p v-if="review.sourceStale" class="review-error">原记忆已变化 停用或到期 本次建议失效 请重新分析</p>
@@ -23,7 +24,7 @@
         <p v-if="review.status==='READY'&&!review.candidates.length">本次近邻范围内没有可展示候选 不代表全库没有重复</p>
         <TransitionGroup name="review" tag="div">
           <article v-for="pair in review.candidates" :key="pair.id" class="review-pair">
-            <h4>关系建议 {{ label(pair.label) }}</h4><p>建议仅供审阅 停用前请比较两条完整正文</p>
+            <div class="review-relation-heading"><h4>关系建议</h4><StatusBadge domain="memoryRelation" :code="pair.label" :label="label(pair.label)" /></div><p>建议仅供审阅 停用前请比较两条完整正文</p>
             <p v-if="pair.stale" class="review-error">候选已变化 停用或到期 不能继续使用原建议</p>
             <div class="review-grid"><section><h4>原记忆</h4><pre class="review-text">{{ review.source?.memory||'当前版本不可用于此审阅' }}</pre><small v-if="review.source?.sourceSessionId">来源会话 {{ review.source.sourceSessionId }}</small></section><section><h4>候选记忆</h4><pre class="review-text">{{ pair.item?.memory||'当前版本不可用于此审阅' }}</pre><small v-if="pair.item?.sourceSessionId">来源会话 {{ pair.item.sourceSessionId }}</small></section></div>
             <p v-if="decision(pair.id)">{{ choiceLabel(decision(pair.id).choice) }} · 已记录</p>
@@ -42,12 +43,12 @@
 <script setup>
 import {onBeforeUnmount,onMounted,ref,watch} from 'vue'
 import {useUserStore} from '@/stores/user'
-import {beijingDateTime} from '@/utils/beijingTime'
+import {memoryTime} from '@/utils/memoryPresentation'
 import {personalMemory,memoryReviews,memoryReview,startMemoryReview,resolveMemoryReview} from '@/api/agentMemory'
 const emit=defineEmits(['updated']),user=useUserStore()
 const visible=ref(false),saving=ref(false),source=ref(null),review=ref(null),error=ref(''),startId=ref(''),pending=ref(null),blocked=ref(false),uncertainId=ref(''),conflict=ref(false),records=ref([]),historyLoading=ref(false),historyError=ref('')
 let generation=0,timer=null,pollDeadline=0
-const status=value=>({RUNNING:'正在分析',READY:'分析已完成',FAILED:'分析未完成',INTERRUPTED:'分析已中断'}[value]||'等待分析')
+const status=value=>({RUNNING:'正在分析',READY:'分析已完成',FAILED:'分析未完成',INTERRUPTED:'分析已中断'}[value]||'分析状态未确认')
 const label=value=>({DUPLICATE:'可能重复',CONFLICT:'可能矛盾',RELATED:'相关但有区别',DISTINCT:'不同信息',UNSURE:'需要人工判断'}[value]||'需要人工判断')
 const choiceLabel=value=>({KEEP_SOURCE:'保留原记忆并停用候选',KEEP_CANDIDATE:'保留候选并停用原记忆',KEEP_BOTH:'保留两条'}[value]||'待核对')
 const decision=id=>review.value?.decisions?.find(row=>row.candidateId===id)
