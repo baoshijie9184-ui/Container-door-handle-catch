@@ -10,6 +10,7 @@ import './assets/system-ui.css'
 import AppIcon from './components/AppIcon.vue'
 import PageHero from './components/PageHero.vue'
 import StatusBadge from './components/StatusBadge.vue'
+import TableReadHint from './components/TableReadHint.vue'
 import App from './App.vue'
 import router from './router'
 import './api/request'
@@ -41,6 +42,7 @@ app.use(ElementPlus, {
 app.component('AppIcon', AppIcon)
 app.component('PageHero', PageHero)
 app.component('StatusBadge', StatusBadge)
+app.component('TableReadHint', TableReadHint)
 
 // 挂载应用
 app.mount('#app')

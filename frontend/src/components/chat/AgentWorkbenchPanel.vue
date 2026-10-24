@@ -4,7 +4,7 @@
   <div role="status" aria-live="polite" aria-label="后台任务通知"><p v-for="notice in state.notifications||[]" :key="notice.id" class="wb-note">{{ notice.text }}</p></div>
   <nav ref="workbenchTabs" aria-label="工作台视图"><button v-for="[key,label] in tabs" :key="key" type="button" :class="{active:tab===key}" :aria-pressed="tab===key" @click="tab=key"><AppIcon :name="workbenchTabIcon(key)" :size="14" />{{ label }}</button></nav>
   <p v-if="error||state.error" role="alert" class="wb-error">{{ error||state.error }}</p>
-  <p v-if="tab==='RECOVERY'" class="wb-note">仅可恢复启用后保存了 SDK 检查点的任务；旧版历史记录不可续跑</p>
+  <p v-if="tab==='RECOVERY'" class="wb-note">仅能恢复已保存检查点的任务；未保存检查点的历史任务只能追溯，无法续跑。</p>
   <template v-if="tab==='FILE'">
    <label class="wb-upload"><span class="wb-upload-title"><AppIcon name="Upload" :size="18" />上传本人资料</span><input type="file" accept=".png,.jpg,.jpeg,.webp,.pdf,.txt,.md,.csv,.json,.html,.svg" :disabled="busy||!state.loaded" @change="upload" /></label>
    <p class="wb-note">单文件上限 {{ state.loaded?composerAttachment({bytes:state.limits?.maxFileBytes}).size:'尚未核对' }} · HTML/SVG 仅查看源码</p>
@@ -16,7 +16,7 @@
   </template>
   <template v-else>
    <article v-for="item in rows" :key="item.id" :data-kind="item.kind">
-    <header><span class="wb-kind-icon"><AppIcon :name="workbenchKind(item.kind).icon" :size="18" /></span><strong>{{ workbenchTitle(item) }}</strong><StatusBadge :domain="item.kind==='CONTEXT'?'contextRecord':'task'" :code="item.kind==='CONTEXT'?contextStatusCode(item):item.status" :label="item.kind==='CONTEXT'?undefined:workbenchInteractionStatus(item) || status[item.status]" /></header>
+    <header><span class="wb-kind-icon"><AppIcon :name="workbenchKind(item.kind).icon" :size="18" /></span><strong>{{ workbenchTitle(item) }}</strong><StatusBadge :domain="item.kind==='CONTEXT'?'contextRecord':item.kind==='TASKS'?'checklistRecord':'task'" :code="item.kind==='CONTEXT'?contextStatusCode(item):item.status" :label="['CONTEXT','TASKS'].includes(item.kind)?undefined:workbenchInteractionStatus(item) || status[item.status]" /></header>
     <p class="wb-record-meta">{{ workbenchKind(item.kind).label }} · 版本 {{ item.revision }}<span v-if="workbenchTime(item.updatedAt)"> · 更新于 {{ workbenchTime(item.updatedAt) }} UTC+8</span></p>
     <p v-if="item.kind==='QUESTION'" class="wb-purpose"><AppIcon name="ChatDotRound" :size="14" />补充任务信息，回答不等于业务授权</p>
     <p v-if="item.kind==='PLAN'" class="wb-purpose"><AppIcon name="DocumentChecked" :size="14" />审阅执行范围，业务操作仍需单独确认</p>
@@ -26,23 +26,15 @@
     <pre v-else-if="item.data.text && item.kind!=='CONTEXT'" tabindex="0" aria-label="工作记录正文">{{ item.data.text }}</pre>
     <p v-if="item.kind==='EXECUTION'&&item.data.result" class="wb-output">{{ item.data.result }}</p>
     <button v-if="item.kind==='EXECUTION'&&['RUNNING','QUEUED','READY','WAITING_PLAN','WAITING_INPUT','WAITING_CHILD'].includes(item.status)" :disabled="busy" @click="cancelTask(item)">取消任务</button>
-    <p v-if="taskListSummary(item.data.tasks)" class="wb-task-summary">{{ taskListSummary(item.data.tasks) }}</p>
-    <ol v-if="Array.isArray(item.data.tasks)&&item.data.tasks.length" class="wb-task-list"><li v-for="(task,index) in item.data.tasks" :key="index"><StatusBadge domain="task" :code="taskStepStatus(task?.status)" /><div>{{ task?.title || '未记录步骤名称' }}<small v-if="task?.evidenceCallId">执行证据 {{ task.evidenceCallId }}</small></div></li></ol>
+    <AgentTaskChecklist :tasks="Array.isArray(item.data.tasks)?item.data.tasks:undefined" />
     <div v-if="item.kind==='QUESTION'&&item.status==='ANSWERED'" class="wb-answer"><strong>已提交的回答</strong><p>{{ workbenchAnswer(item.data.answer) }}</p></div>
     <div v-if="item.kind==='PLAN'&&item.data.feedback" class="wb-answer"><strong>修订意见</strong><p>{{ item.data.feedback }}</p></div>
     <WorkbenchInteraction v-if="['PLAN','QUESTION'].includes(item.kind) && item.status === 'PENDING'" :item="item" :value="item.data.questionType === 'MULTIPLE' ? (selections[item.id] || []) : (drafts[item.id] || '')" :busy="busy" @update:value="updateInteraction(item, $event)" @command="act(item, $event.action, $event.input)" />
-    <AgentChildTask v-if="item.kind==='CHILD'" :item="item" :value="drafts[item.id] || ''" :busy="busy" :available-views="tabs.map(([key])=>key)" @update:value="drafts[item.id]=$event" @command="act(item,'child-message',{content:$event})" @cancel="cancelChild(item)" @view="openWorkbenchView" />
+    <AgentChildTask v-if="item.kind==='CHILD'" :item="item" :value="drafts[item.id] || ''" :busy="busy" :recovery-shown="item.status==='NEEDS_REVIEW'" :available-views="tabs.map(([key])=>key)" @update:value="drafts[item.id]=$event" @command="act(item,'child-message',{content:$event})" @cancel="cancelChild(item)" @view="openWorkbenchView" />
     <AgentUsageSummary v-if="item.kind==='USAGE'" :data="item.data" />
     <AgentContextSummary v-if="item.kind==='CONTEXT'" :item="item" :files="state.files" :files-enabled="state.capabilities.files!==false" @open-files="openContextFiles" />
     <p v-if="item.kind==='TOOL_TIMING'">工具批次耗时 {{ tokens(item.data.durationMs) }} ms</p>
-    <div v-if="item.status==='NEEDS_REVIEW'" class="wb-recovery"><p class="wb-note">恢复会重新鉴权，未知写结果不会自动重做</p>
-     <template v-if="state.capabilities.modelConfig">
-      <p class="wb-note">任务模型 {{ item.data.modelId||item.data.modelDefault||'未固定' }} · {{ item.data.modelConfigVersion?'V'+item.data.modelConfigVersion:'历史配置未知' }}</p>
-      <template v-if="item.kind==='EXECUTION'"><label>恢复时使用<select v-model="recoveryChoices[item.id]" :disabled="busy" aria-label="恢复任务使用模型"><option value="KEEP">保留任务原配置</option><option value="CURRENT_DEFAULT" :disabled="!state.recoveryModels?.some(model=>model.id===state.recoveryDefault)">当前默认 · {{ state.recoveryDefault||'尚未核对' }} · V{{ state.recoveryConfigVersion||'未知' }}</option><option v-for="model in state.recoveryModels||[]" :key="model.id" :value="model.id">{{ modelLabel(model) }} · V{{ state.recoveryConfigVersion }}</option></select></label><button :disabled="busy||state.recoveryModelsLoading" @click="client.loadRecoveryModels()">核对恢复模型</button><p v-if="state.recoveryModelError" role="alert" class="wb-error">{{ state.recoveryModelError }}</p><small>更换配置后，未结束的专业任务同步使用新版本；仍在执行的子任务需要先停止</small></template>
-      <p v-else class="wb-note">需要更换模型时，先在主任务恢复卡片选择当前配置</p>
-     </template>
-     <button :disabled="busy||!canResume(item)" @click="resume(item)">确认从检查点恢复</button><button :disabled="busy" @click="act(item,'cancel')">结束任务</button>
-    </div>
+    <AgentRecoveryPanel v-if="item.status==='NEEDS_REVIEW'" :item="item" :state="state" :choice="recoveryChoices[item.id] || 'KEEP'" :busy="busy" @choice="recoveryChoices[item.id]=$event" @refresh="client.loadRecoveryModels()" @resume="resume(item)" @end="item.kind==='CHILD'?cancelChild(item):cancelTask(item)" />
    </article>
    <div v-if="!rows.length" class="wb-empty"><AppIcon :name="workbenchEmpty(tab,state).icon" :size="24" /><strong>{{ workbenchEmpty(tab,state).title }}</strong><p>{{ workbenchEmpty(tab,state).description }}</p></div>
   </template>
@@ -61,16 +53,18 @@
 import {nextTick,ref,reactive,computed,watch,onBeforeUnmount} from 'vue'
 import {ElMessageBox} from 'element-plus'
 import {AgentWorkbenchClient,availableWorkbenchTabs,workbenchStatus,workbenchRows,tokenDisplay,recoveryInput} from '@/utils/agentWorkbench'
-import {modelLabel} from '@/utils/composerResources'
 import {composerAttachment} from '@/utils/composerPresentation'
 import AgentWorkbenchFiles from './AgentWorkbenchFiles.vue'
 import AgentUsageSummary from './AgentUsageSummary.vue'
 import AgentContextSummary from './AgentContextSummary.vue'
 import AgentForkPanel from './AgentForkPanel.vue'
 import AgentChildTask from './AgentChildTask.vue'
+import AgentTaskChecklist from './AgentTaskChecklist.vue'
+import AgentRecoveryPanel from './AgentRecoveryPanel.vue'
+import {recoveryReviewError} from '@/utils/recoveryPresentation'
 import { contextStatusCode } from '@/utils/contextPresentation'
 import WorkbenchInteraction from './WorkbenchInteraction.vue'
-import {workbenchKind,workbenchTabIcon,workbenchInteractionStatus,workbenchTitle,workbenchEmpty,workbenchTime,taskListSummary,taskStepStatus,workbenchAnswer} from '@/utils/workbenchPresentation'
+import {workbenchKind,workbenchTabIcon,workbenchInteractionStatus,workbenchTitle,workbenchEmpty,workbenchTime,workbenchAnswer} from '@/utils/workbenchPresentation'
 import {readFilePreview,boundedTextPreview} from '@/utils/chatFileReferences'
 import '@/assets/agent-workbench.css'
 import '@/assets/chat-file-references.css'
@@ -98,12 +92,29 @@ async function run(action,previewing=false){if(busy.value)return;const generatio
 async function act(item,action,input){await run(()=>client.command(item,action,input));}
 function updateInteraction(item,value){if(busy.value)return;if(item.kind==='QUESTION'&&item.data.questionType==='MULTIPLE')selections[item.id]=value;else drafts[item.id]=value}
 function recoveryPayload(item){return recoveryInput(item.kind==='EXECUTION'?(recoveryChoices[item.id]||'KEEP'):'KEEP',state.value)}
-function canResume(item){try{recoveryPayload(item);return true}catch{return false}}
 async function resume(item){
+ if(busy.value)return
  const generation=client.generation
- try{const input=recoveryPayload(item);if(Object.hasOwn(input,'replacementModelId'))await ElMessageBox.confirm(`将任务及未结束的专业任务改用 V${input.replacementConfigVersion} 的 ${input.replacementModelId||state.value.recoveryDefault}。已完成工具结果仍保留，未知写结果不会重新执行。`,'确认恢复模型',{confirmButtonText:'确认更换并恢复',cancelButtonText:'保留现状'});if(generation===client.generation)await act(item,'resume',input)}catch(cause){if(cause!=='cancel'&&cause!=='close')error.value=cause.message}
+ try{
+  const input=recoveryPayload(item)
+  if(Object.hasOwn(input,'replacementModelId'))await ElMessageBox.confirm(`将任务及未结束的专业任务改用 V${input.replacementConfigVersion} 的 ${input.replacementModelId||state.value.recoveryDefault}。已完成工具结果仍保留，未知写结果不会重新执行。`,'确认恢复模型',{confirmButtonText:'确认更换并恢复',cancelButtonText:'保留现状'})
+  if(generation!==client.generation || busy.value)return
+  const reviewError=recoveryReviewError(item,state.value,recoveryChoices[item.id]||'KEEP',input)
+  if(reviewError){error.value=reviewError;return}
+  await act(item,'resume',input)
+ }catch(cause){if(generation===client.generation && cause!=='cancel' && cause!=='close')error.value=cause.message}
 }
-async function cancelTask(item){const generation=client.generation;try{await ElMessageBox.confirm('取消本任务及其活动子任务，已完成的操作不会回滚。排队消息仍按原设置处理。','取消任务',{confirmButtonText:'确认取消',cancelButtonText:'继续执行',type:'warning'});if(generation===client.generation)await act(item,'cancel')}catch{/* Dialog dismissal does not change the task. */}}
+async function cancelTask(item){
+ if(busy.value)return
+ const generation=client.generation,interrupted=item.status==='NEEDS_REVIEW'
+ try{
+  await ElMessageBox.confirm(`取消任务 ${item.id}（V${item.revision}）及其活动子任务？已完成操作不会回滚，排队消息仍按原设置处理。`,interrupted?'结束此任务':'取消任务',{confirmButtonText:interrupted?'确认结束':'确认取消',cancelButtonText:interrupted?'保留当前状态':'继续执行',type:'warning'})
+  if(generation!==client.generation || busy.value)return
+  const current=state.value.items.find(row=>row.id===item.id)
+  if(!current || current.kind!=='EXECUTION' || current.revision!==item.revision){error.value='任务记录已变化，请重新核对后再确认取消';return}
+  await act(item,'cancel')
+ }catch(cause){if(generation===client.generation && !['cancel','close'].includes(cause))error.value='取消尚未确认，请重新核对任务记录'}
+}
 async function cancelChild(item){
  if(busy.value)return
  const generation=client.generation

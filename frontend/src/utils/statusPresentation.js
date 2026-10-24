@@ -1,6 +1,7 @@
 // Display metadata only. Eligibility and authorization are always determined by the server.
 const entry = (label, tone = 'info', icon = 'Document') => ({ label, tone, icon })
 const domains = {
+  checklistRecord: { ACTIVE:entry('已保存清单','info','Tickets'), REFERENCE_ONLY:entry('仅供参考','neutral','DocumentCopy') },
   agentMode: { READ_ONLY:entry('只读查询','info','Search'), CONFIRMABLE:entry('操作需确认','info','Lock'), DRAFTS:entry('受控协作','info','Document'), DISABLED:entry('助手尚未启用','warning','Lock') },
   marketCapability: { AVAILABLE:entry('目录已核对','info','DocumentChecked'), INTERFACE_ONLY:entry('仅提供接口','warning','Connection'), UNVERIFIED:entry('尚待核对','info','Search'), OUT_OF_SCOPE:entry('目录范围之外','info','Document') },
   cardRead: { OK:entry('已重新读取','info','Refresh'), PARTIAL:entry('部分资料不可用','warning','Warning'), UNAVAILABLE:entry('暂不可读取','warning','Search') },
@@ -52,6 +53,8 @@ const domains = {
   },
   detection: {
     UNKNOWN: entry('检测状态未记录','warning','Search'),
+    RESULT_RECORDED: entry('已结束 · 结果待核对','warning','Search'),
+    EXECUTION_FAILED: entry('任务异常','danger','Warning'),
     UPLOADING: entry('上传中', 'info', 'Upload'), UPLOADED: entry('已上传', 'info', 'Picture'),
     QUEUED: entry('待检测', 'warning', 'Clock'), PENDING: entry('待检测', 'warning', 'Clock'),
     DETECTING: entry('检测中', 'info', 'Connection'), RUNNING: entry('检测中', 'info', 'Connection'),

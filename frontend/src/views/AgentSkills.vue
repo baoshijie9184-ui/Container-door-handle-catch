@@ -12,7 +12,7 @@
       <p v-if="!linksEnabled && !linkError" class="detail-note">链接安装状态尚未核对，读取成功后才能下载。</p>
       <p>Git 来源固定提交 魔搭原生归档保存内容快照 脚本和附件只存档 不执行或自动启用</p>
       <p v-if="linkError" class="error" role="alert">{{ linkError }}</p>
-      <el-table v-if="downloads.length" :data="downloads" row-key="download_id">
+      <el-table :scrollbar-tabindex="0" role="region" aria-label="本人 Skill 下载记录" v-if="downloads.length" :data="downloads" row-key="download_id">
         <el-table-column label="来源" min-width="200"><template #default="{ row }"><span class="download-source">{{ row.source_url }}</span></template></el-table-column>
         <el-table-column label="下载状态" min-width="210"><template #default="{ row }"><StatusBadge domain="skillDownload" :code="row.status" :label="downloadLabel(row.status)" /><small v-if="row.error_code">{{ downloadError(row.error_code) }}</small></template></el-table-column>
         <el-table-column label="操作" width="120"><template #default="{ row }"><el-button v-if="row.skill_id" text @click="select({skillId:row.skill_id})">查看私人草稿</el-button><el-button v-if="['ERROR','NO_CHANGE','CLEANUP_ERROR'].includes(row.status)" text :disabled="busy" @click="cleanupDownload(row)">清理下载缓存</el-button><span v-else-if="row.status==='PURGED'">已清理文件</span></template></el-table-column>
@@ -26,7 +26,7 @@
       <p>仅保存成功工具名和完成时间 不复制聊天正文或业务参数 授权后可让助手按明确要求提议私人技能草稿</p>
       <el-button type="primary" :disabled="!sources.length || busy" @click="newDraft">编写技能草稿</el-button>
     </section>
-    <el-table :data="skills" row-key="skillId" v-loading="loading">
+    <el-table :scrollbar-tabindex="0" role="region" aria-label="可查看的技能记录" :data="skills" row-key="skillId" v-loading="loading">
       <template #empty><CollectionEmptyState :loading="loading" :error="error" empty-title="暂无可查看的技能" empty-description="可从链接下载私人草稿，或授权已有运行经验后编写；评测与审核仍需分别完成。" @retry="refresh" /></template>
       <el-table-column label="技能" min-width="180"><template #default="{row}"><div class="skill-list-name"><strong>{{ row.name||'技能名称未记录' }}</strong><small>最新可见版本 {{ latestVisibleVersion(row)?.version??'未记录' }}</small></div></template></el-table-column>
       <el-table-column label="目标角色" width="100"><template #default="{ row }">{{ roleLabel(row.targetRole) }}</template></el-table-column>

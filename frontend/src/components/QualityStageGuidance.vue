@@ -33,7 +33,7 @@ const needsAttention = computed(() => ['REWORK_REQUIRED', 'RECHECK_REQUIRED', 'H
 .quality-guidance { display: flex; align-items: flex-start; gap: 9px; padding: 11px 12px; border-radius: 8px; background: #f8fafc; color: var(--app-text-secondary); font-size: 12px; line-height: 1.7; }
 .quality-guidance-icon { color: var(--app-primary); padding-top: 3px; flex: 0 0 auto; }
 .quality-guidance strong { font-weight: 600; color: var(--app-text); }
-.quality-guidance p { margin: 2px 0 0; overflow-wrap: anywhere; font-size: 11px; }
+.quality-guidance p { margin: 2px 0 0; overflow-wrap: anywhere; font-size: 12px; line-height:1.8; }
 .quality-guidance[data-attention=true] { background: var(--app-warning-soft); }
 .quality-guidance[data-attention=true] .quality-guidance-icon { color: var(--app-warning); }
 .quality-guidance[data-tone=danger] { background:var(--app-danger-soft); }

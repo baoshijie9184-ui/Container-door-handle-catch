@@ -9,10 +9,7 @@
         </el-tooltip>
       </div>
       <router-link to="/manual" class="agent-rail-link" aria-label="使用手册" title="使用手册"><el-icon><Files /></el-icon></router-link>
-      <el-dropdown trigger="click" placement="right-end">
-        <button type="button" class="agent-rail-account" :aria-label="'账号菜单 '+userStore.username" :title="userStore.username">{{ userInitial }}</button>
-        <template #dropdown><el-dropdown-menu><el-dropdown-item disabled>{{ userStore.username }}</el-dropdown-item><el-dropdown-item @click="router.push('/home')">返回业务系统</el-dropdown-item><el-dropdown-item divided @click="handleLogout">退出登录</el-dropdown-item></el-dropdown-menu></template>
-      </el-dropdown>
+      <AppAccountMenu compact :username="userStore.username" :role="accountPresentation.role" :department="userStore.identity?.departmentName" :scope="accountPresentation.scope" @home="router.push('/home')" @manual="router.push('/manual')" @logout="handleLogout" />
     </nav>
     <aside v-else id="system-sidebar" class="layout-sidebar app-panel" aria-label="系统导航">
       <div class="brand-block">
@@ -90,14 +87,7 @@
           <router-link v-if="!isAgentChatRoute" to="/agent/chat" class="assistant-entry-link">
             <el-icon><ChatDotRound /></el-icon> AI 工作助手
           </router-link>
-          <div class="user-box app-panel">
-            <div class="user-avatar">{{ userInitial }}</div>
-            <div class="user-meta">
-              <div class="user-name">{{ userStore.username || '企业用户' }}</div>
-              <div class="user-role" :title="accountPresentation.role+(userStore.identity?.departmentName ? ' · '+userStore.identity.departmentName : '')">{{ accountPresentation.role }}<template v-if="userStore.identity?.departmentName"> · {{ userStore.identity.departmentName }}</template></div>
-            </div>
-            <el-button type="danger" plain size="small" @click="handleLogout">退出登录</el-button>
-          </div>
+          <AppAccountMenu :username="userStore.username" :role="accountPresentation.role" :department="userStore.identity?.departmentName" :scope="accountPresentation.scope" @home="router.push('/home')" @manual="router.push('/manual')" @logout="handleLogout" />
         </div>
       </header>
 
@@ -130,6 +120,7 @@ import '@/assets/agent-unified.css'
 import ChatAssistantDrawer from '@/components/chat/ChatAssistantDrawer.vue'
 import ChatAssistantLauncher from '@/components/chat/ChatAssistantLauncher.vue'
 import WorkspaceNavigation from '@/components/WorkspaceNavigation.vue'
+import AppAccountMenu from '@/components/AppAccountMenu.vue'
 import {
   HomeFilled,
   Tickets,
@@ -323,11 +314,6 @@ const breadcrumbs = computed(() => {
     crumbs.push({ label: meta.title })
   }
   return crumbs.length > 1 ? crumbs : []
-})
-
-const userInitial = computed(() => {
-  const name = userStore.username || 'A'
-  return name.slice(0, 1).toUpperCase()
 })
 
 const handleLogout = () => {
@@ -710,41 +696,6 @@ onBeforeUnmount(() => {
   box-shadow: 0 0 0 6px rgba(18, 168, 122, 0.12);
 }
 
-.user-box {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 10px 12px;
-  border-color: rgba(37, 99, 235, 0.10);
-}
-
-.user-avatar {
-  width: 42px;
-  height: 42px;
-  border-radius: 12px;
-  display: grid;
-  place-items: center;
-  color: #fff;
-  font-weight: 700;
-  font-size: 15px;
-  background: linear-gradient(135deg, var(--app-primary-deep), var(--app-primary), var(--app-cyan));
-}
-
-.user-meta {
-  min-width: 70px;
-}
-
-.user-name {
-  font-weight: 700;
-  color: var(--app-text);
-}
-
-.user-role {
-  margin-top: 4px;
-  color: var(--app-text-secondary);
-  font-size: 12px;
-}
-
 .layout-content {
   min-width: 0;
   min-height: 0;
@@ -812,12 +763,9 @@ onBeforeUnmount(() => {
   .brand-mark { width: 36px; height: 36px; border-radius: 11px; font-size: 13px; }
   .brand-block { padding: 0; margin-bottom: 16px; }
   .layout-header { min-height: 68px; padding: 12px; gap: 8px; }
-  .header-caption, .breadcrumb-link, .breadcrumb-sep, .user-meta, .assistant-entry-link { display: none; }
+  .header-caption, .breadcrumb-link, .breadcrumb-sep, .assistant-entry-link { display: none; }
   .header-title, .breadcrumb-current { font-size: 17px; }
   .header-actions { gap: 4px; }
-  .user-box { padding: 0; border: 0; box-shadow: none; gap: 6px; background: transparent; }
-  .user-avatar { width: 30px; height: 30px; font-size: 12px; }
-  .user-box :deep(.el-button) { padding: 6px; font-size: 11px; }
   .layout-content { padding: 12px; }
   .is-agent-workspace .layout-content, .is-trace-workspace .layout-content { padding: 8px; }
   .back-top-btn { display: none; }
@@ -833,10 +781,6 @@ onBeforeUnmount(() => {
 .breadcrumb-nav { flex-wrap: wrap; gap: 6px; }
 .breadcrumb-current { color: var(--app-text); font-weight: 600; }
 .layout-content { padding: 28px 32px; }
-.user-box { border: 0; background: transparent; box-shadow: none; padding: 0; gap: 10px; }
-.user-avatar { width: 34px; height: 34px; font-size: 13px; background: var(--app-primary-soft); color: var(--app-primary); border-radius: 10px; }
-.user-role { margin-top: 1px; font-size: 12px; }
-.user-box .el-button--danger { border-color: transparent; background: transparent; }
 .footer-card { box-shadow: none; border: 0; background: var(--app-bg); padding: 15px; }
 .footer-card-meter { display: none; }
 .back-top-btn { border-radius: 12px; width: 40px; height: 40px; box-shadow: var(--app-shadow-sm); color: var(--app-text-secondary); }
@@ -852,7 +796,7 @@ onBeforeUnmount(() => {
   .layout-header { min-height: 62px; padding: 10px 12px; }
   .header-left { min-width: 0; gap: 10px; }
   .breadcrumb-current { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 38vw; }
-  .workspace-scope, .manual-entry-link, .user-box .user-avatar { display: none; }
+  .workspace-scope, .manual-entry-link { display: none; }
   .header-actions { gap: 8px; }
   .layout-content { padding: 18px 14px; }
 }

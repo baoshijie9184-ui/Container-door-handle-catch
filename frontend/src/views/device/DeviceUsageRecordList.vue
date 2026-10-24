@@ -43,7 +43,8 @@
       <p class="management-applied-query">已查询范围：{{ appliedDescription }}</p>
       <el-alert v-if="listError && records.length" :title="listError + '；下方保留先前读取的记录，请重新查询核对。'" type="error" show-icon :closable="false" />
       <el-button v-if="listError && records.length" class="management-retry" :loading="loading" @click="retryRecords"><AppIcon name="Refresh" :size="14" />重读上次请求</el-button>
-      <el-table :data="records" v-loading="loading" row-key="id" border style="width: 100%">
+      <TableReadHint v-if="records.length" />
+      <el-table :scrollbar-tabindex="0" role="region" aria-label="设备使用记录" :data="records" v-loading="loading" row-key="id" border style="width: 100%">
         <template #empty>
           <CollectionEmptyState :loading="loading" :error="listError" :filtered="!!hasFilters" empty-title="暂无设备使用记录" :empty-description="deviceIdFromRoute ? '当前设备与已查询条件下未找到使用记录。' : '设备使用登记后，可在这里查看使用人与归还情况。'" @retry="retryRecords" @reset="resetFilters" />
         </template>

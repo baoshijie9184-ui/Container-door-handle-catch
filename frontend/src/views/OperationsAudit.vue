@@ -6,7 +6,8 @@
     <el-button v-if="error && rows.length" class="audit-retry" :loading="loading" @click="retryBusiness"><AppIcon name="Refresh" :size="14" />重读上次业务请求</el-button>
     <div class="audit-table table-panel">
       <div class="collection-heading"><h2><AppIcon name="Document" :size="18" />业务操作记录</h2><span>{{ loaded?'已加载 '+rows.length+' 条':'数量尚未核对' }} · {{ loaded ? appliedDomain ? auditDomainLabel(appliedDomain) : '全部业务域' : '范围尚未读取' }}</span></div>
-      <el-table :data="rows" v-loading="loading" row-key="id">
+      <TableReadHint v-if="rows.length" />
+      <el-table :scrollbar-tabindex="0" role="region" aria-label="业务操作审计" :data="rows" v-loading="loading" row-key="id">
         <template #empty><CollectionEmptyState :loading="loading" :error="error" :filtered="!!appliedDomain" empty-title="暂无可查看的业务操作" empty-description="这里只展示当前账号有权限读取的已登记审计记录。" @retry="retryBusiness" @reset="resetDomain" /></template>
         <el-table-column label="业务与动作" min-width="200"><template #default="{row}"><div class="audit-cell"><strong>{{ auditDomainLabel(row.domain) }}</strong><small>{{ row.action||'动作未记录' }}</small></div></template></el-table-column>
         <el-table-column label="资源" min-width="195"><template #default="{row}"><div class="audit-cell"><strong>{{ row.resource_id||'资源未记录' }}</strong><small>版本 {{ row.resource_version??'未知' }} · {{ auditScopeLabel(row.scope) }}</small></div></template></el-table-column>
@@ -21,7 +22,7 @@
       <header><div><h3><el-icon><DocumentChecked /></el-icon> 文件交付记录</h3><p>{{ deliveryLoaded?'已加载 '+deliveries.length+' 条':'数量尚未核对' }} · 按当前账号范围独立查询，不受上方业务域筛选影响</p></div><el-button :loading="deliveryLoading" @click="loadDeliveries(false)"><AppIcon name="Refresh" :size="16" />刷新交付状态</el-button></header>
       <el-alert v-if="deliveryError && deliveries.length" :title="deliveryError + '；以下保留先前读取的交付记录。'" type="error" :closable="false" role="alert"/>
       <el-button v-if="deliveryError && deliveries.length" class="audit-retry" :loading="deliveryLoading" @click="retryDelivery"><AppIcon name="Refresh" :size="14" />重读上次交付请求</el-button>
-      <div class="audit-table"><el-table :data="deliveries" v-loading="deliveryLoading" row-key="delivery_id">
+      <div class="audit-table"><el-table :scrollbar-tabindex="0" role="region" aria-label="文件交付记录" :data="deliveries" v-loading="deliveryLoading" row-key="delivery_id">
         <template #empty><CollectionEmptyState :loading="deliveryLoading" :error="deliveryError" empty-title="暂无可查看的交付记录" empty-description="文件响应登记后，可在这里核对服务端处理状态。" @retry="retryDelivery" /></template>
         <el-table-column label="业务资源" min-width="220"><template #default="{row}"><div class="audit-cell"><strong>{{ auditDomainLabel(row.domain) }}</strong><small>{{ row.resource_id||'资源未记录' }}</small></div></template></el-table-column>
         <el-table-column label="交付状态" min-width="180"><template #default="{row}"><StatusBadge domain="delivery" :code="row.state" /></template></el-table-column>

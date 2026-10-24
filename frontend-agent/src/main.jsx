@@ -26,6 +26,7 @@ import AgentModelOverview from './AgentModelOverview';
 import StatusBadge from './StatusBadge';
 import {readAgentRoleCatalog,readAgentModelCatalog} from '../../frontend/src/utils/agentCatalogPresentation';
 import { AgentErrorBoundary } from './AgentErrorBoundary';
+import {useReadableMessageRegions} from './useReadableMessageRegions';
 
 const API = import.meta.env.VITE_AGENT_API_URL || '/agui/run';
 const LOGIN = new URL(import.meta.env.VITE_BUSINESS_LOGIN_URL || '/#/login', window.location.href).toString();
@@ -129,6 +130,7 @@ function App() {
     catch(error){if(error.name!=='AbortError'&&generation===commandGeneration.current){setCommandCatalog(null);setCommandError(error.message);}}
   }
   const [threadId,setThreadId]=useState('');
+  useReadableMessageRegions(transcriptRef,threadId);
   const [sessions,setSessions]=useState([]);
   const [sessionLoading,setSessionLoading]=useState(true);
   const [sessionError,setSessionError]=useState('');

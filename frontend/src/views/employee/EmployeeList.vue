@@ -62,7 +62,8 @@
       <p v-if="filtersDirty && employees.length" class="management-query-note" role="status">条件已修改，当前保留已查询范围；点击查询更新。刷新与翻页不会采用未提交条件。</p>
       <el-alert v-if="listError && employees.length" :title="listError+'；下方保留已读取记录，请重新核对。'" type="error" show-icon :closable="false" />
       <div v-if="listError && employees.length" class="management-retry"><el-button size="small" :loading="loading" @click="retryEmployees">重读上次查询</el-button></div>
-      <el-table :data="employees" row-key="id" v-loading="loading">
+      <TableReadHint v-if="employees.length" />
+      <el-table :scrollbar-tabindex="0" role="region" aria-label="人员记录" :data="employees" row-key="id" v-loading="loading">
         <template #empty><CollectionEmptyState :loading="loading" :error="listError" :filtered="listLoaded ? Object.keys(appliedFilters).length>0 : hasFilters" empty-title="暂无人员记录" :empty-description="isSupervisor ? '可从新增人员登记业务人员，或调整筛选条件。' : '可调整筛选条件，或联系主管核对人员登记。'" @retry="retryEmployees" @reset="resetFilters" /></template>
         <el-table-column label="姓名与员工编号" min-width="220"><template #default="{row}"><div class="management-row-identity"><button type="button" @click="viewEmployee(row.id)">{{ row.name || '姓名未记录' }}</button><span>员工编号 {{ row.employeeNumber || '未记录' }}</span><small>性别 {{ row.gender || '未记录' }}</small></div></template></el-table-column>
         <el-table-column label="岗位与部门" min-width="195"><template #default="{row}"><div class="management-row-identity"><strong>{{ getEmployeeTypeName(row.employeeType) }}</strong><span>{{ row.department || '部门 / 班组未记录' }}</span></div></template></el-table-column>

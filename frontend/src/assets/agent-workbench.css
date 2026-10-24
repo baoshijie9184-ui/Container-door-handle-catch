@@ -2,7 +2,6 @@
 .wb-business-form{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px}.wb-business-form input{min-width:0;width:100%;border:1px solid #dbe3ef;border-radius:6px;font:inherit;padding:6px;box-sizing:border-box}
 .session-source-link{font:inherit;font-size:11px;border:0;border-radius:5px;padding:2px 5px;background:#edf4ff;color:#245cc6;cursor:pointer;margin:2px 0 3px 5px}
 .wb-file-tree{margin-top:10px}.wb-file-tree>summary{cursor:pointer;color:#475569;font-weight:600}.wb-file-tree>article{margin-left:8px;border-left:2px solid #e0eaff}
-.wb-recovery label{display:grid;gap:6px;margin:10px 0;font-size:12px}.wb-recovery select{width:100%;max-width:100%;min-width:0;padding:8px;border:1px solid #dbe3ef;border-radius:8px;background:#fff;color:#1e293b}.wb-recovery small{display:block;color:#64748b;line-height:1.7;margin:6px 0}.wb-recovery select:focus-visible{outline:2px solid #2563eb;outline-offset:2px}
 
 /* Shared structure for Vue and React; color communicates purpose, never authorization. */
 .agent-workbench > header > button { display: inline-flex; align-items: center; gap: 5px; }
@@ -12,12 +11,6 @@
 .agent-workbench .wb-record-meta { margin: 9px 0; font-size: 12px; line-height: 1.8; color: var(--app-text-secondary); overflow-wrap: anywhere; }
 .agent-workbench .wb-note { font-size:12px; line-height:1.8; color:var(--app-text-secondary); overflow-wrap:anywhere; }
 .agent-workbench .wb-purpose > :is(svg, .el-icon) { flex: 0 0 auto; margin-top: 3px; }
-.agent-workbench .wb-task-summary { margin: 14px 0 6px; color: var(--app-text-secondary); font-size: 12px; font-weight: 550; }
-.agent-workbench .wb-task-list { margin: 0 0 14px; padding: 0; list-style: none; }
-.agent-workbench .wb-task-list > li { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 8px; align-items: start; padding: 10px 0; border-bottom: 1px solid var(--app-border); font-size: 12px; line-height: 1.8; }
-.agent-workbench .wb-task-list > li:last-child { border-bottom: 0; }
-.agent-workbench .wb-task-list > li > div { min-width: 0; overflow-wrap: anywhere; }
-.agent-workbench .wb-task-list small { margin-top: 4px; color: var(--app-text-muted); font-size: 11px; }
 .agent-workbench :is(.wb-output, .wb-answer p) { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; line-height: 1.85; }
 .agent-workbench .wb-answer { margin: 12px 0; padding: 10px 12px; border-left: 3px solid #b7cff9; border-radius: 0 7px 7px 0; background: var(--app-primary-light); }
 .agent-workbench .wb-answer > strong { font-size: 11px; font-weight: 550; color: var(--app-text-secondary); }

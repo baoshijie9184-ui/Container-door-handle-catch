@@ -118,7 +118,7 @@
       </template>
       <div v-loading="deviceLoading">
         <el-alert v-if="deviceError && assignedDevices.length" :title="deviceError+'；下方保留先前读取的记录。'" type="error" show-icon :closable="false" />
-        <el-table v-if="assignedDevices.length > 0" :data="assignedDevices" border>
+        <el-table :scrollbar-tabindex="0" role="region" aria-label="当前人员已分配设备" v-if="assignedDevices.length > 0" :data="assignedDevices" border>
           <template #empty>
             <el-empty description="暂无分配的设备" :image-size="80" />
           </template>

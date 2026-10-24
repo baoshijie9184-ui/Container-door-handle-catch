@@ -13,7 +13,8 @@
       <div class="collection-heading"><h2><AppIcon name="DocumentChecked" :size="18" />报告记录</h2><span>{{ loading ? '正在读取…' : error ? '本次读取失败' : total===null ? '总数尚未读取' : `共 ${total} 条` }}</span></div>
       <p v-if="listLoaded" class="report-applied-query">已读取范围：{{ appliedQuery.keyword ? `关键词“${appliedQuery.keyword}”` : '全部关键词' }} · {{ appliedQuery.status ? states[appliedQuery.status] || '指定状态' : '全部状态' }} · 第 {{ appliedPage }} 页</p>
       <el-alert v-if="error && records.length" :title="error + '；下方保留先前读取的记录，请重新查询核对。'" type="error" show-icon :closable="false" />
-      <el-table :data="records" v-loading="loading" row-key="reportId">
+      <TableReadHint v-if="records.length" />
+      <el-table :scrollbar-tabindex="0" role="region" aria-label="质检报告记录" :data="records" v-loading="loading" row-key="reportId">
         <template #empty><CollectionEmptyState :loading="loading" :error="error" :filtered="!!(requestedQuery.keyword || requestedQuery.status)" empty-title="暂无质检报告" empty-description="可在新建报告草稿中填写有权访问的检测任务编号，提交后由主管独立审批。" @retry="retryList" @reset="resetSearch" /></template>
         <el-table-column label="报告与编写账号" min-width="265"><template #default="{ row }"><div class="report-list-identity"><button type="button" :disabled="busy" @click="openDetail(row.reportId)">{{ row.title || '未命名报告' }}</button><span>编写账号 {{ row.ownerUsername || '未记录' }}</span><details><summary>报告编号</summary><code>{{ row.reportId }}</code></details></div></template></el-table-column>
         <el-table-column label="依据任务" min-width="205"><template #default="{ row }"><router-link v-if="row.taskId" class="report-task-link" :to="{ path:'/inspection/history', query:{ keyword:row.taskId } }">{{ row.taskId }}</router-link><span v-else>未记录</span></template></el-table-column>
@@ -58,7 +59,7 @@
             <summary><AppIcon name="Connection" :size="16" />审批状态同步<span v-if="eventsError"> · 读取未完成</span><span v-else-if="events.some(item=>['FAILED','RETRY'].includes(item.deliveryStatus))"> · 有待核对的发送记录</span></summary>
             <div class="detail-heading"><p class="muted">发送状态与已记录的审批决定分别显示；失败会按原机制重试，重新发送不会再次审批。</p><el-button size="small" :disabled="busy" :loading="eventsLoading" @click="loadEvents(detail.reportId)"><AppIcon name="Refresh" :size="15" />刷新同步状态</el-button></div>
             <el-alert v-if="eventsError" :title="eventsError" type="error" :closable="false" />
-            <el-table v-else :data="events" v-loading="eventsLoading" empty-text="本报告暂无已读取的同步状态更新" max-height="240">
+            <el-table :scrollbar-tabindex="0" role="region" aria-label="报告同步状态更新" v-else :data="events" v-loading="eventsLoading" empty-text="本报告暂无已读取的同步状态更新" max-height="240">
               <el-table-column label="状态更新" min-width="110"><template #default="{ row }">{{ eventLabel(row.eventType) }}</template></el-table-column>
               <el-table-column label="发送状态" min-width="140"><template #default="{ row }"><StatusBadge domain="reportDelivery" :code="row.deliveryStatus" /></template></el-table-column>
               <el-table-column label="尝试次数" width="90"><template #default="{row}">{{ knownCount(row.attempts) ?? '—' }}</template></el-table-column>
@@ -74,7 +75,7 @@
             <el-button v-if="detail.status === 'APPROVED'" :loading="busy" @click="download"><AppIcon name="Download" :size="15" />导出已审批报告</el-button>
           </div>
           <h3><AppIcon name="DocumentCopy" :size="18" />操作记录<span class="report-section-count">本次读取 {{ audits.length }} 条</span></h3>
-          <el-table :data="audits" max-height="260"><el-table-column prop="actorUsername" label="操作账号" min-width="140" /><el-table-column label="操作" min-width="90"><template #default="{ row }">{{ auditLabels[row.action] || row.action }}</template></el-table-column><el-table-column prop="reportVersion" label="版本" width="65" /><el-table-column label="来源" min-width="150"><template #default="{ row }"><router-link v-if="row.runId" :to="{ path: '/agent/trace', query: { runId: row.runId } }">助手运行轨迹</router-link><span v-else>业务页面</span></template></el-table-column><el-table-column prop="reason" label="意见" min-width="160" /><el-table-column label="时间（UTC+8）" min-width="190"><template #default="{ row }">{{ reportTime(row.createdAt) }}</template></el-table-column></el-table>
+          <el-table :scrollbar-tabindex="0" role="region" aria-label="报告操作记录" :data="audits" max-height="260"><el-table-column prop="actorUsername" label="操作账号" min-width="140" /><el-table-column label="操作" min-width="90"><template #default="{ row }">{{ auditLabels[row.action] || row.action }}</template></el-table-column><el-table-column prop="reportVersion" label="版本" width="65" /><el-table-column label="来源" min-width="150"><template #default="{ row }"><router-link v-if="row.runId" :to="{ path: '/agent/trace', query: { runId: row.runId } }">助手运行轨迹</router-link><span v-else>业务页面</span></template></el-table-column><el-table-column prop="reason" label="意见" min-width="160" /><el-table-column label="时间（UTC+8）" min-width="190"><template #default="{ row }">{{ reportTime(row.createdAt) }}</template></el-table-column></el-table>
         </template>
         <el-alert v-if="detailError&&detail" :title="detailError" type="error" :closable="false" />
       </div>

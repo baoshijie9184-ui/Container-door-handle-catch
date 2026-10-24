@@ -16,6 +16,11 @@ body { font-family: var(--app-font); background: var(--app-bg); color: var(--app
 .management-applied-query { margin:0 18px 14px; color:var(--app-text-secondary); font-size:12px; line-height:1.85; overflow-wrap:anywhere; }
 .management-query-note { margin:0 18px 16px; padding:10px 12px; background:var(--app-primary-soft); color:var(--app-text-secondary); font-size:12px; line-height:1.85; border-radius:7px; }
 .management-retry { margin:12px 18px; }
+.table-read-hint { display:flex; align-items:flex-start; gap:7px; margin:10px 0 12px; color:var(--app-text-secondary); font-size:12px; line-height:1.8; }
+.table-read-hint > .el-icon { flex:0 0 auto; margin-top:3px; color:var(--app-primary); }
+.table-panel > .table-read-hint { margin-inline:18px; }
+.el-table .el-scrollbar__wrap[tabindex="0"]:focus-visible { outline:2px solid var(--app-primary); outline-offset:-2px; border-radius:3px; }
+.el-table .el-table__row:not(.current-row):focus-within > td.el-table__cell { background-color:var(--app-primary-light); }
 .management-row-identity { display:grid; justify-items:start; gap:6px; min-width:0; padding:7px 0; }
 .management-row-identity > button { max-width:100%; border:0; padding:0; background:none; color:var(--app-primary); font:inherit; font-size:14px; font-weight:600; text-align:left; line-height:1.8; overflow-wrap:anywhere; cursor:pointer; }
 .management-row-identity > strong { color:var(--app-text); font-size:13px; line-height:1.8; font-weight:550; }
@@ -146,7 +151,6 @@ button:not(:disabled):active { transform: scale(.985); }
 #app .identity-page .mapping-table .el-table__header .cell { font-size: 12px; line-height: 1.8; }
 #app .layout-header a.manual-entry-link { display:inline-flex; align-items:center; justify-content:center; gap:7px; min-height:34px; padding:7px 11px; box-sizing:border-box; border:1px solid var(--app-border); border-radius:7px; background:white; color:var(--app-text-secondary); font-size:12px; font-weight:550; text-decoration:none; transition:background 150ms ease, border-color 150ms ease; }
 #app .layout-header a.manual-entry-link:hover { color:var(--app-primary); border-color:#b8cdf4; background:var(--app-primary-light); }
-#app .layout-header .user-role { max-width:230px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 #app .user-manual-page { max-width: 1380px; margin-inline: auto; }
 #app .user-manual-page .manual-account-scope { display: flex; gap: 10px; align-items: flex-start; padding: 14px 16px; border-radius: 10px; background: var(--app-primary-soft); color: var(--app-text-secondary); }
 #app .user-manual-page .manual-account-scope > .el-icon { flex: 0 0 auto; margin-top: 3px; color: var(--app-primary); }
@@ -236,7 +240,7 @@ button:not(:disabled):active { transform: scale(.985); }
 #app .image-detection-container .defect-evidence-card:focus-within { border-color: #b6cdfa; }
 .defect-card-responsibility { display: grid; grid-template-columns: minmax(0, 1fr); gap: 7px; padding-block: 10px; margin: 10px 0; border-block: 1px solid var(--app-border); font-size: 12px; }
 .defect-card-responsibility > div { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: 8px; }
-.defect-card-responsibility dt { color: var(--app-text-muted); }
+.defect-card-responsibility dt { color: var(--app-text-secondary); }
 .defect-card-responsibility dd { margin: 0; color: var(--app-text-secondary); overflow-wrap: anywhere; }
 .defect-preview-caption { display: inline-flex; align-items: center; gap: 5px; position: absolute; bottom: 10px; right: 10px; padding: 5px 8px; border: 1px solid var(--app-border); border-radius: 6px; background: #ffffffef; color: var(--app-primary); font-size: 11px; }
 .defect-preview-empty { display: flex; min-height: 180px; align-items: center; justify-content: center; flex-direction: column; gap: 8px; padding: 18px; color: var(--app-text-muted); font-size: 12px; line-height: 1.8; }
@@ -265,7 +269,7 @@ button:not(:disabled):active { transform: scale(.985); }
 #app .layout-content :is(.task-item-main, .task-item-taskid, .record-header-left, .record-capture, .defect-card-body) { min-width: 0; }
 #app .layout-content :is(.taskid-value, .record-taskid, .oss-path-value, .result-message, .task-item-status, .identity-preview code) { overflow-wrap: anywhere; word-break: break-word; }
 #app .image-detection-container .task-item-main > .quality-guidance { margin-top: 12px; }
-#app .image-detection-container .defect-card-body > .quality-guidance { margin-bottom: 14px; }
+#app .image-detection-container .defect-card-body > .quality-guidance { margin-top:14px; margin-bottom:0; }
 #app .image-detection-container .hero-side-note strong { display: flex; align-items: center; gap: 7px; }
 #app .image-detection-container .defect-card-image img { object-fit: contain; background: #f1f5f9; }
 #app .image-detection-container .trace-dialog-body .el-descriptions { margin-bottom: 16px; }

@@ -83,7 +83,8 @@
       <p v-if="filtersDirty" class="management-query-note" role="status">筛选内容尚未查询，翻页和刷新继续沿用已执行的条件。</p>
       <el-button v-if="listError && modelList.length" class="management-retry" :loading="loading" @click="retryModelList"><AppIcon name="Refresh" :size="14" />重读上次请求</el-button>
       <el-alert v-if="listError && modelList.length" :title="listError + '；下方保留先前读取的记录，请重新查询核对。'" type="error" show-icon :closable="false" />
-      <el-table row-key="modelId" :data="modelList" v-loading="loading" border style="width: 100%">
+      <TableReadHint v-if="modelList.length" />
+      <el-table :scrollbar-tabindex="0" role="region" aria-label="检测模型记录" row-key="modelId" :data="modelList" v-loading="loading" border style="width: 100%">
         <template #empty>
           <CollectionEmptyState :loading="loading" :error="listError" :filtered="listLoaded ? Object.keys(appliedFilters).length>0 : !!hasSearch" empty-title="暂无检测模型" :empty-description="isSupervisor?'可使用上方上传入口登记模型，发布后供检测任务选择。':'当前账号可查看已登记模型，需要新增时请联系主管。'" @retry="retryModelList" @reset="resetSearch" />
         </template>
@@ -181,7 +182,7 @@
             <h3><AppIcon name="DocumentCopy" :size="17" />操作日志</h3><el-button size="small" :loading="operationLoading" @click="fetchOperationLogs(selectedModelId)"><AppIcon name="Refresh" :size="14" />重新读取</el-button>
           </div>
           <el-alert v-if="operationError&&operationLogs.length" :title="operationError+'；保留先前读取的日志。'" type="error" :closable="false" />
-          <el-table :data="operationLogs" v-loading="operationLoading" border size="small">
+          <el-table :scrollbar-tabindex="0" role="region" aria-label="检测模型操作日志" :data="operationLogs" v-loading="operationLoading" border size="small">
             <template #empty>
               <CollectionEmptyState :loading="operationLoading" :error="operationError" empty-title="暂无已登记的操作日志" empty-description="日志缺失不代表没有执行过操作，请结合当前模型状态核对。" @retry="fetchOperationLogs(selectedModelId)" />
             </template>

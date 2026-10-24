@@ -144,7 +144,7 @@ const handleLogin = async () => {
 .login-showcase { display: flex; flex-direction: column; padding: 38px clamp(28px, 6vw, 90px); background: #f6f8fb; border-right: 1px solid var(--app-border); }
 .login-brand { display: flex; align-items: center; gap: 11px; font-size: 17px; font-weight: 700; color: var(--app-text); }
 .login-brand-mark { display: grid; place-items: center; width: 43px; height: 43px; background: var(--app-primary); border-radius: 12px; color: white; }
-.login-brand small { display: block; font-weight: 400; font-size: 11px; margin-top: 3px; color: var(--app-text-muted); }
+.login-brand small { display: block; font-weight: 400; font-size: 12px; margin-top: 3px; color: var(--app-text-secondary); }
 .showcase-inner { max-width: 560px; margin-block: auto; padding-block: 38px; }
 .login-product-label { color: var(--app-primary); font-size: 12px; font-weight: 600; }
 .showcase-inner h1 { margin: 18px 0 16px; color: var(--app-text); font-size: clamp(28px, 3vw, 42px); font-weight: 700; letter-spacing: -.04em; line-height: 1.38; }
@@ -152,7 +152,8 @@ const handleLogin = async () => {
 .login-capabilities { display: flex; flex-wrap: wrap; gap: 18px; }
 .login-capabilities span, .login-scope-note, .login-card-footer { display: flex; align-items: center; gap: 7px; color: var(--app-text-secondary); font-size: 12px; }
 .login-capabilities .el-icon { color: var(--app-primary); }
-.login-scope-note { font-size: 11px; padding-top: 18px; border-top: 1px solid var(--app-border); }
+.login-scope-note { font-size:12px; line-height:1.8; padding-top: 18px; border-top: 1px solid var(--app-border); }
+.login-scope-note > .el-icon { flex-shrink:0; }
 .login-panel { position: relative; display: flex; flex-direction: column; justify-content: center; align-items: center; padding: 52px 32px; }
 .login-card { width: 100%; max-width: 365px; animation: login-reveal 200ms ease both; }
 .login-card-icon { width: 49px; height: 49px; display: grid; place-items: center; background: var(--app-primary-soft); color: var(--app-primary); border-radius: 14px; margin-bottom: 22px; }
@@ -163,7 +164,7 @@ const handleLogin = async () => {
 .login-form :deep(.el-input__wrapper.is-focus) { box-shadow: 0 0 0 1px var(--app-primary) inset, 0 0 0 3px #2563eb10; }
 .login-form :deep(.el-form-item) { margin-bottom: 23px; }
 .login-options { display:flex; align-items:center; justify-content:space-between; margin:0 0 3px; gap:12px; }
-.login-remember-note { margin:0 0 18px; color:var(--app-text-muted); font-size:11px; line-height:1.7; }
+.login-remember-note { margin:0 0 18px; color:var(--app-text-secondary); font-size:12px; line-height:1.8; }
 .login-inline-note { display:flex; align-items:flex-start; gap:7px; margin:0 0 15px; padding:9px 10px; border-radius:7px; color:var(--app-text-secondary); background:var(--app-info-soft); font-size:12px; line-height:1.8; overflow-wrap:anywhere; }
 .login-inline-note > .el-icon { flex:0 0 auto; margin-top:3px; }
 .login-inline-note.is-warning { color:var(--app-warning); background:var(--app-warning-soft); }
@@ -175,8 +176,9 @@ const handleLogin = async () => {
 .password-help-heading > .el-icon { flex:0 0 auto; color:var(--app-primary); }
 .login-page :is(button,a,input):focus-visible { outline:2px solid var(--app-primary); outline-offset:3px; }
 .login-button { width: 100%; height: 46px; justify-content: space-between; padding-inline: 18px; box-shadow: none; }
-.login-card-footer { margin-top: 24px; justify-content: center; font-size: 11px; line-height: 1.7; }
-.login-timezone { position: absolute; bottom: 24px; font-size: 11px; color: var(--app-text-muted); }
+.login-card-footer { margin-top: 24px; justify-content: center; font-size:12px; line-height:1.8; }
+.login-card-footer > .el-icon { flex-shrink:0; }
+.login-timezone { position: absolute; bottom: 24px; font-size:12px; color:var(--app-text-secondary); }
 .password-help { color: var(--app-text-secondary); line-height: 1.8; }
 @keyframes login-reveal { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
 @media(max-width: 850px) { .login-page { grid-template-columns: 1fr; } .login-showcase { padding: 24px; border-right: 0; border-bottom: 1px solid var(--app-border); } .showcase-inner, .login-scope-note { display: none; } .login-panel { padding: 44px 24px 70px; flex: 1; } .login-brand { font-size: 15px; } .login-card h2 { font-size: 25px; } }

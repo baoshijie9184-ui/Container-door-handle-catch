@@ -34,7 +34,7 @@
     <template v-else>
     <div role="status" class="dashboard-refresh-note">
       <span>{{ refreshing ? '正在刷新…' : '每 30 秒自动刷新（后台页面暂停）' }}</span>
-      <span v-if="lastUpdated"> · 最近全部更新成功：{{ lastUpdated }}</span>
+      <span v-if="lastUpdated"> · 最近全部更新成功：{{ lastUpdated }} UTC+8</span>
       <el-alert v-if="failedSections.length" type="warning" :closable="false"
         :title="`加载失败：${failedSections.join('、')}。对应区域可能保留上次数据；未读取或缺失的指标显示 —，请刷新核对。`" />
     </div>
@@ -42,7 +42,7 @@
     <section class="quality-overview" aria-labelledby="quality-overview-title" :aria-busy="refreshing">
       <header><div><h2 id="quality-overview-title">{{ userStore.role === 'SUPERVISOR' ? '企业质量待办' : '我的质量待办' }}</h2><p>按当前账号可访问任务统计 · 当前状态 · 时间 UTC+8</p></div><router-link to="/quality/queue"><AppIcon name="ArrowRight" :size="16" />全部质检任务</router-link></header>
       <div class="quality-overview-grid">
-        <router-link v-for="metric in qualityMetrics" :key="metric.key" :to="{path:'/quality/queue',query:{queue:metric.queue}}" :data-tone="metric.tone"><span class="quality-overview-icon"><AppIcon :name="metric.icon" :size="20" /></span><span><strong>{{ qualityWorkload ? qualityWorkload[metric.key] : '—' }}</strong><small>{{ metric.label }}</small></span><AppIcon name="ArrowRight" :size="15" /></router-link>
+        <router-link v-for="metric in qualityMetrics" :key="metric.key" :to="{path:'/quality/queue',query:{queue:metric.queue}}" :data-tone="metric.tone"><span class="quality-overview-icon"><AppIcon :name="metric.icon" :size="20" /></span><span><strong>{{ qualityWorkload ? formatNumber(qualityWorkload[metric.key]) : '—' }}</strong><small>{{ metric.label }}</small></span><AppIcon name="ArrowRight" :size="15" /></router-link>
       </div>
       <p v-if="!qualityWorkload" class="quality-overview-note">{{ failedSections.includes('质量待办') ? '质量待办暂不可读取，请刷新核对；缺失值不代表零。' : '正在读取质量待办…' }}</p>
       <p v-else class="quality-overview-note">{{ failedSections.includes('质量待办') ? '本次刷新失败，以上保留上次数据，请刷新核对。' : '各类待办可能交叉，不能直接相加作为任务总数。' }}</p>
@@ -215,6 +215,7 @@
         <div ref="detectionTrendChartRef" class="chart" role="img" :aria-label="`${trendScopeLabel}检测趋势：左轴任务图片数，右轴各类目标数`" :aria-busy="trendLoading"></div>
         <p class="dashboard-data-note">图片数与目标数单位不同，一张图片可以有多个目标；此时间范围仅作用于本图。</p>
         <p v-if="detectionTimeRange==='month'" class="dashboard-data-note">月份标签沿用原统计记录，尚未包含年份；跨年明细请在检测历史核对。</p>
+        <ChartDataDetails title="查看趋势数据" :columns="trendColumns" :rows="chartReadouts.trend.rows" :scope="chartReadouts.trend.scope || trendScopeLabel" :loaded="chartReadouts.trend.loaded" :loading="trendLoading" :read-error="failedSections.includes('检测趋势')?'趋势统计暂不可读取。':''" />
       </el-card>
 
       <!-- 快速状态 (右侧窄) -->
@@ -278,6 +279,7 @@
           </div>
         </template>
         <div ref="regionChartRef" class="chart" role="img" aria-label="登记地区的累计任务图片数与任务数"></div>
+        <ChartDataDetails title="查看地区数据" :columns="regionColumns" :rows="chartReadouts.region.rows" scope="当前账号可访问的累计完成任务（含部分失败），按登记地区分组" :loaded="chartReadouts.region.loaded" :loading="refreshing" :read-error="failedSections.includes('地区采集')?'地区统计暂不可读取。':''" />
       </el-card>
 
       <!-- 检测结果分布 (右半) -->
@@ -292,6 +294,7 @@
         </template>
         <div ref="detectionDistributionChartRef" class="chart" role="img" aria-label="六类检测目标累计分布，不代表人工复核结果"></div>
         <p class="dashboard-data-note">按检测目标计数，非图片数或人工复核结论。</p>
+        <ChartDataDetails title="查看分类目标数" :columns="targetColumns" :rows="chartReadouts.distribution.rows" scope="当前账号可访问的累计完成任务（含部分失败），按检测目标计数" :loaded="chartReadouts.distribution.loaded" :loading="refreshing" :read-error="failedSections.includes('检测分布')?'分类统计暂不可读取。':''" />
       </el-card>
 
       <!-- 设备状态分布 -->
@@ -305,6 +308,7 @@
           </div>
         </template>
         <div ref="deviceStatusChartRef" class="chart" role="img" aria-label="登记设备的当前状态分布"></div>
+        <ChartDataDetails title="查看设备状态数" :columns="deviceColumns" :rows="deviceStatusRows" scope="全部登记设备的当前业务状态，不表示实时在线心跳" :loaded="deviceStatusRows.every(row=>row.count!==null)" :loading="refreshing" :read-error="failedSections.includes('设备')?'设备统计暂不可读取。':''" />
       </el-card>
 
       <!-- 人员状态分布 -->
@@ -318,6 +322,7 @@
           </div>
         </template>
         <div ref="employeeStatusChartRef" class="chart" role="img" aria-label="登记人员的当前状态分布"></div>
+        <ChartDataDetails title="查看人员状态数" :columns="employeeColumns" :rows="employeeStatusRows" scope="全部登记人员的当前在岗状态" :loaded="employeeStatusRows.every(row=>row.count!==null)" :loading="refreshing" :read-error="failedSections.includes('人员')?'人员统计暂不可读取。':''" />
       </el-card>
 
       <!-- 设备类型概览 -->
@@ -440,6 +445,7 @@ import { useUserStore } from '../stores/user'
 import {beijingDateTime} from '@/utils/beijingTime'
 import { knownCount } from '@/utils/countPresentation'
 import CollectionEmptyState from '@/components/CollectionEmptyState.vue'
+import ChartDataDetails from '@/components/ChartDataDetails.vue'
 import * as echarts from 'echarts'
 import {
   User, Monitor, Search, Setting,
@@ -536,10 +542,20 @@ const deviceStatus = reactive({
   inUse: null, offline: null, maintenance: null, unused: null
 })
 
+// Reading alternatives use the same validated values as the charts, without another request.
+const chartReadouts=reactive({trend:{rows:[],loaded:false,scope:''},region:{rows:[],loaded:false},distribution:{rows:[],loaded:false}})
+const trendColumns=[{key:'period',label:'统计分组'},...Object.entries({total:'图片数（张）',normal:'正常目标（个）',bent:'弯曲目标（个）',deformed:'形变目标（个）',rusty:'锈蚀目标（个）',missing:'缺失目标（个）',compromised:'结构损伤目标（个）'}).map(([key,label])=>({key,label,numeric:true}))]
+const regionColumns=[{key:'label',label:'登记地区'},{key:'images',label:'图片数（张）',numeric:true},{key:'tasks',label:'任务数（个）',numeric:true}]
+const targetColumns=[{key:'label',label:'检测类别'},{key:'count',label:'目标数（个）',numeric:true}]
+const deviceColumns=[{key:'label',label:'设备业务状态'},{key:'count',label:'设备数（台）',numeric:true}]
+const employeeColumns=[{key:'label',label:'人员状态'},{key:'count',label:'人数（人）',numeric:true}]
+const deviceStatusRows=computed(()=>Object.entries({inUse:'使用中',offline:'离线',maintenance:'维护中',unused:'未使用'}).map(([key,label])=>({label,count:deviceStatus[key]})))
+
 const employeeStatus = reactive({
   active: null, vacation: null, resigned: null,
   detection: null, collection: null, maintenance: null
 })
+const employeeStatusRows=computed(()=>Object.entries({active:'在岗',vacation:'休假',resigned:'离职'}).map(([key,label])=>({label,count:employeeStatus[key]})))
 
 const detectionTrendChartRef = ref(null)
 const detectionDistributionChartRef = ref(null)
@@ -729,7 +745,10 @@ async function updateDetectionTrendChart() {
   const timeRange = detectionTimeRange.value
   trendLoading.value = true
   // Clear the previous range immediately so it cannot appear under a new range label.
-  if (renderedTrendRange !== timeRange) charts.detectionTrend.setOption(buildEmptyOption('正在读取所选范围…'), true)
+  if (renderedTrendRange !== timeRange) {
+    charts.detectionTrend.setOption(buildEmptyOption('正在读取所选范围…'), true)
+    chartReadouts.trend={rows:[],loaded:false,scope:trendScopeLabel.value}
+  }
   try {
     const res = await request.get('/api/statistics/detection-trend', { params: { timeRange } })
     if (disposed || generation !== trendRequestGeneration) return
@@ -738,9 +757,10 @@ async function updateDetectionTrendChart() {
     charts.detectionTrend.clear()
     renderedTrendRange = timeRange
     const data = res.data?.data || []
-    if (!data.length) { charts.detectionTrend.setOption(buildEmptyOption('暂无趋势数据')); return }
+    if (!data.length) { chartReadouts.trend={rows:[],loaded:true,scope:trendScopeLabel.value};charts.detectionTrend.setOption(buildEmptyOption('暂无趋势数据')); return }
     const countKeys = ['total', 'normal', 'bent', 'deformed', 'rusty', 'missing', 'compromised']
     if (data.some(item => !item || countKeys.some(key => knownCount(item[key]) === null))) throw new Error('趋势统计字段不完整')
+    chartReadouts.trend={rows:data.map(item=>Object.fromEntries([['period',item.date],...countKeys.map(key=>[key,knownCount(item[key])])])),loaded:true,scope:trendScopeLabel.value}
 
     const labels = data.map(i => i.date)
     const pick = (k) => data.map(i => knownCount(i[k]))
@@ -755,20 +775,20 @@ async function updateDetectionTrendChart() {
         textStyle: { color: '#0f172a', fontSize: 13 },
         boxShadow: '0 12px 40px rgba(15,23,42,0.12)'
       },
-      legend: { top: 0, textStyle: { color: '#5f728c', fontSize: 12 }, itemGap: 16 },
+      legend: { top: 0, textStyle: { color: '#475569', fontSize: 12 }, itemGap: 16 },
       grid: { left: 20, right: 18, bottom: 20, top: 48, containLabel: true },
       xAxis: {
         type: 'category', data: labels,
         axisLine: { lineStyle: { color: '#e2e8f0' } },
-        axisLabel: { color: '#94a3b8', fontSize: 11 }
+        axisLabel: { color: '#475569', fontSize: 12 }
       },
       yAxis: [{
         type: 'value', name: '图片数', minInterval: 1,
         splitLine: { lineStyle: { color: '#f1f5f9' } },
-        axisLabel: { color: '#94a3b8', fontSize: 11 }
+        axisLabel: { color: '#475569', fontSize: 12 }
       }, {
         type: 'value', name: '目标数', minInterval: 1,
-        splitLine: { show: false }, axisLabel: { color: '#94a3b8', fontSize: 11 }
+        splitLine: { show: false }, axisLabel: { color: '#475569', fontSize: 12 }
       }],
       series: [
         {
@@ -808,23 +828,24 @@ async function updateDetectionDistributionChart() {
     const resultMap = { 正常: null, 弯曲: null, 形变: null, 锈蚀: null, 缺失: null, 结构损伤: null }
     const data = res.data?.data
     if (!Array.isArray(data)) throw new Error('分布统计格式异常')
-    if (!data.length) { charts.detectionDistribution.setOption(buildEmptyOption('暂无分布数据')); return }
-    if (data.every(item => item?.count == null)) { charts.detectionDistribution.setOption(buildEmptyOption('尚无已记录的分类统计')); return }
+    if (!data.length) { chartReadouts.distribution={rows:[],loaded:true};charts.detectionDistribution.setOption(buildEmptyOption('暂无分布数据')); return }
+    if (data.every(item => item?.count == null)) { chartReadouts.distribution={rows:[],loaded:false};charts.detectionDistribution.setOption(buildEmptyOption('尚无已记录的分类统计')); return }
     data.forEach(item => {
       const label = DETECTION_CATEGORY_LABELS[item.result] || item.result
       if (Object.hasOwn(resultMap, label)) resultMap[label] = knownCount(item.count)
     })
     if (Object.values(resultMap).some(v => v === null)) throw new Error('分布统计字段不完整')
+    chartReadouts.distribution={rows:Object.entries(resultMap).map(([label,count])=>({label,count})),loaded:true}
     if (Object.values(resultMap).every(v => v === 0)) { charts.detectionDistribution.setOption(buildEmptyOption('暂无分布数据')); return }
 
     charts.detectionDistribution.setOption({
       ...chartMotionOptions(),
       color: [CHART_COLORS.green, CHART_COLORS.amber, CHART_COLORS.violet, CHART_COLORS.red, CHART_COLORS.purple, CHART_COLORS.cyan],
       tooltip: { trigger: 'item', backgroundColor: '#fff', borderColor: '#e2e8f0', textStyle: { color: '#0f172a' } },
-      legend: { bottom: 0, textStyle: { color: '#5f728c', fontSize: 12 } },
+      legend: { bottom: 0, textStyle: { color: '#475569', fontSize: 12 } },
       series: [{
         type: 'pie', radius: ['50%', '74%'], center: ['50%', '44%'],
-        label: { formatter: '{b}\n{d}%', fontSize: 11 },
+        label: { formatter: '{b}\n{d}%', fontSize: 12, color: '#475569' },
         itemStyle: { borderRadius: 12, borderColor: '#fff', borderWidth: 3 },
         emphasis: { scaleSize: 8, label: { fontSize: 14, fontWeight: 'bold' } },
         data: [
@@ -856,10 +877,10 @@ function updateDeviceStatusChart() {
     ...chartMotionOptions(),
     color: [CHART_COLORS.blue, CHART_COLORS.slate, CHART_COLORS.amber, CHART_COLORS.pale],
     tooltip: { trigger: 'item', backgroundColor: '#fff', borderColor: '#e2e8f0', textStyle: { color: '#0f172a' } },
-    legend: { bottom: 0, textStyle: { color: '#5f728c', fontSize: 12 } },
+    legend: { bottom: 0, textStyle: { color: '#475569', fontSize: 12 } },
     series: [{
       type: 'pie', radius: ['44%', '70%'], center: ['50%', '44%'],
-      label: { formatter: '{b}\n{c} 台', fontSize: 11 },
+      label: { formatter: '{b}\n{c} 台', fontSize: 12, color: '#475569' },
       itemStyle: { borderRadius: 12, borderColor: '#fff', borderWidth: 3 },
       emphasis: { scaleSize: 8 },
       data: [
@@ -888,10 +909,10 @@ function updateEmployeeStatusChart() {
     ...chartMotionOptions(),
     color: [CHART_COLORS.green, CHART_COLORS.amber, CHART_COLORS.slate],
     tooltip: { trigger: 'item', backgroundColor: '#fff', borderColor: '#e2e8f0', textStyle: { color: '#0f172a' } },
-    legend: { bottom: 0, textStyle: { color: '#5f728c', fontSize: 12 } },
+    legend: { bottom: 0, textStyle: { color: '#475569', fontSize: 12 } },
     series: [{
       type: 'pie', radius: ['44%', '70%'], center: ['50%', '44%'],
-      label: { formatter: '{b}\n{d}%', fontSize: 11 },
+      label: { formatter: '{b}\n{d}%', fontSize: 12, color: '#475569' },
       itemStyle: { borderRadius: 12, borderColor: '#fff', borderWidth: 3 },
       emphasis: { scaleSize: 8 },
       data: [
@@ -911,12 +932,13 @@ async function updateRegionChart() {
     charts.region.clear()
     const data = res.data?.data
     if (!Array.isArray(data)) throw new Error('地区统计格式异常')
-    if (!data.length) { charts.region.setOption(buildEmptyOption('暂无地区数据')); return }
+    if (!data.length) { chartReadouts.region={rows:[],loaded:true};charts.region.setOption(buildEmptyOption('暂无地区数据')); return }
 
     const regions = data.map(i => i.region)
     const imageCounts = data.map(i => knownCount(i.imageCount))
     const taskCounts = data.map(i => knownCount(i.taskCount))
     if ([...imageCounts, ...taskCounts].some(value => value === null)) throw new Error('地区统计字段不完整')
+    chartReadouts.region={rows:data.map((item,index)=>({label:item.region,images:imageCounts[index],tasks:taskCounts[index]})),loaded:true}
 
     charts.region.setOption({
       ...chartMotionOptions(),
@@ -928,23 +950,23 @@ async function updateRegionChart() {
         textStyle: { color: '#0f172a', fontSize: 13 },
         axisPointer: { type: 'shadow' }
       },
-      legend: { top: 0, textStyle: { color: '#5f728c', fontSize: 12 }, itemGap: 16 },
+      legend: { top: 0, textStyle: { color: '#475569', fontSize: 12 }, itemGap: 16 },
       grid: { left: 20, right: 18, bottom: 20, top: 40, containLabel: true },
       xAxis: {
         type: 'category', data: regions,
         axisLine: { lineStyle: { color: '#e2e8f0' } },
-        axisLabel: { color: '#94a3b8', fontSize: 11, rotate: regions.length > 6 ? 30 : 0 }
+        axisLabel: { color: '#475569', fontSize: 12, rotate: regions.length > 6 ? 30 : 0 }
       },
       yAxis: [
         {
           type: 'value', name: '图片数',
           splitLine: { lineStyle: { color: '#f1f5f9' } },
-          axisLabel: { color: '#94a3b8', fontSize: 11 }
+          axisLabel: { color: '#475569', fontSize: 12 }
         },
         {
           type: 'value', name: '任务数',
           splitLine: { show: false },
-          axisLabel: { color: '#94a3b8', fontSize: 11 }
+          axisLabel: { color: '#475569', fontSize: 12 }
         }
       ],
       series: [
@@ -973,7 +995,7 @@ function buildEmptyOption(text) {
     ...chartMotionOptions(),
     title: {
       text, left: 'center', top: 'center',
-      textStyle: { color: '#94a3b8', fontSize: 14, fontWeight: 500 }
+      textStyle: { color: '#475569', fontSize: 14, fontWeight: 500 }
     }
   }
 }
