@@ -39,6 +39,23 @@ def config():
     return rehearsal.isolated_config(sample(), PROJECT, 18089, {'backend': 'sha256:'+'a'*64}, 'doorhandledb')
 
 
+def test_memory_model_override_preserves_embeddings_credentials_and_app_choice():
+    value=config()
+    value['services']['mem0']['environment'].update(MEM0_LLM_MODEL='glm-5.3',EMBEDDING_MODEL='fixed-vector',DASHSCOPE_API_KEY='fixture-key')
+    original=copy.deepcopy(value)
+    selected=rehearsal.memory_extraction_config(value,'qwen3.8-flash')
+    assert value==original
+    assert selected['services']['mem0']['environment']['MEM0_LLM_MODEL']=='qwen3.8-flash'
+    selected['services']['mem0']['environment']['MEM0_LLM_MODEL']='glm-5.3'
+    assert selected==original
+
+
+@pytest.mark.parametrize('model',[None,'','https://example.com/model','qwen\nother=value','qwen;command','x'*129])
+def test_memory_model_override_rejects_unbounded_or_non_model_values(model):
+    with pytest.raises(RuntimeError,match='bounded model identifier'):
+        rehearsal.memory_extraction_config(config(),model)
+
+
 def test_compatible_runner_updates_only_its_private_overlay_identities():
     value = config()
     value['services']['higress-config'] = {'image': 'old-config', 'environment': {'AGENT_MCP_GATEWAY_KEY': 'private-key'}}

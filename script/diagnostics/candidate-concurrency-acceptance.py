@@ -57,10 +57,11 @@ def main():
                     accounts.append(account);report['accounts'].append({'name':name,'sessionId':sid,'blocking':index<2,'submitted':account['submitted']});save()
                 for account in accounts[:2]:
                     models=api(account,'GET','/agui/models')['models']
-                    deepseek=next(m for m in models if m['provider']=='deepseek' and m['configured'])
+                    selected=next((m for m in models if m['id']=='dashscope:qwen3.8-flash' and m['provider']=='dashscope' and m['configured']),None)
+                    if selected is None:raise RuntimeError('Configured Bailian test model unavailable; do not switch to a direct paid provider')
                     selection=api(account,'GET',account['prefix']+'/model-selection')
                     api(account,'POST',account['prefix']+'/model-selection',headers={'X-Agent-Action':'workbench'},
-                        json={'modelId':deepseek['id'],'revision':selection['revision'],'requestId':identifier()})
+                        json={'modelId':selected['id'],'revision':selection['revision'],'requestId':identifier()})
                     # One submission only. A lost response is inspected through workbench,
                     # never retried or replaced with an unconfirmed second model request.
                     try:

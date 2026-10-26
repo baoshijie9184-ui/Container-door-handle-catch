@@ -8,7 +8,7 @@ import pytest
 from memory_service import main
 
 
-@pytest.mark.parametrize('model', ['qwen3.8-flash', 'glm-5.3', 'kimi-k3', 'kimi-k2.7-code'])
+@pytest.mark.parametrize('model', ['qwen3.8-flash', 'qwen3.8-max-0902', 'glm-5.3', 'kimi-k3', 'kimi-k2.7-code'])
 @pytest.mark.parametrize('managed', [False, True])
 def test_provider_models_retain_the_native_output_budget(monkeypatch, model, managed):
     from mem0.utils.factory import LlmFactory
@@ -23,6 +23,7 @@ def test_provider_models_retain_the_native_output_budget(monkeypatch, model, man
     else:
         monkeypatch.setenv('DASHSCOPE_BASE_URL', base)
         llm=LlmFactory.create('openai', main.get_memory_config()['llm']['config'])
+        main.configure_llm_provider(llm)
     original=llm.client
     captured=[]
     def handler(request):
@@ -41,6 +42,10 @@ def test_provider_models_retain_the_native_output_budget(monkeypatch, model, man
         assert request['model']==model and request['response_format']=={'type':'json_object'}
         assert request.get('max_tokens')==2000, 'Provider extraction lost its native output bound'
         assert request.get('temperature')==(1.0 if model.startswith('kimi-') else 0.1)
+        if model.startswith('qwen3.8-'):
+            assert request.get('enable_thinking') is False
+        else:
+            assert 'enable_thinking' not in request
     finally:
         llm.client.close()
         original.close()

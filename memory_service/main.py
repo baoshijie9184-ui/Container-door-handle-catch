@@ -136,11 +136,28 @@ def bounded_setting(name, default, minimum, maximum):
     return value
 
 
+def configure_llm_provider(llm):
+    extraction_timeout = bounded_setting("MEM0_EXTRACTION_TIMEOUT_SECONDS", 30, 0.1, 120)
+    llm.client = llm.client.with_options(timeout=extraction_timeout, max_retries=0)
+    model = str(getattr(getattr(llm, "config", None), "model", "")).lower().rsplit("/", 1)[-1]
+    if model.startswith("qwen3.8-") and not getattr(llm.generate_response, "_doorhandle_json_mode", False):
+        # These configured mixed-mode models need non-thinking JSON extraction.
+        # Pass the option through the native SDK; never retry a previous write.
+        original = llm.generate_response
+        def generate_response(*args, **kwargs):
+            extra = kwargs.pop("extra_body", None)
+            if extra is not None and not isinstance(extra, dict):
+                raise ValueError("Invalid provider options")
+            return original(*args, **kwargs, extra_body={**(extra or {}), "enable_thinking": False})
+        generate_response._doorhandle_json_mode = True
+        llm.generate_response = generate_response
+    return llm
+
+
 def configure_provider_timeouts(memory):
     # The pinned Mem0 constructor does not forward a timeout to its OpenAI clients.
     timeout = bounded_setting("MEM0_PROVIDER_TIMEOUT_SECONDS", 15, 0.1, 120)
-    extraction_timeout = bounded_setting("MEM0_EXTRACTION_TIMEOUT_SECONDS", 30, 0.1, 120)
-    memory.llm.client = memory.llm.client.with_options(timeout=extraction_timeout, max_retries=0)
+    configure_llm_provider(memory.llm)
     memory.embedding_model.client = memory.embedding_model.client.with_options(timeout=timeout, max_retries=0)
 
 
@@ -228,8 +245,7 @@ def create_configured_llm(data):
     if data["model"].rsplit("/", 1)[-1] in {"kimi-k3", "kimi-k2.7-code"}:
         config.update(temperature=1.0, top_p=0.95)
     llm = LlmFactory.create("openai", config)
-    llm.client = llm.client.with_options(timeout=bounded_setting("MEM0_EXTRACTION_TIMEOUT_SECONDS", 30, .1, 120), max_retries=0)
-    return llm
+    return configure_llm_provider(llm)
 
 
 class PrepareModelConfiguration(BaseModel):

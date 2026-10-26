@@ -198,6 +198,16 @@ def compatible_runner_config(config, image, runtime):
     return value
 
 
+def memory_extraction_config(config, model):
+    require(isinstance(model, str) and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._/-]{0,127}', model),
+            'Memory extraction requires a bounded model identifier')
+    require('mem0' in config.get('services', {}) and isinstance(config['services']['mem0'].get('environment'), dict),
+            'Existing memory service configuration required')
+    value=copy.deepcopy(config)
+    value['services']['mem0']['environment']['MEM0_LLM_MODEL']=model
+    return value
+
+
 def require_no_detection_backlog(output, group):
     rows = [line.split() for line in output.splitlines() if line.split() and line.split()[0] == group]
     require(bool(rows), 'Detection consumer offset is unknown; do not start a copied worker')
@@ -679,6 +689,11 @@ def run(args):
             command+=['-f',str(source/'compose.model-config.yml')]
         config = json.loads(ops.docker(*command, 'config', '--format', 'json', env=env))
         config = isolated_config(config, project, args.port, manifest['images'], manifest['databaseName'], model_secret_source)
+        memory_environment=config['services']['mem0'].get('environment',{})
+        original_memory_model=memory_environment.get('MEM0_LLM_MODEL') or memory_environment.get('DASHSCOPE_MODEL')
+        memory_model=getattr(args,'memory_extraction_model',None)
+        if memory_model:
+            config=memory_extraction_config(config,memory_model)
         assignment_guard=module('rehearsal_assignment_input',Path(__file__).with_name('assignment-compat.py'))
         desired_assignment_writes=assignment_guard.boolean(config['services']['backend']['environment'],'DETECTION_ASSIGNMENT_WRITES_ENABLED',True)
         mcp_guard=module('rehearsal_mcp_input',Path(__file__).with_name('mcp-compat.py'))
@@ -711,6 +726,8 @@ def run(args):
         instance.report.update(originalBackendImage=manifest['images']['backend'],compatibleBaselineBackend=config['services']['backend']['image'],assignmentBaselinePaused=bool(args.compatible_backend_image),mcpBaselinePaused=not baseline_mcp_writes)
         instance.report.update(originalRunnerImage=manifest['images'].get('mcp-runner'),
                                compatibleBaselineRunner=compatible_runner)
+        instance.report.update(originalMemoryExtractionModel=original_memory_model,
+                               selectedMemoryExtractionModel=memory_model or original_memory_model)
         instance.persist()
         instance.require_fresh_resources()
         print(json.dumps({'project': project, 'phase': 'BUILDING', 'port': args.port}), flush=True)
@@ -840,6 +857,7 @@ def main():
     parser.add_argument('--snapshot')
     parser.add_argument('--compatible-backend-image')
     parser.add_argument('--compatible-runner-image')
+    parser.add_argument('--memory-extraction-model')
     parser.add_argument('--port', type=int, default=18089)
     parser.add_argument('--keep', action='store_true', help='Keep an explicitly successful private candidate for immediate browser acceptance')
     args = parser.parse_args()

@@ -131,7 +131,7 @@ class FakeCandidate:
         elif path=='/api/chat-assistant/sessions':
             sid='s'+str(len(self.states));self.states[sid]={'owner':name,'inputs':[],'waiting':False,'revision':0};value={'sessionId':sid}
         elif path=='/api/chat-assistant/messages':self.states[body['sessionId']]['waiting']=True
-        elif path=='/agui/models':value={'models':[{'id':'deepseek:test','provider':'deepseek','configured':True}]}
+        elif path=='/agui/models':value={'models':[{'id':'deepseek:test','provider':'deepseek','configured':True},{'id':'dashscope:qwen3.8-flash','provider':'dashscope','configured':True}]}
         else:
             parts=path.split('/');sid=parts[4];state=self.states[sid]
             if state['owner']!=name:status=404
@@ -191,3 +191,16 @@ def test_read_failure_does_not_report_pass_and_still_withdraws_owned_inputs(monk
     final=candidate.snapshots[-1]
     assert not final['passed'] and final['cleanup']['complete']
     assert all(i['status']!='QUEUED' for state in candidate.states.values() for i in state['inputs'])
+
+
+def test_load_test_does_not_replace_unavailable_bailian_with_direct_paid_model(monkeypatch):
+    candidate=FakeCandidate()
+    original=candidate.api
+    def api(client,method,path,**kwargs):
+        if path=='/agui/models':return {'models':[{'id':'deepseek:paid','provider':'deepseek','configured':True}]}
+        if path=='/api/chat-assistant/messages':raise AssertionError('No model request is allowed without the selected Bailian model')
+        return original(client,method,path,**kwargs)
+    candidate.api=api
+    with pytest.raises(RuntimeError,match='do not switch to a direct paid provider'):
+        run_harness(monkeypatch,candidate)
+    assert candidate.snapshots[-1]['passed'] is False and candidate.snapshots[-1]['cleanup']['complete']
