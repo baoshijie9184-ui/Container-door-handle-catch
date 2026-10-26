@@ -113,13 +113,8 @@ def get_memory_config():
             }
         }
     }
-    # The local development SDK adds this option; pinned PyPI 2.0.19 does not.
-    # Detect constructor support before initialization rather than retrying a
-    # partially initialized memory store after a TypeError.
-    import inspect
-    from mem0.configs.llms.openai import OpenAIConfig
-    if "is_reasoning_model" in inspect.signature(OpenAIConfig).parameters:
-        config["llm"]["config"]["is_reasoning_model"] = True
+    # Let the SDK classify the selected model. Forcing every provider model
+    # into its reasoning path drops max_tokens and sampling parameters.
     if llm_model.rsplit("/", 1)[-1] in {"kimi-k3", "kimi-k2.7-code"}:
         # Pinned PyPI uses the general-model parameter path for Kimi. Its
         # default temperature=0.1 is rejected by these thinking-only models.
@@ -229,11 +224,7 @@ async def authenticate_memory_bridge(request: Request, call_next):
 
 def create_configured_llm(data):
     from mem0.utils.factory import LlmFactory
-    from mem0.configs.llms.openai import OpenAIConfig
-    import inspect
     config = {"model": data["model"], "api_key": data["api_key"], "openai_base_url": data["base_url"]}
-    if "is_reasoning_model" in inspect.signature(OpenAIConfig).parameters:
-        config["is_reasoning_model"] = True
     if data["model"].rsplit("/", 1)[-1] in {"kimi-k3", "kimi-k2.7-code"}:
         config.update(temperature=1.0, top_p=0.95)
     llm = LlmFactory.create("openai", config)

@@ -14,6 +14,9 @@ SPEC.loader.exec_module(environment)
 SPEC=importlib.util.spec_from_file_location('candidate_concurrency',SCRIPTS/'candidate-concurrency-acceptance.py')
 concurrency=importlib.util.module_from_spec(SPEC)
 with __import__('unittest.mock',fromlist=['patch']).patch.dict(sys.modules,{'candidate_environment':environment}):SPEC.loader.exec_module(concurrency)
+SPEC=importlib.util.spec_from_file_location('candidate_quality',SCRIPTS/'candidate-quality-acceptance.py')
+quality=importlib.util.module_from_spec(SPEC)
+with __import__('unittest.mock',fromlist=['patch']).patch.dict(sys.modules,{'candidate_environment':environment}):SPEC.loader.exec_module(quality)
 
 
 def receipt():
@@ -47,6 +50,63 @@ def test_unknown_image_identity_stops_before_tunnel_or_login(tmp_path,monkeypatc
     monkeypatch.setattr(environment.subprocess,'Popen',forbidden)
     with pytest.raises(RuntimeError,match='ownership'):
         with environment.CandidateEnvironment(report,tmp_path/'work'/'probe'):pass
+
+
+def test_quality_admission_failure_cannot_start_a_business_workflow(monkeypatch):
+    class Rejected:
+        def __enter__(self):raise RuntimeError('not an owned candidate')
+        def __exit__(self,*args):pass
+    monkeypatch.setattr(quality,'CandidateEnvironment',lambda *a:Rejected())
+    def forbidden(*a,**kw):raise AssertionError('Business work must follow candidate ownership validation')
+    monkeypatch.setattr(quality.subprocess,'run',forbidden)
+    with pytest.raises(RuntimeError,match='not an owned candidate'):
+        quality.main(['--candidate-report','unused.json','--directory','unused','--execute'])
+
+
+def test_quality_unknown_result_is_not_retried_and_transport_is_closed(tmp_path,monkeypatch):
+    class Candidate:
+        out=tmp_path
+        project=receipt()['project']
+        candidate=receipt()
+        base='http://127.0.0.1:18089'
+        closed=False
+        evidence=[]
+        def __enter__(self):return self
+        def __exit__(self,*args):self.closed=True
+        def write(self,name,value):self.evidence.append(deepcopy(value))
+    candidate=Candidate();calls=[]
+    monkeypatch.setattr(quality,'CandidateEnvironment',lambda *a:candidate)
+    def failed(args,**kwargs):
+        calls.append(args)
+        assert args[args.index('--base-url')+1]==candidate.base
+        assert kwargs['check'] is False and kwargs['timeout']==1800
+        workflow=tmp_path/'workflow';workflow.mkdir()
+        (workflow/'result.json').write_text(json.dumps({'passed':False,'tasks':{'normal-release':{'taskId':'partial-owned-task'}}}))
+        return type('Result',(),{'returncode':1})()
+    monkeypatch.setattr(quality.subprocess,'run',failed)
+    with pytest.raises(RuntimeError,match='Inspect|inspect'):
+        quality.main(['--candidate-report','unused.json','--directory','unused','--execute'])
+    assert len(calls)==1 and candidate.closed and candidate.evidence[-1]['passed'] is False
+
+
+def test_quality_resume_cannot_cross_candidate_identity(tmp_path,monkeypatch):
+    source=tmp_path/'work'/'prior'/'workflow'/'result.json';source.parent.mkdir(parents=True)
+    source.write_text('{}')
+    prior={**receipt(),'project':'doorhandle-rehearsal-ffffffffffff'}
+    (source.parent.parent/'quality-admission.json').write_text(json.dumps(prior))
+    class Candidate:
+        out=tmp_path/'work'/'next'
+        project=receipt()['project']
+        candidate=receipt()
+        def __enter__(self):return self
+        def __exit__(self,*a):pass
+        def write(self,*a):pass
+    monkeypatch.setattr(quality,'ROOT',tmp_path)
+    monkeypatch.setattr(quality,'CandidateEnvironment',lambda *a:Candidate())
+    def forbidden(*a,**kw):raise AssertionError('Foreign demo receipt must not run')
+    monkeypatch.setattr(quality.subprocess,'run',forbidden)
+    with pytest.raises(ValueError,match='another candidate'):
+        quality.main(['--candidate-report','unused.json','--directory','unused','--execute','--resume-from',str(source)])
 
 
 class Clock:

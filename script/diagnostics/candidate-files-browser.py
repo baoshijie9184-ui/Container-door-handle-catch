@@ -134,7 +134,7 @@ def main():
                         card = workbench.locator('article').filter(has_text=file['name'])
                         expect(card).to_have_count(1)
                         card.get_by_role('button', name='预览', exact=True).click()
-                        dialog = page.get_by_role('dialog').filter(has=page.locator('.wb-preview-image,pre')).last
+                        dialog = page.get_by_role('dialog', name=file['name'], exact=True)
                         expect(dialog).to_be_visible()
                         extension = file['name'].split('.')[-1]
                         if extension in ('png', 'jpg', 'webp', 'pdf'):
@@ -164,11 +164,11 @@ def main():
                     with page.expect_file_chooser() as chooser:
                         page.get_by_role('button', name='添加附件', exact=True).click()
                     chooser.value.set_files({'name': name, 'mimeType': 'text/plain', 'buffer': '真实加号上传与刷新保留'.encode()})
-                    pending = page.get_by_label('待发送附件', exact=True)
+                    pending = page.get_by_role('list', name='本条消息的附件引用', exact=True)
                     expect(pending.get_by_text(name, exact=True)).to_be_visible()
                     page.reload(wait_until='networkidle')
                     expect(page.get_by_role('combobox', name='使用模型', exact=True)).to_have_value(model)
-                    expect(page.get_by_label('待发送附件', exact=True).get_by_text(name, exact=True)).to_be_visible()
+                    expect(page.get_by_role('list', name='本条消息的附件引用', exact=True).get_by_text(name, exact=True)).to_be_visible()
                     saved = context.request.get(base+'/api/agent/conversations/'+state['id']+'/model-selection').json()
                     check(entry+' explicit model selection persists in MySQL', saved['modelId'] == model)
                     check(entry+' plus upload and attachment draft survive refresh', True)

@@ -4,6 +4,7 @@ from datetime import datetime,timedelta,timezone
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import sys
 import time
@@ -14,11 +15,25 @@ import requests
 from playwright.sync_api import sync_playwright,expect
 
 ROOT=Path(__file__).resolve().parents[2]
-parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--execute',action='store_true');parser.add_argument('--directory',required=True);args=parser.parse_args()
+parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--execute',action='store_true');parser.add_argument('--directory',required=True);parser.add_argument('--base-url',default='http://127.0.0.1:18088');parser.add_argument('--resume-from');args=parser.parse_args()
 out=Path(args.directory).resolve()
 if not args.execute or out.exists() or not out.is_relative_to((ROOT/'work').resolve()):parser.error('Require --execute and a new project work directory')
-password=os.environ['DOORHANDLE_DEMO_PASSWORD'];base='http://127.0.0.1:18088';out.mkdir(parents=True)
+target=urlsplit(args.base_url)
+if target.scheme!='http' or target.hostname!='127.0.0.1' or target.port not in (18088,18089) or target.path not in ('','/') or target.username or target.password or target.query or target.fragment:
+    parser.error('Only the explicit local demo or owned candidate tunnel is accepted')
+password=os.environ['DOORHANDLE_DEMO_PASSWORD'];base=args.base_url.rstrip('/');out.mkdir(parents=True)
 report={'at':datetime.now(timezone(timedelta(hours=8))).isoformat(),'scope':'demo workflow only, not physical repair or accuracy assessment','tasks':{},'checks':[],'javascriptErrors':[],'passed':False}
+if args.resume_from:
+    source=Path(args.resume_from).resolve(strict=True)
+    assert source.is_relative_to(ROOT/'work') and source.is_file()
+    prior=json.loads(source.read_text(encoding='utf8'))
+    checkpoint={'normal-release real upload, CPU PTH and supervisor assignment completed','rework-recheck real upload, CPU PTH and supervisor assignment completed','employee completes normal sample review through the actual UI','normal demo task release persists through the actual UI'}
+    assert prior.get('passed') is False and set(prior.get('checks',[]))==checkpoint and not prior.get('reportId')
+    assert set(prior['tasks'])=={'normal-release','rework-recheck'} and prior.get('scope')==report['scope']
+    assert all(re.fullmatch(r'det_\d{8}_\d{6}_[a-f0-9]{8}',v['taskId']) for v in prior['tasks'].values())
+    report.update(prior)
+    report['previousFailure']=report.pop('failure',None)
+    report['resumedAt']=datetime.now(timezone(timedelta(hours=8))).isoformat()
 staff=requests.Session();boss=requests.Session()
 for session in [staff,boss]:session.trust_env=False
 def save():(out/'result.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf8')
@@ -46,6 +61,18 @@ def wait(task):
     assert result['status']=='COMPLETED' and result['successfulImages']==1 and result['failedImages']==0
     return result
 def create(kind,sample):
+    if args.resume_from:
+        saved=report['tasks'][kind]
+        assert saved['sourceSha256']==sample['imageSha256']
+        task=api(staff,'GET','/api/detection/tasks/'+saved['taskId'])
+        assert task['region']=='演示验收-非生产' and task['collector']=='inspector.demo' and task['deviceName']=='CPU-PTH-105-DEMO'
+        assert re.fullmatch('DEMO-'+kind+'-[a-f0-9]{10}',task['imageFolderName']) and task['assignee']=='inspector.demo'
+        assert task['flowStatus']==('RELEASED' if kind=='normal-release' else 'REVIEWING')
+        if kind=='normal-release':
+            assert task['reviewConclusion']=='NORMAL_RELEASE'
+            existing=api(staff,'GET','/api/detection/reports?page=1&size=10&keyword='+saved['taskId'])
+            assert existing.get('records')==[], 'Inspect an existing report; do not recreate it after an unknown result'
+        return saved['taskId'],wait(saved['taskId'])
     image=ROOT/'work/testing/cloud100-20261015-111121-8d75ad/report'/sample['original'];data=image.read_bytes()
     assert hashlib.sha256(data).hexdigest()==sample['imageSha256']
     filename='DEMO-'+kind+'-'+uuid.uuid4().hex[:10]+'.jpg'
@@ -62,7 +89,7 @@ def login(page,name):
 def workspace(page,task):
     page.goto(base+'/#/inspection/workbench',wait_until='networkidle');page.get_by_placeholder('搜索任务ID或文件夹名…').fill(task)
 def reports(page,task):
-    page.goto(base+'/#/quality/reports',wait_until='networkidle');page.get_by_placeholder('查询任务编号或报告标题').fill(task);page.get_by_role('button',name='查询',exact=True).click()
+    page.goto(base+'/#/quality/reports',wait_until='networkidle');page.get_by_role('textbox',name='查询任务编号或报告标题',exact=True).fill(task);page.get_by_role('button',name='查询',exact=True).click()
 try:
     release,released=create('normal-release',normal);assert released.get('defectCount',0)==0
     rework,reworked=create('rework-recheck',defect)
@@ -70,18 +97,20 @@ try:
         browser=p.chromium.launch(headless=True)
         try:
             context=browser.new_context(viewport={'width':1500,'height':1050},accept_downloads=True,reduced_motion='reduce');page=context.new_page();page.on('pageerror',lambda e:report['javascriptErrors'].append(str(e)))
-            login(page,'inspector.demo');workspace(page,release)
-            page.get_by_role('button',name='确认复核',exact=True).click();dialog=page.get_by_role('dialog',name='人工复核',exact=True)
-            dialog.locator('.el-form-item').filter(has_text='复核结论').locator('.el-select__wrapper').click();page.get_by_role('option',name='正常放行',exact=True).click()
-            dialog.get_by_placeholder('记录缺陷位置、人工判断依据或误报原因').fill('系统演示验收：此样本模型未检出缺陷，仅验证流程，不作为实际产品的质量认证。')
-            with page.expect_response(lambda r:r.url.endswith('/review') and r.request.method=='POST') as response:dialog.get_by_role('button',name='提交复核',exact=True).click()
-            assert response.value.ok;expect(dialog).not_to_be_visible();check('employee completes normal sample review through the actual UI')
-            page.get_by_role('button',name='质检处置',exact=True).click();dialog=page.get_by_role('dialog',name='质检处置',exact=True)
-            dialog.locator('.el-select__wrapper').click();page.get_by_role('option',name='正常放行',exact=True).click();dialog.get_by_placeholder('记录处置依据、返工要求或隔离说明').fill('仅演示验收任务 正常处置流程 不关联真实生产产品')
-            with page.expect_response(lambda r:r.url.endswith('/disposition') and r.request.method=='POST') as response:dialog.get_by_role('button',name='提交处置',exact=True).click()
-            assert response.value.ok;expect(dialog).not_to_be_visible();assert api(staff,'GET','/api/detection/tasks/'+release)['flowStatus']=='RELEASED';check('normal demo task release persists through the actual UI')
+            login(page,'inspector.demo')
+            if not args.resume_from:
+                workspace(page,release)
+                page.get_by_role('button',name='确认复核',exact=True).click();dialog=page.get_by_role('dialog',name='人工复核',exact=True)
+                dialog.locator('.el-form-item').filter(has_text='复核结论').locator('.el-select__wrapper').click();page.get_by_role('option',name='正常放行',exact=True).click()
+                dialog.get_by_placeholder('记录缺陷位置、人工判断依据或误报原因').fill('系统演示验收：此样本模型未检出缺陷，仅验证流程，不作为实际产品的质量认证。')
+                with page.expect_response(lambda r:r.url.endswith('/review') and r.request.method=='POST') as response:dialog.get_by_role('button',name='提交复核',exact=True).click()
+                assert response.value.ok;expect(dialog).not_to_be_visible();check('employee completes normal sample review through the actual UI')
+                page.get_by_role('button',name='质检处置',exact=True).click();dialog=page.get_by_role('dialog',name='质检处置',exact=True)
+                dialog.locator('.el-select__wrapper').click();page.get_by_role('option',name='正常放行',exact=True).click();dialog.get_by_placeholder('记录处置依据、返工要求或隔离说明').fill('仅演示验收任务 正常处置流程 不关联真实生产产品')
+                with page.expect_response(lambda r:r.url.endswith('/disposition') and r.request.method=='POST') as response:dialog.get_by_role('button',name='确认正常放行',exact=True).click()
+                assert response.value.ok;expect(dialog).not_to_be_visible();assert api(staff,'GET','/api/detection/tasks/'+release)['flowStatus']=='RELEASED';check('normal demo task release persists through the actual UI')
             reports(page,release);page.get_by_role('button',name='新建报告草稿',exact=True).click();editor=page.get_by_role('dialog',name='新建报告草稿',exact=True)
-            editor.get_by_placeholder('输入已完成检测任务编号').fill(release);editor.get_by_placeholder('报告标题',exact=True).fill('演示验收-审批通过与导出 '+release);editor.get_by_placeholder('记录复核说明、风险和建议，检测数量以系统依据为准').fill('本报告仅用于系统闭环演示，记录真实上传、CPU PTH、演示员工复核及处置。不是模型准确率报告或实际产品放行凭证。')
+            editor.get_by_placeholder('输入已完成检测任务编号').fill(release);editor.get_by_role('textbox',name='报告标题',exact=True).fill('演示验收-审批通过与导出 '+release);editor.get_by_placeholder('记录复核说明、风险和建议，检测数量以系统依据为准').fill('本报告仅用于系统闭环演示，记录真实上传、CPU PTH、演示员工复核及处置。不是模型准确率报告或实际产品放行凭证。')
             with page.expect_response(lambda r:r.url.endswith('/api/detection/reports') and r.request.method=='POST') as created:editor.get_by_role('button',name='保存草稿',exact=True).click()
             assert created.value.ok;report['reportId']=created.value.json()['data']['reportId'];save()
             detail=page.get_by_role('dialog',name='报告详情',exact=True);detail.get_by_role('button',name='提交主管审批',exact=True).click();submit=page.get_by_role('dialog',name='提交主管审批',exact=True);submit.get_by_role('button',name='确认提交',exact=True).click();expect(submit).not_to_be_visible();check('employee explicitly submits the frozen demo report version')
