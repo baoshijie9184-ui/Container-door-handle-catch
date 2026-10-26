@@ -747,13 +747,22 @@ def run(args):
                                  '--bootstrap-server', 'kafka:9092', '--describe', '--group', group, timeout=45).decode()
             require_no_detection_backlog(offsets, group)
             instance.check('Restored Kafka has committed zero-lag worker offsets; copied detection is not replayed', True)
+            if args.compatible_backend_image:
+                # The independent reader baseline is newer than the production backup
+                # and can require additive tables even while its write gates are paused.
+                instance.migrate_candidate(source)
+                instance.report['migrationStage'] = 'BEFORE_COMPATIBLE_BASELINE'
+                instance.persist()
             assignment_guard.guard(instance.state,config,project=project,pin=True,allow_initial=True)
             mcp_guard.guard(instance.state,config,project=project,pin=True,allow_initial=True)
             instance.dc('up', '-d', '--no-build', '--pull', 'never', '--wait', '--wait-timeout', '240', timeout=420)
             smoke(instance, args.port)
             marker = upload_marker(args.port)
             private_json(directory/'marker.json', marker)
-            instance.migrate_candidate(source)
+            if not args.compatible_backend_image:
+                instance.migrate_candidate(source)
+                instance.report['migrationStage'] = 'AFTER_ORIGINAL_BASELINE'
+                instance.persist()
             print(json.dumps({'project': project, 'phase': 'UPGRADING'}), flush=True)
             instance.activate(candidate, 'Upgrade',assignment_writes=desired_assignment_writes,mcp_writes=desired_mcp_writes)
             smoke(instance, args.port, marker)
