@@ -87,6 +87,7 @@ def main():
     from memory_service.duplicate_review import PROMPT, PROMPT_VERSION, model_metrics,review_request_budget
     from mem0.utils.factory import LlmFactory
     config=bridge.get_memory_config()['llm'];llm=LlmFactory.create(config['provider'],config['config'])
+    bridge.configure_llm_provider(llm)
     llm.client=llm.client.with_options(timeout=15,max_retries=0)
     results=[]
     dataset_hash=hashlib.sha256(json.dumps(cases,ensure_ascii=False,sort_keys=True).encode()).hexdigest()

@@ -140,6 +140,13 @@ print(json.dumps({'containerId':after['Id'],'image':after['Image'],'before':befo
             else:raise AssertionError('Extraction did not finish; not replayed')
             turn['receipt']=receipt;turn['status']='SUCCEEDED';save()
             check('Session '+str(index+1)+' has a verified extraction receipt',True)
+            if index==0:
+                format_memory=own_memory(lambda i:'PDF' in i['memory'].upper(),sid)
+                turn['createdMemoryId']=format_memory['id'];save()
+                check('The explicit format preference was actually extracted',True)
+            if index==2:
+                own_memory(lambda i:'蓝' in i['memory'] or 'blue' in i['memory'].lower(),sid)
+                check('The explicit title preference was actually extracted',True)
             if index in (4,8):check('Session '+str(index+1)+' reads corrected format across sessions','CSV' in reply['content'].upper())
             if index==7:check('Title preference survives the second restart','蓝' in reply['content'] or 'BLUE' in reply['content'].upper())
             if index==9:check('Timezone preference survives the second restart','UTC+8' in reply['content'] or '北京时间' in reply['content'] or '东八区' in reply['content'])

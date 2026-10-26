@@ -17,6 +17,9 @@ with __import__('unittest.mock',fromlist=['patch']).patch.dict(sys.modules,{'can
 SPEC=importlib.util.spec_from_file_location('candidate_quality',SCRIPTS/'candidate-quality-acceptance.py')
 quality=importlib.util.module_from_spec(SPEC)
 with __import__('unittest.mock',fromlist=['patch']).patch.dict(sys.modules,{'candidate_environment':environment}):SPEC.loader.exec_module(quality)
+SPEC=importlib.util.spec_from_file_location('candidate_semantic',SCRIPTS/'candidate-memory-semantic-acceptance.py')
+semantic=importlib.util.module_from_spec(SPEC)
+with __import__('unittest.mock',fromlist=['patch']).patch.dict(sys.modules,{'candidate_environment':environment}):SPEC.loader.exec_module(semantic)
 
 
 def receipt():
@@ -61,6 +64,47 @@ def test_quality_admission_failure_cannot_start_a_business_workflow(monkeypatch)
     monkeypatch.setattr(quality.subprocess,'run',forbidden)
     with pytest.raises(RuntimeError,match='not an owned candidate'):
         quality.main(['--candidate-report','unused.json','--directory','unused','--execute'])
+
+
+def test_semantic_admission_failure_cannot_call_provider(monkeypatch):
+    class Rejected:
+        project=receipt()['project'];candidate=receipt()
+        def write(self,*args):pass
+        def __enter__(self):raise RuntimeError('not an owned candidate')
+        def __exit__(self,*args):pass
+    monkeypatch.setattr(semantic,'CandidateEnvironment',lambda *a:Rejected())
+    def forbidden(*a,**kw):raise AssertionError('Provider must follow ownership validation')
+    monkeypatch.setattr(semantic.subprocess,'Popen',forbidden)
+    with pytest.raises(RuntimeError,match='not an owned candidate'):
+        semantic.main(['--candidate-report','unused','--directory','unused','--execute'])
+
+
+def test_semantic_transport_failure_keeps_checkpoint_and_does_not_retry(monkeypatch):
+    import ast
+    class Candidate:
+        project=receipt()['project'];candidate=receipt();ssh=['ssh'];closed=False;evidence=[]
+        def write(self,name,value):self.evidence.append(deepcopy(value))
+        def __enter__(self):return self
+        def __exit__(self,*args):self.closed=True
+    candidate=Candidate();calls=[]
+    class Failed:
+        returncode=1
+        def communicate(self,code,**kwargs):
+            tree=ast.parse(code)
+            children=[kw.value.value for node in ast.walk(tree) if isinstance(node,ast.Call)
+                      for kw in node.keywords if kw.arg=='input' and isinstance(kw.value,ast.Constant)]
+            assert len(children)==1
+            compile(children[0],'native-classifier','exec')
+            return json.dumps({'checkpoint':{'results':[{'status':'PASS'}]}}),'private error never stored'
+    def execute(*args,**kwargs):calls.append(args);return Failed()
+    monkeypatch.setattr(semantic,'CandidateEnvironment',lambda *a:candidate)
+    monkeypatch.setattr(semantic.subprocess,'Popen',execute)
+    with pytest.raises(RuntimeError,match='no calls are retried'):
+        semantic.main(['--candidate-report','unused','--directory','unused','--execute'])
+    assert len(calls)==1 and candidate.closed
+    final=candidate.evidence[-1]
+    assert final['passed'] is False and final['evaluation']['results']==[{'status':'PASS'}]
+    assert 'private error' not in json.dumps(final)
 
 
 def test_quality_unknown_result_is_not_retried_and_transport_is_closed(tmp_path,monkeypatch):

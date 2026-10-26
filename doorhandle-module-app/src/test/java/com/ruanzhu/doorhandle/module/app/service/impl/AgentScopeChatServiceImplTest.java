@@ -68,7 +68,7 @@ class AgentScopeChatServiceImplTest {
         var answer=service.handleUserMessage("alice",request());
         var envelope=new ObjectMapper().readValue(answer.getContent(),AgentCards.Envelope.class);
         assertThat(envelope.text()).isEqualTo("查询完成");assertThat(envelope.cards()).containsExactly(ref);assertThat(envelope.runId()).isEqualTo("run-1");
-        verify(memory).addMemoryAsync(any(),eq("s1"),eq("用户: 查询任务\n助手: 查询完成"),anyMap());
+        verify(memory).addMemoryAsync(any(),eq("s1"),eq("查询任务"),anyMap());
     }
     @Test void restoredCardMessageOnlyFeedsPlainAnswerBackToModel() throws Exception {
         var message=new ChatMessageResponse();message.setRole("assistant");message.setMessageType("AGENT_CARDS");
@@ -123,7 +123,20 @@ class AgentScopeChatServiceImplTest {
         when(sessions.appendAssistantMessage(any(),eq("s1"),eq("统一回答"),eq("TEXT"),eq("AGENTSCOPE"),isNull())).thenReturn(saved);
         var run=service.start(new AgentActor(1,"alice",AgentActor.Role.INSPECTOR),"s1","request-1","当前问题",event->{});
         assertThat(run.result().get().text()).isEqualTo("统一回答");verify(sessions).appendUserMessage(any(),eq("s1"),eq("当前问题"));verify(sessions).appendAssistantMessage(any(),eq("s1"),eq("统一回答"),eq("TEXT"),eq("AGENTSCOPE"),isNull());
-        verify(memory).addMemoryAsync(any(),eq("s1"),eq("用户: 当前问题\n助手: 统一回答"),anyMap());
+        verify(memory).addMemoryAsync(any(),eq("s1"),eq("当前问题"),anyMap());
+    }
+    @Test void personalMemoryKeepsUserPreferenceWithoutAssistantClaimsOrRetrievedFacts(){
+        var input=request();input.setContent("请记住我的验收资料默认导出为 PDF");
+        when(knowledge.retrieveContext(input.getContent())).thenReturn("服务器参考：该用户默认使用 XLSX");
+        when(api.start(any(),anyString(),anyList(),anyString(),any())).thenReturn(
+                new AgentConversationApi.Run(CompletableFuture.completedFuture("我无法保存偏好；你可以改用 CSV"),()->{}));
+        when(sessions.appendAssistantMessage(any(),any(),any(),any(),any(),any())).thenAnswer(inv->{
+            var saved=new ChatMessageResponse();saved.setContent(inv.getArgument(2));saved.setId(42L);return saved;
+        });
+        assertThat(service.handleUserMessage("alice",input).getContent()).contains("无法保存", "CSV");
+        verify(memory).addMemoryAsync(any(),eq("s1"),eq(input.getContent()),argThat(metadata->
+                metadata.get("turn_id").equals(42L)&&metadata.get("source").equals("agentscope-chat")));
+        verify(sessions).appendAssistantMessage(any(),eq("s1"),contains("CSV"),eq("TEXT"),eq("AGENTSCOPE"),isNull());
     }
     @Test void replayRejectedByExecutionDoesNotAppendAnotherUserMessage(){
         when(api.start(any(),anyString(),anyList(),anyString(),any())).thenThrow(new IllegalStateException("duplicate run"));
