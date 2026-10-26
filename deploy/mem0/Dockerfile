@@ -8,7 +8,8 @@ ENV PYTHONUNBUFFERED=1 PYTHONNOUSERSITE=1 MEM0_DATA_DIR=/data \
     MEM0_TELEMETRY=false ANONYMIZED_TELEMETRY=false
 COPY deploy/mem0/requirements.txt ./requirements.txt
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --index-url "$PIP_INDEX_URL" -r requirements.txt \
+    pip install --disable-pip-version-check --progress-bar off --timeout 120 --retries 5 \
+      --index-url "$PIP_INDEX_URL" -r requirements.txt \
     && groupadd --gid 10001 app && useradd --uid 10001 --gid app --create-home app \
     && mkdir /data && chown app:app /data
 COPY --chmod=0644 memory_service/main.py memory_service/write_receipts.py memory_service/lifecycle.py memory_service/duplicate_review.py memory_service/model_config.py /app/
