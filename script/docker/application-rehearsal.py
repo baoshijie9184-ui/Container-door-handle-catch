@@ -414,14 +414,44 @@ except Exception as error:
         return self.ops.db(self.row('mysql')['Id'], sql).strip() == 'status,user_id,id'
 
     def migrate_candidate(self, source):
-        # Fixed additive migration on the owned copy only; production publishing never invokes it.
+        # Fixed additive migrations on the owned copy only; production publishing never invokes this.
+        # Verify the entire source plan before the first database operation.
         file = source/'sql/mysql/migration-V39-conversation-owner-dispatch.sql'
         mirror = source/'doorhandle-module-app/src/main/resources/db/migration-V39-conversation-owner-dispatch.sql'
         require(file.read_bytes() == mirror.read_bytes(), 'Candidate V39 migration copies differ')
+        plan = []
+        for version in range(40, 63):
+            files = list((source/'sql/mysql').glob('migration-V'+str(version)+'-*.sql'))
+            require(len(files) == 1 and not files[0].is_symlink(), 'Candidate migration source missing or ambiguous: V'+str(version))
+            mirrors = list(source.glob('doorhandle-*/src/main/resources/db/'+files[0].name))
+            require(len(mirrors) == 1 and not mirrors[0].is_symlink() and files[0].read_bytes() == mirrors[0].read_bytes(),
+                    'Candidate V'+str(version)+' migration copies differ')
+            plan.append(files[0])
+        self.verify_model_fact_columns(complete=False)
         existing = self.ops.db(self.row('mysql')['Id'], "SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='agent_conversation_input' AND INDEX_NAME='idx_conversation_input_dispatch_owner';").strip()
         if existing == '0':
             self.ops.db(self.row('mysql')['Id'], file.read_text(encoding='utf8'))
         self.check('Candidate V39 adds only the expected dispatch index', self.verify_dispatch_index())
+        for migration in plan:
+            self.ops.db(self.row('mysql')['Id'], migration.read_text(encoding='utf8'))
+        self.verify_model_fact_columns(complete=True)
+        self.report['candidateMigrations'] = [migration.name for migration in (file, *plan)]
+        self.check('Owned candidate copy applied V40-V62 and retains the expected nullable model facts', True)
+
+    def verify_model_fact_columns(self, *, complete):
+        expected = {'training_image_count': 'int', 'training_completed_at': 'datetime',
+                    'evaluation_image_count': 'int', 'no_detection_image_count': 'int', 'inference_fps': 'decimal(12,4)'}
+        names = ','.join("'"+name+"'" for name in expected)
+        sql = "SELECT COLUMN_NAME,LOWER(COLUMN_TYPE),IS_NULLABLE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='model_management' AND COLUMN_NAME IN ("+names+");"
+        found = {}
+        for line in self.ops.db(self.row('mysql')['Id'], sql).splitlines():
+            parts = line.split('\t')
+            require(len(parts) == 3 and parts[0] in expected and parts[0] not in found, 'Candidate model fact metadata unavailable')
+            name, kind, nullable = parts
+            kind = 'int' if kind == 'int(11)' else kind
+            require(kind == expected[name] and nullable == 'YES', 'Candidate V62 existing column type differs: '+name)
+            found[name] = kind
+        require(not complete or found.keys() == expected.keys(), 'Candidate V62 model fact columns incomplete')
 
     def cleanup(self):
         # Re-read labels, and revalidate the exact private config before deleting owned copies.

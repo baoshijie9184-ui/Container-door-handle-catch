@@ -298,15 +298,47 @@ def test_fixed_candidate_migration_checks_existing_index_before_creating(tmp_pat
         def db(self, container, sql):
             assert container == 'owned-copy'
             calls.append(sql)
+            if 'COLUMN_NAME,LOWER(COLUMN_TYPE)' in sql:
+                migrated = any('ADD COLUMN inference_fps' in statement for statement in calls)
+                return model_fact_metadata() if migrated else ''
             return existing if 'COUNT(*)' in sql else signature
     run = rehearsal.Rehearsal.__new__(rehearsal.Rehearsal)
     run.ops = Ops()
+    run.report = {}
     run.row = lambda service: {'Id': 'owned-copy'}
     run.check = lambda name, condition: rehearsal.require(condition, name)
     if passes: run.migrate_candidate(root)
     else:
         with pytest.raises(RuntimeError): run.migrate_candidate(root)
-    assert any('CREATE INDEX' in sql for sql in calls) == creates
+    assert any('CREATE INDEX idx_conversation_input_dispatch_owner' in sql for sql in calls) == creates
+    if passes:
+        assert len(run.report['candidateMigrations']) == 24
+
+
+def model_fact_metadata():
+    return '\n'.join(name+'\t'+kind+'\tYES' for name,kind in (
+        ('training_image_count','int'),('training_completed_at','datetime'),('evaluation_image_count','int'),
+        ('no_detection_image_count','int'),('inference_fps','decimal(12,4)')))
+
+
+@pytest.mark.parametrize('metadata', [model_fact_metadata().replace('decimal(12,4)','double'),
+                                    model_fact_metadata().replace('int\tYES','int unsigned\tYES'),
+                                    model_fact_metadata().replace('\tYES','\tNO')])
+def test_candidate_existing_fact_type_mismatch_blocks_ddl(metadata):
+    calls=[]
+    class Ops:
+        def db(self, container, sql): calls.append(sql); return metadata
+    run=rehearsal.Rehearsal.__new__(rehearsal.Rehearsal);run.ops=Ops();run.row=lambda service:{'Id':'owned-copy'}
+    with pytest.raises(RuntimeError,match='type differs'):
+        run.migrate_candidate(Path(__file__).resolve().parents[1])
+    assert len(calls)==1 and 'information_schema.COLUMNS' in calls[0]
+
+
+def test_candidate_incomplete_post_migration_fact_columns_are_not_accepted():
+    class Ops:
+        def db(self, container, sql): return ''
+    run=rehearsal.Rehearsal.__new__(rehearsal.Rehearsal);run.ops=Ops();run.row=lambda service:{'Id':'owned-copy'}
+    with pytest.raises(RuntimeError,match='incomplete'):run.verify_model_fact_columns(complete=True)
 
 
 def test_migration_copy_mismatch_stops_before_any_database_operation(tmp_path):
