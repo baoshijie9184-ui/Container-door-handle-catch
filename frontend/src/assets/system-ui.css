@@ -93,8 +93,8 @@ button:not(:disabled):active { transform: scale(.985); }
 .upload-feedback-enter-from, .upload-feedback-leave-to { opacity: 0; transform: translateY(3px); }
 .el-button { gap: 6px; font-weight: 550; }
 .el-button--primary { background-image: none; box-shadow: none; }
-#app .layout-content .el-button--primary:not(.is-plain):not(.is-link):not(.is-text) { background: var(--app-primary); border-color: var(--app-primary); box-shadow: none; }
-#app .layout-content .el-button--primary:not(.is-disabled):not(.is-plain):not(.is-link):not(.is-text):hover { background: var(--app-primary-hover); border-color: var(--app-primary-hover); }
+#app .layout-content .el-button--primary:not(.is-disabled):not(:disabled):not(.is-plain):not(.is-link):not(.is-text) { background: var(--app-primary); border-color: var(--app-primary); box-shadow: none; }
+#app .layout-content .el-button--primary:not(.is-disabled):not(:disabled):not(.is-plain):not(.is-link):not(.is-text):hover { background: var(--app-primary-hover); border-color: var(--app-primary-hover); }
 .el-button .el-icon + span { margin-left: 0; }
 .el-input__wrapper, .el-select__wrapper, .el-textarea__inner { border-radius: 8px; }
 .el-form-item__label { font-weight: 550; color: var(--app-text-secondary); }
@@ -188,8 +188,12 @@ button:not(:disabled):active { transform: scale(.985); }
 #app .home-page .hero-text { color: var(--app-text-secondary); max-width: 65ch; font-size: 13px; }
 #app .home-page .industrial-kicker { display: none; }
 #app .home-page :is(.highlight-card, .status-panel, .workflow-summary) { border: 1px solid var(--app-border); box-shadow: none; background: white; border-radius: 12px; }
-#app .home-page .highlight-card[role=link] { cursor: pointer; }
-#app .home-page .highlight-card[role=link]:hover { border-color: #b7cdf9; background: #f8faff; }
+#app .home-page .highlight-card { cursor: pointer; }
+#app .home-page .highlight-card:hover { border-color: #b7cdf9; background: #f8faff; }
+#app .home-page a:is(.highlight-card,.status-item,.quick-stat-item,.summary-item) { color:inherit; text-decoration:none; min-width:0; }
+#app .home-page a.highlight-card { display:block; }
+#app .home-page a:is(.highlight-card,.status-item,.quick-stat-item,.summary-item):focus-visible { outline:2px solid var(--app-primary); outline-offset:3px; }
+#app .home-page a.status-item:focus-visible .si-arrow,#app .home-page a.summary-item:focus-visible .sm-arrow { opacity:1; transform:none; }
 #app .home-page .highlight-card .hl-value { color: var(--app-text); font-variant-numeric: tabular-nums; }
 #app .home-page .status-item { border-radius: 10px; }
 #app .home-page .workflow-summary { border-top: 3px solid #b8d0ff; }
@@ -260,11 +264,9 @@ button:not(:disabled):active { transform: scale(.985); }
 #app .layout-content :is(.taskid-value, .record-taskid, .oss-path-value, .result-message, .task-item-status, .identity-preview code) { overflow-wrap: anywhere; word-break: break-word; }
 #app .image-detection-container .task-item-main > .quality-guidance { margin-top: 12px; }
 #app .image-detection-container .defect-card-body > .quality-guidance { margin-top:14px; margin-bottom:0; }
-#app .image-detection-container .hero-side-note strong { display: flex; align-items: center; gap: 7px; }
 #app .image-detection-container .defect-card-image img { object-fit: contain; background: #f1f5f9; }
 #app .image-detection-container .trace-dialog-body .el-descriptions { margin-bottom: 16px; }
 #app .reports-page .detail-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
-#app .reports-page .detail-heading h2 { flex: 1 1 180px; min-width: 0; overflow-wrap: anywhere; font-size: 20px; }
 #app .reports-page .report-version { font-size: 12px; color: var(--app-text-muted); }
 #app .reports-page .report-toolbar { display: flex; flex-wrap: wrap; align-items: center; }
 #app .reports-page .report-toolbar .el-input { flex: 1 1 250px; min-width: 0; }
@@ -316,6 +318,11 @@ button:not(:disabled):active { transform: scale(.985); }
 .managed-form-actions .el-button + .el-button { margin-left:0; }
 .managed-department-state:has(> *) { display:grid; gap:10px; margin-bottom:22px; }
 .managed-department-state > .el-button { justify-self:start; }
+/* Explicit classes also cover teleported popups outside the page container. */
+.business-select-popper.el-popper { max-width:min(560px,calc(100vw - 24px)); }
+.business-select-popper .el-select-dropdown__item { height:auto; min-height:34px; padding-block:7px; line-height:1.75; white-space:normal; overflow-wrap:anywhere; }
+.business-date-popper .el-picker-panel.el-date-picker { width:min(322px,calc(100vw - 24px)); box-sizing:border-box; }
+.business-date-popper .el-date-picker .el-picker-panel__content { width:auto; margin:12px; }
 @media(max-width:600px) { .managed-form-surface { padding:18px 16px; } .managed-form-version { flex:0 0 100%; margin-left:0; } .managed-form-actions > div { width:100%; } }
 #app .form-page .form-actions { margin-top: 14px; padding-top: 18px; border-top: 1px solid var(--app-border); }
 #app .form-page .form-actions .el-form-item__content { gap: 10px; }
@@ -363,6 +370,8 @@ button:not(:disabled):active { transform: scale(.985); }
   .el-dialog__footer .el-button + .el-button { margin-left: 0; }
 }
 @media(prefers-reduced-motion: reduce) {
-  *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-delay: 0ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; transition-delay: 0ms !important; }
+  /* Instant transitions keep popup geometry stable when the SDK measures it. */
+  *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-delay: 0ms !important; animation-iteration-count: 1 !important; transition-duration: 0s !important; transition-delay: 0ms !important; }
   button:not(:disabled):active { transform: none; }
+  #app .home-page a:is(.highlight-card,.status-item,.quick-stat-item,.summary-item):hover { transform:none; }
 }

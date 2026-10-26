@@ -1,16 +1,17 @@
 <template>
   <button
     ref="launcherRef"
+    type="button"
     class="launcher-btn"
     :class="{ 'is-dragging': isDragging }"
     :style="btnStyle"
     @mousedown="onMouseDown"
     @touchstart.passive="onTouchStart"
     @click="onClick"
-    title="智能助手"
+    title="打开智能助手"
+    aria-label="打开智能助手"
   >
-    <span class="launcher-ring"></span>
-    <span class="launcher-icon">
+    <span class="launcher-icon" aria-hidden="true">
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M12 2a4 4 0 0 1 4 4v2a4 4 0 0 1-8 0V6a4 4 0 0 1 4-4z"/>
         <path d="M8 12h8a4 4 0 0 1 4 4v2a4 4 0 0 1-8 0"/>
@@ -187,26 +188,21 @@ onUnmounted(() => {
   padding: 14px 22px;
   border: none;
   border-radius: 999px;
-  background: linear-gradient(135deg, #1e3a5f 0%, #2f6bff 50%, #5b9cff 100%);
+  background: var(--app-primary);
   color: #fff;
   font-size: 14px;
   font-weight: 600;
-  box-shadow:
-    0 4px 16px rgba(47, 107, 255, 0.25),
-    0 12px 40px rgba(16, 35, 63, 0.18),
-    inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  box-shadow: var(--app-shadow-md);
   cursor: grab;
-  transition: box-shadow 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: background-color 180ms ease,box-shadow 180ms ease,transform 180ms ease;
   letter-spacing: 0.02em;
   user-select: none;
   touch-action: none;
 }
 
 .launcher-btn:hover {
-  box-shadow:
-    0 8px 28px rgba(47, 107, 255, 0.35),
-    0 20px 56px rgba(16, 35, 63, 0.22),
-    inset 0 1px 0 rgba(255, 255, 255, 0.16);
+  background: var(--app-primary-hover);
+  box-shadow: var(--app-shadow-lg);
 }
 
 .launcher-btn.is-dragging {
@@ -216,35 +212,6 @@ onUnmounted(() => {
 
 .launcher-btn:active:not(.is-dragging) {
   transform: scale(0.98);
-}
-
-.launcher-ring {
-  position: absolute;
-  inset: -4px;
-  border-radius: 999px;
-  border: 2px solid rgba(47, 107, 255, 0.3);
-  animation: launcher-pulse 2.4s ease-in-out infinite;
-  pointer-events: none;
-}
-
-.launcher-btn.is-dragging .launcher-ring {
-  animation: none;
-  opacity: 0;
-}
-
-@keyframes launcher-pulse {
-  0%, 100% {
-    transform: scale(1);
-    opacity: 0;
-  }
-  50% {
-    transform: scale(1.08);
-    opacity: 1;
-  }
-  100% {
-    transform: scale(1);
-    opacity: 0;
-  }
 }
 
 .launcher-icon {
@@ -265,8 +232,13 @@ onUnmounted(() => {
 
 @media (max-width: 768px) {
   .launcher-btn {
-    padding: 12px 16px;
-    gap: 8px;
+    width:48px;
+    height:48px;
+    right:16px;
+    bottom:calc(16px + env(safe-area-inset-bottom,0px));
+    justify-content:center;
+    padding:0;
+    gap:0;
   }
 
   .launcher-icon {
@@ -275,7 +247,8 @@ onUnmounted(() => {
   }
 
   .launcher-text {
-    font-size: 13px;
+    display:none;
   }
 }
+@media(prefers-reduced-motion:reduce) { .launcher-btn { transition:none; }.launcher-btn:active:not(.is-dragging) { transform:none; } }
 </style>

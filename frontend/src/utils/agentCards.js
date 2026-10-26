@@ -1,5 +1,6 @@
 import { beijingDateTime } from './beijingTime'
 import { knownCount } from './countPresentation'
+import { modelPrimaryMetricFields, modelLegacyMetricFields, modelNoDetection } from './detectionModelPresentation'
 
 const taskTools = new Set(['get_task_detail', 'get_my_detection_tasks', 'search_detection_tasks', 'get_my_quality_records', 'get_quality_records'])
 const metricTools = new Set(['get_my_work_metrics', 'get_department_work_metrics'])
@@ -63,14 +64,25 @@ function operationCode(item, field, value, labels) {
 const operationText = value => typeof value === 'string' && value.trim() ? value : '未记录'
 const operationDate = value => value ? beijingDateTime(value) || '时间格式未知' : '未记录'
 export function modelOperationMetrics(item) {
-  return [['precisionScore', 'Precision'], ['recallScore', 'Recall'], ['mapScore', 'mAP'], ['f1Score', 'F1']].map(([field, label]) => ({
-    label, value: operationNumber(item, field, item?.evaluation?.[field], 1, value => (value * 100).toLocaleString('zh-CN', { maximumFractionDigits: 4 }) + '%'),
+  const evaluation = item?.evaluation || {}
+  const invalidCounts = ['evaluationImageCount','noDetectionImageCount'].some(field=>invalidOperationField(item,field))
+  return [...modelPrimaryMetricFields.map(([field, label]) => ({
+    label, value: operationNumber(item, field, evaluation[field], 1, value => (value * 100).toFixed(2) + '%'),
+  })), {label:'整图未检出率',value:invalidCounts?'需核对':modelNoDetection(evaluation).value},
+    {label:'实测 FPS',value:operationNumber(item,'inferenceFps',evaluation.inferenceFps,99999999.9999,value=>value.toLocaleString('zh-CN',{maximumFractionDigits:4})+' 张/秒',false,0.0001)}]
+}
+export function modelOperationLegacyMetrics(item) {
+  return modelLegacyMetricFields.filter(([field]) => item?.evaluation?.[field]!=null || invalidOperationField(item,field)).map(([field,label]) => ({
+    label, value:operationNumber(item,field,item?.evaluation?.[field],1,value=>(value*100).toFixed(2)+'%'),
   }))
 }
 export function modelOperationDetails(item) {
   const evaluation = item?.evaluation || {}, rollout = item?.rollout || {}, usage = item?.usage || {}
   return [
-    { label: '测试集', value: operationText(evaluation.dataset) },
+    { label: '训练图片数量', value: operationNumber(item,'trainingImageCount',evaluation.trainingImageCount,2147483647,value=>value.toLocaleString('zh-CN')+' 张',true,1) },
+    { label: '训练完成日期 · UTC+8', value: operationDate(evaluation.trainingCompletedAt) },
+    { label: '未检出 / 成功评估', value: modelNoDetection(evaluation).description },
+    { label: '评估数据集', value: operationText(evaluation.dataset) },
     { label: '登记平均耗时', value: operationNumber(item, 'avgInferenceMs', evaluation.avgInferenceMs, 2147483647, value => value + ' ms', true) },
     { label: '校验状态', value: operationCode(item, 'validationStatus', item?.validationStatus, validationLabels) },
     { label: 'MLOps 状态', value: operationCode(item, 'mlopsStatus', item?.mlopsStatus, mlopsLabels) },

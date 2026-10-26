@@ -73,6 +73,7 @@ public class ModelInfoServiceImpl extends ServiceImpl<ModelInfoMapper, ModelInfo
     @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DETECTION_MODEL",action="saveModelInfo",supervisorOnly=true)
     public boolean saveModelInfo(ModelInfo modelInfo) {
         log.info("保存模型信息: modelId={}", modelInfo.getModelId());
+        validateModelFacts(modelInfo);
         uploadFiles.metadataPath(modelInfo.getModelPath(),null);
         return save(modelInfo);
     }
@@ -89,6 +90,7 @@ public class ModelInfoServiceImpl extends ServiceImpl<ModelInfoMapper, ModelInfo
 
         uploadFiles.metadataPath(modelInfo.getModelPath(),existing.getModelPath());
         mergeEditableFields(existing, modelInfo);
+        validateModelFacts(existing);
         return updateById(existing);
     }
 
@@ -110,13 +112,17 @@ public class ModelInfoServiceImpl extends ServiceImpl<ModelInfoMapper, ModelInfo
             throw new BusinessException("平均推理耗时不能为负数");
         }
 
+        // Old clients omit these fields. Preserve their existing facts rather than silently erasing them.
+        mergeModelFacts(existing, evaluation);
+
         existing.setEvaluationDataset(evaluation.getEvaluationDataset());
         existing.setPrecisionScore(evaluation.getPrecisionScore());
         existing.setRecallScore(evaluation.getRecallScore());
         existing.setMapScore(evaluation.getMapScore());
         existing.setF1Score(evaluation.getF1Score());
         existing.setAvgInferenceMs(evaluation.getAvgInferenceMs());
-        existing.setCompatibilityNote(evaluation.getCompatibilityNote());
+        if (evaluation.getCompatibilityNote() != null) existing.setCompatibilityNote(evaluation.getCompatibilityNote());
+        validateModelFacts(existing);
         existing.setMlopsStatus("EVALUATED");
         return updateById(existing);
     }
@@ -170,6 +176,32 @@ public class ModelInfoServiceImpl extends ServiceImpl<ModelInfoMapper, ModelInfo
         }
     }
 
+    private void mergeModelFacts(ModelInfo target, ModelInfo incoming) {
+        if (incoming.getTrainingImageCount() != null) target.setTrainingImageCount(incoming.getTrainingImageCount());
+        if (incoming.getTrainingCompletedAt() != null) target.setTrainingCompletedAt(incoming.getTrainingCompletedAt());
+        if (incoming.getEvaluationImageCount() != null) target.setEvaluationImageCount(incoming.getEvaluationImageCount());
+        if (incoming.getNoDetectionImageCount() != null) target.setNoDetectionImageCount(incoming.getNoDetectionImageCount());
+        if (incoming.getInferenceFps() != null) target.setInferenceFps(incoming.getInferenceFps());
+    }
+
+    private void validateModelFacts(ModelInfo model) {
+        validateMetric(model.getMapScore());
+        if (model.getTrainingImageCount() != null && model.getTrainingImageCount() <= 0)
+            throw new BusinessException("训练图片数量必须为正整数，未知请留空");
+        Integer images = model.getEvaluationImageCount(), empty = model.getNoDetectionImageCount();
+        if ((images == null) != (empty == null)) throw new BusinessException("成功评估图片数和整图未检出图片数必须同时登记");
+        if (images != null && (images < 0 || empty < 0 || empty > images))
+            throw new BusinessException("整图未检出图片数必须在 0 到成功评估图片数之间");
+        BigDecimal fps = model.getInferenceFps();
+        if (fps != null && (fps.signum() <= 0 || fps.compareTo(new BigDecimal("99999999.9999")) > 0
+                || fps.stripTrailingZeros().scale() > 4))
+            throw new BusinessException("每秒检测图片速度必须大于 0，最多保留四位小数");
+        if (fps != null && !StringUtils.hasText(model.getCompatibilityNote()))
+            throw new BusinessException("登记实测 FPS 时请注明设备、CPU/GPU、输入尺寸、批大小和计时范围");
+        if (model.getCompatibilityNote() != null && model.getCompatibilityNote().length() > 500)
+            throw new BusinessException("测试环境说明不能超过 500 字");
+    }
+
     @Override
     @CacheEvict(cacheNames = {"model", "dashboard"}, allEntries = true)
     @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DETECTION_MODEL",action="deleteModelInfoByModelId",supervisorOnly=true)
@@ -181,6 +213,7 @@ public class ModelInfoServiceImpl extends ServiceImpl<ModelInfoMapper, ModelInfo
     }
 
     private void mergeEditableFields(ModelInfo existing, ModelInfo incoming) {
+        mergeModelFacts(existing, incoming);
         if (incoming.getModelName() != null) {
             existing.setModelName(incoming.getModelName());
         }

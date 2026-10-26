@@ -12,6 +12,7 @@
         <p v-if="Number.isSafeInteger(detail.assignmentRevision) && detail.assignmentRevision >= 0" class="task-trace-version">已读分派版本 V{{ detail.assignmentRevision }}</p>
         <p v-if="detail.assignmentRemark" class="task-trace-assignment-note"><strong>分派说明</strong>{{ detail.assignmentRemark }}</p>
         <dl class="task-trace-image-counts"><div><dt>记录图片总数</dt><dd>{{ count(detail.totalImages) }}</dd></div><div><dt>检测成功图片</dt><dd>{{ count(detail.successfulImages) }}</dd></div><div><dt>检测失败图片</dt><dd :data-error="detail.failedImages > 0">{{ count(detail.failedImages) }}</dd></div></dl>
+        <NoDetectionSummary :result="detail" />
       </section>
       <section :ref="node => targets.images = node" tabindex="-1" aria-label="图片对照"><EvidenceComparison :task-id="detail.taskId" :originals="detail.originalImages || []" :annotations="detail.previewImages || []" /></section>
       <section :ref="node => targets.records = node" tabindex="-1" aria-label="任务及人工处理资料"><TaskTraceDetails :detail="detail" /></section>
@@ -22,6 +23,7 @@
   </div>
 </template>
 <script setup>
+import NoDetectionSummary from './NoDetectionSummary.vue'
 import { computed, ref } from 'vue'
 import AppIcon from './AppIcon.vue'
 import CollectionEmptyState from './CollectionEmptyState.vue'
@@ -62,6 +64,7 @@ defineExpose({ showOverview: () => go('overview', false), resetScroll: () => roo
 .task-trace-navigation { position: sticky; top: 0; z-index: 2; display: flex; flex-wrap: wrap; gap: 6px; margin-block: 16px; padding-block: 9px; border-block: 1px solid var(--app-border, #e2e8f0); background: #fff; }
 .task-trace-navigation button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 34px; padding: 6px 10px; border: 0; border-radius: 6px; color: var(--app-text-secondary, #475569); background: transparent; font: inherit; font-size: 12px; cursor: pointer; transition: color 180ms ease, background-color 180ms ease; }
 .task-trace-navigation button:hover { color: var(--app-primary, #2563eb); background: var(--app-primary-soft, #eff6ff); }
+@media (max-width:580px) { .task-trace-heading h3 { font-size:15px; } .task-trace-navigation { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); } }
 .task-trace-responsibility { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin: 16px 0 0; }
 .task-trace-responsibility > div { min-width: 0; }
 .task-trace-responsibility dt { font-size: 12px; line-height: 1.8; color: var(--app-text-secondary, #475569); }

@@ -5,6 +5,7 @@
    <header><h4><AppIcon name="DocumentChecked" :size="17" />已读检测结果</h4><StatusBadge domain="detection" :code="result.status" /></header>
    <p class="task-result-note">以下为本次已返回的结果快照。检测、人工复核、任务放行与报告审批分别记录，最新资料请重新读取追溯。</p>
    <dl class="task-result-counts"><div><dt>图片总数</dt><dd>{{ count(result.totalImages) }}</dd></div><div><dt>检测成功图片</dt><dd>{{ count(result.successfulImages) }}</dd></div><div><dt>检测失败图片</dt><dd>{{ count(result.failedImages) }}</dd></div></dl>
+   <NoDetectionSummary :result="result" />
    <dl class="task-result-responsibility"><div><dt>责任人</dt><dd>{{ result.assignee || '未记录' }}</dd></div><div><dt>质检截止 · UTC+8</dt><dd>{{ time(result.dueAt) }}</dd></div><div><dt>人工复核</dt><dd><StatusBadge domain="review" :code="result.reviewStatus" /></dd></div><div><dt>复核结论</dt><dd><StatusBadge domain="reviewConclusion" :code="result.reviewConclusion" /></dd></div></dl>
    <p v-if="result.errorMessage" class="task-result-mismatch">结果记录的异常：{{ result.errorMessage }}</p>
    <EvidenceComparison :task-id="taskId" :originals="originals" :annotations="previews" />
@@ -15,6 +16,7 @@
  </section>
 </template>
 <script setup>
+import NoDetectionSummary from './NoDetectionSummary.vue'
 import {computed} from 'vue'
 import EvidenceComparison from './EvidenceComparison.vue'
 import TaskTraceDetails from './TaskTraceDetails.vue'

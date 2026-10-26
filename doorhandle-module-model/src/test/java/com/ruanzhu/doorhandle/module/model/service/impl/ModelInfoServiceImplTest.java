@@ -103,6 +103,69 @@ class ModelInfoServiceImplTest {
     }
 
     @Test
+    void recordsMeasuredFactsAndDerivesRateUsingSuccessfulEvaluationImages() {
+        ModelInfo existing = new ModelInfo();
+        existing.setModelId(8);
+        ModelInfo incoming = new ModelInfo();
+        incoming.setTrainingImageCount(3200);
+        incoming.setTrainingCompletedAt(LocalDateTime.of(2026, 10, 20, 18, 30));
+        incoming.setEvaluationImageCount(98);
+        incoming.setNoDetectionImageCount(3);
+        incoming.setInferenceFps(new java.math.BigDecimal("12.3456"));
+        incoming.setCompatibilityNote("CPU / 640x640 / batch=1 / 98 images / inference only");
+        when(modelInfoMapper.selectOne(any(), anyBoolean())).thenReturn(existing);
+        when(modelInfoMapper.updateById(any(ModelInfo.class))).thenReturn(1);
+        assertTrue(modelInfoService.recordEvaluation(8, incoming));
+        ArgumentCaptor<ModelInfo> saved = ArgumentCaptor.forClass(ModelInfo.class);
+        verify(modelInfoMapper).updateById(saved.capture());
+        assertEquals(3200, saved.getValue().getTrainingImageCount());
+        assertEquals(incoming.getTrainingCompletedAt(), saved.getValue().getTrainingCompletedAt());
+        assertEquals(new java.math.BigDecimal("0.03061224"), saved.getValue().getNoDetectionRate());
+        assertEquals(incoming.getInferenceFps(), saved.getValue().getInferenceFps());
+    }
+
+    @Test
+    void omittedNewFactsRemainAvailableForOlderClients() {
+        ModelInfo existing = new ModelInfo();
+        existing.setTrainingImageCount(3200);
+        existing.setEvaluationImageCount(100);
+        existing.setNoDetectionImageCount(0);
+        when(modelInfoMapper.selectOne(any(), anyBoolean())).thenReturn(existing);
+        when(modelInfoMapper.updateById(any(ModelInfo.class))).thenReturn(1);
+        assertTrue(modelInfoService.recordEvaluation(8, new ModelInfo()));
+        ArgumentCaptor<ModelInfo> saved = ArgumentCaptor.forClass(ModelInfo.class);
+        verify(modelInfoMapper).updateById(saved.capture());
+        assertEquals(3200, saved.getValue().getTrainingImageCount());
+        assertEquals(new java.math.BigDecimal("0.00000000"), saved.getValue().getNoDetectionRate());
+    }
+
+    @Test
+    void rejectsInventedRatesAndUnspecifiedFpsEnvironment() {
+        ModelInfo existing = new ModelInfo();
+        when(modelInfoMapper.selectOne(any(), anyBoolean())).thenReturn(existing);
+        ModelInfo incoming = new ModelInfo();
+        incoming.setEvaluationImageCount(10);
+        incoming.setNoDetectionImageCount(11);
+        assertThrows(BusinessException.class, () -> modelInfoService.recordEvaluation(8, incoming));
+        incoming.setNoDetectionImageCount(0);
+        incoming.setInferenceFps(new java.math.BigDecimal("25"));
+        assertThrows(BusinessException.class, () -> modelInfoService.recordEvaluation(8, incoming));
+        ModelInfo noSuccessfulImage = new ModelInfo();
+        noSuccessfulImage.setEvaluationImageCount(0);
+        noSuccessfulImage.setNoDetectionImageCount(0);
+        org.junit.jupiter.api.Assertions.assertNull(noSuccessfulImage.getNoDetectionRate());
+    }
+
+    @Test
+    void fractionalJsonImageCountsAreRejectedInsteadOfTruncated() {
+        var json = new com.fasterxml.jackson.databind.ObjectMapper();
+        assertThrows(com.fasterxml.jackson.databind.JsonMappingException.class,
+                () -> json.readValue("{\"trainingImageCount\":1.5}", ModelInfo.class));
+        assertThrows(com.fasterxml.jackson.databind.JsonMappingException.class,
+                () -> json.readValue("{\"evaluationImageCount\":\"100\"}", ModelInfo.class));
+    }
+
+    @Test
     void configureRolloutStoresStrategyAndRollbackSource() {
         ModelInfo existing = new ModelInfo();
         existing.setModelId(9);

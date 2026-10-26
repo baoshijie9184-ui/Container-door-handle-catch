@@ -25,9 +25,9 @@ import { messageBlocks, messageInline } from '../../utils/messageMarkdown'
 import { skillInstallNavigation } from '../../utils/skillInstallNavigation'
 import '../../assets/agent-markdown.css'
 
-const props = defineProps({ text: { type: String, default: '' } })
+const props = defineProps({ text: { type: String, default: '' }, convertSkillLinks: { type: Boolean, default: true } })
 const blocks = computed(() => {
-  const install = skillInstallNavigation(props.text, window.location.href)
+  const install = props.convertSkillLinks ? skillInstallNavigation(props.text, window.location.href) : null
   return messageBlocks(install ? install.before + '[' + install.label + '](' + install.route + ')' + install.after : props.text)
 })
 const copied = ref(null), copyError = ref(null)

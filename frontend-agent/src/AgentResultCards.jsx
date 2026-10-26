@@ -6,7 +6,7 @@ import StatusBadge from './StatusBadge';
 import { ChartNoAxesCombined, ClipboardList, FileCheck, FileText, Files, Layers, Monitor, TriangleAlert, RefreshCw, ChevronDown } from 'lucide-react';
 import { beijingDateTime } from '../../frontend/src/utils/beijingTime';
 import './AgentModelOperations.css';
-import { readResolvedAgentCards, cardIcon, cardCount, cardVersion, cardEmptyText, cardTitle, cardScope, cardRoute, reportStatus, metricLabels, cardDeviceFields, modelStatus, alertStatus, alertLevel, alertType, modelOperationMetrics, modelOperationDetails } from '../../frontend/src/utils/agentCards';
+import { readResolvedAgentCards, cardIcon, cardCount, cardVersion, cardEmptyText, cardTitle, cardScope, cardRoute, reportStatus, metricLabels, cardDeviceFields, modelStatus, alertStatus, alertLevel, alertType, modelOperationMetrics, modelOperationLegacyMetrics, modelOperationDetails } from '../../frontend/src/utils/agentCards';
 const resultIcons = { Tickets:ClipboardList, DataAnalysis:ChartNoAxesCombined, DocumentChecked:FileCheck, Monitor, Warning:TriangleAlert, Collection:Layers, Document:FileText };
 function ResultCardIcon({card}) { const Icon = resultIcons[cardIcon(card)] || FileText; return <Icon size={19} aria-hidden="true"/>; }
 
@@ -59,9 +59,10 @@ export function AgentResultCards({ text, references = [], businessBase = '' }) {
         <a href={route('MODEL_OPERATIONS', String(item.model.modelId))}>{item.model.name || '模型 ' + item.model.modelId}</a>
         <p>版本 {item.model.version || '未记录'} · {modelStatus(item.model.status)}</p>
         <div className="card-metrics operation-metrics">{modelOperationMetrics(item).map(metric => <div key={metric.label}><strong>{metric.value}</strong><span>{metric.label} 登记值</span></div>)}</div>
+        {!!modelOperationLegacyMetrics(item).length && <details className="operation-disclosure"><summary>其他历史指标</summary><dl className="operation-details">{modelOperationLegacyMetrics(item).map(metric=><div key={metric.label}><dt>{metric.label}</dt><dd>{metric.value}</dd></div>)}</dl></details>}
         <details className="operation-disclosure"><summary>查看发布配置与登记信息</summary><dl className="operation-details">{modelOperationDetails(item).map(row => <div key={row.label}><dt>{row.label}</dt><dd>{row.value}</dd></div>)}</dl></details>
         {!!item.invalidFields?.length && <p className="result-error">部分登记字段异常 请到模型页面核对</p>}
-        <p className="card-note">指标为登记值 发布策略为配置记录 实际分流尚未核验</p>
+        <p className="card-note">指标为登记值，未检出率排除执行失败，Normal 检出也算检出。FPS 测试环境见模型详情；发布策略为配置记录，实际分流尚未核验。</p>
         <a href={route('MODEL_OPERATIONS', String(item.model.modelId))}>查看模型</a>
       </div>)}
       {card.type!=='METRICS'&&!card.items.length&&<p className="card-empty">{card.status==='OK'?<Files size={18} aria-hidden="true"/>:<TriangleAlert size={18} aria-hidden="true"/>}{cardEmptyText(card)}</p>}

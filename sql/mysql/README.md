@@ -1,5 +1,7 @@
 # 检测记录与业务预置数据导入说明
 
+V62 migration-V62-detection-model-facts.sql 增加可空训练图片数、UTC+8 训练完成时间、成功评估/整图未检出计数及 FPS；Model classpath 副本同步。依赖模型表和 V6，先核对字段类型并迁移，再启动读取新列的应用。无历史回填，回滚保留字段，尚未执行迁移或真实保存验证，见 [模型字段说明](../../docs/检测模型字段说明.md)。
+
 V59 `migration-V59-fetch-shared-images.sql` 新增共享镜像封存及一次性命令，为 MCP 执行增加可空镜像 ID，AI classpath 副本同步。需前置 V34/V47–V49/V58；默认关闭，未执行。原本地辅助脚本可显式选择 shared-images，不能直接用于服务器库，见 [共享镜像回收](../../docs/固定Fetch共享镜像回收.md)。
 
 V58 `migration-V58-native-fetch-install-evidence.sql` 为固定 Fetch 安装增加 transport/native pool 及逐安装预留字节字段，AI classpath 同名副本保持一致。依赖 V47/V48/V49，现阶段仅新增源码，未执行迁移。新原生安装开关默认关闭，旧镜像恢复兼容保护仍待补齐，见 [原生安装进程树回执](../../docs/固定Fetch原生安装进程树回执.md)。

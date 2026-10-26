@@ -10,7 +10,7 @@
           <div class="managed-form-section-heading"><AppIcon name="Monitor" :size="19" /><div><h2 id="device-identity-heading">设备识别信息</h2><p>编号用于查找设备，序列号用于核对实物；带星号为必填项。</p></div></div>
           <div class="device-form-grid">
             <el-form-item label="设备编号" prop="deviceCode"><el-input v-model="form.deviceCode" placeholder="填写设备登记编号" maxlength="20" show-word-limit aria-describedby="device-code-help" /><p id="device-code-help" class="managed-field-help">4–20 个字符，保存时仍由服务端校验唯一性。</p></el-form-item>
-            <el-form-item label="设备类型" prop="deviceType"><el-select v-model="form.deviceType" placeholder="选择设备业务类型"><el-option v-for="item in deviceTypeOptions" :key="item.value" :label="item.label" :value="item.value" /></el-select></el-form-item>
+            <el-form-item label="设备类型" prop="deviceType"><el-select v-model="form.deviceType" popper-class="business-select-popper" placeholder="选择设备业务类型"><el-option v-for="item in deviceTypeOptions" :key="item.value" :label="item.label" :value="item.value" /></el-select></el-form-item>
             <el-form-item label="设备型号" prop="modelName"><el-input v-model="form.modelName" placeholder="填写实物型号或登记型号" /></el-form-item>
             <el-form-item label="序列号" prop="serialNumber"><el-input v-model="form.serialNumber" placeholder="填写实物序列号" /></el-form-item>
           </div>
@@ -18,8 +18,8 @@
         <section class="managed-form-section" aria-labelledby="device-state-heading">
           <div class="managed-form-section-heading"><AppIcon name="Operation" :size="19" /><div><h2 id="device-state-heading">状态与维护</h2><p>以下为设备业务登记，不作为实时在线或现场可用证明。</p></div></div>
           <div class="device-form-grid">
-            <el-form-item label="设备状态" prop="status"><el-select v-model="form.status" placeholder="选择业务状态"><el-option v-for="item in statusOptions" :key="item.value" :label="item.label" :value="item.value" /></el-select></el-form-item>
-            <el-form-item label="最后维护时间（UTC+8）" prop="lastMaintenanceDate"><el-date-picker v-model="form.lastMaintenanceDate" type="datetime" placeholder="选择实际维护时间" value-format="YYYY-MM-DDTHH:mm:ss" /><p class="managed-field-help">仅更新维护时间登记，不自动生成维护工单。</p></el-form-item>
+            <el-form-item label="设备状态" prop="status"><el-select v-model="form.status" popper-class="business-select-popper" placeholder="选择业务状态"><el-option v-for="item in statusOptions" :key="item.value" :label="item.label" :value="item.value" /></el-select></el-form-item>
+            <el-form-item label="最后维护时间（UTC+8）" prop="lastMaintenanceDate"><el-date-picker v-model="form.lastMaintenanceDate" popper-class="business-date-popper" type="datetime" placeholder="选择实际维护时间" value-format="YYYY-MM-DDTHH:mm:ss" /><p class="managed-field-help">仅更新维护时间登记，不自动生成维护工单。</p></el-form-item>
           </div>
         </section>
       </el-form>

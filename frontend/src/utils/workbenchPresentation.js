@@ -85,6 +85,23 @@ export function workbenchFileMatches(file, query = '') {
   const needle = query.trim().toLowerCase()
   return !needle || [file?.name,file?.id,file?.resourceId,file?.fileId].filter(value=>typeof value==='string').join(' ').toLowerCase().includes(needle)
 }
+// Group only the references returned for this session. No additional reads or permission inference.
+// Keep first-seen order so workbench refreshes do not reorder the reader's current list.
+export function workbenchBusinessFileGroups(files = [], query = '') {
+  const groups = new Map()
+  for (const file of Array.isArray(files) ? files : []) {
+    if (!file || !['DETECTION','REPORT'].includes(file.kind) || typeof file.resourceId !== 'string') continue
+    const key = JSON.stringify([file.kind,file.resourceId])
+    if (!groups.has(key)) groups.set(key,{
+      key,resourceId:file.resourceId,label:file.kind==='REPORT'?'质检报告':'检测任务',
+      icon:file.kind==='REPORT'?'DocumentChecked':'Picture',total:0,files:[]
+    })
+    const group = groups.get(key)
+    group.total += 1
+    if (workbenchFileMatches(file,query)) group.files.push(file)
+  }
+  return [...groups.values()].filter(group=>group.files.length)
+}
 export function workbenchFileSummary(files = []) {
   const rows = Array.isArray(files) ? files : []
   const bytes = rows.every(file => Number.isSafeInteger(file?.bytes) && file.bytes>=0) ? rows.reduce((sum,file)=>sum+file.bytes,0) : null

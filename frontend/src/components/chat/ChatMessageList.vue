@@ -176,7 +176,7 @@ const formatTime = beijingClock
 .msg-list {
   display: flex;
   flex-direction: column;
-  gap: 24px;
+  gap: 12px;
 }
 
 /* ── 空状态 ── */
@@ -316,6 +316,9 @@ const formatTime = beijingClock
 }
 
 .msg-bubble {
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
   border-radius: 16px;
   padding: 10px 14px;
   line-height: 1.6;
@@ -324,6 +327,7 @@ const formatTime = beijingClock
 }
 
 .msg-bubble.assistant {
+  padding: 4px 0;
   background: #ffffff;
   color: #1e293b;
   border-bottom-left-radius: 4px;

@@ -1,10 +1,11 @@
 <template>
-  <section v-if="rows.length || error" class="detection-transfer-reviews" aria-label="检测创建结果核对">
-    <header class="transfer-heading"><strong><AppIcon name="DocumentChecked" :size="17" />检测创建结果核对</strong><el-button size="small" :loading="loading" :disabled="hasCurrentWrite()" @click="refresh">刷新状态</el-button></header>
-    <p class="transfer-intro">核对原创建命令的文件与回执，再决定是否完成创建。此处不重新上传图片。</p>
-    <p v-if="loading" class="transfer-read-note" role="status">正在读取，当前保留上次快照；读取完成前不能提交处置。</p>
+  <section v-if="rows.length || error || availability" class="detection-transfer-reviews" :class="{'is-unavailable':compact}" aria-label="检测创建结果核对">
+    <details v-if="availability" class="transfer-availability"><summary><AppIcon name="DocumentChecked" :size="15" />检测创建核对暂不可用</summary><p role="status">{{ availabilityMessage }}</p><el-button size="small" :loading="loading" :disabled="hasCurrentWrite()" @click="refresh">重新读取能力与状态</el-button></details>
+    <header v-if="!compact" class="transfer-heading"><strong><AppIcon name="DocumentChecked" :size="17" />检测创建结果核对</strong><el-button size="small" :loading="loading" :disabled="hasCurrentWrite()" @click="refresh">刷新状态</el-button></header>
+    <p v-if="!compact" class="transfer-intro">核对原创建命令的文件与回执，再决定是否完成创建。此处不重新上传图片。</p>
+    <p v-if="loading" class="transfer-read-note" role="status">{{ rows.length ? '正在读取，当前保留上次快照；读取完成前不能提交处置。' : '正在读取核对状态；读取完成前不能提交处置。' }}</p>
     <p v-if="error" role="alert" class="transfer-error">{{ error }}</p>
-    <p v-if="error && lastRequest" class="transfer-read-note">操作请求 {{ operationNames[lastRequest.action] }} · 请求 <code>{{ lastRequest.requestId }}</code>。请保留编号核对，不会自动重发。</p>
+    <p v-if="(error || availability) && lastRequest" class="transfer-read-note">操作请求 {{ operationNames[lastRequest.action] }} · 请求 <code>{{ lastRequest.requestId }}</code>。请保留编号核对，不会自动重发。</p>
     <article v-for="row in rows" :key="row.commandId" class="transfer-record" :data-status="row.status" :aria-busy="busy.has(row.commandId)">
       <header class="transfer-record-heading"><div><small>检测任务</small><strong>{{ row.taskId }}</strong></div><StatusBadge domain="detectionCreation" :code="row.status" /></header>
       <dl class="transfer-metrics">
@@ -39,7 +40,7 @@
 import { computed, ref, watch, onBeforeUnmount } from 'vue'
 import request from '@/api/request'
 import { useUserStore } from '@/stores/user'
-import { validTransferReview, canCheckTransfer, transferDecision, transferCount, transferNextStep, transferDecisionSnapshot, transferDecisionMatches } from '@/utils/detectionCreationReview'
+import { validTransferReview, canCheckTransfer, transferDecision, transferCount, transferNextStep, transferDecisionSnapshot, transferDecisionMatches, transferPayload, transferCapability, transferReadIssue, transferFailureStatus, transferDisabledMessage } from '@/utils/detectionCreationReview'
 import { beijingDateTime } from '@/utils/beijingTime'
 import { cardRoute } from '@/utils/agentCards'
 import '@/assets/detection-creation-review.css'
@@ -48,6 +49,8 @@ const emit = defineEmits(['changed'])
 const userStore = useUserStore()
 const actor = computed(() => JSON.stringify([userStore.identity?.userId || userStore.username || '', userStore.role, userStore.isAuthenticated]))
 const rows = ref([]), error = ref(''), loading = ref(false), verified = ref(false), busy = ref(new Map()), decision = ref(null), lastRequest = ref(null)
+const availability = ref(''), availabilityMessage = ref('')
+const compact = computed(() => !!availability.value && !rows.value.length && !lastRequest.value)
 const operationNames = { CHECK: '只读核对', FINALIZE: '完成原创建', ABANDON: '终止创建' }
 const formatTime = value => value ? beijingDateTime(value) || '时间未记录' : '时间未记录'
 let scopeGeneration = 0, readGeneration = 0, activeRead
@@ -59,14 +62,22 @@ async function refresh() {
   stopRead(); const version = ++readGeneration, scope = scopeGeneration, controller = new AbortController()
   activeRead = controller; loading.value = true; verified.value = false; decision.value = null; error.value = ''
   try {
-    const { data } = await request.get(endpoint(), { signal: controller.signal })
+    let support='UNKNOWN'
+    try { const capability=await request.get('/api/agent/workbench/capabilities',{signal:controller.signal}); support=transferCapability(capability.data) }
+    catch(failure) { if(transferFailureStatus(failure)!==404)throw failure }
+    if (scope !== scopeGeneration || version !== readGeneration || controller.signal.aborted) return
+    if(support==='DISABLED'){rows.value=[];availability.value='DISABLED';availabilityMessage.value=transferDisabledMessage;return}
+    const response = await request.get(endpoint(), { signal: controller.signal })
     if (scope !== scopeGeneration || version !== readGeneration) return
+    const data=transferPayload(response.data)
     if (!Array.isArray(data) || !data.every(validTransferReview)) throw new Error()
-    rows.value = data; verified.value = true
+    rows.value = data; verified.value = true; availability.value='';availabilityMessage.value=''
   } catch (failure) {
     if (scope !== scopeGeneration || version !== readGeneration || controller.signal.aborted) return
-    if ([401, 403, 404].includes(failure.response?.status)) rows.value = []
-    error.value = '核对状态暂不可读取。已显示内容仅为上次快照，请刷新核对，不会重发原操作。'
+    const issue=transferReadIssue(failure,rows.value.length>0)
+    if(issue.clear)rows.value=[]
+    availability.value=issue.availability;availabilityMessage.value=issue.availability?issue.message:''
+    error.value=issue.availability?'':issue.message
   } finally { if (scope === scopeGeneration && version === readGeneration) { activeRead = null; loading.value = false } }
 }
 function choose(row, action) {
@@ -80,20 +91,21 @@ async function send(row, action) {
   busy.value = new Map([...busy.value, [row.commandId, { action, requestId, scope }]])
   lastRequest.value = { requestId, action }; decision.value = null; error.value = ''
   try {
-    const { data } = await request.post(endpoint() + '/' + encodeURIComponent(row.commandId) + '/review', { requestId, revision: row.revision, action, ...(action === 'FINALIZE' ? { checkId: row.checkId } : {}) }, { headers: { 'X-Agent-Action': 'workbench', 'X-Request-ID': requestId } })
+    const response = await request.post(endpoint() + '/' + encodeURIComponent(row.commandId) + '/review', { requestId, revision: row.revision, action, ...(action === 'FINALIZE' ? { checkId: row.checkId } : {}) }, { headers: { 'X-Agent-Action': 'workbench', 'X-Request-ID': requestId } })
     if (scope !== scopeGeneration) return
+    const data=transferPayload(response.data)
     if (!validTransferReview(data) || data.commandId !== row.commandId) throw new Error()
     rows.value = rows.value.map(value => value.commandId === row.commandId ? data : value); emit('changed')
   } catch (failure) {
     if (scope !== scopeGeneration) return
     verified.value = false; lastRequest.value = { requestId, action }
-    if ([401, 403, 404].includes(failure.response?.status)) rows.value = []
+    if ([401, 403, 404].includes(transferFailureStatus(failure))) rows.value = []
     error.value = failure.response?.data?.message || '操作结果尚未核实，请刷新原命令状态。保留本次请求编号，不会自动重发。'
   } finally {
     if (busy.value.get(row.commandId)?.requestId === requestId) { const next = new Map(busy.value); next.delete(row.commandId); busy.value = next }
   }
 }
-watch(() => JSON.stringify([props.sessionId, actor.value]), () => { scopeGeneration++; stopRead(); rows.value = []; decision.value = null; lastRequest.value = null; error.value = ''; verified.value = false; refresh() }, { immediate: true, flush: 'sync' })
+watch(() => JSON.stringify([props.sessionId, actor.value]), () => { scopeGeneration++; stopRead(); rows.value = []; decision.value = null; lastRequest.value = null; error.value = ''; availability.value='';availabilityMessage.value='';verified.value = false; refresh() }, { immediate: true, flush: 'sync' })
 watch(() => props.refreshKey, refresh)
 onBeforeUnmount(() => { scopeGeneration++; stopRead() })
 </script>

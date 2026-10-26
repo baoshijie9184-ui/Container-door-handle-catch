@@ -7,7 +7,7 @@
       <section class="version-strip"><span>生效版本 <strong>V{{ activeRevision }}</strong></span><span>默认 {{ active.document.defaultModel }}</span><span class="memory-config-state">记忆配置<StatusBadge domain="memoryConfig" :code="active.memoryState" :label="memoryStates[active.memoryState]" /></span></section>
       <section class="version-picker"><label for="model-version">查看版本</label><el-select id="model-version" :model-value="selectedRevision" :disabled="busy" @change="selectVersion"><el-option v-for="v in versions" :key="v.revision" :value="v.revision" :label="`V${v.revision} · ${statuses[v.status] || v.status}`" /></el-select><el-button :disabled="busy" @click="editActive">编辑生效版本</el-button></section>
       <section v-if="selected" class="version-actions" aria-label="版本操作">
-        <span class="selected-config-version"><strong>V{{ selected.revision }}</strong><StatusBadge domain="modelConfig" :code="selected.status" :label="statuses[selected.status]" /><small>基于 V{{ selected.baseRevision }}</small></span>
+        <span class="selected-config-version"><strong>V{{ selected.revision }}</strong><StatusBadge domain="modelConfig" :code="selected.status" :label="statuses[selected.status]" /><small>{{ Number.isSafeInteger(selected.baseRevision)&&selected.baseRevision>=0?`基于 V${selected.baseRevision}`:'来源版本未记录' }}</small></span>
         <el-button v-if="selected.status==='DRAFT'" :disabled="busy" @click="probe">检查提炼 JSON 兼容性</el-button>
         <el-button v-if="selected.status==='DRAFT'" :disabled="busy" @click="validate">校验草稿</el-button>
         <el-button v-if="selected.status==='VALIDATED'" type="primary" :disabled="busy" @click="publish">发布此版本</el-button>
@@ -22,11 +22,16 @@
         <ModelConfigDiff :before="active.document" :after="selected.document" />
       </section>
       <el-form v-if="editor" :model="editor" label-position="top" class="config-editor" @submit.prevent="saveDraft">
-        <h3>配置草稿 <small>基于 V{{ baseRevision }}</small></h3>
+        <h3 class="config-editor-heading"><AppIcon name="Edit" :size="19" />配置草稿 <small>基于 V{{ baseRevision }}</small></h3>
         <p v-if="draftDirty" class="config-draft-note" role="status"><AppIcon name="Edit" :size="15" />有尚未保存到服务器的修改，保存草稿后仍需校验和发布。</p>
         <p v-if="baseRevision!==activeRevision" class="config-draft-note" role="status">生效版本已变为 V{{ activeRevision }}，本页仍保留基于 V{{ baseRevision }} 的修改；请先复制需要保留的内容，再重新编辑生效版本。</p>
-        <div class="model-rows" tabindex="0" role="region" aria-label="本草稿模型登记，可滚动阅读"><div v-for="(model,index) in editor.models" :key="model.id" class="model-row"><el-checkbox v-model="model.enabled" :disabled="busy" :aria-label="`启用 ${model.id}`">{{ model.id }}</el-checkbox><el-button text :disabled="busy || editor.models.length===1" :aria-label="`从本草稿移出 ${model.id}`" @click="removeModel(index)">移出草稿</el-button></div></div>
-        <div class="add-model"><el-select v-model="newProvider" aria-label="接入类型" :disabled="busy"><el-option v-for="(label,id) in providers" :key="id" :value="id" :label="label" /></el-select><el-input v-model="newModel" placeholder="填写供应商模型名" aria-label="新模型名称" :disabled="busy" maxlength="128" @keydown.enter.prevent="addModel" /><el-button :disabled="busy || !newModel.trim()" @click="addModel">加入列表</el-button></div>
+        <section class="config-editor-section" aria-labelledby="config-models-heading">
+        <div class="config-section-heading"><AppIcon name="Cpu" :size="18" /><div><h4 id="config-models-heading">可用模型列表</h4><p>草稿内启用 {{ enabled.length }} / {{ editor.models.length }} 个模型，保存后仍需校验和发布。</p></div></div>
+        <div class="model-rows" tabindex="0" role="region" aria-label="本草稿模型登记，可滚动阅读"><div v-for="(model,index) in editor.models" :key="model.id" class="model-row"><div class="config-model-identity"><el-checkbox v-model="model.enabled" :disabled="busy" :aria-label="`启用 ${model.id}`">{{ model.id }}</el-checkbox><span>{{ modelProviderLabel(model.id) }}<small>{{ model.enabled?'本草稿已启用':'本草稿已停用' }}</small></span></div><el-button text :disabled="busy || editor.models.length===1" :aria-label="`从本草稿移出 ${model.id}`" @click="removeModel(index)"><AppIcon name="Close" :size="14" />移出草稿</el-button></div></div>
+        <div class="add-model"><el-select v-model="newProvider" aria-label="接入类型" :disabled="busy"><el-option v-for="(label,id) in providers" :key="id" :value="id" :label="label" /></el-select><el-input v-model="newModel" placeholder="填写供应商模型名" aria-label="新模型名称" :disabled="busy" maxlength="128" @keydown.enter.prevent="addModel" /><el-button :disabled="busy || !newModel.trim()" @click="addModel"><AppIcon name="Plus" :size="15" />加入列表</el-button></div>
+        </section>
+        <section class="config-editor-section" aria-labelledby="config-routing-heading">
+        <div class="config-section-heading"><AppIcon name="Connection" :size="18" /><div><h4 id="config-routing-heading">默认模型与请求策略</h4><p>设置新任务的模型、提炼候选及超时；正在执行的任务仍使用其固定版本。</p></div></div>
         <div class="form-grid">
           <el-form-item label="默认模型"><el-select v-model="editor.defaultModel" :disabled="busy" aria-label="默认模型"><el-option v-for="m in enabled" :key="m.id" :value="m.id" :label="m.id" /></el-select></el-form-item>
           <el-form-item label="提炼候选模型"><el-select v-model="editor.memoryModel" :disabled="busy" aria-label="提炼候选模型"><el-option v-for="m in memoryCandidates" :key="m.id" :value="m.id" :label="m.id" /></el-select><small>更换连接后须保存草稿并通过 JSON 检查，才能发布</small></el-form-item>
@@ -35,10 +40,11 @@
           <el-form-item label="最大输出 Token"><el-input-number v-model="editor.maxOutputTokens" :min="16" :max="65536" :disabled="busy" /></el-form-item>
           <el-form-item label="供应商备用切换"><el-switch v-model="editor.fallbackEnabled" :disabled="busy" aria-label="启用备用模型" /></el-form-item>
         </div>
-        <div class="fallback-order"><h4>备用顺序</h4><p v-if="!editor.fallbackModels.length">尚未设置备用模型</p><ol><li v-for="(id,index) in editor.fallbackModels" :key="id"><small class="fallback-position" :aria-label="'备用顺序 '+(index+1)">{{ index+1 }}</small><span>{{ id }}</span><el-button text :disabled="busy || index===0" :aria-label="`上移 ${id}`" @click="moveFallback(index,-1)">上移</el-button><el-button text :disabled="busy || index===editor.fallbackModels.length-1" :aria-label="`下移 ${id}`" @click="moveFallback(index,1)">下移</el-button><el-button text :disabled="busy" :aria-label="`移出备用 ${id}`" @click="editor.fallbackModels.splice(index,1)">移出备用</el-button></li></ol><el-select v-model="fallbackToAdd" placeholder="选择要追加的备用模型" aria-label="追加备用模型" :disabled="busy" @change="addFallback"><el-option v-for="m in availableFallbacks" :key="m.id" :value="m.id" :label="m.id" /></el-select></div>
-        <section class="credentials"><h4>连接凭证</h4><p>仅写入替换值。留空保留现有凭证，服务器不回传 Key。</p><div v-for="(label,id) in providers" :key="id" class="credential-row"><el-form-item :label="`${label} · ${active.credentials[id]?'已配置':'未配置或已撤销'}`"><el-input v-model="keys[id]" type="password" autocomplete="new-password" :disabled="busy" :aria-label="`${label} 新 API Key`" placeholder="留空保留现有凭证" /></el-form-item><el-button :disabled="busy || !active.credentials[id]" type="danger" plain @click="revoke(id)">撤销现有 Key</el-button></div></section>
+        <div class="fallback-order"><h4>备用顺序</h4><p v-if="!editor.fallbackModels.length">尚未设置备用模型</p><ol><li v-for="(id,index) in editor.fallbackModels" :key="id"><small class="fallback-position" :aria-label="'备用顺序 '+(index+1)">{{ index+1 }}</small><span>{{ id }}</span><el-button text :disabled="busy || index===0" :aria-label="`上移 ${id}`" @click="moveFallback(index,-1)"><AppIcon name="ArrowUp" :size="14" />上移</el-button><el-button text :disabled="busy || index===editor.fallbackModels.length-1" :aria-label="`下移 ${id}`" @click="moveFallback(index,1)"><AppIcon name="ArrowDown" :size="14" />下移</el-button><el-button text :disabled="busy" :aria-label="`移出备用 ${id}`" @click="editor.fallbackModels.splice(index,1)">移出备用</el-button></li></ol><el-select v-model="fallbackToAdd" placeholder="选择要追加的备用模型" aria-label="追加备用模型" :disabled="busy" @change="addFallback"><el-option v-for="m in availableFallbacks" :key="m.id" :value="m.id" :label="m.id" /></el-select></div>
+        </section>
+        <section class="credentials config-editor-section" aria-labelledby="config-credentials-heading"><div class="config-section-heading"><AppIcon name="Key" :size="18" /><div><h4 id="config-credentials-heading">连接凭证</h4><p>仅写入替换值。留空保留现有凭证，服务器不回传 Key。</p></div></div><div v-for="(label,id) in providers" :key="id" class="credential-row"><el-form-item :label="`${label} · ${active.credentials[id]?'已配置':'未配置或已撤销'}`"><el-input v-model="keys[id]" type="password" autocomplete="new-password" :disabled="busy" :aria-label="`${label} 新 API Key`" placeholder="留空保留现有凭证" /></el-form-item><el-button :disabled="busy || !active.credentials[id]" type="danger" plain @click="revoke(id)"><AppIcon name="Delete" :size="15" />撤销现有 Key</el-button></div></section>
         <ModelConfigDiff :before="active.document" :after="editor" next-label="本次草稿值"><p v-if="Object.values(keys).some(Boolean)">包含凭证替换，值已隐藏</p></ModelConfigDiff>
-        <el-button type="primary" native-type="submit" :loading="busy">保存为新草稿</el-button>
+        <footer class="config-editor-footer"><p><AppIcon name="DocumentChecked" :size="16" />保存草稿后，当前生效版本不会立即改变。</p><el-button type="primary" native-type="submit" :loading="busy"><AppIcon name="DocumentChecked" :size="16" />保存为新草稿</el-button></footer>
       </el-form>
     </template>
     <CollectionEmptyState v-else :loading="busy" :error="error" empty-title="模型配置尚未读取" empty-description="请核对当前账号授权及服务状态，读取成功后再操作配置。" @retry="refresh" />
@@ -56,6 +62,7 @@ import CollectionEmptyState from '@/components/CollectionEmptyState.vue'
 import ModelConfigDiff from '@/components/chat/ModelConfigDiff.vue'
 import ModelConfigValue from '@/components/chat/ModelConfigValue.vue'
 const providers={dashscope:'百炼',deepseek:'DeepSeek 直连',openai:'灵算 Responses'}
+function modelProviderLabel(id){const prefix=typeof id==='string'?id.split(':',1)[0]:'';return prefix==='openai-official'?providers.openai:providers[prefix]||'接入类型未识别'}
 const statuses={DRAFT:'待校验',VALIDATED:'已校验，待发布',PUBLISHED:'已发布',RETIRED:'历史版本'}
 const memoryStates={ENVIRONMENT:'沿用部署配置',PENDING:'应用中，需核对',APPLIED:'已应用'}
 const probeStates={PASSED:'格式兼容通过',FAILED:'未通过，不自动重试',STARTED:'结果待核对，不自动重试'}
@@ -99,4 +106,27 @@ onBeforeUnmount(()=>{clearKeys();pending.clear()})
 
 <style scoped>
 .model-config-page{max-width:1100px;margin:auto;padding:24px;background:#fff;border:1px solid #e5eaf2;border-radius:18px;animation:config-enter .18s ease}.page-heading{display:flex;justify-content:space-between;align-items:center;gap:16px}.page-heading h2{margin:0}.page-heading p,.credentials p{font-size:13px;color:#64748b}.version-strip{display:flex;gap:16px;flex-wrap:wrap;padding:16px;margin:18px 0;border-radius:12px;background:#f3f7ff;font-size:13px}.version-picker,.version-actions{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin:16px 0}.version-picker .el-select{width:240px}.version-actions>span{font-size:13px;color:#475569}.probe-list{flex-basis:100%;margin:4px 0;padding-left:22px;font-size:13px;color:#475569}.config-editor{border-top:1px solid #e5eaf2;padding-top:16px}.config-editor h3 small{font-weight:400;color:#64748b;font-size:13px;margin-left:8px}.model-rows{max-height:260px;overflow:auto;border:1px solid #e5eaf2;border-radius:10px;padding:8px 12px}.model-rows:focus-visible{outline:2px solid var(--app-primary);outline-offset:3px}.version-strip>span{min-width:0;overflow-wrap:anywhere;line-height:1.85}.fallback-order .fallback-position{flex:none;min-width:22px;font-size:12px;line-height:22px;text-align:center;border-radius:5px;background:var(--app-primary-soft);color:var(--app-primary)}.model-row{display:flex;justify-content:space-between;align-items:center;gap:8px;overflow-wrap:anywhere}.model-row :deep(.el-checkbox__label){white-space:normal;overflow-wrap:anywhere}.add-model{display:grid;grid-template-columns:180px minmax(0,1fr) auto;gap:8px;margin:12px 0 24px}.form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 24px}.form-grid .el-select{width:100%}.form-grid small{color:#64748b;line-height:1.6}.fallback-order{padding:12px 0}.fallback-order ol{padding-left:24px}.fallback-order li{display:flex;align-items:center;flex-wrap:wrap;gap:6px;font-size:13px}.fallback-order li>span{flex:1;min-width:120px;overflow-wrap:anywhere}.fallback-order>.el-select{width:min(100%,420px)}h4{margin:8px 0 12px}.credentials{margin:20px 0}.credential-row{display:flex;gap:16px;align-items:center}.credential-row .el-form-item{flex:1;min-width:0}.notice{color:#1d4ed8;font-size:13px}.empty-state{padding:32px;color:#64748b}button{transition:transform .15s ease}button:active{transform:scale(.98)}@keyframes config-enter{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}@media(max-width:680px){.model-config-page{padding:14px}.page-heading{align-items:flex-start;flex-direction:column}.form-grid{grid-template-columns:1fr}.add-model{grid-template-columns:1fr}.credential-row{align-items:stretch;flex-direction:column;gap:0;margin-bottom:16px}.version-strip{gap:10px}.version-picker .el-select{max-width:100%}}@media(prefers-reduced-motion:reduce){.model-config-page,button{animation:none;transition:none;transform:none}}
+</style>
+<style scoped>
+.config-editor-heading { display:flex; align-items:center; flex-wrap:wrap; gap:9px; }
+.config-editor-heading > .el-icon,.config-section-heading > .el-icon { flex-shrink:0; color:var(--app-primary); }
+.config-editor-section { padding-block:22px; }
+.config-editor-section + .config-editor-section { border-top:1px solid var(--app-border); }
+.config-section-heading { display:flex; align-items:flex-start; gap:10px; margin-bottom:18px; }
+.config-section-heading > .el-icon { margin-top:3px; }
+.config-section-heading > div { min-width:0; }
+.config-section-heading h4 { margin:0; color:var(--app-text); font-size:15px; font-weight:600; line-height:1.7; }
+.config-section-heading p { margin:5px 0 0; color:var(--app-text-secondary); font-size:12px; line-height:1.85; overflow-wrap:anywhere; }
+.config-editor .model-rows { padding-block:0; border:0; border-radius:0; }
+.config-editor .model-row { padding:11px 0; border-bottom:1px solid var(--app-border); }
+.config-model-identity { flex:1; min-width:0; display:grid; gap:3px; }
+.config-model-identity > span { padding-left:24px; color:var(--app-text-secondary); font-size:12px; line-height:1.8; overflow-wrap:anywhere; }
+.config-model-identity > span small { display:inline-block; margin-left:10px; font-size:12px; }
+.config-editor .model-row > .el-button { flex:0 0 auto; }
+.config-editor .add-model { margin-bottom:0; }
+.config-editor .credentials { margin-block:0; }
+.config-editor-footer { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:14px; padding-top:18px; margin-top:18px; border-top:1px solid var(--app-border); }
+.config-editor-footer p { display:flex; align-items:flex-start; gap:7px; max-width:48ch; margin:0; color:var(--app-text-secondary); font-size:12px; line-height:1.85; }
+.config-editor-footer p > .el-icon { flex-shrink:0; margin-top:3px; color:var(--app-primary); }
+@media(max-width:480px) { .config-editor .model-row { align-items:flex-start; flex-wrap:wrap; }.config-model-identity { flex-basis:100%; }.config-editor .model-row > .el-button { margin-left:24px; }.config-editor-footer > .el-button { width:100%; } }
 </style>

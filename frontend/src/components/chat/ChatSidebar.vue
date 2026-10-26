@@ -1,5 +1,5 @@
 <template>
-  <button v-if="compact && !collapsed" class="session-backdrop" type="button" aria-label="关闭会话列表" @click="collapsed = true"></button>
+  <button v-if="compact && !collapsed" class="session-backdrop" type="button" aria-label="关闭会话列表" @click="closeCompactSidebar"></button>
   <aside ref="sidebarRef" class="chat-sidebar" :class="{ collapsed: collapsed, compact: compact }" @keydown.esc="handleSidebarEscape">
     <!-- 折叠按钮 -->
     <button ref="sidebarToggleRef" type="button" class="sidebar-toggle" @click="collapsed = !collapsed" :title="collapsed ? '展开会话列表' : '收起会话列表'" :aria-label="collapsed ? '展开会话列表' : '收起会话列表'" :aria-expanded="!collapsed">
@@ -566,7 +566,12 @@ const handleSwitchSession = (sessionId) => {
   store.closeMenu()
   store.closeProjectMenu()
   store.switchSession(sessionId)
-  if (props.compact) collapsed.value = true
+  if (props.compact) closeCompactSidebar()
+}
+
+function closeCompactSidebar() {
+  collapsed.value = true
+  nextTick(()=>sidebarToggleRef.value?.focus({preventScroll:true}))
 }
 
 const startEdit = (sess) => {
@@ -623,8 +628,7 @@ function handleSidebarEscape(event) {
     nextTick(()=>trigger?.focus({preventScroll:true}))
     return
   }
-  collapsed.value=true
-  nextTick(()=>sidebarToggleRef.value?.focus({preventScroll:true}))
+  closeCompactSidebar()
 }
 
 // 拖拽处理

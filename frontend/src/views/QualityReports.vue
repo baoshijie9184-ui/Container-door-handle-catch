@@ -45,7 +45,7 @@
       <div v-loading="detailLoading">
         <CollectionEmptyState v-if="!detail" :loading="detailLoading" :error="detailError" empty-title="报告资料尚未读取" empty-description="请重新读取当前报告，核对本版内容及操作记录。" @retry="openDetail(detailRequestedId)" />
         <template v-if="detail">
-          <div class="detail-heading"><h2>{{ detail.title }}</h2><StatusBadge domain="report" :code="detail.status" :label="states[detail.status]" /><span class="report-version">版本 {{ detail.version }}</span></div>
+          <header class="report-detail-heading"><h2>{{ detail.title }}</h2><div><StatusBadge domain="report" :code="detail.status" :label="states[detail.status]" /><span class="report-version">版本 {{ detail.version }}</span></div></header>
           <dl class="report-identity-strip"><div><dt>编写账号</dt><dd>{{ detail.ownerUsername || '未记录' }}</dd></div><div><dt>依据任务</dt><dd>{{ detail.taskId || '未记录' }}</dd></div><div><dt>报告编号</dt><dd>{{ detail.reportId }}</dd></div></dl>
           <div class="report-next-step"><AppIcon name="DocumentChecked" :size="17" /><p>{{ reportNextStep }}</p></div>
           <p v-if="detail.previousReportId" class="muted">修订自报告 {{ detail.previousReportId }}</p>
@@ -76,7 +76,17 @@
             <el-button v-if="detail.status === 'APPROVED'" :loading="busy" @click="download"><AppIcon name="Download" :size="15" />导出已审批报告</el-button>
           </div>
           <h3><AppIcon name="DocumentCopy" :size="18" />操作记录<span class="report-section-count">本次读取 {{ audits.length }} 条</span></h3>
-          <el-table :scrollbar-tabindex="0" role="region" aria-label="报告操作记录" :data="audits" max-height="260"><el-table-column prop="actorUsername" label="操作账号" min-width="140" /><el-table-column label="操作" min-width="90"><template #default="{ row }">{{ auditLabels[row.action] || row.action }}</template></el-table-column><el-table-column prop="reportVersion" label="版本" width="65" /><el-table-column label="来源" min-width="150"><template #default="{ row }"><router-link v-if="row.runId" :to="{ path: '/agent/trace', query: { runId: row.runId } }">助手运行轨迹</router-link><span v-else>业务页面</span></template></el-table-column><el-table-column prop="reason" label="意见" min-width="160" /><el-table-column label="时间（UTC+8）" min-width="190"><template #default="{ row }">{{ reportTime(row.createdAt) }}</template></el-table-column></el-table>
+          <el-table class="report-audit-table" :scrollbar-tabindex="0" role="region" aria-label="报告操作记录" :data="audits" max-height="260"><el-table-column prop="actorUsername" label="操作账号" min-width="140" /><el-table-column label="操作" min-width="90"><template #default="{ row }">{{ auditLabels[row.action] || row.action }}</template></el-table-column><el-table-column prop="reportVersion" label="版本" width="65" /><el-table-column label="来源" min-width="150"><template #default="{ row }"><router-link v-if="row.runId" :to="{ path: '/agent/trace', query: { runId: row.runId } }">助手运行轨迹</router-link><span v-else>业务页面</span></template></el-table-column><el-table-column prop="reason" label="意见" min-width="160" /><el-table-column label="时间（UTC+8）" min-width="190"><template #default="{ row }">{{ reportTime(row.createdAt) }}</template></el-table-column></el-table>
+          <div class="report-audit-mobile" role="region" aria-label="报告操作记录，可聚焦后使用方向键滚动" tabindex="0">
+            <p v-if="audits.length" class="report-audit-reading-hint">按本次返回顺序展示，可聚焦后用方向键上下滚动。</p>
+            <ol v-if="audits.length">
+              <li v-for="(row,index) in audits" :key="row.id ?? index">
+                <header><strong><AppIcon :name="auditIcons[row.action] || 'Document'" :size="15" />{{ auditLabels[row.action] || row.action || '操作未记录' }}</strong><span>版本 {{ knownCount(row.reportVersion) ?? '未记录' }}</span></header>
+                <dl><div><dt>操作账号</dt><dd>{{ row.actorUsername || '未记录' }}</dd></div><div><dt>时间 · UTC+8</dt><dd>{{ reportTime(row.createdAt) }}</dd></div><div><dt>来源</dt><dd><router-link v-if="row.runId" :to="{path:'/agent/trace',query:{runId:row.runId}}">助手运行轨迹<AppIcon name="ArrowRight" :size="13" /></router-link><span v-else>业务页面</span></dd></div><div><dt>意见</dt><dd>{{ row.reason || '未记录意见' }}</dd></div></dl>
+              </li>
+            </ol>
+            <p v-else>本次未返回报告操作记录</p>
+          </div>
         </template>
         <el-alert v-if="detailError&&detail" :title="detailError" type="error" :closable="false" />
       </div>
@@ -124,6 +134,7 @@ const reportTime = value => value ? beijingDateTime(value) || '时间格式未�
 const route = useRoute(), userStore = useUserStore()
 const states = { DRAFT: '个人草稿', SUBMITTED: '待审批', APPROVED: '审批通过', REJECTED: '已驳回', WITHDRAWN: '已撤回' }
 const auditLabels = { CREATE: '创建草稿', EDIT: '保存草稿', SUBMIT: '提交审批', WITHDRAW: '撤回', REVISE: '创建修订', APPROVE: '审批通过', REJECT: '驳回', EXPORT: '导出', EVENT_RETRY: '重新发送状态' }
+const auditIcons = { APPROVE:'CircleCheck', REJECT:'CircleClose', EXPORT:'Download', EDIT:'Edit', SUBMIT:'DocumentChecked', WITHDRAW:'RefreshLeft', REVISE:'DocumentCopy', EVENT_RETRY:'Refresh' }
 const records = ref([]), status = ref(''), keyword = ref(''), page = ref(1), total = ref(null), loading = ref(false), error = ref('')
 const appliedQuery = reactive({ keyword:'', status:'' })
 const requestedQuery = reactive({ keyword:'', status:'', page:1 })
@@ -282,7 +293,7 @@ h3 .el-icon { color:var(--app-primary); }
 .report-list-identity > button:disabled { color:var(--app-text-secondary); cursor:wait; }
 .report-list-identity > span,.report-list-identity details { max-width:100%; color:var(--app-text-secondary); font-size:12px; line-height:1.7; }
 .report-list-identity summary { width:fit-content; cursor:pointer; }
-.report-list-identity code { display:block; padding-top:5px; font-size:11px; overflow-wrap:anywhere; }
+.report-list-identity code { display:block; padding-top:5px; font-size:12px; overflow-wrap:anywhere; }
 .report-list-status { display:grid; justify-items:start; gap:7px; }
 .report-list-status small { color:var(--app-text-secondary); font-size:12px; }
 .report-list-time { color:var(--app-text-secondary); font-size:12px; font-variant-numeric:tabular-nums; }
@@ -300,9 +311,29 @@ h3 .el-icon { color:var(--app-primary); }
 .report-dialog-actions { display:flex; align-items:center; justify-content:flex-end; flex-wrap:wrap; gap:8px; width:100%; }
 .report-dialog-actions .el-button + .el-button { margin-left:0; }
 .report-dialog-footnote { flex:1 1 200px; text-align:left; color:var(--app-text-secondary); font-size:12px; line-height:1.8; overflow-wrap:anywhere; }
-.report-section-count { margin-left:auto; color:var(--app-text-secondary); font-size:11px; font-weight:400; }
+.report-section-count { margin-left:auto; color:var(--app-text-secondary); font-size:12px; font-weight:400; }
+.report-detail-heading { display:grid; gap:12px; margin:0 0 18px; min-width:0; }
+.report-detail-heading h2 { margin:0; color:var(--app-text); font-size:19px; font-weight:650; line-height:1.7; overflow-wrap:anywhere; }
+.report-detail-heading > div { display:flex; align-items:center; flex-wrap:wrap; gap:10px 16px; }
+.report-detail-heading .report-version { color:var(--app-text-secondary); font-size:12px; font-variant-numeric:tabular-nums; }
+.report-audit-mobile { display:none; min-width:0; max-height:360px; max-height:min(360px,50dvh); overflow:auto; overscroll-behavior:contain; scrollbar-gutter:stable; }
+.report-audit-mobile ol { list-style:none; padding:0; margin:0; }
+.report-audit-reading-hint { margin:0 0 12px; color:var(--app-text-secondary); font-size:12px; line-height:1.8; }
+.report-audit-mobile li { padding:16px 0; border-top:1px solid var(--app-border); }
+.report-audit-mobile li:first-child { padding-top:6px; border-top:0; }
+.report-audit-mobile li > header { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; }
+.report-audit-mobile li > header strong { display:inline-flex; align-items:center; gap:6px; color:var(--app-text); font-size:13px; font-weight:600; }
+.report-audit-mobile li > header .el-icon { color:var(--app-primary); }
+.report-audit-mobile li > header > span { color:var(--app-text-secondary); font-size:12px; }
+.report-audit-mobile dl { display:grid; gap:10px; margin:12px 0 0; }
+.report-audit-mobile dl > div { min-width:0; }
+.report-audit-mobile dt { color:var(--app-text-secondary); font-size:12px; line-height:1.8; }
+.report-audit-mobile dd { margin:3px 0 0; color:var(--app-text); font-size:13px; line-height:1.85; white-space:pre-wrap; overflow-wrap:anywhere; }
+.report-audit-mobile a { display:inline-flex; align-items:center; gap:5px; color:var(--app-primary); text-underline-offset:3px; }
+.report-audit-mobile a:hover { text-decoration:underline; }
+.report-audit-mobile:focus-visible { outline:2px solid var(--app-primary); outline-offset:3px; }
 .report-identity-strip { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1.5fr) minmax(0,1.5fr); gap:16px; margin:18px 0; }
-.report-identity-strip dt { font-size:11px; line-height:1.8; color:var(--app-text-muted); }
+.report-identity-strip dt { font-size:12px; line-height:1.8; color:var(--app-text-secondary); }
 .report-identity-strip dd { margin:5px 0 0; color:var(--app-text); font-size:12px; line-height:1.8; overflow-wrap:anywhere; }
 .report-next-step { display:flex; gap:9px; align-items:flex-start; padding:12px 14px; border-radius:8px; background:var(--app-primary-soft); color:var(--app-text-secondary); }
 .report-next-step > .el-icon { color:var(--app-primary); margin-top:3px; flex:0 0 auto; }
@@ -314,7 +345,7 @@ h3 .el-icon { color:var(--app-primary); }
 .report-operation-context { padding:14px 16px; margin:16px 0; border:1px solid var(--app-border); border-radius:8px; background:var(--app-primary-light); overflow-wrap:anywhere; }
 .report-operation-context strong { color:var(--app-text); font-size:14px; line-height:1.8; }
 .report-operation-context :is(p,small) { color:var(--app-text-secondary); font-size:12px; line-height:1.8; }
-@media(max-width:640px) { .report-identity-strip { grid-template-columns:minmax(0,1fr); gap:10px; } .report-filter-field { width:100%; } .report-toolbar .el-input,.report-toolbar .el-select { width:100%; } }
+@media(max-width:640px) { .report-audit-mobile { display:block; } .report-audit-table { display:none; } .report-detail-heading h2 { font-size:16px; } .report-identity-strip { grid-template-columns:minmax(0,1fr); gap:10px; } .report-filter-field { width:100%; } .report-toolbar .el-input,.report-toolbar .el-select { width:100%; } }
 .source-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; }.source-grid div { display: flex; flex-direction: column; gap: 6px; }
 .source-grid span, .muted { font-size: 13px; color: #64748b; }.source-grid strong { font-weight: 500; overflow-wrap: anywhere; }
 .narrative { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.7; }.detail-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 18px 0; }

@@ -41,3 +41,8 @@
 @keyframes transfer-decision-in { from { opacity: 0; } to { opacity: 1; } }
 @media (max-width: 480px) { .detection-transfer-reviews .transfer-record { padding: 14px; } .detection-transfer-reviews .transfer-buttons > button { flex: 1 1 auto; min-height: 36px; } .detection-transfer-reviews .transfer-decision-actions > button { min-height: 36px; } }
 @media (prefers-reduced-motion: reduce) { .detection-transfer-reviews .transfer-decision { animation: none; } .detection-transfer-reviews button { transition: none; transform: none; } }
+.detection-transfer-reviews.is-unavailable { padding: 8px 0; border: 0; background: transparent; }
+.detection-transfer-reviews .transfer-availability { color: var(--app-text-secondary, #475569); font-size: 12px; line-height: 1.85; }
+.detection-transfer-reviews .transfer-availability > summary { cursor: pointer; width: fit-content; }
+.detection-transfer-reviews .transfer-availability > summary :is(svg,.el-icon) { margin: 0 5px; vertical-align: -3px; color: var(--app-primary, #2563eb); }
+.detection-transfer-reviews .transfer-availability > p { margin: 8px 0; max-width: 70ch; }

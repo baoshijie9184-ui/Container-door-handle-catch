@@ -321,52 +321,6 @@ const filteredFaqs = computed(() => {
   gap: 18px;
 }
 
-.manual-hero {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 360px;
-  gap: 24px;
-  align-items: stretch;
-}
-
-.manual-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  margin-top: 22px;
-}
-
-.manual-hero-card {
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: 10px;
-  padding: 22px;
-  border-radius: 22px;
-  color: #fff;
-  background:
-    radial-gradient(circle at 16% 18%, rgba(56, 189, 248, 0.34), transparent 38%),
-    linear-gradient(135deg, #10233f, #16436f 58%, #0f766e);
-  box-shadow: 0 18px 40px rgba(15, 47, 87, 0.24);
-}
-
-.manual-hero-card-label {
-  font-size: 12px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  opacity: 0.72;
-  font-weight: 800;
-}
-
-.manual-hero-card strong {
-  font-size: 20px;
-  line-height: 1.45;
-}
-
-.manual-hero-card span {
-  color: rgba(255, 255, 255, 0.72);
-  line-height: 1.7;
-}
-
 .quick-start-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -656,7 +610,6 @@ const filteredFaqs = computed(() => {
 @media(prefers-reduced-motion:reduce) { .manual-resource-link,.manual-toc button { transition: none; transform: none; } }
 
 @media (max-width: 1100px) {
-  .manual-hero,
   .manual-layout {
     grid-template-columns: 1fr;
   }

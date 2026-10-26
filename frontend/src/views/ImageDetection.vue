@@ -1403,8 +1403,11 @@ onBeforeUnmount(() => {
 <style scoped>
 .image-detection-container {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 24px;
 }
+
+.image-detection-container > * { min-width:0; }
 
 .detection-hero {
   align-items: stretch;
@@ -1415,32 +1418,6 @@ onBeforeUnmount(() => {
   flex-wrap: wrap;
   gap: 10px;
   margin-top: 16px;
-}
-
-.hero-side-note {
-  position: relative;
-  z-index: 1;
-  min-width: 260px;
-  max-width: 360px;
-  display: grid;
-  gap: 8px;
-  align-content: center;
-  padding: 18px;
-  border-radius: 18px;
-  color: #e8f4ff;
-  background:
-    radial-gradient(circle at 18% 0%, rgba(56, 189, 248, 0.30), transparent 36%),
-    linear-gradient(135deg, #0f2f57, #17416f);
-  box-shadow: var(--app-shadow-command);
-}
-
-.hero-side-note strong {
-  font-size: 16px;
-}
-
-.hero-side-note span {
-  color: rgba(232, 244, 255, 0.78);
-  line-height: 1.7;
 }
 
 .workspace-tabs :deep(.el-tabs__content) {
@@ -1464,15 +1441,6 @@ onBeforeUnmount(() => {
 
 .detection-card {
   min-width: 0;
-  border-radius: 24px;
-  border-color: rgba(37, 99, 235, 0.10);
-  box-shadow: var(--app-shadow-command);
-}
-
-.detection-card :deep(.el-card__header) {
-  background:
-    linear-gradient(90deg, rgba(239, 246, 255, 0.82), rgba(255, 255, 255, 0));
-  padding-bottom: 10px !important;
 }
 
 .input-grid {
@@ -1482,33 +1450,14 @@ onBeforeUnmount(() => {
 }
 
 .input-block {
-  position: relative;
-  overflow: hidden;
-  padding: 18px;
-  border: 1px solid rgba(37, 99, 235, 0.10);
-  border-radius: 18px;
-  background:
-    radial-gradient(circle at right top, rgba(14, 165, 233, 0.12), transparent 38%),
-    linear-gradient(180deg, rgba(248, 250, 252, 0.95), rgba(255, 255, 255, 0.9));
-}
-
-.input-block::after {
-  content: "";
-  position: absolute;
-  right: -26px;
-  bottom: -30px;
-  width: 88px;
-  height: 88px;
-  border: 1px solid rgba(37, 99, 235, 0.08);
-  border-radius: 999px;
-  pointer-events: none;
+  min-width: 0;
 }
 
 .input-block-title {
-  margin-bottom: 14px;
-  font-size: 16px;
+  margin-bottom: 12px;
+  font-size: 14px;
   font-weight: 600;
-  color: #172033;
+  color: var(--app-text);
 }
 
 .wide-button {
@@ -1900,39 +1849,43 @@ onBeforeUnmount(() => {
 }
 
 .quality-queue-chip {
-  border: 1px solid rgba(37, 99, 235, 0.10);
-  background:
-    radial-gradient(circle at right top, rgba(14, 165, 233, 0.08), transparent 42%),
-    linear-gradient(135deg, #ffffff, #f8fafc);
-  border-radius: 16px;
+  border: 1px solid var(--app-border);
+  background: var(--app-surface);
+  border-radius: 8px;
   padding: 11px 12px;
   text-align: left;
   cursor: pointer;
-  transition: border-color 180ms ease, background-color 180ms ease, box-shadow 180ms ease, transform 180ms ease;
+  transition: border-color 180ms ease, background-color 180ms ease, transform 180ms ease;
+}
+
+.quality-queue-chip:hover {
+  border-color: var(--app-border-focus);
+  background: var(--app-primary-light);
 }
 
 .quality-queue-chip span {
   display: block;
-  color: #172033;
+  color: var(--app-text);
   font-size: 13px;
-  font-weight: 800;
+  font-weight: 600;
 }
 
 .quality-queue-chip small {
   display: block;
   margin-top: 4px;
-  color: #64748b;
-  font-size: 11px;
+  color: var(--app-text-secondary);
+  font-size: 12px;
+  line-height: 1.85;
 }
 
 .quality-queue-chip.active {
-  border-color: rgba(37, 99, 235, 0.42);
-  background:
-    radial-gradient(circle at right top, rgba(14, 165, 233, 0.16), transparent 42%),
-    linear-gradient(135deg, #eff6ff, #ffffff);
-  box-shadow: 0 12px 26px rgba(37, 99, 235, 0.1);
-  transform: translateY(-1px);
+  border-color: #aac3f6;
+  background: var(--app-primary-soft);
+  box-shadow: none;
+  transform: none;
 }
+
+@media(prefers-reduced-motion:reduce) { .quality-queue-chip { transition:none; transform:none; } }
 
 .quality-queue-table {
   margin-top: 8px;
@@ -2147,7 +2100,6 @@ onBeforeUnmount(() => {
 .quality-queue-task span, .quality-queue-responsibility span { color:var(--app-text-secondary); font-size:12px; line-height:1.8; overflow-wrap:anywhere; }
 .quality-queue-task small, .quality-queue-responsibility small { color:var(--app-text-muted); font-size:11px; line-height:1.7; overflow-wrap:anywhere; }
 .quality-queue-responsibility strong { color:var(--app-text); font-size:13px; font-weight:550; overflow-wrap:anywhere; }
-.quality-queue-chip.active { background:var(--app-primary-soft); border-color:#aac3f6; box-shadow:none; transform:none; }
 .quality-queue-chip:focus-visible { outline:2px solid var(--app-primary); outline-offset:3px; }
 .detection-input-note { margin:0 0 14px; color:var(--app-text-secondary); font-size:12px; line-height:1.8; overflow-wrap:anywhere; }
 .detection-input-note.is-warning { padding:9px 11px; border-radius:8px; color:var(--app-warning); background:var(--app-warning-soft); }

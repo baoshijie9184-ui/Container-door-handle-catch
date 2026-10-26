@@ -32,5 +32,5 @@ export function composerModelTitle(state = {}, locked = false, disabled = false)
   const model=(Array.isArray(state.models) ? state.models : []).find(item=>item?.id===state.modelId)
   const label=state.modelId ? model ? modelLabel(model) : '原选模型尚未核对' : composerDefaultModel(state)
   const reason=!state.ready ? '模型目录与会话选择尚未就绪' : locked ? '当前任务模型已固定，结束后可切换' : state.busy ? '正在等待附件或模型选择回执' : disabled ? '当前消息输入暂不可用' : '选择仅对当前会话的新任务生效，实际调用以执行轨迹为准'
-  return label+'\n'+reason
+  return label+'\n'+reason+(state.fallbackEnabled ? '\n请求失败时可使用备用模型，实际调用见执行轨迹' : '')
 }

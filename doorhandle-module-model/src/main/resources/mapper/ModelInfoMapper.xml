@@ -22,6 +22,11 @@
         <result column="precision_score" property="precisionScore"/>
         <result column="recall_score" property="recallScore"/>
         <result column="map_score" property="mapScore"/>
+        <result column="training_image_count" property="trainingImageCount"/>
+        <result column="training_completed_at" property="trainingCompletedAt"/>
+        <result column="evaluation_image_count" property="evaluationImageCount"/>
+        <result column="no_detection_image_count" property="noDetectionImageCount"/>
+        <result column="inference_fps" property="inferenceFps"/>
         <result column="f1_score" property="f1Score"/>
         <result column="avg_inference_ms" property="avgInferenceMs"/>
         <result column="compatibility_note" property="compatibilityNote"/>
@@ -35,13 +40,13 @@
         INSERT INTO model_management (
             model_id, model_name, version, model_path, upload_time, update_description,
             status, is_default, creator, published_at, last_used_at, usage_count, validation_status, validation_message,
-            mlops_status, evaluation_dataset, precision_score, recall_score, map_score, f1_score,
+            mlops_status, evaluation_dataset, precision_score, recall_score, map_score, training_image_count, training_completed_at, evaluation_image_count, no_detection_image_count, inference_fps, f1_score,
             avg_inference_ms, compatibility_note, deployment_strategy, canary_percent, ab_group, rollback_from_model_id
         )
         VALUES (
             #{modelId}, #{modelName}, #{version}, #{modelPath}, #{uploadTime}, #{updateDescription},
             #{status}, #{isDefault}, #{creator}, #{publishedAt}, #{lastUsedAt}, #{usageCount}, #{validationStatus}, #{validationMessage},
-            #{mlopsStatus}, #{evaluationDataset}, #{precisionScore}, #{recallScore}, #{mapScore}, #{f1Score},
+            #{mlopsStatus}, #{evaluationDataset}, #{precisionScore}, #{recallScore}, #{mapScore}, #{trainingImageCount}, #{trainingCompletedAt}, #{evaluationImageCount}, #{noDetectionImageCount}, #{inferenceFps}, #{f1Score},
             #{avgInferenceMs}, #{compatibilityNote}, #{deploymentStrategy}, #{canaryPercent}, #{abGroup}, #{rollbackFromModelId}
         )
     </insert>
@@ -49,7 +54,7 @@
     <select id="selectByModelId" parameterType="java.lang.Integer" resultMap="BaseResultMap">
         SELECT model_id, model_name, version, model_path, upload_time, update_description,
                status, is_default, creator, published_at, last_used_at, usage_count, validation_status, validation_message,
-               mlops_status, evaluation_dataset, precision_score, recall_score, map_score, f1_score,
+               mlops_status, evaluation_dataset, precision_score, recall_score, map_score, training_image_count, training_completed_at, evaluation_image_count, no_detection_image_count, inference_fps, f1_score,
                avg_inference_ms, compatibility_note, deployment_strategy, canary_percent, ab_group, rollback_from_model_id
         FROM model_management
         WHERE model_id = #{modelId}
@@ -58,7 +63,7 @@
     <select id="selectByModelNameAndVersion" resultMap="BaseResultMap">
         SELECT model_id, model_name, version, model_path, upload_time, update_description,
                status, is_default, creator, published_at, last_used_at, usage_count, validation_status, validation_message,
-               mlops_status, evaluation_dataset, precision_score, recall_score, map_score, f1_score,
+               mlops_status, evaluation_dataset, precision_score, recall_score, map_score, training_image_count, training_completed_at, evaluation_image_count, no_detection_image_count, inference_fps, f1_score,
                avg_inference_ms, compatibility_note, deployment_strategy, canary_percent, ab_group, rollback_from_model_id
         FROM model_management
         WHERE model_name = #{modelName} AND version = #{version}
@@ -67,7 +72,7 @@
     <select id="selectAll" resultMap="BaseResultMap">
         SELECT model_id, model_name, version, model_path, upload_time, update_description,
                status, is_default, creator, published_at, last_used_at, usage_count, validation_status, validation_message,
-               mlops_status, evaluation_dataset, precision_score, recall_score, map_score, f1_score,
+               mlops_status, evaluation_dataset, precision_score, recall_score, map_score, training_image_count, training_completed_at, evaluation_image_count, no_detection_image_count, inference_fps, f1_score,
                avg_inference_ms, compatibility_note, deployment_strategy, canary_percent, ab_group, rollback_from_model_id
         FROM model_management
         ORDER BY is_default DESC, upload_time DESC
@@ -99,6 +104,11 @@
             precision_score = #{precisionScore},
             recall_score = #{recallScore},
             map_score = #{mapScore},
+            training_image_count = #{trainingImageCount},
+            training_completed_at = #{trainingCompletedAt},
+            evaluation_image_count = #{evaluationImageCount},
+            no_detection_image_count = #{noDetectionImageCount},
+            inference_fps = #{inferenceFps},
             f1_score = #{f1Score},
             avg_inference_ms = #{avgInferenceMs},
             compatibility_note = #{compatibilityNote},

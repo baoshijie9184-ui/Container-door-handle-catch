@@ -1,8 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Button, Select, ConfigProvider, Layout, message } from 'antd';
+import { Button, ConfigProvider, Layout, message } from 'antd';
 import { RobotOutlined, PlusOutlined } from '@ant-design/icons';
-import { PanelLeft, PanelRight, ArrowUpRight, ArrowDown, ScanLine, ClipboardCheck, ChartNoAxesCombined, Compass, BrainCircuit, ArrowLeft, X, ShieldCheck, Blocks, Plug, RefreshCw } from 'lucide-react';
+import { PanelLeft, PanelRight, ArrowUpRight, ArrowDown, ScanLine, ClipboardCheck, ChartNoAxesCombined, Compass, BrainCircuit, ArrowLeft, X, ShieldCheck, Blocks, Plug, RefreshCw, List } from 'lucide-react';
 import { Bubble, Sender } from '@agentscope-ai/chat';
 import '../../frontend/src/assets/design-tokens.css';
 import '../../frontend/src/assets/status-badge.css';
@@ -28,6 +28,7 @@ import {readAgentRoleCatalog,readAgentModelCatalog} from '../../frontend/src/uti
 import { AgentErrorBoundary } from './AgentErrorBoundary';
 import {useReadableMessageRegions} from './useReadableMessageRegions';
 import {observeTranscriptLayout} from '../../frontend/src/utils/transcriptLayout';
+import {useReducedMotion} from './useReducedMotion';
 
 const API = import.meta.env.VITE_AGENT_API_URL || '/agui/run';
 const LOGIN = new URL(import.meta.env.VITE_BUSINESS_LOGIN_URL || '/#/login', window.location.href).toString();
@@ -44,6 +45,7 @@ const BusinessCardBubble = ({ data }) => <AgentResultCards {...data} />;
 const SkillInstallLinkBubble=({data})=><p style={{whiteSpace:'pre-wrap'}}>{data.before}<a href={data.href}>{data.label}</a>{data.after}</p>;
 
 function App() {
+  const reducedMotion=useReducedMotion();
   const [items, setItems] = useState([]);
   const [controlState,setControlState]=useState({enabled:false,run:null});
   const controlsRef=useRef(null);
@@ -55,6 +57,15 @@ function App() {
   const senderRef = useRef(null);
   const infoToggleRef = useRef(null);
   const sidebarToggleRef = useRef(null);
+  function closeSessionSidebar() {
+    setSidebarOpen(false);
+    sidebarToggleRef.current?.focus({preventScroll:true});
+  }
+  function selectHistorySession(id) {
+    loadSession(id);
+    if (window.innerWidth <= 900) closeSessionSidebar();
+    else sidebarToggleRef.current?.focus({preventScroll:true});
+  }
   const transcriptRef = useRef(null);
   const followTranscript = useRef(true);
   const [showTranscriptReturn, setShowTranscriptReturn] = useState(false);
@@ -69,11 +80,15 @@ function App() {
     setShowTranscriptReturn(false);
     if (transcriptRef.current) transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight;
   }
+  function handleReturnToLatest() {
+    returnToLatest();
+    transcriptRef.current?.focus({preventScroll:true});
+  }
   useEffect(() => {
     const resize = () => { if (window.innerWidth <= 900) { setSidebarOpen(false); setInfoOpen(false); } };
     const dismiss = event => { if(event.target?.closest?.('[role="dialog"]')||document.querySelector('.ant-modal-wrap:not([style*="display: none"])'))return; if (event.key === 'Escape') {
       if (infoOpen) { setInfoOpen(false); infoToggleRef.current?.focus(); }
-      else if (sidebarOpen && window.innerWidth <= 900) { setSidebarOpen(false); sidebarToggleRef.current?.focus(); }
+      else if (sidebarOpen && window.innerWidth <= 900) closeSessionSidebar();
     } };
     window.addEventListener('resize', resize); window.addEventListener('keydown', dismiss);
     return () => { window.removeEventListener('resize', resize); window.removeEventListener('keydown', dismiss); };
@@ -238,35 +253,41 @@ function App() {
     {title:'执行与调研',note:'工具轨迹、模型路由与来源',path:'/agent/trace'+(threadId?'?sessionId='+encodeURIComponent(threadId):''),icon:ChartNoAxesCombined},
   ];
   const infoTabKey=event=>{if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key))return;event.preventDefault();const index=event.key==='Home'?0:event.key==='End'?1:infoTab==='workspace'?1:0;setInfoTab(index?'models':'workspace');event.currentTarget.querySelectorAll('[role="tab"]')[index]?.focus();};
-  return <ConfigProvider theme={{ token: { colorPrimary: '#2563eb', colorSuccess: '#15803d', colorWarning: '#b45309', colorError: '#dc2626', colorText: '#0f172a', colorTextSecondary: '#475569', colorBorder: '#e2e8f0', borderRadius: 8, fontFamily: '"Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif', motionDurationMid: '0.2s' } }}>
+  return <ConfigProvider theme={{ token: { colorPrimary: '#2563eb', colorSuccess: '#15803d', colorWarning: '#b45309', colorError: '#dc2626', colorText: '#0f172a', colorTextSecondary: '#475569', colorBorder: '#e2e8f0', borderRadius: 8, fontFamily: '"Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif', motion: !reducedMotion, motionDurationMid: '0.2s' } }}>
     <Layout className={`agent-shell ${sidebarOpen ? 'with-sessions' : ''} ${infoOpen ? 'with-info' : ''}`}>
       <nav id="agent-sessions" className="session-sidebar" aria-label="对话历史" hidden={!sidebarOpen}>
         <a className="agent-brand" href={BUSINESS}><span className="brand-symbol"><ScanLine size={20} /></span><span>DoorHandle<strong>智能工作空间</strong></span></a>
         <Button className="new-session" aria-label="新建对话" type="primary" icon={<PlusOutlined aria-hidden="true" />} onClick={newSession} disabled={loading||sessionLoading}>新建对话</Button>
-        <SessionHistory sessions={sessions} selectedId={threadId} disabled={loading||sessionLoading} loading={sessionLoading} error={sessionError} currentTaskActive={!!controlState.run&&controlState.run.phase!=='IDLE'} base={SESSIONS} traceBase={TRACE} businessBase={LOGIN.replace(/#.*$/,'')} onSelect={id=>{loadSession(id);if(window.innerWidth<=900)setSidebarOpen(false);}} onRefresh={()=>loadSession(threadId)} onChanged={(id,patch)=>{sessionMetadataVersion.current++;setSessions(current=>current.map(session=>session.sessionId===id?{...session,...patch}:session));}}/>
+        <SessionHistory sessions={sessions} selectedId={threadId} disabled={loading||sessionLoading} loading={sessionLoading} error={sessionError} currentTaskActive={!!controlState.run&&controlState.run.phase!=='IDLE'} base={SESSIONS} traceBase={TRACE} businessBase={LOGIN.replace(/#.*$/,'')} onSelect={selectHistorySession} onRefresh={()=>loadSession(threadId)} onChanged={(id,patch)=>{sessionMetadataVersion.current++;setSessions(current=>current.map(session=>session.sessionId===id?{...session,...patch}:session));}}/>
         <div className="sidebar-links"><a href={TRACE+(threadId?'?sessionId='+encodeURIComponent(threadId):'')}><ChartNoAxesCombined size={16} />执行追溯</a><a href={MEMORIES}><BrainCircuit size={16} />个人记忆</a><a href={REPORTS}><ClipboardCheck size={16} />报告与审批</a><a href={OPERATIONS_AUDIT}><ShieldCheck size={16} />操作与交付审计</a><a href={BUSINESS}><ArrowLeft size={16} />返回业务系统</a></div>
         <p className="account-note"><ShieldCheck size={14} />会话与记忆按账号隔离</p>
       </nav>
-      {!sidebarOpen&&<nav className="agent-rail" aria-label="Agent 快捷导航"><Button type="text" aria-label="展开会话列表" icon={<PanelLeft size={18}/>} onClick={()=>setSidebarOpen(true)}/><Button type="text" aria-label="新建对话" disabled={loading||sessionLoading} icon={<PlusOutlined/>} onClick={newSession}/><div/><a href={TRACE+(threadId?'?sessionId='+encodeURIComponent(threadId):'')} aria-label="执行追溯"><ChartNoAxesCombined size={18}/></a><a href={BUSINESS} aria-label="返回业务系统"><ArrowLeft size={18}/></a></nav>}
-      {sidebarOpen && <button className="sidebar-scrim" aria-label="收起会话列表" onClick={()=>setSidebarOpen(false)} />}
+      {!sidebarOpen && <nav className="agent-rail" aria-label="Agent 快捷导航">
+        <Button type="text" aria-label="展开会话列表" title="展开会话列表" aria-expanded={sidebarOpen} aria-controls="agent-sessions" icon={<PanelLeft size={18} aria-hidden="true"/>} onClick={()=>setSidebarOpen(true)}/>
+        <Button type="text" aria-label="新建对话" title={sessionLoading?'正在读取会话，暂不能新建':loading?'当前消息正在处理，暂不能新建':'新建对话'} disabled={loading||sessionLoading} icon={<PlusOutlined aria-hidden="true"/>} onClick={newSession}/>
+        <div aria-hidden="true"/>
+        <a href={TRACE+(threadId?'?sessionId='+encodeURIComponent(threadId):'')} aria-label="执行追溯" title="执行追溯"><ChartNoAxesCombined size={18} aria-hidden="true"/></a>
+        <a href={BUSINESS} aria-label="返回业务系统" title="返回业务系统"><ArrowLeft size={18} aria-hidden="true"/></a>
+      </nav>}
+      {sidebarOpen && <button className="sidebar-scrim" aria-label="收起会话列表" onClick={closeSessionSidebar} />}
       <main className="agent-main">
         <header className="agent-header">
-          <Button ref={sidebarToggleRef} type="text" aria-label={sidebarOpen?'收起会话列表':'展开会话列表'} aria-expanded={sidebarOpen} aria-controls="agent-sessions" icon={<PanelLeft size={18} />} onClick={()=>setSidebarOpen(!sidebarOpen)} />
+          <Button ref={sidebarToggleRef} type="text" aria-label={sidebarOpen?'收起会话列表':'展开会话列表'} title={sidebarOpen?'收起会话列表':'展开会话列表'} aria-expanded={sidebarOpen} aria-controls="agent-sessions" icon={<PanelLeft size={18} aria-hidden="true" />} onClick={()=>setSidebarOpen(!sidebarOpen)} />
           <div className="conversation-heading"><h1>{activeSession?.title||'智能对话助手'}</h1><span>{catalog?.role === 'SUPERVISOR' ? '主管工作助手' : catalog ? '员工工作助手' : '检测与质检工作助手'}</span></div>
           {catalog && <span className="capability-tag"><StatusBadge domain="agentMode" code={catalog.mode}/></span>}
-          <Button ref={infoToggleRef} className="info-toggle" type="text" aria-label={infoOpen?'收起助手信息':'查看助手信息'} aria-expanded={infoOpen} aria-controls="agent-info" icon={<PanelRight size={18} />} onClick={()=>setInfoOpen(!infoOpen)} />
+          {controlState.enabled&&<Button type="text" aria-label="任务操作" title="任务操作" icon={<List size={17} aria-hidden="true"/>} onClick={()=>controlsRef.current?.openOptions()}/>}
+          <Button ref={infoToggleRef} className="info-toggle" type="text" aria-label={infoOpen?'收起助手信息':'查看助手信息'} title={infoOpen?'收起助手信息':'查看助手信息'} aria-expanded={infoOpen} aria-controls="agent-info" icon={<PanelRight size={18} aria-hidden="true" />} onClick={()=>setInfoOpen(!infoOpen)} />
         </header>
         <section className="chat-panel" aria-label="智能对话">
-          <div className="session-toolbar"><Select aria-label="选择会话" value={threadId||undefined} options={sessions.map(s=>({value:s.sessionId,label:s.title||"智能助手对话"}))} onChange={loadSession} disabled={loading||sessionLoading} placeholder="选择会话" /><Button aria-label="新建对话" icon={<PlusOutlined aria-hidden="true" />} onClick={newSession} disabled={loading||sessionLoading}>新建</Button></div>
           {sessionError&&<p role="alert" className="session-error">{sessionError} <a href={LOGIN}>前往登录</a> · <button onClick={()=>loadSession(threadId)}>重试</button></p>}
           <div ref={transcriptRef} className="bubble-list transcript-reading-region" tabIndex={0} role="region" aria-label="对话消息，可在此区域滚动阅读" onScroll={handleTranscriptScroll}>
             {!items.length && !sessionLoading && <div className="chat-welcome"><span className="welcome-symbol"><RobotOutlined /></span><span className="welcome-eyebrow">DOORHANDLE ASSISTANT</span><h2>今天，想先解决什么？</h2><p>查看检测结果、追溯质检任务，或一起梳理下一步</p><div className="welcome-prompts">{prompts.map(({icon: Icon,...prompt})=><button type="button" key={prompt.title} disabled={!catalog||!threadId} onClick={()=>prepareQuestion(prompt.query)}><span className="prompt-icon"><Icon size={19} /></span><strong>{prompt.title}</strong><span>{prompt.description}</span><ArrowUpRight className="prompt-arrow" size={15} /></button>)}</div></div>}
             {sessionLoading ? <p className="loading-note" role="status">正在加载你的对话…</p> : items.length > 0 && <Bubble.List classNames={{wrapper: 'conversation-transcript', list: 'conversation-messages'}} items={displayedItems} />}
           </div>
-          {showTranscriptReturn && items.length > 0 && <div className="transcript-return"><button type="button" onClick={returnToLatest}><ArrowDown size={16} aria-hidden="true"/>回到最新消息</button></div>}
+          {showTranscriptReturn && items.length > 0 && <div className="transcript-return"><button type="button" onClick={handleReturnToLatest}><ArrowDown size={16} aria-hidden="true"/>回到最新消息</button></div>}
           {(catalogError || catalogAuthRequired || modelAuthRequired) && <p className="agent-service-error agent-service-gate" role="alert">{catalogError || modelCatalogError || '正在核对目录访问权限'}<button type="button" disabled={catalogLoading || modelCatalogLoading} onClick={refreshServiceCatalogs}><RefreshCw size={13} aria-hidden="true"/>重新读取目录</button>{(catalogAuthRequired || modelAuthRequired) && <a href={LOGIN}>前往登录</a>}</p>}
           <ConversationControls ref={controlsRef} sessionId={threadId} base={CONVERSATION_CONTROLS} onSnapshot={setControlState} onRefresh={refreshControlHistory}/>
-          <div className="composer-area"><div className="resource-input"><Sender className="harness-composer-sender" actions={()=>null} styles={{input:{minHeight:64}}} ref={senderRef} disabled={!catalog||!threadId||sessionLoading||catalogAuthRequired||modelAuthRequired} loading={loading} value={draft} onChange={setDraft} onFocus={()=>refreshCommands()} suggestions={skillCommandOptions(commandCatalog).map(item=>({value:item.value.slice(1).trim(),label:item.label+' · '+item.description}))} placeholder="输入问题 或输入 / 选择技能命令" onSubmit={submit} /><ComposerToolbar ref={resourcesRef} sessionId={threadId} base={new URL(API,window.location.href).origin} locked={loading||!!controlState.run&&controlState.run.phase!=='IDLE'} run={controlState.run} draft={draft} onDraft={setDraft} onSend={submit} onStop={()=>controlsRef.current?.cancel()} disabled={!catalog||!threadId||sessionLoading||catalogAuthRequired||modelAuthRequired} onUpload={()=>setDraft(value=>value||'查看这些附件')}/></div><p className="command-hint">Enter 发送 · Shift + Enter 换行 · / 选择技能</p>{commandError&&draft.startsWith('/')&&<p className="command-hint" role="status">{commandError}</p>}</div>
+          <div className="composer-area"><div className="resource-input" title="Enter 发送 · Shift + Enter 换行 · / 选择技能"><Sender className="harness-composer-sender" actions={()=>null} styles={{input:{minHeight:32}}} ref={senderRef} disabled={!catalog||!threadId||sessionLoading||catalogAuthRequired||modelAuthRequired} loading={loading} value={draft} onChange={setDraft} onFocus={()=>refreshCommands()} suggestions={skillCommandOptions(commandCatalog).map(item=>({value:item.value.slice(1).trim(),label:item.label+' · '+item.description}))} placeholder="输入问题 或输入 / 选择技能命令" onSubmit={submit} /><ComposerToolbar ref={resourcesRef} sessionId={threadId} base={new URL(API,window.location.href).origin} locked={loading||!!controlState.run&&controlState.run.phase!=='IDLE'} run={controlState.run} draft={draft} onDraft={setDraft} onSend={submit} onStop={()=>controlsRef.current?.cancel()} disabled={!catalog||!threadId||sessionLoading||catalogAuthRequired||modelAuthRequired} onUpload={()=>setDraft(value=>value||'查看这些附件')}/></div>{commandError&&draft.startsWith('/')&&<p className="command-hint" role="status">{commandError}</p>}</div>
         </section>
       </main>
       <aside id="agent-info" className="agent-info" aria-label="助手信息" hidden={!infoOpen}>

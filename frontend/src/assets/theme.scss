@@ -437,15 +437,23 @@ select {
   --el-button-hover-border-color: var(--app-primary-hover);
   --el-button-active-bg-color: var(--app-primary-active);
   --el-button-active-border-color: var(--app-primary-active);
+}
+
+.el-button--primary:not(.is-plain):not(.is-link):not(.is-text):not(.is-disabled):not(:disabled) {
+  background: var(--app-primary);
+  border-color: var(--app-primary);
+  border-radius: var(--app-radius-sm);
   box-shadow: var(--app-shadow-primary);
 }
 
-.el-button--primary:hover {
+.el-button--primary:not(.is-plain):not(.is-link):not(.is-text):not(.is-disabled):not(:disabled):hover {
+  background: var(--app-primary-hover);
+  border-color: var(--app-primary-hover);
   box-shadow: 0 4px 12px rgba(37, 99, 235, 0.18);
   transform: translateY(-1px);
 }
 
-.el-button--primary:active {
+.el-button--primary:not(.is-plain):not(.is-link):not(.is-text):not(.is-disabled):not(:disabled):active {
   transform: translateY(0);
 }
 
@@ -613,17 +621,6 @@ select {
 
 .el-tabs__active-bar {
   background: var(--app-primary) !important;
-}
-
-.el-button--primary {
-  background: var(--app-primary) !important;
-  border-color: var(--app-primary) !important;
-  box-shadow: var(--app-shadow-primary) !important;
-  border-radius: 10px !important;
-}
-
-.el-button--primary:hover {
-  background: var(--app-primary-hover) !important;
 }
 
 .el-tag {

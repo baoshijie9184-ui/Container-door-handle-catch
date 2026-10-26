@@ -17,7 +17,7 @@
     <section v-if="device" class="stats-bar">
       <div class="stats-bar-item">
         <div class="stats-bar-icon" :class="statusIconClass">
-          <AppIcon name="Monitor" :size="22" />
+          <AppIcon :name="statusSummary.icon" :size="22" />
         </div>
         <div>
           <div class="stats-bar-value">{{ getStatusName(device.status) }}</div>
@@ -43,7 +43,7 @@
         </div>
       </div>
       <div class="stats-bar-item">
-        <div class="stats-bar-icon warning">
+        <div class="stats-bar-icon info">
           <AppIcon name="Clock" :size="22" />
         </div>
         <div>
@@ -143,6 +143,7 @@ import { useUserStore } from '../../stores/user'
 import CollectionEmptyState from '../../components/CollectionEmptyState.vue'
 import CollectionTaskRecords from '../../components/CollectionTaskRecords.vue'
 import EmployeeDeviceAssignment from '../../components/EmployeeDeviceAssignment.vue'
+import { statusPresentation } from '../../utils/statusPresentation'
 
 const router = useRouter()
 const route = useRoute()
@@ -191,27 +192,10 @@ const getDeviceTypeTag = (type) => {
   return 'info'
 }
 
-const getStatusName = (status) => {
-  const map = {
-    IN_USE: '使用中', '使用中': '使用中',
-    IDLE: '未使用', '未使用': '未使用', '空闲': '未使用',
-    MAINTENANCE: '维护中', '维护中': '维护中',
-    OFFLINE: '离线', '离线': '离线'
-  }
-  return map[status] || status
-}
+const getStatusName = status => status === '空闲' ? '未使用' : statusPresentation('device', status).label
 
-const getStatusType = (status) => {
-  if (status === 'IN_USE' || status === '使用中') return 'success'
-  if (status === 'MAINTENANCE' || status === '维护中') return 'warning'
-  if (status === 'OFFLINE' || status === '离线') return 'danger'
-  return 'info'
-}
-
-const statusIconClass = computed(() => {
-  const t = getStatusType(device.value?.status)
-  return { success: t === 'success', warning: t === 'warning', danger: t === 'danger', info: t === 'info' }
-})
+const statusSummary = computed(() => statusPresentation('device', device.value?.status))
+const statusIconClass = computed(() => statusSummary.value.tone === 'progress' ? 'primary' : statusSummary.value.tone)
 
 const getEmployeeTypeName = (type) => {
   const option = employeeTypeOptions.find(opt => opt.value === type)

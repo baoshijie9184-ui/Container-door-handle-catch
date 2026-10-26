@@ -77,17 +77,17 @@
         </div>
 
         <div class="hero-highlights">
-          <div class="highlight-card hl-primary" role="link" tabindex="0" aria-label="查看检测记录" @click="router.push('/inspection/history')" @keydown.enter="router.push('/inspection/history')" @keydown.space.prevent="router.push('/inspection/history')">
+          <router-link class="highlight-card hl-primary" title="打开检测记录，统计范围以列表查询为准" to="/inspection/history">
             <div class="hl-header">
               <div class="hl-icon hl-icon-blue">
                 <el-icon><DataAnalysis /></el-icon>
               </div>
-              <span class="hl-trend up">累计</span>
+              <span class="hl-trend">累计</span>
             </div>
             <strong class="hl-value">{{ formatNumber(totalDetections) }}</strong>
             <span class="hl-label">累计完成检测任务数（含部分失败）</span>
-          </div>
-          <div class="highlight-card hl-success" role="link" tabindex="0" aria-label="查看设备状态" @click="router.push('/devices')" @keydown.enter="router.push('/devices')" @keydown.space.prevent="router.push('/devices')">
+          </router-link>
+          <router-link class="highlight-card hl-success" title="打开设备列表核对登记状态" to="/devices">
             <div class="hl-header">
               <div class="hl-icon hl-icon-green">
                 <el-icon><Monitor /></el-icon>
@@ -96,17 +96,17 @@
             </div>
             <strong class="hl-value">{{ inUseRate ?? '—' }}<small v-if="inUseRate !== null">%</small></strong>
             <span class="hl-label">登记设备使用率</span>
-          </div>
-          <div class="highlight-card hl-warning" role="link" tabindex="0" aria-label="查看人员状态" @click="router.push('/employees')" @keydown.enter="router.push('/employees')" @keydown.space.prevent="router.push('/employees')">
+          </router-link>
+          <router-link class="highlight-card hl-neutral" title="打开人员列表核对在岗状态" to="/employees">
             <div class="hl-header">
-              <div class="hl-icon hl-icon-amber">
+              <div class="hl-icon hl-icon-blue">
                 <el-icon><User /></el-icon>
               </div>
               <span class="hl-trend">{{ formatNumber(employeeStatus.active) }} 在岗</span>
             </div>
             <strong class="hl-value">{{ employeeActiveRate ?? '—' }}<small v-if="employeeActiveRate !== null">%</small></strong>
             <span class="hl-label">人员在岗率</span>
-          </div>
+          </router-link>
         </div>
       </div>
 
@@ -123,7 +123,7 @@
         </div>
 
         <div class="status-list">
-          <div class="status-item interactive" role="link" tabindex="0" @click="router.push('/devices')" @keydown.enter="router.push('/devices')" @keydown.space.prevent="router.push('/devices')">
+          <router-link class="status-item interactive" to="/devices">
             <div class="si-indicator si-online">
               <el-icon><Monitor /></el-icon>
             </div>
@@ -137,8 +137,8 @@
               <div v-if="inUseRate !== null" class="si-bar" aria-hidden="true"><div class="si-bar-fill" :style="{ width: inUseRate + '%' }"></div></div>
             </div>
             <el-icon class="si-arrow"><ArrowRight /></el-icon>
-          </div>
-          <div class="status-item interactive" role="link" tabindex="0" @click="router.push('/devices')" @keydown.enter="router.push('/devices')" @keydown.space.prevent="router.push('/devices')">
+          </router-link>
+          <router-link class="status-item interactive" to="/devices">
             <div class="si-indicator si-maintain">
               <el-icon><WarningFilled /></el-icon>
             </div>
@@ -148,8 +148,8 @@
               <div v-if="maintenanceRate !== null" class="si-bar" aria-hidden="true"><div class="si-bar-fill si-bar-warn" :style="{ width: maintenanceRate + '%' }"></div></div>
             </div>
             <el-icon class="si-arrow"><ArrowRight /></el-icon>
-          </div>
-          <div class="status-item interactive" role="link" tabindex="0" @click="router.push('/employees')" @keydown.enter="router.push('/employees')" @keydown.space.prevent="router.push('/employees')">
+          </router-link>
+          <router-link class="status-item interactive" to="/employees">
             <div class="si-indicator si-schedule">
               <el-icon><UserFilled /></el-icon>
             </div>
@@ -163,7 +163,7 @@
               <div v-if="employeeActiveRate !== null" class="si-bar" aria-hidden="true"><div class="si-bar-fill si-bar-blue" :style="{ width: employeeActiveRate + '%' }"></div></div>
             </div>
             <el-icon class="si-arrow"><ArrowRight /></el-icon>
-          </div>
+          </router-link>
         </div>
       </div>
     </section>
@@ -229,7 +229,7 @@
           </div>
         </template>
         <div class="quick-stats">
-          <div class="quick-stat-item" role="link" tabindex="0" @click="router.push('/inspection/history')" @keydown.enter="router.push('/inspection/history')" @keydown.space.prevent="router.push('/inspection/history')">
+          <router-link class="quick-stat-item" to="/inspection/history">
             <div class="qs-icon qs-icon-blue">
               <el-icon><DataAnalysis /></el-icon>
             </div>
@@ -237,8 +237,8 @@
               <div class="qs-value">{{ formatNumber(totalDetections) }}</div>
               <div class="qs-label">累计完成任务（含部分失败）</div>
             </div>
-          </div>
-          <div class="quick-stat-item" role="link" tabindex="0" @click="router.push('/devices')" @keydown.enter="router.push('/devices')" @keydown.space.prevent="router.push('/devices')">
+          </router-link>
+          <router-link class="quick-stat-item" to="/devices">
             <div class="qs-icon qs-icon-green">
               <el-icon><Monitor /></el-icon>
             </div>
@@ -246,25 +246,25 @@
               <div class="qs-value">{{ formatNumber(deviceStatus.inUse) }}/{{ formatNumber(totalDevices) }}</div>
               <div class="qs-label">使用中 / 登记设备</div>
             </div>
-          </div>
-          <div class="quick-stat-item" role="link" tabindex="0" @click="router.push('/employees')" @keydown.enter="router.push('/employees')" @keydown.space.prevent="router.push('/employees')">
-            <div class="qs-icon qs-icon-amber">
+          </router-link>
+          <router-link class="quick-stat-item" to="/employees">
+            <div class="qs-icon qs-icon-blue">
               <el-icon><User /></el-icon>
             </div>
             <div class="qs-content">
               <div class="qs-value">{{ formatNumber(employeeStatus.active) }}/{{ formatNumber(totalEmployees) }}</div>
               <div class="qs-label">人员在岗</div>
             </div>
-          </div>
-          <div class="quick-stat-item" role="link" tabindex="0" @click="router.push('/employees')" @keydown.enter="router.push('/employees')" @keydown.space.prevent="router.push('/employees')">
-            <div class="qs-icon qs-icon-red">
+          </router-link>
+          <router-link class="quick-stat-item" to="/employees">
+            <div class="qs-icon qs-icon-slate">
               <el-icon><User /></el-icon>
             </div>
             <div class="qs-content">
               <div class="qs-value">{{ formatNumber(totalEmployees) }}</div>
               <div class="qs-label">登记人员总数</div>
             </div>
-          </div>
+          </router-link>
         </div>
       </el-card>
 
@@ -336,7 +336,7 @@
           </div>
         </template>
         <div class="summary-list">
-          <div v-for="item in topDevices" :key="item.label" class="summary-item interactive" role="link" tabindex="0" @click="router.push('/devices')" @keydown.enter="router.push('/devices')" @keydown.space.prevent="router.push('/devices')">
+          <router-link v-for="item in topDevices" :key="item.label" class="summary-item interactive" to="/devices">
             <div class="sm-left">
               <div class="sm-icon" :class="item.label.includes('采集') ? 'sm-icon-cyan' : 'sm-icon-indigo'">
                 <el-icon><Monitor /></el-icon>
@@ -355,7 +355,7 @@
               </div>
             </div>
             <el-icon class="sm-arrow"><ArrowRight /></el-icon>
-          </div>
+          </router-link>
         </div>
       </el-card>
 
@@ -370,7 +370,7 @@
           </div>
         </template>
         <div class="summary-list summary-list-horizontal">
-          <div v-for="(item, idx) in employeeTypeItems" :key="item.label" class="summary-item interactive" role="link" tabindex="0" @click="router.push('/employees')" @keydown.enter="router.push('/employees')" @keydown.space.prevent="router.push('/employees')">
+          <router-link v-for="(item, idx) in employeeTypeItems" :key="item.label" class="summary-item interactive" to="/employees">
             <div class="sm-left">
               <div class="sm-icon" :class="['sm-icon-green', 'sm-icon-blue', 'sm-icon-amber'][idx]">
                 <el-icon><User /></el-icon>
@@ -388,7 +388,7 @@
               </div>
             </div>
             <el-icon class="sm-arrow"><ArrowRight /></el-icon>
-          </div>
+          </router-link>
         </div>
       </el-card>
 
@@ -1133,7 +1133,7 @@ function getModelUsagePercent(taskCount) {
 }
 .hl-icon-blue   { color: var(--app-primary); background: var(--app-primary-soft); }
 .hl-icon-green  { color: var(--app-success); background: var(--app-success-soft); }
-.hl-icon-amber  { color: var(--app-warning); background: var(--app-warning-soft); }
+
 
 .hl-trend {
   font-size: 11px; font-weight: 600;
@@ -1141,7 +1141,7 @@ function getModelUsagePercent(taskCount) {
   background: var(--app-surface-muted);
   color: var(--app-text-secondary);
 }
-.hl-trend.up { color: var(--app-success); }
+
 
 .hl-value {
   display: block;
@@ -1428,8 +1428,7 @@ function getModelUsagePercent(taskCount) {
 
 .qs-icon-blue  { color: var(--app-primary); background: var(--app-primary-soft); }
 .qs-icon-green { color: var(--app-success); background: var(--app-success-soft); }
-.qs-icon-amber { color: var(--app-warning); background: var(--app-warning-soft); }
-.qs-icon-red   { color: var(--app-danger); background: var(--app-danger-soft); }
+.qs-icon-slate { color: var(--app-text-secondary); background: var(--app-info-soft); }
 
 .qs-content {
   flex: 1;

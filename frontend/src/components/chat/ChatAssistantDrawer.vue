@@ -55,7 +55,9 @@
               </div>
             </div>
             <div class="chat-header-actions">
-              <button v-if="fullScreen" ref="contextToggleRef" type="button" class="chat-header-btn context-toggle" :aria-label="contextOpen?'收起工作面板':'展开工作面板'" :aria-expanded="contextOpen" aria-controls="chat-workspace-context" @click="contextOpen=!contextOpen"><el-icon><Operation /></el-icon></button>
+              <button v-if="fullScreen" ref="contextToggleRef" type="button" class="chat-header-btn context-toggle" :aria-label="contextOpen?'收起工作面板':'展开工作面板'" :title="contextOpen?'收起工作面板':'展开工作面板'" :aria-expanded="contextOpen" aria-controls="chat-workspace-context" @click="contextOpen=!contextOpen"><el-icon aria-hidden="true"><Operation /></el-icon></button>
+              <div class="chat-header-secondary-actions">
+              <button v-if="controlState.enabled" type="button" class="chat-header-btn" title="任务操作" aria-label="任务操作" @click="conversationControlsRef?.openOptions()"><AppIcon name="List" :size="16" /></button>
               <a class="chat-header-btn" :href="'#/agent/trace?sessionId='+encodeURIComponent(chatStore.sessionId || '')" title="查看执行追溯" aria-label="查看执行追溯" @click="chatStore.close()">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="5" cy="6" r="2"/><circle cx="19" cy="6" r="2"/><circle cx="12" cy="18" r="2"/><path d="M7 6h10M5 8v2a3 3 0 0 0 3 3h4m7-5v2a3 3 0 0 1-3 3h-4v3"/></svg>
               </a>
@@ -75,6 +77,18 @@
                   <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
                 </svg>
               </button>
+              </div>
+              <el-dropdown class="chat-header-more-actions" trigger="click" @command="handleHeaderCommand">
+                <button type="button" class="chat-header-btn" aria-label="更多对话操作" title="更多对话操作"><el-icon :size="17" aria-hidden="true"><MoreFilled /></el-icon></button>
+                <template #dropdown><el-dropdown-menu>
+                  <el-dropdown-item v-if="controlState.enabled" command="tasks"><AppIcon name="List" :size="15" />任务操作</el-dropdown-item>
+                  <el-dropdown-item command="trace"><AppIcon name="Connection" :size="15" />执行追溯</el-dropdown-item>
+                  <el-dropdown-item command="memory"><AppIcon name="Collection" :size="15" />个人记忆</el-dropdown-item>
+                  <el-dropdown-item command="diagnostics" :disabled="chatStore.diagnosticsLoading || !chatStore.sessionId"><AppIcon name="DataAnalysis" :size="15" />助手诊断</el-dropdown-item>
+                  <el-dropdown-item command="retry" :disabled="chatStore.loading"><AppIcon name="Refresh" :size="15" />重试最后一条消息</el-dropdown-item>
+                  <el-dropdown-item command="clear" class="chat-header-clear-item" divided :disabled="chatStore.loading"><AppIcon name="Delete" :size="15" />清空对话</el-dropdown-item>
+                </el-dropdown-menu></template>
+              </el-dropdown>
               <button v-if="!fullScreen" class="chat-header-close" @click="chatStore.close()" title="关闭" aria-label="关闭助手">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
                   <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
@@ -98,7 +112,7 @@
           </div>
 
           <div v-if="!followTranscript && controlledMessages.length" class="transcript-return">
-            <button type="button" @click="returnToLatest"><AppIcon name="ArrowDown" :size="16" />回到最新消息</button>
+            <button type="button" @click="handleReturnToLatest"><AppIcon name="ArrowDown" :size="16" />回到最新消息</button>
           </div>
 
           <ChatQuestionNavigator
@@ -126,6 +140,7 @@
 <script setup>
 import { computed, ref, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { ElDrawer } from 'element-plus'
+import { useRouter } from 'vue-router'
 import { useChatAssistantStore } from '@/stores/chatAssistant'
 import ChatComposer from './ChatComposer.vue'
 import ConversationControls from './ConversationControls.vue'
@@ -135,7 +150,7 @@ import ChatQuestionNavigator from './ChatQuestionNavigator.vue'
 import ChatSidebar from './ChatSidebar.vue'
 import AgentWorkspacePanel from './AgentWorkspacePanel.vue'
 import AgentDiagnostics from './AgentDiagnostics.vue'
-import { Operation } from '@element-plus/icons-vue'
+import { Operation, MoreFilled } from '@element-plus/icons-vue'
 import { buildQuestionItems } from '@/utils/chatMessageNavigation'
 import { observeTranscriptLayout } from '@/utils/transcriptLayout'
 
@@ -144,6 +159,7 @@ const props = defineProps({
 })
 
 const chatStore = useChatAssistantStore()
+const router = useRouter()
 const conversationControlsRef=ref(null),composerRef=ref(null),controlState=ref({enabled:false,run:null})
 const controlledMessages=computed(()=>controlState.value.run?.text&&controlState.value.run.phase!=='IDLE'?[...chatStore.messages,{role:'assistant',content:controlState.value.run.text,messageType:'TEXT',streaming:true}]:chatStore.messages)
 const chatBodyRef = ref(null)
@@ -341,6 +357,12 @@ const returnToLatest = () => {
   scrollToBottom()
 }
 
+// This focus move belongs only to the explicit reading control, never new output.
+const handleReturnToLatest = () => {
+  returnToLatest()
+  nextTick(()=>chatBodyRef.value?.focus({preventScroll:true}))
+}
+
 watch([
   () => chatStore.messages.length,
   () => chatStore.messages.at(-1)?.content?.length,
@@ -380,6 +402,17 @@ const handleClear = async () => {
 const openDiagnostics = async () => {
   diagnosticsVisible.value = true
   await chatStore.loadDiagnostics()
+}
+
+const handleHeaderCommand = command => {
+  if (command === 'tasks') return conversationControlsRef.value?.openOptions()
+  if (command === 'trace' || command === 'memory') {
+    chatStore.close()
+    return router.push(command === 'trace' ? {path:'/agent/trace',query:{sessionId:chatStore.sessionId || ''}} : '/agent/memory')
+  }
+  if (command === 'diagnostics' && !chatStore.diagnosticsLoading && chatStore.sessionId) return openDiagnostics()
+  if (command === 'retry' && !chatStore.loading) return handleRetry()
+  if (command === 'clear' && !chatStore.loading) return handleClear()
 }
 
 const handleDrawerChange = (value) => {
@@ -508,7 +541,8 @@ const handleDrawerChange = (value) => {
   .chat-heading p { display: none; }
   .chat-header-main { gap: 8px; overflow: hidden; }
   .chat-header-title { font-size: 13px; }
-  .chat-header-actions a[title="个人记忆"], .chat-header-actions button[title="清空对话"] { display: none; }
+  .chat-header-actions .chat-header-secondary-actions { display:none; }
+  .chat-header-actions .chat-header-more-actions { display:inline-flex; }
 }
 
 .chat-header-title {
@@ -527,6 +561,9 @@ const handleDrawerChange = (value) => {
   gap: 4px;
   flex-shrink: 0;
 }
+
+.chat-header-secondary-actions { display:flex; align-items:center; gap:4px; }
+.chat-header-more-actions { display:none; }
 
 .chat-header-btn,
 .chat-header-close {

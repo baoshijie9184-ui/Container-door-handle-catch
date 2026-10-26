@@ -15,7 +15,7 @@ import java.util.List;
 public interface ModelInfoMapper extends BaseMapper<ModelInfo> {
     ModelInfo selectByModelNameAndVersion(@Param("modelName") String modelName, @Param("version") String version);
 
-    @Select("SELECT model_id, model_name, version, model_path, upload_time, update_description, status, is_default, creator, published_at, last_used_at, usage_count, validation_status, validation_message, mlops_status, evaluation_dataset, precision_score, recall_score, map_score, f1_score, avg_inference_ms, compatibility_note, deployment_strategy, canary_percent, ab_group, rollback_from_model_id FROM model_management ORDER BY is_default DESC, upload_time DESC")
+    @Select("SELECT model_id, model_name, version, model_path, upload_time, update_description, status, is_default, creator, published_at, last_used_at, usage_count, validation_status, validation_message, mlops_status, evaluation_dataset, precision_score, recall_score, map_score, training_image_count, training_completed_at, evaluation_image_count, no_detection_image_count, inference_fps, f1_score, avg_inference_ms, compatibility_note, deployment_strategy, canary_percent, ab_group, rollback_from_model_id FROM model_management ORDER BY is_default DESC, upload_time DESC")
     List<ModelInfo> selectAll();
 
     @Select("SELECT COALESCE(MAX(model_id), 0) + 1 FROM model_management")
@@ -32,7 +32,7 @@ public interface ModelInfoMapper extends BaseMapper<ModelInfo> {
             SELECT model_id, model_name, version, model_path, upload_time, update_description,
                    status, is_default, creator, published_at, last_used_at, usage_count,
                    validation_status, validation_message, mlops_status, evaluation_dataset,
-                   precision_score, recall_score, map_score, f1_score, avg_inference_ms,
+                   precision_score, recall_score, map_score, training_image_count, training_completed_at, evaluation_image_count, no_detection_image_count, inference_fps, f1_score, avg_inference_ms,
                    compatibility_note, deployment_strategy, canary_percent, ab_group,
                    rollback_from_model_id
             FROM model_management

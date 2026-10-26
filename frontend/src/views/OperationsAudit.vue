@@ -35,7 +35,7 @@
       <p class="audit-page-note">响应编号、文件编号、请求编号和预计内容大小可在详情核对。此处不会重新发起文件下载。</p>
     </section>
     <details class="audit-explanation"><summary><AppIcon name="Document" :size="15" />审计范围与文件响应说明</summary><p class="note">主管查看企业业务和本人私有审计，员工查看本人记录。服务端响应完成不代表浏览器收到文件；写出字节是服务端已返回的写调用计数，不用于流量计费。OSS 重定向仅表示授权签发，HEAD 无文件正文，206 为部分或多段响应；计数可能包含多段边界或错误响应内容，不等于文件净字节。</p></details>
-    <el-dialog class="operations-audit-dialog" append-to-body v-model="detailOpen" :title="detailDelivery?'文件交付详情':'业务操作详情'" width="min(720px,94vw)"><AuditRecordDetails :record="selectedRecord" :delivery="detailDelivery" /><template #footer><el-button @click="detailOpen=false">关闭详情</el-button></template></el-dialog>
+    <el-dialog class="operations-audit-dialog" append-to-body v-model="detailOpen" :title="detailDelivery?'文件交付详情':'业务操作详情'" width="min(720px,94vw)"><AuditRecordDetails :key="(detailDelivery?'delivery:':'audit:')+(selectedRecord?.id??'')" :record="selectedRecord" :delivery="detailDelivery" /><template #footer><el-button @click="detailOpen=false">关闭详情</el-button></template></el-dialog>
   </section>
 </template>
 <script setup>

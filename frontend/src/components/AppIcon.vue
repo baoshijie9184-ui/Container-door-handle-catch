@@ -7,7 +7,7 @@ import {
   DocumentCopy, DocumentChecked, Upload, Search, Connection, Key, CircleCheck,
   ChatDotRound, Collection, Operation, Plus, Refresh, ArrowLeft, ArrowRight,
   ArrowUp, ArrowDown, Close, Menu, Fold, Expand, Download, Delete, Edit, Filter, Lock, Warning, Clock,
-  Compass, Cpu, TopRight, Rank
+  Compass, Cpu, TopRight, Rank, MagicStick, List, CircleClose, RefreshLeft
 } from '@element-plus/icons-vue'
 defineProps({ name: { type: String, default: 'Files' }, size: { type: [Number, String], default: 18 } })
 const icons = {
@@ -15,6 +15,6 @@ const icons = {
   DocumentCopy, DocumentChecked, Upload, Search, Connection, Key, CircleCheck,
   ChatDotRound, Collection, Operation, Plus, Refresh, ArrowLeft, ArrowRight,
   ArrowUp, ArrowDown, Close, Menu, Fold, Expand, Download, Delete, Edit, Filter, Lock, Warning, Clock,
-  Compass, Cpu, TopRight, Rank
+  Compass, Cpu, TopRight, Rank, MagicStick, List, CircleClose, RefreshLeft
 }
 </script>

@@ -72,7 +72,7 @@
         </div>
         <div>
           <div class="stats-bar-value">{{ evaluatedCount }}</div>
-          <div class="stats-bar-label">本页已记指标</div>
+          <div class="stats-bar-label">本页已登记 AP</div>
         </div>
       </div>
     </section>
@@ -89,6 +89,8 @@
           <CollectionEmptyState :loading="loading" :error="listError" :filtered="listLoaded ? Object.keys(appliedFilters).length>0 : !!hasSearch" empty-title="暂无检测模型" :empty-description="isSupervisor?'可使用上方上传入口登记模型，发布后供检测任务选择。':'当前账号可查看已登记模型，需要新增时请联系主管。'" @retry="retryModelList" @reset="resetSearch" />
         </template>
         <el-table-column label="模型与版本" min-width="230"><template #default="{row}"><div class="model-record-cell"><strong>{{ row.modelName||'模型名称未记录' }}</strong><small>版本 {{ row.version||'未记录' }} · ID {{ row.modelId }}</small><span v-if="modelDefault(row.isDefault)==='是'" class="model-default-marker"><AppIcon name="CircleCheck" :size="13" />默认模型</span></div></template></el-table-column>
+        <el-table-column label="训练资料" min-width="210"><template #default="{row}"><div class="model-record-cell"><strong>{{ modelTrainingImages(row.trainingImageCount) }}</strong><small>完成 {{ modelTime(row.trainingCompletedAt) }} · UTC+8</small></div></template></el-table-column>
+        <el-table-column label="漏检率 / 速度" min-width="180"><template #default="{row}"><div class="model-record-cell"><strong>整图未检出 {{ modelNoDetection(row).value }}</strong><small>{{ modelNoDetection(row).description }}</small><small>实测 {{ modelFps(row.inferenceFps) }}</small></div></template></el-table-column>
         <el-table-column label="状态" width="120">
           <template #default="{ row }">
             <StatusBadge domain="model" :code="row.status" :label="statusLabelMap[row.status]" />
@@ -101,7 +103,7 @@
         </el-table-column>
         <el-table-column label="评估资料" min-width="185">
           <template #default="{ row }">
-            <div class="model-record-cell"><StatusBadge domain="modelEvaluation" :code="row.mlopsStatus" /><small>mAP {{ formatMetric(row.mapScore) }} / F1 {{ formatMetric(row.f1Score) }}</small></div>
+            <div class="model-record-cell"><StatusBadge domain="modelEvaluation" :code="row.mlopsStatus" /><small>mAP（AP）{{ formatMetric(row.mapScore) }}</small></div>
           </template>
         </el-table-column>
         <el-table-column label="登记策略与使用" min-width="190">
@@ -139,6 +141,7 @@
     </section>
 
     <el-dialog
+      class="model-maintenance-dialog"
       v-model="dialogVisible"
       title="编辑模型资料"
       width="min(680px,94vw)"
@@ -199,29 +202,31 @@
       </template>
     </el-drawer>
 
-    <el-dialog v-model="evaluationDialogVisible" title="记录模型评估" width="min(620px,94vw)" :close-on-click-modal="!mlopsSubmitting" :close-on-press-escape="!mlopsSubmitting" :show-close="!mlopsSubmitting">
-      <p class="model-command-context">{{ activeMlopsLabel }}</p><p class="model-list-note">登记已有评测结果，不在此运行检测评测。指标取值为 0 至 1，留空不补零，保存后可在详情核对。</p><el-alert v-if="mlopsError" :title="mlopsError" :type="mlopsUncertain ? 'warning' : 'error'" :closable="false" /><p v-if="mlopsUncertain" class="model-list-note">结果尚未确认，请先关闭并刷新详情核对，不直接重复保存。</p>
+    <el-dialog class="model-maintenance-dialog" v-model="evaluationDialogVisible" title="训练与评估资料" width="min(620px,94vw)" :close-on-click-modal="!mlopsSubmitting" :close-on-press-escape="!mlopsSubmitting" :show-close="!mlopsSubmitting">
+      <p class="model-command-context">{{ activeMlopsLabel }}</p><p class="model-list-note">登记已有训练和评估结果，不在此运行训练、评测或测速。输入 0 至 1 的数值，例如 0.6774 显示为 67.74%；留空不补零。请注明 val / test 数据集，AP50、AP75 不能填入 AP。新增训练、计数和 FPS 字段留空表示保留已有登记，不会清除。</p><el-alert v-if="mlopsError" :title="mlopsError" :type="mlopsUncertain ? 'warning' : 'error'" :closable="false" /><p v-if="mlopsUncertain" class="model-list-note">结果尚未确认，请先关闭并刷新详情核对，不直接重复保存。</p>
       <el-form :model="evaluationForm" label-position="top" :disabled="mlopsSubmitting||mlopsUncertain" @submit.prevent="submitEvaluation" class="model-metrics-form">
-        <el-form-item label="测试集名称">
-          <el-input v-model="evaluationForm.evaluationDataset" aria-label="例如 door-handle-val-2026Q2" placeholder="例如 door-handle-val-2026Q2" />
+        <el-form-item label="训练图片数量（原始训练集，不含重复增强）">
+          <el-input-number v-model="evaluationForm.trainingImageCount" :min="1" :max="2147483647" :precision="0" aria-label="训练图片数量" style="width:100%" />
         </el-form-item>
-        <el-form-item label="Precision">
-          <el-input-number v-model="evaluationForm.precisionScore" :min="0" :max="1" :step="0.0001" :precision="4" style="width: 100%" />
+        <el-form-item label="训练完成日期时间（UTC+8）">
+          <el-date-picker v-model="evaluationForm.trainingCompletedAt" type="datetime" format="YYYY-MM-DD HH:mm:ss" value-format="YYYY-MM-DDTHH:mm:ss" placeholder="选择实际训练完成时间" aria-label="训练完成日期时间 UTC+8" style="width:100%" />
         </el-form-item>
-        <el-form-item label="Recall">
-          <el-input-number v-model="evaluationForm.recallScore" :min="0" :max="1" :step="0.0001" :precision="4" style="width: 100%" />
+        <el-form-item label="评估数据集（注明 val / test）">
+          <el-input v-model="evaluationForm.evaluationDataset" aria-label="例如 door-handle-test" placeholder="例如 door-handle-test" />
         </el-form-item>
-        <el-form-item label="mAP">
+        <el-form-item label="mAP / AP（0–1）">
           <el-input-number v-model="evaluationForm.mapScore" :min="0" :max="1" :step="0.0001" :precision="4" style="width: 100%" />
         </el-form-item>
-        <el-form-item label="F1">
-          <el-input-number v-model="evaluationForm.f1Score" :min="0" :max="1" :step="0.0001" :precision="4" style="width: 100%" />
-        </el-form-item>
+        <el-form-item label="成功评估图片数（排除执行失败）"><el-input-number v-model="evaluationForm.evaluationImageCount" :min="0" :max="2147483647" :precision="0" aria-label="成功评估图片数" style="width:100%" /></el-form-item>
+        <el-form-item label="整图未检出图片数（所有类别均未检出）"><el-input-number v-model="evaluationForm.noDetectionImageCount" :min="0" :max="2147483647" :precision="0" aria-label="整图未检出图片数" style="width:100%" /></el-form-item>
+        <p class="model-list-note" role="status">整图未检出率：{{ modelNoDetection(evaluationForm).value }} · {{ modelNoDetection(evaluationForm).description }}。Normal 检出也算检出；两项计数一起登记，比例自动计算。</p>
+        <el-form-item label="实测每秒检测图片速度 FPS（张/秒）"><el-input-number v-model="evaluationForm.inferenceFps" :min="0.0001" :max="MODEL_FPS_MAX" :precision="4" aria-label="实测每秒检测图片速度 FPS" style="width:100%" /></el-form-item>
+        <details class="operation-disclosure"><summary>其他历史指标（兼容已有登记）</summary><p class="model-list-note">已有数值仍保留，非当前主评估指标；不要用 AP 代填。</p><el-form-item v-for="[key,label] in modelLegacyMetricFields" :key="key" :label="label"><el-input-number v-model="evaluationForm[key]" :min="0" :max="1" :step="0.0001" :precision="4" style="width:100%" /></el-form-item></details>
         <el-form-item label="平均推理耗时（毫秒）">
           <el-input-number v-model="evaluationForm.avgInferenceMs" :min="0" :precision="0" style="width: 100%" />
         </el-form-item>
-        <el-form-item label="兼容性说明">
-          <el-input v-model="evaluationForm.compatibilityNote" type="textarea" :rows="3" aria-label="例如 ONNX Runtime 版本、CPU/GPU、输入尺寸兼容性" placeholder="例如 ONNX Runtime 版本、CPU/GPU、输入尺寸兼容性" />
+        <el-form-item label="测试环境与兼容性说明（有 FPS 时必填）">
+          <el-input v-model="evaluationForm.compatibilityNote" type="textarea" :rows="3" maxlength="500" show-word-limit aria-label="测试环境与兼容性说明" placeholder="记录 PyTorch 版本、CPU/GPU 型号、输入尺寸、batch、样本数、阈值、计时是否包含预处理和后处理" />
         </el-form-item>
       </el-form>
       <template #footer>
@@ -230,7 +235,7 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="rolloutDialogVisible" title="配置模型登记策略" width="min(560px,94vw)" :close-on-click-modal="!mlopsSubmitting" :close-on-press-escape="!mlopsSubmitting" :show-close="!mlopsSubmitting">
+    <el-dialog class="model-maintenance-dialog" v-model="rolloutDialogVisible" title="配置模型登记策略" width="min(560px,94vw)" :close-on-click-modal="!mlopsSubmitting" :close-on-press-escape="!mlopsSubmitting" :show-close="!mlopsSubmitting">
       <p class="model-command-context">{{ activeMlopsLabel }}</p><p class="model-list-note">原登记：{{ modelStrategy(activeMlopsSnapshot||{}) }}。以下为拟保存配置；保存不代表实际流量分配、推理切换或服务器部署已经完成。</p><el-alert v-if="mlopsError" :title="mlopsError" :type="mlopsUncertain ? 'warning' : 'error'" :closable="false" /><p v-if="mlopsUncertain" class="model-list-note">结果尚未确认，请先关闭并刷新详情核对，不直接重复保存。</p>
       <el-form :model="rolloutForm" label-position="top" :disabled="mlopsSubmitting||mlopsUncertain" @submit.prevent="submitRollout">
         <el-form-item label="部署策略">
@@ -274,7 +279,7 @@ import DetectionModelDetails from '@/components/DetectionModelDetails.vue'
 import {useUserStore} from '@/stores/user'
 import {knownCount} from '@/utils/countPresentation'
 import {useManagedList} from '@/composables/useManagedList'
-import {modelTime,modelMetric,modelMetricNumber,modelUsage,modelDefault,modelStrategy} from '@/utils/detectionModelPresentation'
+import {modelTime,modelMetric,modelMetricNumber,modelUsage,modelDefault,modelStrategy,modelLegacyMetricFields,modelFps,modelFpsNumber,modelTrainingImages,modelNoDetection,MODEL_FPS_MAX} from '@/utils/detectionModelPresentation'
 const userStore=useUserStore()
 const isSupervisor=computed(()=>userStore.isAuthenticated && userStore.role==='SUPERVISOR')
 const actor=computed(()=>JSON.stringify([userStore.identity?.userId || userStore.username || '',userStore.role,userStore.isAuthenticated]))
@@ -330,6 +335,7 @@ const modelForm = reactive({
 const modelFormRef = ref(null)
 
 const evaluationForm = reactive({
+  trainingImageCount:undefined,trainingCompletedAt:undefined,evaluationImageCount:undefined,noDetectionImageCount:undefined,inferenceFps:undefined,
   evaluationDataset: '',
   precisionScore: undefined,
   recallScore: undefined,
@@ -360,7 +366,7 @@ const rules = {
 
 const defaultModel = computed(() => modelList.value.find((item) => modelDefault(item.isDefault)==='是') || null)
 const publishedCount = computed(() => modelList.value.filter((item) => item.status === 'PUBLISHED').length)
-const evaluatedCount = computed(() => modelList.value.filter(item=>['precisionScore','recallScore','mapScore','f1Score'].some(key=>modelMetricNumber(item[key])!=null)).length)
+const evaluatedCount = computed(() => modelList.value.filter(item=>modelMetricNumber(item.mapScore)!=null).length)
 const totalUsageCount = computed(() => modelList.value.every(item=>knownCount(item.usageCount)!=null)?modelList.value.reduce((sum,item)=>sum+knownCount(item.usageCount),0):null)
 
 const formatMetric=modelMetric
@@ -400,6 +406,11 @@ const openEvaluationDialog = (row) => {
   evaluationForm.mapScore = modelMetricNumber(row.mapScore)
   evaluationForm.f1Score = modelMetricNumber(row.f1Score)
   evaluationForm.avgInferenceMs = knownCount(row.avgInferenceMs)??undefined
+  evaluationForm.trainingImageCount = knownCount(row.trainingImageCount) || undefined
+  evaluationForm.trainingCompletedAt = row.trainingCompletedAt ? modelTime(row.trainingCompletedAt).replace(' ','T') : undefined
+  evaluationForm.evaluationImageCount = knownCount(row.evaluationImageCount) ?? undefined
+  evaluationForm.noDetectionImageCount = knownCount(row.noDetectionImageCount) ?? undefined
+  evaluationForm.inferenceFps = modelFpsNumber(row.inferenceFps)
   evaluationForm.compatibilityNote = row.compatibilityNote || ''
   evaluationDialogVisible.value = true
 }
@@ -428,7 +439,8 @@ const fetchModelDetail = (modelId) => {
         detailModel.value = model
       } else {
         detailModel.value = null
-        detailError.value = '模型不存在或当前无权访问 请重新查询'
+        const code = Number(response.data?.code)
+        detailError.value = code === 404 ? '未找到此模型，请返回列表重新查询' : code === 403 ? '当前账号无权读取此模型，请核对账号范围' : '模型详情未读取成功，请重新读取核对'
       }
     })
     .catch(() => {
@@ -542,6 +554,14 @@ function isUncertain(cause){return cause.uncertain ?? (!cause.response || cause.
 async function saveModelAssessment(kind){
   if(!activeMlopsModelId.value || !isSupervisor.value || mutationBusy.value || mlopsUncertain.value || modelUncertain(activeMlopsModelId.value))return
   const modelId=activeMlopsModelId.value,payload=Object.freeze({...(kind==='evaluation'?evaluationForm:rolloutForm)}),scope=accountGeneration
+  if(kind==='evaluation'){
+    const train=payload.trainingImageCount,images=payload.evaluationImageCount,empty=payload.noDetectionImageCount
+    if(payload.mapScore!=null && modelMetricNumber(payload.mapScore)==null){mlopsError.value='mAP / AP 必须在 0–1 之间，尚未保存';return}
+    if(train!=null && (!Number.isInteger(train)||train<1||train>2147483647)){mlopsError.value='训练图片数量须为正整数，尚未保存';return}
+    if((images==null)!==(empty==null) || images!=null && (![images,empty].every(value=>Number.isInteger(value)&&value>=0&&value<=2147483647)||empty>images)){mlopsError.value='请同时填写成功评估与整图未检出图片数，未检出数不能超过成功数';return}
+    if(payload.inferenceFps!=null && (modelFpsNumber(payload.inferenceFps)==null||!payload.compatibilityNote?.trim())){mlopsError.value='FPS 须大于零，且需注明设备、输入尺寸、batch 和计时范围';return}
+    if(payload.trainingCompletedAt && modelTime(payload.trainingCompletedAt)==='时间格式未知'){mlopsError.value='训练完成日期格式无效，尚未保存';return}
+  }
   if(kind==='rollout'){
     const percent=knownCount(payload.canaryPercent)
     if(!['FULL','CANARY','AB_TEST','ROLLBACK'].includes(payload.deploymentStrategy)){mlopsError.value='请选择要登记的策略，尚未发送保存';return}
@@ -581,7 +601,7 @@ watch(actor,()=>{
   accountGeneration++;detailGeneration++;detailDrawerVisible.value=false;detailModel.value=null;selectedModelId.value=null;operationLogs.value=[];detailLoading.value=false;operationLoading.value=false;detailError.value='';operationError.value=''
   dialogVisible.value=false;evaluationDialogVisible.value=false;rolloutDialogVisible.value=false;activeMlopsModelId.value=null;activeMlopsSnapshot.value=null
   Object.assign(modelForm,{modelId:null,modelName:'',version:'',modelPath:'',updateDescription:''})
-  Object.assign(evaluationForm,{evaluationDataset:'',precisionScore:undefined,recallScore:undefined,mapScore:undefined,f1Score:undefined,avgInferenceMs:undefined,compatibilityNote:''})
+  Object.assign(evaluationForm,{trainingImageCount:undefined,trainingCompletedAt:undefined,evaluationImageCount:undefined,noDetectionImageCount:undefined,inferenceFps:undefined,evaluationDataset:'',precisionScore:undefined,recallScore:undefined,mapScore:undefined,f1Score:undefined,avgInferenceMs:undefined,compatibilityNote:''})
   Object.assign(rolloutForm,{deploymentStrategy:'',canaryPercent:undefined,abGroup:'',rollbackFromModelId:null})
   mlopsSubmitting.value=false;editSubmitting.value=false;lifecyclePending.value=false;mlopsError.value='';editError.value='';modelCommandError.value='';mlopsUncertain.value=false;editUncertain.value=false;uncertainModelIds.value=new Set();modelCommandUncertain.value=false
 },{flush:'sync'})
@@ -718,4 +738,14 @@ onMounted(() => {
 .model-filter-form .management-filter-actions { grid-column:1/-1; justify-content:flex-end; }
 @media(max-width:900px) { .model-filter-form { grid-template-columns:repeat(2,minmax(0,1fr)); } }
 @media(max-width:600px) { .model-filter-form { grid-template-columns:minmax(0,1fr); } }
+</style>
+
+<style>
+.model-maintenance-dialog.el-dialog { display:flex; flex-direction:column; max-height:90vh; max-height:90dvh; margin-block:5vh; }
+.model-maintenance-dialog :is(.el-dialog__header,.el-dialog__footer) { flex-shrink:0; }
+.model-maintenance-dialog .el-dialog__body { min-height:0; max-height:65vh; max-height:65dvh; overflow:auto; overscroll-behavior:contain; }
+.model-maintenance-dialog .el-dialog__footer,.model-maintenance-dialog .dialog-footer { display:flex; align-items:center; justify-content:flex-end; flex-wrap:wrap; gap:8px; }
+.model-maintenance-dialog .el-dialog__footer .el-button + .el-button { margin-left:0; }
+.model-maintenance-dialog summary { cursor:pointer; font-size:12px; line-height:1.8; color:var(--app-primary); margin-bottom:12px; }
+.model-maintenance-dialog summary:focus-visible { outline:2px solid var(--app-primary); outline-offset:3px; }
 </style>

@@ -5,11 +5,14 @@ import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Data;
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
+import com.ruanzhu.doorhandle.module.model.util.ModelImageCountDeserializer;
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDateTime;
 
 /**
- * ONNX模型信息实体类
+ * 检测模型登记资料（兼容 PTH 与 ONNX）
  */
 @Data
 @TableName("model_management")
@@ -128,6 +131,38 @@ public class ModelInfo {
      */
     @TableField("map_score")
     private BigDecimal mapScore;
+
+    /** 训练集原始图片数量，不按增强次数累计。 */
+    @TableField("training_image_count")
+    @JsonDeserialize(using = ModelImageCountDeserializer.class)
+    private Integer trainingImageCount;
+
+    /** 实际训练完成日期时间，按业务时区 UTC+8 登记。 */
+    @TableField("training_completed_at")
+    private LocalDateTime trainingCompletedAt;
+
+    /** 本次评估成功完成检测的图片数，不含执行失败图片。 */
+    @TableField("evaluation_image_count")
+    @JsonDeserialize(using = ModelImageCountDeserializer.class)
+    private Integer evaluationImageCount;
+
+    /** 本次评估中一个目标也未检出的图片数，Normal 检出也算检出。 */
+    @TableField("no_detection_image_count")
+    @JsonDeserialize(using = ModelImageCountDeserializer.class)
+    private Integer noDetectionImageCount;
+
+    /** 指定环境和批大小下实测的每秒处理图片数量，不从延迟取倒数。 */
+    @TableField("inference_fps")
+    private BigDecimal inferenceFps;
+
+    /** 派生统计，不保存另一份比例，也不读取历史 missDetectionRate。 */
+    @com.fasterxml.jackson.annotation.JsonProperty(access = com.fasterxml.jackson.annotation.JsonProperty.Access.READ_ONLY)
+    public BigDecimal getNoDetectionRate() {
+        if (evaluationImageCount == null || evaluationImageCount <= 0 || noDetectionImageCount == null
+                || noDetectionImageCount < 0 || noDetectionImageCount > evaluationImageCount) return null;
+        return BigDecimal.valueOf(noDetectionImageCount)
+                .divide(BigDecimal.valueOf(evaluationImageCount), 8, RoundingMode.HALF_UP);
+    }
 
     /**
      * F1 指标

@@ -10,6 +10,8 @@ export function workbenchInteractionRecords(item) {
   if (!['PLAN', 'QUESTION'].includes(item?.kind)) return []
   const plan = item.kind === 'PLAN', data = item.data || {}
   const rows = [record('body', plan ? '本版执行范围' : '问题内容', plan ? 'Document' : 'ChatDotRound', prose(data.text, '正文尚未完整读取，请刷新核对。'))]
+  // Only plan prose is formatted. Questions and saved answers retain literal text.
+  rows[0].format = plan && typeof data.text === 'string' && data.text.trim() ? 'markdown' : 'text'
   if (!plan && item.status === 'ANSWERED') {
     const values = Array.isArray(data.answer) && data.answer.length && data.answer.every(value => typeof value === 'string' && value.trim()) ? data.answer : undefined
     rows.push(record('answer', '已保存的回答', 'ChatDotRound', values ? '' : prose(data.answer, '回答内容尚未完整读取，请刷新核对。'), '这是已返回的回答记录，不是新的提交；普通回答不授予业务操作权限。', values))

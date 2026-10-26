@@ -5,7 +5,8 @@
 .agent-workbench .wb-child-result h4 { display:flex; align-items:center; gap:7px; margin:0 0 9px; color:var(--app-text); font-size:13px; line-height:1.8; font-weight:600; }
 .agent-workbench .wb-child-result h4 > :is(svg,.el-icon) { flex-shrink:0; color:var(--app-primary); }
 .agent-workbench .wb-child-result-note { margin:0 0 10px; color:var(--app-text-secondary); font-size:12px; line-height:1.9; }
-.agent-workbench .wb-child-excerpt { color:var(--app-text); font-size:13px; line-height:1.9; margin:0 0 12px; overflow-wrap:anywhere; }
+.agent-workbench .wb-child-excerpt { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:4; overflow:hidden; color:var(--app-text); font-size:13px; line-height:1.9; margin:0 0 12px; overflow-wrap:anywhere; }
+.agent-workbench .wb-child-excerpt-label { margin:0 0 5px; color:var(--app-text-secondary); font-size:12px; line-height:1.8; }
 .agent-workbench .wb-child-result summary { width:fit-content; max-width:100%; color:var(--app-primary); font-size:12px; line-height:1.8; cursor:pointer; }
 .agent-workbench .wb-child-result pre { max-height:320px; padding:12px; margin:12px 0 0; overflow:auto; overscroll-behavior:contain; white-space:pre-wrap; overflow-wrap:anywhere; background:var(--app-bg); border-radius:7px; color:var(--app-text); font:13px/1.9 var(--app-font); }
 .agent-workbench .wb-child-followup > label { display:block; color:var(--app-text-secondary); font-size:12px; line-height:1.8; }

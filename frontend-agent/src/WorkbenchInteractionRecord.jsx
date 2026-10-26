@@ -1,6 +1,7 @@
 import React from 'react';
 import { FileText, MessageSquare, Pencil, Move } from 'lucide-react';
 import { workbenchInteractionRecords } from '../../frontend/src/utils/workbenchRecordPresentation.js';
+import AgentMarkdown from './AgentMarkdown';
 import '../../frontend/src/assets/workbench-interaction-record.css';
 
 const icons={Document:FileText,ChatDotRound:MessageSquare,Edit:Pencil};
@@ -11,8 +12,9 @@ export default function WorkbenchInteractionRecord({item,part='all'}) {
   const Icon=icons[record.icon];
   return <section key={record.key} data-record={record.key}>
    <h4><Icon size={15} aria-hidden="true"/>{record.label}{record.values&&<span>{record.values.length} 项</span>}</h4>
-   <div className={'wb-record-copy'+(record.long?' is-long':'')} tabIndex={record.long?0:undefined} role={record.long?'region':undefined} aria-label={record.long?record.label+'完整内容，版本 '+(item.revision??'未记录')+'，可使用方向键滚动':undefined}>{record.values?<ul>{record.values.map((value,index)=><li key={index}>{value}</li>)}</ul>:<p>{record.text}</p>}</div>
+   <div className={'wb-record-copy'+(record.long?' is-long':'')} tabIndex={record.long?0:undefined} role={record.long?'region':undefined} aria-label={record.long?record.label+'完整内容，版本 '+(item.revision??'未记录')+'，可使用方向键滚动':undefined}>{record.values?<ul>{record.values.map((value,index)=><li key={index}>{value}</li>)}</ul>:record.format==='markdown'?<AgentMarkdown className="wb-record-markdown" text={record.text}/>:<p>{record.text}</p>}</div>
    {record.long&&<p className="wb-record-reading-hint"><Move size={13} aria-hidden="true"/>完整内容保留在上方阅读区，可聚焦后用方向键滚动</p>}
+   {record.format==='markdown'&&<details className="wb-record-source"><summary><FileText size={14} aria-hidden="true"/>查看计划原文</summary><pre tabIndex={0} aria-label={'计划原文，版本 '+(item.revision??'未记录')}>{record.text}</pre></details>}
    {record.note&&<p className="wb-record-reading-hint">{record.note}</p>}
   </section>;
  })}</div>;

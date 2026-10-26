@@ -14,6 +14,19 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 class AgentWorkbenchControllerTest {
+    @Test void optionalCreationCapabilityIsNotAdvertisedWithoutItsService()throws Exception{
+        mvc.perform(get("/api/agent/workbench/capabilities").principal(auth()))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.detectionCreationReviews").value(false));
+        verifyNoInteractions(workspace);
+    }
+    @Test void optionalCreationCapabilityDoesNotExecuteOrReadAnyBusinessCommand()throws Exception{
+        var provider=mock(org.springframework.beans.factory.ObjectProvider.class);
+        var creation=mock(DetectionCreationApi.class);when(provider.getIfAvailable()).thenReturn(creation);
+        var optional=MockMvcBuilders.standaloneSetup(new AgentWorkbenchController(api,workspace,provider)).build();
+        optional.perform(get("/api/agent/workbench/capabilities").principal(auth()))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.detectionCreationReviews").value(true));
+        verifyNoInteractions(creation,workspace);
+    }
     AgentWorkbenchApi api;AgentWorkspaceService workspace;MockMvc mvc;
     UsernamePasswordAuthenticationToken auth(){var roles=List.of(new SimpleGrantedAuthority("ROLE_INSPECTOR"));return new UsernamePasswordAuthenticationToken(new TenantPrincipal(1L,"alice","",roles),null,roles);}
     @BeforeEach void setup(){api=mock(AgentWorkbenchApi.class);workspace=mock(AgentWorkspaceService.class);when(api.capabilities()).thenReturn(Map.of("enabled",true,"files",true,"forks",true));mvc=MockMvcBuilders.standaloneSetup(new AgentWorkbenchController(api,workspace)).build();}

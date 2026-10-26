@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Button } from 'antd';
 import { FileCheck, Search, TriangleAlert, ArrowUpRight } from 'lucide-react';
 import StatusBadge from './StatusBadge';
-import { validTransferReview, canCheckTransfer, transferDecision, transferCount, transferNextStep, transferDecisionSnapshot, transferDecisionMatches } from '../../frontend/src/utils/detectionCreationReview.js';
+import { validTransferReview, canCheckTransfer, transferDecision, transferCount, transferNextStep, transferDecisionSnapshot, transferDecisionMatches, transferPayload, transferCapability, transferReadIssue, transferFailureStatus, transferDisabledMessage } from '../../frontend/src/utils/detectionCreationReview.js';
 import { beijingDateTime } from '../../frontend/src/utils/beijingTime.js';
 import { cardRoute } from '../../frontend/src/utils/agentCards.js';
 import './DetectionCreationReview.css';
@@ -13,8 +13,10 @@ export function DetectionCreationReview({ sessionId, base = '', refreshKey, onCh
   const scope = JSON.stringify([sessionId, base]);
   const [snapshot, setSnapshot] = useState(null), [failure, setFailure] = useState(null), [loading, setLoading] = useState(false), [verified, setVerified] = useState(false);
   const [busy, setBusy] = useState(new Map()), [decision, setDecision] = useState(null), [lastRequest, setLastRequest] = useState(null);
+  const [unavailable,setUnavailable]=useState(null);
   const currentScope = useRef(null), scopeGeneration = useRef(0), readGeneration = useRef(0), activeRead = useRef(null), locked = useRef(new Map()), alive = useRef(true);
   const rows = snapshot?.scope === scope ? snapshot.rows : [], error = failure?.scope === scope ? failure.message : '';
+  const availability=unavailable?.scope===scope?unavailable:null;
   const selectedDecision = decision?.scope === scope ? decision : null;
   const endpoint = base + '/api/agent/conversations/' + encodeURIComponent(sessionId) + '/detection-creations';
   const setError = message => setFailure(message ? { scope, message } : null);
@@ -24,25 +26,32 @@ export function DetectionCreationReview({ sessionId, base = '', refreshKey, onCh
     let body;
     try { body = await response.json(); } catch { const invalid = new Error('核对回执格式暂不可核对'); invalid.status = response.status; throw invalid; }
     if (!response.ok) { const rejected = new Error(typeof body?.message === 'string' ? body.message : '核对状态暂不可用'); rejected.status = response.status; throw rejected; }
-    return body;
+    return transferPayload(body);
   }
   async function refresh() {
     if (!sessionId || hasCurrentWrite()) return;
     stopRead(); const version = ++readGeneration.current, epoch = scopeGeneration.current, controller = new AbortController();
     activeRead.current = controller; setLoading(true); setVerified(false); setDecision(null); setError('');
     try {
+      let support='UNKNOWN';
+      try { support=transferCapability(await read(await fetch(base+'/api/agent/workbench/capabilities',{credentials:'include',cache:'no-store',signal:controller.signal}))); }
+      catch(cause){if(transferFailureStatus(cause)!==404)throw cause;}
+      if(epoch!==scopeGeneration.current||version!==readGeneration.current||controller.signal.aborted)return;
+      if(support==='DISABLED'){setSnapshot(null);setUnavailable({scope,message:transferDisabledMessage});return;}
       const data = await read(await fetch(endpoint, { credentials: 'include', cache: 'no-store', signal: controller.signal }));
       if (epoch !== scopeGeneration.current || version !== readGeneration.current) return;
       if (!Array.isArray(data) || !data.every(validTransferReview)) throw new Error();
-      setSnapshot({ scope, rows: data }); setVerified(true);
+      setSnapshot({ scope, rows: data }); setVerified(true);setUnavailable(null);
     } catch (cause) {
       if (epoch !== scopeGeneration.current || version !== readGeneration.current || controller.signal.aborted) return;
-      if ([401, 403, 404].includes(cause.status)) setSnapshot(null);
-      setError('核对状态暂不可读取。已显示内容仅为上次快照，请刷新核对，不会重发原操作。');
+      const issue=transferReadIssue(cause,rows.length>0);
+      if(issue.clear)setSnapshot(null);
+      setUnavailable(issue.availability?{scope,message:issue.message}:null);
+      setError(issue.availability?'':issue.message);
     } finally { if (epoch === scopeGeneration.current && version === readGeneration.current) { activeRead.current = null; setLoading(false); } }
   }
   useEffect(() => {
-    if (currentScope.current !== scope) { currentScope.current = scope; scopeGeneration.current++; setSnapshot(null); setDecision(null); setLastRequest(null); setFailure(null); setVerified(false); setLoading(false); }
+    if (currentScope.current !== scope) { currentScope.current = scope; scopeGeneration.current++; setSnapshot(null); setDecision(null); setLastRequest(null); setFailure(null);setUnavailable(null); setVerified(false); setLoading(false); }
     refresh(); return stopRead;
   }, [sessionId, base, refreshKey]);
   useEffect(() => { alive.current = true; return () => { alive.current = false; scopeGeneration.current++; stopRead(); }; }, []);
@@ -69,13 +78,15 @@ export function DetectionCreationReview({ sessionId, base = '', refreshKey, onCh
       if (locked.current.get(row.commandId)?.requestId === requestId) { locked.current.delete(row.commandId); if (alive.current) setBusy(new Map(locked.current)); }
     }
   }
-  if (!sessionId || !rows.length && !error) return null;
-  return <section className="detection-transfer-reviews" aria-label="检测创建结果核对">
-    <header className="transfer-heading"><strong><FileCheck size={17} aria-hidden="true"/>检测创建结果核对</strong><Button size="small" loading={loading} disabled={hasCurrentWrite()} onClick={refresh}>刷新状态</Button></header>
-    <p className="transfer-intro">核对原创建命令的文件与回执，再决定是否完成创建。此处不重新上传图片。</p>
-    {loading && <p className="transfer-read-note" role="status">正在读取，当前保留上次快照；读取完成前不能提交处置。</p>}
+  if (!sessionId || !rows.length && !error && !availability) return null;
+  const compact=!!availability&&!rows.length&&lastRequest?.scope!==scope;
+  return <section className={'detection-transfer-reviews'+(compact?' is-unavailable':'')} aria-label="检测创建结果核对">
+    {availability&&<details className="transfer-availability"><summary><FileCheck size={15} aria-hidden="true"/>检测创建核对暂不可用</summary><p role="status">{availability.message}</p><Button size="small" loading={loading} disabled={hasCurrentWrite()} onClick={refresh}>重新读取能力与状态</Button></details>}
+    {!compact&&<header className="transfer-heading"><strong><FileCheck size={17} aria-hidden="true"/>检测创建结果核对</strong><Button size="small" loading={loading} disabled={hasCurrentWrite()} onClick={refresh}>刷新状态</Button></header>}
+    {!compact&&<p className="transfer-intro">核对原创建命令的文件与回执，再决定是否完成创建。此处不重新上传图片。</p>}
+    {loading && <p className="transfer-read-note" role="status">{rows.length ? '正在读取，当前保留上次快照；读取完成前不能提交处置。' : '正在读取核对状态；读取完成前不能提交处置。'}</p>}
     {error && <p role="alert" className="transfer-error">{error}</p>}
-    {error && lastRequest?.scope === scope && <p className="transfer-read-note">操作请求 {operationNames[lastRequest.action]} · 请求 <code>{lastRequest.requestId}</code>。请保留编号核对，不会自动重发。</p>}
+    {(error || availability) && lastRequest?.scope === scope && <p className="transfer-read-note">操作请求 {operationNames[lastRequest.action]} · 请求 <code>{lastRequest.requestId}</code>。请保留编号核对，不会自动重发。</p>}
     {rows.map(row => <article key={row.commandId} className="transfer-record" data-status={row.status} aria-busy={busy.has(row.commandId)}>
       <header className="transfer-record-heading"><div><small>检测任务</small><strong>{row.taskId}</strong></div><StatusBadge domain="detectionCreation" code={row.status}/></header>
       <dl className="transfer-metrics"><div><dt>目标图片清单</dt><dd>{row.manifestAvailable ? transferCount(row.images) + ' 张' : '清单不完整'}</dd></div><div><dt>存储已记录</dt><dd>{transferCount(row.acknowledged)} 张</dd></div><div><dt>核对内容一致</dt><dd>{row.checkStatus ? transferCount(row.verified) + ' 张' : '尚未核对'}</dd></div></dl>

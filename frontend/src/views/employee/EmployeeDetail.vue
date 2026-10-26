@@ -11,7 +11,7 @@
     <section v-if="employee.id" class="stats-bar">
       <div class="stats-bar-item">
         <div class="stats-bar-icon" :class="statusIconClass">
-          <AppIcon name="CircleCheck" :size="22" />
+          <AppIcon :name="statusSummary.icon" :size="22" />
         </div>
         <div>
           <div class="stats-bar-value">{{ getStatusName(employee.status) }}</div>
@@ -37,7 +37,7 @@
         </div>
       </div>
       <div class="stats-bar-item">
-        <div class="stats-bar-icon success">
+        <div class="stats-bar-icon info">
           <AppIcon name="Document" :size="22" />
         </div>
         <div>
@@ -173,6 +173,7 @@ import { beijingDateTime } from '../../utils/beijingTime'
 import CollectionEmptyState from '../../components/CollectionEmptyState.vue'
 import CollectionTaskRecords from '../../components/CollectionTaskRecords.vue'
 import EmployeeDeviceAssignment from '../../components/EmployeeDeviceAssignment.vue'
+import { statusPresentation } from '../../utils/statusPresentation'
 
 const router = useRouter()
 const route = useRoute()
@@ -209,12 +210,6 @@ const employeeTypeOptions = [
   { value: 'MAINTENANCE', label: '设备维护人员' }
 ]
 
-const statusOptions = [
-  { value: 'ACTIVE', label: '在岗' },
-  { value: 'RESIGNED', label: '离职' },
-  { value: 'VACATION', label: '休假' }
-]
-
 const getEmployeeTypeName = (type) => {
   const option = employeeTypeOptions.find(opt => opt.value === type)
   return option ? option.label : type
@@ -227,20 +222,9 @@ const getEmployeeTypeTag = (type) => {
   return 'info'
 }
 
-const getStatusName = (status) => {
-  const option = statusOptions.find(opt => opt.value === status)
-  return option ? option.label : status
-}
-
-const getStatusType = (status) => {
-  const map = { ACTIVE: 'success', RESIGNED: 'info', VACATION: 'warning' }
-  return map[status] || 'info'
-}
-
-const statusIconClass = computed(() => {
-  const t = getStatusType(employee.value?.status)
-  return { success: t === 'success', warning: t === 'warning', slate: t === 'info' }
-})
+const getStatusName = status => statusPresentation('employee', status).label
+const statusSummary = computed(() => statusPresentation('employee', employee.value?.status))
+const statusIconClass = computed(() => statusSummary.value.tone === 'progress' ? 'primary' : statusSummary.value.tone)
 
 const fetchEmployeeDetail = async () => {
   if(!pageActive || !employeeId.value || !userStore.isAuthenticated)return false

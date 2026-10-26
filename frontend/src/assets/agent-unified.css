@@ -10,6 +10,7 @@
 .agent-result .result-read-feedback[data-tone=warning] { background:var(--app-warning-soft); color:var(--app-warning); }
 .agent-result .result-read-feedback[data-tone=warning] > :is(svg,.el-icon) { color:var(--app-warning); }
 .agent-result :is(a,summary,button):focus-visible { outline:2px solid var(--app-primary); outline-offset:3px; border-radius:3px; }
+.el-dropdown-menu__item.chat-header-clear-item:not(.is-disabled) { color:var(--app-danger); }
 .agent-result .result-card-symbol { display:grid; place-items:center; flex:0 0 34px; width:34px; height:34px; border-radius:9px; color:var(--app-primary); background:var(--app-primary-soft); }
 .agent-result .result-card-heading { flex:1 1 150px; min-width:0; }
 .agent-result .result-card-heading strong { display:block; color:var(--app-text); font-size:14px; font-weight:600; line-height:1.7; overflow-wrap:anywhere; }
@@ -96,7 +97,7 @@
 #app .is-agent-section .config-probe-note { flex-basis:100%; margin:0; font-size:12px; line-height:1.8; color:var(--app-text-secondary); }
 
 #app .is-agent-section .model-config-page { padding: 0; background: transparent; border: 0; box-shadow: none; }
-#app .is-agent-section :is(.memory-page, .mcp-page, .skills-page, .model-config-page) > header { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; }
+#app .is-agent-section :is(.memory-page, .mcp-page, .skills-page, .model-config-page) > header { display:flex; flex-flow:row wrap; align-items:flex-start; justify-content:space-between; gap:12px 18px; }
 #app .is-agent-section :is(.memory-page, .mcp-page, .skills-page, .model-config-page) > header > div { flex: 1 1 280px; min-width: 0; }
 #app .is-agent-section :is(.memory-page, .mcp-page, .skills-page, .model-config-page) h2 { display: flex; align-items: center; gap: 12px; }
 #app .is-agent-section :is(.memory-page, .mcp-page, .skills-page, .model-config-page) > header p { margin-top: 8px; font-size: 13px; line-height: 1.8; color: var(--app-text-secondary); }
@@ -180,10 +181,10 @@
 #app .is-agent-section .trace-eyebrow { display: none; }
 #app .is-agent-section .trace-run { border-radius: 9px; }
 #app .is-agent-section .trace-run.active { background: #e8f0ff; border-color: #c7d9fb; }
-#app .is-agent-section :is(.trace-note, .trace-empty-note, .trace-run-date, .trace-event-subtitle, .trace-detail-list) { font-size: 12px; color: var(--app-text-secondary); line-height: 1.8; }
-#app .is-agent-section .trace-run-id { font-size: 11px; color: var(--app-text-muted); overflow-wrap: anywhere; }
+#app .is-agent-section :is(.trace-note, .trace-empty-note, .trace-run-date, .trace-event-subtitle) { font-size: 12px; color: var(--app-text-secondary); line-height: 1.8; }
+#app .is-agent-section .trace-run-id { font-size: 12px; color: var(--app-text-secondary); overflow-wrap: anywhere; }
 #app .is-agent-section .trace-event-top strong { font-size: 13px; line-height: 1.7; color: var(--app-text); }
-#app .is-agent-section :is(.trace-event-timing strong, .trace-event-timing small, .trace-parent-label) { font-size: 11px; color: var(--app-text-muted); }
+#app .is-agent-section :is(.trace-event-timing strong, .trace-event-timing small, .trace-parent-label) { font-size: 12px; color: var(--app-text-secondary); font-variant-numeric:tabular-nums; }
 #app .is-agent-section .trace-filter-chips button { font-size: 12px; min-height: 32px; }
 #app .is-agent-section .trace-filter-chips button.active { background: var(--app-primary-soft); color: var(--app-primary); border-color: #b6cdfa; }
 #app .is-agent-section .trace-event.selected { background: #f4f8ff; border-color: #c7d9fb; }
@@ -286,7 +287,10 @@
 .agent-shell .composer-area .resource-input { background: #f9fafc; border-color: #d8e0ec; border-radius: 18px; box-shadow: none; }
 .agent-shell .composer-area .resource-input:focus-within { background: white; border-color: #91b1f4; box-shadow: 0 0 0 3px #2563eb08; }
 .agent-shell .composer-area .ant-sender { background: transparent; box-shadow: none; }
-.agent-shell .agent-info { background: var(--app-bg); border-color: var(--app-border); }
+.agent-shell .agent-info { display:flex; flex-direction:column; min-height:0; padding:0; overflow:hidden; background: var(--app-bg); border-color: var(--app-border); }
+.agent-shell .agent-info > .info-heading { flex-shrink:0; margin:0; padding:16px 20px; }
+.agent-shell .agent-info > .workspace-tabs { flex-shrink:0; margin:0 20px 16px; }
+.agent-shell .agent-info > [role="tabpanel"] { flex:1; min-height:0; padding:0 20px 20px; overflow:auto; overscroll-behavior:contain; scrollbar-gutter:stable; }
 .agent-shell .workspace-tabs { background: #eaf0f7; }
 .agent-shell .workspace-resource { border-radius: 9px; }
 .agent-shell .workspace-resource-icon { background: white; border-color: var(--app-border); color: var(--app-primary); }
@@ -306,6 +310,7 @@
   #app .is-agent-section .memory-settings label > .el-switch { flex: 0 0 auto; }
   #app .is-agent-section :is(.source-panel, .server-card) { padding: 16px; }
   #app .is-agent-section .layout-content :is(.memory-page, .mcp-page, .skills-page, .action-page, .model-config-page) > header { flex-direction: column; align-items: flex-start; gap: 12px; }
+  #app .is-agent-section .layout-content :is(.memory-page, .mcp-page, .skills-page, .action-page, .model-config-page) > header > div { flex:0 1 auto; width:100%; min-width:0; }
   #app .is-agent-section :is(.memory-page, .mcp-page, .skills-page, .action-page, .model-config-page) h2 { font-size: 22px; }
   #app .is-agent-workspace .chat-workspace .composer-toolbar select { max-width: calc(100vw - 150px); }
   #app .is-agent-workspace .chat-workspace .composer-context { display: none; }
@@ -314,6 +319,34 @@
   .agent-shell .agent-info { width: min(370px, 100vw); }
 }
 @media(prefers-reduced-motion: reduce) {
-  :is(.is-agent-section, .agent-shell) *, :is(.is-agent-section, .agent-shell) *::before, :is(.is-agent-section, .agent-shell) *::after { animation-duration: .01ms !important; animation-delay: 0ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; transition-delay: 0ms !important; scroll-behavior: auto !important; }
+  :is(.is-agent-section, .agent-shell) *, :is(.is-agent-section, .agent-shell) *::before, :is(.is-agent-section, .agent-shell) *::after { animation-duration: .01ms !important; animation-delay: 0ms !important; animation-iteration-count: 1 !important; transition-duration: 0s !important; transition-delay: 0ms !important; scroll-behavior: auto !important; }
   #app .is-agent-workspace .msg-empty .welcome-prompt:hover, .agent-shell .welcome-prompts > button:hover:not(:disabled), #app .is-agent-section .market-item:hover { transform: none; }
+}
+
+/* Keep the transcript primary; normal composer hints live in tooltips/settings. */
+#app .is-agent-workspace .chat-workspace .chat-header { padding:10px 20px; min-height:60px; }
+#app .is-agent-workspace .chat-workspace .chat-body { padding-block:12px 6px; }
+#app .is-agent-workspace .chat-workspace .msg-bubble.user { padding:8px 14px; }
+#app .is-agent-workspace .chat-workspace .msg-bubble.assistant { padding:4px 0; }
+#app .is-agent-workspace .chat-workspace .msg-time { margin-top:3px; line-height:1.5; }
+#app .is-agent-workspace .chat-workspace .composer { padding-block:8px 10px; }
+#app .is-agent-workspace .chat-workspace .gpt-composer-input { min-height:84px; padding:8px 12px; }
+#app .is-agent-workspace .chat-workspace .gpt-composer-input .composer-textarea { min-height:28px; padding:2px 2px 4px; }
+#app .is-agent-workspace .chat-workspace .composer .conversation-controls { margin:0 0 6px; padding:4px 8px; border-radius:10px; }
+#app .is-agent-workspace .chat-workspace .composer .conversation-queue { max-height:112px; }
+.agent-shell.ant-layout .agent-header { min-height:60px; padding:10px 20px; }
+.agent-shell.ant-layout .bubble-list { padding-block:16px 8px; }
+.agent-shell.ant-layout .composer-area { padding-block:8px 10px; }
+.agent-shell .composer-area .resource-input { padding:4px 10px 6px; }
+@media(max-width:640px) {
+ /* The compact history already opens over the chat; do not reserve a second rail while closed. */
+ #app .is-agent-workspace .chat-workspace .chat-sidebar.compact.collapsed { width:0; border-right:0; z-index:25; }
+ #app .is-agent-workspace .chat-workspace .chat-sidebar.compact.collapsed .sidebar-toggle { left:10px; right:auto; top:10px; width:30px; height:30px; border-radius:7px; box-shadow:none; }
+ #app .is-agent-workspace .chat-workspace .chat-header-main { padding-left:34px; }
+ #app .is-agent-workspace .chat-workspace .chat-header-main .chat-avatar { display:none; }
+ #app .is-agent-workspace .chat-workspace .chat-header { min-height:52px; padding:8px 12px; }
+ #app .is-agent-workspace .chat-workspace .composer { padding-inline:12px; }
+ #app .is-agent-workspace .chat-workspace .composer .conversation-queue { max-height:96px; }
+ .agent-shell.ant-layout .agent-header { min-height:56px; padding:8px 12px; gap:8px; }
+ .agent-shell.ant-layout .composer-area { padding-inline:12px; }
 }

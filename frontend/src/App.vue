@@ -6,7 +6,7 @@
     <Transition name="global-notice">
       <div v-if="error" class="global-error-bar" role="alert">
         <AppIcon name="Warning" :size="20" />
-        <div class="global-error-content"><strong>页面出现异常</strong><p>部分内容可能未显示，已提交操作请先核对记录，避免重复提交。</p><details><summary>查看错误说明</summary><pre>{{ error }}</pre></details></div>
+        <div class="global-error-content"><strong>页面出现异常</strong><p>部分内容可能未显示，已提交操作请先核对记录，避免重复提交。</p><details><summary>查看错误说明</summary><pre tabindex="0" role="region" aria-label="页面异常说明正文">{{ error }}</pre></details></div>
         <router-link v-if="$route.path !== '/login'" class="global-error-home" to="/home"><AppIcon name="HomeFilled" :size="15" />返回首页</router-link>
         <button class="global-error-close" type="button" aria-label="收起页面异常提示" title="收起提示，不代表异常已修复" @click="error = ''"><AppIcon name="Close" :size="18" /></button>
       </div>
@@ -87,7 +87,8 @@ onErrorCaptured((err, instance, info) => {
 .global-error-content strong { font-size:14px; font-weight:600; }
 .global-error-content p { margin:3px 0 7px; color:var(--app-text-secondary); }
 .global-error-content summary { width:fit-content; color:var(--app-danger); font-size:12px; cursor:pointer; }
-.global-error-content pre { max-height:180px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; margin:8px 0 0; font:12px/1.8 Consolas,monospace; color:var(--app-text-secondary); }
+.global-error-content pre { max-height:180px; max-height:min(180px,32dvh); overflow:auto; overscroll-behavior:contain; scroll-padding:8px; white-space:pre-wrap; overflow-wrap:anywhere; margin:8px 0 0; padding:4px 6px; border-radius:4px; font:12px/1.8 Consolas,monospace; color:var(--app-text-secondary); }
+.global-error-content pre:focus-visible { outline:2px solid var(--app-primary); outline-offset:-2px; }
 .global-error-home { display:inline-flex; align-items:center; gap:6px; flex-shrink:0; min-height:30px; color:var(--app-primary); font-size:12px; text-decoration:none; line-height:1.8; }
 .global-error-bar :is(a,button,summary):focus-visible { outline:2px solid var(--app-primary); outline-offset:3px; }
 .global-navigation-error { background:var(--app-surface, #fff); border-bottom-color:var(--app-border); border-left:4px solid var(--app-primary); }

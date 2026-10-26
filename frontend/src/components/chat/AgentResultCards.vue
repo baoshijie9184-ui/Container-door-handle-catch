@@ -63,11 +63,12 @@
               <a :href="cardRoute('MODEL_OPERATIONS', String(item.model.modelId))">{{ item.model.name || '模型 ' + item.model.modelId }}</a>
               <p>版本 {{ item.model.version || '未记录' }} · {{ modelStatus(item.model.status) }}</p>
               <div class="card-metrics operation-metrics"><div v-for="metric in modelOperationMetrics(item)" :key="metric.label"><strong>{{ metric.value }}</strong><span>{{ metric.label }} 登记值</span></div></div>
+              <details v-if="modelOperationLegacyMetrics(item).length" class="operation-disclosure"><summary>其他历史指标</summary><dl class="operation-details"><div v-for="metric in modelOperationLegacyMetrics(item)" :key="metric.label"><dt>{{ metric.label }}</dt><dd>{{ metric.value }}</dd></div></dl></details>
               <details class="operation-disclosure"><summary>查看发布配置与登记信息</summary>
                 <dl class="operation-details"><div v-for="row in modelOperationDetails(item)" :key="row.label"><dt>{{ row.label }}</dt><dd>{{ row.value }}</dd></div></dl>
               </details>
               <p v-if="item.invalidFields?.length" class="result-error">部分登记字段异常 请到模型页面核对</p>
-              <p class="card-note">指标为登记值 发布策略为配置记录 实际分流尚未核验</p>
+              <p class="card-note">指标为登记值，未检出率排除执行失败，Normal 检出也算检出。FPS 测试环境见模型详情；发布策略为配置记录，实际分流尚未核验。</p>
               <a class="record-action" :href="cardRoute('MODEL_OPERATIONS', String(item.model.modelId))">查看模型</a>
             </div>
           </template>
@@ -85,7 +86,7 @@ import AgentMarkdown from './AgentMarkdown.vue'
 import { beijingDateTime } from '@/utils/beijingTime'
 import { resolveAgentCards } from '@/api/chatAssistant'
 import { useUserStore } from '@/stores/user'
-import { parseAgentCardEnvelope, readResolvedAgentCards, cardIcon, cardCount, cardVersion, cardEmptyText, cardRoute, cardTitle, cardScope, reportStatus, metricLabels, cardDeviceFields, modelStatus, alertStatus, alertLevel, alertType, modelOperationMetrics, modelOperationDetails } from '@/utils/agentCards'
+import { parseAgentCardEnvelope, readResolvedAgentCards, cardIcon, cardCount, cardVersion, cardEmptyText, cardRoute, cardTitle, cardScope, reportStatus, metricLabels, cardDeviceFields, modelStatus, alertStatus, alertLevel, alertType, modelOperationMetrics, modelOperationLegacyMetrics, modelOperationDetails } from '@/utils/agentCards'
 const props = defineProps({ message: { type: Object, required: true } })
 const userStore = useUserStore()
 const actor = computed(() => JSON.stringify([userStore.identity?.userId || userStore.username || '',userStore.role,userStore.isAuthenticated]))

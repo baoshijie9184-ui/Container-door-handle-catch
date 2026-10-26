@@ -49,13 +49,21 @@ public class ModelAgentReadApiImpl implements ModelAgentReadApi {
                 ModelInfo::getVersion, ModelInfo::getStatus, ModelInfo::getIsDefault, ModelInfo::getValidationStatus,
                 ModelInfo::getMlopsStatus, ModelInfo::getEvaluationDataset, ModelInfo::getPrecisionScore, ModelInfo::getRecallScore,
                 ModelInfo::getMapScore, ModelInfo::getF1Score, ModelInfo::getAvgInferenceMs, ModelInfo::getDeploymentStrategy,
+                ModelInfo::getTrainingImageCount, ModelInfo::getTrainingCompletedAt, ModelInfo::getEvaluationImageCount,
+                ModelInfo::getNoDetectionImageCount, ModelInfo::getInferenceFps,
                 ModelInfo::getCanaryPercent, ModelInfo::getAbGroup, ModelInfo::getRollbackFromModelId,
                 ModelInfo::getUsageCount, ModelInfo::getLastUsedAt, ModelInfo::getPublishedAt).eq(ModelInfo::getModelId,modelId));
         if (m == null) throw new BusinessException(404, "模型不存在");
         var invalid = new ArrayList<String>();
         var evaluation = new Evaluation(m.getEvaluationDataset(), score(m.getPrecisionScore(),"precisionScore",invalid),
                 score(m.getRecallScore(),"recallScore",invalid), score(m.getMapScore(),"mapScore",invalid),
-                score(m.getF1Score(),"f1Score",invalid), integer(m.getAvgInferenceMs(),0,Integer.MAX_VALUE,"avgInferenceMs",invalid));
+                score(m.getF1Score(),"f1Score",invalid), integer(m.getAvgInferenceMs(),0,Integer.MAX_VALUE,"avgInferenceMs",invalid),
+                integer(m.getTrainingImageCount(),1,Integer.MAX_VALUE,"trainingImageCount",invalid), m.getTrainingCompletedAt(),
+                integer(m.getEvaluationImageCount(),0,Integer.MAX_VALUE,"evaluationImageCount",invalid),
+                integer(m.getNoDetectionImageCount(),0,Integer.MAX_VALUE,"noDetectionImageCount",invalid),
+                fps(m.getInferenceFps(),invalid));
+        if (m.getNoDetectionImageCount() != null && m.getEvaluationImageCount() != null
+                && m.getNoDetectionImageCount() > m.getEvaluationImageCount()) invalid.add("noDetectionImageCount");
         var rollout = new Rollout(code(m.getDeploymentStrategy(),Set.of("FULL","CANARY","AB_TEST","ROLLBACK"),"strategy",invalid),
                 integer(m.getCanaryPercent(),0,100,"configuredPercent",invalid), m.getAbGroup(),
                 integer(m.getRollbackFromModelId(),1,Integer.MAX_VALUE,"rollbackFromModelId",invalid));
@@ -68,6 +76,10 @@ public class ModelAgentReadApiImpl implements ModelAgentReadApi {
     private BigDecimal score(BigDecimal value,String field,List<String> invalid) {
         if (value == null || value.compareTo(BigDecimal.ZERO)>=0 && value.compareTo(BigDecimal.ONE)<=0) return value;
         invalid.add(field); return null;
+    }
+    private BigDecimal fps(BigDecimal value,List<String> invalid) {
+        if (value == null || value.signum() > 0 && value.compareTo(new BigDecimal("99999999.9999")) <= 0) return value;
+        invalid.add("inferenceFps"); return null;
     }
     private Integer integer(Integer value,int minimum,int maximum,String field,List<String> invalid) {
         if (value == null || value>=minimum && value<=maximum) return value;

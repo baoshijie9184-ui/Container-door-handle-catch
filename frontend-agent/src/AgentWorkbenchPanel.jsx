@@ -18,12 +18,12 @@ import {contextStatusCode} from '../../frontend/src/utils/contextPresentation';
 import WorkbenchInteraction from './WorkbenchInteraction';
 import WorkbenchInteractionRecord from './WorkbenchInteractionRecord';
 import {composerAttachment} from '../../frontend/src/utils/composerPresentation';
-import {FileText,FileCheck,Files,ListChecks,MessageSquare,Network,Activity,ChartNoAxesCombined,Clock,Copy,RefreshCw,Upload,Download,Image,TriangleAlert} from 'lucide-react';
+import {FileText,FileCheck,Files,ListChecks,MessageSquare,Network,Activity,ChartNoAxesCombined,Clock,Copy,RefreshCw,Upload,Download,Image,TriangleAlert,ChevronRight,X} from 'lucide-react';
 import {workbenchKind,workbenchTabIcon,workbenchInteractionStatus,workbenchTitle,workbenchEmpty,workbenchTime} from '../../frontend/src/utils/workbenchPresentation';
 import '../../frontend/src/assets/chat-file-references.css';
 
-const workbenchIcons={Document:FileText,DocumentChecked:FileCheck,Files,Tickets:ListChecks,ChatDotRound:MessageSquare,Connection:Network,Operation:Activity,DataAnalysis:ChartNoAxesCombined,Picture:Image,Clock,DocumentCopy:Copy,Refresh:RefreshCw,Upload,Warning:TriangleAlert};
-function WorkbenchIcon({name,size=18}){const Icon=workbenchIcons[name]||FileText;return <Icon size={size} aria-hidden="true"/>}
+const workbenchIcons={Document:FileText,DocumentChecked:FileCheck,Files,Tickets:ListChecks,ChatDotRound:MessageSquare,Connection:Network,Operation:Activity,DataAnalysis:ChartNoAxesCombined,Picture:Image,Clock,DocumentCopy:Copy,Refresh:RefreshCw,Upload,Warning:TriangleAlert,ArrowRight:ChevronRight,Close:X};
+function WorkbenchIcon({name,size=18,className}){const Icon=workbenchIcons[name]||FileText;return <Icon size={size} className={className} aria-hidden="true"/>}
 
 export function AgentWorkbenchPanel({sessionId,base='',messages=[],onFork,onReference}){
  const reducedMotion=useReducedMotion();
@@ -74,7 +74,10 @@ export function AgentWorkbenchPanel({sessionId,base='',messages=[],onFork,onRefe
   {(error||state.error)&&<p role="alert" className="wb-error">{error||state.error}</p>}
   {tab==='RECOVERY'&&<p className="wb-note">仅能恢复已保存检查点的任务；未保存检查点的历史任务只能追溯，无法续跑。</p>}
   {tab==='FILE'?<>
-   <label className="wb-upload"><span className="wb-upload-title"><WorkbenchIcon name="Upload"/>上传本人资料</span><input type="file" accept=".png,.jpg,.jpeg,.webp,.pdf,.txt,.md,.csv,.json,.html,.svg" disabled={busy||!state.loaded} onChange={event=>{const file=event.target.files?.[0];if(file)run(()=>client.upload(file));event.target.value=''}}/></label><p className="wb-note">单文件上限 {state.loaded?composerAttachment({bytes:state.limits?.maxFileBytes}).size:'尚未核对'} · HTML/SVG 仅查看源码</p>
+   <details className="wb-upload-disclosure" open={state.loaded&&!state.files.length&&!state.businessFiles.length}>
+    <summary><WorkbenchIcon name="Upload" size={16}/><span>上传本人资料</span><WorkbenchIcon name="ArrowRight" size={13} className="wb-folder-chevron"/></summary>
+    <label className="wb-upload"><span className="wb-upload-title">选择要上传的文件</span><input type="file" accept=".png,.jpg,.jpeg,.webp,.pdf,.txt,.md,.csv,.json,.html,.svg" disabled={busy||!state.loaded} onChange={event=>{const file=event.target.files?.[0];if(file)run(()=>client.upload(file));event.target.value=''}}/></label><p className="wb-note">单文件上限 {state.loaded?composerAttachment({bytes:state.limits?.maxFileBytes}).size:'尚未核对'} · HTML/SVG 仅查看源码</p>
+   </details>
    <details className="wb-business-link"><summary><Network size={15} aria-hidden="true"/>关联已有业务资料</summary><p className="wb-note">填写有权访问的任务或报告编号，每次读取重新鉴权。</p><form className="wb-business-form" onSubmit={event=>{event.preventDefault();if(!busy&&state.loaded&&businessId.trim())run(()=>client.attachBusiness(businessKind,businessId.trim()))}}><select aria-label="业务文件类型" disabled={busy||!state.loaded} value={businessKind} onChange={event=>setBusinessKind(event.target.value)}><option value="DETECTION">检测任务</option><option value="REPORT">质检报告</option></select><input aria-label="业务对象编号" placeholder="任务或报告编号" maxLength={128} disabled={busy||!state.loaded} value={businessId} onChange={event=>setBusinessId(event.target.value)}/><button type="submit" disabled={busy||!state.loaded||!businessId.trim()}>关联业务文件</button></form></details>
    <AgentWorkbenchFiles key={sessionId} files={state.files} businessFiles={state.businessFiles} known={state.loaded} loading={state.loading} error={state.error} busy={busy} onPreview={file=>show(file)} onDownload={file=>show(file,true)} onReference={file=>onReference?.('@file:'+file.id)} onCopy={file=>run(()=>navigator.clipboard.writeText('@file:'+file.id))} onRemove={removeFile} onPreviewBusiness={showBusiness}/>
   </>:tab==='FORK'?<AgentForkPanel key={sessionId} sessionId={sessionId} messages={messages} lineage={state.lineage} known={state.loaded} loading={state.loading} readError={state.error} busy={busy} onSource={onFork} onFork={async id=>{const result=await run(()=>client.fork(id));if(result)onFork?.(result.sessionId)}}/>:<>
@@ -86,7 +89,7 @@ export function AgentWorkbenchPanel({sessionId,base='',messages=[],onFork,onRefe
     {['/detection','/agent/mcp','/agent/actions'].includes(item.data.managementPath)&&<a href={base+'/#'+item.data.managementPath}>打开原任务页面</a>}
     {['PLAN','QUESTION'].includes(item.kind)?<WorkbenchInteractionRecord key={item.id+':'+item.revision+':body'} item={item} part="body"/>:item.data.text&&item.kind!=='CONTEXT'&&<pre tabIndex={0} aria-label="工作记录正文">{item.data.text}</pre>}
     {item.kind==='EXECUTION'&&item.data.result&&<p className="wb-output">{item.data.result}</p>}
-    {item.kind==='EXECUTION'&&['RUNNING','QUEUED','READY','WAITING_PLAN','WAITING_INPUT','WAITING_CHILD'].includes(item.status)&&<button disabled={busy} onClick={()=>cancelTask(item)}>取消任务</button>}
+    {item.kind==='EXECUTION'&&['RUNNING','QUEUED','READY','WAITING_PLAN','WAITING_INPUT','WAITING_CHILD'].includes(item.status)&&<button type="button" className="wb-button-danger wb-execution-cancel" disabled={busy} onClick={()=>cancelTask(item)}><WorkbenchIcon name="Close" size={14}/>取消任务</button>}
     <AgentTaskChecklist tasks={item.data.tasks} traceBase={base}/>
     {['PLAN','QUESTION'].includes(item.kind)&&<WorkbenchInteractionRecord key={item.id+':'+item.revision+':response'} item={item} part="response"/>}
 

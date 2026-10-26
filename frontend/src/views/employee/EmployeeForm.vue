@@ -13,16 +13,16 @@
             <el-form-item label="姓名" prop="name"><el-input v-model="employeeForm.name" placeholder="填写业务人员姓名" maxlength="20" show-word-limit /></el-form-item>
             <el-form-item label="员工编号" prop="employeeNumber"><el-input v-model="employeeForm.employeeNumber" placeholder="填写员工登记编号" aria-describedby="employee-number-help" /><p id="employee-number-help" class="managed-field-help">编号是否重复以保存时的服务端校验为准。</p></el-form-item>
             <el-form-item label="联系方式" prop="contact"><el-input v-model="employeeForm.contact" placeholder="填写手机号或邮箱" autocomplete="off" aria-describedby="employee-contact-help" /><p id="employee-contact-help" class="managed-field-help">用于业务联系，不会创建登录账号。</p></el-form-item>
-            <el-form-item label="性别"><el-select v-model="employeeForm.gender" placeholder="选择已登记性别"><el-option label="男" value="男" /><el-option label="女" value="女" /></el-select></el-form-item>
+            <el-form-item label="性别"><el-select v-model="employeeForm.gender" popper-class="business-select-popper" placeholder="选择已登记性别"><el-option label="男" value="男" /><el-option label="女" value="女" /></el-select></el-form-item>
           </div>
         </section>
         <section class="managed-form-section" aria-labelledby="employee-position-heading">
           <div class="managed-form-section-heading"><AppIcon name="Collection" :size="19" /><div><h2 id="employee-position-heading">部门与业务岗位</h2><p>业务岗位参与设备分配校验，不授予登录角色或主管权限。</p></div></div>
           <div class="device-form-grid">
-            <el-form-item label="部门 / 班组" prop="departmentId"><el-select v-model="departmentModel" :disabled="departmentLoading || !departmentsLoaded || !!departmentError" :loading="departmentLoading" filterable placeholder="选择已有部门或班组"><el-option v-if="departmentModel && !departments.some(item=>resourceId(item.id)===departmentModel)" :value="departmentModel" :label="`原登记 ${employeeForm.department || departmentModel}（待核对）`" disabled /><el-option v-for="item in departments" :key="item.id" :label="item.name || '部门名称未记录'" :value="resourceId(item.id)" /></el-select><p class="managed-field-help">{{ departmentLoading ? '正在读取部门' : departmentsLoaded ? `本次读取 ${departments.length} 项，搜索仅在已读取项内进行` : '部门候选尚未读取' }}<router-link v-if="supervisor" :to="{name:'organization'}">维护部门</router-link></p></el-form-item>
-            <el-form-item label="人员业务岗位" prop="employeeType"><el-select v-model="employeeForm.employeeType" placeholder="选择业务岗位"><el-option v-for="item in employeeTypeOptions" :key="item.value" :label="item.label" :value="item.value" /></el-select></el-form-item>
-            <el-form-item label="入职日期"><el-date-picker v-model="employeeForm.hireDate" type="date" placeholder="选择入职日期" format="YYYY-MM-DD" value-format="YYYY-MM-DD" /><p class="managed-field-help">保存日历日期，不按时区转换日期。</p></el-form-item>
-            <el-form-item label="在岗状态" prop="status"><el-select v-model="employeeForm.status" placeholder="选择在岗状态"><el-option v-for="item in statusOptions" :key="item.value" :label="item.label" :value="item.value" /></el-select><p class="managed-field-help">已有分配设备时，改为非在岗状态需先完成设备归还。</p></el-form-item>
+            <el-form-item label="部门 / 班组" prop="departmentId"><el-select v-model="departmentModel" popper-class="business-select-popper" :disabled="departmentLoading || !departmentsLoaded || !!departmentError" :loading="departmentLoading" filterable placeholder="选择已有部门或班组"><el-option v-if="departmentModel && !departments.some(item=>resourceId(item.id)===departmentModel)" :value="departmentModel" :label="`原登记 ${employeeForm.department || departmentModel}（待核对）`" disabled /><el-option v-for="item in departments" :key="item.id" :label="item.name || '部门名称未记录'" :value="resourceId(item.id)" /></el-select><p class="managed-field-help">{{ departmentLoading ? '正在读取部门' : departmentsLoaded ? `本次读取 ${departments.length} 项，搜索仅在已读取项内进行` : '部门候选尚未读取' }}<router-link v-if="supervisor" :to="{name:'organization'}">维护部门</router-link></p></el-form-item>
+            <el-form-item label="人员业务岗位" prop="employeeType"><el-select v-model="employeeForm.employeeType" popper-class="business-select-popper" placeholder="选择业务岗位"><el-option v-for="item in employeeTypeOptions" :key="item.value" :label="item.label" :value="item.value" /></el-select></el-form-item>
+            <el-form-item label="入职日期"><el-date-picker v-model="employeeForm.hireDate" popper-class="business-date-popper" type="date" placeholder="选择入职日期" format="YYYY-MM-DD" value-format="YYYY-MM-DD" /><p class="managed-field-help">保存日历日期，不按时区转换日期。</p></el-form-item>
+            <el-form-item label="在岗状态" prop="status"><el-select v-model="employeeForm.status" popper-class="business-select-popper" placeholder="选择在岗状态"><el-option v-for="item in statusOptions" :key="item.value" :label="item.label" :value="item.value" /></el-select><p class="managed-field-help">已有分配设备时，改为非在岗状态需先完成设备归还。</p></el-form-item>
           </div>
         </section>
         <section class="managed-form-section" aria-labelledby="employee-note-heading"><div class="managed-form-section-heading"><AppIcon name="Document" :size="19" /><div><h2 id="employee-note-heading">补充说明</h2><p>当前接口不会持久保存备注，请勿用于重要交接。</p></div></div><el-form-item label="备注（当前不持久保存）"><el-input v-model="employeeForm.remark" type="textarea" :rows="3" placeholder="临时填写内容不会保存在人员档案中" /></el-form-item></section>
@@ -33,7 +33,7 @@
   </div>
 </template>
 <script setup>
-import { ref,computed,watch,onBeforeUnmount } from 'vue'
+import { ref,computed,watch,onBeforeUnmount,nextTick } from 'vue'
 import request from '../../api/request'
 import { beijingDateTime } from '../../utils/beijingTime'
 import { useManagedForm } from '../../composables/useManagedForm'
@@ -65,6 +65,9 @@ async function loadDepartments(){
     const ids=new Set()
     for(const row of response.data.data){const key=resourceId(row?.id);if(!key || ids.has(key))throw new Error('部门编号未完整读取');ids.add(key)}
     departments.value=response.data.data;departmentsLoaded.value=true
+    // Recheck an existing selection after the candidates arrive, replacing any loading-time error.
+    await nextTick()
+    if(current() && departmentModel.value)await formRef.value?.validateField('departmentId').catch(()=>{})
   }catch(error){if(current())departmentError.value=error.response?.data?.message || error.message || '部门暂不可读取，已有表单输入保留'}
   finally{if(current())departmentLoading.value=false}
 }

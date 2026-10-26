@@ -6,8 +6,11 @@
   <p v-if="error||state.error" role="alert" class="wb-error">{{ error||state.error }}</p>
   <p v-if="tab==='RECOVERY'" class="wb-note">仅能恢复已保存检查点的任务；未保存检查点的历史任务只能追溯，无法续跑。</p>
   <template v-if="tab==='FILE'">
-   <label class="wb-upload"><span class="wb-upload-title"><AppIcon name="Upload" :size="18" />上传本人资料</span><input type="file" accept=".png,.jpg,.jpeg,.webp,.pdf,.txt,.md,.csv,.json,.html,.svg" :disabled="busy||!state.loaded" @change="upload" /></label>
-   <p class="wb-note">单文件上限 {{ state.loaded?composerAttachment({bytes:state.limits?.maxFileBytes}).size:'尚未核对' }} · HTML/SVG 仅查看源码</p>
+   <details class="wb-upload-disclosure" :open="state.loaded&&!state.files.length&&!state.businessFiles.length">
+    <summary><AppIcon name="Upload" :size="16" /><span>上传本人资料</span><AppIcon name="ArrowRight" :size="13" class="wb-folder-chevron" /></summary>
+    <label class="wb-upload"><span class="wb-upload-title">选择要上传的文件</span><input type="file" accept=".png,.jpg,.jpeg,.webp,.pdf,.txt,.md,.csv,.json,.html,.svg" :disabled="busy||!state.loaded" @change="upload" /></label>
+    <p class="wb-note">单文件上限 {{ state.loaded?composerAttachment({bytes:state.limits?.maxFileBytes}).size:'尚未核对' }} · HTML/SVG 仅查看源码</p>
+   </details>
    <details class="wb-business-link"><summary><AppIcon name="Connection" :size="15" />关联已有业务资料</summary><p class="wb-note">填写有权访问的任务或报告编号，每次读取重新鉴权。</p><form class="wb-business-form" @submit.prevent="attachBusiness"><select v-model="businessKind" aria-label="业务文件类型" :disabled="busy||!state.loaded"><option value="DETECTION">检测任务</option><option value="REPORT">质检报告</option></select><input v-model="businessId" aria-label="业务对象编号" placeholder="任务或报告编号" maxlength="128" :disabled="busy||!state.loaded"/><button type="submit" :disabled="busy||!state.loaded||!businessId.trim()">关联业务文件</button></form></details>
    <AgentWorkbenchFiles :key="sessionId" :files="state.files" :business-files="state.businessFiles" :known="state.loaded" :loading="state.loading" :error="state.error" :busy="busy" @preview="preview" @download="download" @reference="insertReference" @copy="copyReference" @remove="removeFile" @preview-business="previewBusiness" />
   </template>
@@ -25,7 +28,7 @@
     <WorkbenchInteractionRecord v-if="['PLAN','QUESTION'].includes(item.kind)" :key="item.id+':'+item.revision+':body'" :item="item" part="body" />
     <pre v-else-if="item.data.text && item.kind!=='CONTEXT'" tabindex="0" aria-label="工作记录正文">{{ item.data.text }}</pre>
     <p v-if="item.kind==='EXECUTION'&&item.data.result" class="wb-output">{{ item.data.result }}</p>
-    <button v-if="item.kind==='EXECUTION'&&['RUNNING','QUEUED','READY','WAITING_PLAN','WAITING_INPUT','WAITING_CHILD'].includes(item.status)" :disabled="busy" @click="cancelTask(item)">取消任务</button>
+    <button v-if="item.kind==='EXECUTION'&&['RUNNING','QUEUED','READY','WAITING_PLAN','WAITING_INPUT','WAITING_CHILD'].includes(item.status)" type="button" class="wb-button-danger wb-execution-cancel" :disabled="busy" @click="cancelTask(item)"><AppIcon name="Close" :size="14" />取消任务</button>
     <AgentTaskChecklist :tasks="Array.isArray(item.data.tasks)?item.data.tasks:undefined" />
     <WorkbenchInteractionRecord v-if="['PLAN','QUESTION'].includes(item.kind)" :key="item.id+':'+item.revision+':response'" :item="item" part="response" />
     <WorkbenchInteraction v-if="['PLAN','QUESTION'].includes(item.kind) && item.status === 'PENDING'" :item="item" :value="item.data.questionType === 'MULTIPLE' ? (selections[item.id] || []) : (drafts[item.id] || '')" :busy="busy" @update:value="updateInteraction(item, $event)" @command="act(item, $event.action, $event.input)" />

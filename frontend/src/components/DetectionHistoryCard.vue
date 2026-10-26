@@ -3,6 +3,7 @@
     <header class="history-card-heading"><span class="history-card-symbol"><AppIcon name="Picture" :size="20" /></span><div><h3>{{ task.folderName || task.captureInfo?.imageFolderName || '检测任务' }}</h3><button type="button" class="history-task-link" @click="$emit('trace',task.taskId)">{{ task.taskId }}</button></div><StatusBadge domain="detection" :code="statusCode" /></header>
     <div class="history-quality-states"><span>流转 <StatusBadge domain="flow" :code="task.flowStatus" /></span><span>复核 <StatusBadge domain="review" :code="task.reviewStatus" /></span><StatusBadge v-if="task.reviewConclusion" domain="reviewConclusion" :code="task.reviewConclusion" /></div>
     <dl class="history-image-counts"><div><dt>图片总数</dt><dd>{{ count(task.totalImages ?? task.imageCount) }}<small>张</small></dd></div><div><dt>检测成功图片</dt><dd>{{ count(task.successfulImages) }}<small>张</small></dd></div><div :data-attention="knownCount(task.failedImages)>0"><dt>检测失败图片</dt><dd>{{ count(task.failedImages) }}<small>张</small></dd></div></dl>
+    <NoDetectionSummary v-if="task.result" :result="task.result" />
     <p class="history-card-time"><AppIcon name="Clock" :size="14" />{{ task.finishedAt ? '检测结束' : '任务创建' }} {{ time(task.finishedAt || task.createdAt) }} · UTC+8</p>
     <dl class="history-capture-fields"><div><dt>工单 / 批次</dt><dd><router-link v-if="task.workOrderNo" :to="{path:'/quality/work-order-trace',query:{workOrderNo:task.workOrderNo}}">{{ task.workOrderNo }}</router-link><span v-else>工单未记录</span><router-link v-if="task.batchNo" :to="{path:'/quality/batch-trace',query:{batchNo:task.batchNo}}">{{ task.batchNo }}</router-link><span v-else>批次未记录</span></dd></div><div><dt>采集人员 / 区域</dt><dd>{{ task.captureInfo?.collector || '人员未记录' }}<span>{{ task.captureInfo?.region || '区域未记录' }}</span></dd></div><div><dt>采集设备</dt><dd>{{ task.captureInfo?.deviceName || '未记录' }}</dd></div><div><dt>采集日期</dt><dd>{{ task.captureInfo?.captureDate || '未记录' }}</dd></div></dl>
     <p v-if="task.errorMessage" class="history-task-error" :data-failed="statusCode==='FAILED'"><AppIcon name="Warning" :size="15" /><span>任务记录的异常说明：{{ task.errorMessage }}</span></p>
@@ -18,6 +19,7 @@
 </template>
 
 <script setup>
+import NoDetectionSummary from './NoDetectionSummary.vue'
 import { computed } from 'vue'
 import { knownCount } from '@/utils/countPresentation'
 import { beijingDateTime } from '@/utils/beijingTime'
@@ -85,5 +87,5 @@ const classCounts = computed(() => {
 .history-local-details p { margin:10px 0; overflow-wrap:anywhere; }
 .history-local-details code { display:block; margin-top:6px; font-size:11px; overflow-wrap:anywhere; }
 .detection-history-card :is(button,a,summary):focus-visible { outline:2px solid var(--app-primary); outline-offset:3px; border-radius:3px; }
-@media(max-width:640px) { .detection-history-card { padding:16px; } .history-card-heading { flex-wrap:wrap; } .history-card-heading > .business-status { margin-left:47px; } .history-capture-fields { grid-template-columns:minmax(0,1fr); gap:12px; } }
+@media(max-width:640px) { .detection-history-card { padding:16px; } .history-card-heading { display:grid; grid-template-columns:36px minmax(0,1fr); gap:9px 11px; } .history-card-heading > .business-status { grid-column:2; justify-self:start; max-width:100%; margin-left:0; } .history-capture-fields { grid-template-columns:minmax(0,1fr); gap:12px; } }
 </style>

@@ -14,3 +14,21 @@
 .agent-workbench .wb-interaction-record .wb-record-reading-hint { display:flex; align-items:flex-start; gap:6px; margin:8px 0 0; font-size:12px; line-height:1.85; color:var(--app-text-secondary); overflow-wrap:anywhere; }
 .wb-interaction-record .wb-record-reading-hint > :is(svg,.el-icon) { flex:0 0 auto; margin-top:4px; }
 @media(max-width:480px) { .wb-interaction-record .wb-record-copy.is-long { max-height:300px; max-height:min(300px,42dvh); } }
+
+/* Plan reading uses the same safe Markdown subset in both clients. */
+.agent-workbench .wb-record-copy .wb-record-markdown { font:inherit; color:inherit; }
+.agent-workbench .wb-record-copy .wb-record-markdown :is(h2,h3,h4,h5,h6) { display:block; margin:18px 0 8px; font-size:14px; font-weight:650; line-height:1.7; color:var(--app-text); }
+.agent-workbench .wb-record-copy .wb-record-markdown > :first-child { margin-top:0; }
+.agent-workbench .wb-record-copy .wb-record-markdown :is(p,ul,ol,blockquote,.agent-code,.agent-markdown-table) { margin:10px 0; }
+.agent-workbench .wb-record-copy .wb-record-markdown :is(ul,ol) { padding-left:21px; }
+.agent-workbench .wb-record-copy .wb-record-markdown li { padding:2px 0; }
+.agent-workbench .wb-record-copy .wb-record-markdown > :last-child { margin-bottom:0; }
+.wb-interaction-record .wb-record-source { margin:10px 0 0; min-width:0; }
+.wb-interaction-record .wb-record-source summary { display:flex; align-items:center; gap:6px; width:fit-content; max-width:100%; padding:4px 0; color:var(--app-text-secondary); font-size:12px; line-height:1.8; cursor:pointer; list-style:none; transition:color 180ms ease; }
+.wb-record-source summary::-webkit-details-marker { display:none; }
+.wb-record-source summary::after { content:''; width:6px; height:6px; margin-left:4px; border-right:1.5px solid currentColor; border-bottom:1.5px solid currentColor; transform:rotate(45deg); transition:transform 180ms ease; }
+.wb-record-source[open] summary::after { transform:rotate(225deg); }
+.wb-interaction-record .wb-record-source summary:hover { color:var(--app-primary); }
+.wb-interaction-record .wb-record-source pre { max-width:100%; max-height:300px; max-height:min(300px,42dvh); margin:8px 0 0; padding:10px 12px; border-left:2px solid var(--app-border); background:var(--app-surface-muted); color:var(--app-text); font:12px/1.85 Consolas,"Cascadia Code",monospace; white-space:pre-wrap; overflow:auto; overflow-wrap:anywhere; overscroll-behavior:contain; }
+.wb-record-source :is(summary,pre):focus-visible { outline:2px solid var(--app-primary); outline-offset:2px; }
+@media(prefers-reduced-motion:reduce) { .wb-interaction-record .wb-record-source summary,.wb-record-source summary::after { transition:none; } }

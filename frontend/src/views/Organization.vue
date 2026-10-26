@@ -63,7 +63,7 @@
         <div class="organization-binding-target"><AppIcon name="Key" :size="23" /><div><strong>{{ selectedAccount.username || '账号名称未记录' }}</strong><small>{{ roleLabel(selectedAccount.role) }} · 账号 ID {{ selectedAccount.userId }} · 版本 {{ selectedAccount.bindingVersion??'待核对' }}</small></div></div>
         <p class="muted">原关联：{{ employeeLabel(selectedAccount) }}</p>
         <el-form-item label="关联员工">
-          <el-select v-model="selectedEmployee" filterable remote :remote-method="findEmployees" :loading="employeeLoading" clearable aria-label="输入姓名或从在岗员工中选择" placeholder="输入姓名或从在岗员工中选择" style="width:100%" :disabled="saving||bindingUncertain">
+          <el-select v-model="selectedEmployee" popper-class="business-select-popper" filterable remote :remote-method="findEmployees" :loading="employeeLoading" clearable aria-label="输入姓名或从在岗员工中选择" placeholder="输入姓名或从在岗员工中选择" style="width:100%" :disabled="saving||bindingUncertain">
             <el-option v-for="e in employeeOptions" :key="e.id" :value="e.id" :label="`${e.name||'姓名未记录'} / ${e.employeeNumber||'编号未记录'} / ${e.department||'部门未记录'}`" />
           </el-select>
         </el-form-item>

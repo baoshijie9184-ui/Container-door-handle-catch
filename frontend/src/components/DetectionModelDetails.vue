@@ -1,7 +1,7 @@
 <template>
   <section class="detection-model-details" aria-label="检测模型资料">
     <header class="detection-model-heading">
-      <span><AppIcon name="Tickets" :size="25" /></span>
+      <span class="detection-model-symbol"><AppIcon name="Tickets" :size="25" /></span>
       <div><h3>{{ model.modelName || '模型名称未记录' }}</h3><p>版本 {{ model.version || '未记录' }} · 模型 ID {{ model.modelId ?? '未记录' }}</p></div>
       <StatusBadge domain="model" :code="model.status" />
     </header>
@@ -17,10 +17,15 @@
 
     <section class="model-detail-group">
       <h4><AppIcon name="DataAnalysis" :size="17" />效果评估资料</h4>
-      <p class="model-detail-note">以下为已登记指标，取值范围 0 至 1。缺失或无效值显示“待核对”，不补零；本页不自动运行评测。</p>
-      <dl class="model-detail-metrics"><div v-for="[key,label] in metrics" :key="key"><dt>{{ label }}</dt><dd :class="{'is-unknown':modelMetricNumber(model[key])==null}">{{ modelMetricNumber(model[key])==null ? '待核对' : modelMetric(model[key]) }}</dd></div></dl>
+      <p class="model-detail-note">mAP 沿用当前 AP 评估口径，以百分比展示。这里只展示登记结果，不自动训练、测速或运行评测。</p>
+      <dl class="model-detail-metrics model-primary-metrics"><div v-for="[key,label] in metrics" :key="key"><dt>{{ label }}</dt><dd :class="{'is-unknown':modelMetricNumber(model[key])==null}">{{ modelMetricNumber(model[key])==null ? '待核对' : modelMetric(model[key]) }}</dd></div></dl>
+      <p class="model-detail-note">AP50、AP75 应分别核对原始评测报告，不能由 AP 推算。</p>
+      <dl class="model-detail-metrics model-fact-metrics"><div><dt>整图未检出率（漏检率）</dt><dd>{{ emptyImages.value }}</dd></div><div><dt>实测速度 FPS</dt><dd>{{ modelFps(model.inferenceFps) }}</dd></div></dl>
+      <p class="model-detail-note">{{ emptyImages.description }}。未检出表示没有任何类别目标通过本次阈值，Normal 检出也算检出；失败图片不计入分母，不等同有真实标注的漏检判定。</p>
+      <dl class="model-detail-facts"><dt>训练图片数量</dt><dd>{{ modelTrainingImages(model.trainingImageCount) }}</dd><dt>训练完成日期 · UTC+8</dt><dd>{{ modelTime(model.trainingCompletedAt) }}</dd></dl>
+      <details v-if="legacyMetrics.length" class="model-storage-details"><summary><AppIcon name="Document" :size="15" />其他历史指标<AppIcon class="model-storage-chevron" name="ArrowDown" :size="13" /></summary><p class="model-detail-note">保留已有登记，不作为当前模型的主评估指标。</p><dl class="model-detail-metrics"><div v-for="[key,label] in legacyMetrics" :key="key"><dt>{{ label }}</dt><dd>{{ modelMetricNumber(model[key])==null ? '待核对' : modelMetric(model[key]) }}</dd></div></dl></details>
       <dl class="model-detail-facts"><dt>评估数据集</dt><dd>{{ model.evaluationDataset || '未记录' }}</dd><dt>登记的平均耗时</dt><dd>{{ modelMilliseconds(model.avgInferenceMs) }}</dd><dt>资料状态</dt><dd><StatusBadge domain="modelEvaluation" :code="model.mlopsStatus" /></dd></dl>
-      <div v-if="model.compatibilityNote" class="model-compatibility-note"><h5><AppIcon name="Connection" :size="15" />兼容性说明</h5><div :key="model.compatibilityNote" class="model-detail-copy" :class="{'is-long':longText(model.compatibilityNote)}" :tabindex="longText(model.compatibilityNote) ? 0 : undefined" :role="longText(model.compatibilityNote) ? 'region' : undefined" :aria-label="longText(model.compatibilityNote) ? '兼容性完整说明，可使用方向键滚动' : undefined"><p>{{ model.compatibilityNote }}</p></div><p v-if="longText(model.compatibilityNote)" class="model-detail-reading-hint"><AppIcon name="Rank" :size="13" />完整兼容性说明可在上方区域内滚动阅读</p></div>
+      <div v-if="model.compatibilityNote" class="model-compatibility-note"><h5><AppIcon name="Connection" :size="15" />测试环境与兼容性说明</h5><div :key="model.compatibilityNote" class="model-detail-copy" :class="{'is-long':longText(model.compatibilityNote)}" :tabindex="longText(model.compatibilityNote) ? 0 : undefined" :role="longText(model.compatibilityNote) ? 'region' : undefined" :aria-label="longText(model.compatibilityNote) ? '兼容性完整说明，可使用方向键滚动' : undefined"><p>{{ model.compatibilityNote }}</p></div><p v-if="longText(model.compatibilityNote)" class="model-detail-reading-hint"><AppIcon name="Rank" :size="13" />完整兼容性说明可在上方区域内滚动阅读</p></div>
     </section>
 
     <section class="model-detail-group">
@@ -40,16 +45,20 @@
   </section>
 </template>
 <script setup>
-import {modelTime,modelMetric,modelMetricNumber,modelMilliseconds,modelUsage,modelDefault,modelStrategy,modelNextStep} from '@/utils/detectionModelPresentation'
+import { computed } from 'vue'
+import {modelTime,modelMetric,modelMetricNumber,modelMilliseconds,modelUsage,modelDefault,modelStrategy,modelNextStep,modelPrimaryMetricFields,modelLegacyMetricFields,modelFps,modelTrainingImages,modelNoDetection} from '@/utils/detectionModelPresentation'
 
-defineProps({model:{type:Object,required:true}})
-const metrics=[['precisionScore','Precision'],['recallScore','Recall'],['mapScore','mAP'],['f1Score','F1']]
+const props=defineProps({model:{type:Object,required:true}})
+const metrics=modelPrimaryMetricFields
+const emptyImages=computed(()=>modelNoDetection(props.model))
+const legacyMetrics=computed(()=>modelLegacyMetricFields.filter(([key])=>props.model[key]!=null))
 const longText=value=>typeof value==='string' && (value.length>480 || value.split(/\r?\n/).length>7)
 </script>
 <style scoped>
 .detection-model-details{min-width:0}
 .detection-model-heading{display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap}
-.detection-model-heading>span{display:grid;place-items:center;width:44px;height:44px;border-radius:11px;background:var(--app-primary-soft);color:var(--app-primary);flex:0 0 auto}
+.detection-model-symbol{display:grid;place-items:center;width:44px;height:44px;border-radius:11px;background:var(--app-primary-soft);color:var(--app-primary);flex:0 0 auto}
+.detection-model-heading>.business-status{flex-shrink:0}
 .detection-model-heading>div{flex:1;min-width:140px}
 .detection-model-heading h3{margin:0;font-size:18px;color:var(--app-text);line-height:1.6;overflow-wrap:anywhere}
 .detection-model-heading p{margin:5px 0 0;font-size:12px;line-height:1.8;color:var(--app-text-secondary);overflow-wrap:anywhere}
@@ -64,6 +73,9 @@ const longText=value=>typeof value==='string' && (value.length>480 || value.spli
 .model-detail-metrics dt{font-size:12px;color:var(--app-text-secondary);line-height:1.8;overflow-wrap:anywhere}
 .model-detail-metrics dd{margin:0;font-size:19px;font-weight:650;color:var(--app-text);line-height:1.5;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
 .model-detail-metrics dd.is-unknown{font-size:13px;font-weight:400;color:var(--app-text-secondary);align-self:center}
+.model-detail-metrics.model-primary-metrics{grid-template-columns:minmax(0,1fr);max-width:260px}
+.model-fact-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}
+.model-primary-metrics dd{font-size:28px}
 .model-detail-facts{display:grid;grid-template-columns:135px minmax(0,1fr);gap:10px 16px;font-size:13px;line-height:1.85;margin:16px 0 0}
 .model-detail-facts dt{color:var(--app-text-secondary)}
 .model-detail-facts dd{margin:0;min-width:0;overflow-wrap:anywhere;color:var(--app-text)}

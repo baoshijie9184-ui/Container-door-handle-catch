@@ -9,7 +9,14 @@ public interface ModelAgentReadApi {
     List<ModelView> models(AgentActor actor, int page, int size);
     ModelView model(AgentActor actor, int modelId);
     record Evaluation(String dataset, BigDecimal precisionScore, BigDecimal recallScore, BigDecimal mapScore,
-                      BigDecimal f1Score, Integer avgInferenceMs) {}
+                      BigDecimal f1Score, Integer avgInferenceMs, Integer trainingImageCount,
+                      LocalDateTime trainingCompletedAt, Integer evaluationImageCount,
+                      Integer noDetectionImageCount, BigDecimal inferenceFps) {
+        public Evaluation(String dataset, BigDecimal precisionScore, BigDecimal recallScore, BigDecimal mapScore,
+                          BigDecimal f1Score, Integer avgInferenceMs) {
+            this(dataset, precisionScore, recallScore, mapScore, f1Score, avgInferenceMs, null, null, null, null, null);
+        }
+    }
     /** 数据库配置，不表示执行链已按此分流。 */
     record Rollout(String strategy, Integer configuredPercent, String abGroup, Integer rollbackFromModelId) {}
     record Usage(Integer count, LocalDateTime lastUsedAt, LocalDateTime publishedAt) {}

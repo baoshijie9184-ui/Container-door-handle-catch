@@ -1,4 +1,6 @@
-.conversation-controls{margin:4px 16px 0;padding:4px 8px;border:0;border-radius:18px;background:#f4f5f7;color:#25354a;font-size:12px;animation:conversation-arrive .18s ease-out}
+.conversation-control-host{display:contents}
+.conversation-controls{margin:0 0 6px;padding:4px 8px;border:0;border-radius:10px;background:var(--app-bg);color:var(--app-text);font-size:12px;animation:conversation-arrive .18s ease-out}
+.conversation-control-error{margin:4px 0;font-size:12px;line-height:1.6}
 .conversation-options>summary{color:#697586;cursor:pointer;min-height:22px;line-height:22px;font-size:11px;padding:0 3px}.conversation-options[open]{padding-bottom:6px}.conversation-options>summary:focus-visible{outline:2px solid #2563eb;border-radius:5px}.conversation-options .conversation-delivery>span{display:none}.conversation-options .conversation-delivery{font-size:11px}.conversation-options .conversation-control-bar{padding-top:4px}
 .conversation-control-bar{display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap}
 .conversation-control-bar>span{font-weight:600;color:#245cc6}
@@ -9,7 +11,7 @@
 .conversation-delivery select{border:1px solid #dce3ee;background:#f8faff;color:#244674;border-radius:6px;padding:5px}
 .conversation-delivery>span{color:#708096;font-size:11px}
 .control-error{color:#b33d3d;font-size:12px;line-height:1.65}
-.conversation-queue{list-style:none;padding:0;margin:8px -6px 0;max-height:170px;overflow:auto;border-radius:8px;background:#f6f8fb}
+.conversation-queue{list-style:none;padding:0;margin:4px -6px 0;max-height:112px;overflow:auto;overscroll-behavior:contain;border-radius:8px;background:var(--app-bg)}
 .conversation-queue li{display:flex;gap:8px;min-height:42px;align-items:center;padding:4px 8px;animation:conversation-arrive .18s ease-out}
 .conversation-queue li+li{border-top:1px solid #e9edf3}
 .queue-entry-icon{flex-shrink:0;color:#8591a2;width:16px;font-size:16px}
@@ -26,6 +28,11 @@
 .queue-row-enter-active,.queue-row-leave-active,.queue-row-move{transition:opacity .16s ease,transform .16s ease}
 .queue-row-enter-from,.queue-row-leave-to{opacity:0;transform:translateY(4px)}
 .queue-count { margin:6px 3px 3px; color:var(--app-text-muted); font-size:11px; line-height:1.7; }
+.conversation-controls .queue-preference { display:flex; align-items:center; flex-wrap:wrap; gap:4px 6px; margin:3px; color:var(--app-text-secondary); font-size:12px; line-height:1.8; }
+.conversation-controls .queue-preference > :is(.el-icon,svg) { flex:0 0 auto; color:var(--app-text-secondary); }
+.conversation-controls .queue-preference > span:not(.el-icon) { flex:1 1 120px; }
+.conversation-controls .queue-preference button { margin-left:0; }
+.conversation-controls .queue-preference button:disabled { opacity:.45; cursor:default; transform:none; }
 .control-receipt { display:flex; align-items:center; flex-wrap:wrap; gap:7px; }
 .control-receipt > small { font-size:11px; color:var(--app-text-muted); }
 .control-edit-note { margin:0 0 14px; color:var(--app-text-secondary); font-size:12px; line-height:1.8; }
@@ -41,5 +48,5 @@
 :is(.queue-edit-dialog,.queue-edit-modal) .control-error[role=status] { background:var(--app-warning-soft); color:var(--app-warning); }
 .conversation-control-bar .business-status { font-weight:500; }
 @keyframes conversation-arrive{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
-@media(max-width:540px){.conversation-controls{margin:6px 10px 0;padding:8px}.conversation-delivery>span{flex-basis:100%}.conversation-queue li{gap:4px;min-height:44px;padding:4px 6px}.conversation-queue .queue-icon-button{width:32px;min-height:34px}}
+@media(max-width:540px){.conversation-controls{margin:0 0 4px;padding:4px}.conversation-queue{max-height:96px}.conversation-delivery>span{flex-basis:100%}.conversation-queue li{gap:4px;min-height:40px;padding:3px 6px}.conversation-queue .queue-icon-button{width:32px;min-height:34px}}
 @media(prefers-reduced-motion:reduce){.conversation-controls,.conversation-queue li{animation:none}.conversation-queue button,.queue-preference button,.queue-row-enter-active,.queue-row-leave-active,.queue-row-move{transition:none}}

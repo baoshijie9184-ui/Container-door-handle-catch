@@ -1,0 +1,17 @@
+.record-details { min-width:0; }
+.record-details-group { padding:14px 0; }
+.record-details-group + .record-details-group { border-top:1px solid var(--app-border); }
+.record-details .record-details-heading { display:flex; align-items:flex-start; gap:7px; margin:0 0 12px; color:var(--app-text); font-size:13px; font-weight:600; line-height:1.8; }
+.record-details-heading > .el-icon { flex:none; margin-top:3px; color:var(--app-primary); }
+.record-details-identifiers { min-width:0; margin-top:12px; padding-top:14px; border-top:1px solid var(--app-border); }
+.record-details-identifiers > summary { display:flex; align-items:flex-start; gap:7px; width:fit-content; max-width:100%; border-radius:3px; color:var(--app-text-secondary); font-size:12px; line-height:1.85; cursor:pointer; list-style:none; transition:color 180ms ease; }
+.record-details-identifiers > summary::-webkit-details-marker { display:none; }
+.record-details-identifiers > summary > span { min-width:0; overflow-wrap:anywhere; }
+.record-details-identifiers > summary > .el-icon { flex:none; margin-top:3px; color:var(--app-primary); }
+.record-details-chevron { transition:transform 180ms ease; }
+.record-details-identifiers[open] > summary .record-details-chevron { transform:rotate(180deg); }
+.record-details-identifiers > summary:hover { color:var(--app-primary); }
+.record-details-identifiers > summary:focus-visible { outline:2px solid var(--app-primary); outline-offset:3px; }
+.record-details-identifiers > .recorded-facts { margin-top:14px; }
+.record-details-note { margin:12px 0 0; color:var(--app-text-secondary); font-size:12px; line-height:1.9; overflow-wrap:anywhere; }
+@media(prefers-reduced-motion:reduce) { .record-details-identifiers > summary,.record-details-chevron { transition:none; } }

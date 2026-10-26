@@ -1,5 +1,10 @@
 export const controlPhaseLabels={IDLE:'空闲',RUNNING:'执行中',PAUSE_REQUESTED:'等待安全切点暂停',PAUSED:'已暂停',REMOTE_RUNNING:'其他实例执行中',WAITING_PLAN:'等待计划审阅',WAITING_INPUT:'等待补充信息',WAITING_CHILD:'后台专业任务执行中',AWAITING_RECOVERY:'等待核对与恢复'}
 export const inputStatusLabels={QUEUED:'待处理',STARTED:'已领取执行',APPLIED:'已交付安全切点',COMPLETED:'已完成',FAILED:'已停止或失败',CANCELLED:'已撤回',EXPIRED:'已过期'}
+// The current/first message is not a visible backlog. Show only extra waiting input.
+export function showConversationQueue(state){
+ const count=(state?.inputs||[]).filter(item=>item.status==='QUEUED').length
+ return state?.enabled===true && count>0 && (count>1 || !!state.run?.runId&&state.run.phase!=='IDLE')
+}
 export function normalizeControl(value,sessionId){
  const run=value?.run
  if(run?.sessionId!==sessionId||!Object.hasOwn(controlPhaseLabels,run.phase)||!Number.isSafeInteger(run.revision)||run.revision<0||typeof run.local!=='boolean'||typeof run.text!=='string'||run.text.length>64000||!Array.isArray(value.inputs)||value.inputs.length>50)throw Error('INVALID_CONTROL')

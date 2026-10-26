@@ -17,6 +17,7 @@
           class="brand-mark"
           type="button"
           :aria-label="collapsed ? '展开菜单' : '收起菜单'"
+          :title="collapsed ? '展开菜单' : '收起菜单'"
           :aria-expanded="isMobile ? mobileNavVisible : !collapsed"
           aria-controls="system-sidebar"
           @click="toggleNavigation"
@@ -93,7 +94,7 @@
       </button>
     </div>
 
-    <ChatAssistantLauncher v-if="!isAgentChatRoute && route.path !== '/agent/trace'" @open="handleOpenAssistant" />
+    <ChatAssistantLauncher v-if="!isAgentSection" @open="handleOpenAssistant" />
     <ChatAssistantDrawer v-if="!isAgentChatRoute" />
   </div>
 </template>

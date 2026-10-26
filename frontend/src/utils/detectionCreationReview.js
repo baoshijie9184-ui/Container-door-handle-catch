@@ -1,5 +1,33 @@
 const uuid=value=>typeof value==='string'&&/^[a-f0-9-]{36}$/.test(value)
 const integer=value=>Number.isSafeInteger(value)&&value>=0
+// Accept the existing raw DTOs and the project's Result envelope. HTTP 200 is not a business success.
+export function transferPayload(value){
+ if(value&&typeof value==='object'&&!Array.isArray(value)&&Object.hasOwn(value,'code')){
+  if(value.code!==200){const error=new Error('检测创建核对未返回成功回执');error.status=Number.isInteger(value.code)&&value.code>=400&&value.code<600?value.code:502;throw error}
+  return value.data
+ }
+ return value
+}
+export function transferFailureStatus(error){
+ const http=error?.response?.status,code=error?.response?.data?.code
+ return http>=400?http:code>=400&&code<600?code:error?.status
+}
+export function transferCapability(value){
+ const caps=transferPayload(value)
+ if(!caps||typeof caps!=='object'||Array.isArray(caps))throw new Error('核对能力响应无效')
+ if(caps.enabled===false||caps.detectionCreationReviews===false)return 'DISABLED'
+ if(caps.detectionCreationReviews===true)return 'SUPPORTED'
+ if(caps.detectionCreationReviews!=null)throw new Error('核对能力响应无效')
+ return 'UNKNOWN'
+}
+export function transferReadIssue(error,hasSnapshot=false){
+ const status=transferFailureStatus(error),clear=[401,403,404].includes(status)
+ if(status===404)return {clear:true,availability:'MISSING',message:'核对接口未提供或当前会话不可访问。请核对后端版本和账号范围；没有确认任何检测创建结果。'}
+ if(status===401)return {clear:true,availability:'',message:'登录状态已失效，已清除旧核对资料，请重新登录后读取。不会重发原操作。'}
+ if(status===403)return {clear:true,availability:'',message:'当前账号无权读取这些核对资料，已清除旧内容。不会重发原操作。'}
+ return {clear,availability:'',message:'核对状态暂不可读取，请刷新后再操作。'+(hasSnapshot?'已显示内容仅为上次快照。':'')+'不会重发原操作。'}
+}
+export const transferDisabledMessage='此环境未启用检测创建核对。普通对话可继续使用；启用前需要核对后端配置与迁移。'
 export const transferLabels={NEEDS_REVIEW:'待核对',QUEUED:'已提交检测',CANCELLED:'已终止',PREPARING:'准备中',UPLOADING:'传输中'}
 export const checkLabels={QUEUED:'等待核对',RUNNING:'核对中',VERIFIED:'内容一致',INCOMPLETE:'内容不齐或不一致',UNCONFIRMED:'核对未完成',CANCELLED:'核对已终止'}
 export function validTransferReview(value){return !!value&&uuid(value.commandId)&&typeof value.taskId==='string'&&/^[A-Za-z0-9_-]{1,128}$/.test(value.taskId)&&Object.hasOwn(transferLabels,value.status)&&integer(value.revision)&&integer(value.images)&&integer(value.acknowledged)&&value.acknowledged<=value.images&&typeof value.manifestAvailable==='boolean'&&typeof value.canFinalize==='boolean'&&(value.checkId==null||uuid(value.checkId))&&(value.checkStatus==null||Object.hasOwn(checkLabels,value.checkStatus))&&integer(value.checked)&&integer(value.verified)&&value.verified<=value.checked&&value.checked<=value.images}
