@@ -39,6 +39,39 @@ def config():
     return rehearsal.isolated_config(sample(), PROJECT, 18089, {'backend': 'sha256:'+'a'*64}, 'doorhandledb')
 
 
+def test_compatible_runner_updates_only_its_private_overlay_identities():
+    value = config()
+    value['services']['higress-config'] = {'image': 'old-config', 'environment': {'AGENT_MCP_GATEWAY_KEY': 'private-key'}}
+    original = copy.deepcopy(value)
+    image = 'sha256:'+'b'*64
+    selected = rehearsal.compatible_runner_config(value, image, SimpleNamespace(image=lambda ref: 2))
+    assert value == original
+    assert selected['services']['mcp-runner']['image'] == image
+    assert selected['services']['mcp-runner']['environment']['MCP_FETCH_IMAGE'] == image
+    assert selected['services']['backend']['environment']['AGENT_MCP_GATEWAY_IMAGE'] == image
+    assert selected['services']['higress-config']['image'] == image
+    assert selected['services']['higress-config']['environment'] == original['services']['higress-config']['environment']
+    assert selected['services']['backend']['image'] == original['services']['backend']['image']
+
+
+@pytest.mark.parametrize('reference', ['mutable:tag', 'sha256:bad', None])
+def test_compatible_runner_rejects_mutable_or_invalid_image_before_inspection(reference):
+    def unexpected(ref):raise AssertionError('Invalid image must not be inspected')
+    with pytest.raises(RuntimeError, match='existing immutable'):
+        rehearsal.compatible_runner_config(config(), reference, SimpleNamespace(image=unexpected))
+
+
+@pytest.mark.parametrize('protocol', [0, 1])
+def test_compatible_runner_rejects_legacy_journals(protocol):
+    with pytest.raises(RuntimeError, match='deployment-aware journal'):
+        rehearsal.compatible_runner_config(config(), 'sha256:'+'b'*64, SimpleNamespace(image=lambda ref: protocol))
+
+
+def test_compatible_runner_does_not_add_an_unconfigured_gateway_overlay():
+    with pytest.raises(RuntimeError, match='existing gateway overlay'):
+        rehearsal.compatible_runner_config(config(), 'sha256:'+'b'*64, SimpleNamespace(image=lambda ref: 2))
+
+
 def test_new_receipt_volume_is_owned_before_any_probe_can_create_it(tmp_path):
     calls, checks = [], []
     run = SimpleNamespace(project=PROJECT, config={'volumes': {'receipts': {'name': PROJECT+'_receipts'}}},

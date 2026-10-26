@@ -184,6 +184,20 @@ def validate_isolation(config, project, model_secret_source=None):
                     'Public rehearsal port rejected')
 
 
+def compatible_runner_config(config, image, runtime):
+    require(isinstance(image, str) and re.fullmatch(r'sha256:[a-f0-9]{64}', image),
+            'Compatible runner must be an existing immutable image')
+    require(runtime.image(image) == 2, 'Compatible runner requires the reviewed fixed release and deployment-aware journal')
+    require(all(name in config['services'] for name in ('backend', 'mcp-runner', 'higress-config')),
+            'Compatible runner requires the existing gateway overlay')
+    value = copy.deepcopy(config)
+    value['services']['mcp-runner']['image'] = image
+    value['services']['mcp-runner']['environment']['MCP_FETCH_IMAGE'] = image
+    value['services']['backend']['environment']['AGENT_MCP_GATEWAY_IMAGE'] = image
+    value['services']['higress-config']['image'] = image
+    return value
+
+
 def require_no_detection_backlog(output, group):
     rows = [line.split() for line in output.splitlines() if line.split() and line.split()[0] == group]
     require(bool(rows), 'Detection consumer offset is unknown; do not start a copied worker')
@@ -684,6 +698,10 @@ def run(args):
             require(mcp_capability>=2,'A paused compatible baseline must declare the native MCP protocol and write gate')
             config['services']['backend']['environment']['AGENT_MCP_WRITES_ENABLED']='false'
             baseline_mcp_writes=False
+        compatible_runner = getattr(args, 'compatible_runner_image', None)
+        if compatible_runner:
+            runner_guard=module('rehearsal_compatible_runner',Path(__file__).with_name('mcp-runtime.py'))
+            config=compatible_runner_config(config,compatible_runner,runner_guard)
         if model_secret_source:
             for service in ('backend','mem0'):
                 old_image=json.loads(ops.docker('image','inspect',config['services'][service]['image']))[0]
@@ -691,6 +709,8 @@ def run(args):
         instance = Rehearsal(directory, config, ops, guard, baseline, model_secret_source)
         instance.report.update(snapshot=snapshot.name, release=args.tag, sourceSha256=args.source_sha256, port=args.port)
         instance.report.update(originalBackendImage=manifest['images']['backend'],compatibleBaselineBackend=config['services']['backend']['image'],assignmentBaselinePaused=bool(args.compatible_backend_image),mcpBaselinePaused=not baseline_mcp_writes)
+        instance.report.update(originalRunnerImage=manifest['images'].get('mcp-runner'),
+                               compatibleBaselineRunner=compatible_runner)
         instance.persist()
         instance.require_fresh_resources()
         print(json.dumps({'project': project, 'phase': 'BUILDING', 'port': args.port}), flush=True)
@@ -819,6 +839,7 @@ def main():
     parser.add_argument('--project', help='Exact owned identity, required for cleanup')
     parser.add_argument('--snapshot')
     parser.add_argument('--compatible-backend-image')
+    parser.add_argument('--compatible-runner-image')
     parser.add_argument('--port', type=int, default=18089)
     parser.add_argument('--keep', action='store_true', help='Keep an explicitly successful private candidate for immediate browser acceptance')
     args = parser.parse_args()
