@@ -9,15 +9,15 @@ class AgentUserDirectoryImplTest {
     @Test void rereadsCurrentDatabaseRoleAndRejectsMissingOrMismatchedIdentity() {
         var users=mock(UserMapper.class);var directory=new AgentUserDirectoryImpl(users);
         var actor=new AgentActor(1,"boss",AgentActor.Role.SUPERVISOR);
-        var user=new User();user.setId(1L);user.setUsername("boss");user.setRole("SUPERVISOR");when(users.selectById(1L)).thenReturn(user);
+        var user=new User();user.setId(1L);user.setUsername("boss");user.setRole("SUPERVISOR");when(users.selectOne(any(com.baomidou.mybatisplus.core.conditions.Wrapper.class))).thenReturn(user);
         assertThatCode(()->directory.assertSupervisor(actor)).doesNotThrowAnyException();
         user.setRole("INSPECTOR");assertThatThrownBy(()->directory.assertSupervisor(actor)).isInstanceOf(SecurityException.class);
         user.setRole("SUPERVISOR");user.setUsername("other");assertThatThrownBy(()->directory.assertSupervisor(actor)).isInstanceOf(SecurityException.class);
-        when(users.selectById(1L)).thenReturn(null);assertThatThrownBy(()->directory.assertSupervisor(actor)).isInstanceOf(SecurityException.class);
+        when(users.selectOne(any(com.baomidou.mybatisplus.core.conditions.Wrapper.class))).thenReturn(null);assertThatThrownBy(()->directory.assertSupervisor(actor)).isInstanceOf(SecurityException.class);
     }
     @Test void assignmentTargetsMustBeActualInspectorAccounts() {
         var users=mock(UserMapper.class);var directory=new AgentUserDirectoryImpl(users);
-        assertThat(directory.inspectorExists("missing")).isFalse();var user=new User();user.setRole("SUPERVISOR");when(users.findByUsername("account")).thenReturn(user);
+        assertThat(directory.inspectorExists("missing")).isFalse();var user=new User();user.setId(2L);user.setUsername("account");user.setRole("SUPERVISOR");when(users.selectList(any(com.baomidou.mybatisplus.core.conditions.Wrapper.class))).thenReturn(java.util.List.of(user));
         assertThat(directory.inspectorExists("account")).isFalse();user.setRole("INSPECTOR");assertThat(directory.inspectorExists("account")).isTrue();
     }
 }

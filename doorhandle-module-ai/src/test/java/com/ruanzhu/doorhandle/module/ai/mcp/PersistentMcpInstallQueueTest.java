@@ -29,7 +29,7 @@ class PersistentMcpInstallQueueTest {
             for(String sql:ddl.split(";"))if(!sql.isBlank())jdbc.execute(sql);
         }
         users=mock(BusinessUserDirectory.class);for(var actor:List.of(alice,bob))when(users.current(actor.userId(),actor.username())).thenReturn(new BusinessUserDirectory.Identity(actor.userId(),actor.username(),false));
-        runtime=mock(FetchMcpRuntime.class);when(runtime.installationIdentity()).thenReturn("a".repeat(64));when(runtime.install(any())).thenReturn(Map.of("version",FetchMcpRuntime.VERSION));
+        runtime=mock(FetchMcpRuntime.class);when(runtime.writesAllowed()).thenReturn(true);when(runtime.installationIdentity()).thenReturn("a".repeat(64));when(runtime.install(any())).thenReturn(Map.of("version",FetchMcpRuntime.VERSION));
         service=create();
     }
     LocalMcpService create(){var properties=new AgentScopeProperties();properties.setWorkspace(root.toString());var result=new LocalMcpService(jdbc,new DataSourceTransactionManager(jdbc.getDataSource()),new ObjectMapper(),users,properties,runtime,null,new PersistentMcpInstallQueue(jdbc));result.schema();services.add(result);return result;}

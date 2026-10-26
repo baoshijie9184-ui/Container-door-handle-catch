@@ -17,23 +17,23 @@ class BusinessUserDirectoryImplTest {
         assertThat(directory.findExactUserId("alice")).isNull();
     }
     @Test void revokedOrUnknownRoleDoesNotFallBackToInspector(){
-        var mapper=mock(UserMapper.class);var directory=new BusinessUserDirectoryImpl(mapper);var user=new User();user.setUsername("alice");when(mapper.selectById(1L)).thenReturn(user);
+        var mapper=mock(UserMapper.class);var directory=new BusinessUserDirectoryImpl(mapper);var user=new User();user.setUsername("alice");when(mapper.selectOne(any(com.baomidou.mybatisplus.core.conditions.Wrapper.class))).thenReturn(user);
         for(String role:new String[]{null,"USER","DISABLED","UNKNOWN"}){user.setRole(role);assertThatThrownBy(()->directory.current(1,"alice")).isInstanceOf(SecurityException.class);}
     }
     @Test void legacyRoleAliasesRemainCompatible(){
-        var mapper=mock(UserMapper.class);var directory=new BusinessUserDirectoryImpl(mapper);var user=new User();user.setUsername("alice");when(mapper.selectById(1L)).thenReturn(user);
+        var mapper=mock(UserMapper.class);var directory=new BusinessUserDirectoryImpl(mapper);var user=new User();user.setUsername("alice");when(mapper.selectOne(any(com.baomidou.mybatisplus.core.conditions.Wrapper.class))).thenReturn(user);
         user.setRole("ADMIN");assertThat(directory.current(1,"alice").supervisor()).isTrue();user.setRole("OPERATOR");assertThat(directory.current(1,"alice").supervisor()).isFalse();
     }
     @Test void freshDatabaseRoleOverridesPreviouslyGrantedRole(){
         var mapper=mock(UserMapper.class);var directory=new BusinessUserDirectoryImpl(mapper);
-        var user=new User();user.setUsername("boss");user.setRole("SUPERVISOR");when(mapper.selectById(3L)).thenReturn(user);
+        var user=new User();user.setUsername("boss");user.setRole("SUPERVISOR");when(mapper.selectOne(any(com.baomidou.mybatisplus.core.conditions.Wrapper.class))).thenReturn(user);
         assertThat(directory.current(3,"boss").supervisor()).isTrue();user.setRole("INSPECTOR");
         assertThat(directory.current(3,"boss").supervisor()).isFalse();
     }
     @Test void missingOrMismatchedIdentityIsRejected(){
         var mapper=mock(UserMapper.class);var directory=new BusinessUserDirectoryImpl(mapper);
         assertThatThrownBy(()->directory.current(1,"alice")).isInstanceOf(SecurityException.class);
-        var user=new User();user.setUsername("other");when(mapper.selectById(1L)).thenReturn(user);
+        var user=new User();user.setUsername("other");when(mapper.selectOne(any(com.baomidou.mybatisplus.core.conditions.Wrapper.class))).thenReturn(user);
         assertThatThrownBy(()->directory.current(1,"alice")).isInstanceOf(SecurityException.class);
     }
 }

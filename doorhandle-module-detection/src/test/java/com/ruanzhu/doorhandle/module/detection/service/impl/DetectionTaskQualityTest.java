@@ -41,20 +41,17 @@ class DetectionTaskQualityTest {
     }
 
     @Test
-    void advanceTaskFlowMovesPendingReviewTaskToConfirmed() {
+    void advanceTaskFlowCannotFabricateAReviewConclusion() {
         DetectionTask task = new DetectionTask();
         task.setTaskId("det_123");
         task.setStatus("COMPLETED");
         task.setFlowStatus("PENDING_REVIEW");
+        task.setReviewStatus("PENDING");
 
         when(fixture.detectionTaskMapper.selectOne(any())).thenReturn(task);
 
-        DetectionTaskProgressResponse response = fixture.service.advanceTaskFlow("det_123", "CONFIRMED");
-
-        assertEquals("CONFIRMED", response.getFlowStatus());
-        ArgumentCaptor<DetectionTask> taskCaptor = ArgumentCaptor.forClass(DetectionTask.class);
-        verify(fixture.detectionTaskMapper).updateById(taskCaptor.capture());
-        assertEquals("CONFIRMED", taskCaptor.getValue().getFlowStatus());
+        assertThrows(BusinessException.class, () -> fixture.service.advanceTaskFlow("det_123", "CONFIRMED"));
+        verify(fixture.detectionTaskMapper, Mockito.never()).updateById(any(DetectionTask.class));
     }
 
     @Test
@@ -64,6 +61,7 @@ class DetectionTaskQualityTest {
         task.setStatus("COMPLETED");
         task.setFlowStatus("CONFIRMED");
         task.setReviewStatus("REVIEWED");
+        task.setReviewedAt(LocalDateTime.of(2026, 6, 10, 10, 0));
 
         when(fixture.detectionTaskMapper.selectOne(any())).thenReturn(task);
 
@@ -72,7 +70,7 @@ class DetectionTaskQualityTest {
                 () -> fixture.service.advanceTaskFlow("det_bypass", "RELEASED")
         );
 
-        assertEquals("处置类状态请通过质检处置接口流转", exception.getMessage());
+        assertEquals(409, exception.getCode());
     }
 
     @Test
@@ -81,6 +79,7 @@ class DetectionTaskQualityTest {
         task.setTaskId("det_review");
         task.setStatus("COMPLETED");
         task.setFlowStatus("PENDING_REVIEW");
+        task.setReviewStatus("PENDING");
 
         DetectionReviewRequest request = new DetectionReviewRequest();
         request.setReviewConclusion("CONFIRMED_DEFECT");
@@ -116,6 +115,7 @@ class DetectionTaskQualityTest {
         task.setTaskId("det_review");
         task.setStatus("COMPLETED");
         task.setFlowStatus("PENDING_REVIEW");
+        task.setReviewStatus("PENDING");
 
         DetectionReviewRequest request = new DetectionReviewRequest();
         request.setConfirmedDefectCount(-1);
@@ -137,6 +137,7 @@ class DetectionTaskQualityTest {
         task.setTaskId("det_review_alias");
         task.setStatus("COMPLETED");
         task.setFlowStatus("PENDING_REVIEW");
+        task.setReviewStatus("PENDING");
 
         DetectionReviewRequest request = new DetectionReviewRequest();
         request.setReviewConclusion("PASS");
@@ -156,6 +157,7 @@ class DetectionTaskQualityTest {
         task.setTaskId("det_assign");
         task.setStatus("COMPLETED");
         task.setFlowStatus("PENDING_REVIEW");
+        task.setReviewStatus("PENDING");
         task.setReviewStatus("PENDING");
 
         DetectionTaskAssignmentRequest request = new DetectionTaskAssignmentRequest();
@@ -190,6 +192,7 @@ class DetectionTaskQualityTest {
         task.setStatus("COMPLETED");
         task.setFlowStatus("RELEASED");
         task.setReviewStatus("REVIEWED");
+        task.setReviewedAt(LocalDateTime.of(2026, 6, 10, 10, 0));
         task.setDispositionStatus("DISPOSED");
         task.setDisposedAt(LocalDateTime.of(2026, 6, 10, 11, 10));
 
@@ -204,7 +207,7 @@ class DetectionTaskQualityTest {
                 () -> fixture.service.reviewTask("det_review_done", request)
         );
 
-        assertEquals("已处置任务不能重复复核", exception.getMessage());
+        assertEquals(409, exception.getCode());
     }
 
     @Test
@@ -214,6 +217,7 @@ class DetectionTaskQualityTest {
         task.setStatus("COMPLETED");
         task.setFlowStatus("CONFIRMED");
         task.setReviewStatus("REVIEWED");
+        task.setReviewedAt(LocalDateTime.of(2026, 6, 10, 10, 0));
         task.setReviewConclusion("CONFIRMED_DEFECT");
         task.setSeverityLevel("MAJOR");
 
@@ -247,6 +251,7 @@ class DetectionTaskQualityTest {
         task.setStatus("COMPLETED");
         task.setFlowStatus("CONFIRMED");
         task.setReviewStatus("REVIEWED");
+        task.setReviewedAt(LocalDateTime.of(2026, 6, 10, 10, 0));
         task.setReviewConclusion("CONFIRMED_DEFECT");
         task.setSeverityLevel("CRITICAL");
 
@@ -260,7 +265,7 @@ class DetectionTaskQualityTest {
                 () -> fixture.service.disposeTask("det_dispose", request)
         );
 
-        assertEquals("存在确认缺陷或待复检结论的任务不能直接放行", exception.getMessage());
+        assertEquals(409, exception.getCode());
     }
 
     @Test
@@ -270,6 +275,7 @@ class DetectionTaskQualityTest {
         task.setStatus("COMPLETED");
         task.setFlowStatus("RELEASED");
         task.setReviewStatus("REVIEWED");
+        task.setReviewedAt(LocalDateTime.of(2026, 6, 10, 10, 0));
         task.setReviewConclusion("NORMAL_RELEASE");
         task.setDispositionStatus("DISPOSED");
         task.setDispositionAction("RELEASE");
@@ -285,7 +291,7 @@ class DetectionTaskQualityTest {
                 () -> fixture.service.disposeTask("det_dispose_done", request)
         );
 
-        assertEquals("任务已完成质检处置，不能重复处置", exception.getMessage());
+        assertEquals(409, exception.getCode());
     }
 
     @Test
@@ -295,8 +301,10 @@ class DetectionTaskQualityTest {
         task.setStatus("COMPLETED");
         task.setFlowStatus("REWORK_REQUIRED");
         task.setReviewStatus("REVIEWED");
+        task.setReviewedAt(LocalDateTime.of(2026, 6, 10, 10, 0));
         task.setDispositionStatus("DISPOSED");
         task.setDispositionAction("REWORK");
+        task.setDisposedAt(LocalDateTime.of(2026, 6, 10, 11, 0));
 
         DetectionReworkResultRequest request = new DetectionReworkResultRequest();
         request.setReworkResult("HANDLE_REPLACED");
@@ -305,6 +313,7 @@ class DetectionTaskQualityTest {
         request.setRecheckRequired(true);
 
         when(fixture.detectionTaskMapper.selectOne(any())).thenReturn(task);
+        when(fixture.detectionTaskMapper.clearDispositionForRework("det_rework")).thenReturn(1);
 
         DetectionTaskProgressResponse response = fixture.service.submitReworkResult("det_rework", request);
 
@@ -334,6 +343,7 @@ class DetectionTaskQualityTest {
         task.setTaskId("det_queue");
         task.setStatus("COMPLETED");
         task.setFlowStatus("PENDING_REVIEW");
+        task.setReviewStatus("PENDING");
         task.setReviewStatus("PENDING");
         task.setTotalImages(2);
         task.setCreatedAt(LocalDateTime.of(2026, 6, 10, 10, 0));

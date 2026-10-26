@@ -8,6 +8,7 @@ from pathlib import Path, PurePosixPath
 import subprocess
 import tarfile
 import pytest
+from types import SimpleNamespace
 
 SOURCE=Path(__file__).resolve().parents[1]/'script/docker/monolith-ops.py'
 spec=importlib.util.spec_from_file_location('monolith_ops',SOURCE);ops=importlib.util.module_from_spec(spec);spec.loader.exec_module(ops)
@@ -31,6 +32,11 @@ def fixture(monkeypatch,root):
           {'id':'backend-id','service':'backend','image':IMAGE,'running':True,'mounts':[{'type':'volume','source':'doorhandle-workspace','target':'/app/workspace'}]},
           {'id':'web-id','service':'nginx','image':IMAGE,'running':True,'mounts':[]}]
     monkeypatch.setattr(ops,'private_config_ok',lambda path:True);monkeypatch.setattr(ops,'inventory',lambda:live)
+    # This fixture exercises data-backup control flow with model governance disabled.
+    # Enabled policy/proof failures are covered independently below.
+    monkeypatch.setattr(ops, 'model_secret_helper', lambda: SimpleNamespace(
+        backup_key=lambda *args: {'enabled': False},
+        status=lambda *args: {'enabled': False, 'healthy': True}))
     monkeypatch.setattr(ops,'healthy',lambda container:True);monkeypatch.setattr(ops,'table_counts',lambda container:{'demo':2})
     monkeypatch.setattr(ops,'table_checksums',lambda container,names:{'demo':123})
     monkeypatch.setattr(ops,'db',lambda container,sql:'0\n' if 'information_schema.events' in sql else 'doorhandledb\n')
@@ -60,6 +66,19 @@ def test_backup_quiesces_ingress_and_writers_resumes_exact_services_and_checks_a
     assert all('PRIVATE_TOKEN' not in str(args) for args,kwargs in calls)
     (snapshot/'volume-0.tar.gz').write_bytes(b'damaged')
     with pytest.raises(ops.OpsError,match='checksum'):ops.verify(snapshot)
+
+
+@pytest.mark.parametrize('state', ['unverified', 'unavailable'])
+def test_model_secret_failure_prevents_quiescing_or_copying_data(tmp_path, monkeypatch, state):
+    runtime, calls, resumed = fixture(monkeypatch, tmp_path)
+    def backup_key(*args):
+        if state == 'unavailable':
+            raise RuntimeError('fixture proof lookup failed')
+        return {'enabled': True, 'decryptionVerified': False}
+    monkeypatch.setattr(ops, 'model_secret_helper', lambda: SimpleNamespace(backup_key=backup_key))
+    with pytest.raises(ops.OpsError, match='proof|escrow'):
+        ops.backup(tmp_path, runtime)
+    assert calls == [] and resumed == []
 
 
 @pytest.mark.parametrize('failed_phase',['stop','dump','volume','resume'])

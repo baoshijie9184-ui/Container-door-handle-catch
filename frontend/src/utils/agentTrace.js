@@ -1,5 +1,5 @@
 // A projection of recorded metadata. Missing timing, usage and source text stay missing.
-import { beijingDateTime } from './beijingTime'
+import { beijingDateTime } from './beijingTime.js'
 const textFields = ['agent', 'tool', 'callId', 'parentCallId', 'scope', 'decision', 'policyVersion', 'result', 'command', 'status', 'skillId', 'sha256', 'modelRequestId', 'modelId', 'provider', 'model', 'failureReason', 'nextModelId', 'purpose', 'inputId']
 const numberFields = ['elapsedMs', 'durationMs', 'inputTokens', 'outputTokens', 'version', 'attempt', 'firstContentMs', 'httpStatus', 'beforeMessages', 'afterMessages', 'beforeChars', 'afterChars']
 export const traceCategories = [

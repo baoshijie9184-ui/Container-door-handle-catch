@@ -27,11 +27,15 @@ class ModelInfoServiceImplTest {
     @Mock
     private ModelInfoMapper modelInfoMapper;
 
+    @Mock
+    private com.ruanzhu.doorhandle.module.model.service.ModelUploadFiles uploadFiles;
+
     private ModelInfoServiceImpl modelInfoService;
 
     @BeforeEach
     void setUp() {
         modelInfoService = new ModelInfoServiceImpl();
+        ReflectionTestUtils.setField(modelInfoService, "uploadFiles", uploadFiles);
         ReflectionTestUtils.setField(modelInfoService, "baseMapper", modelInfoMapper);
     }
 

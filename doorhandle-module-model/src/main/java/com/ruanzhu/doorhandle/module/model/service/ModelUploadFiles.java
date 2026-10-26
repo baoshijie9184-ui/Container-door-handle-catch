@@ -47,7 +47,8 @@ public class ModelUploadFiles {
             java.util.Set<OpenOption> options=java.util.Set.of(StandardOpenOption.CREATE_NEW,StandardOpenOption.WRITE,LinkOption.NOFOLLOW_LINKS);
             java.nio.file.attribute.FileAttribute<?>[] attributes=Files.getFileAttributeView(root,java.nio.file.attribute.PosixFileAttributeView.class)==null
                     ?new java.nio.file.attribute.FileAttribute<?>[0]
-                    :new java.nio.file.attribute.FileAttribute<?>[]{java.nio.file.attribute.PosixFilePermissions.asFileAttribute("rw-------")};
+                    :new java.nio.file.attribute.FileAttribute<?>[]{java.nio.file.attribute.PosixFilePermissions.asFileAttribute(
+                            java.nio.file.attribute.PosixFilePermissions.fromString("rw-------"))};
             try(InputStream input=upload.getInputStream(); FileChannel output=FileChannel.open(target,options,attributes)) {
                 byte[] buffer=new byte[65536];int read;
                 while((read=input.read(buffer))!=-1) {

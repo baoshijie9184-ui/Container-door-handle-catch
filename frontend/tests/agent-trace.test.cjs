@@ -1,7 +1,7 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
-const { readFrontendFile } = require('./helpers/project-source.cjs')
-const load = file => import(`data:text/javascript;base64,${Buffer.from(readFrontendFile('src','utils',file)).toString('base64')}`)
+const { importFrontendModule } = require('./helpers/project-source.cjs')
+const load = file => importFrontendModule('src', 'utils', file)
 const projection = load('agentTrace.js'), readerModule = load('agentTraceReader.js')
 const event = (sequence,type,payload={}) => ({sequence,type,payload,occurredAt:'2026-10-16T12:00:00'})
 const run = (runId,extra={}) => ({runId,sessionId:'session-'+runId,status:'COMPLETED',lastSequence:1,...extra})
@@ -70,8 +70,12 @@ test('missing tool completion is pending only while the run is actually running'
 test('token totals distinguish absent usage from an explicit zero and exclude unrelated event fields',async()=>{
   const {traceSummary}=await projection
   assert.equal(traceSummary([event(1,'MODEL_STARTED')]).inputTokens,null)
-  const summary=traceSummary([event(1,'MODEL_COMPLETED',{inputTokens:0,outputTokens:2}),event(2,'TOOL_COMPLETED',{inputTokens:999}),event(3,'MODEL_COMPLETED',{})])
+  const recorded=[event(1,'MODEL_COMPLETED',{inputTokens:0,outputTokens:2}),event(2,'TOOL_COMPLETED',{inputTokens:999})]
+  const summary=traceSummary(recorded)
   assert.equal(summary.inputTokens,0);assert.equal(summary.outputTokens,2);assert.equal(summary.usageRecords,1)
+  const partial=traceSummary([...recorded,event(3,'MODEL_COMPLETED',{})])
+  assert.equal(partial.inputTokens,null);assert.equal(partial.outputTokens,null)
+  assert.equal(partial.completedModels,2);assert.equal(partial.inputUsageRecords,1)
 })
 
 test('model routes correlate by explicit request ID and keep fallback attempts separate from logical token usage',async()=>{

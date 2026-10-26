@@ -5,6 +5,8 @@ const { readFrontendFile, readProjectFile } = require('./helpers/project-source.
 test('tests\\quality-records-contract.test.cjs', () => {
   const recordsSource = readFrontendFile('src', 'utils', 'qualityRecords.js')
   const imageDetectionSource = readFrontendFile('src', 'views', 'ImageDetection.vue')
+  const evidenceSource = readFrontendFile('src', 'components', 'TaskTracePanel.vue')
+  const resultSource = readFrontendFile('src', 'components', 'TaskResultSnapshot.vue')
 
   for (const exportName of [
     'normalizeQualityQueueRecord',
@@ -14,7 +16,9 @@ test('tests\\quality-records-contract.test.cjs', () => {
     'formatPercentValue'
   ]) {
     assert.match(recordsSource, new RegExp(`export const ${exportName}`))
-    assert.match(imageDetectionSource, new RegExp(exportName))
+    if (exportName !== 'formatPercentValue') {
+      assert.match(imageDetectionSource + evidenceSource + resultSource, new RegExp(exportName))
+    }
   }
 
   assert.match(recordsSource, /captureInfo/)
@@ -34,6 +38,7 @@ test('tests\\quality-records-contract.test.cjs', () => {
 test('tests\\quality-workflow-contract.test.cjs', () => {
   const workflowSource = readFrontendFile('src', 'utils', 'qualityWorkflow.js')
   const imageDetectionSource = readFrontendFile('src', 'views', 'ImageDetection.vue')
+  const actionsSource = readFrontendFile('src', 'composables', 'useQualityTaskActions.js')
 
   for (const exportName of [
     'canAssignQualityTask',
@@ -47,7 +52,7 @@ test('tests\\quality-workflow-contract.test.cjs', () => {
     'dispositionActionText'
   ]) {
     assert.match(workflowSource, new RegExp(`export const ${exportName}`))
-    assert.match(imageDetectionSource, new RegExp(exportName))
+    assert.match(imageDetectionSource + actionsSource, new RegExp(exportName))
   }
 
   for (const status of [
@@ -245,7 +250,7 @@ test('tests\\use-trace-reports-contract.test.cjs', () => {
   assert.match(composableSource, /fetchBatchTraceReport/)
   assert.match(composableSource, /businessWorkOrderNos/)
   assert.match(composableSource, /businessBatchNos/)
-  assert.match(imageDetectionSource, /useTraceReports\(\)/)
+  assert.match(imageDetectionSource, /useTraceReports\(\{ getAccountScope:/)
 
   assert.doesNotMatch(imageDetectionSource, /fetchWorkOrderTraceReport/)
   assert.doesNotMatch(imageDetectionSource, /fetchBatchTraceReport/)

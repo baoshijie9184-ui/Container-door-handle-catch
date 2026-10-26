@@ -56,15 +56,18 @@ test('tests\\hash-route-anchor-contract.test.cjs', () => {
 })
 
 {
-  test('layout identifies every signed-in account as an enterprise user', () => {
+  test('layout distinguishes supervisor scope from employee-owned and assigned tasks', () => {
     const source = readFrontendFile('src', 'layout', 'index.vue')
-    assert.match(source, /企业用户/)
+    assert.match(source, /userStore\.role==='SUPERVISOR'/)
+    assert.match(source, /企业主管/)
+    assert.match(source, /本人及分派任务/)
     assert.doesNotMatch(source, /系统管理账号/)
   })
 
-  test('user manual documents shared enterprise capabilities', () => {
+  test('user manual explains current role boundaries and private conversations', () => {
     const source = readFrontendFile('src', 'views', 'UserManual.vue')
-    assert.match(source, /所有已登录用户/)
-    assert.match(source, /共享/)
+    assert.match(source, /员工只能查看本人及分派任务/)
+    assert.match(source, /主管/)
+    assert.match(source, /不读取其他账号私人会话/)
   })
 }

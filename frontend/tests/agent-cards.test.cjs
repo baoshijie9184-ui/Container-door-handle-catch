@@ -1,9 +1,7 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
-const fs = require('node:fs')
-const path = require('node:path')
-const source = fs.readFileSync(path.join(__dirname, '../src/utils/agentCards.js'), 'utf8')
-const modulePromise = import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`)
+const { importFrontendModule } = require('./helpers/project-source.cjs')
+const modulePromise = importFrontendModule('src', 'utils', 'agentCards.js')
 
 test('persisted card envelope restores text and references without accepting arbitrary components', async () => {
   const { parseAgentCardEnvelope } = await modulePromise
@@ -45,7 +43,7 @@ test('resource cards preserve large device IDs and only link canonical bounded p
 test('resource labels distinguish detection models and unknown states without inventing readiness', async () => {
   const { cardTitle, modelStatus, deviceStatus } = await modulePromise
   assert.equal(cardTitle({ type: 'MODELS' }), '检测模型')
-  assert.equal(cardTitle({ type: 'DEVICES' }), '设备运行状态')
+  assert.equal(cardTitle({ type: 'DEVICES' }), '设备状态记录')
   assert.equal(modelStatus('PUBLISHED'), '已发布')
   assert.equal(modelStatus('new-status'), '状态未知')
   assert.equal(deviceStatus(null), '未知')
@@ -73,7 +71,7 @@ test('alert labels separate record workflow from live device health and handle u
   const { cardTitle, alertStatus, alertType, alertLevel } = await modulePromise
   assert.equal(cardTitle({ type: 'DEVICE_ALERTS' }), '采集告警')
   assert.equal(alertStatus('ACKNOWLEDGED'), '已确认')
-  assert.equal(alertStatus('RESOLVED'), '已解决')
+  assert.equal(alertStatus('RESOLVED'), '已登记解决')
   assert.equal(alertLevel('CRITICAL'), '紧急')
   assert.equal(alertType('HEARTBEAT_OFFLINE'), '心跳离线')
   for (const value of [null, '__proto__', 'constructor', 'UNKNOWN']) {
@@ -95,14 +93,19 @@ test('detection model operations references accept only the readonly tool and bo
 })
 
 test('registered metric formatting preserves zero and missing values and rejects invalid numeric evidence', async () => {
-  const { modelOperationMetrics } = await modulePromise
+  const { modelOperationMetrics, modelOperationLegacyMetrics } = await modulePromise
   const values = item => Object.fromEntries(modelOperationMetrics(item).map(row => [row.label, row.value]))
   assert.deepEqual(values({ evaluation: { precisionScore: 0, recallScore: 1, mapScore: .925, f1Score: null } }), {
-    Precision: '0%', Recall: '100%', mAP: '92.5%', F1: '未记录',
+    'mAP（AP）': '92.50%', '整图未检出率': '未记录', '实测 FPS': '未记录',
   })
-  for (const value of [-.1, 1.1, Infinity, NaN, '0.9']) assert.equal(values({ evaluation: { precisionScore: value } }).Precision, '需核对')
-  assert.equal(values({ evaluation: { precisionScore: null }, invalidFields: ['precisionScore'] }).Precision, '需核对')
-  assert.equal(values({ evaluation: { precisionScore: .000001 } }).Precision, '0.0001%')
+  for (const value of [-.1, 1.1, Infinity, NaN, '0.9']) assert.equal(values({ evaluation: { mapScore: value } })['mAP（AP）'], '需核对')
+  assert.equal(values({ evaluation: { mapScore: null }, invalidFields: ['mapScore'] })['mAP（AP）'], '需核对')
+  assert.equal(values({ evaluation: { mapScore: 0 } })['mAP（AP）'], '0.00%')
+  assert.deepEqual(modelOperationLegacyMetrics({ evaluation: { precisionScore: 0, recallScore: 1, f1Score: null } }), [
+    { label: 'Precision', value: '0.00%' }, { label: 'Recall', value: '100.00%' },
+  ])
+  assert.equal(values({ evaluation: { evaluationImageCount: 100, noDetectionImageCount: 2, inferenceFps: 12.5 } })['整图未检出率'], '2.00%')
+  assert.equal(values({ evaluation: { inferenceFps: 0 } })['实测 FPS'], '需核对')
 })
 
 test('model configuration display makes no default percentage or live routing assumptions', async () => {

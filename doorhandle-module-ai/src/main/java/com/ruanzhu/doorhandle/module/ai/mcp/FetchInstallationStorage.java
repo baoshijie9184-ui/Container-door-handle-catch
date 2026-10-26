@@ -14,7 +14,7 @@ final class FetchInstallationStorage {
     Path directory(long owner,String id){if(id==null||!UUID.fromString(id).toString().equals(id))throw new IllegalArgumentException("MCP_INSTALLATION_INVALID");return base(owner).resolve(id);}
     record Usage(long bytes,long files){}
     Usage usage(long owner,Set<String> reserved)throws IOException {
-        Path base=base(owner);FetchMcpRuntime.secure(base);if(!Files.exists(base,LinkOption.NOFOLLOW_LINKS))return new Usage(0,0);
+        Path base=base(owner);secure(base);if(!Files.exists(base,LinkOption.NOFOLLOW_LINKS))return new Usage(0,0);
         long[] values={0,0};
         Files.walkFileTree(base,new SimpleFileVisitor<>(){
             int visited;

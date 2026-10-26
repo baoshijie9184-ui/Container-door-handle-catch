@@ -6,11 +6,15 @@ import com.ruanzhu.doorhandle.module.model.entity.ModelOperationLog;
 import com.ruanzhu.doorhandle.module.model.mapper.ModelInfoMapper;
 import com.ruanzhu.doorhandle.module.model.mapper.ModelOperationLogMapper;
 import com.ruanzhu.doorhandle.module.model.service.ModelValidationService;
+import com.ruanzhu.doorhandle.module.model.service.ModelUploadFiles;
+import com.ruanzhu.doorhandle.module.model.service.ModelRegistrationService;
+import com.ruanzhu.doorhandle.module.model.service.ModelFileJournal;
+import com.ruanzhu.doorhandle.module.model.service.ModelMutationIdentity;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
-import org.mockito.InjectMocks;
+import org.junit.jupiter.api.io.TempDir;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.DuplicateKeyException;
@@ -31,6 +35,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.lenient;
 
 import com.ruanzhu.doorhandle.common.BusinessException;
 
@@ -46,18 +51,32 @@ class ModelServiceImplTest {
     @Mock
     private ModelValidationService modelValidationService;
 
-    @InjectMocks
+    @TempDir
+    Path uploadDir;
+
+    @Mock
+    private ModelMutationIdentity identity;
+
+    @Mock
+    private org.springframework.beans.factory.ObjectProvider<ModelFileJournal> fileJournals;
+
     private ModelServiceImpl modelService;
 
     @BeforeEach
     void setUp() {
+        var files = new ModelUploadFiles(fileJournals, identity, uploadDir.toString(), 209715200L);
+        var registration = new ModelRegistrationService(modelInfoMapper, modelOperationLogMapper, identity, fileJournals);
+        modelService = new ModelServiceImpl(modelInfoMapper, modelOperationLogMapper, modelValidationService,
+                files, registration, fileJournals, identity);
+        lenient().when(identity.supervisor()).thenReturn(new com.ruanzhu.doorhandle.contracts.agent.AgentActor(
+                1L, "supervisor", com.ruanzhu.doorhandle.contracts.agent.AgentActor.Role.SUPERVISOR));
+        lenient().when(identity.requestId()).thenReturn("model-upload-test");
+        lenient().when(modelOperationLogMapper.insert(any(ModelOperationLog.class))).thenReturn(1);
         ReflectionTestUtils.setField(modelService, "maxUploadBytes", 209715200L);
     }
 
     @Test
     void uploadModelRetriesWithFreshModelIdWhenDuplicateKeyOccurs() throws Exception {
-        Path uploadDir = Files.createTempDirectory("model-upload-test");
-        ReflectionTestUtils.setField(modelService, "modelUploadDir", uploadDir.toString());
 
         when(modelInfoMapper.selectByModelNameAndVersion("door-handle", "v1")).thenReturn(null);
         when(modelInfoMapper.selectNextModelId()).thenReturn(10, 11);
@@ -68,12 +87,6 @@ class ModelServiceImplTest {
         when(modelInfoMapper.insert(insertCaptor.capture()))
                 .thenThrow(new DuplicateKeyException("duplicate model_id"))
                 .thenReturn(1);
-
-        ModelInfo persisted = new ModelInfo();
-        persisted.setModelId(11);
-        persisted.setModelName("door-handle");
-        persisted.setVersion("v1");
-        when(modelInfoMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(persisted);
 
         MockMultipartFile file = new MockMultipartFile(
                 "file",
@@ -100,8 +113,6 @@ class ModelServiceImplTest {
 
     @Test
     void uploadModelRejectsNonOnnxFiles() throws Exception {
-        Path uploadDir = Files.createTempDirectory("model-upload-test");
-        ReflectionTestUtils.setField(modelService, "modelUploadDir", uploadDir.toString());
 
         MockMultipartFile file = new MockMultipartFile(
                 "file",
@@ -124,8 +135,6 @@ class ModelServiceImplTest {
 
     @Test
     void uploadModelRejectsOversizedFilesBeforePersistence() throws Exception {
-        Path uploadDir = Files.createTempDirectory("model-upload-test");
-        ReflectionTestUtils.setField(modelService, "modelUploadDir", uploadDir.toString());
         ReflectionTestUtils.setField(modelService, "maxUploadBytes", 4L);
 
         MockMultipartFile file = new MockMultipartFile(
@@ -149,16 +158,14 @@ class ModelServiceImplTest {
     }
 
     @Test
-    void uploadModelDeletesSavedFileWhenPersistenceFails() throws Exception {
-        Path uploadDir = Files.createTempDirectory("model-upload-test");
-        ReflectionTestUtils.setField(modelService, "modelUploadDir", uploadDir.toString());
+    void uploadModelRetainsSavedFileAndDoesNotRetryWhenPersistenceOutcomeIsUnknown() throws Exception {
 
         when(modelInfoMapper.selectByModelNameAndVersion("door-handle", "v1")).thenReturn(null);
         when(modelInfoMapper.selectNextModelId()).thenReturn(10);
         when(modelValidationService.validate(any(Path.class)))
                 .thenReturn(new ModelValidationService.ValidationResult("PASSED", "ONNX 加载成功"));
-        when(modelInfoMapper.insert(any(ModelInfo.class))).thenReturn(1);
-        when(modelInfoMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(null);
+        when(modelInfoMapper.insert(any(ModelInfo.class))).thenThrow(
+                new org.springframework.dao.DataAccessResourceFailureException("unknown commit outcome"));
 
         MockMultipartFile file = new MockMultipartFile(
                 "file",
@@ -167,22 +174,22 @@ class ModelServiceImplTest {
                 "fake-onnx".getBytes()
         );
 
-        BusinessException exception = assertThrows(
-                BusinessException.class,
+        var exception = assertThrows(
+                org.springframework.dao.DataAccessResourceFailureException.class,
                 () -> modelService.uploadModel(file, "door-handle", "v1", "desc")
         );
 
-        assertEquals("模型信息保存失败", exception.getMessage());
+        assertEquals("unknown commit outcome", exception.getMessage());
         try (Stream<Path> files = Files.list(uploadDir)) {
-            assertEquals(0L, files.count());
+            assertEquals(1L, files.count());
         }
+        verify(modelInfoMapper).insert(any(ModelInfo.class));
+        verify(modelValidationService).validate(any(Path.class));
         assertFalse(Files.notExists(uploadDir));
     }
 
     @Test
     void uploadModelPersistsFailedValidationAsDraft() throws Exception {
-        Path uploadDir = Files.createTempDirectory("model-upload-test");
-        ReflectionTestUtils.setField(modelService, "modelUploadDir", uploadDir.toString());
 
         when(modelInfoMapper.selectByModelNameAndVersion("door-handle", "v1")).thenReturn(null);
         when(modelInfoMapper.selectNextModelId()).thenReturn(12);
@@ -191,15 +198,6 @@ class ModelServiceImplTest {
 
         ArgumentCaptor<ModelInfo> insertCaptor = ArgumentCaptor.forClass(ModelInfo.class);
         when(modelInfoMapper.insert(insertCaptor.capture())).thenReturn(1);
-
-        ModelInfo persisted = new ModelInfo();
-        persisted.setModelId(12);
-        persisted.setModelName("door-handle");
-        persisted.setVersion("v1");
-        persisted.setStatus("DRAFT");
-        persisted.setValidationStatus("FAILED");
-        persisted.setValidationMessage("ONNX 加载失败: invalid protobuf");
-        when(modelInfoMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(persisted);
 
         MockMultipartFile file = new MockMultipartFile(
                 "file",

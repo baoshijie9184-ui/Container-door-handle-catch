@@ -119,6 +119,7 @@ public class ResearchEvidenceServiceTest {
         var users=org.mockito.Mockito.mock(com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory.class);
         org.mockito.Mockito.when(users.current(alice.userId(),alice.username())).thenReturn(new com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory.Identity(alice.userId(),alice.username(),false));
         var runtime=org.mockito.Mockito.mock(com.ruanzhu.doorhandle.module.ai.mcp.FetchMcpRuntime.class);
+        org.mockito.Mockito.when(runtime.writesAllowed()).thenReturn(true);
         org.mockito.Mockito.when(runtime.install(org.mockito.ArgumentMatchers.any())).thenReturn(Map.of("serverKey","fetch","version","fixture"));
         var session=org.mockito.Mockito.mock(com.ruanzhu.doorhandle.module.ai.mcp.FetchMcpRuntime.Session.class);
         org.mockito.Mockito.when(session.call(org.mockito.ArgumentMatchers.any())).thenReturn(reactor.core.publisher.Mono.just(ToolResultBlock.text("# Public fixture\nA fact from the captured segment")));

@@ -16,8 +16,8 @@ class DetectionAssignmentApiImplTest {
     @BeforeEach void setup() {
         mapper=mock(DetectionTaskMapper.class);service=mock(DetectionTaskService.class);users=mock(AgentUserDirectory.class);
         api=new DetectionAssignmentApiImpl(mapper,service,users,new ObjectMapper().findAndRegisterModules());
-        task=new DetectionTask();task.setTaskId("task-1");task.setStatus("COMPLETED");task.setFlowStatus("DETECTED");task.setDueAt(LocalDateTime.of(2026,10,30,15,0));
-        when(mapper.selectOne(any())).thenReturn(task);when(users.inspectorExists("alice")).thenReturn(true);
+        task=new DetectionTask();task.setTaskId("task-1");task.setStatus("COMPLETED");task.setFlowStatus("PENDING_REVIEW");task.setDueAt(LocalDateTime.of(2026,10,30,15,0));
+        when(mapper.selectOne(any())).thenReturn(task);when(users.inspector("alice")).thenReturn(new AgentUserDirectory.Inspector(2L,"alice","a".repeat(64)));
     }
     @AfterEach void cleanup(){TransactionSynchronizationManager.setActualTransactionActive(false);}
     @Test void previewsPreserveExistingDeadlineAndNeverCallBusinessWrite(){
@@ -38,6 +38,6 @@ class DetectionAssignmentApiImplTest {
     }
     @Test void badParametersOrMissingEmployeeFailBeforeAnyBusinessWrite(){
         assertThatThrownBy(()->api.preview(boss,new DetectionAssignmentApi.Command("../task","站点","alice",null,null))).isInstanceOf(IllegalArgumentException.class);
-        when(users.inspectorExists("alice")).thenReturn(false);assertThatThrownBy(()->api.preview(boss,command)).isInstanceOf(IllegalArgumentException.class);verifyNoInteractions(service);
+        when(users.inspector("alice")).thenThrow(new IllegalArgumentException("员工不存在"));assertThatThrownBy(()->api.preview(boss,command)).isInstanceOf(IllegalArgumentException.class);verifyNoInteractions(service);
     }
 }

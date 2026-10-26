@@ -1,6 +1,6 @@
-import { beijingDateTime } from './beijingTime'
-import { knownCount } from './countPresentation'
-import { modelPrimaryMetricFields, modelLegacyMetricFields, modelNoDetection } from './detectionModelPresentation'
+import { beijingDateTime } from './beijingTime.js'
+import { knownCount } from './countPresentation.js'
+import { modelPrimaryMetricFields, modelLegacyMetricFields, modelNoDetection } from './detectionModelPresentation.js'
 
 const taskTools = new Set(['get_task_detail', 'get_my_detection_tasks', 'search_detection_tasks', 'get_my_quality_records', 'get_quality_records'])
 const metricTools = new Set(['get_my_work_metrics', 'get_department_work_metrics'])

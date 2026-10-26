@@ -1,5 +1,5 @@
-import {beijingDateTime} from './beijingTime'
-import {knownCount} from './countPresentation'
+import {beijingDateTime} from './beijingTime.js'
+import {knownCount} from './countPresentation.js'
 export const modelTime=value=>value?beijingDateTime(value)||'时间格式未知':'未记录'
 export function modelMetricNumber(value){if(!['number','string'].includes(typeof value)||typeof value==='string'&&!value.trim())return undefined;const number=Number(value);return Number.isFinite(number)&&number>=0&&number<=1?number:undefined}
 export const modelPrimaryMetricFields = [['mapScore','mAP（AP）']]

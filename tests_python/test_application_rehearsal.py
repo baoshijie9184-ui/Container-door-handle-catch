@@ -212,6 +212,7 @@ def test_cleanup_refuses_foreign_volume_even_if_compose_project_name_matches(tmp
             return b'[{"Labels":{"io.doorhandle.rehearsal":"another-project"}}]'
     run = rehearsal.Rehearsal.__new__(rehearsal.Rehearsal)
     run.config, run.project, run.ops = config(), PROJECT, Ops()
+    run.model_secret_source = None
     run.dc = lambda *args: pytest.fail('Must not call compose down on an unowned resource')
     with pytest.raises(RuntimeError, match='Cleanup ownership'): run.cleanup()
 
@@ -235,6 +236,7 @@ def test_foreign_container_rejected_before_compose_down():
             return b'foreign-id' if args[0] == 'ps' else b'[{"Config":{"Labels":{}}}]'
     run = rehearsal.Rehearsal.__new__(rehearsal.Rehearsal)
     run.config, run.project, run.ops = config(), PROJECT, Ops()
+    run.model_secret_source = None
     run.dc = lambda *args: pytest.fail('Foreign container must not be removed')
     with pytest.raises(RuntimeError, match='container ownership'): run.cleanup()
 
