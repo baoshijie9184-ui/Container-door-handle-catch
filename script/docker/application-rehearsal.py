@@ -192,6 +192,26 @@ def require_no_detection_backlog(output, group):
                 'Detection backlog or unknown offset; do not replay copied work')
 
 
+def restore_candidate_volumes(instance, snapshot, manifest):
+    """Label every fresh volume before probes or Compose can implicitly create it."""
+    ops, project = instance.ops, instance.project
+    for logical, definition in instance.config['volumes'].items():
+        name = definition['name']
+        ops.docker('volume', 'create', '--label', 'io.doorhandle.rehearsal='+project, name)
+        original = PRODUCTION+'_'+logical
+        if original not in manifest['volumes']:
+            instance.check('New owned volume initialized: '+logical, True)
+            continue
+        common = ['run', '--rm', '--network', 'none', '--read-only', '--cap-drop', 'ALL',
+                  '--cap-add', 'CHOWN', '--cap-add', 'FOWNER', '--cap-add', 'DAC_OVERRIDE',
+                  '--security-opt', 'no-new-privileges', '--user', '0', '--mount', 'type=volume,src='+name+',dst=/target']
+        file = snapshot/manifest['volumes'][original]
+        with file.open('rb') as stream:
+            ops.docker(*common, '-i', '--entrypoint', 'tar', manifest['images']['backend'], '-xzf', '-', '-C', '/target', input_stream=stream, timeout=600)
+        actual = json.loads(ops.docker(*common, '--entrypoint', 'python3', manifest['images']['backend'], '-c', ops.SCAN_VOLUME, timeout=600))
+        instance.check('Restored volume matches backup: '+logical, actual == ops.archive_files(file))
+
+
 class Rehearsal:
     def __init__(self, directory, config, ops, guard, baseline, model_secret_source=None):
         self.directory, self.config, self.ops, self.guard = directory, config, ops, guard
@@ -619,6 +639,8 @@ def run(args):
         if key_setting:key_helper.verify_reference(root,runtime,manifest.get('modelKeyEscrow',{}))
         require(not manifest.get('modelKeyEscrow',{}).get('enabled') or key_setting is not None,'Encrypted candidate data requires its external key policy')
         model_secret_source=key_setting['masterKeyFile'] if key_setting else None
+        assignment_preflight=module('rehearsal_assignment_preflight',Path(__file__).with_name('assignment-compat.py'))
+        assignment_preflight.private_state(root/'state')
         require(shutil.disk_usage(root).free > max(5*1024**3, manifest.get('estimatedBytes', 0)+3*1024**3), 'Insufficient rehearsal disk reserve')
         with socket.socket() as probe:
             probe.bind(('127.0.0.1', args.port))
@@ -699,20 +721,7 @@ def run(args):
                 require(candidate['backend']!=args.compatible_backend_image,'A candidate image cannot count as its own previous-version rollback evidence')
             instance.check('Three candidate images built from production Dockerfiles', True)
             print(json.dumps({'project': project, 'phase': 'RESTORING'}), flush=True)
-            for logical, definition in config['volumes'].items():
-                original = PRODUCTION+'_'+logical
-                if original not in manifest['volumes']:
-                    continue
-                name = definition['name']
-                ops.docker('volume', 'create', '--label', 'io.doorhandle.rehearsal='+project, name)
-                common = ['run', '--rm', '--network', 'none', '--read-only', '--cap-drop', 'ALL',
-                          '--cap-add', 'CHOWN', '--cap-add', 'FOWNER', '--cap-add', 'DAC_OVERRIDE',
-                          '--security-opt', 'no-new-privileges', '--user', '0', '--mount', 'type=volume,src='+name+',dst=/target']
-                file = snapshot/manifest['volumes'][original]
-                with file.open('rb') as stream:
-                    ops.docker(*common, '-i', '--entrypoint', 'tar', manifest['images']['backend'], '-xzf', '-', '-C', '/target', input_stream=stream, timeout=600)
-                actual = json.loads(ops.docker(*common, '--entrypoint', 'python3', manifest['images']['backend'], '-c', ops.SCAN_VOLUME, timeout=600))
-                instance.check('Restored volume matches backup: '+logical, actual == ops.archive_files(file))
+            restore_candidate_volumes(instance, snapshot, manifest)
             instance.dc('up', '-d', '--no-build', '--pull', 'never', '--wait', '--wait-timeout', '180', 'mysql', timeout=210)
             mysql = instance.row('mysql')['Id']
             with (snapshot/'database.sql.gz').open('rb') as stream:
@@ -729,7 +738,8 @@ def run(args):
             if 'mcp-runner' in config['services']:
                 logical=next(value['source'] for value in config['services']['mcp-runner']['volumes'] if value['target']=='/var/lib/doorhandle-mcp')
                 journal=instance.mcp_runtime.probe({'State':{'Running':False}},config['volumes'][logical]['name'],config['services']['mcp-runner']['image'])
-                instance.check('Copied runner journal has no executable resources that could target production containers',journal['pending']==0)
+                storage = 'Restored' if PRODUCTION+'_'+logical in manifest['volumes'] else 'New'
+                instance.check(storage+' runner journal has no executable resources that could target production containers',journal['pending']==0)
             instance.dc('up', '-d', '--no-build', '--pull', 'never', '--wait', '--wait-timeout', '180', 'kafka', timeout=210)
             group = config['services']['detection-worker']['environment']['KAFKA_CONSUMER_GROUP']
             require(isinstance(group, str) and re.fullmatch(r'[A-Za-z0-9_.-]{1,128}', group), 'Unexpected detection consumer group')

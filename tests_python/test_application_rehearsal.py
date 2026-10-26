@@ -39,6 +39,45 @@ def config():
     return rehearsal.isolated_config(sample(), PROJECT, 18089, {'backend': 'sha256:'+'a'*64}, 'doorhandledb')
 
 
+def test_new_receipt_volume_is_owned_before_any_probe_can_create_it(tmp_path):
+    calls, checks = [], []
+    run = SimpleNamespace(project=PROJECT, config={'volumes': {'receipts': {'name': PROJECT+'_receipts'}}},
+        ops=SimpleNamespace(docker=lambda *args, **kwargs: calls.append(args)),
+        check=lambda name, passed: checks.append((name, passed)))
+    rehearsal.restore_candidate_volumes(run, tmp_path, {'volumes': {}})
+    assert calls == [('volume', 'create', '--label', 'io.doorhandle.rehearsal='+PROJECT, PROJECT+'_receipts')]
+    assert checks == [('New owned volume initialized: receipts', True)]
+
+
+def test_restored_volume_is_owned_and_checksum_verified_after_copy(tmp_path):
+    calls, checks = [], []
+    archive = tmp_path/'data.tar.gz'
+    archive.write_bytes(b'private archive fixture')
+    expected = {'fixture.txt': {'sha256': 'fixture-hash'}}
+    def docker(*args, **kwargs):
+        calls.append(args)
+        if args[0] == 'run' and 'python3' in args:
+            return json.dumps(expected).encode()
+        return b''
+    run = SimpleNamespace(project=PROJECT, config={'volumes': {'data': {'name': PROJECT+'_data'}}},
+        ops=SimpleNamespace(docker=docker, SCAN_VOLUME='scan-fixture', archive_files=lambda path: expected),
+        check=lambda name, passed: checks.append((name, passed)))
+    rehearsal.restore_candidate_volumes(run, tmp_path, {'volumes': {rehearsal.PRODUCTION+'_data': archive.name},
+                                                     'images': {'backend': 'sha256:'+'a'*64}})
+    assert calls[0] == ('volume', 'create', '--label', 'io.doorhandle.rehearsal='+PROJECT, PROJECT+'_data')
+    assert len(calls) == 3 and checks == [('Restored volume matches backup: data', True)]
+
+
+def test_failed_volume_creation_cannot_be_hidden_by_an_implicit_probe_mount(tmp_path):
+    def failed(*args, **kwargs):
+        assert args[0] == 'volume'
+        raise RuntimeError('ownership initialization failed')
+    run = SimpleNamespace(project=PROJECT, config={'volumes': {'receipts': {'name': PROJECT+'_receipts'}}},
+                          ops=SimpleNamespace(docker=failed))
+    with pytest.raises(RuntimeError, match='ownership initialization failed'):
+        rehearsal.restore_candidate_volumes(run, tmp_path, {'volumes': {}})
+
+
 @pytest.mark.parametrize('foreign', [None,'owner','session','content'])
 def test_native_upgrade_fixture_disables_llm_and_rejects_foreign_or_wrong_stored_results(monkeypatch,capsys,foreign):
     payload={'owner':'demo-owner','session':'demo-session','requestId':'fixture-request','content':'synthetic fixture'}
