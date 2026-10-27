@@ -17,6 +17,26 @@ def timestamp():
     return datetime.now(CST).isoformat()
 
 
+def conversation_not_started(control,runs,history):
+    """A browser wait failure does not prove that a chat was never accepted."""
+    return (control.get('run',{}).get('phase')=='IDLE' and control.get('inputs')==[] and runs==[]
+            and isinstance(history.get('messages'),list)
+            and all(message.get('role')=='assistant' and message.get('intent')=='GREETING'
+                    for message in history['messages']))
+
+
+def owned_child_denial(items,root):
+    if root.get('kind')!='EXECUTION' or root.get('status')!='WAITING_CHILD' or not root.get('id'):return None
+    children=[i for i in items if i.get('kind')=='CHILD' and i.get('status')=='WAITING_INPUT'
+              and i.get('data',{}).get('parentId')==root['id'] and i.get('id')]
+    matches=[(child,q) for child in children for q in items if q.get('kind')=='QUESTION'
+             and q.get('status')=='PENDING' and q.get('data',{}).get('parentId')==child['id']
+             and re.search(r'无访问权限|无权|资源不存在|无权限|access denied|not found',q.get('data',{}).get('text',''),re.I)]
+    if len(matches)!=1:return None
+    child,question=matches[0]
+    return {'questionId':question['id'],'childId':child['id'],'rootId':root['id'],'text':question['data']['text']}
+
+
 def candidate_identity(value):
     if value.get('passed') is not True or value.get('kept') is not True or value.get('productionChanged') is not False:
         raise ValueError('A successful, retained, isolated candidate is required')

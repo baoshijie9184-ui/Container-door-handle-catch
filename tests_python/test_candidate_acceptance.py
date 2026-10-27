@@ -48,6 +48,30 @@ def test_remote_probe_checks_every_image_and_private_listener():
     assert 'docker compose' not in source and 'cloud.env' not in source
 
 
+@pytest.mark.parametrize('state',['empty','input','run','history','waiting'])
+def test_no_browser_resubmission_when_server_has_any_execution_evidence(state):
+    control={'run':{'phase':'IDLE'},'inputs':[]};runs=[]
+    history={'messages':[{'role':'assistant','intent':'GREETING'}]}
+    if state=='input':control['inputs']=[{'id':'accepted'}]
+    if state=='run':runs=[{'status':'ERROR'}]
+    if state=='history':history['messages'].append({'role':'user','content':'prior request'})
+    if state=='waiting':control['run']['phase']='AWAITING_RECOVERY'
+    assert environment.conversation_not_started(control,runs,history)==(state=='empty')
+
+
+@pytest.mark.parametrize('change',['valid','other-parent','other-child','not-denial','active-root'])
+def test_structured_denial_must_belong_to_the_exact_waiting_child(change):
+    root={'id':'root','kind':'EXECUTION','status':'WAITING_CHILD'}
+    child={'id':'child','kind':'CHILD','status':'WAITING_INPUT','data':{'parentId':'root'}}
+    question={'id':'question','kind':'QUESTION','status':'PENDING','data':{'parentId':'child','text':'无访问权限或资源不存在'}}
+    if change=='other-parent':child['data']['parentId']='another-root'
+    if change=='other-child':question['data']['parentId']='another-child'
+    if change=='not-denial':question['data']['text']='请输入设备编号'
+    if change=='active-root':root['status']='RUNNING'
+    result=environment.owned_child_denial([child,question],root)
+    assert (result is not None)==(change=='valid')
+
+
 @pytest.mark.parametrize('change',['candidate','unknown','incomplete','valid'])
 def test_memory_resume_requires_the_exact_verified_ninth_checkpoint(change):
     value={k:v for k,v in receipt().items() if k in {'project','release','sourceSha256'}}
