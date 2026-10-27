@@ -159,7 +159,13 @@ public class AgentScopeChatServiceImpl implements ChatConversationService, Agent
             boolean command=request.getContent().stripLeading().startsWith("/");
             String context = command?"":Objects.toString(knowledge.retrieveContext(request.getContent()), "");
             if(!command){var memories = memory.searchAccountMemories(tenant, sessionId, request.getContent(), 5);
-                if (memories != null && !memories.isEmpty()) context += "\n" + memory.formatMemoriesAsContext(memories);
+                if (memories != null && !memories.isEmpty()) {
+                    String personal=Objects.toString(memory.formatMemoriesAsContext(memories),"");
+                    if(personal.length()>2000)personal=personal.substring(0,2000);
+                    int remaining=6000-personal.length()-1;
+                    if(context.length()>remaining)context=context.substring(0,remaining);
+                    context+="\n"+personal;
+                }
             }
             if (context.length() > 6000) context = context.substring(0, 6000);
             Consumer<AgentConversationApi.Event> consume = event -> {

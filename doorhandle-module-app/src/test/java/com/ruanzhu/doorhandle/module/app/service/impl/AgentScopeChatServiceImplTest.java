@@ -138,6 +138,18 @@ class AgentScopeChatServiceImplTest {
                 metadata.get("turn_id").equals(42L)&&metadata.get("source").equals("agentscope-chat")));
         verify(sessions).appendAssistantMessage(any(),eq("s1"),contains("CSV"),eq("TEXT"),eq("AGENTSCOPE"),isNull());
     }
+    @Test void longKnowledgeReferenceCannotTruncateTheAccountPreference(){
+        when(knowledge.retrieveContext(anyString())).thenReturn("业务资料".repeat(2000));
+        when(memory.searchAccountMemories(any(),eq("s1"),anyString(),eq(5))).thenReturn(List.of(java.util.Map.of("memory","本人时区为 UTC+8")));
+        when(memory.formatMemoriesAsContext(anyList())).thenReturn("[用户历史记忆]\n- 本人时区为 UTC+8");
+        when(api.start(any(),anyString(),anyList(),anyString(),any())).thenAnswer(inv->{
+            String reference=inv.getArgument(3);
+            assertThat(reference).hasSize(6000).contains("业务资料").endsWith("[用户历史记忆]\n- 本人时区为 UTC+8");
+            return new AgentConversationApi.Run(CompletableFuture.completedFuture("历史记录为 UTC+8"),()->{});
+        });
+        when(sessions.appendAssistantMessage(any(),any(),any(),any(),any(),any())).thenReturn(new ChatMessageResponse());
+        service.handleUserMessage("alice",request());
+    }
     @Test void replayRejectedByExecutionDoesNotAppendAnotherUserMessage(){
         when(api.start(any(),anyString(),anyList(),anyString(),any())).thenThrow(new IllegalStateException("duplicate run"));
         assertThatThrownBy(()->service.handleUserMessage("alice",request())).hasMessageContaining("duplicate");

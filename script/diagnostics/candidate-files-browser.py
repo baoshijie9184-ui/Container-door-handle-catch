@@ -174,7 +174,7 @@ def main():
                     check(entry+' plus upload and attachment draft survive refresh', True)
                     before_inputs=context.request.get(base+'/api/agent/conversations/'+state['id']+'/control').json()['inputs']
                     draft='DEMO-OFFLINE-'+uuid.uuid4().hex+' 本条保留为未发送草稿'
-                    composer=page.locator('textarea')
+                    composer=page.locator('textarea:visible')
                     expect(composer).to_have_count(1)
                     context.set_offline(True)
                     expect(page.get_by_text('浏览器报告网络离线，当前输入保留；恢复连接后请手动发送，不会自动重发。',exact=True)).to_be_visible()
@@ -182,7 +182,7 @@ def main():
                     context.set_offline(False)
                     expect(page.get_by_text('浏览器报告网络离线，当前输入保留；恢复连接后请手动发送，不会自动重发。',exact=True)).not_to_be_visible()
                     page.reload(wait_until='networkidle')
-                    expect(page.locator('textarea')).to_have_value(draft)
+                    expect(page.locator('textarea:visible')).to_have_value(draft)
                     expect(page.get_by_role('list',name='本条消息的附件引用',exact=True).get_by_text(name,exact=True)).to_be_visible()
                     after_inputs=context.request.get(base+'/api/agent/conversations/'+state['id']+'/control').json()['inputs']
                     check(entry+' offline text and attachment draft survive reconnect and refresh',True)

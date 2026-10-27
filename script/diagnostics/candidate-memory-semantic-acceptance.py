@@ -14,6 +14,8 @@ def main(argv=None):
     parser.add_argument('--candidate-report',required=True)
     parser.add_argument('--directory',required=True)
     parser.add_argument('--execute',action='store_true')
+    parser.add_argument('--model',choices=['qwen3.8-flash','qwen3.8-max-0902'],
+                        help='Read-only Bailian classifier variant; does not change candidate extraction')
     args=parser.parse_args(argv)
     if not args.execute:parser.error('Explicit bounded model calls must be requested')
     api=runpy.run_path(str(Path(__file__).with_name('memory-semantic-eval.py')))
@@ -21,6 +23,7 @@ def main(argv=None):
     env=CandidateEnvironment(args.candidate_report,args.directory)
     report={'startedAt':timestamp(),'project':env.project,'release':env.candidate['release'],
             'sourceSha256':env.candidate['sourceSha256'],'passed':False,'callsLimit':len(cases),
+            'readOnlyModelVariant':args.model,
             'scope':'32 fixed synthetic relationships; no memory or vector writes and no retry'}
     env.write('result.json',report)
     child='''import hashlib,json
@@ -31,9 +34,12 @@ from mem0.utils.factory import LlmFactory
 '''+inspect.getsource(api['parse_labels'])+'''
 cases=CASES
 config=bridge.get_memory_config()['llm']
-assert config['config']['model']=='qwen3.8-flash'
+assert config['config']['model'] in {'qwen3.8-flash','qwen3.8-max-0902'}
+candidate_model=config['config']['model']
+requested=MODEL
+if requested:config['config']['model']=requested
 llm=bridge.configure_llm_provider(LlmFactory.create(config['provider'],config['config']))
-document={'model':config['config']['model'],'promptVersion':PROMPT_VERSION,
+document={'model':config['config']['model'],'candidateExtractionModel':candidate_model,'promptVersion':PROMPT_VERSION,
           'promptSha256':hashlib.sha256(PROMPT.encode()).hexdigest(),
           'datasetSha256':hashlib.sha256(json.dumps(cases,ensure_ascii=False,sort_keys=True).encode()).hexdigest(),
           'results':[],'retryCount':0,'gatePassed':False}
@@ -57,7 +63,7 @@ try:
     document['gatePassed']=len(document['results'])==len(cases) and all(r['status']=='PASS' for r in document['results'])
 finally:llm.client.close()
 print(json.dumps({'result':document}),flush=True)
-'''.replace('cases=CASES','cases='+repr(cases))
+'''.replace('cases=CASES','cases='+repr(cases)).replace('requested=MODEL','requested='+repr(args.model))
     code=probe_source(env.candidate).replace("print('owned-candidate-ready')",'')+'''
 ids=subprocess.check_output(['docker','ps','-q','--filter','label=com.docker.compose.project='+project,
     '--filter','label=com.docker.compose.service=mem0']).decode().split();assert len(ids)==1

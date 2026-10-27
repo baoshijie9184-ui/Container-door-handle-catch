@@ -20,6 +20,9 @@ with __import__('unittest.mock',fromlist=['patch']).patch.dict(sys.modules,{'can
 SPEC=importlib.util.spec_from_file_location('candidate_semantic',SCRIPTS/'candidate-memory-semantic-acceptance.py')
 semantic=importlib.util.module_from_spec(SPEC)
 with __import__('unittest.mock',fromlist=['patch']).patch.dict(sys.modules,{'candidate_environment':environment}):SPEC.loader.exec_module(semantic)
+SPEC=importlib.util.spec_from_file_location('candidate_memory',SCRIPTS/'candidate-memory-acceptance.py')
+memory=importlib.util.module_from_spec(SPEC)
+with __import__('unittest.mock',fromlist=['patch']).patch.dict(sys.modules,{'candidate_environment':environment}):SPEC.loader.exec_module(memory)
 
 
 def receipt():
@@ -43,6 +46,26 @@ def test_remote_probe_checks_every_image_and_private_listener():
     assert "row['Image']==image" in source and "row['State']['Running']" in source
     assert "'HostIp':'127.0.0.1','HostPort':'18089'" in source
     assert 'docker compose' not in source and 'cloud.env' not in source
+
+
+@pytest.mark.parametrize('change',['candidate','unknown','incomplete','valid'])
+def test_memory_resume_requires_the_exact_verified_ninth_checkpoint(change):
+    value={k:v for k,v in receipt().items() if k in {'project','release','sourceSha256'}}
+    value.update(passed=False,errorType='AssertionError',marker='DEMO-MEM-123456abcd',
+                 turns=[{'number':i+1,'sessionId':'session-'+str(i),'status':'SUCCEEDED',
+                         'createdMemoryId':'owned-id','receipt':{'status':'SUCCEEDED'}} for i in range(9)],
+                 restarts=[{'healthy':True},{'healthy':True}],
+                 checks=[{'name':'Session 9 reads corrected format across sessions','passed':False}])
+    if change=='candidate':value['sourceSha256']='c'*64
+    if change=='unknown':value['turns'][3]['receipt']['status']='NEEDS_REVIEW'
+    if change=='incomplete':value['turns'].pop()
+    before=deepcopy(value)
+    if change=='valid':
+        result=memory.checkpoint(value,receipt())
+        assert result['passed'] is False and result['checks']==[] and result['priorFailure']['check']['passed'] is False
+    else:
+        with pytest.raises(ValueError):memory.checkpoint(value,receipt())
+    assert value==before
 
 
 def test_unknown_image_identity_stops_before_tunnel_or_login(tmp_path,monkeypatch):
