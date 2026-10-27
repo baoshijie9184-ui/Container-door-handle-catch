@@ -23,7 +23,7 @@ services:
   nginx:
     build:
       args:
-        NPM_REGISTRY: https://registry.npmmirror.com
+        NPM_REGISTRY: ${DOORHANDLE_BUILD_NPM_REGISTRY:-https://registry.npmmirror.com}
 
   mysql:
     image: mysql:8.4
