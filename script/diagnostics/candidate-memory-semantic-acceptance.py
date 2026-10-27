@@ -1,5 +1,6 @@
 """Bounded synthetic classifier checks using the owned candidate's native SDK and model."""
 import argparse
+import ast
 import inspect
 import json
 from pathlib import Path
@@ -16,15 +17,26 @@ def main(argv=None):
     parser.add_argument('--execute',action='store_true')
     parser.add_argument('--model',choices=['qwen3.8-flash','qwen3.8-max-0902'],
                         help='Read-only Bailian classifier variant; does not change candidate extraction')
+    parser.add_argument('--local-prompt',action='store_true',help='Read-only prompt variant from local reviewed source; never updates the candidate')
+    parser.add_argument('--expanded',action='store_true',help='Add sixteen new fixed validation relationships')
     args=parser.parse_args(argv)
     if not args.execute:parser.error('Explicit bounded model calls must be requested')
     api=runpy.run_path(str(Path(__file__).with_name('memory-semantic-eval.py')))
     cases=api['CASES']+api['HOLDOUT_CASES']
+    if args.expanded:cases+=api['VALIDATION_CASES']
+    override=None
+    if args.local_prompt:
+        source=Path(__file__).resolve().parents[2]/'memory_service/duplicate_review.py'
+        tree=ast.parse(source.read_text(encoding='utf8'))
+        values={node.targets[0].id:ast.literal_eval(node.value) for node in tree.body if isinstance(node,ast.Assign)
+                and isinstance(node.targets[0],ast.Name) and node.targets[0].id in {'PROMPT','PROMPT_VERSION'}}
+        override={'prompt':values['PROMPT'],'version':values['PROMPT_VERSION']}
     env=CandidateEnvironment(args.candidate_report,args.directory)
     report={'startedAt':timestamp(),'project':env.project,'release':env.candidate['release'],
             'sourceSha256':env.candidate['sourceSha256'],'passed':False,'callsLimit':len(cases),
             'readOnlyModelVariant':args.model,
-            'scope':'32 fixed synthetic relationships; no memory or vector writes and no retry'}
+            'localPromptVariant':args.local_prompt,'expandedValidation':args.expanded,
+            'scope':'fixed synthetic relationships; no memory or vector writes and no retry'}
     env.write('result.json',report)
     child='''import hashlib,json
 from types import SimpleNamespace
@@ -33,6 +45,10 @@ from duplicate_review import PROMPT,PROMPT_VERSION,model_metrics,review_request_
 from mem0.utils.factory import LlmFactory
 '''+inspect.getsource(api['parse_labels'])+'''
 cases=CASES
+candidate_prompt_version=PROMPT_VERSION
+candidate_prompt_sha256=hashlib.sha256(PROMPT.encode()).hexdigest()
+override=PROMPT_OVERRIDE
+if override:PROMPT,PROMPT_VERSION=override['prompt'],override['version']
 config=bridge.get_memory_config()['llm']
 assert config['config']['model'] in {'qwen3.8-flash','qwen3.8-max-0902'}
 candidate_model=config['config']['model']
@@ -40,6 +56,7 @@ requested=MODEL
 if requested:config['config']['model']=requested
 llm=bridge.configure_llm_provider(LlmFactory.create(config['provider'],config['config']))
 document={'model':config['config']['model'],'candidateExtractionModel':candidate_model,'promptVersion':PROMPT_VERSION,
+          'candidatePromptVersion':candidate_prompt_version,'candidatePromptSha256':candidate_prompt_sha256,
           'promptSha256':hashlib.sha256(PROMPT.encode()).hexdigest(),
           'datasetSha256':hashlib.sha256(json.dumps(cases,ensure_ascii=False,sort_keys=True).encode()).hexdigest(),
           'results':[],'retryCount':0,'gatePassed':False}
@@ -63,13 +80,13 @@ try:
     document['gatePassed']=len(document['results'])==len(cases) and all(r['status']=='PASS' for r in document['results'])
 finally:llm.client.close()
 print(json.dumps({'result':document}),flush=True)
-'''.replace('cases=CASES','cases='+repr(cases)).replace('requested=MODEL','requested='+repr(args.model))
+'''.replace('cases=CASES','cases='+repr(cases)).replace('requested=MODEL','requested='+repr(args.model)).replace('override=PROMPT_OVERRIDE','override='+repr(override))
     code=probe_source(env.candidate).replace("print('owned-candidate-ready')",'')+'''
 ids=subprocess.check_output(['docker','ps','-q','--filter','label=com.docker.compose.project='+project,
     '--filter','label=com.docker.compose.service=mem0']).decode().split();assert len(ids)==1
 row=json.loads(subprocess.check_output(['docker','inspect',ids[0]]))[0]
 assert row['Config']['Labels'].get('io.doorhandle.rehearsal')==project
-result=subprocess.run(['docker','exec','-i',ids[0],'python','-'],input=CHILD,text=True,capture_output=True,timeout=300)
+result=subprocess.run(['docker','exec','-i',ids[0],'python','-'],input=CHILD,text=True,capture_output=True,timeout=420)
 # Only the deliberately bounded classifier protocol is emitted, never private logs.
 for line in result.stdout.splitlines():
     try:value=json.loads(line)
@@ -81,7 +98,7 @@ assert result.returncode==0
         with env:
             process=subprocess.Popen(env.ssh+['doorhandle-bj','python3 -'],stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
-            try:output,_=process.communicate(code,timeout=330)
+            try:output,_=process.communicate(code,timeout=450)
             except subprocess.TimeoutExpired:
                 process.kill();process.communicate(timeout=10)
                 raise RuntimeError('Classifier outcome unavailable; do not automatically retry') from None

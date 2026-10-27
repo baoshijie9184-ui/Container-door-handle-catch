@@ -41,18 +41,23 @@ def main(argv=None):
     parser.add_argument('--candidate-report',required=True)
     parser.add_argument('--directory',required=True)
     parser.add_argument('--execute',action='store_true')
+    parser.add_argument('--text-only',action='store_true',help='Explicitly request plain-text preference handling without skills or business tools')
     parser.add_argument('--resume-from',help='Continue only a verified ninth-session structured-question checkpoint')
     args=parser.parse_args(argv)
     if not args.execute:parser.error('Explicit candidate mutations must be requested')
     env=CandidateEnvironment(args.candidate_report,args.directory)
     report={'startedAt':timestamp(),'release':env.candidate['release'],'sourceSha256':env.candidate['sourceSha256'],
             'project':env.project,'passed':False,'checks':[],'turns':[],'restarts':[],
+            'scenario':'TEXT_ONLY' if args.text_only else 'DEFAULT',
+            'harnessSha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
             'scope':'ten short real HTTP sessions, not weeks of memory stability'}
     if args.resume_from:
         previous=Path(args.resume_from).resolve(strict=True)
         if not previous.is_relative_to(ROOT/'work') or previous.name!='result.json':
             raise ValueError('Resume requires a project-owned memory receipt')
         report=checkpoint(json.loads(previous.read_text(encoding='utf8')),env.candidate)
+        if report.get('scenario','DEFAULT')!=('TEXT_ONLY' if args.text_only else 'DEFAULT'):
+            raise ValueError('A checkpoint cannot change its original scenario')
         report.update(resumedFrom=str(previous),resumedAt=timestamp())
 
     def save():env.write('result.json',report)
@@ -128,6 +133,8 @@ print(json.dumps({'containerId':after['Id'],'image':after['Image'],'before':befo
                 '查询我对 '+marker+' 验收资料标题颜色的长期偏好。',
                 '查询我对 '+marker+' 验收资料文件格式的长期偏好。',
                 '查询我对 '+marker+' 验收资料时区的长期偏好。']
+            if args.text_only:
+                statements=[value+'本轮仅确认或引用上述本人偏好，请只用纯文本回答，不加载技能、不调用任何工具。' for value in statements]
             format_memory=None
             mutation_ids=[]
             if args.resume_from:
@@ -187,6 +194,16 @@ print(json.dumps({'containerId':after['Id'],'image':after['Image'],'before':befo
                 reply=replies[0]
                 if reply.get('messageType')=='AGENT_CARDS':reply=dict(reply,content=json.loads(reply['content'])['text'])
                 turn['reply']=reply['content'];turn['messageId']=reply['id'];save()
+                if args.text_only:
+                    runs=api('GET','/api/agent/runs',params={'sessionId':sid})
+                    if not 1<=len(runs)<=4:raise AssertionError('Unexpected text-only run count')
+                    turn['toolCalls']=[]
+                    for run in runs:
+                        events=api('GET','/api/agent/runs/'+run['runId']+'/events',params={'after':0,'limit':100})
+                        if len(events)>=100:raise AssertionError('Text-only evidence exceeded its event budget')
+                        turn['toolCalls'] += [e['payload'].get('tool') for e in events if e['type']=='TOOL_STARTED']
+                    save()
+                    if turn['toolCalls']:raise AssertionError('A text-only case unexpectedly used tools')
                 extraction_id=hashlib.sha256(('doorhandlecatch:user:'+str(uid)+'\0doorhandlecatch\0'+sid+'\0'+str(reply['id'])).encode()).hexdigest()
                 turn['extractionId']=extraction_id;save()
                 deadline=time.monotonic()+100;receipt=None

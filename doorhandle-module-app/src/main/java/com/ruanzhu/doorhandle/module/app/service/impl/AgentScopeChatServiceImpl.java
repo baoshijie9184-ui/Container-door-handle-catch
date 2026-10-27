@@ -158,7 +158,7 @@ public class AgentScopeChatServiceImpl implements ChatConversationService, Agent
             output.accept(ChatStreamEvent.status(sessionId, "AgentScope 正在检索并处理问题"));
             boolean command=request.getContent().stripLeading().startsWith("/");
             String context = command?"":Objects.toString(knowledge.retrieveContext(request.getContent()), "");
-            if(!command){var memories = memory.searchAccountMemories(tenant, sessionId, request.getContent(), 5);
+            if(!command){var memories = memory.searchAccountMemories(tenant, sessionId, request.getContent(), 10);
                 if (memories != null && !memories.isEmpty()) {
                     String personal=Objects.toString(memory.formatMemoriesAsContext(memories),"");
                     if(personal.length()>2000)personal=personal.substring(0,2000);

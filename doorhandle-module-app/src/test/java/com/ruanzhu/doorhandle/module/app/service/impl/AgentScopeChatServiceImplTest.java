@@ -113,7 +113,7 @@ class AgentScopeChatServiceImplTest {
         var previous=new ChatMessageResponse();previous.setRole("assistant");previous.setMessageType("TEXT");previous.setContent("来自主站的历史");
         when(sessions.listMessages("alice","s1")).thenReturn(List.of(previous));
         when(knowledge.retrieveContext("当前问题")).thenReturn("业务参考");
-        when(memory.searchAccountMemories(any(),eq("s1"),eq("当前问题"),eq(5))).thenReturn(List.of(java.util.Map.of("memory","本人偏好")));
+        when(memory.searchAccountMemories(any(),eq("s1"),eq("当前问题"),eq(10))).thenReturn(List.of(java.util.Map.of("memory","本人偏好")));
         when(memory.formatMemoriesAsContext(anyList())).thenReturn("本人偏好");
         when(api.start(any(),eq("s1"),anyList(),anyString(),any(),eq("AGUI"),eq("request-1"))).thenAnswer(inv->{
             assertThat(inv.getArgument(2,List.class).toString()).contains("来自主站的历史","当前问题");assertThat(inv.getArgument(3,String.class)).contains("业务参考","本人偏好");
@@ -140,12 +140,31 @@ class AgentScopeChatServiceImplTest {
     }
     @Test void longKnowledgeReferenceCannotTruncateTheAccountPreference(){
         when(knowledge.retrieveContext(anyString())).thenReturn("业务资料".repeat(2000));
-        when(memory.searchAccountMemories(any(),eq("s1"),anyString(),eq(5))).thenReturn(List.of(java.util.Map.of("memory","本人时区为 UTC+8")));
+        when(memory.searchAccountMemories(any(),eq("s1"),anyString(),eq(10))).thenReturn(List.of(java.util.Map.of("memory","本人时区为 UTC+8")));
         when(memory.formatMemoriesAsContext(anyList())).thenReturn("[用户历史记忆]\n- 本人时区为 UTC+8");
         when(api.start(any(),anyString(),anyList(),anyString(),any())).thenAnswer(inv->{
             String reference=inv.getArgument(3);
             assertThat(reference).hasSize(6000).contains("业务资料").endsWith("[用户历史记忆]\n- 本人时区为 UTC+8");
             return new AgentConversationApi.Run(CompletableFuture.completedFuture("历史记录为 UTC+8"),()->{});
+        });
+        when(sessions.appendAssistantMessage(any(),any(),any(),any(),any(),any())).thenReturn(new ChatMessageResponse());
+        service.handleUserMessage("alice",request());
+    }
+    @Test void recallIncludesACorrectedPreferenceBeyondTheFirstFiveMatches(){
+        when(memory.searchAccountMemories(any(),eq("s1"),anyString(),anyInt())).thenAnswer(inv->{
+            int limit=inv.getArgument(3);
+            var rows=new java.util.ArrayList<java.util.Map<String,Object>>();
+            for(int i=0;i<6;i++)rows.add(java.util.Map.of("memory","其他偏好 "+i));
+            rows.add(java.util.Map.of("memory","人工纠正后的默认格式为 CSV"));
+            return List.copyOf(rows.subList(0,Math.min(limit,rows.size())));
+        });
+        when(memory.formatMemoriesAsContext(anyList())).thenAnswer(inv->{
+            List<java.util.Map<String,Object>> rows=inv.getArgument(0);
+            return rows.stream().map(row->row.get("memory").toString()).collect(java.util.stream.Collectors.joining("\n"));
+        });
+        when(api.start(any(),anyString(),anyList(),anyString(),any())).thenAnswer(inv->{
+            assertThat(inv.getArgument(3,String.class)).contains("人工纠正后的默认格式为 CSV");
+            return new AgentConversationApi.Run(CompletableFuture.completedFuture("CSV"),()->{});
         });
         when(sessions.appendAssistantMessage(any(),any(),any(),any(),any(),any())).thenReturn(new ChatMessageResponse());
         service.handleUserMessage("alice",request());

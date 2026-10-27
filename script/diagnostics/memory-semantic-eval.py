@@ -57,6 +57,30 @@ HOLDOUT_CASES=[
 ]
 
 
+VALIDATION_CASES=[
+    {'id':'shipment','source':'发货单出库前必须由仓库主管复核','candidates':[
+        ('每张发货单必须先由仓库主管复核再出库','DUPLICATE'),
+        ('发货单出库前不需要任何主管复核','CONFLICT'),
+        ('发货单的标题采用深蓝色字体','RELATED'),
+        ('用户在家喜欢把灯光调成暖色','DISTINCT')]},
+    {'id':'archive-format','source':'用户要求巡检附件默认提供 ZIP 文件','candidates':[
+        ('巡检附件默认应提供 ZIP 格式','DUPLICATE'),
+        ('巡检附件只能提供 PNG 不能提供 ZIP','CONFLICT'),
+        ('巡检附件同时提供 ZIP 与 PDF 格式','RELATED'),
+        ('设备 D 的安装位置在三楼走廊','DISTINCT')]},
+    {'id':'temperature','source':'设备 D 在 2026-10-27 的报警温度阈值为 85 摄氏度','candidates':[
+        ('2026-10-27 设备 D 的报警温度阈值是 85 摄氏度','DUPLICATE'),
+        ('2026-10-27 设备 D 的报警温度阈值是 75 摄氏度','CONFLICT'),
+        ('2026-10-26 设备 D 的报警温度阈值是 75 摄氏度','RELATED'),
+        ('用户早餐喜欢食用燕麦','DISTINCT')]},
+    {'id':'purchase-purpose','source':'采购申请每次提交前都必须填写用途说明','candidates':[
+        ('每份采购申请都须先填写用途说明再提交','DUPLICATE'),
+        ('采购申请无需填写任何用途说明也可以提交','CONFLICT'),
+        ('采购申请的用途说明采用两段排版','RELATED'),
+        ('用户的无线耳机外壳为白色','DISTINCT')]}
+]
+
+
 def parse_labels(response, candidates):
     """Only a complete one-to-one classifier response is scoreable."""
     value=json.loads(response)
