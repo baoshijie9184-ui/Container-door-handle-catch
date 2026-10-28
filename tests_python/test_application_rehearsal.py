@@ -401,7 +401,10 @@ def test_fixed_candidate_migration_checks_existing_index_before_creating(tmp_pat
         with pytest.raises(RuntimeError): run.migrate_candidate(root)
     assert any('CREATE INDEX idx_conversation_input_dispatch_owner' in sql for sql in calls) == creates
     if passes:
-        assert len(run.report['candidateMigrations']) == 24
+        assert len(run.report['candidateMigrations']) == 27
+        assert run.report['candidateMigrations'][-3:] == [
+            'migration-V63-quality-knowledge.sql', 'migration-V64-model-budget.sql',
+            'migration-V65-quality-digests.sql']
 
 
 def model_fact_metadata():
@@ -439,3 +442,21 @@ def test_migration_copy_mismatch_stops_before_any_database_operation(tmp_path):
     run = rehearsal.Rehearsal.__new__(rehearsal.Rehearsal)
     run.row = lambda service: pytest.fail('Must not access a database when migration copies differ')
     with pytest.raises(RuntimeError, match='copies differ'): run.migrate_candidate(tmp_path)
+
+
+@pytest.mark.parametrize('version', [63, 64, 65])
+def test_quality_migration_mismatch_rejects_entire_plan_before_ddl(tmp_path, version):
+    root = Path(__file__).resolve().parents[1]
+    for number in range(39, 66):
+        sql = next((root/'sql/mysql').glob(f'migration-V{number}-*.sql'))
+        mirror = next(root.glob('doorhandle-*/src/main/resources/db/'+sql.name))
+        for source in (sql, mirror):
+            target = tmp_path/source.relative_to(root)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(source.read_bytes())
+        if number == version:
+            (tmp_path/mirror.relative_to(root)).write_text('DIFFERENT;', encoding='utf8')
+    run = rehearsal.Rehearsal.__new__(rehearsal.Rehearsal)
+    run.row = lambda service: pytest.fail('A mismatched migration must not access MySQL')
+    with pytest.raises(RuntimeError, match=f'V{version} migration copies differ'):
+        run.migrate_candidate(tmp_path)

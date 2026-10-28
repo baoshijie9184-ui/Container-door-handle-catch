@@ -464,7 +464,7 @@ except Exception as error:
         mirror = source/'doorhandle-module-app/src/main/resources/db/migration-V39-conversation-owner-dispatch.sql'
         require(file.read_bytes() == mirror.read_bytes(), 'Candidate V39 migration copies differ')
         plan = []
-        for version in range(40, 63):
+        for version in range(40, 66):
             files = list((source/'sql/mysql').glob('migration-V'+str(version)+'-*.sql'))
             require(len(files) == 1 and not files[0].is_symlink(), 'Candidate migration source missing or ambiguous: V'+str(version))
             mirrors = list(source.glob('doorhandle-*/src/main/resources/db/'+files[0].name))
@@ -480,7 +480,7 @@ except Exception as error:
             self.ops.db(self.row('mysql')['Id'], migration.read_text(encoding='utf8'))
         self.verify_model_fact_columns(complete=True)
         self.report['candidateMigrations'] = [migration.name for migration in (file, *plan)]
-        self.check('Owned candidate copy applied V40-V62 and retains the expected nullable model facts', True)
+        self.check('Owned candidate copy applied V40-V65 and retains the expected nullable model facts', True)
 
     def verify_model_fact_columns(self, *, complete):
         expected = {'training_image_count': 'int', 'training_completed_at': 'datetime',

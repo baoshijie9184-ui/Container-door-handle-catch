@@ -20,7 +20,7 @@ pipeline {
         string(name: 'BUILD_WORKSPACE', defaultValue: 'D:/AI/lunwen1/DoorHandleCatch/work/jenkins/workspace', description: '专用工作区；不能使用开发源码目录')
         string(name: 'DEPLOY_HOST', defaultValue: "${params.DEPLOY_HOST ?: ''}", description: '原 ECS 当前公网 IP；保留最近一次配置，节省停机后重新核对')
         string(name: 'DEPLOY_PORT', defaultValue: "${params.DEPLOY_PORT ?: '443'}", description: '保留最近验证的 SSH 端口；当前使用 443 TLS 入口')
-        choice(name: 'SSH_TRANSPORT', choices: ['tls', 'direct'], description: '默认使用已验证的 TLS 通道，校验证书和 SSH 主机公钥；直连需另行验证端口')
+        choice(name: 'SSH_TRANSPORT', choices: params.SSH_TRANSPORT == 'direct' ? ['direct', 'tls'] : ['tls', 'direct'], description: '保留最近验证的连接方式；direct 校验 SSH 主机公钥，tls 另校验服务器证书')
         string(name: 'SSH_TLS_CA_FILE', defaultValue: 'D:/AI/lunwen1/DoorHandleCatch/work/cloud/ssh-tls/server.crt', description: '经云助手核验的服务器公有证书，不含私钥')
         string(name: 'OPENSSL_EXE', defaultValue: 'D:/ruanjian/Git/usr/bin/openssl.exe', description: '本机已有 Git OpenSSL 客户端')
         string(name: 'REMOTE_ROOT', defaultValue: '/home/ecs-user/doorhandle-ci', description: '保存版本与回滚状态的目录')
