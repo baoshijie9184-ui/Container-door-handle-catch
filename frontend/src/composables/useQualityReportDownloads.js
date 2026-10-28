@@ -1,3 +1,4 @@
+import {EXPORT_SOURCE} from '../utils/systemBrand'
 import { ref, onBeforeUnmount } from 'vue'
 import { ElMessage } from 'element-plus'
 import { fetchQualityReport } from '../api/detection'
@@ -70,7 +71,7 @@ export function useQualityReportDownloads({
     downloadJsonReport({
       ...batchTraceReport.value,
       exportedAt: new Date().toISOString(),
-      exportedBy: 'DoorHandleCatch Web'
+      exportedBy: EXPORT_SOURCE
     }, `batch-trace-${safeFilePart(batchNo)}-${reportTimestamp()}.json`)
     ElMessage.success('已发起本次批次摘要下载')
   }
@@ -85,7 +86,7 @@ export function useQualityReportDownloads({
     downloadJsonReport({
       ...workOrderTraceReport.value,
       exportedAt: new Date().toISOString(),
-      exportedBy: 'DoorHandleCatch Web'
+      exportedBy: EXPORT_SOURCE
     }, `work-order-trace-${safeFilePart(workOrderNo)}-${reportTimestamp()}.json`)
     ElMessage.success('已发起本次工单摘要下载')
   }

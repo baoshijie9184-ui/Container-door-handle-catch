@@ -53,7 +53,7 @@
             <h2 tabindex="-1"><AppIcon name="HomeFilled" :size="20" />系统能做什么</h2>
           </div>
               <p>
-                本系统用于集装箱门把手工业缺陷检测，覆盖图像采集、模型推理、检测记录、质检复核、缺陷证据、工单追溯、批次追溯、模型管理、设备人员管理和智能助手辅助查询。
+                {{ SYSTEM_NAME }}用于集装箱门把手盖工业缺陷检测，覆盖图像采集、模型推理、检测记录、质检复核、缺陷证据、工单追溯、批次追溯、模型管理、设备人员管理和智能助手辅助查询。
                 系统面向单个企业，员工查看本人及分派任务，主管查看企业业务范围。聊天、记忆及操作确认按账号隔离，具体业务操作还受角色和任务状态约束。
               </p>
           <div class="flow-line">
@@ -164,6 +164,7 @@
 </template>
 
 <script setup>
+import {SYSTEM_NAME} from '@/utils/systemBrand'
 import { computed, ref, onMounted, onBeforeUnmount } from 'vue'
 import { useUserStore } from '@/stores/user'
 const user = useUserStore()

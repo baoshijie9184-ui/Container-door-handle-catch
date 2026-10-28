@@ -19,6 +19,38 @@ import static org.assertj.core.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
 class AgentScopeChatServiceImplTest {
+    @Test void vueStreamForwardsOnlyActualSanitizedToolReceiptsAndPersistedRunLink()throws Exception{
+        when(api.start(any(),anyString(),anyList(),anyString(),any())).thenAnswer(inv->{
+            Consumer<AgentConversationApi.Event> events=inv.getArgument(4);
+            events.accept(new AgentConversationApi.Event("TOOL_STARTED","reader","read_workspace_file","SECRET_ARGUMENTS",1,"call-safe"));
+            events.accept(new AgentConversationApi.Event("TOOL_ERROR","reader","read_workspace_file","SECRET_FAILURE",2,"call-safe"));
+            events.accept(new AgentConversationApi.Event("TEXT_CHUNK","reader",null,"已核对记录",3));
+            return new AgentConversationApi.Run(CompletableFuture.completedFuture("已核对记录"),()->{},"durable-vue");
+        });
+        var saved=new ChatMessageResponse();saved.setId(25L);saved.setSessionId("s1");saved.setContent("已核对记录");saved.setMessageType("TEXT");
+        when(sessions.appendAssistantMessage(any(),any(),any(),any(),any(),any())).thenReturn(saved);
+        var controller=new com.ruanzhu.doorhandle.module.app.controller.ChatAssistantController(sessions,service,mock(SpeechTranscriptionService.class));
+        var mvc=org.springframework.test.web.servlet.setup.MockMvcBuilders.standaloneSetup(controller).build();
+        var response=mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post("/api/chat-assistant/messages/stream")
+                .principal(SecurityContextHolder.getContext().getAuthentication()).contentType("application/json")
+                .content("{\"sessionId\":\"s1\",\"content\":\"核对记录\"}")).andReturn();
+        response.getAsyncResult(10000);
+        String body=mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch(response)).andReturn().getResponse().getContentAsString(java.nio.charset.StandardCharsets.UTF_8);
+        assertThat(body).contains("event:tool","TOOL_STARTED","TOOL_ERROR","read_workspace_file","call-safe","event:done","durable-vue")
+                .doesNotContain("SECRET_ARGUMENTS","SECRET_FAILURE");
+    }
+    @Test void dynamicUiOwnershipReusesCurrentIdentityAndNeverStartsAModel(){
+        service.assertOwned(new AgentActor(1,"alice",AgentActor.Role.INSPECTOR),"s1");
+        verify(sessions).verifySessionOwner("alice","s1");verifyNoInteractions(api,knowledge,memory);
+        assertThatThrownBy(()->service.assertOwned(new AgentActor(2,"alice",AgentActor.Role.INSPECTOR),"s1"))
+                .isInstanceOf(org.springframework.security.access.AccessDeniedException.class);
+    }
+    @Test void dynamicUiOwnershipDoesNotExposeAnotherSessionsFailureDetails(){
+        doThrow(new com.ruanzhu.doorhandle.common.BusinessException(404,"PRIVATE_SESSION_DETAIL")).when(sessions).verifySessionOwner("alice","s1");
+        assertThatThrownBy(()->service.assertOwned(new AgentActor(1,"alice",AgentActor.Role.INSPECTOR),"s1"))
+                .isInstanceOf(org.springframework.security.access.AccessDeniedException.class).hasMessageNotContaining("PRIVATE_SESSION_DETAIL");
+        verifyNoInteractions(api,knowledge,memory);
+    }
     private final ChatSessionService sessions = mock(ChatSessionService.class);
     private final AgentConversationApi api = mock(AgentConversationApi.class);
     private final ObjectProvider<AgentConversationApi> provider = mock(ObjectProvider.class);
@@ -110,6 +142,9 @@ class AgentScopeChatServiceImplTest {
         verify(sessions).appendUserMessage(any(),eq("s1"),eq("/skills"));verifyNoInteractions(knowledge,memory);
     }
     @Test void aguiUsesDatabaseHistoryAndSameAccountMemoryAndPersistsBeforeReply()throws Exception{
+        var links=mock(MessageExecutionLinks.class);
+        ObjectProvider<MessageExecutionLinks> linkProvider=mock(ObjectProvider.class);
+        when(linkProvider.getIfAvailable()).thenReturn(links);service.setExecutionLinks(linkProvider);
         var previous=new ChatMessageResponse();previous.setRole("assistant");previous.setMessageType("TEXT");previous.setContent("来自主站的历史");
         when(sessions.listMessages("alice","s1")).thenReturn(List.of(previous));
         when(knowledge.retrieveContext(eq("当前问题"),any())).thenReturn("业务参考");
@@ -119,11 +154,14 @@ class AgentScopeChatServiceImplTest {
             assertThat(inv.getArgument(2,List.class).toString()).contains("来自主站的历史","当前问题");assertThat(inv.getArgument(3,String.class)).contains("业务参考","本人偏好");
             return new AgentConversationApi.Run(CompletableFuture.completedFuture("统一回答"),()->{},"durable-1");
         });
-        var saved=new ChatMessageResponse();saved.setContent("统一回答");saved.setMessageType("TEXT");
+        var saved=new ChatMessageResponse();saved.setId(41L);saved.setContent("统一回答");saved.setMessageType("TEXT");
         when(sessions.appendAssistantMessage(any(),eq("s1"),eq("统一回答"),eq("TEXT"),eq("AGENTSCOPE"),isNull())).thenReturn(saved);
         var run=service.start(new AgentActor(1,"alice",AgentActor.Role.INSPECTOR),"s1","request-1","当前问题",event->{});
-        assertThat(run.result().get().text()).isEqualTo("统一回答");verify(sessions).appendUserMessage(any(),eq("s1"),eq("当前问题"));verify(sessions).appendAssistantMessage(any(),eq("s1"),eq("统一回答"),eq("TEXT"),eq("AGENTSCOPE"),isNull());
+        assertThat(run.result().get().text()).isEqualTo("统一回答");assertThat(run.result().get().runId()).isEqualTo("durable-1");assertThat(run.result().get().messageId()).isEqualTo(41L);assertThat(saved.getRunId()).isEqualTo("durable-1");verify(sessions).appendUserMessage(any(),eq("s1"),eq("当前问题"));verify(sessions).appendAssistantMessage(any(),eq("s1"),eq("统一回答"),eq("TEXT"),eq("AGENTSCOPE"),isNull());
         verify(memory).addMemoryAsync(any(),eq("s1"),eq("当前问题"),anyMap());
+        var savedOrder=inOrder(sessions,links);
+        savedOrder.verify(sessions).appendAssistantMessage(any(),eq("s1"),eq("统一回答"),eq("TEXT"),eq("AGENTSCOPE"),isNull());
+        savedOrder.verify(links).bind(eq(new com.ruanzhu.doorhandle.module.system.security.TenantContext(1L,"alice")),eq("s1"),eq(41L),eq("durable-1"));
     }
     @Test void personalMemoryKeepsUserPreferenceWithoutAssistantClaimsOrRetrievedFacts(){
         var input=request();input.setContent("请记住我的验收资料默认导出为 PDF");

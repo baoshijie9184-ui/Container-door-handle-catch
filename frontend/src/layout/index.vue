@@ -22,11 +22,11 @@
           aria-controls="system-sidebar"
           @click="toggleNavigation"
         >
-          DH
+          <AppIcon name="Picture" :size="19" />
         </button>
-        <div v-show="!collapsed" class="brand-text">
-          <div class="brand-title">DoorHandle Catch</div>
-          <div class="brand-subtitle">工业检测智能控制台</div>
+        <div v-show="!collapsed" class="brand-text" :title="SYSTEM_NAME" :aria-label="SYSTEM_NAME">
+          <div class="brand-title">{{ SYSTEM_SHORT_NAME }}</div>
+          <div class="brand-subtitle">{{ SYSTEM_TAGLINE }}</div>
         </div>
       </div>
 
@@ -100,6 +100,7 @@
 </template>
 
 <script setup>
+import {SYSTEM_NAME,SYSTEM_SHORT_NAME,SYSTEM_TAGLINE} from '@/utils/systemBrand'
 import { computed, ref, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useUserStore } from '@/stores/user'
 import { useRouter, useRoute } from 'vue-router'

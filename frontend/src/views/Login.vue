@@ -1,9 +1,9 @@
 <template>
   <div class="login-page">
     <section class="login-showcase" aria-label="系统介绍">
-      <a class="login-brand" href="#/login"><span class="login-brand-mark"><AppIcon name="Picture" :size="23" /></span><span>DoorHandle Catch<small>集装箱门把手质量管理</small></span></a>
+      <a class="login-brand" href="#/login" :title="SYSTEM_NAME" :aria-label="SYSTEM_NAME"><span class="login-brand-mark"><AppIcon name="Picture" :size="23" /></span><span>{{ SYSTEM_SHORT_NAME }}<small>{{ SYSTEM_SCOPE }}</small></span></a>
       <div class="showcase-inner">
-        <span class="login-product-label">工业视觉检测与协作</span>
+        <span class="login-product-label">{{ SYSTEM_NAME }}</span>
         <h1>从一张原图<br />到有据可查的质量结论</h1>
         <p>连接图片采集、缺陷检测、人工复核与报告，让现场团队在同一个工作空间协作。</p>
         <HandleInspectionGraphic />
@@ -49,6 +49,7 @@
 </template>
 
 <script setup>
+import {SYSTEM_NAME,SYSTEM_SHORT_NAME,SYSTEM_SCOPE} from '@/utils/systemBrand'
 import { ref, reactive, nextTick, onMounted, onUnmounted } from 'vue'
 import { User as UserIcon, Lock as LockIcon } from '@element-plus/icons-vue'
 import { useRouter } from 'vue-router'
@@ -143,8 +144,9 @@ const handleLogin = async () => {
 .login-page { min-height: 100vh; min-height: 100dvh; display: grid; grid-template-columns:minmax(0,1fr) minmax(420px,1fr); background: white; }
 .login-showcase { display: flex; flex-direction: column; padding:32px clamp(28px,5.5vw,84px); background:var(--app-bg-alt); border-right: 1px solid var(--app-border); }
 .login-brand { display: flex; align-items: center; gap: 11px; font-size: 17px; font-weight: 700; color: var(--app-text); }
-.login-brand-mark { display: grid; place-items: center; width:36px; height:36px; background:var(--app-text); border-radius:9px; color: white; }
-.login-brand small { display: block; font-weight: 400; font-size: 12px; margin-top: 3px; color: var(--app-text-secondary); }
+.login-brand > span:last-child { min-width: 0; overflow-wrap: anywhere; }
+.login-brand-mark { flex-shrink: 0; display: grid; place-items: center; width:36px; height:36px; background:var(--app-text); border-radius:9px; color: white; }
+.login-brand small { line-height: 1.6; display: block; font-weight: 400; font-size: 12px; margin-top: 3px; color: var(--app-text-secondary); }
 .showcase-inner { max-width: 560px; margin-block: auto; padding-block: 38px; }
 .login-product-label { color: var(--app-primary); font-size: 12px; font-weight: 600; }
 .showcase-inner h1 { margin: 18px 0 16px; color: var(--app-text); font-size:clamp(28px,2.8vw,40px); font-weight:600; letter-spacing: -.04em; line-height: 1.38; }

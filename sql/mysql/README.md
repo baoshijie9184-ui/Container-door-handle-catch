@@ -134,3 +134,7 @@ V34 `migration-V34-mcp-install-queue.sql` 新增固定 Fetch 安装持久队列�
 阶段 B 新增 `sql/mysql/migration-V16-agentscope-run-journal.sql`，classpath 副本在 AI 模块的 `src/main/resources/db` 中。该脚本只创建 agent_run 和 agent_run_event，不加入业务 seed 自动导入。先在项目业务库执行，再开启 AGENT_RUN_JOURNAL_ENABLED。接口、回退与验证见项目 `docs/agentscope-run-journal.md`。
 
 V23 `migration-V23-agent-skill-evolution.sql` 新增本人来源授权、技能与不可变版本、规则 Eval、操作审计五表。开启演化前显式执行 `script/shell/migrate-local-skills.py --apply`，默认不启用功能；不自动删除历史或回滚表。见 [技能演化](../../docs/Agent技能自学习与受控发布.md)。
+
+## V66：聊天消息与执行关联
+
+`migration-V66-chat-message-execution.sql` 仅新增 `agent_message_execution`，供新保存的助手回复在页面刷新后恢复真实工具运行关联。归档和 App 模块 `src/main/resources/db` 副本保持一致。需要既有 V16 运行日志，显式迁移，不由启动或 seed 自动执行；不回填旧消息。未迁移时兼容普通聊天，详见 `docs/Agent消息执行关联持久化-20261028.md`。

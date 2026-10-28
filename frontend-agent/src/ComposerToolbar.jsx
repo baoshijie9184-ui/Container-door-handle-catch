@@ -3,7 +3,7 @@ import {Plus,FileText,Image as ImageIcon,ChartNoAxesCombined,X,ShieldCheck,Messa
 import {ComposerResources,modelLabel,selectedModelMissing} from '../../frontend/src/utils/composerResources.js';
 import {composerAttachment,composerDefaultModel,composerUploadHint,composerModelTitle} from '../../frontend/src/utils/composerPresentation';
 import '../../frontend/src/assets/composer-presentation.css';
-export const ComposerToolbar=forwardRef(function Toolbar({sessionId,base,locked,onUpload,run,draft='',onDraft,onSend,onStop,disabled},ref){
+export const ComposerToolbar=forwardRef(function Toolbar({sessionId,base,locked,onUpload,run,streaming=false,draft='',onDraft,onSend,onStop,disabled},ref){
  const [state,setState]=useState({ready:false,files:[],models:[],modelId:'',busy:false,error:''});const input=useRef(null),client=useRef(null);
  const [browserOffline,setBrowserOffline]=useState(()=>navigator.onLine===false);
  useEffect(()=>{const update=()=>setBrowserOffline(navigator.onLine===false);window.addEventListener('online',update);window.addEventListener('offline',update);return()=>{window.removeEventListener('online',update);window.removeEventListener('offline',update)}},[]);
@@ -22,7 +22,7 @@ export const ComposerToolbar=forwardRef(function Toolbar({sessionId,base,locked,
    <select aria-label="使用模型" title={composerModelTitle(state,locked,disabled)} value={state.modelId} disabled={!state.ready||state.busy||locked||disabled} onChange={event=>client.current.select(event.target.value).catch(()=>{})}><option value="">{composerDefaultModel(state)}</option>{selectedModelMissing(state)&&<option value={state.modelId} disabled>原选模型已不可用，请重新选择</option>}{state.models.map(model=><option key={model.id} value={model.id}>{modelLabel(model)}</option>)}</select>
    <span className="composer-context" title="使用本会话历史与已授权的资料"><MessageSquareText size={15} aria-hidden="true"/><span>会话上下文</span></span>
    {state.busy&&<span className="composer-upload-status" role="status">处理中</span>}
-   {run?.local&&run.runId&&!draft.trim()&&!state.files.length?<button type="button" className="gpt-stop" aria-label="停止任务" title="停止当前任务" onClick={onStop}><Square size={14} fill="currentColor" aria-hidden="true"/></button>:<button type="button" className="gpt-send" aria-label="发送消息" title="发送消息" disabled={disabled||state.busy||(!draft.trim()&&!state.files.length)} onClick={()=>onSend(draft)}><ArrowUp size={18} aria-hidden="true"/></button>}
+   {streaming||run?.local&&run.runId&&!draft.trim()&&!state.files.length?<button type="button" className="gpt-stop" aria-label="停止任务" title="停止当前任务" onClick={onStop}><Square size={14} fill="currentColor" aria-hidden="true"/></button>:<button type="button" className="gpt-send" aria-label="发送消息" title="发送消息" disabled={disabled||state.busy||(!draft.trim()&&!state.files.length)} onClick={()=>onSend(draft)}><ArrowUp size={18} aria-hidden="true"/></button>}
   </div>
   {state.error&&<p className="control-error" role="alert">{state.error}</p>}
   {(selectedModelMissing(state)||state.modelNotice||state.modelError)&&<div className="model-selection-feedback"><span role="status">{selectedModelMissing(state)?'原选模型已不在可用目录，请选择其他模型':state.modelNotice||''}</span>{state.modelError&&<button type="button" disabled={state.busy||disabled} onClick={()=>client.current.refreshModels()}>核对模型选择</button>}</div>}

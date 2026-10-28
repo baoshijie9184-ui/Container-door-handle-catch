@@ -161,7 +161,7 @@ const props = defineProps({
 const chatStore = useChatAssistantStore()
 const router = useRouter()
 const conversationControlsRef=ref(null),composerRef=ref(null),controlState=ref({enabled:false,run:null})
-const controlledMessages=computed(()=>controlState.value.run?.text&&controlState.value.run.phase!=='IDLE'?[...chatStore.messages,{role:'assistant',content:controlState.value.run.text,messageType:'TEXT',streaming:true}]:chatStore.messages)
+const controlledMessages=computed(()=>controlState.value.run?.runId&&controlState.value.run.phase!=='IDLE'?[...chatStore.messages,{role:'assistant',content:controlState.value.run.text,messageType:'TEXT',streaming:true,runId:controlState.value.run.runId}]:chatStore.messages)
 const chatBodyRef = ref(null)
 const followTranscript = ref(true)
 const messageListRef = ref(null)

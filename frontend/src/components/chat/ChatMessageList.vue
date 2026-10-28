@@ -4,7 +4,7 @@
     <div v-if="messages.length === 0" class="msg-empty">
       <div class="empty-glow"></div>
       <div class="empty-avatar"><el-icon><ChatDotRound /></el-icon></div>
-      <span class="welcome-eyebrow">DOORHANDLE ASSISTANT</span>
+      <span class="welcome-eyebrow">{{ SYSTEM_SHORT_NAME }}</span>
       <h2 class="empty-title">今天，想先解决什么？</h2>
       <p class="empty-desc">查看检测结果、追溯质检任务，或一起梳理下一步</p>
       <div class="welcome-prompts">
@@ -37,6 +37,7 @@
         </div>
 
         <div class="msg-body">
+          <ToolExecutionTimeline v-if="item.role==='assistant' && (messageRunId(item) || item.executionEvents?.length)" :session-id="sessionId" :run-id="messageRunId(item)" :events="item.executionEvents || []" :active="!!item.streaming" />
           <!-- PendingAction 卡片 -->
           <ChatPendingActionCard
             v-if="item.messageType === 'PENDING_ACTION'"
@@ -103,6 +104,7 @@
 </template>
 
 <script setup>
+import {SYSTEM_SHORT_NAME} from '@/utils/systemBrand'
 import { onUnmounted, ref } from 'vue'
 import { ChatDotRound, Search, CircleCheck, DataAnalysis, Guide, TopRight } from '@element-plus/icons-vue'
 import ChatBusinessCard from './ChatBusinessCard.vue'
@@ -113,6 +115,8 @@ import {beijingClock} from '@/utils/beijingTime'
 import AgentResultCards from './AgentResultCards.vue'
 import ChatPendingActionCard from './ChatPendingActionCard.vue'
 import { buildChatMessageKey } from '@/utils/chatMessageNavigation'
+import {messageRunId} from '@/utils/toolExecution'
+import ToolExecutionTimeline from './ToolExecutionTimeline.vue'
 
 defineProps({
   sessionId:String,

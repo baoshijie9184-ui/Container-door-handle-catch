@@ -450,6 +450,7 @@
 </template>
 
 <script setup>
+import {EXPORT_SOURCE} from '@/utils/systemBrand'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
@@ -714,7 +715,7 @@ const downloadBatchTraceReport = () => {
   downloadJsonReport({
     ...batchTraceReport.value,
     exportedAt: new Date().toISOString(),
-    exportedBy: 'DoorHandleCatch Web'
+    exportedBy: EXPORT_SOURCE
   }, `batch-trace-${safeFilePart(batchNo)}-${reportTimestamp()}.json`)
   ElMessage.success('批次追溯报告已导出')
 }
@@ -728,7 +729,7 @@ const downloadWorkOrderTraceReport = () => {
   downloadJsonReport({
     ...workOrderTraceReport.value,
     exportedAt: new Date().toISOString(),
-    exportedBy: 'DoorHandleCatch Web'
+    exportedBy: EXPORT_SOURCE
   }, `work-order-trace-${safeFilePart(workOrderNo)}-${reportTimestamp()}.json`)
   ElMessage.success('工单追溯报告已导出')
 }

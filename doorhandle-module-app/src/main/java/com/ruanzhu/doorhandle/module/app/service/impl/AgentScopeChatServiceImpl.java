@@ -37,6 +37,8 @@ public class AgentScopeChatServiceImpl implements ChatConversationService, Agent
     private final ObjectMapper json;
     private final Set<String> active = ConcurrentHashMap.newKeySet();
     private final Map<Long, Deque<Long>> rateWindows = new ConcurrentHashMap<>();
+    private ObjectProvider<MessageExecutionLinks> executionLinks;
+    @org.springframework.beans.factory.annotation.Autowired public void setExecutionLinks(ObjectProvider<MessageExecutionLinks> links){this.executionLinks=links;}
     private ObjectProvider<AgentWorkbenchApi> workbench;
     @org.springframework.beans.factory.annotation.Autowired public void setWorkbench(ObjectProvider<AgentWorkbenchApi> workbench){this.workbench=workbench;}
 
@@ -97,6 +99,12 @@ public class AgentScopeChatServiceImpl implements ChatConversationService, Agent
             AtomicReference<AgentConversationApi.Run> holder, AtomicBoolean disconnected) {
         return execute(actor, request, output, holder, disconnected, null, event -> {});
     }
+    @Override public void assertOwned(AgentActor supplied,String sessionId) {
+        if(supplied==null||!supplied.equals(actor(supplied.username())))throw new org.springframework.security.access.AccessDeniedException("登录身份不一致");
+        if(sessionId==null||!sessionId.matches("[A-Za-z0-9_.-]{1,128}"))throw new IllegalArgumentException("会话编号无效");
+        try{sessions.verifySessionOwner(supplied.username(),sessionId);}
+        catch(BusinessException error){throw new org.springframework.security.access.AccessDeniedException("当前账号无权读取此会话");}
+    }
     @Override public AgentChatSessionApi.Run start(AgentActor supplied, String sessionId, String requestId,
                                                    String question, Consumer<AgentConversationApi.Event> events) {
         if (supplied == null || !supplied.equals(actor(supplied.username())))
@@ -120,7 +128,7 @@ public class AgentScopeChatServiceImpl implements ChatConversationService, Agent
                 if (AgentCards.MESSAGE_TYPE.equals(saved.getMessageType())) {
                     var envelope = json.readValue(text, AgentCards.Envelope.class); text = envelope.text(); cards = envelope.cards();
                 }
-                var run = holder.get(); result.complete(new AgentChatSessionApi.Reply(text, run == null ? null : run.runId(), cards));
+                var run = holder.get(); result.complete(new AgentChatSessionApi.Reply(text, run == null ? null : run.runId(), cards,saved.getId()));
             } catch (Exception error) {
                 log.warn("持久 AG-UI 会话执行失败：errorType={}", error.getClass().getSimpleName());
                 result.completeExceptionally(new IllegalStateException("智能助手执行失败，请稍后重试"));
@@ -173,6 +181,8 @@ public class AgentScopeChatServiceImpl implements ChatConversationService, Agent
                 agentEvents.accept(event);
                 if ("TEXT_CHUNK".equals(event.type())) output.accept(ChatStreamEvent.builder().type("chunk").sessionId(sessionId).content(event.text()).build());
                 else if (trace.size() < 200) trace.add(event);
+                if(java.util.Set.of("TOOL_STARTED","TOOL_COMPLETED","TOOL_ERROR","TOOL_CANCELLED").contains(event.type())&&event.callId()!=null&&event.tool()!=null)
+                    output.accept(ChatStreamEvent.builder().type("tool").sessionId(sessionId).execution(Map.of("type",event.type(),"callId",event.callId(),"tool",event.tool(),"agent",Objects.toString(event.agent(),""))).build());
             };
             var run = requestId == null ? api.start(actor, sessionId, history, context, consume)
                     : api.start(actor, sessionId, history, context, consume, "AGUI", requestId);
@@ -188,6 +198,9 @@ public class AgentScopeChatServiceImpl implements ChatConversationService, Agent
                 catch (Exception error) { log.warn("卡片编码失败，保留文字回答：errorType={}",error.getClass().getSimpleName()); }
             }
             var saved = sessions.appendAssistantMessage(tenant, sessionId, content, messageType, "AGENTSCOPE", null);
+            saved.setRunId(run.runId());
+            var links=executionLinks==null?null:executionLinks.getIfAvailable();
+            if(links!=null)links.bind(tenant,sessionId,saved.getId(),run.runId());
             if(workbench!=null&&workbench.getIfAvailable()!=null&&saved.getId()!=null)workbench.getObject().turnSaved(actor,sessionId,saved.getId());
             try {
                 // Personal facts come from the user's message. Generated answers and retrieved

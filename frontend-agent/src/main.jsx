@@ -1,6 +1,8 @@
+import {SYSTEM_NAME,SYSTEM_SHORT_NAME,SYSTEM_TAGLINE,AGENT_WORKSPACE_NAME} from '../../frontend/src/utils/systemBrand';
 import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Button, ConfigProvider, Layout, message } from 'antd';
+import { Button, Layout, message,Skeleton } from 'antd';
+import ConfigProvider from '@agentscope-ai/design/lib/components/commonComponents/ConfigProvider';
 import { RobotOutlined, PlusOutlined } from '@ant-design/icons';
 import { PanelLeft, PanelRight, ArrowUpRight, ArrowDown, ScanLine, ClipboardCheck, ChartNoAxesCombined, Compass, BrainCircuit, ArrowLeft, X, ShieldCheck, Blocks, Plug, RefreshCw, List } from 'lucide-react';
 import { Bubble, Sender } from '@agentscope-ai/chat';
@@ -9,7 +11,11 @@ import '../../frontend/src/assets/status-badge.css';
 import './styles.css';
 import '../../frontend/src/assets/agent-appearance.css';
 import '../../frontend/src/assets/agent-unified.css';
-import { readAnswer } from './aguiClient';
+import { readAnswer,initialRunState } from './aguiClient';
+import {applyA2uiMessage} from './a2uiState';
+import {framePublisher} from './framePublisher';
+import {WorkbenchMessage} from './WorkbenchMessage';
+import './workbench-ui.css';
 import { AgentResultCards } from './AgentResultCards';
 import { validCardReference } from '../../frontend/src/utils/agentCards';
 import { skillCommandOptions } from '../../frontend/src/utils/skillCommands';
@@ -42,6 +48,7 @@ const COMMANDS = new URL('/api/agent/commands', new URL(API, window.location.hre
 const SESSIONS = new URL('/api/chat-assistant/sessions',new URL(API,window.location.href)).toString();
 const CONVERSATION_CONTROLS = new URL('/api/agent/conversations',new URL(API,window.location.href)).toString();
 const BusinessCardBubble = ({ data }) => <AgentResultCards {...data} />;
+const WorkbenchMessageBubble = ({ data }) => <WorkbenchMessage {...data} />;
 const SkillInstallLinkBubble=({data})=><p style={{whiteSpace:'pre-wrap'}}>{data.before}<a href={data.href}>{data.label}</a>{data.after}</p>;
 
 function App() {
@@ -98,6 +105,11 @@ function App() {
   }, [items, controlState.run?.text]);
 
   const [loading, setLoading] = useState(false);
+  const [runState,setRunState]=useState(null),[streamNotice,setStreamNotice]=useState('');
+  const streamAbort=useRef(null),liveStream=useRef(null);
+  const uncertainStream=useRef(false);
+  const executionCache=useRef(new Map());
+  const withExecution=records=>records.map(item=>({...item,...(executionCache.current.get(currentSession.current+'|'+item.key)||{})}));
   const [catalog, setCatalog] = useState(null);
   const [catalogError, setCatalogError] = useState('');
   const [modelCatalog, setModelCatalog] = useState(null);
@@ -160,10 +172,10 @@ function App() {
   const sessionGeneration=useRef(0);
   const sessionMetadataVersion=useRef(0);
   const busy=useRef(false);
-  const cardView=(text,references)=>[{code:'BusinessResults',component:BusinessCardBubble,data:{text,references,businessBase:LOGIN.replace(/#.*$/,'')}}];
+  const cardView=(text,references)=>[{code:'WorkbenchMessage',component:WorkbenchMessageBubble,data:{text,references,sessionId:currentSession.current,businessBase:LOGIN.replace(/#.*$/,''),onFollowUp:question=>sendUiFollowUp(question)}}];
   async function refreshControlHistory(sessionId){try{
     const session=await readSession(await fetch(SESSIONS+'/'+encodeURIComponent(sessionId),{credentials:'include',cache:'no-store'}));
-    if(currentSession.current===sessionId)setItems(sessionItems(session.messages,cardView));
+    if(currentSession.current===sessionId)setItems(withExecution(sessionItems(session.messages,cardView)));
   }catch{if(currentSession.current===sessionId)setSessionError('会话消息暂不可读取，请刷新核对')}}
   async function loadSession(id) {
     if(busy.current)return;
@@ -177,11 +189,11 @@ function App() {
       let selected=id||list[0]?.sessionId;
       const session=selected?await readSession(await fetch(SESSIONS+'/'+encodeURIComponent(selected),{credentials:'include',cache:'no-store'})):await readSession(await fetch(SESSIONS,{method:'POST',credentials:'include'}));
       if(generation!==sessionGeneration.current)return;
-      if(currentSession.current!==session.sessionId){setDraft('');followTranscript.current=true;setShowTranscriptReturn(false);}currentSession.current=session.sessionId;setThreadId(session.sessionId);
+      if(currentSession.current!==session.sessionId){setDraft('');setRunState(null);setStreamNotice('');executionCache.current.clear();followTranscript.current=true;setShowTranscriptReturn(false);}currentSession.current=session.sessionId;setThreadId(session.sessionId);
       const nextSessions=list.some(s=>s.sessionId===session.sessionId)?list:[session,...list];
       setSessions(current=>metadataVersion===sessionMetadataVersion.current?nextSessions:nextSessions.map(row=>{const latest=current.find(value=>value.sessionId===row.sessionId);return latest?{...row,title:latest.title,pinned:latest.pinned}:row;}));
       const url=new URL(window.location.href);url.searchParams.set('sessionId',session.sessionId);window.history.replaceState(null,'',url.pathname+url.search+url.hash);
-      setItems(sessionItems(session.messages,cardView));
+      setItems(withExecution(sessionItems(session.messages,cardView)));
     }catch(error){if(generation===sessionGeneration.current){setSessionError(error.message);setItems([]);setThreadId('');currentSession.current='';setSessions([]);}}
     finally{if(generation===sessionGeneration.current)setSessionLoading(false);}
   }
@@ -194,12 +206,12 @@ function App() {
   useEffect(() => {
     const abort = new AbortController();
     loadSession(new URLSearchParams(window.location.search).get('sessionId'));
-    const focus=()=>{if(!busy.current)loadSession(currentSession.current);};window.addEventListener('focus',focus);
+    const focus=()=>{if(!busy.current&&!uncertainStream.current)loadSession(currentSession.current);};window.addEventListener('focus',focus);
     refreshCommands(abort.signal);
     catalogAlive.current=true;catalogAbort.current=abort;
     readServiceCatalog('roles',abort.signal);readServiceCatalog('models',abort.signal);
     const modelRefresh=setInterval(()=>readServiceCatalog('models',abort.signal),30000);
-    return () => { catalogAlive.current=false;catalogVersions.current.roles++;catalogVersions.current.models++;catalogRequests.current={roles:null,models:null};sessionGeneration.current++;commandGeneration.current++;clearInterval(modelRefresh); abort.abort();window.removeEventListener('focus',focus); };
+    return () => { catalogAlive.current=false;streamAbort.current?.abort();catalogVersions.current.roles++;catalogVersions.current.models++;catalogRequests.current={roles:null,models:null};sessionGeneration.current++;commandGeneration.current++;clearInterval(modelRefresh); abort.abort();window.removeEventListener('focus',focus); };
   }, []);
 
   async function submit(text) {
@@ -210,33 +222,62 @@ function App() {
     if(selectedSession!==currentSession.current)return
     if(controlled){
       if(!query)return;returnToLatest();const sessionId=currentSession.current;setDraft('');
-      try{await controlsRef.current.submit(query);if(currentSession.current===sessionId)resourcesRef.current?.clear()}catch{if(currentSession.current===sessionId)setDraft(current=>current||query)}return;
+      try{await controlsRef.current.submit(query);if(currentSession.current===sessionId)resourcesRef.current?.clear();return true;}catch{if(currentSession.current===sessionId)setDraft(current=>current||query);return false;}
     }
     if (!query || busy.current || sessionLoading || !threadId || !catalog) return;
     returnToLatest();
     busy.current=true;
+    uncertainStream.current=false;
+    const requestSession=threadId,requestId=crypto.randomUUID(),abort=new AbortController();
+    const pendingKey='pending-'+requestId;
+    streamAbort.current=abort;liveStream.current={sessionId:requestSession,runId:requestId};
+    setRunState(initialRunState());setStreamNotice('');
     setDraft('');
-    setItems((old) => [...old, { key: crypto.randomUUID(), role: 'user', content: query }, { key: 'pending', role: 'assistant', content: '正在分析…', loading: true }]);
+    setItems((old) => [...old, { key: crypto.randomUUID(), role: 'user', content: query }, { key: pendingKey, role: 'assistant', content: '', msgStatus:'generating', loading: true }]);
     setLoading(true);
+    let completed=false;
+    let displayPublisher;
     try {
-      const response = await fetch(API, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream', 'X-Agent-Id': catalog.mainAgent }, body: JSON.stringify({ threadId, runId: crypto.randomUUID(), messages: [{ id: crypto.randomUUID(), role: 'user', content: query }] }) });
+      const response = await fetch(API, { method: 'POST', credentials: 'include',signal:abort.signal, headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream', 'X-Agent-Id': catalog.mainAgent }, body: JSON.stringify({ threadId:requestSession, runId:requestId, messages: [{ id: crypto.randomUUID(), role: 'user', content: query }] }) });
       let references = [];
-      const answer = await readAnswer(response, content => setItems(old => old.map(item => item.key === 'pending' ? { ...item, content, loading: false } : item)), value => {
+      let surfaces={};
+      let committed={};
+      let display={text:'',state:initialRunState(),surfaces,references};
+      displayPublisher=framePublisher(snapshot=>{if(!catalogAlive.current||currentSession.current!==requestSession)return;setRunState(snapshot.state);setItems(old=>old.map(item=>item.key===pendingKey?{...item,content:snapshot.text,execution:snapshot.state,surfaces:snapshot.surfaces,references:snapshot.references,loading:!snapshot.text&&!Object.keys(snapshot.surfaces).length}:item));});
+      const answer = await readAnswer(response, content => {display={...display,text:content};displayPublisher.push(display);}, value => {
         if (value?.version === 1 && Array.isArray(value.cards) && value.cards.length <= 8 && value.cards.every(validCardReference)) references = value.cards;
-      });
+      },{signal:abort.signal,onEvent:event=>{if(event.type==='CUSTOM'&&event.name==='doorhandle.execution.v1'&&typeof event.value?.runId==='string')committed=event.value;},onSnapshot:state=>{display={...display,state};displayPublisher.push(display);},onA2ui:envelope=>{try{surfaces=applyA2uiMessage(surfaces,envelope);display={...display,surfaces,references};displayPublisher.push(display);}catch{setStreamNotice('部分动态界面未通过校验，正文和业务引用仍可阅读');}}});
+      displayPublisher.finish();
+      if(Number.isSafeInteger(committed.messageId)&&committed.messageId>0){if(executionCache.current.size>=80)executionCache.current.delete(executionCache.current.keys().next().value);executionCache.current.set(requestSession+'|'+committed.messageId,{execution:display.state,runId:committed.runId});}
       resourcesRef.current?.clear();
-      setItems((old) => [...old.filter((item) => item.key !== 'pending'), { key: crypto.randomUUID(), role: 'assistant', text: answer,
+      completed=true;
+      setItems((old) => [...old.filter((item) => item.key !== pendingKey), { key: crypto.randomUUID(), role: 'assistant', text: answer,references,surfaces,execution:display.state,runId:committed.runId,
         content: references.length ? '' : answer,
         cards: references.length ? [{ code: 'BusinessResults', component: BusinessCardBubble, data: { text: answer, references, businessBase: LOGIN.replace(/#.*$/, '') } }] : undefined }]);
+      return true;
     } catch (error) {
-      setDraft(query);
-      setItems((old) => [...old.filter((item) => item.key !== 'pending'), { key: crypto.randomUUID(), role: 'assistant', content: `暂时无法连接 AgentScope：${error.message}`, msgStatus: 'error' }]);
-      message.error('AgentScope 请求失败');
-    } finally { busy.current=false;setLoading(false);await loadSession(threadId); }
+      displayPublisher?.finish();
+      uncertainStream.current=true;
+      if(!catalogAlive.current)return;
+      setDraft(current=>current||query);
+      setItems(old=>old.map(item=>item.key===pendingKey?{...item,loading:false,execution:item.execution?{...item.execution,phase:abort.signal.aborted?'cancelled':'error'}:undefined,msgStatus:abort.signal.aborted?'interrupted':'error',content:item.content||'本轮未收到正文，请核对执行记录'}:item));
+      setStreamNotice(error.message);setRunState(current=>({...current,phase:abort.signal.aborted?'cancelled':'error'}));
+      return false;
+    } finally { displayPublisher?.close();busy.current=false;streamAbort.current=null;liveStream.current=null;if(catalogAlive.current){setLoading(false);if(completed)await loadSession(requestSession);} }
   }
 
-  const visibleItems=controlState.run?.text&&controlState.run.phase!=='IDLE'?[...items,{key:'control-preview',role:'assistant',content:controlState.run.text}]:items;
-  const displayedItems=visibleItems.map(item=>{if(typeof item.content!=='string')return item;const files=splitFileReferences(item.content,item.role);if(files.ids.length)return {...item,content:'',cards:[{code:'ChatFileReferences',component:ChatFileReferences,data:{...files,sessionId:threadId,base:new URL(API,window.location.href).origin}}]};if(item.role!=='assistant')return item;const link=skillInstallNavigation(item.content,LOGIN);return link?{...item,content:'',cards:[{code:'SkillInstallNavigation',component:SkillInstallLinkBubble,data:link}]}:item;});
+  function stopStream(){
+    if(!liveStream.current)return;
+    streamAbort.current?.abort();
+    setStreamNotice('已停止接收，已完成的工具操作不会回滚；请在执行记录核对状态。');
+  }
+  async function sendUiFollowUp(question){
+    if(busy.current||sessionLoading||resourcesRef.current?.busy())throw Error('请等待当前消息或附件处理完成，再发送后续问题');
+    if(!await submit(question))throw Error('后续问题尚未确认提交，请核对输入框与执行记录；不会自动重试');
+  }
+
+  const visibleItems=controlState.run?.runId&&controlState.run.phase!=='IDLE'?[...items,{key:'control-preview',role:'assistant',content:controlState.run.text,runId:controlState.run.runId,controlRun:controlState.run}]:items;
+  const displayedItems=visibleItems.map(item=>{if(typeof item.content!=='string')return item;const files=splitFileReferences(item.content,item.role);if(files.ids.length)return {...item,content:'',cards:[{code:'ChatFileReferences',component:ChatFileReferences,data:{...files,sessionId:threadId,base:new URL(API,window.location.href).origin}}]};if(item.role==='assistant'){const link=skillInstallNavigation(item.content,LOGIN);if(link)return {...item,content:'',cards:[{code:'SkillInstallNavigation',component:SkillInstallLinkBubble,data:link}]};}if(item.loading&&!item.content&&!Object.keys(item.execution?.tools||{}).length&&!item.runId)return item;return {...item,content:'',cards:[{code:'WorkbenchMessage',component:WorkbenchMessageBubble,data:{text:item.text||item.content,role:item.role,createdAt:item.createdAt,status:item.msgStatus,execution:item.execution,runId:item.runId,controlRun:item.controlRun,references:item.references||[],sessionId:threadId,businessBase:LOGIN.replace(/#.*$/,''),onFollowUp:question=>sendUiFollowUp(question),surfaces:item.surfaces}}]};});
   const activeSession = sessions.find(session => session.sessionId === threadId);
   const prompts = [
     { icon: ScanLine, title: '查看检测进度', description: '最近任务与处理状态', query: '查询最近的检测任务和处理进度' },
@@ -254,10 +295,10 @@ function App() {
     {title:'执行与调研',note:'工具轨迹、模型路由与来源',path:'/agent/trace'+(threadId?'?sessionId='+encodeURIComponent(threadId):''),icon:ChartNoAxesCombined},
   ];
   const infoTabKey=event=>{if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key))return;event.preventDefault();const index=event.key==='Home'?0:event.key==='End'?1:infoTab==='workspace'?1:0;setInfoTab(index?'models':'workspace');event.currentTarget.querySelectorAll('[role="tab"]')[index]?.focus();};
-  return <ConfigProvider theme={{ token: { colorPrimary: '#2563eb', colorSuccess: '#15803d', colorWarning: '#b45309', colorError: '#dc2626', colorText: '#181b23', colorTextSecondary: '#525b6a', colorBorder: '#e6e8ec', borderRadius: 8, fontFamily: '"Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif', motion: !reducedMotion, motionDurationMid: '0.2s' } }}>
+  return <ConfigProvider prefixCls="ant" iconfont="" theme={{ cssVar:{key:'doorhandle-workbench'}, token: { colorPrimary: '#2563eb', colorSuccess: '#15803d', colorWarning: '#b45309', colorError: '#dc2626', colorText: '#181b23', colorTextSecondary: '#525b6a', colorBorder: '#e6e8ec', borderRadius: 8, fontFamily: '"Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif', motion: !reducedMotion, motionDurationMid: '0.2s' } }}>
     <Layout className={`agent-shell ${sidebarOpen ? 'with-sessions' : ''} ${infoOpen ? 'with-info' : ''}`}>
       <nav id="agent-sessions" className="session-sidebar" aria-label="对话历史" hidden={!sidebarOpen}>
-        <a className="agent-brand" href={BUSINESS}><span className="brand-symbol"><ScanLine size={20} /></span><span>DoorHandle<strong>智能工作空间</strong></span></a>
+        <a className="agent-brand" href={BUSINESS} title={SYSTEM_NAME} aria-label={SYSTEM_NAME}><span className="brand-symbol"><ScanLine size={20} /></span><span>{SYSTEM_SHORT_NAME}<strong>{SYSTEM_TAGLINE}</strong></span></a>
         <Button className="new-session" aria-label="新建对话" type="primary" icon={<PlusOutlined aria-hidden="true" />} onClick={newSession} disabled={loading||sessionLoading}>新建对话</Button>
         <SessionHistory sessions={sessions} selectedId={threadId} disabled={loading||sessionLoading} loading={sessionLoading} error={sessionError} currentTaskActive={!!controlState.run&&controlState.run.phase!=='IDLE'} base={SESSIONS} traceBase={TRACE} businessBase={LOGIN.replace(/#.*$/,'')} onSelect={selectHistorySession} onRefresh={()=>loadSession(threadId)} onChanged={(id,patch)=>{sessionMetadataVersion.current++;setSessions(current=>current.map(session=>session.sessionId===id?{...session,...patch}:session));}}/>
         <div className="sidebar-links"><a href={TRACE+(threadId?'?sessionId='+encodeURIComponent(threadId):'')}><ChartNoAxesCombined size={16} />执行追溯</a><a href={MEMORIES}><BrainCircuit size={16} />个人记忆</a><a href={REPORTS}><ClipboardCheck size={16} />报告与审批</a><a href={OPERATIONS_AUDIT}><ShieldCheck size={16} />操作与交付审计</a><a href={BUSINESS}><ArrowLeft size={16} />返回业务系统</a></div>
@@ -282,13 +323,14 @@ function App() {
         <section className="chat-panel" aria-label="智能对话">
           {sessionError&&<p role="alert" className="session-error">{sessionError} <a href={LOGIN}>前往登录</a> · <button onClick={()=>loadSession(threadId)}>重试</button></p>}
           <div ref={transcriptRef} className="bubble-list transcript-reading-region" tabIndex={0} role="region" aria-label="对话消息，可在此区域滚动阅读" onScroll={handleTranscriptScroll}>
-            {!items.length && !sessionLoading && <div className="chat-welcome"><span className="welcome-symbol"><RobotOutlined /></span><span className="welcome-eyebrow">DOORHANDLE ASSISTANT</span><h2>今天，想先解决什么？</h2><p>查看检测结果、追溯质检任务，或一起梳理下一步</p><div className="welcome-prompts">{prompts.map(({icon: Icon,...prompt})=><button type="button" key={prompt.title} disabled={!catalog||!threadId} onClick={()=>prepareQuestion(prompt.query)}><span className="prompt-icon"><Icon size={19} /></span><strong>{prompt.title}</strong><span>{prompt.description}</span><ArrowUpRight className="prompt-arrow" size={15} /></button>)}</div></div>}
-            {sessionLoading ? <p className="loading-note" role="status">正在加载你的对话…</p> : items.length > 0 && <Bubble.List classNames={{wrapper: 'conversation-transcript', list: 'conversation-messages'}} items={displayedItems} />}
+            {!items.length && !sessionLoading && <div className="chat-welcome"><span className="welcome-symbol"><RobotOutlined /></span><span className="welcome-eyebrow">{SYSTEM_SHORT_NAME}</span><h2>今天，想先解决什么？</h2><p>查看检测结果、追溯质检任务，或一起梳理下一步</p><div className="welcome-prompts">{prompts.map(({icon: Icon,...prompt})=><button type="button" key={prompt.title} disabled={!catalog||!threadId} onClick={()=>prepareQuestion(prompt.query)}><span className="prompt-icon"><Icon size={19} /></span><strong>{prompt.title}</strong><span>{prompt.description}</span><ArrowUpRight className="prompt-arrow" size={15} /></button>)}</div></div>}
+            {sessionLoading ? <div className="workbench-skeleton" role="status" aria-label="正在加载对话"><Skeleton active paragraph={{rows:4}}/></div> : items.length > 0 && <Bubble.List classNames={{wrapper: 'conversation-transcript', list: 'conversation-messages'}} items={displayedItems} />}
+            {streamNotice&&<p className="stream-notice" role="status">{streamNotice} <a href={TRACE+(threadId?'?sessionId='+encodeURIComponent(threadId):'')}>核对执行记录</a></p>}
           </div>
           {showTranscriptReturn && items.length > 0 && <div className="transcript-return"><button type="button" onClick={handleReturnToLatest}><ArrowDown size={16} aria-hidden="true"/>回到最新消息</button></div>}
           {(catalogError || catalogAuthRequired || modelAuthRequired) && <p className="agent-service-error agent-service-gate" role="alert">{catalogError || modelCatalogError || '正在核对目录访问权限'}<button type="button" disabled={catalogLoading || modelCatalogLoading} onClick={refreshServiceCatalogs}><RefreshCw size={13} aria-hidden="true"/>重新读取目录</button>{(catalogAuthRequired || modelAuthRequired) && <a href={LOGIN}>前往登录</a>}</p>}
           <ConversationControls ref={controlsRef} sessionId={threadId} base={CONVERSATION_CONTROLS} onSnapshot={setControlState} onRefresh={refreshControlHistory}/>
-          <div className="composer-area"><div className="resource-input" title="Enter 发送 · Shift + Enter 换行 · / 选择技能"><Sender className="harness-composer-sender" actions={()=>null} styles={{input:{minHeight:32}}} ref={senderRef} disabled={!catalog||!threadId||sessionLoading||catalogAuthRequired||modelAuthRequired} loading={loading} value={draft} onChange={setDraft} onFocus={()=>refreshCommands()} suggestions={skillCommandOptions(commandCatalog).map(item=>({value:item.value.slice(1).trim(),label:item.label+' · '+item.description}))} placeholder="输入问题 或输入 / 选择技能命令" onSubmit={submit} /><ComposerToolbar ref={resourcesRef} sessionId={threadId} base={new URL(API,window.location.href).origin} locked={loading||!!controlState.run&&controlState.run.phase!=='IDLE'} run={controlState.run} draft={draft} onDraft={setDraft} onSend={submit} onStop={()=>controlsRef.current?.cancel()} disabled={!catalog||!threadId||sessionLoading||catalogAuthRequired||modelAuthRequired} onUpload={()=>setDraft(value=>value||'查看这些附件')}/></div>{commandError&&draft.startsWith('/')&&<p className="command-hint" role="status">{commandError}</p>}</div>
+          <div className="composer-area"><div className="resource-input" title="Enter 发送 · Shift + Enter 换行 · / 选择技能"><Sender className="harness-composer-sender" actions={()=>null} styles={{input:{minHeight:32}}} ref={senderRef} disabled={!catalog||!threadId||sessionLoading||catalogAuthRequired||modelAuthRequired} loading={loading} value={draft} onChange={setDraft} onFocus={()=>refreshCommands()} suggestions={skillCommandOptions(commandCatalog).map(item=>({value:item.value.slice(1).trim(),label:item.label+' · '+item.description}))} placeholder="输入问题 或输入 / 选择技能命令" onSubmit={submit} /><ComposerToolbar ref={resourcesRef} sessionId={threadId} base={new URL(API,window.location.href).origin} locked={loading||!!controlState.run&&controlState.run.phase!=='IDLE'} run={controlState.run} draft={draft} onDraft={setDraft} onSend={submit} streaming={loading} onStop={()=>loading?stopStream():controlsRef.current?.cancel()} disabled={!catalog||!threadId||sessionLoading||catalogAuthRequired||modelAuthRequired} onUpload={()=>setDraft(value=>value||'查看这些附件')}/></div>{commandError&&draft.startsWith('/')&&<p className="command-hint" role="status">{commandError}</p>}</div>
         </section>
       </main>
       <aside id="agent-info" className="agent-info" aria-label="助手信息" hidden={!infoOpen}>

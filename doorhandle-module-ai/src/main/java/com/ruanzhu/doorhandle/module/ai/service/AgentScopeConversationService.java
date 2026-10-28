@@ -26,6 +26,23 @@ import java.util.function.Consumer;
 @Service
 @ConditionalOnProperty(prefix = "agentscope.ai", name = "enabled", havingValue = "true")
 public class AgentScopeConversationService implements AgentConversationApi {
+    // Forward only actual middleware receipts; never infer completion from model text.
+    static AgentJournal.Run uiJournal(AgentJournal.Run stored, Consumer<Event> events) {
+        return new AgentJournal.Run() {
+            public String id(){return stored.id();}
+            public void finish(String status){stored.finish(status);}
+            public void bindCancel(Runnable cancel){stored.bindCancel(cancel);}
+            public void event(String type,java.util.Map<String,Object> payload){
+                stored.event(type,payload);
+                if(java.util.Set.of("TOOL_STARTED","TOOL_COMPLETED","TOOL_ERROR","TOOL_CANCELLED").contains(type)) {
+                    long elapsed=payload.get("elapsedMs") instanceof Number number?number.longValue():0;
+                    events.accept(new Event(type,java.util.Objects.toString(payload.get("agent"),"agent"),
+                            java.util.Objects.toString(payload.get("tool"),"tool"),null,elapsed,
+                            java.util.Objects.toString(payload.get("callId"),"unknown")));
+                }
+            }
+        };
+    }
     private final RoleAgentFactory factory;
     private final AgentRunRegistry registry;
     private final AgentScopeProperties properties;
@@ -85,7 +102,7 @@ public class AgentScopeConversationService implements AgentConversationApi {
         String session = actor.userId() + ":" + main + ":" + sessionId;
         if (!registry.acquire(session)) throw new IllegalStateException("当前会话仍在处理上一轮请求");
         AgentJournal.Run audit;
-        try { audit = journal.begin(actor, sessionId, main, entryPoint, requestId, properties.getModel()); }
+        try { audit = uiJournal(journal.begin(actor, sessionId, main, entryPoint, requestId, properties.getModel()), consumer); }
         catch (RuntimeException error) { registry.release(session); throw error; }
         Agent agent;
         final com.ruanzhu.doorhandle.module.ai.workbench.AgentWorkbenchService.Scope work;

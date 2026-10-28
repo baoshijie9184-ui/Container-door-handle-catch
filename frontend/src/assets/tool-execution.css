@@ -1,0 +1,28 @@
+/* One visual language for the main-site chat and the independent Agent workbench. */
+.tool-execution { min-width:0; margin:12px 0 18px; color:var(--app-text-secondary,#626975); font:inherit; font-size:13px; }
+.tool-execution>summary { display:flex; align-items:center; gap:10px; width:fit-content; max-width:100%; list-style:none; cursor:pointer; padding:4px 0; color:#80858d; line-height:1.7; user-select:none; }
+.tool-execution summary::-webkit-details-marker { display:none; }
+.tool-execution-toggle { display:grid; place-items:center; width:25px; height:25px; flex:0 0 25px; border:1px solid #e5e7eb; border-radius:7px; background:#fff; box-shadow:0 1px 2px #17203305; }
+.tool-execution-toggle svg { transition:transform .16s ease; }.tool-execution[open]>.tool-execution-heading .tool-execution-toggle svg { transform:rotate(90deg); }
+.tool-execution-heading strong { font-size:13px; font-weight:400; color:inherit; overflow-wrap:anywhere; }.tool-execution-heading:hover { color:#414854; }
+.tool-execution-body { margin:7px 0 0 12px; padding:3px 0 4px 23px; border-left:1px solid #e5e7eb; min-width:0; }
+.tool-execution[open]>.tool-execution-body { animation:tool-record-enter .14s ease-out; }
+.tool-call { min-width:0; margin:0; padding:0; }
+.tool-call>summary { display:flex; align-items:center; gap:9px; min-height:35px; padding:5px 0; list-style:none; cursor:pointer; min-width:0; }
+.tool-call-state { display:grid; place-items:center; width:16px; height:16px; flex:0 0 16px; color:#9ba2ad; }.tool-call-state[data-status="returned"]{color:#34965c;}.tool-call-state[data-status="failed"]{color:#e05252;}.tool-call-state[data-status="cancelled"]{color:#9197a1;}
+.tool-call-label { flex-shrink:0; color:#60666f; font-size:13px; font-weight:400; }.tool-call-status { flex-shrink:0; color:#8b919a; font-size:12px; }.tool-call-description { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#a0a5ad; font-size:12px; }
+.tool-call-file { display:inline-flex; align-items:center; gap:5px; max-width:230px; padding:1px 7px; border:1px solid #e5e7eb; border-radius:5px; background:#fff; color:#818791; font-size:11px; }
+.tool-call-duration { margin-left:auto; flex-shrink:0; color:#9299a3; font-size:11px; font-variant-numeric:tabular-nums; }
+.tool-call>summary:hover .tool-call-description { color:#727984; }.tool-call[open]>summary .tool-call-label { color:var(--app-text,#172033); }
+.tool-call-detail { margin:4px 0 12px 25px; border:1px solid #e5e7eb; border-radius:9px; overflow:hidden; background:#fafbfc; min-width:0; }
+.tool-call-detail>header { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:8px 12px; border-bottom:1px solid #e8ebf0; color:#717985; font-size:11px; }
+.tool-call-copy { display:inline-grid; place-items:center; width:24px; height:24px; padding:0; border:0; border-radius:4px; background:transparent; color:#838b97; cursor:pointer; }.tool-call-copy:hover{background:#eceff4;color:#3e495a;}.tool-call-copy:active{transform:scale(.95);}
+.tool-call-detail dl { display:grid; grid-template-columns:64px minmax(0,1fr); gap:7px 12px; padding:12px; margin:0; font-size:11px; line-height:1.7; }.tool-call-detail dt{color:#8b929d;}.tool-call-detail dd{margin:0;color:#586374;overflow-wrap:anywhere;}
+.tool-call-detail p { margin:0; padding:0 12px 12px; color:#78818e; font-size:11px; line-height:1.8; }
+.tool-execution-notice { margin:8px 0; font-size:11px; color:#8a6c35; line-height:1.8; }.tool-execution-reload { padding:2px 5px; margin-left:6px; color:var(--app-primary,#2563eb); border:0; background:none; font:inherit; cursor:pointer; }
+.tool-execution summary:focus-visible,.tool-execution button:focus-visible{outline:2px solid #86a9ed;outline-offset:3px;border-radius:5px;}
+.tool-call-state.is-spinning{animation:tool-record-spin 1.3s linear infinite;}
+@keyframes tool-record-enter{from{opacity:0;transform:translateY(-3px)}to{opacity:1;transform:translateY(0)}}
+@keyframes tool-record-spin{to{transform:rotate(360deg)}}
+@media(max-width:480px){.tool-execution{font-size:12px}.tool-execution-heading strong,.tool-call-label{font-size:12px}.tool-execution-body{padding-left:15px}.tool-call>summary{gap:6px;flex-wrap:wrap}.tool-call-description{flex:1 1 85px}.tool-call-duration{display:none}.tool-call-detail{margin-left:22px}.tool-call-detail dl{grid-template-columns:54px minmax(0,1fr);gap:5px 8px}}
+@media(prefers-reduced-motion:reduce){.tool-execution-toggle svg{transition:none}.tool-execution[open]>.tool-execution-body,.tool-call-state.is-spinning{animation:none}.tool-call-copy:active{transform:none}}

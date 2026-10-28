@@ -10,7 +10,7 @@
     </button>
 
     <template v-if="!collapsed">
-      <div class="sidebar-caption"><strong>DoorHandle <span class="sidebar-agent-label">Agent</span></strong><span>检测与质检工作空间</span></div>
+      <div class="sidebar-caption" :title="SYSTEM_NAME"><strong>{{ SYSTEM_SHORT_NAME }} <span class="sidebar-agent-label">Agent</span></strong><span>{{ SYSTEM_SCOPE }}</span></div>
       <!-- 新建按钮组 -->
       <div class="sidebar-header">
         <button class="new-session-btn" @click="store.newSession()">
@@ -426,6 +426,7 @@
 </template>
 
 <script setup>
+import {SYSTEM_NAME,SYSTEM_SHORT_NAME,SYSTEM_SCOPE} from '@/utils/systemBrand'
 import { ref, nextTick, computed, reactive, watch, onMounted, onUnmounted } from 'vue'
 import { useChatAssistantStore } from '@/stores/chatAssistant'
 import { Position } from '@element-plus/icons-vue'

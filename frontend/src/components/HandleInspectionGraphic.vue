@@ -1,6 +1,6 @@
 <template>
   <figure class="handle-graphic">
-    <svg viewBox="0 0 440 320" role="img" aria-label="集装箱门把手检测区域示意，不代表实际检测结果">
+    <svg viewBox="0 0 440 320" role="img" aria-label="集装箱门把手盖检测区域示意，不代表实际检测结果">
       <rect x="44" y="14" width="350" height="280" rx="12" fill="#f8fafc" stroke="#cbd5e1" stroke-width="2" />
       <path d="M219 15v278" stroke="#cbd5e1" stroke-width="3" />
       <g stroke="#e2e8f0" stroke-width="7" stroke-linecap="round">
@@ -15,7 +15,7 @@
       <g stroke="#2563eb" stroke-width="3" fill="none"><path d="M150 151v-12h12m117 0h12v12m0 24v12h-12m-117 0h-12v-12" /></g>
       <path d="M292 163h33l24-27" fill="none" stroke="#2563eb" stroke-width="1.5" />
       <rect x="298" y="103" width="124" height="31" rx="7" fill="white" stroke="#dbe7fb" />
-      <text x="310" y="123" fill="#1d4ed8" font-size="12" font-family="sans-serif">门把手检测区域</text>
+      <text x="310" y="123" fill="#1d4ed8" font-size="12" font-family="sans-serif">门把手盖检测区域</text>
       <path d="M44 306h350" stroke="#cbd5e1" />
       <path d="M44 302v8m350-8v8" stroke="#cbd5e1" />
     </svg>

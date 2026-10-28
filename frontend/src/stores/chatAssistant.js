@@ -31,6 +31,9 @@ export const useChatAssistantStore = defineStore('chatAssistant', () => {
   const sessionTitle = ref('智能助手')
   const sessionStatus = ref('ACTIVE')
   const messages = ref([])
+  const executionCache = new Map()
+  let executionSession = ''
+  const withExecution = (rows,sid) => {if(executionSession!==sid){executionCache.clear();executionSession=sid}return rows.map(item=>({...item,...(executionCache.get(sid+'|'+item.id)||{})}))}
   const loading = ref(false)
   const bootstrapped = ref(false)
   const confirmingActionIds = ref(new Set())
@@ -83,7 +86,7 @@ export const useChatAssistantStore = defineStore('chatAssistant', () => {
       sessionId.value = data.sessionId || sid
       sessionTitle.value = data.title || '智能助手'
       sessionStatus.value = data.status || 'ACTIVE'
-      messages.value = data.messages || []
+      messages.value = withExecution(data.messages || [],data.sessionId || sessionId.value)
       bootstrapped.value = true
     } finally {
       loading.value = false
@@ -95,7 +98,7 @@ export const useChatAssistantStore = defineStore('chatAssistant', () => {
       const response=await fetchSessionById(sid)
       if(sessionId.value!==sid)return
       const data=response.data?.data
-      if(data&&Array.isArray(data.messages)){messages.value=data.messages;sessionTitle.value=data.title||sessionTitle.value}
+      if(data&&Array.isArray(data.messages)){messages.value=withExecution(data.messages,sid);sessionTitle.value=data.title||sessionTitle.value}
     }catch{if(sessionId.value===sid)ElMessage.warning('会话消息暂不可读取，请刷新核对')}
   }
   const bootstrap = async (force = false) => {
@@ -111,7 +114,7 @@ export const useChatAssistantStore = defineStore('chatAssistant', () => {
         sessionId.value = data.sessionId || ''
         sessionTitle.value = data.title || '智能助手'
         sessionStatus.value = data.status || 'ACTIVE'
-        messages.value = data.messages || []
+        messages.value = withExecution(data.messages || [],data.sessionId || sessionId.value)
         bootstrapped.value = true
         await loadSessionList()
       } catch (err) {
@@ -239,7 +242,7 @@ export const useChatAssistantStore = defineStore('chatAssistant', () => {
       sessionId.value = data.sessionId || ''
       sessionTitle.value = data.title || '新对话'
       sessionStatus.value = 'ACTIVE'
-      messages.value = data.messages || []
+      messages.value = withExecution(data.messages || [],data.sessionId || sessionId.value)
       bootstrapped.value = true
       await loadSessionList()
       ElMessage.success('新对话已创建')
@@ -393,7 +396,7 @@ export const useChatAssistantStore = defineStore('chatAssistant', () => {
           ? newMessages[newMessages.length - 1]?.id
           : null
         if (newMessages.length !== messages.value.length || newLastMsgId !== lastMsgId) {
-          messages.value = newMessages
+          messages.value = withExecution(newMessages,sessionId.value)
           stopPolling()
           return
         }
@@ -476,6 +479,9 @@ export const useChatAssistantStore = defineStore('chatAssistant', () => {
           ...buildPageContext()
         },
         {
+          onEvent: (type,event) => {
+            if(type==='tool'&&event?.execution){assistantMsg.executionEvents=[...(assistantMsg.executionEvents||[]),event.execution].slice(-800);messages.value=[...messages.value]}
+          },
           onStatus: (status) => {
             assistantMsg.statusText = status
             if (!assistantMsg.content) {
@@ -494,6 +500,7 @@ export const useChatAssistantStore = defineStore('chatAssistant', () => {
             messages.value = [...messages.value]
           },
           onDone: (messageResponse) => {
+            if(messageResponse?.id && assistantMsg.executionEvents?.length){if(executionCache.size>=80)executionCache.delete(executionCache.keys().next().value);executionCache.set((messageResponse.sessionId||sessionId.value)+'|'+messageResponse.id,{executionEvents:assistantMsg.executionEvents,runId:messageResponse.runId})}
             Object.assign(assistantMsg, {
               ...messageResponse,
               streaming: false,

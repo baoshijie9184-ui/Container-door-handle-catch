@@ -14,10 +14,11 @@
     <section v-show="tab===1" id="workspace-content-1" role="tabpanel" aria-labelledby="workspace-tab-1" class="context-content">
       <AgentRecentExecution :session-id="sessionId" :trace="trace" :loaded="traceLoaded" :error="traceError" :loading="loading" @refresh="$emit('refresh')" />
     </section>
-    <footer><span>DoorHandle Agent</span><span>当前账号工作区</span></footer>
+    <footer><span :title="SYSTEM_NAME">{{ AGENT_WORKSPACE_NAME }}</span><span>当前账号工作区</span></footer>
   </aside>
 </template>
 <script setup>
+import {SYSTEM_NAME,AGENT_WORKSPACE_NAME} from '@/utils/systemBrand'
 import { computed, ref, nextTick } from 'vue'
 import AgentWorkbenchPanel from './AgentWorkbenchPanel.vue'
 import AgentRecentExecution from './AgentRecentExecution.vue'

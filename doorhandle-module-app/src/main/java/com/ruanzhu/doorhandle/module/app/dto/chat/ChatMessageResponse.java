@@ -13,4 +13,5 @@ public class ChatMessageResponse {
     private String intent;
     private String actionId;
     private String createdAt;
+    private String runId;
 }

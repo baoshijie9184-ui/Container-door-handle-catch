@@ -46,6 +46,8 @@ public class ChatSessionServiceImpl implements ChatSessionService {
     private org.springframework.beans.factory.ObjectProvider<org.springframework.jdbc.core.JdbcTemplate> workbenchJdbc;
     @org.springframework.beans.factory.annotation.Value("${agentscope.workbench.enabled:false}") private boolean workbenchEnabled;
     @org.springframework.beans.factory.annotation.Autowired public void setWorkbenchJdbc(org.springframework.beans.factory.ObjectProvider<org.springframework.jdbc.core.JdbcTemplate> jdbc){this.workbenchJdbc=jdbc;}
+    private org.springframework.beans.factory.ObjectProvider<MessageExecutionLinks> executionLinks;
+    @org.springframework.beans.factory.annotation.Autowired public void setExecutionLinks(org.springframework.beans.factory.ObjectProvider<MessageExecutionLinks> links){this.executionLinks=links;}
     private org.springframework.beans.factory.ObjectProvider<WorkspaceTurnSnapshotService> turnSnapshots;
     @org.springframework.beans.factory.annotation.Autowired public void setTurnSnapshots(org.springframework.beans.factory.ObjectProvider<WorkspaceTurnSnapshotService> snapshots){turnSnapshots=snapshots;}
 
@@ -224,7 +226,7 @@ public class ChatSessionServiceImpl implements ChatSessionService {
         }
 
         if (includeMessages) {
-            response.setMessages(listMessagesInternal(session.getSessionId()));
+            response.setMessages(listMessagesInternal(session));
         }
         return response;
     }
@@ -249,17 +251,20 @@ public class ChatSessionServiceImpl implements ChatSessionService {
 
     @Override
     public List<ChatMessageResponse> listMessages(String username, String sessionId) {
-        requireOwnedSession(username, sessionId);
-        return listMessagesInternal(sessionId);
+        var session=requireOwnedSession(username, sessionId);
+        return listMessagesInternal(session);
     }
 
-    private List<ChatMessageResponse> listMessagesInternal(String sessionId) {
-        List<ChatMessage> messages = chatMessageMapper.findBySessionId(sessionId);
-        return messages.stream()
+    private List<ChatMessageResponse> listMessagesInternal(ChatSession session) {
+        List<ChatMessage> messages = chatMessageMapper.findBySessionId(session.getSessionId());
+        var response=messages.stream()
                 .sorted(Comparator.comparing(ChatMessage::getId))
                 .skip(Math.max(0, messages.size() - chatAssistantProperties.getMaxHistoryMessages()))
                 .map(this::toResponse)
                 .collect(Collectors.toList());
+        var links=executionLinks==null?null:executionLinks.getIfAvailable();
+        if(links!=null&&session.getUserId()!=null)links.hydrate(new TenantContext(session.getUserId(),session.getUsername()),session.getSessionId(),response);
+        return response;
     }
 
     private ChatPendingAction savePendingActionInternal(String sessionId, String actionId, String actionType,

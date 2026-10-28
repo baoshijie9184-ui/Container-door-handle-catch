@@ -13,6 +13,7 @@ public class ChatStreamEvent {
     private String intent;
     private String actionId;
     private ChatMessageResponse messageResponse;
+    private java.util.Map<String,Object> execution;
 
     public static ChatStreamEvent status(String sessionId, String message) {
         return ChatStreamEvent.builder()

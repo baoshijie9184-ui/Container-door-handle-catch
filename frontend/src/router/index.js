@@ -1,4 +1,5 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
+import {systemPageTitle} from '../utils/systemBrand'
 import { useUserStore } from '../stores/user'
 import { recordNavigationFailure, clearNavigationFailure } from '../utils/navigationFeedback'
 
@@ -251,7 +252,7 @@ function finishProgress() {
 router.beforeEach(async (to, from, next) => {
   const userStore = useUserStore()
   const detectionTitle = to.path === '/detection' ? detectionTabTitles[String(to.query.tab || 'workspace')] : ''
-  document.title = detectionTitle || to.meta.title || '集装箱门把手检测智能管理软件'
+  document.title = systemPageTitle(detectionTitle || to.meta.title)
 
   if (to.meta.requiresAuth && !userStore.isAuthenticated) {
     const authenticated = userStore.hasCheckedAuth ? false : await userStore.checkAuth()
@@ -272,12 +273,12 @@ router.beforeEach(async (to, from, next) => {
 router.afterEach((to, from, failure) => {
   finishProgress()
   if (!failure) clearNavigationFailure()
-  if (failure && from.meta?.title) document.title = from.meta.title
+  if (failure && from.meta?.title) document.title = systemPageTitle(from.meta.title)
 })
 
 router.onError((error, to, from) => {
   finishProgress()
-  if (from?.meta?.title) document.title = from.meta.title
+  if (from?.meta?.title) document.title = systemPageTitle(from.meta.title)
   recordNavigationFailure(to)
 })
 

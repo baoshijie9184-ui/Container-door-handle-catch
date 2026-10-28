@@ -1,3 +1,4 @@
+import {SYSTEM_NAME,SYSTEM_SHORT_NAME,SYSTEM_TAGLINE,AGENT_WORKSPACE_NAME} from '../../frontend/src/utils/systemBrand';
 import React from 'react';
 import { ScanLine, RefreshCw, ArrowLeft, ChartNoAxesCombined, X } from 'lucide-react';
 import './agent-error-boundary.css';
@@ -20,7 +21,7 @@ export class AgentErrorBoundary extends React.Component {
     if (!this.state.failed) return this.props.children;
     return <main className="agent-error-page" aria-labelledby="agent-error-title">
       <div className="agent-error-content">
-        <a className="agent-error-brand" href={this.props.businessHref}><ScanLine size={22} aria-hidden="true"/><span>DoorHandleCatch<span>检测与 Agent 协同</span></span></a>
+        <a className="agent-error-brand" href={this.props.businessHref} title={SYSTEM_NAME} aria-label={SYSTEM_NAME}><ScanLine size={22} aria-hidden="true"/><span>{SYSTEM_SHORT_NAME}<span>{AGENT_WORKSPACE_NAME}</span></span></a>
         <div className="agent-error-heading"><span className="agent-error-symbol" aria-hidden="true"><X size={21}/></span><h1 id="agent-error-title" tabIndex={-1} ref={this.heading}>对话界面暂时无法显示</h1></div>
         <p>页面遇到显示异常。此提示不能确认后台任务是否结束，也不代表操作已取消。</p>
         <section className="agent-error-guidance" aria-label="继续操作前请核对">

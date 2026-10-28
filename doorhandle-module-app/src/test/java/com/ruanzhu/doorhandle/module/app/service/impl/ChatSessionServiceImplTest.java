@@ -38,6 +38,26 @@ import static org.mockito.Mockito.when;
 
 class ChatSessionServiceImplTest {
 
+    @Test void historyHydratesExecutionLinksOnlyAfterOwnershipIsVerified(){
+        var session=new ChatSession();session.setSessionId("s-owned");session.setUserId(1L);session.setUsername("alice");
+        when(chatSessionMapper.selectOne(any())).thenReturn(session);
+        var stored=new ChatMessage();stored.setId(31L);stored.setSessionId("s-owned");stored.setRole("assistant");stored.setMessageType("TEXT");stored.setContent("历史正文");
+        when(chatMessageMapper.findBySessionId("s-owned")).thenReturn(List.of(stored));
+        var links=mock(MessageExecutionLinks.class);
+        org.springframework.beans.factory.ObjectProvider<MessageExecutionLinks> provider=mock(org.springframework.beans.factory.ObjectProvider.class);
+        when(provider.getIfAvailable()).thenReturn(links);chatSessionService.setExecutionLinks(provider);
+        org.mockito.Mockito.doAnswer(inv->{List<com.ruanzhu.doorhandle.module.app.dto.chat.ChatMessageResponse> page=inv.getArgument(2);page.get(0).setRunId("exact-run");return null;})
+                .when(links).hydrate(any(),org.mockito.ArgumentMatchers.eq("s-owned"),any());
+        var page=chatSessionService.listMessages("alice","s-owned");
+        assertThat(page).singleElement().satisfies(message->{assertThat(message.getRunId()).isEqualTo("exact-run");assertThat(message.getContent()).isEqualTo("历史正文");});
+        var order=org.mockito.Mockito.inOrder(chatSessionMapper,chatMessageMapper,links);
+        order.verify(chatSessionMapper).selectOne(any());order.verify(chatMessageMapper).findBySessionId("s-owned");
+        order.verify(links).hydrate(org.mockito.ArgumentMatchers.eq(new TenantContext(1L,"alice")),org.mockito.ArgumentMatchers.eq("s-owned"),any());
+        org.mockito.Mockito.clearInvocations(links,chatMessageMapper);when(chatSessionMapper.selectOne(any())).thenReturn(null);
+        assertThatThrownBy(()->chatSessionService.listMessages("bob","s-owned")).isInstanceOf(BusinessException.class);
+        org.mockito.Mockito.verifyNoInteractions(links,chatMessageMapper);
+    }
+
     @BeforeAll
     static void initMetadata() {
         TableInfoHelper.initTableInfo(new MapperBuilderAssistant(new MybatisConfiguration(), ""), ChatSession.class);

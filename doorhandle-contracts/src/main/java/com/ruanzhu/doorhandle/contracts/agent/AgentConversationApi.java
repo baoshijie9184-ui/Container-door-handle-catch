@@ -13,7 +13,9 @@ public interface AgentConversationApi {
         }
     }
     record Message(String role, String content) {}
-    record Event(String type, String agent, String tool, String text, long elapsedMs) {}
+    record Event(String type, String agent, String tool, String text, long elapsedMs, String callId) {
+        public Event(String type,String agent,String tool,String text,long elapsedMs){this(type,agent,tool,text,elapsedMs,null);}
+    }
     record Run(CompletableFuture<String> result, Runnable cancel, String runId, java.util.function.Supplier<List<AgentCards.Reference>> cards) {
         public Run(CompletableFuture<String> result, Runnable cancel, String runId) { this(result, cancel, runId, List::of); }
         public Run(CompletableFuture<String> result, Runnable cancel) { this(result, cancel, null); }

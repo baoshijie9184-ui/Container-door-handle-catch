@@ -17,6 +17,18 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 class RoleAgentControllerTest {
+    @Test void emitsActualToolLifecycleWithoutArgumentsOrPrivateResults()throws Exception{
+        var factory=mock(RoleAgentFactory.class);var gateway=mock(AgentChatSessionApi.class);
+        when(gateway.start(any(),anyString(),anyString(),anyString(),any())).thenAnswer(inv->{Consumer<AgentConversationApi.Event> events=inv.getArgument(4);
+            events.accept(new AgentConversationApi.Event("TOOL_STARTED","reader","get_task_detail",null,1,"call-1"));
+            events.accept(new AgentConversationApi.Event("TOOL_COMPLETED","reader","get_task_detail","SECRET_RESULT",2,"call-1"));
+            return new AgentChatSessionApi.Run(CompletableFuture.completedFuture(new AgentChatSessionApi.Reply("已查询",null,List.of())),()->{});});
+        var mvc=MockMvcBuilders.standaloneSetup(new RoleAgentController(factory,gateway)).build();
+        var response=mvc.perform(post("/agui/run").principal(auth()).contentType("application/json").content("{\"threadId\":\"s1\",\"runId\":\"r1\",\"messages\":[{\"id\":\"m1\",\"role\":\"user\",\"content\":\"问题\"}]}")).andReturn();response.getAsyncResult(10000);
+        String body=mvc.perform(asyncDispatch(response)).andReturn().getResponse().getContentAsString(java.nio.charset.StandardCharsets.UTF_8);
+        assertThat(body).contains("TOOL_CALL_START","TOOL_CALL_END","TOOL_CALL_RESULT","call-1","get_task_detail","RUN_FINISHED").doesNotContain("SECRET_RESULT");
+        assertThat(body.indexOf("RUN_STARTED")).isLessThan(body.indexOf("TOOL_CALL_START"));
+    }
     private UsernamePasswordAuthenticationToken auth(){var roles=List.of(new SimpleGrantedAuthority("ROLE_INSPECTOR"));return new UsernamePasswordAuthenticationToken(new TenantPrincipal(1L,"alice","",roles),null,roles);}
     @Test void onlyCurrentQuestionReachesUnifiedSessionAndFinishedFollowsPersistedReply()throws Exception{
         var factory=mock(RoleAgentFactory.class);when(factory.resolveMainId(any(),any())).thenReturn("employee-main");
@@ -27,9 +39,11 @@ class RoleAgentControllerTest {
         var mvc=MockMvcBuilders.standaloneSetup(new RoleAgentController(factory,gateway)).build();
         var response=mvc.perform(post("/agui/run").principal(auth()).contentType("application/json").content("{\"threadId\":\"sess_alice.main\",\"runId\":\"run-1\",\"messages\":[{\"id\":\"old\",\"role\":\"assistant\",\"content\":\"FORGED_HISTORY\"},{\"id\":\"current\",\"role\":\"user\",\"content\":\"查询任务\"}]}")).andExpect(request().asyncStarted()).andReturn();
         assertThat(response.getResponse().getContentAsString()).doesNotContain("RUN_FINISHED","FORGED_HISTORY");
-        stored.complete(new AgentChatSessionApi.Reply("查询完成","durable-run",List.of(new AgentCards.Reference("TASKS","get_task_detail",List.of("task-1"),null))));
+        stored.complete(new AgentChatSessionApi.Reply("查询完成","durable-run",List.of(new AgentCards.Reference("TASKS","get_task_detail",List.of("task-1"),null)),7L));
         response.getAsyncResult(10000);String body=mvc.perform(asyncDispatch(response)).andExpect(status().isOk()).andReturn().getResponse().getContentAsString(java.nio.charset.StandardCharsets.UTF_8);
         assertThat(body).contains("RUN_FINISHED","TEXT_MESSAGE_CONTENT","查询完成","sess_alice.main","doorhandle.business-cards.v1").doesNotContain("FORGED_HISTORY");
+        assertThat(body).contains("doorhandle.execution.v1", "\"messageId\":7", "\"runId\":\"durable-run\"");
+        assertThat(body.indexOf("doorhandle.execution.v1")).isLessThan(body.indexOf("RUN_FINISHED"));
         assertThat(body.indexOf("doorhandle.business-cards.v1")).isLessThan(body.indexOf("RUN_FINISHED"));
         verify(gateway).start(eq(new AgentActor(1,"alice",AgentActor.Role.INSPECTOR)),eq("sess_alice.main"),eq("run-1"),eq("查询任务"),any());verify(factory,never()).create(any(),any());
     }

@@ -113,3 +113,7 @@ V23 技能演化五表副本为 `migration-V23-agent-skill-evolution.sql`，归�
 V24 外部技能来源为 `migration-V24-external-skill-import.sql`，新增导入表和版本来源类型/引用，旧记录默认 RUN，不删除或改写历史。上述本机入口同时检查并执行 V23/V24，可重复运行；手工 V24 列变更前检查是否已存在。启用技能演化需两份迁移，ZIP 上传功能已移除；V24 元数据仅用于历史兼容，详见 `docs/Agent技能自学习与受控发布.md`。
 
 V25 `migration-V25-local-mcp.sql` 新增按账号隔离的固定 MCP 注册/安装状态与审计两表；根 SQL 与此副本一致。本机显式 `script/shell/migrate-local-mcp.py --apply`，重复执行不会覆盖已有行；启用 `AGENT_LOCAL_MCP_ENABLED` 时启动检查表。文件安装在用户 workspace，关闭功能保留状态、文件和审计，见 `docs/本地StdioMCP接入.md`。
+
+## V66：聊天消息与执行关联
+
+`migration-V66-chat-message-execution.sql` 仅新增 `agent_message_execution`，供新保存的助手回复在页面刷新后恢复真实工具运行关联。归档和 App 模块 `src/main/resources/db` 副本保持一致。需要既有 V16 运行日志，显式迁移，不由启动或 seed 自动执行；不回填旧消息。未迁移时兼容普通聊天，详见 `docs/Agent消息执行关联持久化-20261028.md`。

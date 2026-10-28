@@ -1,4 +1,4 @@
-# DoorHandle Agent UI
+# 企业级集装箱门把手盖多智能体协同缺陷检测平台 · 多智能体工作台
 
 独立的 React + Spark Design 对话入口，连接后端 AgentScope Java AG-UI。
 

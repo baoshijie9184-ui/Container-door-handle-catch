@@ -6,7 +6,10 @@ import java.util.function.Consumer;
 
 /** 服务端持久会话门面。外部入口只能提交本轮问题，不能覆盖历史或记忆所属账号。 */
 public interface AgentChatSessionApi {
-    record Reply(String text, String runId, List<AgentCards.Reference> cards) {}
+    default void assertOwned(AgentActor actor,String sessionId){throw new SecurityException("当前会话不支持动态界面");}
+    record Reply(String text, String runId, List<AgentCards.Reference> cards, Long messageId) {
+        public Reply(String text,String runId,List<AgentCards.Reference> cards){this(text,runId,cards,null);}
+    }
     record Run(CompletableFuture<Reply> result, Runnable cancel) {}
 
     Run start(AgentActor actor, String sessionId, String requestId, String question,
