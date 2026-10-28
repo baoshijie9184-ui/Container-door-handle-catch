@@ -81,6 +81,23 @@ class QualityReportServiceTest {
         assertThat(count("detection_report_outbox")).isEqualTo(2);
         assertThat(jdbc.queryForObject("SELECT flow_status FROM detection_task WHERE task_id='task-1'",String.class)).isEqualTo("REVIEWED");
     }
+    @Test void approvedReportsProduceReadableWordPdfAndExcelWithFrozenIdentity()throws Exception{
+        var row=submitted();var approved=service.decide(boss,row.reportId(),approvedRequest(row,boss));
+        var output=Path.of("../work/feature-tests-20261027/report-artifacts");Files.createDirectories(output);
+        for(String format:List.of("docx","pdf","xlsx")){
+            var file=service.exportDocument(alice,row.reportId(),format);Files.write(output.resolve("approved-report."+format),file.bytes());
+            String text;
+            if(format.equals("docx")){try(var document=new org.apache.poi.xwpf.usermodel.XWPFDocument(new java.io.ByteArrayInputStream(file.bytes()))){text=document.getParagraphs().stream().map(org.apache.poi.xwpf.usermodel.XWPFParagraph::getText).collect(java.util.stream.Collectors.joining("\n"));}}
+            else if(format.equals("xlsx")){try(var workbook=new org.apache.poi.xssf.usermodel.XSSFWorkbook(new java.io.ByteArrayInputStream(file.bytes()))){var content=new StringBuilder();for(var item:workbook.getSheetAt(0))for(var cell:item)content.append(cell.getStringCellValue()).append('\n');text=content.toString();}}
+            else try(var document=org.apache.pdfbox.Loader.loadPDF(file.bytes())){text=new org.apache.pdfbox.text.PDFTextStripper().getText(document);javax.imageio.ImageIO.write(new org.apache.pdfbox.rendering.PDFRenderer(document).renderImageWithDPI(0,110),"png",output.resolve("approved-report-page1.png").toFile());}
+            assertThat(text).contains("已审批检测报告","boss","task-1");
+            // PDF may wrap a long fingerprint; extracted line breaks do not change its identity.
+            assertThat(text.replaceAll("\\s+", "")).contains(approved.snapshotSha256());
+        }
+        assertThat(service.audit(alice,row.reportId())).filteredOn(a->a.action().equals("EXPORT")).hasSize(3);
+        assertThat(service.get(alice,row.reportId()).snapshotSha256()).isEqualTo(approved.snapshotSha256());
+    }
+    @Test void officeExportsCannotBypassDraftPrivacyOrFrozenHash(){var draft=create();for(String format:List.of("docx","pdf","xlsx"))assertThatThrownBy(()->service.exportDocument(alice,draft.reportId(),format)).isInstanceOf(BusinessException.class);var row=submitted();service.decide(boss,row.reportId(),approvedRequest(row,boss));assertThatThrownBy(()->service.exportDocument(other,row.reportId(),"pdf")).isInstanceOf(BusinessException.class);jdbc.update("UPDATE detection_quality_report SET snapshot_sha256=? WHERE report_id=?","0".repeat(64),row.reportId());assertThatThrownBy(()->service.exportDocument(alice,row.reportId(),"xlsx")).isInstanceOf(BusinessException.class);assertThat(service.audit(alice,row.reportId())).filteredOn(a->a.action().equals("EXPORT")).isEmpty();}
     @Test void crossEmployeeAndOtherSupervisorCannotReadPrivateDraft(){
         var row=create();assertThatThrownBy(()->service.get(other,row.reportId())).isInstanceOf(BusinessException.class);
         assertThatThrownBy(()->service.get(boss,row.reportId())).isInstanceOf(BusinessException.class);
@@ -220,6 +237,7 @@ class QualityReportServiceTest {
     }
     static class RoleStore {final Map<Long,Boolean> roles=new ConcurrentHashMap<>(Map.of(1L,false,2L,false,3L,true,4L,true));}
     @Configuration @EnableTransactionManagement static class Config {
+        @Bean ReportDocumentRenderer documentRenderer(){return new ReportDocumentRenderer();}
         @Bean DataSource source(){return new DriverManagerDataSource("jdbc:h2:mem:report"+UUID.randomUUID()+";MODE=MySQL;DB_CLOSE_DELAY=-1","sa","");}
         @Bean JdbcTemplate jdbc(DataSource ds){return new JdbcTemplate(ds);}
         @Bean DataSourceTransactionManager transactions(DataSource ds){return new DataSourceTransactionManager(ds);}

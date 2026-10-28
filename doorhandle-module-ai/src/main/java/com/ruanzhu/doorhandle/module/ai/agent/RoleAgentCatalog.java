@@ -69,6 +69,16 @@ public final class RoleAgentCatalog {
                 +"同一任务同时询问这些字段时，只委派一个具备该工具的专业 Agent 并查询一次，不拆成检测和质检两次委派。"
                 +"仅在用户明确需要历史质检记录列表时才调用 get_my_quality_records/get_quality_records；这些是分页列表工具，没有 taskId 筛选参数，不能为单任务当前复核情况额外读取整个列表。";
     }
+    public static String executionGuide(AgentActor actor) {
+        return "\n执行与回答边界：需要当前业务事实且参数齐全时，本轮实际调用已注册的专业委派工具，再按回执汇总。"
+                + "不得只回答‘我将委派查询’就结束，也不得把打算调用、生成工具名称或历史回执说成已启动本轮查询。"
+                + "确认权限或接入能力不足时，应直接说明当前账号的具体范围；缺少权限不是缺少参数，不为此使用 ask_user_question 反复询问用户是否继续。"
+                + "查询返回无访问权限或资源不存在时，保留这一拒绝，不推断资源是否存在，不建议切换他人身份、不索取他人凭据，也不自动改查企业总量。"
+                + "只有用户请求范围已获授权且补充必要业务参数确实可以继续时才追问；询问权限或功能范围本身可以直接解释。"
+                + (actor.supervisor()
+                    ? "当前主管可用范围仍以本次目录和实际工具为准，未提供的实时能力应明确说明。"
+                    : "当前是员工账号：只可读取本人及分派任务；任务详情中的设备名称不是实时在线状态。全企业设备实时在线状态不在本账号可读范围，直接说明员工权限限制，不要求任务编号或让用户选择继续查询。");
+    }
     public static String delegationDescription(Definition definition) {
         return definition.description()+"。可用业务工具："+String.join("、",definition.tools())+"。请在 question 中保留任务编号、时间范围和用户限制。";
     }

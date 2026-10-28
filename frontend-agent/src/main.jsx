@@ -250,10 +250,11 @@ function App() {
     {title:'固定 Fetch MCP',note:'查看本人安装、启用与执行状态',path:'/agent/mcp',icon:Plug},
     {title:'资源市场',note:'查看外部资源目录与接入条件',path:'/agent/markets',icon:Compass},
     {title:'个人记忆',note:'查看和管理本人记忆',path:'/agent/memory',icon:BrainCircuit},
+    {title:'质检知识库',note:'查看规范、版本与文字引用',path:'/quality/knowledge',icon:ClipboardCheck},
     {title:'执行与调研',note:'工具轨迹、模型路由与来源',path:'/agent/trace'+(threadId?'?sessionId='+encodeURIComponent(threadId):''),icon:ChartNoAxesCombined},
   ];
   const infoTabKey=event=>{if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key))return;event.preventDefault();const index=event.key==='Home'?0:event.key==='End'?1:infoTab==='workspace'?1:0;setInfoTab(index?'models':'workspace');event.currentTarget.querySelectorAll('[role="tab"]')[index]?.focus();};
-  return <ConfigProvider theme={{ token: { colorPrimary: '#2563eb', colorSuccess: '#15803d', colorWarning: '#b45309', colorError: '#dc2626', colorText: '#0f172a', colorTextSecondary: '#475569', colorBorder: '#e2e8f0', borderRadius: 8, fontFamily: '"Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif', motion: !reducedMotion, motionDurationMid: '0.2s' } }}>
+  return <ConfigProvider theme={{ token: { colorPrimary: '#2563eb', colorSuccess: '#15803d', colorWarning: '#b45309', colorError: '#dc2626', colorText: '#181b23', colorTextSecondary: '#525b6a', colorBorder: '#e6e8ec', borderRadius: 8, fontFamily: '"Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif', motion: !reducedMotion, motionDurationMid: '0.2s' } }}>
     <Layout className={`agent-shell ${sidebarOpen ? 'with-sessions' : ''} ${infoOpen ? 'with-info' : ''}`}>
       <nav id="agent-sessions" className="session-sidebar" aria-label="对话历史" hidden={!sidebarOpen}>
         <a className="agent-brand" href={BUSINESS}><span className="brand-symbol"><ScanLine size={20} /></span><span>DoorHandle<strong>智能工作空间</strong></span></a>

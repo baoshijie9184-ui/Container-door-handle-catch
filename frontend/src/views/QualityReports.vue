@@ -73,7 +73,7 @@
             <el-button v-if="own && detail.status === 'SUBMITTED'" :disabled="busy" @click="openTransition('withdraw')">撤回申请</el-button>
             <el-button v-if="own && ['APPROVED', 'REJECTED', 'WITHDRAWN'].includes(detail.status)" :loading="busy" @click="runCommand('revise')">创建修订草稿</el-button>
             <template v-if="isSupervisor && !own && detail.status === 'SUBMITTED'"><el-button type="primary" :disabled="busy" @click="openDecision('APPROVE')">审批通过</el-button><el-button type="danger" plain :disabled="busy" @click="openDecision('REJECT')">驳回报告</el-button></template>
-            <el-button v-if="detail.status === 'APPROVED'" :loading="busy" @click="download"><AppIcon name="Download" :size="15" />导出已审批报告</el-button>
+            <template v-if="detail.status === 'APPROVED'"><el-select v-model="exportFormat" :disabled="busy" aria-label="报告导出格式" style="width:130px"><el-option label="Word" value="docx" /><el-option label="PDF" value="pdf" /><el-option label="Excel" value="xlsx" /><el-option label="Markdown" value="md" /></el-select><el-button :loading="busy" @click="download"><AppIcon name="Download" :size="15" />导出已审批报告</el-button></template>
           </div>
           <h3><AppIcon name="DocumentCopy" :size="18" />操作记录<span class="report-section-count">本次读取 {{ audits.length }} 条</span></h3>
           <el-table class="report-audit-table" :scrollbar-tabindex="0" role="region" aria-label="报告操作记录" :data="audits" max-height="260"><el-table-column prop="actorUsername" label="操作账号" min-width="140" /><el-table-column label="操作" min-width="90"><template #default="{ row }">{{ auditLabels[row.action] || row.action }}</template></el-table-column><el-table-column prop="reportVersion" label="版本" width="65" /><el-table-column label="来源" min-width="150"><template #default="{ row }"><router-link v-if="row.runId" :to="{ path: '/agent/trace', query: { runId: row.runId } }">助手运行轨迹</router-link><span v-else>业务页面</span></template></el-table-column><el-table-column prop="reason" label="意见" min-width="160" /><el-table-column label="时间（UTC+8）" min-width="190"><template #default="{ row }">{{ reportTime(row.createdAt) }}</template></el-table-column></el-table>
@@ -131,6 +131,7 @@ import ReportSnapshotIdentity from '../components/ReportSnapshotIdentity.vue'
 import { knownCount } from '../utils/countPresentation'
 
 const reportTime = value => value ? beijingDateTime(value) || '时间格式未知' : '未记录'
+const exportFormat = ref('md')
 const route = useRoute(), userStore = useUserStore()
 const states = { DRAFT: '个人草稿', SUBMITTED: '待审批', APPROVED: '审批通过', REJECTED: '已驳回', WITHDRAWN: '已撤回' }
 const auditLabels = { CREATE: '创建草稿', EDIT: '保存草稿', SUBMIT: '提交审批', WITHDRAW: '撤回', REVISE: '创建修订', APPROVE: '审批通过', REJECT: '驳回', EXPORT: '导出', EVENT_RETRY: '重新发送状态' }
@@ -261,9 +262,11 @@ async function download() {
   if (busy.value || !detail.value) return
   busy.value = true; detailError.value = ''
   try {
-    const response = await request.post(`/api/detection/reports/${detail.value.reportId}/export`, null, { headers, responseType: 'blob' })
-    if (!(response.headers['content-type'] || '').startsWith('text/markdown')) throw new Error('报告导出失败，请刷新核对状态')
-    const url = URL.createObjectURL(response.data), link = document.createElement('a'); link.href = url; link.download = `${detail.value.reportId}.md`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000)
+    const format=exportFormat.value, id=detail.value.reportId
+    const response = await request.post(`/api/detection/reports/${id}/export`, null, { headers, params:{format}, responseType: 'blob' })
+    const expected={md:'text/markdown',pdf:'application/pdf',docx:'application/vnd.openxmlformats-officedocument.wordprocessingml.document',xlsx:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}[format]
+    if (!(response.headers['content-type'] || '').startsWith(expected)) throw new Error('报告导出失败，请刷新核对状态')
+    const url = URL.createObjectURL(response.data), link = document.createElement('a'); link.href = url; link.download = `${id}.${format}`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000)
     await openDetail(detail.value.reportId)
   } catch (e) { detailError.value = message(e) }
   finally { busy.value = false }

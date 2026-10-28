@@ -4,6 +4,8 @@
   <parent><groupId>com.ruanzhu</groupId><artifactId>doorhandle-parent</artifactId><version>0.0.1-SNAPSHOT</version></parent>
   <artifactId>doorhandle-module-detection</artifactId>
   <dependencies>
+    <dependency><groupId>org.apache.poi</groupId><artifactId>poi-ooxml</artifactId></dependency>
+    <dependency><groupId>org.apache.pdfbox</groupId><artifactId>pdfbox</artifactId><exclusions><exclusion><groupId>commons-logging</groupId><artifactId>commons-logging</artifactId></exclusion></exclusions></dependency>
     <dependency><groupId>com.ruanzhu</groupId><artifactId>doorhandle-common</artifactId><version>${project.version}</version></dependency>
     <dependency><groupId>com.ruanzhu</groupId><artifactId>doorhandle-contracts</artifactId><version>${project.version}</version></dependency>
     <dependency><groupId>com.ruanzhu</groupId><artifactId>doorhandle-module-system</artifactId><version>${project.version}</version></dependency>

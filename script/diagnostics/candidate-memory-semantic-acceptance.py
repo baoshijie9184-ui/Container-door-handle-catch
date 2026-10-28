@@ -49,6 +49,8 @@ candidate_prompt_version=PROMPT_VERSION
 candidate_prompt_sha256=hashlib.sha256(PROMPT.encode()).hexdigest()
 override=PROMPT_OVERRIDE
 if override:PROMPT,PROMPT_VERSION=override['prompt'],override['version']
+if PROMPT_VERSION>=6:
+    from duplicate_review import semantic_labels
 config=bridge.get_memory_config()['llm']
 assert config['config']['model'] in {'qwen3.8-flash','qwen3.8-max-0902'}
 candidate_model=config['config']['model']
@@ -69,7 +71,11 @@ try:
                 response=llm.generate_response(messages=[{'role':'system','content':PROMPT},
                     {'role':'user','content':json.dumps({'source':case['source'],'candidates':candidates},ensure_ascii=False)}],
                     response_format={'type':'json_object'})
-            labels=parse_labels(response,candidates)
+            if PROMPT_VERSION>=6:
+                decisions=semantic_labels(response,case['source'],candidates)
+                labels={id:decision['label'] for id,decision in decisions.items()}
+                row['decisionValidation']='STRUCTURED_V6'
+            else:labels=parse_labels(response,candidates)
             row['checks']=[{'id':'C'+str(i),'expected':expected,'actual':labels['C'+str(i)],
                             'passed':labels['C'+str(i)]==expected} for i,(_,expected) in enumerate(case['candidates'])]
             row['status']='PASS' if all(c['passed'] for c in row['checks']) else 'MISMATCH'

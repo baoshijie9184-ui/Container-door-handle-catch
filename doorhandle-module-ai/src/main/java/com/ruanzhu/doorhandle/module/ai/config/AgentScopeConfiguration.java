@@ -16,6 +16,8 @@ import org.springframework.context.annotation.Configuration;
 @EnableConfigurationProperties({AgentScopeProperties.class, AgentModelProperties.class})
 @ConditionalOnProperty(prefix = "agentscope.ai", name = "enabled", havingValue = "true")
 public class AgentScopeConfiguration {
+    @org.springframework.beans.factory.annotation.Autowired
+    private org.springframework.beans.factory.ObjectProvider<com.ruanzhu.doorhandle.module.ai.model.ModelBudgetService> budgets;
 
     @Bean
     public com.ruanzhu.doorhandle.module.ai.report.AgentReportGateway agentReportGateway(org.springframework.beans.factory.ObjectProvider<QualityReportAgentApi> reports,
@@ -37,6 +39,7 @@ public class AgentScopeConfiguration {
     public AgentModelService agentModelService(AgentModelProperties connections, AgentScopeProperties properties,org.springframework.beans.factory.ObjectProvider<com.ruanzhu.doorhandle.module.ai.model.ModelConfigurationService> configurations,org.springframework.beans.factory.ObjectProvider<org.springframework.data.redis.core.StringRedisTemplate> redis) {
         var models = new AgentModelService(connections, properties);
         models.setConfigurations(configurations.getIfAvailable());
+        models.setBudget(budgets==null?null:budgets.getIfAvailable());
         if(configurations.getIfAvailable()!=null)models.setCircuitRedis(redis.getObject());
         models.resolve(models.currentDefault()); // Validate without generating a provider request.
         return models;

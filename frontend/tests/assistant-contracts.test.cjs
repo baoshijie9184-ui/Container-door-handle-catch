@@ -189,8 +189,8 @@ test('tests\\business-trace-presets-contract.test.cjs', () => {
 
   assert.match(presetSource, /businessWorkOrderNos/)
   assert.match(presetSource, /businessBatchNos/)
-  assert.match(presetSource, /WO-SH-A-001/)
-  assert.match(presetSource, /BATCH-SH-A-20260615-001/)
+  assert.doesNotMatch(presetSource, /WO-SH-A-001|BATCH-SH-A-20260615-001/)
+  assert.match(presetSource, /Object\.freeze\(\[\]\)/)
   assert.doesNotMatch(presetSource, /DEMO|demo|示例|演示/)
 
   assert.match(traceComposableSource, /businessWorkOrderNos/)

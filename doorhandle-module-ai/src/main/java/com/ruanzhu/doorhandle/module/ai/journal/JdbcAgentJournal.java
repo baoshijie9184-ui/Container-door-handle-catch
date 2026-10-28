@@ -30,7 +30,7 @@ public class JdbcAgentJournal implements AgentJournal {
             "MODEL_ATTEMPT_STARTED", "MODEL_ATTEMPT_COMPLETED", "MODEL_ATTEMPT_ERROR", "MODEL_ATTEMPT_CANCELLED", "MODEL_CANDIDATE_SKIPPED", "MODEL_FALLBACK_SELECTED",
             "AUTHORIZATION_ALLOWED", "AUTHORIZATION_DENIED", "TOOL_STARTED", "TOOL_COMPLETED", "TOOL_ERROR", "TOOL_CANCELLED",
             "COMMAND_RECEIVED","COMMAND_REJECTED","SKILL_COMMAND_LOADED","CONTEXT_STARTED","CONTEXT_COMPLETED","CONTEXT_FAILED","CONTEXT_CANCELLED",
-            "PAUSE_REQUESTED","RUN_PAUSED","RUN_RESUMED","STEERING_APPLIED");
+            "PAUSE_REQUESTED","RUN_PAUSED","RUN_RESUMED","STEERING_APPLIED","ANSWER_REJECTED");
     private static final Set<String> PAYLOAD = Set.of("agent", "tool", "callId", "scope", "decision", "policyVersion", "result", "durationMs", "inputTokens", "outputTokens", "elapsedMs", "parentCallId","command","status","skillId","version","sha256",
             "modelRequestId", "modelId", "provider", "model", "attempt", "firstContentMs", "failureReason", "httpStatus", "nextModelId",
             "purpose","beforeMessages","afterMessages","beforeChars","afterChars","inputId");

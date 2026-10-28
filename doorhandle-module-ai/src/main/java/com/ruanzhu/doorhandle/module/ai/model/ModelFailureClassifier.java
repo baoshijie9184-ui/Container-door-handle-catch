@@ -20,6 +20,7 @@ final class ModelFailureClassifier {
         var seen = Collections.newSetFromMap(new IdentityHashMap<Throwable, Boolean>());
         boolean transport = false;
         for (Throwable cause = error; cause != null && seen.add(cause); cause = cause.getCause()) {
+            if(cause instanceof ModelBudgetService.Exhausted)return Failure.QUOTA;
             if ((status != null && status >= 400 && status < 600 || cause instanceof ModelException)
                     && quotaText(cause.getMessage())) return Failure.QUOTA;
             if (cause instanceof HttpTransportException http && quotaText(http.getResponseBody())) return Failure.QUOTA;

@@ -173,6 +173,9 @@ const routes = [
         path: 'agent/markets', name: 'agentMarkets', component: () => import('../views/AgentMarkets.vue'),
         meta: { title: '资源市场', requiresAuth: true, icon: 'Operation' }
       },
+      {path:'quality/knowledge',name:'qualityKnowledge',component:()=>import('../views/QualityKnowledge.vue'),meta:{title:'质检知识库',requiresAuth:true}},
+      {path:'quality/digests',name:'qualityDigests',component:()=>import('../views/QualityDigests.vue'),meta:{title:'质检日报',requiresAuth:true,supervisorOnly:true}},
+      {path:'agent/model-budgets',name:'agentModelBudgets',component:()=>import('../views/AgentModelBudgets.vue'),meta:{title:'模型额度',requiresAuth:true,supervisorOnly:true}},
       {path:'agent/model-config',name:'agentModelConfig',component:()=>import('../views/AgentModelConfig.vue'),meta:{title:'Agent 模型配置',requiresAuth:true,supervisorOnly:true}},
       {path:'operations/identity',name:'detectionIdentity',component:()=>import('../views/DetectionIdentity.vue'),meta:{title:'任务账号关联',requiresAuth:true,supervisorOnly:true}},
       {path:'operations/audit',name:'operationsAudit',component:()=>import('../views/OperationsAudit.vue'),meta:{title:'操作审计',requiresAuth:true}},
@@ -258,7 +261,7 @@ router.beforeEach(async (to, from, next) => {
     }
   }
 
-  if (to.meta.supervisorOnly && userStore.role !== 'SUPERVISOR') {
+  if (to.meta.supervisorOnly && !['SUPERVISOR','ADMIN'].includes(userStore.role)) {
     next({name:'home'})
     return
   }

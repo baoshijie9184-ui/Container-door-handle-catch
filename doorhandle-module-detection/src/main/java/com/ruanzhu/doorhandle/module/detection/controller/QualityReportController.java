@@ -47,10 +47,13 @@ public class QualityReportController {
             @RequestHeader(value="X-Report-Action",required=false) String header,@Valid @RequestBody Decision request){guard(header);return Result.success(service.decide(actor(principal),id,request));}
     @com.ruanzhu.doorhandle.contracts.agent.FileDelivery(domain="QUALITY_REPORT",resource="arg1",scope="ENTERPRISE")
     @PostMapping("/{id}/export") public ResponseEntity<byte[]> export(@AuthenticationPrincipal TenantPrincipal principal,@PathVariable String id,
-            @RequestHeader(value="X-Report-Action",required=false) String header){guard(header);return ResponseEntity.ok()
-            .contentType(new MediaType("text","markdown",StandardCharsets.UTF_8)).cacheControl(CacheControl.noStore())
-            .header(HttpHeaders.CONTENT_DISPOSITION,ContentDisposition.attachment().filename(id+".md").build().toString())
-            .body(service.export(actor(principal),id).getBytes(StandardCharsets.UTF_8));}
+            @RequestHeader(value="X-Report-Action",required=false) String header,@RequestParam(defaultValue="md")String format){guard(header);
+        if("md".equals(format))return ResponseEntity.ok().contentType(new MediaType("text","markdown",StandardCharsets.UTF_8)).cacheControl(CacheControl.noStore())
+                .header(HttpHeaders.CONTENT_DISPOSITION,ContentDisposition.attachment().filename(id+".md").build().toString()).body(service.export(actor(principal),id).getBytes(StandardCharsets.UTF_8));
+        var file=service.exportDocument(actor(principal),id,format);
+        return ResponseEntity.ok().contentType(MediaType.parseMediaType(file.mediaType())).cacheControl(CacheControl.noStore())
+                .header(HttpHeaders.CONTENT_DISPOSITION,ContentDisposition.attachment().filename(id+"."+file.extension()).build().toString()).header("X-Content-Type-Options","nosniff").body(file.bytes());}
     private static Identity actor(TenantPrincipal p){if(p==null)throw new SecurityException("请先登录");return new Identity(p.userId(),p.username(),false);}
+    public ResponseEntity<byte[]> export(TenantPrincipal principal,String id,String header){return export(principal,id,header,"md");}
     private static void guard(String header){if(!"update".equals(header))throw new BusinessException(400,"缺少报告操作请求标记");}
 }

@@ -29,13 +29,15 @@ watch(()=>[props.active,props.collapsed,activeGroup.value],async()=>{
 </script>
 <style scoped>
 .nav-menu { width: 100%; border: 0; background: transparent; }
-.nav-menu :deep(.el-menu-item), .nav-menu :deep(.el-sub-menu__title) { height: 44px; line-height: 44px; border-radius: 8px; margin: 3px 0; font-size: 13px; transition: background var(--app-transition-fast), color var(--app-transition-fast); }
-.nav-menu :deep(.el-menu-item .el-icon), .nav-menu :deep(.el-sub-menu__title .el-icon) { font-size: 19px; color: var(--app-text-muted); }
-.nav-menu :deep(.el-menu-item.is-active) { background: var(--app-primary-soft); color: var(--app-primary); font-weight: 650; }
+.nav-menu :deep(.el-menu-item),.nav-menu :deep(.el-sub-menu__title) { position:relative; height:39px; line-height:39px; border-radius:6px; margin:3px 0; font-size:13px; color:var(--app-text-secondary); transition:background var(--app-transition-fast),color var(--app-transition-fast); }
+.nav-menu :deep(.el-menu-item .el-icon),.nav-menu :deep(.el-sub-menu__title .el-icon) { font-size:17px; color:var(--app-text-muted); }
+.nav-menu :deep(.el-menu-item:hover),.nav-menu :deep(.el-sub-menu__title:hover) { background:#e9ecf1; color:var(--app-text); }
+.nav-menu :deep(.el-menu-item.is-active) { background:white; color:var(--app-text); font-weight:600; box-shadow:0 0 0 1px var(--app-border) inset,var(--app-shadow-xs); }
+.nav-menu :deep(.el-menu-item.is-active)::before { content:''; position:absolute; width:3px; height:16px; top:50%; left:0; border-radius:0 2px 2px 0; transform:translateY(-50%); background:var(--app-primary); }
 .nav-menu :deep(.el-menu-item.is-active .el-icon) { color: var(--app-primary); }
 .nav-menu :deep(.el-sub-menu.is-active > .el-sub-menu__title),.nav-menu :deep(.el-sub-menu.is-active > .el-sub-menu__title .el-icon) { color:var(--app-primary); }
 .nav-menu :deep(.el-sub-menu.is-active > .el-sub-menu__title) { font-weight:600; }
-.nav-menu :deep(.el-sub-menu .el-menu-item) { min-width: 0; height: 39px; line-height: 39px; font-size: 12px; }
+.nav-menu :deep(.el-sub-menu .el-menu-item) { min-width:0; height:36px; line-height:36px; font-size:12px; }
 .nav-menu :deep(.el-sub-menu .el-menu) { background: transparent; }
 .nav-menu :deep(.el-menu-item:focus-visible),.nav-menu :deep(.el-sub-menu__title:focus-visible) { outline:2px solid var(--app-primary); outline-offset:-2px; }
 @media(prefers-reduced-motion:reduce) { .nav-menu :deep(.el-menu-item),.nav-menu :deep(.el-sub-menu__title) { transition:none; } }

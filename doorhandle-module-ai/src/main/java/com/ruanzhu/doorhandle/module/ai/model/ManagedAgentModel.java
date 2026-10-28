@@ -27,6 +27,8 @@ final class ManagedAgentModel implements Model {
     private final Duration firstTokenTimeout;
     private final Duration timeout;
     private final boolean circuitEnabled;
+    private ModelBudgetService budget;
+    ManagedAgentModel budget(ModelBudgetService value){this.budget=value;return this;}
     ManagedAgentModel(String id, Model primary, Model fallback) {
         this(id, primary, fallback, null);
     }
@@ -47,7 +49,7 @@ final class ManagedAgentModel implements Model {
     public Flux<ChatResponse> stream(List<Msg> messages, List<ToolSchema> tools, GenerateOptions options) {
         GenerateOptions enforced = policy == null ? options : GenerateOptions.mergeOptions(policy, options);
         return Flux.deferContextual(context -> attempt(0, messages, tools, enforced,
-                        context.getOrDefault(ModelAttemptTrace.CONTEXT_KEY, ModelAttemptTrace.NONE),context.getOrDefault(ModelUsageTrace.CONTEXT_KEY,ModelUsageTrace.NONE)))
+                        context.getOrDefault(ModelAttemptTrace.CONTEXT_KEY, ModelAttemptTrace.NONE),combinedUsage(context.getOrDefault(ModelUsageTrace.CONTEXT_KEY,ModelUsageTrace.NONE))))
                 .onErrorMap(error -> {
                     if(error instanceof RedisModelCircuit.Unavailable)return error;
                     log.warn("模型路由失败：model={}, reason={}, status={}", candidates.get(0).id(),
@@ -55,6 +57,7 @@ final class ManagedAgentModel implements Model {
                     return new IllegalStateException("模型调用失败，请稍后重试（" + candidates.get(0).id() + "）");
                 });
     }
+    private ModelUsageTrace combinedUsage(ModelUsageTrace existing){return budget==null?existing:new ModelUsageTrace((id,fields)->{budget.finished(id,fields);existing.record(id,fields);});}
     private Flux<ChatResponse> attempt(int index, List<Msg> messages, List<ToolSchema> tools, GenerateOptions options, ModelAttemptTrace trace,ModelUsageTrace usageTrace) {
         if (index >= candidates.size()) return Flux.error(new IllegalStateException("暂无可用模型"));
         return Flux.defer(() -> {
@@ -73,6 +76,7 @@ final class ManagedAgentModel implements Model {
             long started = System.nanoTime();
             // STARTED 写入失败时仍释放恢复探测 permit，不发出供应商请求。
             return Flux.defer(() -> {
+                        if(budget!=null)budget.started(usageId,candidate.id());
                         trace.event("MODEL_ATTEMPT_STARTED", fields(candidate, index));
                         return candidate.model().stream(messages, tools, options).doOnNext(chunk->{if(chunk.getUsage()!=null)reportedUsage.set(chunk.getUsage());});
                     })

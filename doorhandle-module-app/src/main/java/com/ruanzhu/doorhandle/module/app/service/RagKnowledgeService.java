@@ -27,6 +27,14 @@ import java.util.regex.Pattern;
 @Service
 @RequiredArgsConstructor
 public class RagKnowledgeService {
+    @org.springframework.beans.factory.annotation.Autowired
+    private org.springframework.beans.factory.ObjectProvider<com.ruanzhu.doorhandle.module.app.service.knowledge.QualityKnowledgeService> managedKnowledge;
+
+    public String retrieveContext(String query, com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory.Identity actor) {
+        var managed = managedKnowledge == null ? null : managedKnowledge.getIfAvailable();
+        String owned = managed == null ? "" : managed.context(actor, query);
+        return owned + "\n" + retrieveContext(query);
+    }
 
     private final ChatAssistantProperties properties;
     private final ResourceLoader resourceLoader;

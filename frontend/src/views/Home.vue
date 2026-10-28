@@ -32,39 +32,8 @@
 
     <!-- ═══ 真实内容 ═══ -->
     <template v-else>
-    <div role="status" class="dashboard-refresh-note">
-      <span>{{ refreshing ? '正在刷新…' : '每 30 秒自动刷新（后台页面暂停）' }}</span>
-      <span v-if="lastUpdated"> · 最近全部更新成功：{{ lastUpdated }} UTC+8</span>
-      <el-alert v-if="failedSections.length" type="warning" :closable="false"
-        :title="`加载失败：${failedSections.join('、')}。对应区域可能保留上次数据；未读取或缺失的指标显示 —，请刷新核对。`" />
-    </div>
-    <p class="dashboard-data-note">检测统计按当前账号可访问任务汇总；设备与人员为全部登记资料。“—”表示尚未读取、字段缺失或无法计算，不代表零。</p>
-    <section class="quality-overview" aria-labelledby="quality-overview-title" :aria-busy="refreshing">
-      <header><div><h2 id="quality-overview-title">{{ userStore.role === 'SUPERVISOR' ? '企业质量待办' : '我的质量待办' }}</h2><p>按当前账号可访问任务统计 · 当前状态 · 时间 UTC+8</p></div><router-link to="/quality/queue"><AppIcon name="ArrowRight" :size="16" />全部质检任务</router-link></header>
-      <div class="quality-overview-grid">
-        <router-link v-for="metric in qualityMetrics" :key="metric.key" :to="{path:'/quality/queue',query:{queue:metric.queue}}" :data-tone="metric.tone"><span class="quality-overview-icon"><AppIcon :name="metric.icon" :size="20" /></span><span><strong>{{ qualityWorkload ? formatNumber(qualityWorkload[metric.key]) : '—' }}</strong><small>{{ metric.label }}</small></span><AppIcon name="ArrowRight" :size="15" /></router-link>
-      </div>
-      <p v-if="!qualityWorkload" class="quality-overview-note">{{ failedSections.includes('质量待办') ? '质量待办暂不可读取，请刷新核对；缺失值不代表零。' : '正在读取质量待办…' }}</p>
-      <p v-else class="quality-overview-note">{{ failedSections.includes('质量待办') ? '本次刷新失败，以上保留上次数据，请刷新核对。' : '各类待办可能交叉，不能直接相加作为任务总数。' }}</p>
-    </section>
-    <!-- ── 顶部 Hero + 运行态势 ── -->
-    <section class="hero-grid animate-fade-in-up">
-      <div class="hero-panel app-panel command-panel">
-        <div class="hero-copy">
-          <div class="industrial-kicker">Door Handle Inspection Center</div>
-          <h2 class="hero-title">{{ userStore.role === 'SUPERVISOR' ? '企业质量工作台' : '我的检测工作台' }}</h2>
-          <p class="hero-text">
-            {{ userStore.role === 'SUPERVISOR' ? '查看企业检测与质量情况，安排复核、跟进异常和设备维护。' : '查看本人及分派任务，跟进检测结果、质检处理和工作记录。' }}
-          </p>
-        </div>
-
-        <div class="hero-telemetry">
-          <span class="metric-chip">使用中设备 {{ formatNumber(deviceStatus.inUse) }} 台</span>
-          <span class="metric-chip">在岗人员 {{ formatNumber(employeeStatus.active) }} 人</span>
-          <span class="metric-chip">登记设备 {{ formatNumber(totalDevices) }} 台</span>
-        </div>
-
-        <div class="hero-actions">
+    <PageHero :title="userStore.role === 'SUPERVISOR' ? '企业质量工作台' : '我的检测工作台'" icon="DataAnalysis" :description="userStore.role === 'SUPERVISOR' ? '查看企业检测与质量情况，安排复核、跟进异常和设备维护。' : '查看本人及分派任务，跟进检测结果、质检处理和工作记录。'">
+      <template #actions>
           <el-button type="primary" @click="router.push('/inspection/workbench')">
             <el-icon style="margin-right:6px"><Search /></el-icon>
             开始图像检测
@@ -74,6 +43,32 @@
             管理检测模型
           </el-button>
           <el-button plain @click="router.push('/agent/chat')">向 AI 助手提问 <el-icon style="margin-left:4px"><ArrowRight /></el-icon></el-button>
+      </template>
+    </PageHero>
+    <div role="status" class="dashboard-refresh-note">
+      <span>{{ refreshing ? '正在刷新…' : '每 30 秒自动刷新（后台页面暂停）' }}</span>
+      <span v-if="lastUpdated"> · 最近全部更新成功：{{ lastUpdated }} UTC+8</span>
+      <el-alert v-if="failedSections.length" type="warning" :closable="false"
+        :title="`加载失败：${failedSections.join('、')}。对应区域可能保留上次数据；未读取或缺失的指标显示 —，请刷新核对。`" />
+    </div>
+    <p class="dashboard-data-note">任务统计按当前账号可访问范围汇总；历史累计沿用历史登记数值，设备与人员为全部登记资料。“—”表示尚未读取、字段缺失或无法计算，不代表零。</p>
+    <HistoricalDetectionOverview v-if="canViewHistoricalSummary && historicalSummary" :summary="historicalSummary" />
+    <section class="quality-overview" aria-labelledby="quality-overview-title" :aria-busy="refreshing">
+      <header><div><h2 id="quality-overview-title">{{ userStore.role === 'SUPERVISOR' ? '企业质量待办' : '我的质量待办' }}</h2><p>按当前账号可访问任务统计 · 当前状态 · 时间 UTC+8</p></div><router-link to="/quality/queue"><AppIcon name="ArrowRight" :size="16" />全部质检任务</router-link></header>
+      <div class="quality-overview-grid">
+        <router-link v-for="metric in qualityMetrics" :key="metric.key" :to="{path:'/quality/queue',query:{queue:metric.queue}}" :data-tone="metric.tone"><span class="quality-overview-icon"><AppIcon :name="metric.icon" :size="20" /></span><span><strong>{{ qualityWorkload ? formatNumber(qualityWorkload[metric.key]) : '—' }}</strong><small>{{ metric.label }}</small></span><AppIcon name="ArrowRight" :size="15" /></router-link>
+      </div>
+      <p v-if="!qualityWorkload" class="quality-overview-note">{{ failedSections.includes('质量待办') ? '质量待办暂不可读取，请刷新核对；缺失值不代表零。' : '正在读取质量待办…' }}</p>
+      <p v-else class="quality-overview-note">{{ failedSections.includes('质量待办') ? '本次刷新失败，以上保留上次数据，请刷新核对。' : '各类待办可能交叉，不能直接相加作为任务总数。' }}</p>
+    </section>
+    <!-- ── 顶部 Hero + 运行态势 ── -->
+    <section class="hero-grid" aria-label="任务与资源概览">
+      <div class="hero-panel app-panel command-panel">
+        <h2 class="app-panel-title">任务与资源</h2>
+        <div class="hero-telemetry">
+          <span class="metric-chip">使用中设备 {{ formatNumber(deviceStatus.inUse) }} 台</span>
+          <span class="metric-chip">在岗人员 {{ formatNumber(employeeStatus.active) }} 人</span>
+          <span class="metric-chip">登记设备 {{ formatNumber(totalDevices) }} 台</span>
         </div>
 
         <div class="hero-highlights">
@@ -446,6 +441,7 @@ import {beijingDateTime} from '@/utils/beijingTime'
 import { knownCount } from '@/utils/countPresentation'
 import CollectionEmptyState from '@/components/CollectionEmptyState.vue'
 import ChartDataDetails from '@/components/ChartDataDetails.vue'
+import HistoricalDetectionOverview from '@/components/HistoricalDetectionOverview.vue'
 import * as echarts from 'echarts'
 import {
   User, Monitor, Search, Setting,
@@ -527,6 +523,10 @@ function markSectionFailed(section) {
 }
 
 const totalDetections = ref(null)
+const historicalSummary = ref(null)
+const canViewHistoricalSummary = computed(() => userStore.isAuthenticated && ['SUPERVISOR', 'ADMIN'].includes(userStore.role))
+const historicalAccountScope = () => JSON.stringify([userStore.identity?.userId, userStore.username, userStore.role, userStore.isAuthenticated])
+watch(historicalAccountScope, () => { historicalSummary.value = null }, { flush: 'sync' })
 const totalEmployees = ref(null)
 const totalDevices = ref(null)
 const avgMissRate = ref(null)
@@ -675,11 +675,13 @@ async function updateChartData() {
 }
 
 async function fetchDashboardStats() {
+  const owner = historicalAccountScope()
   try {
     const res = await dashboardRequest('总览', '/api/dashboard/stats')
     const s = res.data?.data || {}
     if (disposed) return
     totalDetections.value = knownCount(s.detectionCount)
+    if (owner === historicalAccountScope()) historicalSummary.value = canViewHistoricalSummary.value && s.historicalSummary && typeof s.historicalSummary === 'object' && !Array.isArray(s.historicalSummary) ? s.historicalSummary : null
     avgMissRate.value = s.avgMissRate
     if (totalDetections.value === null) markSectionFailed('总览')
   } catch { /* 保留旧值，统一显示失败提示。 */ }
@@ -1029,6 +1031,17 @@ function getModelUsagePercent(taskCount) {
 </script>
 
 <style scoped>
+.home-page > .dashboard-refresh-note { margin:0; }
+.home-page .hero-panel > .app-panel-title { font-size:16px; font-weight:600; margin-bottom:16px; }
+.home-page .hero-panel .hero-telemetry { margin:0 0 20px; gap:12px; }
+.home-page .hero-panel .metric-chip { padding:0; min-height:24px; border:0; border-radius:0; background:transparent; color:var(--app-text-muted); font-weight:400; }
+.home-page .hero-highlights { gap:0; margin-top:0; }
+.home-page .hero-highlights > a:first-child { border-left:0; }
+.home-page .hl-header { margin-bottom:12px; }
+.home-page .hl-icon { width:28px; height:28px; border-radius:7px; background:var(--app-surface-muted); color:var(--app-text-secondary); }
+.home-page .hl-label { line-height:1.8; font-size:12px; }
+.home-page .hl-trend { color:var(--app-text-muted); background:transparent; font-weight:400; }
+
 /* ═══════════════════════════════════════════════════════
    Home Dashboard — 仪表板样式
    ═══════════════════════════════════════════════════════ */
@@ -1036,7 +1049,7 @@ function getModelUsagePercent(taskCount) {
 .home-page {
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap:24px;
 }
 
 /* ── Hero + 运行态势 ── */

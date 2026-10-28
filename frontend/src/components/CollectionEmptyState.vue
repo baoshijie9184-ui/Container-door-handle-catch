@@ -26,11 +26,14 @@ defineEmits(['retry', 'reset'])
 </script>
 
 <style scoped>
-.collection-empty { display: flex; flex-direction: column; align-items: center; gap: 9px; max-width: 480px; margin: auto; padding: 32px 18px; text-align: center; white-space: normal; line-height: 1.8; }
-.collection-empty-icon { display: grid; place-items: center; width: 52px; height: 52px; margin-bottom: 4px; border: 1px solid #dce7fb; border-radius: 14px; color: var(--app-primary); background: var(--app-primary-soft); }
+.collection-empty { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:9px; max-width:440px; min-height:230px; margin:auto; padding:36px 24px; text-align:center; white-space:normal; line-height:1.8; }
+.collection-empty-icon { display:grid; place-items:center; width:44px; height:44px; margin-bottom:7px; border:1px solid var(--app-border); border-radius:11px; color:var(--app-text-muted); background:var(--app-surface); box-shadow:var(--app-shadow-xs); }
 .collection-empty-icon[data-tone=danger] { color: var(--app-danger); border-color: #f5d5d9; background: var(--app-danger-soft); }
-.collection-empty h3 { margin: 0; color: var(--app-text); font-size: 14px; font-weight: 650; }
-.collection-empty p { margin: 0; color: var(--app-text-secondary); font-size: 12px; overflow-wrap: anywhere; }
+.collection-empty h3 { margin:0; color:var(--app-text); font-size:15px; font-weight:600; }
+.collection-empty p { margin:0; max-width:52ch; color:var(--app-text-secondary); font-size:13px; overflow-wrap:anywhere; }
 .collection-empty-actions { display: flex; justify-content: center; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
 .collection-empty-actions .el-button + .el-button { margin-left: 0; }
+.collection-empty[aria-busy=true] .collection-empty-icon :deep(.app-icon) { animation:empty-loading 1.8s linear infinite; }
+@keyframes empty-loading { to { transform:rotate(360deg); } }
+@media(prefers-reduced-motion:reduce) { .collection-empty[aria-busy=true] .collection-empty-icon :deep(.app-icon) { animation:none; } }
 </style>

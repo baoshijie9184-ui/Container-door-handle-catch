@@ -1,0 +1,51 @@
+/* Shared knowledge, quota and digest surfaces; request/state ownership stays in each page. */
+.operation-page { display:grid; gap:24px; min-width:0; max-width:var(--app-content-width); margin-inline:auto; }
+.operation-toolbar { display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:16px 20px; border:1px solid var(--app-border); border-radius:10px; background:var(--app-surface); }
+.operation-toolbar .el-input { width:min(380px,100%); }
+.operation-toolbar .el-button + .el-button { margin-left:0; }
+.operation-panel { padding:24px; border:1px solid var(--app-border); border-radius:10px; background:var(--app-surface); min-width:0; }
+.operation-panel h3 { margin:0 0 14px; font-size:15px; font-weight:600; }
+.operation-cards { display:grid; grid-template-columns:repeat(auto-fill,minmax(min(330px,100%),1fr)); gap:18px; }
+.operation-cards[aria-label="各模型额度"] { grid-template-columns:repeat(auto-fill,minmax(min(430px,100%),1fr)); }
+.operation-card { padding:24px; border:1px solid var(--app-border); border-radius:10px; background:var(--app-surface); min-width:0; }
+.operation-card h3 { margin:0 0 15px; color:var(--app-text); font-size:15px; line-height:1.6; font-weight:600; letter-spacing:-.015em; overflow-wrap:anywhere; }
+.operation-card > .el-tag { margin-bottom:9px; margin-right:5px; }
+.operation-card p,.operation-muted { color:var(--app-text-muted); font-size:12px; line-height:1.85; overflow-wrap:anywhere; }
+.operation-card p { margin:7px 0; }
+.operation-actions { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-top:20px; }
+.operation-card .operation-actions { padding-top:16px; border-top:1px solid var(--app-border); }
+.operation-actions .el-button + .el-button { margin-left:0; }
+.operation-metrics { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:22px 20px; padding:22px 0; margin:8px 0 16px; border-bottom:1px solid var(--app-border); }
+.operation-metrics strong { display:block; font-size:28px; font-weight:600; line-height:1.5; letter-spacing:-.035em; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
+.operation-metrics span { color:var(--app-text-muted); font-size:12px; }
+.operation-form { display:grid; gap:20px; min-width:0; }
+.operation-form label { display:grid; gap:9px; color:var(--app-text); font-size:13px; font-weight:500; }
+.operation-form .el-select,.operation-form .el-input-number,.operation-form .el-date-editor { width:100%; }
+.operation-form input:is([type=date],[type=datetime-local]) { width:100%; min-width:0; min-height:38px; border:1px solid var(--app-border); border-radius:7px; padding:8px 10px; background:var(--app-surface); color:var(--app-text); font:inherit; }
+.operation-form input[type=file] { width:100%; min-width:0; padding:12px; border:1px dashed var(--app-border-strong); border-radius:8px; font-size:12px; color:var(--app-text-secondary); }
+.operation-form input[type=file]::file-selector-button { padding:7px 10px; margin-right:12px; border:1px solid var(--app-border); border-radius:6px; background:var(--app-surface); color:var(--app-text); cursor:pointer; font:inherit; }
+.operation-form > .el-button[type=submit] { justify-self:start; min-width:140px; }
+.operation-detail-copy { white-space:pre-wrap; overflow-wrap:anywhere; font:inherit; font-size:13px; line-height:1.9; margin:0; }
+.operation-scroll { max-height:65vh; overflow:auto; padding:4px; }
+.operation-chunk { padding:20px 0; border-bottom:1px solid var(--app-border); scroll-margin-top:16px; }
+.operation-chunk h3 { margin:0 0 10px; color:var(--app-text); font-size:14px; font-weight:600; }
+.operation-chunk code { color:var(--app-text-muted); font-size:11px; overflow-wrap:anywhere; }
+.operation-chunk.is-target { padding:16px; border-left:3px solid var(--app-primary); background:var(--app-primary-soft); }
+.operation-page :is(button,summary,input,a):focus-visible { outline:2px solid var(--app-primary); outline-offset:3px; }
+.operation-page .el-button { transition:transform var(--app-transition-fast),background-color var(--app-transition-fast),border-color var(--app-transition-fast); }
+.operation-page .el-button:active { transform:scale(.98); }
+@media(max-width:640px) {
+  .operation-page { gap:20px; }
+  .operation-panel,.operation-card { padding:20px; }
+  .operation-toolbar { padding:14px; align-items:stretch; }
+  .operation-toolbar .el-input { width:100%; }
+  .operation-metrics { gap:20px 16px; }
+  .operation-metrics strong { font-size:25px; }
+}
+@media(max-width:480px) {
+  .operation-cards[aria-label="各模型额度"] .operation-metrics { grid-template-columns:minmax(0,1fr); gap:18px; }
+  .operation-cards[aria-label="各模型额度"] .operation-metrics > div { display:flex; align-items:baseline; justify-content:space-between; gap:14px; }
+  .operation-cards[aria-label="各模型额度"] .operation-metrics strong { font-size:24px; white-space:nowrap; overflow-wrap:normal; }
+  .operation-cards[aria-label="各模型额度"] .operation-metrics span { max-width:110px; text-align:right; }
+}
+@media(prefers-reduced-motion:reduce) { .operation-page .el-button { transition:none; transform:none; } }

@@ -12,6 +12,12 @@ function Require-Value([string]$Name, [string]$Pattern) {
     if ([string]::IsNullOrWhiteSpace($value) -or $value -notmatch $Pattern) { throw "Invalid or missing $Name" }
     return $value
 }
+function Get-BuildRegistryAssignment {
+    $registry = $env:BUILD_NPM_REGISTRY
+    if ([string]::IsNullOrWhiteSpace($registry)) { $registry = 'https://registry.npmjs.org' }
+    if ($registry -notin @('https://registry.npmjs.org', 'https://registry.npmmirror.com')) { throw 'Unsupported npm build registry' }
+    return "DOORHANDLE_BUILD_NPM_REGISTRY='$registry'"
+}
 
 $tag = Require-Value 'RELEASE_TAG' '^ci-[0-9]+-[a-f0-9]{12}$'
 New-Item -ItemType Directory -Force -Path artifacts | Out-Null
@@ -76,12 +82,26 @@ if ($Action -eq 'Rehearse') {
         $compatibleImage = Require-Value 'COMPATIBLE_BACKEND_IMAGE' '^sha256:[a-f0-9]{64}$'
         $compatibleFlag = " --compatible-backend-image '$compatibleImage'"
     }
-    $output = Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "python3 '$remoteInbox/application-rehearsal.py' --root '$remoteRoot' --runtime '$runtime' --tag '$tag' --source-sha256 '$sha'$keep$compatibleFlag"))
+    $runnerFlag = ''
+    if (-not [string]::IsNullOrWhiteSpace($env:COMPATIBLE_RUNNER_IMAGE)) {
+        $runnerImage = Require-Value 'COMPATIBLE_RUNNER_IMAGE' '^sha256:[a-f0-9]{64}$'
+        $runnerFlag = " --compatible-runner-image '$runnerImage'"
+    }
+    $memoryModelFlag = ''
+    if (-not [string]::IsNullOrWhiteSpace($env:REHEARSAL_MEMORY_EXTRACTION_MODEL)) {
+        $memoryModel = Require-Value 'REHEARSAL_MEMORY_EXTRACTION_MODEL' '^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$'
+        $memoryModelFlag = " --memory-extraction-model '$memoryModel'"
+    }
+    $buildRegistry = Get-BuildRegistryAssignment
+    $output = Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "$buildRegistry python3 '$remoteInbox/application-rehearsal.py' --root '$remoteRoot' --runtime '$runtime' --tag '$tag' --source-sha256 '$sha'$keep$compatibleFlag$runnerFlag$memoryModelFlag"))
     $receipt = ($output | Select-Object -Last 1) | ConvertFrom-Json
     if ($receipt.passed -ne $true -or $receipt.project -notmatch '^doorhandle-rehearsal-[a-f0-9]{12}$') { throw 'Rehearsal did not pass' }
     $evidence = Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "cat '$remoteRoot/rehearsals/$($receipt.project)/result.json'"))
     $report = ($evidence -join "`n") | ConvertFrom-Json
     if ($report.passed -ne $true -or $report.productionChanged -ne $false -or $report.sourceSha256 -ne $sha -or $report.release -ne $tag) { throw 'Rehearsal evidence identity differs' }
+    if ($runnerFlag -and $report.compatibleBaselineRunner -ne $runnerImage) { throw 'Rehearsal runner differs from the explicit selection' }
+    if ($compatibleFlag -and $report.compatibleBaselineBackend -ne $compatibleImage) { throw 'Rehearsal backend differs from the explicit selection' }
+    if ($memoryModelFlag -and $report.selectedMemoryExtractionModel -ne $memoryModel) { throw 'Rehearsal extraction model differs from the explicit selection' }
     $report | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath artifacts/application-rehearsal.json -Encoding UTF8
     return
 }
@@ -106,7 +126,8 @@ if ($env:ACTION -eq 'rollback') {
 } elseif ($env:ACTION -eq 'verify-deploy') {
     $sha = (Get-FileHash -LiteralPath artifacts/source.tar.gz -Algorithm SHA256).Hash.ToLowerInvariant()
     Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, 'artifacts/source.tar.gz', "${destination}:$remoteInbox/source.tar.gz"))
-    Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "bash '$remoteInbox/deploy-remote.sh' deploy '$remoteRoot' '$runtime' '$tag' '$sha'"))
+    $buildRegistry = Get-BuildRegistryAssignment
+    Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "$buildRegistry bash '$remoteInbox/deploy-remote.sh' deploy '$remoteRoot' '$runtime' '$tag' '$sha'"))
 } else { throw 'Unknown pipeline ACTION' }
 } catch {
     $publishFailure = $_

@@ -1,12 +1,12 @@
 /* Shared visual language for the Vue workspace and React Agent entry.
    Root-scoped to avoid changing business pages or embedded assistant drawers. */
 :is(.agent-chat-page, .agent-shell) {
-  --agent-ink: #192334;
-  --agent-muted: #657184;
-  --agent-line: #e7ebf0;
-  --agent-soft: #f7f9fc;
+  --agent-ink: var(--app-text);
+  --agent-muted: var(--app-text-secondary);
+  --agent-line: var(--app-border);
+  --agent-soft: var(--app-bg-alt);
   --agent-blue: #2563eb;
-  --agent-reading-width: 760px;
+  --agent-reading-width: 780px;
   color: var(--agent-ink);
 }
 
@@ -51,8 +51,8 @@
 
 .agent-chat-page .chat-workspace .chat-header,
 .agent-shell.ant-layout .agent-header {
-  min-height: 72px;
-  padding: 16px 24px;
+  min-height: 58px;
+  padding: 10px 24px;
   border-bottom: 1px solid var(--agent-line);
   background: #fff;
 }
@@ -76,25 +76,25 @@
 .agent-shell.ant-layout .bubble-list { padding: 28px max(24px, calc((100% - var(--agent-reading-width)) / 2)); }
 
 .agent-chat-page .msg-empty,
-.agent-shell .chat-welcome { padding: 36px 0 28px; }
+.agent-shell .chat-welcome { padding:28px 0; width:100%; max-width:720px; margin-inline:auto; text-align:left; align-items:stretch; }
 .agent-chat-page .empty-glow { display: none; }
 .agent-chat-page .empty-avatar,
 .agent-shell .welcome-symbol {
-  width: 56px;
-  height: 56px;
-  border-radius: 18px;
+  width:40px;
+  height:40px;
+  border-radius:10px;
   background: #f0f5ff;
   border: 1px solid #dfe9fc;
   color: var(--agent-blue);
   box-shadow: 0 4px 12px #2563eb06;
-  margin-bottom: 18px;
+  margin-bottom:16px;
 }
 .agent-chat-page .welcome-eyebrow,
 .agent-shell .welcome-eyebrow { color: var(--agent-muted); font-size: 10px; letter-spacing: .16em; }
 .agent-chat-page .empty-title,
 .agent-shell .chat-welcome h2 {
   color: var(--agent-ink);
-  font-size: clamp(24px, 2.4vw, 34px);
+  font-size:clamp(24px,2.2vw,30px);
   font-weight: 650;
   letter-spacing: -.045em;
   line-height: 1.4;
@@ -103,30 +103,31 @@
 .agent-chat-page .empty-desc,
 .agent-shell .chat-welcome > p { color: var(--agent-muted); font-size: 13px; line-height: 1.9; margin: 0; }
 .agent-chat-page .welcome-prompts,
-.agent-shell .welcome-prompts { max-width: 620px; gap: 12px; margin-top: 32px; }
+.agent-shell .welcome-prompts { max-width:720px; gap:6px 20px; margin-top:28px; }
 .agent-chat-page .welcome-prompt,
 .agent-shell .welcome-prompts > button {
-  padding: 20px 18px;
-  min-height: 92px;
-  border-radius: 14px;
-  border: 1px solid var(--agent-line);
+  padding:16px 10px;
+  min-height:78px;
+  border-radius:6px;
+  border:0;
+  border-bottom:1px solid var(--agent-line);
   background: #fff;
-  box-shadow: 0 2px 5px #17263e02;
+  box-shadow:none;
   transition: border-color .18s ease, background .18s ease, transform .18s ease, box-shadow .18s ease;
 }
 .agent-chat-page .welcome-prompt:hover,
-.agent-shell .welcome-prompts > button:hover:not(:disabled) { background: #fbfdff; border-color: #b9cef5; box-shadow: 0 5px 16px #2563eb08; transform: translateY(-2px); }
+.agent-shell .welcome-prompts > button:hover:not(:disabled) { background:var(--app-surface-muted); border-color:var(--agent-line); box-shadow:none; transform:none; }
 .agent-chat-page .welcome-prompt strong,
 .agent-shell .welcome-prompts strong { color: var(--agent-ink); font-size: 13px; font-weight: 600; }
 .agent-chat-page .welcome-prompt > span:not(.prompt-icon),
 .agent-shell .welcome-prompts button > span:not(.prompt-icon) { color: var(--agent-muted); font-size: 12px; }
 .agent-chat-page .prompt-icon,
 .agent-shell .prompt-icon { border-radius: 10px; background: var(--agent-soft); color: #5275b0; }
-.agent-shell .welcome-symbol { background: linear-gradient(135deg, #2b65df, #5e99ff); color: #fff; border: 0; box-shadow: 0 10px 24px #2563eb23; }
-.agent-shell .welcome-prompts > button:nth-child(1) .prompt-icon { background: #eaf1ff; color: #386ccf; }
-.agent-shell .welcome-prompts > button:nth-child(2) .prompt-icon { background: #e5f4ef; color: #318774; }
-.agent-shell .welcome-prompts > button:nth-child(3) .prompt-icon { background: #f0eaff; color: #7c62be; }
-.agent-shell .welcome-prompts > button:nth-child(4) .prompt-icon { background: #fff2df; color: #b3823f; }
+.agent-shell .welcome-symbol { background:var(--app-surface); color:var(--app-text); border:1px solid var(--app-border); box-shadow:none; }
+.agent-shell .welcome-prompts > button:nth-child(1) .prompt-icon { background:var(--app-surface-muted); color:var(--app-text-secondary); }
+.agent-shell .welcome-prompts > button:nth-child(2) .prompt-icon { background:var(--app-surface-muted); color:var(--app-text-secondary); }
+.agent-shell .welcome-prompts > button:nth-child(3) .prompt-icon { background:var(--app-surface-muted); color:var(--app-text-secondary); }
+.agent-shell .welcome-prompts > button:nth-child(4) .prompt-icon { background:var(--app-surface-muted); color:var(--app-text-secondary); }
 .agent-chat-page .welcome-note { margin-top: 22px; color: var(--agent-muted); font-size: 11px; }
 
 .agent-chat-page .msg-row { gap: 12px; }

@@ -33,11 +33,22 @@
         <!-- 第三方平台版本统一在父 POM 管理；升级 AgentScope 只需修改此处。 -->
         <agentscope.version>2.0.4</agentscope.version>
         <pdfbox.version>3.0.8</pdfbox.version>
+        <poi.version>6.0.0</poi.version>
         <twelvemonkeys.version>3.13.1</twelvemonkeys.version>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     </properties>
     <dependencyManagement>
         <dependencies>
+            <dependency><groupId>org.apache.poi</groupId><artifactId>poi-ooxml</artifactId><version>${poi.version}</version></dependency>
+            <!-- POI 6 minimum runtime dependencies override the older Boot BOM entries. -->
+            <dependency><groupId>commons-io</groupId><artifactId>commons-io</artifactId><version>2.22.0</version></dependency>
+            <dependency><groupId>org.apache.commons</groupId><artifactId>commons-compress</artifactId><version>1.28.0</version></dependency>
+            <dependency><groupId>org.apache.commons</groupId><artifactId>commons-collections4</artifactId><version>4.6.0</version></dependency>
+            <dependency><groupId>commons-codec</groupId><artifactId>commons-codec</artifactId><version>1.23.0</version></dependency>
+            <dependency><groupId>org.apache.logging.log4j</groupId><artifactId>log4j-api</artifactId><version>2.26.1</version></dependency>
+            <dependency><groupId>org.apache.logging.log4j</groupId><artifactId>log4j-to-slf4j</artifactId><version>2.26.1</version></dependency>
+            <dependency><groupId>org.apache.logging.log4j</groupId><artifactId>log4j-core</artifactId><version>2.26.1</version></dependency>
+            <dependency><groupId>org.apache.xmlbeans</groupId><artifactId>xmlbeans</artifactId><version>5.4.1</version></dependency>
             <dependency><groupId>org.apache.pdfbox</groupId><artifactId>pdfbox</artifactId><version>${pdfbox.version}</version></dependency>
             <dependency><groupId>com.twelvemonkeys.imageio</groupId><artifactId>imageio-webp</artifactId><version>${twelvemonkeys.version}</version></dependency>
             <dependency>

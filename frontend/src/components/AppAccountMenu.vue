@@ -25,13 +25,13 @@ watch(()=>[props.username,props.role,props.department,props.scope],()=>{menu.val
 </script>
 <style scoped>
 .app-account-menu { flex:0 0 auto; min-width:0; max-width:240px; }
-.app-account-trigger { display:flex; align-items:center; gap:9px; min-width:0; max-width:100%; min-height:40px; padding:5px 8px; border:1px solid transparent; border-radius:9px; background:transparent; color:var(--app-text); font:inherit; cursor:pointer; transition:background-color 160ms ease,border-color 160ms ease,transform 160ms ease; }
+.app-account-trigger { display:flex; align-items:center; gap:8px; min-width:0; max-width:100%; min-height:36px; padding:2px 6px; border:1px solid transparent; border-radius:7px; background:transparent; color:var(--app-text); font:inherit; cursor:pointer; transition:background-color 160ms ease,border-color 160ms ease,transform 160ms ease; }
 .app-account-trigger:hover { border-color:var(--app-border); background:var(--app-surface-hover); }
 .app-account-trigger:active { transform:scale(.98); }
-.app-account-avatar { display:grid; place-items:center; flex:0 0 32px; width:32px; height:32px; border-radius:9px; color:var(--app-primary); background:var(--app-primary-soft); font-size:13px; font-weight:600; }
+.app-account-avatar { display:grid; place-items:center; flex:0 0 28px; width:28px; height:28px; border-radius:7px; color:var(--app-text-secondary); background:var(--app-surface-muted); font-size:12px; font-weight:600; }
 .app-account-trigger-copy { display:grid; gap:2px; min-width:0; text-align:left; }
-.app-account-trigger-copy strong { max-width:clamp(80px,10vw,150px); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px; font-weight:600; line-height:1.7; }
-.app-account-trigger-copy small { color:var(--app-text-secondary); font-size:12px; line-height:1.7; }
+.app-account-trigger-copy strong { max-width:clamp(80px,10vw,150px); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; font-weight:550; line-height:1.5; }
+.app-account-trigger-copy small { color:var(--app-text-muted); font-size:11px; line-height:1.4; }
 .app-account-chevron { flex-shrink:0; color:var(--app-text-secondary); transition:transform 180ms ease; }
 .app-account-trigger[aria-expanded=true] .app-account-chevron { transform:rotate(180deg); }
 .app-account-menu.is-compact { width:36px; max-width:36px; }

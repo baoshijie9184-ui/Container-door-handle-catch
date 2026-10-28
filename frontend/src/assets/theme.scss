@@ -135,18 +135,10 @@ select {
   border: 1px solid var(--app-border);
   border-radius: var(--app-radius-lg);
   box-shadow: var(--app-shadow-sm);
-  backdrop-filter: blur(16px);
   transition: box-shadow var(--app-transition-base), border-color var(--app-transition-base);
 }
 
-.app-panel::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  border-radius: inherit;
-  box-shadow: var(--app-shadow-inset);
-}
+.app-panel::before { content: none; }
 
 .app-panel.interactive:hover {
   border-color: var(--app-border-strong);
@@ -177,12 +169,7 @@ select {
 }
 
 .industrial-kicker::before {
-  content: "";
-  width: 7px;
-  height: 7px;
-  border-radius: 999px;
-  background: var(--app-success);
-  box-shadow: 0 0 0 6px var(--app-success-soft);
+  content: none;
 }
 
 .metric-chip {

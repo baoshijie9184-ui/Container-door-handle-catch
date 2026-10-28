@@ -28,7 +28,7 @@ class AgentScopeChatServiceImplTest {
     private AgentScopeChatServiceImpl service;
     @BeforeEach void setup() {
         login("ROLE_INSPECTOR"); when(provider.getIfAvailable()).thenReturn(api);
-        when(knowledge.retrieveContext(anyString())).thenReturn(""); when(sessions.listMessages("alice", "s1")).thenReturn(List.of());
+        when(knowledge.retrieveContext(anyString(),any())).thenReturn(""); when(sessions.listMessages("alice", "s1")).thenReturn(List.of());
         service = new AgentScopeChatServiceImpl(sessions, provider, knowledge, memory, new SyncTaskExecutor(), settings, new ObjectMapper());
     }
     @AfterEach void clear() { SecurityContextHolder.clearContext(); }
@@ -112,7 +112,7 @@ class AgentScopeChatServiceImplTest {
     @Test void aguiUsesDatabaseHistoryAndSameAccountMemoryAndPersistsBeforeReply()throws Exception{
         var previous=new ChatMessageResponse();previous.setRole("assistant");previous.setMessageType("TEXT");previous.setContent("来自主站的历史");
         when(sessions.listMessages("alice","s1")).thenReturn(List.of(previous));
-        when(knowledge.retrieveContext("当前问题")).thenReturn("业务参考");
+        when(knowledge.retrieveContext(eq("当前问题"),any())).thenReturn("业务参考");
         when(memory.searchAccountMemories(any(),eq("s1"),eq("当前问题"),eq(10))).thenReturn(List.of(java.util.Map.of("memory","本人偏好")));
         when(memory.formatMemoriesAsContext(anyList())).thenReturn("本人偏好");
         when(api.start(any(),eq("s1"),anyList(),anyString(),any(),eq("AGUI"),eq("request-1"))).thenAnswer(inv->{
@@ -127,7 +127,7 @@ class AgentScopeChatServiceImplTest {
     }
     @Test void personalMemoryKeepsUserPreferenceWithoutAssistantClaimsOrRetrievedFacts(){
         var input=request();input.setContent("请记住我的验收资料默认导出为 PDF");
-        when(knowledge.retrieveContext(input.getContent())).thenReturn("服务器参考：该用户默认使用 XLSX");
+        when(knowledge.retrieveContext(eq(input.getContent()),any())).thenReturn("服务器参考：该用户默认使用 XLSX");
         when(api.start(any(),anyString(),anyList(),anyString(),any())).thenReturn(
                 new AgentConversationApi.Run(CompletableFuture.completedFuture("我无法保存偏好；你可以改用 CSV"),()->{}));
         when(sessions.appendAssistantMessage(any(),any(),any(),any(),any(),any())).thenAnswer(inv->{
@@ -139,7 +139,7 @@ class AgentScopeChatServiceImplTest {
         verify(sessions).appendAssistantMessage(any(),eq("s1"),contains("CSV"),eq("TEXT"),eq("AGENTSCOPE"),isNull());
     }
     @Test void longKnowledgeReferenceCannotTruncateTheAccountPreference(){
-        when(knowledge.retrieveContext(anyString())).thenReturn("业务资料".repeat(2000));
+        when(knowledge.retrieveContext(anyString(),any())).thenReturn("业务资料".repeat(2000));
         when(memory.searchAccountMemories(any(),eq("s1"),anyString(),eq(10))).thenReturn(List.of(java.util.Map.of("memory","本人时区为 UTC+8")));
         when(memory.formatMemoriesAsContext(anyList())).thenReturn("[用户历史记忆]\n- 本人时区为 UTC+8");
         when(api.start(any(),anyString(),anyList(),anyString(),any())).thenAnswer(inv->{

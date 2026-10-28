@@ -157,7 +157,7 @@ public class AgentScopeChatServiceImpl implements ChatConversationService, Agent
             history.add(new AgentConversationApi.Message("user", request.getContent()));
             output.accept(ChatStreamEvent.status(sessionId, "AgentScope 正在检索并处理问题"));
             boolean command=request.getContent().stripLeading().startsWith("/");
-            String context = command?"":Objects.toString(knowledge.retrieveContext(request.getContent()), "");
+            String context = command?"":Objects.toString(knowledge.retrieveContext(request.getContent(),new com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory.Identity(actor.userId(),actor.username(),false)), "");
             if(!command){var memories = memory.searchAccountMemories(tenant, sessionId, request.getContent(), 10);
                 if (memories != null && !memories.isEmpty()) {
                     String personal=Objects.toString(memory.formatMemoriesAsContext(memories),"");
@@ -202,6 +202,8 @@ public class AgentScopeChatServiceImpl implements ChatConversationService, Agent
         } catch (CancellationException error) {
             state = "CANCELLED"; throw new BusinessException("助手请求已取消");
         } catch (ExecutionException | TimeoutException error) {
+            if(error.getCause() instanceof AgentConversationApi.UnverifiedAnswerException unverified)
+                throw new BusinessException(unverified.getMessage());
             throw new BusinessException("AgentScope 执行失败，请稍后重试");
         } finally {
             var run = holder.get(); if (run != null && !run.result().isDone()) run.cancel().run();

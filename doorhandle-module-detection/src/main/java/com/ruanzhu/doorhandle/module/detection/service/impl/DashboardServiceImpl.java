@@ -1,10 +1,12 @@
 package com.ruanzhu.doorhandle.module.detection.service.impl;
 
 import com.ruanzhu.doorhandle.module.detection.service.DashboardService;
+import com.ruanzhu.doorhandle.module.detection.service.HistoricalDetectionSummaryService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
 import com.ruanzhu.doorhandle.module.detection.security.DetectionTaskAccessPolicy;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
+import org.springframework.security.core.context.SecurityContextHolder;
 
 import org.springframework.stereotype.Service;
 
@@ -29,6 +31,9 @@ public class DashboardServiceImpl implements DashboardService {
 
     @Autowired
     private NamedParameterJdbcTemplate scopedJdbc;
+
+    @Autowired
+    private HistoricalDetectionSummaryService historicalSummaryService;
 
 
     private static final DateTimeFormatter DATE_FORMATTER = DateTimeFormatter.ofPattern("MM-dd");
@@ -61,6 +66,9 @@ public class DashboardServiceImpl implements DashboardService {
         stats.put("employeeCount", employeeCount != null ? employeeCount : 0);
         stats.put("deviceCount", deviceCount != null ? deviceCount : 0);
         stats.put("avgMissRate", avgMissRate != null ? avgMissRate : 0.0);
+        if (accessPolicy.isAdmin(SecurityContextHolder.getContext().getAuthentication())) {
+            stats.put("historicalSummary", historicalSummaryService.summary());
+        }
 
         return stats;
     }

@@ -32,6 +32,7 @@ public class QualityReportService {
     private final ObjectMapper canonicalJson;
     @org.springframework.beans.factory.annotation.Autowired private org.springframework.beans.factory.ObjectProvider<com.ruanzhu.doorhandle.contracts.agent.OperationsAuditApi> operationsAudit;
     @org.springframework.beans.factory.annotation.Value("${operations.audit.enabled:false}") private boolean operationsAuditEnabled;
+    @org.springframework.beans.factory.annotation.Autowired private ReportDocumentRenderer documentRenderer;
     public QualityReportService(QualityReportRepository reports,DetectionTaskMapper tasks,BusinessUserDirectory users,
             DetectionTaskAccessPolicy policy,ObjectMapper json) {
         this.reports=reports;this.tasks=tasks;this.users=users;this.policy=policy;this.json=json;
@@ -151,8 +152,11 @@ public class QualityReportService {
         return finish(actor,id,request.requestId(),digest,request.decision(),row.status(),request.reason().trim(),true);
     }
     public String export(Identity actor,String id) {
+        return exportText(actor,id,null);
+    }
+    private String exportText(Identity actor,String id,String reason) {
         actor=current(actor);var row=authorized(actor,id,true);state(row,"APPROVED");integrity(row);
-        writeAudit(actor,row,"EXPORT",row.status(),null);
+        writeAudit(actor,row,"EXPORT",row.status(),reason);
         var source=decode(row.sourceJson());
         StringBuilder text=new StringBuilder("# 已审批检测报告\n\n");
         text.append("报告编号：").append(row.reportId()).append("\n\n标题：").append(plain(row.title())).append("\n\n")
@@ -163,6 +167,11 @@ public class QualityReportService {
         source.forEach((key,value)->text.append("- ").append(SOURCE_LABELS.getOrDefault(key,key)).append("：").append(plain(Objects.toString(value,"未记录"))).append("\n"));
         text.append("\n## 编写意见\n\n").append(plain(row.narrative())).append("\n\n本报告记录人工审批结果，产品放行与公开发布按相应业务流程办理。\n");
         return text.toString();
+    }
+    public ReportDocumentRenderer.File exportDocument(Identity actor,String id,String format) {
+        if(!Set.of("docx","pdf","xlsx").contains(format))fail(400,"报告格式不正确");
+        // Same authorization, approved state, frozen hash checks and audit transaction as Markdown.
+        return documentRenderer.render(exportText(actor,id,"文件格式："+format.toUpperCase(Locale.ROOT)),format);
     }
     private View newDraft(Identity actor,DetectionTask task,String previous,String title,String narrative,String requestId,String digest) {
         String id="qr-"+UUID.randomUUID();LocalDateTime now=now();

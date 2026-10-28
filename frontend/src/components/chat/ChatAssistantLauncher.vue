@@ -12,14 +12,7 @@
     aria-label="打开智能助手"
   >
     <span class="launcher-icon" aria-hidden="true">
-      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M12 2a4 4 0 0 1 4 4v2a4 4 0 0 1-8 0V6a4 4 0 0 1 4-4z"/>
-        <path d="M8 12h8a4 4 0 0 1 4 4v2a4 4 0 0 1-8 0"/>
-        <path d="M12 12v4"/>
-        <circle cx="8" cy="8" r="1" fill="currentColor"/>
-        <circle cx="16" cy="8" r="1" fill="currentColor"/>
-        <rect x="8" y="16" width="8" height="4" rx="2"/>
-      </svg>
+      <AppIcon name="ChatDotRound" :size="20" />
     </span>
     <span class="launcher-text">智能助手</span>
   </button>
@@ -179,20 +172,21 @@ onUnmounted(() => {
 <style scoped>
 .launcher-btn {
   position: fixed;
-  right: 28px;
-  bottom: 28px;
+  right: 24px;
+  bottom: 20px;
   z-index: 1200;
   display: inline-flex;
   align-items: center;
-  gap: 10px;
-  padding: 14px 22px;
-  border: none;
-  border-radius: 999px;
-  background: var(--app-primary);
-  color: #fff;
-  font-size: 14px;
-  font-weight: 600;
-  box-shadow: var(--app-shadow-md);
+  gap: 8px;
+  min-height:44px;
+  padding:7px 13px 7px 8px;
+  border:1px solid var(--app-border);
+  border-radius:10px;
+  background:var(--app-surface);
+  color:var(--app-text);
+  font-size:12px;
+  font-weight:550;
+  box-shadow:var(--app-shadow-sm);
   cursor: grab;
   transition: background-color 180ms ease,box-shadow 180ms ease,transform 180ms ease;
   letter-spacing: 0.02em;
@@ -201,8 +195,9 @@ onUnmounted(() => {
 }
 
 .launcher-btn:hover {
-  background: var(--app-primary-hover);
-  box-shadow: var(--app-shadow-lg);
+  background:var(--app-surface);
+  border-color:var(--app-border-focus);
+  box-shadow:var(--app-shadow-md);
 }
 
 .launcher-btn.is-dragging {
@@ -215,14 +210,14 @@ onUnmounted(() => {
 }
 
 .launcher-icon {
-  width: 36px;
-  height: 36px;
-  border-radius: 999px;
+  width:28px;
+  height:28px;
+  border-radius:7px;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(255, 255, 255, 0.15);
-  backdrop-filter: blur(6px);
+  background:var(--app-primary-soft);
+  color:var(--app-primary);
   flex-shrink: 0;
 }
 
@@ -232,8 +227,8 @@ onUnmounted(() => {
 
 @media (max-width: 768px) {
   .launcher-btn {
-    width:48px;
-    height:48px;
+    width:44px;
+    height:44px;
     right:16px;
     bottom:calc(16px + env(safe-area-inset-bottom,0px));
     justify-content:center;

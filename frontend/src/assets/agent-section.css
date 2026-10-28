@@ -1,12 +1,12 @@
 /* Agent pages share an application shell; business pages retain their layout. */
-#app .layout-shell.is-agent-section { grid-template-columns: 68px minmax(0, 1fr); background: #f5f7fc; }
-.agent-app-rail { display: flex; align-items: center; flex-direction: column; gap: 16px; min-height: 0; padding: 20px 10px 16px; background: #fff; border-right: 1px solid #e6ebf4; }
+#app .layout-shell.is-agent-section { grid-template-columns:60px minmax(0,1fr); background: #f5f7fc; }
+.agent-app-rail { display: flex; align-items: center; flex-direction: column; gap:14px; min-height:0; padding:18px 8px 14px; background: #fff; border-right: 1px solid #e6ebf4; }
 .agent-rail-brand { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 14px; color: #fff; background: linear-gradient(140deg, #1849be, #4387ff); box-shadow: 0 5px 14px #2563eb24; font-size: 21px; margin-bottom: 16px; }
 .agent-rail-links { display: flex; flex-direction: column; gap: 10px; flex: 1; min-height: 0; overflow-y: auto; }
 .agent-rail-link { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 13px; color: #7c89a1; font-size: 20px; transition: background .18s, color .18s, transform .18s; }
 .agent-rail-link:hover { background: #f0f5ff; color: #2563eb; transform: translateY(-1px); }
 .agent-rail-link.selected { color: #2563eb; background: #eaf1ff; box-shadow: inset 0 0 0 1px #dae6ff; }
-#app .is-agent-section .layout-header { min-height: 66px; padding: 12px 28px; background: #ffffffb8; }
+#app .is-agent-section .layout-header { min-height:58px; padding:10px 28px; background: #ffffffb8; }
 #app .is-agent-section .collapse-btn, #app .is-agent-section .manual-entry-link, #app .is-agent-section .assistant-entry-link { display: none; }
 #app .is-agent-section .layout-content { padding: 28px 36px; }
 #app .is-agent-section.is-agent-workspace .layout-content { padding: 0; }
@@ -21,10 +21,7 @@
 #app .is-agent-workspace .msg-empty .empty-avatar { width: 64px; height: 64px; background: linear-gradient(135deg, #2b65df, #5e99ff); color: white; border: 0; border-radius: 20px; box-shadow: 0 10px 24px #2563eb23; font-size: 30px; }
 #app .is-agent-workspace .msg-empty .welcome-eyebrow { color: #507bbf; }
 #app .is-agent-workspace .msg-empty .welcome-prompt { background: #fff; border-color: #dce6f6; box-shadow: 0 5px 20px #2b65df08; }
-#app .is-agent-workspace .msg-empty .welcome-prompt .prompt-icon { background: #eaf1ff; color: #386ccf; }
-#app .is-agent-workspace .msg-empty .welcome-prompt:nth-child(2) .prompt-icon { background: #e5f4ef; color: #318774; }
-#app .is-agent-workspace .msg-empty .welcome-prompt:nth-child(3) .prompt-icon { background: #f0eaff; color: #7c62be; }
-#app .is-agent-workspace .msg-empty .welcome-prompt:nth-child(4) .prompt-icon { background: #fff2df; color: #b3823f; }
+#app .is-agent-workspace .msg-empty .welcome-prompt .prompt-icon { background:var(--app-surface-muted); color:var(--app-text-secondary); }
 #app .is-agent-section:not(.is-agent-workspace):not(.is-trace-workspace) .layout-content > * { max-width: 1380px; margin-inline: auto; }
 #app .is-agent-section .layout-content :is(.memory-page, .mcp-page, .skills-page) { background: transparent; border: 0; box-shadow: none; padding: 0; }
 #app .is-agent-section .layout-content :is(.memory-page, .mcp-page, .skills-page)::before { content: none; }
@@ -35,7 +32,7 @@
 #app .is-agent-section .link-install-panel { background: linear-gradient(120deg, #f0f5ff, #fff 75%); border-color: #d7e4ff; }
 #app .is-agent-section :is(.memory-settings, .source-panel) h3 { color: #234f9d; font-size: 16px; margin-bottom: 14px; }
 #app .is-agent-section .el-table { --el-table-header-bg-color: #f0f4fb; --el-table-border-color: #edf1f7; --el-table-row-hover-bg-color: #f6f9ff; border: 1px solid #e2e9f4; border-radius: 12px; }
-#app .is-agent-section .el-button--primary { --el-button-bg-color: #2b65df; --el-button-border-color: #2b65df; border-radius: 9px; box-shadow: 0 3px 8px #2563eb14; }
+#app .is-agent-section .el-button--primary:not(.is-plain):not(.is-link):not(.is-text) { --el-button-bg-color: #2b65df; --el-button-border-color: #2b65df; border-radius: 9px; box-shadow: 0 3px 8px #2563eb14; }
 #app .is-agent-section .el-alert--info { --el-alert-bg-color: #eaf2ff; --el-alert-border-color: #d8e6ff; border-radius: 12px; }
 #app .is-agent-section .market-header { margin-bottom: 24px; }
 #app .is-agent-section .market-header h2 { font-size: 30px; letter-spacing: -.04em; display: flex; align-items: center; gap: 14px; }

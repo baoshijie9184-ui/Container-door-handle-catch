@@ -25,7 +25,7 @@ class AgentScopeConversationServiceTest {
     private final AgentRunRegistry registry = new AgentRunRegistry();
     private AgentScopeConversationService service(Agent agent) {
         when(factory.resolveMainId(actor, null)).thenReturn("employee-main");
-        when(factory.create(eq(actor), eq("employee-main"), isNull(), any())).thenReturn(agent);
+        when(factory.create(eq(actor), eq("employee-main"), isNull(), any(), isNull(), isNull(), isNull(), any(AgentAnswerEvidence.class))).thenReturn(agent);
         return new AgentScopeConversationService(factory, registry, new AgentScopeProperties());
     }
     private ReActAgent react(Model model, Toolkit tools) {
@@ -104,13 +104,23 @@ class AgentScopeConversationServiceTest {
         var service = service(mock(Agent.class));
         assertThatThrownBy(() -> service.start(actor, "s4", List.of(new AgentConversationApi.Message("user", "query")), "", event -> {}))
                 .isInstanceOf(IllegalStateException.class).hasMessageContaining("上一轮");
-        verify(factory, never()).create(any(), any(), any(), any());
+        verify(factory, never()).create(any(), any(), any(), any(), any(), any(), any(), any());
     }
     @Test void listCommandCompletesWithTextAndTraceWithoutCreatingAgent()throws Exception {
         when(factory.resolveMainId(actor,null)).thenReturn("employee-main");when(factory.slashCommands()).thenReturn(new com.ruanzhu.doorhandle.module.ai.command.AgentSlashCommands(null));
         var events=new CopyOnWriteArrayList<AgentConversationApi.Event>();
         var run=new AgentScopeConversationService(factory,registry,new AgentScopeProperties()).start(actor,"command-session",List.of(new AgentConversationApi.Message("user","/skills")),"",events::add);
         assertThat(run.result().get()).contains("尚未启用");assertThat(events).extracting(AgentConversationApi.Event::type).containsExactly("RUN_STARTED","TEXT_CHUNK","RUN_FINISHED");
-        verify(factory,never()).create(any(),any(),any(),any());assertThat(registry.acquire("1:employee-main:command-session")).isTrue();registry.release("1:employee-main:command-session");
+        verify(factory,never()).create(any(),any(),any(),any(),any(),any(),any(),any());assertThat(registry.acquire("1:employee-main:command-session")).isTrue();registry.release("1:employee-main:command-session");
+    }
+    @Test void unsupportedDelegationClaimFailsWithoutRetryAndReleasesSession()throws Exception {
+        var model=mock(Model.class);when(model.getModelName()).thenReturn("fixture");
+        when(model.stream(anyList(),anyList(),any())).thenReturn(Flux.just(ChatResponse.builder().content(List.of(TextBlock.builder().text("我将为你委派质检助手处理").build())).finishReason("stop").build()));
+        var events=new CopyOnWriteArrayList<AgentConversationApi.Event>();
+        var run=service(react(model,new Toolkit())).start(actor,"missing-receipt",List.of(new AgentConversationApi.Message("user","查询质检情况")),"",events::add);
+        assertThatThrownBy(()->run.result().get(10,TimeUnit.SECONDS)).hasCauseInstanceOf(AgentConversationApi.UnverifiedAnswerException.class);
+        assertThat(events).extracting(AgentConversationApi.Event::type).contains("RUN_ERROR").doesNotContain("RUN_FINISHED");
+        verify(model,times(1)).stream(anyList(),anyList(),any());
+        org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(2)).until(()->registry.acquire("1:employee-main:missing-receipt"));registry.release("1:employee-main:missing-receipt");
     }
 }

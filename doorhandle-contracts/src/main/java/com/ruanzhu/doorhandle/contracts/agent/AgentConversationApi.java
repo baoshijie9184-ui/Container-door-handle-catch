@@ -6,6 +6,12 @@ import java.util.function.Consumer;
 
 /** Agent 模块的内部执行门面；身份与历史只能由服务端构造，不暴露 SDK 类型。 */
 public interface AgentConversationApi {
+    /** A generated execution claim has no matching receipt; callers must not save it as success. */
+    final class UnverifiedAnswerException extends IllegalStateException {
+        public UnverifiedAnswerException() {
+            super("本轮没有取得专业查询已启动的执行回执，回答未作为成功结果保存。请查看执行追溯，系统没有自动重试。");
+        }
+    }
     record Message(String role, String content) {}
     record Event(String type, String agent, String tool, String text, long elapsedMs) {}
     record Run(CompletableFuture<String> result, Runnable cancel, String runId, java.util.function.Supplier<List<AgentCards.Reference>> cards) {

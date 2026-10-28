@@ -95,6 +95,7 @@ public class AgentScopeConversationService implements AgentConversationApi {
         try{control=controls==null?null:controls.attach(actor,sessionId,audit);}
         catch(RuntimeException error){try{if(work!=null){work.finish("NEEDS_REVIEW","");work.release();}audit.finish("ERROR");}finally{registry.release(session);}throw error;}
         var cards = new com.ruanzhu.doorhandle.module.ai.card.AgentCardCollector(new com.fasterxml.jackson.databind.ObjectMapper());
+        var answerEvidence = new AgentAnswerEvidence();
         try {
             var last=history.get(history.size()-1).content();
             var command=last.stripLeading().startsWith("/")&&!(work!=null&&last.stripLeading().startsWith("/plan"))?factory.slashCommands().prepare(actor,last,audit):null;
@@ -109,11 +110,11 @@ public class AgentScopeConversationService implements AgentConversationApi {
             }
             if(command!=null){messages.set(messages.size()-1,new UserMessage(command.question()));if(work!=null)work.bindContextInput(messages,history.size()-1);
                 var middleware=journal.enabled()?new AgentJournalMiddleware(audit,actor,factory.confirmationEnabled(),factory.reportsEnabled(),factory.reportDraftsEnabled()):null;
-                agent=work!=null?factory.create(actor,main,middleware,cards,command.skill(),control,work):control==null?factory.create(actor,main,middleware,cards,command.skill()):factory.create(actor,main,middleware,cards,command.skill(),control);
+                agent=factory.create(actor,main,middleware,cards,command.skill(),control,work,answerEvidence);
             }else {
                 if(work!=null)work.bindContextInput(messages,history.size()-1);
                 var middleware=journal.enabled()?new AgentJournalMiddleware(audit, actor, factory.confirmationEnabled(),factory.reportsEnabled(),factory.reportDraftsEnabled()):null;
-                agent=work!=null?factory.create(actor,main,middleware,cards,null,control,work):control==null?factory.create(actor,main,middleware,cards):factory.create(actor,main,middleware,cards,null,control);
+                agent=factory.create(actor,main,middleware,cards,null,control,work,answerEvidence);
             }
         }
         catch (RuntimeException error) { try { if(work!=null){work.finish("NEEDS_REVIEW","");work.release();}audit.finish("ERROR"); } finally { if(control!=null)control.close();registry.release(session); } throw error; }
@@ -181,6 +182,12 @@ public class AgentScopeConversationService implements AgentConversationApi {
                         else {
                             try {
                                 if(work!=null){text=work.resolveReply(text);if(work.waiting()){audit.finish("INTERRUPTED");result.complete(text);return;}}
+                                if(answerEvidence.unsupportedHandoff(text)&&!(work!=null&&work.handoffRecorded())){
+                                    audit.event("ANSWER_REJECTED",java.util.Map.of("agent",main,"decision","DENY","policyVersion","answer-evidence-v1"));
+                                    consumer.accept(new Event("RUN_ERROR",main,null,null,(System.nanoTime()-started)/1_000_000));
+                                    result.completeExceptionally(new AgentConversationApi.UnverifiedAnswerException());
+                                    return;
+                                }
                                 if(research!=null)research.recordAnswer(actor,audit.id(),text);
                                 consumer.accept(new Event("RUN_FINISHED", main, null, null, (System.nanoTime() - started) / 1_000_000));
                                 if(work!=null)work.finish("COMPLETED",text);

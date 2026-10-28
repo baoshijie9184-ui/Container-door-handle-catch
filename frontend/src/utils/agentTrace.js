@@ -10,6 +10,7 @@ export const traceCategories = [
 ]
 const names = {
   RUN_FINISHED:'运行结束记录', TEXT_CHUNK:'文本输出记录', TOOL_CALL:'工具调用记录',
+  ANSWER_REJECTED:'缺少委派回执，回答未保存',
   PAUSE_REQUESTED:'请求暂停',RUN_PAUSED:'已到达暂停切点',RUN_RESUMED:'继续运行',STEERING_APPLIED:'已交付运行中补充要求',
   RUN_STARTED: '开始运行', RUN_COMPLETED: '运行完成', RUN_FAILED: '运行失败', RUN_ERROR: '运行失败', RUN_CANCELLED: '运行取消', RUN_INTERRUPTED: '运行中断',
   AGENT_STARTED: 'Agent 开始处理', AGENT_COMPLETED: 'Agent 处理完成', AGENT_ERROR: 'Agent 处理异常', AGENT_CANCELLED: 'Agent 已取消', AGENT_YIELDED: 'Agent 已保存进度并等待',

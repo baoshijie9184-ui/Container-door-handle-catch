@@ -148,6 +148,14 @@ file:
       images: ${DETECTION_UPLOAD_DIR:${user.dir}/uploads/images}
 
 app:
+  knowledge:
+    enabled: ${APP_KNOWLEDGE_ENABLED:false}
+  model-budget:
+    enabled: ${APP_MODEL_BUDGET_ENABLED:false}
+  quality-automation:
+    enabled: ${APP_QUALITY_AUTOMATION_ENABLED:false}
+    poll-ms: ${APP_QUALITY_AUTOMATION_POLL_MS:30000}
+    task-time-zone: ${APP_QUALITY_AUTOMATION_TASK_TIME_ZONE:UTC}
   security:
     cookie-secure: ${APP_COOKIE_SECURE:false}
   redis:

@@ -31,7 +31,9 @@ def native(tmp_path,monkeypatch,isolate_memory_receipts):
     calls=[]
     def model(*args,**kwargs):
         calls.append(kwargs['messages']);body=json.loads(kwargs['messages'][1]['content'])
-        return json.dumps({'labels':[{'id':row['id'],'label':'DUPLICATE'} for row in body['candidates']]})
+        return json.dumps({'labels':[{'id':row['id'],'label':'DUPLICATE','topicRelation':'SAME_OBJECT',
+            'equivalent':True,'incompatible':False,'sourceAnchor':body['source'][:80],
+            'candidateAnchor':row['text'][:80]} for row in body['candidates']]})
     memory.llm.generate_response=model
     http=TestClient(main.app);headers={'X-Doorhandle-Memory-Token':'fixture','X-Doorhandle-Memory-Protocol':'2'}
     return SimpleNamespace(memory=memory,writer=isolate_memory_receipts,add=add,source=source,candidate=candidate,http=http,headers=headers,calls=calls)

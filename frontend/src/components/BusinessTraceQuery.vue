@@ -6,7 +6,9 @@
     <p v-if="dirty" class="business-trace-draft-note" role="status">输入已修改，当前摘要仍属于{{ kindLabel }} {{ referenceNo }}。{{ loading ? '当前查询结束后，可查询新编号。' : '点击查询读取新编号。' }}<button type="button" @click="$emit('update:modelValue', referenceNo)">恢复已读编号</button></p>
     <p v-if="loading" class="business-trace-reading" role="status">正在读取{{ kindLabel }} {{ requestedNo || '编号未记录' }}。{{ report ? '当前保留上次摘要，不把旧数据当作本次查询已成功。' : '修改输入不会改变已经发出的查询。' }}</p>
     <el-alert v-if="error && report" :title="error" description="当前仍为上次已读摘要。可重新读取原结果，或按输入编号查询。" type="warning" :closable="false" show-icon />
-    <details v-if="examples.length" class="business-trace-examples"><summary>查看{{ kindLabel }}编号示例</summary><p>仅作格式参考，点击会填入编号并尝试只读查询，不代表当前账号存在这些记录。</p><div><el-button v-for="example in examples" :key="example" size="small" :disabled="loading" @click="$emit('example', example)">{{ example }}</el-button></div></details>
+    <p v-if="referenceLoading" class="business-trace-reading" role="status">正在读取最近任务中的{{ kindLabel }}编号</p>
+    <p v-if="referenceError" class="business-trace-reading" role="status">{{ referenceError }}<button type="button" :disabled="referenceLoading" @click="$emit('refresh-references')">重新读取编号</button></p>
+    <details v-if="references.length" class="business-trace-examples"><summary>最近任务中的{{ kindLabel }}</summary><p>来自当前账号最近 50 条检测任务，选择编号查看关联记录。</p><div><el-button v-for="reference in references" :key="reference" size="small" :disabled="loading" @click="$emit('reference', reference)">{{ reference }}</el-button></div></details>
     <CollectionEmptyState v-if="!report" :loading="loading" :error="error" :empty-title="'输入' + kindLabel + '编号查看追溯'" empty-description="这里只读取当前账号有权查看的关联业务；查无结果时请核对编号与权限范围。" @retry="$emit('query')" />
   </section>
 </template>
@@ -14,8 +16,8 @@
 import { computed, getCurrentInstance } from 'vue'
 import AppIcon from './AppIcon.vue'
 import CollectionEmptyState from './CollectionEmptyState.vue'
-const props = defineProps({ modelValue: { type: String, default: '' }, kind: String, requestedNo: String, loading: Boolean, report: Object, error: String, examples: { type: Array, default: () => [] }, scopeLabel: { type: String, default: '当前账号有权查看的业务范围' } })
-defineEmits(['update:modelValue', 'query', 'refresh', 'example'])
+const props = defineProps({ modelValue: { type: String, default: '' }, kind: String, requestedNo: String, loading: Boolean, report: Object, error: String, references: { type: Array, default: () => [] }, referenceLoading: Boolean, referenceError: String, scopeLabel: { type: String, default: '当前账号有权查看的业务范围' } })
+defineEmits(['update:modelValue', 'query', 'refresh', 'reference', 'refresh-references'])
 const inputId = `business-trace-query-${getCurrentInstance().uid}`
 const kindLabel = computed(() => props.kind === 'work-order' ? '工单' : '批次')
 const referenceNo = computed(() => props.report?.[props.kind === 'work-order' ? 'workOrderNo' : 'batchNo'] || '')
@@ -35,6 +37,7 @@ const dirty = computed(() => !!referenceNo.value && props.modelValue.trim() !== 
 .business-trace-result-scope strong { color: var(--app-text, #0f172a); font-size: 14px; font-weight: 600; line-height: 1.8; overflow-wrap: anywhere; }
 .business-trace-draft-note, .business-trace-reading { margin: 12px 0; padding: 10px 12px; border-left: 3px solid var(--app-primary, #2563eb); color: var(--app-text-secondary, #475569); background: var(--app-primary-soft, #eff6ff); font-size: 12px; line-height: 1.85; overflow-wrap: anywhere; }
 .business-trace-draft-note button { border: 0; border-radius: 3px; background: transparent; color: var(--app-primary, #2563eb); padding: 0 4px; font: inherit; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
+.business-trace-reading button { margin-left: 8px; border: 0; background: transparent; padding: 0; color: var(--app-primary); font: inherit; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
 .business-trace-examples { margin: 16px 0 20px; }
 .business-trace-examples > summary { width: fit-content; color: var(--app-text-secondary, #475569); font-size: 12px; line-height: 1.8; cursor: pointer; }
 .business-trace-examples p { max-width: 80ch; margin: 10px 0; color: var(--app-text-secondary, #475569); font-size: 12px; line-height: 1.85; }

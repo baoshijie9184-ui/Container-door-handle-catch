@@ -108,7 +108,7 @@ def main():
     expected=sum(len(case['candidates']) for case in cases)
     output.parent.mkdir(parents=True,exist_ok=True)
     from memory_service import main as bridge  # Select the same configured SDK source, without constructing its database.
-    from memory_service.duplicate_review import PROMPT, PROMPT_VERSION, model_metrics,review_request_budget
+    from memory_service.duplicate_review import PROMPT, PROMPT_VERSION, model_metrics,review_request_budget,semantic_labels
     from mem0.utils.factory import LlmFactory
     config=bridge.get_memory_config()['llm'];llm=LlmFactory.create(config['provider'],config['config'])
     bridge.configure_llm_provider(llm)
@@ -131,7 +131,9 @@ def main():
             try:
                 with review_request_budget(llm),model_metrics(SimpleNamespace(llm=llm),metrics):
                     response=llm.generate_response(messages=[{'role':'system','content':PROMPT},{'role':'user','content':json.dumps({'source':case['source'],'candidates':candidates},ensure_ascii=False)}],response_format={'type':'json_object'})
-                supplied=parse_labels(response,candidates)
+                decisions=semantic_labels(response,case['source'],candidates)
+                supplied={id:decision['label'] for id,decision in decisions.items()}
+                row['decisionValidation']='STRUCTURED_V6'
                 row['checks']=[{'id':'C'+str(i),'expected':expected,'actual':supplied['C'+str(i)],'passed':supplied['C'+str(i)]==expected} for i,(_,expected) in enumerate(case['candidates'])]
                 row['status']='PASS' if all(c['passed'] for c in row['checks']) else 'MISMATCH'
             except Exception as error:row['errorType']=type(error).__name__  # Never store URLs, keys, provider bodies or reasoning.

@@ -22,6 +22,8 @@ public class AgentModelService implements AutoCloseable {
     private final Map<String, ModelCircuit> health = new ConcurrentHashMap<>();
     private boolean closed;
     private ModelConfigurationService configurations;
+    private ModelBudgetService budget;
+    public void setBudget(ModelBudgetService value){budget=value;}
     private static final int MAX_CACHED_VERSIONS = 16;
     private final Map<Long, VersionClient> versions = new java.util.LinkedHashMap<>(16, .75f, true);
     private final List<AutoCloseable> ownedResources = new ArrayList<>();
@@ -68,6 +70,7 @@ public class AgentModelService implements AutoCloseable {
         }
         var snapshot=configurations.runtime(revision);var settings=new AgentScopeProperties();settings.setModel(snapshot.document().defaultModel());
         var client=new AgentModelService(snapshot.properties(),settings);
+        client.budget=budget;
         if(circuitRedis==null)throw new RedisModelCircuit.Unavailable();
         client.circuitRedis=circuitRedis;client.circuitRevision=revision;
         client.configurationGuard=id->configurations.assertUsable(revision,id);
@@ -114,7 +117,7 @@ public class AgentModelService implements AutoCloseable {
         }
         return new ManagedAgentModel(candidates, GenerateOptions.builder()
                 .maxTokens(connections.getMaxOutputTokens()).executionConfig(execution()).build(), connections,
-                connections.isFallbackEnabled() || circuitRedis != null);
+                connections.isFallbackEnabled() || circuitRedis != null).budget(budget);
     }
     private ModelCircuit circuit(String id){return circuitRedis==null?new ModelCircuit(connections.getFailureThreshold(),connections.getCircuitCooldown(),connections.getQuotaCooldown()):new RedisModelCircuit(circuitRedis,circuitRevision,id,connections.getFailureThreshold(),connections.getCircuitCooldown(),connections.getQuotaCooldown(),connections.getTimeout());}
 

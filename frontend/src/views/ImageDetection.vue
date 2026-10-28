@@ -572,7 +572,7 @@
             </div>
           </template>
 
-          <BusinessTraceQuery v-model="workOrderTraceNo" kind="work-order" :requested-no="workOrderTraceRequestedNo" :loading="workOrderTraceLoading" :report="workOrderTraceReport" :error="workOrderTraceError" :examples="businessWorkOrderNos" :scope-label="businessTraceScope" @query="loadWorkOrderTraceReport" @refresh="refreshWorkOrderTraceReport" @example="loadBusinessWorkOrderTrace" />
+          <BusinessTraceQuery v-model="workOrderTraceNo" kind="work-order" :requested-no="workOrderTraceRequestedNo" :loading="workOrderTraceLoading" :report="workOrderTraceReport" :error="workOrderTraceError" :references="businessWorkOrderNos" :reference-loading="traceReferencesLoading" :reference-error="traceReferencesError" :scope-label="businessTraceScope" @query="loadWorkOrderTraceReport" @refresh="refreshWorkOrderTraceReport" @reference="loadBusinessWorkOrderTrace" @refresh-references="loadTraceReferences" />
 
           <TraceReportOverview v-if="workOrderTraceReport" :report="workOrderTraceReport" kind="work-order" :report-downloading="reportDownloading" @open-trace="openTraceDialog" @download-task="downloadTaskQualityReport" />
         </el-card>
@@ -598,7 +598,7 @@
             </div>
           </template>
 
-          <BusinessTraceQuery v-model="batchTraceNo" kind="batch" :requested-no="batchTraceRequestedNo" :loading="batchTraceLoading" :report="batchTraceReport" :error="batchTraceError" :examples="businessBatchNos" :scope-label="businessTraceScope" @query="loadBatchTraceReport" @refresh="refreshBatchTraceReport" @example="loadBusinessBatchTrace" />
+          <BusinessTraceQuery v-model="batchTraceNo" kind="batch" :requested-no="batchTraceRequestedNo" :loading="batchTraceLoading" :report="batchTraceReport" :error="batchTraceError" :references="businessBatchNos" :reference-loading="traceReferencesLoading" :reference-error="traceReferencesError" :scope-label="businessTraceScope" @query="loadBatchTraceReport" @refresh="refreshBatchTraceReport" @reference="loadBusinessBatchTrace" @refresh-references="loadTraceReferences" />
 
           <TraceReportOverview v-if="batchTraceReport" :report="batchTraceReport" kind="batch" :report-downloading="reportDownloading" @open-trace="openTraceDialog" @download-task="downloadTaskQualityReport" />
         </el-card>
@@ -880,6 +880,9 @@ const {
   batchTraceError,
   businessWorkOrderNos,
   businessBatchNos,
+  traceReferencesLoading,
+  traceReferencesError,
+  loadTraceReferences,
   ensureDefaultWorkOrderNo,
   ensureDefaultBatchNo,
   loadWorkOrderTraceReport,
@@ -1054,12 +1057,10 @@ const handleTabChange = async (tabName, { fromRoute = false } = {}) => {
     await loadDefectGallery(1)
   }
   if (tabName === 'work-order-trace' && !workOrderTraceReport.value && !workOrderTraceLoading.value) {
-    ensureDefaultWorkOrderNo()
-    await loadWorkOrderTraceReport()
+    if (await ensureDefaultWorkOrderNo()) await loadWorkOrderTraceReport()
   }
   if (tabName === 'batch-trace' && !batchTraceReport.value && !batchTraceLoading.value) {
-    ensureDefaultBatchNo()
-    await loadBatchTraceReport()
+    if (await ensureDefaultBatchNo()) await loadBatchTraceReport()
   }
   const targetPath = tabRouteMap[tabName]
   if (!fromRoute && targetPath && route.path !== targetPath && route.fullPath === startingRoute) {
