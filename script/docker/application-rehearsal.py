@@ -685,6 +685,24 @@ def verify_memory_marker(run, port, marker, *, legacy=False):
               all(item['id'] != marker['memoryId'] for item in rows))
 
 
+def verify_rollback_bridge(run, original_container, requested_image):
+    """Verify the guard's real decision for both old and compatible baselines."""
+    record = run.guard.read_json(run.state/'memory-transition.json')
+    current = run.row('mem0')
+    require(record.get('phase') == 'VERIFIED' and
+            record['selectedProtocol'] >= record['requiredProtocol'] and
+            current['Image'] == record['selectedImage'] and
+            current['State'].get('Health', {}).get('Status') == 'healthy',
+            'Rollback memory bridge is not the verified compatible selection')
+    if record['preserved']:
+        run.check('Legacy rollback retains the exact compatible memory bridge',
+                  current['Id'] == original_container == record['originalContainer'])
+    else:
+        expected, protocol = run.guard.image(requested_image)
+        run.check('Compatible rollback uses its requested healthy memory image',
+                  current['Image'] == expected and protocol >= record['requiredProtocol'])
+
+
 def initial_reader_config(config, observed, capabilities, mcp_reader):
     """Start a new copy as a reader before enabling any new protocol writers.
 
@@ -893,7 +911,7 @@ def run(args):
             instance.activate(rollback_images, 'Rollback', assignment_writes=False if args.compatible_backend_image else desired_assignment_writes,mcp_writes=baseline_mcp_writes)
             instance.check('Application rollback preserves the additive V39 index', instance.verify_dispatch_index())
             smoke(instance, args.port, marker)
-            instance.check('Legacy rollback retains the exact compatible memory bridge', instance.row('mem0')['Id'] == upgraded_memory)
+            verify_rollback_bridge(instance, upgraded_memory, rollback_images['mem0'])
             verify_memory_marker(instance, args.port, memory, legacy=True)
             current_config = instance.activate(candidate, 'Candidate reactivation', assignment_writes=desired_assignment_writes,mcp_writes=desired_mcp_writes)
             instance.dc('restart', 'backend', timeout=120)

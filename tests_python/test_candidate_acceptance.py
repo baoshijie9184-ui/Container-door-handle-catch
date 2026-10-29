@@ -48,6 +48,15 @@ def test_remote_probe_checks_every_image_and_private_listener():
     assert 'docker compose' not in source and 'cloud.env' not in source
 
 
+@pytest.mark.parametrize('port',[18088,18080,0,65535,True])
+def test_reserved_tunnel_port_cannot_target_production_or_arbitrary_local_services(tmp_path,port):
+    report=tmp_path/'candidate.json';report.write_text(json.dumps(receipt()))
+    target=tmp_path/'not-created'
+    with pytest.raises(ValueError,match='reserved loopback'):
+        environment.CandidateEnvironment(report,target,local_port=port)
+    assert not target.exists()
+
+
 @pytest.mark.parametrize('state',['empty','input','run','history','waiting'])
 def test_no_browser_resubmission_when_server_has_any_execution_evidence(state):
     control={'run':{'phase':'IDLE'},'inputs':[]};runs=[]

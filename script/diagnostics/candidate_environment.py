@@ -73,9 +73,12 @@ print('owned-candidate-ready')
 
 class CandidateEnvironment:
     """Does not start cloud instances, modify Compose or read server credentials."""
-    def __init__(self,report,directory):
+    def __init__(self,report,directory,*,local_port=18089):
         self.candidate=json.loads(Path(report).read_text(encoding='utf-8-sig'))
         self.project=candidate_identity(self.candidate)
+        if type(local_port) is not int or local_port not in (18089,18090):
+            raise ValueError('Only the two reserved loopback candidate ports are allowed')
+        self.local_port=local_port
         self.out=Path(directory).resolve()
         if self.out.exists() or not self.out.is_relative_to((ROOT/'work').resolve()) or self.out==(ROOT/'work').resolve():
             raise ValueError('Use a new project work directory')
@@ -83,17 +86,17 @@ class CandidateEnvironment:
         self.ssh=['ssh','-F',str(ROOT/'work/cloud/ssh-config'),'-o','BatchMode=yes','-o','ConnectTimeout=10']
         self.tunnel=None
         self.clients=[]
-        self.base='http://127.0.0.1:18089'
+        self.base='http://127.0.0.1:'+str(local_port)
 
     def __enter__(self):
         try:
             probe=subprocess.run(self.ssh+['doorhandle-bj','python3 -'],input=probe_source(self.candidate),capture_output=True,text=True,timeout=25)
             if probe.returncode or probe.stdout.strip()!='owned-candidate-ready':
                 raise RuntimeError('Candidate ownership, image, health or listener check failed')
-            with socket.socket() as listener:listener.bind(('127.0.0.1',18089))
+            with socket.socket() as listener:listener.bind(('127.0.0.1',self.local_port))
             with (self.out/'ssh.log').open('wb') as log:
-                self.tunnel=subprocess.Popen(self.ssh+['-o','ExitOnForwardFailure=yes','-N','-L','127.0.0.1:18089:127.0.0.1:18089','doorhandle-bj'],stdout=log,stderr=log)
-            self.write('transport.json',{'project':self.project,'release':self.candidate['release'],'startedAt':timestamp(),'ownedTunnelPid':self.tunnel.pid})
+                self.tunnel=subprocess.Popen(self.ssh+['-o','ExitOnForwardFailure=yes','-N','-L',f'127.0.0.1:{self.local_port}:127.0.0.1:18089','doorhandle-bj'],stdout=log,stderr=log)
+            self.write('transport.json',{'project':self.project,'release':self.candidate['release'],'startedAt':timestamp(),'ownedTunnelPid':self.tunnel.pid,'localPort':self.local_port,'remotePort':18089})
             client=self.client()
             for _ in range(40):
                 if self.tunnel.poll() is not None:raise RuntimeError('Owned SSH tunnel ended')

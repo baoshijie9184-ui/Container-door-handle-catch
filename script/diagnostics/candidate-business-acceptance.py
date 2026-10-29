@@ -95,10 +95,12 @@ try:
                 try:
                     context.request.post(env.base+'/api/auth/login',data={'username':account,'password':os.environ.get('DOORHANDLE_DEMO_PASSWORD','123456')})
                     page=context.new_page();page.on('pageerror',lambda e:report['pageErrors'].append(str(e)))
+                    ui_started=time.monotonic()
                     page.goto(env.base+('/#/agent/chat?sessionId='+sid if entry=='vue' else '/agent-ui/?sessionId='+sid),wait_until='domcontentloaded')
                     editor=page.get_by_role('textbox',name='聊天消息或技能命令',exact=True) if entry=='vue' else page.locator('[data-sender-input]')
-                    expect(editor).to_be_visible()
-                    expect(page.get_by_role('combobox',name='使用模型',exact=True)).to_have_value(model)
+                    expect(editor).to_be_visible(timeout=60000)
+                    expect(page.get_by_role('combobox',name='使用模型',exact=True)).to_have_value(model,timeout=30000)
+                    row['uiReadyMs']=round((time.monotonic()-ui_started)*1000);save()
                     if submit:
                         row['submissionState']='SENDING';save()
                         editor.fill(question);editor.press('Enter')

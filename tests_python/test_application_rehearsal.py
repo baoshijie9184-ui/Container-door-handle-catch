@@ -17,6 +17,35 @@ spec.loader.exec_module(rehearsal)
 PROJECT = 'doorhandle-rehearsal-0123456789ab'
 
 
+@pytest.mark.parametrize('preserved',[False,True])
+def test_rollback_bridge_accepts_the_guard_selection_in_both_modes(preserved):
+    record={'phase':'VERIFIED','requiredProtocol':2,'selectedProtocol':2,
+            'selectedImage':'compatible','preserved':preserved,'originalContainer':'original'}
+    row={'Id':'original' if preserved else 'replacement','Image':'compatible','State':{'Health':{'Status':'healthy'}}}
+    subject=SimpleNamespace(state=Path('/private'),row=lambda service:row,
+        guard=SimpleNamespace(read_json=lambda path:record,image=lambda image:('compatible',2)),
+        check=lambda name,condition:rehearsal.require(condition,name))
+    rehearsal.verify_rollback_bridge(subject,'original','requested')
+
+
+@pytest.mark.parametrize('damage',['unsupported','unverified','wrong-image','unhealthy','replaced-preserved','wrong-requested'])
+def test_rollback_bridge_rejects_incompatible_or_changed_runtime(damage):
+    record={'phase':'VERIFIED','requiredProtocol':2,'selectedProtocol':2,
+            'selectedImage':'compatible','preserved':False,'originalContainer':'original'}
+    row={'Id':'replacement','Image':'compatible','State':{'Health':{'Status':'healthy'}}}
+    selected=('compatible',2)
+    if damage=='unsupported':record['selectedProtocol']=0
+    elif damage=='unverified':record['phase']='DECIDED'
+    elif damage=='wrong-image':row['Image']='wrong'
+    elif damage=='unhealthy':row['State']['Health']['Status']='unhealthy'
+    elif damage=='replaced-preserved':record['preserved']=True
+    elif damage=='wrong-requested':selected=('other',2)
+    subject=SimpleNamespace(state=Path('/private'),row=lambda service:row,
+        guard=SimpleNamespace(read_json=lambda path:record,image=lambda image:selected),
+        check=lambda name,condition:rehearsal.require(condition,name))
+    with pytest.raises(RuntimeError):rehearsal.verify_rollback_bridge(subject,'original','requested')
+
+
 def test_additive_replay_preserves_tables_and_adds_only_missing_declarations():
     body = "-- immutable source\nALTER TABLE agent_fetch_installation\n ADD COLUMN reconcile_request VARCHAR(64) COLLATE utf8mb4_bin NULL,\n ADD COLUMN reserved_bytes BIGINT NOT NULL DEFAULT 2097152;\nCREATE TABLE IF NOT EXISTS receipt(id INT);\n"
     found = {'type': 'varchar(64)', 'nullable': 'YES', 'default': None, 'collation': 'utf8mb4_bin'}
