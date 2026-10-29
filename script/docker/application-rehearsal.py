@@ -78,6 +78,36 @@ def private_json(path, value):
     os.replace(temporary, path)
 
 
+def additive_replay_sql(body, column):
+    """Make archived simple ADD COLUMN steps repeatable without rewriting SQL.
+
+    Existing declarations must match type, nullability, explicit collation and
+    default. This is deliberately not a general SQL parser: unknown ADD syntax
+    fails closed. Stored routines and other statements remain byte-identical.
+    `column` is a read-only information_schema lookup on the owned MySQL copy.
+    """
+    pattern = re.compile(r'^ALTER TABLE\s+([a-z][a-z0-9_]*)\s+(ADD COLUMN\s+.*?);', re.M | re.S | re.I)
+    definition = re.compile(r"([a-z][a-z0-9_]*)\s+(varchar\([0-9]+\)|char\([0-9]+\)|datetime(?:\([0-9]+\))?|bigint|int)"
+        r"(?:\s+COLLATE\s+([a-z0-9_]+))?\s+(NOT NULL|NULL)(?:\s+DEFAULT\s+('[A-Za-z0-9_]+'|[0-9]+))?", re.I)
+    def replace(match):
+        table, declarations = match.groups(); missing = []
+        for declaration in re.split(r',\s*ADD COLUMN\s+', declarations.removeprefix('ADD COLUMN '), flags=re.I):
+            parsed = definition.fullmatch(declaration.strip())
+            require(parsed is not None, 'Unsupported archived ADD COLUMN declaration')
+            name, kind, collation, nullable, default = parsed.groups()
+            expected = {'type': kind.lower(), 'nullable': 'NO' if nullable.upper() == 'NOT NULL' else 'YES',
+                        'default': None if default is None else default.strip("'")}
+            actual = column(table, name)
+            if actual is None:
+                missing.append('ADD COLUMN '+declaration.strip())
+            else:
+                require(all(actual.get(key) == value for key, value in expected.items())
+                        and (collation is None or actual.get('collation') == collation.lower()),
+                        'Existing migration column differs: '+table+'.'+name)
+        return 'ALTER TABLE '+table+'\n '+',\n '.join(missing)+';' if missing else ''
+    return pattern.sub(replace, body)
+
+
 def extract_source(archive, destination):
     with tarfile.open(archive, 'r:gz') as source:
         for entry in source:
@@ -464,23 +494,35 @@ except Exception as error:
         mirror = source/'doorhandle-module-app/src/main/resources/db/migration-V39-conversation-owner-dispatch.sql'
         require(file.read_bytes() == mirror.read_bytes(), 'Candidate V39 migration copies differ')
         plan = []
-        for version in range(40, 66):
+        for version in range(40, 67):
             files = list((source/'sql/mysql').glob('migration-V'+str(version)+'-*.sql'))
             require(len(files) == 1 and not files[0].is_symlink(), 'Candidate migration source missing or ambiguous: V'+str(version))
             mirrors = list(source.glob('doorhandle-*/src/main/resources/db/'+files[0].name))
             require(len(mirrors) == 1 and not mirrors[0].is_symlink() and files[0].read_bytes() == mirrors[0].read_bytes(),
                     'Candidate V'+str(version)+' migration copies differ')
             plan.append(files[0])
+        def column(table, name):
+            # Identifiers are accepted only by the trusted declaration parser.
+            raw = self.ops.db(self.row('mysql')['Id'],
+                "SELECT JSON_OBJECT('type',COLUMN_TYPE,'nullable',IS_NULLABLE,'default',COLUMN_DEFAULT,'collation',COLLATION_NAME) "
+                "FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='"+table+"' AND COLUMN_NAME='"+name+"';").strip()
+            return json.loads(raw) if raw else None
         self.verify_model_fact_columns(complete=False)
+        # Validate every pre-existing ADD declaration before executing any DDL.
+        prepared = [(migration, additive_replay_sql(migration.read_text(encoding='utf8'), column)) for migration in plan]
         existing = self.ops.db(self.row('mysql')['Id'], "SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='agent_conversation_input' AND INDEX_NAME='idx_conversation_input_dispatch_owner';").strip()
         if existing == '0':
             self.ops.db(self.row('mysql')['Id'], file.read_text(encoding='utf8'))
         self.check('Candidate V39 adds only the expected dispatch index', self.verify_dispatch_index())
-        for migration in plan:
-            self.ops.db(self.row('mysql')['Id'], migration.read_text(encoding='utf8'))
+        for migration, body in prepared:
+            self.report['migrationAttempt'] = migration.name
+            self.persist()
+            self.ops.db(self.row('mysql')['Id'], body)
+            self.report.setdefault('completedMigrations', []).append(migration.name)
+            self.persist()
         self.verify_model_fact_columns(complete=True)
         self.report['candidateMigrations'] = [migration.name for migration in (file, *plan)]
-        self.check('Owned candidate copy applied V40-V65 and retains the expected nullable model facts', True)
+        self.check('Owned candidate copy applied V40-V66 and retains the expected nullable model facts', True)
 
     def verify_model_fact_columns(self, *, complete):
         expected = {'training_image_count': 'int', 'training_completed_at': 'datetime',

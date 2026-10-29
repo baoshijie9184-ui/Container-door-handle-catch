@@ -17,6 +17,38 @@ spec.loader.exec_module(rehearsal)
 PROJECT = 'doorhandle-rehearsal-0123456789ab'
 
 
+def test_additive_replay_preserves_tables_and_adds_only_missing_declarations():
+    body = "-- immutable source\nALTER TABLE agent_fetch_installation\n ADD COLUMN reconcile_request VARCHAR(64) COLLATE utf8mb4_bin NULL,\n ADD COLUMN reserved_bytes BIGINT NOT NULL DEFAULT 2097152;\nCREATE TABLE IF NOT EXISTS receipt(id INT);\n"
+    found = {'type': 'varchar(64)', 'nullable': 'YES', 'default': None, 'collation': 'utf8mb4_bin'}
+    query = lambda table, name: found if name == 'reconcile_request' else None
+    result = rehearsal.additive_replay_sql(body, query)
+    assert 'ADD COLUMN reconcile_request' not in result
+    assert 'ADD COLUMN reserved_bytes BIGINT NOT NULL DEFAULT 2097152' in result
+    assert 'CREATE TABLE IF NOT EXISTS receipt(id INT);' in result
+    assert body.startswith('-- immutable source\nALTER')
+
+
+@pytest.mark.parametrize('damage', [
+    {'type': 'varchar(16)'}, {'nullable': 'YES'}, {'default': 'OTHER'}, {'collation': 'utf8mb4_general_ci'}])
+def test_additive_replay_rejects_changed_existing_column_contract(damage):
+    body = "ALTER TABLE agent_mcp_execution ADD COLUMN transport VARCHAR(32) COLLATE utf8mb4_bin NOT NULL DEFAULT 'STREAMABLE_HTTP';"
+    actual = {'type': 'varchar(32)', 'nullable': 'NO', 'default': 'STREAMABLE_HTTP', 'collation': 'utf8mb4_bin', **damage}
+    with pytest.raises(RuntimeError, match='column differs'):
+        rehearsal.additive_replay_sql(body, lambda table, name: actual)
+
+
+def test_all_archived_additions_are_removed_only_after_matching_metadata():
+    body = "ALTER TABLE agent_mcp_execution ADD COLUMN transport VARCHAR(32) NOT NULL DEFAULT 'STREAMABLE_HTTP';"
+    result = rehearsal.additive_replay_sql(body, lambda table, name: {
+        'type': 'varchar(32)', 'nullable': 'NO', 'default': 'STREAMABLE_HTTP'})
+    assert result == ''
+
+
+def test_unknown_archived_add_syntax_is_not_executed_or_silently_skipped():
+    with pytest.raises(RuntimeError, match='Unsupported archived'):
+        rehearsal.additive_replay_sql('ALTER TABLE receipt ADD COLUMN value JSON NULL;', lambda *args: None)
+
+
 def test_new_copy_starts_without_new_writers_and_keeps_the_desired_config():
     original = {'services': {'backend': {'environment': {
         'DETECTION_ASSIGNMENT_WRITES_ENABLED': 'true', 'AGENT_MCP_WRITES_ENABLED': 'true',
@@ -432,6 +464,7 @@ def test_fixed_candidate_migration_checks_existing_index_before_creating(tmp_pat
         def db(self, container, sql):
             assert container == 'owned-copy'
             calls.append(sql)
+            if 'JSON_OBJECT' in sql: return ''
             if 'COLUMN_NAME,LOWER(COLUMN_TYPE)' in sql:
                 migrated = any('ADD COLUMN inference_fps' in statement for statement in calls)
                 return model_fact_metadata() if migrated else ''
@@ -439,6 +472,7 @@ def test_fixed_candidate_migration_checks_existing_index_before_creating(tmp_pat
     run = rehearsal.Rehearsal.__new__(rehearsal.Rehearsal)
     run.ops = Ops()
     run.report = {}
+    run.persist = lambda: None
     run.row = lambda service: {'Id': 'owned-copy'}
     run.check = lambda name, condition: rehearsal.require(condition, name)
     if passes: run.migrate_candidate(root)
@@ -446,10 +480,10 @@ def test_fixed_candidate_migration_checks_existing_index_before_creating(tmp_pat
         with pytest.raises(RuntimeError): run.migrate_candidate(root)
     assert any('CREATE INDEX idx_conversation_input_dispatch_owner' in sql for sql in calls) == creates
     if passes:
-        assert len(run.report['candidateMigrations']) == 27
-        assert run.report['candidateMigrations'][-3:] == [
+        assert len(run.report['candidateMigrations']) == 28
+        assert run.report['candidateMigrations'][-4:] == [
             'migration-V63-quality-knowledge.sql', 'migration-V64-model-budget.sql',
-            'migration-V65-quality-digests.sql']
+            'migration-V65-quality-digests.sql', 'migration-V66-chat-message-execution.sql']
 
 
 def model_fact_metadata():
@@ -489,10 +523,10 @@ def test_migration_copy_mismatch_stops_before_any_database_operation(tmp_path):
     with pytest.raises(RuntimeError, match='copies differ'): run.migrate_candidate(tmp_path)
 
 
-@pytest.mark.parametrize('version', [63, 64, 65])
+@pytest.mark.parametrize('version', [63, 64, 65, 66])
 def test_quality_migration_mismatch_rejects_entire_plan_before_ddl(tmp_path, version):
     root = Path(__file__).resolve().parents[1]
-    for number in range(39, 66):
+    for number in range(39, 67):
         sql = next((root/'sql/mysql').glob(f'migration-V{number}-*.sql'))
         mirror = next(root.glob('doorhandle-*/src/main/resources/db/'+sql.name))
         for source in (sql, mirror):
