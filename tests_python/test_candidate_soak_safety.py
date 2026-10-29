@@ -3,6 +3,7 @@ import importlib.util
 import json
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -30,3 +31,24 @@ def test_production_identity_is_rejected_without_starting_ssh(monkeypatch,tmp_pa
     monkeypatch.setattr(soak.subprocess,'run',lambda *args,**kwargs:pytest.fail('Production must never be probed by this load driver'))
     with pytest.raises(ValueError,match='Candidate project'):soak.main()
     assert not target.exists()
+
+
+def test_generated_remote_program_compiles_and_preserves_sql_lines_and_tabular_ids(monkeypatch,capsys):
+    monkeypatch.setattr(soak,'probe_source',lambda candidate:'')
+    name='soak_0123456789_0';project='doorhandle-rehearsal-0123456789ab';commands=[]
+    def output(command):
+        if command[1]=='ps':return b'owned-mysql\n'
+        return json.dumps([{'Config':{'Labels':{'io.doorhandle.rehearsal':project}}}]).encode()
+    def run(command,**kwargs):
+        commands.append(kwargs['input'])
+        return SimpleNamespace(returncode=0,stdout='42\t'+name+'\n')
+    source=soak.provision_source({},[name])
+    exec(compile(source,'generated_provision','exec'),{'subprocess':SimpleNamespace(check_output=output,run=run),'json':json,'project':project})
+    assert commands[0].startswith('START TRANSACTION;\nINSERT INTO users')
+    assert '\nCOMMIT;\nSELECT id,username' in commands[0]
+    assert json.loads(capsys.readouterr().out)['users']==[{'id':42,'username':name}]
+
+
+@pytest.mark.parametrize('names',[['operator'],["soak_0123456789_0'; DROP TABLE users;"],['soak_0123456789_0']*2])
+def test_provision_rejects_non_generated_or_duplicate_identities(names):
+    with pytest.raises(ValueError,match='generated'):soak.provision_source({},names)

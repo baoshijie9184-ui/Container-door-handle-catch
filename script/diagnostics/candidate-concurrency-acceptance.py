@@ -5,7 +5,7 @@ import os
 import time
 import uuid
 
-from candidate_environment import CandidateEnvironment, timestamp
+from candidate_environment import BAILIAN_TEST_MODELS, CandidateEnvironment, timestamp
 
 ACCOUNTS=('inspector.demo','supervisor.demo','inspector.demo2','supervisor.demo2')
 TERMINAL={'COMPLETED','APPLIED','CANCELLED','FAILED','EXPIRED'}
@@ -18,13 +18,14 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--candidate-report',required=True)
     parser.add_argument('--directory',required=True)
+    parser.add_argument('--model',choices=BAILIAN_TEST_MODELS,default='dashscope:qwen3.8-flash')
     parser.add_argument('--execute',action='store_true',help='Creates four private sessions and at most two real-model plans')
     args=parser.parse_args()
     if not args.execute:parser.error('Explicit --execute is required')
     environment=CandidateEnvironment(args.candidate_report,args.directory)
     report={'startedAt':timestamp(),'project':environment.project,'release':environment.candidate['release'],
             'sourceSha256':environment.candidate['sourceSha256'],'passed':False,'checks':[],
-            'accounts':[],'load':{'minimumSeconds':600,'samples':0,'failures':0},'cleanup':{'complete':False},
+            'accounts':[],'modelId':args.model,'load':{'minimumSeconds':600,'samples':0,'failures':0},'cleanup':{'complete':False},
             'scope':'four demo accounts on an isolated monolith; not a larger capacity or distributed fairness claim'}
     accounts=[]
     def save():environment.write('result.json',report)
@@ -57,7 +58,7 @@ def main():
                     accounts.append(account);report['accounts'].append({'name':name,'sessionId':sid,'blocking':index<2,'submitted':account['submitted']});save()
                 for account in accounts[:2]:
                     models=api(account,'GET','/agui/models')['models']
-                    selected=next((m for m in models if m['id']=='dashscope:qwen3.8-flash' and m['provider']=='dashscope' and m['configured']),None)
+                    selected=next((m for m in models if m['id']==args.model and m['provider']=='dashscope' and m['configured']),None)
                     if selected is None:raise RuntimeError('Configured Bailian test model unavailable; do not switch to a direct paid provider')
                     selection=api(account,'GET',account['prefix']+'/model-selection')
                     api(account,'POST',account['prefix']+'/model-selection',headers={'X-Agent-Action':'workbench'},

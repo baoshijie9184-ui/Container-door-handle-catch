@@ -14,7 +14,7 @@ import uuid
 
 ROOT=Path(__file__).resolve().parents[2]
 sys.path.insert(0,str(ROOT/'script/diagnostics'))
-from candidate_environment import CandidateEnvironment, probe_source, timestamp
+from candidate_environment import BAILIAN_TEST_MODELS, CandidateEnvironment, probe_source, timestamp
 
 def checkpoint(value,candidate):
     if any(value.get(key)!=candidate.get(key) for key in ('project','release','sourceSha256')):
@@ -42,13 +42,14 @@ def main(argv=None):
     parser.add_argument('--directory',required=True)
     parser.add_argument('--execute',action='store_true')
     parser.add_argument('--text-only',action='store_true',help='Explicitly request plain-text preference handling without skills or business tools')
+    parser.add_argument('--model',choices=BAILIAN_TEST_MODELS,default='dashscope:qwen3.8-flash')
     parser.add_argument('--resume-from',help='Continue only a verified ninth-session structured-question checkpoint')
     args=parser.parse_args(argv)
     if not args.execute:parser.error('Explicit candidate mutations must be requested')
     env=CandidateEnvironment(args.candidate_report,args.directory)
     report={'startedAt':timestamp(),'release':env.candidate['release'],'sourceSha256':env.candidate['sourceSha256'],
             'project':env.project,'passed':False,'checks':[],'turns':[],'restarts':[],
-            'scenario':'TEXT_ONLY' if args.text_only else 'DEFAULT',
+            'scenario':'TEXT_ONLY' if args.text_only else 'DEFAULT','selectedModel':args.model,
             'harnessSha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
             'scope':'ten short real HTTP sessions, not weeks of memory stability'}
     if args.resume_from:
@@ -56,6 +57,8 @@ def main(argv=None):
         if not previous.is_relative_to(ROOT/'work') or previous.name!='result.json':
             raise ValueError('Resume requires a project-owned memory receipt')
         report=checkpoint(json.loads(previous.read_text(encoding='utf8')),env.candidate)
+        if report.get('selectedModel','dashscope:qwen3.8-flash')!=args.model:
+            raise ValueError('A memory checkpoint cannot change its selected model')
         if report.get('scenario','DEFAULT')!=('TEXT_ONLY' if args.text_only else 'DEFAULT'):
             raise ValueError('A checkpoint cannot change its original scenario')
         report.update(resumedFrom=str(previous),resumedAt=timestamp())
@@ -121,7 +124,7 @@ print(json.dumps({'containerId':after['Id'],'image':after['Image'],'before':befo
 """
                 value=remote(code);report['restarts'].append(value);save()
                 check('Owned application restart '+str(len(report['restarts']))+' is healthy',True)
-            selected=next(m for m in api('GET','/agui/models')['models'] if m['id']=='dashscope:qwen3.8-flash' and m['configured'])['id']
+            selected=next(m for m in api('GET','/agui/models')['models'] if m['id']==args.model and m['provider']=='dashscope' and m['configured'])['id']
             statements=[
                 '你好，请记住我的明确长期偏好：'+marker+' 验收资料的默认文件格式是 PDF。',
                 '你好，请记住我的明确长期偏好：'+marker+' 验收资料的页边距统一使用两厘米。',

@@ -10,13 +10,13 @@ import uuid
 
 ROOT=Path(__file__).resolve().parents[2]
 sys.path.insert(0,str(ROOT/'script/diagnostics'))
-from candidate_environment import CandidateEnvironment,conversation_not_started,owned_child_denial,timestamp
+from candidate_environment import BAILIAN_TEST_MODELS,CandidateEnvironment,conversation_not_started,owned_child_denial,timestamp
 from playwright.sync_api import sync_playwright,expect
 
 parser=argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--candidate-report',required=True)
 parser.add_argument('--quality-report',required=True)
-parser.add_argument('--model',choices=['dashscope:qwen3.8-flash','dashscope:deepseek-v4.1-flash'],required=True)
+parser.add_argument('--model',choices=BAILIAN_TEST_MODELS,required=True)
 parser.add_argument('--directory',required=True)
 parser.add_argument('--execute',action='store_true')
 parser.add_argument('--only',nargs='+',choices=['employee-task','supervisor-task','foreign-task','role-scope','text-file','pdf-file'])

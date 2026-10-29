@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import statistics
 import subprocess
@@ -21,6 +22,22 @@ from candidate_environment import CandidateEnvironment, probe_source, timestamp
 
 def percentile(values, quantile):
     return sorted(values)[max(0, int(len(values)*quantile)-1)] if values else None
+
+
+def provision_source(candidate,names):
+    if not 1<=len(names)<=32 or len(set(names))!=len(names) or any(not re.fullmatch(r'soak_[a-f0-9]{10}_[0-9]{1,2}',n) for n in names):
+        raise ValueError('Only distinct generated soak account names are allowed')
+    source=probe_source(candidate).replace("print('owned-candidate-ready')",'')+'''
+ids=subprocess.check_output(['docker','ps','-q','--filter','label=com.docker.compose.project='+project,'--filter','label=com.docker.compose.service=mysql']).decode().split();assert len(ids)==1
+row=json.loads(subprocess.check_output(['docker','inspect',ids[0]]))[0];assert row['Config']['Labels']['io.doorhandle.rehearsal']==project
+names=NAMES
+sql="START TRANSACTION;"+chr(10)+chr(10).join("INSERT INTO users(username,password,role) SELECT '"+name+"',password,'INSPECTOR' FROM users WHERE username='inspector.demo';" for name in names)+chr(10)+"COMMIT;"+chr(10)+"SELECT id,username FROM users WHERE username IN ("+','.join("'"+n+"'" for n in names)+");"
+r=subprocess.run(['docker','exec','-i',ids[0],'sh','-c','MYSQL_PWD="$MYSQL_PASSWORD" exec mysql -u"$MYSQL_USER" "$MYSQL_DATABASE" --batch --skip-column-names'],input=sql,text=True,capture_output=True,timeout=25);assert r.returncode==0
+rows=[line.split(chr(9)) for line in r.stdout.splitlines()];assert len(rows)==len(names)
+print(json.dumps({'users':[{'id':int(r[0]),'username':r[1]} for r in rows]}))
+'''.replace('NAMES',repr(names))
+    compile(source,'owned_soak_provision','exec')
+    return source
 
 
 def main():
@@ -43,21 +60,17 @@ def main():
     def save():env.write('result.json',report)
     def remote(code,timeout=40):
         r=subprocess.run(env.ssh+['doorhandle-bj','python3 -'],input=code,text=True,capture_output=True,timeout=timeout)
-        if r.returncode: raise RuntimeError('Owned remote diagnostic failed')
+        if r.returncode:
+            env.write('remote-error.json',{'exitCode':r.returncode,'stderr':r.stderr[-3000:]})
+            raise RuntimeError('Owned remote diagnostic failed')
         return json.loads(r.stdout)
     accounts=[];durations=[];command_times=[];save()
     try:
         with env:
             prefix='soak_'+uuid.uuid4().hex[:10]+'_'
-            provision=probe_source(env.candidate).replace("print('owned-candidate-ready')",'')+'''
-ids=subprocess.check_output(['docker','ps','-q','--filter','label=com.docker.compose.project='+project,'--filter','label=com.docker.compose.service=mysql']).decode().split();assert len(ids)==1
-row=json.loads(subprocess.check_output(['docker','inspect',ids[0]]))[0];assert row['Config']['Labels']['io.doorhandle.rehearsal']==project
-names=NAMES
-sql="START TRANSACTION;\n"+"\n".join("INSERT INTO users(username,password,role) SELECT '"+name+"',password,'INSPECTOR' FROM users WHERE username='inspector.demo';" for name in names)+"\nCOMMIT;\nSELECT id,username FROM users WHERE username IN ("+','.join("'"+n+"'" for n in names)+");"
-r=subprocess.run(['docker','exec','-i',ids[0],'sh','-c','MYSQL_PWD="$MYSQL_PASSWORD" exec mysql -u"$MYSQL_USER" "$MYSQL_DATABASE" --batch --skip-column-names'],input=sql,text=True,capture_output=True,timeout=25);assert r.returncode==0
-rows=[line.split('\\t') for line in r.stdout.splitlines()];assert len(rows)==len(names)
-print(json.dumps({'users':[{'id':int(r[0]),'username':r[1]} for r in rows]}))
-'''.replace('NAMES',repr([prefix+str(n) for n in range(args.accounts)]))
+            names=[prefix+str(n) for n in range(args.accounts)]
+            report['provisionedNames']=names;save()
+            provision=provision_source(env.candidate,names)
             users=remote(provision)['users'];report['identities']=users;save()
             for user in users:
                 client=env.client()
@@ -85,7 +98,7 @@ print(json.dumps({'users':[{'id':int(r[0]),'username':r[1]} for r in rows]}))
                         raise AssertionError('Command exceeds sixty-second fairness gate')
                 return (time.monotonic()-start)*1000
             def command(account,index):
-                item={'id':uuid.uuid4().hex,'start':time.monotonic(),'done':False}
+                item={'id':str(uuid.uuid4()),'start':time.monotonic(),'done':False}
                 receipt={'id':item['id'],'sessionId':account['sessionId'],'submittedAt':timestamp(),'status':'SUBMITTING'}
                 report['commandReceipts'].append(receipt);item['receipt']=receipt;save()
                 account['submitted'].append(item)

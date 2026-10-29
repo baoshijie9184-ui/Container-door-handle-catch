@@ -1,4 +1,5 @@
 import hashlib
+import base64
 import importlib.util
 import json
 from pathlib import Path
@@ -30,6 +31,47 @@ class Transport:
         return content+b'changed' if self.tamper and path.endswith('SKILL.md') else content
 
 class LinkedSkillDownloadTest(unittest.TestCase):
+    def test_unreachable_raw_endpoint_uses_the_same_verified_git_blob(self):
+        class ApiTransport(Transport):
+            def get(self,url,limit):
+                self.urls.append(url)
+                raise ValueError('SOURCE_CONNECTION_FAILED')
+            def document(self,url):
+                if '/git/blobs/' not in url:return super().document(url)
+                self.urls.append(url)
+                digest=url.rsplit('/',1)[1]
+                content=next(value for value in self.data.values() if hashlib.sha1(b'blob '+str(len(value)).encode()+b'\0'+value).hexdigest()==digest)
+                if self.tamper and content==SKILL:content=b'X'+content[1:]
+                return {'sha':digest,'size':len(content),'encoding':'base64','content':base64.encodebytes(content).decode()}
+        with tempfile.TemporaryDirectory() as folder:
+            path=Path(folder)/'package';transport=ApiTransport()
+            result=module.download('https://github.com/fixtures/skills/tree/main/skills/fixture-reader',path,transport)
+            self.assertTrue(result['downloaded']);self.assertEqual((path/'SKILL.md').read_bytes(),SKILL)
+            self.assertEqual(len([u for u in transport.urls if '/git/blobs/' in u]),3)
+            self.assertEqual(json.loads((path/'manifest.json').read_text())['commit'],COMMIT)
+        with tempfile.TemporaryDirectory() as folder,self.assertRaisesRegex(ValueError,'REMOTE_BLOB_DIGEST_MISMATCH'):
+            module.download('https://github.com/fixtures/skills/tree/main/skills/fixture-reader',Path(folder)/'package',ApiTransport(tamper=True))
+
+    def test_blob_fallback_rejects_bad_identity_encoding_size_and_bytes(self):
+        digest=hashlib.sha1(b'blob '+str(len(SKILL)).encode()+b'\0'+SKILL).hexdigest()
+        entry={'path':'skills/fixture-reader/SKILL.md','sha':digest,'size':len(SKILL)}
+        valid={'sha':digest,'size':len(SKILL),'encoding':'base64','content':base64.b64encode(SKILL).decode()}
+        for changes in ({'sha':'b'*40},{'encoding':'text'},{'content':'!bad-base64!'},
+                        {'size':len(SKILL)+1},{'size':module.MAX_FILE+1},{'size':True}):
+            class Broken(Transport):
+                def get(self,url,limit):raise ValueError('SOURCE_TIMEOUT')
+                def document(self,url):return {**valid,**changes}
+            with self.subTest(changes=changes),self.assertRaises(ValueError):module.github_file(Broken(),'fixtures','skills',COMMIT,entry)
+
+    def test_authentication_or_policy_failure_does_not_start_blob_fallback(self):
+        class Denied(Transport):
+            def get(self,url,limit):raise ValueError('SOURCE_AUTHENTICATION_REQUIRED')
+            def document(self,url):raise AssertionError('No fallback is allowed for this failure')
+        with self.assertRaisesRegex(ValueError,'SOURCE_AUTHENTICATION_REQUIRED'):
+            module.github_file(Denied(),'fixtures','skills',COMMIT,{'path':'SKILL.md','sha':'a'*40})
+        with self.assertRaisesRegex(ValueError,'REMOTE_BLOB_DIGEST_MISMATCH'):
+            module.github_file(Denied(),'fixtures','skills',COMMIT,{'path':'SKILL.md','sha':'../commits/main'})
+
     def test_public_source_is_pinned_and_license_scripts_are_archived_without_execution(self):
         with tempfile.TemporaryDirectory() as folder:
             path=Path(folder)/'package';transport=Transport()

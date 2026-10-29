@@ -11,6 +11,8 @@ import requests
 
 ROOT=Path(__file__).resolve().parents[2]
 CST=timezone(timedelta(hours=8))
+BAILIAN_TEST_MODELS=('dashscope:qwen3.8-flash','dashscope:qwen3.8-max-0902',
+                     'dashscope:deepseek-v4.1-flash','dashscope:glm-5.3')
 
 
 def timestamp():

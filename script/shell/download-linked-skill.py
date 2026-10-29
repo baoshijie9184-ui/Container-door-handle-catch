@@ -1,5 +1,7 @@
 """Snapshot public GitHub, skills.sh and ModelScope Skills in private quarantine; never execute package files."""
 import argparse
+import base64
+import binascii
 import hashlib
 import ipaddress
 import json
@@ -110,6 +112,34 @@ def license_type(text):
     raise ValueError('SUPPORTED_LICENSE_REQUIRED')
 
 
+def github_file(transport, owner, repo, commit, entry):
+    """Use the same pinned Git blob when the raw content endpoint is unreachable."""
+    if not isinstance(entry.get('sha'), str) or not re.fullmatch(r'[a-f0-9]{40}', entry['sha']):
+        raise ValueError('REMOTE_BLOB_DIGEST_MISMATCH')
+    raw = f'https://raw.githubusercontent.com/{owner}/{repo}/{commit}/{quote(entry["path"], safe="/")}'
+    try:
+        return transport.get(raw, MAX_FILE)
+    except ValueError as error:
+        if str(error) not in ('SOURCE_TIMEOUT', 'SOURCE_CONNECTION_FAILED', 'REMOTE_FILE_UNAVAILABLE'):
+            raise
+    # The tree already supplied the exact blob identity. Do not follow a new branch,
+    # substitute another repository, bypass TLS or relax the existing host checks.
+    value = transport.document(f'https://api.github.com/repos/{owner}/{repo}/git/blobs/{entry["sha"]}')
+    if (not isinstance(value, dict) or value.get('encoding') != 'base64'
+            or value.get('sha') != entry['sha'] or not isinstance(value.get('content'), str)
+            or type(value.get('size')) is not int or value['size'] < 0):
+        raise ValueError('REMOTE_BLOB_DIGEST_MISMATCH')
+    if value['size'] > MAX_FILE or len(value['content']) > 2 * MAX_FILE:
+        raise ValueError('PACKAGE_LIMIT_EXCEEDED')
+    try:
+        content = base64.b64decode(re.sub(r'[ \t\r\n]', '', value['content']), validate=True)
+    except (binascii.Error, ValueError) as error:
+        raise ValueError('REMOTE_BLOB_DIGEST_MISMATCH') from error
+    if len(content) != value['size'] or value['size'] != entry.get('size'):
+        raise ValueError('REMOTE_BLOB_DIGEST_MISMATCH')
+    return content
+
+
 def _download_github(url, destination, transport=None, original_url=None, market=None):
     parsed = source(url)
     owner, repo, ref, folder = (parsed[k] for k in ('owner', 'repo', 'ref', 'folder'))
@@ -154,7 +184,7 @@ def _download_github(url, destination, transport=None, original_url=None, market
         used.add(relative.casefold())
         if entry.get('size', MAX_FILE + 1) > MAX_FILE:
             raise ValueError('PACKAGE_LIMIT_EXCEEDED')
-        content = transport.get(f'https://raw.githubusercontent.com/{owner}/{repo}/{commit}/{quote(remote_path, safe="/")}', MAX_FILE)
+        content = github_file(transport, owner, repo, commit, entry)
         if len(content) > MAX_FILE:
             raise ValueError('PACKAGE_LIMIT_EXCEEDED')
         blob_digest = hashlib.sha1(b'blob ' + str(len(content)).encode('ascii') + b'\x00' + content).hexdigest()
