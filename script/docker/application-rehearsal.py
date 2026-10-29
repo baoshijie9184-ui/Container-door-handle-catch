@@ -643,6 +643,40 @@ def verify_memory_marker(run, port, marker, *, legacy=False):
               all(item['id'] != marker['memoryId'] for item in rows))
 
 
+def initial_reader_config(config, observed, capabilities, mcp_reader):
+    """Start a new copy as a reader before enabling any new protocol writers.
+
+    An empty candidate state cannot inherit production pins: those are bound to
+    the production MySQL volume. Keep every reader required by restored data,
+    pause compatible write gates, and defer unused format features until an
+    actual compatible baseline container exists. The normal guards still run.
+    """
+    require(set(observed) == set(capabilities) and
+            set(observed) == {'json', 'identity', 'scope', 'review', 'evidence', 'context'},
+            'Incomplete initial reader format evidence')
+    require(all(type(level) is int and 0 <= level <= capabilities[key]
+                for key, level in observed.items()), 'Baseline cannot read restored format')
+    value = copy.deepcopy(config)
+    environment = value['services']['backend']['environment']
+    if capabilities['json'] == 2:
+        environment['DETECTION_ASSIGNMENT_WRITES_ENABLED'] = 'false'
+    if mcp_reader >= 2:
+        environment['AGENT_MCP_WRITES_ENABLED'] = 'false'
+    if not observed['scope']:
+        environment['DETECTION_STABLE_IDENTITY_ENABLED'] = 'false'
+    if not observed['review']:
+        environment['DETECTION_IDENTITY_REVIEW_ENABLED'] = 'false'
+    if not observed['evidence']:
+        environment['DETECTION_IDENTITY_EVIDENCE_ENABLED'] = 'false'
+        environment['DETECTION_IDENTITY_RECONCILIATION_ENABLED'] = 'false'
+    if observed['evidence'] < 2:
+        environment['DETECTION_IDENTITY_MISSING_NAME_REVIEW_ENABLED'] = 'false'
+    if not observed['context']:
+        environment['AGENT_DURABLE_CONTEXT_ENABLED'] = 'false'
+        environment['AGENT_CONTEXT_OFFLOAD_ENABLED'] = 'false'
+    return value
+
+
 def run(args):
     root, runtime = Path(args.root), Path(args.runtime)
     require(TAG.fullmatch(args.tag) and re.fullmatch(r'[a-f0-9]{64}', args.source_sha256), 'Invalid source identity')
@@ -790,9 +824,15 @@ def run(args):
                 instance.migrate_candidate(source)
                 instance.report['migrationStage'] = 'BEFORE_COMPATIBLE_BASELINE'
                 instance.persist()
-            assignment_guard.guard(instance.state,config,project=project,pin=True,allow_initial=True)
-            mcp_guard.guard(instance.state,config,project=project,pin=True,allow_initial=True)
-            instance.dc('up', '-d', '--no-build', '--pull', 'never', '--wait', '--wait-timeout', '240', timeout=420)
+            observed = assignment_guard.data_floor(assignment_guard.container(project, 'mysql'))
+            reader_config = initial_reader_config(config, observed, baseline_capabilities, baseline_mcp)
+            instance.report['initialReader'] = {'observedAssignmentFloor': observed,
+                'assignmentWrites': assignment_guard.boolean(reader_config['services']['backend']['environment'], 'DETECTION_ASSIGNMENT_WRITES_ENABLED', True),
+                'mcpWrites': mcp_guard.flag(reader_config['services']['backend']['environment'], 'AGENT_MCP_WRITES_ENABLED', True)}
+            instance.persist()
+            assignment_guard.guard(instance.state,reader_config,project=project,pin=True,allow_initial=True)
+            mcp_guard.guard(instance.state,reader_config,project=project,pin=True,allow_initial=True)
+            instance.dc('up', '-d', '--no-build', '--pull', 'never', '--wait', '--wait-timeout', '240', config=reader_config, timeout=420)
             smoke(instance, args.port)
             marker = upload_marker(args.port)
             private_json(directory/'marker.json', marker)

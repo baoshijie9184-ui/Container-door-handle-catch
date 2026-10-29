@@ -17,6 +17,51 @@ spec.loader.exec_module(rehearsal)
 PROJECT = 'doorhandle-rehearsal-0123456789ab'
 
 
+def test_new_copy_starts_without_new_writers_and_keeps_the_desired_config():
+    original = {'services': {'backend': {'environment': {
+        'DETECTION_ASSIGNMENT_WRITES_ENABLED': 'true', 'AGENT_MCP_WRITES_ENABLED': 'true',
+        'DETECTION_STABLE_IDENTITY_ENABLED': 'true', 'DETECTION_IDENTITY_REVIEW_ENABLED': 'true',
+        'DETECTION_IDENTITY_EVIDENCE_ENABLED': 'true', 'DETECTION_IDENTITY_RECONCILIATION_ENABLED': 'true',
+        'DETECTION_IDENTITY_MISSING_NAME_REVIEW_ENABLED': 'true', 'AGENT_DURABLE_CONTEXT_ENABLED': 'true',
+        'AGENT_CONTEXT_OFFLOAD_ENABLED': 'true', 'DETECTION_ASSIGNMENT_BINDING_ENABLED': 'true'}}}}
+    before = copy.deepcopy(original)
+    capabilities = dict(json=2, identity=1, scope=1, review=1, evidence=2, context=2)
+    value = rehearsal.initial_reader_config(original, dict.fromkeys(capabilities, 0), capabilities, 4)
+    environment = value['services']['backend']['environment']
+    assert original == before
+    assert all(environment[key] == 'false' for key in environment if key != 'DETECTION_ASSIGNMENT_BINDING_ENABLED')
+    assert environment['DETECTION_ASSIGNMENT_BINDING_ENABLED'] == 'true'
+
+
+def test_reader_bootstrap_never_disables_existing_identity_or_context_readers():
+    capabilities = dict(json=2, identity=1, scope=1, review=1, evidence=2, context=2)
+    environment = {key: 'true' for key in ('DETECTION_STABLE_IDENTITY_ENABLED',
+        'DETECTION_IDENTITY_REVIEW_ENABLED', 'DETECTION_IDENTITY_EVIDENCE_ENABLED',
+        'DETECTION_IDENTITY_RECONCILIATION_ENABLED', 'DETECTION_IDENTITY_MISSING_NAME_REVIEW_ENABLED',
+        'AGENT_DURABLE_CONTEXT_ENABLED', 'AGENT_CONTEXT_OFFLOAD_ENABLED')}
+    value = rehearsal.initial_reader_config({'services': {'backend': {'environment': environment}}}, capabilities, capabilities, 4)
+    result = value['services']['backend']['environment']
+    assert all(result[key] == 'true' for key in environment)
+    assert result['DETECTION_ASSIGNMENT_WRITES_ENABLED'] == result['AGENT_MCP_WRITES_ENABLED'] == 'false'
+
+
+def test_initial_reader_keeps_evidence_v1_but_defers_v2_writers():
+    capabilities = dict(json=2, identity=1, scope=1, review=1, evidence=2, context=2)
+    observed = dict.fromkeys(capabilities, 0); observed['evidence'] = 1
+    value = rehearsal.initial_reader_config({'services': {'backend': {'environment': {
+        'DETECTION_IDENTITY_EVIDENCE_ENABLED': 'true', 'DETECTION_IDENTITY_MISSING_NAME_REVIEW_ENABLED': 'true'}}}}, observed, capabilities, 4)
+    environment = value['services']['backend']['environment']
+    assert environment['DETECTION_IDENTITY_EVIDENCE_ENABLED'] == 'true'
+    assert environment['DETECTION_IDENTITY_MISSING_NAME_REVIEW_ENABLED'] == 'false'
+
+
+@pytest.mark.parametrize('bad', [{'json': 2}, dict(json=2, identity=1, scope=1, review=1, evidence=3, context=2)])
+def test_initial_reader_rejects_missing_or_newer_restored_formats(bad):
+    capabilities = dict(json=2, identity=1, scope=1, review=1, evidence=2, context=2)
+    with pytest.raises(RuntimeError):
+        rehearsal.initial_reader_config({'services': {'backend': {'environment': {}}}}, bad, capabilities, 4)
+
+
 def sample():
     return {'name': 'doorhandlecatch-monolith',
             'volumes': {'data': {'name': 'doorhandlecatch-monolith_data', 'external': True}},
