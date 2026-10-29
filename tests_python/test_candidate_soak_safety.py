@@ -1,5 +1,6 @@
 """Safety checks for the opt-in load driver; these are not capacity results."""
 import importlib.util
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -31,6 +32,25 @@ def test_production_identity_is_rejected_without_starting_ssh(monkeypatch,tmp_pa
     monkeypatch.setattr(soak.subprocess,'run',lambda *args,**kwargs:pytest.fail('Production must never be probed by this load driver'))
     with pytest.raises(ValueError,match='Candidate project'):soak.main()
     assert not target.exists()
+
+
+def test_valid_start_records_source_identities_before_any_remote_mutation(monkeypatch,tmp_path):
+    reports=[]
+    class GuardedEnvironment:
+        project='doorhandle-rehearsal-0123456789ab'
+        candidate={'release':'ci-43-9347e8ae8e0e','sourceSha256':'a'*64}
+        def __init__(self,*args,**kwargs):pass
+        def write(self,name,value):reports.append(json.loads(json.dumps(value)))
+        def __enter__(self):raise RuntimeError('Deliberate pre-transport stop')
+        def __exit__(self,*args):pass
+    monkeypatch.setattr(soak,'CandidateEnvironment',GuardedEnvironment)
+    monkeypatch.setattr(soak.subprocess,'run',lambda *args,**kwargs:pytest.fail('No SSH or database mutation is allowed'))
+    monkeypatch.setattr(sys,'argv',['soak','--candidate-report','owned.json','--directory',str(tmp_path/'unused'),'--execute'])
+    with pytest.raises(RuntimeError,match='pre-transport stop'):soak.main()
+    assert reports[0]['harnessSha256']==hashlib.sha256(Path(soak.__file__).read_bytes()).hexdigest()
+    assert reports[0]['transportHarnessSha256']==hashlib.sha256((ROOT/'script/diagnostics/candidate_environment.py').read_bytes()).hexdigest()
+    assert reports[-1]['passed'] is False and reports[-1]['errors'][0]['type']=='RuntimeError'
+    assert not reports[-1].get('identities')
 
 
 def test_generated_remote_program_compiles_and_preserves_sql_lines_and_tabular_ids(monkeypatch,capsys):
