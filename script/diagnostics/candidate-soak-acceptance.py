@@ -53,6 +53,7 @@ def main():
     env=CandidateEnvironment(args.candidate_report,args.directory,local_port=18090)
     report={'startedAt':timestamp(),'project':env.project,'release':env.candidate['release'],
             'sourceSha256':env.candidate['sourceSha256'],'harnessSha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+            'transportHarnessSha256':hashlib.sha256((ROOT/'script/diagnostics/candidate_environment.py').read_bytes()).hexdigest(),
             'passed':False,'accountCount':args.accounts,'requestedSeconds':args.seconds,
             'modelRequests':None,'samples':0,'commands':0,'commandReceipts':[],'errors':[],'resources':[],
             'scope':'Distinct synthetic inspectors, concurrent authenticated reads and local /help commands; not model throughput or a multi-day uptime claim',

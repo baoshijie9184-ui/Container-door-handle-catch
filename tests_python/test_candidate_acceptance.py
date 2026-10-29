@@ -4,6 +4,8 @@ import importlib.util
 import json
 from pathlib import Path
 import sys
+import os
+import threading
 
 import pytest
 
@@ -29,6 +31,56 @@ def receipt():
     return {'passed':True,'kept':True,'productionChanged':False,'project':'doorhandle-rehearsal-123456abcdef',
             'port':18089,'release':'ci-26-41dcd195e2b2','sourceSha256':'a'*64,
             'candidateImages':{s:'sha256:'+'b'*64 for s in ('backend','nginx','mem0')}}
+
+
+def test_private_evidence_retries_only_the_atomic_rename(tmp_path,monkeypatch):
+    env=environment.CandidateEnvironment.__new__(environment.CandidateEnvironment);env.out=tmp_path
+    target=tmp_path/'result.json';target.write_text('{"old":true}')
+    original=Path.replace;attempts=[];sleeps=[]
+    def replace(path,destination):
+        attempts.append(path)
+        if len(attempts)<3:raise PermissionError('Temporary reader sharing violation')
+        return original(path,destination)
+    monkeypatch.setattr(Path,'replace',replace);monkeypatch.setattr(environment.time,'sleep',sleeps.append)
+    env.write('result.json',{'complete':True})
+    assert json.loads(target.read_text())=={'complete':True}
+    assert len(attempts)==3 and len(sleeps)==2 and env.evidence_write_retries==2
+    assert len(set(attempts))==1 and not list(tmp_path.glob('*.tmp'))
+
+
+def test_persistent_evidence_permission_failure_preserves_the_previous_receipt(tmp_path,monkeypatch):
+    env=environment.CandidateEnvironment.__new__(environment.CandidateEnvironment);env.out=tmp_path
+    target=tmp_path/'result.json';target.write_text('{"old":true}');calls=[]
+    def denied(path,destination):calls.append(path);raise PermissionError('Persistent denial')
+    monkeypatch.setattr(Path,'replace',denied);monkeypatch.setattr(environment.time,'sleep',lambda duration:None)
+    with pytest.raises(PermissionError):env.write('result.json',{'complete':True})
+    assert len(calls)==30 and json.loads(target.read_text())=={'old':True}
+    assert len(list(tmp_path.glob('*.tmp')))==1
+
+
+def test_other_evidence_io_failures_are_not_retried(tmp_path,monkeypatch):
+    env=environment.CandidateEnvironment.__new__(environment.CandidateEnvironment);env.out=tmp_path
+    target=tmp_path/'result.json';target.write_text('{"old":true}');calls=[]
+    def broken(path,destination):calls.append(path);raise OSError('Storage failure')
+    monkeypatch.setattr(Path,'replace',broken)
+    monkeypatch.setattr(environment.time,'sleep',lambda duration:pytest.fail('Only a sharing denial may be retried'))
+    with pytest.raises(OSError,match='Storage failure'):env.write('result.json',{'complete':True})
+    assert len(calls)==1 and json.loads(target.read_text())=={'old':True}
+
+
+@pytest.mark.skipif(os.name!='nt',reason='Windows file-sharing semantics')
+def test_an_actual_windows_reader_can_release_the_receipt_for_atomic_replace(tmp_path):
+    env=environment.CandidateEnvironment.__new__(environment.CandidateEnvironment);env.out=tmp_path
+    target=tmp_path/'result.json';target.write_text('{"old":true}')
+    ready=threading.Event();release=threading.Event();seen=[]
+    def reader():
+        with target.open() as stream:
+            seen.append(stream.read());ready.set();release.wait(.2)
+    thread=threading.Thread(target=reader);thread.start();assert ready.wait(2)
+    try:env.write('result.json',{'complete':True})
+    finally:release.set();thread.join(timeout=2)
+    assert seen==['{"old":true}'] and json.loads(target.read_text())=={'complete':True}
+    assert env.evidence_write_retries>=1
 
 
 @pytest.mark.parametrize('key,value',[

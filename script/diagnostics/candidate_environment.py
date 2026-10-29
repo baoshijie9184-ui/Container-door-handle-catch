@@ -6,6 +6,7 @@ import re
 import socket
 import subprocess
 import time
+import uuid
 
 import requests
 
@@ -137,5 +138,15 @@ class CandidateEnvironment:
 
     def write(self,name,value):
         if not re.fullmatch(r'[a-z0-9-]+\.json',name):raise ValueError('Invalid evidence filename')
-        target=self.out/name;temp=target.with_suffix('.tmp')
-        temp.write_text(json.dumps(value,ensure_ascii=False,indent=2),encoding='utf8');temp.replace(target)
+        target=self.out/name;temp=self.out/(name+'.'+uuid.uuid4().hex+'.tmp')
+        temp.write_text(json.dumps(value,ensure_ascii=False,indent=2),encoding='utf8')
+        for attempt in range(30):
+            try:
+                temp.replace(target)
+                return
+            except PermissionError:
+                if attempt==29:raise
+                # Windows readers can briefly deny atomic replacement. Retry only
+                # the local rename, never the HTTP operation described by the receipt.
+                self.evidence_write_retries=getattr(self,'evidence_write_retries',0)+1
+                time.sleep(.05)
