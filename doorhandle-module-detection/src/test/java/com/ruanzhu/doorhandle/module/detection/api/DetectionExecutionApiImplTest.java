@@ -44,13 +44,8 @@ class DetectionExecutionApiImplTest {
     @BeforeEach void setup() throws Exception {
         var source=new DriverManagerDataSource("jdbc:h2:mem:"+UUID.randomUUID()+";MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1;LOCK_TIMEOUT=5000","sa","");
         boolean mysql=System.getProperty("detection.command.mysql-file")!=null;
-        if(mysql) {
-            var settings=json.readTree(java.nio.file.Files.readString(java.nio.file.Path.of(System.getProperty("detection.command.mysql-file"))));
-            String database=settings.path("database").asText(),url=settings.path("url").asText();
-            if(!database.matches("doorhandle_detection_verify_[a-f0-9]{10}") || !url.startsWith("jdbc:mysql://127.0.0.1:3306/"+database+"?"))
-                throw new SecurityException("Only a dedicated local detection verification database is allowed");
-            source=new DriverManagerDataSource(url,settings.path("username").asText(),settings.path("password").asText());
-        }
+        if(mysql)source=com.ruanzhu.doorhandle.module.detection.EcsIsolatedMysql.open(
+                System.getProperty("detection.command.mysql-file"), "doorhandle_detection_verify_");
         jdbc=new JdbcTemplate(source);tx=new TransactionTemplate(new DataSourceTransactionManager(source));
         if(mysql)for(var table:List.of("test_audit","detection_execution_command","detection_dispatch_outbox","detection_worker_receipt","detection_task"))jdbc.execute("DROP TABLE IF EXISTS "+table);
         var columns=new ArrayList<String>();

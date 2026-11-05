@@ -4,9 +4,8 @@ import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.extension.spring.MybatisSqlSessionFactoryBean;
 import com.ruanzhu.doorhandle.module.model.entity.ModelInfo;
 import com.ruanzhu.doorhandle.module.model.mapper.ModelInfoMapper;
-import org.apache.ibatis.datasource.unpooled.UnpooledDataSource;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.springframework.core.io.ByteArrayResource;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.jdbc.datasource.init.ScriptUtils;
@@ -19,16 +18,12 @@ import java.time.LocalDateTime;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/** Explicit, loopback-only disposable MySQL schema; never uses the application's DB_URL. */
-@EnabledIfEnvironmentVariable(named = "DOORHANDLE_MODEL_FACTS_MYSQL_URL",
-        matches = "jdbc:mysql://127\\.0\\.0\\.1:[0-9]+/doorhandle_model_facts_[a-z0-9]+(?:\\?.*)?")
+/** Explicit ECS-owned disposable schema; never uses the application's DB_URL. */
+@EnabledIfSystemProperty(named = "model.facts.mysql", matches = "true")
 class ModelFactsMySqlTest {
     @Test
     void migrationResumesAndMapperFactsSurviveLegacySqlAndRepeatedUpgrade() throws Exception {
-        var source = new UnpooledDataSource("com.mysql.cj.jdbc.Driver",
-                System.getenv("DOORHANDLE_MODEL_FACTS_MYSQL_URL"),
-                System.getenv().getOrDefault("DOORHANDLE_MODEL_FACTS_MYSQL_USER", "root"),
-                System.getenv().getOrDefault("DOORHANDLE_MODEL_FACTS_MYSQL_PASSWORD", ""));
+        var source = EcsMysqlFixture.source();
         Path project = Path.of("..").toAbsolutePath().normalize();
         String schema = Files.readString(project.resolve("sql/mysql/schema.sql"));
         int start = schema.indexOf("CREATE TABLE IF NOT EXISTS `model_management`");

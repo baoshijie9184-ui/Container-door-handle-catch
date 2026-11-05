@@ -33,12 +33,8 @@ class ModelConfigurationServiceTest {
     @BeforeEach void setup() throws Exception {
         var dataSource=new DriverManagerDataSource("jdbc:h2:mem:"+UUID.randomUUID()+";MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1","sa","");
         boolean mysql=System.getProperty("agent.model-config.mysql-file")!=null;
-        if(mysql){
-            var config=json.readTree(Files.readString(Path.of(System.getProperty("agent.model-config.mysql-file"))));
-            String database=config.path("database").asText(),url=config.path("url").asText();
-            if(!database.matches("doorhandle_model_verify_[a-f0-9]{10}")||!url.startsWith("jdbc:mysql://127.0.0.1:3306/"+database+"?"))throw new SecurityException("Only an isolated local model verification database is allowed");
-            dataSource=new DriverManagerDataSource(url,config.path("username").asText(),config.path("password").asText());
-        }
+        if(mysql) dataSource=com.ruanzhu.doorhandle.module.ai.EcsIsolatedMysql.open(
+                System.getProperty("agent.model-config.mysql-file"), "doorhandle_model_verify_");
         jdbc=new JdbcTemplate(dataSource);
         String sql=new String(Objects.requireNonNull(getClass().getResourceAsStream("/db/migration-V41-model-configuration.sql")).readAllBytes(),java.nio.charset.StandardCharsets.UTF_8);
         // Same table/column/unique definitions; H2 cannot accept MySQL secondary-key clauses.

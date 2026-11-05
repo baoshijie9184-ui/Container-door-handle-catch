@@ -6,7 +6,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ruanzhu.doorhandle.contracts.agent.AgentActor;
 import com.ruanzhu.doorhandle.module.detection.api.DetectionAgentReadApiImpl;
 import com.ruanzhu.doorhandle.module.detection.mapper.DetectionTaskMapper;
-import io.github.cdimascio.dotenv.Dotenv;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.mybatis.spring.SqlSessionTemplate;
@@ -23,11 +22,7 @@ import static org.assertj.core.api.Assertions.*;
 class DetectionScopeLocalMysqlTest {
     @Test void verifiesOwnAssignedEnterpriseAndRevokedAssignment() throws Exception {
         Path root=Path.of(System.getProperty("agent.actions.project", ".."));
-        var env=Dotenv.configure().directory(root.toAbsolutePath().toString()).load();
-        String url=env.get("DB_URL");
-        if (!url.matches("jdbc:mysql://(?:localhost|127\\.0\\.0\\.1):3306/doorhandledb\\?.+"))
-            throw new IllegalArgumentException("仅允许当前本机 doorhandledb");
-        var source=new DriverManagerDataSource(url, env.get("DB_USERNAME"),env.get("DB_PASSWORD"));
+        var source=EcsMysqlFixture.source();
         var jdbc=new JdbcTemplate(source);
         var client=new RestTemplate(new org.springframework.http.client.JdkClientHttpRequestFactory(
                 java.net.http.HttpClient.newBuilder().version(java.net.http.HttpClient.Version.HTTP_1_1)
@@ -35,15 +30,15 @@ class DetectionScopeLocalMysqlTest {
                     public List<java.net.Proxy> select(java.net.URI uri){return List.of(java.net.Proxy.NO_PROXY);}
                     public void connectFailed(java.net.URI uri,java.net.SocketAddress address,java.io.IOException error){}
                 }).build()));
-        String base="http://127.0.0.1:8080", prefix="scope-fixture-"+UUID.randomUUID().toString().substring(0,8);
+        String base=EcsMysqlFixture.httpBase(), prefix="scope-fixture-"+UUID.randomUUID().toString().substring(0,8);
         String mine=prefix+"-mine", assigned=prefix+"-assigned", foreign=prefix+"-foreign";
         for (var row:List.of(List.of(mine,"inspector.demo","inspector.demo2"),
                 List.of(assigned,"supervisor.demo","inspector.demo"), List.of(foreign,"inspector.demo2","inspector.demo2"))) {
             jdbc.update("INSERT INTO detection_task(task_id,status,flow_status,created_by,assignee,total_images,processed_images,created_at,updated_at) VALUES(?,'COMPLETED','DETECTED',?,?,0,0,NOW(),NOW())", row.get(0),row.get(1),row.get(2));
         }
         // Surefire 工作目录是 server 模块；后端启动脚本在项目根目录运行。
-        Path imageBase=root.resolve(Optional.ofNullable(env.get("DETECTION_UPLOAD_DIR")).orElse("uploads/images")).toAbsolutePath().normalize();
-        Path annotatedBase=root.resolve(Optional.ofNullable(env.get("DETECTION_ANNOTATED_DIR")).orElse("uploads/annotated")).toAbsolutePath().normalize();
+        Path imageBase=EcsMysqlFixture.directory("imageDirectory");
+        Path annotatedBase=EcsMysqlFixture.directory("annotatedDirectory");
         for(String id:List.of(mine,assigned,foreign)) {
             Path folder=imageBase.resolve(id);Files.createDirectories(folder);
             Files.writeString(folder.resolve("scope-sample.jpg"),"scope-fixture-image");
@@ -110,7 +105,7 @@ class DetectionScopeLocalMysqlTest {
         Files.writeString(root.resolve("work/task-scope-local-mysql.json"),new ObjectMapper().writerWithDefaultPrettyPrinter().writeValueAsString(report));
     }
     private static HttpHeaders login(RestTemplate client,String base,String username) {
-        var response=client.postForEntity(base+"/api/auth/login",Map.of("username",username,"password","123456"),Map.class);
+        var response=client.postForEntity(base+"/api/auth/login",Map.of("username",username,"password",EcsMysqlFixture.value("loginPassword")),Map.class);
         assertThat(response.getBody().get("code")).isEqualTo(200);var headers=new HttpHeaders();
         headers.set(HttpHeaders.COOKIE,String.join("; ",response.getHeaders().get(HttpHeaders.SET_COOKIE).stream().map(cookie->cookie.split(";",2)[0]).toList()));
         return headers;

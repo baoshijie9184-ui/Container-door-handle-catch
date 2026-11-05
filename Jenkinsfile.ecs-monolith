@@ -1,0 +1,41 @@
+// Source verification only; lifecycle controller arms a deadline before starting the ECS agent.
+pipeline {
+    agent { label 'doorhandle-monolith && doorhandle-ecs' }
+    options { skipDefaultCheckout(true); disableConcurrentBuilds(); timestamps(); timeout(time: 90, unit: 'MINUTES') }
+    parameters {
+        string(name: 'TRUSTED_COMMIT', defaultValue: '', description: 'Exact reviewed java-cloud commit')
+    }
+    stages {
+        stage('Trusted checkout and ECS identity') {
+            steps {
+                script {
+                    env.CI_EVIDENCE_RELATIVE = ''
+                    env.CI_EVIDENCE = ''
+                    if (!isUnix()) error('Monolith verification must run on the admitted Linux ECS')
+                    if (!(params.TRUSTED_COMMIT ==~ /[a-f0-9]{40}/)) error('An exact reviewed commit is required')
+                    def revision = checkout scm
+                    def branch = (env.BRANCH_NAME ?: revision.GIT_BRANCH ?: '').replaceFirst(/^origin\//, '')
+                    if (branch != 'java-cloud' || revision.GIT_COMMIT != params.TRUSTED_COMMIT) error('SCM branch or commit differs')
+                    if (env.DOORHANDLE_ECS_INSTANCE_ID != 'i-2zeieuov2aum486jm1ek') error('Wrong monolith ECS instance')
+                    if (!env.PYTHON_EXE) error('Set the ECS Python executable')
+                    sh '"$PYTHON_EXE" -B scripts/ecs_execution.py'
+                    env.CI_EVIDENCE_RELATIVE = "work/ecs-ci-${env.BUILD_NUMBER}-${java.util.UUID.randomUUID().toString()}"
+                    env.CI_EVIDENCE = "${env.WORKSPACE}/${env.CI_EVIDENCE_RELATIVE}"
+                }
+            }
+        }
+        stage('Verify on ECS') {
+            steps { sh '"$PYTHON_EXE" -B script/jenkins/verify-ecs.py --output "$CI_EVIDENCE"' }
+        }
+    }
+    post {
+        always {
+            script {
+                if (env.CI_EVIDENCE_RELATIVE) {
+                    junit testResults: "${env.CI_EVIDENCE_RELATIVE}/java/*/surefire-reports/TEST-*.xml,${env.CI_EVIDENCE_RELATIVE}/python.xml", allowEmptyResults: true
+                    archiveArtifacts artifacts: "${env.CI_EVIDENCE_RELATIVE}/receipt.json,${env.CI_EVIDENCE_RELATIVE}/*.log,${env.CI_EVIDENCE_RELATIVE}/python.xml", allowEmptyArchive: true
+                }
+            }
+        }
+    }
+}

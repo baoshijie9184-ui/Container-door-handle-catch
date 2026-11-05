@@ -3,7 +3,7 @@ package com.ruanzhu.doorhandle.module.detection.service;
 import com.ruanzhu.doorhandle.module.detection.security.DetectionTaskAccessPolicy;
 import com.ruanzhu.doorhandle.module.detection.testsupport.FeatureMySql;
 import org.junit.jupiter.api.*;
-import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
@@ -13,7 +13,7 @@ import static org.assertj.core.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
-@EnabledIfEnvironmentVariable(named="DOORHANDLE_FEATURE_MYSQL_URL",matches="jdbc:mysql://127\\.0\\.0\\.1:13363/doorhandle_feature_.*")
+@EnabledIfSystemProperty(named="doorhandle.feature.mysql.config",matches=".+")
 class HistoricalDetectionSummaryMySqlTest {
     JdbcTemplate jdbc;HistoricalDetectionSummaryService service;DetectionTaskAccessPolicy access;
     @BeforeAll void start(){jdbc=new JdbcTemplate(FeatureMySql.source());jdbc.execute("CREATE TABLE IF NOT EXISTS image_detection_data(id BIGINT AUTO_INCREMENT PRIMARY KEY,detected_images_count BIGINT,detection_instances_count BIGINT,model_id BIGINT,start_time DATETIME,finished_at DATETIME,folder_path VARCHAR(255),result_path VARCHAR(255))");}

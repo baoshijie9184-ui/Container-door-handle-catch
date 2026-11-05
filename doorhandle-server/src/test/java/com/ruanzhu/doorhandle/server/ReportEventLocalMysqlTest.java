@@ -6,7 +6,6 @@ import com.ruanzhu.doorhandle.module.detection.config.ReportEventConfiguration;
 import com.ruanzhu.doorhandle.module.detection.config.properties.*;
 import com.ruanzhu.doorhandle.module.detection.repository.ReportEventRepository;
 import com.ruanzhu.doorhandle.module.detection.service.report.*;
-import io.github.cdimascio.dotenv.Dotenv;
 import org.apache.kafka.clients.admin.*;
 import org.apache.kafka.clients.consumer.*;
 import org.apache.kafka.common.serialization.StringDeserializer;
@@ -27,9 +26,9 @@ import static org.assertj.core.api.Assertions.*;
 @EnabledIfSystemProperty(named="report.events.local.mysql",matches="true")
 class ReportEventLocalMysqlTest {
     @Test void retriesSurviveRestartAndActualKafkaReceiptsAreIdempotentAndMonotonic()throws Exception{
-        Path root=Path.of("..").toAbsolutePath().normalize();var env=Dotenv.configure().directory(root.toString()).load();
-        String bootstrap=env.get("APP_KAFKA_BOOTSTRAP_SERVERS","127.0.0.1:9092");
-        if(!Set.of("localhost:9092","127.0.0.1:9092").contains(bootstrap))throw new IllegalStateException("Only local Kafka allowed");
+        Path root=Path.of(System.getProperty("agent.report.project", "..")).toAbsolutePath().normalize();
+        String bootstrap=EcsMysqlFixture.value("kafkaBootstrapServers");
+        if(!bootstrap.matches("127\\.0\\.0\\.1:[0-9]{4,5}"))throw new IllegalStateException("Only the explicit ECS fixture Kafka is allowed");
         try(var context=new AnnotationConfigApplicationContext(AgentCardsLocalMysqlTest.Config.class)){
             var jdbc=context.getBean(JdbcTemplate.class);var json=context.getBean(ObjectMapper.class);var codec=new ReportEventCodec(json);
             String report="qr-"+UUID.randomUUID();

@@ -16,9 +16,10 @@ spring:
       matching-strategy: ant_path_matcher
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
-    url: ${DB_URL:jdbc:mysql://localhost:3306/doorhandledb?useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useUnicode=true&characterEncoding=UTF-8&rewriteBatchedStatements=true}
-    username: ${DB_USERNAME:root}
-    password: ${DB_PASSWORD:}
+    # Runtime configuration is supplied explicitly by the ECS deployment.
+    url: ${DB_URL}
+    username: ${DB_USERNAME}
+    password: ${DB_PASSWORD}
     hikari:
       connection-init-sql: SET time_zone = '+08:00', character_set_client = 'utf8mb4', character_set_connection = 'utf8mb4', character_set_results = 'utf8mb4'
       maximum-pool-size: ${DB_POOL_MAX_SIZE:20}
@@ -30,7 +31,7 @@ spring:
       pool-name: DoorHandleCatchHikariPool
   data:
     redis:
-      host: ${REDIS_HOST:localhost}
+      host: ${REDIS_HOST:}
       port: ${REDIS_PORT:6379}
       password: ${REDIS_PASSWORD:}
       database: ${REDIS_DATABASE:0}

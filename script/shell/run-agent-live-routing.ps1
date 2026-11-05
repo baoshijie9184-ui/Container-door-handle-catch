@@ -7,6 +7,7 @@ param(
     [string]$MavenCommand
 )
 $ErrorActionPreference = 'Stop'
+throw 'Local runtime/test execution is retired. Use script/jenkins/verify-ecs.py on the admitted ECS; local machines edit/build only.'
 if (-not $ExecuteLive) {
     Write-Host 'This evaluation calls a paid provider with synthetic business data.'
     Write-Host 'Run with -ExecuteLive; -Suite routing executes ten fixed cases, workbench verifies plan/async-child lifecycle. No automatic retry or fallback.'

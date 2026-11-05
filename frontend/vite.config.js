@@ -2,10 +2,11 @@ import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import path from 'path'
 import https from 'https'
+import { execFileSync } from 'node:child_process'
 
-// Local frontend preview can use the existing SSH-forwarded server entry.
+// Development runtime executes on the admitted ECS; local production builds remain supported.
 // This is a Vite-only setting and is never included in the production bundle.
-const developmentApiTarget = process.env.DOORHANDLE_DEV_API_TARGET || 'http://127.0.0.1:8080'
+const developmentApiTarget = process.env.DOORHANDLE_DEV_API_TARGET || ''
 const previewOrigin = process.env.DOORHANDLE_DEV_API_TARGET ? new URL(developmentApiTarget).origin : null
 const forwardPreviewOrigin = (proxy) => {
   if (previewOrigin) proxy.on('proxyReq', (request) => request.setHeader('Origin', previewOrigin))
@@ -20,7 +21,12 @@ const ossAgent = new https.Agent({
   timeout: 60000
 })
 
-export default defineConfig({
+export default defineConfig(({ command }) => {
+  if (command === 'serve') {
+    if (!process.env.DOORHANDLE_DEV_API_TARGET) throw new Error('Set DOORHANDLE_DEV_API_TARGET to the ECS gateway')
+    execFileSync(process.env.PYTHON_EXE || 'python3', ['-B', path.resolve(__dirname, '../scripts/ecs_execution.py')], { stdio: 'inherit' })
+  }
+  return {
   plugins: [vue()],
   resolve: {
     alias: {
@@ -112,4 +118,5 @@ export default defineConfig({
       }
     }
   }
+}
 })

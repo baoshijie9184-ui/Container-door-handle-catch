@@ -35,9 +35,9 @@ class AgentWorkbenchServiceTest {
         String ddl=Files.readString(Path.of("../sql/mysql/migration-V37-agent-workbench.sql")).replaceAll("(?m)^--.*$", "").replace(" COLLATE utf8mb4_bin","").replace(" ENGINE=InnoDB DEFAULT CHARSET=utf8mb4","")
             .replaceAll("(?m)^(\\s*)UNIQUE KEY (\\w+)\\s*(\\([^\\n]+\\))", "$1CONSTRAINT $2 UNIQUE $3").replaceAll("(?m)^\\s*KEY .*\\n","").replaceAll(",\\s*\\)",")");
         if(Boolean.getBoolean("workbench.mysql")){
-            var config=new ObjectMapper().readTree(Path.of("../work/workbench-mysql/connection.json").toFile());String database=config.path("database").asText();
-            if(!database.matches("doorhandle_wb_verify_[a-f0-9]{10}")||!config.path("url").asText().startsWith("jdbc:mysql://127.0.0.1:13308/"+database+"?"))throw new IllegalStateException("Only the isolated verification database is allowed");
-            pool=new com.zaxxer.hikari.HikariDataSource();pool.setJdbcUrl(config.path("url").asText()+"&connectTimeout=8000&socketTimeout=15000");pool.setUsername(config.path("username").asText());pool.setPassword(config.path("password").asText());pool.setConnectionInitSql("SET time_zone = '+08:00'");pool.setMaximumPoolSize(8);pool.setMinimumIdle(1);source=pool;jdbc=new JdbcTemplate(source);
+            pool=com.ruanzhu.doorhandle.module.ai.EcsIsolatedMysql.pool(
+                    System.getProperty("workbench.mysql.config"), "doorhandle_wb_verify_", "wb_verify_", 8);
+            source=pool;jdbc=new JdbcTemplate(source);
             assertThat(jdbc.queryForObject("SELECT @@session.time_zone",String.class)).isEqualTo("+08:00");
             for(String table:List.of("agent_workbench_sdk_state","agent_workbench_request","agent_workbench_audit","agent_workbench_item","agent_workbench_owner"))jdbc.execute("DROP TABLE IF EXISTS "+table);
             ddl=Files.readString(Path.of("../sql/mysql/migration-V37-agent-workbench.sql")).replaceAll("(?m)^--.*$", "");
@@ -307,7 +307,7 @@ class AgentWorkbenchServiceTest {
     private void haltProcess(String scenario,int expectedExit)throws Exception{
         store.jdbc().execute("DROP TABLE IF EXISTS agent_workbench_crash_effect");store.jdbc().execute("CREATE TABLE agent_workbench_crash_effect(id BIGINT PRIMARY KEY)");
         String javaExecutable=Path.of(System.getProperty("java.home"),"bin",System.getProperty("os.name").toLowerCase(Locale.ROOT).contains("win")?"java.exe":"java").toString();String classpath=System.getProperty("surefire.test.class.path",System.getProperty("java.class.path"));
-        var process=new ProcessBuilder(javaExecutable,"-cp",classpath,WorkbenchCrashProbe.class.getName(),scenario).redirectErrorStream(true).redirectOutput(Path.of("../work/workbench-mysql/crash-"+scenario+".log").toFile()).start();
+        var process=new ProcessBuilder(javaExecutable,"-Dworkbench.mysql.config="+System.getProperty("workbench.mysql.config"),"-cp",classpath,WorkbenchCrashProbe.class.getName(),scenario).redirectErrorStream(true).redirectOutput(Path.of(System.getProperty("workbench.mysql.config")).getParent().resolve("crash-"+scenario+".log").toFile()).start();
         try{assertThat(process.waitFor(55,TimeUnit.SECONDS)).as("isolated JVM must exit at the injection point").isTrue();assertThat(process.exitValue()).isEqualTo(expectedExit);}finally{if(process.isAlive()){process.destroyForcibly();process.waitFor(10,TimeUnit.SECONDS);}}
     }
     private void crashAndRecover(String scenario,int expectedExit)throws Exception{

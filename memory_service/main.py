@@ -18,7 +18,6 @@ from contextlib import asynccontextmanager, contextmanager
 from fastapi import FastAPI, HTTPException, Request, Header
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
-from dotenv import load_dotenv
 try:
     from .write_receipts import MemoryWriter, ReceiptError, BRIDGE_PROTOCOL
     from .lifecycle import GovernedVectorStore, memory_digest
@@ -26,8 +25,7 @@ except ImportError:  # Docker / start_server.py load main as a top-level module.
     from write_receipts import MemoryWriter, ReceiptError, BRIDGE_PROTOCOL
     from lifecycle import GovernedVectorStore, memory_digest
 
-# 加载 .env 文件
-load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=True)
+# Runtime settings are injected by the ECS deployment. Never load a workstation .env.
 
 # 优先加载指定的本地 Mem0 源码仓库，便于与项目内的服务封装联调。
 mem0_source_path = os.getenv("MEM0_SOURCE_PATH")
@@ -685,5 +683,10 @@ async def retired_unscoped_operation(user_id: str = "", memory_id: str = ""):
 
 
 if __name__ == "__main__":
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    from ecs_execution import require_ecs_execution
+    require_ecs_execution()
     import uvicorn
     uvicorn.run(app, host="127.0.0.1", port=8081)

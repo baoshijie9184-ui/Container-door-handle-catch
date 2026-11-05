@@ -24,9 +24,9 @@ import static org.mockito.Mockito.*;
 /** Separate JVM deliberately exits without close/finally to exercise real crash durability. */
 public final class WorkbenchCrashProbe {
     public static void main(String[] args)throws Exception{
-        var config=new ObjectMapper().readTree(Path.of("../work/workbench-mysql/connection.json").toFile());String database=config.path("database").asText();
-        if(!database.matches("doorhandle_wb_verify_[a-f0-9]{10}")||!config.path("url").asText().startsWith("jdbc:mysql://127.0.0.1:13308/"+database+"?"))throw new SecurityException("Only isolated verification database is allowed");
-        var source=new com.zaxxer.hikari.HikariDataSource();source.setJdbcUrl(config.path("url").asText()+"&connectTimeout=8000&socketTimeout=15000");source.setUsername(config.path("username").asText());source.setPassword(config.path("password").asText());source.setConnectionInitSql("SET time_zone = '+08:00'");source.setMaximumPoolSize(3);source.setMinimumIdle(1);var jdbc=new JdbcTemplate(source);var store=new WorkbenchStore(jdbc,new DataSourceTransactionManager(source),new ObjectMapper());
+        var source=com.ruanzhu.doorhandle.module.ai.EcsIsolatedMysql.pool(
+                System.getProperty("workbench.mysql.config"), "doorhandle_wb_verify_", "wb_verify_", 3);
+        var jdbc=new JdbcTemplate(source);var store=new WorkbenchStore(jdbc,new DataSourceTransactionManager(source),new ObjectMapper());
         var actor=new AgentActor(1,"alice",AgentActor.Role.INSPECTOR);var users=mock(BusinessUserDirectory.class);when(users.current(1,"alice")).thenReturn(new BusinessUserDirectory.Identity(1,"alice",false));
         var provider=mock(ObjectProvider.class);when(provider.getObject()).thenReturn(mock(WorkbenchSessionApi.class));var settings=new WorkbenchProperties();settings.setEnabled(true);var journal=mock(AgentJournal.class);when(journal.enabled()).thenReturn(true);
         String scenario=args[0];var calls=new AtomicInteger();var model=mock(Model.class);when(model.getModelName()).thenReturn("crash-script");when(model.stream(anyList(),anyList(),any())).thenAnswer(inv->{

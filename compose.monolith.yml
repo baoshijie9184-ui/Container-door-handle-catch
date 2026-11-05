@@ -18,8 +18,6 @@ services:
       AGENT_WORKSPACE_ROOT: /app/.agentscope/workspace
     expose:
       - "8080"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     volumes:
       - doorhandle-uploads:/app/uploads
       - doorhandle-agent-workspace:/app/.agentscope/workspace

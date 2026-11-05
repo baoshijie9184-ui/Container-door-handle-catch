@@ -13,7 +13,6 @@ import com.ruanzhu.doorhandle.module.detection.mapper.DetectionTaskMapper;
 import com.ruanzhu.doorhandle.module.detection.service.DetectionTaskService;
 import com.ruanzhu.doorhandle.module.system.api.AgentUserDirectoryImpl;
 import com.ruanzhu.doorhandle.module.system.mapper.UserMapper;
-import io.github.cdimascio.dotenv.Dotenv;
 import org.mybatis.spring.SqlSessionTemplate;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
@@ -26,16 +25,12 @@ import java.util.*;
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
-/** 显式本机验证：只新增带标记的测试任务，保留数据；无需模型或检测 worker。 */
+/** 显式 ECS 隔离验证：只新增带标记的测试任务，保留数据；无需模型或检测 worker。 */
 @EnabledIfSystemProperty(named="agent.actions.local.mysql",matches="true")
 class AgentConfirmationLocalMysqlTest {
     @Test void validatesProductionConfirmationWithRealMysqlAndBackend() throws Exception {
         Path root=Path.of(System.getProperty("agent.actions.project",".."));
-        var env=Dotenv.configure().directory(root.toAbsolutePath().toString()).load();
-        String url=env.get("DB_URL");
-        if (!url.startsWith("jdbc:mysql://localhost:3306/doorhandledb?")&&!url.startsWith("jdbc:mysql://127.0.0.1:3306/doorhandledb?"))
-            throw new IllegalArgumentException("本验证仅允许当前本机 doorhandledb");
-        var source=new DriverManagerDataSource(url,env.get("DB_USERNAME"),env.get("DB_PASSWORD"));
+        var source=EcsMysqlFixture.source();
         var jdbc=new JdbcTemplate(source);var transactions=new DataSourceTransactionManager(source);
         var config=new MybatisConfiguration();config.addMapper(DetectionTaskMapper.class);config.addMapper(UserMapper.class);
         var factory=new MybatisSqlSessionFactoryBean();factory.setDataSource(source);factory.setConfiguration(config);
@@ -59,7 +54,7 @@ class AgentConfirmationLocalMysqlTest {
                     public List<java.net.Proxy> select(java.net.URI uri){return List.of(java.net.Proxy.NO_PROXY);}
                     public void connectFailed(java.net.URI uri,java.net.SocketAddress address,java.io.IOException error){}
                 }).build()));
-        String base="http://127.0.0.1:8080";
+        String base=EcsMysqlFixture.httpBase();
         HttpHeaders owner=login(client,base,"supervisor.demo"),other=login(client,base,"supervisor.demo2"),staff=login(client,base,"inspector.demo");
         List<String> ids=new ArrayList<>();List<AgentActionService.View> pending=new ArrayList<>();
         for(String scenario:List.of("approve","reject","expired","changed","browser")) {
@@ -95,10 +90,10 @@ class AgentConfirmationLocalMysqlTest {
         Files.writeString(root.resolve("work/stage-c-local-mysql.json"),json.writerWithDefaultPrettyPrinter().writeValueAsString(result));
     }
     private static HttpHeaders login(RestTemplate client,String base,String username) {
-        var response=client.postForEntity(base+"/api/auth/login",Map.of("username",username,"password","123456"),Map.class);
+        var response=client.postForEntity(base+"/api/auth/login",Map.of("username",username,"password",EcsMysqlFixture.value("loginPassword")),Map.class);
         assertThat(response.getBody().get("code")).isEqualTo(200);var headers=new HttpHeaders();
         headers.set(HttpHeaders.COOKIE,String.join("; ",response.getHeaders().get(HttpHeaders.SET_COOKIE).stream().map(cookie->cookie.split(";",2)[0]).toList()));
-        headers.set("X-Agent-Action","confirm");headers.set(HttpHeaders.ORIGIN,"http://127.0.0.1:3001");return headers;
+        headers.set("X-Agent-Action","confirm");headers.set(HttpHeaders.ORIGIN,EcsMysqlFixture.value("backendOrigin"));return headers;
     }
     private static Map<?,?> get(RestTemplate client,String base,HttpHeaders headers,String id) {return client.exchange(base+"/api/agent/actions/"+id,HttpMethod.GET,new HttpEntity<>(headers),Map.class).getBody();}
     private static Map<?,?> decide(RestTemplate client,String base,HttpHeaders headers,AgentActionService.View a,String decision,Map<String,Object> extra) {

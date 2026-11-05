@@ -1,5 +1,8 @@
 # 企业级集装箱门把手盖多智能体协同缺陷检测平台
 
+2026-11-05 运行约定：本地仅编辑和构建，运行与测试全部在 ECS `172.29.146.74` 执行，结束后确认 `Stopped / StopCharging`。旧本机运行命令失效，当前入口见 [ECS 运行约定](docs/ECS-only-runtime.md)。
+
+
 本项目面向企业的集装箱门把手盖缺陷检测业务，提供图像采集、模型检测、质检复核、质量追溯和多智能体协同工作台。
 
 ## 系统架构
@@ -127,85 +130,56 @@ Fetch MCP 已接入：“Agent智能系统 → MCP工具”，人工确认版本
 - 检测历史记录管理
 - 模型管理与切换
 
-## 本机开发与 CI 构建环境
+## 本地编辑与构建
 
-以下环境用于修改源码、测试和 Jenkins 构建；日常访问系统使用上面的服务器入口。
+本地仅编辑源码、编译和打包。应用运行、开发预览、数据库、Worker、浏览器验收及所有测试都在 ECS `172.29.146.74` 执行。完整入口和启停要求见 [ECS 运行与测试约定](docs/ECS-only-runtime.md)。
 
-### 前提条件
+### 本地构建工具
 
-- JDK 17+
-- Maven 3.6+
-- Node.js 24（与前端 Docker 构建一致）
-- MySQL 8.0+
-- Conda + Python 3.10（统一使用 `leetcode` 环境）
+- JDK 17 与 Maven
+- Node.js 24 与 npm
+- 如需编辑或编译 Python 源码，复用已有项目 Python 环境
 
-### Python 环境
+本机不需要安装或启动 MySQL、Redis、Kafka、Mem0 或检测 Worker，也不复制运行用 `.env`。环境模板中的连接配置由服务器部署注入。
 
-项目内的 Playwright 测试、Kafka 检测 worker 和 Python 测试统一使用
-`leetcode` Conda 环境。首次配置可执行：
+### 后端构建
 
-```powershell
-conda env create -f environment.yml
-conda run -n leetcode python -m playwright install chromium
-```
-
-如果本机已经存在 `leetcode` 环境，可按清单更新：
+在项目根目录执行。为本轮选择新的项目内输出目录；`-DskipTests=true` 只编译测试源码，不执行测试：
 
 ```powershell
-conda env update -n leetcode -f environment.yml
+mvn -DskipTests=true clean package -B -ntp -Ddoorhandle.isolated-verification=true "-Ddoorhandle.verification-root=D:/AI/lunwen1/DoorHandleCatch/work/monolith-build-01"
 ```
 
-项目提供统一入口，避免当前终端误用 Conda base：
-
-```powershell
-# 验证浏览器
-.\scripts\run-python.ps1 frontend\tests\test_browser.py
-
-# 执行前端自动化测试（需先启动前后端）
-.\scripts\run-python.ps1 frontend\tests\test_frontend.py
-
-# 执行 AgentScope 在线冒烟检查（需配置测试账号，调用真实模型）
-.\scripts\run-python.ps1 scripts\diagnostics\agent_live_smoke.py
-
-# CPU PTH worker 的服务器部署见 docs/六分类检测链路接入.md
-```
-
-### 数据库设置
-
-1. 安装MySQL数据库
-2. 创建数据库：
-```sql
-CREATE DATABASE doorhandledb DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-```
-
-### 后端设置
-
-1. 克隆代码库
-2. 将本地开发环境变量模板复制为 `.env`，并填写数据库、JWT 和外部服务等真实配置。`.env.example` 可提交仓库，`.env` 仅供本机使用并已加入 `.gitignore`：
-```powershell
-Copy-Item .env.example .env
-```
-3. 编译项目：
-```bash
-mvn clean compile
-```
+构建成功不代表云端验证或发布完成。编译工具沿用 Spring Boot 3.2.4 / Java 17，不复用微服务分支的已编译字节。
 
 ### 前端构建
 
-1. 进入前端目录：
-```bash
-cd frontend
-```
+分别在 `frontend` 和 `frontend-agent` 目录安装锁定依赖并构建静态资源：
 
-2. 安装依赖：
 ```bash
-npm ci
-```
-
-3. 构建静态资源（独立 Agent UI 在 `frontend-agent` 中同样执行）：
-```bash
+npm ci --ignore-scripts
 npm run build
 ```
+
+前端开发服务器和测试必须在 ECS 上启动，并要求显式后端地址与 ECS 身份校验。本机不执行 `npm run dev`、`node --test` 或浏览器测试。
+
+### ECS 验证环境
+
+Java/Maven/Python/Node 与浏览器依赖准备在服务器独立测试目录，和既有部署目录分开。`environment.yml` 保留 Python 依赖清单；已有兼容 Conda 环境需要更新时，只在 ECS 上操作：
+
+```bash
+conda env update -n leetcode -f environment.yml
+```
+
+进入已核验的 ECS 隔离源码目录后，设置 `DOORHANDLE_ECS_INSTANCE_ID`、实际 `DOORHANDLE_ECS_MACHINE_ID` 及工具绝对路径，使用以下入口：
+
+```bash
+python3 script/jenkins/verify-ecs.py
+```
+
+Jenkins 任务使用 `Jenkinsfile.ecs-monolith`。真实 MySQL 场景需要控制器提供独立数据库和绑定实例身份的私有 JSON，具体参数见运行约定；不能将生产 `deploy/cloud.env` 或业务数据库交给测试脚本。
+
+代码与构建准备完成后再启动 ECS。测试前设置独立停止定时器，完成后关闭本轮测试进程、收回证据，再由控制端停止实例并回读 `Stopped / StopCharging`。不以操作系统 shutdown 代替云端节省停机。
 
 ## 使用指南
 
@@ -253,7 +227,7 @@ docs/chroma-rag-setup.md
 
 ### 数据库连接问题
 
-请确认MySQL服务已启动，并检查用户名密码是否正确。
+在 ECS 上检查容器私网 MySQL 的健康状态、显式连接地址与专用账号；本机不启动数据库。测试连接必须指向本轮隔离库。
 
 ### 图像上传失败
 

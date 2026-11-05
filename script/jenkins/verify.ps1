@@ -1,5 +1,6 @@
 param([Parameter(Mandatory = $true)][string]$PythonExe)
 $ErrorActionPreference = 'Stop'
+throw 'Local runtime/test execution is retired. Use script/jenkins/verify-ecs.py on the admitted ECS; local machines edit/build only.'
 Set-StrictMode -Version Latest
 $root = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
 Set-Location -LiteralPath $root

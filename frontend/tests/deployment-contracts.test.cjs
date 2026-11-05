@@ -12,14 +12,15 @@ const { readFrontendFile, readProjectFile } = require('./helpers/project-source.
     return nextSection === -1 ? remainder : remainder.slice(0, nextSection)
   }
 
-  test('compose declares two private Spring Boot instances', () => {
+  test('compose declares two private Spring Boot instances with explicit ECS configuration', () => {
     const compose = readProjectFile('compose.nginx.yml')
     assert.match(compose, /^\s{2}backend-1:/m)
     assert.match(compose, /^\s{2}backend-2:/m)
     assert.doesNotMatch(serviceBlock(compose, 'backend-1'), /ports:/)
     assert.doesNotMatch(serviceBlock(compose, 'backend-2'), /ports:/)
     assert.match(compose, /SERVER_PORT:\s*8080/)
-    assert.match(compose, /host\.docker\.internal:host-gateway/)
+    assert.match(compose, /env_file:\s*\n\s*-\s*\$\{DOORHANDLE_ENV_FILE:\?[^}]+\}/)
+    assert.doesNotMatch(compose, /host\.docker\.internal|host-gateway/)
   })
 
   test('backend image uses Maven build and non-root Java runtime', () => {
@@ -57,12 +58,13 @@ const { readFrontendFile, readProjectFile } = require('./helpers/project-source.
     assert.match(compose, /condition:\s*service_healthy/)
   })
 
-  test('deployment environment example uses external services and placeholders', () => {
+  test('deployment environment requires explicit ECS service endpoints and credentials', () => {
     const env = readProjectFile('deploy', 'docker.env.example')
     const gitignore = readProjectFile('.gitignore')
-    assert.match(env, /DB_URL=jdbc:mysql:\/\/host\.docker\.internal:3306\/doorhandledb/)
-    assert.match(env, /REDIS_HOST=host\.docker\.internal/)
-    assert.match(env, /APP_KAFKA_BOOTSTRAP_SERVERS=host\.docker\.internal:9092/)
+    for (const key of ['DB_URL', 'DB_USERNAME', 'DB_PASSWORD', 'REDIS_HOST', 'APP_KAFKA_BOOTSTRAP_SERVERS']) {
+      assert.match(env, new RegExp(`^${key}=[ \\t]*\\r?$`, 'm'))
+    }
+    assert.doesNotMatch(env, /host\.docker\.internal|jdbc:mysql:\/\/(?:localhost|127\.0\.0\.1)/)
     assert.match(env, /JWT_SECRET=replace-with-at-least-32-random-characters/)
     assert.doesNotMatch(env, /sk-[A-Za-z0-9]{16,}/)
     assert.match(gitignore, /^deploy\/\*\.env\r?$/m)
@@ -76,7 +78,7 @@ const { readFrontendFile, readProjectFile } = require('./helpers/project-source.
 }
 
 {
-  test('declares leetcode as the repository Python environment', () => {
+  test('retains the declared Python dependency versions for managed environments', () => {
     const environment = readProjectFile('environment.yml')
 
     assert.match(environment, /^name:\s*leetcode\s*$/m)
@@ -87,22 +89,25 @@ const { readFrontendFile, readProjectFile } = require('./helpers/project-source.
     assert.match(environment, /Pillow>=10\.0\.0/)
   })
 
-  test('runs Python through the leetcode Conda environment without fallback', () => {
+  test('retires the Windows Python runtime wrapper before it can start a local process', () => {
     const runner = readProjectFile('scripts', 'run-python.ps1')
 
-    assert.match(runner, /conda env list --json/)
-    assert.match(runner, /conda run --no-capture-output -n \$EnvironmentName python/)
-    assert.match(runner, /EnvironmentName\s*=\s*'leetcode'/)
-    assert.doesNotMatch(runner, /fallback|base environment/i)
+    assert.match(runner, /throw 'Runtime and tests are ECS-only/)
+    assert.match(runner, /docs\/ECS-only-runtime\.md/)
+    assert.doesNotMatch(runner, /conda\s+run|Start-Process|&\s*(?:conda|python)/i)
   })
 
-  test('configures VS Code and the batch test launcher for leetcode', () => {
+  test('keeps editor analysis while disabling local Python tests and the batch launcher', () => {
     const settings = JSON.parse(readProjectFile('.vscode', 'settings.json'))
     const batchLauncher = readProjectFile('tests_python', 'run_test.bat')
 
-    assert.match(settings['python.defaultInterpreterPath'], /envs[\\/]leetcode[\\/]python\.exe$/i)
-    assert.match(batchLauncher, /conda run --no-capture-output -n leetcode python/i)
-    assert.doesNotMatch(batchLauncher, /[A-Z]:\\.*anaconda.*python\.exe/i)
+    assert.equal(typeof settings['python.defaultInterpreterPath'], 'string')
+    assert.equal(settings['python.testing.pytestEnabled'], false)
+    assert.equal(settings['python.testing.unittestEnabled'], false)
+    assert.equal(settings['python.testing.autoTestDiscoverOnSaveEnabled'], false)
+    assert.match(batchLauncher, /Runtime and tests are ECS-only/)
+    assert.match(batchLauncher, /^exit \/b 1\s*$/m)
+    assert.doesNotMatch(batchLauncher, /conda\s+run|python\s+-m\s+pytest|agent_live_smoke\.py/i)
   })
 
   test('lets Playwright resolve its installed Chromium browser', () => {
@@ -115,11 +120,17 @@ const { readFrontendFile, readProjectFile } = require('./helpers/project-source.
     assert.match(frontendTest, /chromium\.launch\(headless=True\)/)
   })
 
-  test('documents a non-destructive update for the shared leetcode environment', () => {
+  test('documents ECS execution and local editing and builds', () => {
     const readme = readProjectFile('README.md')
+    const guide = readProjectFile('docs', 'ECS-only-runtime.md')
 
-    assert.match(readme, /conda env update -n leetcode -f environment\.yml/)
-    assert.doesNotMatch(readme, /conda env update[^\r\n]*--prune/)
+    assert.match(readme, /本地编辑与构建/)
+    assert.match(readme, /mvn -DskipTests=true clean package/)
+    assert.match(readme, /前端开发服务器和测试必须在 ECS 上启动/)
+    assert.match(guide, /本地仅编辑、编译和打包/)
+    assert.match(guide, /单元\/集成测试全部在 ECS 执行/)
+    assert.match(guide, /Status=Stopped/)
+    assert.match(guide, /StoppedMode=StopCharging/)
   })
 }
 

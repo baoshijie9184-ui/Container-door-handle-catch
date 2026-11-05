@@ -6,7 +6,7 @@ import com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory;
 import com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory.Identity;
 import com.ruanzhu.doorhandle.module.detection.testsupport.FeatureMySql;
 import org.junit.jupiter.api.*;
-import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.springframework.context.annotation.*;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
@@ -19,7 +19,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.assertj.core.api.Assertions.*;
 
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
-@EnabledIfEnvironmentVariable(named="DOORHANDLE_FEATURE_MYSQL_URL",matches="jdbc:mysql://127\\.0\\.0\\.1:13363/doorhandle_feature_.*")
+@EnabledIfSystemProperty(named="doorhandle.feature.mysql.config",matches=".+")
 class QualityDigestMySqlTest {
     AnnotationConfigApplicationContext context;JdbcTemplate jdbc;QualityDigestService service;Directory directory;
     final ZoneId beijing=ZoneId.of("Asia/Shanghai");

@@ -7,8 +7,7 @@ import logging
 from datetime import datetime, timezone, timedelta
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from dotenv import load_dotenv
-load_dotenv()
+# Runtime settings are injected by the ECS deployment, never a working-directory .env.
 
 from kafka_event_models import DetectionTaskCreatedEvent, DetectionTaskFinishedEvent
 from kafka_settings import KafkaWorkerSettings

@@ -31,6 +31,7 @@ pipeline {
         stage('Checkout trusted branch') {
             steps {
                 script {
+                    error('This Windows pipeline is retired. Use Jenkinsfile.ecs-monolith on the ECS execution agent; local machines edit/build only.')
                     if (isUnix()) { error('This pipeline requires the existing Windows Jenkins node.') }
                     if (params.ACTION in ['verify-deploy', 'rollback'] && !params.PRODUCTION_RELEASE_ENABLED) {
                         error('Production publishing is disabled during development. Complete final acceptance before enabling the release action.')

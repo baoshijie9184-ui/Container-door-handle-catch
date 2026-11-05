@@ -22,19 +22,14 @@ class ConversationInboxMySqlTest extends ConversationInboxServiceTest {
     @Override javax.sql.DataSource source(){
         try{
             var project=Path.of("..").toAbsolutePath().normalize();
-            var file=Path.of(System.getenv("DOORHANDLE_INBOX_MYSQL_CONFIG")).toAbsolutePath().normalize();
+            var file=Path.of(System.getenv("DOORHANDLE_INBOX_MYSQL_CONFIG")).normalize();
             assertThat(file.startsWith(project.resolve("work"))).isTrue();
-            var config=new ObjectMapper().readTree(Files.readString(file));
-            String database=config.path("database").asText(),username=config.path("username").asText();
-            assertThat(database).matches("doorhandle_wb_verify_[a-f0-9]{10}");
-            assertThat(username).isEqualTo("wb_verify_"+database.substring(database.lastIndexOf('_')+1));
-            String url=config.path("url").asText();
-            assertThat(url).startsWith("jdbc:mysql://127.0.0.1:").contains("/"+database+"?");
-            var pool=new HikariDataSource();pool.setJdbcUrl(url+"&rewriteBatchedStatements=true");pool.setUsername(username);pool.setPassword(config.path("password").asText());
-            pool.setMaximumPoolSize(6);pool.setConnectionInitSql("SET time_zone='+08:00'");pool.setConnectionTimeout(10000);
+            var pool=com.ruanzhu.doorhandle.module.app.EcsIsolatedMysql.pool(
+                    file.toString(), "doorhandle_wb_verify_", "wb_verify_", 6);
+            pool.setJdbcUrl(pool.getJdbcUrl()+"&rewriteBatchedStatements=true");
+            pool.setConnectionTimeout(10000);
             try{
                 var db=new JdbcTemplate(pool);
-                assertThat(db.queryForObject("SELECT DATABASE()",String.class)).isEqualTo(database);
                 assertThat(db.queryForObject("SELECT @@session.time_zone",String.class)).isEqualTo("+08:00");
                 for(String table:new String[]{"agent_conversation_input_audit","agent_conversation_input","agent_conversation_input_owner"})db.execute("DROP TABLE IF EXISTS "+table);
                 for(String name:new String[]{"migration-V36-conversation-inbox.sql","migration-V39-conversation-owner-dispatch.sql"}){

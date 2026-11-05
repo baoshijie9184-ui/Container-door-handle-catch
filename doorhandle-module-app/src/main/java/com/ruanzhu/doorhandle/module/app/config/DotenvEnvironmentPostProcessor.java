@@ -9,21 +9,28 @@ import org.springframework.core.env.MapPropertySource;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.nio.file.Files;
+import java.nio.file.Path;
 
 /**
- * 在 Spring 环境准备阶段自动加载 .env 文件
- * 确保在属性绑定之前就设置好环境变量
+ * Load only an explicitly selected server file; never read the working directory .env.
+ * DOORHANDLE_ENV_FILE belongs to Compose and is deliberately a different setting.
  */
 @Slf4j
 public class DotenvEnvironmentPostProcessor implements EnvironmentPostProcessor {
 
     @Override
     public void postProcessEnvironment(ConfigurableEnvironment environment, SpringApplication application) {
+        String configured = environment.getProperty("DOORHANDLE_JAVA_ENV_FILE");
+        if (configured == null || configured.isBlank()) return;
+        Path file = Path.of(configured);
+        if (!file.isAbsolute() || !Files.isRegularFile(file) || Files.isSymbolicLink(file)) {
+            throw new IllegalStateException("DOORHANDLE_JAVA_ENV_FILE must select an existing absolute server environment file");
+        }
         try {
             Dotenv dotenv = Dotenv.configure()
-                    .directory(".")
-                    .ignoreIfMalformed()
-                    .ignoreIfMissing()
+                    .directory(file.getParent().toString())
+                    .filename(file.getFileName().toString())
                     .load();
 
             Map<String, Object> envMap = new HashMap<>();
@@ -33,9 +40,10 @@ public class DotenvEnvironmentPostProcessor implements EnvironmentPostProcessor 
 
             addDotenvProperties(environment, envMap);
 
-            log.info("已加载 .env 文件，共 {} 个变量", envMap.size());
+            log.info("已加载显式服务器环境文件，共 {} 个变量", envMap.size());
         } catch (Exception e) {
-            log.warn("加载 .env 文件失败: {}", e.getMessage());
+            // Parser failures can contain credentials. Do not expose their text or cause.
+            throw new IllegalStateException("Unable to load DOORHANDLE_JAVA_ENV_FILE");
         }
     }
 

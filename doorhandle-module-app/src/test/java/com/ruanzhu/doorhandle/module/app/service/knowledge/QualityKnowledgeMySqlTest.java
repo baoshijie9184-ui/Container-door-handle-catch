@@ -5,7 +5,7 @@ import com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory;
 import com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory.Identity;
 import com.ruanzhu.doorhandle.module.app.testsupport.FeatureMySql;
 import org.junit.jupiter.api.*;
-import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.springframework.context.annotation.*;
 import org.springframework.jdbc.core.*;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
@@ -19,7 +19,7 @@ import java.util.concurrent.atomic.*;
 import static org.assertj.core.api.Assertions.*;
 
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
-@EnabledIfEnvironmentVariable(named="DOORHANDLE_FEATURE_MYSQL_URL",matches="jdbc:mysql://127\\.0\\.0\\.1:13363/doorhandle_feature_.*")
+@EnabledIfSystemProperty(named="doorhandle.feature.mysql.config",matches=".+")
 class QualityKnowledgeMySqlTest {
     static final Identity ALICE=new Identity(1,"alice",false),BOB=new Identity(2,"bob",false),BOSS=new Identity(3,"boss",true);
     AnnotationConfigApplicationContext context;QualityKnowledgeService service;CoordinatedJdbc jdbc;Directory directory;

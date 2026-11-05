@@ -1,4 +1,8 @@
-"""Install one pinned Fetch release into a prevalidated user/job directory. No shell."""
+"""Build pinned Fetch artifacts in a prevalidated directory; this does not start a service.
+
+Used both by Docker image builds and supervised ECS installation. ECS runtime
+checks belong to deployment/execution entry points, not this artifact builder.
+"""
 import argparse
 import email
 import hashlib

@@ -4,6 +4,7 @@ param(
     [string]$Baseline
 )
 $ErrorActionPreference = 'Stop'
+throw 'Local runtime/test execution is retired. Use script/jenkins/verify-ecs.py on the admitted ECS; local machines edit/build only.'
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
 $outputRoot = Join-Path $projectRoot ('work/agent-eval/' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff') + '-' + [Guid]::NewGuid().ToString('N').Substring(0,6))
 New-Item -ItemType Directory -Path $outputRoot -Force | Out-Null

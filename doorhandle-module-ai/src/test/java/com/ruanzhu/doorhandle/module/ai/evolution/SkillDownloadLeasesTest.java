@@ -17,7 +17,8 @@ class SkillDownloadLeasesTest {
     JdbcTemplate jdbc;DriverManagerDataSource source;SkillLinkStorage storage;SkillDownloadLeases leases;TransactionTemplate tx;
     @BeforeEach void setup()throws Exception{
         boolean mysql=System.getProperty("agent.skill.mysql-file")!=null;
-        if(mysql){var config=new ObjectMapper().readTree(Files.readString(Path.of(System.getProperty("agent.skill.mysql-file"))));String database=config.path("database").asText(),url=config.path("url").asText();if(!database.matches("doorhandle_skill_verify_[a-f0-9]{10}")||!url.startsWith("jdbc:mysql://127.0.0.1:3306/"+database+"?"))throw new SecurityException("Only a dedicated local Skill verification database is allowed");source=new DriverManagerDataSource(url,config.path("username").asText(),config.path("password").asText());}
+        if(mysql)source=com.ruanzhu.doorhandle.module.ai.EcsIsolatedMysql.open(
+                System.getProperty("agent.skill.mysql-file"), "doorhandle_skill_verify_");
         else source=new DriverManagerDataSource("jdbc:h2:mem:"+UUID.randomUUID()+";MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1;LOCK_TIMEOUT=5000","sa","");
         jdbc=new JdbcTemplate(source);tx=new TransactionTemplate(new DataSourceTransactionManager(source));
         if(mysql)for(String table:List.of("agent_skill_download_event","agent_skill_download_lease","agent_skill_download_owner","agent_skill_download"))jdbc.execute("DROP TABLE IF EXISTS "+table);

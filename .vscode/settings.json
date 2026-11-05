@@ -1,6 +1,9 @@
 {
     "python.defaultInterpreterPath": "D:\\ruanjian\\anaconda3\\envs\\leetcode\\python.exe",
-    "python.terminal.activateEnvironment": true,
+    "python.terminal.activateEnvironment": false,
+    "python.testing.pytestEnabled": false,
+    "python.testing.unittestEnabled": false,
+    "python.testing.autoTestDiscoverOnSaveEnabled": false,
     "java.compile.nullAnalysis.mode": "automatic",
     "java.configuration.updateBuildConfiguration": "interactive"
 }

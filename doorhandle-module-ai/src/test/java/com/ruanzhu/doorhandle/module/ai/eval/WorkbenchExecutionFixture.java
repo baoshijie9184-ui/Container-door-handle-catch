@@ -47,8 +47,9 @@ final class WorkbenchExecutionFixture implements AutoCloseable {
         if(mysql!=null) {
             if(!mysql.toRealPath().startsWith(project.resolve("work").toRealPath()))throw new IllegalArgumentException("Private project-owned MySQL config required");
             var config=json.readTree(mysql.toFile());String database=config.path("database").asText();
-            if(!database.matches("doorhandle_wb_live_[a-f0-9]{10}")||!config.path("url").asText().startsWith("jdbc:mysql://127.0.0.1:13310/"+database+"?"))throw new IllegalArgumentException("Only an isolated workbench verification database is allowed");
-            pool=new com.zaxxer.hikari.HikariDataSource();pool.setJdbcUrl(config.path("url").asText());pool.setUsername(config.path("username").asText());pool.setPassword(config.path("password").asText());pool.setMaximumPoolSize(6);pool.setMinimumIdle(1);dataSource=pool;databaseKind="MYSQL_ISOLATED";
+            pool=com.ruanzhu.doorhandle.module.ai.EcsIsolatedMysql.pool(
+                    mysql.toString(), "doorhandle_wb_live_", "ecsit_", 6);
+            dataSource=pool;databaseKind="MYSQL_ISOLATED";
             var isolated=new JdbcTemplate(pool);
             if(!database.equals(isolated.queryForObject("SELECT DATABASE()",String.class))||isolated.queryForObject("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE()",Integer.class)!=0)throw new IllegalArgumentException("Use an empty verification database, never replay an earlier experiment");
         } else {pool=null;databaseKind="H2_SYNTHETIC";}

@@ -20,7 +20,6 @@ import com.ruanzhu.doorhandle.module.system.mapper.UserMapper;
 import io.agentscope.core.message.*;
 import io.agentscope.core.model.*;
 import io.agentscope.core.tool.*;
-import io.github.cdimascio.dotenv.Dotenv;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.mybatis.spring.SqlSessionTemplate;
@@ -93,9 +92,7 @@ class AgentReportLocalMysqlTest {
     }
     @Configuration @EnableTransactionManagement static class Config {
         @Bean DataSource source(){
-            var root=Path.of(System.getProperty("agent.report.project","..")).toAbsolutePath();var env=Dotenv.configure().directory(root.toString()).load();String url=env.get("DB_URL");
-            if(!url.matches("jdbc:mysql://(?:localhost|127\\.0\\.0\\.1):3306/doorhandledb\\?.+"))throw new IllegalArgumentException("仅允许本机 doorhandledb");
-            return new DriverManagerDataSource(url,env.get("DB_USERNAME"),env.get("DB_PASSWORD"));
+            return EcsMysqlFixture.source();
         }
         @Bean JdbcTemplate jdbc(DataSource source){return new JdbcTemplate(source);}
         @Bean DataSourceTransactionManager transaction(DataSource source){return new DataSourceTransactionManager(source);}

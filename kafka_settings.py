@@ -23,7 +23,7 @@ class KafkaWorkerSettings:
     @classmethod
     def from_env(cls) -> "KafkaWorkerSettings":
         return cls(
-            kafka_bootstrap_servers=os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092"),
+            kafka_bootstrap_servers=os.getenv("KAFKA_BOOTSTRAP_SERVERS", ""),
             task_created_topic=os.getenv("KAFKA_TASK_CREATED_TOPIC", "detection.task.created"),
             task_finished_topic=os.getenv("KAFKA_TASK_FINISHED_TOPIC", "detection.task.finished"),
             consumer_group=os.getenv("KAFKA_CONSUMER_GROUP", "doorhandlecatch-python"),

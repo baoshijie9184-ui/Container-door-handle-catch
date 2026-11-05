@@ -3,6 +3,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+throw 'Local runtime/test execution is retired. Use script/jenkins/verify-ecs.py on the admitted ECS; local machines edit/build only.'
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $repoRoot

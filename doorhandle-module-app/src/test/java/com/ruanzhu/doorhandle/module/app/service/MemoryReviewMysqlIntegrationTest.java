@@ -40,13 +40,12 @@ class MemoryReviewMysqlIntegrationTest {
 
     @BeforeAll static void initialize()throws Exception{
         Path root=Path.of(System.getProperty("agent.memory.review.project")).toAbsolutePath().normalize();
-        Path privateConfig=Path.of(System.getProperty("agent.memory.review.config")).toAbsolutePath().normalize();
+        Path privateConfig=Path.of(System.getProperty("agent.memory.review.config")).normalize();
         assertThat(privateConfig.startsWith(root.resolve("work"))).isTrue();
         config=JSON.readTree(Files.readString(privateConfig));
-        String database=config.path("database").asText(),url=config.path("url").asText();
-        assertThat(database).matches("doorhandle_wb_verify_[a-f0-9]{10}");
-        assertThat(url).startsWith("jdbc:mysql://127.0.0.1:").contains("/"+database+"?");
-        jdbc=new JdbcTemplate(new DriverManagerDataSource(url,config.path("username").asText(),config.path("password").asText()));
+        String database=config.path("database").asText();
+        jdbc=new JdbcTemplate(com.ruanzhu.doorhandle.module.app.EcsIsolatedMysql.open(
+                privateConfig.toString(), "doorhandle_wb_verify_", "wb_verify_"));
         assertThat(jdbc.queryForObject("SELECT DATABASE()",String.class)).isEqualTo(database);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE()",Integer.class)).isZero();
         String ddl=Files.readString(root.resolve("sql/mysql/migration-V26-personal-memory-governance.sql"));
