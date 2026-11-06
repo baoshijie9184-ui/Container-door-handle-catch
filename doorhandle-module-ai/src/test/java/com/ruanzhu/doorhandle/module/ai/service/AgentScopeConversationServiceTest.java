@@ -20,6 +20,23 @@ import static org.assertj.core.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
 class AgentScopeConversationServiceTest {
+    @Test void accountingIdentityReachesTheModelWhenJournalIsDisabled() throws Exception {
+        var seen=new java.util.concurrent.atomic.AtomicReference<com.ruanzhu.doorhandle.module.ai.model.ModelBudgetContext>();
+        Model model=new Model() {
+            public String getModelName(){return "identity-fixture";}
+            public Flux<ChatResponse> stream(List<Msg> messages,List<ToolSchema> tools,GenerateOptions options){
+                return Flux.deferContextual(context->{
+                    seen.set(context.get(com.ruanzhu.doorhandle.module.ai.model.ModelBudgetContext.CONTEXT_KEY));
+                    return Flux.just(ChatResponse.builder().content(List.of(TextBlock.builder().text("完成").build())).finishReason("stop").build());
+                });
+            }
+        };
+        var run=service(react(model,new Toolkit())).start(actor,"budget-context-session",
+                List.of(new AgentConversationApi.Message("user","查询任务")),"",event->{});
+        assertThat(run.result().get(5,TimeUnit.SECONDS)).isEqualTo("完成");
+        assertThat(seen.get()).isNotNull();assertThat(seen.get().actor()).isEqualTo(actor);
+        assertThat(seen.get().runId()).isNotBlank();
+    }
     private final AgentActor actor = new AgentActor(1, "alice", AgentActor.Role.INSPECTOR);
     private final RoleAgentFactory factory = mock(RoleAgentFactory.class);
     private final AgentRunRegistry registry = new AgentRunRegistry();

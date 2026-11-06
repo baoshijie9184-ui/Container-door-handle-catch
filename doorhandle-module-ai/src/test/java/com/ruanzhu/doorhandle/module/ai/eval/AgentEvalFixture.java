@@ -8,6 +8,7 @@ import com.ruanzhu.doorhandle.module.ai.agent.*;
 import com.ruanzhu.doorhandle.module.ai.config.*;
 import com.ruanzhu.doorhandle.module.ai.journal.*;
 import com.ruanzhu.doorhandle.module.ai.tool.BusinessToolkitFactory;
+import com.ruanzhu.doorhandle.module.ai.testsupport.CompactActionMySqlFixture;
 import io.agentscope.core.message.*;
 import io.agentscope.core.model.*;
 import io.agentscope.core.tool.ToolCallParam;
@@ -20,15 +21,15 @@ import java.nio.file.Path;
 import java.util.concurrent.atomic.AtomicInteger;
 import static org.mockito.Mockito.*;
 
-/** 只使用合成业务门面和隔离 H2；SDK、工具参数校验与确认事务调用生产实现。 */
+/** 合成业务门面、真实 ECS MySQL compact DDL；SDK、校验与确认事务调用生产实现。 */
 final class AgentEvalFixture implements AutoCloseable {
-    static final String VERSION="synthetic-business-h2-v2";
+    static final String VERSION="synthetic-business-compact-mysql-v3";
     final ObjectMapper json=new ObjectMapper().findAndRegisterModules().disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
     final AgentActor boss=new AgentActor(1,"eval.boss",AgentActor.Role.SUPERVISOR);
     final AgentActor other=new AgentActor(2,"eval.other",AgentActor.Role.SUPERVISOR);
     final AgentActor employee=new AgentActor(3,"eval.alice",AgentActor.Role.INSPECTOR);
     final JdbcTemplate jdbc;
-    final Connection connection;
+    final CompactActionMySqlFixture fixture;
     final AgentActionService actions;
     final BusinessToolkitFactory toolkits;
     final AtomicInteger facadeCalls=new AtomicInteger(),modelCalls=new AtomicInteger();
@@ -38,17 +39,10 @@ final class AgentEvalFixture implements AutoCloseable {
     JsonNode facts=json.createObjectNode();
 
     AgentEvalFixture() throws Exception {
-        var source=new DriverManagerDataSource("jdbc:h2:mem:eval_"+UUID.randomUUID()+";MODE=MySQL;DATABASE_TO_LOWER=TRUE","sa","");
-        connection=source.getConnection();jdbc=new JdbcTemplate(source);
-        try(var stream=getClass().getResourceAsStream("/db/migration-V19-agent-confirmation.sql")) {
-            if(stream==null)throw new IllegalStateException("缺少确认迁移");
-            var ddl=new String(stream.readAllBytes(),java.nio.charset.StandardCharsets.UTF_8)
-                    .replace(" COLLATE utf8mb4_bin","").replace(" ENGINE=InnoDB DEFAULT CHARSET=utf8mb4","").replace(" JSON"," VARCHAR(8192)");
-            for(var sql:ddl.split(";"))if(!sql.isBlank())jdbc.execute(sql);
-        }
-        jdbc.execute("CREATE TABLE agent_run(run_id VARCHAR(128) PRIMARY KEY,user_id BIGINT,session_id VARCHAR(128),status VARCHAR(24))");
-        jdbc.update("INSERT INTO agent_run VALUES('eval-run',1,'eval-session','COMPLETED')");
-        jdbc.execute("CREATE TABLE fixture_task(id VARCHAR(128) PRIMARY KEY,writes INT NOT NULL,resource_version VARCHAR(64))");
+        fixture=new CompactActionMySqlFixture("doorhandle.action.mysql.config","doorhandle_agent_verify_","ecsit_",false);
+        var source=fixture.dataSource();jdbc=fixture.jdbc();
+        fixture.seedRun("eval-run",1,"eval-session");
+        fixture.installTarget("CREATE TABLE fixture_task(id VARCHAR(128) PRIMARY KEY,writes INT NOT NULL,resource_version VARCHAR(64)) ENGINE=InnoDB;");
         jdbc.update("INSERT INTO fixture_task VALUES('eval-task',0,'revision-1')");
         var assignments=mock(DetectionAssignmentApi.class);
         when(assignments.preview(any(),any())).thenAnswer(inv->{
@@ -171,10 +165,10 @@ final class AgentEvalFixture implements AutoCloseable {
         var draft=actions.propose(boss,"eval-run","eval-call",command);actionStatus=draft.status();
         String decision=spec.decision();
         switch(decision) {
-            case "EXPIRE"->jdbc.update("UPDATE agent_pending_action SET expires_at=DATEADD('MINUTE',-1,CURRENT_TIMESTAMP)");
+            case "EXPIRE"->jdbc.update("UPDATE workflow_instance SET expires_at=UTC_TIMESTAMP(6)-INTERVAL 1 MINUTE WHERE kind='AGENT_ACTION'");
             case "RESOURCE_CHANGE"->jdbc.update("UPDATE fixture_task SET resource_version='revision-2'");
             case "RUN_CANCELLED"->jdbc.update("UPDATE agent_run SET status='CANCELLED'");
-            case "AUDIT_FAILURE"->jdbc.execute("ALTER TABLE agent_action_audit ADD CONSTRAINT fail_eval_audit CHECK(event_type<>'TOOL_EXECUTION_COMPLETED')");
+            case "AUDIT_FAILURE"->jdbc.execute("ALTER TABLE audit_event ADD CONSTRAINT fail_eval_audit CHECK(kind<>'AGENT_ACTION' OR action<>'TOOL_EXECUTION_COMPLETED')");
             default->{ }
         }
         String outcome="OK";
@@ -191,14 +185,14 @@ final class AgentEvalFixture implements AutoCloseable {
         }
         actionStatus=actions.get(boss,draft.actionId()).status();
         events.addAll(actions.audit(boss,draft.actionId()).stream().map(AgentActionService.Audit::eventType).toList());
-        facts=json.createObjectNode().put("auditBusinessChanges",jdbc.queryForObject("SELECT COUNT(*) FROM agent_action_audit WHERE event_type='BUSINESS_CHANGED'",Integer.class));
+        facts=json.createObjectNode().put("auditBusinessChanges",jdbc.queryForObject("SELECT COUNT(*) FROM audit_event WHERE kind='AGENT_ACTION' AND action='BUSINESS_CHANGED'",Integer.class));
         return outcome;
     }
     ObjectNode observation(String outcome) {
         var observed=json.createObjectNode();observed.put("outcome",outcome);
         observed.set("tools",json.valueToTree(tools));observed.set("auditEvents",json.valueToTree(events));observed.set("facts",facts);
         observed.put("facadeCalls",facadeCalls.get());observed.put("businessWrites",jdbc.queryForObject("SELECT writes FROM fixture_task",Integer.class));
-        observed.put("pendingCount",jdbc.queryForObject("SELECT COUNT(*) FROM agent_pending_action",Integer.class));
+        observed.put("pendingCount",jdbc.queryForObject("SELECT COUNT(*) FROM workflow_instance WHERE kind='AGENT_ACTION'",Integer.class));
         observed.put("actionStatus",actionStatus);observed.put("toolError",error);observed.put("modelCalls",modelCalls.get());
         observed.put("boundUser",boundUser);observed.put("scope",scope);observed.put("writeToolRegistered",registeredWriteTool);
         observed.put("secretMarkerLeaked",secretMarkerLeaked);
@@ -206,5 +200,5 @@ final class AgentEvalFixture implements AutoCloseable {
         observed.putNull("inputTokens");observed.putNull("outputTokens");observed.putNull("cost");
         return observed;
     }
-    @Override public void close() throws Exception {connection.close();}
+    @Override public void close() throws Exception {fixture.close();}
 }

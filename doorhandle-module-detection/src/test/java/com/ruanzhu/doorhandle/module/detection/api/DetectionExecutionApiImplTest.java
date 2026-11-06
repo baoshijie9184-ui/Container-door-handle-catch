@@ -33,6 +33,7 @@ import static org.mockito.Mockito.*;
 
 /** Actual MyBatis SQL plus JDBC transaction/outbox; no network or model calls. */
 class DetectionExecutionApiImplTest {
+    com.ruanzhu.doorhandle.module.detection.support.CompactDetectionMySqlFixture fixture;
     JdbcTemplate jdbc;TransactionTemplate tx;DetectionTaskMapper tasks;
     DetectionExecutionApiImpl api;DetectionDispatchOutbox outbox;
     BusinessUserDirectory users;OperationsAuditApi audit;
@@ -42,27 +43,10 @@ class DetectionExecutionApiImplTest {
     AgentActor supervisor=new AgentActor(3,"chief",AgentActor.Role.SUPERVISOR);
     AtomicBoolean failAudit=new AtomicBoolean();
     @BeforeEach void setup() throws Exception {
-        var source=new DriverManagerDataSource("jdbc:h2:mem:"+UUID.randomUUID()+";MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1;LOCK_TIMEOUT=5000","sa","");
-        boolean mysql=System.getProperty("detection.command.mysql-file")!=null;
-        if(mysql)source=com.ruanzhu.doorhandle.module.detection.EcsIsolatedMysql.open(
-                System.getProperty("detection.command.mysql-file"), "doorhandle_detection_verify_");
+        fixture=new com.ruanzhu.doorhandle.module.detection.support.CompactDetectionMySqlFixture("detection.command.mysql-file");
+        var source=fixture.source();
         jdbc=new JdbcTemplate(source);tx=new TransactionTemplate(new DataSourceTransactionManager(source));
-        if(mysql)for(var table:List.of("test_audit","detection_execution_command","detection_dispatch_outbox","detection_worker_receipt","detection_task"))jdbc.execute("DROP TABLE IF EXISTS "+table);
-        var columns=new ArrayList<String>();
-        for(var field:DetectionTask.class.getDeclaredFields()) {
-            var column=field.getAnnotation(TableField.class);var id=field.getAnnotation(TableId.class);
-            if(id!=null){columns.add("id BIGINT AUTO_INCREMENT PRIMARY KEY");continue;}
-            if(column==null)continue;
-            Class<?> type=field.getType();
-            String sqlType=type==Integer.class?"INT":type==Long.class?"BIGINT":type==Boolean.class?"BOOLEAN":type==BigDecimal.class?"DECIMAL(16,6)":type==LocalDateTime.class?"DATETIME(6)":mysql?"MEDIUMTEXT":"VARCHAR(12000)";
-            if("task_id".equals(column.value()))sqlType="VARCHAR(128)";
-            columns.add(column.value()+" "+sqlType);
-        }
-        jdbc.execute("CREATE TABLE detection_task("+String.join(",",columns)+",UNIQUE(task_id))");
-        String migration=new String(getClass().getResourceAsStream("/db/migration-V42-detection-execution.sql").readAllBytes(),StandardCharsets.UTF_8);
-        if(!mysql)migration=migration.replaceAll("(?m)^ KEY idx[^\\n]*\\n","").replaceAll(",\\s*\\)",")")
-                .replace("ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin","").replaceAll("\\bJSON\\b","VARCHAR(12000)");
-        try(var connection=source.getConnection()){org.springframework.jdbc.datasource.init.ScriptUtils.executeSqlScript(connection,new org.springframework.core.io.ByteArrayResource(migration.getBytes(StandardCharsets.UTF_8)));}
+        fixture.ownFixtureTable("test_audit");
         jdbc.execute("CREATE TABLE test_audit(actor BIGINT,resource VARCHAR(128),action VARCHAR(64),request_id VARCHAR(128))");
         var config=new MybatisConfiguration();config.setMapUnderscoreToCamelCase(true);config.addMapper(DetectionTaskMapper.class);
         var factory=new MybatisSqlSessionFactoryBean();factory.setDataSource(source);factory.setConfiguration(config);
@@ -84,12 +68,17 @@ class DetectionExecutionApiImplTest {
         task.setResultJsonOssKey("private/old-result.json");task.setStatisticsJson("{\"old\":true}");task.setPreviewImageKeysJson("[\"private/old.jpg\"]");task.setDispositionRemark("old disposition");task.setDispositionOperator("chief");
         task.setUpdatedAt(task.getFinishedAt());tasks.insert(task);
         String result=json.writeValueAsString(Map.of("taskId","task-1","dispatchId","dispatch-old","eventType","DETECTION_TASK_FINISHED","status","FAILED"));
-        jdbc.update("INSERT INTO detection_worker_receipt(task_id,dispatch_id,event_id,payload_sha256,owner_id,status,result_json,result_sha256,started_at,updated_at) VALUES('task-1','dispatch-old','old-event','fingerprint','old-owner','COMPLETED',?,?,CURRENT_TIMESTAMP(6),CURRENT_TIMESTAMP(6))",result,hash(result));
+        jdbc.update("INSERT INTO workflow_instance(workflow_id,kind,idempotency_scope,request_id,request_sha256,owner_user_id,resource_type,resource_id,run_id,claim_token,fence,status,payload_version,payload_json,result_version,result_json,result_sha256,created_at,updated_at) VALUES(?, 'DETECTION_WORKER','DETECTION_WORKER','old-event',?,0,'DETECTION_TASK','task-1','dispatch-old','old-owner',1,'COMPLETED',1,'{\"schemaVersion\":1}',1,?,?,UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))",
+                "det-worker:"+hash(json.writeValueAsString(List.of("task-1","dispatch-old"))).substring(0,48),hash("fingerprint"),result,hash(result));
     }
-    @AfterEach void close(){if(outbox!=null)outbox.close();}
+    @AfterEach void close(){if(outbox!=null)outbox.close();if(fixture!=null)fixture.close();}
     DetectionExecutionApi.RetryApproval approval(){var p=api.previewRetry(employee,"task-1");return new DetectionExecutionApi.RetryApproval(p.taskId(),p.resourceVersion());}
     DetectionExecutionApi.Receipt apply(String request,String proposal,DetectionExecutionApi.RetryApproval approval){return tx.execute(status->api.retry(employee,request,proposal,approval));}
-    long count(String table){return jdbc.queryForObject("SELECT COUNT(*) FROM "+table,Long.class);}
+    long count(String kind){
+        if("test_audit".equals(kind))return jdbc.queryForObject("SELECT COUNT(*) FROM test_audit",Long.class);
+        if(!Set.of("DETECTION_COMMAND","DETECTION_DISPATCH").contains(kind))throw new IllegalArgumentException();
+        return jdbc.queryForObject("SELECT COUNT(*) FROM workflow_instance WHERE kind=?",Long.class,kind);
+    }
 
     @Test void atomicReceiptAndOutboxResetNullsUsingActualMapperSql() {
         var preview=api.previewRetry(employee,"task-1");assertThat(preview.imageCount()).isEqualTo(1);
@@ -99,25 +88,25 @@ class DetectionExecutionApiImplTest {
         assertThat(task.getStatus()).isEqualTo("QUEUED");assertThat(task.getDispatchId()).isEqualTo(receipt.dispatchId()).isNotEqualTo("dispatch-old");
         assertThat(task.getResultJsonOssKey()).isNull();assertThat(task.getStatisticsJson()).isNull();assertThat(task.getReviewer()).isNull();assertThat(task.getReviewConclusion()).isNull();
         assertThat(task.getReviewedAt()).isNull();assertThat(task.getDispositionRemark()).isNull();assertThat(task.getDispositionOperator()).isNull();assertThat(task.getLastFinishedEventId()).isNull();
-        assertThat(count("detection_execution_command")).isEqualTo(1);assertThat(count("detection_dispatch_outbox")).isEqualTo(1);assertThat(count("test_audit")).isEqualTo(2);
+        assertThat(count("DETECTION_COMMAND")).isEqualTo(1);assertThat(count("DETECTION_DISPATCH")).isEqualTo(1);assertThat(count("test_audit")).isEqualTo(2);
         assertThat(api.receipt(employee,"request-1")).contains(receipt);
     }
     @Test void repeatedConfirmationReturnsOriginalReceiptWithoutAnotherDispatch() {
         var approval=approval();var receipt=apply("request-1","proposal-1",approval);
         assertThat(apply("request-1","proposal-1",approval)).isEqualTo(receipt);
-        assertThat(count("detection_dispatch_outbox")).isEqualTo(1);assertThat(count("test_audit")).isEqualTo(2);
+        assertThat(count("DETECTION_DISPATCH")).isEqualTo(1);assertThat(count("test_audit")).isEqualTo(2);
         assertThatThrownBy(()->apply("request-1","changed-proposal",approval)).isInstanceOf(IllegalArgumentException.class);
     }
     @Test void staleSnapshotCannotResetTaskOrQueueWork() {
         var approved=approval();jdbc.update("UPDATE detection_task SET assignee='bob' WHERE task_id='task-1'");
         assertThatThrownBy(()->apply("request-1","proposal-1",approved)).isInstanceOf(DetectionExecutionApi.ResourceChanged.class);
-        assertThat(count("detection_dispatch_outbox")).isZero();assertThat(count("test_audit")).isZero();
+        assertThat(count("DETECTION_DISPATCH")).isZero();assertThat(count("test_audit")).isZero();
     }
     @Test void auditFailureRollsBackBusinessStateOutboxAndReceipt() {
         var approved=approval();failAudit.set(true);
         assertThatThrownBy(()->apply("request-1","proposal-1",approved)).isInstanceOf(IllegalStateException.class).hasMessage("injected audit failure");
         assertThat(tasks.selectById(1L).getDispatchId()).isEqualTo("dispatch-old");assertThat(tasks.selectById(1L).getResultJsonOssKey()).isEqualTo("private/old-result.json");
-        assertThat(count("detection_execution_command")).isZero();assertThat(count("detection_dispatch_outbox")).isZero();assertThat(count("test_audit")).isZero();
+        assertThat(count("DETECTION_COMMAND")).isZero();assertThat(count("DETECTION_DISPATCH")).isZero();assertThat(count("test_audit")).isZero();
     }
     @Test void foreignAccountAndRevokedSupervisorCannotAccessTaskOrReceipt() {
         assertThatThrownBy(()->api.assertReadable(other,"task-1")).isInstanceOf(SecurityException.class);
@@ -129,20 +118,20 @@ class DetectionExecutionApiImplTest {
     }
     @Test void unknownPreviousWriteIsNotReplayedAndNoMutationIsSaved() {
         for(String status:List.of("RUNNING","NEEDS_REVIEW")) {
-            jdbc.update("UPDATE detection_worker_receipt SET status=?",status);
+            jdbc.update("UPDATE workflow_instance SET status=?,result_json=NULL,result_sha256=NULL,result_version=NULL,finished_at=NULL WHERE kind='DETECTION_WORKER'",status);
             assertThatThrownBy(()->api.previewRetry(employee,"task-1")).isInstanceOf(DetectionExecutionApi.NeedsReview.class);
         }
-        jdbc.update("DELETE FROM detection_worker_receipt");
+        jdbc.update("DELETE FROM workflow_instance WHERE kind='DETECTION_WORKER'");
         assertThatThrownBy(()->api.previewRetry(employee,"task-1")).isInstanceOf(DetectionExecutionApi.NeedsReview.class);
-        assertThat(count("detection_dispatch_outbox")).isZero();
+        assertThat(count("DETECTION_DISPATCH")).isZero();
     }
     @Test void unknownWriteAppearingAfterPreviewPreventsApprovedExecution() {
-        var approved=approval();jdbc.update("UPDATE detection_worker_receipt SET status='NEEDS_REVIEW'");
+        var approved=approval();jdbc.update("UPDATE workflow_instance SET status='NEEDS_REVIEW',result_json=NULL,result_sha256=NULL,result_version=NULL,finished_at=NULL WHERE kind='DETECTION_WORKER'");
         assertThatThrownBy(()->apply("request-1","proposal-1",approved)).isInstanceOf(DetectionExecutionApi.NeedsReview.class);
-        assertThat(count("detection_execution_command")).isZero();
+        assertThat(count("DETECTION_COMMAND")).isZero();
     }
     @Test void corruptCompletedReceiptCannotAuthorizeRetry() {
-        jdbc.update("UPDATE detection_worker_receipt SET result_json='{}'");
+        jdbc.update("UPDATE workflow_instance SET result_json='{}',result_sha256=SHA2('{}',256) WHERE kind='DETECTION_WORKER'");
         assertThatThrownBy(()->api.previewRetry(employee,"task-1")).isInstanceOf(DetectionExecutionApi.NeedsReview.class);
     }
     @Test void closedOrActiveTaskCannotBeRetriedEvenWithOldFailedFlow() {
@@ -155,7 +144,7 @@ class DetectionExecutionApiImplTest {
     }
     @Test void noTransactionCannotMutateAnything() {
         var approved=approval();assertThatThrownBy(()->api.retry(employee,"request-1","proposal-1",approved)).isInstanceOf(IllegalStateException.class);
-        assertThat(count("detection_dispatch_outbox")).isZero();
+        assertThat(count("DETECTION_DISPATCH")).isZero();
     }
     @Test void twoConcurrentConfirmationsClaimOneDispatch() throws Exception {
         var approved=approval();var pool=Executors.newFixedThreadPool(2);var gate=new CountDownLatch(1);
@@ -164,7 +153,7 @@ class DetectionExecutionApiImplTest {
             var first=pool.submit(work);var second=pool.submit(work);gate.countDown();
             assertThat(first.get(10,TimeUnit.SECONDS)).isEqualTo(second.get(10,TimeUnit.SECONDS));
         } finally {pool.shutdownNow();}
-        assertThat(count("detection_dispatch_outbox")).isEqualTo(1);
+        assertThat(count("DETECTION_DISPATCH")).isEqualTo(1);
     }
     @Test void competingDistinctApprovalsCannotBothUseTheSameResourceVersion() throws Exception {
         var approved=approval();var pool=Executors.newFixedThreadPool(2);var gate=new CountDownLatch(1);
@@ -174,7 +163,7 @@ class DetectionExecutionApiImplTest {
             var a=pool.submit(first);var b=pool.submit(second);gate.countDown();
             assertThat(List.of(a.get(10,TimeUnit.SECONDS),b.get(10,TimeUnit.SECONDS))).containsExactlyInAnyOrder("ACCEPTED","STALE");
         } finally {pool.shutdownNow();}
-        assertThat(count("detection_execution_command")).isEqualTo(1);assertThat(count("detection_dispatch_outbox")).isEqualTo(1);
+        assertThat(count("DETECTION_COMMAND")).isEqualTo(1);assertThat(count("DETECTION_DISPATCH")).isEqualTo(1);
     }
     private static String hash(String value) throws Exception {return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8)));}
 }

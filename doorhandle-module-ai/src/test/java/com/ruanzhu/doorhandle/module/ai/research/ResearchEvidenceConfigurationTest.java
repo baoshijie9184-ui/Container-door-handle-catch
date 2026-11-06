@@ -16,6 +16,7 @@ class ResearchEvidenceConfigurationTest {
     final AgentJournal journal=mock(AgentJournal.class);
     ApplicationContextRunner context(){
         when(journal.enabled()).thenReturn(true);
+        when(jdbc.execute(org.mockito.ArgumentMatchers.<org.springframework.jdbc.core.ConnectionCallback<Boolean>>any())).thenReturn(true);
         return new ApplicationContextRunner()
                 .withUserConfiguration(ResearchEvidenceService.class,ResearchEvidenceStorage.class,ResearchEvidenceExportService.class,ResearchExportRateLimit.class)
                 .withBean(JdbcTemplate.class,()->jdbc)
@@ -38,7 +39,7 @@ class ResearchEvidenceConfigurationTest {
     @Test void existingEvidenceCanStartWithoutGovernanceTables(){
         context().withPropertyValues("agentscope.research.enabled=true").run(ctx->{
             assertThat(ctx).hasNotFailed().hasSingleBean(ResearchEvidenceService.class).doesNotHaveBean(ResearchEvidenceStorage.class);
-            verify(jdbc,never()).queryForList(contains("agent_research_storage_owner"));
+            verify(jdbc,never()).queryForList(contains("runtime_state"));
             assertThat(ctx).doesNotHaveBean(ResearchEvidenceExportService.class);
             verify(jdbc,never()).queryForList(contains("agent_research_export_audit"));
         });
@@ -55,15 +56,16 @@ class ResearchEvidenceConfigurationTest {
             assertThat(ctx).hasNotFailed().hasSingleBean(ResearchEvidenceStorage.class).hasSingleBean(ResearchEvidenceService.class);
             assertThat(ctx.getBean(ResearchEvidenceProperties.class).isPurgeEnabled()).isFalse();
             assertThat(ctx.getBean(ResearchEvidenceStorage.class).purgeExpiredBatch()).isZero();
-            verify(jdbc).queryForList(contains("agent_research_storage_owner"));
-            verify(jdbc).queryForList(contains("agent_research_content_purge"));
+            verify(jdbc).queryForList(contains("runtime_state"));
+            verify(jdbc,times(2)).queryForList(contains("purge_owner_user_id"));
         });
     }
     @Test void optingIntoGovernanceRequiresMigrationBeforeStartup(){
-        when(jdbc.queryForList(contains("agent_research_storage_owner"))).thenThrow(new DataAccessResourceFailureException("missing table"));
+        when(jdbc.queryForList(contains("runtime_state"))).thenThrow(new DataAccessResourceFailureException("missing table"));
         context().withPropertyValues("agentscope.research.enabled=true","agentscope.research.governance-enabled=true").run(ctx->{
             assertThat(ctx).hasFailed();
-            assertThat(ctx.getStartupFailure()).hasRootCauseMessage("请先执行 migration-V32-agent-research-storage.sql 再启用存储治理");
+            assertThat(ctx.getStartupFailure()).hasRootCauseMessage("missing table")
+                    .hasStackTraceContaining("请先完成 compact schema 迁移再启用存储治理");
         });
     }
     @Test void existingExportDoesNotReadTheOptionalLimitTable(){

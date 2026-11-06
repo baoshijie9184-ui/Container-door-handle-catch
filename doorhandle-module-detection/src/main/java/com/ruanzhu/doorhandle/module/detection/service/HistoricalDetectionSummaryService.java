@@ -34,7 +34,7 @@ public class HistoricalDetectionSummaryService {
                 SELECT COUNT(*) AS records, COALESCE(SUM(detected_images_count),0) AS images,
                        SUM(detection_instances_count) AS targets, COUNT(DISTINCT model_id) AS models,
                        MIN(start_time) AS first_recorded, MAX(COALESCE(finished_at,start_time)) AS last_recorded
-                FROM image_detection_data
+                FROM historical_detection_summary
                 """, (row, index) -> new HistoricalDetectionSummary(
                 row.getLong("records"), row.getLong("images"), nullableLong(row, "targets"),
                 row.getLong("models"), row.getObject("first_recorded", LocalDateTime.class),
@@ -43,7 +43,7 @@ public class HistoricalDetectionSummaryService {
                 SELECT YEAR(start_time) AS recorded_year, COUNT(*) AS records,
                        COALESCE(SUM(detected_images_count),0) AS images,
                        SUM(detection_instances_count) AS targets
-                FROM image_detection_data WHERE start_time IS NOT NULL
+                FROM historical_detection_summary WHERE start_time IS NOT NULL
                 GROUP BY YEAR(start_time) ORDER BY recorded_year
                 """, (row, index) -> new YearTotal(row.getInt("recorded_year"), row.getLong("records"),
                 row.getLong("images"), nullableLong(row, "targets")));

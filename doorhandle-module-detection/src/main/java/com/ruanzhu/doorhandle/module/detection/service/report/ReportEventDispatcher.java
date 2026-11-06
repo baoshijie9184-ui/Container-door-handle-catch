@@ -7,7 +7,6 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 import java.time.*;
-import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /** 短语句竞争租约，网络发送在事务外；确认丢失时允许重投，由接收端去重。 */
@@ -36,8 +35,8 @@ public class ReportEventDispatcher {
                 ReportLifecycleEvent event=null;
                 try{event=validated(entry);}catch(IllegalArgumentException ignored){}
                 if(event!=null&&hasEarlierUndelivered(event)){repository.defer(entry,now().plusSeconds(5));continue;}
-                String token=UUID.randomUUID().toString();
-                if(!repository.claim(entry,token,now(),now().plusNanos(properties.getLeaseMs()*1_000_000)))continue;
+                var claimed=repository.claim(entry,now(),now().plusNanos(properties.getLeaseMs()*1_000_000));
+                if(claimed==null)continue;String token=claimed.leaseToken();
                 if(event==null){repository.failed(entry.eventId(),token,"INVALID_EVENT",true,now());continue;}
                 try{transport.send(event.reportId(),entry.payload());}
                 catch(InterruptedException error){Thread.currentThread().interrupt();repository.failed(entry.eventId(),token,"SEND_INTERRUPTED",false,next(entry.attempts()+1));break;}

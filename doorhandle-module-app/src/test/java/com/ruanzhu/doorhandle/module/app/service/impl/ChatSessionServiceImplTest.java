@@ -8,7 +8,6 @@ import com.ruanzhu.doorhandle.module.app.entity.ChatMessage;
 import com.ruanzhu.doorhandle.module.app.entity.ChatPendingAction;
 import com.ruanzhu.doorhandle.module.app.entity.ChatSession;
 import com.ruanzhu.doorhandle.module.app.mapper.ChatMessageMapper;
-import com.ruanzhu.doorhandle.module.app.mapper.ChatPendingActionMapper;
 import com.ruanzhu.doorhandle.module.app.mapper.ChatSessionMapper;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
@@ -65,14 +64,14 @@ class ChatSessionServiceImplTest {
 
     private ChatSessionMapper chatSessionMapper;
     private ChatMessageMapper chatMessageMapper;
-    private ChatPendingActionMapper pendingActionMapper;
+    private LegacyChatActionStore pendingActionStore;
     private ChatSessionServiceImpl chatSessionService;
 
     @BeforeEach
     void setUp() {
         chatSessionMapper = mock(ChatSessionMapper.class);
         chatMessageMapper = mock(ChatMessageMapper.class);
-        pendingActionMapper = mock(ChatPendingActionMapper.class);
+        pendingActionStore = mock(LegacyChatActionStore.class);
 
         ChatAssistantProperties properties = new ChatAssistantProperties();
         properties.setDefaultSessionSuffix("default");
@@ -81,7 +80,7 @@ class ChatSessionServiceImplTest {
         chatSessionService = new ChatSessionServiceImpl(
                 chatSessionMapper,
                 chatMessageMapper,
-                pendingActionMapper,
+                pendingActionStore,
                 properties,
                 new ObjectMapper()
         );
@@ -243,16 +242,10 @@ class ChatSessionServiceImplTest {
         session.setSessionId("sess_admin_default");
         session.setUserId(1L);
         when(chatSessionMapper.selectOne(any())).thenReturn(session);
-        ChatPendingAction action = new ChatPendingAction();
-        action.setSessionId("sess_admin_default");
-        action.setActionId("action-1");
-        when(pendingActionMapper.selectOne(any())).thenReturn(action);
-
         chatSessionService.markPendingActionStatus(
                 new TenantContext(1L, "admin"), "sess_admin_default", "action-1", "CONFIRMED");
 
-        assertThat(action.getStatus()).isEqualTo("CONFIRMED");
-        verify(pendingActionMapper).updateById(action);
+        verify(pendingActionStore).mark(1L,"sess_admin_default","action-1","CONFIRMED");
     }
 
     @Test
@@ -261,9 +254,9 @@ class ChatSessionServiceImplTest {
         session.setSessionId("sess_admin_default");
         session.setUserId(1L);
         when(chatSessionMapper.selectOne(any())).thenReturn(session);
-        when(pendingActionMapper.transitionStatus(
+        when(pendingActionStore.transition(1L,
                 "sess_admin_default", "action-1", "PENDING", "EXECUTING", null))
-                .thenReturn(1);
+                .thenReturn(true);
 
         boolean claimed = chatSessionService.transitionPendingAction(
                 new TenantContext(1L, "admin"), "sess_admin_default", "action-1",

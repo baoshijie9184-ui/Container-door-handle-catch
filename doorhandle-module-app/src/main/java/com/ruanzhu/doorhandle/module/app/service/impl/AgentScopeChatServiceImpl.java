@@ -234,7 +234,8 @@ public class AgentScopeChatServiceImpl implements ChatConversationService, Agent
             var text=new ChatMessageResponse();text.setRole(message.getRole());text.setMessageType("TEXT");text.setContent(envelope.text());return text;
         } catch(Exception ignored) {return null;}
     }
-    @Override public ChatMessageResponse confirmAction(String username, ChatConfirmActionRequest request) {
+    @Override @org.springframework.transaction.annotation.Transactional(rollbackFor=Exception.class)
+    public ChatMessageResponse confirmAction(String username, ChatConfirmActionRequest request) {
         var actor = actor(username); var tenant = new TenantContext(actor.userId(), actor.username());
         sessions.verifySessionOwner(username, request.getSessionId());
         if (request.isConfirmed()) throw new BusinessException(410, "旧版 Agent 动作已停用，请到业务页面执行操作");

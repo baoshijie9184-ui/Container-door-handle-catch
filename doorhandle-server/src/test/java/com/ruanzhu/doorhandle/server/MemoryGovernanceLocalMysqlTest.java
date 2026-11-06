@@ -42,6 +42,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @EnabledIfSystemProperty(named="agent.memory.local.mysql",matches="true")
 class MemoryGovernanceLocalMysqlTest {
     @Test void ownedEditsUseActualMysqlAuditAndPrivateHttpBridge()throws Exception{
+        EcsMysqlFixture.configuration();
         var http=com.sun.net.httpserver.HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
         try(var context=new AnnotationConfigApplicationContext(AgentCardsLocalMysqlTest.Config.class)){
             var json=context.getBean(ObjectMapper.class);var user=context.getBean(UserMapper.class).findByUsername("inspector.demo");
@@ -62,7 +63,7 @@ class MemoryGovernanceLocalMysqlTest {
             assertThatThrownBy(()->governance.update(owner,id,new MemoryDtos.Update(key,request.expectedDigest(),"其他正文",true))).hasMessageContaining("409");
             assertThatThrownBy(()->governance.delete(owner,id,new MemoryDtos.Delete(key,request.expectedDigest(),true))).hasMessageContaining("409");
             assertThatThrownBy(()->governance.update(other,id,new MemoryDtos.Update(UUID.randomUUID().toString(),request.expectedDigest(),request.memory(),true))).hasMessageContaining("404");
-            var audit=context.getBean(JdbcTemplate.class).queryForMap("SELECT action_name,outcome,content_digest FROM agent_memory_audit WHERE owner_user_id=? AND request_key=?",owner.userId(),key);
+            var audit=context.getBean(JdbcTemplate.class).queryForMap("SELECT action AS action_name,outcome,content_sha256 AS content_digest FROM audit_event WHERE kind='MEMORY_OPERATION' AND owner_user_id=? AND request_id=? ORDER BY revision DESC,id DESC LIMIT 1",owner.userId(),key);
             assertThat(audit.get("action_name")).isEqualTo("UPDATE");assertThat(audit.get("outcome")).isEqualTo("SUCCEEDED");assertThat(audit.toString()).doesNotContain(request.memory());
             Path root=Path.of(System.getProperty("agent.report.project","..")).toAbsolutePath().normalize();
             Files.writeString(root.resolve("work/memory-edit-local-mysql.json"),json.writerWithDefaultPrettyPrinter().writeValueAsString(Map.of("actualMysql",true,"privateBridgeHttp",true,"successfulReplayDidNotRedispatch",true,"changedContentAndActionRejected",true,"foreignOwnerRejected",true,"memoryResponsesScripted",true,"paidModelsCalled",false,"passed",true)));
@@ -70,6 +71,7 @@ class MemoryGovernanceLocalMysqlTest {
     }
     @Test void preferencesApplyToBothEntrypointsAndDeletionIsOwnedAuditedAndIdempotent()throws Exception{
         Path root=Path.of(System.getProperty("agent.report.project","..")).toAbsolutePath().normalize();
+        EcsMysqlFixture.configuration();
         var http=com.sun.net.httpserver.HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
         try(var context=new AnnotationConfigApplicationContext(AgentCardsLocalMysqlTest.Config.class)){
             var json=context.getBean(ObjectMapper.class);var user=context.getBean(UserMapper.class).findByUsername("inspector.demo");
@@ -92,7 +94,7 @@ class MemoryGovernanceLocalMysqlTest {
             var governance=new PersonalMemoryService(memory,settings);var roles=List.of(new SimpleGrantedAuthority("ROLE_INSPECTOR"));var auth=new UsernamePasswordAuthenticationToken(new TenantPrincipal(owner.userId(),owner.username(),"",roles),null,roles);SecurityContextHolder.getContext().setAuthentication(auth);
             try{
                 var preference=settings.change(owner,new MemoryDtos.ChangePreference(original.revision(),true,false));
-                var sql=context.getBean(SqlSessionTemplate.class);var chatSettings=new ChatAssistantProperties();var sessions=new ChatSessionServiceImpl(sql.getMapper(ChatSessionMapper.class),sql.getMapper(ChatMessageMapper.class),sql.getMapper(ChatPendingActionMapper.class),chatSettings,json);String session=sessions.createSession(owner.username()).getSessionId();
+                var sql=context.getBean(SqlSessionTemplate.class);var chatSettings=new ChatAssistantProperties();var sessions=new ChatSessionServiceImpl(sql.getMapper(ChatSessionMapper.class),sql.getMapper(ChatMessageMapper.class),context.getBean(LegacyChatActionStore.class),chatSettings,json);String session=sessions.createSession(owner.username()).getSessionId();
                 var model=mock(Model.class);when(model.getModelName()).thenReturn("scripted-memory-policy");var prompts=new ArrayList<String>();when(model.stream(anyList(),anyList(),any())).thenAnswer(inv->{List<Msg> messages=inv.getArgument(0);prompts.add(messages.stream().map(Msg::getTextContent).collect(java.util.stream.Collectors.joining("\n")));return reactor.core.publisher.Flux.just(ChatResponse.builder().content(List.of(TextBlock.builder().text("仅按已授权上下文回答").build())).build());});
                 var ai=new AgentScopeProperties();ai.setWorkspace(root.resolve("work/memory-governance-sdk").toString());var factory=new RoleAgentFactory(ai,new BusinessToolkitFactory(mock(DetectionAgentReadApi.class),mock(ResourceAgentReadApi.class),mock(ModelAgentReadApi.class),json),id->model);var journal=context.getBean(JdbcAgentJournal.class);var engine=new AgentScopeConversationService(factory,new AgentRunRegistry(),ai,journal);
                 var beans=new DefaultListableBeanFactory();beans.registerSingleton("engine",engine);var rag=mock(RagKnowledgeService.class);when(rag.retrieveContext(anyString())).thenReturn("");

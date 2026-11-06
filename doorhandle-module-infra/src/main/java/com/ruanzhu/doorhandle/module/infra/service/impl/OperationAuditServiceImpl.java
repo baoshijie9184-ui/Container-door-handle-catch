@@ -3,7 +3,7 @@ package com.ruanzhu.doorhandle.module.infra.service.impl;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ruanzhu.doorhandle.module.infra.entity.OperationAuditLog;
-import com.ruanzhu.doorhandle.module.infra.mapper.OperationAuditLogMapper;
+import com.ruanzhu.doorhandle.module.infra.service.InfraOperationAuditStore;
 import com.ruanzhu.doorhandle.module.infra.service.OperationAuditService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.core.Authentication;
@@ -21,9 +21,7 @@ import java.util.Set;
 public class OperationAuditServiceImpl implements OperationAuditService {
     private static final Set<String> SENSITIVE_PARTS = Set.of(
             "password", "token", "authorization", "cookie", "secret", "accesskey");
-    private static final int MAX_SUMMARY_LENGTH = 8192;
-
-    private final OperationAuditLogMapper mapper;
+    private final InfraOperationAuditStore store;
     private final ObjectMapper objectMapper;
 
     @Override
@@ -37,8 +35,24 @@ public class OperationAuditServiceImpl implements OperationAuditService {
                 Map.of("error", failure == null ? "unknown" : failure.getClass().getSimpleName()));
     }
 
+    @Override
+    public void recordHttp(String method,String path,int status,String clientIp,Throwable failure) {
+        Map<String,Object> summary=new LinkedHashMap<>();
+        summary.put("method",method);summary.put("path",path);summary.put("status",status);
+        if(failure!=null)summary.put("error",failure.getClass().getSimpleName());
+        else if(status>=400)summary.put("error","HTTP_STATUS");
+        var log=entry("API",path!=null&&path.codePointCount(0,path.length())<=128?path:null,method,
+                failure==null&&status<400?"SUCCESS":"FAILURE",summary);
+        log.setRequestMethod(method);log.setRequestPath(path);log.setClientIp(clientIp);
+        store.append(log);
+    }
+
     private void persist(String resourceType, String resourceId, String action,
                          String result, Map<String, ?> summary) {
+        store.append(entry(resourceType,resourceId,action,result,summary));
+    }
+
+    private OperationAuditLog entry(String resourceType,String resourceId,String action,String result,Map<String,?> summary) {
         OperationAuditLog log = new OperationAuditLog();
         Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
         log.setOperator(authentication == null ? "system" : authentication.getName());
@@ -47,8 +61,8 @@ public class OperationAuditServiceImpl implements OperationAuditService {
         log.setAction(action);
         log.setResult(result);
         log.setChangeSummary(toJson(summary));
-        log.setCreatedAt(LocalDateTime.now());
-        mapper.insert(log);
+        log.setCreatedAt(LocalDateTime.now(java.time.ZoneOffset.ofHours(8)));
+        return log;
     }
 
     private Map<String, Object> sanitize(Map<String, ?> changes) {
@@ -67,8 +81,8 @@ public class OperationAuditServiceImpl implements OperationAuditService {
 
     private String toJson(Map<String, ?> summary) {
         try {
-            String json = objectMapper.writeValueAsString(summary);
-            return json.length() <= MAX_SUMMARY_LENGTH ? json : json.substring(0, MAX_SUMMARY_LENGTH);
+            // A substring can turn a valid JSON snapshot into invalid/truncated evidence.
+            return objectMapper.writeValueAsString(summary);
         } catch (JsonProcessingException e) {
             return "{\"serializationError\":true}";
         }

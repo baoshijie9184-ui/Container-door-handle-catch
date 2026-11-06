@@ -29,6 +29,7 @@ runtime="$root/runtime"
 mkdir -p "$root/state" "$runtime"
 assignment_helper=assignment-fixture
 secret_helper=secret-fixture
+schema_helper=schema-fixture
 prepare_mcp_runtime() { :; }
 python3() { cat >/dev/null; [[ "${GUARD_FAIL:-}" != "$1" ]] || return 1; printf '{}'; }
 '''.replace('ROOT_PATH', shlex.quote(tmp_path.as_posix()))
@@ -127,7 +128,7 @@ def test_runtime_snapshot_keeps_the_database_health_gate(tmp_path, monkeypatch, 
         assert not outputs
 
 
-@pytest.mark.parametrize('guard', ['assignment-fixture', 'secret-fixture'])
+@pytest.mark.parametrize('guard', ['schema-fixture', 'assignment-fixture', 'secret-fixture'])
 def test_prerequisite_guard_failure_stops_before_any_application_activation(tmp_path, guard):
     source=(Path(__file__).resolve().parents[1]/'script/jenkins/deploy-remote.sh').read_text(encoding='utf8')
     activate=re.search(r'^activate\(\) \{.*?^\}',source,flags=re.M|re.S).group()

@@ -47,8 +47,8 @@ public class JdbcAgentJournal implements AgentJournal {
     @PostConstruct public void verifySchema() {
         if (enabled()) {
             try { jdbc.queryForObject("SELECT COUNT(*) FROM agent_run WHERE 1 = 0", Long.class);
-                  jdbc.queryForObject("SELECT COUNT(*) FROM agent_run_event WHERE 1 = 0", Long.class); }
-            catch (RuntimeException error) { throw new IllegalStateException("请先执行 migration-V16-agentscope-run-journal.sql 再启用运行日志"); }
+                  jdbc.queryForObject("SELECT COUNT(journal_run_id) FROM audit_event WHERE kind='AGENT_RUN' AND 1=0", Long.class); }
+            catch (RuntimeException error) { throw new IllegalStateException("请先执行 compact 28 表 agent_run/audit_event 基线及迁移，再启用运行日志",error); }
         }
     }
     @Override public void checkRequest(AgentActor actor, String entry, String request) {
@@ -79,7 +79,7 @@ public class JdbcAgentJournal implements AgentJournal {
                 jdbc.update("""
                     INSERT INTO agent_run(run_id,user_id,session_id,main_agent,entry_point,request_key,status,default_model,
                       policy_version,instance_id,active_slot,last_sequence,started_at,heartbeat_at,lease_expires_at)
-                    VALUES (?,?,?,?,?,?,'RUNNING',?,?,?,1,0,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,?)
+                    VALUES (?,?,?,?,?,?,'RUNNING',?,?,?,1,0,UTC_TIMESTAMP(6),UTC_TIMESTAMP(6),?)
                     """, id, actor.userId(), session, main, entry, request, model, POLICY, instance, databaseNow().plusSeconds(90));
                 handle.event("RUN_STARTED", Map.of("agent", main, "scope", actor.supervisor() ? "SINGLE_ENTERPRISE" : "OWNED_OR_ASSIGNED", "policyVersion", POLICY));
             });
@@ -104,8 +104,8 @@ public class JdbcAgentJournal implements AgentJournal {
     }
     public List<EventView> events(AgentActor actor, String id, long after, int limit) {
         get(actor,id); if (after < 0) throw badRequest("事件游标不正确");
-        return jdbc.query("SELECT sequence_no,event_type,occurred_at,payload_json FROM agent_run_event WHERE user_id=? AND run_id=? AND sequence_no>? ORDER BY sequence_no LIMIT ?",
-            (rs,n) -> new EventView(rs.getLong(1),rs.getString(2),rs.getObject(3,LocalDateTime.class),readPayload(rs.getString(4))),actor.userId(),id,after,bounded(limit));
+        return jdbc.query("SELECT sequence_no,action,occurred_at,payload_json FROM audit_event WHERE kind='AGENT_RUN' AND owner_user_id=? AND journal_run_id=? AND sequence_no>? ORDER BY sequence_no LIMIT ?",
+            (rs,n) -> new EventView(rs.getLong(1),rs.getString(2),businessTime(rs.getObject(3,LocalDateTime.class)),readPayload(rs.getString(4))),actor.userId(),id,after,bounded(limit));
     }
     public RunView cancel(AgentActor actor, String id) {
         var view = get(actor,id); if (!"RUNNING".equals(view.status())) return view;
@@ -117,11 +117,11 @@ public class JdbcAgentJournal implements AgentJournal {
     @Scheduled(fixedDelay = 30000) public void maintainLeases() {
         if (!enabled()) return;
         for (var handle : active.values()) {
-            try { if (jdbc.update("UPDATE agent_run SET heartbeat_at=CURRENT_TIMESTAMP,lease_expires_at=? WHERE user_id=? AND run_id=? AND instance_id=? AND status='RUNNING'",
+            try { if (jdbc.update("UPDATE agent_run SET heartbeat_at=UTC_TIMESTAMP(6),lease_expires_at=? WHERE user_id=? AND run_id=? AND instance_id=? AND status='RUNNING'",
                     databaseNow().plusSeconds(90),handle.userId,handle.id,instance) == 0) handle.cancel(); }
             catch (RuntimeException error) { handle.cancel(); }
         }
-        var ids = jdbc.query("SELECT run_id,user_id FROM agent_run WHERE status='RUNNING' AND lease_expires_at<CURRENT_TIMESTAMP ORDER BY lease_expires_at LIMIT 100",
+        var ids = jdbc.query("SELECT run_id,user_id FROM agent_run WHERE status='RUNNING' AND lease_expires_at<UTC_TIMESTAMP(6) ORDER BY lease_expires_at LIMIT 100",
                 (rs,n) -> Map.entry(rs.getString(1),rs.getLong(2)));
         for (var id : ids) new Handle(id.getKey(),id.getValue()).expire();
     }
@@ -143,7 +143,11 @@ public class JdbcAgentJournal implements AgentJournal {
             });
         }
         private void insert(long seq,String type,String payload) {
-            jdbc.update("INSERT INTO agent_run_event(run_id,user_id,sequence_no,event_type,occurred_at,payload_json) VALUES (?,?,?,?,CURRENT_TIMESTAMP,?)",id,userId,seq,type,payload);
+            com.ruanzhu.doorhandle.framework.persistence.JdbcTransactions.requireActive(jdbc);
+            jdbc.update("""
+                INSERT INTO audit_event(event_id,kind,owner_user_id,run_id,journal_run_id,sequence_no,action,occurred_at,payload_version,payload_json)
+                VALUES (?,'AGENT_RUN',?,?,?,?,?,UTC_TIMESTAMP(6),1,?)
+                """,UUID.randomUUID().toString(),userId,id,id,seq,type,payload);
         }
         public synchronized void finish(String status) { finishInternal(status,false); }
         private void finishInternal(String status,boolean expiredOnly) {
@@ -162,7 +166,7 @@ public class JdbcAgentJournal implements AgentJournal {
                 if (expiredOnly && !expiry.isBefore(databaseNow())) return current;
                 long seq=((Number)rows.get(0).get("last_sequence")).longValue()+1;
                 insert(seq,"RUN_"+status,"{}");
-                jdbc.update("UPDATE agent_run SET status=?,active_slot=NULL,last_sequence=?,ended_at=CURRENT_TIMESTAMP WHERE user_id=? AND run_id=? AND status='RUNNING'",status,seq,userId,id);
+                jdbc.update("UPDATE agent_run SET status=?,active_slot=NULL,last_sequence=?,ended_at=UTC_TIMESTAMP(6) WHERE user_id=? AND run_id=? AND status='RUNNING'",status,seq,userId,id);
                 return status;
             });
             if (!"RUNNING".equals(actual)) { closed=true; terminalStatus=actual; active.remove(id,this); }
@@ -191,10 +195,13 @@ public class JdbcAgentJournal implements AgentJournal {
         catch (Exception error) { throw new IllegalStateException("运行事件格式不正确"); }
     }
     private static final RowMapper<RunView> ROW=(rs,n)->new RunView(rs.getString("run_id"),rs.getString("session_id"),rs.getString("entry_point"),rs.getString("main_agent"),rs.getString("status"),
-            rs.getString("default_model"),rs.getString("policy_version"),rs.getObject("started_at",LocalDateTime.class),rs.getObject("ended_at",LocalDateTime.class),rs.getLong("last_sequence"));
-    // DATETIME/SQL leases use database wall-clock values. Timestamp would apply the
-    // connector/JVM timezone difference and could make a new lease expire eight hours ago.
-    private LocalDateTime databaseNow() { return jdbc.queryForObject("SELECT CURRENT_TIMESTAMP", LocalDateTime.class); }
+            rs.getString("default_model"),rs.getString("policy_version"),businessTime(rs.getObject("started_at",LocalDateTime.class)),businessTime(rs.getObject("ended_at",LocalDateTime.class)),rs.getLong("last_sequence"));
+    // Preserve the existing offset-free UTC+8 API contract; persisted runtime timestamps and leases are UTC.
+    private static LocalDateTime businessTime(LocalDateTime utc) {
+        return utc==null?null:utc.atOffset(java.time.ZoneOffset.UTC).atZoneSameInstant(java.time.ZoneId.of("Asia/Shanghai")).toLocalDateTime();
+    }
+    // Shared runtime DATETIME values are UTC; LocalDateTime avoids connector/JVM conversion.
+    private LocalDateTime databaseNow() { return jdbc.queryForObject("SELECT UTC_TIMESTAMP(6)", LocalDateTime.class); }
     private void requireEnabled() { if(!enabled()) throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"运行日志未启用，请先执行数据库迁移"); }
     private static int bounded(int limit) { if(limit<1||limit>100) throw badRequest("分页大小必须在 1 到 100 之间"); return limit; }
     private static void validateId(String id) { if(id==null||!id.matches("[A-Za-z0-9_-]{1,128}")) throw badRequest("运行编号不正确"); }

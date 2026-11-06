@@ -39,7 +39,7 @@ public class OrganizationDepartmentService implements OrganizationDirectoryApi {
         return new DepartmentIdentity(department.getId(), department.getName());
     }
     public void assertEmployeeUnbound(Long employeeId) {
-        if (bindings.selectCount(new LambdaQueryWrapper<AccountEmployeeBinding>().eq(AccountEmployeeBinding::getEmployeeId, employeeId)) > 0)
+        if (bindings.countByEmployeeId(employeeId) > 0)
             throw new BusinessException(409, "员工已关联登录账号，请先解除账号关联再删除");
     }
 }

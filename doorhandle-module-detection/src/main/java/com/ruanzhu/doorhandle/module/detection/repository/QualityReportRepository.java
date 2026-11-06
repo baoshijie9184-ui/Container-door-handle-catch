@@ -21,15 +21,15 @@ public class QualityReportRepository {
             r.getObject("submitted_at",LocalDateTime.class),r.getObject("decided_at",LocalDateTime.class),r.getString("decider_username"),
             r.getString("decision_reason"),r.getObject("created_at",LocalDateTime.class),r.getObject("updated_at",LocalDateTime.class));
     public Row get(String id,boolean lock) {
-        var rows=jdbc.query("SELECT * FROM detection_quality_report WHERE report_id=?"+(lock?" FOR UPDATE":""),mapper,id);
+        var rows=jdbc.query("SELECT * FROM quality_report WHERE report_id=?"+(lock?" FOR UPDATE":""),mapper,id);
         return rows.isEmpty()?null:rows.get(0);
     }
     public List<Row> list(String where,Map<String,Object> parameters,int page,int size) {
         var p=new HashMap<>(parameters);p.put("limit",size);p.put("offset",(page-1)*size);
-        return named.query("SELECT r.* FROM detection_quality_report r JOIN detection_task t ON t.task_id=r.task_id WHERE "+where+" ORDER BY r.id DESC LIMIT :limit OFFSET :offset",p,mapper);
+        return named.query("SELECT r.* FROM quality_report r JOIN detection_task t ON t.task_id=r.task_id WHERE "+where+" ORDER BY r.id DESC LIMIT :limit OFFSET :offset",p,mapper);
     }
     public long count(String where,Map<String,Object> parameters) {
-        return named.queryForObject("SELECT COUNT(*) FROM detection_quality_report r JOIN detection_task t ON t.task_id=r.task_id WHERE "+where,parameters,Long.class);
+        return named.queryForObject("SELECT COUNT(*) FROM quality_report r JOIN detection_task t ON t.task_id=r.task_id WHERE "+where,parameters,Long.class);
     }
     public JdbcTemplate jdbc() { return jdbc; }
 }

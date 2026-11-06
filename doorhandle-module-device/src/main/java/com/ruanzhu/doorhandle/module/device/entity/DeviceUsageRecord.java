@@ -19,7 +19,7 @@ import java.time.LocalDateTime;
  */
 @Data
 @NoArgsConstructor
-@TableName("device_usage_record")
+@TableName("device_usage")
 public class DeviceUsageRecord {
 
     /** 主键ID */

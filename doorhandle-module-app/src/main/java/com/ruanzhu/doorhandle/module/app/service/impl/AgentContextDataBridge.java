@@ -101,7 +101,7 @@ public class AgentContextDataBridge implements AgentContextDataApi {
     }
     @Override public List<ForkMessage> forkMessages(AgentActor actor,String source,String target,long through){
         workspace.assertOwned(actor,source);workspace.assertOwned(actor,target);
-        Long proof=jdbc.queryForObject("SELECT COUNT(*) FROM agent_session_fork WHERE user_id=? AND source_session_id=? AND fork_session_id=? AND through_message_id=?",Long.class,actor.userId(),source,target,through);if(proof!=1)throw new SecurityException("分支来源或切点不匹配");
+        Long proof=jdbc.queryForObject("SELECT COUNT(*) FROM chat_session WHERE user_id=? AND fork_owner_user_id=user_id AND fork_source_session_id=? AND session_id=? AND fork_through_message_id=? AND fork_request_id IS NOT NULL",Long.class,actor.userId(),source,target,through);if(proof!=1)throw new SecurityException("分支来源或切点不匹配");
         var before=jdbc.queryForList("SELECT id,role,message_type,content FROM chat_message WHERE session_id=? AND id<=? ORDER BY id LIMIT 5001",source,through);
         if(before.size()>5000)throw new IllegalStateException("分支历史映射超出本次上限");
         var after=jdbc.queryForList("SELECT id,role,message_type,content FROM chat_message WHERE session_id=? ORDER BY id LIMIT ?",target,before.size());if(before.size()!=after.size())throw new IllegalStateException("分支历史前缀不完整");

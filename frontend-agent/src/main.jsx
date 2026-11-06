@@ -4,7 +4,7 @@ import { createRoot } from 'react-dom/client';
 import { Button, Layout, message,Skeleton } from 'antd';
 import ConfigProvider from '@agentscope-ai/design/lib/components/commonComponents/ConfigProvider';
 import { RobotOutlined, PlusOutlined } from '@ant-design/icons';
-import { PanelLeft, PanelRight, ArrowUpRight, ArrowDown, ScanLine, ClipboardCheck, ChartNoAxesCombined, Compass, BrainCircuit, ArrowLeft, X, ShieldCheck, Blocks, Plug, RefreshCw, List } from 'lucide-react';
+import { PanelLeft, PanelRight, ArrowUpRight, ArrowDown, ScanLine, ClipboardCheck, ChartNoAxesCombined, Compass, BrainCircuit, ArrowLeft, X, ShieldCheck, Blocks, Plug, RefreshCw, List, Cpu } from 'lucide-react';
 import { Bubble, Sender } from '@agentscope-ai/chat';
 import '../../frontend/src/assets/design-tokens.css';
 import '../../frontend/src/assets/status-badge.css';
@@ -40,6 +40,7 @@ const API = import.meta.env.VITE_AGENT_API_URL || '/agui/run';
 const LOGIN = new URL(import.meta.env.VITE_BUSINESS_LOGIN_URL || '/#/login', window.location.href).toString();
 const ACTIONS = LOGIN.replace(/#.*$/, '') + '#/agent/actions';
 const MEMORIES=LOGIN.replace(/#.*$/,'')+'#/agent/memory';
+const MODEL_QUOTAS=LOGIN.replace(/#.*$/,'')+'#/agent/model-quotas';
 const BUSINESS = LOGIN.replace(/#.*$/, '') + '#/home';
 const TRACE = LOGIN.replace(/#.*$/, '') + '#/agent/trace';
 const REPORTS = LOGIN.replace(/#.*$/, '') + '#/quality/reports';
@@ -291,6 +292,7 @@ function App() {
     {title:'固定 Fetch MCP',note:'查看本人安装、启用与执行状态',path:'/agent/mcp',icon:Plug},
     {title:'资源市场',note:'查看外部资源目录与接入条件',path:'/agent/markets',icon:Compass},
     {title:'个人记忆',note:'查看和管理本人记忆',path:'/agent/memory',icon:BrainCircuit},
+    {title:'LLM模型管理',note:'查看个人额度、提交申请与跟进审批',path:'/agent/model-quotas',icon:Cpu},
     {title:'质检知识库',note:'查看规范、版本与文字引用',path:'/quality/knowledge',icon:ClipboardCheck},
     {title:'执行与调研',note:'工具轨迹、模型路由与来源',path:'/agent/trace'+(threadId?'?sessionId='+encodeURIComponent(threadId):''),icon:ChartNoAxesCombined},
   ];
@@ -301,7 +303,7 @@ function App() {
         <a className="agent-brand" href={BUSINESS} title={SYSTEM_NAME} aria-label={SYSTEM_NAME}><span className="brand-symbol"><ScanLine size={20} /></span><span>{SYSTEM_SHORT_NAME}<strong>{SYSTEM_TAGLINE}</strong></span></a>
         <Button className="new-session" aria-label="新建对话" type="primary" icon={<PlusOutlined aria-hidden="true" />} onClick={newSession} disabled={loading||sessionLoading}>新建对话</Button>
         <SessionHistory sessions={sessions} selectedId={threadId} disabled={loading||sessionLoading} loading={sessionLoading} error={sessionError} currentTaskActive={!!controlState.run&&controlState.run.phase!=='IDLE'} base={SESSIONS} traceBase={TRACE} businessBase={LOGIN.replace(/#.*$/,'')} onSelect={selectHistorySession} onRefresh={()=>loadSession(threadId)} onChanged={(id,patch)=>{sessionMetadataVersion.current++;setSessions(current=>current.map(session=>session.sessionId===id?{...session,...patch}:session));}}/>
-        <div className="sidebar-links"><a href={TRACE+(threadId?'?sessionId='+encodeURIComponent(threadId):'')}><ChartNoAxesCombined size={16} />执行追溯</a><a href={MEMORIES}><BrainCircuit size={16} />个人记忆</a><a href={REPORTS}><ClipboardCheck size={16} />报告与审批</a><a href={OPERATIONS_AUDIT}><ShieldCheck size={16} />操作与交付审计</a><a href={BUSINESS}><ArrowLeft size={16} />返回业务系统</a></div>
+        <div className="sidebar-links"><a href={TRACE+(threadId?'?sessionId='+encodeURIComponent(threadId):'')}><ChartNoAxesCombined size={16} />执行追溯</a><a href={MODEL_QUOTAS}><Cpu size={16} />LLM模型管理</a><a href={MEMORIES}><BrainCircuit size={16} />个人记忆</a><a href={REPORTS}><ClipboardCheck size={16} />报告与审批</a><a href={OPERATIONS_AUDIT}><ShieldCheck size={16} />操作与交付审计</a><a href={BUSINESS}><ArrowLeft size={16} />返回业务系统</a></div>
         <p className="account-note"><ShieldCheck size={14} />会话与记忆按账号隔离</p>
       </nav>
       {!sidebarOpen && <nav className="agent-rail" aria-label="Agent 快捷导航">
@@ -309,6 +311,7 @@ function App() {
         <Button type="text" aria-label="新建对话" title={sessionLoading?'正在读取会话，暂不能新建':loading?'当前消息正在处理，暂不能新建':'新建对话'} disabled={loading||sessionLoading} icon={<PlusOutlined aria-hidden="true"/>} onClick={newSession}/>
         <div aria-hidden="true"/>
         <a href={TRACE+(threadId?'?sessionId='+encodeURIComponent(threadId):'')} aria-label="执行追溯" title="执行追溯"><ChartNoAxesCombined size={18} aria-hidden="true"/></a>
+        <a href={MODEL_QUOTAS} aria-label="LLM模型管理" title="LLM模型管理"><Cpu size={18} aria-hidden="true"/></a>
         <a href={BUSINESS} aria-label="返回业务系统" title="返回业务系统"><ArrowLeft size={18} aria-hidden="true"/></a>
       </nav>}
       {sidebarOpen && <button className="sidebar-scrim" aria-label="收起会话列表" onClick={closeSessionSidebar} />}
@@ -338,7 +341,7 @@ function App() {
         <div className="workspace-tabs" role="tablist" aria-label="助手信息视图" onKeyDown={infoTabKey}><button type="button" id="workspace-tab" role="tab" aria-selected={infoTab==='workspace'} aria-controls="workspace-content" tabIndex={infoTab==='workspace'?0:-1} onClick={()=>setInfoTab('workspace')}>工作区</button><button type="button" id="models-tab" role="tab" aria-selected={infoTab==='models'} aria-controls="models-content" tabIndex={infoTab==='models'?0:-1} onClick={()=>setInfoTab('models')}>模型与能力</button></div>
         <section id="workspace-content" role="tabpanel" aria-labelledby="workspace-tab" hidden={infoTab!=='workspace'}><div className="workspace-session"><span>当前会话</span><strong>{activeSession?.title||'新对话'}</strong></div><AgentWorkbenchPanel sessionId={threadId} base={new URL(API,window.location.href).origin} messages={items} onFork={loadSession} onReference={value=>{if(/^@file:[a-f0-9-]{36}$/.test(value)){setDraft(current=>(current?current.trimEnd()+' ':'')+value+' ');senderRef.current?.focus()}}}/><AgentActionList sessionId={threadId} base={new URL(API,window.location.href).origin} refreshKey={loading}/><p className="workspace-section-label">资源与能力</p>{workspaceResources.map(({icon:Icon,...resource})=><a className="workspace-resource" key={resource.path} href={new URL('#'+resource.path,LOGIN).toString()}><span className="workspace-resource-icon"><Icon size={17}/></span><span><strong>{resource.title}</strong><small>{resource.note}</small></span><ArrowUpRight size={13}/></a>)}<p className="info-note workspace-privacy"><ShieldCheck size={14}/>会话与记忆按账号隔离<br/>需要确认的操作请在确认页面核对</p></section>
         <div id="models-content" role="tabpanel" aria-labelledby="models-tab" hidden={infoTab!=='models'}>
-          <AgentModelOverview catalog={catalog} modelCatalog={modelCatalog} catalogLoading={catalogLoading} modelLoading={modelCatalogLoading} catalogError={catalogError} modelError={modelCatalogError} authRequired={catalogAuthRequired || modelAuthRequired} onRefresh={refreshServiceCatalogs} loginHref={LOGIN} traceHref={TRACE+(threadId?'?sessionId='+encodeURIComponent(threadId):'')} actionsHref={ACTIONS} reportsHref={REPORTS}/>
+          <AgentModelOverview catalog={catalog} modelCatalog={modelCatalog} catalogLoading={catalogLoading} modelLoading={modelCatalogLoading} catalogError={catalogError} modelError={modelCatalogError} authRequired={catalogAuthRequired || modelAuthRequired} onRefresh={refreshServiceCatalogs} loginHref={LOGIN} traceHref={TRACE+(threadId?'?sessionId='+encodeURIComponent(threadId):'')} actionsHref={ACTIONS} reportsHref={REPORTS} modelQuotasHref={MODEL_QUOTAS}/>
         </div>
       </aside>
     </Layout>

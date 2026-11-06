@@ -14,6 +14,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
+@org.junit.jupiter.api.condition.EnabledIfSystemProperty(named="agent.workbench.mysqlConfig",matches=".+")
 class WorkbenchExecutionFixtureTest {
     @TempDir Path workspace;
     final ObjectMapper json=new ObjectMapper();
@@ -27,7 +28,7 @@ class WorkbenchExecutionFixtureTest {
             return ordinary.stream(inv.getArgument(0),inv.getArgument(1),inv.getArgument(2));
         });
         var racers=java.util.concurrent.Executors.newFixedThreadPool(2);
-        try(var f=new WorkbenchExecutionFixture(Path.of(System.getProperty("agent.eval.project","..")).toAbsolutePath().normalize(),workspace,"scripted-terminal-race",id->held,null)) {
+        try(var f=new WorkbenchExecutionFixture(Path.of(System.getProperty("agent.eval.project","..")).toAbsolutePath().normalize(),workspace,"scripted-terminal-race",id->held,Path.of(System.getProperty("agent.workbench.mysqlConfig")))) {
             for(int iteration=0;iteration<6;iteration++) {
                 String session="race-"+iteration;response.set(null);
                 f.start(f.employee,session,UUID.randomUUID().toString(),"查询任务 det_eval_employee 的状态").result().get(20,java.util.concurrent.TimeUnit.SECONDS);
@@ -59,7 +60,7 @@ class WorkbenchExecutionFixtureTest {
             }
             return ordinary.stream(inv.getArgument(0),inv.getArgument(1),inv.getArgument(2));
         });
-        try(var f=new WorkbenchExecutionFixture(Path.of(System.getProperty("agent.eval.project","..")).toAbsolutePath().normalize(),workspace,"scripted-cancellation",id->held,null)) {
+        try(var f=new WorkbenchExecutionFixture(Path.of(System.getProperty("agent.eval.project","..")).toAbsolutePath().normalize(),workspace,"scripted-cancellation",id->held,Path.of(System.getProperty("agent.workbench.mysqlConfig")))) {
             for(var actor:List.of(f.employee,f.supervisor)) {
                 String session="cancel-"+actor.userId();
                 f.start(actor,session,UUID.randomUUID().toString(),"查询任务 "+f.task(actor)+" 的状态").result().get(20,java.util.concurrent.TimeUnit.SECONDS);

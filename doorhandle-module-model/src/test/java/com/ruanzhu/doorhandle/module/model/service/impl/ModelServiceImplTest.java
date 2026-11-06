@@ -4,7 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.ruanzhu.doorhandle.module.model.entity.ModelInfo;
 import com.ruanzhu.doorhandle.module.model.entity.ModelOperationLog;
 import com.ruanzhu.doorhandle.module.model.mapper.ModelInfoMapper;
-import com.ruanzhu.doorhandle.module.model.mapper.ModelOperationLogMapper;
+import com.ruanzhu.doorhandle.module.model.service.ModelOperationAuditStore;
 import com.ruanzhu.doorhandle.module.model.service.ModelValidationService;
 import com.ruanzhu.doorhandle.module.model.service.ModelUploadFiles;
 import com.ruanzhu.doorhandle.module.model.service.ModelRegistrationService;
@@ -46,7 +46,7 @@ class ModelServiceImplTest {
     private ModelInfoMapper modelInfoMapper;
 
     @Mock
-    private ModelOperationLogMapper modelOperationLogMapper;
+    private ModelOperationAuditStore modelOperationAudit;
 
     @Mock
     private ModelValidationService modelValidationService;
@@ -65,13 +65,12 @@ class ModelServiceImplTest {
     @BeforeEach
     void setUp() {
         var files = new ModelUploadFiles(fileJournals, identity, uploadDir.toString(), 209715200L);
-        var registration = new ModelRegistrationService(modelInfoMapper, modelOperationLogMapper, identity, fileJournals);
-        modelService = new ModelServiceImpl(modelInfoMapper, modelOperationLogMapper, modelValidationService,
+        var registration = new ModelRegistrationService(modelInfoMapper, modelOperationAudit, identity, fileJournals);
+        modelService = new ModelServiceImpl(modelInfoMapper, modelOperationAudit, modelValidationService,
                 files, registration, fileJournals, identity);
         lenient().when(identity.supervisor()).thenReturn(new com.ruanzhu.doorhandle.contracts.agent.AgentActor(
                 1L, "supervisor", com.ruanzhu.doorhandle.contracts.agent.AgentActor.Role.SUPERVISOR));
         lenient().when(identity.requestId()).thenReturn("model-upload-test");
-        lenient().when(modelOperationLogMapper.insert(any(ModelOperationLog.class))).thenReturn(1);
         ReflectionTestUtils.setField(modelService, "maxUploadBytes", 209715200L);
     }
 
@@ -108,7 +107,7 @@ class ModelServiceImplTest {
         assertEquals("UNASSESSED", insertCaptor.getAllValues().get(1).getMlopsStatus());
         assertEquals("FULL", insertCaptor.getAllValues().get(1).getDeploymentStrategy());
         assertEquals(100, insertCaptor.getAllValues().get(1).getCanaryPercent());
-        verify(modelOperationLogMapper).insert(any(ModelOperationLog.class));
+        verify(modelOperationAudit).append(any(ModelOperationLog.class));
     }
 
     @Test
@@ -246,7 +245,7 @@ class ModelServiceImplTest {
         assertEquals(Boolean.TRUE, defaultModel.getIsDefault());
         assertTrue(defaultModel.getPublishedAt() != null);
         verify(modelInfoMapper, times(2)).updateModelRecord(any(ModelInfo.class));
-        verify(modelOperationLogMapper, times(2)).insert(any(ModelOperationLog.class));
+        verify(modelOperationAudit, times(2)).append(any(ModelOperationLog.class));
     }
 
     @Test
@@ -263,7 +262,7 @@ class ModelServiceImplTest {
 
         assertEquals("模型校验未通过，不能发布", exception.getMessage());
         verify(modelInfoMapper, never()).updateModelRecord(any(ModelInfo.class));
-        verify(modelOperationLogMapper, never()).insert(any(ModelOperationLog.class));
+        verify(modelOperationAudit, never()).append(any(ModelOperationLog.class));
     }
 
     @Test
@@ -284,7 +283,7 @@ class ModelServiceImplTest {
         assertEquals("PASSED", result.getValidationStatus());
         assertEquals("ONNX 加载成功", result.getValidationMessage());
         verify(modelInfoMapper).updateModelRecord(any(ModelInfo.class));
-        verify(modelOperationLogMapper).insert(any(ModelOperationLog.class));
+        verify(modelOperationAudit).append(any(ModelOperationLog.class));
     }
 
     @Test
@@ -306,7 +305,7 @@ class ModelServiceImplTest {
         assertEquals("FAILED", result.getValidationStatus());
         assertEquals("ONNX 加载失败: invalid graph", result.getValidationMessage());
         verify(modelInfoMapper).updateModelRecord(any(ModelInfo.class));
-        verify(modelOperationLogMapper).insert(any(ModelOperationLog.class));
+        verify(modelOperationAudit).append(any(ModelOperationLog.class));
     }
 
     @Test
@@ -333,6 +332,6 @@ class ModelServiceImplTest {
         assertEquals("ARCHIVED", archived.getStatus());
         assertEquals(3, model.getUsageCount());
         assertEquals(LocalDateTime.of(2026, 6, 1, 10, 0), model.getLastUsedAt());
-        verify(modelOperationLogMapper, times(2)).insert(any(ModelOperationLog.class));
+        verify(modelOperationAudit, times(2)).append(any(ModelOperationLog.class));
     }
 }

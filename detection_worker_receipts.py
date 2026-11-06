@@ -78,8 +78,37 @@ class MysqlDetectionReceipts:
 
     def validate_schema(self):
         with self.transaction() as cursor:
-            cursor.execute('SELECT task_id,dispatch_id,event_id,payload_sha256,owner_id,status,'
-                           'result_json,result_sha256 FROM detection_worker_receipt LIMIT 0')
+            cursor.execute('SELECT workflow_id,kind,resource_id,run_id,request_id,request_sha256,claim_token,'
+                           'fence,status,payload_version,payload_json,result_json,result_sha256 '
+                           'FROM workflow_instance LIMIT 0')
+
+    @staticmethod
+    def workflow_id(task):
+        identity = json.dumps([task.task_id, task.dispatch_id], ensure_ascii=False,
+                              separators=(',', ':'), allow_nan=False)
+        return 'det-worker:' + digest(identity)[:48]
+
+    @staticmethod
+    def receipt_row(row):
+        """Only the closed worker protocol may be interpreted as an inference fence."""
+        if row is None:
+            return None
+        try:
+            payload = json.loads(row['payload_json'])
+            if (row['payload_version'] != 1 or not isinstance(payload, dict)
+                    or set(payload) != {'schemaVersion'} or type(payload['schemaVersion']) is not int
+                    or payload['schemaVersion'] != 1):
+                raise ValueError()
+        except (KeyError, ValueError, TypeError):
+            raise ReceiptUnavailable() from None
+        return row
+
+    @staticmethod
+    def select_receipt():
+        return ('SELECT workflow_id,resource_id AS task_id,run_id AS dispatch_id,request_id AS event_id,'
+                'request_sha256 AS payload_sha256,claim_token AS owner_id,status,result_json,result_sha256,'
+                'payload_version,payload_json FROM workflow_instance '
+                "WHERE kind='DETECTION_WORKER' AND resource_id=%s AND run_id=%s")
 
     def claim(self, task):
         for value, limit in ((task.task_id, 128), (task.dispatch_id, 64), (task.event_id, 128)):
@@ -89,15 +118,19 @@ class MysqlDetectionReceipts:
         fingerprint = task_digest(task)
         with self.transaction() as cursor:
             # A duplicate event ID attached to a different task cannot acquire a fence.
-            cursor.execute('INSERT INTO detection_worker_receipt '
-                           '(task_id,dispatch_id,event_id,payload_sha256,owner_id,status,started_at,updated_at) '
-                           "VALUES (%s,%s,%s,%s,%s,'RUNNING',CURRENT_TIMESTAMP(6),CURRENT_TIMESTAMP(6)) "
-                           'ON DUPLICATE KEY UPDATE task_id=task_id',
-                           (task.task_id, task.dispatch_id, task.event_id, fingerprint, owner))
-            cursor.execute('SELECT * FROM detection_worker_receipt WHERE task_id=%s AND dispatch_id=%s FOR UPDATE',
+            cursor.execute('INSERT INTO workflow_instance '
+                           '(workflow_id,kind,idempotency_scope,request_id,request_sha256,owner_user_id,'
+                           'resource_type,resource_id,run_id,claim_token,fence,status,payload_version,payload_json,'
+                           'created_at,updated_at) '
+                           "VALUES (%s,'DETECTION_WORKER','DETECTION_WORKER',%s,%s,0,'DETECTION_TASK',%s,%s,%s,1,"
+                           "'RUNNING',1,'{\"schemaVersion\":1}',UTC_TIMESTAMP(6),UTC_TIMESTAMP(6)) "
+                           'ON DUPLICATE KEY UPDATE id=id',
+                           (self.workflow_id(task), task.event_id, fingerprint, task.task_id, task.dispatch_id, owner))
+            cursor.execute(self.select_receipt() + ' FOR UPDATE',
                            (task.task_id, task.dispatch_id))
-            row = cursor.fetchone()
-            if row is None or row['payload_sha256'] != fingerprint or row['event_id'] != task.event_id:
+            row = self.receipt_row(cursor.fetchone())
+            if (row is None or row['workflow_id'] != self.workflow_id(task)
+                    or row['payload_sha256'] != fingerprint or row['event_id'] != task.event_id):
                 raise ReceiptUnavailable()
             if row['owner_id'] == owner and row['status'] == 'RUNNING':
                 return Claim(owner=owner)
@@ -106,12 +139,13 @@ class MysqlDetectionReceipts:
     def completed(self, task):
         """Waiting-message reconciliation must never create a new execution fence."""
         with self.transaction() as cursor:
-            cursor.execute('SELECT * FROM detection_worker_receipt WHERE task_id=%s AND dispatch_id=%s',
+            cursor.execute(self.select_receipt(),
                            (task.task_id, task.dispatch_id))
-            return self.completed_result(task, cursor.fetchone())
+            return self.completed_result(task, self.receipt_row(cursor.fetchone()))
 
     def completed_result(self, task, row):
-        if row is None or row['payload_sha256'] != task_digest(task) or row['event_id'] != task.event_id:
+        if (row is None or row['workflow_id'] != self.workflow_id(task)
+                or row['payload_sha256'] != task_digest(task) or row['event_id'] != task.event_id):
             raise ReceiptUnavailable()
         if row['status'] != 'COMPLETED':
             raise ReceiptPending()
@@ -139,17 +173,18 @@ class MysqlDetectionReceipts:
     def complete(self, task, claim, result):
         self.validate_result(task, result)
         with self.transaction() as cursor:
-            cursor.execute("UPDATE detection_worker_receipt SET status='COMPLETED',result_json=%s,result_sha256=%s,"
-                           'updated_at=CURRENT_TIMESTAMP(6) WHERE task_id=%s AND dispatch_id=%s AND owner_id=%s '
-                           "AND payload_sha256=%s AND status='RUNNING'",
+            cursor.execute("UPDATE workflow_instance SET status='COMPLETED',result_version=1,result_json=%s,result_sha256=%s,"
+                           'revision=revision+1,updated_at=UTC_TIMESTAMP(6),finished_at=UTC_TIMESTAMP(6) '
+                           "WHERE kind='DETECTION_WORKER' AND resource_id=%s AND run_id=%s AND claim_token=%s "
+                           "AND request_sha256=%s AND status='RUNNING'",
                            (result, digest(result), task.task_id, task.dispatch_id, claim.owner, task_digest(task)))
             if cursor.rowcount != 1:
                 raise ReceiptUnavailable()
 
     def mark_unknown(self, task, claim):
         with self.transaction() as cursor:
-            cursor.execute("UPDATE detection_worker_receipt SET status='NEEDS_REVIEW',updated_at=CURRENT_TIMESTAMP(6) "
-                           "WHERE task_id=%s AND dispatch_id=%s AND owner_id=%s AND status='RUNNING'",
+            cursor.execute("UPDATE workflow_instance SET status='NEEDS_REVIEW',revision=revision+1,updated_at=UTC_TIMESTAMP(6) "
+                           "WHERE kind='DETECTION_WORKER' AND resource_id=%s AND run_id=%s AND claim_token=%s AND status='RUNNING'",
                            (task.task_id, task.dispatch_id, claim.owner))
 
 

@@ -7,7 +7,7 @@ import lombok.Data;
 import java.time.LocalDateTime;
 
 @Data
-@TableName("detection_work_unit_image")
+@TableName("detection_input")
 public class DetectionWorkUnitImage {
     @TableId(type = IdType.AUTO) private Long id;
     private String workUnitId;
@@ -17,6 +17,9 @@ public class DetectionWorkUnitImage {
     private String objectKey;
     private String status;
     private String detectionRunId;
+    /** Optional verified shared content reference; legacy rows keep their original object key. */
+    private String contentAssetId;
+    private Integer contentVersion;
     private Integer version;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;

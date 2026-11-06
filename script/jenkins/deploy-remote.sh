@@ -7,7 +7,7 @@ root=${2:?release root required}
 runtime=${3:?existing runtime directory required}
 tag=${4:?release tag required}
 digest=${5:-}
-[[ "$action" == deploy || "$action" == rollback ]] || exit 2
+[[ "$action" == deploy || "$action" == rollback || "$action" == build-only ]] || exit 2
 [[ "$tag" =~ ^ci-[0-9]+-[a-f0-9]{12}$ ]] || exit 2
 for path in "$root" "$runtime"; do
     [[ "$path" =~ ^/(home|srv|opt)/[a-zA-Z0-9_./-]+$ && "$path" != */ && "/$path/" != *"/../"* ]] || exit 2
@@ -32,6 +32,12 @@ mcp_helper="$(dirname "${BASH_SOURCE[0]}")/mcp-compat.py"
 [[ -r "$mcp_helper" ]] || { echo 'Native MCP compatibility helper is required.' >&2; exit 2; }
 runtime_helper="$(dirname "${BASH_SOURCE[0]}")/mcp-runtime.py"
 [[ -r "$runtime_helper" ]] || { echo 'MCP runtime transition helper is required.' >&2; exit 2; }
+schema_helper="$(dirname "${BASH_SOURCE[0]}")/compact-schema-guard.py"
+[[ -r "$schema_helper" ]] || { echo 'Compact schema admission helper is required.' >&2; exit 2; }
+if [[ "$action" != build-only ]]; then
+    [[ -r "$root/state/compact-connection.override.yml" && -r "$root/state/compact-connection.json" ]] \
+        || { echo 'Verified compact cutover connection is required; perform the initial migration/cutover separately.' >&2; exit 2; }
+fi
 exec 9>"$root/state/deploy.lock"
 flock -n 9 || { echo 'Another deployment is in progress.' >&2; exit 3; }
 python3 "$runtime_helper" sync-publication --state "$root/state" --lock-fd 9
@@ -53,9 +59,12 @@ dc() {
         [[ -r "$dir/compose.model-config.yml" ]] || { echo 'Release has no model Secret overlay; select a compatible version.' >&2; return 1; }
         overlays+=(-f "$dir/compose.model-config.yml")
     fi
+    local connection_override=()
+    if [[ -r "$root/state/compact-connection.override.yml" ]]; then connection_override=(-f "$root/state/compact-connection.override.yml"); fi
     docker compose --project-name "$project" --env-file "$envfile" \
         -f "$dir/compose.monolith.yml" -f "$dir/compose.cloud.yml" -f "$dir/compose.detection.yml" \
-        "${overlays[@]}" -f "$override" "${memory_override[@]}" "${mcp_override[@]}" "$@"
+        "${overlays[@]}" -f "$override" "${memory_override[@]}" "${mcp_override[@]}" \
+        "${connection_override[@]}" "$@"
 }
 
 # Snapshot actual running image IDs, independent of a mutable tag or private env APP_IMAGE_TAG.
@@ -114,6 +123,8 @@ activate() {
     memory_override=()
     mcp_recovery_done=false
     mcp_manual_recovery=false
+    # Never run a compact candidate against the old MYSQL_DATABASE or trust a UI flag.
+    dc "$dir" "$images" config --format json | python3 "$schema_helper" --state "$root/state" --source "$dir" > /dev/null || return 1
     # No application is stopped until metadata, reader declarations and the recovery baseline agree.
     dc "$dir" "$images" config --format json | python3 "$assignment_helper" guard --state "$root/state" --lock-fd 9 --pin > "$root/state/assignment-transition.pending.json" || return 1
     mv "$root/state/assignment-transition.pending.json" "$root/state/assignment-transition.json"
@@ -181,7 +192,24 @@ if [[ -s "$root/state/current-directory" ]]; then previous=$(cat "$root/state/cu
 snapshot "$release/previous-images.yml" all
 snapshot "$release/runtime-images.yml" runtime
 export APP_IMAGE_TAG=$tag
+if [[ "$action" == build-only ]]; then
+    settings=${6:?private reviewed cutover settings required}
+    instance=${7:?admitted instance identity required}
+    machine=${8:?admitted machine identity required}
+    commit=${9:?fixed SCM commit required}
+    [[ "$settings" =~ ^/(home|srv|opt)/[a-zA-Z0-9_./-]+\.json$ && "/$settings/" != *"/../"* ]] || exit 2
+    [[ "$instance" == i-2zeieuov2aum486jm1ek && "$machine" =~ ^[a-f0-9]{32}$ && "$commit" =~ ^[a-f0-9]{40}$ ]] || exit 2
+    candidate_helper="$release/script/docker/compact-candidate-build.py"
+    candidate_args=(--root "$root" --runtime "$runtime" --tag "$tag" --source-sha256 "$digest" --settings "$settings" --instance-id "$instance" --machine-id "$machine" --commit "$commit")
+    python3 -B "$candidate_helper" stage "${candidate_args[@]}"
+    export DETECTION_BUILD_CONTEXT="$release/work/compact-worker-build"
+    dc "$release" "$release/runtime-images.yml" config --quiet
+    dc "$release" "$release/runtime-images.yml" build backend nginx mem0 detection-worker
+    python3 -B "$candidate_helper" capture "${candidate_args[@]}"
+    exit 0
+fi
 dc "$release" "$release/runtime-images.yml" config --quiet
+dc "$release" "$release/previous-images.yml" config --format json | python3 "$schema_helper" --state "$root/state" --source "$release" > /dev/null
 # The backup helper inherits this deployment's lock; failed backup prevents any app replacement.
 python3 "$release/script/docker/monolith-ops.py" backup --root "$root" --runtime "$runtime" --lock-fd 9
 # The memory protocol and backend are released together. Runtime PTH/Chroma remain pinned.

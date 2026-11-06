@@ -31,6 +31,7 @@ import org.mybatis.spring.SqlSessionTemplate;
 import org.springframework.beans.factory.support.DefaultListableBeanFactory;
 import org.springframework.context.annotation.*;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -55,7 +56,7 @@ class AgentCardsLocalMysqlTest {
             String task="agent-card-fixture-"+UUID.randomUUID().toString().substring(0,8),revoked=task+"-assigned";
             for(String id:List.of(task,revoked))jdbc.update("INSERT INTO detection_task(task_id,status,flow_status,created_by,assignee,total_images,processed_images,successful_images,failed_images,defect_count,review_status,review_conclusion,created_at,updated_at) VALUES(?,'COMPLETED','REVIEWED',?,?,3,3,3,0,2,'REVIEWED','PASS',NOW(),NOW())",id,id.equals(task)?actor.username():"supervisor.demo",actor.username());
             var report=context.getBean(QualityReportService.class).create(context.getBean(BusinessUserDirectory.class).current(actor.userId(),actor.username()),new QualityReportDtos.Create(task,"卡片验收报告 <script>文本</script>","私人验收草稿",UUID.randomUUID().toString()));
-            var sessions=new ChatSessionServiceImpl(sql.getMapper(ChatSessionMapper.class),sql.getMapper(ChatMessageMapper.class),sql.getMapper(ChatPendingActionMapper.class),new ChatAssistantProperties(),json);
+            var sessions=new ChatSessionServiceImpl(sql.getMapper(ChatSessionMapper.class),sql.getMapper(ChatMessageMapper.class),context.getBean(LegacyChatActionStore.class),new ChatAssistantProperties(),json);
             String session=sessions.createSession(actor.username()).getSessionId();
             var detection=new DetectionAgentReadApiImpl(context.getBean(DetectionTaskMapper.class));
             var resources=mock(ResourceAgentReadApi.class);var models=mock(ModelAgentReadApi.class);
@@ -92,16 +93,19 @@ class AgentCardsLocalMysqlTest {
             jdbc.update("UPDATE detection_task SET assignee=?,updated_at=NOW() WHERE task_id=?",other.username(),revoked);
             var current=cards.resolve(actor,envelope.cards());assertThat(current.get(1).items()).isEmpty();assertThat(current.get(1).status()).isEqualTo("PARTIAL");
             var otherViews=cards.resolve(other,envelope.cards());assertThat(otherViews.get(0).items()).isEmpty();assertThat(otherViews.get(3).items()).isEmpty();
-            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM detection_report_outbox WHERE report_id=?",Long.class,report.reportId())).isZero();
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM workflow_instance WHERE kind='REPORT_DELIVERY' AND resource_type='QUALITY_REPORT' AND resource_id=?",Long.class,report.reportId())).isZero();
             assertThat(context.getBean(JdbcAgentJournal.class).events(actor,envelope.runId(),0,100).toString()).doesNotContain("私人验收草稿","卡片验收报告");
             var evidence=new LinkedHashMap<String,Object>();evidence.put("taskId",task);evidence.put("revokedTaskId",revoked);evidence.put("reportId",report.reportId());evidence.put("sessionId",session);evidence.put("runId",envelope.runId());evidence.put("envelope",envelope);evidence.put("modelResponsesScripted",true);evidence.put("paidModelsCalled",false);evidence.put("sdkModelCalls",steps.get());evidence.put("actualMysqlAndServices",true);evidence.put("passed",true);
             Files.writeString(root.resolve("work/agent-cards-local-mysql.json"),json.writerWithDefaultPrettyPrinter().writeValueAsString(evidence));
         } finally {SecurityContextHolder.clearContext();}
     }
     @Configuration static class Config extends AgentReportLocalMysqlTest.Config {
+        @Bean LegacyChatActionStore legacyChatActions(JdbcTemplate jdbc,ObjectMapper json,DataSourceTransactionManager transaction) {
+            return new LegacyChatActionStore(jdbc,json,transaction);
+        }
         @Override @Bean SqlSessionTemplate sql(DataSource source)throws Exception {
             var configuration=new MybatisConfiguration();configuration.setMapUnderscoreToCamelCase(true);
-            for(var mapper:List.of(DetectionTaskMapper.class,UserMapper.class,ChatSessionMapper.class,ChatMessageMapper.class,ChatPendingActionMapper.class))configuration.addMapper(mapper);
+            for(var mapper:List.of(DetectionTaskMapper.class,UserMapper.class,ChatSessionMapper.class,ChatMessageMapper.class))configuration.addMapper(mapper);
             var factory=new MybatisSqlSessionFactoryBean();factory.setDataSource(source);factory.setConfiguration(configuration);return new SqlSessionTemplate(factory.getObject());
         }
     }

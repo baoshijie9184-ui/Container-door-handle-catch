@@ -1,12 +1,11 @@
 package com.ruanzhu.doorhandle.module.system.entity;
 
-import com.baomidou.mybatisplus.annotation.*;
 import lombok.Data;
 
+/** A projection of the account's association fields, never an independently inserted row. */
 @Data
-@TableName("account_employee_binding")
 public class AccountEmployeeBinding {
-    @TableId(value = "user_id", type = IdType.INPUT) private Long userId;
-    @TableField(updateStrategy = FieldStrategy.ALWAYS) private Long employeeId;
+    private Long userId;
+    private Long employeeId;
     private Integer version;
 }

@@ -7,10 +7,12 @@ import com.ruanzhu.doorhandle.common.BusinessException;
 import com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory;
 import com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory.Identity;
 import com.ruanzhu.doorhandle.module.detection.dto.report.QualityReportDtos.*;
+import com.ruanzhu.doorhandle.module.detection.dto.report.ReportTime;
 import com.ruanzhu.doorhandle.module.detection.entity.DetectionTask;
 import com.ruanzhu.doorhandle.module.detection.mapper.DetectionTaskMapper;
 import com.ruanzhu.doorhandle.module.detection.repository.QualityReportRepository;
 import com.ruanzhu.doorhandle.module.detection.repository.QualityReportRepository.Row;
+import com.ruanzhu.doorhandle.module.detection.repository.ReportWorkflowRepository;
 import com.ruanzhu.doorhandle.module.detection.security.DetectionTaskAccessPolicy;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.*;
@@ -30,12 +32,14 @@ public class QualityReportService {
     private final DetectionTaskAccessPolicy policy;
     private final ObjectMapper json;
     private final ObjectMapper canonicalJson;
+    private final ReportWorkflowRepository workflow;
     @org.springframework.beans.factory.annotation.Autowired private org.springframework.beans.factory.ObjectProvider<com.ruanzhu.doorhandle.contracts.agent.OperationsAuditApi> operationsAudit;
     @org.springframework.beans.factory.annotation.Value("${operations.audit.enabled:false}") private boolean operationsAuditEnabled;
     @org.springframework.beans.factory.annotation.Autowired private ReportDocumentRenderer documentRenderer;
     public QualityReportService(QualityReportRepository reports,DetectionTaskMapper tasks,BusinessUserDirectory users,
             DetectionTaskAccessPolicy policy,ObjectMapper json) {
         this.reports=reports;this.tasks=tasks;this.users=users;this.policy=policy;this.json=json;
+        this.workflow=new ReportWorkflowRepository(reports.jdbc(),json);
         this.canonicalJson=json.copy().configure(com.fasterxml.jackson.databind.SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS,true)
                 .configure(com.fasterxml.jackson.databind.MapperFeature.SORT_PROPERTIES_ALPHABETICALLY,true);
     }
@@ -54,26 +58,23 @@ public class QualityReportService {
     public View get(Identity actor,String id) { actor=current(actor);return view(authorized(actor,id,false)); }
     public List<EventDelivery> events(Identity actor,String id) {
         actor=current(actor);authorized(actor,id,false);
-        return reports.jdbc().query("SELECT e.event_id,e.event_type,e.delivery_status,e.attempts,e.next_attempt_at,e.delivered_at,e.last_error_code,r.consumed_at FROM detection_report_outbox e LEFT JOIN detection_report_event_receipt r ON r.event_id=e.event_id WHERE e.report_id=? ORDER BY e.created_at,e.event_id LIMIT 100",
-                (r,n)->new EventDelivery(r.getString("event_id"),r.getString("event_type"),r.getString("delivery_status"),r.getInt("attempts"),r.getObject("next_attempt_at",LocalDateTime.class),r.getObject("delivered_at",LocalDateTime.class),r.getString("last_error_code"),r.getObject("consumed_at",LocalDateTime.class)),id);
+        return workflow.events(id);
     }
     public List<EventDelivery> retryEvent(Identity actor,String id,String eventId,RetryEvent request) {
         actor=current(actor);supervisor(actor);var row=authorized(actor,id,true);
         if(eventId==null||!eventId.matches("[a-f0-9-]{36}")||request==null||request.expectedAttempts()==null||request.expectedAttempts()<0||!request.confirmed())fail(400,"请核对事件并明确确认重试");
         String digest=commandDigest("EVENT_RETRY",id+":"+eventId,request);
         if(repeat(actor,request.requestId(),digest)!=null)return events(actor,id);
-        if(reports.jdbc().update("UPDATE detection_report_outbox SET delivery_status='RETRY',next_attempt_at=?,last_error_code=NULL WHERE report_id=? AND event_id=? AND delivery_status IN ('FAILED','RETRY') AND attempts=?",now(),id,eventId,request.expectedAttempts())!=1)
+        if(!workflow.retry(id,eventId,request.expectedAttempts()))
             fail(409,"事件已变化或正在发送，请刷新后重试");
         writeAudit(actor,row,"EVENT_RETRY",row.status(),"人工确认重新投递报告事件");
         businessAudit(actor,row,"EVENT_RETRY",request.requestId());
-        reports.jdbc().update("INSERT INTO detection_report_command(actor_user_id,request_id,command_sha256,report_id,response_json,created_at) VALUES(?,?,?,?,?,?)",actor.userId(),request.requestId(),digest,id,encode(view(row)),now());
+        workflow.saveCommand(actor.userId(),request.requestId(),digest,row,encode(view(row)));
         return events(actor,id);
     }
     public List<Audit> audit(Identity actor,String id) {
         actor=current(actor);authorized(actor,id,false);
-        return reports.jdbc().query("SELECT a.*,o.run_id,o.call_id,o.tool_name FROM detection_report_audit a LEFT JOIN detection_report_agent_origin o ON o.report_id=a.report_id AND o.report_version=a.report_version AND o.actor_user_id=a.actor_user_id AND a.action IN ('CREATE','EDIT') WHERE a.report_id=? ORDER BY a.id DESC LIMIT 100",
-                (r,n)->new Audit(r.getLong("id"),r.getString("actor_username"),r.getString("action"),r.getString("before_status"),
-                        r.getString("after_status"),r.getInt("report_version"),r.getString("reason"),r.getString("snapshot_sha256"),r.getObject("created_at",LocalDateTime.class),r.getString("run_id"),r.getString("call_id"),r.getString("tool_name")),id);
+        return workflow.audit(id);
     }
     public View create(Identity actor,Create request) {
         actor=current(actor);validateText(request.title(),request.narrative());
@@ -90,7 +91,7 @@ public class QualityReportService {
         var repeated=repeat(actor,request.requestId(),digest);if(repeated!=null)return repeated;
         version(row,request.expectedVersion());state(row,"DRAFT");
         var task=task(actor,row.taskId(),true);eligible(task);
-        reports.jdbc().update("UPDATE detection_quality_report SET title=?,narrative=?,source_json=?,source_sha256=?,version=version+1,updated_at=? WHERE report_id=?",
+        reports.jdbc().update("UPDATE quality_report SET title=?,narrative=?,source_json=?,source_sha256=?,version=version+1,updated_at=? WHERE report_id=?",
                 request.title().trim(),request.narrative(),encode(facts(task)),sourceDigest(task),now(),id);
         return finish(actor,id,request.requestId(),digest,"EDIT",row.status(),null,false);
     }
@@ -100,14 +101,14 @@ public class QualityReportService {
         version(row,request.expectedVersion());state(row,"DRAFT");
         var task=task(actor,row.taskId(),true);eligible(task);sameSource(row,task);
         String snapshot=snapshotDigest(row);
-        reports.jdbc().update("UPDATE detection_quality_report SET status='SUBMITTED',snapshot_sha256=?,submitted_at=?,version=version+1,updated_at=? WHERE report_id=?",snapshot,now(),now(),id);
+        reports.jdbc().update("UPDATE quality_report SET status='SUBMITTED',snapshot_sha256=?,submitted_at=?,version=version+1,updated_at=? WHERE report_id=?",snapshot,now(),now(),id);
         return finish(actor,id,request.requestId(),digest,"SUBMIT",row.status(),null,true);
     }
     public View withdraw(Identity actor,String id,Command request) {
         actor=current(actor);var row=authorized(actor,id,true);owner(actor,row);
         String digest=commandDigest("WITHDRAW",id,request);var repeated=repeat(actor,request.requestId(),digest);if(repeated!=null)return repeated;
         version(row,request.expectedVersion());state(row,"SUBMITTED");
-        reports.jdbc().update("UPDATE detection_quality_report SET status='WITHDRAWN',version=version+1,updated_at=? WHERE report_id=?",now(),id);
+        reports.jdbc().update("UPDATE quality_report SET status='WITHDRAWN',version=version+1,updated_at=? WHERE report_id=?",now(),id);
         return finish(actor,id,request.requestId(),digest,"WITHDRAW",row.status(),null,true);
     }
     public View revise(Identity actor,String id,Command request) {
@@ -122,33 +123,21 @@ public class QualityReportService {
         actor=current(actor);supervisor(actor);var row=authorized(actor,id,true);independent(actor,row);
         version(row,request.expectedVersion());state(row,"SUBMITTED");validateDecision(request.decision(),request.reason());integrity(row);
         if("APPROVE".equals(request.decision()))approveGate(row,task(actor,row.taskId(),true));
-        Long pending=reports.jdbc().queryForObject("SELECT COUNT(*) FROM detection_report_confirmation WHERE report_id=? AND actor_user_id=? AND expires_at>CURRENT_TIMESTAMP AND used_at IS NULL",Long.class,id,actor.userId());
-        if(pending>=20)fail(429,"确认预览过多，请稍后重试");
         String token=UUID.randomUUID().toString().replace("-","")+UUID.randomUUID().toString().replace("-","");
-        LocalDateTime expires=now().plusMinutes(10);
-        reports.jdbc().update("INSERT INTO detection_report_confirmation(token,report_id,actor_user_id,report_version,snapshot_sha256,decision_sha256,expires_at) VALUES(?,?,?,?,?,?,?)",
-                token,id,actor.userId(),row.version(),row.snapshotSha256(),decisionDigest(request.decision(),request.reason()),expires);
-        return new Preview(view(row),request.decision(),request.reason().trim(),token,expires);
+        LocalDateTime expires=workflow.confirmation(actor.userId(),row,token,decisionDigest(request.decision(),request.reason()));
+        return new Preview(view(row),request.decision(),request.reason().trim(),token,ReportTime.fromUtc(expires));
     }
     public View decide(Identity actor,String id,Decision request) {
         actor=current(actor);supervisor(actor);var row=authorized(actor,id,true);independent(actor,row);
         validateDecision(request.decision(),request.reason());
         String digest=commandDigest("DECIDE",id,request);var repeated=repeat(actor,request.requestId(),digest);if(repeated!=null)return repeated;
         version(row,request.expectedVersion());state(row,"SUBMITTED");integrity(row);
-        var confirmations=reports.jdbc().queryForList("SELECT * FROM detection_report_confirmation WHERE token=? FOR UPDATE",request.confirmationToken());
-        if(confirmations.isEmpty())fail(409,"请重新预览审批操作");
-        var confirmation=confirmations.get(0);
-        if(!id.equals(confirmation.get("report_id"))||((Number)confirmation.get("actor_user_id")).longValue()!=actor.userId()
-                ||((Number)confirmation.get("report_version")).intValue()!=row.version()||confirmation.get("used_at")!=null
-                ||!row.snapshotSha256().equals(confirmation.get("snapshot_sha256"))
-                ||!decisionDigest(request.decision(),request.reason()).equals(confirmation.get("decision_sha256")))fail(409,"审批确认与当前内容不一致，请重新预览");
-        Long valid=reports.jdbc().queryForObject("SELECT COUNT(*) FROM detection_report_confirmation WHERE token=? AND expires_at>CURRENT_TIMESTAMP",Long.class,request.confirmationToken());
-        if(valid!=1)fail(409,"审批确认已过期，请重新预览");
+        var confirmation=workflow.requireConfirmation(actor.userId(),row,request.confirmationToken(),decisionDigest(request.decision(),request.reason()));
         if("APPROVE".equals(request.decision()))approveGate(row,task(actor,row.taskId(),true));
         String target="APPROVE".equals(request.decision())?"APPROVED":"REJECTED";
-        reports.jdbc().update("UPDATE detection_quality_report SET status=?,decided_at=?,decider_user_id=?,decider_username=?,decision_reason=?,version=version+1,updated_at=? WHERE report_id=?",
+        reports.jdbc().update("UPDATE quality_report SET status=?,decided_at=?,decider_user_id=?,decider_username=?,decision_reason=?,version=version+1,updated_at=? WHERE report_id=?",
                 target,now(),actor.userId(),actor.username(),request.reason().trim(),now(),id);
-        reports.jdbc().update("UPDATE detection_report_confirmation SET used_at=? WHERE token=?",now(),request.confirmationToken());
+        workflow.consumeConfirmation(confirmation);
         return finish(actor,id,request.requestId(),digest,request.decision(),row.status(),request.reason().trim(),true);
     }
     public String export(Identity actor,String id) {
@@ -175,26 +164,22 @@ public class QualityReportService {
     }
     private View newDraft(Identity actor,DetectionTask task,String previous,String title,String narrative,String requestId,String digest) {
         String id="qr-"+UUID.randomUUID();LocalDateTime now=now();
-        reports.jdbc().update("INSERT INTO detection_quality_report(report_id,previous_report_id,owner_user_id,owner_username,task_id,title,narrative,status,version,source_json,source_sha256,created_at,updated_at) VALUES(?,?,?,?,?,?,?,'DRAFT',1,?,?,?,?)",
+        reports.jdbc().update("INSERT INTO quality_report(report_id,previous_report_id,owner_user_id,owner_username,task_id,title,narrative,status,version,source_json,source_sha256,created_at,updated_at) VALUES(?,?,?,?,?,?,?,'DRAFT',1,?,?,?,?)",
                 id,previous,actor.userId(),actor.username(),task.getTaskId(),title,narrative,encode(facts(task)),sourceDigest(task),now,now);
         return finish(actor,id,requestId,digest,previous==null?"CREATE":"REVISE",null,null,false);
     }
     private View finish(Identity actor,String id,String requestId,String digest,String action,String before,String reason,boolean event) {
         var row=reports.get(id,false);writeAudit(actor,row,action,before,reason);businessAudit(actor,row,action,requestId);var response=view(row);
-        reports.jdbc().update("INSERT INTO detection_report_command(actor_user_id,request_id,command_sha256,report_id,response_json,created_at) VALUES(?,?,?,?,?,?)",
-                actor.userId(),requestId,digest,id,encode(response),now());
+        workflow.saveCommand(actor.userId(),requestId,digest,row,encode(response));
         if(event) {
             String eventId=UUID.randomUUID().toString();
-            reports.jdbc().update("INSERT INTO detection_report_outbox(event_id,report_id,event_type,payload_json,delivery_status,created_at) VALUES(?,?,?,?,'PENDING',?)",
-                    eventId,id,"detection.report."+row.status().toLowerCase(Locale.ROOT)+".v1",
-                    encode(Map.of("eventId",eventId,"reportId",id,"actorUserId",actor.userId(),"status",row.status(),"version",row.version(),"schemaVersion",1)),now());
+            workflow.enqueue(row,actor.userId(),eventId,"detection.report."+row.status().toLowerCase(Locale.ROOT)+".v1",
+                    encode(Map.of("eventId",eventId,"reportId",id,"actorUserId",actor.userId(),"status",row.status(),"version",row.version(),"schemaVersion",1)));
         }
         return response;
     }
     private void writeAudit(Identity actor,Row row,String action,String before,String reason) {
-        if(reports.jdbc().update("INSERT INTO detection_report_audit(report_id,actor_user_id,actor_username,action,before_status,after_status,report_version,reason,snapshot_sha256,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
-                row.reportId(),actor.userId(),actor.username(),action,before,row.status(),row.version(),reason,row.snapshotSha256(),now())!=1)
-            throw new IllegalStateException("报告审计写入失败");
+        workflow.audit(row,actor.userId(),actor.username(),action,before,reason);
     }
     /** Only new commands reach here; a duplicate command returns its immutable original response earlier. */
     private void businessAudit(Identity actor,Row row,String action,String request){
@@ -205,11 +190,10 @@ public class QualityReportService {
     }
     private View repeat(Identity actor,String requestId,String digest) {
         if(requestId==null||!requestId.matches("[A-Za-z0-9_-]{8,64}"))fail(400,"请求编号不正确");
-        var rows=reports.jdbc().queryForList("SELECT * FROM detection_report_command WHERE actor_user_id=? AND request_id=?",actor.userId(),requestId);
-        if(rows.isEmpty())return null;var command=rows.get(0);
-        if(!digest.equals(command.get("command_sha256")))fail(409,"相同请求编号不能用于不同参数");
-        authorized(actor,(String)command.get("report_id"),false);
-        try{return json.readValue((String)command.get("response_json"),View.class);}catch(Exception error){throw new IllegalStateException("报告请求结果读取失败",error);}
+        var stored=workflow.command(actor.userId(),requestId);if(stored.isEmpty())return null;var command=stored.get();
+        if(!digest.equals(command.requestSha256()))fail(409,"相同请求编号不能用于不同参数");
+        authorized(actor,command.resourceId(),false);
+        try{return json.readValue(workflow.commandPayload(command).responseJson(),View.class);}catch(Exception error){throw new IllegalStateException("报告请求结果读取失败",error);}
     }
     private Row authorized(Identity actor,String id,boolean lock) {
         if(id==null||!id.matches("qr-[a-f0-9-]{36}"))fail(404,"报告不存在或无访问权限");
@@ -263,7 +247,7 @@ public class QualityReportService {
             Map.entry("failedImages","失败图片"),Map.entry("defectCount","缺陷数量"),Map.entry("reviewStatus","人工复核状态"),Map.entry("reviewConclusion","复核结论"),
             Map.entry("reviewer","复核账号"),Map.entry("reviewedAt","复核时间"),Map.entry("confirmedDefectCount","确认缺陷数"),Map.entry("falsePositiveCount","误报数"),
             Map.entry("flowStatus","流转状态"),Map.entry("dispositionStatus","处置状态"),Map.entry("dispositionAction","处置措施"),Map.entry("recheckRequired","是否需要复检"),Map.entry("finishedAt","检测完成时间"));
-    private static LocalDateTime now(){return LocalDateTime.now().truncatedTo(ChronoUnit.SECONDS);}
+    private static LocalDateTime now(){return LocalDateTime.now(ReportTime.BEIJING).truncatedTo(ChronoUnit.SECONDS);}
     private static void validateText(String title,String narrative){if(title==null||title.isBlank()||title.length()>120||narrative==null||narrative.isBlank()||narrative.length()>10000)fail(400,"报告标题或意见不正确");}
     private static void validateDecision(String decision,String reason){if(!Set.of("APPROVE","REJECT").contains(Objects.toString(decision,""))||reason==null||reason.isBlank()||reason.length()>500)fail(400,"审批决定及意见不正确");}
     private String encode(Object value){try{return json.writeValueAsString(value);}catch(Exception error){throw new IllegalStateException("报告数据编码失败",error);}}

@@ -1,32 +1,24 @@
 package com.ruanzhu.doorhandle.module.model.entity;
 
-import com.baomidou.mybatisplus.annotation.IdType;
-import com.baomidou.mybatisplus.annotation.TableField;
-import com.baomidou.mybatisplus.annotation.TableId;
-import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Data;
 
 import java.time.LocalDateTime;
 
+/** Read DTO for typed detection-model audit events; not a persistence table mapping. */
 @Data
-@TableName("model_operation_log")
 public class ModelOperationLog {
 
-    @TableId(value = "id", type = IdType.AUTO)
     private Long id;
+    /** Original pre-migration ID when present; id remains the shared audit cursor. */
+    private Long legacyId;
 
-    @TableField("model_id")
     private Integer modelId;
 
-    @TableField("operation_type")
     private String operationType;
 
-    @TableField("operator")
     private String operator;
 
-    @TableField("operation_time")
     private LocalDateTime operationTime;
 
-    @TableField("remark")
     private String remark;
 }

@@ -20,14 +20,26 @@ class JdbcAgentJournalTest {
     @BeforeEach void setup() throws Exception {
         var source=new DriverManagerDataSource("jdbc:h2:mem:"+UUID.randomUUID()+";MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1","sa","");
         jdbc=new JdbcTemplate(source);
-        // H2 执行同一迁移结构，移除仅 MySQL 支持的字符集/排序规则，JSON 使用文本模拟。
-        String ddl=Files.readString(Path.of("src/main/resources/db/migration-V16-agentscope-run-journal.sql"))
-                .replaceAll(" COLLATE utf8mb4_bin","").replaceAll(" ENGINE=InnoDB DEFAULT CHARSET=utf8mb4","").replace("payload_json JSON","payload_json VARCHAR(8192)");
-        for(String sql:ddl.split(";")) if(!sql.isBlank())jdbc.execute(sql);
+        com.ruanzhu.doorhandle.module.ai.testsupport.CompactAgentJournalFixture.install(jdbc);
         var settings=new AgentJournalProperties();settings.setEnabled(true);
         journal=new JdbcAgentJournal(jdbc,new DataSourceTransactionManager(source),new ObjectMapper(),settings);journal.verifySchema();
     }
     private AgentJournal.Run begin(String session,String request) {return journal.begin(alice,session,"employee-main","CHAT",request,"fixture-model");}
+    @Test void utcPersistenceKeepsTheExistingBeijingPresentationContract() {
+        var run=begin("time-session","time-request");run.finish("COMPLETED");
+        var started=jdbc.queryForObject("SELECT started_at FROM agent_run WHERE run_id=?",java.time.LocalDateTime.class,run.id());
+        var occurred=jdbc.queryForObject("SELECT occurred_at FROM audit_event WHERE kind='AGENT_RUN' AND journal_run_id=? AND sequence_no=1",java.time.LocalDateTime.class,run.id());
+        assertThat(journal.get(alice,run.id()).startedAt()).isEqualTo(started.plusHours(8));
+        assertThat(journal.events(alice,run.id(),0,100).get(0).occurredAt()).isEqualTo(occurred.plusHours(8));
+    }
+    @Test void journalEventsCannotReferenceAnotherOwnerOrAnAbsentRun() {
+        var run=begin("owner-link-session","owner-link-request");
+        String insert="INSERT INTO audit_event(event_id,kind,owner_user_id,run_id,journal_run_id,sequence_no,action,payload_version,payload_json) VALUES(?,'AGENT_RUN',?,?,?,2,'MODEL_STARTED',1,'{}')";
+        assertThatThrownBy(()->jdbc.update(insert,UUID.randomUUID().toString(),bob.userId(),run.id(),run.id())).isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+        String absent=UUID.randomUUID().toString();
+        assertThatThrownBy(()->jdbc.update(insert,UUID.randomUUID().toString(),alice.userId(),absent,absent)).isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+        assertThat(journal.events(alice,run.id(),0,100)).hasSize(1);run.finish("COMPLETED");
+    }
     @Test void professionalRunsUseAnInternalRoleScopedEntryWithoutOpeningPublicConversationEntries(){
         var parent=begin("parent-session","parent-request");
         var child=journal.beginChild(alice,"child-session","detection-task","child-request","fixture-model");
@@ -46,7 +58,7 @@ class JdbcAgentJournalTest {
         var settings=new AgentJournalProperties();settings.setEnabled(true);
         var tested=new JdbcAgentJournal(shifted,new DataSourceTransactionManager(jdbc.getDataSource()),new ObjectMapper(),settings);
         var run=tested.begin(alice,"clock-session","employee-main","CHAT","clock-request","fixture-model");
-        assertThat(jdbc.queryForObject("SELECT TIMESTAMPDIFF(SECOND,CURRENT_TIMESTAMP,lease_expires_at) FROM agent_run WHERE run_id=?",Long.class,run.id())).isBetween(60L,95L);
+        assertThat(jdbc.queryForObject("SELECT TIMESTAMPDIFF(SECOND,UTC_TIMESTAMP(6),lease_expires_at) FROM agent_run WHERE run_id=?",Long.class,run.id())).isBetween(60L,95L);
         tested.maintainLeases();
         assertThat(tested.get(alice,run.id()).status()).isEqualTo("RUNNING");
         run.finish("COMPLETED");
@@ -99,7 +111,7 @@ class JdbcAgentJournalTest {
         // 模拟重启后新实例：没有旧运行的本机取消句柄。
         var source=jdbc.getDataSource();var settings=new AgentJournalProperties();settings.setEnabled(true);
         var restarted=new JdbcAgentJournal(jdbc,new DataSourceTransactionManager(source),new ObjectMapper(),settings);
-        jdbc.update("UPDATE agent_run SET lease_expires_at=? WHERE run_id=?",java.time.LocalDateTime.now().minusMinutes(2),run.id());
+        jdbc.update("UPDATE agent_run SET lease_expires_at=? WHERE run_id=?",java.time.LocalDateTime.now(java.time.ZoneOffset.UTC).minusMinutes(2),run.id());
         restarted.maintainLeases();
         assertThat(restarted.get(alice,run.id()).status()).isEqualTo("INTERRUPTED");
         assertThatThrownBy(()->run.finish("COMPLETED")).isInstanceOf(IllegalStateException.class);

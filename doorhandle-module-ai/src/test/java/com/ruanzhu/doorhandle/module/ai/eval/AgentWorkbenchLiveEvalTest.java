@@ -90,7 +90,7 @@ class AgentWorkbenchLiveEvalTest {
                     assertThat(reply).doesNotContain(f.task(actor.supervisor()?f.employee:f.supervisor));
                     checks.add(actor.role()+":APPROVED_ASYNC_CHILD_RETURNED_OWN_FACTS_ONCE");
                     org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(15)).until(()->{
-                        var rows=f.jdbc.queryForList("SELECT payload FROM agent_workbench_item WHERE item_id=?",child.id());
+                        var rows=f.jdbc.queryForList("SELECT JSON_EXTRACT(payload_json,'$.data') AS payload FROM workflow_instance WHERE workbench_item_id=?",child.id());
                         return Boolean.TRUE.equals(json.readTree(rows.get(0).get("payload").toString()).path("yieldReady").asBoolean());
                     });
                     var settled=f.item(actor,session,"CHILD");
@@ -108,9 +108,9 @@ class AgentWorkbenchLiveEvalTest {
                     write(output,report);
                 }
                 assertThat(f.businessCalls).hasSize(2);
-                assertThat(f.jdbc.queryForObject("SELECT COUNT(*) FROM agent_workbench_sdk_state",Integer.class)).isEqualTo(4);
+                assertThat(f.jdbc.queryForObject("SELECT COUNT(*) FROM runtime_state WHERE namespace='SDK_CHECKPOINT'",Integer.class)).isEqualTo(4);
                 checks.add("FOUR_MAIN_AND_CHILD_SDK_STATE_SLOTS_PERSISTED");
-                var usage=f.jdbc.queryForList("SELECT item_id,payload FROM agent_workbench_item WHERE kind='USAGE'");
+                var usage=f.jdbc.queryForList("SELECT workbench_item_id AS item_id,JSON_EXTRACT(payload_json,'$.data') AS payload FROM workflow_instance WHERE kind='WORKBENCH_USAGE'");
                 assertThat(usage).hasSize(requests.get());
                 for(var row:usage){var data=json.readTree(row.get("payload").toString());assertThat(data.path("modelId").asText()).isEqualTo(modelId);assertThat(data.path("basis").asText()).isEqualTo("PROVIDER_REPORTED");assertThat(data.path("inputTokens").isNumber()).isTrue();assertThat(data.path("outputTokens").isNumber()).isTrue();}
                 report.put("persistedUsage",usage);checks.add("USAGE_MATCHES_REAL_REQUEST_COUNT_AND_RETAINS_PROVIDER_VALUES");

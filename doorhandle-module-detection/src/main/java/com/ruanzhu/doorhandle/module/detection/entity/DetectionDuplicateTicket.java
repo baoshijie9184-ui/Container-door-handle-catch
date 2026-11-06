@@ -6,6 +6,7 @@ import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Data;
 import java.time.LocalDateTime;
 
+/** Independent review identity and historical comparison evidence; deliberately not a shared workflow payload. */
 @Data
 @TableName("detection_duplicate_ticket")
 public class DetectionDuplicateTicket {

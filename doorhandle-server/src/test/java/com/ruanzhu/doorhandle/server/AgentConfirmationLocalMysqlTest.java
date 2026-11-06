@@ -77,9 +77,9 @@ class AgentConfirmationLocalMysqlTest {
         assertThat(decide(client,base,owner,a,"APPROVE",Map.of()).get("status")).isEqualTo("SUCCEEDED");
         assertThat(jdbc.queryForObject("SELECT assignee FROM detection_task WHERE task_id=?",String.class,ids.get(0))).isEqualTo("inspector.demo");
         assertThat(jdbc.queryForObject("SELECT DATE_FORMAT(due_at,'%Y-%m-%dT%H:%i:%s') FROM detection_task WHERE task_id=?",String.class,ids.get(0))).isEqualTo("2026-11-01T15:30:00");
-        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM agent_action_audit WHERE action_id=? AND event_type='BUSINESS_CHANGED'",Integer.class,a.actionId())).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM audit_event WHERE kind='AGENT_ACTION' AND owner_user_id=? AND resource_id=? AND action='BUSINESS_CHANGED'",Integer.class,boss.userId(),a.actionId())).isEqualTo(1);
         assertThat(decide(client,base,owner,pending.get(1),"REJECT",Map.of()).get("status")).isEqualTo("REJECTED");
-        jdbc.update("UPDATE agent_pending_action SET expires_at=DATE_SUB(NOW(),INTERVAL 1 MINUTE) WHERE action_id=?",pending.get(2).actionId());
+        jdbc.update("UPDATE workflow_instance SET expires_at=UTC_TIMESTAMP(6)-INTERVAL 1 MINUTE WHERE kind='AGENT_ACTION' AND owner_user_id=? AND request_id=?",boss.userId(),pending.get(2).actionId());
         assertThat(decide(client,base,owner,pending.get(2),"APPROVE",Map.of()).get("status")).isEqualTo("EXPIRED");
         jdbc.update("UPDATE detection_task SET quality_station='测试资源已变化' WHERE task_id=?",ids.get(3));
         assertThat(decide(client,base,owner,pending.get(3),"APPROVE",Map.of()).get("reasonCode")).isEqualTo("RESOURCE_CHANGED");

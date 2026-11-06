@@ -29,31 +29,31 @@ public final class McpExecutionLedger {
         this.jdbc=jdbc;this.json=json;this.images=images;this.tx=new TransactionTemplate(manager);
         tx.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);tx.setTimeout(10);
     }
-    public void schema(){jdbc.queryForList("SELECT execution_id,transport FROM agent_mcp_execution WHERE 1=0");jdbc.queryForList("SELECT request_id FROM agent_mcp_execution_command WHERE 1=0");}
+    public void schema(){jdbc.queryForList("SELECT resource_id AS execution_id,mcp_transport AS transport FROM workflow_instance WHERE kind='MCP_EXECUTION' AND (1=0) ");jdbc.queryForList("SELECT request_id FROM workflow_instance WHERE kind='MCP_EXECUTION_COMMAND' AND (1=0) ");}
     public String reserve(AgentActor actor,String installation,String runtime,String pool,String purpose,String run,String call,boolean requireEnabled){
         if(!Set.of("CALL","PROBE","INSTALL_PROBE").contains(purpose)||!runtime.matches("[a-f0-9]{64}")||!pool.matches("[a-f0-9]{32}")||"INSTALL_PROBE".equals(purpose)&&requireEnabled)throw new IllegalArgumentException("MCP_EXECUTION_METADATA_INVALID");
         return tx.execute(status->{
             var registration=registration(actor.userId());
             String requiredStatus="INSTALL_PROBE".equals(purpose)?"INSTALLING":"INSTALLED";
             if(!installation.equals(registration.get("operation_id"))||!requiredStatus.equals(registration.get("status"))||requireEnabled&&!bool(registration.get("enabled")))throw fail(409,"MCP 安装或启用状态已变化");
-            Long pending=jdbc.queryForObject("SELECT COUNT(*) FROM agent_mcp_execution WHERE owner_user_id=? AND state<>'REMOVED'",Long.class,actor.userId());
+            Long pending=jdbc.queryForObject("SELECT COUNT(*) FROM workflow_instance WHERE kind='MCP_EXECUTION' AND (owner_user_id=? AND status<>'REMOVED') ",Long.class,actor.userId());
             if(pending!=null&&pending>=2)throw fail(409,"本人仍有执行或清理待核对 请先核对退出状态");
             String id=UUID.randomUUID().toString();
             if(images!=null&&images.available()){
                 String image=null;
                 if("STREAMABLE_HTTP".equals(transport)){
-                    if("INSTALL_PROBE".equals(purpose))image=jdbc.queryForObject("SELECT image_id FROM agent_fetch_installation WHERE owner_user_id=? AND installation_id=?",String.class,actor.userId(),installation);
+                    if("INSTALL_PROBE".equals(purpose))image=jdbc.queryForObject("SELECT mcp_image_id AS image_id FROM workflow_instance WHERE kind='MCP_INSTALLATION' AND (owner_user_id=? AND resource_id=?) ",String.class,actor.userId(),installation);
                     else try{var manifest=registration.get("manifest_json");image=json.readTree(manifest instanceof byte[] bytes?new String(bytes,StandardCharsets.UTF_8):manifest.toString()).path("image").asText();}catch(Exception error){throw fail(409,"镜像引用无法核对");}
                     if(image==null||!image.matches("sha256:[a-f0-9]{64}"))throw fail(409,"镜像引用无法核对");images.usable(image);
                 }
-                jdbc.update("INSERT INTO agent_mcp_execution(execution_id,owner_user_id,installation_id,runtime_sha256,pool_id,purpose,state,run_id,call_id,transport,image_id,lease_expires_at) VALUES(?,?,?,?,?,?,'OPENING',?,?,?,?,DATE_ADD(CURRENT_TIMESTAMP,INTERVAL 90 SECOND))",id,actor.userId(),installation,runtime,pool,purpose,run,call,transport,image);
-            }else jdbc.update("INSERT INTO agent_mcp_execution(execution_id,owner_user_id,installation_id,runtime_sha256,pool_id,purpose,state,run_id,call_id,transport,lease_expires_at) VALUES(?,?,?,?,?,?,'OPENING',?,?,?,DATE_ADD(CURRENT_TIMESTAMP,INTERVAL 90 SECOND))",id,actor.userId(),installation,runtime,pool,purpose,run,call,transport);
+                jdbc.update("INSERT INTO workflow_instance(resource_id,owner_user_id,mcp_installation_id,mcp_runtime_sha256,mcp_pool_id,mcp_purpose,status,run_id,call_id,mcp_transport,mcp_image_id,lease_expires_at,revision,mcp_exit_verified,mcp_cleanup_confirmed,workflow_id,kind,idempotency_scope,resource_type,payload_version,payload_json,request_id,request_sha256,created_at,updated_at) SELECT v.execution_id,v.owner_user_id,v.installation_id,v.runtime_sha256,v.pool_id,v.purpose,v.state,v.run_id,v.call_id,v.transport,v.image_id,v.lease_expires_at,0,FALSE,FALSE,UUID(),'MCP_EXECUTION','MCP_EXECUTION','MCP_EXECUTION',1,JSON_OBJECT('schemaVersion',1),v.execution_id,SHA2(v.execution_id,256),UTC_TIMESTAMP(6),UTC_TIMESTAMP(6) FROM (SELECT ? AS execution_id,? AS owner_user_id,? AS installation_id,? AS runtime_sha256,? AS pool_id,? AS purpose,'OPENING' AS state,? AS run_id,? AS call_id,? AS transport,? AS image_id,DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 90 SECOND) AS lease_expires_at) v",id,actor.userId(),installation,runtime,pool,purpose,run,call,transport,image);
+            }else jdbc.update("INSERT INTO workflow_instance(resource_id,owner_user_id,mcp_installation_id,mcp_runtime_sha256,mcp_pool_id,mcp_purpose,status,run_id,call_id,mcp_transport,lease_expires_at,revision,mcp_exit_verified,mcp_cleanup_confirmed,workflow_id,kind,idempotency_scope,resource_type,payload_version,payload_json,request_id,request_sha256,created_at,updated_at) SELECT v.execution_id,v.owner_user_id,v.installation_id,v.runtime_sha256,v.pool_id,v.purpose,v.state,v.run_id,v.call_id,v.transport,v.lease_expires_at,0,FALSE,FALSE,UUID(),'MCP_EXECUTION','MCP_EXECUTION','MCP_EXECUTION',1,JSON_OBJECT('schemaVersion',1),v.execution_id,SHA2(v.execution_id,256),UTC_TIMESTAMP(6),UTC_TIMESTAMP(6) FROM (SELECT ? AS execution_id,? AS owner_user_id,? AS installation_id,? AS runtime_sha256,? AS pool_id,? AS purpose,'OPENING' AS state,? AS run_id,? AS call_id,? AS transport,DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 90 SECOND) AS lease_expires_at) v",id,actor.userId(),installation,runtime,pool,purpose,run,call,transport);
             audit(actor,id,installation,0,"EXECUTION_OPEN","STARTED",Map.of("purpose",purpose,"exitVerified",false,"cleanupConfirmed",false));return id;
         });
     }
     public boolean started(AgentActor actor,String id){return tx.execute(status->{
         registration(actor.userId());var row=locked(actor,id);if(!"OPENING".equals(row.get("state")))return false;
-        jdbc.update("UPDATE agent_mcp_execution SET state='RUNNING',revision=revision+1,updated_at=CURRENT_TIMESTAMP WHERE id=?",row.get("id"));
+        jdbc.update("UPDATE workflow_instance SET status='RUNNING',revision=revision+1,updated_at=UTC_TIMESTAMP(6) WHERE kind='MCP_EXECUTION' AND (id=?) ",row.get("id"));
         audit(actor,id,(String)row.get("installation_id"),revision(row)+1,"EXECUTION_OPEN","RUNNING",Map.of("exitVerified",false,"cleanupConfirmed",false));return true;
     });}
     public void observe(AgentActor actor,String id,Map<String,Object> evidence){tx.executeWithoutResult(status->{
@@ -63,7 +63,7 @@ public final class McpExecutionLedger {
         // Exit is irreversible. A temporary later control outage cannot erase established evidence.
         exited=exited||bool(row.get("exit_verified"));cleaned=cleaned||bool(row.get("cleanup_confirmed"));
         String state=cleaned?"REMOVED":exited?"EXITED":"NEEDS_REVIEW";
-        jdbc.update("UPDATE agent_mcp_execution SET state=?,exit_verified=?,cleanup_confirmed=?,revision=revision+1,updated_at=CURRENT_TIMESTAMP WHERE id=?",state,exited,cleaned,row.get("id"));
+        jdbc.update("UPDATE workflow_instance SET status=?,mcp_exit_verified=?,mcp_cleanup_confirmed=?,revision=revision+1,updated_at=UTC_TIMESTAMP(6) WHERE kind='MCP_EXECUTION' AND (id=?) ",state,exited,cleaned,row.get("id"));
         audit(actor,id,(String)row.get("installation_id"),revision(row)+1,"EXECUTION_EXIT",state,Map.of("exitVerified",exited,"cleanupConfirmed",cleaned));
     });}
     /** Starts one explicit reconciliation attempt. Duplicate request IDs never repeat network I/O. */
@@ -72,32 +72,32 @@ public final class McpExecutionLedger {
         String hash=FetchMcpRuntime.sha((id+":"+expected+":STOP_AND_RECONCILE").getBytes(StandardCharsets.UTF_8));
         return tx.execute(status->{
             registration(actor.userId());
-            var previous=jdbc.queryForList("SELECT request_sha256 FROM agent_mcp_execution_command WHERE owner_user_id=? AND request_id=?",actor.userId(),request);
+            var previous=jdbc.queryForList("SELECT request_sha256 FROM workflow_instance WHERE kind='MCP_EXECUTION_COMMAND' AND (owner_user_id=? AND request_id=?) ",actor.userId(),request);
             if(!previous.isEmpty()){if(!hash.equals(previous.get(0).get("request_sha256")))throw fail(409,"请求编号已用于其他操作");return Optional.empty();}
             var row=locked(actor,id);if(revision(row)!=expected)throw fail(409,"执行状态已变化 请刷新核对");
             if("REMOVED".equals(row.get("state")))throw fail(409,"此执行已确认清理 无需重复核对");
             if("STOPPING".equals(row.get("state"))&&!Boolean.TRUE.equals(row.get("lease_expired")))throw fail(409,"退出核对正在执行 请稍后刷新");
-            jdbc.update("INSERT INTO agent_mcp_execution_command(owner_user_id,request_id,execution_id,request_sha256,status) VALUES(?,?,?,?,'STARTED')",actor.userId(),request,id,hash);
-            jdbc.update("UPDATE agent_mcp_execution SET state='STOPPING',revision=revision+1,lease_expires_at=DATE_ADD(CURRENT_TIMESTAMP,INTERVAL 90 SECOND),updated_at=CURRENT_TIMESTAMP WHERE id=?",row.get("id"));
+            jdbc.update("INSERT INTO workflow_instance(owner_user_id,request_id,resource_id,request_sha256,status,workflow_id,kind,idempotency_scope,resource_type,payload_version,payload_json,revision,created_at,updated_at) SELECT v.owner_user_id,v.request_id,v.execution_id,v.request_sha256,v.status,UUID(),'MCP_EXECUTION_COMMAND',CONCAT('MCP_EXECUTION_COMMAND',':OWNER:',v.owner_user_id),'MCP_EXECUTION_COMMAND',1,JSON_OBJECT('schemaVersion',1),0,UTC_TIMESTAMP(6),UTC_TIMESTAMP(6) FROM (SELECT ? AS owner_user_id,? AS request_id,? AS execution_id,? AS request_sha256,'STARTED' AS status) v",actor.userId(),request,id,hash);
+            jdbc.update("UPDATE workflow_instance SET status='STOPPING',revision=revision+1,lease_expires_at=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 90 SECOND),updated_at=UTC_TIMESTAMP(6) WHERE kind='MCP_EXECUTION' AND (id=?) ",row.get("id"));
             audit(actor,id,(String)row.get("installation_id"),expected+1,"EXECUTION_RECONCILE","STARTED",Map.of("requestId",request));return Optional.of(row);
         });
     }
     public void finish(AgentActor actor,String id,String request,Map<String,Object> evidence){tx.executeWithoutResult(status->{
         observe(actor,id,evidence);
-        jdbc.update("UPDATE agent_mcp_execution_command SET status=?,updated_at=CURRENT_TIMESTAMP WHERE owner_user_id=? AND execution_id=? AND request_id=? AND status='STARTED'",Boolean.TRUE.equals(evidence.get("cleanupConfirmed"))?"COMPLETED":"NEEDS_REVIEW",actor.userId(),id,request);
+        jdbc.update("UPDATE workflow_instance SET status=?,updated_at=UTC_TIMESTAMP(6) WHERE kind='MCP_EXECUTION_COMMAND' AND (owner_user_id=? AND resource_id=? AND request_id=? AND status='STARTED') ",Boolean.TRUE.equals(evidence.get("cleanupConfirmed"))?"COMPLETED":"NEEDS_REVIEW",actor.userId(),id,request);
     });}
     public Map<String,Object> view(AgentActor actor){
-        var rows=jdbc.queryForList("SELECT execution_id AS executionId,installation_id AS installationId,purpose,transport,state,revision,exit_verified AS exitVerified,cleanup_confirmed AS cleanupConfirmed,created_at AS createdAt,updated_at AS updatedAt,(lease_expires_at<CURRENT_TIMESTAMP) AS leaseExpired FROM agent_mcp_execution WHERE owner_user_id=? ORDER BY CASE WHEN state='REMOVED' THEN 1 ELSE 0 END,id DESC LIMIT 30",actor.userId());
-        Long pending=jdbc.queryForObject("SELECT COUNT(*) FROM agent_mcp_execution WHERE owner_user_id=? AND state<>'REMOVED'",Long.class,actor.userId());
+        var rows=jdbc.queryForList("SELECT resource_id AS executionId,mcp_installation_id AS installationId,mcp_purpose AS purpose,mcp_transport AS transport,status AS state,revision,mcp_exit_verified AS exitVerified,mcp_cleanup_confirmed AS cleanupConfirmed,created_at AS createdAt,updated_at AS updatedAt,(lease_expires_at<UTC_TIMESTAMP(6)) AS leaseExpired FROM workflow_instance WHERE kind='MCP_EXECUTION' AND (owner_user_id=?) ORDER BY CASE WHEN status='REMOVED' THEN 1 ELSE 0 END,id DESC LIMIT 30",actor.userId());
+        Long pending=jdbc.queryForObject("SELECT COUNT(*) FROM workflow_instance WHERE kind='MCP_EXECUTION' AND (owner_user_id=? AND status<>'REMOVED') ",Long.class,actor.userId());
         for(var row:rows){row.put("exitVerified",bool(row.get("exitVerified")));row.put("cleanupConfirmed",bool(row.get("cleanupConfirmed")));boolean expired=bool(row.remove("leaseExpired"));if(expired&&Set.of("OPENING","RUNNING","STOPPING").contains(row.get("state")))row.put("state","NEEDS_REVIEW");}
         return Map.of("supported",true,"transport",transport,"pendingCount",pending==null?0:pending,"items",rows);
     }
-    public boolean hasPending(long owner){return jdbc.queryForObject("SELECT COUNT(*) FROM agent_mcp_execution WHERE owner_user_id=? AND state<>'REMOVED'",Long.class,owner)>0;}
-    private Map<String,Object> registration(long owner){var rows=jdbc.queryForList("SELECT * FROM agent_local_mcp WHERE owner_user_id=? AND server_key='fetch' FOR UPDATE",owner);if(rows.isEmpty())throw fail(409,"MCP 安装登记不存在");return rows.get(0);}
-    private Map<String,Object> locked(AgentActor actor,String id){var rows=jdbc.queryForList("SELECT *,(lease_expires_at<CURRENT_TIMESTAMP) AS lease_expired FROM agent_mcp_execution WHERE owner_user_id=? AND execution_id=? FOR UPDATE",actor.userId(),id);if(rows.isEmpty())throw fail(404,"执行不存在或无权访问");var row=rows.get(0);row.put("lease_expired",bool(row.get("lease_expired")));return row;}
+    public boolean hasPending(long owner){return jdbc.queryForObject("SELECT COUNT(*) FROM workflow_instance WHERE kind='MCP_EXECUTION' AND (owner_user_id=? AND status<>'REMOVED') ",Long.class,owner)>0;}
+    private Map<String,Object> registration(long owner){var rows=jdbc.queryForList("SELECT id AS id,owner_user_id AS owner_user_id,server_key AS server_key,package_version AS package_version,status AS status,enabled AS enabled,revision AS revision,operation_id AS operation_id,request_id AS request_id,lease_expires_at AS lease_expires_at,manifest_json AS manifest_json,manifest_sha256 AS manifest_sha256,error_code AS error_code,created_at AS created_at,updated_at AS updated_at FROM agent_connector WHERE owner_user_id=? AND server_key='fetch' FOR UPDATE",owner);if(rows.isEmpty())throw fail(409,"MCP 安装登记不存在");return rows.get(0);}
+    private Map<String,Object> locked(AgentActor actor,String id){var rows=jdbc.queryForList("SELECT id AS id,resource_id AS execution_id,owner_user_id AS owner_user_id,mcp_installation_id AS installation_id,mcp_runtime_sha256 AS runtime_sha256,mcp_pool_id AS pool_id,mcp_purpose AS purpose,status AS state,revision AS revision,mcp_exit_verified AS exit_verified,mcp_cleanup_confirmed AS cleanup_confirmed,run_id AS run_id,call_id AS call_id,lease_expires_at AS lease_expires_at,created_at AS created_at,updated_at AS updated_at,mcp_transport AS transport,mcp_image_id AS image_id,(lease_expires_at<UTC_TIMESTAMP(6)) AS lease_expired FROM workflow_instance WHERE kind='MCP_EXECUTION' AND (owner_user_id=? AND resource_id=?) FOR UPDATE",actor.userId(),id);if(rows.isEmpty())throw fail(404,"执行不存在或无权访问");var row=rows.get(0);row.put("lease_expired",bool(row.get("lease_expired")));return row;}
     private void audit(AgentActor actor,String id,String installation,int version,String action,String outcome,Map<String,Object> detail){
         var data=new LinkedHashMap<String,Object>(detail);data.put("executionId",id);
-        try{jdbc.update("INSERT INTO agent_local_mcp_audit(owner_user_id,server_key,action_name,outcome,revision,operation_id,detail_json,created_at) VALUES(?,'fetch',?,?,?,?,?,CURRENT_TIMESTAMP)",actor.userId(),action,outcome,version,installation,json.writeValueAsString(data));}
+        try{jdbc.update("INSERT INTO audit_event(event_id,owner_user_id,resource_id,action,outcome,revision,request_id,occurred_at,kind,resource_type,payload_version,payload_json) SELECT UUID(),v.owner_user_id,v.server_key,v.action_name,v.outcome,v.revision,v.operation_id,v.created_at,'MCP','MCP_CONNECTOR',1,JSON_OBJECT('schemaVersion',1,'detailJson',CAST(v.detail_json AS CHAR)) FROM (SELECT ? AS owner_user_id,'fetch' AS server_key,? AS action_name,? AS outcome,? AS revision,? AS operation_id,? AS detail_json,UTC_TIMESTAMP(6) AS created_at) v",actor.userId(),action,outcome,version,installation,json.writeValueAsString(data));}
         catch(com.fasterxml.jackson.core.JsonProcessingException error){throw new IllegalStateException("MCP_EXECUTION_AUDIT_UNAVAILABLE",error);}
     }
     private static boolean bool(Object value){return value instanceof Boolean b?b:value instanceof Number n&&n.intValue()!=0;}

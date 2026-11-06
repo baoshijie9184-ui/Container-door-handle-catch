@@ -169,10 +169,35 @@ def inventory():
     return result
 
 
+def database_for_container(container):
+    rows=json.loads(docker('inspect',container))
+    if len(rows)!=1:raise OpsError('MySQL identity is unavailable')
+    mysql=rows[0];project=mysql.get('Config',{}).get('Labels',{}).get('com.docker.compose.project','')
+    if not re.fullmatch(r'[A-Za-z0-9_-]{1,100}',project):raise OpsError('MySQL project identity is invalid')
+    environment=dict(value.split('=',1) for value in mysql.get('Config',{}).get('Env',[]) if '=' in value)
+    database=environment.get('MYSQL_DATABASE')
+    ids=docker('ps','-aq','--filter','label=com.docker.compose.project='+project,'--filter','label=com.docker.compose.service=backend').decode().split()
+    if len(ids)>1:raise OpsError('Multiple backend generations prevent database selection')
+    if ids:
+        backends=json.loads(docker('inspect',ids[0]))
+        if len(backends)!=1:raise OpsError('Backend database binding is unavailable')
+        backend=dict(value.split('=',1) for value in backends[0].get('Config',{}).get('Env',[]) if '=' in value)
+        from urllib.parse import urlsplit
+        raw=backend.get('DB_URL','')
+        if not raw.startswith('jdbc:mysql://'):raise OpsError('An explicit backend database binding is required')
+        try:
+            value=urlsplit(raw[5:]);database=value.path[1:]
+            if value.hostname!='mysql' or (value.port or 3306)!=3306 or value.username or value.password:raise ValueError()
+        except ValueError:raise OpsError('Backend no longer targets the owned MySQL service') from None
+    if not re.fullmatch(r'[A-Za-z0-9_]{1,64}',database or ''):raise OpsError('Explicit schema identity is invalid')
+    return database
+
+
 def db(container, sql):
+    database=database_for_container(container)
     return docker('exec', '-i', container, 'sh', '-c',
                   'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot --default-character-set=utf8mb4 '
-                  '--batch --skip-column-names "$MYSQL_DATABASE"', data=sql.encode(), timeout=120).decode()
+                  '--batch --skip-column-names "$1"', '--', database, data=sql.encode(), timeout=120).decode()
 
 
 def table_counts(container):
@@ -416,7 +441,7 @@ def backup(root, runtime, minimum_gib=2):
             docker('exec', mysql['id'], 'sh', '-c',
                    'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysqldump -uroot --single-transaction '
                    '--routines --events --triggers --hex-blob --no-tablespaces --set-gtid-purged=OFF '
-                   '--column-statistics=0 --default-character-set=utf8mb4 "$MYSQL_DATABASE"', output=stream, timeout=600,
+                   '--column-statistics=0 --default-character-set=utf8mb4 "$1"', '--', manifest['databaseName'], output=stream, timeout=600,
                    file_limit=output_budget(root, reserve))
         with raw.open('rb') as source, gzip.open(target/'database.sql.gz', 'xb') as output:
             while True:
@@ -426,6 +451,22 @@ def backup(root, runtime, minimum_gib=2):
                 output_budget(root, reserve);output.write(block)
         raw.unlink()
         shutil.copyfile(private, target/'cloud.env');os.chmod(target/'cloud.env', 0o600)
+        connection_files=('compact-connection.override.yml','compact-connection.json')
+        present=[(root/'state'/name).exists() for name in connection_files]
+        if any(present):
+            if not all(present):raise OpsError('Compact cutover connection backup is incomplete')
+            for name in connection_files:
+                original=root/'state'/name
+                if not private_config_ok(original) or original.stat().st_size>1024*1024:
+                    raise OpsError('Compact cutover connection must be a bounded private file')
+                shutil.copyfile(original,target/name);os.chmod(target/name,0o600)
+            connection=json.loads((target/'compact-connection.json').read_text())
+            if connection.get('schemaVersion')!=1 or connection.get('targetSchema')!=manifest['databaseName']:
+                raise OpsError('Active application database differs from the compact cutover journal')
+            if digest(target/'compact-connection.override.yml')!=connection.get('overlaySha256'):
+                raise OpsError('Compact connection overlay checksum differs')
+            manifest['compactConnection']={'stateFile':'compact-connection.json','overlayFile':'compact-connection.override.yml'}
+
         for number, volume in enumerate(volumes):
             name = 'volume-'+str(number)+'.tar.gz'
             with (target/name).open('xb') as stream:

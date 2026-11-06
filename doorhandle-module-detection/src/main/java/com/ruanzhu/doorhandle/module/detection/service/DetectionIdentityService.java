@@ -18,7 +18,7 @@ import java.nio.charset.StandardCharsets;
 @Service @ConditionalOnProperty(prefix="detection.identity",name="enabled",havingValue="true")
 public class DetectionIdentityService {
     private static final Map<String,String> ROLES=Map.of("created","created_by","assignee","assignee","reviewer","reviewer","disposition","disposition_operator","rework","rework_operator");
-    private final JdbcTemplate jdbc;private final BusinessAccountLookupApi accounts;private final BusinessUserDirectory users;private final OperationsAuditApi audit;private final ObjectMapper json;
+    private final DetectionIdentityPersistence storage;private final JdbcTemplate jdbc;private final BusinessAccountLookupApi accounts;private final BusinessUserDirectory users;private final OperationsAuditApi audit;private final ObjectMapper json;
     private DetectionIdentityReviewService review;
     @org.springframework.beans.factory.annotation.Autowired public void reviewService(DetectionIdentityReviewService review){this.review=review;}
     private DetectionIdentityEvidenceService evidence;
@@ -27,9 +27,9 @@ public class DetectionIdentityService {
     @org.springframework.beans.factory.annotation.Autowired(required=false) public void reconciliationService(DetectionIdentityReconciliationService reconciliation){this.reconciliation=reconciliation;}
     @org.springframework.beans.factory.annotation.Value("${detection.identity.assignment-binding-enabled:false}") private boolean assignmentBinding;
     public boolean assignmentBindingEnabled(){return assignmentBinding;}
-    @jakarta.annotation.PostConstruct public void assignmentSchema(){if(assignmentBinding){jdbc.queryForList("SELECT assigned_by_user_id,assigned_by_identity_name,assigned_to_revision,assignment_identity_revision FROM detection_task WHERE 1=0");jdbc.queryForList("SELECT task_id,revision,actor_user_id,assignee_user_id FROM detection_assignment_identity_event WHERE 1=0");}}
-    public DetectionIdentityService(JdbcTemplate jdbc,BusinessAccountLookupApi accounts,BusinessUserDirectory users,OperationsAuditApi audit,ObjectMapper json){this.jdbc=jdbc;this.accounts=accounts;this.users=users;this.audit=audit;this.json=json;}
-    public boolean active(){String mode=jdbc.queryForObject("SELECT mode FROM detection_identity_control WHERE control_id=1",String.class);if(!Set.of("ACTIVE","PREVIEW").contains(Objects.toString(mode,""))||(evidence!=null&&evidence.active()&&!"ACTIVE".equals(mode)))throw bad(503,"身份授权模式未能核对");return "ACTIVE".equals(mode);}
+    @jakarta.annotation.PostConstruct public void assignmentSchema(){if(assignmentBinding){jdbc.queryForList("SELECT assigned_by_user_id,assigned_by_identity_name,assigned_to_revision,assignment_identity_revision FROM detection_task WHERE 1=0");jdbc.queryForList("SELECT task_id,revision,actor_user_id,assignee_user_id FROM ("+DetectionIdentityPersistence.ASSIGNMENTS+") identity_assignments WHERE 1=0");}}
+    public DetectionIdentityService(JdbcTemplate jdbc,BusinessAccountLookupApi accounts,BusinessUserDirectory users,OperationsAuditApi audit,ObjectMapper json){this.jdbc=jdbc;this.accounts=accounts;this.users=users;this.audit=audit;this.json=json;this.storage=new DetectionIdentityPersistence(jdbc,json);}
+    public boolean active(){String mode=Objects.toString(storage.control(false,false).get("mode"),"");if(!Set.of("ACTIVE","PREVIEW").contains(Objects.toString(mode,""))||(evidence!=null&&evidence.active()&&!"ACTIVE".equals(mode)))throw bad(503,"身份授权模式未能核对");return "ACTIVE".equals(mode);}
     public long userId(String username){var id=accounts.findExactUserId(username);if(id==null)throw new SecurityException("账号不存在");return id;}
     public BusinessUserDirectory.Identity current(long userId,String username){return users.current(userId,username);}
     @Deprecated public BusinessUserDirectory.Identity current(String username){var current=users.authenticated();if(!Objects.equals(username,current.username()))throw new SecurityException("缺少原账号稳定身份");return current;}
@@ -77,7 +77,7 @@ public class DetectionIdentityService {
             String role=entry.getKey();if(row.get(role+"_user_id")!=null&&name.equals(row.get(role+"_identity_name")))continue;
             var item=new LinkedHashMap<String,Object>();item.put("taskId",row.get("task_id"));item.put("role",role);item.put("expectedName",name);item.put("snapshot",hash(new TreeMap<>(row)));item.put("existingUserId",row.get(role+"_user_id"));item.put("existingIdentityName",row.get(role+"_identity_name"));item.put("suggestedUserId",accounts.findExactUserId(name));result.add(item);
         }
-        var control=jdbc.queryForMap("SELECT mode,revision FROM detection_identity_control WHERE control_id=1");
+        var control=storage.control(false,false);
         return Map.of("records",result,"nextCursor",rows.isEmpty()?after:rows.get(rows.size()-1).get("task_id"),"hasMore",rows.size()==size,"mode",control.get("mode"),"revision",control.get("revision"));
     }
     public Map<String,Object> apply(AgentActor actor,Apply command){supervisor(actor);requireReview();return review.apply(actor,command);}
@@ -88,9 +88,9 @@ public class DetectionIdentityService {
         var current=supervisor(actor);requireReview();if(request==null||!request.matches("[A-Za-z0-9_-]{1,128}"))throw bad(400,"请求编号无效");
         if(revision<0)throw bad(400,"身份预览版本无效");
         if(sourceProtection==null||sourceProtection!=(evidence!=null))throw bad(409,"身份保护范围已变化，请重新预览并确认");
-        var control=jdbc.queryForMap("SELECT * FROM detection_identity_control WHERE control_id=1 FOR UPDATE");
+        var control=storage.control(false,true);
         String digest=hash(Map.of("action","ACTIVATE_IDENTITY_V2","revision",revision,"sourceProtection",sourceProtection));
-        var previous=jdbc.queryForList("SELECT actor_user_id,request_sha256 FROM detection_identity_command WHERE request_id=?",request);
+        var previous=jdbc.queryForList("SELECT actor_user_id,request_sha256 FROM ("+DetectionIdentityPersistence.COMMANDS+") identity_commands WHERE request_id=?",request);
         if(!previous.isEmpty()){var old=previous.get(0);if(((Number)old.get("actor_user_id")).longValue()!=current.userId()||!digest.equals(old.get("request_sha256")))throw bad(409,"请求编号冲突");return;}
         if(((Number)control.get("revision")).longValue()!=revision)throw bad(409,"授权模式已变化");
         if(!Set.of("PREVIEW","ACTIVE").contains(Objects.toString(control.get("mode"),"")))throw bad(409,"身份授权模式异常");
@@ -99,10 +99,10 @@ public class DetectionIdentityService {
         review.lockRequiredAccounts();
         if(evidence!=null)evidence.requireActivationReady();
         boolean changed=!"ACTIVE".equals(control.get("mode"))||(evidence!=null&&!evidence.active());long applied=changed?Math.incrementExact(revision):revision;
-        if(changed)jdbc.update("UPDATE detection_identity_control SET mode='ACTIVE',revision=revision+1 WHERE control_id=1");
+        if(changed)storage.activateControl();
         if(evidence!=null)evidence.activate(applied);
         audit.append(new OperationsAuditApi.Event(current,"ENTERPRISE","DETECTION_IDENTITY","ACTIVATE","all",request,changed?"APPLIED":"NO_CHANGE",applied));
-        jdbc.update("INSERT INTO detection_identity_command(request_id,actor_user_id,request_sha256,result_json,created_at) VALUES(?,?,?,?,CURRENT_TIMESTAMP(6))",request,current.userId(),digest,"{\"revision\":"+applied+"}");
+        storage.command(request,current.userId(),digest,"{\"revision\":"+applied+"}");
     }
     /** Called only immediately after a new insert in the caller's business transaction. */
     @Transactional(propagation=org.springframework.transaction.annotation.Propagation.MANDATORY) public void recordCreation(DetectionTask task){
@@ -132,7 +132,7 @@ public class DetectionIdentityService {
         if(assignmentBinding){
             long revision=Math.incrementExact(((Number)row.get("assignment_identity_revision")).longValue());
             jdbc.update("UPDATE detection_task SET assigned_by_user_id=?,assigned_by_identity_name=?,assigned_to_revision=?,assignment_identity_revision=? WHERE task_id=?",actor.userId(),actor.username(),recipient.revision(),revision,task.getTaskId());
-            jdbc.update("INSERT INTO detection_assignment_identity_event(task_id,revision,actor_user_id,actor_name,assignee_user_id,assignee_name,assignee_revision,request_id) VALUES(?,?,?,?,?,?,?,?)",task.getTaskId(),revision,actor.userId(),actor.username(),recipient.userId(),name,recipient.revision(),request);
+            storage.assignment(task.getTaskId(),revision,actor.userId(),actor.username(),recipient.userId(),name,recipient.revision(),request);
             audit.append(new OperationsAuditApi.Event(new AgentActor(actor.userId(),actor.username(),AgentActor.Role.SUPERVISOR),"ENTERPRISE","DETECTION_IDENTITY","ASSIGN_IDENTITY",task.getTaskId(),request,"APPLIED",revision));
         }
         if(evidence!=null)evidence.record(task.getTaskId(),"assignee",new AgentActor(actor.userId(),actor.username(),AgentActor.Role.SUPERVISOR),"QUALITY_ASSIGNMENT",request,null);
@@ -144,7 +144,7 @@ public class DetectionIdentityService {
         boolean aligned=Objects.equals(row.get("assignee_identity_name"),row.get("assignee"));
         return new AssignmentIdentity(aligned?number(row.get("assigned_by_user_id")):null,aligned?(String)row.get("assigned_by_identity_name"):null,aligned?number(row.get("assignee_user_id")):null,aligned?(String)row.get("assigned_to_revision"):null,number(row.get("assignment_identity_revision")));
     }
-    private static Long number(Object value){return value==null?null:((Number)value).longValue();}
+    private static Long number(Object value){return value==null?null:value instanceof java.math.BigInteger integer?integer.longValueExact():((Number)value).longValue();}
     private String assignmentRequest(){
         String value=null;
         var attributes=org.springframework.web.context.request.RequestContextHolder.getRequestAttributes();

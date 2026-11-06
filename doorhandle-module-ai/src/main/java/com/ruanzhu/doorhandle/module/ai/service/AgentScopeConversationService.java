@@ -166,7 +166,9 @@ public class AgentScopeConversationService implements AgentConversationApi {
             var stream = StreamOptions.builder().eventTypes(EventType.ALL).incremental(true)
                     .includeReasoningChunk(true).includeReasoningResult(true).includeActingChunk(false).build();
             Disposable disposable = agent.stream(work==null?messages:work.messages(messages), stream)
-                    .contextWrite(context -> context.put(AgentBase.RUNTIME_CONTEXT_KEY, runtime))
+                    .contextWrite(context -> context.put(AgentBase.RUNTIME_CONTEXT_KEY, runtime)
+                            .put(com.ruanzhu.doorhandle.module.ai.model.ModelBudgetContext.CONTEXT_KEY,
+                                    new com.ruanzhu.doorhandle.module.ai.model.ModelBudgetContext(actor,audit.id())))
                     .subscribeOn(Schedulers.boundedElastic()).timeout(Duration.ofSeconds(controls==null?180:controls.maxRunSeconds()))
                     .doFinally(signal -> cleanup.run()).subscribe(event -> {
                         if (closed.get()) return;

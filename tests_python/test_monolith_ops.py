@@ -68,6 +68,38 @@ def test_backup_quiesces_ingress_and_writers_resumes_exact_services_and_checks_a
     with pytest.raises(ops.OpsError,match='checksum'):ops.verify(snapshot)
 
 
+def test_database_backup_uses_current_backend_schema_after_distinct_target_cutover(monkeypatch):
+    mysql={'Config':{'Env':['MYSQL_DATABASE=old_source'], 'Labels':{'com.docker.compose.project':ops.PROJECT}}}
+    backend={'Config':{'Env':['DB_URL=jdbc:mysql://mysql:3306/compact_target?serverTimezone=Asia/Shanghai']}}
+    calls=[]
+    def docker(*args,**kwargs):
+        calls.append((args,kwargs))
+        if args[:2]==('inspect','mysql-owned'):return json.dumps([mysql]).encode()
+        if args[:2]==('ps','-aq'):return b'backend-owned'
+        if args[:2]==('inspect','backend-owned'):return json.dumps([backend]).encode()
+        if args[:2]==('exec','-i'):
+            assert args[-1]=='compact_target'
+            assert 'old_source' not in args
+            return b'compact_target\n'
+        raise AssertionError('Unexpected Docker operation')
+    monkeypatch.setattr(ops,'docker',docker)
+    assert ops.db('mysql-owned','SELECT DATABASE();')=='compact_target\n'
+    assert all(args[0] in ('inspect','ps','exec') for args,kwargs in calls)
+
+
+def test_backup_preserves_private_compact_connection_with_its_matching_checksum(tmp_path,monkeypatch):
+    runtime,_,_=fixture(monkeypatch,tmp_path)
+    state=tmp_path/'state';state.mkdir(exist_ok=True)
+    overlay=state/'compact-connection.override.yml';overlay.write_text('{"services":{}}',encoding='utf8');overlay.chmod(0o600)
+    metadata={'schemaVersion':1,'targetSchema':'doorhandledb','overlaySha256':hashlib.sha256(overlay.read_bytes()).hexdigest()}
+    record=state/'compact-connection.json';record.write_text(json.dumps(metadata),encoding='utf8');record.chmod(0o600)
+    snapshot=ops.backup(tmp_path,runtime)
+    result=ops.verify(snapshot)
+    assert (snapshot/'compact-connection.override.yml').read_bytes()==overlay.read_bytes()
+    assert result['compactConnection']['stateFile']=='compact-connection.json'
+    assert {'compact-connection.override.yml','compact-connection.json'}<=set(result['files'])
+
+
 @pytest.mark.parametrize('state', ['unverified', 'unavailable'])
 def test_model_secret_failure_prevents_quiescing_or_copying_data(tmp_path, monkeypatch, state):
     runtime, calls, resumed = fixture(monkeypatch, tmp_path)

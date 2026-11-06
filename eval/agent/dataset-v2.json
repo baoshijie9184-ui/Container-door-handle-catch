@@ -1,7 +1,7 @@
 {
   "datasetId": "doorhandle-agent-contracts",
   "version": "v2",
-  "fixtureVersion": "synthetic-business-h2-v2",
+  "fixtureVersion": "synthetic-business-compact-mysql-v3",
   "requiredCategories": [
     "TOOL_AUTHORIZATION",
     "TOOL_ARGUMENTS",

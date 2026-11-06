@@ -16,8 +16,6 @@ class ResearchExportRateLimitTest {
     ResearchEvidenceExportService exports;
     @BeforeEach void setup() throws Exception {
         fixture.workspace=workspace;fixture.setup();
-        fixture.migrate(Path.of("src/main/resources/db/migration-V33-agent-research-export.sql"));
-        fixture.migrate(Path.of("src/main/resources/db/migration-V35-agent-research-export-limit.sql"));
         properties=new ResearchEvidenceProperties();properties.setExportMaxPerWindow(1);
         limiter=new ResearchExportRateLimit(fixture.jdbc,properties);limiter.schema();exports=service();
     }
@@ -25,9 +23,9 @@ class ResearchExportRateLimitTest {
         return new ResearchEvidenceExportService(fixture.evidence,fixture.jdbc,fixture.transactions,fixture.json,
                 new ResearchExportRateLimit(fixture.jdbc,properties));
     }
-    int count(){return fixture.jdbc.queryForObject("SELECT COALESCE(SUM(export_count),0) FROM agent_research_export_limit",Integer.class);}
-    int audits(){return fixture.jdbc.queryForObject("SELECT COUNT(*) FROM agent_research_export_audit",Integer.class);}
-    LocalDateTime now(){return fixture.jdbc.queryForObject("SELECT CURRENT_TIMESTAMP(6)",LocalDateTime.class);}
+    int count(){return fixture.jdbc.queryForObject("SELECT COALESCE(SUM(counter_value),0) FROM runtime_state WHERE namespace='RESEARCH_EXPORT_LIMIT'",Integer.class);}
+    int audits(){return fixture.jdbc.queryForObject("SELECT COUNT(*) FROM audit_event WHERE kind='RESEARCH_EXPORT'",Integer.class);}
+    LocalDateTime now(){return fixture.jdbc.queryForObject("SELECT UTC_TIMESTAMP(6)",LocalDateTime.class);}
     @Test void allRunsAndServiceInstancesShareTheAccountsLimit() {
         var first=fixture.begin(fixture.alice,"first");var second=fixture.begin(fixture.alice,"second");
         exports.export(fixture.alice,first.id(),true);
@@ -58,16 +56,16 @@ class ResearchExportRateLimitTest {
     }
     @Test void failedAuditRollsBackQuotaAndANewExplicitAttemptCanSucceed() {
         var run=fixture.begin(fixture.alice,"owned");
-        fixture.jdbc.execute("ALTER TABLE agent_research_export_audit ADD CONSTRAINT reject_export CHECK(payload_bytes<0)");
+        fixture.jdbc.execute("ALTER TABLE audit_event ADD CONSTRAINT reject_export CHECK(kind<>'RESEARCH_EXPORT')");
         assertThatThrownBy(()->exports.export(fixture.alice,run.id(),true)).isInstanceOf(org.springframework.dao.DataAccessException.class);
         assertThat(count()).isZero();assertThat(audits()).isZero();
-        fixture.jdbc.execute("ALTER TABLE agent_research_export_audit DROP CONSTRAINT reject_export");
+        fixture.jdbc.execute("ALTER TABLE audit_event DROP CONSTRAINT reject_export");
         exports.export(fixture.alice,run.id(),true);assertThat(count()).isEqualTo(1);assertThat(audits()).isEqualTo(1);
     }
     @Test void failedAuditAlsoRestoresAnExistingWindow() {
         properties.setExportMaxPerWindow(2);exports=service();var run=fixture.begin(fixture.alice,"owned");
         exports.export(fixture.alice,run.id(),true);
-        fixture.jdbc.execute("ALTER TABLE agent_research_export_audit ADD CONSTRAINT reject_export CHECK(id=1)");
+        fixture.jdbc.execute("ALTER TABLE audit_event ADD CONSTRAINT reject_export CHECK(kind<>'RESEARCH_EXPORT' OR id<="+fixture.jdbc.queryForObject("SELECT MAX(id) FROM audit_event",Long.class)+")");
         assertThatThrownBy(()->exports.export(fixture.alice,run.id(),true)).isInstanceOf(org.springframework.dao.DataAccessException.class);
         assertThat(count()).isEqualTo(1);assertThat(audits()).isEqualTo(1);
     }
@@ -80,9 +78,9 @@ class ResearchExportRateLimitTest {
     }
     @Test void expiredWindowResetsUsingDatabaseTimeAndDoesNotDeleteAuditHistory() {
         var run=fixture.begin(fixture.alice,"owned");exports.export(fixture.alice,run.id(),true);
-        fixture.jdbc.update("UPDATE agent_research_export_limit SET window_ends_at=?",now().minusSeconds(1));
+        fixture.jdbc.update("UPDATE runtime_state SET window_ends_at=? WHERE namespace='RESEARCH_EXPORT_LIMIT'",now().minusSeconds(1));
         exports.export(fixture.alice,run.id(),true);assertThat(count()).isEqualTo(1);assertThat(audits()).isEqualTo(2);
-        var end=fixture.jdbc.queryForObject("SELECT window_ends_at FROM agent_research_export_limit",LocalDateTime.class);
+        var end=fixture.jdbc.queryForObject("SELECT window_ends_at FROM runtime_state WHERE namespace='RESEARCH_EXPORT_LIMIT'",LocalDateTime.class);
         assertThat(end).isAfter(now().plusSeconds(55));
     }
     @Test void successfulExportsAtTheLimitRemainAllowedUntilTheNextAttempt() {
@@ -94,10 +92,10 @@ class ResearchExportRateLimitTest {
     @Test void limitFailurePreservesTheWindowAndRoundsRetryUp() {
         var run=fixture.begin(fixture.alice,"owned");exports.export(fixture.alice,run.id(),true);
         var end=now().plusSeconds(12).plusNanos(800000000);
-        fixture.jdbc.update("UPDATE agent_research_export_limit SET window_ends_at=?",end);
+        fixture.jdbc.update("UPDATE runtime_state SET window_ends_at=? WHERE namespace='RESEARCH_EXPORT_LIMIT'",end);
         assertThatThrownBy(()->exports.export(fixture.alice,run.id(),true)).isInstanceOfSatisfying(ResearchExportRateLimit.Limited.class,error->
                 assertThat(Long.parseLong(error.getHeaders().getFirst("Retry-After"))).isBetween(12L,13L));
-        assertThat(fixture.jdbc.queryForObject("SELECT window_ends_at FROM agent_research_export_limit",LocalDateTime.class)).isEqualTo(end);
+        assertThat(fixture.jdbc.queryForObject("SELECT window_ends_at FROM runtime_state WHERE namespace='RESEARCH_EXPORT_LIMIT'",LocalDateTime.class)).isEqualTo(end);
     }
     @Test void counterCannotBeUsedOutsideTheExportTransaction() {
         assertThatThrownBy(()->limiter.consume(fixture.alice)).isInstanceOf(IllegalStateException.class);assertThat(count()).isZero();
@@ -105,11 +103,11 @@ class ResearchExportRateLimitTest {
         tx.executeWithoutResult(status->{limiter.consume(fixture.alice);status.setRollbackOnly();});assertThat(count()).isZero();
     }
     @Test void missingMigrationFailsBeforeServingAnyExports() {
-        fixture.jdbc.execute("DROP TABLE agent_research_export_limit");
-        assertThatThrownBy(limiter::schema).hasMessageContaining("migration-V35-agent-research-export-limit.sql");
+        fixture.jdbc.execute("DROP TABLE runtime_state");
+        assertThatThrownBy(limiter::schema).hasMessageContaining("compact");
     }
     @Test void runtimeDatabaseFailureCannotSilentlyDisableTheLimit() {
-        var run=fixture.begin(fixture.alice,"owned");fixture.jdbc.execute("DROP TABLE agent_research_export_limit");
+        var run=fixture.begin(fixture.alice,"owned");fixture.jdbc.execute("DROP TABLE runtime_state");
         assertThatThrownBy(()->exports.export(fixture.alice,run.id(),true)).isInstanceOf(org.springframework.dao.DataAccessException.class);
         assertThat(audits()).isZero();
     }
@@ -119,7 +117,7 @@ class ResearchExportRateLimitTest {
         var evidence=org.mockito.Mockito.spy(fixture.evidence);
         org.mockito.Mockito.doAnswer(invocation->{
             var view=fixture.evidence.view(fixture.alice,run.id());
-            if(reads.getAndIncrement()==0)fixture.jdbc.update("UPDATE agent_research_source SET expires_at=? WHERE source_id=?",now().minusSeconds(1),id);
+            if(reads.getAndIncrement()==0)fixture.jdbc.update("UPDATE content_revision SET expires_at=? WHERE asset_kind='RESEARCH_SOURCE' AND asset_id=?",now().minusSeconds(1),id);
             return view;
         }).when(evidence).view(fixture.alice,run.id());
         var service=new ResearchEvidenceExportService(evidence,fixture.jdbc,fixture.transactions,fixture.json,limiter);

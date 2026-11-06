@@ -160,6 +160,7 @@ def isolated_config(config, project, port, images, database, model_secret_source
             if key in replacements:
                 environment[key] = replacements[key]
         if name == 'backend':
+            environment['APP_BUSINESS_SEED_ENABLED']='false'
             environment.update({key: replacements[key] for key in (
                 'DB_URL', 'DB_USERNAME', 'DB_PASSWORD', 'REDIS_HOST', 'REDIS_PASSWORD', 'JWT_SECRET',
                 'MEM0_SERVICE_URL', 'MEM0_BASE_URL', 'MEM0_BRIDGE_TOKEN', 'CHAT_ASSISTANT_CHROMA_BASE_URL',
@@ -483,61 +484,25 @@ except Exception as error:
         self.persist()
         return config
 
-    def verify_dispatch_index(self):
-        sql = "SELECT GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='agent_conversation_input' AND INDEX_NAME='idx_conversation_input_dispatch_owner';"
-        return self.ops.db(self.row('mysql')['Id'], sql).strip() == 'status,user_id,id'
+    def verify_compact_schema(self, source=None, *, quiescent=False):
+        source=Path(source or self.directory/'source')
+        helper=module('rehearsal_compact_schema',source/'script/docker/compact-schema-guard.py')
+        mysql=self.assignment_guard.selected_mysql(self.row('mysql'),self.config['services']['backend']['environment'])
+        observed=helper.inspect_database(mysql,source,require_quiescent=quiescent)
+        prior=self.report.get('compactSchema')
+        require(prior is None or all(prior[key]==observed[key] for key in ('contractSha256','sqlSha256','metadataSha256','serverUuid','targetSchema')),
+                'Application rehearsal must not change the admitted compact database structure')
+        self.report['compactSchema']=observed
+        self.persist()
+        return True
 
-    def migrate_candidate(self, source):
-        # Fixed additive migrations on the owned copy only; production publishing never invokes this.
-        # Verify the entire source plan before the first database operation.
-        file = source/'sql/mysql/migration-V39-conversation-owner-dispatch.sql'
-        mirror = source/'doorhandle-module-app/src/main/resources/db/migration-V39-conversation-owner-dispatch.sql'
-        require(file.read_bytes() == mirror.read_bytes(), 'Candidate V39 migration copies differ')
-        plan = []
-        for version in range(40, 67):
-            files = list((source/'sql/mysql').glob('migration-V'+str(version)+'-*.sql'))
-            require(len(files) == 1 and not files[0].is_symlink(), 'Candidate migration source missing or ambiguous: V'+str(version))
-            mirrors = list(source.glob('doorhandle-*/src/main/resources/db/'+files[0].name))
-            require(len(mirrors) == 1 and not mirrors[0].is_symlink() and files[0].read_bytes() == mirrors[0].read_bytes(),
-                    'Candidate V'+str(version)+' migration copies differ')
-            plan.append(files[0])
-        def column(table, name):
-            # Identifiers are accepted only by the trusted declaration parser.
-            raw = self.ops.db(self.row('mysql')['Id'],
-                "SELECT JSON_OBJECT('type',COLUMN_TYPE,'nullable',IS_NULLABLE,'default',COLUMN_DEFAULT,'collation',COLLATION_NAME) "
-                "FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='"+table+"' AND COLUMN_NAME='"+name+"';").strip()
-            return json.loads(raw) if raw else None
-        self.verify_model_fact_columns(complete=False)
-        # Validate every pre-existing ADD declaration before executing any DDL.
-        prepared = [(migration, additive_replay_sql(migration.read_text(encoding='utf8'), column)) for migration in plan]
-        existing = self.ops.db(self.row('mysql')['Id'], "SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='agent_conversation_input' AND INDEX_NAME='idx_conversation_input_dispatch_owner';").strip()
-        if existing == '0':
-            self.ops.db(self.row('mysql')['Id'], file.read_text(encoding='utf8'))
-        self.check('Candidate V39 adds only the expected dispatch index', self.verify_dispatch_index())
-        for migration, body in prepared:
-            self.report['migrationAttempt'] = migration.name
-            self.persist()
-            self.ops.db(self.row('mysql')['Id'], body)
-            self.report.setdefault('completedMigrations', []).append(migration.name)
-            self.persist()
-        self.verify_model_fact_columns(complete=True)
-        self.report['candidateMigrations'] = [migration.name for migration in (file, *plan)]
-        self.check('Owned candidate copy applied V40-V66 and retains the expected nullable model facts', True)
-
-    def verify_model_fact_columns(self, *, complete):
-        expected = {'training_image_count': 'int', 'training_completed_at': 'datetime',
-                    'evaluation_image_count': 'int', 'no_detection_image_count': 'int', 'inference_fps': 'decimal(12,4)'}
-        names = ','.join("'"+name+"'" for name in expected)
-        sql = "SELECT COLUMN_NAME,LOWER(COLUMN_TYPE),IS_NULLABLE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='model_management' AND COLUMN_NAME IN ("+names+");"
-        found = {}
-        for line in self.ops.db(self.row('mysql')['Id'], sql).splitlines():
-            parts = line.split('\t')
-            require(len(parts) == 3 and parts[0] in expected and parts[0] not in found, 'Candidate model fact metadata unavailable')
-            name, kind, nullable = parts
-            kind = 'int' if kind == 'int(11)' else kind
-            require(kind == expected[name] and nullable == 'YES', 'Candidate V62 existing column type differs: '+name)
-            found[name] = kind
-        require(not complete or found.keys() == expected.keys(), 'Candidate V62 model fact columns incomplete')
+    def admit_candidate_schema(self, source):
+        # Full 131->29 migration and source/target restoration are separate prerequisites.
+        # This application rehearsal upgrades only independently compatible compact readers.
+        self.verify_compact_schema(source)
+        self.report['candidateMigrations']=[]
+        self.report['schemaChangedByRehearsal']=False
+        self.check('Candidate and recovery images use the already-migrated compact schema',True)
 
     def cleanup(self):
         # Re-read labels, and revalidate the exact private config before deleting owned copies.
@@ -781,7 +746,14 @@ def run(args):
         if model_secret_source:
             env['MODEL_CONFIG_MASTER_KEY_SOURCE']=model_secret_source
             command+=['-f',str(source/'compose.model-config.yml')]
+        connection_overlay=root/'state/compact-connection.override.yml'
+        require(connection_overlay.is_file() and not connection_overlay.is_symlink(),'Compact application rehearsal requires an admitted cutover connection')
+        command+=['-f',str(connection_overlay)]
         config = json.loads(ops.docker(*command, 'config', '--format', 'json', env=env))
+        admission_config=copy.deepcopy(config)
+        admission_config['services']['backend']['image']=manifest['images']['backend']
+        compact_admission=module('rehearsal_compact_admission',source/'script/docker/compact-schema-guard.py')
+        compact_admission.guard(root/'state',admission_config,source,None,project=PRODUCTION,write_receipt=False)
         config = isolated_config(config, project, args.port, manifest['images'], manifest['databaseName'], model_secret_source)
         memory_environment=config['services']['mem0'].get('environment',{})
         original_memory_model=memory_environment.get('MEM0_LLM_MODEL') or memory_environment.get('DASHSCOPE_MODEL')
@@ -793,6 +765,12 @@ def run(args):
         mcp_guard=module('rehearsal_mcp_input',Path(__file__).with_name('mcp-compat.py'))
         desired_mcp_writes=mcp_guard.flag(config['services']['backend']['environment'],'AGENT_MCP_WRITES_ENABLED',True)
         original_backend=mcp_guard.common.container(PRODUCTION,'backend')
+        compact_guard=module('rehearsal_compact_image',source/'script/docker/compact-schema-guard.py')
+        _,compact_catalog=compact_guard.source_catalog(source)
+        require(set(manifest['tableCounts'])==set(compact_catalog['tables']),
+                'Application rehearsal requires a verified compact snapshot; run complete legacy migration and restoration proof separately first')
+        compact_guard.compact_image(args.compatible_backend_image or original_backend['Image'],mcp_guard.common)
+
         require(original_backend['Image']==manifest['images']['backend'],'Backend changed after the selected backup; refresh the rehearsal baseline')
         _,original_mcp_capability=mcp_guard.capability(original_backend['Image'])
         baseline_mcp_writes=mcp_guard.flag(mcp_guard.common.environment(original_backend),'AGENT_MCP_WRITES_ENABLED',True) if original_mcp_capability>=2 else True
@@ -839,6 +817,7 @@ def run(args):
             require(result.returncode == 0, 'Image build failed; inspect private image-build.log')
             candidate = {service: guard.image(build_config['services'][service]['image'])[0] for service in ('backend', 'nginx', 'mem0')}
             instance.report['candidateImages'] = candidate
+            compact_guard.compact_image(candidate['backend'],mcp_guard.common)
             _,candidate_capabilities=assignment_guard.image(candidate['backend'])
             _,baseline_capabilities=assignment_guard.image(config['services']['backend']['image'])
             intended_environment={**config['services']['backend']['environment'],'DETECTION_ASSIGNMENT_WRITES_ENABLED':str(desired_assignment_writes).lower()}
@@ -860,12 +839,8 @@ def run(args):
                            'gzip -dc | MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot --default-character-set=utf8mb4 "$MYSQL_DATABASE"', input_stream=stream, timeout=600)
             instance.check('Restored MySQL row counts and checksums match', ops.table_counts(mysql) == manifest['tableCounts'] and ops.table_checksums(mysql, manifest['tableCounts']) == manifest['tableChecksums'])
             # Never start copied pending input/install work. Require a quiescent source snapshot.
-            checks = ["SELECT COUNT(*) FROM agent_conversation_input WHERE status IN ('QUEUED','STARTED')",
-                      "SELECT COUNT(*) FROM agent_workbench_item WHERE (kind='EXECUTION' AND status IN ('RUNNING','READY')) OR (kind='CHILD' AND status IN ('QUEUED','RUNNING'))",
-                      "SELECT COUNT(*) FROM agent_mcp_install_job WHERE status IN ('QUEUED','RUNNING')"]
-            if ops.db(mysql,"SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name='agent_mcp_execution';").strip()=='1':
-                checks.append("SELECT COUNT(*) FROM agent_mcp_execution WHERE state<>'REMOVED'")
-            instance.check('Backup has no automatically executable Agent or installation work', all(ops.db(mysql, sql).strip() == '0' for sql in checks))
+            instance.check('Restored compact schema has no automatically executable Agent or MCP work',
+                           instance.verify_compact_schema(source,quiescent=True))
             if 'mcp-runner' in config['services']:
                 logical=next(value['source'] for value in config['services']['mcp-runner']['volumes'] if value['target']=='/var/lib/doorhandle-mcp')
                 journal=instance.mcp_runtime.probe({'State':{'Running':False}},config['volumes'][logical]['name'],config['services']['mcp-runner']['image'])
@@ -881,8 +856,8 @@ def run(args):
             if args.compatible_backend_image:
                 # The independent reader baseline is newer than the production backup
                 # and can require additive tables even while its write gates are paused.
-                instance.migrate_candidate(source)
-                instance.report['migrationStage'] = 'BEFORE_COMPATIBLE_BASELINE'
+                instance.admit_candidate_schema(source)
+                instance.report['schemaAdmissionStage'] = 'BEFORE_COMPATIBLE_BASELINE'
                 instance.persist()
             observed = assignment_guard.data_floor(assignment_guard.container(project, 'mysql'))
             reader_config = initial_reader_config(config, observed, baseline_capabilities, baseline_mcp)
@@ -897,8 +872,8 @@ def run(args):
             marker = upload_marker(args.port)
             private_json(directory/'marker.json', marker)
             if not args.compatible_backend_image:
-                instance.migrate_candidate(source)
-                instance.report['migrationStage'] = 'AFTER_ORIGINAL_BASELINE'
+                instance.admit_candidate_schema(source)
+                instance.report['schemaAdmissionStage'] = 'AFTER_ORIGINAL_BASELINE'
                 instance.persist()
             print(json.dumps({'project': project, 'phase': 'UPGRADING'}), flush=True)
             instance.activate(candidate, 'Upgrade',assignment_writes=desired_assignment_writes,mcp_writes=desired_mcp_writes)
@@ -909,7 +884,7 @@ def run(args):
             rollback_images = dict(manifest['images'])
             rollback_images['backend'] = config['services']['backend']['image']
             instance.activate(rollback_images, 'Rollback', assignment_writes=False if args.compatible_backend_image else desired_assignment_writes,mcp_writes=baseline_mcp_writes)
-            instance.check('Application rollback preserves the additive V39 index', instance.verify_dispatch_index())
+            instance.check('Application rollback preserves the admitted compact schema metadata', instance.verify_compact_schema(source))
             smoke(instance, args.port, marker)
             verify_rollback_bridge(instance, upgraded_memory, rollback_images['mem0'])
             verify_memory_marker(instance, args.port, memory, legacy=True)

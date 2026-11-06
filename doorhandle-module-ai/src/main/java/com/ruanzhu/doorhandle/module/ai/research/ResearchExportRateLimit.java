@@ -1,13 +1,13 @@
 package com.ruanzhu.doorhandle.module.ai.research;
 
 import com.ruanzhu.doorhandle.contracts.agent.AgentActor;
+import com.ruanzhu.doorhandle.framework.persistence.JdbcTransactions;
 import jakarta.annotation.PostConstruct;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.time.Duration;
@@ -38,28 +38,29 @@ public class ResearchExportRateLimit {
     @PostConstruct public void schema() {
         if(maxExports<1||maxExports>100||windowSeconds<1||windowSeconds>3600)
             throw new IllegalStateException("来源导出限流参数超出范围：次数 1—100，时间窗 1—3600 秒");
-        try { jdbc.queryForList("SELECT user_id,window_ends_at,export_count FROM agent_research_export_limit WHERE 1=0"); }
+        try { jdbc.queryForList("SELECT owner_id,window_ends_at,counter_value FROM runtime_state WHERE namespace='RESEARCH_EXPORT_LIMIT' AND 1=0"); }
         catch(org.springframework.dao.DataAccessException error) {
-            throw new IllegalStateException("请先执行 migration-V35-agent-research-export-limit.sql 再启用导出限流");
+            throw new IllegalStateException("请先安装 compact 研究导出限流状态约束",error);
         }
     }
     void consume(AgentActor actor) {
-        if(!TransactionSynchronizationManager.isActualTransactionActive()||actor.userId()<1)
+        JdbcTransactions.requireActive(jdbc);
+        if(actor.userId()<1)
             throw new IllegalStateException("来源导出限流需要账号事务");
-        jdbc.update("INSERT INTO agent_research_export_limit(user_id) VALUES(?) ON DUPLICATE KEY UPDATE user_id=VALUES(user_id)",actor.userId());
-        var row=jdbc.queryForObject("SELECT window_ends_at,export_count FROM agent_research_export_limit WHERE user_id=? FOR UPDATE",
-                (rs,index)->new Window(rs.getObject(1,LocalDateTime.class),rs.getInt(2)),actor.userId());
+        jdbc.update("INSERT INTO runtime_state(namespace,owner_id,scope_key,revision,window_ends_at,counter_value,created_at,updated_at) VALUES('RESEARCH_EXPORT_LIMIT',?,'',0,UTC_TIMESTAMP(6),0,NULL,NULL) ON DUPLICATE KEY UPDATE owner_id=VALUES(owner_id)",actor.userId());
+        var row=jdbc.queryForObject("SELECT window_ends_at,counter_value FROM runtime_state WHERE namespace='RESEARCH_EXPORT_LIMIT' AND owner_id=? AND scope_key='' FOR UPDATE",
+                (rs,index)->new Window(rs.getObject(1,LocalDateTime.class),rs.getLong(2)),actor.userId());
         // 在账号行锁之后读取数据库时间，多个应用实例不依赖各自的系统时钟。
-        var now=jdbc.queryForObject("SELECT CURRENT_TIMESTAMP(6)",LocalDateTime.class);
+        var now=jdbc.queryForObject("SELECT UTC_TIMESTAMP(6)",LocalDateTime.class);
         if(!now.isBefore(row.endsAt())) {
-            jdbc.update("UPDATE agent_research_export_limit SET window_ends_at=?,export_count=1 WHERE user_id=?",now.plusSeconds(windowSeconds),actor.userId());
+            jdbc.update("UPDATE runtime_state SET window_ends_at=?,counter_value=1 WHERE namespace='RESEARCH_EXPORT_LIMIT' AND owner_id=? AND scope_key=''",now.plusSeconds(windowSeconds),actor.userId());
         } else {
             if(row.count()>=maxExports) {
                 long remaining=Duration.between(now,row.endsAt()).toNanos();
                 throw new Limited((remaining+999999999L)/1000000000L);
             }
-            jdbc.update("UPDATE agent_research_export_limit SET export_count=export_count+1 WHERE user_id=?",actor.userId());
+            jdbc.update("UPDATE runtime_state SET counter_value=counter_value+1 WHERE namespace='RESEARCH_EXPORT_LIMIT' AND owner_id=? AND scope_key=''",actor.userId());
         }
     }
-    private record Window(LocalDateTime endsAt,int count) {}
+    private record Window(LocalDateTime endsAt,long count) {}
 }

@@ -8,6 +8,8 @@ import java.util.List;
 
 @Mapper
 public interface DetectionDuplicateTicketMapper extends BaseMapper<DetectionDuplicateTicket> {
+    String COLUMNS="id,ticket_id,sha256,left_task_id,right_task_id,left_employee_id,right_employee_id,left_folder_name,right_folder_name,"
+            +"left_images_json,right_images_json,assigned_to,comparison_result,resolution,status,approved_by,approved_at,version,created_at,updated_at";
     @Select("SELECT status, COUNT(*) AS total FROM detection_duplicate_ticket WHERE assigned_to = #{userId} GROUP BY status")
     List<java.util.Map<String, Object>> countAssignedStatuses(@org.apache.ibatis.annotations.Param("userId") String userId);
 
@@ -23,6 +25,6 @@ public interface DetectionDuplicateTicketMapper extends BaseMapper<DetectionDupl
         """)
     int resolveIfVersion(@org.apache.ibatis.annotations.Param("ticket") DetectionDuplicateTicket ticket,
                          @org.apache.ibatis.annotations.Param("expectedVersion") Integer expectedVersion);
-    @Select("SELECT * FROM detection_duplicate_ticket WHERE status IN ('OPEN','ASSIGNED','COMPARING','PENDING_APPROVAL') ORDER BY created_at ASC")
+    @Select("SELECT "+COLUMNS+" FROM detection_duplicate_ticket WHERE status IN ('OPEN','ASSIGNED','COMPARING','PENDING_APPROVAL') ORDER BY created_at ASC,id ASC")
     List<DetectionDuplicateTicket> findPending();
 }

@@ -143,9 +143,20 @@ def mysql_connect():
             cursor.execute('SELECT COUNT(*) AS table_count FROM information_schema.tables WHERE table_schema=DATABASE()')
             if cursor.fetchone()['table_count'] != 0:
                 raise ValueError('Worker fixture must be a fresh empty database')
-            for statement in (root / 'sql/mysql/migration-V42-detection-execution.sql').read_text('utf-8').split(';'):
-                if statement.strip():
-                    cursor.execute(statement)
+            # Use the reviewed target schema, not the three retired receipt tables.
+            import importlib.util
+            spec = importlib.util.spec_from_file_location('compact_schema_source', root / 'script/schema/build_compact_schema.py')
+            compiler = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(compiler)
+            for part in compiler.PARTS:
+                text = compiler.without_comments((root / 'sql/mysql/compact/baseline' / part).read_text('utf-8'))
+                statements = text.split('$$') if part.endswith('-guards.sql') else compiler.split_top_level(text, ';')
+                for statement in statements:
+                    if statement.strip():
+                        cursor.execute(statement)
+            cursor.execute('SELECT COUNT(*) AS table_count FROM information_schema.tables WHERE table_schema=DATABASE()')
+            if cursor.fetchone()['table_count'] != 29:
+                raise ValueError('Expected the full compact 29-table target')
         connection.commit()
     finally:
         connection.close()
@@ -177,11 +188,11 @@ def test_crashed_running_attempt_is_not_reclaimed(store, mysql_connect, task):
 def test_waiting_reconciliation_never_creates_missing_receipt(store, task):
     store.claim(task)
     with store.transaction() as cursor:
-        cursor.execute('DELETE FROM detection_worker_receipt WHERE task_id=%s', (task.task_id,))
+        cursor.execute("DELETE FROM workflow_instance WHERE kind='DETECTION_WORKER' AND resource_id=%s", (task.task_id,))
     with pytest.raises(ReceiptUnavailable):
         store.completed(task)
     with store.transaction() as cursor:
-        cursor.execute('SELECT COUNT(*) AS total FROM detection_worker_receipt WHERE task_id=%s', (task.task_id,))
+        cursor.execute("SELECT COUNT(*) AS total FROM workflow_instance WHERE kind='DETECTION_WORKER' AND resource_id=%s", (task.task_id,))
         assert cursor.fetchone()['total'] == 0
 
 
@@ -207,7 +218,7 @@ def test_inference_failure_is_durable_pending_review(store, task, mysql_connect)
     with pytest.raises(RuntimeError, match='injected interruption'):
         execute_once(task, store, broken)
     with MysqlDetectionReceipts(mysql_connect).transaction() as cursor:
-        cursor.execute('SELECT status FROM detection_worker_receipt WHERE task_id=%s', (task.task_id,))
+        cursor.execute("SELECT status FROM workflow_instance WHERE kind='DETECTION_WORKER' AND resource_id=%s", (task.task_id,))
         assert cursor.fetchone()['status'] == 'NEEDS_REVIEW'
     with pytest.raises(ReceiptPending):
         execute_once(task, store, lambda: pytest.fail('Uncertain write must not replay'))
@@ -226,14 +237,14 @@ def test_wrong_execution_owner_cannot_complete_or_release_fence(store, task):
 @pytest.mark.parametrize('clear_hash', [False, True])
 def test_corrupted_stored_result_fails_closed(store, task, clear_hash):
     execute_once(task, store, lambda: finished(task))
-    with store.transaction() as cursor:
-        if clear_hash:
-            cursor.execute('UPDATE detection_worker_receipt SET result_sha256=NULL WHERE task_id=%s', (task.task_id,))
-        else:
-            cursor.execute('UPDATE detection_worker_receipt SET result_json=%s WHERE task_id=%s',
-                           (finished(task).replace('结果', '损坏'), task.task_id))
     with pytest.raises(ReceiptUnavailable):
-        execute_once(task, store, lambda: pytest.fail('Corrupt receipt must not replay inference'))
+        with store.transaction() as cursor:
+            if clear_hash:
+                cursor.execute("UPDATE workflow_instance SET result_sha256=NULL WHERE kind='DETECTION_WORKER' AND resource_id=%s", (task.task_id,))
+            else:
+                cursor.execute("UPDATE workflow_instance SET result_json=%s WHERE kind='DETECTION_WORKER' AND resource_id=%s",
+                               (finished(task).replace('结果', '损坏'), task.task_id))
+    assert execute_once(task, store, lambda: pytest.fail('Original committed result must survive rejected corruption')) == finished(task)
 
 
 def test_two_workers_execute_one_dispatch_once(store, mysql_connect, task):

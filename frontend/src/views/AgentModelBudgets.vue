@@ -1,8 +1,27 @@
 <template>
   <div class="operation-page">
-    <PageHero title="模型额度" icon="DataAnalysis" description="每个模型单独登记额度与核对记录。供应商剩余额度以核对时点为准；本站用量只统计已接入的 AgentScope 路由请求，不包含站外、独立记忆、独立 RAG 和探测调用。"><template #actions><el-button :loading="loading" @click="load">刷新</el-button><el-button type="primary" @click="configure(null)"><AppIcon name="Plus" :size="16" />登记模型额度</el-button></template></PageHero>
+    <PageHero title="企业模型额度" icon="DataAnalysis" description="每个模型单独登记企业额度与核对记录。供应商剩余额度以核对时点为准；本站用量只统计已接入的 AgentScope 路由请求，不包含站外、独立记忆、独立 RAG 和探测调用。"><template #actions><el-button @click="$router.push('/agent/model-quotas')">LLM模型管理</el-button><el-button :loading="loading" @click="load">刷新</el-button><el-button type="primary" @click="configure(null)"><AppIcon name="Plus" :size="16" />登记企业额度</el-button></template></PageHero>
     <el-alert v-if="error && rows.length" :title="error" type="warning" :closable="false" />
-    <section class="operation-cards" aria-label="各模型额度"><article v-for="row in rows" :key="row.model_id" class="operation-card"><h3>{{ row.model_id }}</h3><el-tag :type="warning(row.alert)?'warning':'info'">{{ labels[row.alert]||row.alert }}</el-tag><div class="operation-metrics"><div><strong>{{ count(row.providerObservation?.remaining_tokens) }}</strong><span>供应商剩余 · 上次核对值</span></div><div><strong>{{ count(row.total_tokens) }}</strong><span>登记额度 Tokens</span></div><div><strong>{{ count(row.usage?.reportedTokens) }}</strong><span>本站已报告消耗</span></div><div><strong>{{ count(row.usage?.unknownAttempts) }}</strong><span>用量未完整报告的尝试</span></div></div><p v-if="row.providerObservation">核对时间 {{ utcDisplay(row.providerObservation.observed_at) }} · {{ row.providerObservation.source_note }}</p><p v-else>尚无供应商额度核对记录</p><p>已记录 {{ count(row.usage?.attempts) }} 次尝试 · {{ count(row.usage?.activeAttempts) }} 次未取得终态</p><p>提醒阈值 {{ row.warning_percent }}% · 到期时间 {{ utcDisplay(row.expires_at) }}</p><div class="operation-actions"><el-button @click="configure(row)">调整登记</el-button><el-button type="primary" plain @click="observe(row)">记录供应商额度</el-button><el-button link @click="history(row)">核对历史</el-button></div></article></section>
+    <section class="operation-cards" aria-label="各模型额度">
+      <article v-for="row in rows" :key="row.model_id" class="operation-card">
+        <h3>{{ row.model_id }}</h3>
+        <el-tag :type="warning(row.alert)?'warning':'info'">{{ labels[row.alert]||row.alert }}</el-tag>
+        <div class="operation-metrics">
+          <div><strong>{{ count(row.providerObservation?.remaining_tokens) }}</strong><span>供应商剩余 · 上次核对值</span></div>
+          <div><strong>{{ row.total_tokens === null ? '未设上限' : count(row.total_tokens) }}</strong><span>企业登记总额度 Tokens</span></div>
+          <div><strong>{{ count(row.usage?.reportedTokens) }}</strong><span>已报告消耗 · 含已导入历史</span></div>
+          <div><strong>{{ count(row.reserved_tokens) }}</strong><span>已预留 Tokens</span></div>
+          <div><strong>{{ enterpriseAvailableValue(row) }}</strong><span>企业账面可用 Tokens</span></div>
+          <div><strong>{{ count(row.usage?.unknownAttempts) }}</strong><span>用量尚未核实的尝试</span></div>
+        </div>
+        <p v-if="row.providerObservation">核对时间 {{ utcDisplay(row.providerObservation.observed_at) }} · {{ row.providerObservation.source_note }}</p>
+        <p v-else>尚无供应商额度核对记录</p>
+        <p>已记录 {{ count(row.usage?.attempts) }} 次尝试 · {{ count(row.usage?.activeAttempts) }} 次未取得终态</p>
+        <p v-if="Number(row.unreconciled_legacy_attempts) > 0" class="operation-muted">其中 {{ count(row.unreconciled_legacy_attempts) }} 条历史用量待核实。已报告消耗是已知下限；有限企业额度暂停新增调用。调整总量或记录供应商余额不会清除这些历史记录。</p>
+        <p>提醒阈值 {{ row.warning_percent }}% · 到期时间 {{ utcDisplay(row.expires_at) }}</p>
+        <div class="operation-actions"><el-button @click="configure(row)">调整登记</el-button><el-button type="primary" plain @click="observe(row)">记录供应商额度</el-button><el-button link @click="history(row)">核对历史</el-button></div>
+      </article>
+    </section>
     <CollectionEmptyState v-if="!rows.length" :loading="loading" :error="error" empty-title="登记每个模型的免费额度" empty-description="先选择模型并登记额度；剩余值只有在核对供应商后才显示。" @retry="load" />
     <el-dialog v-model="policyVisible" title="模型额度登记" width="min(520px,94vw)" :close-on-click-modal="!busy" :close-on-press-escape="!busy" :before-close="closePolicy"><form class="operation-form" @submit.prevent="savePolicy"><label>模型标识<el-input v-model="policy.modelId" :disabled="!!selected||busy" placeholder="从实际模型目录选择或输入完整标识" required /></label><el-select v-if="!selected&&models.length" v-model="policy.modelId" aria-label="实际模型目录" placeholder="选择当前模型"><el-option v-for="model in models" :key="model.id" :label="model.id" :value="model.id" /></el-select><label>登记总额度 Tokens<el-input-number v-model="policy.totalTokens" :precision="0" :min="0" :max="1000000000000" :disabled="busy" /></label><label>本站消耗提醒阈值 %<el-input-number v-model="policy.warningPercent" :min="1" :max="100" :precision="0" :disabled="busy" /></label><label>免费额度到期时间 · UTC+8<input v-model="expiry" type="datetime-local" :disabled="busy" /></label><p class="operation-muted">按你当前的使用方式，新增登记预填每模型 1,000,000 Tokens。保存登记不会申请额度，也不会修改供应商的免费额度限制或连接凭证。</p><el-alert v-if="formError" :title="formError" type="error" :closable="false" /><el-button type="primary" native-type="submit" :loading="busy" :disabled="!policy.modelId.trim()">保存登记</el-button></form></el-dialog>
     <el-dialog v-model="observationVisible" title="记录供应商额度" width="min(520px,94vw)" :close-on-click-modal="!busy" :close-on-press-escape="!busy" :before-close="closeObservation"><form class="operation-form" @submit.prevent="saveObservation"><p>{{ observation.modelId }}</p><label>核对时剩余 Tokens<el-input-number v-model="observation.remainingTokens" :precision="0" :min="0" :max="1000000000000" :disabled="busy" /></label><label>核对时间 · UTC+8<input v-model="observedAt" type="datetime-local" required :disabled="busy" /></label><label>来源说明<el-input v-model="observation.sourceNote" type="textarea" maxlength="500" :disabled="busy" required placeholder="记录本次核对的控制台位置或账单依据" /></label><p class="operation-muted">核对记录追加保存，历史值不会被覆盖。未接入供应商实时余额，不把本站推算值作为实际剩余额度。</p><el-alert v-if="formError" :title="formError" type="error" :closable="false" /><el-button type="primary" native-type="submit" :loading="busy" :disabled="!observedAt||!observation.sourceNote.trim()||!Number.isSafeInteger(observation.remainingTokens)">保存核对记录</el-button></form></el-dialog>
@@ -15,6 +34,7 @@ import request from '../api/request'
 import { useAccountOperationScope } from '../composables/useAccountOperationScope'
 import { operationData, operationError, utcDisplay } from '../utils/qualityOperations'
 import { knownCount } from '../utils/countPresentation'
+import { enterpriseAvailableValue } from '../utils/modelQuotaPresentation'
 import { beijingDateTime } from '../utils/beijingTime'
 import AppIcon from '../components/AppIcon.vue'
 import CollectionEmptyState from '../components/CollectionEmptyState.vue'
@@ -23,7 +43,7 @@ const rows=ref([]),models=ref([]),loading=ref(false),error=ref(''),busy=ref(fals
 const policy=reactive({modelId:'',totalTokens:1000000,warningPercent:80,expectedVersion:0}),observation=reactive({modelId:'',remainingTokens:undefined,sourceNote:'',requestId:''})
 const scope=useAccountOperationScope(()=>{rows.value=[];models.value=[];observations.value=[];policyVisible.value=false;observationVisible.value=false;historyVisible.value=false;loading.value=false;busy.value=false;error.value='';formError.value='';historyError.value='';selected.value=null;expiry.value='';observedAt.value='';policy.modelId='';observation.modelId='';observation.sourceNote='';observation.remainingTokens=undefined;observation.requestId=''}),listing=scope.channel(),historyRead=scope.channel()
 const base='/api/agent/model-budgets',headers={'X-Budget-Action':'update'},count=value=>knownCount(value)?.toLocaleString('zh-CN')??'未核对'
-const labels={UNCONFIGURED:'尚未登记总额度',USAGE_INCOMPLETE:'本站用量报告不完整',LOCAL_LIMIT_REACHED:'本站记录已达登记上限',LOCAL_WARNING:'本站记录达到提醒阈值',LOCAL_NORMAL:'本站记录未达提醒阈值',LAST_OBSERVATION_EXHAUSTED:'上次核对额度已耗尽',LAST_OBSERVATION_WARNING:'上次核对剩余达到提醒阈值',EXPIRED:'登记额度已到期'}
+const labels={UNCONFIGURED:'尚未登记总额度',USAGE_INCOMPLETE:'本站用量报告不完整',LOCAL_LIMIT_REACHED:'消耗与预留已达登记上限',LOCAL_WARNING:'消耗与预留达到提醒阈值',LOCAL_NORMAL:'本站记录未达提醒阈值',LAST_OBSERVATION_EXHAUSTED:'上次核对额度已耗尽',LAST_OBSERVATION_WARNING:'上次核对剩余达到提醒阈值',EXPIRED:'登记额度已到期'}
 const warning=state=>['USAGE_INCOMPLETE','LOCAL_LIMIT_REACHED','LOCAL_WARNING','LAST_OBSERVATION_EXHAUSTED','LAST_OBSERVATION_WARNING','EXPIRED'].includes(state)
 async function load(){const token=listing.begin();loading.value=true;error.value='';try{const data=operationData(await request.get(base,{signal:token.signal}));if(!listing.current(token))return;if(!Array.isArray(data))throw new Error('额度列表未完整读取');rows.value=data}catch(e){if(listing.current(token)){rows.value=[];error.value=operationError(e,true)}}finally{if(listing.current(token))loading.value=false}}
 function configure(row){if(busy.value)return;selected.value=row;Object.assign(policy,{modelId:row?.model_id||'',totalTokens:row?.total_tokens??1000000,warningPercent:row?.warning_percent??80,expectedVersion:row?.version??0});expiry.value=row?.expires_at?utcDisplay(row.expires_at).replace(' ','T').slice(0,16):'';formError.value='';policyVisible.value=true}

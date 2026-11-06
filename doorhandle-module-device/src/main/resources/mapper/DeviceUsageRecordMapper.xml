@@ -5,7 +5,7 @@
     <!-- 根据条件查询设备使用记录 -->
     <select id="selectRecordsByConditions" parameterType="java.util.Map" resultType="com.ruanzhu.doorhandle.module.device.entity.DeviceUsageRecord">
         SELECT *
-        FROM device_usage_record
+        FROM device_usage
         <where>
             <if test="deviceId != null">
                 AND device_id = #{deviceId}
@@ -39,7 +39,7 @@
     <!-- 根据条件统计设备使用记录数量 -->
     <select id="countRecordsByConditions" parameterType="java.util.Map" resultType="java.lang.Integer">
         SELECT COUNT(*)
-        FROM device_usage_record
+        FROM device_usage
         <where>
             <if test="deviceId != null">
                 AND device_id = #{deviceId}

@@ -1,16 +1,12 @@
 package com.ruanzhu.doorhandle.module.detection.entity;
 
-import com.baomidou.mybatisplus.annotation.IdType;
-import com.baomidou.mybatisplus.annotation.TableId;
-import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Data;
 
 import java.time.LocalDateTime;
 
 @Data
-@TableName("detection_image_fingerprint")
 public class DetectionImageFingerprint {
-    @TableId(type = IdType.AUTO)
+    /** Original fingerprint ID retained only as migration provenance, never a content/workflow primary key. */
     private Long id;
     private String sha256;
     private String fileName;

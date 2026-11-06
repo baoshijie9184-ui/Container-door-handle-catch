@@ -1,0 +1,517 @@
+{
+  "schemaVersion": 1,
+  "status": "REQUIRES_DOMAIN_REDESIGN",
+  "designDecision": {
+    "candidateDisposition": "WITHDRAWN_AS_FINAL_DESIGN",
+    "finalTableCount": null,
+    "budgetMeaning": "30 is an upper bound, not a target to fill",
+    "retainedCatalogMeaning": "expectedTargetTables and mapping below describe the withdrawn first draft only; they are retained for review, not for deployment or acceptance",
+    "reason": "The first draft combines independent lifecycles in several type-discriminated tables and builds operation_job as a union of unrelated source columns. Domain boundaries must be redesigned before choosing the final catalog.",
+    "review": "docs/database/compact-schema-design-review.md"
+  },
+  "scope": "All persistent business base tables in the current modular monolith database, including technical receipts, audit, coordination and outbox tables",
+  "maximumBusinessTables": 30,
+  "expectedTargetTables": [
+    "agent_connector",
+    "agent_context",
+    "agent_document",
+    "agent_document_chunk",
+    "agent_document_revision",
+    "agent_reference",
+    "agent_research_source",
+    "agent_run",
+    "agent_skill",
+    "agent_skill_revision",
+    "agent_task",
+    "audit_event",
+    "chat_message",
+    "chat_project",
+    "chat_session",
+    "coordination_state",
+    "detection_image",
+    "detection_task",
+    "detection_work_unit",
+    "device_management",
+    "employee",
+    "llm_configuration",
+    "llm_quota",
+    "llm_usage",
+    "model_management",
+    "operation_item",
+    "operation_job",
+    "organization_department",
+    "quality_document",
+    "users"
+  ],
+  "sourceCommit": "f95f09d78a0234a2f507bd452220d89b823ae05e",
+  "sourceObservedAtUtc": "2026-11-05T14:58:27.526518+08:00",
+  "sourceInventorySha256": "b77b3a953ff72a6674e7d0461e3cc99fe69939e0ce19fa95198a189265875d9d",
+  "sourceTables": [
+    "account_employee_binding",
+    "agent_action_audit",
+    "agent_context_audit",
+    "agent_context_bootstrap",
+    "agent_context_head",
+    "agent_context_offload",
+    "agent_context_origin",
+    "agent_context_summary",
+    "agent_context_turn",
+    "agent_conversation_input",
+    "agent_conversation_input_audit",
+    "agent_conversation_input_owner",
+    "agent_fetch_image",
+    "agent_fetch_image_command",
+    "agent_fetch_image_retention",
+    "agent_fetch_image_retention_control",
+    "agent_fetch_image_retention_event",
+    "agent_fetch_installation",
+    "agent_fetch_lifecycle_command",
+    "agent_learned_skill",
+    "agent_local_mcp",
+    "agent_local_mcp_audit",
+    "agent_mcp_execution",
+    "agent_mcp_execution_command",
+    "agent_mcp_install_job",
+    "agent_mcp_install_worker",
+    "agent_memory_audit",
+    "agent_memory_preference",
+    "agent_message_execution",
+    "agent_model_budget",
+    "agent_model_budget_attempt",
+    "agent_model_budget_audit",
+    "agent_model_budget_observation",
+    "agent_model_config_command",
+    "agent_model_config_control",
+    "agent_model_configuration",
+    "agent_model_json_probe",
+    "agent_model_revoked_key",
+    "agent_pending_action",
+    "agent_research_answer",
+    "agent_research_content_purge",
+    "agent_research_export_audit",
+    "agent_research_export_limit",
+    "agent_research_source",
+    "agent_research_storage_owner",
+    "agent_run",
+    "agent_run_event",
+    "agent_session_fork",
+    "agent_skill_audit",
+    "agent_skill_download",
+    "agent_skill_download_event",
+    "agent_skill_download_lease",
+    "agent_skill_download_owner",
+    "agent_skill_eval",
+    "agent_skill_import",
+    "agent_skill_source",
+    "agent_skill_storage_command",
+    "agent_skill_version",
+    "agent_workbench_audit",
+    "agent_workbench_item",
+    "agent_workbench_owner",
+    "agent_workbench_request",
+    "agent_workbench_sdk_state",
+    "agent_workspace_audit",
+    "agent_workspace_business_ref",
+    "agent_workspace_file",
+    "agent_workspace_file_ref",
+    "agent_workspace_owner",
+    "agent_workspace_request",
+    "agent_workspace_turn_snapshot",
+    "chat_message",
+    "chat_pending_action",
+    "chat_project",
+    "chat_session",
+    "detection_assignment_identity_event",
+    "detection_creation_job",
+    "detection_creation_object",
+    "detection_creation_owner",
+    "detection_creation_review",
+    "detection_dispatch_outbox",
+    "detection_duplicate_ticket",
+    "detection_execution_command",
+    "detection_identity_binding",
+    "detection_identity_binding_event",
+    "detection_identity_command",
+    "detection_identity_control",
+    "detection_identity_mapping_batch",
+    "detection_identity_mapping_item",
+    "detection_identity_missing_name_evidence",
+    "detection_identity_reconciliation_item",
+    "detection_identity_reconciliation_report",
+    "detection_identity_source_control",
+    "detection_image_fingerprint",
+    "detection_model_file_journal",
+    "detection_model_file_retention",
+    "detection_quality_report",
+    "detection_report_agent_origin",
+    "detection_report_audit",
+    "detection_report_command",
+    "detection_report_confirmation",
+    "detection_report_event_receipt",
+    "detection_report_event_state",
+    "detection_report_outbox",
+    "detection_task",
+    "detection_work_unit",
+    "detection_work_unit_image",
+    "detection_worker_receipt",
+    "device_capture_alert",
+    "device_management",
+    "device_usage_record",
+    "employee",
+    "image_detection_data",
+    "model_management",
+    "model_operation_log",
+    "operation_audit_log",
+    "operations_audit",
+    "operations_file_delivery",
+    "organization_binding_audit",
+    "organization_department",
+    "quality_digest_audit",
+    "quality_digest_command",
+    "quality_digest_control",
+    "quality_digest_run",
+    "quality_digest_schedule",
+    "quality_knowledge_audit",
+    "quality_knowledge_chunk",
+    "quality_knowledge_command",
+    "quality_knowledge_document",
+    "quality_knowledge_owner",
+    "quality_knowledge_revision",
+    "users"
+  ],
+  "mapping": [
+    {
+      "target": "agent_connector",
+      "sources": [
+        "agent_fetch_image",
+        "agent_fetch_installation",
+        "agent_local_mcp"
+      ],
+      "status": "REQUIRES_IMPLEMENTATION_AND_MIGRATION_PROOF"
+    },
+    {
+      "target": "agent_context",
+      "sources": [
+        "agent_context_bootstrap",
+        "agent_context_head",
+        "agent_context_summary",
+        "agent_workbench_sdk_state"
+      ],
+      "status": "REQUIRES_IMPLEMENTATION_AND_MIGRATION_PROOF"
+    },
+    {
+      "target": "agent_document",
+      "sources": [
+        "agent_workspace_file",
+        "detection_model_file_journal",
+        "detection_model_file_retention",
+        "quality_knowledge_document"
+      ],
+      "status": "REQUIRES_IMPLEMENTATION_AND_MIGRATION_PROOF"
+    },
+    {
+      "target": "agent_document_chunk",
+      "sources": [
+        "quality_knowledge_chunk"
+      ],
+      "status": "REQUIRES_IMPLEMENTATION_AND_MIGRATION_PROOF"
+    },
+    {
+      "target": "agent_document_revision",
+      "sources": [
+        "quality_knowledge_revision"
+      ],
+      "status": "REQUIRES_IMPLEMENTATION_AND_MIGRATION_PROOF"
+    },
+    {
+      "target": "agent_reference",
+      "sources": [
+        "agent_context_offload",
+        "agent_context_origin",
+        "agent_fetch_image_retention",
+        "agent_skill_source",
+        "agent_workspace_business_ref",
+        "agent_workspace_file_ref"
+      ],
+      "status": "REQUIRES_IMPLEMENTATION_AND_MIGRATION_PROOF"
+    },
+    {
+      "target": "agent_research_source",
+      "sources": [
+        "agent_research_content_purge",
+        "agent_research_source"
+      ],
+      "status": "REQUIRES_IMPLEMENTATION_AND_MIGRATION_PROOF"
+    },
+    {
+      "target": "agent_run",
+      "sources": [
+        "agent_research_answer",
+        "agent_run"
+      ],
+      "status": "REQUIRES_IMPLEMENTATION_AND_MIGRATION_PROOF"
+    },
+    {
+      "target": "agent_skill",
+      "sources": [
+        "agent_learned_skill"
+      ],
+      "status": "REQUIRES_IMPLEMENTATION_AND_MIGRATION_PROOF"
+    },
+    {
+      "target": "agent_skill_revision",
+      "sources": [
+        "agent_skill_version"
+      ],
+      "status": "REQUIRES_IMPLEMENTATION_AND_MIGRATION_PROOF"
+    },
+    {
+      "target": "agent_task",
+      "sources": [
+        "agent_workbench_item"
+      ],
+      "status": "REQUIRES_IMPLEMENTATION_AND_MIGRATION_PROOF"
+    },
+    {
+      "target": "audit_event",
+      "sources": [
+        "agent_action_audit",
+        "agent_context_audit",
+        "agent_conversation_input_audit",
+        "agent_fetch_image_retention_event",
+        "agent_local_mcp_audit",
+        "agent_model_budget_audit",
+        "agent_model_budget_observation",
+        "agent_research_export_audit",
+        "agent_run_event",
+        "agent_skill_audit",
+        "agent_skill_download_event",
+        "agent_skill_eval",
+        "agent_workbench_audit",
+        "agent_workspace_audit",
+        "detection_assignment_identity_event",
+        "detection_identity_binding_event",
+        "detection_report_audit",
+        "model_operation_log",
+        "operation_audit_log",
+        "operations_audit",
+        "organization_binding_audit",
+        "quality_digest_audit",
+        "quality_knowledge_audit"
+      ],
+      "status": "REQUIRES_IMPLEMENTATION_AND_MIGRATION_PROOF"
+    },
+    {
+      "target": "chat_message",
+      "sources": [
+        "agent_context_turn",
+        "agent_conversation_input",
+        "agent_message_execution",
+        "agent_workspace_turn_snapshot",
+        "chat_message"
+      ],
+      "status": "REQUIRES_IMPLEMENTATION_AND_MIGRATION_PROOF"
+    },
+    {
+      "target": "chat_project",
+      "sources": [
+        "chat_project"
+      ],
+      "status": "REQUIRES_IMPLEMENTATION_AND_MIGRATION_PROOF"
+    },
+    {
+      "target": "chat_session",
+      "sources": [
+        "agent_session_fork",
+        "chat_session"
+      ],
+      "status": "REQUIRES_IMPLEMENTATION_AND_MIGRATION_PROOF"
+    },
+    {
+      "target": "coordination_state",
+      "sources": [
+        "agent_conversation_input_owner",
+        "agent_fetch_image_retention_control",
+        "agent_mcp_install_worker",
+        "agent_memory_preference",
+        "agent_research_export_limit",
+        "agent_research_storage_owner",
+        "agent_skill_download_owner",
+        "agent_workbench_owner",
+        "agent_workspace_owner",
+        "detection_creation_owner",
+        "detection_identity_control",
+        "detection_identity_source_control",
+        "quality_digest_control",
+        "quality_knowledge_owner"
+      ],
+      "status": "REQUIRES_IMPLEMENTATION_AND_MIGRATION_PROOF"
+    },
+    {
+      "target": "detection_image",
+      "sources": [
+        "detection_creation_object",
+        "detection_image_fingerprint",
+        "detection_work_unit_image"
+      ],
+      "status": "REQUIRES_IMPLEMENTATION_AND_MIGRATION_PROOF"
+    },
+    {
+      "target": "detection_task",
+      "sources": [
+        "detection_task",
+        "image_detection_data"
+      ],
+      "status": "REQUIRES_IMPLEMENTATION_AND_MIGRATION_PROOF"
+    },
+    {
+      "target": "detection_work_unit",
+      "sources": [
+        "detection_work_unit"
+      ],
+      "status": "REQUIRES_IMPLEMENTATION_AND_MIGRATION_PROOF"
+    },
+    {
+      "target": "device_management",
+      "sources": [
+        "device_management"
+      ],
+      "status": "REQUIRES_IMPLEMENTATION_AND_MIGRATION_PROOF"
+    },
+    {
+      "target": "employee",
+      "sources": [
+        "employee"
+      ],
+      "status": "REQUIRES_IMPLEMENTATION_AND_MIGRATION_PROOF"
+    },
+    {
+      "target": "llm_configuration",
+      "sources": [
+        "agent_model_config_control",
+        "agent_model_configuration",
+        "agent_model_revoked_key"
+      ],
+      "status": "REQUIRES_IMPLEMENTATION_AND_MIGRATION_PROOF"
+    },
+    {
+      "target": "llm_quota",
+      "sources": [
+        "agent_model_budget"
+      ],
+      "status": "REQUIRES_IMPLEMENTATION_AND_MIGRATION_PROOF"
+    },
+    {
+      "target": "llm_usage",
+      "sources": [
+        "agent_model_budget_attempt"
+      ],
+      "status": "REQUIRES_IMPLEMENTATION_AND_MIGRATION_PROOF"
+    },
+    {
+      "target": "model_management",
+      "sources": [
+        "model_management"
+      ],
+      "status": "REQUIRES_IMPLEMENTATION_AND_MIGRATION_PROOF"
+    },
+    {
+      "target": "operation_item",
+      "sources": [
+        "agent_skill_download_lease",
+        "agent_skill_import",
+        "detection_identity_binding",
+        "detection_identity_mapping_item",
+        "detection_identity_missing_name_evidence",
+        "detection_identity_reconciliation_item",
+        "detection_report_agent_origin"
+      ],
+      "status": "REQUIRES_IMPLEMENTATION_AND_MIGRATION_PROOF"
+    },
+    {
+      "target": "operation_job",
+      "sources": [
+        "agent_fetch_image_command",
+        "agent_fetch_lifecycle_command",
+        "agent_mcp_execution",
+        "agent_mcp_execution_command",
+        "agent_mcp_install_job",
+        "agent_memory_audit",
+        "agent_model_config_command",
+        "agent_model_json_probe",
+        "agent_pending_action",
+        "agent_skill_download",
+        "agent_skill_storage_command",
+        "agent_workbench_request",
+        "agent_workspace_request",
+        "chat_pending_action",
+        "detection_creation_job",
+        "detection_creation_review",
+        "detection_dispatch_outbox",
+        "detection_duplicate_ticket",
+        "detection_execution_command",
+        "detection_identity_command",
+        "detection_identity_mapping_batch",
+        "detection_identity_reconciliation_report",
+        "detection_report_command",
+        "detection_report_confirmation",
+        "detection_report_event_receipt",
+        "detection_report_outbox",
+        "detection_worker_receipt",
+        "device_capture_alert",
+        "device_usage_record",
+        "operations_file_delivery",
+        "quality_digest_command",
+        "quality_digest_schedule",
+        "quality_knowledge_command"
+      ],
+      "status": "REQUIRES_IMPLEMENTATION_AND_MIGRATION_PROOF"
+    },
+    {
+      "target": "organization_department",
+      "sources": [
+        "organization_department"
+      ],
+      "status": "REQUIRES_IMPLEMENTATION_AND_MIGRATION_PROOF"
+    },
+    {
+      "target": "quality_document",
+      "sources": [
+        "detection_quality_report",
+        "detection_report_event_state",
+        "quality_digest_run"
+      ],
+      "status": "REQUIRES_IMPLEMENTATION_AND_MIGRATION_PROOF"
+    },
+    {
+      "target": "users",
+      "sources": [
+        "account_employee_binding",
+        "users"
+      ],
+      "status": "REQUIRES_IMPLEMENTATION_AND_MIGRATION_PROOF"
+    }
+  ],
+  "microserviceAdditionalTables": {
+    "agent_tenant_quota_account": "llm_quota:TENANT_ACCOUNT",
+    "agent_tenant_quota_root": "llm_usage:TENANT_ROOT",
+    "agent_tenant_quota_attempt": "llm_usage:TENANT_ATTEMPT",
+    "agent_tenant_quota_minute": "coordination_state:TENANT_QUOTA_MINUTE",
+    "agent_tenant_quota_execution": "llm_usage:TENANT_EXECUTION",
+    "agent_tenant_quota_receipt": "operation_job:TENANT_QUOTA_RECEIPT",
+    "agent_tenant_quota_event": "audit_event:TENANT_QUOTA_EVENT",
+    "agent_llm_member_model_quota": "llm_quota:MEMBER_MODEL",
+    "agent_llm_quota_request": "operation_job:QUOTA_APPLICATION"
+  },
+  "gates": [
+    "No old-name views or SQL rewriting fallback",
+    "All source rows and columns have explicit data-preserving mapping",
+    "Fresh schema and restored real-data migration both pass on ECS MySQL",
+    "Runtime operates directly on new schema",
+    "Permissions, quotas, approvals, retries, fencing and historical totals verified",
+    "New-write rollback or recovery validated",
+    "Count checks exact object names across all admitted business schemas; service-owned copies count separately",
+    "Production still unchanged until verified deployment and data cutover",
+    "Final ECS status must be Stopped and StopCharging"
+  ]
+}

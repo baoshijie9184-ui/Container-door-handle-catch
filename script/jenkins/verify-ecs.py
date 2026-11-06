@@ -43,8 +43,14 @@ FIXTURE_SCHEMAS = {
     'legacy.chat.mysql.config': ('doorhandle_agent_verify_', 'ecsit_'),
     'doorhandle.core.mysql.config': ('doorhandle_detection_verify_', 'ecsit_'),
     'doorhandle.fingerprint.mysql.config': ('doorhandle_detection_verify_', 'ecsit_'),
+    'detection.identity.mysql.config': ('doorhandle_detection_verify_', 'ecsit_'),
+    'detection.identity.source.config': ('doorhandle_detection_verify_', 'ecsit_'),
+    'doorhandle.support.mysql.config': ('doorhandle_feature_', 'ecsit_'),
+    'doorhandle.support.source.config': ('doorhandle_feature_', 'ecsit_'),
     'doorhandle.report.mysql.config': ('doorhandle_detection_verify_', 'ecsit_'),
     'doorhandle.digest.mysql.config': ('doorhandle_detection_verify_', 'ecsit_'),
+    'doorhandle.digest.copy.source.config': ('doorhandle_detection_verify_', 'ecsit_'),
+    'doorhandle.digest.copy.mysql.config': ('doorhandle_detection_verify_', 'ecsit_'),
     'doorhandle.core.copy.source.config': ('doorhandle_detection_verify_', 'ecsit_'),
     'doorhandle.core.copy.target.config': ('doorhandle_detection_verify_', 'ecsit_'),
     'doorhandle.detection.runtime.copy.source.config': ('doorhandle_detection_verify_', 'ecsit_'),
@@ -90,6 +96,9 @@ MIGRATION_PAIRS = (
     ('workbench.migration.source', 'workbench.migration.target', True),
     ('doorhandle.core.copy.source.config', 'doorhandle.core.copy.target.config', True),
     ('doorhandle.detection.runtime.copy.source.config', 'doorhandle.detection.runtime.copy.target.config', True),
+    ('detection.identity.source.config', 'detection.identity.mysql.config', False),
+    ('doorhandle.support.source.config', 'doorhandle.support.mysql.config', True),
+    ('doorhandle.digest.copy.source.config', 'doorhandle.digest.copy.mysql.config', True),
     ('report.copy.source-config', 'report.copy.target-config', True),
     ('agent.research.copy.source-config', 'agent.research.copy.target-config', True),
     ('agent.memory.copy.source-config', 'agent.memory.copy.target-config', True),
@@ -116,6 +125,7 @@ for property_name, classes in (
     ('legacy.chat.mysql.config', ('LegacyChatActionStoreMySqlTest',)),
     ('doorhandle.core.mysql.config', ('Core12PersistenceMySqlTest',)),
     ('doorhandle.fingerprint.mysql.config', ('DetectionFingerprintProjectionMySqlTest',)),
+    ('detection.identity.mysql.config', ('DetectionIdentityServiceTest', 'IdentityEvidenceMySqlTest')),
     ('doorhandle.report.mysql.config', ('QualityReportServiceTest', 'ReportEventDeliveryTest',
         'IdentityPersistenceMySqlTest')),
     ('doorhandle.digest.mysql.config', ('QualityDigestMySqlTest',)),
@@ -136,6 +146,9 @@ for class_name, source, target in (
     ('WorkbenchMigrationMySqlTest', 'workbench.migration.source', 'workbench.migration.target'),
     ('CoreCopyMigrationMySqlTest', 'doorhandle.core.copy.source.config', 'doorhandle.core.copy.target.config'),
     ('DetectionRuntimeCopyMySqlTest', 'doorhandle.detection.runtime.copy.source.config', 'doorhandle.detection.runtime.copy.target.config'),
+    ('IdentityMigrationMySqlTest', 'detection.identity.source.config', 'detection.identity.mysql.config'),
+    ('SupportCopyMigrationMySqlTest', 'doorhandle.support.source.config', 'doorhandle.support.mysql.config'),
+    ('DigestCopyMigrationMySqlTest', 'doorhandle.digest.copy.source.config', 'doorhandle.digest.copy.mysql.config'),
     ('ReportWorkflowMigrationMySqlTest', 'report.copy.source-config', 'report.copy.target-config'),
     ('ResearchExportMigrationMySqlTest', 'agent.research.copy.source-config', 'agent.research.copy.target-config'),
     ('MemoryGovernanceMigrationMySqlTest', 'agent.memory.copy.source-config', 'agent.memory.copy.target-config'),
@@ -181,11 +194,12 @@ def java_classes(value):
 def fixture_arguments(args, identity):
     """Validate the entire fixture plan before a test subprocess is started."""
     manifest_receipt = None
+    args.compact_migration_config = None
     if args.fixture_manifest:
         if args.java_tests or args.fixture_property or args.java_only:
             raise ValueError('Fixture manifest cannot be combined with Java scope or fixture CLI overrides')
         _, manifest, digest = private_json(args.fixture_manifest)
-        if set(manifest) - {'version', 'javaTests', 'fixtureProperties', 'javaOnly'} \
+        if set(manifest) - {'version', 'javaTests', 'fixtureProperties', 'javaOnly', 'migrationConfig'} \
                 or type(manifest.get('version')) is not int or manifest['version'] != 1 \
                 or type(manifest.get('javaOnly', False)) is not bool \
                 or not isinstance(manifest.get('javaTests'), list):
@@ -196,6 +210,11 @@ def fixture_arguments(args, identity):
             raise ValueError('Fixture manifest requires explicit fixtureProperties')
         args.java_tests = ','.join(selected)
         args.java_only = manifest.get('javaOnly', False)
+        if 'migrationConfig' in manifest:
+            if args.java_only:
+                raise ValueError('Whole migration acceptance requires Python execution, not javaOnly')
+            private_json(manifest['migrationConfig'])
+            args.compact_migration_config = manifest['migrationConfig']
         manifest_receipt = {'version': 1, 'sha256': digest}
     else:
         selected = java_classes(args.java_tests) if args.java_tests else []
@@ -253,6 +272,15 @@ def fixture_arguments(args, identity):
             if left['database'] == right['database'] or any(left[name] != right[name]
                     for name in ('serverUuid', 'port', 'dataDirectory')):
                 raise ValueError('Migration requires distinct schemas on the same disposable ECS MySQL server')
+    if args.compact_migration_config:
+        sys.path.insert(0, str(ROOT / 'script/schema'))
+        from compact_migration_runtime import load_config
+        migration, actual_identity, _ = load_config(Path(args.compact_migration_config))
+        connection = migration['connection']
+        if migration['scope'] != 'ecs-disposable-migration' or actual_identity != identity \
+                or not any(config['serverUuid'] == migration['serverUuid'] and config['port'] == connection['port']
+                           for config in configs.values()):
+            raise ValueError('Whole migration acceptance must use the same explicitly admitted disposable MySQL server')
     switches = set()
     for name in selected:
         switch = SERVER_SWITCHES.get(name.rsplit('.', 1)[-1])
@@ -308,20 +336,26 @@ def main():
     env.update(HOME=str(output / 'profile'), TMPDIR=str(output / 'tmp'),
                PYTHONDONTWRITEBYTECODE='1', PYTHONNOUSERSITE='1', PYTHON_DOTENV_DISABLED='1',
                npm_config_cache=str(output / 'npm-cache'))
+    python_env = env.copy()
+    if args.compact_migration_config:
+        python_env.update(DOORHANDLE_COMPACT_MIGRATION_TESTS='1',
+                          DOORHANDLE_COMPACT_MIGRATION_CONFIG=args.compact_migration_config,
+                          DOORHANDLE_CI_EVIDENCE_DIR=str(output))
     receipt = {'schemaVersion': 1, 'startedAt': datetime.now(timezone.utc).isoformat(), 'identity': identity,
                'javaSelection': args.java_tests, 'javaOnly': args.java_only, 'commands': [],
                'fixtureProperties': [value[2:].split('=', 1)[0] for value in fixture_options if not value.endswith('=true')],
                'fixtureManifest': manifest_receipt,
+               'wholeMigrationRequested': bool(args.compact_migration_config),
                'scopeKind': 'mysql' if fixture_options else 'source',
                'scope': 'explicit disposable MySQL Java scope' if fixture_options else
                         'ordinary source tests; infrastructure suites remain opt-in and skipped suites are not migration acceptance',
                'ecsLifecycle': {'managedBy': 'external-to-jenkins', 'cloudOperationsPerformed': False,
                                 'note': 'Start ECS before the test window and stop it outside CI/CD after evidence collection'}}
-    def execute(label, command, cwd):
+    def execute(label, command, cwd, *, environment=None):
         entry = {'label': label, 'startedAt': datetime.now(timezone.utc).isoformat()}
         receipt['commands'].append(entry)
         with (output / (label + '.log')).open('xb') as log:
-            process = subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+            process = subprocess.Popen(command, cwd=cwd, env=env if environment is None else environment, stdin=subprocess.DEVNULL,
                                        stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
             entry['pid'] = process.pid
             try:
@@ -373,7 +407,26 @@ def main():
             raise RuntimeError('The selected Java scope did not execute successfully; inspect original Surefire reports')
         if not args.java_only:
             execute('python', [tools['PYTHON_EXE'], '-B', '-m', 'pytest', 'tests_python', '-q',
-                              '--basetemp=' + str(output / 'tmp' / 'pytest'), '--junitxml=' + str(output / 'python.xml')], ROOT)
+                              '--basetemp=' + str(output / 'tmp' / 'pytest'), '--junitxml=' + str(output / 'python.xml')], ROOT, environment=python_env)
+            if args.compact_migration_config:
+                cases = [case for case in ET.parse(output / 'python.xml').getroot().iter('testcase')
+                         if 'test_compact_migration_orchestration_ecs' in case.get('classname', '').split('.')]
+                if not cases or any(case.find(tag) is not None for case in cases for tag in ('failure', 'error', 'skipped')):
+                    raise RuntimeError('Whole migration acceptance was missing, failed or skipped')
+                proof_file = output / 'migration.json'
+                if not proof_file.is_file() or proof_file.is_symlink() or proof_file.stat().st_size > 16384:
+                    raise RuntimeError('Whole migration acceptance requires its bounded public proof summary')
+                proof = json.loads(proof_file.read_text(encoding='utf8'))
+                expected = {'schemaVersion': 1, 'kind': 'doorhandle-compact-migration-acceptance',
+                            'status': 'VERIFIED', 'sourceTableCount': 131, 'targetTableCount': 29}
+                hashes = {'migrationReceiptSha256', 'sourceSnapshotSha256', 'targetSnapshotSha256',
+                          'sourceRecoveryReceiptSha256', 'targetRecoveryReceiptSha256'}
+                if not isinstance(proof, dict) or set(proof) != set(expected) | hashes \
+                        or any(type(proof.get(key)) is not type(value) or proof[key] != value for key, value in expected.items()) \
+                        or any(not isinstance(proof[key], str) or not re.fullmatch(r'[a-f0-9]{64}', proof[key]) for key in hashes):
+                    raise RuntimeError('Whole migration proof summary is incomplete or contains unapproved fields')
+                receipt['wholeMigrationTests'] = {'passed': len(cases), 'failed': 0, 'skipped': 0}
+                receipt['wholeMigrationSummarySha256'] = hashlib.sha256(proof_file.read_bytes()).hexdigest()
             for frontend in ('frontend', 'frontend-agent'):
                 execute(frontend + '-install', [tools['NPM_CMD'], 'ci', '--include=dev', '--ignore-scripts', '--no-audit', '--no-fund'], ROOT / frontend)
                 execute(frontend + '-test', [tools['NODE_EXE'], '--test'], ROOT / frontend)

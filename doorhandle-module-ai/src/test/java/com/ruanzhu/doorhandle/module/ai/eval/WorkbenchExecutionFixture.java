@@ -39,27 +39,24 @@ final class WorkbenchExecutionFixture implements AutoCloseable {
     final List<Throwable> failures=new CopyOnWriteArrayList<>();
     final String databaseKind;
     final com.zaxxer.hikari.HikariDataSource pool;
+    final Set<String> ownedTables=new HashSet<>();
 
     @SuppressWarnings("unchecked")
     WorkbenchExecutionFixture(Path project,Path workspace,String modelId,Function<String,Model> models,Path mysql) throws Exception {
-        var source=new DriverManagerDataSource("jdbc:h2:mem:workbench_live_"+UUID.randomUUID()+";MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1","sa","");
-        javax.sql.DataSource dataSource=source;
-        if(mysql!=null) {
-            if(!mysql.toRealPath().startsWith(project.resolve("work").toRealPath()))throw new IllegalArgumentException("Private project-owned MySQL config required");
-            var config=json.readTree(mysql.toFile());String database=config.path("database").asText();
-            pool=com.ruanzhu.doorhandle.module.ai.EcsIsolatedMysql.pool(
-                    mysql.toString(), "doorhandle_wb_live_", "ecsit_", 6);
-            dataSource=pool;databaseKind="MYSQL_ISOLATED";
-            var isolated=new JdbcTemplate(pool);
-            if(!database.equals(isolated.queryForObject("SELECT DATABASE()",String.class))||isolated.queryForObject("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE()",Integer.class)!=0)throw new IllegalArgumentException("Use an empty verification database, never replay an earlier experiment");
-        } else {pool=null;databaseKind="H2_SYNTHETIC";}
-        jdbc=new JdbcTemplate(dataSource);
-        for(String relative:List.of("doorhandle-module-ai/src/main/resources/db/migration-V16-agentscope-run-journal.sql","sql/mysql/migration-V37-agent-workbench.sql")) {
-            String ddl=Files.readString(project.resolve(relative));
-            if(mysql==null)ddl=ddl.replaceAll("(?m)^--.*$", "").replace(" COLLATE utf8mb4_bin","").replace(" ENGINE=InnoDB DEFAULT CHARSET=utf8mb4","")
-                    .replace("payload_json JSON","payload_json VARCHAR(8192)").replaceAll("(?m)^(\\s*)UNIQUE KEY (\\w+)\\s*(\\([^\\n]+\\))", "$1CONSTRAINT $2 UNIQUE $3").replaceAll("(?m)^\\s*KEY .*\\n","").replaceAll(",\\s*\\)",")");
-            for(String statement:ddl.split(";"))if(!statement.isBlank())jdbc.execute(statement);
+        if(mysql==null||!mysql.isAbsolute()||!mysql.toRealPath().startsWith(project.resolve("work").toRealPath()))throw new IllegalArgumentException("An explicit ECS MySQL fixture config is required");
+        var config=json.readTree(mysql.toFile());String database=config.path("database").asText();
+        pool=com.ruanzhu.doorhandle.module.ai.EcsIsolatedMysql.pool(mysql.toString(),"doorhandle_wb_live_","ecsit_",6);
+        javax.sql.DataSource dataSource=pool;databaseKind="MYSQL_ISOLATED";jdbc=new JdbcTemplate(dataSource);
+        if(!database.equals(jdbc.queryForObject("SELECT DATABASE()",String.class))||jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE()",Integer.class)!=0)throw new IllegalArgumentException("Use an empty admitted ECS schema");
+        try(var connection=dataSource.getConnection()){
+            for(String part:List.of("10-core.sql","20-content.sql","25-agent.sql","30-operations.sql","35-runtime-guards.sql","36-identity-guards.sql","37-audit-guards.sql","38-quota-guards.sql","39-workflow-guards.sql","40-relations.sql")){
+                byte[] bytes=Files.readAllBytes(project.resolve("sql/mysql/compact/baseline").resolve(part));
+                var matcher=java.util.regex.Pattern.compile("(?im)^CREATE TABLE\\s+([a-z_]+)\\s*\\(").matcher(new String(bytes,java.nio.charset.StandardCharsets.UTF_8));while(matcher.find())ownedTables.add(matcher.group(1));
+                var resource=new org.springframework.core.io.ByteArrayResource(bytes);
+                org.springframework.jdbc.datasource.init.ScriptUtils.executeSqlScript(connection,new org.springframework.core.io.support.EncodedResource(resource,java.nio.charset.StandardCharsets.UTF_8),false,false,"--",part.endsWith("-guards.sql")?"$$":";","/*","*/");
+            }
         }
+        if(jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE()",Integer.class)!=29)throw new IllegalStateException("Workbench fixture must use the actual compact target");
         var tx=new DataSourceTransactionManager(dataSource);
         var journalSettings=new AgentJournalProperties();journalSettings.setEnabled(true);
         journal=new JdbcAgentJournal(jdbc,tx,json,journalSettings);journal.verifySchema();
@@ -104,7 +101,7 @@ final class WorkbenchExecutionFixture implements AutoCloseable {
     }
     AgentWorkbenchApi.Item item(AgentActor actor,String session,String kind){return workbench.list(actor,session).stream().filter(row->row.kind().equals(kind)).findFirst().orElseThrow();}
     Map<String,Object> execution(AgentActor actor,String session) throws Exception {
-        return json.readValue(jdbc.queryForObject("SELECT payload FROM agent_workbench_item WHERE user_id=? AND session_id=? AND kind='EXECUTION'",String.class,actor.userId(),session),Map.class);
+        return json.readValue(jdbc.queryForObject("SELECT JSON_EXTRACT(payload_json,'$.data') FROM workflow_instance WHERE owner_user_id=? AND session_id=? AND kind='WORKBENCH_EXECUTION'",String.class,actor.userId(),session),Map.class);
     }
     void waitFor(AgentActor actor,String session,String phase,int seconds) {
         try {org.awaitility.Awaitility.await().pollInterval(Duration.ofMillis(100)).atMost(Duration.ofSeconds(seconds)).until(()->{
@@ -128,5 +125,13 @@ final class WorkbenchExecutionFixture implements AutoCloseable {
         }
         return result;
     }
-    @Override public void close(){try{for(var run:admissions.values())if(!run.result().isDone())run.cancel().run();workbench.close();}finally{if(pool!=null)pool.close();else jdbc.execute("SHUTDOWN");}}
+    @Override public void close(){try{
+        for(var run:admissions.values())if(!run.result().isDone())run.cancel().run();workbench.close();
+        var actual=new HashSet<>(jdbc.queryForList("SELECT table_name FROM information_schema.tables WHERE table_schema=DATABASE()",String.class));
+        if(!ownedTables.equals(actual))throw new SecurityException("Unowned fixture table; preserving ECS verification schema");
+        try(var connection=pool.getConnection();var statement=connection.createStatement()){
+            statement.execute("SET FOREIGN_KEY_CHECKS=0");try{for(String table:actual.stream().sorted().toList())statement.execute("DROP TABLE `"+table+"`");}finally{statement.execute("SET FOREIGN_KEY_CHECKS=1");}
+        }catch(java.sql.SQLException error){throw new IllegalStateException("ECS workbench fixture cleanup failed",error);}
+    }finally{pool.close();}}
+
 }

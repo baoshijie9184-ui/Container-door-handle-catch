@@ -13,7 +13,6 @@ import com.ruanzhu.doorhandle.module.app.entity.ChatMessage;
 import com.ruanzhu.doorhandle.module.app.entity.ChatPendingAction;
 import com.ruanzhu.doorhandle.module.app.entity.ChatSession;
 import com.ruanzhu.doorhandle.module.app.mapper.ChatMessageMapper;
-import com.ruanzhu.doorhandle.module.app.mapper.ChatPendingActionMapper;
 import com.ruanzhu.doorhandle.module.app.mapper.ChatSessionMapper;
 import com.ruanzhu.doorhandle.module.app.service.ChatSessionService;
 import com.ruanzhu.doorhandle.module.system.security.TenantPrincipal;
@@ -40,7 +39,7 @@ public class ChatSessionServiceImpl implements ChatSessionService {
 
     private final ChatSessionMapper chatSessionMapper;
     private final ChatMessageMapper chatMessageMapper;
-    private final ChatPendingActionMapper chatPendingActionMapper;
+    private final LegacyChatActionStore chatPendingActionStore;
     private final ChatAssistantProperties chatAssistantProperties;
     private final ObjectMapper objectMapper;
     private org.springframework.beans.factory.ObjectProvider<org.springframework.jdbc.core.JdbcTemplate> workbenchJdbc;
@@ -152,14 +151,14 @@ public class ChatSessionServiceImpl implements ChatSessionService {
     }
 
     @Override
+    @org.springframework.transaction.annotation.Transactional(rollbackFor=Exception.class)
     public void deleteSession(String username, String sessionId) {
         ChatSession session = requireOwnedSession(username, sessionId);
         // 删除关联的消息
         chatMessageMapper.delete(new LambdaQueryWrapper<ChatMessage>()
                 .eq(ChatMessage::getSessionId, sessionId));
         // 删除关联的待确认动作
-        chatPendingActionMapper.delete(new LambdaQueryWrapper<ChatPendingAction>()
-                .eq(ChatPendingAction::getSessionId, sessionId));
+        chatPendingActionStore.deleteSession(session.getUserId(),sessionId);
         // 删除会话
         chatSessionMapper.deleteById(session.getId());
     }
@@ -201,7 +200,7 @@ public class ChatSessionServiceImpl implements ChatSessionService {
         response.setPinned(session.getPinned() != null && session.getPinned());
         response.setProjectId(session.getProjectId());
         if(workbenchEnabled&&workbenchJdbc!=null&&workbenchJdbc.getIfAvailable()!=null){
-            var lineage=workbenchJdbc.getObject().queryForList("SELECT source_session_id,through_message_id FROM agent_session_fork WHERE user_id=? AND fork_session_id=?",session.getUserId(),session.getSessionId());
+            var lineage=workbenchJdbc.getObject().queryForList("SELECT fork_source_session_id AS source_session_id,fork_through_message_id AS through_message_id FROM chat_session WHERE user_id=? AND fork_owner_user_id=user_id AND session_id=? AND fork_request_id IS NOT NULL",session.getUserId(),session.getSessionId());
             if(!lineage.isEmpty()){response.setSourceSessionId((String)lineage.get(0).get("source_session_id"));response.setForkMessageId(((Number)lineage.get(0).get("through_message_id")).longValue());}
         }
         response.setUpdatedAt(session.getUpdatedAt() == null ? null : session.getUpdatedAt().format(TIME_FORMATTER));
@@ -267,7 +266,7 @@ public class ChatSessionServiceImpl implements ChatSessionService {
         return response;
     }
 
-    private ChatPendingAction savePendingActionInternal(String sessionId, String actionId, String actionType,
+    private ChatPendingAction savePendingActionInternal(long userId,String sessionId, String actionId, String actionType,
                                                         ChatPendingActionPayload payload) {
         ChatPendingAction action = new ChatPendingAction();
         action.setActionId(StringUtils.hasText(actionId) ? actionId : UUID.randomUUID().toString());
@@ -275,65 +274,46 @@ public class ChatSessionServiceImpl implements ChatSessionService {
         action.setActionType(actionType);
         action.setActionPayloadJson(writeJson(payload));
         action.setStatus("PENDING");
-        action.setCreatedAt(LocalDateTime.now());
-        chatPendingActionMapper.insert(action);
-        return action;
+        return chatPendingActionStore.insert(userId,action);
     }
 
     @Override
     public ChatPendingAction savePendingAction(TenantContext tenant, String sessionId, String actionId,
                                                String actionType, ChatPendingActionPayload payload) {
         requireOwnedSession(tenant, sessionId);
-        return savePendingActionInternal(sessionId, actionId, actionType, payload);
+        return savePendingActionInternal(tenant.userId(),sessionId, actionId, actionType, payload);
     }
 
-    private ChatPendingAction getPendingActionInternal(String sessionId, String actionId) {
-        ChatPendingAction action = chatPendingActionMapper.selectOne(new LambdaQueryWrapper<ChatPendingAction>()
-                .eq(ChatPendingAction::getSessionId, sessionId)
-                .eq(ChatPendingAction::getActionId, actionId)
-                .last("limit 1"));
-        if (action == null) {
-            throw new BusinessException(404, "待确认动作不存在");
-        }
-        return action;
+    private ChatPendingAction getPendingActionInternal(long userId,String sessionId, String actionId) {
+        return chatPendingActionStore.get(userId,sessionId,actionId);
     }
 
     @Override
     public ChatPendingAction getPendingAction(TenantContext tenant, String sessionId, String actionId) {
         requireOwnedSession(tenant, sessionId);
-        return getPendingActionInternal(sessionId, actionId);
+        return getPendingActionInternal(tenant.userId(),sessionId, actionId);
     }
 
-    private void markPendingActionStatusInternal(String sessionId, String actionId, String status) {
-        ChatPendingAction action = chatPendingActionMapper.selectOne(new LambdaQueryWrapper<ChatPendingAction>()
-                .eq(ChatPendingAction::getSessionId, sessionId)
-                .eq(ChatPendingAction::getActionId, actionId)
-                .last("limit 1"));
-        if (action == null) {
-            throw new BusinessException(404, "待确认动作不存在");
-        }
-        action.setStatus(status);
-        action.setConfirmedAt(LocalDateTime.now());
-        chatPendingActionMapper.updateById(action);
+    private void markPendingActionStatusInternal(long userId,String sessionId, String actionId, String status) {
+        chatPendingActionStore.mark(userId,sessionId,actionId,status);
     }
 
     @Override
     public void markPendingActionStatus(TenantContext tenant, String sessionId, String actionId, String status) {
         requireOwnedSession(tenant, sessionId);
-        markPendingActionStatusInternal(sessionId, actionId, status);
+        markPendingActionStatusInternal(tenant.userId(),sessionId, actionId, status);
     }
 
-    private boolean transitionPendingActionInternal(String sessionId, String actionId, String expectedStatus,
+    private boolean transitionPendingActionInternal(long userId,String sessionId, String actionId, String expectedStatus,
                                                     String targetStatus, String errorMessage) {
-        return chatPendingActionMapper.transitionStatus(
-                sessionId, actionId, expectedStatus, targetStatus, errorMessage) == 1;
+        return chatPendingActionStore.transition(userId,sessionId, actionId, expectedStatus, targetStatus, errorMessage);
     }
 
     @Override
     public boolean transitionPendingAction(TenantContext tenant, String sessionId, String actionId,
                                            String expectedStatus, String targetStatus, String errorMessage) {
         requireOwnedSession(tenant, sessionId);
-        return transitionPendingActionInternal(sessionId, actionId, expectedStatus, targetStatus, errorMessage);
+        return transitionPendingActionInternal(tenant.userId(),sessionId, actionId, expectedStatus, targetStatus, errorMessage);
     }
 
     @Override

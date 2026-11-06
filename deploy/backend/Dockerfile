@@ -44,6 +44,7 @@ LABEL io.doorhandle.identity-review="1"
 LABEL io.doorhandle.identity-evidence="2"
 LABEL io.doorhandle.context-provenance="2"
 LABEL io.doorhandle.mcp-native-protocol="4"
+LABEL io.doorhandle.business-schema="compact29-v1"
 ARG UBUNTU_MIRROR=""
 # ONNX/OpenCV 使用 glibc；Python 仅供已受控的 Skill 下载和本地 Stdio MCP 安装器。
 RUN if [ -n "$UBUNTU_MIRROR" ]; then \

@@ -173,7 +173,7 @@ def unpack_source(archive, destination, commit):
 
 
 def allowed_evidence(name):
-    if name in ("driver.log", "reports/receipt.json", "reports/python.xml"):
+    if name in ("driver.log", "reports/receipt.json", "reports/python.xml", "reports/migration.json"):
         return True
     if name.startswith("reports/") and name[len("reports/"):] in LOG_NAMES:
         return True
@@ -183,7 +183,7 @@ def allowed_evidence(name):
 def evidence_files(checkout, evidence, driver):
     candidates = [("driver.log", driver)]
     candidates += [("reports/" + name, evidence / name)
-                   for name in ("receipt.json", "python.xml", *sorted(LOG_NAMES))]
+                   for name in ("receipt.json", "python.xml", "migration.json", *sorted(LOG_NAMES))]
     candidates += [("reports/java/" + path.relative_to(evidence / "java").as_posix(), path)
                    for path in sorted((evidence / "java").glob("*/surefire-reports/TEST-*.xml"))]
     result, omitted, total = [], [], 0
@@ -395,6 +395,15 @@ def run_verification(args):
         if args.scope == "mysql":
             require(result.get("fixtureProperties") and result.get("javaSelection") and counts.get("skipped") == 0,
                     "MySQL verification did not record explicit fixture scope")
+        if result.get("wholeMigrationRequested") is True:
+            migration_counts = result.get("wholeMigrationTests", {})
+            require(type(migration_counts.get("passed")) is int and migration_counts["passed"] > 0
+                    and migration_counts.get("failed") == 0 and migration_counts.get("skipped") == 0,
+                    "Whole migration acceptance did not actually pass")
+            migration_file = evidence / "migration.json"
+            regular_file(migration_file, 16384)
+            require(hashlib.sha256(migration_file.read_bytes()).hexdigest() == result.get("wholeMigrationSummarySha256"),
+                    "Whole migration public summary is missing or altered")
         record["status"] = "PASS"
         exit_code = 0
     except BaseException as error:

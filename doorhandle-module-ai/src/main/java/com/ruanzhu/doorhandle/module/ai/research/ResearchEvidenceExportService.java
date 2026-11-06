@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.ruanzhu.doorhandle.contracts.agent.AgentActor;
+import com.ruanzhu.doorhandle.framework.persistence.workflow.AuditEvent;
+import com.ruanzhu.doorhandle.framework.persistence.workflow.JdbcAuditStore;
 import jakarta.annotation.PostConstruct;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.HttpStatus;
@@ -17,6 +19,7 @@ import org.springframework.web.server.ResponseStatusException;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /** 只导出服务端重新授权读取的视图，审计提交成功后才向调用方交付文件。 */
@@ -25,11 +28,13 @@ import java.util.UUID;
 public class ResearchEvidenceExportService {
     public record Download(String exportId,String sha256,byte[] bytes) {}
     public record Document(int version,String exportId,Instant exportedAt,ResearchEvidenceDtos.View evidence,List<String> limitations) {}
+    public record ExportV1(int formatVersion,int sourceCount,int expiredSourceCount) {}
     private final ResearchEvidenceService research;
     private final JdbcTemplate jdbc;
     private final TransactionTemplate tx;
     private final ObjectMapper json;
     private final ResearchExportRateLimit rateLimit;
+    private final JdbcAuditStore audits;
     public ResearchEvidenceExportService(ResearchEvidenceService research,JdbcTemplate jdbc,PlatformTransactionManager manager,ObjectMapper json) {
         this(research,jdbc,manager,json,null);
     }
@@ -38,11 +43,12 @@ public class ResearchEvidenceExportService {
             @org.springframework.lang.Nullable ResearchExportRateLimit rateLimit) {
         this.research=research;this.jdbc=jdbc;this.json=json.copy().registerModule(new JavaTimeModule()).disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
         this.rateLimit=rateLimit;
+        this.audits=new JdbcAuditStore(jdbc,this.json,Map.of("RESEARCH_EXPORT",ExportV1.class));
         tx=new TransactionTemplate(manager);tx.setTimeout(15);tx.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
     }
     @PostConstruct public void schema() {
-        try { jdbc.queryForList("SELECT export_id FROM agent_research_export_audit WHERE 1=0"); }
-        catch(org.springframework.dao.DataAccessException error) { throw new IllegalStateException("请先执行 migration-V33-agent-research-export.sql 再启用来源导出"); }
+        try { audits.validateSchema(); }
+        catch(org.springframework.dao.DataAccessException error) { throw new IllegalStateException("请先安装 compact 审计及研究导出约束再启用来源导出",error); }
     }
     public Download export(AgentActor actor,String runId,boolean confirmed) {
         if(!confirmed)throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"请先确认将本人来源摘录保存到本机");
@@ -61,10 +67,9 @@ public class ResearchEvidenceExportService {
             catch(JsonProcessingException error) { throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"来源文件暂时无法生成"); }
             if(bytes.length>524288)throw new ResponseStatusException(HttpStatus.PAYLOAD_TOO_LARGE,"来源文件超过导出上限");
             String hash=ResearchEvidenceService.sha256(new String(bytes,StandardCharsets.UTF_8));
-            jdbc.update("""
-                INSERT INTO agent_research_export_audit(export_id,user_id,run_id,format_version,source_count,expired_source_count,payload_bytes,payload_sha256)
-                VALUES(?,?,?,?,?,?,?,?)
-                """,id,actor.userId(),runId,1,view.sources().size(),view.expiredSourceCount(),bytes.length,hash);
+            audits.appendResearchExport(new AuditEvent("RESEARCH_EXPORT",actor.userId(),actor.userId(),
+                    "RESEARCH_EXPORT",id,null,runId,null,id,"EXPORT",null,hash,null,1,
+                    new ExportV1(1,view.sources().size(),view.expiredSourceCount())),bytes.length);
             return new Download(id,hash,bytes);
         });
     }

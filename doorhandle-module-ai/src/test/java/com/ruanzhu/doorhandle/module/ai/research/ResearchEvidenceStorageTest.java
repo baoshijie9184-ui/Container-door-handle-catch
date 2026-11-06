@@ -13,13 +13,21 @@ class ResearchEvidenceStorageTest extends ResearchEvidenceServiceTest {
     ResearchEvidenceProperties storageProperties;
     ResearchEvidenceStorage storage;
     @Override @BeforeEach protected void setup() throws Exception {
-        super.setup();migrate(Path.of("src/main/resources/db/migration-V32-agent-research-storage.sql"));
+        super.setup();
+        com.ruanzhu.doorhandle.module.ai.testsupport.CompactCoordinationFixture.install(jdbc);
         storageProperties=new ResearchEvidenceProperties();storageProperties.setEnabled(true);storageProperties.setGovernanceEnabled(true);
         storage=new ResearchEvidenceStorage(jdbc,transactions,storageProperties);storage.schema();
         evidence=new ResearchEvidenceService(jdbc,transactions,json,journal,storage);evidence.schema();
     }
+    private Map<String,Object> sourceRow(String id){return jdbc.queryForMap("""
+        SELECT a.asset_id AS source_id,l.run_id,l.call_id,r.source_url AS requested_url,r.title,
+          r.content_text AS excerpt,r.source_sha256 AS content_sha256,l.request_sha256,
+          r.stored_content_sha256 FROM content_asset a JOIN content_revision r ON r.asset_id=a.asset_id AND r.version=1
+          JOIN content_link l ON l.asset_id=r.asset_id AND l.asset_version=r.version
+        WHERE a.asset_kind='RESEARCH_SOURCE' AND l.link_kind='RESEARCH_SOURCE' AND a.asset_id=?
+        """,id);}
     @AfterEach void stopMaintenance(){if(storage!=null)storage.close();}
-    void expire(String sourceId){jdbc.update("UPDATE agent_research_source SET expires_at=? WHERE source_id=?",LocalDateTime.now().minusDays(1),sourceId);}
+    void expire(String sourceId){jdbc.update("UPDATE content_revision SET expires_at=? WHERE asset_kind='RESEARCH_SOURCE' AND asset_id=?",LocalDateTime.now().minusDays(1),sourceId);}
     @Test void accountQuotaSpansRunsIsolatedByStableUserAndExpiresWithoutDeletingHistory(){
         storageProperties.setMaxSourcesPerUser(2);
         var first=begin(alice,"first");String id=capture(first,"call-1","fact");
@@ -27,16 +35,16 @@ class ResearchEvidenceStorageTest extends ResearchEvidenceServiceTest {
         var third=begin(alice,"third");
         assertThatThrownBy(()->capture(third,"call-3","fact")).isInstanceOf(ResearchEvidenceStorage.QuotaExceeded.class);
         var own=begin(bob,"boss");evidence.capture(bob,own.id(),"boss-call",args(),ToolResultBlock.text("boss fact"));
-        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM agent_research_source WHERE user_id=1",Integer.class)).isEqualTo(2);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM content_asset WHERE asset_kind='RESEARCH_SOURCE' AND owner_user_id=1",Integer.class)).isEqualTo(2);
         expire(id);capture(third,"call-3","fact");
         assertThat(evidence.view(alice,first.id()).expiredSourceCount()).isEqualTo(1);
-        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM agent_research_source WHERE user_id=1",Integer.class)).isEqualTo(3);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM content_asset WHERE asset_kind='RESEARCH_SOURCE' AND owner_user_id=1",Integer.class)).isEqualTo(3);
     }
     @Test void identicalCallAtCapacityRemainsIdempotentAndUnauthorizedRunDoesNotReserveQuota(){
         storageProperties.setMaxSourcesPerUser(1);var run=begin(alice,"one");String id=capture(run,"same","fact");
         assertThat(capture(run,"same","fact")).isEqualTo(id);
         assertThatThrownBy(()->evidence.capture(bob,run.id(),"forged",args(),ToolResultBlock.text("private"))).hasMessageContaining("404");
-        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM agent_research_storage_owner WHERE user_id=2",Integer.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM runtime_state WHERE namespace='RESEARCH_STORAGE' AND owner_id=2 AND scope_key=''",Integer.class)).isZero();
     }
     @Test void concurrentRunsCannotExceedOneAccountQuota() throws Exception {
         storageProperties.setMaxSourcesPerUser(1);var a=begin(alice,"one");var b=begin(alice,"two");
@@ -44,35 +52,35 @@ class ResearchEvidenceStorageTest extends ResearchEvidenceServiceTest {
         try{
             var calls=new ArrayList<Future<Boolean>>();for(var run:List.of(a,b))calls.add(workers.submit(()->{ready.await();try{evidence.capture(alice,run.id(),"call",args(),ToolResultBlock.text("fact"));return true;}catch(ResearchEvidenceStorage.QuotaExceeded error){return false;}}));
             ready.countDown();int successful=0;for(var call:calls)if(call.get(5,TimeUnit.SECONDS))successful++;
-            assertThat(successful).isEqualTo(1);assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM agent_research_source",Integer.class)).isEqualTo(1);
+            assertThat(successful).isEqualTo(1);assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM content_asset WHERE asset_kind='RESEARCH_SOURCE'",Integer.class)).isEqualTo(1);
         }finally{workers.shutdownNow();}
     }
     @Test void expiredPayloadErasureKeepsCitationIdentityHashesAndExpiredCounts(){
         var run=begin(alice,"one");String id=capture(run,"call","PRIVATE_EXPIRED_SNIPPET");
         String answer="fact [source:"+id+"]";evidence.recordAnswer(alice,run.id(),answer);run.finish("COMPLETED");
-        var before=jdbc.queryForMap("SELECT * FROM agent_research_source WHERE source_id=?",id);expire(id);
+        var before=sourceRow(id);expire(id);
         storageProperties.setPurgeEnabled(true);assertThat(storage.purgeExpiredBatch()).isEqualTo(1);assertThat(storage.purgeExpiredBatch()).isZero();
-        var after=jdbc.queryForMap("SELECT * FROM agent_research_source WHERE source_id=?",id);
+        var after=sourceRow(id);
         for(String field:List.of("requested_url","title","excerpt"))assertThat(after.get(field)).isEqualTo("");
-        for(String field:List.of("source_id","run_id","call_id","content_sha256","request_sha256"))assertThat(after.get(field)).isEqualTo(before.get(field));
+        for(String field:List.of("source_id","run_id","call_id","content_sha256","request_sha256","stored_content_sha256"))assertThat(after.get(field)).isEqualTo(before.get(field));
         var view=evidence.view(alice,run.id());assertThat(view.sources()).isEmpty();assertThat(view.expiredSourceCount()).isEqualTo(1);
         assertThat(view.answerSha256()).isEqualTo(ResearchEvidenceService.sha256(answer));assertThat(view.citations()).hasSize(1);
-        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM agent_research_content_purge",Integer.class)).isEqualTo(1);
-        assertThat(jdbc.queryForMap("SELECT * FROM agent_research_content_purge").toString()).doesNotContain("PRIVATE_","1.1.1.1");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM content_revision WHERE asset_kind='RESEARCH_SOURCE' AND purged_at IS NOT NULL",Integer.class)).isEqualTo(1);
+        assertThat(jdbc.queryForMap("SELECT asset_id,purge_owner_user_id,cleared_chars,purged_at FROM content_revision WHERE asset_kind='RESEARCH_SOURCE' AND purged_at IS NOT NULL").toString()).doesNotContain("PRIVATE_","1.1.1.1");
     }
     @Test void cleanupIsOffByDefaultNeverErasesActiveSourcesAndHonorsBatchLimit(){
         var run=begin(alice,"one");String old=capture(run,"old","old fact"),active=capture(run,"active","PRIVATE_ACTIVE_SNIPPET");expire(old);
-        assertThat(storage.purgeExpiredBatch()).isZero();assertThat(jdbc.queryForObject("SELECT excerpt FROM agent_research_source WHERE source_id=?",String.class,old)).isNotEmpty();
+        assertThat(storage.purgeExpiredBatch()).isZero();assertThat(jdbc.queryForObject("SELECT content_text FROM content_revision WHERE asset_kind='RESEARCH_SOURCE' AND asset_id=?",String.class,old)).isNotEmpty();
         String other=capture(run,"other","another fact");expire(other);storageProperties.setCleanupBatchSize(1);storageProperties.setPurgeEnabled(true);
-        assertThat(storage.purgeExpiredBatch()).isEqualTo(1);assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM agent_research_content_purge",Integer.class)).isEqualTo(1);
-        assertThat(jdbc.queryForObject("SELECT excerpt FROM agent_research_source WHERE source_id=?",String.class,active)).isEqualTo("PRIVATE_ACTIVE_SNIPPET");
+        assertThat(storage.purgeExpiredBatch()).isEqualTo(1);assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM content_revision WHERE asset_kind='RESEARCH_SOURCE' AND purged_at IS NOT NULL",Integer.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT content_text FROM content_revision WHERE asset_kind='RESEARCH_SOURCE' AND asset_id=?",String.class,active)).isEqualTo("PRIVATE_ACTIVE_SNIPPET");
     }
     @Test void auditFailureRollsBackContentErasure(){
         var run=begin(alice,"one");String id=capture(run,"call","PRIVATE_EXPIRED_SNIPPET");expire(id);
-        jdbc.execute("ALTER TABLE agent_research_content_purge ADD CONSTRAINT reject_purge_audit CHECK(cleared_chars<0)");
+        jdbc.execute("ALTER TABLE content_revision ADD CONSTRAINT reject_purge_receipt CHECK(cleared_chars<0)");
         storageProperties.setPurgeEnabled(true);assertThatThrownBy(()->storage.purgeExpiredBatch()).isInstanceOf(org.springframework.dao.DataAccessException.class);
-        assertThat(jdbc.queryForObject("SELECT excerpt FROM agent_research_source WHERE source_id=?",String.class,id)).isEqualTo("PRIVATE_EXPIRED_SNIPPET");
-        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM agent_research_content_purge",Integer.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT content_text FROM content_revision WHERE asset_kind='RESEARCH_SOURCE' AND asset_id=?",String.class,id)).isEqualTo("PRIVATE_EXPIRED_SNIPPET");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM content_revision WHERE asset_kind='RESEARCH_SOURCE' AND purged_at IS NOT NULL",Integer.class)).isZero();
     }
     @Test void twoMaintenanceInstancesDoNotDoublePurgeOrDoubleAudit() throws Exception {
         var run=begin(alice,"one");String id=capture(run,"call","old fact");expire(id);
@@ -81,7 +89,7 @@ class ResearchEvidenceStorageTest extends ResearchEvidenceServiceTest {
             other.schema();storageProperties.setPurgeEnabled(true);
             var first=workers.submit(storage::purgeExpiredBatch);var second=workers.submit(other::purgeExpiredBatch);
             assertThat(first.get(5,TimeUnit.SECONDS)+second.get(5,TimeUnit.SECONDS)).isEqualTo(1);
-            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM agent_research_content_purge",Integer.class)).isEqualTo(1);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM content_revision WHERE asset_kind='RESEARCH_SOURCE' AND purged_at IS NOT NULL",Integer.class)).isEqualTo(1);
         }finally{workers.shutdownNow();}
     }
     @Test void invalidConfigurationAndOutOfTransactionQuotaChecksAreRejected(){

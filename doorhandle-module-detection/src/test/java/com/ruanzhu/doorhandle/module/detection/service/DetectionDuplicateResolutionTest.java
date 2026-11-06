@@ -31,4 +31,11 @@ class DetectionDuplicateResolutionTest {
         assertThrows(BusinessException.class, () -> new DetectionDuplicateTicketServiceImpl(mapper).resolve("T1", req, "supervisor-a"));
         verifyNoInteractions(mapper);
     }
+
+    @Test void oversizedComparisonMustNotReachTheDatabaseColumn(){
+        var mapper=mock(DetectionDuplicateTicketMapper.class);var request=new DuplicateTicketResolveRequest();
+        request.setExpectedVersion(0);request.setResolution("REDETECT");request.setComparisonResult("x".repeat(2001));
+        var error=assertThrows(BusinessException.class,()->new DetectionDuplicateTicketServiceImpl(mapper).resolve("T1",request,"supervisor-a"));
+        assertEquals(400,error.getCode());verifyNoInteractions(mapper);
+    }
 }

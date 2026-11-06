@@ -5,7 +5,7 @@ import com.ruanzhu.doorhandle.common.BusinessException;
 import com.ruanzhu.doorhandle.module.model.entity.ModelInfo;
 import com.ruanzhu.doorhandle.module.model.entity.ModelOperationLog;
 import com.ruanzhu.doorhandle.module.model.mapper.ModelInfoMapper;
-import com.ruanzhu.doorhandle.module.model.mapper.ModelOperationLogMapper;
+import com.ruanzhu.doorhandle.module.model.service.ModelOperationAuditStore;
 import com.ruanzhu.doorhandle.module.model.service.ModelService;
 import com.ruanzhu.doorhandle.module.model.service.ModelValidationService;
 import com.ruanzhu.doorhandle.module.model.service.ModelUploadFiles;
@@ -32,7 +32,7 @@ import java.util.Locale;
 public class ModelServiceImpl implements ModelService {
 
     private final ModelInfoMapper modelInfoMapper;
-    private final ModelOperationLogMapper modelOperationLogMapper;
+    private final ModelOperationAuditStore modelOperationAudit;
     private final ModelValidationService modelValidationService;
     private final ModelUploadFiles uploadFiles;
     private final ModelRegistrationService registration;
@@ -110,7 +110,7 @@ public class ModelServiceImpl implements ModelService {
         if(journal!=null) journal.retain(modelInfo);
         if(modelInfoMapper.deleteByModelId(modelId)!=1) throw new BusinessException("模型记录已变化");
         // File retention is intentional even with the journal disabled. SQL rollback cannot restore bytes.
-        // model_operation_log has a foreign key to the deleted row. Durable deletion evidence belongs
+        // Typed model-operation audit rows retain the original cascading FK. Durable deletion evidence belongs
         // to the independent retention journal and operations audit, not an INSERT after parent deletion.
     }
 
@@ -121,6 +121,7 @@ public class ModelServiceImpl implements ModelService {
 
     @Override
     @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DETECTION_MODEL",action="publishModel",supervisorOnly=true)
+    @org.springframework.transaction.annotation.Transactional(rollbackFor=Exception.class)
     public ModelInfo publishModel(Integer modelId) {
         ModelInfo modelInfo = requireModel(modelId);
         if ("ARCHIVED".equals(modelInfo.getStatus())) {
@@ -143,6 +144,7 @@ public class ModelServiceImpl implements ModelService {
 
     @Override
     @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DETECTION_MODEL",action="setDefaultModel",supervisorOnly=true)
+    @org.springframework.transaction.annotation.Transactional(rollbackFor=Exception.class)
     public ModelInfo setDefaultModel(Integer modelId) {
         ModelInfo modelInfo = requireModel(modelId);
         if (!"PUBLISHED".equals(modelInfo.getStatus())) {
@@ -158,6 +160,7 @@ public class ModelServiceImpl implements ModelService {
 
     @Override
     @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DETECTION_MODEL",action="DISABLE",supervisorOnly=true)
+    @org.springframework.transaction.annotation.Transactional(rollbackFor=Exception.class)
     public ModelInfo disableModel(Integer modelId) {
         ModelInfo modelInfo = requireModel(modelId);
         modelInfo.setStatus("DISABLED");
@@ -169,6 +172,7 @@ public class ModelServiceImpl implements ModelService {
 
     @Override
     @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DETECTION_MODEL",action="ARCHIVE",supervisorOnly=true)
+    @org.springframework.transaction.annotation.Transactional(rollbackFor=Exception.class)
     public ModelInfo archiveModel(Integer modelId) {
         ModelInfo modelInfo = requireModel(modelId);
         modelInfo.setStatus("ARCHIVED");
@@ -180,6 +184,7 @@ public class ModelServiceImpl implements ModelService {
 
     @Override
     @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DETECTION_MODEL",action="VALIDATE",supervisorOnly=true)
+    @org.springframework.transaction.annotation.Transactional(rollbackFor=Exception.class)
     public ModelInfo validateModel(Integer modelId) {
         ModelInfo modelInfo = requireModel(modelId);
         if (!StringUtils.hasText(modelInfo.getModelPath())) {
@@ -215,7 +220,7 @@ public class ModelServiceImpl implements ModelService {
 
     @Override
     public List<ModelOperationLog> getOperationLogs(Integer modelId) {
-        return modelOperationLogMapper.selectByModelId(modelId);
+        return modelOperationAudit.selectByModelId(modelId);
     }
 
     private void validateOnnxFile(MultipartFile file) {
@@ -273,9 +278,9 @@ public class ModelServiceImpl implements ModelService {
         logEntry.setModelId(modelId);
         logEntry.setOperationType(operationType);
         logEntry.setOperator(resolveCurrentUsername());
-        logEntry.setOperationTime(LocalDateTime.now());
+        logEntry.setOperationTime(LocalDateTime.now(java.time.ZoneOffset.ofHours(8)));
         logEntry.setRemark(remark);
-        if(modelOperationLogMapper.insert(logEntry)!=1) throw new IllegalStateException("模型操作日志未保存");
+        modelOperationAudit.append(logEntry);
     }
 
     private String resolveCurrentUsername() {

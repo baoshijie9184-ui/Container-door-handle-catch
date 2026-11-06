@@ -70,11 +70,12 @@ node.getNodeProperties().replace(new EnvironmentVariablesNodeProperty(entries))
 if (existingNode == null) ci.addNode(node) else node.save()
 
 def parameters = [
-    new ChoiceParameterDefinition('ACTION', ['verify', 'verify-deploy', 'rehearse', 'rollback'] as String[], 'Default verification. Compact release and legacy rehearsal remain disabled.'),
+    new ChoiceParameterDefinition('ACTION', ['verify', 'verify-deploy', 'rehearse', 'rollback', 'compact-cutover'] as String[], 'Default verification. First compact cutover additionally requires complete MySQL/migration acceptance.'),
     new StringParameterDefinition('TRUSTED_COMMIT', '', 'Optional expected complete java-cloud commit; blank pins this SCM checkout.'),
     new ChoiceParameterDefinition('DOORHANDLE_CI_SCOPE', ['source', 'mysql'] as String[], 'source is ordinary verification; mysql requires explicit ECS fixtures.'),
     new StringParameterDefinition('DOORHANDLE_CI_FIXTURE_MANIFEST', '', 'mysql only: absolute private manifest inside the current ECS checkout/work.'),
     new BooleanParameterDefinition('PRODUCTION_RELEASE_ENABLED', false, 'Keep false until compact schema and release compatibility are accepted.'),
+    new StringParameterDefinition('COMPACT_CUTOVER_SETTINGS', '', 'First cutover only: reviewed private ECS JSON with version, sourceOffsets and existing Java path.'),
     new StringParameterDefinition('DEPLOY_HOST', '', 'Start ECS outside Jenkins, then configure its current verified SSH address.'),
     new StringParameterDefinition('DEPLOY_PORT', '22', 'Verified SSH port.'),
     new ChoiceParameterDefinition('SSH_TRANSPORT', ['direct', 'tls'] as String[], 'Preserve SSH host-key checking; TLS also verifies the existing server certificate.'),

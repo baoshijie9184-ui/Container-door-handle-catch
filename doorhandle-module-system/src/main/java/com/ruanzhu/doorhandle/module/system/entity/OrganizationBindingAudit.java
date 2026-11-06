@@ -1,13 +1,11 @@
 package com.ruanzhu.doorhandle.module.system.entity;
 
-import com.baomidou.mybatisplus.annotation.*;
 import lombok.Data;
 import java.time.LocalDateTime;
 
 @Data
-@TableName("organization_binding_audit")
 public class OrganizationBindingAudit {
-    @TableId(type = IdType.AUTO) private Long id;
+    private Long id;
     private Long userId;
     private String username;
     private Long actorUserId;

@@ -18,9 +18,11 @@ import java.util.*;
 @ConditionalOnProperty(prefix="agentscope.evolution.links",name="enabled",havingValue="true")
 public class SkillLinkStorage {
     private final JdbcTemplate jdbc; private final ObjectMapper json; private final Path root;
+    private final SkillDownloadStore downloads;
+    SkillDownloadStore downloads(){return downloads;}
     public SkillLinkStorage(JdbcTemplate jdbc,ObjectMapper json,
             @Value("${agentscope.ai.workspace:${user.dir}/.agentscope/workspace}") String workspace){
-        this.jdbc=jdbc;this.json=json;this.root=Path.of(workspace).toAbsolutePath().normalize();
+        this.jdbc=jdbc;this.json=json;this.downloads=new SkillDownloadStore(jdbc,json);this.root=Path.of(workspace).toAbsolutePath().normalize();
     }
     public Path directory(long owner,String id){
         if(owner<1||id==null||!id.matches("download-[a-f0-9-]{36}"))throw fail("下载身份不合法");
@@ -106,7 +108,7 @@ public class SkillLinkStorage {
     }
     private void verifySnapshot(Path path,Object expected,long max)throws Exception{checkParents(path);if(!Objects.toString(expected,"").matches("[a-f0-9]{64}")||!Files.isRegularFile(path,LinkOption.NOFOLLOW_LINKS)||Files.size(path)>max||!bytesSha(Files.readAllBytes(path)).equals(expected))throw fail("技能原始快照摘要不一致");}
     public Map<String,Object> verified(long owner,String id){
-        var rows=jdbc.queryForList("SELECT status,manifest_json,manifest_sha256 FROM agent_skill_download WHERE download_id=? AND owner_user_id=?",id,owner);
+        var rows=downloads.packageEvidence(owner,id);
         if(rows.isEmpty()||!Set.of("DOWNLOADED","DRAFT_CREATED").contains(rows.get(0).get("status")))throw fail("技能下载尚未完成或无权限");
         var manifest=inspect(owner,id);
         if(!digest(manifest).equals(rows.get(0).get("manifest_sha256")))throw fail("技能下载清单已变化");

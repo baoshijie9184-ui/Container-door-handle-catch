@@ -9,6 +9,7 @@ import com.ruanzhu.doorhandle.module.detection.mapper.DetectionTaskMapper;
 import com.ruanzhu.doorhandle.module.detection.security.DetectionTaskAccessPolicy;
 import com.ruanzhu.doorhandle.module.detection.service.DetectionTaskService;
 import com.ruanzhu.doorhandle.module.detection.service.detection.DetectionRetryPolicy;
+import com.ruanzhu.doorhandle.module.detection.service.detection.DetectionExecutionPersistence;
 import jakarta.annotation.PostConstruct;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -28,16 +29,14 @@ public class DetectionExecutionApiImpl implements DetectionExecutionApi {
     private final DetectionTaskAccessPolicy access;
     private final BusinessUserDirectory users;
     private final OperationsAuditApi audit;
-    private final JdbcTemplate jdbc;
+    private final DetectionExecutionPersistence persistence;
     private final ObjectMapper json;
     public DetectionExecutionApiImpl(DetectionTaskMapper tasks,DetectionTaskService service,DetectionTaskAccessPolicy access,
                                     BusinessUserDirectory users,OperationsAuditApi audit,JdbcTemplate jdbc,ObjectMapper json) {
-        this.tasks=tasks;this.service=service;this.access=access;this.users=users;this.audit=audit;this.jdbc=jdbc;this.json=json;
+        this.tasks=tasks;this.service=service;this.access=access;this.users=users;this.audit=audit;this.persistence=new DetectionExecutionPersistence(jdbc,json);this.json=json;
     }
     @PostConstruct public void verifySchema() {
-        jdbc.queryForList("SELECT command_id,result_json FROM detection_execution_command WHERE 1=0");
-        jdbc.queryForList("SELECT event_id FROM detection_dispatch_outbox WHERE 1=0");
-        jdbc.queryForList("SELECT result_sha256 FROM detection_worker_receipt WHERE 1=0");
+        persistence.validateSchema();
     }
     @Override public void assertReadable(AgentActor actor,String taskId) {
         actor=current(actor);token(taskId);load(actor,taskId,false);
@@ -74,12 +73,10 @@ public class DetectionExecutionApiImpl implements DetectionExecutionApi {
         var saved=load(actor,task.getTaskId(),false);
         if(!"QUEUED".equals(saved.getStatus()) || saved.getDispatchId()==null || saved.getDispatchId().equals(previousDispatchId))
             throw new IllegalStateException("新的检测派发未核实");
-        var events=jdbc.queryForList("SELECT event_id FROM detection_dispatch_outbox WHERE task_id=? AND dispatch_id=? AND actor_user_id=? AND request_id=?",
-                saved.getTaskId(),saved.getDispatchId(),actor.userId(),requestId);
+        var events=persistence.dispatch(saved.getTaskId(),saved.getDispatchId(),actor.userId(),requestId);
         if(events.size()!=1)throw new IllegalStateException("检测事务消息未保存");
         var result=new Receipt(UUID.randomUUID().toString(),"RETRY",saved.getTaskId(),saved.getDispatchId(),"QUEUED");
-        jdbc.update("INSERT INTO detection_execution_command(command_id,actor_user_id,request_id,command_type,payload_sha256,proposal_id,task_id,dispatch_id,result_json,created_at) VALUES(?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP(6))",
-                result.commandId(),actor.userId(),requestId,result.operation(),fingerprint,proposalId,result.taskId(),result.dispatchId(),encoded(result));
+        persistence.saveCommand(result.commandId(),actor.userId(),requestId,result.operation(),fingerprint,proposalId,result.taskId(),result.dispatchId(),encoded(result));
         audit.append(new OperationsAuditApi.Event(actor,"ENTERPRISE","DETECTION","RETRY_ACCEPTED",result.taskId(),requestId,"APPLIED",null));
         return result;
     }
@@ -91,18 +88,19 @@ public class DetectionExecutionApiImpl implements DetectionExecutionApi {
     }
     private record Stored(String fingerprint,Receipt receipt) {}
     private Optional<Stored> stored(AgentActor actor,String requestId) {
-        var rows=jdbc.query("SELECT payload_sha256,command_id,command_type,task_id,dispatch_id,result_json FROM detection_execution_command WHERE actor_user_id=? AND request_id=?",
-                (rs,n)->{
-                    try {
-                        var receipt=json.readValue(rs.getString("result_json"),Receipt.class);
-                        if(!Objects.equals(receipt.commandId(),rs.getString("command_id")) || !Objects.equals(receipt.operation(),rs.getString("command_type"))
-                                || !Objects.equals(receipt.taskId(),rs.getString("task_id")) || !Objects.equals(receipt.dispatchId(),rs.getString("dispatch_id"))
-                                || !"QUEUED".equals(receipt.status()))throw new IllegalStateException();
-                        return new Stored(rs.getString("payload_sha256"),receipt);
-                    } catch(Exception error) { throw new IllegalStateException("已保存的检测命令回执不可核实"); }
-                },actor.userId(),requestId);
-        return rows.stream().findFirst();
+        var rows=persistence.command(actor.userId(),requestId);
+        if(rows.isEmpty())return Optional.empty();
+        if(rows.size()!=1)throw new IllegalStateException("检测命令请求身份不唯一");
+        var row=rows.get(0);
+        try {
+            var receipt=json.readValue((String)row.get("result_json"),Receipt.class);
+            if(!Objects.equals(receipt.commandId(),row.get("command_id")) || !Objects.equals(receipt.operation(),row.get("command_type"))
+                    || !Objects.equals(receipt.taskId(),row.get("task_id")) || !Objects.equals(receipt.dispatchId(),row.get("dispatch_id"))
+                    || !"QUEUED".equals(receipt.status()))throw new IllegalStateException();
+            return Optional.of(new Stored((String)row.get("payload_sha256"),receipt));
+        } catch(Exception error) { throw new IllegalStateException("已保存的检测命令回执不可核实"); }
     }
+
     private AgentActor current(AgentActor actor) {
         if(actor==null)throw new SecurityException("缺少认证身份");
         var value=users.current(actor.userId(),actor.username());
@@ -120,9 +118,9 @@ public class DetectionExecutionApiImpl implements DetectionExecutionApi {
     }
     private void assertPreviousExecutionKnown(DetectionTask task) {
         if(task.getDispatchId()==null || task.getDispatchId().isBlank())throw new NeedsReview();
-        var receipts=jdbc.queryForList("SELECT status,result_json,result_sha256 FROM detection_worker_receipt WHERE task_id=? AND dispatch_id=?",task.getTaskId(),task.getDispatchId());
+        var receipts=persistence.workerReceipt(task.getTaskId(),task.getDispatchId());
         if(receipts.isEmpty()) {
-            Integer events=jdbc.queryForObject("SELECT COUNT(*) FROM detection_dispatch_outbox WHERE task_id=? AND dispatch_id=?",Integer.class,task.getTaskId(),task.getDispatchId());
+            Integer events=persistence.dispatchCount(task.getTaskId(),task.getDispatchId());
             // Legacy completed business results can be explicitly rechecked. An
             // unexplained failure or a dispatched command without a receipt cannot.
             if(events==null || events!=0 || !Set.of("COMPLETED","PARTIAL_FAILED").contains(task.getStatus())

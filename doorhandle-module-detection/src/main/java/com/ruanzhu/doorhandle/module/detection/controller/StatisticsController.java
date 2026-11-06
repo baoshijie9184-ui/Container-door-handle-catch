@@ -103,7 +103,7 @@ public class StatisticsController {
                 "d.device_type AS deviceType, " +
                 "COUNT(dur.id) AS usageCount " +
                 "FROM device_management d " +
-                "LEFT JOIN device_usage_record dur ON d.id = dur.device_id " +
+                "LEFT JOIN device_usage dur ON d.id = dur.device_id " +
                 "GROUP BY d.id, d.device_code, d.model_name, d.device_type " +
                 "ORDER BY usageCount DESC";
         

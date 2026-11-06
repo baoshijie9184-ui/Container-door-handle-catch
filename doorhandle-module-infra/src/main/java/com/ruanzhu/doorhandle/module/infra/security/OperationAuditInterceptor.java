@@ -8,7 +8,6 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 import org.springframework.web.servlet.HandlerInterceptor;
 
-import java.util.Map;
 import java.util.Set;
 
 @Slf4j
@@ -26,17 +25,7 @@ public class OperationAuditInterceptor implements HandlerInterceptor {
             return;
         }
         try {
-            Map<String, Object> summary = Map.of(
-                    "method", request.getMethod(),
-                    "path", request.getRequestURI(),
-                    "status", response.getStatus());
-            if (exception == null && response.getStatus() < 400) {
-                auditService.recordSuccess("API", request.getRequestURI(), request.getMethod(), summary);
-            } else {
-                Throwable failure = exception == null
-                        ? new IllegalStateException("HTTP " + response.getStatus()) : exception;
-                auditService.recordFailure("API", request.getRequestURI(), request.getMethod(), failure);
-            }
+            auditService.recordHttp(request.getMethod(),request.getRequestURI(),response.getStatus(),request.getRemoteAddr(),exception);
         } catch (Exception auditFailure) {
             log.error("写操作审计失败: {} {}", request.getMethod(), request.getRequestURI(), auditFailure);
         }

@@ -56,6 +56,12 @@ import reactor.core.scheduler.Schedulers;
  * Revalidate this bridge whenever the pinned AgentScope version changes.
  */
 public final class OpenAIResponsesIoBridge extends OpenAIResponsesChatModel implements AutoCloseable {
+    /** Pure validation with the pinned mapper, before a quota admission; no client or network is created. */
+    public static void validateBudgetRequest(List<Msg> messages,List<ToolSchema> tools,GenerateOptions options,String modelName) {
+        GenerateOptions effective=GenerateOptions.mergeOptions(options,
+                GenerateOptions.builder().modelName(modelName).stream(true).build());
+        ResponsesRequestMapper.map(messages,tools,effective,false,null,ResponsesRequestMapper::mapHistory);
+    }
     private static final Logger log = LoggerFactory.getLogger(OpenAIResponsesIoBridge.class);
     private final OpenAIClient client;
     private final GenerateOptions configuredOptions;

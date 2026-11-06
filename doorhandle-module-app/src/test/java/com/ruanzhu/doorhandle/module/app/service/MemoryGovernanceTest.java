@@ -16,7 +16,7 @@ class MemoryGovernanceTest {
     private JdbcTemplate jdbc;private MemoryPreferenceService settings;private Mem0Client bridge;private PersonalMemoryService service;
     @BeforeEach void setup()throws Exception{
         var data=new DriverManagerDataSource("jdbc:h2:mem:"+UUID.randomUUID()+";MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1","sa","");jdbc=new JdbcTemplate(data);
-        String ddl=Files.readString(Path.of("src/main/resources/db/migration-V26-personal-memory-governance.sql")).replace(" ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin","");for(String statement:ddl.split(";"))if(!statement.isBlank())jdbc.execute(statement);
+        com.ruanzhu.doorhandle.module.app.testsupport.CompactWorkflowFixture.install(jdbc);
         settings=new MemoryPreferenceService(jdbc,new DataSourceTransactionManager(data));bridge=mock(Mem0Client.class);service=new PersonalMemoryService(bridge,settings);
     }
     private MemoryDtos.Delete request(String key){return new MemoryDtos.Delete(key,"a".repeat(64),true);}
@@ -51,7 +51,7 @@ class MemoryGovernanceTest {
         when(bridge.getReview(owner,"review")).thenReturn(reviewResult(1));when(bridge.resolveReview(any(),any(),any())).thenReturn(reviewResult(2,new MemoryDtos.ReviewDecision("wrong","candidate","KEEP_SOURCE",1,null)));
         assertThatThrownBy(()->service.resolveReview(owner,"review",resolve("bad-proof","KEEP_SOURCE"))).hasMessageContaining("503");
         assertThat(settings.audit(owner)).singleElement().satisfies(row->assertThat(row.outcome()).isEqualTo("UNKNOWN"));
-        jdbc.execute("DROP TABLE agent_memory_audit");clearInvocations(bridge);
+        jdbc.execute("DROP TABLE audit_event");clearInvocations(bridge);
         assertThatThrownBy(()->service.resolveReview(owner,"review",resolve("no-audit","KEEP_SOURCE"))).isInstanceOf(org.springframework.dao.DataAccessException.class);
         verify(bridge,never()).resolveReview(any(),any(),any());
     }
@@ -73,7 +73,7 @@ class MemoryGovernanceTest {
         assertThatThrownBy(()->service.changeLifecycle(owner,"mine",lifecycle("unknown",true))).hasMessageContaining("503").hasMessageNotContaining("PRIVATE_ERROR");
         assertThatThrownBy(()->service.changeLifecycle(owner,"mine",lifecycle("unknown",true))).hasMessageContaining("409");
         verify(bridge,times(1)).changeLifecycle(any(),any(),any());
-        jdbc.execute("DROP TABLE agent_memory_audit");clearInvocations(bridge);
+        jdbc.execute("DROP TABLE audit_event");clearInvocations(bridge);
         assertThatThrownBy(()->service.changeLifecycle(owner,"mine",lifecycle("audit-failed",true))).isInstanceOf(org.springframework.dao.DataAccessException.class);verifyNoInteractions(bridge);
     }
     @Test void lifecycleRejectsMissingExpiryInvalidTimeAndInvalidStateBeforeAuditing(){
@@ -98,7 +98,7 @@ class MemoryGovernanceTest {
             client.addMemory(owner,"session","PRIVATE_INPUT",metadata);assertThat(adds).hasValue(1);
             var actual=new PersonalMemoryService(client,settings);assertThat(actual.verifyExtraction(owner,key.get()).affectedMemories()).isNull();assertThat(settings.automaticOutcome(owner,key.get())).isEqualTo("DISPATCHED");completed.set(true);assertThat(actual.verifyExtraction(owner,key.get()).affectedMemories()).isEqualTo(1);assertThat(settings.automaticOutcome(owner,key.get())).isEqualTo("SUCCEEDED");
             client.addMemory(owner,"session","PRIVATE_INPUT",metadata);assertThat(adds).hasValue(1);
-            assertThat(jdbc.queryForList("SELECT * FROM agent_memory_audit").toString()).doesNotContain("PRIVATE_INPUT");
+            assertThat(jdbc.queryForList("SELECT * FROM audit_event WHERE kind IN ('MEMORY_PREFERENCE','MEMORY_OPERATION')").toString()).doesNotContain("PRIVATE_INPUT");
         }finally{server.stop(0);}
     }
     @Test void automaticWritesReserveOnceAndOnlyOwnedReceiptsCanResolveUnknownOutcomes(){
@@ -142,7 +142,7 @@ class MemoryGovernanceTest {
         assertThatThrownBy(()->service.delete(owner,"foreign",request("foreign-one"))).hasMessageContaining("404");assertThat(settings.audit(owner)).singleElement().satisfies(row->assertThat(row.outcome()).isEqualTo("REJECTED"));
     }
     @Test void auditFailureBeforeDispatchBlocksRemoteDeletion(){
-        jdbc.execute("DROP TABLE agent_memory_audit");assertThatThrownBy(()->service.delete(owner,"mine",request("audit-down"))).isInstanceOf(org.springframework.dao.DataAccessException.class);verifyNoInteractions(bridge);
+        jdbc.execute("DROP TABLE audit_event");assertThatThrownBy(()->service.delete(owner,"mine",request("audit-down"))).isInstanceOf(org.springframework.dao.DataAccessException.class);verifyNoInteractions(bridge);
     }
     @Test void transportFailureIsUnknownAndIsNotAutomaticallyRetried(){
         doThrow(new IllegalStateException("SECRET_BODY")).when(bridge).deleteOwned(any(),any(),any());
@@ -152,7 +152,7 @@ class MemoryGovernanceTest {
     }
     @Test void pendingDispatchCannotBeClaimedTwiceAndAuditCompletionFailureIsNotSuccess(){
         assertThat(settings.reserveDelete(owner,"mine",request("claimed"))).isFalse();assertThatThrownBy(()->settings.reserveDelete(owner,"mine",request("claimed"))).hasMessageContaining("409");
-        doAnswer(inv->{jdbc.execute("DROP TABLE agent_memory_audit");return null;}).when(bridge).deleteOwned(any(),any(),any());
+        doAnswer(inv->{jdbc.execute("DROP TABLE audit_event");return null;}).when(bridge).deleteOwned(any(),any(),any());
         assertThatThrownBy(()->service.delete(owner,"mine",request("after-delete"))).isInstanceOf(org.springframework.dao.DataAccessException.class);
     }
     private MemoryDtos.Update edit(String key,String text){return new MemoryDtos.Update(key,"a".repeat(64),text,true);}
@@ -166,7 +166,7 @@ class MemoryGovernanceTest {
         assertThatThrownBy(()->service.update(owner,"mine",edit("delete-first","本人按月汇总"))).hasMessageContaining("409");
         assertThat(settings.audit(owner)).anySatisfy(row->{assertThat(row.action()).isEqualTo("UPDATE");assertThat(row.outcome()).isEqualTo("SUCCEEDED");});
         assertThat(settings.audit(other)).isEmpty();
-        assertThat(jdbc.queryForList("SELECT * FROM agent_memory_audit").toString()).doesNotContain("本人按月汇总","改成另一份内容");
+        assertThat(jdbc.queryForList("SELECT * FROM audit_event WHERE kind IN ('MEMORY_PREFERENCE','MEMORY_OPERATION')").toString()).doesNotContain("本人按月汇总","改成另一份内容");
     }
     @Test void unconfirmedBlankAndOversizedEditsCannotReachAuditOrRemoteStore(){
         for(var request:List.of(new MemoryDtos.Update("edit","a".repeat(64),"正文",false),edit("edit","  \n  "),edit("edit","x".repeat(4001))))
@@ -174,7 +174,7 @@ class MemoryGovernanceTest {
         verifyNoInteractions(bridge);assertThat(settings.audit(owner)).isEmpty();
     }
     @Test void editAuditFailureBlocksRemoteWriteAndCompletionFailureIsNotSuccess(){
-        doAnswer(inv->{jdbc.execute("DROP TABLE agent_memory_audit");return null;}).when(bridge).updateOwned(any(),any(),any(),any());
+        doAnswer(inv->{jdbc.execute("DROP TABLE audit_event");return null;}).when(bridge).updateOwned(any(),any(),any(),any());
         assertThatThrownBy(()->service.update(owner,"mine",edit("completion-failed","新的偏好"))).isInstanceOf(org.springframework.dao.DataAccessException.class);
         clearInvocations(bridge);
         assertThatThrownBy(()->service.update(owner,"mine",edit("audit-down","新的偏好"))).isInstanceOf(org.springframework.dao.DataAccessException.class);

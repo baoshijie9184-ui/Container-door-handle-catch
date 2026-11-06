@@ -27,11 +27,11 @@ public class DetectionBatchPrecheckServiceImpl implements DetectionBatchPrecheck
     public DetectionBatchPrecheckResponse precheck(DetectionBatchPrecheckRequest request, String ownerUserId) {
         String strategy = "ALL".equalsIgnoreCase(request.getStrategy()) ? "ALL" : "UNDETECTED_ONLY";
         List<String> hashes = request.getFiles().stream().map(DetectionUploadedFileItem::getSha256)
-                .filter(this::isSha256).distinct().toList();
+                .filter(this::isSha256).map(hash -> hash.toLowerCase(java.util.Locale.ROOT)).distinct().toList();
         Map<String, DetectionImageFingerprint> known = fingerprintMapper.findBySha256(hashes).stream()
-                .collect(Collectors.toMap(DetectionImageFingerprint::getSha256, x -> x, (a, b) -> a));
+                .collect(Collectors.toMap(x -> x.getSha256().toLowerCase(java.util.Locale.ROOT), x -> x, (a, b) -> a));
         List<DetectionBatchPrecheckResponse.Item> items = request.getFiles().stream().map(file -> {
-            DetectionImageFingerprint hit = known.get(file.getSha256());
+            DetectionImageFingerprint hit = file.getSha256() == null ? null : known.get(file.getSha256().toLowerCase(java.util.Locale.ROOT));
             String status = hit == null ? "NEW" : normalize(hit.getStatus());
             if ("ALL".equals(strategy) && ("DETECTED".equals(status) || "APPROVED_PUBLIC".equals(status))) status = "DETECTED";
             return DetectionBatchPrecheckResponse.Item.builder().fileName(file.getFileName()).objectKey(file.getObjectKey())

@@ -1,0 +1,38 @@
+-- Generated source mirror; execute only in an admitted ECS database.
+CREATE TABLE IF NOT EXISTS agent_run (
+ id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+ run_id VARCHAR(36) NOT NULL,
+ user_id BIGINT NOT NULL,
+ session_id VARCHAR(128) NOT NULL,
+ main_agent VARCHAR(64) NOT NULL,
+ entry_point VARCHAR(16) NOT NULL,
+ request_key VARCHAR(128) NOT NULL,
+ status VARCHAR(16) NOT NULL,
+ default_model VARCHAR(160) NOT NULL,
+ policy_version VARCHAR(64) NOT NULL,
+ instance_id VARCHAR(36) NOT NULL,
+ active_slot TINYINT NULL,
+ last_sequence BIGINT NOT NULL DEFAULT 0,
+ started_at DATETIME(6) NOT NULL,
+ ended_at DATETIME(6) NULL,
+ heartbeat_at DATETIME(6) NOT NULL,
+ lease_expires_at DATETIME(6) NOT NULL,
+ answer_owner_user_id BIGINT NULL,
+ answer_sha256 CHAR(64) NULL,
+ answer_citations_json JSON NULL,
+ answer_unresolved_count INT NULL,
+ answer_recorded_at DATETIME(6) NULL,
+ answer_legacy_id BIGINT UNSIGNED NULL,
+ UNIQUE KEY uq_agent_run_id(run_id),
+ UNIQUE KEY uq_agent_run_owner(user_id,run_id),
+ UNIQUE KEY uq_agent_run_owner_session(user_id,session_id,run_id),
+ UNIQUE KEY uq_agent_run_request(user_id,entry_point,request_key),
+ UNIQUE KEY uq_agent_run_active(user_id,main_agent,session_id,active_slot),
+ UNIQUE KEY uq_agent_run_answer_legacy(answer_legacy_id),
+ KEY ix_agent_run_owner(user_id,id),
+ KEY ix_agent_run_session(user_id,session_id,id),
+ KEY ix_agent_run_expiry(status,lease_expires_at),
+ CONSTRAINT ck_agent_run_answer CHECK (
+  (answer_owner_user_id IS NULL AND answer_sha256 IS NULL AND answer_citations_json IS NULL AND answer_unresolved_count IS NULL AND answer_recorded_at IS NULL AND answer_legacy_id IS NULL)
+  OR (answer_owner_user_id IS NOT NULL AND answer_owner_user_id=user_id AND answer_sha256 IS NOT NULL AND answer_citations_json IS NOT NULL AND answer_unresolved_count IS NOT NULL AND answer_unresolved_count>=0 AND answer_recorded_at IS NOT NULL))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;

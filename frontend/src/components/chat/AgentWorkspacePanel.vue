@@ -22,7 +22,7 @@ import {SYSTEM_NAME,AGENT_WORKSPACE_NAME} from '@/utils/systemBrand'
 import { computed, ref, nextTick } from 'vue'
 import AgentWorkbenchPanel from './AgentWorkbenchPanel.vue'
 import AgentRecentExecution from './AgentRecentExecution.vue'
-import { Close, ChatDotRound, Collection, Connection, Notebook, DataLine, Lock, TopRight as ArrowUpRight, Compass } from '@element-plus/icons-vue'
+import { Close, ChatDotRound, Collection, Connection, Notebook, DataLine, Lock, TopRight as ArrowUpRight, Compass, Cpu } from '@element-plus/icons-vue'
 const props=defineProps({title:String,sessionId:String,trace:Object,traceLoaded:Boolean,traceError:String,loading:Boolean,messages:{type:Array,default:()=>[]}})
 defineEmits(['close','refresh','reference'])
 const tabs=['工作区','最近执行'],tab=ref(0)
@@ -31,6 +31,7 @@ const resources=computed(()=>[
   {name:'固定 Fetch MCP',description:'查看本人安装、启用与执行状态',path:'/agent/mcp',icon:Connection},
   {name:'资源市场',description:'查看外部资源目录与接入条件',path:'/agent/markets',icon:Compass},
   {name:'个人记忆',description:'查看和管理本人记忆',path:'/agent/memory',icon:Notebook},
+  {name:'LLM模型管理',description:'查看个人额度、提交申请与跟进审批',path:'/agent/model-quotas',icon:Cpu},
   {name:'执行与调研',description:'工具轨迹、模型路由与来源',path:'/agent/trace?sessionId='+encodeURIComponent(props.sessionId||''),icon:DataLine},
 ])
 async function changeTab(event){

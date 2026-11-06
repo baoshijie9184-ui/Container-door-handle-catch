@@ -14,7 +14,6 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -40,6 +39,7 @@ public class ResearchEvidenceService {
     private final ObjectMapper json;
     private final AgentJournal journal;
     private final ResearchEvidenceStorage storage;
+    private final ResearchSourceRepository sources;
 
     public ResearchEvidenceService(JdbcTemplate jdbc, PlatformTransactionManager manager, ObjectMapper json, AgentJournal journal) {
         this(jdbc,manager,json,journal,null);
@@ -49,16 +49,17 @@ public class ResearchEvidenceService {
             @org.springframework.lang.Nullable ResearchEvidenceStorage storage) {
         this.jdbc = jdbc; this.tx = new TransactionTemplate(manager);
         this.json = json.copy().enable(com.fasterxml.jackson.databind.SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS); this.journal = journal; this.storage=storage;
+        this.sources = new ResearchSourceRepository(jdbc);
         tx.setIsolationLevel(org.springframework.transaction.TransactionDefinition.ISOLATION_READ_COMMITTED);
         tx.setTimeout(15);
     }
     @PostConstruct public void schema() {
         if (!journal.enabled()) throw new IllegalStateException("调研来源登记需要启用运行日志");
         try {
-            jdbc.queryForList("SELECT source_id FROM agent_research_source WHERE 1=0");
-            jdbc.queryForList("SELECT run_id FROM agent_research_answer WHERE 1=0");
+            sources.validateSchema();
+            jdbc.queryForList("SELECT run_id,answer_owner_user_id,answer_sha256,answer_citations_json,answer_unresolved_count,answer_recorded_at FROM agent_run WHERE 1=0");
         } catch (org.springframework.dao.DataAccessException error) {
-            throw new IllegalStateException("请先执行 migration-V31-agent-research-evidence.sql 再启用调研来源登记");
+            throw new IllegalStateException("请先完成 compact schema 调研记录迁移再启用来源登记", error);
         }
     }
 
@@ -80,24 +81,20 @@ public class ResearchEvidenceService {
         String sourceId = tx.execute(status -> {
             if(storage!=null)storage.lockOwner(actor);
             lockLive(actor, runId);
-            var previous = jdbc.queryForList("SELECT source_id,request_sha256,content_sha256 FROM agent_research_source WHERE user_id=? AND run_id=? AND call_id=?", actor.userId(), runId, callId);
+            var previous = sources.findCall(actor.userId(),runId,callId);
             if (!previous.isEmpty()) {
                 var existing = previous.get(0);
                 if (!requestHash.equals(existing.get("request_sha256")) || !contentHash.equals(existing.get("content_sha256")))
                     throw conflict("相同调用编号的来源内容已变化");
                 return existing.get("source_id").toString();
             }
-            Long count = jdbc.queryForObject("SELECT COUNT(*) FROM agent_research_source WHERE user_id=? AND run_id=?", Long.class, actor.userId(), runId);
-            if (count != null && count >= MAX_SOURCES) throw conflict("本次运行来源数量已达上限");
+            if (sources.countRun(actor.userId(),runId) >= MAX_SOURCES) throw conflict("本次运行来源数量已达上限");
             if(storage!=null)storage.checkCapacity(actor);
             String id = "src-" + UUID.randomUUID();
             LocalDateTime now = databaseNow();
-            jdbc.update("""
-                INSERT INTO agent_research_source(source_id,user_id,run_id,call_id,requested_url,query_omitted,url_redacted,title,excerpt,
-                  content_sha256,request_sha256,text_chars,start_index,max_length,fetched_at,expires_at)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                """, id, actor.userId(), runId, callId, displayUrl, URI.create(url).getRawQuery() != null,
-                    !url.equals(displayUrl), title, excerpt, contentHash, requestHash, body.length(), start, max, now, now.plusDays(30));
+            sources.append(new ResearchSourceRepository.Captured(id,actor.userId(),runId,callId,displayUrl,
+                URI.create(url).getRawQuery()!=null,!url.equals(displayUrl),title,excerpt,contentHash,requestHash,
+                body.length(),start,max,now,now.plusDays(30)));
             return id;
         });
         var output = new ArrayList<ContentBlock>(result.getOutput());
@@ -110,7 +107,7 @@ public class ResearchEvidenceService {
         if (answer == null || answer.length() > 200000) throw invalid("回答超出引用登记上限");
         tx.executeWithoutResult(status -> {
             lockLive(actor, runId);
-            var ids = new HashSet<>(jdbc.queryForList("SELECT source_id FROM agent_research_source WHERE user_id=? AND run_id=? AND expires_at>CURRENT_TIMESTAMP", String.class, actor.userId(), runId));
+            var ids = new HashSet<>(sources.activeIds(actor.userId(),runId));
             var references = new ArrayList<Citation>(); var matcher = CITATION.matcher(answer); int unresolved = 0, total = 0;
             while (matcher.find()) {
                 if (++total > 200) throw invalid("回答引用标记过多");
@@ -119,31 +116,35 @@ public class ResearchEvidenceService {
             }
             if (ids.isEmpty() && total == 0) return;
             String digest = sha256(answer);
-            var previous = jdbc.queryForList("SELECT answer_sha256 FROM agent_research_answer WHERE user_id=? AND run_id=?", actor.userId(), runId);
+            var previous = jdbc.queryForList("SELECT answer_sha256 FROM agent_run WHERE user_id=? AND run_id=? AND answer_owner_user_id=? AND answer_sha256 IS NOT NULL", actor.userId(), runId, actor.userId());
             if (!previous.isEmpty()) {
                 if (!digest.equals(previous.get(0).get("answer_sha256"))) throw conflict("本次运行已登记其他回答");
                 return;
             }
-            jdbc.update("INSERT INTO agent_research_answer(user_id,run_id,answer_sha256,citations_json,unresolved_count,recorded_at) VALUES(?,?,?,?,?,CURRENT_TIMESTAMP)",
-                    actor.userId(), runId, digest, json(references), unresolved);
+            int changed = jdbc.update("""
+                    UPDATE agent_run SET answer_owner_user_id=?,answer_sha256=?,answer_citations_json=?,
+                        answer_unresolved_count=?,answer_recorded_at=UTC_TIMESTAMP
+                    WHERE user_id=? AND run_id=? AND answer_sha256 IS NULL AND answer_owner_user_id IS NULL
+                    """, actor.userId(), digest, json(references), unresolved, actor.userId(), runId);
+            if (changed != 1) throw conflict("运行的回答引用记录已变化，不能覆盖");
         });
     }
 
     public View view(AgentActor actor, String runId) {
         journal.get(actor, runId); // 不存在与其他账号的运行一律走同一 404。
-        var sources = jdbc.query("SELECT * FROM agent_research_source WHERE user_id=? AND run_id=? AND expires_at>CURRENT_TIMESTAMP ORDER BY id LIMIT 20", SOURCE, actor.userId(), runId);
-        int expired = Objects.requireNonNullElse(jdbc.queryForObject("SELECT COUNT(*) FROM agent_research_source WHERE user_id=? AND run_id=? AND expires_at<=CURRENT_TIMESTAMP", Integer.class, actor.userId(), runId), 0);
-        var answers = jdbc.queryForList("SELECT answer_sha256,citations_json,unresolved_count FROM agent_research_answer WHERE user_id=? AND run_id=?", actor.userId(), runId);
-        if (answers.isEmpty()) return new View(runId, true, sources, List.of(), null, false, 0, expired);
+        var activeSources = sources.active(actor.userId(),runId);
+        int expired = sources.expiredCount(actor.userId(),runId);
+        var answers = jdbc.queryForList("SELECT answer_sha256,answer_citations_json AS citations_json,answer_unresolved_count AS unresolved_count FROM agent_run WHERE user_id=? AND run_id=? AND answer_owner_user_id=? AND answer_sha256 IS NOT NULL", actor.userId(), runId, actor.userId());
+        if (answers.isEmpty()) return new View(runId, true, activeSources, List.of(), null, false, 0, expired);
         var answer = answers.get(0);
-        return new View(runId, true, sources, readCitations(answer.get("citations_json")), answer.get("answer_sha256").toString(), true, ((Number)answer.get("unresolved_count")).intValue(), expired);
+        return new View(runId, true, activeSources, readCitations(answer.get("citations_json")), answer.get("answer_sha256").toString(), true, ((Number)answer.get("unresolved_count")).intValue(), expired);
     }
     private void lockLive(AgentActor actor, String runId) {
         journal.get(actor, runId);
-        var rows = jdbc.queryForList("SELECT id FROM agent_run WHERE user_id=? AND run_id=? AND status='RUNNING' AND lease_expires_at>CURRENT_TIMESTAMP FOR UPDATE", actor.userId(), runId);
+        var rows = jdbc.queryForList("SELECT id FROM agent_run WHERE user_id=? AND run_id=? AND status='RUNNING' AND lease_expires_at>UTC_TIMESTAMP FOR UPDATE", actor.userId(), runId);
         if (rows.isEmpty()) throw conflict("运行已结束或租约已过期，不能追加来源或引用");
     }
-    private LocalDateTime databaseNow() { return jdbc.queryForObject("SELECT CURRENT_TIMESTAMP", LocalDateTime.class); }
+    private LocalDateTime databaseNow() { return jdbc.queryForObject("SELECT UTC_TIMESTAMP", LocalDateTime.class); }
     private List<Citation> readCitations(Object value) {
         try { return json.readValue(value instanceof byte[] bytes ? new String(bytes, StandardCharsets.UTF_8) : value.toString(), new TypeReference<List<Citation>>() {}); }
         catch (Exception error) { throw new IllegalStateException("引用记录读取失败"); }
@@ -180,7 +181,4 @@ public class ResearchEvidenceService {
     }
     private static ResponseStatusException invalid(String message) { return new ResponseStatusException(HttpStatus.BAD_REQUEST, message); }
     private static ResponseStatusException conflict(String message) { return new ResponseStatusException(HttpStatus.CONFLICT, message); }
-    private static final RowMapper<Source> SOURCE = (rs, n) -> new Source(rs.getString("source_id"), rs.getString("run_id"), rs.getString("call_id"),
-            rs.getString("requested_url"), rs.getBoolean("query_omitted"), rs.getBoolean("url_redacted"), rs.getString("title"), rs.getString("excerpt"), rs.getString("content_sha256"),
-            rs.getInt("text_chars"), rs.getInt("start_index"), rs.getInt("max_length"), rs.getObject("fetched_at", LocalDateTime.class), rs.getObject("expires_at", LocalDateTime.class));
 }

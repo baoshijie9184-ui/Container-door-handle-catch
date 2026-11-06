@@ -2,6 +2,7 @@ package com.ruanzhu.doorhandle.module.ai.eval;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.*;
+import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.*;
 import java.security.MessageDigest;
@@ -10,8 +11,9 @@ import java.util.*;
 import java.util.stream.Stream;
 import static org.assertj.core.api.Assertions.*;
 
-/** 固定数据集驱动的规则实验。模型和业务门面合成；不会读取 .env 或访问网络。 */
+/** 固定数据集驱动的 ECS 数据库规则实验。模型和业务门面合成；不调用供应商。 */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
+@EnabledIfSystemProperty(named="doorhandle.action.mysql.config",matches=".+")
 class AgentContractEvalTest {
     @TempDir Path workspace;
     final ObjectMapper json=new ObjectMapper().findAndRegisterModules();
@@ -41,7 +43,7 @@ class AgentContractEvalTest {
     @AfterAll void report() throws Exception {
         if(dataset==null)return;
         var metadata=new LinkedHashMap<String,Object>();
-        metadata.put("mode","SCRIPTED_MODEL_SYNTHETIC_FACADES_H2");metadata.put("startedAt",began.toString());metadata.put("endedAt",Instant.now().toString());
+        metadata.put("mode","SCRIPTED_MODEL_SYNTHETIC_FACADES_ECS_MYSQL");metadata.put("startedAt",began.toString());metadata.put("endedAt",Instant.now().toString());
         metadata.put("datasetSha256",hash(Files.readAllBytes(datasetPath)));metadata.put("fixtureVersion",AgentEvalFixture.VERSION);
         metadata.put("fixtureSha256",hash(Files.readAllBytes(project.resolve("doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/eval/AgentEvalFixture.java"))));
         metadata.put("agentPromptSourceSha256",hash(Files.readAllBytes(project.resolve("doorhandle-module-ai/src/main/java/com/ruanzhu/doorhandle/module/ai/agent/RoleAgentFactory.java"))));
@@ -66,7 +68,7 @@ class AgentContractEvalTest {
         // 整份报告含合成观测，不包含 Prompt、模型思考或真实用户资料。
         Path temporary=output.resolve("report.json.tmp");Files.writeString(temporary,json.writerWithDefaultPrettyPrinter().writeValueAsString(report));
         Files.move(temporary,output.resolve("report.json"),StandardCopyOption.REPLACE_EXISTING);
-        var markdown=new StringBuilder("# Agent 离线规则评测\n\n模式：SCRIPTED_MODEL_SYNTHETIC_FACADES_H2\n\n");
+        var markdown=new StringBuilder("# Agent 离线规则评测\n\n模式：SCRIPTED_MODEL_SYNTHETIC_FACADES_ECS_MYSQL\n\n");
         markdown.append("数据集：").append(dataset.version()).append("；评分器：").append(AgentEvalScorer.VERSION).append("\n\n");
         markdown.append("规则门槛：").append(report.path("contractGatePassed").asBoolean()?"通过":"未通过").append("。本报告不批准生产发布，不评估真实模型回答质量。\n\n");
         markdown.append("| 用例 | 分类 | 状态 | 规则失败 |\n| --- | --- | --- | --- |\n");

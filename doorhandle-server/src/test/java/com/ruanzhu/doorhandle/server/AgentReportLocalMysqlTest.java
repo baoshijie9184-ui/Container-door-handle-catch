@@ -70,7 +70,7 @@ class AgentReportLocalMysqlTest {
                 var page=api.list(actor,1,20,"DRAFT",task);assertThat(page.records()).hasSize(1);reportId=page.records().get(0).reportId();
                 assertThat(api.get(actor,reportId).report().status()).isEqualTo("DRAFT");
                 var again=gateway.write(actor,run.id(),"mysql-second-call","create_report_draft",new LinkedHashMap<>(args));assertThat(again.report().reportId()).isEqualTo(reportId);
-                assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM detection_report_agent_origin WHERE report_id=?",Long.class,reportId)).isEqualTo(1);
+                assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM workflow_instance WHERE kind='REPORT_AGENT_ORIGIN' AND resource_type='QUALITY_REPORT' AND resource_id=?",Long.class,reportId)).isEqualTo(1);
                 var audit=context.getBean(QualityReportService.class).audit(new BusinessUserDirectory.Identity(actor.userId(),actor.username(),false),reportId);
                 assertThat(audit).hasSize(1);assertThat(audit.get(0).runId()).isEqualTo(run.id());assertThat(audit.get(0).callId()).isEqualTo("mysql-draft-call");
                 assertThatThrownBy(()->api.get(other,reportId)).isInstanceOf(com.ruanzhu.doorhandle.common.BusinessException.class);
@@ -79,7 +79,7 @@ class AgentReportLocalMysqlTest {
                 var events=journal.events(actor,run.id(),0,100);
                 assertThat(events).anySatisfy(e->{assertThat(e.type()).isEqualTo("AUTHORIZATION_ALLOWED");assertThat(e.payload()).containsEntry("tool","create_report_draft").containsEntry("policyVersion",AgentReportGateway.POLICY);});
                 assertThat(events).anySatisfy(e->{assertThat(e.type()).isEqualTo("TOOL_COMPLETED");assertThat(e.payload()).containsEntry("tool","create_report_draft");});
-                assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM detection_report_outbox WHERE report_id=?",Long.class,reportId)).isZero();
+                assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM workflow_instance WHERE kind='REPORT_DELIVERY' AND resource_type='QUALITY_REPORT' AND resource_id=?",Long.class,reportId)).isZero();
                 assertThat(toolkit.create(actor,factory.definitions(actor).get(4),run.id()).getToolNames()).doesNotContain("approve_report","submit_report","export_report");
                 var edited=gateway.write(actor,run.id(),"mysql-edit-call","edit_report_draft",Map.of("reportId",reportId,"expectedVersion",1,"title","修改后草稿","narrative","fixture 修订意见"));
                 assertThat(edited.report().version()).isEqualTo(2);
@@ -91,8 +91,42 @@ class AgentReportLocalMysqlTest {
         }
     }
     @Configuration @EnableTransactionManagement static class Config {
-        @Bean DataSource source(){
-            return EcsMysqlFixture.source();
+        /** Requires an already provisioned compact fixture; never overlays new DDL on historical tables. */
+        @Bean DataSource source() {
+            var admitted=EcsMysqlFixture.source();
+            if(!(admitted instanceof DriverManagerDataSource source))throw new IllegalStateException("Unexpected ECS fixture data source");
+            source.setUrl(source.getUrl().replace("serverTimezone=Asia/Shanghai","connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true"));
+            requireCompactSchema(new JdbcTemplate(source));return source;
+        }
+        private static void requireCompactSchema(JdbcTemplate jdbc) {
+            Path baseline=Path.of(System.getProperty("agent.report.project","..")).toAbsolutePath().normalize().resolve("sql/mysql/compact/baseline");
+            var expectedTables=new TreeSet<String>();var expectedConstraints=new TreeSet<String>();var expectedTriggers=new TreeSet<String>();
+            try(var files=Files.list(baseline)) {
+                for(Path file:files.filter(path->path.getFileName().toString().endsWith(".sql")).sorted().toList()) {
+                    String text=Files.readString(file);
+                    collect(text,"(?im)^CREATE TABLE(?: IF NOT EXISTS)?\\s+`?([a-z_][a-z0-9_]*)`?\\s*\\(",expectedTables);
+                    collect(text,"(?i)\\bCONSTRAINT\\s+`?([a-z_][a-z0-9_]*)`?\\s+(?:CHECK|FOREIGN KEY)\\b",expectedConstraints);
+                    collect(text,"(?im)^CREATE TRIGGER\\s+([a-z_][a-z0-9_]*)\\b",expectedTriggers);
+                }
+            } catch(java.io.IOException error){throw new IllegalStateException("Compact baseline checkout is required for ECS fixture admission",error);}
+            var actualTables=new TreeSet<>(jdbc.queryForList("SELECT table_name FROM information_schema.tables WHERE table_schema=DATABASE()",String.class));
+            if(expectedTables.size()!=29||!actualTables.equals(expectedTables))
+                throw new IllegalStateException("These server tests require exactly the current 29-table compact ECS fixture; historical or partial schemas are not supported");
+            var constraints=new HashSet<>(jdbc.queryForList("SELECT constraint_name FROM information_schema.table_constraints WHERE table_schema=DATABASE() AND constraint_type IN ('CHECK','FOREIGN KEY')",String.class));
+            var triggers=new HashSet<>(jdbc.queryForList("SELECT trigger_name FROM information_schema.triggers WHERE trigger_schema=DATABASE()",String.class));
+            if(!constraints.containsAll(expectedConstraints)||!triggers.containsAll(expectedTriggers))
+                throw new IllegalStateException("The compact ECS fixture is missing baseline CHECK/FK constraints or guards");
+            var relation=jdbc.queryForList("SELECT update_rule,delete_rule FROM information_schema.referential_constraints WHERE constraint_schema=DATABASE() AND constraint_name='fk_workflow_legacy_chat_session'");
+            if(relation.size()!=1||!"CASCADE".equals(relation.get(0).get("update_rule"))||!"CASCADE".equals(relation.get(0).get("delete_rule")))
+                throw new IllegalStateException("Legacy action fixtures require the actual session UPDATE/DELETE CASCADE relation");
+            jdbc.queryForList("SELECT chat_action_session_id,chat_action_id,confirmation_recorded_at,payload_json,legacy_source,legacy_key FROM workflow_instance WHERE 1=0");
+            jdbc.queryForList("SELECT kind,owner_user_id,actor_user_id,resource_id,request_id,content_sha256,outcome,revision,payload_json FROM audit_event WHERE 1=0");
+            jdbc.queryForList("SELECT namespace,owner_id,scope_key,revision,payload_version,payload_json FROM runtime_state WHERE 1=0");
+            if(jdbc.queryForObject("SELECT COUNT(*) FROM users WHERE username IN ('inspector.demo','inspector.demo2','supervisor.demo')",Long.class)!=3L)
+                throw new IllegalStateException("The compact ECS fixture must seed the three existing acceptance identities");
+        }
+        private static void collect(String text,String regex,Set<String> values) {
+            var matcher=java.util.regex.Pattern.compile(regex).matcher(text);while(matcher.find())values.add(matcher.group(1));
         }
         @Bean JdbcTemplate jdbc(DataSource source){return new JdbcTemplate(source);}
         @Bean DataSourceTransactionManager transaction(DataSource source){return new DataSourceTransactionManager(source);}

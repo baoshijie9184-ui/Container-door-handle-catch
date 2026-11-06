@@ -44,6 +44,15 @@ class ConversationControlIntegrationTest {
                     .replaceAll("(?m)^(\\s*)UNIQUE KEY (\\w+)\\s*(\\([^\\n]+\\))", "$1CONSTRAINT $2 UNIQUE $3").replaceAll("(?m)^\\s*KEY .*\\n","").replaceAll(",\\s*\\)",")");
             for(String sql:ddl.split(";"))if(!sql.isBlank())jdbc.execute(sql);
         }
+        String coordination = Files.readString(Path.of("../sql/mysql/compact/001-coordination-state.sql"))
+                .replace(" COLLATE utf8mb4_bin", "")
+                .replace(" ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin", "")
+                .replaceAll(",\\s*CONSTRAINT ck_coordination_settings CHECK \\([^\\n]+\\)", "");
+        var compactPopulator = new org.springframework.jdbc.datasource.init.ResourceDatabasePopulator(
+                new org.springframework.core.io.ByteArrayResource(coordination.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        compactPopulator.setSqlScriptEncoding(java.nio.charset.StandardCharsets.UTF_8.name());
+        compactPopulator.execute(jdbc.getDataSource());
+        jdbc.execute("DROP TABLE agent_conversation_input_owner");
         var journalProperties=new AgentJournalProperties();journalProperties.setEnabled(true);var json=new ObjectMapper();var journal=new JdbcAgentJournal(jdbc,manager,json,journalProperties);journal.verifySchema();
         var inputRef=new AtomicReference<AgentSteeringInboxApi>();var inputProvider=mock(ObjectProvider.class);when(inputProvider.getIfAvailable()).thenAnswer(inv->inputRef.get());
         var controls=new ConversationControlRegistry(journal,inputProvider);

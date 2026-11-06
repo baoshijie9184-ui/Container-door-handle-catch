@@ -9,7 +9,7 @@ import lombok.Data;
 import java.time.LocalDateTime;
 
 @Data
-@TableName("device_capture_alert")
+@TableName("device_alert")
 public class DeviceCaptureAlert {
     @TableId(value = "id", type = IdType.AUTO)
     private Long id;

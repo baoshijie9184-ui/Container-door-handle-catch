@@ -14,11 +14,6 @@ public class BusinessSeedDataProperties {
 
     private Boolean enabled = false;
     private Boolean continueOnError = false;
-    private List<String> scripts = new ArrayList<>(List.of(
-            "classpath:db/migration-V14-security-reliability-hardening.sql",
-            "classpath:db/migration-V13-business-seed-data-normalization.sql",
-            "classpath:db/business-seed-new-features.sql",
-            "classpath:db/business-seed-more-features.sql",
-            "classpath:db/business-seed-trace-rich.sql"
-    ));
+    /** Retained only to detect old environment configuration; no startup scripts execute. */
+    private List<String> scripts = new ArrayList<>();
 }

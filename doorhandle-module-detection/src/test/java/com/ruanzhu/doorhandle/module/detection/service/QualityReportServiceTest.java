@@ -28,34 +28,53 @@ import java.util.concurrent.*;
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
-/** 真实生产 Service、事务、报告表和约束，任务 Mapper 为隔离 SQL fixture。 */
+/** Real report services and active MySQL baseline constraints; executed only in an isolated ECS schema. */
+@org.junit.jupiter.api.condition.EnabledIfSystemProperty(named="doorhandle.report.mysql.config",matches=".+")
 class QualityReportServiceTest {
     static final Identity alice=new Identity(1,"alice",false),other=new Identity(2,"other",false),boss=new Identity(3,"boss",true),boss2=new Identity(4,"boss2",true);
     AnnotationConfigApplicationContext context;JdbcTemplate jdbc;QualityReportService service;Map<Long,Boolean> roles;
     @BeforeEach void setup() throws Exception {
         TableInfoHelper.initTableInfo(new MapperBuilderAssistant(new MybatisConfiguration(),""),DetectionTask.class);
         context=new AnnotationConfigApplicationContext(Config.class);jdbc=context.getBean(JdbcTemplate.class);service=context.getBean(QualityReportService.class);roles=context.getBean(RoleStore.class).roles;
-        String sql=Files.readString(Path.of("../sql/mysql/migration-V21-quality-report-approval.sql"),StandardCharsets.UTF_8)
-                .replaceAll("(?m)\\) ENGINE=InnoDB[^;]*;", ");");
-        try(var connection=context.getBean(DataSource.class).getConnection()){ScriptUtils.executeSqlScript(connection,new ByteArrayResource(sql.getBytes(StandardCharsets.UTF_8)));}
-        String origin=Files.readString(Path.of("../sql/mysql/migration-V22-agent-report-origin.sql"),StandardCharsets.UTF_8).replaceAll("(?m)\\) ENGINE=InnoDB[^;]*;", ");");
-        try(var connection=context.getBean(DataSource.class).getConnection()){ScriptUtils.executeSqlScript(connection,new ByteArrayResource(origin.getBytes(StandardCharsets.UTF_8)));}
-        String delivery=Files.readString(Path.of("../sql/mysql/migration-V30-report-event-delivery.sql"),StandardCharsets.UTF_8).replaceAll("(?m)\\) ENGINE=InnoDB[^;]*;", ");");
-        try(var connection=context.getBean(DataSource.class).getConnection()){ScriptUtils.executeSqlScript(connection,new ByteArrayResource(delivery.getBytes(StandardCharsets.UTF_8)));}
-        jdbc.execute("CREATE TABLE detection_task(task_id VARCHAR(128) PRIMARY KEY,created_by VARCHAR(50),assignee VARCHAR(50),status VARCHAR(20),flow_status VARCHAR(30),total_images INT,processed_images INT,successful_images INT,failed_images INT,defect_count INT,review_status VARCHAR(20),review_conclusion VARCHAR(30),recheck_required BOOLEAN,source_oss_prefix VARCHAR(200))");
-        jdbc.update("INSERT INTO detection_task VALUES('task-1','alice','alice','COMPLETED','REVIEWED',12,12,12,0,2,'REVIEWED','DEFECT',false,'private-oss-key')");
-        jdbc.update("INSERT INTO detection_task VALUES('task-2','other','other','COMPLETED','REVIEWED',12,12,12,0,0,'REVIEWED','PASS',false,'other-secret')");
+        jdbc.update("INSERT INTO detection_task(task_id,created_by,assignee,status,flow_status,total_images,processed_images,successful_images,failed_images,defect_count,review_status,review_conclusion,recheck_required,source_oss_prefix) VALUES('task-1','alice','alice','COMPLETED','REVIEWED',12,12,12,0,2,'REVIEWED','DEFECT',false,'private-oss-key')");
+        jdbc.update("INSERT INTO detection_task(task_id,created_by,assignee,status,flow_status,total_images,processed_images,successful_images,failed_images,defect_count,review_status,review_conclusion,recheck_required,source_oss_prefix) VALUES('task-2','other','other','COMPLETED','REVIEWED',12,12,12,0,0,'REVIEWED','PASS',false,'other-secret')");
     }
-    @AfterEach void close(){context.close();}
+    @AfterEach void close(){if(context!=null)context.close();}
     String key(){return UUID.randomUUID().toString();}
     View create(){return service.create(alice,new Create("task-1","检测报告","人工说明 <script>alert(1)</script>",key()));}
     View submitted(){var draft=create();return service.submit(alice,draft.reportId(),new Command(draft.version(),key()));}
     Decision approvedRequest(View row,Identity actor){var preview=service.preview(actor,row.reportId(),new DecisionPreview(row.version(),"APPROVE","已核对检测依据"));return new Decision(row.version(),preview.decision(),preview.reason(),preview.confirmationToken(),key());}
-    long count(String table){return jdbc.queryForObject("SELECT COUNT(*) FROM "+table,Long.class);}
+    long count(String kind){
+        if("quality_report".equals(kind))return jdbc.queryForObject("SELECT COUNT(*) FROM quality_report",Long.class);
+        if("QUALITY_REPORT".equals(kind))return jdbc.queryForObject("SELECT COUNT(*) FROM audit_event WHERE kind='QUALITY_REPORT'",Long.class);
+        return jdbc.queryForObject("SELECT COUNT(*) FROM workflow_instance WHERE kind=?",Long.class,kind);
+    }
+    @Test void sharedUtcDatesKeepTheExistingBeijingDtoContract(){
+        var before=java.time.LocalDateTime.now(com.ruanzhu.doorhandle.module.detection.dto.report.ReportTime.BEIJING).minusSeconds(1);
+        var row=submitted();
+        assertThat(row.createdAt()).isBetween(before,java.time.LocalDateTime.now(com.ruanzhu.doorhandle.module.detection.dto.report.ReportTime.BEIJING));
+        var preview=service.preview(boss,row.reportId(),new DecisionPreview(row.version(),"APPROVE","核对时区"));
+        var storedExpiry=jdbc.queryForObject("SELECT expires_at FROM workflow_instance WHERE kind='REPORT_CONFIRMATION' AND report_request_id=?",java.time.LocalDateTime.class,preview.confirmationToken());
+        assertThat(preview.expiresAt()).isEqualTo(storedExpiry.plusHours(8));
+        var audit=service.audit(alice,row.reportId()).get(0);
+        var storedAudit=jdbc.queryForObject("SELECT occurred_at FROM audit_event WHERE id=?",java.time.LocalDateTime.class,audit.id());
+        assertThat(audit.createdAt()).isEqualTo(storedAudit.plusHours(8));
+        var event=service.events(alice,row.reportId()).get(0);
+        var storedNext=jdbc.queryForObject("SELECT next_attempt_at FROM workflow_instance WHERE kind='REPORT_DELIVERY' AND report_request_id=?",java.time.LocalDateTime.class,event.eventId());
+        assertThat(event.nextAttemptAt()).isEqualTo(storedNext.plusHours(8));
+        assertThat(event.deliveredAt()).isNull();assertThat(event.consumedAt()).isNull();
+    }
+    @Test void requestIdentityRetainsOldCaseInsensitiveUniquenessAndHistoricalResponse(){
+        var request=new Create("task-1","原始标题","原始意见","ReportCommand_One");var original=service.create(alice,request);
+        service.edit(alice,original.reportId(),new Edit(original.version(),"新标题","新意见",key()));
+        assertThat(service.create(alice,request)).isEqualTo(original);
+        assertThatThrownBy(()->service.create(alice,new Create("task-1","原始标题","原始意见","reportcommand_one"))).isInstanceOf(BusinessException.class).hasMessageContaining("不同参数");
+        assertThat(count("quality_report")).isEqualTo(1);assertThat(count("REPORT_COMMAND")).isEqualTo(2);
+    }
     @Test void deliveryReadAndRetryPreserveScopeConfirmationAndIdempotentAudit(){
         var row=submitted();var event=service.events(alice,row.reportId()).get(0);
         assertThat(event.deliveryStatus()).isEqualTo("PENDING");assertThatThrownBy(()->service.events(other,row.reportId())).isInstanceOf(BusinessException.class);
-        jdbc.update("UPDATE detection_report_outbox SET delivery_status='RETRY',attempts=2 WHERE event_id=?",event.eventId());
+        jdbc.update("UPDATE workflow_instance SET status='RETRY',attempts=2 WHERE kind='REPORT_DELIVERY' AND report_request_id=?",event.eventId());
         var request=new RetryEvent(2,true,key());
         assertThatThrownBy(()->service.retryEvent(alice,row.reportId(),event.eventId(),request)).isInstanceOf(SecurityException.class);
         assertThatThrownBy(()->service.retryEvent(boss,row.reportId(),event.eventId(),new RetryEvent(2,false,key()))).isInstanceOf(BusinessException.class);
@@ -63,22 +82,22 @@ class QualityReportServiceTest {
         assertThat(service.retryEvent(boss,row.reportId(),event.eventId(),request)).singleElement().satisfies(item->assertThat(item.deliveryStatus()).isEqualTo("RETRY"));
         assertThat(service.retryEvent(boss,row.reportId(),event.eventId(),request)).hasSize(1);
         assertThat(service.audit(boss,row.reportId())).filteredOn(a->a.action().equals("EVENT_RETRY")).hasSize(1);
-        jdbc.update("UPDATE detection_report_outbox SET delivery_status='DELIVERED' WHERE event_id=?",event.eventId());
+        jdbc.update("UPDATE workflow_instance SET status='DELIVERED',finished_at=UTC_TIMESTAMP(6) WHERE kind='REPORT_DELIVERY' AND report_request_id=?",event.eventId());
         assertThatThrownBy(()->service.retryEvent(boss,row.reportId(),event.eventId(),new RetryEvent(2,true,key()))).isInstanceOf(BusinessException.class);
         assertThat(service.get(alice,row.reportId()).version()).isEqualTo(row.version());
     }
     @Test void retryAuditFailureRollsBackQueueChangeAndCommand(){
-        var row=submitted();var event=service.events(alice,row.reportId()).get(0);jdbc.update("UPDATE detection_report_outbox SET delivery_status='FAILED',attempts=1 WHERE event_id=?",event.eventId());
-        jdbc.execute("ALTER TABLE detection_report_audit ADD CONSTRAINT fail_retry CHECK(action<>'EVENT_RETRY')");long before=count("detection_report_command");
+        var row=submitted();var event=service.events(alice,row.reportId()).get(0);jdbc.update("UPDATE workflow_instance SET status='FAILED',attempts=1 WHERE kind='REPORT_DELIVERY' AND report_request_id=?",event.eventId());
+        jdbc.execute("ALTER TABLE audit_event ADD CONSTRAINT fail_retry CHECK(action<>'EVENT_RETRY')");long before=count("REPORT_COMMAND");
         assertThatThrownBy(()->service.retryEvent(boss,row.reportId(),event.eventId(),new RetryEvent(1,true,key()))).isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
-        assertThat(service.events(alice,row.reportId()).get(0).deliveryStatus()).isEqualTo("FAILED");assertThat(count("detection_report_command")).isEqualTo(before);
+        assertThat(service.events(alice,row.reportId()).get(0).deliveryStatus()).isEqualTo("FAILED");assertThat(count("REPORT_COMMAND")).isEqualTo(before);
     }
     @Test void normalApprovalFreezesSourceAndExportsWithAuditWithoutTaskWrite(){
         var row=submitted();var request=approvedRequest(row,boss);var approved=service.decide(boss,row.reportId(),request);
         assertThat(approved.status()).isEqualTo("APPROVED");assertThat(approved.version()).isEqualTo(3);
         assertThat(service.export(alice,row.reportId())).contains("已审批检测报告","boss","&lt;script&gt;").doesNotContain("private-oss-key","<script>");
         assertThat(service.audit(alice,row.reportId())).extracting(Audit::action).containsExactly("EXPORT","APPROVE","SUBMIT","CREATE");
-        assertThat(count("detection_report_outbox")).isEqualTo(2);
+        assertThat(count("REPORT_DELIVERY")).isEqualTo(2);
         assertThat(jdbc.queryForObject("SELECT flow_status FROM detection_task WHERE task_id='task-1'",String.class)).isEqualTo("REVIEWED");
     }
     @Test void approvedReportsProduceReadableWordPdfAndExcelWithFrozenIdentity()throws Exception{
@@ -97,7 +116,7 @@ class QualityReportServiceTest {
         assertThat(service.audit(alice,row.reportId())).filteredOn(a->a.action().equals("EXPORT")).hasSize(3);
         assertThat(service.get(alice,row.reportId()).snapshotSha256()).isEqualTo(approved.snapshotSha256());
     }
-    @Test void officeExportsCannotBypassDraftPrivacyOrFrozenHash(){var draft=create();for(String format:List.of("docx","pdf","xlsx"))assertThatThrownBy(()->service.exportDocument(alice,draft.reportId(),format)).isInstanceOf(BusinessException.class);var row=submitted();service.decide(boss,row.reportId(),approvedRequest(row,boss));assertThatThrownBy(()->service.exportDocument(other,row.reportId(),"pdf")).isInstanceOf(BusinessException.class);jdbc.update("UPDATE detection_quality_report SET snapshot_sha256=? WHERE report_id=?","0".repeat(64),row.reportId());assertThatThrownBy(()->service.exportDocument(alice,row.reportId(),"xlsx")).isInstanceOf(BusinessException.class);assertThat(service.audit(alice,row.reportId())).filteredOn(a->a.action().equals("EXPORT")).isEmpty();}
+    @Test void officeExportsCannotBypassDraftPrivacyOrFrozenHash(){var draft=create();for(String format:List.of("docx","pdf","xlsx"))assertThatThrownBy(()->service.exportDocument(alice,draft.reportId(),format)).isInstanceOf(BusinessException.class);var row=submitted();service.decide(boss,row.reportId(),approvedRequest(row,boss));assertThatThrownBy(()->service.exportDocument(other,row.reportId(),"pdf")).isInstanceOf(BusinessException.class);jdbc.update("UPDATE quality_report SET snapshot_sha256=? WHERE report_id=?","0".repeat(64),row.reportId());assertThatThrownBy(()->service.exportDocument(alice,row.reportId(),"xlsx")).isInstanceOf(BusinessException.class);assertThat(service.audit(alice,row.reportId())).filteredOn(a->a.action().equals("EXPORT")).isEmpty();}
     @Test void crossEmployeeAndOtherSupervisorCannotReadPrivateDraft(){
         var row=create();assertThatThrownBy(()->service.get(other,row.reportId())).isInstanceOf(BusinessException.class);
         assertThatThrownBy(()->service.get(boss,row.reportId())).isInstanceOf(BusinessException.class);
@@ -112,7 +131,7 @@ class QualityReportServiceTest {
         assertThat(service.submit(alice,draft.reportId(),submit)).isEqualTo(row);
         var decide=approvedRequest(row,boss);var result=service.decide(boss,row.reportId(),decide);
         assertThat(service.decide(boss,row.reportId(),decide)).isEqualTo(result);
-        assertThat(count("detection_quality_report")).isEqualTo(1);assertThat(count("detection_report_audit")).isEqualTo(3);assertThat(count("detection_report_outbox")).isEqualTo(2);
+        assertThat(count("quality_report")).isEqualTo(1);assertThat(count("QUALITY_REPORT")).isEqualTo(3);assertThat(count("REPORT_DELIVERY")).isEqualTo(2);
         assertThatThrownBy(()->service.create(alice,new Create("task-1","不同标题","意见",request.requestId()))).hasMessageContaining("不同参数");
     }
     @Test void frozenReportCannotBeEditedAndOnlyOwnerMaySubmitOrWithdraw(){
@@ -162,7 +181,7 @@ class QualityReportServiceTest {
         assertThatThrownBy(()->service.decide(boss2,row.reportId(),request)).hasMessageContaining("不一致");
         assertThatThrownBy(()->service.decide(boss,row.reportId(),new Decision(row.version(),"REJECT",request.reason(),request.confirmationToken(),key()))).hasMessageContaining("不一致");
         assertThatThrownBy(()->service.decide(boss,row.reportId(),new Decision(row.version(),"APPROVE","改动意见",request.confirmationToken(),key()))).hasMessageContaining("不一致");
-        jdbc.update("UPDATE detection_report_confirmation SET expires_at=DATEADD('MINUTE',-1,CURRENT_TIMESTAMP)");
+        jdbc.update("UPDATE workflow_instance SET expires_at=DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 1 MINUTE) WHERE kind='REPORT_CONFIRMATION'");
         assertThatThrownBy(()->service.decide(boss,row.reportId(),request)).hasMessageContaining("过期");
     }
     @Test void twoSupervisorsCompetingForSameReportOnlyCommitOneDecision() throws Exception {
@@ -176,16 +195,16 @@ class QualityReportServiceTest {
     }
     @Test void auditFailureRollsBackDecisionTokenCommandAndOutbox(){
         var row=submitted();var request=approvedRequest(row,boss);
-        jdbc.execute("ALTER TABLE detection_report_audit ADD CONSTRAINT fail_audit CHECK(action<>'APPROVE')");
+        jdbc.execute("ALTER TABLE audit_event ADD CONSTRAINT fail_audit CHECK(action<>'APPROVE')");
         assertThatThrownBy(()->service.decide(boss,row.reportId(),request)).isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
         assertThat(service.get(alice,row.reportId()).status()).isEqualTo("SUBMITTED");
-        assertThat(count("detection_report_command")).isEqualTo(2);assertThat(count("detection_report_outbox")).isEqualTo(1);
-        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM detection_report_confirmation WHERE used_at IS NOT NULL",Long.class)).isZero();
+        assertThat(count("REPORT_COMMAND")).isEqualTo(2);assertThat(count("REPORT_DELIVERY")).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM workflow_instance WHERE kind='REPORT_CONFIRMATION' AND status='USED'",Long.class)).isZero();
     }
     @Test void outboxFailureRollsBackSubmissionAndAudit(){
-        var row=create();jdbc.execute("ALTER TABLE detection_report_outbox ADD CONSTRAINT fail_event CHECK(event_type<>'detection.report.submitted.v1')");
+        var row=create();jdbc.execute("ALTER TABLE workflow_instance ADD CONSTRAINT fail_event CHECK(kind<>'REPORT_DELIVERY' OR JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.eventType'))<>'detection.report.submitted.v1')");
         assertThatThrownBy(()->service.submit(alice,row.reportId(),new Command(row.version(),key()))).isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
-        assertThat(service.get(alice,row.reportId()).status()).isEqualTo("DRAFT");assertThat(count("detection_report_audit")).isEqualTo(1);
+        assertThat(service.get(alice,row.reportId()).status()).isEqualTo("DRAFT");assertThat(count("QUALITY_REPORT")).isEqualTo(1);
     }
     @Test void revokedRoleAndTaskReassignmentApplyToExistingSessionsAndRecordedRequests(){
         var row=submitted();var request=approvedRequest(row,boss);roles.put(3L,false);
@@ -203,7 +222,7 @@ class QualityReportServiceTest {
         assertThat(service.export(alice,row.reportId())).contains("缺陷数量：2");
     }
     @Test void changedFrozenContentFailsIntegrityCheck(){
-        var row=submitted();jdbc.update("UPDATE detection_quality_report SET narrative='篡改' WHERE report_id=?",row.reportId());
+        var row=submitted();jdbc.update("UPDATE quality_report SET narrative='篡改' WHERE report_id=?",row.reportId());
         assertThatThrownBy(()->service.preview(boss,row.reportId(),new DecisionPreview(row.version(),"REJECT","意见"))).hasMessageContaining("快照校验");
     }
     @Test void agentDraftFacadeStoresOriginAndReplaysWithoutCreatingAnotherDraft(){
@@ -213,20 +232,20 @@ class QualityReportServiceTest {
         var draft=new com.ruanzhu.doorhandle.contracts.agent.QualityReportAgentApi.Draft("task-1","草稿","意见");
         var saved=api.createDraft(actor,draft,origin);var repeat=api.createDraft(actor,draft,new com.ruanzhu.doorhandle.contracts.agent.QualityReportAgentApi.Origin(origin.requestId(),"run-1","call-2","create_report_draft"));
         assertThat(repeat).isEqualTo(saved);assertThat(saved.report().status()).isEqualTo("DRAFT");
-        assertThat(count("detection_report_agent_origin")).isEqualTo(1);assertThat(count("detection_quality_report")).isEqualTo(1);
+        assertThat(count("REPORT_AGENT_ORIGIN")).isEqualTo(1);assertThat(count("quality_report")).isEqualTo(1);
         assertThat(service.audit(alice,saved.report().reportId()).get(0).runId()).isEqualTo("run-1");
         assertThat(service.audit(alice,saved.report().reportId()).get(0).callId()).isEqualTo("call-1");
         var edit=api.editDraft(actor,new com.ruanzhu.doorhandle.contracts.agent.QualityReportAgentApi.Edit(saved.report().reportId(),1,"新标题","新意见"),
                 new com.ruanzhu.doorhandle.contracts.agent.QualityReportAgentApi.Origin(key(),"run-1","call-3","edit_report_draft"));
-        assertThat(edit.report().version()).isEqualTo(2);assertThat(count("detection_report_agent_origin")).isEqualTo(2);
+        assertThat(edit.report().version()).isEqualTo(2);assertThat(count("REPORT_AGENT_ORIGIN")).isEqualTo(2);
     }
     @Test void agentOriginFailureRollsBackDraftBusinessAuditAndCommand(){
         var api=context.getBean(com.ruanzhu.doorhandle.contracts.agent.QualityReportAgentApi.class);
-        jdbc.execute("ALTER TABLE detection_report_agent_origin ADD CONSTRAINT fail_origin CHECK(tool_name<>'create_report_draft')");
+        jdbc.execute("ALTER TABLE workflow_instance ADD CONSTRAINT fail_origin CHECK(kind<>'REPORT_AGENT_ORIGIN' OR JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.toolName'))<>'create_report_draft')");
         var actor=new com.ruanzhu.doorhandle.contracts.agent.AgentActor(1,"alice",com.ruanzhu.doorhandle.contracts.agent.AgentActor.Role.INSPECTOR);
         assertThatThrownBy(()->api.createDraft(actor,new com.ruanzhu.doorhandle.contracts.agent.QualityReportAgentApi.Draft("task-1","草稿","意见"),
                 new com.ruanzhu.doorhandle.contracts.agent.QualityReportAgentApi.Origin(key(),"run-1","call-1","create_report_draft"))).isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
-        assertThat(count("detection_quality_report")).isZero();assertThat(count("detection_report_audit")).isZero();assertThat(count("detection_report_command")).isZero();
+        assertThat(count("quality_report")).isZero();assertThat(count("QUALITY_REPORT")).isZero();assertThat(count("REPORT_COMMAND")).isZero();
     }
     @Test void agentListIsSummaryOnlyAndSubmittedReportCannotBeEditedThroughFacade(){
         var row=submitted();var api=context.getBean(com.ruanzhu.doorhandle.contracts.agent.QualityReportAgentApi.class);
@@ -238,7 +257,8 @@ class QualityReportServiceTest {
     static class RoleStore {final Map<Long,Boolean> roles=new ConcurrentHashMap<>(Map.of(1L,false,2L,false,3L,true,4L,true));}
     @Configuration @EnableTransactionManagement static class Config {
         @Bean ReportDocumentRenderer documentRenderer(){return new ReportDocumentRenderer();}
-        @Bean DataSource source(){return new DriverManagerDataSource("jdbc:h2:mem:report"+UUID.randomUUID()+";MODE=MySQL;DB_CLOSE_DELAY=-1","sa","");}
+        @Bean(destroyMethod="close") com.ruanzhu.doorhandle.module.detection.support.ReportMySqlFixture fixture(){return new com.ruanzhu.doorhandle.module.detection.support.ReportMySqlFixture();}
+        @Bean DataSource source(com.ruanzhu.doorhandle.module.detection.support.ReportMySqlFixture fixture){return fixture.source();}
         @Bean JdbcTemplate jdbc(DataSource ds){return new JdbcTemplate(ds);}
         @Bean DataSourceTransactionManager transactions(DataSource ds){return new DataSourceTransactionManager(ds);}
         @Bean QualityReportRepository repository(JdbcTemplate jdbc){return new QualityReportRepository(jdbc);}

@@ -27,7 +27,7 @@ public class DetectionIdentityReviewService {
             +"created_identity_name,assignee_identity_name,reviewer_identity_name,disposition_identity_name,rework_identity_name";
     private static final Set<String> BASES=Set.of("SOURCE_RECORD_CHECKED","ORGANIZATION_RECORD_CHECKED",
             "ACCOUNT_RENAME_VERIFIED","MANUAL_RECONCILIATION");
-    private final JdbcTemplate jdbc;
+    private final DetectionIdentityPersistence storage;private final JdbcTemplate jdbc;
     private final BusinessAccountLookupApi accounts;
     private final BusinessUserDirectory users;
     private final OperationsAuditApi audit;
@@ -41,16 +41,17 @@ public class DetectionIdentityReviewService {
 
     public DetectionIdentityReviewService(JdbcTemplate jdbc,BusinessAccountLookupApi accounts,
             BusinessUserDirectory users,OperationsAuditApi audit,ObjectMapper json){
-        this.jdbc=jdbc;this.accounts=accounts;this.users=users;this.audit=audit;this.json=json;
+        this.jdbc=jdbc;this.accounts=accounts;this.users=users;this.audit=audit;this.json=json;this.storage=new DetectionIdentityPersistence(jdbc,json);
     }
     public boolean enabled(){return enabled;}
     public void requireEnabled(){if(!enabled)throw bad(503,"身份回填写入尚未启用，请先完成 V55 及兼容基线核对");}
     @jakarta.annotation.PostConstruct public void schema(){
+        storage.validateSchema();
         if(missingNameReview&&(!enabled||evidence==null||!evidence.missingNameReviewEnabled()))throw new IllegalStateException("缺失名称确认需要身份回填与兼容来源保护服务");
         if(enabled){
-            jdbc.queryForList("SELECT request_id,actor_user_id,command_sha256,revision_before,revision_after,applied_count,result_json FROM detection_identity_mapping_batch WHERE 1=0");
-            jdbc.queryForList("SELECT batch_id,task_id,identity_role,source_snapshot,target_user_id,target_revision,confirmation_basis FROM detection_identity_mapping_item WHERE 1=0");
-            if(missingNameReview)jdbc.queryForList("SELECT batch_id,task_id,identity_role,original_name,source_snapshot,target_user_id,evidence_reference FROM detection_identity_missing_name_evidence WHERE 1=0");
+            jdbc.queryForList("SELECT request_id,actor_user_id,command_sha256,revision_before,revision_after,applied_count,result_json FROM ("+DetectionIdentityPersistence.BATCHES+") identity_batches WHERE 1=0");
+            jdbc.queryForList("SELECT batch_id,task_id,identity_role,source_snapshot,target_user_id,target_revision,confirmation_basis FROM ("+DetectionIdentityPersistence.MAPPINGS+") identity_mappings WHERE 1=0");
+            if(missingNameReview)jdbc.queryForList("SELECT batch_id,task_id,identity_role,original_name,source_snapshot,target_user_id,evidence_reference FROM ("+DetectionIdentityPersistence.MISSING+") identity_missing WHERE 1=0");
         }
     }
     private AgentActor supervisor(AgentActor actor,boolean lock){
@@ -98,7 +99,7 @@ public class DetectionIdentityReviewService {
                     candidate==null?"UNMATCHED":oldId!=null&&!Objects.equals(oldId,candidate.userId())?"DIFFERENT_CURRENT_ACCOUNT":"CANDIDATE_ONLY");
             result.add(item);
         }
-        var control=jdbc.queryForMap("SELECT mode,revision FROM detection_identity_control WHERE control_id=1");
+        var control=storage.control(false,false);
         var response=new LinkedHashMap<String,Object>(Map.of("records",result,"nextCursor",rows.isEmpty()?after:rows.get(rows.size()-1).get("task_id"),
                 "hasMore",taskFilter.isEmpty()&&rows.size()==size,"mode",control.get("mode"),"revision",control.get("revision"),
                 "reviewEnabled",true,"protocol","identity-map-v2","sourceEvidenceEnabled",evidence!=null,"sourceMode",evidence==null?"DISABLED":evidence.active()?"ACTIVE":"COLLECTING","reconciliationEnabled",reconciliationEnabled));
@@ -141,9 +142,9 @@ public class DetectionIdentityReviewService {
         var fingerprint=new LinkedHashMap<String,Object>(Map.of("protocol",protocol,"mappings",mappings,"revision",command.revision(),"acknowledgedHistory",true));
         if(!confirmations.isEmpty())fingerprint.put("missingNames",confirmations);
         String digest=hash(fingerprint);
-        var control=jdbc.queryForMap("SELECT mode,revision FROM detection_identity_control WHERE control_id=1 FOR UPDATE");
+        var control=storage.control(false,true);
         if(!Set.of("ACTIVE","PREVIEW").contains(Objects.toString(control.get("mode"),"")))throw bad(409,"身份授权模式异常，请先核对");
-        var previous=jdbc.queryForList("SELECT actor_user_id,request_sha256,result_json FROM detection_identity_command WHERE request_id=?",command.requestId());
+        var previous=jdbc.queryForList("SELECT actor_user_id,request_sha256,result_json FROM ("+DetectionIdentityPersistence.COMMANDS+") identity_commands WHERE request_id=?",command.requestId());
         if(!previous.isEmpty()){
             var old=previous.get(0);
             if(number(old.get("actor_user_id"))!=current.userId()||!digest.equals(old.get("request_sha256")))throw bad(409,"请求编号冲突");
@@ -175,36 +176,33 @@ public class DetectionIdentityReviewService {
         result.put("revision",appliedRevision);result.put("digest",digest);result.put("protocol",protocol);
         if(!confirmations.isEmpty())result.put("missingNameCount",confirmations.size());
         String resultJson=encode(result);
-        jdbc.update("INSERT INTO detection_identity_mapping_batch(request_id,actor_user_id,actor_name,command_sha256,revision_before,revision_after,applied_count,result_json,created_at) VALUES(?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP(6))",
-                command.requestId(),current.userId(),current.username(),digest,revision,appliedRevision,mappings.size(),resultJson);
-        long batch=jdbc.queryForObject("SELECT id FROM detection_identity_mapping_batch WHERE request_id=?",Long.class,command.requestId());
+        storage.mappingBatch(command.requestId(),current.userId(),current.username(),digest,revision,appliedRevision,mappings.size(),resultJson);
+        long batch=jdbc.queryForObject("SELECT id FROM ("+DetectionIdentityPersistence.BATCHES+") identity_batches WHERE request_id=?",Long.class,command.requestId());
         for(var mapping:mappings){
             var before=snapshots.get(mapping.taskId());
-            jdbc.update("INSERT INTO detection_identity_mapping_item(batch_id,task_id,identity_role,source_name,source_snapshot,previous_user_id,previous_identity_name,target_user_id,target_username,target_role,target_revision,confirmation_basis) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-                    batch,mapping.taskId(),mapping.role(),mapping.expectedName(),mapping.snapshot(),before.get(mapping.role()+"_user_id"),before.get(mapping.role()+"_identity_name"),
-                    mapping.userId(),mapping.targetUsername(),mapping.targetRole(),mapping.targetRevision(),mapping.basis());
+            storage.mappingItem(current.userId(),batch,mapping.taskId(),mapping.role(),mapping.expectedName(),mapping.snapshot(),before.get(mapping.role()+"_user_id"),before.get(mapping.role()+"_identity_name"),mapping.userId(),mapping.targetUsername(),mapping.targetRole(),mapping.targetRevision(),mapping.basis());
             var proof=proofs.get(List.of(mapping.taskId(),mapping.role()));
-            if(proof!=null)jdbc.update("INSERT INTO detection_identity_missing_name_evidence(batch_id,task_id,identity_role,original_name,source_snapshot,target_user_id,evidence_reference) VALUES(?,?,?,?,?,?,?)",batch,mapping.taskId(),mapping.role(),before.get(ROLES.get(mapping.role())),mapping.snapshot(),mapping.userId(),proof.evidenceReference());
+            if(proof!=null)storage.missingName(current.userId(),batch,mapping.taskId(),mapping.role(),before.get(ROLES.get(mapping.role())),mapping.snapshot(),mapping.userId(),proof.evidenceReference());
             if(jdbc.update("UPDATE detection_task SET "+mapping.role()+"_user_id=?,"+mapping.role()+"_identity_name=? WHERE task_id=?",mapping.userId(),mapping.expectedName(),mapping.taskId())!=1)
                 throw bad(409,"任务身份更新未确认");
             if(evidence!=null)evidence.record(mapping.taskId(),mapping.role(),current,proof==null?"SUPERVISOR_MAPPING":"SUPERVISOR_MISSING_NAME",command.requestId(),batch);
             audit.append(new OperationsAuditApi.Event(current,"ENTERPRISE","DETECTION_IDENTITY",(proof==null?"MAP_":"MAP_MISSING_NAME_")+mapping.role().toUpperCase(Locale.ROOT),mapping.taskId(),command.requestId(),"APPLIED",appliedRevision));
         }
-        if(jdbc.update("UPDATE detection_identity_control SET revision=? WHERE control_id=1 AND revision=?",appliedRevision,revision)!=1)throw bad(409,"回填版本冲突");
-        jdbc.update("INSERT INTO detection_identity_command(request_id,actor_user_id,request_sha256,result_json,created_at) VALUES(?,?,?,?,CURRENT_TIMESTAMP(6))",command.requestId(),current.userId(),digest,resultJson);
+        if(storage.revision(appliedRevision,revision)!=1)throw bad(409,"回填版本冲突");
+        storage.command(command.requestId(),current.userId(),digest,resultJson);
         result.put("replayed",false);return result;
     }
     /** Read-only business outcome query; absence never authorizes a new command or automatic resubmission. */
     @Transactional(readOnly=true)
     public Map<String,Object> status(AgentActor actor,String requestId){
         supervisor(actor,false);requireEnabled();if(!request(requestId))throw bad(400,"请求编号无效");
-        var rows=jdbc.queryForList("SELECT actor_user_id FROM detection_identity_mapping_batch WHERE request_id=?",requestId);
+        var rows=jdbc.queryForList("SELECT actor_user_id FROM ("+DetectionIdentityPersistence.BATCHES+") identity_batches WHERE request_id=?",requestId);
         if(rows.isEmpty())return Map.of("requestId",requestId,"found",false,"state","NOT_RECORDED_YET");
         var data=new LinkedHashMap<>(result(requestId,false));data.put("found",true);data.put("state","COMMITTED");
-        var batch=jdbc.queryForMap("SELECT id,actor_user_id,actor_name,created_at FROM detection_identity_mapping_batch WHERE request_id=?",requestId);
-        var entries=jdbc.queryForList("SELECT task_id,identity_role,source_name,source_snapshot,previous_user_id,previous_identity_name,target_user_id,target_username,target_role,target_revision,confirmation_basis FROM detection_identity_mapping_item WHERE batch_id=? ORDER BY id",batch.get("id"));
+        var batch=jdbc.queryForMap("SELECT id,actor_user_id,actor_name,created_at FROM ("+DetectionIdentityPersistence.BATCHES+") identity_batches WHERE request_id=?",requestId);
+        var entries=jdbc.queryForList("SELECT task_id,identity_role,source_name,source_snapshot,previous_user_id,previous_identity_name,target_user_id,target_username,target_role,target_revision,confirmation_basis FROM ("+DetectionIdentityPersistence.MAPPINGS+") identity_mappings WHERE batch_id=? ORDER BY id",batch.get("id"));
         if("identity-map-v3".equals(data.get("protocol"))){
-            var confirmed=jdbc.queryForList("SELECT task_id,identity_role,original_name,source_snapshot,target_user_id,evidence_reference FROM detection_identity_missing_name_evidence WHERE batch_id=?",batch.get("id"));
+            var confirmed=jdbc.queryForList("SELECT task_id,identity_role,original_name,source_snapshot,target_user_id,evidence_reference FROM ("+DetectionIdentityPersistence.MISSING+") identity_missing WHERE batch_id=?",batch.get("id"));
             if(confirmed.isEmpty())throw bad(503,"缺失名称批次依据不完整，请保留编号核对");
             for(var proof:confirmed){var matching=entries.stream().filter(item->Objects.equals(item.get("task_id"),proof.get("task_id"))&&Objects.equals(item.get("identity_role"),proof.get("identity_role"))&&Objects.equals(item.get("source_snapshot"),proof.get("source_snapshot"))&&Objects.equals(number(item.get("target_user_id")),number(proof.get("target_user_id")))).toList();if(matching.size()!=1)throw bad(503,"缺失名称依据与批次明细不一致");matching.get(0).put("missingNameConfirmation",proof);}
         }
@@ -214,7 +212,7 @@ public class DetectionIdentityReviewService {
     @Transactional(readOnly=true)
     public Map<String,Object> history(AgentActor actor,long before,int size){
         supervisor(actor,false);requireEnabled();if(before<0||size<1||size>30)throw bad(400,"回执分页无效");
-        var rows=jdbc.queryForList("SELECT id,request_id,actor_user_id,actor_name,revision_after,applied_count,command_sha256,created_at FROM detection_identity_mapping_batch WHERE (?=0 OR id<?) ORDER BY id DESC LIMIT ?",before,before,size);
+        var rows=jdbc.queryForList("SELECT id,request_id,actor_user_id,actor_name,revision_after,applied_count,command_sha256,created_at FROM ("+DetectionIdentityPersistence.BATCHES+") identity_batches WHERE (?=0 OR id<?) ORDER BY id DESC LIMIT ?",before,before,size);
         var records=new ArrayList<Map<String,Object>>();
         for(var row:rows)records.add(Map.of("id",row.get("id"),"requestId",row.get("request_id"),"actorUserId",row.get("actor_user_id"),"actorName",row.get("actor_name"),"revision",row.get("revision_after"),"applied",row.get("applied_count"),"digest",row.get("command_sha256"),"createdAt",stamp(row.get("created_at"))));
         return Map.of("records",records,"hasMore",rows.size()==size,"nextCursor",rows.isEmpty()?before:rows.get(rows.size()-1).get("id"));
@@ -224,7 +222,7 @@ public class DetectionIdentityReviewService {
         if(time==null)throw bad(503,"回执时间未能核对");return time.atOffset(java.time.ZoneOffset.ofHours(8)).toString();
     }
     private Map<String,Object> result(String requestId,boolean replayed){
-        var rows=jdbc.queryForList("SELECT id,command_sha256,revision_before,revision_after,applied_count,result_json FROM detection_identity_mapping_batch WHERE request_id=?",requestId);
+        var rows=jdbc.queryForList("SELECT id,command_sha256,revision_before,revision_after,applied_count,result_json FROM ("+DetectionIdentityPersistence.BATCHES+") identity_batches WHERE request_id=?",requestId);
         if(rows.size()!=1)throw bad(409,"历史请求没有 v2 批次回执，请保留编号核对，不自动重新映射");
         var row=rows.get(0);
         long before=((Number)row.get("revision_before")).longValue(),after=((Number)row.get("revision_after")).longValue();
@@ -233,8 +231,8 @@ public class DetectionIdentityReviewService {
         String protocol;int missingCount;
         try{var saved=json.readTree(row.get("result_json").toString());protocol=saved.path("protocol").asText();missingCount=saved.path("missingNameCount").asInt(0);if(!Set.of("identity-map-v2","identity-map-v3").contains(protocol)||!requestId.equals(saved.path("requestId").asText())||!Objects.equals(row.get("command_sha256"),saved.path("digest").asText())||saved.path("applied").asInt(-1)!=count||saved.path("revision").asLong(-1)!=after||("identity-map-v3".equals(protocol)&&(!missingNameReview||missingCount<1||missingCount>count))||("identity-map-v2".equals(protocol)&&missingCount!=0))throw new IllegalStateException();}catch(Exception error){throw bad(503,"批次协议或持久回执不完整，请保留编号核对");}
         if(missingCount>0){
-            Long proofs=jdbc.queryForObject("SELECT COUNT(*) FROM detection_identity_missing_name_evidence WHERE batch_id=?",Long.class,row.get("id"));
-            Long matched=jdbc.queryForObject("SELECT COUNT(*) FROM detection_identity_missing_name_evidence p JOIN detection_identity_mapping_item i ON i.batch_id=p.batch_id AND i.task_id=p.task_id AND i.identity_role=p.identity_role AND i.source_snapshot=p.source_snapshot AND i.target_user_id=p.target_user_id AND CAST(i.source_name AS BINARY)=CAST(COALESCE(p.original_name,'') AS BINARY) WHERE p.batch_id=? AND p.evidence_reference<>''",Long.class,row.get("id"));
+            Long proofs=jdbc.queryForObject("SELECT COUNT(*) FROM ("+DetectionIdentityPersistence.MISSING+") identity_missing WHERE batch_id=?",Long.class,row.get("id"));
+            Long matched=jdbc.queryForObject("SELECT COUNT(*) FROM ("+DetectionIdentityPersistence.MISSING+") p JOIN ("+DetectionIdentityPersistence.MAPPINGS+") i ON i.batch_id=p.batch_id AND i.task_id=p.task_id AND i.identity_role=p.identity_role AND i.source_snapshot=p.source_snapshot AND i.target_user_id=p.target_user_id AND CAST(i.source_name AS BINARY)=CAST(COALESCE(p.original_name,'') AS BINARY) WHERE p.batch_id=? AND p.evidence_reference<>''",Long.class,row.get("id"));
             if(proofs==null||matched==null||proofs!=missingCount||matched!=missingCount)throw bad(503,"缺失名称确认明细不完整，请保留编号核对，不重新映射");
         }
         var result=new LinkedHashMap<String,Object>(Map.of("requestId",requestId,"applied",row.get("applied_count"),"revision",row.get("revision_after"),"digest",row.get("command_sha256"),"protocol",protocol,"replayed",replayed));
@@ -251,7 +249,7 @@ public class DetectionIdentityReviewService {
         var ids=new TreeSet<Long>(jdbc.queryForList("SELECT created_user_id FROM detection_task WHERE created_user_id IS NOT NULL UNION SELECT assignee_user_id FROM detection_task WHERE assignee_user_id IS NOT NULL",Long.class));
         for(long id:ids){var account=accounts.describe(id);if(account==null)throw bad(409,"创建人或责任人的原账号已不可用，请重新映射");accounts.lock(account);}
     }
-    private static Long number(Object value){return value==null?null:((Number)value).longValue();}
+    private static Long number(Object value){return value==null?null:value instanceof java.math.BigInteger integer?integer.longValueExact():((Number)value).longValue();}
     private static boolean request(String value){return value!=null&&value.matches("[A-Za-z0-9_-]{1,128}");}
     private static ResponseStatusException bad(int code,String message){return new ResponseStatusException(HttpStatus.valueOf(code),message);}
 }

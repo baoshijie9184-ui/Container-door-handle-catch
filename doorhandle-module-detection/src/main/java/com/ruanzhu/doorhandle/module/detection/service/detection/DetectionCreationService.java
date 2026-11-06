@@ -32,6 +32,7 @@ import java.io.ByteArrayInputStream;
 @ConditionalOnProperty(prefix="detection.creation",name="enabled",havingValue="true")
 public class DetectionCreationService implements DetectionCreationApi {
     private final JdbcTemplate jdbc;private final TransactionTemplate tx;private final ObjectMapper json;
+    private final DetectionCreationPersistence persistence;private final DetectionExecutionPersistence executionPersistence;
     private final PlatformTransactionManager transactions;private DetectionCreationTransfers transfers;private DetectionCreationReview review;
     @Value("${detection.creation.transfer-evidence-enabled:false}") private boolean transferEvidenceEnabled;
     @Value("${detection.creation.business-images-enabled:false}") private boolean businessImagesEnabled;
@@ -48,12 +49,12 @@ public class DetectionCreationService implements DetectionCreationApi {
     public DetectionCreationService(JdbcTemplate jdbc,PlatformTransactionManager manager,ObjectMapper json,ObjectProvider<WorkspaceDetectionImagesApi> images,
             DetectionModelSelectionApi models,BusinessUserDirectory users,OperationsAuditApi audit,OssStorageService oss,
             DetectionTaskMapper tasks,DetectionDispatchOutbox outbox,ObjectProvider<DetectionIdentityService> identities){
-        this.jdbc=jdbc;tx=new TransactionTemplate(manager);this.transactions=manager;this.json=json;this.images=images;this.models=models;this.users=users;this.audit=audit;this.oss=oss;this.tasks=tasks;this.outbox=outbox;this.identities=identities;
+        this.jdbc=jdbc;this.persistence=new DetectionCreationPersistence(jdbc,json);this.executionPersistence=new DetectionExecutionPersistence(jdbc,json);tx=new TransactionTemplate(manager);this.transactions=manager;this.json=json;this.images=images;this.models=models;this.users=users;this.audit=audit;this.oss=oss;this.tasks=tasks;this.outbox=outbox;this.identities=identities;
     }
     @PostConstruct public void validate(){
         if(maxImages<1||maxImageBytes<1||maxImageBytes>26214400)throw new IllegalStateException("检测图片限制配置无效");
         if((businessImagesEnabled||reviewEnabled)&&!transferEvidenceEnabled)throw new IllegalStateException("业务原图及核对功能需要持久传输证据");
-        jdbc.queryForList("SELECT command_id,preview_sha256,owner_token FROM detection_creation_job WHERE 1=0");jdbc.queryForList("SELECT user_id FROM detection_creation_owner WHERE 1=0");
+        persistence.validateSchema();
         if(transferEvidenceEnabled){if(!oss.isConfigured())throw new IllegalStateException("批准传输需要配置对象存储");transfers=new DetectionCreationTransfers(jdbc,transactions,json,oss,audit);transfers.schema();}
         if(reviewEnabled){review=new DetectionCreationReview(jdbc,transactions,json,oss,audit,transfers,new DetectionCreationReview.Access(){
             public Preview validate(AgentActor actor,Map<String,Object> job){
@@ -97,24 +98,22 @@ public class DetectionCreationService implements DetectionCreationApi {
     @Override @Transactional public Receipt reserve(AgentActor actor,String requestId,String proposalId,Preview approved){
         if(!TransactionSynchronizationManager.isActualTransactionActive())throw new IllegalStateException("创建检测需要确认事务");
         current(actor);token(requestId);token(proposalId);if(approved==null)throw new IllegalArgumentException("缺少已批准提议");
-        jdbc.update("INSERT INTO detection_creation_owner(user_id) VALUES(?) ON DUPLICATE KEY UPDATE user_id=VALUES(user_id)",actor.userId());
-        jdbc.queryForObject("SELECT user_id FROM detection_creation_owner WHERE user_id=? FOR UPDATE",Long.class,actor.userId());
-        var previous=jdbc.queryForList("SELECT * FROM detection_creation_job WHERE actor_user_id=? AND request_id=?",actor.userId(),requestId);
+        persistence.reserveOwner(actor.userId());
+        var previous=jdbc.queryForList("SELECT "+DetectionCreationPersistence.JOB_COLUMNS+" FROM workflow_instance w WHERE w.kind='DETECTION_CREATION' AND w.owner_user_id=? AND w.request_id=?",actor.userId(),requestId);
         String body=write(approved),digest=hash(body);
         if(!previous.isEmpty()){var row=previous.get(0);if(!digest.equals(row.get("preview_sha256"))||!proposalId.equals(row.get("proposal_id")))throw new IllegalArgumentException("请求编号已用于其他图片或参数");return receipt(row);}
         revalidate(actor,approved);
-        Long pending=jdbc.queryForObject("SELECT COUNT(*) FROM detection_creation_job j WHERE actor_user_id=? AND (status IN ('PREPARING','UPLOADING','NEEDS_REVIEW')"+(transfers==null?"":" OR (status='CANCELLED' AND EXISTS (SELECT 1 FROM detection_creation_object o WHERE o.command_id=j.command_id AND o.state='UPLOADING'))")+")",Long.class,actor.userId());
+        Long pending=jdbc.queryForObject("SELECT COUNT(*) FROM workflow_instance w WHERE w.kind='DETECTION_CREATION' AND w.owner_user_id=? AND (w.status IN ('PREPARING','UPLOADING','NEEDS_REVIEW')"+(transfers==null?"":" OR (w.status='CANCELLED' AND EXISTS (SELECT 1 FROM workflow_instance o WHERE o.kind='DETECTION_TRANSFER' AND o.resource_id=SUBSTRING(w.workflow_id,12) AND o.status='UPLOADING'))")+")",Long.class,actor.userId());
         if(pending>=16)throw new IllegalStateException("本人未完成的检测创建命令已达上限，请先核对已有任务");
         String command=UUID.randomUUID().toString(),task="det_"+UUID.randomUUID().toString().replace("-",""),dispatch=UUID.randomUUID().toString();
-        jdbc.update("INSERT INTO detection_creation_job(command_id,actor_user_id,actor_username,actor_role,request_id,proposal_id,task_id,dispatch_id,session_id,preview_json,preview_sha256,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,'PREPARING',CURRENT_TIMESTAMP(6),CURRENT_TIMESTAMP(6))",
-                command,actor.userId(),actor.username(),actor.role().name(),requestId,proposalId,task,dispatch,approved.sessionId(),body,digest);
+        persistence.insertJob(command,actor.userId(),actor.username(),actor.role().name(),requestId,proposalId,task,dispatch,approved.sessionId(),body,digest);
         if(transfers!=null)transfers.prepare(actor,command,task,requestId,approved);
         audit(actor,task,requestId,"CREATE_APPROVED","PREPARING");return new Receipt(command,task,dispatch,"PREPARING");
     }
-    @Override public Optional<Receipt> receipt(AgentActor actor,String requestId){current(actor);token(requestId);var rows=jdbc.queryForList("SELECT * FROM detection_creation_job WHERE actor_user_id=? AND request_id=?",actor.userId(),requestId);if(rows.isEmpty())return Optional.empty();var row=rows.get(0);assertReadable(actor,decode(row));return Optional.of(receipt(row));}
+    @Override public Optional<Receipt> receipt(AgentActor actor,String requestId){current(actor);token(requestId);var rows=jdbc.queryForList("SELECT "+DetectionCreationPersistence.JOB_COLUMNS+" FROM workflow_instance w WHERE w.kind='DETECTION_CREATION' AND w.owner_user_id=? AND w.request_id=?",actor.userId(),requestId);if(rows.isEmpty())return Optional.empty();var row=rows.get(0);assertReadable(actor,decode(row));return Optional.of(receipt(row));}
     @Override public List<Receipt> jobs(AgentActor actor,String session,int limit){
         current(actor);if(session==null||!session.matches("[A-Za-z0-9_.-]{1,128}")||limit<1||limit>50)throw new IllegalArgumentException("创建任务查询参数无效");
-        return jdbc.queryForList("SELECT command_id,task_id,dispatch_id,status FROM detection_creation_job WHERE actor_user_id=? AND session_id=? AND status IN ('PREPARING','UPLOADING','NEEDS_REVIEW') ORDER BY id DESC LIMIT ?",actor.userId(),session,limit).stream().map(this::receipt).toList();
+        return jdbc.queryForList("SELECT "+DetectionCreationPersistence.JOB_COLUMNS+" FROM workflow_instance w WHERE w.kind='DETECTION_CREATION' AND w.owner_user_id=? AND w.session_id=? AND w.status IN ('PREPARING','UPLOADING','NEEDS_REVIEW') ORDER BY w.id DESC LIMIT ?",actor.userId(),session,limit).stream().map(this::receipt).toList();
     }
     private Receipt receipt(Map<String,Object> row){return new Receipt((String)row.get("command_id"),(String)row.get("task_id"),(String)row.get("dispatch_id"),(String)row.get("status"));}
     @Override public List<TransferReview> transferReviews(AgentActor actor,String session){current(actor);session(session);return review==null?List.of():review.list(actor,session);}
@@ -125,17 +124,17 @@ public class DetectionCreationService implements DetectionCreationApi {
     @Scheduled(fixedDelay=2000) public void scheduleReviews(){if(review==null||!reviewBusy.compareAndSet(false,true))return;try{reviewExecutor.submit(()->{try{review.poll();}catch(RuntimeException unavailable){org.slf4j.LoggerFactory.getLogger(getClass()).warn("Detection transfer check remains unconfirmed");}finally{reviewBusy.set(false);}});}catch(RejectedExecutionException stopped){reviewBusy.set(false);}}
     private void poll(){
         // Expired ownership never authorizes a second transfer. Keep the directory and original command for reconciliation.
-        for(var expired:jdbc.queryForList("SELECT id FROM detection_creation_job WHERE status='UPLOADING' AND lease_until<CURRENT_TIMESTAMP(6) ORDER BY id LIMIT 8"))try{
-            tx.executeWithoutResult(status->{var rows=jdbc.queryForList("SELECT * FROM detection_creation_job WHERE id=? AND status='UPLOADING' AND lease_until<CURRENT_TIMESTAMP(6) FOR UPDATE SKIP LOCKED",expired.get("id"));if(!rows.isEmpty())markReview(rows.get(0),"TRANSFER_INTERRUPTED");});
+        for(var expired:jdbc.queryForList("SELECT id FROM workflow_instance WHERE kind='DETECTION_CREATION' AND status='UPLOADING' AND lease_expires_at<UTC_TIMESTAMP(6) ORDER BY id LIMIT 8"))try{
+            tx.executeWithoutResult(status->{var rows=jdbc.queryForList("SELECT "+DetectionCreationPersistence.JOB_COLUMNS+" FROM workflow_instance w WHERE w.kind='DETECTION_CREATION' AND w.id=? AND w.status='UPLOADING' AND w.lease_expires_at<UTC_TIMESTAMP(6) FOR UPDATE SKIP LOCKED",expired.get("id"));if(!rows.isEmpty())markReview(rows.get(0),"TRANSFER_INTERRUPTED");});
         }catch(RuntimeException unavailable){org.slf4j.LoggerFactory.getLogger(getClass()).warn("Detection creation reconciliation pending, job={}",expired.get("id"));}
-        var row=tx.execute(status->{var ready=jdbc.queryForList("SELECT * FROM detection_creation_job WHERE status='PREPARING' ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED");if(ready.isEmpty())return null;var job=ready.get(0);String owner=UUID.randomUUID().toString();
+        var row=tx.execute(status->{var ready=jdbc.queryForList("SELECT "+DetectionCreationPersistence.JOB_COLUMNS+" FROM workflow_instance w WHERE w.kind='DETECTION_CREATION' AND w.status='PREPARING' ORDER BY w.id LIMIT 1 FOR UPDATE SKIP LOCKED");if(ready.isEmpty())return null;var job=ready.get(0);String owner=UUID.randomUUID().toString();
             if(transfers!=null&&job.get("manifest_sha256")==null){
                 var actor=new AgentActor(((Number)job.get("actor_user_id")).longValue(),(String)job.get("actor_username"),AgentActor.Role.valueOf((String)job.get("actor_role")));
                 // Recording an immutable target is not permission to transfer; current identity is checked after claim.
                 // Do not let a revoked legacy owner block all other owners at the head of the preparation queue.
-                transfers.prepare(actor,(String)job.get("command_id"),(String)job.get("task_id"),(String)job.get("request_id"),decode(job));job=jdbc.queryForMap("SELECT * FROM detection_creation_job WHERE id=?",job.get("id"));
+                transfers.prepare(actor,(String)job.get("command_id"),(String)job.get("task_id"),(String)job.get("request_id"),decode(job));job=jdbc.queryForMap("SELECT "+DetectionCreationPersistence.JOB_COLUMNS+" FROM workflow_instance w WHERE w.kind='DETECTION_CREATION' AND w.id=?",job.get("id"));
             }
-            jdbc.update("UPDATE detection_creation_job SET status='UPLOADING',owner_token=?,lease_until=DATE_ADD(CURRENT_TIMESTAMP(6),INTERVAL 15 MINUTE),updated_at=CURRENT_TIMESTAMP(6)"+(transfers!=null?",revision=revision+1":"")+" WHERE id=? AND status='PREPARING'",owner,job.get("id"));job.put("owner_token",owner);return job;});
+            jdbc.update("UPDATE workflow_instance SET status='UPLOADING',claim_token=?,lease_expires_at=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 15 MINUTE),fence=fence+1,updated_at=UTC_TIMESTAMP(6)"+(transfers!=null?",revision=revision+1":"")+" WHERE kind='DETECTION_CREATION' AND id=? AND status='PREPARING'",owner,job.get("id"));job.put("owner_token",owner);return job;});
         if(row==null)return;
         try{transfer(row);}catch(RuntimeException failure){
             // No exception message or private content is stored. A committed completion is not overwritten after lost acknowledgement.
@@ -150,13 +149,13 @@ public class DetectionCreationService implements DetectionCreationApi {
         String prefix=manifest==null?oss.normalizeBasePrefix()+"/agent-approved/"+actor.userId()+"/"+row.get("task_id")+"/Original/":manifest.prefix();
         var keys=new ArrayList<String>();
         for(var file:approved.images()){
-            if(jdbc.update("UPDATE detection_creation_job SET lease_until=DATE_ADD(CURRENT_TIMESTAMP(6),INTERVAL 15 MINUTE),updated_at=CURRENT_TIMESTAMP(6) WHERE id=? AND owner_token=? AND status='UPLOADING' AND lease_until>CURRENT_TIMESTAMP(6)",row.get("id"),row.get("owner_token"))!=1)throw new IllegalStateException("创建命令执行权已失效");
+            if(jdbc.update("UPDATE workflow_instance SET lease_expires_at=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 15 MINUTE),updated_at=UTC_TIMESTAMP(6) WHERE kind='DETECTION_CREATION' AND id=? AND claim_token=? AND status='UPLOADING' AND lease_expires_at>UTC_TIMESTAMP(6)",row.get("id"),row.get("owner_token"))!=1)throw new IllegalStateException("创建命令执行权已失效");
             current(actor);byte[] data=images.getObject().read(actor,approved.sessionId(),file);
             String key=manifest==null?prefix+file.fileId()+"-"+file.sha256()+(file.contentType().equals("image/png")?".png":".jpg"):manifest.keys().get(keys.size());
             if(transfers==null)oss.putObject(key,new ByteArrayInputStream(data),data.length,file.contentType());else transfers.upload(row,actor,file,key,data);keys.add(key);
         }
         tx.executeWithoutResult(status->{
-            var locked=jdbc.queryForMap("SELECT * FROM detection_creation_job WHERE id=? FOR UPDATE",row.get("id"));
+            var locked=jdbc.queryForMap("SELECT "+DetectionCreationPersistence.JOB_COLUMNS+" FROM workflow_instance w WHERE w.kind='DETECTION_CREATION' AND w.id=? FOR UPDATE",row.get("id"));
             if(!"UPLOADING".equals(locked.get("status"))||!Objects.equals(row.get("owner_token"),locked.get("owner_token")))throw new IllegalStateException("创建命令执行权已变化");
             if(transfers!=null){transfers.manifest(locked,approved);transfers.assertStored((String)row.get("command_id"),approved.images().size());}
             publishTask(locked,actor,approved,prefix,keys,"UPLOADING");
@@ -181,13 +180,13 @@ public class DetectionCreationService implements DetectionCreationApi {
                     .captureInfo(DetectionTaskEventCaptureInfo.builder().captureDate(p.captureDate()).region(p.region()).collector(p.collector()).deviceName(p.deviceName()).imageFolderName(p.imageFolderName()).build()).build();
             outbox.enqueue(event,actor,(String)row.get("request_id"));audit(actor,taskId,(String)row.get("request_id"),"CREATE_QUEUED","QUEUED");
             var receipt=new DetectionExecutionApi.Receipt((String)row.get("command_id"),"CREATE",taskId,task.getDispatchId(),"QUEUED");
-            jdbc.update("INSERT INTO detection_execution_command(command_id,actor_user_id,request_id,command_type,payload_sha256,proposal_id,task_id,dispatch_id,result_json,created_at) VALUES(?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP(6))",receipt.commandId(),actor.userId(),row.get("request_id"),"CREATE",row.get("preview_sha256"),row.get("proposal_id"),taskId,task.getDispatchId(),write(receipt));
-            String ownership="UPLOADING".equals(expectedStatus)?" AND owner_token=? AND lease_until>CURRENT_TIMESTAMP(6)":"";
+            executionPersistence.saveCommand(receipt.commandId(),actor.userId(),(String)row.get("request_id"),"CREATE",(String)row.get("preview_sha256"),(String)row.get("proposal_id"),taskId,task.getDispatchId(),write(receipt));
+            String ownership="UPLOADING".equals(expectedStatus)?" AND claim_token=? AND lease_expires_at>UTC_TIMESTAMP(6)":"";
             Object[] args="UPLOADING".equals(expectedStatus)?new Object[]{row.get("id"),expectedStatus,row.get("owner_token")}:new Object[]{row.get("id"),expectedStatus};
-            if(jdbc.update("UPDATE detection_creation_job SET status='QUEUED',reason_code=NULL,updated_at=CURRENT_TIMESTAMP(6)"+(transfers!=null?",revision=revision+1":"")+" WHERE id=? AND status=?"+ownership,args)!=1)throw new IllegalStateException("创建命令执行权或期限已变化");
+            if(jdbc.update("UPDATE workflow_instance SET status='QUEUED',error_code=NULL,updated_at=UTC_TIMESTAMP(6)"+(transfers!=null?",revision=revision+1":"")+" WHERE kind='DETECTION_CREATION' AND id=? AND status=?"+ownership,args)!=1)throw new IllegalStateException("创建命令执行权或期限已变化");
     }
     private void markReview(Map<String,Object> row,String reason){
-        int changed=jdbc.update("UPDATE detection_creation_job SET status='NEEDS_REVIEW',reason_code=?,updated_at=CURRENT_TIMESTAMP(6)"+(transfers!=null?",revision=revision+1":"")+" WHERE id=? AND owner_token=? AND status='UPLOADING'",reason,row.get("id"),row.get("owner_token"));
+        int changed=jdbc.update("UPDATE workflow_instance SET status='NEEDS_REVIEW',error_code=?,updated_at=UTC_TIMESTAMP(6)"+(transfers!=null?",revision=revision+1":"")+" WHERE kind='DETECTION_CREATION' AND id=? AND claim_token=? AND status='UPLOADING'",reason,row.get("id"),row.get("owner_token"));
         if(changed==1)audit(new AgentActor(((Number)row.get("actor_user_id")).longValue(),(String)row.get("actor_username"),AgentActor.Role.valueOf((String)row.get("actor_role"))),
                 (String)row.get("task_id"),(String)row.get("request_id"),"CREATE_NEEDS_REVIEW","NEEDS_REVIEW");
     }

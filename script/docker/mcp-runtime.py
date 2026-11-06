@@ -192,21 +192,42 @@ def selected_config(config, selected):
 
 
 def retention_available(project, config):
-    mysql=common.container(project,'mysql');columns=guard.columns(mysql,'agent_fetch_image_retention')
-    if not columns:
-        require(not guard.flag(config['services']['backend']['environment'],'AGENT_MCP_SHARED_IMAGE_CLEANUP_ENABLED'),'V60 is required before shared cleanup can be activated')
+    mysql=common.selected_mysql(common.container(project,'mysql'),config['services']['backend']['environment'])
+    links=guard.columns(mysql,'content_link')
+    if not links:
+        require(not guard.flag(config['services']['backend']['environment'],'AGENT_MCP_SHARED_IMAGE_CLEANUP_ENABLED'),
+                'Compact recovery-image retention storage is required before shared cleanup')
         return False
-    require({'reference_id','image_id','reference_kind','state'}<=columns and {'control_id','state','revision'}<=guard.columns(mysql,'agent_fetch_image_retention_control') and {'request_id','action_name','image_id'}<=guard.columns(mysql,'agent_fetch_image_retention_event'),'Recovery image retention migration is incomplete')
+    require({'link_kind','subject_id','target_id','subject_type','state','updated_at'}<=links
+            and {'namespace','owner_id','scope_key','state_code','revision'}<=guard.columns(mysql,'runtime_state')
+            and {'event_id','kind','request_id','request_scope','action','resource_id'}<=guard.columns(mysql,'audit_event'),
+            'Compact recovery image retention storage is incomplete')
     return True
+
+
+def retention_audit(request, action, image_expression, predicate):
+    # Closed deployment protocol, not a legacy-SQL/table-name translator.
+    require(re.fullmatch('[a-f0-9]{32}',request) and action in ('PREPARE_HOLD','PUBLISH_REFERENCES'),
+            'Invalid compact retention audit identity')
+    return ("INSERT IGNORE INTO audit_event(event_id,kind,resource_type,resource_id,action,outcome,request_id,request_scope,payload_version,payload_json,occurred_at) "
+            "SELECT CONCAT('mcp-retention:',SHA2(CONCAT('"+request+":', '"+action+":', "+image_expression+"),256)),"
+            "'MCP_RETENTION','CONNECTOR_IMAGE',"+image_expression+",'"+action+"','RECORDED','"+request+"',"
+            "CONCAT('MCP_RETENTION:"+action+":',"+image_expression+"),1,JSON_OBJECT('schemaVersion',1),UTC_TIMESTAMP(6) "+predicate+"; ")
 
 
 def retain(project, record, images):
     if not record.get('retentionAvailable'):return
     require(re.fullmatch('[a-f0-9]{32}',record['attempt']) and all(common.DIGEST.fullmatch(value) for value in images),'Retention request identity invalid')
-    mysql=common.container(project,'mysql');values=sorted(set(images));quoted=','.join("'"+value+"'" for value in values);reference='transition:'+record['attempt']
-    sql="START TRANSACTION; INSERT IGNORE INTO agent_fetch_image(image_id,state) VALUES "+','.join("('"+value+"','ACTIVE')" for value in values)+"; SELECT state FROM agent_fetch_image WHERE image_id IN ("+quoted+") ORDER BY image_id FOR UPDATE; "
-    sql+="INSERT IGNORE INTO agent_fetch_image_retention(reference_id,image_id,reference_kind,state) SELECT '"+reference+"',image_id,'TRANSITION','HELD' FROM agent_fetch_image WHERE image_id IN ("+quoted+") AND state='ACTIVE'; "
-    sql+="INSERT IGNORE INTO agent_fetch_image_retention_event(request_id,action_name,image_id) SELECT '"+record['attempt']+"','PREPARE_HOLD',r.image_id FROM agent_fetch_image_retention r JOIN agent_fetch_image f ON f.image_id=r.image_id AND f.state='ACTIVE' WHERE r.reference_id='"+reference+"' AND r.image_id IN ("+quoted+") AND r.state='HELD'; SELECT CONCAT('held:',COUNT(*)) FROM agent_fetch_image_retention r JOIN agent_fetch_image f ON f.image_id=r.image_id AND f.state='ACTIVE' WHERE r.reference_id='"+reference+"' AND r.image_id IN ("+quoted+") AND r.state='HELD'; COMMIT;"
+    mysql=common.selected_mysql(common.container(project,'mysql'),record['configuration']['services']['backend']['environment']);values=sorted(set(images))
+    require(0<len(values)<=8,'Recovery image retention set is invalid')
+    quoted=','.join("'"+value+"'" for value in values);reference='transition:'+record['attempt']
+    sql="START TRANSACTION; INSERT IGNORE INTO content_asset(asset_id,asset_kind,identity_key,title,visibility,lifecycle,revision,connector_image_absent,created_at,updated_at) VALUES "
+    sql+=','.join("('connector-image:"+value+"','CONNECTOR_IMAGE','"+value+"','"+value+"','SYSTEM','ACTIVE',0,FALSE,UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))" for value in values)+"; "
+    sql+="SELECT identity_key FROM content_asset WHERE asset_kind='CONNECTOR_IMAGE' AND identity_key IN ("+quoted+") ORDER BY identity_key FOR UPDATE; "
+    sql+="INSERT IGNORE INTO content_link(link_kind,subject_id,target_type,target_id,subject_type,state,created_at,updated_at) SELECT 'CONNECTOR_RETENTION','"+reference+"','CONNECTOR_IMAGE',identity_key,'TRANSITION','HELD',UTC_TIMESTAMP(6),UTC_TIMESTAMP(6) FROM content_asset WHERE asset_kind='CONNECTOR_IMAGE' AND identity_key IN ("+quoted+") AND lifecycle='ACTIVE'; "
+    joined="FROM content_link r JOIN content_asset f ON f.asset_kind='CONNECTOR_IMAGE' AND f.identity_key=r.target_id AND f.lifecycle='ACTIVE' WHERE r.link_kind='CONNECTOR_RETENTION' AND r.subject_id='"+reference+"' AND r.target_id IN ("+quoted+") AND r.state='HELD'"
+    sql+=retention_audit(record['attempt'],'PREPARE_HOLD','r.target_id',joined)
+    sql+="SELECT CONCAT('held:',COUNT(*)) "+joined+"; COMMIT;"
     result=common.db(mysql,sql).splitlines();require(result and result[-1]=='held:'+str(len(values)),'A retired image cannot be retained as a new recovery baseline')
 
 
@@ -292,10 +313,8 @@ def prepare(state, config, *, project=common.PROJECT, restore_unpublished=False)
         retain(project,record,{runner['Image'],selected})
         guard.guard(state,effective,project=project,pin=True,runner_transition=True,minimum_protocol=4 if storage['required']>=2 else 3 if storage['required'] else 0)
         if storage['pool'] is None:
-            mysql=common.container(project,'mysql')
-            execution_columns=guard.columns(mysql,'agent_mcp_execution')
-            if execution_columns:
-                require('state' in execution_columns and not common.exists(mysql,"SELECT EXISTS(SELECT 1 FROM agent_mcp_execution WHERE state<>'REMOVED' LIMIT 1);"),'A new journal pool cannot replace pending gateway executions')
+            mysql=common.selected_mysql(common.container(project,'mysql'),config['services']['backend']['environment'])
+            require({'kind','status'}<=guard.columns(mysql,'workflow_instance') and not common.exists(mysql,"SELECT EXISTS(SELECT 1 FROM workflow_instance WHERE kind='MCP_EXECUTION' AND status<>'REMOVED' LIMIT 1);"),'A new journal pool cannot replace pending gateway executions')
             require(not common.docker('ps','-aq','--filter','label=doorhandle.mcp.managed=true').strip() and not common.docker('ps','-aq','--filter','label=doorhandle.mcp.legal=true').strip(),'Untracked MCP resources prevent journal initialization')
         record.update(phase='PREPARED',action='preserve' if selected!=target else 'replace',requiredProtocol=required,selectedImage=selected,previousPool=storage['pool'],pendingExecutions=storage['pending'],imageOperations=storage['imageOperations'])
         override={'services':{'mcp-runner':effective['services']['mcp-runner'],'backend':{'environment':{key:effective['services']['backend']['environment'][key] for key in ('AGENT_MCP_GATEWAY_IMAGE','MCP_FETCH_APPROVED_IMAGES')}}}}
@@ -384,23 +403,23 @@ def finalize(state, *, project=common.PROJECT):
     require(volume(project,runner)[1]==record['volumeBinding'],'Published runner no longer uses the recorded volume')
     if record.get('poolVerified'):require(running_pool(runner['Id'])==record.get('selectedPool'),'Runner receipt pool changed after verification')
     if record.get('retentionAvailable'):
-        mysql=common.container(project,'mysql');current,previous=record['selectedImage'],record['previousImage'];request=record['attempt']
+        mysql=common.selected_mysql(common.container(project,'mysql'),record['configuration']['services']['backend']['environment']);current,previous=record['selectedImage'],record['previousImage'];request=record['attempt']
         require(common.DIGEST.fullmatch(current) and common.DIGEST.fullmatch(previous) and re.fullmatch('[a-f0-9]{32}',request),'Publication retention identities are invalid')
         # Publication pointers are updated by the caller first; commit all recovery references together.
-        exists=common.exists(mysql,"SELECT EXISTS(SELECT 1 FROM agent_fetch_image_retention_event WHERE request_id='"+request+"' AND action_name='PUBLISH_REFERENCES' LIMIT 1);")
-        sql="START TRANSACTION; SELECT image_id FROM agent_fetch_image ORDER BY image_id FOR UPDATE; "
-        # Gate every mutation in the same locked transaction. A failed precondition must not release
-        # the old recovery references or mark a partial baseline ACTIVE before the caller sees it.
+        exists=common.exists(mysql,"SELECT EXISTS(SELECT 1 FROM audit_event WHERE kind='MCP_RETENTION' AND request_id='"+request+"' AND action='PUBLISH_REFERENCES' LIMIT 1);")
+        sql="START TRANSACTION; SELECT identity_key FROM content_asset WHERE asset_kind='CONNECTOR_IMAGE' ORDER BY identity_key FOR UPDATE; "
+        sql+="SELECT scope_key FROM runtime_state WHERE namespace='MCP_RETENTION_CONTROL' AND owner_id=0 AND scope_key='1' FOR UPDATE; "
         ids=','.join("'"+value+"'" for value in sorted({current,previous}))
-        sql+="SET @fetch_retention_ready=(SELECT COUNT(*)="+str(len({current,previous}))+" FROM agent_fetch_image WHERE image_id IN ("+ids+") AND state='ACTIVE') AND (SELECT COUNT(*)=1 FROM agent_fetch_image_retention_control WHERE control_id=1 AND state IN ('COLLECTING','ACTIVE')); "
+        sql+="SET @fetch_retention_ready=(SELECT COUNT(*)="+str(len({current,previous}))+" FROM content_asset WHERE asset_kind='CONNECTOR_IMAGE' AND identity_key IN ("+ids+") AND lifecycle='ACTIVE') AND (SELECT COUNT(*)=1 FROM runtime_state WHERE namespace='MCP_RETENTION_CONTROL' AND owner_id=0 AND scope_key='1' AND state_code IN ('COLLECTING','ACTIVE')); "
         for reference,image_id in (('deployment-current',current),('deployment-previous',previous)):
-            sql+="INSERT INTO agent_fetch_image_retention(reference_id,image_id,reference_kind,state) SELECT '"+reference+"','"+image_id+"','PUBLISHED','HELD' WHERE @fetch_retention_ready ON DUPLICATE KEY UPDATE state='HELD',updated_at=CURRENT_TIMESTAMP; "
-            sql+="UPDATE agent_fetch_image_retention SET state='RELEASED',updated_at=CURRENT_TIMESTAMP WHERE @fetch_retention_ready AND reference_id='"+reference+"' AND image_id<>'"+image_id+"' AND state='HELD'; "
-        sql+="UPDATE agent_fetch_image_retention SET state='RELEASED',updated_at=CURRENT_TIMESTAMP WHERE @fetch_retention_ready AND reference_kind='TRANSITION' AND state='HELD'; UPDATE agent_fetch_image_retention_control SET state='ACTIVE',revision=revision+1,updated_at=CURRENT_TIMESTAMP WHERE @fetch_retention_ready AND control_id=1; "
-        sql+="INSERT IGNORE INTO agent_fetch_image_retention_event(request_id,action_name,image_id) SELECT '"+request+"','PUBLISH_REFERENCES','"+current+"' WHERE @fetch_retention_ready; SELECT IF(@fetch_retention_ready,'ACTIVE','PRESERVED'); COMMIT;"
+            sql+="INSERT INTO content_link(link_kind,subject_id,target_type,target_id,subject_type,state,created_at,updated_at) SELECT 'CONNECTOR_RETENTION','"+reference+"','CONNECTOR_IMAGE','"+image_id+"','PUBLISHED','HELD',UTC_TIMESTAMP(6),UTC_TIMESTAMP(6) WHERE @fetch_retention_ready ON DUPLICATE KEY UPDATE state='HELD',updated_at=UTC_TIMESTAMP(6); "
+            sql+="UPDATE content_link SET state='RELEASED',updated_at=UTC_TIMESTAMP(6) WHERE @fetch_retention_ready AND link_kind='CONNECTOR_RETENTION' AND subject_id='"+reference+"' AND target_id<>'"+image_id+"' AND state='HELD'; "
+        sql+="UPDATE content_link SET state='RELEASED',updated_at=UTC_TIMESTAMP(6) WHERE @fetch_retention_ready AND link_kind='CONNECTOR_RETENTION' AND subject_type='TRANSITION' AND state='HELD'; UPDATE runtime_state SET state_code='ACTIVE',revision=revision+1,updated_at=UTC_TIMESTAMP(6) WHERE @fetch_retention_ready AND namespace='MCP_RETENTION_CONTROL' AND owner_id=0 AND scope_key='1'; "
+        sql+=retention_audit(request,'PUBLISH_REFERENCES',"'"+current+"'","WHERE @fetch_retention_ready")
+        sql+="SELECT IF(@fetch_retention_ready,'ACTIVE','PRESERVED'); COMMIT;"
         if not exists:require(common.db(mysql,sql).splitlines()[-1]=='ACTIVE','Published recovery references were not committed; previous references remain protected')
         else:
-            require(common.exists(mysql,"SELECT (SELECT COUNT(*) FROM agent_fetch_image_retention WHERE reference_id='deployment-current' AND image_id='"+current+"' AND state='HELD')=1 AND (SELECT COUNT(*) FROM agent_fetch_image_retention WHERE reference_id='deployment-previous' AND image_id='"+previous+"' AND state='HELD')=1 AND (SELECT COUNT(*) FROM agent_fetch_image_retention_control WHERE control_id=1 AND state='ACTIVE')=1 AND (SELECT COUNT(*) FROM agent_fetch_image WHERE image_id IN ('"+current+"','"+previous+"') AND state<>'ACTIVE')=0;"),'Existing publication receipt does not match its protected images and active retention baseline')
+            require(common.exists(mysql,"SELECT (SELECT COUNT(*) FROM content_link WHERE link_kind='CONNECTOR_RETENTION' AND subject_id='deployment-current' AND target_id='"+current+"' AND state='HELD')=1 AND (SELECT COUNT(*) FROM content_link WHERE link_kind='CONNECTOR_RETENTION' AND subject_id='deployment-previous' AND target_id='"+previous+"' AND state='HELD')=1 AND (SELECT COUNT(*) FROM runtime_state WHERE namespace='MCP_RETENTION_CONTROL' AND owner_id=0 AND scope_key='1' AND state_code='ACTIVE')=1 AND (SELECT COUNT(*) FROM content_asset WHERE asset_kind='CONNECTOR_IMAGE' AND identity_key IN ('"+current+"','"+previous+"') AND lifecycle<>'ACTIVE')=0;"),'Existing publication receipt does not match its protected images and active retention baseline')
     record.update(phase='FINALIZED',retentionVerified=bool(record.get('retentionAvailable')),checkedAt=dt.datetime.now(common.ZONE).isoformat());write_record(state,record);return record
 
 

@@ -20,7 +20,7 @@ public interface DeviceUsageRecordMapper extends BaseMapper<DeviceUsageRecord> {
      * @param deviceId 设备ID
      * @return 使用记录列表
      */
-    @Select("SELECT * FROM device_usage_record WHERE device_id = #{deviceId} ORDER BY start_time DESC")
+    @Select("SELECT * FROM device_usage WHERE device_id = #{deviceId} ORDER BY start_time DESC")
     List<DeviceUsageRecord> findByDeviceId(Long deviceId);
 
     /**
@@ -28,14 +28,14 @@ public interface DeviceUsageRecordMapper extends BaseMapper<DeviceUsageRecord> {
      * @param employeeId 员工ID
      * @return 使用记录列表
      */
-    @Select("SELECT * FROM device_usage_record WHERE employee_id = #{employeeId} ORDER BY start_time DESC")
+    @Select("SELECT * FROM device_usage WHERE employee_id = #{employeeId} ORDER BY start_time DESC")
     List<DeviceUsageRecord> findByEmployeeId(Long employeeId);
 
     /**
      * 查询当前使用中的记录
      * @return 使用中的记录列表
      */
-    @Select("SELECT * FROM device_usage_record WHERE status = 'IN_USE' ORDER BY start_time DESC")
+    @Select("SELECT * FROM device_usage WHERE status = 'IN_USE' ORDER BY start_time DESC")
     List<DeviceUsageRecord> findActiveRecords();
 
     /**
@@ -43,7 +43,7 @@ public interface DeviceUsageRecordMapper extends BaseMapper<DeviceUsageRecord> {
      * @param deviceId 设备ID
      * @return 最新使用记录
      */
-    @Select("SELECT * FROM device_usage_record WHERE device_id = #{deviceId} ORDER BY start_time DESC LIMIT 1")
+    @Select("SELECT * FROM device_usage WHERE device_id = #{deviceId} ORDER BY start_time DESC LIMIT 1")
     DeviceUsageRecord findLatestByDeviceId(Long deviceId);
 
     /**

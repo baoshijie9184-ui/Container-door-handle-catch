@@ -4,7 +4,7 @@ import StatusBadge from './StatusBadge';
 import {agentConfigText,agentConfigFlag,agentConfigNumber,agentConfigDuration,agentFallbackOrder,agentModelCircuit,agentCapabilityLabel} from '../../frontend/src/utils/agentCatalogPresentation';
 import '../../frontend/src/assets/agent-service-overview.css';
 
-export default function AgentModelOverview({catalog,modelCatalog,catalogLoading,modelLoading,catalogError,modelError,authRequired,onRefresh,loginHref,traceHref,actionsHref,reportsHref}){
+export default function AgentModelOverview({catalog,modelCatalog,catalogLoading,modelLoading,catalogError,modelError,authRequired,onRefresh,loginHref,traceHref,actionsHref,reportsHref,modelQuotasHref}){
   const [query,setQuery]=useState('');
   const models=Array.isArray(modelCatalog?.models)?modelCatalog.models:[];
   const agents=Array.isArray(catalog?.agents)?catalog.agents:[];
@@ -13,6 +13,7 @@ export default function AgentModelOverview({catalog,modelCatalog,catalogLoading,
   return <div className="agent-service-overview">
     <header className="agent-service-heading"><h3><Cpu size={18} aria-hidden="true"/>模型与能力</h3><button type="button" disabled={catalogLoading || modelLoading} onClick={onRefresh}><RefreshCw size={14} aria-hidden="true"/>重新读取配置</button></header>
     <p className="agent-service-note">这里展示当前服务配置。会话模型在输入区选择，实际调用和备用切换请查看执行记录。</p>
+    {modelQuotasHref && <a className="agent-service-trace" href={modelQuotasHref}><Cpu size={15} aria-hidden="true"/>LLM模型管理 · 查看个人额度与申请</a>}
     <section className="agent-service-config" aria-label="模型目录与备用设置" aria-busy={modelLoading}>
       <h4><KeyRound size={16} aria-hidden="true"/>服务模型配置</h4>
       {modelLoading && <p className="agent-service-note" role="status">{modelCatalog?'正在重新读取，下方为上次目录快照':'正在读取模型目录与备用设置'}</p>}

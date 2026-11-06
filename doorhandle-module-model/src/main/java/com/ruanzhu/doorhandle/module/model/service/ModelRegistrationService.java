@@ -5,7 +5,7 @@ import com.ruanzhu.doorhandle.contracts.agent.BusinessMutation;
 import com.ruanzhu.doorhandle.module.model.entity.ModelInfo;
 import com.ruanzhu.doorhandle.module.model.entity.ModelOperationLog;
 import com.ruanzhu.doorhandle.module.model.mapper.ModelInfoMapper;
-import com.ruanzhu.doorhandle.module.model.mapper.ModelOperationLogMapper;
+import com.ruanzhu.doorhandle.module.model.service.ModelOperationAuditStore;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -19,10 +19,10 @@ public class ModelRegistrationService {
         IdentifierCollision(org.springframework.dao.DuplicateKeyException failure) { super(failure); }
     }
     private final ModelInfoMapper models;
-    private final ModelOperationLogMapper logs;
+    private final ModelOperationAuditStore logs;
     private final ModelMutationIdentity identity;
     private final ObjectProvider<ModelFileJournal> journals;
-    public ModelRegistrationService(ModelInfoMapper models, ModelOperationLogMapper logs,
+    public ModelRegistrationService(ModelInfoMapper models, ModelOperationAuditStore logs,
                                     ModelMutationIdentity identity,ObjectProvider<ModelFileJournal> journals) {
         this.models=models;this.logs=logs;this.identity=identity;this.journals=journals;
     }
@@ -47,9 +47,9 @@ public class ModelRegistrationService {
         var journal=journals.getIfAvailable();
         if(journal!=null) journal.registered(file,model.getModelId());
         var log=new ModelOperationLog();log.setModelId(model.getModelId());log.setOperationType("UPLOAD");
-        log.setOperator(actor.username());log.setOperationTime(LocalDateTime.now());
+        log.setOperator(actor.username());log.setOperationTime(LocalDateTime.now(java.time.ZoneOffset.ofHours(8)));
         log.setRemark("上传模型，校验结果: "+validation.status());
-        if(logs.insert(log)!=1) throw new IllegalStateException("模型操作审计未保存");
+        logs.append(log);
         return model;
     }
 }

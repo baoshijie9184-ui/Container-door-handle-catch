@@ -22,14 +22,8 @@ class SkillLinkLifecycleTest {
     String downloadId="download-"+UUID.randomUUID();
     @BeforeEach void setup()throws Exception{
         var source=new DriverManagerDataSource("jdbc:h2:mem:"+UUID.randomUUID()+";MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1","sa","");jdbc=new JdbcTemplate(source);
-        String ddl=Files.readString(Path.of("../sql/mysql/migration-V23-agent-skill-evolution.sql")).replace(" JSON "," TEXT ").replace(" ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin","").replaceAll("(?m)^\\s*(?:UNIQUE )?KEY .*\\n","").replaceAll(",\\s*\\)","\n)");
-        for(String sql:ddl.split(";"))if(!sql.isBlank())jdbc.execute(sql);
-        jdbc.execute("ALTER TABLE agent_skill_version MODIFY source_run_id VARCHAR(128) NULL");jdbc.execute("ALTER TABLE agent_skill_version ADD COLUMN source_type VARCHAR(32) NOT NULL DEFAULT 'RUN'");jdbc.execute("ALTER TABLE agent_skill_version ADD COLUMN source_import_id VARCHAR(64) NULL");
-        jdbc.execute("CREATE TABLE agent_skill_download(download_id VARCHAR(64) PRIMARY KEY,owner_user_id BIGINT,status VARCHAR(32),target_role VARCHAR(32),manifest_json TEXT,manifest_sha256 CHAR(64),target_skill_id VARCHAR(64),expected_skill_revision INT,skill_id VARCHAR(64),request_id VARCHAR(64),request_sha256 CHAR(64),source_url VARCHAR(1000),created_at DATETIME,updated_at DATETIME)");
-        String cleanupDdl=Files.readString(Path.of("../sql/mysql/migration-V29-skill-storage-cleanup.sql")).replace(" ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin","").replaceAll("(?m)^\\s*(?:UNIQUE )?KEY .*\\n","").replaceAll(",\\s*\\)","\n)");
-        for(String statement:cleanupDdl.split(";"))if(!statement.isBlank())jdbc.execute(statement);
-        String leaseDdl=Files.readString(Path.of("../sql/mysql/migration-V46-skill-download-leases.sql")).replace(" COLLATE utf8mb4_bin","").replace(" ENGINE=InnoDB DEFAULT CHARSET=utf8mb4","").replaceAll("(?m)^\\s*(?:UNIQUE )?KEY .*\\n","").replaceAll(",\\s*\\)","\n)");
-        for(String statement:leaseDdl.split(";"))if(!statement.isBlank())jdbc.execute(statement);
+        com.ruanzhu.doorhandle.module.ai.testsupport.CompactContentFixture.install(jdbc);
+        com.ruanzhu.doorhandle.module.ai.testsupport.CompactWorkflowFixture.install(jdbc);
         users=mock(BusinessUserDirectory.class);for(var actor:List.of(alice,bob,boss))when(users.current(actor.userId(),actor.username())).thenReturn(new BusinessUserDirectory.Identity(actor.userId(),actor.username(),actor.supervisor()));
         manager=new DataSourceTransactionManager(source);service=new SkillEvolutionService(jdbc,manager,json,users,mock(AgentJournal.class));storage=new SkillLinkStorage(jdbc,json,workspace.toString());service.linkStorage(storage);
         Path path=storage.directory(1,downloadId);Files.createDirectories(path);
@@ -37,7 +31,15 @@ class SkillLinkLifecycleTest {
         String raw="---\nname: fixture-reader\ndescription: Verified documentation reading skill\n---\n\n"+body;
         byte[] bytes=raw.getBytes(StandardCharsets.UTF_8);Files.write(path.resolve("SKILL.md"),bytes);
         Map<String,Object> manifest=Map.ofEntries(Map.entry("sourceType","LINK"),Map.entry("sourceUrl","https://github.com/fixtures/skills/tree/main/skills/fixture-reader"),Map.entry("resolvedUrl","https://github.com/fixtures/skills/tree/"+"a".repeat(40)+"/skills/fixture-reader"),Map.entry("commit","a".repeat(40)),Map.entry("name","fixture-reader"),Map.entry("description","Verified documentation reading skill"),Map.entry("instructions",body),Map.entry("files",List.of(Map.of("path","SKILL.md","bytes",bytes.length,"sha256",HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes))))),Map.entry("licenses",Map.of("LICENSE","Apache License Version 2.0")),Map.entry("license","Apache-2.0"),Map.entry("provenanceVerified",true),Map.entry("scriptsExecutable",false),Map.entry("resourcesReadable",false));
-        Files.writeString(path.resolve("manifest.json"),json.writeValueAsString(manifest));jdbc.update("INSERT INTO agent_skill_download(download_id,owner_user_id,status,target_role,manifest_json,manifest_sha256) VALUES(?,1,'DOWNLOADED','INSPECTOR',?,?)",downloadId,json.writeValueAsString(manifest),storage.digest(manifest));
+        Files.writeString(path.resolve("manifest.json"),json.writeValueAsString(manifest));downloaded(downloadId,manifest,null,null);
+    }
+    void downloaded(String id,Map<String,Object> manifest,String target,Integer revision)throws Exception{
+        String encoded=json.writeValueAsString(manifest);var store=storage.downloads();
+        new org.springframework.transaction.support.TransactionTemplate(manager).executeWithoutResult(state->{
+            store.create(1,id,id,storage.digest(manifest),(String)manifest.get("sourceUrl"),"INSPECTOR",target,revision);
+            store.reserve(1,id);var claim=store.claim(1,id,"fixture-worker");store.seal(1,id,claim);
+            store.packageReady(1,id,encoded,storage.digest(manifest));
+        });
     }
     SkillDtos.View create(){return service.createLinked(alice,downloadId,"INSPECTOR");}
     SkillDtos.View publish(){var view=create();view=service.evaluate(alice,view.skillId(),view.revision());view=service.submit(alice,view.skillId(),view.revision());return service.decide(boss,view.skillId(),new SkillDtos.Decision(view.revision(),"APPROVE","核对来源许可及仅正文参考的适用性",true,true));}
@@ -64,9 +66,9 @@ class SkillLinkLifecycleTest {
     }
     @Test void foreignPackageRoleEscalationAndAuditFailureCannotCreateUsableSkill(){
         assertThatThrownBy(()->service.createLinked(bob,downloadId,"INSPECTOR"));assertThatThrownBy(()->service.createLinked(alice,downloadId,"SUPERVISOR")).hasMessageContaining("角色");
-        jdbc.execute("DROP TABLE agent_skill_audit");assertThatThrownBy(this::create);
-        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM agent_learned_skill",Long.class)).isZero();
-        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM agent_skill_version",Long.class)).isZero();
+        jdbc.execute("DROP TABLE audit_event");assertThatThrownBy(this::create);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM content_asset WHERE asset_kind='SKILL'",Long.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM content_revision WHERE asset_kind='SKILL'",Long.class)).isZero();
     }
     @Test void sourcePolicyAcceptsMarketFormatsButDoesNotTreatThemAsVerifiedContents(){
         SkillLinkService.validateUrl("https://github.com/anthropics/skills/tree/main/skills/skill-creator");
@@ -80,7 +82,7 @@ class SkillLinkLifecycleTest {
         byte[] bytes=raw.getBytes(StandardCharsets.UTF_8);Path directory=storage.directory(1,next);Files.createDirectories(directory);Files.write(directory.resolve("SKILL.md"),bytes);
         manifest.put("commit",commit);manifest.put("resolvedUrl","https://github.com/fixtures/skills/tree/"+commit+"/skills/fixture-reader");manifest.put("instructions",body);manifest.put("files",List.of(Map.of("path","SKILL.md","bytes",bytes.length,"sha256",HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes)))));
         Files.writeString(directory.resolve("manifest.json"),json.writeValueAsString(manifest));
-        jdbc.update("INSERT INTO agent_skill_download(download_id,owner_user_id,status,target_role,manifest_json,manifest_sha256,target_skill_id,expected_skill_revision) VALUES(?,1,'DOWNLOADED','INSPECTOR',?,?,?,?)",next,json.writeValueAsString(manifest),storage.digest(manifest),view.skillId(),view.revision());return next;
+        downloaded(next,manifest,view.skillId(),view.revision());return next;
     }
     @Test void upgradeAddsFrozenVersionPreservesPublishedPointerAndSupportsReviewedRollbackAndDiff()throws Exception{
         var first=publish();String next=upgradedPackage(first,"b".repeat(40),"\nCheck the cited publication date before answering.");
@@ -102,7 +104,7 @@ class SkillLinkLifecycleTest {
     }
     @Test void identicalCommitDoesNotCreateDuplicateVersionAndForeignUpgradeIsDenied()throws Exception{
         var first=publish();String next=upgradedPackage(first,"a".repeat(40),"");var same=service.createLinked(alice,next,"INSPECTOR");assertThat(same.latestVersion()).isEqualTo(1);assertThat(same.revision()).isEqualTo(first.revision());
-        assertThat(jdbc.queryForObject("SELECT status FROM agent_skill_download WHERE download_id=?",String.class,next)).isEqualTo("NO_CHANGE");
+        assertThat(jdbc.queryForObject("SELECT status FROM workflow_instance WHERE kind='SKILL_DOWNLOAD' AND workflow_id=?",String.class,next)).isEqualTo("NO_CHANGE");
         assertThatThrownBy(()->service.linkedUpgradeRole(bob,first.skillId())).hasMessageContaining("本人");
     }
     @Test void concurrentRevisionChangeRejectsDownloadedUpgradeWithoutChangingActiveVersion()throws Exception{
@@ -115,7 +117,7 @@ class SkillLinkLifecycleTest {
     @Test void quotaRejectsBeforeSchedulingOrInsertingAnotherDownload(){
         var links=links();try{long used=storage.usage(1).bytes();org.springframework.test.util.ReflectionTestUtils.setField(links,"quotaBytes",used+5242880L-1);
             assertThatThrownBy(()->links.start(alice,new SkillLinkService.Request("https://github.com/fixtures/skills/tree/main/skills/fixture-reader","INSPECTOR","quota-request",true))).isInstanceOf(org.springframework.web.server.ResponseStatusException.class).hasMessageContaining("配额不足");
-            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM agent_skill_download",Long.class)).isEqualTo(1);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM workflow_instance WHERE kind='SKILL_DOWNLOAD'",Long.class)).isEqualTo(1);
         }finally{links.close();}
     }
     @Test void cleanupDeletesOnlyUnreferencedPackageRetainsOldPublishedFilesAndIsIdempotent()throws Exception{
@@ -127,7 +129,7 @@ class SkillLinkLifecycleTest {
         }finally{links.close();}
     }
     @Test void referencesAndForeignOwnershipPreventPhysicalCleanup(){
-        var first=publish();jdbc.update("UPDATE agent_skill_download SET status='DRAFT_CREATED' WHERE download_id=?",downloadId);var links=links();
+        var first=publish();new org.springframework.transaction.support.TransactionTemplate(manager).executeWithoutResult(state->storage.downloads().draftCreated(1,downloadId,first.skillId()));var links=links();
         try{assertThatThrownBy(()->links.cleanup(alice,downloadId,new SkillLinkService.CleanupRequest("reference-request",true))).hasMessageContaining("版本引用");
             assertThatThrownBy(()->links.cleanup(bob,downloadId,new SkillLinkService.CleanupRequest("foreign-request",true))).hasMessageContaining("无权限");
             assertThat(Files.exists(storage.directory(1,downloadId).resolve("SKILL.md"))).isTrue();assertThat(links.cleanupAudit(alice)).isEmpty();
@@ -135,7 +137,7 @@ class SkillLinkLifecycleTest {
     }
     @Test void cleanupIntentCanResumeAfterFilesDisappearedWithoutClaimingEarlierDeletionAmounts()throws Exception{
         var first=publish();String duplicate=upgradedPackage(first,"a".repeat(40),"");service.createLinked(alice,duplicate,"INSPECTOR");var links=links();var request=new SkillLinkService.CleanupRequest("resume-request",true);
-        try{links.cleanup(alice,duplicate,request);jdbc.update("UPDATE agent_skill_download SET status='PURGING' WHERE download_id=?",duplicate);jdbc.update("UPDATE agent_skill_storage_command SET status='STARTED',removed_bytes=0,removed_files=0 WHERE request_id=?",request.requestId());
+        try{links.cleanup(alice,duplicate,request);jdbc.update("UPDATE workflow_instance SET status='PURGING',finished_at=NULL WHERE kind='SKILL_DOWNLOAD' AND workflow_id=?",duplicate);jdbc.update("UPDATE workflow_instance SET status='STARTED',finished_at=NULL,payload_json=? WHERE kind='SKILL_STORAGE_COMMAND' AND request_id=?",json.writeValueAsString(new SkillDownloadStore.CleanupV1(duplicate,0,0)),request.requestId());
             var resumed=links.cleanup(alice,duplicate,request);assertThat(resumed.get("status")).isEqualTo("COMPLETED");assertThat(((Number)resumed.get("removed_files")).intValue()).isZero();assertThat(links.cleanupAudit(alice)).hasSize(1);
         }finally{links.close();}
     }

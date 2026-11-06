@@ -173,14 +173,8 @@ app:
   business-seed:
     enabled: ${APP_BUSINESS_SEED_ENABLED:false}
     continue-on-error: ${APP_BUSINESS_SEED_CONTINUE_ON_ERROR:false}
-    scripts:
-      - classpath:db/migration-V15-single-enterprise-shared-data.sql
-      - classpath:db/migration-V15-detection-fingerprint-work-unit.sql
-      - classpath:db/migration-V14-security-reliability-hardening.sql
-      - classpath:db/migration-V13-business-seed-data-normalization.sql
-      - classpath:db/business-seed-new-features.sql
-      - classpath:db/business-seed-more-features.sql
-      - classpath:db/business-seed-trace-rich.sql
+    # Legacy startup seeding is retired; enabling it now fails before any SQL executes.
+    scripts: []
   cors:
     allowed-origins: ${APP_CORS_ALLOWED_ORIGINS:http://localhost:3001,http://127.0.0.1:3001,http://localhost:3002,http://127.0.0.1:3002,http://localhost:3003,http://127.0.0.1:3003,http://localhost:3004,http://127.0.0.1:3004,http://localhost:5173,http://127.0.0.1:5173,http://localhost:8080}
     allowed-methods: ${APP_CORS_ALLOWED_METHODS:GET,POST,PUT,DELETE,OPTIONS,HEAD}

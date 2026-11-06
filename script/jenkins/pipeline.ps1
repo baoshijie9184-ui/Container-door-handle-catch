@@ -1,4 +1,4 @@
-param([Parameter(Mandatory = $true)][ValidateSet('Preflight', 'Package', 'VerifyEcs', 'Publish', 'Rehearse')][string]$Action)
+param([Parameter(Mandatory = $true)][ValidateSet('Preflight', 'Package', 'VerifyEcs', 'Publish', 'Rehearse', 'CompactCutover')][string]$Action)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 Set-Location -LiteralPath (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
@@ -28,6 +28,11 @@ if ($Action -eq 'Publish') {
 }
 if ($Action -eq 'Rehearse' -and $env:DOORHANDLE_COMPACT_REHEARSAL_READY -ne 'true') {
     throw 'The legacy rehearsal is disabled until its compact schema adapter is accepted.'
+}
+if ($Action -eq 'CompactCutover') {
+    if ($env:ACTION -ne 'compact-cutover' -or $env:PRODUCTION_RELEASE_ENABLED -ne 'true' -or $env:DOORHANDLE_COMPACT_RELEASE_READY -ne 'true' -or $env:DOORHANDLE_CI_SCOPE -ne 'mysql' -or $env:CI_ECS_VERIFIED -ne 'true') {
+        throw 'First compact cutover requires the accepted machine release gate and this build passing MySQL ECS verification.'
+    }
 }
 New-Item -ItemType Directory -Force -Path artifacts | Out-Null
 if ($Action -eq 'Package') {
@@ -139,9 +144,58 @@ if ($Action -eq 'VerifyEcs') {
     Write-Host 'ECS verification passed; source, execution identity and bounded evidence were validated. ECS lifecycle remains external.'
     return
 }
+if ($Action -eq 'CompactCutover') {
+    $commit = Require-Value 'GIT_COMMIT' '^[a-f0-9]{40}$'
+    $instance = Require-Value 'DOORHANDLE_ECS_INSTANCE_ID' '^i-[a-z0-9]+$'
+    $machine = Require-Value 'DOORHANDLE_ECS_MACHINE_ID' '^[a-f0-9]{32}$'
+    $settings = Require-Value 'COMPACT_CUTOVER_SETTINGS' '^/(home|srv|opt)/[A-Za-z0-9_./-]+\.json$'
+    if ($settings -match '(^|/)\.\.(/|$)') { throw 'Unsafe private ECS cutover settings path' }
+    $sha = (Get-FileHash -LiteralPath artifacts/source.tar.gz -Algorithm SHA256).Hash.ToLowerInvariant()
+    $package = Get-Content -LiteralPath artifacts/release.json -Raw | ConvertFrom-Json
+    $verified = Get-Content -LiteralPath artifacts/ecs/evidence/verification-receipt.json -Raw | ConvertFrom-Json
+    $executed = Get-Content -LiteralPath artifacts/ecs/evidence/reports/receipt.json -Raw | ConvertFrom-Json
+    if ($package.release -ne $tag -or $package.commit -ne $commit -or $package.sourceSha256 -ne $sha -or $verified.release -ne $tag -or $verified.commit -ne $commit -or $verified.sourceSha256 -ne $sha -or $verified.scope -ne 'mysql' -or $verified.status -ne 'PASS' -or $verified.fixtureReadinessValidated -ne $true -or $verified.verificationExitCode -ne 0 -or $verified.identity.instanceId -ne $instance -or $verified.identity.machineId -ne $machine) {
+        throw 'Cutover cannot use another source, host, scope or failed ECS verification attempt.'
+    }
+    if ($executed.wholeMigrationRequested -ne $true -or $executed.wholeMigrationTests.passed -le 0 -or $executed.wholeMigrationTests.failed -ne 0 -or $executed.wholeMigrationTests.skipped -ne 0 -or $executed.javaTests.skipped -ne 0) {
+        throw 'Whole migration, restoration and MySQL acceptance must actually execute without skipped cases.'
+    }
+    foreach ($file in @('memory-compat.py', 'model-secrets.py', 'assignment-compat.py', 'mcp-compat.py', 'mcp-runtime.py', 'compact-schema-guard.py', 'compact-cutover.py')) {
+        Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, "script/docker/$file", "${destination}:$remoteInbox/$file"))
+    }
+    Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, 'script/jenkins/deploy-remote.sh', "${destination}:$remoteInbox/deploy-remote.sh"))
+    $buildRegistry = Get-BuildRegistryAssignment
+    Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "$buildRegistry bash '$remoteInbox/deploy-remote.sh' build-only '$remoteRoot' '$runtime' '$tag' '$sha' '$settings' '$instance' '$machine' '$commit'"))
+    Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, "${destination}:$remoteRoot/releases/$tag/candidate-build.json", 'artifacts/compact-candidate-build.json'))
+    $buildReceipt = Get-Content -LiteralPath artifacts/compact-candidate-build.json -Raw | ConvertFrom-Json
+    if ($buildReceipt.kind -ne 'doorhandle-compact-candidate-build' -or $buildReceipt.status -ne 'BUILT' -or $buildReceipt.commit -ne $commit -or $buildReceipt.sourceSha256 -ne $sha -or $buildReceipt.release -ne $tag -or $buildReceipt.ecs.instanceId -ne $instance -or $buildReceipt.ecs.machineId -ne $machine) {
+        throw 'Candidate image/artifact build receipt differs from this fixed Jenkins source.'
+    }
+    $inputFile = "$remoteRoot/releases/$tag/work/private-cutover-input.json"
+    $helper = "$remoteRoot/releases/$tag/script/docker/compact-cutover.py"
+    $cutoverArgs = "--root '$remoteRoot' --runtime '$runtime' --tag '$tag' --source-sha256 '$sha' --config '$inputFile'"
+    $failed = $null
+    try {
+        foreach ($phase in @('prepare', 'migrate', 'activate')) {
+            $gate = if ($phase -eq 'activate') { 'DOORHANDLE_COMPACT_RELEASE_READY=true ' } else { '' }
+            Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "${gate}python3 -B '$helper' $phase $cutoverArgs"))
+        }
+    } catch { $failed = $_ }
+    try {
+        $output = Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "python3 -B '$helper' status $cutoverArgs"))
+        $summary = ($output | Select-Object -Last 1) | ConvertFrom-Json
+        $summary | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath artifacts/compact-cutover.json -Encoding UTF8
+        if (-not $failed -and ($summary.phase -ne 'ACTIVE' -or $summary.status -ne 'ACTIVE' -or $summary.sourceRestorationAllowed -ne $false -or $summary.migrationReceiptSha256 -notmatch '^[a-f0-9]{64}$')) { throw 'Cutover health/publication evidence is incomplete.' }
+    } catch {
+        if (-not $failed) { throw }
+        Write-Host 'Cutover summary is unavailable; preserve remote private evidence and maintenance state.'
+    }
+    if ($failed) { throw $failed }
+    return
+}
 if ($Action -eq 'Rehearse') {
     if ($env:ACTION -ne 'rehearse') { throw 'Rehearse requires the explicit rehearsal action' }
-    foreach ($file in @('application-rehearsal.py', 'monolith-ops.py', 'memory-compat.py', 'model-secrets.py', 'assignment-compat.py', 'mcp-compat.py', 'mcp-runtime.py')) {
+    foreach ($file in @('application-rehearsal.py', 'monolith-ops.py', 'memory-compat.py', 'model-secrets.py', 'assignment-compat.py', 'mcp-compat.py', 'mcp-runtime.py', 'compact-schema-guard.py')) {
         Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, "script/docker/$file", "${destination}:$remoteInbox/$file"))
     }
     $sha = (Get-FileHash -LiteralPath artifacts/source.tar.gz -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -181,6 +235,7 @@ Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, 'script/docker/model-
 Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, 'script/docker/assignment-compat.py', "${destination}:$remoteInbox/assignment-compat.py"))
 Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, 'script/docker/mcp-compat.py', "${destination}:$remoteInbox/mcp-compat.py"))
 Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, 'script/docker/mcp-runtime.py', "${destination}:$remoteInbox/mcp-runtime.py"))
+Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, 'script/docker/compact-schema-guard.py', "${destination}:$remoteInbox/compact-schema-guard.py"))
 function Save-McpRuntimeEvidence {
     $body = Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "cat '$remoteRoot/state/mcp-runtime-transition.json'"))
     $receipt = ($body -join "`n") | ConvertFrom-Json

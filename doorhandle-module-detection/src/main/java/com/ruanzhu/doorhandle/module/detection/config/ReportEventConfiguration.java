@@ -19,7 +19,7 @@ import java.util.concurrent.TimeUnit;
 @Configuration
 @ConditionalOnProperty(prefix="app.report-events",name="enabled",havingValue="true")
 public class ReportEventConfiguration {
-    @Bean public Clock reportEventClock(){return Clock.systemDefaultZone();}
+    @Bean public Clock reportEventClock(){return Clock.systemUTC();}
     @Bean public ProducerFactory<String,String> reportEventProducerFactory(KafkaTaskProperties kafka,ReportEventProperties settings){
         if(!kafka.isEnabled())throw new IllegalStateException("Report events require app.kafka.enabled=true");
         Map<String,Object> config=new HashMap<>();

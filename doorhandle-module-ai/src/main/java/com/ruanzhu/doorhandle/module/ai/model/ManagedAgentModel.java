@@ -27,6 +27,7 @@ final class ManagedAgentModel implements Model {
     private final Duration firstTokenTimeout;
     private final Duration timeout;
     private final boolean circuitEnabled;
+    private final int maxOutputTokens;
     private ModelBudgetService budget;
     ManagedAgentModel budget(ModelBudgetService value){this.budget=value;return this;}
     ManagedAgentModel(String id, Model primary, Model fallback) {
@@ -39,6 +40,7 @@ final class ManagedAgentModel implements Model {
         this.candidates = List.copyOf(candidates); this.policy = policy;
         this.firstTokenTimeout = settings.getFirstTokenTimeout(); this.timeout = settings.getTimeout();
         this.circuitEnabled = circuitEnabled;
+        this.maxOutputTokens = settings.getMaxOutputTokens();
     }
     private static List<Candidate> legacyCandidates(String id, Model primary, Model fallback) {
         var result = new ArrayList<Candidate>();
@@ -48,17 +50,23 @@ final class ManagedAgentModel implements Model {
     }
     public Flux<ChatResponse> stream(List<Msg> messages, List<ToolSchema> tools, GenerateOptions options) {
         GenerateOptions enforced = policy == null ? options : GenerateOptions.mergeOptions(policy, options);
-        return Flux.deferContextual(context -> attempt(0, messages, tools, enforced,
-                        context.getOrDefault(ModelAttemptTrace.CONTEXT_KEY, ModelAttemptTrace.NONE),combinedUsage(context.getOrDefault(ModelUsageTrace.CONTEXT_KEY,ModelUsageTrace.NONE))))
+        return Flux.deferContextual(context -> {
+                    ModelBudgetContext identity=context.getOrDefault(ModelBudgetContext.CONTEXT_KEY,null);
+                    if(budget!=null&&identity==null)return Flux.error(new IllegalStateException("缺少服务端模型额度身份"));
+                    return attempt(0,messages,tools,enforced,
+                            context.getOrDefault(ModelAttemptTrace.CONTEXT_KEY,ModelAttemptTrace.NONE),
+                            context.getOrDefault(ModelUsageTrace.CONTEXT_KEY,ModelUsageTrace.NONE),identity,
+                            java.util.UUID.randomUUID().toString());
+                })
                 .onErrorMap(error -> {
-                    if(error instanceof RedisModelCircuit.Unavailable)return error;
+                    if(error instanceof RedisModelCircuit.Unavailable||error instanceof ModelBudgetService.Exhausted)return error;
                     log.warn("模型路由失败：model={}, reason={}, status={}", candidates.get(0).id(),
                             ModelFailureClassifier.classify(error), ModelFailureClassifier.status(error));
                     return new IllegalStateException("模型调用失败，请稍后重试（" + candidates.get(0).id() + "）");
                 });
     }
-    private ModelUsageTrace combinedUsage(ModelUsageTrace existing){return budget==null?existing:new ModelUsageTrace((id,fields)->{budget.finished(id,fields);existing.record(id,fields);});}
-    private Flux<ChatResponse> attempt(int index, List<Msg> messages, List<ToolSchema> tools, GenerateOptions options, ModelAttemptTrace trace,ModelUsageTrace usageTrace) {
+    private Flux<ChatResponse> attempt(int index, List<Msg> messages, List<ToolSchema> tools, GenerateOptions options,
+                                      ModelAttemptTrace trace,ModelUsageTrace usageTrace,ModelBudgetContext identity,String requestId) {
         if (index >= candidates.size()) return Flux.error(new IllegalStateException("暂无可用模型"));
         return Flux.defer(() -> {
             var candidate = candidates.get(index);
@@ -66,19 +74,33 @@ final class ManagedAgentModel implements Model {
             if (permit == null) {
                 var skipped = fields(candidate, index); skipped.put("failureReason", "CIRCUIT_OPEN");
                 trace.event("MODEL_CANDIDATE_SKIPPED", skipped);
-                return attempt(index + 1, messages, tools, options, trace,usageTrace);
+                return attempt(index + 1, messages, tools, options, trace,usageTrace,identity,requestId);
             }
             var emitted = new AtomicBoolean();
             var terminal = new AtomicBoolean();
             var firstContentMs = new AtomicLong(-1);
             String usageId=java.util.UUID.randomUUID().toString();
             var reportedUsage=new java.util.concurrent.atomic.AtomicReference<ChatUsage>();
+            var ticket=new java.util.concurrent.atomic.AtomicReference<ModelBudgetService.Ticket>();
             long started = System.nanoTime();
             // STARTED 写入失败时仍释放恢复探测 permit，不发出供应商请求。
             return Flux.defer(() -> {
-                        if(budget!=null)budget.started(usageId,candidate.id());
                         trace.event("MODEL_ATTEMPT_STARTED", fields(candidate, index));
-                        return candidate.model().stream(messages, tools, options).doOnNext(chunk->{if(chunk.getUsage()!=null)reportedUsage.set(chunk.getUsage());});
+                        GenerateOptions attemptOptions=options;
+                        if(budget!=null) {
+                            var plan=ModelTokenReservation.prepare(messages,tools,options,maxOutputTokens,candidate.model());
+                            if("openai".equals(candidate.provider()))
+                                io.agentscope.extensions.model.openaiofficial.OpenAIResponsesIoBridge.validateBudgetRequest(
+                                        messages,tools,plan.options(),candidate.model().getModelName());
+                            ticket.set(budget.started(identity,requestId,usageId,candidate.id(),plan.tokens(),plan.basis()));
+                            attemptOptions=plan.options();
+                            if(terminal.get()) {
+                                // Cancellation can race a blocking admission commit. Do not invoke a new provider afterward.
+                                budget.finished(ticket.get(),usageFields(candidate,index,started,firstContentMs.get(),null,"CANCELLED"));
+                                return Flux.empty();
+                            }
+                        }
+                        return candidate.model().stream(messages, tools, attemptOptions).doOnNext(chunk->{if(chunk.getUsage()!=null)reportedUsage.set(chunk.getUsage());});
                     })
                     // 空元数据不算首字；思考内容或工具参数也算输出，禁止中途跨模型拼接。
                     .filter(chunk -> emitted.get() || hasContent(chunk))
@@ -92,22 +114,22 @@ final class ManagedAgentModel implements Model {
                     .switchIfEmpty(Flux.error(new ModelFailureClassifier.EmptyResponseException()))
                     .doOnComplete(() -> {
                         terminal.set(true);
+                        recordUsage(ticket.get(),usageTrace,usageId,usageFields(candidate,index,started,firstContentMs.get(),reportedUsage.get(),"COMPLETED"));
                         trace.event("MODEL_ATTEMPT_COMPLETED", completedFields(candidate, index, started, firstContentMs.get()));
-                        usageTrace.record(usageId,usageFields(candidate,index,started,firstContentMs.get(),reportedUsage.get(),"COMPLETED"));
                         if (circuitEnabled) candidate.circuit().success(permit);
                         if (index > 0) log.info("备用模型请求完成：model={}", candidate.id());
                         if (permit.probe()) log.info("模型恢复验证成功：model={}", candidate.id());
                     })
                     .onErrorResume(error -> {
-                        if (error instanceof ModelAttemptTrace.RecordingException) return Flux.error(error);
+                        if (terminal.get()||error instanceof ModelAttemptTrace.RecordingException) return Flux.error(error);
                         var reason = ModelFailureClassifier.classify(error);
                         terminal.set(true);
+                        recordUsage(ticket.get(),usageTrace,usageId,usageFields(candidate,index,started,firstContentMs.get(),reportedUsage.get(),"FAILED"));
                         var failed = completedFields(candidate, index, started, firstContentMs.get());
                         failed.put("failureReason", ModelFailureClassifier.reason(error));
                         Integer status = ModelFailureClassifier.status(error);
                         if (status != null && status >= 100 && status <= 599) failed.put("httpStatus", status);
                         trace.event("MODEL_ATTEMPT_ERROR", failed);
-                        usageTrace.record(usageId,usageFields(candidate,index,started,firstContentMs.get(),reportedUsage.get(),"FAILED"));
                         if (circuitEnabled && reason != ModelFailureClassifier.Failure.OTHER) candidate.circuit().failure(permit, reason);
                         if (emitted.get() || reason == ModelFailureClassifier.Failure.OTHER || index + 1 >= candidates.size()) return Flux.error(error);
                         log.warn("切换备用模型：from={}, to={}, reason={}, status={}", candidate.id(), candidates.get(index + 1).id(),
@@ -116,19 +138,24 @@ final class ManagedAgentModel implements Model {
                         selected.put("nextModelId", candidates.get(index + 1).id());
                         selected.put("failureReason", ModelFailureClassifier.reason(error));
                         trace.event("MODEL_FALLBACK_SELECTED", selected);
-                        return attempt(index + 1, messages, tools, options, trace,usageTrace);
+                        return attempt(index + 1, messages, tools, options, trace,usageTrace,identity,requestId);
                     })
                     .doFinally(signal -> {
                         try {
                             if (signal == SignalType.CANCEL && terminal.compareAndSet(false, true)) {
+                                recordUsage(ticket.get(),usageTrace,usageId,usageFields(candidate,index,started,firstContentMs.get(),reportedUsage.get(),"CANCELLED"));
                                 trace.event("MODEL_ATTEMPT_CANCELLED", completedFields(candidate, index, started, firstContentMs.get()));
-                                usageTrace.record(usageId,usageFields(candidate,index,started,firstContentMs.get(),reportedUsage.get(),"CANCELLED"));
                             }
                         } catch (ModelAttemptTrace.RecordingException ignored) {
                             // 取消终态可能已经入库；取消回调不能重发请求。
                         } finally { if (circuitEnabled) try{candidate.circuit().release(permit);}catch(RedisModelCircuit.Unavailable ignored){log.warn("模型恢复探测释放尚未核对，将等待租约到期");} }
                     });
         });
+    }
+    private void recordUsage(ModelBudgetService.Ticket ticket,ModelUsageTrace usageTrace,String usageId,Map<String,Object> fields) {
+        if(ticket!=null)try { budget.finished(ticket,fields); }
+        catch(RuntimeException failure) { throw new ModelAttemptTrace.RecordingException(); }
+        usageTrace.record(usageId,fields);
     }
     private static Map<String, Object> fields(Candidate candidate, int index) {
         var result = new LinkedHashMap<String, Object>();

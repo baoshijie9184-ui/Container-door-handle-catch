@@ -17,8 +17,7 @@ class MysqlAgentJournalTest extends JdbcAgentJournalTest {
         var source=com.ruanzhu.doorhandle.module.ai.EcsIsolatedMysql.open(
                 System.getProperty("agent.journal.mysql-file"), "doorhandle_agent_verify_");
         jdbc=new JdbcTemplate(source);
-        String ddl=Files.readString(Path.of("src/main/resources/db/migration-V16-agentscope-run-journal.sql"));
-        for(String statement:ddl.split(";"))if(!statement.isBlank())jdbc.execute(statement);
+        com.ruanzhu.doorhandle.module.ai.testsupport.CompactAgentJournalFixture.install(jdbc);
         long owner=java.util.concurrent.ThreadLocalRandom.current().nextLong(1000,1_000_000_000);
         alice=new AgentActor(owner,"fixture-alice",AgentActor.Role.INSPECTOR);bob=new AgentActor(owner+1,"fixture-bob",AgentActor.Role.SUPERVISOR);
         var props=new AgentJournalProperties();props.setEnabled(true);journal=new JdbcAgentJournal(jdbc,new DataSourceTransactionManager(source),new ObjectMapper(),props);journal.verifySchema();

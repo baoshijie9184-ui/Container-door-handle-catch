@@ -8,7 +8,6 @@ import jakarta.annotation.PostConstruct;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -49,6 +48,7 @@ public class AgentActionService {
     private final JdbcTemplate jdbc;
     private final TransactionTemplate tx;
     private final ObjectMapper json;
+    private final AgentActionPersistence persistence;
     private final AgentJournal journal;
     private final DetectionAssignmentApi assignments;
     private final AgentActionProperties properties;
@@ -63,15 +63,16 @@ public class AgentActionService {
     public AgentActionService(JdbcTemplate jdbc,PlatformTransactionManager transactions,ObjectMapper json,
             AgentJournal journal,DetectionAssignmentApi assignments,AgentActionProperties properties) {
         this.jdbc=jdbc;this.tx=new TransactionTemplate(transactions);this.json=json;this.journal=journal;
+        this.persistence=new AgentActionPersistence(jdbc,json);
+        this.tx.setIsolationLevel(org.springframework.transaction.TransactionDefinition.ISOLATION_READ_COMMITTED);
         this.assignments=assignments;this.properties=properties;
     }
     public boolean enabled() { return properties.isEnabled(); }
     @PostConstruct public void verifySchema() {
         if (!enabled()) return;
         if (!journal.enabled()) throw new IllegalStateException("启用人工确认前必须启用持久运行日志");
-        try { jdbc.queryForObject("SELECT COUNT(*) FROM agent_pending_action WHERE 1=0",Long.class);
-              jdbc.queryForObject("SELECT COUNT(*) FROM agent_action_audit WHERE 1=0",Long.class); }
-        catch (RuntimeException error) { throw new IllegalStateException("请执行 migration-V19-agent-confirmation.sql 再启用人工确认"); }
+        try { persistence.validateSchema(); }
+        catch (RuntimeException error) { throw new IllegalStateException("请完成 compact 人工确认迁移再启用该功能",error); }
     }
     public View propose(AgentActor actor,String runId,String callId,DetectionAssignmentApi.Command command) {
         requireEnabled();actor.requireSupervisor();validateId(runId);
@@ -83,16 +84,15 @@ public class AgentActionService {
             if (!Set.of("RUNNING","COMPLETED").contains(run.get(0).get("status").toString())) throw conflict("该运行不再接受操作提议");
             var preview=assignments.preview(actor,command);
             String normalized=write(preview.command()), digest=digest(normalized);
-            var duplicates=jdbc.query("SELECT * FROM agent_pending_action WHERE user_id=? AND run_id=? AND arguments_digest=?",row(),actor.userId(),runId,digest);
+            var duplicates=persistence.byArguments(actor.userId(),runId,digest).stream().map(this::stored).toList();
             if (!duplicates.isEmpty()) return expire(actor,duplicates.get(0)).view();
-            var prior=jdbc.query("SELECT * FROM agent_pending_action WHERE user_id=? AND resource_id=? AND status='PENDING' FOR UPDATE",row(),actor.userId(),preview.command().taskId());
+            var prior=persistence.pendingResource(actor.userId(),preview.command().taskId()).stream().map(this::stored).toList();
             for (var old:prior) close(actor,old,"INVALIDATED","PARAMETERS_SUPERSEDED","CONFIRMATION_INVALIDATED");
-            Integer count=jdbc.queryForObject("SELECT COUNT(*) FROM agent_pending_action WHERE user_id=? AND run_id=?",Integer.class,actor.userId(),runId);
+            Integer count=persistence.count(actor.userId(),runId);
             if (count!=null && count>=20) throw conflict("单次运行的操作提议已达上限");
             String id=UUID.randomUUID().toString(),session=run.get(0).get("session_id").toString();
             LocalDateTime now=now();
-            jdbc.update("INSERT INTO agent_pending_action(action_id,user_id,run_id,session_id,call_id,operation,resource_id,resource_version,arguments_digest,command_json,before_json,policy_version,status,expires_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    id,actor.userId(),runId,session,callId,"ASSIGN_QUALITY_TASK",preview.command().taskId(),preview.resourceVersion(),digest,normalized,write(preview.before()),POLICY,"PENDING",now.plusMinutes(10));
+            persistence.create(id,actor.userId(),runId,session,callId,"ASSIGN_QUALITY_TASK",preview.command().taskId(),preview.resourceVersion(),digest,normalized,write(preview.before()),POLICY,now.plusMinutes(10));
             var saved=load(actor,id,false);
             audit(actor,saved,"CONFIRMATION_CREATED","PENDING",null);
             return saved.view();
@@ -110,15 +110,14 @@ public class AgentActionService {
             var preview=detection.previewRetry(actor,taskId);
             var command=new DetectionExecutionApi.RetryApproval(preview.taskId(),preview.resourceVersion());
             String arguments=digest(write(List.of("RETRY_DETECTION",command,preview)));
-            var duplicates=jdbc.query("SELECT * FROM agent_pending_action WHERE user_id=? AND run_id=? AND arguments_digest=?",row(),actor.userId(),runId,arguments);
+            var duplicates=persistence.byArguments(actor.userId(),runId,arguments).stream().map(this::stored).toList();
             if(!duplicates.isEmpty())return expire(actor,duplicates.get(0)).view();
-            var prior=jdbc.query("SELECT * FROM agent_pending_action WHERE user_id=? AND resource_id=? AND status='PENDING' FOR UPDATE",row(),actor.userId(),taskId);
+            var prior=persistence.pendingResource(actor.userId(),taskId).stream().map(this::stored).toList();
             for(var old:prior)close(actor,old,"INVALIDATED","PARAMETERS_SUPERSEDED","CONFIRMATION_INVALIDATED");
-            Integer count=jdbc.queryForObject("SELECT COUNT(*) FROM agent_pending_action WHERE user_id=? AND run_id=?",Integer.class,actor.userId(),runId);
+            Integer count=persistence.count(actor.userId(),runId);
             if(count!=null&&count>=20)throw conflict("单次运行的操作提议已达上限");
             String id=UUID.randomUUID().toString();
-            jdbc.update("INSERT INTO agent_pending_action(action_id,user_id,run_id,session_id,call_id,operation,resource_id,resource_version,arguments_digest,command_json,before_json,policy_version,status,expires_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    id,actor.userId(),runId,run.get(0).get("session_id"),callId,"RETRY_DETECTION",taskId,preview.resourceVersion(),arguments,write(command),write(preview),RETRY_POLICY,"PENDING",now().plusMinutes(10));
+            persistence.create(id,actor.userId(),runId,(String)run.get(0).get("session_id"),callId,"RETRY_DETECTION",taskId,preview.resourceVersion(),arguments,write(command),write(preview),RETRY_POLICY,now().plusMinutes(10));
             var saved=load(actor,id,false);audit(actor,saved,"CONFIRMATION_CREATED","PENDING",null);return saved.view();
         });
     }
@@ -138,27 +137,24 @@ public class AgentActionService {
             if(run.isEmpty())throw missing();if(!Set.of("RUNNING","COMPLETED").contains(run.get(0).get("status")))throw conflict("该运行不再接受操作提议");
             String session=(String)run.get(0).get("session_id");if(!session.equals(prepared.sessionId()))throw conflict("会话已变化 请重新生成提议");creation.revalidate(actor,prepared);var preview=prepared;String body=write(preview),arguments=digest(body);
             if(replacesActionId!=null){var old=load(actor,replacesActionId,true);if(!runId.equals(old.view().runId())||old.view().creation()==null||!"PENDING".equals(old.view().status()))throw conflict("只能修改当前运行尚未确认的检测创建提议");}
-            var duplicate=jdbc.query("SELECT * FROM agent_pending_action WHERE user_id=? AND run_id=? AND operation='CREATE_DETECTION' AND arguments_digest=?",row(),actor.userId(),runId,arguments);
+            var duplicate=persistence.byArguments(actor.userId(),runId,arguments).stream().map(this::stored).toList();
             if(!duplicate.isEmpty())return expire(actor,duplicate.get(0)).view();
-            Integer count=jdbc.queryForObject("SELECT COUNT(*) FROM agent_pending_action WHERE user_id=? AND run_id=?",Integer.class,actor.userId(),runId);if(count>=20)throw conflict("单次运行的操作提议已达上限");
+            Integer count=persistence.count(actor.userId(),runId);if(count>=20)throw conflict("单次运行的操作提议已达上限");
             String id=UUID.randomUUID().toString();
             // Disjoint batches can coexist; overlapping images or an explicit replacement supersede the old pending proposal.
             var ids=new HashSet<>(preview.images().stream().map(WorkspaceDetectionImagesApi.Image::fileId).toList());
-            for(var old:jdbc.query("SELECT * FROM agent_pending_action WHERE user_id=? AND run_id=? AND operation='CREATE_DETECTION' AND status='PENDING' FOR UPDATE",row(),actor.userId(),runId))
+            for(var old:persistence.pendingCreations(actor.userId(),runId).stream().map(this::stored).toList())
                 if(Objects.equals(replacesActionId,old.view().actionId())||old.view().creation().images().stream().anyMatch(image->ids.contains(image.fileId())))
                     close(actor,old,"INVALIDATED","PARAMETERS_SUPERSEDED","CONFIRMATION_INVALIDATED");
-            jdbc.update("INSERT INTO agent_pending_action(action_id,user_id,run_id,session_id,call_id,operation,resource_id,resource_version,arguments_digest,command_json,before_json,policy_version,status,expires_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    id,actor.userId(),runId,session,callId,"CREATE_DETECTION",id,preview.resourceVersion(),arguments,body,body,CREATE_POLICY,"PENDING",now().plusMinutes(10));
+            persistence.create(id,actor.userId(),runId,session,callId,"CREATE_DETECTION",id,preview.resourceVersion(),arguments,body,body,CREATE_POLICY,now().plusMinutes(10));
             var saved=load(actor,id,false);audit(actor,saved,"CONFIRMATION_CREATED","PENDING",null);return saved.view();
         });
     }
     public List<View> list(AgentActor actor,String sessionId,String runId,int limit) {
         requireEnabled();if (limit<1||limit>100) throw bad("分页数量必须在 1 到 100 之间");
-        var parameters=new ArrayList<Object>();parameters.add(actor.userId());
-        String where="user_id=?";
-        if (sessionId!=null) {if(!sessionId.matches("[A-Za-z0-9_.-]{1,128}"))throw bad("会话编号不正确");where+=" AND session_id=?";parameters.add(sessionId);}
-        if (runId!=null) {validateId(runId);where+=" AND run_id=?";parameters.add(runId);}
-        var ids=jdbc.queryForList("SELECT action_id FROM agent_pending_action WHERE "+where+" ORDER BY created_at DESC,action_id DESC LIMIT "+limit,String.class,parameters.toArray());
+        if (sessionId!=null&&!sessionId.matches("[A-Za-z0-9_.-]{1,128}"))throw bad("会话编号不正确");
+        if (runId!=null)validateId(runId);
+        var ids=persistence.ids(actor.userId(),sessionId,runId,limit);
         var visible=new ArrayList<View>();
         for(var id:ids)try{visible.add(get(actor,id));}catch(SecurityException|DetectionExecutionApi.ResourceChanged denied){/* Do not return a revoked or changed source snapshot. Minimal command reconciliation is a separate owner-scoped view. */}
         return List.copyOf(visible);
@@ -179,8 +175,7 @@ public class AgentActionService {
     }
     public List<Audit> audit(AgentActor actor,String id) {
         get(actor,id);
-        return jdbc.query("SELECT * FROM agent_action_audit WHERE user_id=? AND action_id=? ORDER BY id",(rs,n)->
-                new Audit(rs.getLong("id"),rs.getString("event_type"),rs.getString("actor_role"),rs.getString("result"),rs.getString("reason_code"),rs.getTimestamp("occurred_at").toLocalDateTime()),actor.userId(),id);
+        return persistence.audits(actor.userId(),id).stream().map(row->new Audit(row.id(),row.eventType(),row.actorRole(),row.result(),row.reasonCode(),display(row.occurredAt()))).toList();
     }
     public View decide(AgentActor actor,String id,long expectedVersion,String decision) {
         requireEnabled();validateId(id);
@@ -212,7 +207,7 @@ public class AgentActionService {
             catch (DetectionAssignmentApi.ResourceChanged error) { return close(actor,action,"INVALIDATED","RESOURCE_CHANGED","CONFIRMATION_INVALIDATED").view(); }
             catch (SecurityException error) { return close(actor,action,"INVALIDATED","ROLE_REVOKED","AUTHORIZATION_DENIED").view(); }
             catch (IllegalArgumentException error) { return close(actor,action,"INVALIDATED","BUSINESS_PRECONDITION_CHANGED","CONFIRMATION_INVALIDATED").view(); }
-            jdbc.update("UPDATE agent_pending_action SET result_json=? WHERE action_id=? AND user_id=?",write(result),id,actor.userId());
+            persistence.result(actor.userId(),id,action.view().version(),write(result));
             audit(actor,action,"BUSINESS_CHANGED","SUCCEEDED",null);
             return close(actor,action,"SUCCEEDED",null,"TOOL_EXECUTION_COMPLETED").view();
         });
@@ -231,7 +226,7 @@ public class AgentActionService {
         audit(actor,action,"AUTHORIZATION_ALLOWED","APPROVED",null);audit(actor,action,"CONFIRMATION_DECIDED","APPROVED",null);
         var receipt=creation.reserve(actor,action.view().actionId(),action.view().actionId(),p);
         if(receipt==null||!"PREPARING".equals(receipt.status()))throw new IllegalStateException("检测创建命令未核实");
-        jdbc.update("UPDATE agent_pending_action SET result_json=? WHERE action_id=? AND user_id=?",write(receipt),action.view().actionId(),actor.userId());
+        persistence.result(actor.userId(),action.view().actionId(),action.view().version(),write(receipt));
         return close(actor,action,"EXECUTING",null,"TOOL_EXECUTION_STARTED").view();
     }
     private Stored reconcileCreation(AgentActor actor,Stored action){
@@ -239,7 +234,7 @@ public class AgentActionService {
         var receipt=creation.receipt(actor,action.view().actionId());if(receipt.isEmpty())return action;
         String state=switch(receipt.get().status()){case "QUEUED"->"SUCCEEDED";case "NEEDS_REVIEW"->"NEEDS_REVIEW";case "CANCELLED"->"CANCELLED";default->"EXECUTING";};
         if(!state.equals(action.view().status())){
-            jdbc.update("UPDATE agent_pending_action SET status=?,reason_code=?,result_json=?,version=version+1 WHERE action_id=? AND user_id=? AND status IN ('EXECUTING','NEEDS_REVIEW')",state,"NEEDS_REVIEW".equals(state)?"EXECUTION_NEEDS_REVIEW":"CANCELLED".equals(state)?"USER_ABANDONED":null,write(receipt.get()),action.view().actionId(),actor.userId());
+            persistence.reconcile(actor.userId(),action.view().actionId(),action.view().version(),action.view().status(),state,"NEEDS_REVIEW".equals(state)?"EXECUTION_NEEDS_REVIEW":"CANCELLED".equals(state)?"USER_ABANDONED":null,write(receipt.get()));
             audit(actor,action,"NEEDS_REVIEW".equals(state)?"TOOL_EXECUTION_UNCONFIRMED":"CANCELLED".equals(state)?"TOOL_EXECUTION_CANCELLED":"TOOL_EXECUTION_COMPLETED",state,"NEEDS_REVIEW".equals(state)?"EXECUTION_NEEDS_REVIEW":"CANCELLED".equals(state)?"USER_ABANDONED":null);
             return load(actor,action.view().actionId(),false);
         }
@@ -269,45 +264,44 @@ public class AgentActionService {
         var result=detection.retry(actor,action.view().actionId(),action.view().actionId(),command);
         if(result==null||!preview.taskId().equals(result.taskId())||!"RETRY".equals(result.operation())||!"QUEUED".equals(result.status()))
             throw new IllegalStateException("检测命令回执与批准参数不一致");
-        jdbc.update("UPDATE agent_pending_action SET result_json=? WHERE action_id=? AND user_id=?",write(result),action.view().actionId(),actor.userId());
+        persistence.result(actor.userId(),action.view().actionId(),action.view().version(),write(result));
         audit(actor,action,"BUSINESS_CHANGED","SUCCEEDED",null);
         return close(actor,action,"SUCCEEDED",null,"TOOL_EXECUTION_COMPLETED").view();
     }
     private Stored expire(AgentActor actor,Stored action) {
-        if ("PENDING".equals(action.view().status()) && !action.view().expiresAt().isAfter(now()))
+        if ("PENDING".equals(action.view().status()) && !action.view().expiresAt().minusHours(8).isAfter(now()))
             return close(actor,action,"EXPIRED","CONFIRMATION_EXPIRED","CONFIRMATION_INVALIDATED");
         return action;
     }
     private Stored close(AgentActor actor,Stored action,String state,String reason,String event) {
-        int changed=jdbc.update("UPDATE agent_pending_action SET status=?,reason_code=?,version=version+1,decided_at=CURRENT_TIMESTAMP WHERE action_id=? AND user_id=? AND status='PENDING'",state,reason,action.view().actionId(),actor.userId());
-        if (changed!=1) throw conflict("操作状态已变化");
+        persistence.close(actor.userId(),action.view().actionId(),action.view().version(),state,reason);
         audit(actor,action,event,state,reason);
         return load(actor,action.view().actionId(),false);
     }
     private void audit(AgentActor actor,Stored action,String event,String result,String reason) {
-        jdbc.update("INSERT INTO agent_action_audit(action_id,user_id,run_id,event_type,actor_role,resource_id,arguments_digest,policy_version,result,reason_code) VALUES(?,?,?,?,?,?,?,?,?,?)",
-                action.view().actionId(),actor.userId(),action.view().runId(),event,actor.role().name(),action.view().creation()!=null?action.view().actionId():action.view().retry()==null?action.view().command().taskId():action.view().retry().taskId(),action.digest(),action.policy(),result,reason);
+        persistence.appendAudit(actor.userId(),action.view().actionId(),action.view().runId(),event,actor.role().name(),action.view().creation()!=null?action.view().actionId():action.view().retry()==null?action.view().command().taskId():action.view().retry().taskId(),action.digest(),action.policy(),result,reason);
     }
     private Stored load(AgentActor actor,String id,boolean lock) {
-        var list=jdbc.query("SELECT * FROM agent_pending_action WHERE user_id=? AND action_id=?"+(lock?" FOR UPDATE":""),row(),actor.userId(),id);
-        if (list.isEmpty()) throw missing();return list.get(0);
+        var row=persistence.find(actor.userId(),id,lock);
+        if(row==null)throw missing();return stored(row);
     }
-    private RowMapper<Stored> row() { return (rs,n)->{
-        String operation=rs.getString("operation"),result=rs.getString("result_json");
+    private Stored stored(AgentActionPersistence.Row row) {
+        var payload=row.proposal();String operation=payload.operation(),result=row.resultJson();
         boolean retry="RETRY_DETECTION".equals(operation);
         boolean create="CREATE_DETECTION".equals(operation);
         if(!retry&&!create&&!"ASSIGN_QUALITY_TASK".equals(operation))throw new IllegalStateException("不支持的确认操作类型");
-        var creationPreview=create?read(rs.getString("command_json"),DetectionCreationApi.Preview.class):null;
-        if(create&&(!creationPreview.equals(read(rs.getString("before_json"),DetectionCreationApi.Preview.class))||!creationPreview.resourceVersion().equals(rs.getString("resource_version"))))throw new IllegalStateException("创建提议内容已变化");
-        var preview=retry?read(rs.getString("before_json"),DetectionExecutionApi.RetryPreview.class):null;
-        if(retry&&!new DetectionExecutionApi.RetryApproval(preview.taskId(),preview.resourceVersion()).equals(read(rs.getString("command_json"),DetectionExecutionApi.RetryApproval.class)))
+        var creationPreview=create?read(payload.commandJson(),DetectionCreationApi.Preview.class):null;
+        if(create&&(!creationPreview.equals(read(payload.beforeJson(),DetectionCreationApi.Preview.class))||!creationPreview.resourceVersion().equals(payload.resourceVersion())))throw new IllegalStateException("创建提议内容已变化");
+        var preview=retry?read(payload.beforeJson(),DetectionExecutionApi.RetryPreview.class):null;
+        if(retry&&!new DetectionExecutionApi.RetryApproval(preview.taskId(),preview.resourceVersion()).equals(read(payload.commandJson(),DetectionExecutionApi.RetryApproval.class)))
             throw new IllegalStateException("检测提议参数不一致");
-        return new Stored(new View(rs.getString("action_id"),rs.getString("run_id"),rs.getString("session_id"),operation,rs.getString("status"),rs.getLong("version"),
-                retry||create?null:read(rs.getString("command_json"),DetectionAssignmentApi.Command.class),retry||create?null:read(rs.getString("before_json"),DetectionAssignmentApi.Values.class),
-                retry||create||result==null?null:read(result,DetectionAssignmentApi.Applied.class),rs.getString("reason_code"),rs.getTimestamp("created_at").toLocalDateTime(),rs.getTimestamp("expires_at").toLocalDateTime(),
-                preview,retry&&result!=null?read(result,DetectionExecutionApi.Receipt.class):null,creationPreview,create&&result!=null?read(result,DetectionCreationApi.Receipt.class):null),rs.getString("resource_version"),rs.getString("arguments_digest"),rs.getString("policy_version"),rs.getLong("user_id"));
-    }; }
-    private LocalDateTime now() {return jdbc.queryForObject("SELECT CURRENT_TIMESTAMP",java.sql.Timestamp.class).toLocalDateTime();}
+        return new Stored(new View(row.actionId(),row.runId(),row.sessionId(),operation,row.status(),row.version(),
+                retry||create?null:read(payload.commandJson(),DetectionAssignmentApi.Command.class),retry||create?null:read(payload.beforeJson(),DetectionAssignmentApi.Values.class),
+                retry||create||result==null?null:read(result,DetectionAssignmentApi.Applied.class),row.reasonCode(),display(row.createdAt()),display(row.expiresAt()),
+                preview,retry&&result!=null?read(result,DetectionExecutionApi.Receipt.class):null,creationPreview,create&&result!=null?read(result,DetectionCreationApi.Receipt.class):null),payload.resourceVersion(),row.digest(),payload.policyVersion(),row.userId());
+    }
+    private LocalDateTime now(){return persistence.now();}
+    private static LocalDateTime display(LocalDateTime utc){return utc==null?null:utc.plusHours(8);}
     private String write(Object value) {try{return json.writeValueAsString(value);}catch(Exception error){throw new IllegalStateException("操作参数序列化失败");}}
     private <T> T read(String value,Class<T> type) {try{return json.readValue(value,type);}catch(Exception error){throw new IllegalStateException("操作记录格式不正确");}}
     private static String digest(String value) {try{return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8)));}catch(Exception error){throw new IllegalStateException(error);}}

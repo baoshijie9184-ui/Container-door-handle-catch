@@ -14,10 +14,9 @@ class ResearchEvidenceExportServiceTest {
     ResearchEvidenceExportService exports;
     @BeforeEach void setup() throws Exception {
         fixture.workspace=workspace;fixture.setup();
-        fixture.migrate(Path.of("src/main/resources/db/migration-V33-agent-research-export.sql"));
         exports=new ResearchEvidenceExportService(fixture.evidence,fixture.jdbc,fixture.transactions,fixture.json);exports.schema();
     }
-    int audits(){return fixture.jdbc.queryForObject("SELECT COUNT(*) FROM agent_research_export_audit",Integer.class);}
+    int audits(){return fixture.jdbc.queryForObject("SELECT COUNT(*) FROM audit_event WHERE kind='RESEARCH_EXPORT'",Integer.class);}
     @Test void exportUsesCurrentOwnedViewWithExactByteHashAndMetadataOnlyReceipt() throws Exception {
         var run=fixture.begin(fixture.alice,"owned");String id=fixture.capture(run,"call","# 可核对标题\nPRIVATE_EXCERPT token=SECRET_VALUE");
         fixture.evidence.recordAnswer(fixture.alice,run.id(),"PRIVATE_ANSWER [source:"+id+"]");run.finish("COMPLETED");
@@ -29,15 +28,15 @@ class ResearchEvidenceExportServiceTest {
         assertThat(document.path("evidence").path("citations").size()).isEqualTo(1);
         assertThat(text).contains("PRIVATE_EXCERPT","可核对标题").doesNotContain("SECRET_VALUE","private-query","PRIVATE_ANSWER","username");
         assertThat(file.sha256()).isEqualTo(ResearchEvidenceService.sha256(text));
-        var audit=fixture.jdbc.queryForMap("SELECT * FROM agent_research_export_audit");
-        assertThat(audit.get("payload_sha256")).isEqualTo(file.sha256());assertThat(((Number)audit.get("payload_bytes")).intValue()).isEqualTo(file.bytes().length);
+        var audit=fixture.jdbc.queryForMap("SELECT * FROM audit_event WHERE kind='RESEARCH_EXPORT'");
+        assertThat(audit.get("content_sha256")).isEqualTo(file.sha256());assertThat(((Number)audit.get("quantity")).intValue()).isEqualTo(file.bytes().length);
         assertThat(audit.toString()).doesNotContain("PRIVATE_EXCERPT","可核对标题","1.1.1.1","PRIVATE_ANSWER");
         assertThat(fixture.journal.get(fixture.alice,run.id()).status()).isEqualTo("COMPLETED");
     }
     @Test void exportRechecksExpiryAndRetainsOnlyHistoricalReferenceAndCount() throws Exception {
         var run=fixture.begin(fixture.alice,"owned");String id=fixture.capture(run,"call","EXPIRED_PRIVATE_BODY");
         fixture.evidence.recordAnswer(fixture.alice,run.id(),"fact [source:"+id+"]");
-        fixture.jdbc.update("UPDATE agent_research_source SET expires_at=? WHERE source_id=?",LocalDateTime.now().minusDays(1),id);
+        fixture.jdbc.update("UPDATE content_revision SET expires_at=? WHERE asset_kind='RESEARCH_SOURCE' AND asset_id=?",LocalDateTime.now(java.time.ZoneOffset.UTC).minusDays(1),id);
         var file=exports.export(fixture.alice,run.id(),true);String text=new String(file.bytes(),StandardCharsets.UTF_8);var evidence=fixture.json.readTree(text).path("evidence");
         assertThat(evidence.path("sources").size()).isZero();assertThat(evidence.path("expiredSourceCount").asInt()).isEqualTo(1);
         assertThat(evidence.path("citations").get(0).path("sourceId").asText()).isEqualTo(id);
@@ -53,13 +52,13 @@ class ResearchEvidenceExportServiceTest {
     }
     @Test void failedAuditDoesNotReturnAFileAndLeavesSourceUntouched(){
         var run=fixture.begin(fixture.alice,"owned");fixture.capture(run,"call","PRIVATE_EXCERPT");
-        fixture.jdbc.execute("ALTER TABLE agent_research_export_audit ADD CONSTRAINT reject_export CHECK(payload_bytes<0)");
+        fixture.jdbc.execute("ALTER TABLE audit_event ADD CONSTRAINT reject_export CHECK(kind<>'RESEARCH_EXPORT')");
         assertThatThrownBy(()->exports.export(fixture.alice,run.id(),true)).isInstanceOf(org.springframework.dao.DataAccessException.class);
         assertThat(audits()).isZero();assertThat(fixture.evidence.view(fixture.alice,run.id()).sources()).singleElement().satisfies(s->assertThat(s.excerpt()).isEqualTo("PRIVATE_EXCERPT"));
     }
     @Test void missingMigrationFailsBeforeServingExports(){
-        fixture.jdbc.execute("DROP TABLE agent_research_export_audit");
-        assertThatThrownBy(exports::schema).hasMessageContaining("migration-V33-agent-research-export.sql");
+        fixture.jdbc.execute("DROP TABLE audit_event");
+        assertThatThrownBy(exports::schema).hasMessageContaining("compact");
     }
     @Test void separateExplicitExportsHaveDistinctReceipts() throws Exception {
         var run=fixture.begin(fixture.alice,"owned");fixture.capture(run,"call","fact");var workers=Executors.newFixedThreadPool(2);

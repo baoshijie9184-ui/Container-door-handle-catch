@@ -51,9 +51,7 @@ class AgentJournalIntegrationTest {
     @BeforeEach void setup() throws Exception {
         var source=new DriverManagerDataSource("jdbc:h2:mem:"+UUID.randomUUID()+";MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1","sa","");
         var jdbc=new JdbcTemplate(source);
-        String ddl=Files.readString(Path.of("src/main/resources/db/migration-V16-agentscope-run-journal.sql"))
-            .replaceAll(" COLLATE utf8mb4_bin","").replaceAll(" ENGINE=InnoDB DEFAULT CHARSET=utf8mb4","").replace("payload_json JSON","payload_json VARCHAR(8192)");
-        for(String sql:ddl.split(";"))if(!sql.isBlank())jdbc.execute(sql);
+        com.ruanzhu.doorhandle.module.ai.testsupport.CompactAgentJournalFixture.install(jdbc);
         var props=new AgentJournalProperties();props.setEnabled(true);journal=new JdbcAgentJournal(jdbc,new DataSourceTransactionManager(source),new ObjectMapper(),props);
         settings=new AgentScopeProperties();settings.setWorkspace(workspace.toString());
         model=mock(Model.class);when(model.getModelName()).thenReturn("fixture-model");

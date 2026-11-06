@@ -28,7 +28,7 @@ DIGEST = re.compile(r'sha256:[a-f0-9]{64}')
 CID = re.compile(r'[a-f0-9]{64}')
 ZONE = dt.timezone(dt.timedelta(hours=8))
 KEYS = ('json', 'identity', 'scope', 'review', 'evidence', 'context')
-CONTEXT_TABLES = ('agent_context_head','agent_context_summary','agent_context_offload','agent_context_origin','agent_context_turn','agent_context_audit','agent_context_bootstrap')
+CONTEXT_TABLES = ('runtime_state','content_asset','content_revision','content_link','audit_event')
 
 
 class GuardError(Exception):
@@ -103,21 +103,43 @@ def container(project, service, optional=False):
 
 def schema(mysql, table):
     # All table identifiers come from literals below, never from HTTP or model text.
-    require(table in ('agent_pending_action', 'detection_task', 'detection_identity_control',
-                      'detection_identity_command', 'operations_audit', 'detection_identity_mapping_batch', 'detection_identity_mapping_item',
-                      'detection_assignment_identity_event', 'detection_identity_source_control',
-                      'detection_identity_binding', 'detection_identity_binding_event',
-                      'detection_identity_reconciliation_report', 'detection_identity_reconciliation_item',
-                      'detection_identity_missing_name_evidence', *CONTEXT_TABLES), 'Unexpected metadata table')
+    require(table in ('workflow_instance','runtime_state','audit_event','detection_task',
+                      'content_asset','content_revision','content_link'), 'Unexpected compact metadata table')
     sql = "SELECT COLUMN_NAME FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='" + table + "';"
     return set(db(mysql, sql).split())
 
 
 def db(mysql, sql):
     require(mysql.get('State', {}).get('Running'), 'Existing MySQL must be running for metadata inspection')
+    database=mysql.get('_doorhandle_database') or environment(mysql).get('MYSQL_DATABASE')
+    require(re.fullmatch(r'[A-Za-z0-9_]{1,64}',database or ''),'Explicit database identity required')
     command = ('MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot --default-character-set=utf8mb4 '
-               '--batch --raw --skip-column-names "$MYSQL_DATABASE"')
-    return docker('exec', '-i', mysql['Id'], 'sh', '-ec', command, data=sql.encode(), timeout=90).decode().strip()
+               '--batch --raw --skip-column-names "$1"')
+    return docker('exec', '-i', mysql['Id'], 'sh', '-ec', command, '--', database, data=sql.encode(), timeout=90).decode().strip()
+
+
+def database_name(environment_value):
+    raw=environment_value.get('DB_URL','')
+    require(isinstance(raw,str) and raw.startswith('jdbc:mysql://'),'Explicit local MySQL JDBC target required')
+    try:
+        value=urlsplit(raw[5:]);database=value.path[1:]
+        valid=(value.hostname=='mysql' and (value.port or 3306)==3306 and not value.username
+               and not value.password and re.fullmatch(r'[A-Za-z0-9_]{1,64}',database))
+    except ValueError:
+        valid=False
+    require(valid,'Application JDBC target must select an explicit schema on the inspected MySQL service')
+    return database
+
+
+def selected_mysql(mysql, environment_value):
+    selected=dict(mysql);selected['_doorhandle_database']=database_name(environment_value)
+    return selected
+
+
+def check_current_database(current, database):
+    existing=database_name(environment(current))
+    require(existing==database or current.get('State',{}).get('Running') is False,
+            'Stop the old-schema application writer before a separately verified cross-schema cutover')
 
 
 def exists(mysql, sql):
@@ -128,68 +150,52 @@ def exists(mysql, sql):
 
 def data_floor(mysql):
     floor = {key: 0 for key in KEYS}
-    columns = schema(mysql, 'agent_pending_action')
-    if columns:
-        require({'operation', 'policy_version', 'command_json', 'before_json', 'result_json'} <= columns,
-                'Confirmation schema is incomplete')
-        require(not exists(mysql, "SELECT EXISTS(SELECT 1 FROM agent_pending_action WHERE operation='ASSIGN_QUALITY_TASK' AND (policy_version IS NULL OR policy_version NOT IN ('quality-assignment-confirmation-v1','quality-assignment-confirmation-v2')) LIMIT 1);"),
-                'An unknown assignment confirmation policy exists')
-        for column in ('command_json', 'before_json', 'result_json'):
-            require(not exists(mysql, "SELECT EXISTS(SELECT 1 FROM agent_pending_action WHERE operation='ASSIGN_QUALITY_TASK' AND " + column + " IS NOT NULL AND JSON_VALID(" + column + ")=0 LIMIT 1);"),
-                    'Stored assignment JSON is invalid; keep the current reader and reconcile')
-            null_check = column + ' IS NULL OR ' if column != 'result_json' else ''
-            require(not exists(mysql, "SELECT EXISTS(SELECT 1 FROM agent_pending_action WHERE operation='ASSIGN_QUALITY_TASK' AND (" + null_check + "CASE WHEN JSON_VALID(" + column + ") THEN JSON_TYPE(" + column + ")<>'OBJECT' ELSE 0 END) LIMIT 1);"),
-                    'Stored assignment JSON has an unsupported shape; retain the current reader')
-        checks = ("policy_version='quality-assignment-confirmation-v2'",
-                  "CASE WHEN JSON_VALID(command_json) THEN JSON_CONTAINS_PATH(command_json,'one','$.assigneeUserId','$.assigneeRevision') ELSE 0 END=1",
-                  "CASE WHEN JSON_VALID(before_json) THEN JSON_CONTAINS_PATH(before_json,'one','$.assigneeUserId','$.assignedByUserId','$.assignedByName','$.assignmentRevision') ELSE 0 END=1",
-                  "CASE WHEN JSON_VALID(result_json) THEN JSON_CONTAINS_PATH(result_json,'one','$.after.assigneeUserId','$.after.assignedByUserId','$.after.assignedByName','$.after.assignmentRevision') ELSE 0 END=1")
-        if exists(mysql, "SELECT EXISTS(SELECT 1 FROM agent_pending_action WHERE operation='ASSIGN_QUALITY_TASK' AND (" + ' OR '.join(checks) + ") LIMIT 1);"):
-            floor['json'] = 2
-    columns = schema(mysql, 'detection_task')
-    identity = {'assigned_by_user_id', 'assigned_by_identity_name', 'assigned_to_revision', 'assignment_identity_revision'}
-    if columns & identity:
-        require(identity <= columns, 'Assignment identity migration is incomplete')
-        require(not exists(mysql, 'SELECT EXISTS(SELECT 1 FROM detection_task WHERE assignment_identity_revision<0 LIMIT 1);'),
-                'Assignment identity revision is invalid')
-        if exists(mysql, 'SELECT EXISTS(SELECT 1 FROM detection_task WHERE assignment_identity_revision>0 OR assigned_by_user_id IS NOT NULL OR assigned_by_identity_name IS NOT NULL OR assigned_to_revision IS NOT NULL LIMIT 1);'):
-            floor['identity'] = 1
-    if schema(mysql, 'detection_assignment_identity_event'):
-        if exists(mysql, 'SELECT EXISTS(SELECT 1 FROM detection_assignment_identity_event LIMIT 1);'):
-            floor['identity'] = 1
-    if schema(mysql, 'detection_identity_control'):
-        modes = db(mysql, 'SELECT mode FROM detection_identity_control WHERE control_id=1;')
-        require(modes in ('ACTIVE', 'PREVIEW'), 'Stable identity mode is unknown')
-        if modes == 'ACTIVE':
-            floor['scope'] = 1
-    if schema(mysql, 'detection_identity_mapping_batch'):
-        if exists(mysql, 'SELECT EXISTS(SELECT 1 FROM detection_identity_mapping_batch LIMIT 1);'):
-            floor['review'] = 1
-    if schema(mysql, 'detection_identity_mapping_item'):
-        if exists(mysql, 'SELECT EXISTS(SELECT 1 FROM detection_identity_mapping_item LIMIT 1);'):
-            floor['review'] = 1
-    for table in ('detection_identity_binding', 'detection_identity_binding_event'):
-        if schema(mysql, table) and exists(mysql, 'SELECT EXISTS(SELECT 1 FROM '+table+' LIMIT 1);'):
-            floor['evidence'] = 1
-    if schema(mysql, 'detection_identity_source_control'):
-        mode = db(mysql, 'SELECT mode FROM detection_identity_source_control WHERE control_id=1;')
-        require(mode in ('COLLECTING', 'ACTIVE'), 'Identity evidence mode is unknown')
-        if mode == 'ACTIVE':
-            require(schema(mysql, 'detection_identity_control') and db(mysql, 'SELECT mode FROM detection_identity_control WHERE control_id=1;') == 'ACTIVE',
-                    'Active identity evidence cannot fall back to name-based authorization')
-            floor['evidence'] = 1
-    missing_schema=schema(mysql,'detection_identity_missing_name_evidence')
-    if missing_schema:
-        require({'batch_id','task_id','identity_role','original_name','source_snapshot','target_user_id','evidence_reference','created_at'}<=missing_schema,'Missing-name identity migration is incomplete')
-        if exists(mysql,'SELECT EXISTS(SELECT 1 FROM detection_identity_missing_name_evidence LIMIT 1);'):floor['evidence']=2
-    if schema(mysql,'detection_identity_binding_event') and exists(mysql,"SELECT EXISTS(SELECT 1 FROM detection_identity_binding_event WHERE source_kind='SUPERVISOR_MISSING_NAME' LIMIT 1);"):
-        floor['evidence']=2
-    if floor['evidence']:
-        floor['review'] = 1
-    if floor['identity'] or floor['review']:
-        floor['scope'] = 1
-    for table in CONTEXT_TABLES:
-        if schema(mysql,table) and exists(mysql,'SELECT EXISTS(SELECT 1 FROM '+table+' LIMIT 1);'):floor['context']=2
+    workflow = schema(mysql, 'workflow_instance')
+    state = schema(mysql, 'runtime_state')
+    audit = schema(mysql, 'audit_event')
+    require({'kind','payload_json','payload_version','result_json','result_version','agent_action_operation'}<=workflow
+            and {'namespace','owner_id','scope_key','state_code','payload_json'}<=state
+            and {'kind','action','payload_json','payload_version','resource_id'}<=audit,
+            'The complete compact assignment schema must be migrated before candidate activation')
+    selector="kind='AGENT_ACTION' AND agent_action_operation='ASSIGN_QUALITY_TASK'"
+    policy="JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.policyVersion'))"
+    require(not exists(mysql,"SELECT EXISTS(SELECT 1 FROM workflow_instance WHERE "+selector+" AND ("+policy+" IS NULL OR "+policy+" NOT IN ('quality-assignment-confirmation-v1','quality-assignment-confirmation-v2')) LIMIT 1);"),'An unknown assignment confirmation policy exists')
+    bodies={name:"JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$."+name+"'))" for name in ('commandJson','beforeJson')}
+    bodies['resultJson']="JSON_UNQUOTE(JSON_EXTRACT(result_json,'$.resultJson'))"
+    for name, body in bodies.items():
+        condition="("+body+" IS NULL OR NOT JSON_VALID("+body+") OR CASE WHEN JSON_VALID("+body+") THEN JSON_TYPE(CAST("+body+" AS JSON))<>'OBJECT' ELSE 0 END)"
+        if name=='resultJson':condition="result_json IS NOT NULL AND "+condition
+        require(not exists(mysql,"SELECT EXISTS(SELECT 1 FROM workflow_instance WHERE "+selector+" AND "+condition+" LIMIT 1);"),'Stored compact assignment JSON is invalid; retain the current reader')
+    checks=[policy+"='quality-assignment-confirmation-v2'",
+            "JSON_CONTAINS_PATH(CAST("+bodies['commandJson']+" AS JSON),'one','$.assigneeUserId','$.assigneeRevision')=1",
+            "JSON_CONTAINS_PATH(CAST("+bodies['beforeJson']+" AS JSON),'one','$.assigneeUserId','$.assignedByUserId','$.assignedByName','$.assignmentRevision')=1",
+            "CASE WHEN result_json IS NOT NULL THEN JSON_CONTAINS_PATH(CAST("+bodies['resultJson']+" AS JSON),'one','$.after.assigneeUserId','$.after.assignedByUserId','$.after.assignedByName','$.after.assignmentRevision') ELSE 0 END=1"]
+    if exists(mysql,"SELECT EXISTS(SELECT 1 FROM workflow_instance WHERE "+selector+" AND ("+' OR '.join(checks)+") LIMIT 1);"):floor['json']=2
+    task = schema(mysql,'detection_task')
+    require({'assigned_by_user_id','assigned_by_identity_name','assigned_to_revision','assignment_identity_revision'}<=task,
+            'Compact assignment identity projection is incomplete')
+    require(not exists(mysql,'SELECT EXISTS(SELECT 1 FROM detection_task WHERE assignment_identity_revision<0 LIMIT 1);'),'Assignment identity revision is invalid')
+    if exists(mysql,"SELECT EXISTS(SELECT 1 FROM detection_task WHERE assignment_identity_revision>0 OR assigned_by_user_id IS NOT NULL OR assigned_by_identity_name IS NOT NULL OR assigned_to_revision IS NOT NULL LIMIT 1);") or exists(mysql,"SELECT EXISTS(SELECT 1 FROM audit_event WHERE kind='DETECTION_ASSIGNMENT_IDENTITY' LIMIT 1);"):floor['identity']=1
+    control="namespace='DETECTION_IDENTITY_CONTROL' AND owner_id=0 AND scope_key='1'"
+    source="namespace='DETECTION_IDENTITY_SOURCE_CONTROL' AND owner_id=0 AND scope_key='1'"
+    mode=db(mysql,"SELECT state_code FROM runtime_state WHERE "+control+";")
+    require(mode in ('','ACTIVE','PREVIEW'),'Stable identity mode is unknown')
+    if mode=='ACTIVE':floor['scope']=1
+    if exists(mysql,"SELECT EXISTS(SELECT 1 FROM workflow_instance WHERE kind IN ('DETECTION_IDENTITY_MAP_BATCH','DETECTION_IDENTITY_MAP_ITEM','DETECTION_IDENTITY_REPORT') LIMIT 1);"):floor['review']=1
+    if exists(mysql,"SELECT EXISTS(SELECT 1 FROM runtime_state WHERE namespace='DETECTION_IDENTITY_BINDING' LIMIT 1);") or exists(mysql,"SELECT EXISTS(SELECT 1 FROM audit_event WHERE kind='DETECTION_IDENTITY_BINDING_EVENT' LIMIT 1);"):floor['evidence']=1
+    evidence_mode=db(mysql,"SELECT state_code FROM runtime_state WHERE "+source+";")
+    require(evidence_mode in ('','COLLECTING','ACTIVE'),'Identity evidence mode is unknown')
+    if evidence_mode=='ACTIVE':
+        require(mode=='ACTIVE','Active identity evidence cannot fall back to name authorization')
+        floor['evidence']=1
+    if exists(mysql,"SELECT EXISTS(SELECT 1 FROM audit_event WHERE kind='DETECTION_IDENTITY_MISSING_NAME' OR (kind='DETECTION_IDENTITY_BINDING_EVENT' AND action='SUPERVISOR_MISSING_NAME') LIMIT 1);"):floor['evidence']=2
+    if floor['evidence']:floor['review']=1
+    if floor['identity'] or floor['review']:floor['scope']=1
+    context_queries=("SELECT EXISTS(SELECT 1 FROM runtime_state WHERE namespace IN ('CONTEXT_HEAD','CONTEXT_BOOTSTRAP') LIMIT 1);",
+                     "SELECT EXISTS(SELECT 1 FROM content_asset WHERE asset_kind='CONTEXT_SUMMARY' LIMIT 1);",
+                     "SELECT EXISTS(SELECT 1 FROM content_link WHERE link_kind IN ('CONTEXT_SOURCE','TOOL_SOURCE') LIMIT 1);",
+                     "SELECT EXISTS(SELECT 1 FROM audit_event WHERE kind IN ('CONTEXT','CONTEXT_TURN') LIMIT 1);")
+    if any(exists(mysql,sql) for sql in context_queries):floor['context']=2
     return floor
 
 
@@ -294,59 +300,45 @@ def guard(state, config, *, project=PROJECT, pin=False, allow_initial=False):
         require(target_capabilities['identity'] == 1, 'Selected image does not declare the requested identity feature')
     if not boolean(desired_environment, GATE, True):
         require(target_capabilities['json'] == 2, 'Selected legacy image does not implement the assignment write gate')
-    mysql = container(project, 'mysql')
+    mysql = selected_mysql(container(project, 'mysql'), desired_environment)
     current = container(project, 'backend', optional=allow_initial)
-    database = environment(mysql).get('MYSQL_DATABASE')
+    database = mysql['_doorhandle_database']
     check_database(desired_environment, database)
     binding = database_binding(mysql, project)
     observed = data_floor(mysql)
     if boolean(desired_environment,'AGENT_DURABLE_CONTEXT_ENABLED'):
         require(target_capabilities['context']>=2 and boolean(desired_environment,'AGENT_WORKBENCH_ENABLED') and boolean(desired_environment,'AGENT_WORKBENCH_RECOVERY',True) and boolean(desired_environment,'AGENT_WORKBENCH_CHILDREN',True) and boolean(desired_environment,'AGENT_CONTEXT_COMPACTION_ENABLED'),'Persistent context requires compatible origins, durable children, recovery and compaction')
         expected_context={
-            'agent_context_head':{'user_id','session_id','agent_scope','revision','summary_id'},
-            'agent_context_summary':{'summary_id','user_id','session_id','agent_scope','revision','status','covered_through','history_sha256','summary_json','summary_sha256','message_state','sources_json','policy_version','run_id','before_chars','after_chars','original_state'},
-            'agent_context_offload':{'offload_id','user_id','session_id','agent_scope','call_id','file_id','content_sha256','byte_length','sources_json','sources_sha256'},
-            'agent_context_origin':{'user_id','session_id','agent_scope','call_key','logical_task_id','run_id','sources_json','sources_sha256'},
-            'agent_context_turn':{'user_id','session_id','message_id','sources_json','sources_sha256'},
-            'agent_context_audit':{'user_id','session_id','agent_scope','resource_id','action','content_sha256'},
-            'agent_context_bootstrap':{'user_id','session_id','logical_task_id','agent_scope','history_through','initial_state','initial_sha256','initialized'}}
-        require(all(fields<=schema(mysql,table) for table,fields in expected_context.items()),'V44 persistent context migration is incomplete')
+            'runtime_state':{'namespace','owner_id','scope_key','session_id','state_key','current_ref','payload_version','payload_json'},
+            'content_asset':{'asset_kind','identity_key','lifecycle','current_version'},
+            'content_revision':{'asset_kind','context_session_id','context_agent_scope','context_revision','context_covered_through'},
+            'content_link':{'link_kind','agent_scope','call_id','evidence_version','evidence_json'},
+            'audit_event':{'kind','owner_user_id','session_id','payload_version','payload_json'}}
+        require(all(fields<=schema(mysql,table) for table,fields in expected_context.items()),'Compact persistent context migration is incomplete')
     if boolean(desired_environment,'AGENT_CONTEXT_OFFLOAD_ENABLED'):
         require(boolean(desired_environment,'AGENT_DURABLE_CONTEXT_ENABLED') and boolean(desired_environment,'AGENT_WORKBENCH_FILES',True),'Context offloading requires persistent context and private files')
     if boolean(desired_environment,'DETECTION_IDENTITY_MISSING_NAME_REVIEW_ENABLED') or observed['evidence']>=2:
-        require({'batch_id','task_id','identity_role','original_name','source_snapshot','target_user_id','evidence_reference','created_at'}<=schema(mysql,'detection_identity_missing_name_evidence'),'V61 is required for explicit missing-name identity confirmation')
-    if boolean(desired_environment, 'DETECTION_IDENTITY_RECONCILIATION_ENABLED'):
-        require(boolean(desired_environment, 'DETECTION_IDENTITY_EVIDENCE_ENABLED'), 'Identity reconciliation requires the source evidence service')
-        require({'id', 'request_id', 'actor_user_id', 'actor_name', 'request_sha256', 'protocol', 'control_revision', 'identity_mode', 'source_mode', 'started_at', 'finished_at', 'task_count', 'role_count', 'issue_count', 'dataset_sha256', 'previous_report_id', 'summary_json'} <= schema(mysql, 'detection_identity_reconciliation_report')
-                and {'id', 'report_id', 'task_id', 'identity_role', 'existing_name', 'existing_user_id', 'identity_name', 'current_username', 'current_role', 'current_revision', 'source_kind', 'source_request_id', 'source_sha256', 'reason_codes', 'item_sha256'} <= schema(mysql, 'detection_identity_reconciliation_item'),
-                'Identity reconciliation migration columns are missing')
+        require({'kind','identity_task_id','identity_role','identity_parent_id','payload_json'}<=schema(mysql,'audit_event'),'Compact missing-name identity proof storage is required')
     if boolean(desired_environment, 'DETECTION_IDENTITY_EVIDENCE_ENABLED'):
-        require({'control_id', 'mode', 'activation_revision'} <= schema(mysql, 'detection_identity_source_control')
-                and {'task_id', 'identity_role', 'event_id', 'revision', 'event_sha256'} <= schema(mysql, 'detection_identity_binding')
-                and {'id', 'task_id', 'identity_role', 'revision', 'bound_user_id', 'bound_identity_name', 'target_revision', 'actor_user_id', 'actor_name', 'source_kind', 'request_id', 'source_batch_id', 'previous_sha256', 'event_sha256', 'created_at'} <= schema(mysql, 'detection_identity_binding_event'),
-                'Identity evidence migration columns are missing')
+        require({'namespace','current_ref','revision','payload_json'}<=schema(mysql,'runtime_state')
+                and {'kind','revision','previous_sha256','event_sha256','identity_task_id','identity_role'}<=schema(mysql,'audit_event'),
+                'Compact identity evidence migration columns are missing')
     if boolean(desired_environment, 'DETECTION_IDENTITY_REVIEW_ENABLED'):
-        require({'id', 'request_id', 'actor_user_id', 'actor_name', 'command_sha256', 'revision_before', 'revision_after', 'applied_count', 'result_json', 'created_at'} <= schema(mysql, 'detection_identity_mapping_batch')
-                and {'batch_id', 'task_id', 'identity_role', 'source_name', 'source_snapshot', 'previous_user_id', 'previous_identity_name', 'target_user_id', 'target_username', 'target_role', 'target_revision', 'confirmation_basis'} <= schema(mysql, 'detection_identity_mapping_item'),
-                'Historical identity review migration columns are missing')
+        require({'kind','identity_protocol','payload_json','result_json'}<=schema(mysql,'workflow_instance'),'Compact historical identity review storage is missing')
     if boolean(desired_environment, 'DETECTION_STABLE_IDENTITY_ENABLED'):
-        require({'control_id', 'mode', 'revision'} <= schema(mysql, 'detection_identity_control')
-                and {'request_id', 'actor_user_id', 'request_sha256', 'result_json'} <= schema(mysql, 'detection_identity_command')
-                and {'created_user_id', 'created_identity_name', 'assignee_user_id', 'assignee_identity_name',
-                     'reviewer_user_id', 'reviewer_identity_name', 'disposition_user_id', 'disposition_identity_name',
-                     'rework_user_id', 'rework_identity_name'} <= schema(mysql, 'detection_task'),
-                'Stable identity migration columns are missing; no automatic migration is allowed')
+        require({'namespace','state_code','revision'}<=schema(mysql,'runtime_state')
+                and {'created_user_id','created_identity_name','assignee_user_id','assignee_identity_name',
+                     'reviewer_user_id','reviewer_identity_name','disposition_user_id','disposition_identity_name',
+                     'rework_user_id','rework_identity_name'}<=schema(mysql,'detection_task'), 'Compact stable identity columns are missing')
     if boolean(desired_environment, 'OPERATIONS_AUDIT_ENABLED'):
-        require({'actor_user_id', 'scope', 'domain', 'action', 'resource_id', 'request_id', 'result', 'resource_version', 'created_at'} <= schema(mysql, 'operations_audit'),
-                'Operations audit migration columns are missing')
+        require({'actor_user_id','operation_scope','operation_domain','operation_result','resource_id','request_id','revision','occurred_at'}<=schema(mysql,'audit_event'),'Compact operations audit columns are missing')
     if boolean(desired_environment, 'DETECTION_ASSIGNMENT_BINDING_ENABLED'):
-        require({'assigned_by_user_id', 'assigned_by_identity_name', 'assigned_to_revision', 'assignment_identity_revision'} <= schema(mysql, 'detection_task')
-                and {'task_id', 'revision', 'actor_user_id', 'actor_name', 'assignee_user_id', 'assignee_name', 'assignee_revision', 'request_id', 'created_at'} <= schema(mysql, 'detection_assignment_identity_event'),
-                'Assignment identity migration columns are missing')
+        require({'assigned_by_user_id','assigned_by_identity_name','assigned_to_revision','assignment_identity_revision'}<=schema(mysql,'detection_task')
+                and {'kind','identity_task_id','revision','actor_user_id','payload_json'}<=schema(mysql,'audit_event'),'Compact assignment identity storage is missing')
     pinned = read_pin(state, project, binding)
     current_id, current_capabilities, current_potential = None, {key: 0 for key in KEYS}, {key: 0 for key in KEYS}
     if current:
-        check_database(environment(current), database)
+        check_current_database(current, database)
         current_id, current_capabilities = image(current['Image'])
         current_potential = potential(environment(current), current_capabilities)
     required = maximum(observed, pinned, current_potential, potential(desired_environment, target_capabilities))

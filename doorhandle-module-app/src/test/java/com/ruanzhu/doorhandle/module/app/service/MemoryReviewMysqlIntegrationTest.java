@@ -48,8 +48,7 @@ class MemoryReviewMysqlIntegrationTest {
                 privateConfig.toString(), "doorhandle_wb_verify_", "wb_verify_"));
         assertThat(jdbc.queryForObject("SELECT DATABASE()",String.class)).isEqualTo(database);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE()",Integer.class)).isZero();
-        String ddl=Files.readString(root.resolve("sql/mysql/migration-V26-personal-memory-governance.sql"));
-        for(String statement:ddl.split(";"))if(!statement.isBlank())jdbc.execute(statement);
+        com.ruanzhu.doorhandle.module.app.testsupport.CompactWorkflowFixture.install(jdbc);
         preferences=new MemoryPreferenceService(jdbc,new DataSourceTransactionManager(jdbc.getDataSource()));
         fixtures=JSON.readTree(Files.readString(Path.of(config.path("bridgeFixture").asText())));
         client=bridge(fixtures.path("bridgeUrl").asText());service=new PersonalMemoryService(client,preferences);
@@ -148,13 +147,13 @@ class MemoryReviewMysqlIntegrationTest {
 
     @Test @Order(5) void missingMysqlAuditBlocksNativeMutationAndRestoresTheIsolatedTable()throws Exception{
         var actor=owner("audit");var review=start("audit");
-        jdbc.execute("RENAME TABLE agent_memory_audit TO agent_memory_audit_temporarily_unavailable");
+        jdbc.execute("RENAME TABLE audit_event TO memory_audit_temporarily_unavailable");
         try{
             assertThatThrownBy(()->service.resolveReview(actor,review.id(),decision(review,candidate("audit"),UUID.randomUUID().toString()))).isInstanceOf(org.springframework.dao.DataAccessException.class);
             assertThat(client.getOwned(actor,candidate("audit")).lifecycle().revision()).isZero();
             assertThat(client.getReview(actor,review.id()).decisions()).isEmpty();
-        }finally{jdbc.execute("RENAME TABLE agent_memory_audit_temporarily_unavailable TO agent_memory_audit");}
-        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM agent_memory_audit WHERE content_digest NOT REGEXP '^[a-f0-9]{64}$' AND content_digest IS NOT NULL",Integer.class)).isZero();
+        }finally{jdbc.execute("RENAME TABLE memory_audit_temporarily_unavailable TO audit_event");}
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM audit_event WHERE kind='MEMORY_OPERATION' AND (content_sha256 IS NULL OR content_sha256 NOT REGEXP '^[a-f0-9]{64}$')",Integer.class)).isZero();
         checks.add("Unavailable real MySQL audit prevents native mutation; audit contains digests only");
     }
 

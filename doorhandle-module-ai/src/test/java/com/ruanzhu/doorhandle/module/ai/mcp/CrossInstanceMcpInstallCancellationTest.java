@@ -3,24 +3,28 @@ package com.ruanzhu.doorhandle.module.ai.mcp;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ruanzhu.doorhandle.module.ai.config.AgentScopeProperties;
 import org.junit.jupiter.api.*;
+import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
+import com.ruanzhu.doorhandle.module.ai.testsupport.CompactMcpMySqlFixture;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.time.Clock;
 import java.util.Map;
 import java.util.concurrent.*;
 import static org.assertj.core.api.Assertions.*;
 import static org.awaitility.Awaitility.await;
 import static org.mockito.Mockito.*;
 
-@Timeout(15)
+@EnabledIfSystemProperty(named="doorhandle.mcp.mysql.config",matches=".+")
+@Timeout(60)
 class CrossInstanceMcpInstallCancellationTest {
     @TempDir Path root;
     final PersistentMcpInstallQueueTest fixture=new PersistentMcpInstallQueueTest();
     final CountDownLatch entered=new CountDownLatch(1),interrupted=new CountDownLatch(1),release=new CountDownLatch(1);
     @BeforeEach void setup()throws Exception{fixture.root=root;fixture.setup();}
-    @AfterEach void close(){release.countDown();fixture.close();}
+    @AfterEach void close()throws Exception{release.countDown();fixture.close();}
     void block(boolean ignoreInterrupt)throws Exception{
         when(fixture.runtime.install(any())).thenAnswer(inv->{
             entered.countDown();
@@ -35,19 +39,19 @@ class CrossInstanceMcpInstallCancellationTest {
     void cancel(LocalMcpService other){var running=other.view(fixture.alice);other.cancelInstallation(fixture.alice,fixture.revision(running),(String)running.get("operationId"),true);}
     ThreadPoolExecutor executor(LocalMcpService worker){return (ThreadPoolExecutor)org.springframework.test.util.ReflectionTestUtils.getField(worker,"jobs");}
     void drained(LocalMcpService worker)throws Exception{executor(worker).submit(()->{}).get(3,TimeUnit.SECONDS);}
-    int successes(){return fixture.jdbc.queryForObject("SELECT COUNT(*) FROM agent_local_mcp_audit WHERE outcome='SUCCEEDED' AND action_name='INSTALL'",Integer.class);}
+    int successes(){return fixture.jdbc.queryForObject("SELECT COUNT(*) FROM audit_event WHERE kind='MCP' AND (outcome='SUCCEEDED' AND action='INSTALL') ",Integer.class);}
 
     @Test void busyWorkerObservesCommittedRemoteCancellationAndInterruptsItsOwnTask()throws Exception{
         block(false);start(fixture.service);var other=fixture.create();cancel(other);
         assertThat(interrupted.getCount()).isEqualTo(1); // 别的实例没有本地句柄，必须由执行节点轮询发现。
         fixture.service.dispatchInstallation();assertThat(interrupted.await(2,TimeUnit.SECONDS)).isTrue();drained(fixture.service);
         assertThat(fixture.phase()).isEqualTo("CANCELLED");assertThat(successes()).isZero();
-        assertThat(fixture.jdbc.queryForObject("SELECT COUNT(*) FROM agent_local_mcp_audit WHERE action_name='CANCEL_INSTALL'",Integer.class)).isEqualTo(1);
+        assertThat(fixture.jdbc.queryForObject("SELECT COUNT(*) FROM audit_event WHERE kind='MCP' AND (action='CANCEL_INSTALL') ",Integer.class)).isEqualTo(1);
     }
     @Test void validRunningJobIsNotInterruptedByBusyPolling()throws Exception{
         block(false);var queued=start(fixture.service);fixture.service.dispatchInstallation();fixture.service.dispatchInstallation();
         assertThat(interrupted.getCount()).isEqualTo(1);assertThat(fixture.phase()).isEqualTo("RUNNING");
-        String token=fixture.jdbc.queryForObject("SELECT worker_token FROM agent_mcp_install_job",String.class);
+        String token=fixture.jdbc.queryForObject("SELECT mcp_worker_token AS worker_token FROM workflow_instance WHERE kind='MCP_INSTALL_JOB'",String.class);
         var queue=new PersistentMcpInstallQueue(fixture.jdbc);String operation=(String)queued.get("operationId");
         assertThat(queue.executable(fixture.alice.userId(),operation,token)).isTrue();
         assertThat(queue.executable(fixture.bob.userId(),operation,token)).isFalse();
@@ -55,20 +59,20 @@ class CrossInstanceMcpInstallCancellationTest {
         release.countDown();fixture.completed(fixture.service);assertThat(successes()).isEqualTo(1);
     }
     @Test void leaseExpiryInterruptsBeforeTheSixtySecondExpirySweep()throws Exception{
-        block(false);start(fixture.service);fixture.jdbc.update("UPDATE agent_local_mcp SET lease_expires_at=?",LocalDateTime.now().minusDays(1));
+        block(false);start(fixture.service);fixture.jdbc.update("UPDATE agent_connector SET lease_expires_at=?",LocalDateTime.now(Clock.systemUTC()).minusDays(1));
         fixture.service.dispatchInstallation();assertThat(interrupted.await(2,TimeUnit.SECONDS)).isTrue();drained(fixture.service);
         assertThat(fixture.phase()).isEqualTo("RUNNING");assertThat(successes()).isZero();
         fixture.create().expire();assertThat(fixture.phase()).isEqualTo("EXPIRED");
     }
     @Test void changedWorkerTokenInterruptsWithoutOverwritingTheOtherWorkersRecord()throws Exception{
-        block(false);start(fixture.service);fixture.jdbc.update("UPDATE agent_mcp_install_job SET worker_token='new-worker-token'");
+        block(false);start(fixture.service);fixture.jdbc.update("UPDATE workflow_instance SET mcp_worker_token='new-worker-token' WHERE kind='MCP_INSTALL_JOB'");
         fixture.service.dispatchInstallation();assertThat(interrupted.await(2,TimeUnit.SECONDS)).isTrue();drained(fixture.service);
         assertThat(fixture.phase()).isEqualTo("RUNNING");assertThat(successes()).isZero();
-        assertThat(fixture.jdbc.queryForObject("SELECT worker_token FROM agent_mcp_install_job",String.class)).isEqualTo("new-worker-token");
+        assertThat(fixture.jdbc.queryForObject("SELECT mcp_worker_token AS worker_token FROM workflow_instance WHERE kind='MCP_INSTALL_JOB'",String.class)).isEqualTo("new-worker-token");
     }
     @Test void cancelAuditRollbackDoesNotInterruptTheStillAuthorizedWorker()throws Exception{
         block(false);start(fixture.service);var other=fixture.create();
-        fixture.jdbc.execute("ALTER TABLE agent_local_mcp_audit ADD CONSTRAINT deny_cancel CHECK(action_name<>'CANCEL_INSTALL')");
+        fixture.jdbc.execute("ALTER TABLE audit_event ADD CONSTRAINT deny_cancel CHECK(kind<>'MCP' OR action<>'CANCEL_INSTALL')");
         assertThatThrownBy(()->cancel(other)).isInstanceOf(org.springframework.dao.DataAccessException.class);
         fixture.service.dispatchInstallation();assertThat(interrupted.getCount()).isEqualTo(1);assertThat(fixture.phase()).isEqualTo("RUNNING");
         release.countDown();fixture.completed(fixture.service);assertThat(successes()).isEqualTo(1);
@@ -104,6 +108,6 @@ class CrossInstanceMcpInstallCancellationTest {
         assertThat(worker.view(fixture.alice)).containsEntry("status","INSTALLING").containsEntry("enabled",false);
         assertThat(fixture.phase()).isEqualTo("RUNNING");assertThat(successes()).isZero();
         worker.dispatchInstallation();verify(fixture.runtime,times(1)).install(any());
-        fixture.jdbc.update("UPDATE agent_local_mcp SET lease_expires_at=?",LocalDateTime.now().minusDays(1));worker.expire();assertThat(fixture.phase()).isEqualTo("EXPIRED");
+        fixture.jdbc.update("UPDATE agent_connector SET lease_expires_at=?",LocalDateTime.now(Clock.systemUTC()).minusDays(1));worker.expire();assertThat(fixture.phase()).isEqualTo("EXPIRED");
     }
 }

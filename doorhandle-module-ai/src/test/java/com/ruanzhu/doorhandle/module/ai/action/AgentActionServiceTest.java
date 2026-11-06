@@ -5,6 +5,8 @@ import com.ruanzhu.doorhandle.contracts.agent.*;
 import com.ruanzhu.doorhandle.module.ai.config.AgentActionProperties;
 import com.ruanzhu.doorhandle.module.ai.journal.AgentJournal;
 import org.junit.jupiter.api.*;
+import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
+import com.ruanzhu.doorhandle.module.ai.testsupport.CompactActionMySqlFixture;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.*;
 import java.nio.file.*;
@@ -13,19 +15,17 @@ import java.util.concurrent.*;
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
+@EnabledIfSystemProperty(named="doorhandle.action.mysql.config",matches=".+")
 class AgentActionServiceTest {
     private final AgentActor boss=new AgentActor(1,"boss",AgentActor.Role.SUPERVISOR),other=new AgentActor(2,"other",AgentActor.Role.SUPERVISOR),employee=new AgentActor(3,"alice",AgentActor.Role.INSPECTOR);
     private JdbcTemplate jdbc;private AgentActionService actions;private DetectionAssignmentApi assignments;private AgentActionProperties settings;
+    private CompactActionMySqlFixture fixture;
     private final DetectionAssignmentApi.Command command=new DetectionAssignmentApi.Command("task-1","质检站 A","alice",null,"检查任务");
     @BeforeEach void setup() throws Exception {
-        var source=new DriverManagerDataSource("jdbc:h2:mem:"+UUID.randomUUID()+";MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1","sa","");
-        jdbc=new JdbcTemplate(source);
-        var ddl=Files.readString(Path.of("src/main/resources/db/migration-V19-agent-confirmation.sql"))
-                .replace(" COLLATE utf8mb4_bin","").replace(" ENGINE=InnoDB DEFAULT CHARSET=utf8mb4","").replace(" JSON"," VARCHAR(8192)");
-        for(var sql:ddl.split(";"))if(!sql.isBlank())jdbc.execute(sql);
-        jdbc.execute("CREATE TABLE agent_run(run_id VARCHAR(128) PRIMARY KEY,user_id BIGINT,session_id VARCHAR(128),status VARCHAR(24))");
-        jdbc.update("INSERT INTO agent_run VALUES('run-1',1,'session-1','COMPLETED')");
-        jdbc.execute("CREATE TABLE fixture_task(id VARCHAR(128) PRIMARY KEY,writes INT NOT NULL,resource_version VARCHAR(64))");
+        fixture=new CompactActionMySqlFixture("doorhandle.action.mysql.config","doorhandle_agent_verify_","ecsit_",false);
+        var source=fixture.dataSource();jdbc=fixture.jdbc();
+        fixture.seedRun("run-1",1,"session-1");
+        fixture.installTarget("CREATE TABLE fixture_task(id VARCHAR(128) PRIMARY KEY,writes INT NOT NULL,resource_version VARCHAR(64)) ENGINE=InnoDB;");
         jdbc.update("INSERT INTO fixture_task VALUES('task-1',0,'revision-1')");
         assignments=mock(DetectionAssignmentApi.class);
         when(assignments.preview(any(),any())).thenAnswer(invocation->new DetectionAssignmentApi.Preview(invocation.getArgument(1),new DetectionAssignmentApi.Values(null,null,null,null,"DETECTED"),jdbc.queryForObject("SELECT resource_version FROM fixture_task",String.class)));
@@ -37,6 +37,7 @@ class AgentActionServiceTest {
         settings=new AgentActionProperties();settings.setEnabled(true);
         actions=new AgentActionService(jdbc,new DataSourceTransactionManager(source),new ObjectMapper(),journal,assignments,settings);actions.verifySchema();
     }
+    @AfterEach void cleanup()throws Exception{if(fixture!=null)fixture.close();}
     private AgentActionService.View propose(){return actions.propose(boss,"run-1","call-1",command);}
     private int writes(){return jdbc.queryForObject("SELECT writes FROM fixture_task",Integer.class);}
     @Test void proposalIsDurableAndNeverExecutesTheBusinessWrite(){
@@ -54,10 +55,10 @@ class AgentActionServiceTest {
     }
     @Test void rejectCancelAndExpirationNeverWrite(){
         var a=propose();assertThat(actions.decide(boss,a.actionId(),1,"REJECT").status()).isEqualTo("REJECTED");
-        jdbc.update("INSERT INTO agent_run VALUES('run-2',1,'session-2','COMPLETED')");
+        fixture.seedRun("run-2",1,"session-2");
         var b=actions.propose(boss,"run-2",null,command);assertThat(actions.decide(boss,b.actionId(),1,"CANCEL").status()).isEqualTo("CANCELLED");
-        jdbc.update("INSERT INTO agent_run VALUES('run-3',1,'session-3','COMPLETED')");
-        var c=actions.propose(boss,"run-3",null,command);jdbc.update("UPDATE agent_pending_action SET expires_at=DATEADD('MINUTE',-1,CURRENT_TIMESTAMP) WHERE action_id=?",c.actionId());
+        fixture.seedRun("run-3",1,"session-3");
+        var c=actions.propose(boss,"run-3",null,command);jdbc.update("UPDATE workflow_instance SET expires_at=UTC_TIMESTAMP(6)-INTERVAL 1 MINUTE WHERE kind='AGENT_ACTION' AND request_id=?",c.actionId());
         assertThat(actions.decide(boss,c.actionId(),1,"APPROVE").status()).isEqualTo("EXPIRED");assertThat(writes()).isZero();
     }
     @Test void otherAccountCannotReadConfirmCancelOrReadAudit(){
@@ -81,8 +82,8 @@ class AgentActionServiceTest {
     @Test void resourceVersionOrPolicyChangeInvalidatesWithoutWrite(){
         var a=propose();jdbc.update("UPDATE fixture_task SET resource_version='revision-2'");
         assertThat(actions.decide(boss,a.actionId(),1,"APPROVE").reasonCode()).isEqualTo("RESOURCE_CHANGED");
-        jdbc.update("INSERT INTO agent_run VALUES('run-2',1,'session-2','COMPLETED')");
-        var b=actions.propose(boss,"run-2",null,command);jdbc.update("UPDATE agent_pending_action SET policy_version='retired' WHERE action_id=?",b.actionId());
+        fixture.seedRun("run-2",1,"session-2");
+        var b=actions.propose(boss,"run-2",null,command);jdbc.update("UPDATE workflow_instance SET payload_json=JSON_SET(payload_json,'$.policyVersion','retired') WHERE kind='AGENT_ACTION' AND request_id=?",b.actionId());
         assertThat(actions.decide(boss,b.actionId(),1,"APPROVE").reasonCode()).isEqualTo("POLICY_CHANGED");assertThat(writes()).isZero();
     }
     @Test void canceledOriginAndStaleClientVersionDoNotExecute(){
@@ -90,13 +91,13 @@ class AgentActionServiceTest {
         jdbc.update("UPDATE agent_run SET status='CANCELLED'");assertThat(actions.decide(boss,a.actionId(),1,"APPROVE").reasonCode()).isEqualTo("ORIGIN_RUN_TERMINATED");assertThat(writes()).isZero();
     }
     @Test void auditFailureRollsBackAlreadyAppliedBusinessWrite(){
-        var a=propose();jdbc.execute("ALTER TABLE agent_action_audit ADD CONSTRAINT fixture_fail_audit CHECK(event_type<>'TOOL_EXECUTION_COMPLETED')");
+        var a=propose();jdbc.execute("ALTER TABLE audit_event ADD CONSTRAINT fixture_fail_audit CHECK(kind<>'AGENT_ACTION' OR action<>'TOOL_EXECUTION_COMPLETED')");
         assertThatThrownBy(()->actions.decide(boss,a.actionId(),1,"APPROVE")).isInstanceOf(org.springframework.dao.DataAccessException.class);
         assertThat(writes()).isZero();assertThat(actions.get(boss,a.actionId()).status()).isEqualTo("PENDING");
         assertThat(actions.audit(boss,a.actionId())).hasSize(1);
     }
     @Test void tamperedStoredArgumentsAndBusinessFailureCannotProduceSuccess(){
-        var a=propose();jdbc.update("UPDATE agent_pending_action SET command_json=REPLACE(command_json,'alice','evil') WHERE action_id=?",a.actionId());
+        var a=propose();jdbc.update("UPDATE workflow_instance SET payload_json=JSON_SET(payload_json,'$.commandJson',REPLACE(JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.commandJson')),'alice','evil')) WHERE kind='AGENT_ACTION' AND request_id=?",a.actionId());
         assertThatThrownBy(()->actions.decide(boss,a.actionId(),1,"APPROVE")).isInstanceOf(IllegalStateException.class);assertThat(writes()).isZero();
     }
     @Test void concurrentApprovalsProduceOneBusinessWrite() throws Exception {
@@ -109,7 +110,7 @@ class AgentActionServiceTest {
         settings.setEnabled(false);assertThatThrownBy(this::propose).hasMessageContaining("503");
         settings.setEnabled(true);assertThatThrownBy(()->actions.decide(boss,"invalid/id",1,"APPROVE")).hasMessageContaining("400");
         assertThatThrownBy(()->actions.decide(boss,"some-id",1,"invented")).hasMessageContaining("400");
-        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM agent_pending_action",Integer.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM workflow_instance WHERE kind='AGENT_ACTION'",Integer.class)).isZero();
     }
     @Test void dottedUsernameSessionsCanReadOwnActionsWithoutExpandingAccountOrOperationPermissions(){
         String session="sess_supervisor.demo_abc123";jdbc.update("UPDATE agent_run SET session_id=? WHERE run_id='run-1'",session);var pending=propose();
@@ -132,7 +133,7 @@ class AgentActionServiceTest {
         return new DetectionExecutionApi.RetryPreview("task-1",version,"FAILED","FAILED","dispatch-old",12,new java.math.BigDecimal("0.5"),2,"清空当前检测结果与复核、处置状态；不会自动放行");
     }
     @Test void employeeRetryProposalNeedsExplicitApprovalAndReusesOneCommand(){
-        var execution=retryFixture();jdbc.update("INSERT INTO agent_run VALUES('employee-run',3,'employee-session','COMPLETED')");
+        var execution=retryFixture();fixture.seedRun("employee-run",3,"employee-session");
         var pending=actions.proposeRetry(employee,"employee-run","retry-call","task-1");
         assertThat(pending.command()).isNull();assertThat(pending.retry().imageCount()).isEqualTo(2);assertThat(pending.status()).isEqualTo("PENDING");
         assertThat(writes()).isZero();verify(execution,never()).retry(any(),any(),any(),any());
@@ -160,7 +161,7 @@ class AgentActionServiceTest {
     }
     @Test void retryAuditFailureRollsBackDomainWriteAndKeepsPending(){
         retryFixture();var pending=actions.proposeRetry(boss,"run-1","retry-call","task-1");
-        jdbc.execute("ALTER TABLE agent_action_audit ADD CONSTRAINT fixture_retry_fail_audit CHECK(event_type<>'TOOL_EXECUTION_COMPLETED')");
+        jdbc.execute("ALTER TABLE audit_event ADD CONSTRAINT fixture_retry_fail_audit CHECK(kind<>'AGENT_ACTION' OR action<>'TOOL_EXECUTION_COMPLETED')");
         assertThatThrownBy(()->actions.decide(boss,pending.actionId(),1,"APPROVE")).isInstanceOf(org.springframework.dao.DataAccessException.class);
         assertThat(writes()).isZero();assertThat(actions.get(boss,pending.actionId()).status()).isEqualTo("PENDING");assertThat(actions.audit(boss,pending.actionId())).hasSize(1);
     }
@@ -174,7 +175,7 @@ class AgentActionServiceTest {
     @Test void retryTamperedSnapshotIsRefusedAndStaleVersionCannotApprove(){
         var execution=retryFixture();var pending=actions.proposeRetry(boss,"run-1","retry-call","task-1");
         assertThatThrownBy(()->actions.decide(boss,pending.actionId(),2,"APPROVE")).hasMessageContaining("409");
-        jdbc.update("UPDATE agent_pending_action SET before_json=REPLACE(before_json,'0.5','0.9') WHERE action_id=?",pending.actionId());
+        jdbc.update("UPDATE workflow_instance SET payload_json=JSON_SET(payload_json,'$.beforeJson',REPLACE(JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.beforeJson')),'0.5','0.9')) WHERE kind='AGENT_ACTION' AND request_id=?",pending.actionId());
         assertThatThrownBy(()->actions.decide(boss,pending.actionId(),1,"APPROVE")).isInstanceOf(IllegalStateException.class);
         assertThat(writes()).isZero();verify(execution,never()).retry(any(),any(),any(),any());
     }
@@ -183,7 +184,7 @@ class AgentActionServiceTest {
         assertThatThrownBy(()->actions.decide(other,pending.actionId(),1,"APPROVE")).hasMessageContaining("404");
         jdbc.update("UPDATE agent_run SET status='CANCELLED'");
         assertThat(actions.decide(boss,pending.actionId(),1,"APPROVE").reasonCode()).isEqualTo("ORIGIN_RUN_TERMINATED");
-        jdbc.update("INSERT INTO agent_run VALUES('retry-run-2',1,'session-2','COMPLETED')");
+        fixture.seedRun("retry-run-2",1,"session-2");
         var next=actions.proposeRetry(boss,"retry-run-2","retry-call","task-1");
         assertThat(actions.decide(boss,next.actionId(),1,"CANCEL").status()).isEqualTo("CANCELLED");
         verify(execution,never()).retry(any(),any(),any(),any());assertThat(writes()).isZero();
@@ -209,5 +210,28 @@ class AgentActionServiceTest {
             var first=pool.submit(confirm);var second=pool.submit(confirm);
             assertThat(first.get(10,TimeUnit.SECONDS)).isEqualTo("SUCCEEDED");assertThat(second.get(10,TimeUnit.SECONDS)).isEqualTo("SUCCEEDED");assertThat(writes()).isEqualTo(1);
         } finally {pool.shutdownNow();}
+    }
+    @Test void creationReservationAndUncertainResultNeverReplayTheBusinessOperation(){
+        var creation=mock(DetectionCreationApi.class);
+        var request=new DetectionCreationApi.Request(List.of(),12,new java.math.BigDecimal("0.5"),null);
+        var preview=new DetectionCreationApi.Preview("session-1",List.of(),new DetectionModelSelectionApi.Model(12,"fixture","v1","r1"),new java.math.BigDecimal("0.5"),null,"a".repeat(64));
+        when(creation.preview(boss,"session-1",request)).thenReturn(preview);
+        when(creation.reserve(any(),anyString(),anyString(),any())).thenAnswer(inv->{
+            assertThat(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive()).isTrue();
+            jdbc.update("UPDATE fixture_task SET writes=writes+1");
+            return new DetectionCreationApi.Receipt(inv.getArgument(1),"created-task",null,"PREPARING");
+        });
+        when(creation.receipt(any(),anyString())).thenReturn(Optional.empty());actions.setDetectionCreation(creation);
+        var pending=actions.proposeCreation(boss,"run-1","create-call",request,null);
+        assertThat(actions.decide(boss,pending.actionId(),1,"APPROVE").status()).isEqualTo("EXECUTING");
+        assertThat(actions.decide(boss,pending.actionId(),1,"APPROVE").status()).isEqualTo("EXECUTING");assertThat(writes()).isEqualTo(1);
+        when(creation.receipt(boss,pending.actionId())).thenReturn(Optional.of(new DetectionCreationApi.Receipt(pending.actionId(),"created-task",null,"NEEDS_REVIEW")));
+        var uncertain=actions.get(boss,pending.actionId());assertThat(uncertain.status()).isEqualTo("NEEDS_REVIEW");
+        assertThat(actions.decide(boss,pending.actionId(),1,"APPROVE")).isEqualTo(uncertain);
+        assertThat(jdbc.queryForObject("SELECT finished_at FROM workflow_instance WHERE request_id=?",java.time.LocalDateTime.class,pending.actionId())).isNull();
+        when(creation.receipt(boss,pending.actionId())).thenReturn(Optional.of(new DetectionCreationApi.Receipt(pending.actionId(),"created-task","dispatch-1","QUEUED")));
+        assertThat(actions.get(boss,pending.actionId()).status()).isEqualTo("SUCCEEDED");assertThat(writes()).isEqualTo(1);
+        verify(creation,times(1)).reserve(any(),eq(pending.actionId()),eq(pending.actionId()),eq(preview));
+        assertThat(actions.audit(boss,pending.actionId())).extracting(AgentActionService.Audit::eventType).contains("TOOL_EXECUTION_UNCONFIRMED","TOOL_EXECUTION_COMPLETED");
     }
 }

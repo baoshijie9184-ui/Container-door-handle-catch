@@ -1,0 +1,435 @@
+{
+  "schemaVersion": 1,
+  "status": "MIGRATION_ONLY_SOURCE_COLUMN_CATALOG",
+  "tables": {
+    "agent_local_mcp": {
+      "target": "agent_connector",
+      "discriminator": null,
+      "columns": [
+        "id",
+        "owner_user_id",
+        "server_key",
+        "package_version",
+        "status",
+        "enabled",
+        "revision",
+        "operation_id",
+        "request_id",
+        "lease_expires_at",
+        "manifest_json",
+        "manifest_sha256",
+        "error_code",
+        "created_at",
+        "updated_at"
+      ],
+      "mapping": {
+        "id": "id",
+        "owner_user_id": "owner_user_id",
+        "server_key": "server_key",
+        "package_version": "package_version",
+        "status": "status",
+        "enabled": "enabled",
+        "revision": "revision",
+        "operation_id": "operation_id",
+        "request_id": "request_id",
+        "lease_expires_at": "lease_expires_at",
+        "manifest_json": "manifest_json",
+        "manifest_sha256": "manifest_sha256",
+        "error_code": "error_code",
+        "created_at": "created_at",
+        "updated_at": "updated_at"
+      },
+      "defaults": {},
+      "natural": null
+    },
+    "agent_local_mcp_audit": {
+      "target": "audit_event",
+      "discriminator": "kind='MCP'",
+      "columns": [
+        "id",
+        "owner_user_id",
+        "server_key",
+        "action_name",
+        "outcome",
+        "revision",
+        "operation_id",
+        "run_id",
+        "call_id",
+        "detail_json",
+        "created_at"
+      ],
+      "mapping": {
+        "id": "id",
+        "owner_user_id": "owner_user_id",
+        "server_key": "resource_id",
+        "action_name": "action",
+        "outcome": "outcome",
+        "revision": "revision",
+        "operation_id": "request_id",
+        "run_id": "run_id",
+        "call_id": "call_id",
+        "detail_json": "JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.detailJson'))",
+        "created_at": "occurred_at"
+      },
+      "defaults": {},
+      "natural": null
+    },
+    "agent_mcp_install_job": {
+      "target": "workflow_instance",
+      "discriminator": "kind='MCP_INSTALL_JOB'",
+      "columns": [
+        "id",
+        "operation_id",
+        "owner_user_id",
+        "owner_username",
+        "runtime_sha256",
+        "status",
+        "worker_token",
+        "created_at",
+        "updated_at"
+      ],
+      "mapping": {
+        "id": "id",
+        "operation_id": "resource_id",
+        "owner_user_id": "owner_user_id",
+        "owner_username": "mcp_owner_username",
+        "runtime_sha256": "mcp_runtime_sha256",
+        "status": "status",
+        "worker_token": "mcp_worker_token",
+        "created_at": "created_at",
+        "updated_at": "updated_at"
+      },
+      "defaults": {},
+      "natural": "operation_id"
+    },
+    "agent_mcp_execution": {
+      "target": "workflow_instance",
+      "discriminator": "kind='MCP_EXECUTION'",
+      "columns": [
+        "id",
+        "execution_id",
+        "owner_user_id",
+        "installation_id",
+        "runtime_sha256",
+        "pool_id",
+        "purpose",
+        "state",
+        "revision",
+        "exit_verified",
+        "cleanup_confirmed",
+        "run_id",
+        "call_id",
+        "lease_expires_at",
+        "created_at",
+        "updated_at",
+        "transport",
+        "image_id"
+      ],
+      "mapping": {
+        "id": "id",
+        "execution_id": "resource_id",
+        "owner_user_id": "owner_user_id",
+        "installation_id": "mcp_installation_id",
+        "runtime_sha256": "mcp_runtime_sha256",
+        "pool_id": "mcp_pool_id",
+        "purpose": "mcp_purpose",
+        "state": "status",
+        "revision": "revision",
+        "exit_verified": "mcp_exit_verified",
+        "cleanup_confirmed": "mcp_cleanup_confirmed",
+        "run_id": "run_id",
+        "call_id": "call_id",
+        "lease_expires_at": "lease_expires_at",
+        "created_at": "created_at",
+        "updated_at": "updated_at",
+        "transport": "mcp_transport",
+        "image_id": "mcp_image_id"
+      },
+      "defaults": {
+        "revision": "0",
+        "exit_verified": "FALSE",
+        "cleanup_confirmed": "FALSE",
+        "transport": "'STREAMABLE_HTTP'"
+      },
+      "natural": "execution_id"
+    },
+    "agent_mcp_execution_command": {
+      "target": "workflow_instance",
+      "discriminator": "kind='MCP_EXECUTION_COMMAND'",
+      "columns": [
+        "id",
+        "owner_user_id",
+        "request_id",
+        "execution_id",
+        "request_sha256",
+        "status",
+        "created_at",
+        "updated_at"
+      ],
+      "mapping": {
+        "id": "id",
+        "owner_user_id": "owner_user_id",
+        "request_id": "request_id",
+        "execution_id": "resource_id",
+        "request_sha256": "request_sha256",
+        "status": "status",
+        "created_at": "created_at",
+        "updated_at": "updated_at"
+      },
+      "defaults": {},
+      "natural": "request_id"
+    },
+    "agent_fetch_installation": {
+      "target": "workflow_instance",
+      "discriminator": "kind='MCP_INSTALLATION'",
+      "columns": [
+        "id",
+        "owner_user_id",
+        "installation_id",
+        "prior_installation_id",
+        "state",
+        "revision",
+        "writer_exit_verified",
+        "retained_for_rollback",
+        "package_version",
+        "transport",
+        "image_id",
+        "manifest_json",
+        "manifest_sha256",
+        "cleanup_request",
+        "cleanup_expires_at",
+        "created_at",
+        "updated_at",
+        "reconcile_request",
+        "reconcile_expires_at",
+        "writer_evidence_code",
+        "reserved_bytes"
+      ],
+      "mapping": {
+        "id": "id",
+        "owner_user_id": "owner_user_id",
+        "installation_id": "resource_id",
+        "prior_installation_id": "mcp_prior_installation_id",
+        "state": "status",
+        "revision": "revision",
+        "writer_exit_verified": "mcp_writer_exit_verified",
+        "retained_for_rollback": "mcp_retained_for_rollback",
+        "package_version": "mcp_package_version",
+        "transport": "mcp_transport",
+        "image_id": "mcp_image_id",
+        "manifest_json": "mcp_manifest_json",
+        "manifest_sha256": "mcp_manifest_sha256",
+        "cleanup_request": "mcp_cleanup_request",
+        "cleanup_expires_at": "mcp_cleanup_expires_at",
+        "created_at": "created_at",
+        "updated_at": "updated_at",
+        "reconcile_request": "mcp_reconcile_request",
+        "reconcile_expires_at": "mcp_reconcile_expires_at",
+        "writer_evidence_code": "mcp_writer_evidence_code",
+        "reserved_bytes": "reserved_bytes"
+      },
+      "defaults": {
+        "revision": "0",
+        "writer_exit_verified": "FALSE",
+        "retained_for_rollback": "FALSE",
+        "reserved_bytes": "2097152"
+      },
+      "natural": "installation_id"
+    },
+    "agent_fetch_lifecycle_command": {
+      "target": "workflow_instance",
+      "discriminator": "kind='MCP_LIFECYCLE_COMMAND'",
+      "columns": [
+        "id",
+        "owner_user_id",
+        "request_id",
+        "installation_id",
+        "action_name",
+        "request_sha256",
+        "status",
+        "created_at",
+        "updated_at"
+      ],
+      "mapping": {
+        "id": "id",
+        "owner_user_id": "owner_user_id",
+        "request_id": "request_id",
+        "installation_id": "resource_id",
+        "action_name": "mcp_action",
+        "request_sha256": "request_sha256",
+        "status": "status",
+        "created_at": "created_at",
+        "updated_at": "updated_at"
+      },
+      "defaults": {},
+      "natural": "request_id"
+    },
+    "agent_mcp_install_worker": {
+      "target": "workflow_instance",
+      "discriminator": "kind='MCP_INSTALL_WORKER'",
+      "columns": [
+        "id",
+        "owner_user_id",
+        "installation_id",
+        "node_sha256",
+        "runtime_sha256",
+        "controller_pid",
+        "controller_started",
+        "container_id",
+        "container_started",
+        "controller_pool_id",
+        "state",
+        "revision",
+        "created_at",
+        "updated_at",
+        "writer_transport",
+        "native_pool_id"
+      ],
+      "mapping": {
+        "id": "id",
+        "owner_user_id": "owner_user_id",
+        "installation_id": "resource_id",
+        "node_sha256": "mcp_node_sha256",
+        "runtime_sha256": "mcp_runtime_sha256",
+        "controller_pid": "mcp_controller_pid",
+        "controller_started": "mcp_controller_started",
+        "container_id": "mcp_container_id",
+        "container_started": "mcp_container_started",
+        "controller_pool_id": "mcp_controller_pool_id",
+        "state": "status",
+        "revision": "revision",
+        "created_at": "created_at",
+        "updated_at": "updated_at",
+        "writer_transport": "mcp_transport",
+        "native_pool_id": "mcp_native_pool_id"
+      },
+      "defaults": {
+        "revision": "0",
+        "writer_transport": "'STREAMABLE_HTTP'"
+      },
+      "natural": "installation_id"
+    },
+    "agent_fetch_image": {
+      "target": "content_asset",
+      "discriminator": "asset_kind='CONNECTOR_IMAGE'",
+      "columns": [
+        "image_id",
+        "state",
+        "revision",
+        "cleanup_request",
+        "cleanup_owner_user_id",
+        "runner_pool_id",
+        "archive_sha256",
+        "image_absent",
+        "updated_at"
+      ],
+      "mapping": {
+        "image_id": "identity_key",
+        "state": "lifecycle",
+        "revision": "revision",
+        "cleanup_request": "connector_cleanup_request",
+        "cleanup_owner_user_id": "connector_cleanup_owner_user_id",
+        "runner_pool_id": "connector_runner_pool_id",
+        "archive_sha256": "connector_archive_sha256",
+        "image_absent": "connector_image_absent",
+        "updated_at": "updated_at"
+      },
+      "defaults": {
+        "state": "'ACTIVE'",
+        "revision": "0",
+        "image_absent": "FALSE"
+      },
+      "natural": null
+    },
+    "agent_fetch_image_command": {
+      "target": "workflow_instance",
+      "discriminator": "kind='MCP_IMAGE_COMMAND'",
+      "columns": [
+        "id",
+        "owner_user_id",
+        "request_id",
+        "image_id",
+        "request_sha256",
+        "action_name",
+        "state",
+        "created_at",
+        "updated_at",
+        "retention_protocol"
+      ],
+      "mapping": {
+        "id": "id",
+        "owner_user_id": "owner_user_id",
+        "request_id": "request_id",
+        "image_id": "resource_id",
+        "request_sha256": "request_sha256",
+        "action_name": "mcp_action",
+        "state": "status",
+        "created_at": "created_at",
+        "updated_at": "updated_at",
+        "retention_protocol": "mcp_retention_protocol"
+      },
+      "defaults": {
+        "retention_protocol": "3"
+      },
+      "natural": "request_id"
+    },
+    "agent_fetch_image_retention": {
+      "target": "content_link",
+      "discriminator": "link_kind='CONNECTOR_RETENTION'",
+      "columns": [
+        "reference_id",
+        "image_id",
+        "reference_kind",
+        "state",
+        "updated_at"
+      ],
+      "mapping": {
+        "reference_id": "subject_id",
+        "image_id": "target_id",
+        "reference_kind": "subject_type",
+        "state": "state",
+        "updated_at": "updated_at"
+      },
+      "defaults": {},
+      "natural": null
+    },
+    "agent_fetch_image_retention_control": {
+      "target": "runtime_state",
+      "discriminator": "namespace='MCP_RETENTION_CONTROL' AND owner_id=0",
+      "columns": [
+        "control_id",
+        "state",
+        "revision",
+        "updated_at"
+      ],
+      "mapping": {
+        "control_id": "CAST(scope_key AS SIGNED)",
+        "state": "state_code",
+        "revision": "revision",
+        "updated_at": "updated_at"
+      },
+      "defaults": {},
+      "natural": null
+    },
+    "agent_fetch_image_retention_event": {
+      "target": "audit_event",
+      "discriminator": "kind='MCP_RETENTION'",
+      "columns": [
+        "id",
+        "request_id",
+        "action_name",
+        "image_id",
+        "created_at"
+      ],
+      "mapping": {
+        "id": "id",
+        "request_id": "request_id",
+        "action_name": "action",
+        "image_id": "resource_id",
+        "created_at": "occurred_at"
+      },
+      "defaults": {},
+      "natural": null
+    }
+  }
+}

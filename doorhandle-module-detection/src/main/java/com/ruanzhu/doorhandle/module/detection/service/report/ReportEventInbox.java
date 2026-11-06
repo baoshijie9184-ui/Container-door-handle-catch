@@ -1,6 +1,9 @@
 package com.ruanzhu.doorhandle.module.detection.service.report;
 
 import com.ruanzhu.doorhandle.module.detection.repository.ReportEventRepository;
+import com.ruanzhu.doorhandle.module.detection.repository.ReportWorkflowRepository;
+import com.ruanzhu.doorhandle.module.detection.repository.ReportWorkflowProtocols;
+import com.ruanzhu.doorhandle.framework.persistence.workflow.WorkflowKind;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -10,8 +13,10 @@ import org.springframework.transaction.support.TransactionTemplate;
 @Service
 public class ReportEventInbox {
     private final JdbcTemplate jdbc;private final ReportEventRepository outbox;private final ReportEventCodec codec;private final TransactionTemplate tx;
+    private final ReportWorkflowRepository reports;
     public ReportEventInbox(JdbcTemplate jdbc,ReportEventRepository outbox,ReportEventCodec codec,PlatformTransactionManager manager){
         this.jdbc=jdbc;this.outbox=outbox;this.codec=codec;this.tx=new TransactionTemplate(manager);
+        this.reports=new ReportWorkflowRepository(jdbc,new com.fasterxml.jackson.databind.ObjectMapper());
     }
     public boolean receive(String key,String payload){
         var event=codec.decode(payload);
@@ -21,12 +26,18 @@ public class ReportEventInbox {
             throw new IllegalArgumentException("Report event is not bound to committed outbox");
         String digest=codec.digest(event);
         return Boolean.TRUE.equals(tx.execute(status->{
-            int inserted=jdbc.update("INSERT IGNORE INTO detection_report_event_receipt(event_id,report_id,event_type,report_version,payload_sha256,consumed_at) VALUES(?,?,?,?,?,CURRENT_TIMESTAMP)",event.eventId(),event.reportId(),event.eventType(),event.version(),digest);
-            var receipt=jdbc.queryForList("SELECT payload_sha256 FROM detection_report_event_receipt WHERE event_id=?",event.eventId());
-            if(receipt.size()!=1||!digest.equals(receipt.get(0).get("payload_sha256")))throw new IllegalStateException("Report event receipt conflict");
-            if(inserted==0)return false;
-            jdbc.update("INSERT IGNORE INTO detection_report_event_state(report_id,last_version,status,last_event_id,updated_at) VALUES(?,?,?,?,CURRENT_TIMESTAMP)",event.reportId(),event.version(),event.status(),event.eventId());
-            jdbc.update("UPDATE detection_report_event_state SET last_version=?,status=?,last_event_id=?,updated_at=CURRENT_TIMESTAMP WHERE report_id=? AND last_version<?",event.version(),event.status(),event.eventId(),event.reportId(),event.version());
+            var delivery=reports.workflows().findByRequest(WorkflowKind.REPORT_DELIVERY,ReportWorkflowRepository.DELIVERY_SCOPE,event.eventId()).orElseThrow();
+            var draft=ReportWorkflowRepository.draft(WorkflowKind.REPORT_CONSUMPTION,ReportWorkflowRepository.CONSUMPTION_SCOPE,event.eventId(),digest,
+                    delivery.ownerUserId(),event.actorUserId(),event.reportId(),event.version(),null,"COMPLETED",null,
+                    new ReportWorkflowProtocols.ConsumptionV1(event.eventType(),digest));
+            var receipt=reports.workflows().create(draft);
+            if(!draft.workflowId().equals(receipt.workflowId()))return false;
+            String body=reports.encode(new ReportWorkflowProtocols.EventStateV1(event.reportId(),event.eventId(),event.version(),event.status()));
+            // A report/version has one durable receipt; its read projection advances monotonically.
+            jdbc.update("INSERT INTO runtime_state(namespace,owner_id,scope_key,revision,state_code,current_ref,counter_value,payload_version,payload_json,created_at,updated_at) VALUES('REPORT_EVENT_STATE',0,?,1,?,?,?,1,?,UTC_TIMESTAMP(6),UTC_TIMESTAMP(6)) ON DUPLICATE KEY UPDATE scope_key=scope_key",
+                    event.reportId(),event.status(),event.eventId(),event.version(),body);
+            jdbc.update("UPDATE runtime_state SET revision=revision+1,state_code=?,current_ref=?,counter_value=?,payload_json=?,updated_at=UTC_TIMESTAMP(6) WHERE namespace='REPORT_EVENT_STATE' AND owner_id=0 AND scope_key=? AND counter_value<?",
+                    event.status(),event.eventId(),event.version(),body,event.reportId(),event.version());
             return true;
         }));
     }

@@ -45,7 +45,7 @@ class AgentSessionLocalMysqlTest {
             var roles=List.of(new SimpleGrantedAuthority("ROLE_INSPECTOR"));
             var auth=new UsernamePasswordAuthenticationToken(new TenantPrincipal(actor.userId(),actor.username(),"",roles),null,roles);SecurityContextHolder.getContext().setAuthentication(auth);
             var json=context.getBean(ObjectMapper.class);var sql=context.getBean(SqlSessionTemplate.class);var settings=new ChatAssistantProperties();
-            var sessions=new ChatSessionServiceImpl(sql.getMapper(ChatSessionMapper.class),sql.getMapper(ChatMessageMapper.class),sql.getMapper(ChatPendingActionMapper.class),settings,json);
+            var sessions=new ChatSessionServiceImpl(sql.getMapper(ChatSessionMapper.class),sql.getMapper(ChatMessageMapper.class),context.getBean(LegacyChatActionStore.class),settings,json);
             String session=sessions.createSession(actor.username()).getSessionId();
             var calls=new AtomicInteger();var prompts=new ArrayList<String>();var model=mock(Model.class);when(model.getModelName()).thenReturn("scripted-shared-session");
             when(model.stream(anyList(),anyList(),any())).thenAnswer(inv->{int call=calls.incrementAndGet();List<Msg> messages=inv.getArgument(0);prompts.add(messages.stream().map(Msg::getTextContent).collect(java.util.stream.Collectors.joining("\n")));return reactor.core.publisher.Flux.just(ChatResponse.builder().content(List.of(TextBlock.builder().text("统一回答第"+call+"轮").build())).finishReason("stop").build());});

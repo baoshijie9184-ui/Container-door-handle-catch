@@ -160,7 +160,7 @@ const agentNavigation = computed(() => [
   { path:'/agent/markets', label:'资源市场', icon:Search },
   { path:'/agent/memory', label:'个人记忆', icon:User },
   { path:'/agent/mcp', label:'MCP 工具', icon:Monitor },
-  ...(['SUPERVISOR','ADMIN'].includes(userStore.role) ? [{ path:'/agent/model-budgets', label:'模型额度', icon:DataAnalysis }] : []),
+  { path:'/agent/model-quotas', label:'LLM模型管理', icon:DataAnalysis },
   ...(userStore.role === 'SUPERVISOR' ? [{ path:'/agent/model-config', label:'模型配置', icon:Operation }] : [])
 ])
 
@@ -225,7 +225,8 @@ const navGroups = [
     items: [
       { path: '/agent/chat', label: '智能对话助手', desc: '完整页面对话工作区' },
       { path: '/agent/model-config', label: 'Agent 模型配置', desc: '版本策略与连接凭证', supervisorOnly:true },
-      { path: '/agent/model-budgets', label: '模型额度', desc: '每模型用量与供应商核对', supervisorOnly:true },
+      { path: '/agent/model-quotas', label: 'LLM模型管理', desc: '可用模型、个人额度与申请审批' },
+      { path: '/agent/model-budgets', label: '企业模型额度', desc: '企业用量与供应商核对', supervisorOnly:true },
       { path: '/operations/identity', label: '任务账号关联', desc: '历史身份核对与迁移', supervisorOnly:true },
       { path: '/operations/audit', label: '操作审计', desc: '业务变更与交付记录' },
       { path: '/agent/trace', label: 'Agent执行追溯', desc: '查看调用过程与关联结果' },

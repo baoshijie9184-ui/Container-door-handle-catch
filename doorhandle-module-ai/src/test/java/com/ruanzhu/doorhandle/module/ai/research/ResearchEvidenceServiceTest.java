@@ -26,8 +26,8 @@ public class ResearchEvidenceServiceTest {
     @BeforeEach protected void setup() throws Exception {
         var source=new DriverManagerDataSource("jdbc:h2:mem:"+UUID.randomUUID()+";MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1","sa","");
         jdbc=new JdbcTemplate(source);transactions=new DataSourceTransactionManager(source);
-        migrate(Path.of("src/main/resources/db/migration-V16-agentscope-run-journal.sql"));
-        migrate(Path.of("src/main/resources/db/migration-V31-agent-research-evidence.sql"));
+        com.ruanzhu.doorhandle.module.ai.testsupport.CompactAgentJournalFixture.install(jdbc);
+        com.ruanzhu.doorhandle.module.ai.testsupport.CompactContentFixture.install(jdbc);
         var settings=new AgentJournalProperties();settings.setEnabled(true);
         journal=new JdbcAgentJournal(jdbc,transactions,json,settings);journal.verifySchema();
         evidence=new ResearchEvidenceService(jdbc,transactions,json,journal);evidence.schema();
@@ -76,7 +76,7 @@ public class ResearchEvidenceServiceTest {
         evidence.recordAnswer(alice,run.id(),answer);evidence.recordAnswer(alice,run.id(),answer);
         var view=evidence.view(alice,run.id());assertThat(view.answerSha256()).isEqualTo(ResearchEvidenceService.sha256(answer));
         assertThat(view.citations()).containsExactly(new ResearchEvidenceDtos.Citation(id,answer.indexOf(marker),answer.length()));
-        assertThat(jdbc.queryForMap("SELECT * FROM agent_research_answer").toString()).doesNotContain("PRIVATE_ANSWER");
+        assertThat(jdbc.queryForMap("SELECT answer_sha256,answer_citations_json FROM agent_run WHERE run_id=?",run.id()).toString()).doesNotContain("PRIVATE_ANSWER");
         assertThatThrownBy(()->evidence.recordAnswer(alice,run.id(),"different")).hasMessageContaining("409");
     }
     @Test void duplicateCallsAreStableButChangedInputsAndContentCannotOverwriteEvidence() {
@@ -95,11 +95,11 @@ public class ResearchEvidenceServiceTest {
     }
     @Test void expiredSourcesReturnNoStoredAddressOrExcerptAndCannotAuthorizeANewCitation() {
         var run=begin(alice,"session");String id=capture(run,"fetch-1","PRIVATE_EXPIRED_SNIPPET");
-        jdbc.update("UPDATE agent_research_source SET expires_at=?",LocalDateTime.now().minusDays(1));
+        jdbc.update("UPDATE content_revision SET expires_at=? WHERE asset_kind='RESEARCH_SOURCE'",LocalDateTime.now().minusDays(1));
         evidence.recordAnswer(alice,run.id(),"[source:"+id+"]");var view=evidence.view(alice,run.id());
         assertThat(view.expiredSourceCount()).isEqualTo(1);assertThat(view.sources()).isEmpty();assertThat(view.citations()).isEmpty();assertThat(view.unresolvedCitationCount()).isEqualTo(1);
         assertThat(view.toString()).doesNotContain("PRIVATE_EXPIRED_SNIPPET","1.1.1.1");
-        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM agent_research_source",Long.class)).isEqualTo(1); // logical expiry, not physical deletion
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM content_asset WHERE asset_kind='RESEARCH_SOURCE'",Long.class)).isEqualTo(1); // logical expiry, not physical deletion
     }
     @Test void concurrentCaptureCannotExceedThePerRunBudget() throws Exception {
         var run=begin(alice,"session");for(int i=0;i<19;i++)capture(run,"fetch-"+i,"public");
@@ -137,7 +137,7 @@ public class ResearchEvidenceServiceTest {
                 if(calls.getAndIncrement()==0) block=ToolUseBlock.builder().id("fetch-live-1").name(com.ruanzhu.doorhandle.module.ai.mcp.FetchMcpRuntime.TOOL)
                         .input(Map.of("url","https://1.1.1.1/article")).content("{\"url\":\"https://1.1.1.1/article\"}").build();
                 else {
-                    String id=jdbc.queryForObject("SELECT source_id FROM agent_research_source",String.class);
+                    String id=jdbc.queryForObject("SELECT asset_id FROM content_asset WHERE asset_kind='RESEARCH_SOURCE'",String.class);
                     assertThat(json.writeValueAsString(inv.getArgument(0))).contains("[source:"+id+"]");
                     block=TextBlock.builder().text("Public fact [source:"+id+"]").build();
                 }

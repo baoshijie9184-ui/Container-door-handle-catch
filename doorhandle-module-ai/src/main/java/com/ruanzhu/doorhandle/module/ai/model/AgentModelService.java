@@ -135,9 +135,9 @@ public class AgentModelService implements AutoCloseable {
     }
 
     private ExecutionConfig execution() {
-        // 开启备用时由路由层负责切换，避免 SDK 重试把等待时间和重复费用叠加。
+        // Every paid attempt must have its own durable quota admission; hidden SDK retries cannot share one receipt.
         return ExecutionConfig.builder().timeout(connections.getTimeout())
-                .maxAttempts(connections.isFallbackEnabled() ? 1 : connections.getMaxRetries() + 1).build();
+                .maxAttempts(budget!=null||connections.isFallbackEnabled() ? 1 : connections.getMaxRetries() + 1).build();
     }
 
     private ProxyConfig proxy() {

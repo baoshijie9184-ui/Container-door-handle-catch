@@ -27,17 +27,13 @@ class SkillEvolutionTest {
     JdbcTemplate jdbc;SkillEvolutionService service;AgentJournal journal;BusinessUserDirectory users;final ObjectMapper json=new ObjectMapper().findAndRegisterModules();
     @BeforeEach void setup()throws Exception {
         var source=new DriverManagerDataSource("jdbc:h2:mem:"+UUID.randomUUID()+";MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1","sa","");jdbc=new JdbcTemplate(source);
-        String ddl=Files.readString(Path.of("../sql/mysql/migration-V23-agent-skill-evolution.sql")).replace(" JSON "," TEXT ").replace(" ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin","").replaceAll("(?m)^\\s*(?:UNIQUE )?KEY .*\\n","").replaceAll(",\\s*\\)","\n)");
-        for(String sql:ddl.split(";"))if(!sql.isBlank())jdbc.execute(sql);
-        jdbc.execute("ALTER TABLE agent_skill_version MODIFY source_run_id VARCHAR(128) NULL");
-        jdbc.execute("ALTER TABLE agent_skill_version ADD COLUMN source_type VARCHAR(32) NOT NULL DEFAULT 'RUN'");
-        jdbc.execute("ALTER TABLE agent_skill_version ADD COLUMN source_import_id VARCHAR(64) NULL");
-        jdbc.execute("CREATE TABLE agent_skill_import(id BIGINT AUTO_INCREMENT PRIMARY KEY,import_id VARCHAR(64) UNIQUE,owner_user_id BIGINT,request_id VARCHAR(64),request_sha256 CHAR(64),payload_json TEXT,payload_sha256 CHAR(64),created_at DATETIME,UNIQUE(owner_user_id,request_id))");
+        com.ruanzhu.doorhandle.module.ai.testsupport.CompactContentFixture.install(jdbc);
+        com.ruanzhu.doorhandle.module.ai.testsupport.CompactWorkflowFixture.install(jdbc);
         jdbc.execute("CREATE TABLE agent_run(run_id VARCHAR(128),user_id BIGINT,main_agent VARCHAR(64),status VARCHAR(16),lease_expires_at DATETIME)");
         journal=mock(AgentJournal.class);when(journal.enabled()).thenReturn(true);users=mock(BusinessUserDirectory.class);
         for(var actor:List.of(alice,bob,boss))when(users.current(actor.userId(),actor.username())).thenReturn(new BusinessUserDirectory.Identity(actor.userId(),actor.username(),actor.supervisor()));
-        when(journal.get(alice,"source-1")).thenReturn(new AgentJournal.RunView("source-1","s1","CHAT","employee-main","COMPLETED","fixture","policy",LocalDateTime.now(),LocalDateTime.now(),3));
-        when(journal.events(alice,"source-1",0,100)).thenReturn(List.of(new AgentJournal.EventView(1,"TOOL_COMPLETED",LocalDateTime.now(),Map.of("tool","get_task_detail","result","SUCCESS"))));
+        when(journal.get(alice,"source-1")).thenReturn(new AgentJournal.RunView("source-1","s1","CHAT","employee-main","COMPLETED","fixture","policy",LocalDateTime.now(java.time.ZoneOffset.UTC),LocalDateTime.now(java.time.ZoneOffset.UTC),3));
+        when(journal.events(alice,"source-1",0,100)).thenReturn(List.of(new AgentJournal.EventView(1,"TOOL_COMPLETED",LocalDateTime.now(java.time.ZoneOffset.UTC),Map.of("tool","get_task_detail","result","SUCCESS"))));
         when(journal.events(alice,"source-1",1,100)).thenReturn(List.of());
         service=new SkillEvolutionService(jdbc,new DataSourceTransactionManager(source),json,users,journal);service.schema();
     }
@@ -45,7 +41,7 @@ class SkillEvolutionTest {
     SkillDtos.View create(){service.capture(alice,"source-1");return service.create(alice,draft("request-one"));}
     SkillDtos.View publish(){var v=create();v=service.evaluate(alice,v.skillId(),v.revision());v=service.submit(alice,v.skillId(),v.revision());return service.decide(boss,v.skillId(),new SkillDtos.Decision(v.revision(),"APPROVE","已核对通用步骤及脱敏",true,true));}
     @Test void sourceConsentIsRequiredPrivateDraftCannotBeReadByBossOrOtherUserAndRequestDeduplicates(){
-        assertThatThrownBy(()->service.create(alice,draft("request-one"))).hasMessageContaining("授权");assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM agent_learned_skill",Long.class)).isZero();
+        assertThatThrownBy(()->service.create(alice,draft("request-one"))).hasMessageContaining("授权");assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM content_asset WHERE asset_kind='SKILL'",Long.class)).isZero();
         var v=create();assertThat(service.create(alice,draft("request-one")).skillId()).isEqualTo(v.skillId());
         assertThat(service.list(boss)).isEmpty();assertThatThrownBy(()->service.get(bob,v.skillId())).hasMessageContaining("无权限");assertThat(service.repository(alice).getAllSkills()).isEmpty();
         assertThat(v.audit()).hasSize(1);
@@ -54,8 +50,30 @@ class SkillEvolutionTest {
         when(journal.get(alice,"source-1")).thenReturn(new AgentJournal.RunView("source-1","s1","CHAT","employee-main","ERROR","fixture","policy",null,null,0));
         assertThatThrownBy(()->service.capture(alice,"source-1")).hasMessageContaining("已完成");verify(journal,never()).events(any(),any(),anyLong(),anyInt());
     }
+    @Test void repeatedConsentRetainsTheFirstEvidenceAndCannotBeReboundToAnotherContentVersion(){
+        var first=service.capture(alice,"source-1");
+        when(journal.events(alice,"source-1",0,100)).thenReturn(List.of(new AgentJournal.EventView(1,"TOOL_COMPLETED",LocalDateTime.now(java.time.ZoneOffset.UTC),Map.of("tool","get_resource_detail","result","SUCCESS"))));
+        assertThat(service.capture(alice,"source-1")).isEqualTo(first);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM audit_event WHERE kind='SKILL_SOURCE_GRANT'",Long.class)).isEqualTo(1);
+        assertThatThrownBy(()->jdbc.update("INSERT INTO audit_event(event_id,kind,owner_user_id,actor_user_id,resource_type,resource_id,run_id,request_id,request_scope,action,content_sha256,occurred_at,payload_version,payload_json) SELECT 'duplicate-grant',kind,owner_user_id,actor_user_id,resource_type,resource_id,run_id,request_id,request_scope,action,content_sha256,occurred_at,payload_version,payload_json FROM audit_event WHERE kind='SKILL_SOURCE_GRANT'"))
+                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+    }
+    @Test void evaluationGateUsesTypedVersionHashSuiteAndOutcomeAndAuditFailureRollsBackTheEvaluation(){
+        var view=create();String id=view.skillId();
+        jdbc.execute("ALTER TABLE audit_event ADD CONSTRAINT deny_eval_audit CHECK(action <> 'EVAL')");
+        assertThatThrownBy(()->service.evaluate(alice,id,view.revision())).isInstanceOf(org.springframework.dao.DataAccessException.class);
+        assertThat(service.get(alice,id).versions().get(0).status()).isEqualTo("DRAFT");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM audit_event WHERE kind='SKILL_EVALUATION'",Long.class)).isZero();
+        jdbc.execute("ALTER TABLE audit_event DROP CONSTRAINT deny_eval_audit");
+        var evaluated=service.evaluate(alice,id,view.revision());
+        assertThat(jdbc.queryForMap("SELECT revision,content_sha256,policy_version,outcome FROM audit_event WHERE kind='SKILL_EVALUATION'"))
+                .containsEntry("policy_version",SkillEvolutionService.SUITE).containsEntry("outcome","PASSED")
+                .containsEntry("content_sha256",evaluated.versions().get(0).sha256());
+        jdbc.update("UPDATE audit_event SET policy_version='expired-suite' WHERE kind='SKILL_EVALUATION'");
+        assertThatThrownBy(()->service.submit(alice,id,evaluated.revision())).hasMessageContaining("Eval");
+    }
     @Test void externalMcpReadsAndInstallProposalsAreNotSuccessfulBusinessExperience(){
-        when(journal.events(alice,"source-1",0,100)).thenReturn(List.of(new AgentJournal.EventView(1,"TOOL_COMPLETED",LocalDateTime.now(),Map.of("tool","mcp__fetch__fetch","result","SUCCESS")),new AgentJournal.EventView(2,"TOOL_COMPLETED",LocalDateTime.now(),Map.of("tool","propose_fetch_mcp_install","result","SUCCESS"))));
+        when(journal.events(alice,"source-1",0,100)).thenReturn(List.of(new AgentJournal.EventView(1,"TOOL_COMPLETED",LocalDateTime.now(java.time.ZoneOffset.UTC),Map.of("tool","mcp__fetch__fetch","result","SUCCESS")),new AgentJournal.EventView(2,"TOOL_COMPLETED",LocalDateTime.now(java.time.ZoneOffset.UTC),Map.of("tool","propose_fetch_mcp_install","result","SUCCESS"))));
         assertThatThrownBy(()->service.capture(alice,"source-1")).hasMessageContaining("没有已成功的业务工具");
     }
     @Test void serverEvalRejectsUnobservedToolsAndSuspiciousInstructions(){
@@ -71,7 +89,7 @@ class SkillEvolutionTest {
         int revision=v.revision();assertThatThrownBy(()->service.decide(alice,id,new SkillDtos.Decision(revision,"APPROVE","审核",true,true))).hasMessageContaining("主管");
         v=service.decide(boss,id,new SkillDtos.Decision(revision,"APPROVE","已核对步骤和隐私",true,true));assertThat(v.activeVersion()).isEqualTo(1);assertThat(service.repository(alice).getAllSkills()).hasSize(1);assertThat(service.repository(boss).getAllSkills()).isEmpty();
         assertThatThrownBy(()->service.decide(boss,id,new SkillDtos.Decision(revision,"APPROVE","重复",true,true))).hasMessageContaining("版本已变化");
-        jdbc.update("UPDATE agent_skill_version SET instructions_text='tampered' WHERE skill_id=?",id);
+        jdbc.update("UPDATE content_revision SET content_text='tampered' WHERE asset_kind='SKILL' AND asset_id=?",id);
         assertThatThrownBy(()->service.repository(alice)).hasMessageContaining("完整性");
     }
     @Test void versionRevisionDoesNotReplaceActiveSkillUntilApprovedAndRollbackArchivePreserveHistory(){
@@ -82,7 +100,7 @@ class SkillEvolutionTest {
     }
     @Test void auditFailureRollsBackPublishAndImmutableEvaluationResult(){
         var v=create();v=service.evaluate(alice,v.skillId(),1);v=service.submit(alice,v.skillId(),v.revision());
-        jdbc.execute("ALTER TABLE agent_skill_audit ADD CONSTRAINT deny_publish CHECK(action_name <> 'PUBLISH')");String id=v.skillId();int rev=v.revision();
+        jdbc.execute("ALTER TABLE audit_event ADD CONSTRAINT deny_publish CHECK(action <> 'PUBLISH')");String id=v.skillId();int rev=v.revision();
         assertThatThrownBy(()->service.decide(boss,id,new SkillDtos.Decision(rev,"APPROVE","审核",true,true))).isInstanceOf(org.springframework.dao.DataAccessException.class);
         assertThat(service.get(alice,id).activeVersion()).isNull();assertThat(service.get(alice,id).revision()).isEqualTo(rev);assertThat(service.get(alice,id).versions().get(0).status()).isEqualTo("SUBMITTED");
     }
@@ -100,15 +118,15 @@ class SkillEvolutionTest {
         verify(run).event(eq("AUTHORIZATION_ALLOWED"),argThat(p->SkillEvolutionService.LOAD.equals(p.get("tool"))));
     }
     @Test void modelProposalRequiresLiveOwnedRunAndPreviouslyGrantedSource(){
-        service.capture(alice,"source-1");jdbc.update("INSERT INTO agent_run VALUES('live-run',1,'employee-main','RUNNING',?)",LocalDateTime.now().plusMinutes(2));
+        service.capture(alice,"source-1");jdbc.update("INSERT INTO agent_run VALUES('live-run',1,'employee-main','RUNNING',?)",LocalDateTime.now(java.time.ZoneOffset.UTC).plusMinutes(2));
         var d=draft("proposal-request");var view=service.create(alice,d,"live-run","sdk-call");assertThat(view.audit().get(0)).containsEntry("run_id","live-run").containsEntry("call_id","sdk-call");
         assertThatThrownBy(()->service.create(bob,d,"live-run","foreign-call")).hasMessageContaining("运行");
         jdbc.update("UPDATE agent_run SET status='CANCELLED'");assertThatThrownBy(()->service.create(alice,d,"live-run","late-call")).hasMessageContaining("运行");
     }
     @Test void staleMarkerDoesNotStopReadsAndNinetyDayArchivePreservesApprovedVersions(){
-        var v=publish();jdbc.update("UPDATE agent_learned_skill SET activated_at=? WHERE skill_id=?",LocalDateTime.now().minusDays(40),v.skillId());service.curate();
+        var v=publish();jdbc.update("UPDATE content_asset SET activated_at=? WHERE asset_kind='SKILL' AND asset_id=?",LocalDateTime.now(java.time.ZoneOffset.UTC).minusDays(40),v.skillId());service.curate();
         assertThat(service.get(alice,v.skillId()).lifecycle()).isEqualTo("STALE");assertThat(service.repository(alice).getAllSkills()).hasSize(1);
-        jdbc.update("UPDATE agent_learned_skill SET activated_at=? WHERE skill_id=?",LocalDateTime.now().minusDays(100),v.skillId());service.curate();
+        jdbc.update("UPDATE content_asset SET activated_at=? WHERE asset_kind='SKILL' AND asset_id=?",LocalDateTime.now(java.time.ZoneOffset.UTC).minusDays(100),v.skillId());service.curate();
         assertThat(service.get(alice,v.skillId()).lifecycle()).isEqualTo("ARCHIVED");assertThat(service.repository(alice).getAllSkills()).isEmpty();assertThat(service.get(alice,v.skillId()).versions().get(0).status()).isEqualTo("APPROVED");
     }
     @Test void currentRoleAndDeactivationAreRecheckedBeforeNativeSkillReads(){
@@ -123,20 +141,20 @@ class SkillEvolutionTest {
             var external=new SkillDtos.Draft(d.name(),d.targetRole(),d.description(),d.instructions(),d.tools(),run,d.requestId(),"import-00000000-0000-0000-0000-000000000000");
             assertThatThrownBy(()->service.create(alice,external)).hasMessageContaining("外部 Skill 上传已移除");
         }
-        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM agent_learned_skill",Long.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM content_asset WHERE asset_kind='SKILL'",Long.class)).isZero();
     }
     @Test void historicalUploadedVersionsRemainVisibleButCannotBeEvaluatedPublishedRevisedOrLoaded(){
         var v=create();String id=v.skillId();int revision=v.revision();
-        jdbc.update("UPDATE agent_skill_version SET source_type='EXTERNAL_UPLOAD',source_run_id=NULL,source_import_id=?,evidence_json=? WHERE skill_id=?","import-00000000-0000-0000-0000-000000000000",serviceJson(Map.of("sourceType","EXTERNAL_UPLOAD","sourceUrl","https://example.org/skill","licenses",Map.of("LICENSE","Copyright Example Author"))),id);
+        jdbc.update("UPDATE content_revision SET source_type='EXTERNAL_UPLOAD',source_run_id=NULL,source_import_id=?,manifest_json=? WHERE asset_kind='SKILL' AND asset_id=?","import-00000000-0000-0000-0000-000000000000",serviceJson(Map.of("sourceType","EXTERNAL_UPLOAD","sourceUrl","https://example.org/skill","licenses",Map.of("LICENSE","Copyright Example Author"))),id);
         assertThat(service.get(alice,id).versions()).hasSize(1);
         assertThatThrownBy(()->service.get(bob,id)).hasMessageContaining("无权限");
         assertThatThrownBy(()->service.evaluate(alice,id,revision)).hasMessageContaining("已移除");
         assertThatThrownBy(()->service.submit(alice,id,revision)).hasMessageContaining("已移除");
         assertThatThrownBy(()->service.revise(alice,id,revision,draft("blocked-revision"))).hasMessageContaining("已移除");
-        jdbc.update("UPDATE agent_skill_version SET status='SUBMITTED' WHERE skill_id=?",id);
+        jdbc.update("UPDATE content_revision SET approval_status='SUBMITTED' WHERE asset_kind='SKILL' AND asset_id=?",id);
         assertThatThrownBy(()->service.decide(boss,id,new SkillDtos.Decision(revision,"APPROVE","核对历史记录",true,true))).hasMessageContaining("已移除");
-        jdbc.update("UPDATE agent_skill_version SET status='APPROVED' WHERE skill_id=?",id);
-        jdbc.update("UPDATE agent_learned_skill SET active_version=1,lifecycle='ACTIVE' WHERE skill_id=?",id);
+        jdbc.update("UPDATE content_revision SET approval_status='APPROVED',reviewer_user_id=3,reviewed_at=UTC_TIMESTAMP(6) WHERE asset_kind='SKILL' AND asset_id=?",id);
+        jdbc.update("UPDATE content_asset SET published_version=1,lifecycle='ACTIVE' WHERE asset_kind='SKILL' AND asset_id=?",id);
         assertThat(service.repository(alice).getAllSkills()).isEmpty();
         assertThatThrownBy(()->service.rollback(boss,id,new SkillDtos.Rollback(revision,1,"恢复历史版本"))).hasMessageContaining("已移除");
         assertThat(service.get(boss,id).versions().get(0).evidence().get("licenses")).isNotNull();
@@ -152,12 +170,12 @@ class SkillEvolutionTest {
         var duplicate=service.create(alice,draft("duplicate-name-request"));duplicate=service.evaluate(alice,duplicate.skillId(),duplicate.revision());duplicate=service.submit(alice,duplicate.skillId(),duplicate.revision());service.decide(boss,duplicate.skillId(),new SkillDtos.Decision(duplicate.revision(),"APPROVE","同名测试版本",true,true));
         assertThatThrownBy(()->service.commandSkill(alice,"task-progress",false,null,null)).hasMessageContaining("同名");
         assertThat(service.commandSkill(alice,id,false,null,null).metadata().skillId()).isEqualTo(id);
-        jdbc.update("UPDATE agent_skill_version SET source_type='EXTERNAL_UPLOAD',source_import_id='legacy' WHERE skill_id=?",duplicate.skillId());assertThat(service.availableSkills(alice)).hasSize(1);
+        jdbc.update("UPDATE content_revision SET source_type='EXTERNAL_UPLOAD',source_run_id=NULL,source_import_id='legacy' WHERE asset_kind='SKILL' AND asset_id=?",duplicate.skillId());assertThat(service.availableSkills(alice)).hasSize(1);
         service.archive(boss,id,new SkillDtos.Command(v.revision(),"停止使用"));assertThat(service.availableSkills(alice)).isEmpty();
         assertThatThrownBy(()->service.commandSkill(alice,id,false,null,null)).hasMessageContaining("不可用");
     }
     @Test void slashInvocationLoadsChosenSkillBeforeNativeModelAndRecordsOnlyMetadata()throws Exception {
-        var v=publish();jdbc.update("INSERT INTO agent_run VALUES('slash-live',1,'employee-main','RUNNING',?)",LocalDateTime.now().plusMinutes(2));
+        var v=publish();jdbc.update("INSERT INTO agent_run VALUES('slash-live',1,'employee-main','RUNNING',?)",LocalDateTime.now(java.time.ZoneOffset.UTC).plusMinutes(2));
         var audit=mock(AgentJournal.Run.class);when(audit.id()).thenReturn("slash-live");when(journal.begin(any(),anyString(),anyString(),anyString(),anyString(),anyString())).thenReturn(audit);
         var model=mock(Model.class);when(model.getModelName()).thenReturn("scripted-slash");
         var captured=new java.util.concurrent.atomic.AtomicReference<List<Msg>>();

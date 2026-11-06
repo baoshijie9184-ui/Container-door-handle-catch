@@ -22,6 +22,8 @@ const sections = [
   ['/agent/memory', '个人记忆', 'Collection', '智能助手'],
   ['/agent/mcp', 'MCP 工具', 'Operation', '智能助手'],
   ['/agent/model-config', '模型配置', 'Tickets', '智能助手'],
+  ['/agent/model-quotas', 'LLM模型管理', 'Cpu', '智能助手'],
+  ['/agent/model-budgets', '企业模型额度', 'DataAnalysis', '智能助手'],
   ['/upload', '图片上传', 'Upload', '检测业务'],
   ['/manual', '使用手册', 'Files', '帮助'],
   ['/home', '首页总览', 'DataAnalysis', '工作空间'],

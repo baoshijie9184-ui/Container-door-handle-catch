@@ -36,14 +36,7 @@ class ModelConfigurationServiceTest {
         if(mysql) dataSource=com.ruanzhu.doorhandle.module.ai.EcsIsolatedMysql.open(
                 System.getProperty("agent.model-config.mysql-file"), "doorhandle_model_verify_");
         jdbc=new JdbcTemplate(dataSource);
-        String sql=new String(Objects.requireNonNull(getClass().getResourceAsStream("/db/migration-V41-model-configuration.sql")).readAllBytes(),java.nio.charset.StandardCharsets.UTF_8);
-        // Same table/column/unique definitions; H2 cannot accept MySQL secondary-key clauses.
-        if(mysql){for(String table:List.of("agent_model_config_command","agent_model_json_probe","agent_model_revoked_key","agent_model_configuration","agent_model_config_control"))jdbc.execute("DROP TABLE IF EXISTS "+table);}
-        else sql=sql.replaceAll("(?m)^ KEY idx[^\\n]*\\n","").replaceAll(",\\s*\\)",")")
-                .replaceAll("ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin","");
-        try(var connection=dataSource.getConnection()){
-            org.springframework.jdbc.datasource.init.ScriptUtils.executeSqlScript(connection,new org.springframework.core.io.ByteArrayResource(sql.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
-        }
+        com.ruanzhu.doorhandle.module.ai.testsupport.CompactModelConfigurationFixture.install(jdbc);
         users=mock(BusinessUserDirectory.class);
         when(users.current(3,"boss")).thenReturn(new BusinessUserDirectory.Identity(3,"boss",true));
         when(users.current(4,"worker")).thenReturn(new BusinessUserDirectory.Identity(4,"worker",false));
@@ -54,9 +47,10 @@ class ModelConfigurationServiceTest {
         service=newService();service.bootstrap();
     }
 
-    ModelConfigurationService newService(){
+    ModelConfigurationService newService(){return newService(jdbc);}
+    ModelConfigurationService newService(JdbcTemplate template){
         var beans=new StaticListableBeanFactory(Map.of("memory",memory));
-        var result=new ModelConfigurationService(jdbc,new DataSourceTransactionManager(jdbc.getDataSource()),users,audit,json,props,agent,beans.getBeanProvider(MemoryModelConfigApi.class),keyFile.toString(),"qwen-plus");
+        var result=new ModelConfigurationService(template,new DataSourceTransactionManager(template.getDataSource()),users,audit,json,props,agent,beans.getBeanProvider(MemoryModelConfigApi.class),keyFile.toString(),"qwen-plus");
         result.setJsonProbe(probe);return result;
     }
     ModelConfigurationService.Document doc(){return service.get(boss,service.active().version()).document();}
@@ -69,13 +63,91 @@ class ModelConfigurationServiceTest {
         assertThat(service.active().defaultModel()).isEqualTo(agent.getModel());
         assertThat(doc().fallbackModels()).containsExactly("dashscope:glm-fixture");
         assertThat(json.writeValueAsString(service.list(boss))).doesNotContain("fixture-old-key","sealed_snapshot","apiKey","baseUrl","master.key");
-        assertThat(jdbc.queryForObject("SELECT sealed_snapshot FROM agent_model_configuration WHERE revision=1",String.class)).doesNotContain("fixture-old-key");
+        assertThat(jdbc.queryForObject("SELECT sealed_snapshot FROM llm_configuration WHERE revision=1",String.class)).doesNotContain("fixture-old-key");
         newService().bootstrap();assertThat(service.active().version()).isEqualTo(1);
     }
-    @Test void bootstrapDoesNotDropDefaultFromExplicitBackupOrder(){
-        jdbc.update("DELETE FROM agent_model_configuration");jdbc.update("UPDATE agent_model_config_control SET active_revision=0,sequence_value=0");
+    @Test void bootstrapDoesNotDropDefaultFromExplicitBackupOrder() throws Exception {
+        com.ruanzhu.doorhandle.module.ai.testsupport.CompactModelConfigurationFixture.install(jdbc);
         props.setFallbackModels(List.of("dashscope:qwen-plus","dashscope:glm-fixture"));newService().bootstrap();
         assertThat(doc().fallbackModels()).containsExactly("dashscope:qwen-plus","dashscope:glm-fixture");
+    }
+    @Test void existingEncryptedHistoryCannotBeBootstrappedWithoutItsControlRecord() throws Exception {
+        String original=jdbc.queryForObject("SELECT sealed_snapshot FROM llm_configuration WHERE revision=1",String.class);
+        // Simulate an incomplete restore in this already admitted disposable database.
+        // Dropping the fixture table is deliberate: the production DELETE trigger must block a reset.
+        jdbc.execute("DROP TABLE runtime_state");
+        com.ruanzhu.doorhandle.module.ai.testsupport.CompactCoordinationFixture.install(jdbc);
+        assertThatThrownBy(()->newService().bootstrap()).hasMessageContaining("禁止重新初始化");
+        assertThat(jdbc.queryForObject("SELECT sealed_snapshot FROM llm_configuration WHERE revision=1",String.class)).isEqualTo(original);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM llm_configuration",Long.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM runtime_state WHERE namespace='MODEL_CONFIG_CONTROL'",Long.class)).isZero();
+    }
+    @Test void restoredDatabaseRequiresItsOriginalEncryptionKey() throws Exception {
+        String original=jdbc.queryForObject("SELECT sealed_snapshot FROM llm_configuration WHERE revision=1",String.class);
+        byte[] replacement=new byte[32];Arrays.fill(replacement,(byte)7);
+        Files.writeString(keyFile,Base64.getEncoder().encodeToString(replacement));
+        assertThatThrownBy(()->newService().bootstrap()).hasMessageContaining("不能安全加载");
+        assertThat(jdbc.queryForObject("SELECT sealed_snapshot FROM llm_configuration WHERE revision=1",String.class)).isEqualTo(original);
+        assertThat(jdbc.queryForObject("SELECT counter_value FROM runtime_state WHERE namespace='MODEL_CONFIG_CONTROL'",Long.class)).isEqualTo(1);
+    }
+    @Test void conflictingPublishedHistoryCannotBeSilentlyAcceptedAtStartup() {
+        var candidate=draft("inconsistent-published",Map.of());
+        jdbc.update("UPDATE llm_configuration SET status='PUBLISHED' WHERE revision=?",candidate.revision());
+        assertThatThrownBy(()->newService().bootstrap()).hasMessageContaining("禁止重新初始化");
+        assertThat(jdbc.queryForObject("SELECT current_ref FROM runtime_state WHERE namespace='MODEL_CONFIG_CONTROL'",String.class)).isEqualTo("1");
+    }
+    @Test void concurrentMysqlProbeRequestsCannotRepeatThePaidExternalCheck() throws Exception {
+        Assumptions.assumeTrue(System.getProperty("agent.model-config.mysql-file")!=null,
+                "The stale-snapshot regression requires an admitted ECS MySQL fixture");
+        var candidate=draft("concurrent-probe",Map.of());
+        var firstHoldingLock=new CountDownLatch(1);
+        var contenderAtLock=new CountDownLatch(1);
+        var firstAudit=new java.util.concurrent.atomic.AtomicBoolean(true);
+        doAnswer(invocation->{
+            if(firstAudit.compareAndSet(true,false)) {
+                firstHoldingLock.countDown();
+                assertThat(contenderAtLock.await(10,TimeUnit.SECONDS)).isTrue();
+            }
+            return null;
+        }).when(audit).append(any());
+        var contenderJdbc=new JdbcTemplate(jdbc.getDataSource()) {
+            @Override public List<Map<String,Object>> queryForList(String sql,Object... arguments) {
+                if(sql.contains("SELECT current_ref,counter_value")&&sql.contains("FOR UPDATE"))contenderAtLock.countDown();
+                return super.queryForList(sql,arguments);
+            }
+        };
+        var contender=newService(contenderJdbc);
+        when(probe.check(any(),anyString())).thenReturn(true);
+        var executor=Executors.newFixedThreadPool(2);
+        try {
+            var first=executor.submit(()->service.probeJson(boss,candidate.revision(),"dashscope:qwen-plus","same-paid-probe"));
+            assertThat(firstHoldingLock.await(10,TimeUnit.SECONDS)).isTrue();
+            var second=executor.submit(()->contender.probeJson(boss,candidate.revision(),"dashscope:qwen-plus","same-paid-probe"));
+            assertThat(first.get(15,TimeUnit.SECONDS).status()).isEqualTo("PASSED");
+            assertThat(second.get(15,TimeUnit.SECONDS).status()).isIn("STARTED","PASSED");
+            verify(probe,times(1)).check(any(),anyString());
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM workflow_instance WHERE kind='MODEL_JSON_PROBE' AND request_id='same-paid-probe'",Long.class)).isEqualTo(1);
+        } finally {contenderAtLock.countDown();executor.shutdownNow();}
+    }
+    @Test void mysqlProtectsPermanentRevocationsAndConfigurationControl() {
+        Assumptions.assumeTrue(System.getProperty("agent.model-config.mysql-file")!=null,
+                "MySQL triggers require the admitted ECS fixture; H2 cannot prove them");
+        doThrow(new IllegalStateException("bridge unavailable")).when(memory).revokeCredential(anyString());
+        service.revoke(boss,"dashscope",1,"guard-revoke");
+        assertThatThrownBy(()->jdbc.update("DELETE FROM runtime_state WHERE namespace='MODEL_KEY_REVOCATION'"))
+                .isInstanceOf(org.springframework.dao.DataAccessException.class);
+        assertThatThrownBy(()->jdbc.update("UPDATE runtime_state SET namespace='OTHER' WHERE namespace='MODEL_KEY_REVOCATION'"))
+                .isInstanceOf(org.springframework.dao.DataAccessException.class);
+        assertThatThrownBy(()->jdbc.update("DELETE FROM runtime_state WHERE namespace='MODEL_CONFIG_CONTROL'"))
+                .isInstanceOf(org.springframework.dao.DataAccessException.class);
+        doNothing().when(memory).revokeCredential(anyString());
+        service.reconcileMemory();
+        assertThat(jdbc.queryForObject("SELECT counter_value FROM runtime_state WHERE namespace='MODEL_KEY_REVOCATION'",Long.class)).isEqualTo(1);
+        assertThatThrownBy(()->jdbc.update("UPDATE runtime_state SET counter_value=0 WHERE namespace='MODEL_KEY_REVOCATION'"))
+                .isInstanceOf(org.springframework.dao.DataAccessException.class);
+        assertThatThrownBy(()->jdbc.update("UPDATE runtime_state SET current_ref='0',counter_value=0 WHERE namespace='MODEL_CONFIG_CONTROL'"))
+                .isInstanceOf(org.springframework.dao.DataAccessException.class);
+        assertThatThrownBy(()->service.assertUsable(1,"dashscope:qwen-plus")).hasMessageContaining("不可用");
     }
     @Test void permissionsAreRefreshedAndForgedSupervisorRoleIsRejected(){
         assertThatThrownBy(()->service.list(new AgentActor(4,"worker",AgentActor.Role.SUPERVISOR))).isInstanceOf(SecurityException.class);
@@ -92,8 +164,8 @@ class ModelConfigurationServiceTest {
     @Test void auditFailureRollsBackDraftAndRevisionCounter(){
         doThrow(new IllegalStateException("audit unavailable")).when(audit).append(any());
         assertThatThrownBy(()->draft("audit-failed",Map.of())).hasMessage("audit unavailable");
-        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM agent_model_configuration",Long.class)).isEqualTo(1);
-        assertThat(jdbc.queryForObject("SELECT sequence_value FROM agent_model_config_control",Long.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM llm_configuration",Long.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT counter_value FROM runtime_state WHERE namespace='MODEL_CONFIG_CONTROL' AND owner_id=0 AND scope_key='GLOBAL'",Long.class)).isEqualTo(1);
     }
     @Test void retiredTaskSnapshotsKeepOldKeysWhileNewTasksSeeNewConfiguration(){
         var original=service.active();var candidate=draft("rotate",Map.of("dashscope","fixture-new-key"));
@@ -138,15 +210,19 @@ class ModelConfigurationServiceTest {
         doThrow(new IllegalStateException("bridge unavailable")).when(memory).revokeCredential(anyString());
         service.revoke(boss,"dashscope",1,"revoke-extraction");
         assertThatThrownBy(service::assertMemoryAvailable).hasMessageContaining("凭证已撤销");
-        assertThat(jdbc.queryForObject("SELECT memory_propagated FROM agent_model_revoked_key",Boolean.class)).isFalse();
+        assertThat(jdbc.queryForObject("SELECT counter_value FROM runtime_state WHERE namespace='MODEL_KEY_REVOCATION'",Boolean.class)).isFalse();
         doNothing().when(memory).revokeCredential(anyString());newService().reconcileMemory();
-        assertThat(jdbc.queryForObject("SELECT memory_propagated FROM agent_model_revoked_key",Boolean.class)).isTrue();
+        assertThat(jdbc.queryForObject("SELECT counter_value FROM runtime_state WHERE namespace='MODEL_KEY_REVOCATION'",Boolean.class)).isTrue();
     }
     @Test void jsonProbeReceiptPreventsPaidReplayAndUnknownAttemptStaysUnknown(){
         var candidate=draft("probe-draft",Map.of("dashscope","fixture-new-key"));compatible(candidate.revision(),"probe-once");
         service.probeJson(boss,candidate.revision(),"dashscope:qwen-plus","probe-once");verify(probe,times(1)).check(any(),anyString());
-        jdbc.update("INSERT INTO agent_model_json_probe(revision,model_id,request_id,status,created_at) VALUES(?,?,?,'STARTED',CURRENT_TIMESTAMP)",candidate.revision(),"dashscope:qwen-plus","lost-result");
-        assertThat(service.probeJson(boss,candidate.revision(),"dashscope:qwen-plus","lost-result").status()).isEqualTo("STARTED");verify(probe,times(1)).check(any(),anyString());
+        when(probe.check(any(),anyString())).thenThrow(new IllegalStateException("external result unknown"));
+        assertThatThrownBy(()->service.probeJson(boss,candidate.revision(),"dashscope:qwen-plus","lost-result"))
+                .hasMessage("external result unknown");
+        var restarted=newService();restarted.bootstrap();
+        assertThat(restarted.probeJson(boss,candidate.revision(),"dashscope:qwen-plus","lost-result").status()).isEqualTo("STARTED");
+        verify(probe,times(2)).check(any(),anyString());
         assertThatThrownBy(()->service.probeJson(boss,candidate.revision(),"dashscope:glm-fixture","probe-once")).hasMessageContaining("其他模型");
     }
     @Test void restoreCreatesReviewableDraftAndKeepsCurrentKeys(){

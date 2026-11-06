@@ -485,86 +485,33 @@ def test_entry_smoke_rejects_broken_or_external_module_resources(damage):
     with pytest.raises(RuntimeError): rehearsal.verify_ui_entries(Client())
 
 
-@pytest.mark.parametrize('existing,signature,creates,passes', [('0','status,user_id,id',True,True),('3','status,user_id,id',False,True),('3','id,user_id,status',False,False)])
-def test_fixed_candidate_migration_checks_existing_index_before_creating(tmp_path, existing, signature, creates, passes):
-    root = Path(__file__).resolve().parents[1]
-    calls = []
-    class Ops:
-        def db(self, container, sql):
-            assert container == 'owned-copy'
-            calls.append(sql)
-            if 'JSON_OBJECT' in sql: return ''
-            if 'COLUMN_NAME,LOWER(COLUMN_TYPE)' in sql:
-                migrated = any('ADD COLUMN inference_fps' in statement for statement in calls)
-                return model_fact_metadata() if migrated else ''
-            return existing if 'COUNT(*)' in sql else signature
-    run = rehearsal.Rehearsal.__new__(rehearsal.Rehearsal)
-    run.ops = Ops()
-    run.report = {}
-    run.persist = lambda: None
-    run.row = lambda service: {'Id': 'owned-copy'}
-    run.check = lambda name, condition: rehearsal.require(condition, name)
-    if passes: run.migrate_candidate(root)
-    else:
-        with pytest.raises(RuntimeError): run.migrate_candidate(root)
-    assert any('CREATE INDEX idx_conversation_input_dispatch_owner' in sql for sql in calls) == creates
-    if passes:
-        assert len(run.report['candidateMigrations']) == 28
-        assert run.report['candidateMigrations'][-4:] == [
-            'migration-V63-quality-knowledge.sql', 'migration-V64-model-budget.sql',
-            'migration-V65-quality-digests.sql', 'migration-V66-chat-message-execution.sql']
+def test_compact_rehearsal_rejects_metadata_drift_even_when_table_count_stays_29(tmp_path, monkeypatch):
+    observed={'contractSha256':'c'*64,'sqlSha256':'d'*64,'metadataSha256':'e'*64,
+              'serverUuid':'server','targetSchema':'owned_copy','tableCount':29}
+    queried=[]
+    helper=SimpleNamespace(inspect_database=lambda mysql,source,**kwargs:(queried.append(kwargs) or dict(observed)))
+    monkeypatch.setattr(rehearsal,'module',lambda name,path:helper)
+    run=rehearsal.Rehearsal.__new__(rehearsal.Rehearsal)
+    run.directory=tmp_path;run.report={};run.config={'services':{'backend':{'environment':{}}}}
+    run.row=lambda service:{'Id':'owned-mysql'}
+    run.assignment_guard=SimpleNamespace(selected_mysql=lambda row,env:row)
+    run.persist=lambda:None
+    assert run.verify_compact_schema(tmp_path,quiescent=True)
+    assert queried==[{'require_quiescent':True}]
+    observed['metadataSha256']='f'*64
+    with pytest.raises(RuntimeError,match='must not change'):
+        run.verify_compact_schema(tmp_path)
+    assert run.report['compactSchema']['metadataSha256']=='e'*64
 
 
-def model_fact_metadata():
-    return '\n'.join(name+'\t'+kind+'\tYES' for name,kind in (
-        ('training_image_count','int'),('training_completed_at','datetime'),('evaluation_image_count','int'),
-        ('no_detection_image_count','int'),('inference_fps','decimal(12,4)')))
-
-
-@pytest.mark.parametrize('metadata', [model_fact_metadata().replace('decimal(12,4)','double'),
-                                    model_fact_metadata().replace('int\tYES','int unsigned\tYES'),
-                                    model_fact_metadata().replace('\tYES','\tNO')])
-def test_candidate_existing_fact_type_mismatch_blocks_ddl(metadata):
-    calls=[]
-    class Ops:
-        def db(self, container, sql): calls.append(sql); return metadata
-    run=rehearsal.Rehearsal.__new__(rehearsal.Rehearsal);run.ops=Ops();run.row=lambda service:{'Id':'owned-copy'}
-    with pytest.raises(RuntimeError,match='type differs'):
-        run.migrate_candidate(Path(__file__).resolve().parents[1])
-    assert len(calls)==1 and 'information_schema.COLUMNS' in calls[0]
-
-
-def test_candidate_incomplete_post_migration_fact_columns_are_not_accepted():
-    class Ops:
-        def db(self, container, sql): return ''
-    run=rehearsal.Rehearsal.__new__(rehearsal.Rehearsal);run.ops=Ops();run.row=lambda service:{'Id':'owned-copy'}
-    with pytest.raises(RuntimeError,match='incomplete'):run.verify_model_fact_columns(complete=True)
-
-
-def test_migration_copy_mismatch_stops_before_any_database_operation(tmp_path):
-    file = tmp_path/'sql/mysql/migration-V39-conversation-owner-dispatch.sql'
-    mirror = tmp_path/'doorhandle-module-app/src/main/resources/db/migration-V39-conversation-owner-dispatch.sql'
-    for path in (file, mirror): path.parent.mkdir(parents=True)
-    file.write_text('CREATE INDEX expected;',encoding='utf8')
-    mirror.write_text('DIFFERENT;',encoding='utf8')
-    run = rehearsal.Rehearsal.__new__(rehearsal.Rehearsal)
-    run.row = lambda service: pytest.fail('Must not access a database when migration copies differ')
-    with pytest.raises(RuntimeError, match='copies differ'): run.migrate_candidate(tmp_path)
-
-
-@pytest.mark.parametrize('version', [63, 64, 65, 66])
-def test_quality_migration_mismatch_rejects_entire_plan_before_ddl(tmp_path, version):
-    root = Path(__file__).resolve().parents[1]
-    for number in range(39, 67):
-        sql = next((root/'sql/mysql').glob(f'migration-V{number}-*.sql'))
-        mirror = next(root.glob('doorhandle-*/src/main/resources/db/'+sql.name))
-        for source in (sql, mirror):
-            target = tmp_path/source.relative_to(root)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(source.read_bytes())
-        if number == version:
-            (tmp_path/mirror.relative_to(root)).write_text('DIFFERENT;', encoding='utf8')
-    run = rehearsal.Rehearsal.__new__(rehearsal.Rehearsal)
-    run.row = lambda service: pytest.fail('A mismatched migration must not access MySQL')
-    with pytest.raises(RuntimeError, match=f'V{version} migration copies differ'):
-        run.migrate_candidate(tmp_path)
+def test_compact_candidate_admission_performs_no_legacy_ddl(tmp_path):
+    run=rehearsal.Rehearsal.__new__(rehearsal.Rehearsal)
+    run.report={};calls=[]
+    run.verify_compact_schema=lambda source:calls.append(source)
+    run.check=lambda name,condition:rehearsal.require(condition,name)
+    run.row=lambda service:pytest.fail('Candidate admission must not invoke an old migration client')
+    run.ops=SimpleNamespace(db=lambda *args:pytest.fail('No DDL is allowed during compact application rehearsal'))
+    run.admit_candidate_schema(tmp_path)
+    assert calls==[tmp_path]
+    assert run.report['schemaChangedByRehearsal'] is False
+    assert run.report['candidateMigrations']==[]

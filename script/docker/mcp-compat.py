@@ -32,45 +32,43 @@ def capability(reference):
 
 
 def columns(mysql, table):
-    require(table in ('agent_mcp_execution', 'agent_fetch_installation', 'agent_mcp_install_worker', 'agent_mcp_install_job', 'agent_fetch_image', 'agent_fetch_image_command', 'agent_fetch_image_retention', 'agent_fetch_image_retention_control', 'agent_fetch_image_retention_event'), 'Unexpected MCP metadata table')
+    require(table in ('workflow_instance', 'content_asset', 'content_link', 'runtime_state', 'audit_event', 'agent_connector'), 'Unexpected compact MCP metadata table')
     return set(common.db(mysql, "SELECT COLUMN_NAME FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='" + table + "';").split())
 
 
 def observation(mysql):
+    """Inspect the compact physical tables and only registered MCP protocol rows."""
     floor, execution_pending, install_pending, installer_history = 0, False, False, False
-    execution = columns(mysql, 'agent_mcp_execution')
-    if 'transport' in execution:
-        require({'owner_user_id', 'installation_id', 'state', 'execution_id'} <= execution, 'MCP execution receipt schema is incomplete')
-        require(not common.exists(mysql, "SELECT EXISTS(SELECT 1 FROM agent_mcp_execution WHERE transport NOT IN ('STDIO','STREAMABLE_HTTP') LIMIT 1);"), 'Unknown MCP execution transport requires reconciliation')
-        if common.exists(mysql, "SELECT EXISTS(SELECT 1 FROM agent_mcp_execution WHERE transport='STDIO' LIMIT 1);"):
-            floor = 2
-        execution_pending = common.exists(mysql, "SELECT EXISTS(SELECT 1 FROM agent_mcp_execution WHERE transport='STDIO' AND state<>'REMOVED' LIMIT 1);")
-    worker = columns(mysql, 'agent_mcp_install_worker')
-    if 'writer_transport' in worker:
-        require({'native_pool_id', 'installation_id', 'owner_user_id'} <= worker, 'Native MCP installer evidence schema is incomplete')
-        require(not common.exists(mysql, "SELECT EXISTS(SELECT 1 FROM agent_mcp_install_worker WHERE writer_transport NOT IN ('STDIO','STREAMABLE_HTTP') LIMIT 1);"), 'Unknown MCP installer transport requires reconciliation')
-        if common.exists(mysql, "SELECT EXISTS(SELECT 1 FROM agent_mcp_install_worker WHERE writer_transport='STDIO' LIMIT 1);"):
-            floor, installer_history = 2, True
-    installation = columns(mysql, 'agent_fetch_installation')
+    operations = columns(mysql, 'workflow_instance')
+    images = columns(mysql, 'content_asset')
+    if not operations:
+        require(not images, 'Partial compact MCP schema requires reconciliation')
+        return floor, execution_pending, install_pending, installer_history, False
+    require({'kind', 'resource_id', 'owner_user_id', 'status', 'mcp_installation_id', 'mcp_transport',
+             'mcp_native_pool_id', 'mcp_writer_exit_verified', 'reserved_bytes'} <= operations,
+            'Compact MCP execution and installation schema is incomplete')
+    require(not common.exists(mysql, "SELECT EXISTS(SELECT 1 FROM workflow_instance WHERE kind='MCP_EXECUTION' AND (mcp_transport IS NULL OR mcp_transport NOT IN ('STDIO','STREAMABLE_HTTP')) LIMIT 1);"), 'Unknown MCP execution transport requires reconciliation')
+    if common.exists(mysql, "SELECT EXISTS(SELECT 1 FROM workflow_instance WHERE kind='MCP_EXECUTION' AND mcp_transport='STDIO' LIMIT 1);"):
+        floor = 2
+    execution_pending = common.exists(mysql, "SELECT EXISTS(SELECT 1 FROM workflow_instance WHERE kind='MCP_EXECUTION' AND mcp_transport='STDIO' AND status<>'REMOVED' LIMIT 1);")
+    require(not common.exists(mysql, "SELECT EXISTS(SELECT 1 FROM workflow_instance WHERE kind='MCP_INSTALL_WORKER' AND (mcp_transport IS NULL OR mcp_transport NOT IN ('STDIO','STREAMABLE_HTTP')) LIMIT 1);"), 'Unknown MCP installer transport requires reconciliation')
+    if common.exists(mysql, "SELECT EXISTS(SELECT 1 FROM workflow_instance WHERE kind='MCP_INSTALL_WORKER' AND mcp_transport='STDIO' LIMIT 1);"):
+        floor, installer_history = 2, True
     if installer_history:
-        require({'writer_exit_verified', 'transport', 'state', 'owner_user_id', 'installation_id', 'reserved_bytes'} <= installation, 'Native installer is missing its installation snapshot')
-        require(not common.exists(mysql, "SELECT EXISTS(SELECT 1 FROM agent_mcp_install_worker w LEFT JOIN agent_fetch_installation i ON i.owner_user_id=w.owner_user_id AND i.installation_id=w.installation_id WHERE w.writer_transport='STDIO' AND (i.installation_id IS NULL OR i.transport<>'STDIO' OR w.native_pool_id IS NULL) LIMIT 1);"), 'Native installer evidence is incomplete; retain the current reader')
-    if 'reserved_bytes' in installation:
-        require({'writer_exit_verified', 'transport', 'state'} <= installation, 'Native MCP installation schema is incomplete')
-        # Even a never-dispatched installation may have no worker row yet.
-        if common.exists(mysql, "SELECT EXISTS(SELECT 1 FROM agent_fetch_installation WHERE transport='STDIO' AND reserved_bytes>=536870912 LIMIT 1);"):
-            floor, installer_history = 2, True
-        install_pending = common.exists(mysql, "SELECT EXISTS(SELECT 1 FROM agent_fetch_installation i WHERE i.transport='STDIO' AND i.writer_exit_verified=FALSE AND i.state<>'REMOVED' AND (i.reserved_bytes>=536870912 OR EXISTS(SELECT 1 FROM agent_mcp_install_worker w WHERE w.owner_user_id=i.owner_user_id AND w.installation_id=i.installation_id AND w.writer_transport='STDIO')) LIMIT 1);")
-    image_history = False
-    images = columns(mysql, 'agent_fetch_image')
-    if images:
-        require({'image_id', 'state', 'revision', 'cleanup_request', 'cleanup_owner_user_id', 'runner_pool_id', 'archive_sha256', 'image_absent'} <= images, 'Shared image fence migration is incomplete')
-        require({'owner_user_id', 'request_id', 'image_id', 'request_sha256', 'action_name', 'state'} <= columns(mysql, 'agent_fetch_image_command'), 'Shared image command migration is incomplete')
-        image_history = common.exists(mysql, "SELECT EXISTS(SELECT 1 FROM agent_fetch_image WHERE state<>'ACTIVE' LIMIT 1);") or common.exists(mysql, "SELECT EXISTS(SELECT 1 FROM agent_fetch_image_command LIMIT 1);")
-        if image_history:
-            floor = 3
-        if 'retention_protocol' in columns(mysql,'agent_fetch_image_command') and common.exists(mysql,"SELECT EXISTS(SELECT 1 FROM agent_fetch_image_command WHERE retention_protocol>=4 LIMIT 1);"):
-            floor = 4
+        require(not common.exists(mysql, "SELECT EXISTS(SELECT 1 FROM workflow_instance w LEFT JOIN workflow_instance i ON i.kind='MCP_INSTALLATION' AND i.owner_user_id=w.owner_user_id AND i.resource_id=w.resource_id WHERE w.kind='MCP_INSTALL_WORKER' AND w.mcp_transport='STDIO' AND (i.id IS NULL OR i.mcp_transport<>'STDIO' OR w.mcp_native_pool_id IS NULL) LIMIT 1);"), 'Native installer evidence is incomplete; retain the current reader')
+    if common.exists(mysql, "SELECT EXISTS(SELECT 1 FROM workflow_instance WHERE kind='MCP_INSTALLATION' AND mcp_transport='STDIO' AND reserved_bytes>=536870912 LIMIT 1);"):
+        floor, installer_history = 2, True
+    install_pending = common.exists(mysql, "SELECT EXISTS(SELECT 1 FROM workflow_instance i WHERE i.kind='MCP_INSTALLATION' AND i.mcp_transport='STDIO' AND i.mcp_writer_exit_verified=FALSE AND i.status<>'REMOVED' AND (i.reserved_bytes>=536870912 OR EXISTS(SELECT 1 FROM workflow_instance w WHERE w.kind='MCP_INSTALL_WORKER' AND w.owner_user_id=i.owner_user_id AND w.resource_id=i.resource_id AND w.mcp_transport='STDIO')) LIMIT 1);")
+    require({'asset_kind', 'identity_key', 'lifecycle', 'revision', 'connector_cleanup_request',
+             'connector_cleanup_owner_user_id', 'connector_runner_pool_id', 'connector_archive_sha256',
+             'connector_image_absent'} <= images, 'Compact shared image fence schema is incomplete')
+    require({'mcp_image_id', 'request_sha256', 'mcp_action', 'mcp_retention_protocol'} <= operations,
+            'Compact shared image command schema is incomplete')
+    image_history = common.exists(mysql, "SELECT EXISTS(SELECT 1 FROM content_asset WHERE asset_kind='CONNECTOR_IMAGE' AND lifecycle<>'ACTIVE' LIMIT 1);") or common.exists(mysql, "SELECT EXISTS(SELECT 1 FROM workflow_instance WHERE kind='MCP_IMAGE_COMMAND' LIMIT 1);")
+    if image_history:
+        floor = 3
+    if common.exists(mysql, "SELECT EXISTS(SELECT 1 FROM workflow_instance WHERE kind='MCP_IMAGE_COMMAND' AND mcp_retention_protocol>=4 LIMIT 1);"):
+        floor = 4
     return floor, execution_pending, install_pending, installer_history, image_history
 
 
@@ -104,13 +102,13 @@ def guard(state, config, *, project=common.PROJECT, pin=False, allow_initial=Fal
     state = common.private_state(state); backend = config.get('services', {}).get('backend', {})
     desired = backend.get('environment', {}); require(isinstance(desired, dict), 'Resolved MCP Compose environment required')
     target, reader = capability(backend.get('image'))
-    mysql = common.container(project, 'mysql'); database = common.environment(mysql).get('MYSQL_DATABASE')
+    mysql = common.selected_mysql(common.container(project, 'mysql'), desired); database = mysql['_doorhandle_database']
     common.check_database(desired, database); binding = common.database_binding(mysql, project)
     observed, execution_pending, install_pending, installer_history, image_history = observation(mysql)
     current = common.container(project, 'backend', optional=allow_initial)
     current_image, current_reader, current_potential = None, 0, 0
     if current:
-        current_env = common.environment(current); common.check_database(current_env, database)
+        current_env = common.environment(current); common.check_current_database(current, database)
         current_image, current_reader = capability(current['Image']); current_potential = potential(current_env)
     held = read_pin(state, project, binding); future = potential(desired)
     require(type(minimum_protocol) is int and minimum_protocol in (0,2,3,4), 'Invalid runner-derived MCP protocol floor')
@@ -129,12 +127,12 @@ def guard(state, config, *, project=common.PROJECT, pin=False, allow_initial=Fal
         require(flag(desired, 'AGENT_MCP_SHARED_IMAGE_CLEANUP_ENABLED'), 'Shared image fences cannot lose their history and reconciliation interface')
     if flag(desired, 'AGENT_MCP_SHARED_IMAGE_CLEANUP_ENABLED'):
         require(not native(desired) and reader >= 4 and all(flag(desired, name) for name in ('AGENT_LOCAL_MCP_ENABLED', 'AGENT_MCP_EXECUTION_RECEIPTS_ENABLED', 'AGENT_MCP_DURABLE_INSTALL_ENABLED', 'AGENT_MCP_LIFECYCLE_ENABLED', 'AGENT_MCP_INSTALL_RECONCILIATION_ENABLED')), 'Shared image retirement requires deployment-aware gateway readers')
-        require({'image_id', 'cleanup_owner_user_id', 'archive_sha256'} <= columns(mysql, 'agent_fetch_image') and 'image_id' in columns(mysql, 'agent_mcp_execution'), 'V59 must be applied before shared image retirement')
-        require({'reference_id','image_id','reference_kind','state'} <= columns(mysql,'agent_fetch_image_retention') and {'control_id','state','revision'} <= columns(mysql,'agent_fetch_image_retention_control') and {'request_id','action_name','image_id'} <= columns(mysql,'agent_fetch_image_retention_event'),'V60 recovery-image retention is required before shared cleanup')
-        require('retention_protocol' in columns(mysql,'agent_fetch_image_command'),'Shared cleanup command protocol migration is missing')
+        require({'identity_key', 'asset_kind', 'connector_cleanup_owner_user_id', 'connector_archive_sha256'} <= columns(mysql, 'content_asset') and 'mcp_image_id' in columns(mysql, 'workflow_instance'), 'Compact shared image retirement schema is required')
+        require({'link_kind','subject_id','target_id','subject_type','state'} <= columns(mysql,'content_link') and {'namespace','owner_id','scope_key','state_code','revision'} <= columns(mysql,'runtime_state') and {'kind','request_id','action','resource_id'} <= columns(mysql,'audit_event'),'Compact recovery-image retention is required before shared cleanup')
+        require('mcp_retention_protocol' in columns(mysql,'workflow_instance'),'Compact shared cleanup command protocol is missing')
         target_image = desired.get('AGENT_MCP_GATEWAY_IMAGE', '')
         require(isinstance(target_image, str) and common.DIGEST.fullmatch(target_image), 'Fixed gateway image identity is required')
-        require(not common.exists(mysql, "SELECT EXISTS(SELECT 1 FROM agent_fetch_image WHERE image_id='" + target_image + "' AND state<>'ACTIVE' LIMIT 1);"), 'A retired or unresolved image cannot become the configured Fetch target')
+        require(not common.exists(mysql, "SELECT EXISTS(SELECT 1 FROM content_asset WHERE asset_kind='CONNECTOR_IMAGE' AND identity_key='" + target_image + "' AND lifecycle<>'ACTIVE' LIMIT 1);"), 'A retired or unresolved image cannot become the configured Fetch target')
         runner = common.container(project, 'mcp-runner', optional=allow_initial)
         desired_runner = config.get('services', {}).get('mcp-runner', {})
         require(flag(desired_runner.get('environment', {}), 'MCP_SHARED_IMAGE_CLEANUP_ENABLED'), 'Runner image lifecycle must be explicitly enabled')
@@ -146,16 +144,16 @@ def guard(state, config, *, project=common.PROJECT, pin=False, allow_initial=Fal
             require(len(metadata) == 1 and (metadata[0].get('Config', {}).get('Labels') or {}).get('io.doorhandle.mcp-image-lifecycle') == '2', 'Prepare a deployment-aware persistent runner before activating cleanup')
     if flag(desired, 'AGENT_LOCAL_MCP_ENABLED'):
         if flag(desired, 'AGENT_MCP_EXECUTION_RECEIPTS_ENABLED'):
-            require({'execution_id', 'owner_user_id', 'installation_id', 'pool_id', 'transport', 'purpose', 'state', 'exit_verified', 'cleanup_confirmed'} <= columns(mysql, 'agent_mcp_execution'), 'MCP execution receipt migrations are missing')
+            require({'kind', 'resource_id', 'owner_user_id', 'mcp_installation_id', 'mcp_pool_id', 'mcp_transport', 'mcp_purpose', 'status', 'mcp_exit_verified', 'mcp_cleanup_confirmed'} <= columns(mysql, 'workflow_instance'), 'Compact MCP execution receipt schema is missing')
         if flag(desired, 'AGENT_MCP_DURABLE_INSTALL_ENABLED'):
-            require({'operation_id', 'owner_user_id', 'status', 'worker_token', 'runtime_sha256'} <= columns(mysql, 'agent_mcp_install_job'), 'MCP durable installation migration is missing')
+            require({'kind', 'resource_id', 'owner_user_id', 'status', 'mcp_worker_token', 'mcp_runtime_sha256'} <= columns(mysql, 'workflow_instance'), 'Compact MCP durable installation schema is missing')
         if flag(desired, 'AGENT_MCP_LIFECYCLE_ENABLED'):
-            require({'installation_id', 'writer_exit_verified', 'reserved_bytes', 'reconcile_request', 'writer_evidence_code'} <= columns(mysql, 'agent_fetch_installation'), 'MCP installation lifecycle migrations are missing')
+            require({'kind', 'resource_id', 'mcp_writer_exit_verified', 'reserved_bytes', 'mcp_reconcile_request', 'mcp_writer_evidence_code'} <= columns(mysql, 'workflow_instance'), 'Compact MCP installation lifecycle schema is missing')
         if flag(desired, 'AGENT_MCP_INSTALL_RECONCILIATION_ENABLED'):
-            require({'writer_transport', 'native_pool_id', 'controller_pid', 'controller_started', 'node_sha256'} <= columns(mysql, 'agent_mcp_install_worker'), 'MCP installation reconciliation migrations are missing')
+            require({'kind', 'mcp_transport', 'mcp_native_pool_id', 'mcp_controller_pid', 'mcp_controller_started', 'mcp_node_sha256'} <= columns(mysql, 'workflow_instance'), 'Compact MCP installation reconciliation schema is missing')
     if native(desired) and flag(desired, 'AGENT_MCP_NATIVE_INSTALL_ENABLED'):
         require(all(flag(desired, name) for name in ('AGENT_LOCAL_MCP_ENABLED', 'AGENT_MCP_NATIVE_PROCESS_ENABLED', 'AGENT_MCP_EXECUTION_RECEIPTS_ENABLED', 'AGENT_MCP_DURABLE_INSTALL_ENABLED', 'AGENT_MCP_LIFECYCLE_ENABLED', 'AGENT_MCP_INSTALL_RECONCILIATION_ENABLED')), 'Native installation requires the durable queue and all receipt readers')
-        require({'writer_transport', 'native_pool_id'} <= columns(mysql, 'agent_mcp_install_worker') and 'reserved_bytes' in columns(mysql, 'agent_fetch_installation'), 'V58 is required before native MCP installation')
+        require({'mcp_transport', 'mcp_native_pool_id', 'reserved_bytes'} <= columns(mysql, 'workflow_instance'), 'Compact native MCP installation schema is required')
         raw_quota = desired.get('AGENT_MCP_STORAGE_QUOTA_BYTES', '268435456')
         require(isinstance(raw_quota, (str, int)) and str(raw_quota).isdigit() and 536870912 <= int(raw_quota) <= 4294967296, 'Native installation reservation exceeds the configured quota')
     if execution_pending or install_pending:

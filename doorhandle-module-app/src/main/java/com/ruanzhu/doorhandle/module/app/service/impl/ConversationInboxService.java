@@ -1,5 +1,9 @@
 package com.ruanzhu.doorhandle.module.app.service.impl;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.ruanzhu.doorhandle.framework.persistence.JdbcOwnerLock;
+import com.ruanzhu.doorhandle.framework.persistence.workflow.*;
+import com.ruanzhu.doorhandle.framework.persistence.workflow.WorkflowPayloads.ConversationInputV1;
 import com.ruanzhu.doorhandle.contracts.agent.*;
 import com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory;
 import com.ruanzhu.doorhandle.module.app.dto.chat.ChatSendMessageRequest;
@@ -19,172 +23,158 @@ import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.server.ResponseStatusException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.*;
 import java.util.concurrent.*;
 
-/** 只有用户明确提交的普通消息进入后台队列，steering 在 SDK 安全切点交付。 */
+/** Durable explicit input, with workflow identity and fenced one-shot dispatch. */
 @Service
 @ConditionalOnProperty(prefix="agentscope.conversation-control",name="enabled",havingValue="true")
 public class ConversationInboxService implements AgentSteeringInboxApi {
+    private static final WorkflowKind KIND=WorkflowKind.CONVERSATION_INPUT;
+    private static final Set<String> PENDING=Set.of("QUEUED","STARTED");
     public record Item(String id,String mode,String status,int revision,String content,String targetRunId){}
-    private final JdbcTemplate jdbc;private final TransactionTemplate tx;
-    private final ChatSessionService sessions;private final ChatConversationService chat;
-    private final BusinessUserDirectory users;private final ObjectProvider<AgentConversationControlApi> control;
+    private final JdbcTemplate jdbc; private final TransactionTemplate tx;
+    private final JdbcWorkflowStore workflows; private final JdbcAuditStore audits;
+    private final ChatSessionService sessions; private final ChatConversationService chat;
+    private final BusinessUserDirectory users; private final ObjectProvider<AgentConversationControlApi> control;
     private ObjectProvider<AgentWorkbenchApi> workbench;
     @org.springframework.beans.factory.annotation.Autowired public void setWorkbench(ObjectProvider<AgentWorkbenchApi> workbench){this.workbench=workbench;}
     private final ThreadPoolExecutor workers=new ThreadPoolExecutor(2,2,0,TimeUnit.SECONDS,new SynchronousQueue<>(),r->{var t=new Thread(r,"agent-conversation-inbox");t.setDaemon(true);return t;});
     private final ScheduledExecutorService scheduler=Executors.newSingleThreadScheduledExecutor(r->{var t=new Thread(r,"agent-conversation-input-dispatch");t.setDaemon(true);return t;});
-    // Process-local scan position only; durable input claims and execution receipts remain in MySQL.
     private long dispatchAfterUser,dispatchRoundMaxUser;
     public ConversationInboxService(JdbcTemplate jdbc,PlatformTransactionManager manager,ChatSessionService sessions,ChatConversationService chat,
             BusinessUserDirectory users,ObjectProvider<AgentConversationControlApi> control){
         this.jdbc=jdbc;this.sessions=sessions;this.chat=chat;this.users=users;this.control=control;
+        var json=new ObjectMapper();workflows=new JdbcWorkflowStore(jdbc,json);audits=new JdbcAuditStore(jdbc,json);
         tx=new TransactionTemplate(manager);tx.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);tx.setTimeout(5);
     }
     @PostConstruct public void schema(){
-        try{jdbc.queryForList("SELECT user_id FROM agent_conversation_input_owner WHERE 1=0");jdbc.queryForList("SELECT input_id,active_slot FROM agent_conversation_input WHERE 1=0");jdbc.queryForList("SELECT input_id FROM agent_conversation_input_audit WHERE 1=0");}
-        catch(org.springframework.dao.DataAccessException error){throw new IllegalStateException("对话控制需要先执行 migration-V36-conversation-inbox.sql");}
+        try{JdbcOwnerLock.validateSchema(jdbc);workflows.validateSchema();audits.validateSchema();}
+        catch(org.springframework.dao.DataAccessException error){throw new IllegalStateException("对话控制需要先执行 compact/005-workflow-runtime.sql",error);}
         if(control.getIfAvailable()==null)throw new IllegalStateException("对话控制需要 AgentScope 运行控制与日志");
     }
     @org.springframework.context.event.EventListener(org.springframework.boot.context.event.ApplicationReadyEvent.class)
     public void startDispatcher(){scheduler.scheduleWithFixedDelay(()->{try{dispatch();}catch(RuntimeException error){org.slf4j.LoggerFactory.getLogger(getClass()).warn("对话消息队列暂不可调度，请稍后刷新状态");}},1,1,TimeUnit.SECONDS);}
     private AgentActor fresh(AgentActor actor){var identity=users.current(actor.userId(),actor.username());return new AgentActor(identity.userId(),identity.username(),identity.supervisor()?AgentActor.Role.SUPERVISOR:AgentActor.Role.INSPECTOR);}
     private AgentActor owned(AgentActor actor,String session){var current=fresh(actor);var owner=sessions.resolveTenantForSystemCallback(session);if(owner.userId()!=current.userId())throw fail(404,"会话不存在或无权限");sessions.verifySessionOwner(current.username(),session);return current;}
-    private void lock(long user){jdbc.update("INSERT INTO agent_conversation_input_owner(user_id) VALUES(?) ON DUPLICATE KEY UPDATE user_id=VALUES(user_id)",user);jdbc.queryForObject("SELECT user_id FROM agent_conversation_input_owner WHERE user_id=? FOR UPDATE",Long.class,user);}
-    private LocalDateTime now(){return jdbc.queryForObject("SELECT CURRENT_TIMESTAMP(6)",LocalDateTime.class);}
+    private void lock(long user){JdbcOwnerLock.lock(jdbc,JdbcOwnerLock.Scope.CONVERSATION_INPUT,user);}
+    private LocalDateTime now(){return workflows.now();}
     private static String hash(String content){try{return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(content.getBytes(StandardCharsets.UTF_8)));}catch(Exception error){throw new IllegalStateException(error);}}
-    private void audit(Map<String,Object> row,String action){jdbc.update("INSERT INTO agent_conversation_input_audit(input_id,user_id,action,revision,content_sha256) VALUES(?,?,?,?,?)",row.get("input_id"),row.get("user_id"),action,row.get("revision"),row.get("content_sha256"));}
-    private Map<String,Object> row(long user,String id){var rows=jdbc.queryForList("SELECT * FROM agent_conversation_input WHERE user_id=? AND input_id=?",user,id);if(rows.isEmpty())throw fail(404,"消息不存在或无权限");return rows.get(0);}
-    private Item item(Map<String,Object> row){return new Item((String)row.get("input_id"),(String)row.get("mode"),(String)row.get("status"),((Number)row.get("revision")).intValue(),(String)row.get("content"),(String)row.get("target_run_id"));}
-    public List<Item> list(AgentActor actor,String session){var current=owned(actor,session);return jdbc.queryForList("SELECT * FROM agent_conversation_input WHERE user_id=? AND session_id=? ORDER BY id DESC LIMIT 50",current.userId(),session).stream().map(this::item).toList();}
-    public Item enqueue(AgentActor actor,String session,String id,String mode,String content){
-        return enqueue(actor,session,id,mode,content,"CHAT");
-    }
+    private ConversationInputV1 body(WorkflowRecord row){return workflows.payload(row,ConversationInputV1.class);}
+    private void audit(WorkflowRecord row,String action){audits.append(new AuditEvent("CONVERSATION_INPUT",row.ownerUserId(),row.ownerUserId(),"CONVERSATION_INPUT",row.workflowId(),row.sessionId(),row.runId(),null,row.requestId(),action,row.revision(),body(row).contentSha256(),null,1,new AuditPayloads.ConversationInputV1(row.status())));}
+    private WorkflowRecord row(long user,String id){var row=workflows.find(KIND,id).orElseThrow(()->fail(404,"消息不存在或无权限"));if(row.ownerUserId()!=user)throw fail(404,"消息不存在或无权限");return row;}
+    private Item item(WorkflowRecord row){var body=body(row);return new Item(row.workflowId(),body.mode(),row.status(),Math.toIntExact(row.revision()),body.content(),row.runId());}
+    public List<Item> list(AgentActor actor,String session){var current=owned(actor,session);return workflows.list(KIND,current.userId(),session,null,Set.of(),false,50,false).stream().map(this::item).toList();}
+    public Item enqueue(AgentActor actor,String session,String id,String mode,String content){return enqueue(actor,session,id,mode,content,"CHAT");}
     public Item enqueue(AgentActor actor,String session,String id,String mode,String content,String entryPoint){
         var current=owned(actor,session);
         if(!Set.of("CHAT","AGUI").contains(entryPoint))throw fail(400,"消息入口无效");
         if(id==null||!id.matches("[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}")||!Set.of("NEXT_TURN","NEXT_STEP").contains(mode)||content==null||content.isBlank()||content.length()>("NEXT_STEP".equals(mode)?4000:8000))throw fail(400,"消息编号、模式或长度无效");
+        String digest=hash(current.userId()+"|"+session.length()+":"+session+"|"+mode+"|"+entryPoint+"|"+hash(content));
         return tx.execute(status->{
-            lock(current.userId());var previous=jdbc.queryForList("SELECT * FROM agent_conversation_input WHERE input_id=?",id);
-            if(!previous.isEmpty()){
-                var old=previous.get(0);if(!Objects.equals(old.get("user_id"),current.userId())||!session.equals(old.get("session_id"))||!entryPoint.equals(old.get("entry_point"))||!mode.equals(old.get("requested_mode"))||!hash(content).equals(old.get("content_sha256")))throw fail(409,"消息编号已使用，请核对原提交");return item(old);
+            lock(current.userId());var previous=workflows.find(KIND,id);
+            if(previous.isPresent()){
+                var old=previous.get();if(old.ownerUserId()!=current.userId()||!digest.equals(old.requestSha256()))throw fail(409,"消息编号已使用，请核对原提交");return item(old);
             }
-            Long pending=jdbc.queryForObject("SELECT COUNT(*) FROM agent_conversation_input WHERE user_id=? AND status IN ('QUEUED','STARTED')",Long.class,current.userId());
-            if(pending>=16)throw fail(429,"本人待处理消息已达 16 条，请等待或撤回");
+            if(workflows.count(KIND,current.userId(),null,null,PENDING)>=16)throw fail(429,"本人待处理消息已达 16 条，请等待或撤回");
             var run=control.getObject().inspect(current,session);String target=null,actualMode=mode;
             if("NEXT_STEP".equals(mode)&&run.runId()!=null){
-                Long count=jdbc.queryForObject("SELECT COUNT(*) FROM agent_conversation_input WHERE user_id=? AND target_run_id=? AND status IN ('QUEUED','APPLIED')",Long.class,current.userId(),run.runId());
-                if(count>=6)throw fail(429,"本轮补充要求已达上限，请使用排队发送");target=run.runId();
+                if(workflows.count(KIND,current.userId(),null,run.runId(),Set.of("QUEUED","APPLIED"))>=6)throw fail(429,"本轮补充要求已达上限，请使用排队发送");target=run.runId();
             }else actualMode="NEXT_TURN";
-            jdbc.update("INSERT INTO agent_conversation_input(input_id,user_id,username,session_id,mode,requested_mode,entry_point,target_run_id,content,content_sha256,expires_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",id,current.userId(),current.username(),session,actualMode,mode,entryPoint,target,content,hash(content),now().plusMinutes(15));
-            var saved=row(current.userId(),id);audit(saved,"ENQUEUED");return item(saved);
+            var payload=new ConversationInputV1(current.username(),actualMode,mode,entryPoint,content,hash(content));
+            var saved=workflows.create(new WorkflowDraft(id,KIND,"GLOBAL",id,digest,current.userId(),current.userId(),null,"SESSION",session,null,session,target,"QUEUED",now().plusMinutes(15),1,payload));
+            audit(saved,"ENQUEUED");return item(saved);
         });
     }
     public Item change(AgentActor actor,String session,String id,int revision,String content){
         var current=owned(actor,session);if(content!=null&&(content.isBlank()||content.length()>8000))throw fail(400,"消息内容长度无效");
-        return tx.execute(status->{lock(current.userId());var entry=row(current.userId(),id);
-            if(!session.equals(entry.get("session_id")))throw fail(404,"消息不存在或无权限");
-            if(!"QUEUED".equals(entry.get("status"))||((Number)entry.get("revision")).intValue()!=revision)throw fail(409,"消息状态已变化，请刷新核对");
-            if(content!=null&&"NEXT_STEP".equals(entry.get("mode"))&&content.length()>4000)throw fail(400,"补充要求最多 4000 字符");
-            jdbc.update("UPDATE agent_conversation_input SET content=?,content_sha256=?,status=?,revision=revision+1,updated_at=CURRENT_TIMESTAMP WHERE input_id=?",content==null?"":content,content==null?entry.get("content_sha256"):hash(content),content==null?"CANCELLED":"QUEUED",id);
-            var updated=row(current.userId(),id);audit(updated,content==null?"CANCELLED":"EDITED");return item(updated);
+        return tx.execute(status->{lock(current.userId());var entry=row(current.userId(),id);var payload=body(entry);
+            if(!session.equals(entry.sessionId()))throw fail(404,"消息不存在或无权限");
+            if(!"QUEUED".equals(entry.status())||entry.revision()!=revision)throw fail(409,"消息状态已变化，请刷新核对");
+            if(content!=null&&"NEXT_STEP".equals(payload.mode())&&content.length()>4000)throw fail(400,"补充要求最多 4000 字符");
+            var updated=workflows.transition(entry,content==null?"CANCELLED":"QUEUED",payload.withContent(content==null?"":content,content==null?payload.contentSha256():hash(content)),entry.runId(),null,entry.expiresAt());
+            audit(updated,content==null?"CANCELLED":"EDITED");return item(updated);
         });
     }
-    /** Promote an existing pending message; preserve its identity, source, original request mode and deadline. */
     public Item steer(AgentActor actor,String session,String id,int revision,String expectedRunId){
         var current=owned(actor,session);
-        return tx.execute(status->{lock(current.userId());var entry=row(current.userId(),id);
-            if(!session.equals(entry.get("session_id")))throw fail(404,"消息不存在或无权限");
-            if(!"QUEUED".equals(entry.get("status"))||!"NEXT_TURN".equals(entry.get("mode"))||((Number)entry.get("revision")).intValue()!=revision)throw fail(409,"消息状态已变化，请刷新核对");
-            if(jdbc.queryForObject("SELECT COUNT(*) FROM agent_conversation_input WHERE input_id=? AND expires_at>CURRENT_TIMESTAMP",Integer.class,id)!=1)throw fail(409,"消息已过期，请刷新核对");
-            if(((String)entry.get("content")).length()>4000)throw fail(400,"补充要求最多 4000 字符，请先编辑消息");
+        return tx.execute(status->{lock(current.userId());var entry=row(current.userId(),id);var payload=body(entry);
+            if(!session.equals(entry.sessionId()))throw fail(404,"消息不存在或无权限");
+            if(!"QUEUED".equals(entry.status())||!"NEXT_TURN".equals(payload.mode())||entry.revision()!=revision)throw fail(409,"消息状态已变化，请刷新核对");
+            if(!entry.expiresAt().isAfter(now()))throw fail(409,"消息已过期，请刷新核对");
+            if(payload.content().length()>4000)throw fail(400,"补充要求最多 4000 字符，请先编辑消息");
             var run=control.getObject().inspect(current,session);
             if(run.runId()==null||!run.runId().equals(expectedRunId)||"IDLE".equals(run.phase()))throw fail(409,"当前任务已变化，请刷新后重新选择引导");
-            Long count=jdbc.queryForObject("SELECT COUNT(*) FROM agent_conversation_input WHERE user_id=? AND target_run_id=? AND status IN ('QUEUED','APPLIED')",Long.class,current.userId(),run.runId());
-            if(count>=6)throw fail(429,"本轮补充要求已达上限，请保留排队或稍后重试");
-            jdbc.update("UPDATE agent_conversation_input SET mode='NEXT_STEP',target_run_id=?,revision=revision+1,updated_at=CURRENT_TIMESTAMP WHERE input_id=?",run.runId(),id);
-            var updated=row(current.userId(),id);audit(updated,"PROMOTED_NEXT_STEP");return item(updated);
+            if(workflows.count(KIND,current.userId(),null,run.runId(),Set.of("QUEUED","APPLIED"))>=6)throw fail(429,"本轮补充要求已达上限，请保留排队或稍后重试");
+            var updated=workflows.transition(entry,"QUEUED",payload.withMode("NEXT_STEP"),run.runId(),null,entry.expiresAt());
+            audit(updated,"PROMOTED_NEXT_STEP");return item(updated);
         });
     }
     @Override public List<Input> take(AgentActor actor,String session,String runId){
         var current=owned(actor,session);
         return tx.execute(status->{lock(current.userId());var result=new ArrayList<Input>();
-            for(var entry:jdbc.queryForList("SELECT * FROM agent_conversation_input WHERE user_id=? AND session_id=? AND target_run_id=? AND mode='NEXT_STEP' AND status='QUEUED' AND expires_at>CURRENT_TIMESTAMP ORDER BY id LIMIT 6",current.userId(),session,runId)){
-                String content=(String)entry.get("content");result.add(new Input((String)entry.get("input_id"),content));
-                sessions.appendUserMessage(new TenantContext(current.userId(),current.username()),session,content);
-                jdbc.update("UPDATE agent_conversation_input SET status='APPLIED',content='',revision=revision+1,updated_at=CURRENT_TIMESTAMP WHERE input_id=?",entry.get("input_id"));
-                audit(row(current.userId(),(String)entry.get("input_id")),"APPLIED_AT_BOUNDARY");
+            for(var entry:workflows.list(KIND,current.userId(),session,runId,Set.of("QUEUED"),true,6,true)){
+                var payload=body(entry);if(!"NEXT_STEP".equals(payload.mode()))continue;
+                result.add(new Input(entry.workflowId(),payload.content()));
+                sessions.appendUserMessage(new TenantContext(current.userId(),current.username()),session,payload.content());
+                audit(workflows.transition(entry,"APPLIED",payload.withContent("",payload.contentSha256()),entry.runId(),null,entry.expiresAt()),"APPLIED_AT_BOUNDARY");
             }return result;
         });
     }
-    /** 仅领取未执行过的消息，重启不会重放 STARTED。 */
     public synchronized void dispatch(){
         if(workers.isShutdown())return;
         expire();if(workers.getActiveCount()>=2)return;
         if(dispatchRoundMaxUser==0||dispatchAfterUser>=dispatchRoundMaxUser)startDispatchRound();
         var owners=queuedOwnersAfter(dispatchAfterUser);
         if(owners.isEmpty()&&dispatchAfterUser!=0){startDispatchRound();owners=queuedOwnersAfter(0);}
-        for(long owner:owners){
-            dispatchAfterUser=owner;
-            // Admission bounds each account to 16 pending/started messages. A busy account
-            // cannot hide every other account behind the old global 32-row frontier.
-            for(var candidate:jdbc.queryForList("SELECT * FROM agent_conversation_input WHERE user_id=? AND status='QUEUED' ORDER BY id LIMIT 16",owner)){
-                if(dispatch(candidate))return;
-            }
-        }
+        for(long owner:owners){dispatchAfterUser=owner;for(var candidate:workflows.list(KIND,owner,null,null,Set.of("QUEUED"),false,16,true))if(dispatch(candidate))return;}
     }
-    private void startDispatchRound(){
-        dispatchAfterUser=0;
-        // Fix this round's frontier so a continuous stream of new accounts cannot postpone wrapping forever.
-        dispatchRoundMaxUser=jdbc.queryForObject("SELECT COALESCE(MAX(user_id),0) FROM agent_conversation_input WHERE status='QUEUED'",Long.class);
+    private void startDispatchRound(){dispatchAfterUser=0;dispatchRoundMaxUser=workflows.maxOwner(KIND,"QUEUED");}
+    private List<Long> queuedOwnersAfter(long after){return workflows.ownersAfter(KIND,"QUEUED",after,dispatchRoundMaxUser,32);}
+    private record Claimed(WorkflowRecord claim,ConversationInputV1 original){}
+    private boolean dispatch(WorkflowRecord candidate){
+        long user=candidate.ownerUserId();String session=candidate.sessionId(),id=candidate.workflowId();AgentActor actor;
+        try{actor=owned(new AgentActor(user,body(candidate).username(),AgentActor.Role.INSPECTOR),session);}catch(RuntimeException error){failQueued(user,id,"ACCOUNT_OR_SESSION_UNAVAILABLE");return false;}
+        var run=control.getObject().inspect(actor,session);
+        if(workbench!=null&&workbench.getIfAvailable()!=null&&!workbench.getObject().canDispatchInput(actor,session,id))return false;
+        if(!"IDLE".equals(run.phase()))return false;
+        Claimed claimed=tx.execute(status->{lock(user);var entry=row(user,id);if(!"QUEUED".equals(entry.status()))return null;
+            if(workflows.count(KIND,user,session,null,Set.of("STARTED"))>0||!entry.expiresAt().isAfter(now()))return null;
+            var payload=body(entry);
+            if("NEXT_STEP".equals(payload.mode())){entry=workflows.transition(entry,"QUEUED",payload.withMode("NEXT_TURN"),null,null,entry.expiresAt());audit(entry,"FALLBACK_NEXT_TURN");payload=body(entry);}
+            Duration lease=Duration.ofSeconds(control.getObject().maxRunSeconds()+10L);
+            var started=workflows.claim(entry,"STARTED",payload.withContent("",payload.contentSha256()),entry.runId(),now().plus(lease),lease);
+            audit(started,"STARTED");return new Claimed(started,payload);
+        });
+        if(claimed==null)return false;
+        try{workers.execute(()->execute(actor,session,claimed));}catch(RejectedExecutionException error){finish(claimed,"FAILED","EXECUTOR_UNAVAILABLE");}
+        return true;
     }
-    private List<Long> queuedOwnersAfter(long after){
-        return jdbc.queryForList("SELECT DISTINCT user_id FROM agent_conversation_input WHERE status='QUEUED' AND user_id>? AND user_id<=? ORDER BY user_id LIMIT 32",Long.class,after,dispatchRoundMaxUser);
-    }
-    private boolean dispatch(Map<String,Object> candidate){
-            long user=((Number)candidate.get("user_id")).longValue();String username=(String)candidate.get("username"),session=(String)candidate.get("session_id"),id=(String)candidate.get("input_id");
-            AgentActor actor;
-            try{actor=owned(new AgentActor(user,username,AgentActor.Role.INSPECTOR),session);}catch(RuntimeException error){terminal(user,id,"FAILED","ACCOUNT_OR_SESSION_UNAVAILABLE");return false;}
-            var run=control.getObject().inspect(actor,session);
-            if(workbench!=null&&workbench.getIfAvailable()!=null&&!workbench.getObject().canDispatchInput(actor,session,id))return false;
-            if(!"IDLE".equals(run.phase()))return false;
-            Map<String,Object> claimed=tx.execute(status->{lock(user);var entry=row(user,id);if(!"QUEUED".equals(entry.get("status")))return null;
-                if(jdbc.queryForObject("SELECT COUNT(*) FROM agent_conversation_input WHERE user_id=? AND session_id=? AND status='STARTED'",Integer.class,user,session)>0)return null;
-                if(jdbc.queryForObject("SELECT COUNT(*) FROM agent_conversation_input WHERE input_id=? AND expires_at>CURRENT_TIMESTAMP",Integer.class,id)==0)return null;
-                if("NEXT_STEP".equals(entry.get("mode"))){jdbc.update("UPDATE agent_conversation_input SET mode='NEXT_TURN',target_run_id=NULL WHERE input_id=?",id);audit(entry,"FALLBACK_NEXT_TURN");}
-                jdbc.update("UPDATE agent_conversation_input SET status='STARTED',active_slot=1,content='',revision=revision+1,expires_at=?,updated_at=CURRENT_TIMESTAMP WHERE input_id=?",now().plusSeconds(control.getObject().maxRunSeconds()+10),id);audit(row(user,id),"STARTED");return entry;
-            });
-            if(claimed==null)return false;
-            try{workers.execute(()->execute(actor,session,id,(String)claimed.get("content"),(String)claimed.get("entry_point")));}
-            catch(RejectedExecutionException error){terminal(user,id,"FAILED","EXECUTOR_UNAVAILABLE");}
-            return true;
-    }
-    private void execute(AgentActor supplied,String session,String id,String content,String entryPoint){
+    private void execute(AgentActor supplied,String session,Claimed claimed){
         var previous=SecurityContextHolder.getContext();
         try{
             var actor=owned(supplied,session);var roles=List.of(new SimpleGrantedAuthority("ROLE_"+actor.role().name()));
             var security=SecurityContextHolder.createEmptyContext();security.setAuthentication(new UsernamePasswordAuthenticationToken(new TenantPrincipal(actor.userId(),actor.username(),"",roles),null,roles));SecurityContextHolder.setContext(security);
-            var request=new ChatSendMessageRequest();request.setSessionId(session);request.setContent(content);
-            chat.handleQueuedMessage(actor.username(),request,id,entryPoint);terminal(actor.userId(),id,"COMPLETED","COMPLETED");
-        }catch(RuntimeException error){terminal(supplied.userId(),id,"FAILED","EXECUTION_FAILED_NO_AUTO_RETRY");}
+            var request=new ChatSendMessageRequest();request.setSessionId(session);request.setContent(claimed.original().content());
+            chat.handleQueuedMessage(actor.username(),request,claimed.claim().workflowId(),claimed.original().entryPoint());finish(claimed,"COMPLETED","COMPLETED");
+        }catch(RuntimeException error){finish(claimed,"FAILED","EXECUTION_FAILED_NO_AUTO_RETRY");}
         finally{SecurityContextHolder.setContext(previous);}
     }
-    private void terminal(long user,String id,String state,String action){tx.executeWithoutResult(status->{lock(user);var entry=row(user,id);if(!Set.of("QUEUED","STARTED").contains(entry.get("status")))return;
-        jdbc.update("UPDATE agent_conversation_input SET status=?,active_slot=NULL,content='',revision=revision+1,updated_at=CURRENT_TIMESTAMP WHERE input_id=?",state,id);audit(row(user,id),action);
+    private void finish(Claimed claimed,String state,String action){tx.executeWithoutResult(status->{lock(claimed.claim().ownerUserId());var current=row(claimed.claim().ownerUserId(),claimed.claim().workflowId());
+        if(!"STARTED".equals(current.status())||!Objects.equals(current.claimToken(),claimed.claim().claimToken())||current.fence()!=claimed.claim().fence())return;
+        if(!current.expiresAt().isAfter(now()))return;
+        audit(workflows.finishClaim(claimed.claim(),state,body(current),null),action);
     });}
-    public void expire(){for(var entry:jdbc.queryForList("SELECT user_id,input_id FROM agent_conversation_input WHERE status IN ('QUEUED','STARTED') AND expires_at<=CURRENT_TIMESTAMP ORDER BY id LIMIT 50")){
-        long user=((Number)entry.get("user_id")).longValue();String id=(String)entry.get("input_id");
-        tx.executeWithoutResult(status->{lock(user);var row=row(user,id);if(!Set.of("QUEUED","STARTED").contains(row.get("status"))||jdbc.queryForObject("SELECT COUNT(*) FROM agent_conversation_input WHERE input_id=? AND expires_at<=CURRENT_TIMESTAMP",Integer.class,id)==0)return;
-            jdbc.update("UPDATE agent_conversation_input SET status='EXPIRED',active_slot=NULL,content='',revision=revision+1,updated_at=CURRENT_TIMESTAMP WHERE input_id=?",id);audit(row(user,id),"EXPIRED");});
-    }}
+    private void failQueued(long user,String id,String action){tx.executeWithoutResult(status->{lock(user);var entry=row(user,id);if(!"QUEUED".equals(entry.status()))return;var payload=body(entry);
+        audit(workflows.transition(entry,"FAILED",payload.withContent("",payload.contentSha256()),entry.runId(),null,entry.expiresAt()),action);
+    });}
+    public void expire(){for(var candidate:workflows.expired(KIND,PENDING,50))tx.executeWithoutResult(status->{lock(candidate.ownerUserId());var entry=row(candidate.ownerUserId(),candidate.workflowId());
+        if(!PENDING.contains(entry.status())||entry.expiresAt().isAfter(now()))return;var payload=body(entry);
+        audit(workflows.expireConversationInput(entry,payload.withContent("",payload.contentSha256())),"EXPIRED");
+    });}
     private static ResponseStatusException fail(int code,String message){return new ResponseStatusException(HttpStatus.valueOf(code),message);}
-    @PreDestroy public void close(){
-        scheduler.shutdownNow();workers.shutdown();
-        awaitShutdown(scheduler,2);awaitShutdown(workers,5);
-    }
-    private void awaitShutdown(ExecutorService executor,long seconds){
-        try{if(!executor.awaitTermination(seconds,TimeUnit.SECONDS))executor.shutdownNow();}
-        catch(InterruptedException error){executor.shutdownNow();Thread.currentThread().interrupt();}
-    }
+    @PreDestroy public void close(){scheduler.shutdownNow();workers.shutdown();awaitShutdown(scheduler,2);awaitShutdown(workers,5);}
+    private void awaitShutdown(ExecutorService executor,long seconds){try{if(!executor.awaitTermination(seconds,TimeUnit.SECONDS))executor.shutdownNow();}catch(InterruptedException error){executor.shutdownNow();Thread.currentThread().interrupt();}}
 }

@@ -23,7 +23,7 @@
     </resultMap>
 
     <insert id="insert" parameterType="com.ruanzhu.doorhandle.module.detection.entity.ImageDetectionData" useGeneratedKeys="true" keyProperty="id">
-        INSERT INTO image_detection_data (
+        INSERT INTO historical_detection_summary (
             folder_path, result_path, annotated_images_path, detected_images_count, detection_instances_count,
             normal_count, bent_count, deformed_count, rusty_count, missing_count, compromised_count, miss_detection_rate, start_time,
             finished_at, model_id
@@ -38,7 +38,7 @@
         SELECT 
             id, folder_path, result_path, annotated_images_path, detected_images_count, detection_instances_count,
             normal_count, bent_count, deformed_count, rusty_count, missing_count, compromised_count, miss_detection_rate, start_time, finished_at, model_id
-        FROM image_detection_data
+        FROM historical_detection_summary
         WHERE id = #{id}
     </select>
 
@@ -46,12 +46,12 @@
         SELECT 
             id, folder_path, result_path, annotated_images_path, detected_images_count, detection_instances_count,
             normal_count, bent_count, deformed_count, rusty_count, missing_count, compromised_count, miss_detection_rate, start_time, finished_at, model_id
-        FROM image_detection_data
+        FROM historical_detection_summary
         ORDER BY start_time DESC
     </select>
 
     <update id="updateDetectionDataRecord" parameterType="com.ruanzhu.doorhandle.module.detection.entity.ImageDetectionData">
-        UPDATE image_detection_data
+        UPDATE historical_detection_summary
         SET
             folder_path = #{folderPath},
             result_path = #{resultPath},
@@ -72,7 +72,7 @@
     </update>
 
     <delete id="deleteById" parameterType="java.lang.Long">
-        DELETE FROM image_detection_data
+        DELETE FROM historical_detection_summary
         WHERE id = #{id}
     </delete>
 

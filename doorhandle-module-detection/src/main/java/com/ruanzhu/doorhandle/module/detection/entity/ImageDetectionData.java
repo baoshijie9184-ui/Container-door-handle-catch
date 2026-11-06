@@ -11,11 +11,11 @@ import java.time.LocalDateTime;
 /**
  * 图像检测数据实体类（已废弃）
  *
- * @deprecated 统一使用 {@link DetectionTask} 表存储所有检测结果。
- * 此实体仅用于只读归档查询，不应再写入新数据。
+ * @deprecated 新检测使用 {@link DetectionTask}；此类型保留历史聚合 CRUD 的兼容契约。
+ * 历史聚合独立存入 historical_detection_summary，不转换为当前检测任务。
  */
 @Data
-@TableName("image_detection_data")
+@TableName("historical_detection_summary")
 @Deprecated
 public class ImageDetectionData {
 
