@@ -93,6 +93,17 @@ job.setDisabled(true)
 def definition = new CpsScmFlowDefinition(job.getDefinition().getScm(), 'Jenkinsfile.ecs-monolith')
 definition.setLightweight(true)
 job.setDefinition(definition)
+// Job.addProperty appends; remove all old instances so repeated configuration is idempotent.
+while (job.getProperty(ParametersDefinitionProperty) != null) {
+    job.removeProperty(ParametersDefinitionProperty)
+}
+while (job.getProperty(DisableConcurrentBuildsJobProperty) != null) {
+    job.removeProperty(DisableConcurrentBuildsJobProperty)
+}
+while (job.getProperty(PipelineTriggersJobProperty) != null) {
+    job.getProperty(PipelineTriggersJobProperty).getTriggers().each { it.stop() }
+    job.removeProperty(PipelineTriggersJobProperty)
+}
 job.addProperty(new ParametersDefinitionProperty(parameters))
 job.addProperty(new DisableConcurrentBuildsJobProperty())
 job.addProperty(new PipelineTriggersJobProperty([new SCMTrigger('H/5 * * * *')]))
