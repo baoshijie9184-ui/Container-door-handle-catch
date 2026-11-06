@@ -1,6 +1,6 @@
 """ECS-executed failure contracts for the first compact cutover controller."""
-import hashlib
 import importlib.util
+import io
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -21,6 +21,159 @@ cutover = load('compact_cutover_contract', 'compact-cutover.py')
 schema = load('compact_cutover_schema_contract', 'compact-schema-guard.py')
 coverage_spec = importlib.util.spec_from_file_location('compact_coverage_contract', ROOT / 'script/jenkins/compact-acceptance.py')
 coverage = importlib.util.module_from_spec(coverage_spec); coverage_spec.loader.exec_module(coverage)
+
+
+def runtime_verification(tmp_path):
+    tag = 'ci-11-' + 'a' * 12
+    identity = {'instanceId': 'i-example', 'machineId': 'b' * 32, 'executionLocation': 'ECS'}
+    directory = tmp_path / 'verification' / tag
+    profile, profile_sha = coverage.profile(ROOT)
+    images = {key: 'sha256:' + str(index) * 64 for index, key in enumerate(('backend', 'nginx', 'mem0', 'detection-worker'), 1)}
+    context = {'schemaVersion': 1, 'kind': 'doorhandle-compact-runtime-acceptance', 'release': tag,
+        'commit': 'a' * 40, 'sourceSha256': 'c' * 64, 'identity': identity,
+        'acceptanceProfileSha256': profile_sha, 'candidateBuildSha256': 'd' * 64}
+    project = 'doorhandle-rehearsal-' + 'e' * 12
+    proof = {**context, 'status': 'PASS', 'project': project, 'images': images,
+        'migrationReceiptSha256': 'f' * 64, 'initialTargetSnapshotSha256': '1' * 64,
+        'actualServerUuid': '11111111-1111-1111-1111-111111111111', 'actualMysqlPort': 15444, 'paidModelCalls': 0,
+        'scenarios': {}, 'modelIsolation': {
+            'fixtureSourceSha256': cutover.sha_file(ROOT / 'script/docker/compact-model-fixture.py'),
+            'ossAdapterSourceSha256': cutover.sha_file(ROOT / 'script/docker/compact-oss-fixture.py'),
+            'internalNetworksVerified': True, 'providerCredentialsRemoved': True,
+            'fixtureState': {'kind': 'doorhandle-owned-scripted-model', 'modelRequests': 12, 'embeddingRequests': 2},
+            'observedInternalNetworks': [{'service': key, 'networkId': '7' * 64, 'internal': True}
+                for key in ('backend', 'mem0', 'model-fixture')]}}
+    def evidence(name, value):
+        path = directory / 'checkout/work/runtime-acceptance' / (name + '.json')
+        write(path, {**context, 'project': project, **value})
+        return {'file': path.relative_to(directory).as_posix(), 'sha256': cutover.sha_file(path)}
+    recovery_file = directory / 'checkout/work/runtime-acceptance/post-business-recovery/recovery-receipt.json'
+    write(recovery_file, {**context, 'kind': 'doorhandle-runtime-post-business-recovery', 'status': 'VERIFIED',
+        'originalMigrationReceiptSha256': 'f' * 64, 'sourceSnapshotSha256': '2' * 64, 'restoredSnapshotSha256': '2' * 64})
+    critical = {
+        'detection-pth-worker-kafka-receipts': {'actualUnknownResultFence': {'status': 'NEEDS_REVIEW',
+            'actualSuccessfulImages': 1, 'actualFailedImages': 0,
+            'actualCompletionSignal': {'error': 1644, 'sqlState': '45000', 'statementSha256': '3' * 64},
+            'unknownRowSha256': '4' * 64, 'actualSummarySha256': '5' * 64, 'actualUncommittedPartition': {'lag': 2}}},
+        'private-mcp-install-fetch-cancel-reconcile': {'actualUnknownControlFault': {'unknownState': 'NEEDS_REVIEW',
+            'newInstallationBlockedHttpStatus': 409, 'newInstallationBlockedReason': 'PENDING_EXECUTION_EXIT',
+            'denialResponseSha256': '6' * 64, 'reconciledState': 'REMOVED', 'writerExitAndCleanupVerified': True,
+            'observedWriterId': '7' * 64, 'pausedControllerId': '8' * 64, 'poolId': '9' * 32}},
+        'sdk-session-workbench-recovery': {'interruptedRunId': 'interrupted', 'resumedRunId': 'continued',
+            'beforeRestoreRevision': 1, 'afterRestoreRevision': 2, 'afterRestoreSha256': 'a' * 64, 'cancelledExecutionFence': 3},
+        'compact-application-upgrade-recovery': {'restoredTableCount': 29, 'originalSchema': 'original', 'restoredSchema': 'restore',
+            'postBusinessSnapshotSha256': '2' * 64, 'restoredSnapshotSha256': '2' * 64,
+            'wrongKeyRejectedServices': ['backend', 'mem0'], 'actualProcessesUseRestoredSchema': True,
+            'postBusinessRecoveryReceiptSha256': cutover.sha_file(recovery_file)}}
+    for item in profile['runtimeAcceptance']['scenarios']:
+        proof['scenarios'][item['id']] = evidence('scenario-' + item['id'], {
+            'scenario': item['id'], 'status': 'PASS', 'observations': critical.get(item['id'], {'actualReceiptSha256': '8' * 64})})
+    proof['cleanup'] = {**evidence('cleanup', {'status': 'STOPPED', 'unresolved': [],
+        'stoppedContainers': ['9' * 64], 'sourceResourcesChanged': False,
+        'sourceBeforeSha256': 'a' * 64, 'sourceAfterSha256': 'a' * 64}), 'status': 'STOPPED'}
+    write(directory / 'checkout/work/ci-evidence/migration.json', {'migrationReceiptSha256': 'f' * 64, 'targetSnapshotSha256': '1' * 64})
+    path = directory / 'runtime-acceptance.json'; write(path, proof)
+    def admit():
+        return cutover.admitted_runtime(tmp_path, tag, 'a' * 40, 'c' * 64, identity, schema, {'images': images}, 'd' * 64)
+    return SimpleNamespace(path=path, directory=directory, proof=proof, admit=admit)
+
+
+def test_runtime_gate_requires_all_nine_scenario_artifacts_from_the_exact_candidate(tmp_path):
+    actual = runtime_verification(tmp_path)
+    assert actual.admit() == cutover.sha_file(actual.path)
+    actual.proof['scenarios'].pop('report-draft-review-export-delivery')
+    write(actual.path, actual.proof)
+    with pytest.raises(ValueError, match='Every mandatory runtime'):
+        actual.admit()
+
+
+def test_runtime_gate_rejects_modified_child_or_foreign_migration_even_when_summary_says_pass(tmp_path):
+    actual = runtime_verification(tmp_path)
+    item = next(iter(actual.proof['scenarios'].values()))
+    child = actual.directory / item['file']
+    child.write_text(child.read_text(encoding='utf8') + ' ', encoding='utf8')
+    with pytest.raises(ValueError, match='missing, changed or foreign'):
+        actual.admit()
+    item['sha256'] = cutover.sha_file(child)
+    actual.proof['migrationReceiptSha256'] = '0' * 64; write(actual.path, actual.proof)
+    with pytest.raises(ValueError, match='exact whole-migration target'):
+        actual.admit()
+
+
+def test_runtime_gate_rejects_unconfirmed_cleanup_and_external_model_networks(tmp_path):
+    actual = runtime_verification(tmp_path)
+    reference = actual.proof['cleanup']; path = actual.directory / reference['file']
+    value = json.loads(path.read_text(encoding='utf8')); value['unresolved'] = ['container-unknown']
+    write(path, value); reference['sha256'] = cutover.sha_file(path); write(actual.path, actual.proof)
+    with pytest.raises(ValueError, match='cleanup has not been confirmed'):
+        actual.admit()
+    value['unresolved'] = []; write(path, value); reference['sha256'] = cutover.sha_file(path)
+    actual.proof['modelIsolation']['observedInternalNetworks'][0]['internal'] = False
+    write(actual.path, actual.proof)
+    with pytest.raises(ValueError, match='internal-network observations'):
+        actual.admit()
+
+
+def test_runtime_scenario_name_and_409_do_not_replace_an_actual_unknown_writer_fence(tmp_path):
+    actual = runtime_verification(tmp_path)
+    reference = actual.proof['scenarios']['private-mcp-install-fetch-cancel-reconcile']
+    path = actual.directory / reference['file']; value = json.loads(path.read_text(encoding='utf8'))
+    value['observations']['actualUnknownControlFault']['newInstallationBlockedReason'] = 'ALREADY_INSTALLED'
+    write(path, value); reference['sha256'] = cutover.sha_file(path); write(actual.path, actual.proof)
+    with pytest.raises(ValueError, match='Actual unknown MCP writer/control fault'):
+        actual.admit()
+
+
+def oss_transport(monkeypatch):
+    monkeypatch.setenv('FIXTURE_OSS_BUCKET', 'owned-fixture-bucket')
+    monkeypatch.setenv('FIXTURE_OSS_ENDPOINT', 'https://oss-cn-beijing.aliyuncs.com')
+    monkeypatch.setenv('FIXTURE_OSS_PREFIX', 'runtime-acceptance/' + 'a' * 12 + '/')
+    value = load('compact_owned_oss_fixture', 'compact-oss-fixture.py')
+    handler = object.__new__(value.Handler)
+    handler.command = 'HEAD'; handler.request_version = 'HTTP/1.1'
+    handler.requestline = 'HEAD / HTTP/1.1'; handler.wfile = io.BytesIO()
+    return value, handler
+
+
+def test_owned_oss_head_retains_actual_object_length_without_sending_a_body(monkeypatch):
+    _, handler = oss_transport(monkeypatch)
+    handler.response(200, b'', {'Content-Length': '4096', 'ETag': 'fixture-etag'})
+    result = handler.wfile.getvalue()
+    assert b'Content-Length: 4096\r\n' in result and b'ETag: fixture-etag\r\n' in result
+    assert result.endswith(b'\r\n\r\n')
+
+
+def test_owned_oss_preserves_v1_signature_path_and_refuses_foreign_prefix(monkeypatch):
+    value, handler = oss_transport(monkeypatch)
+    requests = []
+    class Upstream:
+        status = 200
+        def read(self, bound):
+            return b'owned-object'
+        def getheader(self, name, default=None):
+            return 'fixture-request' if name == 'x-oss-request-id' else default
+        def getheaders(self):
+            return [('Content-Length', '12')]
+    class Connection:
+        def __init__(self, host, port, timeout):
+            assert host == 'owned-fixture-bucket.oss-cn-beijing.aliyuncs.com' and port == 443
+        def request(self, method, path, body, headers):
+            requests.append((method, path, body, headers))
+        def getresponse(self):
+            return Upstream()
+        def close(self):
+            pass
+    monkeypatch.setattr(value.http.client, 'HTTPSConnection', Connection)
+    handler.command = 'GET'
+    handler.path = '/runtime-acceptance/' + 'a' * 12 + '/%E4%B8%AD.png?OSSAccessKeyId=fixture&Expires=1&Signature=a%2Bb%3D'
+    handler.headers = {'Host': 'oss-proxy:9000', 'Content-Type': 'image/png', 'Content-Length': '0'}
+    handler.rfile = io.BytesIO(b'')
+    handler.forward()
+    assert len(requests) == 1 and requests[0][:3] == ('GET', handler.path, b'')
+    assert requests[0][3]['Host'] == 'owned-fixture-bucket.oss-cn-beijing.aliyuncs.com'
+    handler.wfile = io.BytesIO(); handler.path = '/another-prefix/private.png?OSSAccessKeyId=fixture&Signature=fixture'
+    handler.forward()
+    assert len(requests) == 1 and b'502 ' in handler.wfile.getvalue().split(b'\r\n')[0]
 
 
 def write(path, value):

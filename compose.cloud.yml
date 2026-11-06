@@ -151,6 +151,7 @@ services:
       DASHSCOPE_BASE_URL: ${DASHSCOPE_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
       DASHSCOPE_MODEL: ${DASHSCOPE_MODEL:-qwen-plus}
       MEM0_LLM_MODEL: ${MEM0_LLM_MODEL:-}
+      MEM0_MODEL_GATEWAY_BASE_URL: ${MEM0_MODEL_GATEWAY_BASE_URL:-}
       EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:?Set EMBEDDING_API_KEY}
       EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-qwen3.7-text-embedding-flash}

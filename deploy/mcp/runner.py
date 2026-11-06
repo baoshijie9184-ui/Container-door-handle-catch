@@ -15,7 +15,6 @@ import os
 from pathlib import Path
 import re
 import socket
-import sys
 import sqlite3
 import time
 import uuid
@@ -218,7 +217,18 @@ class DockerExecutor:
         if len(values) != 1:
             raise ValueError('controller unavailable')
         value = values[0]; labels = value.get('Config', {}).get('Labels') or {}; full = value.get('Id', '')
-        if not re.fullmatch('[a-f0-9]{64}', full) or not full.startswith(controller) or labels.get('com.docker.compose.project') != 'doorhandlecatch-monolith' or labels.get('com.docker.compose.service') != 'backend':
+        project = os.environ.get('MCP_CONTROLLER_PROJECT', 'doorhandlecatch-monolith')
+        if project != 'doorhandlecatch-monolith':
+            if not re.fullmatch(r'doorhandle-rehearsal-[a-f0-9]{12}', project) or labels.get('io.doorhandle.rehearsal') != project:
+                raise ValueError('controller deployment is not owned')
+            own = await self.controller()
+            if own is None:
+                raise ValueError('runner deployment unavailable')
+            inspected_own = await self.docker(['inspect', '--type', 'container', own['id']])
+            own_rows = json.loads(inspected_own.stdout) if inspected_own.returncode == 0 else []
+            if len(own_rows) != 1 or (own_rows[0].get('Config', {}).get('Labels') or {}).get('io.doorhandle.rehearsal') != project or (own_rows[0].get('Config', {}).get('Labels') or {}).get('com.docker.compose.project') != project:
+                raise ValueError('runner deployment differs')
+        if not re.fullmatch('[a-f0-9]{64}', full) or not full.startswith(controller) or labels.get('com.docker.compose.project') != project or labels.get('com.docker.compose.service') != 'backend':
             raise ValueError('controller is not the fixed backend')
         state = value.get('State', {}); started = state.get('StartedAt')
         if not isinstance(started, str) or not started:

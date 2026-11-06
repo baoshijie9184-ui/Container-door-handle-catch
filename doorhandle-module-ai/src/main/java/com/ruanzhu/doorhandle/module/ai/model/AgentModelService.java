@@ -69,13 +69,23 @@ public class AgentModelService implements AutoCloseable {
             if(!evicted)throw new IllegalStateException("模型版本执行资源已满，请稍后重试");
         }
         var snapshot=configurations.runtime(revision);var settings=new AgentScopeProperties();settings.setModel(snapshot.document().defaultModel());
-        var client=new AgentModelService(snapshot.properties(),settings);
+        var client=new AgentModelService(deploymentTransport(snapshot.properties(),connections),settings);
         client.budget=budget;
         if(circuitRedis==null)throw new RedisModelCircuit.Unavailable();
         client.circuitRedis=circuitRedis;client.circuitRevision=revision;
         client.configurationGuard=id->configurations.assertUsable(revision,id);
         versions.put(revision,new VersionClient(client));
         return client;
+    }
+    /** Provider identity/credentials remain frozen; transport follows this deployment's network topology. */
+    static AgentModelProperties deploymentTransport(AgentModelProperties frozen,AgentModelProperties deployment){
+        var copy=new com.fasterxml.jackson.databind.ObjectMapper().findAndRegisterModules()
+                .convertValue(frozen,AgentModelProperties.class);
+        // Empty values intentionally clear a proxy/gateway from an older deployment.
+        // Never mutate the decrypted snapshot or inherit another deployment's API keys.
+        copy.setGatewayBaseUrl(deployment.getGatewayBaseUrl());
+        copy.setProxyUrl(deployment.getProxyUrl());
+        return copy;
     }
     private synchronized VersionClient lease(long revision){versionClient(revision);var holder=versions.get(revision);holder.activeStreams++;return holder;}
     private synchronized void release(VersionClient holder){holder.activeStreams--;}

@@ -1,7 +1,6 @@
 # syntax=docker/dockerfile:1
 ARG PYTHON_BASE_IMAGE=python:3.12-slim
 FROM ${PYTHON_BASE_IMAGE}
-LABEL io.doorhandle.business-schema="compact29-v1"
 WORKDIR /app
 ARG PIP_INDEX_URL=https://pypi.org/simple
 ENV PYTHONUNBUFFERED=1 PYTHONNOUSERSITE=1 DETECTION_ENGINE=pth DETECTION_SOURCE_DIR=/opt/model-source
@@ -17,4 +16,5 @@ COPY DINOv3-LICENSE.md BUILD_PROVENANCE.json /opt/model-source/
 COPY PyMySQL-LICENSE.txt /app/licenses/PyMySQL-LICENSE.txt
 USER app
 HEALTHCHECK --interval=15s --timeout=3s --start-period=90s --retries=3 CMD python /app/worker_health.py
+LABEL io.doorhandle.business-schema="compact29-v1"
 CMD ["python", "/app/kafka_detection_worker.py"]

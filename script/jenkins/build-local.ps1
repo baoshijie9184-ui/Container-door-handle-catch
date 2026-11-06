@@ -11,6 +11,13 @@ if ($env:GIT_COMMIT -notmatch '^[a-f0-9]{40}$' -or $env:RELEASE_TAG -notmatch '^
 }
 $actualCommit = (& git.exe rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or $actualCommit -ne $env:GIT_COMMIT) { throw 'Build checkout differs from the pinned SCM commit.' }
+function Assert-PinnedSources {
+    & git.exe diff --quiet HEAD --
+    if ($LASTEXITCODE -ne 0) { throw 'Tracked source modifications cannot enter a pinned-commit build.' }
+    $untracked = @(& git.exe ls-files --others --exclude-standard -- . ':(exclude)work/**' ':(exclude)artifacts/**')
+    if ($LASTEXITCODE -ne 0 -or $untracked.Count -ne 0) { throw 'Untracked files outside owned build output cannot enter the application artifact.' }
+}
+Assert-PinnedSources
 if ([string]::IsNullOrWhiteSpace($MavenCmd)) { $MavenCmd = (Get-Command mvn.cmd -CommandType Application -ErrorAction Stop).Source }
 if (-not [System.IO.Path]::IsPathRooted($MavenCmd) -or -not (Test-Path -LiteralPath $MavenCmd -PathType Leaf)) {
     throw 'Configure an existing absolute Maven executable for the local build node.'
@@ -49,6 +56,7 @@ try {
     & $MavenCmd @arguments 2>&1 | Tee-Object -FilePath $logFile
     $receipt['exitCode'] = $LASTEXITCODE
     if ($LASTEXITCODE -ne 0) { throw 'Local Maven compilation/package failed; inspect local-build.log.' }
+    Assert-PinnedSources
     $jars = @(Get-ChildItem -LiteralPath (Join-Path $buildDirectory 'doorhandle-server') -Filter 'doorhandle-server-*.jar' -File)
     if ($jars.Count -ne 1 -or ($jars[0].Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
         throw 'The fixed commit must produce exactly one regular server application jar.'

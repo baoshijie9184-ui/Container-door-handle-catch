@@ -14,11 +14,18 @@ import java.util.Map;
 @Component
 public class ModelJsonCompatibilityProbe {
     private final ObjectMapper json;
+    private com.ruanzhu.doorhandle.module.ai.config.AgentModelProperties deployment;
 
     public ModelJsonCompatibilityProbe(ObjectMapper json) { this.json = json; }
 
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    void deploymentTransport(com.ruanzhu.doorhandle.module.ai.config.AgentModelProperties properties) {
+        this.deployment = properties;
+    }
+
     public boolean check(ModelConfigurationService.Runtime snapshot, String id) {
         var settings = json.convertValue(snapshot.properties(), com.ruanzhu.doorhandle.module.ai.config.AgentModelProperties.class);
+        if (deployment != null) settings = AgentModelService.deploymentTransport(settings, deployment);
         settings.setFallbackEnabled(false);
         settings.setMaxRetries(0);
         settings.setMaxOutputTokens(64);

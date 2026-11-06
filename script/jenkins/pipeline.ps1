@@ -1,4 +1,4 @@
-param([Parameter(Mandatory = $true)][ValidateSet('Preflight', 'Package', 'PrepareFixtures', 'CleanupFixtures', 'VerifyEcs', 'Publish', 'Rehearse', 'CompactCutover')][string]$Action)
+param([Parameter(Mandatory = $true)][ValidateSet('Preflight', 'Package', 'PrepareFixtures', 'CleanupFixtures', 'VerifyEcs', 'VerifyRuntime', 'CleanupRuntime', 'Publish', 'Rehearse', 'CompactCutover')][string]$Action)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 Set-Location -LiteralPath (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
@@ -33,6 +33,9 @@ if ($Action -eq 'CompactCutover') {
     if ($env:ACTION -ne 'compact-cutover' -or $env:PRODUCTION_RELEASE_ENABLED -ne 'true' -or $env:DOORHANDLE_COMPACT_RELEASE_READY -ne 'true' -or $env:DOORHANDLE_CI_SCOPE -ne 'mysql' -or $env:CI_ECS_VERIFIED -ne 'true') {
         throw 'First compact cutover requires the accepted machine release gate and this build passing MySQL ECS verification.'
     }
+}
+if ($Action -eq 'VerifyRuntime' -and ($env:ACTION -ne 'verify-runtime' -or $env:DOORHANDLE_CI_SCOPE -ne 'mysql' -or $env:CI_ECS_VERIFIED -ne 'true')) {
+    throw 'Runtime acceptance requires this build passing the complete MySQL ECS verification.'
 }
 New-Item -ItemType Directory -Force -Path artifacts | Out-Null
 if ($Action -eq 'Package') {
@@ -203,14 +206,58 @@ if ($Action -eq 'VerifyEcs') {
     Write-Host 'ECS verification passed; source, execution identity and bounded evidence were validated. ECS lifecycle remains external.'
     return
 }
-if ($Action -eq 'CompactCutover') {
+if ($Action -in @('CompactCutover', 'VerifyRuntime', 'CleanupRuntime')) {
     $commit = Require-Value 'GIT_COMMIT' '^[a-f0-9]{40}$'
     $instance = Require-Value 'DOORHANDLE_ECS_INSTANCE_ID' '^i-[a-z0-9]+$'
     $machine = Require-Value 'DOORHANDLE_ECS_MACHINE_ID' '^[a-f0-9]{32}$'
-    $settings = Require-Value 'COMPACT_CUTOVER_SETTINGS' '^/(home|srv|opt)/[A-Za-z0-9_./-]+\.json$'
+    $settingsName = if ($env:DOORHANDLE_CI_FIXTURE_SETTINGS) { 'DOORHANDLE_CI_FIXTURE_SETTINGS' } else { 'COMPACT_CUTOVER_SETTINGS' }
+    $settings = Require-Value $settingsName '^/(home|srv|opt)/[A-Za-z0-9_./-]+\.json$'
     if ($settings -match '(^|/)\.\.(/|$)') { throw 'Unsafe private ECS cutover settings path' }
     $sha = (Get-FileHash -LiteralPath artifacts/source.tar.gz -Algorithm SHA256).Hash.ToLowerInvariant()
     $package = Get-Content -LiteralPath artifacts/release.json -Raw | ConvertFrom-Json
+    $runtimeHelper = "$remoteRoot/releases/$tag/script/docker/compact-runtime-acceptance.py"
+    $runtimeArguments = "--root '$remoteRoot' --runtime '$runtime' --tag '$tag' --commit '$commit' --source-sha256 '$sha' --instance-id '$instance' --machine-id '$machine' --settings '$settings'"
+    if ($Action -eq 'CleanupRuntime') {
+        # Preserve the real exit code, but collect bounded public failure and
+        # cleanup reports before reporting an incomplete cleanup to Jenkins.
+        $PSNativeCommandUseErrorActionPreference = $false
+        $cleanupArguments = $sshOptions + @('-p', $portText, $destination, "python3 -B '$runtimeHelper' cleanup $runtimeArguments")
+        $output = & 'ssh.exe' @cleanupArguments
+        $cleanupExit = $LASTEXITCODE
+        $cleanup = ($output | Select-Object -Last 1) | ConvertFrom-Json
+        if ($cleanup.release -ne $tag) { throw 'Runtime cleanup response belongs to another build.' }
+        $cleanup | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath artifacts/runtime-cleanup.json -Encoding utf8
+        function Receive-RuntimeJson([string]$RemoteFile, [string]$LocalFile, [string]$Digest) {
+            if ($Digest -notmatch '^[a-f0-9]{64}$') { throw 'Runtime report lacks its actual digest.' }
+            Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, "${destination}:$RemoteFile", $LocalFile))
+            $file = Get-Item -LiteralPath $LocalFile
+            if ($file.Length -le 0 -or $file.Length -gt 262144 -or (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant() -ne $Digest) { throw 'Runtime report is missing, oversized or changed during collection.' }
+            $value = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json
+            if ($value.release -ne $tag -or $value.commit -ne $commit -or $value.sourceSha256 -ne $sha -or $value.identity.instanceId -ne $instance -or $value.identity.machineId -ne $machine) { throw 'Runtime report belongs to another source or execution host.' }
+            return $value
+        }
+        $cleanupEvidence = $null
+        $cleanupDigest = $cleanup.PSObject.Properties['cleanupReceiptSha256']
+        if ($cleanupDigest -and $cleanupDigest.Value) {
+            $cleanupEvidence = Receive-RuntimeJson "$remoteRoot/verification/$tag/checkout/work/runtime-acceptance/cleanup.json" 'artifacts/runtime-cleanup-evidence.json' $cleanupDigest.Value
+        }
+        $failureDigest = $cleanup.PSObject.Properties['failureReceiptSha256']
+        if ($failureDigest -and $failureDigest.Value) {
+            $failure = Receive-RuntimeJson "$remoteRoot/verification/$tag/runtime-failure.json" 'artifacts/runtime-failure.json' $failureDigest.Value
+            if ($failure.kind -ne 'doorhandle-compact-runtime-failure' -or $failure.status -ne 'FAILED_OR_UNKNOWN') { throw 'Unexpected runtime failure report.' }
+            $completed = @($failure.completedScenarios.PSObject.Properties)
+            if ($completed.Count -gt 32) { throw 'Runtime failure scenario catalog exceeds its bound.' }
+            New-Item -ItemType Directory -Force -Path artifacts/runtime-scenarios | Out-Null
+            foreach ($scenario in $completed) {
+                $id = $scenario.Name
+                if ($id -notmatch '^[a-z][a-z0-9-]{0,79}$' -or $scenario.Value.file -ne "checkout/work/runtime-acceptance/scenario-$id.json") { throw 'Unexpected completed scenario path in runtime failure evidence.' }
+                $evidence = Receive-RuntimeJson "$remoteRoot/verification/$tag/$($scenario.Value.file)" "artifacts/runtime-scenarios/scenario-$id.json" $scenario.Value.sha256
+                if ($evidence.status -ne 'PASS' -or $evidence.scenario -ne $id -or $evidence.project -ne $failure.project) { throw 'Completed scenario does not belong to the failed runtime attempt.' }
+            }
+        }
+        if ($cleanupExit -ne 0 -or $cleanup.status -ne 'STOPPED' -or -not $cleanupEvidence -or $cleanupEvidence.status -ne 'STOPPED' -or $cleanupEvidence.unresolved.Count -ne 0 -or $cleanupEvidence.sourceResourcesChanged -ne $false) { throw 'Owned runtime cleanup did not verify the matching stopped resources; collected reports are retained.' }
+        return
+    }
     $verified = Get-Content -LiteralPath artifacts/ecs/evidence/verification-receipt.json -Raw | ConvertFrom-Json
     $executed = Get-Content -LiteralPath artifacts/ecs/evidence/reports/receipt.json -Raw | ConvertFrom-Json
     if ($package.release -ne $tag -or $package.commit -ne $commit -or $package.sourceSha256 -ne $sha -or $verified.release -ne $tag -or $verified.commit -ne $commit -or $verified.sourceSha256 -ne $sha -or $verified.scope -ne 'mysql' -or $verified.status -ne 'PASS' -or $verified.fixtureReadinessValidated -ne $true -or $verified.verificationExitCode -ne 0 -or $verified.identity.instanceId -ne $instance -or $verified.identity.machineId -ne $machine) {
@@ -219,6 +266,19 @@ if ($Action -eq 'CompactCutover') {
     if ($executed.wholeMigrationRequested -ne $true -or $executed.wholeMigrationTests.passed -le 0 -or $executed.wholeMigrationTests.failed -ne 0 -or $executed.wholeMigrationTests.skipped -ne 0 -or $executed.javaTests.skipped -ne 0) {
         throw 'Whole migration, restoration and MySQL acceptance must actually execute without skipped cases.'
     }
+    $jarSha = (Get-FileHash -LiteralPath artifacts/application.jar -Algorithm SHA256).Hash.ToLowerInvariant()
+    $jarBytes = (Get-Item -LiteralPath artifacts/application.jar).Length
+    if ($package.applicationJarSha256 -ne $jarSha) { throw 'Candidate image must contain the fixed-commit application artifact.' }
+    $artifactPlan = [ordered]@{ schema=1; kind='doorhandle-compact-fixture-artifacts'; release=$tag; commit=$commit; sourceSha256=$sha; applicationJarSha256=$jarSha; applicationJarBytes=$jarBytes }
+    if (Test-Path -LiteralPath artifacts/fixture-build-artifacts.json) {
+        $existingPlan = Get-Content -LiteralPath artifacts/fixture-build-artifacts.json -Raw | ConvertFrom-Json
+        foreach ($key in $artifactPlan.Keys) { if ($existingPlan.$key -ne $artifactPlan[$key]) { throw 'Candidate and fixture artifact plans differ.' } }
+    } else {
+        $artifactPlan | ConvertTo-Json | Set-Content -LiteralPath artifacts/fixture-build-artifacts.json -Encoding utf8
+    }
+    Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, 'artifacts/application.jar', "${destination}:$remoteInbox/application.jar"))
+    Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, 'artifacts/fixture-build-artifacts.json', "${destination}:$remoteInbox/build-artifacts.json"))
+    Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "chmod 600 '$remoteInbox/application.jar' '$remoteInbox/build-artifacts.json'"))
     foreach ($file in @('memory-compat.py', 'model-secrets.py', 'assignment-compat.py', 'mcp-compat.py', 'mcp-runtime.py', 'compact-schema-guard.py', 'compact-cutover.py')) {
         Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, "script/docker/$file", "${destination}:$remoteInbox/$file"))
     }
@@ -230,13 +290,59 @@ if ($Action -eq 'CompactCutover') {
     if ($buildReceipt.kind -ne 'doorhandle-compact-candidate-build' -or $buildReceipt.status -ne 'BUILT' -or $buildReceipt.commit -ne $commit -or $buildReceipt.sourceSha256 -ne $sha -or $buildReceipt.release -ne $tag -or $buildReceipt.ecs.instanceId -ne $instance -or $buildReceipt.ecs.machineId -ne $machine) {
         throw 'Candidate image/artifact build receipt differs from this fixed Jenkins source.'
     }
+    if ($buildReceipt.applicationJarSha256 -ne $jarSha -or $buildReceipt.applicationJarBytes -ne $jarBytes) { throw 'The built image does not contain this pipeline application jar.' }
+    $result = Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "python3 -B '$runtimeHelper' run $runtimeArguments"))
+    $runtimeResult = ($result | Select-Object -Last 1) | ConvertFrom-Json
+    if ($runtimeResult.status -ne 'PASS' -or $runtimeResult.release -ne $tag -or $runtimeResult.runtimeScenarios -lt 9 -or $runtimeResult.ownedCleanup -ne 'STOPPED' -or $runtimeResult.runtimeReceiptSha256 -notmatch '^[a-f0-9]{64}$') { throw 'Complete application runtime acceptance did not pass and clean up its owned resources.' }
+    Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, "${destination}:$remoteRoot/verification/$tag/runtime-acceptance.json", 'artifacts/runtime-acceptance.json'))
+    if ((Get-FileHash -LiteralPath artifacts/runtime-acceptance.json -Algorithm SHA256).Hash.ToLowerInvariant() -ne $runtimeResult.runtimeReceiptSha256) { throw 'The actual runtime acceptance receipt changed during collection.' }
+    $runtimeProof = Get-Content -LiteralPath artifacts/runtime-acceptance.json -Raw | ConvertFrom-Json
+    $candidateSha = (Get-FileHash -LiteralPath artifacts/compact-candidate-build.json -Algorithm SHA256).Hash.ToLowerInvariant()
+    $wholeProof = Get-Content -LiteralPath artifacts/ecs/evidence/reports/migration.json -Raw | ConvertFrom-Json
+    if ($runtimeProof.status -ne 'PASS' -or $runtimeProof.commit -ne $commit -or $runtimeProof.release -ne $tag -or $runtimeProof.sourceSha256 -ne $sha -or $runtimeProof.candidateBuildSha256 -ne $candidateSha -or $runtimeProof.acceptanceProfileSha256 -ne $verified.acceptanceProfileSha256 -or $runtimeProof.migrationReceiptSha256 -ne $wholeProof.migrationReceiptSha256 -or $runtimeProof.initialTargetSnapshotSha256 -ne $wholeProof.targetSnapshotSha256 -or $runtimeProof.identity.instanceId -ne $instance -or $runtimeProof.identity.machineId -ne $machine -or $runtimeProof.paidModelCalls -ne 0) { throw 'Application acceptance proof belongs to another build, dataset, image or execution host.' }
+    foreach ($service in @('backend', 'nginx', 'mem0', 'detection-worker')) {
+        if ($runtimeProof.images.$service -ne $buildReceipt.images.$service) { throw 'Runtime used a different candidate image.' }
+    }
+    $scenarios = @($runtimeProof.scenarios.PSObject.Properties)
+    $profile = Get-Content -LiteralPath script/jenkins/compact-acceptance.json -Raw | ConvertFrom-Json
+    $requiredScenarios = @($profile.runtimeAcceptance.scenarios | ForEach-Object { $_.id } | Sort-Object)
+    $actualScenarios = @($scenarios | ForEach-Object { $_.Name } | Sort-Object)
+    if ($requiredScenarios.Count -lt 9 -or $requiredScenarios.Count -gt 32 -or ($requiredScenarios -join ',') -cne ($actualScenarios -join ',')) { throw 'Runtime acceptance did not execute the exact fixed-source scenario catalog.' }
+    New-Item -ItemType Directory -Path artifacts/runtime-scenarios | Out-Null
+    foreach ($scenario in $scenarios) {
+        $id = $scenario.Name
+        $member = $scenario.Value
+        $expectedFile = "checkout/work/runtime-acceptance/scenario-$id.json"
+        if ($id -notmatch '^[a-z][a-z0-9-]{0,79}$' -or $member.file -ne $expectedFile -or $member.sha256 -notmatch '^[a-f0-9]{64}$') { throw 'Unexpected runtime scenario evidence path or digest.' }
+        $localFile = "artifacts/runtime-scenarios/scenario-$id.json"
+        Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, "${destination}:$remoteRoot/verification/$tag/$expectedFile", $localFile))
+        $length = (Get-Item -LiteralPath $localFile).Length
+        if ($length -le 0 -or $length -gt 262144 -or (Get-FileHash -LiteralPath $localFile -Algorithm SHA256).Hash.ToLowerInvariant() -ne $member.sha256) { throw 'A runtime scenario report is missing, oversized or changed during collection.' }
+        $observed = Get-Content -LiteralPath $localFile -Raw | ConvertFrom-Json
+        if ($observed.status -ne 'PASS' -or $observed.scenario -ne $id -or $observed.commit -ne $commit -or $observed.release -ne $tag -or $observed.sourceSha256 -ne $sha -or $observed.candidateBuildSha256 -ne $candidateSha -or $observed.acceptanceProfileSha256 -ne $runtimeProof.acceptanceProfileSha256 -or $observed.project -ne $runtimeProof.project -or $observed.identity.instanceId -ne $instance -or $observed.identity.machineId -ne $machine) { throw 'Runtime scenario evidence does not belong to this actual application build.' }
+    }
+    $cleanupReference = $runtimeProof.cleanup
+    if ($cleanupReference.status -ne 'STOPPED' -or $cleanupReference.file -ne 'checkout/work/runtime-acceptance/cleanup.json' -or $cleanupReference.sha256 -notmatch '^[a-f0-9]{64}$') { throw 'Runtime cleanup lacks its actual owned resource report.' }
+    Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, "${destination}:$remoteRoot/verification/$tag/$($cleanupReference.file)", 'artifacts/runtime-cleanup-evidence.json'))
+    $cleanupFile = Get-Item -LiteralPath artifacts/runtime-cleanup-evidence.json
+    if ($cleanupFile.Length -le 0 -or $cleanupFile.Length -gt 262144 -or (Get-FileHash -LiteralPath $cleanupFile.FullName -Algorithm SHA256).Hash.ToLowerInvariant() -ne $cleanupReference.sha256) { throw 'Runtime cleanup evidence is missing, oversized or changed during collection.' }
+    $cleanupEvidence = Get-Content -LiteralPath $cleanupFile.FullName -Raw | ConvertFrom-Json
+    if ($cleanupEvidence.status -ne 'STOPPED' -or $cleanupEvidence.unresolved.Count -ne 0 -or $cleanupEvidence.stoppedContainers.Count -eq 0 -or $cleanupEvidence.sourceResourcesChanged -ne $false -or $cleanupEvidence.commit -ne $commit -or $cleanupEvidence.release -ne $tag -or $cleanupEvidence.sourceSha256 -ne $sha -or $cleanupEvidence.candidateBuildSha256 -ne $candidateSha -or $cleanupEvidence.project -ne $runtimeProof.project) { throw 'Runtime cleanup did not prove this build owned resources were stopped.' }
+    # This completion receipt is written only after all original scenario and
+    # cleanup bytes have passed validation. Later production cutover failure
+    # must not rerun this finished runtime or overwrite its frozen evidence.
+    @{ kind='doorhandle-runtime-gate-passed'; status='VERIFIED'; release=$tag; commit=$commit;
+       sourceSha256=$sha; candidateBuildSha256=$candidateSha; runtimeReceiptSha256=$runtimeResult.runtimeReceiptSha256;
+       cleanupReceiptSha256=$cleanupReference.sha256 } |
+        ConvertTo-Json | Set-Content -LiteralPath artifacts/runtime-gate-passed.json -Encoding utf8
+    if ($Action -eq 'VerifyRuntime') { return }
     $inputFile = "$remoteRoot/releases/$tag/work/private-cutover-input.json"
     $helper = "$remoteRoot/releases/$tag/script/docker/compact-cutover.py"
     $cutoverArgs = "--root '$remoteRoot' --runtime '$runtime' --tag '$tag' --source-sha256 '$sha' --config '$inputFile'"
     $failed = $null
     try {
         foreach ($phase in @('prepare', 'migrate', 'activate')) {
-            $gate = if ($phase -eq 'activate') { 'DOORHANDLE_COMPACT_RELEASE_READY=true ' } else { '' }
+            $gate = 'DOORHANDLE_COMPACT_RELEASE_READY=true '
             Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "${gate}python3 -B '$helper' $phase $cutoverArgs"))
         }
     } catch { $failed = $_ }

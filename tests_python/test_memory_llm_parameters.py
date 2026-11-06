@@ -8,6 +8,36 @@ import pytest
 from memory_service import main
 
 
+def test_memory_gateway_changes_transport_and_preserves_frozen_model_credentials_and_embedding(monkeypatch):
+    monkeypatch.setenv('MEM0_MODEL_GATEWAY_BASE_URL', 'http://owned-gateway:8099')
+    monkeypatch.setenv('DASHSCOPE_API_KEY', 'fixture-not-real')
+    monkeypatch.setenv('EMBEDDING_API_KEY', 'fixture-embedding')
+    monkeypatch.setenv('DASHSCOPE_BASE_URL', 'https://frozen-provider.example/compatible-mode/v1')
+    monkeypatch.setenv('EMBEDDING_BASE_URL', 'https://embedding-fixture.example/v1')
+    frozen = {'provider': 'deepseek', 'base_url': 'https://frozen-deepseek.example/v1',
+              'model': 'deepseek-flash', 'api_key': 'frozen-fixture-key'}
+    before = dict(frozen)
+    llm = main.create_configured_llm(frozen)
+    try:
+        assert str(llm.client.base_url).rstrip('/') == 'http://owned-gateway:8099/llm/deepseek/v1'
+        assert llm.client.api_key == 'frozen-fixture-key'
+        assert frozen == before
+        config = main.get_memory_config()
+        assert config['llm']['config']['openai_base_url'] == 'http://owned-gateway:8099/llm/dashscope/compatible-mode/v1'
+        assert config['embedder']['config']['openai_base_url'] == 'https://embedding-fixture.example/v1'
+    finally:
+        llm.client.close()
+    monkeypatch.setenv('MEM0_MODEL_GATEWAY_BASE_URL', '')
+    assert main.llm_transport_url('deepseek', frozen['base_url']) == frozen['base_url']
+
+
+@pytest.mark.parametrize('gateway', ['http://user:secret@gateway', 'https://gateway/path', 'file:///tmp/gateway'])
+def test_memory_gateway_rejects_credentials_or_unsupported_deployment_routes(monkeypatch, gateway):
+    monkeypatch.setenv('MEM0_MODEL_GATEWAY_BASE_URL', gateway)
+    with pytest.raises(ValueError, match='deployment LLM gateway'):
+        main.llm_transport_url('deepseek', 'https://provider.example/v1')
+
+
 @pytest.mark.parametrize('model', ['qwen3.8-flash', 'qwen3.8-max-0902', 'glm-5.3', 'kimi-k3', 'kimi-k2.7-code'])
 @pytest.mark.parametrize('managed', [False, True])
 def test_provider_models_retain_the_native_output_budget(monkeypatch, model, managed):

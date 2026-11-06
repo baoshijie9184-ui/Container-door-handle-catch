@@ -18,6 +18,56 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.*;
 
 class ModelIoIsolationTest {
+    @Test void deploymentTransportDoesNotMutateFrozenProviderOrPolicyAndEmptyValuesClearOldRoutes() {
+        var frozen=new AgentModelProperties();
+        frozen.getDeepseek().setApiKey("frozen-fixture-key");
+        frozen.getDeepseek().setBaseUrl("https://frozen-provider.invalid/v1");
+        frozen.getDeepseek().setAdditionalModels(new java.util.ArrayList<>(List.of("frozen-secondary")));
+        frozen.setMaxOutputTokens(321);frozen.setTimeout(Duration.ofSeconds(29));
+        frozen.setGatewayBaseUrl("http://old-gateway:8080");frozen.setProxyUrl("http://old-proxy:3128");
+        var deployment=new AgentModelProperties();deployment.getDeepseek().setApiKey("unrelated-deployment-key");
+        deployment.setGatewayBaseUrl("");deployment.setProxyUrl("");
+        var effective=AgentModelService.deploymentTransport(frozen,deployment);
+        assertThat(effective).isNotSameAs(frozen);
+        assertThat(effective.getGatewayBaseUrl()).isEmpty();assertThat(effective.getProxyUrl()).isEmpty();
+        assertThat(effective.getDeepseek().getApiKey()).isEqualTo("frozen-fixture-key");
+        assertThat(effective.getDeepseek().getBaseUrl()).isEqualTo("https://frozen-provider.invalid/v1");
+        assertThat(effective.getDeepseek().getModel()).isEqualTo(frozen.getDeepseek().getModel());
+        assertThat(effective.getMaxOutputTokens()).isEqualTo(321);assertThat(effective.getTimeout()).isEqualTo(Duration.ofSeconds(29));
+        effective.getDeepseek().setApiKey("changed-copy");effective.getDeepseek().getAdditionalModels().clear();
+        assertThat(frozen.getDeepseek().getApiKey()).isEqualTo("frozen-fixture-key");
+        assertThat(frozen.getDeepseek().getAdditionalModels()).containsExactly("frozen-secondary");
+        assertThat(frozen.getGatewayBaseUrl()).isEqualTo("http://old-gateway:8080");
+        assertThat(frozen.getProxyUrl()).isEqualTo("http://old-proxy:3128");
+    }
+
+    @Test void frozenProviderUsesCurrentGatewayWithOriginalPathModelAndCredentials() throws Exception {
+        var calls=new AtomicInteger();var authorization=new java.util.concurrent.atomic.AtomicReference<String>();
+        var server=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
+        server.createContext("/llm/deepseek/v1/chat/completions",exchange->{
+            try {
+                calls.incrementAndGet();authorization.set(exchange.getRequestHeaders().getFirst("Authorization"));
+                String request=new String(exchange.getRequestBody().readAllBytes(),StandardCharsets.UTF_8);
+                assertThat(request).contains("deepseek-flash");
+                byte[] body=("data: {\"id\":\"fixture\",\"object\":\"chat.completion.chunk\",\"model\":\"deepseek-flash\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"transport-ok\"},\"finish_reason\":null}]}\n\ndata: [DONE]\n\n").getBytes(StandardCharsets.UTF_8);
+                exchange.getResponseHeaders().set("Content-Type","text/event-stream");exchange.sendResponseHeaders(200,body.length);
+                exchange.getResponseBody().write(body);
+            } finally {exchange.close();}
+        });server.start();
+        var frozen=new AgentModelProperties();frozen.getDeepseek().setBaseUrl("https://frozen-provider.invalid/v1");
+        frozen.getDeepseek().setApiKey("frozen-fixture-key");frozen.setMaxRetries(0);
+        var deployment=new AgentModelProperties();deployment.setGatewayBaseUrl("http://127.0.0.1:"+server.getAddress().getPort());
+        var settings=new AgentScopeProperties();settings.setModel("deepseek:deepseek-flash");
+        try(var client=new AgentModelService(AgentModelService.deploymentTransport(frozen,deployment),settings)){
+            var response=client.resolve(settings.getModel()).stream(List.of(new UserMessage("fixture")),List.of(),null)
+                    .collectList().block(Duration.ofSeconds(20));
+            assertThat(response.stream().flatMap(item->item.getContent().stream()).filter(TextBlock.class::isInstance)
+                    .map(TextBlock.class::cast).map(TextBlock::getText)).containsExactly("transport-ok");
+            assertThat(calls).hasValue(1);assertThat(authorization.get()).isEqualTo("Bearer frozen-fixture-key");
+            assertThat(frozen.getGatewayBaseUrl()).isEmpty();
+        } finally {server.stop(0);}
+    }
+
     @Test void healthyBackupFinishesWhilePrimaryStillWaitsForHttpHeaders() throws Exception {
         var release=new CountDownLatch(1);
         var primaryCalls=new AtomicInteger();var backupCalls=new AtomicInteger();

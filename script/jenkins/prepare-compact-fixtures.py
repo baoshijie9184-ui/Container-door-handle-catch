@@ -23,6 +23,7 @@ import subprocess
 import sys
 import tarfile
 import time
+from urllib.parse import urlsplit
 from urllib.request import ProxyHandler, Request, build_opener
 
 
@@ -273,6 +274,18 @@ class Preparation:
                 and original['Config']['Labels'].get('com.docker.compose.project') == PROJECT
                 and original['Config']['Labels'].get('com.docker.compose.service') == 'mysql',
                 'Source is not the existing original MySQL container')
+        backends = self.docker_call('ps', '-aq', '--no-trunc', '--filter',
+            'label=com.docker.compose.project=' + PROJECT, '--filter',
+            'label=com.docker.compose.service=backend').decode().split()
+        require(len(backends) == 1, 'Original application generation is missing or ambiguous')
+        backend = json.loads(self.docker_call('inspect', backends[0]))[0]
+        environment = dict(item.split('=', 1) for item in backend['Config'].get('Env', []) if '=' in item)
+        jdbc = environment.get('DB_URL', '')
+        require(jdbc.startswith('jdbc:mysql://'), 'Original application must declare its actual MySQL schema')
+        endpoint = urlsplit(jdbc[5:])
+        require(endpoint.hostname == 'mysql' and (endpoint.port or 3306) == 3306
+                and not endpoint.username and not endpoint.password and endpoint.path == '/' + settings['sourceSchema'],
+                'Fixture source is not the actual original application database')
         self.source = readonly_source(self.runtime, self.docker, original['Id'], self.work)
         actual = self.source.single("SELECT JSON_OBJECT('uuid',@@server_uuid,'version',@@version,'foreignKeys',@@foreign_key_checks);")
         require(actual['version'].startswith('8.4.') and actual['foreignKeys'] == 1, 'Existing MySQL 8.4 with FK enforcement required')

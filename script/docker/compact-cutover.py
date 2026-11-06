@@ -136,6 +136,111 @@ def admitted_verification(root, tag, commit, source_sha, identity, guard):
     return digest
 
 
+def admitted_runtime(root, tag, commit, source_sha, identity, guard, build, build_sha):
+    """Bind every executed runtime scenario and cleanup to this exact candidate."""
+    directory = canonical(Path(root) / 'verification' / tag)
+    proof, digest = guard.read_private(directory / 'runtime-acceptance.json')
+    coverage = module('compact_runtime_coverage', Path(__file__).resolve().parents[1] / 'jenkins/compact-acceptance.py')
+    profile, profile_sha = coverage.profile(Path(__file__).resolve().parents[2])
+    context = {'schemaVersion': 1, 'kind': 'doorhandle-compact-runtime-acceptance', 'release': tag,
+        'commit': commit, 'sourceSha256': source_sha, 'identity': identity,
+        'acceptanceProfileSha256': profile_sha, 'candidateBuildSha256': build_sha}
+    require(all(proof.get(key) == value for key, value in context.items()) and proof.get('status') == 'PASS'
+            and proof.get('images') == {key: build['images'][key] for key in ('backend', 'nginx', 'mem0', 'detection-worker')},
+            'The full runtime proof belongs to another build, model protocol or candidate image')
+    require(re.fullmatch(r'doorhandle-rehearsal-[a-f0-9]{12}', proof.get('project', ''))
+            and SHA.fullmatch(proof.get('migrationReceiptSha256', ''))
+            and SHA.fullmatch(proof.get('initialTargetSnapshotSha256', ''))
+            and re.fullmatch(r'[a-f0-9-]{36}', proof.get('actualServerUuid', ''))
+            and type(proof.get('actualMysqlPort')) is int and 1024 <= proof['actualMysqlPort'] <= 65535
+            and proof['actualMysqlPort'] != 3306 and proof.get('paidModelCalls') == 0,
+            'Runtime proof lacks its actual owned migration/server binding')
+    matrix = json.loads((directory / 'checkout/work/ci-evidence/migration.json').read_text(encoding='utf8'))
+    require(matrix.get('migrationReceiptSha256') == proof['migrationReceiptSha256']
+            and matrix.get('targetSnapshotSha256') == proof['initialTargetSnapshotSha256'],
+            'Runtime did not use the exact whole-migration target accepted by this matrix')
+    required = {item['id'] for item in profile['runtimeAcceptance']['scenarios']}
+    require(isinstance(proof.get('scenarios'), dict) and set(proof['scenarios']) == required,
+            'Every mandatory runtime business scenario must actually have passed')
+    def artifact(reference, name):
+        require(isinstance(reference, dict) and set(reference) == ({'file', 'sha256', 'status'} if name == 'cleanup' else {'file', 'sha256'})
+                and isinstance(reference.get('file'), str) and SHA.fullmatch(reference.get('sha256', '')),
+                'A runtime proof reference is malformed')
+        relative = Path(reference['file'])
+        expected = Path('checkout/work/runtime-acceptance') / (name + '.json')
+        require(relative.as_posix() == expected.as_posix(), 'Runtime evidence escaped its fixed owned location')
+        value, actual_sha = guard.read_private(canonical(directory / relative))
+        require(actual_sha == reference['sha256'] and all(value.get(key) == expected for key, expected in context.items())
+                and value.get('project') == proof['project'], 'An actual runtime artifact is missing, changed or foreign')
+        return value
+    observations = {}
+    for name, reference in proof['scenarios'].items():
+        value = artifact(reference, 'scenario-' + name)
+        require(value.get('scenario') == name and value.get('status') == 'PASS'
+                and isinstance(value.get('observations'), dict) and value['observations'],
+                'A mandatory runtime scenario was not executed successfully')
+        observations[name] = value['observations']
+    worker = observations['detection-pth-worker-kafka-receipts'].get('actualUnknownResultFence', {})
+    signal = worker.get('actualCompletionSignal', {})
+    require(worker.get('status') == 'NEEDS_REVIEW' and worker.get('actualSuccessfulImages') == 1
+            and worker.get('actualFailedImages') == 0 and signal.get('error') == 1644 and signal.get('sqlState') == '45000'
+            and SHA.fullmatch(signal.get('statementSha256', '')) and SHA.fullmatch(worker.get('unknownRowSha256', ''))
+            and SHA.fullmatch(worker.get('actualSummarySha256', ''))
+            and worker.get('actualUncommittedPartition', {}).get('lag', 0) > 0,
+            'Actual worker completion failure and retained unknown-result fence are missing')
+    mcp = observations['private-mcp-install-fetch-cancel-reconcile'].get('actualUnknownControlFault', {})
+    require(mcp.get('unknownState') == 'NEEDS_REVIEW' and mcp.get('newInstallationBlockedHttpStatus') == 409
+            and mcp.get('newInstallationBlockedReason') == 'PENDING_EXECUTION_EXIT'
+            and SHA.fullmatch(mcp.get('denialResponseSha256', ''))
+            and mcp.get('reconciledState') == 'REMOVED' and mcp.get('writerExitAndCleanupVerified') is True
+            and re.fullmatch(r'[a-f0-9]{64}', mcp.get('observedWriterId', ''))
+            and re.fullmatch(r'[a-f0-9]{64}', mcp.get('pausedControllerId', ''))
+            and re.fullmatch(r'[a-f0-9]{32}', mcp.get('poolId', '')),
+            'Actual unknown MCP writer/control fault and causal reconciliation are missing')
+    sdk = observations['sdk-session-workbench-recovery']
+    require(sdk.get('interruptedRunId') and sdk.get('resumedRunId') and sdk['interruptedRunId'] != sdk['resumedRunId']
+            and type(sdk.get('beforeRestoreRevision')) is int and type(sdk.get('afterRestoreRevision')) is int
+            and sdk['afterRestoreRevision'] > sdk['beforeRestoreRevision']
+            and SHA.fullmatch(sdk.get('afterRestoreSha256', '')) and sdk.get('cancelledExecutionFence', 0) > 0,
+            'Actual SDK checkpoint continuation after restart and cancellation fence are missing')
+    recovered = observations['compact-application-upgrade-recovery']
+    require(recovered.get('restoredTableCount') == 29 and recovered.get('originalSchema') != recovered.get('restoredSchema')
+            and SHA.fullmatch(recovered.get('postBusinessSnapshotSha256', ''))
+            and recovered.get('postBusinessSnapshotSha256') == recovered.get('restoredSnapshotSha256')
+            and recovered.get('wrongKeyRejectedServices') == ['backend', 'mem0']
+            and recovered.get('actualProcessesUseRestoredSchema') is True,
+            'Actual post-business 29-table recovery and wrong-key startup rejection are missing')
+    recovery, recovery_sha = guard.read_private(directory / 'checkout/work/runtime-acceptance/post-business-recovery/recovery-receipt.json')
+    require(recovery_sha == recovered.get('postBusinessRecoveryReceiptSha256')
+            and recovery.get('kind') == 'doorhandle-runtime-post-business-recovery' and recovery.get('status') == 'VERIFIED'
+            and all(recovery.get(key) == value for key, value in context.items() if key != 'kind')
+            and recovery.get('originalMigrationReceiptSha256') == proof['migrationReceiptSha256']
+            and recovery.get('sourceSnapshotSha256') == recovered['postBusinessSnapshotSha256']
+            and recovery.get('restoredSnapshotSha256') == recovered['restoredSnapshotSha256'],
+            'The actual post-business backup/restore proof changed or belongs to another migration')
+    cleanup = artifact(proof.get('cleanup'), 'cleanup')
+    require(cleanup.get('status') == 'STOPPED' and proof['cleanup'].get('status') == 'STOPPED'
+            and cleanup.get('unresolved') == [] and isinstance(cleanup.get('stoppedContainers'), list)
+            and cleanup['stoppedContainers'] and all(re.fullmatch(r'[a-f0-9]{64}', cid) for cid in cleanup['stoppedContainers'])
+            and cleanup.get('sourceResourcesChanged') is False
+            and SHA.fullmatch(cleanup.get('sourceBeforeSha256', ''))
+            and cleanup.get('sourceBeforeSha256') == cleanup.get('sourceAfterSha256'), 'Actual owned cleanup has not been confirmed')
+    isolation = proof.get('modelIsolation', {})
+    fixture = isolation.get('fixtureState', {})
+    require(isolation.get('fixtureSourceSha256') == sha_file(Path(__file__).with_name('compact-model-fixture.py'))
+            and isolation.get('ossAdapterSourceSha256') == sha_file(Path(__file__).with_name('compact-oss-fixture.py'))
+            and isolation.get('internalNetworksVerified') is True and isolation.get('providerCredentialsRemoved') is True
+            and fixture.get('kind') == 'doorhandle-owned-scripted-model'
+            and type(fixture.get('modelRequests')) is int and fixture['modelRequests'] > 0
+            and type(fixture.get('embeddingRequests')) is int and fixture['embeddingRequests'] > 0,
+            'The actual isolated model and embedding transport has not been evidenced')
+    observed = isolation.get('observedInternalNetworks')
+    require(isinstance(observed, list) and {row.get('service') for row in observed} == {'backend', 'mem0', 'model-fixture'}
+            and all(row.get('internal') is True and re.fullmatch(r'[a-f0-9]{64}', row.get('networkId', '')) for row in observed),
+            'Model-capable services lack actual internal-network observations')
+    return digest
+
+
 class Cutover:
     def __init__(self, args):
         require(sys.platform == 'linux', 'Cutover runs only on the admitted ECS Linux host')
@@ -159,7 +264,8 @@ class Cutover:
                 and self.input['gitCommit'].startswith(match[2]) and type(self.input['buildNumber']) is int
                 and self.input['buildNumber'] == int(match[1]), 'SCM commit, build and release tag differ')
         self.identity = self.guard.ecs_identity(self.input['ecs'])
-        build, _ = self.guard.read_private(self.source / 'candidate-build.json')
+        build, self.build_sha = self.guard.read_private(self.source / 'candidate-build.json')
+        self.build = build
         require(build.get('kind') == 'doorhandle-compact-candidate-build' and build.get('status') == 'BUILT'
                 and build.get('release') == args.tag and build.get('commit') == self.input['gitCommit']
                 and build.get('sourceSha256') == args.source_sha256 and build.get('inputSha256') == self.input_sha
@@ -381,8 +487,11 @@ class Cutover:
         return output
 
     def prepare(self):
+        require(os.environ.get('DOORHANDLE_COMPACT_RELEASE_READY') == 'true', 'ECS acceptance release gate is closed')
         require(self.journal is None and not (self.state / 'compact-connection.json').exists()
                 and not (self.state / 'compact-connection.override.yml').exists(), 'First cutover cannot overwrite existing admission state')
+        runtime_sha = admitted_runtime(self.root, self.args.tag, self.input['gitCommit'], self.args.source_sha256,
+            self.identity, self.guard, self.build, self.build_sha)
         self.work.mkdir(mode=0o700, parents=True)
         backend = self.common.container(PROJECT, 'backend')
         source_schema = self.common.database_name(self.common.environment(backend))
@@ -391,6 +500,7 @@ class Cutover:
             'sourceArchiveSha256': self.args.source_sha256, 'gitCommit': self.input['gitCommit'],
             'buildNumber': self.input['buildNumber'], 'sourceRoot': str(self.source), 'runtime': str(self.runtime),
             'work': str(self.work), 'originalEnvSha256': self.env_sha, 'sourceSchema': source_schema,
+            'runtimeAcceptanceSha256': runtime_sha,
             'activationStarted': False, 'migrationStarted': False, 'originals': []}
         self.persist()
         identity = json.loads(self.sql("SELECT JSON_OBJECT('uuid',@@server_uuid,'version',@@version);"))
@@ -475,6 +585,7 @@ class Cutover:
         self.persist('PREPARED')
 
     def migrate(self):
+        require(os.environ.get('DOORHANDLE_COMPACT_RELEASE_READY') == 'true', 'ECS acceptance release gate is closed')
         require(self.journal and self.journal['phase'] == 'PREPARED' and not self.journal['migrationStarted'],
                 'Migration requires one prepared fresh target; unknown/failed work is never replayed')
         self.assert_maintenance()
@@ -516,6 +627,9 @@ class Cutover:
         require(os.environ.get('DOORHANDLE_COMPACT_RELEASE_READY') == 'true', 'ECS acceptance release gate is closed')
         require(self.journal and self.journal['phase'] == 'MIGRATED' and not self.journal['activationStarted'],
                 'Activation requires the exact complete migration; failed activation cannot be retried automatically')
+        require(admitted_runtime(self.root, self.args.tag, self.input['gitCommit'], self.args.source_sha256,
+            self.identity, self.guard, self.build, self.build_sha) == self.journal.get('runtimeAcceptanceSha256'),
+            'Runtime acceptance changed after the source was frozen')
         self.assert_maintenance()
         receipt = canonical(self.journal['migrationReceiptFile'])
         require(sha_file(receipt) == self.journal['migrationReceiptSha256'], 'Final migration receipt changed')

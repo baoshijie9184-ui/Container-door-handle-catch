@@ -6,7 +6,6 @@ mem0 记忆服务 - 基于 FastAPI + mem0 + Chroma
 import os
 import sys
 import logging
-import hashlib
 import hmac
 import json
 import threading
@@ -14,6 +13,7 @@ import asyncio
 from pathlib import Path
 from typing import Any, Optional, Literal
 from contextlib import asynccontextmanager, contextmanager
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request, Header
 from fastapi.responses import JSONResponse
@@ -77,6 +77,25 @@ def required_env(name: str) -> str:
     return value
 
 
+def llm_transport_url(provider, original):
+    """Route frozen provider identity through this deployment's optional gateway."""
+    gateway = os.getenv("MEM0_MODEL_GATEWAY_BASE_URL", "").strip()
+    if not gateway:
+        return original
+    try:
+        target, origin = urlsplit(gateway), urlsplit(original)
+        valid = (provider in ("dashscope", "deepseek", "openai")
+                 and target.scheme in ("http", "https") and target.hostname
+                 and not target.username and not target.password and not target.query and not target.fragment
+                 and target.path in ("", "/") and origin.scheme in ("http", "https") and origin.hostname
+                 and not origin.username and not origin.password and not origin.query and not origin.fragment)
+        if not valid:
+            raise ValueError()
+        return gateway.rstrip("/") + "/llm/" + provider + origin.path
+    except (TypeError, ValueError):
+        raise ValueError("Invalid deployment LLM gateway transport") from None
+
+
 def get_memory_config():
     """构建 mem0 配置"""
     llm_api_key = required_env("DASHSCOPE_API_KEY")
@@ -92,7 +111,7 @@ def get_memory_config():
             "config": {
                 "model": llm_model,
                 "api_key": llm_api_key,
-                "openai_base_url": llm_base_url,
+                "openai_base_url": llm_transport_url("dashscope", llm_base_url),
             }
         },
         "embedder": {
@@ -239,7 +258,8 @@ async def authenticate_memory_bridge(request: Request, call_next):
 
 def create_configured_llm(data):
     from mem0.utils.factory import LlmFactory
-    config = {"model": data["model"], "api_key": data["api_key"], "openai_base_url": data["base_url"]}
+    config = {"model": data["model"], "api_key": data["api_key"],
+              "openai_base_url": llm_transport_url(data.get("provider", "dashscope"), data["base_url"])}
     if data["model"].rsplit("/", 1)[-1] in {"kimi-k3", "kimi-k2.7-code"}:
         config.update(temperature=1.0, top_p=0.95)
     llm = LlmFactory.create("openai", config)
@@ -683,8 +703,6 @@ async def retired_unscoped_operation(user_id: str = "", memory_id: str = ""):
 
 
 if __name__ == "__main__":
-    import sys
-    from pathlib import Path
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
     from ecs_execution import require_ecs_execution
     require_ecs_execution()

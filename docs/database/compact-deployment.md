@@ -15,7 +15,7 @@
 Jenkins 动作 `compact-cutover` 必须选择 `mysql` 验证范围，并使用该构建固定提交及源码归档。`PRODUCTION_RELEASE_ENABLED` 和节点环境中的发布门禁同时满足才允许进入首切阶段。控制器与 ECS helper 都核对本轮 MySQL PASS、无跳过的 Java 用例，以及真实执行的整库复制和恢复验收；源码检查结果不能代替这些证据。
 
 1. 流水线验证固定提交，在 ECS 隔离环境执行测试并收集带摘要的报告。
-2. `deploy-remote.sh build-only` 展开同一源码归档，构建 backend、nginx、mem0 和新版 detection-worker。大体积依赖从 ECS 现有已验证 worker 上下文硬链接到本轮目录，当前业务目录不改。制品提取容器仅创建、不启动；从实际候选 backend 镜像提取迁移 BootJar。`candidate-build.json` 绑定提交、构建、源码、四类镜像、jar、私有输入及验证回执摘要。
+2. `deploy-remote.sh build-only` 展开同一源码归档，构建 backend、nginx、mem0 和新版 detection-worker。backend 封装本地 Jenkins 已编译并用于整库迁移的同一 BootJar，不在 ECS 的 Docker 构建中另跑 Maven；受控构建上下文保留版本化 Dockerfile 的固定 runtime 层、依赖和许可证，只替换唯一 jar COPY。大体积依赖从 ECS 现有已验证 worker 上下文硬链接到本轮目录，当前业务目录不改。制品提取容器仅创建、不启动；从实际候选 backend 镜像提取 jar 再核对本轮计划摘要和字节数。`candidate-build.json` 绑定提交、构建、源码、四类镜像、同一 jar、私有输入及验证回执摘要。
 3. `compact-cutover.py prepare` 保存源容器及原重启策略，关闭 nginx 和所有源应用进程，将其重启策略暂设为 `no`。枚举源 app/worker 的实际账号及所有可写旧库身份，拒绝无法证明隔离的额外写者；锁定原运行账号，阻止主机作业复用旧凭据重连。root 维护账号始终保留，不能用作业务运行身份；跨库、全局管理、角色或代理账号不能直接充当可封存的旧业务账号。用管理员权限读取完整源事件目录，拒绝启用中的事件，目录摘要及实际账号锁态进入私有 writer-freeze 证明。创建本轮迁移账号：旧库仅 SELECT、TRIGGER、LOCK TABLES，新目标及两个恢复证明库有对应 schema 授权。观察全部 131 张源表的结构、行、索引与高水位，固定观察摘要。
 4. `migrate` 调用整库编排。迁移锁住完整源表集，在全新目标中复制并校验 29 表，实际将旧库和目标备份分别恢复到两个全新证明库，确认一致后才生成 VERIFIED 回执。失败或结果未知时保留源、候选、备份和证据，禁止覆盖重跑。不会关闭外键检查。
 5. 同阶段创建彼此独立的 app、worker 账号，只授目标库 SELECT、INSERT、UPDATE、DELETE。原 `cloud.env` 保持原样；目标连接写到私有 `state/compact-connection.override.yml`（JSON 内容也是合法 YAML），并以摘要绑定 `state/compact-connection.json`。
@@ -24,7 +24,7 @@ Jenkins 动作 `compact-cutover` 必须选择 `mysql` 验证范围，并使用�
 
 ## 私有设置与凭据
 
-`COMPACT_CUTOVER_SETTINGS` 指向 ECS 上已审阅的 0600 JSON。只包含 `version: 1`、`java`（已有 Java 17 可执行文件的规范绝对路径）、`sourceOffsets`。后者必须逐项填写所有复制域的历史时间偏移：action、agent、binding、chat、context、detection、digest、export、identity、inbox、infra_log、mcp、memory、model_file、model_log、model、operations、report、research、sdk、skill、workspace、workbench。digest 是原 V65 的 UTC DATETIME，必须为 `+00:00`；其他项必须依据旧字段历史约定核对，不能用当前 MySQL 时区推断全部字段。脚本从固定源码取得需要的域集合，缺项、额外项或无效偏移都会拒绝。
+`COMPACT_CUTOVER_SETTINGS` 指向 ECS 上已审阅的 0600 JSON，与本轮夹具准备复用同一文件，严格包含五项：`version: 1`、`sourceMysqlContainerId`（原正式 MySQL 完整 64 位容器 ID）、`sourceSchema`（实际旧业务库名）、`java`（已有 Java 17 可执行文件的规范绝对路径）、`sourceOffsets`。构建候选前即回读原部署的容器及数据库身份，避免昂贵构建后才发现输入不符。`sourceOffsets` 必须逐项填写所有复制域的历史时间偏移：action、agent、binding、chat、context、detection、digest、export、identity、inbox、infra_log、mcp、memory、model_file、model_log、model、operations、report、research、sdk、skill、workspace、workbench。digest 是原 V65 的 UTC DATETIME，必须为 `+00:00`；其他项必须依据旧字段历史约定核对，不能用当前 MySQL 时区推断全部字段。脚本从固定源码取得需要的域集合，缺项、额外项或无效偏移都会拒绝。
 
 迁移、应用和 worker 密码由 ECS helper 随机生成，仅保存在本轮 `release/work` 和 `state` 的私有文件中。Jenkins 只收集不含凭据和业务行的构建及切换摘要。数据库 dump、原始诊断、连接 overlay、迁移私有配置不得归档至 Jenkins。
 
@@ -39,3 +39,19 @@ Jenkins 动作 `compact-cutover` 必须选择 `mysql` 验证范围，并使用�
 ## 验证状态
 
 本轮只允许源码编辑和静态解析。新增或适配的失败场景用例须由 Jenkins 在 ECS 实际执行；本地 AST、PowerShell 语法和 Bash 语法检查不属于迁移、健康或业务验收。没有真实 PASS 和迁移/恢复回执，不打开生产发布门禁。
+
+## 完整候选运行验收
+
+`verify-runtime` 在同一构建的 MySQL 矩阵通过后，执行候选构建和 `compact-runtime-acceptance.py run`；不要求打开生产发布门禁，也不切换正式连接。运行器只接受原夹具的五项私有设置，并从该构建 `runtime-migration.json` 索引、原始矩阵摘要及完整迁移/双恢复回执取得实际目标。它重新核对同一 server UUID、实际非 3306 内外端口、同路径 datadir、29 表快照，以及固定源码/Jar/镜像摘要。不能手工填写另一份自洽回执替代本轮结果。
+
+完整栈有独立 Compose 项目、网络、卷、Redis/Kafka、Mem0、用户及 app/worker DML 账号；复用本轮已拥有的测试 MySQL，不重建或重标记正式 MySQL。模型可执行进程只加入实际读回为 internal 的自有网络，所有环境模型凭据均为合成值；通过草稿、真实 JSON 协议校验和发布 API 启用一个本地脚本模型，保留原加密历史。当前运行场景使用 DeepSeek 的 Chat Completions 兼容路径，不把它表述为 OpenAI Responses 或原生 DashScope 协议验收。真实 PTH、OSS 上传、Kafka 消费及 worker durable receipt 重放仍执行实际服务，不直接插入成功事实。OSS 出站适配器只允许本轮随机对象前缀与固定真实阿里云 bucket，拒绝通用代理、跳转和不支持的签名；模型进程不会因此取得外网权限。
+
+模型配置中的 provider、model、base URL、API key、策略与版本属于冻结的业务配置。gateway/proxy 是本次部署的运输设置，版本 client 在独立副本上应用当前设置，空值明确清除旧部署路由，不修改已封存文档。Mem0 只通过可选 `MEM0_MODEL_GATEWAY_BASE_URL` 在构造 LLM client 时改变运输路径，原 envelope 的 base URL 与密钥校验保留，embedding 设置不会随 LLM 网关改变。这也支持正式部署在网关拓扑变化后继续读取旧版本，而不是为测试改写历史供应商身份。
+
+9 个场景必须全部产生独立实际断言证据；复杂 SDK 工作先持久化计划并通过实际 HTTP 批准，再继续原逻辑任务，不能关闭计划来通过。独立运行验收还核对私有安装/取消/Fetch、工作台 parent-child、SDK checkpoint、额度真实扣减、报告 SDK origin 与审批/下载/Kafka、技能版本发布/加载/回退、Mem0 排除与密钥、业务写入后的真实备份恢复。运行结束只回收本轮拥有的对象和进程，逐容器核对停止与网络解绑，保留私有数据库/卷和原始证据。失败或未知结果保留 NEEDS_REVIEW，不声称 STOPPED。
+
+未知结果验证必须实际触发。worker 在独立真实任务完成 PTH/OSS 写入后，由仅命中该任务的临时目标库触发器拒绝成功 receipt 提交；核对实际 MySQL SIGNAL、worker 退出和 NEEDS_REVIEW，撤除触发器并原样恢复观测设置，再向同一 Kafka 分区重放原消息。原 receipt、实际结果字节/时间和未提交 offset 必须保持，不能把正常重启当作丢结果验证。MCP 则在确认唯一真实 Fetch writer 的 nonce/pool 后暂停真实 runner；控制请求超时必须保留待核对状态并拒绝新安装，恢复 runner 后通过既有 reconcile 核对同一进程树确已退出。故障时间窗未观察到时验收失败，不以模块 XML 替代运行故障证明，也不清除未知业务结果来获得 PASS。这些故障只发生在本轮拥有的测试数据库、进程和对象中。
+
+公开的 `runtime-acceptance.json` 绑定固定构建、模型隔离实际观察、9 份场景文件及 cleanup 摘要；不含凭据、dump 或业务正文。首切的 prepare 和 activate 再核对全部摘要、同一矩阵迁移目标及确实 STOPPED 的清理结果。仅配置完成、模块矩阵 PASS 或 `paidModelCalls=0` 字段本身都不能打开生产门禁。本轮这些运行器仍需由 Jenkins 在可启动的 ECS 上实际执行。
+
+失败时另写 `runtime-failure.json`，只记录固定构建上下文、异常类型、失败阶段、已完成场景摘要和实际清理引用，不归档异常原文或私有日志。cleanup 即使失败也返回 NEEDS_REVIEW 与实际生成文件的 SHA，并以非零状态退出；Jenkins 先收集可核对的失败/清理证据，再判定流水线失败。原正式容器配置、进程代次及 MySQL UUID/schema/表数在运行前后实际读回比较，清理摘要不能用固定 false 声称源资源未变。
