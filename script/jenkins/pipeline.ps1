@@ -1,4 +1,4 @@
-param([Parameter(Mandatory = $true)][ValidateSet('Preflight', 'Package', 'VerifyEcs', 'Publish', 'Rehearse', 'CompactCutover')][string]$Action)
+param([Parameter(Mandatory = $true)][ValidateSet('Preflight', 'Package', 'PrepareFixtures', 'CleanupFixtures', 'VerifyEcs', 'Publish', 'Rehearse', 'CompactCutover')][string]$Action)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 Set-Location -LiteralPath (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
@@ -44,7 +44,14 @@ if ($Action -eq 'Package') {
     Invoke-Checked 'git.exe' @('diff', '--quiet', 'HEAD', '--')
     Invoke-Checked 'git.exe' @('archive', '--format=tar.gz', '--output=artifacts/source.tar.gz', 'HEAD')
     $sha = (Get-FileHash -LiteralPath artifacts/source.tar.gz -Algorithm SHA256).Hash.ToLowerInvariant()
-    @{ release = $tag; commit = $commit; sourceSha256 = $sha } | ConvertTo-Json | Set-Content -LiteralPath artifacts/release.json -Encoding UTF8
+    $build = Get-Content -LiteralPath artifacts/local-build.json -Raw | ConvertFrom-Json
+    $jarSha = (Get-FileHash -LiteralPath artifacts/application.jar -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($build.status -ne 'PASS' -or $build.commit -ne $commit -or $build.release -ne $tag -or $build.testsExecuted -ne $false -or $build.applicationJarSha256 -ne $jarSha) {
+        throw 'The application jar is not the successful local build of this pinned SCM commit.'
+    }
+    @{ release = $tag; commit = $commit; sourceSha256 = $sha; applicationJarSha256 = $jarSha;
+       localBuildReceiptSha256 = (Get-FileHash -LiteralPath artifacts/local-build.json -Algorithm SHA256).Hash.ToLowerInvariant() } |
+        ConvertTo-Json | Set-Content -LiteralPath artifacts/release.json -Encoding UTF8
     return
 }
 
@@ -63,12 +70,22 @@ foreach ($name in @('DEPLOY_KEY', 'DEPLOY_KNOWN_HOSTS')) {
 # rejects keys readable by other local accounts, so restrict this temporary file
 # to the identity executing this build before attempting authentication.
 $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
-$keyAcl = New-Object System.Security.AccessControl.FileSecurity
-$keyAcl.SetOwner($identity)
+$keyFile = Get-Item -LiteralPath $env:DEPLOY_KEY -Force
+if ($keyFile.PSIsContainer -or ($keyFile.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) { throw 'Jenkins SSH credential must be a regular file.' }
+$sections = [System.Security.AccessControl.AccessControlSections]::Access -bor [System.Security.AccessControl.AccessControlSections]::Owner
+$keyBefore = [System.IO.FileSystemAclExtensions]::GetAccessControl($keyFile, $sections)
+if ($keyBefore.GetOwner([System.Security.Principal.SecurityIdentifier]).Value -ne $identity.Value) { throw 'Jenkins SSH credential is not owned by this build identity.' }
+$keyAcl = [System.Security.AccessControl.FileSecurity]::new()
 $keyAcl.SetAccessRuleProtection($true, $false)
-$keyAcl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($identity, 'FullControl', 'Allow')))
-Set-Acl -LiteralPath $env:DEPLOY_KEY -AclObject $keyAcl
-$sshOptions = @('-i', $env:DEPLOY_KEY, '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes', '-o', "UserKnownHostsFile=$env:DEPLOY_KNOWN_HOSTS", '-o', 'ConnectTimeout=12', '-o', 'ServerAliveInterval=30', '-o', 'ServerAliveCountMax=3')
+$keyAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($identity, 'FullControl', 'Allow'))
+# Persist only Access; never request audit/SACL privilege from the local agent.
+[System.IO.FileSystemAclExtensions]::SetAccessControl($keyFile, $keyAcl)
+$keyObserved = [System.IO.FileSystemAclExtensions]::GetAccessControl($keyFile, $sections)
+$keyRules = @($keyObserved.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
+if (-not $keyObserved.AreAccessRulesProtected -or $keyRules.Count -ne 1 -or $keyRules[0].IdentityReference.Value -ne $identity.Value -or $keyRules[0].AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow -or $keyRules[0].FileSystemRights -ne [System.Security.AccessControl.FileSystemRights]::FullControl) {
+    throw 'Jenkins SSH credential owner-only access could not be verified.'
+}
+$sshOptions = @('-i', $env:DEPLOY_KEY, '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes', '-o', 'HostKeyAlias=doorhandle-bj', '-o', "UserKnownHostsFile=$env:DEPLOY_KNOWN_HOSTS", '-o', 'ConnectTimeout=12', '-o', 'ServerAliveInterval=30', '-o', 'ServerAliveCountMax=3')
 if ($env:SSH_TRANSPORT -eq 'tls') {
     foreach ($name in @('OPENSSL_EXE', 'SSH_TLS_CA_FILE')) {
         $value = [Environment]::GetEnvironmentVariable($name)
@@ -88,6 +105,44 @@ if ($Action -eq 'Preflight') {
 
 $remoteInbox = "$remoteRoot/inbox/$tag"
 Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "umask 077; mkdir -p '$remoteInbox'"))
+if ($Action -in @('PrepareFixtures', 'CleanupFixtures')) {
+    if ($env:DOORHANDLE_CI_SCOPE -ne 'mysql' -or $env:DOORHANDLE_CI_AUTO_COMPACT_FIXTURES -ne 'true') { throw 'Automatic compact fixtures require explicit MySQL verification scope.' }
+    $commit = Require-Value 'GIT_COMMIT' '^[a-f0-9]{40}$'
+    $instance = Require-Value 'DOORHANDLE_ECS_INSTANCE_ID' '^i-[a-z0-9]+$'
+    $machine = Require-Value 'DOORHANDLE_ECS_MACHINE_ID' '^[a-f0-9]{32}$'
+    $settings = Require-Value 'DOORHANDLE_CI_FIXTURE_SETTINGS' '^/(home|srv|opt)/[A-Za-z0-9_./-]+\.json$'
+    if ($settings -match '(^|/)\.\.(/|$)') { throw 'Unsafe private fixture settings path.' }
+    $package = Get-Content -LiteralPath artifacts/release.json -Raw | ConvertFrom-Json
+    $sha = (Get-FileHash -LiteralPath artifacts/source.tar.gz -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($package.release -ne $tag -or $package.commit -ne $commit -or $package.sourceSha256 -ne $sha) { throw 'Fixture preparation requires this build pinned source package.' }
+    $helper = "$remoteInbox/prepare-compact-fixtures.py"
+    $arguments = "--root '$remoteRoot' --tag '$tag' --commit '$commit' --source-sha256 '$sha' --instance-id '$instance' --machine-id '$machine' --settings '$settings'"
+    if ($Action -eq 'PrepareFixtures') {
+        $jarSha = (Get-FileHash -LiteralPath artifacts/application.jar -Algorithm SHA256).Hash.ToLowerInvariant()
+        $jarBytes = (Get-Item -LiteralPath artifacts/application.jar).Length
+        if ($package.applicationJarSha256 -ne $jarSha) { throw 'Fixture migration jar differs from the fixed commit build.' }
+        @{ schema=1; kind='doorhandle-compact-fixture-artifacts'; release=$tag; commit=$commit;
+           sourceSha256=$sha; applicationJarSha256=$jarSha; applicationJarBytes=$jarBytes } |
+            ConvertTo-Json | Set-Content -LiteralPath artifacts/fixture-build-artifacts.json -Encoding utf8
+        Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "test ! -e '$remoteInbox/source.tar.gz' && mkdir '$remoteInbox/.fixture-upload'"))
+        foreach ($item in @(@('artifacts/source.tar.gz','source.tar.gz'), @('artifacts/application.jar','application.jar'),
+                            @('artifacts/fixture-build-artifacts.json','build-artifacts.json'), @('script/jenkins/prepare-compact-fixtures.py','prepare-compact-fixtures.py'))) {
+            Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, $item[0], "${destination}:$remoteInbox/$($item[1])"))
+        }
+        Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "chmod 600 '$remoteInbox/source.tar.gz' '$remoteInbox/application.jar' '$remoteInbox/build-artifacts.json' '$helper'"))
+        $result = Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "python3 -B '$helper' prepare $arguments"))
+        $safe = ($result | Select-Object -Last 1) | ConvertFrom-Json
+        $manifest = "$remoteRoot/verification/$tag/checkout/work/compact-fixtures/manifest.json"
+        if ($safe.status -ne 'PREPARED' -or $safe.commit -ne $commit -or $safe.release -ne $tag -or $safe.manifest -ne $manifest) { throw 'Fixture preparation receipt differs from this pinned source and staging directory.' }
+        $safe | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath artifacts/fixture-preparation.json -Encoding utf8
+    } else {
+        $result = Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "python3 -B '$helper' cleanup $arguments"))
+        $safe = ($result | Select-Object -Last 1) | ConvertFrom-Json
+        if ($safe.status -ne 'STOPPED' -or $safe.commit -ne $commit -or $safe.release -ne $tag) { throw 'Owned test resources did not stop with a matching cleanup receipt.' }
+        $safe | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath artifacts/fixture-cleanup.json -Encoding utf8
+    }
+    return
+}
 if ($Action -eq 'VerifyEcs') {
     $commit = Require-Value 'GIT_COMMIT' '^[a-f0-9]{40}$'
     $instance = Require-Value 'DOORHANDLE_ECS_INSTANCE_ID' '^i-[a-z0-9]+$'
@@ -111,8 +166,12 @@ if ($Action -eq 'VerifyEcs') {
     New-Item -ItemType Directory -Path artifacts/ecs | Out-Null
     $attempt = [guid]::NewGuid().ToString('N')
     # Claim the upload once before SCP; a retry with an unknown result must use a new build.
-    Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "test ! -e '$remoteInbox/source.tar.gz' && mkdir '$remoteInbox/.verification-upload'"))
-    Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, 'artifacts/source.tar.gz', "${destination}:$remoteInbox/source.tar.gz"))
+    if ($env:CI_FIXTURES_PREPARED -eq 'true') {
+        Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "test -f '$remoteInbox/source.tar.gz' && mkdir '$remoteInbox/.verification-upload' && test `"`$(sha256sum '$remoteInbox/source.tar.gz' | cut -d ' ' -f 1)`" = '$sha'"))
+    } else {
+        Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "test ! -e '$remoteInbox/source.tar.gz' && mkdir '$remoteInbox/.verification-upload'"))
+        Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, 'artifacts/source.tar.gz', "${destination}:$remoteInbox/source.tar.gz"))
+    }
     Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, 'script/jenkins/verify-remote.py', "${destination}:$remoteInbox/verify-remote.py"))
     $manifestFlag = if ($scope -eq 'mysql') { " --fixture-manifest '$fixture'" } else { '' }
     $remoteCommand = "python3 -B '$remoteInbox/verify-remote.py' --root '$remoteRoot' --tag '$tag' --source-sha256 '$sha' --commit '$commit' --instance-id '$instance' --machine-id '$machine' --scope '$scope' --attempt '$attempt'$manifestFlag"

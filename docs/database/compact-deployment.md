@@ -2,6 +2,14 @@
 
 源码入口已接入 `Jenkinsfile.ecs-monolith`，尚不能据此认定迁移或发布已验收。机器门禁 `DOORHANDLE_COMPACT_RELEASE_READY`、`DOORHANDLE_COMPACT_REHEARSAL_READY` 保持关闭，直到对应 ECS 验收证据完整。CI/CD 由本地 Jenkins 调度；本地不运行测试或业务，ECS 启停不属于流水线。
 
+## 固定验收范围
+
+[compact-acceptance.json](../../script/jenkins/compact-acceptance.json) 是本次验收清单，摘要随源码和每份执行回执绑定。v2 夹具清单为 56 个自包含 JDBC、迁移、权限及业务服务类分别建立独立 schema/account 和 Maven 执行，避免各类的空库前置相互冲突。验收器和切库门禁分别解析原始 Surefire XML，逐类核对实际执行、最低用例数及零失败、零跳过；只报告 Java 总通过数不能放行。
+
+同一构建另执行无夹具或付费模型开关的普通 Java 回归，其中 31 个纯逻辑必需类必须实际通过且不跳过；基础设施 opt-in 类在这一轮的预期跳过不充当数据库验证。完整 Python 回归要求所有已登记模块，实际 worker MySQL receipt 并发/重启/未知结果用例及整库复制、旧源恢复、29 表目标恢复都不能跳过。唯一声明的 Linux 预期跳过是 Windows 文件共享语义专用用例。两套前端分别显式执行 23 和 4 个固定测试文件，并核对 TAP 实际用例数及构建成功。
+
+这组矩阵证明数据库和源码回归覆盖，不能代替完整运行验收。清单还保留 9 个生产前必需运行场景：多角色隔离、模型额度闭环、实际 PTH/Kafka worker、新 SDK/工作台恢复、私有 MCP 及未知写保护、报告闭环、技能发布回退、记忆及密钥恢复、候选应用升级恢复。旧 server LocalMysql 用例有共享来源 run、已安装私有 MCP、真实服务等前置，不能机械拆成空库执行，也不能因此取消其业务要求；运行验收器应在同一构建的隔离完整栈执行等价断言并留下真实证据。未取得这些结果前，不认定业务交付完成，不打开生产门禁。真实供应商 Live suites 不在本次范围；模型仅使用本地、mock 或脚本化输出。
+
 ## 首次从旧库迁移
 
 Jenkins 动作 `compact-cutover` 必须选择 `mysql` 验证范围，并使用该构建固定提交及源码归档。`PRODUCTION_RELEASE_ENABLED` 和节点环境中的发布门禁同时满足才允许进入首切阶段。控制器与 ECS helper 都核对本轮 MySQL PASS、无跳过的 Java 用例，以及真实执行的整库复制和恢复验收；源码检查结果不能代替这些证据。

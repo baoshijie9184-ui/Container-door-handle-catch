@@ -187,7 +187,7 @@ class Mysql:
         connection = config['connection']
         def ini(value):
             return '"' + str(value).replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t') + '"'
-        port = connection['port'] if self.kind == 'native' else 3306
+        port = connection['port'] if self.kind == 'native' or config['scope'] == 'ecs-disposable-migration' else 3306
         self.options = ('[client]\nprotocol=tcp\nhost=127.0.0.1\nport=' + str(port)
                         + '\nuser=' + ini(connection['username']) + '\npassword=' + ini(connection['password'])
                         + '\nconnect-timeout=10\n').encode('utf8')
@@ -208,14 +208,14 @@ class Mysql:
             require(node.get('Id') == self.container and node.get('State', {}).get('Running') is True,
                     'The admitted owned MySQL container is not running')
             if config['scope'] == 'ecs-disposable-migration':
-                bindings = node.get('NetworkSettings', {}).get('Ports', {}).get('3306/tcp') or []
+                bindings = node.get('NetworkSettings', {}).get('Ports', {}).get(str(connection['port']) + '/tcp') or []
                 require(len(bindings) == 1 and bindings[0].get('HostIp') == '127.0.0.1'
                         and bindings[0].get('HostPort') == str(connection['port']),
                         'Disposable MySQL port is not exclusively bound to the admitted loopback port')
                 mounts = [item for item in node.get('Mounts', []) if item.get('Source') == config['dataDirectory']
-                          and item.get('Destination', '').rstrip('/') == '/var/lib/mysql'
+                          and item.get('Destination', '').rstrip('/') == config['dataDirectory'].rstrip('/')
                           and item.get('Type') == 'bind' and item.get('RW') is True]
-                require(len(mounts) == 1, 'Disposable MySQL data directory does not match its owned bind mount')
+                require(len(mounts) == 1, 'Disposable MySQL requires an exact same-absolute-path owned data bind mount')
                 self.container_data_directory = mounts[0]['Destination'].rstrip('/') + '/'
             if connection['host'] != '127.0.0.1':
                 addresses = {network.get('IPAddress') for network in node.get('NetworkSettings', {}).get('Networks', {}).values()}
@@ -281,12 +281,13 @@ class Mysql:
         return rows[0]
 
     def admitted_server(self):
-        value = self.single("SELECT JSON_OBJECT('serverUuid',@@server_uuid,'version',@@version,'foreignKeyChecks',@@foreign_key_checks,'currentUser',CURRENT_USER(),'dataDirectory',@@datadir);")
+        value = self.single("SELECT JSON_OBJECT('serverUuid',@@server_uuid,'version',@@version,'serverPort',@@port,'foreignKeyChecks',@@foreign_key_checks,'currentUser',CURRENT_USER(),'dataDirectory',@@datadir);")
         require(value['serverUuid'] == self.config['serverUuid'] and value['version'].startswith('8.4.')
                 and value['foreignKeyChecks'] == 1, 'MySQL server, version or foreign-key enforcement differs')
         if self.config['scope'] == 'ecs-disposable-migration':
             expected = self.container_data_directory if self.kind == 'docker' else self.config['dataDirectory'].rstrip('/') + '/'
-            require(value['dataDirectory'].rstrip('/') + '/' == expected, 'Actual disposable MySQL storage differs from the admitted data directory')
+            require(value['dataDirectory'].rstrip('/') + '/' == expected and value['serverPort'] == self.config['connection']['port'],
+                    'Actual disposable MySQL storage or server port differs from the admitted fixture')
         return value
 
     @contextmanager

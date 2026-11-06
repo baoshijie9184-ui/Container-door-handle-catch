@@ -1,0 +1,1321 @@
+{
+  "schemaVersion": 1,
+  "kind": "doorhandle-compact-acceptance-profile",
+  "profileId": "compact29-complete-v1",
+  "sourceTableCount": 131,
+  "targetTableCount": 29,
+  "externalModelPolicy": {
+    "paidCallsAllowed": false,
+    "modelModes": [
+      "MOCK",
+      "SCRIPTED",
+      "LOCAL"
+    ],
+    "excludedPaidClasses": [
+      "com.ruanzhu.doorhandle.module.ai.model.AgentModelLiveSmokeTest",
+      "com.ruanzhu.doorhandle.module.ai.eval.AgentWorkbenchLiveEvalTest",
+      "com.ruanzhu.doorhandle.module.ai.eval.AgentLiveRoutingEvalTest"
+    ]
+  },
+  "javaSuites": [
+    {
+      "id": "AccountIdentityServiceTest",
+      "className": "com.ruanzhu.doorhandle.module.system.service.AccountIdentityServiceTest",
+      "fixtureProperties": [
+        "doorhandle.operations.mysql.config"
+      ],
+      "source": "doorhandle-module-system/src/test/java/com/ruanzhu/doorhandle/module/system/service/AccountIdentityServiceTest.java",
+      "minimumTests": 15,
+      "coverage": [
+        "single-enterprise account identity and operation audit"
+      ]
+    },
+    {
+      "id": "AgentActionServiceTest",
+      "className": "com.ruanzhu.doorhandle.module.ai.action.AgentActionServiceTest",
+      "fixtureProperties": [
+        "doorhandle.action.mysql.config"
+      ],
+      "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/action/AgentActionServiceTest.java",
+      "minimumTests": 24,
+      "coverage": [
+        "confirmation policy and scripted SDK contract evaluation"
+      ]
+    },
+    {
+      "id": "AgentContractEvalTest",
+      "className": "com.ruanzhu.doorhandle.module.ai.eval.AgentContractEvalTest",
+      "fixtureProperties": [
+        "doorhandle.action.mysql.config"
+      ],
+      "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/eval/AgentContractEvalTest.java",
+      "minimumTests": 1,
+      "coverage": [
+        "confirmation policy and scripted SDK contract evaluation"
+      ]
+    },
+    {
+      "id": "AgentWorkbenchServiceTest",
+      "className": "com.ruanzhu.doorhandle.module.ai.workbench.AgentWorkbenchServiceTest",
+      "fixtureProperties": [
+        "workbench.mysql.config"
+      ],
+      "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/workbench/AgentWorkbenchServiceTest.java",
+      "minimumTests": 36,
+      "coverage": [
+        "workbench execution, checkpoint and migration"
+      ]
+    },
+    {
+      "id": "AgentWorkspaceServiceTest",
+      "className": "com.ruanzhu.doorhandle.module.app.service.impl.AgentWorkspaceServiceTest",
+      "fixtureProperties": [
+        "doorhandle.feature.mysql.config"
+      ],
+      "source": "doorhandle-module-app/src/test/java/com/ruanzhu/doorhandle/module/app/service/impl/AgentWorkspaceServiceTest.java",
+      "minimumTests": 16,
+      "coverage": [
+        "workspace, chat, inbox, knowledge and memory persistence"
+      ]
+    },
+    {
+      "id": "BusinessMutationAuditTest",
+      "className": "com.ruanzhu.doorhandle.module.system.service.BusinessMutationAuditTest",
+      "fixtureProperties": [
+        "doorhandle.operations.mysql.config"
+      ],
+      "source": "doorhandle-module-system/src/test/java/com/ruanzhu/doorhandle/module/system/service/BusinessMutationAuditTest.java",
+      "minimumTests": 5,
+      "coverage": [
+        "single-enterprise account identity and operation audit"
+      ]
+    },
+    {
+      "id": "CompactChatMigrationMySqlTest",
+      "className": "com.ruanzhu.doorhandle.module.app.service.impl.CompactChatMigrationMySqlTest",
+      "fixtureProperties": [
+        "doorhandle.chat-evidence.source.config",
+        "doorhandle.feature.mysql.config"
+      ],
+      "source": "doorhandle-module-app/src/test/java/com/ruanzhu/doorhandle/module/app/service/impl/CompactChatMigrationMySqlTest.java",
+      "minimumTests": 7,
+      "coverage": [
+        "workspace, chat, inbox, knowledge and memory persistence"
+      ]
+    },
+    {
+      "id": "ConfirmationMigrationMySqlTest",
+      "className": "com.ruanzhu.doorhandle.module.ai.action.ConfirmationMigrationMySqlTest",
+      "fixtureProperties": [
+        "doorhandle.action.source.config",
+        "doorhandle.action.mysql.config"
+      ],
+      "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/action/ConfirmationMigrationMySqlTest.java",
+      "minimumTests": 9,
+      "coverage": [
+        "confirmation policy and scripted SDK contract evaluation"
+      ]
+    },
+    {
+      "id": "ContextMigrationMySqlTest",
+      "className": "com.ruanzhu.doorhandle.module.ai.context.ContextMigrationMySqlTest",
+      "fixtureProperties": [
+        "doorhandle.context.source.config",
+        "doorhandle.context.mysql.config"
+      ],
+      "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/context/ContextMigrationMySqlTest.java",
+      "minimumTests": 7,
+      "coverage": [
+        "durable context provenance and migration"
+      ]
+    },
+    {
+      "id": "ContextStoreMySqlTest",
+      "className": "com.ruanzhu.doorhandle.module.ai.context.ContextStoreMySqlTest",
+      "fixtureProperties": [
+        "doorhandle.context.mysql.config"
+      ],
+      "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/context/ContextStoreMySqlTest.java",
+      "minimumTests": 4,
+      "coverage": [
+        "durable context provenance and migration"
+      ]
+    },
+    {
+      "id": "ConversationInboxMySqlTest",
+      "className": "com.ruanzhu.doorhandle.module.app.service.impl.ConversationInboxMySqlTest",
+      "fixtureProperties": [
+        "doorhandle.feature.mysql.config"
+      ],
+      "source": "doorhandle-module-app/src/test/java/com/ruanzhu/doorhandle/module/app/service/impl/ConversationInboxMySqlTest.java",
+      "minimumTests": 1,
+      "coverage": [
+        "workspace, chat, inbox, knowledge and memory persistence"
+      ]
+    },
+    {
+      "id": "Core12PersistenceMySqlTest",
+      "className": "com.ruanzhu.doorhandle.module.detection.service.Core12PersistenceMySqlTest",
+      "fixtureProperties": [
+        "doorhandle.core.mysql.config"
+      ],
+      "source": "doorhandle-module-detection/src/test/java/com/ruanzhu/doorhandle/module/detection/service/Core12PersistenceMySqlTest.java",
+      "minimumTests": 7,
+      "coverage": [
+        "detection workflow, reports, identity and authorization"
+      ]
+    },
+    {
+      "id": "CoreCopyMigrationMySqlTest",
+      "className": "com.ruanzhu.doorhandle.module.detection.service.CoreCopyMigrationMySqlTest",
+      "fixtureProperties": [
+        "doorhandle.core.copy.source.config",
+        "doorhandle.core.copy.target.config"
+      ],
+      "source": "doorhandle-module-detection/src/test/java/com/ruanzhu/doorhandle/module/detection/service/CoreCopyMigrationMySqlTest.java",
+      "minimumTests": 9,
+      "coverage": [
+        "detection workflow, reports, identity and authorization"
+      ]
+    },
+    {
+      "id": "CrossInstanceMcpInstallCancellationTest",
+      "className": "com.ruanzhu.doorhandle.module.ai.mcp.CrossInstanceMcpInstallCancellationTest",
+      "fixtureProperties": [
+        "doorhandle.mcp.mysql.config"
+      ],
+      "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/mcp/CrossInstanceMcpInstallCancellationTest.java",
+      "minimumTests": 9,
+      "coverage": [
+        "MCP durable install, execution and unknown-result protocol"
+      ]
+    },
+    {
+      "id": "DetectionDispatchOutboxTest",
+      "className": "com.ruanzhu.doorhandle.module.detection.service.detection.DetectionDispatchOutboxTest",
+      "fixtureProperties": [
+        "detection.outbox.mysql-file"
+      ],
+      "source": "doorhandle-module-detection/src/test/java/com/ruanzhu/doorhandle/module/detection/service/detection/DetectionDispatchOutboxTest.java",
+      "minimumTests": 6,
+      "coverage": [
+        "detection workflow, reports, identity and authorization"
+      ]
+    },
+    {
+      "id": "DetectionExecutionApiImplTest",
+      "className": "com.ruanzhu.doorhandle.module.detection.api.DetectionExecutionApiImplTest",
+      "fixtureProperties": [
+        "detection.command.mysql-file"
+      ],
+      "source": "doorhandle-module-detection/src/test/java/com/ruanzhu/doorhandle/module/detection/api/DetectionExecutionApiImplTest.java",
+      "minimumTests": 12,
+      "coverage": [
+        "detection workflow, reports, identity and authorization"
+      ]
+    },
+    {
+      "id": "DetectionFingerprintProjectionMySqlTest",
+      "className": "com.ruanzhu.doorhandle.module.detection.service.DetectionFingerprintProjectionMySqlTest",
+      "fixtureProperties": [
+        "doorhandle.fingerprint.mysql.config"
+      ],
+      "source": "doorhandle-module-detection/src/test/java/com/ruanzhu/doorhandle/module/detection/service/DetectionFingerprintProjectionMySqlTest.java",
+      "minimumTests": 5,
+      "coverage": [
+        "detection workflow, reports, identity and authorization"
+      ]
+    },
+    {
+      "id": "DetectionIdentityServiceTest",
+      "className": "com.ruanzhu.doorhandle.module.detection.service.DetectionIdentityServiceTest",
+      "fixtureProperties": [
+        "detection.identity.mysql.config"
+      ],
+      "source": "doorhandle-module-detection/src/test/java/com/ruanzhu/doorhandle/module/detection/service/DetectionIdentityServiceTest.java",
+      "minimumTests": 6,
+      "coverage": [
+        "detection workflow, reports, identity and authorization"
+      ]
+    },
+    {
+      "id": "DetectionRuntimeCopyMySqlTest",
+      "className": "com.ruanzhu.doorhandle.module.detection.service.detection.DetectionRuntimeCopyMySqlTest",
+      "fixtureProperties": [
+        "doorhandle.detection.runtime.copy.source.config",
+        "doorhandle.detection.runtime.copy.target.config"
+      ],
+      "source": "doorhandle-module-detection/src/test/java/com/ruanzhu/doorhandle/module/detection/service/detection/DetectionRuntimeCopyMySqlTest.java",
+      "minimumTests": 5,
+      "coverage": [
+        "detection workflow, reports, identity and authorization"
+      ]
+    },
+    {
+      "id": "DigestCopyMigrationMySqlTest",
+      "className": "com.ruanzhu.doorhandle.module.detection.service.DigestCopyMigrationMySqlTest",
+      "fixtureProperties": [
+        "doorhandle.digest.copy.source.config",
+        "doorhandle.digest.copy.mysql.config"
+      ],
+      "source": "doorhandle-module-detection/src/test/java/com/ruanzhu/doorhandle/module/detection/service/DigestCopyMigrationMySqlTest.java",
+      "minimumTests": 5,
+      "coverage": [
+        "detection workflow, reports, identity and authorization"
+      ]
+    },
+    {
+      "id": "FileDeliveryAuditMySqlTest",
+      "className": "com.ruanzhu.doorhandle.module.system.service.FileDeliveryAuditMySqlTest",
+      "fixtureProperties": [
+        "doorhandle.operations.mysql.config"
+      ],
+      "source": "doorhandle-module-system/src/test/java/com/ruanzhu/doorhandle/module/system/service/FileDeliveryAuditMySqlTest.java",
+      "minimumTests": 5,
+      "coverage": [
+        "single-enterprise account identity and operation audit"
+      ]
+    },
+    {
+      "id": "HistoricalDetectionSummaryMySqlTest",
+      "className": "com.ruanzhu.doorhandle.module.detection.service.HistoricalDetectionSummaryMySqlTest",
+      "fixtureProperties": [
+        "doorhandle.feature.mysql.config"
+      ],
+      "source": "doorhandle-module-detection/src/test/java/com/ruanzhu/doorhandle/module/detection/service/HistoricalDetectionSummaryMySqlTest.java",
+      "minimumTests": 4,
+      "coverage": [
+        "detection workflow, reports, identity and authorization"
+      ]
+    },
+    {
+      "id": "IdentityEvidenceMySqlTest",
+      "className": "com.ruanzhu.doorhandle.module.detection.service.IdentityEvidenceMySqlTest",
+      "fixtureProperties": [
+        "detection.identity.mysql.config"
+      ],
+      "source": "doorhandle-module-detection/src/test/java/com/ruanzhu/doorhandle/module/detection/service/IdentityEvidenceMySqlTest.java",
+      "minimumTests": 4,
+      "coverage": [
+        "detection workflow, reports, identity and authorization"
+      ]
+    },
+    {
+      "id": "IdentityMigrationMySqlTest",
+      "className": "com.ruanzhu.doorhandle.module.detection.service.IdentityMigrationMySqlTest",
+      "fixtureProperties": [
+        "detection.identity.source.config",
+        "detection.identity.mysql.config"
+      ],
+      "source": "doorhandle-module-detection/src/test/java/com/ruanzhu/doorhandle/module/detection/service/IdentityMigrationMySqlTest.java",
+      "minimumTests": 5,
+      "coverage": [
+        "detection workflow, reports, identity and authorization"
+      ]
+    },
+    {
+      "id": "IdentityPersistenceMySqlTest",
+      "className": "com.ruanzhu.doorhandle.module.detection.service.IdentityPersistenceMySqlTest",
+      "fixtureProperties": [
+        "doorhandle.report.mysql.config"
+      ],
+      "source": "doorhandle-module-detection/src/test/java/com/ruanzhu/doorhandle/module/detection/service/IdentityPersistenceMySqlTest.java",
+      "minimumTests": 4,
+      "coverage": [
+        "detection workflow, reports, identity and authorization"
+      ]
+    },
+    {
+      "id": "InfraOperationAuditMySqlTest",
+      "className": "com.ruanzhu.doorhandle.module.infra.service.InfraOperationAuditMySqlTest",
+      "fixtureProperties": [
+        "infra.log.copy.source-config",
+        "infra.log.copy.target-config"
+      ],
+      "source": "doorhandle-module-infra/src/test/java/com/ruanzhu/doorhandle/module/infra/service/InfraOperationAuditMySqlTest.java",
+      "minimumTests": 9,
+      "coverage": [
+        "infrastructure audit copy and persistence"
+      ]
+    },
+    {
+      "id": "JdbcOwnerLockMySqlTest",
+      "className": "com.ruanzhu.doorhandle.module.ai.persistence.JdbcOwnerLockMySqlTest",
+      "fixtureProperties": [
+        "agent.journal.mysql-file"
+      ],
+      "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/persistence/JdbcOwnerLockMySqlTest.java",
+      "minimumTests": 2,
+      "coverage": [
+        "agent journal and owner-lock fencing"
+      ]
+    },
+    {
+      "id": "LegacyChatActionStoreMySqlTest",
+      "className": "com.ruanzhu.doorhandle.module.app.service.impl.LegacyChatActionStoreMySqlTest",
+      "fixtureProperties": [
+        "legacy.chat.mysql.config"
+      ],
+      "source": "doorhandle-module-app/src/test/java/com/ruanzhu/doorhandle/module/app/service/impl/LegacyChatActionStoreMySqlTest.java",
+      "minimumTests": 10,
+      "coverage": [
+        "workspace, chat, inbox, knowledge and memory persistence"
+      ]
+    },
+    {
+      "id": "LocalMcpServiceTest",
+      "className": "com.ruanzhu.doorhandle.module.ai.mcp.LocalMcpServiceTest",
+      "fixtureProperties": [
+        "doorhandle.mcp.mysql.config"
+      ],
+      "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/mcp/LocalMcpServiceTest.java",
+      "minimumTests": 29,
+      "coverage": [
+        "MCP durable install, execution and unknown-result protocol"
+      ]
+    },
+    {
+      "id": "McpMigrationMySqlTest",
+      "className": "com.ruanzhu.doorhandle.module.ai.mcp.McpMigrationMySqlTest",
+      "fixtureProperties": [
+        "doorhandle.mcp.source.config",
+        "doorhandle.mcp.mysql.config"
+      ],
+      "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/mcp/McpMigrationMySqlTest.java",
+      "minimumTests": 5,
+      "coverage": [
+        "MCP durable install, execution and unknown-result protocol"
+      ]
+    },
+    {
+      "id": "MemoryGovernanceMigrationMySqlTest",
+      "className": "com.ruanzhu.doorhandle.module.app.service.MemoryGovernanceMigrationMySqlTest",
+      "fixtureProperties": [
+        "agent.memory.copy.source-config",
+        "agent.memory.copy.target-config"
+      ],
+      "source": "doorhandle-module-app/src/test/java/com/ruanzhu/doorhandle/module/app/service/MemoryGovernanceMigrationMySqlTest.java",
+      "minimumTests": 11,
+      "coverage": [
+        "workspace, chat, inbox, knowledge and memory persistence"
+      ]
+    },
+    {
+      "id": "MessageExecutionLinksTest",
+      "className": "com.ruanzhu.doorhandle.module.app.service.impl.MessageExecutionLinksTest",
+      "fixtureProperties": [
+        "doorhandle.feature.mysql.config"
+      ],
+      "source": "doorhandle-module-app/src/test/java/com/ruanzhu/doorhandle/module/app/service/impl/MessageExecutionLinksTest.java",
+      "minimumTests": 16,
+      "coverage": [
+        "workspace, chat, inbox, knowledge and memory persistence"
+      ]
+    },
+    {
+      "id": "ModelBudgetMigrationMySqlTest",
+      "className": "com.ruanzhu.doorhandle.module.ai.model.ModelBudgetMigrationMySqlTest",
+      "fixtureProperties": [
+        "doorhandle.model-budget.source.config",
+        "doorhandle.feature.mysql.config"
+      ],
+      "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/model/ModelBudgetMigrationMySqlTest.java",
+      "minimumTests": 9,
+      "coverage": [
+        "model configuration, quota and token accounts"
+      ]
+    },
+    {
+      "id": "ModelBudgetMySqlTest",
+      "className": "com.ruanzhu.doorhandle.module.ai.model.ModelBudgetMySqlTest",
+      "fixtureProperties": [
+        "doorhandle.feature.mysql.config"
+      ],
+      "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/model/ModelBudgetMySqlTest.java",
+      "minimumTests": 17,
+      "coverage": [
+        "model configuration, quota and token accounts"
+      ]
+    },
+    {
+      "id": "ModelConfigurationMigrationMySqlTest",
+      "className": "com.ruanzhu.doorhandle.module.ai.model.ModelConfigurationMigrationMySqlTest",
+      "fixtureProperties": [
+        "agent.model-config.mysql-file"
+      ],
+      "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/model/ModelConfigurationMigrationMySqlTest.java",
+      "minimumTests": 5,
+      "coverage": [
+        "model configuration, quota and token accounts"
+      ]
+    },
+    {
+      "id": "ModelConfigurationServiceTest",
+      "className": "com.ruanzhu.doorhandle.module.ai.model.ModelConfigurationServiceTest",
+      "fixtureProperties": [
+        "agent.model-config.mysql-file"
+      ],
+      "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/model/ModelConfigurationServiceTest.java",
+      "minimumTests": 17,
+      "coverage": [
+        "model configuration, quota and token accounts"
+      ]
+    },
+    {
+      "id": "ModelFileGovernanceMySqlTest",
+      "className": "com.ruanzhu.doorhandle.module.model.service.ModelFileGovernanceMySqlTest",
+      "fixtureProperties": [
+        "model.file.copy.source-config",
+        "model.file.copy.target-config"
+      ],
+      "source": "doorhandle-module-model/src/test/java/com/ruanzhu/doorhandle/module/model/service/ModelFileGovernanceMySqlTest.java",
+      "minimumTests": 10,
+      "coverage": [
+        "workspace, chat, inbox, knowledge and memory persistence"
+      ]
+    },
+    {
+      "id": "ModelOperationAuditMySqlTest",
+      "className": "com.ruanzhu.doorhandle.module.model.service.ModelOperationAuditMySqlTest",
+      "fixtureProperties": [
+        "model.log.copy.source-config",
+        "model.log.copy.target-config"
+      ],
+      "source": "doorhandle-module-model/src/test/java/com/ruanzhu/doorhandle/module/model/service/ModelOperationAuditMySqlTest.java",
+      "minimumTests": 10,
+      "coverage": [
+        "workspace, chat, inbox, knowledge and memory persistence"
+      ]
+    },
+    {
+      "id": "MysqlAgentJournalTest",
+      "className": "com.ruanzhu.doorhandle.module.ai.journal.MysqlAgentJournalTest",
+      "fixtureProperties": [
+        "agent.journal.mysql-file"
+      ],
+      "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/journal/MysqlAgentJournalTest.java",
+      "minimumTests": 0,
+      "coverage": [
+        "agent journal and owner-lock fencing"
+      ]
+    },
+    {
+      "id": "OperationsAuditServiceTest",
+      "className": "com.ruanzhu.doorhandle.module.system.service.OperationsAuditServiceTest",
+      "fixtureProperties": [
+        "doorhandle.operations.mysql.config"
+      ],
+      "source": "doorhandle-module-system/src/test/java/com/ruanzhu/doorhandle/module/system/service/OperationsAuditServiceTest.java",
+      "minimumTests": 6,
+      "coverage": [
+        "single-enterprise account identity and operation audit"
+      ]
+    },
+    {
+      "id": "OperationsCopyMySqlTest",
+      "className": "com.ruanzhu.doorhandle.module.system.service.OperationsCopyMySqlTest",
+      "fixtureProperties": [
+        "doorhandle.operations.source.config",
+        "doorhandle.operations.mysql.config"
+      ],
+      "source": "doorhandle-module-system/src/test/java/com/ruanzhu/doorhandle/module/system/service/OperationsCopyMySqlTest.java",
+      "minimumTests": 9,
+      "coverage": [
+        "single-enterprise account identity and operation audit"
+      ]
+    },
+    {
+      "id": "OrganizationBindingAuditMigrationMySqlTest",
+      "className": "com.ruanzhu.doorhandle.module.system.service.OrganizationBindingAuditMigrationMySqlTest",
+      "fixtureProperties": [
+        "doorhandle.binding.source.config",
+        "doorhandle.binding.mysql.config"
+      ],
+      "source": "doorhandle-module-system/src/test/java/com/ruanzhu/doorhandle/module/system/service/OrganizationBindingAuditMigrationMySqlTest.java",
+      "minimumTests": 8,
+      "coverage": [
+        "single-enterprise account identity and operation audit"
+      ]
+    },
+    {
+      "id": "PersistentMcpInstallQueueTest",
+      "className": "com.ruanzhu.doorhandle.module.ai.mcp.PersistentMcpInstallQueueTest",
+      "fixtureProperties": [
+        "doorhandle.mcp.mysql.config"
+      ],
+      "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/mcp/PersistentMcpInstallQueueTest.java",
+      "minimumTests": 15,
+      "coverage": [
+        "MCP durable install, execution and unknown-result protocol"
+      ]
+    },
+    {
+      "id": "PersonalModelQuotaMySqlTest",
+      "className": "com.ruanzhu.doorhandle.module.ai.model.PersonalModelQuotaMySqlTest",
+      "fixtureProperties": [
+        "doorhandle.feature.mysql.config"
+      ],
+      "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/model/PersonalModelQuotaMySqlTest.java",
+      "minimumTests": 12,
+      "coverage": [
+        "model configuration, quota and token accounts"
+      ]
+    },
+    {
+      "id": "QualityDigestMySqlTest",
+      "className": "com.ruanzhu.doorhandle.module.detection.service.QualityDigestMySqlTest",
+      "fixtureProperties": [
+        "doorhandle.digest.mysql.config"
+      ],
+      "source": "doorhandle-module-detection/src/test/java/com/ruanzhu/doorhandle/module/detection/service/QualityDigestMySqlTest.java",
+      "minimumTests": 11,
+      "coverage": [
+        "detection workflow, reports, identity and authorization"
+      ]
+    },
+    {
+      "id": "QualityKnowledgeMySqlTest",
+      "className": "com.ruanzhu.doorhandle.module.app.service.knowledge.QualityKnowledgeMySqlTest",
+      "fixtureProperties": [
+        "doorhandle.feature.mysql.config"
+      ],
+      "source": "doorhandle-module-app/src/test/java/com/ruanzhu/doorhandle/module/app/service/knowledge/QualityKnowledgeMySqlTest.java",
+      "minimumTests": 9,
+      "coverage": [
+        "workspace, chat, inbox, knowledge and memory persistence"
+      ]
+    },
+    {
+      "id": "QualityReportServiceTest",
+      "className": "com.ruanzhu.doorhandle.module.detection.service.QualityReportServiceTest",
+      "fixtureProperties": [
+        "doorhandle.report.mysql.config"
+      ],
+      "source": "doorhandle-module-detection/src/test/java/com/ruanzhu/doorhandle/module/detection/service/QualityReportServiceTest.java",
+      "minimumTests": 25,
+      "coverage": [
+        "detection workflow, reports, identity and authorization"
+      ]
+    },
+    {
+      "id": "QuotaAccountStoreMySqlTest",
+      "className": "com.ruanzhu.doorhandle.module.ai.model.QuotaAccountStoreMySqlTest",
+      "fixtureProperties": [
+        "doorhandle.feature.mysql.config"
+      ],
+      "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/model/QuotaAccountStoreMySqlTest.java",
+      "minimumTests": 12,
+      "coverage": [
+        "model configuration, quota and token accounts"
+      ]
+    },
+    {
+      "id": "ReportEventDeliveryTest",
+      "className": "com.ruanzhu.doorhandle.module.detection.service.report.ReportEventDeliveryTest",
+      "fixtureProperties": [
+        "doorhandle.report.mysql.config"
+      ],
+      "source": "doorhandle-module-detection/src/test/java/com/ruanzhu/doorhandle/module/detection/service/report/ReportEventDeliveryTest.java",
+      "minimumTests": 14,
+      "coverage": [
+        "detection workflow, reports, identity and authorization"
+      ]
+    },
+    {
+      "id": "ReportWorkflowMigrationMySqlTest",
+      "className": "com.ruanzhu.doorhandle.module.detection.service.report.ReportWorkflowMigrationMySqlTest",
+      "fixtureProperties": [
+        "report.copy.source-config",
+        "report.copy.target-config"
+      ],
+      "source": "doorhandle-module-detection/src/test/java/com/ruanzhu/doorhandle/module/detection/service/report/ReportWorkflowMigrationMySqlTest.java",
+      "minimumTests": 11,
+      "coverage": [
+        "detection workflow, reports, identity and authorization"
+      ]
+    },
+    {
+      "id": "ResearchExportMigrationMySqlTest",
+      "className": "com.ruanzhu.doorhandle.module.ai.research.ResearchExportMigrationMySqlTest",
+      "fixtureProperties": [
+        "agent.research.copy.source-config",
+        "agent.research.copy.target-config"
+      ],
+      "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/research/ResearchExportMigrationMySqlTest.java",
+      "minimumTests": 12,
+      "coverage": [
+        "research export and evidence copy"
+      ]
+    },
+    {
+      "id": "SkillDownloadLeasesTest",
+      "className": "com.ruanzhu.doorhandle.module.ai.evolution.SkillDownloadLeasesTest",
+      "fixtureProperties": [
+        "agent.skill.mysql-file"
+      ],
+      "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/evolution/SkillDownloadLeasesTest.java",
+      "minimumTests": 7,
+      "coverage": [
+        "skill revisions, lease fencing and migration"
+      ]
+    },
+    {
+      "id": "SkillMigrationMySqlTest",
+      "className": "com.ruanzhu.doorhandle.module.ai.evolution.SkillMigrationMySqlTest",
+      "fixtureProperties": [
+        "agent.skill.mysql-file"
+      ],
+      "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/evolution/SkillMigrationMySqlTest.java",
+      "minimumTests": 5,
+      "coverage": [
+        "skill revisions, lease fencing and migration"
+      ]
+    },
+    {
+      "id": "SupportCopyMigrationMySqlTest",
+      "className": "com.ruanzhu.doorhandle.module.app.service.impl.SupportCopyMigrationMySqlTest",
+      "fixtureProperties": [
+        "doorhandle.support.source.config",
+        "doorhandle.support.mysql.config"
+      ],
+      "source": "doorhandle-module-app/src/test/java/com/ruanzhu/doorhandle/module/app/service/impl/SupportCopyMigrationMySqlTest.java",
+      "minimumTests": 6,
+      "coverage": [
+        "workspace, chat, inbox, knowledge and memory persistence"
+      ]
+    },
+    {
+      "id": "WorkbenchMigrationMySqlTest",
+      "className": "com.ruanzhu.doorhandle.module.ai.workbench.WorkbenchMigrationMySqlTest",
+      "fixtureProperties": [
+        "workbench.migration.source",
+        "workbench.migration.target"
+      ],
+      "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/workbench/WorkbenchMigrationMySqlTest.java",
+      "minimumTests": 5,
+      "coverage": [
+        "workbench execution, checkpoint and migration"
+      ]
+    },
+    {
+      "id": "WorkspaceMigrationMySqlTest",
+      "className": "com.ruanzhu.doorhandle.module.app.service.impl.WorkspaceMigrationMySqlTest",
+      "fixtureProperties": [
+        "doorhandle.workspace.source.config",
+        "doorhandle.feature.mysql.config"
+      ],
+      "source": "doorhandle-module-app/src/test/java/com/ruanzhu/doorhandle/module/app/service/impl/WorkspaceMigrationMySqlTest.java",
+      "minimumTests": 7,
+      "coverage": [
+        "workspace, chat, inbox, knowledge and memory persistence"
+      ]
+    }
+  ],
+  "sourceRegression": {
+    "required": true,
+    "mode": "ALL_WITHOUT_FIXTURE_OR_LIVE_FLAGS",
+    "allowInfrastructureOptInSkips": true,
+    "requiredClasses": [
+      {
+        "className": "com.ruanzhu.doorhandle.common.SafePathResolverTest",
+        "minimumTests": 6,
+        "source": "doorhandle-common/src/test/java/com/ruanzhu/doorhandle/common/SafePathResolverTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.contracts.detection.DetectionTaskFinishedEventJacksonTest",
+        "minimumTests": 1,
+        "source": "doorhandle-contracts/src/test/java/com/ruanzhu/doorhandle/contracts/detection/DetectionTaskFinishedEventJacksonTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.system.security.JwtAuthenticationFilterTest",
+        "minimumTests": 3,
+        "source": "doorhandle-module-system/src/test/java/com/ruanzhu/doorhandle/module/system/security/JwtAuthenticationFilterTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.system.security.SensitiveDataSanitizerTest",
+        "minimumTests": 1,
+        "source": "doorhandle-module-system/src/test/java/com/ruanzhu/doorhandle/module/system/security/SensitiveDataSanitizerTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.system.api.BusinessUserDirectoryImplTest",
+        "minimumTests": 5,
+        "source": "doorhandle-module-system/src/test/java/com/ruanzhu/doorhandle/module/system/api/BusinessUserDirectoryImplTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.detection.security.DetectionTaskAccessPolicyTest",
+        "minimumTests": 7,
+        "source": "doorhandle-module-detection/src/test/java/com/ruanzhu/doorhandle/module/detection/security/DetectionTaskAccessPolicyTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.detection.service.DetectionWorkUnitTransitionTest",
+        "minimumTests": 5,
+        "source": "doorhandle-module-detection/src/test/java/com/ruanzhu/doorhandle/module/detection/service/DetectionWorkUnitTransitionTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.detection.service.DetectionDuplicateResolutionTest",
+        "minimumTests": 3,
+        "source": "doorhandle-module-detection/src/test/java/com/ruanzhu/doorhandle/module/detection/service/DetectionDuplicateResolutionTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.detection.service.OssPreviewAuthorizationServiceTest",
+        "minimumTests": 6,
+        "source": "doorhandle-module-detection/src/test/java/com/ruanzhu/doorhandle/module/detection/service/OssPreviewAuthorizationServiceTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.detection.api.DetectionAssignmentApiImplTest",
+        "minimumTests": 4,
+        "source": "doorhandle-module-detection/src/test/java/com/ruanzhu/doorhandle/module/detection/api/DetectionAssignmentApiImplTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.ai.model.ModelConfigCipherTest",
+        "minimumTests": 2,
+        "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/model/ModelConfigCipherTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.ai.model.ModelTokenReservationTest",
+        "minimumTests": 5,
+        "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/model/ModelTokenReservationTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.ai.model.ModelIoIsolationTest",
+        "minimumTests": 1,
+        "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/model/ModelIoIsolationTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.ai.model.ModelFailureClassifierTest",
+        "minimumTests": 3,
+        "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/model/ModelFailureClassifierTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.ai.context.AgentContextCompactionTest",
+        "minimumTests": 13,
+        "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/context/AgentContextCompactionTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.ai.context.AgentIdentityTest",
+        "minimumTests": 1,
+        "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/context/AgentIdentityTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.ai.journal.AgentJournalMiddlewareTest",
+        "minimumTests": 7,
+        "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/journal/AgentJournalMiddlewareTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.ai.mcp.McpGatewayClientTest",
+        "minimumTests": 2,
+        "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/mcp/McpGatewayClientTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.ai.mcp.PersistentMcpConfigurationTest",
+        "minimumTests": 5,
+        "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/mcp/PersistentMcpConfigurationTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.ai.evolution.SkillSourcePolicyTest",
+        "minimumTests": 4,
+        "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/evolution/SkillSourcePolicyTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.app.config.BusinessSeedRetirementTest",
+        "minimumTests": 1,
+        "source": "doorhandle-module-app/src/test/java/com/ruanzhu/doorhandle/module/app/config/BusinessSeedRetirementTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.app.config.ProductionConfigDefaultsTest",
+        "minimumTests": 3,
+        "source": "doorhandle-module-app/src/test/java/com/ruanzhu/doorhandle/module/app/config/ProductionConfigDefaultsTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.app.config.ConfigurationTopologyContractTest",
+        "minimumTests": 5,
+        "source": "doorhandle-module-app/src/test/java/com/ruanzhu/doorhandle/module/app/config/ConfigurationTopologyContractTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.app.config.NoDefaultAdminCredentialContractTest",
+        "minimumTests": 1,
+        "source": "doorhandle-module-app/src/test/java/com/ruanzhu/doorhandle/module/app/config/NoDefaultAdminCredentialContractTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.app.config.DotenvEnvironmentPostProcessorTest",
+        "minimumTests": 8,
+        "source": "doorhandle-module-app/src/test/java/com/ruanzhu/doorhandle/module/app/config/DotenvEnvironmentPostProcessorTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.app.service.impl.ConversationInboxServiceTest",
+        "minimumTests": 28,
+        "source": "doorhandle-module-app/src/test/java/com/ruanzhu/doorhandle/module/app/service/impl/ConversationInboxServiceTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.app.service.impl.JdbcWorkflowFencingTest",
+        "minimumTests": 3,
+        "source": "doorhandle-module-app/src/test/java/com/ruanzhu/doorhandle/module/app/service/impl/JdbcWorkflowFencingTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.app.service.impl.WorkspaceFileContentTest",
+        "minimumTests": 9,
+        "source": "doorhandle-module-app/src/test/java/com/ruanzhu/doorhandle/module/app/service/impl/WorkspaceFileContentTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.infra.security.OperationAuditInterceptorTest",
+        "minimumTests": 2,
+        "source": "doorhandle-module-infra/src/test/java/com/ruanzhu/doorhandle/module/infra/security/OperationAuditInterceptorTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.device.controller.ManagementAuthorizationTest",
+        "minimumTests": 3,
+        "source": "doorhandle-module-device/src/test/java/com/ruanzhu/doorhandle/module/device/controller/ManagementAuthorizationTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.server.ApplicationTimeZoneTest",
+        "minimumTests": 1,
+        "source": "doorhandle-server/src/test/java/com/ruanzhu/doorhandle/server/ApplicationTimeZoneTest.java"
+      }
+    ]
+  },
+  "python": {
+    "required": true,
+    "workerMysqlRequired": true,
+    "requiredSuites": [
+      {
+        "module": "tests_python.test_agent_auth_client",
+        "minimumTests": 2,
+        "source": "tests_python/test_agent_auth_client.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_application_rehearsal",
+        "minimumTests": 38,
+        "source": "tests_python/test_application_rehearsal.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_asr_service",
+        "minimumTests": 6,
+        "source": "tests_python/test_asr_service.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_business_timezone",
+        "minimumTests": 2,
+        "source": "tests_python/test_business_timezone.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_candidate_acceptance",
+        "minimumTests": 18,
+        "source": "tests_python/test_candidate_acceptance.py",
+        "allowedSkippedTests": [
+          "test_an_actual_windows_reader_can_release_the_receipt_for_atomic_replace"
+        ]
+      },
+      {
+        "module": "tests_python.test_candidate_soak_safety",
+        "minimumTests": 5,
+        "source": "tests_python/test_candidate_soak_safety.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_compact_cutover",
+        "minimumTests": 11,
+        "source": "tests_python/test_compact_cutover.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_compact_migration_orchestration_ecs",
+        "minimumTests": 1,
+        "source": "tests_python/test_compact_migration_orchestration_ecs.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_compact_release_guard",
+        "minimumTests": 7,
+        "source": "tests_python/test_compact_release_guard.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_compact_schema_source",
+        "minimumTests": 13,
+        "source": "tests_python/test_compact_schema_source.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_detection_image",
+        "minimumTests": 2,
+        "source": "tests_python/test_detection_image.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_detection_parity",
+        "minimumTests": 4,
+        "source": "tests_python/test_detection_parity.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_detection_worker_receipts",
+        "minimumTests": 20,
+        "source": "tests_python/test_detection_worker_receipts.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_ecs_execution",
+        "minimumTests": 5,
+        "source": "tests_python/test_ecs_execution.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_jenkins_deploy",
+        "minimumTests": 7,
+        "source": "tests_python/test_jenkins_deploy.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_jenkins_fixture_admission",
+        "minimumTests": 5,
+        "source": "tests_python/test_jenkins_fixture_admission.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_jenkins_suite_evidence",
+        "minimumTests": 8,
+        "source": "tests_python/test_jenkins_suite_evidence.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_kafka_detection_worker",
+        "minimumTests": 6,
+        "source": "tests_python/test_kafka_detection_worker.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_kafka_event_models",
+        "minimumTests": 5,
+        "source": "tests_python/test_kafka_event_models.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_linked_skill_download",
+        "minimumTests": 13,
+        "source": "tests_python/test_linked_skill_download.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_mcp_gateway",
+        "minimumTests": 5,
+        "source": "tests_python/test_mcp_gateway.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_memory_compat",
+        "minimumTests": 12,
+        "source": "tests_python/test_memory_compat.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_memory_concurrency",
+        "minimumTests": 3,
+        "source": "tests_python/test_memory_concurrency.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_memory_governance",
+        "minimumTests": 10,
+        "source": "tests_python/test_memory_governance.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_memory_lifecycle",
+        "minimumTests": 14,
+        "source": "tests_python/test_memory_lifecycle.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_memory_llm_parameters",
+        "minimumTests": 1,
+        "source": "tests_python/test_memory_llm_parameters.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_memory_model_config",
+        "minimumTests": 7,
+        "source": "tests_python/test_memory_model_config.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_memory_receipts",
+        "minimumTests": 15,
+        "source": "tests_python/test_memory_receipts.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_memory_reviews",
+        "minimumTests": 18,
+        "source": "tests_python/test_memory_reviews.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_memory_semantic_contract",
+        "minimumTests": 3,
+        "source": "tests_python/test_memory_semantic_contract.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_memory_semantic_eval",
+        "minimumTests": 3,
+        "source": "tests_python/test_memory_semantic_eval.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_memory_service_tenancy",
+        "minimumTests": 5,
+        "source": "tests_python/test_memory_service_tenancy.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_monolith_ops",
+        "minimumTests": 22,
+        "source": "tests_python/test_monolith_ops.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_onnx_detection_engine",
+        "minimumTests": 4,
+        "source": "tests_python/test_onnx_detection_engine.py",
+        "allowedSkippedTests": []
+      }
+    ]
+  },
+  "frontends": [
+    {
+      "directory": "frontend",
+      "testFiles": [
+        "tests/agent-actions.test.cjs",
+        "tests/agent-cards.test.cjs",
+        "tests/agent-trace.test.cjs",
+        "tests/agent-workbench.test.cjs",
+        "tests/agentscope-stream.test.cjs",
+        "tests/assistant-contracts.test.cjs",
+        "tests/beijing-time.test.cjs",
+        "tests/chat-file-references.test.cjs",
+        "tests/composer-resources.test.cjs",
+        "tests/conversation-control.test.cjs",
+        "tests/deployment-contracts.test.cjs",
+        "tests/detection-contracts.test.cjs",
+        "tests/detection-transfer-compatibility.test.cjs",
+        "tests/memory-management.test.cjs",
+        "tests/model-quota-presentation.test.cjs",
+        "tests/project-source-helper.test.cjs",
+        "tests/quality-contracts.test.cjs",
+        "tests/research-evidence.test.cjs",
+        "tests/security-shell-contracts.test.cjs",
+        "tests/skill-commands.test.cjs",
+        "tests/skill-install-navigation.test.cjs",
+        "tests/tool-execution.test.cjs",
+        "tests/trace-references.test.cjs"
+      ],
+      "minimumTests": 23,
+      "requiredCommands": [
+        "frontend-install",
+        "frontend-test",
+        "frontend-build"
+      ],
+      "allowedSkippedTests": []
+    },
+    {
+      "directory": "frontend-agent",
+      "testFiles": [
+        "src/a2uiState.test.js",
+        "src/aguiClient.test.js",
+        "src/framePublisher.test.js",
+        "src/sessionClient.test.js"
+      ],
+      "minimumTests": 4,
+      "requiredCommands": [
+        "frontend-agent-install",
+        "frontend-agent-test",
+        "frontend-agent-build"
+      ],
+      "allowedSkippedTests": []
+    }
+  ],
+  "wholeMigration": {
+    "required": true,
+    "pythonSuite": "tests_python.test_compact_migration_orchestration_ecs",
+    "sourceTableCount": 131,
+    "targetTableCount": 29,
+    "sourceRestoreRequired": true,
+    "targetRestoreRequired": true
+  },
+  "runtimeAcceptance": {
+    "requiredBeforeProduction": true,
+    "receiptFile": "runtime-acceptance.json",
+    "requiresCandidateBuildBinding": true,
+    "scenarios": [
+      {
+        "id": "auth-role-isolation",
+        "requirement": "Login with separate inspector/supervisor accounts; verify user, business-owner and role boundaries through the running application.",
+        "relatedLegacySuites": [
+          "EcsMysqlFixtureTest",
+          "AgentSessionLocalMysqlTest",
+          "DetectionScopeLocalMysqlTest"
+        ],
+        "required": true
+      },
+      {
+        "id": "model-quota-workflow",
+        "requirement": "Display usable models and personal quota; request, supervisor approval, token reservation/deduction, preexisting-access fallback and denied cross-user changes.",
+        "relatedLegacySuites": [
+          "ModelFactsMySqlTest"
+        ],
+        "required": true
+      },
+      {
+        "id": "detection-pth-worker-kafka-receipts",
+        "requirement": "Run the actual candidate Python PTH worker over owned Kafka/OSS test input; verify candidate image, DB receipt persistence, restart/no duplicate inference, unauthorized owner and unknown-result fence.",
+        "relatedLegacySuites": [
+          "DetectionScopeLocalMysqlTest"
+        ],
+        "required": true
+      },
+      {
+        "id": "sdk-session-workbench-recovery",
+        "requirement": "Use the actual candidate app/SDK with scripted model responses; persist/restore conversation, workbench parent/child/tool provenance, model snapshot and cancellation fence.",
+        "relatedLegacySuites": [
+          "AgentCardsLocalMysqlTest",
+          "AgentSessionLocalMysqlTest",
+          "AgentConfirmationLocalMysqlTest"
+        ],
+        "required": true
+      },
+      {
+        "id": "private-mcp-install-fetch-cancel-reconcile",
+        "requirement": "Install/use a private MCP under an owned supervisor; verify fetch, cancellation, writer-tree exit, journal-pool identity, image retention and uncertain write reconciliation.",
+        "relatedLegacySuites": [
+          "LocalMcpMysqlTest"
+        ],
+        "required": true
+      },
+      {
+        "id": "report-draft-review-export-delivery",
+        "requirement": "Create SDK-origin draft; owner edits, supervisor review, export, outbox delivery and unauthorized retries preserve version/audit linkage.",
+        "relatedLegacySuites": [
+          "AgentReportLocalMysqlTest",
+          "ReportEventLocalMysqlTest"
+        ],
+        "required": true
+      },
+      {
+        "id": "skills-capture-publish-use-rollback",
+        "requirement": "Capture an authorized persisted run, draft/evaluate/review/publish/load a skill, then rollback/archive without exposing private source.",
+        "relatedLegacySuites": [
+          "AgentCardsLocalMysqlTest",
+          "SkillEvolutionLocalMysqlTest",
+          "SkillCommandLocalMysqlTest"
+        ],
+        "required": true
+      },
+      {
+        "id": "memory-governance-read-model-key",
+        "requirement": "Use owned memory storage and scripted or infer=false extraction; verify owner isolation, lifecycle review, retention and governed model-key restoration with no paid model call.",
+        "relatedLegacySuites": [
+          "MemoryGovernanceLocalMysqlTest"
+        ],
+        "required": true
+      },
+      {
+        "id": "compact-application-upgrade-recovery",
+        "requirement": "Boot candidate backend/web/worker against an owned migrated 29-table clone; verify health and persisted data, same-schema application recovery and failure-maintenance boundary.",
+        "relatedLegacySuites": [
+          "EcsMysqlFixtureTest"
+        ],
+        "required": true
+      }
+    ],
+    "legacyServerSuites": [
+      {
+        "className": "com.ruanzhu.doorhandle.server.EcsMysqlFixtureTest",
+        "switchName": "ecs.fixture.mysql",
+        "fixtureProperty": "doorhandle.ecs.mysql.config",
+        "execution": "Dedicated owned full-stack runtime fixture; isolated module JDBC PASS does not satisfy this scenario",
+        "preparation": "Provision compact users, role bindings and scenario-specific persisted data; use scripted models and owned services"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.server.AgentCardsLocalMysqlTest",
+        "switchName": "agent.cards.local.mysql",
+        "fixtureProperty": "doorhandle.ecs.mysql.config",
+        "execution": "Dedicated owned full-stack runtime fixture; isolated module JDBC PASS does not satisfy this scenario",
+        "preparation": "Provision compact users, role bindings and scenario-specific persisted data; use scripted models and owned services"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.server.AgentConfirmationLocalMysqlTest",
+        "switchName": "agent.actions.local.mysql",
+        "fixtureProperty": "doorhandle.ecs.mysql.config",
+        "execution": "Dedicated owned full-stack runtime fixture; isolated module JDBC PASS does not satisfy this scenario",
+        "preparation": "Provision compact users, role bindings and scenario-specific persisted data; use scripted models and owned services"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.server.AgentReportLocalMysqlTest",
+        "switchName": "agent.report.local.mysql",
+        "fixtureProperty": "doorhandle.ecs.mysql.config",
+        "execution": "Dedicated owned full-stack runtime fixture; isolated module JDBC PASS does not satisfy this scenario",
+        "preparation": "Provision compact users, role bindings and scenario-specific persisted data; use scripted models and owned services"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.server.AgentSessionLocalMysqlTest",
+        "switchName": "agent.sessions.local.mysql",
+        "fixtureProperty": "doorhandle.ecs.mysql.config",
+        "execution": "Dedicated owned full-stack runtime fixture; isolated module JDBC PASS does not satisfy this scenario",
+        "preparation": "Provision compact users, role bindings and scenario-specific persisted data; use scripted models and owned services"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.server.DetectionScopeLocalMysqlTest",
+        "switchName": "detection.scope.local.mysql",
+        "fixtureProperty": "doorhandle.ecs.mysql.config",
+        "execution": "Dedicated owned full-stack runtime fixture; isolated module JDBC PASS does not satisfy this scenario",
+        "preparation": "Provision compact users, role bindings and scenario-specific persisted data; use scripted models and owned services"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.server.LocalMcpMysqlTest",
+        "switchName": "agent.local.mcp.mysql",
+        "fixtureProperty": "doorhandle.ecs.mysql.config",
+        "execution": "Dedicated owned full-stack runtime fixture; isolated module JDBC PASS does not satisfy this scenario",
+        "preparation": "Provision the private installed fetch runtime, supervisor receipts, owners and controlled network fixture"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.server.MemoryGovernanceLocalMysqlTest",
+        "switchName": "agent.memory.local.mysql",
+        "fixtureProperty": "doorhandle.ecs.mysql.config",
+        "execution": "Dedicated owned full-stack runtime fixture; isolated module JDBC PASS does not satisfy this scenario",
+        "preparation": "Provision compact users, role bindings and scenario-specific persisted data; use scripted models and owned services"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.server.ReportEventLocalMysqlTest",
+        "switchName": "report.events.local.mysql",
+        "fixtureProperty": "doorhandle.ecs.mysql.config",
+        "execution": "Dedicated owned full-stack runtime fixture; isolated module JDBC PASS does not satisfy this scenario",
+        "preparation": "Provision compact users, role bindings and scenario-specific persisted data; use scripted models and owned services"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.server.SkillCommandLocalMysqlTest",
+        "switchName": "agent.skills.commands.mysql",
+        "fixtureProperty": "doorhandle.ecs.mysql.config",
+        "execution": "Dedicated owned full-stack runtime fixture; isolated module JDBC PASS does not satisfy this scenario",
+        "preparation": "Create AgentCards output and its matching persisted source run in the same owned schema before evolution/commands"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.server.SkillEvolutionLocalMysqlTest",
+        "switchName": "agent.skills.local.mysql",
+        "fixtureProperty": "doorhandle.ecs.mysql.config",
+        "execution": "Dedicated owned full-stack runtime fixture; isolated module JDBC PASS does not satisfy this scenario",
+        "preparation": "Create AgentCards output and its matching persisted source run in the same owned schema before evolution/commands"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.server.ModelFactsMySqlTest",
+        "switchName": "model.facts.mysql",
+        "fixtureProperty": "doorhandle.ecs.mysql.config",
+        "execution": "Dedicated owned full-stack runtime fixture; isolated module JDBC PASS does not satisfy this scenario",
+        "preparation": "Provision compact users, role bindings and scenario-specific persisted data; use scripted models and owned services"
+      }
+    ]
+  }
+}

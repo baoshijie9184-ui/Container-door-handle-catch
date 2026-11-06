@@ -49,6 +49,16 @@ try {
     & $MavenCmd @arguments 2>&1 | Tee-Object -FilePath $logFile
     $receipt['exitCode'] = $LASTEXITCODE
     if ($LASTEXITCODE -ne 0) { throw 'Local Maven compilation/package failed; inspect local-build.log.' }
+    $jars = @(Get-ChildItem -LiteralPath (Join-Path $buildDirectory 'doorhandle-server') -Filter 'doorhandle-server-*.jar' -File)
+    if ($jars.Count -ne 1 -or ($jars[0].Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+        throw 'The fixed commit must produce exactly one regular server application jar.'
+    }
+    $jarDestination = Join-Path $artifactDirectory 'application.jar'
+    if (Test-Path -LiteralPath $jarDestination) { throw 'Application artifact already exists; use a fresh build.' }
+    Copy-Item -LiteralPath $jars[0].FullName -Destination $jarDestination
+    $receipt['applicationJar'] = 'artifacts/application.jar'
+    $receipt['applicationJarSha256'] = (Get-FileHash -LiteralPath $jarDestination -Algorithm SHA256).Hash.ToLowerInvariant()
+    $receipt['applicationJarBytes'] = (Get-Item -LiteralPath $jarDestination).Length
     $receipt['status'] = 'PASS'
 } catch {
     $receipt['errorType'] = $_.Exception.GetType().Name

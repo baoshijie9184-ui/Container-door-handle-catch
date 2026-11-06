@@ -21,6 +21,7 @@ import subprocess
 import sys
 import tarfile
 import uuid
+import xml.etree.ElementTree as ET
 from urllib.request import ProxyHandler, Request, build_opener
 
 
@@ -33,7 +34,7 @@ MAX_EVIDENCE_ARCHIVE = 64 * 1024 * 1024
 MAX_EVIDENCE_FILES = 8192
 MAX_RECEIPT_BYTES = 256 * 1024
 MAX_FIXTURE_MARKER_BYTES = 16 * 1024
-VERIFY_TIMEOUT_SECONDS = 90 * 60
+VERIFY_TIMEOUT_SECONDS = 240 * 60
 TAG = re.compile(r"ci-[0-9]+-[a-f0-9]{12}")
 SHA = re.compile(r"[a-f0-9]{64}")
 COMMIT = re.compile(r"[a-f0-9]{40}")
@@ -177,15 +178,21 @@ def allowed_evidence(name):
         return True
     if name.startswith("reports/") and name[len("reports/"):] in LOG_NAMES:
         return True
-    return bool(re.fullmatch(r"reports/java/[A-Za-z0-9_.-]+/surefire-reports/TEST-[A-Za-z0-9_.$-]+\.xml", name))
+    if re.fullmatch(r"reports/java-(?:suite-[0-9]{3}|source-regression)\.log", name):
+        return True
+    return bool(re.fullmatch(r"reports/(?:source-regression/)?java/[A-Za-z0-9_.-]+/surefire-reports/TEST-[A-Za-z0-9_.$-]+\.xml", name))
 
 
 def evidence_files(checkout, evidence, driver):
     candidates = [("driver.log", driver)]
     candidates += [("reports/" + name, evidence / name)
                    for name in ("receipt.json", "python.xml", "migration.json", *sorted(LOG_NAMES))]
+    candidates += [("reports/" + path.name, path) for path in sorted(evidence.glob("java-*.log"))
+                   if allowed_evidence("reports/" + path.name)]
     candidates += [("reports/java/" + path.relative_to(evidence / "java").as_posix(), path)
                    for path in sorted((evidence / "java").glob("*/surefire-reports/TEST-*.xml"))]
+    candidates += [("reports/source-regression/java/" + path.relative_to(evidence / "source-regression/java").as_posix(), path)
+                   for path in sorted((evidence / "source-regression/java").glob("*/surefire-reports/TEST-*.xml"))]
     result, omitted, total = [], [], 0
     for name, path in candidates:
         if not path.exists():
@@ -329,6 +336,81 @@ def prepare_checkout(root, args, identity):
     return attempt_dir, checkout
 
 
+def report_counts(evidence, references, selected, *, prefix):
+    counts = dict(found=0, passed=0, failed=0, skipped=0)
+    classes = {name: dict(counts) for name in selected}
+    seen = set()
+    require(isinstance(references, list) and references, 'The Java suite has no original XML reports')
+    for item in references:
+        require(isinstance(item, dict) and set(item) == {'path', 'bytes', 'sha256'}, 'Invalid Java report binding')
+        name = item['path']
+        require(isinstance(name, str) and name.startswith(prefix) and allowed_evidence('reports/' + name)
+                and name not in seen, 'Java reports must use their independently owned suite archive')
+        seen.add(name)
+        path = evidence.joinpath(*member_path(name).parts)
+        regular_file(path, MAX_FILE_BYTES)
+        require(path.resolve() == path and path.is_relative_to(evidence)
+                and path.stat().st_size == item['bytes'] and digest(path) == item['sha256'], 'Original Java XML bytes differ from their suite binding')
+        root = ET.parse(path).getroot()
+        for case in root.iter('testcase'):
+            result = 'skipped' if case.find('skipped') is not None else 'failed' if (
+                case.find('failure') is not None or case.find('error') is not None) else 'passed'
+            counts['found'] += 1; counts[result] += 1
+            actual = case.get('classname') or root.get('name', '')
+            for requested, tally in classes.items():
+                compared = actual if '.' in requested else actual.rsplit('.', 1)[-1]
+                if compared == requested or compared.startswith(requested + '$'):
+                    tally['found'] += 1; tally[result] += 1
+    return counts, classes
+
+
+def validate_java_suites(result, evidence, *, mysql):
+    """Independently count the archived bytes; suite success is not a readiness flag."""
+    suites = result.get('javaSuites')
+    require(isinstance(suites, list) and 1 <= len(suites) <= 100, 'Verifier did not record its independent Java invocations')
+    total = dict(found=0, passed=0, failed=0, skipped=0)
+    selected, reports, seen_classes, seen_reports = {}, [], set(), set()
+    for number, suite in enumerate(suites, 1):
+        require(isinstance(suite, dict) and suite.get('id') == 'suite-' + str(number).zfill(3)
+                and suite.get('status') == 'PASS', 'A Java invocation is missing or did not pass')
+        names = suite.get('javaSelection')
+        require(isinstance(names, list) and (names or not mysql)
+                and all(isinstance(name, str) and re.fullmatch(r'[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*', name) for name in names),
+                'A Java suite did not record its explicit selected classes')
+        aliases = {name.rsplit('.', 1)[-1] for name in names}
+        require(len(aliases) == len(names) and not aliases.intersection(seen_classes), 'Java class selections repeat between invocations')
+        seen_classes.update(aliases)
+        properties = suite.get('fixtureProperties')
+        require(isinstance(properties, list) and (properties or not mysql), 'A MySQL suite did not record its fixture scope')
+        actual, classes = report_counts(evidence, suite.get('reportFiles'), names, prefix='java/')
+        require(actual == suite.get('javaTests') and classes == suite.get('selectedJavaClasses')
+                and actual['passed'] > 0 and actual['failed'] == 0
+                and (not mysql or actual['skipped'] == 0)
+                and all(tally['passed'] > 0 and tally['failed'] == 0 and (not mysql or tally['skipped'] == 0) for tally in classes.values())
+                and (not mysql or sum(tally['found'] for tally in classes.values()) == actual['found']),
+                'A Java suite count differs from actual XML or a selected class failed, skipped or did not execute')
+        for item in suite['reportFiles']:
+            require(item['path'] not in seen_reports, 'Original Java XML is reused by multiple invocations')
+            seen_reports.add(item['path']); reports.append(item)
+        selected.update(classes)
+        for key in total:
+            total[key] += actual[key]
+    require(total == result.get('javaTests') and selected == result.get('selectedJavaClasses')
+            and reports == result.get('javaReportFiles'), 'The Java aggregate does not equal its independently archived invocations')
+    regression = result.get('sourceRegression')
+    if regression is not None:
+        require(isinstance(regression, dict) and regression.get('status') == 'PASS'
+                and regression.get('id') == 'source-regression' and regression.get('fixtureProperties') == [],
+                'Ordinary Java regression inherited fixture flags or did not pass')
+        names = regression.get('javaSelection')
+        require(isinstance(names, list) and names and len(names) == len(set(names)), 'Ordinary Java regression did not record its audited pure-logic classes')
+        actual, classes = report_counts(evidence, regression.get('reportFiles'), names, prefix='source-regression/java/')
+        require(actual == regression.get('javaTests') and classes == regression.get('selectedJavaClasses')
+                and actual['passed'] > 0 and actual['failed'] == 0
+                and all(tally['passed'] > 0 and tally['failed'] == tally['skipped'] == 0 for tally in classes.values()),
+                'Ordinary Java regression omitted or skipped an audited pure-logic class')
+
+
 def run_verification(args):
     validate_request(args)
     # No directory creation, archive extraction or test process precedes identity admission.
@@ -392,6 +474,13 @@ def run_verification(args):
         counts = result.get("javaTests", {})
         require(type(counts.get("passed")) is int and counts["passed"] > 0 and counts.get("failed") == 0,
                 "Verifier did not record actual passing Java tests")
+        validate_java_suites(result, evidence, mysql=args.scope == 'mysql')
+        profile = checkout / 'script/jenkins/compact-acceptance.json'
+        regular_file(profile, 1024 * 1024)
+        require(result.get('acceptanceProfileSha256') == digest(profile), 'Verifier acceptance profile differs from the fixed source archive')
+        record['javaSuiteCount'] = len(result['javaSuites'])
+        record['acceptanceProfileSha256'] = result['acceptanceProfileSha256']
+        record['sourceRegressionPassed'] = result.get('sourceRegression', {}).get('status') == 'PASS'
         if args.scope == "mysql":
             require(result.get("fixtureProperties") and result.get("javaSelection") and counts.get("skipped") == 0,
                     "MySQL verification did not record explicit fixture scope")

@@ -74,6 +74,8 @@ def parameters = [
     new StringParameterDefinition('TRUSTED_COMMIT', '', 'Optional expected complete java-cloud commit; blank pins this SCM checkout.'),
     new ChoiceParameterDefinition('DOORHANDLE_CI_SCOPE', ['source', 'mysql'] as String[], 'source is ordinary verification; mysql requires explicit ECS fixtures.'),
     new StringParameterDefinition('DOORHANDLE_CI_FIXTURE_MANIFEST', '', 'mysql only: absolute private manifest inside the current ECS checkout/work.'),
+    new BooleanParameterDefinition('DOORHANDLE_CI_AUTO_COMPACT_FIXTURES', false, 'mysql only: prepare independent owned ECS fixtures using this fixed source build.'),
+    new StringParameterDefinition('DOORHANDLE_CI_FIXTURE_SETTINGS', '', 'Automatic fixture preparation: reviewed private ECS source identity, offsets and existing Java settings.'),
     new BooleanParameterDefinition('PRODUCTION_RELEASE_ENABLED', false, 'Keep false until compact schema and release compatibility are accepted.'),
     new StringParameterDefinition('COMPACT_CUTOVER_SETTINGS', '', 'First cutover only: reviewed private ECS JSON with version, sourceOffsets and existing Java path.'),
     new StringParameterDefinition('DEPLOY_HOST', '', 'Start ECS outside Jenkins, then configure its current verified SSH address.'),

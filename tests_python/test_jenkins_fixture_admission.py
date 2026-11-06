@@ -42,10 +42,17 @@ def plan(tmp_path, monkeypatch, *, java_only=False):
     return args, manifest, file
 
 
-def migration_loader(monkeypatch, *, scope='ecs-disposable-migration', port=15444, server=SERVER):
-    config = {'scope': scope, 'connection': {'port': port}, 'serverUuid': server}
+def migration_loader(monkeypatch, *, scope='ecs-disposable-migration', port=15444, server=SERVER, data_directory=None):
+    def load(file):
+        config = {'scope': scope, 'connection': {'port': port}, 'serverUuid': server,
+                  'dataDirectory': data_directory or str(file.parent / 'mysql-data'),
+                  'sourceSchema': 'doorhandle_legacy_verify_' + 'd' * 10,
+                  'targetSchema': 'doorhandle_compact_candidate_' + 'e' * 10,
+                  'recoverySchemas': {'source': 'doorhandle_legacy_restore_' + 'f' * 10,
+                                      'target': 'doorhandle_compact_restore_' + 'a' * 10}}
+        return config, IDENTITY, 'd' * 64
     monkeypatch.setitem(sys.modules, 'compact_migration_runtime',
-                        types.SimpleNamespace(load_config=lambda file: (config, IDENTITY, 'd' * 64)))
+                        types.SimpleNamespace(load_config=load))
 
 
 def test_production_migration_config_cannot_enter_disposable_acceptance(tmp_path, monkeypatch):
@@ -85,3 +92,121 @@ def test_bound_whole_migration_is_explicit_and_preserves_java_scope(tmp_path, mo
     assert set(value[2:].split('=', 1)[0] for value in arguments) == set(manifest['fixtureProperties'])
     assert args.compact_migration_config == manifest['migrationConfig']
     assert receipt['version'] == 1 and len(receipt['sha256']) == 64
+
+
+def version_two(tmp_path, monkeypatch):
+    args, old, file = plan(tmp_path, monkeypatch)
+    first = {'javaTests': ['com.ruanzhu.doorhandle.module.detection.service.IdentityMigrationMySqlTest'],
+             'fixtureProperties': old['fixtureProperties']}
+    second_properties = {}
+    for role, suffix in [('source', 'd' * 10), ('mysql', 'e' * 10)]:
+        original = Path(old['fixtureProperties']['detection.identity.' + role + '.config'])
+        config = json.loads(original.read_text())
+        config['database'] = 'doorhandle_detection_verify_' + suffix
+        config['username'] = 'ecsit_' + suffix
+        config['url'] = f"jdbc:mysql://127.0.0.1:15444/{config['database']}?sslMode=DISABLED&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai"
+        path = original.with_name('digest-' + role + '.json')
+        path.write_text(json.dumps(config), encoding='utf8')
+        second_properties['doorhandle.digest.copy.' + role + '.config'] = str(path)
+    second = {'javaTests': ['com.ruanzhu.doorhandle.module.detection.service.DigestCopyMigrationMySqlTest'],
+              'fixtureProperties': second_properties}
+    manifest = {'version': 2, 'javaSuites': [first, second], 'sourceRegression': True,
+                'wholeMigrationConfig': old['migrationConfig']}
+    file.write_text(json.dumps(manifest), encoding='utf8')
+    return args, manifest, file
+
+
+def test_v2_keeps_each_suite_properties_separate_and_records_one_global_class_scope(tmp_path, monkeypatch):
+    args, manifest, _ = version_two(tmp_path, monkeypatch)
+    migration_loader(monkeypatch)
+    arguments, selected, proof = verifier.fixture_arguments(args, IDENTITY)
+    assert proof['version'] == 2 and args.source_regression is True
+    assert args.compact_migration_config == manifest['wholeMigrationConfig']
+    assert selected == [item['javaTests'][0] for item in manifest['javaSuites']]
+    assert [suite['id'] for suite in args.java_suites] == ['suite-001', 'suite-002']
+    for admitted, configured in zip(args.java_suites, manifest['javaSuites']):
+        assert admitted['fixtureOptions'] == ['-D' + key + '=' + value for key, value in configured['fixtureProperties'].items()]
+        assert admitted['javaSelection'] == configured['javaTests']
+    assert len(arguments) == 4  # Compatibility aggregate is never the Maven invocation.
+
+
+def test_v2_refuses_simple_and_fully_qualified_aliases_of_one_class(tmp_path, monkeypatch):
+    args, manifest, file = version_two(tmp_path, monkeypatch)
+    manifest['javaSuites'][1]['javaTests'] = ['IdentityMigrationMySqlTest']
+    file.write_text(json.dumps(manifest), encoding='utf8')
+    with pytest.raises(ValueError, match='globally unique'):
+        verifier.fixture_arguments(args, IDENTITY)
+
+
+@pytest.mark.parametrize('reuse_file', [True, False])
+def test_v2_refuses_cross_suite_schema_reuse_even_with_another_config_filename(tmp_path, monkeypatch, reuse_file):
+    args, manifest, file = version_two(tmp_path, monkeypatch)
+    first, second = manifest['javaSuites']
+    original = Path(first['fixtureProperties']['detection.identity.source.config'])
+    key = 'doorhandle.digest.copy.source.config'
+    if reuse_file:
+        second['fixtureProperties'][key] = str(original)
+    else:
+        Path(second['fixtureProperties'][key]).write_bytes(original.read_bytes())
+    file.write_text(json.dumps(manifest), encoding='utf8')
+    with pytest.raises(ValueError, match='distinct private inputs and disposable schemas'):
+        verifier.fixture_arguments(args, IDENTITY)
+
+
+@pytest.mark.parametrize('mutation', ['empty', 'global_properties', 'patterns', 'string_classes', 'unknown_property', 'regression_flag'])
+def test_v2_cannot_widen_its_audited_suite_protocol(tmp_path, monkeypatch, mutation):
+    args, manifest, file = version_two(tmp_path, monkeypatch)
+    if mutation == 'empty':manifest['javaSuites'] = []
+    elif mutation == 'global_properties':manifest['fixtureProperties'] = {}
+    elif mutation == 'patterns':manifest['javaSuites'][0]['javaTests'] = ['*MySqlTest']
+    elif mutation == 'string_classes':manifest['javaSuites'][0]['javaTests'] = 'IdentityMigrationMySqlTest'
+    elif mutation == 'unknown_property':manifest['javaSuites'][0]['fixtureProperties']['agent.live.models'] = '/private/file'
+    else:manifest['sourceRegression'] = 'true'
+    file.write_text(json.dumps(manifest), encoding='utf8')
+    with pytest.raises(ValueError):verifier.fixture_arguments(args, IDENTITY)
+
+
+def test_whole_migration_port_and_uuid_cannot_hide_another_data_directory(tmp_path, monkeypatch):
+    args, _, _ = version_two(tmp_path, monkeypatch)
+    migration_loader(monkeypatch, data_directory=str(tmp_path / 'another-owned-server'))
+    with pytest.raises(ValueError, match='same explicitly admitted disposable MySQL server and storage'):
+        verifier.fixture_arguments(args, IDENTITY)
+
+
+def test_original_xml_bytes_are_preserved_and_duplicate_report_paths_never_overwrite(tmp_path):
+    root = tmp_path / 'build'
+    report = root / 'module/surefire-reports/TEST-org.example.ExampleTest.xml'
+    report.parent.mkdir(parents=True)
+    raw = b'<?xml version="1.0"?>\r\n<testsuite name="org.example.ExampleTest"><testcase classname="org.example.ExampleTest" name="actualPass"/></testsuite>\r\n'
+    report.write_bytes(raw)
+    destination = tmp_path / 'java'
+    catalog = verifier.archive_java_reports(root, destination, tmp_path)
+    assert (tmp_path / catalog[0]['path']).read_bytes() == raw
+    counts, selected = verifier.java_report_counts(tmp_path, catalog, ['org.example.ExampleTest'])
+    verifier.require_java_pass(counts, selected, fixture=True)
+    report.write_bytes(raw.replace(b'actualPass', b'anotherRun'))
+    with pytest.raises(FileExistsError):verifier.archive_java_reports(root, destination, tmp_path)
+    assert (tmp_path / catalog[0]['path']).read_bytes() == raw
+
+
+def test_one_passing_class_cannot_cover_another_missing_or_skipped_class():
+    counts = {'found': 2, 'passed': 1, 'failed': 0, 'skipped': 1}
+    selected = {'Passed': {'found': 1, 'passed': 1, 'failed': 0, 'skipped': 0},
+                'Skipped': {'found': 1, 'passed': 0, 'failed': 0, 'skipped': 1}}
+    with pytest.raises(RuntimeError):verifier.require_java_pass(counts, selected, fixture=True)
+    with pytest.raises(RuntimeError):verifier.require_java_pass({'found': 1, 'passed': 1, 'failed': 0, 'skipped': 0},
+        {**selected, 'Missing': {'found': 0, 'passed': 0, 'failed': 0, 'skipped': 0}}, fixture=True)
+
+
+def test_a_later_suite_cannot_change_its_admitted_private_database_binding(tmp_path, monkeypatch):
+    args, _, _ = version_two(tmp_path, monkeypatch)
+    migration_loader(monkeypatch)
+    verifier.fixture_arguments(args, IDENTITY)
+    references = args.java_suites[1]['privateInputs']
+    verifier.require_unchanged_inputs(references)
+    path = Path(next(iter(references)))
+    config = json.loads(path.read_text())
+    config['serverUuid'] = '22345678-1234-1234-1234-123456789abc'
+    path.write_text(json.dumps(config), encoding='utf8')
+    with pytest.raises(ValueError, match='changed after whole-plan admission'):
+        verifier.require_unchanged_inputs(references)

@@ -35,7 +35,7 @@
 
 原生方式为 `client={"kind":"native","executable":"<规范绝对路径mysql>","mysqldump":"<规范绝对路径mysqldump>"}`，仅允许 ECS 本机 loopback。密码只进入 owner-only 配置或通过 stdin 写入容器临时 owner-only options 文件，不进入命令参数或公开日志。
 
-隔离验收 scope 还要求源名 `doorhandle_migration_verify_<10位hex>`、`doorhandle_legacy_verify_<10位hex>` 或 `doorhandle_agent_verify_<10位hex>`、非 3306 的明确 loopback 端口，以及 `dataDirectory` 真实位于配置同目录以下。Docker 的 `3306/tcp` 必须精确映射该 loopback 端口，`/var/lib/mysql` 必须 RW bind 到该私有目录，实际 `@@datadir` 和 UUID 也须一致。原生夹具同样核对实际数据目录。隔离证明不能当作生产迁移证明。
+隔离验收 scope 还要求源名 `doorhandle_migration_verify_<10位hex>`、`doorhandle_legacy_verify_<10位hex>` 或 `doorhandle_agent_verify_<10位hex>`、非 3306 的明确 loopback 端口，以及 `dataDirectory` 真实位于配置同目录以下。Docker 的容器内 MySQL 端口、HostPort 和配置端口必须完全相同且非 3306，该 `<port>/tcp` 只准一条 `127.0.0.1:<port>` 映射。数据目录必须按完全相同的规范绝对路径作 RW bind（Source = Destination = `dataDirectory`），实际 `@@datadir`、`@@port` 和 UUID 也须一致；这样 Java 与 Python 可独立核对同一目录和端口。原生夹具同样核对实际数据目录。隔离证明不能当作生产迁移证明。
 
 `workbench` 配置为 `{"java":"<已有Java17规范绝对路径>","applicationJar":"<候选jar绝对路径>","applicationJarSha256":"<64位SHA>"}`。通过 Boot `PropertiesLauncher` 运行受控 helper，不启动 Spring 应用。仅隔离源码验证可显式提供完整 `classpath` 数组；不会从环境猜测 classpath。迁移账号须对源库有直接 schema 的 `SELECT`、`TRIGGER`、`LOCK TABLES` 授权，对三个新 schema 有建表、复制和恢复所需权限；不需要源库 DML 授权。
 

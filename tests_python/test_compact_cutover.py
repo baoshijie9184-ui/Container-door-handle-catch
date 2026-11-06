@@ -4,6 +4,7 @@ import importlib.util
 import json
 from pathlib import Path
 from types import SimpleNamespace
+import xml.etree.ElementTree as ET
 import pytest
 
 
@@ -18,6 +19,8 @@ def load(name, file):
 
 cutover = load('compact_cutover_contract', 'compact-cutover.py')
 schema = load('compact_cutover_schema_contract', 'compact-schema-guard.py')
+coverage_spec = importlib.util.spec_from_file_location('compact_coverage_contract', ROOT / 'script/jenkins/compact-acceptance.py')
+coverage = importlib.util.module_from_spec(coverage_spec); coverage_spec.loader.exec_module(coverage)
 
 
 def write(path, value):
@@ -29,15 +32,58 @@ def verification(tmp_path):
     tag = 'ci-11-' + 'a' * 12
     identity = {'instanceId': 'i-example', 'machineId': 'b' * 32, 'executionLocation': 'ECS'}
     folder = tmp_path / 'verification' / tag
-    result = {'status': 'PASS', 'identity': identity, 'fixtureProperties': ['private-fixture'],
-              'javaSelection': ['WholeMigrationTest'], 'javaTests': {'passed': 9, 'failed': 0, 'skipped': 0},
-              'wholeMigrationRequested': True, 'wholeMigrationTests': {'passed': 3, 'failed': 0, 'skipped': 0}}
+    profile, profile_sha = coverage.profile(ROOT)
+    evidence = folder / 'checkout/work/ci-evidence'
+    artifacts = []
+    def report(relative, classes):
+        root = ET.Element('testsuite')
+        for name, count in classes:
+            for index in range(count):
+                ET.SubElement(root, 'testcase', classname=name, name='test_' + str(index))
+        path = evidence / relative; path.parent.mkdir(parents=True, exist_ok=True)
+        ET.ElementTree(root).write(path, encoding='utf8')
+        artifacts.append(('reports/' + relative, path))
+        return {'path': relative, 'bytes': path.stat().st_size, 'sha256': cutover.sha_file(path)}
+    def count(number):
+        return {'found': number, 'passed': number, 'failed': 0, 'skipped': 0}
+    java_suites = []
+    for index, requirement in enumerate(profile['javaSuites'], 1):
+        name, number = requirement['className'], requirement['minimumTests']
+        descriptor = report('java/suite-' + str(index) + '/surefire-reports/TEST-' + name + '.xml', [(name, number)])
+        java_suites.append({'id': 'suite-' + str(index), 'javaSelection': [name],
+            'fixtureProperties': requirement['fixtureProperties'], 'status': 'PASS', 'javaTests': count(number),
+            'selectedJavaClasses': {name: count(number)}, 'reportFiles': [descriptor]})
+    source_classes = [(item['className'], item['minimumTests']) for item in profile['sourceRegression']['requiredClasses']]
+    source_report = report('source-regression/java/source/surefire-reports/TEST-source.xml', source_classes)
+    python_classes = [(item['module'], item['minimumTests']) for item in profile['python']['requiredSuites']]
+    report('python.xml', python_classes)
+    result = {'status': 'PASS', 'identity': identity, 'fixtureProperties': ['private-fixture'], 'javaOnly': False,
+              'javaSelection': ','.join(item['className'] for item in profile['javaSuites']),
+              'acceptanceProfileSha256': profile_sha, 'javaTests': count(sum(item['javaTests']['passed'] for item in java_suites)),
+              'javaSuites': java_suites, 'javaReportFiles': [item['reportFiles'][0] for item in java_suites],
+              'sourceRegression': {'status': 'PASS', 'javaTests': count(sum(number for _, number in source_classes)),
+                 'selectedJavaClasses': {name: count(number) for name, number in source_classes}, 'reportFiles': [source_report]},
+              'pythonTests': count(sum(number for _, number in python_classes)),
+              'selectedPythonSuites': {name: count(number) for name, number in python_classes},
+              'workerMysqlRequested': True, 'workerMysqlConfigSha256': 'd' * 64,
+              'wholeMigrationRequested': True, 'wholeMigrationTests': {'passed': next(number for name, number in python_classes
+                   if name == profile['wholeMigration']['pythonSuite']), 'failed': 0, 'skipped': 0},
+              'commands': [], 'frontendResults': {}}
+    for frontend in profile['frontends']:
+        name = frontend['directory']; number = frontend['minimumTests']
+        result['frontendResults'][name] = {'selectedTestFiles': frontend['testFiles'], 'installExitCode': 0,
+            'testExitCode': 0, 'buildExitCode': 0, 'tests': count(number)}
+        result['commands'].extend({'label': label, 'exitCode': 0} for label in frontend['requiredCommands'])
+        log = evidence / (name + '-test.log')
+        log.write_text('TAP version 13\n# tests ' + str(number) + '\n# pass ' + str(number)
+            + '\n# fail 0\n# skipped 0\n# cancelled 0\n# todo 0\n', encoding='utf8')
+        artifacts.append(('reports/' + log.name, log))
     summary = folder / 'checkout/work/ci-evidence/migration.json'
     write(summary, {'status': 'VERIFIED', 'sourceTableCount': 131, 'targetTableCount': 29})
     result['wholeMigrationSummarySha256'] = cutover.sha_file(summary)
     result_file = summary.with_name('receipt.json'); write(result_file, result)
-    xml = summary.with_name('java.xml'); xml.write_text('<testsuite tests="9" failures="0"/>')
-    files = [('reports/receipt.json', result_file), ('reports/migration.json', summary), ('reports/java.xml', xml)]
+    xml = artifacts[0][1]
+    files = [('reports/receipt.json', result_file), ('reports/migration.json', summary), *artifacts]
     receipt = {'schema': 1, 'kind': 'doorhandle-ecs-ci', 'release': tag, 'commit': 'a' * 40,
                'sourceSha256': 'c' * 64, 'identity': identity, 'scope': 'mysql', 'status': 'PASS',
                'verificationExitCode': 0, 'fixtureReadinessValidated': True,
@@ -78,7 +124,36 @@ def test_omitted_whole_migration_cases_cannot_enable_first_cutover(tmp_path, cou
         if item['path'] == 'reports/receipt.json':
             item.update(bytes=fixture.result_file.stat().st_size, sha256=cutover.sha_file(fixture.result_file))
     write(fixture.file, fixture.receipt)
-    with pytest.raises(ValueError, match='whole-source migration'):
+    with pytest.raises(ValueError, match='copy and source/target recovery'):
+        admit(tmp_path, fixture)
+
+
+def update_result(fixture):
+    write(fixture.result_file, fixture.result)
+    for item in fixture.receipt['reportFiles']:
+        if item['path'] == 'reports/receipt.json':
+            item.update(bytes=fixture.result_file.stat().st_size, sha256=cutover.sha_file(fixture.result_file))
+    write(fixture.file, fixture.receipt)
+
+
+def test_one_passing_mysql_class_cannot_replace_the_required_suite_matrix(tmp_path):
+    fixture = verification(tmp_path); fixture.result['javaSuites'] = fixture.result['javaSuites'][:1]
+    update_result(fixture)
+    with pytest.raises(ValueError, match='complete required MySQL suite matrix'):
+        admit(tmp_path, fixture)
+
+
+def test_passing_mysql_matrix_cannot_replace_an_ordinary_source_regression(tmp_path):
+    fixture = verification(tmp_path); fixture.result.pop('sourceRegression')
+    update_result(fixture)
+    with pytest.raises(ValueError, match='ordinary source regression'):
+        admit(tmp_path, fixture)
+
+
+def test_self_reported_successful_frontend_build_cannot_replace_missing_tests(tmp_path):
+    fixture = verification(tmp_path); fixture.result['frontendResults']['frontend']['selectedTestFiles'] = []
+    update_result(fixture)
+    with pytest.raises(ValueError, match='fixed test files and build'):
         admit(tmp_path, fixture)
 
 

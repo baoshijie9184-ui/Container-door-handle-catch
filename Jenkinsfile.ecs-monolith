@@ -12,7 +12,7 @@ pipeline {
         disableConcurrentBuilds()
         disableRestartFromStage()
         timestamps()
-        timeout(time: 90, unit: 'MINUTES')
+        timeout(time: 240, unit: 'MINUTES')
         buildDiscarder(logRotator(numToKeepStr: '15', artifactNumToKeepStr: '5'))
     }
     triggers { pollSCM('H/5 * * * *') }
@@ -21,6 +21,8 @@ pipeline {
         string(name: 'TRUSTED_COMMIT', defaultValue: '', trim: true, description: '可选 java-cloud 完整提交；留空时固定本次 SCM 检出的提交')
         choice(name: 'DOORHANDLE_CI_SCOPE', choices: ['source', 'mysql'], description: 'source 记录可选套件跳过；mysql 要求显式隔离夹具及所有选择用例实际执行')
         string(name: 'DOORHANDLE_CI_FIXTURE_MANIFEST', defaultValue: '', trim: true, description: '仅 mysql：本次远端 checkout/work 内预先准备的绝对私有清单路径；source 必须留空')
+        booleanParam(name: 'DOORHANDLE_CI_AUTO_COMPACT_FIXTURES', defaultValue: false, description: 'mysql：用本次固定提交制品，在 ECS 自动准备独立数据库和完整验收清单')
+        string(name: 'DOORHANDLE_CI_FIXTURE_SETTINGS', defaultValue: '', trim: true, description: '自动夹具：ECS 现有私有 JSON 路径，仅指定原库身份、已核对时区和既有 Java')
         booleanParam(name: 'PRODUCTION_RELEASE_ENABLED', defaultValue: false, description: '发布/回滚开关；机器环境 DOORHANDLE_COMPACT_RELEASE_READY 仍须为 true')
         string(name: 'COMPACT_CUTOVER_SETTINGS', defaultValue: '', trim: true, description: '仅首次切库：ECS已有0600私有JSON，包含version=1/sourceOffsets/现有Java绝对路径，不填账号密码')
         string(name: 'DEPLOY_HOST', defaultValue: "${params.DEPLOY_HOST ?: ''}", trim: true, description: '流水线外启动 ECS 后核对的当前地址；首次为空，不自动开机')
@@ -43,6 +45,8 @@ pipeline {
                 script {
                     env.CI_ECS_VERIFIED = 'false'
                     env.CI_ARTIFACTS_READY = 'false'
+                    env.CI_FIXTURES_PREPARED = 'false'
+                    env.CI_FIXTURE_PREPARATION_ATTEMPTED = 'false'
                     if (isUnix()) error('Control steps require the dedicated local Windows agent')
                     def expectedWorkspace = 'D:/AI/lunwen1/DoorHandleCatch/work/jenkins/ci-workspaces/monolith'
                     if (pwd().replace('\\', '/') != expectedWorkspace) error('Unexpected CI workspace')
@@ -78,8 +82,12 @@ pipeline {
                     if (!(params.DOORHANDLE_CI_SCOPE in ['source', 'mysql'])) error('Unsupported verification scope')
                     env.DOORHANDLE_CI_SCOPE = params.DOORHANDLE_CI_SCOPE
                     env.DOORHANDLE_CI_FIXTURE_MANIFEST = params.DOORHANDLE_CI_FIXTURE_MANIFEST?.trim() ?: ''
+                    env.DOORHANDLE_CI_AUTO_COMPACT_FIXTURES = params.DOORHANDLE_CI_AUTO_COMPACT_FIXTURES ? 'true' : 'false'
+                    env.DOORHANDLE_CI_FIXTURE_SETTINGS = params.DOORHANDLE_CI_FIXTURE_SETTINGS?.trim() ?: ''
                     if (params.DOORHANDLE_CI_SCOPE == 'source' && env.DOORHANDLE_CI_FIXTURE_MANIFEST) error('Source verification cannot accept a MySQL fixture manifest')
-                    if (params.DOORHANDLE_CI_SCOPE == 'mysql' && !env.DOORHANDLE_CI_FIXTURE_MANIFEST) error('MySQL verification requires a pre-provisioned private ECS fixture manifest')
+                    if (params.DOORHANDLE_CI_AUTO_COMPACT_FIXTURES) {
+                        if (params.DOORHANDLE_CI_SCOPE != 'mysql' || env.DOORHANDLE_CI_FIXTURE_MANIFEST || !env.DOORHANDLE_CI_FIXTURE_SETTINGS) error('Automatic compact fixtures require mysql scope, private ECS settings and no conflicting manual manifest')
+                    } else if (params.DOORHANDLE_CI_SCOPE == 'mysql' && !env.DOORHANDLE_CI_FIXTURE_MANIFEST) error('MySQL verification requires a pre-provisioned private ECS fixture manifest')
                     if (params.ACTION in ['verify-deploy', 'rollback', 'compact-cutover']) {
                         if (!params.PRODUCTION_RELEASE_ENABLED || env.DOORHANDLE_COMPACT_RELEASE_READY != 'true') error('Production publish/rollback remains disabled until compact database acceptance is complete')
                     }
@@ -98,6 +106,22 @@ pipeline {
         stage('Package pinned source') {
             when { expression { params.ACTION != 'rollback' } }
             steps { pwsh '& ./script/jenkins/pipeline.ps1 -Action Package' }
+        }
+        stage('Prepare isolated ECS fixtures') {
+            when { expression { params.ACTION != 'rollback' && params.DOORHANDLE_CI_AUTO_COMPACT_FIXTURES } }
+            steps {
+                script { env.CI_FIXTURE_PREPARATION_ATTEMPTED = 'true' }
+                withCredentials([
+                    sshUserPrivateKey(credentialsId: 'doorhandle-ecs-ssh', keyFileVariable: 'DEPLOY_KEY', usernameVariable: 'DEPLOY_USER'),
+                    file(credentialsId: 'doorhandle-ecs-known-hosts', variable: 'DEPLOY_KNOWN_HOSTS')
+                ]) {
+                    pwsh '& ./script/jenkins/pipeline.ps1 -Action PrepareFixtures'
+                }
+                script {
+                    env.CI_FIXTURES_PREPARED = 'true'
+                    env.DOORHANDLE_CI_FIXTURE_MANIFEST = "${params.REMOTE_ROOT}/verification/${env.RELEASE_TAG}/checkout/work/compact-fixtures/manifest.json"
+                }
+            }
         }
         stage('Verify on ECS over SSH') {
             when { expression { params.ACTION != 'rollback' } }
@@ -153,11 +177,21 @@ pipeline {
     post {
         always {
             script {
+                if (env.CI_FIXTURE_PREPARATION_ATTEMPTED == 'true') {
+                    catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
+                        withCredentials([
+                            sshUserPrivateKey(credentialsId: 'doorhandle-ecs-ssh', keyFileVariable: 'DEPLOY_KEY', usernameVariable: 'DEPLOY_USER'),
+                            file(credentialsId: 'doorhandle-ecs-known-hosts', variable: 'DEPLOY_KNOWN_HOSTS')
+                        ]) {
+                            pwsh '& ./script/jenkins/pipeline.ps1 -Action CleanupFixtures'
+                        }
+                    }
+                }
                 if (env.CI_ARTIFACTS_READY == 'true') {
                     try {
                         junit testResults: 'artifacts/ecs/**/TEST-*.xml,artifacts/ecs/**/python.xml', allowEmptyResults: env.CI_ECS_VERIFIED != 'true'
                     } finally {
-                        archiveArtifacts artifacts: 'artifacts/**/*.json,artifacts/**/*.xml,artifacts/**/*.log', allowEmptyArchive: currentBuild.currentResult != 'SUCCESS', fingerprint: true
+                        archiveArtifacts artifacts: 'artifacts/**/*.json,artifacts/**/*.xml,artifacts/**/*.log,artifacts/application.jar,artifacts/source.tar.gz', allowEmptyArchive: currentBuild.currentResult != 'SUCCESS', fingerprint: true
                     }
                 }
             }

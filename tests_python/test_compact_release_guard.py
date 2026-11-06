@@ -82,6 +82,26 @@ def test_restored_target_metadata_must_equal_the_current_admitted_schema(tmp_pat
         validate(file)
 
 
+def test_disposable_admission_requires_the_exact_ecs_disposable_migration_scope(tmp_path):
+    file, receipt = migration_fixture(tmp_path)
+    receipt['scope'] = 'ecs-disposable-migration'
+    evidence = json.loads((tmp_path / 'migration-evidence.json').read_text()); evidence['scope'] = receipt['scope']
+    receipt['evidence'] = private_json(tmp_path / 'migration-evidence.json', evidence)
+    for purpose in ('source', 'target'):
+        path = tmp_path / (purpose + '-proof.json'); proof = json.loads(path.read_text())
+        proof['migrationEvidenceSha256'] = receipt['evidence']['sha256']
+        receipt['recovery'][purpose] = private_json(path, proof)
+    private_json(file, receipt)
+    accepted = guard.validate_migration_receipts(file, contract_sha='1'*64, sql_sha='2'*64,
+        server_uuid='server-fixture', target_schema='compact_target', live_metadata_sha='3'*64,
+        scope='ecs-disposable-migration')
+    assert accepted['targetSchema'] == 'compact_target'
+    with pytest.raises(ValueError, match='complete source and target scope'):
+        guard.validate_migration_receipts(file, contract_sha='1'*64, sql_sha='2'*64,
+            server_uuid='server-fixture', target_schema='compact_target', live_metadata_sha='3'*64,
+            scope='disposable-migration')
+
+
 def test_schema_reference_normalization_preserves_literal_and_comment_facts():
     sql="UPDATE `old_source`.records SET note='old_source.records', other=old_source.records /* old_source.records */"
     normalized=guard.normalize_self_references(sql,'old_source')

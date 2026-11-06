@@ -112,6 +112,13 @@ def test_actual_whole_copy_both_restores_readback_and_unknown_result_stop():
 
     evidence_dir = Path(os.environ['DOORHANDLE_CI_EVIDENCE_DIR'])
     assert evidence_dir.is_absolute() and evidence_dir.resolve(strict=True) == evidence_dir
+    # The separately scheduled ECS runtime stage receives one exact private
+    # input, never a directory scan or a caller-supplied readiness boolean.
+    common.write_json(config_file.parent / 'runtime-migration.json', {
+        'version': 1, 'kind': 'doorhandle-runtime-migration-input', 'ecs': identity,
+        'serverUuid': admitted['serverUuid'], 'targetSchema': admitted['targetSchema'],
+        'migrationReceiptFile': str(receipt_file), 'migrationReceiptSha256': common.sha_file(receipt_file),
+        'reviewedConfigFile': str(reviewed_config), 'reviewedConfigSha256': common.sha_file(reviewed_config)})
     common.write_json(evidence_dir / 'migration.json', {
         'schemaVersion': 1, 'kind': 'doorhandle-compact-migration-acceptance', 'status': 'VERIFIED',
         'sourceTableCount': 131, 'targetTableCount': 29,

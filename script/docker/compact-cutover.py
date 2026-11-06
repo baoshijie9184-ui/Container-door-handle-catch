@@ -98,7 +98,7 @@ def admitted_verification(root, tag, commit, source_sha, identity, guard):
         'The complete fixed-source MySQL ECS verification did not pass')
     files = receipt.get('reportFiles')
     require(isinstance(files, list) and 0 < len(files) < 10000, 'Verification evidence catalog is missing')
-    seen = set()
+    seen, catalog = set(), {}
     for item in files:
         require(isinstance(item, dict) and set(item) == {'path', 'bytes', 'sha256'}
                 and isinstance(item['path'], str) and item['path'] not in seen
@@ -118,20 +118,19 @@ def admitted_verification(root, tag, commit, source_sha, identity, guard):
                 and file.stat().st_size == item['bytes'] and sha_file(file) == item['sha256'],
                 'An executed verification artifact is missing or changed')
         seen.add(item['path'])
+        if item['path'].startswith('reports/'):
+            catalog[item['path']] = {**item, 'path': item['path'][len('reports/'): ]}
     result_file = directory / 'checkout/work/ci-evidence/receipt.json'
     # The verifier writes public test counts inside its 0700 evidence directory;
     # their bytes have just been checked against the private envelope catalog.
     require(result_file.stat().st_size <= 16 * 1024 * 1024, 'Verification result exceeds its bound')
     result = json.loads(result_file.read_text(encoding='utf8'))
-    counts, migration = result.get('javaTests', {}), result.get('wholeMigrationTests', {})
-    require(result.get('status') == 'PASS' and result.get('identity') == identity and result.get('fixtureProperties')
-            and result.get('javaSelection') and type(counts.get('passed')) is int and counts['passed'] > 0
-            and counts.get('failed') == 0 and counts.get('skipped') == 0,
-            'The MySQL acceptance suite did not actually execute without skipped cases')
-    require(result.get('wholeMigrationRequested') is True and type(migration.get('passed')) is int
-            and migration['passed'] > 0 and migration.get('failed') == 0 and migration.get('skipped') == 0
-            and sha_file(result_file.with_name('migration.json')) == result.get('wholeMigrationSummarySha256'),
-            'The whole-source migration and restoration acceptance suite did not actually pass')
+    require(result.get('identity') == identity, 'Test results belong to a different ECS')
+    coverage = module('compact_cutover_coverage', Path(__file__).resolve().parents[1] / 'jenkins/compact-acceptance.py')
+    profile, profile_sha = coverage.profile(Path(__file__).resolve().parents[2])
+    coverage.validate_run(result, profile, profile_sha, result_file.parent, catalog)
+    require(sha_file(result_file.with_name('migration.json')) == result.get('wholeMigrationSummarySha256'),
+            'The whole-source migration and restoration summary changed')
     require({'reports/receipt.json', 'reports/migration.json'} <= seen,
             'Verification catalog does not bind its complete migration acceptance results')
     return digest
