@@ -1,4 +1,4 @@
-param([Parameter(Mandatory = $true)][ValidateSet('Preflight', 'Package', 'Publish', 'Rehearse')][string]$Action)
+param([Parameter(Mandatory = $true)][ValidateSet('Preflight', 'Package', 'VerifyEcs', 'Publish', 'Rehearse')][string]$Action)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 Set-Location -LiteralPath (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
@@ -20,12 +20,26 @@ function Get-BuildRegistryAssignment {
 }
 
 $tag = Require-Value 'RELEASE_TAG' '^ci-[0-9]+-[a-f0-9]{12}$'
+if ($Action -eq 'Publish') {
+    if ($env:PRODUCTION_RELEASE_ENABLED -ne 'true' -or $env:DOORHANDLE_COMPACT_RELEASE_READY -ne 'true') {
+        throw 'Production publish/rollback is disabled until compact schema acceptance and release configuration are complete.'
+    }
+    if ($env:ACTION -notin @('verify-deploy', 'rollback')) { throw 'Publish requires verify-deploy or rollback.' }
+}
+if ($Action -eq 'Rehearse' -and $env:DOORHANDLE_COMPACT_REHEARSAL_READY -ne 'true') {
+    throw 'The legacy rehearsal is disabled until its compact schema adapter is accepted.'
+}
 New-Item -ItemType Directory -Force -Path artifacts | Out-Null
 if ($Action -eq 'Package') {
-    Invoke-Checked 'git.exe' @('diff', '--exit-code', 'HEAD', '--')
+    $commit = Require-Value 'GIT_COMMIT' '^[a-f0-9]{40}$'
+    $actualCommit = ((Invoke-Checked 'git.exe' @('rev-parse', 'HEAD')) | Select-Object -Last 1).Trim()
+    if ($actualCommit -ne $commit -or -not $tag.EndsWith('-' + $commit.Substring(0, 12))) {
+        throw 'Package metadata must match the exact checked out commit and release tag.'
+    }
+    Invoke-Checked 'git.exe' @('diff', '--quiet', 'HEAD', '--')
     Invoke-Checked 'git.exe' @('archive', '--format=tar.gz', '--output=artifacts/source.tar.gz', 'HEAD')
     $sha = (Get-FileHash -LiteralPath artifacts/source.tar.gz -Algorithm SHA256).Hash.ToLowerInvariant()
-    @{ release = $tag; commit = $env:GIT_COMMIT; sourceSha256 = $sha } | ConvertTo-Json | Set-Content -LiteralPath artifacts/release.json -Encoding UTF8
+    @{ release = $tag; commit = $commit; sourceSha256 = $sha } | ConvertTo-Json | Set-Content -LiteralPath artifacts/release.json -Encoding UTF8
     return
 }
 
@@ -69,6 +83,62 @@ if ($Action -eq 'Preflight') {
 
 $remoteInbox = "$remoteRoot/inbox/$tag"
 Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "umask 077; mkdir -p '$remoteInbox'"))
+if ($Action -eq 'VerifyEcs') {
+    $commit = Require-Value 'GIT_COMMIT' '^[a-f0-9]{40}$'
+    $instance = Require-Value 'DOORHANDLE_ECS_INSTANCE_ID' '^i-[a-z0-9]+$'
+    $machine = Require-Value 'DOORHANDLE_ECS_MACHINE_ID' '^[a-f0-9]{32}$'
+    $scope = $env:DOORHANDLE_CI_SCOPE
+    if ([string]::IsNullOrWhiteSpace($scope)) { $scope = 'source' }
+    if ($scope -notin @('source', 'mysql')) { throw 'DOORHANDLE_CI_SCOPE must be source or mysql.' }
+    $fixture = $env:DOORHANDLE_CI_FIXTURE_MANIFEST
+    if ($scope -eq 'mysql') {
+        if ([string]::IsNullOrWhiteSpace($fixture) -or $fixture -notmatch '^/(home|srv|opt)/[A-Za-z0-9_./-]+\.json$' -or $fixture -match '(^|/)\.\.(/|$)') {
+            throw 'MySQL verification requires an explicit private ECS fixture manifest path.'
+        }
+    } elseif (-not [string]::IsNullOrWhiteSpace($fixture)) { throw 'A fixture manifest requires the mysql verification scope.' }
+    $python = $env:LOCAL_PYTHON_EXE
+    if ([string]::IsNullOrWhiteSpace($python)) { $python = $env:PYTHON_EXE }
+    if (-not $python -or -not (Test-Path -LiteralPath $python -PathType Leaf)) { throw 'Configure the existing LOCAL_PYTHON_EXE (or PYTHON_EXE) for evidence validation.' }
+    $package = Get-Content -LiteralPath artifacts/release.json -Raw | ConvertFrom-Json
+    $sha = (Get-FileHash -LiteralPath artifacts/source.tar.gz -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($package.release -ne $tag -or $package.commit -ne $commit -or $package.sourceSha256 -ne $sha) { throw 'The immutable source package metadata differs.' }
+    if (Test-Path -LiteralPath artifacts/ecs) { throw 'Use a fresh build artifacts directory; existing ECS evidence is retained.' }
+    New-Item -ItemType Directory -Path artifacts/ecs | Out-Null
+    $attempt = [guid]::NewGuid().ToString('N')
+    # Claim the upload once before SCP; a retry with an unknown result must use a new build.
+    Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "test ! -e '$remoteInbox/source.tar.gz' && mkdir '$remoteInbox/.verification-upload'"))
+    Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, 'artifacts/source.tar.gz', "${destination}:$remoteInbox/source.tar.gz"))
+    Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, 'script/jenkins/verify-remote.py', "${destination}:$remoteInbox/verify-remote.py"))
+    $manifestFlag = if ($scope -eq 'mysql') { " --fixture-manifest '$fixture'" } else { '' }
+    $remoteCommand = "python3 -B '$remoteInbox/verify-remote.py' --root '$remoteRoot' --tag '$tag' --source-sha256 '$sha' --commit '$commit' --instance-id '$instance' --machine-id '$machine' --scope '$scope' --attempt '$attempt'$manifestFlag"
+    $verifyExit = 1
+    try {
+        $verifyArguments = $sshOptions + @('-p', $portText, $destination, $remoteCommand)
+        & 'ssh.exe' @verifyArguments
+        $verifyExit = $LASTEXITCODE
+    } catch {
+        if ($LASTEXITCODE) { $verifyExit = $LASTEXITCODE }
+    }
+    $collected = $false
+    try {
+        Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, "${destination}:$remoteInbox/verification-evidence.tar.gz", 'artifacts/ecs/verification-evidence.tar.gz'))
+        Invoke-Checked $python @('-B', 'script/jenkins/verify-remote.py', 'collect',
+            '--archive', 'artifacts/ecs/verification-evidence.tar.gz', '--output', 'artifacts/ecs/evidence',
+            '--tag', $tag, '--source-sha256', $sha, '--commit', $commit, '--instance-id', $instance,
+            '--machine-id', $machine, '--scope', $scope, '--attempt', $attempt)
+        $collected = $true
+    } catch {
+        Write-Host 'ECS evidence is unavailable, incomplete or failed validation; retained remote evidence is not removed.'
+    }
+    if ($verifyExit -ne 0) { throw "ECS verification failed (exit $verifyExit); any collected evidence is retained." }
+    if (-not $collected) { throw 'ECS verification cannot pass without this exact attempt evidence.' }
+    $verified = Get-Content -LiteralPath artifacts/ecs/evidence/verification-receipt.json -Raw | ConvertFrom-Json
+    if ($verified.status -ne 'PASS' -or $verified.verificationExitCode -ne 0 -or $verified.attempt -ne $attempt -or $verified.commit -ne $commit -or $verified.sourceSha256 -ne $sha -or $verified.identity.instanceId -ne $instance -or $verified.identity.machineId -ne $machine) {
+        throw 'Collected ECS verification receipt is not a passing result for this source and admitted host.'
+    }
+    Write-Host 'ECS verification passed; source, execution identity and bounded evidence were validated. ECS lifecycle remains external.'
+    return
+}
 if ($Action -eq 'Rehearse') {
     if ($env:ACTION -ne 'rehearse') { throw 'Rehearse requires the explicit rehearsal action' }
     foreach ($file in @('application-rehearsal.py', 'monolith-ops.py', 'memory-compat.py', 'model-secrets.py', 'assignment-compat.py', 'mcp-compat.py', 'mcp-runtime.py')) {

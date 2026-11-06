@@ -2,7 +2,7 @@ param(
     [Parameter(Mandatory = $true)][string]$WarPath,
     [Parameter(Mandatory = $true)][string]$JavaExe,
     [Parameter(Mandatory = $true)][string]$JenkinsDataDir,
-    [ValidateRange(1024, 65535)][int]$Port = 18080
+    [ValidateRange(1024, 65535)][int]$Port = 8080
 )
 $ErrorActionPreference = 'Stop'
 foreach ($file in @($WarPath, $JavaExe)) {

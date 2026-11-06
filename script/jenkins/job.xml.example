@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <flow-definition plugin="workflow-job">
-  <description>Java 单体测试、应用镜像发布与健康失败回滚；首次配置后先执行 ACTION=verify。</description>
+  <description>本地专用节点构建，通过 SSH 在已启动的 ECS 验证与部署；ECS 启停在流水线外操作。首次配置后先执行 ACTION=verify，生产发布须通过数据库验收门禁。本模板默认禁用，不覆盖已有任务。</description>
   <keepDependencies>false</keepDependencies><properties/>
   <definition class="org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition" plugin="workflow-cps">
     <scm class="hudson.plugins.git.GitSCM" plugin="git">
@@ -17,7 +17,7 @@
         </hudson.plugins.git.extensions.impl.MessageExclusion>
       </extensions>
     </scm>
-    <scriptPath>Jenkinsfile</scriptPath><lightweight>true</lightweight>
+    <scriptPath>Jenkinsfile.ecs-monolith</scriptPath><lightweight>true</lightweight>
   </definition>
   <triggers/><disabled>true</disabled>
 </flow-definition>

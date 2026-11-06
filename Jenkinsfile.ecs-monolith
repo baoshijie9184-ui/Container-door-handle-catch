@@ -1,41 +1,151 @@
-// Source verification only; lifecycle controller arms a deadline before starting the ECS agent.
+// Local Windows control node; all tests and runtime stay on ECS over SSH.
+// ECS start/stop is managed outside CI/CD, with no cloud lifecycle calls here.
 pipeline {
-    agent { label 'doorhandle-monolith && doorhandle-ecs' }
-    options { skipDefaultCheckout(true); disableConcurrentBuilds(); timestamps(); timeout(time: 90, unit: 'MINUTES') }
+    agent {
+        node {
+            label 'doorhandle-local-ci'
+            customWorkspace 'D:/AI/lunwen1/DoorHandleCatch/work/jenkins/ci-workspaces/monolith'
+        }
+    }
+    options {
+        skipDefaultCheckout(true)
+        disableConcurrentBuilds()
+        disableRestartFromStage()
+        timestamps()
+        timeout(time: 90, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '15', artifactNumToKeepStr: '5'))
+    }
+    triggers { pollSCM('H/5 * * * *') }
     parameters {
-        string(name: 'TRUSTED_COMMIT', defaultValue: '', description: 'Exact reviewed java-cloud commit')
+        choice(name: 'ACTION', choices: ['verify', 'verify-deploy', 'rehearse', 'rollback'], description: '默认验证；发布、回滚和演练还须满足机器环境中的数据库验收门禁')
+        string(name: 'TRUSTED_COMMIT', defaultValue: '', trim: true, description: '可选 java-cloud 完整提交；留空时固定本次 SCM 检出的提交')
+        choice(name: 'DOORHANDLE_CI_SCOPE', choices: ['source', 'mysql'], description: 'source 记录可选套件跳过；mysql 要求显式隔离夹具及所有选择用例实际执行')
+        string(name: 'DOORHANDLE_CI_FIXTURE_MANIFEST', defaultValue: '', trim: true, description: '仅 mysql：本次远端 checkout/work 内预先准备的绝对私有清单路径；source 必须留空')
+        booleanParam(name: 'PRODUCTION_RELEASE_ENABLED', defaultValue: false, description: '发布/回滚开关；机器环境 DOORHANDLE_COMPACT_RELEASE_READY 仍须为 true')
+        string(name: 'DEPLOY_HOST', defaultValue: "${params.DEPLOY_HOST ?: ''}", trim: true, description: '流水线外启动 ECS 后核对的当前地址；首次为空，不自动开机')
+        string(name: 'DEPLOY_PORT', defaultValue: "${params.DEPLOY_PORT ?: '22'}", trim: true, description: '已核验的 SSH 端口；TLS 通道可显式使用 443')
+        choice(name: 'SSH_TRANSPORT', choices: params.SSH_TRANSPORT == 'tls' ? ['tls', 'direct'] : ['direct', 'tls'], description: 'direct 校验 SSH 主机公钥；tls 额外校验证书')
+        string(name: 'SSH_TLS_CA_FILE', defaultValue: 'D:/AI/lunwen1/DoorHandleCatch/work/cloud/ssh-tls/server.crt', description: '已有且经可信渠道核对的服务器公有证书')
+        string(name: 'OPENSSL_EXE', defaultValue: 'D:/ruanjian/Git/usr/bin/openssl.exe', description: '已有 Git OpenSSL 客户端')
+        string(name: 'REMOTE_ROOT', defaultValue: '/home/ecs-user/doorhandle-ci', description: '独立验证目录、制品及发布状态根目录')
+        string(name: 'REMOTE_RUNTIME', defaultValue: '/home/ecs-user/doorhandle-release-20261014', description: '现有部署目录；不作为测试 checkout 使用')
+        string(name: 'PYTHON_EXE', defaultValue: 'D:/ruanjian/anaconda3/envs/leetcode/python.exe', description: '本地控制脚本使用的已有 Python，不在本地运行 pytest')
+        choice(name: 'BUILD_NPM_REGISTRY', choices: ['https://registry.npmjs.org', 'https://registry.npmmirror.com'], description: '仅本次远端构建使用，不修改生产环境或锁文件')
+        booleanParam(name: 'REHEARSAL_KEEP', defaultValue: false, description: '仅已验收的隔离演练可保留候选环境供查看')
+        string(name: 'COMPATIBLE_BACKEND_IMAGE', defaultValue: '', trim: true, description: '可选已独立验收的兼容旧版后端 sha256 镜像')
+        string(name: 'COMPATIBLE_RUNNER_IMAGE', defaultValue: '', trim: true, description: '可选已独立验收的兼容旧版 MCP runner sha256 镜像')
+        string(name: 'REHEARSAL_MEMORY_EXTRACTION_MODEL', defaultValue: '', trim: true, description: '可选明确指定的隔离演练提炼模型，不更改生产配置')
     }
     stages {
-        stage('Trusted checkout and ECS identity') {
+        stage('Trusted checkout') {
             steps {
                 script {
-                    env.CI_EVIDENCE_RELATIVE = ''
-                    env.CI_EVIDENCE = ''
-                    if (!isUnix()) error('Monolith verification must run on the admitted Linux ECS')
-                    if (!(params.TRUSTED_COMMIT ==~ /[a-f0-9]{40}/)) error('An exact reviewed commit is required')
+                    env.CI_ECS_VERIFIED = 'false'
+                    env.CI_ARTIFACTS_READY = 'false'
+                    if (isUnix()) error('Control steps require the dedicated local Windows agent')
+                    def expectedWorkspace = 'D:/AI/lunwen1/DoorHandleCatch/work/jenkins/ci-workspaces/monolith'
+                    if (pwd().replace('\\', '/') != expectedWorkspace) error('Unexpected CI workspace')
+                    dir('artifacts') {
+                        if (pwd().replace('\\', '/') != "${expectedWorkspace}/artifacts") error('Artifact cleanup escaped the CI workspace')
+                        deleteDir()
+                    }
+                    env.CI_ARTIFACTS_READY = 'true'
                     def revision = checkout scm
                     def branch = (env.BRANCH_NAME ?: revision.GIT_BRANCH ?: '').replaceFirst(/^origin\//, '')
-                    if (branch != 'java-cloud' || revision.GIT_COMMIT != params.TRUSTED_COMMIT) error('SCM branch or commit differs')
-                    if (env.DOORHANDLE_ECS_INSTANCE_ID != 'i-2zeieuov2aum486jm1ek') error('Wrong monolith ECS instance')
-                    if (!env.PYTHON_EXE) error('Set the ECS Python executable')
-                    sh '"$PYTHON_EXE" -B scripts/ecs_execution.py'
-                    env.CI_EVIDENCE_RELATIVE = "work/ecs-ci-${env.BUILD_NUMBER}-${java.util.UUID.randomUUID().toString()}"
-                    env.CI_EVIDENCE = "${env.WORKSPACE}/${env.CI_EVIDENCE_RELATIVE}"
+                    def commit = revision.GIT_COMMIT ?: ''
+                    if (branch != 'java-cloud' || !(commit ==~ /[a-f0-9]{40}/)) error('SCM must supply an exact java-cloud commit')
+                    def requestedCommit = params.TRUSTED_COMMIT?.trim() ?: ''
+                    if (requestedCommit && (!(requestedCommit ==~ /[a-f0-9]{40}/) || requestedCommit != commit)) error('SCM commit differs from TRUSTED_COMMIT')
+                    env.GIT_BRANCH = branch
+                    env.GIT_COMMIT = commit
+                    env.RELEASE_TAG = "ci-${env.BUILD_NUMBER}-${commit.take(12)}"
+                    currentBuild.displayName = "#${env.BUILD_NUMBER} ${commit.take(12)} ${params.ACTION}"
                 }
             }
         }
-        stage('Verify on ECS') {
-            steps { sh '"$PYTHON_EXE" -B script/jenkins/verify-ecs.py --output "$CI_EVIDENCE"' }
+        stage('Configuration gate') {
+            steps {
+                script {
+                    if (!(params.ACTION in ['verify', 'verify-deploy', 'rehearse', 'rollback'])) error('Unsupported pipeline action')
+                    if (env.DOORHANDLE_ECS_INSTANCE_ID != 'i-2zeieuov2aum486jm1ek' || !(env.DOORHANDLE_ECS_MACHINE_ID ==~ /[a-f0-9]{32}/)) error('Configure the admitted ECS instance and machine identity on the control node')
+                    env.DEPLOY_HOST = params.DEPLOY_HOST?.trim() ?: ''
+                    if (!env.DEPLOY_HOST) {
+                        currentBuild.result = 'NOT_BUILT'
+                        currentBuild.description = 'Waiting for externally started ECS and verified connection settings; no tests executed.'
+                        error('Start ECS outside Jenkins and configure its verified current address first')
+                    }
+                    if (!(params.DOORHANDLE_CI_SCOPE in ['source', 'mysql'])) error('Unsupported verification scope')
+                    env.DOORHANDLE_CI_SCOPE = params.DOORHANDLE_CI_SCOPE
+                    env.DOORHANDLE_CI_FIXTURE_MANIFEST = params.DOORHANDLE_CI_FIXTURE_MANIFEST?.trim() ?: ''
+                    if (params.DOORHANDLE_CI_SCOPE == 'source' && env.DOORHANDLE_CI_FIXTURE_MANIFEST) error('Source verification cannot accept a MySQL fixture manifest')
+                    if (params.DOORHANDLE_CI_SCOPE == 'mysql' && !env.DOORHANDLE_CI_FIXTURE_MANIFEST) error('MySQL verification requires a pre-provisioned private ECS fixture manifest')
+                    if (params.ACTION in ['verify-deploy', 'rollback']) {
+                        if (!params.PRODUCTION_RELEASE_ENABLED || env.DOORHANDLE_COMPACT_RELEASE_READY != 'true') error('Production publish/rollback remains disabled until compact database acceptance is complete')
+                    }
+                    if (params.ACTION == 'rehearse' && env.DOORHANDLE_COMPACT_REHEARSAL_READY != 'true') error('Legacy rehearsal remains disabled until its compact database adapter is accepted')
+                }
+            }
+        }
+        stage('Build locally without tests') {
+            when { expression { params.ACTION != 'rollback' } }
+            steps { pwsh '& ./script/jenkins/build-local.ps1' }
+        }
+        stage('Package pinned source') {
+            when { expression { params.ACTION != 'rollback' } }
+            steps { pwsh '& ./script/jenkins/pipeline.ps1 -Action Package' }
+        }
+        stage('Verify on ECS over SSH') {
+            when { expression { params.ACTION != 'rollback' } }
+            steps {
+                withCredentials([
+                    sshUserPrivateKey(credentialsId: 'doorhandle-ecs-ssh', keyFileVariable: 'DEPLOY_KEY', usernameVariable: 'DEPLOY_USER'),
+                    file(credentialsId: 'doorhandle-ecs-known-hosts', variable: 'DEPLOY_KNOWN_HOSTS')
+                ]) {
+                    pwsh '''
+                        $ErrorActionPreference = 'Stop'
+                        & ./script/jenkins/pipeline.ps1 -Action VerifyEcs
+                        $reports = @(Get-ChildItem -LiteralPath artifacts/ecs -Recurse -File -Filter 'TEST-*.xml' -ErrorAction Stop)
+                        if ($reports.Count -eq 0) { throw 'ECS verification returned without Java test reports; publishing is blocked.' }
+                    '''
+                }
+                script { env.CI_ECS_VERIFIED = 'true' }
+            }
+        }
+        stage('Rehearse application') {
+            when { expression { params.ACTION == 'rehearse' } }
+            steps {
+                withCredentials([
+                    sshUserPrivateKey(credentialsId: 'doorhandle-ecs-ssh', keyFileVariable: 'DEPLOY_KEY', usernameVariable: 'DEPLOY_USER'),
+                    file(credentialsId: 'doorhandle-ecs-known-hosts', variable: 'DEPLOY_KNOWN_HOSTS')
+                ]) {
+                    pwsh '& ./script/jenkins/pipeline.ps1 -Action Rehearse'
+                }
+            }
+        }
+        stage('Deploy or rollback') {
+            when { expression { params.ACTION in ['verify-deploy', 'rollback'] } }
+            steps {
+                withCredentials([
+                    sshUserPrivateKey(credentialsId: 'doorhandle-ecs-ssh', keyFileVariable: 'DEPLOY_KEY', usernameVariable: 'DEPLOY_USER'),
+                    file(credentialsId: 'doorhandle-ecs-known-hosts', variable: 'DEPLOY_KNOWN_HOSTS')
+                ]) {
+                    pwsh '& ./script/jenkins/pipeline.ps1 -Action Publish'
+                }
+            }
         }
     }
     post {
         always {
             script {
-                if (env.CI_EVIDENCE_RELATIVE) {
-                    junit testResults: "${env.CI_EVIDENCE_RELATIVE}/java/*/surefire-reports/TEST-*.xml,${env.CI_EVIDENCE_RELATIVE}/python.xml", allowEmptyResults: true
-                    archiveArtifacts artifacts: "${env.CI_EVIDENCE_RELATIVE}/receipt.json,${env.CI_EVIDENCE_RELATIVE}/*.log,${env.CI_EVIDENCE_RELATIVE}/python.xml", allowEmptyArchive: true
+                if (env.CI_ARTIFACTS_READY == 'true') {
+                    try {
+                        junit testResults: 'artifacts/ecs/**/TEST-*.xml,artifacts/ecs/**/python.xml', allowEmptyResults: env.CI_ECS_VERIFIED != 'true'
+                    } finally {
+                        archiveArtifacts artifacts: 'artifacts/**/*.json,artifacts/**/*.xml,artifacts/**/*.log', allowEmptyArchive: currentBuild.currentResult != 'SUCCESS', fingerprint: true
+                    }
                 }
             }
+            echo 'Jenkins remains running. ECS start/stop is managed outside CI/CD.'
         }
     }
 }

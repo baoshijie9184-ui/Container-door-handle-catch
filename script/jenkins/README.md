@@ -1,5 +1,15 @@
 # 本机 Jenkins → 北京 ECS
 
+## 当前约定（2026-11-06）
+
+后续单体与微服务 CI/CD 统一使用现有本地 Jenkins 控制器 <http://127.0.0.1:8080/>，账号 `admin`，密码保存在 Git 忽略的 [项目私有登录文档](../../work/jenkins/local-access.md)。当前入口、启动命令和流程以 [本地 Jenkins CI/CD 约定](../../docs/本地Jenkins-CICD.md) 为准。服务已启动并通过浏览器以 `admin` 登录，本地独立节点和统一任务入口已配置；启用任务前须确认 CI 文件已推送到 SCM 分支，最终启用状态以配置回执为准，不据此宣称已完成项目测试或发布验收。
+
+本地允许运行 Jenkins 控制器并编辑、构建代码；应用、数据、预览及所有测试在 ECS 执行。Jenkins保持运行；ECS在测试前从流水线外启动，测试结束后从流水线外节省停机并回读 `Stopped / StopCharging`，流水线不执行开机、关机或安排限时停止任务。当前统一入口为 `Jenkinsfile.ecs-monolith`，本地专用节点 `doorhandle-local-ci` 沿用 SSH/SCP，在已启动 ECS 的隔离目录执行测试，不新增常驻 ECS Jenkins agent。旧 `Jenkinsfile` 的本地测试流程不可继续使用，生产发布和旧库演练额外受默认未设置的机器环境门禁限制，待数据库重构与迁移验收后再启用。`start-existing.ps1` 的默认端口已统一为 8080。
+
+## 历史实施记录
+
+下方为历史环境、流水线及验收记录，其中 `18080` 构建链接保留原地址。本地运行测试、旧 `Jenkinsfile` 与轮询自动发布等旧指令均已失效，不得用于新构建；历史成功不代表当前源码或流水线已验收。
+
 2026-11-05 运行约定：本地仅编辑和构建，运行与测试全部在 ECS `172.29.146.74` 执行，结束后确认 `Stopped / StopCharging`。旧本机运行命令失效，当前入口见 [ECS 运行约定](../../docs/ECS-only-runtime.md)。
 
 
@@ -11,9 +21,9 @@
 
 复用已有 Windows Jenkins，不重新安装。`jenkins.war` 是启动包，`JENKINS_HOME` 保存任务、插件与凭据，里面的 `war/` 是解压缓存。不要用备份覆盖较新的任务目录。Jenkins JVM 按版本要求使用 JDK 21/25，项目 Maven 构建仍使用 JDK 17。
 
-本机启动包已核对为 `D:/ruanjian/jenkins.war`（2.541.1），现有数据目录为 `C:/Users/19771/.jenkins`；用户提供的 `C:/Users/19771/JenkinsBackups/jenkins-home-20260831-141128/war` 位于备份，备份比现有目录少一个任务，本轮未恢复或覆盖备份。已使用现有 Java 25 启动在 `http://127.0.0.1:18080/`，避开项目后端 8080。需要重启时使用 `start-existing.ps1` 并明确传入原 WAR、Java 和数据目录；脚本不会创建新 Jenkins Home。进程与启动日志保存在项目 `work/jenkins/`。
+本机启动包已核对为 `D:/ruanjian/jenkins.war`（2.541.1），现有数据目录为 `C:/Users/19771/.jenkins`；用户提供的 `C:/Users/19771/JenkinsBackups/jenkins-home-20260831-141128/war` 位于备份，备份比现有目录少一个任务，未恢复或覆盖备份。历史上曾使用 Java 25 在 `http://127.0.0.1:18080/` 启动；该地址已由上述当前约定替代。需要重启时使用 `start-existing.ps1` 并明确传入原 WAR、Java 和数据目录；脚本不会创建新 Jenkins Home。进程与启动日志保存在项目 `work/jenkins/`。
 
-## 流水线
+## 历史流水线（已退役）
 
 2026-10-22 续开发分派兼容保护：发布前核对确认 JSON、稳定身份及 V54 数据格式，快照保留分派写入暂停状态；候选可显式选择已有的兼容旧镜像，不能用候选充当自己的回滚证据。新增代码未执行，首次兼容基线与真实验收仍待完成，见 [分派兼容回滚](../../docs/分派数据格式与兼容回滚.md)。
 
@@ -30,7 +40,7 @@
 
 需要先提交并推送到远程 `java-cloud`，Jenkins 才能获取：首次执行 `git push -u origin java-cloud`，之后通常 `git push` 即可。正常发布无需强推。Jenkins 替代手工测试、构建和发布，不会自动上传未提交的本地修改。
 
-## 配置任务
+## 历史任务配置（已退役）
 
 现有 Pipeline 继续使用 `doorhandle-java` 这个任务名，**Pipeline script from SCM** 的 Git 地址为本项目 origin，Branch 为 `*/java-cloud`，Script Path 为 `Jenkinsfile`。分支校验只允许 `java-cloud` 与 `origin/java-cloud`。切换已有任务时只修改 SCM 分支，保留凭据、参数和构建历史；`job.xml.example` 用于新建任务，默认禁用，不可用整份模板覆盖现有任务。GitHub 私有库需要另加只读仓库凭据。
 

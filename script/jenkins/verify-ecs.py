@@ -2,6 +2,7 @@
 from pathlib import Path
 from datetime import datetime, timezone
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -17,6 +18,254 @@ sys.path.insert(0, str(ROOT / 'scripts'))
 from ecs_execution import require_ecs_execution
 
 
+# These names describe existing ECS-only Java fixtures. Never accept arbitrary -D
+# properties: some unrelated switches enable paid models or production services.
+FIXTURE_SCHEMAS = {
+    'doorhandle.ecs.mysql.config': ('doorhandle_ecsit_', 'ecsit_'),
+    'doorhandle.feature.mysql.config': ('doorhandle_feature_', 'ecsit_'),
+    'workbench.mysql.config': ('doorhandle_wb_verify_', 'wb_verify_'),
+    'workbench.migration.source': ('doorhandle_agent_verify_', 'ecsit_'),
+    'workbench.migration.target': ('doorhandle_wb_verify_', 'wb_verify_'),
+    'agent.model-config.mysql-file': ('doorhandle_model_verify_', 'ecsit_'),
+    'agent.skill.mysql-file': ('doorhandle_skill_verify_', 'ecsit_'),
+    'agent.journal.mysql-file': ('doorhandle_agent_verify_', 'ecsit_'),
+    'detection.command.mysql-file': ('doorhandle_detection_verify_', 'ecsit_'),
+    'detection.outbox.mysql-file': ('doorhandle_detection_verify_', 'ecsit_'),
+    'doorhandle.action.mysql.config': ('doorhandle_agent_verify_', 'ecsit_'),
+    'doorhandle.action.source.config': ('doorhandle_agent_verify_', 'ecsit_'),
+    'doorhandle.context.mysql.config': ('doorhandle_agent_verify_', 'ecsit_'),
+    'doorhandle.context.source.config': ('doorhandle_agent_verify_', 'ecsit_'),
+    'doorhandle.mcp.mysql.config': ('doorhandle_agent_verify_', 'ecsit_'),
+    'doorhandle.mcp.source.config': ('doorhandle_agent_verify_', 'ecsit_'),
+    'doorhandle.model-budget.source.config': ('doorhandle_feature_', 'ecsit_'),
+    'doorhandle.workspace.source.config': ('doorhandle_feature_', 'ecsit_'),
+    'doorhandle.chat-evidence.source.config': ('doorhandle_feature_', 'ecsit_'),
+    'legacy.chat.mysql.config': ('doorhandle_agent_verify_', 'ecsit_'),
+    'doorhandle.core.mysql.config': ('doorhandle_detection_verify_', 'ecsit_'),
+    'doorhandle.fingerprint.mysql.config': ('doorhandle_detection_verify_', 'ecsit_'),
+    'doorhandle.report.mysql.config': ('doorhandle_detection_verify_', 'ecsit_'),
+    'doorhandle.digest.mysql.config': ('doorhandle_detection_verify_', 'ecsit_'),
+    'doorhandle.core.copy.source.config': ('doorhandle_detection_verify_', 'ecsit_'),
+    'doorhandle.core.copy.target.config': ('doorhandle_detection_verify_', 'ecsit_'),
+    'doorhandle.detection.runtime.copy.source.config': ('doorhandle_detection_verify_', 'ecsit_'),
+    'doorhandle.detection.runtime.copy.target.config': ('doorhandle_detection_verify_', 'ecsit_'),
+    'doorhandle.operations.mysql.config': ('doorhandle_detection_verify_', 'ecsit_'),
+    'doorhandle.operations.source.config': ('doorhandle_detection_verify_', 'ecsit_'),
+    'doorhandle.binding.mysql.config': ('doorhandle_detection_verify_', 'ecsit_'),
+    'doorhandle.binding.source.config': ('doorhandle_detection_verify_', 'ecsit_'),
+    'report.copy.source-config': ('doorhandle_detection_verify_', 'ecsit_'),
+    'report.copy.target-config': ('doorhandle_detection_verify_', 'ecsit_'),
+    'agent.research.copy.source-config': ('doorhandle_agent_verify_', 'ecsit_'),
+    'agent.research.copy.target-config': ('doorhandle_agent_verify_', 'ecsit_'),
+    'agent.memory.copy.source-config': ('doorhandle_wb_verify_', 'ecsit_'),
+    'agent.memory.copy.target-config': ('doorhandle_wb_verify_', 'ecsit_'),
+    'model.file.copy.source-config': ('doorhandle_model_verify_', 'ecsit_'),
+    'model.file.copy.target-config': ('doorhandle_model_verify_', 'ecsit_'),
+    'model.log.copy.source-config': ('doorhandle_model_verify_', 'ecsit_'),
+    'model.log.copy.target-config': ('doorhandle_model_verify_', 'ecsit_'),
+    'infra.log.copy.source-config': ('doorhandle_feature_', 'ecsit_'),
+    'infra.log.copy.target-config': ('doorhandle_feature_', 'ecsit_'),
+}
+
+SERVER_SWITCHES = {
+    'EcsMysqlFixtureTest': 'ecs.fixture.mysql', 'AgentCardsLocalMysqlTest': 'agent.cards.local.mysql',
+    'AgentConfirmationLocalMysqlTest': 'agent.actions.local.mysql', 'AgentReportLocalMysqlTest': 'agent.report.local.mysql',
+    'AgentSessionLocalMysqlTest': 'agent.sessions.local.mysql', 'DetectionScopeLocalMysqlTest': 'detection.scope.local.mysql',
+    'LocalMcpMysqlTest': 'agent.local.mcp.mysql', 'MemoryGovernanceLocalMysqlTest': 'agent.memory.local.mysql',
+    'ReportEventLocalMysqlTest': 'report.events.local.mysql', 'SkillCommandLocalMysqlTest': 'agent.skills.commands.mysql',
+    'SkillEvolutionLocalMysqlTest': 'agent.skills.local.mysql', 'ModelFactsMySqlTest': 'model.facts.mysql',
+}
+
+# The third member means the explicitly named target is only valid with a source.
+# Reusable targets such as context.mysql.config remain usable without migrations.
+MIGRATION_PAIRS = (
+    ('doorhandle.action.source.config', 'doorhandle.action.mysql.config', False),
+    ('doorhandle.context.source.config', 'doorhandle.context.mysql.config', False),
+    ('doorhandle.mcp.source.config', 'doorhandle.mcp.mysql.config', False),
+    ('doorhandle.model-budget.source.config', 'doorhandle.feature.mysql.config', False),
+    ('doorhandle.workspace.source.config', 'doorhandle.feature.mysql.config', False),
+    ('doorhandle.chat-evidence.source.config', 'doorhandle.feature.mysql.config', False),
+    ('doorhandle.operations.source.config', 'doorhandle.operations.mysql.config', False),
+    ('doorhandle.binding.source.config', 'doorhandle.binding.mysql.config', False),
+    ('workbench.migration.source', 'workbench.migration.target', True),
+    ('doorhandle.core.copy.source.config', 'doorhandle.core.copy.target.config', True),
+    ('doorhandle.detection.runtime.copy.source.config', 'doorhandle.detection.runtime.copy.target.config', True),
+    ('report.copy.source-config', 'report.copy.target-config', True),
+    ('agent.research.copy.source-config', 'agent.research.copy.target-config', True),
+    ('agent.memory.copy.source-config', 'agent.memory.copy.target-config', True),
+    ('model.file.copy.source-config', 'model.file.copy.target-config', True),
+    ('model.log.copy.source-config', 'model.log.copy.target-config', True),
+    ('infra.log.copy.source-config', 'infra.log.copy.target-config', True),
+)
+
+FIXTURE_CLASSES = {name: ('doorhandle.ecs.mysql.config',) for name in SERVER_SWITCHES}
+for property_name, classes in (
+    ('doorhandle.feature.mysql.config', ('HistoricalDetectionSummaryMySqlTest', 'QualityKnowledgeMySqlTest',
+        'MessageExecutionLinksTest', 'AgentWorkspaceServiceTest', 'ConversationInboxMySqlTest',
+        'ModelBudgetMySqlTest', 'PersonalModelQuotaMySqlTest', 'QuotaAccountStoreMySqlTest')),
+    ('workbench.mysql.config', ('AgentWorkbenchServiceTest',)),
+    ('agent.model-config.mysql-file', ('ModelConfigurationServiceTest', 'ModelConfigurationMigrationMySqlTest')),
+    ('agent.skill.mysql-file', ('SkillDownloadLeasesTest', 'SkillMigrationMySqlTest')),
+    ('agent.journal.mysql-file', ('MysqlAgentJournalTest', 'JdbcOwnerLockMySqlTest')),
+    ('detection.command.mysql-file', ('DetectionExecutionApiImplTest',)),
+    ('detection.outbox.mysql-file', ('DetectionDispatchOutboxTest',)),
+    ('doorhandle.action.mysql.config', ('AgentActionServiceTest', 'AgentContractEvalTest')),
+    ('doorhandle.context.mysql.config', ('ContextStoreMySqlTest',)),
+    ('doorhandle.mcp.mysql.config', ('LocalMcpServiceTest', 'PersistentMcpInstallQueueTest',
+        'CrossInstanceMcpInstallCancellationTest')),
+    ('legacy.chat.mysql.config', ('LegacyChatActionStoreMySqlTest',)),
+    ('doorhandle.core.mysql.config', ('Core12PersistenceMySqlTest',)),
+    ('doorhandle.fingerprint.mysql.config', ('DetectionFingerprintProjectionMySqlTest',)),
+    ('doorhandle.report.mysql.config', ('QualityReportServiceTest', 'ReportEventDeliveryTest',
+        'IdentityPersistenceMySqlTest')),
+    ('doorhandle.digest.mysql.config', ('QualityDigestMySqlTest',)),
+    ('doorhandle.operations.mysql.config', ('AccountIdentityServiceTest', 'FileDeliveryAuditMySqlTest',
+        'BusinessMutationAuditTest', 'OperationsAuditServiceTest')),
+):
+    for class_name in classes:
+        FIXTURE_CLASSES[class_name] = (property_name,)
+for class_name, source, target in (
+    ('ConfirmationMigrationMySqlTest', 'doorhandle.action.source.config', 'doorhandle.action.mysql.config'),
+    ('ContextMigrationMySqlTest', 'doorhandle.context.source.config', 'doorhandle.context.mysql.config'),
+    ('McpMigrationMySqlTest', 'doorhandle.mcp.source.config', 'doorhandle.mcp.mysql.config'),
+    ('ModelBudgetMigrationMySqlTest', 'doorhandle.model-budget.source.config', 'doorhandle.feature.mysql.config'),
+    ('WorkspaceMigrationMySqlTest', 'doorhandle.workspace.source.config', 'doorhandle.feature.mysql.config'),
+    ('CompactChatMigrationMySqlTest', 'doorhandle.chat-evidence.source.config', 'doorhandle.feature.mysql.config'),
+    ('OperationsCopyMySqlTest', 'doorhandle.operations.source.config', 'doorhandle.operations.mysql.config'),
+    ('OrganizationBindingAuditMigrationMySqlTest', 'doorhandle.binding.source.config', 'doorhandle.binding.mysql.config'),
+    ('WorkbenchMigrationMySqlTest', 'workbench.migration.source', 'workbench.migration.target'),
+    ('CoreCopyMigrationMySqlTest', 'doorhandle.core.copy.source.config', 'doorhandle.core.copy.target.config'),
+    ('DetectionRuntimeCopyMySqlTest', 'doorhandle.detection.runtime.copy.source.config', 'doorhandle.detection.runtime.copy.target.config'),
+    ('ReportWorkflowMigrationMySqlTest', 'report.copy.source-config', 'report.copy.target-config'),
+    ('ResearchExportMigrationMySqlTest', 'agent.research.copy.source-config', 'agent.research.copy.target-config'),
+    ('MemoryGovernanceMigrationMySqlTest', 'agent.memory.copy.source-config', 'agent.memory.copy.target-config'),
+    ('ModelFileGovernanceMySqlTest', 'model.file.copy.source-config', 'model.file.copy.target-config'),
+    ('ModelOperationAuditMySqlTest', 'model.log.copy.source-config', 'model.log.copy.target-config'),
+    ('InfraOperationAuditMySqlTest', 'infra.log.copy.source-config', 'infra.log.copy.target-config'),
+):
+    FIXTURE_CLASSES[class_name] = (source, target)
+
+
+def private_json(path):
+    """Read only canonical, bounded private files inside this checkout's work."""
+    path = Path(path)
+    if not path.is_absolute() or path.resolve(strict=True) != path or not path.is_relative_to(ROOT / 'work') \
+            or not path.is_file() or path.stat().st_size > 1024 * 1024:
+        raise ValueError('Private fixture files must be existing canonical files under this checkout work')
+    def unique_keys(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError('Duplicate private configuration key')
+            result[key] = value
+        return result
+    content = path.read_bytes()
+    try:
+        value = json.loads(content, object_pairs_hook=unique_keys)
+    except (UnicodeError, json.JSONDecodeError):
+        raise ValueError('Private fixture JSON is invalid') from None
+    if not isinstance(value, dict):
+        raise ValueError('Private fixture JSON must contain an object')
+    return path, value, hashlib.sha256(content).hexdigest()
+
+
+def java_classes(value):
+    values = value.split(',') if isinstance(value, str) else value
+    if not isinstance(values, list) or not values or len(values) > 100 \
+            or any(not isinstance(name, str) or not re.fullmatch(r'[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*', name)
+                   for name in values) or len(set(values)) != len(values):
+        raise ValueError('Select unique, explicit comma-separated Java class names without patterns')
+    return values
+
+
+def fixture_arguments(args, identity):
+    """Validate the entire fixture plan before a test subprocess is started."""
+    manifest_receipt = None
+    if args.fixture_manifest:
+        if args.java_tests or args.fixture_property or args.java_only:
+            raise ValueError('Fixture manifest cannot be combined with Java scope or fixture CLI overrides')
+        _, manifest, digest = private_json(args.fixture_manifest)
+        if set(manifest) - {'version', 'javaTests', 'fixtureProperties', 'javaOnly'} \
+                or type(manifest.get('version')) is not int or manifest['version'] != 1 \
+                or type(manifest.get('javaOnly', False)) is not bool \
+                or not isinstance(manifest.get('javaTests'), list):
+            raise ValueError('Fixture manifest requires version=1 and only documented fields')
+        selected = java_classes(manifest.get('javaTests'))
+        properties = manifest.get('fixtureProperties')
+        if not isinstance(properties, dict) or not properties:
+            raise ValueError('Fixture manifest requires explicit fixtureProperties')
+        args.java_tests = ','.join(selected)
+        args.java_only = manifest.get('javaOnly', False)
+        manifest_receipt = {'version': 1, 'sha256': digest}
+    else:
+        selected = java_classes(args.java_tests) if args.java_tests else []
+        properties = {}
+        for value in args.fixture_property:
+            key, separator, file = value.partition('=')
+            if not separator or key in properties:
+                raise ValueError('Fixture properties must have unique KEY=ABSOLUTE_JSON entries')
+            properties[key] = file
+    if not properties:
+        return [], selected, manifest_receipt
+    if not selected or set(properties) - FIXTURE_SCHEMAS.keys():
+        raise ValueError('Fixture execution requires explicit classes and allowlisted properties')
+    expected = set()
+    for name in selected:
+        required = FIXTURE_CLASSES.get(name.rsplit('.', 1)[-1])
+        if required is None or not set(required).issubset(properties):
+            raise ValueError('Selected fixture class has no audited matching configuration: ' + name)
+        expected.update(required)
+    if set(properties) != expected:
+        raise ValueError('Fixture properties must exactly match the selected audited Java scope')
+    configs, arguments = {}, []
+    for key, file in properties.items():
+        if not isinstance(file, str) or not file:
+            raise ValueError('Fixture properties must contain absolute private JSON paths')
+        path, config, _ = private_json(file)
+        prefix, account_prefix = FIXTURE_SCHEMAS[key]
+        digits = 12 if prefix == 'doorhandle_feature_' else 10
+        database = config.get('database')
+        port = config.get('port')
+        if config.get('scope') != 'ecs-disposable-mysql' \
+                or any(config.get(name) != identity[name] for name in ('instanceId', 'machineId')) \
+                or not isinstance(database, str) or not re.fullmatch(prefix + r'[a-f0-9]{' + str(digits) + '}', database) \
+                or config.get('username') != account_prefix + database[len(prefix):] \
+                or type(port) is not int or not 1024 < port <= 65535 or port == 3306 \
+                or not isinstance(config.get('password'), str) or not config['password'].strip() \
+                or not isinstance(config.get('serverUuid'), str) \
+                or not re.fullmatch(r'[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}', config['serverUuid']):
+            raise ValueError('Fixture metadata differs from the admitted disposable ECS schema: ' + key)
+        expected_url = (f'jdbc:mysql://127.0.0.1:{port}/{database}'
+                        '?sslMode=DISABLED&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai')
+        if config.get('url') != expected_url or not isinstance(config.get('dataDirectory'), str):
+            raise ValueError('Fixture JDBC identity or data directory is invalid: ' + key)
+        data = Path(config['dataDirectory'])
+        if not data.is_absolute() or data.resolve(strict=True) != data or not data.is_dir() \
+                or not data.is_relative_to(path.parent):
+            raise ValueError('Fixture data directory must belong to its private attempt: ' + key)
+        configs[key] = config
+        arguments.append('-D' + key + '=' + str(path))
+    for source, target, strict in MIGRATION_PAIRS:
+        if source in configs or (strict and target in configs):
+            if source not in configs or target not in configs:
+                raise ValueError('Migration source and target configurations must be supplied together')
+            left, right = configs[source], configs[target]
+            if left['database'] == right['database'] or any(left[name] != right[name]
+                    for name in ('serverUuid', 'port', 'dataDirectory')):
+                raise ValueError('Migration requires distinct schemas on the same disposable ECS MySQL server')
+    switches = set()
+    for name in selected:
+        switch = SERVER_SWITCHES.get(name.rsplit('.', 1)[-1])
+        if switch:
+            switches.add(switch)
+    if 'workbench.mysql.config' in configs:
+        switches.add('workbench.mysql')
+    if 'agent.journal.mysql-file' in configs:
+        switches.add('agent.journal.mysql')
+    arguments += ['-D' + name + '=true' for name in sorted(switches)]
+    return arguments, selected, manifest_receipt
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path)
@@ -24,6 +273,8 @@ def main():
     parser.add_argument('--java-only', action='store_true', help='Do not claim Python/frontend coverage')
     parser.add_argument('--fixture-property', action='append', default=[], metavar='KEY=ABSOLUTE_JSON',
                         help='Explicit isolated MySQL fixture property; requires an explicit Java class selection')
+    parser.add_argument('--fixture-manifest', type=Path,
+                        help='Private version=1 JSON under this checkout work; defines classes and fixture properties')
     args = parser.parse_args()
     def interrupted(_signal, _frame):
         raise KeyboardInterrupt('ECS verification interrupted')
@@ -34,6 +285,7 @@ def main():
     if (ROOT / 'deploy/cloud.env').exists() or ROOT == Path('/home/ecs-user/doorhandle-release-20261014') \
             or ROOT.is_relative_to(Path('/home/ecs-user/doorhandle-ci/releases')):
         raise RuntimeError('Verification requires a separate checkout, never the existing deployment runtime')
+    fixture_options, selected_classes, manifest_receipt = fixture_arguments(args, identity)
     output = args.output or ROOT / 'work' / ('ecs-ci-' + uuid.uuid4().hex)
     if not output.is_absolute() or output.resolve() != output or not output.is_relative_to(ROOT / 'work'):
         raise ValueError('A fresh absolute output under this checkout work directory is required')
@@ -56,10 +308,15 @@ def main():
     env.update(HOME=str(output / 'profile'), TMPDIR=str(output / 'tmp'),
                PYTHONDONTWRITEBYTECODE='1', PYTHONNOUSERSITE='1', PYTHON_DOTENV_DISABLED='1',
                npm_config_cache=str(output / 'npm-cache'))
-    receipt = {'startedAt': datetime.now(timezone.utc).isoformat(), 'identity': identity,
+    receipt = {'schemaVersion': 1, 'startedAt': datetime.now(timezone.utc).isoformat(), 'identity': identity,
                'javaSelection': args.java_tests, 'javaOnly': args.java_only, 'commands': [],
-               'fixtureProperties': [], 'scope': 'ordinary source tests; infrastructure suites remain opt-in unless fixture properties are supplied',
-               'cloudStopRequiredAfterControllerCollectsEvidence': True}
+               'fixtureProperties': [value[2:].split('=', 1)[0] for value in fixture_options if not value.endswith('=true')],
+               'fixtureManifest': manifest_receipt,
+               'scopeKind': 'mysql' if fixture_options else 'source',
+               'scope': 'explicit disposable MySQL Java scope' if fixture_options else
+                        'ordinary source tests; infrastructure suites remain opt-in and skipped suites are not migration acceptance',
+               'ecsLifecycle': {'managedBy': 'external-to-jenkins', 'cloudOperationsPerformed': False,
+                                'note': 'Start ECS before the test window and stop it outside CI/CD after evidence collection'}}
     def execute(label, command, cwd):
         entry = {'label': label, 'startedAt': datetime.now(timezone.utc).isoformat()}
         receipt['commands'].append(entry)
@@ -91,45 +348,28 @@ def main():
                      '-Dmaven.repo.local=' + str(ROOT / 'work' / 'ecs-maven-repository'), 'clean', 'verify']
         if args.java_tests:
             arguments += ['-Dtest=' + args.java_tests, '-Dsurefire.failIfNoSpecifiedTests=false']
-        allowed_files = {'doorhandle.ecs.mysql.config', 'doorhandle.feature.mysql.config', 'workbench.mysql.config', 'agent.model-config.mysql-file',
-                         'agent.skill.mysql-file', 'agent.journal.mysql-file', 'detection.command.mysql-file'}
-        server_switches = {'EcsMysqlFixtureTest': 'ecs.fixture.mysql', 'AgentCardsLocalMysqlTest': 'agent.cards.local.mysql',
-            'AgentConfirmationLocalMysqlTest': 'agent.actions.local.mysql', 'AgentReportLocalMysqlTest': 'agent.report.local.mysql',
-            'AgentSessionLocalMysqlTest': 'agent.sessions.local.mysql', 'DetectionScopeLocalMysqlTest': 'detection.scope.local.mysql',
-            'LocalMcpMysqlTest': 'agent.local.mcp.mysql', 'MemoryGovernanceLocalMysqlTest': 'agent.memory.local.mysql',
-            'ReportEventLocalMysqlTest': 'report.events.local.mysql', 'SkillCommandLocalMysqlTest': 'agent.skills.commands.mysql',
-            'SkillEvolutionLocalMysqlTest': 'agent.skills.local.mysql', 'ModelFactsMySqlTest': 'model.facts.mysql'}
-        for value in args.fixture_property:
-            if not args.java_tests or not re.fullmatch(r'[A-Za-z0-9_.$]+(?:,[A-Za-z0-9_.$]+)*', args.java_tests):
-                raise ValueError('Fixture execution requires explicit comma-separated Java class names')
-            key, separator, file = value.partition('=')
-            if not separator or key not in allowed_files:
-                raise ValueError('Unsupported fixture property')
-            path = Path(file)
-            if not path.is_absolute() or path.resolve(strict=True) != path or not path.is_relative_to(ROOT / 'work'):
-                raise ValueError('Fixture must be an explicit existing file in this isolated checkout work directory')
-            config = json.loads(path.read_text())
-            if config.get('scope') != 'ecs-disposable-mysql' or any(config.get(name) != identity[name] for name in ('instanceId', 'machineId')):
-                raise ValueError('Fixture is not bound to this ECS execution host')
-            arguments.append('-D' + key + '=' + str(path))
-            receipt['fixtureProperties'].append(key)
-            if key == 'workbench.mysql.config': arguments.append('-Dworkbench.mysql=true')
-            if key == 'agent.journal.mysql-file': arguments.append('-Dagent.journal.mysql=true')
-            if key == 'doorhandle.ecs.mysql.config':
-                selected = [name.rsplit('.', 1)[-1] for name in args.java_tests.split(',')]
-                switches = [server_switches[name] for name in selected if name in server_switches]
-                if not switches: raise ValueError('No matching server fixture class was selected')
-                arguments += ['-D' + switch + '=true' for switch in switches]
+        arguments += fixture_options
         execute('java', arguments, ROOT)
         counts = {'found': 0, 'passed': 0, 'failed': 0, 'skipped': 0}
+        selected_counts = {name: {'found': 0, 'passed': 0, 'failed': 0, 'skipped': 0} for name in selected_classes}
         for report in (output / 'java').glob('*/surefire-reports/TEST-*.xml'):
-            for case in ET.parse(report).iter('testcase'):
+            suite = ET.parse(report).getroot()
+            for case in suite.iter('testcase'):
                 counts['found'] += 1
                 result = 'skipped' if case.find('skipped') is not None else 'failed' if (
                     case.find('failure') is not None or case.find('error') is not None) else 'passed'
                 counts[result] += 1
+                actual_class = case.get('classname') or suite.get('name', '')
+                for requested, tally in selected_counts.items():
+                    compared = actual_class if '.' in requested else actual_class.rsplit('.', 1)[-1]
+                    if compared == requested or compared.startswith(requested + '$'):
+                        tally['found'] += 1
+                        tally[result] += 1
         receipt['javaTests'] = counts
-        if counts['passed'] == 0 or counts['failed'] or (args.fixture_property and counts['skipped']):
+        receipt['selectedJavaClasses'] = selected_counts
+        if counts['passed'] == 0 or counts['failed'] or (fixture_options and counts['skipped']) \
+                or any(not tally['passed'] or tally['failed'] or (fixture_options and tally['skipped'])
+                       for tally in selected_counts.values()):
             raise RuntimeError('The selected Java scope did not execute successfully; inspect original Surefire reports')
         if not args.java_only:
             execute('python', [tools['PYTHON_EXE'], '-B', '-m', 'pytest', 'tests_python', '-q',

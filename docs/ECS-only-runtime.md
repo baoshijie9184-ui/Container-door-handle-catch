@@ -1,6 +1,8 @@
 # 单体 ECS 运行与测试
 
-本分支为 `java-cloud`，继续使用 Spring Boot 3.2.4 / Java 17。所有运行、开发预览和测试都在北京 ECS `i-2zeieuov2aum486jm1ek` 上执行，私网地址为 `172.29.146.74`。本地仅编辑、编译和打包，不启动数据库、应用、浏览器验收或测试。单元/集成测试全部在 ECS 执行。
+本分支为 `java-cloud`，继续使用 Spring Boot 3.2.4 / Java 17。所有业务运行、开发预览和测试都在北京 ECS `i-2zeieuov2aum486jm1ek` 上执行，私网地址为 `172.29.146.74`。本地仅编辑、编译和打包，不启动数据库、应用、浏览器验收或测试。单元/集成测试全部在 ECS 执行。
+
+2026-11-06 固定 CI/CD 控制器：后续统一使用本地 Jenkins <http://127.0.0.1:8080/>，本地专用节点 `doorhandle-local-ci` 通过已有 SSH/SCP 连接调度已启动的 ECS、收集报告，不新增常驻 ECS Jenkins agent 或为此安装额外 JRE。Jenkins 保持运行，ECS 开机与测试后的节省停机均在流水线外操作，不在 Jenkins 中配置开关机或限时停止阶段。登录信息保存在 Git 忽略的 [私有文档](../work/jenkins/local-access.md)，启动和流水线约定见 [本地 Jenkins CI/CD](本地Jenkins-CICD.md)。这一约定不允许恢复本地应用运行或测试。
 
 ## 数据库及环境文件
 
@@ -11,9 +13,9 @@
 ## 执行入口
 
 - 本地构建必须加 `-DskipTests=true`；可以编译测试源码，但不能执行测试。隔离构建输出可用 `-Ddoorhandle.isolated-verification=true -Ddoorhandle.verification-root=<项目内新目录>`。
-- 旧 Windows Jenkinsfile 和本机启动/测试脚本已退役；历史文档中的本机运行命令失效。Git 历史保留旧实现。
+- 旧 Windows Jenkinsfile 和本机应用启动/测试脚本已退役；历史文档中的本机应用运行命令失效。本地 Jenkins 控制器启动脚本继续使用。Git 历史保留旧实现。
 - ECS 上使用 `script/jenkins/verify-ecs.py`。运行前配置 `DOORHANDLE_ECS_INSTANCE_ID=i-2zeieuov2aum486jm1ek`、事先核验的 `DOORHANDLE_ECS_MACHINE_ID`，以及已有 Java/Maven/Python/Node 工具路径。入口通过 IMDSv2 和 `/etc/machine-id` 核验实际实例后才运行测试。
-- Jenkins 源码验证入口为 `Jenkinsfile.ecs-monolith`，节点标签 `doorhandle-monolith && doorhandle-ecs`，必须指定审核过的 `java-cloud` 完整提交。它负责源码验证，不执行生产发布。
+- Jenkins 统一入口为 `Jenkinsfile.ecs-monolith`，本地节点标签 `doorhandle-local-ci`。入口固定受信任的 `java-cloud` 完整提交，本地执行控制和源码打包步骤，再通过 SSH 在 ECS 独立 checkout 调用 `verify-ecs.py`；原先依赖常驻 Linux Jenkins agent 的入口已替换。ECS 离线或连接资料缺失时预检明确失败，不自动开机、无限等待或转为本地测试。启用项目任务前须确认 CI 文件已推送到 SCM 分支；生产发布和旧库演练的机器环境门禁默认关闭，真实迁移验收前不启用。
 - Jenkins 为每次构建生成独立的 `work/ecs-ci-<构建号>-<UUID>` 目录，显式传给验证入口；JUnit 和归档步骤只读取本次目录，避免旧失败或旧用例混入当前结果。历史证据和 Maven 缓存保留。
 - 前端开发预览也在 ECS 上执行，须显式设置 `DOORHANDLE_DEV_API_TARGET` / `DOORHANDLE_API_TARGET`。构建静态资源仍可在本地完成。
 
@@ -29,12 +31,12 @@ Python worker 的真实 MySQL 测试由控制器单独启用 `DOORHANDLE_WORKER_
 
 Journal 的真实 MySQL 用例通过 `--java-tests MysqlAgentJournalTest --fixture-property agent.journal.mysql-file=/absolute/checkout/work/attempt/private-journal.json` 启用，清单使用 `doorhandle_agent_verify_<10位随机十六进制>` 与 `ecsit_<同一后缀>`。ModelFacts 使用 `--java-tests ModelFactsMySqlTest --fixture-property doorhandle.ecs.mysql.config=/absolute/checkout/work/attempt/private-server.json`，复用 `doorhandle_ecsit_<10位随机十六进制>`；入口分别设置 `agent.journal.mysql=true` 与 `model.facts.mysql=true`，不再读取根 `.env` 或回退到 root/空密码。
 
-## 启停顺序
+## 流水线之外的 ECS 启停顺序
 
-1. 先完成代码修改与本地构建。控制端通过云 API 核对实例 ID 与私网地址，保留实际状态回执。
-2. 启动前安排有时限的独立云端停止任务。现有每日零点任务不是本轮及时清理的替代品。
+1. 先完成代码修改与本地构建。在 Jenkins 流水线之外，通过云 API 或控制台核对实例 ID 与私网地址，保留实际状态回执。
+2. 测试前从流水线外启动 ECS，等待系统、网络和执行环境就绪；流水线不调用开机、关机 API，也不安排限时停止任务。
 3. 启动后重新查询公网 IP，通过既有 SSH 主机密钥验证连接；不能沿用历史公网 IP。需要 TLS 时，同时验证 `doorhandle-ssh.local` 证书。
-4. 在服务器隔离目录运行测试，保存源码/构建摘要、原始报告及清理回执。
-5. 测试结束关闭本轮拥有的测试进程并收回证据，由控制端调用 ECS `StopInstance`，指定 `StoppedMode=StopCharging`。随后实际回读 `Status=Stopped` 和 `StoppedMode=StopCharging`。
+4. 由 Jenkins 核对已启动目标的连通性与执行身份，在服务器隔离目录运行测试，保存源码/构建摘要、原始报告及清理回执。目标未就绪时明确失败，不自动开机，也不改为本地执行。
+5. 测试结束关闭本轮拥有的测试进程并收回证据，再在流水线之外调用 ECS `StopInstance`，指定 `StoppedMode=StopCharging`。随后实际回读 `Status=Stopped` 和 `StoppedMode=StopCharging`；本地 Jenkins 控制器保持运行。
 
 单纯执行操作系统 shutdown 不满足该要求。实例和云盘保留；StopCharging 停止计算资源计费，保留存储按原规则计费。不查询账单或卡券，不在此流程中发布生产、迁移数据或切流。

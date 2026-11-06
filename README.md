@@ -1,6 +1,6 @@
 # 企业级集装箱门把手盖多智能体协同缺陷检测平台
 
-2026-11-05 运行约定：本地仅编辑和构建，运行与测试全部在 ECS `172.29.146.74` 执行，结束后确认 `Stopped / StopCharging`。旧本机运行命令失效，当前入口见 [ECS 运行约定](docs/ECS-only-runtime.md)。
+2026-11-06 运行约定：本地仅编辑、构建和运行 Jenkins 控制器，业务运行与测试全部在 ECS `172.29.146.74` 执行。ECS 在测试前从流水线外启动，测试结束后从流水线外关闭并确认 `Stopped / StopCharging`；Jenkins 保持运行，CI/CD 不负责 ECS 启停。旧本机运行命令失效，当前入口见 [ECS 运行约定](docs/ECS-only-runtime.md)。
 
 
 本项目面向企业的集装箱门把手盖缺陷检测业务，提供图像采集、模型检测、质检复核、质量追溯和多智能体协同工作台。
@@ -66,9 +66,11 @@ Agent 对话支持安全切点暂停/继续、本人持久消息排队与逐条�
 
 ## 服务器运行与发布
 
-本机 Jenkins 自动验证及发布到现有 ECS 的入口为 `Jenkinsfile`，配置、凭据、发布范围和回滚方法见 [Jenkins CI/CD](script/jenkins/README.md)。
+后续 CI/CD 统一使用现有本地 Jenkins 控制器 <http://127.0.0.1:8080/>，由版本库中的自动流水线编排构建、集成验证、制品管理、部署、健康检查和发布失败处置。本地专用节点 `doorhandle-local-ci` 通过已有 SSH/SCP 连接调度已经启动的 ECS，不新增常驻 ECS Jenkins agent。该要求已写入 [项目工作约定](AGENTS.md)。登录信息保存在 Git 忽略的 [私有文档](work/jenkins/local-access.md)，目标流程及当前缺口见 [本地 Jenkins CI/CD 约定](docs/本地Jenkins-CICD.md)。业务运行、预览及所有测试仍在 ECS；ECS 开机与测试后节省停机均在流水线外进行，Jenkins 不随 ECS 关闭。
 
-开发中的新版流水线默认仅验证并关闭生产发布；模型治理的 Secret 挂载、独立加密备份与离线恢复证明已有新增代码，尚未验证或启用。见 [模型密钥与发布接入](docs/模型主密钥备份与发布接入.md)。
+当前统一入口为 `Jenkinsfile.ecs-monolith`，在本地 `doorhandle-local-ci` 节点执行控制与打包步骤，通过 SSH 在原单体 ECS 的隔离目录测试；旧 `Jenkinsfile` 的 Windows 本地测试流程已退役。启用任务前须确认统一入口及配套 CI 文件已推送到 SCM 分支，配置记录与最终状态见 CI/CD 文档及回执；ECS 离线或连接资料未配置时预检明确失败，不自动开机或无限等待。三机流水线须在部署方案确定后适配，已有发布与回滚背景见 [Jenkins CI/CD](script/jenkins/README.md)。
+
+开发中的新版流水线默认仅验证并关闭生产发布；数据库重构与迁移尚未验收，发布和旧库演练额外受默认未设置的机器环境门禁 `DOORHANDLE_COMPACT_RELEASE_READY` / `DOORHANDLE_COMPACT_REHEARSAL_READY` 限制，不能仅修改页面参数启用。模型治理的 Secret 挂载、独立加密备份与离线恢复证明已有新增代码，尚未验证或启用。见 [模型密钥与发布接入](docs/模型主密钥备份与发布接入.md)。
 
 应用、中间件、记忆服务和 CPU PTH 检测 worker 均运行在北京 ECS。部署使用 `compose.monolith.yml`、`compose.cloud.yml` 和 `compose.detection.yml`，本分支已移除本地一键启动与停止脚本。
 
@@ -82,7 +84,7 @@ ssh -F work/cloud/ssh-config -N -L 127.0.0.1:18088:127.0.0.1:8088 doorhandle-bj
 
 主站登录地址为 <http://127.0.0.1:18088/#/login>，独立 Agent 页面为 <http://127.0.0.1:18088/agent-ui/>。连接配置与私钥位于本机忽略目录，新克隆仓库需单独配置。使用与排查见 [服务器运行说明](docs/服务器运行说明.md)，部署验收见 [服务器演示部署记录](docs/服务器演示部署记录.md)。
 
-Jenkins 任务 `doorhandle-java` 跟踪远程 `java-cloud`，流水线只允许该可信分支。提交并推送后按 SCM 轮询触发构建发布，本机切换分支不会改变构建来源，详见运行说明。
+原 `doorhandle-java` 任务曾跟踪远程 `java-cloud`。本机切换分支不会改变 Jenkins 的构建来源；当前数据重构候选尚未迁移验收，不能按旧任务说明推断提交后即可发布，详见 [开发进展](开发进展.md)。
 
 员工、主管各两个可登录测试账号及密码见 [测试用户账号](docs/测试用户账号.md)。
 
@@ -179,7 +181,7 @@ python3 script/jenkins/verify-ecs.py
 
 Jenkins 任务使用 `Jenkinsfile.ecs-monolith`。真实 MySQL 场景需要控制器提供独立数据库和绑定实例身份的私有 JSON，具体参数见运行约定；不能将生产 `deploy/cloud.env` 或业务数据库交给测试脚本。
 
-代码与构建准备完成后再启动 ECS。测试前设置独立停止定时器，完成后关闭本轮测试进程、收回证据，再由控制端停止实例并回读 `Stopped / StopCharging`。不以操作系统 shutdown 代替云端节省停机。
+代码与构建准备完成后，在 Jenkins 流水线外启动 ECS 并确认就绪，再运行测试。测试完成后关闭本轮测试进程、收回证据，再从流水线外停止实例并回读 `Stopped / StopCharging`。流水线不执行 ECS 开机、关机或限时停止任务配置，Jenkins 控制器保持运行；不以操作系统 shutdown 代替云端节省停机。
 
 ## 使用指南
 
