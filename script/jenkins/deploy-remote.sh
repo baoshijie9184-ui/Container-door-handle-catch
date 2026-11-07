@@ -59,12 +59,18 @@ dc() {
         [[ -r "$dir/compose.model-config.yml" ]] || { echo 'Release has no model Secret overlay; select a compatible version.' >&2; return 1; }
         overlays+=(-f "$dir/compose.model-config.yml")
     fi
-    local connection_override=()
+    local connection_override=() native_override=()
     if [[ -r "$root/state/compact-connection.override.yml" ]]; then connection_override=(-f "$root/state/compact-connection.override.yml"); fi
+    if [[ -r "$root/state/native-data.override.json" ]]; then native_override=(-f "$root/state/native-data.override.json"); fi
     docker compose --project-name "$project" --env-file "$envfile" \
         -f "$dir/compose.monolith.yml" -f "$dir/compose.cloud.yml" -f "$dir/compose.detection.yml" \
         "${overlays[@]}" -f "$override" "${memory_override[@]}" "${mcp_override[@]}" \
-        "${connection_override[@]}" "$@"
+        "${connection_override[@]}" "${native_override[@]}" "$@"
+}
+
+guard_native_runtime() {
+    local dir=$1 images=$2
+    dc "$dir" "$images" config --format json | python3 "$compat_helper" native-state --state "$root/state" --lock-fd 9 --config - > /dev/null
 }
 
 # Snapshot actual running image IDs, independent of a mutable tag or private env APP_IMAGE_TAG.
@@ -125,6 +131,7 @@ activate() {
     mcp_manual_recovery=false
     # Never run a compact candidate against the old MYSQL_DATABASE or trust a UI flag.
     dc "$dir" "$images" config --format json | python3 "$schema_helper" --state "$root/state" --source "$dir" > /dev/null || return 1
+    guard_native_runtime "$dir" "$images" || return 1
     # No application is stopped until metadata, reader declarations and the recovery baseline agree.
     dc "$dir" "$images" config --format json | python3 "$assignment_helper" guard --state "$root/state" --lock-fd 9 --pin > "$root/state/assignment-transition.pending.json" || return 1
     mv "$root/state/assignment-transition.pending.json" "$root/state/assignment-transition.json"

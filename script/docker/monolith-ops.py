@@ -331,6 +331,72 @@ def output_budget(root, reserve):
     return remaining
 
 
+def native_backup_metadata(root, target):
+    """Copy only immutable provenance/configuration; active data use volume TARs."""
+    state = root / 'state'; binding_file = state / 'native-data.json'
+    if not binding_file.exists():
+        if (state / 'native-data.override.json').exists(): raise OpsError('Native overlay has no verified binding')
+        return None
+    import importlib.util
+    helper_file = Path(__file__).with_name('memory-compat.py')
+    spec = importlib.util.spec_from_file_location('ops_native_binding', helper_file)
+    helper = importlib.util.module_from_spec(spec); spec.loader.exec_module(helper)
+    binding = helper.validate_native_state(state)
+    receipt = json.loads(Path(binding['installReceiptFile']).read_text())
+    refs = {'binding': binding_file, 'overlay': Path(binding['overlayFile']), 'install': Path(binding['installReceiptFile']),
+            'freeze': Path(receipt['sourceFreezeFile']), 'semantic': Path(receipt['semanticActivationFile'])}
+    refs.update({'catalog-' + key: Path(value['catalogFile']) for key, value in receipt['pristinePayloads'].items()})
+    refs.update({'fresh-' + key: Path(value['file']) for key, value in receipt['freshSnapshots'].items()})
+    refs.update({'logical-' + key: Path(value['file']) for key, value in receipt['logicalBaselines'].items()})
+    refs['accounts'] = Path(receipt['finalAccountProof']['file'])
+    result = {'version': 1, 'credentialPolicy': 'EXTERNAL_PRIVATE_ECS_EMBEDDING_CREDENTIAL_REQUIRED', 'files': {},
+              'sourceVolumes': {key: value['name'] for key, value in receipt['volumes'].items()}}
+    for key, original in refs.items():
+        if not private_config_ok(original) or original.resolve(strict=True) != original or original.stat().st_size > 16 * 1024 ** 2:
+            raise OpsError('Native source provenance must remain a bounded private regular file')
+        name = 'native-' + key + '.json'; shutil.copyfile(original, target / name); os.chmod(target / name, 0o600)
+        result['files'][key] = {'file': name, 'sha256': digest(target / name)}
+    return result
+
+
+def verify_native_backup(snapshot, manifest):
+    value = manifest.get('nativeData')
+    if value is None: return
+    if value.get('version') != 1 or value.get('credentialPolicy') != 'EXTERNAL_PRIVATE_ECS_EMBEDDING_CREDENTIAL_REQUIRED':
+        raise OpsError('Native recovery credential policy differs')
+    refs = value.get('files', {})
+    def get(key):
+        ref = refs.get(key, {}); name = ref.get('file', '')
+        if not re.fullmatch(r'native-[a-zA-Z0-9_.-]+\.json', name) or manifest['files'].get(name) != ref.get('sha256'):
+            raise OpsError('Native recovery provenance checksum differs')
+        return json.loads((snapshot / name).read_text())
+    binding = get('binding'); receipt = get('install'); overlay = get('overlay')
+    if binding.get('status') != 'ACTIVE' or binding.get('installReceiptSha256') != refs['install']['sha256'] \
+            or binding.get('overlaySha256') != refs['overlay']['sha256'] or receipt.get('overlaySha256') != refs['overlay']['sha256'] \
+            or receipt.get('sourceFreezeSha256') != refs['freeze']['sha256'] \
+            or receipt.get('semanticActivationSha256') != refs['semantic']['sha256']:
+        raise OpsError('Native recovery binding differs from its immutable source')
+    get('freeze'); get('semantic')
+    for key, entry in receipt['pristinePayloads'].items():
+        catalog = get('catalog-' + key)
+        if entry['catalogSha256'] != refs['catalog-' + key]['sha256'] or entry['filesSha256'] != hashlib.sha256(
+                json.dumps(catalog, ensure_ascii=False, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()).hexdigest():
+            raise OpsError('Native pristine recovery catalogue differs')
+    for key, entry in receipt['freshSnapshots'].items():
+        fresh = get('fresh-' + key)
+        if refs['fresh-' + key]['sha256'] != entry['sha256'] or fresh.get('archiveSha256') != entry['archiveSha256'] \
+                or fresh.get('status') != 'RESTORED_VERIFIED': raise OpsError('Native fresh restore provenance differs')
+    for key, entry in receipt['logicalBaselines'].items():
+        get('logical-' + key)
+        if refs['logical-' + key]['sha256'] != entry['sha256']: raise OpsError('Native recovery logical baseline differs')
+    get('accounts')
+    if refs['accounts']['sha256'] != receipt['finalAccountProof']['sha256']: raise OpsError('Native final account proof differs')
+    expected = {key: entry['name'] for key, entry in receipt['volumes'].items()}
+    if value.get('sourceVolumes') != expected or not set(expected.values()) <= set(manifest['volumes']) \
+            or {key: entry.get('name') for key, entry in overlay.get('volumes', {}).items()} != expected:
+        raise OpsError('Native recovery volume archives/overlay differ')
+
+
 def verify(snapshot, require_complete=True):
     if snapshot.is_symlink() or not snapshot.is_dir():
         raise OpsError('Snapshot directory is invalid')
@@ -374,6 +440,7 @@ def verify(snapshot, require_complete=True):
             with gzip.open(target, 'rb') as stream:
                 while stream.read(1024*1024):
                     pass  # Checks gzip CRC/end marker; no content is printed.
+    verify_native_backup(snapshot, manifest)
     return manifest
 
 
@@ -450,7 +517,15 @@ def backup(root, runtime, minimum_gib=2):
                     break
                 output_budget(root, reserve);output.write(block)
         raw.unlink()
-        shutil.copyfile(private, target/'cloud.env');os.chmod(target/'cloud.env', 0o600)
+        # Embedding credentials are reassembled from the persistent private ECS
+        # configuration/credential store, never archived with business data.
+        lines = private.read_text(encoding='utf-8-sig').splitlines(keepends=True)
+        stripped = [line for line in lines if not re.match(r'\s*(?:export\s+)?EMBEDDING_API_KEY(?:_FILE)?\s*=', line)]
+        with os.fdopen(os.open(target/'cloud.env', os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600), 'w', encoding='utf8') as stream:
+            stream.writelines(stripped)
+        manifest['embeddingCredentialPolicy'] = 'EXTERNAL_PRIVATE_ECS_EMBEDDING_CREDENTIAL_REQUIRED'
+        native = native_backup_metadata(root, target)
+        if native is not None: manifest['nativeData'] = native
         connection_files=('compact-connection.override.yml','compact-connection.json')
         present=[(root/'state'/name).exists() for name in connection_files]
         if any(present):
@@ -640,6 +715,20 @@ print(json.dumps(result,sort_keys=True))
 
 def restore_drill(root, snapshot, helper_image=None, runtime=None):
     manifest = verify(snapshot)
+    if manifest.get('nativeData') is not None:
+        if runtime is None: raise OpsError('Native recovery requires the persistent private ECS embedding credential')
+        private = runtime / 'deploy/cloud.env'
+        if not private_config_ok(private): raise OpsError('Native recovery credential permissions differ')
+        selected = {}
+        for line in private.read_text(encoding='utf-8-sig').splitlines():
+            match = re.fullmatch(r'\s*(?:export\s+)?(EMBEDDING_PROFILE|EMBEDDING_MODEL|EMBEDDING_BASE_URL|EMBEDDING_API_KEY)\s*=(.*)', line)
+            if match:
+                if match[1] in selected: raise OpsError('Native recovery credential configuration is ambiguous')
+                selected[match[1]] = match[2].strip().strip('\"\'')
+        if selected.get('EMBEDDING_PROFILE') != 'siliconflow-bge-m3-v1' or selected.get('EMBEDDING_MODEL') != 'BAAI/bge-m3' \
+                or selected.get('EMBEDDING_BASE_URL', '').rstrip('/') != 'https://api.siliconflow.cn/v1' \
+                or not re.fullmatch(r'sk-[A-Za-z0-9_-]{20,4090}', selected.get('EMBEDDING_API_KEY', '')):
+            raise OpsError('Native recovery requires the same externally held free BGE credential/profile')
     if manifest.get('modelKeyEscrow',{}).get('enabled'):
         # A database/volume-only recovery cannot claim encrypted credentials are recoverable.
         # The matching external key proof is checked separately; plaintext key is never copied into the snapshot.

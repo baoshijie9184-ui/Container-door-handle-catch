@@ -1,6 +1,7 @@
 # syntax=docker/dockerfile:1
 FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
 LABEL io.doorhandle.memory-protocol="2"
+LABEL io.doorhandle.memory-embedding-profile="siliconflow-bge-m3-v1"
 LABEL io.doorhandle.model-config-format="1"
 WORKDIR /app
 ARG PIP_INDEX_URL=https://pypi.org/simple

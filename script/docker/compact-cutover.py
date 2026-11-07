@@ -264,9 +264,32 @@ def admitted_runtime(root, tag, commit, source_sha, identity, guard, build, buil
                     and value.get('phase') == phase and value.get('project') == proof['project']
                     and value.get('descriptorSha256') == legacy['candidateSha256']
                     and value.get('ragManifestSha256') == legacy['ragManifestSha256']
-                    and value.get('localMem0SemanticStatus') == legacy['localMem0SemanticStatus']
+                    and value.get('localMem0SemanticStatus') == 'PHASE_SEMANTIC_VERIFIED'
+                    and value.get('candidateSemanticVerified') is True and value.get('productionDataMaterialized') is False
                     and value.get('productionPromotionAllowed') is legacy['productionPromotionAllowed'],
                     'Native startup/restart/recovery readback belongs to another candidate or result')
+            semantic_ref = value.get('bgeSemanticVerification', {})
+            semantic_path = Path('checkout/work/runtime-acceptance') / ('bge-semantic-' + phase + '.json')
+            require(set(semantic_ref) == {'file', 'sha256'} and semantic_ref['file'] == semantic_path.as_posix(),
+                    'BGE phase evidence escaped its fixed source outcome')
+            semantic, checksum = guard.read_private(canonical(directory / semantic_path))
+            helper = module('cutover_actual_semantic_receipt', Path(__file__).resolve().parents[1] / 'jenkins/prepare-legacy-candidate.py')
+            helper.validate_semantic_receipt(semantic, guard.read_private(private / 'mem0-semantic-plan.json')[0])
+            require(checksum == semantic_ref['sha256'] and semantic.get('phase') == phase
+                    and semantic.get('candidateSha256') == legacy['candidateSha256']
+                    and semantic.get('sourceSha256', context['sourceSha256']) == context['sourceSha256']
+                    and semantic.get('helperCleanup', {}).get('pid') == 0
+                    and semantic.get('helperCleanup', {}).get('exitCode') == 0, 'BGE original phase/cleanup evidence changed')
+        activation = legacy.get('semanticActivation', {})
+        expected = 'checkout/work/runtime-acceptance/native-semantic-activation.json'
+        require(set(activation) == {'file', 'sha256'} and activation['file'] == expected, 'Semantic activation location is invalid')
+        activated, checksum = guard.read_private(canonical(directory / expected))
+        require(checksum == activation['sha256'] and activated.get('status') == 'VERIFIED_AND_ACTIVATED'
+                and activated.get('candidateSemanticVerified') is True and activated.get('productionDataMaterialized') is False
+                and activated.get('candidateSha256') == legacy['candidateSha256']
+                and set(activated.get('verifications', {})) == set(legacy['verifications'])
+                and all(activated['verifications'][phase].get('readback') == ref for phase, ref in legacy['verifications'].items()),
+                'Three-phase activation receipt changed')
     return digest
 
 
@@ -274,7 +297,9 @@ def require_native_release(runtime_proof):
     """A preserved archive/test namespace is never a semantic production import."""
     legacy = runtime_proof.get('legacyData', {})
     require(legacy.get('localMem0SemanticStatus') == 'VERIFIED_AND_ACTIVATED'
-            and legacy.get('productionPromotionAllowed') is True,
+            and legacy.get('candidateSemanticVerified') is True and legacy.get('productionDataMaterialized') is False
+            and legacy.get('activatedLocalMem0Records') == 30 and legacy.get('productionPromotionAllowed') is False
+            and isinstance(legacy.get('semanticActivation'), dict),
             'Native legacy semantics/current-cloud final merge are not release-admitted; do not promote an earlier test volume')
 
 
@@ -372,7 +397,7 @@ class Cutover:
         rows = self.current()
         for row in rows:
             service = row['Config']['Labels']['com.docker.compose.service']
-            if service in ('mysql', 'redis', 'kafka', 'chroma', 'kafka-init', 'kafka-storage-init'):
+            if service in ('mysql', 'redis', 'kafka', 'kafka-init', 'kafka-storage-init'):
                 continue
             require(row['Id'] in frozen and not row['State']['Running'] and not row['State']['Restarting']
                     and row['State']['Pid'] == 0 and row['HostConfig']['RestartPolicy'].get('Name') == 'no',
@@ -503,6 +528,11 @@ class Cutover:
         command += ['-f', str(self.work / 'candidate-images.json')]
         for path in overlays:
             command += ['-f', str(path)]
+        native = self.state / 'native-data.override.json'
+        if native.exists():
+            memory = module('cutover_native_binding', self.source / 'script/docker/memory-compat.py')
+            memory.validate_native_state(self.state, allow_pending=True)
+            command += ['-f', str(native)]
         connection = self.state / 'compact-connection.override.yml'
         if connection.exists():
             command += ['-f', str(connection)]
@@ -557,7 +587,7 @@ class Cutover:
                 require(isinstance(username, str) and re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{0,31}', username)
                         and username.lower() != 'root', 'Source runtime must use explicitly fenceable non-root accounts')
                 users.add(username)
-            if service in ('mysql', 'redis', 'kafka', 'chroma', 'kafka-init', 'kafka-storage-init'):
+            if service in ('mysql', 'redis', 'kafka', 'kafka-init', 'kafka-storage-init'):
                 continue
             require((row['Config'].get('Labels') or {}).get('com.docker.compose.oneoff', '').lower() != 'true',
                     'One-off application work prevents cutover')
@@ -596,6 +626,8 @@ class Cutover:
         freeze['routineCatalogSha256'] = self.guard.metadata_sha256(freeze['routineCatalog'])
         self.journal['eventCatalogSha256'] = freeze['eventCatalogSha256']
         self.common.write_json(self.work / 'source-freeze.json', freeze)
+        native = module('cutover_native_installer', self.source / 'script/jenkins/prepare-legacy-candidate.py')
+        native.prepare_production_native(self)
         user, password = 'mig_' + suffix, secrets.token_hex(32)
         self.journal['migrationUser'] = user
         self.persist()
@@ -703,12 +735,16 @@ class Cutover:
             runner.verify(self.state)
         effective = self.config(overlays)
         mcp.guard(self.state, effective, pin=True)
-        action = memory.prepare(self.state, effective)
+        native_receipt = canonical(self.journal['nativeProductionInstall']['file'])
+        require(sha_file(native_receipt) == self.journal['nativeProductionInstall']['sha256'], 'Native production install receipt changed')
+        action = memory.prepare(self.state, effective, native_transition=native_receipt)
         overlays.append(self.state / 'memory-activation-images.yml')
         if action == 'replace':
             self.compose('up', '-d', '--no-deps', '--no-build', '--pull', 'never', '--wait', '--wait-timeout', '240',
                          'mem0', overlays=overlays)
         memory.verify(self.state)
+        self.compose('up', '-d', '--no-deps', '--no-build', '--pull', 'never', '--wait', '--wait-timeout', '120',
+                     'chroma', overlays=overlays)
         if 'higress' in effective['services']:
             self.compose('up', '-d', '--no-deps', '--no-build', '--pull', 'never', '--wait', '--wait-timeout', '120',
                          'higress', overlays=overlays)
@@ -729,6 +765,9 @@ class Cutover:
                     'DETECTION_RECEIPT_DB_DATABASE', 'DETECTION_RECEIPT_DB_USER', 'DETECTION_RECEIPT_DB_PASSWORD')),
                 'Activated worker image or actual compact receipt endpoint/credentials differs')
         self.guard.guard(self.state, self.config(overlays), self.source, receipt, allow_cutover=True)
+        native = module('cutover_native_readback', self.source / 'script/jenkins/prepare-legacy-candidate.py')
+        native.verify_production_native(self)
+        memory.validate_native_state(self.state, self.config(overlays))
         # The compact candidate itself is the first compatible recovery reader.
         # Source images remain separate private evidence, never previous-images.
         previous = self.source / 'previous-images.yml'
@@ -772,7 +811,7 @@ class Cutover:
             with mysql.source_lock(settings['sourceSchema'], model['sourceTables']):
                 actual = runtime.schema_snapshot(mysql, settings['sourceSchema'], model['sourceTables'])
                 require(actual['snapshotSha256'] == expected['sourceSnapshotSha256'], 'The old source changed; source recovery is not approved')
-        for file in ('compact-connection.override.yml', 'compact-connection.json'):
+        for file in ('compact-connection.override.yml', 'compact-connection.json', 'native-data.override.json', 'native-data.json'):
             path = self.state / file
             if path.exists():
                 require(not path.is_symlink(), 'Connection state cannot be a link')
@@ -800,7 +839,7 @@ class Cutover:
         # prepare may fail halfway through stopping the source; recover may fail
         # after restarting only some originals. Both need the same real freeze
         # as a partially started target. One failed stop cannot skip the rest.
-        exempt = {'mysql', 'redis', 'kafka', 'chroma', 'kafka-init', 'kafka-storage-init'}
+        exempt = {'mysql', 'redis', 'kafka', 'kafka-init', 'kafka-storage-init'}
         stopped, unresolved, inventory_ok = set(), set(), True
         try:
             rows = self.current()
@@ -890,12 +929,18 @@ def main():
                     instance.fail_closed(args.phase)
                 raise
             require(instance.journal is not None, 'No cutover has been prepared')
+            native_ref = instance.journal.get('nativeProductionReadback')
+            if native_ref:
+                require(sha_file(canonical(native_ref['file'])) == native_ref['sha256'], 'Native production readback changed')
             print(json.dumps({'kind': 'doorhandle-first-compact-cutover', 'phase': instance.journal['phase'],
                               'status': 'ACTIVE' if instance.journal['phase'] == 'ACTIVE' else 'STOPPED_OR_PRIVATE',
                               'sourceTableCount': 131, 'targetTableCount': 29,
                               'release': instance.args.tag, 'commit': instance.input['gitCommit'],
                               'sourceSha256': instance.args.source_sha256, 'ecs': instance.identity,
                               'migrationReceiptSha256': instance.journal.get('migrationReceiptSha256'),
+                              'candidateSemanticVerified': bool(instance.journal.get('nativeProductionInstall')),
+                              'productionDataMaterialized': bool(native_ref),
+                              'nativeProductionReadback': native_ref,
                               'sourceRestorationAllowed': may_restore_source(instance.journal)}))
         return 0
     except BaseException:

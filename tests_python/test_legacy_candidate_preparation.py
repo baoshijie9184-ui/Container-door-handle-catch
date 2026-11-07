@@ -163,11 +163,12 @@ def test_complete_catalogue_preserves_multiple_real_collections(tmp_path):
     client._system.stop()
 
 
-def test_nonempty_other_native_collection_cannot_hide_behind_empty_personal_collection():
-    before = {'collections': {'personal': {'id': 'p', 'name': 'doorhandle_memories', 'records': {}},
-                             'other': {'id': 'o', 'name': 'another_cloud_collection', 'records': {'existing': {'vectorSha256': 'a' * 64}}}},
-              'sqlite': {'collections': {'p': {'records': 0}, 'o': {'records': 1}}}}
-    with pytest.raises(ValueError, match='Any nonempty'): candidate.require_empty_native_collections(before)
+def test_nonempty_native_sqlite_collection_cannot_hide_behind_an_empty_api_result(tmp_path):
+    before = {'collections': {'personal': {'id': 'p', 'name': 'doorhandle_memories', 'records': {}}},
+              'sqlite': {'collections': {'p': {'records': 1}}}}
+    migration = load('nonempty_native_count_contract', 'script/memory/migrate_legacy_stores.py')
+    with pytest.raises(ValueError, match='count differs from SQLite'):
+        candidate.cloud_memory_records(tmp_path, before, {'owners': []}, migration)
 
 
 def test_cleanup_uses_label_filter_and_retains_safe_failure_summary(tmp_path, monkeypatch):

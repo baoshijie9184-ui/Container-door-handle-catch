@@ -634,7 +634,10 @@ class ApiResponse(BaseModel):
 @app.get("/health")
 async def health_check():
     """健康检查"""
-    return {"status": "ok", "service": "memory", "memory_protocol": BRIDGE_PROTOCOL, "memory_scopes": ["SESSION", "ACCOUNT"], "governance": True, "owned_edit": True, "owned_pagination": True, "write_receipts": memory_writer is not None, "lifecycle": memory_writer is not None, "bridge_auth_configured": bool(os.getenv("MEM0_BRIDGE_TOKEN"))}
+    selected = embedding_profile()
+    return {"status": "ok", "service": "memory", "memory_protocol": BRIDGE_PROTOCOL, "memory_scopes": ["SESSION", "ACCOUNT"], "governance": True, "owned_edit": True, "owned_pagination": True, "write_receipts": memory_writer is not None, "lifecycle": memory_writer is not None, "bridge_auth_configured": bool(os.getenv("MEM0_BRIDGE_TOKEN")),
+            "embedding_profile": selected, "embedding_collection": memory_collection_name(),
+            "embedding_dimensions": 1024 if selected == FREE_PROFILE else None}
 
 
 @app.post("/memories/add", response_model=ApiResponse)

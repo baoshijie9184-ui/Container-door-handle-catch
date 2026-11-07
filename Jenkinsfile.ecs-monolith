@@ -26,6 +26,10 @@ pipeline {
         booleanParam(name: 'PRODUCTION_RELEASE_ENABLED', defaultValue: false, description: '发布/回滚开关；机器环境 DOORHANDLE_COMPACT_RELEASE_READY 仍须为 true')
         string(name: 'COMPACT_CUTOVER_SETTINGS', defaultValue: '', trim: true, description: '可复用夹具设置：ECS私有JSON，version/sourceMysqlContainerId/sourceSchema/sourceOffsets/java，不含密码')
         string(name: 'LEGACY_SOURCE_SNAPSHOT', defaultValue: '', trim: true, description: '可选本地原始数据字节封存目录；源码验证通过后上传ECS并逐文件恢复核对，不在本地打开数据库')
+        string(name: 'LEGACY_SOURCE_ECS_SNAPSHOT', defaultValue: '', trim: true, description: '后续复用ECS已恢复核验的旧数据封存目录；与本地输入互斥，业务原件不回传本地')
+        string(name: 'LOCAL_ARTIFACTS_SNAPSHOT', defaultValue: '', trim: true, description: '首次上传额外历史模型、备份、日志与上传文件的私有字节封存目录')
+        string(name: 'LOCAL_ARTIFACTS_ECS_SNAPSHOT', defaultValue: '', trim: true, description: '后续复用ECS已恢复核验的额外原件；与对应本地输入互斥')
+        booleanParam(name: 'RECLAIM_OLD_BUILD_OUTPUTS', defaultValue: true, description: '本构建完整验证通过后，按原始证据与精确计划清理旧构建可再生输出，保留业务数据和报告')
         string(name: 'DEPLOY_HOST', defaultValue: "${params.DEPLOY_HOST ?: ''}", trim: true, description: '流水线外启动 ECS 后核对的当前地址；首次为空，不自动开机')
         string(name: 'DEPLOY_PORT', defaultValue: "${params.DEPLOY_PORT ?: '22'}", trim: true, description: '已核验的 SSH 端口；TLS 通道可显式使用 443')
         choice(name: 'SSH_TRANSPORT', choices: params.SSH_TRANSPORT == 'tls' ? ['tls', 'direct'] : ['direct', 'tls'], description: 'direct 校验 SSH 主机公钥；tls 额外校验证书')
@@ -91,7 +95,13 @@ pipeline {
                     env.DOORHANDLE_CI_FIXTURE_MANIFEST = params.DOORHANDLE_CI_FIXTURE_MANIFEST?.trim() ?: ''
                     env.DOORHANDLE_CI_AUTO_COMPACT_FIXTURES = params.DOORHANDLE_CI_AUTO_COMPACT_FIXTURES ? 'true' : 'false'
                     env.DOORHANDLE_CI_FIXTURE_SETTINGS = params.DOORHANDLE_CI_FIXTURE_SETTINGS?.trim() ?: ''
-                    if (params.ACTION == 'verify-embedding' && (params.DOORHANDLE_CI_SCOPE != 'source' || params.DOORHANDLE_CI_AUTO_COMPACT_FIXTURES || params.LEGACY_SOURCE_SNAPSHOT?.trim() || params.PRODUCTION_RELEASE_ENABLED)) error('Embedding verification is an independent source component check without legacy migration or production release')
+                    env.LEGACY_SOURCE_SNAPSHOT = params.LEGACY_SOURCE_SNAPSHOT?.trim() ?: ''
+                    env.LEGACY_SOURCE_ECS_SNAPSHOT = params.LEGACY_SOURCE_ECS_SNAPSHOT?.trim() ?: ''
+                    env.LOCAL_ARTIFACTS_SNAPSHOT = params.LOCAL_ARTIFACTS_SNAPSHOT?.trim() ?: ''
+                    env.LOCAL_ARTIFACTS_ECS_SNAPSHOT = params.LOCAL_ARTIFACTS_ECS_SNAPSHOT?.trim() ?: ''
+                    if (env.LEGACY_SOURCE_SNAPSHOT && env.LEGACY_SOURCE_ECS_SNAPSHOT) error('Choose exactly one local or ECS legacy snapshot input')
+                    if (env.LOCAL_ARTIFACTS_SNAPSHOT && env.LOCAL_ARTIFACTS_ECS_SNAPSHOT) error('Choose exactly one local or ECS additional artifact snapshot input')
+                    if (params.ACTION == 'verify-embedding' && (params.DOORHANDLE_CI_SCOPE != 'source' || params.DOORHANDLE_CI_AUTO_COMPACT_FIXTURES || env.LEGACY_SOURCE_SNAPSHOT || env.LEGACY_SOURCE_ECS_SNAPSHOT || env.LOCAL_ARTIFACTS_SNAPSHOT || env.LOCAL_ARTIFACTS_ECS_SNAPSHOT || params.PRODUCTION_RELEASE_ENABLED)) error('Embedding verification is an independent source component check without legacy migration or production release')
                     if (params.DOORHANDLE_CI_SCOPE == 'source' && env.DOORHANDLE_CI_FIXTURE_MANIFEST) error('Source verification cannot accept a MySQL fixture manifest')
                     if (params.DOORHANDLE_CI_AUTO_COMPACT_FIXTURES) {
                         if (params.DOORHANDLE_CI_SCOPE != 'mysql' || env.DOORHANDLE_CI_FIXTURE_MANIFEST || !env.DOORHANDLE_CI_FIXTURE_SETTINGS) error('Automatic compact fixtures require mysql scope, private ECS settings and no conflicting manual manifest')
@@ -106,7 +116,7 @@ pipeline {
                         env.COMPACT_CUTOVER_SETTINGS = selectedSettings
                     }
                     if (params.ACTION == 'verify-runtime' && (params.DOORHANDLE_CI_SCOPE != 'mysql' || !env.DOORHANDLE_CI_FIXTURE_SETTINGS)) error('Runtime acceptance requires complete MySQL scope and the private ECS fixture settings')
-                    if (params.ACTION in ['verify-runtime', 'compact-cutover'] && !params.LEGACY_SOURCE_SNAPSHOT?.trim()) error('Complete runtime acceptance requires the sealed legacy source snapshot for preservation and independent recovery')
+                    if (params.ACTION in ['verify-runtime', 'compact-cutover'] && !env.LEGACY_SOURCE_SNAPSHOT && !env.LEGACY_SOURCE_ECS_SNAPSHOT) error('Complete runtime acceptance requires the sealed legacy source snapshot for preservation and independent recovery')
                     if (params.ACTION == 'rehearse' && env.DOORHANDLE_COMPACT_REHEARSAL_READY != 'true') error('Legacy rehearsal remains disabled until its compact database adapter is accepted')
                 }
             }
@@ -177,14 +187,36 @@ pipeline {
                 script { env.CI_ECS_VERIFIED = 'true' }
             }
         }
+        stage('Reclaim proven old build outputs') {
+            when { expression { params.RECLAIM_OLD_BUILD_OUTPUTS && env.CI_ECS_VERIFIED == 'true' } }
+            steps {
+                withCredentials([
+                    sshUserPrivateKey(credentialsId: 'doorhandle-ecs-ssh', keyFileVariable: 'DEPLOY_KEY', usernameVariable: 'DEPLOY_USER'),
+                    file(credentialsId: 'doorhandle-ecs-known-hosts', variable: 'DEPLOY_KNOWN_HOSTS')
+                ]) {
+                    pwsh '& ./script/jenkins/pipeline.ps1 -Action ReclaimBuildOutputs'
+                }
+            }
+        }
         stage('Preserve legacy source bytes on ECS') {
-            when { expression { params.ACTION != 'rollback' && params.LEGACY_SOURCE_SNAPSHOT?.trim() } }
+            when { expression { params.ACTION != 'rollback' && (env.LEGACY_SOURCE_SNAPSHOT || env.LEGACY_SOURCE_ECS_SNAPSHOT) } }
             steps {
                 withCredentials([
                     sshUserPrivateKey(credentialsId: 'doorhandle-ecs-ssh', keyFileVariable: 'DEPLOY_KEY', usernameVariable: 'DEPLOY_USER'),
                     file(credentialsId: 'doorhandle-ecs-known-hosts', variable: 'DEPLOY_KNOWN_HOSTS')
                 ]) {
                     pwsh '& ./script/jenkins/pipeline.ps1 -Action PreserveLegacy'
+                }
+            }
+        }
+        stage('Preserve additional business artifacts on ECS') {
+            when { expression { params.ACTION != 'rollback' && (env.LOCAL_ARTIFACTS_SNAPSHOT || env.LOCAL_ARTIFACTS_ECS_SNAPSHOT) } }
+            steps {
+                withCredentials([
+                    sshUserPrivateKey(credentialsId: 'doorhandle-ecs-ssh', keyFileVariable: 'DEPLOY_KEY', usernameVariable: 'DEPLOY_USER'),
+                    file(credentialsId: 'doorhandle-ecs-known-hosts', variable: 'DEPLOY_KNOWN_HOSTS')
+                ]) {
+                    pwsh '& ./script/jenkins/pipeline.ps1 -Action PreserveLocalArtifacts'
                 }
             }
         }

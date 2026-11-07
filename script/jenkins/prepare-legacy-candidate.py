@@ -16,11 +16,16 @@ from pathlib import Path
 import re
 import secrets
 import shutil
+import socket
 import sqlite3
 import subprocess
 import sys
 import tarfile
+import threading
 import time
+from types import SimpleNamespace
+import urllib.error
+import urllib.request
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -31,6 +36,14 @@ MAX_BYTES = 512 * MIB
 MAX_FILES = 16384
 MAX_RAG_RECORDS = 1000
 LABEL = 'io.doorhandle.legacy-candidate'
+BGE_PROFILE = 'siliconflow-bge-m3-v1'
+BGE_MODEL = 'BAAI/bge-m3'
+BGE_BASE = 'https://api.siliconflow.cn/v1'
+BGE_COLLECTION = 'doorhandle_memories_bge_m3_v1'
+BGE_DIMENSION = 1024
+SEMANTIC_PHASES = ('after-start', 'after-restart', 'after-volume-restore')
+BGE_VERIFIER_MEMORY = 768 * MIB
+NATIVE_CUTOVER_LABEL = 'io.doorhandle.native-cutover'
 
 
 def need(value, message):
@@ -78,6 +91,506 @@ def module(name, path):
     spec = importlib.util.spec_from_file_location(name, path)
     value = importlib.util.module_from_spec(spec); spec.loader.exec_module(value)
     return value
+
+
+def private_bge_config(runtime):
+    """Read only the explicitly prepared ECS profile; never inherit LLM keys."""
+    runtime = canonical(runtime)
+    path = canonical(runtime / 'deploy/cloud.env')
+    need(path.stat().st_uid == os.getuid() and not path.stat().st_mode & 0o077
+         and 0 < path.stat().st_size <= MIB, 'Prepared ECS embedding settings must remain private')
+    names = {'EMBEDDING_PROFILE', 'EMBEDDING_MODEL', 'EMBEDDING_BASE_URL', 'EMBEDDING_API_KEY', 'EMBEDDING_API_KEY_FILE'}
+    selected = {}
+    for line in path.read_text(encoding='utf-8-sig').splitlines():
+        match = re.fullmatch(r'\s*(?:export\s+)?([A-Z][A-Z0-9_]*)\s*=(.*)', line)
+        if match is None or match[1] not in names: continue
+        need(match[1] not in selected, 'Prepared embedding settings contain a duplicate field')
+        value = match[2].strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"): value = value[1:-1]
+        selected[match[1]] = value
+    need(selected.get('EMBEDDING_PROFILE') == BGE_PROFILE and selected.get('EMBEDDING_MODEL') == BGE_MODEL
+         and selected.get('EMBEDDING_BASE_URL', '').rstrip('/') == BGE_BASE,
+         'Legacy activation requires the exact prepared free BGE profile')
+    literal, filename = selected.get('EMBEDDING_API_KEY'), selected.get('EMBEDDING_API_KEY_FILE')
+    # The actual production Compose contract requires this private env value.
+    # Do not admit file-only settings that cannot survive a normal deployment
+    # or silently mount a transient candidate credential in production.
+    need(bool(literal) and not filename, 'Current production Compose requires the persistent private ECS embedding env credential')
+    need(isinstance(literal, str) and re.fullmatch(r'sk-[A-Za-z0-9_-]{20,4090}', literal), 'Prepared embedding credential is invalid')
+    return {'embeddingProfile': BGE_PROFILE, 'model': BGE_MODEL, 'baseUrl': BGE_BASE, 'dimensions': None,
+            'verifiedTargetRuntime': True, 'apiKey': literal}
+
+
+def semantic_plan(bundle, mapping, migration, cloud_records=None):
+    """Bind partial-source natural-language questions to exact owned legacy IDs.
+
+    This is a repeatable source-anchored retrieval check, not a broad human quality
+    benchmark. Questions are neither original documents nor saved source vectors.
+    All questions/IDs remain in the private ECS candidate, never public receipts.
+    """
+    projected = migration.project(bundle, mapping)
+    all_records = {row['id']: row for row in projected['records']}
+    for row in cloud_records or []:
+        if row['id'] in all_records:
+            need(all_records[row['id']]['metadata'] == row['metadata'], 'Cloud/legacy memory ownership or text conflicts')
+        else: all_records[row['id']] = row
+    owners = sorted({row['metadata']['user_id'] for row in all_records.values()})
+    need(len(owners) >= 2, 'Semantic activation requires two explicitly mapped account scopes')
+    cases = []
+    groups = [('LEGACY', projected['records'])]
+    if cloud_records: groups.append(('CURRENT_CLOUD', cloud_records))
+    for origin, source_rows in groups:
+      for owner in sorted({row['metadata']['user_id'] for row in source_rows}):
+        rows = sorted((row for row in source_rows if row['metadata']['user_id'] == owner),
+                      key=lambda row: (-len(row['metadata']['data']), row['id']))
+        row = rows[0]; text = ' '.join(row['metadata']['data'].split())
+        need(bool(text), 'Legacy semantic query needs a nonempty source anchor')
+        anchor = text[:min(96, max(1, len(text) // 2))]
+        if ' ' in anchor: anchor = anchor.rsplit(' ', 1)[0]
+        query = 'What should be remembered about ' + anchor.rstrip(' .,:;!?') + '?'
+        need(query != text and len(query.encode()) <= 8000 and bool(anchor),
+             'Semantic question cannot repeat the complete memory or omit its source anchor')
+        case = {'owner': owner, 'query': query, 'querySha256': hashlib.sha256(query.encode()).hexdigest(),
+            'expectedId': row['id'], 'expectedTextSha256': row['textSha256'],
+            'topK': min(5, sum(r['metadata']['user_id'] == owner for r in all_records.values()))}
+        if cloud_records: case['origin'] = origin
+        if not any(c['owner'] == owner and c['querySha256'] == case['querySha256'] for c in cases): cases.append(case)
+    result = {'version': 1, 'kind': 'doorhandle-legacy-bge-semantic-plan', 'protocol': 'SOURCE_ANCHORED_NATURAL_LANGUAGE_QUERY_V1',
+        'sourceBundleSha256': migration.sha(migration.canonical(bundle)), 'ownerMappingSha256': migration.sha(migration.canonical(mapping)),
+        'embeddingProfile': BGE_PROFILE, 'model': BGE_MODEL, 'collection': BGE_COLLECTION, 'dimensions': BGE_DIMENSION,
+        'cases': cases}
+    if cloud_records: result['currentCloudRecordsSha256'] = sha(cloud_records)
+    return result
+
+
+def cloud_memory_records(data, before, mapping, migration):
+    """Read all frozen cloud records and prove their exact project/account scope.
+
+    Unmarked vectors remain in their original collection. Only a separately
+    named, already model-bound BGE collection can reuse original vectors.
+    """
+    from chromadb import PersistentClient
+    from chromadb.config import Settings
+    from memory_service.embedding_config import SPACE_METADATA
+    owners = {entry['sourceOwner']: 'doorhandlecatch:user:' + str(entry['userId'])
+              for entry in mapping['owners'] if entry['disposition'] == 'import'}
+    owners.update({value: value for value in list(owners.values())})
+    need(set(before['sqlite']['collections']) == {row['id'] for row in before['collections'].values()},
+         'Complete native API/SQLite collection catalogue differs')
+    records = {}; bound_vectors = {}; clients = {}
+    for key, scope in sorted(before['collections'].items()):
+        need(before['sqlite']['collections'][scope['id']]['records'] == len(scope['records']), 'Cloud collection count differs from SQLite')
+        if not scope['records']: continue
+        need(scope['tenant'] == 'default_tenant' and scope['database'] == 'default_database',
+             'A nondefault Mem0 namespace requires an explicit account/project migration policy')
+        client = clients.setdefault(key, PersistentClient(path=str(data / 'chroma'), tenant=scope['tenant'], database=scope['database'],
+                                                        settings=Settings(anonymized_telemetry=False)))
+        collection = client.get_collection(scope['name'], embedding_function=None)
+        bound = scope['name'] == BGE_COLLECTION
+        if bound: need(all((scope['metadata'] or {}).get(k) == v for k, v in SPACE_METADATA.items()),
+                       'Existing BGE collection lacks its exact provider/model/dimension identity')
+        for offset in range(0, collection.count(), 500):
+            page = collection.get(offset=offset, limit=500, include=['metadatas', 'documents', 'embeddings'])
+            for index, ident in enumerate(page['ids']):
+                meta = dict(page['metadatas'][index] or {}); text = meta.get('data'); owner = meta.get('user_id')
+                need(isinstance(ident, str) and isinstance(text, str) and text.strip() and len(text.encode()) <= 8000
+                     and owner in owners and meta.get('agent_id') in (None, 'doorhandlecatch')
+                     and page['documents'][index] in (None, text), 'A cloud memory has unknown owner/application/text provenance')
+                raw = migration.vector_bytes(page['embeddings'][index])
+                meta.update(user_id=owners[owner], agent_id='doorhandlecatch')
+                row = {'id': ident, 'metadata': meta, 'textSha256': hashlib.sha256(text.encode()).hexdigest(),
+                       'originalVectorSha256': hashlib.sha256(raw).hexdigest(), 'embedding': list(map(float, page['embeddings'][index]))}
+                if ident in records: need(records[ident]['metadata'] == meta, 'Cloud collections reuse an ID for different memory/owner')
+                else: records[ident] = row
+                if bound:
+                    need(len(row['embedding']) == BGE_DIMENSION and page['metadatas'][index] == meta,
+                         'Bound BGE memory has inconsistent vector dimension or owner namespace')
+                    bound_vectors[ident] = row
+                    records[ident] = row
+    need(len(records) <= 1000, 'Cloud memory union exceeds the reviewed bounded migration')
+    return [records[key] for key in sorted(records)], bound_vectors
+
+
+def merge_legacy_mem0(work, data, bundle, mapping, context, migration):
+    snapshot = work / 'cloud-mem0'; proof = read(snapshot / 'snapshot-receipt.json')
+    need(proof.get('status') == 'RESTORED_VERIFIED' and proof.get('fullVolume') is True
+         and proof.get('identity') == context['identity'] and digest(snapshot / 'originals.tar') == proof['archiveSha256'],
+         'BGE merge requires the complete current native backup and independent restore')
+    marker = {'scope': 'mem0-offline-candidate', **context['identity'], 'sourceQuiesced': True,
+        'sourceBundleSha256': migration.sha(migration.canonical(bundle)), 'sourceBackupPath': str(snapshot / 'originals.tar'),
+        'sourceBackupSha256': proof['archiveSha256'], 'restoreProofPath': str(snapshot / 'snapshot-receipt.json'),
+        'release': context['release'], 'commit': context['commit'], 'sourceSha256': context['sourceSha256']}
+    write(data / 'migration-candidate.json', marker)
+    config = read(context['bgeProviderFile'], 8192)
+    need(config.get('embeddingProfile') == BGE_PROFILE and config.get('model') == BGE_MODEL
+         and config.get('baseUrl') == BGE_BASE and config.get('dimensions') is None, 'The owned BGE provider changed before reembedding')
+    before = read(work / 'mem0-before.json', 64 * MIB)
+    cloud, bound = cloud_memory_records(data, before, mapping, migration)
+    projected = migration.project(bundle, mapping)
+    legacy_by_id = {row['id']: row for row in projected['records']}
+    need(not {row['id'] for row in cloud}.intersection(projected['archivedMemoryIds']),
+         'A private archived test ID appears in a real cloud scope; explicit conflict review is required')
+    for row in cloud:
+        if row['id'] in legacy_by_id:
+            need(row['metadata'] == legacy_by_id[row['id']]['metadata'], 'Current/legacy ID content or account conflicts; no overwrite is allowed')
+    write(work / 'mem0-cloud-records.json', cloud)
+    migration.reembed(bundle, mapping, config, work / 'mem0-bge-embeddings.json')
+    embeddings = read(work / 'mem0-bge-embeddings.json', 16 * MIB)
+    need(embeddings.get('targetModel') == BGE_MODEL and embeddings.get('targetCollection') == BGE_COLLECTION
+         and embeddings.get('embeddingProfile') == BGE_PROFILE and embeddings.get('dimensions') == BGE_DIMENSION
+         and [request.get('records') for request in embeddings.get('requests', [])] == [8, 8, 8, 6]
+         and all(request.get('status') == 'SUCCEEDED' and request.get('responseModel') in (None, BGE_MODEL, 'bge-m3')
+                 for request in embeddings['requests']), 'The complete real BGE request/output protocol differs')
+    # An already bound BGE record remains byte-for-byte authoritative. A fresh
+    # provider response must never overwrite it during an idempotent import.
+    for row in embeddings['records']:
+        if row['id'] in bound:
+            row['embedding'] = bound[row['id']]['embedding']
+            row['targetVectorSha256'] = bound[row['id']]['originalVectorSha256']
+            row['existingBoundCloudVectorReused'] = True
+    write(work / 'mem0-bge-merge-embeddings.json', embeddings)
+    result = migration.merge_candidate(bundle, mapping, embeddings, data, data / 'legacy-bge-merge-receipt.json', context['identity'])
+    need(result['activeRecords'] == 30 and result['importedHistoryRows'] == 30 and result['importedMessageRows'] == 25
+         and result['archivedHistoryRows'] == 3 and result['archivedMessageRows'] == 1,
+         'Native BGE merge does not preserve the complete admitted owner disposition')
+    from chromadb import PersistentClient
+    from chromadb.config import Settings
+    client = PersistentClient(path=str(data / 'chroma'), settings=Settings(anonymized_telemetry=False))
+    target = client.get_collection(BGE_COLLECTION, embedding_function=None)
+    pending = [row for row in cloud if row['id'] not in bound and row['id'] not in legacy_by_id]
+    cloud_requests = 0
+    for offset in range(0, len(pending), 30):
+        rows = pending[offset:offset + 30]
+        export = {'format': migration.FORMAT, 'kind': 'legacy-mem0-private-export', 'collection': 'CURRENT_CLOUD_UNION',
+                  'dimension': None, 'sources': [], 'records': rows, 'history': [], 'messages': []}
+        policy = {'sourceBundleSha256': sha(export), 'targetTenantId': None, 'owners': [
+            {'sourceOwner': owner, 'disposition': 'import', 'userId': int(owner.rsplit(':', 1)[1]),
+             'reason': 'Fresh ECS account proof and complete frozen current-cloud project collection'}
+            for owner in sorted({row['metadata']['user_id'] for row in rows})]}
+        output = work / ('cloud-bge-embeddings-' + str(offset) + '.json')
+        migration.reembed(export, policy, config, output)
+        generated = read(output, 16 * MIB); prepared = migration.prepared_records(export, policy, generated)['records']
+        need(generated['targetModel'] == BGE_MODEL and generated['dimensions'] == BGE_DIMENSION
+             and all(item['status'] == 'SUCCEEDED' for item in generated['requests']), 'Cloud BGE reembedding failed closed')
+        cloud_requests += len(generated['requests'])
+        target.add(ids=[row['id'] for row in prepared], embeddings=[row['embedding'] for row in prepared],
+                   metadatas=[row['metadata'] for row in prepared])
+    actual = migration.read_collection(target)
+    expected_ids = set(legacy_by_id) | {row['id'] for row in cloud}
+    need(set(actual) == expected_ids, 'BGE target does not exactly cover current-cloud plus trusted legacy memories')
+    for row in cloud:
+        need(actual[row['id']]['metadata'] == row['metadata'], 'A current-cloud memory lost its original text/ownership metadata')
+        if row['id'] in bound:
+            need(actual[row['id']]['vectorSha256'] == row['originalVectorSha256'], 'An existing bound cloud BGE vector changed')
+    write(work / 'mem0-semantic-plan.json', semantic_plan(bundle, mapping, migration, cloud))
+    after = {'collections': complete_chroma(data / 'chroma', migration), 'history': native_history(data), 'sqlite': native_sql_state(data)}
+    for key, row in before['collections'].items():
+        updated = after['collections'].get(key)
+        need(updated is not None, 'BGE merge removed an original cloud collection')
+        if row['name'] != BGE_COLLECTION:
+            need(updated == row, 'BGE merge changed an original non-target vector space')
+        else:
+            need(updated['id'] == row['id'] and updated['metadata'] == row['metadata']
+                 and all(updated['records'].get(ident) == record for ident, record in row['records'].items()),
+                 'BGE merge changed an original bound vector or metadata')
+    need(all(after['history'][table].get(key) == checksum for table, rows in before['history'].items() for key, checksum in rows.items()),
+         'BGE merge changed an original native history or message row')
+    write(work / 'mem0-after.json', after)
+    receipt = read(data / 'legacy-bge-merge-receipt.json')
+    need(receipt['targetCollection'] == BGE_COLLECTION and receipt['targetModel'] == BGE_MODEL,
+         'The candidate was merged into another vector space')
+    return {'mergedRecords': 30, 'mergedHistoryRows': 30, 'mergedMessageRows': 25,
+        'embeddingRequests': len(embeddings['requests']) + cloud_requests, 'currentCloudRecords': len(cloud),
+        'currentCloudBoundBgeRecords': len(bound), 'currentCloudReembeddedRecords': len(pending), 'targetRecords': len(actual),
+        'cloudRecordsSha256': digest(work / 'mem0-cloud-records.json'), 'allCurrentCloudRecordsPreservedAndSearchable': True,
+        'mergeReceiptSha256': digest(data / 'legacy-bge-merge-receipt.json'),
+        'semanticPlanSha256': digest(work / 'mem0-semantic-plan.json'), 'afterStateSha256': digest(work / 'mem0-after.json')}
+
+
+def verify_semantic_bridge(bundle, mapping, plan, base, token, migration, cloud_records=None):
+    projected = migration.project(bundle, mapping)
+    expected = semantic_plan(bundle, mapping, migration, cloud_records)
+    need(plan == expected, 'Semantic questions or expected legacy IDs changed')
+    by_id = {row['id']: row for row in projected['records']}
+    by_id.update({row['id']: row for row in cloud_records or []})
+    by_owner = {owner: {row['id'] for row in by_id.values() if row['metadata']['user_id'] == owner}
+                for owner in {row['metadata']['user_id'] for row in by_id.values()}}
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), migration.NoRedirect())
+
+    def request(body, authenticated=True):
+        headers = {'Content-Type': 'application/json', 'X-Doorhandle-Memory-Protocol': '2'}
+        if authenticated: headers['X-Doorhandle-Memory-Token'] = token
+        try:
+            with opener.open(urllib.request.Request(base + '/memories/search', data=encoded(body), headers=headers, method='POST'), timeout=30) as response:
+                raw = response.read(2 * MIB + 1); need(len(raw) <= 2 * MIB, 'Semantic response exceeds its private bound')
+                return response.status, json.loads(raw)
+        except urllib.error.HTTPError as error: return error.code, None
+
+    observed = []; provider_requests = 0
+    for case in plan['cases']:
+        body = {'user_id': case['owner'], 'app_id': 'doorhandlecatch', 'query': case['query'], 'scope': 'ACCOUNT', 'top_k': case['topK']}
+        code, _ = request(body, authenticated=False)
+        need(code == 401, 'Unauthenticated semantic search was not denied')
+        for owner in (case['owner'], next(value for value in sorted(by_owner) if value != case['owner'])):
+            code, result = request({**body, 'user_id': owner}); provider_requests += 1
+            need(code == 200 and isinstance(result, dict) and result.get('code') == 200 and isinstance(result.get('data'), list), 'Actual owned BGE search failed')
+            items = result['data']
+            need(all(isinstance(item, dict) and isinstance(item.get('id'), str) and isinstance(item.get('memory'), str)
+                     for item in items), 'Semantic search returned an invalid result shape')
+            ids = [item['id'] for item in items]
+            need(len(ids) == len(set(ids)) and set(ids) <= by_owner[owner]
+                 and not set(ids).intersection(projected['archivedMemoryIds']), 'Actual semantic search crossed an owner or private archive boundary')
+            need(all(hashlib.sha256(item.get('memory', '').encode()).hexdigest() == by_id[item['id']]['textSha256'] for item in items),
+                 'Actual semantic search returned another source text')
+            if owner == case['owner']:
+                need(case['expectedId'] in ids and len(ids) <= case['topK'], 'Actual natural-language BGE query did not retrieve its bound legacy target')
+                observed.append({'ownerSha256': hashlib.sha256(owner.encode()).hexdigest(), 'querySha256': case['querySha256'],
+                    'expectedIdSha256': hashlib.sha256(case['expectedId'].encode()).hexdigest(), 'rank': ids.index(case['expectedId']) + 1,
+                    'topK': case['topK'], 'sourceTextSha256': case['expectedTextSha256'], 'unauthenticatedReadStatus': 401})
+            else:
+                need(case['expectedId'] not in ids, 'A foreign account retrieved the original query target')
+    return {'status': 'SEMANTIC_BRIDGE_VERIFIED', 'planSha256': sha(plan), 'queryProtocol': plan['protocol'],
+        'queries': observed, 'semanticQueries': len(observed), 'crossOwnerQueries': len(observed),
+        'embeddingRequests': provider_requests, 'paidModelCalls': 0, 'llmCalls': 0}
+
+
+def validate_semantic_receipt(value, plan):
+    expected = {(hashlib.sha256(case['owner'].encode()).hexdigest(), case['querySha256']): case for case in plan['cases']}
+    rows = value.get('queries')
+    need(isinstance(rows, list) and len(rows) == len(expected) >= 2 and value.get('planSha256') == sha(plan)
+         and value.get('queryProtocol') == plan['protocol'] and value.get('semanticQueries') == value.get('crossOwnerQueries') == len(expected)
+         and value.get('embeddingRequests') == 2 * len(expected), 'Semantic receipt lacks the exact actual owner queries')
+    seen = set()
+    for row in rows:
+        key = (row.get('ownerSha256'), row.get('querySha256')); case = expected.get(key)
+        need(case is not None and key not in seen
+             and row.get('expectedIdSha256') == hashlib.sha256(case['expectedId'].encode()).hexdigest()
+             and row.get('sourceTextSha256') == case['expectedTextSha256'] and row.get('topK') == case['topK']
+             and type(row.get('rank')) is int and 1 <= row['rank'] <= case['topK']
+             and row.get('unauthenticatedReadStatus') == 401, 'Semantic receipt query target, rank or authorization differs')
+        seen.add(key)
+    need(value.get('embeddingProfile') == BGE_PROFILE and value.get('collection') == BGE_COLLECTION
+         and value.get('model') == BGE_MODEL and value.get('dimensions') == BGE_DIMENSION
+         and value.get('nativeReadOnlyVerified') is True and value.get('independentProcess') is True
+         and value.get('ownedRestoredCopy') is True and value.get('paidModelCalls') == value.get('llmCalls') == 0
+         and re.fullmatch(r'[a-f0-9]{64}', value.get('nativeBeforeSha256', ''))
+         and value['nativeBeforeSha256'] == value.get('nativeAfterSha256'), 'Semantic provider or native before/after evidence differs')
+
+
+@contextlib.contextmanager
+def embedding_request_counter(adapter):
+    """Count real attempts cumulatively, independently of the rate-limit deque."""
+    original = adapter._request; counts = {'attempted': 0, 'succeeded': 0}
+    def request(instance, texts):
+        counts['attempted'] += 1
+        result = original(instance, texts)
+        counts['succeeded'] += 1
+        return result
+    adapter._request = request
+    try: yield counts
+    finally: adapter._request = original
+
+
+def bge_worker_command(ctx, folder, context_file):
+    helper = canonical(ctx.checkout / 'script/jenkins/prepare-legacy-candidate.py')
+    need(digest(helper) == digest(Path(__file__).resolve()) and canonical(context_file).is_relative_to(folder),
+         'BGE worker source/context escaped its admitted mounted checkout')
+    return ['-I', '-B', str(helper), 'bge-verify-worker', '--context', str(context_file)]
+
+
+def bge_container_command(ctx, name, folder, context_file):
+    return ['create', '--name', name, '--pull', 'never', '--network', 'bridge', '--read-only',
+        '--user', str(os.getuid()) + ':' + str(os.getgid()), '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true',
+        '--pids-limit', '128', '--memory', str(BGE_VERIFIER_MEMORY), '--memory-swap', str(BGE_VERIFIER_MEMORY),
+        '--tmpfs', '/tmp:rw,nosuid,noexec,size=33554432', '--log-opt', 'max-size=1m', '--log-opt', 'max-file=1',
+        '--label', 'io.doorhandle.rehearsal=' + ctx.project, '--label', 'io.doorhandle.bge-verifier=' + ctx.token,
+        '--label', 'io.doorhandle.release=' + ctx.args.tag,
+        '--mount', 'type=bind,src=' + str(ctx.checkout) + ',dst=' + str(ctx.checkout) + ',readonly',
+        '--mount', 'type=bind,src=' + str(folder) + ',dst=' + str(folder),
+        '--entrypoint', 'python', ctx.images['mem0'], *bge_worker_command(ctx, folder, context_file)]
+
+
+def bge_verify_worker(context_file):
+    """Real bridge lifecycle on an owned restored COPY, never a source/live volume."""
+    context = read(context_file); folder = canonical(context['directory']); data = canonical(folder / 'data')
+    need(context.get('kind') == 'doorhandle-owned-bge-verifier' and context.get('embeddingProfile') == BGE_PROFILE
+         and folder.is_relative_to(ROOT / 'work') and canonical(context_file).parent == folder,
+         'BGE verification worker escaped its owned candidate')
+    credentials = read(context['credentialFile'], 8192)
+    need(credentials.get('embeddingProfile') == BGE_PROFILE and credentials.get('model') == BGE_MODEL
+         and credentials.get('baseUrl') == BGE_BASE and credentials.get('dimensions') is None, 'Free embedding transport changed')
+    key = folder / 'embedding.key'
+    with os.fdopen(os.open(key, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600), 'w') as stream:
+        stream.write(credentials['apiKey']); stream.flush(); os.fsync(stream.fileno())
+    home = folder / 'home'; home.mkdir(mode=0o700)
+    os.environ.update(HOME=str(home), XDG_CACHE_HOME=str(home / '.cache'), PYTHONDONTWRITEBYTECODE='1', PYTHONNOUSERSITE='1',
+        MEM0_DATA_DIR=str(data), EMBEDDING_PROFILE=BGE_PROFILE, EMBEDDING_MODEL=BGE_MODEL,
+        EMBEDDING_BASE_URL=BGE_BASE, EMBEDDING_API_KEY_FILE=str(key), MEM0_BRIDGE_TOKEN=context['bridgeToken'],
+        DASHSCOPE_API_KEY='unusable-no-llm-credential', DASHSCOPE_BASE_URL='http://127.0.0.1:9/v1',
+        MEM0_LLM_MODEL='llm-disabled-for-legacy-readback', MODEL_CONFIG_ENABLED='false',
+        MEM0_LIFECYCLE_CLEANUP_ENABLED='false', MEM0_DUPLICATE_REVIEW_ENABLED='false',
+        MEM0_TELEMETRY='false', ANONYMIZED_TELEMETRY='false', EMBEDDING_REQUESTS_PER_MINUTE='60')
+    for name in ('EMBEDDING_API_KEY', 'DOORHANDLE_RUNTIME_ACCEPTANCE', 'DOORHANDLE_RUNTIME_PROJECT', 'MEM0_RUNTIME_TEST_COLLECTION',
+                 'MEM0_MODEL_GATEWAY_BASE_URL', 'MEM0_SOURCE_PATH'):
+        os.environ.pop(name, None)
+    sys.path.insert(0, str(ROOT))
+    import uvicorn
+    from memory_service import main as bridge
+    from memory_service import embedding_config as embedding_runtime
+    migration = module('legacy_bge_bridge_source', ROOT / 'script/memory/migrate_legacy_stores.py')
+    bundle = read(context['bundle'], 16 * MIB); mapping = read(context['mapping']); plan = read(context['plan'])
+    need(sha(bundle) == context['sourceBundleSha256'] and sha(mapping) == context['ownerMappingSha256']
+         and digest(context['plan']) == context['semanticPlanSha256'], 'BGE bridge inputs changed')
+    before = native_sql_state(data)
+    sock = socket.socket(); sock.bind(('127.0.0.1', 0)); sock.listen(32)
+    port = sock.getsockname()[1]
+    server = uvicorn.Server(uvicorn.Config(bridge.app, log_level='error', access_log=False))
+    thread = threading.Thread(target=server.run, kwargs={'sockets': [sock]}, daemon=True)
+    llm_calls = []
+    # The adapter deque is a rolling rate limit, not a cumulative I/O receipt.
+    counter = embedding_request_counter(embedding_runtime.FreeBgeEmbedder)
+    counters = counter.__enter__()
+    try:
+        thread.start(); deadline = time.monotonic() + 60
+        while not server.started:
+            need(thread.is_alive() and time.monotonic() < deadline, 'Owned BGE bridge did not start')
+            time.sleep(0.05)
+        def no_llm(*args, **kwargs):
+            llm_calls.append(1); raise ValueError('Real LLM invocation is forbidden in native read verification')
+        bridge.memory_instance.llm.generate_response = no_llm
+        base = 'http://127.0.0.1:' + str(port)
+        migration.verify_bridge(bundle, mapping, {'baseUrl': base, 'token': context['bridgeToken']}, folder / 'bridge-readback-private.json', context['identity'])
+        cloud_records = read(context['cloudRecords'], 64 * MIB)
+        semantic = verify_semantic_bridge(bundle, mapping, plan, base, context['bridgeToken'], migration, cloud_records)
+        need(not llm_calls and counters['attempted'] == counters['succeeded'] == semantic['embeddingRequests'],
+             'A verifier used an unexpected model path or omitted the actual provider calls')
+        semantic.update(identity=context['identity'], phase=context['phase'], collection=BGE_COLLECTION, dimensions=BGE_DIMENSION,
+            embeddingProfile=BGE_PROFILE, model=BGE_MODEL, independentProcess=True, ownedRestoredCopy=True,
+            sourceBundleSha256=context['sourceBundleSha256'], ownerMappingSha256=context['ownerMappingSha256'],
+            semanticPlanSha256=context['semanticPlanSha256'], sourceSnapshotReceiptSha256=context['sourceSnapshotReceiptSha256'],
+            bridgeReadbackSha256=digest(folder / 'bridge-readback-private.json'),
+            actualEmbeddingAttempts=counters['attempted'], actualEmbeddingSuccesses=counters['succeeded'])
+    finally:
+        server.should_exit = True
+        if thread.is_alive(): thread.join(timeout=30)
+        counter.__exit__(None, None, None)
+        need(not thread.is_alive(), 'Owned BGE bridge did not stop')
+        sock.close()
+        if key.exists(): key.unlink()
+    after = native_sql_state(data)
+    need(after == before, 'Actual native read/search changed a recovered source collection or native history/message row')
+    semantic.update(nativeBeforeSha256=sha(before), nativeAfterSha256=sha(after), nativeReadOnlyVerified=True)
+    validate_semantic_receipt(semantic, plan)
+    write(folder / 'semantic-readback.json', semantic)
+    return {'status': semantic['status'], 'semanticReceiptSha256': digest(folder / 'semantic-readback.json')}
+
+
+def owned_bge_helper(row, ctx, name, directory):
+    labels = row['Config'].get('Labels') or {}; host = row['HostConfig']
+    need(row['Image'] == ctx.images['mem0'] and row['Name'] == '/' + name
+         and labels.get('io.doorhandle.rehearsal') == ctx.project
+         and labels.get('io.doorhandle.bge-verifier') == ctx.token
+         and labels.get('io.doorhandle.release') == ctx.args.tag
+         and host['NetworkMode'] == 'bridge' and host['ReadonlyRootfs'] is True
+         and host['Memory'] == BGE_VERIFIER_MEMORY and host['MemorySwap'] == BGE_VERIFIER_MEMORY
+         and not host.get('Privileged') and not host.get('PortBindings') and host['RestartPolicy']['Name'] == 'no'
+         and row['Config']['User'] == str(os.getuid()) + ':' + str(os.getgid()), 'Free BGE verifier ownership/resources changed')
+    binds = {mount['Destination']: mount for mount in row['Mounts'] if mount['Type'] == 'bind'}
+    need(set(binds) == {str(ctx.checkout), str(directory)}
+         and binds[str(ctx.checkout)]['Source'] == str(ctx.checkout) and binds[str(ctx.checkout)]['RW'] is False
+         and binds[str(directory)]['Source'] == str(directory) and binds[str(directory)]['RW'] is True,
+         'BGE helper is not restricted to fixed source and its independent owned restore')
+
+
+def verify_bge_phase(ctx, phase):
+    need(phase in SEMANTIC_PHASES, 'Unknown BGE read verification phase')
+    value, _, work = admit_runtime(ctx)
+    folder = ctx.directory / ('bge-' + phase); need(not folder.exists(), 'A BGE phase result cannot be replayed')
+    folder.mkdir(mode=0o700)
+    volume = ctx.config['volumes']['doorhandle-mem0']['name']
+    volume_info = json.loads(ctx.ops.docker('volume', 'inspect', volume))[0]
+    need(volume_info.get('Labels', {}).get('io.doorhandle.rehearsal') == ctx.project
+         and volume not in value['originalVolumes'].values(), 'BGE verification source is not this attempt owned native volume')
+    source_node = ctx.row('mem0')
+    need(any(mount.get('Type') == 'volume' and mount.get('Name') == volume and mount.get('Destination') == '/data'
+             for mount in source_node['Mounts']), 'Actual runtime memory volume differs from its owned configuration')
+    helper = canonical(ctx.checkout / 'script/jenkins/prepare-legacy-candidate.py')
+    need(digest(helper) == digest(Path(__file__).resolve()), 'BGE worker source differs from the admitted release helper')
+    ctx.ops.docker('stop', '--time', '30', source_node['Id'], timeout=60)
+    try:
+        frozen = ctx.row('mem0')['State']; need(not frozen['Running'] and frozen['Pid'] == 0, 'Owned memory writer did not freeze for independent verification')
+        ctx.ops.docker('run', '--rm', '--pull', 'never', '--network', 'none', '--read-only', '--user', '0:0',
+            '--cap-drop', 'ALL', '--cap-add', 'DAC_READ_SEARCH', '--cap-add', 'DAC_OVERRIDE', '--cap-add', 'CHOWN', '--cap-add', 'FOWNER',
+            '--memory', '256m', '--memory-swap', '256m', '--label', 'io.doorhandle.rehearsal=' + ctx.project,
+            '--mount', 'type=volume,src=' + volume + ',dst=/source,readonly',
+            '--mount', 'type=bind,src=' + str(ctx.checkout) + ',dst=' + str(ctx.checkout),
+            '--mount', 'type=bind,src=' + str(helper) + ',dst=' + str(helper) + ',readonly',
+            '--entrypoint', 'python', ctx.images['mem0'], '-I', '-B', str(helper), 'snapshot-volume',
+            '--source', '/source', '--output', str(folder / 'volume'), '--uid', str(os.getuid()), '--gid', str(os.getgid()),
+            '--instance-id', ctx.identity['instanceId'], '--machine-id', ctx.identity['machineId'], timeout=300)
+    finally:
+        ctx.dc('start', 'mem0', timeout=90)
+    end = time.monotonic() + 120
+    while not ctx.ops.healthy(ctx.row('mem0')['Id']):
+        need(time.monotonic() < end, 'Owned memory service did not resume after independent snapshot')
+        time.sleep(0.5)
+    proof = read(folder / 'volume/snapshot-receipt.json')
+    need(proof['status'] == 'RESTORED_VERIFIED' and proof['fullVolume'] is True and proof['sourceMountedReadOnly'] is True,
+         'BGE phase lacks its full-volume independent restore')
+    credentials = folder / 'provider-private.json'; write(credentials, private_bge_config(ctx.runtime))
+    readback = read(work / 'legacy-mem0-read-verification.json')
+    context = {'kind': 'doorhandle-owned-bge-verifier', 'directory': str(folder / 'volume'), 'phase': phase,
+        'identity': {key: ctx.identity[key] for key in ('instanceId', 'machineId')}, 'embeddingProfile': BGE_PROFILE,
+        'credentialFile': str(credentials), 'bridgeToken': secrets.token_hex(32),
+        'bundle': str(work / 'legacy-mem0-export.json'), 'mapping': str(work / 'legacy-mem0-owner-map.json'),
+        'plan': str(work / 'mem0-semantic-plan.json'), 'cloudRecords': str(work / 'mem0-cloud-records.json'),
+        'sourceBundleSha256': readback['sourceBundleSha256'],
+        'ownerMappingSha256': readback['ownerMappingSha256'], 'semanticPlanSha256': value['mem0SemanticPlanSha256'],
+        'sourceSnapshotReceiptSha256': digest(folder / 'volume/snapshot-receipt.json')}
+    context_file = folder / 'volume/context-private.json'; write(context_file, context)
+    name = 'doorhandle-bge-' + ctx.token + '-' + phase
+    cid = None; stopped = None
+    try:
+        cid = ctx.ops.docker(*bge_container_command(ctx, name, folder, context_file), timeout=30).decode().strip()
+        need(re.fullmatch(r'[a-f0-9]{64}', cid), 'Free BGE verifier container ID is invalid')
+        ctx.owner.setdefault('bgeHelpers', {})[phase] = {'containerId': cid, 'name': name, 'directory': str(folder)}; ctx.save()
+        owned_bge_helper(json.loads(ctx.ops.docker('inspect', cid))[0], ctx, name, folder)
+        ctx.ops.docker('start', cid, timeout=30)
+        with ctx.resources.lock: ctx.resources.sample()
+        exit_code = ctx.ops.docker('wait', cid, timeout=300).decode().strip()
+        logs = ctx.ops.docker('logs', cid, timeout=20)
+        need(len(logs) <= 2 * MIB, 'Free BGE verifier private log exceeded its bound')
+        with (folder / 'worker-private.log').open('xb') as stream:
+            os.chmod(stream.name, 0o600); stream.write(logs)
+        need(exit_code == '0', 'Actual free BGE bridge semantic verification failed; private evidence retained')
+    finally:
+        if cid:
+            row = json.loads(ctx.ops.docker('inspect', cid))[0]; owned_bge_helper(row, ctx, name, folder)
+            ctx.ops.docker('stop', '--time', '5', cid, timeout=20)
+            final = json.loads(ctx.ops.docker('inspect', cid))[0]
+            need(not final['State']['Running'] and not final['State'].get('Restarting') and final['State']['Pid'] == 0,
+                 'Owned free BGE verifier did not stop')
+            with ctx.resources.lock: ctx.resources.sample()
+            stopped = {'containerId': cid, 'image': final['Image'], 'pid': 0, 'exitCode': final['State']['ExitCode']}
+            ctx.ops.docker('rm', '--volumes', cid, timeout=30)
+        for secret in (credentials, context_file, folder / 'volume/embedding.key'):
+            if secret.exists():
+                need(secret.is_file() and not secret.is_symlink() and secret.stat().st_uid == os.getuid(), 'Owned verifier secret path changed')
+                secret.unlink()
+    result = read(folder / 'volume/semantic-readback.json')
+    validate_semantic_receipt(result, read(work / 'mem0-semantic-plan.json'))
+    need(result.get('status') == 'SEMANTIC_BRIDGE_VERIFIED' and result.get('phase') == phase
+         and result.get('semanticPlanSha256') == value['mem0SemanticPlanSha256'] and result.get('nativeReadOnlyVerified') is True
+         and result.get('sourceSnapshotReceiptSha256') == context['sourceSnapshotReceiptSha256']
+         and result.get('semanticQueries', 0) >= 2 and result['crossOwnerQueries'] == result['semanticQueries']
+         and result['embeddingProfile'] == BGE_PROFILE and result['dimensions'] == BGE_DIMENSION
+         and result['paidModelCalls'] == result['llmCalls'] == 0 and stopped and stopped['exitCode'] == 0,
+         'BGE phase receipt lacks actual semantic/owner/restore/cleanup evidence')
+    result.update(kind='doorhandle-legacy-bge-semantic-readback', version=1,
+        actualRuntimeVolumeSha256=hashlib.sha256(volume.encode()).hexdigest(), helperCleanup=stopped,
+        candidateSha256=digest(work / 'legacy-candidate.json'), phaseSnapshotSha256=context['sourceSnapshotReceiptSha256'])
+    file = ctx.directory / ('bge-semantic-' + phase + '.json'); write(file, result)
+    return {'file': file.relative_to(ctx.attempt).as_posix(), 'sha256': digest(file)}
 
 
 def file_inventory(root):
@@ -268,18 +781,12 @@ def native_sql_state(directory):
     return json.loads(result.stdout)
 
 
-def require_empty_native_collections(before):
-    collections = before['collections']
-    personal = [row for row in collections.values() if row['name'] == 'doorhandle_memories']
-    need(len(personal) == 1 and all(not row['records'] for row in collections.values()),
-         'Any nonempty original Mem0 collection requires proven model compatibility; never mix test vectors')
-    need({row['id'] for row in collections.values()} == set(before['sqlite']['collections'])
-         and all(row['records'] == 0 for row in before['sqlite']['collections'].values()),
-         'Complete native collection API/SQLite emptiness evidence disagrees')
-
-
 def data_worker(context_file):
     """Runs only in the already-admitted temporary Python image/checkout."""
+    # The registered python -I launcher clears PYTHONPATH. Admit only this fixed
+    # checkout, so the pinned memory_service adapter can be imported by merge.
+    os.umask(0o077)
+    sys.path.insert(0, str(ROOT))
     context = read(context_file)
     migration = module('candidate_legacy_stores', ROOT / 'script/memory/migrate_legacy_stores.py')
     migration.ecs_identity(context['identity']['instanceId'], context['identity']['machineId'])
@@ -289,7 +796,6 @@ def data_worker(context_file):
     shutil.copytree(work / 'cloud-mem0/data', mem0 / 'data')
     native_before = {'collections': complete_chroma(mem0 / 'data/chroma', migration), 'history': native_history(mem0 / 'data'),
                      'sqlite': native_sql_state(mem0 / 'data')}
-    require_empty_native_collections(native_before)
     write(work / 'mem0-before.json', native_before)
     legacy = work / 'legacy-rag-export-copy'; legacy.mkdir(mode=0o700)
     restored = canonical(context['legacyRestore'])
@@ -304,15 +810,19 @@ def data_worker(context_file):
             {'sourceOwner': 'integration-user', 'disposition': 'archive', 'reason': 'Previously reviewed integration-only principal; no real user mapping'}]}
     migration.verify_accounts(mapping, work / 'owner-proof.json', context['identity'])
     projected = migration.project(native_source, mapping)
-    need(len(projected['records']) == 30 and len(projected['archivedMemoryIds']) == 2,
+    need(len(projected['records']) == 30 and len(projected['archivedMemoryIds']) == 2
+         and len(projected['history']) == 30 and len(projected['messages']) == 25
+         and projected['archivedHistoryRows'] == 3 and projected['archivedMessageRows'] == 1,
          'Legacy native owner dispositions changed; do not infer a new account mapping')
     write(work / 'legacy-mem0-owner-map.json', mapping)
-    write(work / 'legacy-mem0-read-verification.json', {'status': 'READ_AND_OWNER_VERIFIED_NOT_ACTIVATED',
+    merged = merge_legacy_mem0(work, mem0 / 'data', native_source, mapping, context, migration)
+    write(work / 'legacy-mem0-read-verification.json', {'status': 'MERGED_PENDING_SEMANTIC',
         'sourceBundleSha256': sha(native_source), 'ownerMappingSha256': sha(mapping), 'sourceRecords': 32,
         'eligibleRecords': 30, 'activatedRecords': 0, 'archivedRecords': 2, 'sourceHistoryRows': 33, 'sourceMessageRows': 26,
-        'eligibleHistoryRows': len(projected['history']), 'activatedHistoryRows': 0, 'archivedHistoryRows': projected['archivedHistoryRows'],
-        'eligibleMessageRows': len(projected['messages']), 'activatedMessageRows': 0, 'archivedMessageRows': projected['archivedMessageRows'],
-        'originalVectorAndIdReadbackVerified': True, 'modelCallsPerformed': False, 'semanticSearchVerified': False})
+        'eligibleHistoryRows': len(projected['history']), 'mergedHistoryRows': 30, 'archivedHistoryRows': projected['archivedHistoryRows'],
+        'eligibleMessageRows': len(projected['messages']), 'mergedMessageRows': 25, 'archivedMessageRows': projected['archivedMessageRows'],
+        'originalVectorAndIdReadbackVerified': True, 'modelCallsPerformed': True, 'paidModelCalls': 0, 'llmCalls': 0,
+        'semanticSearchVerified': False, 'embeddingProfile': BGE_PROFILE, 'collection': BGE_COLLECTION, 'dimensions': BGE_DIMENSION, **merged})
     shutil.copytree(restored / 'rag_chroma', legacy / 'rag_chroma')
     for name in ('original-manifest.json', 'restore-receipt.json'): shutil.copyfile(restored / name, legacy / name); os.chmod(legacy / name, 0o600)
     source = migration.rag_export(legacy, 83); write(work / 'legacy-rag-export.json', source)
@@ -391,7 +901,7 @@ def data_worker(context_file):
     need(len(encoded(manifest)) <= 2 * MIB, 'Private RAG preservation catalogue exceeds its explicit bound')
     write(work / 'rag-preservation-manifest.json', manifest)
     return {'status': 'MERGED_VERIFIED', 'legacyRecords': 83, 'targetRecords': len(actual),
-            'ragManifestSha256': digest(work / 'rag-preservation-manifest.json')}
+            'ragManifestSha256': digest(work / 'rag-preservation-manifest.json'), 'legacyMem0MergedRecords': merged['mergedRecords']}
 
 
 def owned_snapshot_helper(row, *, token, tag, name, image, volume, checkout):
@@ -527,12 +1037,14 @@ def run(args):
          'Fresh original ECS owner identities differ from the admitted monolith mappings')
     write(work / 'owner-proof.json', {'verifiedOnEcs': True, 'identity': identity, 'accounts': accounts,
         'verifiedAtUtc': time.strftime('%Y-%m-%dT%H:%M:%S+00:00', time.gmtime()), 'source': 'READ_ONLY_ORIGINAL_USERS'})
-    context = {'work': str(work), 'legacyRestore': str(restore), 'identity': identity, 'commit': args.commit,
+    bge_provider = work / 'bge-provider-private.json'
+    write(bge_provider, private_bge_config(args.runtime))
+    context = {'work': str(work), 'legacyRestore': str(restore), 'identity': identity, 'commit': args.commit, 'release': args.tag,
         'sourceSha256': args.source_sha256, 'dimension': args.dimension,
         'tenant': env.get('CHAT_ASSISTANT_CHROMA_TENANT', 'default_tenant'),
         'database': env.get('CHAT_ASSISTANT_CHROMA_DATABASE', 'default_database'),
         'java': str(tool_file.parent / 'java'), 'chromaSnapshotSha256': snapshots['chroma'],
-        'legacyRestoreReceiptSha256': digest(restore / 'restore-receipt.json')}
+        'legacyRestoreReceiptSha256': digest(restore / 'restore-receipt.json'), 'bgeProviderFile': str(bge_provider)}
     write(work / 'private-context.json', context)
     try:
         with (work / 'data-worker.log').open('xb') as output:
@@ -543,7 +1055,15 @@ def run(args):
     except BaseException:
         tool.cleanup(tools)
         raise
+    finally:
+        # This file is never part of a payload, public artifact or backup. Only
+        # the executor-owned transient copy is removed, never the ECS credential.
+        if bge_provider.exists():
+            need(bge_provider.is_file() and not bge_provider.is_symlink() and bge_provider.stat().st_uid == os.getuid(),
+                 'Temporary BGE credential ownership changed')
+            bge_provider.unlink()
     need(result.returncode == 0, 'RAG candidate preparation failed; no original cloud data was modified')
+    for owned in (work / 'mem0/data', work / 'rag/chroma'): private_tree(owned, os.getuid(), os.getgid())
     mem0_files, rag_files = file_inventory(work / 'mem0/data'), file_inventory(work / 'rag/chroma')
     write(work / 'mem0-payload-files.json', mem0_files); write(work / 'rag-payload-files.json', rag_files)
     descriptor = {'version': 1, 'kind': 'doorhandle-legacy-candidate', 'status': 'PREPARED', 'release': args.tag,
@@ -556,17 +1076,24 @@ def run(args):
         'ragDataDirectory': str(work / 'rag/chroma'), 'mem0DataDirectory': str(work / 'mem0/data'),
         'ragPayloadFilesSha256': digest(work / 'rag-payload-files.json'), 'mem0PayloadFilesSha256': digest(work / 'mem0-payload-files.json'),
         'mem0BeforeSha256': digest(work / 'mem0-before.json'),
+        'mem0CloudRecordsSha256': digest(work / 'mem0-cloud-records.json'),
         'legacyMem0ReadVerificationSha256': digest(work / 'legacy-mem0-read-verification.json'),
+        'mem0AfterSha256': digest(work / 'mem0-after.json'), 'mem0SemanticPlanSha256': digest(work / 'mem0-semantic-plan.json'),
+        'mem0MergeReceiptSha256': digest(work / 'mem0/data/legacy-bge-merge-receipt.json'),
         'ragManifestSha256': digest(work / 'rag-preservation-manifest.json'), 'mergeReceiptSha256': digest(work / 'rag-merge-receipt.json'),
         'cloudChromaAfterSha256': digest(work / 'cloud-chroma-after.json'), 'originalContainers': original_nodes,
         'originalVolumes': original_volumes,
-        'mem0Migration': 'LOCAL_30_NOT_ACTIVATED_SEMANTIC_NOT_VERIFIED_CLOUD_RECORDS_RETAINED',
-        'modelCallsPerformed': False, 'productionPromotionAllowed': False}
+        'mem0Migration': 'BGE_30_MERGED_PENDING_SEMANTIC_CLOUD_RECORDS_RETAINED',
+        'embeddingProfile': BGE_PROFILE, 'embeddingCollection': BGE_COLLECTION, 'embeddingDimensions': BGE_DIMENSION,
+        'candidateSemanticVerified': False, 'productionDataMaterialized': False,
+        'modelCallsPerformed': True, 'paidModelCalls': 0, 'llmCalls': 0, 'productionPromotionAllowed': False}
     write(work / 'legacy-candidate.json', descriptor)
     public = {'status': 'PREPARED', 'release': args.tag, 'commit': args.commit, 'sourceSha256': args.source_sha256,
         'identity': {**identity, 'executionLocation': 'ECS'}, 'legacyRagRecords': 83,
         'descriptorSha256': digest(work / 'legacy-candidate.json'), 'ragManifestSha256': descriptor['ragManifestSha256'],
-        'modelCallsPerformed': False, 'productionPromotionAllowed': False}
+        'modelCallsPerformed': True, 'paidModelCalls': 0, 'llmCalls': 0,
+        'legacyMem0MergedRecords': 30, 'candidateSemanticVerified': False, 'productionDataMaterialized': False,
+        'embeddingProfile': BGE_PROFILE, 'productionPromotionAllowed': False}
     write(work / 'public-summary.json', public)
     return {**public, 'publicSummarySha256': digest(work / 'public-summary.json')}
 
@@ -617,7 +1144,9 @@ def admit_runtime(ctx):
         'status': 'PREPARED', 'release': ctx.args.tag, 'commit': ctx.args.commit, 'sourceSha256': ctx.args.source_sha256,
         'legacySourceProfile': 'legacy-stores-with-windows-mcp-and-kafka-v1',
         'legacyKafkaFiles': 309, 'legacyKafkaBytes': 1184990233, 'legacyKafkaReplay': 'NOT_PERFORMED',
-        'identity': identity, 'productionPromotionAllowed': False, 'modelCallsPerformed': False}.items()),
+        'identity': identity, 'productionPromotionAllowed': False, 'modelCallsPerformed': True,
+        'paidModelCalls': 0, 'llmCalls': 0, 'candidateSemanticVerified': False, 'productionDataMaterialized': False,
+        'embeddingProfile': BGE_PROFILE, 'embeddingCollection': BGE_COLLECTION, 'embeddingDimensions': BGE_DIMENSION}.items()),
         'Legacy candidate belongs to another source, attempt or ECS')
     need(value['verificationReceiptSha256'] == digest(ctx.checkout.parent / 'verification-receipt.json')
          and value['legacyRestoreReceiptSha256'] == digest(ctx.checkout / 'work/legacy-source-restore/restore-receipt.json'),
@@ -633,6 +1162,9 @@ def admit_runtime(ctx):
     files = {'rag-preservation-manifest.json': 'ragManifestSha256', 'rag-merge-receipt.json': 'mergeReceiptSha256',
              'cloud-chroma-after.json': 'cloudChromaAfterSha256', 'mem0-before.json': 'mem0BeforeSha256',
              'legacy-mem0-read-verification.json': 'legacyMem0ReadVerificationSha256',
+             'mem0-after.json': 'mem0AfterSha256', 'mem0-semantic-plan.json': 'mem0SemanticPlanSha256',
+             'mem0-cloud-records.json': 'mem0CloudRecordsSha256',
+             'mem0/data/legacy-bge-merge-receipt.json': 'mem0MergeReceiptSha256',
              'rag-payload-files.json': 'ragPayloadFilesSha256', 'mem0-payload-files.json': 'mem0PayloadFilesSha256'}
     for name, key in files.items(): need(digest(canonical(work / name)) == value[key], 'Private native candidate evidence changed')
     for service in ('chroma', 'mem0'):
@@ -768,8 +1300,8 @@ def verify_runtime(ctx, phase):
     need(actual['collections'] == expected and actual['retrievalQueries'] == manifest['recordCount'],
          'Actual post-startup HTTP RAG retrieval lost a cloud or imported record/source/vector')
     native = json.loads(ctx.ops.docker('exec', ctx.row('mem0')['Id'], 'python', '-I', '-B', '-c', NATIVE_SQL_SCRIPT, '/data', timeout=30))
-    before = read(work / 'mem0-before.json', 32 * MIB)['sqlite']
-    need(all(row['records'] == 0 and native['collections'].get(key) == row for key, row in before['collections'].items()),
+    before = read(work / 'mem0-after.json', 32 * MIB)['sqlite']
+    need(all(native['collections'].get(key) == row for key, row in before['collections'].items()),
          'Original cloud Mem0 collection identity/configuration/vector records changed')
     test_name = 'doorhandle_runtime_test_' + ctx.token
     need(all(key in before['collections'] or row['name'] == test_name for key, row in native['collections'].items()),
@@ -787,13 +1319,16 @@ def verify_runtime(ctx, phase):
         need(all(native['collections'].get(key) == row for key, row in previous['collections'].items())
              and all(native['history'][table].get(key) == checksum for table, rows in previous['history'].items()
                      for key, checksum in rows.items()), 'Native recovery lost a post-business collection/history/message record')
+    semantic = verify_bge_phase(ctx, phase)
     result = {**ctx.context(), 'kind': 'doorhandle-legacy-runtime-readback', 'status': 'VERIFIED', 'phase': phase,
         'project': ctx.project, 'descriptorSha256': descriptor_sha, 'ragManifestSha256': value['ragManifestSha256'],
         'allCloudCollectionsSha256': sha(actual['collections']), 'retrievalQueries': actual['retrievalQueries'],
         'sourceAndDocumentAndFloat32Verified': True, 'preservedOriginalNativeCollections': len(before['collections']),
         'preservedOriginalHistoryRows': len(before['history']['history']), 'preservedOriginalMessageRows': len(before['history']['messages']),
-        'nativeStateSha256': sha(native), 'eligibleLocalMem0Records': 30, 'activatedLocalMem0Records': 0, 'localMem0ArchivedRecords': 2,
-        'localMem0SemanticStatus': 'NOT_ACTIVATED_SEMANTIC_NOT_VERIFIED', 'paidModelCalls': 0,
+        'nativeStateSha256': sha(native), 'eligibleLocalMem0Records': 30, 'activatedLocalMem0Records': 30, 'localMem0ArchivedRecords': 2,
+        'mergedLocalHistoryRows': 30, 'mergedLocalMessageRows': 25, 'archivedLocalHistoryRows': 3, 'archivedLocalMessageRows': 1,
+        'localMem0SemanticStatus': 'PHASE_SEMANTIC_VERIFIED', 'bgeSemanticVerification': semantic,
+        'candidateSemanticVerified': True, 'productionDataMaterialized': False, 'paidModelCalls': 0, 'llmCalls': 0,
         'testNamespace': test_name, 'productionPromotionAllowed': False}
     file = ctx.directory / ('native-readback-' + phase + '.json')
     need(not file.exists(), 'Native phase readback must not overwrite an earlier outcome')
@@ -801,6 +1336,356 @@ def verify_runtime(ctx, phase):
     reference = {'file': file.relative_to(ctx.attempt).as_posix(), 'sha256': digest(file)}
     ctx.owner.setdefault('nativeVerifications', {})[phase] = reference; ctx.save()
     return reference
+
+
+def finalize_semantic_activation(ctx):
+    value, candidate_sha, work = admit_runtime(ctx)
+    references = ctx.owner.get('nativeVerifications', {})
+    need(set(references) == set(SEMANTIC_PHASES), 'All native semantic restart/restore phases are required')
+    verified = {}
+    for phase in SEMANTIC_PHASES:
+        reference = references[phase]
+        file = ctx.attempt / reference['file']
+        need(file == ctx.directory / ('native-readback-' + phase + '.json') and digest(canonical(file)) == reference['sha256'],
+             'Native semantic phase path or original receipt changed')
+        readback = read(file)
+        need(readback.get('phase') == phase and readback.get('status') == 'VERIFIED'
+             and readback.get('descriptorSha256') == candidate_sha and readback.get('localMem0SemanticStatus') == 'PHASE_SEMANTIC_VERIFIED'
+             and readback.get('activatedLocalMem0Records') == 30 and readback.get('mergedLocalHistoryRows') == 30
+             and readback.get('mergedLocalMessageRows') == 25 and readback.get('paidModelCalls') == readback.get('llmCalls') == 0,
+             'Native semantic phase does not prove its complete actual legacy import')
+        semantic_ref = readback['bgeSemanticVerification']; semantic_file = ctx.attempt / semantic_ref['file']
+        need(semantic_file == ctx.directory / ('bge-semantic-' + phase + '.json') and digest(canonical(semantic_file)) == semantic_ref['sha256'],
+             'Actual BGE semantic receipt changed')
+        semantic = read(semantic_file)
+        validate_semantic_receipt(semantic, read(work / 'mem0-semantic-plan.json'))
+        need(semantic['candidateSha256'] == candidate_sha and semantic['semanticPlanSha256'] == value['mem0SemanticPlanSha256']
+             and semantic['status'] == 'SEMANTIC_BRIDGE_VERIFIED' and semantic['phase'] == phase
+             and semantic['embeddingProfile'] == BGE_PROFILE and semantic['collection'] == BGE_COLLECTION
+             and semantic['dimensions'] == BGE_DIMENSION and semantic['semanticQueries'] >= 2
+             and semantic['crossOwnerQueries'] == semantic['semanticQueries']
+             and semantic['nativeReadOnlyVerified'] is True and semantic['independentProcess'] is True
+             and semantic['ownedRestoredCopy'] is True and semantic['helperCleanup']['pid'] == 0
+             and semantic['helperCleanup']['exitCode'] == 0 and semantic['paidModelCalls'] == semantic['llmCalls'] == 0,
+             'BGE activation cannot replace actual query/owner/restore evidence with a flag')
+        measured = ctx.resources.summary['containers'].get(semantic['helperCleanup']['containerId'], {})
+        need(measured.get('service') == 'bge-verifier' and measured.get('image') == ctx.images['mem0']
+             and measured.get('peakBytes', 0) > 0 and measured.get('memoryLimitBytes') == BGE_VERIFIER_MEMORY
+             and measured.get('oom') == measured.get('oomKills') == 0,
+             'A semantic helper lacks its actual owned cgroup resource evidence')
+        verified[phase] = {'readback': reference, 'semantic': semantic_ref}
+    result = {**ctx.context(), 'kind': 'doorhandle-native-semantic-activation', 'status': 'VERIFIED_AND_ACTIVATED',
+        'project': ctx.project, 'candidateSha256': candidate_sha, 'semanticPlanSha256': value['mem0SemanticPlanSha256'],
+        'mem0MergeReceiptSha256': value['mem0MergeReceiptSha256'], 'embeddingProfile': BGE_PROFILE,
+        'collection': BGE_COLLECTION, 'dimensions': BGE_DIMENSION, 'activeRecords': 30, 'importedHistoryRows': 30,
+        'importedMessageRows': 25, 'archivedRecords': 2, 'archivedHistoryRows': 3, 'archivedMessageRows': 1,
+        'candidateSemanticVerified': True, 'productionDataMaterialized': False, 'productionPromotionAllowed': False,
+        'paidModelCalls': 0, 'llmCalls': 0, 'verifications': verified}
+    file = ctx.directory / 'native-semantic-activation.json'; write(file, result)
+    return {'file': file.relative_to(ctx.attempt).as_posix(), 'sha256': digest(file)}
+
+
+def production_overlay(volumes, rag, commit, rag_sha):
+    """No database fields, real credentials, test namespaces or transient paths."""
+    return {'services': {
+        'mem0': {'environment': {'EMBEDDING_PROFILE': BGE_PROFILE, 'EMBEDDING_MODEL': BGE_MODEL, 'EMBEDDING_BASE_URL': BGE_BASE}},
+        'backend': {'environment': {'CHAT_ASSISTANT_RAG_STARTUP_MODE': 'PRESERVE_EXISTING',
+            'CHAT_ASSISTANT_RAG_PRESERVATION_MANIFEST': '/run/doorhandle-rag/preservation.json',
+            'CHAT_ASSISTANT_RAG_PRESERVATION_MANIFEST_SHA256': rag_sha, 'CHAT_ASSISTANT_RAG_PRESERVATION_COMMIT': commit,
+            'CHAT_ASSISTANT_CHROMA_EMBEDDING_DIMENSION': str(rag['embeddingDimension']),
+            'CHAT_ASSISTANT_CHROMA_COLLECTION': rag['collection'], 'CHAT_ASSISTANT_CHROMA_TENANT': rag['tenant'],
+            'CHAT_ASSISTANT_CHROMA_DATABASE': rag['database']},
+            'volumes': [{'type': 'volume', 'source': 'native-rag-preservation', 'target': '/run/doorhandle-rag', 'read_only': True}]}},
+        'volumes': {key: {'name': value, 'external': True} for key, value in volumes.items()}}
+
+
+def cutover_helper(controller, name, image, arguments, mounts, token, *, data=None, timeout=300):
+    """One bounded, owner-labelled native file operation; no original RW mount."""
+    disk_before = shutil.disk_usage(controller.work).free
+    need(disk_before >= DISK_FLOOR, 'Production native helper lacks its actual host disk reserve')
+    command = ['create', '--name', name, '--pull', 'never', '--network', 'none', '--read-only', '--user', '0:0',
+        '--cap-drop', 'ALL', '--cap-add', 'DAC_READ_SEARCH', '--cap-add', 'DAC_OVERRIDE', '--cap-add', 'CHOWN', '--cap-add', 'FOWNER',
+        '--security-opt', 'no-new-privileges:true', '--pids-limit', '128', '--memory', '256m', '--memory-swap', '256m',
+        '--label', NATIVE_CUTOVER_LABEL + '=' + token, '--label', 'io.doorhandle.release=' + controller.args.tag]
+    for mount in mounts: command += ['--mount', mount]
+    if data is not None: command.append('-i')
+    command += ['--entrypoint', 'python', image, *arguments]
+    cid = controller.ops.docker(*command, timeout=30).decode().strip()
+    need(re.fullmatch(r'[a-f0-9]{64}', cid), 'Production native helper ID is invalid')
+    controller.journal.setdefault('nativeHelpers', []).append({'containerId': cid, 'name': name, 'token': token})
+    controller.persist()
+    try:
+        row = json.loads(controller.ops.docker('inspect', cid))[0]
+        need(row['Image'] == image and row['Config']['Labels'].get(NATIVE_CUTOVER_LABEL) == token
+             and row['Config'].get('OpenStdin') is (data is not None)
+             and row['HostConfig']['NetworkMode'] == 'none' and row['HostConfig']['Memory'] == row['HostConfig']['MemorySwap'] == 256 * MIB
+             and not row['HostConfig']['Privileged'] and row['HostConfig']['ReadonlyRootfs'], 'Production native helper escaped its fixed admission')
+        return controller.ops.docker('start', '-a', *(['-i'] if data is not None else []), cid, data=data, timeout=timeout)
+    finally:
+        row = json.loads(controller.ops.docker('inspect', cid))[0]
+        need(row['Image'] == image and row['Config']['Labels'].get(NATIVE_CUTOVER_LABEL) == token,
+             'Cannot stop a changed or foreign native helper')
+        controller.ops.docker('stop', '--time', '5', cid, timeout=20)
+        final = json.loads(controller.ops.docker('inspect', cid))[0]
+        need(not final['State']['Running'] and not final['State'].get('Restarting') and final['State']['Pid'] == 0,
+             'Production native helper did not stop')
+        disk_after = shutil.disk_usage(controller.work).free
+        evidence = {'pid': 0, 'exitCode': final['State']['ExitCode'], 'stopped': True, 'image': final['Image'],
+            'memoryLimitBytes': final['HostConfig']['Memory'], 'memorySwapLimitBytes': final['HostConfig']['MemorySwap'],
+            'oomKilled': final['State'].get('OOMKilled', False), 'network': final['HostConfig']['NetworkMode'],
+            'diskAvailableBeforeBytes': disk_before, 'diskAvailableAfterBytes': disk_after,
+            'memoryPeakMeasured': False, 'productionCapacityVerified': False}
+        controller.journal['nativeHelpers'][-1].update(evidence)
+        controller.persist()
+        controller.ops.docker('rm', '--volumes', cid, timeout=30)
+        need(evidence['exitCode'] == 0 and evidence['oomKilled'] is False and disk_after >= DISK_FLOOR,
+             'Production native helper failed, exceeded memory or exhausted its actual disk reserve')
+
+
+def prepare_production_native(controller):
+    """Final frozen current-cloud restore and pristine, never-test volume install."""
+    controller.assert_maintenance()
+    private_bge_config(controller.runtime)  # Persistent ECS source, never a candidate transient key.
+    root, tag = controller.root, controller.args.tag
+    checkout = canonical(root / 'verification' / tag / 'checkout')
+    adapter = SimpleNamespace(checkout=checkout, identity=controller.identity,
+        args=SimpleNamespace(tag=tag, commit=controller.input['gitCommit'], source_sha256=controller.args.source_sha256))
+    candidate, candidate_sha, work = admit_runtime(adapter)
+    runtime = read(checkout.parent / 'runtime-acceptance.json')
+    legacy = runtime.get('legacyData', {})
+    need(runtime.get('status') == 'PASS' and legacy.get('candidateSemanticVerified') is True
+         and legacy.get('localMem0SemanticStatus') == 'VERIFIED_AND_ACTIVATED'
+         and legacy.get('candidateSha256') == candidate_sha and legacy.get('productionDataMaterialized') is False,
+         'Production native installation needs complete semantic/runtime acceptance of this pristine candidate')
+    activation = legacy.get('semanticActivation', {})
+    activation_file = checkout.parent / activation.get('file', '')
+    need(activation_file == checkout / 'work/runtime-acceptance/native-semantic-activation.json'
+         and digest(canonical(activation_file)) == activation.get('sha256'), 'Production semantic activation evidence changed')
+    need(not controller.journal.get('nativeProductionInstall'), 'An unknown production native install cannot be replayed')
+    output = controller.work / 'native-final'; need(not output.exists(), 'Production native outcomes must be fresh')
+    output.mkdir(mode=0o700); token = secrets.token_hex(12)
+    controller.journal['nativeProductionOwner'] = token; controller.persist()
+    account_rows = [json.loads(line) for line in controller.sql(
+        "SELECT JSON_OBJECT('userId',id,'username',username) FROM users WHERE id IN (1,18) ORDER BY id;").splitlines()]
+    admitted_accounts = read(work / 'owner-proof.json')['accounts']
+    need(account_rows == admitted_accounts, 'Final frozen source accounts differ from the admitted legacy/cloud owners')
+    final_accounts = output / 'current-account-proof.json'
+    write(final_accounts, {'verifiedOnEcs': True, 'identity': {key: controller.identity[key] for key in ('instanceId', 'machineId')},
+        'accounts': account_rows, 'verifiedAtUtc': time.strftime('%Y-%m-%dT%H:%M:%S+00:00', time.gmtime()),
+        'source': 'READ_ONLY_FINAL_FROZEN_ORIGINAL_USERS'})
+    image = controller.images['mem0']; helper = canonical(controller.source / 'script/jenkins/prepare-legacy-candidate.py')
+    for service, label, value in (('mem0', 'io.doorhandle.memory-embedding-profile', BGE_PROFILE),
+                                  ('backend', 'io.doorhandle.rag-preservation-protocol', '1')):
+        labels = json.loads(controller.ops.docker('image', 'inspect', controller.images[service]))[0]['Config'].get('Labels') or {}
+        need(labels.get(label) == value, 'Candidate image lacks its required persistent native-data capability')
+    need(digest(helper) == digest(Path(__file__).resolve()), 'Final native helper differs from the fixed release source')
+    snapshots = {}
+    for service in ('mem0', 'chroma'):
+        node = controller.common.container('doorhandlecatch-monolith', service)
+        need(node['Id'] == candidate['originalContainers'][service] and not node['State']['Running']
+             and not node['State'].get('Restarting') and node['State']['Pid'] == 0,
+             'An original native writer was not frozen for the final full snapshot')
+        mounts = [m for m in node['Mounts'] if m.get('Type') == 'volume' and m.get('Destination') == '/data']
+        need(len(mounts) == 1 and mounts[0]['Name'] == candidate['originalVolumes'][service], 'Original production native mount drifted')
+        destination = output / ('fresh-' + service)
+        cutover_helper(controller, 'doorhandle-native-' + token + '-snapshot-' + service, image,
+            ['-I', '-B', str(helper), 'snapshot-volume', '--source', '/source', '--output', str(destination),
+             '--uid', str(os.getuid()), '--gid', str(os.getgid()), '--instance-id', controller.identity['instanceId'],
+             '--machine-id', controller.identity['machineId']],
+            ['type=volume,src=' + mounts[0]['Name'] + ',dst=/source,readonly',
+             'type=bind,src=' + str(controller.source) + ',dst=' + str(controller.source) + ',readonly',
+             'type=bind,src=' + str(controller.work) + ',dst=' + str(controller.work)], token)
+        fresh = read(destination / 'snapshot-receipt.json'); prior = read(work / ('cloud-' + service) / 'snapshot-receipt.json')
+        need(fresh['status'] == 'RESTORED_VERIFIED' and fresh['fullVolume'] is True and fresh['sourceMountedReadOnly'] is True
+             and fresh['identity'] == prior['identity'] and fresh['normalizedFiles'] == prior['normalizedFiles']
+             and file_inventory(destination / 'restored-originals') == fresh['sourceBefore']
+             and digest(destination / 'originals.tar') == fresh['archiveSha256'],
+             'Current full native volume drifted since the verified pristine candidate; explicit reconciliation is required')
+        snapshots[service] = {'file': str(destination / 'snapshot-receipt.json'), 'sha256': digest(destination / 'snapshot-receipt.json'),
+            'archiveSha256': fresh['archiveSha256'], 'sourceVolume': mounts[0]['Name'],
+            'normalizedFilesSha256': sha(fresh['normalizedFiles']), 'sourceBeforeSha256': sha(fresh['sourceBefore'])}
+    controller.assert_maintenance()
+    names = {'doorhandle-mem0': 'doorhandlecatch-monolith_native-' + tag + '-' + token + '-mem0',
+             'doorhandle-chroma': 'doorhandlecatch-monolith_native-' + tag + '-' + token + '-chroma',
+             'native-rag-preservation': 'doorhandlecatch-monolith_native-' + tag + '-' + token + '-manifest'}
+    existing = controller.ops.docker('volume', 'ls', '--format', '{{.Name}}').decode().splitlines()
+    need(not set(names.values()).intersection(existing) and not set(names.values()).intersection(candidate['originalVolumes'].values()),
+         'A production native volume name is already present or aliases an original')
+    installed = {}; labels = {}; pristine = {}
+    for key, name in names.items():
+        expected_labels = {NATIVE_CUTOVER_LABEL: token, 'io.doorhandle.release': tag,
+            'io.doorhandle.source': controller.args.source_sha256, 'com.docker.compose.project': 'doorhandlecatch-monolith',
+            'com.docker.compose.volume': key}
+        arguments = ['volume', 'create']
+        for key_name, value in expected_labels.items(): arguments += ['--label', key_name + '=' + value]
+        controller.ops.docker(*arguments, name)
+        row = json.loads(controller.ops.docker('volume', 'inspect', name))[0]
+        need(row['Name'] == name and row['Driver'] == 'local' and not row.get('Options') and row.get('Labels') == expected_labels,
+             'Production native volume ownership/driver changed')
+        labels[key] = expected_labels
+        if key == 'native-rag-preservation': continue
+        service = 'mem0' if key == 'doorhandle-mem0' else 'rag'
+        source = canonical(candidate[service + 'DataDirectory'])
+        expected = read(work / (service + '-payload-files.json'))
+        need(file_inventory(source) == expected, 'Pristine candidate changed before final installation')
+        raw = cutover_helper(controller, 'doorhandle-native-' + token + '-install-' + service, image,
+            ['-I', '-B', str(helper), 'install-volume', '--source', '/candidate', '--output', '/target'],
+            ['type=bind,src=' + str(helper) + ',dst=' + str(helper) + ',readonly',
+             'type=bind,src=' + str(source) + ',dst=/candidate,readonly', 'type=volume,src=' + name + ',dst=/target'], token)
+        result = json.loads(raw)
+        need(result['status'] == 'MATERIALIZED' and result['filesSha256'] == sha(expected)
+             and result['files'] == len(expected), 'Production native volume differs from the pristine non-test payload')
+        installed[key] = {**result, 'name': name, 'payloadFilesSha256': digest(work / (service + '-payload-files.json'))}
+        pristine[key] = {'directory': str(source), 'catalogFile': str(work / (service + '-payload-files.json')),
+                         'catalogSha256': digest(work / (service + '-payload-files.json')), 'filesSha256': sha(expected)}
+    manifest = read(work / 'rag-preservation-manifest.json')
+    manifest_bytes = (work / 'rag-preservation-manifest.json').read_bytes()
+    code = "import os,sys,json,hashlib;p='/target/preservation.json';d=sys.stdin.buffer.read(2097153);assert len(d)<=2097152;assert not os.listdir('/target');f=os.fdopen(os.open(p,os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o400),'wb');f.write(d);f.flush();os.fsync(f.fileno());f.close();os.chown(p,10001,10001);os.chown('/target',10001,10001);os.chmod('/target',0o700);print(json.dumps({'sha256':hashlib.sha256(open(p,'rb').read()).hexdigest(),'bytes':len(d)}))"
+    copied = json.loads(cutover_helper(controller, 'doorhandle-native-' + token + '-manifest', image, ['-I', '-B', '-c', code],
+        ['type=volume,src=' + names['native-rag-preservation'] + ',dst=/target'], token, data=manifest_bytes))
+    need(copied['sha256'] == candidate['ragManifestSha256'], 'Production RAG preservation manifest changed')
+    installed['native-rag-preservation'] = {'name': names['native-rag-preservation'], **copied}
+    overlay = production_overlay(names, manifest, controller.input['gitCommit'], candidate['ragManifestSha256'])
+    overlay_file = output / 'native-data.override.json'; write(overlay_file, overlay)
+    result = {'schemaVersion': 1, 'kind': 'doorhandle-pristine-native-install', 'status': 'MATERIALIZED_AND_VERIFIED',
+        'release': tag, 'commit': controller.input['gitCommit'], 'sourceSha256': controller.args.source_sha256,
+        'identity': {key: controller.identity[key] for key in ('instanceId', 'machineId')}, 'owner': token,
+        'candidateSha256': candidate_sha, 'semanticActivation': activation, 'semanticActivationSha256': activation['sha256'],
+        'semanticActivationFile': str(activation_file), 'sourceFreezeFile': str(controller.work / 'source-freeze.json'),
+        'pristinePayloads': pristine, 'images': {**controller.images, 'chroma': controller.common.container('doorhandlecatch-monolith', 'chroma')['Image']},
+        'logicalBaselines': {'mem0': {'file': str(work / 'mem0-after.json'), 'sha256': digest(work / 'mem0-after.json')},
+                             'rag': {'file': str(work / 'cloud-chroma-after.json'), 'sha256': digest(work / 'cloud-chroma-after.json')}},
+        'finalAccountProof': {'file': str(final_accounts), 'sha256': digest(final_accounts)},
+        'sourceFreezeSha256': digest(controller.work / 'source-freeze.json'), 'freshSnapshots': snapshots,
+        'volumes': installed, 'volumeLabels': labels, 'overlayFile': str(overlay_file), 'overlaySha256': digest(overlay_file),
+        'embeddingProfile': BGE_PROFILE, 'embeddingCollection': BGE_COLLECTION, 'embeddingDimensions': BGE_DIMENSION,
+        'ragManifestSha256': candidate['ragManifestSha256'], 'originalVolumes': candidate['originalVolumes'],
+        'candidateSemanticVerified': True, 'productionDataMaterialized': True, 'runtimeTestVolumesPublished': False,
+        'originalVolumesMountedReadOnly': True, 'freshIndependentRestoreVerified': True, 'sourceDriftDetected': False,
+        'credentialSource': 'EXISTING_PRIVATE_ECS_ENV', 'privateCredentialFileCopiedIntoPayload': False,
+        'activeRecords': 30, 'importedHistoryRows': 30, 'importedMessageRows': 25, 'archivedRecords': 2,
+        'archivedHistoryRows': 3, 'archivedMessageRows': 1, 'paidModelCalls': 0, 'llmCalls': 0}
+    receipt = output / 'native-production-install.json'; write(receipt, result)
+    controller.journal['nativeProductionInstall'] = {'file': str(receipt), 'sha256': digest(receipt),
+        'overlayFile': str(overlay_file), 'overlaySha256': result['overlaySha256']}
+    need(not (controller.state / 'native-data.json').exists() and not (controller.state / 'native-data.override.json').exists(),
+         'Native installation cannot replace an existing persistent binding')
+    write(controller.state / 'native-data.override.json', overlay)
+    write(controller.state / 'native-data.json', {'schemaVersion': 1, 'kind': 'doorhandle-native-binding',
+        'status': 'MATERIALIZED_PENDING_SERVICE_READBACK', 'release': tag, 'commit': controller.input['gitCommit'],
+        'sourceSha256': controller.args.source_sha256, 'identity': result['identity'], 'owner': token,
+        'installReceiptFile': str(receipt), 'installReceiptSha256': digest(receipt),
+        'overlayFile': str(controller.state / 'native-data.override.json'), 'overlaySha256': digest(controller.state / 'native-data.override.json')})
+    controller.persist()
+    return controller.journal['nativeProductionInstall']
+
+
+def inspect_native_copy(source, uid, gid):
+    source = canonical(source)
+    need(source.is_relative_to(ROOT / 'work') and source.name == 'data' and source.parent.name == 'post-start-mem0',
+         'Native full content inspection accepts only its owned post-start restored copy')
+    sys.path.insert(0, str(ROOT))
+    migration = module('production_native_full_readback', ROOT / 'script/memory/migrate_legacy_stores.py')
+    try:
+        return {'collections': complete_chroma(source / 'chroma', migration), 'history': native_history(source)}
+    finally: private_tree(source, uid, gid)
+
+
+def verify_production_mem0_contents(controller, memory, record, expected):
+    """Inspect SDK contents only on an independently recovered owned copy."""
+    output = controller.work / 'native-final/post-start-mem0'
+    need(not output.exists(), 'A production native full-content outcome cannot be replayed')
+    helper = canonical(controller.source / 'script/jenkins/prepare-legacy-candidate.py')
+    token = record['owner']; volume = record['volumes']['doorhandle-mem0']['name']
+    base_mounts = ['type=bind,src=' + str(controller.source) + ',dst=' + str(controller.source) + ',readonly',
+                   'type=bind,src=' + str(controller.work) + ',dst=' + str(controller.work)]
+    cutover_helper(controller, 'doorhandle-native-' + token + '-post-start-snapshot', record['images']['mem0'],
+        ['-I', '-B', str(helper), 'snapshot-volume', '--source', '/source', '--output', str(output),
+         '--uid', str(os.getuid()), '--gid', str(os.getgid()), '--instance-id', record['identity']['instanceId'],
+         '--machine-id', record['identity']['machineId']],
+        ['type=volume,src=' + volume + ',dst=/source,readonly', *base_mounts], token)
+    proof = read(output / 'snapshot-receipt.json')
+    need(proof.get('status') == 'RESTORED_VERIFIED' and proof.get('fullVolume') is True
+         and proof.get('sourceMountedReadOnly') is True and proof.get('identity') == record['identity']
+         and digest(output / 'originals.tar') == proof.get('archiveSha256')
+         and file_inventory(output / 'restored-originals') == proof.get('sourceBefore'),
+         'Post-start native content inspection lacks a complete actual read-only backup/restore')
+    raw = cutover_helper(controller, 'doorhandle-native-' + token + '-post-start-readback', record['images']['mem0'],
+        ['-I', '-B', str(helper), 'inspect-native-copy', '--source', str(output / 'data'),
+         '--uid', str(os.getuid()), '--gid', str(os.getgid())], base_mounts, token)
+    need(len(raw) <= 64 * MIB, 'Production native full-content readback exceeds its bounded private result')
+    actual = json.loads(raw)
+    need(actual == {'collections': expected['collections'], 'history': expected['history']},
+         'Production startup changed a memory ID, owner, text, document, metadata or FLOAT32 vector')
+    file = controller.work / 'native-final/production-memory-full-readback.json'; write(file, actual)
+    live = controller.common.container('doorhandlecatch-monolith', 'mem0')
+    need(live['Id'] == memory['Id'] and live['State']['Running'], 'The actual production memory process changed during full readback')
+    return {'file': str(file), 'sha256': digest(file), 'snapshotSha256': digest(output / 'snapshot-receipt.json'),
+            'collectionCount': len(actual['collections']), 'sourceMountedReadOnly': True, 'originalProcessUnchanged': True,
+            'helpers': controller.journal['nativeHelpers'][-2:]}
+
+
+def verify_production_native(controller):
+    """Read the actual production mounts/protocol after pristine installation.
+
+    No test writes, extraction, embedding or caller-controlled collection switch.
+    The persistent source receipt remains immutable when the service starts.
+    """
+    binding = read(controller.state / 'native-data.json')
+    record = read(binding['installReceiptFile'])
+    need(digest(Path(binding['installReceiptFile'])) == binding['installReceiptSha256']
+         and binding['status'] == 'MATERIALIZED_PENDING_SERVICE_READBACK', 'Native production source proof changed')
+    for service, key in (('mem0', 'doorhandle-mem0'), ('chroma', 'doorhandle-chroma')):
+        row = controller.common.container('doorhandlecatch-monolith', service)
+        mounts = [m for m in row['Mounts'] if m.get('Destination') == '/data']
+        need(row['State']['Running'] and controller.ops.healthy(row['Id']) and len(mounts) == 1
+             and mounts[0].get('Type') == 'volume' and mounts[0].get('Name') == record['volumes'][key]['name']
+             and row['Image'] == record['images'][service], 'Production service does not mount its admitted pristine owned volume')
+    memory = controller.common.container('doorhandlecatch-monolith', 'mem0')
+    health = json.loads(controller.ops.docker('exec', memory['Id'], 'python', '-I', '-B', '-c',
+        "import json,urllib.request;print(json.dumps(json.load(urllib.request.urlopen('http://127.0.0.1:8081/health',timeout=5))))"))
+    need(health.get('embedding_profile') == BGE_PROFILE and health.get('embedding_collection') == BGE_COLLECTION
+         and health.get('embedding_dimensions') == BGE_DIMENSION and health.get('bridge_auth_configured') is True,
+         'Production memory runtime did not retain the verified BGE vector-space identity')
+    baselines = record['logicalBaselines']
+    for ref in baselines.values(): need(digest(canonical(ref['file'])) == ref['sha256'], 'Pristine native logical baseline changed')
+    native = json.loads(controller.ops.docker('exec', memory['Id'], 'python', '-I', '-B', '-c', NATIVE_SQL_SCRIPT, '/data'))
+    full_native = read(baselines['mem0']['file'], 64 * MIB)
+    expected_native = full_native['sqlite']
+    need(native == expected_native, 'Production startup changed an original or imported native collection/history/message row')
+    contents = verify_production_mem0_contents(controller, memory, record, full_native)
+    backend = controller.common.container('doorhandlecatch-monolith', 'backend')
+    mounts = [m for m in backend['Mounts'] if m.get('Destination') == '/run/doorhandle-rag']
+    env = controller.common.environment(backend)
+    need(len(mounts) == 1 and mounts[0].get('Name') == record['volumes']['native-rag-preservation']['name']
+         and not mounts[0]['RW'] and env.get('CHAT_ASSISTANT_RAG_STARTUP_MODE') == 'PRESERVE_EXISTING'
+         and env.get('CHAT_ASSISTANT_RAG_PRESERVATION_MANIFEST_SHA256') == record['ragManifestSha256'],
+         'Production RAG preservation manifest/env does not match the pristine source')
+    observed = controller.ops.docker('exec', backend['Id'], 'sha256sum', '/run/doorhandle-rag/preservation.json').decode().split()[0]
+    need(observed == record['ragManifestSha256'], 'Actual production RAG manifest differs')
+    manifest = read(Path(record['pristinePayloads']['doorhandle-chroma']['catalogFile']).parent / 'rag-preservation-manifest.json')
+    expected_rag = read(baselines['rag']['file'], 64 * MIB)
+    chroma = controller.common.container('doorhandlecatch-monolith', 'chroma')
+    headers = {'x-chroma-token': env['CHAT_ASSISTANT_CHROMA_TOKEN']} if env.get('CHAT_ASSISTANT_CHROMA_TOKEN') else {}
+    rag_actual = json.loads(controller.ops.docker('exec', '-i', chroma['Id'], 'python', '-I', '-B', '-c', HTTP_CHROMA_SCRIPT,
+        data=encoded({'catalog': expected_rag, 'headers': headers, 'ragCollection': manifest['collection'],
+                      'tenant': manifest['tenant'], 'database': manifest['database']}), timeout=180))
+    need(rag_actual['collections'] == expected_rag and rag_actual['retrievalQueries'] == manifest['recordCount'],
+         'Production RAG HTTP readback lost an original/imported text, metadata, vector or collection')
+    result = {'schemaVersion': 1, 'kind': 'doorhandle-native-production-readback', 'status': 'VERIFIED',
+        'release': binding['release'], 'commit': binding['commit'], 'sourceSha256': binding['sourceSha256'],
+        'identity': binding['identity'], 'owner': binding['owner'], 'installReceiptSha256': binding['installReceiptSha256'],
+        'candidateSemanticVerified': True, 'productionDataMaterialized': True, 'runtimeTestVolumesPublished': False,
+        'actualMountsVerified': True, 'embeddingProtocolVerified': True, 'ragManifestVerified': True,
+        'actualNativeRowsVerified': True, 'actualRagRecordsVerified': True,
+        'actualNativeContentsVerified': True, 'nativeContentReadback': contents,
+        'paidModelCalls': 0, 'llmCalls': 0}
+    write(controller.work / 'native-production-readback.json', result)
+    controller.journal['nativeProductionReadback'] = {'file': str(controller.work / 'native-production-readback.json'),
+        'sha256': digest(controller.work / 'native-production-readback.json')}
+    controller.persist()
+    binding['status'] = 'ACTIVE'; controller.common.write_json(controller.state / 'native-data.json', binding)
+    return result
 
 
 def snapshot_runtime(ctx, folder):
@@ -883,12 +1768,16 @@ def main():
     prepare = sub.add_parser('run')
     for name in ('root', 'tag', 'commit', 'source-sha256', 'instance-id', 'machine-id'): prepare.add_argument('--' + name, required=True)
     prepare.add_argument('--dimension', type=int, required=True)
+    prepare.add_argument('--runtime', required=True, help='Original ECS private deployment directory; never an env value in argv')
     clean = sub.add_parser('cleanup')
     for name in ('root', 'tag', 'commit', 'source-sha256', 'instance-id', 'machine-id'): clean.add_argument('--' + name, required=True)
     snapshot = sub.add_parser('snapshot-volume')
     for name in ('source', 'output', 'instance-id', 'machine-id'): snapshot.add_argument('--' + name, required=True)
     snapshot.add_argument('--uid', required=True, type=int); snapshot.add_argument('--gid', required=True, type=int)
     worker = sub.add_parser('data-worker'); worker.add_argument('--context', required=True)
+    semantic_worker = sub.add_parser('bge-verify-worker'); semantic_worker.add_argument('--context', required=True)
+    inspect = sub.add_parser('inspect-native-copy'); inspect.add_argument('--source', required=True)
+    inspect.add_argument('--uid', type=int, required=True); inspect.add_argument('--gid', type=int, required=True)
     install = sub.add_parser('install-volume')
     install.add_argument('--source', required=True); install.add_argument('--output', required=True)
     args = parser.parse_args()
@@ -898,6 +1787,8 @@ def main():
         elif args.action == 'snapshot-volume': result = snapshot_volume(Path(args.source), Path(args.output),
             {'instanceId': args.instance_id, 'machineId': args.machine_id}, args.uid, args.gid)
         elif args.action == 'install-volume': result = install_volume(Path(args.source), Path(args.output))
+        elif args.action == 'bge-verify-worker': result = bge_verify_worker(args.context)
+        elif args.action == 'inspect-native-copy': result = inspect_native_copy(args.source, args.uid, args.gid)
         else: result = data_worker(args.context)
         print(json.dumps(result if args.action != 'snapshot-volume' else {'status': result['status']}, sort_keys=True)); return 0
     except BaseException as error:
@@ -908,9 +1799,13 @@ def main():
                      and re.fullmatch(r'[a-f0-9]{64}', args.source_sha256) and re.fullmatch(r'i-[a-z0-9]+', args.instance_id)
                      and re.fullmatch(r'[a-f0-9]{32}', args.machine_id), 'Invalid failed attempt identity')
                 work = canonical(Path(args.root) / 'verification' / args.tag / 'checkout/work/legacy-candidate')
+                attempts = 0
+                if (work / 'mem0-bge-embeddings.json').is_file():
+                    attempts = len(read(work / 'mem0-bge-embeddings.json', 16 * MIB).get('requests', []))
                 failure.update(release=args.tag, commit=args.commit, sourceSha256=args.source_sha256,
                     identity={'instanceId': args.instance_id, 'machineId': args.machine_id, 'executionLocation': 'ECS'},
-                    modelCallsPerformed=False, productionPromotionAllowed=False)
+                    modelCallsPerformed=attempts > 0, embeddingRequestsAttempted=attempts, paidModelCalls=0, llmCalls=0,
+                    candidateSemanticVerified=False, productionDataMaterialized=False, productionPromotionAllowed=False)
                 if not (work / 'public-summary.json').exists(): write(work / 'public-summary.json', failure)
                 failure['publicSummarySha256'] = digest(work / 'public-summary.json')
             except BaseException: pass

@@ -1,5 +1,4 @@
 """Run snapshot/restore control flow against a Docker protocol fixture, never a production daemon."""
-import gzip
 import hashlib
 import importlib.util
 import io
@@ -66,6 +65,19 @@ def test_backup_quiesces_ingress_and_writers_resumes_exact_services_and_checks_a
     assert all('PRIVATE_TOKEN' not in str(args) for args,kwargs in calls)
     (snapshot/'volume-0.tar.gz').write_bytes(b'damaged')
     with pytest.raises(ops.OpsError,match='checksum'):ops.verify(snapshot)
+
+
+def test_business_backup_excludes_embedding_key_and_its_private_source_path(tmp_path, monkeypatch):
+    runtime, _, _ = fixture(monkeypatch, tmp_path)
+    with (runtime / 'deploy/cloud.env').open('a') as stream:
+        stream.write('EMBEDDING_PROFILE=siliconflow-bge-m3-v1\nEMBEDDING_API_KEY=sk-fixture-secret-not-archived\nEMBEDDING_API_KEY_FILE=/private/not-archived.key\n')
+    snapshot = ops.backup(tmp_path, runtime)
+    manifest = ops.verify(snapshot)
+    saved = (snapshot / 'cloud.env').read_text()
+    assert 'EMBEDDING_PROFILE=siliconflow-bge-m3-v1' in saved
+    assert 'EMBEDDING_API_KEY' not in saved and 'not-archived' not in saved
+    assert manifest['embeddingCredentialPolicy'] == 'EXTERNAL_PRIVATE_ECS_EMBEDDING_CREDENTIAL_REQUIRED'
+    assert 'sk-fixture-secret' in (runtime / 'deploy/cloud.env').read_text()
 
 
 def test_database_backup_uses_current_backend_schema_after_distinct_target_cutover(monkeypatch):

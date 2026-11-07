@@ -60,6 +60,7 @@ SERVICE_MEMORY_MIB = {'backend': 1792, 'kafka': 1280, 'mem0': 768, 'chroma': 512
     'mcp-egress': 128, 'model-fixture': 128, 'oss-proxy': 128, 'kafka-init': 256,
     'kafka-storage-init': 64, 'higress-seed': 128, 'higress-config': 128}
 MCP_CHILD_MEMORY = 2 * 256 * MIB
+BGE_VERIFIER_MEMORY = 768 * MIB
 
 
 def bounded_config(config):
@@ -170,10 +171,11 @@ def validate_resource_evidence(summary, raw, context, project):
         for row in event['containers']:
             cid, service = row['containerId'], row['service']
             require(re.fullmatch(r'[a-f0-9]{64}', cid) and re.fullmatch(r'sha256:[a-f0-9]{64}', row['image'])
-                    and service in {*SERVICE_MEMORY_MIB, 'mcp-child', 'owned-helper'}
+                    and service in {*SERVICE_MEMORY_MIB, 'mcp-child', 'owned-helper', 'bge-verifier'}
                     and all(type(row[key]) is int and row[key] >= 0 for key in ('currentBytes', 'peakBytes', 'oom', 'oomKills', 'memoryLimitBytes'))
                     and (0 < row['memoryLimitBytes'] <= 256 * MIB if service == 'owned-helper'
-                         else row['memoryLimitBytes'] == (256 * MIB if service == 'mcp-child' else SERVICE_MEMORY_MIB[service] * MIB))
+                         else row['memoryLimitBytes'] == (BGE_VERIFIER_MEMORY if service == 'bge-verifier'
+                              else 256 * MIB if service == 'mcp-child' else SERVICE_MEMORY_MIB[service] * MIB))
                     and row['oom'] == row['oomKills'] == 0, 'Container resource evidence is incomplete or contains OOM')
             previous = containers.get(cid)
             require(previous is None or (previous['image'] == row['image'] and previous['service'] == service
@@ -187,6 +189,9 @@ def validate_resource_evidence(summary, raw, context, project):
     required = set(summary.get('requiredDaemonServices', []))
     require(required == set(SERVICE_MEMORY_MIB) - {'kafka-init', 'kafka-storage-init', 'higress-seed', 'higress-config'}
             and required <= observed, 'Some required runtime service peaks were never observed')
+    transient = summary.get('requiredTransientServices', [])
+    require(transient in ([], ['bge-verifier']) and set(transient) <= observed,
+            'A required free BGE verifier resource peak was not observed')
     require([row.get('phase') for row in summary.get('phases', [])] == ['runtime-start', 'runtime-backup', 'runtime-restore']
             and all(set(row) == {'phase', 'file', 'sha256'} and re.fullmatch(r'[a-f0-9]{64}', row['sha256'])
                     and row['file'] == 'checkout/work/runtime-acceptance/resource-phase-' + str(index) + '-' + row['phase'] + '.json'
@@ -211,6 +216,7 @@ class RuntimeResources:
             'pollIntervalSeconds': 2, 'diskFloorBytes': DISK_FLOOR, 'memoryFloorBytes': MEMORY_FLOOR,
             'containers': {}, 'phases': [], 'phasePlans': {}, 'samples': 0,
             'requiredDaemonServices': sorted(set(SERVICE_MEMORY_MIB) - {'kafka-init', 'kafka-storage-init', 'higress-seed', 'higress-config'}),
+            'requiredTransientServices': ['bge-verifier'],
             'rawProbeFile': 'checkout/work/runtime-acceptance/resource-probes.jsonl'}
         self.raw = runtime.directory / 'resource-probes.jsonl'
 
@@ -273,8 +279,10 @@ class RuntimeResources:
                          and labels.get('doorhandle.mcp.owner') in {str(v['userId']) for v in ctx.accounts.values()})
                 require((ordinary or child) and cid not in (ctx.settings['sourceMysqlContainerId'], ctx.owner['mysqlContainerId']),
                         'Resource observer found a foreign container')
-                service = labels.get('com.docker.compose.service') or ('mcp-child' if child else 'owned-helper')
-                maximum = (256 * MIB if child or service == 'owned-helper' else SERVICE_MEMORY_MIB[service] * MIB)
+                bge = labels.get('io.doorhandle.bge-verifier') == ctx.token
+                require(not bge or ordinary and row['Image'] == ctx.images['mem0'], 'A free BGE helper has a foreign source image or owner')
+                service = 'bge-verifier' if bge else labels.get('com.docker.compose.service') or ('mcp-child' if child else 'owned-helper')
+                maximum = BGE_VERIFIER_MEMORY if bge else 256 * MIB if child or service == 'owned-helper' else SERVICE_MEMORY_MIB[service] * MIB
                 actual_limit = row['HostConfig']['Memory']
                 memory = {'currentBytes': 0, 'peakBytes': 0, 'oom': 0, 'oomKills': 0}
                 if row['State']['Running']:
@@ -897,15 +905,18 @@ print(json.dumps({p:data['properties'][p]['baseUrl'] for p in ('deepseek','dashs
         # the baseline filesystem; none is credited as reclaimable capacity.
         payload_bytes = sum(row['bytes'] for service in ('rag', 'mem0')
                             for row in self.native.read(self.legacy_work / (service + '-payload-files.json')).values())
-        growth = physical + payload_bytes + logs + 8 * 64 * MIB + 256 * MIB
+        mem0_bytes = sum(row['bytes'] for row in self.native.read(self.legacy_work / 'mem0-payload-files.json').values())
+        bge_growth = 3 * (5 * mem0_bytes + 64 * MIB)
+        growth = physical + payload_bytes + logs + 8 * 64 * MIB + 256 * MIB + bge_growth
         self.resources.admit('runtime-start', growth, {
             'candidateSchemaAllocatedBytes': physical, 'retainedFixturesAllocatedBytes': retained,
             'candidateBuildSha256': self.build_sha, 'applicationJarBytes': self.build['applicationJarBytes'],
             'fullNativeCandidatePayloadBytes': payload_bytes, 'legacyCandidateSha256': self.legacy_candidate_sha,
+            'freeBgeRetainedRestoreEnvelopeBytes': bge_growth, 'freeBgeVerifierMemoryLimitBytes': BGE_VERIFIER_MEMORY,
             'originalDeploymentInventorySha256': self.migration.sha_json(self.owner['sourceBefore']),
             'logLimitBytes': logs, 'kafkaPartitionRetentionEnvelopeBytes': 8 * 64 * MIB,
             'newWritableMeasurementEnvelopeBytes': 256 * MIB,
-            'existingDataAndBackups': 'RETAINED_IN_BASELINE_FILESYSTEM'}, declared + MCP_CHILD_MEMORY)
+            'existingDataAndBackups': 'RETAINED_IN_BASELINE_FILESYSTEM'}, declared + MCP_CHILD_MEMORY + BGE_VERIFIER_MEMORY)
         self.resources.start()
         self.owner['nativeMaterialization'] = self.native.materialize_runtime(self); self.save()
         self.install_key(self.master_key)
@@ -1113,7 +1124,7 @@ print(json.dumps(acknowledged[0]))
         self.resources.admit('runtime-backup', bound + 64 * MIB + native_bound, {
             'sourceSnapshotSha256': snapshot['snapshotSha256'], 'tables': tables,
             'rows': row_count, 'dumpUpperBoundBytes': bound, 'retainedPriorData': True,
-            'nativeVolumeMeasurements': native, 'nativeSnapshotGrowthEnvelopeBytes': native_bound})
+            'nativeVolumeMeasurements': native, 'nativeSnapshotGrowthEnvelopeBytes': native_bound}, BGE_VERIFIER_MEMORY)
 
     def admit_restore_phase(self, backup):
         file, manifest, checksum = self.migration.private_json(backup)
@@ -1128,13 +1139,15 @@ print(json.dumps(acknowledged[0]))
         # that InnoDB allocation can be predicted from information_schema.
         native = self.native.measure_runtime_volumes(self)
         native_bytes = sum(row['bytes'] for row in native.values())
-        growth = 2 * dump.stat().st_size + 2 * physical + 128 * MIB + native_bytes
+        bge_bound = 5 * native['mem0']['bytes'] + 64 * MIB
+        growth = 2 * dump.stat().st_size + 2 * physical + 128 * MIB + native_bytes + bge_bound
         self.resources.admit('runtime-restore', growth, {'backupManifestSha256': checksum,
             'dumpBytes': dump.stat().st_size, 'dumpSha256': manifest['data']['sha256'],
             'retainedRawDumpBytes': dump.stat().st_size, 'additionalSqlCopies': 2,
             'retainedSourceSchemaAllocatedBytes': physical, 'cloneAllocationMeasurementEnvelopeBytes': 2 * physical,
             'restoreOverheadEnvelopeBytes': 128 * MIB, 'nativeVolumeMeasurements': native,
-            'newNativeVolumePayloadBytes': native_bytes, 'existingDataAndBackups': 'RETAINED_IN_BASELINE_FILESYSTEM'})
+            'newNativeVolumePayloadBytes': native_bytes, 'freeBgeRestoreEnvelopeBytes': bge_bound,
+            'existingDataAndBackups': 'RETAINED_IN_BASELINE_FILESYSTEM'}, BGE_VERIFIER_MEMORY)
 
     def memory_scenario(self):
         session = self.request('inspector', 'POST', '/api/chat-assistant/sessions')['sessionId']
@@ -1636,12 +1649,15 @@ print(json.dumps({'deleted':len(keys),'keysSha256':hashlib.sha256(json.dumps(sor
         validate_resource_evidence(self.resources.summary, self.resources.raw.read_bytes(), self.context(), self.project)
         require(set(self.owner.get('nativeVerifications', {})) == {'after-start', 'after-restart', 'after-volume-restore'},
                 'Complete native RAG startup/restart/new-volume recovery was not verified')
+        activation = self.native.finalize_semantic_activation(self)
         proof = {**self.context(), 'status': 'PASS', 'project': self.project,
             'legacyData': {'candidateSha256': self.legacy_candidate_sha, 'ragManifestSha256': self.legacy_candidate['ragManifestSha256'],
                 'legacyKafkaFiles': self.legacy_candidate['legacyKafkaFiles'], 'legacyKafkaBytes': self.legacy_candidate['legacyKafkaBytes'],
                 'legacyKafkaReplay': self.legacy_candidate['legacyKafkaReplay'],
-                'originalLocalMem0Records': 32, 'eligibleLocalMem0Records': 30, 'activatedLocalMem0Records': 0, 'archivedLocalMem0Records': 2,
-                'localMem0SemanticStatus': 'NOT_ACTIVATED_SEMANTIC_NOT_VERIFIED', 'productionPromotionAllowed': False,
+                'originalLocalMem0Records': 32, 'eligibleLocalMem0Records': 30, 'activatedLocalMem0Records': 30, 'archivedLocalMem0Records': 2,
+                'mergedLocalHistoryRows': 30, 'mergedLocalMessageRows': 25, 'archivedLocalHistoryRows': 3, 'archivedLocalMessageRows': 1,
+                'localMem0SemanticStatus': 'VERIFIED_AND_ACTIVATED', 'candidateSemanticVerified': True,
+                'productionDataMaterialized': False, 'productionPromotionAllowed': False, 'semanticActivation': activation,
                 'verifications': self.owner.get('nativeVerifications', {}), 'materialization': self.owner['nativeMaterialization']},
             'loadScope': {'profile': RUNTIME_PROFILE, 'productionPerformanceVerified': False,
                           'productionCapacityVerified': False, 'allMandatoryScenariosRequired': True},

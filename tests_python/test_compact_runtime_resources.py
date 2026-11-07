@@ -83,6 +83,25 @@ def test_resource_evidence_is_recomputed_from_all_raw_samples():
     assert runtime.validate_resource_evidence(summary, raw, context, project)['sampleCount'] == 3
 
 
+@pytest.mark.parametrize('damage', ['none', 'missing', 'wrong-limit', 'oom'])
+def test_free_bge_transient_worker_requires_real_bounded_peak_and_zero_oom(damage):
+    summary, samples, context, project = evidence()
+    summary['requiredTransientServices'] = ['bge-verifier']
+    worker = {'containerId': 'f' * 64, 'service': 'bge-verifier', 'image': 'sha256:' + '2' * 64,
+        'memoryLimitBytes': runtime.BGE_VERIFIER_MEMORY, 'currentBytes': 0, 'peakBytes': 1024,
+        'oom': 0, 'oomKills': 0, 'running': False, 'exitCode': 0}
+    if damage == 'wrong-limit': worker['memoryLimitBytes'] = 256 * runtime.MIB
+    if damage == 'oom': worker['oomKills'] = 1
+    if damage != 'missing':
+        samples[-1]['containers'] = samples[-1]['containers'] + [worker]
+        summary['containers'][worker['containerId']] = worker
+    raw = b''.join((json.dumps(row) + '\n').encode() for row in samples)
+    summary['rawProbeSha256'] = hashlib.sha256(raw).hexdigest()
+    if damage == 'none': assert runtime.validate_resource_evidence(summary, raw, context, project)['status'] == 'VERIFIED'
+    else:
+        with pytest.raises(ValueError): runtime.validate_resource_evidence(summary, raw, context, project)
+
+
 @pytest.mark.parametrize('mutation', ['summary-minimum', 'summary-peak', 'oom', 'missing-daemon', 'late-probe', 'growth', 'raw-sha', 'phase-reserve'])
 def test_resource_evidence_rejects_missing_or_falsified_pressure_measurements(mutation):
     summary, samples, context, project = evidence()

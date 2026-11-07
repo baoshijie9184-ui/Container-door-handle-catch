@@ -31,6 +31,7 @@ assignment_helper=assignment-fixture
 secret_helper=secret-fixture
 schema_helper=schema-fixture
 prepare_mcp_runtime() { :; }
+guard_native_runtime() { :; }
 python3() { cat >/dev/null; [[ "${GUARD_FAIL:-}" != "$1" ]] || return 1; printf '{}'; }
 '''.replace('ROOT_PATH', shlex.quote(tmp_path.as_posix()))
 
@@ -87,6 +88,18 @@ def test_pipeline_uploads_guard_for_legacy_rollback_and_allows_recovering_unheal
     assert pipeline.index("'script/docker/memory-compat.py'")<pipeline.index("if ($env:ACTION -eq 'rollback')")
     source=(root/'script/jenkins/deploy-remote.sh').read_text(encoding='utf8')
     assert 'snapshot "$root/state/rollback-current.yml" all yes' in source
+
+
+def test_invalid_persistent_native_binding_stops_deploy_before_any_application_operation(tmp_path):
+    source = (Path(__file__).resolve().parents[1] / 'script/jenkins/deploy-remote.sh').read_text(encoding='utf8')
+    activate = re.search(r'^activate\(\) \{.*?^\}', source, flags=re.M | re.S).group()
+    script = 'set -euo pipefail\n' + activation_support(tmp_path) + '''
+guard_native_runtime() { return 1; }
+prepare_memory() { echo unexpected-memory >&2; }
+dc() { if [[ "$3" == config ]]; then printf '{}'; return; fi; echo unexpected-application >&2; }
+''' + activate + '\nif activate /release /snapshot; then printf allowed; else printf blocked; fi'
+    result = subprocess.run([git_bash(), '-c', script], text=True, capture_output=True, timeout=15, check=True)
+    assert result.stdout == 'blocked' and result.stderr == ''
 
 
 @pytest.mark.parametrize('allow', ['yes', 'no'])
