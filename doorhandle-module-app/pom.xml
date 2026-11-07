@@ -43,6 +43,11 @@
 		<dependency><groupId>org.apache.pdfbox</groupId><artifactId>pdfbox</artifactId><exclusions><exclusion><groupId>commons-logging</groupId><artifactId>commons-logging</artifactId></exclusion></exclusions></dependency>
 		<dependency><groupId>com.twelvemonkeys.imageio</groupId><artifactId>imageio-webp</artifactId></dependency>
 		<dependency><groupId>com.h2database</groupId><artifactId>h2</artifactId><scope>test</scope></dependency>
+		<!-- Share the admitted H2 DDL dialect only in tests; production MySQL remains unchanged. -->
+		<dependency>
+			<groupId>com.ruanzhu</groupId><artifactId>doorhandle-module-ai</artifactId><version>${project.version}</version>
+			<type>test-jar</type><classifier>tests</classifier><scope>test</scope>
+		</dependency>
 		<dependency><groupId>com.ruanzhu</groupId><artifactId>doorhandle-framework</artifactId><version>${project.version}</version></dependency>
 		<dependency><groupId>com.ruanzhu</groupId><artifactId>doorhandle-common</artifactId><version>${project.version}</version></dependency>
 		<dependency><groupId>com.ruanzhu</groupId><artifactId>doorhandle-contracts</artifactId><version>${project.version}</version></dependency>

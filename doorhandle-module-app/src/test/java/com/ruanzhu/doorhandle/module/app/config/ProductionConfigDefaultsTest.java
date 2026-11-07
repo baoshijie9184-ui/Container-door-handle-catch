@@ -35,13 +35,13 @@ class ProductionConfigDefaultsTest {
     }
 
     @Test
-    void businessSeedImportIsExplicitlyOptIn() throws Exception {
-        String config = APPLICATION_YAML
-                .getContentAsString(StandardCharsets.UTF_8);
-
-        assertThat(config).contains("APP_BUSINESS_SEED_ENABLED:false");
-        assertThat(config).contains("business-seed-new-features.sql");
-        assertThat(config).contains("business-seed-more-features.sql");
-        assertThat(config).contains("business-seed-trace-rich.sql");
+    void retiredBusinessSeedImportIsDisabledAndHasNoDefaultScripts() {
+        YamlPropertiesFactoryBean yaml = new YamlPropertiesFactoryBean();
+        yaml.setResources(APPLICATION_YAML);
+        Properties properties = Objects.requireNonNull(yaml.getObject());
+        assertThat(properties.getProperty("app.business-seed.enabled")).isEqualTo("${APP_BUSINESS_SEED_ENABLED:false}");
+        assertThat(properties.getProperty("app.business-seed.scripts", "")).isEmpty();
+        assertThat(properties.stringPropertyNames()).noneMatch(name -> name.startsWith("app.business-seed.scripts["));
+        assertThat(new com.ruanzhu.doorhandle.module.app.config.properties.BusinessSeedDataProperties().getScripts()).isEmpty();
     }
 }

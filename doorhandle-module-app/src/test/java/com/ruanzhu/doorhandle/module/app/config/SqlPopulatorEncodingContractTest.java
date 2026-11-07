@@ -1,6 +1,9 @@
 package com.ruanzhu.doorhandle.module.app.config;
 
 import org.junit.jupiter.api.Test;
+import com.ruanzhu.doorhandle.module.app.config.properties.BusinessSeedDataProperties;
+import org.springframework.boot.CommandLineRunner;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -9,17 +12,16 @@ import java.nio.file.Path;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class SqlPopulatorEncodingContractTest {
 
-    private static final String UTF8_CONFIGURATION =
-            "populator.setSqlScriptEncoding(StandardCharsets.UTF_8.name());";
     private static final Path SOURCE_DIRECTORY = Path.of("src", "main", "java");
     private static final Path CONFIG_DIRECTORY = SOURCE_DIRECTORY.resolve(
             Path.of("com", "ruanzhu", "doorhandle", "module", "app", "config"));
 
     @Test
-    void businessSeedConfigurationIsTheOnlyCustomSqlPopulator() throws IOException {
+    void compactStartupDoesNotConstructCustomSqlPopulators() throws IOException {
         List<String> customPopulators;
         try (var files = Files.walk(SOURCE_DIRECTORY)) {
             customPopulators = files
@@ -30,17 +32,36 @@ class SqlPopulatorEncodingContractTest {
                     .toList();
         }
 
-        assertThat(customPopulators).containsExactly("BusinessSeedDataConfig.java");
+        assertThat(customPopulators).isEmpty();
     }
 
     @Test
-    void businessSeedSqlPopulatorExplicitlyReadsSqlAsUtf8() throws IOException {
-        Path source = CONFIG_DIRECTORY.resolve("BusinessSeedDataConfig.java");
-        String content = Files.readString(source, StandardCharsets.UTF_8);
+    void explicitlyEnablingRetiredSeedStillRejectsLegacyScripts() {
+        BusinessSeedDataProperties properties = new BusinessSeedDataProperties();
+        properties.setEnabled(true);
+        properties.setContinueOnError(true);
+        properties.setScripts(List.of("business-seed-new-features.sql"));
+        new ApplicationContextRunner().withUserConfiguration(BusinessSeedDataConfig.class)
+                .withBean(BusinessSeedDataProperties.class, () -> properties)
+                .withPropertyValues("app.business-seed.enabled=true")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context.getBeansOfType(CommandLineRunner.class)).hasSize(1);
+                    assertThatThrownBy(() -> context.getBean(CommandLineRunner.class).run())
+                            .isInstanceOf(IllegalStateException.class).hasMessageContaining("已退役").hasMessageContaining("compact");
+                });
+    }
 
-        assertThat(content)
-                .contains("import java.nio.charset.StandardCharsets;")
-                .contains(UTF8_CONFIGURATION);
+    @Test
+    void defaultAndExplicitlyDisabledSeedDoNotCreateAnImporter() {
+        for (String[] values : new String[][] { {}, { "app.business-seed.enabled=false" } }) {
+            new ApplicationContextRunner().withUserConfiguration(BusinessSeedDataConfig.class)
+                    .withBean(BusinessSeedDataProperties.class, BusinessSeedDataProperties::new)
+                    .withPropertyValues(values).run(context -> {
+                        assertThat(context).hasNotFailed();
+                        assertThat(context).doesNotHaveBean(CommandLineRunner.class);
+                    });
+        }
     }
 
     @Test

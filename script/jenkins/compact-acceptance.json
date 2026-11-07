@@ -922,6 +922,16 @@
         "source": "doorhandle-module-app/src/test/java/com/ruanzhu/doorhandle/module/app/service/ChromaRagPreservationTest.java"
       },
       {
+        "className": "com.ruanzhu.doorhandle.module.app.service.MemoryGovernanceTest",
+        "minimumTests": 24,
+        "source": "doorhandle-module-app/src/test/java/com/ruanzhu/doorhandle/module/app/service/MemoryGovernanceTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.app.config.SqlPopulatorEncodingContractTest",
+        "minimumTests": 4,
+        "source": "doorhandle-module-app/src/test/java/com/ruanzhu/doorhandle/module/app/config/SqlPopulatorEncodingContractTest.java"
+      },
+      {
         "className": "com.ruanzhu.doorhandle.module.ai.research.ResearchEvidenceServiceTest",
         "minimumTests": 11,
         "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/research/ResearchEvidenceServiceTest.java"

@@ -1,5 +1,11 @@
 # 单体 ECS 运行与测试
 
+2026-11-07 Jenkins #79：固定提交 `eca75a3133ee2c01cc6700e1dfef029730bd5508` 已通过 AI 模块（651 项、395 通过、256 基础设施条件跳过、无错误/失败），首次推进到 APP 模块。全轮 196 份 Java XML 为 727 通过、58 错误、3 断言失败、594 条件跳过；其中 57 错误是 APP 旧夹具缺少 JSON_UNQUOTE，另有 PDF 测试硬编码 target 目录及三项已退役种子导入断言。APP 现通过仅测试作用域的附加 JAR 复用同一 H2 适配器，保留全部 CHECK；PDF 使用本轮临时目录，种子导入回归验证默认关闭且显式启用仍拒绝旧脚本。13 模块本地跳过测试打包通过，附加 JAR 仅含三个适配器类，正式 Boot JAR 未包含测试 JAR；实际 ECS 验证尚待继续。原始回执和报告已独立保留，工具清理 `STOPPED`、`remaining=[]`，随后实际回读 ECS `Stopped / StopCharging`。用户之后重新启动了同一 ECS，本地 Jenkins 及节点继续在线。
+
+已授权的一次本机旧库只读导出现已成功：45 张表，原 SQL 11,123,119 字节、gzip 1,890,654 字节；实际连接的 UUID/数据目录/端口/版本已与本机服务配置闭合，前后独立观察共 4,208 行。完整 11 个清单成员摘要已核验，所有临时凭据已清理。该结果仍为 `LOCAL_EXPORT_COMPLETE_RESTORE_PENDING`，原库未删除，也未宣称 ECS 双恢复或 131→29 迁移通过。
+
+共享测试制品使用现有 Maven JAR Plugin 的 [test-jar 机制](https://maven.apache.org/plugins/maven-jar-plugin/examples/create-test-jar.html)，在 process-test-classes 阶段生成，APP 仅以 test 作用域引用；MySQL 原始 DDL、生产依赖边界及发布门禁保持原要求。
+
 2026-11-07 Jenkins #76：固定提交 `ab8e8c9b8ffbe12b374c4836f8d830b2f23eb8b2` 的 154 份 Java XML 汇总为 581 项通过、2 项错误、0 项断言失败、471 项基础设施条件跳过。仅余两个调度用例被持久安装队列 enqueue 的派生表无类型参数拦截；已改为保留原 16 列、UTC、请求摘要及全部状态的直接 VALUES，并在真实调度回归内核对任务身份、所有者、摘要及 JSON 版本。13 模块本地跳过测试打包通过，后续 Python、前端、封存上传仍待 ECS 验证。原始回执及报告归档已独立保留，临时工具实际 `STOPPED`、`remaining=[]`，随后从流水线外回读 ECS `Stopped / StopCharging`。
 
 本机端口误拦的进一步只读诊断：CIM 与 IPHelper 原始表都把已可访问的 Jenkins 和 MySQL 绑定端点状态返回为 `0`，不能将此称为 Listen 或断言 MySQL 未启动。导出脚本继续保留 UNKNOWN 原证，发送凭据前核对唯一端点所有者、固定服务/直接子进程、命令行、my.ini 及 auto.cnf；只有用户已授权的实际只读身份查询与本机 UUID、数据目录、版本、库名和端口全部吻合才允许导出。此次修复尚未执行新的导出，不能将端点归属证明当成已连接或已恢复。

@@ -89,7 +89,7 @@ class WorkspaceFileContentTest {
         }
     }
 
-    @Test void pdfPreviewIsAnActualRasterPageWithNoEmbeddedActions() throws Exception {
+    @Test void pdfPreviewIsAnActualRasterPageWithNoEmbeddedActions(@org.junit.jupiter.api.io.TempDir java.nio.file.Path outputDirectory) throws Exception {
         byte[] documentBytes;
         try(var document=new PDDocument();var output=new ByteArrayOutputStream()){
             for(var color:new java.awt.Color[]{java.awt.Color.BLUE,java.awt.Color.GREEN}){
@@ -105,9 +105,9 @@ class WorkspaceFileContentTest {
         assertThat(image.getWidth()).isLessThanOrEqualTo(1800);assertThat(image.getHeight()).isLessThanOrEqualTo(1800);
         assertThat(image.getRGB(10,10)).isEqualTo(java.awt.Color.BLUE.getRGB());
         assertThat(ImageIO.read(new java.io.ByteArrayInputStream(second.png())).getRGB(10,10)).isEqualTo(java.awt.Color.GREEN.getRGB());
-        java.nio.file.Files.write(java.nio.file.Path.of("target/pdf-preview-acceptance.pdf"),documentBytes);
-        java.nio.file.Files.write(java.nio.file.Path.of("target/pdf-preview-page1.png"),first.png());
-        java.nio.file.Files.write(java.nio.file.Path.of("target/pdf-preview-page2.png"),second.png());
+        java.nio.file.Files.write(outputDirectory.resolve("pdf-preview-acceptance.pdf"),documentBytes);
+        java.nio.file.Files.write(outputDirectory.resolve("pdf-preview-page1.png"),first.png());
+        java.nio.file.Files.write(outputDirectory.resolve("pdf-preview-page2.png"),second.png());
         assertThatThrownBy(()->WorkspaceFileContent.previewPdf(documentBytes,3)).hasMessageContaining("400");
         assertThatThrownBy(()->WorkspaceFileContent.previewPdf(pdf("text"),0)).hasMessageContaining("400");
     }
