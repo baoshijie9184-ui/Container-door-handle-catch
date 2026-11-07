@@ -22,6 +22,14 @@ SOURCE_SHA = 'b' * 64
 
 
 class ToolPreparationTests(unittest.TestCase):
+    def test_config_size_may_shrink_only_when_all_dependency_diffids_are_identical(self):
+        old = {'RootFS': {'Layers': ['base', 'dependencies']}, 'Size': 1017481845}
+        new = {'RootFS': {'Layers': ['base', 'dependencies']}, 'Size': 1017481042}
+        tools.validate_dependency_layers(old, new)
+        for layers in (['base'], ['base', 'replacement'], ['base', 'dependencies', 'extra']):
+            with self.subTest(layers=layers), self.assertRaises(ValueError):
+                tools.validate_dependency_layers(old, {**new, 'RootFS': {'Layers': layers}})
+
     def test_final_defaults_are_explicit_and_cannot_repeat_the_installation(self):
         sources = {tools.RECIPE: 'c' * 64, tools.REQUIREMENTS: tools.CACHED_REQUIREMENTS}
         changes = tools.tool_changes(sources, uid=1000, gid=1000, commit=COMMIT, source_sha=SOURCE_SHA)

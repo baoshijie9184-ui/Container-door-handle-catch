@@ -91,7 +91,7 @@ if ($Action -eq 'Package') {
         throw 'Package metadata must match the exact checked out commit and release tag.'
     }
     Invoke-Checked 'git.exe' @('diff', '--quiet', 'HEAD', '--')
-    Invoke-Checked 'git.exe' @('archive', '--format=tar.gz', '--output=artifacts/source.tar.gz', 'HEAD')
+    Invoke-Checked 'git.exe' @('-c', 'core.autocrlf=false', 'archive', '--format=tar.gz', '--output=artifacts/source.tar.gz', 'HEAD')
     $sha = (Get-FileHash -LiteralPath artifacts/source.tar.gz -Algorithm SHA256).Hash.ToLowerInvariant()
     $build = Get-Content -LiteralPath artifacts/local-build.json -Raw | ConvertFrom-Json
     $jarSha = (Get-FileHash -LiteralPath artifacts/application.jar -Algorithm SHA256).Hash.ToLowerInvariant()

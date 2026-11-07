@@ -44,6 +44,9 @@ CACHED_RELEASE = 'ci-53-6d8905f30797'
 CACHED_COMMIT = '6d8905f30797823886d213d16dde97af6793ab6d'
 CACHED_SOURCE = 'f98b30360ce405454cbf68b215a8d562e7e123fd7973b4bf6cc845f5a874f27e'
 CACHED_REQUIREMENTS = '12419a0e849948c5582e337247c0893c6fcac890f746d9f7f86b0f18dc1e523c'
+CACHED_PINS = {'pytest': '8.4.2', 'pymysql': '1.1.2', 'pillow': '11.3.0',
+               'onnx': '1.17.0', 'python-multipart': '0.0.20', 'oss2': '2.19.1',
+               'confluent-kafka': '2.10.1'}
 CACHED_PROOFS = {
     'owner.json': 'e40a6ad835103e46fafd8e18458166b99536fa90674b1d15ade3a5566725c7c9',
     'reports/pip-install.json': 'a52bf24b181a13549f5901af98a4ca26e62bb143c0cbf87e0c83063e7c38ad8f',
@@ -160,6 +163,14 @@ def commit_image_id(output):
     matches = [line.strip() for line in output.splitlines() if IMAGE.fullmatch(line.strip())]
     require(len(matches) == 1, 'Tool image commit did not return one immutable image ID')
     return matches[0]
+
+
+def validate_dependency_layers(cached, repaired):
+    # Docker 29's Size includes image metadata: replacing a long default Cmd
+    # can reduce Size while every filesystem DiffID stays exactly identical.
+    require(repaired['RootFS']['Layers'] == cached['RootFS']['Layers']
+            and abs(repaired['Size'] - cached['Size']) <= CONFIG_GROWTH_BOUND,
+            'Config-only repair changed dependency filesystem layers')
 
 
 INSTALL = r'''
@@ -507,11 +518,7 @@ class Preparation:
             self.watcher.start()
             self.sample(extra=CONFIG_GROWTH_BOUND)
             row = self.commit_tool_image(sources, container=self.metadata_container, stem='config-commit')
-            layers = cached['RootFS']['Layers']
-            require(row['RootFS']['Layers'][:len(layers)] == layers
-                    and len(row['RootFS']['Layers']) <= len(layers) + 1
-                    and 0 <= row['Size'] - cached['Size'] <= CONFIG_GROWTH_BOUND,
-                    'Config-only repair changed dependency filesystem layers')
+            validate_dependency_layers(cached, row)
             self.sample()
             self.finish_watchdog()
             cleanup = self.cleanup_metadata()
@@ -541,7 +548,10 @@ class Preparation:
         if CACHED_PYTHON not in images:
             return None
         image = self.image_row(CACHED_PYTHON); cfg = image['Config']; labels = cfg.get('Labels') or {}
-        if sources[REQUIREMENTS] != CACHED_REQUIREMENTS:
+        # The current source archive is canonical LF, while the original #53
+        # archive used CRLF. Original evidence still matches its exact hashes;
+        # compatibility additionally requires precisely the same version pins.
+        if pinned != CACHED_PINS:
             return None
         require(labels.get('io.doorhandle.ci-tools-requirements-sha256') == CACHED_REQUIREMENTS
                 and labels.get('io.doorhandle.ci-tools-recipe-sha256') == CACHED_RECIPE
@@ -568,7 +578,7 @@ class Preparation:
         producer = json.loads(original['owner.json'].read_text())
         require(producer.get('identity') == self.identity
                 and producer.get('sourceFiles', {}).get(RECIPE) == CACHED_RECIPE
-                and producer.get('sourceFiles', {}).get(REQUIREMENTS) == sources[REQUIREMENTS]
+                and producer.get('sourceFiles', {}).get(REQUIREMENTS) == CACHED_REQUIREMENTS
                 and producer.get('release') == CACHED_RELEASE and producer.get('baseImageId') == BASE
                 and producer.get('sourceSha256') == CACHED_SOURCE and producer.get('commit') == CACHED_COMMIT
                 and producer.get('ownerToken') == labels.get(LABEL)
