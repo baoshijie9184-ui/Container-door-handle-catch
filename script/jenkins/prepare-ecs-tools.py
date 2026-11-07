@@ -40,6 +40,21 @@ NODE = 'sha256:44fce696f38ba8c987c4db89954051000bbd05ffd8d8659ba15ed4a8602e937f'
 # stdout contained Docker 29's deprecation notice before the immutable ID.
 CACHED_PYTHON = 'sha256:66321a75c6f45db26cff5b947bb96b0fe32dbd4da069910861a2bd3236d8deba'
 CACHED_RECIPE = 'cd22b2432e010cf05c833cedf5ecde58b594731649360bce24f197942f612a74'
+CACHED_RELEASE = 'ci-53-6d8905f30797'
+CACHED_COMMIT = '6d8905f30797823886d213d16dde97af6793ab6d'
+CACHED_SOURCE = 'f98b30360ce405454cbf68b215a8d562e7e123fd7973b4bf6cc845f5a874f27e'
+CACHED_REQUIREMENTS = '12419a0e849948c5582e337247c0893c6fcac890f746d9f7f86b0f18dc1e523c'
+CACHED_PROOFS = {
+    'owner.json': 'e40a6ad835103e46fafd8e18458166b99536fa90674b1d15ade3a5566725c7c9',
+    'reports/pip-install.json': 'a52bf24b181a13549f5901af98a4ca26e62bb143c0cbf87e0c83063e7c38ad8f',
+    'reports/installed-versions.json': '5c1b5ea3740c7c977e76d7745525fc64bad71a54a3a0611bf45e144876e37339',
+    'commit.stdout': '37150acae23334bfb001f929748ef056695854478ea741905ba24d452a9953dc',
+    'prepare-ecs-tools.py': CACHED_RECIPE,
+    'python-test-requirements.txt': CACHED_REQUIREMENTS,
+    'pip.log': 'f2ae0aad419abc2c8913a256f1c1c2a8a31761f4a8a71861fcf51a8aa9e2e0c6',
+}
+PYTHON = '/usr/local/bin/python'
+CONFIG_GROWTH_BOUND = 2 * MIB
 RECIPE = 'script/jenkins/prepare-ecs-tools.py'
 REQUIREMENTS = 'script/jenkins/python-test-requirements.txt'
 SHA = re.compile(r'[a-f0-9]{64}')
@@ -162,6 +177,46 @@ if versions != expected: raise SystemExit('Pinned installed versions differ')
 '''
 
 
+def installer_command(pinned):
+    return ['-I', '-B', '-c', INSTALL, json.dumps(pinned, sort_keys=True)]
+
+
+def tool_changes(sources, *, uid, gid, commit, source_sha):
+    # Docker 29 merges empty ENTRYPOINT/CMD changes with the container config.
+    # Explicit nonempty inert defaults cannot inherit the pip install command.
+    return ['USER ' + str(uid) + ':' + str(gid),
+            'ENTRYPOINT ["' + PYTHON + '"]', 'CMD ["--version"]', 'WORKDIR /',
+            'LABEL io.doorhandle.ci-tools=python-v1',
+            'LABEL io.doorhandle.source=' + source_sha,
+            'LABEL io.doorhandle.commit=' + commit,
+            'LABEL io.doorhandle.ci-tools-requirements-sha256=' + sources[REQUIREMENTS],
+            'LABEL io.doorhandle.ci-tools-recipe-sha256=' + sources[RECIPE]]
+
+
+def validate_tool_config(cfg, sources, *, uid, gid, commit, source_sha):
+    labels = cfg.get('Labels') or {}
+    require(cfg.get('User') == str(uid) + ':' + str(gid)
+            and cfg.get('Entrypoint') == [PYTHON] and cfg.get('Cmd') == ['--version']
+            and cfg.get('Healthcheck', {}).get('Test') == ['NONE'] and cfg.get('WorkingDir') == '/'
+            and not cfg.get('Volumes') and labels.get('io.doorhandle.ci-tools') == 'python-v1'
+            and labels.get('io.doorhandle.source') == source_sha
+            and labels.get('io.doorhandle.commit') == commit
+            and labels.get('io.doorhandle.ci-tools-requirements-sha256') == sources[REQUIREMENTS]
+            and labels.get('io.doorhandle.ci-tools-recipe-sha256') == sources[RECIPE],
+            'Committed tool configuration or source labels differ')
+
+
+def metadata_arguments(name, token, release, source_sha, *, uid, gid):
+    return ['create', '--pull', 'never', '--name', name, '--user', str(uid) + ':' + str(gid),
+            '--label', LABEL + '=' + token, '--label', 'io.doorhandle.release=' + release,
+            '--label', 'io.doorhandle.source=' + source_sha,
+            '--label', 'io.doorhandle.ci-tool-preparation-role=metadata-only',
+            '--restart', 'no', '--read-only', '--network', 'none', '--no-healthcheck', '--workdir', '/',
+            '--memory', str(512 * MIB), '--memory-swap', str(512 * MIB), '--cpus', '1',
+            '--pids-limit', '16', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true',
+            '--entrypoint', PYTHON, CACHED_PYTHON, '--version']
+
+
 def create_arguments(name, token, release, source_sha, requirement_path, report_path, expected):
     return ['create', '--pull', 'never', '--name', name, '--user', '0:0',
             '--label', LABEL + '=' + token, '--label', 'io.doorhandle.release=' + release,
@@ -175,7 +230,7 @@ def create_arguments(name, token, release, source_sha, requirement_path, report_
             '--mount', 'type=bind,src=' + str(report_path) + ',dst=/ci-report',
             '--env', 'PYTHONDONTWRITEBYTECODE=1', '--env', 'PYTHONNOUSERSITE=1',
             '--env', 'PIP_CONFIG_FILE=/dev/null', '--entrypoint', '/usr/local/bin/python',
-            BASE, '-I', '-B', '-c', INSTALL, json.dumps(expected, sort_keys=True)]
+            BASE, *installer_command(expected)]
 
 
 def resource_check(baseline, available, owned_writable, *, required_growth=0):
@@ -211,6 +266,9 @@ class Preparation:
         self.token = secrets.token_hex(12)
         self.name = 'doorhandle-ci-python-' + self.token
         self.container = None; self.image = None
+        self.metadata_container = None
+        self.metadata_name = self.name + '-metadata'
+        self.preparation_role = 'pip'
         self.baseline = self.available()
         resource_check(self.baseline, self.baseline, 0, required_growth=2 * MIB)
         self.folder.mkdir(mode=0o700)
@@ -283,7 +341,8 @@ class Preparation:
         return row
 
     def sample(self, *, extra=0):
-        row = self.owned(size=True) if self.container else None
+        row = (self.metadata_owned(size=True) if getattr(self, 'preparation_role', 'pip') == 'metadata'
+               else self.owned(size=True) if self.container else None)
         writable = int(row.get('SizeRw', 0)) if row else 0
         available = self.available()
         growth = resource_check(self.baseline, available, writable, required_growth=extra)
@@ -337,10 +396,11 @@ class Preparation:
                     'errorType': type(error).__name__, 'ownerToken': self.token, 'stopScope': 'OWNED_ATTEMPT_ONLY'})
             except BaseException:
                 pass
-            try:
-                self.stop_owned()
-            except BaseException:
-                pass
+            if getattr(self, 'preparation_role', 'pip') != 'metadata':
+                try:
+                    self.stop_owned()
+                except BaseException:
+                    pass
 
     def check_watchdog(self):
         require(not self.watch_failed.is_set(), 'Resource watchdog failed; only owned tool preparation may be stopped')
@@ -362,59 +422,199 @@ class Preparation:
                 'Owned pip container stop was not confirmed')
         return {'containerId': self.container, 'pid': 0, 'exitCode': final['State']['ExitCode'], 'retained': True}
 
+    def metadata_owned(self, *, size=False):
+        arguments = ['inspect'] + (['--size'] if size else []) + [self.metadata_container or self.metadata_name]
+        row = json.loads(self.call(*arguments))[0]
+        cfg, host, state = row['Config'], row['HostConfig'], row['State']
+        labels = cfg.get('Labels') or {}
+        require(row['Image'] == CACHED_PYTHON and row['Name'] == '/' + self.metadata_name
+                and SHA.fullmatch(row['Id']) and (self.metadata_container is None or row['Id'] == self.metadata_container)
+                and labels.get(LABEL) == self.token and labels.get('io.doorhandle.release') == self.args.tag
+                and labels.get('io.doorhandle.source') == self.args.source_sha256
+                and labels.get('io.doorhandle.ci-tool-preparation-role') == 'metadata-only'
+                and cfg.get('User') == str(os.getuid()) + ':' + str(os.getgid())
+                and cfg.get('Entrypoint') == [PYTHON] and cfg.get('Cmd') == ['--version']
+                and cfg.get('Healthcheck', {}).get('Test') == ['NONE'] and cfg.get('WorkingDir') == '/'
+                and host.get('ReadonlyRootfs') is True and host['RestartPolicy']['Name'] == 'no'
+                and not host.get('Privileged') and not host.get('CapAdd')
+                and host.get('Memory') == 512 * MIB and host.get('MemorySwap') == 512 * MIB
+                and host.get('NanoCpus') == 10 ** 9 and host.get('PidsLimit') == 16
+                and host.get('NetworkMode') == 'none' and set(host.get('CapDrop') or []) == {'ALL'}
+                and 'no-new-privileges:true' in (host.get('SecurityOpt') or [])
+                and not row.get('Mounts') and not host.get('Binds') and not host.get('Mounts')
+                and not host.get('Tmpfs') and not host.get('Devices')
+                and state.get('Status') == 'created' and not state.get('Running')
+                and not state.get('Restarting') and not state.get('Paused') and not state.get('OOMKilled')
+                and state.get('Pid') == 0 and state.get('ExitCode') == 0
+                and str(state.get('StartedAt', '')).startswith('0001-'),
+                'Refusing to act on a container outside this never-started metadata repair')
+        return row
+
+    def cleanup_metadata(self):
+        row = self.metadata_owned()
+        self.metadata_container = row['Id']
+        require(not self.call('diff', self.metadata_container).strip(), 'Metadata repair unexpectedly changed filesystem content')
+        self.call('rm', self.metadata_container)
+        remaining = self.call('ps', '-aq', '--no-trunc', '--filter', 'id=' + self.metadata_container).decode().split()
+        require(not remaining, 'The owned metadata container was not removed')
+        return {'status': 'STOPPED', 'containersCreated': [self.metadata_container],
+                'containers': [{'containerId': self.metadata_container, 'sourceImageId': CACHED_PYTHON,
+                                'started': False, 'pid': 0, 'removed': True}], 'remaining': []}
+
+    def commit_tool_image(self, sources, *, container, stem):
+        command = [str(self.docker), 'commit', '--pause=false']
+        for change in tool_changes(sources, uid=os.getuid(), gid=os.getgid(),
+                                   commit=self.args.commit, source_sha=self.args.source_sha256):
+            command += ['--change', change]
+        command += [container, 'doorhandlecatch/ci-python:' + self.args.tag + '-' + self.token[:12]]
+        with (self.folder / (stem + '.stdout')).open('xb') as stdout, (self.folder / (stem + '.stderr')).open('xb') as stderr:
+            os.chmod(stdout.name, 0o600); os.chmod(stderr.name, 0o600)
+            process = subprocess.Popen(command, stdout=stdout, stderr=stderr,
+                env={key: value for key, value in os.environ.items() if key in ('PATH', 'LANG', 'LC_ALL')})
+            try:
+                deadline = time.monotonic() + 120
+                while process.poll() is None:
+                    self.sample()
+                    require(time.monotonic() < deadline, 'Tool image commit exceeded its bounded deadline')
+                    time.sleep(INTERVAL)
+                require(process.returncode == 0, 'Tool image commit failed')
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        process.kill(); process.wait(timeout=3)
+        self.image = commit_image_id((self.folder / (stem + '.stdout')).read_text())
+        row = self.image_row(self.image)
+        validate_tool_config(row['Config'], sources, uid=os.getuid(), gid=os.getgid(),
+                             commit=self.args.commit, source_sha=self.args.source_sha256)
+        return row
+
+    def repair_cached_image(self, sources, cached):
+        """Change only Docker metadata; this container is never started."""
+        self.preparation_role = 'metadata'
+        resource_check(self.baseline, self.available(), 0, required_growth=CONFIG_GROWTH_BOUND)
+        self.sample_stream = self.snapshot.open('x', encoding='utf8'); os.chmod(self.snapshot, 0o600)
+        cleanup = None
+        try:
+            self.metadata_container = self.call(*metadata_arguments(self.metadata_name, self.token,
+                self.args.tag, self.args.source_sha256, uid=os.getuid(), gid=os.getgid())).decode().strip()
+            require(SHA.fullmatch(self.metadata_container), 'Metadata create did not return a complete owned ID')
+            self.metadata_owned()
+            require(not self.call('diff', self.metadata_container).strip(), 'Metadata container must have no filesystem changes')
+            self.watcher = threading.Thread(target=self.watchdog, name='owned-python-tools-config-disk', daemon=True)
+            self.watcher.start()
+            self.sample(extra=CONFIG_GROWTH_BOUND)
+            row = self.commit_tool_image(sources, container=self.metadata_container, stem='config-commit')
+            layers = cached['RootFS']['Layers']
+            require(row['RootFS']['Layers'][:len(layers)] == layers
+                    and len(row['RootFS']['Layers']) <= len(layers) + 1
+                    and 0 <= row['Size'] - cached['Size'] <= CONFIG_GROWTH_BOUND,
+                    'Config-only repair changed dependency filesystem layers')
+            self.sample()
+            self.finish_watchdog()
+            cleanup = self.cleanup_metadata()
+            resource_check(self.baseline, self.available(), 0)
+            self.sample_stream.flush(); os.fsync(self.sample_stream.fileno())
+            return cleanup
+        except BaseException as error:
+            if cleanup is None:
+                try:
+                    cleanup = self.cleanup_metadata()
+                except BaseException:
+                    pass
+            write_json(self.folder / 'metadata-failure.json', {
+                'status': 'FAILED_OR_UNKNOWN', 'errorType': type(error).__name__, 'ownerToken': self.token,
+                'sourceImageId': CACHED_PYTHON, 'currentImageId': self.image, 'cleanup': cleanup,
+                'oldProducerUntouched': True, 'sourceAndEvidenceRetained': True})
+            raise
+        finally:
+            self.watch_stop.set()
+            if self.watcher:
+                self.watcher.join(timeout=35)
+            self.sample_stream.close()
+
     def reuse_pinned_dependencies(self, sources, pinned, owner):
         """Reuse only the reviewed immutable dependency artifact, never a tag."""
         images = self.call('image', 'ls', '-q', '--no-trunc', '--filter', 'label=io.doorhandle.ci-tools=python-v1').decode().split()
         if CACHED_PYTHON not in images:
             return None
         image = self.image_row(CACHED_PYTHON); cfg = image['Config']; labels = cfg.get('Labels') or {}
-        if labels.get('io.doorhandle.ci-tools-requirements-sha256') != sources[REQUIREMENTS]:
+        if sources[REQUIREMENTS] != CACHED_REQUIREMENTS:
             return None
-        require(labels.get('io.doorhandle.ci-tools-recipe-sha256') == CACHED_RECIPE
+        require(labels.get('io.doorhandle.ci-tools-requirements-sha256') == CACHED_REQUIREMENTS
+                and labels.get('io.doorhandle.ci-tools-recipe-sha256') == CACHED_RECIPE
                 and cfg.get('User') == str(os.getuid()) + ':' + str(os.getgid())
-                and cfg.get('Entrypoint') in (None, []) and cfg.get('Cmd') in (None, [])
+                and cfg.get('Entrypoint') == [PYTHON] and cfg.get('Cmd') == installer_command(pinned)
                 and cfg.get('WorkingDir') == '/' and cfg.get('Healthcheck', {}).get('Test') == ['NONE'],
                 'Pinned dependency image configuration differs')
         base = self.image_row(BASE)['RootFS']['Layers']
         require(image['RootFS']['Layers'][:len(base)] == base, 'Pinned dependency image has another base')
         release = labels.get('io.doorhandle.release', '')
-        require(TAG.fullmatch(release), 'Pinned dependency producer release is malformed')
+        require(release == CACHED_RELEASE and labels.get('io.doorhandle.commit') == CACHED_COMMIT
+                and labels.get('io.doorhandle.source') == CACHED_SOURCE,
+                'Pinned dependency producer source differs')
         origin = canonical(self.root / 'inbox' / release / 'python-tools')
         original = {}
-        for name in ('owner.json', 'installed-versions.json', 'pip-install.json'):
-            path = origin / ('reports/' + name if name != 'owner.json' else name)
+        for name, expected_sha in CACHED_PROOFS.items():
+            path = origin / name
             canonical(path); meta = path.stat()
             require(stat.S_ISREG(meta.st_mode) and meta.st_uid == os.getuid() and meta.st_nlink == 1
-                    and not meta.st_mode & 0o077 and 0 < meta.st_size <= 32 * MIB,
+                    and stat.S_IMODE(meta.st_mode) == (0o444 if name == 'python-test-requirements.txt' else 0o600)
+                    and 0 < meta.st_size <= 32 * MIB and digest(path) == expected_sha,
                     'Original private dependency evidence is unavailable')
             original[name] = path
         producer = json.loads(original['owner.json'].read_text())
         require(producer.get('identity') == self.identity
                 and producer.get('sourceFiles', {}).get(RECIPE) == CACHED_RECIPE
                 and producer.get('sourceFiles', {}).get(REQUIREMENTS) == sources[REQUIREMENTS]
-                and producer.get('sourceSha256') == labels.get('io.doorhandle.source')
-                and producer.get('commit') == labels.get('io.doorhandle.commit')
-                and json.loads(original['installed-versions.json'].read_text()) == pinned,
+                and producer.get('release') == CACHED_RELEASE and producer.get('baseImageId') == BASE
+                and producer.get('sourceSha256') == CACHED_SOURCE and producer.get('commit') == CACHED_COMMIT
+                and producer.get('ownerToken') == labels.get(LABEL)
+                and re.fullmatch(r'[a-f0-9]{24}', producer.get('ownerToken', ''))
+                and producer.get('containerName') == 'doorhandle-ci-python-' + producer['ownerToken']
+                and json.loads(original['reports/installed-versions.json'].read_text()) == pinned
+                and b'No broken requirements found.' in original['pip.log'].read_bytes(),
                 'Pinned dependency image is not bound to its successful installation evidence')
-        commit_output = canonical(origin / 'commit.stdout')
+        commit_output = original['commit.stdout']
         require(commit_image_id(commit_output.read_text()) == CACHED_PYTHON,
                 'Original immutable dependency image receipt differs')
+        # Inspect the original producer only. Never assign its ID to this
+        # attempt's container fields and never call start/stop/rm for that ID.
+        old = object.__new__(Preparation)
+        old.args = argparse.Namespace(tag=CACHED_RELEASE, source_sha256=CACHED_SOURCE)
+        old.token = producer['ownerToken']; old.name = producer['containerName']
+        old.container = None; old.folder = origin; old.reports = origin / 'reports'; old.call = self.call
+        produced = old.owned()
+        require(produced['Config'].get('Cmd') == installer_command(pinned)
+                and produced['State'].get('Status') == 'exited' and produced['State'].get('ExitCode') == 0
+                and not produced['State'].get('Running') and not produced['State'].get('Restarting')
+                and not produced['State'].get('OOMKilled') and produced['State'].get('Pid') == 0
+                and not str(produced['State'].get('StartedAt', '')).startswith('0001-'),
+                'Original dependency producer did not finish successfully')
         for name in ('installed-versions.json', 'pip-install.json'):
             target = self.reports / name
-            shutil.copyfile(original[name], target); os.chmod(target, 0o600)
-            require(digest(target) == digest(original[name]), 'Dependency installation evidence changed during reuse')
+            source = original['reports/' + name]
+            shutil.copyfile(source, target); os.chmod(target, 0o600)
+            require(digest(target) == CACHED_PROOFS['reports/' + name], 'Dependency installation evidence changed during reuse')
+        cleanup = self.repair_cached_image(sources, image)
         available = self.available(); growth = resource_check(self.baseline, available, 0)
         write_json(self.folder / 'reuse.json', {'kind': 'doorhandle-pinned-dependency-reuse',
-            'imageId': CACHED_PYTHON, 'producerOwnerSha256': digest(original['owner.json']),
+            'sourceImageId': CACHED_PYTHON, 'repairedImageId': self.image,
+            'producerContainerId': produced['Id'], 'producerContainerInspectedOnly': True,
+            'producerOwnerSha256': digest(original['owner.json']), 'producerProofs': CACHED_PROOFS,
             'producerCommitReceiptSha256': digest(commit_output), 'currentSourceFiles': sources,
             'diskAvailableBytes': available, 'observedGrowthBytes': growth})
         receipt = {**owner, 'status': 'PREPARED', 'kind': 'doorhandle-ecs-tool-preparation',
-            'dependencyPreparation': 'REUSED_IMMUTABLE_IMAGE', 'pythonImageId': CACHED_PYTHON,
+            'dependencyPreparation': 'REUSED_IMMUTABLE_IMAGE_CONFIG_REPAIRED', 'pythonImageId': self.image,
+            'dependencyImageId': CACHED_PYTHON, 'pipExecutedThisAttempt': False, 'testsExecuted': False,
             'mavenImageId': MAVEN, 'nodeImageId': NODE,
             'reportSha': digest(self.reports / 'pip-install.json'),
+            'pipReportSha256': digest(self.reports / 'pip-install.json'),
             'installedVersionsSha256': digest(self.reports / 'installed-versions.json'),
             'reuseEvidenceSha256': digest(self.folder / 'reuse.json'),
-            'cleanup': {'status': 'STOPPED', 'containersCreated': []}}
+            'resourceSamplesSha256': digest(self.snapshot), 'observed': dict(self.observed), 'cleanup': cleanup}
         write_json(self.folder / 'preparation.json', receipt)
         return {**receipt, 'preparation': str(self.folder / 'preparation.json'),
                 'preparationSha256': digest(self.folder / 'preparation.json')}
@@ -469,50 +669,14 @@ class Preparation:
             # to its final unique diff. Reserve this before asking the daemon.
             commit_growth = max(OVERSHOOT, 2 * int(row.get('SizeRw', 0)) + 64 * MIB)
             self.sample(extra=commit_growth)
-            changes = ['USER ' + str(os.getuid()) + ':' + str(os.getgid()), 'ENTRYPOINT []', 'CMD []', 'WORKDIR /',
-                       'LABEL io.doorhandle.ci-tools=python-v1',
-                       'LABEL io.doorhandle.source=' + self.args.source_sha256,
-                       'LABEL io.doorhandle.commit=' + self.args.commit,
-                       'LABEL io.doorhandle.ci-tools-requirements-sha256=' + sources[REQUIREMENTS],
-                       'LABEL io.doorhandle.ci-tools-recipe-sha256=' + sources[RECIPE]]
-            command = [str(self.docker), 'commit', '--pause=false']
-            for change in changes:
-                command += ['--change', change]
-            command += [self.container, 'doorhandlecatch/ci-python:' + self.args.tag + '-' + self.token[:12]]
-            with (self.folder / 'commit.stdout').open('xb') as stdout, (self.folder / 'commit.stderr').open('xb') as stderr:
-                os.chmod(stdout.name, 0o600); os.chmod(stderr.name, 0o600)
-                process = subprocess.Popen(command, stdout=stdout, stderr=stderr,
-                    env={key: value for key, value in os.environ.items() if key in ('PATH', 'LANG', 'LC_ALL')})
-                try:
-                    deadline = time.monotonic() + 120
-                    while process.poll() is None:
-                        self.sample()
-                        require(time.monotonic() < deadline, 'Tool image commit exceeded its bounded deadline')
-                        time.sleep(INTERVAL)
-                    require(process.returncode == 0, 'Tool image commit failed')
-                finally:
-                    if process.poll() is None:
-                        process.terminate()
-                        try:
-                            process.wait(timeout=3)
-                        except subprocess.TimeoutExpired:
-                            process.kill(); process.wait(timeout=3)
-            self.image = commit_image_id((self.folder / 'commit.stdout').read_text())
-            cfg = self.image_row(self.image)['Config']; labels = cfg.get('Labels') or {}
-            require(cfg.get('User') == str(os.getuid()) + ':' + str(os.getgid())
-                    and cfg.get('Entrypoint') in (None, []) and cfg.get('Cmd') in (None, [])
-                    and cfg.get('Healthcheck', {}).get('Test') == ['NONE'] and cfg.get('WorkingDir') == '/'
-                    and labels.get('io.doorhandle.ci-tools') == 'python-v1'
-                    and labels.get('io.doorhandle.source') == self.args.source_sha256
-                    and labels.get('io.doorhandle.commit') == self.args.commit
-                    and labels.get('io.doorhandle.ci-tools-requirements-sha256') == sources[REQUIREMENTS]
-                    and labels.get('io.doorhandle.ci-tools-recipe-sha256') == sources[RECIPE],
-                    'Committed tool configuration or source labels differ')
+            self.commit_tool_image(sources, container=self.container, stem='commit')
             self.sample()
             stopped = self.stop_owned()
             self.finish_watchdog()
             self.sample_stream.flush(); os.fsync(self.sample_stream.fileno())
             receipt = {**owner, 'status': 'PREPARED', 'kind': 'doorhandle-ecs-tool-preparation',
+                       'dependencyPreparation': 'INSTALLED_CURRENT_SOURCE', 'pipExecutedThisAttempt': True,
+                       'testsExecuted': False,
                        'pythonImageId': self.image, 'mavenImageId': MAVEN, 'nodeImageId': NODE,
                        'pipReportSha256': digest(report), 'installedVersionsSha256': digest(versions),
                        'resourceSamplesSha256': digest(self.snapshot), 'observed': dict(self.observed),
