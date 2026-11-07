@@ -1076,7 +1076,7 @@
       },
       {
         "module": "tests_python.test_cold_store_custody",
-        "minimumTests": 41,
+        "minimumTests": 52,
         "source": "tests_python/test_cold_store_custody.py",
         "allowedSkippedTests": []
       },

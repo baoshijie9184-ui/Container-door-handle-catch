@@ -382,3 +382,130 @@ except m.ColdError:print(json.dumps({'status':'ABORTED_OWNED_PROCESS_ONLY'}))
     assert child.returncode == 0 and json.loads(child.stdout)['status'] == 'ABORTED_OWNED_PROCESS_ONLY'
     assert original.read_bytes() == b'original bytes never removed'
     assert cold.read(folder / 'resource-abort.json')['status'] == 'ABORTED_OWNED_PROCESS_ONLY'
+
+
+def choose_profile(monkeypatch, name):
+    # Register every mutation with pytest so a selected profile cannot leak
+    # into another test or override the original fixture's count restoration.
+    for key in cold.PROFILES['cold-store-originals-v1']:
+        monkeypatch.setattr(cold, key, getattr(cold, key))
+    cold.select_profile(name)
+
+
+@pytest.fixture
+def history_originals(originals, tmp_path, monkeypatch):
+    choose_profile(monkeypatch, 'cold-store-history-v2')
+    value = copy.deepcopy(originals.value)
+    names = {'mysql-01': 'test-0001', 'store-01': 'tool-0002'}
+    for root, kind in zip(value['roots'], cold.HISTORY_KINDS):
+        root['id'] = names[root['id']]; root['kind'] = kind
+    value['members'] = [row for row in value['members'] if row['scopes'] != ['EXACT_EVIDENCE']]
+    for row in value['members']:
+        row['scopes'] = [names[key] for key in row['scopes']]
+    for row in value['directories']:
+        row['scopes'] = [root['id'] for root in value['roots']
+                         if row['path'] == root['path'] or row['path'].startswith(root['path'] + '/')]
+    value['sourceInventorySha256'] = cold.SOURCE_INVENTORY_SHA256
+    value['selection'] = {'includedKinds': list(cold.HISTORY_KINDS), 'excludedKinds': list(cold.HISTORY_EXCLUDED_KINDS)}
+    inventory = put(tmp_path / 'history-inventory.json', cold.encoded(value) + b'\n')
+    monkeypatch.setattr(cold, 'INVENTORY_SHA256', cold.digest(inventory))
+    monkeypatch.setattr(cold, 'FILES', len(value['members']))
+    monkeypatch.setattr(cold, 'ORIGINAL_BYTES', sum(row['bytes'] for row in value['members']))
+    monkeypatch.setattr(cold, 'TREE_ROOTS', len(value['roots']))
+    monkeypatch.setattr(cold, 'SOURCE_DIRECTORIES', len(value['directories']))
+    return SimpleNamespace(source=originals.source, parent=originals.parent, inventory=inventory, value=value,
+                           bodies={row['path']: originals.bodies[row['path']] for row in value['members']})
+
+
+def test_fixed_profile_selection_is_explicit_and_original_packet_defaults_remain_compatible():
+    spec = importlib.util.spec_from_file_location('cold_profile_selection', cold.SELF)
+    module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+    assert module.PROFILE == 'cold-store-originals-v1' and module.FILES == 15750 and module.group_count() == 71
+    assert module.INVENTORY_SHA256 == 'd31a1359676053b4182a0e4a9d15d8647cf17f93b2bc26bd7e84ce01116e2f6d'
+    legacy = (module.SNAPSHOT, module.RESTORE, module.OWNER, module.PUBLIC)
+    with pytest.raises(module.ColdError, match='UNKNOWN_FIXED_COLD_PROFILE'):
+        module.select_profile('auto')
+    assert module.PROFILE == 'cold-store-originals-v1'
+    module.select_profile('cold-store-history-v2')
+    assert module.FILES == 16417 and module.ORIGINAL_BYTES == 486493287 and module.group_count() == 4041
+    assert not module.HAS_REPORTS and set(legacy).isdisjoint((module.SNAPSHOT, module.RESTORE, module.OWNER, module.PUBLIC))
+    assert module.MAX_ARCHIVE == 576 * 1024 ** 2
+    module.select_profile('cold-store-originals-v1')
+    assert (module.SNAPSHOT, module.RESTORE, module.OWNER, module.PUBLIC) == legacy and module.group_count() == 71
+
+
+@pytest.mark.parametrize('damage', ['source-sha', 'browser-kind', 'extra-evidence', 'directory-outside'])
+def test_history_inventory_refuses_scope_expansion_even_when_transport_hash_is_updated(history_originals, monkeypatch, damage):
+    value = copy.deepcopy(history_originals.value)
+    if damage == 'source-sha': value['sourceInventorySha256'] = '0' * 64
+    elif damage == 'browser-kind': value['roots'][0]['kind'] = 'BROWSER_TOOL_PROFILE_COMPLETE_TREE'
+    elif damage == 'extra-evidence': value['members'][0]['scopes'] = ['EXACT_EVIDENCE']
+    else: value['directories'][0]['path'] = 'work/foreign-store'
+    history_originals.inventory.write_bytes(cold.encoded(value))
+    monkeypatch.setattr(cold, 'INVENTORY_SHA256', cold.digest(history_originals.inventory))
+    with pytest.raises(cold.ColdError):
+        cold.layout(cold.inventory(history_originals.inventory))
+    assert all((history_originals.source / name).read_bytes() == body for name, body in history_originals.bodies.items())
+
+
+def test_history_recovers_every_group_without_empty_reports_or_touching_legacy_destinations(history_originals, tmp_path, monkeypatch):
+    package = packed(history_originals); args, work, _ = attempt(tmp_path, monkeypatch, package)
+    legacy_file = put(work / 'cold-stores-snapshot/originals.tar.gz', b'old independent cold packet')
+    legacy_public = put(work / 'cold-stores-public-receipt.json', b'old immutable receipt')
+    originals = {name: (package / name).read_bytes() for name in ('inventory.json', 'custody.json', 'originals.tar.gz')}
+    groups = cold.layout(cold.inventory(history_originals.inventory))
+    assert set(groups) == {'test-0001', 'tool-0002'} and 'reports' not in groups
+    assert cold.prepare(args)['status'] == 'PREPARED'; upload(package, work)
+    public = cold.verify_restore(args)
+    assert public['profile'] == 'cold-store-history-v2' and public['restoredRoots'] == public['temporaryRestoresRemoved'] == 2
+    assert public['files'] == 4 and public['originalFilesDeleted'] == public['databasesOpened'] == 0
+    assert cold.read(work / cold.RESTORE / 'test-0001-restore.json')['directories'] == 3
+    assert sum(group['files'] for group in cold.read(work / cold.RESTORE / 'restore-receipt.json')['groups']) == 4
+    assert not list((work / cold.RESTORE).glob('temporary-*'))
+    assert legacy_file.read_bytes() == b'old independent cold packet' and legacy_public.read_bytes() == b'old immutable receipt'
+    assert originals == {name: (work / cold.SNAPSHOT / name).read_bytes() for name in originals}
+
+
+@pytest.mark.parametrize('damage', ['manifest', 'public', 'snapshot-path'])
+def test_history_never_accepts_original_profile_manifest_or_cloud_receipt(history_originals, tmp_path, monkeypatch, damage):
+    if damage == 'manifest':
+        package = packed(history_originals); manifest = cold.read(package / 'custody.json')
+        manifest['profile'] = 'cold-store-originals-v1'
+        with pytest.raises(cold.ColdError, match='MANIFEST_NOT_COMPLETE'):
+            cold.validate_manifest(manifest, history_originals.value)
+    else:
+        args, _, old_work = old_custody(history_originals, tmp_path, monkeypatch)
+        if damage == 'public':
+            public = cold.read(old_work / cold.PUBLIC); public['profile'] = 'cold-store-originals-v1'
+            (old_work / cold.PUBLIC).write_bytes(cold.encoded(public))
+        else:
+            foreign = old_work / 'cold-stores-snapshot'; foreign.mkdir(mode=0o700)
+            args.source_snapshot_directory = str(foreign)
+        with pytest.raises(cold.ColdError): cold.describe(args)
+        assert (old_work / cold.SNAPSHOT / 'originals.tar.gz').is_file()
+
+
+def test_history_cloud_reuse_rechecks_every_group_without_original_local_stores(history_originals, tmp_path, monkeypatch):
+    args, work, old_work = old_custody(history_originals, tmp_path, monkeypatch)
+    before = {file.name: file.read_bytes() for file in (old_work / cold.SNAPSHOT).iterdir()}
+    monkeypatch.setattr(cold, 'safe_source', lambda *_: pytest.fail('Cloud reuse cannot read an original local store'))
+    public = cold.reuse(args)
+    assert public['profile'] == 'cold-store-history-v2' and public['restoredRoots'] == public['temporaryRestoresRemoved'] == 2
+    assert public['sourceCustodyReceiptSha256'] == args.source_receipt_sha256
+    assert len(cold.read(work / cold.RESTORE / 'restore-receipt.json')['groups']) == 2
+    assert before == {file.name: file.read_bytes() for file in (old_work / cold.SNAPSHOT).iterdir()}
+
+
+def test_history_evidence_limit_keeps_unproven_restore_and_original_archive(history_originals, tmp_path, monkeypatch):
+    package = packed(history_originals); args, work, _ = attempt(tmp_path, monkeypatch, package)
+    cold.prepare(args); upload(package, work)
+    owner = cold.read(work / cold.OWNER)
+    plan = cold.budget(cold.layout(history_originals.value), owner['inputs'], os.statvfs(work).f_frsize)
+    monkeypatch.setattr(cold, 'ROOT_EVIDENCE_MAX', len(cold.encoded(plan)) + 1)
+    monkeypatch.setattr(cold, 'remove_verified_temporary', lambda *_: pytest.fail('No deletion before a persisted full root proof'))
+    with pytest.raises(cold.ColdError, match='HISTORY_ROOT_EVIDENCE_BOUND'):
+        cold.verify_restore(args)
+    assert (work / cold.SNAPSHOT / 'originals.tar.gz').read_bytes() == (package / 'originals.tar.gz').read_bytes()
+    assert (work / cold.RESTORE / ('temporary-' + owner['token'])).is_dir()
+    assert not (work / cold.RESTORE / 'test-0001-restore.json').exists() and not (work / cold.PUBLIC).exists()
+    assert cold.read(work / cold.RESTORE / 'restore-failed.json')['originalFilesDeleted'] == 0

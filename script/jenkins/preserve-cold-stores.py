@@ -37,12 +37,37 @@ LARGEST_GROUP_BYTES = 258012096
 LARGEST_GROUP_FILES = 1180
 LARGEST_GROUP_DIRECTORIES = 113
 MAX_JSON = 64 * 1024 ** 2
+ROOT_EVIDENCE_MAX = MAX_JSON // 2
+PROBE_EVIDENCE_MAX = MAX_JSON // 4
+FINAL_EVIDENCE_MAX = MAX_JSON // 8
 MAX_ARCHIVE = 14 * 1024 ** 3
 FLOOR = (2048 + 256) * 1024 ** 2
 SNAPSHOT = 'cold-stores-snapshot'
 RESTORE = 'cold-stores-restore'
 PUBLIC = 'cold-stores-public-receipt.json'
 OWNER = 'cold-stores-owner.json'
+HAS_REPORTS = True
+ROOT_ID_PATTERN = r'(?:mysql|store)-[0-9]{2}'
+SOURCE_INVENTORY_SHA256 = None
+HISTORY_KINDS = ('HISTORICAL_TEST_SCENARIO_COMPLETE_TREE', 'TOOL_RECEIPT_STORE_COMPLETE_TREE_OWNERSHIP_UNPROVED')
+HISTORY_EXCLUDED_KINDS = ('BROWSER_TOOL_PROFILE_COMPLETE_TREE', 'PRIMARY_LEGACY_CHROMA_ALREADY_IN_NAMED_SOURCE_PROFILE',
+                          'TRANSPORT_TOOL_CACHE_COMPLETE_TREE')
+PROFILES = {
+    'cold-store-originals-v1': dict(PROFILE=PROFILE, INVENTORY_SHA256=INVENTORY_SHA256, FILES=FILES,
+        ORIGINAL_BYTES=ORIGINAL_BYTES, TREE_ROOTS=TREE_ROOTS, SOURCE_DIRECTORIES=SOURCE_DIRECTORIES,
+        LARGEST_GROUP_BYTES=LARGEST_GROUP_BYTES, LARGEST_GROUP_FILES=LARGEST_GROUP_FILES,
+        LARGEST_GROUP_DIRECTORIES=LARGEST_GROUP_DIRECTORIES, MAX_ARCHIVE=MAX_ARCHIVE,
+        SNAPSHOT=SNAPSHOT, RESTORE=RESTORE, PUBLIC=PUBLIC, OWNER=OWNER, HAS_REPORTS=True,
+        ROOT_ID_PATTERN=ROOT_ID_PATTERN, SOURCE_INVENTORY_SHA256=None),
+    'cold-store-history-v2': dict(PROFILE='cold-store-history-v2',
+        INVENTORY_SHA256='61a9dddc73bbcd15be4dd6ad0cb11aed3ad805862eb99c4940ecf321df25f33a',
+        FILES=16417, ORIGINAL_BYTES=486493287, TREE_ROOTS=4041, SOURCE_DIRECTORIES=11379,
+        LARGEST_GROUP_BYTES=356070, LARGEST_GROUP_FILES=10, LARGEST_GROUP_DIRECTORIES=5,
+        MAX_ARCHIVE=576 * 1024 ** 2, SNAPSHOT='cold-history-snapshot', RESTORE='cold-history-restore',
+        PUBLIC='cold-history-public-receipt.json', OWNER='cold-history-owner.json', HAS_REPORTS=False,
+        ROOT_ID_PATTERN=r'(?:test|tool)-[0-9]{4}',
+        SOURCE_INVENTORY_SHA256='dc5ba47b8f2f0f8c0fc1b818fdb313d0f2dc5ff265b0e84329529574e4e57d0b'),
+}
 SHA = re.compile(r'[a-f0-9]{64}')
 TAG = re.compile(r'ci-([1-9][0-9]*)-([a-f0-9]{12})')
 FORBIDDEN = 'work/ecs-only-20261105/micro-followup/checkout'
@@ -60,6 +85,16 @@ class ColdError(Exception):
 def need(value, code):
     if not value:
         raise ColdError(code)
+
+
+def select_profile(name):
+    """Explicit CLI selection only; untrusted inventory never selects a recipe."""
+    need(isinstance(name, str) and name in PROFILES, 'UNKNOWN_FIXED_COLD_PROFILE')
+    globals().update(PROFILES[name])
+
+
+def group_count():
+    return TREE_ROOTS + int(HAS_REPORTS)
 
 
 def encoded(value):
@@ -144,7 +179,11 @@ def inventory(path):
          and value['summary']['issues'] == 0 and value['summary']['approvedForDeletion'] == 0
          and not value['physicalFileAliases'] and not value['overlappingTreeDeclarations'], 'INVENTORY_NOT_CLOSED')
     roots = {row['id']: row for row in value['roots']}
-    need(len(roots) == TREE_ROOTS and all(re.fullmatch(r'(?:mysql|store)-[0-9]{2}', key) for key in roots), 'ROOT_CATALOG_CHANGED')
+    need(len(roots) == TREE_ROOTS and all(re.fullmatch(ROOT_ID_PATTERN, key) for key in roots), 'ROOT_CATALOG_CHANGED')
+    if SOURCE_INVENTORY_SHA256 is not None:
+        need(value.get('sourceInventorySha256') == SOURCE_INVENTORY_SHA256
+             and value.get('selection') == {'includedKinds': list(HISTORY_KINDS), 'excludedKinds': list(HISTORY_EXCLUDED_KINDS)}
+             and all(row.get('kind') in HISTORY_KINDS for row in roots.values()), 'HISTORY_SELECTION_NOT_CLOSED')
     seen = set(); ids = set(); total = 0
     for row in value['members']:
         name = utility().member_name(row['path']); info = row['fingerprint']
@@ -157,31 +196,37 @@ def inventory(path):
 
 
 def layout(value):
-    """All 70 scoped trees plus selected reports, including empty directories."""
-    roots = {row['id']: row for row in value['roots']}; groups = {key: {'files': [], 'directories': []} for key in roots}
-    groups['reports'] = {'files': [], 'directories': []}
+    """Every fixed-profile tree and its declared evidence, including empty dirs."""
+    roots = {row['id']: row for row in value['roots']}; root_ids = set(roots)
+    groups = {key: {'files': [], 'directories': []} for key in roots}
+    if HAS_REPORTS:
+        groups['reports'] = {'files': [], 'directories': []}
     for row in value['members']:
-        scopes = set(row['scopes']) & set(roots)
+        scopes = set(row['scopes']) & root_ids
         need(len(scopes) <= 1, 'OVERLAPPING_SOURCE_MEMBER')
         key = next(iter(scopes)) if scopes else 'reports'
-        need(scopes or row['scopes'] == ['EXACT_EVIDENCE'], 'MEMBER_WITHOUT_EXACT_SCOPE')
+        need(scopes or HAS_REPORTS and row['scopes'] == ['EXACT_EVIDENCE'], 'MEMBER_WITHOUT_EXACT_SCOPE')
         prefix = roots[key]['path'] + '/' if key != 'reports' else ''
         need(row['path'].startswith(prefix), 'SOURCE_ESCAPES_ITS_ROOT')
         relative = row['path'][len(prefix):]
         groups[key]['files'].append({'member': key + '/' + relative, 'source': row['path'],
                                      'bytes': row['bytes'], 'sha256': row['sha256']})
     for row in value['directories']:
-        matches = [key for key, root in roots.items() if row['path'] == root['path'] or row['path'].startswith(root['path'] + '/')]
+        matches = ([key for key in row.get('scopes', []) if key in root_ids] if not HAS_REPORTS else
+                   [key for key, root in roots.items() if row['path'] == root['path'] or row['path'].startswith(root['path'] + '/')])
         need(len(matches) == 1, 'DIRECTORY_SCOPE_NOT_EXACT')
+        need(row['path'] == roots[matches[0]]['path'] or row['path'].startswith(roots[matches[0]]['path'] + '/'),
+             'DIRECTORY_ESCAPES_ITS_ROOT')
         key = matches[0]; suffix = row['path'][len(roots[key]['path']):]
         groups[key]['directories'].append({'member': key + suffix, 'source': row['path']})
     report_dirs = set()
-    for row in groups['reports']['files']:
+    for row in groups.get('reports', {}).get('files', []):
         parent = Path(row['member']).parent
         while str(parent) != '.':
             report_dirs.add(parent.as_posix()); parent = parent.parent
-    groups['reports']['directories'] = [{'member': name, 'source': name[len('reports/'):] if name != 'reports' else None}
-                                        for name in sorted(report_dirs)]
+    if HAS_REPORTS:
+        groups['reports']['directories'] = [{'member': name, 'source': name[len('reports/'):] if name != 'reports' else None}
+                                            for name in sorted(report_dirs)]
     seen = set()
     for key, group in groups.items():
         need(group['files'], 'EMPTY_SOURCE_GROUP')
@@ -348,7 +393,7 @@ def validate_manifest(manifest, value):
          and manifest['profile'] == PROFILE and manifest['status'] == 'COMPLETE'
          and manifest['inventorySha256'] == INVENTORY_SHA256 and manifest['files'] == FILES
          and manifest['bytes'] == ORIGINAL_BYTES and manifest['roots'] == TREE_ROOTS
-         and manifest['groups'] == TREE_ROOTS + 1 and manifest['archiveEncoding'] == 'TAR_GZIP'
+         and manifest['groups'] == group_count() and manifest['archiveEncoding'] == 'TAR_GZIP'
          and manifest['heldAllSourcesExclusive'] is True and manifest['sourceDirectoriesVerified'] == SOURCE_DIRECTORIES
          and type(manifest['archiveBytes']) is int and 0 < manifest['archiveBytes'] <= MAX_ARCHIVE
          and SHA.fullmatch(manifest['archiveSha256']) and set(manifest['permissions']) == {row['path'] for row in value['members']},
@@ -509,14 +554,18 @@ class RestoreGuard:
         signal.signal(signal.SIGUSR1, abort)
         def watch():
             previous = time.monotonic()
+            probe_bytes = 0
             while not self.event.is_set():
                 now = time.monotonic()
                 try:
                     need(now - previous <= 3, 'COLD_MONITOR_SAMPLE_LATE')
                     resource(self.work)
                     sample = {'monotonic': now, 'availableBytes': available(self.work)}
+                    raw = encoded(sample) + b'\n'
+                    probe_bytes += len(raw)
+                    need(HAS_REPORTS or probe_bytes <= PROBE_EVIDENCE_MAX, 'HISTORY_PROBE_EVIDENCE_BOUND')
                     with (self.evidence / 'resource-probes.jsonl').open('ab') as output:
-                        output.write(encoded(sample) + b'\n')
+                        output.write(raw)
                     os.chmod(self.evidence / 'resource-probes.jsonl', 0o600)
                 except BaseException as error:
                     self.failure = type(error).__name__
@@ -568,7 +617,13 @@ def restore_all(snapshot, output, value, manifest, owner, context):
     block = os.statvfs(output).f_frsize
     plan = budget(groups, owner['inputs'], block)
     resource(output, plan['largestRestoreAllocationBytes'] + MAX_JSON)
-    private_json(output / 'resource-plan.json', plan)
+    evidence_bytes = 0
+    def save_evidence(path, record):
+        nonlocal evidence_bytes
+        evidence_bytes += len(encoded(record))
+        need(HAS_REPORTS or evidence_bytes <= ROOT_EVIDENCE_MAX, 'HISTORY_ROOT_EVIDENCE_BOUND')
+        private_json(path, record)
+    save_evidence(output / 'resource-plan.json', plan)
     order = list(groups); completed = []; seen = set(); current = None; temporary = None
     expected_entries = {row['member']: ('FILE', row) for group in groups.values() for row in group['files']}
     expected_entries.update({row['member']: ('DIRECTORY', row) for group in groups.values() for row in group['directories']})
@@ -583,11 +638,11 @@ def restore_all(snapshot, output, value, manifest, owner, context):
                  'files': len(files), 'bytes': group['bytes'], 'directories': len(directories),
                  'memberCatalogueSha256': sha(encoded(files)), 'directoryCatalogueSha256': sha(encoded(sorted(directories))),
                  'archiveSha256': manifest['archiveSha256'], 'ownerToken': owner['token']}
-        receipt_file = output / (key + '-restore.json'); private_json(receipt_file, proof)
+        receipt_file = output / (key + '-restore.json'); save_evidence(receipt_file, proof)
         # The proof is fsynced before removing the new, never-published restore copy.
         remove_verified_temporary(temporary, output, owner['token'], {'files': files, 'directories': directories})
         cleanup_file = output / (key + '-temporary-cleanup.json')
-        private_json(cleanup_file, {'status': 'REMOVED_OWNED_VERIFIED_RESTORE', 'group': key,
+        save_evidence(cleanup_file, {'status': 'REMOVED_OWNED_VERIFIED_RESTORE', 'group': key,
                      'ownerToken': owner['token'], 'restoreReceiptSha256': digest(receipt_file)})
         completed.append({'group': key, 'files': len(files), 'bytes': group['bytes'],
                           'restoreReceiptSha256': digest(receipt_file), 'temporaryCleanupSha256': digest(cleanup_file)})
@@ -666,10 +721,13 @@ def verify_restore(args):
             'archiveSha256': args.archive_sha256, 'archiveBytes': args.archive_bytes,
             'sourceCustodyReceiptSha256': owner.get('sourceCustodyReceiptSha256'), 'restoredRoots': len(completed),
             'originalFilesDeleted': 0, 'databasesOpened': 0, 'temporaryRestoresRemoved': len(completed)}
-        private_json(output / 'restore-receipt.json', {**restored, 'groups': completed,
-                     'resourcePlanSha256': digest(output / 'resource-plan.json'), 'ownerToken': owner['token']})
+        receipt = {**restored, 'groups': completed,
+                   'resourcePlanSha256': digest(output / 'resource-plan.json'), 'ownerToken': owner['token']}
+        need(HAS_REPORTS or len(encoded(receipt)) <= FINAL_EVIDENCE_MAX, 'HISTORY_FINAL_EVIDENCE_BOUND')
+        private_json(output / 'restore-receipt.json', receipt)
         public = {**restored, 'restoreReceiptSha256': digest(output / 'restore-receipt.json')}
         need(set(public) == set(PUBLIC_FIELDS), 'COLD_PUBLIC_FIELDS_CHANGED')
+        need(HAS_REPORTS or len(encoded(public)) <= 16384, 'HISTORY_PUBLIC_EVIDENCE_BOUND')
         private_json(work / PUBLIC, public)
         return {**public, 'publicReceiptSha256': digest(work / PUBLIC)}
     except BaseException as error:
@@ -690,7 +748,7 @@ def original_snapshot(args):
     need(set(public) == set(PUBLIC_FIELDS) and public.get('status') == 'RESTORED_VERIFIED'
          and public.get('kind') == KIND and public.get('profile') == PROFILE and public.get('inventorySha256') == INVENTORY_SHA256
          and public.get('files') == FILES and public.get('bytes') == ORIGINAL_BYTES and public.get('roots') == TREE_ROOTS
-         and public.get('restoredRoots') == TREE_ROOTS + 1 and public.get('temporaryRestoresRemoved') == TREE_ROOTS + 1
+         and public.get('restoredRoots') == group_count() and public.get('temporaryRestoresRemoved') == group_count()
          and public.get('originalFilesDeleted') == public.get('databasesOpened') == 0
          and public.get('verificationReceiptSha256') == record_sha
          and all(public.get(key) == record[key] for key in ('release', 'commit', 'sourceSha256', 'identity')), 'COLD_OLD_CUSTODY_NOT_PROVED')
@@ -704,7 +762,7 @@ def original_snapshot(args):
     proof = read(base.owner_path(restore / 'restore-receipt.json'), private=True)
     need(digest(restore / 'restore-receipt.json') == public['restoreReceiptSha256']
          and all(proof.get(key) == val for key, val in public.items() if key != 'restoreReceiptSha256')
-         and len(proof['groups']) == TREE_ROOTS + 1, 'COLD_OLD_ROOT_RESTORE_PROOFS_MISSING')
+         and len(proof['groups']) == group_count(), 'COLD_OLD_ROOT_RESTORE_PROOFS_MISSING')
     need(digest(base.owner_path(restore / 'resource-plan.json')) == proof.get('resourcePlanSha256'), 'COLD_OLD_RESOURCE_PROOF_DRIFT')
     old_owner = read(base.owner_path(old.parent / OWNER), private=True)
     expected_groups = layout(value)
@@ -761,7 +819,7 @@ def retirement_plan(inventory_file, public_file, output):
     value = inventory(inventory_file); public = read(public_file)
     need(set(public) == set(PUBLIC_FIELDS) and public['status'] == 'RESTORED_VERIFIED' and public['kind'] == KIND
          and public['profile'] == PROFILE and public['inventorySha256'] == INVENTORY_SHA256
-         and public['files'] == FILES and public['bytes'] == ORIGINAL_BYTES and public['restoredRoots'] == TREE_ROOTS + 1,
+         and public['files'] == FILES and public['bytes'] == ORIGINAL_BYTES and public['restoredRoots'] == group_count(),
          'EXACT_SERVER_CUSTODY_RECEIPT_REQUIRED')
     output = utility().safe(output, exists=False)
     need(output.is_relative_to(ROOT / 'work') and len(output.relative_to(ROOT / 'work').parts) >= 3
@@ -792,8 +850,11 @@ def main():
                 p.add_argument('--' + prefix + '-sha256', required=True)
         if action in ('describe', 'reuse'): p.add_argument('--source-snapshot-directory', required=True)
         if action == 'reuse': p.add_argument('--source-receipt-sha256', required=True)
+    for command in commands.choices.values():
+        command.add_argument('--profile', choices=tuple(PROFILES), default='cold-store-originals-v1')
     args = parser.parse_args()
     try:
+        select_profile(args.profile)
         if args.action == 'pack': result = pack(args.inventory, args.output)
         elif args.action == 'retirement-plan': result = retirement_plan(args.inventory, args.public_receipt, args.output)
         else: result = globals()[args.action.replace('-', '_')](args)

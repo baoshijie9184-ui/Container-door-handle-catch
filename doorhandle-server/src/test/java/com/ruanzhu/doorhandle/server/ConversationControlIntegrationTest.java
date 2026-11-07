@@ -9,6 +9,7 @@ import com.ruanzhu.doorhandle.module.ai.control.ConversationControlRegistry;
 import com.ruanzhu.doorhandle.module.ai.journal.*;
 import com.ruanzhu.doorhandle.module.ai.service.AgentScopeConversationService;
 import com.ruanzhu.doorhandle.module.ai.tool.BusinessToolkitFactory;
+import com.ruanzhu.doorhandle.module.ai.testsupport.CompactH2Functions;
 import com.ruanzhu.doorhandle.module.app.config.properties.ChatAssistantProperties;
 import com.ruanzhu.doorhandle.module.app.dto.chat.ChatMessageResponse;
 import com.ruanzhu.doorhandle.module.app.service.*;
@@ -39,20 +40,7 @@ class ConversationControlIntegrationTest {
     final AgentActor actor=new AgentActor(1,"alice",AgentActor.Role.INSPECTOR);
     @Test void queuedConversationPausesAcceptsSteeringResumesAndThenRunsTheNextTurn()throws Exception{
         var source=new DriverManagerDataSource("jdbc:h2:mem:"+UUID.randomUUID()+";MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1","sa","");var jdbc=new JdbcTemplate(source);var manager=new DataSourceTransactionManager(source);
-        for(String filename:List.of("migration-V16-agentscope-run-journal.sql","migration-V36-conversation-inbox.sql")){
-            String ddl=Files.readString(Path.of("../sql/mysql",filename)).replaceAll("(?m)^--.*$", "").replaceAll(" COLLATE utf8mb4_bin","").replaceAll(" ENGINE=InnoDB DEFAULT CHARSET=utf8mb4","").replace(" COLLATE=utf8mb4_bin","").replace("payload_json JSON","payload_json VARCHAR(8192)")
-                    .replaceAll("(?m)^(\\s*)UNIQUE KEY (\\w+)\\s*(\\([^\\n]+\\))", "$1CONSTRAINT $2 UNIQUE $3").replaceAll("(?m)^\\s*KEY .*\\n","").replaceAll(",\\s*\\)",")");
-            for(String sql:ddl.split(";"))if(!sql.isBlank())jdbc.execute(sql);
-        }
-        String coordination = Files.readString(Path.of("../sql/mysql/compact/001-coordination-state.sql"))
-                .replace(" COLLATE utf8mb4_bin", "")
-                .replace(" ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin", "")
-                .replaceAll(",\\s*CONSTRAINT ck_coordination_settings CHECK \\([^\\n]+\\)", "");
-        var compactPopulator = new org.springframework.jdbc.datasource.init.ResourceDatabasePopulator(
-                new org.springframework.core.io.ByteArrayResource(coordination.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
-        compactPopulator.setSqlScriptEncoding(java.nio.charset.StandardCharsets.UTF_8.name());
-        compactPopulator.execute(jdbc.getDataSource());
-        jdbc.execute("DROP TABLE agent_conversation_input_owner");
+        installCompactPersistence(jdbc);
         var journalProperties=new AgentJournalProperties();journalProperties.setEnabled(true);var json=new ObjectMapper();var journal=new JdbcAgentJournal(jdbc,manager,json,journalProperties);journal.verifySchema();
         var inputRef=new AtomicReference<AgentSteeringInboxApi>();var inputProvider=mock(ObjectProvider.class);when(inputProvider.getIfAvailable()).thenAnswer(inv->inputRef.get());
         var controls=new ConversationControlRegistry(journal,inputProvider);
@@ -79,17 +67,33 @@ class ConversationControlIntegrationTest {
             var steering=inbox.enqueue(actor,"s1",UUID.randomUUID().toString(),"NEXT_STEP","FOCUS_ON_SOURCES");
             firstResponse.tryEmitValue(ChatResponse.builder().content(List.of(new ToolUseBlock("delegate-1","delegate_detection_task",Map.of("question","查询检测任务")))).finishReason("tool_calls").build());
             await().atMost(Duration.ofSeconds(5)).until(()->"PAUSED".equals(controls.inspect(actor,"s1").phase()));assertThat(requests.get()).isEqualTo(1);
-            inbox.dispatch();assertThat(jdbc.queryForObject("SELECT status FROM agent_conversation_input WHERE input_id=?",String.class,second.id())).isEqualTo("QUEUED");
+            inbox.dispatch();assertThat(inputStatus(jdbc,second.id())).isEqualTo("QUEUED");
             controls.command(actor,"s1",run,"resume",controls.inspect(actor,"s1").revision());
-            await().atMost(Duration.ofSeconds(8)).until(()->"COMPLETED".equals(jdbc.queryForObject("SELECT status FROM agent_conversation_input WHERE input_id=?",String.class,first.id())));
-            assertThat(jdbc.queryForObject("SELECT status FROM agent_conversation_input WHERE input_id=?",String.class,steering.id())).isEqualTo("APPLIED");
-            inbox.dispatch();await().atMost(Duration.ofSeconds(5)).until(()->"COMPLETED".equals(jdbc.queryForObject("SELECT status FROM agent_conversation_input WHERE input_id=?",String.class,second.id())));
+            await().atMost(Duration.ofSeconds(8)).until(()->"COMPLETED".equals(inputStatus(jdbc,first.id())));
+            assertThat(inputStatus(jdbc,steering.id())).isEqualTo("APPLIED");
+            inbox.dispatch();await().atMost(Duration.ofSeconds(5)).until(()->"COMPLETED".equals(inputStatus(jdbc,second.id())));
             assertThat(journal.list(actor,"s1",null,20)).hasSize(2).allSatisfy(item->assertThat(item.status()).isEqualTo("COMPLETED"));
             assertThat(journal.list(actor,"s1",null,20)).extracting(AgentJournal.RunView::entryPoint).containsExactlyInAnyOrder("CHAT","AGUI");
             assertThat(messages.stream().filter(item->"user".equals(item.getRole())).map(ChatMessageResponse::getContent).toList()).containsExactly("先查询检测任务","FOCUS_ON_SOURCES","下一轮核对报告");
             assertThat(received.get(2).stream().filter(item->item.getTextContent()!=null&&item.getTextContent().contains("FOCUS_ON_SOURCES")).count()).isEqualTo(1);
             assertThat(journal.events(actor,run,0,100)).extracting(AgentJournal.EventView::type).contains("PAUSE_REQUESTED","RUN_PAUSED","RUN_RESUMED","STEERING_APPLIED");
         }finally{inbox.close();}
+    }
+    private static void installCompactPersistence(JdbcTemplate jdbc)throws Exception{
+        CompactH2Functions.install(jdbc);
+        for(String filename:List.of("001-coordination-state.sql","005-workflow-runtime.sql","006-agent-run.sql")){
+            String ddl=new org.springframework.core.io.ClassPathResource("db/compact/"+filename)
+                    .getContentAsString(java.nio.charset.StandardCharsets.UTF_8);
+            var script=new org.springframework.jdbc.datasource.init.ResourceDatabasePopulator(new org.springframework.core.io.ByteArrayResource(
+                    CompactH2Functions.adaptDdl(ddl).getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+            script.setSqlScriptEncoding("UTF-8");script.execute(jdbc.getDataSource());
+        }
+        jdbc.execute("ALTER TABLE audit_event ADD CONSTRAINT fk_audit_journal_run FOREIGN KEY(owner_user_id,journal_run_id) REFERENCES agent_run(user_id,run_id) ON DELETE RESTRICT");
+        jdbc.execute("ALTER TABLE audit_event ADD CONSTRAINT fk_audit_research_export_run FOREIGN KEY(owner_user_id,research_export_run_id) REFERENCES agent_run(user_id,run_id) ON DELETE RESTRICT ON UPDATE RESTRICT");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public' AND table_name IN ('agent_conversation_input','agent_conversation_input_owner','agent_run_event')",Integer.class)).isZero();
+    }
+    private static String inputStatus(JdbcTemplate jdbc,String inputId){
+        return jdbc.queryForObject("SELECT status FROM workflow_instance WHERE kind='CONVERSATION_INPUT' AND workflow_id=?",String.class,inputId);
     }
     private ChatMessageResponse append(List<ChatMessageResponse> messages,AtomicLong next,String role,String content,String type){var item=new ChatMessageResponse();item.setId(next.incrementAndGet());item.setSessionId("s1");item.setRole(role);item.setContent(content);item.setMessageType(type);messages.add(item);return item;}
 }

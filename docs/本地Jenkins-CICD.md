@@ -1,5 +1,9 @@
 # 本地 Jenkins CI/CD 约定
 
+2026-11-07 晚间补齐：同一固定源码验证通过后可顺序处理旧源 5,599 文件、额外 36 文件、原冷存储 70 根、额外历史测试/回执 4,041 根及本次成功的 45 表导出。原冷存储仍用 `COLD_STORES_SNAPSHOT` / `COLD_STORES_ECS_SNAPSHOT` 和固定 profile；额外历史包通过独立的 `COLD_HISTORY_SNAPSHOT` / `COLD_HISTORY_ECS_SNAPSHOT` 进入固定 v2，同轮不会覆盖原包目的地或回执。45 表输入使用 `LOCAL_MYSQL_SNAPSHOT` 与 `LOCAL_MYSQL_FIXTURE_SETTINGS`，只在 ECS 的独立新容器/卷进行双恢复，不连接本机数据库或自动合入正式库。互斥、重复 profile 和 embedding 专项排除门禁均在版本库维护。
+
+上述接线已完成静态检查与 Jenkins DSL 校验，尚未通过完整 ECS 源码及恢复验收。#83 的实际结果、剩余 server 夹具修复与 StopCharging 回执见 [ECS 运行约定](ECS-only-runtime.md)。60 GiB 扩容和扩容前快照已按单独授权完成，不能据此推断应用已部署或全部数据已上云。
+
 本轮数据上云新增源码已完成静态检查，实际 ECS 验收尚待新的固定提交执行。首次可同时指定 `LEGACY_SOURCE_SNAPSHOT`（5,599 文件旧库/MCP/Kafka 原件）和 `LOCAL_ARTIFACTS_SNAPSHOT`（36 文件历史模型、备份、日志和上传原件）。后续分别使用互斥的 `LEGACY_SOURCE_ECS_SNAPSHOT` / `LOCAL_ARTIFACTS_ECS_SNAPSHOT`，从同一 ECS 的旧成功封存记录在服务器内复制、独立恢复并重新核对，不要求长期保留本地业务包。完整源码验证通过后，`RECLAIM_OLD_BUILD_OUTPUTS` 仅按原始报告、终态及精确计划处理旧编译目录/依赖树，保留数据库、源码、JAR、备份、报告和共享缓存；任何证据不符都拒绝清理。
 
 旧记忆的 BGE 候选合并、跨用户真实检索与启动/重启/独立恢复三阶段已有新增实现，仍需实际验收。候选验证不代表生产已激活：首次正式切换另需维护冻结后的新鲜原卷备份与恢复证明、pristine 新卷安装及生产启动后的完整内容回读；普通后续部署直接校验持久 native binding，保留已使用的正式数据卷，不重复导入历史记录。生产及旧库演练机器门禁继续关闭。Windows 本机 MySQL/Redis 的受保护目录另需管理员只读盘点，未据此宣称本地清退完成。
