@@ -1118,7 +1118,7 @@
       },
       {
         "module": "tests_python.test_jenkins_tool_preparation",
-        "minimumTests": 14,
+        "minimumTests": 15,
         "source": "tests_python/test_jenkins_tool_preparation.py",
         "allowedSkippedTests": []
       },

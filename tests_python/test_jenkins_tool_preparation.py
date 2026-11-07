@@ -159,6 +159,23 @@ class ToolPreparationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             tools.resource_check(8 * GIB, 7 * GIB, GIB, required_growth=GIB + 1)
 
+    def test_fresh_install_counts_existing_metadata_once_and_keeps_both_bounds(self):
+        metadata = 64 * 1024
+        self.assertEqual(tools.MAX_GROWTH - metadata,
+                         tools.admit_fresh_install(8 * GIB, 8 * GIB - metadata))
+        # At the exact admission boundary, metadata consumes the total envelope
+        # once; it cannot require a second, complete installation allowance.
+        baseline = tools.RESERVE + tools.OVERSHOOT + tools.MAX_GROWTH
+        self.assertEqual(tools.MAX_GROWTH - metadata,
+                         tools.admit_fresh_install(baseline, baseline - metadata))
+        with self.assertRaises(ValueError):
+            tools.admit_fresh_install(baseline - 1, baseline - metadata - 1)
+        for spent in (tools.MAX_GROWTH, tools.MAX_GROWTH + 1):
+            with self.subTest(spent=spent), self.assertRaises(ValueError):
+                tools.admit_fresh_install(8 * GIB, 8 * GIB - spent)
+        with self.assertRaises(ValueError):
+            tools.admit_fresh_install(8 * GIB, tools.RESERVE + tools.OVERSHOOT - 1)
+
     def owned_preparation(self):
         value = tools.Preparation.__new__(tools.Preparation)
         value.token = 'c' * 24; value.name = 'doorhandle-ci-python-' + value.token

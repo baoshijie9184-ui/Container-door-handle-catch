@@ -256,6 +256,15 @@ def resource_check(baseline, available, owned_writable, *, required_growth=0):
     return host_growth
 
 
+def admit_fresh_install(baseline, available):
+    """Reserve the unused part of the same cumulative disk-growth envelope."""
+    observed_growth = resource_check(baseline, available, 0)
+    remaining_growth = MAX_GROWTH - observed_growth
+    require(remaining_growth > 0, 'No bounded disk growth remains for dependency installation')
+    resource_check(baseline, available, 0, required_growth=remaining_growth)
+    return remaining_growth
+
+
 class Preparation:
     def __init__(self, args):
         self.args = args; self.identity = identity(args)
@@ -647,7 +656,15 @@ class Preparation:
         reused = self.reuse_pinned_dependencies(sources, pinned, owner)
         if reused is not None:
             return reused
-        resource_check(self.baseline, self.available(), 0, required_growth=MAX_GROWTH)
+        available = self.available()
+        remaining = admit_fresh_install(self.baseline, available)
+        write_json(self.folder / 'fresh-install-admission.json', {
+            'kind': 'doorhandle-fresh-tool-admission', 'release': self.args.tag,
+            'commit': self.args.commit, 'sourceSha256': self.args.source_sha256,
+            'baselineAvailableBytes': self.baseline, 'availableBytes': available,
+            'observedHostGrowthUpperBoundBytes': MAX_GROWTH - remaining,
+            'remainingGrowthBytes': remaining, 'maximumGrowthBytes': MAX_GROWTH,
+            'reserveBytes': RESERVE, 'overshootBytes': OVERSHOOT})
         self.sample_stream = self.snapshot.open('x', encoding='utf8'); os.chmod(self.snapshot, 0o600)
         try:
             self.container = self.call(*create_arguments(self.name, self.token, self.args.tag, self.args.source_sha256,
