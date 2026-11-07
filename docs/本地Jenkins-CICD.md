@@ -1,5 +1,7 @@
 # 本地 Jenkins CI/CD 约定
 
+2026-11-08 #88：八项依赖在 ECS 实装校验通过，Java 797 项通过、612 条件跳过；Python 1,109 项通过、24 跳过、35 项失败或报错，流水线按门禁失败，未执行双前端及五类资料恢复。原始报告及源码身份已另行保全，工具清理和流水线外 `Stopped / StopCharging` 均已回读。当前继续在版本库修复实际问题，不据配置、编译或局部通过启用生产发布。
+
 2026-11-08：#87 被旧云端每日零点 OOS 计划中断，Jenkins 已终态失败，未进入项目测试和数据恢复。已仅取消该实例的旧定时关机计划并回读 `Cancelled`，后续继续在测试完成后从流水线外节省停机；Jenkins 保持运行。依赖安装源沿用项目已有阿里云 HTTPS 镜像，等待下一固定提交的实际 ECS 回执，详见 [ECS 运行约定](ECS-only-runtime.md)。
 
 2026-11-07 晚间补齐：同一固定源码验证通过后可顺序处理旧源 5,599 文件、额外 36 文件、原冷存储 70 根、额外历史测试/回执 4,041 根及本次成功的 45 表导出。原冷存储仍用 `COLD_STORES_SNAPSHOT` / `COLD_STORES_ECS_SNAPSHOT` 和固定 profile；额外历史包通过独立的 `COLD_HISTORY_SNAPSHOT` / `COLD_HISTORY_ECS_SNAPSHOT` 进入固定 v2，同轮不会覆盖原包目的地或回执。45 表输入使用 `LOCAL_MYSQL_SNAPSHOT` 与 `LOCAL_MYSQL_FIXTURE_SETTINGS`，只在 ECS 的独立新容器/卷进行双恢复，不连接本机数据库或自动合入正式库。互斥、重复 profile 和 embedding 专项排除门禁均在版本库维护。

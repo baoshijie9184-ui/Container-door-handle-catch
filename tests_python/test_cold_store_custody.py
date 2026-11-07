@@ -1,6 +1,7 @@
 """ECS-only byte/ownership contracts; opaque fixtures never use a DB or model reader."""
 from contextlib import nullcontext
 import copy
+import gzip
 import importlib.util
 import io
 import json
@@ -181,8 +182,16 @@ def repack_changed(package, args, mutation):
         entry.type = tarfile.SYMTYPE; entry.size = 0; entry.linkname = '/foreign/secret'; items[i] = (entry, None)
     elif mutation == 'wrong-body':
         i = next(i for i, item in enumerate(items) if item[0].isfile()); entry, body = items[i]; items[i] = (entry, b'x' * len(body))
-    with tarfile.open(package / 'originals.tar.gz', 'w:gz', format=tarfile.PAX_FORMAT) as archive:
-        for entry, body in items: archive.addfile(entry, io.BytesIO(body) if body is not None else None)
+    with tarfile.open(package / 'originals.tar.gz', 'w:gz', format=tarfile.PAX_FORMAT,
+                      pax_headers={'comment': 'opaque'} if mutation == 'global-pax-header' else None) as archive:
+        for index, (entry, body) in enumerate(items):
+            if mutation == 'pax-budget' and index == 0: entry.pax_headers = {'comment': 'x' * 65537}
+            archive.addfile(entry, io.BytesIO(body) if body is not None else None)
+    if mutation in ('pax-budget', 'global-pax-header'):
+        with gzip.open(package / 'originals.tar.gz', 'rb') as raw:
+            header = tarfile.TarInfo.frombuf(raw.read(512), 'utf-8', 'strict')
+        assert header.type == (tarfile.XGLTYPE if mutation == 'global-pax-header' else tarfile.XHDTYPE)
+        assert (header.size > 65536) if mutation == 'pax-budget' else (0 < header.size < 65536)
     if mutation == 'gzip-crc':
         raw = bytearray((package / 'originals.tar.gz').read_bytes()); raw[-8] ^= 0x80
         (package / 'originals.tar.gz').write_bytes(raw)
@@ -193,11 +202,16 @@ def repack_changed(package, args, mutation):
     args.manifest_bytes = (package / 'custody.json').stat().st_size; args.manifest_sha256 = cold.digest(package / 'custody.json')
 
 
-@pytest.mark.parametrize('mutation', ['extra', 'duplicate', 'omitted-file', 'omitted-empty-dir', 'linked-file', 'wrong-body', 'gzip-crc'])
+@pytest.mark.parametrize('mutation', ['extra', 'duplicate', 'omitted-file', 'omitted-empty-dir', 'linked-file', 'wrong-body', 'gzip-crc', 'pax-budget', 'global-pax-header'])
 def test_full_restore_rejects_inner_tar_drift_even_with_updated_transport_hashes(originals, tmp_path, monkeypatch, mutation):
     package = packed(originals); args, work, _ = attempt(tmp_path, monkeypatch, package)
     repack_changed(package, args, mutation); cold.prepare(args); upload(package, work)
-    with pytest.raises(Exception): cold.verify_restore(args)
+    if mutation in ('pax-budget', 'global-pax-header'):
+        monkeypatch.setattr(tarfile.TarInfo, '_proc_pax',
+            lambda *unused: pytest.fail('Unadmitted cold-store PAX must be rejected before decoding'))
+        with pytest.raises(cold.ColdError, match='COLD_FOREIGN_TAR_HEADER'): cold.verify_restore(args)
+    else:
+        with pytest.raises(Exception): cold.verify_restore(args)
     assert not (work / cold.PUBLIC).exists() and (work / cold.SNAPSHOT / 'originals.tar.gz').is_file()
     assert (work / cold.RESTORE / 'restore-failed.json').is_file()
 

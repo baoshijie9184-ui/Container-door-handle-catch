@@ -817,12 +817,26 @@ def verify_preservation(snapshot, restore=None):
             _proc_gnusparse_01 = _proc_gnusparse_00
             _proc_gnusparse_10 = _proc_gnusparse_00
 
-            @classmethod
-            def frombuf(cls, buf, encoding, errors):
-                info = super().frombuf(buf, encoding, errors)
+            @staticmethod
+            def checked_header(info):
                 require(info.type in (tarfile.REGTYPE, tarfile.AREGTYPE, tarfile.XHDTYPE, tarfile.XGLTYPE)
                         and 0 <= info.size <= (logical_limit if info.isfile() else 65536),
                         "Compressed preservation header exceeds its closed metadata bound")
+                return info
+
+            @classmethod
+            def frombuf(cls, buf, encoding, errors):
+                return cls.checked_header(super().frombuf(buf, encoding, errors))
+
+            def _proc_member(self, archive):
+                # New tarfile parsers use _frombuf directly. This dispatch runs
+                # for every raw header before PAX reads or sparse processing.
+                self.checked_header(self)
+                require(archive.fileobj.tell() + self._block(self.size) <= expanded_limit,
+                        "Compressed preservation expanded byte bound exceeded")
+                info = super()._proc_member(archive)
+                require(info.offset_data + info.size <= expanded_limit,
+                        "Compressed preservation expanded byte bound exceeded")
                 return info
 
             @classmethod

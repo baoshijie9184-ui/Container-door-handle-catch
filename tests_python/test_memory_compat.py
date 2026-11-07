@@ -367,6 +367,34 @@ def test_explicit_pristine_transition_switches_only_after_full_proofs_and_persis
     assert guard.read_json(value.state/'memory-transition.json')['phase']=='VERIFIED'
 
 
+@pytest.mark.parametrize('header_type',[tarfile.XHDTYPE,tarfile.XGLTYPE])
+@pytest.mark.parametrize('metadata_bytes',[65536,65537])
+def test_native_original_pax_limit_is_enforced_before_decoding(native_install,monkeypatch,header_type,metadata_bytes):
+    value=native_install;reference=value.receipt['freshSnapshots']['mem0']
+    proof_file=Path(reference['file']);proof=guard.read_json(proof_file)
+    archive=proof_file.with_name('originals.tar');body=(proof_file.parent/'restored-originals/source.db').read_bytes()
+    comment='x'*(metadata_bytes-len(str(metadata_bytes)+' comment=\n'))
+    with tarfile.open(archive,'w',format=tarfile.PAX_FORMAT,
+                      pax_headers={'comment':comment} if header_type==tarfile.XGLTYPE else None) as package:
+        item=tarfile.TarInfo('source.db');item.size=len(body)
+        if header_type==tarfile.XHDTYPE:item.pax_headers={'comment':comment}
+        package.addfile(item,io.BytesIO(body))
+    with archive.open('rb') as stream:header=tarfile.TarInfo.frombuf(stream.read(512),'utf-8','strict')
+    assert header.type==header_type and header.size==metadata_bytes
+    archive_sha=hashlib.sha256(archive.read_bytes()).hexdigest()
+    proof['archiveSha256']=reference['archiveSha256']=archive_sha
+    reference['sha256']=native_write(proof_file,proof)
+    value.binding['installReceiptSha256']=native_write(value.receipt_file,value.receipt)
+    native_write(value.state/'native-data.json',value.binding)
+    if metadata_bytes==65536:
+        assert guard.verify_native_install({**value.binding,'receipt':value.receipt},value.state) is None
+    else:
+        monkeypatch.setattr(tarfile.TarInfo,'_proc_pax',
+            lambda *unused:pytest.fail('Oversize native PAX reached the allocating decoder'))
+        with pytest.raises(guard.GuardError,match='excessive metadata'):
+            guard.verify_native_install({**value.binding,'receipt':value.receipt},value.state)
+
+
 def test_active_state_only_changes_status_and_allows_business_writes_without_rehashing_initial_payload(native_install):
     value=native_install;guard.prepare(value.state,value.config,native_transition=value.receipt_file)
     pending=guard.validate_native_state(value.state,allow_pending=True)['nativeBindingSha256']

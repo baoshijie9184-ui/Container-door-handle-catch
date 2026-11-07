@@ -451,13 +451,19 @@ def verify_native_install(binding,state):
             raise GuardError('Native final source archive or independent restored bytes differ')
         seen=set();total=0
         class BoundedInfo(tarfile.TarInfo):
-            @classmethod
-            def frombuf(cls,raw,encoding,errors):
-                value=super().frombuf(raw,encoding,errors)
+            @staticmethod
+            def checked_header(value):
                 if value.type not in (tarfile.REGTYPE,tarfile.AREGTYPE,tarfile.XHDTYPE,tarfile.XGLTYPE) \
                         or not 0<=value.size<=(512*1024**2 if value.isfile() else 65536):
                     raise GuardError('Native original archive contains unsupported or excessive metadata')
                 return value
+            @classmethod
+            def frombuf(cls,raw,encoding,errors):
+                return cls.checked_header(super().frombuf(raw,encoding,errors))
+            def _proc_member(self,archive):
+                # Enforce before PAX allocation even on tarfile's _frombuf path.
+                self.checked_header(self)
+                return super()._proc_member(archive)
             def _proc_gnusparse_00(self,*unused):raise GuardError('Native original archive contains foreign sparse metadata')
             _proc_gnusparse_01=_proc_gnusparse_00
             _proc_gnusparse_10=_proc_gnusparse_00

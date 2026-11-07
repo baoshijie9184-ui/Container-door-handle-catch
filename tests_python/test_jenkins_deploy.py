@@ -85,7 +85,16 @@ dc() { if [[ "$3" == config ]]; then printf '{}'; return; fi; printf '%s\\n' "$*
 def test_pipeline_uploads_guard_for_legacy_rollback_and_allows_recovering_unhealthy_apps():
     root=Path(__file__).resolve().parents[1]
     pipeline=(root/'script/jenkins/pipeline.ps1').read_text(encoding='utf8')
-    assert pipeline.index("'script/docker/memory-compat.py'")<pipeline.index("if ($env:ACTION -eq 'rollback')")
+    rollback = pipeline.index("if ($env:ACTION -eq 'rollback')")
+    deploy_upload = pipeline.rindex("(Get-PinnedSourceFile 'script/jenkins/deploy-remote.sh')", 0, rollback)
+    helper_uploads = re.findall(
+        r"foreach \(\$file in @\(([^)]*)\)\) \{\s*(Invoke-Checked 'scp.exe'[^\n]+)\s*\}",
+        pipeline[deploy_upload:rollback],
+    )
+    assert any("'memory-compat.py'" in files
+               and '(Get-PinnedSourceFile "script/docker/$file")' in upload
+               and '"${destination}:$remoteInbox/$file"' in upload
+               for files, upload in helper_uploads)
     source=(root/'script/jenkins/deploy-remote.sh').read_text(encoding='utf8')
     assert 'snapshot "$root/state/rollback-current.yml" all yes' in source
 

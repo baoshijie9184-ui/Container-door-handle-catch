@@ -647,12 +647,18 @@ def restore_all(snapshot, output, value, manifest, owner, context):
         completed.append({'group': key, 'files': len(files), 'bytes': group['bytes'],
                           'restoreReceiptSha256': digest(receipt_file), 'temporaryCleanupSha256': digest(cleanup_file)})
     class BoundedInfo(tarfile.TarInfo):
-        @classmethod
-        def frombuf(cls, raw, encoding, errors):
-            entry = super().frombuf(raw, encoding, errors)
+        @staticmethod
+        def checked_header(entry):
             need(entry.type in (tarfile.REGTYPE, tarfile.AREGTYPE, tarfile.DIRTYPE, tarfile.XHDTYPE)
                  and 0 <= entry.size <= (ORIGINAL_BYTES if entry.isfile() else 65536), 'COLD_FOREIGN_TAR_HEADER')
             return entry
+        @classmethod
+        def frombuf(cls, raw, encoding, errors):
+            return cls.checked_header(super().frombuf(raw, encoding, errors))
+        def _proc_member(self, archive):
+            # Streaming tarfile also bypasses public frombuf on newer Python.
+            self.checked_header(self)
+            return super()._proc_member(archive)
         def _proc_gnusparse_00(self, *unused):
             raise ColdError('COLD_SPARSE_TAR_HEADER')
         _proc_gnusparse_01 = _proc_gnusparse_00

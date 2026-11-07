@@ -248,14 +248,21 @@ def verify_restore(args):
     utility.resource_guard(work, manifest['originalBytes']); utility.private_directory(restore)
     wanted = {row['member']: row for row in rows}; seen = set(); total = 0
     class ClosedInfo(tarfile.TarInfo):
-        @classmethod
-        def frombuf(cls, buffer, encoding, errors):
-            member = super().frombuf(buffer, encoding, errors)
+        @staticmethod
+        def checked_header(member):
             # Our closed producer emits only short ASCII names and integer
             # mtime. Reject metadata/long-name headers before gzip/PAX expansion.
-            need(member.isfile() and member.name in MEMBERS and 0 < member.size <= MAX_BYTES,
+            need(member.type in (tarfile.REGTYPE, tarfile.AREGTYPE)
+                 and member.name in MEMBERS and 0 < member.size <= MAX_BYTES,
                  'Unreviewed TAR header cannot enter the SQL custody parser')
             return member
+        @classmethod
+        def frombuf(cls, buffer, encoding, errors):
+            return cls.checked_header(super().frombuf(buffer, encoding, errors))
+        def _proc_member(self, archive):
+            # Recent tarfile versions parse through _frombuf, not frombuf.
+            self.checked_header(self)
+            return super()._proc_member(archive)
     with tarfile.open(snapshot / 'originals.tar.gz', 'r:gz', tarinfo=ClosedInfo) as package:
         for member in package:
             need(member.isfile() and member.name in wanted and member.name not in seen and member.size == wanted[member.name]['bytes']

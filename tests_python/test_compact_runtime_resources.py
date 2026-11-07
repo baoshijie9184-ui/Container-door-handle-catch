@@ -115,7 +115,10 @@ def test_resource_evidence_rejects_missing_or_falsified_pressure_measurements(mu
     if mutation == 'growth': samples[-1]['probe']['hostDiskLossUpperBoundBytes'] = runtime.GIB + 1
     if mutation == 'phase-reserve': summary['phasePlans']['runtime-restore']['baselineProbe']['diskAvailableBytes'] = 0
     raw = b''.join((json.dumps(v) + '\n').encode() for v in samples)
-    if mutation != 'raw-sha': summary['rawProbeSha256'] = hashlib.sha256(raw).hexdigest()
+    summary['rawProbeSha256'] = hashlib.sha256(raw).hexdigest()
+    if mutation == 'raw-sha':
+        first = '0' if summary['rawProbeSha256'][0] != '0' else '1'
+        summary['rawProbeSha256'] = first + summary['rawProbeSha256'][1:]
     with pytest.raises(ValueError): runtime.validate_resource_evidence(summary, raw, context, project)
 
 

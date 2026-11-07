@@ -46,7 +46,10 @@ def archive_state(state, monkeypatch):
     inner['commands'][0]['exitCode'] = 0; support.put_json(state.evidence / 'receipt.json', inner)
     state.record.update(sourceSha256=source_sha, status='PASS', verificationExitCode=0)
     support.seal(state)
-    snapshot = state.checkout / 'work/legacy-source-snapshot'; snapshot.mkdir(mode=0o700)
+    # The cleanup fixture already owns this directory and a placeholder tar.
+    # Replace only that synthetic placeholder with the valid closed archive.
+    snapshot = state.checkout / 'work/legacy-source-snapshot'
+    assert snapshot.is_dir() and {path.name for path in snapshot.iterdir()} == {'originals.tar'}
     frozen = profiles.profile_manifest(monkeypatch, kafka=True)
     with tarfile.open(snapshot / 'originals.tar', 'w:gz', format=tarfile.PAX_FORMAT) as package:
         for row in frozen['files']:

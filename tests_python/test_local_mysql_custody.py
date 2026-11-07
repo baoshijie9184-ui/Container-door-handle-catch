@@ -291,28 +291,51 @@ def test_byte_recovery_independently_reads_every_restored_original_without_openi
         assert (work / custody.RESTORE / name).read_bytes() == original.read_bytes()
 
 
-@pytest.mark.parametrize('damage', ['extra-member', 'link-member', 'duplicate-member', 'changed-member'])
+@pytest.mark.parametrize('damage', ['extra-member', 'link-member', 'duplicate-member', 'changed-member',
+    'pax-header', 'global-pax-header', 'raw-sparse-type', 'contiguous-type'])
 def test_byte_recovery_rejects_unreviewed_tar_structure_or_same_size_content(export_fixture, monkeypatch, damage):
     source = export_fixture; custody.pack(source.export, source.control, source.output)
     archive_path = source.output / 'originals.tar.gz'
     with tarfile.open(archive_path, 'r:gz') as archive:
         entries = [(member, archive.extractfile(member).read()) for member in archive]
     import io
-    with tarfile.open(archive_path, 'w:gz', format=tarfile.PAX_FORMAT) as archive:
-        for member, body in entries:
+    with tarfile.open(archive_path, 'w:gz', format=tarfile.GNU_FORMAT if damage == 'raw-sparse-type' else tarfile.PAX_FORMAT,
+                      pax_headers={'comment': 'opaque'} if damage == 'global-pax-header' else None) as archive:
+        for index, (member, body) in enumerate(entries):
             if damage == 'changed-member' and member.name == 'schema-before.sql': body = b'X' * len(body)
+            if damage == 'pax-header' and index == 0: member.pax_headers = {'comment': 'opaque'}
+            if damage == 'raw-sparse-type' and index == 0: member.type = tarfile.GNUTYPE_SPARSE
+            if damage == 'contiguous-type' and index == 0: member.type = tarfile.CONTTYPE
             archive.addfile(member, io.BytesIO(body))
-        if damage != 'changed-member':
+        if damage in ('extra-member', 'link-member', 'duplicate-member'):
             member, body = entries[0]
             if damage == 'extra-member': member = tarfile.TarInfo('credentials.env'); member.size = len(body)
             if damage == 'link-member':
                 member = tarfile.TarInfo('outside'); member.type = tarfile.SYMTYPE; member.linkname = '/original'; member.size = 0
             archive.addfile(member, None if member.issym() else io.BytesIO(body))
+    if 'pax-header' in damage:
+        with gzip.open(archive_path, 'rb') as raw:
+            header = tarfile.TarInfo.frombuf(raw.read(512), 'utf-8', 'strict')
+        assert header.type == (tarfile.XGLTYPE if damage == 'global-pax-header' else tarfile.XHDTYPE)
+        assert 0 < header.size < 65536  # SQL custody admits no PAX, even small.
+    elif damage in ('raw-sparse-type', 'contiguous-type'):
+        with gzip.open(archive_path, 'rb') as raw:
+            header = tarfile.TarInfo.frombuf(raw.read(512), 'utf-8', 'strict')
+        assert header.type == (tarfile.GNUTYPE_SPARSE if damage == 'raw-sparse-type' else tarfile.CONTTYPE)
+        assert header.name in custody.MEMBERS and 0 < header.size <= custody.MAX_BYTES
     manifest = custody.read(source.output / 'custody.json')
     manifest.update(archiveBytes=archive_path.stat().st_size, archiveSha256=custody.digest(archive_path))
     (source.output / 'custody.json').write_bytes(custody.encoded(manifest))
     args, work = prepared_recovery_fixture(source, monkeypatch)
-    with pytest.raises(ValueError): custody.verify_restore(args)
+    if 'pax-header' in damage:
+        monkeypatch.setattr(tarfile.TarInfo, '_proc_pax',
+            lambda *unused: pytest.fail('SQL custody must reject PAX before decoding any payload'))
+    elif damage in ('raw-sparse-type', 'contiguous-type'):
+        monkeypatch.setattr(tarfile.TarInfo, '_proc_sparse' if damage == 'raw-sparse-type' else '_proc_builtin',
+            lambda *unused: pytest.fail('SQL custody must reject the raw type before member processing'))
+    raw_header_rejected = 'pax-header' in damage or damage in ('raw-sparse-type', 'contiguous-type')
+    with pytest.raises(ValueError, match='Unreviewed TAR header' if raw_header_rejected else None):
+        custody.verify_restore(args)
     assert not (work / custody.PUBLIC).exists() and not (work / custody.RESTORE / 'restore-receipt.json').exists()
 
 

@@ -5,6 +5,7 @@ cloud API, database, application, or production directory is used by these cases
 """
 import copy
 import fcntl
+import gzip
 import importlib.util
 import io
 import json
@@ -201,6 +202,47 @@ def test_drift_in_independently_retained_evidence_or_owner_source_refuses_cleanu
     path.write_bytes(path.read_bytes() + b'changed')
     assert not plan(state)['candidates']
     assert state.classes.exists()
+
+
+@pytest.mark.parametrize('damage', ['suffix', 'crc', 'footer-truncated', 'buffered-tail', 'gzip-tail', 'padding-budget'])
+def test_bounded_original_archive_rejects_transport_tampering_and_hidden_tail(state, damage):
+    raw = state.archive.read_bytes()
+    expanded = gzip.decompress(raw)
+    limit = remote.MAX_EVIDENCE_BYTES
+    if damage == 'suffix':
+        raw += b'changed'
+    elif damage == 'crc':
+        raw = raw[:-8] + bytes([raw[-8] ^ 1]) + raw[-7:]
+    elif damage == 'footer-truncated':
+        raw = raw[:-4]
+    elif damage == 'buffered-tail':
+        # This fits in tarfile's first read-ahead buffer, after the tar EOF.
+        raw = gzip.compress(expanded[:-8] + b'changed!')
+    elif damage == 'gzip-tail':
+        raw += gzip.compress(b'changed')
+    else:
+        limit = len(expanded)
+        raw = gzip.compress(expanded + b'\0' * 512)
+    state.archive.write_bytes(raw)
+    with pytest.raises((remote.VerificationError, gzip.BadGzipFile, EOFError)):
+        with remote.bounded_tar(state.archive, limit) as source:
+            list(source)
+    assert state.classes.exists()
+
+
+def test_bounded_original_archive_accepts_zero_padding_at_exact_expansion_bound(state):
+    limit = len(gzip.decompress(state.archive.read_bytes()))
+    with remote.bounded_tar(state.archive, limit) as source:
+        names = [entry.name for entry in source]
+    assert set(names) == {'verification-receipt.json', *state.reports}
+
+
+def test_bounded_original_archive_does_not_mask_the_consumers_validation_error(state):
+    failure = ValueError('original validation failure')
+    with pytest.raises(ValueError) as caught:
+        with remote.bounded_tar(state.archive, remote.MAX_EVIDENCE_BYTES):
+            raise failure
+    assert caught.value is failure
 
 
 @pytest.mark.parametrize('mode', ['current', 'future', 'protected', 'release-artifact'])

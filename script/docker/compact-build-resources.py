@@ -648,7 +648,7 @@ def build_images(actor, root, source, specifications):
     output = actor.directory / 'outputs'; output.mkdir(mode=0o700)
     mounts = []; prepared = []; catalogue = {}
     for item in specifications:
-        service = item['service']; require(re.fullmatch(r'[a-z][a-z-]{0,31}', service), 'Invalid fixed image service')
+        service = item['service']; require(re.fullmatch(r'[a-z][a-z0-9-]{0,31}', service), 'Invalid fixed image service')
         context = safe(item['context']); inventory = context_inventory(context)
         require(context.is_relative_to(source / 'work') or context.is_relative_to(Path(root) / 'verification' / actor.context['release'] / 'checkout/work/runtime-acceptance'),
                 'Image context escaped this owned attempt')
@@ -842,7 +842,7 @@ def validate_files(directory, context, require_services=True):
             'source-extraction', 'stage-contexts', 'candidate-jar-readback', *['build-' + service for service in SERVICES], *['load-' + service for service in SERVICES])),
             'Candidate source, every image build/import and exact jar readback must be measured')
     for service, image in summary.get('build', {}).get('images', {}).items():
-        require(re.fullmatch(r'[a-z][a-z-]{0,31}', service) and IMAGE.fullmatch(image.get('imageId', ''))
+        require(re.fullmatch(r'[a-z][a-z0-9-]{0,31}', service) and IMAGE.fullmatch(image.get('imageId', ''))
                 and SHA.fullmatch(image.get('ociArchiveSha256', '')) and type(image.get('ociArchiveBytes')) is int
                 and image['ociArchiveBytes'] > 0 and SHA.fullmatch(image.get('controlledDockerfileSha256', ''))
                 and SHA.fullmatch(image.get('inputContext', {}).get('sha256', '')) and 0 < len(image.get('layers', [])) <= 256,

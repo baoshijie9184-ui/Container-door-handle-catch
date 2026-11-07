@@ -433,12 +433,18 @@ def verify_restore(args):
     resource_guard(work, ORIGINAL_BYTES + MAX_MANIFEST); private_directory(restore)
     expected = {row["member"]: row for row in rows}; seen = set(); total = 0
     class BoundedInfo(tarfile.TarInfo):
-        @classmethod
-        def frombuf(cls, buf, encoding, errors):
-            value = super().frombuf(buf, encoding, errors)
+        @staticmethod
+        def checked_header(value):
             need(value.type in (tarfile.REGTYPE, tarfile.AREGTYPE, tarfile.XHDTYPE, tarfile.XGLTYPE)
                  and 0 <= value.size <= (MAX_BYTES if value.isfile() else 65536), "Foreign custody archive metadata")
             return value
+        @classmethod
+        def frombuf(cls, buf, encoding, errors):
+            return cls.checked_header(super().frombuf(buf, encoding, errors))
+        def _proc_member(self, archive):
+            # Guard the raw header even when tarfile bypasses public frombuf.
+            self.checked_header(self)
+            return super()._proc_member(archive)
         def _proc_gnusparse_00(self, *unused):
             raise CustodyError("Foreign custody sparse metadata")
         _proc_gnusparse_01 = _proc_gnusparse_00

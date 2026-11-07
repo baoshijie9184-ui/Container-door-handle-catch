@@ -138,6 +138,12 @@ def bounded_tar(path, limit):
     with gzip.open(path, "rb") as expanded:
         with tarfile.open(fileobj=BoundedReader(expanded, limit), mode="r|") as source:
             yield source
+            # Tar iteration stops at its first zero header. Consume the stream's
+            # read-ahead buffer as well as the gzip footer before accepting it.
+            # This runs only after successful validation, preserving any caller
+            # exception, and keeps padding under the same expansion bound.
+            for block in iter(lambda: source.fileobj.read(1024 * 1024), b""):
+                require(not block.strip(b"\0"), "Archive contains trailing non-padding bytes")
 
 
 def unpack_source(archive, destination, commit):

@@ -1,5 +1,6 @@
 """ECS-executed byte-only profile/opaque archive contracts; never run old MCP."""
 import copy
+import gzip
 import importlib.util
 import io
 import os
@@ -262,16 +263,32 @@ def test_gzip_member_cannot_expand_beyond_its_frozen_logical_size(monkeypatch, t
         migration.verify_preservation(snapshot)
 
 
-def test_gzip_large_pax_metadata_is_rejected_before_decoding(monkeypatch, tmp_path):
+@pytest.mark.parametrize('header_type', [tarfile.XHDTYPE, tarfile.XGLTYPE])
+@pytest.mark.parametrize('metadata_bytes', [65536, 65537])
+def test_gzip_pax_metadata_limit_is_checked_before_decoding(monkeypatch, tmp_path, header_type, metadata_bytes):
     manifest = profile_manifest(monkeypatch, kafka=True)
     snapshot = tmp_path / 'snapshot'; snapshot.mkdir()
-    with tarfile.open(snapshot / 'originals.tar', 'w:gz') as archive:
-        entry = tarfile.TarInfo('opaque-pax'); entry.type = tarfile.XHDTYPE; entry.size = 65537
-        archive.addfile(entry, io.BytesIO(bytes(entry.size)))
+    # Use valid PAX records followed by every actual member. A malformed,
+    # zero-filled header could fail at EOF without exercising the size guard.
+    comment = 'x' * (metadata_bytes - len(str(metadata_bytes) + ' comment=\n'))
+    with tarfile.open(snapshot / 'originals.tar', 'w:gz', format=tarfile.PAX_FORMAT,
+                      pax_headers={'comment': comment} if header_type == tarfile.XGLTYPE else None) as archive:
+        for index, row in enumerate(manifest['files']):
+            entry = tarfile.TarInfo(row['path']); entry.size = row['bytes']
+            if index == 0 and header_type == tarfile.XHDTYPE: entry.pax_headers = {'comment': comment}
+            archive.addfile(entry, io.BytesIO(b'opaque'))
+    with gzip.open(snapshot / 'originals.tar', 'rb') as raw:
+        header = tarfile.TarInfo.frombuf(raw.read(512), 'utf-8', 'strict')
+    assert header.type == header_type and header.size == metadata_bytes
     manifest['archiveSha256'] = migration.file_sha(snapshot / 'originals.tar')
     migration.private_json(snapshot / 'snapshot.json', manifest)
-    with pytest.raises(migration.MigrationError, match='metadata bound'):
-        migration.verify_preservation(snapshot)
+    if metadata_bytes == 65536:
+        assert migration.verify_preservation(snapshot)['status'] == 'SNAPSHOT_VERIFIED'
+    else:
+        monkeypatch.setattr(tarfile.TarInfo, '_proc_pax',
+            lambda *unused: pytest.fail('Oversize PAX must be rejected before the decoder reads its payload'))
+        with pytest.raises(migration.MigrationError, match='metadata bound'):
+            migration.verify_preservation(snapshot)
 
 
 def test_gzip_cannot_smuggle_foreign_sparse_maps_through_pax_headers(monkeypatch, tmp_path):

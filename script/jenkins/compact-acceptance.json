@@ -1058,7 +1058,7 @@
       },
       {
         "module": "tests_python.test_jenkins_ecs_build_cleanup",
-        "minimumTests": 42,
+        "minimumTests": 50,
         "source": "tests_python/test_jenkins_ecs_build_cleanup.py",
         "allowedSkippedTests": []
       },
@@ -1070,19 +1070,19 @@
       },
       {
         "module": "tests_python.test_local_artifact_custody",
-        "minimumTests": 32,
+        "minimumTests": 33,
         "source": "tests_python/test_local_artifact_custody.py",
         "allowedSkippedTests": []
       },
       {
         "module": "tests_python.test_cold_store_custody",
-        "minimumTests": 52,
+        "minimumTests": 54,
         "source": "tests_python/test_cold_store_custody.py",
         "allowedSkippedTests": []
       },
       {
         "module": "tests_python.test_local_mysql_custody",
-        "minimumTests": 63,
+        "minimumTests": 67,
         "source": "tests_python/test_local_mysql_custody.py",
         "allowedSkippedTests": []
       },
@@ -1154,7 +1154,7 @@
       },
       {
         "module": "tests_python.test_memory_compat",
-        "minimumTests": 46,
+        "minimumTests": 50,
         "source": "tests_python/test_memory_compat.py",
         "allowedSkippedTests": []
       },
@@ -1262,7 +1262,7 @@
       },
       {
         "module": "tests_python.test_legacy_preservation_profiles",
-        "minimumTests": 39,
+        "minimumTests": 42,
         "source": "tests_python/test_legacy_preservation_profiles.py",
         "allowedSkippedTests": []
       },

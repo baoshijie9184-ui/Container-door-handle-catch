@@ -8,3 +8,4 @@ python-multipart==0.0.20
 oss2==2.19.1
 confluent-kafka==2.10.1
 mcp==1.29.0
+scipy==1.15.3

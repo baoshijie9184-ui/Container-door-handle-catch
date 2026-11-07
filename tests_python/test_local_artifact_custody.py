@@ -195,17 +195,16 @@ def test_ecs_independent_restore_preserves_all_bytes_and_returns_only_public_cou
     with pytest.raises(custody.CustodyError): custody.verify_restore(args)
 
 
-@pytest.mark.parametrize('mutation', ['transport', 'member-bytes', 'extra-member', 'link-member', 'pax-budget', 'sparse-map'])
+@pytest.mark.parametrize('mutation', ['transport', 'member-bytes', 'extra-member', 'link-member', 'pax-budget', 'global-pax-budget', 'sparse-map'])
 def test_restore_rejects_transport_or_member_tampering_and_keeps_failed_inputs(originals, tmp_path, monkeypatch, mutation):
     package = originals.parent / 'package'; custody.pack(originals.catalog, package)
     if mutation != 'transport':
         manifest = custody.read_json(package / 'custody.json')
-        with tarfile.open(package / 'originals.tar', 'w', format=tarfile.PAX_FORMAT) as archive:
-            if mutation == 'pax-budget':
-                entry = tarfile.TarInfo('opaque-pax'); entry.type = tarfile.XHDTYPE; entry.size = 65537
-                archive.addfile(entry, io.BytesIO(bytes(entry.size)))
+        with tarfile.open(package / 'originals.tar', 'w', format=tarfile.PAX_FORMAT,
+                          pax_headers={'comment': 'x' * 65537} if mutation == 'global-pax-budget' else None) as archive:
             for row in manifest['files']:
                 data = (originals.source / row['member']).read_bytes(); entry = tarfile.TarInfo(row['member']); entry.size = len(data)
+                if mutation == 'pax-budget' and row == manifest['files'][0]: entry.pax_headers = {'comment': 'x' * 65537}
                 if mutation == 'member-bytes' and row == manifest['files'][0]: data = b'X' + data[1:]
                 if mutation == 'link-member' and row == manifest['files'][0]: entry.type = tarfile.SYMTYPE; entry.linkname = '/not-admitted'
                 if mutation == 'sparse-map' and row == manifest['files'][0]: entry.pax_headers = {'GNU.sparse.map': '0,' + str(len(data))}
@@ -214,11 +213,23 @@ def test_restore_rejects_transport_or_member_tampering_and_keeps_failed_inputs(o
                 entry = tarfile.TarInfo('private.env'); entry.size = 1; archive.addfile(entry, io.BytesIO(b'x'))
         manifest['archiveBytes'] = (package / 'originals.tar').stat().st_size; manifest['archiveSha256'] = custody.digest(package / 'originals.tar')
         (package / 'custody.json').write_bytes(custody.encoded(manifest))
+        if 'pax-budget' in mutation:
+            with (package / 'originals.tar').open('rb') as raw:
+                header = tarfile.TarInfo.frombuf(raw.read(512), 'utf-8', 'strict')
+            assert header.type == (tarfile.XGLTYPE if mutation == 'global-pax-budget' else tarfile.XHDTYPE)
+            assert header.size > 65536
     args, work = create_attempt(tmp_path, monkeypatch, package)
     custody.prepare(args); upload(package, work)
     if mutation == 'transport':
         path = work / custody.SNAPSHOT / 'originals.tar'; path.write_bytes(path.read_bytes() + b'x')
-    with pytest.raises(custody.CustodyError): custody.verify_restore(args)
+    if 'pax-budget' in mutation:
+        original_pax = tarfile.TarInfo._proc_pax
+        def guarded_pax(info, archive):
+            assert info.size <= 65536, 'Oversize PAX reached the allocating decoder'
+            return original_pax(info, archive)
+        monkeypatch.setattr(tarfile.TarInfo, '_proc_pax', guarded_pax)
+    with pytest.raises(custody.CustodyError, match='metadata' if 'pax-budget' in mutation else None):
+        custody.verify_restore(args)
     assert (work / custody.SNAPSHOT).exists() and not (work / custody.PUBLIC).exists()
 
 
