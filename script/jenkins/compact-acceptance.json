@@ -1058,7 +1058,7 @@
       },
       {
         "module": "tests_python.test_jenkins_ecs_build_cleanup",
-        "minimumTests": 50,
+        "minimumTests": 102,
         "source": "tests_python/test_jenkins_ecs_build_cleanup.py",
         "allowedSkippedTests": []
       },
@@ -1076,13 +1076,13 @@
       },
       {
         "module": "tests_python.test_cold_store_custody",
-        "minimumTests": 127,
+        "minimumTests": 133,
         "source": "tests_python/test_cold_store_custody.py",
         "allowedSkippedTests": []
       },
       {
         "module": "tests_python.test_local_cold_retirement",
-        "minimumTests": 70,
+        "minimumTests": 89,
         "source": "tests_python/test_local_cold_retirement.py",
         "allowedSkippedTests": []
       },

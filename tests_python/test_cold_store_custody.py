@@ -725,3 +725,60 @@ def test_delete_access_has_no_posix_fallback_or_implicit_deletion():
     assert os.name != 'nt', 'This contract belongs to the ECS Linux test suite'
     with pytest.raises(cold.ColdError, match='DELETE_ACCESS_REQUIRES_WINDOWS'):
         cold.HeldSources({'members': []}, delete_access=True)
+
+
+def synthetic_windows_holder(tmp_path, monkeypatch, *, delete_access, readonly, denied=False, native_attributes=None):
+    """Exercise the Win32 argument path through a fake DLL, never native APIs."""
+    target = put(tmp_path / 'opaque.bin', b'abc')
+    attributes = 0x21 if readonly else 0x20
+    fingerprint = [7, 11, 3, 0, 0, 1, 0o100444 if readonly else 0o100600, attributes]
+    row = {'path': 'work/frozen/opaque.bin', 'fingerprint': fingerprint}
+    holder = cold.HeldSources.__new__(cold.HeldSources)
+    holder.value = {'members': [row]}; holder.handles = {}; holder.windows = True
+    holder.delete_access = delete_access; holder.source_resolver = lambda _name: target
+    calls = []
+    def create(*args):
+        calls.append(('create', args))
+        return cold.ctypes.c_void_p(-1).value if denied else 1234
+    def info(_handle, pointer):
+        value = pointer._obj; value.volume = 7; value.indexLow = 11; value.sizeLow = 3; value.links = 1
+        value.attributes = attributes if native_attributes is None else native_attributes
+        epoch = 116444736000000000
+        for stamp in (value.written, value.created):
+            stamp.dwHighDateTime = epoch >> 32; stamp.dwLowDateTime = epoch & 0xffffffff
+        return 1
+    api = SimpleNamespace(CreateFileW=create, GetFileInformationByHandle=info, ReadFile=lambda *unused: 1,
+                          CloseHandle=lambda handle: calls.append(('close', handle)) or 1)
+    monkeypatch.setattr(cold.ctypes, 'WinDLL', lambda *args, **kwargs: api, raising=False)
+    monkeypatch.setattr(cold, 'fingerprint', lambda _info: fingerprint)
+    return holder, calls
+
+
+@pytest.mark.parametrize('delete_access,readonly,expected', [
+    (False, False, 0x80000000), (False, True, 0x80000000),
+    (True, False, 0x80010000), (True, True, 0x80010100)])
+def test_readonly_write_attributes_permission_is_exclusive_to_reviewed_delete_handles(tmp_path, monkeypatch, delete_access, readonly, expected):
+    holder, calls = synthetic_windows_holder(tmp_path, monkeypatch, delete_access=delete_access, readonly=readonly)
+    with holder:
+        assert holder.handles == {'work/frozen/opaque.bin': 1234}
+        assert not any(call[0] == 'close' for call in calls)
+    arguments = calls[0][1]
+    assert arguments[1] == expected and arguments[2] == 0
+    assert arguments[4:6] == (3, 0x00200000)
+    assert calls[-1] == ('close', 1234)
+
+
+def test_readonly_delete_permission_denial_never_falls_back_to_a_weaker_handle(tmp_path, monkeypatch):
+    holder, calls = synthetic_windows_holder(tmp_path, monkeypatch, delete_access=True, readonly=True, denied=True)
+    with pytest.raises(cold.ColdError, match='ACTIVE_SOURCE_OWNER_OR_ACCESS_BLOCKED'):
+        holder.__enter__()
+    assert len(calls) == 1 and calls[0][0] == 'create' and calls[0][1][1] == 0x80010100
+    assert holder.handles == {}
+
+
+def test_readonly_attribute_drift_is_refused_on_the_opened_identity_before_use(tmp_path, monkeypatch):
+    holder, calls = synthetic_windows_holder(tmp_path, monkeypatch, delete_access=True, readonly=True, native_attributes=0x20)
+    with pytest.raises(cold.ColdError, match='SOURCE_NATIVE_HANDLE_CHANGED'):
+        holder.__enter__()
+    assert len([call for call in calls if call[0] == 'create']) == 1
+    assert calls[-1] == ('close', 1234) and holder.handles == {}

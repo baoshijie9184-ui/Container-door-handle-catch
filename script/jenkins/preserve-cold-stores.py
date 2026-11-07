@@ -296,7 +296,12 @@ class HeldSources:
                 path = Path(self.source_resolver(row['path']))
                 need(fingerprint(path.lstat()) == row['fingerprint'], 'SOURCE_NTFS_ID_OR_METADATA_CHANGED')
                 if self.windows:
-                    handle = self.api.CreateFileW(str(path), 0x80000000 | (0x10000 if self.delete_access else 0),
+                    access = 0x80000000 | (0x10000 if self.delete_access else 0)
+                    # MS-FSA requires WRITE_ATTRIBUTES as well as the Ex flag.
+                    # Permission is requested only; the attribute is never changed.
+                    if self.delete_access and row['fingerprint'][7] & 0x1:
+                        access |= 0x100
+                    handle = self.api.CreateFileW(str(path), access,
                                                   0, None, 3, 0x00200000, None)
                     need(handle not in (None, ctypes.c_void_p(-1).value), 'ACTIVE_SOURCE_OWNER_OR_ACCESS_BLOCKED')
                 else:

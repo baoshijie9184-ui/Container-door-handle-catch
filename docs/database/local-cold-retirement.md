@@ -62,10 +62,20 @@ v2 使用 `--profile cold-store-history-v2` 及该 profile 对应的原 inventor
 
 每个文件仅由已验证的原句柄执行 disposition 并关闭确认，保留意图与完成记录；不先释放独占句柄再按路径 unlink。目录仅处理 inventory 中的目录，自深向浅复核原目录身份并确认当前为空，交给内核执行空目录 disposition；未知剩余成员阻止该目录删除，不使用递归删除或 `DELETE_ON_CLOSE`。
 
+## 已验证的只读文件
+
+共享句柄后端也供固定旧原件清退器使用。仅当已核对的文件 `fingerprint[7]` 含 `FILE_ATTRIBUTE_READONLY` 时，删除用的初始独占句柄额外申请 `FILE_WRITE_ATTRIBUTES=0x100`。这是取得权限，不是改写属性；字节打包的只读句柄、普通文件以及目录的权限保持原样。微软的 [FileDispositionInformationEx 规范](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/4c26c8cb-5a8f-4339-a372-b315c4974131) 要求只读删除同时具备忽略只读标志与该访问权限。
+
+含只读文件时，`WindowsBackend.hold` 在首次原生句柄调用前检查 `sys.getwindowsversion().platform_version`：必须是三个非负整数且不低于 Windows 10 1809（10.0.17763）；版本缺失、未知或过旧均拒绝。普通文件不增加该检查。该版本门只核对已公开的系统支持边界，不声称已实际执行过删除 API。
+
+只读文件由同一已持有、全量摘要与身份均通过预检的句柄执行 `FileDispositionInfoEx=21`，缓冲区为固定4字节 `Flags=0x11`（`DELETE | IGNORE_READONLY_ATTRIBUTE`）。不使用 POSIX 或 ON_CLOSE 标志。普通文件与空目录继续使用 `FileDispositionInfo=4`、1字节 BOOLEAN。结构和标志参见微软 [扩展删除结构说明](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntddk/ns-ntddk-_file_disposition_information_ex) 与 [句柄信息类枚举](https://learn.microsoft.com/en-us/windows/win32/api/minwinbase/ne-minwinbase-file_info_by_handle_class)。
+
+属性或FileID漂移在预检时拒绝，不借扩展标志覆盖变化。接口失败不改属性、不按路径强制删除、不重开句柄、不降级重试；原句柄留待所属持锁上下文释放。关闭失败时不移除持有记录、不记为已确认删除，按未确认 disposition 保留审计并停止。版本支持边界也可交叉核对微软 [STL 文件系统实现](https://github.com/microsoft/STL/blob/main/stl/src/filesystem.cpp) 中的 Windows 10 1809 注释；这里不采用该实现的旧系统降级或改属性分支。
+
 ## 失败与证据
 
 计划、审计和结果写入新建私有输出目录。审计记录已确认删除量、disposition 尝试量及未确认量。删除后回读失败、关闭结果不确定、刷新失败或后续成员漂移均保留已有证据与剩余数据，结果按拒绝或局部完成处理，`automaticResumeAllowed=false`。必须逐条核对本轮意图和实际文件身份后再决定后续操作，禁止自动续跑、回放或扩大清退范围。
 
 本轮新增源码与合成测试仍需按固定提交由 Jenkins 在 ECS 验证；文档、静态检查、合成后端结果均不表示本地数据已经清退。
 
-[`compact-acceptance.json`](../../script/jenkins/compact-acceptance.json) 将冷存储模块登记为至少 127 例，将新增执行器合成模块登记为至少 70 例，两者均不允许跳过。合成用例覆盖定期刷新、同一证据绑定、新 nonce、刷新失败、审计延迟跨过时效、保留根边界及执行时显式提供当前地址；实际通过情况以对应固定提交的 ECS 原始报告为准。
+[`compact-acceptance.json`](../../script/jenkins/compact-acceptance.json) 约定这两个模块均不允许跳过；最小数量以同提交的登记为准。合成用例覆盖定期刷新、同一证据绑定、新 nonce、刷新失败、审计延迟跨过时效、保留根边界、执行时显式提供当前地址，以及只读权限位、扩展ABI和失败审计。Linux 合成 API 测试不调用真实 Windows 删除接口；实际通过情况以对应固定提交的 ECS 原始报告为准。

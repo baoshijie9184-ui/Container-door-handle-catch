@@ -16,6 +16,7 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 import stat
 import subprocess
 import sys
@@ -35,6 +36,10 @@ MAX_TREE_BYTES = 4 * 1024 ** 3
 MAX_TREE_FILES = 100000
 MAX_TREE_ENTRIES = 150000
 FRONTENDS = ('frontend', 'frontend-agent')
+# The root metadata mode receives these exact already-loaded source bytes via
+# stdin, avoiding a second privileged open of a replaceable user-owned script.
+LOADED_SOURCE = None if __file__ == '<stdin>' else Path(__file__).read_bytes()
+PROCESS_PROBE_KIND = 'doorhandle-single-process-metadata'
 
 
 def require(condition, code):
@@ -315,20 +320,183 @@ def quiescent(binding, tag, containers):
     process_references(checkout)
 
 
+def process_reference(raw, checkout):
+    text = os.fsdecode(raw).removesuffix(' (deleted)')
+    if '=' in text and not text.startswith('/'): text = text.split('=', 1)[1]
+    path = Path(text)
+    return path.is_absolute() and (path == checkout or path.is_relative_to(checkout))
+
+
+def probe_result(status, checkout, pid, uid, nonce):
+    return {'schema': 1, 'kind': PROCESS_PROBE_KIND, 'status': status,
+            'pid': pid, 'uid': uid, 'checkout': str(checkout), 'nonce': nonce}
+
+
+def checked_probe_checkout(checkout):
+    checkout = Path(checkout)
+    require(checkout.is_absolute() and '..' not in checkout.parts
+            and checkout.resolve(strict=True) == checkout and checkout.name == 'checkout'
+            and TAG.fullmatch(checkout.parent.name)
+            and checkout.parent.parent.name == 'verification'
+            and len(checkout.parts) > 5 and checkout.parts[1] in ('home', 'srv', 'opt'),
+            'PROCESS_PROBE_CHECKOUT_NOT_CANONICAL_CI_PATH')
+    root = checkout.parent.parent.parent
+    for path in (root, checkout.parent.parent, checkout.parent, checkout):
+        info = path.lstat()
+        require(stat.S_ISDIR(info.st_mode) and info.st_uid == 1000 and not info.st_mode & 0o022,
+                'PROCESS_PROBE_CHECKOUT_OWNER_OR_MODE_CHANGED')
+    return checkout
+
+
+def probe_read(pid_fd, name, maximum):
+    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=pid_fd)
+    try:
+        require(stat.S_ISREG(os.fstat(fd).st_mode), 'PROCESS_METADATA_NOT_REGULAR')
+        chunks = []; total = 0
+        while True:
+            raw = os.read(fd, min(65536, maximum + 1 - total))
+            if not raw: break
+            total += len(raw); require(total <= maximum, 'PROCESS_METADATA_BOUND_EXCEEDED'); chunks.append(raw)
+        return b''.join(chunks)
+    finally:
+        os.close(fd)
+
+
+def process_identity_at(pid_fd, pid, uid):
+    raw = probe_read(pid_fd, 'stat', 65536)
+    opening, closing = raw.find(b'('), raw.rfind(b')')
+    require(opening > 0 and closing > opening and raw[:opening].strip() == str(pid).encode(),
+            'PROCESS_STAT_IDENTITY_INVALID')
+    fields = raw[closing + 1:].split()
+    require(len(fields) >= 20 and fields[19].isdigit(), 'PROCESS_START_TIME_INVALID')
+    status = probe_read(pid_fd, 'status', 65536); ids = {}
+    for line in status.splitlines():
+        if line.startswith((b'Uid:', b'Gid:')):
+            key, values = line.split(b':', 1)
+            require(key not in ids and len(values.split()) == 4 and all(x.isdigit() for x in values.split()),
+                    'PROCESS_UID_OR_GID_METADATA_INVALID')
+            ids[key] = tuple(int(x) for x in values.split())
+    require(set(ids) == {b'Uid', b'Gid'} and ids[b'Uid'] == (uid,) * 4,
+            'PROCESS_PROBE_UID_CHANGED')
+    return int(fields[19]), ids[b'Uid'], ids[b'Gid']
+
+
+def confirm_pid_gone(proc_fd, pid):
+    # Absence is required twice. An alive replacement, unreadable task, zombie,
+    # or a missing metadata file within a live task is never reported as GONE.
+    for unused in range(2):
+        try:
+            os.stat(str(pid), dir_fd=proc_fd, follow_symlinks=False)
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+        raise ValueError('PROCESS_DISAPPEARANCE_NOT_PROVEN')
+
+
+def single_process_metadata(checkout, pid, uid, nonce, *, proc=Path('/proc')):
+    """Root-only read-only probe. ``proc`` is internal synthetic-test injection."""
+    require(sys.platform == 'linux' and os.geteuid() == 0, 'ROOT_PROCESS_METADATA_MODE_REQUIRED')
+    require(type(pid) is int and 0 < pid <= 2 ** 31 - 1 and type(uid) is int and uid == 1000
+            and isinstance(nonce, str) and re.fullmatch(r'[a-f0-9]{32}', nonce), 'PROCESS_PROBE_REQUEST_INVALID')
+    checkout = checked_probe_checkout(checkout)
+    proc_fd = os.open(proc, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    pid_fd = None
+    try:
+        try:
+            pid_fd = os.open(str(pid), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=proc_fd)
+        except (FileNotFoundError, ProcessLookupError):
+            confirm_pid_gone(proc_fd, pid)
+            return probe_result('GONE', checkout, pid, uid, nonce)
+        before = os.fstat(pid_fd); before_identity = None
+        try:
+            before_identity = process_identity_at(pid_fd, pid, uid)
+            require(not process_reference(os.readlink('cwd', dir_fd=pid_fd), checkout),
+                    'ACTIVE_PROCESS_REFERENCES_OLD_CHECKOUT')
+            argv = probe_read(pid_fd, 'cmdline', 1024 ** 2)
+            require(not any(process_reference(arg, checkout) for arg in argv.split(b'\0') if arg),
+                    'ACTIVE_PROCESS_REFERENCES_OLD_CHECKOUT')
+            fd_fd = os.open('fd', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=pid_fd)
+            try:
+                descriptors = os.listdir(fd_fd)
+                require(len(descriptors) <= 8192 and all(name.isascii() and name.isdecimal() for name in descriptors),
+                        'PROCESS_DESCRIPTOR_SCAN_BOUND_EXCEEDED')
+                for descriptor in descriptors:
+                    try:
+                        target = os.readlink(descriptor, dir_fd=fd_fd)
+                    except (FileNotFoundError, ProcessLookupError):
+                        try:
+                            os.stat(descriptor, dir_fd=fd_fd, follow_symlinks=False)
+                        except (FileNotFoundError, ProcessLookupError):
+                            continue  # Only this vanished descriptor is skipped.
+                        raise ValueError('PROCESS_DESCRIPTOR_CHANGED_DURING_SCAN')
+                    require(not process_reference(target, checkout), 'ACTIVE_FILE_DESCRIPTOR_REFERENCES_OLD_CHECKOUT')
+            finally:
+                os.close(fd_fd)
+            maps = probe_read(pid_fd, 'maps', 16 * 1024 ** 2)
+            for line in maps.splitlines():
+                fields = line.split(None, 5)
+                if len(fields) == 6:
+                    require(not process_reference(fields[5], checkout), 'ACTIVE_MEMORY_MAP_REFERENCES_OLD_CHECKOUT')
+            after_identity = process_identity_at(pid_fd, pid, uid)
+            current = os.stat(str(pid), dir_fd=proc_fd, follow_symlinks=False)
+            require((current.st_dev, current.st_ino) == (before.st_dev, before.st_ino)
+                    and after_identity == before_identity, 'PROCESS_PID_OR_IDENTITY_REUSED')
+        except (FileNotFoundError, ProcessLookupError):
+            confirm_pid_gone(proc_fd, pid)
+            return probe_result('GONE', checkout, pid, uid, nonce)
+        return probe_result('QUIESCENT', checkout, pid, uid, nonce)
+    finally:
+        if pid_fd is not None: os.close(pid_fd)
+        os.close(proc_fd)
+
+
+def privileged_process_probe(checkout, pid, proc):
+    require(sys.platform == 'linux' and proc == Path('/proc') and os.getuid() == 1000 and os.geteuid() == 1000,
+            'PRIVILEGED_PROCESS_PROBE_SCOPE_REFUSED')
+    checkout = checked_probe_checkout(checkout)
+    require(LOADED_SOURCE is not None and len(LOADED_SOURCE) <= 1024 ** 2, 'FIXED_PROCESS_PROBE_SOURCE_REQUIRED')
+    source = owned(Path(__file__).absolute(), maximum=1024 ** 2)
+    admitted = metadata(source.lstat())
+    with os.fdopen(os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), 'rb') as stream:
+        info = os.fstat(stream.fileno()); before = metadata(info)
+        require(stat.S_ISREG(info.st_mode) and info.st_uid == 1000 and info.st_nlink == 1
+                and not info.st_mode & 0o022 and info.st_size <= 1024 ** 2 and before == admitted,
+                'OPENED_PROCESS_PROBE_SOURCE_NOT_ADMITTED')
+        raw = stream.read(1024 ** 2 + 1)
+        require(raw == LOADED_SOURCE and before == metadata(os.fstat(stream.fileno()))
+                and before == metadata(source.lstat()), 'LOADED_PROCESS_PROBE_SOURCE_CHANGED')
+    nonce = secrets.token_hex(16)
+    command = ['/usr/bin/sudo', '-n', '/usr/bin/python3', '-I', '-B', '-', 'inspect-process',
+               '--checkout', str(checkout), '--pid', str(pid), '--uid', '1000', '--nonce', nonce]
+    result = subprocess.run(command, input=raw, capture_output=True, timeout=20,
+                            env={'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LANG': 'C', 'LC_ALL': 'C'})
+    require(result.returncode == 0 and len(result.stdout) <= 4096 and len(result.stderr) <= 4096,
+            'PRIVILEGED_PROCESS_METADATA_UNAVAILABLE')
+    def unique(pairs):
+        value = {}
+        for key, item in pairs:
+            require(key not in value, 'DUPLICATE_PROCESS_PROBE_FIELD'); value[key] = item
+        return value
+    value = json.loads(result.stdout, object_pairs_hook=unique,
+                       parse_constant=lambda unused: require(False, 'NONFINITE_PROCESS_PROBE_FIELD'))
+    expected = probe_result(value.get('status') if isinstance(value, dict) else None, checkout, pid, 1000, nonce)
+    require(isinstance(value, dict) and set(value) == set(expected) and value == expected
+            and type(value['schema']) is int and type(value['pid']) is int and type(value['uid']) is int
+            and value['status'] in ('QUIESCENT', 'GONE'), 'PROCESS_PROBE_RESPONSE_NOT_BOUND')
+
+
 def process_references(checkout, proc=Path('/proc')):
-    """Read only cwd/argv/fd paths, never process environments or their contents."""
+    """Read only cwd/argv/fd paths; root fallback is restricted to one denied PID."""
     def references(raw):
-        text = os.fsdecode(raw).removesuffix(' (deleted)')
-        if '=' in text and not text.startswith('/'): text = text.split('=', 1)[1]
-        path = Path(text)
-        return path.is_absolute() and (path == checkout or path.is_relative_to(checkout))
+        return process_reference(raw, checkout)
 
     entries = list(proc.iterdir()); require(len(entries) <= 65536, 'PROCESS_SCAN_BOUND_EXCEEDED')
     for entry in entries:
         if not entry.name.isdecimal(): continue
         if int(entry.name) == os.getpid(): continue
+        same_uid = False
         try:
             if entry.stat().st_uid != os.getuid(): continue
+            same_uid = True
             require(not references(os.readlink(entry / 'cwd')), 'ACTIVE_PROCESS_REFERENCES_OLD_CHECKOUT')
             with (entry / 'cmdline').open('rb') as stream: argv = stream.read(1024 ** 2 + 1)
             require(len(argv) <= 1024 ** 2, 'PROCESS_ARGUMENT_SCAN_BOUND_EXCEEDED')
@@ -336,7 +504,13 @@ def process_references(checkout, proc=Path('/proc')):
             descriptors = list((entry / 'fd').iterdir())
             require(len(descriptors) <= 8192, 'PROCESS_DESCRIPTOR_SCAN_BOUND_EXCEEDED')
             for descriptor in descriptors:
-                require(not references(os.readlink(descriptor)), 'ACTIVE_FILE_DESCRIPTOR_REFERENCES_OLD_CHECKOUT')
+                try:
+                    target = os.readlink(descriptor)
+                except (FileNotFoundError, ProcessLookupError):
+                    try: descriptor.lstat()
+                    except (FileNotFoundError, ProcessLookupError): continue
+                    raise ValueError('PROCESS_DESCRIPTOR_CHANGED_DURING_SCAN')
+                require(not references(target), 'ACTIVE_FILE_DESCRIPTOR_REFERENCES_OLD_CHECKOUT')
             with (entry / 'maps').open('rb') as stream: maps = stream.read(16 * 1024 ** 2 + 1)
             require(len(maps) <= 16 * 1024 ** 2, 'PROCESS_MAP_SCAN_BOUND_EXCEEDED')
             for line in maps.splitlines():
@@ -344,7 +518,13 @@ def process_references(checkout, proc=Path('/proc')):
                 if len(fields) == 6:
                     require(not references(fields[5]), 'ACTIVE_MEMORY_MAP_REFERENCES_OLD_CHECKOUT')
         except (FileNotFoundError, ProcessLookupError):
-            continue
+            try: entry.stat()
+            except (FileNotFoundError, ProcessLookupError): continue
+            raise ValueError('LIVE_PROCESS_METADATA_DISAPPEARED')
+        except PermissionError:
+            if not same_uid or sys.platform != 'linux' or proc != Path('/proc') or os.getuid() != 1000 or os.geteuid() != 1000:
+                raise
+            privileged_process_probe(checkout, int(entry.name), proc)
 
 
 def metadata(info):
@@ -656,7 +836,18 @@ def admitted_plan(path, expected_path, expected_sha, tag, identity):
     return plan, request
 
 
-def main():
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ['inspect-process']:
+        parser = argparse.ArgumentParser(description='Read only one denied Linux process metadata namespace.')
+        parser.add_argument('--checkout', required=True)
+        parser.add_argument('--pid', required=True, type=int)
+        parser.add_argument('--uid', required=True, type=int)
+        parser.add_argument('--nonce', required=True)
+        args = parser.parse_args(argv[1:])
+        result = single_process_metadata(Path(args.checkout), args.pid, args.uid, args.nonce)
+        print(json.dumps(result, sort_keys=True)); return
+    require(not (sys.platform == 'linux' and os.geteuid() == 0), 'ROOT_PERMITS_ONLY_PROCESS_METADATA_MODE')
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('phase', choices=('custody', 'plan', 'apply'))
     parser.add_argument('--retained-directory'); parser.add_argument('--output', required=True)
@@ -665,7 +856,7 @@ def main():
     parser.add_argument('--protected-release', action='append', default=[])
     parser.add_argument('--source-archive'); parser.add_argument('--source-sha256'); parser.add_argument('--request')
     parser.add_argument('--request-sha256'); parser.add_argument('--plan'); parser.add_argument('--plan-sha256')
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if args.phase == 'custody':
         verifier = verifier_module(Path(__file__).with_name('verify-remote.py'))
         result = local_custody(args.retained_directory, verifier)

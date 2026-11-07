@@ -10,6 +10,7 @@ import importlib.util
 import io
 import json
 import os
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 import tarfile
@@ -424,3 +425,298 @@ def test_fixed_bootstrap_checks_deployed_recipes_before_importing_any_helper(sta
 def test_duplicate_json_keys_cannot_redefine_a_reviewed_cleanup_plan(state):
     file = put(state.root / 'duplicate.json', b'{"identity":1,"identity":2}')
     with pytest.raises(ValueError, match='DUPLICATE_JSON_FIELD'): cleanup.read_json(file)
+
+
+@pytest.fixture
+def process_namespace(state, tmp_path, monkeypatch):
+    """Only synthetic proc metadata; the root role is simulated, never acquired."""
+    proc = tmp_path / 'synthetic-process-metadata'; pid = os.getpid() + 100000
+    directory = proc / str(pid); (directory / 'fd').mkdir(parents=True)
+    fields = ['S'] + ['0'] * 49; fields[19] = '123456'
+    (directory / 'stat').write_bytes((str(pid) + ' (synthetic task) ' + ' '.join(fields)).encode())
+    (directory / 'status').write_bytes(b'Name:\tsynthetic\nUid:\t1000\t1000\t1000\t1000\nGid:\t1000\t1000\t1000\t1000\n')
+    (directory / 'cwd').symlink_to(tmp_path, target_is_directory=True)
+    (directory / 'cmdline').write_bytes(b'synthetic\0--safe\0')
+    (directory / 'maps').write_bytes(b'')
+    (directory / 'fd/9').symlink_to('/dev/null')
+    monkeypatch.setattr(cleanup.os, 'geteuid', lambda: 0)
+    return SimpleNamespace(proc=proc, pid=pid, directory=directory, checkout=state.checkout, nonce='a' * 32)
+
+
+def inspect_process(value):
+    return cleanup.single_process_metadata(value.checkout, value.pid, 1000, value.nonce, proc=value.proc)
+
+
+def test_root_probe_reads_only_metadata_and_returns_no_argv_maps_or_path_targets(process_namespace, monkeypatch):
+    value = process_namespace; original = cleanup.os.open; opens = []
+    def readonly(path, flags, *args, **kwargs):
+        assert not flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND)
+        opens.append((path, flags)); return original(path, flags, *args, **kwargs)
+    monkeypatch.setattr(cleanup.os, 'open', readonly)
+    monkeypatch.setattr(cleanup, 'write_json', lambda *args: pytest.fail('root metadata wrote a file'))
+    monkeypatch.setattr(cleanup, 'remove_target', lambda *args: pytest.fail('root metadata used deletion API'))
+    result = inspect_process(value)
+    assert result == cleanup.probe_result('QUIESCENT', value.checkout, value.pid, 1000, value.nonce)
+    assert opens and set(result) == {'schema', 'kind', 'status', 'pid', 'uid', 'checkout', 'nonce'}
+    assert not any(key in result for key in ('argv', 'maps', 'cwd', 'descriptors', 'environment'))
+
+
+@pytest.mark.parametrize('reference', ['cwd', 'argv', 'fd', 'mmap'])
+def test_root_probe_still_refuses_every_real_reference(process_namespace, reference):
+    value = process_namespace
+    if reference == 'cwd':
+        (value.directory / 'cwd').unlink(); (value.directory / 'cwd').symlink_to(value.checkout, target_is_directory=True)
+    elif reference == 'argv': (value.directory / 'cmdline').write_bytes(b'process\0--script=' + os.fsencode(value.checkout / 'app.py') + b'\0')
+    elif reference == 'fd':
+        (value.directory / 'fd/9').unlink(); (value.directory / 'fd/9').symlink_to(value.checkout / 'opened.data')
+    else: (value.directory / 'maps').write_bytes(b'0-1 r--p 0 00:00 1 ' + os.fsencode(value.checkout / 'mapped.data') + b'\n')
+    with pytest.raises(ValueError, match='REFERENCES_OLD_CHECKOUT'): inspect_process(value)
+
+
+@pytest.mark.parametrize('change', ['uid', 'gid', 'starttime', 'pid-directory'])
+def test_root_probe_refuses_changed_identity_or_reused_pid_without_following_new_process(process_namespace, monkeypatch, change):
+    value = process_namespace; original = cleanup.probe_read; original_inode = value.directory.stat().st_ino
+    observed = []; mutated = False
+    def read(pid_fd, name, maximum):
+        nonlocal mutated
+        observed.append(os.fstat(pid_fd).st_ino); raw = original(pid_fd, name, maximum)
+        if name == 'maps' and not mutated:
+            mutated = True
+            if change == 'pid-directory':
+                value.directory.rename(value.proc / 'retired-process'); value.directory.mkdir()
+                (value.directory / 'status').write_bytes(b'untrusted replacement must not be read')
+            elif change == 'starttime':
+                path = value.directory / 'stat'; path.write_bytes(path.read_bytes().replace(b'123456', b'987654'))
+            else:
+                path = value.directory / 'status'; old = b'Uid:' if change == 'uid' else b'Gid:'
+                path.write_bytes(path.read_bytes().replace(old + b'\t1000\t1000\t1000\t1000', old + b'\t1001\t1001\t1001\t1001'))
+        return raw
+    monkeypatch.setattr(cleanup, 'probe_read', read)
+    with pytest.raises(ValueError, match='UID_CHANGED|PID_OR_IDENTITY_REUSED'): inspect_process(value)
+    assert mutated and set(observed) == {original_inode}
+
+
+def test_root_probe_refuses_foreign_uid_before_reading_other_metadata(process_namespace, monkeypatch):
+    value = process_namespace; (value.directory / 'status').write_bytes(b'Uid:\t1001\t1001\t1001\t1001\nGid:\t1000\t1000\t1000\t1000\n')
+    monkeypatch.setattr(cleanup.os, 'readlink', lambda *a, **k: pytest.fail('foreign UID reached reference scan'))
+    with pytest.raises(ValueError, match='UID_CHANGED'): inspect_process(value)
+
+
+@pytest.mark.parametrize('phase', ['before-open', 'after-open'])
+def test_root_probe_reports_gone_only_when_pid_namespace_is_actually_absent(process_namespace, monkeypatch, phase):
+    value = process_namespace
+    if phase == 'before-open': value.directory.rename(value.proc / 'exited-process')
+    else:
+        original = cleanup.probe_read
+        def read(fd, name, maximum):
+            raw = original(fd, name, maximum)
+            if name == 'maps': value.directory.rename(value.proc / 'exited-process')
+            return raw
+        monkeypatch.setattr(cleanup, 'probe_read', read)
+    assert inspect_process(value)['status'] == 'GONE'
+
+
+@pytest.mark.parametrize('condition', ['missing-maps-alive', 'permission-denied', 'open-race-alive'])
+def test_root_probe_never_calls_an_unknown_or_unreadable_live_pid_gone(process_namespace, monkeypatch, condition):
+    value = process_namespace
+    if condition == 'missing-maps-alive': (value.directory / 'maps').unlink()
+    elif condition == 'permission-denied':
+        original = cleanup.probe_read
+        def denied(fd, name, maximum):
+            if name == 'maps': raise PermissionError('synthetic root metadata unavailable')
+            return original(fd, name, maximum)
+        monkeypatch.setattr(cleanup, 'probe_read', denied)
+    else:
+        original = cleanup.os.open
+        def missing(path, flags, *a, **kw):
+            if path == str(value.pid) and kw.get('dir_fd') is not None: raise FileNotFoundError('PID open raced')
+            return original(path, flags, *a, **kw)
+        monkeypatch.setattr(cleanup.os, 'open', missing)
+    with pytest.raises((ValueError, PermissionError)): inspect_process(value)
+    assert value.directory.exists()
+
+
+@pytest.mark.parametrize('scanner', ['privileged', 'unprivileged'])
+def test_closing_one_descriptor_does_not_skip_a_live_process_memory_mapping(process_namespace, monkeypatch, scanner):
+    value = process_namespace; original = cleanup.os.readlink
+    (value.directory / 'maps').write_bytes(b'0-1 r--p 0 00:00 1 ' + os.fsencode(value.checkout / 'mapped.data') + b'\n')
+    fd_inode = (value.directory / 'fd').stat().st_ino
+    def closed(path, *a, **kw):
+        matches = (kw.get('dir_fd') is not None and os.fstat(kw['dir_fd']).st_ino == fd_inode and path == '9')
+        matches = matches or Path(path) == value.directory / 'fd/9'
+        if matches:
+            (value.directory / 'fd/9').unlink(); raise FileNotFoundError('descriptor closed')
+        return original(path, *a, **kw)
+    monkeypatch.setattr(cleanup.os, 'readlink', closed)
+    with pytest.raises(ValueError, match='MEMORY_MAP_REFERENCES_OLD_CHECKOUT'):
+        inspect_process(value) if scanner == 'privileged' else cleanup.process_references(value.checkout, value.proc)
+
+
+def test_a_descriptor_replaced_during_missing_read_is_not_treated_as_closed(process_namespace, monkeypatch):
+    value = process_namespace; original = cleanup.os.readlink; fd_inode = (value.directory / 'fd').stat().st_ino
+    def changed(path, *a, **kw):
+        if path == '9' and kw.get('dir_fd') is not None and os.fstat(kw['dir_fd']).st_ino == fd_inode:
+            raise FileNotFoundError('descriptor number already reused')
+        return original(path, *a, **kw)
+    monkeypatch.setattr(cleanup.os, 'readlink', changed)
+    with pytest.raises(ValueError, match='DESCRIPTOR_CHANGED'): inspect_process(value)
+
+
+@pytest.fixture
+def denied_real_process(state, monkeypatch):
+    pid = os.getpid(); entry = Path('/proc') / str(pid); original_iter = Path.iterdir; original_link = os.readlink
+    monkeypatch.setattr(cleanup.os, 'getpid', lambda: pid + 100000)
+    monkeypatch.setattr(Path, 'iterdir', lambda path: iter([entry]) if path == Path('/proc') else original_iter(path))
+    def denied(path, *a, **kw):
+        if Path(path) == entry / 'cwd': raise PermissionError(13, 'synthetic non-dumpable process', str(path))
+        return original_link(path, *a, **kw)
+    monkeypatch.setattr(cleanup.os, 'readlink', denied)
+    calls = []
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        result = cleanup.probe_result('QUIESCENT', state.checkout, pid, 1000, command[command.index('--nonce') + 1])
+        return SimpleNamespace(returncode=0, stdout=cleanup.canonical(result), stderr=b'')
+    monkeypatch.setattr(cleanup.subprocess, 'run', run)
+    return SimpleNamespace(pid=pid, calls=calls, run=run, checkout=state.checkout, entry=entry)
+
+
+def test_only_denied_real_proc_uses_single_pid_fixed_source_stdin_and_sanitized_sudo(denied_real_process):
+    value = denied_real_process; cleanup.process_references(value.checkout)
+    assert len(value.calls) == 1; command, options = value.calls[0]
+    assert command[:7] == ['/usr/bin/sudo', '-n', '/usr/bin/python3', '-I', '-B', '-', 'inspect-process']
+    assert command[command.index('--pid') + 1] == str(value.pid)
+    assert command[command.index('--checkout') + 1] == str(value.checkout)
+    assert command[command.index('--uid') + 1] == '1000'
+    assert options['input'] == cleanup.LOADED_SOURCE and options['timeout'] == 20
+    assert options['env'] == {'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LANG': 'C', 'LC_ALL': 'C'}
+
+
+@pytest.mark.parametrize('field', ['uid', 'pid', 'checkout', 'nonce', 'kind', 'schema-type', 'status', 'extra', 'duplicate', 'not-json'])
+def test_privileged_metadata_response_must_be_closed_typed_and_bound(denied_real_process, monkeypatch, field):
+    value = denied_real_process
+    def changed(command, **kwargs):
+        reply = value.run(command, **kwargs); row = json.loads(reply.stdout)
+        if field == 'uid': row[field] = 1001
+        elif field == 'pid': row[field] += 1
+        elif field == 'checkout': row[field] += '/other'
+        elif field == 'nonce': row[field] = '0' * 32
+        elif field == 'kind': row[field] = 'untrusted'
+        elif field == 'schema-type': row['schema'] = True
+        elif field == 'status': row[field] = 'REFERENCED'
+        elif field == 'extra': row['argv'] = ['must not be returned']
+        if field == 'duplicate': reply.stdout = b'{"schema":1,' + cleanup.canonical(row)[1:]
+        elif field == 'not-json': reply.stdout = b'not-json'
+        else: reply.stdout = cleanup.canonical(row)
+        return reply
+    monkeypatch.setattr(cleanup.subprocess, 'run', changed)
+    with pytest.raises(ValueError): cleanup.process_references(value.checkout)
+
+
+@pytest.mark.parametrize('failure', ['sudo-denied', 'timeout', 'stdout-bound', 'stderr-bound'])
+def test_failed_or_unavailable_privileged_metadata_never_becomes_quiescent(denied_real_process, monkeypatch, failure):
+    value = denied_real_process
+    def changed(command, **kwargs):
+        if failure == 'timeout': raise subprocess.TimeoutExpired(command, 20)
+        reply = value.run(command, **kwargs)
+        if failure == 'sudo-denied': reply.returncode = 1
+        elif failure == 'stdout-bound': reply.stdout = b'x' * 4097
+        else: reply.stderr = b'x' * 4097
+        return reply
+    monkeypatch.setattr(cleanup.subprocess, 'run', changed)
+    with pytest.raises((ValueError, subprocess.TimeoutExpired)): cleanup.process_references(value.checkout)
+
+
+@pytest.mark.parametrize('error', [OSError(5, 'unrelated IO failure'), FileNotFoundError('live task metadata disappeared'), ValueError('other validation')])
+def test_non_permission_error_does_not_invoke_privileged_fallback(denied_real_process, monkeypatch, error):
+    value = denied_real_process
+    monkeypatch.setattr(cleanup.os, 'readlink', lambda *a, **kw: (_ for _ in ()).throw(error))
+    monkeypatch.setattr(cleanup, 'privileged_process_probe', lambda *a: pytest.fail('non-permission error elevated'))
+    with pytest.raises((OSError, ValueError)): cleanup.process_references(value.checkout)
+
+
+def test_unproven_process_uid_does_not_request_privileged_metadata(denied_real_process, monkeypatch):
+    value = denied_real_process; original = Path.stat
+    def denied(path, *args, **kwargs):
+        if path == value.entry: raise PermissionError('PID owner could not be established')
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(Path, 'stat', denied)
+    monkeypatch.setattr(cleanup, 'privileged_process_probe', lambda *a: pytest.fail('unproven UID elevated'))
+    with pytest.raises(PermissionError): cleanup.process_references(value.checkout)
+
+
+def test_synthetic_or_non_proc_namespace_never_invokes_sudo(process_namespace, monkeypatch):
+    value = process_namespace
+    monkeypatch.setattr(cleanup.os, 'readlink', lambda *a, **kw: (_ for _ in ()).throw(PermissionError('denied')))
+    monkeypatch.setattr(cleanup, 'privileged_process_probe', lambda *a: pytest.fail('non-proc namespace elevated'))
+    with pytest.raises(PermissionError): cleanup.process_references(value.checkout, value.proc)
+
+
+@pytest.mark.parametrize('scope', ['wrong-uid', 'wrong-euid', 'non-linux'])
+def test_wrong_actor_or_platform_cannot_request_sudo_probe(denied_real_process, monkeypatch, scope):
+    value = denied_real_process
+    if scope == 'wrong-uid': monkeypatch.setattr(cleanup.os, 'getuid', lambda: 1001)
+    elif scope == 'wrong-euid': monkeypatch.setattr(cleanup.os, 'geteuid', lambda: 0)
+    else: monkeypatch.setattr(cleanup.sys, 'platform', 'win32')
+    with pytest.raises(ValueError, match='SCOPE_REFUSED'):
+        cleanup.privileged_process_probe(value.checkout, value.pid, Path('/proc'))
+    assert value.calls == []
+
+
+@pytest.mark.parametrize('race', ['writable', 'hardlink', 'replacement', 'fifo'])
+def test_fixed_source_fd_rechecks_admitted_shape_before_root_interpretation(denied_real_process, tmp_path, monkeypatch, race):
+    value = denied_real_process; source = put(tmp_path / 'cleanup-fixed.py', cleanup.LOADED_SOURCE)
+    monkeypatch.setattr(cleanup, '__file__', str(source)); original = cleanup.os.open; changed = False
+    def racing(path, flags, *a, **kw):
+        nonlocal changed
+        if Path(path) == source and not changed:
+            changed = True; assert flags & os.O_NONBLOCK
+            if race == 'writable': source.chmod(0o666)
+            elif race == 'hardlink': os.link(source, source.with_name('unreviewed-link'))
+            elif race == 'replacement': put(source.with_name('replacement'), cleanup.LOADED_SOURCE).replace(source)
+            else: source.unlink(); os.mkfifo(source, 0o600)
+        return original(path, flags, *a, **kw)
+    monkeypatch.setattr(cleanup.os, 'open', racing)
+    with pytest.raises(ValueError, match='SOURCE_NOT_ADMITTED'):
+        cleanup.privileged_process_probe(value.checkout, value.pid, Path('/proc'))
+    assert changed and value.calls == []
+
+
+def test_stdin_root_module_does_not_try_to_open_a_source_path(monkeypatch):
+    source = cleanup.LOADED_SOURCE
+    monkeypatch.setattr(Path, 'read_bytes', lambda *a: pytest.fail('stdin code tried source pathname read'))
+    namespace = {'__file__': '<stdin>', '__name__': 'fixed_root_metadata_stdin_contract'}
+    exec(compile(source, '<stdin>', 'exec'), namespace)
+    assert namespace['LOADED_SOURCE'] is None
+
+
+@pytest.mark.parametrize('phase', ['custody', 'plan', 'apply'])
+def test_root_has_no_data_cleanup_or_custody_cli_mode(monkeypatch, phase):
+    monkeypatch.setattr(cleanup.os, 'geteuid', lambda: 0)
+    monkeypatch.setattr(cleanup, 'write_json', lambda *a: pytest.fail('root cleanup wrote an artifact'))
+    monkeypatch.setattr(cleanup, 'remove_target', lambda *a: pytest.fail('root cleanup deleted data'))
+    with pytest.raises(ValueError, match='ROOT_PERMITS_ONLY_PROCESS_METADATA'): cleanup.main([phase])
+
+
+def test_unprivileged_process_cannot_claim_root_probe_result(process_namespace, monkeypatch):
+    value = process_namespace; monkeypatch.setattr(cleanup.os, 'geteuid', lambda: 1000)
+    with pytest.raises(ValueError, match='ROOT_PROCESS_METADATA_MODE_REQUIRED'): inspect_process(value)
+
+
+def test_root_cli_is_only_bound_single_pid_metadata_and_never_writes_outputs(state, monkeypatch, capsys):
+    monkeypatch.setattr(cleanup.os, 'geteuid', lambda: 0)
+    monkeypatch.setattr(cleanup, 'write_json', lambda *a: pytest.fail('root metadata wrote an artifact'))
+    pid = 2 ** 31 - 1; assert not (Path('/proc') / str(pid)).exists()
+    cleanup.main(['inspect-process', '--checkout', str(state.checkout), '--pid', str(pid), '--uid', '1000', '--nonce', 'a' * 32])
+    assert json.loads(capsys.readouterr().out) == cleanup.probe_result('GONE', state.checkout, pid, 1000, 'a' * 32)
+
+
+def test_windows_local_custody_dispatch_does_not_require_linux_privilege_api(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(cleanup.sys, 'platform', 'win32')
+    monkeypatch.setattr(cleanup.os, 'geteuid', lambda: pytest.fail('Windows custody accessed Linux privilege API'))
+    expected = {'kind': 'local-custody-contract', 'status': 'VERIFIED_LOCAL_BYTES'}; writes = []
+    monkeypatch.setattr(cleanup, 'verifier_module', lambda path: object())
+    monkeypatch.setattr(cleanup, 'local_custody', lambda directory, verifier: expected)
+    monkeypatch.setattr(cleanup, 'write_json', lambda path, value: writes.append((path, value)))
+    output = tmp_path / 'custody.json'
+    cleanup.main(['custody', '--retained-directory', str(tmp_path), '--output', str(output)])
+    assert writes == [(output, expected)] and json.loads(capsys.readouterr().out) == expected

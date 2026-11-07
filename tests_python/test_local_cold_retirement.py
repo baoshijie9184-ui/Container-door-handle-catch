@@ -435,3 +435,113 @@ def test_disposition_uses_original_handle_and_one_byte_boolean_without_path_dele
         CloseHandle=lambda handle: seen.append(('close', handle)) or 1)
     backend.dispose(2468)
     assert seen == [('dispose', 2468, 4, 1, 1), ('close', 2468)]
+
+
+def synthetic_native_backend(tmp_path, monkeypatch, *, set_ok=True, close_ok=True, close_callback=None):
+    """Construct the real ABI structures using a fake DLL, even on Linux."""
+    import ctypes
+    events = []
+    def set_information(handle, kind, value, size):
+        events.append(('dispose', handle, kind, size, int.from_bytes(ctypes.string_at(value, size), 'little')))
+        return int(set_ok)
+    def close(handle):
+        events.append(('close', handle))
+        if close_ok and close_callback is not None: close_callback()
+        return int(close_ok)
+    api = SimpleNamespace(CreateFileW=lambda *args: events.append(('create', args)) or 77,
+        CloseHandle=close, GetFinalPathNameByHandleW=lambda *unused: 0, SetFileInformationByHandle=set_information)
+    # Patch this module's os reference, never the global os.name used by pathlib.
+    with monkeypatch.context() as init:
+        init.setattr(retire, 'os', SimpleNamespace(name='nt'))
+        init.setattr(ctypes, 'WinDLL', lambda *args, **kwargs: api, raising=False)
+        backend = retire.WindowsBackend(SimpleNamespace())
+    backend.source_resolver = lambda name: str(tmp_path / name)
+    backend.held = SimpleNamespace(handles={'opaque.bin': 2468})
+    return backend, events
+
+
+@pytest.mark.parametrize('attributes,kind,size,flags', [(0x20, 4, 1, 1), (0x21, 21, 4, 0x11)])
+def test_only_verified_readonly_rows_select_the_four_byte_extended_disposition(tmp_path, monkeypatch, attributes, kind, size, flags):
+    import ctypes
+    backend, events = synthetic_native_backend(tmp_path, monkeypatch)
+    assert ctypes.sizeof(backend.disposition) == 1 and ctypes.sizeof(backend.disposition_ex) == 4
+    backend.delete_file({'path': 'opaque.bin', 'fingerprint': [7, 11, 3, 40, 50, 1, 0o100444, attributes]})
+    assert events == [('dispose', 2468, kind, size, flags), ('close', 2468)]
+    assert backend.held.handles == {}
+
+
+@pytest.mark.parametrize('readonly', [False, True])
+def test_disposition_failure_makes_no_close_or_weaker_disposition_attempt(tmp_path, monkeypatch, readonly):
+    backend, events = synthetic_native_backend(tmp_path, monkeypatch, set_ok=False)
+    with pytest.raises(retire.RetirementError, match='EXACT_HANDLE_DISPOSITION_REFUSED'):
+        backend.delete_file({'path': 'opaque.bin', 'fingerprint': [7, 11, 3, 40, 50, 1, 0o100600, 0x21 if readonly else 0x20]})
+    assert events == [('dispose', 2468, 21 if readonly else 4, 4 if readonly else 1, 0x11 if readonly else 1)]
+    assert backend.held.handles == {'opaque.bin': 2468}
+
+
+def test_readonly_close_failure_keeps_handle_and_never_claims_confirmed_deletion(scope, tmp_path, monkeypatch):
+    backend, events = synthetic_native_backend(tmp_path, monkeypatch, close_ok=False)
+    first = scope.value['members'][0]; first['fingerprint'][7] = 0x21
+    backend.held.handles = {first['path']: 2468}
+    scope.backend.delete_file = backend.delete_file
+    with pytest.raises(retire.RetirementError, match='DISPOSITION_CLOSE_UNCONFIRMED'): apply(scope)
+    assert events == [('dispose', 2468, 21, 4, 0x11), ('close', 2468)]
+    assert backend.held.handles == {first['path']: 2468}
+    partial = [event[2] for event in scope.events if event[0:2] == ('audit', 'PARTIAL_OR_REFUSED')][-1]
+    assert partial['filesDeleted'] == 0 and partial['unconfirmedFileDispositions'] == 1
+    assert not any(event[0:2] == ('audit', 'FILE_DELETED') for event in scope.events)
+
+
+@pytest.mark.parametrize('platform', [None, (), (10, 0), (10, 0, 17762), (True, 0, 26100),
+                                    (10, -1, 26100), (10, 0, '26100'), [10, 0, 26100]])
+def test_readonly_platform_gate_refuses_unknown_old_or_untyped_versions_before_any_native_handle(tmp_path, monkeypatch, platform):
+    backend, events = synthetic_native_backend(tmp_path, monkeypatch)
+    monkeypatch.setattr(retire.sys, 'getwindowsversion', lambda: SimpleNamespace(platform_version=platform, build=99999), raising=False)
+    value = {'members': [{'fingerprint': [7, 11, 3, 40, 50, 1, 0o100444, 0x21]}], 'directories': []}
+    with pytest.raises(retire.RetirementError, match='READONLY_DISPOSITION_PLATFORM_'):
+        with backend.hold(value): pytest.fail('Unsupported platform reached held sources')
+    assert events == []
+
+
+@pytest.mark.parametrize('failure', ['missing', 'getter-error'])
+def test_readonly_platform_metadata_failure_never_initializes_native_handles(tmp_path, monkeypatch, failure):
+    backend, events = synthetic_native_backend(tmp_path, monkeypatch)
+    if failure == 'missing': monkeypatch.delattr(retire.sys, 'getwindowsversion', raising=False)
+    else:
+        def unavailable(): raise OSError('synthetic version read failure')
+        monkeypatch.setattr(retire.sys, 'getwindowsversion', unavailable, raising=False)
+    with pytest.raises(retire.RetirementError, match='READONLY_DISPOSITION_PLATFORM_UNAVAILABLE'):
+        with backend.hold({'members': [{'fingerprint': [0] * 7 + [1]}], 'directories': []}):
+            pytest.fail('Version failure must precede source admission')
+    assert events == []
+
+
+@pytest.mark.parametrize('platform', [(10, 0, 17763), (10, 0, 26100)])
+def test_readonly_platform_gate_uses_verified_platform_version_not_compatibility_build(monkeypatch, platform):
+    monkeypatch.setattr(retire.sys, 'getwindowsversion', lambda: SimpleNamespace(platform_version=platform, build=1), raising=False)
+    retire.WindowsBackend.check_readonly_platform()
+
+
+def test_ordinary_files_do_not_require_or_read_windows_version_metadata(tmp_path, monkeypatch):
+    from contextlib import nullcontext
+    backend, events = synthetic_native_backend(tmp_path, monkeypatch)
+    monkeypatch.setattr(retire, 'PROJECT_ROOT', str(tmp_path))
+    monkeypatch.setattr(retire.sys, 'getwindowsversion', lambda: pytest.fail('Ordinary files must not add a version gate'), raising=False)
+    backend.cold = SimpleNamespace(HeldSources=lambda value, **kwargs: nullcontext(SimpleNamespace()))
+    backend.final_path = lambda *unused: None
+    backend.verify_file = lambda row: None
+    with backend.hold({'members': [{'path': 'opaque.bin', 'fingerprint': [0] * 7 + [0x20]}], 'directories': []}):
+        assert len([event for event in events if event[0] == 'create']) == 1
+    assert not any(event[0] == 'dispose' for event in events)
+
+
+def test_empty_directory_uses_original_boolean_disposition_even_with_a_readonly_attribute(tmp_path, monkeypatch):
+    target = tmp_path / 'empty'; target.mkdir()
+    backend, events = synthetic_native_backend(tmp_path, monkeypatch, close_callback=target.rmdir)
+    original = [7, 11, 0, 40, 50, 1, 0o40700, 0x11]
+    backend.cold = SimpleNamespace(fingerprint=lambda _info: original)
+    backend.final_path = lambda *unused: None
+    backend.directories = {str(target): 2468}
+    backend.rmdir_empty({'path': 'empty', 'fingerprint': original})
+    assert events == [('dispose', 2468, 4, 1, 1), ('close', 2468)]
+    assert backend.directories == {} and not target.exists()

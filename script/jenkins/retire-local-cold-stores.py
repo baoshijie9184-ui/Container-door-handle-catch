@@ -299,7 +299,7 @@ class FreshProof:
 
 
 class WindowsBackend:
-    """Held READ|DELETE handles; empty-directory disposition has no recursion API."""
+    """Held handles; read-only files alone request WRITE_ATTRIBUTES for Ex delete."""
     def __init__(self, cold, *, source_resolver=None):
         need(os.name == 'nt', 'APPLY_REQUIRES_WINDOWS')
         self.cold = cold
@@ -315,7 +315,10 @@ class WindowsBackend:
         self.api.SetFileInformationByHandle.argtypes = [w.HANDLE, ctypes.c_int, w.LPVOID, w.DWORD]
         class Disposition(ctypes.Structure):
             _fields_ = [('DeleteFile', ctypes.c_ubyte)]  # Win32 BOOLEAN, not BOOL/DWORD.
+        class DispositionEx(ctypes.Structure):
+            _fields_ = [('Flags', ctypes.c_uint32)]  # DWORD remains 4 bytes in Linux API fixtures too.
         self.disposition = Disposition
+        self.disposition_ex = DispositionEx
         self.directories = {}; self.targets = set()
 
     def final_path(self, handle, expected):
@@ -345,6 +348,8 @@ class WindowsBackend:
 
     @contextmanager
     def hold(self, value):
+        if any(row['fingerprint'][7] & 0x1 for row in value['members']):
+            self.check_readonly_platform()
         rows = {self.source_resolver(row['path']): row for row in value['directories']}; paths = set(rows)
         for row in value['members'] + value['directories']:
             path = Path(self.source_resolver(row['path'])).parent
@@ -386,15 +391,30 @@ class WindowsBackend:
         need(reader.bytes == row['bytes'] and reader.checksum.hexdigest() == row['sha256'], 'FRESH_SOURCE_BYTES_DIFFER')
         self.verify_file(row)
 
-    def dispose(self, handle):
-        value = self.disposition(1)
-        need(self.api.SetFileInformationByHandle(handle, 4, ctypes.byref(value), ctypes.sizeof(value)),
+    @staticmethod
+    def check_readonly_platform():
+        try:
+            platform = sys.getwindowsversion().platform_version
+        except Exception as error:
+            raise RetirementError('READONLY_DISPOSITION_PLATFORM_UNAVAILABLE') from error
+        need(type(platform) is tuple and len(platform) == 3
+             and all(type(part) is int and part >= 0 for part in platform), 'READONLY_DISPOSITION_PLATFORM_UNVERIFIED')
+        need(platform >= (10, 0, 17763), 'READONLY_DISPOSITION_PLATFORM_UNSUPPORTED')
+
+    def dispose(self, handle, *, readonly=False):
+        need(type(readonly) is bool, 'EXPLICIT_READONLY_DISPOSITION_REQUIRED')
+        value = self.disposition_ex(0x1 | 0x10) if readonly else self.disposition(1)
+        need(self.api.SetFileInformationByHandle(handle, 21 if readonly else 4, ctypes.byref(value), ctypes.sizeof(value)),
              'EXACT_HANDLE_DISPOSITION_REFUSED')
         need(self.api.CloseHandle(handle), 'DISPOSITION_CLOSE_UNCONFIRMED')
 
     def delete_file(self, row):
         handle = self.held.handles[row['path']]
-        self.dispose(handle); del self.held.handles[row['path']]
+        if row['fingerprint'][7] & 0x1:
+            self.dispose(handle, readonly=True)
+        else:
+            self.dispose(handle)
+        del self.held.handles[row['path']]
         need(not Path(self.source_resolver(row['path'])).exists(), 'DELETED_PATH_RECREATED_OR_UNCONFIRMED')
 
     def rmdir_empty(self, row):
