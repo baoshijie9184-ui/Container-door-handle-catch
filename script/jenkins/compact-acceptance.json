@@ -1087,6 +1087,18 @@
         "allowedSkippedTests": []
       },
       {
+        "module": "tests_python.test_fixed_originals_attestation",
+        "minimumTests": 173,
+        "source": "tests_python/test_fixed_originals_attestation.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_local_fixed_originals_retirement",
+        "minimumTests": 71,
+        "source": "tests_python/test_local_fixed_originals_retirement.py",
+        "allowedSkippedTests": []
+      },
+      {
         "module": "tests_python.test_local_mysql_custody",
         "minimumTests": 67,
         "source": "tests_python/test_local_mysql_custody.py",

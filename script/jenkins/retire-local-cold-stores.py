@@ -223,8 +223,10 @@ class Audit:
 
 
 class LiveAttestor:
-    def __init__(self, cold, args):
+    def __init__(self, cold, args, *, helper_name='preserve-cold-stores.py'):
+        need(helper_name in ('preserve-cold-stores.py', 'attest-fixed-originals.py'), 'FIXED_ATTESTATION_HELPER_REQUIRED')
         self.cold, self.args = cold, args
+        self.helper_name = helper_name
 
     def fetch(self, plan, nonce):
         args = self.args; now = plan['current']; old = plan['custody']
@@ -237,14 +239,15 @@ class LiveAttestor:
         key, known = canonical_control(args.ssh_key), canonical_control(args.known_hosts)
         for file in (key, known):
             need(file.is_file() and file.stat().st_nlink == 1, 'UNLINKED_SSH_CONTROL_REQUIRED')
-        helper = remote_root + '/verification/' + now['release'] + '/checkout/script/jenkins/preserve-cold-stores.py'
+        helper = remote_root + '/verification/' + now['release'] + '/checkout/script/jenkins/' + self.helper_name
         snapshot = remote_root + '/verification/' + old['release'] + '/checkout/work/' + self.cold.PROFILES[args.profile]['SNAPSHOT']
         arguments = ['python3', '-I', '-B', helper, 'fresh-retirement-attest', '--profile', args.profile,
             '--root', remote_root, '--tag', now['release'], '--commit', now['commit'], '--source-sha256', now['sourceSha256'],
             '--expected-instance-id', INSTANCE, '--expected-machine-id', MACHINE,
             '--source-snapshot-directory', snapshot, '--nonce', nonce, '--attestation-seconds', str(PROOF_SECONDS)]
         # Authenticate the fixed recipe before trusting even its identity/proof output.
-        remote = 'test "$(sha256sum ' + shlex.quote(helper) + ' | cut -d " " -f 1)" = ' + shlex.quote(plan['coldHelperSha256'])
+        helper_sha = plan['coldHelperSha256' if self.helper_name == 'preserve-cold-stores.py' else 'attestationHelperSha256']
+        remote = 'test "$(sha256sum ' + shlex.quote(helper) + ' | cut -d " " -f 1)" = ' + shlex.quote(helper_sha)
         remote += ' && ' + shlex.join(arguments)
         ssh = shutil.which('ssh.exe') or shutil.which('ssh'); need(ssh, 'EXISTING_SSH_CLIENT_REQUIRED')
         result = subprocess.run([ssh, '-F', 'NUL', '-i', str(key), '-p', str(args.ssh_port), '-o', 'BatchMode=yes',
@@ -297,9 +300,12 @@ class FreshProof:
 
 class WindowsBackend:
     """Held READ|DELETE handles; empty-directory disposition has no recursion API."""
-    def __init__(self, cold):
+    def __init__(self, cold, *, source_resolver=None):
         need(os.name == 'nt', 'APPLY_REQUIRES_WINDOWS')
         self.cold = cold
+        need(source_resolver is None or callable(source_resolver), 'EXPLICIT_SOURCE_RESOLVER_REQUIRED')
+        self.source_resolver = source_path if source_resolver is None else source_resolver
+        self.custom_source_resolver = source_resolver is not None
         from ctypes import wintypes as w
         self.api = ctypes.WinDLL('kernel32', use_last_error=True)
         self.api.CreateFileW.argtypes = [w.LPCWSTR, w.DWORD, w.DWORD, w.LPVOID, w.DWORD, w.DWORD, w.HANDLE]
@@ -323,7 +329,7 @@ class WindowsBackend:
 
     def active_references(self, value):
         # Raw argv stays only in PowerShell memory; report matching IDs, never argv.
-        roots = [source_path(row['path']) for row in value['roots']]
+        roots = [self.source_resolver(row['path']) for row in value['roots']]
         payload = __import__('base64').b64encode(encoded(roots)).decode()
         script = "$ErrorActionPreference='Stop'; $roots=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('" + payload + "'))|ConvertFrom-Json; $hits=@(); foreach($p in @(Get-CimInstance Win32_Process)){if($p.CommandLine){foreach($r in $roots){if($p.CommandLine.IndexOf($r,[StringComparison]::OrdinalIgnoreCase)-ge 0){$hits+=@{pid=$p.ProcessId};break}}}}; ConvertTo-Json -InputObject @($hits) -Compress"
         result = subprocess.run(['powershell.exe', '-NoLogo', '-NoProfile', '-NonInteractive', '-Command', '-'],
@@ -339,9 +345,9 @@ class WindowsBackend:
 
     @contextmanager
     def hold(self, value):
-        rows = {source_path(row['path']): row for row in value['directories']}; paths = set(rows)
+        rows = {self.source_resolver(row['path']): row for row in value['directories']}; paths = set(rows)
         for row in value['members'] + value['directories']:
-            path = Path(source_path(row['path'])).parent
+            path = Path(self.source_resolver(row['path'])).parent
             while path.is_relative_to(Path(PROJECT_ROOT)):
                 paths.add(str(path))
                 if path == Path(PROJECT_ROOT): break
@@ -356,7 +362,8 @@ class WindowsBackend:
                 self.directories[path] = handle; self.final_path(handle, path)
                 if path in rows:
                     need(self.cold.fingerprint(source.lstat()) == rows[path]['fingerprint'], 'SOURCE_DIRECTORY_ID_OR_MEMBERSHIP_DRIFT')
-            with self.cold.HeldSources(value, delete_access=True) as held:
+            resolver = {'source_resolver': self.source_resolver} if self.custom_source_resolver else {}
+            with self.cold.HeldSources(value, delete_access=True, **resolver) as held:
                 self.held = held
                 for row in value['members']: self.verify_file(row)
                 yield self
@@ -371,7 +378,7 @@ class WindowsBackend:
 
     def verify_file(self, row):
         self.held.verify_one(row)
-        self.final_path(self.held.handles[row['path']], source_path(row['path']))
+        self.final_path(self.held.handles[row['path']], self.source_resolver(row['path']))
 
     def hash_file(self, row):
         reader = self.held.reader(row['path'])
@@ -388,10 +395,10 @@ class WindowsBackend:
     def delete_file(self, row):
         handle = self.held.handles[row['path']]
         self.dispose(handle); del self.held.handles[row['path']]
-        need(not Path(source_path(row['path'])).exists(), 'DELETED_PATH_RECREATED_OR_UNCONFIRMED')
+        need(not Path(self.source_resolver(row['path'])).exists(), 'DELETED_PATH_RECREATED_OR_UNCONFIRMED')
 
     def rmdir_empty(self, row):
-        path = source_path(row['path']); handle = self.directories[path]
+        path = self.source_resolver(row['path']); handle = self.directories[path]
         self.final_path(handle, path)
         observed = self.cold.fingerprint(Path(path).lstat()); original = row['fingerprint']
         # Our own file removals change parent mtime. Retain exact directory ID,

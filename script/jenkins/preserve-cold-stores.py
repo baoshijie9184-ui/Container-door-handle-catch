@@ -270,10 +270,12 @@ class NativeReader:
 
 class HeldSources:
     """Win32 handles avoid the CRT fd ceiling and hold ShareMode=0 for every file."""
-    def __init__(self, value, *, delete_access=False):
+    def __init__(self, value, *, delete_access=False, source_resolver=None):
         self.value, self.handles, self.windows = value, {}, os.name == 'nt'
         need(type(delete_access) is bool and (not delete_access or self.windows), 'DELETE_ACCESS_REQUIRES_WINDOWS')
         self.delete_access = delete_access
+        need(source_resolver is None or callable(source_resolver), 'EXPLICIT_SOURCE_RESOLVER_REQUIRED')
+        self.source_resolver = safe_source if source_resolver is None else source_resolver
 
     def __enter__(self):
         if self.windows:
@@ -291,7 +293,7 @@ class HeldSources:
             self.api.GetFileInformationByHandle.argtypes = [w.HANDLE, ctypes.POINTER(Info)]
         try:
             for row in self.value['members']:
-                path = safe_source(row['path'])
+                path = Path(self.source_resolver(row['path']))
                 need(fingerprint(path.lstat()) == row['fingerprint'], 'SOURCE_NTFS_ID_OR_METADATA_CHANGED')
                 if self.windows:
                     handle = self.api.CreateFileW(str(path), 0x80000000 | (0x10000 if self.delete_access else 0),
