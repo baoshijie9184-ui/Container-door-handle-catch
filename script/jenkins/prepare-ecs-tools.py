@@ -180,7 +180,8 @@ INSTALL = r'''
 import importlib.metadata,json,pathlib,subprocess,sys
 report=pathlib.Path('/ci-report')
 args=[sys.executable,'-I','-m','pip','--isolated','--disable-pip-version-check','--no-input']
-code=subprocess.call(args+['install','--index-url','https://pypi.org/simple','--no-cache-dir','--no-compile','--report',str(report/'pip-install.json'),'-r','/ci-input/requirements.txt'])
+# Use the same HTTPS mirror as compose.cloud.yml; isolated pip cannot inherit another index.
+code=subprocess.call(args+['install','--index-url','https://mirrors.aliyun.com/pypi/simple','--no-cache-dir','--no-compile','--report',str(report/'pip-install.json'),'-r','/ci-input/requirements.txt'])
 if code: raise SystemExit(code)
 code=subprocess.call(args+['check'])
 if code: raise SystemExit(code)

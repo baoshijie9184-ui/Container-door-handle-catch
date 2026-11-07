@@ -6,10 +6,12 @@ import io
 import json
 import os
 from pathlib import Path
+import sys
 import tarfile
 import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest import mock
 
 
 FILE = Path(__file__).resolve().parents[1] / 'script' / 'jenkins' / 'prepare-ecs-tools.py'
@@ -147,6 +149,33 @@ class ToolPreparationTests(unittest.TestCase):
         self.assertIn('readonly', mounts[0])
         self.assertIn(tools.BASE, args)
         self.assertNotIn('pytest', tools.INSTALL)
+
+    def test_fresh_install_uses_only_existing_https_mirror_and_keeps_provenance(self):
+        pinned = tools.requirements(FILE.parent / 'python-test-requirements.txt')
+        with mock.patch('subprocess.call', return_value=0) as call, \
+                mock.patch('importlib.metadata.version', side_effect=pinned.__getitem__), \
+                mock.patch('pathlib.Path.write_text') as write, \
+                mock.patch.object(sys, 'argv', ['-c', json.dumps(pinned)]):
+            exec(compile(tools.INSTALL, '<owned-pip-recipe>', 'exec'), {})
+        install, check = [entry.args[0] for entry in call.call_args_list]
+        prefix = [sys.executable, '-I', '-m', 'pip', '--isolated',
+                  '--disable-pip-version-check', '--no-input']
+        self.assertEqual(prefix, install[:len(prefix)])
+        options = install[len(prefix):]
+        self.assertEqual('install', options[0])
+        self.assertEqual('https://mirrors.aliyun.com/pypi/simple',
+                         options[options.index('--index-url') + 1])
+        self.assertEqual(1, options.count('--index-url'))
+        self.assertIn('--no-cache-dir', options)
+        self.assertIn('--no-compile', options)
+        self.assertEqual(str(Path('/ci-report') / 'pip-install.json'),
+                         options[options.index('--report') + 1])
+        self.assertEqual('/ci-input/requirements.txt', options[options.index('-r') + 1])
+        self.assertTrue(all(option not in options for option in
+                            ('--trusted-host', '--extra-index-url', '--no-deps')))
+        self.assertEqual(prefix + ['check'], check)
+        write.assert_called_once()
+        self.assertEqual(pinned, json.loads(write.call_args.args[0]))
 
     def test_growth_and_real_disk_reserve_are_independent_bounds(self):
         self.assertEqual(GIB, tools.resource_check(8 * GIB, 7 * GIB, MIB))

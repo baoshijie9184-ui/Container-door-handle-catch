@@ -6,6 +6,8 @@
 
 本地允许运行 Jenkins 控制器并编辑、构建代码；应用、数据、预览及所有测试在 ECS 执行。Jenkins保持运行；ECS在测试前从流水线外启动，测试结束后从流水线外节省停机并回读 `Stopped / StopCharging`，流水线不执行开机、关机或安排限时停止任务。当前统一入口为 `Jenkinsfile.ecs-monolith`，本地专用节点 `doorhandle-local-ci` 沿用 SSH/SCP，在已启动 ECS 的隔离目录执行测试，不新增常驻 ECS Jenkins agent。旧 `Jenkinsfile` 的本地测试流程不可继续使用，生产发布和旧库演练额外受默认未设置的机器环境门禁限制，待数据库重构与迁移验收后再启用。`start-existing.ps1` 的默认端口已统一为 8080。
 
+Python 测试工具需要新装依赖时，固定源码配方沿用 `compose.cloud.yml` 的阿里云 HTTPS PyPI 镜像 `https://mirrors.aliyun.com/pypi/simple`。安装仍使用隔离 pip、固定版本、禁用缓存、原始 pip 下载摘要报告、`pip check` 和实际版本回读；不增加备用源或绕过 TLS 校验。2 GiB 总增长包络、磁盘保底、容器内存限制及 1,800 秒期限保持不变，真实安装和新增命令回归均由后续固定提交在 ECS 验证。
+
 ## 历史实施记录
 
 下方为历史环境、流水线及验收记录，其中 `18080` 构建链接保留原地址。本地运行测试、旧 `Jenkinsfile` 与轮询自动发布等旧指令均已失效，不得用于新构建；历史成功不代表当前源码或流水线已验收。

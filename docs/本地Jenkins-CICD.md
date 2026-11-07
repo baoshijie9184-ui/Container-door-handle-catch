@@ -1,5 +1,7 @@
 # 本地 Jenkins CI/CD 约定
 
+2026-11-08：#87 被旧云端每日零点 OOS 计划中断，Jenkins 已终态失败，未进入项目测试和数据恢复。已仅取消该实例的旧定时关机计划并回读 `Cancelled`，后续继续在测试完成后从流水线外节省停机；Jenkins 保持运行。依赖安装源沿用项目已有阿里云 HTTPS 镜像，等待下一固定提交的实际 ECS 回执，详见 [ECS 运行约定](ECS-only-runtime.md)。
+
 2026-11-07 晚间补齐：同一固定源码验证通过后可顺序处理旧源 5,599 文件、额外 36 文件、原冷存储 70 根、额外历史测试/回执 4,041 根及本次成功的 45 表导出。原冷存储仍用 `COLD_STORES_SNAPSHOT` / `COLD_STORES_ECS_SNAPSHOT` 和固定 profile；额外历史包通过独立的 `COLD_HISTORY_SNAPSHOT` / `COLD_HISTORY_ECS_SNAPSHOT` 进入固定 v2，同轮不会覆盖原包目的地或回执。45 表输入使用 `LOCAL_MYSQL_SNAPSHOT` 与 `LOCAL_MYSQL_FIXTURE_SETTINGS`，只在 ECS 的独立新容器/卷进行双恢复，不连接本机数据库或自动合入正式库。互斥、重复 profile 和 embedding 专项排除门禁均在版本库维护。
 
 上述接线已完成静态检查与 Jenkins DSL 校验，尚未通过完整 ECS 源码及恢复验收。#83 的实际结果、剩余 server 夹具修复与 StopCharging 回执见 [ECS 运行约定](ECS-only-runtime.md)。60 GiB 扩容和扩容前快照已按单独授权完成，不能据此推断应用已部署或全部数据已上云。
