@@ -51,13 +51,14 @@ foreach ($name in @('snapshot.json', 'originals.tar')) {
     $path = Join-Path $local $name
     Assert-UnlinkedPath $path
     $info = Get-Item -LiteralPath $path -Force
-    Require-Preservation (-not $info.PSIsContainer -and $info.Length -gt 0 -and $info.Length -le 520MB) 'Preservation input exceeds its byte budget.'
+    Require-Preservation (-not $info.PSIsContainer -and $info.Length -gt 0 -and $info.Length -le 512MB) 'Preservation input exceeds its byte budget.'
     $files[$name] = @{ bytes = $info.Length; sha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() }
 }
-Require-Preservation ($files['snapshot.json'].bytes -le 1MB) 'Preservation manifest exceeds its metadata budget.'
+Require-Preservation ($files['snapshot.json'].bytes -le 16MB) 'Preservation manifest exceeds its metadata budget.'
 $snapshot = Get-Content -LiteralPath (Join-Path $local 'snapshot.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 Require-Preservation ($snapshot.format -eq 1 -and $snapshot.kind -eq 'legacy-stores-byte-preservation' -and $snapshot.status -eq 'COMPLETE' -and $snapshot.archiveSha256 -eq $files['originals.tar'].sha256 -and $snapshot.inventorySha256 -match '^[a-f0-9]{64}$') 'Inputs are not a completed byte-only source preservation snapshot.'
-Require-Preservation (@($snapshot.files).Count -eq 12) 'This preservation stage requires all 12 inventoried legacy files.'
+$expectedFiles = @($snapshot.files).Count
+Require-Preservation ($expectedFiles -gt 0 -and $expectedFiles -le 8192) 'Preservation member count exceeds its closed profile budget.'
 $total = [long]0
 $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
 foreach ($file in $snapshot.files) {
@@ -81,17 +82,26 @@ if ([string]::IsNullOrWhiteSpace($python)) { $python = $env:PYTHON_EXE }
 Require-Preservation ($python -and [IO.Path]::IsPathFullyQualified($python) -and (Test-Path -LiteralPath $python -PathType Leaf)) 'Configure the existing local packaging Python.'
 $archiveReader = @'
 import hashlib,json,sys,tarfile
+from pathlib import Path
 with tarfile.open(sys.argv[1], 'r:gz') as archive:
     source=archive.getmember('script/memory/migrate_legacy_stores.py')
     assert source.isfile() and 0 < source.size <= 1048576
     assert archive.pax_headers.get('comment') == sys.argv[2]
-    print(json.dumps({'sha256':hashlib.sha256(archive.extractfile(source).read(1048577)).hexdigest()}))
+    raw=archive.extractfile(source).read(1048577)
+scope={'__name__':'fixed_byte_preservation_plan','__file__':str(Path(sys.argv[1]).resolve())}
+exec(compile(raw,'fixed-source-byte-preservation','exec'),scope)
+snapshot=Path(sys.argv[3]); manifest=scope['read_json'](snapshot/'snapshot.json')
+plan=scope['validate_preservation_plan'](manifest)
+verified=scope['verify_preservation'](snapshot)
+assert verified['files']==plan['files'] and verified['bytes']==plan['bytes']
+print(json.dumps({'sha256':hashlib.sha256(raw).hexdigest(),'plan':plan}))
 '@
-$scriptBinding = (Invoke-PreservationCommand $python @('-I', '-B', '-c', $archiveReader, $archive, $Commit) | Select-Object -Last 1) | ConvertFrom-Json
+$scriptBinding = (Invoke-PreservationCommand $python @('-I', '-B', '-c', $archiveReader, $archive, $Commit, $local) | Select-Object -Last 1) | ConvertFrom-Json
 Require-Preservation ($scriptBinding.sha256 -match '^[a-f0-9]{64}$') 'Fixed archive migration helper is unavailable.'
+Require-Preservation ($scriptBinding.plan.profile -cin @('legacy-stores-v1', 'legacy-stores-with-windows-mcp-v1') -and $scriptBinding.plan.files -eq $expectedFiles -and $scriptBinding.plan.bytes -eq $total -and $scriptBinding.plan.memberInventorySha256 -match '^[a-f0-9]{64}$') 'Source member paths, roots and actual byte hashes do not match a reviewed preservation profile.'
 $context = @{ root = $RemoteRoot; tag = $Tag; commit = $Commit; sourceSha256 = $SourceSha256;
     scriptSha256 = $scriptBinding.sha256; instanceId = $instance; machineId = $machine;
-    files = $files; expectedFiles = 12; expectedBytes = $total;
+    files = $files; expectedFiles = $expectedFiles; expectedBytes = $total;
     verificationReceiptSha256 = (Get-FileHash -LiteralPath $verifiedFile -Algorithm SHA256).Hash.ToLowerInvariant() }
 
 # Send only this bounded controller as base64 code. Neither local paths nor
@@ -183,12 +193,13 @@ foreach ($name in @('snapshot.json', 'originals.tar')) {
     Require-Preservation ((Get-Item -LiteralPath $path).Length -eq $files[$name].bytes -and (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -eq $files[$name].sha256) 'Local preservation input changed during transfer.'
 }
 $public = (Invoke-PreservationCommand 'ssh.exe' ($SshOptions + @('-p', $PortText, $Destination, "$baseCommand restore")) | Select-Object -Last 1) | ConvertFrom-Json
-Require-Preservation ($public.status -eq 'RESTORED_VERIFIED' -and $public.files -eq 12 -and $public.bytes -eq $total -and $public.archiveSha256 -eq $files['originals.tar'].sha256 -and $public.snapshotManifestSha256 -eq $files['snapshot.json'].sha256 -and $public.commit -eq $Commit -and $public.sourceSha256 -eq $SourceSha256 -and $public.scriptSha256 -eq $scriptBinding.sha256 -and $public.identity.instanceId -eq $instance -and $public.identity.machineId -eq $machine -and $public.restoreReceiptSha256 -match '^[a-f0-9]{64}$' -and $public.verificationReceiptSha256 -eq $context.verificationReceiptSha256) 'ECS byte-preservation recovery evidence is incomplete or belongs to another build.'
+Require-Preservation ($public.status -eq 'RESTORED_VERIFIED' -and $public.files -eq $expectedFiles -and $public.bytes -eq $total -and $public.archiveSha256 -eq $files['originals.tar'].sha256 -and $public.snapshotManifestSha256 -eq $files['snapshot.json'].sha256 -and $public.commit -eq $Commit -and $public.sourceSha256 -eq $SourceSha256 -and $public.scriptSha256 -eq $scriptBinding.sha256 -and $public.identity.instanceId -eq $instance -and $public.identity.machineId -eq $machine -and $public.restoreReceiptSha256 -match '^[a-f0-9]{64}$' -and $public.verificationReceiptSha256 -eq $context.verificationReceiptSha256) 'ECS byte-preservation recovery evidence is incomplete or belongs to another build.'
 # Select public fields explicitly; never archive the private manifest or paths.
 $summary = @{ schemaVersion = 1; kind = 'doorhandle-legacy-source-preservation'; status = $public.status;
     release = $Tag; commit = $Commit; sourceSha256 = $SourceSha256; scriptSha256 = $scriptBinding.sha256;
     identity = @{ instanceId = $instance; machineId = $machine; executionLocation = 'ECS' };
-    files = 12; bytes = $total; archiveBytes = $files['originals.tar'].bytes; manifestBytes = $files['snapshot.json'].bytes;
+    files = $expectedFiles; bytes = $total; archiveBytes = $files['originals.tar'].bytes; manifestBytes = $files['snapshot.json'].bytes;
+    profile = $scriptBinding.plan.profile; memberInventorySha256 = $scriptBinding.plan.memberInventorySha256;
     archiveSha256 = $files['originals.tar'].sha256; snapshotManifestSha256 = $files['snapshot.json'].sha256;
     restoreReceiptSha256 = $public.restoreReceiptSha256; verificationReceiptSha256 = $public.verificationReceiptSha256 }
 $stream = [IO.File]::Open($artifact, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
@@ -196,4 +207,4 @@ try {
     $bytes = [Text.UTF8Encoding]::new($false).GetBytes(($summary | ConvertTo-Json -Depth 6))
     $stream.Write($bytes, 0, $bytes.Length)
 } finally { $stream.Dispose() }
-Write-Host 'The 12 legacy source files were retained and recovered byte for byte on the admitted ECS.'
+Write-Host ("The {0} inventoried legacy source files were retained and recovered byte for byte on the admitted ECS." -f $expectedFiles)

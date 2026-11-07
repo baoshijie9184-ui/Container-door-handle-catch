@@ -1164,6 +1164,12 @@
         "minimumTests": 20,
         "source": "tests_python/test_compact_runtime_resources.py",
         "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_legacy_preservation_profiles",
+        "minimumTests": 11,
+        "source": "tests_python/test_legacy_preservation_profiles.py",
+        "allowedSkippedTests": []
       }
     ]
   },

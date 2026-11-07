@@ -37,6 +37,22 @@ RAG_COLLECTION = "door_handle_assistant_knowledge"
 JAVA_EMBEDDER = "doorhandle-module-app/src/main/java/com/ruanzhu/doorhandle/module/app/service/LocalTextEmbeddingService.java"
 HISTORY_COLUMNS = ("id", "memory_id", "old_memory", "new_memory", "event", "created_at", "updated_at", "is_deleted", "actor_id", "role")
 MESSAGE_COLUMNS = ("id", "session_scope", "role", "content", "name", "created_at")
+PRESERVATION_LEGACY_PROFILE = "legacy-stores-v1"
+PRESERVATION_COMBINED_PROFILE = "legacy-stores-with-windows-mcp-v1"
+PRESERVATION_MAX_FILES = 8192
+PRESERVATION_MAX_BYTES = 512 * 1024 ** 2
+PRESERVATION_MAX_MANIFEST = 16 * 1024 ** 2
+# Digests cover sorted [portable member name, byte size, raw SHA256] tuples from
+# the independently inventoried originals. These are byte-preservation profiles,
+# never executable/import profiles or authorization to include other directories.
+LEGACY_MEMBER_INVENTORY_SHA256 = "ed490983e42cb1a175af444b427de19e1a6095d008ac61b1302a1fae57d9d89a"
+WINDOWS_MCP_MEMBER_INVENTORY_SHA256 = "d2d7ce9705eb37a420991d7b6db8c7e4ae79597803377ea231f9545a15a95b43"
+PRESERVATION_SOURCE_ROOTS = {
+    "personal_chroma": "D:/AI/lunwen1/DoorHandleCatch/memory_service/chroma_db",
+    "legacy_history": "C:/Users/19771/.mem0",
+    "rag_chroma": "D:/AI/lunwen1/DoorHandleCatch/work/middlewares/chroma",
+    "windows_mcp": "D:/AI/lunwen1/DoorHandleCatch/.agentscope/workspace/users/18/mcp",
+}
 
 
 class MigrationError(Exception):
@@ -568,6 +584,84 @@ def permission_record(path):
     return result
 
 
+def preservation_member_inventory(files):
+    return sha(canonical(sorted([[row["path"], row["bytes"], row["sha256"]] for row in files])))
+
+
+def validate_preservation_plan(manifest):
+    """Closed, byte-only CI admission; accepts the original minimal snapshot too."""
+    require(isinstance(manifest, dict) and manifest.get("format") == FORMAT
+            and manifest.get("kind") == "legacy-stores-byte-preservation"
+            and manifest.get("status") == "COMPLETE", "Expected a completed source byte snapshot")
+    required = {"format", "kind", "status", "inventorySha256", "files", "directories", "originalBytes", "excludedFiles", "permissionPolicy"}
+    require(required <= set(manifest) <= required | {"archiveSha256", "profile", "memberInventorySha256"}
+            and re.fullmatch(r"[a-f0-9]{64}", manifest.get("inventorySha256", "")),
+            "Unexpected preservation metadata or missing inventory binding")
+    profile = manifest.get("profile", PRESERVATION_LEGACY_PROFILE)
+    require(profile in (PRESERVATION_LEGACY_PROFILE, PRESERVATION_COMBINED_PROFILE), "Unknown source preservation profile")
+    files = manifest.get("files")
+    require(isinstance(files, list) and 0 < len(files) <= PRESERVATION_MAX_FILES, "Preservation member count exceeds its bound")
+    labels = {"personal_chroma", "legacy_history", "rag_chroma"}
+    if profile == PRESERVATION_COMBINED_PROFILE:
+        labels.add("windows_mcp")
+    def permissions(value):
+        fields = {"mode", "uid", "gid", "atimeNs", "mtimeNs"}
+        require(isinstance(value, dict) and fields <= set(value) <= fields | {"windowsSddl"}
+                and all(type(value[key]) is int and value[key] >= 0 for key in fields)
+                and value["mode"] <= 0o7777
+                and ("windowsSddl" not in value or isinstance(value["windowsSddl"], str)
+                     and 0 < len(value["windowsSddl"]) <= 16384), "Unexpected original permission metadata")
+    seen, groups, total = set(), {label: [] for label in labels}, 0
+    for row in files:
+        require(isinstance(row, dict) and set(row) == {"path", "sourcePath", "bytes", "sha256", "permissions"}
+                and isinstance(row.get("path"), str), "Invalid preservation member metadata")
+        name = relative_name(row["path"])
+        permissions(row["permissions"])
+        require(len(name) <= 512 and name not in seen and "/" in name, "Repeated or oversized preservation member")
+        seen.add(name)
+        label, relative = name.split("/", 1)
+        require(label in labels and type(row.get("bytes")) is int and 0 <= row["bytes"] <= PRESERVATION_MAX_BYTES
+                and isinstance(row.get("sha256"), str) and re.fullmatch(r"[a-f0-9]{64}", row["sha256"]),
+                "Member escaped the closed preservation roots or byte budget")
+        raw_source = row.get("sourcePath")
+        require(isinstance(raw_source, str) and not any(part in (".", "..") for part in raw_source.replace("\\", "/").split("/")),
+                "Source path is not a frozen original root")
+        normalized = re.sub(r"/+", "/", raw_source.replace("\\", "/"))
+        expected = PRESERVATION_SOURCE_ROOTS[label] + "/" + relative
+        require(normalized.casefold() == expected.casefold(), "Preservation source is outside the reviewed original roots")
+        groups[label].append(row); total += row["bytes"]
+    require(total == manifest.get("originalBytes") and total <= PRESERVATION_MAX_BYTES,
+            "Preservation total differs or exceeds the original-byte bound")
+    directories = manifest["directories"]
+    require(isinstance(directories, list) and len(directories) <= PRESERVATION_MAX_FILES
+            and all(isinstance(row, dict) and set(row) == {"path", "permissions"}
+                    and relative_name(row["path"]).split("/", 1)[0] in labels for row in directories),
+            "Preservation directory metadata escaped its closed source roots")
+    for row in directories:
+        permissions(row["permissions"])
+    excluded = manifest["excludedFiles"]
+    require(isinstance(excluded, list) and len(excluded) <= 1
+            and all(set(row) == {"path", "bytes", "sha256", "reason"} and row["path"] == "legacy_history/config.json"
+                    and type(row["bytes"]) is int and row["bytes"] >= 0
+                    and re.fullmatch(r"[a-f0-9]{64}", row["sha256"])
+                    and row["reason"] == "global Mem0 provider configuration outside business-data inventory; raw hash only, no decoding or archive member"
+                    for row in excluded), "Only the named unarchived global provider configuration may be described")
+    require(manifest["permissionPolicy"] == "original modes/ownership/NTFS SDDL retained privately; ECS access stays owner-only",
+            "Unexpected preservation permissions policy")
+    business = [row for label, rows in groups.items() if label != "windows_mcp" for row in rows]
+    require(preservation_member_inventory(business) == LEGACY_MEMBER_INVENTORY_SHA256,
+            "Original legacy store names, bytes or hashes changed")
+    windows = groups.get("windows_mcp", [])
+    if profile == PRESERVATION_COMBINED_PROFILE:
+        require(preservation_member_inventory(windows) == WINDOWS_MCP_MEMBER_INVENTORY_SHA256,
+                "Windows MCP members differ from the independently reviewed frozen inventory")
+    require("memberInventorySha256" not in manifest or manifest["memberInventorySha256"] == preservation_member_inventory(files),
+            "Preservation member inventory digest changed")
+    return {"profile": profile, "files": len(files), "bytes": total,
+            "memberInventorySha256": preservation_member_inventory(files),
+            "businessFiles": len(business), "windowsMcpFiles": len(windows)}
+
+
 def preserve_sources(inventory, roots, destination):
     """Byte-only preservation; never opens SQLite/Chroma, even on a workstation.
 
@@ -583,7 +677,8 @@ def preserve_sources(inventory, roots, destination):
         require(re.fullmatch(r"[a-z][a-z0-9_]{0,63}", label), "Invalid source label")
         root = safe_path(roots[label])
         require(output != root and root not in output.parents, "Output cannot be inside a source")
-        actual = tree_files(root)
+        actual = tree_files(root, maximum=PRESERVATION_MAX_FILES
+                            if inventory.get("profile") == PRESERVATION_COMBINED_PROFILE and label == "windows_mcp" else 4096)
         expected = {relative_name(row["relativePath"]): row for row in source["files"]}
         extras = set(actual) - set(expected)
         # A global Mem0 directory can include credentials unrelated to this DB.
@@ -606,16 +701,20 @@ def preserve_sources(inventory, roots, destination):
             planned.append({"path": label + "/" + name, "sourcePath": str(path), "bytes": expected_file["bytes"],
                             "sha256": expected_file["sha256"], "permissions": original})
             total += expected_file["bytes"]
-    require(total <= 512 * 1024 * 1024, "Preservation byte budget exceeded")
+    require(total <= PRESERVATION_MAX_BYTES and len(planned) <= PRESERVATION_MAX_FILES, "Preservation byte/member budget exceeded")
     output.mkdir(mode=0o700)
     archive = output / "originals.tar"
     manifest = {"format": FORMAT, "kind": "legacy-stores-byte-preservation", "inventorySha256": sha(canonical(inventory)),
                 "files": planned, "directories": directories, "originalBytes": total, "excludedFiles": excluded,
                 "permissionPolicy": "original modes/ownership/NTFS SDDL retained privately; ECS access stays owner-only"}
+    if "profile" in inventory:
+        manifest.update(profile=inventory["profile"], memberInventorySha256=preservation_member_inventory(planned))
+        validate_preservation_plan({**manifest, "status": "COMPLETE"})
+    require(len(canonical(manifest)) <= PRESERVATION_MAX_MANIFEST, "Preservation manifest exceeds its private metadata bound")
     # A partial archive is never labelled COMPLETE and is retained for inspection.
     private_json(output / "snapshot.json", {**manifest, "status": "PREPARED"})
     with os.fdopen(os.open(archive, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600), "wb") as stream:
-        with tarfile.open(fileobj=stream, mode="w", format=tarfile.PAX_FORMAT) as tar:
+        with tarfile.open(fileobj=stream, mode="w", format=tarfile.PAX_FORMAT, dereference=True) as tar:
             for entry in planned:
                 path = Path(entry["sourcePath"])
                 info = tar.gettarinfo(str(path), arcname=entry["path"])
@@ -625,6 +724,7 @@ def preserve_sources(inventory, roots, destination):
                 require(file_sha(path) == entry["sha256"] and path.stat().st_mtime_ns == entry["permissions"]["mtimeNs"], "Source changed while preserving")
         stream.flush()
         os.fsync(stream.fileno())
+    require(archive.stat().st_size <= PRESERVATION_MAX_BYTES, "Preservation archive exceeds its retained byte bound")
     manifest.update(status="COMPLETE", archiveSha256=file_sha(archive))
     private_json(output / "snapshot.json", manifest, replace=True)
     verify_preservation(output)
@@ -634,9 +734,14 @@ def preserve_sources(inventory, roots, destination):
 def verify_preservation(snapshot, restore=None):
     """Verify every archive byte; optionally recover into a NEW private ECS tree."""
     root = safe_path(snapshot)
+    require((root / "snapshot.json").stat().st_size <= PRESERVATION_MAX_MANIFEST, "Private preservation manifest exceeds its bound")
     manifest = read_json(root / "snapshot.json")
     require(manifest.get("kind") == "legacy-stores-byte-preservation" and manifest.get("status") == "COMPLETE", "Preservation snapshot is incomplete")
     archive = safe_path(root / "originals.tar")
+    require(archive.stat().st_size <= PRESERVATION_MAX_BYTES and len(manifest.get("files", [])) <= PRESERVATION_MAX_FILES,
+            "Preservation archive/member budget exceeded")
+    if "profile" in manifest:
+        validate_preservation_plan(manifest)
     require(file_sha(archive) == manifest.get("archiveSha256"), "Preservation archive digest mismatch")
     expected = {relative_name(row["path"]): row for row in manifest["files"]}
     require(len(expected) == len(manifest["files"]), "Duplicate preservation member")
