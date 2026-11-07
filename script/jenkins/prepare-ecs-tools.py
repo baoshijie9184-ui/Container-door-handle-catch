@@ -44,9 +44,13 @@ TAG = re.compile(r'ci-[1-9][0-9]*-[a-f0-9]{12}')
 SENSITIVE = re.compile(r'PASSWORD|PASSWD|SECRET|API_KEY|ACCESS_KEY|TOKEN|DATABASE_URL|DB_URL', re.I)
 
 
+class PreparationError(ValueError):
+    """An authored diagnostic safe to include in the public CI receipt."""
+
+
 def require(condition, message):
     if not condition:
-        raise ValueError(message)
+        raise PreparationError(message)
 
 
 def digest(path):
@@ -475,8 +479,11 @@ def main(argv=None):
     try:
         print(json.dumps(Preparation(args).prepare(), ensure_ascii=True)); return 0
     except BaseException as error:
-        print(json.dumps({'status': 'FAILED_OR_UNKNOWN', 'errorType': type(error).__name__,
-                          'sourceAndEvidenceRetained': True}), file=sys.stderr)
+        failed = {'status': 'FAILED_OR_UNKNOWN', 'errorType': type(error).__name__,
+                  'sourceAndEvidenceRetained': True}
+        if isinstance(error, PreparationError):
+            failed['error'] = str(error)
+        print(json.dumps(failed), file=sys.stderr)
         return 2
 
 

@@ -15,21 +15,36 @@ function Require-Value([string]$Name, [string]$Pattern) {
 function Get-PinnedSourceFile([string]$RelativePath) {
     $commit = Require-Value 'GIT_COMMIT' '^[a-f0-9]{40}$'
     if ($RelativePath -notmatch '^script/[A-Za-z0-9_./-]+\.(py|sh)$' -or @($RelativePath.Split('/') | Where-Object { $_ -eq '..' }).Count) { throw 'Unsafe fixed-source helper path.' }
-    # Read the Git blob as bytes. Windows checkout filters may change LF to
-    # CRLF; SCP must use the same original bytes as git archive, never relax SHA.
+    # Git archive can apply checkout conversion too. Extract the actual archive
+    # member bytes rather than assuming the Git blob or worktree has its EOLs.
+    $archive = Join-Path (Get-Location) 'artifacts/source.tar.gz'
+    $package = Get-Content -LiteralPath artifacts/release.json -Raw | ConvertFrom-Json
+    if ($package.commit -ne $commit -or $package.sourceSha256 -ne (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()) { throw 'Fixed helper extraction requires the exact packaged source archive.' }
+    $python = $env:LOCAL_PYTHON_EXE
+    if ([string]::IsNullOrWhiteSpace($python)) { $python = $env:PYTHON_EXE }
+    if (-not $python -or -not [System.IO.Path]::IsPathFullyQualified($python) -or -not (Test-Path -LiteralPath $python -PathType Leaf)) { throw 'Configure the existing local Python for byte-only source packaging.' }
+    $sourceReader = @'
+import sys,tarfile
+with tarfile.open(sys.argv[1], 'r:gz') as archive:
+    if archive.pax_headers.get('comment') != sys.argv[2]: raise ValueError('Archive commit differs')
+    entry=archive.getmember(sys.argv[3])
+    if not entry.isfile() or not 0 < entry.size <= 32*1024**2: raise ValueError('Bounded source member required')
+    with archive.extractfile(entry) as stream:
+        content=stream.read(32*1024**2+1)
+    if len(content) != entry.size: raise ValueError('Source member size differs')
+    sys.stdout.buffer.write(content)
+'@
     $directory = Join-Path (Join-Path (Get-Location) 'artifacts/pinned-source') ([guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $directory -Force | Out-Null
     $output = Join-Path $directory ([System.IO.Path]::GetFileName($RelativePath))
     $info = [System.Diagnostics.ProcessStartInfo]::new()
-    $gitCommand = Get-Command git.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1
-    $info.FileName = $gitCommand.Source
+    $info.FileName = $python
     $info.WorkingDirectory = (Get-Location).Path
     $info.UseShellExecute = $false
     $info.CreateNoWindow = $true
     $info.RedirectStandardOutput = $true
     $info.RedirectStandardError = $true
-    $info.ArgumentList.Add('show')
-    $info.ArgumentList.Add("${commit}:$RelativePath")
+    foreach ($argument in @('-I', '-B', '-c', $sourceReader, $archive, $commit, $RelativePath)) { $info.ArgumentList.Add($argument) }
     $process = [System.Diagnostics.Process]::new()
     $process.StartInfo = $info
     try {
