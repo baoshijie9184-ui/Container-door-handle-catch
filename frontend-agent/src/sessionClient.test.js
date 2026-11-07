@@ -18,3 +18,7 @@ test('restores text and trusted references without rendering old action payloads
   const result=sessionItems([{id:1,role:'user',messageType:'TEXT',content:'问题'},{id:2,role:'assistant',messageType:'AGENT_CARDS',content:JSON.stringify({version:1,text:'回答',cards:refs})},{id:3,role:'assistant',messageType:'PENDING_ACTION',content:'private payload'},{id:4,role:'assistant',messageType:'AGENT_CARDS',content:'invalid'}],(text,cards)=>[{text,cards}]);
   assert.equal(result.length,2);assert.equal(result[0].content,'问题');assert.equal(result[1].text,'回答');assert.deepEqual(result[1].cards,[{text:'回答',cards:refs}]);
 });
+test('history retains unknown execution provenance without changing the body date',()=>{
+  const [item]=sessionItems([{id:1,role:'assistant',messageType:'TEXT',content:'original body',runId:'retained-run',createdAt:'body-date',executionClockStatus:'UNRESOLVED',executionSourceWallTimes:{created_at:'2025-01-02 03:04:05.123456'}}],()=>[]);
+  assert.equal(item.runId,'retained-run');assert.equal(item.executionClockStatus,'UNRESOLVED');assert.deepEqual(item.executionSourceWallTimes,{created_at:'2025-01-02 03:04:05.123456'});assert.equal(item.createdAt,'body-date');
+});

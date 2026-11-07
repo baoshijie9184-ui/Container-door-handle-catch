@@ -37,7 +37,7 @@
         </div>
 
         <div class="msg-body">
-          <ToolExecutionTimeline v-if="item.role==='assistant' && (messageRunId(item) || item.executionEvents?.length)" :session-id="sessionId" :run-id="messageRunId(item)" :events="item.executionEvents || []" :active="!!item.streaming" />
+          <ToolExecutionTimeline v-if="item.role==='assistant' && (messageRunId(item) || item.executionEvents?.length)" :session-id="sessionId" :run-id="messageRunId(item)" :events="item.executionEvents || []" :active="!!item.streaming" :execution-clock-status="item.executionClockStatus" :execution-source-wall-times="item.executionSourceWallTimes" />
           <!-- PendingAction 卡片 -->
           <ChatPendingActionCard
             v-if="item.messageType === 'PENDING_ACTION'"

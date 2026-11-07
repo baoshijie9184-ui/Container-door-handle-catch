@@ -14,4 +14,7 @@ public class ChatMessageResponse {
     private String actionId;
     private String createdAt;
     private String runId;
+    /** Provenance of the historical execution link; never substitutes for createdAt. */
+    private String executionClockStatus;
+    private java.util.Map<String,String> executionSourceWallTimes;
 }

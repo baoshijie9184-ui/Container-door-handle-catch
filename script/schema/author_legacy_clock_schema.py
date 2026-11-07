@@ -130,7 +130,52 @@ def replace_checks(body, table):
     for name in ('legacy_utc_offset', 'mcp_source_utc_offset'):
         if any(re.match(name + r'\s+', field) for field in output):
             output.append('CONSTRAINT ck_legacy_' + table + '_' + name + ' CHECK (legacy_clock_json IS NULL OR ' + name + ' IS NULL)')
+    if table == 'audit_event':
+        for kind, source, snapshot in (('MESSAGE_EXECUTION', 'agent_message_execution', False),
+                                       ('MESSAGE_WORKSPACE_SNAPSHOT', 'agent_workspace_turn_snapshot', True)):
+            properties = {'legacyId': {'type': 'string', 'pattern': r'^(0|[1-9][0-9]{0,19})$'}}
+            if snapshot:
+                properties['snapshotJson'] = {'type': 'string'}
+            properties.update(createdAtSource={'type': 'string'}, sourceUtcOffset={'type': 'null'})
+            shape = q(json.dumps(object_schema(properties), separators=(',', ':')))
+            test = "legacy_clock_json IS NULL OR kind<>" + q(kind) + " OR COALESCE((occurred_at IS NULL AND JSON_SCHEMA_VALID("
+            test += shape + ",payload_json)=1 AND JSON_TYPE(JSON_EXTRACT(legacy_clock_json,'$.sourceWallTimes.created_at'))='STRING'"
+            test += " AND BINARY JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.legacyId'))=BINARY JSON_UNQUOTE(JSON_EXTRACT(legacy_clock_json,'$.sourceKey.id'))"
+            test += " AND BINARY JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.createdAtSource'))=BINARY JSON_UNQUOTE(JSON_EXTRACT(legacy_clock_json,'$.sourceWallTimes.created_at'))),0)=1"
+            output.append('CONSTRAINT ck_legacy_clock_chat_' + source.removeprefix('agent_') + ' CHECK (' + test + ')')
     return output
+
+
+def chat_projection_guards():
+    """NULL projection times require this exact immutable audit provenance."""
+    checks = []
+    for snapshot in (False, True):
+        prefix = 'snapshot' if snapshot else 'execution'
+        instant = 'workspace_snapshot_created_at' if snapshot else 'execution_created_at'
+        legacy = 'workspace_snapshot_legacy_id' if snapshot else 'execution_legacy_id'
+        kind = 'MESSAGE_WORKSPACE_SNAPSHOT' if snapshot else 'MESSAGE_EXECUTION'
+        source = 'agent_workspace_turn_snapshot' if snapshot else 'agent_message_execution'
+        evidence = prefix + '_evidence_id'; owner = prefix + '_owner_user_id'
+        active = 'NEW.snapshot_evidence_id IS NOT NULL' if snapshot else 'NEW.execution_run_id IS NOT NULL'
+        unknown = 'EXISTS(SELECT 1 FROM audit_event e WHERE e.id=NEW.' + evidence + ' AND e.legacy_clock_json IS NOT NULL)'
+        match = ['e.id=NEW.' + evidence, 'e.owner_user_id=NEW.' + owner,
+                 'e.kind=' + q(kind), 'e.legacy_source=' + q(source), 'e.message_id=NEW.id',
+                 "BINARY NEW.role=BINARY 'assistant'", 'BINARY e.session_id=BINARY NEW.session_id',
+                 'BINARY e.legacy_key=BINARY CAST(NEW.' + legacy + ' AS CHAR)',
+                 'e.occurred_at IS NULL', 'e.legacy_clock_json IS NOT NULL',
+                 "BINARY JSON_UNQUOTE(JSON_EXTRACT(e.legacy_clock_json,'$.sourceTable'))=BINARY " + q(source),
+                 "CAST(JSON_UNQUOTE(JSON_EXTRACT(e.legacy_clock_json,'$.sourceKey.id')) AS DECIMAL(20,0))=NEW." + legacy]
+        if snapshot:
+            match += ['BINARY e.content_sha256=BINARY NEW.workspace_snapshot_sha256',
+                      "BINARY JSON_UNQUOTE(JSON_EXTRACT(e.payload_json,'$.snapshotJson'))=BINARY NEW.workspace_snapshot_json"]
+        else:
+            match.append('BINARY e.run_id=BINARY NEW.execution_run_id')
+        checks.append('    IF ' + active + ' AND (NEW.' + instant + ' IS NULL OR ' + unknown + ') THEN\n'
+            + '        IF NEW.' + instant + ' IS NOT NULL OR NEW.' + legacy + ' IS NULL OR NOT EXISTS(SELECT 1 FROM audit_event e WHERE '
+            + ' AND '.join(match) + ") THEN\n            SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Unknown chat projection requires its exact original audit clock evidence';\n        END IF;\n    END IF;")
+    return '\n\n'.join('CREATE TRIGGER compact_legacy_chat_projection_' + event.lower()
+        + '\nBEFORE ' + event + ' ON chat_message FOR EACH ROW\nBEGIN\n' + '\n'.join(checks) + '\nEND$$'
+        for event in ('INSERT', 'UPDATE')) + '\n'
 
 
 def build():
@@ -143,6 +188,15 @@ def build():
         rendered = []
         for statement in statements:
             match = re.fullmatch(r'(CREATE TABLE\s+([a-z_]+)\s*)\((.*)\)(\s*ENGINE.*)', statement, re.I | re.S)
+            if match and match[2] == 'chat_message':
+                body = match[3]
+                for instant, legacy in (('execution_created_at', 'execution_legacy_id'),
+                                         ('workspace_snapshot_created_at', 'workspace_snapshot_legacy_id')):
+                    expected = instant + ' IS NOT NULL'
+                    if body.count(expected) != 1:
+                        raise ValueError('Reviewed chat projection time constraint changed')
+                    body = body.replace(expected, '(' + expected + ' OR ' + legacy + ' IS NOT NULL)')
+                rendered.append(match[1] + '(' + body + ')' + match[4]); continue
             if not match or match[2] not in TABLE_FILES:
                 rendered.append(statement); continue
             table = match[2]
@@ -162,10 +216,17 @@ def build():
                 name = 'compact_legacy_clock_' + table + '_' + event.lower()
                 condition = ('NOT(CAST(NEW.legacy_clock_json AS CHAR CHARACTER SET utf8mb4)<=>CAST(OLD.legacy_clock_json AS CHAR CHARACTER SET utf8mb4))'
                              if event == 'UPDATE' else 'OLD.legacy_clock_json IS NOT NULL')
+                if table == 'audit_event' and event == 'UPDATE':
+                    immutable = ('event_id', 'kind', 'owner_user_id', 'resource_type', 'resource_id', 'session_id',
+                                 'message_id', 'run_id', 'action', 'content_sha256', 'occurred_at', 'payload_version',
+                                 'payload_json', 'legacy_source', 'legacy_key')
+                    changed = ' OR '.join('NOT(BINARY NEW.' + name + '<=>BINARY OLD.' + name + ')' for name in immutable)
+                    condition += " OR (OLD.legacy_clock_json IS NOT NULL AND OLD.kind IN ('MESSAGE_EXECUTION','MESSAGE_WORKSPACE_SNAPSHOT') AND (" + changed + '))'
                 triggers.append('CREATE TRIGGER ' + name + '\nBEFORE ' + event + ' ON ' + table + ' FOR EACH ROW\nBEGIN\n    IF ' + condition
                     + " THEN\n        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Original legacy clock evidence must be retained unchanged';\n    END IF;\nEND$$")
             generated[ROOT / 'sql/mysql/compact/baseline' / guard_file] = '\n\n'.join(triggers) + '\n'
         generated[path] = '-- Clock protocol authored by author_legacy_clock_schema.py; ECS validation required.\n' + ';\n\n'.join(rendered) + ';\n'
+    generated[ROOT / 'sql/mysql/compact/baseline/35-legacy-clock-chat-projection.sql'] = chat_projection_guards()
     parents = {
         'model_management': ("EXISTS(SELECT 1 FROM audit_event e WHERE e.detection_model_id=OLD.model_id AND e.legacy_clock_json IS NOT NULL)", 'NOT(NEW.model_id<=>OLD.model_id)'),
         'chat_session': ("EXISTS(SELECT 1 FROM workflow_instance w WHERE w.chat_action_session_id=OLD.session_id AND w.legacy_clock_json IS NOT NULL)", 'NOT(BINARY NEW.session_id<=>BINARY OLD.session_id)'),

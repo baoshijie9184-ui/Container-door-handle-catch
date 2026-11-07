@@ -44,6 +44,10 @@ for clock_table, clock_parent in ([(name, False) for name in LEGACY_CLOCK_TABLES
     guards = {prefix + '_update': 'UPDATE', prefix + '_delete': 'DELETE'}
     LEGACY_CLOCK_GUARDS.update(guards)
     GUARD_RESOURCES[filename] = (clock_table, guards)
+CHAT_CLOCK_PROJECTION_GUARDS = {'compact_legacy_chat_projection_insert': 'INSERT',
+                                'compact_legacy_chat_projection_update': 'UPDATE'}
+LEGACY_CLOCK_GUARDS.update(CHAT_CLOCK_PROJECTION_GUARDS)
+GUARD_RESOURCES['35-legacy-clock-chat-projection.sql'] = ('chat_message', CHAT_CLOCK_PROJECTION_GUARDS)
 PARTS = (*PARTS[:-1], *(name for name in GUARD_RESOURCES if name.startswith('35-legacy-clock-')), PARTS[-1])
 IDENT = r'`?([a-z][a-z0-9_]*)`?'
 

@@ -260,7 +260,7 @@ pipeline {
                     try {
                         junit testResults: 'artifacts/ecs/**/TEST-*.xml,artifacts/ecs/**/python.xml', allowEmptyResults: env.CI_ECS_VERIFIED != 'true'
                     } finally {
-                        archiveArtifacts artifacts: 'artifacts/**/*.json,artifacts/**/*.xml,artifacts/**/*.log,artifacts/application.jar,artifacts/source.tar.gz', allowEmptyArchive: currentBuild.currentResult != 'SUCCESS', fingerprint: true
+                        archiveArtifacts artifacts: 'artifacts/**/*.json,artifacts/**/*.xml,artifacts/**/*.log,artifacts/ecs/verification-evidence.tar.gz,artifacts/runtime-resources/resource-probes.jsonl,artifacts/application.jar,artifacts/source.tar.gz', allowEmptyArchive: currentBuild.currentResult != 'SUCCESS', fingerprint: true
                     }
                 }
             }

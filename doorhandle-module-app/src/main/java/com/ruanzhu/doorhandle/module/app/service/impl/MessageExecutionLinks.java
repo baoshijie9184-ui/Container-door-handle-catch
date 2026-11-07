@@ -42,14 +42,14 @@ public class MessageExecutionLinks {
                 .filter(message -> Set.of("TEXT", "AGENT_CARDS").contains(Objects.toString(message.getMessageType(), "")))
                 .filter(message -> sessionId.equals(message.getSessionId())).toList();
         if (targets.isEmpty()) return;
-        Map<Long,String> links = new HashMap<>();
+        Map<Long,com.ruanzhu.doorhandle.framework.persistence.chat.MessageEvidence.ExecutionLink> links = new HashMap<>();
         try {
             for (int offset = 0; offset < targets.size(); offset += 200) {
                 var batch = targets.subList(offset, Math.min(offset + 200, targets.size()));
-                links.putAll(evidence.executionLinks(tenant.userId(),sessionId,batch.stream().map(ChatMessageResponse::getId).toList()));
+                links.putAll(evidence.executionDetails(tenant.userId(),sessionId,batch.stream().map(ChatMessageResponse::getId).toList()));
             }
             // 全批次成功才补充关联，查询失败不会让半页消息出现推断结果。
-            targets.forEach(message -> message.setRunId(links.get(message.getId())));
+            targets.forEach(message -> {var link=links.get(message.getId());message.setRunId(link==null?null:link.runId());message.setExecutionClockStatus(link==null?null:link.clockStatus());message.setExecutionSourceWallTimes(link==null?null:link.sourceWallTimes());});
         } catch (DataAccessException error) { unavailable(error); }
     }
 

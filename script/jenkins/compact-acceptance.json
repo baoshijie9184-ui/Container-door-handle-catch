@@ -98,7 +98,7 @@
         "doorhandle.feature.mysql.config"
       ],
       "source": "doorhandle-module-app/src/test/java/com/ruanzhu/doorhandle/module/app/service/impl/CompactChatMigrationMySqlTest.java",
-      "minimumTests": 7,
+      "minimumTests": 15,
       "coverage": [
         "workspace, chat, inbox, knowledge and memory persistence"
       ]
@@ -910,6 +910,11 @@
         "className": "com.ruanzhu.doorhandle.module.ai.research.ResearchEvidenceConfigurationTest",
         "minimumTests": 12,
         "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/research/ResearchEvidenceConfigurationTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.framework.persistence.chat.JdbcMessageEvidenceClockTest",
+        "minimumTests": 6,
+        "source": "doorhandle-framework/src/test/java/com/ruanzhu/doorhandle/framework/persistence/chat/JdbcMessageEvidenceClockTest.java"
       }
     ]
   },
@@ -919,13 +924,13 @@
     "requiredSuites": [
       {
         "module": "tests_python.test_compact_clock_policy",
-        "minimumTests": 21,
+        "minimumTests": 22,
         "source": "tests_python/test_compact_clock_policy.py",
         "allowedSkippedTests": []
       },
       {
         "module": "tests_python.test_legacy_clock_sql",
-        "minimumTests": 10,
+        "minimumTests": 14,
         "source": "tests_python/test_legacy_clock_sql.py",
         "allowedSkippedTests": []
       },

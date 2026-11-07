@@ -81,10 +81,10 @@ CREATE TABLE chat_message (
  UNIQUE KEY uq_chat_message_snapshot_legacy(workspace_snapshot_legacy_id),
  CONSTRAINT ck_chat_message_execution CHECK (
   (execution_run_id IS NULL AND execution_owner_user_id IS NULL AND execution_created_at IS NULL AND execution_legacy_id IS NULL AND execution_evidence_id IS NULL)
-  OR (execution_run_id IS NOT NULL AND execution_owner_user_id IS NOT NULL AND execution_created_at IS NOT NULL AND execution_evidence_id IS NOT NULL)),
+  OR (execution_run_id IS NOT NULL AND execution_owner_user_id IS NOT NULL AND (execution_created_at IS NOT NULL OR execution_legacy_id IS NOT NULL) AND execution_evidence_id IS NOT NULL)),
  CONSTRAINT ck_chat_message_snapshot CHECK (
   (snapshot_owner_user_id IS NULL AND workspace_snapshot_json IS NULL AND workspace_snapshot_sha256 IS NULL AND workspace_snapshot_created_at IS NULL AND workspace_snapshot_legacy_id IS NULL AND snapshot_evidence_id IS NULL)
-  OR (snapshot_owner_user_id IS NOT NULL AND workspace_snapshot_json IS NOT NULL AND workspace_snapshot_sha256 IS NOT NULL AND workspace_snapshot_created_at IS NOT NULL AND snapshot_evidence_id IS NOT NULL AND JSON_VALID(workspace_snapshot_json))),
+  OR (snapshot_owner_user_id IS NOT NULL AND workspace_snapshot_json IS NOT NULL AND workspace_snapshot_sha256 IS NOT NULL AND (workspace_snapshot_created_at IS NOT NULL OR workspace_snapshot_legacy_id IS NOT NULL) AND snapshot_evidence_id IS NOT NULL AND JSON_VALID(workspace_snapshot_json))),
  CONSTRAINT ck_chat_message_sources CHECK (
   (context_owner_user_id IS NULL AND context_sources_json IS NULL AND context_sources_sha256 IS NULL AND context_evidence_id IS NULL)
   OR (context_owner_user_id IS NOT NULL AND context_sources_json IS NOT NULL AND context_sources_sha256 IS NOT NULL AND context_evidence_id IS NOT NULL AND JSON_VALID(context_sources_json)))

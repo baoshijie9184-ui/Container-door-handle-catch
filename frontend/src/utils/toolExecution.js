@@ -34,6 +34,17 @@ export function messageRunId(message) {
   if(message?.messageType!=='AGENT_CARDS'||typeof message.content!=='string')return '';
   try{const value=JSON.parse(message.content);return value.version===1&&valid(value.runId)?value.runId:'';}catch{return '';}
 }
+// Only the execution-link provenance is normalized here; the message body date is independent.
+export function messageExecutionEvidence(message) {
+  const unresolved=message?.executionClockStatus==='UNRESOLVED',raw=message?.executionSourceWallTimes?.created_at;
+  const wall=unresolved&&(raw===null||typeof raw==='string'&&/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d{1,6})?$/.test(raw))?{created_at:raw}:{};
+  return {executionClockStatus:unresolved?'UNRESOLVED':'UTC',executionSourceWallTimes:wall};
+}
+export function executionClockHint(status,wallTimes) {
+  if(status!=='UNRESOLVED')return '';
+  const raw=messageExecutionEvidence({executionClockStatus:status,executionSourceWallTimes:wallTimes}).executionSourceWallTimes.created_at;
+  return raw?`原关联时间 ${raw}（时区未确认）`:'历史关联时区未确认';
+}
 
 export class ToolExecutionReader {
   constructor({fetcher=(...args)=>globalThis.fetch(...args),onChange=()=>{}}={}){Object.assign(this,{fetcher,onChange});this.version=0;this.timer=null;this.controller=null;}

@@ -61,6 +61,7 @@
       "agent_fetch_image_retention_event",
       "agent_local_mcp_audit",
       "agent_memory_audit",
+      "agent_message_execution",
       "agent_run_event",
       "agent_skill_audit",
       "agent_skill_download_event",
@@ -68,6 +69,7 @@
       "agent_skill_source",
       "agent_workbench_audit",
       "agent_workspace_audit",
+      "agent_workspace_turn_snapshot",
       "detection_report_audit",
       "model_operation_log",
       "operation_audit_log"
@@ -128,6 +130,13 @@
       "triggers": [
         "compact_legacy_clock_audit_event_update",
         "compact_legacy_clock_audit_event_delete"
+      ]
+    },
+    "35-legacy-clock-chat-projection.sql": {
+      "table": "chat_message",
+      "triggers": [
+        "compact_legacy_chat_projection_insert",
+        "compact_legacy_chat_projection_update"
       ]
     },
     "35-legacy-clock-parent-model-management.sql": {

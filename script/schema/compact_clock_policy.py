@@ -18,13 +18,24 @@ DOMAINS = frozenset(('action', 'agent', 'binding', 'chat', 'context', 'detection
     'model_file', 'model_log', 'operations', 'report', 'research', 'sdk', 'skill',
     'workbench', 'workspace'))
 # Only the copy/read protocols with a reviewed unknown-clock branch may opt in.
-UNRESOLVED_DOMAINS = frozenset(('action', 'agent', 'inbox', 'infra_log', 'mcp',
+UNRESOLVED_DOMAINS = frozenset(('action', 'agent', 'chat', 'inbox', 'infra_log', 'mcp',
     'memory', 'model_log', 'report', 'sdk', 'skill', 'workbench', 'workspace'))
 OFFSET = re.compile(r'[+-](?:0[0-9]|1[0-4]):[0-5][0-9]')
 SHA = re.compile(r'[a-f0-9]{64}')
 EMPTY_DOMAIN_TABLES = {
     'binding': ('organization_binding_audit',),
+    'context': ('agent_context_audit', 'agent_context_offload', 'agent_context_summary'),
+    'detection': ('detection_creation_job', 'detection_creation_object', 'detection_creation_review',
+                  'detection_dispatch_outbox', 'detection_execution_command', 'detection_worker_receipt'),
+    'digest': ('quality_digest_audit', 'quality_digest_command', 'quality_digest_run', 'quality_digest_schedule'),
     'export': ('agent_research_export_audit', 'agent_research_export_limit'),
+    'identity': ('detection_assignment_identity_event', 'detection_identity_binding_event',
+                 'detection_identity_command', 'detection_identity_mapping_batch',
+                 'detection_identity_missing_name_evidence', 'detection_identity_reconciliation_report'),
+    'model': ('agent_model_config_command', 'agent_model_configuration', 'agent_model_json_probe',
+              'agent_model_revoked_key'),
+    'model_file': ('detection_model_file_journal', 'detection_model_file_retention'),
+    'operations': ('operations_audit', 'operations_file_delivery'),
     'research': ('agent_research_content_purge', 'agent_research_source'),
 }
 

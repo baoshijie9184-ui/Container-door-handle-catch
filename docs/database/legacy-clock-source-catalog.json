@@ -61,6 +61,38 @@
         "sql/mysql/migration-V19-agent-confirmation.sql": "3c7c3ace00cf5ab14d2510c5bfb273ed5278809e5f4fbfdbf6786e5887e71e07"
       }
     },
+    "agent_context_turn": {
+      "columns": {
+        "user_id": {
+          "type": "BIGINT",
+          "declaration": "user_id BIGINT NOT NULL"
+        },
+        "session_id": {
+          "type": "VARCHAR(128)",
+          "declaration": "session_id VARCHAR(128) NOT NULL"
+        },
+        "message_id": {
+          "type": "BIGINT",
+          "declaration": "message_id BIGINT NOT NULL"
+        },
+        "sources_json": {
+          "type": "MEDIUMTEXT",
+          "declaration": "sources_json MEDIUMTEXT NOT NULL"
+        },
+        "sources_sha256": {
+          "type": "CHAR(64)",
+          "declaration": "sources_sha256 CHAR(64) NOT NULL"
+        }
+      },
+      "primaryKey": [
+        "user_id",
+        "session_id",
+        "message_id"
+      ],
+      "sourceFiles": {
+        "sql/mysql/migration-V44-agent-durable-context.sql": "e583a824990adece83199d6a356d13e953a1df9af543d8ebeabad113e9f48476"
+      }
+    },
     "agent_conversation_input": {
       "columns": {
         "id": {
@@ -1040,6 +1072,40 @@
       ],
       "sourceFiles": {
         "sql/mysql/migration-V26-personal-memory-governance.sql": "b798647afecb1cd4edd396d6f2f86dc675021e1290a0b1548a6a4f7468ac36b2"
+      }
+    },
+    "agent_message_execution": {
+      "columns": {
+        "id": {
+          "type": "BIGINT UNSIGNED",
+          "declaration": "id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY"
+        },
+        "user_id": {
+          "type": "BIGINT",
+          "declaration": "user_id BIGINT NOT NULL"
+        },
+        "session_id": {
+          "type": "VARCHAR(128)",
+          "declaration": "session_id VARCHAR(128) COLLATE utf8mb4_bin NOT NULL"
+        },
+        "message_id": {
+          "type": "BIGINT",
+          "declaration": "message_id BIGINT NOT NULL"
+        },
+        "run_id": {
+          "type": "VARCHAR(36)",
+          "declaration": "run_id VARCHAR(36) COLLATE utf8mb4_bin NOT NULL"
+        },
+        "created_at": {
+          "type": "DATETIME(6)",
+          "declaration": "created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)"
+        }
+      },
+      "primaryKey": [
+        "id"
+      ],
+      "sourceFiles": {
+        "sql/mysql/migration-V66-chat-message-execution.sql": "023ad0265b75d696ff7ad31b74421cb87d0262931cff878b8671c0eff1b4ae64"
       }
     },
     "agent_pending_action": {
@@ -2074,43 +2140,81 @@
         "sql/mysql/migration-V38-agent-workspace.sql": "131175e320d70761f6e0a36ec588c151c2291f907c0572528b46d3f424721558"
       }
     },
+    "agent_workspace_turn_snapshot": {
+      "columns": {
+        "id": {
+          "type": "BIGINT UNSIGNED",
+          "declaration": "id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY"
+        },
+        "user_id": {
+          "type": "BIGINT",
+          "declaration": "user_id BIGINT NOT NULL"
+        },
+        "session_id": {
+          "type": "VARCHAR(128)",
+          "declaration": "session_id VARCHAR(128) COLLATE utf8mb4_bin NOT NULL"
+        },
+        "message_id": {
+          "type": "BIGINT",
+          "declaration": "message_id BIGINT NOT NULL"
+        },
+        "snapshot_json": {
+          "type": "MEDIUMTEXT",
+          "declaration": "snapshot_json MEDIUMTEXT NOT NULL"
+        },
+        "snapshot_sha256": {
+          "type": "CHAR(64)",
+          "declaration": "snapshot_sha256 CHAR(64) NOT NULL"
+        },
+        "created_at": {
+          "type": "DATETIME(6)",
+          "declaration": "created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)"
+        }
+      },
+      "primaryKey": [
+        "id"
+      ],
+      "sourceFiles": {
+        "sql/mysql/migration-V45-workspace-turn-snapshot.sql": "326b53e479b8d536adac6ad33d9dd17917741c2bb31a9e6c12f82893e8819e5b"
+      }
+    },
     "chat_pending_action": {
       "columns": {
         "id": {
           "type": "BIGINT",
-          "declaration": "`id` BIGINT NOT NULL AUTO_INCREMENT COMMENT '\u4e3b\u952eID'"
+          "declaration": "`id` BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键ID'"
         },
         "action_id": {
           "type": "VARCHAR(64)",
-          "declaration": "`action_id` VARCHAR(64) NOT NULL COMMENT '\u52a8\u4f5c\u7f16\u53f7'"
+          "declaration": "`action_id` VARCHAR(64) NOT NULL COMMENT '动作编号'"
         },
         "session_id": {
           "type": "VARCHAR(64)",
-          "declaration": "`session_id` VARCHAR(64) NOT NULL COMMENT '\u4f1a\u8bdd\u7f16\u53f7\uff08\u5916\u952e -> chat_session.session_id\uff09'"
+          "declaration": "`session_id` VARCHAR(64) NOT NULL COMMENT '会话编号（外键 -> chat_session.session_id）'"
         },
         "action_type": {
           "type": "VARCHAR(64)",
-          "declaration": "`action_type` VARCHAR(64) NOT NULL COMMENT '\u52a8\u4f5c\u7c7b\u578b'"
+          "declaration": "`action_type` VARCHAR(64) NOT NULL COMMENT '动作类型'"
         },
         "action_payload_json": {
           "type": "LONGTEXT",
-          "declaration": "`action_payload_json` LONGTEXT NOT NULL COMMENT '\u52a8\u4f5c\u8f7d\u8377'"
+          "declaration": "`action_payload_json` LONGTEXT NOT NULL COMMENT '动作载荷'"
         },
         "status": {
           "type": "VARCHAR(32)",
-          "declaration": "`status` VARCHAR(32) NOT NULL DEFAULT 'PENDING' COMMENT '\u52a8\u4f5c\u72b6\u6001'"
+          "declaration": "`status` VARCHAR(32) NOT NULL DEFAULT 'PENDING' COMMENT '动作状态'"
         },
         "created_at": {
           "type": "DATETIME",
-          "declaration": "`created_at` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '\u521b\u5efa\u65f6\u95f4'"
+          "declaration": "`created_at` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间'"
         },
         "confirmed_at": {
           "type": "DATETIME",
-          "declaration": "`confirmed_at` DATETIME DEFAULT NULL COMMENT '\u786e\u8ba4\u65f6\u95f4'"
+          "declaration": "`confirmed_at` DATETIME DEFAULT NULL COMMENT '确认时间'"
         },
         "error_message": {
           "type": "VARCHAR(500)",
-          "declaration": "`error_message` VARCHAR(500) DEFAULT NULL COMMENT '\u52a8\u4f5c\u5931\u8d25\u6458\u8981'"
+          "declaration": "`error_message` VARCHAR(500) DEFAULT NULL COMMENT '动作失败摘要'"
         }
       },
       "primaryKey": [
@@ -2423,27 +2527,27 @@
       "columns": {
         "id": {
           "type": "BIGINT",
-          "declaration": "`id` BIGINT NOT NULL AUTO_INCREMENT COMMENT '\u4e3b\u952eID'"
+          "declaration": "`id` BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键ID'"
         },
         "model_id": {
           "type": "INT",
-          "declaration": "`model_id` INT NOT NULL COMMENT '\u6a21\u578bID'"
+          "declaration": "`model_id` INT NOT NULL COMMENT '模型ID'"
         },
         "operation_type": {
           "type": "VARCHAR(32)",
-          "declaration": "`operation_type` VARCHAR(32) NOT NULL COMMENT '\u64cd\u4f5c\u7c7b\u578b'"
+          "declaration": "`operation_type` VARCHAR(32) NOT NULL COMMENT '操作类型'"
         },
         "operator": {
           "type": "VARCHAR(64)",
-          "declaration": "`operator` VARCHAR(64) DEFAULT NULL COMMENT '\u64cd\u4f5c\u4eba'"
+          "declaration": "`operator` VARCHAR(64) DEFAULT NULL COMMENT '操作人'"
         },
         "operation_time": {
           "type": "DATETIME",
-          "declaration": "`operation_time` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '\u64cd\u4f5c\u65f6\u95f4'"
+          "declaration": "`operation_time` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '操作时间'"
         },
         "remark": {
           "type": "VARCHAR(255)",
-          "declaration": "`remark` VARCHAR(255) DEFAULT NULL COMMENT '\u5907\u6ce8'"
+          "declaration": "`remark` VARCHAR(255) DEFAULT NULL COMMENT '备注'"
         }
       },
       "primaryKey": [

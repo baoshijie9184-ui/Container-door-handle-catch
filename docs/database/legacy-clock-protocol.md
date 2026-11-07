@@ -2,11 +2,11 @@
 
 本协议保持29张业务表，不推断历史时区，不用导入时间替代历史时间。适用于明确选择 `UNRESOLVED` 的迁移分支；固定偏移分支继续要求原有证据和往返校验。
 
-私有迁移配置中的 `sourceOffsets` 仍须完整列出原来的23个域。无法确认的受支持域显式填 JSON null，同时增加 `legacyClockPolicy`，其结构严格为 `{"version":1,"kind":"doorhandle-legacy-clock-policy","unresolvedDomains":[...]}`。列表必须按字母排序、去重，且与所有 null 域完全一致；不能省略策略后默认为 UTC。当前支持的未知域是 action、agent、inbox、infra_log、mcp、memory、model_log、report、sdk、skill、workbench、workspace，其余域不接受 null。正式设置必须依据原机证据，不直接套用示例偏移。
+私有迁移配置中的 `sourceOffsets` 仍须完整列出原来的23个域。无法确认的受支持域显式填 JSON null，同时增加 `legacyClockPolicy`，其结构严格为 `{"version":1,"kind":"doorhandle-legacy-clock-policy","unresolvedDomains":[...]}`。列表必须按字母排序、去重，且与所有 null 域完全一致；不能省略策略后默认为 UTC。当前支持的未知域是 action、agent、chat、inbox、infra_log、mcp、memory、model_log、report、sdk、skill、workbench、workspace，其余域不接受 null。正式设置必须依据原机证据，不直接套用示例偏移。
 
 控制器在生成 COPY SQL 前读取已审阅的完整源观察，并在源锁内再次核对同一快照。迁移回执和最终证据同时记录源时钟策略及其摘要，验证阶段拒绝配置策略改变。Workbench 仅在 workbench 域未知时使用版本2的 CLI 配置；已证固定偏移继续使用原版本1。
 
-若 binding、export、research 只能证明对应源表精确为空，策略可额外声明按字母排序的 `emptyDomains`。这些域的 `sourceOffsets` 必须为 `+00:00`，仅作为无数据时不使用的占位值，不是 UTC 结论。预备器和整库迁移分别依据本轮完整源快照强制对应全部源表精确零行；缺表、估算零行、NULL 或新产生一行都拒绝迁移。该策略整体写入回执，Workbench CLI 只接收其自身三键未知时钟子协议。其他有数据域仍必须保留独立的历史时钟依据；该空表机制不能替代它们的来源证明。
+若只能证明已审阅的时间输入源表精确为空，策略可额外声明按字母排序的 `emptyDomains`。当前白名单为 binding、context、detection、digest、export、identity、model、model_file、operations、research；只检查各域实际参与时间转换的表，无时间列的控制行继续正常复制。这些域的 `sourceOffsets` 必须为 `+00:00`，仅作为无数据时不使用的占位值，不是 UTC 结论。预备器和整库迁移分别依据本轮完整源快照强制对应全部源表精确零行；缺表、估算零行、NULL 或新产生一行都拒绝迁移。该策略整体写入回执，Workbench CLI 只接收其自身三键未知时钟子协议。其他有数据域仍必须保留独立的历史时钟依据；该空表机制不能替代它们的来源证明。
 
 8张表增加可空 JSON `legacy_clock_json`：`content_asset`、`content_revision`、`content_link`、`agent_run`、`agent_connector`、`runtime_state`、`workflow_instance`、`audit_event`。非空时必须严格包含以下7键，不能省略、增加字段或用字符串`"null"`代替JSON null：
 
@@ -41,3 +41,5 @@ NULL例外只对完整有效的白名单历史旁证开放；新记录仍按原�
 单行旁证只能绑定一个原表。当前未知Agent分支明确要求`agent_research_answer`精确0行，未知Skill分支明确要求`agent_skill_download_lease`精确0行；非空则失败关闭，保留原数据，等待多来源证据协议。已证偏移分支保留原有多来源迁移支持。
 
 生成入口为`script/schema/author_legacy_clock_copy.py`，固定偏移源模板保留在`sql/mysql/compact/copy-fixed-clock/`，生成结果位于原copy目录。源码生成和静态编译不代表ECS迁移验收通过。
+
+聊天未知分支保持既有审计 payload 键和版本，原偏移为 JSON null，旁证仍在 audit_event 的独立列。chat_message 不增加侧列；execution/workspace 的 UTC 投影为 NULL，并必须引用同账号、消息、会话、run 和原主键的有效审计旁证。两项投影触发器同时拒绝凭空填入绝对时间或换指针。历史关联继续只读展示，正文日期独立保留，旧关联不自动重绑或重放。直接删除消息不会级联删除独立的原审计旁证。

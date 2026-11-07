@@ -51,6 +51,59 @@ def test_original_source_catalog_rejects_an_unreviewed_row_shape(monkeypatch, tm
         clock.catalog()
 
 
+def test_chat_clock_catalog_uses_original_unsigned_primary_keys_and_complete_rows():
+    sources = clock.catalog()
+    for name, columns in (
+        ('agent_message_execution', ['id', 'user_id', 'session_id', 'message_id', 'run_id', 'created_at']),
+        ('agent_workspace_turn_snapshot', ['id', 'user_id', 'session_id', 'message_id', 'snapshot_json', 'snapshot_sha256', 'created_at'])):
+        assert sources[name]['primaryKey'] == ['id']
+        assert list(sources[name]['columns']) == columns
+        assert sources[name]['columns']['id']['type'] == 'BIGINT UNSIGNED'
+        value = clock.sidecar(name, 's', sources)
+        assert "'sourceKey',JSON_OBJECT('id',s.`id`)" in value
+        assert "'sourceWallTimes',JSON_OBJECT('created_at',CAST(s.`created_at` AS CHAR))" in value
+    assert not any(v['type'].upper().startswith(('DATETIME', 'TIMESTAMP'))
+                   for v in sources['agent_context_turn']['columns'].values())
+
+
+def test_chat_unknown_projection_never_manufactures_absolute_times_or_offsets():
+    text = (ROOT / 'sql/mysql/compact/copy/24-chat-evidence.sql').read_text('utf8')
+    for column in ('execution_created_at', 'workspace_snapshot_created_at'):
+        assert 'm.' + column + '=IF(@compact_source_clock_unresolved,NULL,CONVERT_TZ(' in text
+        assert '(m.' + column + '<=>IF(@compact_source_clock_unresolved,NULL,CONVERT_TZ(' in text
+    assert "'sourceUtcOffset',IF(@compact_source_clock_unresolved,NULL,@compact_validation_wall_offset)" in text
+    assert "'createdAtSource',IF(@compact_source_clock_unresolved,CAST(s.created_at AS CHAR),DATE_FORMAT(" in text
+    assert "'sourceTable','agent_message_execution'" in text
+    assert "'sourceTable','agent_workspace_turn_snapshot'" in text
+    assert 'UPDATE chat_message' in text and 'm.execution_legacy_id=s.id' in text
+
+
+def test_chat_projection_exception_requires_exact_immutable_audit_reference():
+    generated, _ = schema.build()
+    guards = generated[ROOT / 'sql/mysql/compact/baseline/35-legacy-clock-chat-projection.sql']
+    assert 'BEFORE INSERT ON chat_message' in guards and 'BEFORE UPDATE ON chat_message' in guards
+    for condition in ('e.message_id=NEW.id', 'BINARY e.session_id=BINARY NEW.session_id',
+                      'BINARY e.run_id=BINARY NEW.execution_run_id', 'e.owner_user_id=NEW.execution_owner_user_id',
+                      'e.owner_user_id=NEW.snapshot_owner_user_id', "'$.sourceKey.id'", 'e.occurred_at IS NULL'):
+        assert condition in guards
+    assert 'NEW.execution_created_at IS NOT NULL' in guards
+    assert 'NEW.workspace_snapshot_created_at IS NOT NULL' in guards
+    audit_guard = generated[ROOT / 'sql/mysql/compact/baseline/35-legacy-clock-audit-event.sql']
+    assert 'NOT(BINARY NEW.message_id<=>BINARY OLD.message_id)' in audit_guard
+    assert 'NOT(BINARY NEW.payload_json<=>BINARY OLD.payload_json)' in audit_guard
+    # A live message is a projection of retained evidence; it is not an audit
+    # parent capable of cascading away the original clock sidecar.
+    relations = (ROOT / 'sql/mysql/compact/baseline/40-relations.sql').read_text('utf8')
+    audit_relations = [part for part in split_top_level(without_comments(relations), ';')
+                       if part.startswith('ALTER TABLE audit_event')]
+    assert not any('REFERENCES chat_message' in part for part in audit_relations)
+
+
+def test_chat_changed_wall_expression_is_refused_during_authoring():
+    with pytest.raises(ValueError, match='Reviewed chat raw wall source changed'):
+        clock.chat_payloads("JSON_OBJECT('createdAtSource',DATE_FORMAT(x.created_at,'%Y-%m-%d'))")
+
+
 def mysql(tmp_path):
     specification = importlib.util.spec_from_file_location('clock_mysql_runtime', DIRECTORY / 'compact_migration_runtime.py')
     common = importlib.util.module_from_spec(specification); specification.loader.exec_module(common)

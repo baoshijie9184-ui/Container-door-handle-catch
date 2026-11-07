@@ -18,6 +18,13 @@ test('does not forward raw parameters, private errors, invalid metadata or inven
 test('a late live snapshot cannot downgrade a completed durable tool receipt',async()=>{
  const {toolRows}=await import(modulePath);assert.equal(toolRows([{type:'TOOL_COMPLETED',callId:'one',tool:'read_file'}],{one:{id:'one',name:'read_file',status:'calling'}})[0].status,'returned')
 })
+test('unknown historical execution provenance keeps raw wall time separate from message dates',async()=>{
+ const {messageExecutionEvidence,executionClockHint}=await import(modulePath)
+ const original={executionClockStatus:'UNRESOLVED',executionSourceWallTimes:{created_at:'2025-01-02 03:04:05.123456',privateBody:'PRIVATE'},createdAt:'2026-11-07T00:00:00Z'}
+ const result=messageExecutionEvidence(original);assert.equal(result.executionClockStatus,'UNRESOLVED');assert.deepEqual(result.executionSourceWallTimes,{created_at:'2025-01-02 03:04:05.123456'})
+ assert.equal(executionClockHint(result.executionClockStatus,result.executionSourceWallTimes),'原关联时间 2025-01-02 03:04:05.123456（时区未确认）');assert.equal(original.createdAt,'2026-11-07T00:00:00Z')
+ assert.equal(executionClockHint('UTC',{}),'');assert.equal(executionClockHint('UNRESOLVED',{created_at:'2025-01-02T03:04:05+08:00'}),'历史关联时区未确认')
+})
 test('reader pages actual owned records and clears events on permission loss',async()=>{
  const {ToolExecutionReader}=await import(modulePath);let denied=false;const calls=[]
  const reader=new ToolExecutionReader({fetcher:async url=>{calls.push(url);if(denied)return new Response('',{status:403});return Response.json(url.includes('/events?')?[{sequence:1,type:'TOOL_STARTED',payload:{callId:'c1',tool:'read_file'}},{sequence:2,type:'TOOL_COMPLETED',payload:{callId:'c1',tool:'read_file'}}]:{runId:'r1',sessionId:'s1',lastSequence:2,status:'COMPLETED'})}})

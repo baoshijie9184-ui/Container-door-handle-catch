@@ -14,7 +14,7 @@ from build_compact_schema import ROOT, parse_table, split_top_level, without_com
 
 
 PROTOCOL = 'doorhandle-legacy-clock-v1'
-COPIES = ('22-skills.sql', '23-skill-downloads.sql', '25-agent-runs.sql',
+COPIES = ('22-skills.sql', '23-skill-downloads.sql', '24-chat-evidence.sql', '25-agent-runs.sql',
           '31-conversation-inbox.sql', '32-agent-journal.sql', '33-sdk-checkpoint.sql',
           '34-quality-report-workflow.sql', '36-memory-governance.sql',
           '40-model-operations.sql', '41-infra-operations.sql', '43-workspace.sql',
@@ -28,6 +28,7 @@ VALIDATION = '@compact_validation_wall_offset'
 UNKNOWN = '@compact_source_clock_unresolved'
 GENERATED = '-- Generated explicit legacy-clock protocol by author_legacy_clock_copy.py.'
 RAW_TIME = {'legacy_created_at', 'mcp_source_created_at', 'mcp_source_updated_at'}
+PROJECTION_CLOCKS = {'chat_message': {'execution_created_at', 'workspace_snapshot_created_at'}}
 
 
 def q(value):
@@ -228,10 +229,11 @@ def projection_checks(statement, table_catalog):
     """Rewrite only target comparisons; source validation remains a wall check."""
     aliases = {}
     for table, alias in re.findall(r'\b(?:FROM|JOIN)\s+`?([a-z_]+)`?\s+([a-z][a-z0-9_]*)', statement, re.I):
-        if table in TABLE_FILES:
+        if table in TABLE_FILES or table in PROJECTION_CLOCKS:
             aliases[alias] = table
     for alias, table in aliases.items():
-        for column in clock_columns(table_catalog[table]) | {'legacy_utc_offset', 'mcp_source_utc_offset'}:
+        clocks = PROJECTION_CLOCKS[table] if table in PROJECTION_CLOCKS else clock_columns(table_catalog[table])
+        for column in clocks | {'legacy_utc_offset', 'mcp_source_utc_offset'}:
             pattern = re.compile(r'(?P<left>(?:BINARY\s+)?' + re.escape(alias) + r'\.`?' + re.escape(column)
                                  + r'`?\s*)(?P<op><=>|<>|!=|=)\s*(?P<binary>BINARY\s+)?(?P<rhs>(?:CONVERT_TZ|IF|COALESCE)\s*\(|' + re.escape(VALIDATION) + ')', re.I)
             position = 0
@@ -248,6 +250,37 @@ def projection_checks(statement, table_catalog):
                                else '(' + left + '<=>' + right + ')')
                 statement = statement[:match.start()] + replacement + statement[end:]
                 position = match.start() + len(replacement)
+    return statement
+
+
+def chat_payloads(statement):
+    """Keep V1 keys, with exact raw wall values and a JSON null offset."""
+    pattern = re.compile(r"('createdAtSource'\s*,\s*)DATE_FORMAT\s*\(", re.I)
+    position = 0
+    while match := pattern.search(statement, position):
+        opening = statement.index('(', match.end() - 1)
+        end = paren(statement, opening) + 1
+        parts = list(split_top_level(statement[opening + 1:end - 1], ','))
+        if len(parts) != 2 or not re.fullmatch(r's\.created_at', parts[0], re.I):
+            raise ValueError('Reviewed chat raw wall source changed')
+        old = statement[match.end(1):end]
+        value = 'IF(' + UNKNOWN + ',CAST(' + parts[0] + ' AS CHAR),' + old + ')'
+        statement = statement[:match.end(1)] + value + statement[end:]
+        position = match.end(1) + len(value)
+    return statement
+
+
+def chat_projection_writes(statement):
+    if not re.match(r'UPDATE\s+chat_message\s+', statement, re.I):
+        return statement
+    pattern = re.compile(r'(\bm\.(?:execution_created_at|workspace_snapshot_created_at)\s*=\s*)CONVERT_TZ\s*\(', re.I)
+    position = 0
+    while match := pattern.search(statement, position):
+        end = paren(statement, statement.index('(', match.end() - 1)) + 1
+        expression = statement[match.end(1):end]
+        value = normalized(expression)
+        statement = statement[:match.end(1)] + value + statement[end:]
+        position = match.end(1) + len(value)
     return statement
 
 
@@ -294,6 +327,8 @@ def compile_copy(text, filename, sources=None):
         statement = statement.replace(q(token), VALIDATION)
         statement = payload_offsets(statement)
         statement = workspace_manifest(statement)
+        if filename == '24-chat-evidence.sql':
+            statement = chat_projection_writes(chat_payloads(statement))
         if original:
             table, columns, expressions, tail, origin, alias, aliases, distinct = original
             if origin not in sources:

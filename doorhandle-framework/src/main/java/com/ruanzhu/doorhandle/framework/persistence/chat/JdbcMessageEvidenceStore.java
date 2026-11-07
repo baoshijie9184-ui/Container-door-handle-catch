@@ -4,6 +4,8 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ruanzhu.doorhandle.framework.persistence.JdbcTransactions;
+import com.ruanzhu.doorhandle.common.time.LegacyClockEvidence;
+import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.LocalDateTime;
@@ -21,7 +23,7 @@ public final class JdbcMessageEvidenceStore {
         // Keep this storage protocol independent of the application's HTTP NON_NULL policy.
         this.json=json.copy().setSerializationInclusion(JsonInclude.Include.ALWAYS);
     }
-    public void validateSchema(){jdbc.queryForList("SELECT execution_evidence_id,snapshot_evidence_id,context_evidence_id FROM chat_message WHERE 1=0");jdbc.queryForList("SELECT id,kind,owner_user_id,session_id,message_id,run_id,payload_version,payload_json FROM audit_event WHERE 1=0");}
+    public void validateSchema(){jdbc.queryForList("SELECT execution_evidence_id,snapshot_evidence_id,context_evidence_id FROM chat_message WHERE 1=0");jdbc.queryForList("SELECT id,kind,owner_user_id,session_id,message_id,run_id,payload_version,payload_json,occurred_at,legacy_source,legacy_key,legacy_clock_json FROM audit_event WHERE 1=0");}
 
     /** Invalid/stale replies are ignored; a committed original binding is never reassigned. */
     public boolean bindExecution(long owner,String session,long message,String run) {
@@ -29,7 +31,7 @@ public final class JdbcMessageEvidenceStore {
         var current=lockMessage(owner,session,message,true);if(current==null)return false;
         if(!Set.of("TEXT","AGENT_CARDS").contains(Objects.toString(current.get("message_type"),"")))return false;
         Long pointer=number(current.get("execution_evidence_id"));
-        if(pointer!=null){var event=event(pointer,MessageEvidence.EXECUTION,owner,message);verifyExecution(event);return run.equals(event.get("run_id"));}
+        if(pointer!=null){var event=event(pointer,MessageEvidence.EXECUTION,owner,message);if(verifyExecution(event)!=null)return false;return run.equals(event.get("run_id"));}
         var eligible=jdbc.queryForList("SELECT run_id FROM agent_run WHERE user_id=? AND session_id=? AND run_id=? AND entry_point IN ('CHAT','AGUI') AND status IN ('COMPLETED','INTERRUPTED') FOR SHARE",owner,session,run);
         if(eligible.isEmpty())return false;
         // Global original message/run identities remain occupied even after their projection is deleted.
@@ -46,7 +48,7 @@ public final class JdbcMessageEvidenceStore {
         JdbcTransactions.requireActive(jdbc);validateJson(body);
         var current=lockMessage(owner,session,message,true);if(current==null)throw new SecurityException("附件切点消息不属于当前账号");
         Long pointer=number(current.get("snapshot_evidence_id"));
-        if(pointer!=null){var prior=event(pointer,MessageEvidence.SNAPSHOT,owner,message);String previous=read(prior,MessageEvidence.WorkspaceSnapshotV1.class).snapshotJson();verifyBody(prior,previous);if(!body.equals(previous))throw conflict();return false;}
+        if(pointer!=null){var prior=event(pointer,MessageEvidence.SNAPSHOT,owner,message);var payload=read(prior,MessageEvidence.WorkspaceSnapshotV1.class);if(snapshotClock(prior,payload)!=null)throw conflict();String previous=payload.snapshotJson();verifyBody(prior,previous);if(!body.equals(previous))throw conflict();return false;}
         LocalDateTime now=now();long evidence=append(MessageEvidence.SNAPSHOT,owner,session,message,null,hash(body),now,new MessageEvidence.WorkspaceSnapshotV1(null,body,SOURCE_TIME.format(now),"+00:00"));
         if(jdbc.update("UPDATE chat_message SET snapshot_evidence_id=?,snapshot_owner_user_id=?,workspace_snapshot_json=?,workspace_snapshot_sha256=?,workspace_snapshot_created_at=? WHERE id=? AND snapshot_evidence_id IS NULL",evidence,owner,body,hash(body),now,message)!=1)throw conflict();
         return true;
@@ -62,15 +64,18 @@ public final class JdbcMessageEvidenceStore {
         return true;
     }
 
-    public String loadSnapshot(long owner,String session,long message){var event=currentEvidence(owner,session,message,"snapshot_evidence_id",MessageEvidence.SNAPSHOT);if(event==null)return null;var payload=read(event,MessageEvidence.WorkspaceSnapshotV1.class);if(payload.createdAtSource()==null||payload.sourceUtcOffset()==null)throw conflict();String body=payload.snapshotJson();verifyBody(event,body);return body;}
+    public String loadSnapshot(long owner,String session,long message){var event=currentEvidence(owner,session,message,"snapshot_evidence_id",MessageEvidence.SNAPSHOT);if(event==null)return null;var payload=read(event,MessageEvidence.WorkspaceSnapshotV1.class);snapshotClock(event,payload);String body=payload.snapshotJson();verifyBody(event,body);return body;}
     public String loadSources(long owner,String session,long message){var event=currentEvidence(owner,session,message,"context_evidence_id",MessageEvidence.SOURCES);if(event==null)return null;String body=read(event,MessageEvidence.ContextSourcesV1.class).sourcesJson();verifyBody(event,body);return body;}
 
     public Map<Long,String> executionLinks(long owner,String session,List<Long> messages) {
+        var result=new HashMap<Long,String>();executionDetails(owner,session,messages).forEach((id,link)->result.put(id,link.runId()));return result;
+    }
+    public Map<Long,MessageEvidence.ExecutionLink> executionDetails(long owner,String session,List<Long> messages) {
         if(messages.isEmpty())return Map.of();if(messages.size()>200)throw new IllegalArgumentException("Message evidence batch exceeds 200");
         var args=new ArrayList<Object>(List.of(owner,session));args.addAll(messages);
         var rows=jdbc.queryForList("SELECT e.*,m.id AS current_message FROM chat_message m JOIN chat_session s ON s.session_id=m.session_id JOIN audit_event e ON e.id=m.execution_evidence_id AND e.owner_user_id=m.execution_owner_user_id WHERE s.user_id=? AND m.session_id=? AND m.role='assistant' AND m.message_type IN ('TEXT','AGENT_CARDS') AND m.id IN ("+String.join(",",Collections.nCopies(messages.size(),"?"))+")",args.toArray());
-        var result=new HashMap<Long,String>();
-        for(var row:rows){long message=((Number)row.get("current_message")).longValue();verifyEnvelope(row,MessageEvidence.EXECUTION,owner,message);verifyExecution(row);result.put(message,(String)row.get("run_id"));}
+        var result=new HashMap<Long,MessageEvidence.ExecutionLink>();
+        for(var row:rows){long message=((Number)row.get("current_message")).longValue();verifyEnvelope(row,MessageEvidence.EXECUTION,owner,message);var clock=verifyExecution(row);result.put(message,new MessageEvidence.ExecutionLink((String)row.get("run_id"),clock==null?"UTC":clock.clockStatus(),clock==null?Map.of():clock.sourceWallTimes()));}
         return result;
     }
 
@@ -99,7 +104,17 @@ public final class JdbcMessageEvidenceStore {
         return jdbc.queryForObject("SELECT id FROM audit_event WHERE event_id=?",Long.class,event);
     }
     private <T> T read(Map<String,Object> event,Class<T> type){try{return json.readerFor(type).with(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_MISSING_CREATOR_PROPERTIES).readValue((String)event.get("payload_json"));}catch(JsonProcessingException invalid){throw new IllegalStateException("Message evidence payload is unreadable",invalid);}}
-    private void verifyExecution(Map<String,Object> event){var payload=read(event,MessageEvidence.ExecutionV1.class);if(payload.createdAtSource()==null||payload.sourceUtcOffset()==null)throw conflict();verifyBody(event,(String)event.get("payload_json"));}
+    private LegacyClockEvidence verifyExecution(Map<String,Object> event){var payload=read(event,MessageEvidence.ExecutionV1.class);var clock=sourceClock(event,"agent_message_execution",payload.legacyId(),payload.createdAtSource(),payload.sourceUtcOffset());verifyBody(event,(String)event.get("payload_json"));return clock;}
+    private LegacyClockEvidence snapshotClock(Map<String,Object> event,MessageEvidence.WorkspaceSnapshotV1 payload){return sourceClock(event,"agent_workspace_turn_snapshot",payload.legacyId(),payload.createdAtSource(),payload.sourceUtcOffset());}
+    private LegacyClockEvidence sourceClock(Map<String,Object> event,String table,String legacyId,String wall,String offset){
+        if(!event.containsKey("legacy_clock_json")||wall==null)throw conflict();
+        Object raw=event.get("legacy_clock_json");
+        if(raw==null){if(offset==null)throw conflict();return null;}
+        if(!(raw instanceof String text)||offset!=null||legacyId==null||!legacyId.matches("[0-9]{1,20}")||!event.containsKey("occurred_at")
+                ||!table.equals(event.get("legacy_source"))||!legacyId.equals(event.get("legacy_key"))||event.get("occurred_at")!=null)throw conflict();
+        BigInteger key=new BigInteger(legacyId);if(key.signum()<0||key.bitLength()>64||!key.toString().equals(legacyId))throw conflict();
+        var clock=LegacyClockEvidence.parse(text,table,Map.of("id",key));if(!clock.sourceWallTimes().keySet().equals(Set.of("created_at")))throw conflict();clock.requireWallTime("created_at",wall);return clock;
+    }
     private void validateJson(String body){try{if(body==null||json.readTree(body)==null)throw conflict();}catch(JsonProcessingException invalid){throw new IllegalArgumentException("Invalid message evidence JSON",invalid);}}
     private void verifyBody(Map<String,Object> event,String body){if(body==null||!(event.get("content_sha256") instanceof String digest)||!hash(body).equalsIgnoreCase(digest))throw conflict();}
     private String write(Object value){try{return json.writeValueAsString(value);}catch(JsonProcessingException invalid){throw new IllegalArgumentException("Cannot encode message evidence",invalid);}}

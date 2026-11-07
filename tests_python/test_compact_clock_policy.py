@@ -92,3 +92,18 @@ def test_empty_domain_policy_is_bound_globally_while_workbench_receives_its_own_
     document = {**policy('workbench'), 'emptyDomains': ['binding']}
     assert clock.policy_digest(offsets, document) != clock.policy_digest(offsets, policy('workbench'))
     assert clock.workbench_fields(offsets, document, 'a' * 64)['legacyClockPolicy'] == policy('workbench')
+
+
+def test_complete_source_policy_never_guesses_offsets_and_keeps_timeless_control_rows():
+    offsets = {name: None if name in clock.UNRESOLVED_DOMAINS else '+00:00' for name in clock.DOMAINS}
+    document = {**policy(*clock.UNRESOLVED_DOMAINS), 'emptyDomains': sorted(clock.EMPTY_DOMAIN_TABLES)}
+    assert set(document['emptyDomains']) | set(document['unresolvedDomains']) == clock.DOMAINS
+    tables = {table: {'rows': 0} for names in clock.EMPTY_DOMAIN_TABLES.values() for table in names}
+    # A time-free control record is ordinary business data and remains eligible
+    # for copying. The empty fence applies only to the reviewed clock inputs.
+    tables['agent_context_head'] = {'rows': 4}
+    snapshot = {'snapshotSha256': 'a' * 64, 'tables': tables}
+    clock.require_empty_sources(offsets, document, snapshot)
+    tables['agent_model_config_command']['rows'] = 1
+    with pytest.raises(ValueError, match='exact zero rows'):
+        clock.require_empty_sources(offsets, document, snapshot)

@@ -1,6 +1,6 @@
 <template>
   <details v-if="rows.length || runId || active" class="tool-execution" @toggle="toggle">
-    <summary class="tool-execution-heading"><span class="tool-execution-toggle"><AppIcon name="ArrowRight" :size="13" /></span><strong>{{ summary }}</strong></summary>
+    <summary class="tool-execution-heading"><span class="tool-execution-toggle"><AppIcon name="ArrowRight" :size="13" /></span><strong>{{ summary }}</strong><small v-if="executionClockStatus==='UNRESOLVED'" :title="executionClockHint(executionClockStatus,executionSourceWallTimes)">历史关联时区未确认</small></summary>
     <div class="tool-execution-body">
       <details v-for="tool in displayRows" :key="tool.id" class="tool-call">
         <summary><span class="tool-call-state" :data-status="tool.status" :class="{ 'is-spinning': ['calling','awaiting-result'].includes(tool.status) }"><AppIcon :name="tool.status==='returned'?'CircleCheck':tool.status==='failed'?'CircleClose':tool.status==='cancelled'?'Close':'Refresh'" :size="15" /></span><span class="tool-call-label">{{ toolTitle(tool.name) }}</span><span class="tool-call-status">{{ toolStatus(tool.status) }}</span><span class="tool-call-description" :title="tool.name">{{ tool.name }}</span><span v-if="toolTime(tool.durationMs)" class="tool-call-duration">{{ toolTime(tool.durationMs) }}</span></summary>
@@ -13,9 +13,9 @@
 </template>
 <script setup>
 import {computed,onBeforeUnmount,ref,watch} from 'vue'
-import {ToolExecutionReader,toolRows,toolSummary,toolTitle,toolStatus,toolTime} from '@/utils/toolExecution'
+import {ToolExecutionReader,toolRows,toolSummary,toolTitle,toolStatus,toolTime,executionClockHint} from '@/utils/toolExecution'
 import '@/assets/tool-execution.css'
-const props=defineProps({sessionId:String,runId:String,events:{type:Array,default:()=>[]},active:Boolean})
+const props=defineProps({sessionId:String,runId:String,events:{type:Array,default:()=>[]},active:Boolean,executionClockStatus:String,executionSourceWallTimes:Object})
 const saved=ref({events:[],known:false,complete:true}),copyState=ref('')
 let reader
 watch(()=>[props.sessionId,props.runId],()=>{reader?.close();reader=new ToolExecutionReader({onChange:value=>{saved.value=value}});saved.value=reader.open(props.sessionId,props.runId,props.active);copyState.value=''}, {immediate:true})
