@@ -239,7 +239,7 @@ function Invoke-PrivateClient([string]$Executable, [string[]]$Arguments, [string
 }
 function Observe-Project([string]$Prefix) {
     $identityFile = Join-Path $script:output "$Prefix-identity-private.json"
-    Invoke-PrivateClient $script:mysql ($script:clientArgs + @('--batch','--raw','--silent','--skip-column-names', '--skip-auto-rehash',
+    Invoke-PrivateClient $script:mysql ($script:mysqlArgs + @('--batch','--raw','--silent','--skip-column-names', '--skip-auto-rehash',
         '--init-command=SET SESSION TRANSACTION READ ONLY', '--database=doorhandledb')) $identityFile `
         $script:identitySql -IdentityProbe | Out-Null
     $identity = [IO.File]::ReadAllText($identityFile) | ConvertFrom-Json
@@ -248,7 +248,7 @@ function Observe-Project([string]$Prefix) {
         [IO.Path]::GetFullPath($identity.dataDirectory).TrimEnd('\') -ieq $script:sourceProcess.configuration.expectedDataDirectory) 'The actual connection does not match the proven local UUID/data directory/schema/version/port.' 'ACTUAL_SOURCE_IDENTITY_MISMATCH'
     $script:actualClientIdentityVerified = $true
     $catalogFile = Join-Path $script:output "$Prefix-catalog-private.jsonl"
-    Invoke-PrivateClient $script:mysql ($script:clientArgs + @('--batch','--raw','--silent','--skip-column-names','--skip-auto-rehash',
+    Invoke-PrivateClient $script:mysql ($script:mysqlArgs + @('--batch','--raw','--silent','--skip-column-names','--skip-auto-rehash',
         '--init-command=SET SESSION TRANSACTION READ ONLY', '--database=doorhandledb')) $catalogFile `
         "SELECT JSON_OBJECT('table',TABLE_NAME,'kind',TABLE_TYPE,'engine',ENGINE,'collation',TABLE_COLLATION) FROM information_schema.TABLES WHERE TABLE_SCHEMA='doorhandledb' ORDER BY TABLE_NAME;" | Out-Null
     $catalog = @([IO.File]::ReadAllLines($catalogFile) | Where-Object { $_ } | ForEach-Object { $_ | ConvertFrom-Json })
@@ -261,7 +261,7 @@ function Observe-Project([string]$Prefix) {
         "SELECT JSON_OBJECT('table','" + $_.table + "','rows',COUNT(*)) FROM ``doorhandledb``.``" + $_.table + '`;'
     }) -join "`n"
     $countFile = Join-Path $script:output "$Prefix-row-counts-private.jsonl"
-    Invoke-PrivateClient $script:mysql ($script:clientArgs + @('--batch','--raw','--silent','--skip-column-names','--skip-auto-rehash',
+    Invoke-PrivateClient $script:mysql ($script:mysqlArgs + @('--batch','--raw','--silent','--skip-column-names','--skip-auto-rehash',
         '--init-command=SET SESSION TRANSACTION READ ONLY','--database=doorhandledb')) $countFile $countSql | Out-Null
     $counts = @([IO.File]::ReadAllLines($countFile) | Where-Object { $_ } | ForEach-Object { $_ | ConvertFrom-Json })
     Require-Export ($counts.Count -eq $catalog.Count) 'The restricted row observation is incomplete.'
@@ -326,7 +326,10 @@ try {
     [IO.File]::WriteAllText($optionFile, ("[client]`nhost=127.0.0.1`nport=3306`nprotocol=TCP`nuser=" +
         (Option-Value $credentials.DB_USERNAME) + "`npassword=" + (Option-Value $credentials.DB_PASSWORD) + "`n"), [Text.UTF8Encoding]::new($false))
     [IO.File]::WriteAllBytes($loginFile, [byte[]]::new(0)); $credentials.Clear(); $value = $null
-    $clientArgs = @(('--defaults-extra-file=' + $optionFile), '--host=127.0.0.1','--port=3306','--protocol=TCP','--connect-timeout=10','--default-character-set=utf8mb4')
+    $clientArgs = @(('--defaults-extra-file=' + $optionFile), '--host=127.0.0.1','--port=3306','--protocol=TCP','--default-character-set=utf8mb4')
+    # mysql supports this connection option; the installed mysqldump 8.3 does
+    # not. Both clients remain bounded by Invoke-PrivateClient's process timeout.
+    $mysqlArgs = $clientArgs + @('--connect-timeout=10')
     $dumpArgs = $clientArgs + @('--single-transaction','--skip-lock-tables','--no-tablespaces','--set-gtid-purged=OFF',
         '--column-statistics=0','--hex-blob','--routines','--events','--triggers','--quick','--skip-comments','--skip-dump-date',
         '--skip-add-locks','--skip-add-drop-table','--skip-disable-keys')
