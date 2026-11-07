@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 import gzip
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -174,7 +175,7 @@ def unpack_source(archive, destination, commit):
 
 
 def allowed_evidence(name):
-    if name in ("driver.log", "reports/receipt.json", "reports/python.xml", "reports/migration.json"):
+    if name in ("driver.log", "reports/receipt.json", "reports/python.xml", "reports/migration.json", "reports/tool-runtime.json"):
         return True
     if name.startswith("reports/") and name[len("reports/"):] in LOG_NAMES:
         return True
@@ -186,7 +187,7 @@ def allowed_evidence(name):
 def evidence_files(checkout, evidence, driver):
     candidates = [("driver.log", driver)]
     candidates += [("reports/" + name, evidence / name)
-                   for name in ("receipt.json", "python.xml", "migration.json", *sorted(LOG_NAMES))]
+                   for name in ("receipt.json", "python.xml", "migration.json", "tool-runtime.json", *sorted(LOG_NAMES))]
     candidates += [("reports/" + path.name, path) for path in sorted(evidence.glob("java-*.log"))
                    if allowed_evidence("reports/" + path.name)]
     candidates += [("reports/java/" + path.relative_to(evidence / "java").as_posix(), path)
@@ -435,12 +436,24 @@ def run_verification(args):
               "fixtureManifestProvided": bool(args.fixture_manifest),
               "fixtureReadinessValidated": args.scope == "mysql"}
     process = None
+    tool_runtime, tool_value = None, None
     exit_code = 1
     try:
         unpack_source(archive, checkout, args.commit)
         script = checkout / "script" / "jenkins" / "verify-ecs.py"
         regular_file(script, MAX_FILE_BYTES)
         command = [sys.executable, "-B", str(script), "--output", str(evidence)]
+        tool_manifest = inbox / 'tool-runtime/manifest.json'
+        if tool_manifest.exists() or tool_manifest.is_symlink():
+            module = checkout / 'script/jenkins/ecs-tool-runtime.py'
+            regular_file(module, MAX_FILE_BYTES)
+            spec = importlib.util.spec_from_file_location('admitted_ecs_tool_runtime', module)
+            tool_runtime = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(tool_runtime)
+            tool_value, tool_sha = tool_runtime.admit(tool_manifest, root=root, tag=args.tag,
+                commit=args.commit, source_sha=args.source_sha256, identity=identity, source=checkout)
+            record['toolRuntime'] = {'manifestSha256': tool_sha, 'images': tool_value['images']}
+            command += ['--tool-manifest', str(tool_manifest), '--tool-manifest-sha256', tool_sha]
         if args.scope == "mysql":
             require(bool(args.fixture_manifest), "MySQL verification requires an explicit private manifest")
             manifest = Path(args.fixture_manifest)
@@ -470,6 +483,9 @@ def run_verification(args):
         regular_file(result_file, MAX_RECEIPT_BYTES)
         result = json.loads(result_file.read_text(encoding="utf8"))
         require(result.get("identity") == identity, "Verifier receipt belongs to another execution host")
+        if tool_value is not None:
+            require(result.get('toolRuntime') == record['toolRuntime'],
+                    'Verifier did not use this build immutable tool registration')
         require(process.returncode == 0 and result.get("status") == "PASS", "ECS verification did not pass")
         counts = result.get("javaTests", {})
         require(type(counts.get("passed")) is int and counts["passed"] > 0 and counts.get("failed") == 0,
@@ -502,6 +518,17 @@ def run_verification(args):
             record["error"] = str(error)
     finally:
         stop_owned_process(process)
+        if tool_value is not None:
+            try:
+                stopped = tool_runtime.cleanup(tool_value)
+                tool_evidence = tool_runtime.evidence(tool_value, stopped)
+                evidence.mkdir(mode=0o700, parents=True, exist_ok=True)
+                file = evidence / 'tool-runtime.json'
+                write_json(file, tool_evidence)
+                record['toolRuntime'].update(cleanupStatus=stopped['status'], evidenceSha256=digest(file))
+            except BaseException as error:
+                record.update(status='FAILED', toolCleanupErrorType=type(error).__name__)
+                exit_code = 1
         if process is not None:
             record["verificationExitCode"] = process.returncode
         record["finishedAt"] = now()
@@ -552,6 +579,14 @@ def validate_envelope(record, args):
         total += size
         require(total <= MAX_EVIDENCE_BYTES - MAX_RECEIPT_BYTES, "Evidence catalog exceeds the byte limit")
         catalog[name] = file
+    if record.get('toolRuntime') is not None:
+        tools = record['toolRuntime']
+        require(isinstance(tools, dict) and SHA.fullmatch(tools.get('manifestSha256', '')),
+                'Tool admission evidence is incomplete')
+        if record['status'] == 'PASS':
+            require(tools.get('cleanupStatus') == 'STOPPED' and 'reports/tool-runtime.json' in catalog
+                    and tools.get('evidenceSha256') == catalog['reports/tool-runtime.json']['sha256'],
+                    'Passing tool evidence requires actual cleanup and its original report')
     return catalog
 
 

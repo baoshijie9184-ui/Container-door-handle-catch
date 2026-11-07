@@ -156,6 +156,37 @@ def registry(source):
     return values
 
 
+def fixture_java_executable(configured, *, root, inbox, archive, tag, commit, source_sha, identity):
+    if configured != 'ecs-tool-runtime':
+        return canonical(configured)
+    # This check precedes importing the uploaded executor and does not rely on a
+    # previous prepare command's return flag or on an uncommitted host checkout.
+    require(digest(archive) == source_sha and archive.stat().st_size <= 128 * 1024 ** 2,
+            'Tool Java requires this fixed uploaded source archive')
+    executor_sha, seen, total, count = None, set(), 0, 0
+    with tarfile.open(archive, 'r:gz') as package:
+        for entry in package:
+            count += 1; total += entry.size
+            require(count <= 50000 and 0 <= entry.size <= 32 * 1024 ** 2 and total <= 512 * 1024 ** 2
+                    and entry.name not in seen, 'Tool source archive is duplicate or exceeds its bounds')
+            seen.add(entry.name)
+            if entry.name == 'script/jenkins/ecs-tool-runtime.py':
+                require(entry.isfile() and 0 < entry.size <= 1024 ** 2, 'Pinned tool executor source is invalid')
+                executor_sha = hashlib.sha256(package.extractfile(entry).read(1024 ** 2 + 1)).hexdigest()
+        require(package.pax_headers.get('comment') == commit and executor_sha is not None,
+                'Pinned executor is missing or belongs to another source commit')
+    uploaded = canonical(inbox / 'ecs-tool-runtime.py')
+    folder = canonical(inbox / 'tool-runtime')
+    require(uploaded.stat().st_uid == os.getuid() and not uploaded.stat().st_mode & 0o022
+            and digest(uploaded) == executor_sha and digest(canonical(folder / 'executor.py')) == executor_sha,
+            'Uploaded tool executor bytes differ from this source archive')
+    runtime = module('fixed_fixture_tool_runtime', uploaded)
+    value, _ = runtime.admit(folder / 'manifest.json', root=root, tag=tag, commit=commit,
+        source_sha=source_sha, identity=identity, source=folder)
+    require(value['directory'] == str(folder), 'Fixture Java registration escaped its fixed build inbox')
+    return canonical(folder / 'java')
+
+
 class Preparation:
     def __init__(self, args):
         self.args = args; self.identity = ecs_identity(args)
@@ -212,7 +243,10 @@ class Preparation:
         require(isinstance(settings['sourceOffsets'], dict) and settings['sourceOffsets'] and all(
             re.fullmatch(r'[+-](?:0[0-9]|1[0-4]):[0-5][0-9]', value) and (value[1:3] != '14' or value[4:] == '00')
             for value in settings['sourceOffsets'].values()), 'Explicit reviewed domain source offsets required')
-        java = canonical(settings['java']); jar = canonical(self.inbox / 'application.jar')
+        java = fixture_java_executable(settings['java'], root=self.root, inbox=self.inbox,
+            archive=self.archive, tag=self.args.tag, commit=self.args.commit,
+            source_sha=self.args.source_sha256, identity=self.identity)
+        jar = canonical(self.inbox / 'application.jar')
         plan = private_json(self.inbox / 'build-artifacts.json')
         require(isinstance(plan.get('applicationJarSha256'), str) and SHA.fullmatch(plan['applicationJarSha256'])
                 and type(plan.get('applicationJarBytes')) is int and 0 < plan['applicationJarBytes'] <= 512 * 1024 * 1024
@@ -225,7 +259,8 @@ class Preparation:
                     'commit': self.args.commit, 'sourceSha256': self.args.source_sha256,
                     'applicationJarSha256': settings['applicationJarSha256'], 'applicationJarBytes': jar.stat().st_size}
         require(all(plan.get(key) == value for key, value in expected.items()), 'Jenkins source/jar artifact plan differs')
-        version = subprocess.run([str(java), '-version'], capture_output=True, timeout=15)
+        version = subprocess.run([str(java), '-version'], capture_output=True,
+                                 timeout=90 if settings['java'] == 'ecs-tool-runtime' else 15)
         require(version.returncode == 0 and re.search(rb'version "17(?:[.\"]|$)', version.stderr + version.stdout),
                 'An existing Java 17 executable is required; no JRE is installed')
         parent = self.root / 'verification'; parent.mkdir(mode=0o700, exist_ok=True); canonical(parent)

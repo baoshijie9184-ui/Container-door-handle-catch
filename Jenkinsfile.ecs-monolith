@@ -25,6 +25,7 @@ pipeline {
         string(name: 'DOORHANDLE_CI_FIXTURE_SETTINGS', defaultValue: '', trim: true, description: '自动夹具：ECS 现有私有 JSON 路径，仅指定原库身份、已核对时区和既有 Java')
         booleanParam(name: 'PRODUCTION_RELEASE_ENABLED', defaultValue: false, description: '发布/回滚开关；机器环境 DOORHANDLE_COMPACT_RELEASE_READY 仍须为 true')
         string(name: 'COMPACT_CUTOVER_SETTINGS', defaultValue: '', trim: true, description: '可复用夹具设置：ECS私有JSON，version/sourceMysqlContainerId/sourceSchema/sourceOffsets/java，不含密码')
+        string(name: 'LEGACY_SOURCE_SNAPSHOT', defaultValue: '', trim: true, description: '可选本地原始数据字节封存目录；源码验证通过后上传ECS并逐文件恢复核对，不在本地打开数据库')
         string(name: 'DEPLOY_HOST', defaultValue: "${params.DEPLOY_HOST ?: ''}", trim: true, description: '流水线外启动 ECS 后核对的当前地址；首次为空，不自动开机')
         string(name: 'DEPLOY_PORT', defaultValue: "${params.DEPLOY_PORT ?: '22'}", trim: true, description: '已核验的 SSH 端口；TLS 通道可显式使用 443')
         choice(name: 'SSH_TRANSPORT', choices: params.SSH_TRANSPORT == 'tls' ? ['tls', 'direct'] : ['direct', 'tls'], description: 'direct 校验 SSH 主机公钥；tls 额外校验证书')
@@ -46,6 +47,8 @@ pipeline {
                     env.CI_ECS_VERIFIED = 'false'
                     env.CI_ARTIFACTS_READY = 'false'
                     env.CI_FIXTURES_PREPARED = 'false'
+                    env.CI_TOOLS_PREPARED = 'false'
+                    env.CI_TOOLS_ATTEMPTED = 'false'
                     env.CI_FIXTURE_PREPARATION_ATTEMPTED = 'false'
                     env.CI_RUNTIME_ATTEMPTED = 'false'
                     env.CI_RUNTIME_VERIFIED = 'false'
@@ -112,6 +115,19 @@ pipeline {
             when { expression { params.ACTION != 'rollback' } }
             steps { pwsh '& ./script/jenkins/pipeline.ps1 -Action Package' }
         }
+        stage('Prepare temporary ECS tools') {
+            when { expression { params.ACTION != 'rollback' } }
+            steps {
+                script { env.CI_TOOLS_ATTEMPTED = 'true' }
+                withCredentials([
+                    sshUserPrivateKey(credentialsId: 'doorhandle-ecs-ssh', keyFileVariable: 'DEPLOY_KEY', usernameVariable: 'DEPLOY_USER'),
+                    file(credentialsId: 'doorhandle-ecs-known-hosts', variable: 'DEPLOY_KNOWN_HOSTS')
+                ]) {
+                    pwsh '& ./script/jenkins/pipeline.ps1 -Action PrepareTools'
+                }
+                script { env.CI_TOOLS_PREPARED = 'true' }
+            }
+        }
         stage('Prepare isolated ECS fixtures') {
             when { expression { params.ACTION != 'rollback' && params.DOORHANDLE_CI_AUTO_COMPACT_FIXTURES } }
             steps {
@@ -143,6 +159,17 @@ pipeline {
                     '''
                 }
                 script { env.CI_ECS_VERIFIED = 'true' }
+            }
+        }
+        stage('Preserve legacy source bytes on ECS') {
+            when { expression { params.ACTION != 'rollback' && params.LEGACY_SOURCE_SNAPSHOT?.trim() } }
+            steps {
+                withCredentials([
+                    sshUserPrivateKey(credentialsId: 'doorhandle-ecs-ssh', keyFileVariable: 'DEPLOY_KEY', usernameVariable: 'DEPLOY_USER'),
+                    file(credentialsId: 'doorhandle-ecs-known-hosts', variable: 'DEPLOY_KNOWN_HOSTS')
+                ]) {
+                    pwsh '& ./script/jenkins/pipeline.ps1 -Action PreserveLegacy'
+                }
             }
         }
         stage('Rehearse application') {
@@ -216,6 +243,16 @@ pipeline {
                             file(credentialsId: 'doorhandle-ecs-known-hosts', variable: 'DEPLOY_KNOWN_HOSTS')
                         ]) {
                             pwsh '& ./script/jenkins/pipeline.ps1 -Action CleanupFixtures'
+                        }
+                    }
+                }
+                if (env.CI_TOOLS_PREPARED == 'true') {
+                    catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
+                        withCredentials([
+                            sshUserPrivateKey(credentialsId: 'doorhandle-ecs-ssh', keyFileVariable: 'DEPLOY_KEY', usernameVariable: 'DEPLOY_USER'),
+                            file(credentialsId: 'doorhandle-ecs-known-hosts', variable: 'DEPLOY_KNOWN_HOSTS')
+                        ]) {
+                            pwsh '& ./script/jenkins/pipeline.ps1 -Action CleanupTools'
                         }
                     }
                 }

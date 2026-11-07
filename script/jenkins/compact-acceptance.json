@@ -970,6 +970,12 @@
         "allowedSkippedTests": []
       },
       {
+        "module": "tests_python.test_jenkins_ecs_tool_runtime",
+        "minimumTests": 22,
+        "source": "tests_python/test_jenkins_ecs_tool_runtime.py",
+        "allowedSkippedTests": []
+      },
+      {
         "module": "tests_python.test_jenkins_fixture_admission",
         "minimumTests": 5,
         "source": "tests_python/test_jenkins_fixture_admission.py",
@@ -979,6 +985,24 @@
         "module": "tests_python.test_jenkins_suite_evidence",
         "minimumTests": 8,
         "source": "tests_python/test_jenkins_suite_evidence.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_jenkins_resource_budget",
+        "minimumTests": 1,
+        "source": "tests_python/test_jenkins_resource_budget.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_jenkins_tool_preparation",
+        "minimumTests": 1,
+        "source": "tests_python/test_jenkins_tool_preparation.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_legacy_store_migration",
+        "minimumTests": 17,
+        "source": "tests_python/test_legacy_store_migration.py",
         "allowedSkippedTests": []
       },
       {

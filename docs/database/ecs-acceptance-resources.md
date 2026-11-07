@@ -1,0 +1,150 @@
+# ECS 隔离验收的资源预算
+
+本文定义单体数据库重构验收的资源准入，不代表迁移、项目测试或部署已通过。本地只编辑与构建；实测、依赖准备、测试和数据均在原单体 ECS `172.29.146.74`。原应用保持运行。本地 Jenkins 调度固定提交，ECS 启停仍在流水线外完成。
+
+## 容量事实与判断边界
+
+2026-11-07 只读核对实例和机器身份后，原机 40 GiB 系统盘的文件系统容量约 39.01 GiB，实际可用约 7.88 GiB。Docker、业务数据与 `/home/ecs-user/doorhandle-ci` 在同一文件系统。当前业务 MySQL 卷物理分配约 299.41 MiB；Kafka 卷物理约 26.24 MiB、逻辑约 1.10 GiB，后者包含稀疏文件。估算新增写入时必须区分实际分配和逻辑长度，恢复程序是否保留稀疏空洞也会影响容量。
+
+现有 CI 目录约 2.0 GiB，包含历史源码、演练、回执和备份。原容器仍引用不同历史发布目录，停止的演练容器也仍引用镜像和数据卷。镜像显示“可回收”或文件较旧不能作为删除依据。此次审计未删除任何数据。
+
+Maven 与 Node 工具镜像已经缓存，镜像唯一层分别约 759 MB 和 231 MB；这不能证明 Maven、npm 依赖缓存已经准备好。历史 13 个 SQL 压缩快照合计约 24.46 MiB、gzip 标称解压约 147.98 MiB，不能代替本轮源库快照的实际大小。Docker 图像大小不能逐标签相加，同一个共享层也不能重复计算回收量。
+
+原 11 个常驻容器均健康，4 个初始化容器正常退出。一次快照中，常驻容器 working set 合计约 4091 MiB，cgroup 匿名页约 2.47 GiB、当前计费内存约 4.63 GiB，主机 MemAvailable 约 12.01 GiB。各容器历史峰值相加约 4.73 GiB，不是同一时刻的负载峰值。这些快照不能证明原应用与完整测试栈在测试峰值下必然容纳。运行阶段仍须核对各进程/容器的真实限额、监测内存和 OOM。
+
+固定“约 14 GiB 可用空间”的旧门槛是保守策略，不是系统实际峰值。空闲低于该值不能直接推出物理容量必然不足，也不能据此改成另一个较小常量并宣布足够。新预算需要实际证据，分阶段准入，保留真实余量。
+
+## 预算模型
+
+实现位于 [`ecs-resource-budget.py`](../../script/jenkins/ecs-resource-budget.py)。模块只有 JSON 计算和输入文件读取，不连接 ECS、不执行命令、不删除文件、不停止容器。调用方负责获得真实探针、核验摘要、建立本轮所有权，并实际实施进程组、cgroup 和增长监测。
+
+预算锚定完整的 Git 提交号、本轮唯一 `ownerToken`、源码归档与应用 Jar 的原始字节数和 SHA-256。源库的 `allocatedBytes` 来自本轮源库实际元数据，`dumpBytes` 来自本轮已完成的快照，而非历史备份。摘要应指向已归档的测量证据，包含命令、固定提交、执行时间、目标身份、测量对象、物理字节、退出码和必要的所有权信息，不包含环境文件原文或凭据。
+
+每个组件记录：
+
+| 字段 | 含义 |
+|---|---|
+| `peakBytes` | 本阶段所需的组件实际物理峰值，或明确实施的受控测量上界 |
+| `baselineBytes` | 起算探针时该组件已经存在的实际分配；不得随阶段推进移动起算点 |
+| `measurement` | `MEASURED`、`ENFORCED_BOUND` 或 `NOT_MEASURED` |
+| `evidenceSha256` | 实测记录或上界实施方案的已核验归档摘要 |
+| `retention` | `PROTECTED` 或允许在证据归档后处理的 `OWNED_BUILD_OUTPUT` |
+
+所有组件的起算量必须以同一基线解释，互不重复归属。根目录中的文件、Docker 卷、镜像唯一层和可写层要分别计量，禁止遍历重叠目录后重复相加。镜像使用本轮新增唯一层/未共享层；存在的共享层已经反映在磁盘可用量内。
+
+每个阶段列出当时并存的组件。阶段新增磁盘预算为 `sum(peakBytes - baselineBytes)`；完整计划峰值取各阶段预算的最大值。已有归档和 Jar 已包含于基线实际占用，若发生额外复制，则将其新增副本纳入 `extraction` 等组件。阶段内已经发生的本轮增长从剩余预算中扣除，避免与当前真实空闲重复计算。
+
+必须覆盖这些组件：
+
+| 组件名 | 包含内容及保留规则 |
+|---|---|
+| `extraction` | 固定源码解压、副本、Jar/归档新增副本；保护源文件 |
+| `maven-cache` | 本轮专属 Maven 仓库的冷缓存实际增长；本轮保留 |
+| `java-output` | 一套 reactor 编译输出及当前 suite 的临时输出 |
+| `suite-evidence` | 全部 suite 的原始 XML、stdout/stderr、摘要清单；保留 |
+| `main-node-modules` | 主站依赖树，仅在主站阶段存在 |
+| `main-frontend-output` | 主站测试报告和构建输出；保留 |
+| `agent-node-modules` | 独立 Agent UI 依赖树，仅在对应阶段存在 |
+| `agent-frontend-output` | Agent UI 测试报告和构建输出；保留 |
+| `fixture-mysql` | 本轮 MySQL 引擎文件、schema、索引、日志及迁移数据；保留 |
+| `double-restore` | 两个独立恢复目标和恢复过程中并存的临时数据；保留 |
+| `runtime-images` | 当前候选应用和辅助镜像新增的唯一分配，不重复计工具共享层 |
+| `runtime-writable` | 隔离业务栈的可写层、卷、Kafka/Redis/Chroma 等增长；保留 |
+| `runtime-backups` | 实际源快照、恢复输入和运行栈备份；保留 |
+| `logs-receipts` | 资源监测原始记录、业务证据、部署回执及失败诊断；保留 |
+
+只有 `java-output`、`main-node-modules`、`agent-node-modules` 可以标记为 `OWNED_BUILD_OUTPUT`。保护组件一旦在某阶段出现，后续阶段必须继续列入，不能用后续预算“忘记”已存在的数据库、备份或证据。
+
+## 串行执行与渐进实测
+
+56 个 MySQL suite 全部执行。只保留一套所需 reactor 编译输出；每个 suite 结束，先将原始 XML 和日志逐字节复制、核对字节数/SHA-256、写入归档清单，再处理本轮拥有的可再生成编译输出。不得把 56 份完整编译结果视作同时常驻，也不得为了省空间跳过 suite 或只保留汇总数量。
+
+主站与独立 Agent UI 分别执行依赖安装、测试、构建、报告归档。前一个项目的原始报告和输出核验归档后，才可清理它在本轮 checkout 中的 `node_modules`，随后处理另一个项目。预算校验拒绝一个阶段同时保留两套依赖树。Maven 使用本轮专属缓存，不能清理共享缓存或旧生产目录。
+
+未知的后续阶段不要求在开始前伪造峰值。可先由 Jenkins 在本轮隔离目录中准备工具和冷缓存、跳过测试执行构建，得到真实增长，再补齐后续计划。数据库与运行镜像也按依赖顺序逐阶段测量。
+
+首次受控测量使用 `ENFORCED_BOUND`，必须给出真实实施的阶段上界，且阶段 `enforcement` 明确：
+
+```json
+{
+  "ownedProcessGroup": true,
+  "growthMonitor": true,
+  "memoryLimitEnforced": true,
+  "maxProbeIntervalSeconds": 1,
+  "diskOvershootBytes": 268435456
+}
+```
+
+以上数值只是字段示例，不能作为本项目已证明的余量。`diskOvershootBytes` 需要覆盖探针间隔、写入速率、终止延迟和停止后待刷盘增长；它另加在真实 2 GiB 磁盘保底之上。布尔字段不能代替实施：调用方须校验目标进程组/容器归本轮所有，提前启动增长监测，应用实际内存限额，监测失联或终止失败立即失败，等待本轮子进程全部退出。无上界实施能力时不能将估计写为 `ENFORCED_BOUND`。
+
+每个阶段准入只评估当前并存项，后续阶段未知不阻塞当前安全量测。当前组件缺少峰值、基线、证据或约束时，当前阶段仍失败关闭。测量完成后记录真实峰值和原始探针，将组件更新为 `MEASURED`，以同一基线生成新的计划；不得提高预算去掩盖已经发生的超界。未来阶段到达前重新准入。全部组件实测完成前，全量计划始终是 `NOT_MEASURED`，不能声称完整验收已容纳或已通过。
+
+## 调用接口
+
+`plan(spec)`、`validate(plan)`、`check(plan, actualProbe, phase, baselineProbe=None)` 都是纯函数。`plan` 返回包含原始 spec 的可序列化计划；`validate` 重新推导并拒绝被篡改的预算或保底。`check` 返回当前阶段准入和本轮增长检查，绝不执行删除或终止。
+
+输入结构如下，`components` 中必须列出上表所有项；未测项保留名称、正确 retention，并使用 `peakBytes: null`、`baselineBytes: null`、`measurement: "NOT_MEASURED"` 和空证据，不填写虚构值。
+
+```json
+{
+  "version": 1,
+  "ownerToken": "ci-BUILD-attempt-random",
+  "sourceCommit": "完整40位提交号",
+  "artifacts": {
+    "sourceArchive": {"bytes": 123, "sha256": "实际64位摘要"},
+    "applicationJar": {"bytes": 456, "sha256": "实际64位摘要"}
+  },
+  "source": {"allocatedBytes": null, "dumpBytes": null, "evidenceSha256": null},
+  "components": {
+    "extraction": {
+      "peakBytes": null,
+      "baselineBytes": null,
+      "measurement": "NOT_MEASURED",
+      "evidenceSha256": null,
+      "retention": "PROTECTED"
+    }
+  },
+  "phases": [
+    {"name": "prepare", "components": ["extraction"], "memoryLimitBytes": null}
+  ],
+  "baselineProbe": {
+    "ownerToken": "ci-BUILD-attempt-random",
+    "sourceCommit": "完整40位提交号",
+    "capturedAtUtc": "2026-11-07T00:00:00Z",
+    "diskTotalBytes": 0,
+    "diskAvailableBytes": 0,
+    "memoryAvailableBytes": 0,
+    "ownedDiskBytes": 0,
+    "ownedMemoryBytes": 0,
+    "oomKills": 0
+  }
+}
+```
+
+上述是不可执行的占位示例。`actualProbe` 使用与 `baselineProbe` 相同结构，表示同一文件系统、本轮所有路径/卷/可写层的物理分配、本轮 cgroup 当前内存与累计 OOM kill 次数。必须记录真实探针时间，拒绝早于基线、容量变化、所有权或提交不符的探针。原应用不纳入本轮计数，不能通过重置基线“消除”本轮增长。节点挂载或容量改变时先重新审阅和规划。
+
+| 返回状态 | 含义 |
+|---|---|
+| `INVALID` | 结构、保留规则、固定身份或计划完整性不符 |
+| `NOT_MEASURED` | 全量计划仍缺实际数据；这不等于物理空间必然不足 |
+| `MEASUREMENT_ADMITTED` | 当前受控测量阶段准入，完整计划仍未证明 |
+| `PHASE_ADMITTED` | 当前阶段已测并可开始，未来仍有未测项 |
+| `READY` | 计划全部资源项具有实际测量证据；不代表项目测试完成 |
+| `PASS` | 当前已测阶段的实时资源检查通过；不代表业务验收通过 |
+| `FAIL_CLOSED` | 当前阶段停止准入或终止本轮，保留失败证据 |
+
+运行 CLI 时，`plan` 读 spec，`validate/check` 读已保存计划；`check` 额外需要探针文件和阶段名：
+
+```text
+python3 -B script/jenkins/ecs-resource-budget.py check --input resource-plan.json --actual-probe resource-probe.json --phase frontend-main
+```
+
+调用方应保存完整 JSON 和退出码，不能只读取 `action`。`READY/PASS/PHASE_ADMITTED/MEASUREMENT_ADMITTED` 返回 0，其他返回 2。只接受当前阶段合适的状态，不能把测量准入等同于最终全量证明。
+
+## 持续检查与失败处置
+
+每个阶段开始前、命令执行中和结束后采样真实可用空间、本轮增长和 OOM。准入要求当前真实磁盘可用量至少覆盖当前阶段尚未发生的增长、2 GiB 保底和受控测量的额外 overshoot。内存按当前阶段本轮进程/容器的合计实际限额计算，扣除已发生的本轮用量后仍保留 1 GiB 主机余量。峰值接近或超过预算、外部空间挤占、OOM、监测故障、报告归档失败都阻止后续阶段。
+
+任何容量失败都只返回 `STOP_OWNED_ATTEMPT / OWNED_ATTEMPT_ONLY`。执行方只能终止已核验属于本轮的进程组和测试容器，保护原运行应用和其他任务，不能调用全局 `docker prune`、停止原服务或删除无归属卷。数据库、快照、双恢复、迁移结果、业务证据、回执、源文件一律保留；失败时仍先收集已有原始报告、探针和诊断。获准清理编译物/依赖树也必须先证明路径在本轮 checkout 内、非符号链接跳转，且原始报告已核验归档；预算模块不会授权或执行清理。
+
+本模块的测试源码见 [`test_jenkins_resource_budget.py`](../../tests_python/test_jenkins_resource_budget.py)，覆盖串行峰值、未知阶段、受控测量、真实保底、超界、OOM、原始所有权及篡改拒绝。应由 Jenkins 在已准入的 ECS 上运行。本地只做源码与 AST 检查，不能把静态检查记录为测试通过。

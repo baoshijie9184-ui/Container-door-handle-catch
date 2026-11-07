@@ -492,6 +492,72 @@ def node_tap_counts(path):
             'skipped': values['skipped'] + values['todo']}
 
 
+def admitted_tool_executables(manifest, expected_sha, identity):
+    """Bind tool paths to the outer verifier's admitted manifest and this checkout."""
+    if not expected_sha or not re.fullmatch(r'[a-f0-9]{64}', expected_sha):
+        raise ValueError('Tool registration requires its admitted manifest digest')
+    spec = importlib.util.spec_from_file_location('ecs_verifier_tool_runtime', ROOT / 'script/jenkins/ecs-tool-runtime.py')
+    runtime = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runtime)
+    value = runtime.private_json(manifest)
+    if runtime.digest(manifest) != expected_sha or ROOT.name != 'checkout' or ROOT.parent.parent.name != 'verification':
+        raise ValueError('Tool registration differs from the outer fixed-source admission')
+    value, actual_sha = runtime.admit(manifest, root=ROOT.parents[2], tag=ROOT.parent.name,
+        commit=value['commit'], source_sha=value['sourceSha256'], identity=identity, source=ROOT)
+    tools = {key: str(Path(value['directory']) / binary) for key, binary in (
+        ('MAVEN_CMD', 'mvn'), ('PYTHON_EXE', 'python'), ('NODE_EXE', 'node'), ('NPM_CMD', 'npm'))}
+    return tools, {'manifestSha256': actual_sha, 'images': value['images']}
+
+
+def owned_directory(path, parent):
+    path, parent = Path(path), Path(parent)
+    if not path.is_absolute() or path == parent or not path.is_relative_to(parent) \
+            or path.resolve(strict=True) != path or parent.resolve(strict=True) != parent \
+            or not path.is_dir() or path.stat().st_uid != os.getuid() or parent.stat().st_uid != os.getuid():
+        raise ValueError('Build cleanup requires this attempt owned directory without redirected parents')
+    return path
+
+
+def tree_inventory(path, *, allow_links=False, hash_files=False):
+    """Never follow package-manager symlinks while measuring an owned output."""
+    files, size, links = 0, 0, 0
+    binding = hashlib.sha256()
+    for current, directories, names in os.walk(path, followlinks=False):
+        for name in sorted(directories + names):
+            entry = Path(current) / name
+            if entry.is_symlink():
+                if not allow_links:
+                    raise ValueError('Java/output inventory cannot contain symbolic links')
+                links += 1
+                continue
+            if entry.is_file():
+                length = entry.stat().st_size
+                files += 1; size += length
+                if hash_files:
+                    checksum = hashlib.sha256()
+                    with entry.open('rb') as stream:
+                        for block in iter(lambda: stream.read(1024 * 1024), b''):
+                            checksum.update(block)
+                    binding.update(json.dumps([entry.relative_to(path).as_posix(), length, checksum.hexdigest()],
+                                              ensure_ascii=True, separators=(',', ':')).encode() + b'\n')
+        directories.sort()
+    result = {'files': files, 'bytes': size, 'links': links}
+    if hash_files:
+        result['sha256'] = binding.hexdigest()
+    return result
+
+
+def remove_owned_build(path, parent, *, allow_links=False):
+    path = owned_directory(path, parent)
+    result = tree_inventory(path, allow_links=allow_links)
+    # rmtree unlinks nested node_modules/.bin links without following their targets.
+    # The admitted top-level directory and every parent remain real owned paths.
+    shutil.rmtree(path)
+    if path.exists() or path.is_symlink():
+        raise RuntimeError('Owned build output remains after cleanup')
+    return {'status': 'REMOVED', 'relativePath': path.relative_to(ROOT).as_posix(), **result}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path)
@@ -501,6 +567,8 @@ def main():
                         help='Explicit isolated MySQL fixture property; requires an explicit Java class selection')
     parser.add_argument('--fixture-manifest', type=Path,
                         help='Private version=1 or version=2 JSON under this checkout work; defines isolated Java suites')
+    parser.add_argument('--tool-manifest', type=Path, help='Fixed-build temporary ECS tool registration')
+    parser.add_argument('--tool-manifest-sha256', help='Manifest digest admitted by the outer fixed-source verifier')
     args = parser.parse_args()
     def interrupted(_signal, _frame):
         raise KeyboardInterrupt('ECS verification interrupted')
@@ -520,11 +588,17 @@ def main():
     output.mkdir(mode=0o700)
     (output / 'tmp').mkdir()
     (output / 'profile').mkdir()
-    tools = {}
+    tools, tool_receipt = {}, None
+    if args.tool_manifest:
+        tools, tool_receipt = admitted_tool_executables(args.tool_manifest, args.tool_manifest_sha256, identity)
+    elif args.tool_manifest_sha256:
+        raise ValueError('A tool manifest digest requires its explicit registered path')
     requested_tools = [('MAVEN_CMD', 'mvn')]
     if not args.java_only:
         requested_tools += [('PYTHON_EXE', 'python3'), ('NODE_EXE', 'node'), ('NPM_CMD', 'npm')]
     for key, binary in requested_tools:
+        if key in tools:
+            continue
         value = os.environ.get(key) or shutil.which(binary)
         if not value or not Path(value).is_absolute() or not Path(value).is_file():
             raise ValueError('Configure an existing absolute ECS executable: ' + key)
@@ -537,6 +611,8 @@ def main():
                PYTHONDONTWRITEBYTECODE='1', PYTHONNOUSERSITE='1', PYTHON_DOTENV_DISABLED='1',
                npm_config_cache=str(output / 'npm-cache'))
     python_env = env.copy()
+    if tool_receipt is not None:
+        python_env['DOORHANDLE_MIGRATION_JAVA'] = str(args.tool_manifest.parent / 'java')
     if args.compact_migration_config:
         python_env.update(DOORHANDLE_COMPACT_MIGRATION_TESTS='1',
                           DOORHANDLE_COMPACT_MIGRATION_CONFIG=args.compact_migration_config,
@@ -555,6 +631,8 @@ def main():
                         'ordinary source tests; infrastructure suites remain opt-in and skipped suites are not migration acceptance',
                'ecsLifecycle': {'managedBy': 'external-to-jenkins', 'cloudOperationsPerformed': False,
                                 'note': 'Start ECS before the test window and stop it outside CI/CD after evidence collection'}}
+    if tool_receipt is not None:
+        receipt['toolRuntime'] = tool_receipt
     def execute(label, command, cwd, *, environment=None):
         entry = {'label': label, 'startedAt': datetime.now(timezone.utc).isoformat()}
         receipt['commands'].append(entry)
@@ -585,6 +663,9 @@ def main():
             label = 'java-source-regression' if source_regression else 'java-' + suite['id']
             build_root = output / ('source-regression/build' if source_regression else 'java-suites/' + suite['id'])
             destination = output / ('source-regression/java' if source_regression else 'java')
+            if build_root.exists() or build_root.is_symlink():
+                raise ValueError('Each Java invocation requires a fresh owned build output')
+            build_root.mkdir(mode=0o700, parents=True)
             entry = {key: suite[key] for key in ('id', 'javaSelection', 'fixtureProperties')}
             entry.update(status='FAILED', javaTests=empty_counts(), selectedJavaClasses={}, reportFiles=[])
             if source_regression:
@@ -614,6 +695,7 @@ def main():
                     if tally['passed'] < required['minimumTests'] or tally['skipped']:
                         raise RuntimeError('Ordinary Java regression omitted a required pure-logic class')
             entry['status'] = 'PASS'
+            entry['buildOutputCleanup'] = remove_owned_build(build_root, output)
         for suite in args.java_suites:
             run_java(suite)
         if args.source_regression:
@@ -652,6 +734,9 @@ def main():
             for frontend in ('frontend', 'frontend-agent'):
                 frontend_result = {'selectedTestFiles': frontend_test_files(profile, frontend)}
                 receipt.setdefault('frontendResults', {})[frontend] = frontend_result
+                dependencies = ROOT / frontend / 'node_modules'
+                if dependencies.exists() or dependencies.is_symlink():
+                    raise ValueError('Frontend verification requires absent dependencies in this fresh checkout')
                 execute(frontend + '-install', [tools['NPM_CMD'], 'ci', '--include=dev', '--ignore-scripts', '--no-audit', '--no-fund'], ROOT / frontend)
                 frontend_result['installExitCode'] = 0
                 execute(frontend + '-test', [tools['NODE_EXE'], '--test', '--test-reporter=tap', *frontend_result['selectedTestFiles']], ROOT / frontend)
@@ -667,6 +752,9 @@ def main():
                     arguments += ['--', '--base=/agent-ui/']
                 execute(frontend + '-build', arguments, ROOT / frontend)
                 frontend_result['buildExitCode'] = 0
+                distribution = owned_directory(ROOT / frontend / 'dist', ROOT / frontend)
+                frontend_result['artifact'] = tree_inventory(distribution, hash_files=True)
+                frontend_result['dependenciesCleanup'] = remove_owned_build(dependencies, ROOT / frontend, allow_links=True)
         receipt['status'] = 'PASS'
     except BaseException as error:
         receipt['status'] = 'FAILED'

@@ -1,4 +1,4 @@
-param([Parameter(Mandatory = $true)][ValidateSet('Preflight', 'Package', 'PrepareFixtures', 'CleanupFixtures', 'VerifyEcs', 'VerifyRuntime', 'CleanupRuntime', 'Publish', 'Rehearse', 'CompactCutover')][string]$Action)
+param([Parameter(Mandatory = $true)][ValidateSet('Preflight', 'Package', 'PrepareTools', 'CleanupTools', 'PrepareFixtures', 'CleanupFixtures', 'VerifyEcs', 'PreserveLegacy', 'VerifyRuntime', 'CleanupRuntime', 'Publish', 'Rehearse', 'CompactCutover')][string]$Action)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 Set-Location -LiteralPath (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
@@ -11,6 +11,36 @@ function Require-Value([string]$Name, [string]$Pattern) {
     $value = [Environment]::GetEnvironmentVariable($Name)
     if ([string]::IsNullOrWhiteSpace($value) -or $value -notmatch $Pattern) { throw "Invalid or missing $Name" }
     return $value
+}
+function Get-PinnedSourceFile([string]$RelativePath) {
+    $commit = Require-Value 'GIT_COMMIT' '^[a-f0-9]{40}$'
+    if ($RelativePath -notmatch '^script/[A-Za-z0-9_./-]+\.(py|sh)$' -or @($RelativePath.Split('/') | Where-Object { $_ -eq '..' }).Count) { throw 'Unsafe fixed-source helper path.' }
+    # Read the Git blob as bytes. Windows checkout filters may change LF to
+    # CRLF; SCP must use the same original bytes as git archive, never relax SHA.
+    $directory = Join-Path (Join-Path (Get-Location) 'artifacts/pinned-source') ([guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $directory -Force | Out-Null
+    $output = Join-Path $directory ([System.IO.Path]::GetFileName($RelativePath))
+    $info = [System.Diagnostics.ProcessStartInfo]::new()
+    $info.FileName = (Get-Command git.exe -CommandType Application -ErrorAction Stop).Source
+    $info.WorkingDirectory = (Get-Location).Path
+    $info.UseShellExecute = $false
+    $info.CreateNoWindow = $true
+    $info.RedirectStandardOutput = $true
+    $info.RedirectStandardError = $true
+    $info.ArgumentList.Add('show')
+    $info.ArgumentList.Add("${commit}:$RelativePath")
+    $process = [System.Diagnostics.Process]::new()
+    $process.StartInfo = $info
+    try {
+        if (-not $process.Start()) { throw 'Cannot read the pinned Git source.' }
+        $errorRead = $process.StandardError.ReadToEndAsync()
+        $stream = [System.IO.File]::Open($output, [System.IO.FileMode]::CreateNew)
+        try { $process.StandardOutput.BaseStream.CopyTo($stream) } finally { $stream.Dispose() }
+        $process.WaitForExit()
+        $null = $errorRead.GetAwaiter().GetResult()
+        if ($process.ExitCode -ne 0 -or (Get-Item -LiteralPath $output).Length -eq 0) { throw 'The fixed Git source helper is missing.' }
+    } finally { $process.Dispose() }
+    return $output
 }
 function Get-BuildRegistryAssignment {
     $registry = $env:BUILD_NPM_REGISTRY
@@ -108,6 +138,48 @@ if ($Action -eq 'Preflight') {
 
 $remoteInbox = "$remoteRoot/inbox/$tag"
 Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "umask 077; mkdir -p '$remoteInbox'"))
+if ($Action -eq 'PreserveLegacy') {
+    if ($env:CI_ECS_VERIFIED -ne 'true') { throw 'Original source preservation requires this fixed commit ECS source verification first.' }
+    $commit = Require-Value 'GIT_COMMIT' '^[a-f0-9]{40}$'
+    $sha = (Get-FileHash -LiteralPath artifacts/source.tar.gz -Algorithm SHA256).Hash.ToLowerInvariant()
+    & ./script/jenkins/preserve-legacy-input.ps1 -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha -SnapshotDirectory $env:LEGACY_SOURCE_SNAPSHOT
+    return
+}
+if ($Action -in @('PrepareTools', 'CleanupTools')) {
+    $commit = Require-Value 'GIT_COMMIT' '^[a-f0-9]{40}$'
+    $instance = Require-Value 'DOORHANDLE_ECS_INSTANCE_ID' '^i-[a-z0-9]+$'
+    $machine = Require-Value 'DOORHANDLE_ECS_MACHINE_ID' '^[a-f0-9]{32}$'
+    $sha = (Get-FileHash -LiteralPath artifacts/source.tar.gz -Algorithm SHA256).Hash.ToLowerInvariant()
+    $package = Get-Content -LiteralPath artifacts/release.json -Raw | ConvertFrom-Json
+    if ($package.release -ne $tag -or $package.commit -ne $commit -or $package.sourceSha256 -ne $sha) { throw 'Tool preparation requires this build pinned source package.' }
+    $executor = "$remoteInbox/ecs-tool-runtime.py"
+    if ($Action -eq 'PrepareTools') {
+        Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "test ! -e '$remoteInbox/source.tar.gz' && mkdir '$remoteInbox/.tools-upload'"))
+        foreach ($item in @(@('artifacts/source.tar.gz','source.tar.gz'), @('script/jenkins/prepare-ecs-tools.py','prepare-ecs-tools.py'), @('script/jenkins/ecs-tool-runtime.py','ecs-tool-runtime.py'))) {
+            $inputFile = if ($item[0].StartsWith('script/')) { Get-PinnedSourceFile $item[0] } else { $item[0] }
+            Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, $inputFile, "${destination}:$remoteInbox/$($item[1])"))
+        }
+        Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "chmod 600 '$remoteInbox/source.tar.gz' '$remoteInbox/prepare-ecs-tools.py' '$executor'"))
+        $arguments = "--root '$remoteRoot' --tag '$tag' --commit '$commit' --source-sha256 '$sha' --instance-id '$instance' --machine-id '$machine'"
+        $result = Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "python3 -B '$remoteInbox/prepare-ecs-tools.py' $arguments"))
+        $prepared = ($result | Select-Object -Last 1) | ConvertFrom-Json
+        if ($prepared.status -ne 'PREPARED' -or $prepared.release -ne $tag -or $prepared.commit -ne $commit -or $prepared.sourceSha256 -ne $sha) { throw 'ECS tool image preparation did not return matching source evidence.' }
+        foreach ($image in @($prepared.mavenImageId, $prepared.nodeImageId, $prepared.pythonImageId)) {
+            if ($image -notmatch '^sha256:[a-f0-9]{64}$') { throw 'Prepared ECS tools require immutable image IDs.' }
+        }
+        $prepared | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath artifacts/ecs-tool-preparation.json -Encoding utf8
+        $result = Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "python3 -B '$executor' prepare $arguments --maven-image '$($prepared.mavenImageId)' --node-image '$($prepared.nodeImageId)' --python-image '$($prepared.pythonImageId)'"))
+        $registered = ($result | Select-Object -Last 1) | ConvertFrom-Json
+        if ($registered.status -ne 'PREPARED' -or $registered.release -ne $tag -or $registered.manifest -ne "$remoteInbox/tool-runtime/manifest.json" -or $registered.manifestSha256 -notmatch '^[a-f0-9]{64}$') { throw 'ECS tool registration differs from the fixed build inbox.' }
+        $registered | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath artifacts/ecs-tool-runtime.json -Encoding utf8
+    } else {
+        $result = Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "python3 -B '$executor' cleanup --manifest '$remoteInbox/tool-runtime/manifest.json'"))
+        $stopped = ($result | Select-Object -Last 1) | ConvertFrom-Json
+        if ($stopped.status -ne 'STOPPED' -or $stopped.release -ne $tag -or @($stopped.remaining).Count -ne 0) { throw 'Owned tool containers did not stop.' }
+        $stopped | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath artifacts/ecs-tool-cleanup.json -Encoding utf8
+    }
+    return
+}
 if ($Action -in @('PrepareFixtures', 'CleanupFixtures')) {
     if ($env:DOORHANDLE_CI_SCOPE -ne 'mysql' -or $env:DOORHANDLE_CI_AUTO_COMPACT_FIXTURES -ne 'true') { throw 'Automatic compact fixtures require explicit MySQL verification scope.' }
     $commit = Require-Value 'GIT_COMMIT' '^[a-f0-9]{40}$'
@@ -127,10 +199,12 @@ if ($Action -in @('PrepareFixtures', 'CleanupFixtures')) {
         @{ schema=1; kind='doorhandle-compact-fixture-artifacts'; release=$tag; commit=$commit;
            sourceSha256=$sha; applicationJarSha256=$jarSha; applicationJarBytes=$jarBytes } |
             ConvertTo-Json | Set-Content -LiteralPath artifacts/fixture-build-artifacts.json -Encoding utf8
-        Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "test ! -e '$remoteInbox/source.tar.gz' && mkdir '$remoteInbox/.fixture-upload'"))
-        foreach ($item in @(@('artifacts/source.tar.gz','source.tar.gz'), @('artifacts/application.jar','application.jar'),
+        if ($env:CI_TOOLS_PREPARED -ne 'true') { throw 'Prepare fixed ECS tools before automatic fixtures.' }
+        Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "test -f '$remoteInbox/source.tar.gz' && mkdir '$remoteInbox/.fixture-upload' && test `"`$(sha256sum '$remoteInbox/source.tar.gz' | cut -d ' ' -f 1)`" = '$sha'"))
+        foreach ($item in @(@('artifacts/application.jar','application.jar'),
                             @('artifacts/fixture-build-artifacts.json','build-artifacts.json'), @('script/jenkins/prepare-compact-fixtures.py','prepare-compact-fixtures.py'))) {
-            Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, $item[0], "${destination}:$remoteInbox/$($item[1])"))
+            $inputFile = if ($item[0].StartsWith('script/')) { Get-PinnedSourceFile $item[0] } else { $item[0] }
+            Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, $inputFile, "${destination}:$remoteInbox/$($item[1])"))
         }
         Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "chmod 600 '$remoteInbox/source.tar.gz' '$remoteInbox/application.jar' '$remoteInbox/build-artifacts.json' '$helper'"))
         $result = Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "python3 -B '$helper' prepare $arguments"))
@@ -169,13 +243,13 @@ if ($Action -eq 'VerifyEcs') {
     New-Item -ItemType Directory -Path artifacts/ecs | Out-Null
     $attempt = [guid]::NewGuid().ToString('N')
     # Claim the upload once before SCP; a retry with an unknown result must use a new build.
-    if ($env:CI_FIXTURES_PREPARED -eq 'true') {
+    if ($env:CI_FIXTURES_PREPARED -eq 'true' -or $env:CI_TOOLS_PREPARED -eq 'true') {
         Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "test -f '$remoteInbox/source.tar.gz' && mkdir '$remoteInbox/.verification-upload' && test `"`$(sha256sum '$remoteInbox/source.tar.gz' | cut -d ' ' -f 1)`" = '$sha'"))
     } else {
         Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "test ! -e '$remoteInbox/source.tar.gz' && mkdir '$remoteInbox/.verification-upload'"))
         Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, 'artifacts/source.tar.gz', "${destination}:$remoteInbox/source.tar.gz"))
     }
-    Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, 'script/jenkins/verify-remote.py', "${destination}:$remoteInbox/verify-remote.py"))
+    Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, (Get-PinnedSourceFile 'script/jenkins/verify-remote.py'), "${destination}:$remoteInbox/verify-remote.py"))
     $manifestFlag = if ($scope -eq 'mysql') { " --fixture-manifest '$fixture'" } else { '' }
     $remoteCommand = "python3 -B '$remoteInbox/verify-remote.py' --root '$remoteRoot' --tag '$tag' --source-sha256 '$sha' --commit '$commit' --instance-id '$instance' --machine-id '$machine' --scope '$scope' --attempt '$attempt'$manifestFlag"
     $verifyExit = 1
@@ -280,9 +354,9 @@ if ($Action -in @('CompactCutover', 'VerifyRuntime', 'CleanupRuntime')) {
     Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, 'artifacts/fixture-build-artifacts.json', "${destination}:$remoteInbox/build-artifacts.json"))
     Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "chmod 600 '$remoteInbox/application.jar' '$remoteInbox/build-artifacts.json'"))
     foreach ($file in @('memory-compat.py', 'model-secrets.py', 'assignment-compat.py', 'mcp-compat.py', 'mcp-runtime.py', 'compact-schema-guard.py', 'compact-cutover.py')) {
-        Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, "script/docker/$file", "${destination}:$remoteInbox/$file"))
+        Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, (Get-PinnedSourceFile "script/docker/$file"), "${destination}:$remoteInbox/$file"))
     }
-    Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, 'script/jenkins/deploy-remote.sh', "${destination}:$remoteInbox/deploy-remote.sh"))
+    Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, (Get-PinnedSourceFile 'script/jenkins/deploy-remote.sh'), "${destination}:$remoteInbox/deploy-remote.sh"))
     $buildRegistry = Get-BuildRegistryAssignment
     Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "$buildRegistry bash '$remoteInbox/deploy-remote.sh' build-only '$remoteRoot' '$runtime' '$tag' '$sha' '$settings' '$instance' '$machine' '$commit'"))
     Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, "${destination}:$remoteRoot/releases/$tag/candidate-build.json", 'artifacts/compact-candidate-build.json'))
@@ -361,7 +435,7 @@ if ($Action -in @('CompactCutover', 'VerifyRuntime', 'CleanupRuntime')) {
 if ($Action -eq 'Rehearse') {
     if ($env:ACTION -ne 'rehearse') { throw 'Rehearse requires the explicit rehearsal action' }
     foreach ($file in @('application-rehearsal.py', 'monolith-ops.py', 'memory-compat.py', 'model-secrets.py', 'assignment-compat.py', 'mcp-compat.py', 'mcp-runtime.py', 'compact-schema-guard.py')) {
-        Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, "script/docker/$file", "${destination}:$remoteInbox/$file"))
+        Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, (Get-PinnedSourceFile "script/docker/$file"), "${destination}:$remoteInbox/$file"))
     }
     $sha = (Get-FileHash -LiteralPath artifacts/source.tar.gz -Algorithm SHA256).Hash.ToLowerInvariant()
     Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, 'artifacts/source.tar.gz', "${destination}:$remoteInbox/source.tar.gz"))
@@ -394,13 +468,10 @@ if ($Action -eq 'Rehearse') {
     $report | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath artifacts/application-rehearsal.json -Encoding UTF8
     return
 }
-Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, 'script/jenkins/deploy-remote.sh', "${destination}:$remoteInbox/deploy-remote.sh"))
-Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, 'script/docker/memory-compat.py', "${destination}:$remoteInbox/memory-compat.py"))
-Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, 'script/docker/model-secrets.py', "${destination}:$remoteInbox/model-secrets.py"))
-Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, 'script/docker/assignment-compat.py', "${destination}:$remoteInbox/assignment-compat.py"))
-Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, 'script/docker/mcp-compat.py', "${destination}:$remoteInbox/mcp-compat.py"))
-Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, 'script/docker/mcp-runtime.py', "${destination}:$remoteInbox/mcp-runtime.py"))
-Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, 'script/docker/compact-schema-guard.py', "${destination}:$remoteInbox/compact-schema-guard.py"))
+Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, (Get-PinnedSourceFile 'script/jenkins/deploy-remote.sh'), "${destination}:$remoteInbox/deploy-remote.sh"))
+foreach ($file in @('memory-compat.py', 'model-secrets.py', 'assignment-compat.py', 'mcp-compat.py', 'mcp-runtime.py', 'compact-schema-guard.py')) {
+    Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, (Get-PinnedSourceFile "script/docker/$file"), "${destination}:$remoteInbox/$file"))
+}
 function Save-McpRuntimeEvidence {
     $body = Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "cat '$remoteRoot/state/mcp-runtime-transition.json'"))
     $receipt = ($body -join "`n") | ConvertFrom-Json
