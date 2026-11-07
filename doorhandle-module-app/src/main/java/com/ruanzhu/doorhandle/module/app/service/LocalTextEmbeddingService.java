@@ -12,6 +12,9 @@ import java.util.Locale;
 @RequiredArgsConstructor
 public class LocalTextEmbeddingService {
 
+    /** Versioned deterministic feature-hashing protocol; not a neural semantic model. */
+    public static final String PROTOCOL = "doorhandle-local-hashing-v1";
+
     private final ChatAssistantProperties properties;
 
     public float[] embed(String text) {

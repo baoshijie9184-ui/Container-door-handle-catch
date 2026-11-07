@@ -49,6 +49,10 @@ def registration(tmp_path):
              'uid': os.getuid(), 'gid': os.getgid(), 'docker': '/usr/bin/docker',
              'images': {'maven': 'sha256:' + '1' * 64, 'node': 'sha256:' + '2' * 64,
                         'python': 'sha256:' + '3' * 64}, 'files': files}
+    pom = checkout / 'pom.xml'; pom.write_bytes(b'<project/>')
+    value['mavenCache'] = tools.maven_cache_definition(tmp_path, value['images']['maven'],
+        [{'path': 'pom.xml', 'bytes': pom.stat().st_size, 'sha256': tools.digest(pom)}])
+    tools.initialize_maven_cache(value)
     manifest = folder / 'manifest.json'
     tools.write_json(manifest, value)
     return value, manifest, dict(root=tmp_path, tag=tag, commit=commit, source_sha=source_sha,
@@ -60,7 +64,8 @@ def row(value):
     return {'Id': 'e' * 64, 'Image': value['images']['maven'],
             'Name': '/doorhandle-ci-tool-' + value['token'] + '-123456789abc',
             'Config': {'Labels': {tools.LABEL: value['token'], 'io.doorhandle.release': value['release'],
-                                 'io.doorhandle.source': value['sourceSha256'], 'io.doorhandle.tool': 'mvn'},
+                                 'io.doorhandle.source': value['sourceSha256'], 'io.doorhandle.tool': 'mvn',
+                                 'io.doorhandle.maven-cache': value['mavenCache']['key']},
                        'User': str(value['uid']) + ':' + str(value['gid']), 'Entrypoint': [tools.BINARIES['mvn']]},
             'HostConfig': {'RestartPolicy': {'Name': 'no'}, 'NetworkMode': 'host',
                            'ReadonlyRootfs': True, 'Privileged': False, 'CapDrop': ['ALL'],
@@ -70,7 +75,8 @@ def row(value):
                        for source, target, writable in (
                            (folder, folder, False), (folder + '/receipts', folder + '/receipts', True),
                            ('/etc/machine-id', '/etc/machine-id', False),
-                           (value['checkout'], value['checkout'], True))],
+                           (value['checkout'], value['checkout'], True),
+                           (value['mavenCache']['repository'], value['mavenCache']['repository'], True))],
             'State': {'Running': False, 'Paused': False, 'Restarting': False, 'Pid': 0, 'ExitCode': 0}}
 
 

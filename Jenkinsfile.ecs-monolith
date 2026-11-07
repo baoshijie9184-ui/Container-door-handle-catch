@@ -52,6 +52,8 @@ pipeline {
                     env.CI_FIXTURE_PREPARATION_ATTEMPTED = 'false'
                     env.CI_RUNTIME_ATTEMPTED = 'false'
                     env.CI_RUNTIME_VERIFIED = 'false'
+                    env.CI_LEGACY_CANDIDATE_ATTEMPTED = 'false'
+                    env.CI_LEGACY_CANDIDATE_PREPARED = 'false'
                     if (isUnix()) error('Control steps require the dedicated local Windows agent')
                     def expectedWorkspace = 'D:/AI/lunwen1/DoorHandleCatch/work/jenkins/ci-workspaces/monolith'
                     if (pwd().replace('\\', '/') != expectedWorkspace) error('Unexpected CI workspace')
@@ -103,6 +105,7 @@ pipeline {
                         env.COMPACT_CUTOVER_SETTINGS = selectedSettings
                     }
                     if (params.ACTION == 'verify-runtime' && (params.DOORHANDLE_CI_SCOPE != 'mysql' || !env.DOORHANDLE_CI_FIXTURE_SETTINGS)) error('Runtime acceptance requires complete MySQL scope and the private ECS fixture settings')
+                    if (params.ACTION in ['verify-runtime', 'compact-cutover'] && !params.LEGACY_SOURCE_SNAPSHOT?.trim()) error('Complete runtime acceptance requires the sealed legacy source snapshot for preservation and independent recovery')
                     if (params.ACTION == 'rehearse' && env.DOORHANDLE_COMPACT_REHEARSAL_READY != 'true') error('Legacy rehearsal remains disabled until its compact database adapter is accepted')
                 }
             }
@@ -172,6 +175,19 @@ pipeline {
                 }
             }
         }
+        stage('Prepare preserved legacy data candidate on ECS') {
+            when { expression { params.ACTION in ['verify-runtime', 'compact-cutover'] } }
+            steps {
+                script { env.CI_LEGACY_CANDIDATE_ATTEMPTED = 'true' }
+                withCredentials([
+                    sshUserPrivateKey(credentialsId: 'doorhandle-ecs-ssh', keyFileVariable: 'DEPLOY_KEY', usernameVariable: 'DEPLOY_USER'),
+                    file(credentialsId: 'doorhandle-ecs-known-hosts', variable: 'DEPLOY_KNOWN_HOSTS')
+                ]) {
+                    pwsh '& ./script/jenkins/pipeline.ps1 -Action PrepareLegacyCandidate'
+                }
+                script { env.CI_LEGACY_CANDIDATE_PREPARED = 'true' }
+            }
+        }
         stage('Rehearse application') {
             when { expression { params.ACTION == 'rehearse' } }
             steps {
@@ -233,6 +249,16 @@ pipeline {
                             file(credentialsId: 'doorhandle-ecs-known-hosts', variable: 'DEPLOY_KNOWN_HOSTS')
                         ]) {
                             pwsh '& ./script/jenkins/pipeline.ps1 -Action CleanupRuntime'
+                        }
+                    }
+                }
+                if (env.CI_LEGACY_CANDIDATE_ATTEMPTED == 'true') {
+                    catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
+                        withCredentials([
+                            sshUserPrivateKey(credentialsId: 'doorhandle-ecs-ssh', keyFileVariable: 'DEPLOY_KEY', usernameVariable: 'DEPLOY_USER'),
+                            file(credentialsId: 'doorhandle-ecs-known-hosts', variable: 'DEPLOY_KNOWN_HOSTS')
+                        ]) {
+                            pwsh '& ./script/jenkins/pipeline.ps1 -Action CleanupLegacyCandidate'
                         }
                     }
                 }

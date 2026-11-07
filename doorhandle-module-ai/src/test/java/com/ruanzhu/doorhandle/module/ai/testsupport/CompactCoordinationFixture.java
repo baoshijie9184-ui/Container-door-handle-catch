@@ -23,11 +23,7 @@ public final class CompactCoordinationFixture {
             if ("H2".equals(database)) {
                 // Register every expression before the first CHECK/generated column is parsed.
                 CompactH2Functions.install(jdbc);
-                ddl = CompactH2Functions.adaptJsonColumns(ddl).replace(" COLLATE utf8mb4_bin", "")
-                        .replace(" ENGINE=InnoDB ROW_FORMAT=DYNAMIC DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin", "")
-                        .replaceAll("(?m)^(\\s*)UNIQUE KEY (\\w+)\\s*(\\([^\\n]+\\))", "$1CONSTRAINT $2 UNIQUE $3")
-                        .replaceAll("(?m)^\\s*KEY [^\\n]+\\n", "")
-                        .replaceAll(",\\s*\\)", ")");
+                ddl = CompactH2Functions.adaptDdl(ddl);
             } else if (!"MySQL".equals(database)) {
                 throw new IllegalArgumentException("Unsupported disposable fixture database");
             }

@@ -1,4 +1,4 @@
-param([Parameter(Mandatory = $true)][ValidateSet('Preflight', 'Package', 'PrepareTools', 'CleanupTools', 'PrepareFixtures', 'CleanupFixtures', 'VerifyEcs', 'PreserveLegacy', 'VerifyRuntime', 'CleanupRuntime', 'Publish', 'Rehearse', 'CompactCutover')][string]$Action)
+param([Parameter(Mandatory = $true)][ValidateSet('Preflight', 'Package', 'PrepareTools', 'CleanupTools', 'PrepareFixtures', 'CleanupFixtures', 'VerifyEcs', 'PreserveLegacy', 'PrepareLegacyCandidate', 'CleanupLegacyCandidate', 'VerifyRuntime', 'CleanupRuntime', 'Publish', 'Rehearse', 'CompactCutover')][string]$Action)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 Set-Location -LiteralPath (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
@@ -83,6 +83,9 @@ if ($Action -eq 'CompactCutover') {
 if ($Action -eq 'VerifyRuntime' -and ($env:ACTION -ne 'verify-runtime' -or $env:DOORHANDLE_CI_SCOPE -ne 'mysql' -or $env:CI_ECS_VERIFIED -ne 'true')) {
     throw 'Runtime acceptance requires this build passing the complete MySQL ECS verification.'
 }
+if ($Action -in @('VerifyRuntime', 'CompactCutover') -and $env:CI_LEGACY_CANDIDATE_PREPARED -ne 'true') {
+    throw 'Runtime acceptance requires this fixed build preserved native data candidate.'
+}
 New-Item -ItemType Directory -Force -Path artifacts | Out-Null
 if ($Action -eq 'Package') {
     $commit = Require-Value 'GIT_COMMIT' '^[a-f0-9]{40}$'
@@ -159,6 +162,55 @@ if ($Action -eq 'PreserveLegacy') {
     $commit = Require-Value 'GIT_COMMIT' '^[a-f0-9]{40}$'
     $sha = (Get-FileHash -LiteralPath artifacts/source.tar.gz -Algorithm SHA256).Hash.ToLowerInvariant()
     & ./script/jenkins/preserve-legacy-input.ps1 -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha -SnapshotDirectory $env:LEGACY_SOURCE_SNAPSHOT
+    return
+}
+if ($Action -in @('PrepareLegacyCandidate', 'CleanupLegacyCandidate')) {
+    if ($env:CI_ECS_VERIFIED -ne 'true' -or $env:DOORHANDLE_CI_SCOPE -ne 'mysql' -or $env:ACTION -notin @('verify-runtime', 'compact-cutover')) {
+        throw 'Native data candidate preparation requires the complete fixed-source MySQL verification.'
+    }
+    $commit = Require-Value 'GIT_COMMIT' '^[a-f0-9]{40}$'
+    $instance = Require-Value 'DOORHANDLE_ECS_INSTANCE_ID' '^i-[a-z0-9]+$'
+    $machine = Require-Value 'DOORHANDLE_ECS_MACHINE_ID' '^[a-f0-9]{32}$'
+    $sha = (Get-FileHash -LiteralPath artifacts/source.tar.gz -Algorithm SHA256).Hash.ToLowerInvariant()
+    $pinnedHelper = Get-PinnedSourceFile 'script/jenkins/prepare-legacy-candidate.py'
+    $helperSha = (Get-FileHash -LiteralPath $pinnedHelper -Algorithm SHA256).Hash.ToLowerInvariant()
+    $helper = "$remoteRoot/verification/$tag/checkout/script/jenkins/prepare-legacy-candidate.py"
+    $helperGuard = "test `"`$(sha256sum '$helper' | cut -d ' ' -f 1)`" = '$helperSha' && "
+    $arguments = "--root '$remoteRoot' --tag '$tag' --commit '$commit' --source-sha256 '$sha' --instance-id '$instance' --machine-id '$machine'"
+    if ($Action -eq 'PrepareLegacyCandidate') {
+        $preservation = Get-Content -LiteralPath artifacts/legacy-source-preservation.json -Raw | ConvertFrom-Json
+        if ($preservation.status -ne 'RESTORED_VERIFIED' -or $preservation.release -ne $tag -or $preservation.commit -ne $commit -or $preservation.sourceSha256 -ne $sha -or $preservation.identity.instanceId -ne $instance -or $preservation.identity.machineId -ne $machine) {
+            throw 'Native data candidate requires this exact build byte-preserved and independently recovered legacy inputs.'
+        }
+        $output = Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "${helperGuard}python3 -B '$helper' run $arguments --dimension 256"))
+        $prepared = ($output | Select-Object -Last 1) | ConvertFrom-Json
+        if ($prepared.status -ne 'PREPARED' -or $prepared.release -ne $tag -or $prepared.commit -ne $commit -or $prepared.sourceSha256 -ne $sha -or $prepared.identity.instanceId -ne $instance -or $prepared.identity.machineId -ne $machine -or $prepared.identity.executionLocation -ne 'ECS' -or $prepared.descriptorSha256 -notmatch '^[a-f0-9]{64}$' -or $prepared.ragManifestSha256 -notmatch '^[a-f0-9]{64}$' -or $prepared.publicSummarySha256 -notmatch '^[a-f0-9]{64}$' -or $prepared.legacyRagRecords -ne 83 -or $prepared.modelCallsPerformed -ne $false -or $prepared.productionPromotionAllowed -ne $false) {
+            throw 'Native data candidate does not prove fixed-source preservation without paid calls or promotion.'
+        }
+        # This public summary contains only counts, hashes and status. Private
+        # source text, per-record inventories and candidate paths stay on ECS.
+        Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, "${destination}:$remoteRoot/verification/$tag/checkout/work/legacy-candidate/public-summary.json", 'artifacts/legacy-candidate.json'))
+        $summaryFile = Get-Item -LiteralPath artifacts/legacy-candidate.json
+        if ($summaryFile.Length -le 0 -or $summaryFile.Length -gt 262144 -or (Get-FileHash -LiteralPath $summaryFile.FullName -Algorithm SHA256).Hash.ToLowerInvariant() -ne $prepared.publicSummarySha256) { throw 'Native candidate public evidence changed during collection.' }
+        $summary = Get-Content -LiteralPath $summaryFile.FullName -Raw | ConvertFrom-Json
+        foreach ($key in @('status', 'release', 'commit', 'sourceSha256', 'descriptorSha256', 'ragManifestSha256', 'legacyRagRecords', 'modelCallsPerformed', 'productionPromotionAllowed')) {
+            if ($summary.$key -cne $prepared.$key) { throw 'Native candidate public evidence differs from its actual execution response.' }
+        }
+        if ($summary.identity.instanceId -ne $instance -or $summary.identity.machineId -ne $machine -or $summary.identity.executionLocation -ne 'ECS') { throw 'Native data candidate public evidence belongs to another execution host.' }
+    } else {
+        $output = Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "${helperGuard}python3 -B '$helper' cleanup $arguments"))
+        $cleanup = ($output | Select-Object -Last 1) | ConvertFrom-Json
+        if ($cleanup.status -notin @('STOPPED', 'NO_RESOURCES') -or $cleanup.release -ne $tag -or $cleanup.sourceVolumesPreserved -ne $true) { throw 'Native candidate owned helper cleanup is incomplete.' }
+        $cleanup | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath artifacts/legacy-candidate-cleanup.json -Encoding utf8
+        if ($cleanup.hasPublicSummary -eq $true) {
+            if ($cleanup.publicSummarySha256 -notmatch '^[a-f0-9]{64}$') { throw 'Native data candidate outcome lacks an actual evidence digest.' }
+            Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, "${destination}:$remoteRoot/verification/$tag/checkout/work/legacy-candidate/public-summary.json", 'artifacts/legacy-candidate-outcome.json'))
+            $file = Get-Item -LiteralPath artifacts/legacy-candidate-outcome.json
+            if ($file.Length -le 0 -or $file.Length -gt 262144 -or (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant() -ne $cleanup.publicSummarySha256) { throw 'Native candidate final outcome changed during collection.' }
+            $outcome = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json
+            if ($outcome.status -notin @('PREPARED', 'FAILED') -or $outcome.release -ne $tag -or $outcome.commit -ne $commit -or $outcome.sourceSha256 -ne $sha -or $outcome.identity.instanceId -ne $instance -or $outcome.identity.machineId -ne $machine -or $outcome.modelCallsPerformed -ne $false -or $outcome.productionPromotionAllowed -ne $false) { throw 'Native candidate final outcome belongs to another build or data policy.' }
+        }
+    }
     return
 }
 if ($Action -in @('PrepareTools', 'CleanupTools')) {
@@ -420,6 +472,23 @@ if ($Action -in @('CompactCutover', 'VerifyRuntime', 'CleanupRuntime')) {
     $candidateSha = (Get-FileHash -LiteralPath artifacts/compact-candidate-build.json -Algorithm SHA256).Hash.ToLowerInvariant()
     $wholeProof = Get-Content -LiteralPath artifacts/ecs/evidence/reports/migration.json -Raw | ConvertFrom-Json
     if ($runtimeProof.status -ne 'PASS' -or $runtimeProof.commit -ne $commit -or $runtimeProof.release -ne $tag -or $runtimeProof.sourceSha256 -ne $sha -or $runtimeProof.candidateBuildSha256 -ne $candidateSha -or $runtimeProof.acceptanceProfileSha256 -ne $verified.acceptanceProfileSha256 -or $runtimeProof.migrationReceiptSha256 -ne $wholeProof.migrationReceiptSha256 -or $runtimeProof.initialTargetSnapshotSha256 -ne $wholeProof.targetSnapshotSha256 -or $runtimeProof.identity.instanceId -ne $instance -or $runtimeProof.identity.machineId -ne $machine -or $runtimeProof.paidModelCalls -ne 0) { throw 'Application acceptance proof belongs to another build, dataset, image or execution host.' }
+    $nativeCandidate = Get-Content -LiteralPath artifacts/legacy-candidate.json -Raw | ConvertFrom-Json
+    $native = $runtimeProof.legacyData
+    if ($native.candidateSha256 -ne $nativeCandidate.descriptorSha256 -or $native.ragManifestSha256 -ne $nativeCandidate.ragManifestSha256 -or $native.originalLocalMem0Records -ne 32 -or $native.eligibleLocalMem0Records -ne 30 -or $native.activatedLocalMem0Records -ne 0 -or $native.archivedLocalMem0Records -ne 2 -or $native.localMem0SemanticStatus -ne 'NOT_ACTIVATED_SEMANTIC_NOT_VERIFIED' -or $native.productionPromotionAllowed -ne $false) { throw 'Runtime did not retain the admitted legacy data and its explicit semantic activation boundary.' }
+    $nativePhases = @('after-start', 'after-restart', 'after-volume-restore')
+    if ((@($native.verifications.PSObject.Properties.Name | Sort-Object) -join ',') -cne (@($nativePhases | Sort-Object) -join ',')) { throw 'Native data startup, restart and new-volume recovery evidence is incomplete.' }
+    New-Item -ItemType Directory -Path artifacts/runtime-native | Out-Null
+    foreach ($phase in $nativePhases) {
+        $reference = $native.verifications.$phase
+        $name = "native-readback-$phase.json"
+        if ($reference.file -ne "checkout/work/runtime-acceptance/$name" -or $reference.sha256 -notmatch '^[a-f0-9]{64}$') { throw 'Native runtime evidence escaped the fixed public report catalog.' }
+        $localFile = "artifacts/runtime-native/$name"
+        Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, "${destination}:$remoteRoot/verification/$tag/$($reference.file)", $localFile))
+        $file = Get-Item -LiteralPath $localFile
+        if ($file.Length -le 0 -or $file.Length -gt 262144 -or (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant() -ne $reference.sha256) { throw 'Native runtime original evidence changed during collection.' }
+        $proof = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json
+        if ($proof.kind -ne 'doorhandle-legacy-runtime-readback' -or $proof.status -ne 'VERIFIED' -or $proof.phase -ne $phase -or $proof.commit -ne $commit -or $proof.release -ne $tag -or $proof.sourceSha256 -ne $sha -or $proof.candidateBuildSha256 -ne $candidateSha -or $proof.project -ne $runtimeProof.project -or $proof.identity.instanceId -ne $instance -or $proof.identity.machineId -ne $machine -or $proof.descriptorSha256 -ne $nativeCandidate.descriptorSha256 -or $proof.ragManifestSha256 -ne $nativeCandidate.ragManifestSha256 -or $proof.retrievalQueries -lt 83 -or $proof.sourceAndDocumentAndFloat32Verified -ne $true -or $proof.activatedLocalMem0Records -ne 0 -or $proof.localMem0SemanticStatus -ne 'NOT_ACTIVATED_SEMANTIC_NOT_VERIFIED' -or $proof.paidModelCalls -ne 0 -or $proof.productionPromotionAllowed -ne $false) { throw 'Native data readback did not verify this exact candidate without semantic activation or paid calls.' }
+    }
     foreach ($service in @('backend', 'nginx', 'mem0', 'detection-worker')) {
         if ($runtimeProof.images.$service -ne $buildReceipt.images.$service) { throw 'Runtime used a different candidate image.' }
     }
@@ -476,6 +545,7 @@ if ($Action -in @('CompactCutover', 'VerifyRuntime', 'CleanupRuntime')) {
     # must not rerun this finished runtime or overwrite its frozen evidence.
     @{ kind='doorhandle-runtime-gate-passed'; status='VERIFIED'; release=$tag; commit=$commit;
        sourceSha256=$sha; candidateBuildSha256=$candidateSha; runtimeReceiptSha256=$runtimeResult.runtimeReceiptSha256;
+       legacyCandidateSha256=$nativeCandidate.descriptorSha256; ragManifestSha256=$nativeCandidate.ragManifestSha256;
        cleanupReceiptSha256=$cleanupReference.sha256; resourceSummarySha256=$resourceReference.sha256;
        resourceProbeSha256=$resourceSummary.rawProbeSha256 } |
         ConvertTo-Json | Set-Content -LiteralPath artifacts/runtime-gate-passed.json -Encoding utf8

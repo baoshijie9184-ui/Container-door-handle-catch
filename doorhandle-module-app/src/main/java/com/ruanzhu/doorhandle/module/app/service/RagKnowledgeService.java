@@ -49,6 +49,13 @@ public class RagKnowledgeService {
 
     @PostConstruct
     public void loadKnowledgeBase() {
+        if (properties.getRagStartupMode() == null) throw new IllegalStateException("Explicit RAG startup mode required");
+        if (properties.getRagStartupMode() == ChatAssistantProperties.RagStartupMode.PRESERVE_EXISTING) {
+            chunks.clear(); contextCache.clear();
+            chromaRagStoreService.attachPreservedCollection();
+            log.info("智能助手 RAG 已连接经过导入凭证校验的既有集合");
+            return;
+        }
         if (!Boolean.TRUE.equals(properties.getRagEnabled())) {
             log.info("智能助手 RAG 已关闭");
             return;
@@ -66,7 +73,7 @@ public class RagKnowledgeService {
     }
 
     public String retrieveContext(String query) {
-        if (!Boolean.TRUE.equals(properties.getRagEnabled()) || !StringUtils.hasText(query) || chunks.isEmpty()) {
+        if (!Boolean.TRUE.equals(properties.getRagEnabled()) || !StringUtils.hasText(query)) {
             return "";
         }
         String cacheKey = normalizeCacheKey(query);

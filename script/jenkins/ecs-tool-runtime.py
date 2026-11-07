@@ -1,13 +1,15 @@
 """Short-lived, fixed-image ECS tool executors; never a Jenkins agent or production exec.
 
 System Python controls Docker. Maven/JDK, Node/npm and Python test dependencies
-remain in explicit immutable images. Only this build's checkout is writable;
+remain in explicit immutable images. This build's checkout and its registered
+third-party-only Maven repository are writable;
 its original host identity and Docker client are mounted read-only. The socket
 is required by the trusted migration tests, not an untrusted-code sandbox.
 """
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -39,6 +41,7 @@ ENVIRONMENT = {'LANG', 'LC_ALL', 'PYTHONDONTWRITEBYTECODE',
 MEMORY = {'java': 2, 'mvn': 4, 'node': 2, 'npm': 3, 'python': 4}
 DISK_FLOOR = (2 * 1024 + 256) * 1024 ** 2
 MEMORY_FLOOR = 1024 ** 3
+CACHE_PROTOCOL = 'doorhandle-maven-release-cache-v1'
 
 
 def require(value, message):
@@ -76,6 +79,266 @@ def write_json(path, value):
         json.dump(value, stream, ensure_ascii=True, indent=2)
         stream.write('\n')
     temporary.replace(path)
+
+
+def maven_input(name):
+    parts = Path(name).parts
+    return bool(parts) and (parts[-1] == 'pom.xml' or '.mvn' in parts)
+
+
+def maven_cache_definition(root, image, catalog):
+    require(IMAGE.fullmatch(image) and isinstance(catalog, list) and 0 < len(catalog) <= 2048,
+            'Maven cache requires fixed source inputs and an immutable tool image')
+    names, total = [], 0
+    for row in catalog:
+        require(set(row) == {'path', 'bytes', 'sha256'} and isinstance(row['path'], str)
+                and not Path(row['path']).is_absolute() and '\\' not in row['path']
+                and all(part not in ('', '.', '..') for part in row['path'].split('/'))
+                and maven_input(row['path']) and row['path'].split('/')[0] not in ('work', '.git')
+                and type(row['bytes']) is int and 0 <= row['bytes'] <= 1024 ** 2
+                and SHA.fullmatch(row['sha256']), 'Unexpected fixed Maven cache input')
+        names.append(row['path']); total += row['bytes']
+    require(names == sorted(set(names)) and 'pom.xml' in names and total <= 16 * 1024 ** 2,
+            'Maven input catalog is incomplete, repeated or oversized')
+    inputs_sha = hashlib.sha256(json.dumps(catalog, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    key = hashlib.sha256(json.dumps({'protocol': CACHE_PROTOCOL, 'inputsSha256': inputs_sha,
+        'mavenImage': image}, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    directory = Path(root) / 'dependency-cache' / 'maven' / key
+    return {'protocol': CACHE_PROTOCOL, 'key': key, 'inputsSha256': inputs_sha, 'mavenImage': image,
+            'directory': str(directory), 'repository': str(directory / 'repository'), 'inputs': catalog}
+
+
+def maven_archive_inputs(archive):
+    catalog = []
+    with tarfile.open(archive, 'r:gz') as package:
+        for entry in package:
+            if not maven_input(entry.name) or entry.isdir():
+                continue
+            require(entry.isfile() and 0 <= entry.size <= 1024 ** 2, 'Maven source input is not a bounded regular file')
+            raw = package.extractfile(entry).read(1024 ** 2 + 1)
+            require(len(raw) == entry.size, 'Maven source input changed')
+            if entry.name.endswith(('/maven.config', '/jvm.config', '/settings.xml')):
+                require(b'maven.repo.local' not in raw and b'<localRepository>' not in raw,
+                        'Fixed Maven configuration cannot override the registered dependency repository')
+            catalog.append({'path': entry.name, 'bytes': len(raw), 'sha256': hashlib.sha256(raw).hexdigest()})
+    return sorted(catalog, key=lambda row: row['path'])
+
+
+def registered_maven_cache(value):
+    root = Path(value['directory']).parents[2]
+    actual = value.get('mavenCache', {})
+    require(actual == maven_cache_definition(root, value['images']['maven'], actual.get('inputs')),
+            'Maven cache escaped its exact source/image registration')
+    return actual
+
+
+def cache_directory(path, *, create=False):
+    path = canonical(path, exists=not create)
+    if create:
+        path.mkdir(mode=0o700, exist_ok=True)
+    info = path.stat()
+    require(path.is_dir() and info.st_uid == os.getuid() and stat.S_IMODE(info.st_mode) == 0o700,
+            'Maven dependency cache must be a private owned directory without links')
+    return path
+
+
+def initialize_maven_cache(value):
+    binding = registered_maven_cache(value)
+    root = Path(value['directory']).parents[2]
+    disk = os.statvfs(root)
+    require(disk.f_bavail * disk.f_frsize >= DISK_FLOOR, 'Maven cache preparation requires the actual filesystem reserve')
+    for path in (root / 'dependency-cache', root / 'dependency-cache/maven', Path(binding['directory']),
+                 Path(binding['repository']), Path(binding['directory']) / 'receipts'):
+        cache_directory(path, create=True)
+    with maven_cache_lock(value):
+        before = maven_cache_inventory(value)
+        verify_maven_cache_state(value, before)
+        persist_maven_cache(value, before, before)
+
+
+@contextmanager
+def maven_cache_lock(value):
+    import fcntl
+    binding = registered_maven_cache(value)
+    directory = cache_directory(Path(binding['directory']))
+    file = directory / 'cache.lock'
+    require(not file.is_symlink(), 'Maven cache lock cannot be redirected')
+    with os.fdopen(os.open(file, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600), 'r+b') as lock:
+        info = os.fstat(lock.fileno())
+        require(info.st_uid == os.getuid() and info.st_nlink == 1 and stat.S_IMODE(info.st_mode) == 0o600,
+                'Maven cache lock is not private and owned')
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ValueError('This Maven dependency cache is already in use') from None
+        try:
+            yield
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def maven_cache_usage(value):
+    repository = cache_directory(Path(registered_maven_cache(value)['repository']))
+    files, logical, allocated = 0, 0, 0
+    for current, dirs, names in os.walk(repository, followlinks=False):
+        allocated += Path(current).lstat().st_blocks * 512
+        for name in dirs + names:
+            path = Path(current) / name; info = path.lstat()
+            require(not path.is_symlink() and info.st_uid == os.getuid(), 'Maven cache contains a foreign path or link')
+            if path.is_file():
+                require(info.st_nlink == 1 and not info.st_mode & 0o022, 'Maven cache file is linked or writable by others')
+                files += 1; logical += info.st_size; allocated += info.st_blocks * 512
+                require(files <= 50000 and logical <= 2 * 1024 ** 3, 'Maven dependency cache exceeds its reviewed budget')
+    return {'files': files, 'bytes': logical, 'allocatedBytes': allocated}
+
+
+def maven_cache_inventory(value):
+    """No reactor outputs, snapshots, unchecked jars or error/temporary metadata are reusable."""
+    repository = Path(registered_maven_cache(value)['repository'])
+    maven_cache_usage(value)
+    records, artifacts = [], []
+    for path in sorted(repository.rglob('*')):
+        if not path.is_file():
+            continue
+        name = path.relative_to(repository).as_posix(); parts = name.split('/')
+        require(parts[:2] != ['com', 'ruanzhu'] and not any('SNAPSHOT' in part.upper() for part in parts),
+                'Reactor or snapshot bytes cannot enter a reusable dependency cache')
+        require(all(re.fullmatch(r'[A-Za-z0-9_.+\-]+', part) for part in parts), 'Unexpected Maven dependency path')
+        require(path.name == '_remote.repositories' or path.name.endswith(('.jar', '.pom', '.sha1', '.sha256', '.md5', '.sha512')),
+                'Partial downloads and resolver metadata cannot be marked ready')
+        checksum = digest(path)
+        if path.suffix in ('.jar', '.pom'):
+            require(len(parts) >= 4 and re.fullmatch(re.escape(parts[-3] + '-' + parts[-2])
+                    + r'(?:-[A-Za-z0-9_.+\-]+)?\.(?:jar|pom)', path.name), 'Unexpected release artifact layout')
+            verified = False
+            for suffix, algorithm in (('.sha256', 'sha256'), ('.sha1', 'sha1')):
+                sidecar = Path(str(path) + suffix)
+                if sidecar.is_file():
+                    require(sidecar.stat().st_size <= 1024, 'Oversized dependency checksum sidecar')
+                    supplied = sidecar.read_text(encoding='ascii').strip().split()[0]
+                    expected_length = 64 if algorithm == 'sha256' else 40
+                    require(re.fullmatch('[a-fA-F0-9]{' + str(expected_length) + '}', supplied), 'Invalid dependency checksum')
+                    result = hashlib.new(algorithm)
+                    with path.open('rb') as stream:
+                        for chunk in iter(lambda: stream.read(1024 ** 2), b''): result.update(chunk)
+                    require(result.hexdigest() == supplied.lower(), 'Downloaded dependency checksum mismatch')
+                    verified = True
+            require(verified, 'Release dependency has no verified repository checksum')
+            artifacts.append([name, path.stat().st_size, checksum])
+        records.append([name, path.stat().st_size, checksum])
+    catalog_sha = hashlib.sha256(json.dumps(records, separators=(',', ':')).encode()).hexdigest()
+    return {**maven_cache_usage(value), 'catalogSha256': catalog_sha, 'artifacts': artifacts, 'records': records}
+
+
+def discard_maven_transients(value):
+    """Only known generated resolver markers in this exact registered repository may be removed."""
+    repository = Path(registered_maven_cache(value)['repository'])
+    maven_cache_usage(value)  # Reject links/foreign files before any unlink.
+    for path in repository.rglob('*'):
+        if path.is_file() and (path.name.endswith(('.lastUpdated', '.part', '.part.lock', '.tmp'))
+                or path.name == 'resolver-status.properties' or path.name.startswith('maven-metadata-')):
+            path.unlink()
+
+
+def persist_maven_cache(value, before, after):
+    binding = registered_maven_cache(value)
+    previous = {tuple(row) for row in before['artifacts']}
+    summary = {'key': binding['key'], 'inputsSha256': binding['inputsSha256'], 'mavenImage': binding['mavenImage'],
+        'scope': 'SHARED_THIRD_PARTY_RELEASE_DEPENDENCIES', 'status': 'READY',
+        'beforeCatalogSha256': before['catalogSha256'], 'afterCatalogSha256': after['catalogSha256'],
+        'artifactCount': len(after['artifacts']), 'reusedArtifacts': sum(tuple(row) in previous for row in after['artifacts']),
+        'files': after['files'], 'bytes': after['bytes'], 'allocatedBytes': after['allocatedBytes'],
+        'allocatedGrowthBytes': max(0, after['allocatedBytes'] - before['allocatedBytes'])}
+    directory = Path(binding['directory'])
+    state = directory / 'state.json'
+    previous_receipt = private_json(state).get('receiptSha256') if state.exists() else None
+    receipt = directory / 'receipts' / (value['release'] + '-' + secrets.token_hex(6) + '.json')
+    write_json(receipt, {**summary, 'release': value['release'], 'commit': value['commit'],
+        'sourceSha256': value['sourceSha256'], 'identity': value['identity'], 'catalog': after['records'],
+        'previousReceiptSha256': previous_receipt})
+    write_json(directory / 'state.json', {**summary, 'receipt': receipt.name, 'receiptSha256': digest(receipt)})
+    return {**summary, 'receiptSha256': digest(receipt)}
+
+
+def verify_maven_cache_state(value, inventory):
+    binding = registered_maven_cache(value); directory = Path(binding['directory'])
+    state_file = directory / 'state.json'
+    if not state_file.exists():
+        require(inventory['files'] == 0, 'Unregistered Maven cache bytes cannot be seeded implicitly')
+        return
+    state = private_json(state_file)
+    require(state.get('status') == 'READY' and all(state.get(key) == binding[key]
+                for key in ('key', 'inputsSha256', 'mavenImage'))
+            and re.fullmatch(r'ci-[0-9]+-[a-f0-9]{12}-[a-f0-9]{12}\.json', state.get('receipt', '')),
+            'Maven cache has no completed matching source/image receipt')
+    receipt = canonical(directory / 'receipts' / state['receipt']); info = receipt.stat()
+    require(info.st_uid == os.getuid() and info.st_nlink == 1 and stat.S_IMODE(info.st_mode) == 0o600
+            and 0 < info.st_size <= 16 * 1024 ** 2 and digest(receipt) == state.get('receiptSha256'),
+            'Maven dependency source receipt changed')
+    proof = json.loads(receipt.read_text(encoding='utf8'))
+    require(proof.get('status') == 'READY' and proof.get('key') == binding['key']
+            and proof.get('identity') == value['identity'] and SHA.fullmatch(proof.get('sourceSha256', ''))
+            and re.fullmatch(r'[a-f0-9]{40}', proof.get('commit', '')) and TAG.fullmatch(proof.get('release', ''))
+            and proof['release'].endswith('-' + proof['commit'][:12])
+            and proof.get('catalog') == inventory['records']
+            and proof.get('afterCatalogSha256') == state.get('afterCatalogSha256') == inventory['catalogSha256'],
+            'Maven dependency bytes changed outside their serial command receipt')
+
+
+def maven_arguments(value, arguments):
+    binding = registered_maven_cache(value)
+    expected = '-Dmaven.repo.local=' + binding['repository']
+    require(all('maven.repo.local' not in argument or argument == expected for argument in arguments)
+            and sum(argument == expected for argument in arguments) <= 1,
+            'Maven repository argument differs from its exact registered cache')
+    allowed_flags = {'-B', '--batch-mode', '-ntp', '--no-transfer-progress', '-v', '-version', '--version', '-V', '-C', '--strict-checksums'}
+    require(all(argument == expected or argument in allowed_flags or argument.startswith('-D')
+                or argument in ('clean', 'test', 'verify', 'package') for argument in arguments),
+            'Only fixed verification phases and properties may use the shared Maven cache')
+    require(not any(argument.startswith(('-Dmaven.', '-Duser.home=', '-Duser.dir=', '-Djava.home=')) and argument != expected for argument in arguments),
+            'Maven cannot redirect its fixed source or tool configuration')
+    checkout = Path(value['checkout'])
+    if arguments not in (['-version'], ['--version'], ['-v']):
+        actual_inputs = set()
+        for current, dirs, names in os.walk(checkout, followlinks=False):
+            dirs[:] = [name for name in dirs if name not in ('work', 'target', '.git', 'node_modules', '.venv')]
+            for name in names:
+                relative = (Path(current) / name).relative_to(checkout).as_posix()
+                if maven_input(relative): actual_inputs.add(relative)
+        require(actual_inputs == {row['path'] for row in binding['inputs']}, 'Maven source input set changed')
+        for row in binding['inputs']:
+            file = canonical(checkout / row['path'])
+            require(file.is_file() and file.stat().st_size == row['bytes'] and digest(file) == row['sha256'],
+                    'Maven source input differs from the exact cache registration')
+    return ['-C', *([] if expected in arguments else [expected]), *arguments]
+
+
+def verify_maven_source(value):
+    archive = canonical(Path(value['directory']).parent / 'source.tar.gz')
+    require(digest(archive) == value['sourceSha256'], 'Maven cache source archive changed')
+    with tarfile.open(archive, 'r:gz') as package:
+        require(package.pax_headers.get('comment') == value['commit'], 'Maven cache source commit changed')
+    require(maven_archive_inputs(archive) == registered_maven_cache(value)['inputs'],
+            'Maven dependency key differs from the fixed source archive bytes')
+
+
+def public_maven_cache(value, proof):
+    if proof is None:
+        return None
+    require(isinstance(proof, dict) and proof.get('key') == registered_maven_cache(value)['key'],
+            'Maven dependency evidence belongs to another source/image key')
+    if proof.get('status') == 'FAILED_OR_UNKNOWN':
+        require(set(proof) == {'status', 'key', 'errorType'} and re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{0,99}', proof['errorType']),
+                'Unexpected private Maven dependency failure metadata')
+        return dict(proof)
+    hashes = {'key', 'inputsSha256', 'beforeCatalogSha256', 'afterCatalogSha256', 'receiptSha256'}
+    numbers = {'artifactCount', 'reusedArtifacts', 'files', 'bytes', 'allocatedBytes', 'allocatedGrowthBytes'}
+    fields = hashes | numbers | {'mavenImage', 'scope', 'status'}
+    require(set(proof) == fields and all(SHA.fullmatch(proof[key]) for key in hashes)
+            and all(type(proof[key]) is int and proof[key] >= 0 for key in numbers)
+            and proof['mavenImage'] == value['images']['maven'] and proof['status'] == 'READY'
+            and proof['scope'] == 'SHARED_THIRD_PARTY_RELEASE_DEPENDENCIES', 'Unexpected Maven dependency evidence')
+    return {key: proof[key] for key in sorted(fields)}
 
 
 def docker(program, *arguments, timeout=45):
@@ -121,6 +384,7 @@ def validate_manifest(value, *, root, tag, commit, source_sha, identity):
     files = value.get('files', {})
     require(isinstance(files, dict) and set(files) == {'executor.py', *BINARIES}
             and all(isinstance(v, str) and SHA.fullmatch(v) for v in files.values()), 'Tool launcher source catalog is incomplete')
+    registered_maven_cache(value)
     return folder
 
 
@@ -255,6 +519,10 @@ def owned_row(program, value, container):
     if tool == 'python':
         allowed[(str(docker_socket()), '/var/run/docker.sock')] = True
         allowed[(value['docker'], value['docker'])] = False
+    if tool == 'mvn':
+        cache = registered_maven_cache(value)
+        allowed[(cache['repository'], cache['repository'])] = True
+        require(labels.get('io.doorhandle.maven-cache') == cache['key'], 'Maven tool cache identity changed')
     release = None
     if labels.get('io.doorhandle.java-release') is not None:
         require(tool == 'java', 'Only Java may mount an admitted candidate release')
@@ -350,7 +618,8 @@ def evidence(value, stopped):
                          'argumentsSha256': item['argumentsSha256'], 'status': item['status'],
                          'exitCode': item.get('exitCode'), 'cleanup': cleaned,
                          'resourceLimitTriggered': item.get('resourceLimitTriggered', False),
-                         'resourceMonitoring': item.get('resourceMonitoring')})
+                         'resourceMonitoring': item.get('resourceMonitoring'),
+                         'mavenDependencyCache': public_maven_cache(value, item.get('mavenDependencyCache'))})
     return {'schema': 1, 'kind': 'doorhandle-ecs-tool-evidence', 'release': value['release'],
             'commit': value['commit'], 'sourceSha256': value['sourceSha256'],
             'manifestSha256': digest(Path(value['directory']) / 'manifest.json'),
@@ -399,6 +668,8 @@ def command(value, tool, arguments, cwd, environment):
         writable = folder / 'probe'
         writable.mkdir(mode=0o700, exist_ok=True)
         actual = writable
+    if tool == 'mvn':
+        arguments = maven_arguments(value, arguments)
     env, home = safe_environment(value, environment, writable)
     role = 'maven' if tool in ('java', 'mvn') else 'node' if tool in ('node', 'npm') else 'python'
     image = value['images'][role]
@@ -418,6 +689,11 @@ def command(value, tool, arguments, cwd, environment):
     if release:
         binds.append((release['source'], release['source'], True))
         args += ['--label', 'io.doorhandle.java-release=' + digest(folder / 'java-release.json')]
+    if tool == 'mvn':
+        cache = registered_maven_cache(value)
+        cache_directory(Path(cache['repository']))
+        binds.append((cache['repository'], cache['repository'], False))
+        args += ['--label', 'io.doorhandle.maven-cache=' + cache['key']]
     # The probe lies beneath the read-only registration folder; add the more
     # specific writable bind after its parent so only probe output can change.
     binds.sort(key=lambda item: len(Path(item[1]).parts))
@@ -479,6 +755,10 @@ def observe_resources(value, record, file):
     for source, target in (('diskAvailableBytes', 'minimumDiskAvailableBytes'),
                            ('memoryAvailableBytes', 'minimumMemoryAvailableBytes')):
         monitoring[target] = min(monitoring[target], probe[source])
+    if record.get('tool') == 'mvn':
+        # The shared repository is explicitly separate from this checkout's owned outputs.
+        monitoring['sharedMavenDependencyCache'] = {'key': registered_maven_cache(value)['key'],
+            'scope': 'SHARED_THIRD_PARTY_RELEASE_DEPENDENCIES', **maven_cache_usage(value)}
     if probe['diskAvailableBytes'] < DISK_FLOOR or probe['memoryAvailableBytes'] < MEMORY_FLOOR:
         record.update(status='FAILED_OR_UNKNOWN', resourceLimitTriggered=True)
         write_json(file, record)
@@ -486,6 +766,16 @@ def observe_resources(value, record, file):
 
 
 def launch_admitted(value, tool, arguments):
+    if tool == 'mvn':
+        verify_maven_source(value)
+        with maven_cache_lock(value):
+            before = maven_cache_inventory(value)
+            verify_maven_cache_state(value, before)
+            return launch_command(value, tool, arguments, before)
+    return launch_command(value, tool, arguments)
+
+
+def launch_command(value, tool, arguments, cache_before=None):
     args, name = command(value, tool, arguments, Path.cwd(), dict(os.environ))
     program = canonical(value['docker'])
     record = {'kind': 'doorhandle-ecs-tool-command', 'release': value['release'], 'commit': value['commit'],
@@ -529,6 +819,20 @@ def launch_admitted(value, tool, arguments):
             if record.get('resourceLimitTriggered'):
                 record['resourceAbortCleanup'] = cleanup(value)
         finally:
+            if tool == 'mvn':
+                try:
+                    require(container is None or record.get('cleanup', {}).get('removed') is True,
+                            'Maven dependency bytes cannot be prepared while its tool may still run')
+                    # Even source-test failure can retain successfully verified third-party downloads.
+                    discard_maven_transients(value)
+                    after = maven_cache_inventory(value)
+                    record['mavenDependencyCache'] = persist_maven_cache(value, cache_before, after)
+                except BaseException as error:
+                    record.update(status='FAILED_OR_UNKNOWN', mavenDependencyCache={'status': 'FAILED_OR_UNKNOWN',
+                        'key': registered_maven_cache(value)['key'], 'errorType': type(error).__name__})
+                    write_json(Path(registered_maven_cache(value)['directory']) / 'state.json', record['mavenDependencyCache'])
+                    record['finishedAtUnix'] = time.time(); write_json(file, record)
+                    raise
             record['finishedAtUnix'] = time.time()
             write_json(file, record)
 
@@ -585,6 +889,8 @@ def prepare(args):
              'sourceSha256': args.source_sha256, 'identity': expected, 'directory': str(folder),
              'checkout': str(root / 'verification' / args.tag / 'checkout'), 'token': secrets.token_hex(12),
              'uid': os.getuid(), 'gid': os.getgid(), 'docker': str(program), 'images': images, 'files': files}
+    value['mavenCache'] = maven_cache_definition(root, images['maven'], maven_archive_inputs(archive))
+    initialize_maven_cache(value)
     path = folder / 'manifest.json'; write_json(path, value)
     return {'status': 'PREPARED', 'release': args.tag, 'manifest': str(path), 'manifestSha256': digest(path),
             'java': str(folder / 'java'), 'tools': {key: str(folder / key) for key in BINARIES}}

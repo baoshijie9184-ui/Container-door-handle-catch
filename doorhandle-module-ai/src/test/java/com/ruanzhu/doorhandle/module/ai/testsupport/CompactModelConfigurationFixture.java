@@ -31,11 +31,7 @@ public final class CompactModelConfigurationFixture {
         var match = Pattern.compile("(?s)CREATE TABLE llm_configuration \\(.*?;(?=\\s*(?:--|CREATE|$))").matcher(source);
         if (!match.find()) throw new IllegalStateException("Actual llm_configuration baseline is missing");
         String ddl = match.group();
-        if (!mysql) ddl = CompactH2Functions.adaptJsonColumns(ddl).replaceAll(" COLLATE utf8mb4_[a-z0-9_]+", "")
-                .replace("document_json JSON", "document_json LONGTEXT")
-                .replaceAll(" ENGINE=InnoDB(?: ROW_FORMAT=DYNAMIC)? DEFAULT CHARSET=utf8mb4", "")
-                .replaceAll("(?m)^(\\s*)UNIQUE KEY (\\w+)\\s*(\\([^\\n]+\\))", "$1CONSTRAINT $2 UNIQUE $3")
-                .replaceAll("(?m)^\\s*KEY [^\\n]+\\n", "").replaceAll(",\\s*\\)", ")");
+        if (!mysql) ddl = CompactH2Functions.adaptDdl(ddl);
         new ResourceDatabasePopulator(new ByteArrayResource(ddl.getBytes(StandardCharsets.UTF_8))).execute(jdbc.getDataSource());
         if (mysql) {
             var guards = new ResourceDatabasePopulator(new ClassPathResource("db/compact/007-runtime-guards.sql"));

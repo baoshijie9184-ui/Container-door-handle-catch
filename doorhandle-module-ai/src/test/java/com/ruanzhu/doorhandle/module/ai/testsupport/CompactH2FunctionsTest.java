@@ -71,4 +71,48 @@ class CompactH2FunctionsTest {
         assertThat(row.get("matched")).isEqualTo(true);
         assertThat(row.get("id")).isNotNull();
     }
+
+    @Test void generatedColumnsRemainComputedWhileStorageModifiersAndOnlyTheirSyntaxAreAdapted() {
+        String source = """
+            CREATE TABLE fixture_generated (
+              id INT PRIMARY KEY,
+              raw JSON NOT NULL,
+              calculated VARCHAR(24) GENERATED ALWAYS AS
+                (CASE WHEN JSON_TYPE(JSON_EXTRACT(raw,'$.role'))='STRING'
+                 THEN JSON_UNQUOTE(JSON_EXTRACT(raw,'$.role')) END) VIRTUAL,
+              stored_value INT GENERATED ALWAYS AS (id+1) STORED,
+              description VARCHAR(80) DEFAULT ' VIRTUAL and STORED are literal data',
+              CONSTRAINT ck_generated CHECK (stored_value>id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+            """;
+        String ddl = CompactH2Functions.adaptDdl(source);
+        assertThat(ddl).contains("GENERATED ALWAYS AS", " VIRTUAL and STORED are literal data", "CONSTRAINT ck_generated CHECK");
+        jdbc.execute(ddl);
+        jdbc.update("INSERT INTO fixture_generated(id,raw) VALUES(?,?)", 1, "{\"role\":\"INSPECTOR\"}");
+        assertThat(jdbc.queryForMap("SELECT calculated,stored_value FROM fixture_generated WHERE id=1"))
+                .containsEntry("calculated", "INSPECTOR").containsEntry("stored_value", 2);
+        assertThatThrownBy(() -> jdbc.update("UPDATE fixture_generated SET stored_value=9 WHERE id=1"))
+                .isInstanceOf(org.springframework.dao.DataAccessException.class);
+    }
+
+    @Test void tableScopedMysqlUniqueNamesRemainIndependentAndEnforcedInH2() {
+        jdbc.execute(CompactH2Functions.adaptDdl("""
+            CREATE TABLE fixture_left (
+              id INT PRIMARY KEY,
+              value_id INT,
+              UNIQUE KEY same_key (value_id)
+            );
+            CREATE TABLE fixture_right (
+              id INT PRIMARY KEY,
+              value_id INT,
+              UNIQUE KEY same_key (value_id)
+            );
+            """));
+        jdbc.update("INSERT INTO fixture_left(id,value_id) VALUES(1,10)");
+        jdbc.update("INSERT INTO fixture_right(id,value_id) VALUES(1,10)");
+        assertThatThrownBy(() -> jdbc.update("INSERT INTO fixture_left(id,value_id) VALUES(2,10)"))
+                .isInstanceOf(org.springframework.dao.DuplicateKeyException.class);
+        assertThatThrownBy(() -> jdbc.update("INSERT INTO fixture_right(id,value_id) VALUES(2,10)"))
+                .isInstanceOf(org.springframework.dao.DuplicateKeyException.class);
+    }
 }

@@ -903,7 +903,7 @@
       },
       {
         "className": "com.ruanzhu.doorhandle.module.ai.testsupport.CompactH2FunctionsTest",
-        "minimumTests": 4,
+        "minimumTests": 6,
         "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/testsupport/CompactH2FunctionsTest.java"
       },
       {
@@ -915,6 +915,16 @@
         "className": "com.ruanzhu.doorhandle.framework.persistence.chat.JdbcMessageEvidenceClockTest",
         "minimumTests": 6,
         "source": "doorhandle-framework/src/test/java/com/ruanzhu/doorhandle/framework/persistence/chat/JdbcMessageEvidenceClockTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.app.service.ChromaRagPreservationTest",
+        "minimumTests": 12,
+        "source": "doorhandle-module-app/src/test/java/com/ruanzhu/doorhandle/module/app/service/ChromaRagPreservationTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.ai.testsupport.CompactH2FixtureInstallationTest",
+        "minimumTests": 3,
+        "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/testsupport/CompactH2FixtureInstallationTest.java"
       }
     ]
   },
@@ -1174,6 +1184,24 @@
         "module": "tests_python.test_legacy_preservation_profiles",
         "minimumTests": 11,
         "source": "tests_python/test_legacy_preservation_profiles.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_mem0_runtime_collection",
+        "minimumTests": 24,
+        "source": "tests_python/test_mem0_runtime_collection.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_jenkins_maven_dependency_cache",
+        "minimumTests": 32,
+        "source": "tests_python/test_jenkins_maven_dependency_cache.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_legacy_candidate_preparation",
+        "minimumTests": 25,
+        "source": "tests_python/test_legacy_candidate_preparation.py",
         "allowedSkippedTests": []
       }
     ]

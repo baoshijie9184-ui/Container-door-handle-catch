@@ -8,6 +8,7 @@ import sys
 import logging
 import hmac
 import json
+import re
 import threading
 import asyncio
 from pathlib import Path
@@ -96,8 +97,22 @@ def llm_transport_url(provider, original):
         raise ValueError("Invalid deployment LLM gateway transport") from None
 
 
+def memory_collection_name(settings=None):
+    """An isolated acceptance namespace requires one exact, explicitly admitted project."""
+    settings = os.environ if settings is None else settings
+    keys = ("DOORHANDLE_RUNTIME_ACCEPTANCE", "DOORHANDLE_RUNTIME_PROJECT", "MEM0_RUNTIME_TEST_COLLECTION")
+    if not any(key in settings for key in keys):
+        return "doorhandle_memories"
+    switch, project, collection = (settings.get(key) for key in keys)
+    match = re.fullmatch(r"doorhandle-rehearsal-([a-f0-9]{12})", project) if isinstance(project, str) else None
+    if switch != "true" or match is None or collection != "doorhandle_runtime_test_" + match[1]:
+        raise ValueError("Invalid controlled memory acceptance collection")
+    return collection
+
+
 def get_memory_config():
     """构建 mem0 配置"""
+    collection = memory_collection_name()
     llm_api_key = required_env("DASHSCOPE_API_KEY")
     llm_base_url = os.getenv("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
     llm_model = os.getenv("MEM0_LLM_MODEL") or os.getenv("DASHSCOPE_MODEL", "kimi-k3")
@@ -125,7 +140,7 @@ def get_memory_config():
         "vector_store": {
             "provider": "chroma",
             "config": {
-                "collection_name": "doorhandle_memories",
+                "collection_name": collection,
                 "path": os.path.join(os.path.dirname(__file__), "chroma_db")
             }
         }

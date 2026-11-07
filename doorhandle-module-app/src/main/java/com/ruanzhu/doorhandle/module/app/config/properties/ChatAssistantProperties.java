@@ -22,6 +22,11 @@ public class ChatAssistantProperties {
     private Long voiceMaxBytes = 10 * 1024 * 1024L;
     private List<String> voiceTranscribeAllowedHosts = new ArrayList<>(List.of("localhost", "127.0.0.1", "::1"));
     private Boolean ragEnabled = true;
+    /** PRESERVE_EXISTING is explicit and requires the candidate's pinned private import evidence. */
+    private RagStartupMode ragStartupMode = RagStartupMode.REINDEX;
+    private String ragPreservationManifest = "";
+    private String ragPreservationManifestSha256 = "";
+    private String ragPreservationCommit = "";
     private Boolean ragQueryRewriteEnabled = true;
     private Boolean ragRerankEnabled = true;
     private Integer ragTopK = 4;
@@ -44,4 +49,6 @@ public class ChatAssistantProperties {
             "file:docs/system-user-guide.md",
             "file:README.md"
     ));
+
+    public enum RagStartupMode { REINDEX, PRESERVE_EXISTING }
 }

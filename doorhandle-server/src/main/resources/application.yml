@@ -233,6 +233,10 @@ chat-assistant:
   voice-max-bytes: ${CHAT_ASSISTANT_VOICE_MAX_BYTES:10485760}
   voice-transcribe-allowed-hosts: ${CHAT_ASSISTANT_VOICE_TRANSCRIBE_ALLOWED_HOSTS:localhost,127.0.0.1,::1}
   rag-enabled: ${CHAT_ASSISTANT_RAG_ENABLED:true}
+  rag-startup-mode: ${CHAT_ASSISTANT_RAG_STARTUP_MODE:REINDEX}
+  rag-preservation-manifest: ${CHAT_ASSISTANT_RAG_PRESERVATION_MANIFEST:}
+  rag-preservation-manifest-sha256: ${CHAT_ASSISTANT_RAG_PRESERVATION_MANIFEST_SHA256:}
+  rag-preservation-commit: ${CHAT_ASSISTANT_RAG_PRESERVATION_COMMIT:}
   rag-query-rewrite-enabled: ${CHAT_ASSISTANT_RAG_QUERY_REWRITE_ENABLED:true}
   rag-rerank-enabled: ${CHAT_ASSISTANT_RAG_RERANK_ENABLED:true}
   rag-top-k: ${CHAT_ASSISTANT_RAG_TOP_K:4}

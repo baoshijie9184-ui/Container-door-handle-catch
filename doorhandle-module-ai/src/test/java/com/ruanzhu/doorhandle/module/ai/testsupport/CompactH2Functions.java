@@ -41,11 +41,22 @@ public final class CompactH2Functions {
 
     /** Preserve textual JSON and case-sensitive comparisons without removing CHECKs. */
     public static String adaptJsonColumns(String ddl) {
+        return adaptSql(ddl, null);
+    }
+
+    /** Complete test DDL dialect; production MySQL scripts are never rewritten. */
+    public static String adaptDdl(String ddl) {
+        return adaptSql(ddl, new DdlContext());
+    }
+
+    private static final class DdlContext { String table = ""; }
+
+    private static String adaptSql(String ddl, DdlContext context) {
         StringBuilder result = new StringBuilder(), plain = new StringBuilder();
         for (int i = 0; i < ddl.length();) {
             char c = ddl.charAt(i);
             if (c == '\'') {
-                result.append(adaptPlain(plain.toString())); plain.setLength(0);
+                result.append(adaptPlain(plain.toString(), context)); plain.setLength(0);
                 StringBuilder literal = new StringBuilder(); boolean closed = false; i++;
                 while (i < ddl.length()) {
                     c = ddl.charAt(i++);
@@ -63,21 +74,52 @@ public final class CompactH2Functions {
                 if (!closed) throw new IllegalArgumentException("Unterminated MySQL fixture SQL literal");
                 result.append('\'').append(literal.toString().replace("'", "''")).append('\'');
             } else if (ddl.startsWith("--", i) || ddl.startsWith("/*", i)) {
-                result.append(adaptPlain(plain.toString())); plain.setLength(0);
+                result.append(adaptPlain(plain.toString(), context)); plain.setLength(0);
                 int end = ddl.startsWith("--", i) ? ddl.indexOf('\n', i) : ddl.indexOf("*/", i + 2);
                 if (end < 0) end = ddl.length();
                 else if (ddl.startsWith("/*", i)) end += 2;
                 result.append(ddl, i, end); i = end;
             } else { plain.append(c); i++; }
         }
-        return result.append(adaptPlain(plain.toString())).toString();
+        return result.append(adaptPlain(plain.toString(), context)).toString();
     }
 
-    private static String adaptPlain(String sql) {
-        return sql.replaceAll("(?i)\\bAS\\s+JSON\\s*\\)", "AS VARCHAR)")
+    private static String adaptPlain(String sql, DdlContext context) {
+        String adapted = sql.replaceAll("(?i)\\bAS\\s+JSON\\s*\\)", "AS VARCHAR)")
                 .replaceAll("(?i)\\b([a-z_][a-z0-9_]*)\\s+JSON\\b", "$1 LONGTEXT")
                 .replaceAll("(?i)\\bBINARY\\s+", "")
+                // Generated expressions remain real H2 generated columns.
+                // Only MySQL's storage modifier is omitted, never the CASE.
+                .replaceAll("(?i)\\)\\s+(?:VIRTUAL|STORED)\\b", ")")
                 .replace("<=>", " IS NOT DISTINCT FROM ");
+        if (context == null) return adapted;
+        StringBuilder result = new StringBuilder(); int position = 0;
+        var tables = Pattern.compile("(?i)\\bCREATE\\s+TABLE(?:\\s+IF\\s+NOT\\s+EXISTS)?\\s+`?([a-z_][a-z0-9_]*)").matcher(adapted);
+        while (tables.find()) {
+            result.append(adaptDdlPlain(adapted.substring(position, tables.start()), context.table));
+            context.table = tables.group(1); position = tables.start();
+        }
+        return result.append(adaptDdlPlain(adapted.substring(position), context.table)).toString();
+    }
+
+    private static String adaptDdlPlain(String sql, String table) {
+        String result = sql.replaceAll("(?i)\\s+COLLATE(?:\\s+|=)utf8mb4_[a-z0-9_]+", "")
+                .replaceAll("(?i)\\s+CHARACTER\\s+SET(?:\\s+|=)utf8mb4", "")
+                .replaceAll("(?i)\\s+ENGINE\\s*=\\s*InnoDB", "")
+                .replaceAll("(?i)\\s+ROW_FORMAT\\s*=\\s*DYNAMIC", "")
+                .replaceAll("(?i)\\s+DEFAULT\\s+CHARSET\\s*=\\s*utf8mb4", "")
+                .replaceAll("(?mi)^[\\t ]*KEY\\s+[^\\n]*(?:\\n|$)", "");
+        // MySQL index names are scoped to a table; H2 UNIQUE constraints are
+        // schema scoped. Preserve every unique key with a deterministic name.
+        var unique = Pattern.compile("(?mi)^([\\t ]*)UNIQUE KEY\\s+`?([a-z_][a-z0-9_]*)`?\\s*(\\([^\\n]+\\))").matcher(result);
+        StringBuffer renamed = new StringBuffer();
+        while (unique.find()) {
+            if (table.isEmpty()) throw new IllegalArgumentException("Unique key has no fixture table context");
+            unique.appendReplacement(renamed, java.util.regex.Matcher.quoteReplacement(unique.group(1)
+                    + "CONSTRAINT h2_" + table + "_" + unique.group(2) + " UNIQUE " + unique.group(3)));
+        }
+        unique.appendTail(renamed);
+        return renamed.toString().replaceAll(",\\s*\\)", ")");
     }
 
     public static LocalDateTime utcTimestamp() { return LocalDateTime.now(ZoneOffset.UTC); }

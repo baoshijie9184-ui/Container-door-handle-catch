@@ -26,10 +26,7 @@ public final class CompactContentFixture {
         try(var connection=jdbc.getDataSource().getConnection()) {
             if("H2".equals(connection.getMetaData().getDatabaseProductName())) {
                 CompactH2Functions.install(jdbc);
-                ddl=CompactH2Functions.adaptJsonColumns(ddl).replaceAll(" COLLATE utf8mb4_[a-z0-9_]+","").replace(" VIRTUAL","")
-                    .replaceAll(" ENGINE=InnoDB(?: ROW_FORMAT=DYNAMIC)? DEFAULT CHARSET=utf8mb4(?: COLLATE=utf8mb4_[a-z0-9_]+)?","")
-                    .replaceAll("(?m)^(\\s*)UNIQUE KEY (\\w+)\\s*(\\([^\\n]+\\))","$1CONSTRAINT $2 UNIQUE $3")
-                    .replaceAll("(?m)^\\s*KEY [^\\n]+\\n","").replaceAll(",\\s*\\)",")");
+                ddl=CompactH2Functions.adaptDdl(ddl);
             }
         }
         var script=new ResourceDatabasePopulator(new ByteArrayResource(ddl.getBytes(StandardCharsets.UTF_8)));

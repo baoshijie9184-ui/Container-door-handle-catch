@@ -15,10 +15,7 @@ public final class CompactAgentJournalFixture {
                 .replace("CREATE TABLE agent_run", "CREATE TABLE IF NOT EXISTS agent_run");
         try(var connection=jdbc.getDataSource().getConnection()) {
             if("H2".equals(connection.getMetaData().getDatabaseProductName())) {
-                ddl=CompactH2Functions.adaptJsonColumns(ddl).replace(" COLLATE utf8mb4_bin", "").replace(" ENGINE=InnoDB DEFAULT CHARSET=utf8mb4", "")
-                        .replace("answer_citations_json JSON", "answer_citations_json LONGTEXT")
-                        .replaceAll("(?m)^(\\s*)UNIQUE KEY (\\w+)\\s*(\\([^\\n]+\\))", "$1CONSTRAINT $2 UNIQUE $3")
-                        .replaceAll("(?m)^\\s*KEY [^\\n]+\\n", "").replaceAll(",\\s*\\)", ")");
+                ddl=CompactH2Functions.adaptDdl(ddl);
             }
         }
         new ResourceDatabasePopulator(new ByteArrayResource(ddl.getBytes(StandardCharsets.UTF_8))).execute(jdbc.getDataSource());

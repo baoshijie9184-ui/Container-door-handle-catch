@@ -506,7 +506,10 @@ def admitted_tool_executables(manifest, expected_sha, identity):
         commit=value['commit'], source_sha=value['sourceSha256'], identity=identity, source=ROOT)
     tools = {key: str(Path(value['directory']) / binary) for key, binary in (
         ('MAVEN_CMD', 'mvn'), ('PYTHON_EXE', 'python'), ('NODE_EXE', 'node'), ('NPM_CMD', 'npm'))}
-    return tools, {'manifestSha256': actual_sha, 'images': value['images']}
+    cache = runtime.registered_maven_cache(value)
+    tools['MAVEN_REPOSITORY'] = cache['repository']
+    return tools, {'manifestSha256': actual_sha, 'images': value['images'],
+        'mavenDependencyCache': {key: cache[key] for key in ('key', 'inputsSha256', 'mavenImage')}}
 
 
 def owned_directory(path, parent):
@@ -674,7 +677,7 @@ def main():
                 receipt['javaSuites'].append(entry)
             arguments = [tools['MAVEN_CMD'], '-B', '-ntp', '-Ddoorhandle.isolated-verification=true',
                          '-Ddoorhandle.verification-root=' + str(build_root),
-                         '-Dmaven.repo.local=' + str(ROOT / 'work' / 'ecs-maven-repository'), 'clean',
+                         '-Dmaven.repo.local=' + tools.get('MAVEN_REPOSITORY', str(ROOT / 'work' / 'ecs-maven-repository')), 'clean',
                          'test' if suite['fixtureProperties'] else 'verify']
             if suite['javaSelection'] and not source_regression:
                 arguments += ['-Dtest=' + ','.join(suite['javaSelection']), '-Dsurefire.failIfNoSpecifiedTests=false']

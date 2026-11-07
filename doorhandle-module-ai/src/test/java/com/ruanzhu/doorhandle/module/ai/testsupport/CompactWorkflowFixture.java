@@ -19,10 +19,7 @@ public final class CompactWorkflowFixture {
         try(var connection=jdbc.getDataSource().getConnection()) {
             if("H2".equals(connection.getMetaData().getDatabaseProductName())) {
                 CompactH2Functions.install(jdbc);
-                ddl=CompactH2Functions.adaptJsonColumns(ddl).replace(" COLLATE utf8mb4_bin","").replace(" COLLATE utf8mb4_0900_ai_ci","").replace(" COLLATE utf8mb4_unicode_ci","")
-                    .replace(" VIRTUAL","").replace(" STORED","").replaceAll(" ENGINE=InnoDB ROW_FORMAT=DYNAMIC DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin","")
-                    .replaceAll("(?m)^(\\s*)UNIQUE KEY (\\w+)\\s*(\\([^\\n]+\\))","$1CONSTRAINT $2 UNIQUE $3")
-                    .replaceAll("(?m)^\\s*KEY [^\\n]+\\n","").replaceAll(",\\s*\\)",")");
+                ddl=CompactH2Functions.adaptDdl(ddl);
             }
         }
         var populator=new ResourceDatabasePopulator(new ByteArrayResource(ddl.getBytes(StandardCharsets.UTF_8)));

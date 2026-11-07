@@ -244,7 +244,38 @@ def admitted_runtime(root, tag, commit, source_sha, identity, guard, build, buil
     require(isinstance(observed, list) and {row.get('service') for row in observed} == {'backend', 'mem0', 'model-fixture'}
             and all(row.get('internal') is True and re.fullmatch(r'[a-f0-9]{64}', row.get('networkId', '')) for row in observed),
             'Model-capable services lack actual internal-network observations')
+    legacy = proof.get('legacyData')
+    if legacy is not None:
+        require(isinstance(legacy, dict) and SHA.fullmatch(legacy.get('candidateSha256', ''))
+                and SHA.fullmatch(legacy.get('ragManifestSha256', ''))
+                and set(legacy.get('verifications', {})) == {'after-start', 'after-restart', 'after-volume-restore'},
+                'Native RAG startup/restart/new-volume recovery evidence is incomplete')
+        private = directory / 'checkout/work/legacy-candidate'
+        require(sha_file(canonical(private / 'legacy-candidate.json')) == legacy['candidateSha256']
+                and sha_file(canonical(private / 'rag-preservation-manifest.json')) == legacy['ragManifestSha256'],
+                'The actual complete native candidate/manifest changed')
+        for phase, reference in legacy['verifications'].items():
+            expected = Path('checkout/work/runtime-acceptance') / ('native-readback-' + phase + '.json')
+            require(set(reference) == {'file', 'sha256'} and reference['file'] == expected.as_posix()
+                    and SHA.fullmatch(reference['sha256']), 'Native readback escaped its owned evidence location')
+            value, checksum = guard.read_private(canonical(directory / expected))
+            require(checksum == reference['sha256'] and all(value.get(key) == entry for key, entry in context.items() if key != 'kind')
+                    and value.get('kind') == 'doorhandle-legacy-runtime-readback' and value.get('status') == 'VERIFIED'
+                    and value.get('phase') == phase and value.get('project') == proof['project']
+                    and value.get('descriptorSha256') == legacy['candidateSha256']
+                    and value.get('ragManifestSha256') == legacy['ragManifestSha256']
+                    and value.get('localMem0SemanticStatus') == legacy['localMem0SemanticStatus']
+                    and value.get('productionPromotionAllowed') is legacy['productionPromotionAllowed'],
+                    'Native startup/restart/recovery readback belongs to another candidate or result')
     return digest
+
+
+def require_native_release(runtime_proof):
+    """A preserved archive/test namespace is never a semantic production import."""
+    legacy = runtime_proof.get('legacyData', {})
+    require(legacy.get('localMem0SemanticStatus') == 'VERIFIED_AND_ACTIVATED'
+            and legacy.get('productionPromotionAllowed') is True,
+            'Native legacy semantics/current-cloud final merge are not release-admitted; do not promote an earlier test volume')
 
 
 class Cutover:
@@ -501,6 +532,7 @@ class Cutover:
                 and not (self.state / 'compact-connection.override.yml').exists(), 'First cutover cannot overwrite existing admission state')
         runtime_sha = admitted_runtime(self.root, self.args.tag, self.input['gitCommit'], self.args.source_sha256,
             self.identity, self.guard, self.build, self.build_sha)
+        require_native_release(self.guard.read_private(self.root / 'verification' / self.args.tag / 'runtime-acceptance.json')[0])
         self.work.mkdir(mode=0o700, parents=True)
         backend = self.common.container(PROJECT, 'backend')
         source_schema = self.common.database_name(self.common.environment(backend))

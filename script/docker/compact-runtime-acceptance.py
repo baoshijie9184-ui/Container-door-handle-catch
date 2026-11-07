@@ -397,6 +397,7 @@ class Runtime:
         self.rehearsal = module('runtime_rehearsal_methods', source / 'script/docker/application-rehearsal.py')
         self.http = module('runtime_http_scenarios', source / 'script/docker/compact-runtime-scenarios.py')
         self.recovery = module('runtime_recovery_scenario', source / 'script/docker/compact-runtime-recovery.py')
+        self.native = module('runtime_legacy_candidate', source / 'script/jenkins/prepare-legacy-candidate.py')
         self.worker_fence = module('runtime_worker_unknown_result', source / 'script/docker/compact-runtime-worker-fence.py')
         self.common = module('runtime_schema_queries', source / 'script/docker/assignment-compat.py')
         self.acceptance = module('runtime_profile_contract', source / 'script/jenkins/compact-acceptance.py')
@@ -646,6 +647,8 @@ with urllib.request.urlopen(r,timeout=10) as s: print(s.read().decode())
             'initialTargetSnapshotSha256': receipt['targetSnapshotSha256'], 'scenarios': {}, 'objects': [],
             'sourceBefore': self.source_observation()}
         self.save()
+        self.legacy_candidate, self.legacy_candidate_sha, self.legacy_work = self.native.admit_runtime(self)
+        self.owner['legacyCandidateSha256'] = self.legacy_candidate_sha; self.save()
         self.accounts = self.http.seed_owned_users(self.db, schema, self.token)
         self.common.write_json(self.directory / 'users.json', self.accounts)
         runtime_accounts = self.create_dml_accounts(schema)
@@ -731,7 +734,8 @@ with urllib.request.urlopen(r,timeout=10) as s: print(s.read().decode())
                     AGENT_MCP_SHARED_IMAGE_CLEANUP_ENABLED='false', AGENT_SKILL_EVOLUTION_ENABLED='true',
                     DETECTION_EXECUTION_COMMANDS_ENABLED='true', APP_DETECTION_WORKER_ENABLED='true',
                     APP_DETECTION_WORKER_CONSUMER_GROUP='runtime-' + self.token,
-                    APP_REDIS_ENABLED='true', CHAT_ASSISTANT_RAG_ENABLED='false', AGENT_MODEL_FALLBACK_ENABLED='false',
+                    APP_REDIS_ENABLED='true', CHAT_ASSISTANT_RAG_ENABLED='true', AGENT_MODEL_FALLBACK_ENABLED='false',
+                    CHAT_ASSISTANT_RAG_QUERY_REWRITE_ENABLED='false', CHAT_ASSISTANT_RAG_RERANK_ENABLED='false',
                     AGENT_MODEL_GATEWAY_BASE_URL='http://model-fixture:8099', AGENT_MODEL_PROXY_URL='', DEEPSEEK_MODEL='runtime-scripted', MEM0_LLM_MODEL='deepseek:runtime-scripted',
                     DEEPSEEK_API_KEY='runtime-fixture', DASHSCOPE_API_KEY='runtime-fixture', OPENAI_API_KEY='runtime-fixture',
                     DEEPSEEK_BASE_URL='http://model-fixture:8099/v1', DASHSCOPE_BASE_URL='http://model-fixture:8099/v1',
@@ -743,6 +747,9 @@ with urllib.request.urlopen(r,timeout=10) as s: print(s.read().decode())
                     MEM0_LLM_MODEL='runtime-scripted', MODEL_CONFIG_ENABLED='true',
                     MODEL_CONFIG_MASTER_KEY_FILE='/run/secrets/model_config_master_key', MEM0_LIFECYCLE_CLEANUP_ENABLED='false',
                     MEM0_MODEL_GATEWAY_BASE_URL='http://model-fixture:8099')
+                env.update(DOORHANDLE_RUNTIME_ACCEPTANCE='true', DOORHANDLE_RUNTIME_PROJECT=self.project,
+                           MEM0_RUNTIME_TEST_COLLECTION='doorhandle_runtime_test_' + self.token,
+                           MEM0_DUPLICATE_REVIEW_ENABLED='false')
                 # The encrypted memory candidate keeps its original endpoint;
                 # its new synthetic key is applied by the public publish API.
                 # This process has no external network, and infer=false never
@@ -759,6 +766,19 @@ with urllib.request.urlopen(r,timeout=10) as s: print(s.read().decode())
         for name in ('backend', 'mem0'):
             config['services'][name].setdefault('volumes', []).append({'type': 'volume', 'source': 'runtime-model-key',
                                                                       'target': '/run/secrets', 'read_only': True})
+        rag_manifest = self.native.read(self.legacy_work / 'rag-preservation-manifest.json')
+        config['volumes']['runtime-rag-preservation'] = {'name': self.project + '_runtime-rag-preservation',
+            'labels': {'io.doorhandle.rehearsal': self.project}}
+        config['services']['backend']['volumes'].append({'type': 'volume', 'source': 'runtime-rag-preservation',
+                                                       'target': '/run/doorhandle-rag', 'read_only': True})
+        config['services']['backend']['environment'].update(
+            CHAT_ASSISTANT_RAG_STARTUP_MODE='PRESERVE_EXISTING',
+            CHAT_ASSISTANT_RAG_PRESERVATION_MANIFEST='/run/doorhandle-rag/preservation.json',
+            CHAT_ASSISTANT_RAG_PRESERVATION_MANIFEST_SHA256=self.legacy_candidate['ragManifestSha256'],
+            CHAT_ASSISTANT_RAG_PRESERVATION_COMMIT=self.args.commit,
+            CHAT_ASSISTANT_CHROMA_EMBEDDING_DIMENSION=str(rag_manifest['embeddingDimension']),
+            CHAT_ASSISTANT_CHROMA_COLLECTION=rag_manifest['collection'],
+            CHAT_ASSISTANT_CHROMA_TENANT=rag_manifest['tenant'], CHAT_ASSISTANT_CHROMA_DATABASE=rag_manifest['database'])
         model_image = self.build_model_image()
         config['services']['model-fixture'] = {'image': model_image, 'restart': 'no', 'read_only': True,
             'environment': {'RUNTIME_FIXTURE_TOKEN': secrets.token_hex(32)}, 'networks': {'doorhandle-network': {}},
@@ -874,15 +894,19 @@ print(json.dumps({p:data['properties'][p]['baseUrl'] for p in ('deepseek','dashs
         # This is a monitored experiment boundary, never a predicted peak/PASS.
         # Existing images, source, all dumps and prior clones remain allocated in
         # the baseline filesystem; none is credited as reclaimable capacity.
-        growth = physical + logs + 8 * 64 * MIB + 256 * MIB
+        payload_bytes = sum(row['bytes'] for service in ('rag', 'mem0')
+                            for row in self.native.read(self.legacy_work / (service + '-payload-files.json')).values())
+        growth = physical + payload_bytes + logs + 8 * 64 * MIB + 256 * MIB
         self.resources.admit('runtime-start', growth, {
             'candidateSchemaAllocatedBytes': physical, 'retainedFixturesAllocatedBytes': retained,
             'candidateBuildSha256': self.build_sha, 'applicationJarBytes': self.build['applicationJarBytes'],
+            'fullNativeCandidatePayloadBytes': payload_bytes, 'legacyCandidateSha256': self.legacy_candidate_sha,
             'originalDeploymentInventorySha256': self.migration.sha_json(self.owner['sourceBefore']),
             'logLimitBytes': logs, 'kafkaPartitionRetentionEnvelopeBytes': 8 * 64 * MIB,
             'newWritableMeasurementEnvelopeBytes': 256 * MIB,
             'existingDataAndBackups': 'RETAINED_IN_BASELINE_FILESYSTEM'}, declared + MCP_CHILD_MEMORY)
         self.resources.start()
+        self.owner['nativeMaterialization'] = self.native.materialize_runtime(self); self.save()
         self.install_key(self.master_key)
         self.dc('create', '--no-build', 'redis', timeout=120)
         network_name = self.config['networks']['doorhandle-network']['name']
@@ -915,13 +939,17 @@ print(json.dumps({p:data['properties'][p]['baseUrl'] for p in ('deepseek','dashs
         require(isinstance(pool, str) and re.fullmatch(r'[a-f0-9]{32}', pool), 'The actual runtime MCP journal pool is unverified')
         self.owner['mcpPoolId'] = pool
         self.save('RUNNING')
+        self.native.verify_runtime(self, 'after-start')
 
     def restart_backend(self):
         self.dc('restart', 'backend', timeout=120)
         end = time.monotonic() + 180
         while time.monotonic() < end:
             if self.ops.healthy(self.row('backend')['Id']):
-                self.clients = {}; self.client('inspector'); return
+                self.clients = {}; self.client('inspector')
+                if 'after-restart' not in self.owner.get('nativeVerifications', {}):
+                    self.native.verify_runtime(self, 'after-restart')
+                return
             time.sleep(2)
         raise ValueError('The actual candidate backend did not recover')
 
@@ -1079,9 +1107,12 @@ print(json.dumps(acknowledged[0]))
             upper = 2 * size + rows * (len(prefix.encode()) + 16 * len(names) + 4)
             bound += upper; tables[table] = {'rows': rows, 'rawColumnBytes': size, 'dumpUpperBoundBytes': upper}
         self.backup_dump_bound = bound
-        self.resources.admit('runtime-backup', bound + 64 * MIB, {
+        native = self.native.measure_runtime_volumes(self)
+        native_bound = 5 * sum(row['bytes'] for row in native.values()) + 2 * 64 * MIB
+        self.resources.admit('runtime-backup', bound + 64 * MIB + native_bound, {
             'sourceSnapshotSha256': snapshot['snapshotSha256'], 'tables': tables,
-            'rows': row_count, 'dumpUpperBoundBytes': bound, 'retainedPriorData': True})
+            'rows': row_count, 'dumpUpperBoundBytes': bound, 'retainedPriorData': True,
+            'nativeVolumeMeasurements': native, 'nativeSnapshotGrowthEnvelopeBytes': native_bound})
 
     def admit_restore_phase(self, backup):
         file, manifest, checksum = self.migration.private_json(backup)
@@ -1094,12 +1125,15 @@ print(json.dumps(acknowledged[0]))
         # and prefixed SQL input; the original schema and prior clones stay too.
         # Physical clone growth is an enforced measurement envelope, not a claim
         # that InnoDB allocation can be predicted from information_schema.
-        growth = 2 * dump.stat().st_size + 2 * physical + 128 * MIB
+        native = self.native.measure_runtime_volumes(self)
+        native_bytes = sum(row['bytes'] for row in native.values())
+        growth = 2 * dump.stat().st_size + 2 * physical + 128 * MIB + native_bytes
         self.resources.admit('runtime-restore', growth, {'backupManifestSha256': checksum,
             'dumpBytes': dump.stat().st_size, 'dumpSha256': manifest['data']['sha256'],
             'retainedRawDumpBytes': dump.stat().st_size, 'additionalSqlCopies': 2,
             'retainedSourceSchemaAllocatedBytes': physical, 'cloneAllocationMeasurementEnvelopeBytes': 2 * physical,
-            'restoreOverheadEnvelopeBytes': 128 * MIB, 'existingDataAndBackups': 'RETAINED_IN_BASELINE_FILESYSTEM'})
+            'restoreOverheadEnvelopeBytes': 128 * MIB, 'nativeVolumeMeasurements': native,
+            'newNativeVolumePayloadBytes': native_bytes, 'existingDataAndBackups': 'RETAINED_IN_BASELINE_FILESYSTEM'})
 
     def memory_scenario(self):
         session = self.request('inspector', 'POST', '/api/chat-assistant/sessions')['sessionId']
@@ -1599,7 +1633,13 @@ print(json.dumps({'deleted':len(keys),'keysSha256':hashlib.sha256(json.dumps(sor
         observed = {row['service'] for row in self.resources.summary['containers'].values() if row['peakBytes'] > 0}
         require(daemons <= observed, 'An actual service memory peak was not observed; retain the incomplete resource evidence')
         validate_resource_evidence(self.resources.summary, self.resources.raw.read_bytes(), self.context(), self.project)
+        require(set(self.owner.get('nativeVerifications', {})) == {'after-start', 'after-restart', 'after-volume-restore'},
+                'Complete native RAG startup/restart/new-volume recovery was not verified')
         proof = {**self.context(), 'status': 'PASS', 'project': self.project,
+            'legacyData': {'candidateSha256': self.legacy_candidate_sha, 'ragManifestSha256': self.legacy_candidate['ragManifestSha256'],
+                'originalLocalMem0Records': 32, 'eligibleLocalMem0Records': 30, 'activatedLocalMem0Records': 0, 'archivedLocalMem0Records': 2,
+                'localMem0SemanticStatus': 'NOT_ACTIVATED_SEMANTIC_NOT_VERIFIED', 'productionPromotionAllowed': False,
+                'verifications': self.owner.get('nativeVerifications', {}), 'materialization': self.owner['nativeMaterialization']},
             'loadScope': {'profile': RUNTIME_PROFILE, 'productionPerformanceVerified': False,
                           'productionCapacityVerified': False, 'allMandatoryScenariosRequired': True},
             'resourceEvidence': {'file': (self.directory / 'resource-summary.json').relative_to(self.attempt).as_posix(),

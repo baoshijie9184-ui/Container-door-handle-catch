@@ -249,6 +249,7 @@ def run(ctx):
             _, metadata = m.metadata_snapshot(ctx.db.mysql, source)
             require(len(snapshot['tables']) == 29, 'Post-business backup must cover all 29 tables')
             ctx.admit_backup_phase(snapshot)
+            native_backup = ctx.native.snapshot_runtime(ctx, folder / 'native-volumes')
             backup = m.backup_schema(ctx.db.mysql, snapshot, folder / 'backup', purpose='runtime-post-business', migration_context=context)
             ctx.admit_restore_phase(backup)
             restored, restored_meta, backup_sha = restore_clone(ctx, backup, restore_schema, context)
@@ -259,6 +260,7 @@ def run(ctx):
         ctx.save()
         credentials = ctx.create_dml_accounts(restore_schema)
         switch_database(ctx, restore_schema, credentials)
+        native_materialization = ctx.native.restore_runtime(ctx, native_backup)
         m.write_json(folder / 'application-restored.json', ctx.config)
         config_restored_sha = digest(folder / 'application-restored.json')
         rejected, after_failure, after_meta = wrong_key(ctx, restored, folder)
@@ -277,6 +279,7 @@ def run(ctx):
                 'Actual running processes did not select the restored schema')
         readback = business_readback(ctx)
         require(readback == baseline, 'Actual restored application readback differs from the pre-backup business evidence')
+        native_readback = ctx.native.verify_runtime(ctx, 'after-volume-restore')
         require(m.schema_snapshot(ctx.db.mysql, source, snapshot['tables'])['snapshotSha256'] == snapshot['snapshotSha256']
                 and m.metadata_snapshot(ctx.db.mysql, source)[1] == metadata,
                 'The retained original owned schema changed after application connection recovery')
@@ -288,6 +291,8 @@ def run(ctx):
             'postWrongKeySnapshotSha256': after_failure['snapshotSha256'],
             'postWrongKeyAutoIncrement': {name: row['autoIncrement'] for name, row in after_failure['tables'].items()},
             'keyReferenceSha256': digest(ctx.key_reference), 'applicationReadback': readback,
+            'nativeRecoveryProofSha256': digest(native_backup / 'native-recovery.json'),
+            'nativeMaterialization': native_materialization, 'nativeReadback': native_readback,
             'originalSourceRetained': True, 'finishedAtUtc': m.utc_now()}
         file = folder / 'recovery-receipt.json'; m.write_json(file, result)
         ctx.owner['postBusinessRecovery'].update(phase='VERIFIED', receiptFile=str(file), receiptSha256=digest(file)); ctx.save('RUNNING')
