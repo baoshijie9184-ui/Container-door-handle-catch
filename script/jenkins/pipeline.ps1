@@ -314,15 +314,118 @@ if ($Action -in @('PrepareTools', 'CleanupTools')) {
         $arguments = "--root '$remoteRoot' --tag '$tag' --commit '$commit' --source-sha256 '$sha' --instance-id '$instance' --machine-id '$machine'"
         $prepareArguments = $arguments
         if ($env:ACTION -in @('verify-runtime', 'compact-cutover')) { $prepareArguments += ' --prepare-candidate-builder' }
-        $result = Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "python3 -B '$remoteInbox/prepare-ecs-tools.py' $prepareArguments"))
-        $prepared = ($result | Select-Object -Last 1) | ConvertFrom-Json
-        if ($prepared.status -ne 'PREPARED' -or $prepared.release -ne $tag -or $prepared.commit -ne $commit -or $prepared.sourceSha256 -ne $sha) { throw 'ECS tool image preparation did not return matching source evidence.' }
-        foreach ($image in @($prepared.mavenImageId, $prepared.nodeImageId, $prepared.pythonImageId)) {
-            if ($image -notmatch '^sha256:[a-f0-9]{64}$') { throw 'Prepared ECS tools require immutable image IDs.' }
+        $prepareCommand = "python3 -B '$remoteInbox/prepare-ecs-tools.py' $prepareArguments"
+        $prepareTransport = [ordered]@{
+            schema=1; kind='doorhandle-ecs-tool-preparation-transport'; release=$tag; commit=$commit; sourceSha256=$sha
+            instanceId=$instance; machineId=$machine; prepareCandidateBuilder=($env:ACTION -in @('verify-runtime', 'compact-cutover'))
+            originalExitCode=$null; finalExitCode=$null; readbacks=@(); readbackAttempts=0
+            maximumReadbacks=3; recoveryWindowSeconds=180; readbackIntervalSeconds=60; recoveryElapsedSeconds=0
+            transportRecovered=$false; status='FAILED'; failureReason=$null
         }
-        if ($env:ACTION -in @('verify-runtime', 'compact-cutover')) {
-            $builder = $prepared.PSObject.Properties['candidateBuilderTools']
-            if (-not $builder -or $builder.Value.status -ne 'PREPARED' -or $builder.Value.file -ne "$remoteInbox/candidate-build-tools/tools.json" -or $builder.Value.sha256 -notmatch '^[a-f0-9]{64}$') { throw 'Candidate BuildKit was not automatically prepared for this fixed attempt.' }
+        $prepareFirstOut = 'artifacts/ecs-tool-preparation-first.stdout.log'
+        $prepareFirstErr = 'artifacts/ecs-tool-preparation-first.stderr.log'
+        $prepareRecoveryTimer = $null
+        try {
+            $prepareSshArguments = $sshOptions + @('-p', $portText, $destination, $prepareCommand)
+            & 'ssh.exe' @prepareSshArguments 1> $prepareFirstOut 2> $prepareFirstErr
+            $prepareExit = $LASTEXITCODE
+            $prepareTransport.originalExitCode = $prepareExit
+            $prepareTransport.finalExitCode = $prepareExit
+            $prepareOutput = $prepareFirstOut
+            $prepareRecovered = $false
+            if ($prepareExit -eq 255) {
+                Write-Host 'ECS preparation SSH disconnected; retaining its output and reading only the same attempt evidence.'
+                $prepareRecoveryTimer = [Diagnostics.Stopwatch]::StartNew()
+                for ($prepareReadback = 1; $prepareReadback -le 3; $prepareReadback++) {
+                    if ($prepareReadback -gt 1) {
+                        $prepareWait = [Math]::Min(60, [Math]::Max(0, 180 - $prepareRecoveryTimer.Elapsed.TotalSeconds))
+                        if ($prepareWait -gt 0) { Start-Sleep -Seconds $prepareWait }
+                    }
+                    if ($prepareRecoveryTimer.Elapsed.TotalSeconds -ge 180) { $prepareTransport.failureReason = 'DEADLINE_EXCEEDED'; break }
+                    $prepareReadOut = "artifacts/ecs-tool-preparation-readback-$prepareReadback.stdout.log"
+                    $prepareReadErr = "artifacts/ecs-tool-preparation-readback-$prepareReadback.stderr.log"
+                    $prepareReadArguments = $sshOptions + @('-p', $portText, $destination, "$prepareCommand --read-prepared")
+                    $prepareReadProcess = [Diagnostics.Process]::new()
+                    $prepareReadProcess.StartInfo = [Diagnostics.ProcessStartInfo]::new('ssh.exe')
+                    $prepareReadProcess.StartInfo.UseShellExecute = $false
+                    $prepareReadProcess.StartInfo.CreateNoWindow = $true
+                    $prepareReadProcess.StartInfo.RedirectStandardOutput = $true
+                    $prepareReadProcess.StartInfo.RedirectStandardError = $true
+                    foreach ($prepareReadArgument in $prepareReadArguments) { $prepareReadProcess.StartInfo.ArgumentList.Add([string]$prepareReadArgument) }
+                    $prepareReadOutStream = [IO.File]::Create((Join-Path (Get-Location).Path $prepareReadOut))
+                    $prepareReadErrStream = [IO.File]::Create((Join-Path (Get-Location).Path $prepareReadErr))
+                    $prepareReadStarted = $false; $prepareReadDeadline = $false; $prepareReadExit = $null
+                    try {
+                        $prepareReadStarted = $prepareReadProcess.Start()
+                        if (-not $prepareReadStarted) { throw 'Could not start the local preparation evidence reader.' }
+                        $prepareReadCopies = [Threading.Tasks.Task[]]@(
+                            $prepareReadProcess.StandardOutput.BaseStream.CopyToAsync($prepareReadOutStream),
+                            $prepareReadProcess.StandardError.BaseStream.CopyToAsync($prepareReadErrStream)
+                        )
+                        $prepareReadRemaining = [int][Math]::Max(0, [Math]::Floor((180 - $prepareRecoveryTimer.Elapsed.TotalSeconds) * 1000))
+                        if ($prepareReadRemaining -le 0 -or -not $prepareReadProcess.WaitForExit($prepareReadRemaining)) {
+                            $prepareReadDeadline = $true
+                        } else {
+                            $prepareReadExit = $prepareReadProcess.ExitCode
+                            $prepareReadRemaining = [int][Math]::Max(0, [Math]::Floor((180 - $prepareRecoveryTimer.Elapsed.TotalSeconds) * 1000))
+                            if ($prepareReadRemaining -le 0 -or -not [Threading.Tasks.Task]::WaitAll($prepareReadCopies, $prepareReadRemaining)) { $prepareReadDeadline = $true }
+                        }
+                        if ($prepareRecoveryTimer.Elapsed.TotalSeconds -ge 180) { $prepareReadDeadline = $true }
+                    } finally {
+                        if ($prepareReadStarted) {
+                            if (-not $prepareReadProcess.HasExited) {
+                                try { $prepareReadProcess.Kill($true) } catch [InvalidOperationException] { if (-not $prepareReadProcess.HasExited) { throw } }
+                                $null = $prepareReadProcess.WaitForExit(1000)
+                            }
+                            if ($prepareReadProcess.HasExited) { $prepareReadExit = $prepareReadProcess.ExitCode }
+                            $prepareReadProcess.StandardOutput.Dispose(); $prepareReadProcess.StandardError.Dispose()
+                        }
+                        $prepareReadOutStream.Dispose(); $prepareReadErrStream.Dispose(); $prepareReadProcess.Dispose()
+                    }
+                    $prepareTransport.finalExitCode = $prepareReadExit
+                    $prepareTransport.readbackAttempts = $prepareReadback
+                    $prepareReadOutSha = (Get-FileHash -LiteralPath $prepareReadOut -Algorithm SHA256).Hash.ToLowerInvariant()
+                    $prepareReadErrSha = (Get-FileHash -LiteralPath $prepareReadErr -Algorithm SHA256).Hash.ToLowerInvariant()
+                    $prepareReadDeadline = $prepareReadDeadline -or $prepareRecoveryTimer.Elapsed.TotalSeconds -ge 180
+                    $prepareReadOutcome = if ($prepareReadDeadline) { 'DEADLINE_EXCEEDED' } else { switch ($prepareReadExit) { 0 { 'VALIDATED' }; 75 { 'PENDING' }; 255 { 'DISCONNECTED' }; default { 'FAILED' } } }
+                    $prepareTransport.readbacks += [ordered]@{
+                        attempt=$prepareReadback; exitCode=$prepareReadExit; outcome=$prepareReadOutcome; deadlineExceeded=$prepareReadDeadline
+                        elapsedSeconds=[Math]::Round($prepareRecoveryTimer.Elapsed.TotalSeconds, 3)
+                        stdoutFile=$prepareReadOut; stdoutSha256=$prepareReadOutSha
+                        stderrFile=$prepareReadErr; stderrSha256=$prepareReadErrSha
+                    }
+                    if ($prepareReadDeadline -or $prepareRecoveryTimer.Elapsed.TotalSeconds -ge 180) {
+                        $prepareTransport.failureReason = 'DEADLINE_EXCEEDED'
+                        throw 'The preparation evidence readback exceeded its 180-second recovery window; the original SSH exit was 255.'
+                    }
+                    if ($prepareReadExit -eq 0) { $prepareOutput = $prepareReadOut; $prepareRecovered = $true; break }
+                    if ($prepareReadExit -notin @(75, 255)) { throw "ECS preparation evidence readback failed with exit $prepareReadExit; the original SSH exit was 255." }
+                }
+                if (-not $prepareRecovered) { throw 'ECS preparation evidence was not verified within three readbacks and the 180-second recovery window; the original SSH exit was 255.' }
+            } elseif ($prepareExit -ne 0) {
+                throw "ssh.exe failed with exit $prepareExit"
+            }
+            $result = Get-Content -LiteralPath $prepareOutput -Encoding utf8
+            $prepared = ($result | Select-Object -Last 1) | ConvertFrom-Json
+            if ($prepared.status -ne 'PREPARED' -or $prepared.release -ne $tag -or $prepared.commit -ne $commit -or $prepared.sourceSha256 -ne $sha) { throw 'ECS tool image preparation did not return matching source evidence.' }
+            foreach ($image in @($prepared.mavenImageId, $prepared.nodeImageId, $prepared.pythonImageId)) {
+                if ($image -notmatch '^sha256:[a-f0-9]{64}$') { throw 'Prepared ECS tools require immutable image IDs.' }
+            }
+            if ($env:ACTION -in @('verify-runtime', 'compact-cutover')) {
+                $builder = $prepared.PSObject.Properties['candidateBuilderTools']
+                if (-not $builder -or $builder.Value.status -ne 'PREPARED' -or $builder.Value.file -ne "$remoteInbox/candidate-build-tools/tools.json" -or $builder.Value.sha256 -notmatch '^[a-f0-9]{64}$') { throw 'Candidate BuildKit was not automatically prepared for this fixed attempt.' }
+            }
+            $prepareTransport.transportRecovered = $prepareRecovered
+            $prepareTransport.status = 'PREPARED'
+        } finally {
+            if ($null -ne $prepareRecoveryTimer) { $prepareTransport.recoveryElapsedSeconds = [Math]::Round($prepareRecoveryTimer.Elapsed.TotalSeconds, 3) }
+            foreach ($prepareStream in @(@('stdout', $prepareFirstOut), @('stderr', $prepareFirstErr))) {
+                if (Test-Path -LiteralPath $prepareStream[1] -PathType Leaf) {
+                    $prepareTransport[$prepareStream[0] + 'File'] = $prepareStream[1]
+                    $prepareTransport[$prepareStream[0] + 'Sha256'] = (Get-FileHash -LiteralPath $prepareStream[1] -Algorithm SHA256).Hash.ToLowerInvariant()
+                }
+            }
+            $prepareTransport | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath artifacts/ecs-tool-preparation-transport.json -Encoding utf8
         }
         $prepared | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath artifacts/ecs-tool-preparation.json -Encoding utf8
         $result = Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "python3 -B '$executor' prepare $arguments --maven-image '$($prepared.mavenImageId)' --node-image '$($prepared.nodeImageId)' --python-image '$($prepared.pythonImageId)'"))

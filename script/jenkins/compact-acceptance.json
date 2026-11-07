@@ -1106,7 +1106,7 @@
       },
       {
         "module": "tests_python.test_jenkins_suite_evidence",
-        "minimumTests": 21,
+        "minimumTests": 25,
         "source": "tests_python/test_jenkins_suite_evidence.py",
         "allowedSkippedTests": []
       },
@@ -1118,7 +1118,7 @@
       },
       {
         "module": "tests_python.test_jenkins_tool_preparation",
-        "minimumTests": 16,
+        "minimumTests": 23,
         "source": "tests_python/test_jenkins_tool_preparation.py",
         "allowedSkippedTests": []
       },

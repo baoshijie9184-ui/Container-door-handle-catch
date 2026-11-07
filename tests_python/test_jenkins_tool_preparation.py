@@ -316,5 +316,179 @@ class ToolPreparationTests(unittest.TestCase):
             value.stop_owned()
 
 
+    def completed_readback(self, root, *, include_scipy=True):
+        value = object.__new__(tools.PreparedReadback)
+        value.root = root; value.inbox = root / 'inbox' / ('ci-1-' + COMMIT[:12])
+        value.inbox.mkdir(parents=True)
+        value.folder = value.inbox / 'python-tools'; value.folder.mkdir(mode=0o700)
+        value.reports = value.folder / 'reports'; value.reports.mkdir(mode=0o700)
+        value.archive = value.inbox / 'source.tar.gz'
+        pins_raw = (FILE.parent / 'python-test-requirements.txt').read_bytes()
+        if not include_scipy:
+            pins_raw = b'\n'.join(line for line in pins_raw.splitlines() if not line.startswith(b'scipy==')) + b'\n'
+        recipe = Path(tools.__file__).read_bytes()
+        value.found = {tools.RECIPE: recipe, tools.REQUIREMENTS: pins_raw}
+        with tarfile.open(value.archive, 'w:gz', pax_headers={'comment': COMMIT}) as archive:
+            for name, raw in value.found.items():
+                entry = tarfile.TarInfo(name); entry.size = len(raw); archive.addfile(entry, io.BytesIO(raw))
+        value.archive.chmod(0o600)
+        source_sha = tools.digest(value.archive)
+        value.args = SimpleNamespace(tag=value.inbox.name, commit=COMMIT, source_sha256=source_sha,
+                                     prepare_candidate_builder=False)
+        value.identity = {'instanceId': tools.INSTANCE, 'machineId': tools.MACHINE, 'executionLocation': 'ECS'}
+        value.docker = Path('/usr/bin/docker'); token = 'c' * 24
+        sources = {name: hashlib.sha256(raw).hexdigest() for name, raw in value.found.items()}
+        for name, raw in value.found.items():
+            file = value.folder / Path(name).name; file.write_bytes(raw)
+            file.chmod(0o444 if name == tools.REQUIREMENTS else 0o600)
+        pinned = tools.requirements(value.folder / 'python-test-requirements.txt')
+        owner = {'release': value.args.tag, 'commit': COMMIT, 'sourceSha256': source_sha, 'identity': value.identity,
+                 'ownerToken': token, 'containerName': 'doorhandle-ci-python-' + token, 'baseImageId': tools.BASE,
+                 'diskReserveBytes': tools.RESERVE, 'diskOvershootBytes': tools.OVERSHOOT,
+                 'maximumGrowthBytes': tools.MAX_GROWTH, 'baselineAvailableBytes': 8 * GIB, 'sourceFiles': sources}
+        tools.write_json(value.folder / 'owner.json', owner)
+        tools.write_json(value.reports / 'pip-install.json', {'version': '1', 'install': []})
+        tools.write_json(value.reports / 'installed-versions.json', pinned)
+        sample = {'elapsedSeconds': 1.0, 'availableDiskBytes': 8 * GIB - 1234, 'hostDiskGrowthBytes': 1234,
+                  'ownedWritableBytes': 2000, 'ownedMemoryPeakBytes': 3000, 'oomKilled': False}
+        watchdog = {'kind': 'disk-watchdog', 'elapsedSeconds': 0.999,
+                    'availableDiskBytes': 8 * GIB - 1200, 'hostDiskGrowthBytes': 1200}
+        file = value.folder / 'resource-samples.jsonl'
+        file.write_text(json.dumps(sample) + '\n' + json.dumps(watchdog) + '\n'); file.chmod(0o600)
+        tools.write_json(value.folder / 'fresh-install-admission.json', {
+            'kind': 'doorhandle-fresh-tool-admission', 'release': value.args.tag, 'commit': COMMIT,
+            'sourceSha256': source_sha, 'baselineAvailableBytes': 8 * GIB, 'availableBytes': 8 * GIB - 64 * 1024,
+            'observedHostGrowthUpperBoundBytes': 64 * 1024, 'remainingGrowthBytes': tools.MAX_GROWTH - 64 * 1024,
+            'maximumGrowthBytes': tools.MAX_GROWTH, 'reserveBytes': tools.RESERVE, 'overshootBytes': tools.OVERSHOOT})
+        image_id = 'sha256:' + 'e' * 64
+        for name, raw in [('pip.log', b'No broken requirements found.\n'), ('commit.stdout', (image_id + '\n').encode()), ('commit.stderr', b'')]:
+            file = value.folder / name; file.write_bytes(raw); file.chmod(0o600)
+        receipt = {**owner, 'status': 'PREPARED', 'kind': 'doorhandle-ecs-tool-preparation',
+                   'dependencyPreparation': 'INSTALLED_CURRENT_SOURCE', 'pipExecutedThisAttempt': True,
+                   'testsExecuted': False, 'pythonImageId': image_id, 'mavenImageId': tools.MAVEN, 'nodeImageId': tools.NODE,
+                   'pipReportSha256': tools.digest(value.reports / 'pip-install.json'),
+                   'reportSha': tools.digest(value.reports / 'pip-install.json'),
+                   'installedVersionsSha256': tools.digest(value.reports / 'installed-versions.json'),
+                   'resourceSamplesSha256': tools.digest(value.folder / 'resource-samples.jsonl'),
+                   'observed': {'hostDiskGrowthPeakBytes': 1234, 'containerWritablePeakBytes': 2000,
+                                'memoryPeakBytes': 3000, 'oomKilled': False, 'samples': 2},
+                   'cleanup': {'containerId': 'd' * 64, 'pid': 0, 'exitCode': 0, 'retained': True}}
+        tools.write_json(value.folder / 'preparation.json', receipt)
+        result = {**receipt, 'preparation': str(value.folder / 'preparation.json'),
+                  'preparationSha256': tools.digest(value.folder / 'preparation.json')}
+        tools.complete_preparation(value, result)
+        _, producer = self.owned_preparation()
+        producer['Name'] = '/' + owner['containerName']
+        producer['Config']['Labels'].update({'io.doorhandle.release': value.args.tag, 'io.doorhandle.source': source_sha})
+        producer['Config']['Cmd'] = tools.installer_command(pinned)
+        producer['Mounts'][0]['Source'] = str(value.folder / 'python-test-requirements.txt')
+        producer['Mounts'][1]['Source'] = str(value.reports)
+        producer['State'].update(Status='exited', OOMKilled=False)
+        config = {'User': str(os.getuid()) + ':' + str(os.getgid()), 'Entrypoint': [tools.PYTHON],
+                  'Cmd': ['--version'], 'WorkingDir': '/', 'Healthcheck': {'Test': ['NONE']}, 'Volumes': None,
+                  'Env': [], 'Labels': {'io.doorhandle.ci-tools': 'python-v1', 'io.doorhandle.source': source_sha,
+                    'io.doorhandle.commit': COMMIT, 'io.doorhandle.ci-tools-recipe-sha256': sources[tools.RECIPE],
+                    'io.doorhandle.ci-tools-requirements-sha256': sources[tools.REQUIREMENTS]}}
+        image = {'Id': image_id, 'Os': 'linux', 'Config': config, 'RootFS': {'Layers': ['base', 'installed']}}
+        calls = []
+        def call(*args, **kwargs):
+            calls.append(args)
+            if args == ('inspect', 'd' * 64): return json.dumps([producer]).encode()
+            if args[:2] == ('image', 'inspect'):
+                row = image if args[2] == image_id else {'Id': args[2], 'Os': 'linux',
+                    'Config': {'Volumes': None, 'Env': []}, 'RootFS': {'Layers': ['base']}}
+                return json.dumps([row]).encode()
+            raise AssertionError('Readback may not create, install, commit, start or stop')
+        value.call = call
+        return value, producer, image, calls
+
+    def reseal_readback(self, value):
+        receipt = json.loads((value.folder / 'preparation.json').read_text())
+        (value.folder / 'completion.json').unlink()
+        tools.complete_preparation(value, {**receipt, 'preparation': str(value.folder / 'preparation.json'),
+            'preparationSha256': tools.digest(value.folder / 'preparation.json')})
+
+    def test_completed_readback_verifies_eight_or_nine_pins_without_any_mutation(self):
+        for scipy in (False, True):
+            with self.subTest(scipy=scipy), tempfile.TemporaryDirectory() as directory:
+                value, _, _, calls = self.completed_readback(Path(directory), include_scipy=scipy)
+                before = {str(p.relative_to(value.root)): p.read_bytes() for p in value.root.rglob('*') if p.is_file()}
+                result = value.read_prepared()
+                self.assertTrue(result['readbackValidated'])
+                self.assertEqual('PREPARED', result['status'])
+                self.assertEqual(before, {str(p.relative_to(value.root)): p.read_bytes() for p in value.root.rglob('*') if p.is_file()})
+                self.assertTrue(all(args[0] in ('inspect', 'image') for args in calls))
+
+    def test_readback_rejects_original_control_byte_drift(self):
+        for name in ('owner.json', 'preparation.json', 'python-test-requirements.txt', 'reports/pip-install.json',
+                     'reports/installed-versions.json', 'resource-samples.jsonl', 'commit.stdout', 'pip.log'):
+            with self.subTest(file=name), tempfile.TemporaryDirectory() as directory:
+                value, _, _, _ = self.completed_readback(Path(directory))
+                path = value.folder / name; mode = path.stat().st_mode & 0o777
+                path.chmod(0o600); path.write_bytes(path.read_bytes() + b'changed'); path.chmod(mode)
+                with self.assertRaises((ValueError, json.JSONDecodeError)): value.read_prepared()
+
+    def test_readback_refuses_live_or_changed_producer_and_image_configuration(self):
+        for mutation in ('running', 'oom', 'pid', 'exit', 'owner', 'mount', 'installer', 'image-command', 'image-source'):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                value, producer, image, _ = self.completed_readback(Path(directory))
+                if mutation == 'running': producer['State']['Running'] = True
+                if mutation == 'oom': producer['State']['OOMKilled'] = True
+                if mutation == 'pid': producer['State']['Pid'] = 123
+                if mutation == 'exit': producer['State']['ExitCode'] = 1
+                if mutation == 'owner': producer['Config']['Labels'][tools.LABEL] = 'another-owner'
+                if mutation == 'mount': producer['Mounts'][1]['Source'] = '/production/data'
+                if mutation == 'installer': producer['Config']['Cmd'] = ['--version']
+                if mutation == 'image-command': image['Config']['Cmd'] = ['-c', 'start-business']
+                if mutation == 'image-source': image['Config']['Labels']['io.doorhandle.source'] = 'f' * 64
+                with self.assertRaises(ValueError): value.read_prepared()
+
+    def test_readback_recomputes_resource_samples_even_when_sidecars_are_resealed(self):
+        for mutation in ('peak', 'reserve', 'growth', 'oom', 'admission'):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                value, _, _, _ = self.completed_readback(Path(directory))
+                file = value.folder / ('fresh-install-admission.json' if mutation == 'admission' else 'resource-samples.jsonl')
+                rows = [json.loads(line) for line in file.read_text().splitlines()] if mutation != 'admission' else [json.loads(file.read_text())]
+                if mutation == 'peak': rows[0]['ownedMemoryPeakBytes'] += 1
+                if mutation == 'reserve': rows[0]['availableDiskBytes'] = tools.RESERVE - 1
+                if mutation == 'growth': rows[0]['hostDiskGrowthBytes'] += 1
+                if mutation == 'oom': rows[0]['oomKilled'] = True
+                if mutation == 'admission': rows[0]['remainingGrowthBytes'] += 1
+                file.write_text('\n'.join(json.dumps(row) for row in rows) + '\n')
+                receipt_file = value.folder / 'preparation.json'; receipt = json.loads(receipt_file.read_text())
+                receipt['resourceSamplesSha256'] = tools.digest(value.folder / 'resource-samples.jsonl')
+                receipt_file.write_text(json.dumps(receipt)); self.reseal_readback(value)
+                with self.assertRaises(ValueError): value.read_prepared()
+
+    def test_readback_requires_final_completion_and_same_builder_request(self):
+        with tempfile.TemporaryDirectory() as directory:
+            value, _, _, calls = self.completed_readback(Path(directory))
+            value.args.prepare_candidate_builder = True
+            with self.assertRaisesRegex(ValueError, 'request mode'): value.read_prepared()
+            value.args.prepare_candidate_builder = False
+            (value.folder / 'completion.json').unlink()
+            with self.assertRaises(tools.PreparationPending): value.read_prepared()
+            self.assertEqual([], calls)
+            tools.write_json(value.folder / 'completion-failure.json', {'status': 'FAILED_OR_UNKNOWN'})
+            with self.assertRaisesRegex(ValueError, 'terminal failure'): value.read_prepared()
+
+    def test_atomic_completion_never_overwrites_success_or_leaves_pending_bytes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'completion.json'
+            tools.atomic_completion(path, {'original': True}); before = path.read_bytes()
+            with self.assertRaises(FileExistsError): tools.atomic_completion(path, {'replacement': True})
+            self.assertEqual(before, path.read_bytes())
+            self.assertEqual([path], list(path.parent.iterdir()))
+
+    def test_read_prepared_main_routes_pending_and_semantic_failures_without_preparation(self):
+        arguments = ['--root', '/home/owned', '--tag', 'ci-1-' + COMMIT[:12], '--commit', COMMIT,
+                     '--source-sha256', SOURCE_SHA, '--instance-id', tools.INSTANCE, '--machine-id', tools.MACHINE, '--read-prepared']
+        for error, code in [(tools.PreparationPending('incomplete'), 75), (tools.PreparationError('changed'), 2)]:
+            with self.subTest(code=code), mock.patch.object(tools, 'Preparation') as prepare, \
+                    mock.patch.object(tools, 'PreparedReadback', side_effect=error), \
+                    mock.patch.object(tools.signal, 'signal'), mock.patch('sys.stderr', io.StringIO()):
+                self.assertEqual(code, tools.main(arguments)); prepare.assert_not_called()
+
+
 if __name__ == '__main__':
     unittest.main()

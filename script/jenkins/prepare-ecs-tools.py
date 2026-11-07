@@ -7,9 +7,11 @@ process is started. Source, reports, stopped containers and images are retained.
 from __future__ import annotations
 
 import argparse
+import ctypes
 import hashlib
 import importlib.util
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -72,6 +74,10 @@ class PreparationError(ValueError):
     """An authored diagnostic safe to include in the public CI receipt."""
 
 
+class PreparationPending(PreparationError):
+    """The same owned request has no final completion evidence yet."""
+
+
 def require(condition, message):
     if not condition:
         raise PreparationError(message)
@@ -114,7 +120,7 @@ def identity(args):
     return {'instanceId': args.instance_id, 'machineId': args.machine_id, 'executionLocation': 'ECS'}
 
 
-def archive_inputs(archive, destination, commit, expected_sha, own_recipe, include_builder=False):
+def scan_archive_inputs(archive, commit, expected_sha, own_recipe, include_builder=False):
     require(digest(archive) == expected_sha, 'Fixed source archive digest differs')
     found, seen, total = {}, set(), 0
     expected = {RECIPE, REQUIREMENTS} | (BUILDER_RECIPES if include_builder else set())
@@ -139,6 +145,11 @@ def archive_inputs(archive, destination, commit, expected_sha, own_recipe, inclu
     require(set(found) == expected, 'Fixed source recipe or requirements is missing')
     require(hashlib.sha256(found[RECIPE]).hexdigest() == digest(own_recipe),
             'Uploaded tool provisioner is not this fixed source recipe')
+    return found
+
+
+def archive_inputs(archive, destination, commit, expected_sha, own_recipe, include_builder=False):
+    found = scan_archive_inputs(archive, commit, expected_sha, own_recipe, include_builder)
     for source_name, content in found.items():
         target = destination / Path(source_name).name
         with target.open('xb') as output:
@@ -555,8 +566,8 @@ class Preparation:
                 self.watcher.join(timeout=35)
             self.sample_stream.close()
 
-    def reuse_pinned_dependencies(self, sources, pinned, owner):
-        """Reuse only the reviewed immutable dependency artifact, never a tag."""
+    def inspect_pinned_dependencies(self, pinned):
+        """Inspect the historical immutable producer without changing it."""
         images = self.call('image', 'ls', '-q', '--no-trunc', '--filter', 'label=io.doorhandle.ci-tools=python-v1').decode().split()
         if CACHED_PYTHON not in images:
             return None
@@ -616,6 +627,15 @@ class Preparation:
                 and not produced['State'].get('OOMKilled') and produced['State'].get('Pid') == 0
                 and not str(produced['State'].get('StartedAt', '')).startswith('0001-'),
                 'Original dependency producer did not finish successfully')
+        return image, original, produced
+
+    def reuse_pinned_dependencies(self, sources, pinned, owner):
+        """Reuse only the reviewed immutable dependency artifact, never a tag."""
+        proof = self.inspect_pinned_dependencies(pinned)
+        if proof is None:
+            return None
+        image, original, produced = proof
+        commit_output = original['commit.stdout']
         for name in ('installed-versions.json', 'pip-install.json'):
             target = self.reports / name
             source = original['reports/' + name]
@@ -652,7 +672,8 @@ class Preparation:
         owner = {'release': self.args.tag, 'commit': self.args.commit, 'sourceSha256': self.args.source_sha256,
                  'identity': self.identity, 'ownerToken': self.token, 'containerName': self.name,
                  'baseImageId': BASE, 'diskReserveBytes': RESERVE, 'diskOvershootBytes': OVERSHOOT,
-                 'maximumGrowthBytes': MAX_GROWTH, 'sourceFiles': sources}
+                 'maximumGrowthBytes': MAX_GROWTH, 'sourceFiles': sources,
+                 'baselineAvailableBytes': self.baseline}
         write_json(self.folder / 'owner.json', owner)
         reused = self.reuse_pinned_dependencies(sources, pinned, owner)
         if reused is not None:
@@ -736,29 +757,325 @@ class Preparation:
                 self.sample_stream.close()
 
 
+def control_bytes(path, *, maximum=32 * MIB, empty=False):
+    path = canonical(path)
+    with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW), 'rb') as stream:
+        before = os.fstat(stream.fileno())
+        require(stat.S_ISREG(before.st_mode) and before.st_uid == os.getuid() and before.st_nlink == 1
+                and stat.S_IMODE(before.st_mode) == (0o444 if path.name == 'python-test-requirements.txt' else 0o600)
+                and (0 if empty else 1) <= before.st_size <= maximum, 'Owned bounded preparation evidence required')
+        raw = stream.read(maximum + 1); after = os.fstat(stream.fileno())
+        require(len(raw) == before.st_size and (before.st_ino, before.st_size, before.st_mtime_ns)
+                == (after.st_ino, after.st_size, after.st_mtime_ns), 'Preparation evidence changed while reading')
+    return raw
+
+
+def completion_files(receipt):
+    names = {'owner.json', 'preparation.json', 'reports/pip-install.json', 'reports/installed-versions.json',
+             'resource-samples.jsonl', *[Path(name).name for name in receipt['sourceFiles']]}
+    if receipt['dependencyPreparation'] == 'INSTALLED_CURRENT_SOURCE':
+        names.update(('pip.log', 'fresh-install-admission.json', 'commit.stdout', 'commit.stderr'))
+    else:
+        require(receipt['dependencyPreparation'] == 'REUSED_IMMUTABLE_IMAGE_CONFIG_REPAIRED',
+                'Unknown completed dependency preparation')
+        names.update(('reuse.json', 'config-commit.stdout', 'config-commit.stderr'))
+    return sorted(names)
+
+
+def complete_preparation(preparation, value):
+    """Publish success only after every component requested by this invocation."""
+    receipt = json.loads(control_bytes(preparation.folder / 'preparation.json'))
+    proofs = {name: hashlib.sha256(control_bytes(preparation.folder / name, empty=name.endswith('.stderr'))).hexdigest()
+              for name in completion_files(receipt)}
+    completion = {'schema': 1, 'kind': 'doorhandle-completed-tool-preparation',
+                  **{key: value[key] for key in ('release', 'commit', 'sourceSha256', 'identity', 'ownerToken')},
+                  'prepareCandidateBuilder': preparation.args.prepare_candidate_builder,
+                  'proofs': proofs, 'result': value}
+    path = preparation.folder / 'completion.json'
+    atomic_completion(path, completion)
+    return {**value, 'completion': str(path), 'completionSha256': digest(path)}
+
+
+def atomic_completion(path, value):
+    """Linux no-replace rename publishes only a fully fsynced completion file."""
+    temporary = path.with_name(path.name + '.' + secrets.token_hex(12) + '.pending')
+    try:
+        write_json(temporary, value)
+        rename = ctypes.CDLL(None, use_errno=True).renameat2
+        rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        rename.restype = ctypes.c_int
+        if rename(-100, os.fsencode(temporary), -100, os.fsencode(path), 1):  # RENAME_NOREPLACE
+            number = ctypes.get_errno()
+            raise OSError(number, os.strerror(number))
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+class PreparedReadback(Preparation):
+    """Re-admit an existing result; this path has no create, pip or cleanup API."""
+
+    def __init__(self, args):
+        self.args = args; self.identity = identity(args)
+        require(TAG.fullmatch(args.tag) and re.fullmatch(r'[a-f0-9]{40}', args.commit)
+                and args.tag.endswith('-' + args.commit[:12]) and SHA.fullmatch(args.source_sha256),
+                'Fixed commit, source archive hash and release are required')
+        self.root = canonical(args.root); self.inbox = canonical(self.root / 'inbox' / args.tag)
+        require(re.fullmatch(r'/(?:home|srv|opt)/[A-Za-z0-9_./-]+', str(self.root)), 'Owned release root path required')
+        for path in (self.root, self.inbox):
+            info = path.stat()
+            require(path.is_dir() and info.st_uid == os.getuid() and not info.st_mode & 0o022,
+                    'Owned existing preparation root and inbox required')
+        self.archive = canonical(self.inbox / 'source.tar.gz')
+        control_bytes(self.archive, maximum=512 * MIB)
+        self.found = scan_archive_inputs(self.archive, args.commit, args.source_sha256, Path(__file__).resolve(),
+                                         args.prepare_candidate_builder)
+        self.docker = canonical(shutil.which('docker')); self.folder = self.inbox / 'python-tools'
+        require(not self.folder.is_symlink(), 'Preparation directory cannot be a link')
+        if not self.folder.exists():
+            raise PreparationPending('Same-request preparation has not created its evidence yet')
+        canonical(self.folder); info = self.folder.stat()
+        require(self.folder.is_dir() and info.st_uid == os.getuid() and stat.S_IMODE(info.st_mode) == 0o700,
+                'Private owned preparation directory required')
+        self.reports = self.folder / 'reports'
+
+    def call(self, *arguments, timeout=20):
+        require((arguments[:2] == ('image', 'inspect') or arguments[:2] == ('image', 'ls')
+                 or arguments[:1] == ('inspect',) or arguments[:1] == ('ps',)),
+                'Preparation readback permits Docker inspection only')
+        result = subprocess.run([str(self.docker), *arguments], capture_output=True, timeout=min(timeout, 20),
+                                env={key: value for key, value in os.environ.items() if key in ('PATH', 'LANG', 'LC_ALL')})
+        require(result.returncode == 0 and len(result.stdout) <= 32 * MIB,
+                'Read-only preparation inspection failed')
+        return result.stdout
+
+    def validate_samples(self, receipt):
+        rows = control_bytes(self.snapshot).splitlines()
+        require(0 < len(rows) <= 10000, 'Bounded raw preparation samples required')
+        peaks = {'hostDiskGrowthPeakBytes': 0, 'containerWritablePeakBytes': 0,
+                 'memoryPeakBytes': 0, 'oomKilled': False, 'samples': len(rows)}
+        owned_samples = 0
+        for raw in rows:
+            row = json.loads(raw); elapsed = row['elapsedSeconds']
+            common = {'elapsedSeconds', 'availableDiskBytes', 'hostDiskGrowthBytes'}
+            if row.get('kind') == 'disk-watchdog':
+                require(set(row) == common | {'kind'}, 'Disk watchdog sample schema differs')
+            else:
+                require(set(row) == common | {'ownedWritableBytes', 'ownedMemoryPeakBytes', 'oomKilled'},
+                        'Owned container sample schema differs')
+                owned_samples += 1
+            require(type(elapsed) in (int, float) and math.isfinite(elapsed) and elapsed >= 0,
+                    'Preparation sample time is invalid')
+            for key in ('availableDiskBytes', 'hostDiskGrowthBytes', 'ownedWritableBytes', 'ownedMemoryPeakBytes'):
+                require(type(row.get(key, 0)) is int and row.get(key, 0) >= 0, 'Preparation resource sample is invalid')
+            growth = resource_check(self.baseline, row['availableDiskBytes'], row.get('ownedWritableBytes', 0))
+            require(growth == row['hostDiskGrowthBytes'] and row.get('oomKilled', False) is False
+                    and row.get('ownedMemoryPeakBytes', 0) <= 2 * GIB, 'Preparation growth or OOM evidence differs')
+            for key, field in (('hostDiskGrowthBytes', 'hostDiskGrowthPeakBytes'),
+                               ('ownedWritableBytes', 'containerWritablePeakBytes'), ('ownedMemoryPeakBytes', 'memoryPeakBytes')):
+                peaks[field] = max(peaks[field], row.get(key, 0))
+        require(owned_samples > 0 and peaks == receipt['observed'], 'Preparation observed peaks differ from original samples')
+
+    def validate_builder(self, reference):
+        spec = importlib.util.spec_from_file_location('readback_fixed_builder', self.folder / 'compact-build-resources.py')
+        helper = importlib.util.module_from_spec(spec); spec.loader.exec_module(helper)
+        context = {key: value for key, value in self.owner.items() if key in ('release', 'commit', 'sourceSha256', 'identity')}
+        proof = helper.admit_tools(self.root, context, self.folder)
+        require(reference == {**proof, 'imageId': helper.IMAGE_ID, 'status': 'PREPARED'},
+                'Completed builder reference differs')
+        directory = self.inbox / 'candidate-build-tools'
+        value = json.loads(control_bytes(directory / 'tools.json'))
+        require(value['licenseFile'] == str(directory / 'LICENSE')
+                and hashlib.sha256(control_bytes(directory / 'LICENSE')).hexdigest() == helper.LICENSE_SHA
+                and set(value['versions']) == {'buildctl', 'buildkitd'}, 'Builder license or version evidence differs')
+        for name, evidence in value['versions'].items():
+            require(evidence['file'] == name + '-version.log', 'Builder version log escaped its owned path')
+            raw = control_bytes(directory / evidence['file'], maximum=4096)
+            require(hashlib.sha256(raw).hexdigest() == evidence['sha256'] and helper.VERSION.encode() in raw,
+                    'Actual builder version evidence differs')
+        image = json.loads(self.call('image', 'inspect', helper.IMAGE_ID))[0]
+        require(image['Id'] == helper.IMAGE_ID and image['Os'] == 'linux'
+                and image['Config'].get('User') in ('1000', '1000:1000'), 'Prepared builder image is not rootless')
+        summary = json.loads(control_bytes(directory / 'resource-summary.json'))
+        cid = summary['cleanup']['builderContainerId']; require(SHA.fullmatch(cid), 'Stopped builder ID is invalid')
+        row = json.loads(self.call('inspect', cid))[0]; labels = row['Config'].get('Labels') or {}; state = row['State']
+        require(row['Id'] == cid and row['Image'] == helper.IMAGE_ID
+                and labels.get(helper.LABEL) == summary['ownerToken'] and labels.get('io.doorhandle.release') == self.args.tag
+                and labels.get('io.doorhandle.source') == self.args.source_sha256
+                and row['Config'].get('User') in ('1000', '1000:1000') and not row['HostConfig'].get('Privileged')
+                and row['HostConfig'].get('Memory') == helper.BUILDER_MEMORY
+                and row['HostConfig'].get('MemorySwap') == helper.BUILDER_MEMORY
+                and row['HostConfig']['RestartPolicy']['Name'] == 'no'
+                and row['HostConfig'].get('NetworkMode') == 'bridge' and row['HostConfig'].get('NanoCpus') == 2 * 10 ** 9
+                and row['HostConfig'].get('PidsLimit') == 1024
+                and set(row['HostConfig'].get('SecurityOpt') or []) == {'seccomp=unconfined', 'apparmor=unconfined', 'systempaths=unconfined'}
+                and state.get('Status') == 'exited' and not state.get('Running') and not state.get('Restarting')
+                and not state.get('Paused') and not state.get('OOMKilled')
+                and not str(state.get('StartedAt', '')).startswith('0001-')
+                and state.get('Pid') == 0 and state.get('ExitCode') == summary['cleanup']['builderExitCode'],
+                'Prepared builder owner, cgroup or actual stopped state differs')
+
+    def read_prepared(self):
+        for name in ('failure.json', 'watchdog-failure.json', 'metadata-failure.json', 'completion-failure.json'):
+            require(not (self.folder / name).exists() and not (self.folder / name).is_symlink(),
+                    'This preparation has terminal failure evidence')
+        builder_summary = self.inbox / 'candidate-build-tools/resource-summary.json'
+        if self.args.prepare_candidate_builder and builder_summary.exists():
+            require(json.loads(control_bytes(builder_summary)).get('status') == 'PASS', 'Requested builder preparation failed')
+        path = self.folder / 'completion.json'
+        if not path.exists():
+            require(not path.is_symlink(), 'Completion evidence cannot be a link')
+            raise PreparationPending('Same-request preparation has no final completion evidence yet')
+        complete_raw = control_bytes(path); complete = json.loads(complete_raw)
+        require(complete.get('schema') == 1 and complete.get('kind') == 'doorhandle-completed-tool-preparation'
+                and complete.get('prepareCandidateBuilder') is self.args.prepare_candidate_builder
+                and set(complete) == {'schema', 'kind', 'release', 'commit', 'sourceSha256', 'identity',
+                                      'ownerToken', 'prepareCandidateBuilder', 'proofs', 'result'},
+                'Completed preparation request mode differs')
+        found = self.found
+        sources = {name: hashlib.sha256(raw).hexdigest() for name, raw in found.items()}
+        for name, raw in found.items():
+            require(control_bytes(self.folder / Path(name).name) == raw, 'Retained recipe or requirements differ from fixed source')
+        self.owner = json.loads(control_bytes(self.folder / 'owner.json')); owner = self.owner
+        self.token = owner['ownerToken']; self.name = owner['containerName']; self.container = None
+        self.metadata_container = None; self.metadata_name = self.name + '-metadata'
+        self.snapshot = self.folder / 'resource-samples.jsonl'; self.baseline = owner['baselineAvailableBytes']
+        require(type(self.baseline) is int and self.baseline >= RESERVE + OVERSHOOT
+                and re.fullmatch(r'[a-f0-9]{24}', self.token) and self.name == 'doorhandle-ci-python-' + self.token,
+                'Preparation owner or baseline is invalid')
+        expected = {'release': self.args.tag, 'commit': self.args.commit, 'sourceSha256': self.args.source_sha256,
+                    'identity': self.identity, 'baseImageId': BASE, 'diskReserveBytes': RESERVE,
+                    'diskOvershootBytes': OVERSHOOT, 'maximumGrowthBytes': MAX_GROWTH, 'sourceFiles': sources}
+        require(set(owner) == set(expected) | {'ownerToken', 'containerName', 'baselineAvailableBytes'}
+                and all(owner.get(key) == value for key, value in expected.items())
+                and all(complete.get(key) == owner[key] for key in ('release', 'commit', 'sourceSha256', 'identity', 'ownerToken')),
+                'Completed preparation belongs to another source, ECS or owner')
+        receipt = json.loads(control_bytes(self.folder / 'preparation.json'))
+        receipt_keys = set(owner) | {'status', 'kind', 'dependencyPreparation', 'pipExecutedThisAttempt', 'testsExecuted',
+            'pythonImageId', 'mavenImageId', 'nodeImageId', 'pipReportSha256', 'installedVersionsSha256',
+            'resourceSamplesSha256', 'observed', 'cleanup', 'reportSha'}
+        if receipt.get('dependencyPreparation') == 'REUSED_IMMUTABLE_IMAGE_CONFIG_REPAIRED':
+            receipt_keys |= {'dependencyImageId', 'reuseEvidenceSha256'}
+        require(all(receipt.get(key) == value for key, value in owner.items())
+                and set(receipt) == receipt_keys
+                and receipt.get('status') == 'PREPARED' and receipt.get('kind') == 'doorhandle-ecs-tool-preparation'
+                and receipt.get('testsExecuted') is False and receipt.get('mavenImageId') == MAVEN
+                and receipt.get('nodeImageId') == NODE, 'Python preparation receipt is incomplete or changed')
+        names = completion_files(receipt)
+        proofs = {name: hashlib.sha256(control_bytes(self.folder / name, empty=name.endswith('.stderr'))).hexdigest() for name in names}
+        require(complete.get('proofs') == proofs, 'Completed preparation original control bytes changed')
+        pinned = requirements(self.folder / 'python-test-requirements.txt')
+        require(json.loads(control_bytes(self.reports / 'installed-versions.json')) == pinned
+                and receipt['installedVersionsSha256'] == proofs['reports/installed-versions.json']
+                and receipt['pipReportSha256'] == receipt['reportSha'] == proofs['reports/pip-install.json']
+                and receipt['resourceSamplesSha256'] == proofs['resource-samples.jsonl'], 'Python reports or pinned versions differ')
+        self.validate_samples(receipt)
+        require(IMAGE.fullmatch(receipt['pythonImageId']), 'Prepared image is not immutable')
+        image = self.image_row(receipt['pythonImageId'])
+        validate_tool_config(image['Config'], sources, uid=os.getuid(), gid=os.getgid(),
+                             commit=self.args.commit, source_sha=self.args.source_sha256)
+        base = self.image_row(BASE)['RootFS']['Layers']
+        require(image['RootFS']['Layers'][:len(base)] == base, 'Prepared dependency image has another base')
+        if receipt['dependencyPreparation'] == 'INSTALLED_CURRENT_SOURCE':
+            admission = json.loads(control_bytes(self.folder / 'fresh-install-admission.json'))
+            require(all(admission.get(key) == expected for key, expected in {
+                'kind': 'doorhandle-fresh-tool-admission', 'release': self.args.tag, 'commit': self.args.commit,
+                'sourceSha256': self.args.source_sha256, 'baselineAvailableBytes': self.baseline,
+                'maximumGrowthBytes': MAX_GROWTH, 'reserveBytes': RESERVE, 'overshootBytes': OVERSHOOT}.items())
+                and type(admission['availableBytes']) is int
+                and admission['remainingGrowthBytes'] == admit_fresh_install(self.baseline, admission['availableBytes'])
+                and admission['observedHostGrowthUpperBoundBytes'] == MAX_GROWTH - admission['remainingGrowthBytes'],
+                'Fresh installation admission differs from its actual bounded baseline')
+            require(receipt['pipExecutedThisAttempt'] is True and b'No broken requirements found.' in control_bytes(self.folder / 'pip.log')
+                    and commit_image_id(control_bytes(self.folder / 'commit.stdout').decode()) == receipt['pythonImageId'],
+                    'Current dependency installation or commit evidence differs')
+            self.container = receipt['cleanup']['containerId']; row = self.owned(); state = row['State']
+            require(row['Config'].get('Cmd') == installer_command(pinned) and state.get('Status') == 'exited'
+                    and not state.get('Running') and not state.get('Restarting') and not state.get('OOMKilled')
+                    and not state.get('Paused') and not str(state.get('StartedAt', '')).startswith('0001-')
+                    and state.get('Pid') == 0 and state.get('ExitCode') == 0
+                    and receipt['cleanup'] == {'containerId': row['Id'], 'pid': 0, 'exitCode': 0, 'retained': True},
+                    'Owned pip producer did not actually finish successfully')
+        else:
+            proof = self.inspect_pinned_dependencies(pinned)
+            require(proof is not None and receipt['pipExecutedThisAttempt'] is False
+                    and receipt['dependencyImageId'] == CACHED_PYTHON, 'Historical dependency provenance differs')
+            validate_dependency_layers(proof[0], image)
+            require(commit_image_id(control_bytes(self.folder / 'config-commit.stdout').decode()) == receipt['pythonImageId']
+                    and digest(self.folder / 'reuse.json') == receipt['reuseEvidenceSha256'], 'Config-only commit evidence differs')
+            reuse = json.loads(control_bytes(self.folder / 'reuse.json'))
+            require(all(reuse.get(key) == expected for key, expected in {
+                'kind': 'doorhandle-pinned-dependency-reuse', 'sourceImageId': CACHED_PYTHON,
+                'repairedImageId': receipt['pythonImageId'], 'producerContainerId': proof[2]['Id'],
+                'producerContainerInspectedOnly': True, 'producerOwnerSha256': CACHED_PROOFS['owner.json'],
+                'producerCommitReceiptSha256': CACHED_PROOFS['commit.stdout'], 'currentSourceFiles': sources,
+                'producerProofs': CACHED_PROOFS}.items()) and type(reuse['diskAvailableBytes']) is int
+                and resource_check(self.baseline, reuse['diskAvailableBytes'], 0) == reuse['observedGrowthBytes']
+                and all(proofs['reports/' + name] == CACHED_PROOFS['reports/' + name]
+                        for name in ('pip-install.json', 'installed-versions.json')), 'Config-only producer evidence differs')
+            cleanup = receipt['cleanup']
+            require(cleanup['status'] == 'STOPPED' and cleanup['remaining'] == [] and len(cleanup['containers']) == 1
+                    and cleanup['containersCreated'] == [cleanup['containers'][0]['containerId']]
+                    and cleanup['containers'][0] == {'containerId': cleanup['containersCreated'][0], 'sourceImageId': CACHED_PYTHON,
+                        'started': False, 'pid': 0, 'removed': True}, 'Config-only cleanup evidence differs')
+            cid = cleanup['containersCreated'][0]; require(SHA.fullmatch(cid), 'Metadata container ID is invalid')
+            require(not self.call('ps', '-aq', '--no-trunc', '--filter', 'id=' + cid).strip(), 'Metadata container still exists')
+        for fixed in (MAVEN, NODE): self.image_row(fixed)
+        result = {**receipt, 'preparation': str(self.folder / 'preparation.json'),
+                  'preparationSha256': digest(self.folder / 'preparation.json')}
+        if self.args.prepare_candidate_builder:
+            reference = complete['result'].get('candidateBuilderTools'); self.validate_builder(reference)
+            result['candidateBuilderTools'] = reference
+        require(complete['result'] == result, 'Final completion result differs from fully verified components')
+        require(digest(self.archive) == self.args.source_sha256 and control_bytes(path) == complete_raw
+                and all(hashlib.sha256(control_bytes(self.folder / name, empty=name.endswith('.stderr'))).hexdigest() == checksum
+                        for name, checksum in proofs.items()),
+                'Preparation evidence changed during final readback')
+        return {**result, 'completion': str(path), 'completionSha256': hashlib.sha256(complete_raw).hexdigest(),
+                'readbackValidated': True}
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('root', 'tag', 'commit', 'source-sha256', 'instance-id', 'machine-id'):
         parser.add_argument('--' + name, required=True)
     parser.add_argument('--prepare-candidate-builder', action='store_true')
+    parser.add_argument('--read-prepared', action='store_true')
     args = parser.parse_args(argv)
     for event in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         signal.signal(event, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
+    preparation = None
     try:
+        if args.read_prepared:
+            print(json.dumps(PreparedReadback(args).read_prepared(), ensure_ascii=True)); return 0
         preparation = Preparation(args)
         value = preparation.prepare()
         if args.prepare_candidate_builder:
             spec = importlib.util.spec_from_file_location('pinned_candidate_build_resources', preparation.folder / 'compact-build-resources.py')
             helper = importlib.util.module_from_spec(spec); spec.loader.exec_module(helper)
             value['candidateBuilderTools'] = helper.prepare_tools(args, preparation.identity, preparation.folder)
+        value = complete_preparation(preparation, value)
         print(json.dumps(value, ensure_ascii=True)); return 0
     except BaseException as error:
-        failed = {'status': 'FAILED_OR_UNKNOWN', 'errorType': type(error).__name__,
+        failed = {'status': 'PENDING' if isinstance(error, PreparationPending) else 'FAILED_OR_UNKNOWN', 'errorType': type(error).__name__,
                   'sourceAndEvidenceRetained': True}
         if isinstance(error, PreparationError) or getattr(error, 'doorhandle_public_resource_error', False):
             failed['error'] = str(error)
+        if preparation is not None and not args.read_prepared:
+            marker = preparation.folder / 'completion-failure.json'
+            try:
+                if not marker.exists():
+                    write_json(marker, {**failed, 'release': args.tag, 'commit': args.commit,
+                                        'sourceSha256': args.source_sha256, 'prepareCandidateBuilder': args.prepare_candidate_builder})
+            except (OSError, PreparationError):
+                pass  # Keep the original failure when its evidence filesystem is unavailable.
         print(json.dumps(failed), file=sys.stderr)
-        return 2
+        return 75 if isinstance(error, PreparationPending) else 2
 
 
 if __name__ == '__main__':

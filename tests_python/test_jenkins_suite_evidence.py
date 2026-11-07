@@ -6,6 +6,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import stat
 import tarfile
 from types import SimpleNamespace
@@ -25,6 +26,82 @@ def module(name, file):
 remote = module('serial_suite_remote_evidence', 'verify-remote.py')
 inner = module('serial_suite_ecs_evidence', 'verify-ecs.py')
 cleanup = module('serial_suite_original_custody', 'cleanup-ecs-builds.py')
+
+
+def preparation_transport_source():
+    source = (ROOT / 'script/jenkins/pipeline.ps1').read_text(encoding='utf8')
+    begin = source.index('        $prepareCommand = ')
+    end = source.index('        $prepared | ConvertTo-Json -Depth 12', begin)
+    return source[begin:end]
+
+
+def test_preparation_disconnect_recovers_only_by_reading_the_same_fixed_command():
+    source = preparation_transport_source()
+    assert '$prepareCommand = "python3 -B \'$remoteInbox/prepare-ecs-tools.py\' $prepareArguments"' in source
+    gate = source.index('if ($prepareExit -eq 255)')
+    loop = source.index('for ($prepareReadback = 1; $prepareReadback -le 3; $prepareReadback++)')
+    terminal = source.index('if (-not $prepareRecovered)', loop)
+    assert source.index("& 'ssh.exe' @prepareSshArguments") < gate < loop
+    readback = source[loop:terminal]
+    assert "& 'ssh.exe'" not in readback
+    assert readback.count("[Diagnostics.ProcessStartInfo]::new('ssh.exe')") == 1
+    assert '$prepareReadArguments = $sshOptions + @' in readback
+    assert '$prepareReadProcess.StartInfo.ArgumentList.Add([string]$prepareReadArgument)' in readback
+    assert '"$prepareCommand --read-prepared"' in readback
+    assert 'prepare-ecs-tools.py' not in readback and 'Invoke-Checked' not in readback
+    assert 'elseif ($prepareExit -ne 0)' in source[terminal:]
+    assert 'throw "ssh.exe failed with exit $prepareExit"' in source[terminal:]
+
+
+def test_preparation_readback_has_bounded_wait_and_stops_on_semantic_failure():
+    source = preparation_transport_source()
+    assert 'maximumReadbacks=3; recoveryWindowSeconds=180; readbackIntervalSeconds=60' in source
+    assert '[Diagnostics.Stopwatch]::StartNew()' in source
+    assert '[Math]::Min(60, [Math]::Max(0, 180 - $prepareRecoveryTimer.Elapsed.TotalSeconds))' in source
+    assert "if ($prepareRecoveryTimer.Elapsed.TotalSeconds -ge 180) { $prepareTransport.failureReason = 'DEADLINE_EXCEEDED'; break }" in source
+    assert source.index("failureReason = 'DEADLINE_EXCEEDED'; break") < source.index('$prepareReadProcess.Start()')
+    assert 'if ($prepareReadExit -eq 0) { $prepareOutput = $prepareReadOut; $prepareRecovered = $true; break }' in source
+    assert 'if ($prepareReadExit -notin @(75, 255)) { throw ' in source
+    assert 'if (-not $prepareRecovered) { throw ' in source
+
+
+def test_preparation_transport_retains_actual_exits_hashes_and_source_validation():
+    source = preparation_transport_source()
+    assert re.search(r"& 'ssh.exe' @prepareSshArguments 1> \$prepareFirstOut 2> \$prepareFirstErr\s+"
+                     r'\$prepareExit = \$LASTEXITCODE', source)
+    assert '$prepareReadExit = $prepareReadProcess.ExitCode' in source
+    assert 'originalExitCode = $prepareExit' in source
+    assert 'attempt=$prepareReadback; exitCode=$prepareReadExit; outcome=$prepareReadOutcome' in source
+    assert '$prepareReadOutSha = (Get-FileHash -LiteralPath $prepareReadOut -Algorithm SHA256)' in source
+    assert '$prepareReadErrSha = (Get-FileHash -LiteralPath $prepareReadErr -Algorithm SHA256)' in source
+    assert 'stdoutFile=$prepareReadOut; stdoutSha256=$prepareReadOutSha' in source
+    assert 'stderrFile=$prepareReadErr; stderrSha256=$prepareReadErrSha' in source
+    assert "} finally {" in source and 'artifacts/ecs-tool-preparation-transport.json' in source
+    assert "'Sha256'] = (Get-FileHash -LiteralPath $prepareStream[1] -Algorithm SHA256)" in source
+    assert 'release=$tag; commit=$commit; sourceSha256=$sha' in source
+    assert 'instanceId=$instance; machineId=$machine; prepareCandidateBuilder=' in source
+    success = source.index('$prepareTransport.transportRecovered = $prepareRecovered')
+    assert source.index("throw 'ECS tool image preparation did not return matching source evidence.'") < success
+    assert source.index("throw 'Prepared ECS tools require immutable image IDs.'") < success
+    assert source.index("throw 'Candidate BuildKit was not automatically prepared for this fixed attempt.'") < success
+
+
+def test_preparation_reader_enforces_the_remaining_deadline_on_the_local_ssh_process():
+    source = preparation_transport_source()
+    assert 'StartInfo.UseShellExecute = $false' in source and 'StartInfo.CreateNoWindow = $true' in source
+    assert 'StandardOutput.BaseStream.CopyToAsync($prepareReadOutStream)' in source
+    assert 'StandardError.BaseStream.CopyToAsync($prepareReadErrStream)' in source
+    remaining = '[Math]::Floor((180 - $prepareRecoveryTimer.Elapsed.TotalSeconds) * 1000)'
+    assert source.count(remaining) == 2
+    assert '$prepareReadProcess.WaitForExit($prepareReadRemaining)' in source
+    assert '[Threading.Tasks.Task]::WaitAll($prepareReadCopies, $prepareReadRemaining)' in source
+    assert '$prepareReadProcess.Kill($true)' in source and '$prepareReadProcess.WaitForExit(1000)' in source
+    assert '$prepareReadDeadline = $prepareReadDeadline -or $prepareRecoveryTimer.Elapsed.TotalSeconds -ge 180' in source
+    assert "if ($prepareReadDeadline) { 'DEADLINE_EXCEEDED' }" in source
+    deadline_gate = source.index('if ($prepareReadDeadline -or $prepareRecoveryTimer.Elapsed.TotalSeconds -ge 180)')
+    success_gate = source.index('if ($prepareReadExit -eq 0)')
+    assert deadline_gate < success_gate
+    assert "failureReason = 'DEADLINE_EXCEEDED'" in source[deadline_gate:success_gate]
 
 
 def test_old_owned_staging_parent_is_private_without_reclaiming_an_attempt(tmp_path):
