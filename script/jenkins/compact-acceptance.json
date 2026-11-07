@@ -808,7 +808,7 @@
       },
       {
         "className": "com.ruanzhu.doorhandle.module.ai.mcp.PersistentMcpConfigurationTest",
-        "minimumTests": 5,
+        "minimumTests": 7,
         "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/mcp/PersistentMcpConfigurationTest.java"
       },
       {
@@ -903,7 +903,7 @@
       },
       {
         "className": "com.ruanzhu.doorhandle.module.ai.testsupport.CompactH2FunctionsTest",
-        "minimumTests": 12,
+        "minimumTests": 13,
         "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/testsupport/CompactH2FunctionsTest.java"
       },
       {
@@ -920,6 +920,16 @@
         "className": "com.ruanzhu.doorhandle.module.app.service.ChromaRagPreservationTest",
         "minimumTests": 12,
         "source": "doorhandle-module-app/src/test/java/com/ruanzhu/doorhandle/module/app/service/ChromaRagPreservationTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.ai.research.ResearchEvidenceServiceTest",
+        "minimumTests": 11,
+        "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/research/ResearchEvidenceServiceTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.ai.research.ResearchEvidenceStorageTest",
+        "minimumTests": 19,
+        "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/research/ResearchEvidenceStorageTest.java"
       },
       {
         "className": "com.ruanzhu.doorhandle.module.ai.testsupport.CompactH2FixtureInstallationTest",

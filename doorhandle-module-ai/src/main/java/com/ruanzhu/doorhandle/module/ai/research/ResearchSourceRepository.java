@@ -84,30 +84,30 @@ public final class ResearchSourceRepository {
     }
 
     public long countActive(long owner) {
-        return jdbc.queryForObject("SELECT COUNT(*) "+FROM+" AND l.owner_user_id=? AND r.expires_at>UTC_TIMESTAMP",Long.class,owner);
+        return jdbc.queryForObject("SELECT COUNT(*) "+FROM+" AND l.owner_user_id=? AND r.expires_at>UTC_TIMESTAMP(6)",Long.class,owner);
     }
 
     public List<String> activeIds(long owner,String run) {
-        return jdbc.queryForList("SELECT a.asset_id "+FROM+" AND l.owner_user_id=? AND l.run_id=? AND r.expires_at>UTC_TIMESTAMP",
+        return jdbc.queryForList("SELECT a.asset_id "+FROM+" AND l.owner_user_id=? AND l.run_id=? AND r.expires_at>UTC_TIMESTAMP(6)",
             String.class,owner,run);
     }
 
     public List<String> activeHashes(long owner,String sourceId) {
         return jdbc.queryForList("SELECT r.source_sha256 "+FROM+
-            " AND l.owner_user_id=? AND a.asset_id=? AND r.expires_at>UTC_TIMESTAMP",String.class,owner,sourceId);
+            " AND l.owner_user_id=? AND a.asset_id=? AND r.expires_at>UTC_TIMESTAMP(6)",String.class,owner,sourceId);
     }
 
     public List<ResearchEvidenceDtos.Source> active(long owner,String run) {
-        return jdbc.query(SOURCE_COLUMNS+FROM+" AND l.owner_user_id=? AND l.run_id=? AND r.expires_at>UTC_TIMESTAMP ORDER BY r.id LIMIT 20",SOURCE,owner,run);
+        return jdbc.query(SOURCE_COLUMNS+FROM+" AND l.owner_user_id=? AND l.run_id=? AND r.expires_at>UTC_TIMESTAMP(6) ORDER BY r.id LIMIT 20",SOURCE,owner,run);
     }
 
     public int expiredCount(long owner,String run) {
-        return jdbc.queryForObject("SELECT COUNT(*) "+FROM+" AND l.owner_user_id=? AND l.run_id=? AND r.expires_at<=UTC_TIMESTAMP",Integer.class,owner,run);
+        return jdbc.queryForObject("SELECT COUNT(*) "+FROM+" AND l.owner_user_id=? AND l.run_id=? AND r.expires_at<=UTC_TIMESTAMP(6)",Integer.class,owner,run);
     }
 
     public List<Map<String,Object>> purgeCandidates(int maximum) {
         return jdbc.query("SELECT a.asset_id AS source_id,l.owner_user_id AS user_id "+FROM+
-            " AND r.expires_at<=UTC_TIMESTAMP AND r.purged_at IS NULL ORDER BY r.expires_at,r.id LIMIT ?",
+            " AND r.expires_at<=UTC_TIMESTAMP(6) AND r.purged_at IS NULL ORDER BY r.expires_at,r.id LIMIT ?",
             statement->{statement.setInt(1,maximum);statement.setQueryTimeout(5);},new org.springframework.jdbc.core.ColumnMapRowMapper());
     }
 
@@ -118,7 +118,7 @@ public final class ResearchSourceRepository {
                 ||!Boolean.FALSE.equals(jdbc.execute((ConnectionCallback<Boolean>) c->c.getAutoCommit())))
             throw new IllegalStateException("Research purge requires its JDBC transaction");
         var rows=jdbc.queryForList("SELECT r.source_url,r.title,r.content_text "+FROM+
-            " AND l.owner_user_id=? AND a.asset_id=? AND r.expires_at<=UTC_TIMESTAMP AND r.purged_at IS NULL FOR UPDATE",owner,sourceId);
+            " AND l.owner_user_id=? AND a.asset_id=? AND r.expires_at<=UTC_TIMESTAMP(6) AND r.purged_at IS NULL FOR UPDATE",owner,sourceId);
         if(rows.isEmpty()) return 0;
         if(rows.size()!=1) throw new IllegalStateException("Research provenance is not unique");
         var row=rows.get(0);
@@ -127,7 +127,7 @@ public final class ResearchSourceRepository {
             UPDATE content_revision SET source_url='',title='',content_text='',content_state='PURGED',
               purge_owner_user_id=?,cleared_chars=?,purged_at=UTC_TIMESTAMP(6)
             WHERE asset_kind='RESEARCH_SOURCE' AND asset_id=? AND version=1 AND owner_user_id=?
-              AND expires_at<=UTC_TIMESTAMP AND purged_at IS NULL
+              AND expires_at<=UTC_TIMESTAMP(6) AND purged_at IS NULL
             """,owner,chars,sourceId,owner);
         if(changed!=1) throw new IllegalStateException("Research content purge did not record exactly one receipt");
         if(jdbc.update("UPDATE content_asset SET title='',updated_at=UTC_TIMESTAMP(6),revision=revision+1 WHERE asset_id=? AND asset_kind='RESEARCH_SOURCE' AND owner_user_id=?",sourceId,owner)!=1)

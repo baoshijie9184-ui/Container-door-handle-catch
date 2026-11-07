@@ -90,7 +90,38 @@ public final class CompactH2Functions {
             } else { plain.append(c); i++; }
         }
         String adapted = result.append(adaptPlain(plain.toString(), context)).toString();
-        return context == null ? adapted : expandGeneratedDependencies(adaptGuardedJsonBooleans(adapted));
+        return context == null ? adapted : splitAlterTableAdds(expandGeneratedDependencies(adaptGuardedJsonBooleans(adapted)));
+    }
+
+    /** H2 accepts the same constraints/actions, but one ADD per ALTER statement. */
+    private static String splitAlterTableAdds(String sql) {
+        String masked = maskProtectedSql(sql);
+        var alters = Pattern.compile("(?i)\\bALTER\\s+TABLE\\s+`?[a-z_][a-z0-9_]*`?"
+                + "(?:\\s*\\.\\s*`?[a-z_][a-z0-9_]*`?)?\\s+").matcher(masked);
+        StringBuilder result = new StringBuilder(); int position = 0;
+        while (alters.find()) {
+            int end = alters.end(), depth = 0;
+            for (; end < masked.length(); end++) {
+                char c = masked.charAt(end);
+                if (c == '(') depth++;
+                else if (c == ')') depth--;
+                else if (c == ';' && depth == 0) break;
+            }
+            if (depth != 0) throw new IllegalArgumentException("Unbalanced fixture ALTER statement");
+            List<String> clauses = splitTopLevelClauses(sql.substring(alters.end(), end));
+            int next = end < sql.length() ? end + 1 : end;
+            if (clauses.size() > 1) {
+                String header = sql.substring(alters.start(), alters.end());
+                result.append(sql, position, alters.start());
+                for (String clause : clauses) {
+                    if (!Pattern.compile("(?i)^\\s*ADD\\b").matcher(maskProtectedSql(clause)).find())
+                        throw new IllegalArgumentException("Only ADD clauses can be split in a fixture ALTER statement");
+                    result.append(header).append(clause.stripLeading()).append(";\n");
+                }
+            } else result.append(sql, position, next);
+            position = next; alters.region(next, masked.length());
+        }
+        return result.append(sql, position, sql.length()).toString();
     }
 
     private record GeneratedColumn(int clause, int start, int end, String name, String type, String expression) { }
@@ -135,7 +166,7 @@ public final class CompactH2Functions {
         throw new IllegalArgumentException("Unclosed fixture DDL expression");
     }
 
-    private static String expandGeneratedTable(String body) {
+    private static List<String> splitTopLevelClauses(String body) {
         List<String> clauses = new ArrayList<>(); int position = 0, depth = 0;
         for (int i = 0; i < body.length();) {
             int end = protectedSqlEnd(body, i);
@@ -146,7 +177,13 @@ public final class CompactH2Functions {
             else if (c == ',' && depth == 0) { clauses.add(body.substring(position, i)); position = i + 1; }
             i++;
         }
+        if (depth != 0) throw new IllegalArgumentException("Unbalanced fixture DDL clauses");
         clauses.add(body.substring(position));
+        return clauses;
+    }
+
+    private static String expandGeneratedTable(String body) {
+        List<String> clauses = splitTopLevelClauses(body);
         Map<String, GeneratedColumn> generated = new LinkedHashMap<>();
         var declaration = Pattern.compile("(?i)^\\s*(`?[a-z_][a-z0-9_]*`?)\\s+([a-z_][a-z0-9_]*(?:\\s*\\([0-9 ,]+\\))?)"
                 + "\\s+GENERATED\\s+ALWAYS\\s+AS\\s*\\(");

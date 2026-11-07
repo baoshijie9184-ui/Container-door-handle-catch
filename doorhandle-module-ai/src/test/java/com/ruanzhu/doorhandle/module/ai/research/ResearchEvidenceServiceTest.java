@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ruanzhu.doorhandle.contracts.agent.AgentActor;
 import com.ruanzhu.doorhandle.module.ai.config.AgentJournalProperties;
 import com.ruanzhu.doorhandle.module.ai.journal.*;
+import com.ruanzhu.doorhandle.module.ai.testsupport.CompactMcpFixture;
 import io.agentscope.core.message.*;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.io.TempDir;
@@ -11,6 +12,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.*;
 import java.nio.file.*;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.*;
 import java.util.concurrent.*;
 import static org.assertj.core.api.Assertions.*;
@@ -31,13 +33,6 @@ public class ResearchEvidenceServiceTest {
         var settings=new AgentJournalProperties();settings.setEnabled(true);
         journal=new JdbcAgentJournal(jdbc,transactions,json,settings);journal.verifySchema();
         evidence=new ResearchEvidenceService(jdbc,transactions,json,journal);evidence.schema();
-    }
-    protected void migrate(Path path) throws Exception {
-        String ddl=Files.readString(path).replaceAll("(?m)^--.*$", "").replaceAll(" COLLATE utf8mb4_bin","").replaceAll(" ENGINE=InnoDB DEFAULT CHARSET=utf8mb4(?: COLLATE=utf8mb4_bin)?","")
-                .replace(" JSON "," VARCHAR(16384) ")
-                .replaceAll("(?m)^(\\s*)UNIQUE KEY (\\w+)\\s*(\\([^\\n]+\\))", "$1CONSTRAINT $2 UNIQUE $3")
-                .replaceAll("(?m)^\\s*KEY .*\\n","");
-        for(String sql:ddl.split(";"))if(!sql.isBlank())jdbc.execute(sql);
     }
     protected AgentJournal.Run begin(AgentActor actor,String session) {return journal.begin(actor,session,actor.supervisor()?"supervisor-main":"employee-main","CHAT",UUID.randomUUID().toString(),"fixture");}
     protected Map<String,Object> args() {return Map.of("url","https://1.1.1.1/article?topic=private-query","max_length",5000,"start_index",0);}
@@ -90,12 +85,12 @@ public class ResearchEvidenceServiceTest {
         assertThat(evidence.view(alice,run.id()).sources()).hasSize(1);
         assertThatThrownBy(()->capture(run,"fetch-2","Public source")).hasMessageContaining("409");
         assertThatThrownBy(()->evidence.recordAnswer(alice,run.id(),"answer")).hasMessageContaining("409");
-        var expired=begin(alice,"expired");jdbc.update("UPDATE agent_run SET lease_expires_at=? WHERE run_id=?",LocalDateTime.now().minusMinutes(1),expired.id());
+        var expired=begin(alice,"expired");jdbc.update("UPDATE agent_run SET lease_expires_at=? WHERE run_id=?",LocalDateTime.now(ZoneOffset.UTC).minusMinutes(1),expired.id());
         assertThatThrownBy(()->capture(expired,"fetch-1","data")).hasMessageContaining("409");
     }
     @Test void expiredSourcesReturnNoStoredAddressOrExcerptAndCannotAuthorizeANewCitation() {
         var run=begin(alice,"session");String id=capture(run,"fetch-1","PRIVATE_EXPIRED_SNIPPET");
-        jdbc.update("UPDATE content_revision SET expires_at=? WHERE asset_kind='RESEARCH_SOURCE'",LocalDateTime.now().minusDays(1));
+        jdbc.update("UPDATE content_revision SET expires_at=? WHERE asset_kind='RESEARCH_SOURCE'",LocalDateTime.now(ZoneOffset.UTC).minusDays(1));
         evidence.recordAnswer(alice,run.id(),"[source:"+id+"]");var view=evidence.view(alice,run.id());
         assertThat(view.expiredSourceCount()).isEqualTo(1);assertThat(view.sources()).isEmpty();assertThat(view.citations()).isEmpty();assertThat(view.unresolvedCitationCount()).isEqualTo(1);
         assertThat(view.toString()).doesNotContain("PRIVATE_EXPIRED_SNIPPET","1.1.1.1");
@@ -114,8 +109,33 @@ public class ResearchEvidenceServiceTest {
         assertThat(Files.readAllBytes(Path.of("../sql/mysql/migration-V31-agent-research-evidence.sql")))
                 .isEqualTo(Files.readAllBytes(Path.of("src/main/resources/db/migration-V31-agent-research-evidence.sql")));
     }
+    @Test void nonUtcSessionKeepsSourceAnswerExpiryAndRunLeaseInUtc() {
+        // One transaction holds the same connection, so SET TIME ZONE applies to
+        // the actual service SQL rather than a discarded setup connection.
+        new org.springframework.transaction.support.TransactionTemplate(transactions).executeWithoutResult(status->{
+            try {
+                jdbc.execute("SET TIME ZONE '+09:00'");
+                LocalDateTime utc=LocalDateTime.now(ZoneOffset.UTC);
+                assertThat(jdbc.queryForObject("SELECT CURRENT_TIMESTAMP(6)",LocalDateTime.class))
+                    .isBetween(utc.plusHours(9).minusMinutes(1),utc.plusHours(9).plusMinutes(1));
+                var run=begin(alice,"non-utc");String id=capture(run,"clock-call","Public source");
+                var source=evidence.view(alice,run.id()).sources().get(0);
+                assertThat(source.fetchedAt()).isBetween(utc.minusSeconds(1),LocalDateTime.now(ZoneOffset.UTC).plusSeconds(1));
+                assertThat(source.expiresAt()).isEqualTo(source.fetchedAt().plusDays(30));
+                evidence.recordAnswer(alice,run.id(),"Fact [source:"+id+"]");
+                assertThat(evidence.view(alice,run.id()).citations()).hasSize(1);
+                assertThat(jdbc.queryForObject("SELECT answer_recorded_at FROM agent_run WHERE run_id=?",LocalDateTime.class,run.id()))
+                    .isBetween(utc.minusSeconds(1),LocalDateTime.now(ZoneOffset.UTC).plusSeconds(1));
+                jdbc.update("UPDATE content_revision SET expires_at=? WHERE asset_id=?",utc.minusSeconds(1),id);
+                assertThat(evidence.view(alice,run.id()).sources()).isEmpty();
+                assertThat(evidence.view(alice,run.id()).expiredSourceCount()).isEqualTo(1);
+                jdbc.update("UPDATE agent_run SET lease_expires_at=? WHERE run_id=?",utc.minusSeconds(1),run.id());
+                assertThatThrownBy(()->capture(run,"expired-clock-call","Public source")).hasMessageContaining("409");
+            } finally { status.setRollbackOnly(); }
+        });
+    }
     @Test void nativeSdkFetchAndSharedConversationServicePersistSourceAndAnswerMapping() throws Exception {
-        migrate(Path.of("../sql/mysql/migration-V25-local-mcp.sql"));
+        CompactMcpFixture.installConnector(jdbc);
         var users=org.mockito.Mockito.mock(com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory.class);
         org.mockito.Mockito.when(users.current(alice.userId(),alice.username())).thenReturn(new com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory.Identity(alice.userId(),alice.username(),false));
         var runtime=org.mockito.Mockito.mock(com.ruanzhu.doorhandle.module.ai.mcp.FetchMcpRuntime.class);

@@ -273,4 +273,34 @@ class CompactH2FunctionsTest {
             assertThatThrownBy(() -> CompactH2Functions.adaptDdl("CREATE TABLE fixture_invalid (id INT," + columns + ");"))
                     .as(columns).isInstanceOf(IllegalArgumentException.class);
     }
+
+    @Test void multipleAlterAddsRetainCompositeKeysActionsChecksAndProtectedCommas() {
+        String literal = "ADD x, ADD y; ALTER TABLE ignored ADD z";
+        String adapted = CompactH2Functions.adaptDdl("""
+            CREATE TABLE fixture_relation_parent (id INT PRIMARY KEY,code INT,UNIQUE(id,code));
+            CREATE TABLE fixture_relation_child (a INT,b INT);
+            ALTER TABLE fixture_relation_child
+              ADD COLUMN marker VARCHAR(160) DEFAULT 'ADD x, ADD y; ALTER TABLE ignored ADD z',
+              ADD CONSTRAINT fk_relation_pair FOREIGN KEY(a,b) REFERENCES fixture_relation_parent(id,code)
+                ON DELETE CASCADE ON UPDATE CASCADE,
+              /* ADD x, ADD y; remains a comment */
+              ADD CONSTRAINT ck_relation_pair CHECK (a<>b OR a=0);
+            """);
+        assertThat(adapted).contains("FOREIGN KEY(a,b) REFERENCES fixture_relation_parent(id,code)",
+                "ON DELETE CASCADE ON UPDATE CASCADE", "CONSTRAINT ck_relation_pair CHECK",
+                "DEFAULT '" + literal + "'", "/* ADD x, ADD y; remains a comment */");
+        assertThat(adapted.lines().filter(line -> line.startsWith("ALTER TABLE fixture_relation_child")).count()).isEqualTo(3);
+        jdbc.execute(adapted);
+        jdbc.update("INSERT INTO fixture_relation_parent(id,code) VALUES(2,7),(4,4)");
+        jdbc.update("INSERT INTO fixture_relation_child(a,b) VALUES(2,7)");
+        assertThat(jdbc.queryForObject("SELECT marker FROM fixture_relation_child", String.class)).isEqualTo(literal);
+        jdbc.update("UPDATE fixture_relation_parent SET id=3 WHERE id=2");
+        assertThat(jdbc.queryForObject("SELECT a FROM fixture_relation_child", Integer.class)).isEqualTo(3);
+        assertThatThrownBy(() -> jdbc.update("INSERT INTO fixture_relation_child(a,b) VALUES(4,4)"))
+                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+        assertThatThrownBy(() -> jdbc.update("INSERT INTO fixture_relation_child(a,b) VALUES(9,8)"))
+                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+        jdbc.update("DELETE FROM fixture_relation_parent WHERE id=3");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM fixture_relation_child", Integer.class)).isZero();
+    }
 }

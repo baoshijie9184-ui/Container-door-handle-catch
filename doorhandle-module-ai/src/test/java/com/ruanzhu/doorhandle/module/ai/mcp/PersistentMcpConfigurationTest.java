@@ -3,7 +3,7 @@ package com.ruanzhu.doorhandle.module.ai.mcp;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ruanzhu.doorhandle.contracts.agent.AgentActor;
 import com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory;
-import com.ruanzhu.doorhandle.module.ai.testsupport.CompactH2Functions;
+import com.ruanzhu.doorhandle.module.ai.testsupport.CompactMcpFixture;
 import com.ruanzhu.doorhandle.module.ai.testsupport.CompactWorkflowFixture;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
@@ -11,7 +11,6 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.*;
 import java.nio.file.*;
 import java.util.*;
-import java.util.regex.Pattern;
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
@@ -25,29 +24,29 @@ class PersistentMcpConfigurationTest {
     ApplicationContextRunner runner(boolean queueSchema)throws Exception{return runner(queueSchema,true);}
     ApplicationContextRunner runner(boolean queueSchema,boolean connectorSchema)throws Exception{
         var source=new DriverManagerDataSource("jdbc:h2:mem:"+UUID.randomUUID()+";MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1","sa","");var jdbc=new JdbcTemplate(source);
-        CompactH2Functions.install(jdbc);CompactWorkflowFixture.install(jdbc);
+        CompactWorkflowFixture.install(jdbc);
         // This class verifies Spring wiring and real scheduler admission. The
         // separate admitted MySQL suite verifies all production engine/trigger contracts.
-        if(connectorSchema)installCompactTable(jdbc,"25-agent.sql","agent_connector");
-        installCompactTable(jdbc,"30-operations.sql","audit_event");
+        if(connectorSchema)CompactMcpFixture.installConnector(jdbc);
         if(!queueSchema)jdbc.execute("DROP TABLE workflow_instance");
         var users=mock(BusinessUserDirectory.class);when(users.current(1,"alice")).thenReturn(new BusinessUserDirectory.Identity(1,"alice",false));
         return new ApplicationContextRunner().withUserConfiguration(LocalMcpConfiguration.class)
             .withBean(JdbcTemplate.class,()->jdbc).withBean(org.springframework.transaction.PlatformTransactionManager.class,()->new DataSourceTransactionManager(source))
             .withBean(ObjectMapper.class,ObjectMapper::new).withBean(BusinessUserDirectory.class,()->users).withPropertyValues("agentscope.mcp.enabled=true");
     }
-    private void installCompactTable(JdbcTemplate jdbc,String file,String table)throws Exception{
-        String baseline=Files.readString(Path.of("../sql/mysql/compact/baseline",file));
-        var match=Pattern.compile("(?ms)^CREATE TABLE "+Pattern.quote(table)+" \\(.*?^\\) ENGINE=[^;]+;").matcher(baseline);
-        if(!match.find())throw new IllegalStateException("Reviewed compact configuration table is absent");
-        String ddl=match.group();
-        if(match.find())throw new IllegalStateException("Duplicate compact configuration table");
-        ddl=CompactH2Functions.adaptJsonColumns(ddl)
-            .replaceAll(" COLLATE utf8mb4_[a-z0-9_]+","").replace(" VIRTUAL","").replace(" STORED","")
-            .replaceAll(" ENGINE=InnoDB(?: ROW_FORMAT=DYNAMIC)? DEFAULT CHARSET=utf8mb4(?: COLLATE=utf8mb4_[a-z0-9_]+)?","")
-            .replaceAll("(?m)^(\\s*)UNIQUE KEY (\\w+)\\s*(\\([^\\n]+\\))","$1CONSTRAINT $2 UNIQUE $3")
-            .replaceAll("(?m)^\\s*KEY [^\\n]+\\n","").replaceAll(",\\s*\\)",")");
-        jdbc.execute(ddl);
+    @Test void compactConnectorFixturePreservesTheExistingAuditAndProductionChecks()throws Exception{
+        var source=new DriverManagerDataSource("jdbc:h2:mem:"+UUID.randomUUID()+";MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1","sa","");
+        var jdbc=new JdbcTemplate(source);CompactWorkflowFixture.install(jdbc);
+        var constraints=jdbc.queryForList("SELECT constraint_name FROM information_schema.table_constraints WHERE table_name='audit_event' ORDER BY constraint_name");
+        CompactMcpFixture.installConnector(jdbc);
+        assertThat(jdbc.queryForList("SELECT constraint_name FROM information_schema.table_constraints WHERE table_name='audit_event' ORDER BY constraint_name")).isEqualTo(constraints);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM audit_event",Long.class)).isZero();
+        assertThat(jdbc.queryForList("SELECT id,legacy_clock_json,current_installation_id FROM agent_connector WHERE 1=0")).isEmpty();
+        assertThatThrownBy(()->jdbc.update("INSERT INTO agent_connector(owner_user_id,server_key,package_version,revision,created_at,updated_at) VALUES(1,'fetch','fixture',-1,UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))"))
+            .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+        assertThatThrownBy(()->jdbc.update("INSERT INTO agent_connector(owner_user_id,server_key,package_version,created_at,updated_at) VALUES(1,'fetch','fixture',NULL,NULL)"))
+            .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+        assertThatThrownBy(()->CompactMcpFixture.installConnector(jdbc)).isInstanceOf(org.springframework.jdbc.datasource.init.ScriptStatementFailedException.class);
     }
     @Test void defaultMemoryModeDoesNotRequireQueueMigration()throws Exception{
         runner(false).run(ctx->{assertThat(ctx).hasNotFailed();assertThat(ctx.getBean(LocalMcpProperties.class).isDurableInstallEnabled()).isFalse();assertThat(ctx.getBean(LocalMcpService.class).view(new AgentActor(1,"alice",AgentActor.Role.INSPECTOR))).containsEntry("installQueue","MEMORY");});

@@ -123,7 +123,7 @@ public class ResearchEvidenceService {
             }
             int changed = jdbc.update("""
                     UPDATE agent_run SET answer_owner_user_id=?,answer_sha256=?,answer_citations_json=?,
-                        answer_unresolved_count=?,answer_recorded_at=UTC_TIMESTAMP
+                        answer_unresolved_count=?,answer_recorded_at=UTC_TIMESTAMP(6)
                     WHERE user_id=? AND run_id=? AND answer_sha256 IS NULL AND answer_owner_user_id IS NULL
                     """, actor.userId(), digest, json(references), unresolved, actor.userId(), runId);
             if (changed != 1) throw conflict("运行的回答引用记录已变化，不能覆盖");
@@ -141,10 +141,10 @@ public class ResearchEvidenceService {
     }
     private void lockLive(AgentActor actor, String runId) {
         journal.get(actor, runId);
-        var rows = jdbc.queryForList("SELECT id FROM agent_run WHERE user_id=? AND run_id=? AND status='RUNNING' AND lease_expires_at>UTC_TIMESTAMP FOR UPDATE", actor.userId(), runId);
+        var rows = jdbc.queryForList("SELECT id FROM agent_run WHERE user_id=? AND run_id=? AND status='RUNNING' AND lease_expires_at>UTC_TIMESTAMP(6) FOR UPDATE", actor.userId(), runId);
         if (rows.isEmpty()) throw conflict("运行已结束或租约已过期，不能追加来源或引用");
     }
-    private LocalDateTime databaseNow() { return jdbc.queryForObject("SELECT UTC_TIMESTAMP", LocalDateTime.class); }
+    private LocalDateTime databaseNow() { return jdbc.queryForObject("SELECT UTC_TIMESTAMP(6)", LocalDateTime.class); }
     private List<Citation> readCitations(Object value) {
         try { return json.readValue(value instanceof byte[] bytes ? new String(bytes, StandardCharsets.UTF_8) : value.toString(), new TypeReference<List<Citation>>() {}); }
         catch (Exception error) { throw new IllegalStateException("引用记录读取失败"); }

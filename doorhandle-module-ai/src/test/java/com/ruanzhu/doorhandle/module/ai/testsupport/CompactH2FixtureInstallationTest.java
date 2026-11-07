@@ -69,6 +69,32 @@ class CompactH2FixtureInstallationTest {
                 + "VALUES('history-bound','fixture',TRUE,1,101)");
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM users", Integer.class)).isEqualTo(3);
         assertThat(jdbc.queryForObject("SELECT binding_history_present FROM users WHERE username='history-present'", Boolean.class)).isTrue();
+        long user = jdbc.queryForObject("SELECT id FROM users WHERE username='history-clear'", Long.class);
+        jdbc.update("INSERT INTO chat_project(project_id,username,user_id,name) VALUES('fk-project','history-clear',?,'fixture')", user);
+        jdbc.update("INSERT INTO chat_session(session_id,username,user_id,project_id) VALUES('fk-session','history-clear',?,'fk-project')", user);
+        jdbc.update("INSERT INTO chat_message(session_id,role,content) VALUES('fk-session','USER','fixture')");
+        assertThatThrownBy(() -> jdbc.update("INSERT INTO chat_project(project_id,username,user_id,name) "
+                + "VALUES('orphan-project','history-clear',999999,'fixture')"))
+                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+        assertThatThrownBy(() -> jdbc.update("INSERT INTO chat_session(session_id,username,user_id,project_id) "
+                + "VALUES('orphan-session','history-clear',?,'missing-project')", user))
+                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+        assertThatThrownBy(() -> jdbc.update("UPDATE users SET id=? WHERE id=?", user + 1000, user))
+                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+        assertThatThrownBy(() -> jdbc.update("UPDATE chat_project SET project_id='restricted-project' WHERE project_id='fk-project'"))
+                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+        jdbc.update("UPDATE users SET username='history-renamed' WHERE id=?", user);
+        assertThat(jdbc.queryForObject("SELECT username FROM chat_project WHERE project_id='fk-project'", String.class)).isEqualTo("history-renamed");
+        assertThat(jdbc.queryForObject("SELECT username FROM chat_session WHERE session_id='fk-session'", String.class)).isEqualTo("history-renamed");
+        jdbc.update("UPDATE chat_session SET session_id='fk-session-renamed' WHERE session_id='fk-session'");
+        assertThat(jdbc.queryForObject("SELECT session_id FROM chat_message", String.class)).isEqualTo("fk-session-renamed");
+        jdbc.update("DELETE FROM chat_project WHERE project_id='fk-project'");
+        assertThat(jdbc.queryForObject("SELECT project_id FROM chat_session WHERE session_id='fk-session-renamed'", String.class)).isNull();
+        jdbc.update("INSERT INTO chat_project(project_id,username,user_id,name) VALUES('fk-project-delete','history-renamed',?,'fixture')", user);
+        jdbc.update("DELETE FROM users WHERE id=?", user);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM chat_project", Integer.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM chat_session", Integer.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM chat_message", Integer.class)).isZero();
     }
 
     @Test void sharedJournalFixtureInstallsItsActualCoordinationAndWorkflowResources() throws Exception {
