@@ -36,6 +36,10 @@ MACHINE = '1ebe8f77e3104ab6a49a9386e38abd20'
 BASE = 'sha256:d9489c281e69291fec34ee6bd470197c4c41d06fdc29a822d3a5aaad66f1b2fa'
 MAVEN = 'sha256:f58d59b6273e785ac0a4477f6e9b5ba1d7731c75b906c0f7b34076f1851318cc'
 NODE = 'sha256:44fce696f38ba8c987c4db89954051000bbd05ffd8d8659ba15ed4a8602e937f'
+# This dependency image was installed and pip-checked by Jenkins #53. Its
+# stdout contained Docker 29's deprecation notice before the immutable ID.
+CACHED_PYTHON = 'sha256:66321a75c6f45db26cff5b947bb96b0fe32dbd4da069910861a2bd3236d8deba'
+CACHED_RECIPE = 'cd22b2432e010cf05c833cedf5ecde58b594731649360bce24f197942f612a74'
 RECIPE = 'script/jenkins/prepare-ecs-tools.py'
 REQUIREMENTS = 'script/jenkins/python-test-requirements.txt'
 SHA = re.compile(r'[a-f0-9]{64}')
@@ -136,6 +140,13 @@ def requirements(path):
     return result
 
 
+def commit_image_id(output):
+    """Docker may prepend an authored CLI warning on stdout; bind one full ID."""
+    matches = [line.strip() for line in output.splitlines() if IMAGE.fullmatch(line.strip())]
+    require(len(matches) == 1, 'Tool image commit did not return one immutable image ID')
+    return matches[0]
+
+
 INSTALL = r'''
 import importlib.metadata,json,pathlib,subprocess,sys
 report=pathlib.Path('/ci-report')
@@ -201,7 +212,7 @@ class Preparation:
         self.name = 'doorhandle-ci-python-' + self.token
         self.container = None; self.image = None
         self.baseline = self.available()
-        resource_check(self.baseline, self.baseline, 0, required_growth=MAX_GROWTH)
+        resource_check(self.baseline, self.baseline, 0, required_growth=2 * MIB)
         self.folder.mkdir(mode=0o700)
         self.reports = self.folder / 'reports'; self.reports.mkdir(mode=0o733)
         os.chmod(self.reports, 0o733)
@@ -351,6 +362,63 @@ class Preparation:
                 'Owned pip container stop was not confirmed')
         return {'containerId': self.container, 'pid': 0, 'exitCode': final['State']['ExitCode'], 'retained': True}
 
+    def reuse_pinned_dependencies(self, sources, pinned, owner):
+        """Reuse only the reviewed immutable dependency artifact, never a tag."""
+        images = self.call('image', 'ls', '-q', '--no-trunc', '--filter', 'label=io.doorhandle.ci-tools=python-v1').decode().split()
+        if CACHED_PYTHON not in images:
+            return None
+        image = self.image_row(CACHED_PYTHON); cfg = image['Config']; labels = cfg.get('Labels') or {}
+        if labels.get('io.doorhandle.ci-tools-requirements-sha256') != sources[REQUIREMENTS]:
+            return None
+        require(labels.get('io.doorhandle.ci-tools-recipe-sha256') == CACHED_RECIPE
+                and cfg.get('User') == str(os.getuid()) + ':' + str(os.getgid())
+                and cfg.get('Entrypoint') in (None, []) and cfg.get('Cmd') in (None, [])
+                and cfg.get('WorkingDir') == '/' and cfg.get('Healthcheck', {}).get('Test') == ['NONE'],
+                'Pinned dependency image configuration differs')
+        base = self.image_row(BASE)['RootFS']['Layers']
+        require(image['RootFS']['Layers'][:len(base)] == base, 'Pinned dependency image has another base')
+        release = labels.get('io.doorhandle.release', '')
+        require(TAG.fullmatch(release), 'Pinned dependency producer release is malformed')
+        origin = canonical(self.root / 'inbox' / release / 'python-tools')
+        original = {}
+        for name in ('owner.json', 'installed-versions.json', 'pip-install.json'):
+            path = origin / ('reports/' + name if name != 'owner.json' else name)
+            canonical(path); meta = path.stat()
+            require(stat.S_ISREG(meta.st_mode) and meta.st_uid == os.getuid() and meta.st_nlink == 1
+                    and not meta.st_mode & 0o077 and 0 < meta.st_size <= 32 * MIB,
+                    'Original private dependency evidence is unavailable')
+            original[name] = path
+        producer = json.loads(original['owner.json'].read_text())
+        require(producer.get('identity') == self.identity
+                and producer.get('sourceFiles', {}).get(RECIPE) == CACHED_RECIPE
+                and producer.get('sourceFiles', {}).get(REQUIREMENTS) == sources[REQUIREMENTS]
+                and producer.get('sourceSha256') == labels.get('io.doorhandle.source')
+                and producer.get('commit') == labels.get('io.doorhandle.commit')
+                and json.loads(original['installed-versions.json'].read_text()) == pinned,
+                'Pinned dependency image is not bound to its successful installation evidence')
+        commit_output = canonical(origin / 'commit.stdout')
+        require(commit_image_id(commit_output.read_text()) == CACHED_PYTHON,
+                'Original immutable dependency image receipt differs')
+        for name in ('installed-versions.json', 'pip-install.json'):
+            target = self.reports / name
+            shutil.copyfile(original[name], target); os.chmod(target, 0o600)
+            require(digest(target) == digest(original[name]), 'Dependency installation evidence changed during reuse')
+        available = self.available(); growth = resource_check(self.baseline, available, 0)
+        write_json(self.folder / 'reuse.json', {'kind': 'doorhandle-pinned-dependency-reuse',
+            'imageId': CACHED_PYTHON, 'producerOwnerSha256': digest(original['owner.json']),
+            'producerCommitReceiptSha256': digest(commit_output), 'currentSourceFiles': sources,
+            'diskAvailableBytes': available, 'observedGrowthBytes': growth})
+        receipt = {**owner, 'status': 'PREPARED', 'kind': 'doorhandle-ecs-tool-preparation',
+            'dependencyPreparation': 'REUSED_IMMUTABLE_IMAGE', 'pythonImageId': CACHED_PYTHON,
+            'mavenImageId': MAVEN, 'nodeImageId': NODE,
+            'reportSha': digest(self.reports / 'pip-install.json'),
+            'installedVersionsSha256': digest(self.reports / 'installed-versions.json'),
+            'reuseEvidenceSha256': digest(self.folder / 'reuse.json'),
+            'cleanup': {'status': 'STOPPED', 'containersCreated': []}}
+        write_json(self.folder / 'preparation.json', receipt)
+        return {**receipt, 'preparation': str(self.folder / 'preparation.json'),
+                'preparationSha256': digest(self.folder / 'preparation.json')}
+
     def prepare(self):
         sources = archive_inputs(self.archive, self.folder, self.args.commit, self.args.source_sha256, Path(__file__).resolve())
         os.chmod(self.folder / 'python-test-requirements.txt', 0o444)
@@ -362,6 +430,10 @@ class Preparation:
                  'baseImageId': BASE, 'diskReserveBytes': RESERVE, 'diskOvershootBytes': OVERSHOOT,
                  'maximumGrowthBytes': MAX_GROWTH, 'sourceFiles': sources}
         write_json(self.folder / 'owner.json', owner)
+        reused = self.reuse_pinned_dependencies(sources, pinned, owner)
+        if reused is not None:
+            return reused
+        resource_check(self.baseline, self.available(), 0, required_growth=MAX_GROWTH)
         self.sample_stream = self.snapshot.open('x', encoding='utf8'); os.chmod(self.snapshot, 0o600)
         try:
             self.container = self.call(*create_arguments(self.name, self.token, self.args.tag, self.args.source_sha256,
@@ -425,8 +497,7 @@ class Preparation:
                             process.wait(timeout=3)
                         except subprocess.TimeoutExpired:
                             process.kill(); process.wait(timeout=3)
-            self.image = (self.folder / 'commit.stdout').read_text().strip()
-            require(IMAGE.fullmatch(self.image), 'Tool image commit did not return an immutable image ID')
+            self.image = commit_image_id((self.folder / 'commit.stdout').read_text())
             cfg = self.image_row(self.image)['Config']; labels = cfg.get('Labels') or {}
             require(cfg.get('User') == str(os.getuid()) + ':' + str(os.getgid())
                     and cfg.get('Entrypoint') in (None, []) and cfg.get('Cmd') in (None, [])

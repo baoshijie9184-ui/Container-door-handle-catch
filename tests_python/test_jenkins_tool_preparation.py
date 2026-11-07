@@ -20,6 +20,14 @@ SOURCE_SHA = 'b' * 64
 
 
 class ToolPreparationTests(unittest.TestCase):
+    def test_docker_stdout_notice_does_not_replace_the_immutable_image_receipt(self):
+        actual = 'sha256:' + 'd' * 64
+        output = 'Flag --pause has been deprecated, and enabled by default.\n' + actual + '\n'
+        self.assertEqual(actual, tools.commit_image_id(output))
+        for bad in ('notice only', actual + '\n' + actual, 'sha256:short'):
+            with self.subTest(output=bad), self.assertRaises(ValueError):
+                tools.commit_image_id(bad)
+
     def package(self, root, *, commit=COMMIT, recipe=b'reviewed source', extra=None):
         path = root / 'source.tar.gz'
         with tarfile.open(path, 'w:gz', format=tarfile.PAX_FORMAT, pax_headers={'comment': commit}) as archive:
