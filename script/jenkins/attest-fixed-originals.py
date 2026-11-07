@@ -50,6 +50,14 @@ PROFILES = {
         'PUBLIC_IN_SNAPSHOT': False, 'PUBLIC_KIND': 'doorhandle-additional-local-artifact-custody',
         'PUBLIC_PROFILE': 'additional-local-artifacts-v1', 'PUBLIC_MANIFEST_FIELD': 'manifestSha256',
         'MAX_ARCHIVE': 512 * MIB},
+    'residual-project-originals-v1': {'FILES': 1968, 'ORIGINAL_BYTES': 8779830,
+        'MANIFEST_SHA256': '471dedbba39f7220f760797ba1827040dd1cef7ac51af76daa8d7613117a6025',
+        'CATALOG_SHA256': 'a9b6498c0f0e59b8821b0dbd9a8a4c1488bd300a67d92049f673e687fd49a00c',
+        'SNAPSHOT': 'residual-project-originals-snapshot', 'MANIFEST': 'custody.json', 'ARCHIVE': 'originals.tar',
+        'RESTORE': 'residual-project-originals-restore', 'PUBLIC': 'residual-project-originals-public-receipt.json',
+        'PUBLIC_IN_SNAPSHOT': False, 'PUBLIC_KIND': 'doorhandle-additional-local-artifact-custody',
+        'PUBLIC_PROFILE': 'residual-project-originals-v1', 'PUBLIC_MANIFEST_FIELD': 'manifestSha256',
+        'MAX_ARCHIVE': 32 * MIB, 'MAX_MANIFEST': 2 * MIB},
 }
 PROFILES['pth-aliases-v1'] = dict(PROFILES['additional-originals-v1'])
 MODEL_SOURCE = Path('/srv/doorhandle/models/best_stg2.pth')
@@ -82,7 +90,10 @@ def need(value, code):
 
 def recipe(profile):
     need(isinstance(profile, str) and profile in PROFILES, 'UNKNOWN_FIXED_ORIGINALS_PROFILE')
-    return PROFILES[profile]
+    fixed = PROFILES[profile]
+    need(isinstance(fixed.get('MANIFEST_SHA256'), str) and SHA.fullmatch(fixed['MANIFEST_SHA256']),
+         'FROZEN_FIXED_ORIGINALS_MANIFEST_REQUIRED')
+    return fixed
 
 
 def encoded(value):
@@ -302,6 +313,14 @@ def fixed_modules(args):
         reuse=modules['script/jenkins/reuse-legacy-source.py'], artifacts=modules['script/jenkins/preserve-local-artifacts.py'],
         cold=modules['script/jenkins/preserve-cold-stores.py'], cleanup=modules['script/jenkins/cleanup-ecs-builds.py'],
         verifier=modules['script/jenkins/verify-remote.py'], migration=modules['script/memory/migrate_legacy_stores.py'])
+    if args.profile == 'residual-project-originals-v1':
+        state.artifacts.select_profile(args.profile)
+        need(state.artifacts.PROFILE == fixed['PUBLIC_PROFILE'] and state.artifacts.FILE_COUNT == fixed['FILES']
+             and state.artifacts.ORIGINAL_BYTES == fixed['ORIGINAL_BYTES']
+             and state.artifacts.CATALOG_SHA256 == fixed['CATALOG_SHA256']
+             and state.artifacts.SNAPSHOT == fixed['SNAPSHOT'] and state.artifacts.RESTORE == fixed['RESTORE']
+             and state.artifacts.PUBLIC == fixed['PUBLIC'] and state.artifacts.MAX_BYTES == fixed['MAX_ARCHIVE']
+             and state.artifacts.MAX_MANIFEST == fixed['MAX_MANIFEST'], 'RESIDUAL_FIXED_PRODUCER_PROFILE_DRIFT')
     if args.profile == 'legacy-project-originals-v1':
         need(state.reuse.fixed_source(args, executor=inbox_executor) == checkout, 'LEGACY_FIXED_SOURCE_GATE_DIFFERED')
     return state
@@ -320,7 +339,7 @@ def old_snapshot(args, state, current):
     need(len(parts) == 4 and TAG.fullmatch(parts[0]) and parts[1:] == ('checkout', 'work', fixed['SNAPSHOT'])
          and int(TAG.fullmatch(parts[0])[1]) < int(TAG.fullmatch(args.tag)[1]), 'EXACT_OLDER_ORIGINALS_SNAPSHOT_REQUIRED')
     owned(old, directory=True, private=True)
-    need(file_digest(old / fixed['MANIFEST'], 16 * MIB, private=True)[0] == fixed['MANIFEST_SHA256'],
+    need(file_digest(old / fixed['MANIFEST'], fixed.get('MAX_MANIFEST', 16 * MIB), private=True)[0] == fixed['MANIFEST_SHA256'],
          'FROZEN_ORIGINALS_MANIFEST_REQUIRED')
     if args.profile == 'legacy-project-originals-v1':
         admitted = state.reuse.admit_snapshot(state.root, old, args.tag, current['identity'], state.migration, state.cleanup, state.verifier)
@@ -478,7 +497,7 @@ def fresh_retirement_attest(args):
     issued, started = utc_now(), time.monotonic()
     state = fixed_modules(args); current = current_pass(args, state); old, custody = old_snapshot(args, state, current)
     public_file = (old if fixed['PUBLIC_IN_SNAPSHOT'] else old.parent) / fixed['PUBLIC']
-    bindings = ((old / fixed['MANIFEST'], custody['manifestSha256'], 16 * MIB),
+    bindings = ((old / fixed['MANIFEST'], custody['manifestSha256'], fixed.get('MAX_MANIFEST', 16 * MIB)),
         (old / fixed['ARCHIVE'], custody['archiveSha256'], fixed['MAX_ARCHIVE']),
         (public_file, custody['publicReceiptSha256'], MIB),
         (old.parent / fixed['RESTORE'] / 'restore-receipt.json', custody['restoreReceiptSha256'], 16 * MIB),

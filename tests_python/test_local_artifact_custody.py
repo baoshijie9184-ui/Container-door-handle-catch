@@ -82,6 +82,108 @@ def upload(package, work):
         target.chmod(0o600)
 
 
+@pytest.fixture
+def residual_originals(tmp_path, monkeypatch):
+    for field in custody.PROFILE_FIELDS:
+        monkeypatch.setattr(custody, field, getattr(custody, field))
+    custody.select_profile('residual-project-originals-v1')
+    source = tmp_path / 'opaque-residuals'; source.mkdir(mode=0o700)
+    parent = source / 'work/data-migration-residual'; parent.mkdir(parents=True, mode=0o700)
+    rows = [('work/case/plain.sql', 'residual-sql', b'opaque sql bytes\x00never executed'),
+            ('work/case/archive.sql.gz', 'residual-sql', b'\x1f\x8bopaque-not-decompressed'),
+            ('work/case/model.onnx', 'residual-model', b'opaque-model-never-deserialized')]
+    for name, _, raw in rows:
+        path = source / name; path.parent.mkdir(mode=0o700, parents=True, exist_ok=True); path.write_bytes(raw)
+    monkeypatch.setattr(custody, 'SOURCE_ROOT', str(source))
+    monkeypatch.setattr(custody, 'FILE_COUNT', len(rows))
+    monkeypatch.setattr(custody, 'ORIGINAL_BYTES', sum(len(raw) for _, _, raw in rows))
+    monkeypatch.setattr(custody.shutil, 'disk_usage', lambda _: SimpleNamespace(free=10 * 1024 ** 3))
+    members = [{'group': group, 'path': name, 'bytes': len(raw), 'sha256': hashlib.sha256(raw).hexdigest()}
+               for name, group, raw in rows]
+    monkeypatch.setattr(custody, 'CATALOG_SHA256', hashlib.sha256(custody.encoded(sorted(
+        [[r['group'], r['path'], r['bytes'], r['sha256']] for r in members]))).hexdigest())
+    catalog = tmp_path / 'residual-catalog.json'
+    catalog.write_bytes(custody.encoded({'kind': 'doorhandle-additional-local-data-inventory',
+        'observedAtUtc': '2026-11-07T00:00:00Z', 'readOnlySources': True, 'notUploaded': True,
+        'files': len(rows), 'bytes': custody.ORIGINAL_BYTES, 'members': members}))
+    calls = []
+    def metadata_only(args, **kwargs):
+        calls.append(args)
+        assert args[:3] == ['git', '-C', str(source)]
+        if args[3:] == ['worktree', 'list', '--porcelain', '-z']:
+            return SimpleNamespace(returncode=0, stdout=('worktree ' + str(source) + '\0\0').encode())
+        assert args[3:] == ['ls-files', '-z']
+        return SimpleNamespace(returncode=0, stdout=b'')
+    monkeypatch.setattr(custody.subprocess, 'run', metadata_only)
+    return SimpleNamespace(source=source, parent=parent, catalog=catalog, members=members,
+                           rows=rows, calls=calls, metadata_only=metadata_only)
+
+
+def test_original_default_profile_facts_and_limits_are_not_replaced_by_residual_profile(monkeypatch):
+    for field in custody.PROFILE_FIELDS:
+        monkeypatch.setattr(custody, field, getattr(custody, field))
+    original = dict(custody.PROFILES[custody.DEFAULT_PROFILE])
+    custody.select_profile('residual-project-originals-v1')
+    assert custody.FILE_COUNT == 1968 and custody.ORIGINAL_BYTES == 8779830
+    assert custody.MAX_BYTES == 32 * 1024 ** 2 and custody.MAX_MANIFEST == 2 * 1024 ** 2
+    custody.select_profile(custody.DEFAULT_PROFILE)
+    assert {field: getattr(custody, field) for field in custody.PROFILE_FIELDS} == original
+    assert custody.FILE_COUNT == 36 and custody.ORIGINAL_BYTES == 465240718
+    assert custody.CATALOG_SHA256 == 'e1258807aae1df63412e2190268351b1d63e770219ce9aba2d760f2f1bae1383'
+
+
+def test_residual_opaque_pack_restore_and_later_reuse_bind_the_same_private_bytes(residual_originals, tmp_path, monkeypatch):
+    fixture = residual_originals; package = fixture.parent / 'package'
+    before = {name: custody.digest(fixture.source / name) for name, _, _ in fixture.rows}
+    custody.pack(fixture.catalog, package)
+    args, work = create_attempt(tmp_path, monkeypatch, package)
+    custody.prepare(args); upload(package, work); first = custody.verify_restore(args)
+    assert first['profile'] == 'residual-project-originals-v1'
+    assert first['databasesOpened'] == first['modelsExecuted'] == first['originalFilesDeleted'] == 0
+    old = work / custody.SNAPSHOT
+    args, newer = create_attempt(tmp_path, monkeypatch, package, number=72)
+    args.source_snapshot_directory = str(old)
+    description = custody.describe(args)
+    args.source_receipt_sha256 = description['sourceCustodyReceiptSha256']
+    second = custody.reuse(args)
+    assert second['status'] == 'RESTORED_VERIFIED' and second['files'] == len(fixture.rows)
+    assert second['sourceCustodyReceiptSha256'] == description['sourceCustodyReceiptSha256']
+    assert custody.SNAPSHOT == 'residual-project-originals-snapshot'
+    assert before == {name: custody.digest(fixture.source / name) for name, _, _ in fixture.rows}
+    assert not (newer / 'additional-local-artifacts-snapshot').exists()
+    assert all(custody.digest(newer / custody.RESTORE / name) == digest for name, digest in before.items())
+
+
+@pytest.mark.parametrize('where', ['registered-worktree', 'tracked-source', 'nested-git', 'protected-jenkins'])
+def test_residual_scope_refuses_source_roots_before_any_original_permission_or_content_read(residual_originals, monkeypatch, where):
+    fixture = residual_originals
+    def metadata(args, **kwargs):
+        if where == 'registered-worktree' and args[3:] == ['worktree', 'list', '--porcelain', '-z']:
+            return SimpleNamespace(returncode=0, stdout=('worktree ' + str(fixture.source) + '\0\0worktree '
+                + str(fixture.source / 'work/case') + '\0\0').encode())
+        if where == 'tracked-source' and args[3:] == ['ls-files', '-z']:
+            return SimpleNamespace(returncode=0, stdout=b'work/case/plain.sql\0')
+        return fixture.metadata_only(args, **kwargs)
+    monkeypatch.setattr(custody.subprocess, 'run', metadata)
+    if where == 'nested-git': (fixture.source / 'work/case/.git').mkdir()
+    monkeypatch.setattr(custody, 'permissions', lambda *_: pytest.fail('source bytes/permissions read before root admission'))
+    if where == 'protected-jenkins':
+        with pytest.raises(custody.CustodyError): custody.residual_repository_guard([fixture.source / 'work/jenkins/private.sql'])
+    else:
+        with pytest.raises(custody.CustodyError): custody.pack(fixture.catalog, fixture.parent / 'rejected')
+
+
+@pytest.mark.parametrize('damage', ['profile', 'catalogue', 'extra-member', 'old-group'])
+def test_residual_manifest_cannot_be_accepted_as_original_36_or_widen_its_closed_set(residual_originals, damage):
+    package = residual_originals.parent / 'package'; custody.pack(residual_originals.catalog, package)
+    manifest = custody.read_json(package / 'custody.json')
+    if damage == 'profile': manifest['profile'] = custody.DEFAULT_PROFILE
+    elif damage == 'catalogue': manifest['catalogSha256'] = custody.PROFILES[custody.DEFAULT_PROFILE]['CATALOG_SHA256']
+    elif damage == 'extra-member': manifest['files'].append(dict(manifest['files'][0]))
+    else: manifest['files'][0]['group'] = 'logs'
+    with pytest.raises(custody.CustodyError): custody.validate_manifest(manifest)
+
+
 def test_pack_copies_only_pinned_opaque_bytes_and_retains_private_original_permissions(originals, monkeypatch):
     monkeypatch.setattr(custody, 'identity', lambda *args: pytest.fail('pack must not contact ECS'))
     package = originals.parent / 'package'

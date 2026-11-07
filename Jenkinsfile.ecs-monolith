@@ -29,6 +29,7 @@ pipeline {
         string(name: 'LEGACY_SOURCE_ECS_SNAPSHOT', defaultValue: '', trim: true, description: '后续复用ECS已恢复核验的旧数据封存目录；与本地输入互斥，业务原件不回传本地')
         string(name: 'LOCAL_ARTIFACTS_SNAPSHOT', defaultValue: '', trim: true, description: '首次上传额外历史模型、备份、日志与上传文件的私有字节封存目录')
         string(name: 'LOCAL_ARTIFACTS_ECS_SNAPSHOT', defaultValue: '', trim: true, description: '后续复用ECS已恢复核验的额外原件；与对应本地输入互斥')
+        choice(name: 'LOCAL_ARTIFACTS_PROFILE', choices: ['additional-local-artifacts-v1', 'residual-project-originals-v1'], description: '固定原件清单：原36项，或独立补充的项目残留文件')
         string(name: 'COLD_STORES_SNAPSHOT', defaultValue: '', trim: true, description: '可选历史测试存储冷归档私有目录；完整验证后在ECS逐存储树独立恢复核验')
         string(name: 'COLD_STORES_ECS_SNAPSHOT', defaultValue: '', trim: true, description: '复用ECS已核验的历史测试存储冷归档；与对应本地输入互斥')
         choice(name: 'COLD_STORES_PROFILE', choices: ['cold-store-originals-v1', 'cold-store-history-v2'], description: '固定冷归档清单；v1为原70存储根，v2为额外4041历史测试与工具回执根')
@@ -107,6 +108,8 @@ pipeline {
                     env.LEGACY_SOURCE_ECS_SNAPSHOT = params.LEGACY_SOURCE_ECS_SNAPSHOT?.trim() ?: ''
                     env.LOCAL_ARTIFACTS_SNAPSHOT = params.LOCAL_ARTIFACTS_SNAPSHOT?.trim() ?: ''
                     env.LOCAL_ARTIFACTS_ECS_SNAPSHOT = params.LOCAL_ARTIFACTS_ECS_SNAPSHOT?.trim() ?: ''
+                    env.LOCAL_ARTIFACTS_PROFILE = params.LOCAL_ARTIFACTS_PROFILE ?: 'additional-local-artifacts-v1'
+                    if (!(env.LOCAL_ARTIFACTS_PROFILE in ['additional-local-artifacts-v1', 'residual-project-originals-v1'])) error('Unsupported fixed artifact profile')
                     env.COLD_STORES_SNAPSHOT = params.COLD_STORES_SNAPSHOT?.trim() ?: ''
                     env.COLD_STORES_ECS_SNAPSHOT = params.COLD_STORES_ECS_SNAPSHOT?.trim() ?: ''
                     if (!(params.COLD_STORES_PROFILE in ['cold-store-originals-v1', 'cold-store-history-v2'])) error('Unsupported fixed cold-store profile')
@@ -121,7 +124,7 @@ pipeline {
                     if (env.COLD_HISTORY_SNAPSHOT && env.COLD_HISTORY_ECS_SNAPSHOT) error('Choose exactly one local or ECS additional historical test-store input')
                     if ((env.COLD_HISTORY_SNAPSHOT || env.COLD_HISTORY_ECS_SNAPSHOT) && env.COLD_STORES_PROFILE == 'cold-store-history-v2' && (env.COLD_STORES_SNAPSHOT || env.COLD_STORES_ECS_SNAPSHOT)) error('The same fixed history profile cannot be preserved twice in one build')
                     if ((env.LOCAL_MYSQL_SNAPSHOT && !env.LOCAL_MYSQL_FIXTURE_SETTINGS) || (!env.LOCAL_MYSQL_SNAPSHOT && env.LOCAL_MYSQL_FIXTURE_SETTINGS)) error('Local MySQL custody requires both the sealed export packet and reviewed private ECS image settings')
-                    if (params.ACTION == 'verify-embedding' && (params.DOORHANDLE_CI_SCOPE != 'source' || params.DOORHANDLE_CI_AUTO_COMPACT_FIXTURES || env.LEGACY_SOURCE_SNAPSHOT || env.LEGACY_SOURCE_ECS_SNAPSHOT || env.LOCAL_ARTIFACTS_SNAPSHOT || env.LOCAL_ARTIFACTS_ECS_SNAPSHOT || env.COLD_STORES_SNAPSHOT || env.COLD_STORES_ECS_SNAPSHOT || env.COLD_HISTORY_SNAPSHOT || env.COLD_HISTORY_ECS_SNAPSHOT || env.LOCAL_MYSQL_SNAPSHOT || env.LOCAL_MYSQL_FIXTURE_SETTINGS || params.PRODUCTION_RELEASE_ENABLED)) error('Embedding verification is an independent source component check without legacy migration or production release')
+                    if (params.ACTION == 'verify-embedding' && (params.DOORHANDLE_CI_SCOPE != 'source' || params.DOORHANDLE_CI_AUTO_COMPACT_FIXTURES || env.LEGACY_SOURCE_SNAPSHOT || env.LEGACY_SOURCE_ECS_SNAPSHOT || env.LOCAL_ARTIFACTS_SNAPSHOT || env.LOCAL_ARTIFACTS_ECS_SNAPSHOT || env.LOCAL_ARTIFACTS_PROFILE != 'additional-local-artifacts-v1' || env.COLD_STORES_SNAPSHOT || env.COLD_STORES_ECS_SNAPSHOT || env.COLD_HISTORY_SNAPSHOT || env.COLD_HISTORY_ECS_SNAPSHOT || env.LOCAL_MYSQL_SNAPSHOT || env.LOCAL_MYSQL_FIXTURE_SETTINGS || params.PRODUCTION_RELEASE_ENABLED)) error('Embedding verification is an independent source component check without legacy migration or production release')
                     if (params.DOORHANDLE_CI_SCOPE == 'source' && env.DOORHANDLE_CI_FIXTURE_MANIFEST) error('Source verification cannot accept a MySQL fixture manifest')
                     if (params.DOORHANDLE_CI_AUTO_COMPACT_FIXTURES) {
                         if (params.DOORHANDLE_CI_SCOPE != 'mysql' || env.DOORHANDLE_CI_FIXTURE_MANIFEST || !env.DOORHANDLE_CI_FIXTURE_SETTINGS) error('Automatic compact fixtures require mysql scope, private ECS settings and no conflicting manual manifest')
@@ -137,6 +140,7 @@ pipeline {
                     }
                     if (params.ACTION == 'verify-runtime' && (params.DOORHANDLE_CI_SCOPE != 'mysql' || !env.DOORHANDLE_CI_FIXTURE_SETTINGS)) error('Runtime acceptance requires complete MySQL scope and the private ECS fixture settings')
                     if (params.ACTION in ['verify-runtime', 'compact-cutover'] && !env.LEGACY_SOURCE_SNAPSHOT && !env.LEGACY_SOURCE_ECS_SNAPSHOT) error('Complete runtime acceptance requires the sealed legacy source snapshot for preservation and independent recovery')
+                    if (params.ACTION in ['verify-runtime', 'compact-cutover'] && env.LOCAL_ARTIFACTS_PROFILE != 'additional-local-artifacts-v1') error('Complete runtime acceptance uses the original model and upload artifact profile')
                     if (params.ACTION == 'rehearse' && env.DOORHANDLE_COMPACT_REHEARSAL_READY != 'true') error('Legacy rehearsal remains disabled until its compact database adapter is accepted')
                 }
             }
@@ -208,7 +212,7 @@ pipeline {
             }
         }
         stage('Repair registered prior CI evidence permissions') {
-            when { expression { env.CI_ECS_VERIFIED == 'true' && (params.LEGACY_SOURCE_ECS_SNAPSHOT || params.LOCAL_ARTIFACTS_ECS_SNAPSHOT) } }
+            when { expression { env.CI_ECS_VERIFIED == 'true' && (env.LEGACY_SOURCE_ECS_SNAPSHOT || (env.LOCAL_ARTIFACTS_PROFILE == 'additional-local-artifacts-v1' && env.LOCAL_ARTIFACTS_ECS_SNAPSHOT)) } }
             steps {
                 withCredentials([
                     sshUserPrivateKey(credentialsId: 'doorhandle-ecs-ssh', keyFileVariable: 'DEPLOY_KEY', usernameVariable: 'DEPLOY_USER'),

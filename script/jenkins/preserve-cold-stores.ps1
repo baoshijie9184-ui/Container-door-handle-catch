@@ -141,7 +141,18 @@ $received = Get-Content -LiteralPath $pending -Raw -Encoding UTF8 | ConvertFrom-
 $allowedFields = @('version','kind','profile','release','commit','sourceSha256','identity','verificationReceiptSha256','inventorySha256','files','bytes','roots','status','manifestSha256','archiveSha256','archiveBytes','sourceCustodyReceiptSha256','restoredRoots','restoreReceiptSha256','originalFilesDeleted','databasesOpened','temporaryRestoresRemoved')
 Require-Custody ((@($received.PSObject.Properties.Name | Sort-Object) -join ',') -ceq (@($allowedFields | Sort-Object) -join ',')) 'Public custody receipt includes unexpected data.'
 foreach ($name in $allowedFields) {
-    Require-Custody (($received.$name | ConvertTo-Json -Depth 5 -Compress) -ceq ($public.$name | ConvertTo-Json -Depth 5 -Compress)) 'Public custody receipt differs from the admitted server result.'
+    if ($name -ceq 'identity') {
+        # JSON object property order is not part of the execution identity.
+        $identityFields = @('executionLocation', 'instanceId', 'machineId')
+        foreach ($identityValue in @($received.identity, $public.identity)) {
+            Require-Custody ((@($identityValue.PSObject.Properties.Name | Sort-Object) -join ',') -ceq ($identityFields -join ',')) 'Public custody identity includes unexpected fields.'
+        }
+        foreach ($field in $identityFields) {
+            Require-Custody ($received.identity.$field -is [string] -and $public.identity.$field -is [string] -and $received.identity.$field -ceq $public.identity.$field) 'Public custody identity differs from the admitted server result.'
+        }
+    } else {
+        Require-Custody (($received.$name | ConvertTo-Json -Depth 5 -Compress) -ceq ($public.$name | ConvertTo-Json -Depth 5 -Compress)) 'Public custody receipt differs from the admitted server result.'
+    }
 }
 $raw = [IO.File]::ReadAllBytes($pending)
 $stream = [IO.File]::Open($artifact, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)

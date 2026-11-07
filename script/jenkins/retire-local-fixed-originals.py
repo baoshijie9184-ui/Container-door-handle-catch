@@ -28,6 +28,8 @@ RECIPES = {
         'members': 36, 'selected': 36, 'bytes': 465240718, 'retained': 0},
     'pth-aliases-v1': {'manifestSha256': 'b247f6f8bf0f5fc3e4d12b5bca008bb05786221d657262860de1ae6c479eec94',
         'members': 36, 'selected': 2, 'bytes': 465240718, 'retained': 0},
+    'residual-project-originals-v1': {'manifestSha256': '471dedbba39f7220f760797ba1827040dd1cef7ac51af76daa8d7613117a6025',
+        'members': 1968, 'selected': 1968, 'bytes': 8779830, 'retained': 0},
 }
 SHA = re.compile(r'[a-f0-9]{64}')
 RETAINED_C_HISTORY = r'C:\Users\19771\.mem0\history.db'
@@ -183,8 +185,21 @@ def alias_bindings(profile, proof):
             'requiredServerModel': proof.model_expected_reference()}
 
 
+def residual_bindings(profile):
+    if profile != 'residual-project-originals-v1': return {}
+    return {'residualScopeHelperSha256': sha(SELF.with_name('preserve-local-artifacts.py').read_bytes())}
+
+
+def residual_source_guard(profile, members):
+    if profile != 'residual-project-originals-v1': return
+    # Reuse the same metadata-only scope policy as the fixed opaque producer.
+    helper = load('preserve-local-artifacts.py')
+    helper.residual_repository_guard([ROOT + '\\' + row['path'].replace('/', '\\') for row in members])
+
+
 def make_plan(profile, manifest_file, current_file, custody_file, core, cold, proof, backend_factory):
     path = core.canonical_control(manifest_file); selected, retained = select_manifest(profile, path.read_bytes())
+    residual_source_guard(profile, selected)
     resolver = StrictResolver(selected); members = observed_members(selected, cold, resolver)
     validate_observations(selected, members)
     backend = backend_factory(resolver); value = value_for(members)
@@ -200,7 +215,7 @@ def make_plan(profile, manifest_file, current_file, custody_file, core, cold, pr
         'currentReceiptFile': str(core.canonical_control(current_file)) if current_file else None,
         'custodyReceiptFile': str(core.canonical_control(custody_file)) if custody_file else None,
         'current': current, 'custody': custody, 'originalFilesDeleted': 0, **code_bindings(core, cold, proof),
-        **alias_bindings(profile, proof)}
+        **alias_bindings(profile, proof), **residual_bindings(profile)}
 
 
 def load_plan(args, core, cold, proof):
@@ -214,13 +229,17 @@ def load_plan(args, core, cold, proof):
         'currentReceiptFile': str(core.canonical_control(args.current_receipt)),
         'custodyReceiptFile': str(core.canonical_control(args.custody_receipt)),
         'current': current, 'custody': custody, 'originalFilesDeleted': 0, **code_bindings(core, cold, proof),
-        **alias_bindings(args.profile, proof)}
+        **alias_bindings(args.profile, proof), **residual_bindings(args.profile)}
     need(plan == expected and current is not None and custody is not None, 'PLAN_SOURCE_OR_CLOUD_BINDING_DRIFT')
     return plan
 
 
 def apply_plan(plan, core, proof, backend, attestor, audit):
     need(plan.get('current') is not None and plan.get('custody') is not None, 'CLOUD_RECEIPTS_REQUIRED')
+    if plan['profile'] == 'residual-project-originals-v1':
+        need(all(plan.get(key) == value for key, value in residual_bindings(plan['profile']).items()),
+             'FIXED_RESIDUAL_SOURCE_GUARD_REQUIRED')
+        residual_source_guard(plan['profile'], plan['members'])
     if plan['profile'] == 'pth-aliases-v1':
         aliases = [{'path': name, 'bytes': MODEL_BYTES, 'sha256': MODEL_SHA256} for name in MODEL_ALIASES]
         validate_observations(aliases, plan.get('members'))

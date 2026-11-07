@@ -1,4 +1,4 @@
-"""Opaque custody of the closed 36-file local inventory; never executes its data.
+"""Opaque custody of fixed local inventories; never executes their data.
 
 pack is workstation byte copying only. All restore/reuse commands require the
 fixed source and an actual passing verification on the original ECS. There is
@@ -16,6 +16,7 @@ from pathlib import Path
 import re
 import shutil
 import stat
+import subprocess
 import sys
 import tarfile
 from urllib.request import ProxyHandler, Request, build_opener
@@ -39,6 +40,21 @@ PUBLIC = "additional-local-artifacts-public-receipt.json"
 SHA = re.compile(r"[a-f0-9]{64}")
 GROUPS = {"doorhandle-server/uploads", "uploads", "logs", "work/cloud/wacga-runtime-v2",
           "work/cloud/wacga-runtime-v3", "work/cloud/wacga-runtime-v4", "work/cloud/pth-model", "historical-archives"}
+DEFAULT_PROFILE = PROFILE
+PROFILE_FIELDS = ('PROFILE', 'CATALOG_SHA256', 'FILE_COUNT', 'ORIGINAL_BYTES', 'MAX_BYTES', 'MAX_MANIFEST',
+                  'SNAPSHOT', 'RESTORE', 'OWNER', 'PUBLIC', 'GROUPS')
+PROFILES = {
+    DEFAULT_PROFILE: {name: globals()[name] for name in PROFILE_FIELDS},
+    'residual-project-originals-v1': {
+        'PROFILE': 'residual-project-originals-v1',
+        'CATALOG_SHA256': 'a9b6498c0f0e59b8821b0dbd9a8a4c1488bd300a67d92049f673e687fd49a00c',
+        'FILE_COUNT': 1968, 'ORIGINAL_BYTES': 8779830,
+        'MAX_BYTES': 32 * 1024 ** 2, 'MAX_MANIFEST': 2 * 1024 ** 2,
+        'SNAPSHOT': 'residual-project-originals-snapshot', 'RESTORE': 'residual-project-originals-restore',
+        'OWNER': 'residual-project-originals-owner.json', 'PUBLIC': 'residual-project-originals-public-receipt.json',
+        'GROUPS': {'residual-sql', 'residual-model'},
+    },
+}
 
 
 class CustodyError(Exception):
@@ -48,6 +64,16 @@ class CustodyError(Exception):
 def need(value, message):
     if not value:
         raise CustodyError(message)
+
+
+def select_profile(name):
+    need(isinstance(name, str) and name in PROFILES, "Unknown fixed opaque custody profile")
+    selected = PROFILES[name]
+    need(isinstance(selected['CATALOG_SHA256'], str) and SHA.fullmatch(selected['CATALOG_SHA256'])
+         and type(selected['FILE_COUNT']) is int and selected['FILE_COUNT'] > 0
+         and type(selected['ORIGINAL_BYTES']) is int and selected['ORIGINAL_BYTES'] > 0,
+         "Opaque custody profile has no frozen catalogue")
+    globals().update(selected)
 
 
 def encoded(value):
@@ -83,7 +109,8 @@ def member_name(value):
     return value
 
 
-def read_json(path, maximum=MAX_MANIFEST, *, private=False):
+def read_json(path, maximum=None, *, private=False):
+    maximum = MAX_MANIFEST if maximum is None else maximum
     path = safe(path); info = path.stat()
     need(stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and info.st_size <= maximum,
          "Custody metadata must be a bounded unlinked regular file")
@@ -176,6 +203,33 @@ def catalogue(rows):
     return hashlib.sha256(encoded(sorted([[r["group"], r["member"], r["bytes"], r["sha256"]] for r in rows]))).hexdigest()
 
 
+def residual_repository_guard(paths):
+    """Read Git/ancestor metadata only; never enter another source checkout."""
+    root = safe(SOURCE_ROOT)
+    result = subprocess.run(['git', '-C', str(root), 'worktree', 'list', '--porcelain', '-z'],
+                            capture_output=True, timeout=20)
+    need(result.returncode == 0 and len(result.stdout) <= 1024 ** 2, 'Registered source worktrees must be verifiable')
+    others = [Path(row[9:].decode('utf8')) for row in result.stdout.split(b'\0') if row.startswith(b'worktree ')]
+    need(root in others, 'The current project source worktree is not registered')
+    others = [path for path in others if path != root]
+    result = subprocess.run(['git', '-C', str(root), 'ls-files', '-z'], capture_output=True, timeout=20)
+    need(result.returncode == 0 and len(result.stdout) <= 4 * 1024 ** 2, 'Tracked source files must be verifiable')
+    tracked = {name.decode('utf8').casefold() for name in result.stdout.split(b'\0') if name}
+    for raw in paths:
+        path = Path(raw)
+        need(path.is_absolute() and path.is_relative_to(root), 'Residual custody must stay in this project')
+        relative = path.relative_to(root).as_posix()
+        need(not any(path == other or path.is_relative_to(other) for other in others)
+             and relative.casefold() not in tracked, 'Residual custody cannot include a source checkout')
+        need(not any(part in ('.git', 'node_modules', 'target', 'dist', '.cache', 'deepseek-harness') for part in path.relative_to(root).parts)
+             and not relative.casefold().startswith(('work/jenkins/', 'work/ecs-only-20261105/micro-followup/checkout/')),
+             'Residual custody cannot include protected development resources')
+        for ancestor in path.parents:
+            if ancestor == root: break
+            need(not any((ancestor / marker).exists() or (ancestor / marker).is_symlink()
+                         for marker in ('.git', '.hg', '.svn')), 'Residual custody cannot enter a nested source repository')
+
+
 def validate_rows(rows):
     need(isinstance(rows, list) and len(rows) == FILE_COUNT, "The complete closed custody inventory is required")
     seen = set(); total = 0
@@ -234,6 +288,8 @@ def pack(catalog_file, output):
             "permissions": {"mode": 0, "uid": 0, "gid": 0, "atimeNs": 0, "mtimeNs": 0}})
     # Reject any extra/secret source before opening even one original file.
     validate_rows(rows)
+    if PROFILE == 'residual-project-originals-v1':
+        residual_repository_guard([row['sourcePath'] for row in rows])
     for row in rows:
         path = safe(row["sourcePath"]); info = path.stat()
         need(stat.S_ISREG(info.st_mode), "A reviewed custody source is not a regular file")
@@ -511,8 +567,11 @@ def main():
             p.add_argument("--manifest-bytes", type=int, required=True); p.add_argument("--archive-bytes", type=int, required=True)
         if action in ("describe", "reuse"): p.add_argument("--source-snapshot-directory", required=True)
         if action == "reuse": p.add_argument("--source-receipt-sha256", required=True)
+    for command in commands.choices.values():
+        command.add_argument('--profile', choices=tuple(PROFILES), default=DEFAULT_PROFILE)
     args = parser.parse_args()
     try:
+        select_profile(args.profile)
         result = pack(args.catalog, args.output) if args.action == "pack" else {
             "prepare": prepare, "verify-restore": verify_restore, "describe": describe, "reuse": reuse}[args.action](args)
         print(json.dumps(result, sort_keys=True))

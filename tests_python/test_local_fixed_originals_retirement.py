@@ -76,6 +76,62 @@ def test_additional_profile_admits_uploads_and_logs_without_admitting_c_history(
 
 
 @pytest.fixture
+def residual_packet(packet, monkeypatch):
+    name = 'residual-project-originals-v1'
+    rows = [{'sourcePath': fixed.ROOT + r'\work\old-output\opaque.sql', 'bytes': 1, 'sha256': 'a' * 64},
+            {'sourcePath': fixed.ROOT + r'\work\old-output\opaque.onnx', 'bytes': 2, 'sha256': 'b' * 64}]
+    raw = packet.seal(rows)
+    recipe = {'manifestSha256': fixed.sha(raw), 'members': 2, 'selected': 2, 'bytes': 3, 'retained': 0}
+    monkeypatch.setitem(fixed.RECIPES, name, recipe)
+    return SimpleNamespace(profile=name, rows=rows, raw=raw, recipe=recipe)
+
+
+def residual_plan(scope, residual_packet):
+    selected, retained = fixed.select_manifest(residual_packet.profile, residual_packet.raw)
+    members = [{**row, 'fingerprint': [7, i + 10, row['bytes'], 40, 50, 1, 0o100600, 32]} for i, row in enumerate(selected)]
+    scope.plan.update(profile=residual_packet.profile, manifestSha256=residual_packet.recipe['manifestSha256'],
+                      members=members, retained=retained, **fixed.residual_bindings(residual_packet.profile))
+    return members
+
+
+def test_residual_scope_uses_frozen_manifest_and_a_separate_metadata_only_source_guard(residual_packet, monkeypatch):
+    selected, retained = fixed.select_manifest(residual_packet.profile, residual_packet.raw)
+    assert len(selected) == 2 and retained == []
+    seen = []
+    helper = SimpleNamespace(residual_repository_guard=lambda paths: seen.extend(paths))
+    monkeypatch.setattr(fixed, 'load', lambda name: helper if name == 'preserve-local-artifacts.py' else pytest.fail('unexpected helper'))
+    fixed.residual_source_guard(residual_packet.profile, selected)
+    assert seen == [fixed.ROOT + '\\' + row['path'].replace('/', '\\') for row in selected]
+    fixed.residual_source_guard('additional-originals-v1', selected)
+    assert len(seen) == 2
+
+
+def test_residual_fake_apply_holds_every_original_and_obtains_fresh_custody_before_disposition(scope, residual_packet, monkeypatch):
+    members = residual_plan(scope, residual_packet)
+    def guard(profile, rows):
+        assert profile == residual_packet.profile and rows == members
+        scope.events.append(('source-metadata-guard',))
+    monkeypatch.setattr(fixed, 'residual_source_guard', guard)
+    result = apply(scope)
+    assert result['filesDeleted'] == 2 and result['directoriesRemoved'] == 0
+    assert scope.events[0] == ('source-metadata-guard',)
+    live = next(i for i, row in enumerate(scope.events) if row[0] == 'live-ssh-proof')
+    first_delete = next(i for i, row in enumerate(scope.events) if row[0] == 'delete-held')
+    assert len([row for row in scope.events[:live] if row[0] == 'hash']) == 2 and live < first_delete
+
+
+@pytest.mark.parametrize('why', ['guard-code-changed', 'new-foreign-repository', 'new-nested-repository'])
+def test_residual_source_guard_failures_refuse_before_any_native_source_handle(scope, residual_packet, monkeypatch, why):
+    residual_plan(scope, residual_packet)
+    if why == 'guard-code-changed': scope.plan['residualScopeHelperSha256'] = '0' * 64
+    else:
+        def reject(*unused): raise ValueError('SOURCE_REPOSITORY_SCOPE_CHANGED')
+        monkeypatch.setattr(fixed, 'residual_source_guard', reject)
+    with pytest.raises(ValueError): apply(scope)
+    assert not scope.events
+
+
+@pytest.fixture
 def alias_packet(packet, monkeypatch):
     profile = 'pth-aliases-v1'
     rows = [{'member': fixed.MODEL_ORIGIN_MEMBER, 'sourcePath': fixed.ROOT + r'\work\cloud\pth-model\best_stg2.pth',

@@ -1,12 +1,19 @@
 # 固定旧原件清退开发说明
 
-[`retire-local-fixed-originals.py`](../../script/jenkins/retire-local-fixed-originals.py) 仅接受两个原始字节 SHA 固定的清单及单独显式选择的模型别名范围，不发现或自动加入新文件。复用已存在的 Windows 独占句柄、身份核验、审计和证明刷新机制；目录全部保留，不提供递归删除。
+[`retire-local-fixed-originals.py`](../../script/jenkins/retire-local-fixed-originals.py) 仅接受原始字节 SHA 固定的闭合清单及单独显式选择的模型别名范围，不发现或自动加入新文件。复用已存在的 Windows 独占句柄、身份核验、审计和证明刷新机制；目录全部保留，不提供递归删除。
 
 | Profile | 原封存范围 | 本地可选范围 |
 | --- | --- | --- |
 | `legacy-project-originals-v1` | 5,599 原件 | D 项目内 5,598 项；C 盘 `history.db` 明确保留且不访问 |
 | `additional-originals-v1` | 36 原件 | 固定清单中的36项；不加入任何模型别名或运输包 |
 | `pth-aliases-v1` | 同一36项清单中的精确 PTH 成员 | 仅下述两个已知重复模型路径，不包含在前两种 profile 中 |
+| `residual-project-originals-v1` | 精确固定的后续残留字节清单 | 1,968 项、8,779,830 字节；排除其他已登记 Git worktree 的352项 |
+
+残留 profile 只来自既有报告的已列文件，不扫描或自动加入新目录。原始2,320项中352项位于其他 Git worktree，保留在原处；实际封存1,554项 SQL相关文件（含351项 `.sql.gz`）和414个小模型。SQL、压缩备份和模型均按 opaque 字节保存，不解析、解压、执行或合入业务。默认36项 profile 的清单、命名、限额与未传 profile 时的命令行为保持原样。
+
+残留 profile 使用独立 `residual-project-originals-snapshot` / `residual-project-originals-restore` 目录，以及 `residual-project-originals-owner.json` / `residual-project-originals-public-receipt.json`；制品回执为 `artifacts/residual-artifact-custody.json`。通过本地 Jenkins 的 `LOCAL_ARTIFACTS_PROFILE=residual-project-originals-v1` 和已有的本地或ECS snapshot互斥参数选择；复用原来的打包、上传、独立恢复和后续复用流程。归档上限32 MiB，清单及控制JSON仍不超过2 MiB。
+
+本地字节封包已固定：catalog SHA `a9b6498c0f0e59b8821b0dbd9a8a4c1488bd300a67d92049f673e687fd49a00c`，`custody.json` 原始SHA `471dedbba39f7220f760797ba1827040dd1cef7ac51af76daa8d7613117a6025`，`originals.tar` 原始SHA `743e1bfdfd6f88d5684e7833a624ad4a7b8d8e3cbb55286c858afd29fefdf2b6`。打包不是ECS恢复验收。实际清退还需固定提交在ECS通过测试、服务器独立恢复成功、严格更早的custody与当次新鲜现场证明；源代码、在用文件和新出现的Git worktree/nested repository仍需拒绝。
 
 模型别名 profile 必须显式选择，仅允许项目根 `best_stg2.pth` 与 `work/quality-platform-20261103/ecs-stage-04/model/best_stg2.pth`，各159,274,200字节、SHA `eb10caf9fe5fa41e1ce0cfe2bcfaaa728ff44c4fa56f3c6994d6fadb66da434b`。必须先绑定36包的 `work/cloud/pth-model/best_stg2.pth` 精确成员，再获得同次现场证明：服务器 `/srv/doorhandle/models/best_stg2.pth` 实物及 worker 只读挂载、实际允许的模型配置与固定 manifest 路径关联。旧别名审计和旧运行回读只作设计依据，不代替当次现场证明。
 
@@ -24,7 +31,7 @@
 
 执行始终持有全部剩余文件句柄；每次证明 TTL 不超过300秒，120秒或 UTC 剩余不超过60秒时重新取得同一证据绑定的新 nonce 证明。每条意图先 fsync，再次验证有效证明及同一原始句柄身份后，才逐文件 disposition 并关闭。刷新、权限、身份或关闭结果不确定时停止，保留未删文件和逐条审计，不自动续跑或重放。
 
-禁止范围包括 C 盘、共享 MySQL/Redis、Jenkins、Git、跟踪源码和受保护 checkout；仅固定旧源的 Chroma/Kafka 路径可进入严格 resolver。未知候选和五份运输包均不在本轮执行范围。两处 PTH 别名只接受独立 profile 的完整证明，不能凭历史别名 JSON 删除。
+禁止范围包括 C 盘、共享 MySQL/Redis、Jenkins、Git、跟踪源码和受保护 checkout；仅固定旧源的 Chroma/Kafka 路径可进入严格 resolver。固定清单之外的未知候选与运输包均不在本轮执行范围。两处 PTH 别名只接受独立 profile 的完整证明，不能凭历史别名 JSON 删除。
 
 本页属于开发说明。仅完成源码静态检查和合成用例编写，不表示这些原件已经清退；测试只由固定提交在 ECS 执行，不在本地运行测试或真实 Windows 删除 API。
 

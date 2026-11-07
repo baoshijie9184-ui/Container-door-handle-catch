@@ -82,6 +82,7 @@ def parameters = [
     new StringParameterDefinition('LEGACY_SOURCE_ECS_SNAPSHOT', '', 'Reuse an independently restored ECS legacy snapshot; mutually exclusive with the local input.'),
     new StringParameterDefinition('LOCAL_ARTIFACTS_SNAPSHOT', '', 'Initial sealed local historical artifacts; transfer and recovery occur only after fixed-source verification.'),
     new StringParameterDefinition('LOCAL_ARTIFACTS_ECS_SNAPSHOT', '', 'Reuse independently restored ECS historical artifacts without returning private source bytes locally.'),
+    new ChoiceParameterDefinition('LOCAL_ARTIFACTS_PROFILE', ['additional-local-artifacts-v1', 'residual-project-originals-v1'] as String[], 'Fixed artifact inventory: original 36 items or the separate residual project file set.'),
     new StringParameterDefinition('COLD_STORES_SNAPSHOT', '', 'Optional sealed historical test stores; recover every store independently on ECS after fixed-source verification.'),
     new StringParameterDefinition('COLD_STORES_ECS_SNAPSHOT', '', 'Reuse an ECS-verified historical cold-store archive; mutually exclusive with its local input.'),
     new ChoiceParameterDefinition('COLD_STORES_PROFILE', ['cold-store-originals-v1', 'cold-store-history-v2'] as String[], 'Fixed archive inventory: original 70 storage roots or additional 4041 historical test/receipt roots.'),

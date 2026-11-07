@@ -7,10 +7,17 @@ param(
     [Parameter(Mandatory = $true)][string]$Commit,
     [Parameter(Mandatory = $true)][string]$SourceSha256,
     [string]$SnapshotDirectory,
-    [string]$EcsSnapshotDirectory
+    [string]$EcsSnapshotDirectory,
+    [ValidateSet('additional-local-artifacts-v1', 'residual-project-originals-v1')][string]$Profile = 'additional-local-artifacts-v1'
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+
+$profileSettings = if ($Profile -ceq 'additional-local-artifacts-v1') {
+    @{ CatalogSha = 'e1258807aae1df63412e2190268351b1d63e770219ce9aba2d760f2f1bae1383'; Files = 36; Bytes = 465240718; MaximumArchive = 512MB; MaximumManifest = 2MB; Snapshot = 'additional-local-artifacts-snapshot'; Public = 'additional-local-artifacts-public-receipt.json'; Artifact = 'local-artifact-custody'; }
+} else {
+    @{ CatalogSha = 'a9b6498c0f0e59b8821b0dbd9a8a4c1488bd300a67d92049f673e687fd49a00c'; Files = 1968; Bytes = 8779830; MaximumArchive = 32MB; MaximumManifest = 2MB; Snapshot = 'residual-project-originals-snapshot'; Public = 'residual-project-originals-public-receipt.json'; Artifact = 'residual-artifact-custody'; }
+}
 
 function Require-Custody([bool]$Condition, [string]$Message) {
     if (-not $Condition) { throw $Message }
@@ -42,7 +49,7 @@ Require-Custody ($instance -match '^i-[a-z0-9]+$' -and $machine -match '^[a-f0-9
 $ssh = (Get-Command ssh.exe -ErrorAction Stop | Select-Object -First 1).Source
 $scp = (Get-Command scp.exe -ErrorAction Stop | Select-Object -First 1).Source
 $workspace = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '../..')).Path
-$artifact = Join-Path $workspace 'artifacts/local-artifact-custody.json'
+$artifact = Join-Path $workspace ('artifacts/' + $profileSettings.Artifact + '.json')
 Require-Custody (-not (Test-Path -LiteralPath $artifact)) 'Use a fresh custody build; completed evidence is immutable.'
 $verification = Join-Path $workspace 'artifacts/ecs/evidence/verification-receipt.json'
 Assert-CustodyUnlinked $verification
@@ -71,11 +78,12 @@ Require-Custody ($binding.sha256 -match '^[a-f0-9]{64}$') 'Committed custody hel
 $helper = "$RemoteRoot/verification/$Tag/checkout/script/jenkins/preserve-local-artifacts.py"
 $helperGuard = "test `"`$(sha256sum '$helper' | cut -d ' ' -f 1)`" = '$($binding.sha256)' && "
 $common = "--root '$RemoteRoot' --tag '$Tag' --commit '$Commit' --source-sha256 '$SourceSha256' --expected-instance-id '$instance' --expected-machine-id '$machine'"
+if ($Profile -cne 'additional-local-artifacts-v1') { $common += " --profile '$Profile'" }
 function Invoke-EcsCustody([string]$Mode, [string]$Extra) {
     $result = Invoke-Custody $ssh ($SshOptions + @('-p', $PortText, $Destination, "${helperGuard}python3 -I -B '$helper' $Mode $common $Extra"))
     return ($result | Select-Object -Last 1) | ConvertFrom-Json
 }
-$catalogSha = 'e1258807aae1df63412e2190268351b1d63e770219ce9aba2d760f2f1bae1383'
+$catalogSha = $profileSettings.CatalogSha
 $sourceReceiptSha = $null
 if ($localInput) {
     Require-Custody ([IO.Path]::IsPathFullyQualified($SnapshotDirectory)) 'A full local custody snapshot directory is required.'
@@ -89,17 +97,17 @@ if ($localInput) {
     foreach ($name in @('custody.json', 'originals.tar')) {
         $file = Join-Path $local $name; Assert-CustodyUnlinked $file
         $length = (Get-Item -LiteralPath $file).Length
-        Require-Custody ($length -gt 0 -and $length -le 512MB -and ($name -ne 'custody.json' -or $length -le 2MB)) 'Custody input exceeds its byte budget.'
+        Require-Custody ($length -gt 0 -and $length -le $profileSettings.MaximumArchive -and ($name -ne 'custody.json' -or $length -le $profileSettings.MaximumManifest)) 'Custody input exceeds its byte budget.'
         $inputs[$name] = @{ bytes = $length; sha256 = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant() }
     }
     $manifest = Get-Content -LiteralPath (Join-Path $local 'custody.json') -Raw -Encoding UTF8 | ConvertFrom-Json
-    Require-Custody ($manifest.version -eq 1 -and $manifest.kind -ceq 'doorhandle-additional-local-artifact-custody' -and $manifest.profile -ceq 'additional-local-artifacts-v1' -and $manifest.status -ceq 'COMPLETE' -and $manifest.catalogSha256 -ceq $catalogSha -and $manifest.originalFiles -eq 36 -and @($manifest.files).Count -eq 36 -and $manifest.originalBytes -eq 465240718 -and $manifest.archiveEncoding -ceq 'TAR' -and $manifest.archiveBytes -eq $inputs['originals.tar'].bytes -and $manifest.archiveSha256 -ceq $inputs['originals.tar'].sha256) 'Local opaque input is not the reviewed completed custody package.'
+    Require-Custody ($manifest.version -eq 1 -and $manifest.kind -ceq 'doorhandle-additional-local-artifact-custody' -and $manifest.profile -ceq $Profile -and $manifest.status -ceq 'COMPLETE' -and $manifest.catalogSha256 -ceq $catalogSha -and $manifest.originalFiles -eq $profileSettings.Files -and @($manifest.files).Count -eq $profileSettings.Files -and $manifest.originalBytes -eq $profileSettings.Bytes -and $manifest.archiveEncoding -ceq 'TAR' -and $manifest.archiveBytes -eq $inputs['originals.tar'].bytes -and $manifest.archiveSha256 -ceq $inputs['originals.tar'].sha256) 'Local opaque input is not the reviewed completed custody package.'
 } else {
-    $pattern = '^' + [regex]::Escape($RemoteRoot) + '/verification/ci-[1-9][0-9]*-[a-f0-9]{12}/checkout/work/additional-local-artifacts-snapshot$'
-    Require-Custody ($EcsSnapshotDirectory -cmatch $pattern -and $EcsSnapshotDirectory -cne "$RemoteRoot/verification/$Tag/checkout/work/additional-local-artifacts-snapshot") 'ECS custody reuse must name an earlier same-root fixed snapshot.'
+    $pattern = '^' + [regex]::Escape($RemoteRoot) + '/verification/ci-[1-9][0-9]*-[a-f0-9]{12}/checkout/work/' + [regex]::Escape($profileSettings.Snapshot) + '$'
+    Require-Custody ($EcsSnapshotDirectory -cmatch $pattern -and $EcsSnapshotDirectory -cne "$RemoteRoot/verification/$Tag/checkout/work/$($profileSettings.Snapshot)") 'ECS custody reuse must name an earlier same-root fixed snapshot.'
     $description = Invoke-EcsCustody 'describe' "--source-snapshot-directory '$EcsSnapshotDirectory'"
-    Require-Custody ($description.status -ceq 'DESCRIBED' -and $description.release -ceq $Tag -and $description.commit -ceq $Commit -and $description.sourceSha256 -ceq $SourceSha256 -and $description.identity.instanceId -ceq $instance -and $description.identity.machineId -ceq $machine -and $description.profile -ceq 'additional-local-artifacts-v1' -and $description.catalogSha256 -ceq $catalogSha -and $description.files -eq 36 -and $description.bytes -eq 465240718 -and $description.sourceCustodyReceiptSha256 -match '^[a-f0-9]{64}$') 'Existing ECS custody does not provide a matching public description.'
-    Require-Custody ($description.archiveSha256 -match '^[a-f0-9]{64}$' -and $description.manifestSha256 -match '^[a-f0-9]{64}$' -and $description.archiveBytes -gt 0 -and $description.archiveBytes -le 512MB -and $description.manifestBytes -gt 0 -and $description.manifestBytes -le 2MB) 'ECS custody description exceeds its transport bounds.'
+    Require-Custody ($description.status -ceq 'DESCRIBED' -and $description.release -ceq $Tag -and $description.commit -ceq $Commit -and $description.sourceSha256 -ceq $SourceSha256 -and $description.identity.instanceId -ceq $instance -and $description.identity.machineId -ceq $machine -and $description.profile -ceq $Profile -and $description.catalogSha256 -ceq $catalogSha -and $description.files -eq $profileSettings.Files -and $description.bytes -eq $profileSettings.Bytes -and $description.sourceCustodyReceiptSha256 -match '^[a-f0-9]{64}$') 'Existing ECS custody does not provide a matching public description.'
+    Require-Custody ($description.archiveSha256 -match '^[a-f0-9]{64}$' -and $description.manifestSha256 -match '^[a-f0-9]{64}$' -and $description.archiveBytes -gt 0 -and $description.archiveBytes -le $profileSettings.MaximumArchive -and $description.manifestBytes -gt 0 -and $description.manifestBytes -le $profileSettings.MaximumManifest) 'ECS custody description exceeds its transport bounds.'
     $inputs = @{ 'custody.json' = @{ bytes = $description.manifestBytes; sha256 = $description.manifestSha256 }; 'originals.tar' = @{ bytes = $description.archiveBytes; sha256 = $description.archiveSha256 } }
     $sourceReceiptSha = $description.sourceCustodyReceiptSha256
 }
@@ -107,7 +115,7 @@ $inputFlags = "--manifest-sha256 '$($inputs['custody.json'].sha256)' --manifest-
 if ($localInput) {
     $prepared = Invoke-EcsCustody 'prepare' $inputFlags
     Require-Custody ($prepared.status -ceq 'PREPARED' -and $prepared.release -ceq $Tag -and $prepared.commit -ceq $Commit -and $prepared.sourceSha256 -ceq $SourceSha256 -and $prepared.identity.instanceId -ceq $instance -and $prepared.identity.machineId -ceq $machine) 'ECS did not admit the new private custody destination.'
-    $remoteSnapshot = "$RemoteRoot/verification/$Tag/checkout/work/additional-local-artifacts-snapshot"
+    $remoteSnapshot = "$RemoteRoot/verification/$Tag/checkout/work/$($profileSettings.Snapshot)"
     foreach ($name in @('custody.json', 'originals.tar')) {
         $file = Join-Path $local $name; Assert-CustodyUnlinked $file
         Invoke-Custody $scp ($SshOptions + @('-P', $PortText, $file, "${Destination}:$remoteSnapshot/$name")) | Out-Null
@@ -117,12 +125,12 @@ if ($localInput) {
 } else {
     $public = Invoke-EcsCustody 'reuse' "$inputFlags --source-snapshot-directory '$EcsSnapshotDirectory' --source-receipt-sha256 '$sourceReceiptSha'"
 }
-Require-Custody ($public.status -ceq 'RESTORED_VERIFIED' -and $public.kind -ceq 'doorhandle-additional-local-artifact-custody' -and $public.version -eq 1 -and $public.profile -ceq 'additional-local-artifacts-v1' -and $public.release -ceq $Tag -and $public.commit -ceq $Commit -and $public.sourceSha256 -ceq $SourceSha256 -and $public.identity.instanceId -ceq $instance -and $public.identity.machineId -ceq $machine -and $public.identity.executionLocation -ceq 'ECS' -and $public.verificationReceiptSha256 -ceq $verificationSha -and $public.catalogSha256 -ceq $catalogSha -and $public.files -eq 36 -and $public.bytes -eq 465240718 -and $public.manifestSha256 -ceq $inputs['custody.json'].sha256 -and $public.archiveSha256 -ceq $inputs['originals.tar'].sha256 -and $public.archiveBytes -eq $inputs['originals.tar'].bytes -and $public.sourceCustodyReceiptSha256 -ceq $sourceReceiptSha -and $public.originalFilesDeleted -eq 0 -and $public.modelsExecuted -eq 0 -and $public.databasesOpened -eq 0 -and $public.restoreReceiptSha256 -match '^[a-f0-9]{64}$' -and $public.publicReceiptSha256 -match '^[a-f0-9]{64}$') 'ECS opaque custody restoration did not prove the admitted bytes and same-build identity.'
+Require-Custody ($public.status -ceq 'RESTORED_VERIFIED' -and $public.kind -ceq 'doorhandle-additional-local-artifact-custody' -and $public.version -eq 1 -and $public.profile -ceq $Profile -and $public.release -ceq $Tag -and $public.commit -ceq $Commit -and $public.sourceSha256 -ceq $SourceSha256 -and $public.identity.instanceId -ceq $instance -and $public.identity.machineId -ceq $machine -and $public.identity.executionLocation -ceq 'ECS' -and $public.verificationReceiptSha256 -ceq $verificationSha -and $public.catalogSha256 -ceq $catalogSha -and $public.files -eq $profileSettings.Files -and $public.bytes -eq $profileSettings.Bytes -and $public.manifestSha256 -ceq $inputs['custody.json'].sha256 -and $public.archiveSha256 -ceq $inputs['originals.tar'].sha256 -and $public.archiveBytes -eq $inputs['originals.tar'].bytes -and $public.sourceCustodyReceiptSha256 -ceq $sourceReceiptSha -and $public.originalFilesDeleted -eq 0 -and $public.modelsExecuted -eq 0 -and $public.databasesOpened -eq 0 -and $public.restoreReceiptSha256 -match '^[a-f0-9]{64}$' -and $public.publicReceiptSha256 -match '^[a-f0-9]{64}$') 'ECS opaque custody restoration did not prove the admitted bytes and same-build identity.'
 # Download only the explicitly projected public count/hash receipt. Business
 # originals, filenames, source paths and original permissions stay private on ECS.
-$pending = Join-Path $workspace 'artifacts/ecs/local-artifact-custody-public.pending.json'
+$pending = Join-Path $workspace ('artifacts/ecs/' + $profileSettings.Artifact + '-public.pending.json')
 Require-Custody (-not (Test-Path -LiteralPath $pending)) 'Use a fresh custody evidence destination.'
-Invoke-Custody $scp ($SshOptions + @('-P', $PortText, "${Destination}:$RemoteRoot/verification/$Tag/checkout/work/additional-local-artifacts-public-receipt.json", $pending)) | Out-Null
+Invoke-Custody $scp ($SshOptions + @('-P', $PortText, "${Destination}:$RemoteRoot/verification/$Tag/checkout/work/$($profileSettings.Public)", $pending)) | Out-Null
 Assert-CustodyUnlinked $pending
 Require-Custody ((Get-Item -LiteralPath $pending).Length -le 16384 -and (Get-FileHash -LiteralPath $pending -Algorithm SHA256).Hash.ToLowerInvariant() -ceq $public.publicReceiptSha256) 'Public custody receipt raw bytes changed in transport.'
 $received = Get-Content -LiteralPath $pending -Raw -Encoding UTF8 | ConvertFrom-Json

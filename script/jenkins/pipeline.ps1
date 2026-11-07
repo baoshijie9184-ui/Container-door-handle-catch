@@ -12,6 +12,12 @@ function Require-Value([string]$Name, [string]$Pattern) {
     if ([string]::IsNullOrWhiteSpace($value) -or $value -notmatch $Pattern) { throw "Invalid or missing $Name" }
     return $value
 }
+function Get-LocalArtifactsProfile {
+    $selected = $env:LOCAL_ARTIFACTS_PROFILE
+    if ([string]::IsNullOrWhiteSpace($selected)) { $selected = 'additional-local-artifacts-v1' }
+    if ($selected -cnotin @('additional-local-artifacts-v1', 'residual-project-originals-v1')) { throw 'Unsupported fixed artifact profile.' }
+    return $selected
+}
 function Get-PinnedSourceFile([string]$RelativePath) {
     $commit = Require-Value 'GIT_COMMIT' '^[a-f0-9]{40}$'
     if ($RelativePath -notmatch '^script/[A-Za-z0-9_./-]+\.(py|sh)$' -or @($RelativePath.Split('/') | Where-Object { $_ -eq '..' }).Count) { throw 'Unsafe fixed-source helper path.' }
@@ -220,7 +226,10 @@ if ($Action -eq 'RepairPriorEvidence') {
     if ($env:CI_ECS_VERIFIED -ne 'true') { throw 'Prior evidence permission repair requires this fixed commit ECS verification first.' }
     $commit = Require-Value 'GIT_COMMIT' '^[a-f0-9]{40}$'
     $sha = (Get-FileHash -LiteralPath artifacts/source.tar.gz -Algorithm SHA256).Hash.ToLowerInvariant()
-    & ./script/jenkins/repair-ci-evidence-permissions.ps1 -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha -LegacySnapshot $env:LEGACY_SOURCE_ECS_SNAPSHOT -AdditionalSnapshot $env:LOCAL_ARTIFACTS_ECS_SNAPSHOT
+    # Only the original profile has registered historical permission repairs.
+    $additionalForRepair = ''
+    if ((Get-LocalArtifactsProfile) -ceq 'additional-local-artifacts-v1') { $additionalForRepair = $env:LOCAL_ARTIFACTS_ECS_SNAPSHOT }
+    & ./script/jenkins/repair-ci-evidence-permissions.ps1 -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha -LegacySnapshot $env:LEGACY_SOURCE_ECS_SNAPSHOT -AdditionalSnapshot $additionalForRepair
     return
 }
 if ($Action -eq 'PreserveLegacy') {
@@ -241,7 +250,10 @@ if ($Action -in @('PreserveLocalArtifacts', 'PreserveColdStores', 'PreserveLocal
     $commit = Require-Value 'GIT_COMMIT' '^[a-f0-9]{40}$'
     $sha = (Get-FileHash -LiteralPath artifacts/source.tar.gz -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($Action -eq 'PreserveLocalArtifacts') {
-        & ./script/jenkins/preserve-local-artifacts.ps1 -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha -SnapshotDirectory $env:LOCAL_ARTIFACTS_SNAPSHOT -EcsSnapshotDirectory $env:LOCAL_ARTIFACTS_ECS_SNAPSHOT
+        $artifactProfile = Get-LocalArtifactsProfile
+        $profileOptions = @{}
+        if ($artifactProfile -cne 'additional-local-artifacts-v1') { $profileOptions['Profile'] = $artifactProfile }
+        & ./script/jenkins/preserve-local-artifacts.ps1 -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha -SnapshotDirectory $env:LOCAL_ARTIFACTS_SNAPSHOT -EcsSnapshotDirectory $env:LOCAL_ARTIFACTS_ECS_SNAPSHOT @profileOptions
     } elseif ($Action -eq 'PreserveColdStores') {
         & ./script/jenkins/preserve-cold-stores.ps1 -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha -SnapshotDirectory $env:COLD_STORES_SNAPSHOT -EcsSnapshotDirectory $env:COLD_STORES_ECS_SNAPSHOT -Profile $env:COLD_STORES_PROFILE
     } elseif ($Action -eq 'PreserveLocalMySql') {

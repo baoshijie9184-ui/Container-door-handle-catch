@@ -64,8 +64,19 @@ def build_custody_state(profile, old_state, tmp_path, monkeypatch):
         old, public = state.snapshot, state.public
     else:
         original_root = tmp_path / 'additional-fixture'; original_root.mkdir(mode=0o700)
-        originals = additional.originals.__wrapped__(original_root, monkeypatch)
-        package = originals.parent / 'package'; additional.custody.pack(originals.catalog, package)
+        metadata_run = additional.custody.subprocess.run
+        if profile == 'residual-project-originals-v1':
+            originals = additional.residual_originals.__wrapped__(original_root, monkeypatch)
+        else:
+            originals = additional.originals.__wrapped__(original_root, monkeypatch)
+        package = originals.parent / 'package'
+        try:
+            additional.custody.pack(originals.catalog, package)
+        finally:
+            if profile == 'residual-project-originals-v1':
+                # The synthetic Git dispatcher belongs only to local pack's
+                # real metadata guard, never the later CI/old-custody chain.
+                monkeypatch.setattr(additional.custody.subprocess, 'run', metadata_run)
         old_work = state.checkout / 'work'
         old_context = {'version': 1, 'kind': additional.custody.KIND, 'profile': additional.custody.PROFILE,
             'release': legacy.support.OLD, 'commit': state.record['commit'], 'sourceSha256': state.record['sourceSha256'],
@@ -98,7 +109,7 @@ def build_custody_state(profile, old_state, tmp_path, monkeypatch):
         current=current, custody=custody, public_file=public_file)
 
 
-@pytest.fixture(params=['legacy-project-originals-v1', 'additional-originals-v1'])
+@pytest.fixture(params=['legacy-project-originals-v1', 'additional-originals-v1', 'residual-project-originals-v1'])
 def custody_state(request, old_state, tmp_path, monkeypatch):
     return build_custody_state(request.param, old_state, tmp_path, monkeypatch)
 
@@ -119,7 +130,7 @@ def tree_bytes(path):
             for file in path.rglob('*')}
 
 
-def test_two_real_old_custody_chains_supply_fresh_readonly_projections(custody_state, monkeypatch):
+def test_real_old_custody_chains_supply_fresh_readonly_projections(custody_state, monkeypatch):
     state = custody_state; before = tree_bytes(state.state.root)
     opened = Path.open
     def readonly(path, mode='r', *args, **kwargs):
@@ -249,8 +260,10 @@ def test_live_output_still_requires_exact_challenge_context_fixed_recipe_and_tim
         validate(proof, state, expected_current=expected_current, expected_custody=expected_old, now_utc=now)
 
 
-@pytest.fixture(params=['legacy-project-originals-v1', 'additional-originals-v1'])
+@pytest.fixture(params=['legacy-project-originals-v1', 'additional-originals-v1', 'residual-project-originals-v1'])
 def fixed_source(tmp_path, monkeypatch, request):
+    if request.param == 'residual-project-originals-v1':
+        monkeypatch.setitem(attest.PROFILES, request.param, {**attest.PROFILES[request.param], 'MANIFEST_SHA256': 'e' * 64})
     root = tmp_path / 'source-fixture'; root.mkdir(mode=0o700)
     tag = 'ci-81-' + 'a' * 12; checkout = root / 'verification' / tag / 'checkout'; checkout.mkdir(mode=0o700, parents=True)
     inbox = root / 'inbox' / tag; inbox.mkdir(mode=0o700, parents=True)
@@ -302,6 +315,35 @@ def test_only_legacy_requires_the_existing_inbox_executor_and_neither_profile_wr
     else:
         assert attest.fixed_modules(fixed_source.args).checkout == fixed_source.checkout
     assert tree_bytes(fixed_source.root) == before
+
+
+@pytest.mark.parametrize('manifest_sha', [None, '', 'unfrozen', 'A' * 64])
+def test_unfrozen_residual_manifest_is_refused_before_any_server_access(monkeypatch, manifest_sha):
+    profile = 'residual-project-originals-v1'
+    monkeypatch.setitem(attest.PROFILES, profile, {**attest.PROFILES[profile], 'MANIFEST_SHA256': manifest_sha})
+    monkeypatch.setattr(attest, 'fixed_modules', lambda _: pytest.fail('Unfrozen manifest cannot inspect server state'))
+    with pytest.raises(attest.AttestationError, match='FROZEN_FIXED_ORIGINALS_MANIFEST_REQUIRED'):
+        attest.fresh_retirement_attest(SimpleNamespace(profile=profile, nonce='9' * 64, attestation_seconds=120))
+
+
+@pytest.mark.parametrize('field', ['CATALOG_SHA256', 'FILE_COUNT', 'ORIGINAL_BYTES', 'SNAPSHOT', 'RESTORE', 'PUBLIC',
+                                  'MAX_BYTES', 'MAX_MANIFEST'])
+def test_residual_source_admission_selects_and_checks_the_fixed_producer_profile(tmp_path, monkeypatch, field):
+    state = fixed_source.__wrapped__(tmp_path, monkeypatch, SimpleNamespace(param='residual-project-originals-v1'))
+    real_load = attest.load
+    def changed_profile(path):
+        module = real_load(path)
+        if path.name == 'preserve-local-artifacts.py':
+            select = module.select_profile
+            def changed(name):
+                select(name)
+                value = getattr(module, field)
+                setattr(module, field, value + 1 if type(value) is int else value + '-changed')
+            module.select_profile = changed
+        return module
+    monkeypatch.setattr(attest, 'load', changed_profile)
+    with pytest.raises(attest.AttestationError, match='RESIDUAL_FIXED_PRODUCER_PROFILE_DRIFT'):
+        attest.fixed_modules(state.args)
 
 
 @pytest.mark.parametrize('damage', ['none', 'report', 'tool-owner', 'unfinished'])
