@@ -60,3 +60,24 @@ test('a slower earlier read cannot overwrite a newer phase in the same conversat
  client.enabled=true;client.session='s1'
  try{const slow=client.poll();await client.poll();release();await slow;assert.equal(client.state.run.phase,'PAUSED');assert.equal(client.state.run.revision,2)}finally{client.close()}
 })
+test('historical unresolved input retains civil times and stays visible without mutation requests',async()=>{
+ const {normalizeControl,showConversationQueue,ConversationControlClient}=await utility
+ const sourceWallTimes={created_at:'2026-10-17 11:45:27.244980',expires_at:null}
+ const item={...snapshot().inputs[0],clockStatus:'UNRESOLVED',sourceWallTimes}
+ const data=normalizeControl(snapshot('s1',{run:{...snapshot().run,runId:null,phase:'IDLE'},inputs:[item]}),'s1')
+ assert.deepEqual(data.inputs[0].sourceWallTimes,sourceWallTimes);assert.equal(data.inputs[0].clockStatus,'UNRESOLVED')
+ sourceWallTimes.created_at='changed';assert.equal(data.inputs[0].sourceWallTimes.created_at,'2026-10-17 11:45:27.244980')
+ assert.equal(showConversationQueue({enabled:true,...data}),true)
+ let calls=0;const client=new ConversationControlClient({fetcher:async()=>{calls++;return response(snapshot())}})
+ client.enabled=true;client.session='s1';client.state=data
+ try{assert.throws(()=>client.change(data.inputs[0],null),/历史时区未确认/);assert.throws(()=>client.steer(data.inputs[0]),/历史时区未确认/);assert.equal(calls,0)}finally{client.close()}
+})
+test('clock metadata cannot introduce offset coercion or malformed fields into queue projections',async()=>{
+ const {normalizeControl}=await utility
+ for(const metadata of [
+  {clockStatus:'MAYBE',sourceWallTimes:{}},
+  {clockStatus:'UNRESOLVED',sourceWallTimes:[]},
+  {clockStatus:'UNRESOLVED',sourceWallTimes:{created_at:'2026-10-17T11:45:27Z'}},
+  {clockStatus:'UNRESOLVED',sourceWallTimes:{created_at:'2026-10-17 11:45:27+08:00'}}
+ ])assert.throws(()=>normalizeControl(snapshot('s1',{inputs:[{...snapshot().inputs[0],...metadata}]}),'s1'),/INVALID_INPUT_CLOCK/)
+})

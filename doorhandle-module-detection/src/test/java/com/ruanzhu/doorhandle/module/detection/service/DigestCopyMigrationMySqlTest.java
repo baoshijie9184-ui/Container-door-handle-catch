@@ -53,6 +53,7 @@ class DigestCopyMigrationMySqlTest {
                         ScriptUtils.DEFAULT_BLOCK_COMMENT_START_DELIMITER,ScriptUtils.DEFAULT_BLOCK_COMMENT_END_DELIMITER);
             }
         }
+        com.ruanzhu.doorhandle.module.detection.support.FixtureSourceSnapshot.installLegacyClockGuards(target,Path.of("../sql/mysql/compact/baseline"));
         snapshotSha=sha(json.writeValueAsString(json.readValue(SNAPSHOT,Object.class)));
         source.update("INSERT INTO quality_digest_schedule VALUES(41,'Plan-A',3,'主管','质量日报','0 0 8 * * *',FALSE,7,NULL,'2026-02-03 04:05:06.123456','2026-02-04 05:06:07.654321')");
         source.update("INSERT INTO quality_digest_run VALUES(71,'Run-Café','Plan-A',3,'manual-Ä','2026-02-03 04:05:06.123456','2026-02-03','COMPLETED','retained-old-token','2026-02-03 04:10:06.123456',?,?,'retained-old-code','2026-02-03 04:05:06.123456','2026-02-03 04:06:07.654321')",SNAPSHOT,snapshotSha);

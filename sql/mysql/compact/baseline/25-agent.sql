@@ -1,6 +1,4 @@
--- Eight dedicated conversation, execution, connector and LLM tables.
--- Part of the accepted compact model. Fresh target only; not a source upgrade.
-
+-- Clock protocol authored by author_legacy_clock_schema.py; ECS validation required.
 CREATE TABLE chat_project (
  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
  project_id VARCHAR(64) COLLATE utf8mb4_unicode_ci NOT NULL,
@@ -93,6 +91,7 @@ CREATE TABLE chat_message (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
 CREATE TABLE agent_run (
+ legacy_clock_json JSON NULL,
  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
  run_id VARCHAR(36) NOT NULL,
  user_id BIGINT NOT NULL,
@@ -106,10 +105,10 @@ CREATE TABLE agent_run (
  instance_id VARCHAR(36) NOT NULL,
  active_slot TINYINT NULL,
  last_sequence BIGINT NOT NULL DEFAULT 0,
- started_at DATETIME(6) NOT NULL,
+ started_at DATETIME(6) NULL,
  ended_at DATETIME(6) NULL,
- heartbeat_at DATETIME(6) NOT NULL,
- lease_expires_at DATETIME(6) NOT NULL,
+ heartbeat_at DATETIME(6) NULL,
+ lease_expires_at DATETIME(6) NULL,
  answer_owner_user_id BIGINT NULL,
  answer_sha256 CHAR(64) NULL,
  answer_citations_json JSON NULL,
@@ -127,11 +126,16 @@ CREATE TABLE agent_run (
  KEY ix_agent_run_expiry(status,lease_expires_at),
  CONSTRAINT ck_agent_run_answer CHECK (
   (answer_owner_user_id IS NULL AND answer_sha256 IS NULL AND answer_citations_json IS NULL AND answer_unresolved_count IS NULL AND answer_recorded_at IS NULL AND answer_legacy_id IS NULL)
-  OR (answer_owner_user_id IS NOT NULL AND answer_owner_user_id=user_id AND answer_sha256 IS NOT NULL AND answer_citations_json IS NOT NULL AND answer_unresolved_count IS NOT NULL AND answer_unresolved_count>=0 AND answer_recorded_at IS NOT NULL))
+  OR (answer_owner_user_id IS NOT NULL AND answer_owner_user_id=user_id AND answer_sha256 IS NOT NULL AND answer_citations_json IS NOT NULL AND answer_unresolved_count IS NOT NULL AND answer_unresolved_count>=0 AND (answer_recorded_at IS NOT NULL OR legacy_clock_json IS NOT NULL))),
+ CONSTRAINT ck_legacy_agent_run_started_at CHECK (started_at IS NOT NULL OR legacy_clock_json IS NOT NULL),
+ CONSTRAINT ck_legacy_agent_run_heartbeat_at CHECK (heartbeat_at IS NOT NULL OR legacy_clock_json IS NOT NULL),
+ CONSTRAINT ck_legacy_agent_run_lease_expires_at CHECK (lease_expires_at IS NOT NULL OR legacy_clock_json IS NOT NULL),
+ CONSTRAINT ck_legacy_clock_shape_agent_run CHECK (legacy_clock_json IS NULL OR COALESCE(JSON_SCHEMA_VALID('{"anyOf":[{"type":"object","additionalProperties":false,"required":["protocol","status","sourceTable","sourceKey","sourceSnapshotSha256","sourceRowSha256","sourceWallTimes"],"properties":{"protocol":{"enum":["doorhandle-legacy-clock-v1"]},"status":{"enum":["UNRESOLVED"]},"sourceTable":{"enum":["agent_run"]},"sourceKey":{"type":"object","additionalProperties":false,"required":["id"],"properties":{"id":{"type":"integer","minimum":0,"maximum":18446744073709551615}}},"sourceSnapshotSha256":{"type":"string","pattern":"^[a-f0-9]{64}$"},"sourceRowSha256":{"type":"string","pattern":"^[a-f0-9]{64}$"},"sourceWallTimes":{"type":"object","additionalProperties":false,"required":["started_at","ended_at","heartbeat_at","lease_expires_at"],"properties":{"started_at":{"type":["string","null"],"pattern":"^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}(\\\\.[0-9]{1,6})?$"},"ended_at":{"type":["string","null"],"pattern":"^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}(\\\\.[0-9]{1,6})?$"},"heartbeat_at":{"type":["string","null"],"pattern":"^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}(\\\\.[0-9]{1,6})?$"},"lease_expires_at":{"type":["string","null"],"pattern":"^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}(\\\\.[0-9]{1,6})?$"}}}}}]}',legacy_clock_json),0)=1),
+ CONSTRAINT ck_legacy_clock_binding_agent_run CHECK (legacy_clock_json IS NULL OR COALESCE((((BINARY JSON_UNQUOTE(JSON_EXTRACT(legacy_clock_json,'$.sourceTable'))=BINARY 'agent_run') AND (BINARY id<=>BINARY CAST(JSON_UNQUOTE(JSON_EXTRACT(legacy_clock_json,'$.sourceKey.id')) AS DECIMAL(20,0))))),0)=1)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
--- Registration only. Installation versions and process attempts use workflows.
 CREATE TABLE agent_connector (
+ legacy_clock_json JSON NULL,
  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
  owner_user_id BIGINT NOT NULL,
  server_key VARCHAR(32) NOT NULL,
@@ -146,11 +150,15 @@ CREATE TABLE agent_connector (
  manifest_sha256 CHAR(64) NULL,
  error_code VARCHAR(64) NULL,
  current_installation_id VARCHAR(64) NULL,
- created_at DATETIME NOT NULL,
- updated_at DATETIME NOT NULL,
+ created_at DATETIME NULL,
+ updated_at DATETIME NULL,
  UNIQUE KEY uq_agent_connector_owner(owner_user_id,server_key),
  KEY ix_agent_connector_status(status,lease_expires_at),
- CONSTRAINT ck_agent_connector_revision CHECK (revision>=0)
+ CONSTRAINT ck_agent_connector_revision CHECK (revision>=0),
+ CONSTRAINT ck_legacy_agent_connector_created_at CHECK (created_at IS NOT NULL OR legacy_clock_json IS NOT NULL),
+ CONSTRAINT ck_legacy_agent_connector_updated_at CHECK (updated_at IS NOT NULL OR legacy_clock_json IS NOT NULL),
+ CONSTRAINT ck_legacy_clock_shape_agent_connector CHECK (legacy_clock_json IS NULL OR COALESCE(JSON_SCHEMA_VALID('{"anyOf":[{"type":"object","additionalProperties":false,"required":["protocol","status","sourceTable","sourceKey","sourceSnapshotSha256","sourceRowSha256","sourceWallTimes"],"properties":{"protocol":{"enum":["doorhandle-legacy-clock-v1"]},"status":{"enum":["UNRESOLVED"]},"sourceTable":{"enum":["agent_local_mcp"]},"sourceKey":{"type":"object","additionalProperties":false,"required":["id"],"properties":{"id":{"type":"integer","minimum":-9223372036854775808,"maximum":9223372036854775807}}},"sourceSnapshotSha256":{"type":"string","pattern":"^[a-f0-9]{64}$"},"sourceRowSha256":{"type":"string","pattern":"^[a-f0-9]{64}$"},"sourceWallTimes":{"type":"object","additionalProperties":false,"required":["lease_expires_at","created_at","updated_at"],"properties":{"lease_expires_at":{"type":["string","null"],"pattern":"^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}(\\\\.[0-9]{1,6})?$"},"created_at":{"type":["string","null"],"pattern":"^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}(\\\\.[0-9]{1,6})?$"},"updated_at":{"type":["string","null"],"pattern":"^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}(\\\\.[0-9]{1,6})?$"}}}}}]}',legacy_clock_json),0)=1),
+ CONSTRAINT ck_legacy_clock_binding_agent_connector CHECK (legacy_clock_json IS NULL OR COALESCE((((BINARY JSON_UNQUOTE(JSON_EXTRACT(legacy_clock_json,'$.sourceTable'))=BINARY 'agent_local_mcp') AND (BINARY id<=>BINARY CAST(JSON_UNQUOTE(JSON_EXTRACT(legacy_clock_json,'$.sourceKey.id')) AS DECIMAL(20,0))))),0)=1)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
 CREATE TABLE llm_configuration (
@@ -175,8 +183,6 @@ CREATE TABLE llm_configuration (
  CONSTRAINT ck_llm_configuration_request CHECK (CHAR_LENGTH(request_id)>0 AND request_sha256 REGEXP '^[a-f0-9]{64}$')
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
--- MODEL scope is the single enterprise's per-model account. Absence of a USER
--- account preserves existing model access; a NULL limit is explicitly unlimited.
 CREATE TABLE llm_quota (
  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
  scope_type VARCHAR(16) NOT NULL,
@@ -203,8 +209,6 @@ CREATE TABLE llm_quota (
  CONSTRAINT ck_llm_quota_warning CHECK (warning_percent BETWEEN 1 AND 100)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
--- Accounting entries only. Request/attempt/lease states live in workflows.
--- Account updates and the corresponding entries must commit in one transaction.
 CREATE TABLE llm_usage (
  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
  account_id BIGINT UNSIGNED NOT NULL,

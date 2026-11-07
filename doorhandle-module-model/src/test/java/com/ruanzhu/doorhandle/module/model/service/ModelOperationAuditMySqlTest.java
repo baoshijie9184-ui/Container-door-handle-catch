@@ -127,4 +127,24 @@ class ModelOperationAuditMySqlTest {
     }
 
     @Test void copyCannotOverwriteExistingModelHistory() throws Exception {copy();assertThatThrownBy(this::copy).isInstanceOf(ScriptStatementFailedException.class);assertThat(count()).isEqualTo(2);}
+    @Test void unresolvedCopyBindsTheRealFixtureSnapshotAndNeverLabelsRawTimeAsBeijing()throws Exception{
+        String sourceHash=fixture.sourceSnapshotSha256();
+        fixture.copy("40-model-operations.sql","__SOURCE_MODEL_LOG_OFFSET__","UNRESOLVED",fixture.sourceName());
+        assertThat(store.selectByModelId(7)).hasSize(2).allSatisfy(row->{assertThat(row.getClockStatus()).isEqualTo("UNRESOLVED");assertThat(row.getOperationTime()).isNull();assertThat(row.getSourceWallTimes()).containsEntry("operation_time","2026-10-14 16:30:00");});
+        for(String value:target.queryForList("SELECT legacy_clock_json FROM audit_event WHERE kind='DETECTION_MODEL_OPERATION'",String.class))
+            assertThat(new ObjectMapper().readTree(value).path("sourceSnapshotSha256").asText()).isEqualTo(sourceHash);
+        assertThat(target.queryForList("SELECT occurred_at FROM audit_event",LocalDateTime.class)).containsOnlyNulls();
+        tx.executeWithoutResult(status->store.append(event(7,"ENABLE")));
+        assertThat(store.selectByModelId(7)).filteredOn(row->row.getLegacyId()==null).singleElement().satisfies(row->assertThat(row.getOperationTime()).isEqualTo(LOCAL));
+        assertThat(target.queryForObject("SELECT occurred_at FROM audit_event WHERE legacy_clock_json IS NULL",LocalDateTime.class)).isEqualTo(UTC);
+        assertThat(fixture.sourceSnapshotSha256()).isEqualTo(sourceHash);
+        assertThat(source.queryForList("SELECT operation_time FROM model_operation_log",LocalDateTime.class)).containsOnly(LOCAL);
+    }
+    @Test void anUnknownModelAuditCannotGainAConfirmedInstantOrBorrowAnotherOriginalRow()throws Exception{
+        fixture.copy("40-model-operations.sql","__SOURCE_MODEL_LOG_OFFSET__","UNRESOLVED",fixture.sourceName());
+        assertThatThrownBy(()->{target.update("UPDATE audit_event SET occurred_at=UTC_TIMESTAMP(6) WHERE kind='DETECTION_MODEL_OPERATION' AND legacy_key='11'");store.selectByModelId(7);})
+                .isInstanceOfAny(IllegalStateException.class,DataAccessException.class);
+        assertThatThrownBy(()->{target.update("UPDATE audit_event SET occurred_at=NULL,legacy_key='99' WHERE kind='DETECTION_MODEL_OPERATION' AND legacy_key='11'");store.selectByModelId(7);})
+                .isInstanceOfAny(IllegalStateException.class,DataAccessException.class);
+    }
 }

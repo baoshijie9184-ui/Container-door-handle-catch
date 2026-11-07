@@ -29,7 +29,7 @@ class SkillEvolutionTest {
         var source=new DriverManagerDataSource("jdbc:h2:mem:"+UUID.randomUUID()+";MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1","sa","");jdbc=new JdbcTemplate(source);
         com.ruanzhu.doorhandle.module.ai.testsupport.CompactContentFixture.install(jdbc);
         com.ruanzhu.doorhandle.module.ai.testsupport.CompactWorkflowFixture.install(jdbc);
-        jdbc.execute("CREATE TABLE agent_run(run_id VARCHAR(128),user_id BIGINT,main_agent VARCHAR(64),status VARCHAR(16),lease_expires_at DATETIME)");
+        jdbc.execute("CREATE TABLE agent_run(run_id VARCHAR(128),user_id BIGINT,main_agent VARCHAR(64),status VARCHAR(16),lease_expires_at DATETIME,legacy_clock_json LONGTEXT NULL)");
         journal=mock(AgentJournal.class);when(journal.enabled()).thenReturn(true);users=mock(BusinessUserDirectory.class);
         for(var actor:List.of(alice,bob,boss))when(users.current(actor.userId(),actor.username())).thenReturn(new BusinessUserDirectory.Identity(actor.userId(),actor.username(),actor.supervisor()));
         when(journal.get(alice,"source-1")).thenReturn(new AgentJournal.RunView("source-1","s1","CHAT","employee-main","COMPLETED","fixture","policy",LocalDateTime.now(java.time.ZoneOffset.UTC),LocalDateTime.now(java.time.ZoneOffset.UTC),3));
@@ -118,7 +118,7 @@ class SkillEvolutionTest {
         verify(run).event(eq("AUTHORIZATION_ALLOWED"),argThat(p->SkillEvolutionService.LOAD.equals(p.get("tool"))));
     }
     @Test void modelProposalRequiresLiveOwnedRunAndPreviouslyGrantedSource(){
-        service.capture(alice,"source-1");jdbc.update("INSERT INTO agent_run VALUES('live-run',1,'employee-main','RUNNING',?)",LocalDateTime.now(java.time.ZoneOffset.UTC).plusMinutes(2));
+        service.capture(alice,"source-1");jdbc.update("INSERT INTO agent_run(run_id,user_id,main_agent,status,lease_expires_at) VALUES('live-run',1,'employee-main','RUNNING',?)",LocalDateTime.now(java.time.ZoneOffset.UTC).plusMinutes(2));
         var d=draft("proposal-request");var view=service.create(alice,d,"live-run","sdk-call");assertThat(view.audit().get(0)).containsEntry("run_id","live-run").containsEntry("call_id","sdk-call");
         assertThatThrownBy(()->service.create(bob,d,"live-run","foreign-call")).hasMessageContaining("运行");
         jdbc.update("UPDATE agent_run SET status='CANCELLED'");assertThatThrownBy(()->service.create(alice,d,"live-run","late-call")).hasMessageContaining("运行");
@@ -175,7 +175,7 @@ class SkillEvolutionTest {
         assertThatThrownBy(()->service.commandSkill(alice,id,false,null,null)).hasMessageContaining("不可用");
     }
     @Test void slashInvocationLoadsChosenSkillBeforeNativeModelAndRecordsOnlyMetadata()throws Exception {
-        var v=publish();jdbc.update("INSERT INTO agent_run VALUES('slash-live',1,'employee-main','RUNNING',?)",LocalDateTime.now(java.time.ZoneOffset.UTC).plusMinutes(2));
+        var v=publish();jdbc.update("INSERT INTO agent_run(run_id,user_id,main_agent,status,lease_expires_at) VALUES('slash-live',1,'employee-main','RUNNING',?)",LocalDateTime.now(java.time.ZoneOffset.UTC).plusMinutes(2));
         var audit=mock(AgentJournal.Run.class);when(audit.id()).thenReturn("slash-live");when(journal.begin(any(),anyString(),anyString(),anyString(),anyString(),anyString())).thenReturn(audit);
         var model=mock(Model.class);when(model.getModelName()).thenReturn("scripted-slash");
         var captured=new java.util.concurrent.atomic.AtomicReference<List<Msg>>();

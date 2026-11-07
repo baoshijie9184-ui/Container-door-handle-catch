@@ -12,7 +12,16 @@ export function workbenchNotifications(previous,current){const before=new Map(pr
 export function normalizeWorkbench(value){
  if(!Array.isArray(value?.items)||value.items.length>256||!Array.isArray(value.files)||value.files.length>200)throw Error('工作区响应格式无效')
  const ids=new Set();const items=value.items.map(row=>{if(typeof row?.id!=='string'||! /^[a-f0-9-]{36}$/.test(row.id)||ids.has(row.id)||!Number.isSafeInteger(row.revision)||row.revision<0||typeof row.kind!=='string'||typeof row.status!=='string'||!row.data||typeof row.data!=='object'||Array.isArray(row.data))throw Error('工作项格式无效');ids.add(row.id);return {id:row.id,kind:row.kind,status:row.status,revision:row.revision,data:row.data,updatedAt:row.updatedAt}})
- const files=value.files.map(file=>{if(typeof file?.id!=='string'||! /^[a-f0-9-]{36}$/.test(file.id)||typeof file.name!=='string'||typeof file.contentType!=='string'||!Number.isSafeInteger(file.bytes)||file.bytes<0)throw Error('文件信息无效');return {id:file.id,name:file.name,contentType:file.contentType,bytes:file.bytes,folder:file.folder}})
+ const files=value.files.map(file=>{
+  if(typeof file?.id!=='string'||! /^[a-f0-9-]{36}$/.test(file.id)||typeof file.name!=='string'||typeof file.contentType!=='string'||!Number.isSafeInteger(file.bytes)||file.bytes<0)throw Error('文件信息无效')
+  const normalized={id:file.id,name:file.name,contentType:file.contentType,bytes:file.bytes,folder:file.folder}
+  if(file.clockStatus!==undefined){
+   const times=file.sourceWallTimes
+   if(!['UTC','UNRESOLVED'].includes(file.clockStatus)||!times||typeof times!=='object'||Array.isArray(times)||Object.keys(times).length>64||Object.entries(times).some(([key,value])=>!/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(key)||value!==null&&(typeof value!=='string'||!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d{1,6})?$/.test(value))))throw Error('文件历史时钟信息无效')
+   normalized.clockStatus=file.clockStatus;normalized.sourceWallTimes={...times}
+  }
+  return normalized
+ })
  const businessFiles=(Array.isArray(value.businessFiles)?value.businessFiles:[]).filter(file=>['DETECTION','REPORT'].includes(file?.kind)&&typeof file.resourceId==='string'&&typeof file.fileId==='string'&&typeof file.name==='string'&&typeof file.previewPath==='string'&&/^\/api\/agent\/business-files\/(DETECTION|REPORT)\/[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+$/.test(file.previewPath))
  const limits={maxFileBytes:26214400,quotaBytes:524288000,previewBytes:64000};for(const key of Object.keys(limits))if(Number.isSafeInteger(value.limits?.[key])&&value.limits[key]>0)limits[key]=value.limits[key]
  return {items,files,businessFiles,limits,lineage:typeof value.lineage?.sourceSessionId==='string'?value.lineage:null}

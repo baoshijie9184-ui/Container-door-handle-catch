@@ -39,6 +39,7 @@ public final class OperationLogCopyFixture implements AutoCloseable {
                 if(!relation.find())throw new IllegalStateException("Actual model audit CASCADE relation missing");
                 databases.executeTarget(relation.group());
             }
+            FixtureSourceSnapshot.installLegacyClockGuards(target(),sql.resolve("compact/baseline"));
         } catch(Exception failure) {
             try {databases.close();}catch(Exception cleanup){failure.addSuppressed(cleanup);}
             throw failure;

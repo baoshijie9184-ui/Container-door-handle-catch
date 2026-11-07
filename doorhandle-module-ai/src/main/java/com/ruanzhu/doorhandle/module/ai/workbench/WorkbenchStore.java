@@ -3,6 +3,9 @@ package com.ruanzhu.doorhandle.module.ai.workbench;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.*;
 import com.ruanzhu.doorhandle.framework.persistence.JdbcOwnerLock;
+import com.ruanzhu.doorhandle.framework.persistence.workflow.LegacyWorkflowClocks;
+import com.ruanzhu.doorhandle.framework.persistence.workflow.WorkflowKind;
+import com.ruanzhu.doorhandle.common.time.LegacyClockEvidence;
 import com.ruanzhu.doorhandle.contracts.agent.*;
 import com.ruanzhu.doorhandle.module.ai.context.ChildProvenanceReader;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -26,10 +29,11 @@ import java.util.function.Supplier;
 @ConditionalOnProperty(prefix="agentscope.workbench",name="enabled",havingValue="true")
 public class WorkbenchStore {
     private static final String ITEMS="'WORKBENCH_EXECUTION','WORKBENCH_CHILD','WORKBENCH_PLAN','WORKBENCH_QUESTION','WORKBENCH_TASKS','WORKBENCH_TOOL','WORKBENCH_CHECKPOINT','WORKBENCH_MODEL_SELECTION','WORKBENCH_TURN','WORKBENCH_FORK_SNAPSHOT','WORKBENCH_ARTIFACT','WORKBENCH_USAGE','WORKBENCH_CONTEXT','WORKBENCH_TOOL_TIMING'";
-    private static final String COLUMNS="id,workflow_id,resource_id,owner_user_id,session_id,kind,status,revision,payload_version,payload_json,updated_at,claim_token,fence,lease_expires_at";
+    private static final String COLUMNS="id,workflow_id,resource_id,owner_user_id,session_id,kind,status,revision,payload_version,payload_json,updated_at,claim_token,fence,lease_expires_at,legacy_source,legacy_key,legacy_clock_json";
     private static final DateTimeFormatter DISPLAY=DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSSSSS");
     record Row(String id,long user,String session,String kind,String status,long revision,Map<String,Object> data,String updated,
-               long cursor,String workflowId,String claimToken,long fence,LocalDateTime lease,WorkbenchProtocol.LegacyItemV1 legacy) {}
+               long cursor,String workflowId,String claimToken,long fence,LocalDateTime lease,WorkbenchProtocol.LegacyItemV1 legacy,
+               LegacyClockEvidence legacyClockEvidence) {}
     record Attempt(long user,String session,String itemId,String taskId,String runId,String claimToken,long fence) {}
     private final JdbcTemplate jdbc;
     private final TransactionTemplate tx;
@@ -48,10 +52,13 @@ public class WorkbenchStore {
     static String hash(String value){try{return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8)));}catch(Exception error){throw new IllegalStateException(error);}}
     static String stable(long user,String session,String kind){return UUID.nameUUIDFromBytes((user+":"+session+":"+kind).getBytes(StandardCharsets.UTF_8)).toString();}
     private RowMapper<Row> mapper(){return (rs,n)->{
-        String type=WorkbenchProtocol.type(rs.getString("kind"));var payload=protocol.read(type,rs.getInt("payload_version"),rs.getString("payload_json"));
+        String type=WorkbenchProtocol.type(rs.getString("kind"));
+        var clock=LegacyWorkflowClocks.read(rs.getString("legacy_clock_json"),WorkflowKind.valueOf(rs.getString("kind")),rs.getString("legacy_source"),rs.getString("legacy_key"));
+        var payload=protocol.read(type,rs.getInt("payload_version"),rs.getString("payload_json"),clock);
         LocalDateTime updated=rs.getObject("updated_at",LocalDateTime.class);
+        if(clock!=null&&(updated!=null||rs.getObject("lease_expires_at")!=null))throw new IllegalStateException("Unresolved workbench has an invented absolute time");
         return new Row(rs.getString("resource_id"),rs.getLong("owner_user_id"),rs.getString("session_id"),type,rs.getString("status"),rs.getLong("revision"),protocol.data(payload),
-            updated==null?null:updated.plusHours(8).format(DISPLAY),rs.getLong("id"),rs.getString("workflow_id"),rs.getString("claim_token"),rs.getLong("fence"),rs.getObject("lease_expires_at",LocalDateTime.class),payload.legacy());
+            updated==null?null:updated.plusHours(8).format(DISPLAY),rs.getLong("id"),rs.getString("workflow_id"),rs.getString("claim_token"),rs.getLong("fence"),rs.getObject("lease_expires_at",LocalDateTime.class),payload.legacy(),clock);
     };}
     private static String currentRead(){return org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive()?" FOR SHARE":"";}
     Row find(long user,String session,String id){return jdbc.query("SELECT "+COLUMNS+" FROM workflow_instance WHERE kind IN ("+ITEMS+") AND owner_user_id=? AND session_id=? AND workbench_item_id=?"+currentRead(),mapper(),user,session,id).stream().findFirst().orElse(null);}
@@ -65,7 +72,7 @@ public class WorkbenchStore {
     List<Row> pendingInteractions(long user,String session,String parent,Object task){return jdbc.query("SELECT "+COLUMNS+" FROM workflow_instance WHERE kind IN ('WORKBENCH_PLAN','WORKBENCH_QUESTION') AND owner_user_id=? AND session_id=? AND workbench_parent_item_id=? AND workbench_logical_task_id<=>? AND status='PENDING' ORDER BY id",mapper(),user,session,parent,task);}
     long pendingChildCount(long user){return jdbc.queryForObject("SELECT COUNT(*) FROM workflow_instance WHERE kind='WORKBENCH_CHILD' AND owner_user_id=? AND status IN ('QUEUED','RUNNING','WAITING_INPUT','WAITING_PLAN','WAITING_CHILD','NEEDS_REVIEW')",Long.class,user);}
     boolean permitsSpecialist(long user,String run,String specialist,String role){return jdbc.queryForObject("SELECT COUNT(*) FROM workflow_instance WHERE kind='WORKBENCH_CHILD' AND owner_user_id=? AND run_id=? AND workbench_specialist=? AND workbench_role=? AND status='RUNNING' AND claim_token IS NOT NULL AND lease_expires_at>UTC_TIMESTAMP(6)",Long.class,user,run,specialist,role)>0;}
-    List<Row> dispatch(long after){return jdbc.query("SELECT "+COLUMNS+" FROM workflow_instance WHERE ((kind='WORKBENCH_CHILD' AND status='QUEUED' AND (workbench_yield_ready IS NULL OR workbench_yield_ready=TRUE)) OR (kind='WORKBENCH_EXECUTION' AND status='READY')) AND id>? ORDER BY id LIMIT 12",mapper(),after);}
+    List<Row> dispatch(long after){return jdbc.query("SELECT "+COLUMNS+" FROM workflow_instance WHERE legacy_clock_json IS NULL AND ((kind='WORKBENCH_CHILD' AND status='QUEUED' AND (workbench_yield_ready IS NULL OR workbench_yield_ready=TRUE)) OR (kind='WORKBENCH_EXECUTION' AND status='READY')) AND id>? ORDER BY id LIMIT 12",mapper(),after);}
     Optional<ChildProvenanceReader.ChildProvenance> childProvenance(long user,String session,String item){return jdbc.query("SELECT resource_id,owner_user_id,session_id,status,revision FROM workflow_instance WHERE kind='WORKBENCH_CHILD' AND owner_user_id=? AND session_id=? AND workbench_item_id=?",(rs,n)->new ChildProvenanceReader.ChildProvenance(rs.getString(1),rs.getLong(2),rs.getString(3),rs.getString(4),rs.getLong(5)),user,session,item).stream().findFirst();}
     Row create(long user,String session,String id,String kind,String status,Map<String,Object> data){return locked(user,()->{
         var existing=find(user,session,id);if(existing!=null){if(!existing.kind().equals(kind))throw fail(409,"工作项编号已用于其他类型");return existing;}
@@ -78,6 +85,7 @@ public class WorkbenchStore {
     });}
     Row update(Row previous,String status,Map<String,Object> data,String action){return locked(previous.user(),()->{
         var current=require(previous.user(),previous.session(),previous.id());if(current.revision()!=previous.revision())throw fail(409,"工作项已变化，请刷新核对");
+        if(current.legacyClockEvidence()!=null)throw fail(409,"历史工作台时钟待核对，不能自动恢复或改变执行状态");
         protocol.transition(previous.kind(),previous.status(),status);var body=protocol.payload(previous.kind(),data,previous.legacy());
         boolean execution=WorkbenchProtocol.execution(previous.kind()),start=execution&&status.equals("RUNNING")&&!previous.status().equals("RUNNING");
         boolean release=execution&&(Set.of("COMPLETED","CANCELLED","NEEDS_REVIEW").contains(status)||Boolean.TRUE.equals(data.get("yieldReady")));
@@ -105,26 +113,28 @@ public class WorkbenchStore {
             jdbc.update("UPDATE workflow_instance SET status=?,run_id=?,revision=revision+1,updated_at=UTC_TIMESTAMP(6),finished_at=IF(?,UTC_TIMESTAMP(6),NULL) WHERE id=?",item.status(),item.data().get("runId"),WorkbenchProtocol.closed(item.kind(),item.status()),row.get("id"));
         }
     }
-    Attempt attempt(Row row){if(!WorkbenchProtocol.execution(row.kind())||row.claimToken()==null)throw fail(409,"工作项没有当前执行权");return new Attempt(row.user(),row.session(),row.id(),Objects.toString(row.data().get("logicalTaskId"),null),Objects.toString(row.data().get("runId"),null),row.claimToken(),row.fence());}
+    Attempt attempt(Row row){if(row.legacyClockEvidence()!=null||!WorkbenchProtocol.execution(row.kind())||row.claimToken()==null)throw fail(409,"工作项没有已核对时钟的当前执行权");return new Attempt(row.user(),row.session(),row.id(),Objects.toString(row.data().get("logicalTaskId"),null),Objects.toString(row.data().get("runId"),null),row.claimToken(),row.fence());}
     void assertAttempt(Attempt attempt){var row=require(attempt.user(),attempt.session(),attempt.itemId());var now=jdbc.queryForObject("SELECT UTC_TIMESTAMP(6)",LocalDateTime.class);
+        if(row.legacyClockEvidence()!=null)throw fail(409,"历史执行时钟待核对");
         if(!Objects.equals(attempt.claimToken(),row.claimToken())||attempt.fence()!=row.fence()||!Objects.equals(attempt.taskId(),row.data().get("logicalTaskId"))||!Objects.equals(attempt.runId(),row.data().get("runId"))||row.lease()==null||!row.lease().isAfter(now)||Set.of("COMPLETED","CANCELLED","NEEDS_REVIEW","READY").contains(row.status())||Boolean.TRUE.equals(row.data().get("yieldReady")))throw fail(409,"执行租约已结束或被替换");
     }
     <T>T withAttempt(Attempt attempt,Supplier<T> work){return locked(attempt.user(),()->{assertAttempt(attempt);return work.get();});}
     boolean renew(Attempt attempt){return jdbc.update("""
         UPDATE workflow_instance SET lease_expires_at=TIMESTAMPADD(SECOND,90,UTC_TIMESTAMP(6))
         WHERE owner_user_id=? AND session_id=? AND workbench_item_id=? AND claim_token=? AND fence=? AND run_id<=>? AND workbench_logical_task_id<=>?
-          AND lease_expires_at>UTC_TIMESTAMP(6) AND status IN ('RUNNING','WAITING_PLAN','WAITING_INPUT','WAITING_CHILD','QUEUED') AND (workbench_yield_ready IS NULL OR workbench_yield_ready=FALSE)
+          AND legacy_clock_json IS NULL AND lease_expires_at>UTC_TIMESTAMP(6) AND status IN ('RUNNING','WAITING_PLAN','WAITING_INPUT','WAITING_CHILD','QUEUED') AND (workbench_yield_ready IS NULL OR workbench_yield_ready=FALSE)
         """,attempt.user(),attempt.session(),attempt.itemId(),attempt.claimToken(),attempt.fence(),attempt.runId(),attempt.taskId())==1;}
-    List<Row> stale(){return jdbc.query("SELECT "+COLUMNS+" FROM workflow_instance WHERE kind IN ('WORKBENCH_EXECUTION','WORKBENCH_CHILD') AND (status='RUNNING' OR (status IN ('WAITING_PLAN','WAITING_INPUT','WAITING_CHILD','QUEUED') AND workbench_yield_ready=FALSE)) AND (claim_token IS NULL OR lease_expires_at<=UTC_TIMESTAMP(6)) ORDER BY id LIMIT 50",mapper());}
+    List<Row> stale(){return jdbc.query("SELECT "+COLUMNS+" FROM workflow_instance WHERE kind IN ('WORKBENCH_EXECUTION','WORKBENCH_CHILD') AND legacy_clock_json IS NULL AND (status='RUNNING' OR (status IN ('WAITING_PLAN','WAITING_INPUT','WAITING_CHILD','QUEUED') AND workbench_yield_ready=FALSE)) AND (claim_token IS NULL OR lease_expires_at<=UTC_TIMESTAMP(6)) ORDER BY id LIMIT 50",mapper());}
     boolean committedWait(Row row){
         var checkpoint=find(row.user(),row.session(),stable(row.user(),row.session(),"checkpoint:"+row.id()));
         if(checkpoint==null||!checkpoint.kind().equals("CHECKPOINT")||!Objects.equals(checkpoint.data().get("runId"),row.data().get("runId"))||!Objects.equals(checkpoint.data().get("logicalTaskId"),row.data().get("logicalTaskId"))||!(checkpoint.data().get("sdkRevision") instanceof Number version)||version.longValue()<1)return false;
         String sdk="wb:"+row.data().get("logicalTaskId")+":"+(row.kind().equals("CHILD")?row.id():"main");
-        var revisions=jdbc.queryForList("SELECT revision FROM runtime_state WHERE namespace='SDK_CHECKPOINT' AND owner_id=? AND session_id=? AND state_key='agent_state'",Long.class,row.user(),sdk);
+        var revisions=jdbc.queryForList("SELECT revision FROM runtime_state WHERE namespace='SDK_CHECKPOINT' AND legacy_clock_json IS NULL AND owner_id=? AND session_id=? AND state_key='agent_state'",Long.class,row.user(),sdk);
         return !revisions.isEmpty()&&revisions.get(0)>=version.longValue();
     }
     void recover(Row candidate){locked(candidate.user(),()->{
         var current=require(candidate.user(),candidate.session(),candidate.id());var now=jdbc.queryForObject("SELECT UTC_TIMESTAMP(6)",LocalDateTime.class);
+        if(current.legacyClockEvidence()!=null)return null;
         if(current.revision()!=candidate.revision()||current.lease()!=null&&current.lease().isAfter(now))return null;
         if(current.status().startsWith("WAITING_")&&Boolean.FALSE.equals(current.data().get("yieldReady"))&&committedWait(current)){
             var values=new LinkedHashMap<>(current.data());values.put("yieldReady",true);update(current,current.status(),values,"WAIT_RECOVERED");
@@ -148,6 +158,7 @@ public class WorkbenchStore {
     private static void identity(long user,String session,String id){if(user<=0||session==null||session.codePointCount(0,session.length())>128||id==null||id.isBlank()||id.codePointCount(0,id.length())>64)throw new IllegalArgumentException("Invalid workbench identity");}
     AgentWorkbenchApi.Item view(Row row){var safe=new LinkedHashMap<String,Object>();
         for(String key:List.of("title","text","tasks","options","answer","questionType","feedback","parentId","specialist","childSessionId","result","progress","phase","runId","logicalTaskId","inputTokens","outputTokens","cachedTokens","durationMs","firstContentMs","systemTokens","toolsTokens","messageTokens","beforeChars","afterChars","basis","modelId","provider","purpose","fileId","filename","throughMessageId","forkSessionId","sourceSessionId","evidenceRunId","evidenceCallId","modelConfigVersion","modelDefault"))if(row.data().containsKey(key))safe.put(key,row.data().get(key));
+        if(row.legacyClockEvidence()!=null){safe.put("clockStatus",row.legacyClockEvidence().clockStatus());safe.put("sourceWallTimes",row.legacyClockEvidence().sourceWallTimes());}
         return new AgentWorkbenchApi.Item(row.id(),row.kind(),row.status(),row.revision(),safe,row.updated());}
     static ResponseStatusException fail(int status,String message){return new ResponseStatusException(HttpStatus.valueOf(status),message);}
 }

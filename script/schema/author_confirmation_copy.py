@@ -171,7 +171,8 @@ copy('audit_event', AUDIT, dict(event_id="CONCAT('legacy-agent-action-audit:',s.
 for condition in final_checks:
     guard(condition)
 lines += ['COMMIT;', 'DROP TEMPORARY TABLE compact_action_unique;', 'DROP TEMPORARY TABLE compact_action_columns;', 'DROP TEMPORARY TABLE compact_action_guard;']
-(ROOT / 'sql/mysql/compact/copy/44-confirmation-actions.sql').write_text('\n'.join(lines) + '\n', encoding='utf-8')
+from author_legacy_clock_copy import write_copy
+write_copy('44-confirmation-actions.sql', '\n'.join(lines) + '\n')
 fixture = ROOT / 'doorhandle-module-ai/src/test/resources/compact/action-source-evidence.sql'
 fixture.parent.mkdir(parents=True, exist_ok=True)
 fixture.write_text('-- Exact historical source DDL. Parent users/session are dependencies, not migrated by copy44.\n' + ';\n'.join([extract(base, 'users'), extract(base, 'chat_session'), *source_sql.values()]) + ';\n', encoding='utf-8')

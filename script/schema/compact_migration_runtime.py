@@ -25,6 +25,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'scripts'))
 from ecs_execution import require_ecs_execution
 from build_compact_schema import GUARD_RESOURCES, compile_schema, split_top_level, without_comments
+import compact_clock_policy as clocks
 
 IDENT = re.compile(r'[a-z][a-z0-9_]{0,63}\Z')
 UUID = re.compile(r'[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\Z')
@@ -128,7 +129,7 @@ def load_config(path):
     allowed = {'version', 'scope', 'instanceId', 'machineId', 'serverUuid', 'sourceSchema', 'targetSchema',
                'connection', 'client', 'sourceOffsets', 'sourceCollations', 'workbench', 'recoverySchemas',
                'reviewedSourceSnapshot', 'reviewedSourceSnapshotSha256', 'freezeEvidenceFile',
-               'freezeEvidenceSha256', 'dataDirectory'}
+               'freezeEvidenceSha256', 'dataDirectory', 'legacyClockPolicy'}
     require(isinstance(config, dict) and not set(config) - allowed and type(config.get('version')) is int
             and config['version'] == 1, 'Unsupported migration configuration shape')
     require(all(config.get(key) == identity[key] for key in ('instanceId', 'machineId')),
@@ -166,9 +167,7 @@ def load_config(path):
             'Two distinct new source/target recovery-proof schemas are required')
     require(isinstance(config.get('sourceOffsets'), dict) and isinstance(config.get('sourceCollations'), dict),
             'Explicit reviewed domain offsets and all source table collations required')
-    for value in config['sourceOffsets'].values():
-        require(isinstance(value, str) and re.fullmatch(r'[+-](?:0\d|1[0-4]):[0-5]\d', value)
-                and (value[1:3] != '14' or value[4:] == '00'), 'Invalid fixed source UTC offset')
+    clocks.validate(config['sourceOffsets'], config.get('legacyClockPolicy'))
     config['_admittedConfigDirectory'] = str(admitted_path.parent)
     return config, identity, digest
 
@@ -581,7 +580,8 @@ COLLATION_BINDINGS = {
 }
 
 
-def render_copy(sql, config):
+def render_copy(sql, config, *, source_snapshot_sha256=None):
+    clocks.validate(config['sourceOffsets'], config.get('legacyClockPolicy'))
     values = {'__SOURCE_SCHEMA__': identifier(config['sourceSchema'])}
     placeholders = set(re.findall(r'__[A-Za-z0-9_]+__', sql))
     for token in placeholders - values.keys():
@@ -590,7 +590,9 @@ def render_copy(sql, config):
         if offset:
             key = offset.group(1).lower()
             require(key in config['sourceOffsets'], 'A domain UTC offset has no reviewed source evidence: ' + key)
-            values[token] = config['sourceOffsets'][key]
+            values[token] = clocks.offset_literal_value(key, config['sourceOffsets'], config.get('legacyClockPolicy'))
+        elif token == '__SOURCE_SNAPSHOT_SHA256__':
+            values[token] = clocks.snapshot_binding(source_snapshot_sha256)
         elif token in COLLATION_BINDINGS or mcp_collation:
             names = COLLATION_BINDINGS.get(token, (mcp_collation.group(1),) if mcp_collation else ())
             observed = {config['sourceCollations'].get(name) for name in names}
@@ -858,13 +860,15 @@ def validate_migration_receipt(path, expected_context=None):
             'Production and disposable writer-freeze evidence cannot be interchanged')
     if expected_context:
         require(all(value.get(key) == actual for key, actual in expected_context.items()), 'Migration receipt context differs')
+    if 'sourceClockPolicy' in value:
+        clocks.validate_evidence(value['sourceClockPolicy'])
     evidence = receipt_member(path.parent, value['evidence'])
     require(evidence.get('status') == 'COPY_VERIFIED' and evidence.get('kind') == 'doorhandle-compact-migration-evidence',
             'Copy evidence is not verified')
     binding = ('attempt', 'ecs', 'scope', 'serverUuid', 'sourceSchema', 'targetSchema', 'contractSha256', 'sqlSha256',
                'copyPlanSha256', 'sourceSnapshotSha256', 'sourceMetadataSha256', 'targetSnapshotSha256', 'targetMetadataSha256',
                'freezeEvidenceSha256', 'executedSteps', 'sourceSnapshot', 'targetSnapshot',
-               'sourceTableCount', 'targetTableCount', 'foreignKeysValidated')
+               'sourceTableCount', 'targetTableCount', 'foreignKeysValidated', 'sourceClockPolicy')
     require(all(evidence.get(key) == value.get(key) for key in binding), 'Copy evidence and migration receipt bindings differ')
     for purpose in ('source', 'target'):
         snapshot = value.get(purpose + 'Snapshot')

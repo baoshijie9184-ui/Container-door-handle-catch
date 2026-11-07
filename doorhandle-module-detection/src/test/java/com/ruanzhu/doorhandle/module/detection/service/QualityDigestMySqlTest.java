@@ -31,6 +31,7 @@ class QualityDigestMySqlTest {
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE()",Long.class)).as("separate empty ECS digest schema").isZero();
         FeatureMySql.migrate(context.getBean(DataSource.class),"compact/baseline/10-core.sql");
         FeatureMySql.migrate(context.getBean(DataSource.class),"compact/baseline/30-operations.sql");
+        com.ruanzhu.doorhandle.module.detection.support.FixtureSourceSnapshot.installLegacyClockGuards(jdbc,java.nio.file.Path.of("../sql/mysql/compact/baseline"));
     }
     @AfterAll void close(){if(context!=null)context.close();}
     @BeforeEach void reset(){FeatureMySql.clear(jdbc,"audit_event","workflow_instance","scheduled_plan","runtime_state","detection_task");directory.roles.put(3L,true);directory.account.set(new Identity(3,"boss",true));directory.onCurrent=null;}

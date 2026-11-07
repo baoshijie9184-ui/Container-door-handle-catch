@@ -37,6 +37,7 @@ public final class CompactDetectionMySqlFixture implements AutoCloseable {
                 }
             }
             if(tables().size()!=29)throw new IllegalStateException("Compact detection fixture must contain the reviewed 29-table model");
+            FixtureSourceSnapshot.installLegacyClockGuards(new JdbcTemplate(source),Path.of("../sql/mysql/compact/baseline"));
         }catch(Exception failure){close();throw failure;}
     }
     private static final class ListParts {

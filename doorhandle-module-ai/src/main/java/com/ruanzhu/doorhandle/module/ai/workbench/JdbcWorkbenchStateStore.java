@@ -1,6 +1,7 @@
 package com.ruanzhu.doorhandle.module.ai.workbench;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.ruanzhu.doorhandle.common.time.LegacyClockEvidence;
 import io.agentscope.core.state.*;
 import org.springframework.jdbc.core.JdbcTemplate;
 import java.nio.charset.StandardCharsets;
@@ -16,7 +17,7 @@ public final class JdbcWorkbenchStateStore implements AgentStateStore {
     private static final class Lease { long latest; final Set<Long> versions=new HashSet<>(); Lease(long version){latest=version;versions.add(version);} }
     /** The inner JSON string is retained byte-for-byte; SDK encoding is independent of the shared envelope. */
     public record CheckpointV1(String stateJson) { public CheckpointV1 { Objects.requireNonNull(stateJson,"stateJson"); } }
-    private record Snapshot(long revision,int payloadVersion,String payload) { }
+    private record Snapshot(long revision,int payloadVersion,String payload,LegacyClockEvidence clock) { }
     public JdbcWorkbenchStateStore(WorkbenchStore store){this(store,false);}
     public JdbcWorkbenchStateStore(WorkbenchStore store,boolean sdkAttempt){this(store,sdkAttempt,()->{});}
     public JdbcWorkbenchStateStore(WorkbenchStore store,boolean sdkAttempt,Runnable assertClaim){this(store,sdkAttempt,assertClaim,null,null);}
@@ -33,11 +34,20 @@ public final class JdbcWorkbenchStateStore implements AgentStateStore {
     private Snapshot snapshot(long owner,String session,String key){
         binding(Long.toString(owner),session);
         scope(session,key);
-        var rows=jdbc.query("SELECT revision,payload_version,payload_json FROM runtime_state WHERE namespace=? AND owner_id=? AND session_id=? AND state_key=?",
-                (rs,n)->new Snapshot(rs.getLong(1),rs.getInt(2),rs.getString(3)),NAMESPACE,owner,session,key);
+        var rows=jdbc.query("SELECT revision,payload_version,payload_json,scope_key,legacy_clock_json FROM runtime_state WHERE namespace=? AND owner_id=? AND session_id=? AND state_key=?",
+                (rs,n)->{
+                    if(!scope(session,key).equals(rs.getString("scope_key")))throw new IllegalStateException("SDK checkpoint natural key differs");
+                    LegacyClockEvidence clock=null;String raw=rs.getString("legacy_clock_json");
+                    if(raw!=null)try{
+                        var id=json.readTree(raw).path("sourceKey").path("id");if(!id.isIntegralNumber()||id.bigIntegerValue().signum()<=0)throw new IllegalStateException();
+                        clock=LegacyClockEvidence.parse(raw,"agent_workbench_sdk_state",Map.of("id",id.bigIntegerValue()));
+                    }catch(Exception error){throw new IllegalStateException("SDK original clock provenance differs");}
+                    return new Snapshot(rs.getLong(1),rs.getInt(2),rs.getString(3),clock);
+                },NAMESPACE,owner,session,key);
         return rows.isEmpty()?null:rows.get(0);
     }
     private String state(Snapshot row){
+        if(sdkAttempt&&row.clock()!=null)throw WorkbenchStore.fail(409,"历史 SDK 时钟待核对，不能自动恢复执行");
         if(row.payloadVersion()!=1)throw new IllegalStateException("Unsupported SDK checkpoint version");
         try{return json.readValue(row.payload(),CheckpointV1.class).stateJson();}
         catch(Exception error){throw new IllegalStateException("SDK 检查点封装不可读",error);}
@@ -64,6 +74,7 @@ public final class JdbcWorkbenchStateStore implements AgentStateStore {
         return store.locked(owner,()->{
             assertClaim.run();
             var row=snapshot(owner,session,key);long current=row==null?0:row.revision();
+            if(row!=null&&row.clock()!=null)throw WorkbenchStore.fail(409,"历史 SDK 时钟待核对，不能覆盖检查点");
             if(version!=UNVERSIONED&&version!=current)return UNVERSIONED;
             if(row==null)jdbc.update("""
                     INSERT INTO runtime_state(namespace,owner_id,scope_key,session_id,state_key,revision,state_code,payload_version,payload_json,created_at,updated_at)
@@ -71,7 +82,7 @@ public final class JdbcWorkbenchStateStore implements AgentStateStore {
                     """,NAMESPACE,owner,scope,session,key,envelope);
             else if(jdbc.update("""
                     UPDATE runtime_state SET revision=revision+1,payload_json=?,updated_at=UTC_TIMESTAMP(6)
-                    WHERE namespace=? AND owner_id=? AND scope_key=? AND session_id=? AND state_key=? AND revision=?
+                    WHERE namespace=? AND owner_id=? AND scope_key=? AND session_id=? AND state_key=? AND revision=? AND legacy_clock_json IS NULL
                     """,envelope,NAMESPACE,owner,scope,session,key,current)!=1)return UNVERSIONED;
             return current+1;
         });
@@ -85,7 +96,8 @@ public final class JdbcWorkbenchStateStore implements AgentStateStore {
         catch(Exception error){throw new IllegalStateException("SDK 状态列表不可读",error);}
     }
     @Override public boolean exists(String user,String session){binding(user,session);session(session);return jdbc.queryForObject("SELECT COUNT(*) FROM runtime_state WHERE namespace=? AND owner_id=? AND session_id=?",Long.class,NAMESPACE,account(user),session)>0;}
-    @Override public void delete(String user,String session){binding(user,session);session(session);long owner=account(user);store.locked(owner,()->{assertClaim.run();jdbc.update("DELETE FROM runtime_state WHERE namespace=? AND owner_id=? AND session_id=?",NAMESPACE,owner,session);return null;});}
-    @Override public void delete(String user,String session,String key){binding(user,session);scope(session,key);long owner=account(user);store.locked(owner,()->{assertClaim.run();jdbc.update("DELETE FROM runtime_state WHERE namespace=? AND owner_id=? AND session_id=? AND state_key=?",NAMESPACE,owner,session,key);return null;});}
+    @Override public void delete(String user,String session){binding(user,session);session(session);long owner=account(user);store.locked(owner,()->{assertClaim.run();requireResolvedSession(owner,session);jdbc.update("DELETE FROM runtime_state WHERE namespace=? AND owner_id=? AND session_id=? AND legacy_clock_json IS NULL",NAMESPACE,owner,session);return null;});}
+    @Override public void delete(String user,String session,String key){binding(user,session);scope(session,key);long owner=account(user);store.locked(owner,()->{assertClaim.run();var row=snapshot(owner,session,key);if(row!=null&&row.clock()!=null)throw WorkbenchStore.fail(409,"历史 SDK 时钟待核对，不能删除");jdbc.update("DELETE FROM runtime_state WHERE namespace=? AND owner_id=? AND session_id=? AND state_key=? AND legacy_clock_json IS NULL",NAMESPACE,owner,session,key);return null;});}
+    private void requireResolvedSession(long owner,String session){if(jdbc.queryForObject("SELECT COUNT(*) FROM runtime_state WHERE namespace=? AND owner_id=? AND session_id=? AND legacy_clock_json IS NOT NULL",Long.class,NAMESPACE,owner,session)>0)throw WorkbenchStore.fail(409,"历史 SDK 时钟待核对，不能删除");}
     @Override public Set<String> listSessionIds(String user){if(expectedUser!=null){binding(user,expectedSession);return exists(user,expectedSession)?Set.of(expectedSession):Set.of();}return new HashSet<>(jdbc.queryForList("SELECT DISTINCT session_id FROM runtime_state WHERE namespace=? AND owner_id=?",String.class,NAMESPACE,account(user)));}
 }

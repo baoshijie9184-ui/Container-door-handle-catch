@@ -219,4 +219,49 @@ class ReportWorkflowMigrationMySqlTest {
         assertThatThrownBy(this::migrate).isInstanceOf(org.springframework.jdbc.datasource.init.ScriptStatementFailedException.class);
         assertEmptyTargetOperations();
     }
+    @ParameterizedTest @ValueSource(strings={"PENDING","RETRY","PROCESSING","FAILED"})
+    void unresolvedSourceCannotBeClaimedRetriedDeferredAcknowledgedOrConsumed(String originalStatus)throws Exception{
+        legacy.update("UPDATE detection_report_outbox SET delivery_status=?,delivered_at=NULL,lease_token=?,lease_expires_at=?",originalStatus,
+                "PROCESSING".equals(originalStatus)?"old-worker":null,"PROCESSING".equals(originalStatus)?beijing.plusMinutes(1):null);
+        String sourceHash=fixture.sourceSnapshotSha256();fixture.copyUnresolved();
+        var repository=new ReportEventRepository(jdbc);var reports=new ReportWorkflowRepository(jdbc,json);var entry=repository.get(event.eventId());
+        assertThat(entry.status()).isEqualTo(originalStatus);assertThat(entry.clockStatus()).isEqualTo("UNRESOLVED");assertThat(entry.payload()).isEqualTo(eventJson);
+        var retained=jdbc.queryForList("SELECT * FROM workflow_instance ORDER BY id");var retainedState=jdbc.queryForList("SELECT * FROM runtime_state ORDER BY namespace,owner_id,scope_key");
+        var future=LocalDateTime.of(2030,1,1,0,0);assertThat(repository.due(future,100)).isEmpty();assertThat(repository.claim(entry,future,future.plusMinutes(1))).isNull();
+        var stale=new ReportEventRepository.Entry(entry.eventId(),entry.reportId(),entry.eventType(),entry.payload(),entry.status(),entry.attempts(),entry.leaseToken());
+        assertThat(repository.claim(stale,future,future.plusMinutes(1))).isNull();repository.defer(stale,future);
+        assertThat(repository.delivered(event.eventId(),"old-worker",future)).isFalse();assertThat(repository.failed(event.eventId(),"old-worker","RETRY",false,future)).isFalse();
+        var transaction=new org.springframework.transaction.support.TransactionTemplate(new DataSourceTransactionManager(fixture.targetDataSource()));
+        transaction.executeWithoutResult(status->assertThat(reports.retry(report,event.eventId(),entry.attempts())).isFalse());
+        var inbox=new ReportEventInbox(jdbc,repository,new ReportEventCodec(json),new DataSourceTransactionManager(fixture.targetDataSource()));
+        assertThatThrownBy(()->inbox.receive(report,json.writeValueAsString(event))).isInstanceOf(IllegalStateException.class).hasMessageContaining("历史报告");
+        var confirmation=reports.workflows().findByRequest(WorkflowKind.REPORT_CONFIRMATION,"REPORT_CONFIRMATION",token).orElseThrow();
+        assertThatThrownBy(()->transaction.executeWithoutResult(status->reports.consumeConfirmation(confirmation))).hasMessageContaining("历史确认时间需核对");
+        assertThatThrownBy(()->reports.command(1,request)).hasMessageContaining("历史报告操作时间需核对");
+        assertThat(jdbc.queryForList("SELECT * FROM workflow_instance ORDER BY id")).isEqualTo(retained);
+        assertThat(jdbc.queryForList("SELECT * FROM runtime_state ORDER BY namespace,owner_id,scope_key")).isEqualTo(retainedState);
+        String sidecar=jdbc.queryForObject("SELECT legacy_clock_json FROM workflow_instance WHERE kind='REPORT_DELIVERY'",String.class);
+        assertThat(json.readTree(sidecar).path("sourceSnapshotSha256").asText()).isEqualTo(sourceHash);assertThat(fixture.sourceSnapshotSha256()).isEqualTo(sourceHash);
+    }
+    @Test void unknownHistoryIsReadableWithoutManufacturedTimesAndNewDeliveryStillWorks()throws Exception{
+        fixture.copyUnresolved();var reports=new ReportWorkflowRepository(jdbc,json);var repository=new ReportEventRepository(jdbc);
+        assertThat(reports.events(report)).singleElement().satisfies(view->{assertThat(view.deliveryStatus()).isEqualTo("DELIVERED");assertThat(view.clockStatus()).isEqualTo("UNRESOLVED");assertThat(view.nextAttemptAt()).isNull();assertThat(view.deliveredAt()).isNull();assertThat(view.consumedAt()).isNull();assertThat(view.sourceWallTimes()).containsEntry("created_at","2026-10-14 16:30:00");});
+        assertThat(reports.audit(report)).singleElement().satisfies(view->{assertThat(view.createdAt()).isNull();assertThat(view.clockStatus()).isEqualTo("UNRESOLVED");assertThat(view.sourceWallTimes()).containsEntry("created_at","2026-10-14 16:30:00");});
+        var next=new ReportLifecycleEvent(UUID.randomUUID().toString(),report,1,"APPROVED",3,1);String body=json.writeValueAsString(next);
+        var current=new com.ruanzhu.doorhandle.module.detection.repository.QualityReportRepository(jdbc).get(report,false);
+        var transaction=new org.springframework.transaction.support.TransactionTemplate(new DataSourceTransactionManager(fixture.targetDataSource()));
+        transaction.executeWithoutResult(status->reports.enqueue(current,1,next.eventId(),next.eventType(),body));
+        var candidate=repository.get(next.eventId());assertThat(candidate.legacyClockUnresolved()).isFalse();
+        var now=LocalDateTime.now(ZoneOffset.UTC);var claimed=repository.claim(candidate,now,now.plusMinutes(1));assertThat(claimed).isNotNull();
+        var inbox=new ReportEventInbox(jdbc,repository,new ReportEventCodec(json),new DataSourceTransactionManager(fixture.targetDataSource()));
+        assertThat(inbox.receive(report,body)).isTrue();assertThat(repository.delivered(next.eventId(),claimed.leaseToken(),now)).isTrue();
+        assertThat(repository.get(event.eventId()).clockStatus()).isEqualTo("UNRESOLVED");assertThat(repository.get(event.eventId()).status()).isEqualTo("DELIVERED");
+    }
+    @Test void fixtureSourceSnapshotIncludesOriginalNullableValuesAndCompleteRawPayload()throws Exception{
+        String original=fixture.sourceSnapshotSha256();legacy.update("UPDATE detection_report_audit SET reason='原始备注 ' WHERE report_id=?",report);
+        assertThat(fixture.sourceSnapshotSha256()).isNotEqualTo(original);
+        legacy.update("UPDATE detection_report_audit SET reason=NULL WHERE report_id=?",report);assertThat(fixture.sourceSnapshotSha256()).isEqualTo(original);
+        legacy.update("UPDATE detection_report_command SET response_json=CONCAT(response_json,' ') WHERE report_id=?",report);
+        assertThat(fixture.sourceSnapshotSha256()).isNotEqualTo(original);
+    }
 }

@@ -3,6 +3,7 @@ package com.ruanzhu.doorhandle.module.app.service;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.ruanzhu.doorhandle.framework.persistence.JdbcOwnerLock;
+import com.ruanzhu.doorhandle.common.time.LegacyClockEvidence;
 import com.ruanzhu.doorhandle.framework.persistence.workflow.*;
 import com.ruanzhu.doorhandle.module.app.dto.chat.MemoryDtos;
 import com.ruanzhu.doorhandle.module.system.security.TenantContext;
@@ -23,7 +24,8 @@ import java.time.LocalDateTime;
 public class MemoryPreferenceService {
     private final JdbcTemplate jdbc;
     private final TransactionTemplate tx;
-    private final ObjectMapper json=new ObjectMapper().findAndRegisterModules().disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+    private final ObjectMapper json=new ObjectMapper().findAndRegisterModules().disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
+            .enable(com.fasterxml.jackson.core.JsonParser.Feature.STRICT_DUPLICATE_DETECTION);
     private final JdbcWorkflowStore workflows;
     private final JdbcAuditStore audits;
     public record PreferenceV1(boolean readEnabled,boolean saveEnabled) {}
@@ -43,10 +45,14 @@ public class MemoryPreferenceService {
         audits=new JdbcAuditStore(jdbc,json,Map.of("MEMORY_PREFERENCE",PreferenceAuditV1.class,"MEMORY_OPERATION",MutationAuditV1.class));
     }
     public MemoryDtos.Preference get(TenantContext owner) {
-        var rows=jdbc.query("SELECT revision,payload_version,payload_json,updated_at FROM runtime_state WHERE namespace='MEMORY_PREFERENCE' AND owner_id=? AND scope_key=''",(rs,n)->{
+        var rows=jdbc.query("SELECT revision,payload_version,payload_json,updated_at,legacy_clock_json FROM runtime_state WHERE namespace='MEMORY_PREFERENCE' AND owner_id=? AND scope_key=''",(rs,n)->{
             if(rs.getInt("payload_version")!=1)throw new IllegalStateException("Unsupported memory preference version");
             var value=decode(rs.getString("payload_json"),PreferenceV1.class);
-            return new MemoryDtos.Preference(value.readEnabled(),value.saveEnabled(),Math.toIntExact(rs.getLong("revision")),rs.getString("updated_at"));
+            var clock=LegacyClockEvidence.optional(rs.getString("legacy_clock_json"),"agent_memory_preference",Map.of("owner_user_id",owner.userId())).orElse(null);
+            if(clock!=null&&!clock.sourceWallTimes().containsKey("updated_at"))throw invalidClock();
+            String updated=utcTime(rs,"updated_at");if(updated==null&&clock==null)throw invalidClock();
+            return new MemoryDtos.Preference(value.readEnabled(),value.saveEnabled(),Math.toIntExact(rs.getLong("revision")),updated,
+                    clock==null?"UTC":clock.clockStatus(),clock==null?Map.of():clock.sourceWallTimes());
         },owner.userId());
         return rows.isEmpty()?new MemoryDtos.Preference(true,true,0,null):rows.get(0);
     }
@@ -90,7 +96,7 @@ public class MemoryPreferenceService {
             JdbcOwnerLock.lock(jdbc,JdbcOwnerLock.Scope.MEMORY_MUTATION,owner.userId());
             for(var decision:review.decisions()) {
                 var row=workflows.findByRequestLocked(WorkflowKind.MEMORY_MUTATION,"OWNER:"+owner.userId(),decision.requestId());
-                if(row.isPresent()&&matches(row.get(),"REVIEW_DECISION",review.sourceId(),reviewFingerprint(review.id(),decision.expectedRevision(),decision.candidateId(),decision.choice()))
+                if(row.isPresent()&&!row.get().legacyClockUnresolved()&&matches(row.get(),"REVIEW_DECISION",review.sourceId(),reviewFingerprint(review.id(),decision.expectedRevision(),decision.candidateId(),decision.choice()))
                         &&Set.of("DISPATCHED","UNKNOWN").contains(row.get().status()))transition(row.get(),"SUCCEEDED");
             }
         });
@@ -117,6 +123,7 @@ public class MemoryPreferenceService {
         tx.executeWithoutResult(status->{
             JdbcOwnerLock.lock(jdbc,JdbcOwnerLock.Scope.MEMORY_MUTATION,owner.userId());
             var row=workflows.findByRequestLocked(WorkflowKind.MEMORY_MUTATION,"OWNER:"+owner.userId(),requestId).orElseThrow(()->new ResponseStatusException(HttpStatus.NOT_FOUND,"提炼记录不存在或无权限"));
+            requireCurrentClock(row);
             if(!"AUTOSAVE".equals(workflows.payload(row,MutationV1.class).action()))throw new ResponseStatusException(HttpStatus.NOT_FOUND,"提炼记录不存在或无权限");
             requireAudit(row);
             String outcome="SUCCEEDED".equals(state)?"SUCCEEDED":"NOT_STARTED".equals(state)?"REJECTED":"NEEDS_REVIEW".equals(state)?"UNKNOWN":null;
@@ -129,6 +136,7 @@ public class MemoryPreferenceService {
             var row=workflows.findByRequestLocked(WorkflowKind.MEMORY_MUTATION,"OWNER:"+owner.userId(),requestId)
                     .orElseGet(()->workflows.create(new WorkflowDraft(UUID.randomUUID().toString(),WorkflowKind.MEMORY_MUTATION,"OWNER:"+owner.userId(),requestId,fingerprint,
                             owner.userId(),owner.userId(),null,"MEMORY",memoryId,null,null,null,"PENDING",null,1,new MutationV1(action))));
+            requireCurrentClock(row);
             if(!matches(row,action,memoryId,fingerprint))throw new ResponseStatusException(HttpStatus.CONFLICT,"请求编号已用于其他操作、记忆或内容版本");
             if("SUCCEEDED".equals(row.status())){requireAudit(row);return true;}
             if(!"PENDING".equals(row.status()))throw new ResponseStatusException(HttpStatus.CONFLICT,"上次操作结果需要核对，请刷新后再操作");
@@ -142,14 +150,18 @@ public class MemoryPreferenceService {
             JdbcOwnerLock.lock(jdbc,JdbcOwnerLock.Scope.MEMORY_MUTATION,owner.userId());
             var row=workflows.findByRequestLocked(WorkflowKind.MEMORY_MUTATION,"OWNER:"+owner.userId(),requestId);
             if(row.isEmpty()||!"DISPATCHED".equals(row.get().status()))throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"操作结果待核对，请刷新记忆列表");
+            requireCurrentClock(row.get());
             transition(row.get(),outcome);
         });
     }
     public List<MemoryDtos.Audit> audit(TenantContext owner) {
         return jdbc.query("""
                 SELECT a.id,a.kind,a.action,a.outcome,a.revision,a.payload_version,a.payload_json,a.request_id,
-                    w.resource_id AS memory_id,COALESCE(w.created_at,a.occurred_at) AS created_at,
-                    COALESCE(w.updated_at,a.occurred_at) AS updated_at
+                    a.occurred_at AS audit_occurred_at,a.legacy_clock_json AS audit_clock_json,
+                    a.legacy_source AS audit_source,a.legacy_key AS audit_source_key,
+                    w.resource_id AS memory_id,w.workflow_id AS bound_workflow_id,w.created_at AS operation_created_at,
+                    w.updated_at AS operation_updated_at,w.legacy_clock_json AS operation_clock_json,
+                    w.legacy_source AS operation_source,w.legacy_key AS operation_source_key
                 FROM audit_event a LEFT JOIN workflow_instance w ON a.kind='MEMORY_OPERATION'
                     AND w.kind='MEMORY_MUTATION' AND w.workflow_id=a.resource_id AND w.owner_user_id=a.owner_user_id
                 WHERE a.owner_user_id=? AND a.kind IN ('MEMORY_PREFERENCE','MEMORY_OPERATION')
@@ -160,24 +172,47 @@ public class MemoryPreferenceService {
                 """,(rs,n)->{
             if(rs.getInt("payload_version")!=1)throw new IllegalStateException("Unsupported memory audit version");
             var preference="MEMORY_PREFERENCE".equals(rs.getString("kind"))?decode(rs.getString("payload_json"),PreferenceAuditV1.class):null;
+            var auditClock=auditClock(rs.getString("audit_clock_json"),rs.getString("audit_source"),rs.getString("audit_source_key"));
+            var operationClock=auditClock(rs.getString("operation_clock_json"),rs.getString("operation_source"),rs.getString("operation_source_key"));
+            if(auditClock!=null&&operationClock!=null&&(!auditClock.sourceRowSha256().equals(operationClock.sourceRowSha256())
+                    ||!auditClock.sourceSnapshotSha256().equals(operationClock.sourceSnapshotSha256())))throw invalidClock();
+            var clock=operationClock==null?auditClock:operationClock;
+            boolean bound=rs.getString("bound_workflow_id")!=null;
+            String created=utcTime(rs,bound?"operation_created_at":"audit_occurred_at");
+            String updated=utcTime(rs,bound?"operation_updated_at":"audit_occurred_at");
+            if(clock==null&&(created==null||updated==null))throw invalidClock();
+            if(preference!=null&&preference.legacyUpdatedAt()!=null){
+                if(clock!=null)throw invalidClock();
+                updated=preference.legacyUpdatedAt().toInstant(java.time.ZoneOffset.UTC).toString();
+            }
             return new MemoryDtos.Audit(rs.getLong("id"),rs.getString("action"),rs.getString("outcome"),rs.getString("memory_id"),
                     preference==null?null:Math.toIntExact(rs.getLong("revision")),preference==null?null:preference.readEnabled(),preference==null?null:preference.saveEnabled(),
-                    rs.getString("created_at"),preference!=null&&preference.legacyUpdatedAt()!=null?preference.legacyUpdatedAt().toString():rs.getString("updated_at"),rs.getString("request_id"));
+                    created,updated,rs.getString("request_id"),clock==null?"UTC":clock.clockStatus(),clock==null?Map.of():clock.sourceWallTimes());
         },owner.userId());
     }
     private boolean matches(WorkflowRecord row,String action,String memoryId,String fingerprint) {
         return action.equals(workflows.payload(row,MutationV1.class).action())&&java.util.Objects.equals(memoryId,row.resourceId())&&fingerprint.equals(row.requestSha256());
     }
     private void transition(WorkflowRecord before,String outcome) {
+        requireCurrentClock(before);
         var after=workflows.transition(before,outcome,workflows.payload(before,MutationV1.class),null,null,null);
         audits.appendMemoryOperation(new AuditEvent("MEMORY_OPERATION",after.ownerUserId(),after.actorUserId(),"MEMORY_MUTATION",after.workflowId(),null,null,null,after.requestId(),
                 workflows.payload(after,MutationV1.class).action(),after.revision(),after.requestSha256(),after.updatedAt(),1,new MutationAuditV1(false)),outcome);
     }
     private void requireAudit(WorkflowRecord row) {
+        requireCurrentClock(row);
         if(jdbc.queryForObject("SELECT COUNT(*) FROM audit_event WHERE kind='MEMORY_OPERATION' AND owner_user_id=? AND resource_id=? AND revision=? AND outcome=? AND content_sha256=?",Long.class,
                 row.ownerUserId(),row.workflowId(),row.revision(),row.status(),row.requestSha256())!=1)
             throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"操作结果的审计回执需要核对");
     }
+    private static LegacyClockEvidence auditClock(String raw,String source,String key){
+        if(raw==null)return null;
+        if(!"agent_memory_audit".equals(source)||key==null||!key.matches("[0-9]+"))throw invalidClock();
+        return LegacyClockEvidence.parse(raw,"agent_memory_audit",Map.of("id",new java.math.BigInteger(key)));
+    }
+    private static void requireCurrentClock(WorkflowRecord row){if(row.legacyClockUnresolved())throw new ResponseStatusException(HttpStatus.CONFLICT,"历史时区未确认，原操作结果需要核对，不能自动重放");}
+    private static IllegalStateException invalidClock(){return new IllegalStateException("Memory clock provenance is inconsistent");}
+    private static String utcTime(java.sql.ResultSet rs,String column)throws java.sql.SQLException{var value=rs.getObject(column,LocalDateTime.class);return value==null?null:value.toInstant(java.time.ZoneOffset.UTC).toString();}
     private String encode(Object value){try{return json.writeValueAsString(value);}catch(Exception error){throw new IllegalStateException("Cannot encode memory protocol",error);}}
     private <T> T decode(String value,Class<T> type){try{return json.readValue(value,type);}catch(Exception error){throw new IllegalStateException("Invalid stored memory protocol",error);}}
 }

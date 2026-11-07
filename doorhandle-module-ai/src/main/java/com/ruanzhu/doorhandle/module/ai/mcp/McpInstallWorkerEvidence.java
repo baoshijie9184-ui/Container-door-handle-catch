@@ -15,7 +15,7 @@ public final class McpInstallWorkerEvidence {
         if(!"STREAMABLE_HTTP".equals(runtime.transport())&&!runtime.nativeInstallSupervised())throw new IllegalArgumentException("MCP_INSTALL_PROOF_REQUIRES_SUPERVISOR");
         this.jdbc=jdbc;this.runtime=runtime;this.configuredNode=configuredNode;
     }
-    public void schema(){jdbc.queryForList("SELECT mcp_controller_pid AS controller_pid,mcp_controller_started AS controller_started,mcp_node_sha256 AS node_sha256,mcp_transport AS writer_transport,mcp_native_pool_id AS native_pool_id FROM workflow_instance WHERE kind='MCP_INSTALL_WORKER' AND (1=0) ");node();}
+    public void schema(){jdbc.queryForList("SELECT mcp_controller_pid AS controller_pid,mcp_controller_started AS controller_started,mcp_node_sha256 AS node_sha256,mcp_transport AS writer_transport,mcp_native_pool_id AS native_pool_id,legacy_clock_json,legacy_source,legacy_key FROM workflow_instance WHERE kind='MCP_INSTALL_WORKER' AND (1=0) ");node();}
     public Capture capture(Path directory){
         var current=ProcessHandle.current();String started=current.info().startInstant().orElseThrow(()->new IllegalStateException("MCP_CONTROLLER_IDENTITY_UNAVAILABLE")).toString();
         return new Capture(node(),runtime.installationIdentity(),current.pid(),started,runtime.installationController(directory));
@@ -25,11 +25,11 @@ public final class McpInstallWorkerEvidence {
     }
     public void returned(AgentActor actor,String operation){
         var current=ProcessHandle.current();var started=current.info().startInstant();if(started.isEmpty())return;
-        jdbc.update("UPDATE workflow_instance SET status='RETURNED',revision=revision+1,updated_at=UTC_TIMESTAMP(6) WHERE kind='MCP_INSTALL_WORKER' AND (owner_user_id=? AND resource_id=? AND mcp_controller_pid=? AND mcp_controller_started=? AND mcp_node_sha256=?) ",actor.userId(),operation,current.pid(),started.get().toString(),node());
+        jdbc.update("UPDATE workflow_instance SET status='RETURNED',revision=revision+1,updated_at=UTC_TIMESTAMP(6) WHERE kind='MCP_INSTALL_WORKER' AND legacy_clock_json IS NULL AND (owner_user_id=? AND resource_id=? AND mcp_controller_pid=? AND mcp_controller_started=? AND mcp_node_sha256=?) ",actor.userId(),operation,current.pid(),started.get().toString(),node());
     }
     public Proof proof(AgentActor actor,String operation,Path directory){
-        var rows=jdbc.queryForList("SELECT id AS id,owner_user_id AS owner_user_id,resource_id AS installation_id,mcp_node_sha256 AS node_sha256,mcp_runtime_sha256 AS runtime_sha256,mcp_controller_pid AS controller_pid,mcp_controller_started AS controller_started,mcp_container_id AS container_id,mcp_container_started AS container_started,mcp_controller_pool_id AS controller_pool_id,status AS state,revision AS revision,created_at AS created_at,updated_at AS updated_at,mcp_transport AS writer_transport,mcp_native_pool_id AS native_pool_id FROM workflow_instance WHERE kind='MCP_INSTALL_WORKER' AND (owner_user_id=? AND resource_id=?) ",actor.userId(),operation);
-        if(rows.isEmpty())return new Proof(false,"NO_CONTROLLER_EVIDENCE");var row=rows.get(0);
+        var rows=jdbc.queryForList("SELECT id AS id,owner_user_id AS owner_user_id,resource_id AS installation_id,mcp_node_sha256 AS node_sha256,mcp_runtime_sha256 AS runtime_sha256,mcp_controller_pid AS controller_pid,mcp_controller_started AS controller_started,mcp_container_id AS container_id,mcp_container_started AS container_started,mcp_controller_pool_id AS controller_pool_id,status AS state,revision AS revision,created_at AS created_at,updated_at AS updated_at,mcp_transport AS writer_transport,mcp_native_pool_id AS native_pool_id,legacy_clock_json,legacy_source,legacy_key FROM workflow_instance WHERE kind='MCP_INSTALL_WORKER' AND (owner_user_id=? AND resource_id=?) ",actor.userId(),operation);
+        if(rows.isEmpty())return new Proof(false,"NO_CONTROLLER_EVIDENCE");var row=rows.get(0);if(LegacyMcpClocks.workflow(row,com.ruanzhu.doorhandle.framework.persistence.workflow.WorkflowKind.MCP_INSTALL_WORKER)!=null)return new Proof(false,"LEGACY_CLOCK_UNRESOLVED");
         if("STDIO".equals(row.get("writer_transport"))){
             if(!runtime.nativeInstallSupervised()||!(row.get("native_pool_id") instanceof String pool)||!pool.matches("[a-f0-9]{32}"))return new Proof(false,"NATIVE_INSTALLER_UNVERIFIED");
             boolean javaStopped="RETURNED".equals(row.get("state"));

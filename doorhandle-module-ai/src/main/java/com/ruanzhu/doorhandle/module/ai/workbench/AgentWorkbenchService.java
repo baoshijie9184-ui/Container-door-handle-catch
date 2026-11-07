@@ -83,8 +83,8 @@ public class AgentWorkbenchService implements AgentWorkbenchApi,AutoCloseable {
     }
     private String mainId(AgentActor actor,String session){return WorkbenchStore.stable(actor.userId(),session,"MAIN_EXECUTION");}
     @Override public boolean permitsSpecialistWrite(AgentActor actor,String run,String specialist){var identity=users.current(actor.userId(),actor.username());if(identity.userId()!=actor.userId()||identity.supervisor()!=actor.supervisor())return false;return store.permitsSpecialist(actor.userId(),run,specialist,actor.role().name());}
-    @Override public boolean canDispatchInput(AgentActor actor,String session,String input){var job=store.find(actor.userId(),session,mainId(actor,session));return job==null||!Set.of("READY","WAITING_PLAN","WAITING_INPUT","WAITING_CHILD","NEEDS_REVIEW").contains(job.status())||job.status().equals("READY")&&input.equals(WorkbenchStore.stable(actor.userId(),session,"continue:"+job.id()+":"+job.revision()));}
-    @Override public void turnSaved(AgentActor actor,String session,long message){owned(actor,session);var job=store.find(actor.userId(),session,mainId(actor,session));if(job==null)return;var snapshot=store.list(actor.userId(),session).stream().filter(row->Set.of("PLAN","TASKS").contains(row.kind())).map(store::view).toList();store.create(actor.userId(),session,WorkbenchStore.stable(actor.userId(),session,"turn:"+message),"TURN",job.status(),Map.of("throughMessageId",message,"snapshot",snapshot));if(contexts!=null&&contexts.getIfAvailable()!=null)contexts.getObject().turnSaved(actor,session,Objects.toString(job.data().get("logicalTaskId")),message);}
+    @Override public boolean canDispatchInput(AgentActor actor,String session,String input){var job=store.find(actor.userId(),session,mainId(actor,session));return job==null||job.legacyClockEvidence()==null&&(!Set.of("READY","WAITING_PLAN","WAITING_INPUT","WAITING_CHILD","NEEDS_REVIEW").contains(job.status())||job.status().equals("READY")&&input.equals(WorkbenchStore.stable(actor.userId(),session,"continue:"+job.id()+":"+job.revision())));}
+    @Override public void turnSaved(AgentActor actor,String session,long message){owned(actor,session);var job=store.find(actor.userId(),session,mainId(actor,session));if(job==null||job.legacyClockEvidence()!=null)return;var snapshot=store.list(actor.userId(),session).stream().filter(row->row.legacyClockEvidence()==null&&Set.of("PLAN","TASKS").contains(row.kind())).map(store::view).toList();store.create(actor.userId(),session,WorkbenchStore.stable(actor.userId(),session,"turn:"+message),"TURN",job.status(),Map.of("throughMessageId",message,"snapshot",snapshot));if(contexts!=null&&contexts.getIfAvailable()!=null)contexts.getObject().turnSaved(actor,session,Objects.toString(job.data().get("logicalTaskId")),message);}
     @Override public void assertForkPoint(AgentActor actor,String session,long message){owned(actor,session);var turn=store.find(actor.userId(),session,WorkbenchStore.stable(actor.userId(),session,"turn:"+message));if(turn!=null&&!turn.status().equals("COMPLETED"))throw fail(409,"此轮仍在等待或已中断，不能作为完成切点");}
     @Override public void forked(AgentActor actor,String source,String target,long message){owned(actor,source);owned(actor,target);var turn=store.find(actor.userId(),source,WorkbenchStore.stable(actor.userId(),source,"turn:"+message));if(turn!=null)store.create(actor.userId(),target,WorkbenchStore.stable(actor.userId(),target,"fork-snapshot"),"FORK_SNAPSHOT","REFERENCE_ONLY",Map.of("text",store.encode(turn.data().get("snapshot")),"sourceSessionId",source,"throughMessageId",message));if(contexts!=null&&contexts.getIfAvailable()!=null)contexts.getObject().fork(actor,source,target,message);}
     @Override public String waitingPhase(AgentActor actor,String session){var job=store.find(actor.userId(),session,mainId(actor,session));if(job==null)return null;return switch(job.status()){case "WAITING_PLAN"->"WAITING_PLAN";case "WAITING_INPUT"->"WAITING_INPUT";case "WAITING_CHILD"->"WAITING_CHILD";case "NEEDS_REVIEW","UNKNOWN"->"AWAITING_RECOVERY";default->null;};}
@@ -209,23 +209,30 @@ public class AgentWorkbenchService implements AgentWorkbenchApi,AutoCloseable {
         });
     }
     @Scheduled(fixedDelay=1000) public void dispatch(){
-        // SQL claims bound work across instances. No external work occurs while holding a row lock.
+        // Scan only confirmed clocks, then re-read under a lock before admitting local inbox work.
         var candidates=store.dispatch(dispatchCursor);
         if(candidates.isEmpty()&&dispatchCursor>0){dispatchCursor=0;candidates=store.dispatch(0);}
         if(candidates.isEmpty())return;
         for(var candidate:candidates){
             dispatchCursor=candidate.cursor();
+            if(candidate.legacyClockEvidence()!=null)continue;
             long user=candidate.user();String session=candidate.session(),id=candidate.id();var payload=candidate.data();
             AgentActor actor=new AgentActor(user,(String)payload.get("username"),AgentActor.Role.valueOf((String)payload.get("role")));
-            try{owned(actor,session);var row=store.require(user,session,id);
+            try{owned(actor,session);var row=store.require(user,session,id);if(row.legacyClockEvidence()!=null)continue;
                 if(row.kind().equals("EXECUTION")){
-                    String request=WorkbenchStore.stable(user,session,"continue:"+id+":"+row.revision());
-                    sessions.getObject().continueSession(actor,session,request,bounded(Objects.toString(row.data().get("continuation"),"按已确认的检查点继续任务；不要重复已完成操作。"),7500));
+                    store.locked(user,()->{
+                        var current=store.require(user,session,id);
+                        if(current.legacyClockEvidence()!=null||!current.kind().equals("EXECUTION")||!current.status().equals("READY"))return null;
+                        String request=WorkbenchStore.stable(user,session,"continue:"+id+":"+current.revision());
+                        // This facade only admits the local inbox; no model or external work runs here.
+                        sessions.getObject().continueSession(actor,session,request,bounded(Objects.toString(current.data().get("continuation"),"按已确认的检查点继续任务；不要重复已完成操作。"),7500));
+                        return null;
+                    });
                     // READY stays until the existing inbox has admitted the real execution.
                 }else {
                     if(!childSlots.tryAcquire())continue;
                     WorkbenchStore.Row claimed;
-                    try{claimed=store.locked(user,()->{var current=store.require(user,session,id);if(!current.status().equals("QUEUED")||Boolean.FALSE.equals(current.data().get("yieldReady")))return null;var data=new LinkedHashMap<>(current.data());data.put("instance",instance);data.put("yieldReady",false);return store.update(current,"RUNNING",data,"CHILD_STARTED");});}catch(RuntimeException failure){childSlots.release();throw failure;}
+                    try{claimed=store.locked(user,()->{var current=store.require(user,session,id);if(current.legacyClockEvidence()!=null||!current.kind().equals("CHILD")||!current.status().equals("QUEUED")||Boolean.FALSE.equals(current.data().get("yieldReady")))return null;var data=new LinkedHashMap<>(current.data());data.put("instance",instance);data.put("yieldReady",false);return store.update(current,"RUNNING",data,"CHILD_STARTED");});}catch(RuntimeException failure){childSlots.release();throw failure;}
                     if(claimed!=null){liveExecutions.put(id,"claim:"+claimed.revision());durableAttempts.put(id,store.attempt(claimed));try{children.submit(()->runChild(actor,session,claimed));}catch(RuntimeException failure){releaseAttempt(id,"claim:"+claimed.revision());childSlots.release();throw failure;}}else childSlots.release();
                 }
             }catch(RuntimeException error){org.slf4j.LoggerFactory.getLogger(getClass()).warn("Agent 工作项暂不可调度：{}",error.getClass().getSimpleName());}

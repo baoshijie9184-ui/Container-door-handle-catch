@@ -5,6 +5,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ruanzhu.doorhandle.contracts.agent.WorkbenchSessionApi;
+import com.ruanzhu.doorhandle.common.time.LegacyClockEvidence;
 import com.ruanzhu.doorhandle.framework.persistence.JdbcTransactions;
 import com.ruanzhu.doorhandle.framework.persistence.content.ContentKind;
 import com.ruanzhu.doorhandle.framework.persistence.content.JdbcContentStore;
@@ -18,7 +19,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 final class WorkspacePersistence {
     static final String AUDIT_KIND="WORKSPACE";
     private static final DateTimeFormatter SOURCE_TIME=DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSSSSS");
-    private static final String FILE_COLUMNS="a.asset_id AS file_id,r.filename,r.media_type,r.byte_length,r.content_sha256,r.manifest_json";
+    private static final String FILE_COLUMNS="a.asset_id AS file_id,r.filename,r.media_type,r.byte_length,r.content_sha256,r.manifest_json,r.created_at,r.legacy_source,r.legacy_id,r.legacy_clock_json";
     private static final String FILES="content_asset a JOIN content_revision r ON r.asset_id=a.asset_id AND r.asset_kind=a.asset_kind AND r.version=a.current_version";
     private final JdbcTemplate jdbc;
     private final ObjectMapper json;
@@ -27,6 +28,7 @@ final class WorkspacePersistence {
     private final JdbcAuditStore audits;
 
     record FileManifestV1(String folder,String createdAtSource,String sourceUtcOffset) { }
+    record FileManifestV2(int protocolVersion,String folder,String createdAtSource,String clockStatus) { }
     record AuditV1(String createdAtSource,String sourceUtcOffset) { }
     record WorkspaceMutationV1(String signature) {
         WorkspaceMutationV1 { if(signature==null||!signature.matches("[a-fA-F0-9]{64}"))throw new IllegalArgumentException("Invalid workspace mutation signature"); }
@@ -36,6 +38,7 @@ final class WorkspacePersistence {
     WorkspacePersistence(JdbcTemplate jdbc) {
         this.jdbc=jdbc;
         json=new ObjectMapper().setSerializationInclusion(JsonInclude.Include.ALWAYS)
+                .enable(com.fasterxml.jackson.core.JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
                 .enable(DeserializationFeature.FAIL_ON_MISSING_CREATOR_PROPERTIES);
         content=new JdbcContentStore(jdbc);
         var mutation=new WorkflowProtocol<>(WorkflowKind.WORKSPACE_MUTATION,1,WorkspaceMutationV1.class,
@@ -45,7 +48,7 @@ final class WorkspacePersistence {
     }
     void validate() {
         jdbc.queryForList("SELECT asset_id,asset_kind,owner_user_id,current_version FROM content_asset WHERE 1=0");
-        jdbc.queryForList("SELECT manifest_json,request_id,object_key FROM content_revision WHERE 1=0");
+        jdbc.queryForList("SELECT manifest_json,request_id,object_key,legacy_clock_json FROM content_revision WHERE 1=0");
         jdbc.queryForList("SELECT workspace_file_id,workspace_business_type,target_id FROM content_link WHERE 1=0");
         workflows.validateSchema();audits.validateSchema();
     }
@@ -63,10 +66,27 @@ final class WorkspacePersistence {
         return rows.isEmpty()?Optional.empty():Optional.of(file(rows.get(0)));
     }
     private WorkbenchSessionApi.File file(Map<String,Object> row) {
-        var manifest=read((String)row.get("manifest_json"),FileManifestV1.class);
-        if(manifest.folder()==null||manifest.createdAtSource()==null||manifest.sourceUtcOffset()==null)throw corrupt();
-        return new WorkbenchSessionApi.File((String)row.get("file_id"),(String)row.get("filename"),(String)row.get("media_type"),((Number)row.get("byte_length")).longValue(),(String)row.get("content_sha256"),manifest.folder());
+        var tree=read((String)row.get("manifest_json"),com.fasterxml.jackson.databind.JsonNode.class);
+        if(tree==null||!tree.isObject())throw corrupt();
+        String folder,clockStatus="UTC";Map<String,String> sourceWallTimes=Map.of();
+        if(tree.has("protocolVersion")){
+            if(!fields(tree).equals(Set.of("protocolVersion","folder","createdAtSource","clockStatus")))throw corrupt();
+            var manifest=read((String)row.get("manifest_json"),FileManifestV2.class);
+            if(manifest.protocolVersion()!=2||!"UNRESOLVED".equals(manifest.clockStatus())||manifest.folder()==null
+                    ||row.get("created_at")!=null||!"agent_workspace_file".equals(row.get("legacy_source"))||!(row.get("legacy_id") instanceof Number))throw corrupt();
+            var evidence=LegacyClockEvidence.parse((String)row.get("legacy_clock_json"),"agent_workspace_file",Map.of("id",new java.math.BigInteger(row.get("legacy_id").toString())));
+            evidence.requireWallTime("created_at",manifest.createdAtSource());
+            folder=manifest.folder();clockStatus=evidence.clockStatus();sourceWallTimes=evidence.sourceWallTimes();
+        }else{
+            if(!fields(tree).equals(Set.of("folder","createdAtSource","sourceUtcOffset"))||row.get("legacy_clock_json")!=null||row.get("created_at")==null)throw corrupt();
+            var manifest=read((String)row.get("manifest_json"),FileManifestV1.class);
+            if(manifest.folder()==null||manifest.createdAtSource()==null||manifest.sourceUtcOffset()==null)throw corrupt();
+            try{java.time.ZoneOffset.of(manifest.sourceUtcOffset());}catch(java.time.DateTimeException invalid){throw corrupt();}
+            folder=manifest.folder();
+        }
+        return new WorkbenchSessionApi.File((String)row.get("file_id"),(String)row.get("filename"),(String)row.get("media_type"),((Number)row.get("byte_length")).longValue(),(String)row.get("content_sha256"),folder,clockStatus,sourceWallTimes);
     }
+    private static Set<String> fields(com.fasterxml.jackson.databind.JsonNode tree){var keys=new HashSet<String>();tree.fieldNames().forEachRemaining(keys::add);return keys;}
     long usedBytes(long owner){return jdbc.queryForObject("SELECT COALESCE(SUM(r.byte_length),0) FROM content_revision r JOIN content_asset a ON a.asset_id=r.asset_id AND a.asset_kind=r.asset_kind WHERE a.asset_kind='WORKSPACE_FILE' AND a.owner_user_id=?",Long.class,owner);}
     boolean hasFileReference(long owner,String session,String file){return jdbc.queryForObject("SELECT COUNT(*) FROM content_link WHERE link_kind='WORKSPACE_FILE' AND state='ACTIVE' AND owner_user_id=? AND session_id=? AND workspace_file_id=?",Integer.class,owner,session,file)==1;}
     void createFile(long owner,String session,String request,WorkbenchSessionApi.File file) {
@@ -98,18 +118,20 @@ final class WorkspacePersistence {
     void inheritBusiness(long owner,String source,String target,String kind,String resource) {if(hasBusiness(owner,source,kind,resource))linkBusiness(owner,target,kind,resource);}
     void inheritBefore(long owner,String source,String target,LocalDateTime utcCutoff) {
         JdbcTransactions.requireActive(jdbc);
+        if(hasUnresolvedReferenceClock(owner,source))throw new org.springframework.web.server.ResponseStatusException(org.springframework.http.HttpStatus.CONFLICT,"历史时区未确认，不能按时间自动继承资料，请重新关联");
         // Never reattach a deleted source reference. Exact snapshots are preferred over this legacy cutoff.
-        for(String file:jdbc.queryForList("SELECT workspace_file_id FROM content_link WHERE link_kind='WORKSPACE_FILE' AND state='ACTIVE' AND owner_user_id=? AND session_id=? AND created_at<? ORDER BY id FOR UPDATE",String.class,owner,source,utcCutoff))inheritFile(owner,source,target,file);
-        for(var row:jdbc.queryForList("SELECT target_type,target_id FROM content_link WHERE link_kind='WORKSPACE_BUSINESS' AND state='ACTIVE' AND owner_user_id=? AND session_id=? AND created_at<? ORDER BY id FOR UPDATE",owner,source,utcCutoff))inheritBusiness(owner,source,target,(String)row.get("target_type"),(String)row.get("target_id"));
+        for(String file:jdbc.queryForList("SELECT workspace_file_id FROM content_link WHERE link_kind='WORKSPACE_FILE' AND state='ACTIVE' AND owner_user_id=? AND session_id=? AND legacy_clock_json IS NULL AND created_at<? ORDER BY id FOR UPDATE",String.class,owner,source,utcCutoff))inheritFile(owner,source,target,file);
+        for(var row:jdbc.queryForList("SELECT target_type,target_id FROM content_link WHERE link_kind='WORKSPACE_BUSINESS' AND state='ACTIVE' AND owner_user_id=? AND session_id=? AND legacy_clock_json IS NULL AND created_at<? ORDER BY id FOR UPDATE",owner,source,utcCutoff))inheritBusiness(owner,source,target,(String)row.get("target_type"),(String)row.get("target_id"));
     }
+    boolean hasUnresolvedReferenceClock(long owner,String session){return jdbc.queryForObject("SELECT COUNT(*) FROM content_link WHERE owner_user_id=? AND session_id=? AND state='ACTIVE' AND link_kind IN ('WORKSPACE_FILE','WORKSPACE_BUSINESS') AND legacy_clock_json IS NOT NULL",Long.class,owner,session)>0;}
     boolean hasMutation(long owner,String request,String signature) {
         var old=workflows.findByRequestLocked(WorkflowKind.WORKSPACE_MUTATION,JdbcWorkflowStore.ownerScope(owner),request);
         if(old.isEmpty())return false;
-        var receipt=old.get();if(receipt.ownerUserId()!=owner||!signature.equals(receipt.requestSha256())||!signature.equals(workflows.payload(receipt,WorkspaceMutationV1.class).signature()))throw conflict();return true;
+        var receipt=old.get();if(receipt.legacyClockUnresolved())throw unresolved();if(receipt.ownerUserId()!=owner||!signature.equals(receipt.requestSha256())||!signature.equals(workflows.payload(receipt,WorkspaceMutationV1.class).signature()))throw conflict();return true;
     }
     void mutation(long owner,String request,String signature){workflows.create(new WorkflowDraft(UUID.randomUUID().toString(),WorkflowKind.WORKSPACE_MUTATION,JdbcWorkflowStore.ownerScope(owner),request,signature,owner,owner,null,"WORKSPACE_MUTATION",null,null,null,null,"COMPLETED",null,1,new WorkspaceMutationV1(signature)));}
     Optional<WorkflowPayloads.WorkspaceForkV1> fork(long owner,String request) {
-        return workflows.findByRequestLocked(WorkflowKind.WORKSPACE_FORK,JdbcWorkflowStore.ownerScope(owner),request).map(record->{if(record.ownerUserId()!=owner)throw corrupt();return workflows.payload(record,WorkflowPayloads.WorkspaceForkV1.class);});
+        return workflows.findByRequestLocked(WorkflowKind.WORKSPACE_FORK,JdbcWorkflowStore.ownerScope(owner),request).map(record->{if(record.ownerUserId()!=owner)throw corrupt();if(record.legacyClockUnresolved())throw unresolved();return workflows.payload(record,WorkflowPayloads.WorkspaceForkV1.class);});
     }
     void fork(long owner,String request,String signature,String source,long through,String child){workflows.create(new WorkflowDraft(UUID.randomUUID().toString(),WorkflowKind.WORKSPACE_FORK,JdbcWorkflowStore.ownerScope(owner),request,signature,owner,owner,null,"SESSION",child,null,null,null,"COMPLETED",null,1,new WorkflowPayloads.WorkspaceForkV1(source,through,child)));}
     void audit(long owner,String session,String resource,String action,String digest) {
@@ -120,4 +142,5 @@ final class WorkspacePersistence {
     private <T>T read(String value,Class<T> type){try{return json.readValue(value,type);}catch(JsonProcessingException invalid){throw new IllegalStateException("Unreadable workspace metadata",invalid);}}
     private static IllegalStateException corrupt(){return new IllegalStateException("Workspace persistence identity is inconsistent");}
     private static org.springframework.web.server.ResponseStatusException conflict(){return new org.springframework.web.server.ResponseStatusException(org.springframework.http.HttpStatus.CONFLICT,"请求编号已使用");}
+    private static org.springframework.web.server.ResponseStatusException unresolved(){return new org.springframework.web.server.ResponseStatusException(org.springframework.http.HttpStatus.CONFLICT,"历史时区未确认，原请求结果需要核对，不能自动重放");}
 }

@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.*;
 import com.ruanzhu.doorhandle.common.LocalDateTimeRow;
+import com.ruanzhu.doorhandle.common.time.LegacyClockEvidence;
 import com.ruanzhu.doorhandle.contracts.agent.AgentWorkbenchApi;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -31,8 +32,13 @@ public final class WorkbenchLegacyMigration {
         "agent_workbench_audit",List.of("id","user_id","session_id","item_id","action","revision","payload_sha256","created_at"));
     private static final DateTimeFormatter MICROS=DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSSSSS");
     public record Admission(String instanceId,String machineId,String sourceSchema,String targetSchema,
-                            String serverUuid,ZoneOffset sourceOffset,Map<String,String> sourceCollations) {
-        public Admission {sourceCollations=Map.copyOf(sourceCollations);}
+                            String serverUuid,ZoneOffset sourceOffset,Map<String,String> sourceCollations,
+                            String sourceSnapshotSha256,Set<String> unresolvedDomains) {
+        public Admission {sourceCollations=Map.copyOf(sourceCollations);unresolvedDomains=unresolvedDomains==null?Set.of():Set.copyOf(unresolvedDomains);}
+        public Admission(String instanceId,String machineId,String sourceSchema,String targetSchema,String serverUuid,
+                         ZoneOffset sourceOffset,Map<String,String> sourceCollations){
+            this(instanceId,machineId,sourceSchema,targetSchema,serverUuid,sourceOffset,sourceCollations,null,Set.of());
+        }
     }
     public record TableEvidence(int rowCount,String autoIncrement,String rowSha256,String columnsSha256,
                                 String indexesSha256,String ddlSha256) {}
@@ -52,6 +58,7 @@ public final class WorkbenchLegacyMigration {
     private final TransactionTemplate tx;
     private final ObjectMapper json;
     private final WorkbenchProtocol protocol;
+    private final Map<String,String> legacyClocks=new HashMap<>();
     public WorkbenchLegacyMigration(JdbcTemplate jdbc,PlatformTransactionManager manager,ObjectMapper mapper){
         this.jdbc=jdbc;this.json=mapper.copy().findAndRegisterModules().enable(JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
             .enable(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS).disable(SerializationFeature.INDENT_OUTPUT);
@@ -66,12 +73,12 @@ public final class WorkbenchLegacyMigration {
     }
     /** Read-only post-commit/UNKNOWN check. A mismatch never triggers cleanup, copy, or a retry. */
     public OutcomeVerification verifyCommitted(Admission a,Receipt candidate){
-        admit(a);check(candidate!=null&&a.sourceSchema().equals(candidate.sourceSchema())&&a.targetSchema().equals(candidate.targetSchema())&&a.serverUuid().equals(candidate.serverUuid())&&a.instanceId().equals(candidate.instanceId())&&a.machineId().equals(candidate.machineId())&&a.sourceOffset().getId().equals(candidate.sourceUtcOffset()),"Outcome receipt belongs to another admission");
+        admit(a);check(candidate!=null&&a.sourceSchema().equals(candidate.sourceSchema())&&a.targetSchema().equals(candidate.targetSchema())&&a.serverUuid().equals(candidate.serverUuid())&&a.instanceId().equals(candidate.instanceId())&&a.machineId().equals(candidate.machineId())&&Objects.equals(offset(a),candidate.sourceUtcOffset()),"Outcome receipt belongs to another admission");
         if(TransactionSynchronizationManager.isActualTransactionActive())throw new IllegalStateException("Outcome verification owns its read-only transaction");
         var read=new TransactionTemplate(Objects.requireNonNull(tx.getTransactionManager()));read.setIsolationLevel(TransactionDefinition.ISOLATION_REPEATABLE_READ);read.setReadOnly(true);read.setTimeout(120);
         return read.execute(status->{
             var identity=jdbc.queryForMap("SELECT DATABASE() db,@@server_uuid uuid");check(a.targetSchema().equals(identity.get("db"))&&a.serverUuid().equals(identity.get("uuid")),"Outcome MySQL identity differs");
-            for(String table:TABLES){var actual=shape(a,table);var rows=jdbc.query("SELECT "+String.join(",",FIELDS.get(table))+" FROM "+qualified(a.sourceSchema(),table)+" ORDER BY id",LocalDateTimeRow::read);var expected=candidate.sources().get(table);
+            for(String table:TABLES){var actual=shape(a,table);var rows=sourceRows(a,table,false);var expected=candidate.sources().get(table);
                 if(expected==null||rows.size()!=expected.rowCount()||!Objects.equals(actual.autoIncrement(),expected.autoIncrement())||!WorkbenchStore.hash(encode(normalize(rows))).equals(expected.rowSha256())||!WorkbenchStore.hash(encode(normalize(actual.columns()))).equals(expected.columnsSha256())||!WorkbenchStore.hash(encode(normalize(actual.indexes()))).equals(expected.indexesSha256())||!actual.ddlSha256().equals(expected.ddlSha256()))return new OutcomeVerification(false,candidate.copyId(),"SOURCE_CHANGED_REVIEW_REQUIRED");
             }
             var target=new LinkedHashMap<String,Map<String,Map<String,Object>>>();for(String table:List.of("workflow_instance","audit_event"))target.put(table,targetRows(table,false));
@@ -94,10 +101,10 @@ public final class WorkbenchLegacyMigration {
             shapes.put(table,shape(a,table));String text=table.equals("agent_workbench_item")?"payload":table.equals("agent_workbench_request")?"result_json":null;
             var size=jdbc.queryForMap("SELECT COUNT(*) rows_count,"+(text==null?"0":"COALESCE(SUM(OCTET_LENGTH("+text+")),0)")+" text_bytes FROM "+qualified(a.sourceSchema(),table));
             check(((Number)size.get("rows_count")).longValue()<=50000&&((Number)size.get("text_bytes")).longValue()<=67108864,"Source exceeds this bounded migration batch; use an explicit streaming copy plan");
-            var rows=jdbc.query("SELECT "+String.join(",",FIELDS.get(table))+" FROM "+qualified(a.sourceSchema(),table)+" FORCE INDEX(PRIMARY) ORDER BY id FOR SHARE",LocalDateTimeRow::read);
+            var rows=sourceRows(a,table,true);
             check(rows.size()<=50000,"Source grew beyond the bounded migration batch");source.put(table,rows);
         }
-        var items=source.get("agent_workbench_item").stream().map(row->item(row,a.sourceOffset())).toList();
+        var items=source.get("agent_workbench_item").stream().map(row->item(row,a)).toList();
         var commands=source.get("agent_workbench_request").stream().map(this::command).toList();
         for(var row:source.get("agent_workbench_audit")){positive(row.get("user_id"));nonnegative(row.get("revision"));digest(row.get("payload_sha256"));utc(row.get("created_at"),a.sourceOffset());}
         var expected=new LinkedHashMap<String,Map<String,Map<String,Object>>>();
@@ -108,15 +115,17 @@ public final class WorkbenchLegacyMigration {
             var values=empty(columns.get("workflow_instance"));values.putAll(map("workflow_id",item.workflowId(),"kind",WorkbenchProtocol.kind(item.type()).name(),"idempotency_scope","WORKBENCH_ITEM","request_id",item.item(),
                 "request_sha256",WorkbenchStore.hash(encode(List.of(item.owner(),item.session(),item.item(),item.type()))),"owner_user_id",item.owner(),"resource_type","WORKBENCH_ITEM","resource_id",item.item(),"session_id",item.session(),
                 "run_id",decode(item.original().get("payload")).get("runId"),"status",item.status(),"revision",item.revision(),"payload_version",1,"payload_json",item.body(),
-                "created_at",utc(item.original().get("created_at"),a.sourceOffset()),"updated_at",utc(item.original().get("updated_at"),a.sourceOffset()),"legacy_source","agent_workbench_item","legacy_key",number(item.original().get("id"))));
+                "created_at",utc(item.original().get("created_at"),a.sourceOffset()),"updated_at",utc(item.original().get("updated_at"),a.sourceOffset()),"legacy_source","agent_workbench_item","legacy_key",number(item.original().get("id")),"legacy_clock_json",clock(a,"agent_workbench_item",item.original())));
             String targetId=insert("workflow_instance",values);expected.get("workflow_instance").put(targetId,values);
             if(WorkbenchProtocol.execution(item.type())){
-                var data=protocol.data(protocol.read(item.type(),1,item.body()));String task=Objects.toString(data.get("logicalTaskId"),null);
+                var clock=clock(a,"agent_workbench_item",item.original());
+                var evidence=clock==null?null:LegacyClockEvidence.parse(clock,"agent_workbench_item",Map.of("id",new java.math.BigInteger(number(item.original().get("id")))));
+                var data=protocol.data(protocol.read(item.type(),1,item.body(),evidence));String task=Objects.toString(data.get("logicalTaskId"),null);
                 check(task!=null&&!task.isBlank()&&task.codePointCount(0,task.length())<=128,"Source execution has no representable current logical task");
                 Object version=data.get("modelConfigVersion");String logicalBody=protocol.write(new WorkbenchProtocol.LogicalTaskV1(item.item(),null,Objects.toString(data.get("role"),null),Objects.toString(data.get("modelId"),null),version instanceof Number n?n.longValue():null,Objects.toString(data.get("modelDefault"),null),true));
                 var logicalValues=empty(columns.get("workflow_instance"));logicalValues.putAll(map("workflow_id",UUID.randomUUID().toString(),"kind","WORKBENCH_LOGICAL_TASK","idempotency_scope",WorkbenchStore.hash(encode(List.of(item.owner(),item.session(),item.item()))),
                     "request_id",task,"request_sha256",WorkbenchStore.hash(encode(List.of(item.owner(),item.session(),item.item(),task))),"owner_user_id",item.owner(),"parent_workflow_id",new BigDecimal(targetId),"resource_type","WORKBENCH_TASK","resource_id",task,"session_id",item.session(),
-                    "run_id",data.get("runId"),"status",item.status(),"payload_version",1,"payload_json",logicalBody,"legacy_source","agent_workbench_logical_task","legacy_key",number(item.original().get("id"))));
+                    "run_id",data.get("runId"),"status",item.status(),"payload_version",1,"payload_json",logicalBody,"legacy_source","agent_workbench_logical_task","legacy_key",number(item.original().get("id")),"legacy_clock_json",clock));
                 String logicalId=insert("workflow_instance",logicalValues);expected.get("workflow_instance").put(logicalId,logicalValues);logical++;
             }
         }
@@ -124,22 +133,24 @@ public final class WorkbenchLegacyMigration {
             "resource_type","WORKBENCH_COMMAND","resource_id",command.request(),"status","COMPLETED","payload_version",1,"payload_json",protocol.write(new WorkbenchProtocol.CommandV1(command.responseType())),"result_version",1,"result_json",command.body(),"result_sha256",WorkbenchStore.hash(command.body()),"legacy_source","agent_workbench_request","legacy_key",number(command.original().get("id"))));
             String id=insert("workflow_instance",values);expected.get("workflow_instance").put(id,values);}
         for(var row:source.get("agent_workbench_audit")){var values=empty(columns.get("audit_event"));String legacy=number(row.get("id"));values.putAll(map("event_id","wb-audit:"+legacy,"kind","WORKBENCH","owner_user_id",positive(row.get("user_id")),"resource_type","WORKBENCH_ITEM","resource_id",row.get("item_id"),"session_id",row.get("session_id"),"action",row.get("action"),"revision",nonnegative(row.get("revision")),
-            "content_sha256",row.get("payload_sha256"),"occurred_at",utc(row.get("created_at"),a.sourceOffset()),"payload_version",1,"payload_json",protocol.write(new WorkbenchProtocol.AuditV1(null,null,legacy,originalTime(row.get("created_at")),a.sourceOffset().getId())),"legacy_source","agent_workbench_audit","legacy_key",legacy));
+            "content_sha256",row.get("payload_sha256"),"occurred_at",utc(row.get("created_at"),a.sourceOffset()),"payload_version",1,"payload_json",protocol.write(new WorkbenchProtocol.AuditV1(null,null,legacy,originalTime(row.get("created_at")),offset(a))),"legacy_source","agent_workbench_audit","legacy_key",legacy,"legacy_clock_json",clock(a,"agent_workbench_audit",row)));
             String id=insert("audit_event",values);expected.get("audit_event").put(id,values);}
         for(String table:List.of("workflow_instance","audit_event"))check(equalRows(expected.get(table),targetRows(table,false)),"Final complete target-column verification failed: "+table);
         var evidence=new LinkedHashMap<String,TableEvidence>();
         for(String table:TABLES){var afterShape=shape(a,table);check(shapes.get(table).equals(afterShape),"Source metadata or AUTO_INCREMENT changed: "+table);
-            var after=jdbc.query("SELECT "+String.join(",",FIELDS.get(table))+" FROM "+qualified(a.sourceSchema(),table)+" FORCE INDEX(PRIMARY) ORDER BY id FOR SHARE",LocalDateTimeRow::read);
+            var after=sourceRows(a,table,true);
             check(encode(normalize(source.get(table))).equals(encode(normalize(after))),"A source row changed during copy: "+table);
             var before=shapes.get(table);evidence.put(table,new TableEvidence(after.size(),before.autoIncrement(),WorkbenchStore.hash(encode(normalize(after))),WorkbenchStore.hash(encode(normalize(before.columns()))),WorkbenchStore.hash(encode(normalize(before.indexes()))),before.ddlSha256()));
         }
-        return new Receipt("COPIED_VERIFIED_NOT_PRODUCTION_CUTOVER",UUID.randomUUID().toString(),a.sourceSchema(),a.targetSchema(),a.serverUuid(),a.instanceId(),a.machineId(),a.sourceOffset().getId(),Map.copyOf(evidence),WorkbenchStore.hash(encode(normalize(expected))),items.size(),commands.size(),source.get("agent_workbench_audit").size(),logical);
+        return new Receipt("COPIED_VERIFIED_NOT_PRODUCTION_CUTOVER",UUID.randomUUID().toString(),a.sourceSchema(),a.targetSchema(),a.serverUuid(),a.instanceId(),a.machineId(),offset(a),Map.copyOf(evidence),WorkbenchStore.hash(encode(normalize(expected))),items.size(),commands.size(),source.get("agent_workbench_audit").size(),logical);
     }
-    private ItemPlan item(Map<String,Object> row,ZoneOffset offset){
+    private ItemPlan item(Map<String,Object> row,Admission admission){
         long owner=positive(row.get("user_id")),revision=nonnegative(row.get("revision"));String type=(String)row.get("kind"),state=(String)row.get("status");protocol.state(type,state);
-        String raw=(String)row.get("payload");var data=decode(raw);var evidence=new WorkbenchProtocol.LegacyItemV1(raw,originalTime(row.get("created_at")),originalTime(row.get("updated_at")),offset.getId());
-        utc(row.get("created_at"),offset);utc(row.get("updated_at"),offset);
-        return new ItemPlan(row,"wb-item:"+number(row.get("id")),type,owner,(String)row.get("item_id"),(String)row.get("session_id"),state,revision,protocol.write(protocol.payload(type,data,evidence)));
+        var clock=clock(admission,"agent_workbench_item",row);
+        var provenance=clock==null?null:LegacyClockEvidence.parse(clock,"agent_workbench_item",Map.of("id",new java.math.BigInteger(number(row.get("id")))));
+        String raw=(String)row.get("payload");var data=decode(raw);var evidence=new WorkbenchProtocol.LegacyItemV1(raw,provenance==null?originalTime(row.get("created_at")):provenance.sourceWallTimes().get("created_at"),provenance==null?originalTime(row.get("updated_at")):provenance.sourceWallTimes().get("updated_at"),offset(admission));
+        utc(row.get("created_at"),admission.sourceOffset());utc(row.get("updated_at"),admission.sourceOffset());
+        return new ItemPlan(row,"wb-item:"+number(row.get("id")),type,owner,(String)row.get("item_id"),(String)row.get("session_id"),state,revision,protocol.write(protocol.payload(type,data,evidence,clock!=null)));
     }
     private CommandPlan command(Map<String,Object> row){
         long owner=positive(row.get("user_id"));String raw=(String)row.get("result_json"),type;
@@ -177,12 +188,38 @@ public final class WorkbenchLegacyMigration {
         return new SourceShape(columns,indexes,tableInfo.get("auto_increment")==null?null:number(tableInfo.get("auto_increment")),WorkbenchStore.hash(ddl));
     }
     private List<String> ordinary(String table){return jdbc.queryForList("SELECT column_name FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name=? AND generation_expression='' ORDER BY ordinal_position",String.class,table);}
+    private List<Map<String,Object>> sourceRows(Admission a,String table,boolean lock){
+        var columns=FIELDS.get(table);boolean unresolved=a.sourceOffset()==null&&!table.equals("agent_workbench_request");
+        var times=columns.stream().filter(name->name.endsWith("_at")).toList();
+        String extras="";
+        if(unresolved){
+            var pairs=new ArrayList<String>();for(String name:columns){pairs.add("'"+name+"'");pairs.add(times.contains(name)?"CAST(`"+name+"` AS CHAR CHARACTER SET utf8mb4)":"`"+name+"`");}
+            extras=",SHA2(CAST(JSON_OBJECT("+String.join(",",pairs)+") AS CHAR CHARACTER SET utf8mb4),256) AS __clock_row_sha";
+            for(String name:times)extras+=",CAST(`"+name+"` AS CHAR CHARACTER SET utf8mb4) AS __clock_"+name;
+        }
+        return jdbc.query("SELECT "+String.join(",",columns)+extras+" FROM "+qualified(a.sourceSchema(),table)+(lock?" FORCE INDEX(PRIMARY)":"")+" ORDER BY id"+(lock?" FOR SHARE":""),(rs,n)->{
+            Map<String,Object> row=new LinkedHashMap<>(LocalDateTimeRow.read(rs,n));
+            if(unresolved){
+                var wall=new LinkedHashMap<String,Object>();for(String name:times)wall.put(name,row.remove("__clock_"+name));
+                String body=encode(map("protocol",LegacyClockEvidence.PROTOCOL,"status",LegacyClockEvidence.UNRESOLVED,
+                    "sourceTable",table,"sourceKey",Map.of("id",new java.math.BigInteger(number(row.get("id")))),
+                    "sourceSnapshotSha256",a.sourceSnapshotSha256(),"sourceRowSha256",row.remove("__clock_row_sha"),"sourceWallTimes",wall));
+                LegacyClockEvidence.parse(body,table,Map.of("id",new java.math.BigInteger(number(row.get("id")))));
+                legacyClocks.put(table+":"+number(row.get("id")),body);
+            }
+            return row;
+        });
+    }
+    private String clock(Admission a,String table,Map<String,Object> row){
+        if(a.sourceOffset()!=null||table.equals("agent_workbench_request"))return null;
+        String value=legacyClocks.get(table+":"+number(row.get("id")));check(value!=null,"Original SQL wall-clock evidence is missing");return value;
+    }
     private Map<String,Object> empty(List<String> columns){var result=new LinkedHashMap<String,Object>();for(String column:columns)result.put(column,null);if(columns.contains("fence"))result.put("fence",0);if(columns.contains("attempts"))result.put("attempts",0);if(columns.contains("revision"))result.put("revision",0);return result;}
     private Map<String,Map<String,Object>> targetRows(String table,boolean lock){var result=new LinkedHashMap<String,Map<String,Object>>();String columns=String.join(",",ordinary(table));for(var row:jdbc.query("SELECT "+columns+" FROM `"+table+"` ORDER BY id"+(lock?" FOR UPDATE":""),LocalDateTimeRow::read))result.put(number(row.get("id")),row);return result;}
     private String insert(String table,Map<String,Object> expected){var names=expected.keySet().stream().filter(n->!n.equals("id")).toList();String sql="INSERT INTO `"+table+"`("+String.join(",",names)+") VALUES("+String.join(",",Collections.nCopies(names.size(),"?"))+")";jdbc.update(sql,names.stream().map(expected::get).toArray());
         String key=table.equals("workflow_instance")?"workflow_id":"event_id";String id=number(jdbc.queryForObject("SELECT id FROM `"+table+"` WHERE "+key+"=?",Object.class,expected.get(key)));expected.put("id",new BigDecimal(id));return id;}
     private boolean equalRows(Object expected,Object actual){return encode(normalize(expected)).equals(encode(normalize(actual)));}
-    private Object normalize(Object value){if(value instanceof Number n)return new BigDecimal(n.toString()).stripTrailingZeros().toPlainString();if(value instanceof LocalDateTime date)return MICROS.format(date);if(value instanceof Map<?,?> map){var result=new TreeMap<String,Object>();map.forEach((k,v)->result.put(k.toString(),normalize(v)));return result;}if(value instanceof Collection<?> list)return list.stream().map(this::normalize).toList();return value;}
+    private Object normalize(Object value){if(value instanceof Number n)return new BigDecimal(n.toString()).stripTrailingZeros().toPlainString();if(value instanceof LocalDateTime date)return MICROS.format(date);if(value instanceof Map<?,?> map){var result=new TreeMap<String,Object>();map.forEach((k,v)->result.put(k.toString(),normalize("legacy_clock_json".equals(k)&&v instanceof String text?decode(text):v)));return result;}if(value instanceof Collection<?> list)return list.stream().map(this::normalize).toList();return value;}
     private String encode(Object value){try{return json.writeValueAsString(value);}catch(Exception error){throw new IllegalArgumentException("Migration evidence cannot be encoded",error);}}
     private Map<String,Object> decode(Object raw){try{return json.readValue((String)raw,new TypeReference<LinkedHashMap<String,Object>>(){});}catch(Exception error){throw new IllegalArgumentException("Legacy payload is not a supported JSON object",error);}}
     private static Map<String,Object> map(Object... pairs){var result=new LinkedHashMap<String,Object>();for(int n=0;n<pairs.length;n+=2)result.put((String)pairs[n],pairs[n+1]);return result;}
@@ -191,12 +228,14 @@ public final class WorkbenchLegacyMigration {
     private static long nonnegative(Object value){long result=new BigDecimal(value.toString()).longValueExact();check(result>=0,"Negative source revision is unsupported");return result;}
     private static String digest(Object value){String result=(String)value;check(result!=null&&result.matches("[a-f0-9]{64}"),"Source digest cannot be represented unchanged");return result;}
     private static String originalTime(Object value){check(value instanceof LocalDateTime,"Source wall-clock time is not representable");return MICROS.format((LocalDateTime)value);}
-    private static LocalDateTime utc(Object value,ZoneOffset offset){originalTime(value);LocalDateTime original=(LocalDateTime)value;check(original.getNano()%1000==0,"Source microsecond precision differs");var result=original.minusSeconds(offset.getTotalSeconds());check(result.getYear()>=1000&&result.getYear()<=9999,"Source offset conversion is outside MySQL DATETIME");return result;}
+    private static LocalDateTime utc(Object value,ZoneOffset offset){originalTime(value);LocalDateTime original=(LocalDateTime)value;check(original.getNano()%1000==0,"Source microsecond precision differs");if(offset==null)return null;var result=original.minusSeconds(offset.getTotalSeconds());check(result.getYear()>=1000&&result.getYear()<=9999,"Source offset conversion is outside MySQL DATETIME");return result;}
+    private static String offset(Admission a){return a.sourceOffset()==null?null:a.sourceOffset().getId();}
     private static String qualified(String schema,String table){check(schema!=null&&schema.matches("[A-Za-z0-9_]{1,64}")&&TABLES.contains(table),"Explicit source identifiers required");return "`"+schema+"`.`"+table+"`";}
     private static void check(boolean value,String message){if(!value)throw new IllegalStateException(message);}
     private static void admit(Admission a){
         check(a!=null&&"Linux".equals(System.getProperty("os.name")),"Workbench migration executes only on ECS");
-        check(a.instanceId()!=null&&a.instanceId().matches("i-[a-z0-9]+")&&a.machineId()!=null&&a.machineId().matches("[a-f0-9]{32}")&&a.sourceOffset()!=null,"Explicit ECS identities and source offset are required");
+        check(a.instanceId()!=null&&a.instanceId().matches("i-[a-z0-9]+")&&a.machineId()!=null&&a.machineId().matches("[a-f0-9]{32}"),"Explicit ECS identities are required");
+        check(a.sourceOffset()!=null?a.unresolvedDomains().isEmpty()&&a.sourceSnapshotSha256()==null:a.unresolvedDomains().contains("workbench")&&a.sourceSnapshotSha256()!=null&&a.sourceSnapshotSha256().matches("[a-f0-9]{64}"),"Reviewed offset or explicit unresolved clock policy and snapshot required");
         check(a.sourceSchema()!=null&&a.sourceSchema().matches("[A-Za-z0-9_]{1,64}")&&a.targetSchema()!=null&&a.targetSchema().matches("[A-Za-z0-9_]{1,64}")&&!a.sourceSchema().equalsIgnoreCase(a.targetSchema()),"Distinct explicit source and target schemas required");
         check(a.serverUuid()!=null&&a.serverUuid().matches("[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}")&&a.sourceCollations().keySet().equals(Set.copyOf(TABLES))&&a.sourceCollations().values().stream().allMatch(v->v.matches("utf8mb4_[a-z0-9_]+")),"Reviewed server UUID and all three source collations are required");
         check(a.instanceId().equals(System.getenv("DOORHANDLE_ECS_INSTANCE_ID"))&&a.machineId().equals(System.getenv("DOORHANDLE_ECS_MACHINE_ID")),"Migration admission differs from the ECS execution contract");

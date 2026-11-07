@@ -125,6 +125,7 @@ public class AgentWorkspaceService implements WorkbenchSessionApi {
         store.fork(actor.userId(),requestId,hash((session+":"+through).getBytes(StandardCharsets.UTF_8)),session,through,child.getSessionId());
         boolean exact=turnSnapshots!=null&&turnSnapshots.getIfAvailable()!=null&&turnSnapshots.getObject().inherit(actor.userId(),session,through,child.getSessionId());
         String endedAt=messages.get(end).getCreatedAt();
+        if(!exact&&store.hasUnresolvedReferenceClock(actor.userId(),session))throw fail(409,"历史时区未确认，无法确认资料切点，请核对或重新关联资料");
         if(!exact&&endedAt!=null){java.time.LocalDateTime cutoff;try{cutoff=java.time.LocalDateTime.parse(endedAt,java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));}catch(java.time.format.DateTimeParseException error){throw fail(409,"历史时间不可读取，无法确认文件切点");}
             // ChatSessionServiceImpl stores LocalDateTime.now() in the JVM zone; content uses UTC.
             var offsets=java.time.ZoneId.systemDefault().getRules().getValidOffsets(cutoff);

@@ -35,8 +35,8 @@ public final class CompactActionMySqlFixture implements AutoCloseable {
         }
         owned=true;
         try{
-            for(String part:new String[]{"10-core.sql","20-content.sql","25-agent.sql","30-operations.sql","35-runtime-guards.sql","36-identity-guards.sql","37-audit-guards.sql","38-quota-guards.sql","39-workflow-guards.sql","40-relations.sql"})
-                install(targetData,Files.readString(Path.of("../sql/mysql/compact/baseline",part)),part.endsWith("-guards.sql")?"$$":";",targetTables);
+            for(String part:CompactBaselineParts.all())
+                install(targetData,Files.readString(Path.of("../sql/mysql/compact/baseline",part)),CompactBaselineParts.separator(part),targetTables);
             if(sourceData!=null)install(sourceData,new ClassPathResource("compact/action-source-evidence.sql").getContentAsString(StandardCharsets.UTF_8),";",sourceTables);
         }catch(Exception error){try{close();}catch(Exception cleanup){error.addSuppressed(cleanup);}throw error;}
     }
@@ -56,6 +56,7 @@ public final class CompactActionMySqlFixture implements AutoCloseable {
             if(collation==null||!collation.matches("utf8mb4_[a-z0-9_]+"))throw new SecurityException("Unrecognized source collation");
             sql=sql.replace(pair[1],collation);
         }
+        sql=FixtureSourceSnapshot.bind(sql,source(),sourceTables);
         try(Connection connection=targetData.getConnection()){
             connection.setAutoCommit(false);
             try{execute(connection,sql,";");}catch(Exception error){try{connection.rollback();}catch(Exception rollback){error.addSuppressed(rollback);}throw error;}

@@ -20,5 +20,9 @@ public class ModelOperationLog {
 
     private LocalDateTime operationTime;
 
+    /** Describes retained source timestamps, without assigning them an offset. */
+    private String clockStatus;
+    private java.util.Map<String,String> sourceWallTimes;
+
     private String remark;
 }

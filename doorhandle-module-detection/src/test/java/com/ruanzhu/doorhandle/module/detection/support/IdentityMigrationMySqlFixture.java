@@ -38,6 +38,7 @@ public final class IdentityMigrationMySqlFixture implements AutoCloseable {
                             ScriptUtils.DEFAULT_BLOCK_COMMENT_START_DELIMITER,ScriptUtils.DEFAULT_BLOCK_COMMENT_END_DELIMITER);
                 }
             }
+            FixtureSourceSnapshot.installLegacyClockGuards(target(),Path.of("../sql/mysql/compact/baseline"));
         }catch(Exception failure){try{close();}catch(Exception cleanup){failure.addSuppressed(cleanup);}throw failure;}
     }
     public JdbcTemplate source(){return fixture.source();}

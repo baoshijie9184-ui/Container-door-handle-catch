@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ruanzhu.doorhandle.common.BusinessException;
+import com.ruanzhu.doorhandle.common.time.LegacyClockEvidence;
 import com.ruanzhu.doorhandle.framework.persistence.workflow.WorkflowKind;
 import com.ruanzhu.doorhandle.framework.persistence.workflow.WorkflowProtocol;
 import com.ruanzhu.doorhandle.framework.persistence.workflow.WorkflowProtocols;
@@ -27,7 +28,7 @@ public class LegacyChatActionStore {
                             String legacySessionId,String legacyCreatedAt,String legacyConfirmedAt,String sourceUtcOffset) { }
     public record TransitionV1(String actionType,String previousStatus,String status,String errorMessage,String previousErrorMessage) { }
     private record Row(long id,long revision,String status,String digest,LocalDateTime created,LocalDateTime confirmed,
-                       String actionId,String session,PendingV1 payload) { }
+                       String actionId,String session,PendingV1 payload,LegacyClockEvidence clock) { }
     private static final Set<String> TERMINAL=Set.of("CONFIRMED","COMPLETED","FAILED","CANCELLED","REJECTED","EXPIRED");
     private final JdbcTemplate jdbc;
     private final ObjectMapper json;
@@ -36,6 +37,7 @@ public class LegacyChatActionStore {
 
     public LegacyChatActionStore(JdbcTemplate jdbc,ObjectMapper mapper,PlatformTransactionManager transactions) {
         this.jdbc=jdbc;json=mapper.copy().setSerializationInclusion(JsonInclude.Include.ALWAYS)
+                .enable(com.fasterxml.jackson.core.JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
                 .enable(DeserializationFeature.FAIL_ON_MISSING_CREATOR_PROPERTIES);
         tx=new TransactionTemplate(transactions);tx.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
         protocol=new WorkflowProtocol<>(WorkflowKind.LEGACY_CHAT_ACTION,1,PendingV1.class,Set.of("PENDING"),TERMINAL,
@@ -85,6 +87,7 @@ public class LegacyChatActionStore {
             String current=lockSession(user,session);
             // Keep the source status/action-id unicode_ci comparison, while the live session is the exact current FK.
             Row row=find(current,actionId,true,expected);if(row==null)return false;
+            if(row.clock()!=null)throw new BusinessException(409,"历史时区未确认，原动作状态需要核对，不能自动应用或重放");
             LocalDateTime now=now(),confirmed=markConfirmed||"EXECUTING".equals(target)?now:row.confirmed();
             var old=row.payload();var payload=new PendingV1(old.actionType(),old.actionPayload(),error,old.legacyId(),old.legacySessionId(),old.legacyCreatedAt(),old.legacyConfirmedAt(),old.sourceUtcOffset());
             int changed=jdbc.update("UPDATE workflow_instance SET status=?,revision=revision+1,payload_json=?,confirmation_recorded_at=?,updated_at=?,finished_at=? "
@@ -119,14 +122,30 @@ public class LegacyChatActionStore {
 
     private Row row(ResultSet rs,int ignored) throws SQLException {
         var payload=read(rs.getString("payload_json"));protocol.validatePayload(payload,rs.getInt("payload_version"));
+        LocalDateTime created=rs.getObject("created_at",LocalDateTime.class),confirmed=rs.getObject("confirmation_recorded_at",LocalDateTime.class);
+        String sidecar=rs.getString("legacy_clock_json"),source=rs.getString("legacy_source"),key=rs.getString("legacy_key");
+        LegacyClockEvidence clock=null;
+        if(source!=null){
+            if(!"chat_pending_action".equals(source)||key==null||!key.matches("[0-9]+")||!key.equals(payload.legacyId())||payload.legacySessionId()==null)throw corruptClock();
+            if(sidecar!=null){
+                clock=LegacyClockEvidence.parse(sidecar,"chat_pending_action",Map.of("id",new java.math.BigInteger(key)));
+                requireSameWallTime(clock,"created_at",payload.legacyCreatedAt());requireSameWallTime(clock,"confirmed_at",payload.legacyConfirmedAt());
+                if(payload.sourceUtcOffset()!=null||created!=null||confirmed!=null)throw corruptClock();
+            }else{
+                if(payload.sourceUtcOffset()==null)throw corruptClock();
+                try{java.time.ZoneOffset.of(payload.sourceUtcOffset());}catch(java.time.DateTimeException invalid){throw corruptClock();}
+                if(created==null&&payload.legacyCreatedAt()!=null)throw corruptClock();
+            }
+        }else if(sidecar!=null||key!=null||payload.legacyId()!=null||payload.legacySessionId()!=null||payload.legacyCreatedAt()!=null
+                ||payload.legacyConfirmedAt()!=null||payload.sourceUtcOffset()!=null||created==null)throw corruptClock();
         return new Row(rs.getLong("id"),rs.getLong("revision"),rs.getString("status"),rs.getString("request_sha256"),
-                rs.getObject("created_at",LocalDateTime.class),rs.getObject("confirmation_recorded_at",LocalDateTime.class),
-                rs.getString("request_id"),rs.getString("chat_action_session_id"),payload);
+                created,confirmed,rs.getString("request_id"),rs.getString("chat_action_session_id"),payload,clock);
     }
     private ChatPendingAction dto(Row row) {
         var value=new ChatPendingAction();value.setId(row.id());value.setActionId(row.actionId());value.setSessionId(row.session());
         value.setActionType(row.payload().actionType());value.setActionPayloadJson(row.payload().actionPayload());value.setStatus(row.status());
-        value.setCreatedAt(display(row.created()));value.setConfirmedAt(display(row.confirmed()));value.setErrorMessage(row.payload().errorMessage());return value;
+        value.setCreatedAt(display(row.created()));value.setConfirmedAt(display(row.confirmed()));value.setErrorMessage(row.payload().errorMessage());
+        value.setClockStatus(row.clock()==null?"UTC":row.clock().clockStatus());value.setSourceWallTimes(row.clock()==null?Map.of():row.clock().sourceWallTimes());return value;
     }
     private void audit(long owner,Row row,String action,String previous,String state,String error,String oldError) {
         var body=new TransitionV1(row.payload().actionType(),previous,state,error,oldError);
@@ -147,6 +166,16 @@ public class LegacyChatActionStore {
     private String write(Object value){try{return json.writeValueAsString(value);}catch(Exception error){throw new IllegalArgumentException("Cannot encode legacy action evidence",error);}}
     private LocalDateTime now(){return jdbc.queryForObject("SELECT UTC_TIMESTAMP(6)",LocalDateTime.class);}
     private static LocalDateTime display(LocalDateTime utc){return utc==null?null:utc.plusHours(8);}
+    private static IllegalStateException corruptClock(){return new IllegalStateException("Legacy chat action clock provenance is inconsistent");}
+    private static void requireSameWallTime(LegacyClockEvidence clock,String column,String payloadWall){
+        String raw=clock.sourceWallTimes().get(column);clock.requireWallTime(column,raw);
+        if(raw==null||payloadWall==null){if(!Objects.equals(raw,payloadWall))throw corruptClock();return;}
+        // Historical payload DATE_FORMAT adds .000000 to DATETIME(0). Compare civil values,
+        // never assign an offset or rewrite either original representation.
+        try{if(!payloadWall.matches("[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,6})?")
+                ||!LocalDateTime.parse(raw.replace(' ','T')).equals(LocalDateTime.parse(payloadWall.replace(' ','T'))))throw corruptClock();}
+        catch(java.time.DateTimeException invalid){throw corruptClock();}
+    }
     private static int length(String value){return value.codePointCount(0,value.length());}
     private static String sha(String text){try{return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(text.getBytes(StandardCharsets.UTF_8)));}catch(java.security.NoSuchAlgorithmException impossible){throw new IllegalStateException(impossible);}}
 }

@@ -4,6 +4,7 @@ The generated checks enforce the existing Java protocol, not an alternate runtim
 representation. Draft 4 schemas are inline constants as required by MySQL 8.4.
 """
 from pathlib import Path
+from copy import deepcopy
 import json
 import re
 
@@ -90,19 +91,28 @@ def main():
                                                   'items': {'enum': [name for _, name in fields]}},
                                 'legacy': legacy})
         encoded = json.dumps(schema, ensure_ascii=True, separators=(',', ':')).replace('\\', '\\\\').replace("'", "''")
-        checks.append(f" CONSTRAINT ck_workbench_json_{variant.lower()} CHECK (kind<>'WORKBENCH_{variant}' OR COALESCE(JSON_SCHEMA_VALID('{encoded}',CAST(payload_json AS JSON)),0)=1),")
-    sql = BASELINE.read_text(encoding='utf8')
+        unknown = deepcopy(schema)
+        unknown['properties']['schemaVersion'] = {'enum': [2]}
+        unknown['properties']['legacy'] = object_schema({name: {'type': 'string'} for name in
+            ('payloadJson', 'createdAt', 'updatedAt')})
+        unknown['properties']['legacy']['required'].append('sourceUtcOffset')
+        unknown['properties']['legacy']['properties']['sourceUtcOffset'] = {'type': 'null'}
+        unknown_encoded = json.dumps(unknown, ensure_ascii=True, separators=(',', ':')).replace('\\', '\\\\').replace("'", "''")
+        checks.append(f" CONSTRAINT ck_workbench_json_{variant.lower()} CHECK (kind<>'WORKBENCH_{variant}' OR ((legacy_clock_json IS NULL AND COALESCE(JSON_SCHEMA_VALID('{encoded}',CAST(payload_json AS JSON)),0)=1) OR (legacy_clock_json IS NOT NULL AND COALESCE(JSON_SCHEMA_VALID('{unknown_encoded}',CAST(payload_json AS JSON)),0)=1))),")
     start = ' -- BEGIN GENERATED WORKBENCH JSON CHECKS'
     end = ' -- END GENERATED WORKBENCH JSON CHECKS'
     section = start + '\n' + '\n'.join(checks) + '\n' + end + '\n'
-    if start in sql:
-        sql = re.sub(re.escape(start) + r'.*?' + re.escape(end) + r'\n', lambda _: section, sql, flags=re.S)
-    else:
-        anchor = ' CONSTRAINT ck_workflow_workbench_command CHECK'
-        if sql.count(anchor) != 1:
-            raise ValueError('Expected one workbench constraint insertion point')
-        sql = sql.replace(anchor, section + anchor)
-    BASELINE.write_text(sql, encoding='utf8', newline='\n')
+    for path in (BASELINE, ROOT / 'sql/mysql/compact/baseline-fixed-clock/30-operations.sql'):
+        sql = path.read_text(encoding='utf8')
+        if start in sql:
+            sql = re.sub(re.escape(start) + r'.*?' + re.escape(end) + r'\n', lambda _: section, sql, flags=re.S)
+        else:
+            sql = re.sub(r'(?m)^ CONSTRAINT ck_workbench_json_[a-z_]+ CHECK .*\n', '', sql)
+            anchor = ' CONSTRAINT ck_workflow_workbench_command CHECK'
+            if sql.count(anchor) != 1:
+                raise ValueError('Expected one workbench constraint insertion point')
+            sql = sql.replace(anchor, section + anchor)
+        path.write_bytes(sql.encode('utf8'))
     print(json.dumps({'status': 'SOURCE_AUTHORED_NOT_SQL_EXECUTED', 'workbenchJsonChecks': len(checks)}))
 
 

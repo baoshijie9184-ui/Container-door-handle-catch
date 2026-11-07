@@ -20,6 +20,7 @@ export default function AgentWorkbenchFiles({files=[],businessFiles=[],known=fal
     <p className="wb-note">{folder.note}</p>
     {folder.files.map(file=><article key={file.id} className="wb-file-row" aria-label={'私有文件 '+(file.name||file.id)}>
      <div className="wb-file-heading"><span className="wb-file-icon"><FileIcon name={composerAttachment(file).icon}/></span><div><strong>{file.name||'未记录文件名'}</strong><small>{composerAttachment(file).type} · {composerAttachment(file).size}</small></div></div>
+     {file.clockStatus==='UNRESOLVED'&&<small>历史时区未确认</small>}
      <div className="wb-actions"><button type="button" disabled={busy} onClick={()=>onPreview(file)}><Search size={14} aria-hidden="true"/>预览</button><button type="button" disabled={busy} onClick={()=>onDownload(file)}><Download size={14} aria-hidden="true"/>下载</button>{!folder.readOnly&&<button type="button" disabled={busy} onClick={()=>onReference(file)}><Plus size={14} aria-hidden="true"/>引用</button>}</div>
      <details className="wb-file-more"><summary aria-label={(file.name||'文件')+'的编号与更多操作'}>更多</summary><p className="wb-file-id">文件编号 {file.id}</p>{!folder.readOnly&&<div className="wb-actions"><button type="button" disabled={busy} onClick={()=>onCopy(file)}><Copy size={14} aria-hidden="true"/>复制引用</button><button type="button" className="wb-button-danger" disabled={busy} onClick={()=>onRemove(file)}><Trash2 size={14} aria-hidden="true"/>移出会话</button></div>}</details>
     </article>)}

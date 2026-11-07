@@ -8,7 +8,12 @@ public interface WorkbenchSessionApi {
     void assertOwned(AgentActor actor,String sessionId);
     void continueSession(AgentActor actor,String sessionId,String requestId,String content);
     String fork(AgentActor actor,String sessionId,long throughMessageId,String requestId);
-    record File(String id,String name,String contentType,long bytes,String sha256,String folder) {}
+    /** clockStatus describes retained historical provenance, not the time of a new user operation. */
+    record File(String id,String name,String contentType,long bytes,String sha256,String folder,
+                String clockStatus,Map<String,String> sourceWallTimes) {
+        public File(String id,String name,String contentType,long bytes,String sha256,String folder){this(id,name,contentType,bytes,sha256,folder,"UTC",Map.of());}
+        public File { clockStatus=clockStatus==null?"UTC":clockStatus;sourceWallTimes=sourceWallTimes==null?Map.of():java.util.Collections.unmodifiableMap(new java.util.LinkedHashMap<>(sourceWallTimes)); }
+    }
     List<File> files(AgentActor actor,String sessionId);
     File createArtifact(AgentActor actor,String sessionId,String requestId,String name,String content);
     String readText(AgentActor actor,String sessionId,String fileId);

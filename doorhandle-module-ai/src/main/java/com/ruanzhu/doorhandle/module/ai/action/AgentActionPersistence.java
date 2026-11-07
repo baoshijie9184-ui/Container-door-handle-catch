@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ruanzhu.doorhandle.framework.persistence.JdbcTransactions;
 import com.ruanzhu.doorhandle.framework.persistence.workflow.WorkflowKind;
+import com.ruanzhu.doorhandle.framework.persistence.workflow.LegacyWorkflowClocks;
+import com.ruanzhu.doorhandle.common.time.LegacyClockEvidence;
 import com.ruanzhu.doorhandle.framework.persistence.workflow.WorkflowProtocol;
 import com.ruanzhu.doorhandle.framework.persistence.workflow.WorkflowProtocols;
 import java.nio.charset.StandardCharsets;
@@ -23,8 +25,8 @@ final class AgentActionPersistence {
     record AuditV1(String actorRole,String resourceId,String reasonCode,String legacyId,String legacyOccurredAt,String sourceUtcOffset) { }
     record Row(long id,String actionId,long userId,String runId,String sessionId,String resourceId,String digest,
                String status,long version,String reasonCode,LocalDateTime createdAt,LocalDateTime expiresAt,
-               LocalDateTime decidedAt,ProposalV1 proposal,String resultJson) { }
-    record AuditRow(long id,String eventType,String actorRole,String result,String reasonCode,LocalDateTime occurredAt) { }
+               LocalDateTime decidedAt,ProposalV1 proposal,String resultJson,LegacyClockEvidence legacyClockEvidence) { }
+    record AuditRow(long id,String eventType,String actorRole,String result,String reasonCode,LocalDateTime occurredAt,LegacyClockEvidence legacyClockEvidence) { }
     private static final Set<String> TERMINAL=Set.of("SUCCEEDED","REJECTED","CANCELLED","EXPIRED","INVALIDATED");
     private final JdbcTemplate jdbc;
     private final ObjectMapper json;
@@ -42,8 +44,8 @@ final class AgentActionPersistence {
     }
 
     void validateSchema() {
-        jdbc.queryForList("SELECT agent_action_digest,agent_action_call_id,agent_action_operation,confirmation_recorded_at FROM workflow_instance WHERE 1=0");
-        jdbc.queryForList("SELECT kind,owner_user_id,policy_version,outcome,payload_version FROM audit_event WHERE 1=0");
+        jdbc.queryForList("SELECT agent_action_digest,agent_action_call_id,agent_action_operation,confirmation_recorded_at,legacy_clock_json FROM workflow_instance WHERE 1=0");
+        jdbc.queryForList("SELECT kind,owner_user_id,policy_version,outcome,payload_version,legacy_clock_json FROM audit_event WHERE 1=0");
     }
 
     Row find(long owner,String actionId,boolean locked) {
@@ -95,7 +97,7 @@ final class AgentActionPersistence {
     void result(long owner,String actionId,long version,String body) {
         JdbcTransactions.requireActive(jdbc);validateJson(body);
         String result=write(new ResultV1(body));
-        if(jdbc.update("UPDATE workflow_instance SET result_version=1,result_json=?,result_sha256=? WHERE kind='AGENT_ACTION' AND owner_user_id=? AND request_id=? AND revision=?",
+        if(jdbc.update("UPDATE workflow_instance SET result_version=1,result_json=?,result_sha256=? WHERE kind='AGENT_ACTION' AND owner_user_id=? AND request_id=? AND revision=? AND legacy_clock_json IS NULL",
                 result,sha(result),owner,actionId,version)!=1)throw changed();
     }
 
@@ -103,7 +105,7 @@ final class AgentActionPersistence {
         JdbcTransactions.requireActive(jdbc);protocol.requireTransition("PENDING",state);
         LocalDateTime now=now();
         if(jdbc.update("UPDATE workflow_instance SET status=?,error_code=?,revision=revision+1,confirmation_recorded_at=?,updated_at=?,finished_at=? "
-                        +"WHERE kind='AGENT_ACTION' AND owner_user_id=? AND request_id=? AND status='PENDING' AND revision=?",
+                        +"WHERE kind='AGENT_ACTION' AND owner_user_id=? AND request_id=? AND status='PENDING' AND revision=? AND legacy_clock_json IS NULL",
                 state,reason,now,now,TERMINAL.contains(state)?now:null,owner,actionId,version)!=1)throw changed();
     }
 
@@ -111,7 +113,7 @@ final class AgentActionPersistence {
         JdbcTransactions.requireActive(jdbc);protocol.requireTransition(before,state);validateJson(body);
         LocalDateTime now=now();String result=write(new ResultV1(body));
         if(jdbc.update("UPDATE workflow_instance SET status=?,error_code=?,result_version=1,result_json=?,result_sha256=?,revision=revision+1,updated_at=?,finished_at=? "
-                        +"WHERE kind='AGENT_ACTION' AND owner_user_id=? AND request_id=? AND status=? AND revision=?",
+                        +"WHERE kind='AGENT_ACTION' AND owner_user_id=? AND request_id=? AND status=? AND revision=? AND legacy_clock_json IS NULL",
                 state,reason,result,sha(result),now,TERMINAL.contains(state)?now:null,owner,actionId,before,version)!=1)throw changed();
     }
 
@@ -126,10 +128,12 @@ final class AgentActionPersistence {
     }
 
     List<AuditRow> audits(long owner,String actionId) {
-        return jdbc.query("SELECT id,action,outcome,occurred_at,payload_version,payload_json FROM audit_event WHERE kind='AGENT_ACTION' AND owner_user_id=? AND resource_id=? ORDER BY id",(rs,n)->{
+        return jdbc.query("SELECT id,action,outcome,occurred_at,payload_version,payload_json,legacy_clock_json,legacy_source,legacy_key FROM audit_event WHERE kind='AGENT_ACTION' AND owner_user_id=? AND resource_id=? ORDER BY id",(rs,n)->{
             if(rs.getInt("payload_version")!=1)throw changed();
             var payload=read(rs.getString("payload_json"),AuditV1.class);
-            return new AuditRow(rs.getLong("id"),rs.getString("action"),payload.actorRole(),rs.getString("outcome"),payload.reasonCode(),rs.getObject("occurred_at",LocalDateTime.class));
+            var clock=rs.getString("legacy_clock_json")==null?null:LegacyClockEvidence.parse(rs.getString("legacy_clock_json"),"agent_action_audit",Map.of("id",new java.math.BigInteger(rs.getString("legacy_key"))));
+            if(clock!=null){if(!"agent_action_audit".equals(rs.getString("legacy_source"))||rs.getObject("occurred_at")!=null||payload.sourceUtcOffset()!=null)throw changed();sameWall(clock,"occurred_at",payload.legacyOccurredAt());}
+            return new AuditRow(rs.getLong("id"),rs.getString("action"),payload.actorRole(),rs.getString("outcome"),payload.reasonCode(),rs.getObject("occurred_at",LocalDateTime.class),clock);
         },owner,actionId);
     }
 
@@ -138,11 +142,21 @@ final class AgentActionPersistence {
     private Row row(ResultSet rs,int ignored) throws SQLException {
         int version=rs.getInt("payload_version");var proposal=read(rs.getString("payload_json"),ProposalV1.class);
         protocol.validatePayload(proposal,version);
+        var clock=LegacyWorkflowClocks.read(rs.getString("legacy_clock_json"),WorkflowKind.AGENT_ACTION,rs.getString("legacy_source"),rs.getString("legacy_key"));
+        if(clock!=null){
+            if(proposal.sourceUtcOffset()!=null)throw changed();
+            for(String column:List.of("created_at","expires_at","confirmation_recorded_at"))if(rs.getObject(column)!=null)throw changed();
+            sameWall(clock,"created_at",proposal.legacyCreatedAt());sameWall(clock,"expires_at",proposal.legacyExpiresAt());sameWall(clock,"decided_at",proposal.legacyDecidedAt());
+        }else if(proposal.legacyCreatedAt()!=null&&proposal.sourceUtcOffset()==null||rs.getObject("created_at")==null||rs.getObject("expires_at")==null)throw changed();
         String body=rs.getString("result_json"),result=null;
         if(body!=null){if(rs.getInt("result_version")!=1||!sha(body).equals(rs.getString("result_sha256")))throw changed();result=read(body,ResultV1.class).resultJson();validateJson(result);}
         return new Row(rs.getLong("id"),rs.getString("request_id"),rs.getLong("owner_user_id"),rs.getString("run_id"),rs.getString("session_id"),
                 rs.getString("resource_id"),rs.getString("request_sha256"),rs.getString("status"),rs.getLong("revision"),rs.getString("error_code"),
-                rs.getObject("created_at",LocalDateTime.class),rs.getObject("expires_at",LocalDateTime.class),rs.getObject("confirmation_recorded_at",LocalDateTime.class),proposal,result);
+                rs.getObject("created_at",LocalDateTime.class),rs.getObject("expires_at",LocalDateTime.class),rs.getObject("confirmation_recorded_at",LocalDateTime.class),proposal,result,clock);
+    }
+    private static void sameWall(LegacyClockEvidence clock,String column,String payload){
+        if(!clock.sourceWallTimes().containsKey(column))throw changed();String original=clock.sourceWallTimes().get(column);
+        if(original==null?payload!=null:payload==null||!LocalDateTime.parse(original.replace(' ','T')).equals(LocalDateTime.parse(payload.replace(' ','T'))))throw changed();
     }
 
     private void validate(ProposalV1 proposal) {

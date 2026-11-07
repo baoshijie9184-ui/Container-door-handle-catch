@@ -26,9 +26,22 @@ public final class QualityReportDtos {
             LocalDateTime createdAt, LocalDateTime updatedAt) {}
     public record Preview(View report, String decision, String reason, String confirmationToken, LocalDateTime expiresAt) {}
     public record EventDelivery(String eventId,String eventType,String deliveryStatus,int attempts,LocalDateTime nextAttemptAt,
-            LocalDateTime deliveredAt,String lastErrorCode,LocalDateTime consumedAt) {}
+            LocalDateTime deliveredAt,String lastErrorCode,LocalDateTime consumedAt,String clockStatus,Map<String,String> sourceWallTimes) {
+        public EventDelivery { sourceWallTimes=sourceWallTimes==null?Map.of():java.util.Collections.unmodifiableMap(new java.util.LinkedHashMap<>(sourceWallTimes)); }
+        public EventDelivery(String eventId,String eventType,String deliveryStatus,int attempts,LocalDateTime nextAttemptAt,
+                LocalDateTime deliveredAt,String lastErrorCode,LocalDateTime consumedAt) {
+            this(eventId,eventType,deliveryStatus,attempts,nextAttemptAt,deliveredAt,lastErrorCode,consumedAt,null,Map.of());
+        }
+    }
     public record RetryEvent(@NotNull @Min(0) Integer expectedAttempts,@AssertTrue boolean confirmed,
             @NotBlank @Pattern(regexp="[A-Za-z0-9_-]{8,64}") String requestId) {}
     public record Audit(long id, String actorUsername, String action, String beforeStatus, String afterStatus,
-            int reportVersion, String reason, String snapshotSha256, LocalDateTime createdAt,String runId,String callId,String toolName) {}
+            int reportVersion, String reason, String snapshotSha256, LocalDateTime createdAt,String runId,String callId,String toolName,
+            String clockStatus,Map<String,String> sourceWallTimes) {
+        public Audit { sourceWallTimes=sourceWallTimes==null?Map.of():java.util.Collections.unmodifiableMap(new java.util.LinkedHashMap<>(sourceWallTimes)); }
+        public Audit(long id,String actorUsername,String action,String beforeStatus,String afterStatus,int reportVersion,
+                     String reason,String snapshotSha256,LocalDateTime createdAt,String runId,String callId,String toolName) {
+            this(id,actorUsername,action,beforeStatus,afterStatus,reportVersion,reason,snapshotSha256,createdAt,runId,callId,toolName,null,Map.of());
+        }
+    }
 }

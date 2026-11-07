@@ -34,6 +34,17 @@ GUARD_RESOURCES = {'35-runtime-guards.sql': ('runtime_state', RUNTIME_GUARDS),
                    '37-audit-guards.sql': ('audit_event', AUDIT_GUARDS),
                    '38-quota-guards.sql': ('llm_quota', QUOTA_GUARDS),
                    '39-workflow-guards.sql': ('workflow_instance', WORKFLOW_GUARDS)}
+LEGACY_CLOCK_TABLES = ('content_asset', 'content_revision', 'content_link', 'agent_run',
+                       'agent_connector', 'runtime_state', 'workflow_instance', 'audit_event')
+LEGACY_CLOCK_GUARDS = {}
+for clock_table, clock_parent in ([(name, False) for name in LEGACY_CLOCK_TABLES]
+                                  + [(name, True) for name in ('model_management', 'chat_session', 'users')]):
+    prefix = 'compact_legacy_clock_' + ('parent_' if clock_parent else '') + clock_table
+    filename = '35-legacy-clock-' + ('parent-' if clock_parent else '') + clock_table.replace('_', '-') + '.sql'
+    guards = {prefix + '_update': 'UPDATE', prefix + '_delete': 'DELETE'}
+    LEGACY_CLOCK_GUARDS.update(guards)
+    GUARD_RESOURCES[filename] = (clock_table, guards)
+PARTS = (*PARTS[:-1], *(name for name in GUARD_RESOURCES if name.startswith('35-legacy-clock-')), PARTS[-1])
 IDENT = r'`?([a-z][a-z0-9_]*)`?'
 
 

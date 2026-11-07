@@ -68,6 +68,40 @@ class WorkbenchMigrationMySqlTest {
         assertThat(source.queryForObject("SELECT status FROM agent_workbench_item",String.class)).isEqualTo("RUNNING");
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE()",Integer.class)).isEqualTo(29);
     }
+
+    @Test void unresolvedSourceKeepsRunningStatusAndWallEvidenceWithoutRecovery(){
+        String original=seed();
+        String snapshot=com.ruanzhu.doorhandle.module.ai.testsupport.FixtureSourceSnapshot.capture(source,SOURCE_TABLES);
+        var unknown=new WorkbenchLegacyMigration.Admission(admission.instanceId(),admission.machineId(),admission.sourceSchema(),admission.targetSchema(),admission.serverUuid(),null,admission.sourceCollations(),snapshot,Set.of("workbench"));
+        var receipt=migration.copy(unknown);assertThat(receipt.sourceUtcOffset()).isNull();assertThat(migration.verifyCommitted(unknown,receipt).matches()).isTrue();
+        var store=new WorkbenchStore(jdbc,new DataSourceTransactionManager(target.dataSource()),json);var item=store.require(7,"deleted-session","legacy-child");
+        assertThat(item.status()).isEqualTo("RUNNING");assertThat(item.updated()).isNull();assertThat(item.lease()).isNull();
+        assertThat(item.legacy().payloadJson()).isEqualTo(original);assertThat(item.legacy().sourceUtcOffset()).isNull();
+        assertThat(item.legacyClockEvidence().sourceKey()).containsEntry("id",new java.math.BigInteger("9223372036854775810"));
+        assertThat(item.legacyClockEvidence().sourceWallTimes()).containsEntry("created_at","2025-03-04 12:13:14.123456");
+        assertThat(store.stale()).isEmpty();store.recover(item);assertThat(store.require(7,"deleted-session","legacy-child").status()).isEqualTo("RUNNING");
+        assertThatThrownBy(()->store.update(item,"NEEDS_REVIEW",item.data(),"PROCESS_INTERRUPTED")).hasMessageContaining("历史");
+        assertThat(store.view(item).data()).containsEntry("clockStatus","UNRESOLVED");
+        assertThat(jdbc.queryForObject("SELECT occurred_at FROM audit_event WHERE kind='WORKBENCH'",LocalDateTime.class)).isNull();
+    }
+    @Test void unresolvedReadyAndQueuedSourcesRemainReadableButNeverEnterDispatch()throws Exception{
+        seed();source.update("UPDATE agent_workbench_item SET status='QUEUED' WHERE item_id='legacy-child'");
+        source.update("INSERT INTO agent_workbench_item(id,item_id,user_id,session_id,kind,status,revision,payload,created_at,updated_at) VALUES(22,'legacy-ready',7,'deleted-session','EXECUTION','READY',3,?,?,?)",
+            "{ \"username\" : \"fixture-user\", \"role\" : \"INSPECTOR\", \"logicalTaskId\" : \"legacy-main-task\", \"continuation\" : \"preserve original continuation\" }",
+            LocalDateTime.of(2025,3,4,12,13,14),LocalDateTime.of(2026,1,2,3,4,5));
+        String snapshot=com.ruanzhu.doorhandle.module.ai.testsupport.FixtureSourceSnapshot.capture(source,SOURCE_TABLES);
+        var unknown=new WorkbenchLegacyMigration.Admission(admission.instanceId(),admission.machineId(),admission.sourceSchema(),admission.targetSchema(),admission.serverUuid(),null,admission.sourceCollations(),snapshot,Set.of("workbench"));
+        var receipt=migration.copy(unknown);assertThat(migration.verifyCommitted(unknown,receipt).matches()).isTrue();
+        var store=new WorkbenchStore(jdbc,new DataSourceTransactionManager(target.dataSource()),json);
+        assertThat(store.require(7,"deleted-session","legacy-ready").status()).isEqualTo("READY");
+        assertThat(store.require(7,"deleted-session","legacy-child").status()).isEqualTo("QUEUED");
+        assertThat(store.dispatch(0)).isEmpty();
+        var confirmed=store.create(7,"deleted-session","confirmed-ready","EXECUTION","READY",
+            Map.of("username","fixture-user","role","INSPECTOR","logicalTaskId","confirmed-task","continuation","confirmed continuation"));
+        assertThat(store.dispatch(0)).extracting(WorkbenchStore.Row::id).containsExactly(confirmed.id());
+        assertThat(store.require(7,"deleted-session","legacy-ready").legacyClockEvidence().sourceSnapshotSha256()).isEqualTo(snapshot);
+        assertThat(com.ruanzhu.doorhandle.module.ai.testsupport.FixtureSourceSnapshot.capture(source,SOURCE_TABLES)).isEqualTo(snapshot);
+    }
     @Test void rejectsUnregisteredPayloadFieldsBeforeTargetMutation(){
         seed();source.update("UPDATE agent_workbench_item SET payload=JSON_SET(payload,'$.arbitrary_unregistered_field','must not disappear')");
         assertThatThrownBy(()->migration.copy(admission)).isInstanceOf(IllegalArgumentException.class);

@@ -29,5 +29,10 @@ public final class WorkspaceMigrationFixture implements AutoCloseable {
         if(offset==null||!offset.matches("[+-][0-9]{2}:[0-9]{2}"))throw new IllegalArgumentException("An evidenced source DATETIME offset is required");
         schemas.executeTarget(Files.readString(Path.of("../sql/mysql/compact/copy/43-workspace.sql")).replace("__SOURCE_SCHEMA__",schemas.sourceName()).replace("__SOURCE_WORKSPACE_OFFSET__",offset));
     }
+    public String sourceSnapshotSha256(){return schemas.sourceSnapshotSha256();}
+    public void migrateUnresolved()throws Exception{
+        schemas.executeTarget(Files.readString(Path.of("../sql/mysql/compact/copy/43-workspace.sql"))
+                .replace("__SOURCE_SCHEMA__",schemas.sourceName()).replace("__SOURCE_WORKSPACE_OFFSET__","UNRESOLVED"));
+    }
     @Override public void close()throws Exception{schemas.close();}
 }

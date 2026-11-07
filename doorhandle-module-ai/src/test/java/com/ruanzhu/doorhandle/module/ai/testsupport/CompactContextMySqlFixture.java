@@ -35,8 +35,8 @@ public final class CompactContextMySqlFixture implements AutoCloseable {
         }
         owned=true;
         try{
-            for(String part:new String[]{"10-core.sql","20-content.sql","25-agent.sql","30-operations.sql","35-runtime-guards.sql","36-identity-guards.sql","37-audit-guards.sql","38-quota-guards.sql","39-workflow-guards.sql","40-relations.sql"})
-                install(targetData,Files.readString(Path.of("../sql/mysql/compact/baseline",part)),part.endsWith("-guards.sql")?"$$":";",targetTables);
+            for(String part:CompactBaselineParts.all())
+                install(targetData,Files.readString(Path.of("../sql/mysql/compact/baseline",part)),CompactBaselineParts.separator(part),targetTables);
             if(sourceData!=null)install(sourceData,new ClassPathResource("compact/context-source-evidence.sql").getContentAsString(StandardCharsets.UTF_8),";",sourceTables);
         }catch(Exception error){try{close();}catch(Exception cleanup){error.addSuppressed(cleanup);}throw error;}
     }
@@ -51,6 +51,7 @@ public final class CompactContextMySqlFixture implements AutoCloseable {
         if(offset==null||!offset.matches("[+-][0-9]{2}:[0-9]{2}"))throw new IllegalArgumentException("Explicit source UTC offset required");
         String sql=Files.readString(Path.of("../sql/mysql/compact/copy/45-context.sql"))
                 .replace("__SOURCE_SCHEMA__",source().queryForObject("SELECT DATABASE()",String.class)).replace("__SOURCE_CONTEXT_OFFSET__",offset);
+        sql=FixtureSourceSnapshot.bind(sql,source(),sourceTables);
         try(Connection connection=targetData.getConnection()){
             connection.setAutoCommit(false);
             try{execute(connection,"SET @compact_context_source_frozen=1; SET @compact_context_target_frozen=1; "+sql,";");}catch(Exception error){try{connection.rollback();}catch(Exception rollback){error.addSuppressed(rollback);}throw error;}

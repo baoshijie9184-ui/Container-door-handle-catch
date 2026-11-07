@@ -49,11 +49,11 @@ final class WorkbenchExecutionFixture implements AutoCloseable {
         javax.sql.DataSource dataSource=pool;databaseKind="MYSQL_ISOLATED";jdbc=new JdbcTemplate(dataSource);
         if(!database.equals(jdbc.queryForObject("SELECT DATABASE()",String.class))||jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE()",Integer.class)!=0)throw new IllegalArgumentException("Use an empty admitted ECS schema");
         try(var connection=dataSource.getConnection()){
-            for(String part:List.of("10-core.sql","20-content.sql","25-agent.sql","30-operations.sql","35-runtime-guards.sql","36-identity-guards.sql","37-audit-guards.sql","38-quota-guards.sql","39-workflow-guards.sql","40-relations.sql")){
+            for(String part:com.ruanzhu.doorhandle.module.ai.testsupport.CompactBaselineParts.all()){
                 byte[] bytes=Files.readAllBytes(project.resolve("sql/mysql/compact/baseline").resolve(part));
                 var matcher=java.util.regex.Pattern.compile("(?im)^CREATE TABLE\\s+([a-z_]+)\\s*\\(").matcher(new String(bytes,java.nio.charset.StandardCharsets.UTF_8));while(matcher.find())ownedTables.add(matcher.group(1));
                 var resource=new org.springframework.core.io.ByteArrayResource(bytes);
-                org.springframework.jdbc.datasource.init.ScriptUtils.executeSqlScript(connection,new org.springframework.core.io.support.EncodedResource(resource,java.nio.charset.StandardCharsets.UTF_8),false,false,"--",part.endsWith("-guards.sql")?"$$":";","/*","*/");
+                org.springframework.jdbc.datasource.init.ScriptUtils.executeSqlScript(connection,new org.springframework.core.io.support.EncodedResource(resource,java.nio.charset.StandardCharsets.UTF_8),false,false,"--",com.ruanzhu.doorhandle.module.ai.testsupport.CompactBaselineParts.separator(part),"/*","*/");
             }
         }
         if(jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE()",Integer.class)!=29)throw new IllegalStateException("Workbench fixture must use the actual compact target");

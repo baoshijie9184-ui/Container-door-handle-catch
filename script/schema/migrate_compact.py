@@ -8,19 +8,18 @@ stops ECS. Deployment uses the verified receipt, not this command's intent.
 from __future__ import annotations
 
 import argparse
-from contextlib import nullcontext
 import json
 import os
 from pathlib import Path
-import re
 import subprocess
 import sys
 import uuid
+import compact_clock_policy as clocks
 
 from compact_migration_runtime import (ROOT, Mysql, WORKBENCH_SOURCES, compiled_target_parts,
-    copy_plan, executable, fresh_output, freeze_evidence, identifier, install_relations,
-    load_config, metadata_snapshot, new_schema, private_json, quoted, render_copy, require,
-    restore_backup, schema_snapshot, schema_tables, sha_file, sha_json, utc_now, write_json,
+    copy_plan, executable, fresh_output, freeze_evidence, install_relations,
+    load_config, metadata_snapshot, new_schema, private_json, render_copy, require,
+    restore_backup, schema_snapshot, sha_file, sha_json, utc_now, write_json,
     backup_schema, validate_migration_receipt, admit_source_trigger_definers, literal)
 
 
@@ -70,7 +69,7 @@ def observed_source(mysql, config, identity, contract_sha, sources):
             'sourceSnapshot': snapshot, 'observedAtUtc': utc_now()}
 
 
-def workbench(mysql, config, identity, output):
+def workbench(mysql, config, identity, output, *, source_snapshot_sha256=None):
     value = config.get('workbench')
     require(isinstance(value, dict) and set(value) in ({'java', 'applicationJar', 'applicationJarSha256'}, {'java', 'classpath'}),
             'A built candidate application jar or explicit complete Java classpath is required')
@@ -96,7 +95,11 @@ def workbench(mysql, config, identity, output):
                 'serverUuid': config['serverUuid'], 'sourceUtcOffset': config['sourceOffsets'].get('workbench'),
                 'sourceCollations': {name: config['sourceCollations'][name] for name in sorted(WORKBENCH_SOURCES)},
                 'connection': config['connection'], 'scope': config['scope'], 'client': config['client']}
-    require(isinstance(settings['sourceUtcOffset'], str), 'An observed Workbench source UTC offset is required')
+    extra = clocks.workbench_fields(config['sourceOffsets'], config.get('legacyClockPolicy'), source_snapshot_sha256)
+    if extra:
+        settings.update(version=2, **extra)
+    else:
+        require(clocks.fixed_offset(settings['sourceUtcOffset']), 'An observed Workbench source UTC offset is required')
     config_path = output / 'private/workbench.json'
     receipt_path = output / 'workbench-receipt.json'
     write_json(config_path, settings)
@@ -126,10 +129,6 @@ def initialize_target(mysql, config, base, guards):
 def migrate(config, identity, config_sha, output, model, model_sha):
     sql, catalog, base, foreign, guards = compiled_target_parts()
     plan = copy_plan(model)
-    # Render every reviewed template before creating any schema; missing time
-    # evidence or an unknown token is a configuration failure, not a copy step.
-    rendered = {step['name']: render_copy((ROOT / 'sql/mysql/compact/copy' / step['name']).read_text(encoding='utf8'), config)
-                for step in plan if step['kind'] == 'sql'}
     plan_sha = sha_json(plan)
     mysql = Mysql(config, output)
     server = mysql.admitted_server()
@@ -141,6 +140,12 @@ def migrate(config, identity, config_sha, output, model, model_sha):
             and reviewed.get('ecs') == identity and reviewed.get('sourceSchema') == config['sourceSchema']
             and reviewed.get('serverUuid') == config['serverUuid'] and reviewed.get('contractSha256') == model_sha,
             'A reviewed complete source observation for this exact schema and server is required')
+    # Bind provenance to the reviewed observation before any target DDL. The
+    # same complete snapshot is independently verified under the source lock.
+    source_binding = clocks.snapshot_binding(reviewed.get('sourceSnapshotSha256'))
+    rendered = {step['name']: render_copy((ROOT / 'sql/mysql/compact/copy' / step['name']).read_text(encoding='utf8'),
+                    config, source_snapshot_sha256=source_binding)
+                for step in plan if step['kind'] == 'sql'}
     attempt = uuid.uuid4().hex
     record = {'schemaVersion': 1, 'kind': 'doorhandle-compact-migration', 'status': 'IN_PROGRESS',
               'attempt': attempt, 'ecs': identity, 'scope': config['scope'], 'startedAtUtc': utc_now(),
@@ -148,7 +153,8 @@ def migrate(config, identity, config_sha, output, model, model_sha):
               'configSha256': config_sha, 'contractSha256': model_sha, 'sqlSha256': catalog['sqlSha256'],
               'copyPlanSha256': plan_sha, 'reviewedSourceObservationSha256': reviewed_sha,
               'freezeEvidenceSha256': freeze['sha256'], 'sourceTableCount': 131, 'targetTableCount': 29,
-              'executedSteps': [], 'lifecycle': 'external-to-jenkins'}
+              'executedSteps': [], 'lifecycle': 'external-to-jenkins',
+              'sourceClockPolicy': clocks.evidence(config['sourceOffsets'], config.get('legacyClockPolicy'))}
     context = {name: record[name] for name in ('attempt', 'ecs', 'scope', 'serverUuid', 'sourceSchema', 'targetSchema',
                                               'contractSha256', 'sqlSha256', 'copyPlanSha256')}
     try:
@@ -166,7 +172,7 @@ def migrate(config, identity, config_sha, output, model, model_sha):
             for step in plan:
                 mysql.assert_source_lock()
                 if step['kind'] == 'java':
-                    proof = workbench(mysql, config, identity, output)
+                    proof = workbench(mysql, config, identity, output, source_snapshot_sha256=record['sourceSnapshotSha256'])
                 else:
                     path = ROOT / 'sql/mysql/compact/copy' / step['name']
                     require(sha_file(path) == step['sha256'], 'Copy source changed during migration')
@@ -241,6 +247,9 @@ def verify(config, identity, output, receipt_path, model, model_sha):
     prior = validate_migration_receipt(receipt_path, {'ecs': identity, 'serverUuid': config['serverUuid'],
         'sourceSchema': config['sourceSchema'], 'targetSchema': config['targetSchema'],
         'contractSha256': model_sha, 'sqlSha256': catalog['sqlSha256'], 'scope': config['scope']})
+    if 'sourceClockPolicy' in prior:
+        require(prior['sourceClockPolicy'] == clocks.evidence(config['sourceOffsets'], config.get('legacyClockPolicy')),
+                'Readback source clock policy differs from the accepted migration')
     mysql = Mysql(config, output)
     mysql.admitted_server()
     freeze = freeze_evidence(config, identity)

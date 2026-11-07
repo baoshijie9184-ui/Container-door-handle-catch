@@ -2,6 +2,15 @@ const test=require('node:test'),assert=require('node:assert/strict')
 const {readFrontendFile}=require('./helpers/project-source.cjs')
 const utility=import(`data:text/javascript;base64,${Buffer.from(readFrontendFile('src','utils','agentWorkbench.js')).toString('base64')}`)
 const id='00000000-0000-0000-0000-000000000001'
+test('file normalization retains unknown historical civil time without coercing an offset',async()=>{
+ const {normalizeWorkbench}=await utility
+ const times={created_at:'2026-10-17 11:43:52.871087',updated_at:null}
+ const file={id,name:'private.md',contentType:'text/plain',bytes:7,folder:'uploads',clockStatus:'UNRESOLVED',sourceWallTimes:times}
+ const value=normalizeWorkbench({items:[],files:[file]})
+ assert.equal(value.files[0].clockStatus,'UNRESOLVED');assert.deepEqual(value.files[0].sourceWallTimes,times)
+ times.created_at='changed';assert.equal(value.files[0].sourceWallTimes.created_at,'2026-10-17 11:43:52.871087')
+ assert.throws(()=>normalizeWorkbench({items:[],files:[{...file,sourceWallTimes:{created_at:'2026-10-17T11:43:52Z'}}]}),/历史时钟信息无效/)
+})
 test('recovery model choice is explicit and bound to a verified configuration version',async()=>{
  const {recoveryInput}=await utility
  assert.deepEqual(recoveryInput('KEEP',{}),{})

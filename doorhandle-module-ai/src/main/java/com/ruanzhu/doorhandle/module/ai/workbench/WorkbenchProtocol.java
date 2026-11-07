@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.*;
 import com.fasterxml.jackson.databind.*;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.ruanzhu.doorhandle.contracts.agent.AgentWorkbenchApi;
+import com.ruanzhu.doorhandle.common.time.LegacyClockEvidence;
 import com.ruanzhu.doorhandle.framework.persistence.workflow.*;
 import java.lang.reflect.RecordComponent;
 import java.util.*;
@@ -106,6 +107,9 @@ final class WorkbenchProtocol {
     void transition(String type,String before,String after){protocols.get(type).requireTransition(before,after);}
     void state(String type,String state){if(!states(type).contains(state))throw new IllegalArgumentException("Unsupported workbench state");}
     ItemV1 payload(String type,Map<String,Object> values,LegacyItemV1 legacy){
+        return payload(type,values,legacy,false);
+    }
+    ItemV1 payload(String type,Map<String,Object> values,LegacyItemV1 legacy,boolean unresolved){
         Class<? extends ItemData> bodyType=CLASSES.get(type);if(bodyType==null)throw new IllegalArgumentException("Unknown workbench kind");
         ObjectNode body=json.createObjectNode();body.put("type",type);for(var component:bodyType.getRecordComponents())body.putNull(component.getName());
         values.forEach((key,value)->body.set(key,json.valueToTree(value)));
@@ -115,9 +119,15 @@ final class WorkbenchProtocol {
             var keys=task.fieldNames();while(keys.hasNext())if(!names.contains(keys.next()))throw new IllegalArgumentException("Unknown task field");
             for(String key:names)if(!task.has(key))task.putNull(key);
         }
-        ItemV1 result=new ItemV1(1,json.convertValue(body,ItemData.class),Set.copyOf(values.keySet()),legacy);validate(type,result);return result;
+        ItemV1 result=new ItemV1(unresolved?2:1,json.convertValue(body,ItemData.class),Set.copyOf(values.keySet()),legacy);validate(type,result);return result;
     }
-    ItemV1 read(String type,int version,String value){try{var payload=json.readValue(value,ItemV1.class);protocols.get(type).validatePayload(payload,version);return payload;}catch(Exception error){throw new IllegalStateException("工作台记录格式不正确",error);}}
+    ItemV1 read(String type,int version,String value){return read(type,version,value,null);}
+    ItemV1 read(String type,int version,String value,LegacyClockEvidence clock){try{
+        var payload=json.readValue(value,ItemV1.class);protocols.get(type).validatePayload(payload,version);
+        if((payload.schemaVersion()==2)!=(clock!=null))throw new IllegalStateException("Workbench legacy clock provenance is incomplete");
+        if(clock!=null){clock.requireWallTime("created_at",payload.legacy().createdAt());clock.requireWallTime("updated_at",payload.legacy().updatedAt());}
+        return payload;
+    }catch(Exception error){throw new IllegalStateException("工作台记录格式不正确",error);}}
     String write(Object value){try{return json.writeValueAsString(value);}catch(Exception error){throw new IllegalArgumentException("工作台记录不能编码",error);}}
     Map<String,Object> data(ItemV1 payload){
         var tree=(ObjectNode)json.valueToTree(payload.data());var result=new LinkedHashMap<String,Object>();
@@ -133,7 +143,7 @@ final class WorkbenchProtocol {
     }catch(Exception error){throw new IllegalStateException("工作台命令回执不可读",error);}}
     private static void responseType(String type){if(!Set.of("ITEM","MODEL_SELECTION").contains(type))throw new IllegalArgumentException("Unsupported command response type");}
     private void validate(String type,ItemV1 payload){
-        if(payload==null||payload.schemaVersion()!=1||payload.data()==null||!CLASSES.get(type).isInstance(payload.data())||payload.presentFields()==null)throw new IllegalArgumentException("Invalid workbench typed payload");
+        if(payload==null||!Set.of(1,2).contains(payload.schemaVersion())||payload.data()==null||!CLASSES.get(type).isInstance(payload.data())||payload.presentFields()==null)throw new IllegalArgumentException("Invalid workbench typed payload");
         Set<String> fields=new HashSet<>();for(RecordComponent component:payload.data().getClass().getRecordComponents())fields.add(component.getName());
         if(!fields.containsAll(payload.presentFields()))throw new IllegalArgumentException("Unknown workbench payload field");
         var values=data(payload);
@@ -152,6 +162,7 @@ final class WorkbenchProtocol {
             if(turn.throughMessageId()==null||turn.throughMessageId()<1||turn.snapshot()==null)throw new IllegalArgumentException("Invalid turn snapshot");
             for(var item:turn.snapshot()){if(item==null||!Set.of("PLAN","TASKS").contains(item.kind()))throw new IllegalArgumentException("Invalid snapshot kind");payload(item.kind(),item.data(),null);}
         }
-        if(payload.legacy()!=null&&(payload.legacy().payloadJson()==null||payload.legacy().createdAt()==null||payload.legacy().updatedAt()==null||payload.legacy().sourceUtcOffset()==null))throw new IllegalArgumentException("Incomplete legacy workbench evidence");
+        if(payload.legacy()!=null&&(payload.legacy().payloadJson()==null||payload.legacy().createdAt()==null||payload.legacy().updatedAt()==null||(payload.schemaVersion()==1)==(payload.legacy().sourceUtcOffset()==null)))throw new IllegalArgumentException("Incomplete legacy workbench evidence");
+        if(payload.schemaVersion()==2&&payload.legacy()==null)throw new IllegalArgumentException("Unresolved workbench requires retained original wall clocks");
     }
 }

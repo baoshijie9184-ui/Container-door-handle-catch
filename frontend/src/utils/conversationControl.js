@@ -3,7 +3,7 @@ export const inputStatusLabels={QUEUED:'待处理',STARTED:'已领取执行',APP
 // The current/first message is not a visible backlog. Show only extra waiting input.
 export function showConversationQueue(state){
  const count=(state?.inputs||[]).filter(item=>item.status==='QUEUED').length
- return state?.enabled===true && count>0 && (count>1 || !!state.run?.runId&&state.run.phase!=='IDLE')
+ return state?.enabled===true && count>0 && (count>1 || !!state.run?.runId&&state.run.phase!=='IDLE' || (state.inputs||[]).some(item=>item.status==='QUEUED'&&item.clockStatus==='UNRESOLVED'))
 }
 export function normalizeControl(value,sessionId){
  const run=value?.run
@@ -11,7 +11,13 @@ export function normalizeControl(value,sessionId){
  const ids=new Set()
  const inputs=value.inputs.map(item=>{
   if(typeof item?.id!=='string'||!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(item.id)||ids.has(item.id)||!['NEXT_TURN','NEXT_STEP'].includes(item.mode)||!Object.hasOwn(inputStatusLabels,item.status)||!Number.isSafeInteger(item.revision)||item.revision<0||typeof item.content!=='string'||item.content.length>8000)throw Error('INVALID_INPUT')
-  ids.add(item.id);return {id:item.id,mode:item.mode,status:item.status,revision:item.revision,content:item.content}
+  const normalized={id:item.id,mode:item.mode,status:item.status,revision:item.revision,content:item.content}
+  if(item.clockStatus!==undefined){
+   const times=item.sourceWallTimes
+   if(!['UTC','UNRESOLVED'].includes(item.clockStatus)||!times||typeof times!=='object'||Array.isArray(times)||Object.keys(times).length>64||Object.entries(times).some(([key,value])=>!/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(key)||value!==null&&(typeof value!=='string'||!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d{1,6})?$/.test(value))))throw Error('INVALID_INPUT_CLOCK')
+   normalized.clockStatus=item.clockStatus;normalized.sourceWallTimes={...times}
+  }
+  ids.add(item.id);return normalized
  })
  return {run:{sessionId,runId:typeof run.runId==='string'?run.runId:null,phase:run.phase,revision:run.revision,local:run.local,text:run.text},inputs}
 }
@@ -58,9 +64,9 @@ export class ConversationControlClient{
   if(this.uncertain.get(signature)===id)this.uncertain.delete(signature)
   return result
  }
- change(item,content){return this.write('/'+encodeURIComponent(this.session)+'/inputs/'+encodeURIComponent(item.id),{revision:item.revision,content})}
+ change(item,content){if(item.clockStatus==='UNRESOLVED')throw Error('历史时区未确认，原消息需要核对');return this.write('/'+encodeURIComponent(this.session)+'/inputs/'+encodeURIComponent(item.id),{revision:item.revision,content})}
  setQueueEnabled(enabled){this.queueEnabled=enabled===true;try{globalThis.sessionStorage?.setItem('conversation-queue:'+this.session,this.queueEnabled?'on':'off')}catch{/* The current view still retains the choice. */}if(this.state)this.onState({enabled:this.enabled,...this.state,queueEnabled:this.queueEnabled,error:''})}
- steer(item){const run=this.state?.run;if(!run?.runId||run.phase==='IDLE')throw Error('当前没有可引导的任务，请刷新核对');return this.write('/'+encodeURIComponent(this.session)+'/inputs/'+encodeURIComponent(item.id)+'/steer',{revision:item.revision,runId:run.runId})}
+ steer(item){if(item.clockStatus==='UNRESOLVED')throw Error('历史时区未确认，原消息需要核对');const run=this.state?.run;if(!run?.runId||run.phase==='IDLE')throw Error('当前没有可引导的任务，请刷新核对');return this.write('/'+encodeURIComponent(this.session)+'/inputs/'+encodeURIComponent(item.id)+'/steer',{revision:item.revision,runId:run.runId})}
  command(action){const run=this.state?.run;if(!run?.local||!run.runId)throw Error('当前实例无法控制此执行，请刷新核对');return this.write('/'+encodeURIComponent(this.session)+'/control',{runId:run.runId,action,revision:run.revision,confirmed:action==='cancel'})}
  close(){this.generation++;this.enabled=false;clearTimeout(this.timer);this.state=null}
 }

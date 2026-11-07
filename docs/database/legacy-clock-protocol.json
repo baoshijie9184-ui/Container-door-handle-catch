@@ -1,0 +1,155 @@
+{
+  "protocol": "doorhandle-legacy-clock-v1",
+  "status": "SOURCE_AUTHORED_NOT_ECS_VALIDATED",
+  "algorithm": "MYSQL_JSON_SHA256_V1",
+  "tables": {
+    "content_asset": [
+      "agent_fetch_image",
+      "agent_learned_skill",
+      "agent_skill_download",
+      "agent_skill_import",
+      "agent_workspace_file"
+    ],
+    "content_revision": [
+      "agent_skill_download",
+      "agent_skill_import",
+      "agent_skill_version",
+      "agent_workspace_file"
+    ],
+    "content_link": [
+      "agent_fetch_image_retention",
+      "agent_workspace_business_ref",
+      "agent_workspace_file_ref"
+    ],
+    "agent_run": [
+      "agent_run"
+    ],
+    "agent_connector": [
+      "agent_local_mcp"
+    ],
+    "runtime_state": [
+      "agent_fetch_image_retention_control",
+      "agent_memory_preference",
+      "agent_workbench_sdk_state",
+      "detection_report_event_state"
+    ],
+    "workflow_instance": [
+      "agent_conversation_input",
+      "agent_fetch_image_command",
+      "agent_fetch_installation",
+      "agent_fetch_lifecycle_command",
+      "agent_mcp_execution",
+      "agent_mcp_execution_command",
+      "agent_mcp_install_job",
+      "agent_mcp_install_worker",
+      "agent_memory_audit",
+      "agent_pending_action",
+      "agent_skill_download",
+      "agent_skill_import",
+      "agent_skill_storage_command",
+      "agent_workbench_item",
+      "chat_pending_action",
+      "detection_report_agent_origin",
+      "detection_report_command",
+      "detection_report_confirmation",
+      "detection_report_event_receipt",
+      "detection_report_outbox"
+    ],
+    "audit_event": [
+      "agent_action_audit",
+      "agent_conversation_input_audit",
+      "agent_fetch_image_retention_event",
+      "agent_local_mcp_audit",
+      "agent_memory_audit",
+      "agent_run_event",
+      "agent_skill_audit",
+      "agent_skill_download_event",
+      "agent_skill_eval",
+      "agent_skill_source",
+      "agent_workbench_audit",
+      "agent_workspace_audit",
+      "detection_report_audit",
+      "model_operation_log",
+      "operation_audit_log"
+    ]
+  },
+  "guardResources": {
+    "35-legacy-clock-content-asset.sql": {
+      "table": "content_asset",
+      "triggers": [
+        "compact_legacy_clock_content_asset_update",
+        "compact_legacy_clock_content_asset_delete"
+      ]
+    },
+    "35-legacy-clock-content-revision.sql": {
+      "table": "content_revision",
+      "triggers": [
+        "compact_legacy_clock_content_revision_update",
+        "compact_legacy_clock_content_revision_delete"
+      ]
+    },
+    "35-legacy-clock-content-link.sql": {
+      "table": "content_link",
+      "triggers": [
+        "compact_legacy_clock_content_link_update",
+        "compact_legacy_clock_content_link_delete"
+      ]
+    },
+    "35-legacy-clock-agent-run.sql": {
+      "table": "agent_run",
+      "triggers": [
+        "compact_legacy_clock_agent_run_update",
+        "compact_legacy_clock_agent_run_delete"
+      ]
+    },
+    "35-legacy-clock-agent-connector.sql": {
+      "table": "agent_connector",
+      "triggers": [
+        "compact_legacy_clock_agent_connector_update",
+        "compact_legacy_clock_agent_connector_delete"
+      ]
+    },
+    "35-legacy-clock-runtime-state.sql": {
+      "table": "runtime_state",
+      "triggers": [
+        "compact_legacy_clock_runtime_state_update",
+        "compact_legacy_clock_runtime_state_delete"
+      ]
+    },
+    "35-legacy-clock-workflow-instance.sql": {
+      "table": "workflow_instance",
+      "triggers": [
+        "compact_legacy_clock_workflow_instance_update",
+        "compact_legacy_clock_workflow_instance_delete"
+      ]
+    },
+    "35-legacy-clock-audit-event.sql": {
+      "table": "audit_event",
+      "triggers": [
+        "compact_legacy_clock_audit_event_update",
+        "compact_legacy_clock_audit_event_delete"
+      ]
+    },
+    "35-legacy-clock-parent-model-management.sql": {
+      "table": "model_management",
+      "triggers": [
+        "compact_legacy_clock_parent_model_management_update",
+        "compact_legacy_clock_parent_model_management_delete"
+      ]
+    },
+    "35-legacy-clock-parent-chat-session.sql": {
+      "table": "chat_session",
+      "triggers": [
+        "compact_legacy_clock_parent_chat_session_update",
+        "compact_legacy_clock_parent_chat_session_delete"
+      ]
+    },
+    "35-legacy-clock-parent-users.sql": {
+      "table": "users",
+      "triggers": [
+        "compact_legacy_clock_parent_users_update",
+        "compact_legacy_clock_parent_users_delete"
+      ]
+    }
+  }
+}

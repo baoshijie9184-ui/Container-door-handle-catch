@@ -25,6 +25,7 @@ class DetectionFingerprintProjectionMySqlTest {
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE()",Long.class)).isZero();
         FeatureMySql.migrate(source,"compact/baseline/20-content.sql");
         FeatureMySql.migrate(source,"compact/baseline/30-operations.sql");
+        com.ruanzhu.doorhandle.module.detection.support.FixtureSourceSnapshot.installLegacyClockGuards(jdbc,java.nio.file.Path.of("../sql/mysql/compact/baseline"));
         fingerprints=new DetectionImageFingerprintMapper(jdbc,new ObjectMapper());
     }
     @BeforeEach void seed() {

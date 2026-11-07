@@ -96,6 +96,44 @@ class LegacyChatActionStoreMySqlTest {
         assertThat(jdbc.queryForObject("SELECT finished_at FROM workflow_instance",LocalDateTime.class)).isNotNull();
     }
 
+    private String importUnresolvedClockAction(String action)throws Exception{
+        var times=new java.util.LinkedHashMap<String,Object>();times.put("created_at","2026-05-28 17:38:15");times.put("confirmed_at",null);
+        String evidence=json.writeValueAsString(java.util.Map.of("protocol","doorhandle-legacy-clock-v1","status","UNRESOLVED",
+                "sourceTable","chat_pending_action","sourceKey",java.util.Map.of("id",98),"sourceSnapshotSha256","a".repeat(64),
+                "sourceRowSha256","b".repeat(64),"sourceWallTimes",times));
+        var payload=new LegacyChatActionStore.PendingV1("OLD_OPERATION",RAW,"original error  ","98",SESSION,"2026-05-28 17:38:15.000000",null,null);
+        jdbc.update("""
+                INSERT INTO workflow_instance(workflow_id,kind,idempotency_scope,request_id,request_sha256,owner_user_id,
+                  resource_type,resource_id,chat_action_session_id,status,revision,payload_version,payload_json,
+                  created_at,updated_at,confirmation_recorded_at,finished_at,legacy_source,legacy_key,legacy_clock_json)
+                VALUES(?,'LEGACY_CHAT_ACTION','LEGACY_CHAT_ACTION',?,?,1,'CHAT_ACTION',?,?,'pending',0,1,?,
+                  NULL,NULL,NULL,NULL,'chat_pending_action','98',?)
+                """,UUID.randomUUID().toString(),action,digest(json.writeValueAsString(List.of(payload.actionType(),payload.actionPayload()))),
+                action,SESSION,json.writeValueAsString(payload),evidence);
+        return evidence;
+    }
+    @Test void unresolvedClockRetainsOriginalStatusRawPayloadAndNullTimesButBlocksApplication()throws Exception{
+        String evidence=importUnresolvedClockAction("unknown-clock-action");
+        var read=store.get(1,SESSION,"unknown-clock-action");
+        assertThat(read.getCreatedAt()).isNull();assertThat(read.getConfirmedAt()).isNull();assertThat(read.getStatus()).isEqualTo("pending");
+        assertThat(read.getActionPayloadJson()).isEqualTo(RAW);assertThat(read.getClockStatus()).isEqualTo("UNRESOLVED");
+        assertThat(read.getSourceWallTimes()).containsEntry("created_at","2026-05-28 17:38:15").containsEntry("confirmed_at",null);
+        assertThatThrownBy(()->store.transition(1,SESSION,"unknown-clock-action","PENDING","EXECUTING",null)).hasMessageContaining("历史时区未确认");
+        assertThatThrownBy(()->store.mark(1,SESSION,"unknown-clock-action","CANCELLED")).hasMessageContaining("历史时区未确认");
+        assertThatThrownBy(()->store.get(2,SESSION,"unknown-clock-action")).isInstanceOf(SecurityException.class);
+        assertThat(jdbc.queryForObject("SELECT legacy_clock_json FROM workflow_instance",String.class)).isEqualTo(evidence);
+        assertThat(jdbc.queryForObject("SELECT status FROM workflow_instance",String.class)).isEqualTo("pending");assertThat(count("audit_event")).isZero();
+        var current=store.insert(1,pending("new-current-action",SESSION));assertThat(current.getCreatedAt()).isNotNull();assertThat(current.getClockStatus()).isEqualTo("UTC");
+        assertThat(store.transition(1,SESSION,"new-current-action","PENDING","CANCELLED",null)).isTrue();
+    }
+    @Test void unresolvedClockCannotBorrowAnOffsetOrAnotherPrimaryKey()throws Exception{
+        importUnresolvedClockAction("unknown-clock-action");
+        assertThatThrownBy(()->{jdbc.update("UPDATE workflow_instance SET payload_json=JSON_SET(payload_json,'$.sourceUtcOffset','+08:00')");store.get(1,SESSION,"unknown-clock-action");})
+                .isInstanceOfAny(IllegalStateException.class,DataAccessException.class);
+        assertThatThrownBy(()->{jdbc.update("UPDATE workflow_instance SET payload_json=JSON_SET(payload_json,'$.sourceUtcOffset',CAST('null' AS JSON)),legacy_key='99'");store.get(1,SESSION,"unknown-clock-action");})
+                .isInstanceOfAny(IllegalStateException.class,DataAccessException.class);
+    }
+
     @Test void currentSessionOwnerControlsExistingActionsAfterTransfer() {
         store.insert(1,pending("ownership",SESSION));
         assertThatThrownBy(()->store.get(2,SESSION,"ownership")).isInstanceOf(SecurityException.class);

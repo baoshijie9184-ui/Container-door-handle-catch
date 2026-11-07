@@ -6,6 +6,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.server.ResponseStatusException;
 import org.springframework.http.HttpStatus;
 import java.util.Map;
+import com.ruanzhu.doorhandle.common.time.LegacyClockEvidence;
 
 /** One SQL fence per immutable image. Readers remain enforced when the cleanup UI is disabled. */
 public final class FetchImageRegistry {
@@ -19,7 +20,9 @@ public final class FetchImageRegistry {
     public Map<String,Object> lock(String image){
         if(image==null||!image.matches("sha256:[a-f0-9]{64}"))throw new IllegalArgumentException("MCP_IMAGE_INVALID");
         jdbc.update("INSERT IGNORE INTO content_asset(identity_key,lifecycle,asset_id,asset_kind,title,visibility,created_at,revision,connector_image_absent,updated_at) SELECT v.image_id,v.state,CONCAT('connector-image:',v.image_id),'CONNECTOR_IMAGE',v.image_id,'SYSTEM',UTC_TIMESTAMP(6),0,FALSE,UTC_TIMESTAMP(6) FROM (SELECT ? AS image_id,'ACTIVE' AS state) v",image);
-        return jdbc.queryForMap("SELECT identity_key AS image_id,lifecycle AS state,revision AS revision,connector_cleanup_request AS cleanup_request,connector_cleanup_owner_user_id AS cleanup_owner_user_id,connector_runner_pool_id AS runner_pool_id,connector_archive_sha256 AS archive_sha256,connector_image_absent AS image_absent,updated_at AS updated_at FROM content_asset WHERE asset_kind='CONNECTOR_IMAGE' AND (identity_key=?) FOR UPDATE",image);
+        var row=jdbc.queryForMap("SELECT identity_key AS image_id,lifecycle AS state,revision AS revision,connector_cleanup_request AS cleanup_request,connector_cleanup_owner_user_id AS cleanup_owner_user_id,connector_runner_pool_id AS runner_pool_id,connector_archive_sha256 AS archive_sha256,connector_image_absent AS image_absent,updated_at AS updated_at,legacy_clock_json FROM content_asset WHERE asset_kind='CONNECTOR_IMAGE' AND (identity_key=?) FOR UPDATE",image);
+        if(row.get("legacy_clock_json")!=null)LegacyMcpClocks.requireResolved(LegacyClockEvidence.parse(row.get("legacy_clock_json").toString(),"agent_fetch_image",Map.of("image_id",image)));
+        return row;
     }
     public void usable(String image){
         if(image==null)return;

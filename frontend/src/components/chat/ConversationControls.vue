@@ -22,10 +22,11 @@
    <li v-for="(item,index) in pending" :key="item.id">
     <svg class="queue-entry-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M3 3v6a3 3 0 0 0 3 3h14m-5-5 5 5-5 5" /></svg>
     <p class="queue-content" :title="item.content">{{ item.content }}</p>
-    <span v-if="item.mode==='NEXT_STEP'" class="queue-steering-status">等待引导</span>
+    <span v-if="item.clockStatus==='UNRESOLVED'" class="queue-steering-status">历史时区未确认 · 需核对</span>
+    <span v-else-if="item.mode==='NEXT_STEP'" class="queue-steering-status">等待引导</span>
     <button v-else type="button" class="queue-steer" :disabled="busy||!state.run?.runId" title="在当前任务的下一推理切点补充要求" @click="steer(item)"><el-icon aria-hidden="true"><Right /></el-icon>引导</button>
-    <button type="button" class="queue-icon-button" :aria-label="'撤回第 '+(index+1)+' 条待处理消息'" title="撤回消息" :disabled="busy" @click="withdraw(item)"><el-icon aria-hidden="true"><Delete /></el-icon></button>
-    <el-dropdown trigger="click" :disabled="busy" @command="action=>action==='edit'?edit(item):client.setQueueEnabled(false)"><button type="button" class="queue-icon-button" aria-label="更多消息操作" title="更多消息操作" :disabled="busy"><el-icon aria-hidden="true"><MoreFilled /></el-icon></button><template #dropdown><el-dropdown-menu><el-dropdown-item command="edit" :icon="Edit">编辑消息</el-dropdown-item><el-dropdown-item command="close-queue" :icon="Close" :disabled="state.queueEnabled===false">关闭排队</el-dropdown-item></el-dropdown-menu></template></el-dropdown>
+    <button type="button" class="queue-icon-button" :aria-label="'撤回第 '+(index+1)+' 条待处理消息'" title="撤回消息" :disabled="busy||item.clockStatus==='UNRESOLVED'" @click="withdraw(item)"><el-icon aria-hidden="true"><Delete /></el-icon></button>
+    <el-dropdown trigger="click" :disabled="busy||item.clockStatus==='UNRESOLVED'" @command="action=>action==='edit'?edit(item):client.setQueueEnabled(false)"><button type="button" class="queue-icon-button" aria-label="更多消息操作" title="更多消息操作" :disabled="busy||item.clockStatus==='UNRESOLVED'"><el-icon aria-hidden="true"><MoreFilled /></el-icon></button><template #dropdown><el-dropdown-menu><el-dropdown-item command="edit" :icon="Edit">编辑消息</el-dropdown-item><el-dropdown-item command="close-queue" :icon="Close" :disabled="state.queueEnabled===false">关闭排队</el-dropdown-item></el-dropdown-menu></template></el-dropdown>
    </li>
   </TransitionGroup>
   </section>

@@ -61,14 +61,16 @@ final class SkillDownloadStore {
     }
     private WorkflowRecord row(long owner,String id,boolean lock) {
         var record=(lock?workflows.findLocked(WorkflowKind.SKILL_DOWNLOAD,id):workflows.find(WorkflowKind.SKILL_DOWNLOAD,id)).orElseThrow(()->conflict("下载记录不存在或无权限"));
-        if(record.ownerUserId()!=owner)throw conflict("下载记录不存在或无权限");return record;
+        if(record.ownerUserId()!=owner)throw conflict("下载记录不存在或无权限");
+        if(lock)LegacyWorkflowClocks.requireResolved(record);return record;
     }
     private DownloadV1 payload(WorkflowRecord row){return workflows.payload(row,DownloadV1.class);}
     private Map<String,Object> view(WorkflowRecord row) {
         var p=payload(row);var result=new LinkedHashMap<String,Object>();
         result.put("download_id",row.workflowId());result.put("owner_user_id",row.ownerUserId());result.put("request_id",row.requestId());result.put("request_sha256",row.requestSha256());
         result.put("source_url",p.sourceUrl());result.put("target_role",p.targetRole());result.put("target_skill_id",p.targetSkillId());result.put("expected_skill_revision",p.expectedSkillRevision());
-        result.put("status",row.status());result.put("skill_id",p.skillId());result.put("error_code",row.errorCode());result.put("created_at",row.createdAt());result.put("updated_at",row.updatedAt());return result;
+        result.put("status",row.status());result.put("skill_id",p.skillId());result.put("error_code",row.errorCode());result.put("created_at",row.createdAt());result.put("updated_at",row.updatedAt());
+        if(row.legacyClockUnresolved()){result.put("clockStatus",row.legacyClockEvidence().clockStatus());result.put("sourceWallTimes",row.legacyClockEvidence().sourceWallTimes());}return result;
     }
     Map<String,Object> download(long owner,String id,boolean lock){return view(row(owner,id,lock));}
     List<Map<String,Object>> lookup(long owner,String id,boolean lock){return (lock?workflows.findLocked(WorkflowKind.SKILL_DOWNLOAD,id):workflows.find(WorkflowKind.SKILL_DOWNLOAD,id)).filter(value->value.ownerUserId()==owner).map(value->List.of(view(value))).orElseGet(List::of);}
@@ -146,7 +148,7 @@ final class SkillDownloadStore {
         event(owner,id,exit?"EXIT_CONFIRMED":"EXIT_UNVERIFIED",exit?"RELEASED":"NEEDS_REVIEW");
     }
     List<Map<String,Object>> expired() {
-        return jdbc.queryForList("SELECT workflow_id AS download_id,owner_user_id FROM workflow_instance WHERE kind='SKILL_DOWNLOAD' AND ((execution_state IN ('RESERVED','RUNNING') AND execution_deadline<UTC_TIMESTAMP(6)) OR (execution_state IS NULL AND status='DOWNLOADING' AND updated_at<TIMESTAMPADD(MINUTE,-5,UTC_TIMESTAMP(6)))) ORDER BY id LIMIT 50");
+        return jdbc.queryForList("SELECT workflow_id AS download_id,owner_user_id FROM workflow_instance WHERE kind='SKILL_DOWNLOAD' AND legacy_clock_json IS NULL AND ((execution_state IN ('RESERVED','RUNNING') AND execution_deadline<UTC_TIMESTAMP(6)) OR (execution_state IS NULL AND status='DOWNLOADING' AND updated_at<TIMESTAMPADD(MINUTE,-5,UTC_TIMESTAMP(6)))) ORDER BY id LIMIT 50");
     }
     void expire(long owner,String id) {
         var before=row(owner,id,true);var e=execution(before);String phase=(String)e.get("execution_state");var now=workflows.now();

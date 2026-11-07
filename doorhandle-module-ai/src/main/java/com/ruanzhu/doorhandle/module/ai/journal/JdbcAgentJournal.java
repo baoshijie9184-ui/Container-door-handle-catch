@@ -3,6 +3,7 @@ package com.ruanzhu.doorhandle.module.ai.journal;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ruanzhu.doorhandle.contracts.agent.AgentActor;
+import com.ruanzhu.doorhandle.common.time.LegacyClockEvidence;
 import com.ruanzhu.doorhandle.module.ai.config.AgentJournalProperties;
 import jakarta.annotation.PostConstruct;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -46,9 +47,9 @@ public class JdbcAgentJournal implements AgentJournal {
     public boolean enabled() { return properties.isEnabled(); }
     @PostConstruct public void verifySchema() {
         if (enabled()) {
-            try { jdbc.queryForObject("SELECT COUNT(*) FROM agent_run WHERE 1 = 0", Long.class);
-                  jdbc.queryForObject("SELECT COUNT(journal_run_id) FROM audit_event WHERE kind='AGENT_RUN' AND 1=0", Long.class); }
-            catch (RuntimeException error) { throw new IllegalStateException("请先执行 compact 28 表 agent_run/audit_event 基线及迁移，再启用运行日志",error); }
+            try { jdbc.queryForObject("SELECT COUNT(legacy_clock_json) FROM agent_run WHERE 1 = 0", Long.class);
+                  jdbc.queryForObject("SELECT COUNT(journal_run_id)+COUNT(legacy_clock_json) FROM audit_event WHERE kind='AGENT_RUN' AND 1=0", Long.class); }
+            catch (RuntimeException error) { throw new IllegalStateException("请先执行 compact 29 表 agent_run/audit_event 基线及迁移，再启用运行日志",error); }
         }
     }
     @Override public void checkRequest(AgentActor actor, String entry, String request) {
@@ -104,8 +105,12 @@ public class JdbcAgentJournal implements AgentJournal {
     }
     public List<EventView> events(AgentActor actor, String id, long after, int limit) {
         get(actor,id); if (after < 0) throw badRequest("事件游标不正确");
-        return jdbc.query("SELECT sequence_no,action,occurred_at,payload_json FROM audit_event WHERE kind='AGENT_RUN' AND owner_user_id=? AND journal_run_id=? AND sequence_no>? ORDER BY sequence_no LIMIT ?",
-            (rs,n) -> new EventView(rs.getLong(1),rs.getString(2),businessTime(rs.getObject(3,LocalDateTime.class)),readPayload(rs.getString(4))),actor.userId(),id,after,bounded(limit));
+        return jdbc.query("SELECT sequence_no,action,occurred_at,payload_json,legacy_clock_json,legacy_key,legacy_source FROM audit_event WHERE kind='AGENT_RUN' AND owner_user_id=? AND journal_run_id=? AND sequence_no>? ORDER BY sequence_no LIMIT ?",
+            (rs,n) -> {
+                var clock=rs.getString("legacy_clock_json")==null?null:LegacyClockEvidence.parse(rs.getString("legacy_clock_json"),"agent_run_event",Map.of("id",new java.math.BigInteger(rs.getString("legacy_key"))));
+                if(clock!=null&&(!"agent_run_event".equals(rs.getString("legacy_source"))||rs.getObject("occurred_at")!=null))throw new IllegalStateException("Journal legacy clock identity differs");
+                return new EventView(rs.getLong(1),rs.getString(2),businessTime(rs.getObject(3,LocalDateTime.class)),readPayload(rs.getString(4)),clock==null?null:clock.clockStatus(),clock==null?null:clock.sourceWallTimes());
+            },actor.userId(),id,after,bounded(limit));
     }
     public RunView cancel(AgentActor actor, String id) {
         var view = get(actor,id); if (!"RUNNING".equals(view.status())) return view;
@@ -117,11 +122,11 @@ public class JdbcAgentJournal implements AgentJournal {
     @Scheduled(fixedDelay = 30000) public void maintainLeases() {
         if (!enabled()) return;
         for (var handle : active.values()) {
-            try { if (jdbc.update("UPDATE agent_run SET heartbeat_at=UTC_TIMESTAMP(6),lease_expires_at=? WHERE user_id=? AND run_id=? AND instance_id=? AND status='RUNNING'",
+            try { if (jdbc.update("UPDATE agent_run SET heartbeat_at=UTC_TIMESTAMP(6),lease_expires_at=? WHERE user_id=? AND run_id=? AND instance_id=? AND status='RUNNING' AND legacy_clock_json IS NULL",
                     databaseNow().plusSeconds(90),handle.userId,handle.id,instance) == 0) handle.cancel(); }
             catch (RuntimeException error) { handle.cancel(); }
         }
-        var ids = jdbc.query("SELECT run_id,user_id FROM agent_run WHERE status='RUNNING' AND lease_expires_at<UTC_TIMESTAMP(6) ORDER BY lease_expires_at LIMIT 100",
+        var ids = jdbc.query("SELECT run_id,user_id FROM agent_run WHERE status='RUNNING' AND legacy_clock_json IS NULL AND lease_expires_at<UTC_TIMESTAMP(6) ORDER BY lease_expires_at LIMIT 100",
                 (rs,n) -> Map.entry(rs.getString(1),rs.getLong(2)));
         for (var id : ids) new Handle(id.getKey(),id.getValue()).expire();
     }
@@ -157,13 +162,14 @@ public class JdbcAgentJournal implements AgentJournal {
                 return;
             }
             String actual = tx.execute(transaction -> {
-                var rows=jdbc.query("SELECT last_sequence,status,lease_expires_at FROM agent_run WHERE user_id=? AND run_id=? FOR UPDATE",
-                        (rs,n)->Map.<String,Object>of("last_sequence",rs.getLong(1),"status",rs.getString(2),"lease_expires_at",rs.getObject(3,LocalDateTime.class)),userId,id);
+                var rows=jdbc.query("SELECT last_sequence,status,lease_expires_at,legacy_clock_json FROM agent_run WHERE user_id=? AND run_id=? FOR UPDATE",
+                    (rs,n)->{var row=new LinkedHashMap<String,Object>();row.put("last_sequence",rs.getLong(1));row.put("status",rs.getString(2));row.put("lease_expires_at",rs.getObject(3,LocalDateTime.class));row.put("legacy_clock_json",rs.getString(4));return row;},userId,id);
                 if (rows.isEmpty()) throw new IllegalStateException("运行不存在");
                 String current=rows.get(0).get("status").toString();
+                if(rows.get(0).get("legacy_clock_json")!=null)return current;
                 if (!"RUNNING".equals(current)) return current;
                 LocalDateTime expiry=(LocalDateTime)rows.get(0).get("lease_expires_at");
-                if (expiredOnly && !expiry.isBefore(databaseNow())) return current;
+                if (expiredOnly && (expiry==null||!expiry.isBefore(databaseNow()))) return current;
                 long seq=((Number)rows.get(0).get("last_sequence")).longValue()+1;
                 insert(seq,"RUN_"+status,"{}");
                 jdbc.update("UPDATE agent_run SET status=?,active_slot=NULL,last_sequence=?,ended_at=UTC_TIMESTAMP(6) WHERE user_id=? AND run_id=? AND status='RUNNING'",status,seq,userId,id);
@@ -194,8 +200,13 @@ public class JdbcAgentJournal implements AgentJournal {
         try { return json.readValue(value,new TypeReference<Map<String,Object>>(){}); }
         catch (Exception error) { throw new IllegalStateException("运行事件格式不正确"); }
     }
-    private static final RowMapper<RunView> ROW=(rs,n)->new RunView(rs.getString("run_id"),rs.getString("session_id"),rs.getString("entry_point"),rs.getString("main_agent"),rs.getString("status"),
-            rs.getString("default_model"),rs.getString("policy_version"),businessTime(rs.getObject("started_at",LocalDateTime.class)),businessTime(rs.getObject("ended_at",LocalDateTime.class)),rs.getLong("last_sequence"));
+    private static final RowMapper<RunView> ROW=(rs,n)->{
+        var clock=LegacyClockEvidence.optional(rs.getString("legacy_clock_json"),"agent_run",Map.of("id",rs.getLong("id"))).orElse(null);
+        if(clock!=null)for(String column:List.of("started_at","ended_at","heartbeat_at","lease_expires_at"))if(rs.getObject(column)!=null)throw new IllegalStateException("Unresolved run has an invented absolute clock");
+        if(clock==null)for(String column:List.of("started_at","heartbeat_at","lease_expires_at"))if(rs.getObject(column)==null)throw new IllegalStateException("Absolute run clocks require UTC values or explicit legacy evidence");
+        return new RunView(rs.getString("run_id"),rs.getString("session_id"),rs.getString("entry_point"),rs.getString("main_agent"),rs.getString("status"),
+            rs.getString("default_model"),rs.getString("policy_version"),businessTime(rs.getObject("started_at",LocalDateTime.class)),businessTime(rs.getObject("ended_at",LocalDateTime.class)),rs.getLong("last_sequence"),clock==null?null:clock.clockStatus(),clock==null?null:clock.sourceWallTimes());
+    };
     // Preserve the existing offset-free UTC+8 API contract; persisted runtime timestamps and leases are UTC.
     private static LocalDateTime businessTime(LocalDateTime utc) {
         return utc==null?null:utc.atOffset(java.time.ZoneOffset.UTC).atZoneSameInstant(java.time.ZoneId.of("Asia/Shanghai")).toLocalDateTime();

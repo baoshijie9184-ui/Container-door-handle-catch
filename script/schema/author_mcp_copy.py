@@ -199,6 +199,7 @@ for query in metadata:query_guard(query)
 guard("NOT EXISTS(SELECT 1 FROM compact_mcp_sequences e LEFT JOIN information_schema.tables t ON t.table_schema='__SOURCE_SCHEMA__' AND t.table_name=e.table_name WHERE t.table_name IS NULL OR NOT(t.auto_increment<=>e.auto_increment))")
 emit('COMMIT;')
 emit('SET SESSION group_concat_max_len=@compact_mcp_previous_concat;')
-out=ROOT/'sql/mysql/compact/copy/48-mcp.sql';out.write_text('\n'.join(sql)+'\n',encoding='utf-8')
+from author_legacy_clock_copy import write_copy
+out=ROOT/'sql/mysql/compact/copy/48-mcp.sql';write_copy('48-mcp.sql','\n'.join(sql)+'\n')
 resource=ROOT/'doorhandle-module-ai/src/test/resources/compact/mcp-source-evidence.sql';resource.parent.mkdir(parents=True,exist_ok=True);resource.write_text('-- Exact original MCP DDL/ALTER; authored from checked-in declarations.\n'+'\n'.join(fixture)+'\n',encoding='utf-8')
 print(json.dumps({'status':'AUTHORED_NOT_EXECUTED','sourceTables':len(sources),'sourceColumns':len(column_rows),'copy':str(out.relative_to(ROOT))}))

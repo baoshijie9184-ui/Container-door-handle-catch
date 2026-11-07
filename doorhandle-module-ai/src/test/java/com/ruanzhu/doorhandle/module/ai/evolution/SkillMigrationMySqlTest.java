@@ -11,6 +11,7 @@ import java.security.MessageDigest;
 import java.time.LocalDateTime;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Set;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
@@ -90,8 +91,13 @@ class SkillMigrationMySqlTest {
     private void migrate(String script) throws Exception {
         // Old names are source fixture tables, never compatibility tables for the new runtime.
         // A single disposable schema exercises the real qualified SQL without extra schema grants.
-        execute(Files.readString(sqlRoot.resolve("compact/copy").resolve(script))
-                .replace("__SOURCE_SCHEMA__",schema).replace("__SOURCE_SKILL_OFFSET__","+08:00"));
+        String sql=Files.readString(sqlRoot.resolve("compact/copy").resolve(script))
+                .replace("__SOURCE_SCHEMA__",schema).replace("__SOURCE_SKILL_OFFSET__","+08:00");
+        sql=com.ruanzhu.doorhandle.module.ai.testsupport.FixtureSourceSnapshot.bind(sql,jdbc,Set.of("content_link","content_chunk","content_revision","content_asset","audit_event",
+                "workflow_instance","scheduled_plan","runtime_state","agent_skill_download_event","agent_skill_download_lease",
+                "agent_skill_download_owner","agent_skill_storage_command","agent_skill_download","agent_skill_audit",
+                "agent_skill_eval","agent_skill_import","agent_skill_version","agent_learned_skill","agent_skill_source"));
+        execute(sql);
     }
 
     private void seedLinkedSkill() throws Exception {

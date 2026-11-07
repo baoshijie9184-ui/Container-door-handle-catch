@@ -1,10 +1,11 @@
--- USE the compact target after the exact quality_report core copy. Stop source writers first.
--- Render only validated __SOURCE_SCHEMA__ and evidence-backed __SOURCE_REPORT_OFFSET__ values.
--- Report main-table DATETIME values remain unchanged. Only shared storage timestamps become UTC.
--- The runner must stop on the first error and ROLLBACK on the same connection; never use --force.
+-- Generated explicit legacy-clock protocol by author_legacy_clock_copy.py.
+-- validation_wall_offset is ONLY a zero-shift wall-value validator when unresolved.
+-- It is never persisted as a source offset or used to manufacture UTC.
+SET @compact_source_clock_unresolved=BINARY '__SOURCE_REPORT_OFFSET__'=BINARY 'UNRESOLVED';
+SET @compact_validation_wall_offset=IF(@compact_source_clock_unresolved,'+00:00','__SOURCE_REPORT_OFFSET__');
 CREATE TEMPORARY TABLE compact_report_guard(valid INT NOT NULL CHECK(valid=1));
 START TRANSACTION;
--- BEGIN exact report source metadata
+INSERT INTO compact_report_guard SELECT IF(NOT @compact_source_clock_unresolved OR REGEXP_LIKE('__SOURCE_SNAPSHOT_SHA256__','^[a-f0-9]{64}$','c'),1,0);
 CREATE TEMPORARY TABLE compact_report_columns(table_name VARCHAR(64),column_name VARCHAR(64),position_no INT,column_type VARCHAR(64),nullable VARCHAR(3),collation_name VARCHAR(64),default_value VARCHAR(64),extra VARCHAR(64),PRIMARY KEY(table_name,column_name)) ENGINE=InnoDB;
 INSERT INTO compact_report_columns VALUES
 ('detection_quality_report','id','1','bigint','NO',NULL,NULL,'auto_increment'),
@@ -126,20 +127,17 @@ INSERT INTO compact_report_guard SELECT IF(NOT EXISTS(SELECT 1 FROM information_
 INSERT INTO compact_report_guard SELECT IF(NOT EXISTS(SELECT 1 FROM information_schema.table_constraints WHERE BINARY table_schema=BINARY '__SOURCE_SCHEMA__' AND table_name IN ('detection_quality_report','detection_report_audit','detection_report_command','detection_report_confirmation','detection_report_outbox','detection_report_agent_origin','detection_report_event_receipt','detection_report_event_state') AND constraint_type IN ('FOREIGN KEY','CHECK')),1,0);
 DROP TEMPORARY TABLE compact_report_indexes;
 DROP TEMPORARY TABLE compact_report_columns;
--- END exact report source metadata
 INSERT INTO compact_report_guard SELECT IF(DATABASE() IS NOT NULL AND BINARY DATABASE()<>BINARY '__SOURCE_SCHEMA__'
  AND @@FOREIGN_KEY_CHECKS=1 AND @@SESSION.sql_mode REGEXP '(^|,)(STRICT_TRANS_TABLES|STRICT_ALL_TABLES)(,|$)',1,0);
--- BEGIN reviewed fixed-offset conversion guards
-INSERT INTO compact_report_guard SELECT IF(REGEXP_LIKE('__SOURCE_REPORT_OFFSET__','^[+-][0-9]{2}:[0-9]{2}$','c') AND CONVERT_TZ('2026-01-01','__SOURCE_REPORT_OFFSET__','+00:00') IS NOT NULL,1,0);
-INSERT INTO compact_report_guard SELECT NOT EXISTS(SELECT 1 FROM `__SOURCE_SCHEMA__`.detection_report_command s WHERE (s.created_at IS NOT NULL AND (CONVERT_TZ(s.created_at,'__SOURCE_REPORT_OFFSET__','+00:00') IS NULL OR NOT(TIMESTAMPDIFF(MICROSECOND,CONVERT_TZ(s.created_at,'__SOURCE_REPORT_OFFSET__','+00:00'),s.created_at)<=>((IF(LEFT('__SOURCE_REPORT_OFFSET__',1)='-',-1,1)*(CAST(SUBSTRING('__SOURCE_REPORT_OFFSET__',2,2) AS UNSIGNED)*3600+CAST(SUBSTRING('__SOURCE_REPORT_OFFSET__',5,2) AS UNSIGNED)*60))*1000000)))));
-INSERT INTO compact_report_guard SELECT NOT EXISTS(SELECT 1 FROM `__SOURCE_SCHEMA__`.detection_report_confirmation s WHERE (s.expires_at IS NOT NULL AND (CONVERT_TZ(s.expires_at,'__SOURCE_REPORT_OFFSET__','+00:00') IS NULL OR NOT(TIMESTAMPDIFF(MICROSECOND,CONVERT_TZ(s.expires_at,'__SOURCE_REPORT_OFFSET__','+00:00'),s.expires_at)<=>((IF(LEFT('__SOURCE_REPORT_OFFSET__',1)='-',-1,1)*(CAST(SUBSTRING('__SOURCE_REPORT_OFFSET__',2,2) AS UNSIGNED)*3600+CAST(SUBSTRING('__SOURCE_REPORT_OFFSET__',5,2) AS UNSIGNED)*60))*1000000)))) OR (s.used_at IS NOT NULL AND (CONVERT_TZ(s.used_at,'__SOURCE_REPORT_OFFSET__','+00:00') IS NULL OR NOT(TIMESTAMPDIFF(MICROSECOND,CONVERT_TZ(s.used_at,'__SOURCE_REPORT_OFFSET__','+00:00'),s.used_at)<=>((IF(LEFT('__SOURCE_REPORT_OFFSET__',1)='-',-1,1)*(CAST(SUBSTRING('__SOURCE_REPORT_OFFSET__',2,2) AS UNSIGNED)*3600+CAST(SUBSTRING('__SOURCE_REPORT_OFFSET__',5,2) AS UNSIGNED)*60))*1000000)))));
-INSERT INTO compact_report_guard SELECT NOT EXISTS(SELECT 1 FROM `__SOURCE_SCHEMA__`.detection_report_outbox s WHERE (s.created_at IS NOT NULL AND (CONVERT_TZ(s.created_at,'__SOURCE_REPORT_OFFSET__','+00:00') IS NULL OR NOT(TIMESTAMPDIFF(MICROSECOND,CONVERT_TZ(s.created_at,'__SOURCE_REPORT_OFFSET__','+00:00'),s.created_at)<=>((IF(LEFT('__SOURCE_REPORT_OFFSET__',1)='-',-1,1)*(CAST(SUBSTRING('__SOURCE_REPORT_OFFSET__',2,2) AS UNSIGNED)*3600+CAST(SUBSTRING('__SOURCE_REPORT_OFFSET__',5,2) AS UNSIGNED)*60))*1000000)))) OR (s.next_attempt_at IS NOT NULL AND (CONVERT_TZ(s.next_attempt_at,'__SOURCE_REPORT_OFFSET__','+00:00') IS NULL OR NOT(TIMESTAMPDIFF(MICROSECOND,CONVERT_TZ(s.next_attempt_at,'__SOURCE_REPORT_OFFSET__','+00:00'),s.next_attempt_at)<=>((IF(LEFT('__SOURCE_REPORT_OFFSET__',1)='-',-1,1)*(CAST(SUBSTRING('__SOURCE_REPORT_OFFSET__',2,2) AS UNSIGNED)*3600+CAST(SUBSTRING('__SOURCE_REPORT_OFFSET__',5,2) AS UNSIGNED)*60))*1000000)))) OR (s.lease_expires_at IS NOT NULL AND (CONVERT_TZ(s.lease_expires_at,'__SOURCE_REPORT_OFFSET__','+00:00') IS NULL OR NOT(TIMESTAMPDIFF(MICROSECOND,CONVERT_TZ(s.lease_expires_at,'__SOURCE_REPORT_OFFSET__','+00:00'),s.lease_expires_at)<=>((IF(LEFT('__SOURCE_REPORT_OFFSET__',1)='-',-1,1)*(CAST(SUBSTRING('__SOURCE_REPORT_OFFSET__',2,2) AS UNSIGNED)*3600+CAST(SUBSTRING('__SOURCE_REPORT_OFFSET__',5,2) AS UNSIGNED)*60))*1000000)))) OR (s.delivered_at IS NOT NULL AND (CONVERT_TZ(s.delivered_at,'__SOURCE_REPORT_OFFSET__','+00:00') IS NULL OR NOT(TIMESTAMPDIFF(MICROSECOND,CONVERT_TZ(s.delivered_at,'__SOURCE_REPORT_OFFSET__','+00:00'),s.delivered_at)<=>((IF(LEFT('__SOURCE_REPORT_OFFSET__',1)='-',-1,1)*(CAST(SUBSTRING('__SOURCE_REPORT_OFFSET__',2,2) AS UNSIGNED)*3600+CAST(SUBSTRING('__SOURCE_REPORT_OFFSET__',5,2) AS UNSIGNED)*60))*1000000)))));
-INSERT INTO compact_report_guard SELECT NOT EXISTS(SELECT 1 FROM `__SOURCE_SCHEMA__`.detection_report_event_state s WHERE (s.updated_at IS NOT NULL AND (CONVERT_TZ(s.updated_at,'__SOURCE_REPORT_OFFSET__','+00:00') IS NULL OR NOT(TIMESTAMPDIFF(MICROSECOND,CONVERT_TZ(s.updated_at,'__SOURCE_REPORT_OFFSET__','+00:00'),s.updated_at)<=>((IF(LEFT('__SOURCE_REPORT_OFFSET__',1)='-',-1,1)*(CAST(SUBSTRING('__SOURCE_REPORT_OFFSET__',2,2) AS UNSIGNED)*3600+CAST(SUBSTRING('__SOURCE_REPORT_OFFSET__',5,2) AS UNSIGNED)*60))*1000000)))));
-INSERT INTO compact_report_guard SELECT NOT EXISTS(SELECT 1 FROM `__SOURCE_SCHEMA__`.detection_report_event_receipt s WHERE (s.consumed_at IS NOT NULL AND (CONVERT_TZ(s.consumed_at,'__SOURCE_REPORT_OFFSET__','+00:00') IS NULL OR NOT(TIMESTAMPDIFF(MICROSECOND,CONVERT_TZ(s.consumed_at,'__SOURCE_REPORT_OFFSET__','+00:00'),s.consumed_at)<=>((IF(LEFT('__SOURCE_REPORT_OFFSET__',1)='-',-1,1)*(CAST(SUBSTRING('__SOURCE_REPORT_OFFSET__',2,2) AS UNSIGNED)*3600+CAST(SUBSTRING('__SOURCE_REPORT_OFFSET__',5,2) AS UNSIGNED)*60))*1000000)))));
-INSERT INTO compact_report_guard SELECT NOT EXISTS(SELECT 1 FROM `__SOURCE_SCHEMA__`.detection_report_audit s WHERE (s.created_at IS NOT NULL AND (CONVERT_TZ(s.created_at,'__SOURCE_REPORT_OFFSET__','+00:00') IS NULL OR NOT(TIMESTAMPDIFF(MICROSECOND,CONVERT_TZ(s.created_at,'__SOURCE_REPORT_OFFSET__','+00:00'),s.created_at)<=>((IF(LEFT('__SOURCE_REPORT_OFFSET__',1)='-',-1,1)*(CAST(SUBSTRING('__SOURCE_REPORT_OFFSET__',2,2) AS UNSIGNED)*3600+CAST(SUBSTRING('__SOURCE_REPORT_OFFSET__',5,2) AS UNSIGNED)*60))*1000000)))));
-INSERT INTO compact_report_guard SELECT NOT EXISTS(SELECT 1 FROM `__SOURCE_SCHEMA__`.detection_report_agent_origin s WHERE (s.created_at IS NOT NULL AND (CONVERT_TZ(s.created_at,'__SOURCE_REPORT_OFFSET__','+00:00') IS NULL OR NOT(TIMESTAMPDIFF(MICROSECOND,CONVERT_TZ(s.created_at,'__SOURCE_REPORT_OFFSET__','+00:00'),s.created_at)<=>((IF(LEFT('__SOURCE_REPORT_OFFSET__',1)='-',-1,1)*(CAST(SUBSTRING('__SOURCE_REPORT_OFFSET__',2,2) AS UNSIGNED)*3600+CAST(SUBSTRING('__SOURCE_REPORT_OFFSET__',5,2) AS UNSIGNED)*60))*1000000)))));
--- END reviewed fixed-offset conversion guards
-INSERT INTO compact_report_guard SELECT IF(CONVERT_TZ('2026-01-01','__SOURCE_REPORT_OFFSET__','+00:00') IS NOT NULL,1,0);
+INSERT INTO compact_report_guard SELECT IF(REGEXP_LIKE(@compact_validation_wall_offset,'^[+-][0-9]{2}:[0-9]{2}$','c') AND CONVERT_TZ('2026-01-01',@compact_validation_wall_offset,'+00:00') IS NOT NULL,1,0);
+INSERT INTO compact_report_guard SELECT NOT EXISTS(SELECT 1 FROM `__SOURCE_SCHEMA__`.detection_report_command s WHERE (s.created_at IS NOT NULL AND (CONVERT_TZ(s.created_at,@compact_validation_wall_offset,'+00:00') IS NULL OR NOT(TIMESTAMPDIFF(MICROSECOND,CONVERT_TZ(s.created_at,@compact_validation_wall_offset,'+00:00'),s.created_at)<=>((IF(LEFT(@compact_validation_wall_offset,1)='-',-1,1)*(CAST(SUBSTRING(@compact_validation_wall_offset,2,2) AS UNSIGNED)*3600+CAST(SUBSTRING(@compact_validation_wall_offset,5,2) AS UNSIGNED)*60))*1000000)))));
+INSERT INTO compact_report_guard SELECT NOT EXISTS(SELECT 1 FROM `__SOURCE_SCHEMA__`.detection_report_confirmation s WHERE (s.expires_at IS NOT NULL AND (CONVERT_TZ(s.expires_at,@compact_validation_wall_offset,'+00:00') IS NULL OR NOT(TIMESTAMPDIFF(MICROSECOND,CONVERT_TZ(s.expires_at,@compact_validation_wall_offset,'+00:00'),s.expires_at)<=>((IF(LEFT(@compact_validation_wall_offset,1)='-',-1,1)*(CAST(SUBSTRING(@compact_validation_wall_offset,2,2) AS UNSIGNED)*3600+CAST(SUBSTRING(@compact_validation_wall_offset,5,2) AS UNSIGNED)*60))*1000000)))) OR (s.used_at IS NOT NULL AND (CONVERT_TZ(s.used_at,@compact_validation_wall_offset,'+00:00') IS NULL OR NOT(TIMESTAMPDIFF(MICROSECOND,CONVERT_TZ(s.used_at,@compact_validation_wall_offset,'+00:00'),s.used_at)<=>((IF(LEFT(@compact_validation_wall_offset,1)='-',-1,1)*(CAST(SUBSTRING(@compact_validation_wall_offset,2,2) AS UNSIGNED)*3600+CAST(SUBSTRING(@compact_validation_wall_offset,5,2) AS UNSIGNED)*60))*1000000)))));
+INSERT INTO compact_report_guard SELECT NOT EXISTS(SELECT 1 FROM `__SOURCE_SCHEMA__`.detection_report_outbox s WHERE (s.created_at IS NOT NULL AND (CONVERT_TZ(s.created_at,@compact_validation_wall_offset,'+00:00') IS NULL OR NOT(TIMESTAMPDIFF(MICROSECOND,CONVERT_TZ(s.created_at,@compact_validation_wall_offset,'+00:00'),s.created_at)<=>((IF(LEFT(@compact_validation_wall_offset,1)='-',-1,1)*(CAST(SUBSTRING(@compact_validation_wall_offset,2,2) AS UNSIGNED)*3600+CAST(SUBSTRING(@compact_validation_wall_offset,5,2) AS UNSIGNED)*60))*1000000)))) OR (s.next_attempt_at IS NOT NULL AND (CONVERT_TZ(s.next_attempt_at,@compact_validation_wall_offset,'+00:00') IS NULL OR NOT(TIMESTAMPDIFF(MICROSECOND,CONVERT_TZ(s.next_attempt_at,@compact_validation_wall_offset,'+00:00'),s.next_attempt_at)<=>((IF(LEFT(@compact_validation_wall_offset,1)='-',-1,1)*(CAST(SUBSTRING(@compact_validation_wall_offset,2,2) AS UNSIGNED)*3600+CAST(SUBSTRING(@compact_validation_wall_offset,5,2) AS UNSIGNED)*60))*1000000)))) OR (s.lease_expires_at IS NOT NULL AND (CONVERT_TZ(s.lease_expires_at,@compact_validation_wall_offset,'+00:00') IS NULL OR NOT(TIMESTAMPDIFF(MICROSECOND,CONVERT_TZ(s.lease_expires_at,@compact_validation_wall_offset,'+00:00'),s.lease_expires_at)<=>((IF(LEFT(@compact_validation_wall_offset,1)='-',-1,1)*(CAST(SUBSTRING(@compact_validation_wall_offset,2,2) AS UNSIGNED)*3600+CAST(SUBSTRING(@compact_validation_wall_offset,5,2) AS UNSIGNED)*60))*1000000)))) OR (s.delivered_at IS NOT NULL AND (CONVERT_TZ(s.delivered_at,@compact_validation_wall_offset,'+00:00') IS NULL OR NOT(TIMESTAMPDIFF(MICROSECOND,CONVERT_TZ(s.delivered_at,@compact_validation_wall_offset,'+00:00'),s.delivered_at)<=>((IF(LEFT(@compact_validation_wall_offset,1)='-',-1,1)*(CAST(SUBSTRING(@compact_validation_wall_offset,2,2) AS UNSIGNED)*3600+CAST(SUBSTRING(@compact_validation_wall_offset,5,2) AS UNSIGNED)*60))*1000000)))));
+INSERT INTO compact_report_guard SELECT NOT EXISTS(SELECT 1 FROM `__SOURCE_SCHEMA__`.detection_report_event_state s WHERE (s.updated_at IS NOT NULL AND (CONVERT_TZ(s.updated_at,@compact_validation_wall_offset,'+00:00') IS NULL OR NOT(TIMESTAMPDIFF(MICROSECOND,CONVERT_TZ(s.updated_at,@compact_validation_wall_offset,'+00:00'),s.updated_at)<=>((IF(LEFT(@compact_validation_wall_offset,1)='-',-1,1)*(CAST(SUBSTRING(@compact_validation_wall_offset,2,2) AS UNSIGNED)*3600+CAST(SUBSTRING(@compact_validation_wall_offset,5,2) AS UNSIGNED)*60))*1000000)))));
+INSERT INTO compact_report_guard SELECT NOT EXISTS(SELECT 1 FROM `__SOURCE_SCHEMA__`.detection_report_event_receipt s WHERE (s.consumed_at IS NOT NULL AND (CONVERT_TZ(s.consumed_at,@compact_validation_wall_offset,'+00:00') IS NULL OR NOT(TIMESTAMPDIFF(MICROSECOND,CONVERT_TZ(s.consumed_at,@compact_validation_wall_offset,'+00:00'),s.consumed_at)<=>((IF(LEFT(@compact_validation_wall_offset,1)='-',-1,1)*(CAST(SUBSTRING(@compact_validation_wall_offset,2,2) AS UNSIGNED)*3600+CAST(SUBSTRING(@compact_validation_wall_offset,5,2) AS UNSIGNED)*60))*1000000)))));
+INSERT INTO compact_report_guard SELECT NOT EXISTS(SELECT 1 FROM `__SOURCE_SCHEMA__`.detection_report_audit s WHERE (s.created_at IS NOT NULL AND (CONVERT_TZ(s.created_at,@compact_validation_wall_offset,'+00:00') IS NULL OR NOT(TIMESTAMPDIFF(MICROSECOND,CONVERT_TZ(s.created_at,@compact_validation_wall_offset,'+00:00'),s.created_at)<=>((IF(LEFT(@compact_validation_wall_offset,1)='-',-1,1)*(CAST(SUBSTRING(@compact_validation_wall_offset,2,2) AS UNSIGNED)*3600+CAST(SUBSTRING(@compact_validation_wall_offset,5,2) AS UNSIGNED)*60))*1000000)))));
+INSERT INTO compact_report_guard SELECT NOT EXISTS(SELECT 1 FROM `__SOURCE_SCHEMA__`.detection_report_agent_origin s WHERE (s.created_at IS NOT NULL AND (CONVERT_TZ(s.created_at,@compact_validation_wall_offset,'+00:00') IS NULL OR NOT(TIMESTAMPDIFF(MICROSECOND,CONVERT_TZ(s.created_at,@compact_validation_wall_offset,'+00:00'),s.created_at)<=>((IF(LEFT(@compact_validation_wall_offset,1)='-',-1,1)*(CAST(SUBSTRING(@compact_validation_wall_offset,2,2) AS UNSIGNED)*3600+CAST(SUBSTRING(@compact_validation_wall_offset,5,2) AS UNSIGNED)*60))*1000000)))));
+INSERT INTO compact_report_guard SELECT IF(CONVERT_TZ('2026-01-01',@compact_validation_wall_offset,'+00:00') IS NOT NULL,1,0);
 INSERT INTO compact_report_guard SELECT IF(COUNT(*)=0,1,0) FROM workflow_instance WHERE kind IN ('REPORT_COMMAND','REPORT_CONFIRMATION','REPORT_DELIVERY','REPORT_CONSUMPTION','REPORT_AGENT_ORIGIN');
 INSERT INTO compact_report_guard SELECT IF(COUNT(*)=0,1,0) FROM audit_event WHERE kind='QUALITY_REPORT';
 INSERT INTO compact_report_guard SELECT IF(COUNT(*)=0,1,0) FROM runtime_state WHERE namespace='REPORT_EVENT_STATE';
@@ -152,8 +150,7 @@ INSERT INTO compact_report_guard SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA
  WHERE q.id IS NULL OR COALESCE(c.actor_user_id,0)<=0 OR NOT COALESCE(REGEXP_LIKE(c.command_sha256,'^[a-f0-9]{64}$','c'),FALSE)
  OR NOT COALESCE(REGEXP_LIKE(c.request_id,'^[A-Za-z0-9_-]{8,64}$','c'),FALSE)
  OR COALESCE(JSON_VALID(c.response_json),0)<>1 OR COALESCE(CHAR_LENGTH(c.response_json),0) NOT BETWEEN 1 AND 2000000
- OR CONVERT_TZ(c.created_at,'__SOURCE_REPORT_OFFSET__','+00:00') IS NULL;
--- Separate JSON guards so malformed source JSON is rejected before any JSON_EXTRACT evaluation.
+ OR CONVERT_TZ(c.created_at,@compact_validation_wall_offset,'+00:00') IS NULL;
 INSERT INTO compact_report_guard SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA__`.detection_report_command c
  WHERE COALESCE(JSON_TYPE(CAST(c.response_json AS JSON)),'NULL')<>'OBJECT'
  OR COALESCE(JSON_TYPE(JSON_EXTRACT(c.response_json,'$.reportId')),'NULL')<>'STRING'
@@ -167,7 +164,7 @@ INSERT INTO compact_report_guard SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA
  OR COALESCE(JSON_TYPE(JSON_EXTRACT(c.response_json,'$.status')),'NULL')<>'STRING'
  OR COALESCE(JSON_TYPE(JSON_EXTRACT(c.response_json,'$.source')),'NULL')<>'OBJECT'
  OR COALESCE(JSON_TYPE(JSON_EXTRACT(c.response_json,'$.sourceSha256')),'NULL')<>'STRING'
- -- Spring's API mapper writes ISO strings; historical test/tool mappers may write LocalDateTime arrays.
+
  OR COALESCE(JSON_TYPE(JSON_EXTRACT(c.response_json,'$.createdAt')),'NULL') NOT IN ('STRING','ARRAY')
  OR COALESCE(JSON_TYPE(JSON_EXTRACT(c.response_json,'$.updatedAt')),'NULL') NOT IN ('STRING','ARRAY');
 INSERT INTO compact_report_guard SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA__`.detection_report_command c
@@ -183,8 +180,8 @@ INSERT INTO compact_report_guard SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA
  WHERE q.id IS NULL OR COALESCE(c.actor_user_id,0)<=0 OR COALESCE(c.report_version,0)<1 OR c.report_version>q.version
  OR NOT COALESCE(REGEXP_LIKE(c.snapshot_sha256,'^[a-f0-9]{64}$','c'),FALSE)
  OR NOT COALESCE(REGEXP_LIKE(c.decision_sha256,'^[a-f0-9]{64}$','c'),FALSE) OR NOT COALESCE(REGEXP_LIKE(c.token,'^[a-f0-9]{64}$','c'),FALSE)
- OR CONVERT_TZ(c.expires_at,'__SOURCE_REPORT_OFFSET__','+00:00') IS NULL
- OR (c.used_at IS NOT NULL AND (CONVERT_TZ(c.used_at,'__SOURCE_REPORT_OFFSET__','+00:00') IS NULL OR c.used_at>=c.expires_at));
+ OR CONVERT_TZ(c.expires_at,@compact_validation_wall_offset,'+00:00') IS NULL
+ OR (c.used_at IS NOT NULL AND (CONVERT_TZ(c.used_at,@compact_validation_wall_offset,'+00:00') IS NULL OR c.used_at>=c.expires_at));
 INSERT INTO compact_report_guard SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA__`.detection_report_agent_origin o
  LEFT JOIN quality_report q ON BINARY q.report_id=BINARY o.report_id
  WHERE q.id IS NULL OR COALESCE(o.actor_user_id,0)<=0 OR COALESCE(o.report_version,0)<1 OR o.report_version>q.version
@@ -192,7 +189,7 @@ INSERT INTO compact_report_guard SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA
  OR NOT COALESCE(REGEXP_LIKE(o.run_id,'^[A-Za-z0-9_:.-]{1,128}$','c'),FALSE)
  OR NOT COALESCE(REGEXP_LIKE(o.call_id,'^[A-Za-z0-9_:.-]{1,160}$','c'),FALSE)
  OR COALESCE(BINARY o.tool_name,BINARY '') NOT IN (BINARY 'create_report_draft',BINARY 'edit_report_draft')
- OR CONVERT_TZ(o.created_at,'__SOURCE_REPORT_OFFSET__','+00:00') IS NULL;
+ OR CONVERT_TZ(o.created_at,@compact_validation_wall_offset,'+00:00') IS NULL;
 INSERT INTO compact_report_guard SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA__`.detection_report_outbox e
  LEFT JOIN quality_report q ON BINARY q.report_id=BINARY e.report_id
  WHERE q.id IS NULL OR COALESCE(JSON_VALID(e.payload_json),0)<>1 OR COALESCE(CHAR_LENGTH(e.payload_json),0) NOT BETWEEN 1 AND 4096
@@ -202,10 +199,10 @@ INSERT INTO compact_report_guard SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA
  OR (e.delivery_status<>'PROCESSING' AND (e.lease_token IS NOT NULL OR e.lease_expires_at IS NOT NULL))
  OR (e.delivery_status='DELIVERED' AND e.delivered_at IS NULL) OR (e.delivery_status<>'DELIVERED' AND e.delivered_at IS NOT NULL)
  OR (e.lease_token IS NOT NULL AND CHAR_LENGTH(e.lease_token)=0)
- OR CONVERT_TZ(e.created_at,'__SOURCE_REPORT_OFFSET__','+00:00') IS NULL
- OR CONVERT_TZ(e.next_attempt_at,'__SOURCE_REPORT_OFFSET__','+00:00') IS NULL
- OR (e.lease_expires_at IS NOT NULL AND CONVERT_TZ(e.lease_expires_at,'__SOURCE_REPORT_OFFSET__','+00:00') IS NULL)
- OR (e.delivered_at IS NOT NULL AND CONVERT_TZ(e.delivered_at,'__SOURCE_REPORT_OFFSET__','+00:00') IS NULL);
+ OR CONVERT_TZ(e.created_at,@compact_validation_wall_offset,'+00:00') IS NULL
+ OR CONVERT_TZ(e.next_attempt_at,@compact_validation_wall_offset,'+00:00') IS NULL
+ OR (e.lease_expires_at IS NOT NULL AND CONVERT_TZ(e.lease_expires_at,@compact_validation_wall_offset,'+00:00') IS NULL)
+ OR (e.delivered_at IS NOT NULL AND CONVERT_TZ(e.delivered_at,@compact_validation_wall_offset,'+00:00') IS NULL);
 INSERT INTO compact_report_guard SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA__`.detection_report_outbox e
  WHERE COALESCE(JSON_TYPE(CAST(e.payload_json AS JSON)),'NULL')<>'OBJECT' OR JSON_LENGTH(e.payload_json)<>6
  OR COALESCE(JSON_TYPE(JSON_EXTRACT(e.payload_json,'$.eventId')),'NULL')<>'STRING'
@@ -228,8 +225,7 @@ INSERT INTO compact_report_guard SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA
  LEFT JOIN `__SOURCE_SCHEMA__`.detection_report_outbox e ON BINARY e.event_id=BINARY r.event_id
  WHERE e.event_id IS NULL OR NOT(BINARY r.report_id<=>BINARY e.report_id) OR NOT(BINARY r.event_type<=>BINARY e.event_type)
  OR NOT(r.report_version<=>JSON_EXTRACT(e.payload_json,'$.version')) OR NOT COALESCE(REGEXP_LIKE(r.payload_sha256,'^[a-f0-9]{64}$','c'),FALSE)
- OR CONVERT_TZ(r.consumed_at,'__SOURCE_REPORT_OFFSET__','+00:00') IS NULL;
--- Receipt hashes use the codec's canonical record order, independent of the original transport whitespace.
+ OR CONVERT_TZ(r.consumed_at,@compact_validation_wall_offset,'+00:00') IS NULL;
 INSERT INTO compact_report_guard SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA__`.detection_report_event_receipt r
  JOIN `__SOURCE_SCHEMA__`.detection_report_outbox e ON BINARY e.event_id=BINARY r.event_id
  WHERE BINARY r.payload_sha256<>BINARY SHA2(CONCAT('{"eventId":',JSON_QUOTE(e.event_id),',"reportId":',JSON_QUOTE(e.report_id),
@@ -239,53 +235,23 @@ INSERT INTO compact_report_guard SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA
  LEFT JOIN quality_report q ON BINARY q.report_id=BINARY a.report_id
  WHERE q.id IS NULL OR COALESCE(a.actor_user_id,0)<=0 OR COALESCE(a.report_version,0)<1 OR a.report_version>q.version
  OR (a.snapshot_sha256 IS NOT NULL AND NOT REGEXP_LIKE(a.snapshot_sha256,'^[a-f0-9]{64}$','c'))
- OR CONVERT_TZ(a.created_at,'__SOURCE_REPORT_OFFSET__','+00:00') IS NULL;
+ OR CONVERT_TZ(a.created_at,@compact_validation_wall_offset,'+00:00') IS NULL;
 INSERT INTO compact_report_guard SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA__`.detection_report_event_state s
  LEFT JOIN `__SOURCE_SCHEMA__`.detection_report_event_receipt r ON BINARY r.event_id=BINARY s.last_event_id
  LEFT JOIN `__SOURCE_SCHEMA__`.detection_report_outbox e ON BINARY e.event_id=BINARY s.last_event_id
  WHERE r.event_id IS NULL OR e.event_id IS NULL OR NOT(BINARY r.report_id<=>BINARY s.report_id) OR NOT(r.report_version<=>s.last_version)
  OR NOT(BINARY s.status<=>BINARY JSON_UNQUOTE(JSON_EXTRACT(e.payload_json,'$.status')))
  OR NOT(s.last_version<=>(SELECT MAX(x.report_version) FROM `__SOURCE_SCHEMA__`.detection_report_event_receipt x WHERE BINARY x.report_id=BINARY s.report_id))
- OR CONVERT_TZ(s.updated_at,'__SOURCE_REPORT_OFFSET__','+00:00') IS NULL;
+ OR CONVERT_TZ(s.updated_at,@compact_validation_wall_offset,'+00:00') IS NULL;
 INSERT INTO compact_report_guard SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA__`.detection_report_event_receipt r
  LEFT JOIN `__SOURCE_SCHEMA__`.detection_report_event_state s ON BINARY s.report_id=BINARY r.report_id WHERE s.report_id IS NULL;
-
-INSERT INTO workflow_instance(workflow_id,kind,idempotency_scope,request_id,request_sha256,owner_user_id,actor_user_id,resource_type,resource_id,resource_revision,status,payload_version,payload_json,created_at,updated_at,finished_at,legacy_source,legacy_key)
- SELECT SHA2(CONCAT('REPORT_COMMAND:',c.actor_user_id,':',c.request_id),256),'REPORT_COMMAND',CONCAT('OWNER:',c.actor_user_id),c.request_id,c.command_sha256,q.owner_user_id,c.actor_user_id,
- 'QUALITY_REPORT',c.report_id,CAST(JSON_UNQUOTE(JSON_EXTRACT(c.response_json,'$.version')) AS UNSIGNED),'COMPLETED',1,JSON_OBJECT('responseJson',c.response_json),
- CONVERT_TZ(c.created_at,'__SOURCE_REPORT_OFFSET__','+00:00'),CONVERT_TZ(c.created_at,'__SOURCE_REPORT_OFFSET__','+00:00'),CONVERT_TZ(c.created_at,'__SOURCE_REPORT_OFFSET__','+00:00'),
- 'detection_report_command',CAST(JSON_ARRAY(c.actor_user_id,c.request_id) AS CHAR)
- FROM `__SOURCE_SCHEMA__`.detection_report_command c JOIN quality_report q ON BINARY q.report_id=BINARY c.report_id;
-INSERT INTO workflow_instance(workflow_id,kind,idempotency_scope,request_id,request_sha256,owner_user_id,actor_user_id,resource_type,resource_id,resource_revision,status,expires_at,payload_version,payload_json,created_at,updated_at,finished_at,legacy_source,legacy_key)
- SELECT SHA2(CONCAT('REPORT_CONFIRMATION:',c.token),256),'REPORT_CONFIRMATION','REPORT_CONFIRMATION',c.token,SHA2(CONCAT(c.snapshot_sha256,':',c.decision_sha256),256),q.owner_user_id,c.actor_user_id,
- 'QUALITY_REPORT',c.report_id,c.report_version,IF(c.used_at IS NULL,'PENDING','USED'),CONVERT_TZ(c.expires_at,'__SOURCE_REPORT_OFFSET__','+00:00'),1,JSON_OBJECT('snapshotSha256',c.snapshot_sha256,'decisionSha256',c.decision_sha256),
- -- No original creation time exists. A validity interval is not a recorded creation fact.
- NULL,CONVERT_TZ(c.used_at,'__SOURCE_REPORT_OFFSET__','+00:00'),CONVERT_TZ(c.used_at,'__SOURCE_REPORT_OFFSET__','+00:00'),
- 'detection_report_confirmation',c.token FROM `__SOURCE_SCHEMA__`.detection_report_confirmation c JOIN quality_report q ON BINARY q.report_id=BINARY c.report_id;
-INSERT INTO workflow_instance(workflow_id,kind,idempotency_scope,request_id,request_sha256,owner_user_id,actor_user_id,resource_type,resource_id,resource_revision,run_id,status,payload_version,payload_json,created_at,updated_at,finished_at,legacy_source,legacy_key)
- SELECT SHA2(CONCAT('REPORT_AGENT_ORIGIN:',o.actor_user_id,':',o.request_id),256),'REPORT_AGENT_ORIGIN',CONCAT('OWNER:',o.actor_user_id),o.request_id,
- SHA2(CONCAT(o.actor_user_id,'|',o.report_id,'|',o.report_version,'|',CHAR_LENGTH(o.run_id),':',o.run_id,'|',o.tool_name),256),q.owner_user_id,o.actor_user_id,
- 'QUALITY_REPORT',o.report_id,o.report_version,o.run_id,'COMPLETED',1,JSON_OBJECT('callId',o.call_id,'toolName',o.tool_name),
- CONVERT_TZ(o.created_at,'__SOURCE_REPORT_OFFSET__','+00:00'),CONVERT_TZ(o.created_at,'__SOURCE_REPORT_OFFSET__','+00:00'),CONVERT_TZ(o.created_at,'__SOURCE_REPORT_OFFSET__','+00:00'),
- 'detection_report_agent_origin',CAST(JSON_ARRAY(o.actor_user_id,o.request_id) AS CHAR) FROM `__SOURCE_SCHEMA__`.detection_report_agent_origin o JOIN quality_report q ON BINARY q.report_id=BINARY o.report_id;
-INSERT INTO workflow_instance(workflow_id,kind,idempotency_scope,request_id,request_sha256,owner_user_id,actor_user_id,resource_type,resource_id,resource_revision,status,fence,claim_token,lease_expires_at,attempts,next_attempt_at,error_code,payload_version,payload_json,created_at,updated_at,finished_at,legacy_source,legacy_key)
- SELECT SHA2(CONCAT('REPORT_DELIVERY:',e.event_id),256),'REPORT_DELIVERY','REPORT_DELIVERY',e.event_id,SHA2(CONVERT(e.payload_json USING utf8mb4),256),q.owner_user_id,CAST(JSON_UNQUOTE(JSON_EXTRACT(e.payload_json,'$.actorUserId')) AS UNSIGNED),
- 'QUALITY_REPORT',e.report_id,CAST(JSON_UNQUOTE(JSON_EXTRACT(e.payload_json,'$.version')) AS UNSIGNED),e.delivery_status,IF(e.delivery_status='PROCESSING',1,0),e.lease_token,CONVERT_TZ(e.lease_expires_at,'__SOURCE_REPORT_OFFSET__','+00:00'),e.attempts,CONVERT_TZ(e.next_attempt_at,'__SOURCE_REPORT_OFFSET__','+00:00'),e.last_error_code,1,JSON_OBJECT('eventType',e.event_type,'eventJson',e.payload_json),
- CONVERT_TZ(e.created_at,'__SOURCE_REPORT_OFFSET__','+00:00'),COALESCE(CONVERT_TZ(e.delivered_at,'__SOURCE_REPORT_OFFSET__','+00:00'),CONVERT_TZ(e.created_at,'__SOURCE_REPORT_OFFSET__','+00:00')),CONVERT_TZ(e.delivered_at,'__SOURCE_REPORT_OFFSET__','+00:00'),
- 'detection_report_outbox',e.event_id FROM `__SOURCE_SCHEMA__`.detection_report_outbox e JOIN quality_report q ON BINARY q.report_id=BINARY e.report_id;
-INSERT INTO workflow_instance(workflow_id,kind,idempotency_scope,request_id,request_sha256,owner_user_id,actor_user_id,resource_type,resource_id,resource_revision,status,payload_version,payload_json,created_at,updated_at,finished_at,legacy_source,legacy_key)
- SELECT SHA2(CONCAT('REPORT_CONSUMPTION:',r.event_id),256),'REPORT_CONSUMPTION','REPORT_CONSUMPTION',r.event_id,r.payload_sha256,q.owner_user_id,CAST(JSON_UNQUOTE(JSON_EXTRACT(e.payload_json,'$.actorUserId')) AS UNSIGNED),
- 'QUALITY_REPORT',r.report_id,r.report_version,'COMPLETED',1,JSON_OBJECT('eventType',r.event_type,'payloadSha256',r.payload_sha256),
- CONVERT_TZ(r.consumed_at,'__SOURCE_REPORT_OFFSET__','+00:00'),CONVERT_TZ(r.consumed_at,'__SOURCE_REPORT_OFFSET__','+00:00'),CONVERT_TZ(r.consumed_at,'__SOURCE_REPORT_OFFSET__','+00:00'),
- 'detection_report_event_receipt',r.event_id FROM `__SOURCE_SCHEMA__`.detection_report_event_receipt r JOIN quality_report q ON BINARY q.report_id=BINARY r.report_id JOIN `__SOURCE_SCHEMA__`.detection_report_outbox e ON BINARY e.event_id=BINARY r.event_id;
-INSERT INTO audit_event(event_id,kind,owner_user_id,actor_user_id,resource_type,resource_id,action,revision,content_sha256,occurred_at,payload_version,payload_json,legacy_source,legacy_key)
- SELECT CONCAT('legacy-report-audit-',a.id),'QUALITY_REPORT',q.owner_user_id,a.actor_user_id,'QUALITY_REPORT',a.report_id,a.action,a.report_version,a.snapshot_sha256,CONVERT_TZ(a.created_at,'__SOURCE_REPORT_OFFSET__','+00:00'),1,
- JSON_OBJECT('actorUsername',a.actor_username,'beforeStatus',a.before_status,'afterStatus',a.after_status,'reason',a.reason),'detection_report_audit',CAST(a.id AS CHAR)
- FROM `__SOURCE_SCHEMA__`.detection_report_audit a JOIN quality_report q ON BINARY q.report_id=BINARY a.report_id ORDER BY a.id;
-INSERT INTO runtime_state(namespace,owner_id,scope_key,revision,state_code,current_ref,counter_value,payload_version,payload_json,created_at,updated_at)
- SELECT 'REPORT_EVENT_STATE',0,s.report_id,1,s.status,s.last_event_id,s.last_version,1,JSON_OBJECT('reportId',s.report_id,'lastEventId',s.last_event_id,'lastVersion',s.last_version,'status',s.status),NULL,CONVERT_TZ(s.updated_at,'__SOURCE_REPORT_OFFSET__','+00:00')
- FROM `__SOURCE_SCHEMA__`.detection_report_event_state s;
-
+INSERT INTO workflow_instance(workflow_id,kind,idempotency_scope,request_id,request_sha256,owner_user_id,actor_user_id,resource_type,resource_id,resource_revision,status,payload_version,payload_json,created_at,updated_at,finished_at,legacy_source,legacy_key,legacy_clock_json) SELECT SHA2(CONCAT('REPORT_COMMAND:',c.actor_user_id,':',c.request_id),256),'REPORT_COMMAND',CONCAT('OWNER:',c.actor_user_id),c.request_id,c.command_sha256,q.owner_user_id,c.actor_user_id,'QUALITY_REPORT',c.report_id,CAST(JSON_UNQUOTE(JSON_EXTRACT(c.response_json,'$.version')) AS UNSIGNED),'COMPLETED',1,JSON_OBJECT('responseJson',c.response_json),IF(@compact_source_clock_unresolved,NULL,CONVERT_TZ(c.created_at,@compact_validation_wall_offset,'+00:00')),IF(@compact_source_clock_unresolved,NULL,CONVERT_TZ(c.created_at,@compact_validation_wall_offset,'+00:00')),IF(@compact_source_clock_unresolved,NULL,CONVERT_TZ(c.created_at,@compact_validation_wall_offset,'+00:00')),'detection_report_command',CAST(JSON_ARRAY(c.actor_user_id,c.request_id) AS CHAR),IF(@compact_source_clock_unresolved,JSON_OBJECT('protocol','doorhandle-legacy-clock-v1','status','UNRESOLVED','sourceTable','detection_report_command','sourceKey',JSON_OBJECT('actor_user_id',c.`actor_user_id`,'request_id',c.`request_id`),'sourceSnapshotSha256','__SOURCE_SNAPSHOT_SHA256__','sourceRowSha256',SHA2(CAST(JSON_OBJECT('actor_user_id',c.`actor_user_id`,'request_id',c.`request_id`,'command_sha256',c.`command_sha256`,'report_id',c.`report_id`,'response_json',c.`response_json`,'created_at',CAST(c.`created_at` AS CHAR CHARACTER SET utf8mb4)) AS CHAR CHARACTER SET utf8mb4),256),'sourceWallTimes',JSON_OBJECT('created_at',CAST(c.`created_at` AS CHAR))),NULL) FROM `__SOURCE_SCHEMA__`.detection_report_command c JOIN quality_report q ON BINARY q.report_id=BINARY c.report_id;
+INSERT INTO workflow_instance(workflow_id,kind,idempotency_scope,request_id,request_sha256,owner_user_id,actor_user_id,resource_type,resource_id,resource_revision,status,expires_at,payload_version,payload_json,created_at,updated_at,finished_at,legacy_source,legacy_key,legacy_clock_json) SELECT SHA2(CONCAT('REPORT_CONFIRMATION:',c.token),256),'REPORT_CONFIRMATION','REPORT_CONFIRMATION',c.token,SHA2(CONCAT(c.snapshot_sha256,':',c.decision_sha256),256),q.owner_user_id,c.actor_user_id,'QUALITY_REPORT',c.report_id,c.report_version,IF(c.used_at IS NULL,'PENDING','USED'),IF(@compact_source_clock_unresolved,NULL,CONVERT_TZ(c.expires_at,@compact_validation_wall_offset,'+00:00')),1,JSON_OBJECT('snapshotSha256',c.snapshot_sha256,'decisionSha256',c.decision_sha256),NULL,IF(@compact_source_clock_unresolved,NULL,CONVERT_TZ(c.used_at,@compact_validation_wall_offset,'+00:00')),IF(@compact_source_clock_unresolved,NULL,CONVERT_TZ(c.used_at,@compact_validation_wall_offset,'+00:00')),'detection_report_confirmation',c.token,IF(@compact_source_clock_unresolved,JSON_OBJECT('protocol','doorhandle-legacy-clock-v1','status','UNRESOLVED','sourceTable','detection_report_confirmation','sourceKey',JSON_OBJECT('token',c.`token`),'sourceSnapshotSha256','__SOURCE_SNAPSHOT_SHA256__','sourceRowSha256',SHA2(CAST(JSON_OBJECT('token',c.`token`,'report_id',c.`report_id`,'actor_user_id',c.`actor_user_id`,'report_version',c.`report_version`,'snapshot_sha256',c.`snapshot_sha256`,'decision_sha256',c.`decision_sha256`,'expires_at',CAST(c.`expires_at` AS CHAR CHARACTER SET utf8mb4),'used_at',CAST(c.`used_at` AS CHAR CHARACTER SET utf8mb4)) AS CHAR CHARACTER SET utf8mb4),256),'sourceWallTimes',JSON_OBJECT('expires_at',CAST(c.`expires_at` AS CHAR),'used_at',CAST(c.`used_at` AS CHAR))),NULL) FROM `__SOURCE_SCHEMA__`.detection_report_confirmation c JOIN quality_report q ON BINARY q.report_id=BINARY c.report_id;
+INSERT INTO workflow_instance(workflow_id,kind,idempotency_scope,request_id,request_sha256,owner_user_id,actor_user_id,resource_type,resource_id,resource_revision,run_id,status,payload_version,payload_json,created_at,updated_at,finished_at,legacy_source,legacy_key,legacy_clock_json) SELECT SHA2(CONCAT('REPORT_AGENT_ORIGIN:',o.actor_user_id,':',o.request_id),256),'REPORT_AGENT_ORIGIN',CONCAT('OWNER:',o.actor_user_id),o.request_id,SHA2(CONCAT(o.actor_user_id,'|',o.report_id,'|',o.report_version,'|',CHAR_LENGTH(o.run_id),':',o.run_id,'|',o.tool_name),256),q.owner_user_id,o.actor_user_id,'QUALITY_REPORT',o.report_id,o.report_version,o.run_id,'COMPLETED',1,JSON_OBJECT('callId',o.call_id,'toolName',o.tool_name),IF(@compact_source_clock_unresolved,NULL,CONVERT_TZ(o.created_at,@compact_validation_wall_offset,'+00:00')),IF(@compact_source_clock_unresolved,NULL,CONVERT_TZ(o.created_at,@compact_validation_wall_offset,'+00:00')),IF(@compact_source_clock_unresolved,NULL,CONVERT_TZ(o.created_at,@compact_validation_wall_offset,'+00:00')),'detection_report_agent_origin',CAST(JSON_ARRAY(o.actor_user_id,o.request_id) AS CHAR),IF(@compact_source_clock_unresolved,JSON_OBJECT('protocol','doorhandle-legacy-clock-v1','status','UNRESOLVED','sourceTable','detection_report_agent_origin','sourceKey',JSON_OBJECT('actor_user_id',o.`actor_user_id`,'request_id',o.`request_id`),'sourceSnapshotSha256','__SOURCE_SNAPSHOT_SHA256__','sourceRowSha256',SHA2(CAST(JSON_OBJECT('actor_user_id',o.`actor_user_id`,'request_id',o.`request_id`,'report_id',o.`report_id`,'report_version',o.`report_version`,'run_id',o.`run_id`,'call_id',o.`call_id`,'tool_name',o.`tool_name`,'created_at',CAST(o.`created_at` AS CHAR CHARACTER SET utf8mb4)) AS CHAR CHARACTER SET utf8mb4),256),'sourceWallTimes',JSON_OBJECT('created_at',CAST(o.`created_at` AS CHAR))),NULL) FROM `__SOURCE_SCHEMA__`.detection_report_agent_origin o JOIN quality_report q ON BINARY q.report_id=BINARY o.report_id;
+INSERT INTO workflow_instance(workflow_id,kind,idempotency_scope,request_id,request_sha256,owner_user_id,actor_user_id,resource_type,resource_id,resource_revision,status,fence,claim_token,lease_expires_at,attempts,next_attempt_at,error_code,payload_version,payload_json,created_at,updated_at,finished_at,legacy_source,legacy_key,legacy_clock_json) SELECT SHA2(CONCAT('REPORT_DELIVERY:',e.event_id),256),'REPORT_DELIVERY','REPORT_DELIVERY',e.event_id,SHA2(CONVERT(e.payload_json USING utf8mb4),256),q.owner_user_id,CAST(JSON_UNQUOTE(JSON_EXTRACT(e.payload_json,'$.actorUserId')) AS UNSIGNED),'QUALITY_REPORT',e.report_id,CAST(JSON_UNQUOTE(JSON_EXTRACT(e.payload_json,'$.version')) AS UNSIGNED),e.delivery_status,IF(e.delivery_status='PROCESSING',1,0),e.lease_token,IF(@compact_source_clock_unresolved,NULL,CONVERT_TZ(e.lease_expires_at,@compact_validation_wall_offset,'+00:00')),e.attempts,IF(@compact_source_clock_unresolved,NULL,CONVERT_TZ(e.next_attempt_at,@compact_validation_wall_offset,'+00:00')),e.last_error_code,1,JSON_OBJECT('eventType',e.event_type,'eventJson',e.payload_json),IF(@compact_source_clock_unresolved,NULL,CONVERT_TZ(e.created_at,@compact_validation_wall_offset,'+00:00')),IF(@compact_source_clock_unresolved,NULL,COALESCE(CONVERT_TZ(e.delivered_at,@compact_validation_wall_offset,'+00:00'),CONVERT_TZ(e.created_at,@compact_validation_wall_offset,'+00:00'))),IF(@compact_source_clock_unresolved,NULL,CONVERT_TZ(e.delivered_at,@compact_validation_wall_offset,'+00:00')),'detection_report_outbox',e.event_id,IF(@compact_source_clock_unresolved,JSON_OBJECT('protocol','doorhandle-legacy-clock-v1','status','UNRESOLVED','sourceTable','detection_report_outbox','sourceKey',JSON_OBJECT('event_id',e.`event_id`),'sourceSnapshotSha256','__SOURCE_SNAPSHOT_SHA256__','sourceRowSha256',SHA2(CAST(JSON_OBJECT('event_id',e.`event_id`,'report_id',e.`report_id`,'event_type',e.`event_type`,'payload_json',e.`payload_json`,'delivery_status',e.`delivery_status`,'created_at',CAST(e.`created_at` AS CHAR CHARACTER SET utf8mb4),'attempts',e.`attempts`,'next_attempt_at',CAST(e.`next_attempt_at` AS CHAR CHARACTER SET utf8mb4),'lease_token',e.`lease_token`,'lease_expires_at',CAST(e.`lease_expires_at` AS CHAR CHARACTER SET utf8mb4),'delivered_at',CAST(e.`delivered_at` AS CHAR CHARACTER SET utf8mb4),'last_error_code',e.`last_error_code`) AS CHAR CHARACTER SET utf8mb4),256),'sourceWallTimes',JSON_OBJECT('created_at',CAST(e.`created_at` AS CHAR),'next_attempt_at',CAST(e.`next_attempt_at` AS CHAR),'lease_expires_at',CAST(e.`lease_expires_at` AS CHAR),'delivered_at',CAST(e.`delivered_at` AS CHAR))),NULL) FROM `__SOURCE_SCHEMA__`.detection_report_outbox e JOIN quality_report q ON BINARY q.report_id=BINARY e.report_id;
+INSERT INTO workflow_instance(workflow_id,kind,idempotency_scope,request_id,request_sha256,owner_user_id,actor_user_id,resource_type,resource_id,resource_revision,status,payload_version,payload_json,created_at,updated_at,finished_at,legacy_source,legacy_key,legacy_clock_json) SELECT SHA2(CONCAT('REPORT_CONSUMPTION:',r.event_id),256),'REPORT_CONSUMPTION','REPORT_CONSUMPTION',r.event_id,r.payload_sha256,q.owner_user_id,CAST(JSON_UNQUOTE(JSON_EXTRACT(e.payload_json,'$.actorUserId')) AS UNSIGNED),'QUALITY_REPORT',r.report_id,r.report_version,'COMPLETED',1,JSON_OBJECT('eventType',r.event_type,'payloadSha256',r.payload_sha256),IF(@compact_source_clock_unresolved,NULL,CONVERT_TZ(r.consumed_at,@compact_validation_wall_offset,'+00:00')),IF(@compact_source_clock_unresolved,NULL,CONVERT_TZ(r.consumed_at,@compact_validation_wall_offset,'+00:00')),IF(@compact_source_clock_unresolved,NULL,CONVERT_TZ(r.consumed_at,@compact_validation_wall_offset,'+00:00')),'detection_report_event_receipt',r.event_id,IF(@compact_source_clock_unresolved,JSON_OBJECT('protocol','doorhandle-legacy-clock-v1','status','UNRESOLVED','sourceTable','detection_report_event_receipt','sourceKey',JSON_OBJECT('event_id',r.`event_id`),'sourceSnapshotSha256','__SOURCE_SNAPSHOT_SHA256__','sourceRowSha256',SHA2(CAST(JSON_OBJECT('event_id',r.`event_id`,'report_id',r.`report_id`,'event_type',r.`event_type`,'report_version',r.`report_version`,'payload_sha256',r.`payload_sha256`,'consumed_at',CAST(r.`consumed_at` AS CHAR CHARACTER SET utf8mb4)) AS CHAR CHARACTER SET utf8mb4),256),'sourceWallTimes',JSON_OBJECT('consumed_at',CAST(r.`consumed_at` AS CHAR))),NULL) FROM `__SOURCE_SCHEMA__`.detection_report_event_receipt r JOIN quality_report q ON BINARY q.report_id=BINARY r.report_id JOIN `__SOURCE_SCHEMA__`.detection_report_outbox e ON BINARY e.event_id=BINARY r.event_id;
+INSERT INTO audit_event(event_id,kind,owner_user_id,actor_user_id,resource_type,resource_id,action,revision,content_sha256,occurred_at,payload_version,payload_json,legacy_source,legacy_key,legacy_clock_json) SELECT CONCAT('legacy-report-audit-',a.id),'QUALITY_REPORT',q.owner_user_id,a.actor_user_id,'QUALITY_REPORT',a.report_id,a.action,a.report_version,a.snapshot_sha256,IF(@compact_source_clock_unresolved,NULL,CONVERT_TZ(a.created_at,@compact_validation_wall_offset,'+00:00')),1,JSON_OBJECT('actorUsername',a.actor_username,'beforeStatus',a.before_status,'afterStatus',a.after_status,'reason',a.reason),'detection_report_audit',CAST(a.id AS CHAR),IF(@compact_source_clock_unresolved,JSON_OBJECT('protocol','doorhandle-legacy-clock-v1','status','UNRESOLVED','sourceTable','detection_report_audit','sourceKey',JSON_OBJECT('id',a.`id`),'sourceSnapshotSha256','__SOURCE_SNAPSHOT_SHA256__','sourceRowSha256',SHA2(CAST(JSON_OBJECT('id',a.`id`,'report_id',a.`report_id`,'actor_user_id',a.`actor_user_id`,'actor_username',a.`actor_username`,'action',a.`action`,'before_status',a.`before_status`,'after_status',a.`after_status`,'report_version',a.`report_version`,'reason',a.`reason`,'snapshot_sha256',a.`snapshot_sha256`,'created_at',CAST(a.`created_at` AS CHAR CHARACTER SET utf8mb4)) AS CHAR CHARACTER SET utf8mb4),256),'sourceWallTimes',JSON_OBJECT('created_at',CAST(a.`created_at` AS CHAR))),NULL) FROM `__SOURCE_SCHEMA__`.detection_report_audit a JOIN quality_report q ON BINARY q.report_id=BINARY a.report_id ORDER BY a.id;
+INSERT INTO runtime_state(namespace,owner_id,scope_key,revision,state_code,current_ref,counter_value,payload_version,payload_json,created_at,updated_at,legacy_clock_json) SELECT 'REPORT_EVENT_STATE',0,s.report_id,1,s.status,s.last_event_id,s.last_version,1,JSON_OBJECT('reportId',s.report_id,'lastEventId',s.last_event_id,'lastVersion',s.last_version,'status',s.status),NULL,IF(@compact_source_clock_unresolved,NULL,CONVERT_TZ(s.updated_at,@compact_validation_wall_offset,'+00:00')),IF(@compact_source_clock_unresolved,JSON_OBJECT('protocol','doorhandle-legacy-clock-v1','status','UNRESOLVED','sourceTable','detection_report_event_state','sourceKey',JSON_OBJECT('report_id',s.`report_id`),'sourceSnapshotSha256','__SOURCE_SNAPSHOT_SHA256__','sourceRowSha256',SHA2(CAST(JSON_OBJECT('report_id',s.`report_id`,'last_version',s.`last_version`,'status',s.`status`,'last_event_id',s.`last_event_id`,'updated_at',CAST(s.`updated_at` AS CHAR CHARACTER SET utf8mb4)) AS CHAR CHARACTER SET utf8mb4),256),'sourceWallTimes',JSON_OBJECT('updated_at',CAST(s.`updated_at` AS CHAR))),NULL) FROM `__SOURCE_SCHEMA__`.detection_report_event_state s;
 INSERT INTO compact_report_guard SELECT IF(
  (SELECT COUNT(*) FROM workflow_instance WHERE kind='REPORT_COMMAND')=(SELECT COUNT(*) FROM `__SOURCE_SCHEMA__`.detection_report_command)
  AND (SELECT COUNT(*) FROM workflow_instance WHERE kind='REPORT_CONFIRMATION')=(SELECT COUNT(*) FROM `__SOURCE_SCHEMA__`.detection_report_confirmation)
@@ -294,8 +260,6 @@ INSERT INTO compact_report_guard SELECT IF(
  AND (SELECT COUNT(*) FROM workflow_instance WHERE kind='REPORT_CONSUMPTION')=(SELECT COUNT(*) FROM `__SOURCE_SCHEMA__`.detection_report_event_receipt)
  AND (SELECT COUNT(*) FROM audit_event WHERE kind='QUALITY_REPORT')=(SELECT COUNT(*) FROM `__SOURCE_SCHEMA__`.detection_report_audit)
  AND (SELECT COUNT(*) FROM runtime_state WHERE namespace='REPORT_EVENT_STATE')=(SELECT COUNT(*) FROM `__SOURCE_SCHEMA__`.detection_report_event_state),1,0);
--- BEGIN complete report field reconciliation
--- detection_report_command: all ordinary target fields, including NULL/default state.
 INSERT INTO compact_report_guard SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA__`.detection_report_command c JOIN quality_report q ON BINARY q.report_id=BINARY c.report_id
  LEFT JOIN workflow_instance t ON BINARY t.workflow_id=BINARY (SHA2(CONCAT('REPORT_COMMAND:',c.actor_user_id,':',c.request_id),256))
  WHERE t.workflow_id IS NULL
@@ -337,9 +301,9 @@ INSERT INTO compact_report_guard SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA
  OR NOT(t.result_version<=>(NULL))
  OR NOT(BINARY t.result_json<=>BINARY (NULL))
  OR NOT(BINARY t.result_sha256<=>BINARY (NULL))
- OR NOT(t.created_at<=>(CONVERT_TZ(c.created_at,'__SOURCE_REPORT_OFFSET__','+00:00')))
- OR NOT(t.updated_at<=>(CONVERT_TZ(c.created_at,'__SOURCE_REPORT_OFFSET__','+00:00')))
- OR NOT(t.finished_at<=>(CONVERT_TZ(c.created_at,'__SOURCE_REPORT_OFFSET__','+00:00')))
+ OR NOT(t.created_at<=>(CONVERT_TZ(c.created_at,@compact_validation_wall_offset,'+00:00')))
+ OR NOT(t.updated_at<=>(CONVERT_TZ(c.created_at,@compact_validation_wall_offset,'+00:00')))
+ OR NOT(t.finished_at<=>(CONVERT_TZ(c.created_at,@compact_validation_wall_offset,'+00:00')))
  OR NOT(BINARY t.legacy_source<=>BINARY ('detection_report_command'))
  OR NOT(BINARY t.legacy_key<=>BINARY (CAST(JSON_ARRAY(c.actor_user_id,c.request_id) AS CHAR)))
  OR NOT(BINARY t.call_id<=>BINARY (NULL))
@@ -377,7 +341,6 @@ INSERT INTO compact_report_guard SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA
  OR NOT(t.mcp_source_updated_at<=>(NULL))
  OR NOT(BINARY t.mcp_source_utc_offset<=>BINARY (NULL))
  OR NOT(BINARY t.digest_legacy_row_json<=>BINARY (NULL));
--- detection_report_confirmation: all ordinary target fields, including NULL/default state.
 INSERT INTO compact_report_guard SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA__`.detection_report_confirmation c JOIN quality_report q ON BINARY q.report_id=BINARY c.report_id
  LEFT JOIN workflow_instance t ON BINARY t.workflow_id=BINARY (SHA2(CONCAT('REPORT_CONFIRMATION:',c.token),256))
  WHERE t.workflow_id IS NULL
@@ -409,7 +372,7 @@ INSERT INTO compact_report_guard SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA
  OR NOT(t.scheduled_for<=>(NULL))
  OR NOT(BINARY t.error_code<=>BINARY (NULL))
  OR NOT(t.next_attempt_at<=>(NULL))
- OR NOT(t.expires_at<=>(CONVERT_TZ(c.expires_at,'__SOURCE_REPORT_OFFSET__','+00:00')))
+ OR NOT(t.expires_at<=>(CONVERT_TZ(c.expires_at,@compact_validation_wall_offset,'+00:00')))
  OR NOT(BINARY t.execution_state<=>BINARY (NULL))
  OR NOT(t.reserved_bytes<=>(NULL))
  OR NOT(t.exit_verified<=>(NULL))
@@ -420,8 +383,8 @@ INSERT INTO compact_report_guard SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA
  OR NOT(BINARY t.result_json<=>BINARY (NULL))
  OR NOT(BINARY t.result_sha256<=>BINARY (NULL))
  OR NOT(t.created_at<=>(NULL))
- OR NOT(t.updated_at<=>(CONVERT_TZ(c.used_at,'__SOURCE_REPORT_OFFSET__','+00:00')))
- OR NOT(t.finished_at<=>(CONVERT_TZ(c.used_at,'__SOURCE_REPORT_OFFSET__','+00:00')))
+ OR NOT(t.updated_at<=>(CONVERT_TZ(c.used_at,@compact_validation_wall_offset,'+00:00')))
+ OR NOT(t.finished_at<=>(CONVERT_TZ(c.used_at,@compact_validation_wall_offset,'+00:00')))
  OR NOT(BINARY t.legacy_source<=>BINARY ('detection_report_confirmation'))
  OR NOT(BINARY t.legacy_key<=>BINARY (c.token))
  OR NOT(BINARY t.call_id<=>BINARY (NULL))
@@ -459,7 +422,6 @@ INSERT INTO compact_report_guard SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA
  OR NOT(t.mcp_source_updated_at<=>(NULL))
  OR NOT(BINARY t.mcp_source_utc_offset<=>BINARY (NULL))
  OR NOT(BINARY t.digest_legacy_row_json<=>BINARY (NULL));
--- detection_report_agent_origin: all ordinary target fields, including NULL/default state.
 INSERT INTO compact_report_guard SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA__`.detection_report_agent_origin o JOIN quality_report q ON BINARY q.report_id=BINARY o.report_id
  LEFT JOIN workflow_instance t ON BINARY t.workflow_id=BINARY (SHA2(CONCAT('REPORT_AGENT_ORIGIN:',o.actor_user_id,':',o.request_id),256))
  WHERE t.workflow_id IS NULL
@@ -501,9 +463,9 @@ INSERT INTO compact_report_guard SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA
  OR NOT(t.result_version<=>(NULL))
  OR NOT(BINARY t.result_json<=>BINARY (NULL))
  OR NOT(BINARY t.result_sha256<=>BINARY (NULL))
- OR NOT(t.created_at<=>(CONVERT_TZ(o.created_at,'__SOURCE_REPORT_OFFSET__','+00:00')))
- OR NOT(t.updated_at<=>(CONVERT_TZ(o.created_at,'__SOURCE_REPORT_OFFSET__','+00:00')))
- OR NOT(t.finished_at<=>(CONVERT_TZ(o.created_at,'__SOURCE_REPORT_OFFSET__','+00:00')))
+ OR NOT(t.created_at<=>(CONVERT_TZ(o.created_at,@compact_validation_wall_offset,'+00:00')))
+ OR NOT(t.updated_at<=>(CONVERT_TZ(o.created_at,@compact_validation_wall_offset,'+00:00')))
+ OR NOT(t.finished_at<=>(CONVERT_TZ(o.created_at,@compact_validation_wall_offset,'+00:00')))
  OR NOT(BINARY t.legacy_source<=>BINARY ('detection_report_agent_origin'))
  OR NOT(BINARY t.legacy_key<=>BINARY (CAST(JSON_ARRAY(o.actor_user_id,o.request_id) AS CHAR)))
  OR NOT(BINARY t.call_id<=>BINARY (NULL))
@@ -541,7 +503,6 @@ INSERT INTO compact_report_guard SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA
  OR NOT(t.mcp_source_updated_at<=>(NULL))
  OR NOT(BINARY t.mcp_source_utc_offset<=>BINARY (NULL))
  OR NOT(BINARY t.digest_legacy_row_json<=>BINARY (NULL));
--- detection_report_outbox: all ordinary target fields, including NULL/default state.
 INSERT INTO compact_report_guard SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA__`.detection_report_outbox e JOIN quality_report q ON BINARY q.report_id=BINARY e.report_id
  LEFT JOIN workflow_instance t ON BINARY t.workflow_id=BINARY (SHA2(CONCAT('REPORT_DELIVERY:',e.event_id),256))
  WHERE t.workflow_id IS NULL
@@ -567,12 +528,12 @@ INSERT INTO compact_report_guard SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA
  OR NOT(t.fence<=>(IF(e.delivery_status='PROCESSING',1,0)))
  OR NOT(t.active_slot<=>(NULL))
  OR NOT(BINARY t.claim_token<=>BINARY (e.lease_token))
- OR NOT(t.lease_expires_at<=>(CONVERT_TZ(e.lease_expires_at,'__SOURCE_REPORT_OFFSET__','+00:00')))
+ OR NOT(t.lease_expires_at<=>(CONVERT_TZ(e.lease_expires_at,@compact_validation_wall_offset,'+00:00')))
  OR NOT(t.attempts<=>(e.attempts))
  OR NOT(t.effective_date<=>(NULL))
  OR NOT(t.scheduled_for<=>(NULL))
  OR NOT(BINARY t.error_code<=>BINARY (e.last_error_code))
- OR NOT(t.next_attempt_at<=>(CONVERT_TZ(e.next_attempt_at,'__SOURCE_REPORT_OFFSET__','+00:00')))
+ OR NOT(t.next_attempt_at<=>(CONVERT_TZ(e.next_attempt_at,@compact_validation_wall_offset,'+00:00')))
  OR NOT(t.expires_at<=>(NULL))
  OR NOT(BINARY t.execution_state<=>BINARY (NULL))
  OR NOT(t.reserved_bytes<=>(NULL))
@@ -583,9 +544,9 @@ INSERT INTO compact_report_guard SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA
  OR NOT(t.result_version<=>(NULL))
  OR NOT(BINARY t.result_json<=>BINARY (NULL))
  OR NOT(BINARY t.result_sha256<=>BINARY (NULL))
- OR NOT(t.created_at<=>(CONVERT_TZ(e.created_at,'__SOURCE_REPORT_OFFSET__','+00:00')))
- OR NOT(t.updated_at<=>(COALESCE(CONVERT_TZ(e.delivered_at,'__SOURCE_REPORT_OFFSET__','+00:00'),CONVERT_TZ(e.created_at,'__SOURCE_REPORT_OFFSET__','+00:00'))))
- OR NOT(t.finished_at<=>(CONVERT_TZ(e.delivered_at,'__SOURCE_REPORT_OFFSET__','+00:00')))
+ OR NOT(t.created_at<=>(CONVERT_TZ(e.created_at,@compact_validation_wall_offset,'+00:00')))
+ OR NOT(t.updated_at<=>(COALESCE(CONVERT_TZ(e.delivered_at,@compact_validation_wall_offset,'+00:00'),CONVERT_TZ(e.created_at,@compact_validation_wall_offset,'+00:00'))))
+ OR NOT(t.finished_at<=>(CONVERT_TZ(e.delivered_at,@compact_validation_wall_offset,'+00:00')))
  OR NOT(BINARY t.legacy_source<=>BINARY ('detection_report_outbox'))
  OR NOT(BINARY t.legacy_key<=>BINARY (e.event_id))
  OR NOT(BINARY t.call_id<=>BINARY (NULL))
@@ -623,7 +584,6 @@ INSERT INTO compact_report_guard SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA
  OR NOT(t.mcp_source_updated_at<=>(NULL))
  OR NOT(BINARY t.mcp_source_utc_offset<=>BINARY (NULL))
  OR NOT(BINARY t.digest_legacy_row_json<=>BINARY (NULL));
--- detection_report_event_receipt: all ordinary target fields, including NULL/default state.
 INSERT INTO compact_report_guard SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA__`.detection_report_event_receipt r JOIN quality_report q ON BINARY q.report_id=BINARY r.report_id JOIN `__SOURCE_SCHEMA__`.detection_report_outbox e ON BINARY e.event_id=BINARY r.event_id
  LEFT JOIN workflow_instance t ON BINARY t.workflow_id=BINARY (SHA2(CONCAT('REPORT_CONSUMPTION:',r.event_id),256))
  WHERE t.workflow_id IS NULL
@@ -665,9 +625,9 @@ INSERT INTO compact_report_guard SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA
  OR NOT(t.result_version<=>(NULL))
  OR NOT(BINARY t.result_json<=>BINARY (NULL))
  OR NOT(BINARY t.result_sha256<=>BINARY (NULL))
- OR NOT(t.created_at<=>(CONVERT_TZ(r.consumed_at,'__SOURCE_REPORT_OFFSET__','+00:00')))
- OR NOT(t.updated_at<=>(CONVERT_TZ(r.consumed_at,'__SOURCE_REPORT_OFFSET__','+00:00')))
- OR NOT(t.finished_at<=>(CONVERT_TZ(r.consumed_at,'__SOURCE_REPORT_OFFSET__','+00:00')))
+ OR NOT(t.created_at<=>(CONVERT_TZ(r.consumed_at,@compact_validation_wall_offset,'+00:00')))
+ OR NOT(t.updated_at<=>(CONVERT_TZ(r.consumed_at,@compact_validation_wall_offset,'+00:00')))
+ OR NOT(t.finished_at<=>(CONVERT_TZ(r.consumed_at,@compact_validation_wall_offset,'+00:00')))
  OR NOT(BINARY t.legacy_source<=>BINARY ('detection_report_event_receipt'))
  OR NOT(BINARY t.legacy_key<=>BINARY (r.event_id))
  OR NOT(BINARY t.call_id<=>BINARY (NULL))
@@ -705,7 +665,6 @@ INSERT INTO compact_report_guard SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA
  OR NOT(t.mcp_source_updated_at<=>(NULL))
  OR NOT(BINARY t.mcp_source_utc_offset<=>BINARY (NULL))
  OR NOT(BINARY t.digest_legacy_row_json<=>BINARY (NULL));
--- detection_report_audit: all ordinary target fields, including NULL/default state.
 INSERT INTO compact_report_guard SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA__`.detection_report_audit a JOIN quality_report q ON BINARY q.report_id=BINARY a.report_id
  LEFT JOIN audit_event t ON BINARY t.event_id=BINARY (CONCAT('legacy-report-audit-',a.id))
  WHERE t.event_id IS NULL
@@ -733,14 +692,13 @@ INSERT INTO compact_report_guard SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA
  OR NOT(BINARY t.policy_version<=>BINARY (NULL))
  OR NOT(BINARY t.outcome<=>BINARY (NULL))
  OR NOT(t.observed_at<=>(NULL))
- OR NOT(t.occurred_at<=>(CONVERT_TZ(a.created_at,'__SOURCE_REPORT_OFFSET__','+00:00')))
+ OR NOT(t.occurred_at<=>(CONVERT_TZ(a.created_at,@compact_validation_wall_offset,'+00:00')))
  OR NOT(t.payload_version<=>(1))
  OR NOT(BINARY t.payload_json<=>BINARY (JSON_OBJECT('actorUsername',a.actor_username,'beforeStatus',a.before_status,'afterStatus',a.after_status,'reason',a.reason)))
  OR NOT(BINARY t.legacy_source<=>BINARY ('detection_report_audit'))
  OR NOT(BINARY t.legacy_key<=>BINARY (CAST(a.id AS CHAR)))
  OR NOT(BINARY t.call_id<=>BINARY (NULL))
  OR NOT(BINARY t.digest_legacy_detail_json<=>BINARY (NULL));
--- detection_report_event_state: all ordinary target fields, including NULL/default state.
 INSERT INTO compact_report_guard SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA__`.detection_report_event_state s
  LEFT JOIN runtime_state t ON BINARY t.namespace=BINARY ('REPORT_EVENT_STATE') AND BINARY t.owner_id=BINARY (0) AND BINARY t.scope_key=BINARY (s.report_id)
  WHERE t.namespace IS NULL
@@ -762,7 +720,13 @@ INSERT INTO compact_report_guard SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA
  OR NOT(t.payload_version<=>(1))
  OR NOT(BINARY t.payload_json<=>BINARY (JSON_OBJECT('reportId',s.report_id,'lastEventId',s.last_event_id,'lastVersion',s.last_version,'status',s.status)))
  OR NOT(t.created_at<=>(NULL))
- OR NOT(t.updated_at<=>(CONVERT_TZ(s.updated_at,'__SOURCE_REPORT_OFFSET__','+00:00')));
--- END complete report field reconciliation
+ OR NOT(t.updated_at<=>(CONVERT_TZ(s.updated_at,@compact_validation_wall_offset,'+00:00')));
+INSERT INTO compact_report_guard SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA__`.detection_report_command c JOIN quality_report q ON BINARY q.report_id=BINARY c.report_id LEFT JOIN workflow_instance clock_target ON BINARY clock_target.`legacy_source`<=>BINARY 'detection_report_command' AND BINARY clock_target.`legacy_key`<=>BINARY CAST(JSON_ARRAY(c.actor_user_id,c.request_id) AS CHAR) WHERE (clock_target.id IS NULL OR NOT(clock_target.legacy_clock_json<=>IF(@compact_source_clock_unresolved,JSON_OBJECT('protocol','doorhandle-legacy-clock-v1','status','UNRESOLVED','sourceTable','detection_report_command','sourceKey',JSON_OBJECT('actor_user_id',c.`actor_user_id`,'request_id',c.`request_id`),'sourceSnapshotSha256','__SOURCE_SNAPSHOT_SHA256__','sourceRowSha256',SHA2(CAST(JSON_OBJECT('actor_user_id',c.`actor_user_id`,'request_id',c.`request_id`,'command_sha256',c.`command_sha256`,'report_id',c.`report_id`,'response_json',c.`response_json`,'created_at',CAST(c.`created_at` AS CHAR CHARACTER SET utf8mb4)) AS CHAR CHARACTER SET utf8mb4),256),'sourceWallTimes',JSON_OBJECT('created_at',CAST(c.`created_at` AS CHAR))),NULL)) OR NOT(BINARY clock_target.`payload_json`<=>BINARY JSON_OBJECT('responseJson',c.response_json)) OR NOT(BINARY clock_target.`created_at`<=>BINARY IF(@compact_source_clock_unresolved,NULL,CONVERT_TZ(c.created_at,@compact_validation_wall_offset,'+00:00'))) OR NOT(BINARY clock_target.`updated_at`<=>BINARY IF(@compact_source_clock_unresolved,NULL,CONVERT_TZ(c.created_at,@compact_validation_wall_offset,'+00:00'))) OR NOT(BINARY clock_target.`finished_at`<=>BINARY IF(@compact_source_clock_unresolved,NULL,CONVERT_TZ(c.created_at,@compact_validation_wall_offset,'+00:00'))));
+INSERT INTO compact_report_guard SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA__`.detection_report_confirmation c JOIN quality_report q ON BINARY q.report_id=BINARY c.report_id LEFT JOIN workflow_instance clock_target ON BINARY clock_target.`legacy_source`<=>BINARY 'detection_report_confirmation' AND BINARY clock_target.`legacy_key`<=>BINARY c.token WHERE (clock_target.id IS NULL OR NOT(clock_target.legacy_clock_json<=>IF(@compact_source_clock_unresolved,JSON_OBJECT('protocol','doorhandle-legacy-clock-v1','status','UNRESOLVED','sourceTable','detection_report_confirmation','sourceKey',JSON_OBJECT('token',c.`token`),'sourceSnapshotSha256','__SOURCE_SNAPSHOT_SHA256__','sourceRowSha256',SHA2(CAST(JSON_OBJECT('token',c.`token`,'report_id',c.`report_id`,'actor_user_id',c.`actor_user_id`,'report_version',c.`report_version`,'snapshot_sha256',c.`snapshot_sha256`,'decision_sha256',c.`decision_sha256`,'expires_at',CAST(c.`expires_at` AS CHAR CHARACTER SET utf8mb4),'used_at',CAST(c.`used_at` AS CHAR CHARACTER SET utf8mb4)) AS CHAR CHARACTER SET utf8mb4),256),'sourceWallTimes',JSON_OBJECT('expires_at',CAST(c.`expires_at` AS CHAR),'used_at',CAST(c.`used_at` AS CHAR))),NULL)) OR NOT(BINARY clock_target.`expires_at`<=>BINARY IF(@compact_source_clock_unresolved,NULL,CONVERT_TZ(c.expires_at,@compact_validation_wall_offset,'+00:00'))) OR NOT(BINARY clock_target.`payload_json`<=>BINARY JSON_OBJECT('snapshotSha256',c.snapshot_sha256,'decisionSha256',c.decision_sha256)) OR NOT(BINARY clock_target.`created_at`<=>BINARY NULL) OR NOT(BINARY clock_target.`updated_at`<=>BINARY IF(@compact_source_clock_unresolved,NULL,CONVERT_TZ(c.used_at,@compact_validation_wall_offset,'+00:00'))) OR NOT(BINARY clock_target.`finished_at`<=>BINARY IF(@compact_source_clock_unresolved,NULL,CONVERT_TZ(c.used_at,@compact_validation_wall_offset,'+00:00'))));
+INSERT INTO compact_report_guard SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA__`.detection_report_agent_origin o JOIN quality_report q ON BINARY q.report_id=BINARY o.report_id LEFT JOIN workflow_instance clock_target ON BINARY clock_target.`legacy_source`<=>BINARY 'detection_report_agent_origin' AND BINARY clock_target.`legacy_key`<=>BINARY CAST(JSON_ARRAY(o.actor_user_id,o.request_id) AS CHAR) WHERE (clock_target.id IS NULL OR NOT(clock_target.legacy_clock_json<=>IF(@compact_source_clock_unresolved,JSON_OBJECT('protocol','doorhandle-legacy-clock-v1','status','UNRESOLVED','sourceTable','detection_report_agent_origin','sourceKey',JSON_OBJECT('actor_user_id',o.`actor_user_id`,'request_id',o.`request_id`),'sourceSnapshotSha256','__SOURCE_SNAPSHOT_SHA256__','sourceRowSha256',SHA2(CAST(JSON_OBJECT('actor_user_id',o.`actor_user_id`,'request_id',o.`request_id`,'report_id',o.`report_id`,'report_version',o.`report_version`,'run_id',o.`run_id`,'call_id',o.`call_id`,'tool_name',o.`tool_name`,'created_at',CAST(o.`created_at` AS CHAR CHARACTER SET utf8mb4)) AS CHAR CHARACTER SET utf8mb4),256),'sourceWallTimes',JSON_OBJECT('created_at',CAST(o.`created_at` AS CHAR))),NULL)) OR NOT(BINARY clock_target.`payload_json`<=>BINARY JSON_OBJECT('callId',o.call_id,'toolName',o.tool_name)) OR NOT(BINARY clock_target.`created_at`<=>BINARY IF(@compact_source_clock_unresolved,NULL,CONVERT_TZ(o.created_at,@compact_validation_wall_offset,'+00:00'))) OR NOT(BINARY clock_target.`updated_at`<=>BINARY IF(@compact_source_clock_unresolved,NULL,CONVERT_TZ(o.created_at,@compact_validation_wall_offset,'+00:00'))) OR NOT(BINARY clock_target.`finished_at`<=>BINARY IF(@compact_source_clock_unresolved,NULL,CONVERT_TZ(o.created_at,@compact_validation_wall_offset,'+00:00'))));
+INSERT INTO compact_report_guard SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA__`.detection_report_outbox e JOIN quality_report q ON BINARY q.report_id=BINARY e.report_id LEFT JOIN workflow_instance clock_target ON BINARY clock_target.`legacy_source`<=>BINARY 'detection_report_outbox' AND BINARY clock_target.`legacy_key`<=>BINARY e.event_id WHERE (clock_target.id IS NULL OR NOT(clock_target.legacy_clock_json<=>IF(@compact_source_clock_unresolved,JSON_OBJECT('protocol','doorhandle-legacy-clock-v1','status','UNRESOLVED','sourceTable','detection_report_outbox','sourceKey',JSON_OBJECT('event_id',e.`event_id`),'sourceSnapshotSha256','__SOURCE_SNAPSHOT_SHA256__','sourceRowSha256',SHA2(CAST(JSON_OBJECT('event_id',e.`event_id`,'report_id',e.`report_id`,'event_type',e.`event_type`,'payload_json',e.`payload_json`,'delivery_status',e.`delivery_status`,'created_at',CAST(e.`created_at` AS CHAR CHARACTER SET utf8mb4),'attempts',e.`attempts`,'next_attempt_at',CAST(e.`next_attempt_at` AS CHAR CHARACTER SET utf8mb4),'lease_token',e.`lease_token`,'lease_expires_at',CAST(e.`lease_expires_at` AS CHAR CHARACTER SET utf8mb4),'delivered_at',CAST(e.`delivered_at` AS CHAR CHARACTER SET utf8mb4),'last_error_code',e.`last_error_code`) AS CHAR CHARACTER SET utf8mb4),256),'sourceWallTimes',JSON_OBJECT('created_at',CAST(e.`created_at` AS CHAR),'next_attempt_at',CAST(e.`next_attempt_at` AS CHAR),'lease_expires_at',CAST(e.`lease_expires_at` AS CHAR),'delivered_at',CAST(e.`delivered_at` AS CHAR))),NULL)) OR NOT(BINARY clock_target.`lease_expires_at`<=>BINARY IF(@compact_source_clock_unresolved,NULL,CONVERT_TZ(e.lease_expires_at,@compact_validation_wall_offset,'+00:00'))) OR NOT(BINARY clock_target.`next_attempt_at`<=>BINARY IF(@compact_source_clock_unresolved,NULL,CONVERT_TZ(e.next_attempt_at,@compact_validation_wall_offset,'+00:00'))) OR NOT(BINARY clock_target.`payload_json`<=>BINARY JSON_OBJECT('eventType',e.event_type,'eventJson',e.payload_json)) OR NOT(BINARY clock_target.`created_at`<=>BINARY IF(@compact_source_clock_unresolved,NULL,CONVERT_TZ(e.created_at,@compact_validation_wall_offset,'+00:00'))) OR NOT(BINARY clock_target.`updated_at`<=>BINARY IF(@compact_source_clock_unresolved,NULL,COALESCE(CONVERT_TZ(e.delivered_at,@compact_validation_wall_offset,'+00:00'),CONVERT_TZ(e.created_at,@compact_validation_wall_offset,'+00:00')))) OR NOT(BINARY clock_target.`finished_at`<=>BINARY IF(@compact_source_clock_unresolved,NULL,CONVERT_TZ(e.delivered_at,@compact_validation_wall_offset,'+00:00'))));
+INSERT INTO compact_report_guard SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA__`.detection_report_event_receipt r JOIN quality_report q ON BINARY q.report_id=BINARY r.report_id JOIN `__SOURCE_SCHEMA__`.detection_report_outbox e ON BINARY e.event_id=BINARY r.event_id LEFT JOIN workflow_instance clock_target ON BINARY clock_target.`legacy_source`<=>BINARY 'detection_report_event_receipt' AND BINARY clock_target.`legacy_key`<=>BINARY r.event_id WHERE (clock_target.id IS NULL OR NOT(clock_target.legacy_clock_json<=>IF(@compact_source_clock_unresolved,JSON_OBJECT('protocol','doorhandle-legacy-clock-v1','status','UNRESOLVED','sourceTable','detection_report_event_receipt','sourceKey',JSON_OBJECT('event_id',r.`event_id`),'sourceSnapshotSha256','__SOURCE_SNAPSHOT_SHA256__','sourceRowSha256',SHA2(CAST(JSON_OBJECT('event_id',r.`event_id`,'report_id',r.`report_id`,'event_type',r.`event_type`,'report_version',r.`report_version`,'payload_sha256',r.`payload_sha256`,'consumed_at',CAST(r.`consumed_at` AS CHAR CHARACTER SET utf8mb4)) AS CHAR CHARACTER SET utf8mb4),256),'sourceWallTimes',JSON_OBJECT('consumed_at',CAST(r.`consumed_at` AS CHAR))),NULL)) OR NOT(BINARY clock_target.`payload_json`<=>BINARY JSON_OBJECT('eventType',r.event_type,'payloadSha256',r.payload_sha256)) OR NOT(BINARY clock_target.`created_at`<=>BINARY IF(@compact_source_clock_unresolved,NULL,CONVERT_TZ(r.consumed_at,@compact_validation_wall_offset,'+00:00'))) OR NOT(BINARY clock_target.`updated_at`<=>BINARY IF(@compact_source_clock_unresolved,NULL,CONVERT_TZ(r.consumed_at,@compact_validation_wall_offset,'+00:00'))) OR NOT(BINARY clock_target.`finished_at`<=>BINARY IF(@compact_source_clock_unresolved,NULL,CONVERT_TZ(r.consumed_at,@compact_validation_wall_offset,'+00:00'))));
+INSERT INTO compact_report_guard SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA__`.detection_report_audit a JOIN quality_report q ON BINARY q.report_id=BINARY a.report_id LEFT JOIN audit_event clock_target ON BINARY clock_target.`legacy_source`<=>BINARY 'detection_report_audit' AND BINARY clock_target.`legacy_key`<=>BINARY CAST(a.id AS CHAR) WHERE (clock_target.id IS NULL OR NOT(clock_target.legacy_clock_json<=>IF(@compact_source_clock_unresolved,JSON_OBJECT('protocol','doorhandle-legacy-clock-v1','status','UNRESOLVED','sourceTable','detection_report_audit','sourceKey',JSON_OBJECT('id',a.`id`),'sourceSnapshotSha256','__SOURCE_SNAPSHOT_SHA256__','sourceRowSha256',SHA2(CAST(JSON_OBJECT('id',a.`id`,'report_id',a.`report_id`,'actor_user_id',a.`actor_user_id`,'actor_username',a.`actor_username`,'action',a.`action`,'before_status',a.`before_status`,'after_status',a.`after_status`,'report_version',a.`report_version`,'reason',a.`reason`,'snapshot_sha256',a.`snapshot_sha256`,'created_at',CAST(a.`created_at` AS CHAR CHARACTER SET utf8mb4)) AS CHAR CHARACTER SET utf8mb4),256),'sourceWallTimes',JSON_OBJECT('created_at',CAST(a.`created_at` AS CHAR))),NULL)) OR NOT(BINARY clock_target.`occurred_at`<=>BINARY IF(@compact_source_clock_unresolved,NULL,CONVERT_TZ(a.created_at,@compact_validation_wall_offset,'+00:00'))) OR NOT(BINARY clock_target.`payload_json`<=>BINARY JSON_OBJECT('actorUsername',a.actor_username,'beforeStatus',a.before_status,'afterStatus',a.after_status,'reason',a.reason)));
+INSERT INTO compact_report_guard SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA__`.detection_report_event_state s LEFT JOIN runtime_state clock_target ON BINARY clock_target.`namespace`<=>BINARY 'REPORT_EVENT_STATE' AND BINARY clock_target.`owner_id`<=>BINARY 0 AND BINARY clock_target.`scope_key`<=>BINARY s.report_id WHERE (clock_target.namespace IS NULL OR NOT(clock_target.legacy_clock_json<=>IF(@compact_source_clock_unresolved,JSON_OBJECT('protocol','doorhandle-legacy-clock-v1','status','UNRESOLVED','sourceTable','detection_report_event_state','sourceKey',JSON_OBJECT('report_id',s.`report_id`),'sourceSnapshotSha256','__SOURCE_SNAPSHOT_SHA256__','sourceRowSha256',SHA2(CAST(JSON_OBJECT('report_id',s.`report_id`,'last_version',s.`last_version`,'status',s.`status`,'last_event_id',s.`last_event_id`,'updated_at',CAST(s.`updated_at` AS CHAR CHARACTER SET utf8mb4)) AS CHAR CHARACTER SET utf8mb4),256),'sourceWallTimes',JSON_OBJECT('updated_at',CAST(s.`updated_at` AS CHAR))),NULL)) OR NOT(BINARY clock_target.`payload_json`<=>BINARY JSON_OBJECT('reportId',s.report_id,'lastEventId',s.last_event_id,'lastVersion',s.last_version,'status',s.status)) OR NOT(BINARY clock_target.`created_at`<=>BINARY NULL) OR NOT(BINARY clock_target.`updated_at`<=>BINARY IF(@compact_source_clock_unresolved,NULL,CONVERT_TZ(s.updated_at,@compact_validation_wall_offset,'+00:00'))));
 COMMIT;
 DROP TEMPORARY TABLE compact_report_guard;

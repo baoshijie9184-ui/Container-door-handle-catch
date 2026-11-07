@@ -34,7 +34,11 @@ import java.util.concurrent.*;
 public class ConversationInboxService implements AgentSteeringInboxApi {
     private static final WorkflowKind KIND=WorkflowKind.CONVERSATION_INPUT;
     private static final Set<String> PENDING=Set.of("QUEUED","STARTED");
-    public record Item(String id,String mode,String status,int revision,String content,String targetRunId){}
+    public record Item(String id,String mode,String status,int revision,String content,String targetRunId,
+                       String clockStatus,Map<String,String> sourceWallTimes){
+        public Item(String id,String mode,String status,int revision,String content,String targetRunId){this(id,mode,status,revision,content,targetRunId,"UTC",Map.of());}
+        public Item { clockStatus=clockStatus==null?"UTC":clockStatus;sourceWallTimes=sourceWallTimes==null?Map.of():Collections.unmodifiableMap(new LinkedHashMap<>(sourceWallTimes)); }
+    }
     private final JdbcTemplate jdbc; private final TransactionTemplate tx;
     private final JdbcWorkflowStore workflows; private final JdbcAuditStore audits;
     private final ChatSessionService sessions; private final ChatConversationService chat;
@@ -65,7 +69,7 @@ public class ConversationInboxService implements AgentSteeringInboxApi {
     private ConversationInputV1 body(WorkflowRecord row){return workflows.payload(row,ConversationInputV1.class);}
     private void audit(WorkflowRecord row,String action){audits.append(new AuditEvent("CONVERSATION_INPUT",row.ownerUserId(),row.ownerUserId(),"CONVERSATION_INPUT",row.workflowId(),row.sessionId(),row.runId(),null,row.requestId(),action,row.revision(),body(row).contentSha256(),null,1,new AuditPayloads.ConversationInputV1(row.status())));}
     private WorkflowRecord row(long user,String id){var row=workflows.find(KIND,id).orElseThrow(()->fail(404,"消息不存在或无权限"));if(row.ownerUserId()!=user)throw fail(404,"消息不存在或无权限");return row;}
-    private Item item(WorkflowRecord row){var body=body(row);return new Item(row.workflowId(),body.mode(),row.status(),Math.toIntExact(row.revision()),body.content(),row.runId());}
+    private Item item(WorkflowRecord row){var body=body(row);var clock=row.legacyClockEvidence();return new Item(row.workflowId(),body.mode(),row.status(),Math.toIntExact(row.revision()),body.content(),row.runId(),clock==null?"UTC":clock.clockStatus(),clock==null?Map.of():clock.sourceWallTimes());}
     public List<Item> list(AgentActor actor,String session){var current=owned(actor,session);return workflows.list(KIND,current.userId(),session,null,Set.of(),false,50,false).stream().map(this::item).toList();}
     public Item enqueue(AgentActor actor,String session,String id,String mode,String content){return enqueue(actor,session,id,mode,content,"CHAT");}
     public Item enqueue(AgentActor actor,String session,String id,String mode,String content,String entryPoint){
@@ -76,7 +80,7 @@ public class ConversationInboxService implements AgentSteeringInboxApi {
         return tx.execute(status->{
             lock(current.userId());var previous=workflows.find(KIND,id);
             if(previous.isPresent()){
-                var old=previous.get();if(old.ownerUserId()!=current.userId()||!digest.equals(old.requestSha256()))throw fail(409,"消息编号已使用，请核对原提交");return item(old);
+                var old=previous.get();if(old.ownerUserId()!=current.userId()||!digest.equals(old.requestSha256()))throw fail(409,"消息编号已使用，请核对原提交");requireCurrentClock(old);return item(old);
             }
             if(workflows.count(KIND,current.userId(),null,null,PENDING)>=16)throw fail(429,"本人待处理消息已达 16 条，请等待或撤回");
             var run=control.getObject().inspect(current,session);String target=null,actualMode=mode;
@@ -92,6 +96,7 @@ public class ConversationInboxService implements AgentSteeringInboxApi {
         var current=owned(actor,session);if(content!=null&&(content.isBlank()||content.length()>8000))throw fail(400,"消息内容长度无效");
         return tx.execute(status->{lock(current.userId());var entry=row(current.userId(),id);var payload=body(entry);
             if(!session.equals(entry.sessionId()))throw fail(404,"消息不存在或无权限");
+            requireCurrentClock(entry);
             if(!"QUEUED".equals(entry.status())||entry.revision()!=revision)throw fail(409,"消息状态已变化，请刷新核对");
             if(content!=null&&"NEXT_STEP".equals(payload.mode())&&content.length()>4000)throw fail(400,"补充要求最多 4000 字符");
             var updated=workflows.transition(entry,content==null?"CANCELLED":"QUEUED",payload.withContent(content==null?"":content,content==null?payload.contentSha256():hash(content)),entry.runId(),null,entry.expiresAt());
@@ -102,6 +107,7 @@ public class ConversationInboxService implements AgentSteeringInboxApi {
         var current=owned(actor,session);
         return tx.execute(status->{lock(current.userId());var entry=row(current.userId(),id);var payload=body(entry);
             if(!session.equals(entry.sessionId()))throw fail(404,"消息不存在或无权限");
+            requireCurrentClock(entry);
             if(!"QUEUED".equals(entry.status())||!"NEXT_TURN".equals(payload.mode())||entry.revision()!=revision)throw fail(409,"消息状态已变化，请刷新核对");
             if(!entry.expiresAt().isAfter(now()))throw fail(409,"消息已过期，请刷新核对");
             if(payload.content().length()>4000)throw fail(400,"补充要求最多 4000 字符，请先编辑消息");
@@ -116,6 +122,7 @@ public class ConversationInboxService implements AgentSteeringInboxApi {
         var current=owned(actor,session);
         return tx.execute(status->{lock(current.userId());var result=new ArrayList<Input>();
             for(var entry:workflows.list(KIND,current.userId(),session,runId,Set.of("QUEUED"),true,6,true)){
+                if(entry.legacyClockUnresolved())continue;
                 var payload=body(entry);if(!"NEXT_STEP".equals(payload.mode()))continue;
                 result.add(new Input(entry.workflowId(),payload.content()));
                 sessions.appendUserMessage(new TenantContext(current.userId(),current.username()),session,payload.content());
@@ -135,12 +142,14 @@ public class ConversationInboxService implements AgentSteeringInboxApi {
     private List<Long> queuedOwnersAfter(long after){return workflows.ownersAfter(KIND,"QUEUED",after,dispatchRoundMaxUser,32);}
     private record Claimed(WorkflowRecord claim,ConversationInputV1 original){}
     private boolean dispatch(WorkflowRecord candidate){
+        if(candidate.legacyClockUnresolved())return false;
         long user=candidate.ownerUserId();String session=candidate.sessionId(),id=candidate.workflowId();AgentActor actor;
         try{actor=owned(new AgentActor(user,body(candidate).username(),AgentActor.Role.INSPECTOR),session);}catch(RuntimeException error){failQueued(user,id,"ACCOUNT_OR_SESSION_UNAVAILABLE");return false;}
         var run=control.getObject().inspect(actor,session);
         if(workbench!=null&&workbench.getIfAvailable()!=null&&!workbench.getObject().canDispatchInput(actor,session,id))return false;
         if(!"IDLE".equals(run.phase()))return false;
         Claimed claimed=tx.execute(status->{lock(user);var entry=row(user,id);if(!"QUEUED".equals(entry.status()))return null;
+            if(entry.legacyClockUnresolved())return null;
             if(workflows.count(KIND,user,session,null,Set.of("STARTED"))>0||!entry.expiresAt().isAfter(now()))return null;
             var payload=body(entry);
             if("NEXT_STEP".equals(payload.mode())){entry=workflows.transition(entry,"QUEUED",payload.withMode("NEXT_TURN"),null,null,entry.expiresAt());audit(entry,"FALLBACK_NEXT_TURN");payload=body(entry);}
@@ -163,17 +172,21 @@ public class ConversationInboxService implements AgentSteeringInboxApi {
         finally{SecurityContextHolder.setContext(previous);}
     }
     private void finish(Claimed claimed,String state,String action){tx.executeWithoutResult(status->{lock(claimed.claim().ownerUserId());var current=row(claimed.claim().ownerUserId(),claimed.claim().workflowId());
+        if(current.legacyClockUnresolved())return;
         if(!"STARTED".equals(current.status())||!Objects.equals(current.claimToken(),claimed.claim().claimToken())||current.fence()!=claimed.claim().fence())return;
         if(!current.expiresAt().isAfter(now()))return;
         audit(workflows.finishClaim(claimed.claim(),state,body(current),null),action);
     });}
     private void failQueued(long user,String id,String action){tx.executeWithoutResult(status->{lock(user);var entry=row(user,id);if(!"QUEUED".equals(entry.status()))return;var payload=body(entry);
+        if(entry.legacyClockUnresolved())return;
         audit(workflows.transition(entry,"FAILED",payload.withContent("",payload.contentSha256()),entry.runId(),null,entry.expiresAt()),action);
     });}
     public void expire(){for(var candidate:workflows.expired(KIND,PENDING,50))tx.executeWithoutResult(status->{lock(candidate.ownerUserId());var entry=row(candidate.ownerUserId(),candidate.workflowId());
+        if(entry.legacyClockUnresolved())return;
         if(!PENDING.contains(entry.status())||entry.expiresAt().isAfter(now()))return;var payload=body(entry);
         audit(workflows.expireConversationInput(entry,payload.withContent("",payload.contentSha256())),"EXPIRED");
     });}
+    private static void requireCurrentClock(WorkflowRecord row){if(row.legacyClockUnresolved())throw fail(409,"历史时区未确认，原消息期限和状态需要核对，不能自动执行或重放");}
     private static ResponseStatusException fail(int code,String message){return new ResponseStatusException(HttpStatus.valueOf(code),message);}
     @PreDestroy public void close(){scheduler.shutdownNow();workers.shutdown();awaitShutdown(scheduler,2);awaitShutdown(workers,5);}
     private void awaitShutdown(ExecutorService executor,long seconds){try{if(!executor.awaitTermination(seconds,TimeUnit.SECONDS))executor.shutdownNow();}catch(InterruptedException error){executor.shutdownNow();Thread.currentThread().interrupt();}}

@@ -1,5 +1,6 @@
 -- Generated source mirror; execute only in an admitted ECS database.
 CREATE TABLE IF NOT EXISTS agent_run (
+ legacy_clock_json JSON NULL,
  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
  run_id VARCHAR(36) NOT NULL,
  user_id BIGINT NOT NULL,
@@ -13,10 +14,10 @@ CREATE TABLE IF NOT EXISTS agent_run (
  instance_id VARCHAR(36) NOT NULL,
  active_slot TINYINT NULL,
  last_sequence BIGINT NOT NULL DEFAULT 0,
- started_at DATETIME(6) NOT NULL,
+ started_at DATETIME(6) NULL,
  ended_at DATETIME(6) NULL,
- heartbeat_at DATETIME(6) NOT NULL,
- lease_expires_at DATETIME(6) NOT NULL,
+ heartbeat_at DATETIME(6) NULL,
+ lease_expires_at DATETIME(6) NULL,
  answer_owner_user_id BIGINT NULL,
  answer_sha256 CHAR(64) NULL,
  answer_citations_json JSON NULL,
@@ -34,5 +35,10 @@ CREATE TABLE IF NOT EXISTS agent_run (
  KEY ix_agent_run_expiry(status,lease_expires_at),
  CONSTRAINT ck_agent_run_answer CHECK (
   (answer_owner_user_id IS NULL AND answer_sha256 IS NULL AND answer_citations_json IS NULL AND answer_unresolved_count IS NULL AND answer_recorded_at IS NULL AND answer_legacy_id IS NULL)
-  OR (answer_owner_user_id IS NOT NULL AND answer_owner_user_id=user_id AND answer_sha256 IS NOT NULL AND answer_citations_json IS NOT NULL AND answer_unresolved_count IS NOT NULL AND answer_unresolved_count>=0 AND answer_recorded_at IS NOT NULL))
+  OR (answer_owner_user_id IS NOT NULL AND answer_owner_user_id=user_id AND answer_sha256 IS NOT NULL AND answer_citations_json IS NOT NULL AND answer_unresolved_count IS NOT NULL AND answer_unresolved_count>=0 AND (answer_recorded_at IS NOT NULL OR legacy_clock_json IS NOT NULL))),
+ CONSTRAINT ck_legacy_agent_run_started_at CHECK (started_at IS NOT NULL OR legacy_clock_json IS NOT NULL),
+ CONSTRAINT ck_legacy_agent_run_heartbeat_at CHECK (heartbeat_at IS NOT NULL OR legacy_clock_json IS NOT NULL),
+ CONSTRAINT ck_legacy_agent_run_lease_expires_at CHECK (lease_expires_at IS NOT NULL OR legacy_clock_json IS NOT NULL),
+ CONSTRAINT ck_legacy_clock_shape_agent_run CHECK (legacy_clock_json IS NULL OR COALESCE(JSON_SCHEMA_VALID('{"anyOf":[{"type":"object","additionalProperties":false,"required":["protocol","status","sourceTable","sourceKey","sourceSnapshotSha256","sourceRowSha256","sourceWallTimes"],"properties":{"protocol":{"enum":["doorhandle-legacy-clock-v1"]},"status":{"enum":["UNRESOLVED"]},"sourceTable":{"enum":["agent_run"]},"sourceKey":{"type":"object","additionalProperties":false,"required":["id"],"properties":{"id":{"type":"integer","minimum":0,"maximum":18446744073709551615}}},"sourceSnapshotSha256":{"type":"string","pattern":"^[a-f0-9]{64}$"},"sourceRowSha256":{"type":"string","pattern":"^[a-f0-9]{64}$"},"sourceWallTimes":{"type":"object","additionalProperties":false,"required":["started_at","ended_at","heartbeat_at","lease_expires_at"],"properties":{"started_at":{"type":["string","null"],"pattern":"^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}(\\\\.[0-9]{1,6})?$"},"ended_at":{"type":["string","null"],"pattern":"^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}(\\\\.[0-9]{1,6})?$"},"heartbeat_at":{"type":["string","null"],"pattern":"^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}(\\\\.[0-9]{1,6})?$"},"lease_expires_at":{"type":["string","null"],"pattern":"^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}(\\\\.[0-9]{1,6})?$"}}}}}]}',legacy_clock_json),0)=1),
+ CONSTRAINT ck_legacy_clock_binding_agent_run CHECK (legacy_clock_json IS NULL OR COALESCE((((BINARY JSON_UNQUOTE(JSON_EXTRACT(legacy_clock_json,'$.sourceTable'))=BINARY 'agent_run') AND (BINARY id<=>BINARY CAST(JSON_UNQUOTE(JSON_EXTRACT(legacy_clock_json,'$.sourceKey.id')) AS DECIMAL(20,0))))),0)=1)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;

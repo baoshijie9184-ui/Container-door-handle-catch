@@ -43,7 +43,7 @@ public final class ReportMigrationFixture implements AutoCloseable {
             try(var connection=targetDataSource().getConnection()) {
                 for(var part:targets.entrySet())
                     ScriptUtils.executeSqlScript(connection,new EncodedResource(new ByteArrayResource(part.getValue().getBytes(StandardCharsets.UTF_8)),StandardCharsets.UTF_8),
-                            false,false,ScriptUtils.DEFAULT_COMMENT_PREFIX,part.getKey().getFileName().toString().endsWith("-guards.sql")?"$$":";",
+                            false,false,ScriptUtils.DEFAULT_COMMENT_PREFIX,part.getKey().getFileName().toString().endsWith("-guards.sql")||part.getKey().getFileName().toString().startsWith("35-legacy-clock-")?"$$":";",
                             ScriptUtils.DEFAULT_BLOCK_COMMENT_START_DELIMITER,ScriptUtils.DEFAULT_BLOCK_COMMENT_END_DELIMITER);
             }
         } catch(Exception failure){try{databases.close();}catch(Exception cleanup){failure.addSuppressed(cleanup);}throw failure;}
@@ -61,10 +61,15 @@ public final class ReportMigrationFixture implements AutoCloseable {
     public DriverManagerDataSource targetDataSource(){return databases.targetDataSource();}
     public String sourceName(){return databases.sourceName();}
     public String targetName(){return databases.targetName();}
+    public String sourceSnapshotSha256(){return databases.sourceSnapshotSha256();}
     public void copy(String offset) throws Exception {
         if(offset==null||!offset.matches("[+-][0-9]{2}:[0-9]{2}"))throw new IllegalArgumentException("A numeric source UTC offset is required");
         databases.executeTarget(Files.readString(sql.resolve("compact/copy/34-quality-report-workflow.sql"))
                 .replace("__SOURCE_SCHEMA__",sourceName()).replace("__SOURCE_REPORT_OFFSET__",offset));
+    }
+    public void copyUnresolved()throws Exception{
+        databases.executeTarget(Files.readString(sql.resolve("compact/copy/34-quality-report-workflow.sql"))
+                .replace("__SOURCE_SCHEMA__",sourceName()).replace("__SOURCE_REPORT_OFFSET__","UNRESOLVED"));
     }
     @Override public void close() throws Exception {databases.close();}
 }

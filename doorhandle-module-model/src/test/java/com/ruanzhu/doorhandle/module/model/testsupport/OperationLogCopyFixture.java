@@ -39,6 +39,7 @@ public final class OperationLogCopyFixture implements AutoCloseable {
                 if(!relation.find())throw new IllegalStateException("Actual model audit CASCADE relation missing");
                 databases.executeTarget(relation.group());
             }
+            FixtureSourceSnapshot.installLegacyClockGuards(target(),sql.resolve("compact/baseline"));
         } catch(Exception failure) {
             try {databases.close();}catch(Exception cleanup){failure.addSuppressed(cleanup);}
             throw failure;
@@ -59,6 +60,7 @@ public final class OperationLogCopyFixture implements AutoCloseable {
     public DriverManagerDataSource targetDataSource(){return databases.targetDataSource();}
     public String sourceName(){return databases.sourceName();}
     public String targetName(){return databases.targetName();}
+    public String sourceSnapshotSha256(){return databases.sourceSnapshotSha256();}
     public void copy(String file,String offsetName) throws Exception {copy(file,offsetName,"+08:00",sourceName());}
     public void copy(String file,String offsetName,String offset,String sourceName) throws Exception {
         databases.executeTarget(Files.readString(sql.resolve("compact/copy/"+file)).replace("__SOURCE_SCHEMA__",sourceName).replace(offsetName,offset));

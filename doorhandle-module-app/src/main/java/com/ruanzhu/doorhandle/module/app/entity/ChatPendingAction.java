@@ -3,6 +3,7 @@ package com.ruanzhu.doorhandle.module.app.entity;
 import lombok.Data;
 
 import java.time.LocalDateTime;
+import java.util.Map;
 
 @Data
 public class ChatPendingAction {
@@ -24,4 +25,9 @@ public class ChatPendingAction {
     private LocalDateTime confirmedAt;
 
     private String errorMessage;
+
+    /** Historical source timezone status; current UTC writes remain separately timestamped. */
+    private String clockStatus = "UTC";
+
+    private Map<String,String> sourceWallTimes = Map.of();
 }

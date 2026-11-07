@@ -37,7 +37,7 @@ public final class ModelFileMigrationFixture implements AutoCloseable {
             try(var connection=targetDataSource().getConnection()) {
                 for(var part:parts.entrySet())
                     ScriptUtils.executeSqlScript(connection,new EncodedResource(new ByteArrayResource(part.getValue().getBytes(StandardCharsets.UTF_8)),StandardCharsets.UTF_8),
-                            false,false,ScriptUtils.DEFAULT_COMMENT_PREFIX,part.getKey().getFileName().toString().endsWith("-guards.sql")?"$$":";",
+                            false,false,ScriptUtils.DEFAULT_COMMENT_PREFIX,part.getKey().getFileName().toString().endsWith("-guards.sql")||part.getKey().getFileName().toString().startsWith("35-legacy-clock-")?"$$":";",
                             ScriptUtils.DEFAULT_BLOCK_COMMENT_START_DELIMITER,ScriptUtils.DEFAULT_BLOCK_COMMENT_END_DELIMITER);
             }
         } catch(Exception failure){try{databases.close();}catch(Exception cleanup){failure.addSuppressed(cleanup);}throw failure;}

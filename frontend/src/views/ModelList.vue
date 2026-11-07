@@ -193,7 +193,10 @@
             <el-table-column prop="operator" label="操作人" width="120" />
             <el-table-column label="操作时间（UTC+8）" min-width="185">
               <template #default="{ row }">
-                {{ formatDateTime(row.operationTime) || '--' }}
+                <el-tooltip v-if="row.clockStatus === 'UNRESOLVED' && !row.operationTime" :content="row.sourceWallTimes?.operation_time ? '原时间 '+row.sourceWallTimes.operation_time+'（时区未确认）' : '原记录没有时间'" placement="top">
+                  <el-tag size="small" type="info">历史时区未确认</el-tag>
+                </el-tooltip>
+                <span v-else>{{ formatDateTime(row.operationTime) || '--' }}</span>
               </template>
             </el-table-column>
             <el-table-column prop="remark" label="备注" min-width="200" show-overflow-tooltip />

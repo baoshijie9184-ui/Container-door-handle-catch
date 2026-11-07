@@ -40,6 +40,17 @@ class AgentActionServiceTest {
     @AfterEach void cleanup()throws Exception{if(fixture!=null)fixture.close();}
     private AgentActionService.View propose(){return actions.propose(boss,"run-1","call-1",command);}
     private int writes(){return jdbc.queryForObject("SELECT writes FROM fixture_task",Integer.class);}
+    @Test void unresolvedLegacyConfirmationStaysPendingAndCannotExecute()throws Exception{
+        String id=UUID.randomUUID().toString();var json=new ObjectMapper();
+        var before=new DetectionAssignmentApi.Values(null,null,null,null,"DETECTED");
+        var proposal=new AgentActionPersistence.ProposalV1("old-call","ASSIGN_QUALITY_TASK","revision-1",json.writeValueAsString(command),json.writeValueAsString(before),AgentActionService.POLICY,"2020-01-02 00:00:00.000000","2020-01-02 00:05:00.000000",null,null);
+        var wall=new LinkedHashMap<String,Object>();wall.put("created_at","2020-01-02 00:00:00");wall.put("expires_at","2020-01-02 00:05:00");wall.put("decided_at",null);
+        String evidence=json.writeValueAsString(Map.of("protocol","doorhandle-legacy-clock-v1","status","UNRESOLVED","sourceTable","agent_pending_action","sourceKey",Map.of("action_id",id),"sourceSnapshotSha256","a".repeat(64),"sourceRowSha256","b".repeat(64),"sourceWallTimes",wall));
+        jdbc.update("INSERT INTO workflow_instance(workflow_id,kind,idempotency_scope,request_id,request_sha256,owner_user_id,resource_type,resource_id,session_id,run_id,status,revision,payload_version,payload_json,created_at,updated_at,expires_at,legacy_source,legacy_key,legacy_clock_json) VALUES(?,'AGENT_ACTION','AGENT_ACTION',?,?,1,'AGENT_ACTION','task-1','session-1','run-1','PENDING',1,1,?,NULL,NULL,NULL,'agent_pending_action',?,?)","agent-action:"+id,id,"c".repeat(64),json.writeValueAsString(proposal),id,evidence);
+        var view=actions.get(boss,id);assertThat(view.status()).isEqualTo("PENDING");assertThat(view.expiresAt()).isNull();assertThat(view.clockStatus()).isEqualTo("UNRESOLVED");assertThat(view.sourceWallTimes()).containsEntry("expires_at","2020-01-02 00:05:00");
+        assertThatThrownBy(()->actions.decide(boss,id,1,"APPROVE")).hasMessageContaining("历史");
+        assertThat(actions.get(boss,id).status()).isEqualTo("PENDING");assertThat(writes()).isZero();verify(assignments,never()).apply(any(),any(),any());
+    }
     @Test void proposalIsDurableAndNeverExecutesTheBusinessWrite(){
         var action=propose();assertThat(action.status()).isEqualTo("PENDING");assertThat(writes()).isZero();
         assertThat(actions.list(boss,"session-1",null,10)).extracting(AgentActionService.View::actionId).containsExactly(action.actionId());

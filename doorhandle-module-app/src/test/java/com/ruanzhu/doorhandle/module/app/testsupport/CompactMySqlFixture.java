@@ -32,6 +32,7 @@ public final class CompactMySqlFixture implements AutoCloseable {
                     "35-runtime-guards.sql", "36-identity-guards.sql", "37-audit-guards.sql","38-quota-guards.sql","39-workflow-guards.sql", "40-relations.sql")) {
                 install(Path.of("../sql/mysql/compact/baseline", file), file.endsWith("-guards.sql") ? "$$" : ";");
             }
+            FixtureSourceSnapshot.installLegacyClockGuards(new JdbcTemplate(source),Path.of("../sql/mysql/compact/baseline"));
         } catch (Exception error) {
             try { close(); } catch (RuntimeException cleanup) { error.addSuppressed(cleanup); }
             throw error;

@@ -69,7 +69,10 @@ def author():
                         source_columns.setdefault(alteration.group(1), set()).add(added.group(1))
     changes = {}
     for filename, (domain, tables) in COPIES.items():
-        path = ROOT / 'sql/mysql/compact/copy' / filename
+        # Compile the reviewed fixed-clock source before adding the explicit
+        # unknown branch. Never double-transform a generated copy artifact.
+        fixed = ROOT / 'sql/mysql/compact/copy-fixed-clock' / filename
+        path = fixed if fixed.exists() else ROOT / 'sql/mysql/compact/copy' / filename
         text = path.read_text(encoding='utf-8')
         offset = f'__SOURCE_{domain}_OFFSET__'
         if offset not in text or text.count('START TRANSACTION;') != 1:
@@ -104,7 +107,11 @@ def author():
         list(parser.split_top_level(parser.without_comments(text), ';'))
         changes[path] = text
     for path, text in changes.items():
-        path.write_text(text, encoding='utf-8')
+        if path.parent.name == 'copy-fixed-clock':
+            from author_legacy_clock_copy import write_copy
+            write_copy(path.name, text)
+        else:
+            path.write_text(text, encoding='utf-8')
     print(json.dumps({'status': 'SOURCE_AUTHORED_NOT_EXECUTED', 'copies': len(changes),
                       'timestampFields': sum(len(columns) for _, tables in COPIES.values() for columns in tables.values())}))
 

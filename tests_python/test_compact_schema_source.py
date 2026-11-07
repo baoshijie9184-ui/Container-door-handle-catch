@@ -142,7 +142,7 @@ def copy_current_schema_sources(tmp_path, monkeypatch):
 
 def test_generated_cli_schema_keeps_trigger_bodies_and_restores_statement_separator():
     sql, catalog = builder.compile_schema()
-    assert {guard['name'] for guard in catalog['triggers']} == set(builder.RUNTIME_GUARDS) | set(builder.IDENTITY_GUARDS) | set(builder.QUOTA_GUARDS) | set(builder.AUDIT_GUARDS) | set(builder.WORKFLOW_GUARDS)
+    assert {guard['name'] for guard in catalog['triggers']} == set(builder.RUNTIME_GUARDS) | set(builder.IDENTITY_GUARDS) | set(builder.QUOTA_GUARDS) | set(builder.AUDIT_GUARDS) | set(builder.WORKFLOW_GUARDS) | set(builder.LEGACY_CLOCK_GUARDS)
     assert 'DELIMITER $$\n' in sql
     assert 'END$$\nDELIMITER ;' in sql
     assert sql.index('DELIMITER ;') < sql.index('ADD CONSTRAINT fk_audit_journal_run')

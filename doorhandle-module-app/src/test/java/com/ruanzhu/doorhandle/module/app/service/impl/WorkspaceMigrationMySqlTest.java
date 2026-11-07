@@ -117,6 +117,32 @@ class WorkspaceMigrationMySqlTest {
         assertThatThrownBy(()->transaction(()->store.hasMutation(1,"Remove_Case","0".repeat(64)))).hasMessageContaining("409");
         assertThat(target.queryForObject("SELECT COUNT(*) FROM workflow_instance",Long.class)).isEqualTo(5);
     }
+    @Test void unresolvedSourceUsesExplicitV2AndRetainsUnknownTimesWithoutAutomaticBoundaryOrReplay()throws Exception{
+        seed();var original=snapshot();String sourceSnapshotSha256=fixture.sourceSnapshotSha256();fixture.migrateUnresolved();
+        var store=new WorkspacePersistence(target);var files=store.files(1,"source");
+        assertThat(files).singleElement().satisfies(file->{assertThat(file.id()).isEqualTo(FILE);assertThat(file.clockStatus()).isEqualTo("UNRESOLVED");assertThat(file.sourceWallTimes()).containsEntry("created_at","2026-10-17 12:34:56.123456");});
+        assertThat(store.files(2,"source")).isEmpty();
+        var revision=target.queryForMap("SELECT manifest_json,legacy_clock_json,created_at FROM content_revision WHERE asset_id=?",FILE);
+        assertThat(json.readTree((String)revision.get("legacy_clock_json")).path("sourceSnapshotSha256").asText()).isEqualTo(sourceSnapshotSha256);
+        assertThat(revision.get("created_at")).isNull();
+        var manifest=json.readTree((String)revision.get("manifest_json"));
+        assertThat(manifest.size()).isEqualTo(4);assertThat(manifest.path("protocolVersion").intValue()).isEqualTo(2);
+        assertThat(manifest.has("sourceUtcOffset")).isFalse();
+        assertThatThrownBy(()->transaction(()->store.inheritBefore(1,"source","child",LocalDateTime.of(2030,1,1,0,0))))
+                .hasMessageContaining("历史时区未确认");
+        assertThatThrownBy(()->transaction(()->store.fork(1,"Fork_Case"))).hasMessageContaining("历史时区未确认");
+        String signature=source.queryForObject("SELECT signature FROM agent_workspace_request WHERE id=31",String.class);
+        assertThatThrownBy(()->transaction(()->store.hasMutation(1,"Remove_Case",signature))).hasMessageContaining("历史时区未确认");
+        assertThat(snapshot()).isEqualTo(original);
+        assertThat(target.queryForObject("SELECT COUNT(*) FROM content_link WHERE session_id='child'",Long.class)).isZero();
+    }
+    @Test void unresolvedFileCannotBorrowAnOffsetOrAnotherSourcePrimaryKey()throws Exception{
+        seed();fixture.migrateUnresolved();var store=new WorkspacePersistence(target);
+        assertThatThrownBy(()->{target.update("UPDATE content_revision SET manifest_json=JSON_SET(manifest_json,'$.sourceUtcOffset','+08:00') WHERE asset_id=?",FILE);store.files(1,"source");})
+                .isInstanceOfAny(IllegalStateException.class,org.springframework.dao.DataAccessException.class);
+        assertThatThrownBy(()->{target.update("UPDATE content_revision SET manifest_json=JSON_REMOVE(manifest_json,'$.sourceUtcOffset'),legacy_id=999 WHERE asset_id=?",FILE);store.files(1,"source");})
+                .isInstanceOfAny(IllegalStateException.class,org.springframework.dao.DataAccessException.class);
+    }
     @ParameterizedTest @ValueSource(strings={"unknown_column","nullable","business_collation","source_trigger","target_session_column","missing_folder","unused_field","legacy_space","changed_audit","changed_fork_projection"})
     void metadataOrTargetCorruptionRejectsTheWholeCopyAndNeverChangesSource(String mutation){
         seed();switch(mutation){

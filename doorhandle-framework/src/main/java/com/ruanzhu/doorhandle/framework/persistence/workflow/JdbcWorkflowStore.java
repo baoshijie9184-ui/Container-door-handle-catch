@@ -24,7 +24,7 @@ public final class JdbcWorkflowStore {
     }
     public void validateSchema() {
         jdbc.queryForList("SELECT workflow_id,kind,idempotency_scope,request_id,request_sha256,parent_workflow_id,"
-                + "status,revision,fence,claim_token,report_request_id,report_consumed_id,model_probe_id,file_delivery_scope,file_delivery_domain,requested_tokens,decider_user_id,result_sha256,payload_version,payload_json FROM workflow_instance WHERE 1=0");
+                + "status,revision,fence,claim_token,legacy_clock_json,report_request_id,report_consumed_id,model_probe_id,file_delivery_scope,file_delivery_domain,requested_tokens,decider_user_id,result_sha256,payload_version,payload_json FROM workflow_instance WHERE 1=0");
     }
     public LocalDateTime now() { return jdbc.queryForObject("SELECT UTC_TIMESTAMP(6)", LocalDateTime.class); }
     public <P> P payload(WorkflowRecord record, Class<P> type) {
@@ -101,7 +101,7 @@ public final class JdbcWorkflowStore {
                 UPDATE workflow_instance SET status=?,payload_json=?,run_id=?,active_slot=?,expires_at=?,
                   revision=revision+1,updated_at=UTC_TIMESTAMP(6),
                   finished_at=CASE WHEN ? THEN UTC_TIMESTAMP(6) ELSE NULL END
-                WHERE id=? AND revision=? AND fence=? AND status=? AND claim_token IS NULL
+                WHERE legacy_clock_json IS NULL AND id=? AND revision=? AND fence=? AND status=? AND claim_token IS NULL
                 """, state, encode(payload), runId, activeSlot, expiresAt,
                 protocols.require(before.kind()).terminalStates().contains(state), before.id(), before.revision(), before.fence(), before.status());
         return changed(before, changed);
@@ -116,7 +116,7 @@ public final class JdbcWorkflowStore {
                 UPDATE workflow_instance SET status=?,payload_json=?,run_id=?,active_slot=?,expires_at=?,
                   claim_token=?,lease_expires_at=?,fence=fence+1,attempts=attempts+1,
                   revision=revision+1,updated_at=UTC_TIMESTAMP(6)
-                WHERE id=? AND revision=? AND fence=? AND status=? AND claim_token IS NULL
+                WHERE legacy_clock_json IS NULL AND id=? AND revision=? AND fence=? AND status=? AND claim_token IS NULL
                   AND (expires_at IS NULL OR expires_at>UTC_TIMESTAMP(6))
                 """, state, encode(payload), runId, before.kind() == WorkflowKind.CONVERSATION_INPUT ? 1 : null,
                 expiresAt, token, now().plus(lease), before.id(), before.revision(), before.fence(), before.status());
@@ -146,7 +146,7 @@ public final class JdbcWorkflowStore {
                 UPDATE workflow_instance SET status=?,payload_json=?,result_version=?,result_json=?,result_sha256=?,error_code=?,
                   active_slot=NULL,claim_token=NULL,lease_expires_at=NULL,revision=revision+1,
                   updated_at=UTC_TIMESTAMP(6),finished_at=UTC_TIMESTAMP(6)
-                WHERE id=? AND revision=? AND fence=? AND claim_token=? AND status=?
+                WHERE legacy_clock_json IS NULL AND id=? AND revision=? AND fence=? AND claim_token=? AND status=?
                   AND lease_expires_at>UTC_TIMESTAMP(6)
                   AND (expires_at IS NULL OR expires_at>UTC_TIMESTAMP(6))
                 """, state, encode(payload), resultVersion,resultJson,resultSha256,errorCode,
@@ -165,7 +165,7 @@ public final class JdbcWorkflowStore {
                 UPDATE workflow_instance SET status=?,payload_json=?,error_code=?,next_attempt_at=?,active_slot=NULL,
                   claim_token=NULL,lease_expires_at=NULL,revision=revision+1,updated_at=UTC_TIMESTAMP(6),
                   finished_at=CASE WHEN ? THEN UTC_TIMESTAMP(6) ELSE NULL END
-                WHERE id=? AND revision=? AND fence=? AND claim_token=? AND status=?
+                WHERE legacy_clock_json IS NULL AND id=? AND revision=? AND fence=? AND claim_token=? AND status=?
                   AND lease_expires_at>UTC_TIMESTAMP(6) AND (expires_at IS NULL OR expires_at>UTC_TIMESTAMP(6))
                 """,state,encode(payload),errorCode,nextAttemptAt,terminal,
                 claimed.id(),claimed.revision(),claimed.fence(),claimed.claimToken(),claimed.status());
@@ -180,7 +180,7 @@ public final class JdbcWorkflowStore {
         int count=jdbc.update("""
                 UPDATE workflow_instance SET status=?,payload_json=?,run_id=?,expires_at=?,claim_token=?,lease_expires_at=?,
                   fence=fence+1,attempts=attempts+1,revision=revision+1,updated_at=UTC_TIMESTAMP(6)
-                WHERE id=? AND revision=? AND fence=? AND claim_token=? AND status=? AND lease_expires_at<=UTC_TIMESTAMP(6)
+                WHERE legacy_clock_json IS NULL AND id=? AND revision=? AND fence=? AND claim_token=? AND status=? AND lease_expires_at<=UTC_TIMESTAMP(6)
                   AND (expires_at IS NULL OR expires_at>UTC_TIMESTAMP(6))
                 """,state,encode(payload),runId,expiresAt,UUID.randomUUID().toString(),now().plus(lease),
                 before.id(),before.revision(),before.fence(),before.claimToken(),before.status());
@@ -194,7 +194,7 @@ public final class JdbcWorkflowStore {
         int changed = jdbc.update("""
                 UPDATE workflow_instance SET status='EXPIRED',payload_json=?,active_slot=NULL,claim_token=NULL,
                   lease_expires_at=NULL,fence=fence+1,revision=revision+1,updated_at=UTC_TIMESTAMP(6),finished_at=UTC_TIMESTAMP(6)
-                WHERE id=? AND revision=? AND fence=? AND status=? AND expires_at<=UTC_TIMESTAMP(6)
+                WHERE legacy_clock_json IS NULL AND id=? AND revision=? AND fence=? AND status=? AND expires_at<=UTC_TIMESTAMP(6)
                 """, encode(payload), before.id(), before.revision(), before.fence(), before.status());
         return changed(before, changed);
     }
@@ -203,6 +203,7 @@ public final class JdbcWorkflowStore {
         if (limit < 1 || limit > 1000) throw new IllegalArgumentException("Invalid workflow page size");
         var args = new ArrayList<Object>(); var where = filters(kind, owner, session, run, states, args);
         if (unexpired) where += " AND (expires_at IS NULL OR expires_at>UTC_TIMESTAMP(6))";
+        if (unexpired && kind==WorkflowKind.CONVERSATION_INPUT) where += " AND legacy_clock_json IS NULL";
         args.add(limit);
         return jdbc.query("SELECT * FROM workflow_instance WHERE " + where + " ORDER BY id "
                 + (oldestFirst ? "ASC" : "DESC") + " LIMIT ?", this::map, args.toArray());
@@ -212,20 +213,20 @@ public final class JdbcWorkflowStore {
         return jdbc.queryForObject("SELECT COUNT(*) FROM workflow_instance WHERE " + where, Long.class, args.toArray());
     }
     public long maxOwner(WorkflowKind kind, String state) {
-        return jdbc.queryForObject("SELECT COALESCE(MAX(owner_user_id),0) FROM workflow_instance WHERE kind=? AND status=?",
+        return jdbc.queryForObject("SELECT COALESCE(MAX(owner_user_id),0) FROM workflow_instance WHERE kind=? AND status=? AND legacy_clock_json IS NULL",
                 Long.class, kind.name(), state);
     }
     public List<Long> ownersAfter(WorkflowKind kind, String state, long after, long maximum, int limit) {
         if (limit < 1 || limit > 1000) throw new IllegalArgumentException("Invalid owner page size");
         return jdbc.queryForList("SELECT DISTINCT owner_user_id FROM workflow_instance WHERE kind=? AND status=? "
-                + "AND owner_user_id>? AND owner_user_id<=? ORDER BY owner_user_id LIMIT ?",
+                + "AND legacy_clock_json IS NULL AND owner_user_id>? AND owner_user_id<=? ORDER BY owner_user_id LIMIT ?",
                 Long.class, kind.name(), state, after, maximum, limit);
     }
     public List<WorkflowRecord> expired(WorkflowKind kind, Set<String> states, int limit) {
         if (limit < 1 || limit > 1000) throw new IllegalArgumentException("Invalid expiry page size");
         var args = new ArrayList<Object>(); String where = filters(kind, null, null, null, states, args); args.add(limit);
         return jdbc.query("SELECT * FROM workflow_instance WHERE " + where
-                + " AND expires_at<=UTC_TIMESTAMP(6) ORDER BY id LIMIT ?", this::map, args.toArray());
+                + " AND legacy_clock_json IS NULL AND expires_at<=UTC_TIMESTAMP(6) ORDER BY id LIMIT ?", this::map, args.toArray());
     }
     private String filters(WorkflowKind kind, Long owner, String session, String run, Set<String> states, List<Object> args) {
         StringBuilder sql = new StringBuilder("kind=?"); args.add(kind.name());
@@ -272,6 +273,7 @@ public final class JdbcWorkflowStore {
         }
     }
     private void validateTransition(WorkflowRecord before, String state, Object payload) {
+        LegacyWorkflowClocks.requireResolved(before);
         var protocol = protocols.require(before.kind()); protocol.requireTransition(before.status(), state);
         protocol.validatePayload(payload, before.payloadVersion());
     }
@@ -292,6 +294,10 @@ public final class JdbcWorkflowStore {
     }
     private static <T> Optional<T> first(List<T> values) { return values.isEmpty() ? Optional.empty() : Optional.of(values.get(0)); }
     private WorkflowRecord map(ResultSet r, int ignored) throws SQLException {
+        var clock = LegacyWorkflowClocks.read(r.getString("legacy_clock_json"), WorkflowKind.valueOf(r.getString("kind")),
+                r.getString("legacy_source"), r.getString("legacy_key"));
+        if(clock!=null)for(String column:List.of("lease_expires_at","expires_at","created_at","updated_at","finished_at","scheduled_for"))
+            if(time(r,column)!=null)throw new IllegalStateException("Unresolved legacy clock cannot supply an absolute workflow time");
         return new WorkflowRecord(r.getLong("id"),r.getString("workflow_id"),WorkflowKind.valueOf(r.getString("kind")),
                 r.getString("idempotency_scope"),r.getString("request_id"),r.getString("request_sha256"),r.getLong("owner_user_id"),
                 nullableLong(r,"actor_user_id"),nullableLong(r,"parent_workflow_id"),r.getString("resource_type"),r.getString("resource_id"),
@@ -299,7 +305,7 @@ public final class JdbcWorkflowStore {
                 r.getLong("fence"),r.getObject("active_slot") == null ? null : r.getInt("active_slot"),r.getString("claim_token"),
                 time(r,"lease_expires_at"),time(r,"expires_at"),r.getInt("payload_version"),r.getString("payload_json"),r.getString("result_json"),
                 time(r,"created_at"),time(r,"updated_at"),time(r,"finished_at"),r.getString("result_sha256"),r.getString("error_code"),
-                r.getObject("effective_date",java.time.LocalDate.class),time(r,"scheduled_for"));
+                r.getObject("effective_date",java.time.LocalDate.class),time(r,"scheduled_for"),clock);
     }
     private static String sha(String value) {
         try{return HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(value.getBytes(java.nio.charset.StandardCharsets.UTF_8)));}

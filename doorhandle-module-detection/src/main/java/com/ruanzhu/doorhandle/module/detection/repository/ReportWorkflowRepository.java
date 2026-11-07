@@ -2,6 +2,7 @@ package com.ruanzhu.doorhandle.module.detection.repository;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ruanzhu.doorhandle.framework.persistence.JdbcTransactions;
+import com.ruanzhu.doorhandle.common.time.LegacyClockEvidence;
 import com.ruanzhu.doorhandle.framework.persistence.workflow.*;
 import com.ruanzhu.doorhandle.module.detection.dto.report.QualityReportDtos.*;
 import com.ruanzhu.doorhandle.module.detection.dto.report.ReportTime;
@@ -26,14 +27,14 @@ public final class ReportWorkflowRepository {
         this.audits=new JdbcAuditStore(jdbc,json,Map.of(RESOURCE,AuditV1.class));
     }
     public JdbcWorkflowStore workflows(){return workflows;}
-    public Optional<WorkflowRecord> command(long actor,String request){return workflows.findByRequest(WorkflowKind.REPORT_COMMAND,JdbcWorkflowStore.ownerScope(actor),request);}
+    public Optional<WorkflowRecord> command(long actor,String request){var row=workflows.findByRequest(WorkflowKind.REPORT_COMMAND,JdbcWorkflowStore.ownerScope(actor),request);if(row.isPresent()&&row.get().legacyClockUnresolved())throw new com.ruanzhu.doorhandle.common.BusinessException(409,"历史报告操作时间需核对，不能自动重放");return row;}
     public CommandV1 commandPayload(WorkflowRecord row){return workflows.payload(row,CommandV1.class);}
     public void saveCommand(long actor,String request,String digest,QualityReportRepository.Row report,String responseJson) {
         workflows.create(draft(WorkflowKind.REPORT_COMMAND,JdbcWorkflowStore.ownerScope(actor),request,digest,report.ownerUserId(),actor,
                 report.reportId(),report.version(),null,"COMPLETED",null,new CommandV1(responseJson)));
     }
     public LocalDateTime confirmation(long actor,QualityReportRepository.Row report,String token,String decisionSha) {
-        Long pending=jdbc.queryForObject("SELECT COUNT(*) FROM workflow_instance WHERE kind='REPORT_CONFIRMATION' AND resource_type='QUALITY_REPORT' AND resource_id=? AND actor_user_id=? AND status='PENDING' AND expires_at>UTC_TIMESTAMP(6)",Long.class,report.reportId(),actor);
+        Long pending=jdbc.queryForObject("SELECT COUNT(*) FROM workflow_instance WHERE kind='REPORT_CONFIRMATION' AND resource_type='QUALITY_REPORT' AND resource_id=? AND actor_user_id=? AND status='PENDING' AND (legacy_clock_json IS NOT NULL OR expires_at>UTC_TIMESTAMP(6))",Long.class,report.reportId(),actor);
         if(pending>=20)throw new com.ruanzhu.doorhandle.common.BusinessException(429,"确认预览过多，请稍后重试");
         LocalDateTime expires=workflows.now().plusMinutes(10);
         var payload=new ConfirmationV1(report.snapshotSha256(),decisionSha);
@@ -46,6 +47,7 @@ public final class ReportWorkflowRepository {
         var row=workflows.findByRequest(WorkflowKind.REPORT_CONFIRMATION,CONFIRMATION_SCOPE,token)
                 .orElseThrow(()->new com.ruanzhu.doorhandle.common.BusinessException(409,"请重新预览审批操作"));
         var body=workflows.payload(row,ConfirmationV1.class);
+        if(row.legacyClockUnresolved())throw new com.ruanzhu.doorhandle.common.BusinessException(409,"历史确认时间需核对，请重新预览");
         if(!Objects.equals(row.actorUserId(),actor)||!report.reportId().equals(row.resourceId())||!Objects.equals(row.resourceRevision(),(long)report.version())
                 ||!"PENDING".equals(row.status())||!report.snapshotSha256().equals(body.snapshotSha256())||!decisionSha.equals(body.decisionSha256()))
             throw new com.ruanzhu.doorhandle.common.BusinessException(409,"审批确认与当前内容不一致，请重新预览");
@@ -55,27 +57,33 @@ public final class ReportWorkflowRepository {
     public void consumeConfirmation(WorkflowRecord row) {
         // A DB deadline predicate prevents accepting a token that expires after the preview check.
         JdbcTransactions.requireActive(jdbc);
-        if(jdbc.update("UPDATE workflow_instance SET status='USED',revision=revision+1,updated_at=UTC_TIMESTAMP(6),finished_at=UTC_TIMESTAMP(6) WHERE id=? AND kind='REPORT_CONFIRMATION' AND status='PENDING' AND revision=? AND fence=? AND claim_token IS NULL AND expires_at>UTC_TIMESTAMP(6)",row.id(),row.revision(),row.fence())!=1)
+        if(row.legacyClockUnresolved())throw new com.ruanzhu.doorhandle.common.BusinessException(409,"历史确认时间需核对，请重新预览");
+        if(jdbc.update("UPDATE workflow_instance SET status='USED',revision=revision+1,updated_at=UTC_TIMESTAMP(6),finished_at=UTC_TIMESTAMP(6) WHERE id=? AND kind='REPORT_CONFIRMATION' AND legacy_clock_json IS NULL AND status='PENDING' AND revision=? AND fence=? AND claim_token IS NULL AND expires_at>UTC_TIMESTAMP(6)",row.id(),row.revision(),row.fence())!=1)
             throw new com.ruanzhu.doorhandle.common.BusinessException(409,"审批确认已过期或已使用，请重新预览");
     }
     public void enqueue(QualityReportRepository.Row report,long actor,String eventId,String eventType,String eventJson) {
         var row=workflows.create(draft(WorkflowKind.REPORT_DELIVERY,DELIVERY_SCOPE,eventId,sha(eventJson),report.ownerUserId(),actor,
                 report.reportId(),report.version(),null,"PENDING",null,new DeliveryV1(eventType,eventJson)));
-        jdbc.update("UPDATE workflow_instance SET next_attempt_at=created_at WHERE id=? AND kind='REPORT_DELIVERY' AND next_attempt_at IS NULL",row.id());
+        jdbc.update("UPDATE workflow_instance SET next_attempt_at=created_at WHERE id=? AND kind='REPORT_DELIVERY' AND legacy_clock_json IS NULL AND next_attempt_at IS NULL",row.id());
     }
     public List<EventDelivery> events(String reportId) {
         return jdbc.query("""
-                SELECT e.*,r.finished_at AS consumed_at FROM workflow_instance e LEFT JOIN workflow_instance r
+                SELECT e.*,r.finished_at AS consumed_at,r.legacy_clock_json AS consumed_clock_json,
+                  r.legacy_source AS consumed_source,r.legacy_key AS consumed_source_key FROM workflow_instance e LEFT JOIN workflow_instance r
                   ON r.kind='REPORT_CONSUMPTION' AND r.idempotency_scope='REPORT_CONSUMPTION' AND r.report_request_id=e.report_request_id
+                  AND r.resource_type='QUALITY_REPORT' AND r.resource_id=e.resource_id
                 WHERE e.kind='REPORT_DELIVERY' AND e.resource_type='QUALITY_REPORT' AND e.resource_id=? ORDER BY e.created_at,e.request_id LIMIT 100
                 """,(r,n)->{
             var body=decode(r.getString("payload_json"),DeliveryV1.class);
-            return new EventDelivery(r.getString("request_id"),body.eventType(),r.getString("status"),r.getInt("attempts"),ReportTime.fromUtc(r.getObject("next_attempt_at",LocalDateTime.class)),ReportTime.fromUtc(r.getObject("finished_at",LocalDateTime.class)),r.getString("error_code"),ReportTime.fromUtc(r.getObject("consumed_at",LocalDateTime.class)));
+            var clock=LegacyWorkflowClocks.read(r.getString("legacy_clock_json"),WorkflowKind.REPORT_DELIVERY,r.getString("legacy_source"),r.getString("legacy_key"));
+            var consumedClock=LegacyWorkflowClocks.read(r.getString("consumed_clock_json"),WorkflowKind.REPORT_CONSUMPTION,r.getString("consumed_source"),r.getString("consumed_source_key"));
+            if(clock==null)clock=consumedClock;
+            return new EventDelivery(r.getString("request_id"),body.eventType(),r.getString("status"),r.getInt("attempts"),ReportTime.fromUtc(r.getObject("next_attempt_at",LocalDateTime.class)),ReportTime.fromUtc(r.getObject("finished_at",LocalDateTime.class)),r.getString("error_code"),ReportTime.fromUtc(r.getObject("consumed_at",LocalDateTime.class)),clock==null?null:clock.clockStatus(),clock==null?Map.of():clock.sourceWallTimes());
         },reportId);
     }
     public boolean retry(String report,String event,int attempts) {
         JdbcTransactions.requireActive(jdbc);
-        return jdbc.update("UPDATE workflow_instance SET status='RETRY',revision=revision+1,next_attempt_at=UTC_TIMESTAMP(6),updated_at=UTC_TIMESTAMP(6),error_code=NULL WHERE kind='REPORT_DELIVERY' AND resource_type='QUALITY_REPORT' AND resource_id=? AND report_request_id=? AND status IN ('FAILED','RETRY') AND attempts=? AND claim_token IS NULL",report,event,attempts)==1;
+        return jdbc.update("UPDATE workflow_instance e LEFT JOIN workflow_instance r ON r.kind='REPORT_CONSUMPTION' AND r.idempotency_scope='REPORT_CONSUMPTION' AND r.report_request_id=e.report_request_id AND r.resource_type='QUALITY_REPORT' AND r.resource_id=e.resource_id AND r.legacy_clock_json IS NOT NULL SET e.status='RETRY',e.revision=e.revision+1,e.next_attempt_at=UTC_TIMESTAMP(6),e.updated_at=UTC_TIMESTAMP(6),e.error_code=NULL WHERE e.kind='REPORT_DELIVERY' AND e.legacy_clock_json IS NULL AND r.id IS NULL AND e.resource_type='QUALITY_REPORT' AND e.resource_id=? AND e.report_request_id=? AND e.status IN ('FAILED','RETRY') AND e.attempts=? AND e.claim_token IS NULL",report,event,attempts)==1;
     }
     public void audit(QualityReportRepository.Row report,long actor,String username,String action,String before,String reason) {
         audits.append(new AuditEvent(RESOURCE,report.ownerUserId(),actor,RESOURCE,report.reportId(),null,null,null,null,action,(long)report.version(),report.snapshotSha256(),null,1,new AuditV1(username,before,report.status(),reason)));
@@ -90,7 +98,12 @@ public final class ReportWorkflowRepository {
             if(r.getInt("payload_version")!=1)throw new IllegalStateException("Unsupported report audit payload");
             var body=decode(r.getString("payload_json"),AuditV1.class);
             var origin=r.getString("origin_payload")==null?null:decode(r.getString("origin_payload"),AgentOriginV1.class);
-            return new Audit(r.getLong("id"),body.actorUsername(),r.getString("action"),body.beforeStatus(),body.afterStatus(),r.getInt("revision"),body.reason(),r.getString("content_sha256"),ReportTime.fromUtc(r.getObject("occurred_at",LocalDateTime.class)),r.getString("origin_run"),origin==null?null:origin.callId(),origin==null?null:origin.toolName());
+            LegacyClockEvidence clock=null;
+            if(r.getString("legacy_clock_json")!=null) {
+                if(!"detection_report_audit".equals(r.getString("legacy_source")))throw new IllegalStateException("报告历史时钟来源不匹配");
+                clock=LegacyClockEvidence.parse(r.getString("legacy_clock_json"),"detection_report_audit",Map.of("id",new java.math.BigInteger(r.getString("legacy_key"))));
+            }
+            return new Audit(r.getLong("id"),body.actorUsername(),r.getString("action"),body.beforeStatus(),body.afterStatus(),r.getInt("revision"),body.reason(),r.getString("content_sha256"),ReportTime.fromUtc(r.getObject("occurred_at",LocalDateTime.class)),r.getString("origin_run"),origin==null?null:origin.callId(),origin==null?null:origin.toolName(),clock==null?null:clock.clockStatus(),clock==null?Map.of():clock.sourceWallTimes());
         },report);
     }
     public void origin(long actor,String request,String report,int version,long owner,String run,String call,String tool) {

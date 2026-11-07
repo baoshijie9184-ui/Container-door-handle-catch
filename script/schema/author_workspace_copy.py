@@ -136,5 +136,6 @@ guard('SELECT IF(COUNT(*)=0,1,0) FROM compact_workspace_session_snapshot expecte
 guard("SELECT IF(COUNT(*)=0,1,0) FROM compact_workspace_fork_projection expected JOIN `__SOURCE_SCHEMA__`.agent_session_fork s ON s.id=expected.legacy_id LEFT JOIN chat_session t ON t.id=expected.target_id WHERE t.id IS NULL OR NOT(t.fork_owner_user_id<=>s.user_id) OR NOT(BINARY t.fork_request_id<=>BINARY s.request_id) OR NOT(BINARY t.fork_source_session_id<=>BINARY s.source_session_id) OR NOT(t.fork_through_message_id<=>s.through_message_id) OR NOT(t.fork_legacy_id<=>s.id)")
 guard('SELECT IF(COUNT(*)=0,1,0) FROM chat_session t LEFT JOIN compact_workspace_fork_projection expected ON expected.target_id=t.id WHERE expected.target_id IS NULL AND ('+' OR '.join('t.'+column+' IS NOT NULL' for column in sorted(fork_columns))+')')
 emit('COMMIT;\nDROP TEMPORARY TABLE compact_workspace_fork_projection;\nDROP TEMPORARY TABLE compact_workspace_session_snapshot;\nDROP TEMPORARY TABLE compact_workspace_keys;\nDROP TEMPORARY TABLE compact_workspace_columns;\nDROP TEMPORARY TABLE compact_workspace_guard;')
-(ROOT/'sql/mysql/compact/copy/43-workspace.sql').write_text('\n'.join(sql)+'\n',encoding='utf-8')
+from author_legacy_clock_copy import write_copy
+write_copy('43-workspace.sql','\n'.join(sql)+'\n')
 print(json.dumps({'status':'AUTHORED_NOT_EXECUTED','sourceTables':len(tables),'sourceColumns':len(rows),'preservedSessionColumns':len(preserved_columns)}))

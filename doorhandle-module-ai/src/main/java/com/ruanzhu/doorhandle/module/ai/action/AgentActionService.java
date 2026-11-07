@@ -31,7 +31,14 @@ public class AgentActionService {
                        DetectionAssignmentApi.Command command,DetectionAssignmentApi.Values before,
                        DetectionAssignmentApi.Applied result,String reasonCode,LocalDateTime createdAt,LocalDateTime expiresAt,
                        DetectionExecutionApi.RetryPreview retry,DetectionExecutionApi.Receipt execution,
-                       DetectionCreationApi.Preview creation,DetectionCreationApi.Receipt creationResult) {
+                       DetectionCreationApi.Preview creation,DetectionCreationApi.Receipt creationResult,
+                       String clockStatus,Map<String,String> sourceWallTimes) {
+        public View(String actionId,String runId,String sessionId,String operation,String status,long version,
+                    DetectionAssignmentApi.Command command,DetectionAssignmentApi.Values before,DetectionAssignmentApi.Applied result,
+                    String reasonCode,LocalDateTime createdAt,LocalDateTime expiresAt,DetectionExecutionApi.RetryPreview retry,DetectionExecutionApi.Receipt execution,
+                    DetectionCreationApi.Preview creation,DetectionCreationApi.Receipt creationResult){
+            this(actionId,runId,sessionId,operation,status,version,command,before,result,reasonCode,createdAt,expiresAt,retry,execution,creation,creationResult,null,null);
+        }
         public View(String actionId,String runId,String sessionId,String operation,String status,long version,
                     DetectionAssignmentApi.Command command,DetectionAssignmentApi.Values before,DetectionAssignmentApi.Applied result,
                     String reasonCode,LocalDateTime createdAt,LocalDateTime expiresAt) {
@@ -43,8 +50,10 @@ public class AgentActionService {
             this(actionId,runId,sessionId,operation,status,version,command,before,result,reasonCode,createdAt,expiresAt,retry,execution,null,null);
         }
     }
-    public record Audit(long id,String eventType,String actorRole,String result,String reasonCode,LocalDateTime occurredAt) {}
-    private record Stored(View view,String resourceVersion,String digest,String policy,long userId) {}
+    public record Audit(long id,String eventType,String actorRole,String result,String reasonCode,LocalDateTime occurredAt,String clockStatus,Map<String,String> sourceWallTimes) {
+        public Audit(long id,String eventType,String actorRole,String result,String reasonCode,LocalDateTime occurredAt){this(id,eventType,actorRole,result,reasonCode,occurredAt,null,null);}
+    }
+    private record Stored(View view,String resourceVersion,String digest,String policy,long userId,com.ruanzhu.doorhandle.common.time.LegacyClockEvidence clock) {}
     private final JdbcTemplate jdbc;
     private final TransactionTemplate tx;
     private final ObjectMapper json;
@@ -79,7 +88,7 @@ public class AgentActionService {
         if (callId!=null && !callId.matches("[A-Za-z0-9_:.-]{1,160}")) throw bad("调用编号格式不正确");
         return tx.execute(ignored->{
             // 锁住运行，避免取消已提交后仍接受新的提议，也串行化同一运行的幂等键。
-            var run=jdbc.queryForList("SELECT session_id,status FROM agent_run WHERE user_id=? AND run_id=? FOR UPDATE",actor.userId(),runId);
+            var run=jdbc.queryForList("SELECT session_id,status FROM agent_run WHERE legacy_clock_json IS NULL AND user_id=? AND run_id=? FOR UPDATE",actor.userId(),runId);
             if (run.isEmpty()) throw missing();
             if (!Set.of("RUNNING","COMPLETED").contains(run.get(0).get("status").toString())) throw conflict("该运行不再接受操作提议");
             var preview=assignments.preview(actor,command);
@@ -104,7 +113,7 @@ public class AgentActionService {
         validateId(runId);validateId(taskId);
         if(callId!=null&&!callId.matches("[A-Za-z0-9_:.-]{1,160}"))throw bad("调用编号格式不正确");
         return tx.execute(ignored->{
-            var run=jdbc.queryForList("SELECT session_id,status FROM agent_run WHERE user_id=? AND run_id=? FOR UPDATE",actor.userId(),runId);
+            var run=jdbc.queryForList("SELECT session_id,status FROM agent_run WHERE legacy_clock_json IS NULL AND user_id=? AND run_id=? FOR UPDATE",actor.userId(),runId);
             if(run.isEmpty())throw missing();
             if(!Set.of("RUNNING","COMPLETED").contains(run.get(0).get("status").toString()))throw conflict("该运行不再接受操作提议");
             var preview=detection.previewRetry(actor,taskId);
@@ -128,12 +137,12 @@ public class AgentActionService {
         requireEnabled();if(!creationEnabled())throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"会话图片创建检测尚未启用");
         validateId(runId);if(callId!=null&&!callId.matches("[A-Za-z0-9_:.-]{1,160}"))throw bad("调用编号格式不正确");
         if(replacesActionId!=null)validateId(replacesActionId);
-        var initial=jdbc.queryForList("SELECT session_id,status FROM agent_run WHERE user_id=? AND run_id=?",actor.userId(),runId);
+        var initial=jdbc.queryForList("SELECT session_id,status FROM agent_run WHERE legacy_clock_json IS NULL AND user_id=? AND run_id=?",actor.userId(),runId);
         if(initial.isEmpty())throw missing();if(!Set.of("RUNNING","COMPLETED").contains(initial.get(0).get("status")))throw conflict("该运行不再接受操作提议");
         // Business originals may require bounded OSS reads; finish those before locking any proposal/run row.
         var prepared=creation.preview(actor,(String)initial.get(0).get("session_id"),request);
         return tx.execute(ignored->{
-            var run=jdbc.queryForList("SELECT session_id,status FROM agent_run WHERE user_id=? AND run_id=? FOR UPDATE",actor.userId(),runId);
+            var run=jdbc.queryForList("SELECT session_id,status FROM agent_run WHERE legacy_clock_json IS NULL AND user_id=? AND run_id=? FOR UPDATE",actor.userId(),runId);
             if(run.isEmpty())throw missing();if(!Set.of("RUNNING","COMPLETED").contains(run.get(0).get("status")))throw conflict("该运行不再接受操作提议");
             String session=(String)run.get(0).get("session_id");if(!session.equals(prepared.sessionId()))throw conflict("会话已变化 请重新生成提议");creation.revalidate(actor,prepared);var preview=prepared;String body=write(preview),arguments=digest(body);
             if(replacesActionId!=null){var old=load(actor,replacesActionId,true);if(!runId.equals(old.view().runId())||old.view().creation()==null||!"PENDING".equals(old.view().status()))throw conflict("只能修改当前运行尚未确认的检测创建提议");}
@@ -175,7 +184,7 @@ public class AgentActionService {
     }
     public List<Audit> audit(AgentActor actor,String id) {
         get(actor,id);
-        return persistence.audits(actor.userId(),id).stream().map(row->new Audit(row.id(),row.eventType(),row.actorRole(),row.result(),row.reasonCode(),display(row.occurredAt()))).toList();
+        return persistence.audits(actor.userId(),id).stream().map(row->new Audit(row.id(),row.eventType(),row.actorRole(),row.result(),row.reasonCode(),display(row.occurredAt()),row.legacyClockEvidence()==null?null:row.legacyClockEvidence().clockStatus(),row.legacyClockEvidence()==null?null:row.legacyClockEvidence().sourceWallTimes())).toList();
     }
     public View decide(AgentActor actor,String id,long expectedVersion,String decision) {
         requireEnabled();validateId(id);
@@ -183,7 +192,8 @@ public class AgentActionService {
         return tx.execute(ignored->{
             // 与提议一致采用 run -> action -> resource 的锁顺序，取消先提交时拒绝执行。
             var initial=load(actor,id,false);
-            var origin="APPROVE".equals(decision)?jdbc.queryForList("SELECT status FROM agent_run WHERE user_id=? AND run_id=? FOR UPDATE",actor.userId(),initial.view().runId()):List.<Map<String,Object>>of();
+            if(initial.clock()!=null)throw conflict("历史确认时钟待核对，不能重新执行或决策");
+            var origin="APPROVE".equals(decision)?jdbc.queryForList("SELECT status FROM agent_run WHERE legacy_clock_json IS NULL AND user_id=? AND run_id=? FOR UPDATE",actor.userId(),initial.view().runId()):List.<Map<String,Object>>of();
             var action=expire(actor,load(actor,id,true));
             if (!"PENDING".equals(action.view().status())) {if(action.view().creation()!=null)return reconcileCreation(actor,action).view();return action.view();}
             if (action.view().version()!=expectedVersion) throw conflict("操作版本已变化，请刷新卡片");
@@ -230,6 +240,7 @@ public class AgentActionService {
         return close(actor,action,"EXECUTING",null,"TOOL_EXECUTION_STARTED").view();
     }
     private Stored reconcileCreation(AgentActor actor,Stored action){
+        if(action.clock()!=null)return action;
         if(!Set.of("EXECUTING","NEEDS_REVIEW").contains(action.view().status())||creation==null)return action;
         var receipt=creation.receipt(actor,action.view().actionId());if(receipt.isEmpty())return action;
         String state=switch(receipt.get().status()){case "QUEUED"->"SUCCEEDED";case "NEEDS_REVIEW"->"NEEDS_REVIEW";case "CANCELLED"->"CANCELLED";default->"EXECUTING";};
@@ -269,11 +280,13 @@ public class AgentActionService {
         return close(actor,action,"SUCCEEDED",null,"TOOL_EXECUTION_COMPLETED").view();
     }
     private Stored expire(AgentActor actor,Stored action) {
-        if ("PENDING".equals(action.view().status()) && !action.view().expiresAt().minusHours(8).isAfter(now()))
+        if(action.clock()!=null)return action;
+        if ("PENDING".equals(action.view().status()) && action.view().expiresAt()!=null && !action.view().expiresAt().minusHours(8).isAfter(now()))
             return close(actor,action,"EXPIRED","CONFIRMATION_EXPIRED","CONFIRMATION_INVALIDATED");
         return action;
     }
     private Stored close(AgentActor actor,Stored action,String state,String reason,String event) {
+        if(action.clock()!=null)throw conflict("历史确认时钟待核对，不能自动改变状态");
         persistence.close(actor.userId(),action.view().actionId(),action.view().version(),state,reason);
         audit(actor,action,event,state,reason);
         return load(actor,action.view().actionId(),false);
@@ -298,7 +311,8 @@ public class AgentActionService {
         return new Stored(new View(row.actionId(),row.runId(),row.sessionId(),operation,row.status(),row.version(),
                 retry||create?null:read(payload.commandJson(),DetectionAssignmentApi.Command.class),retry||create?null:read(payload.beforeJson(),DetectionAssignmentApi.Values.class),
                 retry||create||result==null?null:read(result,DetectionAssignmentApi.Applied.class),row.reasonCode(),display(row.createdAt()),display(row.expiresAt()),
-                preview,retry&&result!=null?read(result,DetectionExecutionApi.Receipt.class):null,creationPreview,create&&result!=null?read(result,DetectionCreationApi.Receipt.class):null),payload.resourceVersion(),row.digest(),payload.policyVersion(),row.userId());
+                preview,retry&&result!=null?read(result,DetectionExecutionApi.Receipt.class):null,creationPreview,create&&result!=null?read(result,DetectionCreationApi.Receipt.class):null,
+                row.legacyClockEvidence()==null?null:row.legacyClockEvidence().clockStatus(),row.legacyClockEvidence()==null?null:row.legacyClockEvidence().sourceWallTimes()),payload.resourceVersion(),row.digest(),payload.policyVersion(),row.userId(),row.legacyClockEvidence());
     }
     private LocalDateTime now(){return persistence.now();}
     private static LocalDateTime display(LocalDateTime utc){return utc==null?null:utc.plusHours(8);}

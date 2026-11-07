@@ -8,6 +8,7 @@
         <label><span>允许助手读取长期记忆<small>关闭后不再将已保存的长期记忆加入回答参考</small></span><el-switch v-model="form.readEnabled" aria-label="允许读取长期记忆" :disabled="busy" /></label>
         <label><span>自动保存新的长期记忆<small>关闭后跳过新记忆提取 现有聊天记录和记忆继续保留</small></span><el-switch v-model="form.saveEnabled" aria-label="自动保存长期记忆" :disabled="busy" /></label>
         <div class="memory-settings-actions"><el-button type="primary" :loading="busy" :disabled="loading||!changed" @click="saveSettings"><AppIcon name="CircleCheck" :size="15" />保存设置</el-button><span v-if="changed" role="status">有尚未保存的设置，刷新会恢复已保存值</span><span v-else>两个聊天入口共用此设置</span></div><p>已经开始的保存不因关闭开关而撤销</p>
+        <p v-if="settings.clockStatus==='UNRESOLVED'">历史时区未确认 仍可保存当前设置</p>
       </template>
       <p v-else>设置暂不可用 请刷新后重试</p>
     </section>
@@ -36,7 +37,7 @@
       <summary><AppIcon name="DocumentChecked" :size="16" />本人最近操作记录</summary>
       <p v-if="auditError" class="memory-error" role="alert">{{ auditError }}</p>
       <p v-else-if="loading&&!audit.length">正在读取操作记录…</p><p v-else-if="!audit.length">暂无已读取的操作记录</p>
-      <div v-for="record in audit" :key="record.id" class="memory-audit-entry"><div><strong>{{ action(record.action) }}</strong><small>{{ memoryTime(record.createdAt) }}<template v-if="record.createdAt"> UTC+8</template></small></div><StatusBadge domain="memoryAudit" :code="record.outcome" /><el-button v-if="record.action==='AUTOSAVE'&&record.requestId&&['DISPATCHED','UNKNOWN'].includes(record.outcome)" size="small" :disabled="busy||loading" @click="verifyExtraction(record)"><AppIcon name="Search" :size="15" />核对提炼结果</el-button></div>
+      <div v-for="record in audit" :key="record.id" class="memory-audit-entry"><div><strong>{{ action(record.action) }}</strong><small>{{ record.clockStatus==='UNRESOLVED'&&!record.createdAt?'历史时区未确认':memoryTime(record.createdAt) }}<template v-if="record.createdAt"> UTC+8</template></small></div><StatusBadge domain="memoryAudit" :code="record.outcome" /><el-button v-if="record.action==='AUTOSAVE'&&record.requestId&&['DISPATCHED','UNKNOWN'].includes(record.outcome)" size="small" :disabled="busy||loading||record.clockStatus==='UNRESOLVED'" @click="verifyExtraction(record)"><AppIcon name="Search" :size="15" />核对提炼结果</el-button></div>
       <p v-if="receiptMessage" role="status">{{ receiptMessage }}</p><p>核对只读取原提炼回执 不会重新执行保存 操作记录不保存记忆正文</p>
     </details>
     <el-dialog v-model="policy.visible" title="记忆有效期与停用" class="memory-policy-dialog" width="min(640px, calc(100vw - 32px))" append-to-body :close-on-click-modal="false" :close-on-press-escape="!busy" :show-close="!busy" :before-close="closeEditor">

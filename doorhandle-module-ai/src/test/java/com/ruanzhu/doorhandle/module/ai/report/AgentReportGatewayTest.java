@@ -16,8 +16,8 @@ class AgentReportGatewayTest {
     JdbcTemplate jdbc;AgentJournal journal;QualityReportAgentApi api;AgentReportGateway gateway;
     @BeforeEach void setup(){
         var source=new DriverManagerDataSource("jdbc:h2:mem:gateway"+UUID.randomUUID()+";MODE=MySQL;DB_CLOSE_DELAY=-1","sa","");jdbc=new JdbcTemplate(source);
-        jdbc.execute("CREATE TABLE agent_run(run_id VARCHAR(128) PRIMARY KEY,user_id BIGINT,main_agent VARCHAR(64),status VARCHAR(20),lease_expires_at TIMESTAMP)");
-        jdbc.update("INSERT INTO agent_run VALUES('run-1',1,'employee-main','RUNNING',DATEADD('MINUTE',10,CURRENT_TIMESTAMP))");
+        jdbc.execute("CREATE TABLE agent_run(run_id VARCHAR(128) PRIMARY KEY,user_id BIGINT,main_agent VARCHAR(64),status VARCHAR(20),lease_expires_at TIMESTAMP,legacy_clock_json LONGTEXT NULL)");
+        jdbc.update("INSERT INTO agent_run(run_id,user_id,main_agent,status,lease_expires_at) VALUES('run-1',1,'employee-main','RUNNING',DATEADD('MINUTE',10,CURRENT_TIMESTAMP))");
         journal=mock(AgentJournal.class);when(journal.enabled()).thenReturn(true);api=mock(QualityReportAgentApi.class);
         gateway=new AgentReportGateway(api,journal,jdbc,new DataSourceTransactionManager(source),new ObjectMapper());
     }

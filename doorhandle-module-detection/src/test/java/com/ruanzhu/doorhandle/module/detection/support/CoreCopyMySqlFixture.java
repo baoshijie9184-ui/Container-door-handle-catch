@@ -43,6 +43,7 @@ public final class CoreCopyMySqlFixture implements AutoCloseable {
             for(String part:new String[]{"10-core.sql","20-content.sql","25-agent.sql","30-operations.sql","35-runtime-guards.sql","36-identity-guards.sql","37-audit-guards.sql","38-quota-guards.sql","39-workflow-guards.sql"})
                 install(target,Files.readString(Path.of("../sql/mysql/compact/baseline",part)),part.endsWith("-guards.sql")?"$$":";",targetTables);
             for(String table:sourceTables)new JdbcTemplate(target).queryForObject("SELECT COUNT(*) FROM `"+sourceName+"`.`"+table+"`",Long.class);
+            FixtureSourceSnapshot.installLegacyClockGuards(target(),Path.of("../sql/mysql/compact/baseline"));
         } catch(Exception error) {
             try {close();} catch(Exception cleanup) {error.addSuppressed(cleanup);}
             throw error;

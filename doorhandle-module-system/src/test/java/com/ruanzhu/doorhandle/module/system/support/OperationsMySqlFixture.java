@@ -35,6 +35,7 @@ public final class OperationsMySqlFixture implements AutoCloseable {
         try {
             for(String part:new String[]{"10-core.sql","20-content.sql","25-agent.sql","30-operations.sql","35-runtime-guards.sql","36-identity-guards.sql","37-audit-guards.sql","38-quota-guards.sql","39-workflow-guards.sql","40-relations.sql"})
                 install(Files.readString(Path.of("../sql/mysql/compact/baseline",part)),part.endsWith("-guards.sql")?"$$":";");
+            FixtureSourceSnapshot.installLegacyClockGuards(target(),Path.of("../sql/mysql/compact/baseline"));
             if(source!=null)install(source,new ClassPathResource("compact/operations-source-evidence.sql").getContentAsString(StandardCharsets.UTF_8),";",sourceTables);
         } catch(Exception error) {try {close();}catch(Exception cleanup){error.addSuppressed(cleanup);}throw error;}
     }
@@ -47,6 +48,7 @@ public final class OperationsMySqlFixture implements AutoCloseable {
         String name=source().queryForObject("SELECT DATABASE()",String.class);
         String sql=Files.readString(Path.of("../sql/mysql/compact/copy/37-operations-file-delivery.sql"))
                 .replace("__SOURCE_SCHEMA__",name).replace("__SOURCE_OPERATIONS_OFFSET__",offset);
+        sql=FixtureSourceSnapshot.bind(sql,source(),sourceTables);
         try(Connection connection=target.getConnection()) {
             connection.setAutoCommit(false);
             try {execute(connection,sql,";");}

@@ -40,6 +40,7 @@ public final class BindingAuditMigrationMySqlFixture implements AutoCloseable {
                     "35-runtime-guards.sql","36-identity-guards.sql","37-audit-guards.sql","38-quota-guards.sql","39-workflow-guards.sql","40-relations.sql"})
                 install(targetData,Files.readString(Path.of("../sql/mysql/compact/baseline",part)),
                         part.endsWith("-guards.sql")?"$$":";",targetTables);
+            FixtureSourceSnapshot.installLegacyClockGuards(target(),Path.of("../sql/mysql/compact/baseline"));
             install(sourceData,new ClassPathResource("compact/binding-audit-source-evidence.sql")
                     .getContentAsString(StandardCharsets.UTF_8),";",sourceTables);
         } catch(Exception error) {
@@ -59,6 +60,7 @@ public final class BindingAuditMigrationMySqlFixture implements AutoCloseable {
         String schema=source().queryForObject("SELECT DATABASE()",String.class);
         String sql=Files.readString(Path.of("../sql/mysql/compact/copy/39-organization-binding-audit.sql"))
                 .replace("__SOURCE_SCHEMA__",schema).replace("__SOURCE_BINDING_OFFSET__",offset);
+        sql=FixtureSourceSnapshot.bind(sql,source(),sourceTables);
         try(Connection connection=targetData.getConnection()) {
             connection.setAutoCommit(false);
             try {execute(connection,sql,";");}

@@ -1,0 +1,2512 @@
+{
+  "protocol": "doorhandle-legacy-clock-v1",
+  "algorithm": "MYSQL_JSON_SHA256_V1",
+  "sourceInventorySha256": "47254a3c1b102facc1a4f554c86df925f209d254cbfa68494ff93ccd8209df09",
+  "tables": {
+    "agent_action_audit": {
+      "columns": {
+        "id": {
+          "type": "BIGINT",
+          "declaration": "id BIGINT NOT NULL AUTO_INCREMENT"
+        },
+        "action_id": {
+          "type": "VARCHAR(36)",
+          "declaration": "action_id VARCHAR(36) COLLATE utf8mb4_bin NOT NULL"
+        },
+        "user_id": {
+          "type": "BIGINT",
+          "declaration": "user_id BIGINT NOT NULL"
+        },
+        "run_id": {
+          "type": "VARCHAR(128)",
+          "declaration": "run_id VARCHAR(128) COLLATE utf8mb4_bin NOT NULL"
+        },
+        "event_type": {
+          "type": "VARCHAR(64)",
+          "declaration": "event_type VARCHAR(64) NOT NULL"
+        },
+        "actor_role": {
+          "type": "VARCHAR(24)",
+          "declaration": "actor_role VARCHAR(24) NOT NULL"
+        },
+        "resource_id": {
+          "type": "VARCHAR(128)",
+          "declaration": "resource_id VARCHAR(128) COLLATE utf8mb4_bin NOT NULL"
+        },
+        "arguments_digest": {
+          "type": "VARCHAR(64)",
+          "declaration": "arguments_digest VARCHAR(64) NOT NULL"
+        },
+        "policy_version": {
+          "type": "VARCHAR(64)",
+          "declaration": "policy_version VARCHAR(64) NOT NULL"
+        },
+        "result": {
+          "type": "VARCHAR(24)",
+          "declaration": "result VARCHAR(24) NOT NULL"
+        },
+        "reason_code": {
+          "type": "VARCHAR(64)",
+          "declaration": "reason_code VARCHAR(64) DEFAULT NULL"
+        },
+        "occurred_at": {
+          "type": "DATETIME(6)",
+          "declaration": "occurred_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)"
+        }
+      },
+      "primaryKey": [
+        "id"
+      ],
+      "sourceFiles": {
+        "sql/mysql/migration-V19-agent-confirmation.sql": "3c7c3ace00cf5ab14d2510c5bfb273ed5278809e5f4fbfdbf6786e5887e71e07"
+      }
+    },
+    "agent_conversation_input": {
+      "columns": {
+        "id": {
+          "type": "BIGINT UNSIGNED",
+          "declaration": "id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT"
+        },
+        "input_id": {
+          "type": "VARCHAR(36)",
+          "declaration": "input_id VARCHAR(36) COLLATE utf8mb4_bin NOT NULL"
+        },
+        "user_id": {
+          "type": "BIGINT",
+          "declaration": "user_id BIGINT NOT NULL"
+        },
+        "username": {
+          "type": "VARCHAR(128)",
+          "declaration": "username VARCHAR(128) NOT NULL"
+        },
+        "session_id": {
+          "type": "VARCHAR(128)",
+          "declaration": "session_id VARCHAR(128) COLLATE utf8mb4_bin NOT NULL"
+        },
+        "mode": {
+          "type": "VARCHAR(24)",
+          "declaration": "mode VARCHAR(24) NOT NULL"
+        },
+        "requested_mode": {
+          "type": "VARCHAR(24)",
+          "declaration": "requested_mode VARCHAR(24) NOT NULL"
+        },
+        "entry_point": {
+          "type": "VARCHAR(8)",
+          "declaration": "entry_point VARCHAR(8) NOT NULL DEFAULT 'CHAT'"
+        },
+        "target_run_id": {
+          "type": "VARCHAR(36)",
+          "declaration": "target_run_id VARCHAR(36) COLLATE utf8mb4_bin DEFAULT NULL"
+        },
+        "status": {
+          "type": "VARCHAR(24)",
+          "declaration": "status VARCHAR(24) NOT NULL DEFAULT 'QUEUED'"
+        },
+        "revision": {
+          "type": "INT",
+          "declaration": "revision INT NOT NULL DEFAULT 0"
+        },
+        "content": {
+          "type": "TEXT",
+          "declaration": "content TEXT NOT NULL"
+        },
+        "content_sha256": {
+          "type": "CHAR(64)",
+          "declaration": "content_sha256 CHAR(64) NOT NULL"
+        },
+        "active_slot": {
+          "type": "TINYINT",
+          "declaration": "active_slot TINYINT DEFAULT NULL"
+        },
+        "expires_at": {
+          "type": "DATETIME(6)",
+          "declaration": "expires_at DATETIME(6) NOT NULL"
+        },
+        "created_at": {
+          "type": "DATETIME(6)",
+          "declaration": "created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)"
+        },
+        "updated_at": {
+          "type": "DATETIME(6)",
+          "declaration": "updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)"
+        }
+      },
+      "primaryKey": [
+        "id"
+      ],
+      "sourceFiles": {
+        "sql/mysql/migration-V36-conversation-inbox.sql": "2b3de543c36dbe5cd34ff668a25b5aacae605dea5cbac5c2f077607038122559"
+      }
+    },
+    "agent_conversation_input_audit": {
+      "columns": {
+        "id": {
+          "type": "BIGINT UNSIGNED",
+          "declaration": "id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT"
+        },
+        "input_id": {
+          "type": "VARCHAR(36)",
+          "declaration": "input_id VARCHAR(36) COLLATE utf8mb4_bin NOT NULL"
+        },
+        "user_id": {
+          "type": "BIGINT",
+          "declaration": "user_id BIGINT NOT NULL"
+        },
+        "action": {
+          "type": "VARCHAR(32)",
+          "declaration": "action VARCHAR(32) NOT NULL"
+        },
+        "revision": {
+          "type": "INT",
+          "declaration": "revision INT NOT NULL"
+        },
+        "content_sha256": {
+          "type": "CHAR(64)",
+          "declaration": "content_sha256 CHAR(64) NOT NULL"
+        },
+        "created_at": {
+          "type": "DATETIME(6)",
+          "declaration": "created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)"
+        }
+      },
+      "primaryKey": [
+        "id"
+      ],
+      "sourceFiles": {
+        "sql/mysql/migration-V36-conversation-inbox.sql": "2b3de543c36dbe5cd34ff668a25b5aacae605dea5cbac5c2f077607038122559"
+      }
+    },
+    "agent_conversation_input_owner": {
+      "columns": {
+        "user_id": {
+          "type": "BIGINT",
+          "declaration": "user_id BIGINT NOT NULL"
+        }
+      },
+      "primaryKey": [
+        "user_id"
+      ],
+      "sourceFiles": {
+        "sql/mysql/migration-V36-conversation-inbox.sql": "2b3de543c36dbe5cd34ff668a25b5aacae605dea5cbac5c2f077607038122559"
+      }
+    },
+    "agent_fetch_image": {
+      "columns": {
+        "image_id": {
+          "type": "VARCHAR(80)",
+          "declaration": "image_id VARCHAR(80) COLLATE utf8mb4_bin NOT NULL PRIMARY KEY"
+        },
+        "state": {
+          "type": "VARCHAR(24)",
+          "declaration": "state VARCHAR(24) NOT NULL DEFAULT 'ACTIVE'"
+        },
+        "revision": {
+          "type": "INT",
+          "declaration": "revision INT NOT NULL DEFAULT 0"
+        },
+        "cleanup_request": {
+          "type": "VARCHAR(36)",
+          "declaration": "cleanup_request VARCHAR(36) COLLATE utf8mb4_bin NULL"
+        },
+        "cleanup_owner_user_id": {
+          "type": "BIGINT",
+          "declaration": "cleanup_owner_user_id BIGINT NULL"
+        },
+        "runner_pool_id": {
+          "type": "CHAR(32)",
+          "declaration": "runner_pool_id CHAR(32) COLLATE utf8mb4_bin NULL"
+        },
+        "archive_sha256": {
+          "type": "CHAR(64)",
+          "declaration": "archive_sha256 CHAR(64) COLLATE utf8mb4_bin NULL"
+        },
+        "image_absent": {
+          "type": "BOOLEAN",
+          "declaration": "image_absent BOOLEAN NOT NULL DEFAULT FALSE"
+        },
+        "updated_at": {
+          "type": "DATETIME(6)",
+          "declaration": "updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)"
+        }
+      },
+      "primaryKey": [
+        "image_id"
+      ],
+      "sourceFiles": {
+        "sql/mysql/migration-V59-fetch-shared-images.sql": "c6d3d97caf8661fb47c725d0e90e2fe9591d76c762cd4dc78da3810e17048838"
+      }
+    },
+    "agent_fetch_image_command": {
+      "columns": {
+        "id": {
+          "type": "BIGINT UNSIGNED",
+          "declaration": "id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY"
+        },
+        "owner_user_id": {
+          "type": "BIGINT",
+          "declaration": "owner_user_id BIGINT NOT NULL"
+        },
+        "request_id": {
+          "type": "VARCHAR(36)",
+          "declaration": "request_id VARCHAR(36) COLLATE utf8mb4_bin NOT NULL"
+        },
+        "image_id": {
+          "type": "VARCHAR(80)",
+          "declaration": "image_id VARCHAR(80) COLLATE utf8mb4_bin NOT NULL"
+        },
+        "request_sha256": {
+          "type": "CHAR(64)",
+          "declaration": "request_sha256 CHAR(64) COLLATE utf8mb4_bin NOT NULL"
+        },
+        "action_name": {
+          "type": "VARCHAR(16)",
+          "declaration": "action_name VARCHAR(16) NOT NULL"
+        },
+        "state": {
+          "type": "VARCHAR(24)",
+          "declaration": "state VARCHAR(24) NOT NULL"
+        },
+        "created_at": {
+          "type": "DATETIME(6)",
+          "declaration": "created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)"
+        },
+        "updated_at": {
+          "type": "DATETIME(6)",
+          "declaration": "updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)"
+        },
+        "retention_protocol": {
+          "type": "INT",
+          "declaration": "retention_protocol INT NOT NULL DEFAULT 3"
+        }
+      },
+      "primaryKey": [
+        "id"
+      ],
+      "sourceFiles": {
+        "sql/mysql/migration-V59-fetch-shared-images.sql": "c6d3d97caf8661fb47c725d0e90e2fe9591d76c762cd4dc78da3810e17048838",
+        "sql/mysql/migration-V60-fetch-deployment-retention.sql": "0f743fe689b7e21335e60185f52fca9eb33de91c858a04b37cf03b16602681cb"
+      }
+    },
+    "agent_fetch_image_retention": {
+      "columns": {
+        "reference_id": {
+          "type": "VARCHAR(96)",
+          "declaration": "reference_id VARCHAR(96) COLLATE utf8mb4_bin NOT NULL"
+        },
+        "image_id": {
+          "type": "VARCHAR(80)",
+          "declaration": "image_id VARCHAR(80) COLLATE utf8mb4_bin NOT NULL"
+        },
+        "reference_kind": {
+          "type": "VARCHAR(24)",
+          "declaration": "reference_kind VARCHAR(24) NOT NULL"
+        },
+        "state": {
+          "type": "VARCHAR(16)",
+          "declaration": "state VARCHAR(16) NOT NULL DEFAULT 'HELD'"
+        },
+        "updated_at": {
+          "type": "DATETIME(6)",
+          "declaration": "updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)"
+        }
+      },
+      "primaryKey": [
+        "reference_id",
+        "image_id"
+      ],
+      "sourceFiles": {
+        "sql/mysql/migration-V60-fetch-deployment-retention.sql": "0f743fe689b7e21335e60185f52fca9eb33de91c858a04b37cf03b16602681cb"
+      }
+    },
+    "agent_fetch_image_retention_control": {
+      "columns": {
+        "control_id": {
+          "type": "TINYINT",
+          "declaration": "control_id TINYINT NOT NULL PRIMARY KEY"
+        },
+        "state": {
+          "type": "VARCHAR(16)",
+          "declaration": "state VARCHAR(16) NOT NULL DEFAULT 'COLLECTING'"
+        },
+        "revision": {
+          "type": "BIGINT",
+          "declaration": "revision BIGINT NOT NULL DEFAULT 0"
+        },
+        "updated_at": {
+          "type": "DATETIME(6)",
+          "declaration": "updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)"
+        }
+      },
+      "primaryKey": [
+        "control_id"
+      ],
+      "sourceFiles": {
+        "sql/mysql/migration-V60-fetch-deployment-retention.sql": "0f743fe689b7e21335e60185f52fca9eb33de91c858a04b37cf03b16602681cb"
+      }
+    },
+    "agent_fetch_image_retention_event": {
+      "columns": {
+        "id": {
+          "type": "BIGINT UNSIGNED",
+          "declaration": "id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY"
+        },
+        "request_id": {
+          "type": "CHAR(32)",
+          "declaration": "request_id CHAR(32) COLLATE utf8mb4_bin NOT NULL"
+        },
+        "action_name": {
+          "type": "VARCHAR(24)",
+          "declaration": "action_name VARCHAR(24) NOT NULL"
+        },
+        "image_id": {
+          "type": "VARCHAR(80)",
+          "declaration": "image_id VARCHAR(80) COLLATE utf8mb4_bin NULL"
+        },
+        "created_at": {
+          "type": "DATETIME(6)",
+          "declaration": "created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)"
+        }
+      },
+      "primaryKey": [
+        "id"
+      ],
+      "sourceFiles": {
+        "sql/mysql/migration-V60-fetch-deployment-retention.sql": "0f743fe689b7e21335e60185f52fca9eb33de91c858a04b37cf03b16602681cb"
+      }
+    },
+    "agent_fetch_installation": {
+      "columns": {
+        "id": {
+          "type": "BIGINT UNSIGNED",
+          "declaration": "id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY"
+        },
+        "owner_user_id": {
+          "type": "BIGINT",
+          "declaration": "owner_user_id BIGINT NOT NULL"
+        },
+        "installation_id": {
+          "type": "VARCHAR(36)",
+          "declaration": "installation_id VARCHAR(36) COLLATE utf8mb4_bin NOT NULL"
+        },
+        "prior_installation_id": {
+          "type": "VARCHAR(36)",
+          "declaration": "prior_installation_id VARCHAR(36) COLLATE utf8mb4_bin NULL"
+        },
+        "state": {
+          "type": "VARCHAR(24)",
+          "declaration": "state VARCHAR(24) NOT NULL"
+        },
+        "revision": {
+          "type": "INT",
+          "declaration": "revision INT NOT NULL DEFAULT 0"
+        },
+        "writer_exit_verified": {
+          "type": "BOOLEAN",
+          "declaration": "writer_exit_verified BOOLEAN NOT NULL DEFAULT FALSE"
+        },
+        "retained_for_rollback": {
+          "type": "BOOLEAN",
+          "declaration": "retained_for_rollback BOOLEAN NOT NULL DEFAULT FALSE"
+        },
+        "package_version": {
+          "type": "VARCHAR(64)",
+          "declaration": "package_version VARCHAR(64) NOT NULL"
+        },
+        "transport": {
+          "type": "VARCHAR(32)",
+          "declaration": "transport VARCHAR(32) NOT NULL"
+        },
+        "image_id": {
+          "type": "VARCHAR(80)",
+          "declaration": "image_id VARCHAR(80) NULL"
+        },
+        "manifest_json": {
+          "type": "JSON",
+          "declaration": "manifest_json JSON NULL"
+        },
+        "manifest_sha256": {
+          "type": "CHAR(64)",
+          "declaration": "manifest_sha256 CHAR(64) COLLATE utf8mb4_bin NULL"
+        },
+        "cleanup_request": {
+          "type": "VARCHAR(64)",
+          "declaration": "cleanup_request VARCHAR(64) COLLATE utf8mb4_bin NULL"
+        },
+        "cleanup_expires_at": {
+          "type": "DATETIME(6)",
+          "declaration": "cleanup_expires_at DATETIME(6) NULL"
+        },
+        "created_at": {
+          "type": "DATETIME(6)",
+          "declaration": "created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)"
+        },
+        "updated_at": {
+          "type": "DATETIME(6)",
+          "declaration": "updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)"
+        },
+        "reconcile_request": {
+          "type": "VARCHAR(64)",
+          "declaration": "reconcile_request VARCHAR(64) COLLATE utf8mb4_bin NULL"
+        },
+        "reconcile_expires_at": {
+          "type": "DATETIME(6)",
+          "declaration": "reconcile_expires_at DATETIME(6) NULL"
+        },
+        "writer_evidence_code": {
+          "type": "VARCHAR(48)",
+          "declaration": "writer_evidence_code VARCHAR(48) NULL"
+        },
+        "reserved_bytes": {
+          "type": "BIGINT",
+          "declaration": "reserved_bytes BIGINT NOT NULL DEFAULT 2097152"
+        }
+      },
+      "primaryKey": [
+        "id"
+      ],
+      "sourceFiles": {
+        "sql/mysql/migration-V48-fetch-installation-lifecycle.sql": "edbc129a4bc3f4512a79935e8e745ca4a8c87ec715860077af5463f5f9f6638c",
+        "sql/mysql/migration-V49-mcp-process-evidence.sql": "709b5be9259f1dbda73aee84d6ff9d9f0e4fe8b05a4101e03bf9a52c362688cc",
+        "sql/mysql/migration-V58-native-fetch-install-evidence.sql": "6b3e00cffab66afef9f0cf55f6d74e93cd0e2f27279f30cfe16b9173f75549f8"
+      }
+    },
+    "agent_fetch_lifecycle_command": {
+      "columns": {
+        "id": {
+          "type": "BIGINT UNSIGNED",
+          "declaration": "id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY"
+        },
+        "owner_user_id": {
+          "type": "BIGINT",
+          "declaration": "owner_user_id BIGINT NOT NULL"
+        },
+        "request_id": {
+          "type": "VARCHAR(64)",
+          "declaration": "request_id VARCHAR(64) COLLATE utf8mb4_bin NOT NULL"
+        },
+        "installation_id": {
+          "type": "VARCHAR(36)",
+          "declaration": "installation_id VARCHAR(36) COLLATE utf8mb4_bin NOT NULL"
+        },
+        "action_name": {
+          "type": "VARCHAR(24)",
+          "declaration": "action_name VARCHAR(24) NOT NULL"
+        },
+        "request_sha256": {
+          "type": "CHAR(64)",
+          "declaration": "request_sha256 CHAR(64) COLLATE utf8mb4_bin NOT NULL"
+        },
+        "status": {
+          "type": "VARCHAR(24)",
+          "declaration": "status VARCHAR(24) NOT NULL"
+        },
+        "created_at": {
+          "type": "DATETIME(6)",
+          "declaration": "created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)"
+        },
+        "updated_at": {
+          "type": "DATETIME(6)",
+          "declaration": "updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)"
+        }
+      },
+      "primaryKey": [
+        "id"
+      ],
+      "sourceFiles": {
+        "sql/mysql/migration-V48-fetch-installation-lifecycle.sql": "edbc129a4bc3f4512a79935e8e745ca4a8c87ec715860077af5463f5f9f6638c"
+      }
+    },
+    "agent_learned_skill": {
+      "columns": {
+        "id": {
+          "type": "BIGINT",
+          "declaration": "id BIGINT NOT NULL AUTO_INCREMENT"
+        },
+        "skill_id": {
+          "type": "VARCHAR(64)",
+          "declaration": "skill_id VARCHAR(64) NOT NULL"
+        },
+        "owner_user_id": {
+          "type": "BIGINT",
+          "declaration": "owner_user_id BIGINT NOT NULL"
+        },
+        "name": {
+          "type": "VARCHAR(64)",
+          "declaration": "name VARCHAR(64) NOT NULL"
+        },
+        "target_role": {
+          "type": "VARCHAR(16)",
+          "declaration": "target_role VARCHAR(16) NOT NULL"
+        },
+        "latest_version": {
+          "type": "INT",
+          "declaration": "latest_version INT NOT NULL"
+        },
+        "active_version": {
+          "type": "INT",
+          "declaration": "active_version INT NULL"
+        },
+        "revision": {
+          "type": "INT",
+          "declaration": "revision INT NOT NULL"
+        },
+        "lifecycle": {
+          "type": "VARCHAR(16)",
+          "declaration": "lifecycle VARCHAR(16) NOT NULL DEFAULT 'ACTIVE'"
+        },
+        "use_count": {
+          "type": "BIGINT",
+          "declaration": "use_count BIGINT NOT NULL DEFAULT 0"
+        },
+        "last_used_at": {
+          "type": "DATETIME",
+          "declaration": "last_used_at DATETIME NULL"
+        },
+        "activated_at": {
+          "type": "DATETIME",
+          "declaration": "activated_at DATETIME NULL"
+        },
+        "created_at": {
+          "type": "DATETIME",
+          "declaration": "created_at DATETIME NOT NULL"
+        },
+        "updated_at": {
+          "type": "DATETIME",
+          "declaration": "updated_at DATETIME NOT NULL"
+        }
+      },
+      "primaryKey": [
+        "id"
+      ],
+      "sourceFiles": {
+        "sql/mysql/migration-V23-agent-skill-evolution.sql": "a380d14b129469deb4a055b311a4587cb9e0a59880ed4de61f3b968fb9faf3dd"
+      }
+    },
+    "agent_local_mcp": {
+      "columns": {
+        "id": {
+          "type": "BIGINT",
+          "declaration": "id BIGINT NOT NULL AUTO_INCREMENT"
+        },
+        "owner_user_id": {
+          "type": "BIGINT",
+          "declaration": "owner_user_id BIGINT NOT NULL"
+        },
+        "server_key": {
+          "type": "VARCHAR(32)",
+          "declaration": "server_key VARCHAR(32) NOT NULL"
+        },
+        "package_version": {
+          "type": "VARCHAR(64)",
+          "declaration": "package_version VARCHAR(64) NOT NULL"
+        },
+        "status": {
+          "type": "VARCHAR(32)",
+          "declaration": "status VARCHAR(32) NOT NULL DEFAULT 'NOT_INSTALLED'"
+        },
+        "enabled": {
+          "type": "BOOLEAN",
+          "declaration": "enabled BOOLEAN NOT NULL DEFAULT FALSE"
+        },
+        "revision": {
+          "type": "INT",
+          "declaration": "revision INT NOT NULL DEFAULT 0"
+        },
+        "operation_id": {
+          "type": "VARCHAR(64)",
+          "declaration": "operation_id VARCHAR(64) NULL"
+        },
+        "request_id": {
+          "type": "VARCHAR(64)",
+          "declaration": "request_id VARCHAR(64) NULL"
+        },
+        "lease_expires_at": {
+          "type": "DATETIME",
+          "declaration": "lease_expires_at DATETIME NULL"
+        },
+        "manifest_json": {
+          "type": "JSON",
+          "declaration": "manifest_json JSON NULL"
+        },
+        "manifest_sha256": {
+          "type": "CHAR(64)",
+          "declaration": "manifest_sha256 CHAR(64) NULL"
+        },
+        "error_code": {
+          "type": "VARCHAR(64)",
+          "declaration": "error_code VARCHAR(64) NULL"
+        },
+        "created_at": {
+          "type": "DATETIME",
+          "declaration": "created_at DATETIME NOT NULL"
+        },
+        "updated_at": {
+          "type": "DATETIME",
+          "declaration": "updated_at DATETIME NOT NULL"
+        }
+      },
+      "primaryKey": [
+        "id"
+      ],
+      "sourceFiles": {
+        "sql/mysql/migration-V25-local-mcp.sql": "1a148378e5ccdb5e16f2cc2d357668731cf753648025a137c04a1639dcf05cde"
+      }
+    },
+    "agent_local_mcp_audit": {
+      "columns": {
+        "id": {
+          "type": "BIGINT",
+          "declaration": "id BIGINT NOT NULL AUTO_INCREMENT"
+        },
+        "owner_user_id": {
+          "type": "BIGINT",
+          "declaration": "owner_user_id BIGINT NOT NULL"
+        },
+        "server_key": {
+          "type": "VARCHAR(32)",
+          "declaration": "server_key VARCHAR(32) NOT NULL"
+        },
+        "action_name": {
+          "type": "VARCHAR(32)",
+          "declaration": "action_name VARCHAR(32) NOT NULL"
+        },
+        "outcome": {
+          "type": "VARCHAR(32)",
+          "declaration": "outcome VARCHAR(32) NOT NULL"
+        },
+        "revision": {
+          "type": "INT",
+          "declaration": "revision INT NOT NULL"
+        },
+        "operation_id": {
+          "type": "VARCHAR(64)",
+          "declaration": "operation_id VARCHAR(64) NULL"
+        },
+        "run_id": {
+          "type": "VARCHAR(128)",
+          "declaration": "run_id VARCHAR(128) NULL"
+        },
+        "call_id": {
+          "type": "VARCHAR(160)",
+          "declaration": "call_id VARCHAR(160) NULL"
+        },
+        "detail_json": {
+          "type": "JSON",
+          "declaration": "detail_json JSON NOT NULL"
+        },
+        "created_at": {
+          "type": "DATETIME",
+          "declaration": "created_at DATETIME NOT NULL"
+        }
+      },
+      "primaryKey": [
+        "id"
+      ],
+      "sourceFiles": {
+        "sql/mysql/migration-V25-local-mcp.sql": "1a148378e5ccdb5e16f2cc2d357668731cf753648025a137c04a1639dcf05cde"
+      }
+    },
+    "agent_mcp_execution": {
+      "columns": {
+        "id": {
+          "type": "BIGINT UNSIGNED",
+          "declaration": "id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY"
+        },
+        "execution_id": {
+          "type": "VARCHAR(36)",
+          "declaration": "execution_id VARCHAR(36) COLLATE utf8mb4_bin NOT NULL"
+        },
+        "owner_user_id": {
+          "type": "BIGINT",
+          "declaration": "owner_user_id BIGINT NOT NULL"
+        },
+        "installation_id": {
+          "type": "VARCHAR(36)",
+          "declaration": "installation_id VARCHAR(36) COLLATE utf8mb4_bin NOT NULL"
+        },
+        "runtime_sha256": {
+          "type": "CHAR(64)",
+          "declaration": "runtime_sha256 CHAR(64) COLLATE utf8mb4_bin NOT NULL"
+        },
+        "pool_id": {
+          "type": "CHAR(32)",
+          "declaration": "pool_id CHAR(32) COLLATE utf8mb4_bin NOT NULL"
+        },
+        "purpose": {
+          "type": "VARCHAR(16)",
+          "declaration": "purpose VARCHAR(16) NOT NULL"
+        },
+        "state": {
+          "type": "VARCHAR(24)",
+          "declaration": "state VARCHAR(24) NOT NULL"
+        },
+        "revision": {
+          "type": "INT",
+          "declaration": "revision INT NOT NULL DEFAULT 0"
+        },
+        "exit_verified": {
+          "type": "BOOLEAN",
+          "declaration": "exit_verified BOOLEAN NOT NULL DEFAULT FALSE"
+        },
+        "cleanup_confirmed": {
+          "type": "BOOLEAN",
+          "declaration": "cleanup_confirmed BOOLEAN NOT NULL DEFAULT FALSE"
+        },
+        "run_id": {
+          "type": "VARCHAR(128)",
+          "declaration": "run_id VARCHAR(128) NULL"
+        },
+        "call_id": {
+          "type": "VARCHAR(160)",
+          "declaration": "call_id VARCHAR(160) NULL"
+        },
+        "lease_expires_at": {
+          "type": "DATETIME(6)",
+          "declaration": "lease_expires_at DATETIME(6) NOT NULL"
+        },
+        "created_at": {
+          "type": "DATETIME(6)",
+          "declaration": "created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)"
+        },
+        "updated_at": {
+          "type": "DATETIME(6)",
+          "declaration": "updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)"
+        },
+        "transport": {
+          "type": "VARCHAR(32)",
+          "declaration": "transport VARCHAR(32) NOT NULL DEFAULT 'STREAMABLE_HTTP'"
+        },
+        "image_id": {
+          "type": "VARCHAR(80)",
+          "declaration": "image_id VARCHAR(80) COLLATE utf8mb4_bin NULL"
+        }
+      },
+      "primaryKey": [
+        "id"
+      ],
+      "sourceFiles": {
+        "sql/mysql/migration-V47-mcp-execution-receipts.sql": "d829d26a464927f523e5755218bf170e9598477347cd379381569ab93f338d0e",
+        "sql/mysql/migration-V49-mcp-process-evidence.sql": "709b5be9259f1dbda73aee84d6ff9d9f0e4fe8b05a4101e03bf9a52c362688cc",
+        "sql/mysql/migration-V59-fetch-shared-images.sql": "c6d3d97caf8661fb47c725d0e90e2fe9591d76c762cd4dc78da3810e17048838"
+      }
+    },
+    "agent_mcp_execution_command": {
+      "columns": {
+        "id": {
+          "type": "BIGINT UNSIGNED",
+          "declaration": "id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY"
+        },
+        "owner_user_id": {
+          "type": "BIGINT",
+          "declaration": "owner_user_id BIGINT NOT NULL"
+        },
+        "request_id": {
+          "type": "VARCHAR(64)",
+          "declaration": "request_id VARCHAR(64) COLLATE utf8mb4_bin NOT NULL"
+        },
+        "execution_id": {
+          "type": "VARCHAR(36)",
+          "declaration": "execution_id VARCHAR(36) COLLATE utf8mb4_bin NOT NULL"
+        },
+        "request_sha256": {
+          "type": "CHAR(64)",
+          "declaration": "request_sha256 CHAR(64) COLLATE utf8mb4_bin NOT NULL"
+        },
+        "status": {
+          "type": "VARCHAR(24)",
+          "declaration": "status VARCHAR(24) NOT NULL"
+        },
+        "created_at": {
+          "type": "DATETIME(6)",
+          "declaration": "created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)"
+        },
+        "updated_at": {
+          "type": "DATETIME(6)",
+          "declaration": "updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)"
+        }
+      },
+      "primaryKey": [
+        "id"
+      ],
+      "sourceFiles": {
+        "sql/mysql/migration-V47-mcp-execution-receipts.sql": "d829d26a464927f523e5755218bf170e9598477347cd379381569ab93f338d0e"
+      }
+    },
+    "agent_mcp_install_job": {
+      "columns": {
+        "id": {
+          "type": "BIGINT",
+          "declaration": "id BIGINT NOT NULL AUTO_INCREMENT"
+        },
+        "operation_id": {
+          "type": "VARCHAR(64)",
+          "declaration": "operation_id VARCHAR(64) NOT NULL"
+        },
+        "owner_user_id": {
+          "type": "BIGINT",
+          "declaration": "owner_user_id BIGINT NOT NULL"
+        },
+        "owner_username": {
+          "type": "VARCHAR(128)",
+          "declaration": "owner_username VARCHAR(128) NOT NULL"
+        },
+        "runtime_sha256": {
+          "type": "CHAR(64)",
+          "declaration": "runtime_sha256 CHAR(64) NOT NULL"
+        },
+        "status": {
+          "type": "VARCHAR(32)",
+          "declaration": "status VARCHAR(32) NOT NULL DEFAULT 'QUEUED'"
+        },
+        "worker_token": {
+          "type": "VARCHAR(64)",
+          "declaration": "worker_token VARCHAR(64) NULL"
+        },
+        "created_at": {
+          "type": "DATETIME",
+          "declaration": "created_at DATETIME NOT NULL"
+        },
+        "updated_at": {
+          "type": "DATETIME",
+          "declaration": "updated_at DATETIME NOT NULL"
+        }
+      },
+      "primaryKey": [
+        "id"
+      ],
+      "sourceFiles": {
+        "sql/mysql/migration-V34-mcp-install-queue.sql": "11930dd2f848041c049b1cbcc50c47e1d5efb05414391b44ba96a3ac8fc82471"
+      }
+    },
+    "agent_mcp_install_worker": {
+      "columns": {
+        "id": {
+          "type": "BIGINT UNSIGNED",
+          "declaration": "id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY"
+        },
+        "owner_user_id": {
+          "type": "BIGINT",
+          "declaration": "owner_user_id BIGINT NOT NULL"
+        },
+        "installation_id": {
+          "type": "VARCHAR(36)",
+          "declaration": "installation_id VARCHAR(36) COLLATE utf8mb4_bin NOT NULL"
+        },
+        "node_sha256": {
+          "type": "CHAR(64)",
+          "declaration": "node_sha256 CHAR(64) COLLATE utf8mb4_bin NOT NULL"
+        },
+        "runtime_sha256": {
+          "type": "CHAR(64)",
+          "declaration": "runtime_sha256 CHAR(64) COLLATE utf8mb4_bin NOT NULL"
+        },
+        "controller_pid": {
+          "type": "BIGINT",
+          "declaration": "controller_pid BIGINT NOT NULL"
+        },
+        "controller_started": {
+          "type": "VARCHAR(48)",
+          "declaration": "controller_started VARCHAR(48) NOT NULL"
+        },
+        "container_id": {
+          "type": "CHAR(64)",
+          "declaration": "container_id CHAR(64) COLLATE utf8mb4_bin NULL"
+        },
+        "container_started": {
+          "type": "VARCHAR(64)",
+          "declaration": "container_started VARCHAR(64) NULL"
+        },
+        "controller_pool_id": {
+          "type": "CHAR(32)",
+          "declaration": "controller_pool_id CHAR(32) COLLATE utf8mb4_bin NULL"
+        },
+        "state": {
+          "type": "VARCHAR(24)",
+          "declaration": "state VARCHAR(24) NOT NULL"
+        },
+        "revision": {
+          "type": "INT",
+          "declaration": "revision INT NOT NULL DEFAULT 0"
+        },
+        "created_at": {
+          "type": "DATETIME(6)",
+          "declaration": "created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)"
+        },
+        "updated_at": {
+          "type": "DATETIME(6)",
+          "declaration": "updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)"
+        },
+        "writer_transport": {
+          "type": "VARCHAR(32)",
+          "declaration": "writer_transport VARCHAR(32) NOT NULL DEFAULT 'STREAMABLE_HTTP'"
+        },
+        "native_pool_id": {
+          "type": "CHAR(32)",
+          "declaration": "native_pool_id CHAR(32) COLLATE utf8mb4_bin NULL"
+        }
+      },
+      "primaryKey": [
+        "id"
+      ],
+      "sourceFiles": {
+        "sql/mysql/migration-V49-mcp-process-evidence.sql": "709b5be9259f1dbda73aee84d6ff9d9f0e4fe8b05a4101e03bf9a52c362688cc",
+        "sql/mysql/migration-V58-native-fetch-install-evidence.sql": "6b3e00cffab66afef9f0cf55f6d74e93cd0e2f27279f30cfe16b9173f75549f8"
+      }
+    },
+    "agent_memory_audit": {
+      "columns": {
+        "id": {
+          "type": "BIGINT",
+          "declaration": "id BIGINT NOT NULL AUTO_INCREMENT"
+        },
+        "owner_user_id": {
+          "type": "BIGINT",
+          "declaration": "owner_user_id BIGINT NOT NULL"
+        },
+        "action_name": {
+          "type": "VARCHAR(32)",
+          "declaration": "action_name VARCHAR(32) NOT NULL"
+        },
+        "outcome": {
+          "type": "VARCHAR(32)",
+          "declaration": "outcome VARCHAR(32) NOT NULL"
+        },
+        "request_key": {
+          "type": "VARCHAR(64)",
+          "declaration": "request_key VARCHAR(64) NULL"
+        },
+        "memory_id": {
+          "type": "VARCHAR(64)",
+          "declaration": "memory_id VARCHAR(64) NULL"
+        },
+        "content_digest": {
+          "type": "CHAR(64)",
+          "declaration": "content_digest CHAR(64) NULL"
+        },
+        "preference_revision": {
+          "type": "INT",
+          "declaration": "preference_revision INT NULL"
+        },
+        "read_enabled": {
+          "type": "BOOLEAN",
+          "declaration": "read_enabled BOOLEAN NULL"
+        },
+        "save_enabled": {
+          "type": "BOOLEAN",
+          "declaration": "save_enabled BOOLEAN NULL"
+        },
+        "created_at": {
+          "type": "DATETIME",
+          "declaration": "created_at DATETIME NOT NULL"
+        },
+        "updated_at": {
+          "type": "DATETIME",
+          "declaration": "updated_at DATETIME NOT NULL"
+        }
+      },
+      "primaryKey": [
+        "id"
+      ],
+      "sourceFiles": {
+        "sql/mysql/migration-V26-personal-memory-governance.sql": "b798647afecb1cd4edd396d6f2f86dc675021e1290a0b1548a6a4f7468ac36b2"
+      }
+    },
+    "agent_memory_preference": {
+      "columns": {
+        "owner_user_id": {
+          "type": "BIGINT",
+          "declaration": "owner_user_id BIGINT NOT NULL"
+        },
+        "read_enabled": {
+          "type": "BOOLEAN",
+          "declaration": "read_enabled BOOLEAN NOT NULL DEFAULT TRUE"
+        },
+        "save_enabled": {
+          "type": "BOOLEAN",
+          "declaration": "save_enabled BOOLEAN NOT NULL DEFAULT TRUE"
+        },
+        "revision": {
+          "type": "INT",
+          "declaration": "revision INT NOT NULL DEFAULT 0"
+        },
+        "updated_at": {
+          "type": "DATETIME",
+          "declaration": "updated_at DATETIME NOT NULL"
+        }
+      },
+      "primaryKey": [
+        "owner_user_id"
+      ],
+      "sourceFiles": {
+        "sql/mysql/migration-V26-personal-memory-governance.sql": "b798647afecb1cd4edd396d6f2f86dc675021e1290a0b1548a6a4f7468ac36b2"
+      }
+    },
+    "agent_pending_action": {
+      "columns": {
+        "action_id": {
+          "type": "VARCHAR(36)",
+          "declaration": "action_id VARCHAR(36) COLLATE utf8mb4_bin NOT NULL"
+        },
+        "user_id": {
+          "type": "BIGINT",
+          "declaration": "user_id BIGINT NOT NULL"
+        },
+        "run_id": {
+          "type": "VARCHAR(128)",
+          "declaration": "run_id VARCHAR(128) COLLATE utf8mb4_bin NOT NULL"
+        },
+        "session_id": {
+          "type": "VARCHAR(128)",
+          "declaration": "session_id VARCHAR(128) COLLATE utf8mb4_bin NOT NULL"
+        },
+        "call_id": {
+          "type": "VARCHAR(160)",
+          "declaration": "call_id VARCHAR(160) COLLATE utf8mb4_bin DEFAULT NULL"
+        },
+        "operation": {
+          "type": "VARCHAR(64)",
+          "declaration": "operation VARCHAR(64) NOT NULL"
+        },
+        "resource_id": {
+          "type": "VARCHAR(128)",
+          "declaration": "resource_id VARCHAR(128) COLLATE utf8mb4_bin NOT NULL"
+        },
+        "resource_version": {
+          "type": "VARCHAR(64)",
+          "declaration": "resource_version VARCHAR(64) NOT NULL"
+        },
+        "arguments_digest": {
+          "type": "VARCHAR(64)",
+          "declaration": "arguments_digest VARCHAR(64) NOT NULL"
+        },
+        "command_json": {
+          "type": "JSON",
+          "declaration": "command_json JSON NOT NULL"
+        },
+        "before_json": {
+          "type": "JSON",
+          "declaration": "before_json JSON NOT NULL"
+        },
+        "result_json": {
+          "type": "JSON",
+          "declaration": "result_json JSON DEFAULT NULL"
+        },
+        "policy_version": {
+          "type": "VARCHAR(64)",
+          "declaration": "policy_version VARCHAR(64) NOT NULL"
+        },
+        "status": {
+          "type": "VARCHAR(24)",
+          "declaration": "status VARCHAR(24) NOT NULL"
+        },
+        "version": {
+          "type": "BIGINT",
+          "declaration": "version BIGINT NOT NULL DEFAULT 1"
+        },
+        "reason_code": {
+          "type": "VARCHAR(64)",
+          "declaration": "reason_code VARCHAR(64) DEFAULT NULL"
+        },
+        "created_at": {
+          "type": "DATETIME(6)",
+          "declaration": "created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)"
+        },
+        "expires_at": {
+          "type": "DATETIME(6)",
+          "declaration": "expires_at DATETIME(6) NOT NULL"
+        },
+        "decided_at": {
+          "type": "DATETIME(6)",
+          "declaration": "decided_at DATETIME(6) DEFAULT NULL"
+        }
+      },
+      "primaryKey": [
+        "action_id"
+      ],
+      "sourceFiles": {
+        "sql/mysql/migration-V19-agent-confirmation.sql": "3c7c3ace00cf5ab14d2510c5bfb273ed5278809e5f4fbfdbf6786e5887e71e07"
+      }
+    },
+    "agent_run": {
+      "columns": {
+        "id": {
+          "type": "BIGINT UNSIGNED",
+          "declaration": "id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT"
+        },
+        "run_id": {
+          "type": "VARCHAR(36)",
+          "declaration": "run_id VARCHAR(36) COLLATE utf8mb4_bin NOT NULL"
+        },
+        "user_id": {
+          "type": "BIGINT",
+          "declaration": "user_id BIGINT NOT NULL"
+        },
+        "session_id": {
+          "type": "VARCHAR(128)",
+          "declaration": "session_id VARCHAR(128) COLLATE utf8mb4_bin NOT NULL"
+        },
+        "main_agent": {
+          "type": "VARCHAR(64)",
+          "declaration": "main_agent VARCHAR(64) COLLATE utf8mb4_bin NOT NULL"
+        },
+        "entry_point": {
+          "type": "VARCHAR(16)",
+          "declaration": "entry_point VARCHAR(16) COLLATE utf8mb4_bin NOT NULL"
+        },
+        "request_key": {
+          "type": "VARCHAR(128)",
+          "declaration": "request_key VARCHAR(128) COLLATE utf8mb4_bin NOT NULL"
+        },
+        "status": {
+          "type": "VARCHAR(16)",
+          "declaration": "status VARCHAR(16) NOT NULL"
+        },
+        "default_model": {
+          "type": "VARCHAR(160)",
+          "declaration": "default_model VARCHAR(160) NOT NULL"
+        },
+        "policy_version": {
+          "type": "VARCHAR(64)",
+          "declaration": "policy_version VARCHAR(64) NOT NULL"
+        },
+        "instance_id": {
+          "type": "VARCHAR(36)",
+          "declaration": "instance_id VARCHAR(36) NOT NULL"
+        },
+        "active_slot": {
+          "type": "TINYINT",
+          "declaration": "active_slot TINYINT NULL"
+        },
+        "last_sequence": {
+          "type": "BIGINT",
+          "declaration": "last_sequence BIGINT NOT NULL DEFAULT 0"
+        },
+        "started_at": {
+          "type": "DATETIME(6)",
+          "declaration": "started_at DATETIME(6) NOT NULL"
+        },
+        "ended_at": {
+          "type": "DATETIME(6)",
+          "declaration": "ended_at DATETIME(6) NULL"
+        },
+        "heartbeat_at": {
+          "type": "DATETIME(6)",
+          "declaration": "heartbeat_at DATETIME(6) NOT NULL"
+        },
+        "lease_expires_at": {
+          "type": "DATETIME(6)",
+          "declaration": "lease_expires_at DATETIME(6) NOT NULL"
+        }
+      },
+      "primaryKey": [
+        "id"
+      ],
+      "sourceFiles": {
+        "sql/mysql/migration-V16-agentscope-run-journal.sql": "3481853ea3eab9d031eaad66c5a8e6f277d38df4c79fe8cbd0cdf76015beab83"
+      }
+    },
+    "agent_run_event": {
+      "columns": {
+        "id": {
+          "type": "BIGINT UNSIGNED",
+          "declaration": "id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT"
+        },
+        "run_id": {
+          "type": "VARCHAR(36)",
+          "declaration": "run_id VARCHAR(36) COLLATE utf8mb4_bin NOT NULL"
+        },
+        "user_id": {
+          "type": "BIGINT",
+          "declaration": "user_id BIGINT NOT NULL"
+        },
+        "sequence_no": {
+          "type": "BIGINT",
+          "declaration": "sequence_no BIGINT NOT NULL"
+        },
+        "event_type": {
+          "type": "VARCHAR(64)",
+          "declaration": "event_type VARCHAR(64) NOT NULL"
+        },
+        "occurred_at": {
+          "type": "DATETIME(6)",
+          "declaration": "occurred_at DATETIME(6) NOT NULL"
+        },
+        "payload_json": {
+          "type": "JSON",
+          "declaration": "payload_json JSON NOT NULL"
+        }
+      },
+      "primaryKey": [
+        "id"
+      ],
+      "sourceFiles": {
+        "sql/mysql/migration-V16-agentscope-run-journal.sql": "3481853ea3eab9d031eaad66c5a8e6f277d38df4c79fe8cbd0cdf76015beab83"
+      }
+    },
+    "agent_session_fork": {
+      "columns": {
+        "id": {
+          "type": "BIGINT UNSIGNED",
+          "declaration": "id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY"
+        },
+        "user_id": {
+          "type": "BIGINT",
+          "declaration": "user_id BIGINT NOT NULL"
+        },
+        "request_id": {
+          "type": "VARCHAR(128)",
+          "declaration": "request_id VARCHAR(128) COLLATE utf8mb4_bin NOT NULL"
+        },
+        "source_session_id": {
+          "type": "VARCHAR(128)",
+          "declaration": "source_session_id VARCHAR(128) COLLATE utf8mb4_bin NOT NULL"
+        },
+        "through_message_id": {
+          "type": "BIGINT",
+          "declaration": "through_message_id BIGINT NOT NULL"
+        },
+        "fork_session_id": {
+          "type": "VARCHAR(128)",
+          "declaration": "fork_session_id VARCHAR(128) COLLATE utf8mb4_bin NOT NULL"
+        }
+      },
+      "primaryKey": [
+        "id"
+      ],
+      "sourceFiles": {
+        "sql/mysql/migration-V38-agent-workspace.sql": "131175e320d70761f6e0a36ec588c151c2291f907c0572528b46d3f424721558"
+      }
+    },
+    "agent_skill_audit": {
+      "columns": {
+        "id": {
+          "type": "BIGINT",
+          "declaration": "id BIGINT NOT NULL AUTO_INCREMENT"
+        },
+        "skill_id": {
+          "type": "VARCHAR(64)",
+          "declaration": "skill_id VARCHAR(64) NOT NULL"
+        },
+        "version_no": {
+          "type": "INT",
+          "declaration": "version_no INT NOT NULL"
+        },
+        "actor_user_id": {
+          "type": "BIGINT",
+          "declaration": "actor_user_id BIGINT NOT NULL"
+        },
+        "action_name": {
+          "type": "VARCHAR(32)",
+          "declaration": "action_name VARCHAR(32) NOT NULL"
+        },
+        "revision": {
+          "type": "INT",
+          "declaration": "revision INT NOT NULL"
+        },
+        "content_sha256": {
+          "type": "CHAR(64)",
+          "declaration": "content_sha256 CHAR(64) NOT NULL"
+        },
+        "reason": {
+          "type": "VARCHAR(500)",
+          "declaration": "reason VARCHAR(500) NULL"
+        },
+        "run_id": {
+          "type": "VARCHAR(128)",
+          "declaration": "run_id VARCHAR(128) NULL"
+        },
+        "call_id": {
+          "type": "VARCHAR(160)",
+          "declaration": "call_id VARCHAR(160) NULL"
+        },
+        "created_at": {
+          "type": "DATETIME",
+          "declaration": "created_at DATETIME NOT NULL"
+        }
+      },
+      "primaryKey": [
+        "id"
+      ],
+      "sourceFiles": {
+        "sql/mysql/migration-V23-agent-skill-evolution.sql": "a380d14b129469deb4a055b311a4587cb9e0a59880ed4de61f3b968fb9faf3dd"
+      }
+    },
+    "agent_skill_download": {
+      "columns": {
+        "id": {
+          "type": "BIGINT",
+          "declaration": "id BIGINT NOT NULL AUTO_INCREMENT"
+        },
+        "download_id": {
+          "type": "VARCHAR(64)",
+          "declaration": "download_id VARCHAR(64) NOT NULL"
+        },
+        "owner_user_id": {
+          "type": "BIGINT",
+          "declaration": "owner_user_id BIGINT NOT NULL"
+        },
+        "request_id": {
+          "type": "VARCHAR(64)",
+          "declaration": "request_id VARCHAR(64) NOT NULL"
+        },
+        "request_sha256": {
+          "type": "CHAR(64)",
+          "declaration": "request_sha256 CHAR(64) NOT NULL"
+        },
+        "source_url": {
+          "type": "VARCHAR(1000)",
+          "declaration": "source_url VARCHAR(1000) NOT NULL"
+        },
+        "target_role": {
+          "type": "VARCHAR(32)",
+          "declaration": "target_role VARCHAR(32) NOT NULL"
+        },
+        "status": {
+          "type": "VARCHAR(32)",
+          "declaration": "status VARCHAR(32) NOT NULL"
+        },
+        "manifest_json": {
+          "type": "JSON",
+          "declaration": "manifest_json JSON NULL"
+        },
+        "manifest_sha256": {
+          "type": "CHAR(64)",
+          "declaration": "manifest_sha256 CHAR(64) NULL"
+        },
+        "skill_id": {
+          "type": "VARCHAR(64)",
+          "declaration": "skill_id VARCHAR(64) NULL"
+        },
+        "error_code": {
+          "type": "VARCHAR(80)",
+          "declaration": "error_code VARCHAR(80) NULL"
+        },
+        "created_at": {
+          "type": "DATETIME",
+          "declaration": "created_at DATETIME NOT NULL"
+        },
+        "updated_at": {
+          "type": "DATETIME",
+          "declaration": "updated_at DATETIME NOT NULL"
+        },
+        "target_skill_id": {
+          "type": "VARCHAR(64)",
+          "declaration": "target_skill_id VARCHAR(64) NULL"
+        },
+        "expected_skill_revision": {
+          "type": "INT",
+          "declaration": "expected_skill_revision INT NULL"
+        }
+      },
+      "primaryKey": [
+        "id"
+      ],
+      "sourceFiles": {
+        "sql/mysql/migration-V27-linked-skill-download.sql": "ceffafcd61d30a587399e8f79b96ac8f625b9496f22fb7745945cfac70f90b9d",
+        "sql/mysql/migration-V28-linked-skill-upgrade.sql": "2dfc6e14cb94aa9ecf918ba7766b19be95079de8994b488200227dd663f3b797"
+      }
+    },
+    "agent_skill_download_event": {
+      "columns": {
+        "id": {
+          "type": "BIGINT UNSIGNED",
+          "declaration": "id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY"
+        },
+        "owner_user_id": {
+          "type": "BIGINT",
+          "declaration": "owner_user_id BIGINT NOT NULL"
+        },
+        "download_id": {
+          "type": "VARCHAR(64)",
+          "declaration": "download_id VARCHAR(64) COLLATE utf8mb4_bin NOT NULL"
+        },
+        "action": {
+          "type": "VARCHAR(40)",
+          "declaration": "action VARCHAR(40) NOT NULL"
+        },
+        "status": {
+          "type": "VARCHAR(24)",
+          "declaration": "status VARCHAR(24) NOT NULL"
+        },
+        "created_at": {
+          "type": "DATETIME(6)",
+          "declaration": "created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)"
+        }
+      },
+      "primaryKey": [
+        "id"
+      ],
+      "sourceFiles": {
+        "sql/mysql/migration-V46-skill-download-leases.sql": "44617c8656ad6567510cf1794d5464d454c4e1d3da7f3536a0c70c4d9eed5e31"
+      }
+    },
+    "agent_skill_eval": {
+      "columns": {
+        "id": {
+          "type": "BIGINT",
+          "declaration": "id BIGINT NOT NULL AUTO_INCREMENT"
+        },
+        "skill_id": {
+          "type": "VARCHAR(64)",
+          "declaration": "skill_id VARCHAR(64) NOT NULL"
+        },
+        "version_no": {
+          "type": "INT",
+          "declaration": "version_no INT NOT NULL"
+        },
+        "content_sha256": {
+          "type": "CHAR(64)",
+          "declaration": "content_sha256 CHAR(64) NOT NULL"
+        },
+        "suite_version": {
+          "type": "VARCHAR(64)",
+          "declaration": "suite_version VARCHAR(64) NOT NULL"
+        },
+        "passed": {
+          "type": "BOOLEAN",
+          "declaration": "passed BOOLEAN NOT NULL"
+        },
+        "result_json": {
+          "type": "JSON",
+          "declaration": "result_json JSON NOT NULL"
+        },
+        "actor_user_id": {
+          "type": "BIGINT",
+          "declaration": "actor_user_id BIGINT NOT NULL"
+        },
+        "created_at": {
+          "type": "DATETIME",
+          "declaration": "created_at DATETIME NOT NULL"
+        }
+      },
+      "primaryKey": [
+        "id"
+      ],
+      "sourceFiles": {
+        "sql/mysql/migration-V23-agent-skill-evolution.sql": "a380d14b129469deb4a055b311a4587cb9e0a59880ed4de61f3b968fb9faf3dd"
+      }
+    },
+    "agent_skill_import": {
+      "columns": {
+        "id": {
+          "type": "BIGINT",
+          "declaration": "id BIGINT NOT NULL AUTO_INCREMENT"
+        },
+        "import_id": {
+          "type": "VARCHAR(64)",
+          "declaration": "import_id VARCHAR(64) NOT NULL"
+        },
+        "owner_user_id": {
+          "type": "BIGINT",
+          "declaration": "owner_user_id BIGINT NOT NULL"
+        },
+        "request_id": {
+          "type": "VARCHAR(64)",
+          "declaration": "request_id VARCHAR(64) NOT NULL"
+        },
+        "request_sha256": {
+          "type": "CHAR(64)",
+          "declaration": "request_sha256 CHAR(64) NOT NULL"
+        },
+        "payload_json": {
+          "type": "JSON",
+          "declaration": "payload_json JSON NOT NULL"
+        },
+        "payload_sha256": {
+          "type": "CHAR(64)",
+          "declaration": "payload_sha256 CHAR(64) NOT NULL"
+        },
+        "created_at": {
+          "type": "DATETIME",
+          "declaration": "created_at DATETIME NOT NULL"
+        }
+      },
+      "primaryKey": [
+        "id"
+      ],
+      "sourceFiles": {
+        "sql/mysql/migration-V24-external-skill-import.sql": "e842cbbdef5217b2c87a99ed423698c419c1260111ab6639c2ddbbe6acdf9091"
+      }
+    },
+    "agent_skill_source": {
+      "columns": {
+        "id": {
+          "type": "BIGINT",
+          "declaration": "id BIGINT NOT NULL AUTO_INCREMENT"
+        },
+        "user_id": {
+          "type": "BIGINT",
+          "declaration": "user_id BIGINT NOT NULL"
+        },
+        "run_id": {
+          "type": "VARCHAR(128)",
+          "declaration": "run_id VARCHAR(128) NOT NULL"
+        },
+        "evidence_json": {
+          "type": "JSON",
+          "declaration": "evidence_json JSON NOT NULL"
+        },
+        "evidence_sha256": {
+          "type": "CHAR(64)",
+          "declaration": "evidence_sha256 CHAR(64) NOT NULL"
+        },
+        "captured_at": {
+          "type": "DATETIME",
+          "declaration": "captured_at DATETIME NOT NULL"
+        }
+      },
+      "primaryKey": [
+        "id"
+      ],
+      "sourceFiles": {
+        "sql/mysql/migration-V23-agent-skill-evolution.sql": "a380d14b129469deb4a055b311a4587cb9e0a59880ed4de61f3b968fb9faf3dd"
+      }
+    },
+    "agent_skill_storage_command": {
+      "columns": {
+        "id": {
+          "type": "BIGINT",
+          "declaration": "id BIGINT NOT NULL AUTO_INCREMENT"
+        },
+        "owner_user_id": {
+          "type": "BIGINT",
+          "declaration": "owner_user_id BIGINT NOT NULL"
+        },
+        "request_id": {
+          "type": "VARCHAR(64)",
+          "declaration": "request_id VARCHAR(64) NOT NULL"
+        },
+        "request_sha256": {
+          "type": "CHAR(64)",
+          "declaration": "request_sha256 CHAR(64) NOT NULL"
+        },
+        "download_id": {
+          "type": "VARCHAR(64)",
+          "declaration": "download_id VARCHAR(64) NOT NULL"
+        },
+        "status": {
+          "type": "VARCHAR(32)",
+          "declaration": "status VARCHAR(32) NOT NULL"
+        },
+        "removed_bytes": {
+          "type": "BIGINT",
+          "declaration": "removed_bytes BIGINT NOT NULL DEFAULT 0"
+        },
+        "removed_files": {
+          "type": "INT",
+          "declaration": "removed_files INT NOT NULL DEFAULT 0"
+        },
+        "error_code": {
+          "type": "VARCHAR(80)",
+          "declaration": "error_code VARCHAR(80) NULL"
+        },
+        "created_at": {
+          "type": "DATETIME",
+          "declaration": "created_at DATETIME NOT NULL"
+        },
+        "updated_at": {
+          "type": "DATETIME",
+          "declaration": "updated_at DATETIME NOT NULL"
+        }
+      },
+      "primaryKey": [
+        "id"
+      ],
+      "sourceFiles": {
+        "sql/mysql/migration-V29-skill-storage-cleanup.sql": "85b8b027c0cc15e1e5fb060a488c73db296ea154b2c5842b681a81c1f023c67e"
+      }
+    },
+    "agent_skill_version": {
+      "columns": {
+        "id": {
+          "type": "BIGINT",
+          "declaration": "id BIGINT NOT NULL AUTO_INCREMENT"
+        },
+        "skill_id": {
+          "type": "VARCHAR(64)",
+          "declaration": "skill_id VARCHAR(64) NOT NULL"
+        },
+        "version_no": {
+          "type": "INT",
+          "declaration": "version_no INT NOT NULL"
+        },
+        "owner_user_id": {
+          "type": "BIGINT",
+          "declaration": "owner_user_id BIGINT NOT NULL"
+        },
+        "request_id": {
+          "type": "VARCHAR(64)",
+          "declaration": "request_id VARCHAR(64) NOT NULL"
+        },
+        "request_sha256": {
+          "type": "CHAR(64)",
+          "declaration": "request_sha256 CHAR(64) NOT NULL"
+        },
+        "description_text": {
+          "type": "VARCHAR(300)",
+          "declaration": "description_text VARCHAR(300) NOT NULL"
+        },
+        "instructions_text": {
+          "type": "TEXT",
+          "declaration": "instructions_text TEXT NOT NULL"
+        },
+        "tool_names_json": {
+          "type": "JSON",
+          "declaration": "tool_names_json JSON NOT NULL"
+        },
+        "source_run_id": {
+          "type": "VARCHAR(128)",
+          "declaration": "source_run_id VARCHAR(128) NULL"
+        },
+        "evidence_json": {
+          "type": "JSON",
+          "declaration": "evidence_json JSON NOT NULL"
+        },
+        "content_sha256": {
+          "type": "CHAR(64)",
+          "declaration": "content_sha256 CHAR(64) NOT NULL"
+        },
+        "status": {
+          "type": "VARCHAR(16)",
+          "declaration": "status VARCHAR(16) NOT NULL"
+        },
+        "reviewer_user_id": {
+          "type": "BIGINT",
+          "declaration": "reviewer_user_id BIGINT NULL"
+        },
+        "review_reason": {
+          "type": "VARCHAR(500)",
+          "declaration": "review_reason VARCHAR(500) NULL"
+        },
+        "created_at": {
+          "type": "DATETIME",
+          "declaration": "created_at DATETIME NOT NULL"
+        },
+        "submitted_at": {
+          "type": "DATETIME",
+          "declaration": "submitted_at DATETIME NULL"
+        },
+        "reviewed_at": {
+          "type": "DATETIME",
+          "declaration": "reviewed_at DATETIME NULL"
+        },
+        "source_type": {
+          "type": "VARCHAR(32)",
+          "declaration": "source_type VARCHAR(32) NOT NULL DEFAULT 'RUN'"
+        },
+        "source_import_id": {
+          "type": "VARCHAR(64)",
+          "declaration": "source_import_id VARCHAR(64) NULL"
+        }
+      },
+      "primaryKey": [
+        "id"
+      ],
+      "sourceFiles": {
+        "sql/mysql/migration-V23-agent-skill-evolution.sql": "a380d14b129469deb4a055b311a4587cb9e0a59880ed4de61f3b968fb9faf3dd",
+        "sql/mysql/migration-V24-external-skill-import.sql": "e842cbbdef5217b2c87a99ed423698c419c1260111ab6639c2ddbbe6acdf9091"
+      }
+    },
+    "agent_workbench_audit": {
+      "columns": {
+        "id": {
+          "type": "BIGINT UNSIGNED",
+          "declaration": "id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY"
+        },
+        "user_id": {
+          "type": "BIGINT",
+          "declaration": "user_id BIGINT NOT NULL"
+        },
+        "session_id": {
+          "type": "VARCHAR(128)",
+          "declaration": "session_id VARCHAR(128) COLLATE utf8mb4_bin NOT NULL"
+        },
+        "item_id": {
+          "type": "VARCHAR(64)",
+          "declaration": "item_id VARCHAR(64) COLLATE utf8mb4_bin NOT NULL"
+        },
+        "action": {
+          "type": "VARCHAR(48)",
+          "declaration": "action VARCHAR(48) NOT NULL"
+        },
+        "revision": {
+          "type": "BIGINT",
+          "declaration": "revision BIGINT NOT NULL"
+        },
+        "payload_sha256": {
+          "type": "CHAR(64)",
+          "declaration": "payload_sha256 CHAR(64) NOT NULL"
+        },
+        "created_at": {
+          "type": "DATETIME(6)",
+          "declaration": "created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)"
+        }
+      },
+      "primaryKey": [
+        "id"
+      ],
+      "sourceFiles": {
+        "sql/mysql/migration-V37-agent-workbench.sql": "d93bd7f07eea68c44a0fd78cd7c91d267e9f1d35a22d4b6e08b592303b36f063"
+      }
+    },
+    "agent_workbench_item": {
+      "columns": {
+        "id": {
+          "type": "BIGINT UNSIGNED",
+          "declaration": "id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY"
+        },
+        "item_id": {
+          "type": "VARCHAR(64)",
+          "declaration": "item_id VARCHAR(64) COLLATE utf8mb4_bin NOT NULL"
+        },
+        "user_id": {
+          "type": "BIGINT",
+          "declaration": "user_id BIGINT NOT NULL"
+        },
+        "session_id": {
+          "type": "VARCHAR(128)",
+          "declaration": "session_id VARCHAR(128) COLLATE utf8mb4_bin NOT NULL"
+        },
+        "kind": {
+          "type": "VARCHAR(32)",
+          "declaration": "kind VARCHAR(32) NOT NULL"
+        },
+        "status": {
+          "type": "VARCHAR(40)",
+          "declaration": "status VARCHAR(40) NOT NULL"
+        },
+        "revision": {
+          "type": "BIGINT",
+          "declaration": "revision BIGINT NOT NULL DEFAULT 0"
+        },
+        "payload": {
+          "type": "LONGTEXT",
+          "declaration": "payload LONGTEXT NOT NULL"
+        },
+        "created_at": {
+          "type": "DATETIME(6)",
+          "declaration": "created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)"
+        },
+        "updated_at": {
+          "type": "DATETIME(6)",
+          "declaration": "updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)"
+        }
+      },
+      "primaryKey": [
+        "id"
+      ],
+      "sourceFiles": {
+        "sql/mysql/migration-V37-agent-workbench.sql": "d93bd7f07eea68c44a0fd78cd7c91d267e9f1d35a22d4b6e08b592303b36f063"
+      }
+    },
+    "agent_workbench_owner": {
+      "columns": {
+        "user_id": {
+          "type": "BIGINT",
+          "declaration": "user_id BIGINT NOT NULL PRIMARY KEY"
+        }
+      },
+      "primaryKey": [
+        "user_id"
+      ],
+      "sourceFiles": {
+        "sql/mysql/migration-V37-agent-workbench.sql": "d93bd7f07eea68c44a0fd78cd7c91d267e9f1d35a22d4b6e08b592303b36f063"
+      }
+    },
+    "agent_workbench_request": {
+      "columns": {
+        "id": {
+          "type": "BIGINT UNSIGNED",
+          "declaration": "id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY"
+        },
+        "user_id": {
+          "type": "BIGINT",
+          "declaration": "user_id BIGINT NOT NULL"
+        },
+        "request_id": {
+          "type": "VARCHAR(128)",
+          "declaration": "request_id VARCHAR(128) COLLATE utf8mb4_bin NOT NULL"
+        },
+        "request_sha256": {
+          "type": "CHAR(64)",
+          "declaration": "request_sha256 CHAR(64) NOT NULL"
+        },
+        "result_json": {
+          "type": "LONGTEXT",
+          "declaration": "result_json LONGTEXT NOT NULL"
+        }
+      },
+      "primaryKey": [
+        "id"
+      ],
+      "sourceFiles": {
+        "sql/mysql/migration-V37-agent-workbench.sql": "d93bd7f07eea68c44a0fd78cd7c91d267e9f1d35a22d4b6e08b592303b36f063"
+      }
+    },
+    "agent_workbench_sdk_state": {
+      "columns": {
+        "id": {
+          "type": "BIGINT UNSIGNED",
+          "declaration": "id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY"
+        },
+        "user_id": {
+          "type": "VARCHAR(32)",
+          "declaration": "user_id VARCHAR(32) COLLATE utf8mb4_bin NOT NULL"
+        },
+        "session_id": {
+          "type": "VARCHAR(160)",
+          "declaration": "session_id VARCHAR(160) COLLATE utf8mb4_bin NOT NULL"
+        },
+        "state_key": {
+          "type": "VARCHAR(128)",
+          "declaration": "state_key VARCHAR(128) COLLATE utf8mb4_bin NOT NULL"
+        },
+        "revision": {
+          "type": "BIGINT",
+          "declaration": "revision BIGINT NOT NULL"
+        },
+        "state_json": {
+          "type": "LONGTEXT",
+          "declaration": "state_json LONGTEXT NOT NULL"
+        },
+        "updated_at": {
+          "type": "DATETIME(6)",
+          "declaration": "updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)"
+        }
+      },
+      "primaryKey": [
+        "id"
+      ],
+      "sourceFiles": {
+        "sql/mysql/migration-V37-agent-workbench.sql": "d93bd7f07eea68c44a0fd78cd7c91d267e9f1d35a22d4b6e08b592303b36f063"
+      }
+    },
+    "agent_workspace_audit": {
+      "columns": {
+        "id": {
+          "type": "BIGINT UNSIGNED",
+          "declaration": "id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY"
+        },
+        "user_id": {
+          "type": "BIGINT",
+          "declaration": "user_id BIGINT NOT NULL"
+        },
+        "session_id": {
+          "type": "VARCHAR(128)",
+          "declaration": "session_id VARCHAR(128) COLLATE utf8mb4_bin NOT NULL"
+        },
+        "resource_id": {
+          "type": "VARCHAR(128)",
+          "declaration": "resource_id VARCHAR(128) COLLATE utf8mb4_bin NOT NULL"
+        },
+        "action": {
+          "type": "VARCHAR(32)",
+          "declaration": "action VARCHAR(32) NOT NULL"
+        },
+        "content_sha256": {
+          "type": "CHAR(64)",
+          "declaration": "content_sha256 CHAR(64) NOT NULL"
+        },
+        "created_at": {
+          "type": "DATETIME(6)",
+          "declaration": "created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)"
+        }
+      },
+      "primaryKey": [
+        "id"
+      ],
+      "sourceFiles": {
+        "sql/mysql/migration-V38-agent-workspace.sql": "131175e320d70761f6e0a36ec588c151c2291f907c0572528b46d3f424721558"
+      }
+    },
+    "agent_workspace_business_ref": {
+      "columns": {
+        "id": {
+          "type": "BIGINT UNSIGNED",
+          "declaration": "id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY"
+        },
+        "user_id": {
+          "type": "BIGINT",
+          "declaration": "user_id BIGINT NOT NULL"
+        },
+        "session_id": {
+          "type": "VARCHAR(128)",
+          "declaration": "session_id VARCHAR(128) COLLATE utf8mb4_bin NOT NULL"
+        },
+        "kind": {
+          "type": "VARCHAR(20)",
+          "declaration": "kind VARCHAR(20) NOT NULL"
+        },
+        "resource_id": {
+          "type": "VARCHAR(128)",
+          "declaration": "resource_id VARCHAR(128) COLLATE utf8mb4_bin NOT NULL"
+        },
+        "created_at": {
+          "type": "DATETIME(6)",
+          "declaration": "created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)"
+        }
+      },
+      "primaryKey": [
+        "id"
+      ],
+      "sourceFiles": {
+        "sql/mysql/migration-V38-agent-workspace.sql": "131175e320d70761f6e0a36ec588c151c2291f907c0572528b46d3f424721558"
+      }
+    },
+    "agent_workspace_file": {
+      "columns": {
+        "id": {
+          "type": "BIGINT UNSIGNED",
+          "declaration": "id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY"
+        },
+        "file_id": {
+          "type": "VARCHAR(36)",
+          "declaration": "file_id VARCHAR(36) COLLATE utf8mb4_bin NOT NULL"
+        },
+        "user_id": {
+          "type": "BIGINT",
+          "declaration": "user_id BIGINT NOT NULL"
+        },
+        "request_id": {
+          "type": "VARCHAR(128)",
+          "declaration": "request_id VARCHAR(128) COLLATE utf8mb4_bin NOT NULL"
+        },
+        "filename": {
+          "type": "VARCHAR(240)",
+          "declaration": "filename VARCHAR(240) NOT NULL"
+        },
+        "content_type": {
+          "type": "VARCHAR(100)",
+          "declaration": "content_type VARCHAR(100) NOT NULL"
+        },
+        "byte_length": {
+          "type": "BIGINT",
+          "declaration": "byte_length BIGINT NOT NULL"
+        },
+        "sha256": {
+          "type": "CHAR(64)",
+          "declaration": "sha256 CHAR(64) NOT NULL"
+        },
+        "folder": {
+          "type": "VARCHAR(32)",
+          "declaration": "folder VARCHAR(32) NOT NULL"
+        },
+        "created_at": {
+          "type": "DATETIME(6)",
+          "declaration": "created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)"
+        }
+      },
+      "primaryKey": [
+        "id"
+      ],
+      "sourceFiles": {
+        "sql/mysql/migration-V38-agent-workspace.sql": "131175e320d70761f6e0a36ec588c151c2291f907c0572528b46d3f424721558"
+      }
+    },
+    "agent_workspace_file_ref": {
+      "columns": {
+        "id": {
+          "type": "BIGINT UNSIGNED",
+          "declaration": "id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY"
+        },
+        "user_id": {
+          "type": "BIGINT",
+          "declaration": "user_id BIGINT NOT NULL"
+        },
+        "session_id": {
+          "type": "VARCHAR(128)",
+          "declaration": "session_id VARCHAR(128) COLLATE utf8mb4_bin NOT NULL"
+        },
+        "file_id": {
+          "type": "VARCHAR(36)",
+          "declaration": "file_id VARCHAR(36) COLLATE utf8mb4_bin NOT NULL"
+        },
+        "created_at": {
+          "type": "DATETIME(6)",
+          "declaration": "created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)"
+        }
+      },
+      "primaryKey": [
+        "id"
+      ],
+      "sourceFiles": {
+        "sql/mysql/migration-V38-agent-workspace.sql": "131175e320d70761f6e0a36ec588c151c2291f907c0572528b46d3f424721558"
+      }
+    },
+    "agent_workspace_owner": {
+      "columns": {
+        "user_id": {
+          "type": "BIGINT",
+          "declaration": "user_id BIGINT NOT NULL PRIMARY KEY"
+        }
+      },
+      "primaryKey": [
+        "user_id"
+      ],
+      "sourceFiles": {
+        "sql/mysql/migration-V38-agent-workspace.sql": "131175e320d70761f6e0a36ec588c151c2291f907c0572528b46d3f424721558"
+      }
+    },
+    "agent_workspace_request": {
+      "columns": {
+        "id": {
+          "type": "BIGINT UNSIGNED",
+          "declaration": "id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY"
+        },
+        "user_id": {
+          "type": "BIGINT",
+          "declaration": "user_id BIGINT NOT NULL"
+        },
+        "request_id": {
+          "type": "VARCHAR(128)",
+          "declaration": "request_id VARCHAR(128) COLLATE utf8mb4_bin NOT NULL"
+        },
+        "signature": {
+          "type": "CHAR(64)",
+          "declaration": "signature CHAR(64) NOT NULL"
+        }
+      },
+      "primaryKey": [
+        "id"
+      ],
+      "sourceFiles": {
+        "sql/mysql/migration-V38-agent-workspace.sql": "131175e320d70761f6e0a36ec588c151c2291f907c0572528b46d3f424721558"
+      }
+    },
+    "chat_pending_action": {
+      "columns": {
+        "id": {
+          "type": "BIGINT",
+          "declaration": "`id` BIGINT NOT NULL AUTO_INCREMENT COMMENT '\u4e3b\u952eID'"
+        },
+        "action_id": {
+          "type": "VARCHAR(64)",
+          "declaration": "`action_id` VARCHAR(64) NOT NULL COMMENT '\u52a8\u4f5c\u7f16\u53f7'"
+        },
+        "session_id": {
+          "type": "VARCHAR(64)",
+          "declaration": "`session_id` VARCHAR(64) NOT NULL COMMENT '\u4f1a\u8bdd\u7f16\u53f7\uff08\u5916\u952e -> chat_session.session_id\uff09'"
+        },
+        "action_type": {
+          "type": "VARCHAR(64)",
+          "declaration": "`action_type` VARCHAR(64) NOT NULL COMMENT '\u52a8\u4f5c\u7c7b\u578b'"
+        },
+        "action_payload_json": {
+          "type": "LONGTEXT",
+          "declaration": "`action_payload_json` LONGTEXT NOT NULL COMMENT '\u52a8\u4f5c\u8f7d\u8377'"
+        },
+        "status": {
+          "type": "VARCHAR(32)",
+          "declaration": "`status` VARCHAR(32) NOT NULL DEFAULT 'PENDING' COMMENT '\u52a8\u4f5c\u72b6\u6001'"
+        },
+        "created_at": {
+          "type": "DATETIME",
+          "declaration": "`created_at` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '\u521b\u5efa\u65f6\u95f4'"
+        },
+        "confirmed_at": {
+          "type": "DATETIME",
+          "declaration": "`confirmed_at` DATETIME DEFAULT NULL COMMENT '\u786e\u8ba4\u65f6\u95f4'"
+        },
+        "error_message": {
+          "type": "VARCHAR(500)",
+          "declaration": "`error_message` VARCHAR(500) DEFAULT NULL COMMENT '\u52a8\u4f5c\u5931\u8d25\u6458\u8981'"
+        }
+      },
+      "primaryKey": [
+        "id"
+      ],
+      "sourceFiles": {
+        "sql/mysql/migration-V14-security-reliability-hardening.sql": "00a62a3907d792f729d67c9ff9681ee6c3f0294391ad4b4e0a026c5bfe660bd5",
+        "sql/mysql/migration-V2.sql": "279be55c044056290768428dbaf58331a8eb70e44f0fae945c88d9a8f15c46cc",
+        "sql/mysql/schema.sql": "4621daed832ed538fb8646804d12becd8e87b7026cbf45782f693073d76ce001"
+      }
+    },
+    "detection_report_agent_origin": {
+      "columns": {
+        "actor_user_id": {
+          "type": "BIGINT",
+          "declaration": "actor_user_id BIGINT NOT NULL"
+        },
+        "request_id": {
+          "type": "VARCHAR(64)",
+          "declaration": "request_id VARCHAR(64) NOT NULL"
+        },
+        "report_id": {
+          "type": "VARCHAR(64)",
+          "declaration": "report_id VARCHAR(64) NOT NULL"
+        },
+        "report_version": {
+          "type": "INT",
+          "declaration": "report_version INT NOT NULL"
+        },
+        "run_id": {
+          "type": "VARCHAR(128)",
+          "declaration": "run_id VARCHAR(128) NOT NULL"
+        },
+        "call_id": {
+          "type": "VARCHAR(160)",
+          "declaration": "call_id VARCHAR(160) NOT NULL"
+        },
+        "tool_name": {
+          "type": "VARCHAR(64)",
+          "declaration": "tool_name VARCHAR(64) NOT NULL"
+        },
+        "created_at": {
+          "type": "DATETIME",
+          "declaration": "created_at DATETIME NOT NULL"
+        }
+      },
+      "primaryKey": [
+        "actor_user_id",
+        "request_id"
+      ],
+      "sourceFiles": {
+        "sql/mysql/migration-V22-agent-report-origin.sql": "6508224ddd9afe832021c9da66ee8bf54161ae3c17f8832a2b7efc234381d9c4"
+      }
+    },
+    "detection_report_audit": {
+      "columns": {
+        "id": {
+          "type": "BIGINT",
+          "declaration": "id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY"
+        },
+        "report_id": {
+          "type": "VARCHAR(64)",
+          "declaration": "report_id VARCHAR(64) NOT NULL"
+        },
+        "actor_user_id": {
+          "type": "BIGINT",
+          "declaration": "actor_user_id BIGINT NOT NULL"
+        },
+        "actor_username": {
+          "type": "VARCHAR(50)",
+          "declaration": "actor_username VARCHAR(50) NOT NULL"
+        },
+        "action": {
+          "type": "VARCHAR(24)",
+          "declaration": "action VARCHAR(24) NOT NULL"
+        },
+        "before_status": {
+          "type": "VARCHAR(20)",
+          "declaration": "before_status VARCHAR(20) NULL"
+        },
+        "after_status": {
+          "type": "VARCHAR(20)",
+          "declaration": "after_status VARCHAR(20) NOT NULL"
+        },
+        "report_version": {
+          "type": "INT",
+          "declaration": "report_version INT NOT NULL"
+        },
+        "reason": {
+          "type": "VARCHAR(500)",
+          "declaration": "reason VARCHAR(500) NULL"
+        },
+        "snapshot_sha256": {
+          "type": "CHAR(64)",
+          "declaration": "snapshot_sha256 CHAR(64) NULL"
+        },
+        "created_at": {
+          "type": "DATETIME",
+          "declaration": "created_at DATETIME NOT NULL"
+        }
+      },
+      "primaryKey": [
+        "id"
+      ],
+      "sourceFiles": {
+        "sql/mysql/migration-V21-quality-report-approval.sql": "ad08e8d20a05f9c2d09ea3ce0d7d03e39b59cb9ed472261cec2a47045252afe2"
+      }
+    },
+    "detection_report_command": {
+      "columns": {
+        "actor_user_id": {
+          "type": "BIGINT",
+          "declaration": "actor_user_id BIGINT NOT NULL"
+        },
+        "request_id": {
+          "type": "VARCHAR(64)",
+          "declaration": "request_id VARCHAR(64) NOT NULL"
+        },
+        "command_sha256": {
+          "type": "CHAR(64)",
+          "declaration": "command_sha256 CHAR(64) NOT NULL"
+        },
+        "report_id": {
+          "type": "VARCHAR(64)",
+          "declaration": "report_id VARCHAR(64) NOT NULL"
+        },
+        "response_json": {
+          "type": "MEDIUMTEXT",
+          "declaration": "response_json MEDIUMTEXT NOT NULL"
+        },
+        "created_at": {
+          "type": "DATETIME",
+          "declaration": "created_at DATETIME NOT NULL"
+        }
+      },
+      "primaryKey": [
+        "actor_user_id",
+        "request_id"
+      ],
+      "sourceFiles": {
+        "sql/mysql/migration-V21-quality-report-approval.sql": "ad08e8d20a05f9c2d09ea3ce0d7d03e39b59cb9ed472261cec2a47045252afe2"
+      }
+    },
+    "detection_report_confirmation": {
+      "columns": {
+        "token": {
+          "type": "CHAR(64)",
+          "declaration": "token CHAR(64) NOT NULL PRIMARY KEY"
+        },
+        "report_id": {
+          "type": "VARCHAR(64)",
+          "declaration": "report_id VARCHAR(64) NOT NULL"
+        },
+        "actor_user_id": {
+          "type": "BIGINT",
+          "declaration": "actor_user_id BIGINT NOT NULL"
+        },
+        "report_version": {
+          "type": "INT",
+          "declaration": "report_version INT NOT NULL"
+        },
+        "snapshot_sha256": {
+          "type": "CHAR(64)",
+          "declaration": "snapshot_sha256 CHAR(64) NOT NULL"
+        },
+        "decision_sha256": {
+          "type": "CHAR(64)",
+          "declaration": "decision_sha256 CHAR(64) NOT NULL"
+        },
+        "expires_at": {
+          "type": "DATETIME",
+          "declaration": "expires_at DATETIME NOT NULL"
+        },
+        "used_at": {
+          "type": "DATETIME",
+          "declaration": "used_at DATETIME NULL"
+        }
+      },
+      "primaryKey": [
+        "token"
+      ],
+      "sourceFiles": {
+        "sql/mysql/migration-V21-quality-report-approval.sql": "ad08e8d20a05f9c2d09ea3ce0d7d03e39b59cb9ed472261cec2a47045252afe2"
+      }
+    },
+    "detection_report_event_receipt": {
+      "columns": {
+        "event_id": {
+          "type": "VARCHAR(64)",
+          "declaration": "event_id VARCHAR(64) NOT NULL PRIMARY KEY"
+        },
+        "report_id": {
+          "type": "VARCHAR(64)",
+          "declaration": "report_id VARCHAR(64) NOT NULL"
+        },
+        "event_type": {
+          "type": "VARCHAR(80)",
+          "declaration": "event_type VARCHAR(80) NOT NULL"
+        },
+        "report_version": {
+          "type": "INT",
+          "declaration": "report_version INT NOT NULL"
+        },
+        "payload_sha256": {
+          "type": "CHAR(64)",
+          "declaration": "payload_sha256 CHAR(64) NOT NULL"
+        },
+        "consumed_at": {
+          "type": "DATETIME",
+          "declaration": "consumed_at DATETIME NOT NULL"
+        }
+      },
+      "primaryKey": [
+        "event_id"
+      ],
+      "sourceFiles": {
+        "sql/mysql/migration-V30-report-event-delivery.sql": "1a80a23f3a7972c525d21722ab62492e5452c94f3321745e219ca42c4d65a50a"
+      }
+    },
+    "detection_report_event_state": {
+      "columns": {
+        "report_id": {
+          "type": "VARCHAR(64)",
+          "declaration": "report_id VARCHAR(64) NOT NULL PRIMARY KEY"
+        },
+        "last_version": {
+          "type": "INT",
+          "declaration": "last_version INT NOT NULL"
+        },
+        "status": {
+          "type": "VARCHAR(20)",
+          "declaration": "status VARCHAR(20) NOT NULL"
+        },
+        "last_event_id": {
+          "type": "VARCHAR(64)",
+          "declaration": "last_event_id VARCHAR(64) NOT NULL"
+        },
+        "updated_at": {
+          "type": "DATETIME",
+          "declaration": "updated_at DATETIME NOT NULL"
+        }
+      },
+      "primaryKey": [
+        "report_id"
+      ],
+      "sourceFiles": {
+        "sql/mysql/migration-V30-report-event-delivery.sql": "1a80a23f3a7972c525d21722ab62492e5452c94f3321745e219ca42c4d65a50a"
+      }
+    },
+    "detection_report_outbox": {
+      "columns": {
+        "event_id": {
+          "type": "VARCHAR(64)",
+          "declaration": "event_id VARCHAR(64) NOT NULL PRIMARY KEY"
+        },
+        "report_id": {
+          "type": "VARCHAR(64)",
+          "declaration": "report_id VARCHAR(64) NOT NULL"
+        },
+        "event_type": {
+          "type": "VARCHAR(80)",
+          "declaration": "event_type VARCHAR(80) NOT NULL"
+        },
+        "payload_json": {
+          "type": "TEXT",
+          "declaration": "payload_json TEXT NOT NULL"
+        },
+        "delivery_status": {
+          "type": "VARCHAR(20)",
+          "declaration": "delivery_status VARCHAR(20) NOT NULL DEFAULT 'PENDING'"
+        },
+        "created_at": {
+          "type": "DATETIME",
+          "declaration": "created_at DATETIME NOT NULL"
+        },
+        "attempts": {
+          "type": "INT",
+          "declaration": "attempts INT NOT NULL DEFAULT 0"
+        },
+        "next_attempt_at": {
+          "type": "DATETIME",
+          "declaration": "next_attempt_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP"
+        },
+        "lease_token": {
+          "type": "VARCHAR(64)",
+          "declaration": "lease_token VARCHAR(64) NULL"
+        },
+        "lease_expires_at": {
+          "type": "DATETIME",
+          "declaration": "lease_expires_at DATETIME NULL"
+        },
+        "delivered_at": {
+          "type": "DATETIME",
+          "declaration": "delivered_at DATETIME NULL"
+        },
+        "last_error_code": {
+          "type": "VARCHAR(40)",
+          "declaration": "last_error_code VARCHAR(40) NULL"
+        }
+      },
+      "primaryKey": [
+        "event_id"
+      ],
+      "sourceFiles": {
+        "sql/mysql/migration-V21-quality-report-approval.sql": "ad08e8d20a05f9c2d09ea3ce0d7d03e39b59cb9ed472261cec2a47045252afe2",
+        "sql/mysql/migration-V30-report-event-delivery.sql": "1a80a23f3a7972c525d21722ab62492e5452c94f3321745e219ca42c4d65a50a"
+      }
+    },
+    "model_operation_log": {
+      "columns": {
+        "id": {
+          "type": "BIGINT",
+          "declaration": "`id` BIGINT NOT NULL AUTO_INCREMENT COMMENT '\u4e3b\u952eID'"
+        },
+        "model_id": {
+          "type": "INT",
+          "declaration": "`model_id` INT NOT NULL COMMENT '\u6a21\u578bID'"
+        },
+        "operation_type": {
+          "type": "VARCHAR(32)",
+          "declaration": "`operation_type` VARCHAR(32) NOT NULL COMMENT '\u64cd\u4f5c\u7c7b\u578b'"
+        },
+        "operator": {
+          "type": "VARCHAR(64)",
+          "declaration": "`operator` VARCHAR(64) DEFAULT NULL COMMENT '\u64cd\u4f5c\u4eba'"
+        },
+        "operation_time": {
+          "type": "DATETIME",
+          "declaration": "`operation_time` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '\u64cd\u4f5c\u65f6\u95f4'"
+        },
+        "remark": {
+          "type": "VARCHAR(255)",
+          "declaration": "`remark` VARCHAR(255) DEFAULT NULL COMMENT '\u5907\u6ce8'"
+        }
+      },
+      "primaryKey": [
+        "id"
+      ],
+      "sourceFiles": {
+        "sql/mysql/schema.sql": "4621daed832ed538fb8646804d12becd8e87b7026cbf45782f693073d76ce001"
+      }
+    },
+    "operation_audit_log": {
+      "columns": {
+        "id": {
+          "type": "BIGINT UNSIGNED",
+          "declaration": "`id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT"
+        },
+        "operator": {
+          "type": "VARCHAR(64)",
+          "declaration": "`operator` VARCHAR(64) NOT NULL"
+        },
+        "action": {
+          "type": "VARCHAR(32)",
+          "declaration": "`action` VARCHAR(32) NOT NULL"
+        },
+        "resource_type": {
+          "type": "VARCHAR(64)",
+          "declaration": "`resource_type` VARCHAR(64) NOT NULL"
+        },
+        "resource_id": {
+          "type": "VARCHAR(128)",
+          "declaration": "`resource_id` VARCHAR(128) DEFAULT NULL"
+        },
+        "request_method": {
+          "type": "VARCHAR(16)",
+          "declaration": "`request_method` VARCHAR(16) DEFAULT NULL"
+        },
+        "request_path": {
+          "type": "VARCHAR(512)",
+          "declaration": "`request_path` VARCHAR(512) DEFAULT NULL"
+        },
+        "change_summary": {
+          "type": "JSON",
+          "declaration": "`change_summary` JSON DEFAULT NULL"
+        },
+        "result": {
+          "type": "VARCHAR(16)",
+          "declaration": "`result` VARCHAR(16) NOT NULL"
+        },
+        "client_ip": {
+          "type": "VARCHAR(45)",
+          "declaration": "`client_ip` VARCHAR(45) DEFAULT NULL"
+        },
+        "created_at": {
+          "type": "DATETIME",
+          "declaration": "`created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP"
+        }
+      },
+      "primaryKey": [
+        "id"
+      ],
+      "sourceFiles": {
+        "sql/mysql/schema.sql": "4621daed832ed538fb8646804d12becd8e87b7026cbf45782f693073d76ce001"
+      }
+    }
+  },
+  "sourceFileDigestEncoding": "UTF8_LF_WITHOUT_BOM"
+}

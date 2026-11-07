@@ -196,4 +196,31 @@ class MemoryGovernanceTest {
         for(int offset:new int[]{-1,Integer.MAX_VALUE})assertThatThrownBy(()->service.list(owner,50,offset)).hasMessageContaining("400");
         assertThatThrownBy(()->service.list(owner,101,0)).hasMessageContaining("400");
     }
+    @Test void unresolvedPreferenceRetainsItsSourceWhileAnExplicitNewSaveGetsRealUtc()throws Exception{
+        settings.change(owner,new MemoryDtos.ChangePreference(0,true,false));
+        String evidence=new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(Map.of("protocol","doorhandle-legacy-clock-v1","status","UNRESOLVED",
+                "sourceTable","agent_memory_preference","sourceKey",Map.of("owner_user_id",owner.userId()),"sourceSnapshotSha256","a".repeat(64),
+                "sourceRowSha256","b".repeat(64),"sourceWallTimes",Map.of("updated_at","2026-10-14 16:13:24.000000")));
+        jdbc.update("UPDATE runtime_state SET updated_at=NULL,legacy_clock_json=? WHERE namespace='MEMORY_PREFERENCE' AND owner_id=?",evidence,owner.userId());
+        assertThat(settings.get(owner)).satisfies(value->{assertThat(value.updatedAt()).isNull();assertThat(value.clockStatus()).isEqualTo("UNRESOLVED");assertThat(value.sourceWallTimes()).containsEntry("updated_at","2026-10-14 16:13:24.000000");});
+        var changed=settings.change(owner,new MemoryDtos.ChangePreference(1,false,true));
+        assertThat(changed.updatedAt()).endsWith("Z");assertThat(changed.revision()).isEqualTo(2);assertThat(changed.clockStatus()).isEqualTo("UNRESOLVED");
+        assertThat(changed.sourceWallTimes()).containsEntry("updated_at","2026-10-14 16:13:24.000000");
+        assertThat(jdbc.queryForObject("SELECT legacy_clock_json FROM runtime_state WHERE namespace='MEMORY_PREFERENCE' AND owner_id=?",String.class,owner.userId())).isEqualTo(evidence);
+        assertThat(settings.get(other).sourceWallTimes()).isEmpty();verifyNoInteractions(bridge);
+    }
+    @Test void unresolvedOldMutationIsReadableButCannotBecomeASuccessfulReplayOrAutomaticReconciliation()throws Exception{
+        String key="legacy-mutation",fingerprint="c".repeat(64);settings.reserveAutomatic(owner,key,fingerprint);settings.deletionOutcome(owner,key,"SUCCEEDED");
+        String evidence=new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(Map.of("protocol","doorhandle-legacy-clock-v1","status","UNRESOLVED",
+                "sourceTable","agent_memory_audit","sourceKey",Map.of("id",77),"sourceSnapshotSha256","a".repeat(64),"sourceRowSha256","b".repeat(64),
+                "sourceWallTimes",Map.of("created_at","2026-10-13 21:40:19.000000","updated_at","2026-10-14 16:13:24.000000")));
+        jdbc.update("UPDATE workflow_instance SET created_at=NULL,updated_at=NULL,finished_at=NULL,legacy_source='agent_memory_audit',legacy_key='77',legacy_clock_json=? WHERE kind='MEMORY_MUTATION' AND request_id=?",evidence,key);
+        jdbc.update("UPDATE audit_event SET occurred_at=NULL,legacy_source='agent_memory_audit',legacy_key='77',legacy_clock_json=? WHERE kind='MEMORY_OPERATION' AND request_id=? AND outcome='SUCCEEDED'",evidence,key);
+        assertThat(settings.audit(owner)).singleElement().satisfies(value->{assertThat(value.outcome()).isEqualTo("SUCCEEDED");assertThat(value.createdAt()).isNull();assertThat(value.updatedAt()).isNull();assertThat(value.clockStatus()).isEqualTo("UNRESOLVED");assertThat(value.sourceWallTimes()).containsEntry("created_at","2026-10-13 21:40:19.000000");});
+        assertThatThrownBy(()->settings.reserveAutomatic(owner,key,fingerprint)).hasMessageContaining("历史时区未确认");
+        assertThatThrownBy(()->settings.reconcileAutomatic(owner,key,"SUCCEEDED")).hasMessageContaining("历史时区未确认");
+        assertThat(jdbc.queryForObject("SELECT status FROM workflow_instance WHERE request_id=?",String.class,key)).isEqualTo("SUCCEEDED");
+        assertThat(jdbc.queryForObject("SELECT legacy_clock_json FROM workflow_instance WHERE request_id=?",String.class,key)).isEqualTo(evidence);
+        assertThat(settings.audit(other)).isEmpty();verifyNoInteractions(bridge);
+    }
 }

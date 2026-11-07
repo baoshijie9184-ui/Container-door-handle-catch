@@ -38,7 +38,8 @@ public final class DualSchemaCopyMySqlFixture implements AutoCloseable {
     public String sourceName(){return String.valueOf(sourceIdentity.get("db"));}
     public String targetName(){return String.valueOf(targetIdentity.get("db"));}
     public void executeSource(String sql) throws Exception {execute(source,sql);}
-    public void executeTarget(String sql) throws Exception {execute(target,sql);}
+    public void executeTarget(String sql) throws Exception {execute(target,FixtureSourceSnapshot.bind(sql,source(),sourceTables));}
+    public String sourceSnapshotSha256(){return FixtureSourceSnapshot.capture(source(),sourceTables);}
 
     /** ScriptUtils stops at the first error; all migrated rows roll back on this exact connection. */
     private static void execute(DriverManagerDataSource data,String sql) throws Exception {

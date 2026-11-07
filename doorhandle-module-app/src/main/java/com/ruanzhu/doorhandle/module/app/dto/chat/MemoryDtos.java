@@ -2,10 +2,16 @@ package com.ruanzhu.doorhandle.module.app.dto.chat;
 
 import jakarta.validation.constraints.*;
 import java.util.List;
+import java.util.Map;
 
 public final class MemoryDtos {
     private MemoryDtos() {}
-    public record Preference(boolean readEnabled, boolean saveEnabled, int revision, String updatedAt) {}
+    /** clockStatus refers to historical source clocks; a later updatedAt can be a genuine new UTC write. */
+    public record Preference(boolean readEnabled, boolean saveEnabled, int revision, String updatedAt,
+                             String clockStatus,Map<String,String> sourceWallTimes) {
+        public Preference(boolean readEnabled,boolean saveEnabled,int revision,String updatedAt){this(readEnabled,saveEnabled,revision,updatedAt,"UTC",Map.of());}
+        public Preference { clockStatus=clockStatus==null?"UTC":clockStatus;sourceWallTimes=sourceWallTimes==null?Map.of():java.util.Collections.unmodifiableMap(new java.util.LinkedHashMap<>(sourceWallTimes)); }
+    }
     public record ChangePreference(@NotNull @Min(0) Integer expectedRevision, @NotNull Boolean readEnabled, @NotNull Boolean saveEnabled) {}
     public record Item(String id, String memory, String sourceSessionId, String createdAt, String updatedAt, String digest, Lifecycle lifecycle) {
         public Item(String id,String memory,String sourceSessionId,String createdAt,String updatedAt,String digest){this(id,memory,sourceSessionId,createdAt,updatedAt,digest,null);}
@@ -41,6 +47,11 @@ public final class MemoryDtos {
                          @NotBlank @Size(max=4000) String memory, @AssertTrue boolean confirmed) {}
     public record Updated(boolean updated, boolean replayed) {}
     public record Audit(long id, String action, String outcome, String memoryId, Integer preferenceRevision,
-                        Boolean readEnabled, Boolean saveEnabled, String createdAt, String updatedAt, String requestId) {}
+                        Boolean readEnabled, Boolean saveEnabled, String createdAt, String updatedAt, String requestId,
+                        String clockStatus,Map<String,String> sourceWallTimes) {
+        public Audit(long id,String action,String outcome,String memoryId,Integer preferenceRevision,Boolean readEnabled,Boolean saveEnabled,
+                     String createdAt,String updatedAt,String requestId){this(id,action,outcome,memoryId,preferenceRevision,readEnabled,saveEnabled,createdAt,updatedAt,requestId,"UTC",Map.of());}
+        public Audit { clockStatus=clockStatus==null?"UTC":clockStatus;sourceWallTimes=sourceWallTimes==null?Map.of():java.util.Collections.unmodifiableMap(new java.util.LinkedHashMap<>(sourceWallTimes)); }
+    }
     public record Extraction(String requestId,String status,Integer affectedMemories,String updatedAt) {}
 }

@@ -10,6 +10,7 @@
         <p class="wb-note">{{ folder.note }}</p>
         <article v-for="file in folder.files" :key="file.id" class="wb-file-row" :aria-label="'私有文件 '+(file.name || file.id)">
           <div class="wb-file-heading"><span class="wb-file-icon"><AppIcon :name="composerAttachment(file).icon" :size="19" /></span><div><strong>{{ file.name || '未记录文件名' }}</strong><small>{{ composerAttachment(file).type }} · {{ composerAttachment(file).size }}</small></div></div>
+          <small v-if="file.clockStatus==='UNRESOLVED'">历史时区未确认</small>
           <div class="wb-actions"><button type="button" :disabled="busy" @click="$emit('preview',file)"><AppIcon name="Search" :size="14" />预览</button><button type="button" :disabled="busy" @click="$emit('download',file)"><AppIcon name="Download" :size="14" />下载</button><button v-if="!folder.readOnly" type="button" :disabled="busy" @click="$emit('reference',file)"><AppIcon name="Plus" :size="14" />引用</button></div>
           <details class="wb-file-more"><summary :aria-label="(file.name||'文件')+'的编号与更多操作'">更多</summary><p class="wb-file-id">文件编号 {{ file.id }}</p><div v-if="!folder.readOnly" class="wb-actions"><button type="button" :disabled="busy" @click="$emit('copy',file)"><AppIcon name="DocumentCopy" :size="14" />复制引用</button><button type="button" class="wb-button-danger" :disabled="busy" @click="$emit('remove',file)"><AppIcon name="Delete" :size="14" />移出会话</button></div></details>
         </article>

@@ -10,8 +10,19 @@ import java.util.function.Consumer;
 /** 应用运行日志边界，不保存 SDK 状态、消息正文或凭证。 */
 public interface AgentJournal {
     record RunView(String runId, String sessionId, String entryPoint, String mainAgent, String status,
-                   String defaultModel, String policyVersion, LocalDateTime startedAt, LocalDateTime endedAt, long lastSequence) {}
-    record EventView(long sequence, String type, LocalDateTime occurredAt, Map<String, Object> payload) {}
+                   String defaultModel, String policyVersion, LocalDateTime startedAt, LocalDateTime endedAt, long lastSequence,
+                   String clockStatus, Map<String,String> sourceWallTimes) {
+        public RunView(String runId,String sessionId,String entryPoint,String mainAgent,String status,String defaultModel,
+                       String policyVersion,LocalDateTime startedAt,LocalDateTime endedAt,long lastSequence) {
+            this(runId,sessionId,entryPoint,mainAgent,status,defaultModel,policyVersion,startedAt,endedAt,lastSequence,null,null);
+        }
+    }
+    record EventView(long sequence, String type, LocalDateTime occurredAt, Map<String, Object> payload,
+                     String clockStatus, Map<String,String> sourceWallTimes) {
+        public EventView(long sequence,String type,LocalDateTime occurredAt,Map<String,Object> payload) {
+            this(sequence,type,occurredAt,payload,null,null);
+        }
+    }
     interface Run {
         String id();
         void event(String type, Map<String, Object> payload);

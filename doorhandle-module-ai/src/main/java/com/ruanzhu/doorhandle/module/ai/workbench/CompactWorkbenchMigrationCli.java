@@ -47,8 +47,10 @@ public final class CompactWorkbenchMigrationCli {
         JsonNode input = mapper.readTree(Files.readString(config, StandardCharsets.UTF_8));
         Set<String> fields = Set.of("version", "kind", "instanceId", "machineId", "sourceSchema", "targetSchema",
                 "serverUuid", "sourceUtcOffset", "sourceCollations", "connection", "scope", "client");
+        int version=input.path("version").asInt();
+        if(version==2){fields=new java.util.HashSet<>(fields);fields.add("legacyClockPolicy");fields.add("sourceSnapshotSha256");}
         var found = new java.util.HashSet<String>(); input.fieldNames().forEachRemaining(found::add);
-        if (!found.equals(fields) || input.path("version").asInt() != 1
+        if (!found.equals(fields) || !input.path("version").isIntegralNumber() || !input.path("version").canConvertToInt() || !Set.of(1,2).contains(version)
                 || !"doorhandle-workbench-migration-config".equals(input.path("kind").asText())) {
             throw new SecurityException("Unsupported workbench migration CLI configuration");
         }
@@ -95,9 +97,26 @@ public final class CompactWorkbenchMigrationCli {
         }
         var collations = new LinkedHashMap<String,String>();
         input.path("sourceCollations").fields().forEachRemaining(entry -> collations.put(entry.getKey(), entry.getValue().asText()));
+        var unresolved=new java.util.TreeSet<String>();String snapshot=null;ZoneOffset offset=null;
+        if(version==1){
+            if(!input.path("sourceUtcOffset").isTextual())throw new SecurityException("Reviewed workbench source offset required");
+            offset=ZoneOffset.of(input.path("sourceUtcOffset").asText());
+        }else{
+            var policy=input.path("legacyClockPolicy");var policyKeys=new java.util.HashSet<String>();policy.fieldNames().forEachRemaining(policyKeys::add);
+            if(!input.path("sourceUtcOffset").isNull()||!input.path("sourceSnapshotSha256").isTextual()
+                ||!input.path("sourceSnapshotSha256").asText().matches("[a-f0-9]{64}")
+                ||!policyKeys.equals(Set.of("version","kind","unresolvedDomains"))||!policy.path("version").isIntegralNumber()||!policy.path("version").canConvertToInt()||policy.path("version").asInt()!=1
+                ||!"doorhandle-legacy-clock-policy".equals(policy.path("kind").asText())||!policy.path("unresolvedDomains").isArray()||policy.path("unresolvedDomains").size()>64)
+                throw new SecurityException("Explicit unresolved workbench clock policy and source snapshot required");
+            String previous=null;for(var domain:policy.path("unresolvedDomains")){
+                String value=domain.asText();if(!domain.isTextual()||!value.matches("[a-z][a-z_]{0,63}")||previous!=null&&previous.compareTo(value)>=0||!unresolved.add(value))throw new SecurityException("Unresolved clock domains must be explicit sorted unique names");previous=value;
+            }
+            if(!unresolved.contains("workbench"))throw new SecurityException("Workbench must be explicitly unresolved");
+            snapshot=input.path("sourceSnapshotSha256").asText();
+        }
         var admission = new WorkbenchLegacyMigration.Admission(input.path("instanceId").asText(),
                 input.path("machineId").asText(), input.path("sourceSchema").asText(), input.path("targetSchema").asText(),
-                input.path("serverUuid").asText(), ZoneOffset.of(input.path("sourceUtcOffset").asText()), collations);
+                input.path("serverUuid").asText(), offset, collations,snapshot,unresolved);
         String schema = admission.targetSchema();
         if (!schema.matches("doorhandle_compact_candidate_[a-f0-9]{10}")) {
             throw new SecurityException("A new compact candidate target is required");
