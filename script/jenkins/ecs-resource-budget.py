@@ -314,6 +314,134 @@ def check(resource_plan, actualProbe, phase, baselineProbe=None):
     return result
 
 
+def plan_phase(spec):
+    """Plan only the next controlled preparer measurement, never full acceptance.
+
+    Physical ownedDiskBytes must be measured independently of host free-space
+    changes. The immutable attempt baseline and earlier phase receipt digest are
+    retained, so a new phase cannot hide earlier protected data or claim a peak
+    measurement that has not happened.
+    """
+    errors, missing = [], []
+    if not isinstance(spec, dict):
+        spec = {}
+        errors.append('Phase spec must be an object')
+    owner, commit = spec.get('ownerToken'), spec.get('sourceCommit')
+    if not isinstance(owner, str) or not TOKEN.fullmatch(owner):
+        errors.append('Invalid phase ownerToken')
+    if not isinstance(commit, str) or not COMMIT.fullmatch(commit):
+        errors.append('Invalid fixed phase sourceCommit')
+    phase = spec.get('phase')
+    if phase not in ('extraction', 'source-inspection', 'source-export', 'fixture-clone'):
+        errors.append('Unregistered controlled preparation phase')
+    predecessor = spec.get('previousPhaseReceiptSha256')
+    if phase == 'extraction' and predecessor is not None:
+        errors.append('Extraction must start the fixed attempt receipt chain')
+    elif phase != 'extraction' and (not isinstance(predecessor, str) or not HASH.fullmatch(predecessor)):
+        missing.append('previousPhaseReceiptSha256')
+    for key in ('sourceSha256', 'applicationJarSha256', 'enforcementEvidenceSha256'):
+        if not isinstance(spec.get(key), str) or not HASH.fullmatch(spec[key]):
+            missing.append(key)
+    for key in ('growthEnvelopeBytes', 'memoryAdmissionBytes', 'ownedMemoryLimitBytes'):
+        if not _integer(spec.get(key)) or spec.get(key) == 0:
+            missing.append(key)
+    baseline = spec.get('baselineProbe')
+    origin = spec.get('attemptBaselineProbe')
+    errors.extend(_probe_errors(baseline, owner, commit))
+    errors.extend(_probe_errors(origin, owner, commit))
+    if not errors and baseline['diskTotalBytes'] != origin['diskTotalBytes']:
+        errors.append('Phase and attempt filesystem differ')
+    if not errors and datetime.fromisoformat(baseline['capturedAtUtc'].replace('Z', '+00:00')) < datetime.fromisoformat(origin['capturedAtUtc'].replace('Z', '+00:00')):
+        errors.append('Current phase baseline predates the immutable attempt baseline')
+    enforcement = spec.get('enforcement', {})
+    if not isinstance(enforcement, dict):
+        enforcement = {}
+    for key in ('independentMonitor', 'ownedPhysicalDiskMeasured', 'registeredProcessGroups', 'controllerAddressSpaceLimited'):
+        if enforcement.get(key) is not True:
+            missing.append('enforcement.' + key)
+    interval = enforcement.get('maxProbeIntervalSeconds')
+    if not isinstance(interval, (int, float)) or isinstance(interval, bool) or not 0 < interval <= 2:
+        missing.append('enforcement.maxProbeIntervalSeconds')
+    overshoot = enforcement.get('diskOvershootBytes')
+    if not _integer(overshoot) or overshoot < 256 * 1024 ** 2:
+        missing.append('enforcement.diskOvershootBytes')
+    if phase in ('source-inspection', 'source-export') and enforcement.get('sourceExportCancellation') is not True:
+        missing.append('enforcement.sourceExportCancellation')
+    inputs = spec.get('measuredInputs', {})
+    if not isinstance(inputs, dict):
+        inputs = {}
+    if phase == 'extraction':
+        for key in ('archiveDeclaredBytes', 'archiveAllocatedBoundBytes', 'archiveMemberCount', 'jarCopyBytes'):
+            if not _integer(inputs.get(key)):
+                missing.append('measuredInputs.' + key)
+    if phase in ('source-export', 'fixture-clone') and not _integer(inputs.get('sourceAllocatedBytes')):
+        missing.append('measuredInputs.sourceAllocatedBytes')
+    if phase == 'fixture-clone':
+        if enforcement.get('mysqlCgroupLimitBytes') != 1536 * 1024 ** 2:
+            missing.append('enforcement.mysqlCgroupLimitBytes')
+        if not _integer(inputs.get('dumpBytes')) or inputs.get('dumpBytes') == 0:
+            missing.append('measuredInputs.dumpBytes')
+        for key in ('dumpSha256', 'backupManifestSha256', 'sourceSnapshotSha256'):
+            if not isinstance(inputs.get(key), str) or not HASH.fullmatch(inputs[key]):
+                missing.append('measuredInputs.' + key)
+    return {'version': 1, 'kind': 'doorhandle-controlled-preparer-phase', 'spec': deepcopy(spec),
+            'status': 'INVALID' if errors else 'NOT_MEASURED' if missing else 'MEASUREMENT_PLANNED',
+            'mode': 'ENFORCED_BOUND', 'errors': errors, 'missingMeasurements': sorted(set(missing)),
+            'diskReserveBytes': DISK_RESERVE_BYTES, 'memoryReserveBytes': MEMORY_RESERVE_BYTES,
+            'allAcceptanceResourcesMeasured': False, 'fullAcceptanceStatus': 'NOT_MEASURED',
+            'stopScope': 'OWNED_ATTEMPT_ONLY', 'preserveEvidence': True}
+
+
+def check_phase(resource_phase, actualProbe):
+    """Check a preparer phase against real owned allocation and current pressure."""
+    result = {'status': 'FAIL_CLOSED', 'action': 'STOP_OWNED_ATTEMPT',
+              'stopScope': 'OWNED_ATTEMPT_ONLY', 'preserveEvidence': True,
+              'fullAcceptanceStatus': 'NOT_MEASURED', 'allAcceptanceResourcesMeasured': False,
+              'actualProbe': deepcopy(actualProbe), 'reasons': []}
+    if not isinstance(resource_phase, dict) or 'spec' not in resource_phase:
+        result['reasons'] = ['Missing controlled phase plan']
+        return result
+    expected = plan_phase(resource_phase['spec'])
+    if resource_phase != expected:
+        result['reasons'] = ['Controlled phase plan was changed after derivation']
+        return result
+    if expected['status'] != 'MEASUREMENT_PLANNED':
+        result['reasons'] = expected['errors'] + ['NOT_MEASURED: ' + key for key in expected['missingMeasurements']]
+        return result
+    spec = resource_phase['spec']; baseline = spec['baselineProbe']
+    errors = _probe_errors(actualProbe, spec['ownerToken'], spec['sourceCommit'], baseline['diskTotalBytes'])
+    if errors:
+        result['reasons'] = errors
+        return result
+    if datetime.fromisoformat(actualProbe['capturedAtUtc'].replace('Z', '+00:00')) < datetime.fromisoformat(baseline['capturedAtUtc'].replace('Z', '+00:00')):
+        result['reasons'] = ['Current phase probe predates its fixed baseline']
+        return result
+    growth = max(0, actualProbe['ownedDiskBytes'] - baseline['ownedDiskBytes'])
+    memory_growth = max(0, actualProbe['ownedMemoryBytes'] - baseline['ownedMemoryBytes'])
+    remaining = max(0, spec['growthEnvelopeBytes'] - growth)
+    required_disk = remaining + DISK_RESERVE_BYTES + spec['enforcement']['diskOvershootBytes']
+    required_memory = max(MEMORY_RESERVE_BYTES, spec['memoryAdmissionBytes'] - memory_growth + MEMORY_RESERVE_BYTES)
+    result.update(phase=spec['phase'], observedOwnedGrowthBytes=growth,
+        remainingGrowthEnvelopeBytes=remaining, requiredFreeDiskBytes=required_disk,
+        requiredAvailableMemoryBytes=required_memory,
+        hostDiskLossObservation={'kind': 'HOST_DISK_LOSS_UPPER_BOUND',
+            'bytes': max(0, baseline['diskAvailableBytes'] - actualProbe['diskAvailableBytes']),
+            'ownershipProof': False})
+    if growth > spec['growthEnvelopeBytes']:
+        result['reasons'].append('Owned physical allocation exceeded this controlled phase envelope')
+    if actualProbe['diskAvailableBytes'] < required_disk:
+        result['reasons'].append('Actual free space cannot retain the phase envelope plus real 2 GiB reserve and overshoot')
+    if actualProbe['memoryAvailableBytes'] < required_memory:
+        result['reasons'].append('Host memory pressure would consume the controlled phase memory reserve')
+    if actualProbe['ownedMemoryBytes'] > spec['ownedMemoryLimitBytes']:
+        result['reasons'].append('Owned process tree and fixture memory exceeded the monitored limit')
+    if actualProbe['oomKills'] != baseline['oomKills']:
+        result['reasons'].append('Owned cgroup OOM evidence changed')
+    if not result['reasons']:
+        result.update(status='MEASUREMENT_ADMITTED', action='CONTINUE_OWNED_ATTEMPT')
+    return result
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('operation', choices=('plan', 'validate', 'check'))

@@ -248,7 +248,9 @@ def run(ctx):
             snapshot = m.schema_snapshot(ctx.db.mysql, source, catalog['tables'])
             _, metadata = m.metadata_snapshot(ctx.db.mysql, source)
             require(len(snapshot['tables']) == 29, 'Post-business backup must cover all 29 tables')
+            ctx.admit_backup_phase(snapshot)
             backup = m.backup_schema(ctx.db.mysql, snapshot, folder / 'backup', purpose='runtime-post-business', migration_context=context)
+            ctx.admit_restore_phase(backup)
             restored, restored_meta, backup_sha = restore_clone(ctx, backup, restore_schema, context)
             require(restored_meta == metadata and m.schema_snapshot(ctx.db.mysql, source, catalog['tables'])['snapshotSha256'] == snapshot['snapshotSha256'],
                     'Recovery changed the original owned business schema')

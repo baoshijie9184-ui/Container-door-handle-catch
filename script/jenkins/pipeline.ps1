@@ -307,6 +307,20 @@ if ($Action -in @('CompactCutover', 'VerifyRuntime', 'CleanupRuntime')) {
     $package = Get-Content -LiteralPath artifacts/release.json -Raw | ConvertFrom-Json
     $runtimeHelper = "$remoteRoot/releases/$tag/script/docker/compact-runtime-acceptance.py"
     $runtimeArguments = "--root '$remoteRoot' --runtime '$runtime' --tag '$tag' --commit '$commit' --source-sha256 '$sha' --instance-id '$instance' --machine-id '$machine' --settings '$settings'"
+    function Receive-RuntimeResource([string]$Name, [string]$Digest) {
+        $names = @('resource-summary.json', 'resource-probes.jsonl',
+            'resource-phase-1-runtime-start.json', 'resource-phase-2-runtime-backup.json', 'resource-phase-3-runtime-restore.json')
+        if ($Name -notin $names -or $Digest -notmatch '^[a-f0-9]{64}$') { throw 'Unexpected runtime resource evidence reference.' }
+        New-Item -ItemType Directory -Force -Path artifacts/runtime-resources | Out-Null
+        $localFile = "artifacts/runtime-resources/$Name"
+        $remoteFile = "$remoteRoot/verification/$tag/checkout/work/runtime-acceptance/$Name"
+        Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, "${destination}:$remoteFile", $localFile))
+        $file = Get-Item -LiteralPath $localFile
+        $maximum = if ($Name -eq 'resource-probes.jsonl') { 67108864 } else { 262144 }
+        if ($file.Length -le 0 -or $file.Length -gt $maximum -or (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant() -ne $Digest) { throw 'Runtime resource evidence is missing, oversized or changed during collection.' }
+        if ($Name -eq 'resource-probes.jsonl') { return }
+        return Get-Content -LiteralPath $localFile -Raw | ConvertFrom-Json
+    }
     if ($Action -eq 'CleanupRuntime') {
         # Preserve the real exit code, but collect bounded public failure and
         # cleanup reports before reporting an incomplete cleanup to Jenkins.
@@ -330,6 +344,22 @@ if ($Action -in @('CompactCutover', 'VerifyRuntime', 'CleanupRuntime')) {
         $cleanupDigest = $cleanup.PSObject.Properties['cleanupReceiptSha256']
         if ($cleanupDigest -and $cleanupDigest.Value) {
             $cleanupEvidence = Receive-RuntimeJson "$remoteRoot/verification/$tag/checkout/work/runtime-acceptance/cleanup.json" 'artifacts/runtime-cleanup-evidence.json' $cleanupDigest.Value
+        }
+        if ($cleanupEvidence -and $cleanupEvidence.resourceEvidence) {
+            $reference = $cleanupEvidence.resourceEvidence
+            if ($reference.file -ne 'checkout/work/runtime-acceptance/resource-summary.json') { throw 'Unexpected failed runtime resource evidence location.' }
+            $summary = Receive-RuntimeResource 'resource-summary.json' $reference.sha256
+            if ($summary.release -ne $tag -or $summary.commit -ne $commit -or $summary.sourceSha256 -ne $sha -or $summary.project -ne $cleanupEvidence.project) { throw 'Failed runtime resource observations belong to another build.' }
+            if ($summary.rawProbeSha256) {
+                if ($summary.rawProbeFile -ne 'checkout/work/runtime-acceptance/resource-probes.jsonl') { throw 'Unexpected failed runtime probe location.' }
+                Receive-RuntimeResource 'resource-probes.jsonl' $summary.rawProbeSha256
+            }
+            if (@($summary.phases).Count -gt 3) { throw 'Failed runtime phase evidence exceeds its bound.' }
+            foreach ($phase in $summary.phases) {
+                $name = [System.IO.Path]::GetFileName($phase.file)
+                if ($phase.file -ne "checkout/work/runtime-acceptance/$name") { throw 'Failed runtime phase escaped its owned evidence directory.' }
+                $null = Receive-RuntimeResource $name $phase.sha256
+            }
         }
         $failureDigest = $cleanup.PSObject.Properties['failureReceiptSha256']
         if ($failureDigest -and $failureDigest.Value) {
@@ -418,12 +448,36 @@ if ($Action -in @('CompactCutover', 'VerifyRuntime', 'CleanupRuntime')) {
     if ($cleanupFile.Length -le 0 -or $cleanupFile.Length -gt 262144 -or (Get-FileHash -LiteralPath $cleanupFile.FullName -Algorithm SHA256).Hash.ToLowerInvariant() -ne $cleanupReference.sha256) { throw 'Runtime cleanup evidence is missing, oversized or changed during collection.' }
     $cleanupEvidence = Get-Content -LiteralPath $cleanupFile.FullName -Raw | ConvertFrom-Json
     if ($cleanupEvidence.status -ne 'STOPPED' -or $cleanupEvidence.unresolved.Count -ne 0 -or $cleanupEvidence.stoppedContainers.Count -eq 0 -or $cleanupEvidence.sourceResourcesChanged -ne $false -or $cleanupEvidence.commit -ne $commit -or $cleanupEvidence.release -ne $tag -or $cleanupEvidence.sourceSha256 -ne $sha -or $cleanupEvidence.candidateBuildSha256 -ne $candidateSha -or $cleanupEvidence.project -ne $runtimeProof.project) { throw 'Runtime cleanup did not prove this build owned resources were stopped.' }
+    $resourceReference = $runtimeProof.resourceEvidence
+    if ($resourceReference.file -ne 'checkout/work/runtime-acceptance/resource-summary.json' -or $resourceReference.sha256 -notmatch '^[a-f0-9]{64}$' -or $cleanupEvidence.resourceEvidence.file -ne $resourceReference.file -or $cleanupEvidence.resourceEvidence.sha256 -ne $resourceReference.sha256) { throw 'Runtime resources and cleanup lack a common bound evidence reference.' }
+    $resourceSummary = Receive-RuntimeResource 'resource-summary.json' $resourceReference.sha256
+    if ($resourceSummary.rawProbeFile -ne 'checkout/work/runtime-acceptance/resource-probes.jsonl') { throw 'Unexpected resource probe evidence location.' }
+    Receive-RuntimeResource 'resource-probes.jsonl' $resourceSummary.rawProbeSha256
+    if (@($resourceSummary.phases).Count -ne 3) { throw 'Runtime resource phase evidence is incomplete.' }
+    foreach ($phase in $resourceSummary.phases) {
+        $name = [System.IO.Path]::GetFileName($phase.file)
+        if ($phase.file -ne "checkout/work/runtime-acceptance/$name") { throw 'Resource phase evidence escaped its owned directory.' }
+        $null = Receive-RuntimeResource $name $phase.sha256
+    }
+    $python = $env:LOCAL_PYTHON_EXE
+    if ([string]::IsNullOrWhiteSpace($python)) { $python = $env:PYTHON_EXE }
+    if (-not $python -or -not (Test-Path -LiteralPath $python -PathType Leaf)) { throw 'Configure existing local Python for byte-only resource evidence validation.' }
+    $validatedResources = Invoke-Checked $python @('-I', '-B', 'script/jenkins/validate-runtime-resources.py',
+        '--proof', (Resolve-Path artifacts/runtime-acceptance.json).Path,
+        '--cleanup', (Resolve-Path artifacts/runtime-cleanup-evidence.json).Path,
+        '--summary', (Resolve-Path artifacts/runtime-resources/resource-summary.json).Path,
+        '--probes', (Resolve-Path artifacts/runtime-resources/resource-probes.jsonl).Path,
+        '--phase-directory', (Resolve-Path artifacts/runtime-resources).Path)
+    $resourceVerdict = ($validatedResources | Select-Object -Last 1) | ConvertFrom-Json
+    if ($resourceVerdict.status -ne 'VERIFIED' -or $resourceVerdict.productionCapacityVerified -ne $false -or $resourceVerdict.resourceSummarySha256 -ne $resourceReference.sha256) { throw 'Bounded runtime resources did not pass independent byte-level validation.' }
+    $resourceVerdict | ConvertTo-Json | Set-Content -LiteralPath artifacts/runtime-resources/validated.json -Encoding utf8
     # This completion receipt is written only after all original scenario and
     # cleanup bytes have passed validation. Later production cutover failure
     # must not rerun this finished runtime or overwrite its frozen evidence.
     @{ kind='doorhandle-runtime-gate-passed'; status='VERIFIED'; release=$tag; commit=$commit;
        sourceSha256=$sha; candidateBuildSha256=$candidateSha; runtimeReceiptSha256=$runtimeResult.runtimeReceiptSha256;
-       cleanupReceiptSha256=$cleanupReference.sha256 } |
+       cleanupReceiptSha256=$cleanupReference.sha256; resourceSummarySha256=$resourceReference.sha256;
+       resourceProbeSha256=$resourceSummary.rawProbeSha256 } |
         ConvertTo-Json | Set-Content -LiteralPath artifacts/runtime-gate-passed.json -Encoding utf8
     if ($Action -eq 'VerifyRuntime') { return }
     $inputFile = "$remoteRoot/releases/$tag/work/private-cutover-input.json"

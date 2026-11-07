@@ -225,6 +225,12 @@ def admitted_runtime(root, tag, commit, source_sha, identity, guard, build, buil
             and cleanup.get('sourceResourcesChanged') is False
             and SHA.fullmatch(cleanup.get('sourceBeforeSha256', ''))
             and cleanup.get('sourceBeforeSha256') == cleanup.get('sourceAfterSha256'), 'Actual owned cleanup has not been confirmed')
+    resources = module('compact_runtime_resource_bytes', Path(__file__).resolve().parents[1]
+                       / 'jenkins/validate-runtime-resources.py')
+    resource_directory = canonical(directory / 'checkout/work/runtime-acceptance')
+    resources.validate_files(directory / 'runtime-acceptance.json', resource_directory / 'cleanup.json',
+                             resource_directory / 'resource-summary.json',
+                             resource_directory / 'resource-probes.jsonl', resource_directory)
     isolation = proof.get('modelIsolation', {})
     fixture = isolation.get('fixtureState', {})
     require(isolation.get('fixtureSourceSha256') == sha_file(Path(__file__).with_name('compact-model-fixture.py'))
@@ -258,8 +264,11 @@ class Cutover:
         self.input_path = canonical(args.config)
         require(self.input_path.is_relative_to(self.source / 'work'), 'Private cutover input must remain in candidate/work')
         self.input, self.input_sha = self.guard.read_private(self.input_path)
-        require(set(self.input) == {'version', 'ecs', 'gitCommit', 'buildNumber', 'sourceOffsets', 'candidateImages', 'workbench'}
+        input_fields = {'version', 'ecs', 'gitCommit', 'buildNumber', 'sourceOffsets', 'candidateImages', 'workbench'}
+        require(input_fields <= set(self.input) <= input_fields | {'legacyClockPolicy'}
                 and self.input.get('version') == 1, 'Unsupported private cutover input shape')
+        clocks = module('cutover_clock_policy', self.source / 'script/schema/compact_clock_policy.py')
+        clocks.validate(self.input['sourceOffsets'], self.input.get('legacyClockPolicy'))
         require(re.fullmatch(r'[a-f0-9]{40}', self.input.get('gitCommit', ''))
                 and self.input['gitCommit'].startswith(match[2]) and type(self.input['buildNumber']) is int
                 and self.input['buildNumber'] == int(match[1]), 'SCM commit, build and release tag differ')
@@ -577,6 +586,8 @@ class Cutover:
             'client': {'kind': 'docker', 'executable': str(canonical(shutil.which('docker'))), 'containerId': self.mysql['Id']},
             'workbench': self.input['workbench'], 'recoverySchemas': recovery,
             'freezeEvidenceFile': str(self.work / 'source-freeze.json'), 'freezeEvidenceSha256': sha_file(self.work / 'source-freeze.json')}
+        if self.input.get('legacyClockPolicy') is not None:
+            settings['legacyClockPolicy'] = self.input['legacyClockPolicy']
         self.common.write_json(self.work / 'migration.json', settings)
         self.common.write_json(self.work / 'candidate-images.json', self.runtime_overlay)
         observed = self.invoke_migration('observe', 'observation') / 'source-observation.json'

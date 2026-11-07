@@ -16,8 +16,10 @@ import os
 from pathlib import Path
 import re
 import secrets
+import signal
 import socket
 import struct
+import subprocess
 import sys
 import threading
 import time
@@ -45,6 +47,321 @@ def sha_file(path):
         for block in iter(lambda: stream.read(1024 * 1024), b''):
             value.update(block)
     return value.hexdigest()
+
+
+MIB = 1024 ** 2
+GIB = 1024 ** 3
+RUNTIME_PROFILE = 'bounded-single-ecs-v1'
+DISK_FLOOR = 2 * GIB + 256 * MIB
+MEMORY_FLOOR = GIB
+# Includes short initialization jobs; admission conservatively counts them all.
+SERVICE_MEMORY_MIB = {'backend': 1792, 'kafka': 1280, 'mem0': 768, 'chroma': 512,
+    'detection-worker': 2048, 'higress': 512, 'redis': 256, 'nginx': 64, 'mcp-runner': 256,
+    'mcp-egress': 128, 'model-fixture': 128, 'oss-proxy': 128, 'kafka-init': 256,
+    'kafka-storage-init': 64, 'higress-seed': 128, 'higress-config': 128}
+MCP_CHILD_MEMORY = 2 * 256 * MIB
+
+
+def bounded_config(config):
+    """Change only this isolated acceptance stack, including actual JVM heaps."""
+    value = copy.deepcopy(config)
+    require(set(value['services']) <= set(SERVICE_MEMORY_MIB), 'An unbudgeted runtime service was added')
+    for name, service in value['services'].items():
+        limit = SERVICE_MEMORY_MIB[name] * MIB
+        service.update(mem_limit=limit, memswap_limit=limit)
+        service['logging'] = {'driver': 'json-file', 'options': {'max-size': '5m', 'max-file': '1'}}
+        service.setdefault('labels', {})['io.doorhandle.acceptance-profile'] = RUNTIME_PROFILE
+        env = service.setdefault('environment', {})
+        if name == 'backend':
+            env['JAVA_OPTS'] = '-Xms256m -Xmx1024m -XX:MaxMetaspaceSize=256m -Djava.awt.headless=true'
+        if name in ('kafka', 'kafka-init'):
+            env['KAFKA_HEAP_OPTS'] = '-Xms128m -Xmx512m' if name == 'kafka' else '-Xms32m -Xmx128m'
+        if name == 'kafka':
+            # Bounded test retention still retains every scenario/replay event.
+            env.update(KAFKA_LOG_SEGMENT_BYTES=str(16 * MIB), KAFKA_LOG_RETENTION_BYTES=str(64 * MIB),
+                       KAFKA_LOG_RETENTION_HOURS='24', KAFKA_OFFSETS_TOPIC_NUM_PARTITIONS='3',
+                       KAFKA_TRANSACTION_STATE_LOG_NUM_PARTITIONS='1')
+    return value
+
+
+def allocated_bytes(path):
+    """Allocated retained bytes, including hardlinks once; never follow links."""
+    path = Path(path)
+    require(path.is_absolute() and path.resolve(strict=True) == path and path.is_dir(), 'Resource inventory requires a canonical directory')
+    seen, total = set(), 0
+    for current, folders, files in os.walk(path, followlinks=False):
+        for item in [Path(current), *(Path(current) / name for name in folders + files)]:
+            stat = item.lstat(); identity = (stat.st_dev, stat.st_ino)
+            if identity not in seen:
+                seen.add(identity); total += stat.st_blocks * 512
+    return total
+
+
+def host_probe(directory):
+    fs = os.statvfs(directory)
+    memory = next(int(line.split()[1]) * 1024 for line in Path('/proc/meminfo').read_text().splitlines()
+                  if line.startswith('MemAvailable:'))
+    return {'capturedAtUnix': time.time(), 'diskTotalBytes': fs.f_blocks * fs.f_frsize,
+            'diskAvailableBytes': fs.f_bavail * fs.f_frsize, 'memoryAvailableBytes': memory}
+
+
+def phase_admission(phase, probe, growth_bytes, memory_bytes, measured):
+    require(phase in ('runtime-start', 'runtime-backup', 'runtime-restore')
+            and type(growth_bytes) is int and growth_bytes > 0 and type(memory_bytes) is int and memory_bytes >= 0
+            and isinstance(measured, dict) and measured, 'Runtime phase requires measured inputs and an explicit growth bound')
+    result = {'kind': 'doorhandle-bounded-runtime-resource-phase', 'profile': RUNTIME_PROFILE, 'phase': phase,
+        'capacityVerdict': 'CONTROLLED_MEASUREMENT', 'productionCapacityVerified': False,
+        'growthEnvelopeBytes': growth_bytes, 'memoryAdmissionBytes': memory_bytes,
+        'diskFloorBytes': DISK_FLOOR, 'memoryFloorBytes': MEMORY_FLOOR,
+        'measuredInputs': measured, 'baselineProbe': probe, 'status': 'FAIL_CLOSED'}
+    if probe['diskAvailableBytes'] >= growth_bytes + DISK_FLOOR and probe['memoryAvailableBytes'] >= memory_bytes + MEMORY_FLOOR:
+        result['status'] = 'MEASUREMENT_ADMITTED'
+    return result
+
+
+def validate_resource_evidence(summary, raw, context, project):
+    """Pure verification shared by remote admission and local byte-only archiving."""
+    require(isinstance(summary, dict) and isinstance(raw, bytes) and 0 < len(raw) <= 64 * MIB,
+            'Bounded runtime resource evidence is absent or oversized')
+    require(all(summary.get(key) == value for key, value in context.items() if key != 'kind')
+            and summary.get('kind') == 'doorhandle-bounded-runtime-resources' and summary.get('project') == project
+            and summary.get('profile') == RUNTIME_PROFILE and summary.get('capacityVerdict') == 'CONTROLLED_MEASUREMENT'
+            and summary.get('productionCapacityVerified') is False
+            and summary.get('status') == 'MEASURED_FOR_BOUNDED_SCENARIOS'
+            and summary.get('pollIntervalSeconds') == 2 and summary.get('diskFloorBytes') == DISK_FLOOR
+            and summary.get('memoryFloorBytes') == MEMORY_FLOOR
+            and summary.get('rawProbeFile') == 'checkout/work/runtime-acceptance/resource-probes.jsonl'
+            and summary.get('rawProbeSha256') == hashlib.sha256(raw).hexdigest(),
+            'Runtime resource evidence differs from this exact bounded attempt')
+    def pairs(entries):
+        value = {}
+        for key, item in entries:
+            require(key not in value, 'Duplicate runtime resource evidence key')
+            value[key] = item
+        return value
+    lines = raw.splitlines()
+    require(0 < len(lines) <= 250000 and all(0 < len(line) <= MIB for line in lines), 'Invalid resource probe stream bounds')
+    samples = [json.loads(line, object_pairs_hook=pairs,
+                         parse_constant=lambda _: (_ for _ in ()).throw(ValueError('Invalid JSON number'))) for line in lines]
+    plans = summary.get('phasePlans', {})
+    require(set(plans) == {'runtime-start', 'runtime-backup', 'runtime-restore'}, 'Runtime phase plans are missing')
+    for phase, plan in plans.items():
+        require(plan == phase_admission(phase, plan['baselineProbe'], plan['growthEnvelopeBytes'],
+                    plan['memoryAdmissionBytes'], plan['measuredInputs']) and plan['status'] == 'MEASUREMENT_ADMITTED',
+                'Runtime phase was not derived from its measured reserve')
+    last, minimum_disk, minimum_memory, containers = None, None, None, {}
+    for event in samples:
+        require(set(event) == {'probe', 'containers', 'stopReasons'} and event['stopReasons'] == []
+                and isinstance(event['containers'], list), 'A failed/partial resource observation cannot pass')
+        probe = event['probe']; stamp = probe['capturedAtUnix']
+        require(isinstance(stamp, (int, float)) and not isinstance(stamp, bool)
+                and (last is None or 0 <= stamp - last <= 2), 'Resource probe interval was not independently bounded')
+        last = stamp
+        plan = plans.get(probe.get('phase'))
+        require(plan is not None, 'Probe belongs to an unknown runtime phase')
+        loss = max(0, plan['baselineProbe']['diskAvailableBytes'] - probe['diskAvailableBytes'])
+        require(probe.get('diskLossOwnershipProof') is False and probe.get('hostDiskLossUpperBoundBytes') == loss
+                and loss <= plan['growthEnvelopeBytes'], 'An exhausted runtime growth envelope was hidden')
+        require(type(probe['diskAvailableBytes']) is int and probe['diskAvailableBytes'] >= DISK_FLOOR
+                and type(probe['memoryAvailableBytes']) is int and probe['memoryAvailableBytes'] >= MEMORY_FLOOR,
+                'Resource pressure was hidden in the raw observation stream')
+        minimum_disk = min(minimum_disk or probe['diskAvailableBytes'], probe['diskAvailableBytes'])
+        minimum_memory = min(minimum_memory or probe['memoryAvailableBytes'], probe['memoryAvailableBytes'])
+        for row in event['containers']:
+            cid, service = row['containerId'], row['service']
+            require(re.fullmatch(r'[a-f0-9]{64}', cid) and re.fullmatch(r'sha256:[a-f0-9]{64}', row['image'])
+                    and service in {*SERVICE_MEMORY_MIB, 'mcp-child', 'owned-helper'}
+                    and all(type(row[key]) is int and row[key] >= 0 for key in ('currentBytes', 'peakBytes', 'oom', 'oomKills', 'memoryLimitBytes'))
+                    and (0 < row['memoryLimitBytes'] <= 256 * MIB if service == 'owned-helper'
+                         else row['memoryLimitBytes'] == (256 * MIB if service == 'mcp-child' else SERVICE_MEMORY_MIB[service] * MIB))
+                    and row['oom'] == row['oomKills'] == 0, 'Container resource evidence is incomplete or contains OOM')
+            previous = containers.get(cid)
+            require(previous is None or (previous['image'] == row['image'] and previous['service'] == service
+                    and row['peakBytes'] >= previous['peakBytes']), 'A container resource identity/peak was rewritten')
+            containers[cid] = row
+    require(summary.get('samples') == len(samples) and summary.get('containers') == containers
+            and summary.get('minimumDiskAvailableBytes') == minimum_disk
+            and summary.get('minimumMemoryAvailableBytes') == minimum_memory
+            and summary.get('latestProbeAtUnix') == last, 'Resource summary disagrees with its actual raw samples')
+    observed = {row['service'] for row in containers.values() if row['peakBytes'] > 0}
+    required = set(summary.get('requiredDaemonServices', []))
+    require(required == set(SERVICE_MEMORY_MIB) - {'kafka-init', 'kafka-storage-init', 'higress-seed', 'higress-config'}
+            and required <= observed, 'Some required runtime service peaks were never observed')
+    require([row.get('phase') for row in summary.get('phases', [])] == ['runtime-start', 'runtime-backup', 'runtime-restore']
+            and all(set(row) == {'phase', 'file', 'sha256'} and re.fullmatch(r'[a-f0-9]{64}', row['sha256'])
+                    and row['file'] == 'checkout/work/runtime-acceptance/resource-phase-' + str(index) + '-' + row['phase'] + '.json'
+                    for index, row in enumerate(summary['phases'], 1)), 'Runtime phase evidence is incomplete')
+    return {'status': 'VERIFIED', 'profile': RUNTIME_PROFILE, 'capacityVerdict': 'CONTROLLED_MEASUREMENT',
+            'sampleCount': len(samples), 'productionCapacityVerified': False}
+
+
+class ResourcePressure(RuntimeError):
+    pass
+
+
+class RuntimeResources:
+    """Independent sampling; failures interrupt only this owned controller."""
+    def __init__(self, runtime):
+        self.runtime = runtime
+        self.done = threading.Event(); self.lock = threading.RLock()
+        self.thread = None; self.phase = None; self.error = None; self.previous_signal = None
+        self.summary = {**runtime.context(), 'kind': 'doorhandle-bounded-runtime-resources',
+            'project': runtime.project, 'profile': RUNTIME_PROFILE,
+            'capacityVerdict': 'CONTROLLED_MEASUREMENT', 'productionCapacityVerified': False,
+            'pollIntervalSeconds': 2, 'diskFloorBytes': DISK_FLOOR, 'memoryFloorBytes': MEMORY_FLOOR,
+            'containers': {}, 'phases': [], 'phasePlans': {}, 'samples': 0,
+            'requiredDaemonServices': sorted(set(SERVICE_MEMORY_MIB) - {'kafka-init', 'kafka-storage-init', 'higress-seed', 'higress-config'}),
+            'rawProbeFile': 'checkout/work/runtime-acceptance/resource-probes.jsonl'}
+        self.raw = runtime.directory / 'resource-probes.jsonl'
+
+    def admit(self, phase, growth_bytes, measured, memory_bytes=0):
+        with self.lock:
+            probe = host_probe(self.runtime.directory)
+            plan = phase_admission(phase, probe, growth_bytes, memory_bytes, measured)
+            file = self.runtime.directory / ('resource-phase-' + str(len(self.summary['phases']) + 1) + '-' + phase + '.json')
+            self.runtime.common.write_json(file, plan)
+            self.summary['phases'].append({'phase': phase, 'file': file.relative_to(self.runtime.attempt).as_posix(), 'sha256': sha_file(file)})
+            self.summary['phasePlans'][phase] = plan
+            require(plan['status'] == 'MEASUREMENT_ADMITTED', 'Measured runtime phase lacks its bounded disk/memory reserve')
+            self.phase = plan
+
+    def rows(self):
+        ctx = self.runtime
+        identifiers = ctx.ops.docker('ps', '-aq', '--no-trunc', '--filter',
+            'label=io.doorhandle.rehearsal=' + ctx.project, timeout=0.4).decode().split()
+        if ctx.owner.get('mcpPoolId'):
+            identifiers += ctx.ops.docker('ps', '-aq', '--no-trunc', '--filter',
+                'label=doorhandle.mcp.pool=' + ctx.owner['mcpPoolId'], timeout=0.4).decode().split()
+        if not identifiers:
+            return []
+        require(all(re.fullmatch(r'[a-f0-9]{64}', cid) for cid in identifiers), 'Invalid owned runtime observer inventory')
+        inspected = subprocess.run(['docker', 'inspect', *sorted(set(identifiers))], capture_output=True,
+                                   timeout=0.4, check=False)
+        if inspected.returncode:
+            # --rm MCP children may exit between inventory and inspect. Only
+            # Docker's exact missing-ID diagnostics are accepted, never a daemon
+            # failure or a lost observation of a still-running process.
+            missing = inspected.stderr.decode().splitlines()
+            require(missing and all(line.removeprefix('Error: No such object: ') in identifiers
+                    and line.startswith('Error: No such object: ') for line in missing),
+                    'Runtime container inspection failed')
+        rows = json.loads(inspected.stdout)
+        require(isinstance(rows, list) and all(row['Id'] in identifiers for row in rows), 'Foreign runtime observer response')
+        return rows
+
+    def sample(self):
+        ctx = self.runtime; probe = host_probe(ctx.directory)
+        reasons = []
+        if 'latestProbeAtUnix' in self.summary and probe['capturedAtUnix'] - self.summary['latestProbeAtUnix'] > 2:
+            reasons.append('PROBE_INTERVAL_EXCEEDED')
+        self.summary['latestProbeAtUnix'] = probe['capturedAtUnix']
+        if probe['diskAvailableBytes'] < DISK_FLOOR: reasons.append('DISK_FLOOR')
+        if probe['memoryAvailableBytes'] < MEMORY_FLOOR: reasons.append('MEMORY_FLOOR')
+        if self.phase:
+            loss = max(0, self.phase['baselineProbe']['diskAvailableBytes'] - probe['diskAvailableBytes'])
+            if loss > self.phase['growthEnvelopeBytes']: reasons.append('PHASE_GROWTH_BOUND')
+            probe['phase'] = self.phase['phase']; probe['hostDiskLossUpperBoundBytes'] = loss
+            probe['diskLossOwnershipProof'] = False
+        containers = []
+        # Stop on pressure before any Docker metadata operation can stall.
+        if not reasons:
+            for row in self.rows():
+                labels = row['Config'].get('Labels') or {}; cid = row['Id']
+                ordinary = labels.get('io.doorhandle.rehearsal') == ctx.project
+                child = (ctx.owner.get('mcpPoolId') and labels.get('doorhandle.mcp.pool') == ctx.owner['mcpPoolId']
+                         and labels.get('doorhandle.mcp.managed') == 'true' and row['Image'] == ctx.owner['runtimeMcpImage']
+                         and labels.get('doorhandle.mcp.owner') in {str(v['userId']) for v in ctx.accounts.values()})
+                require((ordinary or child) and cid not in (ctx.settings['sourceMysqlContainerId'], ctx.owner['mysqlContainerId']),
+                        'Resource observer found a foreign container')
+                service = labels.get('com.docker.compose.service') or ('mcp-child' if child else 'owned-helper')
+                maximum = (256 * MIB if child or service == 'owned-helper' else SERVICE_MEMORY_MIB[service] * MIB)
+                actual_limit = row['HostConfig']['Memory']
+                memory = {'currentBytes': 0, 'peakBytes': 0, 'oom': 0, 'oomKills': 0}
+                if row['State']['Running']:
+                    require((actual_limit == maximum if service != 'owned-helper' else 0 < actual_limit <= maximum)
+                            and row['HostConfig']['MemorySwap'] == actual_limit,
+                            'Actual runtime cgroup differs from the bounded acceptance profile')
+                    try:
+                        cg = Path('/proc') / str(row['State']['Pid']) / 'cgroup'
+                        unified = [line[3:] for line in cg.read_text().splitlines() if line.startswith('0::/')]
+                        require(len(unified) == 1 and '..' not in Path(unified[0]).parts
+                                and unified[0].endswith(('/docker-' + cid + '.scope', '/docker/' + cid)),
+                                'Runtime PID does not belong to its exact cgroup v2 container')
+                        base = Path('/sys/fs/cgroup') / unified[0].lstrip('/')
+                        require(int((base / 'memory.max').read_text()) == actual_limit
+                                and int((base / 'memory.swap.max').read_text()) == 0,
+                                'The observed kernel cgroup/swap limit differs from the runtime profile')
+                        events = dict(line.split() for line in (base / 'memory.events').read_text().splitlines())
+                        memory = {'currentBytes': int((base / 'memory.current').read_text()),
+                            'peakBytes': int((base / 'memory.peak').read_text()),
+                            'oom': int(events.get('oom', 0)), 'oomKills': int(events.get('oom_kill', 0))}
+                    except FileNotFoundError:
+                        current = json.loads(ctx.ops.docker('inspect', cid, timeout=0.4))[0]
+                        require(current['Id'] == cid and current['Image'] == row['Image'] and not current['State']['Running'],
+                                'A running runtime process lost its resource observation')
+                        row = current  # An intentional restart can remove its old cgroup.
+                if row['State'].get('OOMKilled') or memory['oom'] or memory['oomKills']: reasons.append('OWNED_OOM')
+                previous = self.summary['containers'].get(cid, {})
+                item = {'service': service, 'containerId': cid, 'image': row['Image'], 'memoryLimitBytes': actual_limit,
+                    **memory, 'peakBytes': max(memory['peakBytes'], previous.get('peakBytes', 0)),
+                    'oom': max(memory['oom'], previous.get('oom', 0)),
+                    'oomKills': max(memory['oomKills'], previous.get('oomKills', 0)),
+                    'running': row['State']['Running'], 'exitCode': row['State']['ExitCode']}
+                self.summary['containers'][cid] = item; containers.append(item)
+        self.summary['samples'] += 1
+        for key in ('diskAvailableBytes', 'memoryAvailableBytes'):
+            name = 'minimum' + key[0].upper() + key[1:]
+            self.summary[name] = min(probe[key], self.summary.get(name, probe[key]))
+        entry = json.dumps({'probe': probe, 'containers': containers, 'stopReasons': reasons}) + '\n'
+        require((self.raw.stat().st_size if self.raw.exists() else 0) + len(entry.encode('utf8')) <= 64 * MIB,
+                'Owned resource evidence reached its retained byte bound')
+        with self.raw.open('a', encoding='utf8') as stream:
+            os.chmod(self.raw, 0o600)
+            stream.write(entry); stream.flush()
+        require(not reasons, 'Owned runtime resource boundary reached: ' + ','.join(reasons))
+
+    def start(self):
+        require(self.phase is not None and self.thread is None, 'Runtime resource phase must be admitted first')
+        try:
+            self.sample()
+        except BaseException as error:
+            self.error = type(error).__name__
+            raise
+        self.previous_signal = signal.getsignal(signal.SIGUSR1)
+        signal.signal(signal.SIGUSR1, lambda *_: (_ for _ in ()).throw(ResourcePressure('Owned runtime resource boundary reached')))
+        def observe():
+            while not self.done.wait(0.5):
+                started = time.monotonic()
+                try:
+                    with self.lock: self.sample()
+                    require(time.monotonic() - started <= 2, 'Runtime resource probe exceeded its bounded interval')
+                except BaseException as error:
+                    self.error = type(error).__name__; self.summary['status'] = 'FAILED_OR_UNKNOWN'
+                    self.summary['failureType'] = self.error
+                    self.done.set()
+                    # Main's existing failure path freezes creators and performs
+                    # independently verified owned cleanup. Never signal a DB or
+                    # original deployment, and never continue a failed scenario.
+                    os.kill(os.getpid(), signal.SIGUSR1)
+        self.thread = threading.Thread(target=observe, name='owned-runtime-resources', daemon=True); self.thread.start()
+
+    def finish(self):
+        file = self.runtime.directory / 'resource-summary.json'
+        if self.thread is None and file.exists():
+            previous, _ = self.runtime.guard.read_private(file)
+            require(all(previous.get(key) == value for key, value in self.runtime.context().items() if key != 'kind'),
+                    'Existing resource evidence belongs to another runtime')
+            return {'file': file.relative_to(self.runtime.attempt).as_posix(), 'sha256': sha_file(file)}
+        self.done.set()
+        if self.thread:
+            self.thread.join(timeout=5)
+            require(not self.thread.is_alive(), 'Owned resource observer did not stop')
+        if self.previous_signal is not None: signal.signal(signal.SIGUSR1, self.previous_signal)
+        self.summary['status'] = ('FAILED_OR_UNKNOWN' if self.error else
+            'MEASURED_FOR_BOUNDED_SCENARIOS' if self.summary['samples'] else 'NOT_MEASURED')
+        self.summary['rawProbeSha256'] = sha_file(self.raw) if self.raw.exists() else None
+        self.runtime.common.write_json(file, self.summary)
+        return {'file': file.relative_to(self.runtime.attempt).as_posix(), 'sha256': sha_file(file)}
 
 
 class Database:
@@ -88,8 +405,11 @@ class Runtime:
         self.root, self.runtime = self.cutover.canonical(args.root), self.cutover.canonical(args.runtime)
         self.cutover.fixed_source(self.root / 'inbox' / args.tag / 'source.tar.gz', source, args.source_sha256, args.commit)
         self.settings, settings_sha = self.guard.read_private(self.cutover.canonical(args.settings))
-        require(set(self.settings) == {'version', 'sourceMysqlContainerId', 'sourceSchema', 'sourceOffsets', 'java'}
+        settings_fields = {'version', 'sourceMysqlContainerId', 'sourceSchema', 'sourceOffsets', 'java'}
+        require(settings_fields <= set(self.settings) <= settings_fields | {'legacyClockPolicy'}
                 and self.settings.get('version') == 1, 'Reuse this build\'s exact private fixture settings')
+        clocks = module('runtime_clock_policy', source / 'script/schema/compact_clock_policy.py')
+        clocks.validate(self.settings['sourceOffsets'], self.settings.get('legacyClockPolicy'))
         self.attempt = self.cutover.canonical(self.root / 'verification' / args.tag)
         self.checkout = self.cutover.canonical(self.attempt / 'checkout')
         self.directory = self.checkout / 'work/runtime-acceptance'
@@ -116,6 +436,7 @@ class Runtime:
             self.token = secrets.token_hex(6); self.project = 'doorhandle-rehearsal-' + self.token
         self.report = {'checks': [], 'project': self.project}
         self.clients = {}
+        self.resources = RuntimeResources(self)
         if self.owner:
             self.accounts = self.guard.read_private(self.directory / 'users.json')[0] if (self.directory / 'users.json').exists() else {}
 
@@ -243,6 +564,9 @@ with urllib.request.urlopen(r,timeout=10) as s: print(s.read().decode())
                 and reviewed.get('connection', {}).get('port') == fixture.journal['port']
                 and reviewed.get('client', {}).get('containerId') == node['Id'],
                 'The reviewed migration configuration is not bound to this exact owned fixture')
+        require(reviewed.get('sourceOffsets') == self.settings['sourceOffsets']
+                and reviewed.get('legacyClockPolicy') == self.settings.get('legacyClockPolicy'),
+                'Runtime source clock preservation policy differs from its accepted fixture settings')
         sys.path.insert(0, str(self.source / 'script/schema'))
         self.migration = module('runtime_migration_primitives', self.source / 'script/schema/compact_migration_runtime.py')
         _, catalog = self.guard.source_catalog(self.source)
@@ -459,6 +783,7 @@ with urllib.request.urlopen(r,timeout=10) as s: print(s.read().decode())
             'healthcheck': {'test': ['CMD', 'python', '-c', "import urllib.request;urllib.request.urlopen('http://127.0.0.1:9000/health',timeout=3)"],
                             'interval': '5s', 'timeout': '4s', 'retries': 10}}
         config['services']['backend'].setdefault('depends_on', {})['oss-proxy'] = {'condition': 'service_healthy'}
+        config = bounded_config(config)
         self.validate_config(config)
         return config
 
@@ -481,6 +806,7 @@ print(json.dumps({p:data['properties'][p]['baseUrl'] for p in ('deepseek','dashs
 """
         value = {**active[0], 'key': self.master_key.strip().decode('ascii')}
         routes = json.loads(self.ops.docker('run', '--rm', '-i', '--network', 'none', '--read-only', '--pull', 'never',
+            '--memory', '128m', '--memory-swap', '128m',
             '--label', 'io.doorhandle.rehearsal=' + self.project, '--entrypoint', 'python', self.images['mem0'],
             '-B', '-c', code, data=json.dumps(value).encode(), timeout=30))
         require(set(routes) == {'deepseek', 'dashscope', 'openai'} and all(isinstance(url, str)
@@ -515,7 +841,12 @@ print(json.dumps({p:data['properties'][p]['baseUrl'] for p in ('deepseek','dashs
         lines = ['FROM ' + original]; catalog = {}
         for name in ('runner.py', 'execution_store.py', 'image_lifecycle.py', 'configure.py'):
             path = self.source / 'deploy/mcp' / name
-            (context / name).write_bytes(path.read_bytes()); catalog[name] = sha_file(path)
+            raw = path.read_bytes()
+            if name == 'runner.py':
+                require(raw.count(b"'--memory=256m',") == 1, 'MCP child memory declaration changed')
+                raw = raw.replace(b"'--memory=256m',", b"'--memory=256m', '--memory-swap=256m',")
+            (context / name).write_bytes(raw)
+            catalog[name] = {'fixedSourceSha256': sha_file(path), 'imageSourceSha256': sha_file(context / name)}
             lines.append('COPY --chmod=0644 ' + name + ' /app/' + name)
         (context / 'Dockerfile').write_text('\n'.join(lines) + '\n', encoding='utf8')
         tag = 'doorhandlecatch/runtime-mcp:' + self.args.tag + '-' + self.token
@@ -531,15 +862,27 @@ print(json.dumps({p:data['properties'][p]['baseUrl'] for p in ('deepseek','dashs
         require(metadata.get('Labels', {}).get('io.doorhandle.rehearsal') == self.project, 'Runtime key volume ownership differs')
         code = "import sys,os; p='/target/model_config_master_key'; f=os.open(p,os.O_WRONLY|os.O_CREAT|os.O_TRUNC,0o400); os.write(f,sys.stdin.buffer.read(128)); os.close(f); os.chown(p,10001,10001); os.chmod(p,0o400)"
         self.ops.docker('run', '--rm', '-i', '--pull', 'never', '--network', 'none', '--read-only', '--user', '0:0',
+            '--memory', '128m', '--memory-swap', '128m',
             '--label', 'io.doorhandle.rehearsal=' + self.project, '--mount', 'type=volume,src=' + volume + ',dst=/target',
             '--entrypoint', 'python', self.images['mem0'], '-B', '-c', code, data=raw, timeout=30)
 
     def start(self):
-        memory = next(int(line.split()[1]) * 1024 for line in Path('/proc/meminfo').read_text().splitlines() if line.startswith('MemAvailable:'))
         declared = sum(int(spec.get('mem_limit', 0)) for spec in self.config['services'].values())
-        require(memory >= max(6 * 1024 ** 3, declared + 1024 ** 3), 'The actual ECS lacks memory for the isolated complete runtime')
-        disk = os.statvfs(self.directory)
-        require(disk.f_bavail * disk.f_frsize >= 8 * 1024 ** 3, 'The actual ECS lacks runtime backup reserve')
+        physical = allocated_bytes(Path(self.fixture_owner['dataDirectory']) / self.owner['targetSchema'])
+        retained = allocated_bytes(self.checkout / 'work/compact-fixtures')
+        logs = len(self.config['services']) * 5 * MIB
+        # This is a monitored experiment boundary, never a predicted peak/PASS.
+        # Existing images, source, all dumps and prior clones remain allocated in
+        # the baseline filesystem; none is credited as reclaimable capacity.
+        growth = physical + logs + 8 * 64 * MIB + 256 * MIB
+        self.resources.admit('runtime-start', growth, {
+            'candidateSchemaAllocatedBytes': physical, 'retainedFixturesAllocatedBytes': retained,
+            'candidateBuildSha256': self.build_sha, 'applicationJarBytes': self.build['applicationJarBytes'],
+            'originalDeploymentInventorySha256': self.migration.sha_json(self.owner['sourceBefore']),
+            'logLimitBytes': logs, 'kafkaPartitionRetentionEnvelopeBytes': 8 * 64 * MIB,
+            'newWritableMeasurementEnvelopeBytes': 256 * MIB,
+            'existingDataAndBackups': 'RETAINED_IN_BASELINE_FILESYSTEM'}, declared + MCP_CHILD_MEMORY)
+        self.resources.start()
         self.install_key(self.master_key)
         self.dc('create', '--no-build', 'redis', timeout=120)
         network_name = self.config['networks']['doorhandle-network']['name']
@@ -711,6 +1054,52 @@ print(json.dumps(acknowledged[0]))
 
     def recovery_scenario(self):
         return self.recovery.run(self)
+
+    def admit_backup_phase(self, snapshot):
+        # mysqldump uses one complete INSERT per row, --hex-blob and no DDL.
+        # Measure every source column's bytes; escaping/binary hex at most double
+        # these bytes. Per-row full column names and framing are counted too.
+        bound, row_count = MIB, 0
+        tables = {}
+        for table, detail in snapshot['tables'].items():
+            names = [column['name'] for column in detail['columns']]
+            prefix = 'INSERT INTO `' + table + '` (' + ', '.join('`' + name + '`' for name in names) + ') VALUES ('
+            terms = []
+            for column in detail['columns']:
+                quoted = self.migration.quoted(column['name'])
+                binary = re.match(r'(?:.*blob|.*binary|bit)(?:\(|$)', column['type'], re.I)
+                encoded = quoted if binary else 'CAST(' + quoted + ' AS CHAR CHARACTER SET utf8mb4)'
+                terms.append('COALESCE(OCTET_LENGTH(' + encoded + '),0)')
+            measured = self.db.one("SELECT JSON_OBJECT('rows',COUNT(*),'bytes',COALESCE(SUM(" + '+'.join(terms)
+                                   + "),0)) FROM " + self.migration.quoted(table) + ';')
+            require(measured['rows'] == detail['rows'], 'Frozen backup row count changed during resource measurement')
+            rows, size = int(measured['rows']), int(measured['bytes'])
+            row_count += rows
+            # NULL, quoting, commas and hex prefixes each fit in 16 bytes/column.
+            upper = 2 * size + rows * (len(prefix.encode()) + 16 * len(names) + 4)
+            bound += upper; tables[table] = {'rows': rows, 'rawColumnBytes': size, 'dumpUpperBoundBytes': upper}
+        self.backup_dump_bound = bound
+        self.resources.admit('runtime-backup', bound + 64 * MIB, {
+            'sourceSnapshotSha256': snapshot['snapshotSha256'], 'tables': tables,
+            'rows': row_count, 'dumpUpperBoundBytes': bound, 'retainedPriorData': True})
+
+    def admit_restore_phase(self, backup):
+        file, manifest, checksum = self.migration.private_json(backup)
+        dump = self.cutover.canonical(file.parent / manifest['data']['file'])
+        require(dump.name == 'data.sql' and dump.stat().st_size == manifest['data']['bytes']
+                and sha_file(dump) == manifest['data']['sha256']
+                and dump.stat().st_size <= self.backup_dump_bound, 'Measured runtime backup exceeded its admitted bound')
+        physical = allocated_bytes(Path(self.fixture_owner['dataDirectory']) / self.owner['targetSchema'])
+        # Existing raw dump stays. restore_data additionally retains clean SQL
+        # and prefixed SQL input; the original schema and prior clones stay too.
+        # Physical clone growth is an enforced measurement envelope, not a claim
+        # that InnoDB allocation can be predicted from information_schema.
+        growth = 2 * dump.stat().st_size + 2 * physical + 128 * MIB
+        self.resources.admit('runtime-restore', growth, {'backupManifestSha256': checksum,
+            'dumpBytes': dump.stat().st_size, 'dumpSha256': manifest['data']['sha256'],
+            'retainedRawDumpBytes': dump.stat().st_size, 'additionalSqlCopies': 2,
+            'retainedSourceSchemaAllocatedBytes': physical, 'cloneAllocationMeasurementEnvelopeBytes': 2 * physical,
+            'restoreOverheadEnvelopeBytes': 128 * MIB, 'existingDataAndBackups': 'RETAINED_IN_BASELINE_FILESYSTEM'})
 
     def memory_scenario(self):
         session = self.request('inspector', 'POST', '/api/chat-assistant/sessions')['sessionId']
@@ -918,6 +1307,7 @@ print(json.dumps(acknowledged[0]))
             env = {key: value for key, value in service['environment'].items() if key.startswith('ALIYUN_OSS_')}
             name = self.project + '-oss-cleanup'
             command = ['run', '--rm', '-i', '--name', name, '--pull', 'never', '--read-only',
+                '--memory', '256m', '--memory-swap', '256m',
                 '--label', 'io.doorhandle.rehearsal=' + self.project, '--network', self.config['networks']['worker-egress']['name']]
             for key, value in env.items():
                 command.extend(['--env', key])
@@ -1029,12 +1419,14 @@ print(json.dumps({'deleted':len(keys),'keysSha256':hashlib.sha256(json.dumps(sor
             require(source_after == self.owner.get('sourceBefore'), 'An original source process, configuration or database identity changed')
         except BaseException:
             failures.append('original-source-readback')
+        resource_evidence = self.resources.finish()
         result = {**self.context(), 'status': 'NEEDS_REVIEW' if failures else 'STOPPED', 'project': self.project,
             'stoppedContainers': stopped, 'preservedOwnedVolumes': True,
             'sourceResourcesChanged': source_after is None or source_after != self.owner.get('sourceBefore'),
             'sourceBeforeSha256': self.migration.sha_json(self.owner.get('sourceBefore')) if hasattr(self, 'migration') else None,
             'sourceAfterSha256': self.migration.sha_json(source_after) if hasattr(self, 'migration') else None,
-            'objectsCleaned': self.owner.get('objectsCleaned'), 'unresolved': failures}
+            'objectsCleaned': self.owner.get('objectsCleaned'), 'unresolved': failures,
+            'resourceEvidence': resource_evidence}
         file = self.directory / 'cleanup.json'; self.common.write_json(file, result)
         self.owner['cleanup'] = {'file': file.relative_to(self.attempt).as_posix(), 'sha256': sha_file(file), 'status': result['status']}
         self.save('NEEDS_REVIEW' if failures else 'STOPPED')
@@ -1202,7 +1594,16 @@ print(json.dumps({'deleted':len(keys),'keysSha256':hashlib.sha256(json.dumps(sor
         self.owner['finalFixtureState'] = state
         self.save('ASSERTIONS_PASSED')
         self.cleanup()
+        require(self.resources.error is None, 'Runtime resource observation failed; bounded acceptance cannot pass')
+        daemons = set(self.config['services']) - {'kafka-init', 'kafka-storage-init', 'higress-seed', 'higress-config'}
+        observed = {row['service'] for row in self.resources.summary['containers'].values() if row['peakBytes'] > 0}
+        require(daemons <= observed, 'An actual service memory peak was not observed; retain the incomplete resource evidence')
+        validate_resource_evidence(self.resources.summary, self.resources.raw.read_bytes(), self.context(), self.project)
         proof = {**self.context(), 'status': 'PASS', 'project': self.project,
+            'loadScope': {'profile': RUNTIME_PROFILE, 'productionPerformanceVerified': False,
+                          'productionCapacityVerified': False, 'allMandatoryScenariosRequired': True},
+            'resourceEvidence': {'file': (self.directory / 'resource-summary.json').relative_to(self.attempt).as_posix(),
+                                 'sha256': sha_file(self.directory / 'resource-summary.json')},
             'migrationReceiptSha256': self.owner['migrationReceiptSha256'],
             'initialTargetSnapshotSha256': self.owner['initialTargetSnapshotSha256'],
             'actualServerUuid': self.owner['serverUuid'], 'actualMysqlPort': self.owner['mysqlPort'],

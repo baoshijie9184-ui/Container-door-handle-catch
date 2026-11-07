@@ -148,3 +148,42 @@ python3 -B script/jenkins/ecs-resource-budget.py check --input resource-plan.jso
 任何容量失败都只返回 `STOP_OWNED_ATTEMPT / OWNED_ATTEMPT_ONLY`。执行方只能终止已核验属于本轮的进程组和测试容器，保护原运行应用和其他任务，不能调用全局 `docker prune`、停止原服务或删除无归属卷。数据库、快照、双恢复、迁移结果、业务证据、回执、源文件一律保留；失败时仍先收集已有原始报告、探针和诊断。获准清理编译物/依赖树也必须先证明路径在本轮 checkout 内、非符号链接跳转，且原始报告已核验归档；预算模块不会授权或执行清理。
 
 本模块的测试源码见 [`test_jenkins_resource_budget.py`](../../tests_python/test_jenkins_resource_budget.py)，覆盖串行峰值、未知阶段、受控测量、真实保底、超界、OOM、原始所有权及篡改拒绝。应由 Jenkins 在已准入的 ECS 上运行。本地只做源码与 AST 检查，不能把静态检查记录为测试通过。
+
+## 夹具准备阶段的实际执行约束
+
+[`prepare-compact-fixtures.py`](../../script/jenkins/prepare-compact-fixtures.py) 使用 `plan_phase(spec)` 与 `check_phase(plan, actualProbe)`；这两个纯函数只描述当前准备阶段，不要求尚未执行的 Maven、前端或运行栈先给出峰值。`MEASUREMENT_ADMITTED` 只允许实施当前受控量测，返回始终保留 `fullAcceptanceStatus: NOT_MEASURED`、`allAcceptanceResourcesMeasured: false`。它没有把旧约 13.9 GiB 门槛替换成新的全程固定门槛。
+
+阶段按如下顺序串行执行，均保留同一个起始探针、固定提交、源码/Jar 摘要和前阶段回执摘要：
+
+| 阶段 | 准入的实际输入与边界 |
+|---|---|
+| `extraction` | 核验 PAX 提交、归档 SHA、自身源码；读取每个 tar 成员实际声明长度，按目标文件系统分配单元向上取整并计目录，另计 Jar 新副本与 32 MiB 元数据余量。最多 50,000 个成员、512 MiB 声明内容，拒绝链接、重复和越界路径 |
+| `source-inspection` | 在不写源库的前提下读取源版本、表结构、事件/存储例程和实际 DATA_LENGTH+INDEX_LENGTH；本阶段以 64 MiB 增长界限受控量测 |
+| `source-export` | 根据本轮实际源 ALLOC 设置 `min(2 GiB, max(512 MiB, 4×ALLOC+64 MiB))` 的可终止量测界限；完整保留源结构、typed 数据快照、前后逐表摘要及 SQL dump；该公式不是 SQL 大小预测或全程容量证明 |
+| `fixture-clone` | 必须先有本轮已完成 dump 的实际字节、SHA-256、backup manifest SHA 和源 snapshot SHA；增长界限为 `max(768 MiB, 3×ALLOC+2×dumpBytes+128 MiB+suiteCount×2 MiB)`。仅在当前实际空闲满足剩余界限及保底后创建本轮 MySQL，复制源库及准备全部 suite |
+
+上界是可停止的测量预算；发生超界就失败并保留已有数据，不能扩大上界掩盖超界，也不能声称在给定磁盘中完整测试必然成功。真实 SQL 若超过量测界限，应根据失败证据另行设计下一轮，不跳过数据或测试。未来 Maven 冷缓存、双恢复和完整运行栈仍需独立准入和实测。
+
+准备器在 Linux 自身及其后代应用 3 GiB `RLIMIT_AS`，不修改原业务进程限额。Docker Go CLI 继承这一地址空间边界；另对本轮控制进程树 RSS 监测 2 GiB 上限。只读源客户端在原 MySQL 容器内部使用单独 512 MiB `ulimit -v`；原 mysqld 不被改动。夹具 MySQL 的 memory 与 memory-swap 都为 1.5 GiB，不允许交换突破该 cgroup。准入计入当前阶段控制器、源客户端或 Java 工具与夹具的并存限额，另保留 1 GiB 主机 MemAvailable。
+
+两个独立线程负责物理分配与快速压力检查。分配线程使用经核验的 `sudo -n timeout --kill-after=0.2s 1.2s du -B1 -x -s -- <本轮attempt>`，只遍历本轮隔离目录；root du 子进程由原生 timeout 约束。物理分配量不由主机空闲差推算，其他任务释放空间不能掩盖本轮超界。另一线程每 0.5 秒读取真实磁盘空闲和 MemAvailable；任一线程延迟超过 2 秒、采样失败、OOM、超界或主机真实剩余低于 2 GiB+256 MiB，均立即向自身主线程发送 SIGUSR1 使操作失败。256 MiB 是独立停止余量，不能借用真实 2 GiB 保底。主机可用量下降只记录为 `HOST_DISK_LOSS_UPPER_BOUND`，不冒充资源归属证据。
+
+每次执行宿主命令前，先在 0700 私有目录持久化唯一 command claim，再创建独立 session，命令继承本轮 owner 与 claim 标记；启动后追加 PID、startticks、参数摘要。失败时以 exact owner+claim 静默匹配 `/proc`，复核 startticks，再终止该 session。即使启动后 PID 回执尚未写成、或 group leader 已退出，也能识别本轮残留；无匹配 capability 的 PID 不被终止。不会输出或归档进程环境。
+
+源库只读客户端另有本轮 export token。准备开始前先核验容器内 token 读取、startticks、kill 与地址空间限制能力；失败清理时重新核对原 source 容器完整 ID、镜像和 Compose 身份，在其 `/proc` 中静默精确匹配 token，仅 TERM/KILL 对应 `mysql`、`mysqldump` 或导出包装 `sh`，并复核 startticks。回执只含 PID、startticks、comm；绝不输出 MYSQL_PWD 等环境内容，不停止、重建或替换原 source 容器。源备份结束后同样确认本轮源客户端已退出。
+
+本轮证据位于 `verification/<tag>/checkout/work/compact-fixtures/`：
+
+| 文件 | 含义 |
+|---|---|
+| `resource-enforcement.json` | 实际 rlimit 回读、限额、固定源码与所有权、监测方案 |
+| `resource-probes.jsonl` | 连续原始时间、主机余量、本轮物理分配、RSS/cgroup 与 OOM 探针 |
+| `resource-phase-<序号>-<阶段>-plan.json`、`-admission.json` | 该阶段的固定输入、真实准入及剩余预算 |
+| `resource-phase-<序号>-measured.json` | 结束探针、采样实际峰值/最低余量、前阶段回执摘要；只声明当前阶段已测 |
+| `owned-command-claims/`、`owned-process-groups.jsonl` | 启动前 capability 与启动后 session 身份，不保存原始 argv 或环境 |
+| `source-export-cleanup-*.json`、`cleanup-receipt.json` | 本轮源客户端、夹具/进程退出的确认；源数据与失败证据全部保留 |
+| `resource-failure.json` | 监督失败；缺失终止确认时不能发布 PREPARED |
+
+只有所有阶段完成、独立监测线程结束、探针与进程回执 fsync 成功后，才写 `.fixtures-ready.json`。失败清理逐项尝试本轮宿主进程、本轮源客户端、Java 探针和本轮 MySQL；一项失败不会跳过其他项，但任一退出状态未知都保留 `FAILED_OR_UNKNOWN`，阻止后续使用。整个过程不删除 dump、源数据、MySQL 目录或证据，不调用全局 Docker 清理。
+
+新增的 ECS 测试源码包含实际 Linux 进程组与 watchdog 信号验证：非本轮 session 保持存活、leader 退出后的子进程仍可清理、仅有启动前 claim 时仍可找到本轮命令、监测迟采真实通知自身并留下失败回执。这些测试必须通过 Jenkins 在 ECS 执行；本次源码检查不能替代其实际结果。

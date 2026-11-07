@@ -140,6 +140,93 @@ def admit(path, *, root, tag, commit, source_sha, identity, source):
     return value, digest(path)
 
 
+def release_identity(value, candidate_file):
+    """Bind Java migration to the same release, source archive and Jenkins jar."""
+    folder = canonical(value['directory'])
+    root = folder.parents[2]
+    source = canonical(root / 'releases' / value['release'])
+    candidate_file = canonical(candidate_file)
+    require(candidate_file == source / 'candidate-build.json', 'Java release is outside this immutable build')
+    archive = canonical(root / 'inbox' / value['release'] / 'source.tar.gz')
+    require(digest(archive) == value['sourceSha256'], 'Java release archive changed')
+    # Check original archive bytes, not a Git blob or a CRLF-normalized worktree.
+    seen, total = set(), 0
+    with tarfile.open(archive, 'r:gz') as package:
+        for entry in package:
+            name = Path(entry.name)
+            require(not name.is_absolute() and '..' not in name.parts and '\\' not in entry.name
+                    and (entry.isdir() or entry.isfile()), 'Unsafe Java release source archive')
+            if entry.isdir():
+                continue
+            total += entry.size
+            require(entry.name not in seen and name.parts[0] not in ('work', '.git')
+                    and 0 <= entry.size <= 128 * 1024 ** 2 and total <= 512 * 1024 ** 2
+                    and len(seen) < 50000, 'Java release source archive exceeds its bounds')
+            seen.add(entry.name)
+            path = canonical(source / name)
+            require(path.is_relative_to(source) and path.is_file() and path.stat().st_size == entry.size
+                    and digest(path) == hashlib.sha256(package.extractfile(entry).read()).hexdigest(),
+                    'Java release differs from the fixed source archive')
+        require(package.pax_headers.get('comment') == value['commit']
+                and 'script/jenkins/ecs-tool-runtime.py' in seen,
+                'Java release is missing its pinned executor/commit')
+    require(digest(source / 'script/jenkins/ecs-tool-runtime.py') == value['files']['executor.py'],
+            'Java release executor differs from its manifest')
+    build = private_json(candidate_file)
+    require(all(build.get(key) == expected for key, expected in {
+        'schemaVersion': 1, 'kind': 'doorhandle-compact-candidate-build', 'status': 'BUILT',
+        'release': value['release'], 'commit': value['commit'], 'sourceSha256': value['sourceSha256'],
+        'ecs': value['identity']}.items()), 'Java candidate belongs to another source or ECS')
+    artifact_file = canonical(root / 'inbox' / value['release'] / 'build-artifacts.json')
+    artifact = private_json(artifact_file)
+    jar = canonical(source / 'work/candidate-app.jar')
+    input_jar = canonical(root / 'inbox' / value['release'] / 'application.jar')
+    require(all(artifact.get(key) == expected for key, expected in {
+        'schema': 1, 'kind': 'doorhandle-compact-fixture-artifacts', 'release': value['release'],
+        'commit': value['commit'], 'sourceSha256': value['sourceSha256']}.items())
+        and build.get('buildArtifactPlanSha256') == digest(artifact_file)
+        and type(artifact.get('applicationJarBytes')) is int
+        and 0 < artifact['applicationJarBytes'] <= 512 * 1024 ** 2
+        and jar.stat().st_size == input_jar.stat().st_size == build.get('applicationJarBytes') == artifact['applicationJarBytes']
+        and digest(jar) == digest(input_jar) == build.get('applicationJarSha256') == artifact.get('applicationJarSha256'),
+        'Java migration must use the exact Jenkins application jar')
+    return {'schema': 1, 'kind': 'doorhandle-ecs-java-release', 'release': value['release'],
+            'commit': value['commit'], 'sourceSha256': value['sourceSha256'], 'identity': value['identity'],
+            'manifestSha256': digest(folder / 'manifest.json'), 'candidateBuildSha256': digest(candidate_file),
+            'source': str(source), 'work': str(canonical(source / 'work')), 'applicationJar': str(jar),
+            'applicationJarSha256': digest(jar), 'applicationJarBytes': jar.stat().st_size}
+
+
+def admit_release(value, candidate_file):
+    proof = release_identity(value, candidate_file)
+    path = Path(value['directory']) / 'java-release.json'
+    require(not path.exists(), 'Java release registration cannot overwrite an existing outcome')
+    write_json(path, proof)
+    return {'status': 'ADMITTED', 'release': value['release'], 'javaReleaseSha256': digest(path)}
+
+
+def java_release(value):
+    folder = Path(value['directory'])
+    file = folder / 'java-release.json'
+    require(file.exists(), 'Java release has not been admitted for this build')
+    proof = private_json(file)
+    expected = release_identity(value, folder.parents[2] / 'releases' / value['release'] / 'candidate-build.json')
+    require(proof == expected, 'Pinned Java release, source, jar or manifest changed')
+    return proof
+
+
+def release_arguments(proof, arguments):
+    prefix = ['-Dloader.main=com.ruanzhu.doorhandle.module.ai.workbench.CompactWorkbenchMigrationCli',
+              '-cp', proof['applicationJar'], 'org.springframework.boot.loader.launch.PropertiesLauncher', '--config']
+    require(arguments[:5] == prefix and len(arguments) == 8 and arguments[6] == '--output',
+            'Release Java is restricted to the fixed Workbench migration entry point')
+    work = canonical(proof['work'])
+    config, output = canonical(arguments[5]), canonical(arguments[7], exists=False)
+    require(config.is_file() and config.is_relative_to(work) and output.is_relative_to(work)
+            and not output.exists(), 'Java migration private inputs/receipt escaped this release work directory')
+    return work
+
+
 def owned_row(program, value, container):
     require(re.fullmatch(r'[a-f0-9]{64}', container), 'Tool container ID is invalid')
     row = json.loads(docker(program, 'inspect', container))[0]
@@ -168,6 +255,13 @@ def owned_row(program, value, container):
     if tool == 'python':
         allowed[(str(docker_socket()), '/var/run/docker.sock')] = True
         allowed[(value['docker'], value['docker'])] = False
+    release = None
+    if labels.get('io.doorhandle.java-release') is not None:
+        require(tool == 'java', 'Only Java may mount an admitted candidate release')
+        release = java_release(value)
+        require(labels['io.doorhandle.java-release'] == digest(folder / 'java-release.json'),
+                'Java container release registration changed')
+        allowed[(release['source'], release['source'])] = False
     writable = []
     for mount in row.get('Mounts', []):
         if mount['Type'] == 'tmpfs':
@@ -179,7 +273,8 @@ def owned_row(program, value, container):
         if pair in allowed:
             require(mount['RW'] is allowed.pop(pair), 'Tool bind permissions changed')
         else:
-            require(pair[0] == pair[1] and pair[0] in (value['checkout'], str(folder / 'probe'))
+            permitted = (release['work'],) if release else (value['checkout'], str(folder / 'probe'))
+            require(pair[0] == pair[1] and pair[0] in permitted
                     and mount['RW'] is True, 'Tool bind escaped this build checkout')
             writable.append(pair[0])
     require(not allowed and len(writable) == 1, 'Tool mount admission is incomplete')
@@ -291,9 +386,13 @@ def command(value, tool, arguments, cwd, environment):
     checkout = Path(value['checkout'])
     folder = canonical(value['directory'])
     actual = canonical(cwd)
+    release = None
     if actual == checkout or actual.is_relative_to(checkout):
         canonical(checkout)
         writable = checkout
+    elif tool == 'java' and actual == folder.parents[2] / 'releases' / value['release']:
+        release = java_release(value)
+        writable = release_arguments(release, arguments)
     else:
         require(arguments in (['-version'], ['--version'], ['-v']),
                 'Tool execution outside this checkout is restricted to version admission')
@@ -316,6 +415,9 @@ def command(value, tool, arguments, cwd, environment):
     binds = [(str(writable), str(writable), False), (str(folder), str(folder), True),
              (str(folder / 'receipts'), str(folder / 'receipts'), False),
              ('/etc/machine-id', '/etc/machine-id', True)]
+    if release:
+        binds.append((release['source'], release['source'], True))
+        args += ['--label', 'io.doorhandle.java-release=' + digest(folder / 'java-release.json')]
     # The probe lies beneath the read-only registration folder; add the more
     # specific writable bind after its parent so only probe output can change.
     binds.sort(key=lambda item: len(Path(item[1]).parts))
@@ -329,7 +431,8 @@ def command(value, tool, arguments, cwd, environment):
     if role == 'maven':
         env.update(JAVA_HOME='/opt/java/openjdk', PATH='/opt/java/openjdk/bin:/usr/local/bin:/usr/bin:/bin',
                    MAVEN_CONFIG=str(home / '.m2'))
-        env['JAVA_TOOL_OPTIONS'] = '-Xmx1536m -XX:MaxMetaspaceSize=512m -Duser.home=' + str(home)
+        env['JAVA_TOOL_OPTIONS'] = ('-Xmx1536m -XX:MaxMetaspaceSize=512m -Duser.home=' + str(home)
+            + ' -Djava.io.tmpdir=' + str(home / 'tmp') + ' -Djansi.tmpdir=' + str(home / 'tmp'))
     else:
         env['PATH'] = '/usr/local/bin:/usr/bin:/bin'
     if role == 'python':
@@ -496,6 +599,8 @@ def main():
     call = sub.add_parser('launch'); call.add_argument('--manifest', required=True); call.add_argument('--tool', choices=BINARIES, required=True)
     call.add_argument('arguments', nargs=argparse.REMAINDER)
     clean = sub.add_parser('cleanup'); clean.add_argument('--manifest', required=True)
+    release = sub.add_parser('admit-release'); release.add_argument('--manifest', required=True)
+    release.add_argument('--candidate-build', required=True)
     args = parser.parse_args()
     for name in (signal.SIGTERM, signal.SIGINT):
         signal.signal(name, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
@@ -510,6 +615,9 @@ def main():
         value, _ = admit(args.manifest, root=Path(value['directory']).parents[2], tag=value['release'],
                          commit=value['commit'], source_sha=value['sourceSha256'], identity=value['identity'],
                          source=Path(value['directory']))
+        if args.action == 'admit-release':
+            identity_guard(value['identity'])
+            print(json.dumps(admit_release(value, args.candidate_build))); return 0
         print(json.dumps(cleanup(value))); return 0
     except BaseException as error:
         print(json.dumps({'status': 'FAILED_OR_UNKNOWN', 'errorType': type(error).__name__}), file=sys.stderr)

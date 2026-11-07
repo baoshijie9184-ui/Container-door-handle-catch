@@ -1,6 +1,17 @@
 """Resource safety contracts. Run on the admitted ECS, never on the workstation."""
 import importlib.util
+import io
+import hashlib
+import os
 from pathlib import Path
+import signal
+import subprocess
+import sys
+import tarfile
+import tempfile
+import threading
+import time
+from types import SimpleNamespace
 import unittest
 
 
@@ -8,6 +19,10 @@ MODULE = Path(__file__).resolve().parents[1] / 'script' / 'jenkins' / 'ecs-resou
 SPEC = importlib.util.spec_from_file_location('ecs_resource_budget', MODULE)
 budget = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(budget)
+PREPARER_MODULE = MODULE.with_name('prepare-compact-fixtures.py')
+PREPARER_SPEC = importlib.util.spec_from_file_location('fixture_resource_preparer', PREPARER_MODULE)
+preparer = importlib.util.module_from_spec(PREPARER_SPEC)
+PREPARER_SPEC.loader.exec_module(preparer)
 MIB = 1024 ** 2
 GIB = budget.GIB
 DIGEST = 'a' * 64
@@ -169,6 +184,274 @@ class ResourceBudgetTests(unittest.TestCase):
         del value['baselineProbe']
         self.assertEqual('FAIL_CLOSED', budget.check(budget.plan(value), probe(), 'java')['status'])
         self.assertEqual('FAIL_CLOSED', budget.check(budget.plan(spec()), probe(), 'not-a-phase')['status'])
+
+
+def phase_spec(phase='extraction', **changes):
+    value = {'ownerToken': 'ci-123-abcdef12', 'sourceCommit': 'b' * 40,
+             'sourceSha256': DIGEST, 'applicationJarSha256': DIGEST,
+             'enforcementEvidenceSha256': DIGEST, 'phase': phase,
+             'baselineProbe': probe(), 'attemptBaselineProbe': probe(),
+             'previousPhaseReceiptSha256': None if phase == 'extraction' else DIGEST,
+             'growthEnvelopeBytes': 600 * MIB, 'memoryAdmissionBytes': 3 * GIB,
+             'ownedMemoryLimitBytes': 2 * GIB,
+             'measuredInputs': {'archiveDeclaredBytes': 1024, 'archiveAllocatedBoundBytes': 8192,
+                                'archiveMemberCount': 2, 'jarCopyBytes': 2048,
+                                'sourceAllocatedBytes': 300 * MIB, 'dumpBytes': 100 * MIB,
+                                'dumpSha256': DIGEST, 'backupManifestSha256': DIGEST,
+                                'sourceSnapshotSha256': DIGEST},
+             'enforcement': {'independentMonitor': True, 'ownedPhysicalDiskMeasured': True,
+                 'registeredProcessGroups': True, 'controllerAddressSpaceLimited': True,
+                 'maxProbeIntervalSeconds': 2, 'diskOvershootBytes': 256 * MIB,
+                 'sourceExportCancellation': True, 'mysqlCgroupLimitBytes': 1536 * MIB}}
+    value.update(changes)
+    return value
+
+
+class ControlledPreparationBudgetTests(unittest.TestCase):
+    def test_seven_gib_can_admit_measured_current_phase_without_claiming_full_fit(self):
+        planned = budget.plan_phase(phase_spec())
+        result = budget.check_phase(planned, probe())
+        self.assertEqual('MEASUREMENT_ADMITTED', result['status'])
+        self.assertEqual(2 * GIB + 856 * MIB, result['requiredFreeDiskBytes'])
+        self.assertEqual('NOT_MEASURED', result['fullAcceptanceStatus'])
+        self.assertFalse(result['allAcceptanceResourcesMeasured'])
+
+    def test_other_tasks_freeing_disk_cannot_hide_our_excess_allocation(self):
+        result = budget.check_phase(budget.plan_phase(phase_spec()),
+            probe(ownedDiskBytes=701 * MIB, diskAvailableBytes=8 * GIB))
+        self.assertEqual('FAIL_CLOSED', result['status'])
+        self.assertEqual(601 * MIB, result['observedOwnedGrowthBytes'])
+        self.assertEqual(0, result['hostDiskLossObservation']['bytes'])
+        self.assertFalse(result['hostDiskLossObservation']['ownershipProof'])
+
+    def test_clone_needs_completed_dump_and_snapshot_digests(self):
+        for key in ('dumpBytes', 'dumpSha256', 'backupManifestSha256', 'sourceSnapshotSha256'):
+            with self.subTest(key=key):
+                value = phase_spec('fixture-clone')
+                del value['measuredInputs'][key]
+                self.assertEqual('NOT_MEASURED', budget.plan_phase(value)['status'])
+                self.assertEqual('FAIL_CLOSED', budget.check_phase(budget.plan_phase(value), probe())['status'])
+
+    def test_current_phase_receipt_chain_cannot_silently_rebase(self):
+        value = phase_spec('source-export', previousPhaseReceiptSha256=None)
+        self.assertEqual('NOT_MEASURED', budget.plan_phase(value)['status'])
+        value = phase_spec(previousPhaseReceiptSha256=DIGEST)
+        self.assertEqual('INVALID', budget.plan_phase(value)['status'])
+
+    def test_real_disk_floor_and_overshoot_cannot_be_borrowed(self):
+        result = budget.check_phase(budget.plan_phase(phase_spec()),
+            probe(ownedDiskBytes=700 * MIB, diskAvailableBytes=2 * GIB + 256 * MIB - 1))
+        self.assertEqual('FAIL_CLOSED', result['status'])
+        self.assertEqual('OWNED_ATTEMPT_ONLY', result['stopScope'])
+        self.assertTrue(result['preserveEvidence'])
+
+    def test_observed_owned_growth_reduces_remaining_envelope_once(self):
+        result = budget.check_phase(budget.plan_phase(phase_spec()), probe(ownedDiskBytes=300 * MIB))
+        self.assertEqual('MEASUREMENT_ADMITTED', result['status'])
+        self.assertEqual(400 * MIB, result['remainingGrowthEnvelopeBytes'])
+        self.assertEqual(2 * GIB + 656 * MIB, result['requiredFreeDiskBytes'])
+
+    def test_missing_actual_monitor_or_limits_is_not_enforced_bound(self):
+        for key in ('independentMonitor', 'ownedPhysicalDiskMeasured', 'registeredProcessGroups',
+                    'controllerAddressSpaceLimited', 'maxProbeIntervalSeconds', 'diskOvershootBytes'):
+            with self.subTest(key=key):
+                value = phase_spec(); del value['enforcement'][key]
+                self.assertEqual('FAIL_CLOSED', budget.check_phase(budget.plan_phase(value), probe())['status'])
+
+    def test_source_cancellation_and_fixture_cgroup_are_required_only_where_applicable(self):
+        value = phase_spec('source-export'); value['enforcement']['sourceExportCancellation'] = False
+        self.assertEqual('NOT_MEASURED', budget.plan_phase(value)['status'])
+        value = phase_spec('fixture-clone'); value['enforcement']['mysqlCgroupLimitBytes'] = GIB
+        self.assertEqual('NOT_MEASURED', budget.plan_phase(value)['status'])
+
+    def test_timestamp_filesystem_commit_owner_oom_and_memory_fail_closed(self):
+        for change in ({'capturedAtUtc': '2026-11-07T03:59:59Z'}, {'diskTotalBytes': 41 * GIB},
+                       {'sourceCommit': 'c' * 40}, {'ownerToken': 'ci-other-attempt'}, {'oomKills': 1},
+                       {'memoryAvailableBytes': 3 * GIB}, {'ownedMemoryBytes': 2 * GIB + 1}):
+            with self.subTest(change=change):
+                self.assertEqual('FAIL_CLOSED', budget.check_phase(budget.plan_phase(phase_spec()), probe(**change))['status'])
+
+    def test_derived_plan_tampering_does_not_lower_reserve(self):
+        planned = budget.plan_phase(phase_spec()); planned['diskReserveBytes'] = 0
+        self.assertEqual('FAIL_CLOSED', budget.check_phase(planned, probe())['status'])
+
+
+class PreparationEnforcementTests(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == 'linux', 'Native signal restoration is verified only on ECS Linux')
+    def test_late_monitor_failure_cannot_close_successfully_and_publish_readiness(self):
+        controller = self.controller()
+        controller.lock = threading.RLock(); controller.stop = threading.Event(); controller.failed.set()
+        controller.old_signal = signal.getsignal(signal.SIGUSR1)
+        worker = SimpleNamespace(join=lambda **_: None, is_alive=lambda: False)
+        controller.watcher = controller.collector = worker
+        controller.preparation.cancel_source_exports = lambda: None
+        controller.preparation.cleanup_java_probe = lambda: None
+        controller.preparation.cleanup = lambda: None
+        with tempfile.TemporaryDirectory() as temp:
+            controller.stream = (Path(temp) / 'probes').open('w')
+            controller.group_stream = (Path(temp) / 'groups').open('w')
+            with self.assertRaisesRegex(ValueError, 'no readiness marker'):
+                controller.close(False)
+            self.assertTrue(controller.stream.closed and controller.group_stream.closed)
+
+    def archive(self, folder, extra=()):
+        target = folder / 'source.tar.gz'
+        with tarfile.open(target, 'w:gz', format=tarfile.PAX_FORMAT, pax_headers={'comment': 'b' * 40}) as package:
+            for name, content in (('script/jenkins/prepare-compact-fixtures.py', PREPARER_MODULE.read_bytes()),
+                                  ('script/jenkins/ecs-resource-budget.py', MODULE.read_bytes())):
+                info = tarfile.TarInfo(name); info.size = len(content)
+                package.addfile(info, io.BytesIO(content))
+            for info, content in extra:
+                package.addfile(info, io.BytesIO(content) if content is not None else None)
+        return target, hashlib.sha256(target.read_bytes()).hexdigest()
+
+    def test_archive_allocation_uses_actual_filesystem_blocks_and_fixed_self_source(self):
+        with tempfile.TemporaryDirectory() as temp:
+            archive, digest = self.archive(Path(temp))
+            result, raw = preparer.archive_inventory(archive, 'b' * 40, digest, PREPARER_MODULE, 4096)
+            sizes = [PREPARER_MODULE.stat().st_size, MODULE.stat().st_size]
+            self.assertEqual(sum(sizes), result['archiveDeclaredBytes'])
+            self.assertEqual(sum(((size + 4095) // 4096) * 4096 for size in sizes) + 2 * 4096,
+                             result['archiveAllocatedBoundBytes'])
+            self.assertEqual(MODULE.read_bytes(), raw)
+
+    def test_archive_rejects_links_duplicate_members_and_escaping_paths(self):
+        bad = []
+        symlink = tarfile.TarInfo('link'); symlink.type = tarfile.SYMTYPE; symlink.linkname = '/tmp'
+        bad.append((symlink, None))
+        for name in ('../escape', 'work/old-data', 'script/jenkins/ecs-resource-budget.py', 'bad\\name'):
+            item = tarfile.TarInfo(name); item.size = 1; bad.append((item, b'x'))
+        for item in bad:
+            with self.subTest(member=item[0].name), tempfile.TemporaryDirectory() as temp:
+                archive, digest = self.archive(Path(temp), [item])
+                with self.assertRaises(ValueError):
+                    preparer.archive_inventory(archive, 'b' * 40, digest, PREPARER_MODULE)
+
+    def test_archive_rejects_wrong_commit_digest_self_recipe_and_block_size(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp); archive, digest = self.archive(folder)
+            other = folder / 'other.py'; other.write_bytes(b'wrong recipe')
+            for changes in ({'commit': 'c' * 40}, {'source_sha': '0' * 64},
+                            {'own_script': other}, {'block_bytes': 3000}):
+                arguments = dict(archive=archive, commit='b' * 40, source_sha=digest, own_script=PREPARER_MODULE)
+                arguments.update(changes)
+                with self.subTest(changes=changes), self.assertRaises(ValueError):
+                    preparer.archive_inventory(**arguments)
+
+    def controller(self):
+        monitor = preparer.PreparationMonitor.__new__(preparer.PreparationMonitor)
+        monitor.token = 'd' * 32; monitor.processes = {}; monitor.process_lock = threading.Lock()
+        monitor.cleaning = False; monitor.failed = threading.Event(); monitor.group_stream = io.StringIO()
+        monitor.preparation = SimpleNamespace(args=SimpleNamespace(commit='b' * 40))
+        directory = tempfile.TemporaryDirectory(); self.addCleanup(directory.cleanup)
+        monitor.claim_directory = Path(directory.name) / 'owned-command-claims'
+        monitor.claim_directory.mkdir(mode=0o700)
+        return monitor
+
+    @unittest.skipUnless(sys.platform == 'linux', 'Native process ownership is verified only on ECS Linux')
+    def test_real_owned_process_group_stops_without_touching_an_unrelated_session(self):
+        controller = self.controller()
+        unrelated = subprocess.Popen([sys.executable, '-I', '-B', '-c', 'import time; time.sleep(30)'],
+                                     start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        owned = None
+        try:
+            owned = controller.popen([sys.executable, '-I', '-B', '-c', 'import time; time.sleep(30)'],
+                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            controller.stop_group(owned)
+            self.assertIsNotNone(owned.poll())
+            self.assertIsNone(unrelated.poll())
+            receipt = controller.group_stream.getvalue()
+            self.assertIn('argumentsSha256', receipt)
+            self.assertNotIn('PATH=', receipt)
+        finally:
+            if owned is not None and owned.poll() is None:
+                controller.stop_group(owned)
+            unrelated.terminate(); unrelated.wait(timeout=5)
+
+    @unittest.skipUnless(sys.platform == 'linux', 'Native process ownership is verified only on ECS Linux')
+    def test_owned_descendant_remains_cancellable_after_its_group_leader_exits(self):
+        controller = self.controller()
+        script = ('import subprocess,sys; '
+                  'subprocess.Popen([sys.executable,"-I","-B","-c","import time; time.sleep(30)"],'
+                  'stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)')
+        leader = controller.popen([sys.executable, '-I', '-B', '-c', script],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        claim = controller.processes[leader.pid][2]
+        try:
+            leader.wait(timeout=5)
+            deadline = time.monotonic() + 2
+            while not preparer.group_members(leader.pid, controller.token, claim) and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue(preparer.group_members(leader.pid, controller.token, claim))
+            controller.stop_group(leader)
+            self.assertEqual([], preparer.group_members(leader.pid, controller.token, claim))
+        finally:
+            controller.stop_group(leader)
+
+    @unittest.skipUnless(sys.platform == 'linux', 'Native process ownership is verified only on ECS Linux')
+    def test_foreign_session_cannot_be_claimed_by_only_its_pid(self):
+        child = subprocess.Popen([sys.executable, '-I', '-B', '-c', 'import time; time.sleep(30)'],
+                                 start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            preparer.stop_owned_group(child.pid, 'd' * 32, 'e' * 32)
+            self.assertIsNone(child.poll())
+            with self.assertRaises(ValueError):
+                preparer.stop_owned_group(os.getpgrp(), 'd' * 32, 'e' * 32)
+        finally:
+            child.terminate(); child.wait(timeout=5)
+
+    @unittest.skipUnless(sys.platform == 'linux', 'Native process ownership is verified only on ECS Linux')
+    def test_persisted_spawn_intent_cleans_a_child_missing_from_the_pid_registry(self):
+        controller = self.controller()
+        child = controller.popen([sys.executable, '-I', '-B', '-c', 'import time; time.sleep(30)'],
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            # Simulate interruption after Popen but before the PID receipt was
+            # appended: only the durable pre-spawn capability remains.
+            preparation = preparer.Preparation.__new__(preparer.Preparation)
+            preparation.work = controller.claim_directory.parent
+            preparation.journal = {'resourceOwnerToken': controller.token}
+            preparation.args = SimpleNamespace(commit='b' * 40)
+            stopped = preparation.cancel_owned_groups()
+            child.wait(timeout=5)
+            self.assertEqual([child.pid], [entry['group'] for entry in stopped])
+        finally:
+            if child.poll() is None:
+                controller.stop_group(child)
+
+    @unittest.skipUnless(sys.platform == 'linux', 'Native watchdog signals are verified only on ECS Linux')
+    def test_stale_real_watchdog_signals_its_controller_and_preserves_failure_evidence(self):
+        # A dedicated child proves the real watchdog/signal path without changing
+        # pytest's own signal handlers, rlimits or any runtime container.
+        script = '''
+import importlib.util,json,signal,sys,threading,time
+from pathlib import Path
+from types import SimpleNamespace
+spec=importlib.util.spec_from_file_location('preparer_watchdog_child',sys.argv[1])
+module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+monitor=module.PreparationMonitor.__new__(module.PreparationMonitor)
+monitor.token='d'*32; monitor.stop=threading.Event(); monitor.failed=threading.Event()
+monitor.lock=threading.RLock(); monitor.measured_at=time.monotonic()-10
+monitor.current=None; monitor.failure=None; monitor.last={}
+monitor.preparation=SimpleNamespace(work=Path(sys.argv[2]),attempt=Path(sys.argv[2]))
+def interrupted(*_): raise module.ResourceLimitExceeded('owned watcher signalled')
+signal.signal(signal.SIGUSR1,interrupted)
+worker=threading.Thread(target=monitor.watch,daemon=True)
+interrupted_by_watcher=False
+try:
+    worker.start(); time.sleep(5)
+except module.ResourceLimitExceeded:
+    interrupted_by_watcher=True
+finally:
+    monitor.stop.set(); worker.join(timeout=2)
+receipt=json.loads((Path(sys.argv[2])/'resource-failure.json').read_text())
+assert interrupted_by_watcher and monitor.failed.is_set() and not worker.is_alive()
+assert receipt['stopScope']=='OWNED_ATTEMPT_ONLY' and receipt['evidenceRetained']
+'''
+        with tempfile.TemporaryDirectory() as temp:
+            child = subprocess.run([sys.executable, '-I', '-B', '-c', script, str(PREPARER_MODULE), temp],
+                                   capture_output=True, timeout=10)
+            self.assertEqual(0, child.returncode, child.stderr.decode('utf8', errors='replace'))
 
 
 if __name__ == '__main__':

@@ -5,6 +5,7 @@ Invoked under deploy.lock by deploy-remote build-only. It never starts an
 application, mutates source datasets, or copies credentials to Jenkins.
 """
 import argparse
+import hashlib
 import importlib.util
 import json
 import os
@@ -63,6 +64,156 @@ def stage_backend(source, work, jar, common, cutover):
     return context
 
 
+def dependency_versions(requirements):
+    result = {}
+    for line in requirements.splitlines():
+        if not line.strip() or line.lstrip().startswith('#'):
+            continue
+        match = re.fullmatch(r'([A-Za-z0-9_.-]+)==([A-Za-z0-9.+_-]+)', line.strip())
+        if not match or match[1].lower() in result:
+            raise ValueError('Worker dependencies must use unique exact versions')
+        result[match[1].lower()] = match[2]
+    return result
+
+
+def frontend_inventory(path):
+    files, size = 0, 0
+    binding = hashlib.sha256()
+    if path.resolve(strict=True) != path or not path.is_dir():
+        raise ValueError('Frontend artifact must be a canonical directory')
+    for current, directories, names in os.walk(path, followlinks=False):
+        for name in sorted(directories + names):
+            entry = Path(current) / name
+            if entry.is_symlink():
+                raise ValueError('Frontend artifact contains a link')
+            if entry.is_file():
+                length = entry.stat().st_size; files += 1; size += length
+                checksum = hashlib.sha256()
+                with entry.open('rb') as stream:
+                    for block in iter(lambda: stream.read(1024 * 1024), b''): checksum.update(block)
+                binding.update(json.dumps([entry.relative_to(path).as_posix(), length, checksum.hexdigest()],
+                    ensure_ascii=True, separators=(',', ':')).encode() + b'\n')
+        directories.sort()
+    return {'files': files, 'bytes': size, 'links': 0, 'sha256': binding.hexdigest()}
+
+
+def stage_web(source, work, verification_file, verification_sha, common, cutover):
+    verification_file = cutover.canonical(verification_file)
+    common.require(cutover.sha_file(verification_file) == verification_sha, 'Passing frontend verification envelope changed')
+    envelope = json.loads(verification_file.read_text())
+    common.require(envelope.get('status') == 'PASS' and envelope.get('verificationExitCode') == 0
+                   and envelope.get('release') == source.name, 'Frontend build lacks its passing same-build verification')
+    checkout = cutover.canonical(verification_file.parent / 'checkout')
+    result_file = cutover.canonical(checkout / 'work/ci-evidence/receipt.json')
+    descriptors = [item for item in envelope['reportFiles'] if item['path'] == 'reports/receipt.json']
+    common.require(len(descriptors) == 1 and descriptors[0]['bytes'] == result_file.stat().st_size
+                   and descriptors[0]['sha256'] == cutover.sha_file(result_file), 'Executed frontend result receipt changed')
+    result = json.loads(result_file.read_text())
+    common.require(result.get('status') == 'PASS' and result.get('identity') == envelope.get('identity'),
+                   'Frontend results belong to another execution or failed build')
+    artifacts = {}
+    for frontend in ('frontend', 'frontend-agent'):
+        receipt = result.get('frontendResults', {}).get(frontend, {})
+        dependencies = checkout / frontend / 'node_modules'
+        common.require(all(receipt.get(key) == 0 for key in ('installExitCode', 'testExitCode', 'buildExitCode'))
+                       and receipt.get('tests', {}).get('passed', 0) > 0
+                       and receipt['tests'].get('failed') == receipt['tests'].get('skipped') == 0
+                       and receipt.get('dependenciesCleanup', {}).get('status') == 'REMOVED'
+                       and receipt['dependenciesCleanup'].get('relativePath') == frontend + '/node_modules'
+                       and not dependencies.exists() and not dependencies.is_symlink(),
+                       'Both frontends must have passed and removed only their own dependencies')
+        distribution = cutover.canonical(checkout / frontend / 'dist')
+        actual = frontend_inventory(distribution)
+        common.require(actual == receipt.get('artifact') and actual['files'] > 0 and actual['bytes'] > 0
+                       and (distribution / 'index.html').is_file(), 'The tested frontend artifact changed or is empty')
+        artifacts[frontend] = actual
+    # Preserve the pinned Nginx runtime, source template and healthcheck. Node
+    # stages are omitted; this context contains only already-tested static files.
+    original = source / 'deploy/nginx/Dockerfile'; original_body = original.read_text()
+    stages = list(re.finditer(r'^FROM nginx:[^\r\n]+@sha256:[a-f0-9]{64}\s*$', original_body, re.M))
+    common.require(len(stages) == 1, 'Nginx runtime must have one pinned final stage')
+    body = original_body[stages[0].start():]
+    substitutions = {
+        'ARG NGINX_CONFIG=deploy/nginx/nginx.conf\n': '',
+        'COPY ${NGINX_CONFIG} /etc/nginx/templates/default.conf.template': 'COPY nginx.conf /etc/nginx/templates/default.conf.template',
+        'COPY --from=frontend-build /workspace/frontend/dist /usr/share/nginx/html': 'COPY frontend-dist/ /usr/share/nginx/html/',
+        'COPY --from=agent-build /workspace/frontend-agent/dist /usr/share/nginx/html/agent-ui': 'COPY agent-dist/ /usr/share/nginx/html/agent-ui/'}
+    for before, after in substitutions.items():
+        common.require(body.count(before) == 1, 'Nginx artifact COPY/runtime declaration changed')
+        body = body.replace(before, after)
+    common.require(len(re.findall(r'^FROM ', body, re.M)) == 1 and 'node:' not in body and 'npm ' not in body,
+                   'Candidate web must package the tested outputs without another Node build')
+    context = work / 'compact-web-build'; context.mkdir(mode=0o700)
+    for frontend, destination in (('frontend', 'frontend-dist'), ('frontend-agent', 'agent-dist')):
+        shutil.copytree(checkout / frontend / 'dist', context / destination)
+        common.require(frontend_inventory(context / destination) == artifacts[frontend], 'Frontend artifact changed during packaging')
+    configuration = cutover.canonical(source / 'deploy/nginx/nginx.monolith.conf')
+    shutil.copyfile(configuration, context / 'nginx.conf'); os.chmod(context / 'nginx.conf', 0o644)
+    dockerfile = context / 'Dockerfile'; dockerfile.write_text(body, encoding='utf8'); os.chmod(dockerfile, 0o600)
+    common.write_json(work / 'web-build-source.json', {'sourceDockerfileSha256': cutover.sha_file(original),
+        'runtimeDockerfileSha256': cutover.sha_file(dockerfile), 'nginxConfigurationSha256': cutover.sha_file(configuration),
+        'verificationReceiptSha256': verification_sha, 'testResultReceiptSha256': cutover.sha_file(result_file),
+        'frontendArtifacts': artifacts})
+    return context
+
+
+def stage_worker_dependencies(source, context, old_context, args, ops, common, cutover):
+    """Reuse proven immutable dependencies while replacing every runtime source."""
+    previous = common.container(common.PROJECT, 'detection-worker')
+    image = previous['Image']
+    common.require(re.fullmatch(r'sha256:[a-f0-9]{64}', image), 'Worker base must be an immutable existing image')
+    row = json.loads(ops.docker('image', 'inspect', image))[0]
+    common.require(row['Id'] == image and not row['Config'].get('Volumes'), 'Unexpected worker base storage')
+    code = """import importlib.metadata,json,hashlib
+from pathlib import Path
+versions={x.metadata['Name'].lower().replace('_','-'):x.version for x in importlib.metadata.distributions()}
+print(json.dumps({'versions':versions,'requirements':Path('/app/requirements.txt').read_text(),
+ 'requirementsSha256':hashlib.sha256(Path('/app/requirements.txt').read_bytes()).hexdigest(),
+ 'provenanceSha256':hashlib.sha256(Path('/opt/model-source/BUILD_PROVENANCE.json').read_bytes()).hexdigest()}))
+"""
+    actual = json.loads(ops.docker('run', '--rm', '--network', 'none', '--read-only', '--pull', 'never',
+        '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true', '--memory', '128m', '--memory-swap', '128m',
+        '--label', 'io.doorhandle.candidate-build=' + args.tag, '--entrypoint', 'python', image,
+        '-I', '-B', '-c', code, timeout=45))
+    original = cutover.canonical(old_context / 'requirements.txt')
+    provenance = cutover.canonical(old_context / 'BUILD_PROVENANCE.json')
+    common.require(actual['requirementsSha256'] == cutover.sha_file(original)
+                   and actual['provenanceSha256'] == cutover.sha_file(provenance),
+                   'Immutable worker dependencies/provenance differ from retained original build inputs')
+    provenance_value = json.loads(provenance.read_text())
+    common.require(set(provenance_value) == {'sourceZipSha256', 'verifiedSourceFiles', 'wheelSha256'}
+                   and re.fullmatch(r'[a-f0-9]{64}', provenance_value['sourceZipSha256'])
+                   and type(provenance_value['verifiedSourceFiles']) is int and provenance_value['verifiedSourceFiles'] > 0
+                   and len(provenance_value['wheelSha256']) == 2, 'Original worker upstream provenance is incomplete')
+    for name, expected in provenance_value['wheelSha256'].items():
+        common.require(Path(name).name == name and name.endswith('.whl')
+                       and cutover.sha_file(cutover.canonical(old_context / 'cpu-wheels' / name)) == expected,
+                       'Retained CPU dependency wheel differs from its immutable upstream provenance')
+    required = dependency_versions((source / 'deploy/worker/requirements.txt').read_text())
+    former = dependency_versions(actual['requirements'])
+    normalize = lambda name: re.sub(r'[-_.]+', '-', name).lower()
+    common.require(all(actual['versions'].get(normalize(name)) == version for name, version in former.items())
+                   and {name: version for name, version in required.items() if name != 'pymysql'} == former,
+                   'Existing worker dependencies cannot be safely reused for this candidate')
+    common.require(required.get('pymysql') == '1.1.2' and actual['versions'].get('pymysql') in (None, '1.1.2'),
+                   'Only the reviewed no-deps PyMySQL supplement is permitted')
+    original_dockerfile = (source / 'deploy/worker/Dockerfile').read_text()
+    body = original_dockerfile[original_dockerfile.index('COPY kafka_detection_worker.py'):]
+    common.require(len(re.findall(r'^LABEL io\.doorhandle\.business-schema=(?:"compact29-v1"|compact29-v1)\s*$', body, re.M)) == 1
+                   and 'RUN ' not in body and 'FROM ' not in body, 'Worker source-only runtime tail changed')
+    prefix = 'FROM ' + image + '\nUSER root\nWORKDIR /app\n'
+    if actual['versions'].get('pymysql') is None:
+        prefix += ('RUN pip install --no-cache-dir --no-deps --index-url https://pypi.org/simple PyMySQL==1.1.2 && pip check\n')
+    prefix += 'COPY --chmod=0644 requirements.txt /app/requirements.txt\n'
+    (context / 'Dockerfile').write_text(prefix + body, encoding='utf8')
+    return {'mode': 'IMMUTABLE_DEPENDENCY_BASE_WITH_FIXED_SOURCE', 'baseImage': image,
+        'baseImageBytes': row['Size'], 'originalRequirementsSha256': actual['requirementsSha256'],
+        'originalProvenanceSha256': actual['provenanceSha256'], 'requiredVersions': required,
+        'verifiedExistingVersions': {name: actual['versions'].get(normalize(name)) for name in required},
+        'addedNoDeps': ['PyMySQL==1.1.2'] if actual['versions'].get('pymysql') is None else [],
+        'runtimeDockerfileSha256': cutover.sha_file(context / 'Dockerfile')}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('phase', choices=('stage', 'capture'))
@@ -85,7 +236,8 @@ def main():
         cutover.fixed_source(Path(args.root) / 'inbox' / args.tag / 'source.tar.gz', source, args.source_sha256, args.commit)
         settings_path = cutover.canonical(args.settings)
         settings, settings_sha = schema.read_private(settings_path)
-        require(set(settings) == {'version', 'sourceOffsets', 'java', 'sourceMysqlContainerId', 'sourceSchema'} and settings['version'] == 1
+        settings_fields = {'version', 'sourceOffsets', 'java', 'sourceMysqlContainerId', 'sourceSchema'}
+        require(settings_fields <= set(settings) <= settings_fields | {'legacyClockPolicy'} and settings['version'] == 1
                 and re.fullmatch(r'[a-f0-9]{64}', settings.get('sourceMysqlContainerId', ''))
                 and re.fullmatch(r'[a-zA-Z][a-zA-Z0-9_]{0,63}', settings.get('sourceSchema', '')),
                 'Reviewed private ECS settings require the exact source MySQL/schema, domain offsets and existing Java path')
@@ -96,11 +248,14 @@ def main():
         domains = {'workbench'}
         for file in (source / 'sql/mysql/compact/copy').glob('*.sql'):
             domains.update(name.lower() for name in re.findall(r'__SOURCE_([A-Z_]+)_OFFSET__', file.read_text(encoding='utf8')))
-        require(isinstance(settings['sourceOffsets'], dict) and set(settings['sourceOffsets']) == domains
-                and all(isinstance(value, str) and re.fullmatch(r'[+-](?:0\d|1[0-4]):[0-5]\d', value)
-                        and (value[1:3] != '14' or value[4:] == '00') for value in settings['sourceOffsets'].values()),
-                'Every migration domain needs its explicitly reviewed source time offset')
-        java = cutover.canonical(settings['java'])
+        clocks = module('candidate_clock_policy', source / 'script/schema/compact_clock_policy.py')
+        clocks.validate(settings['sourceOffsets'], settings.get('legacyClockPolicy'), expected_domains=domains)
+        java_registration = {}
+        fixture_tools = module('candidate_fixture_tool_admission', source / 'script/jenkins/prepare-compact-fixtures.py')
+        inbox = Path(args.root) / 'inbox' / args.tag
+        java = fixture_tools.fixture_java_executable(settings['java'], root=Path(args.root), inbox=inbox,
+            archive=inbox / 'source.tar.gz', tag=args.tag, commit=args.commit, source_sha=args.source_sha256,
+            identity=identity, registration=java_registration)
         require(os.access(java, os.X_OK), 'Existing Java executable is unavailable')
         work = source / 'work'; work.mkdir(mode=0o700, exist_ok=True)
         inbox = Path(args.root) / 'inbox' / args.tag
@@ -115,12 +270,14 @@ def main():
             'Candidate must package the exact fixed-commit Jenkins application jar')
         if args.phase == 'stage':
             backend_context = stage_backend(source, work, jar_input, common, cutover)
+            web_context = stage_web(source, work, Path(args.root) / 'verification' / args.tag / 'verification-receipt.json',
+                                    verification_sha, common, cutover)
             context = work / 'compact-worker-build'
             context.mkdir(mode=0o700)
             old_context = cutover.canonical(Path(args.runtime) / 'work/cloud/pth-worker-build')
             # Large downloaded wheels/model sources stay on ECS. Hardlinks are
             # immutable inputs to Docker; the existing runtime files are untouched.
-            for name in ('cpu-wheels', 'model-source'):
+            for name in ('model-source',):
                 original = cutover.canonical(old_context / name)
                 require(original.is_dir(), 'Existing validated worker build inputs are missing')
                 for current, folders, files in os.walk(original, followlinks=False):
@@ -141,9 +298,11 @@ def main():
                 shutil.copyfile(original, context / name)
             provenance = cutover.canonical(old_context / 'BUILD_PROVENANCE.json')
             shutil.copyfile(provenance, context / 'BUILD_PROVENANCE.json')
+            dependencies = stage_worker_dependencies(source, context, old_context, args, ops, common, cutover)
             common.write_json(work / 'worker-build-source.json', {'commit': args.commit,
                 'sourceSha256': args.source_sha256, 'settingsSha256': settings_sha,
                 'upstreamProvenanceSha256': cutover.sha_file(provenance),
+                'dependencyReuse': dependencies,
                 'sourceFiles': {name: cutover.sha_file(original) for name, original in copies.items()}})
             # Runtime image pinning preserves infrastructure but the first compact
             # worker must be built from this fixed source, rather than the old image.
@@ -151,6 +310,7 @@ def main():
             images = json.loads(runtime_file.read_text())
             images['services'].pop('detection-worker', None)
             images['services']['backend'] = {'build': {'context': str(backend_context), 'dockerfile': 'Dockerfile'}}
+            images['services']['nginx'] = {'build': {'context': str(web_context), 'dockerfile': 'Dockerfile'}}
             common.write_json(runtime_file, images)
         else:
             pinned = json.loads((source / 'previous-images.yml').read_text())['services']
@@ -184,6 +344,8 @@ def main():
                      'sourceOffsets': settings['sourceOffsets'], 'candidateImages': images,
                      'workbench': {'java': str(java), 'applicationJar': str(jar),
                                    'applicationJarSha256': cutover.sha_file(jar)}}
+            if settings.get('legacyClockPolicy') is not None:
+                value['legacyClockPolicy'] = settings['legacyClockPolicy']
             input_file = work / 'private-cutover-input.json'
             common.write_json(input_file, value)
             runtime = {'services': {name: {**item, 'image': images[name]} for name, item in pinned.items()}}
@@ -200,8 +362,12 @@ def main():
                        'applicationJarSha256': value['workbench']['applicationJarSha256'],
                        'applicationJarBytes': artifact['applicationJarBytes'], 'buildArtifactPlanSha256': artifact_sha,
                        'backendSourceReceiptSha256': cutover.sha_file(work / 'backend-build-source.json'),
+                       'webSourceReceiptSha256': cutover.sha_file(work / 'web-build-source.json'),
+                       'frontendArtifacts': schema.read_private(work / 'web-build-source.json')[0]['frontendArtifacts'],
                        'workerSourceReceiptSha256': cutover.sha_file(work / 'worker-build-source.json')}
             common.write_json(source / 'candidate-build.json', receipt)
+            if java_registration:
+                java_registration['runtime'].admit_release(java_registration['value'], source / 'candidate-build.json')
             print(json.dumps(receipt))
         return 0
     except BaseException:

@@ -37,7 +37,7 @@
         "doorhandle.action.mysql.config"
       ],
       "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/action/AgentActionServiceTest.java",
-      "minimumTests": 24,
+      "minimumTests": 25,
       "coverage": [
         "confirmation policy and scripted SDK contract evaluation"
       ]
@@ -482,7 +482,7 @@
         "model.log.copy.target-config"
       ],
       "source": "doorhandle-module-model/src/test/java/com/ruanzhu/doorhandle/module/model/service/ModelOperationAuditMySqlTest.java",
-      "minimumTests": 10,
+      "minimumTests": 12,
       "coverage": [
         "workspace, chat, inbox, knowledge and memory persistence"
       ]
@@ -494,7 +494,7 @@
         "agent.journal.mysql-file"
       ],
       "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/journal/MysqlAgentJournalTest.java",
-      "minimumTests": 0,
+      "minimumTests": 1,
       "coverage": [
         "agent journal and owner-lock fencing"
       ]
@@ -629,7 +629,7 @@
         "report.copy.target-config"
       ],
       "source": "doorhandle-module-detection/src/test/java/com/ruanzhu/doorhandle/module/detection/service/report/ReportWorkflowMigrationMySqlTest.java",
-      "minimumTests": 11,
+      "minimumTests": 17,
       "coverage": [
         "detection workflow, reports, identity and authorization"
       ]
@@ -692,7 +692,7 @@
         "workbench.migration.target"
       ],
       "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/workbench/WorkbenchMigrationMySqlTest.java",
-      "minimumTests": 5,
+      "minimumTests": 7,
       "coverage": [
         "workbench execution, checkpoint and migration"
       ]
@@ -870,6 +870,36 @@
         "className": "com.ruanzhu.doorhandle.server.ApplicationTimeZoneTest",
         "minimumTests": 1,
         "source": "doorhandle-server/src/test/java/com/ruanzhu/doorhandle/server/ApplicationTimeZoneTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.common.time.LegacyClockEvidenceTest",
+        "minimumTests": 6,
+        "source": "doorhandle-common/src/test/java/com/ruanzhu/doorhandle/common/time/LegacyClockEvidenceTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.ai.workbench.LegacyClockProtocolTest",
+        "minimumTests": 6,
+        "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/workbench/LegacyClockProtocolTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.ai.mcp.LegacyMcpClockTest",
+        "minimumTests": 3,
+        "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/mcp/LegacyMcpClockTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.detection.service.report.ReportLegacyClockBindingTest",
+        "minimumTests": 3,
+        "source": "doorhandle-module-detection/src/test/java/com/ruanzhu/doorhandle/module/detection/service/report/ReportLegacyClockBindingTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.model.service.ModelLegacyClockBindingTest",
+        "minimumTests": 4,
+        "source": "doorhandle-module-model/src/test/java/com/ruanzhu/doorhandle/module/model/service/ModelLegacyClockBindingTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.ai.workbench.WorkbenchDispatchClockTest",
+        "minimumTests": 6,
+        "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/workbench/WorkbenchDispatchClockTest.java"
       }
     ]
   },
@@ -877,6 +907,18 @@
     "required": true,
     "workerMysqlRequired": true,
     "requiredSuites": [
+      {
+        "module": "tests_python.test_compact_clock_policy",
+        "minimumTests": 18,
+        "source": "tests_python/test_compact_clock_policy.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_legacy_clock_sql",
+        "minimumTests": 10,
+        "source": "tests_python/test_legacy_clock_sql.py",
+        "allowedSkippedTests": []
+      },
       {
         "module": "tests_python.test_agent_auth_client",
         "minimumTests": 2,
@@ -971,7 +1013,7 @@
       },
       {
         "module": "tests_python.test_jenkins_ecs_tool_runtime",
-        "minimumTests": 22,
+        "minimumTests": 29,
         "source": "tests_python/test_jenkins_ecs_tool_runtime.py",
         "allowedSkippedTests": []
       },
@@ -983,19 +1025,19 @@
       },
       {
         "module": "tests_python.test_jenkins_suite_evidence",
-        "minimumTests": 8,
+        "minimumTests": 16,
         "source": "tests_python/test_jenkins_suite_evidence.py",
         "allowedSkippedTests": []
       },
       {
         "module": "tests_python.test_jenkins_resource_budget",
-        "minimumTests": 1,
+        "minimumTests": 37,
         "source": "tests_python/test_jenkins_resource_budget.py",
         "allowedSkippedTests": []
       },
       {
         "module": "tests_python.test_jenkins_tool_preparation",
-        "minimumTests": 1,
+        "minimumTests": 14,
         "source": "tests_python/test_jenkins_tool_preparation.py",
         "allowedSkippedTests": []
       },
@@ -1105,6 +1147,12 @@
         "module": "tests_python.test_onnx_detection_engine",
         "minimumTests": 4,
         "source": "tests_python/test_onnx_detection_engine.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_compact_runtime_resources",
+        "minimumTests": 20,
+        "source": "tests_python/test_compact_runtime_resources.py",
         "allowedSkippedTests": []
       }
     ]

@@ -131,6 +131,77 @@ def test_tool_outside_checkout_admits_only_version_without_creating_attempt(regi
     assert command[-1] == '-version' and str(Path(value['directory']) / 'probe') in command
 
 
+def release_registration(registration):
+    value, manifest, context = registration
+    root = context['root']; inbox = manifest.parent.parent
+    release = root / 'releases' / value['release']; work = release / 'work'; work.mkdir(parents=True)
+    relative = 'script/jenkins/ecs-tool-runtime.py'
+    fixed = release / relative; fixed.parent.mkdir(parents=True)
+    raw = Path(tools.__file__).read_bytes(); fixed.write_bytes(raw)
+    archive = inbox / 'source.tar.gz'
+    with tarfile.open(archive, 'w:gz', format=tarfile.PAX_FORMAT, pax_headers={'comment': value['commit']}) as target:
+        entry = tarfile.TarInfo(relative); entry.size = len(raw); target.addfile(entry, io.BytesIO(raw))
+    value['sourceSha256'] = tools.digest(archive); tools.write_json(manifest, value)
+    jar = work / 'candidate-app.jar'; jar.write_bytes(b'same immutable Jenkins jar'); jar.chmod(0o600)
+    (inbox / 'application.jar').write_bytes(jar.read_bytes())
+    artifact = {'schema': 1, 'kind': 'doorhandle-compact-fixture-artifacts', 'release': value['release'],
+        'commit': value['commit'], 'sourceSha256': value['sourceSha256'],
+        'applicationJarBytes': jar.stat().st_size, 'applicationJarSha256': tools.digest(jar)}
+    tools.write_json(inbox / 'build-artifacts.json', artifact)
+    build = {'schemaVersion': 1, 'kind': 'doorhandle-compact-candidate-build', 'status': 'BUILT',
+        'release': value['release'], 'commit': value['commit'], 'sourceSha256': value['sourceSha256'], 'ecs': value['identity'],
+        'buildArtifactPlanSha256': tools.digest(inbox / 'build-artifacts.json'),
+        'applicationJarBytes': jar.stat().st_size, 'applicationJarSha256': tools.digest(jar)}
+    tools.write_json(release / 'candidate-build.json', build)
+    return value, release, jar
+
+
+def migration_arguments(jar, config, output):
+    return ['-Dloader.main=com.ruanzhu.doorhandle.module.ai.workbench.CompactWorkbenchMigrationCli',
+            '-cp', str(jar), 'org.springframework.boot.loader.launch.PropertiesLauncher',
+            '--config', str(config), '--output', str(output)]
+
+
+def test_java_release_binds_exact_source_candidate_and_jenkins_jar(registration):
+    value, release, jar = release_registration(registration)
+    tools.admit_release(value, release / 'candidate-build.json')
+    config = release / 'work/private.json'; config.write_text('{}')
+    arguments = migration_arguments(jar, config, release / 'work/receipt.json')
+    command, _ = tools.command(value, 'java', arguments, release, {})
+    assert 'type=bind,src=' + str(release) + ',dst=' + str(release) + ',readonly' in command
+    assert 'type=bind,src=' + str(release / 'work') + ',dst=' + str(release / 'work') in command
+    assert not any('docker.sock' in part for part in command)
+    assert any('-Djava.io.tmpdir=' + str(release / 'work/home/tmp') in part for part in command)
+    with pytest.raises(ValueError, match='overwrite'): tools.admit_release(value, release / 'candidate-build.json')
+
+
+@pytest.mark.parametrize('mutation', ['jar', 'archive', 'candidate', 'source', 'manifest'])
+def test_java_release_rejects_any_changed_pinned_input(registration, mutation):
+    value, release, jar = release_registration(registration)
+    tools.admit_release(value, release / 'candidate-build.json')
+    folder = Path(value['directory'])
+    if mutation == 'jar': jar.write_bytes(b'another jar')
+    if mutation == 'archive': (folder.parent / 'source.tar.gz').write_bytes(b'another archive')
+    if mutation == 'candidate':
+        build = tools.private_json(release / 'candidate-build.json'); build['commit'] = 'e' * 40
+        tools.write_json(release / 'candidate-build.json', build)
+    if mutation == 'source': (release / 'script/jenkins/ecs-tool-runtime.py').write_bytes(b'changed fixed source')
+    if mutation == 'manifest':
+        changed = dict(value, token='d' * 24); tools.write_json(folder / 'manifest.json', changed)
+    with pytest.raises(ValueError): tools.java_release(value)
+
+
+def test_release_cwd_rejects_other_tools_entrypoints_and_external_inputs(registration, tmp_path):
+    value, release, jar = release_registration(registration)
+    tools.admit_release(value, release / 'candidate-build.json')
+    config = release / 'work/private.json'; config.write_text('{}')
+    valid = migration_arguments(jar, config, release / 'work/receipt.json')
+    for tool, arguments in [('python', ['-c', 'print(1)']), ('java', ['-jar', str(jar)]),
+                            ('java', migration_arguments(jar, config, tmp_path / 'foreign.json'))]:
+        with pytest.raises(ValueError): tools.command(value, tool, arguments, release, {})
+    assert tools.release_arguments(tools.java_release(value), valid) == release / 'work'
+
+
 def test_python_executor_owns_mem0_data_and_accepts_only_registered_nested_java(registration, monkeypatch):
     value, _, _ = registration
     socket = Path(value['checkout']) / 'fake-docker-socket'; socket.touch()
