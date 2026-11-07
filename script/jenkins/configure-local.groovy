@@ -78,6 +78,7 @@ def parameters = [
     new StringParameterDefinition('DOORHANDLE_CI_FIXTURE_SETTINGS', '', 'Automatic fixture preparation: reviewed private ECS source identity, offsets and existing Java settings.'),
     new BooleanParameterDefinition('PRODUCTION_RELEASE_ENABLED', false, 'Keep false until compact schema and release compatibility are accepted.'),
     new StringParameterDefinition('COMPACT_CUTOVER_SETTINGS', '', 'Reuse reviewed fixture settings: version, sourceMysqlContainerId, sourceSchema, sourceOffsets, java; no passwords.'),
+    new StringParameterDefinition('LEGACY_SOURCE_SNAPSHOT', '', 'Optional sealed project snapshot directory; restoration occurs only on ECS after fixed-source verification.'),
     new StringParameterDefinition('DEPLOY_HOST', '', 'Start ECS outside Jenkins, then configure its current verified SSH address.'),
     new StringParameterDefinition('DEPLOY_PORT', '22', 'Verified SSH port.'),
     new ChoiceParameterDefinition('SSH_TRANSPORT', ['direct', 'tls'] as String[], 'Preserve SSH host-key checking; TLS also verifies the existing server certificate.'),
