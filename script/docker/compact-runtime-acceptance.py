@@ -425,6 +425,9 @@ class Runtime:
         self.owner_file = self.directory / 'owner.json'
         self.public_file = self.attempt / 'runtime-acceptance.json'
         self.build, self.build_sha = self.guard.read_private(source / 'candidate-build.json')
+        self.build_resources = module('runtime_candidate_build_resources', source / 'script/docker/compact-build-resources.py')
+        self.build_resources.validate_candidate(self.build, source,
+            {'release': args.tag, 'commit': args.commit, 'sourceSha256': args.source_sha256, 'identity': self.identity})
         require(all(self.build.get(key) == expected for key, expected in {
             'schemaVersion': 1, 'kind': 'doorhandle-compact-candidate-build', 'status': 'BUILT',
             'release': args.tag, 'commit': args.commit, 'sourceSha256': args.source_sha256, 'ecs': self.identity}.items()),
@@ -853,10 +856,11 @@ print(json.dumps({p:data['properties'][p]['baseUrl'] for p in ('deepseek','dashs
         (context / 'Dockerfile').write_text('FROM ' + self.images['mem0'] + '\nCOPY --chmod=0644 server.py /app/runtime-model.py\nCOPY --chmod=0644 oss.py /fixture/compact-oss-fixture.py\n'
             'ENTRYPOINT ["python","-B","/app/runtime-model.py"]\n', encoding='utf8')
         tag = 'doorhandlecatch/runtime-model:' + self.args.tag + '-' + self.token
-        self.ops.docker('build', '--label', 'io.doorhandle.rehearsal=' + self.project, '-t', tag, str(context), timeout=300)
+        proof = self.build_resources.runtime_image(self.root, self.source, self.args, self.identity, context, tag, 'model', self.project)
         image = json.loads(self.ops.docker('image', 'inspect', tag))[0]
         self.owner['modelFixtureImage'] = image['Id']; self.owner['modelFixtureSourceSha256'] = sha_file(source)
         self.owner['ossFixtureSourceSha256'] = sha_file(oss_source); self.save()
+        self.owner['modelFixtureBuildResourceEvidence'] = proof; self.save()
         return image['Id']
 
     def build_mcp_image(self, original):
@@ -879,9 +883,10 @@ print(json.dumps({p:data['properties'][p]['baseUrl'] for p in ('deepseek','dashs
             lines.append('COPY --chmod=0644 ' + name + ' /app/' + name)
         (context / 'Dockerfile').write_text('\n'.join(lines) + '\n', encoding='utf8')
         tag = 'doorhandlecatch/runtime-mcp:' + self.args.tag + '-' + self.token
-        self.ops.docker('build', '--label', 'io.doorhandle.rehearsal=' + self.project, '-t', tag, str(context), timeout=300)
+        proof = self.build_resources.runtime_image(self.root, self.source, self.args, self.identity, context, tag, 'mcp', self.project)
         result = json.loads(self.ops.docker('image', 'inspect', tag))[0]['Id']
         self.owner['runtimeMcpImage'] = result; self.owner['runtimeMcpSourceHashes'] = catalog; self.save()
+        self.owner['mcpFixtureBuildResourceEvidence'] = proof; self.save()
         return result
 
     def install_key(self, raw):
@@ -1380,6 +1385,9 @@ print(json.dumps({'deleted':len(keys),'keysSha256':hashlib.sha256(json.dumps(sor
     def cleanup(self):
         require(self.owner is not None, 'No runtime resource ownership journal exists')
         failures = []
+        fixture_builds = {}
+        try: fixture_builds = self.build_resources.fixture_build_evidence(self)
+        except BaseException: failures.append('fixture-image-build-creators')
         # Freeze creators before inventorying their children. A one-shot ps
         # taken while the backend/runner can dispatch would miss new processes.
         creators = self.ops.docker('ps', '-aq', '--no-trunc', '--filter', 'label=io.doorhandle.rehearsal=' + self.project).decode().split()
@@ -1474,7 +1482,7 @@ print(json.dumps({'deleted':len(keys),'keysSha256':hashlib.sha256(json.dumps(sor
             'sourceBeforeSha256': self.migration.sha_json(self.owner.get('sourceBefore')) if hasattr(self, 'migration') else None,
             'sourceAfterSha256': self.migration.sha_json(source_after) if hasattr(self, 'migration') else None,
             'objectsCleaned': self.owner.get('objectsCleaned'), 'unresolved': failures,
-            'resourceEvidence': resource_evidence}
+            'resourceEvidence': resource_evidence, 'fixtureBuildResources': fixture_builds}
         file = self.directory / 'cleanup.json'; self.common.write_json(file, result)
         self.owner['cleanup'] = {'file': file.relative_to(self.attempt).as_posix(), 'sha256': sha_file(file), 'status': result['status']}
         self.save('NEEDS_REVIEW' if failures else 'STOPPED')
@@ -1650,7 +1658,9 @@ print(json.dumps({'deleted':len(keys),'keysSha256':hashlib.sha256(json.dumps(sor
         require(set(self.owner.get('nativeVerifications', {})) == {'after-start', 'after-restart', 'after-volume-restore'},
                 'Complete native RAG startup/restart/new-volume recovery was not verified')
         activation = self.native.finalize_semantic_activation(self)
+        fixture_builds = self.build_resources.fixture_build_evidence(self, require_pass=True)
         proof = {**self.context(), 'status': 'PASS', 'project': self.project,
+            'fixtureBuildResources': fixture_builds,
             'legacyData': {'candidateSha256': self.legacy_candidate_sha, 'ragManifestSha256': self.legacy_candidate['ragManifestSha256'],
                 'legacyKafkaFiles': self.legacy_candidate['legacyKafkaFiles'], 'legacyKafkaBytes': self.legacy_candidate['legacyKafkaBytes'],
                 'legacyKafkaReplay': self.legacy_candidate['legacyKafkaReplay'],
@@ -1715,6 +1725,8 @@ def main():
     for name in ('root', 'runtime', 'tag', 'commit', 'source-sha256', 'instance-id', 'machine-id', 'settings'):
         parser.add_argument('--' + name, required=True)
     args = parser.parse_args(); instance = None
+    for event in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(event, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
     try:
         instance = Runtime(args)
         if args.phase == 'run':

@@ -13,9 +13,9 @@ import static org.assertj.core.api.Assertions.*;
 
 /** Execute only through the ECS test runner; no local application or database is needed to compile. */
 class JdbcWorkflowFencingTest {
-    public record Payload(String value) { }
+    public record Payload(String scheduleId, String scheduledFor, String reportDate) { }
     private JdbcTemplate jdbc; private TransactionTemplate tx;
-    private final Payload body=new Payload("fixture");
+    private final Payload body=new Payload("fence-schedule","2026-11-07T08:00:00","2026-11-07");
     @BeforeEach void setup() throws Exception {
         var source=new DriverManagerDataSource("jdbc:h2:mem:"+UUID.randomUUID()+";MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1","sa","");
         jdbc=new JdbcTemplate(source);tx=new TransactionTemplate(new DataSourceTransactionManager(source));CompactWorkflowFixture.install(jdbc);
@@ -30,7 +30,8 @@ class JdbcWorkflowFencingTest {
         return tx.execute(status->{
             String id=UUID.randomUUID().toString();
             var created=store.create(new WorkflowDraft(id,WorkflowKind.DIGEST_RUN,"FENCE_TEST",id,"a".repeat(64),1,1L,null,
-                    "DIGEST","digest",null,null,null,"PENDING",null,1,body));
+                    "SCHEDULE",body.scheduleId(),null,null,null,"PENDING",null,1,body),
+                    new WorkflowTiming(java.time.LocalDate.parse(body.reportDate()),java.time.LocalDateTime.parse(body.scheduledFor())));
             return store.claim(created,"RUNNING",body,null,null,Duration.ofMinutes(5));
         });
     }

@@ -29,6 +29,10 @@ pipeline {
         string(name: 'LEGACY_SOURCE_ECS_SNAPSHOT', defaultValue: '', trim: true, description: '后续复用ECS已恢复核验的旧数据封存目录；与本地输入互斥，业务原件不回传本地')
         string(name: 'LOCAL_ARTIFACTS_SNAPSHOT', defaultValue: '', trim: true, description: '首次上传额外历史模型、备份、日志与上传文件的私有字节封存目录')
         string(name: 'LOCAL_ARTIFACTS_ECS_SNAPSHOT', defaultValue: '', trim: true, description: '后续复用ECS已恢复核验的额外原件；与对应本地输入互斥')
+        string(name: 'COLD_STORES_SNAPSHOT', defaultValue: '', trim: true, description: '可选历史测试存储冷归档私有目录；完整验证后在ECS逐存储树独立恢复核验')
+        string(name: 'COLD_STORES_ECS_SNAPSHOT', defaultValue: '', trim: true, description: '复用ECS已核验的历史测试存储冷归档；与对应本地输入互斥')
+        string(name: 'LOCAL_MYSQL_SNAPSHOT', defaultValue: '', trim: true, description: '已授权本机45表只读导出包；源码验证后在ECS独立双恢复核验，不合入生产')
+        string(name: 'LOCAL_MYSQL_FIXTURE_SETTINGS', defaultValue: '', trim: true, description: '45表恢复使用的现有ECS私有夹具JSON；仅读取已核对的MySQL镜像身份')
         booleanParam(name: 'RECLAIM_OLD_BUILD_OUTPUTS', defaultValue: true, description: '本构建完整验证通过后，按原始证据与精确计划清理旧构建可再生输出，保留业务数据和报告')
         string(name: 'DEPLOY_HOST', defaultValue: "${params.DEPLOY_HOST ?: ''}", trim: true, description: '流水线外启动 ECS 后核对的当前地址；首次为空，不自动开机')
         string(name: 'DEPLOY_PORT', defaultValue: "${params.DEPLOY_PORT ?: '22'}", trim: true, description: '已核验的 SSH 端口；TLS 通道可显式使用 443')
@@ -58,6 +62,7 @@ pipeline {
                     env.CI_RUNTIME_VERIFIED = 'false'
                     env.CI_LEGACY_CANDIDATE_ATTEMPTED = 'false'
                     env.CI_LEGACY_CANDIDATE_PREPARED = 'false'
+                    env.CI_LOCAL_MYSQL_ATTEMPTED = 'false'
                     if (isUnix()) error('Control steps require the dedicated local Windows agent')
                     def expectedWorkspace = 'D:/AI/lunwen1/DoorHandleCatch/work/jenkins/ci-workspaces/monolith'
                     if (pwd().replace('\\', '/') != expectedWorkspace) error('Unexpected CI workspace')
@@ -99,9 +104,15 @@ pipeline {
                     env.LEGACY_SOURCE_ECS_SNAPSHOT = params.LEGACY_SOURCE_ECS_SNAPSHOT?.trim() ?: ''
                     env.LOCAL_ARTIFACTS_SNAPSHOT = params.LOCAL_ARTIFACTS_SNAPSHOT?.trim() ?: ''
                     env.LOCAL_ARTIFACTS_ECS_SNAPSHOT = params.LOCAL_ARTIFACTS_ECS_SNAPSHOT?.trim() ?: ''
+                    env.COLD_STORES_SNAPSHOT = params.COLD_STORES_SNAPSHOT?.trim() ?: ''
+                    env.COLD_STORES_ECS_SNAPSHOT = params.COLD_STORES_ECS_SNAPSHOT?.trim() ?: ''
+                    env.LOCAL_MYSQL_SNAPSHOT = params.LOCAL_MYSQL_SNAPSHOT?.trim() ?: ''
+                    env.LOCAL_MYSQL_FIXTURE_SETTINGS = params.LOCAL_MYSQL_FIXTURE_SETTINGS?.trim() ?: ''
                     if (env.LEGACY_SOURCE_SNAPSHOT && env.LEGACY_SOURCE_ECS_SNAPSHOT) error('Choose exactly one local or ECS legacy snapshot input')
                     if (env.LOCAL_ARTIFACTS_SNAPSHOT && env.LOCAL_ARTIFACTS_ECS_SNAPSHOT) error('Choose exactly one local or ECS additional artifact snapshot input')
-                    if (params.ACTION == 'verify-embedding' && (params.DOORHANDLE_CI_SCOPE != 'source' || params.DOORHANDLE_CI_AUTO_COMPACT_FIXTURES || env.LEGACY_SOURCE_SNAPSHOT || env.LEGACY_SOURCE_ECS_SNAPSHOT || env.LOCAL_ARTIFACTS_SNAPSHOT || env.LOCAL_ARTIFACTS_ECS_SNAPSHOT || params.PRODUCTION_RELEASE_ENABLED)) error('Embedding verification is an independent source component check without legacy migration or production release')
+                    if (env.COLD_STORES_SNAPSHOT && env.COLD_STORES_ECS_SNAPSHOT) error('Choose exactly one local or ECS historical cold-store snapshot input')
+                    if ((env.LOCAL_MYSQL_SNAPSHOT && !env.LOCAL_MYSQL_FIXTURE_SETTINGS) || (!env.LOCAL_MYSQL_SNAPSHOT && env.LOCAL_MYSQL_FIXTURE_SETTINGS)) error('Local MySQL custody requires both the sealed export packet and reviewed private ECS image settings')
+                    if (params.ACTION == 'verify-embedding' && (params.DOORHANDLE_CI_SCOPE != 'source' || params.DOORHANDLE_CI_AUTO_COMPACT_FIXTURES || env.LEGACY_SOURCE_SNAPSHOT || env.LEGACY_SOURCE_ECS_SNAPSHOT || env.LOCAL_ARTIFACTS_SNAPSHOT || env.LOCAL_ARTIFACTS_ECS_SNAPSHOT || env.COLD_STORES_SNAPSHOT || env.COLD_STORES_ECS_SNAPSHOT || env.LOCAL_MYSQL_SNAPSHOT || env.LOCAL_MYSQL_FIXTURE_SETTINGS || params.PRODUCTION_RELEASE_ENABLED)) error('Embedding verification is an independent source component check without legacy migration or production release')
                     if (params.DOORHANDLE_CI_SCOPE == 'source' && env.DOORHANDLE_CI_FIXTURE_MANIFEST) error('Source verification cannot accept a MySQL fixture manifest')
                     if (params.DOORHANDLE_CI_AUTO_COMPACT_FIXTURES) {
                         if (params.DOORHANDLE_CI_SCOPE != 'mysql' || env.DOORHANDLE_CI_FIXTURE_MANIFEST || !env.DOORHANDLE_CI_FIXTURE_SETTINGS) error('Automatic compact fixtures require mysql scope, private ECS settings and no conflicting manual manifest')
@@ -220,6 +231,29 @@ pipeline {
                 }
             }
         }
+        stage('Preserve historical cold stores on ECS') {
+            when { expression { params.ACTION != 'rollback' && (env.COLD_STORES_SNAPSHOT || env.COLD_STORES_ECS_SNAPSHOT) } }
+            steps {
+                withCredentials([
+                    sshUserPrivateKey(credentialsId: 'doorhandle-ecs-ssh', keyFileVariable: 'DEPLOY_KEY', usernameVariable: 'DEPLOY_USER'),
+                    file(credentialsId: 'doorhandle-ecs-known-hosts', variable: 'DEPLOY_KNOWN_HOSTS')
+                ]) {
+                    pwsh '& ./script/jenkins/pipeline.ps1 -Action PreserveColdStores'
+                }
+            }
+        }
+        stage('Recover approved local MySQL export on ECS') {
+            when { expression { params.ACTION != 'rollback' && env.LOCAL_MYSQL_SNAPSHOT } }
+            steps {
+                script { env.CI_LOCAL_MYSQL_ATTEMPTED = 'true' }
+                withCredentials([
+                    sshUserPrivateKey(credentialsId: 'doorhandle-ecs-ssh', keyFileVariable: 'DEPLOY_KEY', usernameVariable: 'DEPLOY_USER'),
+                    file(credentialsId: 'doorhandle-ecs-known-hosts', variable: 'DEPLOY_KNOWN_HOSTS')
+                ]) {
+                    pwsh '& ./script/jenkins/pipeline.ps1 -Action PreserveLocalMySql'
+                }
+            }
+        }
         stage('Prepare preserved legacy data candidate on ECS') {
             when { expression { params.ACTION in ['verify-runtime', 'compact-cutover'] } }
             steps {
@@ -307,6 +341,16 @@ pipeline {
                         }
                     }
                 }
+                if (env.CI_LOCAL_MYSQL_ATTEMPTED == 'true') {
+                    catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
+                        withCredentials([
+                            sshUserPrivateKey(credentialsId: 'doorhandle-ecs-ssh', keyFileVariable: 'DEPLOY_KEY', usernameVariable: 'DEPLOY_USER'),
+                            file(credentialsId: 'doorhandle-ecs-known-hosts', variable: 'DEPLOY_KNOWN_HOSTS')
+                        ]) {
+                            pwsh '& ./script/jenkins/pipeline.ps1 -Action CleanupLocalMySql'
+                        }
+                    }
+                }
                 if (env.CI_FIXTURE_PREPARATION_ATTEMPTED == 'true') {
                     catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
                         withCredentials([
@@ -331,7 +375,7 @@ pipeline {
                     try {
                         junit testResults: 'artifacts/ecs/**/TEST-*.xml,artifacts/ecs/**/python.xml,artifacts/embedding/python.xml', allowEmptyResults: env.CI_ECS_VERIFIED != 'true'
                     } finally {
-                        archiveArtifacts artifacts: 'artifacts/**/*.json,artifacts/**/*.xml,artifacts/**/*.log,artifacts/ecs/verification-evidence.tar.gz,artifacts/runtime-resources/resource-probes.jsonl,artifacts/application.jar,artifacts/source.tar.gz', allowEmptyArchive: currentBuild.currentResult != 'SUCCESS', fingerprint: true
+                        archiveArtifacts artifacts: 'artifacts/**/*.json,artifacts/**/*.xml,artifacts/**/*.log,artifacts/ecs/verification-evidence.tar.gz,artifacts/runtime-resources/resource-probes.jsonl,artifacts/candidate-build-resources/resource-probes.jsonl,artifacts/fixture-build-resources/*/resource-probes.jsonl,artifacts/application.jar,artifacts/source.tar.gz', allowEmptyArchive: currentBuild.currentResult != 'SUCCESS', fingerprint: true
                     }
                 }
             }

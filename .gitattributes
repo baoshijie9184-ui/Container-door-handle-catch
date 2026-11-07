@@ -8,3 +8,4 @@
 *.yml text working-tree-encoding=UTF-8
 *.yaml text working-tree-encoding=UTF-8
 *.md text working-tree-encoding=UTF-8
+/deploy/buildkit/LICENSE -text

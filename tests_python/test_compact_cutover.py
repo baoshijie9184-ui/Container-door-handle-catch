@@ -1,5 +1,6 @@
 """ECS-executed failure contracts for the first compact cutover controller."""
 import importlib.util
+import hashlib
 import io
 import json
 from pathlib import Path
@@ -19,8 +20,96 @@ def load(name, file):
 
 cutover = load('compact_cutover_contract', 'compact-cutover.py')
 schema = load('compact_cutover_schema_contract', 'compact-schema-guard.py')
+runtime = load('compact_cutover_runtime_resource_fixture', 'compact-runtime-acceptance.py')
+build_resources = load('compact_cutover_build_resource_fixture', 'compact-build-resources.py')
 coverage_spec = importlib.util.spec_from_file_location('compact_coverage_contract', ROOT / 'script/jenkins/compact-acceptance.py')
 coverage = importlib.util.module_from_spec(coverage_spec); coverage_spec.loader.exec_module(coverage)
+
+
+def fixture_build_resources(directory, context, name):
+    """Retain the real resource protocol's byte files, not a PASS-only stub."""
+    resource = directory / 'checkout/work/runtime-acceptance' / ('controlled-build-' + name)
+    resource.mkdir(parents=True)
+    baseline = {'monotonic': 100.0, 'diskAvailableBytes': 8 * runtime.GIB,
+                'memoryAvailableBytes': 12 * runtime.GIB, 'filesystemBlockBytes': 4096}
+    token = hashlib.sha256(('owner:' + name).encode()).hexdigest()[:24]
+    cid = hashlib.sha256(('builder:' + name).encode()).hexdigest()
+    builder = {'id': cid, 'pid': 1200 if name == 'model' else 1201, 'image': build_resources.IMAGE_ID,
+               'memoryLimitBytes': build_resources.BUILDER_MEMORY, 'currentBytes': 8 * runtime.MIB,
+               'peakBytes': 16 * runtime.MIB, 'oomKills': 0, 'writeRateLimitBytesPerSecond': 64 * runtime.MIB}
+    build_context = {key: context[key] for key in ('release', 'commit', 'sourceSha256', 'identity')}
+    plans, samples = [], []
+    for index, phase in enumerate(('builder-bootstrap', 'build-' + name, 'load-' + name), 1):
+        phase += '-%03d' % index
+        value = build_resources.phase_plan({**build_context, 'ownerToken': token}, phase, baseline,
+            64 * runtime.MIB, build_resources.BUILDER_MEMORY, {'retainedFixtureInputBytes': 1024})
+        file = resource / ('phase-%02d.json' % index); write(file, value)
+        plans.append({'file': file.name, 'sha256': cutover.sha_file(file)})
+        samples.append({**baseline, 'monotonic': 100.0 + index * .5, 'phase': phase, 'builder': builder})
+    raw = b''.join(build_resources.encoded(sample) + b'\n' for sample in samples)
+    probes = resource / 'resource-probes.jsonl'; probes.write_bytes(raw); probes.chmod(0o600)
+    image_id = 'sha256:' + hashlib.sha256(('fixture-image:' + name).encode()).hexdigest()
+    image = {'imageId': image_id, 'ociArchiveSha256': hashlib.sha256(('archive:' + name).encode()).hexdigest(),
+             'ociArchiveBytes': 20480, 'controlledDockerfileSha256': hashlib.sha256(('dockerfile:' + name).encode()).hexdigest(),
+             'inputContext': {'sha256': hashlib.sha256(('input:' + name).encode()).hexdigest()},
+             'layers': [{'diffId': 'sha256:' + hashlib.sha256(('layer:' + name).encode()).hexdigest(),
+                         'blobDigest': 'sha256:' + hashlib.sha256(('blob:' + name).encode()).hexdigest(),
+                         'allocationUpperBoundBytes': 8192}]}
+    summary = {'version': 1, 'kind': 'doorhandle-candidate-build-resources', **build_context, 'ownerToken': token,
+        'status': 'PASS', 'capacityVerdict': 'CONTROLLED_MEASUREMENT', 'productionCapacityVerified': False,
+        'baselineProbe': baseline, 'finalProbe': {**baseline, 'monotonic': 102.0}, 'phases': plans,
+        'probeFile': 'resource-probes.jsonl', 'probeSha256': hashlib.sha256(raw).hexdigest(), 'monitorFailure': None,
+        'originalDataChanged': False, 'cleanup': {'creatorStopped': True, 'builderStopped': True,
+            'daemonImportTerminated': True, 'builderContainerId': cid}, 'build': {'images': {name: image}}}
+    file = resource / 'resource-summary.json'; write(file, summary)
+    return {'file': file.relative_to(directory).as_posix(), 'sha256': cutover.sha_file(file)}, image_id
+
+
+def attach_runtime_resources(directory, context, project, proof, images, fixture_images):
+    resource = directory / 'checkout/work/runtime-acceptance'
+    daemons = sorted(set(runtime.SERVICE_MEMORY_MIB) - {'kafka-init', 'kafka-storage-init', 'higress-seed', 'higress-config'})
+    metrics = []
+    for index, service in enumerate(daemons, 1):
+        image = images.get(service, 'sha256:' + hashlib.sha256(('infra:' + service).encode()).hexdigest())
+        if service == 'model-fixture': image = fixture_images['model']
+        if service == 'mcp-runner': image = fixture_images['mcp']
+        metrics.append({'containerId': format(index, '064x'), 'service': service, 'image': image,
+            'memoryLimitBytes': runtime.SERVICE_MEMORY_MIB[service] * runtime.MIB,
+            'currentBytes': runtime.MIB, 'peakBytes': 2 * runtime.MIB, 'oom': 0, 'oomKills': 0,
+            'running': True, 'exitCode': 0})
+    metrics.append({'containerId': 'f' * 64, 'service': 'bge-verifier', 'image': images['mem0'],
+        'memoryLimitBytes': runtime.BGE_VERIFIER_MEMORY, 'currentBytes': 0, 'peakBytes': 4 * runtime.MIB,
+        'oom': 0, 'oomKills': 0, 'running': False, 'exitCode': 0})
+    phases, plans, samples = [], {}, []
+    declared_memory = sum(runtime.SERVICE_MEMORY_MIB.values()) * runtime.MIB + 512 * runtime.MIB + runtime.BGE_VERIFIER_MEMORY
+    for index, phase in enumerate(('runtime-start', 'runtime-backup', 'runtime-restore'), 1):
+        baseline = {'capturedAtUnix': 100 + index, 'diskTotalBytes': 40 * runtime.GIB,
+            'diskAvailableBytes': 8 * runtime.GIB, 'memoryAvailableBytes': 12 * runtime.GIB}
+        plans[phase] = runtime.phase_admission(phase, baseline, runtime.GIB, declared_memory,
+            {'retainedFixtureBytes': 1024, 'actualDeclaredMemoryLimitBytes': declared_memory})
+        file = resource / ('resource-phase-' + str(index) + '-' + phase + '.json'); write(file, plans[phase])
+        phases.append({'phase': phase, 'file': file.relative_to(directory).as_posix(), 'sha256': cutover.sha_file(file)})
+        samples.append({'probe': {**baseline, 'phase': phase, 'hostDiskLossUpperBoundBytes': 0,
+                                 'diskLossOwnershipProof': False}, 'containers': metrics, 'stopReasons': []})
+    raw = b''.join((json.dumps(sample) + '\n').encode() for sample in samples)
+    probes = resource / 'resource-probes.jsonl'; probes.write_bytes(raw); probes.chmod(0o600)
+    summary = {**context, 'kind': 'doorhandle-bounded-runtime-resources', 'project': project,
+        'profile': runtime.RUNTIME_PROFILE, 'capacityVerdict': 'CONTROLLED_MEASUREMENT', 'productionCapacityVerified': False,
+        'status': 'MEASURED_FOR_BOUNDED_SCENARIOS', 'pollIntervalSeconds': 2, 'diskFloorBytes': runtime.DISK_FLOOR,
+        'memoryFloorBytes': runtime.MEMORY_FLOOR, 'rawProbeFile': 'checkout/work/runtime-acceptance/resource-probes.jsonl',
+        'rawProbeSha256': hashlib.sha256(raw).hexdigest(), 'samples': 3,
+        'containers': {row['containerId']: row for row in metrics}, 'requiredDaemonServices': daemons,
+        'requiredTransientServices': ['bge-verifier'], 'minimumDiskAvailableBytes': 8 * runtime.GIB,
+        'minimumMemoryAvailableBytes': 12 * runtime.GIB, 'latestProbeAtUnix': 103, 'phases': phases, 'phasePlans': plans}
+    file = resource / 'resource-summary.json'; write(file, summary)
+    reference = {'file': file.relative_to(directory).as_posix(), 'sha256': cutover.sha_file(file)}
+    proof['resourceEvidence'] = reference
+    proof['loadScope'] = {'profile': runtime.RUNTIME_PROFILE, 'productionPerformanceVerified': False,
+                          'productionCapacityVerified': False, 'allMandatoryScenariosRequired': True}
+    cleanup_file = directory / proof['cleanup']['file']
+    cleanup = json.loads(cleanup_file.read_text()); cleanup['resourceEvidence'] = reference
+    cleanup['fixtureBuildResources'] = proof['fixtureBuildResources']; write(cleanup_file, cleanup)
+    proof['cleanup']['sha256'] = cutover.sha_file(cleanup_file)
 
 
 def runtime_verification(tmp_path):
@@ -43,6 +132,9 @@ def runtime_verification(tmp_path):
             'fixtureState': {'kind': 'doorhandle-owned-scripted-model', 'modelRequests': 12, 'embeddingRequests': 2},
             'observedInternalNetworks': [{'service': key, 'networkId': '7' * 64, 'internal': True}
                 for key in ('backend', 'mem0', 'model-fixture')]}}
+    proof['fixtureBuildResources'] = {}; fixture_images = {}
+    for name in ('model', 'mcp'):
+        proof['fixtureBuildResources'][name], fixture_images[name] = fixture_build_resources(directory, context, name)
     def evidence(name, value):
         path = directory / 'checkout/work/runtime-acceptance' / (name + '.json')
         write(path, {**context, 'project': project, **value})
@@ -72,6 +164,7 @@ def runtime_verification(tmp_path):
         'stoppedContainers': ['9' * 64], 'sourceResourcesChanged': False,
         'sourceBeforeSha256': 'a' * 64, 'sourceAfterSha256': 'a' * 64}), 'status': 'STOPPED'}
     write(directory / 'checkout/work/ci-evidence/migration.json', {'migrationReceiptSha256': 'f' * 64, 'targetSnapshotSha256': '1' * 64})
+    attach_runtime_resources(directory, context, project, proof, images, fixture_images)
     path = directory / 'runtime-acceptance.json'; write(path, proof)
     def admit():
         return cutover.admitted_runtime(tmp_path, tag, 'a' * 40, 'c' * 64, identity, schema, {'images': images}, 'd' * 64)

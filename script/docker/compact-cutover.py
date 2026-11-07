@@ -77,7 +77,7 @@ def fixed_source(archive, source, digest, commit):
             require(sha_file(target) == expected, 'Candidate source differs from the Jenkins SCM artifact')
         require(stream.pax_headers.get('comment') == commit, 'Git archive commit metadata differs from the Jenkins SCM commit')
     require({'script/schema/migrate_compact.py', 'script/docker/compact-cutover.py',
-             'script/docker/compact-schema-guard.py', 'docs/database/compact-schema-contract.json'} <= entries,
+               'script/docker/compact-schema-guard.py', 'docs/database/compact-schema-contract.json'} <= entries,
             'SCM artifact lacks the complete migration and admission implementation')
 
 
@@ -148,6 +148,17 @@ def admitted_runtime(root, tag, commit, source_sha, identity, guard, build, buil
     require(all(proof.get(key) == value for key, value in context.items()) and proof.get('status') == 'PASS'
             and proof.get('images') == {key: build['images'][key] for key in ('backend', 'nginx', 'mem0', 'detection-worker')},
             'The full runtime proof belongs to another build, model protocol or candidate image')
+    fixture_builds = proof.get('fixtureBuildResources')
+    require(isinstance(fixture_builds, dict) and set(fixture_builds) == {'model', 'mcp'}, 'Owned runtime fixture build proofs are missing')
+    build_resources = module('cutover_fixture_build_resources', Path(__file__).with_name('compact-build-resources.py'))
+    build_context = {'release': tag, 'commit': commit, 'sourceSha256': source_sha, 'identity': identity}
+    for name, reference in fixture_builds.items():
+        expected = 'checkout/work/runtime-acceptance/controlled-build-' + name + '/resource-summary.json'
+        require(isinstance(reference, dict) and set(reference) == {'file', 'sha256'} and reference.get('file') == expected,
+                'Runtime fixture build reference escaped its owned directory')
+        resource_directory = canonical(directory / Path(expected).parent)
+        build_resources.validate_files(resource_directory, build_context, require_services=False)
+        require(sha_file(resource_directory / 'resource-summary.json') == reference['sha256'], 'Runtime fixture build bytes changed')
     require(re.fullmatch(r'doorhandle-rehearsal-[a-f0-9]{12}', proof.get('project', ''))
             and SHA.fullmatch(proof.get('migrationReceiptSha256', ''))
             and SHA.fullmatch(proof.get('initialTargetSnapshotSha256', ''))
@@ -331,6 +342,9 @@ class Cutover:
         self.identity = self.guard.ecs_identity(self.input['ecs'])
         build, self.build_sha = self.guard.read_private(self.source / 'candidate-build.json')
         self.build = build
+        resources = module('cutover_candidate_build_resources', self.source / 'script/docker/compact-build-resources.py')
+        resources.validate_candidate(build, self.source,
+            {'release': args.tag, 'commit': self.input['gitCommit'], 'sourceSha256': args.source_sha256, 'identity': self.identity})
         require(build.get('kind') == 'doorhandle-compact-candidate-build' and build.get('status') == 'BUILT'
                 and build.get('release') == args.tag and build.get('commit') == self.input['gitCommit']
                 and build.get('sourceSha256') == args.source_sha256 and build.get('inputSha256') == self.input_sha

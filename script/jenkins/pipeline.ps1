@@ -1,4 +1,4 @@
-param([Parameter(Mandatory = $true)][ValidateSet('Preflight', 'Package', 'PrepareTools', 'CleanupTools', 'PrepareFixtures', 'CleanupFixtures', 'VerifyEcs', 'VerifyEmbedding', 'PreserveLegacy', 'PreserveLocalArtifacts', 'ReclaimBuildOutputs', 'PrepareLegacyCandidate', 'CleanupLegacyCandidate', 'VerifyRuntime', 'CleanupRuntime', 'Publish', 'Rehearse', 'CompactCutover')][string]$Action)
+param([Parameter(Mandatory = $true)][ValidateSet('Preflight', 'Package', 'PrepareTools', 'CleanupTools', 'PrepareFixtures', 'CleanupFixtures', 'VerifyEcs', 'VerifyEmbedding', 'PreserveLegacy', 'PreserveLocalArtifacts', 'PreserveColdStores', 'PreserveLocalMySql', 'CleanupLocalMySql', 'ReclaimBuildOutputs', 'PrepareLegacyCandidate', 'CleanupLegacyCandidate', 'VerifyRuntime', 'CleanupRuntime', 'Publish', 'Rehearse', 'CompactCutover')][string]$Action)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 Set-Location -LiteralPath (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
@@ -223,12 +223,22 @@ if ($Action -eq 'PreserveLegacy') {
     & ./script/jenkins/preserve-legacy-input.ps1 -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha -SnapshotDirectory $env:LEGACY_SOURCE_SNAPSHOT -EcsSnapshotDirectory $env:LEGACY_SOURCE_ECS_SNAPSHOT
     return
 }
-if ($Action -in @('PreserveLocalArtifacts', 'ReclaimBuildOutputs')) {
+if ($Action -eq 'CleanupLocalMySql') {
+    $commit = Require-Value 'GIT_COMMIT' '^[a-f0-9]{40}$'
+    $sha = (Get-FileHash -LiteralPath artifacts/source.tar.gz -Algorithm SHA256).Hash.ToLowerInvariant()
+    & ./script/jenkins/preserve-local-mysql.ps1 -Mode Cleanup -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha
+    return
+}
+if ($Action -in @('PreserveLocalArtifacts', 'PreserveColdStores', 'PreserveLocalMySql', 'ReclaimBuildOutputs')) {
     if ($env:CI_ECS_VERIFIED -ne 'true') { throw 'Original data retention and build reclamation require this fixed commit ECS verification first.' }
     $commit = Require-Value 'GIT_COMMIT' '^[a-f0-9]{40}$'
     $sha = (Get-FileHash -LiteralPath artifacts/source.tar.gz -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($Action -eq 'PreserveLocalArtifacts') {
         & ./script/jenkins/preserve-local-artifacts.ps1 -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha -SnapshotDirectory $env:LOCAL_ARTIFACTS_SNAPSHOT -EcsSnapshotDirectory $env:LOCAL_ARTIFACTS_ECS_SNAPSHOT
+    } elseif ($Action -eq 'PreserveColdStores') {
+        & ./script/jenkins/preserve-cold-stores.ps1 -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha -SnapshotDirectory $env:COLD_STORES_SNAPSHOT -EcsSnapshotDirectory $env:COLD_STORES_ECS_SNAPSHOT
+    } elseif ($Action -eq 'PreserveLocalMySql') {
+        & ./script/jenkins/preserve-local-mysql.ps1 -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha -SnapshotDirectory $env:LOCAL_MYSQL_SNAPSHOT -FixtureSettings $env:LOCAL_MYSQL_FIXTURE_SETTINGS
     } else {
         & ./script/jenkins/reclaim-build-outputs.ps1 -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha
     }
@@ -302,11 +312,17 @@ if ($Action -in @('PrepareTools', 'CleanupTools')) {
         }
         Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "chmod 600 '$remoteInbox/source.tar.gz' '$remoteInbox/prepare-ecs-tools.py' '$executor'"))
         $arguments = "--root '$remoteRoot' --tag '$tag' --commit '$commit' --source-sha256 '$sha' --instance-id '$instance' --machine-id '$machine'"
-        $result = Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "python3 -B '$remoteInbox/prepare-ecs-tools.py' $arguments"))
+        $prepareArguments = $arguments
+        if ($env:ACTION -in @('verify-runtime', 'compact-cutover')) { $prepareArguments += ' --prepare-candidate-builder' }
+        $result = Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "python3 -B '$remoteInbox/prepare-ecs-tools.py' $prepareArguments"))
         $prepared = ($result | Select-Object -Last 1) | ConvertFrom-Json
         if ($prepared.status -ne 'PREPARED' -or $prepared.release -ne $tag -or $prepared.commit -ne $commit -or $prepared.sourceSha256 -ne $sha) { throw 'ECS tool image preparation did not return matching source evidence.' }
         foreach ($image in @($prepared.mavenImageId, $prepared.nodeImageId, $prepared.pythonImageId)) {
             if ($image -notmatch '^sha256:[a-f0-9]{64}$') { throw 'Prepared ECS tools require immutable image IDs.' }
+        }
+        if ($env:ACTION -in @('verify-runtime', 'compact-cutover')) {
+            $builder = $prepared.PSObject.Properties['candidateBuilderTools']
+            if (-not $builder -or $builder.Value.status -ne 'PREPARED' -or $builder.Value.file -ne "$remoteInbox/candidate-build-tools/tools.json" -or $builder.Value.sha256 -notmatch '^[a-f0-9]{64}$') { throw 'Candidate BuildKit was not automatically prepared for this fixed attempt.' }
         }
         $prepared | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath artifacts/ecs-tool-preparation.json -Encoding utf8
         $result = Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "python3 -B '$executor' prepare $arguments --maven-image '$($prepared.mavenImageId)' --node-image '$($prepared.nodeImageId)' --python-image '$($prepared.pythonImageId)'"))
@@ -432,6 +448,25 @@ if ($Action -in @('CompactCutover', 'VerifyRuntime', 'CleanupRuntime')) {
     $package = Get-Content -LiteralPath artifacts/release.json -Raw | ConvertFrom-Json
     $runtimeHelper = "$remoteRoot/releases/$tag/script/docker/compact-runtime-acceptance.py"
     $runtimeArguments = "--root '$remoteRoot' --runtime '$runtime' --tag '$tag' --commit '$commit' --source-sha256 '$sha' --instance-id '$instance' --machine-id '$machine' --settings '$settings'"
+    function Receive-OwnedBuildResources([string]$RemoteDirectory, [string]$LocalDirectory) {
+        & ssh.exe @sshOptions -p $portText $destination "test -f '$RemoteDirectory/resource-summary.json'"
+        if ($LASTEXITCODE -eq 1) { return $null }
+        if ($LASTEXITCODE -ne 0) { throw 'Could not determine whether owned image resource evidence exists.' }
+        New-Item -ItemType Directory -Force -Path $LocalDirectory | Out-Null
+        Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, "${destination}:$RemoteDirectory/resource-summary.json", "$LocalDirectory/resource-summary.json"))
+        $file = Get-Item -LiteralPath "$LocalDirectory/resource-summary.json"
+        if ($file.Length -le 0 -or $file.Length -gt 2097152) { throw 'Owned image resource summary exceeds its bound.' }
+        $summary = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json
+        if ($summary.release -ne $tag -or $summary.commit -ne $commit -or $summary.sourceSha256 -ne $sha -or $summary.identity.instanceId -ne $instance -or $summary.identity.machineId -ne $machine -or $summary.probeFile -ne 'resource-probes.jsonl' -or $summary.probeSha256 -notmatch '^[a-f0-9]{64}$' -or @($summary.phases).Count -gt 512) { throw 'Owned image resource evidence differs from this fixed build.' }
+        $catalog = @(@{ file='resource-probes.jsonl'; sha256=$summary.probeSha256 }) + @($summary.phases)
+        foreach ($entry in $catalog) {
+            if ($entry.file -notmatch '^(resource-probes\.jsonl|phase-[0-9]{2,3}\.json)$' -or $entry.sha256 -notmatch '^[a-f0-9]{64}$') { throw 'Owned image resource file escaped its directory.' }
+            $localFile = "$LocalDirectory/$($entry.file)"
+            Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, "${destination}:$RemoteDirectory/$($entry.file)", $localFile))
+            if ((Get-Item -LiteralPath $localFile).Length -gt 67108864 -or (Get-FileHash -LiteralPath $localFile -Algorithm SHA256).Hash.ToLowerInvariant() -ne $entry.sha256) { throw 'Owned image raw evidence changed during collection.' }
+        }
+        return $summary
+    }
     function Receive-RuntimeResource([string]$Name, [string]$Digest) {
         $names = @('resource-summary.json', 'resource-probes.jsonl',
             'resource-phase-1-runtime-start.json', 'resource-phase-2-runtime-backup.json', 'resource-phase-3-runtime-restore.json')
@@ -447,6 +482,9 @@ if ($Action -in @('CompactCutover', 'VerifyRuntime', 'CleanupRuntime')) {
         return Get-Content -LiteralPath $localFile -Raw | ConvertFrom-Json
     }
     if ($Action -eq 'CleanupRuntime') {
+        foreach ($name in @('model', 'mcp')) {
+            $null = Receive-OwnedBuildResources "$remoteRoot/verification/$tag/checkout/work/runtime-acceptance/controlled-build-$name" "artifacts/fixture-build-resources/$name"
+        }
         # Preserve the real exit code, but collect bounded public failure and
         # cleanup reports before reporting an incomplete cleanup to Jenkins.
         $PSNativeCommandUseErrorActionPreference = $false
@@ -529,19 +567,48 @@ if ($Action -in @('CompactCutover', 'VerifyRuntime', 'CleanupRuntime')) {
     }
     Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, (Get-PinnedSourceFile 'script/jenkins/deploy-remote.sh'), "${destination}:$remoteInbox/deploy-remote.sh"))
     $buildRegistry = Get-BuildRegistryAssignment
-    Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "$buildRegistry bash '$remoteInbox/deploy-remote.sh' build-only '$remoteRoot' '$runtime' '$tag' '$sha' '$settings' '$instance' '$machine' '$commit'"))
+    function Receive-CandidateResources {
+        return Receive-OwnedBuildResources "$remoteRoot/releases/$tag/work/candidate-build-resources" 'artifacts/candidate-build-resources'
+    }
+    $candidateResources = $null
+    try {
+        Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "$buildRegistry bash '$remoteInbox/deploy-remote.sh' build-only '$remoteRoot' '$runtime' '$tag' '$sha' '$settings' '$instance' '$machine' '$commit'"))
+    } finally { $candidateResources = Receive-CandidateResources }
+    if (-not $candidateResources -or $candidateResources.status -ne 'PASS') { throw 'Candidate image construction lacks passing controlled resource evidence.' }
+    $resourceValidator = Get-PinnedSourceFile 'script/docker/compact-build-resources.py'
+    $resourcePython = $env:LOCAL_PYTHON_EXE
+    if (-not $resourcePython) { $resourcePython = $env:PYTHON_EXE }
+    Invoke-Checked $resourcePython @('-I', '-B', $resourceValidator, 'validate', '--directory', 'artifacts/candidate-build-resources', '--tag', $tag, '--commit', $commit, '--source-sha256', $sha, '--instance-id', $instance, '--machine-id', $machine)
     Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, "${destination}:$remoteRoot/releases/$tag/candidate-build.json", 'artifacts/compact-candidate-build.json'))
     $buildReceipt = Get-Content -LiteralPath artifacts/compact-candidate-build.json -Raw | ConvertFrom-Json
     if ($buildReceipt.kind -ne 'doorhandle-compact-candidate-build' -or $buildReceipt.status -ne 'BUILT' -or $buildReceipt.commit -ne $commit -or $buildReceipt.sourceSha256 -ne $sha -or $buildReceipt.release -ne $tag -or $buildReceipt.ecs.instanceId -ne $instance -or $buildReceipt.ecs.machineId -ne $machine) {
         throw 'Candidate image/artifact build receipt differs from this fixed Jenkins source.'
     }
     if ($buildReceipt.applicationJarSha256 -ne $jarSha -or $buildReceipt.applicationJarBytes -ne $jarBytes) { throw 'The built image does not contain this pipeline application jar.' }
-    $result = Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "python3 -B '$runtimeHelper' run $runtimeArguments"))
+    if ($buildReceipt.buildResourceEvidence.file -ne 'work/candidate-build-resources/resource-summary.json' -or $buildReceipt.buildResourceEvidence.sha256 -ne (Get-FileHash -LiteralPath 'artifacts/candidate-build-resources/resource-summary.json' -Algorithm SHA256).Hash.ToLowerInvariant()) { throw 'Candidate build resource receipt was not bound to the actual collected bytes.' }
+    if ($candidateResources.applicationJar.sha256 -ne $jarSha -or $candidateResources.applicationJar.bytes -ne $jarBytes) { throw 'Candidate resource journal contains another Jenkins jar.' }
+    foreach ($service in @('backend', 'nginx', 'mem0', 'detection-worker')) {
+        if ($candidateResources.build.images.$service.imageId -ne $buildReceipt.images.$service) { throw 'Candidate measured image differs from the admitted build receipt.' }
+    }
+    $fixtureResources = @{}
+    try {
+        $result = Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "python3 -B '$runtimeHelper' run $runtimeArguments"))
+    } finally {
+        foreach ($name in @('model', 'mcp')) {
+            $fixtureResources[$name] = Receive-OwnedBuildResources "$remoteRoot/verification/$tag/checkout/work/runtime-acceptance/controlled-build-$name" "artifacts/fixture-build-resources/$name"
+        }
+    }
     $runtimeResult = ($result | Select-Object -Last 1) | ConvertFrom-Json
     if ($runtimeResult.status -ne 'PASS' -or $runtimeResult.release -ne $tag -or $runtimeResult.runtimeScenarios -lt 9 -or $runtimeResult.ownedCleanup -ne 'STOPPED' -or $runtimeResult.runtimeReceiptSha256 -notmatch '^[a-f0-9]{64}$') { throw 'Complete application runtime acceptance did not pass and clean up its owned resources.' }
     Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, "${destination}:$remoteRoot/verification/$tag/runtime-acceptance.json", 'artifacts/runtime-acceptance.json'))
     if ((Get-FileHash -LiteralPath artifacts/runtime-acceptance.json -Algorithm SHA256).Hash.ToLowerInvariant() -ne $runtimeResult.runtimeReceiptSha256) { throw 'The actual runtime acceptance receipt changed during collection.' }
     $runtimeProof = Get-Content -LiteralPath artifacts/runtime-acceptance.json -Raw | ConvertFrom-Json
+    foreach ($name in @('model', 'mcp')) {
+        $reference = $runtimeProof.fixtureBuildResources.$name
+        $file = "artifacts/fixture-build-resources/$name/resource-summary.json"
+        if (-not $fixtureResources[$name] -or $fixtureResources[$name].status -ne 'PASS' -or $reference.file -ne "checkout/work/runtime-acceptance/controlled-build-$name/resource-summary.json" -or $reference.sha256 -ne (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant()) { throw 'Runtime fixture image build lacks matching controlled resource evidence.' }
+        Invoke-Checked $resourcePython @('-I', '-B', $resourceValidator, 'validate', '--directory', "artifacts/fixture-build-resources/$name", '--fixture', $name, '--tag', $tag, '--commit', $commit, '--source-sha256', $sha, '--instance-id', $instance, '--machine-id', $machine)
+    }
     $candidateSha = (Get-FileHash -LiteralPath artifacts/compact-candidate-build.json -Algorithm SHA256).Hash.ToLowerInvariant()
     $wholeProof = Get-Content -LiteralPath artifacts/ecs/evidence/reports/migration.json -Raw | ConvertFrom-Json
     if ($runtimeProof.status -ne 'PASS' -or $runtimeProof.commit -ne $commit -or $runtimeProof.release -ne $tag -or $runtimeProof.sourceSha256 -ne $sha -or $runtimeProof.candidateBuildSha256 -ne $candidateSha -or $runtimeProof.acceptanceProfileSha256 -ne $verified.acceptanceProfileSha256 -or $runtimeProof.migrationReceiptSha256 -ne $wholeProof.migrationReceiptSha256 -or $runtimeProof.initialTargetSnapshotSha256 -ne $wholeProof.targetSnapshotSha256 -or $runtimeProof.identity.instanceId -ne $instance -or $runtimeProof.identity.machineId -ne $machine -or $runtimeProof.paidModelCalls -ne 0) { throw 'Application acceptance proof belongs to another build, dataset, image or execution host.' }

@@ -214,8 +214,10 @@ class MemoryGovernanceTest {
         String evidence=new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(Map.of("protocol","doorhandle-legacy-clock-v1","status","UNRESOLVED",
                 "sourceTable","agent_memory_audit","sourceKey",Map.of("id",77),"sourceSnapshotSha256","a".repeat(64),"sourceRowSha256","b".repeat(64),
                 "sourceWallTimes",Map.of("created_at","2026-10-13 21:40:19.000000","updated_at","2026-10-14 16:13:24.000000")));
-        jdbc.update("UPDATE workflow_instance SET created_at=NULL,updated_at=NULL,finished_at=NULL,legacy_source='agent_memory_audit',legacy_key='77',legacy_clock_json=? WHERE kind='MEMORY_MUTATION' AND request_id=?",evidence,key);
-        jdbc.update("UPDATE audit_event SET occurred_at=NULL,legacy_source='agent_memory_audit',legacy_key='77',legacy_clock_json=? WHERE kind='MEMORY_OPERATION' AND request_id=? AND outcome='SUCCEEDED'",evidence,key);
+        // Match the immutable identities emitted by the actual legacy COPY;
+        // a live random UUID is not a migrated source-row identity.
+        jdbc.update("UPDATE workflow_instance SET workflow_id='memory-mutation-77',created_at=NULL,updated_at=NULL,finished_at=NULL,legacy_source='agent_memory_audit',legacy_key='77',legacy_clock_json=? WHERE kind='MEMORY_MUTATION' AND request_id=?",evidence,key);
+        jdbc.update("UPDATE audit_event SET event_id='memory-audit-77',resource_id='memory-mutation-77',occurred_at=NULL,legacy_source='agent_memory_audit',legacy_key='77',legacy_clock_json=? WHERE kind='MEMORY_OPERATION' AND request_id=? AND outcome='SUCCEEDED'",evidence,key);
         assertThat(settings.audit(owner)).singleElement().satisfies(value->{assertThat(value.outcome()).isEqualTo("SUCCEEDED");assertThat(value.createdAt()).isNull();assertThat(value.updatedAt()).isNull();assertThat(value.clockStatus()).isEqualTo("UNRESOLVED");assertThat(value.sourceWallTimes()).containsEntry("created_at","2026-10-13 21:40:19.000000");});
         assertThatThrownBy(()->settings.reserveAutomatic(owner,key,fingerprint)).hasMessageContaining("历史时区未确认");
         assertThatThrownBy(()->settings.reconcileAutomatic(owner,key,"SUCCEEDED")).hasMessageContaining("历史时区未确认");

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -60,6 +61,7 @@ PYTHON = '/usr/local/bin/python'
 CONFIG_GROWTH_BOUND = 2 * MIB
 RECIPE = 'script/jenkins/prepare-ecs-tools.py'
 REQUIREMENTS = 'script/jenkins/python-test-requirements.txt'
+BUILDER_RECIPES = {'script/docker/compact-build-resources.py', 'script/docker/compact-image-inputs.py', 'deploy/buildkit/LICENSE'}
 SHA = re.compile(r'[a-f0-9]{64}')
 IMAGE = re.compile(r'sha256:[a-f0-9]{64}')
 TAG = re.compile(r'ci-[1-9][0-9]*-[a-f0-9]{12}')
@@ -112,9 +114,10 @@ def identity(args):
     return {'instanceId': args.instance_id, 'machineId': args.machine_id, 'executionLocation': 'ECS'}
 
 
-def archive_inputs(archive, destination, commit, expected_sha, own_recipe):
+def archive_inputs(archive, destination, commit, expected_sha, own_recipe, include_builder=False):
     require(digest(archive) == expected_sha, 'Fixed source archive digest differs')
     found, seen, total = {}, set(), 0
+    expected = {RECIPE, REQUIREMENTS} | (BUILDER_RECIPES if include_builder else set())
     with tarfile.open(archive, 'r:gz') as package:
         for member in package:
             name = member.name
@@ -126,14 +129,14 @@ def archive_inputs(archive, destination, commit, expected_sha, own_recipe):
             seen.add(name); total += member.size
             require(len(seen) <= 50000 and member.size <= 32 * MIB and total <= 512 * MIB,
                     'Source archive exceeds bounded inspection')
-            if name in (RECIPE, REQUIREMENTS):
+            if name in expected:
                 require(member.isfile() and 0 < member.size <= MIB, 'Bounded regular tool source required')
                 with package.extractfile(member) as stream:
                     content = stream.read(MIB + 1)
                 require(len(content) == member.size, 'Tool source member size differs')
                 found[name] = content
         require(package.pax_headers.get('comment') == commit, 'Git archive PAX commit differs')
-    require(set(found) == {RECIPE, REQUIREMENTS}, 'Fixed source recipe or requirements is missing')
+    require(set(found) == expected, 'Fixed source recipe or requirements is missing')
     require(hashlib.sha256(found[RECIPE]).hexdigest() == digest(own_recipe),
             'Uploaded tool provisioner is not this fixed source recipe')
     for source_name, content in found.items():
@@ -630,7 +633,8 @@ class Preparation:
                 'preparationSha256': digest(self.folder / 'preparation.json')}
 
     def prepare(self):
-        sources = archive_inputs(self.archive, self.folder, self.args.commit, self.args.source_sha256, Path(__file__).resolve())
+        sources = archive_inputs(self.archive, self.folder, self.args.commit, self.args.source_sha256, Path(__file__).resolve(),
+                                 include_builder=getattr(self.args, 'prepare_candidate_builder', False))
         os.chmod(self.folder / 'python-test-requirements.txt', 0o444)
         pinned = requirements(self.folder / 'python-test-requirements.txt')
         for image in (BASE, MAVEN, NODE):
@@ -718,15 +722,22 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('root', 'tag', 'commit', 'source-sha256', 'instance-id', 'machine-id'):
         parser.add_argument('--' + name, required=True)
+    parser.add_argument('--prepare-candidate-builder', action='store_true')
     args = parser.parse_args(argv)
-    for event in (signal.SIGTERM, signal.SIGINT):
+    for event in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         signal.signal(event, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
     try:
-        print(json.dumps(Preparation(args).prepare(), ensure_ascii=True)); return 0
+        preparation = Preparation(args)
+        value = preparation.prepare()
+        if args.prepare_candidate_builder:
+            spec = importlib.util.spec_from_file_location('pinned_candidate_build_resources', preparation.folder / 'compact-build-resources.py')
+            helper = importlib.util.module_from_spec(spec); spec.loader.exec_module(helper)
+            value['candidateBuilderTools'] = helper.prepare_tools(args, preparation.identity, preparation.folder)
+        print(json.dumps(value, ensure_ascii=True)); return 0
     except BaseException as error:
         failed = {'status': 'FAILED_OR_UNKNOWN', 'errorType': type(error).__name__,
                   'sourceAndEvidenceRetained': True}
-        if isinstance(error, PreparationError):
+        if isinstance(error, PreparationError) or getattr(error, 'doorhandle_public_resource_error', False):
             failed['error'] = str(error)
         print(json.dumps(failed), file=sys.stderr)
         return 2

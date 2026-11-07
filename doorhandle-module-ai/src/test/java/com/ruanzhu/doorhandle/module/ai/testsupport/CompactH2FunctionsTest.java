@@ -73,6 +73,47 @@ class CompactH2FunctionsTest {
         assertThat(row.get("id")).isNotNull();
     }
 
+    @Test void lengthlessMysqlCharCastsPreserveFullOwnerKeysLongTextAndNullWithoutWeakeningChecks() {
+        String source = """
+            SELECT CAST(? AS CHAR) AS full_text,CAST(NULL AS CHAR) AS null_value,
+              CAST('AS CHAR) literal' AS CHAR(40)) AS explicit_length
+            /* CAST(91 AS CHAR) is comment data */
+            -- CAST(92 AS CHAR) is also comment data
+            """;
+        String adapted = CompactH2Functions.adaptJsonColumns(source);
+        assertThat(adapted).contains("CAST(? AS VARCHAR)", "CAST(NULL AS VARCHAR)",
+                "CAST('AS CHAR) literal' AS CHAR(40))", "/* CAST(91 AS CHAR) is comment data */",
+                "-- CAST(92 AS CHAR) is also comment data");
+        String text = "完整文本".repeat(1024) + " AS CHAR) ";
+        assertThat(jdbc.queryForMap(adapted, text)).containsEntry("full_text", text).containsEntry("null_value", null);
+        jdbc.execute(CompactH2Functions.adaptDdl("""
+            CREATE TABLE fixture_char_binding (
+              id INT PRIMARY KEY,
+              owner_id DECIMAL(20,0),
+              resource_id VARCHAR(40),
+              CONSTRAINT ck_char_binding CHECK (
+                (owner_id IS NULL AND resource_id IS NULL) OR
+                (owner_id IS NOT NULL AND resource_id IS NOT NULL AND resource_id=CAST(owner_id AS CHAR)))
+            );
+            """));
+        String[] owners = {"0", "42", "91", "92", "77", "18446744073709551615"};
+        for (int i = 0; i < owners.length; i++) {
+            jdbc.update("INSERT INTO fixture_char_binding(id,owner_id,resource_id) VALUES(?,?,?)",
+                    i, new BigDecimal(owners[i]), owners[i]);
+            String nested = CompactH2Functions.adaptJsonColumns(
+                    "SELECT CAST(CAST(JSON_UNQUOTE(JSON_EXTRACT(?,'$.id')) AS DECIMAL(20,0)) AS CHAR)");
+            assertThat(jdbc.queryForObject(nested, String.class, "{\"id\":" + owners[i] + "}")).isEqualTo(owners[i]);
+        }
+        jdbc.update("INSERT INTO fixture_char_binding(id,owner_id,resource_id) VALUES(100,NULL,NULL)");
+        assertThatThrownBy(() -> jdbc.update("INSERT INTO fixture_char_binding(id,owner_id,resource_id) VALUES(101,91,'9')"))
+                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+        assertThatThrownBy(() -> jdbc.update("UPDATE fixture_char_binding SET resource_id='4' WHERE owner_id=42"))
+                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+        assertThatThrownBy(() -> jdbc.update("INSERT INTO fixture_char_binding(id,owner_id,resource_id) VALUES(102,NULL,'null')"))
+                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM fixture_char_binding", Integer.class)).isEqualTo(owners.length + 1);
+    }
+
     @Test void generatedColumnsRemainComputedWhileStorageModifiersAndOnlyTheirSyntaxAreAdapted() {
         String source = """
             CREATE TABLE fixture_generated (

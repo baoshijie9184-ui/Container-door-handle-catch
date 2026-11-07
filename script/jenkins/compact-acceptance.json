@@ -903,7 +903,7 @@
       },
       {
         "className": "com.ruanzhu.doorhandle.module.ai.testsupport.CompactH2FunctionsTest",
-        "minimumTests": 13,
+        "minimumTests": 14,
         "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/testsupport/CompactH2FunctionsTest.java"
       },
       {
@@ -1072,6 +1072,24 @@
         "module": "tests_python.test_local_artifact_custody",
         "minimumTests": 32,
         "source": "tests_python/test_local_artifact_custody.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_cold_store_custody",
+        "minimumTests": 41,
+        "source": "tests_python/test_cold_store_custody.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_local_mysql_custody",
+        "minimumTests": 63,
+        "source": "tests_python/test_local_mysql_custody.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_compact_build_resources",
+        "minimumTests": 12,
+        "source": "tests_python/test_compact_build_resources.py",
         "allowedSkippedTests": []
       },
       {

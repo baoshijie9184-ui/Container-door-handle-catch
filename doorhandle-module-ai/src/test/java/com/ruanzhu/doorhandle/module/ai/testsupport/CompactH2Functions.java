@@ -291,6 +291,10 @@ public final class CompactH2Functions {
 
     private static String adaptPlain(String sql, DdlContext context) {
         String adapted = sql.replaceAll("(?i)\\bAS\\s+JSON\\s*\\)", "AS VARCHAR)")
+                // MySQL's lengthless CHAR cast keeps the complete value. H2
+                // defaults to CHAR(1); VARCHAR preserves length and SQL NULL.
+                // Explicit CHAR(n), quoted text and comments are unchanged.
+                .replaceAll("(?i)\\bAS\\s+CHAR\\s*\\)", "AS VARCHAR)")
                 // H2 has no UNSIGNED cast target. DECIMAL(20,0) represents
                 // every valid U64 value without narrowing through signed long.
                 .replaceAll("(?i)\\bAS\\s+UNSIGNED(?:\\s+INTEGER)?\\s*\\)", "AS DECIMAL(20,0))")

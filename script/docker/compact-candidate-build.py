@@ -14,6 +14,7 @@ import re
 import shutil
 import shlex
 import sys
+import tarfile
 import uuid
 
 
@@ -214,12 +215,31 @@ print(json.dumps({'versions':versions,'requirements':Path('/app/requirements.txt
         'runtimeDockerfileSha256': cutover.sha_file(context / 'Dockerfile')}
 
 
-def main():
+def stage_mem0(source, work, common, cutover):
+    context = work / 'compact-mem0-build'; context.mkdir(mode=0o700)
+    body = (source / 'deploy/mem0/Dockerfile').read_text(encoding='utf8')
+    files = {}
+    for line in body.splitlines():
+        if not line.startswith('COPY '): continue
+        values = [item for item in shlex.split(line)[1:] if not item.startswith('--')]
+        common.require(len(values) >= 2, 'Unsupported Mem0 COPY closure')
+        for name in values[:-1]:
+            common.require(re.fullmatch(r'[A-Za-z0-9_./-]+', name) and '..' not in Path(name).parts and not Path(name).is_absolute(),
+                           'Mem0 build input is not a fixed source file')
+            original = cutover.canonical(source / name); common.require(original.is_file(), 'Missing Mem0 source input')
+            target = context / name; target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            shutil.copyfile(original, target); os.chmod(target, 0o644); files[name] = cutover.sha_file(target)
+    (context / 'Dockerfile').write_text(body, encoding='utf8'); os.chmod(context / 'Dockerfile', 0o600)
+    common.write_json(work / 'mem0-build-source.json', {'sourceDockerfileSha256': cutover.sha_file(source / 'deploy/mem0/Dockerfile'), 'files': files})
+    return context
+
+
+def main(argv=None, actor=None, controlled_build=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('phase', choices=('stage', 'capture'))
+    parser.add_argument('phase', choices=('stage', 'capture', 'build'))
     for name in ('root', 'runtime', 'tag', 'source-sha256', 'settings', 'instance-id', 'machine-id', 'commit'):
         parser.add_argument('--' + name, required=True)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     source = Path(args.root) / 'releases' / args.tag
     common = module('candidate_common', source / 'script/docker/assignment-compat.py')
     schema = module('candidate_schema', source / 'script/docker/compact-schema-guard.py')
@@ -268,7 +288,23 @@ def main():
             and jar_input.stat().st_size == artifact['applicationJarBytes']
             and cutover.sha_file(jar_input) == artifact.get('applicationJarSha256'),
             'Candidate must package the exact fixed-commit Jenkins application jar')
-        if args.phase == 'stage':
+        if args.phase == 'build':
+            resources = module('candidate_build_resources', source / 'script/docker/compact-build-resources.py')
+            require(actor is not None and actor.directory == work / 'candidate-build-resources',
+                    'Candidate build must enter through the owned source-extraction controller')
+            with tarfile.open(inbox / 'source.tar.gz', 'r:gz') as package:
+                members = package.getmembers(); source_bytes = sum(item.size for item in members if item.isfile())
+            checkout = Path(args.root) / 'verification' / args.tag / 'checkout'
+            frontends = {name: frontend_inventory(checkout / name / 'dist') for name in ('frontend', 'frontend-agent')}
+            old_context = cutover.canonical(Path(args.runtime) / 'work/cloud/pth-worker-build/model-source')
+            links = 0
+            for current, directories, files in os.walk(old_context, followlinks=False):
+                require(not any((Path(current) / name).is_symlink() for name in directories + files), 'Linked worker source is not closed')
+                links += len(directories) + len(files)
+            growth = artifact['applicationJarBytes'] + source_bytes + sum(item['bytes'] for item in frontends.values()) + (links + len(members)) * 4096 + 64 * resources.MIB
+            actor.begin('stage-contexts', growth, {'applicationJarBytes': artifact['applicationJarBytes'], 'sourceBytes': source_bytes,
+                'sourceMembers': len(members), 'frontendArtifacts': frontends, 'hardlinkedDependencyEntries': links}, 512 * resources.MIB)
+        if args.phase in ('stage', 'build'):
             backend_context = stage_backend(source, work, jar_input, common, cutover)
             web_context = stage_web(source, work, Path(args.root) / 'verification' / args.tag / 'verification-receipt.json',
                                     verification_sha, common, cutover)
@@ -299,6 +335,7 @@ def main():
             provenance = cutover.canonical(old_context / 'BUILD_PROVENANCE.json')
             shutil.copyfile(provenance, context / 'BUILD_PROVENANCE.json')
             dependencies = stage_worker_dependencies(source, context, old_context, args, ops, common, cutover)
+            mem0_context = stage_mem0(source, work, common, cutover)
             common.write_json(work / 'worker-build-source.json', {'commit': args.commit,
                 'sourceSha256': args.source_sha256, 'settingsSha256': settings_sha,
                 'upstreamProvenanceSha256': cutover.sha_file(provenance),
@@ -311,8 +348,27 @@ def main():
             images['services'].pop('detection-worker', None)
             images['services']['backend'] = {'build': {'context': str(backend_context), 'dockerfile': 'Dockerfile'}}
             images['services']['nginx'] = {'build': {'context': str(web_context), 'dockerfile': 'Dockerfile'}}
+            images['services']['mem0'] = {'build': {'context': str(mem0_context), 'dockerfile': 'Dockerfile'}}
             common.write_json(runtime_file, images)
+            if args.phase == 'build':
+                require(re.search(r'^\s+PIP_INDEX_URL: https://mirrors\.aliyun\.com/pypi/simple\s*$', (source / 'compose.cloud.yml').read_text(), re.M),
+                        'Reviewed cloud pip build index changed')
+                specifications = [
+                    {'service': 'backend', 'context': backend_context, 'tag': 'doorhandlecatch/backend:' + args.tag, 'runWriteEnvelopeBytes': 512 * resources.MIB},
+                    {'service': 'nginx', 'context': web_context, 'tag': 'doorhandlecatch/web:' + args.tag},
+                    {'service': 'mem0', 'context': mem0_context, 'tag': 'doorhandlecatch/mem0:' + args.tag, 'runWriteEnvelopeBytes': resources.GIB,
+                     'buildArgs': {'PIP_INDEX_URL': 'https://mirrors.aliyun.com/pypi/simple'}},
+                    {'service': 'detection-worker', 'context': context, 'tag': 'doorhandlecatch/detection-worker:' + args.tag, 'runWriteEnvelopeBytes': 64 * resources.MIB}]
+                controlled_build = resources.build_images(actor, Path(args.root), source, specifications)
+                actor.stop_owned()
+                actor.begin('candidate-jar-readback', artifact['applicationJarBytes'] + 16 * resources.MIB,
+                            {'applicationJarBytes': artifact['applicationJarBytes'], 'images': {key: item['imageId'] for key, item in controlled_build['images'].items()}}, 128 * resources.MIB)
+                capture = ['capture', *[value for name in ('root', 'runtime', 'tag', 'source_sha256', 'settings', 'instance_id', 'machine_id', 'commit')
+                    for value in ('--' + name.replace('_', '-'), getattr(args, name))]]
+                if main(capture, actor=actor, controlled_build=controlled_build) != 0:
+                    raise ValueError('Controlled candidate capture failed')
         else:
+            require(actor is not None and controlled_build is not None, 'Candidate capture requires this invocation owned resource controller')
             pinned = json.loads((source / 'previous-images.yml').read_text())['services']
             images = {name: item['image'] for name, item in pinned.items()}
             for service, repository in (('backend', 'backend'), ('nginx', 'web'), ('mem0', 'mem0'),
@@ -365,12 +421,23 @@ def main():
                        'webSourceReceiptSha256': cutover.sha_file(work / 'web-build-source.json'),
                        'frontendArtifacts': schema.read_private(work / 'web-build-source.json')[0]['frontendArtifacts'],
                        'workerSourceReceiptSha256': cutover.sha_file(work / 'worker-build-source.json')}
+            receipt['mem0SourceReceiptSha256'] = cutover.sha_file(work / 'mem0-build-source.json')
+            evidence = actor.finish('PASS', build=controlled_build,
+                applicationJar={'sha256': artifact['applicationJarSha256'], 'bytes': artifact['applicationJarBytes']})
+            resources = module('candidate_resource_validation', source / 'script/docker/compact-build-resources.py')
+            receipt['buildResourceEvidence'] = resources.validate_files(work / 'candidate-build-resources',
+                {'release': args.tag, 'commit': args.commit, 'sourceSha256': args.source_sha256, 'identity': identity})
+            require(receipt['buildResourceEvidence']['sha256'] == evidence['sha256'], 'Candidate resource finalization changed')
+            resources.validate_candidate(receipt, source, {'release': args.tag, 'commit': args.commit, 'sourceSha256': args.source_sha256, 'identity': identity})
             common.write_json(source / 'candidate-build.json', receipt)
             if java_registration:
                 java_registration['runtime'].admit_release(java_registration['value'], source / 'candidate-build.json')
             print(json.dumps(receipt))
         return 0
     except BaseException:
+        if actor is not None and not (actor.directory / 'resource-summary.json').exists():
+            try: actor.finish('FAILED')
+            except BaseException: pass
         print('Candidate artifact build binding failed; no source writer was changed.', file=sys.stderr)
         return 2
 

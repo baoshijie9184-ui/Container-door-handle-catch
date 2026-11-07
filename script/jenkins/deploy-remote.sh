@@ -180,6 +180,18 @@ archive="$root/inbox/$tag/source.tar.gz"
 printf '%s  %s\n' "$digest" "$archive" | sha256sum --check --status
 release="$root/releases/$tag"
 [[ ! -e "$release" ]] || { echo 'Release ID already exists; use a new build.' >&2; exit 2; }
+if [[ "$action" == build-only ]]; then
+    settings=${6:?private reviewed cutover settings required}
+    instance=${7:?admitted instance identity required}
+    machine=${8:?admitted machine identity required}
+    commit=${9:?fixed SCM commit required}
+    [[ "$settings" =~ ^/(home|srv|opt)/[a-zA-Z0-9_./-]+\.json$ && "/$settings/" != *"/../"* ]] || exit 2
+    [[ "$instance" == i-2zeieuov2aum486jm1ek && "$machine" =~ ^[a-f0-9]{32}$ && "$commit" =~ ^[a-f0-9]{40}$ ]] || exit 2
+    python3 -B "$root/inbox/$tag/python-tools/compact-build-resources.py" build-candidate \
+        --root "$root" --runtime "$runtime" --tag "$tag" --source-sha256 "$digest" --settings "$settings" \
+        --instance-id "$instance" --machine-id "$machine" --commit "$commit"
+    exit 0
+fi
 mkdir "$release"
 # Archives originate from git archive; reject traversal, symbolic links and special entries too.
 python3 - "$archive" "$release" <<'PY'
@@ -199,22 +211,6 @@ if [[ -s "$root/state/current-directory" ]]; then previous=$(cat "$root/state/cu
 snapshot "$release/previous-images.yml" all
 snapshot "$release/runtime-images.yml" runtime
 export APP_IMAGE_TAG=$tag
-if [[ "$action" == build-only ]]; then
-    settings=${6:?private reviewed cutover settings required}
-    instance=${7:?admitted instance identity required}
-    machine=${8:?admitted machine identity required}
-    commit=${9:?fixed SCM commit required}
-    [[ "$settings" =~ ^/(home|srv|opt)/[a-zA-Z0-9_./-]+\.json$ && "/$settings/" != *"/../"* ]] || exit 2
-    [[ "$instance" == i-2zeieuov2aum486jm1ek && "$machine" =~ ^[a-f0-9]{32}$ && "$commit" =~ ^[a-f0-9]{40}$ ]] || exit 2
-    candidate_helper="$release/script/docker/compact-candidate-build.py"
-    candidate_args=(--root "$root" --runtime "$runtime" --tag "$tag" --source-sha256 "$digest" --settings "$settings" --instance-id "$instance" --machine-id "$machine" --commit "$commit")
-    python3 -B "$candidate_helper" stage "${candidate_args[@]}"
-    export DETECTION_BUILD_CONTEXT="$release/work/compact-worker-build"
-    dc "$release" "$release/runtime-images.yml" config --quiet
-    dc "$release" "$release/runtime-images.yml" build backend nginx mem0 detection-worker
-    python3 -B "$candidate_helper" capture "${candidate_args[@]}"
-    exit 0
-fi
 dc "$release" "$release/runtime-images.yml" config --quiet
 dc "$release" "$release/previous-images.yml" config --format json | python3 "$schema_helper" --state "$root/state" --source "$release" > /dev/null
 # The backup helper inherits this deployment's lock; failed backup prevents any app replacement.
