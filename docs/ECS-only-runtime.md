@@ -1,5 +1,7 @@
 # 单体 ECS 运行与测试
 
+2026-11-08 Jenkins #92：九项依赖及完整完成回执正常生成，首轮 SSH 退出 0，未触发只读恢复；collector 的本地回执与 ECS tar 原件已逐字节一致。Java 共 154 个 XML、1,055 项：582 通过、471 条件跳过、1 失败、1 报错，集中于真实调度线程已启动后重新配置 Mockito mock，后续测试又检测到前项遗留的未完成设桩；Python、双前端及五类资料恢复尚未执行。原始报告已保全，工具清理为 `STOPPED / remaining=[]`，实例已从流水线外回读 `Stopped / StopCharging`。修复把 mock 全部配置前置到 Spring 刷新和调度线程启动之前，以 Primary bean 注入，保留真实调度、跨服务取消、忙碌/中断等待及状态断言；符合 [Mockito 关于共享 mock 并发使用的说明](https://github.com/mockito/mockito/wiki/FAQ#is-mockito-thread-safe)。本地仅编译，包括 104 份 AI 测试源码，22.289 秒通过，未运行本地测试；真实复验由后续固定提交在 ECS 执行。
+
 2026-11-08 Jenkins #90：固定提交 `5dec4a42ba4ffac9df75bbff1734715b3ce49c54` 本地跳过测试构建通过；准备工具期间 SSH 被重置、退出 255，流水线失败，尚未执行项目测试或五类资料恢复。随后直接回读同次 ECS 私有回执，九项依赖已真实准备完成（109.34 秒），准确归属的 pip 容器退出 0、PID 0、无 OOM。实例运行状态、启动时长和 CloudTrail 证明中断时没有云端关机或系统重启；不能将该事件归为依赖失败或 Node 堆修复失败。原始控制证据已保全，随后从流水线外回读 `Stopped / StopCharging`，Jenkins 保持运行。现有 SSH 已配置 30 秒保活；新增恢复只允许在首次 SSH 255 后有界、只读重验同次完整完成回执，禁止重新运行准备或仅凭 `PREPARED` 字段跳过证据验证。
 
 2026-11-08 Jenkins #89：固定提交 `02644b8cabb0785c4302425892e85f168e253bac` 的 Java 为 797 通过、612 条件跳过，Python 为 1,166 通过、24 跳过，均零失败及报错；主前端 157 项和独立 Agent 前端 20 项测试均通过。主前端生产构建成功；Agent 前端虽打印 Vite 构建完成，随后 V8 在约 1.5 GiB 堆顶触发 `SIGABRT`，实际命令失败，流水线正确阻止后续五类资料恢复。npm 工具容器原限制为 3 GiB，继续在该限制内修正 Node 堆配置，不扩 ECS 或放宽容器边界。工具清理原始回执为 `STOPPED / remaining=[]`，已从流水线外回读实例 `Stopped / StopCharging`，Jenkins 保持运行。

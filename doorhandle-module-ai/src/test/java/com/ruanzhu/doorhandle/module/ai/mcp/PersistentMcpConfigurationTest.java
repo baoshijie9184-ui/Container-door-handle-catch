@@ -17,6 +17,10 @@ import static org.mockito.Mockito.*;
 class PersistentMcpConfigurationTest {
     @org.springframework.context.annotation.Configuration(proxyBeanMethods=false)
     @org.springframework.scheduling.annotation.EnableScheduling
+    static class SchedulerOnly {}
+
+    @org.springframework.context.annotation.Configuration(proxyBeanMethods=false)
+    @org.springframework.scheduling.annotation.EnableScheduling
     static class Scheduling {
         @org.springframework.context.annotation.Bean @org.springframework.context.annotation.Primary
         FetchMcpRuntime fakeRuntime()throws Exception{var runtime=mock(FetchMcpRuntime.class);when(runtime.writesAllowed()).thenReturn(true);when(runtime.installationIdentity()).thenReturn("a".repeat(64));when(runtime.install(any())).thenReturn(Map.of("version",FetchMcpRuntime.VERSION));return runtime;}
@@ -129,10 +133,15 @@ class PersistentMcpConfigurationTest {
         });
     }
     @Test void realSpringSchedulerObservesRemoteCancelWhileTheInstallerIsBusy()throws Exception{
-        runner(true).withUserConfiguration(Scheduling.class).withPropertyValues("agentscope.mcp.durable-install-enabled=true").run(ctx->{
-            var entered=new java.util.concurrent.CountDownLatch(1);var interrupted=new java.util.concurrent.CountDownLatch(1);
-            var runtime=ctx.getBean("fakeRuntime",FetchMcpRuntime.class);
-            doAnswer(inv->{entered.countDown();try{new java.util.concurrent.CountDownLatch(1).await(10,java.util.concurrent.TimeUnit.SECONDS);}catch(InterruptedException error){interrupted.countDown();throw error;}return Map.of();}).when(runtime).install(any());
+        var entered=new java.util.concurrent.CountDownLatch(1);var interrupted=new java.util.concurrent.CountDownLatch(1);
+        var runtime=mock(FetchMcpRuntime.class);
+        when(runtime.writesAllowed()).thenReturn(true);when(runtime.installationIdentity()).thenReturn("a".repeat(64));
+        doAnswer(inv->{entered.countDown();try{new java.util.concurrent.CountDownLatch(1).await(10,java.util.concurrent.TimeUnit.SECONDS);}catch(InterruptedException error){interrupted.countDown();throw error;}return Map.of();}).when(runtime).install(any());
+        // Finish every stub before Spring publishes this mock to scheduler threads.
+        runner(true).withUserConfiguration(SchedulerOnly.class)
+            .withBean("fakeRuntime",FetchMcpRuntime.class,()->runtime,definition->definition.setPrimary(true))
+            .withPropertyValues("agentscope.mcp.durable-install-enabled=true").run(ctx->{
+            assertThat(ctx).hasNotFailed();assertThat(ctx.getBean("fakeRuntime",FetchMcpRuntime.class)).isSameAs(runtime);
             var service=ctx.getBean(LocalMcpService.class);var actor=new AgentActor(1,"alice",AgentActor.Role.INSPECTOR);
             service.install(actor,0,"request-scheduled-cancel",true);assertThat(entered.await(4,java.util.concurrent.TimeUnit.SECONDS)).isTrue();
             var jdbc=ctx.getBean(JdbcTemplate.class);
