@@ -217,7 +217,11 @@ class MemoryGovernanceTest {
         // Match the immutable identities emitted by the actual legacy COPY;
         // a live random UUID is not a migrated source-row identity.
         jdbc.update("UPDATE workflow_instance SET workflow_id='memory-mutation-77',created_at=NULL,updated_at=NULL,finished_at=NULL,legacy_source='agent_memory_audit',legacy_key='77',legacy_clock_json=? WHERE kind='MEMORY_MUTATION' AND request_id=?",evidence,key);
+        // Keep the whole existing audit chain attached to that same operation;
+        // the prior DISPATCHED event remains immutable history, not an orphan.
+        assertThat(jdbc.update("UPDATE audit_event SET resource_id='memory-mutation-77' WHERE kind='MEMORY_OPERATION' AND owner_user_id=? AND request_id=?",owner.userId(),key)).isEqualTo(2);
         jdbc.update("UPDATE audit_event SET event_id='memory-audit-77',resource_id='memory-mutation-77',occurred_at=NULL,legacy_source='agent_memory_audit',legacy_key='77',legacy_clock_json=? WHERE kind='MEMORY_OPERATION' AND request_id=? AND outcome='SUCCEEDED'",evidence,key);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM audit_event WHERE kind='MEMORY_OPERATION' AND owner_user_id=? AND request_id=? AND resource_id='memory-mutation-77' AND outcome='DISPATCHED'",Integer.class,owner.userId(),key)).isEqualTo(1);
         assertThat(settings.audit(owner)).singleElement().satisfies(value->{assertThat(value.outcome()).isEqualTo("SUCCEEDED");assertThat(value.createdAt()).isNull();assertThat(value.updatedAt()).isNull();assertThat(value.clockStatus()).isEqualTo("UNRESOLVED");assertThat(value.sourceWallTimes()).containsEntry("created_at","2026-10-13 21:40:19.000000");});
         assertThatThrownBy(()->settings.reserveAutomatic(owner,key,fingerprint)).hasMessageContaining("历史时区未确认");
         assertThatThrownBy(()->settings.reconcileAutomatic(owner,key,"SUCCEEDED")).hasMessageContaining("历史时区未确认");
