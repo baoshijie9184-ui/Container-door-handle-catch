@@ -21,7 +21,8 @@ function Get-PinnedSourceFile([string]$RelativePath) {
     New-Item -ItemType Directory -Path $directory -Force | Out-Null
     $output = Join-Path $directory ([System.IO.Path]::GetFileName($RelativePath))
     $info = [System.Diagnostics.ProcessStartInfo]::new()
-    $info.FileName = (Get-Command git.exe -CommandType Application -ErrorAction Stop).Source
+    $gitCommand = Get-Command git.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1
+    $info.FileName = $gitCommand.Source
     $info.WorkingDirectory = (Get-Location).Path
     $info.UseShellExecute = $false
     $info.CreateNoWindow = $true
