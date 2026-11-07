@@ -48,6 +48,56 @@ class PersistentMcpConfigurationTest {
             .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
         assertThatThrownBy(()->CompactMcpFixture.installConnector(jdbc)).isInstanceOf(org.springframework.jdbc.datasource.init.ScriptStatementFailedException.class);
     }
+    private String seedInstalledRegistration(JdbcTemplate jdbc,ObjectMapper mapper,long owner)throws Exception{
+        String operation=UUID.randomUUID().toString();
+        String manifest=mapper.copy().enable(com.fasterxml.jackson.databind.SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS)
+            .writeValueAsString(Map.of("version",FetchMcpRuntime.VERSION,"privateMarker","PRIVATE_MANIFEST_TOKEN"));
+        jdbc.update("INSERT INTO agent_connector(owner_user_id,server_key,package_version,status,enabled,revision,operation_id,manifest_json,manifest_sha256,created_at,updated_at) VALUES(?,'fetch',?,'INSTALLED',TRUE,4,?,?,?,UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))",
+            owner,FetchMcpRuntime.VERSION,operation,manifest,FetchMcpRuntime.sha(manifest.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        return operation;
+    }
+    @Test void actualServiceAuditKeepsTypedPayloadOwnerRevisionAndPrivateDetails()throws Exception{
+        runner(false).withUserConfiguration(Scheduling.class).run(ctx->{
+            assertThat(ctx).hasNotFailed();
+            var jdbc=ctx.getBean(JdbcTemplate.class);var mapper=ctx.getBean(ObjectMapper.class);
+            String operation=seedInstalledRegistration(jdbc,mapper,1);seedInstalledRegistration(jdbc,mapper,2);
+            var service=ctx.getBean(LocalMcpService.class);var actor=new AgentActor(1,"alice",AgentActor.Role.INSPECTOR);
+            assertThat(service.enabled(actor,4,false)).containsEntry("enabled",false).containsEntry("revision",5);
+            var rows=jdbc.queryForList("SELECT event_id,owner_user_id,resource_id,action,outcome,revision,request_id,run_id,call_id,occurred_at,kind,resource_type,payload_version,payload_json FROM audit_event");
+            assertThat(rows).hasSize(1);var row=rows.get(0);
+            assertThat(UUID.fromString(row.get("event_id").toString())).isNotNull();
+            assertThat(((Number)row.get("owner_user_id")).longValue()).isEqualTo(1);
+            assertThat(row).containsEntry("resource_id","fetch").containsEntry("action","DISABLE").containsEntry("outcome","SUCCEEDED")
+                .containsEntry("request_id",operation).containsEntry("run_id",null).containsEntry("call_id",null)
+                .containsEntry("kind","MCP").containsEntry("resource_type","MCP_CONNECTOR");
+            assertThat(((Number)row.get("revision")).intValue()).isEqualTo(5);
+            assertThat(((Number)row.get("payload_version")).intValue()).isEqualTo(1);
+            assertThat(row.get("occurred_at")).isNotNull();
+            var payload=mapper.readTree(row.get("payload_json").toString());
+            assertThat(payload.size()).isEqualTo(2);assertThat(payload.get("schemaVersion").isIntegralNumber()).isTrue();
+            assertThat(payload.get("schemaVersion").intValue()).isEqualTo(1);assertThat(payload.get("detailJson").isTextual()).isTrue();
+            assertThat(mapper.readTree(payload.get("detailJson").textValue())).isEqualTo(mapper.valueToTree(Map.of("version",FetchMcpRuntime.VERSION)));
+            assertThat(rows.toString()).doesNotContain("PRIVATE_MANIFEST_TOKEN","privateMarker");
+            assertThat(jdbc.queryForObject("SELECT enabled FROM agent_connector WHERE owner_user_id=2",Boolean.class)).isTrue();
+            assertThat(jdbc.queryForObject("SELECT revision FROM agent_connector WHERE owner_user_id=2",Integer.class)).isEqualTo(4);
+            assertThatThrownBy(()->service.enabled(actor,4,false)).hasMessageContaining("409");
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM audit_event",Long.class)).isEqualTo(1);
+        });
+    }
+    @Test void actualAuditConstraintFailureRollsBackTheRegistrationAndNeverStartsACommand()throws Exception{
+        runner(false).withUserConfiguration(Scheduling.class).run(ctx->{
+            assertThat(ctx).hasNotFailed();
+            var jdbc=ctx.getBean(JdbcTemplate.class);seedInstalledRegistration(jdbc,ctx.getBean(ObjectMapper.class),1);
+            var before=jdbc.queryForMap("SELECT * FROM agent_connector WHERE owner_user_id=1");
+            jdbc.execute("ALTER TABLE audit_event ADD CONSTRAINT deny_fixture_disable CHECK(kind<>'MCP' OR action<>'DISABLE')");
+            var actor=new AgentActor(1,"alice",AgentActor.Role.INSPECTOR);var service=ctx.getBean(LocalMcpService.class);
+            assertThatThrownBy(()->service.enabled(actor,4,false)).isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+            assertThat(jdbc.queryForMap("SELECT * FROM agent_connector WHERE owner_user_id=1")).isEqualTo(before);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM audit_event",Long.class)).isZero();
+            var runtime=ctx.getBean("fakeRuntime",FetchMcpRuntime.class);
+            verify(runtime,never()).install(any());verify(runtime,never()).open(any(),any());
+        });
+    }
     @Test void defaultMemoryModeDoesNotRequireQueueMigration()throws Exception{
         runner(false).run(ctx->{assertThat(ctx).hasNotFailed();assertThat(ctx.getBean(LocalMcpProperties.class).isDurableInstallEnabled()).isFalse();assertThat(ctx.getBean(LocalMcpService.class).view(new AgentActor(1,"alice",AgentActor.Role.INSPECTOR))).containsEntry("installQueue","MEMORY");});
     }

@@ -93,9 +93,10 @@ class ResearchExportRateLimitTest {
         var run=fixture.begin(fixture.alice,"owned");exports.export(fixture.alice,run.id(),true);
         var end=now().plusSeconds(12).plusNanos(800000000);
         fixture.jdbc.update("UPDATE runtime_state SET window_ends_at=? WHERE namespace='RESEARCH_EXPORT_LIMIT'",end);
+        var storedEnd=fixture.jdbc.queryForObject("SELECT window_ends_at FROM runtime_state WHERE namespace='RESEARCH_EXPORT_LIMIT'",LocalDateTime.class);
         assertThatThrownBy(()->exports.export(fixture.alice,run.id(),true)).isInstanceOfSatisfying(ResearchExportRateLimit.Limited.class,error->
                 assertThat(Long.parseLong(error.getHeaders().getFirst("Retry-After"))).isBetween(12L,13L));
-        assertThat(fixture.jdbc.queryForObject("SELECT window_ends_at FROM runtime_state WHERE namespace='RESEARCH_EXPORT_LIMIT'",LocalDateTime.class)).isEqualTo(end);
+        assertThat(fixture.jdbc.queryForObject("SELECT window_ends_at FROM runtime_state WHERE namespace='RESEARCH_EXPORT_LIMIT'",LocalDateTime.class)).isEqualTo(storedEnd);
     }
     @Test void counterCannotBeUsedOutsideTheExportTransaction() {
         assertThatThrownBy(()->limiter.consume(fixture.alice)).isInstanceOf(IllegalStateException.class);assertThat(count()).isZero();

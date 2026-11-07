@@ -4,6 +4,8 @@
 
 用户已单独授权一次管理员只读导出本机 `doorhandledb`，例外仅用于保全旧项目库。[专用脚本](../script/jenkins/export-legacy-local-mysql.ps1) 固定已有 MySQL83、回环端口及该 schema，使用单事务逻辑导出，生成私有摘要；前后 DDL/计数属于独立观察，不冒充同一事务的行级对账。脚本不启停共享服务、不执行本机恢复或测试、不删源数据。导出成功仅表示 `LOCAL_EXPORT_COMPLETE_RESTORE_PENDING`，后续上传、独立恢复与业务差异核验仍由固定提交的 Jenkins 流水线在 ECS 完成；没有恢复证据不能清退本机库。授权及执行回执保存在项目 Git 忽略目录。
 
+本次已授权导出实际被 `LOCAL_SOURCE_METADATA_GATE / NO_REVIEWED_TCP_LISTENER` 拦截：服务显示 Running，但未取得固定 3306 监听证明，尚未执行 SQL、创建 dump 或启动/重启数据库。两类临时凭据已清理，原配置、库和共享服务均保留。不能将该失败尝试记为导出或迁移成功。#73 两个根因的源码已修复：MCP 审计用直接 VALUES 保留全部字段及 JSON 类型，限流失败前后精确比较数据库实际存储时间；新增审计写入及回滚回归，13 模块本地跳过测试打包通过，仍须 ECS 验证。
+
 2026-11-07 Jenkins #72：固定提交 `687bc7a44c058312f36a460543ef803300db1570` 实际生成 154 份 Java XML，531 项通过、46 项错误、471 项基础设施条件跳过、0 项断言失败。生成列依赖适配及 12 项函数回归已通过；继续暴露的错误为 38 项无括号 UTC 函数调用在 H2 中解析为列、5 项 MCP 夹具重复建 audit_event、2 项旧 MCP 夹具缺 agent_connector，以及 1 项 H2 不支持同条 ALTER 中多个 ADD 外键。后续 Python、前端及两类封存上传仍未执行，不能据此宣称迁移已完成。168 份产物已归档，工具清理回执 `STOPPED`、`remaining=[]`；随后从流水线外实际回读 ECS `Stopped / StopCharging`，Jenkins 保持运行并清空默认目标地址。
 
 对应修复统一采用 `UTC_TIMESTAMP(6)` 保留 UTC 语义；MCP 夹具只装真实 compact connector，保留原 audit_event；H2 夹具拆分多 ADD 并保留全部外键动作。新增非 UTC 会话、真实聊天关系和 connector 约束回归源码，13 模块本地跳过测试打包已通过，仍待下轮固定提交在 ECS 实际运行。

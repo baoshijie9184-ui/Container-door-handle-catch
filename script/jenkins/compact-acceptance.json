@@ -808,7 +808,7 @@
       },
       {
         "className": "com.ruanzhu.doorhandle.module.ai.mcp.PersistentMcpConfigurationTest",
-        "minimumTests": 7,
+        "minimumTests": 9,
         "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/mcp/PersistentMcpConfigurationTest.java"
       },
       {
