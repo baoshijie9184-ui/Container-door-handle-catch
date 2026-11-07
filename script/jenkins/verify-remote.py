@@ -348,6 +348,11 @@ def prepare_checkout(root, args, identity):
         "sourceSha256": args.source_sha256, "identity": identity, "scope": args.scope})
     if args.scope == "source":
         checkout.mkdir(mode=0o700)
+        # Create the shared per-attempt work parent before any tool can inherit
+        # the login umask (0002). Custody requires this directory to be private.
+        work = checkout / "work"
+        work.mkdir(mode=0o700)
+        owned_directory(work)
     return attempt_dir, checkout
 
 

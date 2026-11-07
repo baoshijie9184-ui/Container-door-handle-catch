@@ -110,9 +110,14 @@ def test_old_owned_staging_parent_is_private_without_reclaiming_an_attempt(tmp_p
     os.chmod(parent, 0o775)
     args = SimpleNamespace(tag='ci-57-' + 'a' * 12, scope='source',
                            attempt='b' * 32, commit='a' * 40, source_sha256='c' * 64)
-    attempt, checkout = remote.prepare_checkout(tmp_path, args, {'instanceId': 'i-fixture'})
+    previous_umask = os.umask(0o002)
+    try:
+        attempt, checkout = remote.prepare_checkout(tmp_path, args, {'instanceId': 'i-fixture'})
+    finally:
+        os.umask(previous_umask)
     assert stat.S_IMODE(parent.stat().st_mode) == 0o700
     assert stat.S_IMODE(checkout.stat().st_mode) == 0o700
+    assert stat.S_IMODE((checkout / 'work').stat().st_mode) == 0o700
     claim = (attempt / '.verification-claimed/claim.json').read_bytes()
     with pytest.raises(remote.VerificationError, match='already has a verification directory'):
         remote.prepare_checkout(tmp_path, args, {'instanceId': 'i-fixture'})
