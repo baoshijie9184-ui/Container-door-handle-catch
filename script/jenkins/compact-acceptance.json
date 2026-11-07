@@ -1076,8 +1076,14 @@
       },
       {
         "module": "tests_python.test_cold_store_custody",
-        "minimumTests": 54,
+        "minimumTests": 127,
         "source": "tests_python/test_cold_store_custody.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_local_cold_retirement",
+        "minimumTests": 70,
+        "source": "tests_python/test_local_cold_retirement.py",
         "allowedSkippedTests": []
       },
       {

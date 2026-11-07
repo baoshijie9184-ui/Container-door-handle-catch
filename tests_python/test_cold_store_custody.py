@@ -523,3 +523,205 @@ def test_history_evidence_limit_keeps_unproven_restore_and_original_archive(hist
     assert (work / cold.RESTORE / ('temporary-' + owner['token'])).is_dir()
     assert not (work / cold.RESTORE / 'test-0001-restore.json').exists() and not (work / cold.PUBLIC).exists()
     assert cold.read(work / cold.RESTORE / 'restore-failed.json')['originalFilesDeleted'] == 0
+
+
+@pytest.fixture(params=['originals', 'history_originals'])
+def fresh_custody(request, tmp_path, monkeypatch):
+    original = request.getfixturevalue(request.param)
+    args, work, old_work = old_custody(original, tmp_path, monkeypatch)
+    # Only synthetic fixtures change fixed recipe constants. Production accepts
+    # precisely the two reviewed profiles and their original byte/count limits.
+    monkeypatch.setitem(cold.PROFILES, cold.PROFILE,
+                        {key: getattr(cold, key) for key in cold.PROFILES[cold.PROFILE]})
+    args.nonce = '9' * 64; args.attestation_seconds = 120
+    now = cold.dt.datetime(2026, 11, 8, 8, 30, tzinfo=cold.dt.timezone.utc)
+    monkeypatch.setattr(cold, 'utc_now', lambda: now)
+    public = cold.read(old_work / cold.PUBLIC)
+    current = {'release': args.tag, 'commit': args.commit, 'sourceSha256': args.source_sha256,
+        'identity': copy.deepcopy(public['identity']), 'verificationReceiptSha256': 'd' * 64}
+    custody = {key: public[key] for key in cold.ATTESTATION_CUSTODY_FIELDS if key != 'publicReceiptSha256'}
+    custody['publicReceiptSha256'] = cold.digest(old_work / cold.PUBLIC)
+    return SimpleNamespace(args=args, work=work, old_work=old_work, now=now, current=current, custody=custody)
+
+
+def validate_fresh(value, fixture, **overrides):
+    args = dict(profile=cold.PROFILE, nonce=fixture.args.nonce, expected_current=fixture.current,
+                expected_custody=fixture.custody, now_utc=fixture.now)
+    args.update(overrides)
+    return cold.validate_retirement_attestation(value, **args)
+
+
+def resign_fresh(value):
+    value['proofDigest'] = cold.sha(cold.encoded({key: val for key, val in value.items() if key != 'proofDigest'}))
+
+
+def custody_tree_bytes(root):
+    return {p.relative_to(root).as_posix(): (cold.fingerprint(p.stat()), p.read_bytes() if p.is_file() else None)
+            for p in root.rglob('*')}
+
+
+def forbid_custody_writes(monkeypatch):
+    def refuse(*_args, **_kw):
+        pytest.fail('A fresh custody attestation may only observe existing evidence')
+    open_file = Path.open
+    def readonly(path, mode='r', *args, **kw):
+        assert mode in ('r', 'rb'), 'Attestation tried to open a writable file'
+        return open_file(path, mode, *args, **kw)
+    monkeypatch.setattr(Path, 'open', readonly)
+    for name in ('mkdir', 'unlink', 'rmdir', 'chmod', 'write_bytes', 'write_text', 'rename', 'replace'):
+        monkeypatch.setattr(Path, name, refuse)
+    for name in ('private_json', 'prepare', 'verify_restore', 'restore_all', 'remove_verified_temporary', 'safe_source'):
+        monkeypatch.setattr(cold, name, refuse)
+    for name in ('write_json', 'private_directory'):
+        monkeypatch.setattr(cold.utility(), name, refuse)
+
+
+def test_fresh_retirement_attests_actual_older_roots_and_raw_inputs_without_writing(fresh_custody, monkeypatch):
+    fixture = fresh_custody; root = Path(fixture.args.root)
+    before = custody_tree_bytes(root)
+    with monkeypatch.context() as readonly:
+        forbid_custody_writes(readonly)
+        value = cold.fresh_retirement_attest(fixture.args)
+        assert validate_fresh(value, fixture) == value
+    assert value['current'] == fixture.current and value['custody'] == fixture.custody
+    assert value['custody']['restoredRoots'] == cold.group_count()
+    assert value['custody']['temporaryRestoresRemoved'] == cold.group_count()
+    assert set(value) == set(cold.ATTESTATION_FIELDS) and str(root) not in json.dumps(value)
+    assert (cold.attestation_time(value['expiresAtUtc']) - cold.attestation_time(value['issuedAtUtc'])).total_seconds() == 120
+    assert custody_tree_bytes(root) == before
+
+
+def test_fresh_validator_uses_only_authenticated_projection_and_explicit_references(fresh_custody, monkeypatch):
+    value = cold.fresh_retirement_attest(fresh_custody.args)
+    def refuse(*_args, **_kw):
+        pytest.fail('Projection validation must not import helpers or observe the machine')
+    for name in ('utility', 'load', 'digest', 'original_snapshot', 'admit', 'fixed_modules'):
+        monkeypatch.setattr(cold, name, refuse)
+    monkeypatch.setattr(Path, 'open', refuse)
+    assert validate_fresh(value, fresh_custody) is value
+    assert validate_fresh(value, fresh_custody, now_utc=fresh_custody.now + cold.dt.timedelta(seconds=119)) is value
+
+
+@pytest.mark.parametrize('damage', ['future-build', 'root-proof', 'cleanup-proof', 'archive', 'public-profile'])
+def test_fresh_attestation_retains_original_snapshot_gate_and_never_writes_failures(fresh_custody, monkeypatch, damage):
+    fixture = fresh_custody
+    if damage == 'future-build': fixture.args.tag = 'ci-79-' + fixture.args.commit[:12]
+    elif damage in ('root-proof', 'cleanup-proof'):
+        key = next(iter(cold.layout(cold.inventory(fixture.old_work / cold.SNAPSHOT / 'inventory.json'))))
+        suffix = '-restore.json' if damage == 'root-proof' else '-temporary-cleanup.json'
+        (fixture.old_work / cold.RESTORE / (key + suffix)).write_bytes(b'{}')
+    elif damage == 'archive':
+        path = fixture.old_work / cold.SNAPSHOT / 'originals.tar.gz'; path.write_bytes(path.read_bytes() + b'changed')
+    else:
+        path = fixture.old_work / cold.PUBLIC; value = cold.read(path)
+        value['profile'] = 'unreviewed-profile'; path.write_bytes(cold.encoded(value))
+    before = custody_tree_bytes(Path(fixture.args.root))
+    with monkeypatch.context() as readonly:
+        forbid_custody_writes(readonly)
+        with pytest.raises(Exception): cold.fresh_retirement_attest(fixture.args)
+    assert custody_tree_bytes(Path(fixture.args.root)) == before
+
+
+@pytest.mark.parametrize('damage', ['inventory.json', 'custody.json', 'originals.tar.gz', 'public-receipt'])
+def test_fresh_attestation_rehashes_raw_inputs_after_all_old_proofs_were_admitted(fresh_custody, monkeypatch, damage):
+    original_snapshot = cold.original_snapshot
+    def changed_after_gate(args):
+        result = original_snapshot(args)
+        target = fresh_custody.old_work / (cold.PUBLIC if damage == 'public-receipt' else cold.SNAPSHOT + '/' + damage)
+        target.write_bytes(target.read_bytes() + b'drift after original proof admission')
+        return result
+    monkeypatch.setattr(cold, 'original_snapshot', changed_after_gate)
+    with pytest.raises(cold.ColdError, match='COLD_ATTESTATION_(RAW_INPUT|INPUT_OR_RECEIPT)_CHANGED'):
+        cold.fresh_retirement_attest(fresh_custody.args)
+    assert not list(fresh_custody.work.iterdir())
+
+
+@pytest.mark.parametrize('nonce', [None, '', 'a' * 63, 'A' * 64, 'g' * 64, True])
+def test_invalid_attestation_nonce_is_rejected_before_reading_any_source(monkeypatch, nonce):
+    monkeypatch.setattr(cold, 'original_snapshot', lambda *_: pytest.fail('Invalid nonce must not read custody'))
+    with pytest.raises(cold.ColdError, match='COLD_ATTESTATION_NONCE_REQUIRED'):
+        cold.fresh_retirement_attest(SimpleNamespace(nonce=nonce, attestation_seconds=120))
+
+
+@pytest.mark.parametrize('seconds', [0, -1, 301, True, 1.5, '120'])
+def test_unbounded_or_untyped_attestation_lifetime_is_rejected_before_source_reads(monkeypatch, seconds):
+    monkeypatch.setattr(cold, 'original_snapshot', lambda *_: pytest.fail('Invalid lifetime must not read custody'))
+    with pytest.raises(cold.ColdError, match='COLD_ATTESTATION_TTL_REQUIRED'):
+        cold.fresh_retirement_attest(SimpleNamespace(nonce='9' * 64, attestation_seconds=seconds))
+
+
+def test_fresh_attestation_refuses_observations_that_outlive_the_challenge(fresh_custody, monkeypatch):
+    ticks = iter([0.0, 120.0])
+    monkeypatch.setattr(cold.time, 'monotonic', lambda: next(ticks))
+    with pytest.raises(cold.ColdError, match='COLD_ATTESTATION_OBSERVATION_EXPIRED'):
+        cold.fresh_retirement_attest(fresh_custody.args)
+    assert not list(fresh_custody.work.iterdir())
+
+
+@pytest.mark.parametrize('damage', ['digest', 'nonce', 'profile', 'extra', 'current', 'custody', 'same-build',
+                                  'foreign-ecs', 'fixed-inventory', 'boolean-count', 'excess-ttl',
+                                  'fractional-ttl', 'future', 'timestamp'])
+def test_authenticated_projection_still_rejects_tampering_and_wrong_challenge_or_bindings(fresh_custody, damage):
+    fixture = fresh_custody; value = cold.fresh_retirement_attest(fixture.args)
+    expected_current = copy.deepcopy(fixture.current); expected_custody = copy.deepcopy(fixture.custody)
+    if damage == 'digest': value['custody']['archiveSha256'] = '0' * 64
+    elif damage == 'nonce': value['nonce'] = '8' * 64
+    elif damage == 'profile': value['profile'] = 'cold-store-history-v2' if cold.HAS_REPORTS else 'cold-store-originals-v1'
+    elif damage == 'extra': value['originalPath'] = '/must/not/be/projected'
+    elif damage == 'current': value['current']['sourceSha256'] = '0' * 64
+    elif damage == 'custody': value['custody']['restoreReceiptSha256'] = '0' * 64
+    elif damage == 'same-build':
+        value['custody']['release'] = value['current']['release']; expected_custody = copy.deepcopy(value['custody'])
+    elif damage == 'foreign-ecs':
+        value['custody']['identity'] = {**value['custody']['identity'], 'instanceId': 'i-foreign'}
+        expected_custody = copy.deepcopy(value['custody'])
+    elif damage == 'fixed-inventory':
+        value['custody']['inventorySha256'] = '0' * 64; expected_custody = copy.deepcopy(value['custody'])
+    elif damage == 'boolean-count':
+        value['custody']['roots'] = True; expected_custody = copy.deepcopy(value['custody'])
+    elif damage in ('excess-ttl', 'fractional-ttl'):
+        seconds = 301 if damage == 'excess-ttl' else 1.5
+        value['expiresAtUtc'] = (fixture.now + cold.dt.timedelta(seconds=seconds)).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+    elif damage == 'future':
+        value['issuedAtUtc'] = (fixture.now + cold.dt.timedelta(seconds=1)).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+    else: value['issuedAtUtc'] = '2026-02-30T08:30:00.000000Z'
+    if damage != 'digest': resign_fresh(value)
+    with pytest.raises(cold.ColdError):
+        validate_fresh(value, fixture, expected_current=expected_current, expected_custody=expected_custody)
+
+
+def test_projection_expires_at_the_exact_deadline_and_requires_utc(fresh_custody):
+    value = cold.fresh_retirement_attest(fresh_custody.args)
+    for now in (fresh_custody.now + cold.dt.timedelta(seconds=120),
+                fresh_custody.now - cold.dt.timedelta(microseconds=1), fresh_custody.now.replace(tzinfo=None)):
+        with pytest.raises(cold.ColdError): validate_fresh(value, fresh_custody, now_utc=now)
+
+
+def test_fresh_cli_accepts_only_two_fixed_profiles_and_emits_one_json_projection(fresh_custody, monkeypatch, capsys):
+    args = fresh_custody.args
+    argv = [str(cold.SELF), 'fresh-retirement-attest', '--profile', cold.PROFILE,
+        '--root', args.root, '--tag', args.tag, '--commit', args.commit, '--source-sha256', args.source_sha256,
+        '--expected-instance-id', fresh_custody.current['identity']['instanceId'],
+        '--expected-machine-id', fresh_custody.current['identity']['machineId'],
+        '--source-snapshot-directory', args.source_snapshot_directory, '--nonce', args.nonce]
+    monkeypatch.setattr(sys, 'argv', argv)
+    assert cold.main() == 0
+    captured = capsys.readouterr()
+    assert not captured.err and len(captured.out.splitlines()) == 1
+    validate_fresh(json.loads(captured.out), fresh_custody)
+    argv[argv.index('--profile') + 1] = 'invented-retirement-profile'
+    with pytest.raises(SystemExit) as rejected: cold.main()
+    assert rejected.value.code == 2
+
+
+@pytest.mark.parametrize('value', [None, 0, 1, 'true'])
+def test_held_sources_never_coerces_delete_access_or_changes_default_pack_access(value):
+    assert cold.HeldSources({'members': []}).delete_access is False
+    with pytest.raises(cold.ColdError, match='DELETE_ACCESS_REQUIRES_WINDOWS'):
+        cold.HeldSources({'members': []}, delete_access=value)
+
+
+def test_delete_access_has_no_posix_fallback_or_implicit_deletion():
+    assert os.name != 'nt', 'This contract belongs to the ECS Linux test suite'
+    with pytest.raises(cold.ColdError, match='DELETE_ACCESS_REQUIRES_WINDOWS'):
+        cold.HeldSources({'members': []}, delete_access=True)

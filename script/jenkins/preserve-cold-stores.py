@@ -76,6 +76,12 @@ PUBLIC_FIELDS = ('version kind profile release commit sourceSha256 identity veri
                  'inventorySha256 files bytes roots status manifestSha256 archiveSha256 archiveBytes '
                  'sourceCustodyReceiptSha256 restoredRoots restoreReceiptSha256 originalFilesDeleted '
                  'databasesOpened temporaryRestoresRemoved').split()
+ATTESTATION_KIND = 'doorhandle-cold-retirement-attestation'
+ATTESTATION_SECONDS_MAX = 300
+ATTESTATION_FIELDS = ('kind schemaVersion status profile nonce issuedAtUtc expiresAtUtc current custody proofDigest').split()
+ATTESTATION_CURRENT_FIELDS = ('release commit sourceSha256 identity verificationReceiptSha256').split()
+ATTESTATION_CUSTODY_FIELDS = (ATTESTATION_CURRENT_FIELDS + ('publicReceiptSha256 restoreReceiptSha256 '
+    'inventorySha256 manifestSha256 archiveSha256 archiveBytes files bytes roots restoredRoots temporaryRestoresRemoved').split())
 
 
 class ColdError(Exception):
@@ -264,8 +270,10 @@ class NativeReader:
 
 class HeldSources:
     """Win32 handles avoid the CRT fd ceiling and hold ShareMode=0 for every file."""
-    def __init__(self, value):
+    def __init__(self, value, *, delete_access=False):
         self.value, self.handles, self.windows = value, {}, os.name == 'nt'
+        need(type(delete_access) is bool and (not delete_access or self.windows), 'DELETE_ACCESS_REQUIRES_WINDOWS')
+        self.delete_access = delete_access
 
     def __enter__(self):
         if self.windows:
@@ -286,7 +294,8 @@ class HeldSources:
                 path = safe_source(row['path'])
                 need(fingerprint(path.lstat()) == row['fingerprint'], 'SOURCE_NTFS_ID_OR_METADATA_CHANGED')
                 if self.windows:
-                    handle = self.api.CreateFileW(str(path), 0x80000000, 0, None, 3, 0x00200000, None)
+                    handle = self.api.CreateFileW(str(path), 0x80000000 | (0x10000 if self.delete_access else 0),
+                                                  0, None, 3, 0x00200000, None)
                     need(handle not in (None, ctypes.c_void_p(-1).value), 'ACTIVE_SOURCE_OWNER_OR_ACCESS_BLOCKED')
                 else:
                     import fcntl
@@ -802,6 +811,104 @@ def describe(args):
             'sourceCustodyReceiptSha256': checksum}
 
 
+def utc_now():
+    return dt.datetime.now(dt.timezone.utc)
+
+
+def attestation_time(value):
+    need(isinstance(value, str) and re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}Z', value),
+         'COLD_ATTESTATION_UTC_REQUIRED')
+    try:
+        return dt.datetime.strptime(value, '%Y-%m-%dT%H:%M:%S.%fZ').replace(tzinfo=dt.timezone.utc)
+    except ValueError:
+        raise ColdError('COLD_ATTESTATION_UTC_REQUIRED') from None
+
+
+def validate_retirement_attestation(value, *, profile, nonce, expected_current, expected_custody, now_utc=None):
+    """Pure validation of SSH-authenticated output; the digest is not a signature.
+
+    The caller must authenticate the live SSH peer and supply independently bound
+    current/custody references. A saved JSON and its digest convey no authority.
+    No filesystem, ECS metadata, helper import or process observation occurs here.
+    """
+    need(isinstance(profile, str) and profile in PROFILES, 'UNKNOWN_FIXED_COLD_PROFILE')
+    need(isinstance(nonce, str) and SHA.fullmatch(nonce), 'COLD_ATTESTATION_NONCE_REQUIRED')
+    need(type(value) is dict and set(value) == set(ATTESTATION_FIELDS)
+         and value.get('kind') == ATTESTATION_KIND and type(value.get('schemaVersion')) is int
+         and value['schemaVersion'] == 1 and value.get('status') == 'CUSTODY_FRESHLY_ATTESTED'
+         and value.get('profile') == profile and value.get('nonce') == nonce,
+         'COLD_ATTESTATION_ENVELOPE_DRIFT')
+    checksum = value.get('proofDigest')
+    need(isinstance(checksum, str) and SHA.fullmatch(checksum)
+         and checksum == sha(encoded({key: val for key, val in value.items() if key != 'proofDigest'})),
+         'COLD_ATTESTATION_DIGEST_DRIFT')
+    for row, expected, fields in ((value['current'], expected_current, ATTESTATION_CURRENT_FIELDS),
+                                   (value['custody'], expected_custody, ATTESTATION_CUSTODY_FIELDS)):
+        need(type(row) is dict and type(expected) is dict and set(row) == set(expected) == set(fields)
+             and row == expected, 'COLD_ATTESTATION_EXPECTED_BINDING_DRIFT')
+        tag = row.get('release'); commit = row.get('commit'); identity = row.get('identity')
+        need(isinstance(tag, str) and TAG.fullmatch(tag) and isinstance(commit, str)
+             and re.fullmatch(r'[a-f0-9]{40}', commit) and tag.endswith('-' + commit[:12])
+             and type(identity) is dict and set(identity) == {'instanceId', 'machineId', 'executionLocation'}
+             and isinstance(identity.get('instanceId'), str) and re.fullmatch(r'i-[a-z0-9]+', identity['instanceId'])
+             and isinstance(identity.get('machineId'), str) and re.fullmatch(r'[a-f0-9]{32}', identity['machineId'])
+             and identity.get('executionLocation') == 'ECS', 'COLD_ATTESTATION_SOURCE_OR_IDENTITY_DRIFT')
+        for key in fields:
+            if key.endswith('Sha256'):
+                need(isinstance(row[key], str) and SHA.fullmatch(row[key]), 'COLD_ATTESTATION_SHA_REQUIRED')
+    current, custody, recipe = value['current'], value['custody'], PROFILES[profile]
+    need(current['identity'] == custody['identity']
+         and int(TAG.fullmatch(custody['release'])[1]) < int(TAG.fullmatch(current['release'])[1]),
+         'COLD_ATTESTATION_OLDER_SAME_ECS_REQUIRED')
+    for key, expected in (('inventorySha256', recipe['INVENTORY_SHA256']), ('files', recipe['FILES']),
+                          ('bytes', recipe['ORIGINAL_BYTES']), ('roots', recipe['TREE_ROOTS']),
+                          ('restoredRoots', recipe['TREE_ROOTS'] + int(recipe['HAS_REPORTS'])),
+                          ('temporaryRestoresRemoved', recipe['TREE_ROOTS'] + int(recipe['HAS_REPORTS']))):
+        need(custody[key] == expected and (isinstance(expected, str) or type(custody[key]) is int),
+             'COLD_ATTESTATION_FIXED_PROFILE_DRIFT')
+    need(type(custody['archiveBytes']) is int and 0 < custody['archiveBytes'] <= recipe['MAX_ARCHIVE'],
+         'COLD_ATTESTATION_ARCHIVE_SIZE_REQUIRED')
+    issued, expires = attestation_time(value['issuedAtUtc']), attestation_time(value['expiresAtUtc'])
+    now = utc_now() if now_utc is None else now_utc
+    need(isinstance(now, dt.datetime) and now.tzinfo is not None and now.utcoffset() == dt.timedelta(0),
+         'COLD_ATTESTATION_VERIFIER_UTC_REQUIRED')
+    lifetime = (expires - issued).total_seconds()
+    need(1 <= lifetime <= ATTESTATION_SECONDS_MAX and lifetime.is_integer() and issued <= now < expires,
+         'COLD_ATTESTATION_EXPIRED_OR_FUTURE')
+    return value
+
+
+def fresh_retirement_attest(args):
+    """Read-only live proof of fixed older custody, never a deletion authority."""
+    nonce = getattr(args, 'nonce', None); seconds = getattr(args, 'attestation_seconds', 120)
+    need(isinstance(nonce, str) and SHA.fullmatch(nonce), 'COLD_ATTESTATION_NONCE_REQUIRED')
+    need(type(seconds) is int and 1 <= seconds <= ATTESTATION_SECONDS_MAX, 'COLD_ATTESTATION_TTL_REQUIRED')
+    issued, started = utc_now(), time.monotonic()
+    _, context, old, public, checksum = original_snapshot(args)
+    current = {key: context[key] for key in ATTESTATION_CURRENT_FIELDS}
+    custody = {key: public[key] for key in ATTESTATION_CUSTODY_FIELDS if key != 'publicReceiptSha256'}
+    custody['publicReceiptSha256'] = checksum
+    observations = {}
+    for name, key in (('inventory.json', 'inventorySha256'), ('custody.json', 'manifestSha256'),
+                      ('originals.tar.gz', 'archiveSha256')):
+        path = utility().owner_path(old / name); before = fingerprint(path.stat())
+        need(digest(path) == public[key] and fingerprint(path.stat()) == before,
+             'COLD_ATTESTATION_RAW_INPUT_CHANGED')
+        observations[name] = before
+    need(all(fingerprint(utility().owner_path(old / name).stat()) == before for name, before in observations.items())
+         and digest(utility().owner_path(old.parent / PUBLIC)) == checksum,
+         'COLD_ATTESTATION_INPUT_OR_RECEIPT_CHANGED')
+    need(0 <= time.monotonic() - started < seconds, 'COLD_ATTESTATION_OBSERVATION_EXPIRED')
+    value = {'kind': ATTESTATION_KIND, 'schemaVersion': 1, 'status': 'CUSTODY_FRESHLY_ATTESTED',
+        'profile': PROFILE, 'nonce': nonce,
+        'issuedAtUtc': issued.isoformat(timespec='microseconds').replace('+00:00', 'Z'),
+        'expiresAtUtc': (issued + dt.timedelta(seconds=seconds)).isoformat(timespec='microseconds').replace('+00:00', 'Z'),
+        'current': current, 'custody': custody}
+    value['proofDigest'] = sha(encoded(value))
+    return validate_retirement_attestation(value, profile=PROFILE, nonce=nonce,
+        expected_current=current, expected_custody=custody)
+
+
 def reuse(args):
     work, _, old, _, checksum = original_snapshot(args)
     need(getattr(args, 'source_receipt_sha256', None) == checksum, 'COLD_OLD_DESCRIPTION_CHANGED')
@@ -846,16 +953,19 @@ def main():
     p = commands.add_parser('pack'); p.add_argument('--inventory', required=True); p.add_argument('--output', required=True)
     p = commands.add_parser('retirement-plan')
     for flag in ('inventory', 'public-receipt', 'output'): p.add_argument('--' + flag, required=True)
-    for action in ('prepare', 'verify-restore', 'describe', 'reuse'):
+    for action in ('prepare', 'verify-restore', 'describe', 'reuse', 'fresh-retirement-attest'):
         p = commands.add_parser(action)
         for flag in ('root', 'tag', 'commit', 'source-sha256', 'expected-instance-id', 'expected-machine-id'):
             p.add_argument('--' + flag, required=True)
-        if action != 'describe':
+        if action not in ('describe', 'fresh-retirement-attest'):
             for prefix in ('inventory', 'manifest', 'archive'):
                 p.add_argument('--' + prefix + '-bytes', required=True, type=int)
                 p.add_argument('--' + prefix + '-sha256', required=True)
-        if action in ('describe', 'reuse'): p.add_argument('--source-snapshot-directory', required=True)
+        if action in ('describe', 'reuse', 'fresh-retirement-attest'): p.add_argument('--source-snapshot-directory', required=True)
         if action == 'reuse': p.add_argument('--source-receipt-sha256', required=True)
+        if action == 'fresh-retirement-attest':
+            p.add_argument('--nonce', required=True)
+            p.add_argument('--attestation-seconds', type=int, default=120)
     for command in commands.choices.values():
         command.add_argument('--profile', choices=tuple(PROFILES), default='cold-store-originals-v1')
     args = parser.parse_args()
