@@ -313,6 +313,14 @@ def prepare_checkout(root, args, identity):
     parent = root / "verification"
     require(not parent.is_symlink(), "Verification root cannot be a link")
     parent.mkdir(mode=0o700, exist_ok=True)
+    # Older CI created this shared staging parent under the login umask (0775).
+    # Restrict only this exact, owned directory before reading any child. Each
+    # attempt and pre-staged fixture still passes the strict admission below.
+    metadata = parent.lstat()
+    require(stat.S_ISDIR(metadata.st_mode) and metadata.st_uid == os.getuid()
+            and parent.resolve() == parent,
+            "Verification root must belong to the current Unix user without links")
+    os.chmod(parent, 0o700, follow_symlinks=False)
     owned_directory(parent)
     attempt_dir = parent / args.tag
     checkout = attempt_dir / "checkout"

@@ -2,7 +2,10 @@
 import copy
 import hashlib
 import importlib.util
+import os
 from pathlib import Path
+import stat
+from types import SimpleNamespace
 
 import pytest
 
@@ -18,6 +21,31 @@ def module(name, file):
 
 remote = module('serial_suite_remote_evidence', 'verify-remote.py')
 inner = module('serial_suite_ecs_evidence', 'verify-ecs.py')
+
+
+def test_old_owned_staging_parent_is_private_without_reclaiming_an_attempt(tmp_path):
+    parent = tmp_path / 'verification'
+    parent.mkdir(mode=0o775)
+    os.chmod(parent, 0o775)
+    args = SimpleNamespace(tag='ci-57-' + 'a' * 12, scope='source',
+                           attempt='b' * 32, commit='a' * 40, source_sha256='c' * 64)
+    attempt, checkout = remote.prepare_checkout(tmp_path, args, {'instanceId': 'i-fixture'})
+    assert stat.S_IMODE(parent.stat().st_mode) == 0o700
+    assert stat.S_IMODE(checkout.stat().st_mode) == 0o700
+    claim = (attempt / '.verification-claimed/claim.json').read_bytes()
+    with pytest.raises(remote.VerificationError, match='already has a verification directory'):
+        remote.prepare_checkout(tmp_path, args, {'instanceId': 'i-fixture'})
+    assert (attempt / '.verification-claimed/claim.json').read_bytes() == claim
+
+
+def test_staging_parent_link_does_not_change_another_directory_permissions(tmp_path):
+    outside = tmp_path / 'other'
+    outside.mkdir(mode=0o755)
+    before = stat.S_IMODE(outside.stat().st_mode)
+    (tmp_path / 'verification').symlink_to(outside, target_is_directory=True)
+    with pytest.raises(remote.VerificationError, match='cannot be a link'):
+        remote.prepare_checkout(tmp_path, SimpleNamespace(), {})
+    assert stat.S_IMODE(outside.stat().st_mode) == before
 
 
 def report(root, class_name, *, prefix='java', skipped=False):
