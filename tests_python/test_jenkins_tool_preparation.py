@@ -251,7 +251,7 @@ class ToolPreparationTests(unittest.TestCase):
         value.call = lambda *args, **_kwargs: calls.append(args) or tools.CACHED_PYTHON.encode()
         value.image_row = lambda _image: {'Id': tools.CACHED_PYTHON, 'Config': deepcopy(cfg)}
         with self.assertRaises(ValueError):
-            value.reuse_pinned_dependencies({tools.REQUIREMENTS: tools.CACHED_REQUIREMENTS}, {'pytest': '8.4.2'}, {})
+            value.reuse_pinned_dependencies({tools.REQUIREMENTS: tools.CACHED_REQUIREMENTS}, dict(tools.CACHED_PINS), {})
         self.assertFalse(any(args[0] in ('create', 'commit', 'rm', 'start', 'stop') for args in calls))
 
     def test_cleanup_requires_exact_owner_image_limits_and_mounts(self):
