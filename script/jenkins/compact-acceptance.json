@@ -909,7 +909,7 @@
     "requiredSuites": [
       {
         "module": "tests_python.test_compact_clock_policy",
-        "minimumTests": 18,
+        "minimumTests": 21,
         "source": "tests_python/test_compact_clock_policy.py",
         "allowedSkippedTests": []
       },

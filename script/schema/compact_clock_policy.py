@@ -22,6 +22,11 @@ UNRESOLVED_DOMAINS = frozenset(('action', 'agent', 'inbox', 'infra_log', 'mcp',
     'memory', 'model_log', 'report', 'sdk', 'skill', 'workbench', 'workspace'))
 OFFSET = re.compile(r'[+-](?:0[0-9]|1[0-4]):[0-5][0-9]')
 SHA = re.compile(r'[a-f0-9]{64}')
+EMPTY_DOMAIN_TABLES = {
+    'binding': ('organization_binding_audit',),
+    'export': ('agent_research_export_audit', 'agent_research_export_limit'),
+    'research': ('agent_research_content_purge', 'agent_research_source'),
+}
 
 
 def require(condition, message):
@@ -53,7 +58,8 @@ def validate(offsets, policy=None, *, expected_domains=None):
         require(not unresolved, 'Unresolved source clocks require an explicit preservation policy')
         return []
     require(isinstance(policy, dict)
-            and set(policy) == {'version', 'kind', 'unresolvedDomains'}
+            and {'version', 'kind', 'unresolvedDomains'} <= set(policy)
+            <= {'version', 'kind', 'unresolvedDomains', 'emptyDomains'}
             and type(policy.get('version')) is int and policy['version'] == 1
             and policy.get('kind') == POLICY_KIND,
             'Unsupported explicit legacy clock preservation policy')
@@ -61,7 +67,28 @@ def validate(offsets, policy=None, *, expected_domains=None):
     require(isinstance(names, list) and names and all(isinstance(name, str) for name in names)
             and names == sorted(set(names)) and names == unresolved,
             'Clock policy must name all and only the unresolved source domains in canonical order')
+    if 'emptyDomains' in policy:
+        empty = policy['emptyDomains']
+        require(isinstance(empty, list) and empty and all(isinstance(name, str) for name in empty)
+                and empty == sorted(set(empty)) and set(empty) <= EMPTY_DOMAIN_TABLES.keys()
+                and all(offsets.get(name) == '+00:00' for name in empty),
+                'Empty clock domains need canonical names and an unused zero-offset placeholder')
     return unresolved
+
+
+def require_empty_sources(offsets, policy, source_snapshot):
+    """An empty table proves no conversion is needed, never a UTC offset."""
+    validate(offsets, policy)
+    empty = policy.get('emptyDomains', []) if policy else []
+    if not empty:
+        return
+    require(isinstance(source_snapshot, dict), 'A complete frozen source snapshot is required for empty clock domains')
+    snapshot_binding(source_snapshot.get('snapshotSha256'))
+    tables = source_snapshot.get('tables', {})
+    require(isinstance(tables, dict) and all(isinstance(tables.get(table), dict)
+            and type(tables[table].get('rows')) is int and tables[table]['rows'] == 0
+            for domain in empty for table in EMPTY_DOMAIN_TABLES[domain]),
+            'Every declared empty clock domain must have exact zero rows in the frozen source snapshot')
 
 
 def offset_literal_value(domain, offsets, policy=None):
@@ -103,5 +130,8 @@ def workbench_fields(offsets, policy, source_snapshot_sha256):
     unresolved = validate(offsets, policy)
     if 'workbench' not in unresolved:
         return {}
-    return {'legacyClockPolicy': policy,
+    # The Java CLI owns only Workbench; empty-source checks belong to the
+    # whole-source controller and are independently proved before target DDL.
+    workbench_policy = {key: policy[key] for key in ('version', 'kind', 'unresolvedDomains')}
+    return {'legacyClockPolicy': workbench_policy,
             'sourceSnapshotSha256': snapshot_binding(source_snapshot_sha256)}

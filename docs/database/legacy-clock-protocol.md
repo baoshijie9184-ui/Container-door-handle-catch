@@ -6,6 +6,8 @@
 
 控制器在生成 COPY SQL 前读取已审阅的完整源观察，并在源锁内再次核对同一快照。迁移回执和最终证据同时记录源时钟策略及其摘要，验证阶段拒绝配置策略改变。Workbench 仅在 workbench 域未知时使用版本2的 CLI 配置；已证固定偏移继续使用原版本1。
 
+若 binding、export、research 只能证明对应源表精确为空，策略可额外声明按字母排序的 `emptyDomains`。这些域的 `sourceOffsets` 必须为 `+00:00`，仅作为无数据时不使用的占位值，不是 UTC 结论。预备器和整库迁移分别依据本轮完整源快照强制对应全部源表精确零行；缺表、估算零行、NULL 或新产生一行都拒绝迁移。该策略整体写入回执，Workbench CLI 只接收其自身三键未知时钟子协议。其他有数据域仍必须保留独立的历史时钟依据；该空表机制不能替代它们的来源证明。
+
 8张表增加可空 JSON `legacy_clock_json`：`content_asset`、`content_revision`、`content_link`、`agent_run`、`agent_connector`、`runtime_state`、`workflow_instance`、`audit_event`。非空时必须严格包含以下7键，不能省略、增加字段或用字符串`"null"`代替JSON null：
 
 ```json

@@ -164,6 +164,7 @@ def migrate(config, identity, config_sha, output, model, model_sha):
             require(all(observed[name] == reviewed[name] for name in ('sourceSnapshotSha256', 'sourceMetadataSha256')),
                     'Reviewed source rows, metadata or high-water marks changed; do not migrate')
             source_snapshot = observed['sourceSnapshot']
+            clocks.require_empty_sources(config['sourceOffsets'], config.get('legacyClockPolicy'), source_snapshot)
             record['sourceSnapshotSha256'] = observed['sourceSnapshotSha256']
             record['sourceMetadataSha256'] = observed['sourceMetadataSha256']
             source_backup = backup_schema(mysql, source_snapshot, output / 'private/source-backup',

@@ -63,3 +63,32 @@ def test_workbench_v2_requires_a_real_snapshot_shape_and_never_default_offset():
     fields = clock.workbench_fields(offsets, policy('workbench'), 'a' * 64)
     assert fields == {'legacyClockPolicy': policy('workbench'), 'sourceSnapshotSha256': 'a' * 64}
     assert clock.workbench_fields({'workbench': '+08:00'}, None, None) == {}
+
+
+def test_empty_sources_use_zero_only_as_an_unused_placeholder_and_require_frozen_exact_counts():
+    offsets = {'workbench': None, 'binding': '+00:00'}
+    document = {**policy('workbench'), 'emptyDomains': ['binding']}
+    snapshot = {'snapshotSha256': 'a' * 64, 'tables': {'organization_binding_audit': {'rows': 0}}}
+    clock.require_empty_sources(offsets, document, snapshot)
+    for count in (1, None, False, '0'):
+        bad = {**snapshot, 'tables': {'organization_binding_audit': {'rows': count}}}
+        with pytest.raises(ValueError, match='exact zero rows'):
+            clock.require_empty_sources(offsets, document, bad)
+    with pytest.raises(ValueError, match='exact zero rows'):
+        clock.require_empty_sources(offsets, document, {**snapshot, 'tables': {}})
+
+
+def test_empty_domain_policy_rejects_guessed_offsets_duplicates_and_unregistered_tables():
+    offsets = {'workbench': None, 'binding': '+00:00'}
+    for domains in ([], ['binding', 'binding'], ['other'], ['research', 'binding']):
+        with pytest.raises(ValueError):
+            clock.validate(offsets, {**policy('workbench'), 'emptyDomains': domains})
+    with pytest.raises(ValueError):
+        clock.validate({**offsets, 'binding': '+08:00'}, {**policy('workbench'), 'emptyDomains': ['binding']})
+
+
+def test_empty_domain_policy_is_bound_globally_while_workbench_receives_its_own_strict_protocol():
+    offsets = {'workbench': None, 'binding': '+00:00'}
+    document = {**policy('workbench'), 'emptyDomains': ['binding']}
+    assert clock.policy_digest(offsets, document) != clock.policy_digest(offsets, policy('workbench'))
+    assert clock.workbench_fields(offsets, document, 'a' * 64)['legacyClockPolicy'] == policy('workbench')

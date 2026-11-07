@@ -929,6 +929,7 @@ class Preparation:
         self.journal['resources'] = self.resource_gate(self.source, settings['sourceSchema'], len(suites))
         _, original_metadata = self.runtime.metadata_snapshot(self.source, settings['sourceSchema'])
         snapshot = self.runtime.schema_snapshot(self.source, settings['sourceSchema'], sources)
+        self.runtime.clocks.require_empty_sources(settings['sourceOffsets'], settings.get('legacyClockPolicy'), snapshot)
         require(sum(table['rows'] for table in snapshot['tables'].values()) > 0, 'An empty source cannot prove existing-data preservation')
         backup = self.runtime.backup_schema(self.source, snapshot, self.work / 'source-backup', purpose='source',
             migration_context={'kind': 'fixture-origin-copy', 'sourceCommit': self.args.commit, 'sourceSha256': self.args.source_sha256})
