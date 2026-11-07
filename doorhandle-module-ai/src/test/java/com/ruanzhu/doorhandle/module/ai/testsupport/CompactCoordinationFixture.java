@@ -21,14 +21,10 @@ public final class CompactCoordinationFixture {
         try (var connection = jdbc.getDataSource().getConnection()) {
             String database = connection.getMetaData().getDatabaseProductName();
             if ("H2".equals(database)) {
-                // H2 exercises transaction/locking behavior; MySQL tests retain the JSON constraint.
-                for(String pair:List.of("UTC_TIMESTAMP:utcTimestamp","JSON_VALID:jsonValid","JSON_EXTRACT:jsonExtract","JSON_TYPE:jsonType","JSON_LENGTH:jsonLength")) {
-                    var names=pair.split(":");
-                    jdbc.execute("CREATE ALIAS IF NOT EXISTS "+names[0]+" FOR '"+CompactCoordinationFixture.class.getName()+"."+names[1]+"'");
-                }
-                ddl = ddl.replace(" COLLATE utf8mb4_bin", "")
+                // Register every expression before the first CHECK/generated column is parsed.
+                CompactH2Functions.install(jdbc);
+                ddl = CompactH2Functions.adaptJsonColumns(ddl).replace(" COLLATE utf8mb4_bin", "")
                         .replace(" ENGINE=InnoDB ROW_FORMAT=DYNAMIC DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin", "")
-                        .replaceAll(",\\s*CONSTRAINT ck_runtime_payload CHECK \\([^\\n]+\\)", "")
                         .replaceAll("(?m)^(\\s*)UNIQUE KEY (\\w+)\\s*(\\([^\\n]+\\))", "$1CONSTRAINT $2 UNIQUE $3")
                         .replaceAll("(?m)^\\s*KEY [^\\n]+\\n", "")
                         .replaceAll(",\\s*\\)", ")");

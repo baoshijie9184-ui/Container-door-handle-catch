@@ -900,6 +900,16 @@
         "className": "com.ruanzhu.doorhandle.module.ai.workbench.WorkbenchDispatchClockTest",
         "minimumTests": 6,
         "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/workbench/WorkbenchDispatchClockTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.ai.testsupport.CompactH2FunctionsTest",
+        "minimumTests": 4,
+        "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/testsupport/CompactH2FunctionsTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.ai.research.ResearchEvidenceConfigurationTest",
+        "minimumTests": 12,
+        "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/research/ResearchEvidenceConfigurationTest.java"
       }
     ]
   },

@@ -25,9 +25,8 @@ public final class CompactContentFixture {
         ddl+=contentRelations;
         try(var connection=jdbc.getDataSource().getConnection()) {
             if("H2".equals(connection.getMetaData().getDatabaseProductName())) {
-                jdbc.execute("CREATE ALIAS IF NOT EXISTS JSON_VALID FOR '"+CompactContentFixture.class.getName()+".jsonValid'");
-                jdbc.execute("CREATE ALIAS IF NOT EXISTS UTC_TIMESTAMP FOR '"+CompactContentFixture.class.getName()+".utcTimestamp'");
-                ddl=ddl.replaceAll(" COLLATE utf8mb4_[a-z0-9_]+","").replace(" VIRTUAL","")
+                CompactH2Functions.install(jdbc);
+                ddl=CompactH2Functions.adaptJsonColumns(ddl).replaceAll(" COLLATE utf8mb4_[a-z0-9_]+","").replace(" VIRTUAL","")
                     .replaceAll(" ENGINE=InnoDB(?: ROW_FORMAT=DYNAMIC)? DEFAULT CHARSET=utf8mb4(?: COLLATE=utf8mb4_[a-z0-9_]+)?","")
                     .replaceAll("(?m)^(\\s*)UNIQUE KEY (\\w+)\\s*(\\([^\\n]+\\))","$1CONSTRAINT $2 UNIQUE $3")
                     .replaceAll("(?m)^\\s*KEY [^\\n]+\\n","").replaceAll(",\\s*\\)",")");

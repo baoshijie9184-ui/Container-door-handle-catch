@@ -18,10 +18,8 @@ public final class CompactWorkflowFixture {
         String ddl=new ClassPathResource("db/compact/005-workflow-runtime.sql").getContentAsString(StandardCharsets.UTF_8);
         try(var connection=jdbc.getDataSource().getConnection()) {
             if("H2".equals(connection.getMetaData().getDatabaseProductName())) {
-                for(String pair:new String[]{"UTC_TIMESTAMP:utcTimestamp","JSON_VALID:jsonValid","JSON_EXTRACT:jsonExtract","JSON_UNQUOTE:jsonUnquote"}){
-                    var names=pair.split(":");jdbc.execute("CREATE ALIAS IF NOT EXISTS "+names[0]+" FOR '"+CompactWorkflowFixture.class.getName()+"."+names[1]+"'");
-                }
-                ddl=ddl.replace(" COLLATE utf8mb4_bin","").replace(" COLLATE utf8mb4_0900_ai_ci","").replace(" COLLATE utf8mb4_unicode_ci","")
+                CompactH2Functions.install(jdbc);
+                ddl=CompactH2Functions.adaptJsonColumns(ddl).replace(" COLLATE utf8mb4_bin","").replace(" COLLATE utf8mb4_0900_ai_ci","").replace(" COLLATE utf8mb4_unicode_ci","")
                     .replace(" VIRTUAL","").replace(" STORED","").replaceAll(" ENGINE=InnoDB ROW_FORMAT=DYNAMIC DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin","")
                     .replaceAll("(?m)^(\\s*)UNIQUE KEY (\\w+)\\s*(\\([^\\n]+\\))","$1CONSTRAINT $2 UNIQUE $3")
                     .replaceAll("(?m)^\\s*KEY [^\\n]+\\n","").replaceAll(",\\s*\\)",")");
