@@ -39,25 +39,25 @@ MACHINE = '1ebe8f77e3104ab6a49a9386e38abd20'
 BASE = 'sha256:d9489c281e69291fec34ee6bd470197c4c41d06fdc29a822d3a5aaad66f1b2fa'
 MAVEN = 'sha256:f58d59b6273e785ac0a4477f6e9b5ba1d7731c75b906c0f7b34076f1851318cc'
 NODE = 'sha256:44fce696f38ba8c987c4db89954051000bbd05ffd8d8659ba15ed4a8602e937f'
-# This dependency image was installed and pip-checked by Jenkins #53. Its
+# This dependency image was installed and pip-checked by Jenkins #97. Its
 # stdout contained Docker 29's deprecation notice before the immutable ID.
-CACHED_PYTHON = 'sha256:66321a75c6f45db26cff5b947bb96b0fe32dbd4da069910861a2bd3236d8deba'
-CACHED_RECIPE = 'cd22b2432e010cf05c833cedf5ecde58b594731649360bce24f197942f612a74'
-CACHED_RELEASE = 'ci-53-6d8905f30797'
-CACHED_COMMIT = '6d8905f30797823886d213d16dde97af6793ab6d'
-CACHED_SOURCE = 'f98b30360ce405454cbf68b215a8d562e7e123fd7973b4bf6cc845f5a874f27e'
-CACHED_REQUIREMENTS = '12419a0e849948c5582e337247c0893c6fcac890f746d9f7f86b0f18dc1e523c'
+CACHED_PYTHON = 'sha256:4e8c4a575022713b56227dbf8a4df04e37bf6659e7d1828cd29a884368a1c66d'
+CACHED_RECIPE = '86cc3a2b9cdf5e809a32f59fd7449aa1807a3c51df5cc5c044c62878f111189d'
+CACHED_RELEASE = 'ci-97-abedbf81a73d'
+CACHED_COMMIT = 'abedbf81a73d1b7e28f660e3e72aa10cfbdce747'
+CACHED_SOURCE = '8683361ca092fb85b6497109f9dd6d54f0cbd5712d96be55d5c9bc957a0a1568'
+CACHED_REQUIREMENTS = 'dba9e875042c857fd97eacb52c72a85a239a132c534fe2efee0573d8013da70d'
 CACHED_PINS = {'pytest': '8.4.2', 'pymysql': '1.1.2', 'pillow': '11.3.0',
                'onnx': '1.17.0', 'python-multipart': '0.0.20', 'oss2': '2.19.1',
-               'confluent-kafka': '2.10.1'}
+               'confluent-kafka': '2.10.1', 'mcp': '1.29.0', 'scipy': '1.15.3'}
 CACHED_PROOFS = {
-    'owner.json': 'e40a6ad835103e46fafd8e18458166b99536fa90674b1d15ade3a5566725c7c9',
-    'reports/pip-install.json': 'a52bf24b181a13549f5901af98a4ca26e62bb143c0cbf87e0c83063e7c38ad8f',
-    'reports/installed-versions.json': '5c1b5ea3740c7c977e76d7745525fc64bad71a54a3a0611bf45e144876e37339',
-    'commit.stdout': '37150acae23334bfb001f929748ef056695854478ea741905ba24d452a9953dc',
+    'owner.json': 'ef68f3412d4b02aa62e72e8a38c201fd0a412f139fae4cdae354f49f725bee95',
+    'reports/pip-install.json': '4b2b83db99827ac39cc34b831689cb92d27d4c097fc4e822d847fa38e2537da0',
+    'reports/installed-versions.json': 'c8e26a35f0bf756e18dd7a3c31d0d3843f33281b8486c5ad9145f4d926f10ac4',
+    'commit.stdout': '318ab009265cd910acc49886fb42b926bd8db2c9a2e4325376a0cbbd0530b15f',
     'prepare-ecs-tools.py': CACHED_RECIPE,
     'python-test-requirements.txt': CACHED_REQUIREMENTS,
-    'pip.log': 'f2ae0aad419abc2c8913a256f1c1c2a8a31761f4a8a71861fcf51a8aa9e2e0c6',
+    'pip.log': 'c3d61e1515148f47a74acc84701ceaa891cecf4f9c997d9b27edccdc15f3d0bc',
 }
 PYTHON = '/usr/local/bin/python'
 CONFIG_GROWTH_BOUND = 2 * MIB
@@ -572,8 +572,8 @@ class Preparation:
         if CACHED_PYTHON not in images:
             return None
         image = self.image_row(CACHED_PYTHON); cfg = image['Config']; labels = cfg.get('Labels') or {}
-        # The current source archive is canonical LF, while the original #53
-        # archive used CRLF. Original evidence still matches its exact hashes;
+        # Producer evidence keeps its original bytes and pinned provenance.
+        # Original evidence still matches its exact hashes;
         # compatibility additionally requires precisely the same version pins.
         if pinned != CACHED_PINS:
             return None
