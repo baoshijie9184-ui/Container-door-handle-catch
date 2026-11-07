@@ -509,7 +509,37 @@ if ($Action -eq 'VerifyEcs') {
         Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "test ! -e '$remoteInbox/source.tar.gz' && mkdir '$remoteInbox/.verification-upload'"))
         Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, 'artifacts/source.tar.gz', "${destination}:$remoteInbox/source.tar.gz"))
     }
-    Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, (Get-PinnedSourceFile 'script/jenkins/verify-remote.py'), "${destination}:$remoteInbox/verify-remote.py"))
+    $verifyHelper = Get-PinnedSourceFile 'script/jenkins/verify-remote.py'
+    $verifyHelperSha = (Get-FileHash -LiteralPath $verifyHelper -Algorithm SHA256).Hash.ToLowerInvariant()
+    Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "test ! -e '$remoteInbox/verify-remote.py' && test ! -L '$remoteInbox/verify-remote.py'"))
+    Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, $verifyHelper, "${destination}:$remoteInbox/verify-remote.py"))
+    $sealVerifier = @'
+import hashlib,json,os,stat,sys
+from pathlib import Path
+path=Path(sys.argv[1]); expected=sys.argv[2]
+def need(value):
+    if not value: raise ValueError('Fixed verification helper admission failed')
+need(path.is_absolute() and path.resolve(strict=True)==path)
+for parent in path.parents:
+    need(not parent.is_symlink())
+with os.fdopen(os.open(path,os.O_RDONLY|os.O_NOFOLLOW),'rb') as stream:
+    before=os.fstat(stream.fileno())
+    need(stat.S_ISREG(before.st_mode) and before.st_uid==os.getuid() and before.st_nlink==1)
+    need(0<before.st_size<=1024**2)
+    need(hashlib.sha256(stream.read(1024**2+1)).hexdigest()==expected)
+    after=os.fstat(stream.fileno())
+    need((before.st_ino,before.st_size,before.st_mtime_ns)==(after.st_ino,after.st_size,after.st_mtime_ns))
+    os.fchmod(stream.fileno(),0o600)
+    sealed=os.fstat(stream.fileno()); linked=path.lstat()
+    need(stat.S_IMODE(sealed.st_mode)==0o600 and sealed.st_ino==linked.st_ino and sealed.st_dev==linked.st_dev)
+print(json.dumps({'status':'SEALED','file':'verify-remote.py','sha256':expected,'mode':'0600','uid':os.getuid()}))
+'@
+    $sealArguments = $sshOptions + @('-p', $portText, $destination, "python3 -B - '$remoteInbox/verify-remote.py' '$verifyHelperSha'")
+    $sealResult = $sealVerifier | & 'ssh.exe' @sealArguments
+    if ($LASTEXITCODE -ne 0) { throw 'The fixed verification helper could not be admitted with private permissions.' }
+    $sealedVerifier = ($sealResult | Select-Object -Last 1) | ConvertFrom-Json
+    if ($sealedVerifier.status -ne 'SEALED' -or $sealedVerifier.sha256 -ne $verifyHelperSha -or $sealedVerifier.mode -ne '0600') { throw 'The admitted verification helper differs from the pinned source.' }
+    $sealedVerifier | ConvertTo-Json | Set-Content -LiteralPath artifacts/ecs-verifier-admission.json -Encoding utf8
     $manifestFlag = if ($scope -eq 'mysql') { " --fixture-manifest '$fixture'" } else { '' }
     $remoteCommand = "python3 -B '$remoteInbox/verify-remote.py' --root '$remoteRoot' --tag '$tag' --source-sha256 '$sha' --commit '$commit' --instance-id '$instance' --machine-id '$machine' --scope '$scope' --attempt '$attempt'$manifestFlag"
     $verifyExit = 1
