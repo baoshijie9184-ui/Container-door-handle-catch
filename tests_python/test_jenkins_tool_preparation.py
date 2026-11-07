@@ -408,6 +408,64 @@ class ToolPreparationTests(unittest.TestCase):
         tools.complete_preparation(value, {**receipt, 'preparation': str(value.folder / 'preparation.json'),
             'preparationSha256': tools.digest(value.folder / 'preparation.json')})
 
+    def cached_producer(self, root):
+        """Reuse the complete synthetic producer; image defaults stay passive."""
+        value, producer, image, calls = self.completed_readback(root)
+        owner = json.loads((value.folder / 'owner.json').read_text())
+        producer['State'].update(StartedAt='2026-11-07T00:00:00Z', Paused=False)
+        image['Config']['Labels'].update({tools.LABEL: owner['ownerToken'],
+                                         'io.doorhandle.release': value.args.tag})
+        original_call = value.call
+        def call(*args, **kwargs):
+            if args == ('image', 'ls', '-q', '--no-trunc', '--filter', 'label=io.doorhandle.ci-tools=python-v1'):
+                calls.append(args); return (image['Id'] + '\n').encode()
+            if args == ('inspect', owner['containerName']):
+                calls.append(args); return json.dumps([producer]).encode()
+            return original_call(*args, **kwargs)
+        value.call = call
+        facts = {'CACHED_PYTHON': image['Id'], 'CACHED_RELEASE': owner['release'],
+                 'CACHED_COMMIT': owner['commit'], 'CACHED_SOURCE': owner['sourceSha256'],
+                 'CACHED_RECIPE': owner['sourceFiles'][tools.RECIPE],
+                 'CACHED_REQUIREMENTS': owner['sourceFiles'][tools.REQUIREMENTS],
+                 'CACHED_PINS': tools.requirements(value.folder / 'python-test-requirements.txt'),
+                 'CACHED_PROOFS': {name: tools.digest(value.folder / name) for name in tools.CACHED_PROOFS}}
+        return value, producer, image, calls, facts
+
+    def test_pinned_cache_accepts_passive_image_only_with_original_successful_installer_proof(self):
+        with tempfile.TemporaryDirectory() as directory:
+            value, producer, image, calls, facts = self.cached_producer(Path(directory))
+            before = {str(p.relative_to(value.root)): (p.read_bytes(), p.stat().st_mode)
+                      for p in value.root.rglob('*') if p.is_file()}
+            original_producer = deepcopy(producer)
+            with mock.patch.multiple(tools, **facts):
+                result_image, original, result_producer = value.inspect_pinned_dependencies(dict(facts['CACHED_PINS']))
+            self.assertEqual(image, result_image)
+            self.assertEqual(set(facts['CACHED_PROOFS']), set(original))
+            self.assertEqual(original_producer, result_producer)
+            self.assertEqual(['--version'], result_image['Config']['Cmd'])
+            self.assertEqual(tools.installer_command(facts['CACHED_PINS']), result_producer['Config']['Cmd'])
+            self.assertEqual(before, {str(p.relative_to(value.root)): (p.read_bytes(), p.stat().st_mode)
+                                     for p in value.root.rglob('*') if p.is_file()})
+            self.assertTrue(calls and all(args[0] in ('image', 'inspect') for args in calls))
+
+    def test_pinned_cache_refuses_image_installer_empty_and_unexpected_commands(self):
+        for command in ('installer', [], ['-c', 'unexpected'], None):
+            with self.subTest(command=command), tempfile.TemporaryDirectory() as directory:
+                value, _, image, calls, facts = self.cached_producer(Path(directory))
+                image['Config']['Cmd'] = tools.installer_command(facts['CACHED_PINS']) if command == 'installer' else command
+                with mock.patch.multiple(tools, **facts), self.assertRaisesRegex(ValueError, 'image configuration differs'):
+                    value.inspect_pinned_dependencies(dict(facts['CACHED_PINS']))
+                self.assertTrue(calls and all(args[0] in ('image', 'inspect') for args in calls))
+
+    def test_pinned_cache_still_refuses_passive_or_unexpected_original_producer_commands(self):
+        for command in (['--version'], ['-c', 'unexpected'], [], None):
+            with self.subTest(command=command), tempfile.TemporaryDirectory() as directory:
+                value, producer, _, calls, facts = self.cached_producer(Path(directory))
+                producer['Config']['Cmd'] = command
+                with mock.patch.multiple(tools, **facts), self.assertRaisesRegex(ValueError, 'producer did not finish successfully'):
+                    value.inspect_pinned_dependencies(dict(facts['CACHED_PINS']))
+                self.assertTrue(calls and all(args[0] in ('image', 'inspect') for args in calls))
+
     def test_completed_readback_verifies_eight_or_nine_pins_without_any_mutation(self):
         for scipy in (False, True):
             with self.subTest(scipy=scipy), tempfile.TemporaryDirectory() as directory:

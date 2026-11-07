@@ -577,10 +577,11 @@ class Preparation:
         # compatibility additionally requires precisely the same version pins.
         if pinned != CACHED_PINS:
             return None
+        # The finished image is passive; only its original producer ran pip.
         require(labels.get('io.doorhandle.ci-tools-requirements-sha256') == CACHED_REQUIREMENTS
                 and labels.get('io.doorhandle.ci-tools-recipe-sha256') == CACHED_RECIPE
                 and cfg.get('User') == str(os.getuid()) + ':' + str(os.getgid())
-                and cfg.get('Entrypoint') == [PYTHON] and cfg.get('Cmd') == installer_command(pinned)
+                and cfg.get('Entrypoint') == [PYTHON] and cfg.get('Cmd') == ['--version']
                 and cfg.get('WorkingDir') == '/' and cfg.get('Healthcheck', {}).get('Test') == ['NONE'],
                 'Pinned dependency image configuration differs')
         base = self.image_row(BASE)['RootFS']['Layers']
