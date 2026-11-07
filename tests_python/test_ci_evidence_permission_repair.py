@@ -164,7 +164,8 @@ def test_path_replacement_after_all_preflight_rejected_without_chmod(state, monk
         return result
     monkeypatch.setattr(repair, 'old_preflight', replace)
     monkeypatch.setattr(repair.os, 'fchmod', lambda *unused: pytest.fail('chmod after path replacement'))
-    with pytest.raises(ValueError, match='HELD_PATH_REPLACED'): execute(state, apply=True)
+    # Replacement also changes ancestor metadata, which may be rejected first.
+    with pytest.raises(ValueError, match=r'^HELD_(?:METADATA_CHANGED|PATH_REPLACED)$'): execute(state, apply=True)
 
 
 def test_last_preflight_failure_cannot_partially_tighten_earlier_targets(state, monkeypatch):
@@ -349,6 +350,6 @@ def test_replacement_while_durable_intent_is_written_refuses_before_chmod(state,
         path = state.root / event['path']; saved = state.root / 'replacement-during-intent'
         support.put(saved, path.read_bytes()); saved.chmod(0o664); saved.replace(path)
     monkeypatch.setattr(repair.os, 'fchmod', lambda *unused: pytest.fail('chmod after INTENT path replacement'))
-    with pytest.raises(ValueError, match='HELD_PATH_REPLACED'):
+    with pytest.raises(ValueError, match=r'^HELD_(?:METADATA_CHANGED|PATH_REPLACED)$'):
         repair.repair_entry(state.root, state.entry, support.IDENTITY, support.remote, support.cleanup,
                             apply=True, journal=journal)
