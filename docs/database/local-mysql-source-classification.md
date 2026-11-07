@@ -13,4 +13,26 @@
 
 报告明确保持 `coverageVerified=false`、`targetDataCompared=false`、`productionMerged=false`、`retirementAllowed=false`。`MATCH` 只表示完整表快照一致；本工具没有重读 `data.sql`，没有比较 schema 级对象、触发器、例程、事件、逐主键包含关系及 29 表数据。存在差异后，应在 ECS 补充真实只读逐行对账，再决定合入方式，不用行数或共同列代替无损证明。
 
-入口暂为开发中的独立 CLI，尚未接入流水线，也未取得真实 45↔131 分类结果。[验收清单](../../script/jenkins/compact-acceptance.json) 登记至少 90 例合成测试、不允许跳过；静态编译与代码复核通过，实际测试仍须由固定提交在 ECS 执行。原数据和本地原件未据此删除。
+## Jenkins 最小接线
+
+[`preserve-local-mysql.ps1`](../../script/jenkins/preserve-local-mysql.ps1) 在既有 45 表双恢复、所属临时容器/卷清理，以及原始公开回执 SCP 和 SHA 核验全部成功后，仅在实际验证回执 `scope=mysql` 时运行分类。`source` 范围明确跳过，因为该构建没有完整 131 表 `fixture-origin-copy`；不会借用其他构建的源备份补齐输入。
+
+四个可信锚点按下列来源建立，再作为分类 CLI 的显式参数传入：
+
+| 锚点 | 取值与绑定 |
+| --- | --- |
+| `verification` | 已通过既有收集校验的当前原始 PASS 回执 SHA，分类前再次检查本地回执未变 |
+| `contract` | 固定提交的 `source.tar.gz` 内契约原始字节 SHA，归档读取前后核对源码包 SHA |
+| `localOwner` | 通过已固定主机密钥认证的 SSH，现场读取同构建 45 表 owner 原始字节并计算 SHA |
+| `fixtureOwner` | 同次现场读取同构建 131 表 fixture owner 原始字节并计算 SHA |
+
+现场读取只访问固定的两个控制 JSON，要求 canonical、当前 Unix 身份拥有、owner-only、无符号链接或硬链接，单文件不超过 16 MiB；读取前后核对同一打开文件及路径的身份、大小、时间和权限。SSH 输出只包含字节数和摘要，不回传 owner 内容。分类连接隔离用户 SSH 配置及全局 known-hosts，仅使用已指定主机密钥文件；分类器自身 SHA 同样从固定源码归档取得，在远端运行前核对。分类 CLI 会重读并验证这些原始字节及其证据链，不能由分类结果自报锚点替代现场读取。
+
+成功后先核对远端原始报告的 owned/canonical/稳定读取、1 MiB 上限和 SHA，再通过 SCP 收集原件，并校验实际大小、SHA、同构建及 ECS 上下文、四个锚点、45 表公开回执 SHA 和不授权字段。任何读取、分类、采集或核验异常均使当前步骤失败，阻止后续阶段。
+
+| Jenkins 制品 | 内容 |
+| --- | --- |
+| `artifacts/local-mysql-source-classification.json` | ECS 分类报告原件，仅逐表分类与摘要，不含数据库行或 DDL 内容 |
+| `artifacts/local-mysql-source-classification-ci.json` | 接线摘要，绑定固定源码、helper/契约、四锚点、双恢复和清理回执、报告大小与 SHA；不包含私有 owner 内容或登录资料 |
+
+接线目前属于新增源码，尚未取得真实 45↔131 分类结果。[验收清单](../../script/jenkins/compact-acceptance.json) 登记至少 90 例合成测试、不允许跳过；实际测试和接线仍须由包含这些改动的固定提交在 ECS 验证，先前或正在运行的旧提交不包含新接线。本轮只做 PowerShell 解析、嵌入 Python AST 及 diff 静态检查，没有在本机运行脚本或测试，原数据和本地原件未据此删除。
