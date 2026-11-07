@@ -165,4 +165,56 @@ class CompactH2FunctionsTest {
                 "-- CAST(0 AS UNSIGNED) is comment data, not executable syntax",
                 "/* AS UNSIGNED) BIGINT UNSIGNED GENERATED ALWAYS AS */");
     }
+
+    @Test void booleanPredicatesFollowTheDeclaredColumnAndCurrentTableOnly() {
+        String source = """
+            CREATE TABLE fixture_boolean (
+              id INT PRIMARY KEY,
+              `enabled` BOOLEAN NOT NULL DEFAULT FALSE,
+              enabled_count INT NOT NULL,
+              description VARCHAR(80) DEFAULT 'enabled=1 AND enabled IN (0,1)',
+              CONSTRAINT ck_boolean CHECK (`enabled` IN (0,1) AND (enabled=1 OR enabled_count=0)),
+              CONSTRAINT ck_boolean_false CHECK (enabled<>0 OR id>0)
+            );
+            -- enabled=1 AND enabled IN (0,1) are comment data
+            CREATE TABLE fixture_numeric (
+              enabled INT NOT NULL,
+              CONSTRAINT ck_numeric CHECK (enabled IN (0,1) AND enabled=1)
+            );
+            /* enabled=0 AND enabled IN (0,1) are also comment data */
+            """;
+        String adapted = CompactH2Functions.adaptDdl(source);
+        assertThat(adapted).contains("`enabled` BOOLEAN NOT NULL DEFAULT FALSE", "`enabled` IN (FALSE,TRUE)",
+                "enabled=TRUE OR enabled_count=0", "enabled<>FALSE OR id>0",
+                "DEFAULT 'enabled=1 AND enabled IN (0,1)'",
+                "CONSTRAINT ck_numeric CHECK (enabled IN (0,1) AND enabled=1)",
+                "-- enabled=1 AND enabled IN (0,1) are comment data",
+                "/* enabled=0 AND enabled IN (0,1) are also comment data */");
+        jdbc.execute(adapted);
+        jdbc.update("INSERT INTO fixture_boolean(id,enabled_count) VALUES(1,0)");
+        jdbc.update("INSERT INTO fixture_boolean(id,enabled,enabled_count) VALUES(2,TRUE,7)");
+        assertThatThrownBy(() -> jdbc.update("INSERT INTO fixture_boolean(id,enabled,enabled_count) VALUES(3,FALSE,7)"))
+                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM fixture_boolean", Integer.class)).isEqualTo(2);
+    }
+
+    @Test void guardedJsonBooleanAdaptationKeepsJsonTypesAndProtectedSqlDistinct() throws Exception {
+        assertThat(CompactH2Functions.jsonExtract("{\"flag\":true}", "$.flag")).isEqualTo("true");
+        assertThat(CompactH2Functions.jsonExtract("{\"flag\":\"true\"}", "$.flag")).isEqualTo("\"true\"");
+        assertThat(CompactH2Functions.jsonBooleanValue("true")).isTrue();
+        assertThat(CompactH2Functions.jsonBooleanValue("false")).isFalse();
+        for (String value : new String[]{null, "null", "\"true\"", "\"false\"", "1", "0", "{}", "[]"})
+            assertThat(jdbc.queryForObject("SELECT H2_JSON_BOOLEAN_VALUE(?)", Boolean.class, value)).as("JSON scalar %s", value).isNull();
+        String expression = "CASE WHEN JSON_TYPE(JSON_EXTRACT(raw,'$.flag'))='BOOLEAN' "
+                + "THEN JSON_EXTRACT(raw,'$.flag')=TRUE ELSE NULL END";
+        String source = "CREATE TABLE fixture_json_boolean (raw JSON, flag BOOLEAN GENERATED ALWAYS AS (" + expression
+                + "), description VARCHAR(500) DEFAULT '" + expression.replace("'", "''") + "');\n-- " + expression;
+        String adapted = CompactH2Functions.adaptDdl(source);
+        assertThat(adapted).contains("THEN H2_JSON_BOOLEAN_VALUE(JSON_EXTRACT(raw,'$.flag'))=TRUE ELSE NULL END",
+                "DEFAULT '" + expression.replace("'", "''") + "'", "-- " + expression);
+        assertThat(CompactH2Functions.adaptDdl(expression.replace("THEN JSON_EXTRACT(raw,'$.flag')",
+                "THEN JSON_EXTRACT(raw,'$.Flag')"))).doesNotContain("H2_JSON_BOOLEAN_VALUE");
+        assertThat(CompactH2Functions.adaptDdl("SELECT JSON_EXTRACT(raw,'$.flag')=TRUE"))
+                .doesNotContain("H2_JSON_BOOLEAN_VALUE");
+    }
 }

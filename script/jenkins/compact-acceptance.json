@@ -903,7 +903,7 @@
       },
       {
         "className": "com.ruanzhu.doorhandle.module.ai.testsupport.CompactH2FunctionsTest",
-        "minimumTests": 6,
+        "minimumTests": 10,
         "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/testsupport/CompactH2FunctionsTest.java"
       },
       {
@@ -923,7 +923,7 @@
       },
       {
         "className": "com.ruanzhu.doorhandle.module.ai.testsupport.CompactH2FixtureInstallationTest",
-        "minimumTests": 3,
+        "minimumTests": 4,
         "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/testsupport/CompactH2FixtureInstallationTest.java"
       }
     ]

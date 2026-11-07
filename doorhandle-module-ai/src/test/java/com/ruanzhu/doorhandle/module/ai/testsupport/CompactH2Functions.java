@@ -33,7 +33,8 @@ public final class CompactH2Functions {
         }
         for (String pair : List.of("UTC_TIMESTAMP:utcTimestamp", "JSON_VALID:jsonValid", "JSON_EXTRACT:jsonExtract",
                 "JSON_UNQUOTE:jsonUnquote", "JSON_TYPE:jsonType", "JSON_LENGTH:jsonLength",
-                "JSON_CONTAINS_PATH:jsonContainsPath", "JSON_SCHEMA_VALID:jsonSchemaValid", "SHA2:sha2")) {
+                "JSON_CONTAINS_PATH:jsonContainsPath", "JSON_SCHEMA_VALID:jsonSchemaValid", "SHA2:sha2",
+                "H2_JSON_BOOLEAN_VALUE:jsonBooleanValue")) {
             String[] names = pair.split(":");
             jdbc.execute("CREATE ALIAS IF NOT EXISTS " + names[0] + " FOR '" + CompactH2Functions.class.getName() + "." + names[1] + "'");
         }
@@ -49,7 +50,10 @@ public final class CompactH2Functions {
         return adaptSql(ddl, new DdlContext());
     }
 
-    private static final class DdlContext { String table = ""; }
+    private static final class DdlContext {
+        String table = "";
+        final Set<String> booleanColumns = new HashSet<>();
+    }
 
     private static String adaptSql(String ddl, DdlContext context) {
         StringBuilder result = new StringBuilder(), plain = new StringBuilder();
@@ -81,7 +85,56 @@ public final class CompactH2Functions {
                 result.append(ddl, i, end); i = end;
             } else { plain.append(c); i++; }
         }
-        return result.append(adaptPlain(plain.toString(), context)).toString();
+        String adapted = result.append(adaptPlain(plain.toString(), context)).toString();
+        return context == null ? adapted : adaptGuardedJsonBooleans(adapted);
+    }
+
+    /** Only an existing JSON BOOLEAN type guard admits a typed H2 scalar. */
+    private static String adaptGuardedJsonBooleans(String sql) {
+        StringBuilder result = new StringBuilder();
+        for (int i = 0; i < sql.length();) {
+            int protectedEnd = protectedSqlEnd(sql, i);
+            if (protectedEnd > i) { result.append(sql, i, protectedEnd); i = protectedEnd; continue; }
+            if ((i == 0 || !Character.isJavaIdentifierPart(sql.charAt(i - 1)))
+                    && sql.regionMatches(true, i, "JSON_EXTRACT", 0, 12)) {
+                int opening = i + 12;
+                while (opening < sql.length() && Character.isWhitespace(sql.charAt(opening))) opening++;
+                if (opening < sql.length() && sql.charAt(opening) == '(') {
+                    int depth = 1, end = opening + 1;
+                    while (end < sql.length() && depth > 0) {
+                        int skipped = protectedSqlEnd(sql, end);
+                        if (skipped > end) { end = skipped; continue; }
+                        char current = sql.charAt(end++);
+                        if (current == '(') depth++;
+                        else if (current == ')') depth--;
+                    }
+                    if (depth != 0) throw new IllegalArgumentException("Unclosed fixture JSON_EXTRACT expression");
+                    String expression = sql.substring(i, end);
+                    var comparison = Pattern.compile("(?i)\\s*=\\s*(?:TRUE|FALSE)\\b").matcher(sql).region(end, sql.length());
+                    var guard = Pattern.compile("(?i)\\bJSON_TYPE\\s*\\(\\s*(?-i:" + Pattern.quote(expression)
+                            + ")\\s*\\)\\s*=\\s*'BOOLEAN'\\s+THEN\\s*$").matcher(sql).region(0, i);
+                    if (comparison.lookingAt() && guard.find()) {
+                        result.append("H2_JSON_BOOLEAN_VALUE(").append(expression).append(')'); i = end; continue;
+                    }
+                }
+            }
+            result.append(sql.charAt(i++));
+        }
+        return result.toString();
+    }
+
+    private static int protectedSqlEnd(String sql, int start) {
+        if (sql.charAt(start) == '\'') {
+            for (int end = start + 1; end < sql.length(); end++) {
+                if (sql.charAt(end) != '\'') continue;
+                if (end + 1 < sql.length() && sql.charAt(end + 1) == '\'') end++;
+                else return end + 1;
+            }
+            throw new IllegalArgumentException("Unterminated fixture SQL literal");
+        }
+        if (sql.startsWith("--", start)) { int end = sql.indexOf('\n', start); return end < 0 ? sql.length() : end; }
+        if (sql.startsWith("/*", start)) { int end = sql.indexOf("*/", start + 2); return end < 0 ? sql.length() : end + 2; }
+        return start;
     }
 
     private static String adaptPlain(String sql, DdlContext context) {
@@ -102,27 +155,42 @@ public final class CompactH2Functions {
         StringBuilder result = new StringBuilder(); int position = 0;
         var tables = Pattern.compile("(?i)\\bCREATE\\s+TABLE(?:\\s+IF\\s+NOT\\s+EXISTS)?\\s+`?([a-z_][a-z0-9_]*)").matcher(adapted);
         while (tables.find()) {
-            result.append(adaptDdlPlain(adapted.substring(position, tables.start()), context.table));
-            context.table = tables.group(1); position = tables.start();
+            result.append(adaptDdlPlain(adapted.substring(position, tables.start()), context));
+            context.table = tables.group(1); context.booleanColumns.clear(); position = tables.start();
         }
-        return result.append(adaptDdlPlain(adapted.substring(position), context.table)).toString();
+        return result.append(adaptDdlPlain(adapted.substring(position), context)).toString();
     }
 
-    private static String adaptDdlPlain(String sql, String table) {
+    private static String adaptDdlPlain(String sql, DdlContext context) {
         String result = sql.replaceAll("(?i)\\s+COLLATE(?:\\s+|=)utf8mb4_[a-z0-9_]+", "")
                 .replaceAll("(?i)\\s+CHARACTER\\s+SET(?:\\s+|=)utf8mb4", "")
                 .replaceAll("(?i)\\s+ENGINE\\s*=\\s*InnoDB", "")
                 .replaceAll("(?i)\\s+ROW_FORMAT\\s*=\\s*DYNAMIC", "")
                 .replaceAll("(?i)\\s+DEFAULT\\s+CHARSET\\s*=\\s*utf8mb4", "")
                 .replaceAll("(?mi)^[\\t ]*KEY\\s+[^\\n]*(?:\\n|$)", "");
+        var booleans = Pattern.compile("(?i)(?:^|[(,])\\s*`?([a-z_][a-z0-9_]*)`?\\s+(?:BOOLEAN|BOOL)\\b").matcher(result);
+        while (booleans.find()) context.booleanColumns.add(booleans.group(1));
+        // MySQL BOOLEAN is a numeric alias; H2 keeps a distinct BOOLEAN type.
+        // Translate only 0/1 predicates on columns declared BOOLEAN in this
+        // CREATE TABLE. Literals/comments are handled outside this method.
+        for (String column : context.booleanColumns) {
+            String identifier = "(?<![a-z0-9_$.`])(?:" + Pattern.quote("`" + column + "`")
+                    + "|" + Pattern.quote(column) + ")(?![a-z0-9_$`])";
+            result = Pattern.compile("(?i)(" + identifier + "\\s*(?:<>|!=|=)\\s*)([01])(?![a-z0-9_$.])")
+                    .matcher(result).replaceAll(match -> java.util.regex.Matcher.quoteReplacement(
+                            match.group(1) + (match.group(2).equals("1") ? "TRUE" : "FALSE")));
+            result = Pattern.compile("(?i)(" + identifier + "\\s+IN\\s*\\(\\s*)([01](?:\\s*,\\s*[01])*)(\\s*\\))")
+                    .matcher(result).replaceAll(match -> java.util.regex.Matcher.quoteReplacement(match.group(1)
+                            + match.group(2).replace("0", "FALSE").replace("1", "TRUE") + match.group(3)));
+        }
         // MySQL index names are scoped to a table; H2 UNIQUE constraints are
         // schema scoped. Preserve every unique key with a deterministic name.
         var unique = Pattern.compile("(?mi)^([\\t ]*)UNIQUE KEY\\s+`?([a-z_][a-z0-9_]*)`?\\s*(\\([^\\n]+\\))").matcher(result);
         StringBuffer renamed = new StringBuffer();
         while (unique.find()) {
-            if (table.isEmpty()) throw new IllegalArgumentException("Unique key has no fixture table context");
+            if (context.table.isEmpty()) throw new IllegalArgumentException("Unique key has no fixture table context");
             unique.appendReplacement(renamed, java.util.regex.Matcher.quoteReplacement(unique.group(1)
-                    + "CONSTRAINT h2_" + table + "_" + unique.group(2) + " UNIQUE " + unique.group(3)));
+                    + "CONSTRAINT h2_" + context.table + "_" + unique.group(2) + " UNIQUE " + unique.group(3)));
         }
         unique.appendTail(renamed);
         return renamed.toString().replaceAll(",\\s*\\)", ")");
@@ -143,6 +211,11 @@ public final class CompactH2Functions {
         if (value == null || path == null) return null;
         JsonNode node = at(JSON.readTree(value), path);
         return node == null ? null : node.toString();
+    }
+    public static Boolean jsonBooleanValue(String value) throws Exception {
+        if (value == null) return null;
+        JsonNode node = JSON.readTree(value);
+        return node != null && node.isBoolean() ? node.booleanValue() : null;
     }
     public static String jsonUnquote(String value) throws Exception {
         if (value == null) return null;

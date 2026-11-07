@@ -1,5 +1,6 @@
 package com.ruanzhu.doorhandle.module.ai.testsupport;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -12,6 +13,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.core.io.ByteArrayResource;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.jdbc.datasource.init.ResourceDatabasePopulator;
@@ -47,6 +49,25 @@ class CompactH2FixtureInstallationTest {
                 .isEqualTo(expectedChecks);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.table_constraints WHERE table_schema=? AND constraint_type='FOREIGN KEY'", Integer.class, schema))
                 .isEqualTo(expectedForeignKeys);
+        jdbc.update("INSERT INTO employee(id,name,employee_number,contact,department,employee_type,gender,hire_date,status) "
+                + "VALUES(101,'fixture','fixture-employee','fixture','fixture','DETECTION','UNKNOWN',DATE '2026-01-01','ACTIVE')");
+        jdbc.update("INSERT INTO users(username,password) VALUES('history-clear','fixture')");
+        jdbc.update("INSERT INTO users(username,password,binding_history_present,binding_version) VALUES('history-present','fixture',TRUE,1)");
+        assertThatThrownBy(() -> jdbc.update("INSERT INTO users(username,password,binding_history_present,binding_version) "
+                + "VALUES('false-with-version','fixture',FALSE,1)"))
+                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+        assertThatThrownBy(() -> jdbc.update("INSERT INTO users(username,password,binding_history_present,employee_id) "
+                + "VALUES('false-with-employee','fixture',FALSE,101)"))
+                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+        assertThatThrownBy(() -> jdbc.update("INSERT INTO users(username,password,binding_history_present,binding_version) "
+                + "VALUES('negative-version','fixture',TRUE,-1)"))
+                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+        assertThatThrownBy(() -> jdbc.update("UPDATE users SET binding_history_present=FALSE WHERE username='history-present'"))
+                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+        jdbc.update("INSERT INTO users(username,password,binding_history_present,binding_version,employee_id) "
+                + "VALUES('history-bound','fixture',TRUE,1,101)");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM users", Integer.class)).isEqualTo(3);
+        assertThat(jdbc.queryForObject("SELECT binding_history_present FROM users WHERE username='history-present'", Boolean.class)).isTrue();
     }
 
     @Test void sharedJournalFixtureInstallsItsActualCoordinationAndWorkflowResources() throws Exception {
@@ -62,6 +83,45 @@ class CompactH2FixtureInstallationTest {
         CompactModelConfigurationFixture.install(jdbc);
         assertThat(jdbc.queryForList("SELECT table_name FROM information_schema.tables WHERE table_schema='public'", String.class))
                 .contains("content_asset", "content_revision", "content_chunk", "content_link", "llm_configuration", "workflow_instance", "runtime_state", "audit_event");
+    }
+
+    @Test void actualWorkflowYieldColumnReadsOnlyJsonBooleansAndOriginalChecksRejectWrongTypes() throws Exception {
+        String source = new ClassPathResource("db/compact/005-workflow-runtime.sql").getContentAsString(StandardCharsets.UTF_8);
+        var declarations = source.lines().map(String::strip)
+                .filter(line -> line.startsWith("workbench_yield_ready BOOLEAN GENERATED ALWAYS AS")).toList();
+        assertThat(declarations).hasSize(1);
+        String declaration = declarations.get(0);
+        assertThat(declaration).endsWith(",");
+        install(CompactH2Functions.adaptDdl("CREATE TABLE fixture_actual_yield (id INT PRIMARY KEY, kind VARCHAR(48) NOT NULL, "
+                + "payload_json JSON NOT NULL,\n" + declaration.substring(0, declaration.length() - 1) + "\n)"));
+        CompactWorkflowFixture.install(jdbc);
+        ObjectMapper json = new ObjectMapper();
+        String[] values = {"true", "false", "null", "\"true\"", "\"false\"", "1", "0", "{}", "[]", null};
+        for (int i = 0; i < values.length; i++) {
+            var document = json.createObjectNode(); var data = document.putObject("data");
+            if (values[i] != null) data.set("yieldReady", json.readTree(values[i]));
+            jdbc.update("INSERT INTO fixture_actual_yield(id,kind,payload_json) VALUES(?,'WORKBENCH_EXECUTION',?)", i, document.toString());
+            Boolean expected = i == 0 ? Boolean.TRUE : i == 1 ? Boolean.FALSE : null;
+            assertThat(jdbc.queryForObject("SELECT workbench_yield_ready FROM fixture_actual_yield WHERE id=?", Boolean.class, i))
+                    .as("JSON scalar %s", values[i]).isEqualTo(expected);
+            for (String field : List.of("username", "role", "runId", "instance", "title", "logicalTaskId", "planRequired",
+                    "modelId", "modelConfigVersion", "modelDefault", "approvedPlan", "continuation", "result", "modelConfigurationHistory"))
+                data.putNull(field);
+            data.put("type", "EXECUTION"); document.put("schemaVersion", 1); document.putArray("presentFields"); document.putNull("legacy");
+            String id = "yield-" + i, payload = document.toString();
+            String insert = "INSERT INTO workflow_instance(workflow_id,kind,idempotency_scope,request_id,request_sha256,"
+                    + "owner_user_id,resource_type,resource_id,session_id,status,payload_version,payload_json) "
+                    + "VALUES(?,'WORKBENCH_EXECUTION','WORKBENCH_ITEM',?,?,1,'WORKBENCH_ITEM',?,'fixture','READY',1,?)";
+            if (i <= 2) {
+                jdbc.update(insert, id, id, "a".repeat(64), id, payload);
+                assertThat(jdbc.queryForObject("SELECT workbench_yield_ready FROM workflow_instance WHERE workflow_id=?", Boolean.class, id))
+                        .isEqualTo(expected);
+            } else {
+                assertThatThrownBy(() -> jdbc.update(insert, id, id, "a".repeat(64), id, payload))
+                        .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+            }
+        }
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM workflow_instance", Integer.class)).isEqualTo(3);
     }
 
     private void install(String sql) {
