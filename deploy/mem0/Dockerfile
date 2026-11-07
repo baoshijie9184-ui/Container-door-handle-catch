@@ -12,7 +12,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
       --index-url "$PIP_INDEX_URL" -r requirements.txt \
     && groupadd --gid 10001 app && useradd --uid 10001 --gid app --create-home app \
     && mkdir /data && chown app:app /data
-COPY --chmod=0644 memory_service/main.py memory_service/write_receipts.py memory_service/lifecycle.py memory_service/duplicate_review.py memory_service/model_config.py /app/
+COPY --chmod=0644 memory_service/main.py memory_service/write_receipts.py memory_service/lifecycle.py memory_service/duplicate_review.py memory_service/model_config.py memory_service/embedding_config.py /app/
 COPY --chmod=0644 LICENSE /app/LICENSE
 USER app
 EXPOSE 8081

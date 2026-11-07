@@ -39,19 +39,24 @@ HISTORY_COLUMNS = ("id", "memory_id", "old_memory", "new_memory", "event", "crea
 MESSAGE_COLUMNS = ("id", "session_scope", "role", "content", "name", "created_at")
 PRESERVATION_LEGACY_PROFILE = "legacy-stores-v1"
 PRESERVATION_COMBINED_PROFILE = "legacy-stores-with-windows-mcp-v1"
+PRESERVATION_KAFKA_PROFILE = "legacy-stores-with-windows-mcp-and-kafka-v1"
 PRESERVATION_MAX_FILES = 8192
 PRESERVATION_MAX_BYTES = 512 * 1024 ** 2
+PRESERVATION_KAFKA_MAX_LOGICAL_BYTES = 2 * 1024 ** 3
 PRESERVATION_MAX_MANIFEST = 16 * 1024 ** 2
 # Digests cover sorted [portable member name, byte size, raw SHA256] tuples from
 # the independently inventoried originals. These are byte-preservation profiles,
 # never executable/import profiles or authorization to include other directories.
 LEGACY_MEMBER_INVENTORY_SHA256 = "ed490983e42cb1a175af444b427de19e1a6095d008ac61b1302a1fae57d9d89a"
 WINDOWS_MCP_MEMBER_INVENTORY_SHA256 = "d2d7ce9705eb37a420991d7b6db8c7e4ae79597803377ea231f9545a15a95b43"
+LEGACY_KAFKA_MEMBER_INVENTORY_SHA256 = "85ae732b214d2ed49ab3baf641774e333e6efc6a9594ca6157b25c7ced326929"
+LEGACY_KAFKA_FILE_COUNT = 309
 PRESERVATION_SOURCE_ROOTS = {
     "personal_chroma": "D:/AI/lunwen1/DoorHandleCatch/memory_service/chroma_db",
     "legacy_history": "C:/Users/19771/.mem0",
     "rag_chroma": "D:/AI/lunwen1/DoorHandleCatch/work/middlewares/chroma",
     "windows_mcp": "D:/AI/lunwen1/DoorHandleCatch/.agentscope/workspace/users/18/mcp",
+    "legacy_kafka": "D:/AI/lunwen1/DoorHandleCatch/work/middlewares/kafka-data",
 }
 
 
@@ -247,10 +252,16 @@ def reembed(bundle, mapping, config, output, *, max_records=30):
     require(isinstance(config.get("baseUrl"), str) and config["baseUrl"].startswith("https://"), "Embedding provider must use HTTPS")
     require(config.get("apiKey") and config.get("verifiedTargetRuntime") is True, "Target embedding configuration is not verified")
     require("dimensions" in config and (config["dimensions"] is None or type(config["dimensions"]) is int and 1 <= config["dimensions"] <= 8192), "Target embedding dimension policy is missing")
+    bge = config.get("embeddingProfile") == "siliconflow-bge-m3-v1"
+    if bge:
+        require(config["model"] == "BAAI/bge-m3" and config["baseUrl"] == "https://api.siliconflow.cn/v1"
+                and config["dimensions"] is None, "Free BGE migration requires the exact model, provider and native fixed dimensions")
     fingerprint = sha(canonical({k: config[k] for k in ("model", "baseUrl", "dimensions")}))
     state = {"format": FORMAT, "sourceBundleSha256": sha(canonical(bundle)), "ownerMappingSha256": sha(canonical(mapping)),
              "targetModel": config["model"], "providerConfigSha256": fingerprint,
              "dimensions": config["dimensions"], "maximumRecords": max_records, "requests": [], "records": [], "status": "PREPARED"}
+    if bge:
+        state.update(embeddingProfile="siliconflow-bge-m3-v1", targetCollection="doorhandle_memories_bge_m3_v1")
     path = safe_path(output, exists=False)
     require(not path.exists(), "Embedding output exists; inspect it before another provider call")
     private_json(path, state)
@@ -269,6 +280,8 @@ def reembed(bundle, mapping, config, output, *, max_records=30):
         result = sorted(response.data, key=lambda item: item.index)
         require([item.index for item in result] == list(range(len(batch))), "Provider embedding response cardinality mismatch")
         for row, item in zip(batch, result):
+            if bge:
+                require(len(item.embedding) == 1024, "Free BGE migration returned another vector dimension")
             if state["dimensions"] is None:
                 state["dimensions"] = len(item.embedding)
             require(1 <= len(item.embedding) <= 8192 and len(item.embedding) == state["dimensions"], "Provider embedding dimension mismatch")
@@ -328,6 +341,13 @@ def merge_candidate(bundle, mapping, embeddings, candidate, receipt_path, identi
     require(safe_path(receipt_path, exists=False).parent == root, "Receipt must be inside the owned candidate")
     projected = prepared_records(bundle, mapping, embeddings)
     target_dim = embeddings["dimensions"]
+    target_collection = embeddings.get("targetCollection", COLLECTION)
+    bge = target_collection == "doorhandle_memories_bge_m3_v1"
+    require(target_collection == COLLECTION or bge and embeddings.get("embeddingProfile") == "siliconflow-bge-m3-v1"
+            and embeddings.get("targetModel") == "BAAI/bge-m3" and target_dim == 1024,
+            "Target memory collection is not bound to its embedding model")
+    require(embeddings.get("embeddingProfile") != "siliconflow-bge-m3-v1" or bge,
+            "Free BGE vectors must use their independent collection")
     require(all(len(r["embedding"]) == target_dim for r in projected["records"]), "Prepared embedding dimension mismatch")
     import fcntl
     fence = root / "bridge_receipts" / "writer.lock"
@@ -338,7 +358,10 @@ def merge_candidate(bundle, mapping, embeddings, candidate, receipt_path, identi
         from chromadb.config import Settings
         os.environ["ANONYMIZED_TELEMETRY"] = "false"
         client = PersistentClient(path=str(root / "chroma"), settings=Settings(anonymized_telemetry=False))
-        collection = client.get_or_create_collection(COLLECTION, embedding_function=None)
+        collection = client.get_or_create_collection(target_collection, embedding_function=None)
+        if bge:
+            from memory_service.embedding_config import bind_collection
+            bind_collection(collection)
         before = read_collection(collection)
         missing = []
         for row in projected["records"]:
@@ -417,7 +440,7 @@ def merge_candidate(bundle, mapping, embeddings, candidate, receipt_path, identi
                 require(set(after_history[name]) == set(receipt["beforeHistory"][name]) | {r["id"] for r in projected[name]}, "Candidate gained unexpected history IDs")
             receipt.update(status="MERGED_VERIFIED", activeRecords=len(projected["records"]), importedHistoryRows=len(projected["history"]),
                 importedMessageRows=len(projected["messages"]), targetTotalRecords=len(after), preservedTargetRecords=len(receipt["before"]),
-                targetModel=embeddings["targetModel"], vectorSelfLookupCount=len(projected["records"]),
+                targetModel=embeddings["targetModel"], targetCollection=target_collection, vectorSelfLookupCount=len(projected["records"]),
                 vectorOwnerIsolationQueries=len(projected["records"]), completedAtUtc=dt.datetime.now(dt.timezone.utc).isoformat())
             private_json(receipt_file, receipt, replace=True)
             return {k: receipt[k] for k in ("status", "activeRecords", "importedHistoryRows", "importedMessageRows", "targetTotalRecords", "preservedTargetRecords", "archivedHistoryRows", "archivedMessageRows")}
@@ -593,17 +616,25 @@ def validate_preservation_plan(manifest):
     require(isinstance(manifest, dict) and manifest.get("format") == FORMAT
             and manifest.get("kind") == "legacy-stores-byte-preservation"
             and manifest.get("status") == "COMPLETE", "Expected a completed source byte snapshot")
+    profile = manifest.get("profile", PRESERVATION_LEGACY_PROFILE)
+    require(profile in (PRESERVATION_LEGACY_PROFILE, PRESERVATION_COMBINED_PROFILE, PRESERVATION_KAFKA_PROFILE),
+            "Unknown source preservation profile")
+    kafka_profile = profile == PRESERVATION_KAFKA_PROFILE
+    logical_limit = PRESERVATION_KAFKA_MAX_LOGICAL_BYTES if kafka_profile else PRESERVATION_MAX_BYTES
     required = {"format", "kind", "status", "inventorySha256", "files", "directories", "originalBytes", "excludedFiles", "permissionPolicy"}
+    if kafka_profile:
+        required.add("archiveEncoding")
+        require(manifest.get("archiveEncoding") == "TAR_GZIP", "Kafka preservation requires explicit TAR_GZIP encoding")
     require(required <= set(manifest) <= required | {"archiveSha256", "profile", "memberInventorySha256"}
             and re.fullmatch(r"[a-f0-9]{64}", manifest.get("inventorySha256", "")),
             "Unexpected preservation metadata or missing inventory binding")
-    profile = manifest.get("profile", PRESERVATION_LEGACY_PROFILE)
-    require(profile in (PRESERVATION_LEGACY_PROFILE, PRESERVATION_COMBINED_PROFILE), "Unknown source preservation profile")
     files = manifest.get("files")
     require(isinstance(files, list) and 0 < len(files) <= PRESERVATION_MAX_FILES, "Preservation member count exceeds its bound")
     labels = {"personal_chroma", "legacy_history", "rag_chroma"}
-    if profile == PRESERVATION_COMBINED_PROFILE:
+    if profile in (PRESERVATION_COMBINED_PROFILE, PRESERVATION_KAFKA_PROFILE):
         labels.add("windows_mcp")
+    if kafka_profile:
+        labels.add("legacy_kafka")
     def permissions(value):
         fields = {"mode", "uid", "gid", "atimeNs", "mtimeNs"}
         require(isinstance(value, dict) and fields <= set(value) <= fields | {"windowsSddl"}
@@ -620,7 +651,7 @@ def validate_preservation_plan(manifest):
         require(len(name) <= 512 and name not in seen and "/" in name, "Repeated or oversized preservation member")
         seen.add(name)
         label, relative = name.split("/", 1)
-        require(label in labels and type(row.get("bytes")) is int and 0 <= row["bytes"] <= PRESERVATION_MAX_BYTES
+        require(label in labels and type(row.get("bytes")) is int and 0 <= row["bytes"] <= logical_limit
                 and isinstance(row.get("sha256"), str) and re.fullmatch(r"[a-f0-9]{64}", row["sha256"]),
                 "Member escaped the closed preservation roots or byte budget")
         raw_source = row.get("sourcePath")
@@ -630,7 +661,7 @@ def validate_preservation_plan(manifest):
         expected = PRESERVATION_SOURCE_ROOTS[label] + "/" + relative
         require(normalized.casefold() == expected.casefold(), "Preservation source is outside the reviewed original roots")
         groups[label].append(row); total += row["bytes"]
-    require(total == manifest.get("originalBytes") and total <= PRESERVATION_MAX_BYTES,
+    require(total == manifest.get("originalBytes") and total <= logical_limit,
             "Preservation total differs or exceeds the original-byte bound")
     directories = manifest["directories"]
     require(isinstance(directories, list) and len(directories) <= PRESERVATION_MAX_FILES
@@ -648,18 +679,27 @@ def validate_preservation_plan(manifest):
                     for row in excluded), "Only the named unarchived global provider configuration may be described")
     require(manifest["permissionPolicy"] == "original modes/ownership/NTFS SDDL retained privately; ECS access stays owner-only",
             "Unexpected preservation permissions policy")
-    business = [row for label, rows in groups.items() if label != "windows_mcp" for row in rows]
+    business = [row for label in ("personal_chroma", "legacy_history", "rag_chroma") for row in groups[label]]
     require(preservation_member_inventory(business) == LEGACY_MEMBER_INVENTORY_SHA256,
             "Original legacy store names, bytes or hashes changed")
     windows = groups.get("windows_mcp", [])
-    if profile == PRESERVATION_COMBINED_PROFILE:
+    if profile in (PRESERVATION_COMBINED_PROFILE, PRESERVATION_KAFKA_PROFILE):
         require(preservation_member_inventory(windows) == WINDOWS_MCP_MEMBER_INVENTORY_SHA256,
                 "Windows MCP members differ from the independently reviewed frozen inventory")
+    kafka = groups.get("legacy_kafka", [])
+    if kafka_profile:
+        require(len(kafka) == LEGACY_KAFKA_FILE_COUNT
+                and preservation_member_inventory(kafka) == LEGACY_KAFKA_MEMBER_INVENTORY_SHA256,
+                "Kafka members differ from the complete independently frozen inventory")
     require("memberInventorySha256" not in manifest or manifest["memberInventorySha256"] == preservation_member_inventory(files),
             "Preservation member inventory digest changed")
     return {"profile": profile, "files": len(files), "bytes": total,
             "memberInventorySha256": preservation_member_inventory(files),
-            "businessFiles": len(business), "windowsMcpFiles": len(windows)}
+            "businessFiles": len(business), "windowsMcpFiles": len(windows),
+            "businessBytes": sum(row["bytes"] for row in business), "windowsMcpBytes": sum(row["bytes"] for row in windows),
+            "kafkaFiles": len(kafka), "kafkaBytes": sum(row["bytes"] for row in kafka),
+            "archiveEncoding": "TAR_GZIP" if kafka_profile else "TAR",
+            "logicalByteLimit": logical_limit, "transportByteLimit": PRESERVATION_MAX_BYTES}
 
 
 def preserve_sources(inventory, roots, destination):
@@ -669,6 +709,8 @@ def preserve_sources(inventory, roots, destination):
     The resulting private directory is the unit to transfer and retain on ECS.
     """
     require(set(roots) == set(inventory.get("sources", {})), "Every inventory source needs an explicit root")
+    kafka_profile = inventory.get("profile") == PRESERVATION_KAFKA_PROFILE
+    logical_limit = PRESERVATION_KAFKA_MAX_LOGICAL_BYTES if kafka_profile else PRESERVATION_MAX_BYTES
     output = safe_path(destination, exists=False)
     require(not output.exists(), "Preservation output must be new")
     planned, directories, excluded = [], [], []
@@ -678,7 +720,8 @@ def preserve_sources(inventory, roots, destination):
         root = safe_path(roots[label])
         require(output != root and root not in output.parents, "Output cannot be inside a source")
         actual = tree_files(root, maximum=PRESERVATION_MAX_FILES
-                            if inventory.get("profile") == PRESERVATION_COMBINED_PROFILE and label == "windows_mcp" else 4096)
+                            if inventory.get("profile") in (PRESERVATION_COMBINED_PROFILE, PRESERVATION_KAFKA_PROFILE)
+                            and label == "windows_mcp" else 4096)
         expected = {relative_name(row["relativePath"]): row for row in source["files"]}
         extras = set(actual) - set(expected)
         # A global Mem0 directory can include credentials unrelated to this DB.
@@ -701,7 +744,7 @@ def preserve_sources(inventory, roots, destination):
             planned.append({"path": label + "/" + name, "sourcePath": str(path), "bytes": expected_file["bytes"],
                             "sha256": expected_file["sha256"], "permissions": original})
             total += expected_file["bytes"]
-    require(total <= PRESERVATION_MAX_BYTES and len(planned) <= PRESERVATION_MAX_FILES, "Preservation byte/member budget exceeded")
+    require(total <= logical_limit and len(planned) <= PRESERVATION_MAX_FILES, "Preservation byte/member budget exceeded")
     output.mkdir(mode=0o700)
     archive = output / "originals.tar"
     manifest = {"format": FORMAT, "kind": "legacy-stores-byte-preservation", "inventorySha256": sha(canonical(inventory)),
@@ -709,12 +752,15 @@ def preserve_sources(inventory, roots, destination):
                 "permissionPolicy": "original modes/ownership/NTFS SDDL retained privately; ECS access stays owner-only"}
     if "profile" in inventory:
         manifest.update(profile=inventory["profile"], memberInventorySha256=preservation_member_inventory(planned))
+        if kafka_profile:
+            manifest["archiveEncoding"] = "TAR_GZIP"
         validate_preservation_plan({**manifest, "status": "COMPLETE"})
     require(len(canonical(manifest)) <= PRESERVATION_MAX_MANIFEST, "Preservation manifest exceeds its private metadata bound")
     # A partial archive is never labelled COMPLETE and is retained for inspection.
     private_json(output / "snapshot.json", {**manifest, "status": "PREPARED"})
     with os.fdopen(os.open(archive, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600), "wb") as stream:
-        with tarfile.open(fileobj=stream, mode="w", format=tarfile.PAX_FORMAT, dereference=True) as tar:
+        with tarfile.open(fileobj=stream, mode="w:gz" if kafka_profile else "w", format=tarfile.PAX_FORMAT,
+                          dereference=True, **({"compresslevel": 6} if kafka_profile else {})) as tar:
             for entry in planned:
                 path = Path(entry["sourcePath"])
                 info = tar.gettarinfo(str(path), arcname=entry["path"])
@@ -742,21 +788,59 @@ def verify_preservation(snapshot, restore=None):
             "Preservation archive/member budget exceeded")
     if "profile" in manifest:
         validate_preservation_plan(manifest)
+    kafka_profile = manifest.get("profile") == PRESERVATION_KAFKA_PROFILE
+    logical_limit = PRESERVATION_KAFKA_MAX_LOGICAL_BYTES if kafka_profile else PRESERVATION_MAX_BYTES
+    require(kafka_profile or "archiveEncoding" not in manifest, "Only the closed Kafka profile admits encoded archives")
     require(file_sha(archive) == manifest.get("archiveSha256"), "Preservation archive digest mismatch")
+    with archive.open("rb") as stream:
+        require((stream.read(2) == b"\x1f\x8b") == kafka_profile, "Archive encoding differs from its closed preservation profile")
     expected = {relative_name(row["path"]): row for row in manifest["files"]}
     require(len(expected) == len(manifest["files"]), "Duplicate preservation member")
+    require(all(type(row.get("bytes")) is int and row["bytes"] >= 0 for row in expected.values())
+            and sum(row["bytes"] for row in expected.values()) == manifest.get("originalBytes")
+            and sum(row["bytes"] for row in expected.values()) <= logical_limit,
+            "Preservation logical byte budget exceeded")
     output = safe_path(restore, exists=False) if restore is not None else None
     if output is not None:
         require(not output.exists() and output != root and root not in output.parents, "Restore requires a new, separate directory")
         output.mkdir(parents=True, mode=0o700)
-    seen = set()
-    with tarfile.open(archive, mode="r:") as tar:
+    seen, copied_total = set(), 0
+    zero_block = bytes(1024 * 1024)
+    tar_options = {}
+    if kafka_profile:
+        expanded_limit = logical_limit + PRESERVATION_MAX_FILES * 8192
+
+        class BoundedPreservationTarInfo(tarfile.TarInfo):
+            def _proc_gnusparse_00(self, *args):
+                raise MigrationError("Compressed preservation cannot contain foreign GNU sparse metadata")
+
+            _proc_gnusparse_01 = _proc_gnusparse_00
+            _proc_gnusparse_10 = _proc_gnusparse_00
+
+            @classmethod
+            def frombuf(cls, buf, encoding, errors):
+                info = super().frombuf(buf, encoding, errors)
+                require(info.type in (tarfile.REGTYPE, tarfile.AREGTYPE, tarfile.XHDTYPE, tarfile.XGLTYPE)
+                        and 0 <= info.size <= (logical_limit if info.isfile() else 65536),
+                        "Compressed preservation header exceeds its closed metadata bound")
+                return info
+
+            @classmethod
+            def fromtarfile(cls, archive):
+                require(archive.fileobj.tell() <= expanded_limit, "Compressed preservation expanded byte bound exceeded")
+                info = super().fromtarfile(archive)
+                require(info.offset_data + info.size <= expanded_limit, "Compressed preservation expanded byte bound exceeded")
+                return info
+
+        tar_options["tarinfo"] = BoundedPreservationTarInfo
+    with tarfile.open(archive, mode="r:gz" if kafka_profile else "r:", **tar_options) as tar:
         for member in tar:
             name = relative_name(member.name)
             require(member.isfile() and name in expected and name not in seen, "Unexpected archive member or link")
             row = expected[name]
             require(member.size == row["bytes"], "Archive member size mismatch")
             digest = hashlib.sha256()
+            copied = 0
             with contextlib.closing(tar.extractfile(member)) as content:
                 target = output / name if output is not None else None
                 if target is not None:
@@ -764,10 +848,20 @@ def verify_preservation(snapshot, restore=None):
                 with contextlib.ExitStack() as stack:
                     stream = stack.enter_context(os.fdopen(os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600), "wb")) if target else None
                     for chunk in iter(lambda: content.read(1024 * 1024), b""):
+                        copied += len(chunk); copied_total += len(chunk)
+                        require(copied <= row["bytes"] and copied_total <= logical_limit, "Archive expanded beyond its logical byte budget")
                         digest.update(chunk)
                         if stream:
-                            stream.write(chunk)
-            require(digest.hexdigest() == row["sha256"], "Archive member digest mismatch")
+                            if chunk == zero_block[:len(chunk)]:
+                                stream.seek(len(chunk), os.SEEK_CUR)
+                            else:
+                                stream.write(chunk)
+                    if stream:
+                        # Seeking a final all-zero chunk does not extend a file.
+                        stream.truncate(row["bytes"])
+                        stream.flush()
+                        os.fsync(stream.fileno())
+            require(copied == row["bytes"] and digest.hexdigest() == row["sha256"], "Archive member digest mismatch")
             if target is not None:
                 # NTFS/foreign ownership is retained in the manifest, not granted to Linux users.
                 os.utime(target, ns=(row["permissions"]["atimeNs"], row["permissions"]["mtimeNs"]))

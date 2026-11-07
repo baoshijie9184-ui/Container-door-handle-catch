@@ -1,6 +1,5 @@
 import json
 import logging
-import os
 import subprocess
 import sys
 import threading
@@ -319,6 +318,7 @@ def test_native_mem0_and_real_chroma_confirm_results_and_swallowed_provider_fail
 def test_startup_initializes_private_receipt_subdirectory_and_shutdown_releases_fence(tmp_path,monkeypatch):
     import asyncio
     from mem0 import Memory as NativeMemory
+    monkeypatch.setenv('EMBEDDING_PROFILE', 'explicit-openai-compatible')
     class Client:
         def with_options(self,**kwargs):return self
     memory=SimpleNamespace(llm=SimpleNamespace(client=Client()),embedding_model=SimpleNamespace(client=Client()),vector_store=SimpleNamespace())

@@ -22,9 +22,13 @@ from pydantic import BaseModel, Field, field_validator
 try:
     from .write_receipts import MemoryWriter, ReceiptError, BRIDGE_PROTOCOL
     from .lifecycle import GovernedVectorStore, memory_digest
+    from .embedding_config import (embedder_config, configure_runtime as configure_embedding_runtime,
+                                   profile as embedding_profile, FREE_PROFILE, COLLECTION as BGE_COLLECTION)
 except ImportError:  # Docker / start_server.py load main as a top-level module.
     from write_receipts import MemoryWriter, ReceiptError, BRIDGE_PROTOCOL
     from lifecycle import GovernedVectorStore, memory_digest
+    from embedding_config import (embedder_config, configure_runtime as configure_embedding_runtime,
+                                  profile as embedding_profile, FREE_PROFILE, COLLECTION as BGE_COLLECTION)
 
 # Runtime settings are injected by the ECS deployment. Never load a workstation .env.
 
@@ -102,7 +106,7 @@ def memory_collection_name(settings=None):
     settings = os.environ if settings is None else settings
     keys = ("DOORHANDLE_RUNTIME_ACCEPTANCE", "DOORHANDLE_RUNTIME_PROJECT", "MEM0_RUNTIME_TEST_COLLECTION")
     if not any(key in settings for key in keys):
-        return "doorhandle_memories"
+        return BGE_COLLECTION if embedding_profile(settings) == FREE_PROFILE else "doorhandle_memories"
     switch, project, collection = (settings.get(key) for key in keys)
     match = re.fullmatch(r"doorhandle-rehearsal-([a-f0-9]{12})", project) if isinstance(project, str) else None
     if switch != "true" or match is None or collection != "doorhandle_runtime_test_" + match[1]:
@@ -116,9 +120,7 @@ def get_memory_config():
     llm_api_key = required_env("DASHSCOPE_API_KEY")
     llm_base_url = os.getenv("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
     llm_model = os.getenv("MEM0_LLM_MODEL") or os.getenv("DASHSCOPE_MODEL", "kimi-k3")
-    embedding_api_key = required_env("EMBEDDING_API_KEY")
-    embedding_base_url = os.getenv("EMBEDDING_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
-    embedding_model = os.getenv("EMBEDDING_MODEL", "qwen3.7-text-embedding-flash")
+    embedding = embedder_config()
 
     config = {
         "llm": {
@@ -131,11 +133,7 @@ def get_memory_config():
         },
         "embedder": {
             "provider": "openai",
-            "config": {
-                "model": embedding_model,
-                "api_key": embedding_api_key,
-                "openai_base_url": embedding_base_url
-            }
+            "config": embedding
         },
         "vector_store": {
             "provider": "chroma",
@@ -208,6 +206,7 @@ async def lifespan(app: FastAPI):
         config = get_memory_config()
         memory_instance = Memory.from_config(config)
         configure_provider_timeouts(memory_instance)
+        configure_embedding_runtime(memory_instance)
         cleanup_interval = bounded_setting("MEM0_CLEANUP_INTERVAL_SECONDS", 60, 10, 3600)
         memory_instance.vector_store = GovernedVectorStore(memory_instance.vector_store, writer.lifecycle)
         if os.getenv("MODEL_CONFIG_ENABLED", "false").lower() == "true":

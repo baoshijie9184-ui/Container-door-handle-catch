@@ -251,6 +251,7 @@ writer.schedule_cleanup();writer.future.result()
 def test_real_lifespan_scheduler_only_removes_consented_memories_when_enabled(tmp_path, monkeypatch, enabled):
     import asyncio
     from mem0 import Memory
+    monkeypatch.setenv('EMBEDDING_PROFILE', 'explicit-openai-compatible')
     _, fake, _ = setup(monkeypatch)
     class Client:
         def with_options(self,**kwargs):return self

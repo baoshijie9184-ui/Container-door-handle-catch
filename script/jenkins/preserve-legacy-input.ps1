@@ -57,6 +57,9 @@ foreach ($name in @('snapshot.json', 'originals.tar')) {
 Require-Preservation ($files['snapshot.json'].bytes -le 16MB) 'Preservation manifest exceeds its metadata budget.'
 $snapshot = Get-Content -LiteralPath (Join-Path $local 'snapshot.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 Require-Preservation ($snapshot.format -eq 1 -and $snapshot.kind -eq 'legacy-stores-byte-preservation' -and $snapshot.status -eq 'COMPLETE' -and $snapshot.archiveSha256 -eq $files['originals.tar'].sha256 -and $snapshot.inventorySha256 -match '^[a-f0-9]{64}$') 'Inputs are not a completed byte-only source preservation snapshot.'
+$kafkaProfile = 'legacy-stores-with-windows-mcp-and-kafka-v1'
+$hasKafka = $snapshot.PSObject.Properties['profile'] -and $snapshot.profile -ceq $kafkaProfile
+$logicalLimit = if ($hasKafka) { 2GB } else { 512MB }
 $expectedFiles = @($snapshot.files).Count
 Require-Preservation ($expectedFiles -gt 0 -and $expectedFiles -le 8192) 'Preservation member count exceeds its closed profile budget.'
 $total = [long]0
@@ -65,7 +68,7 @@ foreach ($file in $snapshot.files) {
     Require-Preservation (($file.bytes -is [long] -or $file.bytes -is [int]) -and $file.bytes -ge 0 -and $file.bytes -le 512MB -and $file.sha256 -match '^[a-f0-9]{64}$' -and $file.path -is [string] -and $file.path -notmatch '(^/|\\|:|(^|/)\.\.?(/|$)|//)' -and $seen.Add($file.path)) 'Invalid or repeated source byte inventory member.'
     $total += [long]$file.bytes
 }
-Require-Preservation ($total -eq $snapshot.originalBytes -and $total -le 512MB) 'Source byte inventory total differs.'
+Require-Preservation ($total -eq $snapshot.originalBytes -and $total -le $logicalLimit) 'Source byte inventory total differs or exceeds its profile logical budget.'
 
 $workspace = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '../..')).Path
 $artifact = Join-Path $workspace 'artifacts/legacy-source-preservation.json'
@@ -98,7 +101,8 @@ print(json.dumps({'sha256':hashlib.sha256(raw).hexdigest(),'plan':plan}))
 '@
 $scriptBinding = (Invoke-PreservationCommand $python @('-I', '-B', '-c', $archiveReader, $archive, $Commit, $local) | Select-Object -Last 1) | ConvertFrom-Json
 Require-Preservation ($scriptBinding.sha256 -match '^[a-f0-9]{64}$') 'Fixed archive migration helper is unavailable.'
-Require-Preservation ($scriptBinding.plan.profile -cin @('legacy-stores-v1', 'legacy-stores-with-windows-mcp-v1') -and $scriptBinding.plan.files -eq $expectedFiles -and $scriptBinding.plan.bytes -eq $total -and $scriptBinding.plan.memberInventorySha256 -match '^[a-f0-9]{64}$') 'Source member paths, roots and actual byte hashes do not match a reviewed preservation profile.'
+Require-Preservation ($scriptBinding.plan.profile -cin @('legacy-stores-v1', 'legacy-stores-with-windows-mcp-v1', $kafkaProfile) -and $scriptBinding.plan.files -eq $expectedFiles -and $scriptBinding.plan.bytes -eq $total -and $scriptBinding.plan.memberInventorySha256 -match '^[a-f0-9]{64}$' -and $scriptBinding.plan.logicalByteLimit -eq $logicalLimit -and $scriptBinding.plan.transportByteLimit -eq 512MB) 'Source member paths, roots and actual byte hashes do not match a reviewed preservation profile.'
+Require-Preservation (($hasKafka -and $scriptBinding.plan.archiveEncoding -ceq 'TAR_GZIP' -and $scriptBinding.plan.kafkaFiles -eq 309 -and $scriptBinding.plan.kafkaBytes -eq 1184990233) -or (-not $hasKafka -and $scriptBinding.plan.archiveEncoding -ceq 'TAR' -and $scriptBinding.plan.kafkaFiles -eq 0 -and $scriptBinding.plan.kafkaBytes -eq 0)) 'Kafka preservation requires its complete frozen inventory and explicit compressed encoding.'
 $context = @{ root = $RemoteRoot; tag = $Tag; commit = $Commit; sourceSha256 = $SourceSha256;
     scriptSha256 = $scriptBinding.sha256; instanceId = $instance; machineId = $machine;
     files = $files; expectedFiles = $expectedFiles; expectedBytes = $total;
@@ -107,7 +111,7 @@ $context = @{ root = $RemoteRoot; tag = $Tag; commit = $Commit; sourceSha256 = $
 # Send only this bounded controller as base64 code. Neither local paths nor
 # private manifest content enter a shell string or a public build report.
 $remoteProgram = @'
-import base64,hashlib,json,os,stat,subprocess,sys,tarfile
+import base64,hashlib,json,os,runpy,stat,subprocess,sys,tarfile
 from pathlib import Path
 from urllib.request import ProxyHandler,Request,build_opener
 def need(value):
@@ -168,7 +172,9 @@ try:
         need(report==expected)
         restored=restore/'restore-receipt.json'; regular(restored); need(json.loads(restored.read_text())==expected)
         need(json.loads((restore/'original-manifest.json').read_text())==json.loads((snapshot/'snapshot.json').read_text()))
-        public={**expected,'kind':'doorhandle-legacy-source-preservation','schemaVersion':1,'release':data['tag'],'commit':data['commit'],'sourceSha256':data['sourceSha256'],'scriptSha256':data['scriptSha256'],'identity':identity,'restoreReceiptSha256':digest(restored),'verificationReceiptSha256':digest(receipt),'archiveBytes':data['files']['originals.tar']['bytes'],'manifestBytes':data['files']['snapshot.json']['bytes']}
+        scope=runpy.run_path(str(helper),run_name='fixed_byte_preservation_public_plan')
+        plan=scope['validate_preservation_plan'](json.loads((restore/'original-manifest.json').read_text()))
+        public={**expected,'kind':'doorhandle-legacy-source-preservation','schemaVersion':1,'release':data['tag'],'commit':data['commit'],'sourceSha256':data['sourceSha256'],'scriptSha256':data['scriptSha256'],'identity':identity,'restoreReceiptSha256':digest(restored),'verificationReceiptSha256':digest(receipt),'archiveBytes':data['files']['originals.tar']['bytes'],'manifestBytes':data['files']['snapshot.json']['bytes'],'profile':plan['profile'],'archiveEncoding':plan['archiveEncoding'],'kafkaFiles':plan['kafkaFiles'],'kafkaBytes':plan['kafkaBytes'],'legacyKafkaReplay':'NOT_PERFORMED'}
         private(snapshot/'preservation-public.json',public)
         print(json.dumps(public,sort_keys=True))
 except BaseException as error:
@@ -193,6 +199,7 @@ foreach ($name in @('snapshot.json', 'originals.tar')) {
     Require-Preservation ((Get-Item -LiteralPath $path).Length -eq $files[$name].bytes -and (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -eq $files[$name].sha256) 'Local preservation input changed during transfer.'
 }
 $public = (Invoke-PreservationCommand 'ssh.exe' ($SshOptions + @('-p', $PortText, $Destination, "$baseCommand restore")) | Select-Object -Last 1) | ConvertFrom-Json
+Require-Preservation ($public.profile -ceq $scriptBinding.plan.profile -and $public.archiveEncoding -ceq $scriptBinding.plan.archiveEncoding -and $public.kafkaFiles -eq $scriptBinding.plan.kafkaFiles -and $public.kafkaBytes -eq $scriptBinding.plan.kafkaBytes -and $public.legacyKafkaReplay -ceq 'NOT_PERFORMED') 'ECS restoration did not attest the actual preserved Kafka inventory and encoding.'
 Require-Preservation ($public.status -eq 'RESTORED_VERIFIED' -and $public.files -eq $expectedFiles -and $public.bytes -eq $total -and $public.archiveSha256 -eq $files['originals.tar'].sha256 -and $public.snapshotManifestSha256 -eq $files['snapshot.json'].sha256 -and $public.commit -eq $Commit -and $public.sourceSha256 -eq $SourceSha256 -and $public.scriptSha256 -eq $scriptBinding.sha256 -and $public.identity.instanceId -eq $instance -and $public.identity.machineId -eq $machine -and $public.restoreReceiptSha256 -match '^[a-f0-9]{64}$' -and $public.verificationReceiptSha256 -eq $context.verificationReceiptSha256) 'ECS byte-preservation recovery evidence is incomplete or belongs to another build.'
 # Select public fields explicitly; never archive the private manifest or paths.
 $summary = @{ schemaVersion = 1; kind = 'doorhandle-legacy-source-preservation'; status = $public.status;
@@ -200,6 +207,7 @@ $summary = @{ schemaVersion = 1; kind = 'doorhandle-legacy-source-preservation';
     identity = @{ instanceId = $instance; machineId = $machine; executionLocation = 'ECS' };
     files = $expectedFiles; bytes = $total; archiveBytes = $files['originals.tar'].bytes; manifestBytes = $files['snapshot.json'].bytes;
     profile = $scriptBinding.plan.profile; memberInventorySha256 = $scriptBinding.plan.memberInventorySha256;
+    archiveEncoding = $public.archiveEncoding; kafkaFiles = $public.kafkaFiles; kafkaBytes = $public.kafkaBytes; legacyKafkaReplay = $public.legacyKafkaReplay;
     archiveSha256 = $files['originals.tar'].sha256; snapshotManifestSha256 = $files['snapshot.json'].sha256;
     restoreReceiptSha256 = $public.restoreReceiptSha256; verificationReceiptSha256 = $public.verificationReceiptSha256 }
 $stream = [IO.File]::Open($artifact, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)

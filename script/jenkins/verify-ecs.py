@@ -508,8 +508,9 @@ def admitted_tool_executables(manifest, expected_sha, identity):
         ('MAVEN_CMD', 'mvn'), ('PYTHON_EXE', 'python'), ('NODE_EXE', 'node'), ('NPM_CMD', 'npm'))}
     cache = runtime.registered_maven_cache(value)
     tools['MAVEN_REPOSITORY'] = cache['repository']
-    return tools, {'manifestSha256': actual_sha, 'images': value['images'],
-        'mavenDependencyCache': {key: cache[key] for key in ('key', 'inputsSha256', 'mavenImage')}}
+    # This is the immutable executor identity checked exactly by verify-remote.
+    # Shared dependency usage belongs to each command's tool evidence instead.
+    return tools, {'manifestSha256': actual_sha, 'images': value['images']}
 
 
 def owned_directory(path, parent):

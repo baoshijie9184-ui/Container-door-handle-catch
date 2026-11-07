@@ -16,9 +16,9 @@ def controlled():
     return dict(zip(KEYS, ("true", PROJECT, COLLECTION)))
 
 
-def test_production_default_remains_the_original_collection():
-    assert main.memory_collection_name({}) == "doorhandle_memories"
-    assert main.memory_collection_name({"UNRELATED_SETTING": "true"}) == "doorhandle_memories"
+def test_production_default_uses_the_new_model_specific_collection():
+    assert main.memory_collection_name({}) == "doorhandle_memories_bge_m3_v1"
+    assert main.memory_collection_name({"UNRELATED_SETTING": "true"}) == "doorhandle_memories_bge_m3_v1"
 
 
 def test_only_the_matching_controlled_project_can_select_its_independent_collection():
@@ -62,6 +62,7 @@ def builder_environment(monkeypatch, tmp_path):
     for key, value in {
         "DASHSCOPE_API_KEY": "fixture-not-real", "EMBEDDING_API_KEY": "fixture-not-real",
         "MEM0_LLM_MODEL": "fixture-llm", "EMBEDDING_MODEL": "fixture-embedding",
+        "EMBEDDING_PROFILE": "explicit-openai-compatible",
         "DASHSCOPE_BASE_URL": "https://llm-fixture.invalid/v1", "EMBEDDING_BASE_URL": "https://embed-fixture.invalid/v1",
         "MEM0_DATA_DIR": str(tmp_path / "candidate-memory"),
     }.items():

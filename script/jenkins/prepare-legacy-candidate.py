@@ -441,6 +441,9 @@ def run(args):
     restore = canonical(checkout / 'work/legacy-source-restore')
     legacy_receipt = read(restore / 'restore-receipt.json'); original = read(restore / 'original-manifest.json')
     plan = migration.validate_preservation_plan(original)
+    need(plan['profile'] == migration.PRESERVATION_KAFKA_PROFILE and plan['kafkaFiles'] == 309
+         and plan['kafkaBytes'] == 1184990233 and plan['archiveEncoding'] == 'TAR_GZIP',
+         'Complete runtime acceptance requires the independently preserved original Kafka log bytes')
     need(legacy_receipt.get('status') == 'RESTORED_VERIFIED' and legacy_receipt.get('files') == plan['files']
          and legacy_receipt.get('snapshotManifestSha256') == sha(original), 'Legacy source restore is not bound to its fixed snapshot')
     raw_snapshot = canonical(checkout / 'work/legacy-source-snapshot')
@@ -547,6 +550,8 @@ def run(args):
         'commit': args.commit, 'sourceSha256': args.source_sha256, 'identity': identity,
         'verificationReceiptSha256': digest(accepted_file), 'toolManifestSha256': tool_sha,
         'legacyRestoreReceiptSha256': context['legacyRestoreReceiptSha256'], 'snapshots': snapshots,
+        'legacySourceProfile': plan['profile'], 'legacyKafkaFiles': plan['kafkaFiles'], 'legacyKafkaBytes': plan['kafkaBytes'],
+        'legacyKafkaReplay': 'NOT_PERFORMED',
         'sourceAdmissions': source_admissions,
         'ragDataDirectory': str(work / 'rag/chroma'), 'mem0DataDirectory': str(work / 'mem0/data'),
         'ragPayloadFilesSha256': digest(work / 'rag-payload-files.json'), 'mem0PayloadFilesSha256': digest(work / 'mem0-payload-files.json'),
@@ -610,11 +615,21 @@ def admit_runtime(ctx):
     identity = {key: ctx.identity[key] for key in ('instanceId', 'machineId')}
     need(all(value.get(key) == entry for key, entry in {'version': 1, 'kind': 'doorhandle-legacy-candidate',
         'status': 'PREPARED', 'release': ctx.args.tag, 'commit': ctx.args.commit, 'sourceSha256': ctx.args.source_sha256,
+        'legacySourceProfile': 'legacy-stores-with-windows-mcp-and-kafka-v1',
+        'legacyKafkaFiles': 309, 'legacyKafkaBytes': 1184990233, 'legacyKafkaReplay': 'NOT_PERFORMED',
         'identity': identity, 'productionPromotionAllowed': False, 'modelCallsPerformed': False}.items()),
         'Legacy candidate belongs to another source, attempt or ECS')
     need(value['verificationReceiptSha256'] == digest(ctx.checkout.parent / 'verification-receipt.json')
          and value['legacyRestoreReceiptSha256'] == digest(ctx.checkout / 'work/legacy-source-restore/restore-receipt.json'),
          'Candidate source verification or original restore evidence changed')
+    migration = module('runtime_preservation_profile', ROOT / 'script/memory/migrate_legacy_stores.py')
+    original_file = ctx.checkout / 'work/legacy-source-restore/original-manifest.json'
+    receipt = read(ctx.checkout / 'work/legacy-source-restore/restore-receipt.json')
+    plan = migration.validate_preservation_plan(read(original_file))
+    need(plan['profile'] == value['legacySourceProfile'] and plan['kafkaFiles'] == value['legacyKafkaFiles']
+         and plan['kafkaBytes'] == value['legacyKafkaBytes'] and plan['archiveEncoding'] == 'TAR_GZIP'
+         and digest(original_file) == receipt['snapshotManifestSha256'],
+         'Runtime lost the complete original Kafka byte-preservation evidence')
     files = {'rag-preservation-manifest.json': 'ragManifestSha256', 'rag-merge-receipt.json': 'mergeReceiptSha256',
              'cloud-chroma-after.json': 'cloudChromaAfterSha256', 'mem0-before.json': 'mem0BeforeSha256',
              'legacy-mem0-read-verification.json': 'legacyMem0ReadVerificationSha256',

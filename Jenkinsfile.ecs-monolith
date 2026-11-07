@@ -17,7 +17,7 @@ pipeline {
     }
     triggers { pollSCM('H/5 * * * *') }
     parameters {
-        choice(name: 'ACTION', choices: ['verify', 'verify-runtime', 'verify-deploy', 'rehearse', 'rollback', 'compact-cutover'], description: 'verify-runtime在独立ECS栈验收实际应用；首次切库仍须完整数据库、运行及恢复证据')
+        choice(name: 'ACTION', choices: ['verify', 'verify-embedding', 'verify-runtime', 'verify-deploy', 'rehearse', 'rollback', 'compact-cutover'], description: 'verify-embedding独立验证免费向量模型；verify-runtime验收隔离应用；切库仍须完整证据')
         string(name: 'TRUSTED_COMMIT', defaultValue: '', trim: true, description: '可选 java-cloud 完整提交；留空时固定本次 SCM 检出的提交')
         choice(name: 'DOORHANDLE_CI_SCOPE', choices: ['source', 'mysql'], description: 'source 记录可选套件跳过；mysql 要求显式隔离夹具及所有选择用例实际执行')
         string(name: 'DOORHANDLE_CI_FIXTURE_MANIFEST', defaultValue: '', trim: true, description: '仅 mysql：本次远端 checkout/work 内预先准备的绝对私有清单路径；source 必须留空')
@@ -78,7 +78,7 @@ pipeline {
         stage('Configuration gate') {
             steps {
                 script {
-                    if (!(params.ACTION in ['verify', 'verify-runtime', 'verify-deploy', 'rehearse', 'rollback', 'compact-cutover'])) error('Unsupported pipeline action')
+                    if (!(params.ACTION in ['verify', 'verify-embedding', 'verify-runtime', 'verify-deploy', 'rehearse', 'rollback', 'compact-cutover'])) error('Unsupported pipeline action')
                     if (env.DOORHANDLE_ECS_INSTANCE_ID != 'i-2zeieuov2aum486jm1ek' || !(env.DOORHANDLE_ECS_MACHINE_ID ==~ /[a-f0-9]{32}/)) error('Configure the admitted ECS instance and machine identity on the control node')
                     env.DEPLOY_HOST = params.DEPLOY_HOST?.trim() ?: ''
                     if (!env.DEPLOY_HOST) {
@@ -91,6 +91,7 @@ pipeline {
                     env.DOORHANDLE_CI_FIXTURE_MANIFEST = params.DOORHANDLE_CI_FIXTURE_MANIFEST?.trim() ?: ''
                     env.DOORHANDLE_CI_AUTO_COMPACT_FIXTURES = params.DOORHANDLE_CI_AUTO_COMPACT_FIXTURES ? 'true' : 'false'
                     env.DOORHANDLE_CI_FIXTURE_SETTINGS = params.DOORHANDLE_CI_FIXTURE_SETTINGS?.trim() ?: ''
+                    if (params.ACTION == 'verify-embedding' && (params.DOORHANDLE_CI_SCOPE != 'source' || params.DOORHANDLE_CI_AUTO_COMPACT_FIXTURES || params.LEGACY_SOURCE_SNAPSHOT?.trim() || params.PRODUCTION_RELEASE_ENABLED)) error('Embedding verification is an independent source component check without legacy migration or production release')
                     if (params.DOORHANDLE_CI_SCOPE == 'source' && env.DOORHANDLE_CI_FIXTURE_MANIFEST) error('Source verification cannot accept a MySQL fixture manifest')
                     if (params.DOORHANDLE_CI_AUTO_COMPACT_FIXTURES) {
                         if (params.DOORHANDLE_CI_SCOPE != 'mysql' || env.DOORHANDLE_CI_FIXTURE_MANIFEST || !env.DOORHANDLE_CI_FIXTURE_SETTINGS) error('Automatic compact fixtures require mysql scope, private ECS settings and no conflicting manual manifest')
@@ -147,8 +148,20 @@ pipeline {
                 }
             }
         }
+        stage('Verify free embedding component on ECS') {
+            when { expression { params.ACTION == 'verify-embedding' } }
+            steps {
+                withCredentials([
+                    sshUserPrivateKey(credentialsId: 'doorhandle-ecs-ssh', keyFileVariable: 'DEPLOY_KEY', usernameVariable: 'DEPLOY_USER'),
+                    file(credentialsId: 'doorhandle-ecs-known-hosts', variable: 'DEPLOY_KNOWN_HOSTS'),
+                    string(credentialsId: 'doorhandle-siliconflow-embedding', variable: 'SILICONFLOW_EMBEDDING_API_KEY')
+                ]) {
+                    pwsh '& ./script/jenkins/pipeline.ps1 -Action VerifyEmbedding'
+                }
+            }
+        }
         stage('Verify on ECS over SSH') {
-            when { expression { params.ACTION != 'rollback' } }
+            when { expression { !(params.ACTION in ['rollback', 'verify-embedding']) } }
             steps {
                 withCredentials([
                     sshUserPrivateKey(credentialsId: 'doorhandle-ecs-ssh', keyFileVariable: 'DEPLOY_KEY', usernameVariable: 'DEPLOY_USER'),
@@ -284,7 +297,7 @@ pipeline {
                 }
                 if (env.CI_ARTIFACTS_READY == 'true') {
                     try {
-                        junit testResults: 'artifacts/ecs/**/TEST-*.xml,artifacts/ecs/**/python.xml', allowEmptyResults: env.CI_ECS_VERIFIED != 'true'
+                        junit testResults: 'artifacts/ecs/**/TEST-*.xml,artifacts/ecs/**/python.xml,artifacts/embedding/python.xml', allowEmptyResults: env.CI_ECS_VERIFIED != 'true'
                     } finally {
                         archiveArtifacts artifacts: 'artifacts/**/*.json,artifacts/**/*.xml,artifacts/**/*.log,artifacts/ecs/verification-evidence.tar.gz,artifacts/runtime-resources/resource-probes.jsonl,artifacts/application.jar,artifacts/source.tar.gz', allowEmptyArchive: currentBuild.currentResult != 'SUCCESS', fingerprint: true
                     }

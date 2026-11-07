@@ -14,6 +14,7 @@ def test_memory_gateway_changes_transport_and_preserves_frozen_model_credentials
     monkeypatch.setenv('EMBEDDING_API_KEY', 'fixture-embedding')
     monkeypatch.setenv('DASHSCOPE_BASE_URL', 'https://frozen-provider.example/compatible-mode/v1')
     monkeypatch.setenv('EMBEDDING_BASE_URL', 'https://embedding-fixture.example/v1')
+    monkeypatch.setenv('EMBEDDING_PROFILE', 'explicit-openai-compatible')
     frozen = {'provider': 'deepseek', 'base_url': 'https://frozen-deepseek.example/v1',
               'model': 'deepseek-flash', 'api_key': 'frozen-fixture-key'}
     before = dict(frozen)

@@ -1,4 +1,4 @@
-param([Parameter(Mandatory = $true)][ValidateSet('Preflight', 'Package', 'PrepareTools', 'CleanupTools', 'PrepareFixtures', 'CleanupFixtures', 'VerifyEcs', 'PreserveLegacy', 'PrepareLegacyCandidate', 'CleanupLegacyCandidate', 'VerifyRuntime', 'CleanupRuntime', 'Publish', 'Rehearse', 'CompactCutover')][string]$Action)
+param([Parameter(Mandatory = $true)][ValidateSet('Preflight', 'Package', 'PrepareTools', 'CleanupTools', 'PrepareFixtures', 'CleanupFixtures', 'VerifyEcs', 'VerifyEmbedding', 'PreserveLegacy', 'PrepareLegacyCandidate', 'CleanupLegacyCandidate', 'VerifyRuntime', 'CleanupRuntime', 'Publish', 'Rehearse', 'CompactCutover')][string]$Action)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 Set-Location -LiteralPath (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
@@ -157,6 +157,65 @@ if ($Action -eq 'Preflight') {
 
 $remoteInbox = "$remoteRoot/inbox/$tag"
 Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "umask 077; mkdir -p '$remoteInbox'"))
+if ($Action -eq 'VerifyEmbedding') {
+    if ($env:ACTION -ne 'verify-embedding' -or $env:CI_TOOLS_PREPARED -ne 'true' -or $env:DOORHANDLE_CI_SCOPE -ne 'source') { throw 'Embedding component verification requires its explicit source-only action and fixed tools.' }
+    $commit = Require-Value 'GIT_COMMIT' '^[a-f0-9]{40}$'
+    $instance = Require-Value 'DOORHANDLE_ECS_INSTANCE_ID' '^i-[a-z0-9]+$'
+    $machine = Require-Value 'DOORHANDLE_ECS_MACHINE_ID' '^[a-f0-9]{32}$'
+    $null = Require-Value 'SILICONFLOW_EMBEDDING_API_KEY' '^sk-[A-Za-z0-9_-]{20,}$'
+    $sha = (Get-FileHash -LiteralPath artifacts/source.tar.gz -Algorithm SHA256).Hash.ToLowerInvariant()
+    $registration = Get-Content -LiteralPath artifacts/ecs-tool-runtime.json -Raw | ConvertFrom-Json
+    $helper = Get-PinnedSourceFile 'script/jenkins/verify-free-embedding.py'
+    $helperSha = (Get-FileHash -LiteralPath $helper -Algorithm SHA256).Hash.ToLowerInvariant()
+    foreach ($item in @(@($helper, 'verify-free-embedding.py'), @((Get-PinnedSourceFile 'script/jenkins/verify-remote.py'), 'verify-remote.py'))) {
+        Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, $item[0], "${destination}:$remoteInbox/$($item[1])"))
+    }
+    $remoteKey = "$remoteInbox/embedding.key"
+    $reports = "$remoteInbox/embedding-verification/reports"
+    $runFailed = $false
+    try {
+        # Transfer the credential on SSH stdin. It is never a command argument,
+        # a local workspace file, a public receipt, or a Jenkins artifact.
+        $info = [System.Diagnostics.ProcessStartInfo]::new()
+        $info.FileName = (Get-Command ssh.exe -CommandType Application).Source
+        $info.UseShellExecute = $false
+        $info.CreateNoWindow = $true
+        $info.RedirectStandardInput = $true
+        $info.RedirectStandardOutput = $true
+        $info.RedirectStandardError = $true
+        foreach ($argument in ($sshOptions + @('-p', $portText, $destination, "umask 077; set -C; cat > '$remoteKey'"))) { $info.ArgumentList.Add($argument) }
+        $process = [System.Diagnostics.Process]::new(); $process.StartInfo = $info
+        try {
+            if (-not $process.Start()) { throw 'Cannot transfer the private embedding credential.' }
+            $errorRead = $process.StandardError.ReadToEndAsync()
+            $outputRead = $process.StandardOutput.ReadToEndAsync()
+            $process.StandardInput.Write($env:SILICONFLOW_EMBEDDING_API_KEY)
+            $process.StandardInput.Close()
+            if (-not $process.WaitForExit(30000)) { $process.Kill(); throw 'Embedding secret transfer timed out.' }
+            $null = $errorRead.GetAwaiter().GetResult(); $null = $outputRead.GetAwaiter().GetResult()
+            if ($process.ExitCode -ne 0) { throw 'Embedding secret transfer failed.' }
+        } finally { $process.Dispose() }
+        $arguments = "--root '$remoteRoot' --runtime '$runtime' --tag '$tag' --commit '$commit' --source-sha256 '$sha' --instance-id '$instance' --machine-id '$machine' --key '$remoteKey' --tool-manifest-sha256 '$($registration.manifestSha256)'"
+        try {
+            Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "test `"`$(sha256sum '$remoteInbox/verify-free-embedding.py' | cut -d ' ' -f 1)`" = '$helperSha' && python3 -B '$remoteInbox/verify-free-embedding.py' verify $arguments"))
+        } catch { $runFailed = $true }
+        New-Item -ItemType Directory -Path artifacts/embedding -Force | Out-Null
+        Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, "${destination}:$reports/receipt.json", 'artifacts/embedding/receipt.json'))
+        $proof = Get-Content -LiteralPath artifacts/embedding/receipt.json -Raw | ConvertFrom-Json
+        if ($proof.kind -ne 'doorhandle-free-embedding-verification' -or $proof.release -ne $tag -or $proof.commit -ne $commit -or $proof.sourceSha256 -ne $sha -or $proof.identity.instanceId -ne $instance -or $proof.identity.machineId -ne $machine -or $proof.identity.executionLocation -ne 'ECS' -or $proof.originalRuntimeChanged -ne $false -or $proof.productionReleaseAllowed -ne $false) { throw 'Embedding evidence belongs to another component, source or ECS.' }
+        foreach ($entry in $proof.reportFiles) {
+            if ($entry.path -notin @('python.xml', 'verification.log', 'live-result.json', 'recovery-result.json') -or $entry.sha256 -notmatch '^[a-f0-9]{64}$' -or $entry.bytes -lt 1 -or $entry.bytes -gt 33554432) { throw 'Embedding report escaped its public evidence catalog.' }
+            $target = 'artifacts/embedding/' + $entry.path
+            Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, "${destination}:$reports/$($entry.path)", $target))
+            if ((Get-Item -LiteralPath $target).Length -ne $entry.bytes -or (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLowerInvariant() -ne $entry.sha256) { throw 'Original embedding evidence changed during collection.' }
+        }
+        if ($runFailed -or $proof.status -ne 'PASS' -or $proof.ownedCleanup -ne 'STOPPED' -or $proof.componentTests -lt 86 -or $proof.live.model -cne 'BAAI/bge-m3' -or $proof.live.providerRequests -ne 3 -or $proof.live.dimensions -ne 1024 -or $proof.live.paidFallbacks -ne 0 -or $proof.recovery.status -ne 'PASS' -or $proof.recovery.providerRequests -ne 0) { throw 'Free embedding component acceptance did not pass with its complete original evidence.' }
+        if ($proof.nextReleaseEnvironment.status -ne 'PREPARED_FOR_NEXT_RELEASE' -or $proof.nextReleaseEnvironment.originalBackupRetained -ne $true -or $proof.nextReleaseEnvironment.liveActivationPerformed -ne $false) { throw 'Next release embedding configuration was not privately prepared and backed up.' }
+    } finally {
+        Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "rm -f -- '$remoteKey'; test ! -e '$remoteKey'"))
+    }
+    return
+}
 if ($Action -eq 'PreserveLegacy') {
     if ($env:CI_ECS_VERIFIED -ne 'true') { throw 'Original source preservation requires this fixed commit ECS source verification first.' }
     $commit = Require-Value 'GIT_COMMIT' '^[a-f0-9]{40}$'
@@ -181,6 +240,9 @@ if ($Action -in @('PrepareLegacyCandidate', 'CleanupLegacyCandidate')) {
         $preservation = Get-Content -LiteralPath artifacts/legacy-source-preservation.json -Raw | ConvertFrom-Json
         if ($preservation.status -ne 'RESTORED_VERIFIED' -or $preservation.release -ne $tag -or $preservation.commit -ne $commit -or $preservation.sourceSha256 -ne $sha -or $preservation.identity.instanceId -ne $instance -or $preservation.identity.machineId -ne $machine) {
             throw 'Native data candidate requires this exact build byte-preserved and independently recovered legacy inputs.'
+        }
+        if ($preservation.profile -cne 'legacy-stores-with-windows-mcp-and-kafka-v1' -or $preservation.kafkaFiles -ne 309 -or $preservation.kafkaBytes -ne 1184990233 -or $preservation.archiveEncoding -cne 'TAR_GZIP' -or $preservation.legacyKafkaReplay -cne 'NOT_PERFORMED') {
+            throw 'Complete runtime acceptance requires the full old Kafka log archive without replaying it.'
         }
         $output = Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "${helperGuard}python3 -B '$helper' run $arguments --dimension 256"))
         $prepared = ($output | Select-Object -Last 1) | ConvertFrom-Json
@@ -474,6 +536,7 @@ if ($Action -in @('CompactCutover', 'VerifyRuntime', 'CleanupRuntime')) {
     if ($runtimeProof.status -ne 'PASS' -or $runtimeProof.commit -ne $commit -or $runtimeProof.release -ne $tag -or $runtimeProof.sourceSha256 -ne $sha -or $runtimeProof.candidateBuildSha256 -ne $candidateSha -or $runtimeProof.acceptanceProfileSha256 -ne $verified.acceptanceProfileSha256 -or $runtimeProof.migrationReceiptSha256 -ne $wholeProof.migrationReceiptSha256 -or $runtimeProof.initialTargetSnapshotSha256 -ne $wholeProof.targetSnapshotSha256 -or $runtimeProof.identity.instanceId -ne $instance -or $runtimeProof.identity.machineId -ne $machine -or $runtimeProof.paidModelCalls -ne 0) { throw 'Application acceptance proof belongs to another build, dataset, image or execution host.' }
     $nativeCandidate = Get-Content -LiteralPath artifacts/legacy-candidate.json -Raw | ConvertFrom-Json
     $native = $runtimeProof.legacyData
+    if ($native.legacyKafkaFiles -ne 309 -or $native.legacyKafkaBytes -ne 1184990233 -or $native.legacyKafkaReplay -cne 'NOT_PERFORMED') { throw 'Runtime acceptance lacks the original Kafka archive preservation boundary.' }
     if ($native.candidateSha256 -ne $nativeCandidate.descriptorSha256 -or $native.ragManifestSha256 -ne $nativeCandidate.ragManifestSha256 -or $native.originalLocalMem0Records -ne 32 -or $native.eligibleLocalMem0Records -ne 30 -or $native.activatedLocalMem0Records -ne 0 -or $native.archivedLocalMem0Records -ne 2 -or $native.localMem0SemanticStatus -ne 'NOT_ACTIVATED_SEMANTIC_NOT_VERIFIED' -or $native.productionPromotionAllowed -ne $false) { throw 'Runtime did not retain the admitted legacy data and its explicit semantic activation boundary.' }
     $nativePhases = @('after-start', 'after-restart', 'after-volume-restore')
     if ((@($native.verifications.PSObject.Properties.Name | Sort-Object) -join ',') -cne (@($nativePhases | Sort-Object) -join ',')) { throw 'Native data startup, restart and new-volume recovery evidence is incomplete.' }

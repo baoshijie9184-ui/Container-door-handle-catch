@@ -743,6 +743,7 @@ with urllib.request.urlopen(r,timeout=10) as s: print(s.read().decode())
                 env.update(ALIYUN_OSS_ENDPOINT='http://oss-proxy:9000', ALIYUN_OSS_BASEPREFIX='runtime-acceptance/' + self.token)
             if name == 'mem0':
                 env.update(DASHSCOPE_API_KEY='runtime-fixture', EMBEDDING_API_KEY='runtime-fixture',
+                    EMBEDDING_PROFILE='explicit-openai-compatible',
                     DASHSCOPE_BASE_URL='http://model-fixture:8099/v1', EMBEDDING_BASE_URL='http://model-fixture:8099/v1',
                     MEM0_LLM_MODEL='runtime-scripted', MODEL_CONFIG_ENABLED='true',
                     MODEL_CONFIG_MASTER_KEY_FILE='/run/secrets/model_config_master_key', MEM0_LIFECYCLE_CLEANUP_ENABLED='false',
@@ -1637,6 +1638,8 @@ print(json.dumps({'deleted':len(keys),'keysSha256':hashlib.sha256(json.dumps(sor
                 'Complete native RAG startup/restart/new-volume recovery was not verified')
         proof = {**self.context(), 'status': 'PASS', 'project': self.project,
             'legacyData': {'candidateSha256': self.legacy_candidate_sha, 'ragManifestSha256': self.legacy_candidate['ragManifestSha256'],
+                'legacyKafkaFiles': self.legacy_candidate['legacyKafkaFiles'], 'legacyKafkaBytes': self.legacy_candidate['legacyKafkaBytes'],
+                'legacyKafkaReplay': self.legacy_candidate['legacyKafkaReplay'],
                 'originalLocalMem0Records': 32, 'eligibleLocalMem0Records': 30, 'activatedLocalMem0Records': 0, 'archivedLocalMem0Records': 2,
                 'localMem0SemanticStatus': 'NOT_ACTIVATED_SEMANTIC_NOT_VERIFIED', 'productionPromotionAllowed': False,
                 'verifications': self.owner.get('nativeVerifications', {}), 'materialization': self.owner['nativeMaterialization']},

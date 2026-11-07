@@ -86,6 +86,12 @@ public final class CompactH2Functions {
 
     private static String adaptPlain(String sql, DdlContext context) {
         String adapted = sql.replaceAll("(?i)\\bAS\\s+JSON\\s*\\)", "AS VARCHAR)")
+                // H2 has no UNSIGNED cast target. DECIMAL(20,0) represents
+                // every valid U64 value without narrowing through signed long.
+                .replaceAll("(?i)\\bAS\\s+UNSIGNED(?:\\s+INTEGER)?\\s*\\)", "AS DECIMAL(20,0))")
+                // Only computed projection storage changes; ordinary unsigned
+                // primary keys and AUTO_INCREMENT declarations remain intact.
+                .replaceAll("(?i)\\bBIGINT\\s+UNSIGNED(?=\\s+GENERATED\\s+ALWAYS\\s+AS\\b)", "DECIMAL(20,0)")
                 .replaceAll("(?i)\\b([a-z_][a-z0-9_]*)\\s+JSON\\b", "$1 LONGTEXT")
                 .replaceAll("(?i)\\bBINARY\\s+", "")
                 // Generated expressions remain real H2 generated columns.

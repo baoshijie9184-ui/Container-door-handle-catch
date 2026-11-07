@@ -1109,6 +1109,24 @@
         "allowedSkippedTests": []
       },
       {
+        "module": "tests_python.test_legacy_bge_migration",
+        "minimumTests": 7,
+        "source": "tests_python/test_legacy_bge_migration.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_free_embedding_pipeline",
+        "minimumTests": 8,
+        "source": "tests_python/test_free_embedding_pipeline.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_memory_embedding",
+        "minimumTests": 28,
+        "source": "tests_python/test_memory_embedding.py",
+        "allowedSkippedTests": []
+      },
+      {
         "module": "tests_python.test_memory_governance",
         "minimumTests": 10,
         "source": "tests_python/test_memory_governance.py",
@@ -1182,7 +1200,7 @@
       },
       {
         "module": "tests_python.test_legacy_preservation_profiles",
-        "minimumTests": 11,
+        "minimumTests": 39,
         "source": "tests_python/test_legacy_preservation_profiles.py",
         "allowedSkippedTests": []
       },

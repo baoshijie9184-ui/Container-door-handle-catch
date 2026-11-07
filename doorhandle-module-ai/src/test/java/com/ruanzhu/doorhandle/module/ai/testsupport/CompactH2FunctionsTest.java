@@ -1,6 +1,7 @@
 package com.ruanzhu.doorhandle.module.ai.testsupport;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.math.BigDecimal;
 import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.AfterEach;
@@ -114,5 +115,54 @@ class CompactH2FunctionsTest {
                 .isInstanceOf(org.springframework.dao.DuplicateKeyException.class);
         assertThatThrownBy(() -> jdbc.update("INSERT INTO fixture_right(id,value_id) VALUES(2,10)"))
                 .isInstanceOf(org.springframework.dao.DuplicateKeyException.class);
+    }
+
+    @Test void unsignedGeneratedProjectionPreservesTheValidU64DomainAndItsChecks() {
+        // This fixture accepts the valid U64 business domain. It deliberately
+        // does not emulate MySQL's wrap/warning behavior for negative CASTs.
+        String ddl = CompactH2Functions.adaptDdl("""
+            CREATE TABLE fixture_u64 (
+              id INT PRIMARY KEY,
+              source_text VARCHAR(40) NOT NULL,
+              source_id BIGINT UNSIGNED GENERATED ALWAYS AS
+                (CAST(source_text AS UNSIGNED)) VIRTUAL,
+              CONSTRAINT ck_u64_text CHECK (REGEXP_LIKE(source_text,'^(0|[1-9][0-9]{0,19})$','c')),
+              CONSTRAINT ck_u64_range CHECK (source_id>=0 AND source_id<=18446744073709551615)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            """);
+        assertThat(ddl).contains("source_id DECIMAL(20,0) GENERATED ALWAYS AS", "CAST(source_text AS DECIMAL(20,0))",
+                "CONSTRAINT ck_u64_text CHECK", "CONSTRAINT ck_u64_range CHECK");
+        jdbc.execute(ddl);
+        String[] valid = {"0", "9223372036854775808", "18446744073709551615"};
+        for (int i = 0; i < valid.length; i++) {
+            jdbc.update("INSERT INTO fixture_u64(id,source_text) VALUES(?,?)", i, valid[i]);
+            assertThat(jdbc.queryForObject("SELECT source_id FROM fixture_u64 WHERE id=?", BigDecimal.class, i))
+                    .isEqualByComparingTo(new BigDecimal(valid[i]));
+        }
+        for (String invalid : new String[]{"-1", "18446744073709551616", "1.5", "not-a-number"})
+            assertThatThrownBy(() -> jdbc.update("INSERT INTO fixture_u64(id,source_text) VALUES(99,?)", invalid))
+                    .as(invalid).isInstanceOf(org.springframework.dao.DataAccessException.class);
+        assertThatThrownBy(() -> jdbc.update("UPDATE fixture_u64 SET source_id=1 WHERE id=0"))
+                .isInstanceOf(org.springframework.dao.DataAccessException.class);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM fixture_u64", Integer.class)).isEqualTo(3);
+    }
+
+    @Test void unsignedAdaptationLeavesLiteralsCommentsAndOrdinaryIdentityDeclarationsUnchanged() {
+        String source = """
+            -- CAST(0 AS UNSIGNED) is comment data, not executable syntax
+            CREATE TABLE fixture_u64_syntax (
+              id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+              source_text VARCHAR(40),
+              literal_text VARCHAR(200) DEFAULT ' AS UNSIGNED) BIGINT UNSIGNED GENERATED ALWAYS AS ',
+              generated_id BIGINT UNSIGNED GENERATED ALWAYS AS (CAST(source_text AS UNSIGNED INTEGER)) VIRTUAL
+            );
+            /* AS UNSIGNED) BIGINT UNSIGNED GENERATED ALWAYS AS */
+            """;
+        String adapted = CompactH2Functions.adaptDdl(source);
+        assertThat(adapted).contains("id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY",
+                "generated_id DECIMAL(20,0) GENERATED ALWAYS AS (CAST(source_text AS DECIMAL(20,0)))",
+                "DEFAULT ' AS UNSIGNED) BIGINT UNSIGNED GENERATED ALWAYS AS '",
+                "-- CAST(0 AS UNSIGNED) is comment data, not executable syntax",
+                "/* AS UNSIGNED) BIGINT UNSIGNED GENERATED ALWAYS AS */");
     }
 }
