@@ -1094,7 +1094,7 @@
       },
       {
         "module": "tests_python.test_jenkins_ecs_tool_runtime",
-        "minimumTests": 29,
+        "minimumTests": 55,
         "source": "tests_python/test_jenkins_ecs_tool_runtime.py",
         "allowedSkippedTests": []
       },
@@ -1106,7 +1106,7 @@
       },
       {
         "module": "tests_python.test_jenkins_suite_evidence",
-        "minimumTests": 16,
+        "minimumTests": 21,
         "source": "tests_python/test_jenkins_suite_evidence.py",
         "allowedSkippedTests": []
       },

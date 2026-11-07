@@ -2,9 +2,12 @@
 import copy
 import hashlib
 import importlib.util
+import io
+import json
 import os
 from pathlib import Path
 import stat
+import tarfile
 from types import SimpleNamespace
 
 import pytest
@@ -21,6 +24,7 @@ def module(name, file):
 
 remote = module('serial_suite_remote_evidence', 'verify-remote.py')
 inner = module('serial_suite_ecs_evidence', 'verify-ecs.py')
+cleanup = module('serial_suite_original_custody', 'cleanup-ecs-builds.py')
 
 
 def test_old_owned_staging_parent_is_private_without_reclaiming_an_attempt(tmp_path):
@@ -137,3 +141,70 @@ def test_tap_requires_real_complete_test_counts(tmp_path):
     with pytest.raises(ValueError, match='empty or inconsistent'):inner.node_tap_counts(path)
     path.write_text('build finished successfully\n')
     with pytest.raises(ValueError, match='one complete final testcase tally'):inner.node_tap_counts(path)
+
+
+def collector_archive(root, representation='crlf', mutation=None):
+    archive = root / 'verification-evidence.tar.gz'
+    output = root / 'artifacts/ecs/evidence'
+    args = SimpleNamespace(archive=str(archive), output=str(output), tag='ci-90-' + 'a' * 12,
+        attempt='b' * 32, commit='a' * 40, source_sha256='c' * 64, scope='source',
+        instance_id='i-fixture123', machine_id='d' * 32)
+    report_name = 'reports/java/module/surefire-reports/TEST-org.example.OneTest.xml'
+    report_bytes = b'<?xml version="1.0"?>\r\n<testsuite><testcase name="original"/></testsuite>\r\n'
+    record = {'schema': 1, 'kind': 'doorhandle-ecs-ci', 'release': args.tag, 'attempt': args.attempt,
+        'commit': args.commit, 'sourceSha256': args.source_sha256, 'scope': args.scope,
+        'identity': {'instanceId': args.instance_id, 'machineId': args.machine_id, 'executionLocation': 'ECS'},
+        'status': 'PASS', 'verificationExitCode': 0, 'lifecycle': 'managed-outside-jenkins',
+        'finishedAt': '2026-11-08T00:00:00+00:00',
+        'reportFiles': [{'path': report_name, 'bytes': len(report_bytes), 'sha256': hashlib.sha256(report_bytes).hexdigest()}]}
+    if representation == 'crlf':
+        receipt_bytes = (json.dumps(record, sort_keys=True, indent='\t').replace('\n', '\r\n') + '\r\n').encode()
+    else:
+        receipt_bytes = (json.dumps(record, sort_keys=True, separators=(', ', ' : ')) + '\n').encode()
+    if mutation == 'oversize-receipt':
+        receipt_bytes += b' ' * (remote.MAX_RECEIPT_BYTES + 1 - len(receipt_bytes))
+    members = [('verification-receipt.json', receipt_bytes), (report_name, report_bytes)]
+    if mutation == 'duplicate': members.append(members[0])
+    if mutation == 'unlisted': members.append(('reports/private.env', b'not admitted'))
+    with tarfile.open(archive, 'w:gz') as package:
+        for name, raw in members:
+            entry = tarfile.TarInfo(name); entry.size = len(raw)
+            package.addfile(entry, io.BytesIO(raw))
+    return args, record, receipt_bytes, report_name, report_bytes
+
+
+@pytest.mark.parametrize('representation', ['crlf', 'spaced-lf'])
+def test_collector_preserves_original_receipt_bytes_and_their_custody_sha(tmp_path, monkeypatch, representation):
+    args, record, receipt_bytes, report_name, report_bytes = collector_archive(tmp_path, representation)
+    monkeypatch.chdir(tmp_path)
+    assert remote.collect(args) == 0
+    output = Path(args.output); receipt_file = output / 'verification-receipt.json'
+    assert receipt_file.read_bytes() == receipt_bytes
+    assert json.loads(receipt_file.read_bytes()) == record
+    assert stat.S_IMODE(receipt_file.stat().st_mode) == 0o600
+    assert (output / report_name).read_bytes() == report_bytes
+    assert {p.relative_to(output).as_posix() for p in output.rglob('*') if p.is_file()} == {
+        'verification-receipt.json', report_name}
+    archive_bytes = Path(args.archive).read_bytes()
+    archive_proof = {'bytes': len(archive_bytes), 'sha256': hashlib.sha256(archive_bytes).hexdigest()}
+    retained_archive = output / 'verification-evidence.tar.gz'
+    retained_archive.write_bytes(archive_bytes); retained_archive.chmod(0o600)
+    cleanup.write_json(output / 'preservation.json', {'kind': 'doorhandle-retained-original-ci-evidence',
+        'files': [{'path': 'verification-receipt.json', 'bytes': len(receipt_bytes),
+                   'sha256': hashlib.sha256(receipt_bytes).hexdigest()}, *record['reportFiles']],
+        'testsExecutedLocally': False, 'originalEvidenceArchive': archive_proof})
+    custody = cleanup.local_custody(output, remote)
+    assert custody['verificationReceiptSha256'] == hashlib.sha256(receipt_bytes).hexdigest()
+    assert custody['originalEvidenceArchive'] == archive_proof
+    with tarfile.open(args.archive, 'r:gz') as package:
+        assert package.extractfile('verification-receipt.json').read() == receipt_file.read_bytes()
+
+
+@pytest.mark.parametrize('mutation,message', [
+    ('duplicate', 'Non-regular or duplicate evidence entry'),
+    ('unlisted', 'Unlisted evidence archive entry'),
+    ('oversize-receipt', 'bounded verification receipt')])
+def test_collector_keeps_the_closed_member_set_and_receipt_bound(tmp_path, monkeypatch, mutation, message):
+    args, _, _, _, _ = collector_archive(tmp_path, mutation=mutation)
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(remote.VerificationError, match=message): remote.collect(args)

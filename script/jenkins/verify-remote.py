@@ -626,10 +626,17 @@ def collect(args):
                 require(name == "verification-receipt.json" and 0 <= entry.size <= MAX_RECEIPT_BYTES,
                         "Evidence archive must begin with its bounded verification receipt")
                 with source.extractfile(entry) as stream:
-                    record = json.loads(stream.read(MAX_RECEIPT_BYTES + 1).decode("utf8"))
+                    receipt_bytes = stream.read(MAX_RECEIPT_BYTES + 1)
+                require(len(receipt_bytes) == entry.size, "Truncated verification receipt")
+                record = json.loads(receipt_bytes.decode("utf8"))
                 catalog = validate_envelope(record, args)
                 output.mkdir(mode=0o700, parents=True)
-                write_json(output / "verification-receipt.json", record)
+                # Consumers bind this exact ECS file by SHA, including whitespace
+                # and line endings. Parsing must not replace its original bytes.
+                receipt_file = output / "verification-receipt.json"
+                with receipt_file.open("xb") as destination:
+                    os.chmod(receipt_file, 0o600)
+                    destination.write(receipt_bytes)
                 continue
             require(name in catalog and entry.size == catalog[name]["bytes"], "Unlisted evidence archive entry")
             target = output.joinpath(*relative.parts)

@@ -39,6 +39,7 @@ ENVIRONMENT = {'LANG', 'LC_ALL', 'PYTHONDONTWRITEBYTECODE',
                'DOORHANDLE_WORKER_MYSQL_TESTS', 'DOORHANDLE_WORKER_MYSQL_CONFIG',
                'DOORHANDLE_MIGRATION_JAVA'}
 MEMORY = {'java': 2, 'mvn': 4, 'node': 2, 'npm': 3, 'python': 4}
+NPM_NODE_OPTIONS = '--max-old-space-size=2048'
 DISK_FLOOR = (2 * 1024 + 256) * 1024 ** 2
 MEMORY_FLOOR = 1024 ** 3
 CACHE_PROTOCOL = 'doorhandle-maven-release-cache-v1'
@@ -491,6 +492,25 @@ def release_arguments(proof, arguments):
     return work
 
 
+def runtime_limits(tool):
+    return {'containerMemoryBytes': MEMORY[tool] * 1024 ** 3,
+            'containerMemorySwapBytes': MEMORY[tool] * 1024 ** 3,
+            'nodeOptions': NPM_NODE_OPTIONS if tool == 'npm' else None}
+
+
+def observed_runtime_limits(tool, row):
+    options = [entry.partition('=')[2] for entry in row['Config'].get('Env') or []
+               if entry.partition('=')[0] == 'NODE_OPTIONS']
+    expected = runtime_limits(tool)
+    require(options == ([expected['nodeOptions']] if tool == 'npm' else []),
+            'Tool Node options differ from the fixed executor configuration')
+    actual = {'containerMemoryBytes': row['HostConfig'].get('Memory'),
+              'containerMemorySwapBytes': row['HostConfig'].get('MemorySwap'),
+              'nodeOptions': options[0] if options else None}
+    require(actual == expected, 'Tool runtime limits differ from the fixed executor configuration')
+    return actual
+
+
 def owned_row(program, value, container):
     require(re.fullmatch(r'[a-f0-9]{64}', container), 'Tool container ID is invalid')
     row = json.loads(docker(program, 'inspect', container))[0]
@@ -512,6 +532,7 @@ def owned_row(program, value, container):
             and row['Config']['Entrypoint'] == [BINARIES[tool]]
             and row['Config']['User'] == str(value['uid']) + ':' + str(value['gid']),
             'Tool cleanup may only act on this exact build and owner')
+    observed_runtime_limits(tool, row)
     folder = Path(value['directory'])
     allowed = {(str(folder), str(folder)): False,
                (str(folder / 'receipts'), str(folder / 'receipts')): True,
@@ -614,11 +635,15 @@ def evidence(value, stopped):
         require(item.get('status') in ('EXITED', 'FAILED_OR_UNKNOWN')
                 and (item.get('exitCode') is None or type(item['exitCode']) is int),
                 'Tool command exit status is invalid')
+        limits = item.get('runtimeLimits')
+        require((limits is None and item['status'] == 'FAILED_OR_UNKNOWN')
+                or limits == runtime_limits(item['tool']), 'Tool command runtime limits are missing or changed')
         commands.append({'receiptSha256': digest(file), 'tool': item['tool'], 'containerId': item['containerId'],
                          'argumentsSha256': item['argumentsSha256'], 'status': item['status'],
                          'exitCode': item.get('exitCode'), 'cleanup': cleaned,
                          'resourceLimitTriggered': item.get('resourceLimitTriggered', False),
                          'resourceMonitoring': item.get('resourceMonitoring'),
+                         'runtimeLimits': limits,
                          'mavenDependencyCache': public_maven_cache(value, item.get('mavenDependencyCache'))})
     return {'schema': 1, 'kind': 'doorhandle-ecs-tool-evidence', 'release': value['release'],
             'commit': value['commit'], 'sourceSha256': value['sourceSha256'],
@@ -711,6 +736,10 @@ def command(value, tool, arguments, cwd, environment):
             + ' -Djava.io.tmpdir=' + str(home / 'tmp') + ' -Djansi.tmpdir=' + str(home / 'tmp'))
     else:
         env['PATH'] = '/usr/local/bin:/usr/bin:/bin'
+    if tool == 'npm':
+        # Keep 1 GiB of the existing 3 GiB container for native allocations and
+        # npm. Never inherit caller NODE_OPTIONS or apply this heap to 2 GiB node.
+        env['NODE_OPTIONS'] = NPM_NODE_OPTIONS
     if role == 'python':
         data = home / 'mem0'
         data.mkdir(mode=0o700, exist_ok=True)
@@ -790,7 +819,9 @@ def launch_command(value, tool, arguments, cache_before=None):
         container = docker(program, *args[1:]).decode().strip()
         require(re.fullmatch(r'[a-f0-9]{64}', container), 'Docker did not return an owned tool ID')
         record['containerId'] = container; write_json(file, record)
-        owned_row(program, value, container)
+        observed = owned_row(program, value, container)
+        record['runtimeLimits'] = observed_runtime_limits(tool, observed)
+        write_json(file, record)
         process = subprocess.Popen([str(program), 'start', '-a', '-i', container])
         while True:
             observe_resources(value, record, file)

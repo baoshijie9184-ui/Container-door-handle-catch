@@ -129,6 +129,66 @@ def test_maven_executor_drops_business_credentials_and_writes_only_owned_paths(r
     assert 'DOORHANDLE_COMPACT_MIGRATION_CONFIG=' + value['checkout'] + '/work/private.json' in command
 
 
+@pytest.mark.parametrize('tool,memory_gib,node_options', [
+    ('npm', 3, '--max-old-space-size=2048'), ('node', 2, None),
+])
+def test_node_heap_configuration_is_fixed_per_tool_and_drops_caller_injection(registration, tool, memory_gib, node_options):
+    value, _, _ = registration
+    command, _ = tools.command(value, tool, ['--version'], Path(value['checkout']), {
+        'NODE_OPTIONS': '--require=/private/injected.js --max-old-space-size=8192',
+        'npm_config_node_options': '--require=/private/npm-injected.js'})
+    environment = [command[index + 1] for index, entry in enumerate(command) if entry == '--env']
+    assert [entry for entry in environment if entry.startswith('NODE_OPTIONS=')] == (
+        ['NODE_OPTIONS=' + node_options] if node_options else [])
+    assert '/private/injected.js' not in '\n'.join(command)
+    assert not any(entry.startswith('npm_config_node_options=') for entry in environment)
+    assert command[command.index('--memory') + 1] == str(memory_gib) + 'g'
+    assert command[command.index('--memory-swap') + 1] == str(memory_gib) + 'g'
+    assert 'NODE_OPTIONS' not in tools.ENVIRONMENT
+
+
+def node_row(value, tool):
+    observed = row(value)
+    observed['Image'] = value['images']['node']
+    observed['Config']['Labels']['io.doorhandle.tool'] = tool
+    observed['Config']['Labels'].pop('io.doorhandle.maven-cache')
+    observed['Config']['Entrypoint'] = [tools.BINARIES[tool]]
+    observed['Config']['Env'] = ['NODE_OPTIONS=--max-old-space-size=2048'] if tool == 'npm' else []
+    memory = (3 if tool == 'npm' else 2) * 1024 ** 3
+    observed['HostConfig'].update(Memory=memory, MemorySwap=memory)
+    observed['Mounts'].pop()
+    return observed
+
+
+@pytest.mark.parametrize('tool', ['npm', 'node'])
+@pytest.mark.parametrize('mutation', ['none', 'options', 'absent-or-injected', 'duplicate', 'memory', 'swap'])
+def test_node_container_admission_binds_observed_options_and_memory(registration, monkeypatch, tool, mutation):
+    value, _, _ = registration
+    observed = node_row(value, tool)
+    if mutation == 'options': observed['Config']['Env'] = ['NODE_OPTIONS=--max-old-space-size=8192']
+    if mutation == 'absent-or-injected':
+        observed['Config']['Env'] = [] if tool == 'npm' else ['NODE_OPTIONS=--max-old-space-size=2048']
+    if mutation == 'duplicate': observed['Config']['Env'] = ['NODE_OPTIONS=--max-old-space-size=2048'] * 2
+    if mutation == 'memory': observed['HostConfig']['Memory'] += 1
+    if mutation == 'swap': observed['HostConfig']['MemorySwap'] += 1
+    calls = []
+    def operation(program, *args, **kwargs):
+        calls.append(args)
+        assert args == ('inspect', 'e' * 64)
+        return json.dumps([observed]).encode()
+    monkeypatch.setattr(tools, 'docker', operation)
+    if mutation == 'none':
+        actual = tools.owned_row('/usr/bin/docker', value, 'e' * 64)
+        assert tools.observed_runtime_limits(tool, actual) == {
+            'containerMemoryBytes': (3 if tool == 'npm' else 2) * 1024 ** 3,
+            'containerMemorySwapBytes': (3 if tool == 'npm' else 2) * 1024 ** 3,
+            'nodeOptions': '--max-old-space-size=2048' if tool == 'npm' else None,
+        }
+    else:
+        with pytest.raises(ValueError): tools.owned_row('/usr/bin/docker', value, 'e' * 64)
+    assert len(calls) == 1
+
+
 def test_tool_outside_checkout_admits_only_version_without_creating_attempt(registration, tmp_path):
     value, _, _ = registration
     with pytest.raises(ValueError, match='version admission'):
@@ -279,13 +339,39 @@ def test_tool_report_exports_only_hashes_exits_and_actual_cleanup(registration):
                'sourceSha256': value['sourceSha256'], 'tool': 'java', 'containerId': 'e' * 64,
                'argumentsSha256': hashlib.sha256(b'private argument bytes').hexdigest(),
                'status': 'EXITED', 'exitCode': 0, 'privateSentinel': 'do-not-export',
+               'runtimeLimits': {'containerMemoryBytes': 2 * 1024 ** 3,
+                                 'containerMemorySwapBytes': 2 * 1024 ** 3, 'nodeOptions': None},
                'cleanup': {'containerId': 'e' * 64, 'image': value['images']['maven'], 'pid': 0,
                            'exitCode': 0, 'removed': True}}
     file = Path(value['directory']) / 'receipts' / ('doorhandle-ci-tool-' + value['token'] + '-123456789abc.json')
     tools.write_json(file, receipt)
     report = tools.evidence(value, {'status': 'STOPPED', 'remaining': []})
     assert len(report['commands']) == 1 and 'do-not-export' not in json.dumps(report)
+    assert report['commands'][0]['runtimeLimits'] == receipt['runtimeLimits']
     assert remote.allowed_evidence('reports/tool-runtime.json')
+
+
+@pytest.mark.parametrize('tool', ['npm', 'node'])
+@pytest.mark.parametrize('mutation', ['none', 'missing', 'memory', 'swap', 'options', 'extra-key'])
+def test_node_public_evidence_requires_exact_observed_runtime_limits(registration, tool, mutation):
+    value, _, _ = registration
+    limits = tools.observed_runtime_limits(tool, node_row(value, tool))
+    receipt = {'kind': 'doorhandle-ecs-tool-command', 'release': value['release'], 'commit': value['commit'],
+               'sourceSha256': value['sourceSha256'], 'tool': tool, 'containerId': 'e' * 64,
+               'argumentsSha256': hashlib.sha256(b'private argument bytes').hexdigest(),
+               'status': 'EXITED', 'exitCode': 0, 'runtimeLimits': limits}
+    if mutation == 'missing': receipt.pop('runtimeLimits')
+    if mutation == 'memory': limits['containerMemoryBytes'] += 1
+    if mutation == 'swap': limits['containerMemorySwapBytes'] += 1
+    if mutation == 'options': limits['nodeOptions'] = '--require=/private/injected.js'
+    if mutation == 'extra-key': limits['privateEnvironment'] = 'must-not-export'
+    file = Path(value['directory']) / 'receipts' / ('doorhandle-ci-tool-' + value['token'] + '-123456789abc.json')
+    tools.write_json(file, receipt)
+    if mutation == 'none':
+        report = tools.evidence(value, {'status': 'STOPPED', 'remaining': []})
+        assert report['commands'][0]['runtimeLimits'] == limits
+    else:
+        with pytest.raises(ValueError, match='runtime limits'): tools.evidence(value, {'status': 'STOPPED', 'remaining': []})
 
 
 def test_owned_java_cleanup_preserves_archived_reports_and_private_inputs(tmp_path, monkeypatch):
