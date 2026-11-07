@@ -1093,6 +1093,12 @@
         "allowedSkippedTests": []
       },
       {
+        "module": "tests_python.test_local_mysql_source_classification",
+        "minimumTests": 90,
+        "source": "tests_python/test_local_mysql_source_classification.py",
+        "allowedSkippedTests": []
+      },
+      {
         "module": "tests_python.test_compact_build_resources",
         "minimumTests": 12,
         "source": "tests_python/test_compact_build_resources.py",
