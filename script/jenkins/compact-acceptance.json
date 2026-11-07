@@ -1118,8 +1118,14 @@
       },
       {
         "module": "tests_python.test_jenkins_suite_evidence",
-        "minimumTests": 25,
+        "minimumTests": 27,
         "source": "tests_python/test_jenkins_suite_evidence.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_ci_evidence_permission_repair",
+        "minimumTests": 51,
+        "source": "tests_python/test_ci_evidence_permission_repair.py",
         "allowedSkippedTests": []
       },
       {

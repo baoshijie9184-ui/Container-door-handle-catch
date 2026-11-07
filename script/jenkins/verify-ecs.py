@@ -1,6 +1,7 @@
 """Run monolith verification on the explicitly admitted original ECS only."""
 from pathlib import Path
 from datetime import datetime, timezone
+from contextlib import contextmanager
 import argparse
 import hashlib
 import importlib.util
@@ -17,6 +18,16 @@ import xml.etree.ElementTree as ET
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'scripts'))
 from ecs_execution import require_ecs_execution
+
+
+@contextmanager
+def private_process_umask():
+    """Keep verifier-owned host logs and intermediate directories private."""
+    previous = os.umask(0o077)
+    try:
+        yield
+    finally:
+        os.umask(previous)
 
 
 # These names describe existing ECS-only Java fixtures. Never accept arbitrary -D
@@ -770,4 +781,5 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    with private_process_umask():
+        main()

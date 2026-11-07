@@ -1,4 +1,4 @@
-param([Parameter(Mandatory = $true)][ValidateSet('Preflight', 'Package', 'PrepareTools', 'CleanupTools', 'PrepareFixtures', 'CleanupFixtures', 'VerifyEcs', 'VerifyEmbedding', 'PreserveLegacy', 'PreserveLocalArtifacts', 'PreserveColdStores', 'PreserveLocalMySql', 'CleanupLocalMySql', 'ReclaimBuildOutputs', 'PrepareLegacyCandidate', 'CleanupLegacyCandidate', 'VerifyRuntime', 'CleanupRuntime', 'Publish', 'Rehearse', 'CompactCutover')][string]$Action)
+param([Parameter(Mandatory = $true)][ValidateSet('Preflight', 'Package', 'PrepareTools', 'CleanupTools', 'PrepareFixtures', 'CleanupFixtures', 'VerifyEcs', 'VerifyEmbedding', 'RepairPriorEvidence', 'PreserveLegacy', 'PreserveLocalArtifacts', 'PreserveColdStores', 'PreserveLocalMySql', 'CleanupLocalMySql', 'ReclaimBuildOutputs', 'PrepareLegacyCandidate', 'CleanupLegacyCandidate', 'VerifyRuntime', 'CleanupRuntime', 'Publish', 'Rehearse', 'CompactCutover')][string]$Action)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 Set-Location -LiteralPath (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
@@ -214,6 +214,13 @@ if ($Action -eq 'VerifyEmbedding') {
     } finally {
         Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "rm -f -- '$remoteKey'; test ! -e '$remoteKey'"))
     }
+    return
+}
+if ($Action -eq 'RepairPriorEvidence') {
+    if ($env:CI_ECS_VERIFIED -ne 'true') { throw 'Prior evidence permission repair requires this fixed commit ECS verification first.' }
+    $commit = Require-Value 'GIT_COMMIT' '^[a-f0-9]{40}$'
+    $sha = (Get-FileHash -LiteralPath artifacts/source.tar.gz -Algorithm SHA256).Hash.ToLowerInvariant()
+    & ./script/jenkins/repair-ci-evidence-permissions.ps1 -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha -LegacySnapshot $env:LEGACY_SOURCE_ECS_SNAPSHOT -AdditionalSnapshot $env:LOCAL_ARTIFACTS_ECS_SNAPSHOT
     return
 }
 if ($Action -eq 'PreserveLegacy') {

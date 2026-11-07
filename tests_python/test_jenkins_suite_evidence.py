@@ -8,6 +8,8 @@ import os
 from pathlib import Path
 import re
 import stat
+import subprocess
+import sys
 import tarfile
 from types import SimpleNamespace
 
@@ -132,6 +134,35 @@ def test_staging_parent_link_does_not_change_another_directory_permissions(tmp_p
     with pytest.raises(remote.VerificationError, match='cannot be a link'):
         remote.prepare_checkout(tmp_path, SimpleNamespace(), {})
     assert stat.S_IMODE(outside.stat().st_mode) == before
+
+
+@pytest.mark.parametrize('interrupt', [False, True])
+def test_verifier_creates_private_reports_and_restores_login_umask(tmp_path, interrupt):
+    previous = os.umask(0o002)
+    try:
+        try:
+            with inner.private_process_umask():
+                directory = tmp_path / 'java' / 'module' / 'surefire-reports'
+                directory.mkdir(parents=True)
+                (directory / 'native.log').write_bytes(b'original report bytes')
+                child = subprocess.run([sys.executable, '-B', '-c',
+                    'import sys;from pathlib import Path;Path(sys.argv[1]).write_bytes(b"original child bytes")',
+                    str(directory / 'child.xml')], stdin=subprocess.DEVNULL, capture_output=True)
+                assert child.returncode == 0
+                if interrupt:
+                    raise RuntimeError('synthetic verifier interruption')
+        except RuntimeError:
+            assert interrupt
+        observed = os.umask(0o002)
+        assert observed == 0o002
+        for path in (tmp_path / 'java', tmp_path / 'java/module', directory):
+            assert stat.S_IMODE(path.stat().st_mode) == 0o700
+        for name in ('native.log', 'child.xml'):
+            assert stat.S_IMODE((directory / name).stat().st_mode) == 0o600
+        assert (directory / 'native.log').read_bytes() == b'original report bytes'
+        assert (directory / 'child.xml').read_bytes() == b'original child bytes'
+    finally:
+        os.umask(previous)
 
 
 def report(root, class_name, *, prefix='java', skipped=False):

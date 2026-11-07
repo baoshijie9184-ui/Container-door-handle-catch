@@ -207,6 +207,17 @@ pipeline {
                 script { env.CI_ECS_VERIFIED = 'true' }
             }
         }
+        stage('Repair registered prior CI evidence permissions') {
+            when { expression { env.CI_ECS_VERIFIED == 'true' && (params.LEGACY_SOURCE_ECS_SNAPSHOT || params.LOCAL_ARTIFACTS_ECS_SNAPSHOT) } }
+            steps {
+                withCredentials([
+                    sshUserPrivateKey(credentialsId: 'doorhandle-ecs-ssh', keyFileVariable: 'DEPLOY_KEY', usernameVariable: 'DEPLOY_USER'),
+                    file(credentialsId: 'doorhandle-ecs-known-hosts', variable: 'DEPLOY_KNOWN_HOSTS')
+                ]) {
+                    pwsh '& ./script/jenkins/pipeline.ps1 -Action RepairPriorEvidence'
+                }
+            }
+        }
         stage('Reclaim proven old build outputs') {
             when { expression { params.RECLAIM_OLD_BUILD_OUTPUTS && env.CI_ECS_VERIFIED == 'true' } }
             steps {

@@ -1,0 +1,1288 @@
+{
+  "schema": 1,
+  "kind": "doorhandle-registered-ci-permission-repairs",
+  "releases": [
+    {
+      "release": "ci-97-abedbf81a73d",
+      "commit": "abedbf81a73d1b7e28f660e3e72aa10cfbdce747",
+      "sourceSha256": "8683361ca092fb85b6497109f9dd6d54f0cbd5712d96be55d5c9bc957a0a1568",
+      "attempt": "eeacda54a5494b48b86ca763bf7ffc89",
+      "identity": {
+        "instanceId": "i-2zeieuov2aum486jm1ek",
+        "machineId": "1ebe8f77e3104ab6a49a9386e38abd20",
+        "executionLocation": "ECS"
+      },
+      "reportFiles": [
+        {
+          "path": "driver.log",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "path": "reports/receipt.json",
+          "bytes": 127124,
+          "sha256": "701316a4f0283a333411cbfa120f100907580655d59728361002d7379d34f2c9"
+        },
+        {
+          "path": "reports/python.xml",
+          "bytes": 248329,
+          "sha256": "78fd07457ce20f4e2a8a7b75f1b466223961c2ed290ff375b0a3e06dcb16f590"
+        },
+        {
+          "path": "reports/tool-runtime.json",
+          "bytes": 14359,
+          "sha256": "53dd678cd96e2f491577a41fdf56a8c1b7cf9e964f3f7eb325922c197f2bf902"
+        },
+        {
+          "path": "reports/frontend-agent-build.log",
+          "bytes": 26286,
+          "sha256": "098332b32ab672eea40d3029e390ba8791fa2ed55d01cf55fa7c18cef359f6f2"
+        },
+        {
+          "path": "reports/frontend-agent-install.log",
+          "bytes": 1190,
+          "sha256": "833a26900f3d9c613aabe3ab87b7ba9353d75d6f6d5941a753c8b67a4ee776ac"
+        },
+        {
+          "path": "reports/frontend-agent-test.log",
+          "bytes": 4984,
+          "sha256": "9e144b291e31b609a951b77144114ddf0f551c70bb517bf1e35b46b2138d8efd"
+        },
+        {
+          "path": "reports/frontend-build.log",
+          "bytes": 9517,
+          "sha256": "8d4a0d7331190900eaa8e6dc9ff38495d96b29b6f789dabe088f0bd5e366759b"
+        },
+        {
+          "path": "reports/frontend-install.log",
+          "bytes": 236,
+          "sha256": "019c579732281162f4ed2e5a770b81bf49d414319f66d3d45a85a38293d7d0fd"
+        },
+        {
+          "path": "reports/frontend-test.log",
+          "bytes": 38711,
+          "sha256": "bee1c12c6e7d80280dc2477af4bc56a0be1d8d63a2f6f1bb5853d2e4dbd63d55"
+        },
+        {
+          "path": "reports/python.log",
+          "bytes": 1846,
+          "sha256": "0e7a932244b3f3186defb5c7bf9848073552857764b0a681956a3ff407ffbc4a"
+        },
+        {
+          "path": "reports/java-suite-001.log",
+          "bytes": 317509,
+          "sha256": "adf1f4753d276bdf9c03d1a83aef6958472e955edc4a4f5b7ddbd7da730b045b"
+        },
+        {
+          "path": "reports/java/doorhandle-common/surefire-reports/TEST-com.ruanzhu.doorhandle.common.SafePathResolverTest.xml",
+          "bytes": 34264,
+          "sha256": "617b7adfc4a9d7a8f8631a4f0e7529122b8055f567754e5ce4b57dc2e64922bd"
+        },
+        {
+          "path": "reports/java/doorhandle-common/surefire-reports/TEST-com.ruanzhu.doorhandle.common.time.LegacyClockEvidenceTest.xml",
+          "bytes": 34437,
+          "sha256": "37baa979153b77d4096895eac0d351f14a5d3faa1c2a41aa534818975dd65eef"
+        },
+        {
+          "path": "reports/java/doorhandle-contracts/surefire-reports/TEST-com.ruanzhu.doorhandle.contracts.detection.DetectionTaskFinishedEventJacksonTest.xml",
+          "bytes": 29057,
+          "sha256": "3b62ea2b545083aa7a871227c6d5d0115174881bae4c75da5275a6fd6112d1ef"
+        },
+        {
+          "path": "reports/java/doorhandle-framework/surefire-reports/TEST-com.ruanzhu.doorhandle.framework.persistence.chat.JdbcMessageEvidenceClockTest.xml",
+          "bytes": 46947,
+          "sha256": "1ef9c485d626a48b641bb19e3f631c79451cd3572ef779e4736ffb09d6e12880"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.action.AgentActionServiceTest.xml",
+          "bytes": 7059,
+          "sha256": "4da5bc23db4c3a80981b944a4f037657d10353703c3b0e76810e5c206e46d1ee"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.action.ConfirmationMigrationMySqlTest.xml",
+          "bytes": 2962,
+          "sha256": "4c6f78ee5b6b81085a467f93f5e4a090967041f0ffec02fee03a27b7a9c57ad1"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.agent.RoleAgentFactoryTest.xml",
+          "bytes": 89465,
+          "sha256": "ed4d0c00a7fdb875ae8494842f0cbab7db3225ac3a433420ad123b58e46e2746"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.api.A2uiControllerTest.xml",
+          "bytes": 74583,
+          "sha256": "2aa56b3d2759fb647fed9dc48088138e7c3196e428e8651914892d62f694049b"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.api.AgentActionControllerTest.xml",
+          "bytes": 73886,
+          "sha256": "903adb1107ccef83c3262f07af844705757292364b9faecc38bd8386878388bd"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.api.AgentCardControllerTest.xml",
+          "bytes": 74554,
+          "sha256": "83551182448c81fbfbb7f79215e27051027db92c4552da647311f970cb026d1c"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.api.AgentCommandControllerTest.xml",
+          "bytes": 73308,
+          "sha256": "cd74e5ab98d869ea7c06ce1b0a3d631105ad2276c025b87aef55da03d6659948"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.api.AgentMarketControllerTest.xml",
+          "bytes": 74113,
+          "sha256": "17ede7d0d0400eb91abeb8fff16bd47777262556d8837cba8baffb06be7ad1ef"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.api.AgentResearchControllerTest.xml",
+          "bytes": 77846,
+          "sha256": "d6e91a3f6562f8f4aa37199688be2640df408cfe36651f23e36a479a48acd002"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.api.ConversationModelControllerTest.xml",
+          "bytes": 75029,
+          "sha256": "dcae2769f221ede2ccda667f8424983ec41f13a3dbbbdd3a7bcab4505b0d01f9"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.api.LocalMcpControllerTest.xml",
+          "bytes": 75262,
+          "sha256": "c53fda5e93da35b81fb1f0a70a82bd016ac030f06b3422e3f0a655b0b891ba11"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.api.RoleAgentControllerTest.xml",
+          "bytes": 75318,
+          "sha256": "b9305010b16b9ab12956e52cccca1dbae01b233eaca2f0920916f7dcd2339eaa"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.api.SkillEvolutionControllerTest.xml",
+          "bytes": 75042,
+          "sha256": "9c3ffca0bff7509c5e8e70cd29d68eaf3582892158d599e84622db1cf331d8d6"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.card.AgentCardTest.xml",
+          "bytes": 83118,
+          "sha256": "efdae24dbb2560dc834b527fdc6668124e18b60f717cc8167f334e7144c316ad"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.command.AgentSlashCommandsTest.xml",
+          "bytes": 73437,
+          "sha256": "413e0988bae2bbd57feb84bead4d2ff77ecd5eea2aa616d68104e46a28515c49"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.context.AgentContextCompactionTest.xml",
+          "bytes": 116580,
+          "sha256": "0c56a4f4125b2fd2594bf649307b96cd80018918d0bf77d3621280e35a8e7ed8"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.context.AgentIdentityTest.xml",
+          "bytes": 72875,
+          "sha256": "10b01613d18edd92144252465eeb53dc2148cdba52e2a8bbd164d1452f1fb021"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.context.ContextCompactionConfigurationTest.xml",
+          "bytes": 73659,
+          "sha256": "3715a9bf98104a05751173b747cce48515c1ac3c3ac7cc1c130e3190bf6feee5"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.context.ContextMigrationMySqlTest.xml",
+          "bytes": 74699,
+          "sha256": "bf3f233538419d302804569721661f0178f8f38f174a2a4cc2379a0e6d9fd0e1"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.context.ContextStoreMySqlTest.xml",
+          "bytes": 73842,
+          "sha256": "42c415194bf476379dffa61143ba0696ea7485553dac7e2fb2f5807fae861b9d"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.control.ConversationControlRegistryTest.xml",
+          "bytes": 74621,
+          "sha256": "11651e40f3c3bd6d9b59963171fc5d609428ab7e388e606bd9bb26c4ad699fed"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.eval.AgentContractEvalTest.xml",
+          "bytes": 72942,
+          "sha256": "56ff51069e8df3caede740dbceff05f3f43c18e8264deb949424f690410dd2ff"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.eval.AgentEvalRulesTest.xml",
+          "bytes": 74108,
+          "sha256": "71ca2cf95f6484419eb4bcb19a79e21b5ddf7d9cca46552b3cb63c9b41482b6e"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.eval.AgentLiveRoutingEvalTest.xml",
+          "bytes": 72980,
+          "sha256": "81524ece4ca431d772aa9e6f6f2ede9d06b16f5a2b824283dbdf0953972d8466"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.eval.AgentWorkbenchLiveEvalTest.xml",
+          "bytes": 72992,
+          "sha256": "5366b5d6f889f8959f47e5e4a95baf00b258fb2b9ac6f8657b1e30d86af4bbad"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.eval.LiveRoutingRulesTest.xml",
+          "bytes": 74484,
+          "sha256": "744e2f0da83d9300ecd2cfaa6150164aecf9fa5c9b5d75113928a791915664d9"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.eval.SavedLiveRoutingEvalTest.xml",
+          "bytes": 72981,
+          "sha256": "798475c811d4f6b2d4c973ec958692d5f04ba330e599e7d55e4ab1e37eebe069"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.eval.WorkbenchExecutionFixtureTest.xml",
+          "bytes": 73590,
+          "sha256": "18e3536fefbe3bfb6bdc523313283817af51484d8d4be59ea992a942b621104a"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.evolution.SkillDownloadLeasesTest.xml",
+          "bytes": 73876,
+          "sha256": "6f59b0bcc6cfc617704f24bacc79f82fe4000fda7f79f6124610accfc9644ed7"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.evolution.SkillEvolutionTest.xml",
+          "bytes": 78949,
+          "sha256": "b00159b6ec756f6103577bb01947afe5b4f7bdb8154cf5681dc04e8a25cb673f"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.evolution.SkillLinkLifecycleTest.xml",
+          "bytes": 77176,
+          "sha256": "4e00565800abfe294da03a31e4e11792fa0ac4877e3706c3f36331b21e710363"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.evolution.SkillMigrationMySqlTest.xml",
+          "bytes": 74078,
+          "sha256": "359b69d339f90aa1caec6ef1c54fe2e1dd20850738d851ca09a2cbd993724d8e"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.evolution.SkillSourcePolicyTest.xml",
+          "bytes": 73376,
+          "sha256": "a6f1a0c57f0e046d697bfb9e7d137e4abe0a12bb1b20c4bc5d9d4abb54b23f19"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.journal.AgentJournalIntegrationTest.xml",
+          "bytes": 98771,
+          "sha256": "2d051d37d7e7f5efb1cafa727fcc0116c958889e9b37052bd22f9725ef67f340"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.journal.AgentJournalMiddlewareTest.xml",
+          "bytes": 75583,
+          "sha256": "1d353fbb54f2e39ef15d1c1f4d9d0f8ecd2213f8baca856388f7b8d17c775b1a"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.journal.JdbcAgentJournalTest.xml",
+          "bytes": 74935,
+          "sha256": "1e76efa63ff81dbf5eefa4879d078724f0788927f1497a0366da91871fcc42e1"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.journal.MysqlAgentJournalTest.xml",
+          "bytes": 76360,
+          "sha256": "f5139206386153ac46500c33697e6d80070d6ae97e7b9c69f521c1acfb01325f"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.mcp.CrossInstanceMcpInstallCancellationTest.xml",
+          "bytes": 75291,
+          "sha256": "a5c759070e9800615559ed02a6760dd65a31f1910f7ad94c34815213c3597c8e"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.mcp.LegacyMcpClockTest.xml",
+          "bytes": 73181,
+          "sha256": "a464635833eb105aae3e487c15e3433b0f432cda22ad53f237c2d878bf53a8ab"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.mcp.LocalMcpServiceTest.xml",
+          "bytes": 80208,
+          "sha256": "96e04a84b4b300e32815f26e4626a3495dfe4fb91967f9b0459fe3283075d03c"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.mcp.McpGatewayClientTest.xml",
+          "bytes": 73048,
+          "sha256": "3c0df3ed2070b2225a28c3e9b0b1ae411fcb88cfa53294c878756c4bfccfe9f8"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.mcp.McpMigrationMySqlTest.xml",
+          "bytes": 74061,
+          "sha256": "6b837a179d0f7dcf39c746fcda1d27417a437ee7566b7f097d6ac12683e5345f"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.mcp.PersistentMcpConfigurationTest.xml",
+          "bytes": 75038,
+          "sha256": "60eb1118e7e4fbf0aa8a88679fe43d3f2a51b2641acab90d70da6f8c8df724e9"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.mcp.PersistentMcpInstallQueueTest.xml",
+          "bytes": 76710,
+          "sha256": "826c871c685a3e9c386e4cec6eeaa2447d2aa36fa67c85ceee828ee8fb4b2d09"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.model.AgentModelConfigurationTest.xml",
+          "bytes": 76995,
+          "sha256": "b546b8ded039b2579d2b6ff7538a45a7b7989f1ac115c330e31e1d797e4507ee"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.model.AgentModelLiveSmokeTest.xml",
+          "bytes": 73211,
+          "sha256": "588641203c347ecf8e1f696e8f299cfbe310ac1962ac9d0881f11cdaa7610eeb"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.model.AgentModelServiceTest.xml",
+          "bytes": 75916,
+          "sha256": "00787489bb16dab10ec508a858840235117ba9397502cc257af4fa92f63fe4e9"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.model.ManagedAgentModelTest.xml",
+          "bytes": 79506,
+          "sha256": "987e447caefde2d1eef3ef774de4e9a8688ead22ed3ca6a42a13f4f7ee7baee0"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.model.ModelAttemptTraceTest.xml",
+          "bytes": 76166,
+          "sha256": "cd18b5d64aaa9be637eb1cad521b43fc3a1fef67ff3186875abd4887ca481fe4"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.model.ModelBudgetMigrationMySqlTest.xml",
+          "bytes": 75290,
+          "sha256": "0172a60bdbc70d6d33ace11687f794da59e19d3303862fc2f20c252ab585c28e"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.model.ModelBudgetMySqlTest.xml",
+          "bytes": 77263,
+          "sha256": "798f81a90327d79852161df4ada30656ac6771fae2c443d4539ba3e658a07076"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.model.ModelCircuitTest.xml",
+          "bytes": 73500,
+          "sha256": "0d0c5e1d22e62998a52d5eaac339713c0d4d594d90a816df97ebf6bde7362619"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.model.ModelConfigCipherTest.xml",
+          "bytes": 73036,
+          "sha256": "5e64c12d024fe578893b3a7931f645f4db10efd0fb9e0e0038f13338b4e61192"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.model.ModelConfigurationMigrationMySqlTest.xml",
+          "bytes": 74174,
+          "sha256": "545453170f474035816e74909a9749cd04530486a180992191f6402ccf28c724"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.model.ModelConfigurationServiceTest.xml",
+          "bytes": 77139,
+          "sha256": "49ee3f24b7ac54edb2ff6ce7d4f083cf65eaba0e9e0f47ae73778f28cb6aeca3"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.model.ModelFailureClassifierTest.xml",
+          "bytes": 73241,
+          "sha256": "92204b39a87e0d03331e90fea9475f8bdf56f8504b82a3404bec58843d389aea"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.model.ModelIoIsolationTest.xml",
+          "bytes": 73847,
+          "sha256": "30f7f9c9b2fee7ab2cbe947f6f697f4cb5d1566fcd50b60ce95eed7fee25853a"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.model.ModelTokenReservationTest.xml",
+          "bytes": 73606,
+          "sha256": "2c67f412a7aa3283ecf7530aca4f37e82e015450af0927ecc0ee930b656a3550"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.model.PersonalModelQuotaMySqlTest.xml",
+          "bytes": 76033,
+          "sha256": "a0be17b212e35c202baa7d32588a50f64cac6282b2a08d024625ab91a50db1e6"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.model.QuotaAccountStoreMySqlTest.xml",
+          "bytes": 76091,
+          "sha256": "65384af159d17e17f7a1199af2dd2500b5b3f7ac0b71c9967e86d832187d4ec7"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.model.RedisModelCircuitTest$RealRedis.xml",
+          "bytes": 73655,
+          "sha256": "43dd108557b8214a387436dc11410161dd079f74ac2140de704d25efe7af81ff"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.model.RedisModelCircuitTest.xml",
+          "bytes": 72727,
+          "sha256": "62472c62b86f80410de470cdbb3b2615d195b8f58650d1c4a72d5d3ad05840f6"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.persistence.JdbcOwnerLockMySqlTest.xml",
+          "bytes": 75114,
+          "sha256": "21e905ce7526d601897e178e69c3765aefe114fcf101054d23c1d0a81e038b76"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.persistence.JdbcOwnerLockTest.xml",
+          "bytes": 73915,
+          "sha256": "893f47fc1b9345b539aaa33b3c2db848530b97465ca3c1c224ba5206eac1dc44"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.report.AgentReportGatewayTest.xml",
+          "bytes": 73393,
+          "sha256": "4cc2c685b354837e4b45d651eb7afa6c70521bea4d59c9864664a6f0a5b93322"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.report.ReportToolsTest.xml",
+          "bytes": 76080,
+          "sha256": "935e3c996fd56c20b8fa009aaca6c0d9f91d8692d1352231f3372c960c260809"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.research.ResearchEvidenceConfigurationTest.xml",
+          "bytes": 78159,
+          "sha256": "10ce9e9beefa4afe08b274faedbb31ff8ef98abf6dfa7b85698c3e8abf029259"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.research.ResearchEvidenceExportServiceTest.xml",
+          "bytes": 73961,
+          "sha256": "1aa2526d8e932b0633797b77eeaa32a0956229665bd4e85dfdb6cf55235af9e6"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.research.ResearchEvidenceServiceTest.xml",
+          "bytes": 76298,
+          "sha256": "a5c516ad7affcd6dec72d6269abc0f2e261ae11dd5848d36d6604268aab41e45"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.research.ResearchEvidenceStorageTest.xml",
+          "bytes": 77702,
+          "sha256": "ace726d9138faad5233bea0ad894c233eeb410ec9e94c349c31d69a55cee0dce"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.research.ResearchExportMigrationMySqlTest.xml",
+          "bytes": 76109,
+          "sha256": "b4b12cf36e8ed96d270c60473ffe9e9ba257afd056dffa517cd0752ea617c668"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.research.ResearchExportRateLimitTest.xml",
+          "bytes": 74944,
+          "sha256": "6019c3705463ddb8547dd9606bff332bf3bf10e1b2e33a12ecd314b8843604d1"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.service.AgentScopeConversationServiceTest.xml",
+          "bytes": 79098,
+          "sha256": "32405b317a203e0201378b3087d1d789fab3f0c7705248cc98b5774323511a74"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.service.AgentUiJournalTest.xml",
+          "bytes": 72900,
+          "sha256": "17d3f8e50772df0ea3c09261e8b4ec30d0fa92251717c1dad4c6c9f8da3c4f22"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.testsupport.CompactH2FixtureInstallationTest.xml",
+          "bytes": 73716,
+          "sha256": "387b719fe2790c16fb86b91d1d2c2943f6cb247b2c647a0e1772aef4345963e8"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.testsupport.CompactH2FunctionsTest.xml",
+          "bytes": 75273,
+          "sha256": "a2fbdf977bda0cd7f726d9bcb8d9e3649654d3a101568589cc37bb27b1a74290"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.tool.BusinessToolkitFactoryTest.xml",
+          "bytes": 78743,
+          "sha256": "67bc2045a50cacc2100d67072968eaee66e4e3de047053c260691a5fc4c6aef4"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.tool.SystemHealthToolTest.xml",
+          "bytes": 76597,
+          "sha256": "d57cf67ea1dc0004e5338b07283de547b4799c9ccc90cce75eb234065d0818d4"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.ui.A2uiServiceTest.xml",
+          "bytes": 73673,
+          "sha256": "544ff983e157323482ab8229d1067cae92233c42a2d8f6df3d0bcb5c4c97d893"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.workbench.AgentWorkbenchServiceTest.xml",
+          "bytes": 82725,
+          "sha256": "6d1d9b40c3f7bf34fc005ec26b9bd0e2c63470203335b9c9bf4d72f6bcdab0ec"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.workbench.LegacyClockProtocolTest.xml",
+          "bytes": 73766,
+          "sha256": "e9a43e0e26e134400a9f02bc931d53b7b40448dddc3c1ab16dc85e87db09379e"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.workbench.WorkbenchDispatchClockTest.xml",
+          "bytes": 73790,
+          "sha256": "ecee4e3382f5e1ad344810c3347a012de86243463a85ea528c1bb040b82c8f1a"
+        },
+        {
+          "path": "reports/java/doorhandle-module-ai/surefire-reports/TEST-com.ruanzhu.doorhandle.module.ai.workbench.WorkbenchMigrationMySqlTest.xml",
+          "bytes": 74636,
+          "sha256": "e0744fde74d7faef43789dd82d02f3f08079a91919b7be31a0b880edc3319630"
+        },
+        {
+          "path": "reports/java/doorhandle-module-app/surefire-reports/TEST-com.ruanzhu.doorhandle.module.app.config.AssistantUserTenancyMigrationContractTest.xml",
+          "bytes": 98023,
+          "sha256": "d0072a9ecff2d67e8aac1151f430e5830dabc1187f97f1889efd9ef9d36118a6"
+        },
+        {
+          "path": "reports/java/doorhandle-module-app/surefire-reports/TEST-com.ruanzhu.doorhandle.module.app.config.BusinessSeedMigrationContractTest.xml",
+          "bytes": 98014,
+          "sha256": "c01858019d70d35de21fbb84e8bd2eb8c05fdadf5dbd24073dcaaa07227375b3"
+        },
+        {
+          "path": "reports/java/doorhandle-module-app/surefire-reports/TEST-com.ruanzhu.doorhandle.module.app.config.BusinessSeedRetirementTest.xml",
+          "bytes": 98015,
+          "sha256": "7598407d38251216ded671a57d58fdfd5963d4ab024b374232025a74f303d184"
+        },
+        {
+          "path": "reports/java/doorhandle-module-app/surefire-reports/TEST-com.ruanzhu.doorhandle.module.app.config.ConfigurationTopologyContractTest.xml",
+          "bytes": 98675,
+          "sha256": "56045db022446553615daa748c06a43230a9428355192ef1a6d719eff5c243b9"
+        },
+        {
+          "path": "reports/java/doorhandle-module-app/surefire-reports/TEST-com.ruanzhu.doorhandle.module.app.config.DotenvEnvironmentPostProcessorTest.xml",
+          "bytes": 99441,
+          "sha256": "f2a0bde94d9fccddc3ae4bbebbd6ecadf174356d37d57dfce74a9ceb9ee8adc9"
+        },
+        {
+          "path": "reports/java/doorhandle-module-app/surefire-reports/TEST-com.ruanzhu.doorhandle.module.app.config.MybatisPlusContextTest.xml",
+          "bytes": 100426,
+          "sha256": "31ef08078860d929f1f65ab84fac5da0a31e8aea966f98711c6b5227af7cc3ec"
+        },
+        {
+          "path": "reports/java/doorhandle-module-app/surefire-reports/TEST-com.ruanzhu.doorhandle.module.app.config.NoDefaultAdminCredentialContractTest.xml",
+          "bytes": 98018,
+          "sha256": "8c5c7a7034189a438e24f71ae8f0bcf4b4d6676df50e5a29663760186c5713d9"
+        },
+        {
+          "path": "reports/java/doorhandle-module-app/surefire-reports/TEST-com.ruanzhu.doorhandle.module.app.config.ProductionConfigDefaultsTest.xml",
+          "bytes": 98348,
+          "sha256": "ad18e8f0f28fcd018b3d557c79f31895754175c77bfacb615627d47349a4b367"
+        },
+        {
+          "path": "reports/java/doorhandle-module-app/surefire-reports/TEST-com.ruanzhu.doorhandle.module.app.config.SecurityReliabilityMigrationContractTest.xml",
+          "bytes": 98016,
+          "sha256": "a104deec96c2a855876b8fd9e291ac4c46b88e76e55eb1007ba7997fc0ec5ef4"
+        },
+        {
+          "path": "reports/java/doorhandle-module-app/surefire-reports/TEST-com.ruanzhu.doorhandle.module.app.config.SingleEnterpriseSharedDataMigrationContractTest.xml",
+          "bytes": 98048,
+          "sha256": "4a7d93bfbdf984e512e9c61698126b64dc0f2dd76daaac49d9593d094bf05258"
+        },
+        {
+          "path": "reports/java/doorhandle-module-app/surefire-reports/TEST-com.ruanzhu.doorhandle.module.app.config.SqlPopulatorEncodingContractTest.xml",
+          "bytes": 98519,
+          "sha256": "ae34ba2409bc0057ec0678f0816277ce15272e9464b4587000cab72117e36a6b"
+        },
+        {
+          "path": "reports/java/doorhandle-module-app/surefire-reports/TEST-com.ruanzhu.doorhandle.module.app.config.properties.AppCorsPropertiesTest.xml",
+          "bytes": 98197,
+          "sha256": "27039b0cd6b446d723ad05f3ccfa758091fd5f528039b924193343baa4c81b6f"
+        },
+        {
+          "path": "reports/java/doorhandle-module-app/surefire-reports/TEST-com.ruanzhu.doorhandle.module.app.config.properties.BusinessSeedDataPropertiesTest.xml",
+          "bytes": 98038,
+          "sha256": "9458f6b103a25725022e12a1c7de6a3a9aa2d7faea2e176e2b808b5d14c45627"
+        },
+        {
+          "path": "reports/java/doorhandle-module-app/surefire-reports/TEST-com.ruanzhu.doorhandle.module.app.controller.AgentWorkbenchControllerTest.xml",
+          "bytes": 102847,
+          "sha256": "eef9b2e29fcea965f352f7d3d34edb4ca5a5663738ec64a7d297b53fde4867a8"
+        },
+        {
+          "path": "reports/java/doorhandle-module-app/surefire-reports/TEST-com.ruanzhu.doorhandle.module.app.controller.ConversationControlControllerTest.xml",
+          "bytes": 101979,
+          "sha256": "01110527a074706a570c6cb4f0cad40be4ecb15ea5d7db1aacc10d6d73ec7bdf"
+        },
+        {
+          "path": "reports/java/doorhandle-module-app/surefire-reports/TEST-com.ruanzhu.doorhandle.module.app.controller.PersonalMemoryControllerTest.xml",
+          "bytes": 101983,
+          "sha256": "2e3e9c0cb00277b451581f444f9169fa16788657f5d51a34be7a4a3ab5a11cf2"
+        },
+        {
+          "path": "reports/java/doorhandle-module-app/surefire-reports/TEST-com.ruanzhu.doorhandle.module.app.service.ChromaRagPreservationTest.xml",
+          "bytes": 100281,
+          "sha256": "02d412587d69b429c3a2529ab2e6082389e416b59d48b42a51c74165c4298837"
+        },
+        {
+          "path": "reports/java/doorhandle-module-app/surefire-reports/TEST-com.ruanzhu.doorhandle.module.app.service.ChromaRagStoreServiceTest.xml",
+          "bytes": 98794,
+          "sha256": "71feccac0086128f605f68fd0060864f9bdbfee69d33875721161948394bad52"
+        },
+        {
+          "path": "reports/java/doorhandle-module-app/surefire-reports/TEST-com.ruanzhu.doorhandle.module.app.service.LocalTextEmbeddingServiceTest.xml",
+          "bytes": 97995,
+          "sha256": "19fe8ac0a815d82f62f37715718ff3bf66afd82db5743929eba87693a13e4383"
+        },
+        {
+          "path": "reports/java/doorhandle-module-app/surefire-reports/TEST-com.ruanzhu.doorhandle.module.app.service.Mem0ClientTest.xml",
+          "bytes": 100229,
+          "sha256": "7d453aa250f950a1ce9d9e6be6579272e34733ef78727d8eaf2d4b915d27c153"
+        },
+        {
+          "path": "reports/java/doorhandle-module-app/surefire-reports/TEST-com.ruanzhu.doorhandle.module.app.service.MemoryGovernanceMigrationMySqlTest.xml",
+          "bytes": 100939,
+          "sha256": "db29456e3e85966f32dc61030d739314145a3d8acaee96fd0341d356dc9b9a3a"
+        },
+        {
+          "path": "reports/java/doorhandle-module-app/surefire-reports/TEST-com.ruanzhu.doorhandle.module.app.service.MemoryGovernanceTest.xml",
+          "bytes": 102308,
+          "sha256": "8865336f25570564f58bc27370c5fe989819b7aaa3eed10e60c9bae044e0a28c"
+        },
+        {
+          "path": "reports/java/doorhandle-module-app/surefire-reports/TEST-com.ruanzhu.doorhandle.module.app.service.MemoryReviewMysqlIntegrationTest.xml",
+          "bytes": 99223,
+          "sha256": "582c2b312055137613361df8d6b136ec7949cfcfb77dbf5dda3079e4425d721f"
+        },
+        {
+          "path": "reports/java/doorhandle-module-app/surefire-reports/TEST-com.ruanzhu.doorhandle.module.app.service.RagKnowledgeServiceTest.xml",
+          "bytes": 99977,
+          "sha256": "22aa807f912ad624b3a184da60337f28ed2ce5f35b7268dafe34c960ee9389dc"
+        },
+        {
+          "path": "reports/java/doorhandle-module-app/surefire-reports/TEST-com.ruanzhu.doorhandle.module.app.service.RagModelServiceTest.xml",
+          "bytes": 98148,
+          "sha256": "d424f75d4e5269e6473d1c084f138fa36f863eefe03ffffa33064781bd0c12c8"
+        },
+        {
+          "path": "reports/java/doorhandle-module-app/surefire-reports/TEST-com.ruanzhu.doorhandle.module.app.service.impl.AgentScopeChatServiceImplTest.xml",
+          "bytes": 103070,
+          "sha256": "ac2181330fb3b413f28dac57df193035ff01f51aa09bd56030a00dd51be9e85c"
+        },
+        {
+          "path": "reports/java/doorhandle-module-app/surefire-reports/TEST-com.ruanzhu.doorhandle.module.app.service.impl.AgentWorkspaceServiceTest.xml",
+          "bytes": 102369,
+          "sha256": "5d5900ae3e1787a264a9d4dd0ab882ead044ba935e821c3b13ab2d38d218617d"
+        },
+        {
+          "path": "reports/java/doorhandle-module-app/surefire-reports/TEST-com.ruanzhu.doorhandle.module.app.service.impl.ChatProjectServiceImplTest.xml",
+          "bytes": 98493,
+          "sha256": "5bce2ae9c8e71c54d713b3b0b85e84dedf8aae73a7c7059b2ace8501f9318889"
+        },
+        {
+          "path": "reports/java/doorhandle-module-app/surefire-reports/TEST-com.ruanzhu.doorhandle.module.app.service.impl.ChatSessionServiceImplTest.xml",
+          "bytes": 100201,
+          "sha256": "16d2d6787ba90fde52a8135e46c9e63a062cdbd91b69a180dabaa14179627c46"
+        },
+        {
+          "path": "reports/java/doorhandle-module-app/surefire-reports/TEST-com.ruanzhu.doorhandle.module.app.service.impl.CompactChatMigrationMySqlTest.xml",
+          "bytes": 100243,
+          "sha256": "e0975a0c6cd1c19505a132c0713988ac52991ccebc7aa8758b247bffa6656784"
+        },
+        {
+          "path": "reports/java/doorhandle-module-app/surefire-reports/TEST-com.ruanzhu.doorhandle.module.app.service.impl.ConversationInboxMySqlTest.xml",
+          "bytes": 106577,
+          "sha256": "c195e78ebe89f02aa524883d95d9b8dcdfab20b96992a087fa5e768876c1856b"
+        },
+        {
+          "path": "reports/java/doorhandle-module-app/surefire-reports/TEST-com.ruanzhu.doorhandle.module.app.service.impl.ConversationInboxServiceTest.xml",
+          "bytes": 103229,
+          "sha256": "efee51a50251f04b9e885c51aaa5a7be105cb852b0f133d20804ccd440accf17"
+        },
+        {
+          "path": "reports/java/doorhandle-module-app/surefire-reports/TEST-com.ruanzhu.doorhandle.module.app.service.impl.JdbcWorkflowFencingTest.xml",
+          "bytes": 98360,
+          "sha256": "adcd92d28cfd404e337f0fb9b55d899ce9fe3d49a13cbcf00089de4adc4338a2"
+        },
+        {
+          "path": "reports/java/doorhandle-module-app/surefire-reports/TEST-com.ruanzhu.doorhandle.module.app.service.impl.LegacyChatActionStoreMySqlTest.xml",
+          "bytes": 101242,
+          "sha256": "58e7f1842b8b18189fd4557137654c7d85c4810691bf4ecd53433d24a2c93384"
+        },
+        {
+          "path": "reports/java/doorhandle-module-app/surefire-reports/TEST-com.ruanzhu.doorhandle.module.app.service.impl.MessageExecutionLinksTest.xml",
+          "bytes": 102366,
+          "sha256": "23530fdeca6ac5e087a46a206448b24d67060e15780072b898ee502a81d9f64b"
+        },
+        {
+          "path": "reports/java/doorhandle-module-app/surefire-reports/TEST-com.ruanzhu.doorhandle.module.app.service.impl.SpeechTranscriptionServiceImplTest.xml",
+          "bytes": 98851,
+          "sha256": "670f9462030255b35803474ed8a85a11d7bee95f26a5b2abd50b45e6b414a18b"
+        },
+        {
+          "path": "reports/java/doorhandle-module-app/surefire-reports/TEST-com.ruanzhu.doorhandle.module.app.service.impl.SupportCopyMigrationMySqlTest.xml",
+          "bytes": 99604,
+          "sha256": "d8777573a3cb3afcaf7485c1361d8306f990f310bd3b0546705f28ad8084e27e"
+        },
+        {
+          "path": "reports/java/doorhandle-module-app/surefire-reports/TEST-com.ruanzhu.doorhandle.module.app.service.impl.SystemHealthReadApiImplTest.xml",
+          "bytes": 98924,
+          "sha256": "5be226f6e323cb268ca7d01c1f38f40b1e4c1ea6b677819ee115856b8b25dbc8"
+        },
+        {
+          "path": "reports/java/doorhandle-module-app/surefire-reports/TEST-com.ruanzhu.doorhandle.module.app.service.impl.WorkspaceFileContentTest.xml",
+          "bytes": 100239,
+          "sha256": "21d1e28837d2751e97a4146d98ddf2c2f2ea80484108ec8f420d30645f41c78d"
+        },
+        {
+          "path": "reports/java/doorhandle-module-app/surefire-reports/TEST-com.ruanzhu.doorhandle.module.app.service.impl.WorkspaceMigrationMySqlTest.xml",
+          "bytes": 3088,
+          "sha256": "5925ad42838dec728a735c520006fc7d5c011cb5c83ea1472dccb69138ab3a44"
+        },
+        {
+          "path": "reports/java/doorhandle-module-app/surefire-reports/TEST-com.ruanzhu.doorhandle.module.app.service.knowledge.KnowledgeTextExtractorTest.xml",
+          "bytes": 98892,
+          "sha256": "468033f4d6965c2f71e6d39783c9be98f5da25be3aa26e8e54c4d030cac97f7e"
+        },
+        {
+          "path": "reports/java/doorhandle-module-app/surefire-reports/TEST-com.ruanzhu.doorhandle.module.app.service.knowledge.QualityKnowledgeMySqlTest.xml",
+          "bytes": 100457,
+          "sha256": "abced3dd1cfec6c966168ea6fc1fad6a1c596ed21cdf905b0f19d36db8a892f4"
+        },
+        {
+          "path": "reports/java/doorhandle-module-detection/surefire-reports/TEST-com.ruanzhu.doorhandle.module.detection.api.DetectionAgentReadApiImplTest.xml",
+          "bytes": 72515,
+          "sha256": "3214d32a595b250fecbdeb563de2da949d51f16dc0566541a8fd627c8643a389"
+        },
+        {
+          "path": "reports/java/doorhandle-module-detection/surefire-reports/TEST-com.ruanzhu.doorhandle.module.detection.api.DetectionAssignmentApiImplTest.xml",
+          "bytes": 72731,
+          "sha256": "3981a6e13c1fdd347cc896bfd88db442c7ebb15875de1f8512a6a01128e3846f"
+        },
+        {
+          "path": "reports/java/doorhandle-module-detection/surefire-reports/TEST-com.ruanzhu.doorhandle.module.detection.api.DetectionExecutionApiImplTest.xml",
+          "bytes": 83712,
+          "sha256": "fcc43b22c42537b7ff6c775141f37fbd20f97e7c90d3476ac35f1efdb2696c98"
+        },
+        {
+          "path": "reports/java/doorhandle-module-detection/surefire-reports/TEST-com.ruanzhu.doorhandle.module.detection.config.KafkaConfigTest.xml",
+          "bytes": 72178,
+          "sha256": "0951d35176b8bcfa2c47c1f0b21c72ca6cab5b06dffd3771c928165da426f3ec"
+        },
+        {
+          "path": "reports/java/doorhandle-module-detection/surefire-reports/TEST-com.ruanzhu.doorhandle.module.detection.config.properties.KafkaTaskPropertiesTest.xml",
+          "bytes": 73435,
+          "sha256": "208ba63390889c0d34ef741c6000145b644b1bfafd1049664bfeea707194699f"
+        },
+        {
+          "path": "reports/java/doorhandle-module-detection/surefire-reports/TEST-com.ruanzhu.doorhandle.module.detection.controller.QualityReportControllerTest.xml",
+          "bytes": 73338,
+          "sha256": "56852a821fe6fc3c75dbece3678a17a3ec02d221671067d8f538ed6a7a733411"
+        },
+        {
+          "path": "reports/java/doorhandle-module-detection/surefire-reports/TEST-com.ruanzhu.doorhandle.module.detection.security.DetectionTaskAccessPolicyTest.xml",
+          "bytes": 73171,
+          "sha256": "8dd4cad444e499598e1c959a0a94b8df8b6f43da4f5b62a0709e1747f4fc008b"
+        },
+        {
+          "path": "reports/java/doorhandle-module-detection/surefire-reports/TEST-com.ruanzhu.doorhandle.module.detection.service.Core12PersistenceMySqlTest.xml",
+          "bytes": 73974,
+          "sha256": "8950cecebfc8e1e2f0799ceed451ac5aee64fed9bb8dfee31639cef55cd4748e"
+        },
+        {
+          "path": "reports/java/doorhandle-module-detection/surefire-reports/TEST-com.ruanzhu.doorhandle.module.detection.service.CoreCopyMigrationMySqlTest.xml",
+          "bytes": 74559,
+          "sha256": "975be3e1c5456d55aeb4b17b382e26fb3f34e4b5c59b012b03babdcfffe73643"
+        },
+        {
+          "path": "reports/java/doorhandle-module-detection/surefire-reports/TEST-com.ruanzhu.doorhandle.module.detection.service.DetectionDuplicateResolutionTest.xml",
+          "bytes": 72536,
+          "sha256": "dbe6972b2e3559330ce9ae4c999a97472e36b4daa8c1de63f9e3537c769f641b"
+        },
+        {
+          "path": "reports/java/doorhandle-module-detection/surefire-reports/TEST-com.ruanzhu.doorhandle.module.detection.service.DetectionFingerprintProjectionMySqlTest.xml",
+          "bytes": 73523,
+          "sha256": "ec25df29d9b2215d961e7ca4801fff8dc645a8cf4371a98c94915ce2f0954241"
+        },
+        {
+          "path": "reports/java/doorhandle-module-detection/surefire-reports/TEST-com.ruanzhu.doorhandle.module.detection.service.DetectionIdentityServiceTest.xml",
+          "bytes": 73751,
+          "sha256": "7401699afe82b135c60e3d75be195e84a64522459d1e6d1014b5d5c081ca5d6c"
+        },
+        {
+          "path": "reports/java/doorhandle-module-detection/surefire-reports/TEST-com.ruanzhu.doorhandle.module.detection.service.DetectionWorkUnitTransitionTest.xml",
+          "bytes": 72854,
+          "sha256": "fbfacd045b0d3151127a611dc9f198f793d473a7df475ed6050a741fad8ce21c"
+        },
+        {
+          "path": "reports/java/doorhandle-module-detection/surefire-reports/TEST-com.ruanzhu.doorhandle.module.detection.service.DetectionWorkloadDashboardServiceTest.xml",
+          "bytes": 73264,
+          "sha256": "0870ab1b8acade86dddf639c45b8e3c0cfe88b32f67232e042981aefae61d8ff"
+        },
+        {
+          "path": "reports/java/doorhandle-module-detection/surefire-reports/TEST-com.ruanzhu.doorhandle.module.detection.service.DigestCopyMigrationMySqlTest.xml",
+          "bytes": 73445,
+          "sha256": "42eecfbdc68e022f256fd2b0de1bb4c52572a64d86c3aa9ab8f88bac7e743df3"
+        },
+        {
+          "path": "reports/java/doorhandle-module-detection/surefire-reports/TEST-com.ruanzhu.doorhandle.module.detection.service.HistoricalDetectionSummaryMySqlTest.xml",
+          "bytes": 73196,
+          "sha256": "350daa693face38995a8eb1a13c7ca361fdec1b9438cc9d1c2a8d7f2a8140e4d"
+        },
+        {
+          "path": "reports/java/doorhandle-module-detection/surefire-reports/TEST-com.ruanzhu.doorhandle.module.detection.service.IdentityEvidenceMySqlTest.xml",
+          "bytes": 73205,
+          "sha256": "4a09250149e7fba507037a50fec071ffecb1aad6d869a4258007dd5ab8d95a50"
+        },
+        {
+          "path": "reports/java/doorhandle-module-detection/surefire-reports/TEST-com.ruanzhu.doorhandle.module.detection.service.IdentityMigrationMySqlTest.xml",
+          "bytes": 73490,
+          "sha256": "f2e2940080f80ee3889b29363c16065b370faaa566caf9e8d108e7c063463616"
+        },
+        {
+          "path": "reports/java/doorhandle-module-detection/surefire-reports/TEST-com.ruanzhu.doorhandle.module.detection.service.IdentityPersistenceMySqlTest.xml",
+          "bytes": 73186,
+          "sha256": "18c3e7135645a719d9710d0d3a7a4e418349043f87eebc3364d28b1ebc8688c8"
+        },
+        {
+          "path": "reports/java/doorhandle-module-detection/surefire-reports/TEST-com.ruanzhu.doorhandle.module.detection.service.LocalDetectionFileAuthorizationServiceTest.xml",
+          "bytes": 72439,
+          "sha256": "626675f123c02b061e468e89ea5ddf508d68447a2afbe77ef5e06c03f681dee1"
+        },
+        {
+          "path": "reports/java/doorhandle-module-detection/surefire-reports/TEST-com.ruanzhu.doorhandle.module.detection.service.OssPreviewAuthorizationServiceTest.xml",
+          "bytes": 73052,
+          "sha256": "0f622a9f18b5c44cdce875ea728cf7de3b3f7f148a0d23fa5aff95008e3bb31d"
+        },
+        {
+          "path": "reports/java/doorhandle-module-detection/surefire-reports/TEST-com.ruanzhu.doorhandle.module.detection.service.QualityDigestMySqlTest.xml",
+          "bytes": 75098,
+          "sha256": "afefedcb7d6eceb65f6b24a4e86578d75bffa91a76188e7d5f9382f61f948558"
+        },
+        {
+          "path": "reports/java/doorhandle-module-detection/surefire-reports/TEST-com.ruanzhu.doorhandle.module.detection.service.QualityReportServiceTest.xml",
+          "bytes": 78936,
+          "sha256": "393cfa93ca0dc4baf9f03a3b992fbf90d4eed11a5c9dc1ca8bc41bec72c69179"
+        },
+        {
+          "path": "reports/java/doorhandle-module-detection/surefire-reports/TEST-com.ruanzhu.doorhandle.module.detection.service.detection.DetectionDispatchOutboxTest.xml",
+          "bytes": 78094,
+          "sha256": "ba6347e3fe8483e87383a116d2f9442d3cc0740b5cf8c7d9312e71855933a729"
+        },
+        {
+          "path": "reports/java/doorhandle-module-detection/surefire-reports/TEST-com.ruanzhu.doorhandle.module.detection.service.detection.DetectionRuntimeCopyMySqlTest.xml",
+          "bytes": 73610,
+          "sha256": "e10bf0dbbc072ff77781cac197583c1892cb2e0a8a090b8226878443a3181a4e"
+        },
+        {
+          "path": "reports/java/doorhandle-module-detection/surefire-reports/TEST-com.ruanzhu.doorhandle.module.detection.service.detection.DetectionTaskEventPublisherTest.xml",
+          "bytes": 73747,
+          "sha256": "898a0bbab23a5f78d198608520717b559449df487df74519a06fc036c0db2b64"
+        },
+        {
+          "path": "reports/java/doorhandle-module-detection/surefire-reports/TEST-com.ruanzhu.doorhandle.module.detection.service.detection.DetectionTaskFinishedEventListenerTest.xml",
+          "bytes": 72226,
+          "sha256": "a15b45d1d1da70c5462305d8535bac0d58377b92d644c3a5dd5d359d82204c4c"
+        },
+        {
+          "path": "reports/java/doorhandle-module-detection/surefire-reports/TEST-com.ruanzhu.doorhandle.module.detection.service.impl.DashboardServiceImplTest.xml",
+          "bytes": 72398,
+          "sha256": "cff7d935d819bc195fa4f18ba78c7d2fe51f0d21377c8aa84808e0b07760e50d"
+        },
+        {
+          "path": "reports/java/doorhandle-module-detection/surefire-reports/TEST-com.ruanzhu.doorhandle.module.detection.service.impl.DetectionTaskEventTest.xml",
+          "bytes": 73977,
+          "sha256": "0b4634f3a39b04260de4b4c70545497e86b4fddc807a65b34fb319fa724cd7e8"
+        },
+        {
+          "path": "reports/java/doorhandle-module-detection/surefire-reports/TEST-com.ruanzhu.doorhandle.module.detection.service.impl.DetectionTaskQualityTest.xml",
+          "bytes": 74219,
+          "sha256": "56f72ef1d8fb4befe61ec537afc432e978600773c946eda0d03257fe6bf9ff33"
+        },
+        {
+          "path": "reports/java/doorhandle-module-detection/surefire-reports/TEST-com.ruanzhu.doorhandle.module.detection.service.impl.DetectionTaskTraceTest.xml",
+          "bytes": 72888,
+          "sha256": "d8306567cb89717981f766cca183c1156fba71447ceca97e0469cf4cb1d8e17e"
+        },
+        {
+          "path": "reports/java/doorhandle-module-detection/surefire-reports/TEST-com.ruanzhu.doorhandle.module.detection.service.impl.DetectionTaskUploadTest.xml",
+          "bytes": 74277,
+          "sha256": "3af44c1626c9d79b3e6dc817a9da59f8cef631828c3bcd88993eb209954af6a7"
+        },
+        {
+          "path": "reports/java/doorhandle-module-detection/surefire-reports/TEST-com.ruanzhu.doorhandle.module.detection.service.impl.ImageDetectionServiceImplTest.xml",
+          "bytes": 73773,
+          "sha256": "18d1ebe244007ce1584e4bf392071ba25543633f5bff3db92aa57e67e6c66aea"
+        },
+        {
+          "path": "reports/java/doorhandle-module-detection/surefire-reports/TEST-com.ruanzhu.doorhandle.module.detection.service.impl.ImageInferenceServiceImplTest.xml",
+          "bytes": 72778,
+          "sha256": "e043fd2e901af2023ea6e1f9a152b9c302c03a942051d293d1881cb538deecd3"
+        },
+        {
+          "path": "reports/java/doorhandle-module-detection/surefire-reports/TEST-com.ruanzhu.doorhandle.module.detection.service.report.ReportEventDeliveryTest.xml",
+          "bytes": 75991,
+          "sha256": "1b1d319687c390f0d23177fb4bedfac4af3c205e38ed9ed7392c7544adba6340"
+        },
+        {
+          "path": "reports/java/doorhandle-module-detection/surefire-reports/TEST-com.ruanzhu.doorhandle.module.detection.service.report.ReportLegacyClockBindingTest.xml",
+          "bytes": 72605,
+          "sha256": "6b4079c8fa4cb6469a7b52be3454cf314a98b53e72649712f30f9114bcb0c769"
+        },
+        {
+          "path": "reports/java/doorhandle-module-detection/surefire-reports/TEST-com.ruanzhu.doorhandle.module.detection.service.report.ReportWorkflowMigrationMySqlTest.xml",
+          "bytes": 76160,
+          "sha256": "a0df0c6128f5ea17abe2977281a763cd93aa75743986f14a685ccd640769f9fb"
+        },
+        {
+          "path": "reports/java/doorhandle-module-device/surefire-reports/TEST-com.ruanzhu.doorhandle.module.device.api.ResourceAgentAlertApiTest.xml",
+          "bytes": 47066,
+          "sha256": "c4c37b8a68f5f61139ebbee1caaea2948b7c9ff2fc602facc4080cbd1703a7f3"
+        },
+        {
+          "path": "reports/java/doorhandle-module-device/surefire-reports/TEST-com.ruanzhu.doorhandle.module.device.api.ResourceAgentReadApiImplTest.xml",
+          "bytes": 46560,
+          "sha256": "ad09df25a24621a6d6f0d1fb6a5474f52e5e9acd45f555e2fb957262aa4005f5"
+        },
+        {
+          "path": "reports/java/doorhandle-module-device/surefire-reports/TEST-com.ruanzhu.doorhandle.module.device.controller.ManagementAuthorizationTest.xml",
+          "bytes": 46872,
+          "sha256": "669109663bec0cdc45198aa564df4719e0915ae06914945d0b62783d97eb54d2"
+        },
+        {
+          "path": "reports/java/doorhandle-module-device/surefire-reports/TEST-com.ruanzhu.doorhandle.module.device.service.impl.DeviceServiceImplTest.xml",
+          "bytes": 47033,
+          "sha256": "6d53849a68760b81c6074799abf7915b260e9fd6d9c2b47687d66e61549e04b4"
+        },
+        {
+          "path": "reports/java/doorhandle-module-infra/surefire-reports/TEST-com.ruanzhu.doorhandle.module.infra.security.OperationAuditInterceptorTest.xml",
+          "bytes": 56515,
+          "sha256": "a28dd25c80267d4a679a73a4cbb8d196b4d422b4f460b7828839fa1e4de28322"
+        },
+        {
+          "path": "reports/java/doorhandle-module-infra/surefire-reports/TEST-com.ruanzhu.doorhandle.module.infra.service.InfraOperationAuditMySqlTest.xml",
+          "bytes": 58462,
+          "sha256": "6306031846ddf496ec834f5cedae4e3c2875f069bbac0bd9427d2d7eab3aad4f"
+        },
+        {
+          "path": "reports/java/doorhandle-module-infra/surefire-reports/TEST-com.ruanzhu.doorhandle.module.infra.service.impl.OperationAuditServiceImplTest.xml",
+          "bytes": 56508,
+          "sha256": "5d5fd8fa5244ac6fdf1ad1db9715100704316ede43c6d8a476a5d75747400433"
+        },
+        {
+          "path": "reports/java/doorhandle-module-model/surefire-reports/TEST-com.ruanzhu.doorhandle.module.model.api.ModelAgentOperationsApiTest.xml",
+          "bytes": 50627,
+          "sha256": "840940a4bc0be137590a1cde4226c27d802b4a652be9509bdd2d9fc21d36aa7d"
+        },
+        {
+          "path": "reports/java/doorhandle-module-model/surefire-reports/TEST-com.ruanzhu.doorhandle.module.model.api.ModelAgentReadApiImplTest.xml",
+          "bytes": 50227,
+          "sha256": "022ff7b2a4ad6b005e0bea3edf06e677e4575349d2bd114b109c8e95d8b09a23"
+        },
+        {
+          "path": "reports/java/doorhandle-module-model/surefire-reports/TEST-com.ruanzhu.doorhandle.module.model.service.ModelFileGovernanceMySqlTest.xml",
+          "bytes": 52758,
+          "sha256": "7d266b3e5546aefcd27e9fa0f74078167399a5fa4d7ebb804af0751e65cb7415"
+        },
+        {
+          "path": "reports/java/doorhandle-module-model/surefire-reports/TEST-com.ruanzhu.doorhandle.module.model.service.ModelLegacyClockBindingTest.xml",
+          "bytes": 50634,
+          "sha256": "d68340e8beee5b7225d4e3ef8f0f1bc0813dc270ddba929fc85a3d13a5a5584b"
+        },
+        {
+          "path": "reports/java/doorhandle-module-model/surefire-reports/TEST-com.ruanzhu.doorhandle.module.model.service.ModelOperationAuditMySqlTest.xml",
+          "bytes": 53239,
+          "sha256": "5e824c4bfc969a786e46b2fcda0ace7b841e17a0b68aec7f5133a17dd6690586"
+        },
+        {
+          "path": "reports/java/doorhandle-module-model/surefire-reports/TEST-com.ruanzhu.doorhandle.module.model.service.impl.ModelInfoServiceImplTest.xml",
+          "bytes": 59765,
+          "sha256": "495682c8dcb3120b08e7fedb772587cf4faaa71048d2f7c63e5ce61f488ee580"
+        },
+        {
+          "path": "reports/java/doorhandle-module-model/surefire-reports/TEST-com.ruanzhu.doorhandle.module.model.service.impl.ModelServiceImplTest.xml",
+          "bytes": 51546,
+          "sha256": "a519d9c49c944de2111b7004aeb857655afe3499227d3c9776428bce13e8aa6b"
+        },
+        {
+          "path": "reports/java/doorhandle-module-model/surefire-reports/TEST-com.ruanzhu.doorhandle.module.model.util.OnnxImageDetectionUtilCategoryTest.xml",
+          "bytes": 50054,
+          "sha256": "4d4be2943ab657b42c1ba19cbfde2d9a668982b6b583bb3094205c7f4b51f64b"
+        },
+        {
+          "path": "reports/java/doorhandle-module-system/surefire-reports/TEST-com.ruanzhu.doorhandle.module.system.api.AgentUserDirectoryImplTest.xml",
+          "bytes": 51738,
+          "sha256": "aeced55dbd893b92e35786c2ef065541398d7dacb6102bcaf6e4f53288b5292b"
+        },
+        {
+          "path": "reports/java/doorhandle-module-system/surefire-reports/TEST-com.ruanzhu.doorhandle.module.system.api.BusinessUserDirectoryImplTest.xml",
+          "bytes": 52199,
+          "sha256": "a078ca41aed1325b539759b38005c3498d4cead5328e595b162b6870afb5df58"
+        },
+        {
+          "path": "reports/java/doorhandle-module-system/surefire-reports/TEST-com.ruanzhu.doorhandle.module.system.controller.AuthControllerTest.xml",
+          "bytes": 51726,
+          "sha256": "d8e8f45f170111c12bf30f263e0a740274e9dc91ba352609065157b0366ee05b"
+        },
+        {
+          "path": "reports/java/doorhandle-module-system/surefire-reports/TEST-com.ruanzhu.doorhandle.module.system.controller.OrganizationControllerTest.xml",
+          "bytes": 52111,
+          "sha256": "27dc5576fb02dafa287c72a424731e597ec15060dd7af620165b5d463b5e1714"
+        },
+        {
+          "path": "reports/java/doorhandle-module-system/surefire-reports/TEST-com.ruanzhu.doorhandle.module.system.security.AuthorizationExceptionHandlerTest.xml",
+          "bytes": 52017,
+          "sha256": "b4d808a589e48dc0d674bfc8f644a44e794422bdec6fc2f3f3037c4a67626d68"
+        },
+        {
+          "path": "reports/java/doorhandle-module-system/surefire-reports/TEST-com.ruanzhu.doorhandle.module.system.security.JwtAuthenticationFilterTest.xml",
+          "bytes": 52151,
+          "sha256": "140cea9454c51cadf98d5661daca23a720c218293e0361e4916ff14eccb9503b"
+        },
+        {
+          "path": "reports/java/doorhandle-module-system/surefire-reports/TEST-com.ruanzhu.doorhandle.module.system.security.SensitiveDataSanitizerTest.xml",
+          "bytes": 51561,
+          "sha256": "34b5148dc428e7ccf27aab37a3836de84569682022488d293534b96cf77f7375"
+        },
+        {
+          "path": "reports/java/doorhandle-module-system/surefire-reports/TEST-com.ruanzhu.doorhandle.module.system.service.AccountIdentityServiceTest.xml",
+          "bytes": 55537,
+          "sha256": "369f848127d07421dc69a1292241cc4509504e2bde026aad6243e9f3d45f59bc"
+        },
+        {
+          "path": "reports/java/doorhandle-module-system/surefire-reports/TEST-com.ruanzhu.doorhandle.module.system.service.BusinessMutationAuditTest.xml",
+          "bytes": 52771,
+          "sha256": "c5be7143497aaef14a79ebb416a8f44783ad3fe2904e395856b6cf7e0ee06ccc"
+        },
+        {
+          "path": "reports/java/doorhandle-module-system/surefire-reports/TEST-com.ruanzhu.doorhandle.module.system.service.FileDeliveryAuditMySqlTest.xml",
+          "bytes": 52822,
+          "sha256": "cb59670d9eaf57d20dc7cb705b155a1fdc82f4fd0797ad151b2921da98ec5837"
+        },
+        {
+          "path": "reports/java/doorhandle-module-system/surefire-reports/TEST-com.ruanzhu.doorhandle.module.system.service.OperationsAuditServiceTest.xml",
+          "bytes": 53092,
+          "sha256": "67ebc32e8fd7123522c321059ae8b7c0e283077d764baa13d1984776251efbbe"
+        },
+        {
+          "path": "reports/java/doorhandle-module-system/surefire-reports/TEST-com.ruanzhu.doorhandle.module.system.service.OperationsCopyMySqlTest.xml",
+          "bytes": 53872,
+          "sha256": "479f7df25415cec20dffc847f9f2bd583388be8bdce5f1799aa46bfb416b1601"
+        },
+        {
+          "path": "reports/java/doorhandle-module-system/surefire-reports/TEST-com.ruanzhu.doorhandle.module.system.service.OrganizationBindingAuditMigrationMySqlTest.xml",
+          "bytes": 53808,
+          "sha256": "5e38b06686b1afdadf6f9e83b0b97625bd732f16cef651cc2f9f9ea07bdc299a"
+        },
+        {
+          "path": "reports/java/doorhandle-module-system/surefire-reports/TEST-com.ruanzhu.doorhandle.module.system.service.UserDetailsServiceImplTest.xml",
+          "bytes": 51702,
+          "sha256": "1d6438d12b2b2654a800c0f3fda6848e4f5d01c771525bac3e83ad84a136343f"
+        },
+        {
+          "path": "reports/java/doorhandle-module-system/surefire-reports/TEST-com.ruanzhu.doorhandle.module.system.util.JwtUtilTest.xml",
+          "bytes": 51659,
+          "sha256": "a2bf8971a1691061183c03c52da56dd55764eb3bdb47f906f091e6922b10d88f"
+        },
+        {
+          "path": "reports/java/doorhandle-server/surefire-reports/TEST-com.ruanzhu.doorhandle.server.AgentCardsLocalMysqlTest.xml",
+          "bytes": 98279,
+          "sha256": "a75c93c44cd067ed8ca64f584e2d64acd4560b181b88d9326f00a0dcbca1a458"
+        },
+        {
+          "path": "reports/java/doorhandle-server/surefire-reports/TEST-com.ruanzhu.doorhandle.server.AgentConfirmationLocalMysqlTest.xml",
+          "bytes": 98289,
+          "sha256": "91ff875a0f8ce32dd7eb9ecce82983ebcc924ae6d729ea42b389a68ccaefe457"
+        },
+        {
+          "path": "reports/java/doorhandle-server/surefire-reports/TEST-com.ruanzhu.doorhandle.server.AgentReportLocalMysqlTest.xml",
+          "bytes": 98282,
+          "sha256": "bd154265c9feafc68bdf5668a0803a9058c4207d8917ee576d3b780127813d18"
+        },
+        {
+          "path": "reports/java/doorhandle-server/surefire-reports/TEST-com.ruanzhu.doorhandle.server.AgentSessionLocalMysqlTest.xml",
+          "bytes": 98300,
+          "sha256": "65fc9375275ec433b4ca377761c688c7c45e9176287fe5f80c27bcc3784e1cb0"
+        },
+        {
+          "path": "reports/java/doorhandle-server/surefire-reports/TEST-com.ruanzhu.doorhandle.server.ApplicationTimeZoneTest.xml",
+          "bytes": 98178,
+          "sha256": "a0396e801ed615eb0790b3d0e51cde8f6ab76d7d352019cf1d8f7cf82db3718f"
+        },
+        {
+          "path": "reports/java/doorhandle-server/surefire-reports/TEST-com.ruanzhu.doorhandle.server.ConversationControlIntegrationTest.xml",
+          "bytes": 101111,
+          "sha256": "cd04047f6540e57d8abd05a2e195925bdb9b47f19b89de3a1d40967fa73c09f6"
+        },
+        {
+          "path": "reports/java/doorhandle-server/surefire-reports/TEST-com.ruanzhu.doorhandle.server.DetectionScopeLocalMysqlTest.xml",
+          "bytes": 98280,
+          "sha256": "f22ce8b9c6460743d4ed0b046059db151e31814fe2d0cce863249371ee8719c9"
+        },
+        {
+          "path": "reports/java/doorhandle-server/surefire-reports/TEST-com.ruanzhu.doorhandle.server.EcsMysqlFixtureTest.xml",
+          "bytes": 99111,
+          "sha256": "5ae11e73fe07780c8884225becc8599beb4c89b2e6959064c31a891209c0b573"
+        },
+        {
+          "path": "reports/java/doorhandle-server/surefire-reports/TEST-com.ruanzhu.doorhandle.server.LocalMcpMysqlTest.xml",
+          "bytes": 98286,
+          "sha256": "cac2caf528a5de00e44d0c1e43a97ef2ec55f1321414b126d362187cbb9b45cf"
+        },
+        {
+          "path": "reports/java/doorhandle-server/surefire-reports/TEST-com.ruanzhu.doorhandle.server.MemoryGovernanceLocalMysqlTest.xml",
+          "bytes": 98554,
+          "sha256": "08ed6cf8dfe4e772dcd9344fa4a085eaa35ff55afde97d72e0c1946c465083c3"
+        },
+        {
+          "path": "reports/java/doorhandle-server/surefire-reports/TEST-com.ruanzhu.doorhandle.server.ModelFactsMySqlTest.xml",
+          "bytes": 98267,
+          "sha256": "3a9a25ceda171a3c1142e505a9fc1eefc46eb44fb67ec7b67be741f6d49e8ab4"
+        },
+        {
+          "path": "reports/java/doorhandle-server/surefire-reports/TEST-com.ruanzhu.doorhandle.server.RedisCacheSerializationTest.xml",
+          "bytes": 99078,
+          "sha256": "3c877aa028c0d94fbea2f6b28c70658a64a44dc5badaa8e3cef14fe9bb28a678"
+        },
+        {
+          "path": "reports/java/doorhandle-server/surefire-reports/TEST-com.ruanzhu.doorhandle.server.ReportEventLocalMysqlTest.xml",
+          "bytes": 98291,
+          "sha256": "af8bc64242c181b2dc5374f26dc8db1d6206c5ab93569bceb9fce3dc7d864cab"
+        },
+        {
+          "path": "reports/java/doorhandle-server/surefire-reports/TEST-com.ruanzhu.doorhandle.server.SkillCommandLocalMysqlTest.xml",
+          "bytes": 98302,
+          "sha256": "723e942441100b3fc8039042d77c0066832d26ef14887f80f91731e6135bca5a"
+        },
+        {
+          "path": "reports/java/doorhandle-server/surefire-reports/TEST-com.ruanzhu.doorhandle.server.SkillEvolutionLocalMysqlTest.xml",
+          "bytes": 98303,
+          "sha256": "a17d4517091ea8e987d0b9874d9f63a99cb318d256f310b7e5b2057146a2bb1a"
+        }
+      ],
+      "verificationReceiptSha256": "c0f8f89f48516c3e5346f6c0aee6721cf2a8cccd6c2235ffcf4e5f9e6f948c70",
+      "toolManifestSha256": "ff4a9ca035518f8b619444ee5d24bc1488b288ba7bab343c187b8858815d7a8f",
+      "evidenceArchiveSha256": "8dcf305a77634064e8fbcdbe15c946b830890982d76e116d1036de08520e789e",
+      "evidenceArchiveBytes": 1579545,
+      "reviewedAuditSha256": "66c4daa97fe7b0d77c580e2ea6abc6166b94f07d6e108b7a8b47a104c0c53189",
+      "changes": [
+        {
+          "path": "verification/ci-97-abedbf81a73d/checkout/work/ci-evidence/receipt.json",
+          "directory": false,
+          "beforeMode": 436,
+          "afterMode": 384,
+          "nlink": 1
+        },
+        {
+          "path": "verification/ci-97-abedbf81a73d/checkout/work/ci-evidence/frontend-agent-build.log",
+          "directory": false,
+          "beforeMode": 436,
+          "afterMode": 384,
+          "nlink": 1
+        },
+        {
+          "path": "verification/ci-97-abedbf81a73d/checkout/work/ci-evidence/frontend-agent-install.log",
+          "directory": false,
+          "beforeMode": 436,
+          "afterMode": 384,
+          "nlink": 1
+        },
+        {
+          "path": "verification/ci-97-abedbf81a73d/checkout/work/ci-evidence/frontend-agent-test.log",
+          "directory": false,
+          "beforeMode": 436,
+          "afterMode": 384,
+          "nlink": 1
+        },
+        {
+          "path": "verification/ci-97-abedbf81a73d/checkout/work/ci-evidence/frontend-build.log",
+          "directory": false,
+          "beforeMode": 436,
+          "afterMode": 384,
+          "nlink": 1
+        },
+        {
+          "path": "verification/ci-97-abedbf81a73d/checkout/work/ci-evidence/frontend-install.log",
+          "directory": false,
+          "beforeMode": 436,
+          "afterMode": 384,
+          "nlink": 1
+        },
+        {
+          "path": "verification/ci-97-abedbf81a73d/checkout/work/ci-evidence/frontend-test.log",
+          "directory": false,
+          "beforeMode": 436,
+          "afterMode": 384,
+          "nlink": 1
+        },
+        {
+          "path": "verification/ci-97-abedbf81a73d/checkout/work/ci-evidence/python.log",
+          "directory": false,
+          "beforeMode": 436,
+          "afterMode": 384,
+          "nlink": 1
+        },
+        {
+          "path": "verification/ci-97-abedbf81a73d/checkout/work/ci-evidence/java-suite-001.log",
+          "directory": false,
+          "beforeMode": 436,
+          "afterMode": 384,
+          "nlink": 1
+        },
+        {
+          "path": "verification/ci-97-abedbf81a73d/checkout/work/ci-evidence/java",
+          "directory": true,
+          "beforeMode": 509,
+          "afterMode": 448,
+          "nlink": 13
+        },
+        {
+          "path": "verification/ci-97-abedbf81a73d/checkout/work/ci-evidence/java/doorhandle-common",
+          "directory": true,
+          "beforeMode": 509,
+          "afterMode": 448,
+          "nlink": 3
+        },
+        {
+          "path": "verification/ci-97-abedbf81a73d/checkout/work/ci-evidence/java/doorhandle-contracts",
+          "directory": true,
+          "beforeMode": 509,
+          "afterMode": 448,
+          "nlink": 3
+        },
+        {
+          "path": "verification/ci-97-abedbf81a73d/checkout/work/ci-evidence/java/doorhandle-framework",
+          "directory": true,
+          "beforeMode": 509,
+          "afterMode": 448,
+          "nlink": 3
+        },
+        {
+          "path": "verification/ci-97-abedbf81a73d/checkout/work/ci-evidence/java/doorhandle-module-ai",
+          "directory": true,
+          "beforeMode": 509,
+          "afterMode": 448,
+          "nlink": 3
+        },
+        {
+          "path": "verification/ci-97-abedbf81a73d/checkout/work/ci-evidence/java/doorhandle-module-app",
+          "directory": true,
+          "beforeMode": 509,
+          "afterMode": 448,
+          "nlink": 3
+        },
+        {
+          "path": "verification/ci-97-abedbf81a73d/checkout/work/ci-evidence/java/doorhandle-module-detection",
+          "directory": true,
+          "beforeMode": 509,
+          "afterMode": 448,
+          "nlink": 3
+        },
+        {
+          "path": "verification/ci-97-abedbf81a73d/checkout/work/ci-evidence/java/doorhandle-module-device",
+          "directory": true,
+          "beforeMode": 509,
+          "afterMode": 448,
+          "nlink": 3
+        },
+        {
+          "path": "verification/ci-97-abedbf81a73d/checkout/work/ci-evidence/java/doorhandle-module-infra",
+          "directory": true,
+          "beforeMode": 509,
+          "afterMode": 448,
+          "nlink": 3
+        },
+        {
+          "path": "verification/ci-97-abedbf81a73d/checkout/work/ci-evidence/java/doorhandle-module-model",
+          "directory": true,
+          "beforeMode": 509,
+          "afterMode": 448,
+          "nlink": 3
+        },
+        {
+          "path": "verification/ci-97-abedbf81a73d/checkout/work/ci-evidence/java/doorhandle-module-system",
+          "directory": true,
+          "beforeMode": 509,
+          "afterMode": 448,
+          "nlink": 3
+        },
+        {
+          "path": "verification/ci-97-abedbf81a73d/checkout/work/ci-evidence/java/doorhandle-server",
+          "directory": true,
+          "beforeMode": 509,
+          "afterMode": 448,
+          "nlink": 3
+        }
+      ]
+    }
+  ]
+}
