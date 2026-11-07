@@ -12,7 +12,13 @@ public final class PersistentMcpInstallQueue {
     public void schema(){jdbc.queryForList("SELECT resource_id AS operation_id,owner_user_id,mcp_owner_username AS owner_username,mcp_runtime_sha256 AS runtime_sha256,status,mcp_worker_token AS worker_token FROM workflow_instance WHERE kind='MCP_INSTALL_JOB' AND legacy_clock_json IS NULL AND (1=0) ");}
     public void enqueue(AgentActor actor,String operation,String runtimeSha256){
         if(runtimeSha256==null||!runtimeSha256.matches("[a-f0-9]{64}"))throw new IllegalStateException("INSTALL_RUNTIME_IDENTITY_INVALID");
-        jdbc.update("INSERT INTO workflow_instance(resource_id,owner_user_id,mcp_owner_username,mcp_runtime_sha256,status,created_at,updated_at,workflow_id,kind,idempotency_scope,resource_type,payload_version,payload_json,request_id,request_sha256,revision) SELECT v.operation_id,v.owner_user_id,v.owner_username,v.runtime_sha256,v.status,v.created_at,v.updated_at,UUID(),'MCP_INSTALL_JOB','MCP_INSTALL_JOB','MCP_INSTALL_JOB',1,JSON_OBJECT('schemaVersion',1),v.operation_id,SHA2(v.operation_id,256),0 FROM (SELECT ? AS operation_id,? AS owner_user_id,? AS owner_username,? AS runtime_sha256,'QUEUED' AS status,UTC_TIMESTAMP(6) AS created_at,UTC_TIMESTAMP(6) AS updated_at) v",operation,actor.userId(),actor.username(),runtimeSha256);
+        jdbc.update("""
+            INSERT INTO workflow_instance(resource_id,owner_user_id,mcp_owner_username,mcp_runtime_sha256,
+              status,created_at,updated_at,workflow_id,kind,idempotency_scope,resource_type,
+              payload_version,payload_json,request_id,request_sha256,revision)
+            VALUES(?,?,?,?,'QUEUED',UTC_TIMESTAMP(6),UTC_TIMESTAMP(6),UUID(),
+              'MCP_INSTALL_JOB','MCP_INSTALL_JOB','MCP_INSTALL_JOB',1,JSON_OBJECT('schemaVersion',1),?,SHA2(?,256),0)
+            """,operation,actor.userId(),actor.username(),runtimeSha256,operation,operation);
     }
     public Optional<Job> next(){
         var rows=jdbc.queryForList("SELECT resource_id AS operation_id,owner_user_id,mcp_owner_username AS owner_username,mcp_runtime_sha256 AS runtime_sha256 FROM workflow_instance WHERE kind='MCP_INSTALL_JOB' AND legacy_clock_json IS NULL AND (status='QUEUED') ORDER BY id LIMIT 1");

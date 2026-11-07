@@ -73,6 +73,57 @@ function Assert-GlobalClientOptions {
         }
     }
 }
+function Assert-ReviewedServerCommand([string]$CommandLine) {
+    # Closed Windows quoting subset: executable, one exact --defaults-file and
+    # optional service name. No port/datadir/suffix/include/other override.
+    Require-Export ($CommandLine -and $CommandLine.Length -le 8192 -and
+        $CommandLine -notmatch '[\x00-\x08\x0A-\x1F]' -and -not $CommandLine.Contains('\"')) 'Server command-line metadata is unavailable or outside the reviewed quoting subset.'
+    $arguments = [Collections.Generic.List[string]]::new(); $previous = 0
+    foreach ($token in [regex]::Matches($CommandLine, '"[^"]*"|[^\s"]+="[^"]*"|[^\s"]+')) {
+        $gap = $CommandLine.Substring($previous, $token.Index - $previous)
+        Require-Export ($gap.Trim().Length -eq 0 -and ($arguments.Count -eq 0 -or $gap.Length -gt 0)) 'The server command line contains unsupported quoting.'
+        $arguments.Add($token.Value.Replace('"', '')); $previous = $token.Index + $token.Length
+    }
+    Require-Export ($CommandLine.Substring($previous).Trim().Length -eq 0 -and $arguments.Count -in @(2,3)) 'The server command line contains an unsupported override.'
+    Require-Export ($arguments[0] -ieq 'C:\Program Files\MySQL\MySQL Server 8.3\bin\mysqld.exe' -and
+        $arguments[1] -ieq '--defaults-file=C:\ProgramData\MySQL\MySQL Server 8.3\my.ini' -and
+        ($arguments.Count -eq 2 -or $arguments[2] -ceq 'MySQL83')) 'The source server does not use solely the reviewed configuration.'
+}
+function Get-ReviewedServerConfiguration {
+    $ini = 'C:\ProgramData\MySQL\MySQL Server 8.3\my.ini'
+    $dataRoot = 'C:\ProgramData\MySQL\MySQL Server 8.3\Data'
+    Assert-Unlinked $ini; Assert-Unlinked $dataRoot
+    Require-Export ((Get-Item -LiteralPath $ini).Length -le 1048576) 'The reviewed source configuration exceeds its metadata bound.'
+    $group = ''; $portSeen = $false; $dataSeen = $false
+    foreach ($line in [IO.File]::ReadAllLines($ini, [Text.UTF8Encoding]::new($false, $true))) {
+        $text = $line.Trim()
+        if (-not $text -or $text.StartsWith('#') -or $text.StartsWith(';')) { continue }
+        Require-Export (-not $text.StartsWith('!')) 'Included server configuration requires separate review.'
+        if ($text -match '^\[([^\]]+)\]$') { $group = $Matches[1].ToLowerInvariant(); continue }
+        if ($group -ne 'server' -and -not $group.StartsWith('mysqld')) { continue }
+        $pieces = $text -split '=', 2; $key = $pieces[0].Trim().Replace('_','-').ToLowerInvariant()
+        $value = if ($pieces.Count -eq 2) { $pieces[1].Trim().Trim([char[]]@('"', "'")) } else { '' }
+        if ($key -eq 'port') { Require-Export ($value -ceq '3306') 'The configured source port is not 3306.'; $portSeen = $true }
+        if ($key -eq 'datadir') {
+            Require-Export ([IO.Path]::GetFullPath($value).TrimEnd('\') -ieq $dataRoot) 'The configured source data directory differs.'
+            $dataSeen = $true
+        }
+        if ($key -eq 'skip-networking') { Require-Export ($value.ToUpperInvariant() -in @('0','FALSE','OFF')) 'A networking override requires separate review.' }
+    }
+    Require-Export ($portSeen -and $dataSeen) 'Explicit source port and data-directory metadata are required.'
+    $autoFile = Join-Path $dataRoot 'auto.cnf'; Assert-Unlinked $autoFile
+    Require-Export ((Get-Item -LiteralPath $autoFile).Length -le 8192) 'The source UUID metadata exceeds its bound.'
+    $uuid = $null; $group = ''
+    foreach ($line in [IO.File]::ReadAllLines($autoFile, [Text.UTF8Encoding]::new($false, $true))) {
+        if ($line.Trim() -match '^\[([^\]]+)\]$') { $group = $Matches[1]; continue }
+        if ($group -ceq 'auto' -and $line -match '^\s*server-uuid\s*=\s*([a-f0-9-]+)\s*$') {
+            Require-Export ($null -eq $uuid) 'The source UUID metadata is ambiguous.'; $uuid = $Matches[1]
+        }
+    }
+    Require-Export ($uuid -cmatch '^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$') 'The source UUID metadata is invalid.'
+    return [ordered]@{ expectedServerUuid = $uuid; expectedDataDirectory = $dataRoot;
+        sourceIniSha256 = File-Sha $ini; sourceUuidMetadataSha256 = File-Sha $autoFile }
+}
 function Get-ReviewedSource {
     $service = Get-CimInstance Win32_Service -Filter "Name='MySQL83'"
     $executable = 'C:\Program Files\MySQL\MySQL Server 8.3\bin\mysqld.exe'
@@ -81,23 +132,46 @@ function Get-ReviewedSource {
     $parent = Get-CimInstance Win32_Process -Filter ("ProcessId=" + $service.ProcessId)
     Require-Export ($null -ne $parent -and -not [string]::IsNullOrWhiteSpace($parent.ExecutablePath)) 'INSUFFICIENT_PROCESS_METADATA: service executable cannot be proven.' 'INSUFFICIENT_PROCESS_METADATA'
     Require-Export ($parent.ExecutablePath -ieq $executable) 'The actual service executable differs from the reviewed installation.'
-    $listeners = @(Get-NetTCPConnection -State Listen -LocalPort 3306 -ErrorAction SilentlyContinue)
-    Require-Export ($listeners.Count -gt 0) 'NO_REVIEWED_TCP_LISTENER: the fixed source endpoint is not listening.' 'NO_REVIEWED_TCP_LISTENER'
+    Assert-ReviewedServerCommand $service.PathName; Assert-ReviewedServerCommand $parent.CommandLine
+    $configuration = Get-ReviewedServerConfiguration
+    # This host reports raw state 0 even for the reachable Jenkins endpoint.
+    # Preserve UNKNOWN as UNKNOWN. It proves an owner-bound endpoint only;
+    # the authorized read-only client must still prove actual server identity.
+    $endpoints = @(Get-CimInstance -Namespace root/StandardCimv2 -ClassName MSFT_NetTCPConnection -Filter 'LocalPort=3306' |
+        Where-Object { $_.RemotePort -eq 0 -and $_.RemoteAddress -in @('0.0.0.0','::') -and
+            $_.LocalAddress -in @('127.0.0.1','0.0.0.0','::') })
+    Require-Export ($endpoints.Count -gt 0) 'No owner-bound unconnected endpoint exists for the fixed source.' 'NO_REVIEWED_TCP_ENDPOINT'
+    $states = @($endpoints | ForEach-Object {
+        $stateProperty = $_.CimInstanceProperties['State']
+        Require-Export ($null -ne $stateProperty -and $null -ne $stateProperty.Value -and
+            ($stateProperty.Value -is [byte] -or $stateProperty.Value -is [uint16] -or
+             $stateProperty.Value -is [uint32] -or $stateProperty.Value -is [int])) 'Missing or untyped TCP state metadata is not an observed UNKNOWN value.'
+        [int]$stateProperty.Value
+    } | Sort-Object -Unique)
+    Require-Export (@($states | Where-Object { $_ -notin @(0,2) }).Count -eq 0) 'The source endpoint has an unsupported raw TCP state.'
     $workers = @()
-    foreach ($pidValue in @($listeners | Select-Object -ExpandProperty OwningProcess -Unique)) {
+    foreach ($pidValue in @($endpoints | Select-Object -ExpandProperty OwningProcess -Unique)) {
         $worker = Get-CimInstance Win32_Process -Filter ("ProcessId=" + $pidValue)
         Require-Export ($null -ne $worker -and -not [string]::IsNullOrWhiteSpace($worker.ExecutablePath)) 'INSUFFICIENT_PROCESS_METADATA: listener executable cannot be proven.' 'INSUFFICIENT_PROCESS_METADATA'
         Require-Export ($worker.ExecutablePath -ieq $executable -and
-            ($worker.ProcessId -eq $service.ProcessId -or $worker.ParentProcessId -eq $service.ProcessId)) 'A listener is neither the reviewed service nor its proven direct mysqld child.'
+            ($worker.ProcessId -eq $service.ProcessId -or $worker.ParentProcessId -eq $service.ProcessId)) 'An endpoint owner is neither the reviewed service nor its proven direct mysqld child.'
+        Assert-ReviewedServerCommand $worker.CommandLine
         $workers += [ordered]@{ processId = [int]$worker.ProcessId; parentProcessId = [int]$worker.ParentProcessId;
             createdAtUtc = $worker.CreationDate.ToUniversalTime().ToString('o') }
     }
-    Require-Export ($workers.Count -eq 1) 'The local source has multiple listener process identities.'
-    return [pscustomobject]@{ serviceProcessId = [int]$service.ProcessId; worker = $workers[0] }
+    Require-Export ($workers.Count -eq 1) 'The local source has multiple endpoint process identities.'
+    return [pscustomobject]@{ serviceProcessId = [int]$service.ProcessId;
+        serviceCreatedAtUtc = $parent.CreationDate.ToUniversalTime().ToString('o'); worker = $workers[0];
+        sourceSeenState = $states; tcpEvidenceKind = if ($states -contains 0) { 'UNKNOWN_OWNER_BOUND_ENDPOINT' } else { 'REPORTED_LISTEN_OWNER_BOUND_ENDPOINT' };
+        configuration = $configuration }
 }
 function Invoke-PrivateClient([string]$Executable, [string[]]$Arguments, [string]$OutputFile,
-                              [string]$Sql = '', [long]$MaximumBytes = 1048576, [int]$TimeoutSeconds = 120) {
+                              [string]$Sql = '', [long]$MaximumBytes = 1048576, [int]$TimeoutSeconds = 120,
+                              [switch]$IdentityProbe) {
     Require-Export (-not (Test-Path -LiteralPath $OutputFile)) 'A client result already exists.'
+    Require-Export ($script:actualClientIdentityVerified -or ($IdentityProbe -and $Executable -ceq $script:mysql -and $Sql -ceq $script:identitySql)) 'No data/DDL export is allowed before the actual client identity is verified.'
+    $freshSource = Get-ReviewedSource
+    Require-Export (($freshSource | ConvertTo-Json -Depth 8 -Compress) -ceq ($script:sourceProcess | ConvertTo-Json -Depth 8 -Compress)) 'Source endpoint/process/configuration changed before credentials could be sent.'
     $start = [Diagnostics.ProcessStartInfo]::new()
     $start.FileName = $Executable
     $start.WorkingDirectory = $script:output
@@ -167,10 +241,12 @@ function Observe-Project([string]$Prefix) {
     $identityFile = Join-Path $script:output "$Prefix-identity-private.json"
     Invoke-PrivateClient $script:mysql ($script:clientArgs + @('--batch','--raw','--silent','--skip-column-names', '--skip-auto-rehash',
         '--init-command=SET SESSION TRANSACTION READ ONLY', '--database=doorhandledb')) $identityFile `
-        "SELECT JSON_OBJECT('schema',DATABASE(),'serverUuid',@@server_uuid,'version',@@version,'port',@@port);" | Out-Null
+        $script:identitySql -IdentityProbe | Out-Null
     $identity = [IO.File]::ReadAllText($identityFile) | ConvertFrom-Json
     Require-Export ($identity.schema -ceq 'doorhandledb' -and $identity.version -match '^8\.3\.' -and $identity.port -eq 3306 -and
-        $identity.serverUuid -match '^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$') 'The actual connection is not the reviewed local MySQL83 project source.'
+        $identity.serverUuid -ceq $script:sourceProcess.configuration.expectedServerUuid -and
+        [IO.Path]::GetFullPath($identity.dataDirectory).TrimEnd('\') -ieq $script:sourceProcess.configuration.expectedDataDirectory) 'The actual connection does not match the proven local UUID/data directory/schema/version/port.' 'ACTUAL_SOURCE_IDENTITY_MISMATCH'
+    $script:actualClientIdentityVerified = $true
     $catalogFile = Join-Path $script:output "$Prefix-catalog-private.jsonl"
     Invoke-PrivateClient $script:mysql ($script:clientArgs + @('--batch','--raw','--silent','--skip-column-names','--skip-auto-rehash',
         '--init-command=SET SESSION TRANSACTION READ ONLY', '--database=doorhandledb')) $catalogFile `
@@ -198,6 +274,8 @@ function Observe-Project([string]$Prefix) {
 }
 
 $output = $null; $optionFile = $null; $loginFile = $null; $stage = 'AUTHORIZATION_REQUIRED'; $failure = $null; $reason = 'EXPORT_FAILED'
+$sourceProcess = $null; $actualClientIdentityVerified = $false
+$identitySql = "SELECT JSON_OBJECT('schema',DATABASE(),'serverUuid',@@server_uuid,'version',@@version,'port',@@port,'dataDirectory',@@datadir);"
 $diskFloor = [long](2GB + 256MB)
 try {
     Require-Export ($IsWindows -and $AcknowledgeOneTimeLocalReadOnlyExport -and
@@ -300,6 +378,8 @@ finally {
 if ($failure) {
     $report = [ordered]@{ schemaVersion = 1; kind = 'doorhandle-local-mysql-export'; status = 'FAILED'; phase = $stage;
         errorType = $failure; reasonCode = $reason; sourceDeleted = $false; servicesChanged = $false; testsExecuted = $false; cloudUploaded = $false;
+        sourceSeenState = if ($sourceProcess) { @($sourceProcess.sourceSeenState) } else { @() };
+        actualClientIdentityVerified = $actualClientIdentityVerified;
         backupRestoreVerified = $false; retirementAllowed = $false }
     if ($output -and (Test-Path -LiteralPath $output -PathType Container)) { Write-PrivateJson (Join-Path $output 'public-failure.json') $report }
     Write-Output ($report | ConvertTo-Json -Compress); throw 'Local export did not complete. Preserve partial business artifacts; no source deletion is authorized.'
@@ -313,6 +393,8 @@ $public = [ordered]@{ schemaVersion = 1; kind = 'doorhandle-local-mysql-export';
     observedRowsAfter = [long](($after.counts | Measure-Object -Property rows -Sum).Sum);
     rowEvidence = 'BEFORE_AFTER_OBSERVATIONS_NOT_THE_DUMP_TRANSACTION'; ddlEvidence = 'MATCHING_RESTRICTED_BEFORE_AFTER_DDL';
     dumpConsistency = 'MYSQLDUMP_SINGLE_TRANSACTION_INNODB'; rawSqlSha256 = $rawSha; rawSqlBytes = $rawBytes;
+    sourceSeenState = @($sourceProcess.sourceSeenState); tcpEvidenceKind = $sourceProcess.tcpEvidenceKind;
+    endpointBindingVerified = $true; sourceConfigurationVerified = $true; actualClientIdentityVerified = $actualClientIdentityVerified;
     gzipSha256 = File-Sha $compressed; gzipBytes = (Get-Item -LiteralPath $compressed).Length; gzipByteReadbackVerified = $true;
     privateInputFilesRemoved = $true; credentialsArchived = $false; files = $files;
     sourceDeleted = $false; servicesChanged = $false; testsExecuted = $false; cloudUploaded = $false;

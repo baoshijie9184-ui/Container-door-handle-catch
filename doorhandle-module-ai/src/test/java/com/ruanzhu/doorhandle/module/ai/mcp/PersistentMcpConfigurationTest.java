@@ -117,6 +117,15 @@ class PersistentMcpConfigurationTest {
             service.install(actor,0,"request-real-scheduler",true);
             org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(4)).until(()->"INSTALLED".equals(service.view(actor).get("status")));
             verify(ctx.getBean("fakeRuntime",FetchMcpRuntime.class),times(1)).install(any());
+            String operation=(String)service.view(actor).get("operationId");
+            var job=ctx.getBean(JdbcTemplate.class).queryForMap("SELECT resource_id,owner_user_id,mcp_owner_username,mcp_runtime_sha256,request_id,request_sha256,status,payload_version,payload_json FROM workflow_instance WHERE kind='MCP_INSTALL_JOB' AND resource_id=?",operation);
+            assertThat(job).containsEntry("resource_id",operation).containsEntry("request_id",operation)
+                .containsEntry("mcp_owner_username","alice").containsEntry("mcp_runtime_sha256","a".repeat(64)).containsEntry("status","SUCCEEDED");
+            assertThat(((Number)job.get("owner_user_id")).longValue()).isEqualTo(actor.userId());
+            assertThat(job.get("request_sha256")).isEqualTo(FetchMcpRuntime.sha(operation.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+            assertThat(((Number)job.get("payload_version")).intValue()).isEqualTo(1);
+            assertThat(ctx.getBean(ObjectMapper.class).readTree(job.get("payload_json").toString()))
+                .isEqualTo(ctx.getBean(ObjectMapper.class).readTree("{\"schemaVersion\":1}"));
         });
     }
     @Test void realSpringSchedulerObservesRemoteCancelWhileTheInstallerIsBusy()throws Exception{

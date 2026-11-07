@@ -1,5 +1,9 @@
 # 单体 ECS 运行与测试
 
+2026-11-07 Jenkins #76：固定提交 `ab8e8c9b8ffbe12b374c4836f8d830b2f23eb8b2` 的 154 份 Java XML 汇总为 581 项通过、2 项错误、0 项断言失败、471 项基础设施条件跳过。仅余两个调度用例被持久安装队列 enqueue 的派生表无类型参数拦截；已改为保留原 16 列、UTC、请求摘要及全部状态的直接 VALUES，并在真实调度回归内核对任务身份、所有者、摘要及 JSON 版本。13 模块本地跳过测试打包通过，后续 Python、前端、封存上传仍待 ECS 验证。原始回执及报告归档已独立保留，临时工具实际 `STOPPED`、`remaining=[]`，随后从流水线外回读 ECS `Stopped / StopCharging`。
+
+本机端口误拦的进一步只读诊断：CIM 与 IPHelper 原始表都把已可访问的 Jenkins 和 MySQL 绑定端点状态返回为 `0`，不能将此称为 Listen 或断言 MySQL 未启动。导出脚本继续保留 UNKNOWN 原证，发送凭据前核对唯一端点所有者、固定服务/直接子进程、命令行、my.ini 及 auto.cnf；只有用户已授权的实际只读身份查询与本机 UUID、数据目录、版本、库名和端口全部吻合才允许导出。此次修复尚未执行新的导出，不能将端点归属证明当成已连接或已恢复。
+
 2026-11-07 Jenkins #73：固定提交 `c340d69ecc703c0d4a2f4b8700a2e92139bc4923` 的 154 份 Java XML 汇总为 576 项通过、4 项错误、1 项断言失败、471 项基础设施条件跳过。UTC、重复建表、缺 connector 及多 ADD 外键问题已消除；新问题集中于 MCP 审计派生表参数类型推断和限流测试纳秒预期与 DATETIME(6) 存储精度差异。后续 Python、前端、旧数据上传未执行。报告已归档，工具清理 `STOPPED`、`remaining=[]`，随后从流水线外实际确认 ECS `Stopped / StopCharging`。
 
 用户已单独授权一次管理员只读导出本机 `doorhandledb`，例外仅用于保全旧项目库。[专用脚本](../script/jenkins/export-legacy-local-mysql.ps1) 固定已有 MySQL83、回环端口及该 schema，使用单事务逻辑导出，生成私有摘要；前后 DDL/计数属于独立观察，不冒充同一事务的行级对账。脚本不启停共享服务、不执行本机恢复或测试、不删源数据。导出成功仅表示 `LOCAL_EXPORT_COMPLETE_RESTORE_PENDING`，后续上传、独立恢复与业务差异核验仍由固定提交的 Jenkins 流水线在 ECS 完成；没有恢复证据不能清退本机库。授权及执行回执保存在项目 Git 忽略目录。
