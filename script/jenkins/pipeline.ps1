@@ -177,7 +177,7 @@ if ($Action -eq 'VerifyEmbedding') {
         # Transfer the credential on SSH stdin. It is never a command argument,
         # a local workspace file, a public receipt, or a Jenkins artifact.
         $info = [System.Diagnostics.ProcessStartInfo]::new()
-        $info.FileName = (Get-Command ssh.exe -CommandType Application).Source
+        $info.FileName = (Get-Command ssh.exe -CommandType Application | Select-Object -First 1).Source
         $info.UseShellExecute = $false
         $info.CreateNoWindow = $true
         $info.RedirectStandardInput = $true
