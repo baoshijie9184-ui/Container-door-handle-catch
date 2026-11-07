@@ -1,6 +1,7 @@
 package com.ruanzhu.doorhandle.module.ai.testsupport;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -93,7 +94,7 @@ class CompactH2FixtureInstallationTest {
         String declaration = declarations.get(0);
         assertThat(declaration).endsWith(",");
         install(CompactH2Functions.adaptDdl("CREATE TABLE fixture_actual_yield (id INT PRIMARY KEY, kind VARCHAR(48) NOT NULL, "
-                + "payload_json JSON NOT NULL,\n" + declaration.substring(0, declaration.length() - 1) + "\n)"));
+                + "payload_json JSON NOT NULL,\n" + declaration.substring(0, declaration.length() - 1) + "\n);"));
         CompactWorkflowFixture.install(jdbc);
         ObjectMapper json = new ObjectMapper();
         String[] values = {"true", "false", "null", "\"true\"", "\"false\"", "1", "0", "{}", "[]", null};
@@ -122,6 +123,48 @@ class CompactH2FixtureInstallationTest {
             }
         }
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM workflow_instance", Integer.class)).isEqualTo(3);
+    }
+
+    @Test void actualAuditGeneratedParentDependencyTracksOriginalCasesUpdatesNullAndU64() throws Exception {
+        String source = new ClassPathResource("db/compact/005-workflow-runtime.sql").getContentAsString(StandardCharsets.UTF_8);
+        // Select the actual audit_event declarations, not the identically named
+        // workflow_instance parent projection earlier in this resource.
+        String audit = source.substring(source.indexOf("CREATE TABLE IF NOT EXISTS audit_event"));
+        var declarations = audit.lines().map(String::strip)
+                .filter(line -> line.startsWith("identity_parent_id BIGINT UNSIGNED GENERATED ALWAYS AS")
+                        || line.startsWith("identity_child_parent_id BIGINT UNSIGNED GENERATED ALWAYS AS")).toList();
+        assertThat(declarations).hasSize(2);
+        String columns = String.join("\n", declarations);
+        assertThat(columns).endsWith(",");
+        install(CompactH2Functions.adaptDdl("CREATE TABLE fixture_actual_audit_parent (id INT PRIMARY KEY,"
+                + "kind VARCHAR(48) NOT NULL,payload_json JSON NOT NULL,\n"
+                + columns.substring(0, columns.length() - 1) + "\n);"));
+        ObjectMapper json = new ObjectMapper();
+        String[] values = {"0", "9223372036854775808", "18446744073709551615"};
+        int id = 0;
+        for (String kind : List.of("DETECTION_IDENTITY_MAP_ITEM", "DETECTION_IDENTITY_MISSING_NAME",
+                "DETECTION_IDENTITY_BINDING_EVENT", "DETECTION_IDENTITY_RECON_ITEM")) {
+            String key = kind.equals("DETECTION_IDENTITY_BINDING_EVENT") ? "sourceBatchId"
+                    : kind.equals("DETECTION_IDENTITY_RECON_ITEM") ? "reportId" : "batchId";
+            boolean child = kind.equals("DETECTION_IDENTITY_MISSING_NAME") || kind.equals("DETECTION_IDENTITY_RECON_ITEM");
+            for (String value : values) {
+                int row = ++id; String payload = json.createObjectNode().put(key, value).toString();
+                jdbc.update("INSERT INTO fixture_actual_audit_parent(id,kind,payload_json) VALUES(?,?,?)", row, kind, payload);
+                assertThat(jdbc.queryForObject("SELECT identity_parent_id FROM fixture_actual_audit_parent WHERE id=?", BigDecimal.class, row))
+                        .isEqualByComparingTo(new BigDecimal(value));
+                BigDecimal actual = jdbc.queryForObject("SELECT identity_child_parent_id FROM fixture_actual_audit_parent WHERE id=?", BigDecimal.class, row);
+                if (child) assertThat(actual).isEqualByComparingTo(new BigDecimal(value));
+                else assertThat(actual).isNull();
+                jdbc.update("UPDATE fixture_actual_audit_parent SET payload_json=? WHERE id=?", json.createObjectNode().put(key, "17").toString(), row);
+                assertThat(jdbc.queryForObject("SELECT identity_parent_id FROM fixture_actual_audit_parent WHERE id=?", BigDecimal.class, row))
+                        .isEqualByComparingTo("17");
+                jdbc.update("UPDATE fixture_actual_audit_parent SET payload_json='{}' WHERE id=?", row);
+                assertThat(jdbc.queryForObject("SELECT identity_parent_id FROM fixture_actual_audit_parent WHERE id=?", BigDecimal.class, row)).isNull();
+                assertThat(jdbc.queryForObject("SELECT identity_child_parent_id FROM fixture_actual_audit_parent WHERE id=?", BigDecimal.class, row)).isNull();
+            }
+        }
+        jdbc.update("INSERT INTO fixture_actual_audit_parent(id,kind,payload_json) VALUES(99,'OTHER','{\"batchId\":\"7\"}')");
+        assertThat(jdbc.queryForObject("SELECT identity_parent_id FROM fixture_actual_audit_parent WHERE id=99", BigDecimal.class)).isNull();
     }
 
     private void install(String sql) {

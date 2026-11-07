@@ -8,9 +8,13 @@ import java.security.MessageDigest;
 import java.sql.SQLException;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.HexFormat;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -86,7 +90,118 @@ public final class CompactH2Functions {
             } else { plain.append(c); i++; }
         }
         String adapted = result.append(adaptPlain(plain.toString(), context)).toString();
-        return context == null ? adapted : adaptGuardedJsonBooleans(adapted);
+        return context == null ? adapted : expandGeneratedDependencies(adaptGuardedJsonBooleans(adapted));
+    }
+
+    private record GeneratedColumn(int clause, int start, int end, String name, String type, String expression) { }
+
+    /** H2 resolves generated expressions against base columns only, unlike MySQL. */
+    private static String expandGeneratedDependencies(String sql) {
+        String masked = maskProtectedSql(sql);
+        var tables = Pattern.compile("(?i)\\bCREATE\\s+TABLE(?:\\s+IF\\s+NOT\\s+EXISTS)?\\s+`?[a-z_][a-z0-9_]*`?\\s*\\(")
+                .matcher(masked);
+        StringBuilder result = new StringBuilder(); int position = 0;
+        while (tables.find()) {
+            int opening = tables.end() - 1, closing = closingParenthesis(sql, opening);
+            result.append(sql, position, opening + 1).append(expandGeneratedTable(sql.substring(opening + 1, closing)));
+            result.append(')'); position = closing + 1;
+            tables.region(position, masked.length());
+        }
+        return result.append(sql, position, sql.length()).toString();
+    }
+
+    private static String maskProtectedSql(String sql) {
+        StringBuilder result = new StringBuilder(sql);
+        for (int i = 0; i < sql.length();) {
+            int end = protectedSqlEnd(sql, i);
+            if (end == i) { i++; continue; }
+            for (int j = i; j < end; j++)
+                if (sql.charAt(j) != '\n' && sql.charAt(j) != '\r') result.setCharAt(j, ' ');
+            i = end;
+        }
+        return result.toString();
+    }
+
+    private static int closingParenthesis(String sql, int opening) {
+        int depth = 1;
+        for (int i = opening + 1; i < sql.length();) {
+            int end = protectedSqlEnd(sql, i);
+            if (end > i) { i = end; continue; }
+            char c = sql.charAt(i);
+            if (c == '(') depth++;
+            else if (c == ')' && --depth == 0) return i;
+            i++;
+        }
+        throw new IllegalArgumentException("Unclosed fixture DDL expression");
+    }
+
+    private static String expandGeneratedTable(String body) {
+        List<String> clauses = new ArrayList<>(); int position = 0, depth = 0;
+        for (int i = 0; i < body.length();) {
+            int end = protectedSqlEnd(body, i);
+            if (end > i) { i = end; continue; }
+            char c = body.charAt(i);
+            if (c == '(') depth++;
+            else if (c == ')') depth--;
+            else if (c == ',' && depth == 0) { clauses.add(body.substring(position, i)); position = i + 1; }
+            i++;
+        }
+        clauses.add(body.substring(position));
+        Map<String, GeneratedColumn> generated = new LinkedHashMap<>();
+        var declaration = Pattern.compile("(?i)^\\s*(`?[a-z_][a-z0-9_]*`?)\\s+([a-z_][a-z0-9_]*(?:\\s*\\([0-9 ,]+\\))?)"
+                + "\\s+GENERATED\\s+ALWAYS\\s+AS\\s*\\(");
+        for (int i = 0; i < clauses.size(); i++) {
+            String clause = clauses.get(i), masked = maskProtectedSql(clause);
+            var match = declaration.matcher(masked);
+            if (!match.find()) {
+                if (Pattern.compile("(?i)\\bGENERATED\\s+ALWAYS\\s+AS\\b").matcher(masked).find())
+                    throw new IllegalArgumentException("Unsupported fixture generated-column declaration");
+                continue;
+            }
+            int start = match.end(), end = closingParenthesis(clause, start - 1);
+            String name = match.group(1).replace("`", "").toLowerCase(Locale.ROOT);
+            if (generated.put(name, new GeneratedColumn(i, start, end, name, match.group(2), clause.substring(start, end))) != null)
+                throw new IllegalArgumentException("Duplicate fixture generated-column declaration");
+        }
+        Map<String, String> expanded = new LinkedHashMap<>();
+        for (GeneratedColumn column : generated.values()) {
+            String clause = clauses.get(column.clause());
+            clauses.set(column.clause(), clause.substring(0, column.start())
+                    + expandGeneratedExpression(column, generated, expanded) + clause.substring(column.end()));
+        }
+        return String.join(",", clauses);
+    }
+
+    private static String expandGeneratedExpression(GeneratedColumn column, Map<String, GeneratedColumn> generated,
+                                                     Map<String, String> expanded) {
+        if (expanded.containsKey(column.name())) return expanded.get(column.name());
+        String sql = column.expression(); StringBuilder result = new StringBuilder();
+        for (int i = 0; i < sql.length();) {
+            int protectedEnd = protectedSqlEnd(sql, i);
+            if (protectedEnd > i) { result.append(sql, i, protectedEnd); i = protectedEnd; continue; }
+            int start = i; char c = sql.charAt(i);
+            if (c == '`') {
+                i = sql.indexOf('`', start + 1);
+                if (i < 0) throw new IllegalArgumentException("Unclosed fixture column identifier");
+                i++;
+            } else if (Character.isLetter(c) || c == '_') {
+                while (i < sql.length() && (Character.isLetterOrDigit(sql.charAt(i)) || sql.charAt(i) == '_' || sql.charAt(i) == '$')) i++;
+            } else { result.append(c); i++; continue; }
+            String token = sql.substring(start, i), name = token.replace("`", "").toLowerCase(Locale.ROOT);
+            GeneratedColumn dependency = generated.get(name);
+            int next = i; while (next < sql.length() && Character.isWhitespace(sql.charAt(next))) next++;
+            if (dependency == null || next < sql.length() && sql.charAt(next) == '(') { result.append(token); continue; }
+            int previous = start - 1; while (previous >= 0 && Character.isWhitespace(sql.charAt(previous))) previous--;
+            if (previous >= 0 && sql.charAt(previous) == '.' || next < sql.length() && sql.charAt(next) == '.')
+                throw new IllegalArgumentException("Qualified fixture generated dependencies are unsupported");
+            // MySQL permits references to earlier generated columns only. This
+            // also rejects self references, forward references and cycles.
+            if (dependency.clause() >= column.clause())
+                throw new IllegalArgumentException("Fixture generated dependency must name an earlier column");
+            result.append("CAST((").append(expandGeneratedExpression(dependency, generated, expanded))
+                    .append(") AS ").append(dependency.type()).append(')');
+        }
+        String expression = result.toString(); expanded.put(column.name(), expression); return expression;
     }
 
     /** Only an existing JSON BOOLEAN type guard admits a typed H2 scalar. */

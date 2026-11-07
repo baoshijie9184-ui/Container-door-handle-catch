@@ -217,4 +217,60 @@ class CompactH2FunctionsTest {
         assertThat(CompactH2Functions.adaptDdl("SELECT JSON_EXTRACT(raw,'$.flag')=TRUE"))
                 .doesNotContain("H2_JSON_BOOLEAN_VALUE");
     }
+
+    @Test void generatedDependenciesRemainTypedComputedAndTableScopedAcrossChains() {
+        String adapted = CompactH2Functions.adaptDdl("""
+            CREATE TABLE fixture_dependency (
+              id INT PRIMARY KEY,
+              source_text VARCHAR(40),
+              root_id BIGINT UNSIGNED GENERATED ALWAYS AS (CAST(source_text AS UNSIGNED)) VIRTUAL,
+              middle_id BIGINT UNSIGNED GENERATED ALWAYS AS (CASE WHEN id>0 THEN `root_id` END) VIRTUAL,
+              leaf_text VARCHAR(40) GENERATED ALWAYS AS (CAST(middle_id AS CHAR(40))) VIRTUAL,
+              literal_text VARCHAR(40) GENERATED ALWAYS AS
+                (CASE WHEN source_text='root_id' THEN 'middle_id' ELSE 'leaf_text' END) VIRTUAL,
+              /* root_id and middle_id stay comment data */
+              UNIQUE KEY same_key (middle_id),
+              CONSTRAINT ck_dependency CHECK (root_id>=0 AND root_id<=18446744073709551615)
+            );
+            CREATE TABLE fixture_dependency_other (
+              root_id INT,
+              ordinary_copy INT GENERATED ALWAYS AS (root_id+1)
+            );
+            """);
+        assertThat(adapted).contains("THEN CAST((CAST(source_text AS DECIMAL(20,0))) AS DECIMAL(20,0)) END",
+                "source_text='root_id' THEN 'middle_id' ELSE 'leaf_text'", "/* root_id and middle_id stay comment data */",
+                "ordinary_copy INT GENERATED ALWAYS AS (root_id+1)", "CONSTRAINT ck_dependency CHECK",
+                "CONSTRAINT h2_fixture_dependency_same_key UNIQUE");
+        jdbc.execute(adapted);
+        String[] values = {"0", "9223372036854775808", "18446744073709551615"};
+        for (int i = 0; i < values.length; i++) {
+            jdbc.update("INSERT INTO fixture_dependency(id,source_text) VALUES(?,?)", i + 1, values[i]);
+            assertThat(jdbc.queryForObject("SELECT middle_id FROM fixture_dependency WHERE id=?", BigDecimal.class, i + 1))
+                    .isEqualByComparingTo(new BigDecimal(values[i]));
+            assertThat(jdbc.queryForObject("SELECT leaf_text FROM fixture_dependency WHERE id=?", String.class, i + 1))
+                    .isEqualTo(values[i]);
+        }
+        jdbc.update("UPDATE fixture_dependency SET source_text='17' WHERE id=1");
+        assertThat(jdbc.queryForObject("SELECT leaf_text FROM fixture_dependency WHERE id=1", String.class)).isEqualTo("17");
+        jdbc.update("UPDATE fixture_dependency SET source_text=NULL WHERE id=1");
+        assertThat(jdbc.queryForObject("SELECT middle_id FROM fixture_dependency WHERE id=1", BigDecimal.class)).isNull();
+        assertThat(jdbc.queryForObject("SELECT leaf_text FROM fixture_dependency WHERE id=1", String.class)).isNull();
+        assertThatThrownBy(() -> jdbc.update("INSERT INTO fixture_dependency(id,source_text) VALUES(4,?)", values[1]))
+                .isInstanceOf(org.springframework.dao.DuplicateKeyException.class);
+        assertThatThrownBy(() -> jdbc.update("UPDATE fixture_dependency SET middle_id=1 WHERE id=2"))
+                .isInstanceOf(org.springframework.dao.DataAccessException.class);
+        jdbc.update("INSERT INTO fixture_dependency_other(root_id) VALUES(4)");
+        assertThat(jdbc.queryForObject("SELECT ordinary_copy FROM fixture_dependency_other", Integer.class)).isEqualTo(5);
+    }
+
+    @Test void generatedDependenciesRejectSelfForwardCyclesAndUnsupportedDeclarations() {
+        for (String columns : new String[]{
+                "a INT GENERATED ALWAYS AS (a+1)",
+                "a INT GENERATED ALWAYS AS (b+1),b INT GENERATED ALWAYS AS (id+1)",
+                "a INT GENERATED ALWAYS AS (b+1),b INT GENERATED ALWAYS AS (a+1)",
+                "a INT GENERATED ALWAYS AS (id+1),b INT GENERATED ALWAYS AS (fixture_invalid.a+1)",
+                "a INT NOT NULL GENERATED ALWAYS AS (id+1)"})
+            assertThatThrownBy(() -> CompactH2Functions.adaptDdl("CREATE TABLE fixture_invalid (id INT," + columns + ");"))
+                    .as(columns).isInstanceOf(IllegalArgumentException.class);
+    }
 }
