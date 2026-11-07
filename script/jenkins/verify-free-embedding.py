@@ -26,8 +26,12 @@ MODULES = ["tests_python/test_memory_embedding.py", "tests_python/test_memory_ll
            "tests_python/test_free_embedding_pipeline.py", "tests_python/test_legacy_bge_migration.py"]
 
 
+class ComponentError(ValueError):
+    """Only authored diagnostics, containing no provider or private file content."""
+
+
 def need(value, message):
-    if not value: raise ValueError(message)
+    if not value: raise ComponentError(message)
 
 
 def digest(path):
@@ -168,7 +172,7 @@ def worker(source, output, key):
     # subprocess below is the only code that receives the real secret file path.
     environment = {**os.environ, "PYTHONPATH": str(source), "MEM0_DATA_DIR": str(output / "fixture-memory"),
                    "MEM0_TELEMETRY": "false", "ANONYMIZED_TELEMETRY": "false"}
-    result = subprocess.run([sys.executable, "-B", "-m", "pytest", *MODULES, "-q",
+    result = subprocess.run([sys.executable, "-B", "-m", "pytest", *MODULES, "-q", "-p", "no:cacheprovider",
         "--basetemp=" + str(output / "pytest"), "--junitxml=" + str(output / "python.xml")],
         cwd=source, env=environment, timeout=300)
     need(result.returncode == 0, "Embedding component regression failed")
@@ -233,6 +237,11 @@ def host(args):
     try:
         cid = docker("create", "--name", name, "--pull", "never", "--restart", "no", "--read-only",
             "--label", LABEL + "=" + token, "--label", "io.doorhandle.release=" + args.tag,
+            # The cached dependency image was committed from the old Mem0
+            # image and retains its Compose labels. Override both identities;
+            # no test container may be discoverable as an original service.
+            "--label", "com.docker.compose.project=doorhandle-embedding-" + token[:12],
+            "--label", "com.docker.compose.service=embedding-test",
             "--user", str(os.getuid()) + ":" + str(os.getgid()), "--cap-drop", "ALL",
             "--security-opt", "no-new-privileges", "--memory", "2g", "--memory-swap", "2g",
             "--cpus", "1", "--pids-limit", "256", "--tmpfs", "/tmp:rw,nosuid,nodev,size=256m",
@@ -244,6 +253,10 @@ def host(args):
             image, "-B", "/source/script/jenkins/verify-free-embedding.py", "worker",
             "--source", "/source", "--output", "/output", "--key", "/run/secrets/embedding").decode().strip()
         need(re.fullmatch(r"[a-f0-9]{64}", cid), "Owned container identity unavailable")
+        created = json.loads(docker("inspect", cid))[0]
+        need(created["Config"]["Labels"].get("com.docker.compose.project") == "doorhandle-embedding-" + token[:12]
+             and created["Config"]["Labels"].get("com.docker.compose.service") == "embedding-test",
+             "Dependency image inherited original service identity")
         with (output / "verification.log").open("xb") as log:
             os.chmod(log.name, 0o600)
             started = subprocess.run(["docker", "start", "-a", cid], stdout=log, stderr=subprocess.STDOUT, timeout=600)
@@ -263,10 +276,15 @@ def host(args):
         need(live_result["status"] == recovered["status"] == "PASS" and live_result["providerRequests"] == 3
              and live_result["model"] == "BAAI/bge-m3" and live_result["dimensions"] == 1024
              and recovered["providerRequests"] == 0, "Embedding/recovery evidence differs from its fixed budget")
+        receipt.update(componentTests=len(cases), componentModules=counts, live=live_result, recovery=recovered)
         need(original_runtime() == original, "Original application containers changed during embedding verification")
         prepared_environment = prepare_next_release_environment(args.runtime, root, args.tag, key)
         receipt.update(status="PASS", componentTests=len(cases), componentModules=counts, live=live_result, recovery=recovered,
                        nextReleaseEnvironment=prepared_environment)
+    except Exception as error:
+        receipt["errorType"] = type(error).__name__
+        if isinstance(error, ComponentError): receipt["diagnostic"] = str(error)
+        raise
     finally:
         stopped = False
         if cid:
@@ -306,5 +324,7 @@ def main():
 if __name__ == "__main__":
     try: main()
     except Exception as error:
-        print(json.dumps({"status": "FAILED", "errorType": type(error).__name__}), file=sys.stderr)
+        result = {"status": "FAILED", "errorType": type(error).__name__}
+        if isinstance(error, ComponentError): result["diagnostic"] = str(error)
+        print(json.dumps(result), file=sys.stderr)
         raise SystemExit(2)

@@ -17,7 +17,8 @@ sdk.capture_event=lambda *a,**k:None
 sdk.lemmatize_for_bm25=lambda text:text
 sdk.extract_entities_batch=lambda texts:[[] for _ in texts]
 os.environ.update({'DASHSCOPE_API_KEY':'fixture','EMBEDDING_API_KEY':'fixture','DASHSCOPE_BASE_URL':'http://127.0.0.1:1/v1',
-                   'EMBEDDING_BASE_URL':'http://127.0.0.1:1/v1','MEM0_LLM_MODEL':'kimi-k3','MEM0_DATA_DIR':'/tmp/review-smoke'})
+                   'EMBEDDING_BASE_URL':'http://127.0.0.1:1/v1','EMBEDDING_PROFILE':'explicit-openai-compatible',
+                   'MEM0_LLM_MODEL':'kimi-k3','MEM0_DATA_DIR':'/tmp/review-smoke'})
 config=main.get_memory_config()
 config['embedder']['config'].update(model='fixture',embedding_dims=4)
 config['vector_store']['config']['collection_name']='review_smoke'
