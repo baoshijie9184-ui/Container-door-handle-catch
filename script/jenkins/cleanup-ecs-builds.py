@@ -45,6 +45,15 @@ NPM_ROUTING_AST = {
     'command': 'b44e28ef754376c8a1dcb792f34bf4200a6d4d85da7e52a345fa0aa1eac18bc7',
 }
 NPM_INSTALL_ARGUMENTS = ['ci', '--include=dev', '--ignore-scripts', '--no-audit', '--no-fund']
+PYTEST_TMP_SUFFIX = 'work/ci-evidence/tmp/pytest'
+# Reviewed source runners: 392ae841c2ab, 7a024fc1f02f and the source-only
+# temporary cleanup revision. The main function
+# includes its nested execute callback, source environment and exact basetemp.
+PYTEST_RUNNER_MAIN_AST = {
+    '6ed391795b01ecca1c45efd86b84b5270fa35f36742c76ac957141a28cb2a4ba',
+    '140ee68b43a749ccdfd82ef40754ba7b7a7e7586257c6a119b55e1d1d5b54857',
+    'd44f6afbdcb415341c311c486ad0fad1c4f10519e7840560652a68126e3d4a36',
+}
 # The root metadata mode receives these exact already-loaded source bytes via
 # stdin, avoiding a second privileged open of a replaceable user-owned script.
 LOADED_SOURCE = None if __file__ == '<stdin>' else Path(__file__).read_bytes()
@@ -317,6 +326,90 @@ def npm_cache_provenance(root, source, commit, manifest, inner, catalog, tools, 
             'installArgumentsSha256': arguments_sha}
 
 
+def pytest_temp_provenance(root, source, commit, manifest, inner, catalog, tools, verifier):
+    """Prove only synthetic source pytest data, never native migration fixtures."""
+    def skipped(reason): return {'status': 'SKIPPED', 'reason': reason}
+    commands = inner.get('commands', [])
+    python = [row for row in commands if isinstance(row, dict) and row.get('label') == 'python']
+    if (inner.get('scopeKind') != 'source' or inner.get('javaOnly') is not False
+            or inner.get('wholeMigrationRequested') is not False or inner.get('workerMysqlRequested') is not False
+            or inner.get('fixtureProperties') != [] or 'fixtureManifest' not in inner or inner['fixtureManifest'] is not None
+            or 'workerMysqlConfigSha256' not in inner or inner['workerMysqlConfigSha256'] is not None or len(python) != 1
+            or not python[0].get('finishedAt') or type(python[0].get('exitCode')) is not int
+            or python[0]['exitCode'] != 0 or not {'reports/python.xml', 'reports/python.log'} <= set(catalog)):
+        return skipped('PYTEST_SOURCE_SCOPE_REQUIRED')
+    wanted = {'script/jenkins/verify-ecs.py', 'script/jenkins/ecs-tool-runtime.py'}
+    recipes = {}
+    with verifier.bounded_tar(source, verifier.MAX_SOURCE_BYTES) as package:
+        for item in package:
+            if item.name not in wanted: continue
+            require(item.type in (tarfile.REGTYPE, tarfile.AREGTYPE) and item.sparse is None
+                    and item.name not in recipes and 0 < item.size <= 1024 ** 2, 'PYTEST_SOURCE_RECIPE_INVALID')
+            recipes[item.name] = package.extractfile(item).read()
+        require(package.pax_headers.get('comment') == commit, 'PINNED_SOURCE_COMMIT_DIFFERS')
+    if set(recipes) != wanted: return skipped('PYTEST_SOURCE_RECIPE_MISSING')
+    runner = recipes['script/jenkins/verify-ecs.py']; executor = recipes['script/jenkins/ecs-tool-runtime.py']
+    try:
+        mains = [node for node in ast.parse(runner).body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                 and node.name == 'main']
+        main_sha = routing_ast_sha(mains[0]) if len(mains) == 1 and isinstance(mains[0], ast.FunctionDef) else None
+        if main_sha not in PYTEST_RUNNER_MAIN_AST: return skipped('PYTEST_RUNNER_NOT_REVIEWED')
+        routing = {}
+        for node in ast.parse(executor).body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in NPM_ROUTING_AST:
+                if node.name in routing: return skipped('PYTEST_ROUTING_NOT_REVIEWED')
+                routing[node.name] = routing_ast_sha(node)
+    except (SyntaxError, UnicodeError, ValueError): return skipped('PYTEST_RUNNER_NOT_REVIEWED')
+    if routing != NPM_ROUTING_AST: return skipped('PYTEST_ROUTING_NOT_REVIEWED')
+    checkout = Path(manifest['checkout']); runner_sha, executor_sha = sha(runner), sha(executor)
+    try:
+        actual_runner = owned_chain(checkout / 'script/jenkins/verify-ecs.py', root, maximum=1024 ** 2)
+        if digest(actual_runner) != runner_sha: return skipped('PYTEST_RUNNER_BINDING_MISSING_OR_CHANGED')
+    except (OSError, ValueError): return skipped('PYTEST_RUNNER_BINDING_MISSING_OR_CHANGED')
+    if not isinstance(manifest.get('files'), dict) or manifest['files'].get('executor.py') != executor_sha:
+        return skipped('PYTEST_EXECUTOR_BINDING_MISSING_OR_CHANGED')
+    try:
+        actual_executor = owned_chain(Path(manifest['directory']) / 'executor.py', root, maximum=1024 ** 2)
+        if digest(actual_executor) != executor_sha: return skipped('PYTEST_EXECUTOR_BINDING_MISSING_OR_CHANGED')
+    except (OSError, ValueError): return skipped('PYTEST_REGISTERED_EXECUTOR_UNAVAILABLE')
+    try:
+        report = owned_chain(checkout / 'work/ci-evidence/python.xml', root, maximum=verifier.MAX_FILE_BYTES)
+        with report.open('rb') as stream: raw = stream.read(verifier.MAX_FILE_BYTES + 1)
+        descriptor = catalog['reports/python.xml']
+        if len(raw) != descriptor['bytes'] or sha(raw) != descriptor['sha256'] or b'<!DOCTYPE' in raw or b'<!ENTITY' in raw:
+            return skipped('PYTEST_REPORT_NOT_PASS')
+        tally = {'found': 0, 'passed': 0, 'failed': 0, 'skipped': 0}
+        for case in ET.fromstring(raw).iter('testcase'):
+            result = 'failed' if case.find('failure') is not None or case.find('error') is not None else (
+                'skipped' if case.find('skipped') is not None else 'passed')
+            tally['found'] += 1; tally[result] += 1
+        expected = inner.get('pythonTests')
+        if (not isinstance(expected, dict) or set(expected) != set(tally)
+                or any(type(value) is not int for value in expected.values())
+                or tally != expected or not tally['passed'] or tally['failed']):
+            return skipped('PYTEST_REPORT_NOT_PASS')
+    except (OSError, ValueError, ET.ParseError): return skipped('PYTEST_REPORT_NOT_PASS')
+    arguments = ['-B', '-m', 'pytest', 'tests_python', '-q', '--basetemp=' + str(checkout / PYTEST_TMP_SUFFIX),
+                 '--junitxml=' + str(checkout / 'work/ci-evidence/python.xml')]
+    arguments_sha = sha(json.dumps(arguments, ensure_ascii=True).encode())
+    actual = tools.get('commands')
+    matching = [row for row in actual if isinstance(row, dict) and row.get('tool') == 'python'
+                and row.get('argumentsSha256') == arguments_sha] if isinstance(actual, list) else []
+    if len(matching) != 1: return skipped('PYTEST_TOOL_COMMAND_PROVENANCE_MISSING')
+    command = matching[0]; cleaned = command.get('cleanup', {})
+    images = manifest.get('images'); image = images.get('python') if isinstance(images, dict) else None
+    if (command.get('status') != 'EXITED' or type(command.get('exitCode')) is not int or command['exitCode'] != 0
+            or not isinstance(command.get('containerId'), str) or not SHA.fullmatch(command['containerId'])
+            or not isinstance(cleaned, dict) or cleaned.get('containerId') != command['containerId']
+            or not isinstance(image, str) or not re.fullmatch(r'sha256:[a-f0-9]{64}', image)
+            or cleaned.get('image') != image or type(cleaned.get('pid')) is not int or cleaned['pid'] != 0
+            or type(cleaned.get('exitCode')) is not int or cleaned['exitCode'] != 0 or cleaned.get('removed') is not True):
+        return skipped('PYTEST_TOOL_COMMAND_PROVENANCE_MISSING')
+    return {'status': 'PROVEN', 'runnerSha256': runner_sha, 'runnerMainAstSha256': main_sha,
+            'executorSha256': executor_sha, 'routingAstSha256': routing, 'argumentsSha256': arguments_sha,
+            'pythonTests': tally}
+
+
 def evidence_binding(root, custody, identity, verifier):
     tag = custody['release']; attempt = owned_chain(root / 'verification' / tag, root, directory=True)
     checkout = owned_chain(attempt / 'checkout', root, directory=True)
@@ -383,6 +476,9 @@ def evidence_binding(root, custody, identity, verifier):
     cache = checkout / NPM_CACHE_SUFFIX
     if cache.exists() or cache.is_symlink():
         result['npmCache'] = npm_cache_provenance(root, source, record['commit'], manifest, inner, catalog, tools, verifier)
+    temporary = checkout / PYTEST_TMP_SUFFIX
+    if temporary.exists() or temporary.is_symlink():
+        result['pytestTmp'] = pytest_temp_provenance(root, source, record['commit'], manifest, inner, catalog, tools, verifier)
     return result
 
 
@@ -660,6 +756,54 @@ def locked_inodes(path=Path('/proc/locks')):
     return result
 
 
+def pytest_case_preflight(path, root):
+    """Reject synthetic negative fixtures before hashing any sparse/special file."""
+    require(re.fullmatch(r'[A-Za-z0-9_.-]{1,180}', path.name) and path.name not in ('.', '..'),
+            'PYTEST_CASE_NAME_INVALID')
+    info = path.lstat()
+    require(stat.S_ISDIR(info.st_mode), 'PYTEST_CASE_NOT_REGULAR_DIRECTORY')
+    require(info.st_dev == Path(root).stat().st_dev, 'PYTEST_CASE_METADATA_UNSAFE')
+    owned_chain(path, root, directory=True); device = info.st_dev
+    files = size = entries = 0
+    def unreadable(error): raise error
+    for current, dirs, names in os.walk(path, followlinks=False, onerror=unreadable):
+        for name in dirs + names:
+            item = Path(current) / name; info = item.lstat(); entries += 1
+            require(info.st_uid == os.getuid() and info.st_dev == device and not info.st_mode & 0o022
+                    and (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)), 'PYTEST_CASE_METADATA_UNSAFE')
+            if stat.S_ISREG(info.st_mode):
+                require(info.st_nlink == 1 and info.st_size <= info.st_blocks * 512, 'PYTEST_CASE_HARDLINK_OR_SPARSE')
+                files += 1; size += info.st_size
+            require(files <= MAX_TREE_FILES and size <= MAX_TREE_BYTES and entries <= MAX_TREE_ENTRIES,
+                    'PYTEST_CASE_BOUND_EXCEEDED')
+
+
+def pytest_case_targets(root, binding):
+    proof = binding.get('pytestTmp')
+    if not isinstance(proof, dict) or proof.get('status') != 'PROVEN': return []
+    parent = binding['checkout'] / PYTEST_TMP_SUFFIX
+    proof['skippedCases'] = []
+    try:
+        owned_chain(parent, root, directory=True)
+        children = sorted(parent.iterdir(), key=lambda path: path.name)
+        require(len(children) <= MAX_TREE_ENTRIES, 'PYTEST_CASE_BOUND_EXCEEDED')
+    except (OSError, ValueError) as error:
+        proof['rootStatus'] = 'SKIPPED'
+        proof['rootReason'] = failure_guard_code(error)
+        return []
+    proof['rootStatus'] = 'INSPECTED'; result = []
+    for child in children:
+        try:
+            pytest_case_preflight(child, root)
+            data = tree_inventory(child)
+            result.append({'path': child.relative_to(root).as_posix(), 'kind': 'PYTEST_CASE_DIRECTORY', **data})
+        except (OSError, ValueError) as error:
+            label = {'name': child.name} if re.fullmatch(r'[A-Za-z0-9_.-]{1,180}', child.name) else {
+                'nameSha256': sha(os.fsencode(child.name))}
+            proof['skippedCases'].append({**label, 'reason': failure_guard_code(error)})
+    return result
+
+
 def target_descriptors(root, binding):
     checkout = binding['checkout']; evidence = checkout / 'work/ci-evidence'
     candidates = []
@@ -696,6 +840,7 @@ def target_descriptors(root, binding):
         owned_chain(target, root, directory=True)
         data = tree_inventory(target)
         result.append({'path': relative, 'kind': kind, **data})
+    result.extend(pytest_case_targets(root, binding))
     return result
 
 
@@ -749,7 +894,8 @@ def build_plan(root, request, verifier, containers, *, held_releases=()):
             accepted.append({'release': tag, 'custodySha256': sha(canonical(custody)),
                 'evidenceArchive': binding['evidenceArchive'], 'claimSha256': binding['claimSha256'],
                 'toolManifestSha256': binding['toolManifestSha256'], 'targets': targets,
-                **({'npmCache': binding['npmCache']} if 'npmCache' in binding else {})})
+                **({'npmCache': binding['npmCache']} if 'npmCache' in binding else {}),
+                **({'pytestTmp': binding['pytestTmp']} if 'pytestTmp' in binding else {})})
         except (ValueError, OSError, KeyError, TypeError, ET.ParseError, verifier.VerificationError) as error:
             skipped.append({'release': tag, 'reason': str(error) if isinstance(error, ValueError) else type(error).__name__})
     return {'schema': 1, 'kind': 'doorhandle-old-build-cleanup-plan', 'root': str(root), 'currentRelease': current,
@@ -768,8 +914,11 @@ def remove_target(root_fd, target):
     build = base + r'ci-evidence/(?:java-suites/suite-[0-9]{3}|source-regression/build)/doorhandle-[a-z0-9-]+/'
     patterns = {'COMPILED_DIRECTORY': build + '(?:' + '|'.join(sorted(COMPILE_DIRS)) + ')',
         'NODE_MODULES': r'verification/ci-[0-9]+-[a-f0-9]{12}/checkout/(?:frontend|frontend-agent)/node_modules',
-        'NPM_CACHE': base + re.escape(NPM_CACHE_SUFFIX.removeprefix('work/'))}
+        'NPM_CACHE': base + re.escape(NPM_CACHE_SUFFIX.removeprefix('work/')),
+        'PYTEST_CASE_DIRECTORY': base + re.escape(PYTEST_TMP_SUFFIX.removeprefix('work/')) + r'/[A-Za-z0-9_.-]{1,180}'}
     require(target.get('kind') in patterns and re.fullmatch(patterns[target['kind']], target.get('path', '')),
+            'DELETION_TARGET_OUTSIDE_COMPILED_ALLOWLIST')
+    require(target.get('kind') != 'PYTEST_CASE_DIRECTORY' or target['path'].rsplit('/', 1)[-1] not in ('.', '..'),
             'DELETION_TARGET_OUTSIDE_COMPILED_ALLOWLIST')
     parts = target['path'].split('/'); stack = [os.dup(root_fd)]
     try:

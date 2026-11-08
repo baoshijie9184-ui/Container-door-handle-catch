@@ -469,6 +469,82 @@ def test_failed_unregistered_frontend_retains_dependencies_without_owned_tool_pr
     assert result['dependenciesCleanup']['status'] == 'RETAINED_UNCONFIRMED_TOOLS'
 
 
+def test_passed_source_pytest_cleanup_stops_tools_and_preserves_reports_inputs_cache_and_nested_link_target(tmp_path, monkeypatch):
+    monkeypatch.setattr(verifier, 'ROOT', tmp_path)
+    output = tmp_path / 'work/ci-evidence'; temporary = output / 'tmp/pytest'
+    temporary.mkdir(parents=True); (temporary / 'generated.bin').write_bytes(b'synthetic scratch')
+    retained = [output / 'python.xml', output / 'python.log', output / 'npm-cache/package',
+                output / 'tmp/other-component/keep', tmp_path / 'work/private/migration.json', tmp_path / 'original-data/keep']
+    for path in retained:
+        path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(b'original')
+    (temporary / 'nested-link').symlink_to(tmp_path / 'original-data', target_is_directory=True)
+    calls = []
+    def stop():
+        assert (temporary / 'generated.bin').read_bytes() == b'synthetic scratch'
+        calls.append('STOPPED')
+        return {'status': 'STOPPED', 'remaining': []}
+    receipt = {'pythonTests': {'found': 3, 'passed': 2, 'failed': 0, 'skipped': 1}}
+    result = verifier.cleanup_source_pytest_temporary(output, receipt, ordinary_source=True, python_succeeded=True, stop_tools=stop)
+    assert calls == ['STOPPED'] and not temporary.exists()
+    assert result is receipt['pythonTemporaryCleanup'] and result['status'] == 'REMOVED'
+    assert result['toolsStoppedBeforeCleanup'] is True and result['links'] == 1
+    assert result['relativePath'] == 'work/ci-evidence/tmp/pytest'
+    assert all(path.read_bytes() == b'original' for path in retained)
+
+
+@pytest.mark.parametrize('ordinary_source,python_succeeded,failed', [(False, True, 0), (True, False, 0), (True, True, 1)])
+def test_native_or_unpassed_python_keeps_all_temporary_data_without_stopping_tools(tmp_path, monkeypatch, ordinary_source, python_succeeded, failed):
+    monkeypatch.setattr(verifier, 'ROOT', tmp_path)
+    output = tmp_path / 'work/ci-evidence'; temporary = output / 'tmp/pytest'
+    temporary.mkdir(parents=True); original = temporary / 'native-recovery.sql'; original.write_bytes(b'synthetic recovery evidence')
+    receipt = {'pythonTests': {'passed': 2, 'failed': failed, 'skipped': 0}}
+    result = verifier.cleanup_source_pytest_temporary(output, receipt, ordinary_source=ordinary_source,
+        python_succeeded=python_succeeded, stop_tools=lambda: pytest.fail('Native or failed verification must retain its tools and evidence'))
+    assert original.read_bytes() == b'synthetic recovery evidence'
+    assert result['status'] == ('RETAINED_NATIVE_EVIDENCE' if not ordinary_source else 'RETAINED_PYTHON_NOT_PASSED')
+
+
+@pytest.mark.parametrize('outcome', ['unknown', 'remaining', 'exception'])
+def test_python_temporary_cleanup_retains_data_and_fails_closed_when_owned_shutdown_is_unconfirmed(tmp_path, monkeypatch, outcome):
+    monkeypatch.setattr(verifier, 'ROOT', tmp_path)
+    output = tmp_path / 'work/ci-evidence'; temporary = output / 'tmp/pytest'
+    temporary.mkdir(parents=True); original = temporary / 'keep'; original.write_bytes(b'retained')
+    receipt = {'pythonTests': {'passed': 1, 'failed': 0}}
+    def stop():
+        if outcome == 'exception': raise ValueError('synthetic-private-shutdown-message')
+        return {'status': 'FAILED_OR_UNKNOWN' if outcome == 'unknown' else 'STOPPED',
+                'remaining': ['unconfirmed-tool'] if outcome == 'remaining' else []}
+    with pytest.raises((RuntimeError, ValueError)):
+        verifier.cleanup_source_pytest_temporary(output, receipt, ordinary_source=True, python_succeeded=True, stop_tools=stop)
+    assert original.read_bytes() == b'retained'
+    assert receipt['pythonTemporaryCleanup']['status'] == 'RETAINED_UNCONFIRMED_TOOLS'
+    assert 'toolsStoppedBeforeCleanup' not in receipt['pythonTemporaryCleanup']
+    assert 'synthetic-private-shutdown-message' not in json.dumps(receipt)
+
+
+def test_unregistered_source_python_keeps_scratch_without_an_owned_shutdown_callback(tmp_path, monkeypatch):
+    monkeypatch.setattr(verifier, 'ROOT', tmp_path)
+    output = tmp_path / 'work/ci-evidence'; temporary = output / 'tmp/pytest'; temporary.mkdir(parents=True)
+    (temporary / 'keep').write_bytes(b'retained'); receipt = {'pythonTests': {'passed': 1, 'failed': 0}}
+    result = verifier.cleanup_source_pytest_temporary(output, receipt, ordinary_source=True, python_succeeded=True)
+    assert result['status'] == 'RETAINED_UNCONFIRMED_TOOLS' and (temporary / 'keep').read_bytes() == b'retained'
+
+
+@pytest.mark.parametrize('redirect', ['tmp', 'pytest'])
+def test_python_temporary_cleanup_rejects_redirected_top_levels_without_following_them(tmp_path, monkeypatch, redirect):
+    monkeypatch.setattr(verifier, 'ROOT', tmp_path)
+    output = tmp_path / 'work/ci-evidence'; output.mkdir(parents=True)
+    protected = tmp_path / 'protected'; (protected / 'pytest').mkdir(parents=True); (protected / 'pytest/keep').write_bytes(b'original')
+    if redirect == 'tmp': (output / 'tmp').symlink_to(protected, target_is_directory=True)
+    else:
+        (output / 'tmp').mkdir(); (output / 'tmp/pytest').symlink_to(protected / 'pytest', target_is_directory=True)
+    receipt = {'pythonTests': {'passed': 1, 'failed': 0}}
+    with pytest.raises(ValueError, match='redirected'):
+        verifier.cleanup_source_pytest_temporary(output, receipt, ordinary_source=True, python_succeeded=True,
+            stop_tools=lambda: {'status': 'STOPPED', 'remaining': []})
+    assert (protected / 'pytest/keep').read_bytes() == b'original'
+
+
 def test_frontend_artifact_hash_changes_with_same_size_content(tmp_path):
     file = tmp_path / 'bundle.js'; file.write_bytes(b'first')
     before = verifier.tree_inventory(tmp_path, hash_files=True)

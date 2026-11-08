@@ -226,6 +226,202 @@ def test_reviewed_npm_routing_fingerprints_still_match_the_fixed_executor_source
     assert actual == cleanup.NPM_ROUTING_AST
 
 
+def add_pytest_cases(state, monkeypatch, damage=None):
+    """Bind real archived routing code to synthetic, completed Python evidence."""
+    runner = (ROOT / 'script/jenkins/verify-ecs.py').read_bytes()
+    executor = (ROOT / 'script/jenkins/ecs-tool-runtime.py').read_bytes()
+    main = next(node for node in ast.parse(runner).body if isinstance(node, ast.FunctionDef) and node.name == 'main')
+    assert cleanup.routing_ast_sha(main) in cleanup.PYTEST_RUNNER_MAIN_AST
+    if damage == 'changed-runner':
+        changed = runner.replace(b'def main():', b'def main():\n    unreviewed_fixture_routing = True', 1)
+        assert changed != runner; runner = changed
+    elif damage == 'duplicate-runner':
+        runner += b'\ndef main():\n    pass\n'
+    elif damage == 'async-duplicate-runner':
+        runner += b'\nasync def main():\n    pass\n'
+    if damage == 'changed-routing':
+        changed = executor.replace(b"npm_config_cache=str(home / 'npm-cache')",
+                                   b"npm_config_cache=str(home / 'unreviewed-cache')", 1)
+        assert changed != executor; executor = changed
+    source = state.inbox / 'source.tar.gz'
+    with tarfile.open(source, 'r:gz') as archive:
+        files = {entry.name: archive.extractfile(entry).read() for entry in archive}
+    files['script/jenkins/ecs-tool-runtime.py'] = executor
+    if damage != 'missing-source': files['script/jenkins/verify-ecs.py'] = runner
+    package(source, files, 'a' * 40)
+    source_sha = cleanup.digest(source)
+    registered = put(state.inbox / 'tool-runtime/executor.py', executor)
+    runner_file = put(state.checkout / 'script/jenkins/verify-ecs.py', runner)
+    if damage == 'runner-binding': put(runner_file, runner + b'\n# different retained runner bytes\n')
+    manifest = cleanup.read_json(state.manifest)
+    manifest.update(sourceSha256=source_sha, images={'python': 'sha256:' + '9' * 64},
+                    files={'executor.py': cleanup.sha(executor)})
+    if damage == 'executor-binding': manifest['files']['executor.py'] = '0' * 64
+    put_json(state.manifest, manifest)
+    if damage == 'registered-missing': registered.unlink()
+    claim_path = state.attempt / '.verification-claimed/claim.json'
+    claim = cleanup.read_json(claim_path); claim['sourceSha256'] = source_sha; put_json(claim_path, claim)
+    counts = {'found': 3, 'passed': 2, 'failed': 0, 'skipped': 1}
+    inner = cleanup.read_json(state.evidence / 'receipt.json')
+    inner.update(status='PASS', javaOnly=False, fixtureProperties=[], fixtureManifest=None,
+        wholeMigrationRequested=False, workerMysqlRequested=False, workerMysqlConfigSha256=None,
+        pythonTests=counts.copy(), selectedPythonSuites={'tests_python.test_synthetic_pytest': counts.copy()})
+    inner['commands'][0]['exitCode'] = 0
+    python_command = {'label': 'python', 'exitCode': 0, 'finishedAt': '2026-11-07T00:00:00+00:00'}
+    inner['commands'].append(python_command)
+    source_flags = {'java-only': ('javaOnly', True), 'whole-migration': ('wholeMigrationRequested', True),
+        'worker-mysql': ('workerMysqlRequested', True), 'fixtures': ('fixtureProperties', ['fixture']),
+        'fixture-manifest': ('fixtureManifest', {}), 'untyped-source-flag': ('wholeMigrationRequested', 0)}
+    if damage in source_flags:
+        key, value = source_flags[damage]; inner[key] = value
+    if damage == 'duplicate-inner-command': inner['commands'].append(python_command.copy())
+    if damage == 'xml-count': inner['pythonTests'] = {**counts, 'passed': 3}
+    put_json(state.evidence / 'receipt.json', inner)
+    xml = (b'<testsuites><testsuite><testcase classname="tests_python.test_synthetic_pytest" name="first"/>'
+           b'<testcase classname="tests_python.test_synthetic_pytest" name="second"/>'
+           b'<testcase classname="tests_python.test_synthetic_pytest" name="opt_in"><skipped/></testcase>'
+           b'</testsuite></testsuites>')
+    if damage == 'xml-failure': xml = xml.replace(b'name="first"/>', b'name="first"><failure/></testcase>')
+    python_xml = put(state.evidence / 'python.xml', xml)
+    python_log = put(state.evidence / 'python.log', b'original completed synthetic Python log\n')
+    state.reports.extend(['reports/python.xml', 'reports/python.log'])
+    if damage == 'missing-report': state.reports.remove('reports/python.xml')
+    arguments = ['-B', '-m', 'pytest', 'tests_python', '-q',
+                 '--basetemp=' + str(state.evidence / 'tmp/pytest'),
+                 '--junitxml=' + str(state.evidence / 'python.xml')]
+    arguments_sha = cleanup.sha(json.dumps(arguments, ensure_ascii=True).encode())
+    tools = cleanup.read_json(state.evidence / 'tool-runtime.json')
+    command = {'tool': 'python', 'containerId': 'f' * 64, 'status': 'EXITED', 'exitCode': 0,
+        'argumentsSha256': arguments_sha, 'cleanup': {'containerId': 'f' * 64,
+        'image': manifest['images']['python'], 'pid': 0, 'exitCode': 0, 'removed': True}}
+    if damage == 'tool-arguments': command['argumentsSha256'] = '0' * 64
+    if damage == 'cleanup-pid': command['cleanup']['pid'] = 1
+    if damage == 'cleanup-image': command['cleanup']['image'] = 'sha256:' + '8' * 64
+    if damage == 'cleanup-removed': command['cleanup']['removed'] = False
+    tools.update(sourceSha256=source_sha, manifestSha256=cleanup.digest(state.manifest), commands=[command])
+    if damage == 'duplicate-tool-command': tools['commands'].append(copy.deepcopy(command))
+    tools['cleanup']['manifestSha256'] = cleanup.digest(state.manifest)
+    put_json(state.evidence / 'tool-runtime.json', tools)
+    state.record.update(sourceSha256=source_sha, status='PASS', verificationExitCode=0)
+    seal(state)
+    state.keep.extend([runner_file, python_xml, python_log,
+        put(state.evidence / 'tmp/retained-outside-pytest.bin', b'outside the approved pytest root'),
+        put(state.checkout / 'work/tool-home/tmp/retained.bin', b'outside explicit basetemp')])
+    if registered.exists(): state.keep.append(registered)
+    first = put(state.evidence / 'tmp/pytest/test_synthetic_first0/payload.bin', b'regenerable test payload').parent
+    second = put(state.evidence / 'tmp/pytest/test_synthetic_second0/nested/payload.bin', b'another synthetic payload').parents[1]
+    return SimpleNamespace(base=first.parent, first=first, second=second, arguments_sha=arguments_sha,
+                           runner_sha=cleanup.sha(runner), executor_sha=cleanup.sha(executor))
+
+
+def test_proven_pytest_case_directories_are_removed_while_reports_and_other_temporary_roots_remain(state, monkeypatch):
+    cases = add_pytest_cases(state, monkeypatch); before = preserved_bytes(state)
+    value = plan(state); candidate = value['candidates'][0]
+    proof = candidate['pytestTmp']
+    assert proof['status'] == 'PROVEN' and proof['runnerSha256'] == cases.runner_sha
+    assert proof['executorSha256'] == cases.executor_sha and proof['argumentsSha256'] == cases.arguments_sha
+    assert proof['pythonTests'] == {'found': 3, 'passed': 2, 'failed': 0, 'skipped': 1}
+    assert proof['rootStatus'] == 'INSPECTED' and proof['skippedCases'] == []
+    targets = [row for row in candidate['targets'] if row['kind'] == 'PYTEST_CASE_DIRECTORY']
+    assert {row['path'] for row in targets} == {str(path.relative_to(state.root)) for path in (cases.first, cases.second)}
+    result = cleanup.apply_plan(state.root, state.request, value, remote)
+    assert result['status'] == 'REMOVED' and cases.base.is_dir()
+    assert not cases.first.exists() and not cases.second.exists()
+    assert sum(row['kind'] == 'PYTEST_CASE_DIRECTORY' for row in result['deleted']) == 2
+    assert preserved_bytes(state) == before
+
+
+@pytest.mark.parametrize('damage,reason', [
+    *[(name, 'PYTEST_SOURCE_SCOPE_REQUIRED') for name in ('java-only', 'whole-migration', 'worker-mysql',
+        'fixtures', 'fixture-manifest', 'untyped-source-flag', 'duplicate-inner-command', 'missing-report')],
+    ('missing-source', 'PYTEST_SOURCE_RECIPE_MISSING'),
+    ('changed-runner', 'PYTEST_RUNNER_NOT_REVIEWED'), ('duplicate-runner', 'PYTEST_RUNNER_NOT_REVIEWED'),
+    ('async-duplicate-runner', 'PYTEST_RUNNER_NOT_REVIEWED'),
+    ('changed-routing', 'PYTEST_ROUTING_NOT_REVIEWED'),
+    ('runner-binding', 'PYTEST_RUNNER_BINDING_MISSING_OR_CHANGED'),
+    ('executor-binding', 'PYTEST_EXECUTOR_BINDING_MISSING_OR_CHANGED'),
+    ('registered-missing', 'PYTEST_REGISTERED_EXECUTOR_UNAVAILABLE'),
+    ('xml-count', 'PYTEST_REPORT_NOT_PASS'), ('xml-failure', 'PYTEST_REPORT_NOT_PASS'),
+    *[(name, 'PYTEST_TOOL_COMMAND_PROVENANCE_MISSING') for name in
+      ('tool-arguments', 'duplicate-tool-command', 'cleanup-pid', 'cleanup-image', 'cleanup-removed')],
+])
+def test_unproven_pytest_namespace_is_skipped_without_losing_existing_compiled_targets(state, monkeypatch, damage, reason):
+    cases = add_pytest_cases(state, monkeypatch, damage); before = preserved_bytes(state)
+    value = plan(state); candidate = value['candidates'][0]
+    assert candidate['pytestTmp'] == {'status': 'SKIPPED', 'reason': reason}
+    assert all(row['kind'] != 'PYTEST_CASE_DIRECTORY' for row in candidate['targets'])
+    result = cleanup.apply_plan(state.root, state.request, value, remote)
+    assert result['status'] == 'REMOVED' and cases.first.is_dir() and cases.second.is_dir()
+    assert not state.classes.exists() and preserved_bytes(state) == before
+
+
+@pytest.mark.parametrize('damage,reason', [
+    ('symlink', 'PYTEST_CASE_METADATA_UNSAFE'), ('hardlink', 'PYTEST_CASE_HARDLINK_OR_SPARSE'),
+    ('fifo', 'PYTEST_CASE_METADATA_UNSAFE'), ('sparse', 'PYTEST_CASE_HARDLINK_OR_SPARSE'),
+    ('foreign-owner', 'PYTEST_CASE_METADATA_UNSAFE'), ('foreign-writable', 'PYTEST_CASE_METADATA_UNSAFE'),
+    ('foreign-device', 'PYTEST_CASE_METADATA_UNSAFE'), ('size-bound', 'PYTEST_CASE_BOUND_EXCEEDED'),
+    ('case-name', 'PYTEST_CASE_NAME_INVALID'),
+])
+def test_unsafe_pytest_case_is_skipped_before_hashing_and_does_not_block_safe_cases(state, monkeypatch, damage, reason):
+    cases = add_pytest_cases(state, monkeypatch)
+    bad = cases.base / ('unreviewed case name' if damage == 'case-name' else 'test_unsafe0')
+    leaf = put(bad / 'payload.bin', b'unsafe synthetic test payload')
+    if damage == 'symlink': leaf.unlink(); leaf.symlink_to(state.keep[2])
+    elif damage == 'hardlink': os.link(leaf, state.root / 'outside-pytest-hardlink')
+    elif damage == 'fifo': leaf.unlink(); os.mkfifo(leaf, 0o600)
+    elif damage == 'sparse':
+        with leaf.open('wb') as stream: stream.truncate(1024 * 1024)
+    elif damage == 'foreign-writable': leaf.chmod(0o666)
+    elif damage == 'size-bound':
+        put(leaf, b'x' * 2048); monkeypatch.setattr(cleanup, 'MAX_TREE_BYTES', 1024)
+    elif damage in ('foreign-owner', 'foreign-device'):
+        original = Path.lstat
+        def changed(path, *args, **kwargs):
+            info = original(path, *args, **kwargs)
+            if path != leaf: return info
+            values = {name: getattr(info, name) for name in dir(info) if name.startswith('st_')}
+            values['st_uid' if damage == 'foreign-owner' else 'st_dev'] += 1
+            return SimpleNamespace(**values)
+        monkeypatch.setattr(Path, 'lstat', changed)
+    inventory = cleanup.tree_inventory
+    def no_unsafe_hash(path):
+        assert path != bad, 'Unsafe test fixture must be skipped before content hashing'
+        return inventory(path)
+    monkeypatch.setattr(cleanup, 'tree_inventory', no_unsafe_hash)
+    before = preserved_bytes(state); value = plan(state); candidate = value['candidates'][0]
+    label = {'nameSha256': cleanup.sha(os.fsencode(bad.name))} if damage == 'case-name' else {'name': bad.name}
+    assert {**label, 'reason': reason} in candidate['pytestTmp']['skippedCases']
+    targets = [row for row in candidate['targets'] if row['kind'] == 'PYTEST_CASE_DIRECTORY']
+    assert {row['path'] for row in targets} == {str(path.relative_to(state.root)) for path in (cases.first, cases.second)}
+    result = cleanup.apply_plan(state.root, state.request, value, remote)
+    assert result['status'] == 'REMOVED' and bad.is_dir()
+    assert not cases.first.exists() and not cases.second.exists() and not state.classes.exists()
+    assert preserved_bytes(state) == before
+
+
+@pytest.mark.parametrize('suffix', ['work/ci-evidence/tmp', 'work/ci-evidence/tmp/pytest',
+    'work/ci-evidence/tmp/pytest/test_synthetic0/nested', 'work/ci-evidence/tmp/pytest/../outside',
+    'work/ci-evidence/tmp/pytest/.', 'work/ci-evidence/tmp/pytest/..', 'work/tool-home/tmp/test_synthetic0'])
+def test_pytest_delete_api_rejects_parent_descendant_traversal_and_other_temporary_roots(state, suffix):
+    fd = os.open(state.root, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with pytest.raises(ValueError, match='OUTSIDE_COMPILED_ALLOWLIST'):
+            cleanup.remove_target(fd, {'kind': 'PYTEST_CASE_DIRECTORY',
+                'path': 'verification/' + OLD + '/checkout/' + suffix})
+    finally: os.close(fd)
+    assert state.classes.exists()
+
+
+def test_pytest_case_changed_after_planning_prevents_all_deletions(state, monkeypatch):
+    cases = add_pytest_cases(state, monkeypatch); value = plan(state); before = preserved_bytes(state)
+    put(cases.first / 'payload.bin', b'changed after inventory approval')
+    with pytest.raises(ValueError, match='PLAN_OR_ORIGINAL_EVIDENCE_CHANGED_NO_DELETION'):
+        cleanup.apply_plan(state.root, state.request, value, remote)
+    assert cases.first.is_dir() and cases.second.is_dir() and state.classes.is_dir()
+    assert not (state.root / 'inbox' / CURRENT / 'build-cleanup-journal.jsonl').exists()
+    assert preserved_bytes(state) == before
+
+
 @pytest.mark.parametrize('generic', [False, True])
 def test_routing_fingerprint_only_normalizes_an_empty_cross_version_type_parameters_field(generic):
     node = ast.parse('def sample(value):\n    return value\n').body[0]

@@ -7,6 +7,7 @@ gets its own archive copy and independent byte restore, never a live database.
 from __future__ import annotations
 
 import argparse
+import ast
 import gzip
 import hashlib
 import importlib.util
@@ -27,10 +28,33 @@ TAG = re.compile(r'ci-([0-9]+)-[a-f0-9]{12}')
 RESERVE = (2 * 1024 + 256) * 1024 ** 2
 MIB = 1024 ** 2
 MAX_JSON = 16 * MIB
+LOADED_SOURCE = Path(__file__).read_bytes()
 
 
 def need(value, code):
     if not value: raise ValueError(code)
+
+
+def refusal_details(error):
+    """Expose a fixed guard and own-source locations, never exception payloads."""
+    codes = {node.args[1].value for node in ast.walk(ast.parse(LOADED_SOURCE))
+             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == 'need'
+             and len(node.args) >= 2 and isinstance(node.args[1], ast.Constant)
+             and isinstance(node.args[1].value, str)
+             and re.fullmatch(r'[A-Z][A-Z0-9_]{0,99}', node.args[1].value)}
+    code = (error.args[0] if isinstance(error, ValueError) and len(error.args) == 1
+            and isinstance(error.args[0], str) and error.args[0] in codes else 'UNCLASSIFIED_REFUSAL')
+    locations = []
+    own_guard = False
+    trace = error.__traceback__
+    while trace is not None:
+        frame = trace.tb_frame.f_code
+        own_guard = own_guard or frame is need.__code__
+        if frame.co_filename == __file__:
+            locations.append({'function': frame.co_name, 'line': trace.tb_lineno})
+        trace = trace.tb_next
+    return {'errorType': type(error).__name__, 'guardCode': code if own_guard else 'UNCLASSIFIED_REFUSAL',
+            'locations': locations[-8:]}
 
 
 def digest(path):
@@ -344,7 +368,7 @@ def run(args):
         write(snapshot / 'preservation-public.json', result)
         return result
     except BaseException as error:
-        write(snapshot / 'preservation-failed.json', {'status': 'FAILED', 'errorType': type(error).__name__})
+        write(snapshot / 'preservation-failed.json', {'status': 'FAILED', **refusal_details(error)})
         raise
 
 
@@ -355,7 +379,7 @@ def main():
     try:
         print(json.dumps(run(parser.parse_args()), sort_keys=True)); return 0
     except BaseException as error:
-        print(json.dumps({'status': 'REFUSED', 'errorType': type(error).__name__}), file=sys.stderr); return 2
+        print(json.dumps({'status': 'REFUSED', **refusal_details(error)}), file=sys.stderr); return 2
 
 
 if __name__ == '__main__': raise SystemExit(main())

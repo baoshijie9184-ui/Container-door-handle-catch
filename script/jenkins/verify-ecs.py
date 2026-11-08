@@ -574,6 +574,39 @@ def remove_owned_build(path, parent, *, allow_links=False):
     return {'status': 'REMOVED', 'relativePath': path.relative_to(ROOT).as_posix(), **result}
 
 
+def cleanup_source_pytest_temporary(output, receipt, *, ordinary_source, python_succeeded, stop_tools=None):
+    """Release only passed source-test scratch; native migration evidence stays."""
+    record = receipt['pythonTemporaryCleanup'] = {'status': 'RETAINED_NATIVE_EVIDENCE'}
+    if ordinary_source is not True:
+        return record
+    counts = receipt.get('pythonTests', {})
+    # python_report_counts folds both JUnit failure and error nodes into failed.
+    if python_succeeded is not True or type(counts.get('failed')) is not int or counts['failed'] != 0 \
+            or type(counts.get('passed')) is not int or counts['passed'] <= 0:
+        record['status'] = 'RETAINED_PYTHON_NOT_PASSED'
+        return record
+    output = owned_directory(Path(output), ROOT)
+    parent = owned_directory(output / 'tmp', output)
+    temporary = parent / 'pytest'
+    if not temporary.exists() and not temporary.is_symlink():
+        record['status'] = 'ABSENT'
+        return record
+    record['status'] = 'RETAINED_UNCONFIRMED_TOOLS'
+    if stop_tools is None:
+        return record
+    try:
+        stopped = stop_tools()
+        if stopped.get('status') != 'STOPPED' or stopped.get('remaining') != []:
+            raise RuntimeError('Owned Python tools were not stopped; temporary evidence is retained')
+    except BaseException as error:
+        record['errorType'] = type(error).__name__
+        raise
+    record['toolsStoppedBeforeCleanup'] = True
+    record['status'] = 'RETAINED_CLEANUP_FAILED'
+    record.update(remove_owned_build(temporary, parent, allow_links=True))
+    return record
+
+
 @contextmanager
 def frontend_dependencies(frontend, result, *, stop_tools=None):
     if frontend not in ('frontend', 'frontend-agent'):
@@ -748,9 +781,14 @@ def main():
             require_unchanged_inputs({file: digest for file, digest in (
                 (args.compact_migration_config, args.compact_migration_config_sha256),
                 (args.worker_mysql_config, args.worker_mysql_config_sha256)) if file})
+            ordinary_source = not fixture_options and not args.fixture_manifest \
+                and not args.compact_migration_config and not args.worker_mysql_config
+            receipt['pythonTemporaryCleanup'] = {'status': 'RETAINED_PYTHON_NOT_PASSED' if ordinary_source else 'RETAINED_NATIVE_EVIDENCE'}
             execute('python', [tools['PYTHON_EXE'], '-B', '-m', 'pytest', 'tests_python', '-q',
                               '--basetemp=' + str(output / 'tmp' / 'pytest'), '--junitxml=' + str(output / 'python.xml')], ROOT, environment=python_env)
             receipt['pythonTests'], receipt['selectedPythonSuites'] = python_report_counts(output / 'python.xml')
+            cleanup_source_pytest_temporary(output, receipt, ordinary_source=ordinary_source, python_succeeded=True,
+                                            stop_tools=tools.get('_cleanup_owned_tools'))
             if args.worker_mysql_config:
                 worker_tally = receipt['selectedPythonSuites'].get('tests_python.test_detection_worker_receipts', empty_counts())
                 if not worker_tally['passed'] or worker_tally['failed'] or worker_tally['skipped']:

@@ -2,6 +2,7 @@
 import copy
 import importlib.util
 import io
+import json
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -239,3 +240,43 @@ def test_reuse_recipe_and_entire_import_closure_are_bound_to_the_fixed_source_ar
     assert reuse.fixed_source(args, executor=executor) == checkout
     (checkout / 'script/memory/migrate_legacy_stores.py').write_bytes(b'raise RuntimeError("never import changed code")')
     with pytest.raises(ValueError, match='RECIPE_DIFFERS'): reuse.fixed_source(args, executor=executor)
+
+
+def test_refusal_exposes_only_a_literal_guard_and_own_source_locations():
+    try:
+        reuse.need(False, 'CURRENT_DISK_CANNOT_RETAIN_COPY_RESTORE_AND_RESERVE')
+    except ValueError as error:
+        details = reuse.refusal_details(error)
+    assert details['errorType'] == 'ValueError'
+    assert details['guardCode'] == 'CURRENT_DISK_CANNOT_RETAIN_COPY_RESTORE_AND_RESERVE'
+    assert details['locations'] == [{'function': 'need', 'line': reuse.need.__code__.co_firstlineno + 1}]
+    assert set(details) == {'errorType', 'guardCode', 'locations'}
+
+
+@pytest.mark.parametrize('error', [ValueError('PRIVATE_SQL_AND_MODEL_KEY'),
+                                  ValueError('UNREVIEWED_UPPERCASE_CODE'),
+                                  ValueError('COPY_REACHED_TRUE_DISK_RESERVE'),
+                                  ValueError('COPY_REACHED_TRUE_DISK_RESERVE', 'private-extra'),
+                                  RuntimeError('COPY_REACHED_TRUE_DISK_RESERVE')])
+def test_unreviewed_exception_payloads_never_become_public_refusal_codes(error):
+    details = reuse.refusal_details(error)
+    assert details == {'errorType': type(error).__name__, 'guardCode': 'UNCLASSIFIED_REFUSAL', 'locations': []}
+    assert 'PRIVATE_SQL_AND_MODEL_KEY' not in json.dumps(details)
+    assert 'private-extra' not in json.dumps(details)
+
+
+def test_main_keeps_fixed_refusal_reason_without_printing_args_or_exception_payload(monkeypatch, capsys):
+    def denied(_args):
+        reuse.need(False, 'CURRENT_DISK_CANNOT_RETAIN_COPY_RESTORE_AND_RESERVE')
+    monkeypatch.setattr(reuse, 'run', denied)
+    monkeypatch.setattr(reuse.sys, 'argv', ['reuse-legacy-source.py', *[
+        item for name in ('root', 'tag', 'commit', 'source-sha256', 'instance-id', 'machine-id', 'source-snapshot')
+        for item in ('--' + name, 'private-value')]])
+    assert reuse.main() == 2
+    captured = capsys.readouterr()
+    assert captured.out == ''
+    details = json.loads(captured.err)
+    assert details['status'] == 'REFUSED'
+    assert details['guardCode'] == 'CURRENT_DISK_CANNOT_RETAIN_COPY_RESTORE_AND_RESERVE'
+    assert {row['function'] for row in details['locations']} == {'main', 'need'}
+    assert 'private-value' not in captured.err
