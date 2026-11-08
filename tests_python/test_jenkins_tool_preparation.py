@@ -665,24 +665,28 @@ class ToolPreparationTests(unittest.TestCase):
                                                   'digest': 'sha256:' + '1' * 64, 'size': 1192}
         engine = {'engineImageId': descriptor['digest'] if native else config, 'configDigest': config,
                   'loadDescriptor': descriptor, 'diffIds': ['sha256:' + '2' * 64], 'os': 'linux', 'architecture': 'amd64'}
+        profile = {'profile': 'rootlesskit', 'file': '/etc/apparmor.d/rootlesskit',
+                   'sha256': 'a6a1a760d88312275d64f195e6b2f51627e8cabfdf4e355262c86f0578c66d80',
+                   'loadedMode': 'unconfined', 'localOverrideRulesAbsent': True}
         directory = value.inbox / 'candidate-build-tools'; log = b'v0.34.2\n'; license_raw = b'approved-license'
         helper = SimpleNamespace(IMAGE_ID=config, LABEL='io.doorhandle.candidate-builder', VERSION='v0.34.2',
+            ROOTLESS_PROFILE='rootlesskit', admit_rootless_profile=mock.Mock(return_value=profile),
             BUILDER_MEMORY=2 * GIB, LICENSE_SHA=hashlib.sha256(license_raw).hexdigest(),
             admit_tools=mock.Mock(return_value={'file': 'tools.json', 'sha256': 'e' * 64}),
             buildkit_input=mock.Mock(return_value=None), tool_engine_identity=mock.Mock(return_value=engine),
             validate_engine_identity=mock.Mock(return_value=engine), rootless_security_options=mock.Mock(return_value=True))
-        document = {'licenseFile': str(directory / 'LICENSE'), 'engineIdentity': engine,
+        document = {'licenseFile': str(directory / 'LICENSE'), 'engineIdentity': engine, 'rootlessProfile': profile,
                     'versions': {name: {'file': name + '-version.log', 'sha256': hashlib.sha256(log).hexdigest()}
                                  for name in ('buildctl', 'buildkitd')}}
         cid = 'c' * 64; token = 'f' * 24
         summary = {'ownerToken': token, 'cleanup': {'builderContainerId': cid, 'builderExitCode': 0}}
         image = {'Id': engine['engineImageId'], 'Os': 'linux', 'Architecture': 'amd64', 'Config': {'User': '1000:1000'}}
-        container = {'Id': cid, 'Image': engine['engineImageId'],
+        container = {'Id': cid, 'Image': engine['engineImageId'], 'AppArmorProfile': 'rootlesskit',
             'Config': {'User': '1000:1000', 'Labels': {helper.LABEL: token, 'io.doorhandle.release': value.args.tag,
                                                        'io.doorhandle.source': SOURCE_SHA}},
             'HostConfig': {'Privileged': False, 'Memory': 2 * GIB, 'MemorySwap': 2 * GIB, 'RestartPolicy': {'Name': 'no'},
                            'NetworkMode': 'bridge', 'NanoCpus': 2 * 10 ** 9, 'PidsLimit': 1024,
-                           'SecurityOpt': ['seccomp=unconfined', 'apparmor=unconfined'] + ([] if native else ['systempaths=unconfined']),
+                           'SecurityOpt': ['seccomp=unconfined', 'apparmor=rootlesskit'] + ([] if native else ['systempaths=unconfined']),
                            'MaskedPaths': [], 'ReadonlyPaths': []},
             'State': {'Status': 'exited', 'Running': False, 'Restarting': False, 'Paused': False, 'OOMKilled': False,
                       'StartedAt': '2026-11-08T00:00:00Z', 'Pid': 0, 'ExitCode': 0}}
@@ -710,25 +714,38 @@ class ToolPreparationTests(unittest.TestCase):
                         mock.patch.object(tools, 'control_bytes', side_effect=read):
                     value.validate_builder(reference)
                 helper.validate_engine_identity.assert_called_once_with(image, engine)
+                helper.admit_rootless_profile.assert_called_once_with()
                 helper.rootless_security_options.assert_called_once_with(container['HostConfig'])
                 self.assertEqual([mock.call('image', 'inspect', engine['engineImageId']), mock.call('inspect', container['Id'])],
                                  value.call.call_args_list)
                 if native: self.assertNotEqual(helper.IMAGE_ID, engine['engineImageId'])
 
     def test_builder_readback_rejects_engine_drift_and_wrong_container_image(self):
-        for change in ('identity-drift', 'root-user', 'container-config-id', 'sandbox-drift'):
+        for change in ('identity-drift', 'root-user', 'container-config-id', 'sandbox-drift', 'profile-drift', 'applied-profile-drift', 'profile-boolean'):
             with self.subTest(change=change):
                 value, helper, reference, read, image, container, engine = self.completed_builder_readback()
                 if change == 'identity-drift': helper.validate_engine_identity.side_effect = ValueError('engine identity drift')
                 if change == 'root-user': image['Config']['User'] = '0'
                 if change == 'container-config-id': container['Image'] = helper.IMAGE_ID
                 if change == 'sandbox-drift': helper.rootless_security_options.return_value = False
+                if change == 'profile-drift':
+                    helper.admit_rootless_profile.return_value = {**helper.admit_rootless_profile.return_value, 'profile': 'unconfined'}
+                if change == 'applied-profile-drift': container['AppArmorProfile'] = 'unconfined'
+                if change == 'profile-boolean':
+                    original_read = read
+                    def read(path, **kwargs):
+                        raw = original_read(path, **kwargs)
+                        if path.name == 'tools.json':
+                            stored = json.loads(raw); stored['rootlessProfile']['localOverrideRulesAbsent'] = 1
+                            return json.dumps(stored).encode()
+                        return raw
                 spec = SimpleNamespace(loader=SimpleNamespace(exec_module=mock.Mock()))
                 with mock.patch.object(tools.importlib.util, 'spec_from_file_location', return_value=spec), \
                         mock.patch.object(tools.importlib.util, 'module_from_spec', return_value=helper), \
                         mock.patch.object(tools, 'control_bytes', side_effect=read), self.assertRaises(ValueError):
                     value.validate_builder(reference)
-                self.assertEqual(2 if change in ('container-config-id', 'sandbox-drift') else 1, value.call.call_count)
+                expected = 0 if change in ('profile-drift', 'profile-boolean') else 2 if change in ('container-config-id', 'sandbox-drift', 'applied-profile-drift') else 1
+                self.assertEqual(expected, value.call.call_count)
 
     def test_atomic_completion_never_overwrites_success_or_leaves_pending_bytes(self):
         with tempfile.TemporaryDirectory() as directory:

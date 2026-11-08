@@ -1122,7 +1122,7 @@
       },
       {
         "module": "tests_python.test_compact_build_resources",
-        "minimumTests": 28,
+        "minimumTests": 30,
         "source": "tests_python/test_compact_build_resources.py",
         "allowedSkippedTests": []
       },

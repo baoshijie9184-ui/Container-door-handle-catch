@@ -36,6 +36,9 @@ LABEL = 'io.doorhandle.candidate-builder'
 VERSION = 'v0.34.2'
 REFERENCE = 'docker.io/moby/buildkit@sha256:b2eef63fa76615a59fdab47309743d3018219574b8fcece77d38296704154f44'
 IMAGE_ID = 'sha256:e164dcf5aa147a29659dea4e2e6b909db541c2dfe0b512dac38a2ffaf063fc18'
+ROOTLESS_PROFILE = 'rootlesskit'
+ROOTLESS_PROFILE_FILE = Path('/etc/apparmor.d/rootlesskit')
+ROOTLESS_PROFILE_SHA256 = 'a6a1a760d88312275d64f195e6b2f51627e8cabfdf4e355262c86f0578c66d80'
 BUILDKIT_ARCHIVE_MAX = 128 * MIB
 BUILDKIT_LAYER_BYTES = 119868658
 LICENSE_URL = 'https://raw.githubusercontent.com/moby/buildkit/v0.34.2/LICENSE'
@@ -222,9 +225,85 @@ def rootless_security_options(host):
     options = host['SecurityOpt']
     if not all(type(option) is str for option in options) or len(set(options)) != len(options):
         return False
-    base = {'seccomp=unconfined', 'apparmor=unconfined'}
+    base = {'seccomp=unconfined', 'apparmor=' + ROOTLESS_PROFILE}
     return (set(options) in (base, base | {'systempaths=unconfined'})
             and all(type(host.get(key)) is list and not host[key] for key in ('MaskedPaths', 'ReadonlyPaths')))
+
+
+def rootless_profile_proof():
+    """Pure receipt contract; validating archived evidence never probes the host."""
+    return {'profile': ROOTLESS_PROFILE, 'file': '/etc/apparmor.d/rootlesskit', 'sha256': ROOTLESS_PROFILE_SHA256,
+            'loadedMode': 'unconfined', 'localOverrideRulesAbsent': True}
+
+
+def admit_rootless_profile():
+    """Read the stock host policy and loaded name; never install/reload a policy."""
+    require(sys.platform == 'linux' and os.getuid() == 1000, 'Rootless profile admission requires the ECS data actor')
+    path = ROOTLESS_PROFILE_FILE
+    require(path.is_absolute() and path.name == ROOTLESS_PROFILE, 'Fixed rootless profile path required')
+    def directory(item):
+        info = os.lstat(item)
+        require(stat.S_ISDIR(info.st_mode) and info.st_uid == 0 and not info.st_mode & 0o022,
+                'Rootless profile ancestor is not an unlinked root-owned directory')
+        return (info.st_dev, info.st_ino, info.st_mode, info.st_uid)
+    ancestors = [(item, directory(item)) for item in (path.parent, *path.parent.parents)]
+    def shape(info, maximum):
+        require(stat.S_ISREG(info.st_mode) and info.st_uid == 0 and info.st_nlink == 1
+                and not info.st_mode & 0o022 and 0 <= info.st_size <= maximum,
+                'Stock rootless profile owner, type, links, mode or size differs')
+        return (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_nlink,
+                info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+    opened = []
+    def hold(item, maximum):
+        admitted = shape(os.lstat(item), maximum)
+        fd = os.open(item, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK); opened.append(fd)
+        require(shape(os.fstat(fd), maximum) == admitted, 'Stock rootless policy changed during open')
+        chunks = []; size = 0
+        while True:
+            block = os.read(fd, maximum + 1 - size)
+            if not block: break
+            chunks.append(block); size += len(block)
+            require(size <= maximum, 'Stock rootless policy exceeded its bound')
+        raw = b''.join(chunks)
+        require(len(raw) == admitted[5], 'Stock rootless policy bytes changed during read')
+        return item, maximum, fd, admitted, raw
+    def unchanged(held):
+        item, maximum, fd, admitted, _raw = held
+        return shape(os.fstat(fd), maximum) == admitted == shape(os.lstat(item), maximum)
+    try:
+        stock = hold(path, 64 * 1024)
+        require(hashlib.sha256(stock[4]).hexdigest() == ROOTLESS_PROFILE_SHA256, 'Stock rootless profile bytes differ')
+        local_parent = path.parent / 'local'; local_path = local_parent / ROOTLESS_PROFILE
+        try: local_directory = directory(local_parent)
+        except FileNotFoundError: local_directory = None
+        local = None
+        if local_directory is not None:
+            try: os.lstat(local_path)
+            except FileNotFoundError: pass
+            else:
+                local = hold(local_path, 8 * 1024); text = local[4].decode('utf8')
+                require(all(char >= ' ' or char in '\r\n\t' for char in text)
+                        and all(not line.strip() or (line.lstrip().startswith('#')
+                            and not re.match(r'#\s*(?:include|(?:if|ifdef|ifndef|define|undef|else|elif|endif)\b)', line.lstrip(), re.I))
+                            for line in text.splitlines()), 'Local rootless policy contains effective or unknown rules')
+        result = subprocess.run(['/usr/bin/sudo', '-n', '/usr/bin/cat', '/sys/kernel/security/apparmor/profiles'],
+            capture_output=True, timeout=15, env={k: v for k, v in os.environ.items() if k in ('PATH', 'LANG', 'LC_ALL')})
+        require(result.returncode == 0 and 0 < len(result.stdout) <= MIB, 'Loaded AppArmor profiles are not readable')
+        names = [line for line in result.stdout.decode('utf8').splitlines() if line.split(' ', 1)[0] == ROOTLESS_PROFILE]
+        require(names == [ROOTLESS_PROFILE + ' (unconfined)'], 'The existing named rootless profile is not loaded')
+        require(unchanged(stock) and all(directory(item) == before for item, before in ancestors),
+                'Stock rootless profile changed during admission')
+        try: current_local_directory = directory(local_parent)
+        except FileNotFoundError: current_local_directory = None
+        require(current_local_directory == local_directory, 'Local rootless policy directory changed during admission')
+        if local is None:
+            try: os.lstat(local_path)
+            except FileNotFoundError: pass
+            else: raise BuildResourceError('Local rootless policy appeared during admission')
+        else: require(unchanged(local), 'Local rootless policy changed during admission')
+    finally:
+        for fd in reversed(opened): os.close(fd)
+    return rootless_profile_proof()
 
 
 def effective_dockerfile(body, original_from, alias):
@@ -249,6 +328,7 @@ class Supervisor:
         self.process_deadline = None
         self.builder_stopping = False
         self.engine_identity = None
+        self.rootless_profile = None
         self.daemon_import_unknown = False
         self.builder_last = None
         self.lock = threading.RLock(); self.stop = threading.Event(); self.started = time.monotonic()
@@ -297,6 +377,12 @@ class Supervisor:
                 and row['HostConfig'].get('BlkioDeviceWriteBps') == [{'Path': self.builder['ioDevice'], 'Rate': 64 * MIB}]
                 and rootless_security_options(row['HostConfig']),
                 'Builder source, I/O ceiling or rootless sandbox configuration changed')
+        state = row.get('State')
+        require(type(state) is dict and type(state.get('StartedAt')) is str and state['StartedAt']
+                and type(state.get('Running')) is bool and type(state.get('Pid')) is int and state['Pid'] >= 0,
+                'Builder start-state evidence is incomplete')
+        if state['Running'] or state['Pid'] > 0 or not state['StartedAt'].startswith('0001-'):
+            require(row.get('AppArmorProfile') == ROOTLESS_PROFILE, 'Started builder did not apply the named rootless profile')
         expected = self.builder['mounts']
         actual = sorted((m['Type'], m.get('Name') if m['Type'] == 'volume' else m.get('Source', ''), m['Destination'], m['RW'])
                         for m in row['Mounts'] if m['Type'] != 'tmpfs')
@@ -449,6 +535,7 @@ class Supervisor:
                   'probeFile': 'resource-probes.jsonl', 'probeSha256': digest(self.directory / 'resource-probes.jsonl'),
                   'monitorFailure': self.failed, 'cleanup': cleanup, 'originalDataChanged': False, **extra}
         if self.engine_identity is not None: result['engineIdentity'] = self.engine_identity
+        if self.rootless_profile is not None: result['rootlessProfile'] = self.rootless_profile
         write(self.directory / 'resource-summary.json', result)
         require(requested != 'PASS' or status == 'PASS', 'Candidate resource finalization failed; raw evidence retained')
         return {'file': str(self.directory / 'resource-summary.json'), 'sha256': digest(self.directory / 'resource-summary.json')}
@@ -457,8 +544,10 @@ class Supervisor:
 def bootstrap_builder(actor, mounts=(), *, image_identity):
     """Official rootless daemon, no host socket, no privilege/host setting change."""
     image_identity = stored_builder_identity(image_identity)
+    profile = admit_rootless_profile()
     actor.engine_identity = image_identity
-    actor.begin('builder-bootstrap', 64 * MIB, {'imageId': IMAGE_ID, 'engineIdentity': image_identity, 'version': VERSION}, BUILDER_MEMORY)
+    actor.rootless_profile = profile
+    actor.begin('builder-bootstrap', 64 * MIB, {'imageId': IMAGE_ID, 'engineIdentity': image_identity, 'rootlessProfile': profile, 'version': VERSION}, BUILDER_MEMORY)
     name = 'doorhandle-builder-' + actor.token; volume = name + '-state'
     labels = {LABEL: actor.token, 'io.doorhandle.release': actor.context['release'],
               'io.doorhandle.source': actor.context['sourceSha256']}
@@ -485,7 +574,7 @@ def bootstrap_builder(actor, mounts=(), *, image_identity):
     command = ['create', '--name', name, '--pull', 'never', '--user', '1000:1000', '--network', 'bridge',
         '--restart', 'no', '--memory', str(BUILDER_MEMORY), '--memory-swap', str(BUILDER_MEMORY), '--cpus', '2', '--pids-limit', '1024',
         '--device-write-bps', io_device + ':' + str(64 * MIB),
-        '--security-opt', 'seccomp=unconfined', '--security-opt', 'apparmor=unconfined', '--security-opt', 'systempaths=unconfined',
+        '--security-opt', 'seccomp=unconfined', '--security-opt', 'apparmor=' + ROOTLESS_PROFILE, '--security-opt', 'systempaths=unconfined',
         '--log-opt', 'max-size=5m', '--log-opt', 'max-file=1',
         '--tmpfs', '/run/user/1000:rw,nosuid,nodev,size=67108864,uid=1000,gid=1000,mode=0700',
         '--tmpfs', '/tmp:rw,nosuid,nodev,size=268435456,uid=1000,gid=1000',
@@ -744,6 +833,7 @@ def prepare_tools(args, identity, recipe_directory):
                  'helperSha256': digest(recipe_directory / 'compact-build-resources.py'),
                  'imageInputsHelperSha256': digest(recipe_directory / 'compact-image-inputs.py'),
                  'engineIdentity': engine, 'imageMeasurementSha256': digest(actor.directory / 'official-layer-measurements.json')}
+        value['rootlessProfile'] = rootless_profile_proof()
         if supplied is not None: value['buildkitArchive'] = supplied
         write(actor.directory / 'tools.json', value)
         return {'file': str(actor.directory / 'tools.json'), 'sha256': digest(actor.directory / 'tools.json'),
@@ -906,7 +996,9 @@ def admit_tools(root, context, module_directory):
     require(reference == {'file': str(directory / 'resource-summary.json'), 'sha256': digest(directory / 'resource-summary.json')}, 'Builder preparation receipt changed')
     validate_files(directory, context, require_services=False)
     engine = measured_tool_identity(directory, value)
-    require(summary.get('engineIdentity') == engine, 'Builder resource and tool engine identities differ')
+    require(summary.get('engineIdentity') == engine and value.get('rootlessProfile') == rootless_profile_proof()
+            and value['rootlessProfile'].get('localOverrideRulesAbsent') is True,
+            'Builder resource/tool engine or named profile identities differ')
     require(summary['status'] == 'PASS', 'Builder preparation did not pass')
     return {'file': str(directory / 'tools.json'), 'sha256': digest(directory / 'tools.json')}
 
@@ -1101,6 +1193,9 @@ def validate_files(directory, context, require_services=True):
             and all(summary.get('cleanup', {}).get(key) is True for key in ('creatorStopped', 'builderStopped', 'daemonImportTerminated')),
             'Candidate resource identity, monitor or owned cleanup did not pass')
     engine = stored_builder_identity(summary.get('engineIdentity'))
+    profile = rootless_profile_proof()
+    require(summary.get('rootlessProfile') == profile and summary['rootlessProfile'].get('localOverrideRulesAbsent') is True,
+            'Pinned existing rootless profile evidence differs')
     probes = (directory / 'resource-probes.jsonl').read_bytes()
     require(summary.get('probeFile') == 'resource-probes.jsonl' and 0 < len(probes) <= 64 * MIB
             and hashlib.sha256(probes).hexdigest() == summary.get('probeSha256'), 'Candidate raw resource observations changed')
@@ -1136,6 +1231,8 @@ def validate_files(directory, context, require_services=True):
             builder_identity = identity; builder_peak = builder['peakBytes']
     require(observed == set(phases) and builder_seen, 'Candidate phases or owned builder observations are incomplete')
     require(any(name.startswith('builder-bootstrap-') and value['measuredInputs'].get('engineIdentity') == engine
+                and value['measuredInputs'].get('rootlessProfile') == profile
+                and value['measuredInputs']['rootlessProfile'].get('localOverrideRulesAbsent') is True
                 for name, value in phases.items()), 'Builder bootstrap and actual engine identity differ')
     final = summary['finalProbe']
     require(final['diskAvailableBytes'] >= DISK_FLOOR and final['memoryAvailableBytes'] >= MEMORY_FLOOR

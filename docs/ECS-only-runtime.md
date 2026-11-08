@@ -1,5 +1,11 @@
 # 单体 ECS 运行与测试
 
+2026-11-08 #116：固定提交 `6d37e1b0b6f8d54e9213d09d436d41cc0eb8d222` 实际通过 OCI 身份及安全选项语义检查，构建器启动约 0.205 秒后退出 1。原日志为 RootlessKit `fork/exec /proc/self/exe: permission denied`，只读核对又确认 Ubuntu `apparmor_restrict_unprivileged_userns=1`；该错误与系统对 unconfined 程序的用户命名空间限制一致，未出现 OOM 或资源监测失败。原清理回执三项停止均为 true，实际 CID 为 exited/PID 0；精确容器及状态卷作为失败证据保留。22 份原始控制/日志及固定源码闭包已保全，实例已在流水线外回读 `Stopped / StopCharging`。
+
+服务器已加载 `rootlesskit (unconfined)`，现有 `/etc/apparmor.d/rootlesskit` 原文 SHA 为 `a6a1a760d88312275d64f195e6b2f51627e8cabfdf4e355262c86f0578c66d80`，其规则明确允许 userns。后续实现显式请求 `apparmor=rootlesskit`；启动前只读验证 root 所有的稳定配置、准确字节 SHA、已有加载名称及无有效本地覆盖规则，启动后核对实际应用名称。工具、资源摘要、bootstrap、归属和断线回读绑定同一五字段证明。不会安装、重载或写入主机策略，也不改变 sysctl、特权模式或原有资源限额。机制参见 [Ubuntu 官方说明](https://ubuntu.com/blog/ubuntu-23-10-restricted-unprivileged-user-namespaces)。
+
+该修复目前仅静态检查与独立复核通过，镜像资源模块登记 30 例；真实启动、版本、停止、数据库和业务场景仍待下一固定提交。#116 未进入项目测试，不能用 #114 的部分通过替代。
+
 2026-11-08 #115：同一固定提交 `91c77d97` 的实际 OCI 缓存复用、原层测量、加载及引擎 ID 关联均已越过；随后在首次启动前的构建器归属检查失败。只读逐项核对确认 source 标签和 `/dev/vda` 64 MiB/s 写入限额均匹配，Docker 把请求的 `systempaths=unconfined` 归一化为 `MaskedPaths=[]` / `ReadonlyPaths=[]`，`SecurityOpt` 仅保留 seccomp/apparmor 两项，原脚本按三条字面量比较而误拒。
 
 实际拥有对象为 `created`、PID 0、`StartedAt` 全零，从未启动；其精确容器、状态卷及原 `cleanup=false` 回执继续保留，没有手改历史或宣称已删除。21 份服务器原始控制/日志、固定源码 SHA 和 Docker 回查已保全，资源监测没有失败；最后可用 5,724,520,448 字节。该轮未进入夹具、数据库或测试，实例已在流水线外实际回读 `Stopped / StopCharging`，Jenkins 保持运行。

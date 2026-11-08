@@ -1,11 +1,13 @@
 """Pure boundary regressions; executed by Jenkins on ECS, never locally."""
 import copy
+import contextlib
 import gzip
 import hashlib
 import importlib.util
 import io
 import json
 import os
+import stat
 from pathlib import Path
 import tarfile
 import tempfile
@@ -27,6 +29,46 @@ RES = load('build_resources_under_test', 'script/docker/compact-build-resources.
 OCI = load('image_inputs_under_test', 'script/docker/compact-image-inputs.py')
 CONTEXT = {'release': 'ci-123-' + 'a' * 12, 'commit': 'a' * 40, 'sourceSha256': 'b' * 64,
            'identity': {'instanceId': 'i-fixture', 'machineId': 'c' * 32, 'executionLocation': 'ECS'}}
+STOCK_ROOTLESS_PROFILE = b'''# This profile allows everything and only exists to give the
+# application a name instead of having the label "unconfined"
+
+abi <abi/4.0>,
+include <tunables/global>
+
+profile rootlesskit /usr/bin/rootlesskit flags=(unconfined) {
+  userns,
+
+  # Site-specific additions and overrides. See local/README for details.
+  include if exists <local/rootlesskit>
+}
+'''
+
+
+@contextlib.contextmanager
+def profile_policy_fixture(local=None):
+    """Actual bytes/FD identities, with root ownership simulated for CI UID1000."""
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = Path(temporary) / 'etc/apparmor.d'; directory.mkdir(parents=True)
+        path = directory / 'rootlesskit'; path.write_bytes(STOCK_ROOTLESS_PROFILE); path.chmod(0o644)
+        local_directory = directory / 'local'; local_directory.mkdir()
+        local_path = local_directory / 'rootlesskit'
+        if local is not None: local_path.write_bytes(local); local_path.chmod(0o600)
+        state = SimpleNamespace(path=path, local=local_path, directory=directory, fault=None)
+        actual_lstat, actual_fstat = os.lstat, os.fstat
+        def metadata(info, item=None):
+            values = {name: getattr(info, name) for name in ('st_dev', 'st_ino', 'st_mode', 'st_uid', 'st_nlink', 'st_size', 'st_mtime_ns', 'st_ctime_ns')}
+            values['st_uid'] = 0
+            if stat.S_ISDIR(info.st_mode): values['st_mode'] &= ~0o022
+            if state.fault == 'foreign-file' and stat.S_ISREG(info.st_mode): values['st_uid'] = 1
+            if state.fault == 'writable-parent' and item == directory: values['st_mode'] |= 0o002
+            return SimpleNamespace(**values)
+        result = SimpleNamespace(returncode=0, stdout=b'other-profile (enforce)\nrootlesskit (unconfined)\n', stderr=b'')
+        with mock.patch.object(RES, 'ROOTLESS_PROFILE_FILE', path), mock.patch.object(RES.os, 'getuid', return_value=1000), \
+                mock.patch.object(RES.os, 'lstat', side_effect=lambda item: metadata(actual_lstat(item), Path(item))), \
+                mock.patch.object(RES.os, 'fstat', side_effect=lambda fd: metadata(actual_fstat(fd))), \
+                mock.patch.object(RES.subprocess, 'run', return_value=result) as command:
+            state.command = command; state.result = result
+            yield state
 
 
 def tar_bytes(members):
@@ -110,7 +152,7 @@ def evidence(directory):
     for index, phase in enumerate(names, 1):
         name = phase + '-%03d' % index
         measured = {'actualInputBytes': 1024}
-        if phase == 'builder-bootstrap': measured['engineIdentity'] = engine
+        if phase == 'builder-bootstrap': measured.update(engineIdentity=engine, rootlessProfile=RES.rootless_profile_proof())
         plan = RES.phase_plan({**CONTEXT, 'ownerToken': 'e' * 24}, name, baseline, RES.GIB, RES.BUILDER_MEMORY, measured)
         path = directory / ('phase-%02d.json' % index); path.write_bytes(RES.encoded(plan))
         phases.append({'file': path.name, 'sha256': RES.digest(path)})
@@ -123,6 +165,7 @@ def evidence(directory):
                  engineIdentity=identity_fixture(image['imageId'])[2])
     summary = {'version': 1, 'kind': 'doorhandle-candidate-build-resources', **CONTEXT, 'ownerToken': 'e' * 24,
                'status': 'PASS', 'capacityVerdict': 'CONTROLLED_MEASUREMENT', 'productionCapacityVerified': False, 'engineIdentity': engine,
+               'rootlessProfile': RES.rootless_profile_proof(),
                'baselineProbe': baseline, 'finalProbe': {**baseline, 'monotonic': probes[-1]['monotonic'] + .05}, 'phases': phases, 'probeFile': 'resource-probes.jsonl',
                'probeSha256': hashlib.sha256(raw).hexdigest(), 'monitorFailure': None, 'originalDataChanged': False,
                'cleanup': {'creatorStopped': True, 'builderStopped': True, 'daemonImportTerminated': True, 'builderContainerId': 'd' * 64},
@@ -363,15 +406,22 @@ class CompactBuildResourceTests(unittest.TestCase):
         actor.token = 'e' * 24; actor.context = CONTEXT
         actor.builder = {'id': 'd' * 64, 'engineIdentity': engine, 'ioDevice': '/dev/vda', 'mounts': []}
         row = {'Id': actor.builder['id'], 'Image': engine['engineImageId'],
+            'State': {'StartedAt': '0001-01-01T00:00:00Z', 'Running': False, 'Pid': 0},
             'Config': {'User': '1000:1000', 'Labels': {RES.LABEL: actor.token, 'io.doorhandle.release': CONTEXT['release'], 'io.doorhandle.source': CONTEXT['sourceSha256']}},
             'HostConfig': {'Privileged': False, 'Memory': RES.BUILDER_MEMORY, 'MemorySwap': RES.BUILDER_MEMORY,
                 'BlkioDeviceWriteBps': [{'Path': '/dev/vda', 'Rate': 64 * RES.MIB}],
-                'SecurityOpt': ['seccomp=unconfined', 'apparmor=unconfined', 'systempaths=unconfined'],
+                'SecurityOpt': ['seccomp=unconfined', 'apparmor=' + RES.ROOTLESS_PROFILE, 'systempaths=unconfined'],
                 'MaskedPaths': [], 'ReadonlyPaths': [], 'Tmpfs': {'/tmp': '', '/run/user/1000': ''}}, 'Mounts': []}
         actor.docker = lambda *_: json.dumps([row]).encode()
         self.assertEqual(row, actor.owned_builder())
         row['HostConfig']['SecurityOpt'].remove('systempaths=unconfined')
         self.assertEqual(row, actor.owned_builder())
+        row['State'].update(StartedAt='2026-11-08T03:00:00Z', Running=True, Pid=1234)
+        row['AppArmorProfile'] = RES.ROOTLESS_PROFILE
+        self.assertEqual(row, actor.owned_builder())
+        for profile in ('unconfined', '', None, 'other-profile'):
+            damaged = dict(row, AppArmorProfile=profile); actor.docker = lambda *_: json.dumps([damaged]).encode()
+            with self.subTest(profile=profile), self.assertRaises(ValueError): actor.owned_builder()
         for key in ('MaskedPaths', 'ReadonlyPaths'):
             damaged = copy.deepcopy(row); damaged['HostConfig'][key] = ['/proc/kcore']
             actor.docker = lambda *_: json.dumps([damaged]).encode()
@@ -381,7 +431,7 @@ class CompactBuildResourceTests(unittest.TestCase):
             with self.subTest(field=field), self.assertRaises(ValueError): actor.owned_builder()
 
     def test_rootless_security_normalization_requires_exact_options_and_explicit_empty_path_masks(self):
-        base = ['seccomp=unconfined', 'apparmor=unconfined']
+        base = ['seccomp=unconfined', 'apparmor=' + RES.ROOTLESS_PROFILE]
         for options in (base, list(reversed(base)), base + ['systempaths=unconfined']):
             host = {'SecurityOpt': options, 'MaskedPaths': [], 'ReadonlyPaths': []}
             with self.subTest(options=options): self.assertIs(True, RES.rootless_security_options(host))
@@ -395,21 +445,78 @@ class CompactBuildResourceTests(unittest.TestCase):
                 with self.subTest(missing=key, options=options): self.assertIs(False, RES.rootless_security_options(damaged))
         for options in (None, 'seccomp=unconfined', tuple(base), [], [base[0]], [base[1]],
                         [base[0], 'systempaths=unconfined'], [base[1], 'systempaths=unconfined'],
-                        base + [base[0]], base + ['systempaths=unconfined'] * 2, base + ['label=disable'], base + [3]):
+                        base + [base[0]], base + ['systempaths=unconfined'] * 2, base + ['label=disable'], base + [3],
+                        ['seccomp=unconfined', 'apparmor=unconfined']):
             with self.subTest(options=options):
                 self.assertIs(False, RES.rootless_security_options({'SecurityOpt': options, 'MaskedPaths': [], 'ReadonlyPaths': []}))
         for host in (None, [], {}, {'MaskedPaths': [], 'ReadonlyPaths': []}):
             with self.subTest(host=host): self.assertIs(False, RES.rootless_security_options(host))
 
+    def test_existing_stock_profile_is_read_only_admitted_with_no_effective_local_override(self):
+        self.assertEqual('rootlesskit', RES.ROOTLESS_PROFILE)
+        self.assertEqual('/etc/apparmor.d/rootlesskit', str(RES.ROOTLESS_PROFILE_FILE))
+        self.assertEqual(RES.ROOTLESS_PROFILE_SHA256, hashlib.sha256(STOCK_ROOTLESS_PROFILE).hexdigest())
+        for local in (None, b'', b'# Site-specific notes only\n  # ordinary UTF8 comment \xe4\xb8\xad\xe6\x96\x87\n\n'):
+            with self.subTest(local=local), profile_policy_fixture(local) as fixture:
+                before = fixture.path.read_bytes()
+                self.assertEqual(RES.rootless_profile_proof(), RES.admit_rootless_profile())
+                self.assertEqual(before, fixture.path.read_bytes())
+                fixture.command.assert_called_once()
+                self.assertEqual(['/usr/bin/sudo', '-n', '/usr/bin/cat', '/sys/kernel/security/apparmor/profiles'], fixture.command.call_args.args[0])
+                self.assertEqual({'capture_output', 'timeout', 'env'}, set(fixture.command.call_args.kwargs))
+                self.assertLessEqual(set(fixture.command.call_args.kwargs['env']), {'PATH', 'LANG', 'LC_ALL'})
+
+    def test_profile_owner_bytes_loaded_name_and_local_policy_are_checked_before_any_builder_mutation(self):
+        for damage in ('stock-bytes', 'stock-owner', 'stock-mode', 'stock-link', 'stock-symlink', 'parent-mode',
+                'local-rule', 'local-include', 'local-include-prefix', 'local-spaced-include', 'local-size', 'local-mode',
+                'local-hardlink', 'local-invalid-utf8', 'local-nul', 'local-dir-link', 'loaded-mode', 'loaded-missing',
+                'loaded-duplicate', 'sudo-failure', 'stock-race', 'local-race', 'wrong-actor'):
+            with self.subTest(damage=damage), profile_policy_fixture() as fixture:
+                if damage == 'stock-bytes': fixture.path.write_bytes(STOCK_ROOTLESS_PROFILE + b'# changed\n')
+                if damage == 'stock-owner': fixture.fault = 'foreign-file'
+                if damage == 'stock-mode': fixture.path.chmod(0o666)
+                if damage == 'stock-link': os.link(fixture.path, fixture.directory / 'alias')
+                if damage == 'stock-symlink':
+                    target = fixture.directory / 'actual'; fixture.path.rename(target); fixture.path.symlink_to(target)
+                if damage == 'parent-mode': fixture.fault = 'writable-parent'
+                local_bytes = {'local-rule': b'userns,\n', 'local-include': b'#include <rules>\n',
+                    'local-include-prefix': b'#includeanything\n', 'local-spaced-include': b'# include <rules>\n',
+                    'local-size': b'#' * (8 * 1024 + 1), 'local-mode': b'# comment\n', 'local-hardlink': b'# comment\n',
+                    'local-invalid-utf8': b'#\xff\n', 'local-nul': b'#\0\n'}
+                if damage in local_bytes:
+                    fixture.local.write_bytes(local_bytes[damage]); fixture.local.chmod(0o666 if damage == 'local-mode' else 0o600)
+                if damage == 'local-hardlink': os.link(fixture.local, fixture.directory / 'local-alias')
+                if damage == 'local-dir-link':
+                    parent = fixture.local.parent; target = fixture.directory / 'other-local'; parent.rename(target); parent.symlink_to(target, target_is_directory=True)
+                if damage == 'loaded-mode': fixture.result.stdout = b'rootlesskit (enforce)\n'
+                if damage == 'loaded-missing': fixture.result.stdout = b'other-profile (unconfined)\n'
+                if damage == 'loaded-duplicate': fixture.result.stdout *= 2
+                if damage == 'sudo-failure': fixture.result.returncode = 1
+                if damage in ('stock-race', 'local-race'):
+                    def mutate(*_args, **_kwargs):
+                        if damage == 'stock-race': fixture.path.write_bytes(STOCK_ROOTLESS_PROFILE + b'# after-read\n')
+                        else: fixture.local.write_bytes(b'userns,\n')
+                        return fixture.result
+                    fixture.command.side_effect = mutate
+                actor = SimpleNamespace(begin=mock.Mock(), docker=mock.Mock())
+                with mock.patch.object(RES.os, 'getuid', return_value=0 if damage == 'wrong-actor' else 1000):
+                    with self.assertRaises((ValueError, OSError)): RES.bootstrap_builder(actor, image_identity=identity_fixture()[2])
+                actor.begin.assert_not_called(); actor.docker.assert_not_called()
+
     def test_resource_validator_rejects_rehashed_engine_and_bootstrap_binding_drift(self):
-        for damage in ('missing-engine', 'builder-probe', 'bootstrap', 'candidate-config', 'candidate-engine'):
+        for damage in ('missing-engine', 'builder-probe', 'bootstrap', 'candidate-config', 'candidate-engine', 'profile-bool', 'bootstrap-profile-bool'):
             with self.subTest(damage=damage), tempfile.TemporaryDirectory() as temporary:
                 directory = Path(temporary); summary, probes = evidence(directory)
                 if damage == 'missing-engine': del summary['engineIdentity']
+                if damage == 'profile-bool': summary['rootlessProfile']['localOverrideRulesAbsent'] = 1
                 if damage == 'builder-probe': probes[0]['builder']['image'] = 'sha256:' + '7' * 64
                 if damage == 'bootstrap':
                     reference = summary['phases'][2]; path = directory / reference['file']; phase = json.loads(path.read_bytes())
                     phase['measuredInputs']['engineIdentity']['configDigest'] = 'sha256:' + '7' * 64
+                    path.write_bytes(RES.encoded(phase)); reference['sha256'] = RES.digest(path)
+                if damage == 'bootstrap-profile-bool':
+                    reference = summary['phases'][2]; path = directory / reference['file']; phase = json.loads(path.read_bytes())
+                    phase['measuredInputs']['rootlessProfile']['localOverrideRulesAbsent'] = 1
                     path.write_bytes(RES.encoded(phase)); reference['sha256'] = RES.digest(path)
                 if damage == 'candidate-config': summary['build']['images']['backend']['configDigest'] = 'sha256:' + '7' * 64
                 if damage == 'candidate-engine': summary['build']['images']['backend']['engineIdentity']['engineImageId'] = 'sha256:' + '7' * 64

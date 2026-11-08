@@ -37,6 +37,7 @@ def fixture_build_resources(directory, context, name):
     builder_engine = {'engineImageId': build_resources.IMAGE_ID, 'configDigest': build_resources.IMAGE_ID,
         'loadDescriptor': None, 'diffIds': ['sha256:' + hashlib.sha256(b'fixture-builder-layer').hexdigest()],
         'os': 'linux', 'architecture': 'amd64'}
+    rootless_profile = build_resources.rootless_profile_proof()
     builder = {'id': cid, 'pid': 1200 if name == 'model' else 1201, 'image': build_resources.IMAGE_ID,
                'memoryLimitBytes': build_resources.BUILDER_MEMORY, 'currentBytes': 8 * runtime.MIB,
                'peakBytes': 16 * runtime.MIB, 'oomKills': 0, 'writeRateLimitBytesPerSecond': 64 * runtime.MIB}
@@ -46,7 +47,8 @@ def fixture_build_resources(directory, context, name):
         phase += '-%03d' % index
         value = build_resources.phase_plan({**build_context, 'ownerToken': token}, phase, baseline,
             64 * runtime.MIB, build_resources.BUILDER_MEMORY,
-            {'retainedFixtureInputBytes': 1024, **({'engineIdentity': builder_engine} if phase.startswith('builder-bootstrap-') else {})})
+            {'retainedFixtureInputBytes': 1024, **({'engineIdentity': builder_engine, 'rootlessProfile': rootless_profile}
+                                                 if phase.startswith('builder-bootstrap-') else {})})
         file = resource / ('phase-%02d.json' % index); write(file, value)
         plans.append({'file': file.name, 'sha256': cutover.sha_file(file)})
         samples.append({**baseline, 'monotonic': 100.0 + index * .5, 'phase': phase, 'builder': builder})
@@ -65,7 +67,7 @@ def fixture_build_resources(directory, context, name):
                         'diffIds': [row['diffId'] for row in image['layers']], 'os': 'linux', 'architecture': 'amd64'})
     summary = {'version': 1, 'kind': 'doorhandle-candidate-build-resources', **build_context, 'ownerToken': token,
         'status': 'PASS', 'capacityVerdict': 'CONTROLLED_MEASUREMENT', 'productionCapacityVerified': False,
-        'engineIdentity': builder_engine,
+        'engineIdentity': builder_engine, 'rootlessProfile': rootless_profile,
         'baselineProbe': baseline, 'finalProbe': {**baseline, 'monotonic': 102.0}, 'phases': plans,
         'probeFile': 'resource-probes.jsonl', 'probeSha256': hashlib.sha256(raw).hexdigest(), 'monitorFailure': None,
         'originalDataChanged': False, 'cleanup': {'creatorStopped': True, 'builderStopped': True,

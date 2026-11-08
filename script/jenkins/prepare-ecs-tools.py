@@ -935,6 +935,9 @@ class PreparedReadback(Preparation):
             raw = control_bytes(directory / evidence['file'], maximum=4096)
             require(hashlib.sha256(raw).hexdigest() == evidence['sha256'] and helper.VERSION.encode() in raw,
                     'Actual builder version evidence differs')
+        require(value.get('rootlessProfile') == helper.admit_rootless_profile()
+                and value['rootlessProfile'].get('localOverrideRulesAbsent') is True,
+                'Completed rootless AppArmor profile differs from the current admitted profile')
         engine = helper.tool_engine_identity(self.root, context, self.folder)
         image = json.loads(self.call('image', 'inspect', engine['engineImageId']))[0]
         require(helper.validate_engine_identity(image, engine) == engine and image['Os'] == 'linux'
@@ -952,6 +955,7 @@ class PreparedReadback(Preparation):
                 and row['HostConfig'].get('NetworkMode') == 'bridge' and row['HostConfig'].get('NanoCpus') == 2 * 10 ** 9
                 and row['HostConfig'].get('PidsLimit') == 1024
                 and helper.rootless_security_options(row['HostConfig'])
+                and row.get('AppArmorProfile') == helper.ROOTLESS_PROFILE
                 and state.get('Status') == 'exited' and not state.get('Running') and not state.get('Restarting')
                 and not state.get('Paused') and not state.get('OOMKilled')
                 and not str(state.get('StartedAt', '')).startswith('0001-')
