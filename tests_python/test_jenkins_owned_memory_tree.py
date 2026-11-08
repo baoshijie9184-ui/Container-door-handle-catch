@@ -32,6 +32,33 @@ class OwnedMemoryTreeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.measure(rows)
 
+    def test_worker_locations_exclude_locals_and_foreign_frames(self):
+        monitor = preparer.PreparationMonitor.__new__(preparer.PreparationMonitor)
+        monitor.collector = SimpleNamespace(ident=22)
+        own = SimpleNamespace(f_code=SimpleNamespace(co_filename=str(SPEC.origin), co_name='proc_identity'),
+                              f_lineno=70, f_back=None, f_locals={'password': 'opaque-secret'})
+        foreign = SimpleNamespace(f_code=SimpleNamespace(co_filename='/private/opaque-secret.py', co_name='secret'),
+                                  f_lineno=1, f_back=own)
+        frames = {11: foreign, 22: own}
+        with patch.object(preparer.sys, '_current_frames', return_value=frames), \
+                patch.object(preparer.threading, 'main_thread', return_value=SimpleNamespace(ident=11)):
+            result = monitor.worker_locations()
+        self.assertEqual({}, frames)
+        self.assertEqual([{'file': 'prepare-compact-fixtures.py', 'function': 'proc_identity', 'line': 70}], result['main'])
+        self.assertNotIn('opaque-secret', repr(result))
+
+    def test_worker_locations_are_bounded_and_missing_thread_is_safe(self):
+        monitor = preparer.PreparationMonitor.__new__(preparer.PreparationMonitor)
+        frame = None
+        for _ in range(20):
+            frame = SimpleNamespace(f_code=SimpleNamespace(co_filename=str(SPEC.origin), co_name='bounded'),
+                                    f_lineno=1, f_back=frame)
+        with patch.object(preparer.sys, '_current_frames', return_value={11: frame}), \
+                patch.object(preparer.threading, 'main_thread', return_value=SimpleNamespace(ident=11)):
+            result = monitor.worker_locations()
+        self.assertEqual(8, len(result['main']))
+        self.assertEqual([], result['collector'])
+
 
 if __name__ == '__main__':
     unittest.main()

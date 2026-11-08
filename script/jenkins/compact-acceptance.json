@@ -1170,7 +1170,7 @@
       },
       {
         "module": "tests_python.test_jenkins_owned_memory_tree",
-        "minimumTests": 3,
+        "minimumTests": 5,
         "source": "tests_python/test_jenkins_owned_memory_tree.py",
         "allowedSkippedTests": []
       },

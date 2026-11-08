@@ -507,6 +507,29 @@ class PreparationMonitor:
         except BaseException as error:
             self.fail(error, worker='collector')
 
+    def worker_locations(self):
+        """Bounded code locations only; never capture locals or source text."""
+        frames = sys._current_frames()
+        result = {}
+        allowed = {'prepare-compact-fixtures.py', 'compact_migration_runtime.py',
+                   'pathlib.py', 'subprocess.py', 'threading.py'}
+        try:
+            for label, thread in (('main', threading.main_thread()),
+                                  ('collector', getattr(self, 'collector', None))):
+                frame = frames.get(thread.ident) if thread is not None else None
+                locations = []
+                depth = 0
+                while frame is not None and depth < 64 and len(locations) < 8:
+                    name = Path(frame.f_code.co_filename).name
+                    if name in allowed:
+                        locations.append({'file': name, 'function': frame.f_code.co_name,
+                                          'line': frame.f_lineno})
+                    frame = frame.f_back; depth += 1
+                result[label] = locations
+            return result
+        finally:
+            frames.clear()
+
     def fail(self, error, *, worker):
         details = failure_details(error)
         with self.lock:
@@ -532,6 +555,7 @@ class PreparationMonitor:
                     'elapsedSeconds': max(0, failed_at - active['started']),
                     'stageElapsedSeconds': max(0, failed_at - active['stageStarted']),
                     'timingsSeconds': dict(active['timingsSeconds'])}
+                self.failure['workerLocations'] = self.worker_locations()
             self.failed.set()
         try:
             write_json(self.preparation.work / 'resource-failure.json', self.failure)
