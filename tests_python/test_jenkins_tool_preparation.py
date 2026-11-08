@@ -670,7 +670,7 @@ class ToolPreparationTests(unittest.TestCase):
             BUILDER_MEMORY=2 * GIB, LICENSE_SHA=hashlib.sha256(license_raw).hexdigest(),
             admit_tools=mock.Mock(return_value={'file': 'tools.json', 'sha256': 'e' * 64}),
             buildkit_input=mock.Mock(return_value=None), tool_engine_identity=mock.Mock(return_value=engine),
-            validate_engine_identity=mock.Mock(return_value=engine))
+            validate_engine_identity=mock.Mock(return_value=engine), rootless_security_options=mock.Mock(return_value=True))
         document = {'licenseFile': str(directory / 'LICENSE'), 'engineIdentity': engine,
                     'versions': {name: {'file': name + '-version.log', 'sha256': hashlib.sha256(log).hexdigest()}
                                  for name in ('buildctl', 'buildkitd')}}
@@ -682,7 +682,8 @@ class ToolPreparationTests(unittest.TestCase):
                                                        'io.doorhandle.source': SOURCE_SHA}},
             'HostConfig': {'Privileged': False, 'Memory': 2 * GIB, 'MemorySwap': 2 * GIB, 'RestartPolicy': {'Name': 'no'},
                            'NetworkMode': 'bridge', 'NanoCpus': 2 * 10 ** 9, 'PidsLimit': 1024,
-                           'SecurityOpt': ['seccomp=unconfined', 'apparmor=unconfined', 'systempaths=unconfined']},
+                           'SecurityOpt': ['seccomp=unconfined', 'apparmor=unconfined'] + ([] if native else ['systempaths=unconfined']),
+                           'MaskedPaths': [], 'ReadonlyPaths': []},
             'State': {'Status': 'exited', 'Running': False, 'Restarting': False, 'Paused': False, 'OOMKilled': False,
                       'StartedAt': '2026-11-08T00:00:00Z', 'Pid': 0, 'ExitCode': 0}}
         def read(path, **_kwargs):
@@ -709,23 +710,25 @@ class ToolPreparationTests(unittest.TestCase):
                         mock.patch.object(tools, 'control_bytes', side_effect=read):
                     value.validate_builder(reference)
                 helper.validate_engine_identity.assert_called_once_with(image, engine)
+                helper.rootless_security_options.assert_called_once_with(container['HostConfig'])
                 self.assertEqual([mock.call('image', 'inspect', engine['engineImageId']), mock.call('inspect', container['Id'])],
                                  value.call.call_args_list)
                 if native: self.assertNotEqual(helper.IMAGE_ID, engine['engineImageId'])
 
     def test_builder_readback_rejects_engine_drift_and_wrong_container_image(self):
-        for change in ('identity-drift', 'root-user', 'container-config-id'):
+        for change in ('identity-drift', 'root-user', 'container-config-id', 'sandbox-drift'):
             with self.subTest(change=change):
                 value, helper, reference, read, image, container, engine = self.completed_builder_readback()
                 if change == 'identity-drift': helper.validate_engine_identity.side_effect = ValueError('engine identity drift')
                 if change == 'root-user': image['Config']['User'] = '0'
                 if change == 'container-config-id': container['Image'] = helper.IMAGE_ID
+                if change == 'sandbox-drift': helper.rootless_security_options.return_value = False
                 spec = SimpleNamespace(loader=SimpleNamespace(exec_module=mock.Mock()))
                 with mock.patch.object(tools.importlib.util, 'spec_from_file_location', return_value=spec), \
                         mock.patch.object(tools.importlib.util, 'module_from_spec', return_value=helper), \
                         mock.patch.object(tools, 'control_bytes', side_effect=read), self.assertRaises(ValueError):
                     value.validate_builder(reference)
-                self.assertEqual(2 if change == 'container-config-id' else 1, value.call.call_count)
+                self.assertEqual(2 if change in ('container-config-id', 'sandbox-drift') else 1, value.call.call_count)
 
     def test_atomic_completion_never_overwrites_success_or_leaves_pending_bytes(self):
         with tempfile.TemporaryDirectory() as directory:

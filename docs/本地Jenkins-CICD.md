@@ -1,5 +1,9 @@
 # 本地 Jenkins CI/CD 约定
 
+2026-11-08 #115 已终态失败并回读 `Stopped / StopCharging`。OCI 引擎身份已实际通过，首次启动前的检查遇 Docker 安全选项归一化：`systempaths` 从字面量变成两组显式空路径列表；source/I/O 限额匹配，实际构建器 `created / PID=0 / never started`。该精确容器和状态卷保留作失败证据，原清理失败记录保持。后续源码用同一严格语义函数处理两种表示，要求两组路径都显式为空，仍拒未知、重复及错误类型；准备、归属和断线回读同步使用此函数。镜像资源模块登记 28 例，上一轮夹具 `0600` 也已修正；这些修复尚待新固定提交的 ECS 实测，未进入数据库及业务验收。
+
+2026-11-08 #114（SCM source）：提交 `91c77d97` 在 ECS 实际完成 Java 810 通过/612 条件跳过，以及 Python 2,042 通过/24 条件跳过/1 失败。唯一失败为新增测试夹具少设 `0600`，生产私有回执读取门正确拒绝；已仅修夹具，不改校验或断言。镜像 graph 34、准备回读 35、下载 30、传输 32 例均实际通过，镜像资源为 26/27；双前端和资料阶段未执行，整轮仍失败。217 份原始报告及 tar 已逐字节核验。已排队的完整运行验收实际为 #115/queue138，仍使用原固定提交，未混入本地尚未提交的修复；待其终态、清理和证据完成后再从流水线外停机。
+
 2026-11-08 #113 的实际结果：提交 `f39b2c38` 的自动 OCI 准备、119,889,920 字节传输、SHA 核验、ECS 缓存发布/临时上传清理，以及原层测量和 Docker 加载均通过。后续按 config 摘要查找镜像失败：Docker 29.9 containerd 存储把已加载 OCI manifest 摘要作为引擎 ID；原 config 摘要和镜像内容均未变化。正补齐 config 身份、实际加载 graph 和引擎 ID 的显式关联，不替换上游镜像或放宽内容校验。项目测试、夹具和迁移尚未开始，不能声称本次新增回归已通过。原始证据、拥有容器为空及流水线外 `Stopped / StopCharging` 已核实，Jenkins 保持运行，详见 [ECS 运行约定](ECS-only-runtime.md)。
 
 兼容实现保留 `imageId`/`configDigest` 的内容校验语义，并额外记录 `loadDescriptor`（实际送入 Docker 的原始 graph 身份）和 `engineIdentity`。后者只关联已验证 config 或 graph 的精确摘要、平台及有序 DiffID；Docker 操作使用已核实的引擎 ID。基础镜像的 save 流按实际 engine descriptor 与全 graph 闭合验证，候选原 OCI 的加载身份与重新编码的 `manifestDigest` 分别保存。工具准备、容器身份、采样、停止、断线回读和候选镜像返回值须使用同一关联；不能按名称猜测等价镜像。此为开发状态，新增用例只在后续 ECS 流水线执行。上游实现可参阅 [Moby containerd 镜像检查](https://github.com/moby/moby/blob/master/daemon/containerd/image_inspect.go)及[镜像导出与加载](https://github.com/moby/moby/blob/master/daemon/containerd/image_exporter.go)。

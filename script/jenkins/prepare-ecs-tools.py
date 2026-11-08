@@ -951,7 +951,7 @@ class PreparedReadback(Preparation):
                 and row['HostConfig']['RestartPolicy']['Name'] == 'no'
                 and row['HostConfig'].get('NetworkMode') == 'bridge' and row['HostConfig'].get('NanoCpus') == 2 * 10 ** 9
                 and row['HostConfig'].get('PidsLimit') == 1024
-                and set(row['HostConfig'].get('SecurityOpt') or []) == {'seccomp=unconfined', 'apparmor=unconfined', 'systempaths=unconfined'}
+                and helper.rootless_security_options(row['HostConfig'])
                 and state.get('Status') == 'exited' and not state.get('Running') and not state.get('Restarting')
                 and not state.get('Paused') and not state.get('OOMKilled')
                 and not str(state.get('StartedAt', '')).startswith('0001-')

@@ -215,6 +215,18 @@ def engine_lookup_id(actor, measurement, load_descriptor):
     return measurement['configDigest']
 
 
+def rootless_security_options(host):
+    """Docker may consume systempaths into the two effective path-mask lists."""
+    if type(host) is not dict or type(host.get('SecurityOpt')) is not list:
+        return False
+    options = host['SecurityOpt']
+    if not all(type(option) is str for option in options) or len(set(options)) != len(options):
+        return False
+    base = {'seccomp=unconfined', 'apparmor=unconfined'}
+    return (set(options) in (base, base | {'systempaths=unconfined'})
+            and all(type(host.get(key)) is list and not host[key] for key in ('MaskedPaths', 'ReadonlyPaths')))
+
+
 def effective_dockerfile(body, original_from, alias):
     lines = body.splitlines(); count = 0; output = []
     for line in lines:
@@ -283,7 +295,7 @@ class Supervisor:
                 'Owned rootless builder identity/cgroup changed')
         require(row['Config']['Labels'].get('io.doorhandle.source') == self.context['sourceSha256']
                 and row['HostConfig'].get('BlkioDeviceWriteBps') == [{'Path': self.builder['ioDevice'], 'Rate': 64 * MIB}]
-                and set(row['HostConfig'].get('SecurityOpt') or []) == {'seccomp=unconfined', 'apparmor=unconfined', 'systempaths=unconfined'},
+                and rootless_security_options(row['HostConfig']),
                 'Builder source, I/O ceiling or rootless sandbox configuration changed')
         expected = self.builder['mounts']
         actual = sorted((m['Type'], m.get('Name') if m['Type'] == 'volume' else m.get('Source', ''), m['Destination'], m['RW'])

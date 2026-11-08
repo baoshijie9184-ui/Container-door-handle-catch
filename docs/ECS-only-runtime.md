@@ -1,5 +1,15 @@
 # 单体 ECS 运行与测试
 
+2026-11-08 #115：同一固定提交 `91c77d97` 的实际 OCI 缓存复用、原层测量、加载及引擎 ID 关联均已越过；随后在首次启动前的构建器归属检查失败。只读逐项核对确认 source 标签和 `/dev/vda` 64 MiB/s 写入限额均匹配，Docker 把请求的 `systempaths=unconfined` 归一化为 `MaskedPaths=[]` / `ReadonlyPaths=[]`，`SecurityOpt` 仅保留 seccomp/apparmor 两项，原脚本按三条字面量比较而误拒。
+
+实际拥有对象为 `created`、PID 0、`StartedAt` 全零，从未启动；其精确容器、状态卷及原 `cleanup=false` 回执继续保留，没有手改历史或宣称已删除。21 份服务器原始控制/日志、固定源码 SHA 和 Docker 回查已保全，资源监测没有失败；最后可用 5,724,520,448 字节。该轮未进入夹具、数据库或测试，实例已在流水线外实际回读 `Stopped / StopCharging`，Jenkins 保持运行。
+
+后续源码使用共用纯函数校验安全语义：只接受已知的两项回显或原三项字面量，且两组路径限制必须显式为空列表；缺字段、重复、未知项、非空路径及错误类型仍拒绝，所有其他身份/I/O/权限/资源门保持。已同步准备后的只读回查及合成夹具，真实回归仍须下一固定提交；不重跑 #115 的旧失败 helper，也不接管该保留对象。
+
+2026-11-08 #114：固定提交 `91c77d977a58a0080c49786ecf4f29c4cf87eb33` 的 source 回归在 ECS 实跑。Java 810 通过、612 条件跳过；Python 共 2,067 项，2,042 通过、24 条件跳过，仅 1 项新增测试夹具失败：它用普通写入创建 `official-layer-measurements.json` 后未设 `0600`，被生产读取门正确拒绝。其余实际结果为镜像资源 26/27、原始 image graph 34/34、准备回读 35/35、依赖下载 30/30、传输 32/32。后续仅修正该夹具权限，不放宽生产门或断言。双前端及资料阶段未执行，整轮为 FAILURE；217 份报告和原始 tar 成员已逐字节核验保全。
+
+同提交的队列 138 实际对应 #115；其最终结果与本轮停机状态见上。#114 的 source 回归不能代替 builder、数据库和运行场景结果。下面 #113 的停机回执属于较早开机窗口。
+
 2026-11-08 #113：固定提交 `f39b2c389d6ce44e9ea13bfb68a47f2911220b44` 已实际由 Jenkins 自动准备公开 OCI 依赖，119,889,920 字节、SHA `f706cb2289c61a04311882a3abbba15d56928a91d3fe9e13b96e1a8d44f378c8`；SCP、ECS 完整校验、内容地址缓存发布和本轮 staging 清理均通过，原 tar 未进入 Jenkins 制品。原始上游 manifest、config、六层及压缩/展开字节测量均通过，`docker load` 也实际成功。
 
 本轮随后仍失败：ECS Docker `29.9.0` 使用 `io.containerd.snapshotter.v1`，实际 OCI 引擎镜像 ID/Descriptor 是已加载的规范化 manifest 摘要 `sha256:22024a941a16219263645a992487c383f0310fb6db0d259212ae17ea79e7d569`，原 config 摘要仍为固定的 `sha256:e164dcf5aa147a29659dea4e2e6b909db541c2dfe0b512dac38a2ffaf063fc18`。只读回查确认前者存在、六个 DiffID/平台/UID1000/rootless 入口匹配，后者不能作为该引擎的镜像查找 ID；不把 manifest ID 与 config ID 混用，也不修改上游 pin。后续兼容修复须提交并在 ECS 实测。

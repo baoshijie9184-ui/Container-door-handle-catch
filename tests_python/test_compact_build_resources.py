@@ -351,7 +351,7 @@ class CompactBuildResourceTests(unittest.TestCase):
                 if damage == 'layers': proof['layers'][0]['diffId'] = 'sha256:' + '7' * 64
                 if damage == 'manifest': proof['manifestDigest'] = 'sha256:' + '7' * 64
                 if damage == 'binding-pin': binding['configDigest'] = 'sha256:' + '7' * 64
-                path = directory / 'official-layer-measurements.json'; path.write_bytes(RES.encoded(proof))
+                path = directory / 'official-layer-measurements.json'; path.write_bytes(RES.encoded(proof)); path.chmod(0o600)
                 value = {'engineIdentity': binding, 'imageMeasurementSha256': RES.digest(path)}
                 if damage == 'measurement-sha': value['imageMeasurementSha256'] = '0' * 64
                 if damage is None: self.assertEqual(engine, RES.measured_tool_identity(directory, value))
@@ -366,12 +366,40 @@ class CompactBuildResourceTests(unittest.TestCase):
             'Config': {'User': '1000:1000', 'Labels': {RES.LABEL: actor.token, 'io.doorhandle.release': CONTEXT['release'], 'io.doorhandle.source': CONTEXT['sourceSha256']}},
             'HostConfig': {'Privileged': False, 'Memory': RES.BUILDER_MEMORY, 'MemorySwap': RES.BUILDER_MEMORY,
                 'BlkioDeviceWriteBps': [{'Path': '/dev/vda', 'Rate': 64 * RES.MIB}],
-                'SecurityOpt': ['seccomp=unconfined', 'apparmor=unconfined', 'systempaths=unconfined'], 'Tmpfs': {'/tmp': '', '/run/user/1000': ''}}, 'Mounts': []}
+                'SecurityOpt': ['seccomp=unconfined', 'apparmor=unconfined', 'systempaths=unconfined'],
+                'MaskedPaths': [], 'ReadonlyPaths': [], 'Tmpfs': {'/tmp': '', '/run/user/1000': ''}}, 'Mounts': []}
         actor.docker = lambda *_: json.dumps([row]).encode()
         self.assertEqual(row, actor.owned_builder())
+        row['HostConfig']['SecurityOpt'].remove('systempaths=unconfined')
+        self.assertEqual(row, actor.owned_builder())
+        for key in ('MaskedPaths', 'ReadonlyPaths'):
+            damaged = copy.deepcopy(row); damaged['HostConfig'][key] = ['/proc/kcore']
+            actor.docker = lambda *_: json.dumps([damaged]).encode()
+            with self.subTest(key=key), self.assertRaises(ValueError): actor.owned_builder()
         for field, value in (('Image', RES.IMAGE_ID), ('Id', '7' * 64)):
             damaged = dict(row, **{field: value}); actor.docker = lambda *_: json.dumps([damaged]).encode()
             with self.subTest(field=field), self.assertRaises(ValueError): actor.owned_builder()
+
+    def test_rootless_security_normalization_requires_exact_options_and_explicit_empty_path_masks(self):
+        base = ['seccomp=unconfined', 'apparmor=unconfined']
+        for options in (base, list(reversed(base)), base + ['systempaths=unconfined']):
+            host = {'SecurityOpt': options, 'MaskedPaths': [], 'ReadonlyPaths': []}
+            with self.subTest(options=options): self.assertIs(True, RES.rootless_security_options(host))
+            for key, value in (('MaskedPaths', ['/proc/kcore']), ('ReadonlyPaths', ['/proc/sys']),
+                               ('MaskedPaths', None), ('ReadonlyPaths', ()), ('MaskedPaths', {})):
+                damaged = copy.deepcopy(host); damaged[key] = value
+                with self.subTest(options=options, key=key, value=value):
+                    self.assertIs(False, RES.rootless_security_options(damaged))
+            for key in ('MaskedPaths', 'ReadonlyPaths'):
+                damaged = dict(host); del damaged[key]
+                with self.subTest(missing=key, options=options): self.assertIs(False, RES.rootless_security_options(damaged))
+        for options in (None, 'seccomp=unconfined', tuple(base), [], [base[0]], [base[1]],
+                        [base[0], 'systempaths=unconfined'], [base[1], 'systempaths=unconfined'],
+                        base + [base[0]], base + ['systempaths=unconfined'] * 2, base + ['label=disable'], base + [3]):
+            with self.subTest(options=options):
+                self.assertIs(False, RES.rootless_security_options({'SecurityOpt': options, 'MaskedPaths': [], 'ReadonlyPaths': []}))
+        for host in (None, [], {}, {'MaskedPaths': [], 'ReadonlyPaths': []}):
+            with self.subTest(host=host): self.assertIs(False, RES.rootless_security_options(host))
 
     def test_resource_validator_rejects_rehashed_engine_and_bootstrap_binding_drift(self):
         for damage in ('missing-engine', 'builder-probe', 'bootstrap', 'candidate-config', 'candidate-engine'):
