@@ -1068,8 +1068,14 @@
       },
       {
         "module": "tests_python.test_jenkins_ecs_build_cleanup",
-        "minimumTests": 102,
+        "minimumTests": 125,
         "source": "tests_python/test_jenkins_ecs_build_cleanup.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_build_space_maintenance",
+        "minimumTests": 15,
+        "source": "tests_python/test_build_space_maintenance.py",
         "allowedSkippedTests": []
       },
       {
@@ -1134,7 +1140,7 @@
       },
       {
         "module": "tests_python.test_jenkins_ecs_tool_runtime",
-        "minimumTests": 55,
+        "minimumTests": 62,
         "source": "tests_python/test_jenkins_ecs_tool_runtime.py",
         "allowedSkippedTests": []
       },
@@ -1152,7 +1158,7 @@
       },
       {
         "module": "tests_python.test_ci_evidence_permission_repair",
-        "minimumTests": 51,
+        "minimumTests": 80,
         "source": "tests_python/test_ci_evidence_permission_repair.py",
         "allowedSkippedTests": []
       },

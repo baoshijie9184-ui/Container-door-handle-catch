@@ -1,5 +1,11 @@
 # 本地 Jenkins CI/CD 约定
 
+2026-11-08 #120：Java 810、Python 2,082 和主站前端 157 项测试通过，主站生产构建完成；Agent 前端安装因低于磁盘保护门限约 14.2 MiB 而终态失败，后续包复用未执行。221 份原始报告已核验保全，工具清理 `STOPPED`，实例已从流水线外回读 `Stopped / StopCharging`，Jenkins 保持运行。部分通过不能作为完整源码、数据库或运行验收通过。
+
+新增维护入口 `ACTION=reclaim-build-outputs`，仅接受固定提交和 ECS 连接参数，业务来源、夹具、模型、构建镜像及发布输入须为空，生产/演练开关保持关闭。该动作不做本地 Maven 构建、不准备执行容器、不测试、不发布；`CI_ECS_VERIFIED` 始终为 false。控制器只打包固定源码，目标先核 IMDS、machineId 和 UID/EUID 1000，再独占新建本轮目录及源码文件；核原 inode、完整 SHA、PAX 提交和两个 helper 后，沿既有旧证据/静止/计划/删除协议执行。维护成功仅表示清理完成，不产生项目验收 PASS。
+
+维护回执仅归档 `source.tar.gz`、维护专用 `release.json` 和三份 build-cleanup JSON。可回收范围见 [ECS 运行约定](ECS-only-runtime.md)，新缓存证明和日志预算、维护接线及前端失败清理目前仅完成静态与独立复核，后续由新固定提交流水线实测。原普通验证后的回收仍要求本轮真实 ECS PASS。历史权限修复路由也已补齐：仅固定源码登记表命中的来源调用旧修复 helper；未登记来源在 SSH 前返回 `SKIPPED_NOT_REGISTERED`，后续消费方仍须独立严格准入，不能将跳过当作旧数据验证通过。
+
 2026-11-08 #118 已终态失败并完成流水线外 `Stopped / StopCharging`。显式 shell PID 导出探测已真实通过；原库只读导出随后遇资源监测失败，未进入测试或数据库验收，已记录资源采样均未越界。当前补齐采集/监测源头位置、观测年龄及清理前首次异常保留，保持原有资源门限，待后续 ECS 回归。14 份 Jenkins 和 43 份 ECS 原始控制已保全，Jenkins 保持运行。
 
 新增 `LOCAL_MYSQL_ECS_SNAPSHOT`：填写旧构建的 `/home/ecs-user/doorhandle-ci/verification/ci-<构建号>-<提交前12位>/checkout/work/local-mysql-export-snapshot`，与 `LOCAL_MYSQL_SNAPSHOT` 互斥，仍需 `LOCAL_MYSQL_FIXTURE_SETTINGS`。只有旧原始验证、完整字节与双恢复、资源移除和静止证明全部闭合才允许同机复用，本轮继续执行双恢复、清理及原有分类。此能力用于后续摆脱本地传输包依赖，不授予生产合入、业务原库删除或本地 SQL 查询权限；新增 31 例尚未实跑。变更后的任务参数须由已提交的 `configure-local.groovy` 配置，不能只手改 Jenkins 页面。

@@ -1,9 +1,14 @@
 """Synthetic ECS filesystem contracts; no cloud, application or database access."""
 import copy
+import hashlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
+import subprocess
+import sys
+import tarfile
 from types import SimpleNamespace
 
 import pytest
@@ -353,3 +358,89 @@ def test_replacement_while_durable_intent_is_written_refuses_before_chmod(state,
     with pytest.raises(ValueError, match=r'^HELD_(?:METADATA_CHANGED|PATH_REPLACED)$'):
         repair.repair_entry(state.root, state.entry, support.IDENTITY, support.remote, support.cleanup,
                             apply=True, journal=journal)
+
+
+def run_controller_registry_reader(tmp_path, registry, *, damage=None):
+    """Run the exact source-byte reader embedded in the controller, only on ECS."""
+    script = (ROOT / 'script/jenkins/repair-ci-evidence-permissions.ps1').read_text(encoding='utf8')
+    reader = script.split("$reader = @'\n", 1)[1].split("\n'@", 1)[0]
+    commit = 'c' * 40; helper = b'raise RuntimeError("Project helpers must not be imported by a metadata reader")\n'
+    raw = json.dumps(registry, sort_keys=True).encode() if type(registry) is dict else registry
+    members = [('script/jenkins/repair-ci-evidence-permissions.py', helper),
+               ('script/jenkins/ci-evidence-permission-repairs.json', raw)]
+    if damage == 'missing-helper': members.pop(0)
+    if damage == 'missing-registry': members.pop()
+    if damage == 'duplicate-helper': members.append(members[0])
+    if damage == 'duplicate-registry': members.append(members[1])
+    if damage == 'oversize-registry': members[1] = (members[1][0], raw + b' ' * (1024 * 1024 + 1 - len(raw)))
+    archive = tmp_path / 'source.tar.gz'
+    with tarfile.open(archive, 'x:gz', format=tarfile.PAX_FORMAT,
+                      pax_headers={} if damage == 'missing-commit' else {'comment': 'd' * 40 if damage == 'wrong-commit' else commit}) as package:
+        for name, body in members:
+            row = tarfile.TarInfo(name); row.size = len(body)
+            if damage in ('symlink-registry', 'hardlink-registry', 'contiguous-registry') and name.endswith('.json'):
+                row.type = {'symlink-registry': tarfile.SYMTYPE, 'hardlink-registry': tarfile.LNKTYPE,
+                            'contiguous-registry': tarfile.CONTTYPE}[damage]
+                row.linkname = 'script/jenkins/repair-ci-evidence-permissions.py'
+            package.addfile(row, io.BytesIO(body))
+    result = subprocess.run([sys.executable, '-I', '-B', '-c', reader, str(archive), commit],
+                            env={}, capture_output=True, timeout=10)
+    return result, helper, raw
+
+
+def selector_registry():
+    return {'schema': 1, 'kind': 'doorhandle-registered-ci-permission-repairs', 'releases': [
+        {'release': 'ci-97-' + 'a' * 12, 'commit': 'a' * 40, 'sourceSha256': 'b' * 64}]}
+
+
+@pytest.mark.parametrize('source', ['closed-metadata', 'actual-fixed-registry'])
+def test_controller_reader_only_projects_fixed_registry_tags_and_source_member_hashes(tmp_path, source):
+    registry = selector_registry() if source == 'closed-metadata' else json.loads((ROOT / 'script/jenkins/ci-evidence-permission-repairs.json').read_bytes())
+    result, helper, raw = run_controller_registry_reader(tmp_path, registry)
+    assert result.returncode == 0 and not result.stderr
+    value = json.loads(result.stdout)
+    assert set(value) == {'sha256', 'registrySha256', 'registeredTags'}
+    assert value['sha256'] == hashlib.sha256(helper).hexdigest() and value['registrySha256'] == hashlib.sha256(raw).hexdigest()
+    assert value['registeredTags'] == [entry['release'] for entry in registry['releases']]
+    # Native references to a newer private source are not permission exceptions.
+    assert not set(value['registeredTags']).intersection({'ci-110-' + 'b' * 12})
+    assert set(value['registeredTags']).intersection({registry['releases'][0]['release']})
+    assert len(result.stdout) < 8192 and b'Project helpers must not be imported' not in result.stdout
+
+
+@pytest.mark.parametrize('damage', ['missing-helper', 'missing-registry', 'duplicate-helper', 'duplicate-registry',
+    'oversize-registry', 'symlink-registry', 'hardlink-registry', 'contiguous-registry', 'missing-commit', 'wrong-commit'])
+def test_controller_reader_refuses_nonunique_nonregular_unbounded_or_foreign_source_members(tmp_path, damage):
+    result, _, _ = run_controller_registry_reader(tmp_path, selector_registry(), damage=damage)
+    assert result.returncode != 0 and not result.stdout
+    expected = b'Fixed repair members or commit missing' if damage in ('missing-helper', 'missing-registry', 'missing-commit', 'wrong-commit') else b'Unique regular bounded repair members required'
+    assert expected in result.stderr
+
+
+@pytest.mark.parametrize('damage', ['duplicate-root-key', 'duplicate-entry-key', 'schema-bool', 'schema-string', 'kind',
+    'extra-root-key', 'missing-releases', 'releases-object', 'empty-releases', 'duplicate-release', 'release-type',
+    'tag', 'commit-type', 'commit', 'prefix', 'source-sha', 'nonfinite'])
+def test_controller_selector_rejects_ambiguous_or_untyped_registry_identity_before_skipping(tmp_path, damage):
+    value = selector_registry()
+    if damage == 'schema-bool': value['schema'] = True
+    if damage == 'schema-string': value['schema'] = '1'
+    if damage == 'kind': value['kind'] = 'another-registry'
+    if damage == 'extra-root-key': value['unknown'] = True
+    if damage == 'missing-releases': del value['releases']
+    if damage == 'releases-object': value['releases'] = {}
+    if damage == 'empty-releases': value['releases'] = []
+    if damage == 'duplicate-release': value['releases'].append(copy.deepcopy(value['releases'][0]))
+    if damage == 'release-type': value['releases'][0] = 'not-an-entry'
+    if damage == 'tag': value['releases'][0]['release'] = 'ci-97-' + 'A' * 12
+    if damage == 'commit-type': value['releases'][0]['commit'] = None
+    if damage == 'commit': value['releases'][0]['commit'] = 'a' * 39
+    if damage == 'prefix': value['releases'][0]['commit'] = 'f' * 40
+    if damage == 'source-sha': value['releases'][0]['sourceSha256'] = 'not-a-digest'
+    if damage == 'nonfinite': value['releases'][0]['unknown'] = float('nan')
+    raw = json.dumps(value, sort_keys=True).encode()
+    if damage == 'duplicate-root-key': raw = raw.replace(b'"schema": 1', b'"schema": 1, "schema": 1')
+    if damage == 'duplicate-entry-key': raw = raw.replace(b'"commit": "', b'"commit": "' + b'a' * 40 + b'", "commit": "', 1)
+    result, _, _ = run_controller_registry_reader(tmp_path, raw)
+    assert result.returncode != 0 and not result.stdout
+    if damage in ('duplicate-root-key', 'duplicate-entry-key'):
+        assert b'Repeated registry JSON key' in result.stderr

@@ -3,6 +3,7 @@
 All targets are synthetic children of pytest's own namespace. No Docker daemon,
 cloud API, database, application, or production directory is used by these cases.
 """
+import ast
 import copy
 import fcntl
 import gzip
@@ -167,6 +168,134 @@ def add_dependencies(state, *, proven=True):
         state.reports.append('reports/frontend-install.log')
         seal(state)
     return target
+
+
+def add_npm_cache(state, damage=None):
+    raw = (ROOT / 'script/jenkins/ecs-tool-runtime.py').read_bytes()
+    archived = raw
+    if damage == 'changed-routing':
+        archived = raw.replace(b"npm_config_cache=str(home / 'npm-cache')", b"npm_config_cache=str(home / 'unreviewed-cache')")
+        assert archived != raw
+    elif damage == 'duplicate-routing':
+        archived += b'\ndef command(value, tool, arguments, cwd, environment):\n    pass\n'
+    with tarfile.open(state.inbox / 'source.tar.gz', 'r:gz') as source:
+        files = {entry.name: source.extractfile(entry).read() for entry in source}
+    if damage != 'missing-source':
+        files['script/jenkins/ecs-tool-runtime.py'] = archived
+    package(state.inbox / 'source.tar.gz', files, 'a' * 40)
+    source_sha = cleanup.digest(state.inbox / 'source.tar.gz')
+    manifest = cleanup.read_json(state.manifest)
+    manifest.update(sourceSha256=source_sha, files={'executor.py': cleanup.sha(archived)})
+    if damage == 'manifest-binding': manifest['files']['executor.py'] = '0' * 64
+    put_json(state.manifest, manifest)
+    executor = put(state.inbox / 'tool-runtime/executor.py', archived)
+    if damage == 'registered-bytes': put(executor, archived + b'\n# changed registered bytes\n')
+    if damage == 'registered-missing': executor.unlink()
+    claim_path = state.attempt / '.verification-claimed/claim.json'
+    claim = cleanup.read_json(claim_path); claim['sourceSha256'] = source_sha; put_json(claim_path, claim)
+    inner = cleanup.read_json(state.evidence / 'receipt.json')
+    if damage != 'install-provenance':
+        inner['commands'].append({'label': 'frontend-install', 'exitCode': 1, 'finishedAt': '2026-11-07T00:00:00+00:00'})
+        put(state.evidence / 'frontend-install.log', b'original terminal install log')
+        state.reports.append('reports/frontend-install.log')
+    put_json(state.evidence / 'receipt.json', inner)
+    tools = cleanup.read_json(state.evidence / 'tool-runtime.json')
+    tools.update(sourceSha256=source_sha, manifestSha256=cleanup.digest(state.manifest))
+    tools['cleanup']['manifestSha256'] = cleanup.digest(state.manifest)
+    tools['commands'] = [{'tool': 'npm', 'containerId': 'f' * 64, 'status': 'FAILED_OR_UNKNOWN',
+        'argumentsSha256': cleanup.sha(json.dumps(cleanup.NPM_INSTALL_ARGUMENTS, ensure_ascii=True).encode()),
+        'cleanup': {'containerId': 'f' * 64, 'pid': 0, 'removed': True}}]
+    if damage == 'tool-arguments': tools['commands'][0]['argumentsSha256'] = '0' * 64
+    put_json(state.evidence / 'tool-runtime.json', tools)
+    state.record['sourceSha256'] = source_sha
+    seal(state)
+    cache = put(state.checkout / cleanup.NPM_CACHE_SUFFIX / 'content-v2/object', b'regenerable package content').parents[1]
+    state.keep.extend([
+        put(state.checkout / 'work/tool-home/npm-cache/_logs/original-debug.log', b'keep original cache diagnostics'),
+        put(state.checkout / 'work/tool-home/mem0/history.db', b'protected memory bytes'),
+        put(state.checkout / 'work/tool-home/tmp/retained.bin', b'outside the closed cache suffix'),
+        put(state.checkout / 'frontend/home/npm-cache/_cacache/object', b'unproven alternate home cache'),
+    ])
+    return cache
+
+
+def test_reviewed_npm_routing_fingerprints_still_match_the_fixed_executor_source():
+    tree = ast.parse((ROOT / 'script/jenkins/ecs-tool-runtime.py').read_bytes())
+    actual = {node.name: cleanup.routing_ast_sha(node) for node in tree.body
+              if isinstance(node, ast.FunctionDef) and node.name in cleanup.NPM_ROUTING_AST}
+    assert actual == cleanup.NPM_ROUTING_AST
+
+
+@pytest.mark.parametrize('generic', [False, True])
+def test_routing_fingerprint_only_normalizes_an_empty_cross_version_type_parameters_field(generic):
+    node = ast.parse('def sample(value):\n    return value\n').body[0]
+    expected = cleanup.routing_ast_sha(copy.deepcopy(node))
+    if 'type_params' not in node._fields:
+        node._fields += ('type_params',)
+    node.type_params = [ast.Name(id='T', ctx=ast.Load())] if generic else []
+    assert cleanup.routing_ast_sha(node) == (None if generic else expected)
+
+
+def test_exact_proven_npm_content_cache_is_removed_from_a_terminal_failed_build(state):
+    cache = add_npm_cache(state)
+    before = preserved_bytes(state)
+    value = plan(state)
+    candidate = value['candidates'][0]
+    assert candidate['npmCache']['status'] == 'PROVEN'
+    targets = [row for row in candidate['targets'] if row['kind'] == 'NPM_CACHE']
+    assert len(targets) == 1 and targets[0]['path'] == str(cache.relative_to(state.root))
+    result = cleanup.apply_plan(state.root, state.request, value, remote)
+    assert result['status'] == 'REMOVED' and not cache.exists()
+    assert any(row['kind'] == 'NPM_CACHE' for row in result['deleted'])
+    assert preserved_bytes(state) == before
+
+
+@pytest.mark.parametrize('damage,reason', [
+    ('missing-source', 'NPM_EXECUTOR_SOURCE_MISSING'),
+    ('changed-routing', 'NPM_ROUTING_NOT_REVIEWED'),
+    ('duplicate-routing', 'NPM_ROUTING_NOT_REVIEWED'),
+    ('manifest-binding', 'NPM_EXECUTOR_BINDING_MISSING_OR_CHANGED'),
+    ('registered-bytes', 'NPM_REGISTERED_EXECUTOR_CHANGED'),
+    ('registered-missing', 'NPM_REGISTERED_EXECUTOR_UNAVAILABLE'),
+    ('install-provenance', 'NPM_INSTALL_PROVENANCE_MISSING'),
+    ('tool-arguments', 'NPM_TOOL_COMMAND_PROVENANCE_MISSING'),
+])
+def test_unproven_or_changed_npm_cache_is_explicitly_skipped_without_broadening_old_targets(state, damage, reason):
+    cache = add_npm_cache(state, damage)
+    before = preserved_bytes(state)
+    value = plan(state)
+    assert value['candidates'][0]['npmCache'] == {'status': 'SKIPPED', 'reason': reason}
+    assert all(row['kind'] != 'NPM_CACHE' for row in value['candidates'][0]['targets'])
+    result = cleanup.apply_plan(state.root, state.request, value, remote)
+    assert result['status'] == 'REMOVED' and cache.is_dir()
+    assert (cache / 'content-v2/object').read_bytes() == b'regenerable package content'
+    assert preserved_bytes(state) == before
+
+
+@pytest.mark.parametrize('suffix', ['work/tool-home', 'work/tool-home/npm-cache',
+    'work/tool-home/npm-cache/_logs', 'work/tool-home/mem0', 'work/ecs-maven-repository',
+    'frontend/home/npm-cache/_cacache', 'work/tool-home/npm-cache/_cacache/../_logs'])
+def test_npm_cache_delete_api_rejects_any_parent_alternate_home_or_noncontent_cache(state, suffix):
+    fd = os.open(state.root, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with pytest.raises(ValueError, match='OUTSIDE_COMPILED_ALLOWLIST'):
+            cleanup.remove_target(fd, {'kind': 'NPM_CACHE', 'path': 'verification/' + OLD + '/checkout/' + suffix})
+    finally:
+        os.close(fd)
+    assert state.classes.exists()
+
+
+@pytest.mark.parametrize('damage', ['symlink', 'hardlink'])
+def test_even_proven_npm_cache_keeps_original_tree_link_and_inode_guards(state, damage):
+    cache = add_npm_cache(state)
+    if damage == 'symlink':
+        (cache / 'redirect').symlink_to(state.keep[2])
+        reason = 'TREE_OWNER_TYPE_LINK_OR_DEVICE_CHANGED'
+    else:
+        os.link(cache / 'content-v2/object', state.root / 'outside-cache-alias')
+        reason = 'TREE_FILE_HARDLINK_NOT_ALLOWED'
+    skipped(state, reason)
+    assert cache.is_dir()
 
 
 def test_plan_is_read_only_and_only_names_compile_and_proven_node_dependencies(state):
@@ -378,7 +507,49 @@ def test_apply_stops_on_late_file_drift_and_retains_failure_journal_and_all_orig
     assert result['status'] == 'PARTIAL_FAILURE'
     assert preserved_bytes(state) == before
     journal = state.root / 'inbox' / CURRENT / 'build-cleanup-journal.jsonl'
-    assert json.loads(journal.read_text().splitlines()[-1])['phase'] == 'FAILED'
+    failure = json.loads(journal.read_text().splitlines()[-1])
+    assert failure['phase'] == 'FAILED'
+    assert failure['stage'] == 'DELETE_TARGET' and failure['release'] == OLD
+    assert failure['guardCode'] == 'TARGET_CHANGED_AFTER_APPROVAL'
+
+
+def test_late_quiescence_failure_records_only_controlled_stage_release_and_guard(state, monkeypatch):
+    value = plan(state); before = preserved_bytes(state)
+    original = cleanup.quiescent
+    calls = []
+    secret = 'MYSQL_PWD=synthetic-private-exception-payload'
+    def refuse_after_fresh_plan(binding, tag, containers):
+        calls.append(tag)
+        if len(calls) == 2:
+            raise ValueError(secret)
+        return original(binding, tag, containers)
+    monkeypatch.setattr(cleanup, 'quiescent', refuse_after_fresh_plan)
+    result = cleanup.apply_plan(state.root, state.request, value, remote)
+    assert result['status'] == 'PARTIAL_FAILURE' and result['deleted'] == []
+    raw = (state.root / 'inbox' / CURRENT / 'build-cleanup-journal.jsonl').read_text()
+    failure = json.loads(raw.splitlines()[-1])
+    assert failure == {'phase': 'FAILED', 'errorType': 'ValueError', 'deletedTargets': 0,
+        'stage': 'QUIESCENCE', 'release': OLD, 'guardCode': 'UNCLASSIFIED_VALIDATION_ERROR'}
+    assert secret not in raw and secret not in json.dumps(result)
+    assert preserved_bytes(state) == before and state.classes.is_dir()
+
+
+def test_journal_capacity_refuses_the_next_delete_record_and_preserves_space_for_failure(state, monkeypatch):
+    value = plan(state); before = preserved_bytes(state)
+    started = {'phase': 'STARTED', 'planSha256': cleanup.sha(cleanup.canonical(value)), 'identity': IDENTITY}
+    target = value['candidates'][0]['targets'][0]
+    deleting = {'phase': 'DELETE_STARTED', 'path': target['path'], 'inventorySha256': target['inventorySha256']}
+    normal_limit = len(cleanup.canonical(started)) + 1 + len(cleanup.canonical(deleting))
+    monkeypatch.setattr(cleanup, 'MAX_PLAN', normal_limit + 4096)
+    result = cleanup.apply_plan(state.root, state.request, value, remote)
+    assert result['status'] == 'PARTIAL_FAILURE' and result['deleted'] == []
+    raw = (state.root / 'inbox' / CURRENT / 'build-cleanup-journal.jsonl').read_bytes()
+    entries = [json.loads(line) for line in raw.splitlines()]
+    assert entries[0] == started and [row['phase'] for row in entries] == ['STARTED', 'FAILED']
+    assert entries[-1]['guardCode'] == 'CLEANUP_JOURNAL_BOUND_EXCEEDED'
+    assert entries[-1]['stage'] == 'DELETE_START_JOURNAL' and entries[-1]['release'] == OLD
+    assert len(raw) <= cleanup.MAX_PLAN and len(cleanup.canonical(entries[-1])) + 1 <= 4096
+    assert preserved_bytes(state) == before and state.classes.is_dir()
 
 
 @pytest.mark.parametrize('kind,path', [

@@ -398,6 +398,77 @@ def test_cleanup_rejects_redirected_top_level_and_unlinks_nested_npm_link(tmp_pa
     assert (external / 'keep').read_text() == 'original'
 
 
+@pytest.mark.parametrize('frontend', ['frontend', 'frontend-agent'])
+def test_failed_frontend_removes_only_its_partial_dependencies_after_owned_tools_stop(tmp_path, monkeypatch, frontend):
+    monkeypatch.setattr(verifier, 'ROOT', tmp_path)
+    parent = tmp_path / frontend; parent.mkdir()
+    protected = tmp_path / 'original-data'; protected.mkdir(); (protected / 'keep').write_bytes(b'original')
+    result, stopped = {}, []
+    dependencies = parent / 'node_modules'
+    def stop():
+        assert (dependencies / 'partial.js').is_file()
+        stopped.append(True)
+        return {'status': 'STOPPED', 'remaining': []}
+    with pytest.raises(RuntimeError, match='synthetic install failed'):
+        with verifier.frontend_dependencies(frontend, result, stop_tools=stop):
+            dependencies.mkdir(); (dependencies / 'partial.js').write_bytes(b'partial')
+            (dependencies / 'foreign-link').symlink_to(protected, target_is_directory=True)
+            raise RuntimeError('synthetic install failed')
+    assert stopped == [True] and not dependencies.exists()
+    assert result['toolsStoppedBeforeDependencyCleanup'] is True
+    assert result['dependenciesCleanup']['status'] == 'REMOVED'
+    assert (protected / 'keep').read_bytes() == b'original'
+
+
+@pytest.mark.parametrize('proof', [{'status': 'FAILED_OR_UNKNOWN', 'remaining': []},
+                                   {'status': 'STOPPED', 'remaining': ['unconfirmed-owned-tool']}])
+def test_frontend_dependency_cleanup_refuses_unconfirmed_tool_shutdown(tmp_path, monkeypatch, proof):
+    monkeypatch.setattr(verifier, 'ROOT', tmp_path)
+    parent = tmp_path / 'frontend-agent'; parent.mkdir(); result = {}
+    with pytest.raises(RuntimeError, match='tools were not stopped'):
+        with verifier.frontend_dependencies('frontend-agent', result, stop_tools=lambda: proof):
+            (parent / 'node_modules').mkdir(); (parent / 'node_modules/partial').write_bytes(b'keep')
+            raise RuntimeError('synthetic install failed')
+    assert (parent / 'node_modules/partial').read_bytes() == b'keep'
+    assert 'dependenciesCleanup' not in result
+
+
+def test_frontend_cleanup_keeps_dist_evidence_private_inputs_and_the_dependency_cache(tmp_path, monkeypatch):
+    monkeypatch.setattr(verifier, 'ROOT', tmp_path)
+    parent = tmp_path / 'frontend'; parent.mkdir(); result = {}
+    paths = [parent / 'dist/bundle.js', tmp_path / 'work/ci-evidence/frontend-test.log',
+             tmp_path / 'work/private/migration.json', tmp_path / 'work/tool-home/npm-cache/_cacache/package']
+    for path in paths:
+        path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(b'retained')
+    with verifier.frontend_dependencies('frontend', result, stop_tools=lambda: {'status': 'STOPPED', 'remaining': []}):
+        (parent / 'node_modules').mkdir(); (parent / 'node_modules/package.js').write_bytes(b'compiled dependency')
+    assert result['dependenciesCleanup']['status'] == 'REMOVED'
+    assert all(path.read_bytes() == b'retained' for path in paths)
+
+
+def test_frontend_cleanup_rejects_preexisting_redirect_before_any_frontend_operation(tmp_path, monkeypatch):
+    monkeypatch.setattr(verifier, 'ROOT', tmp_path)
+    parent = tmp_path / 'frontend'; parent.mkdir()
+    protected = tmp_path / 'protected'; protected.mkdir(); (protected / 'keep').write_bytes(b'original')
+    (parent / 'node_modules').symlink_to(protected, target_is_directory=True)
+    operations = []
+    with pytest.raises(ValueError, match='absent dependencies'):
+        with verifier.frontend_dependencies('frontend', {}, stop_tools=lambda: operations.append('stop')):
+            operations.append('frontend')
+    assert operations == [] and (protected / 'keep').read_bytes() == b'original'
+
+
+def test_failed_unregistered_frontend_retains_dependencies_without_owned_tool_proof(tmp_path, monkeypatch):
+    monkeypatch.setattr(verifier, 'ROOT', tmp_path)
+    parent = tmp_path / 'frontend'; parent.mkdir(); result = {}
+    with pytest.raises(RuntimeError, match='synthetic host tool failure'):
+        with verifier.frontend_dependencies('frontend', result):
+            (parent / 'node_modules').mkdir()
+            raise RuntimeError('synthetic host tool failure')
+    assert (parent / 'node_modules').is_dir()
+    assert result['dependenciesCleanup']['status'] == 'RETAINED_UNCONFIRMED_TOOLS'
+
+
 def test_frontend_artifact_hash_changes_with_same_size_content(tmp_path):
     file = tmp_path / 'bundle.js'; file.write_bytes(b'first')
     before = verifier.tree_inventory(tmp_path, hash_files=True)

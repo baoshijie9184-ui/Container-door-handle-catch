@@ -519,6 +519,7 @@ def admitted_tool_executables(manifest, expected_sha, identity):
         ('MAVEN_CMD', 'mvn'), ('PYTHON_EXE', 'python'), ('NODE_EXE', 'node'), ('NPM_CMD', 'npm'))}
     cache = runtime.registered_maven_cache(value)
     tools['MAVEN_REPOSITORY'] = cache['repository']
+    tools['_cleanup_owned_tools'] = lambda: runtime.cleanup(value)
     # This is the immutable executor identity checked exactly by verify-remote.
     # Shared dependency usage belongs to each command's tool evidence instead.
     return tools, {'manifestSha256': actual_sha, 'images': value['images']}
@@ -571,6 +572,33 @@ def remove_owned_build(path, parent, *, allow_links=False):
     if path.exists() or path.is_symlink():
         raise RuntimeError('Owned build output remains after cleanup')
     return {'status': 'REMOVED', 'relativePath': path.relative_to(ROOT).as_posix(), **result}
+
+
+@contextmanager
+def frontend_dependencies(frontend, result, *, stop_tools=None):
+    if frontend not in ('frontend', 'frontend-agent'):
+        raise ValueError('Only the fixed frontend dependency trees may be cleaned')
+    parent = owned_directory(ROOT / frontend, ROOT)
+    dependencies = parent / 'node_modules'
+    if dependencies.exists() or dependencies.is_symlink():
+        raise ValueError('Frontend verification requires absent dependencies in this fresh checkout')
+    succeeded = False
+    try:
+        yield
+        succeeded = True
+    finally:
+        if dependencies.exists() or dependencies.is_symlink():
+            confirmed = stop_tools is not None
+            if confirmed:
+                stopped = stop_tools()
+                if stopped.get('status') != 'STOPPED' or stopped.get('remaining') != []:
+                    raise RuntimeError('Owned frontend tools were not stopped; dependency files are retained')
+                result['toolsStoppedBeforeDependencyCleanup'] = True
+            if succeeded or confirmed:
+                result['dependenciesCleanup'] = remove_owned_build(dependencies, parent, allow_links=True)
+            else:
+                # An unregistered host command has no Docker ownership proof.
+                result['dependenciesCleanup'] = {'status': 'RETAINED_UNCONFIRMED_TOOLS'}
 
 
 def main():
@@ -749,27 +777,24 @@ def main():
             for frontend in ('frontend', 'frontend-agent'):
                 frontend_result = {'selectedTestFiles': frontend_test_files(profile, frontend)}
                 receipt.setdefault('frontendResults', {})[frontend] = frontend_result
-                dependencies = ROOT / frontend / 'node_modules'
-                if dependencies.exists() or dependencies.is_symlink():
-                    raise ValueError('Frontend verification requires absent dependencies in this fresh checkout')
-                execute(frontend + '-install', [tools['NPM_CMD'], 'ci', '--include=dev', '--ignore-scripts', '--no-audit', '--no-fund'], ROOT / frontend)
-                frontend_result['installExitCode'] = 0
-                execute(frontend + '-test', [tools['NODE_EXE'], '--test', '--test-reporter=tap', *frontend_result['selectedTestFiles']], ROOT / frontend)
-                frontend_result['tests'] = node_tap_counts(output / (frontend + '-test.log'))
-                frontend_result['testExitCode'] = 0
-                if frontend_result['tests']['failed'] or frontend_result['tests']['skipped']:
-                    raise RuntimeError('Frontend tests failed or skipped required testcases')
-                minimum = next(item['minimumTests'] for item in profile['frontends'] if item['directory'] == frontend)
-                if frontend_result['tests']['passed'] < minimum:
-                    raise RuntimeError('Frontend execution omitted required testcases from the fixed-source profile')
-                arguments = [tools['NPM_CMD'], 'run', 'build']
-                if frontend == 'frontend-agent':
-                    arguments += ['--', '--base=/agent-ui/']
-                execute(frontend + '-build', arguments, ROOT / frontend)
-                frontend_result['buildExitCode'] = 0
-                distribution = owned_directory(ROOT / frontend / 'dist', ROOT / frontend)
-                frontend_result['artifact'] = tree_inventory(distribution, hash_files=True)
-                frontend_result['dependenciesCleanup'] = remove_owned_build(dependencies, ROOT / frontend, allow_links=True)
+                with frontend_dependencies(frontend, frontend_result, stop_tools=tools.get('_cleanup_owned_tools')):
+                    execute(frontend + '-install', [tools['NPM_CMD'], 'ci', '--include=dev', '--ignore-scripts', '--no-audit', '--no-fund'], ROOT / frontend)
+                    frontend_result['installExitCode'] = 0
+                    execute(frontend + '-test', [tools['NODE_EXE'], '--test', '--test-reporter=tap', *frontend_result['selectedTestFiles']], ROOT / frontend)
+                    frontend_result['tests'] = node_tap_counts(output / (frontend + '-test.log'))
+                    frontend_result['testExitCode'] = 0
+                    if frontend_result['tests']['failed'] or frontend_result['tests']['skipped']:
+                        raise RuntimeError('Frontend tests failed or skipped required testcases')
+                    minimum = next(item['minimumTests'] for item in profile['frontends'] if item['directory'] == frontend)
+                    if frontend_result['tests']['passed'] < minimum:
+                        raise RuntimeError('Frontend execution omitted required testcases from the fixed-source profile')
+                    arguments = [tools['NPM_CMD'], 'run', 'build']
+                    if frontend == 'frontend-agent':
+                        arguments += ['--', '--base=/agent-ui/']
+                    execute(frontend + '-build', arguments, ROOT / frontend)
+                    frontend_result['buildExitCode'] = 0
+                    distribution = owned_directory(ROOT / frontend / 'dist', ROOT / frontend)
+                    frontend_result['artifact'] = tree_inventory(distribution, hash_files=True)
         receipt['status'] = 'PASS'
     except BaseException as error:
         receipt['status'] = 'FAILED'

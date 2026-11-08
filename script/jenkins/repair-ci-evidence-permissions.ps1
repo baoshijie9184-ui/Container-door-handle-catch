@@ -53,17 +53,57 @@ $python = $env:LOCAL_PYTHON_EXE
 if ([string]::IsNullOrWhiteSpace($python)) { $python = $env:PYTHON_EXE }
 Require-EvidenceRepair ($python -and [IO.Path]::IsPathFullyQualified($python) -and (Test-Path -LiteralPath $python -PathType Leaf)) 'Use the existing local source-byte reader.'
 $reader = @'
-import hashlib,json,sys,tarfile
+import hashlib,json,re,sys,tarfile
+from pathlib import Path
+def need(value,message):
+    if not value: raise ValueError(message)
+def unique(pairs):
+    value={}
+    for key,item in pairs:
+        need(key not in value,'Repeated registry JSON key');value[key]=item
+    return value
+def constant(_): raise ValueError('Nonfinite registry JSON value')
+need(re.fullmatch('[a-f0-9]{40}',sys.argv[2]) is not None,'Invalid fixed source commit')
+need(0<Path(sys.argv[1]).stat().st_size<=134217728,'Bounded fixed source archive required')
+wanted={'script/jenkins/repair-ci-evidence-permissions.py':None,'script/jenkins/ci-evidence-permission-repairs.json':None}
 with tarfile.open(sys.argv[1],'r:gz') as archive:
-    entries=[row for row in archive if row.name=='script/jenkins/repair-ci-evidence-permissions.py']
-    if archive.pax_headers.get('comment')!=sys.argv[2] or len(entries)!=1 or not entries[0].isfile() or not 0<entries[0].size<=1048576: raise ValueError('Fixed CI permission helper missing')
-    raw=archive.extractfile(entries[0]).read(1048577)
-    if len(raw)!=entries[0].size: raise ValueError('Fixed helper is truncated')
-print(json.dumps({'sha256':hashlib.sha256(raw).hexdigest()}))
+    count=total=0
+    for row in archive:
+        count+=1;total+=row.size
+        need(count<=50000 and 0<=row.size<=33554432 and total<=536870912,'Fixed source exceeds metadata bounds')
+        if row.name not in wanted: continue
+        need(wanted[row.name] is None and row.type in (tarfile.REGTYPE,tarfile.AREGTYPE)
+             and not row.issparse() and 0<row.size<=1048576,'Unique regular bounded repair members required')
+        raw=archive.extractfile(row).read(1048577)
+        need(len(raw)==row.size,'Fixed repair member is truncated');wanted[row.name]=raw
+    need(archive.pax_headers.get('comment')==sys.argv[2] and all(raw is not None for raw in wanted.values()),'Fixed repair members or commit missing')
+raw=wanted['script/jenkins/ci-evidence-permission-repairs.json']
+registry=json.loads(raw,object_pairs_hook=unique,parse_constant=constant)
+need(type(registry) is dict and set(registry)=={'schema','kind','releases'} and type(registry['schema']) is int
+     and registry['schema']==1 and registry['kind']=='doorhandle-registered-ci-permission-repairs'
+     and type(registry['releases']) is list and len(registry['releases'])==1,'Fixed repair registry schema differs')
+tags=[]
+for entry in registry['releases']:
+    need(type(entry) is dict and type(entry.get('release')) is str and re.fullmatch('ci-[1-9][0-9]*-[a-f0-9]{12}',entry['release'])
+         and type(entry.get('commit')) is str and re.fullmatch('[a-f0-9]{40}',entry['commit'])
+         and entry['release'].endswith('-'+entry['commit'][:12]) and entry['release'] not in tags
+         and type(entry.get('sourceSha256')) is str and re.fullmatch('[a-f0-9]{64}',entry['sourceSha256']), 'Fixed registered release identity differs')
+    tags.append(entry['release'])
+print(json.dumps({'sha256':hashlib.sha256(wanted['script/jenkins/repair-ci-evidence-permissions.py']).hexdigest(),
+                  'registrySha256':hashlib.sha256(raw).hexdigest(),'registeredTags':tags}))
 '@
 $binding = (Invoke-EvidenceRepair $python @('-I','-B','-c',$reader,$archive,$Commit) | Select-Object -Last 1) | ConvertFrom-Json
 Require-EvidenceRepair ($binding.sha256 -cmatch '^[a-f0-9]{64}$') 'The fixed CI permission helper has no digest.'
+Require-EvidenceRepair ($binding.registrySha256 -cmatch '^[a-f0-9]{64}$' -and @($binding.registeredTags).Count -eq 1) 'The fixed repair registry has no closed release selection.'
 Require-EvidenceRepair ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ceq $SourceSha256 -and (Get-FileHash -LiteralPath $verification -Algorithm SHA256).Hash.ToLowerInvariant() -ceq $verificationSha) 'Source or current PASS anchor changed while binding the helper.'
+$registeredPrior = @($binding.registeredTags | Where-Object { $priorTags.Contains([string]$_) })
+if ($registeredPrior.Count -eq 0) {
+    # No old-tree permission exception is applicable. The custody consumer must
+    # still admit every original byte, owner, mode, report and quiescent state.
+    Write-Output ([ordered]@{status='SKIPPED_NOT_REGISTERED';requestedPriorTags=@($priorTags | Sort-Object);
+        registrySha256=$binding.registrySha256;oldCustodyVerified=$false;oldFilesChanged=$false} | ConvertTo-Json -Compress)
+    return
+}
 $helper = "$RemoteRoot/verification/$Tag/checkout/script/jenkins/repair-ci-evidence-permissions.py"
 $output = "$RemoteRoot/verification/$Tag/checkout/work/prior-evidence-permissions"
 $priorFlags = (@($priorTags | Sort-Object) | ForEach-Object { "--prior-tag '$_'" }) -join ' '

@@ -1,4 +1,4 @@
-param([Parameter(Mandatory = $true)][ValidateSet('Preflight', 'Package', 'PrepareTools', 'CleanupTools', 'PrepareFixtures', 'CleanupFixtures', 'VerifyEcs', 'VerifyEmbedding', 'RepairPriorEvidence', 'PreserveLegacy', 'PreserveLocalArtifacts', 'PreserveColdStores', 'PreserveLocalMySql', 'CleanupLocalMySql', 'ReclaimBuildOutputs', 'PrepareLegacyCandidate', 'CleanupLegacyCandidate', 'VerifyRuntime', 'CleanupRuntime', 'Publish', 'Rehearse', 'CompactCutover')][string]$Action)
+param([Parameter(Mandatory = $true)][ValidateSet('Preflight', 'Package', 'PackageSourceOnly', 'PrepareTools', 'CleanupTools', 'PrepareFixtures', 'CleanupFixtures', 'VerifyEcs', 'VerifyEmbedding', 'RepairPriorEvidence', 'PreserveLegacy', 'PreserveLocalArtifacts', 'PreserveColdStores', 'PreserveLocalMySql', 'CleanupLocalMySql', 'ReclaimBuildOutputs', 'PrepareLegacyCandidate', 'CleanupLegacyCandidate', 'VerifyRuntime', 'CleanupRuntime', 'Publish', 'Rehearse', 'CompactCutover')][string]$Action)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 Set-Location -LiteralPath (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
@@ -143,6 +143,17 @@ function Send-CandidateBuildToolsArchive {
 }
 
 $tag = Require-Value 'RELEASE_TAG' '^ci-[0-9]+-[a-f0-9]{12}$'
+if ($env:ACTION -ceq 'reclaim-build-outputs') {
+    if ($Action -cnotin @('PackageSourceOnly', 'ReclaimBuildOutputs') -or $env:CI_ECS_VERIFIED -cne 'false' -or $env:DOORHANDLE_CI_SCOPE -cne 'source') {
+        throw 'Standalone build maintenance only packages pinned source and reclaims proven old outputs without a test PASS.'
+    }
+    foreach ($name in @('LEGACY_SOURCE_SNAPSHOT', 'LEGACY_SOURCE_ECS_SNAPSHOT', 'LOCAL_ARTIFACTS_SNAPSHOT', 'LOCAL_ARTIFACTS_ECS_SNAPSHOT', 'COLD_STORES_SNAPSHOT', 'COLD_STORES_ECS_SNAPSHOT', 'COLD_HISTORY_SNAPSHOT', 'COLD_HISTORY_ECS_SNAPSHOT', 'LOCAL_MYSQL_SNAPSHOT', 'LOCAL_MYSQL_ECS_SNAPSHOT', 'LOCAL_MYSQL_FIXTURE_SETTINGS', 'DOORHANDLE_CI_FIXTURE_MANIFEST', 'DOORHANDLE_CI_FIXTURE_SETTINGS', 'CANDIDATE_BUILD_TOOLS_ARCHIVE', 'COMPACT_CUTOVER_SETTINGS', 'COMPATIBLE_BACKEND_IMAGE', 'COMPATIBLE_RUNNER_IMAGE', 'REHEARSAL_MEMORY_EXTRACTION_MODEL')) {
+        if (-not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) { throw 'Standalone build maintenance cannot accept business, fixture, model or build-image inputs.' }
+    }
+    foreach ($name in @('DOORHANDLE_CI_AUTO_COMPACT_FIXTURES', 'PRODUCTION_RELEASE_ENABLED', 'DOORHANDLE_COMPACT_RELEASE_READY', 'DOORHANDLE_COMPACT_REHEARSAL_READY', 'REHEARSAL_KEEP')) {
+        if ([Environment]::GetEnvironmentVariable($name) -ceq 'true') { throw 'Standalone build maintenance cannot enable fixtures or application release.' }
+    }
+} elseif ($Action -ceq 'PackageSourceOnly') { throw 'Source-only maintenance packaging requires the explicit reclaim-build-outputs action.' }
 if ($env:CANDIDATE_BUILD_TOOLS_ARCHIVE -and ($env:ACTION -cnotin @('verify-runtime', 'compact-cutover') -or $env:DOORHANDLE_CI_SCOPE -cne 'mysql')) {
     throw 'Candidate build input is only accepted by runtime verification or compact cutover.'
 }
@@ -167,6 +178,24 @@ if ($Action -in @('VerifyRuntime', 'CompactCutover') -and $env:CI_LEGACY_CANDIDA
     throw 'Runtime acceptance requires this fixed build preserved native data candidate.'
 }
 New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+if ($Action -ceq 'PackageSourceOnly') {
+    $commit = Require-Value 'GIT_COMMIT' '^[a-f0-9]{40}$'
+    $actualCommit = ((Invoke-Checked 'git.exe' @('rev-parse', 'HEAD')) | Select-Object -Last 1).Trim()
+    if ($actualCommit -cne $commit -or -not $tag.EndsWith('-' + $commit.Substring(0, 12))) { throw 'Maintenance metadata must match this exact checked out commit and release tag.' }
+    foreach ($file in @('artifacts/source.tar.gz', 'artifacts/release.json', 'artifacts/application.jar', 'artifacts/local-build.json')) {
+        if (Test-Path -LiteralPath $file) { throw 'Maintenance packaging requires a fresh artifact directory without application build output.' }
+    }
+    Invoke-Checked 'git.exe' @('diff', '--quiet', 'HEAD', '--')
+    Invoke-Checked 'git.exe' @('-c', 'core.autocrlf=false', 'archive', '--format=tar.gz', '--output=artifacts/source.tar.gz', $commit, 'script/jenkins/cleanup-ecs-builds.py', 'script/jenkins/verify-remote.py')
+    $sha = (Get-FileHash -LiteralPath artifacts/source.tar.gz -Algorithm SHA256).Hash.ToLowerInvariant()
+    $record = [ordered]@{ schema = 1; kind = 'doorhandle-maintenance-source'; action = 'reclaim-build-outputs';
+        release = $tag; commit = $commit; sourceSha256 = $sha; sourceBytes = (Get-Item -LiteralPath artifacts/source.tar.gz).Length;
+        maintenanceOnly = $true; testsExecuted = $false; applicationBuilt = $false }
+    $stream = [IO.File]::Open((Join-Path (Get-Location) 'artifacts/release.json'), [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try { $bytes = [Text.UTF8Encoding]::new($false).GetBytes(($record | ConvertTo-Json)); $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) }
+    finally { $stream.Dispose() }
+    return
+}
 if ($Action -eq 'Package') {
     $commit = Require-Value 'GIT_COMMIT' '^[a-f0-9]{40}$'
     $actualCommit = ((Invoke-Checked 'git.exe' @('rev-parse', 'HEAD')) | Select-Object -Last 1).Trim()
@@ -230,6 +259,14 @@ if ($env:SSH_TRANSPORT -eq 'tls') {
     $sshOptions += @('-o', $tlsProxy)
 } elseif ($env:SSH_TRANSPORT -ne 'direct') { throw 'SSH_TRANSPORT must be tls or direct' }
 $destination = "$user@$targetHost"
+if ($Action -ceq 'ReclaimBuildOutputs' -and $env:ACTION -ceq 'reclaim-build-outputs') {
+    # Admission and fresh exclusive remote directories belong to the maintenance
+    # controller. Do not execute the generic mkdir or a test preflight first.
+    $commit = Require-Value 'GIT_COMMIT' '^[a-f0-9]{40}$'
+    $sha = (Get-FileHash -LiteralPath artifacts/source.tar.gz -Algorithm SHA256).Hash.ToLowerInvariant()
+    & ./script/jenkins/reclaim-build-outputs.ps1 -Mode Maintenance -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha
+    return
+}
 if ($Action -eq 'Preflight') {
     Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "test -r '$runtime/deploy/cloud.env' && docker info --format '{{.ServerVersion}}' && docker compose version --short"))
     return

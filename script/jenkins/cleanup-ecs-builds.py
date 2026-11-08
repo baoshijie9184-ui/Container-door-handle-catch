@@ -7,6 +7,7 @@ dependency cache have no deletion API. ECS lifecycle is outside this helper.
 from __future__ import annotations
 
 import argparse
+import ast
 from contextlib import contextmanager, ExitStack
 from datetime import datetime, timezone
 import gzip
@@ -36,6 +37,14 @@ MAX_TREE_BYTES = 4 * 1024 ** 3
 MAX_TREE_FILES = 100000
 MAX_TREE_ENTRIES = 150000
 FRONTENDS = ('frontend', 'frontend-agent')
+NPM_CACHE_SUFFIX = 'work/tool-home/npm-cache/_cacache'
+# These reviewed functions route checkout commands to this one disposable cache.
+# Compare syntax only; never execute an old source or infer ownership by name.
+NPM_ROUTING_AST = {
+    'safe_environment': 'f3d236e9e74747545aa36f74a1cebf7de1675e2dbafb300d9d506068d7f3b3d6',
+    'command': 'b44e28ef754376c8a1dcb792f34bf4200a6d4d85da7e52a345fa0aa1eac18bc7',
+}
+NPM_INSTALL_ARGUMENTS = ['ci', '--include=dev', '--ignore-scripts', '--no-audit', '--no-fund']
 # The root metadata mode receives these exact already-loaded source bytes via
 # stdin, avoiding a second privileged open of a replaceable user-owned script.
 LOADED_SOURCE = None if __file__ == '<stdin>' else Path(__file__).read_bytes()
@@ -45,6 +54,18 @@ PROCESS_PROBE_KIND = 'doorhandle-single-process-metadata'
 def require(condition, code):
     if not condition:
         raise ValueError(code)
+
+
+def failure_guard_code(error):
+    """Return only a literal refusal code from this fixed controller's source."""
+    if isinstance(error, ValueError) and len(error.args) == 1 and isinstance(error.args[0], str) and LOADED_SOURCE:
+        for node in ast.walk(ast.parse(LOADED_SOURCE)):
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == 'require'
+                    and len(node.args) >= 2 and isinstance(node.args[1], ast.Constant)
+                    and isinstance(node.args[1].value, str) and node.args[1].value == error.args[0]
+                    and re.fullmatch(r'[A-Z][A-Z0-9_]{0,99}', node.args[1].value)):
+                return node.args[1].value
+    return 'UNCLASSIFIED_VALIDATION_ERROR' if isinstance(error, ValueError) else 'UNCLASSIFIED_OS_ERROR'
 
 
 def canonical(value):
@@ -231,6 +252,71 @@ def fixed_build_layout(archive, commit, verifier):
     return modules
 
 
+def routing_ast_sha(function):
+    # Python 3.12 added an empty type_params field to ordinary functions. Strip
+    # only that empty metadata field so host and tool Python versions agree.
+    for node in ast.walk(function):
+        if 'type_params' in node._fields:
+            if getattr(node, 'type_params', None) != []:
+                return None
+            node._fields = tuple(name for name in node._fields if name != 'type_params')
+    return sha(ast.dump(function, include_attributes=False).encode())
+
+
+def npm_cache_provenance(root, source, commit, manifest, inner, catalog, tools, verifier):
+    """Admit only a cache produced by the archived, actually registered executor."""
+    def skipped(reason):
+        return {'status': 'SKIPPED', 'reason': reason}
+    raw = None
+    with verifier.bounded_tar(source, verifier.MAX_SOURCE_BYTES) as package:
+        for item in package:
+            if item.name != 'script/jenkins/ecs-tool-runtime.py':
+                continue
+            require(raw is None and item.isfile() and 0 < item.size <= 1024 ** 2,
+                    'NPM_EXECUTOR_SOURCE_MEMBER_INVALID')
+            raw = package.extractfile(item).read()
+        require(package.pax_headers.get('comment') == commit, 'PINNED_SOURCE_COMMIT_DIFFERS')
+    if raw is None:
+        return skipped('NPM_EXECUTOR_SOURCE_MISSING')
+    try:
+        functions = {}
+        for node in ast.parse(raw).body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in NPM_ROUTING_AST:
+                if node.name in functions:
+                    return skipped('NPM_ROUTING_NOT_REVIEWED')
+                functions[node.name] = routing_ast_sha(node)
+    except (SyntaxError, UnicodeError, ValueError):
+        return skipped('NPM_ROUTING_NOT_REVIEWED')
+    if functions != NPM_ROUTING_AST:
+        return skipped('NPM_ROUTING_NOT_REVIEWED')
+    executor_sha = sha(raw)
+    if not isinstance(manifest.get('files'), dict) or manifest['files'].get('executor.py') != executor_sha:
+        return skipped('NPM_EXECUTOR_BINDING_MISSING_OR_CHANGED')
+    try:
+        executor = owned_chain(Path(manifest['directory']) / 'executor.py', root, maximum=1024 ** 2)
+        if digest(executor) != executor_sha:
+            return skipped('NPM_REGISTERED_EXECUTOR_CHANGED')
+    except (OSError, ValueError):
+        return skipped('NPM_REGISTERED_EXECUTOR_UNAVAILABLE')
+    installs = [row for row in inner['commands'] if row.get('label') in
+                ('frontend-install', 'frontend-agent-install')]
+    if not installs or any('reports/' + row['label'] + '.log' not in catalog for row in installs):
+        return skipped('NPM_INSTALL_PROVENANCE_MISSING')
+    arguments_sha = sha(json.dumps(NPM_INSTALL_ARGUMENTS, ensure_ascii=True).encode())
+    commands = tools.get('commands')
+    if not isinstance(commands, list) or not any(
+        isinstance(row, dict) and row.get('tool') == 'npm' and row.get('argumentsSha256') == arguments_sha
+        and row.get('status') in ('EXITED', 'FAILED_OR_UNKNOWN')
+        and isinstance(row.get('containerId'), str) and SHA.fullmatch(row['containerId'])
+        and isinstance(row.get('cleanup'), dict) and row['cleanup'].get('containerId') == row['containerId']
+        and type(row['cleanup'].get('pid')) is int and row['cleanup']['pid'] == 0
+        and row['cleanup'].get('removed') is True
+        for row in commands):
+        return skipped('NPM_TOOL_COMMAND_PROVENANCE_MISSING')
+    return {'status': 'PROVEN', 'executorSha256': executor_sha, 'routingAstSha256': functions,
+            'installArgumentsSha256': arguments_sha}
+
+
 def evidence_binding(root, custody, identity, verifier):
     tag = custody['release']; attempt = owned_chain(root / 'verification' / tag, root, directory=True)
     checkout = owned_chain(attempt / 'checkout', root, directory=True)
@@ -291,9 +377,13 @@ def evidence_binding(root, custody, identity, verifier):
     require(claim == {'schema': 1, 'kind': 'doorhandle-ci-claim', 'release': tag, 'attempt': record['attempt'],
             'commit': record['commit'], 'sourceSha256': record['sourceSha256'], 'identity': identity, 'scope': 'source'},
             'ORIGINAL_ATTEMPT_OWNER_CLAIM_DIFFERS')
-    return {'checkout': checkout, 'inner': inner, 'token': manifest['token'], 'catalog': catalog,
+    result = {'checkout': checkout, 'inner': inner, 'token': manifest['token'], 'catalog': catalog,
             'modules': fixed_build_layout(source, record['commit'], verifier), 'evidenceArchive': archive_proof,
             'claimSha256': digest(claim_file), 'toolManifestSha256': manifest_sha}
+    cache = checkout / NPM_CACHE_SUFFIX
+    if cache.exists() or cache.is_symlink():
+        result['npmCache'] = npm_cache_provenance(root, source, record['commit'], manifest, inner, catalog, tools, verifier)
+    return result
 
 
 def docker_snapshot():
@@ -596,6 +686,10 @@ def target_descriptors(root, binding):
                 'NODE_DEPENDENCIES_LACK_ARCHIVED_INSTALL_PROVENANCE')
         owned_chain(target, root, directory=True)
         candidates.append((target, 'NODE_MODULES'))
+    if binding.get('npmCache', {}).get('status') == 'PROVEN':
+        target = checkout / NPM_CACHE_SUFFIX
+        owned_chain(target, root, directory=True)
+        candidates.append((target, 'NPM_CACHE'))
     result = []
     for target, kind in sorted(candidates):
         relative = target.relative_to(root).as_posix()
@@ -654,7 +748,8 @@ def build_plan(root, request, verifier, containers, *, held_releases=()):
                 targets = target_descriptors(root, binding)
             accepted.append({'release': tag, 'custodySha256': sha(canonical(custody)),
                 'evidenceArchive': binding['evidenceArchive'], 'claimSha256': binding['claimSha256'],
-                'toolManifestSha256': binding['toolManifestSha256'], 'targets': targets})
+                'toolManifestSha256': binding['toolManifestSha256'], 'targets': targets,
+                **({'npmCache': binding['npmCache']} if 'npmCache' in binding else {})})
         except (ValueError, OSError, KeyError, TypeError, ET.ParseError, verifier.VerificationError) as error:
             skipped.append({'release': tag, 'reason': str(error) if isinstance(error, ValueError) else type(error).__name__})
     return {'schema': 1, 'kind': 'doorhandle-old-build-cleanup-plan', 'root': str(root), 'currentRelease': current,
@@ -672,7 +767,8 @@ def remove_target(root_fd, target):
     base = r'verification/ci-[0-9]+-[a-f0-9]{12}/checkout/work/'
     build = base + r'ci-evidence/(?:java-suites/suite-[0-9]{3}|source-regression/build)/doorhandle-[a-z0-9-]+/'
     patterns = {'COMPILED_DIRECTORY': build + '(?:' + '|'.join(sorted(COMPILE_DIRS)) + ')',
-        'NODE_MODULES': r'verification/ci-[0-9]+-[a-f0-9]{12}/checkout/(?:frontend|frontend-agent)/node_modules'}
+        'NODE_MODULES': r'verification/ci-[0-9]+-[a-f0-9]{12}/checkout/(?:frontend|frontend-agent)/node_modules',
+        'NPM_CACHE': base + re.escape(NPM_CACHE_SUFFIX.removeprefix('work/'))}
     require(target.get('kind') in patterns and re.fullmatch(patterns[target['kind']], target.get('path', '')),
             'DELETION_TARGET_OUTSIDE_COMPILED_ALLOWLIST')
     parts = target['path'].split('/'); stack = [os.dup(root_fd)]
@@ -754,33 +850,50 @@ def apply_plan(root, request, plan, verifier):
         journal_file = root / 'inbox' / plan['currentRelease'] / 'build-cleanup-journal.jsonl'
         owned(journal_file.parent, directory=True)
         journal_fd = os.open(journal_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+        journal_bytes = 0
 
         def journal(event):
+            nonlocal journal_bytes
             data = canonical(event) + b'\n'
+            failed = event.get('phase') == 'FAILED'
+            limit = MAX_PLAN if failed else MAX_PLAN - 4096
+            require(not failed or len(data) <= 4096, 'CLEANUP_FAILURE_RECORD_EXCEEDS_RESERVE')
+            require(journal_bytes + len(data) <= limit, 'CLEANUP_JOURNAL_BOUND_EXCEEDED')
             view = memoryview(data)
             while view:
-                count = os.write(journal_fd, view); require(count > 0, 'CLEANUP_JOURNAL_WRITE_FAILED'); view = view[count:]
+                require(journal_bytes + len(view) <= limit, 'CLEANUP_JOURNAL_BOUND_EXCEEDED')
+                count = os.write(journal_fd, view); require(count > 0, 'CLEANUP_JOURNAL_WRITE_FAILED')
+                journal_bytes += count; view = view[count:]
             os.fsync(journal_fd)
 
         root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        stage, active_release = 'START_JOURNAL', None
         try:
             journal({'phase': 'STARTED', 'planSha256': sha(canonical(plan)), 'identity': plan['identity']})
             for candidate in plan['candidates']:
+                active_release = candidate['release']; stage = 'EVIDENCE_BINDING'
                 custody = next(item for item in request['candidates'] if item['release'] == candidate['release'])
                 binding = evidence_binding(root, custody, request['identity'], verifier)
+                stage = 'QUIESCENCE'
                 quiescent(binding, candidate['release'], docker_snapshot())
                 for target in candidate['targets']:
+                    stage = 'TARGET_INVENTORY'
                     require(tree_inventory(root / target['path']) == {key: target[key] for key in
                         ('files', 'bytes', 'allocatedBytes', 'rootMetadata', 'inventorySha256', 'entries')},
                         'TARGET_INVENTORY_CHANGED_NO_DELETION')
+                    stage = 'DELETE_START_JOURNAL'
                     journal({'phase': 'DELETE_STARTED', 'path': target['path'], 'inventorySha256': target['inventorySha256']})
+                    stage = 'DELETE_TARGET'
                     remove_target(root_fd, target)
                     deleted.append({key: target[key] for key in ('path', 'kind', 'files', 'bytes', 'allocatedBytes', 'inventorySha256')})
+                    stage = 'DELETE_FINISH_JOURNAL'
                     journal({'phase': 'DELETE_FINISHED', **deleted[-1]})
+            stage = 'FINISH_JOURNAL'
             journal({'phase': 'FINISHED', 'deletedTargets': len(deleted)})
         except (OSError, ValueError) as error:
             failure = type(error).__name__
-            journal({'phase': 'FAILED', 'errorType': failure, 'deletedTargets': len(deleted)})
+            journal({'phase': 'FAILED', 'errorType': failure, 'deletedTargets': len(deleted),
+                     'stage': stage, 'release': active_release, 'guardCode': failure_guard_code(error)})
         finally:
             os.close(root_fd); os.close(journal_fd)
         after = os.statvfs(root)
