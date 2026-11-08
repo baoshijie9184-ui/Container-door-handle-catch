@@ -3,6 +3,7 @@ import copy
 import gzip
 import hashlib
 import importlib.util
+import json
 import os
 from pathlib import Path
 import shutil
@@ -518,12 +519,15 @@ def retained_sql_fixture(export_fixture, monkeypatch):
     (inbox / 'source.tar.gz').write_bytes(b'closed synthetic source bytes, never executed')
     (inbox / 'tool-runtime/manifest.json').write_bytes(b'{"synthetic":"tool binding"}')
     driver = old_work.parent / 'driver.log'; driver.write_bytes(b'')  # Empty CI logs are legitimate.
+    python_xml = old_work / 'ci-evidence/python.xml'; python_xml.parent.mkdir(mode=0o700)
+    python_xml.write_bytes(b'<testsuite><testcase classname="tests_python.test_synthetic" name="original"/></testsuite>\n')
     identity = {'instanceId': 'i-fixture', 'machineId': 'c' * 32, 'executionLocation': 'ECS'}
     record = {'schema': 1, 'kind': 'doorhandle-ecs-ci', 'release': old_tag, 'commit': 'a' * 40,
         'sourceSha256': custody.digest(inbox / 'source.tar.gz'), 'identity': identity, 'scope': 'source',
         'status': 'PASS', 'verificationExitCode': 0, 'finishedAt': 'synthetic-finished', 'lifecycle': 'managed-outside-jenkins',
         'toolRuntime': {'manifestSha256': custody.digest(inbox / 'tool-runtime/manifest.json')},
-        'reportFiles': [{'path': 'driver.log', 'bytes': 0, 'sha256': custody.digest(driver)}]}
+        'reportFiles': [{'path': 'driver.log', 'bytes': 0, 'sha256': custody.digest(driver)},
+            {'path': 'reports/python.xml', 'bytes': python_xml.stat().st_size, 'sha256': custody.digest(python_xml)}]}
     custody.write(old_work.parents[1] / 'verification-receipt.json', record)
     old_context = {'version': 1, 'kind': custody.KIND, 'profile': custody.PROFILE,
         **{key: record[key] for key in ('release', 'commit', 'sourceSha256', 'identity')},
@@ -573,14 +577,15 @@ def retained_sql_fixture(export_fixture, monkeypatch):
     # Build the same raw evidence catalogue without running either recovery DB.
     for path in root.rglob('*'):
         path.chmod(0o700 if path.is_dir() else 0o600)
-    root.chmod(0o700); catalogue_names = controller.evidence_bindings(); seal()
+    root.chmod(0o700); python_xml.chmod(0o644)
+    catalogue_names = controller.evidence_bindings(); seal()
     stopped = {**old_context, 'status': 'STOPPED', 'containers': [node['containerId'] for node in servers],
         'originalsChanged': False, 'derivedContainersRemoved': 2, 'derivedVolumesRemoved': 2,
         'derivedVolumesRetained': 0, 'recoveryVolumesRetained': False}
     custody.write(directory / 'public-cleanup.json', stopped)
     cleanup = load('sql_reuse_quiescence_contract', 'script/jenkins/cleanup-ecs-builds.py')
     state = SimpleNamespace(rows=[], calls=[], root=root, old_work=old_work, new_work=new_work, args=args,
-        owner=owner, public=public, stopped=stopped, directory=directory, seal=seal)
+        owner=owner, public=public, stopped=stopped, directory=directory, seal=seal, report=python_xml)
     monkeypatch.setattr(cleanup, 'docker_snapshot', lambda: state.rows)
     monkeypatch.setattr(cleanup, 'process_references', lambda path: state.calls.append(('process', path)))
     guard = load('sql_reuse_terminal_contract', 'script/jenkins/reuse-legacy-source.py')
@@ -597,6 +602,8 @@ def retained_sql_fixture(export_fixture, monkeypatch):
 def test_ecs_sql_description_and_same_fd_copy_restore_every_byte_without_database(retained_sql_fixture):
     value = retained_sql_fixture; old = value.old_work / custody.SNAPSHOT
     before = {name: custody.digest(old / name) for name in ('custody.json', 'originals.tar.gz')}
+    report_before = value.report.read_bytes()
+    assert value.report.stat().st_mode & 0o777 == 0o644
     description = custody.describe(value.args)
     value.args.source_receipt_sha256 = description['sourceCustodyReceiptSha256']
     result = custody.reuse(value.args)
@@ -606,6 +613,7 @@ def test_ecs_sql_description_and_same_fd_copy_restore_every_byte_without_databas
     for name, checksum in before.items():
         assert custody.digest(old / name) == checksum == custody.digest(value.new_work / custody.SNAPSHOT / name)
     assert (value.new_work / custody.RESTORE / 'database.sql').read_bytes() == (value.old_work / custody.RESTORE / 'database.sql').read_bytes()
+    assert value.report.read_bytes() == report_before and value.report.stat().st_mode & 0o777 == 0o644
     assert len([call for call in value.calls if call[0] == 'terminal']) == 2
 
 
@@ -700,3 +708,121 @@ def test_sql_reuse_guards_cannot_be_imported_before_their_fixed_archive_hashes_m
     monkeypatch.setattr(custody, 'module', lambda *args: pytest.fail('Unverified reuse code must never be imported'))
     with pytest.raises((ValueError, KeyError, OSError, utility.CustodyError)):
         custody.reuse_modules(SimpleNamespace(root=root, tag=tag))
+
+
+def held_binding(path, role=None):
+    value = {'bytes': path.stat().st_size, 'sha256': custody.digest(path), 'maximum': custody.MAX_BYTES}
+    if role is not None: value['role'] = role
+    return value
+
+
+def test_original_ci_report_644_is_read_from_the_same_fd_without_changing_bytes_or_mode(retained_sql_fixture):
+    value = retained_sql_fixture; path = value.report; original = path.read_bytes()
+    assert os.getuid() == os.geteuid() == path.stat().st_uid == 1000
+    before = path.stat(); binding = held_binding(path, 'ORIGINAL_CI_REPORT')
+    with custody.held_reuse_files({path: binding}, value.root) as (held, verify):
+        stream = held[path]
+        assert stream.read() == original
+        assert (os.fstat(stream.fileno()).st_dev, os.fstat(stream.fileno()).st_ino) == (before.st_dev, before.st_ino)
+        assert os.fstat(stream.fileno()).st_mode & 0o777 == 0o644
+        verify()
+    assert stream.closed and path.read_bytes() == original and path.stat().st_mode & 0o777 == 0o644
+
+
+@pytest.mark.parametrize('member,role', [('sql', None), ('sql', 'PRIVATE_SQL_EVIDENCE'),
+    ('source', None), ('tool-manifest', None)])
+def test_private_sql_source_and_tool_bindings_keep_owner_only_permissions(retained_sql_fixture, member, role):
+    value = retained_sql_fixture; old_tag = value.old_work.parents[1].name
+    path = {'sql': value.old_work / custody.RESTORE / 'database.sql',
+        'source': value.root / 'inbox' / old_tag / 'source.tar.gz',
+        'tool-manifest': value.root / 'inbox' / old_tag / 'tool-runtime/manifest.json'}[member]
+    original = path.read_bytes(); binding = held_binding(path, role); path.chmod(0o644)
+    with pytest.raises(custody.common().CustodyError, match='owner-only unlinked custody resource'):
+        with custody.held_reuse_files({path: binding}, value.root):
+            pytest.fail('Private SQL/source/tool evidence cannot use report permissions')
+    assert path.read_bytes() == original and path.stat().st_mode & 0o777 == 0o644
+
+
+@pytest.mark.parametrize('damage,reason', [
+    ('group-write', 'Original CI report owner/type/link/mode is invalid'),
+    ('hardlink', 'Original CI report owner/type/link/mode is invalid'),
+    ('symlink', 'Linked custody paths are refused'),
+    ('replacement', 'Old SQL custody file identity changed'),
+    ('mode-drift', 'Old SQL custody file identity changed'),
+])
+def test_original_report_role_still_refuses_writes_links_and_held_file_identity_changes(retained_sql_fixture, damage, reason):
+    value = retained_sql_fixture; path = value.report; original = path.read_bytes()
+    binding = held_binding(path, 'ORIGINAL_CI_REPORT')
+    if damage == 'group-write': path.chmod(0o664)
+    if damage == 'hardlink': os.link(path, path.with_name('unreviewed-report-alias.xml'))
+    if damage == 'symlink':
+        retained = path.with_name('retained-original.xml'); path.rename(retained); path.symlink_to(retained)
+    with pytest.raises((ValueError, OSError, custody.common().CustodyError), match=reason):
+        with custody.held_reuse_files({path: binding}, value.root) as (held, verify):
+            assert held[path].read() == original
+            if damage == 'replacement':
+                path.rename(path.with_name('retained-original.xml'))
+                path.write_bytes(original); path.chmod(0o644)
+                assert custody.digest(path) == binding['sha256']
+            elif damage == 'mode-drift': path.chmod(0o600)
+            else: pytest.fail('Unsafe report must be refused before yielding a file descriptor')
+            verify()
+
+
+@pytest.mark.parametrize('damage,reason', [('unknown-role', 'Unknown closed SQL reuse file role'),
+    ('sql-as-report', 'Original CI report role requires a fixed report path')])
+def test_report_permission_role_is_closed_and_cannot_be_applied_to_sql_outside_the_report_tree(retained_sql_fixture, damage, reason):
+    value = retained_sql_fixture
+    path = value.report if damage == 'unknown-role' else value.old_work / custody.RESTORE / 'database.sql'
+    role = 'UNREVIEWED_ROLE' if damage == 'unknown-role' else 'ORIGINAL_CI_REPORT'
+    original = path.read_bytes(); binding = held_binding(path, role)
+    with pytest.raises(ValueError, match=reason):
+        with custody.held_reuse_files({path: binding}, value.root):
+            pytest.fail('Only original catalogued report paths may receive the report role')
+    assert path.read_bytes() == original
+
+
+def test_sql_pack_cli_keeps_stdout_protocol_and_adds_only_bounded_own_locations_on_stderr(export_fixture):
+    source = export_fixture; source.output.mkdir(mode=0o700)
+    sentinel = source.output / 'keep-original'; sentinel.write_bytes(b'pre-existing output must remain untouched')
+    script = ROOT / 'script/jenkins/preserve-local-mysql.py'
+    launcher = ('from pathlib import Path\nimport sys\n'
+        'script=Path(sys.argv[1]); root=Path(sys.argv[2]); export,control,output=sys.argv[3:]\n'
+        'scope={"__name__":"synthetic_sql_cli_contract","__file__":str(script)}\n'
+        'exec(compile(script.read_bytes(),str(script),"exec"),scope)\n'
+        'scope["LOCAL_ROOT"]=root\n'
+        'sys.argv=[str(script),"pack","--export-directory",export,"--control-receipt",control,"--output",output]\n'
+        'raise SystemExit(scope["main"]())\n')
+    result = subprocess.run([sys.executable, '-I', '-B', '-c', launcher, str(script), str(custody.LOCAL_ROOT),
+        str(source.export), str(source.control), str(source.output)], capture_output=True, text=True, timeout=15)
+    assert result.returncode == 2
+    expected = {'kind': custody.KIND, 'status': 'FAILED', 'phase': 'pack', 'errorType': 'ValueError', 'sourceDeleted': False}
+    assert json.loads(result.stdout) == expected
+    private = json.loads(result.stderr)
+    assert set(private) == set(expected) | {'locations'}
+    assert {key: private[key] for key in expected} == expected
+    assert 1 <= len(private['locations']) <= 8
+    assert {'main', 'pack', 'need'} <= {row['function'] for row in private['locations']}
+    assert all(set(row) == {'function', 'line'} and type(row['line']) is int and row['line'] > 0 for row in private['locations'])
+    assert str(source.export) not in result.stderr and str(script) not in result.stderr
+    assert sentinel.read_bytes() == b'pre-existing output must remain untouched'
+    assert {path.name for path in source.output.iterdir()} == {'keep-original'}
+
+
+def test_sql_failure_locations_filter_foreign_payload_frames_and_keep_only_the_last_eight_own_locations():
+    foreign = {'payload': 'PRIVATE_SQL_DIAGNOSTIC /home/private/originals.sql password=PRIVATE_SENTINEL'}
+    exec(compile('def need():\n    raise ValueError(payload)\n', '<foreign-sql-diagnostic>', 'exec'), foreign)
+    own = {'foreign_guard': foreign['need']}
+    program = ('def need(depth):\n'
+        '    if depth: return need(depth - 1)\n'
+        '    return unreviewed_sql_diagnostic_frame()\n'
+        'def unreviewed_sql_diagnostic_frame():\n'
+        '    return foreign_guard()\n')
+    assert 'unreviewed_sql_diagnostic_frame' not in custody._failure_source_metadata(custody.LOADED_SOURCE)[0]
+    exec(compile(program, custody.__file__, 'exec'), own)
+    with pytest.raises(ValueError) as caught: own['need'](16)
+    locations = custody.failure_locations(caught.value)
+    assert locations == [{'function': 'need', 'line': 2}] * 7 + [{'function': 'need', 'line': 3}]
+    raw = json.dumps(locations)
+    assert 'PRIVATE_SQL_DIAGNOSTIC' not in raw and '/home/private' not in raw and 'PRIVATE_SENTINEL' not in raw
+    assert custody.__file__ not in raw and 'foreign-sql-diagnostic' not in raw

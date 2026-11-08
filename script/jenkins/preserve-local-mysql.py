@@ -7,7 +7,9 @@ production activation, local deletion admission or a source row-hash proof.
 from __future__ import annotations
 
 import argparse
+import ast
 from contextlib import contextmanager
+from functools import lru_cache
 import gzip
 import hashlib
 import importlib.util
@@ -17,11 +19,13 @@ from pathlib import Path
 import re
 import shutil
 import stat
+import sys
 import tarfile
 import time
 from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[2]
+LOADED_SOURCE = None if __file__ == '<stdin>' else Path(__file__).read_bytes()
 LOCAL_ROOT = Path('D:/AI/lunwen1/DoorHandleCatch')
 PROFILE = 'local-mysql-export45-v1'
 KIND = 'doorhandle-local-mysql-custody'
@@ -50,6 +54,25 @@ TAG = re.compile(r'ci-([1-9][0-9]*)-([a-f0-9]{12})')
 
 def need(value, message):
     if not value: raise ValueError(message)
+
+
+@lru_cache(maxsize=1)
+def _failure_source_metadata(source):
+    if not source: return frozenset(), 0
+    return frozenset(node.name for node in ast.walk(ast.parse(source)) if isinstance(node, ast.FunctionDef)), len(source.splitlines())
+
+
+def failure_locations(error):
+    """Only fixed-script function locations; never exception data or paths."""
+    functions, line_count = _failure_source_metadata(LOADED_SOURCE)
+    locations = []; trace = error.__traceback__
+    while trace is not None:
+        code = trace.tb_frame.f_code
+        if (code.co_filename == __file__ and code.co_name in functions
+                and type(trace.tb_lineno) is int and 0 < trace.tb_lineno <= line_count):
+            locations.append({'function': code.co_name, 'line': trace.tb_lineno})
+        trace = trace.tb_next
+    return locations[-8:]
 
 
 def module(name, file):
@@ -331,13 +354,27 @@ def reuse_json(path):
 @contextmanager
 def held_reuse_files(bindings, root):
     """Hold the closed old evidence set; copy and hash the same regular FDs."""
-    utility = common(); held = {}; parents = {}
+    utility = common(); held = {}; parents = {}; descriptors = {}; root = Path(root)
+    def admitted(path, binding):
+        role = binding.get('role', 'PRIVATE_SQL_EVIDENCE')
+        need(role in ('PRIVATE_SQL_EVIDENCE', 'ORIGINAL_CI_REPORT'), 'Unknown closed SQL reuse file role')
+        if role == 'PRIVATE_SQL_EVIDENCE': return utility.owner_path(path)
+        path = utility.safe(path)
+        parts = path.relative_to(root).parts if path.is_relative_to(root) else ()
+        need(len(parts) >= 4 and parts[0] == 'verification' and TAG.fullmatch(parts[1]) and parts[2] == 'checkout'
+             and (parts[3:] == ('driver.log',) or len(parts) >= 6 and parts[3:5] == ('work', 'ci-evidence')),
+             'Original CI report role requires a fixed report path')
+        info = path.lstat()
+        need(os.name == 'posix' and os.getuid() == os.geteuid() == 1000 and info.st_uid == 1000
+             and stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and not info.st_mode & 0o022,
+             'Original CI report owner/type/link/mode is invalid')
+        return path
     def stamp(info):
         return (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid, info.st_nlink,
                 info.st_size, info.st_mtime_ns, info.st_ctime_ns)
     def verify():
         for path, (stream, before) in held.items():
-            need(stamp(os.fstat(stream.fileno())) == before == stamp(utility.owner_path(path).lstat()),
+            need(stamp(os.fstat(stream.fileno())) == before == stamp(admitted(path, descriptors[path]).lstat()),
                  'Old SQL custody file identity changed')
         for path, before in parents.items():
             info = utility.owned_ancestor(path).lstat()
@@ -345,7 +382,8 @@ def held_reuse_files(bindings, root):
                  'Old SQL custody ancestor changed')
     try:
         for path, binding in bindings.items():
-            path = utility.owner_path(path); before = stamp(path.lstat())
+            path = admitted(path, binding); before = stamp(path.lstat())
+            descriptors[path] = binding
             need(type(binding['bytes']) is int and binding.get('minimum', 1) <= binding['bytes'] <= binding['maximum']
                  and before[6] == binding['bytes'] and type(binding['sha256']) is str and SHA.fullmatch(binding['sha256']),
                  'Closed SQL reuse file size or digest is invalid')
@@ -455,7 +493,8 @@ def original_snapshot(args):
         'bytes': utility.owner_path(tool_manifest).stat().st_size, 'maximum': MIB}
     for row in record['reportFiles']:
         name = row['path']; path = binding['checkout'] / ('driver.log' if name == 'driver.log' else 'work/ci-evidence/' + name[8:])
-        files[path] = {'sha256': row['sha256'], 'bytes': row['bytes'], 'maximum': verifier.MAX_FILE_BYTES, 'minimum': 0}
+        files[path] = {'sha256': row['sha256'], 'bytes': row['bytes'], 'maximum': verifier.MAX_FILE_BYTES, 'minimum': 0,
+                       'role': 'ORIGINAL_CI_REPORT'}
     need(files[old / 'custody.json']['sha256'] == public['manifestSha256']
          and files[old / 'originals.tar.gz']['sha256'] == manifest['archiveSha256']
          and files[old / 'originals.tar.gz']['bytes'] == manifest['archiveBytes'], 'Old SQL archive catalogue changed')
@@ -540,7 +579,10 @@ def main():
         result = pack(args.export_directory, args.control_receipt, args.output) if args.action == 'pack' else globals()[args.action.replace('-', '_')](args)
         print(json.dumps(result)); return 0
     except Exception as error:
-        print(json.dumps({'kind': KIND, 'status': 'FAILED', 'phase': args.action, 'errorType': type(error).__name__, 'sourceDeleted': False})); return 2
+        failed = {'kind': KIND, 'status': 'FAILED', 'phase': args.action, 'errorType': type(error).__name__, 'sourceDeleted': False}
+        print(json.dumps(failed))
+        print(json.dumps({**failed, 'locations': failure_locations(error)}), file=sys.stderr)
+        return 2
 
 
 if __name__ == '__main__': raise SystemExit(main())
