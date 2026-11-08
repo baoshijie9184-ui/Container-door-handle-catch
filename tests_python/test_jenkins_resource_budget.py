@@ -878,6 +878,43 @@ class DuMeasurementTests(unittest.TestCase):
                 self.assertNotIn('measurementFailure', json.loads(raw))
                 self.assertNotIn(b'opaque-secret', raw)
 
+    def test_watcher_retains_current_immutable_measurement_stage_without_payload(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp); clock = [11.2]
+            with self.measurement(folder, lambda *_a, **_k: None, clock) as (monitor, run):
+                snapshot = {'stage': 'ownedProcessMemory', 'started': 10.0, 'stageStarted': 10.5,
+                    'timingsSeconds': {'du': .1, 'hostMetrics': .01, 'fixtureMemory': .02},
+                    'extra': 'opaque-secret'}
+                monitor.active_measurement = snapshot
+                with patch.object(preparer.os, 'kill'):
+                    monitor.fail(ValueError('opaque-secret'), worker='watcher')
+                raw = (folder / 'resource-failure.json').read_bytes(); value = json.loads(raw)
+                active = value['activeMeasurement']
+                self.assertEqual({'stage', 'elapsedSeconds', 'stageElapsedSeconds', 'timingsSeconds'}, set(active))
+                self.assertEqual('ownedProcessMemory', active['stage'])
+                self.assertAlmostEqual(1.2, active['elapsedSeconds'])
+                self.assertAlmostEqual(.7, active['stageElapsedSeconds'])
+                snapshot['timingsSeconds']['du'] = 99
+                self.assertEqual(.1, monitor.failure['activeMeasurement']['timingsSeconds']['du'])
+                self.assertNotIn(b'opaque-secret', raw)
+                self.assertNotIn(str(folder).encode(), raw)
+                run.assert_not_called()
+
+    def test_successful_measurement_clears_active_stage_before_unrelated_failure(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp); clock = [10.0]
+            def command(arguments, **kwargs):
+                return subprocess.CompletedProcess(arguments, 0, self.output(folder), b'')
+            with self.measurement(folder, command, clock) as (monitor, run):
+                monitor.active_measurement = {'extra': 'obsolete-secret'}
+                monitor.measure()
+                self.assertIsNone(monitor.active_measurement)
+                with patch.object(preparer.os, 'kill'):
+                    monitor.fail(ValueError('unrelated'), worker='watcher')
+                raw = (folder / 'resource-failure.json').read_bytes()
+                self.assertNotIn('activeMeasurement', json.loads(raw))
+                self.assertNotIn(b'obsolete-secret', raw)
+
 
 if __name__ == '__main__':
     unittest.main()

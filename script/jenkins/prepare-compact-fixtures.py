@@ -396,6 +396,8 @@ class PreparationMonitor:
             self.du_failure = None
             self.measurement_failure = None
             started = time.monotonic(); native_deadline = started + 1.2; outer_deadline = started + 2
+            self.active_measurement = {'stage': 'physicalAllocation', 'started': started,
+                'stageStarted': started, 'timingsSeconds': {}}
             attempts = []
             try:
                 for index in range(2):
@@ -432,18 +434,25 @@ class PreparationMonitor:
                     break
             except Exception as error:
                 self.du_failure = (error, {'attempts': attempts})
+                self.active_measurement = None
                 raise
             self.du_failure = None
             timings = {'du': max(0, time.monotonic() - started)}
             stage = 'hostMetrics'; stage_started = time.monotonic()
+            self.active_measurement = {'stage': stage, 'started': started,
+                'stageStarted': stage_started, 'timingsSeconds': dict(timings)}
             try:
                 memory = {line.split(':', 1)[0]: int(line.split()[1]) * 1024 for line in Path('/proc/meminfo').read_text().splitlines()}
                 disk = os.statvfs(self.preparation.attempt)
                 timings[stage] = max(0, time.monotonic() - stage_started)
                 stage = 'fixtureMemory'; stage_started = time.monotonic()
+                self.active_measurement = {'stage': stage, 'started': started,
+                    'stageStarted': stage_started, 'timingsSeconds': dict(timings)}
                 fixture, oom = self.fixture_memory()
                 timings[stage] = max(0, time.monotonic() - stage_started)
                 stage = 'ownedProcessMemory'; stage_started = time.monotonic()
+                self.active_measurement = {'stage': stage, 'started': started,
+                    'stageStarted': stage_started, 'timingsSeconds': dict(timings)}
                 owned_memory = owned_tree_memory(os.getpid())
                 timings[stage] = max(0, time.monotonic() - stage_started)
                 value = {'ownerToken': self.token, 'sourceCommit': self.preparation.args.commit,
@@ -453,6 +462,8 @@ class PreparationMonitor:
                     'ownedMemoryBytes': owned_memory + fixture, 'oomKills': oom,
                     'ownedDiskMeasurement': 'ALLOCATED_BLOCKS_DU', 'ownedFixtureMemoryBytes': fixture}
                 stage = 'publication'; stage_started = time.monotonic()
+                self.active_measurement = {'stage': stage, 'started': started,
+                    'stageStarted': stage_started, 'timingsSeconds': dict(timings)}
                 with self.lock:
                     measured_at = time.monotonic()
                     timings[stage] = max(0, measured_at - stage_started)
@@ -472,18 +483,23 @@ class PreparationMonitor:
                         observed['minimumFreeDiskBytes'] = min(observed['minimumFreeDiskBytes'], value['diskAvailableBytes'])
                         observed['minimumAvailableMemoryBytes'] = min(observed['minimumAvailableMemoryBytes'], value['memoryAvailableBytes'])
                     self.stream.write(json.dumps(value, sort_keys=True) + '\n'); self.stream.flush()
+                self.active_measurement = None
                 return value
             except Exception as error:
                 now = time.monotonic()
                 timings[stage] = max(0, now - stage_started)
                 self.measurement_failure = (error, {'stage': stage, 'elapsedSeconds': max(0, now - started),
                     'timingsSeconds': timings, 'duAttempts': attempts})
+                self.active_measurement = None
                 raise
 
     def collect(self):
         try:
-            while not self.stop.wait(0.5):
+            next_due = time.monotonic() + 0.5
+            while not self.stop.wait(max(0, next_due - time.monotonic())):
+                started = time.monotonic()
                 self.measure()
+                next_due = started + 0.5
         except BaseException as error:
             self.fail(error, worker='collector')
 
@@ -492,10 +508,11 @@ class PreparationMonitor:
         with self.lock:
             if self.failed.is_set() or self.stop.is_set():
                 return
+            failed_at = time.monotonic()
             self.failure = {'status': 'FAILED_OR_UNKNOWN', 'reason': details['errorType'],
                             'worker': worker if worker in ('collector', 'watcher') else 'unknown',
                             **details, 'ownerToken': self.token,
-                            'lastProbeAgeSeconds': max(0, time.monotonic() - self.measured_at),
+                            'lastProbeAgeSeconds': max(0, failed_at - self.measured_at),
                             'stopScope': 'OWNED_ATTEMPT_ONLY', 'evidenceRetained': True}
             du_failure = getattr(self, 'du_failure', None)
             if du_failure is not None and du_failure[0] is error:
@@ -503,6 +520,14 @@ class PreparationMonitor:
             measurement_failure = getattr(self, 'measurement_failure', None)
             if measurement_failure is not None and measurement_failure[0] is error:
                 self.failure['measurementFailure'] = measurement_failure[1]
+            active = getattr(self, 'active_measurement', None)
+            if active is not None:
+                # Stage snapshots are replaced atomically, never mutated by the
+                # collector while the independent watcher copies one.
+                self.failure['activeMeasurement'] = {'stage': active['stage'],
+                    'elapsedSeconds': max(0, failed_at - active['started']),
+                    'stageElapsedSeconds': max(0, failed_at - active['stageStarted']),
+                    'timingsSeconds': dict(active['timingsSeconds'])}
             self.failed.set()
         try:
             write_json(self.preparation.work / 'resource-failure.json', self.failure)
