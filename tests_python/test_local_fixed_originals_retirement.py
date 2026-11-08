@@ -405,7 +405,10 @@ def test_explicit_resolver_is_used_by_real_opaque_source_reader_on_ecs(tmp_path,
 
 def test_windows_backend_forwards_custom_resolver_and_delete_access_to_original_holder(tmp_path, monkeypatch):
     source = tmp_path / 'uploads/opaque.bin'; source.parent.mkdir(); source.write_bytes(b'opaque')
-    value = {'members': [{'path': 'uploads/opaque.bin'}], 'directories': []}
+    fingerprint = fixed.load('preserve-cold-stores.py').fingerprint(source.stat())
+    fingerprint[7] = 0  # Ordinary-file fixture without the read-only attribute.
+    value = {'members': [{'path': 'uploads/opaque.bin', 'bytes': 6, 'sha256': fixed.sha(b'opaque'),
+                          'fingerprint': fingerprint}], 'directories': []}
     resolver = lambda name: str(tmp_path / name)
     seen = []; closed = []
     @contextmanager
