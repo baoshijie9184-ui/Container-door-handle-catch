@@ -13,7 +13,7 @@ import importlib.util
 import json
 import math
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import secrets
 import shutil
@@ -81,6 +81,26 @@ class PreparationPending(PreparationError):
 def require(condition, message):
     if not condition:
         raise PreparationError(message)
+
+
+def validate_builder_input_arguments(args):
+    """Admit the optional public archive request before creating any resources."""
+    archive, checksum, size = (getattr(args, name, None) for name in
+                               ('buildkit_archive', 'buildkit_archive_sha256', 'buildkit_archive_bytes'))
+    if archive is None and checksum is None and size is None:
+        return None
+    require(all(value is not None for value in (archive, checksum, size))
+            and getattr(args, 'prepare_candidate_builder', False) is True,
+            'BuildKit archive arguments must be complete and request candidate builder preparation')
+    require(type(checksum) is str and SHA.fullmatch(checksum)
+            and type(size) is int and 0 < size <= 128 * MIB,
+            'BuildKit archive requires a full SHA256 and bounded positive byte count')
+    root_value = str(args.root); root = PurePosixPath(root_value)
+    require(root.is_absolute() and str(root) == root_value and '..' not in root.parts
+            and '\\' not in root_value and type(archive) is str
+            and archive == str(root / 'build-inputs' / 'buildkit-v0.34.2' / (checksum + '.tar')),
+            'BuildKit archive must use the exact owned fixed-version cache path')
+    return {'file': archive, 'sha256': checksum, 'bytes': size}
 
 
 def digest(path):
@@ -279,6 +299,7 @@ def admit_fresh_install(baseline, available):
 
 class Preparation:
     def __init__(self, args):
+        validate_builder_input_arguments(args)
         self.args = args; self.identity = identity(args)
         require(TAG.fullmatch(args.tag) and re.fullmatch(r'[a-f0-9]{40}', args.commit)
                 and args.tag.endswith('-' + args.commit[:12]) and SHA.fullmatch(args.source_sha256),
@@ -785,6 +806,9 @@ def completion_files(receipt):
 
 def complete_preparation(preparation, value):
     """Publish success only after every component requested by this invocation."""
+    buildkit_archive = validate_builder_input_arguments(preparation.args)
+    if buildkit_archive is not None:
+        value = {**value, 'buildkitArchive': buildkit_archive}
     receipt = json.loads(control_bytes(preparation.folder / 'preparation.json'))
     proofs = {name: hashlib.sha256(control_bytes(preparation.folder / name, empty=name.endswith('.stderr'))).hexdigest()
               for name in completion_files(receipt)}
@@ -792,6 +816,8 @@ def complete_preparation(preparation, value):
                   **{key: value[key] for key in ('release', 'commit', 'sourceSha256', 'identity', 'ownerToken')},
                   'prepareCandidateBuilder': preparation.args.prepare_candidate_builder,
                   'proofs': proofs, 'result': value}
+    if buildkit_archive is not None:
+        completion['buildkitArchive'] = buildkit_archive
     path = preparation.folder / 'completion.json'
     atomic_completion(path, completion)
     return {**value, 'completion': str(path), 'completionSha256': digest(path)}
@@ -822,6 +848,7 @@ class PreparedReadback(Preparation):
     """Re-admit an existing result; this path has no create, pip or cleanup API."""
 
     def __init__(self, args):
+        validate_builder_input_arguments(args)
         self.args = args; self.identity = identity(args)
         require(TAG.fullmatch(args.tag) and re.fullmatch(r'[a-f0-9]{40}', args.commit)
                 and args.tag.endswith('-' + args.commit[:12]) and SHA.fullmatch(args.source_sha256),
@@ -891,6 +918,15 @@ class PreparedReadback(Preparation):
                 'Completed builder reference differs')
         directory = self.inbox / 'candidate-build-tools'
         value = json.loads(control_bytes(directory / 'tools.json'))
+        buildkit_archive = helper.buildkit_input(self.args)
+        require(buildkit_archive == validate_builder_input_arguments(self.args), 'BuildKit archive request interpretation differs')
+        if buildkit_archive is None:
+            require('buildkitArchive' not in value, 'Prepared builder archive binding differs from this request')
+        else:
+            require(value.get('buildkitArchive') == buildkit_archive
+                    and type(value['buildkitArchive'].get('bytes')) is int,
+                    'Prepared builder archive binding differs from this request')
+            helper.validate_buildkit_archive(self.root, buildkit_archive)
         require(value['licenseFile'] == str(directory / 'LICENSE')
                 and hashlib.sha256(control_bytes(directory / 'LICENSE')).hexdigest() == helper.LICENSE_SHA
                 and set(value['versions']) == {'buildctl', 'buildkitd'}, 'Builder license or version evidence differs')
@@ -922,6 +958,7 @@ class PreparedReadback(Preparation):
                 'Prepared builder owner, cgroup or actual stopped state differs')
 
     def read_prepared(self):
+        buildkit_archive = validate_builder_input_arguments(self.args)
         for name in ('failure.json', 'watchdog-failure.json', 'metadata-failure.json', 'completion-failure.json'):
             require(not (self.folder / name).exists() and not (self.folder / name).is_symlink(),
                     'This preparation has terminal failure evidence')
@@ -933,11 +970,20 @@ class PreparedReadback(Preparation):
             require(not path.is_symlink(), 'Completion evidence cannot be a link')
             raise PreparationPending('Same-request preparation has no final completion evidence yet')
         complete_raw = control_bytes(path); complete = json.loads(complete_raw)
+        completion_keys = {'schema', 'kind', 'release', 'commit', 'sourceSha256', 'identity',
+                           'ownerToken', 'prepareCandidateBuilder', 'proofs', 'result'}
+        if buildkit_archive is not None:
+            completion_keys.add('buildkitArchive')
         require(complete.get('schema') == 1 and complete.get('kind') == 'doorhandle-completed-tool-preparation'
                 and complete.get('prepareCandidateBuilder') is self.args.prepare_candidate_builder
-                and set(complete) == {'schema', 'kind', 'release', 'commit', 'sourceSha256', 'identity',
-                                      'ownerToken', 'prepareCandidateBuilder', 'proofs', 'result'},
+                and set(complete) == completion_keys
+                and (buildkit_archive is None or (complete.get('buildkitArchive') == buildkit_archive
+                    and type(complete['buildkitArchive'].get('bytes')) is int)),
                 'Completed preparation request mode differs')
+        if buildkit_archive is not None:
+            stored = complete['result'].get('buildkitArchive') if type(complete['result']) is dict else None
+            require(type(stored) is dict and stored == buildkit_archive and type(stored.get('bytes')) is int,
+                    'Completed preparation result archive binding differs')
         found = self.found
         sources = {name: hashlib.sha256(raw).hexdigest() for name, raw in found.items()}
         for name, raw in found.items():
@@ -1029,6 +1075,8 @@ class PreparedReadback(Preparation):
         for fixed in (MAVEN, NODE): self.image_row(fixed)
         result = {**receipt, 'preparation': str(self.folder / 'preparation.json'),
                   'preparationSha256': digest(self.folder / 'preparation.json')}
+        if buildkit_archive is not None:
+            result['buildkitArchive'] = buildkit_archive
         if self.args.prepare_candidate_builder:
             reference = complete['result'].get('candidateBuilderTools'); self.validate_builder(reference)
             result['candidateBuilderTools'] = reference
@@ -1046,12 +1094,16 @@ def main(argv=None):
     for name in ('root', 'tag', 'commit', 'source-sha256', 'instance-id', 'machine-id'):
         parser.add_argument('--' + name, required=True)
     parser.add_argument('--prepare-candidate-builder', action='store_true')
+    parser.add_argument('--buildkit-archive')
+    parser.add_argument('--buildkit-archive-sha256')
+    parser.add_argument('--buildkit-archive-bytes', type=int)
     parser.add_argument('--read-prepared', action='store_true')
     args = parser.parse_args(argv)
     for event in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         signal.signal(event, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
     preparation = None
     try:
+        validate_builder_input_arguments(args)
         if args.read_prepared:
             print(json.dumps(PreparedReadback(args).read_prepared(), ensure_ascii=True)); return 0
         preparation = Preparation(args)

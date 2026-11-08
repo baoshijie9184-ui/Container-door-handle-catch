@@ -24,6 +24,53 @@ SOURCE_SHA = 'b' * 64
 
 
 class ToolPreparationTests(unittest.TestCase):
+    def builder_input_args(self, root='/home/owned'):
+        checksum = 'c' * 64
+        return SimpleNamespace(root=str(root), prepare_candidate_builder=True,
+            buildkit_archive=str(root) + '/build-inputs/buildkit-v0.34.2/' + checksum + '.tar',
+            buildkit_archive_sha256=checksum, buildkit_archive_bytes=120000000)
+
+    def test_optional_buildkit_request_requires_all_three_arguments_and_builder_mode(self):
+        self.assertIsNone(tools.validate_builder_input_arguments(SimpleNamespace()))
+        args = self.builder_input_args()
+        expected = {'file': args.buildkit_archive, 'sha256': args.buildkit_archive_sha256,
+                    'bytes': args.buildkit_archive_bytes}
+        self.assertEqual(expected, tools.validate_builder_input_arguments(args))
+        fields = ('buildkit_archive', 'buildkit_archive_sha256', 'buildkit_archive_bytes')
+        for omitted in fields:
+            changed = deepcopy(args); delattr(changed, omitted)
+            with self.subTest(omitted=omitted), self.assertRaises(ValueError):
+                tools.validate_builder_input_arguments(changed)
+        args.prepare_candidate_builder = False
+        with self.assertRaisesRegex(ValueError, 'candidate builder'):
+            tools.validate_builder_input_arguments(args)
+
+    def test_buildkit_input_rejects_unbounded_sizes_hash_aliases_and_cache_path_changes(self):
+        mutations = [('buildkit_archive_bytes', size) for size in
+                     (True, 0, -1, 128 * MIB + 1, '120000000')]
+        mutations += [('buildkit_archive_sha256', checksum) for checksum in
+                      ('C' * 64, 'c' * 63, 'sha256:' + 'c' * 64)]
+        mutations += [('buildkit_archive', path) for path in
+                      ('relative.tar', '/home/owned/archive.tar',
+                       '/home/owned/build-inputs/buildkit-v0.34.2/' + 'd' * 64 + '.tar',
+                       '/home/owned/build-inputs/../buildkit-v0.34.2/' + 'c' * 64 + '.tar')]
+        mutations += [('root', root) for root in ('relative', '/home/owned/../owned', '/home//owned')]
+        for name, replacement in mutations:
+            args = self.builder_input_args(); setattr(args, name, replacement)
+            with self.subTest(field=name, replacement=replacement), self.assertRaises(ValueError):
+                tools.validate_builder_input_arguments(args)
+        args = self.builder_input_args(); args.buildkit_archive_bytes = 128 * MIB
+        self.assertEqual(128 * MIB, tools.validate_builder_input_arguments(args)['bytes'])
+
+    def test_invalid_buildkit_request_is_rejected_before_identity_or_resource_creation(self):
+        args = self.builder_input_args(); args.buildkit_archive_bytes = 128 * MIB + 1
+        for constructor in (tools.Preparation, tools.PreparedReadback):
+            with self.subTest(constructor=constructor.__name__), mock.patch.object(tools, 'identity') as identity, \
+                    mock.patch.object(tools, 'canonical') as canonical, \
+                    mock.patch.object(tools.Path, 'mkdir') as mkdir:
+                with self.assertRaises(ValueError): constructor(args)
+                identity.assert_not_called(); canonical.assert_not_called(); mkdir.assert_not_called()
+
     def test_config_size_may_shrink_only_when_all_dependency_diffids_are_identical(self):
         old = {'RootFS': {'Layers': ['base', 'dependencies']}, 'Size': 1017481845}
         new = {'RootFS': {'Layers': ['base', 'dependencies']}, 'Size': 1017481042}
@@ -530,6 +577,85 @@ class ToolPreparationTests(unittest.TestCase):
             tools.write_json(value.folder / 'completion-failure.json', {'status': 'FAILED_OR_UNKNOWN'})
             with self.assertRaisesRegex(ValueError, 'terminal failure'): value.read_prepared()
 
+    def complete_with_builder_input(self, value):
+        request = self.builder_input_args(value.root)
+        for key, content in vars(request).items(): setattr(value.args, key, content)
+        path = value.folder / 'completion.json'; complete = json.loads(path.read_text())
+        result = {**complete['result'], 'candidateBuilderTools': {'file': 'bound-tools-reference'}}
+        path.unlink(); published = tools.complete_preparation(value, result)
+        return json.loads(path.read_text()), request, published
+
+    def test_completion_keeps_legacy_schema_and_binds_explicit_buildkit_input(self):
+        with tempfile.TemporaryDirectory() as directory:
+            value, _, _, _ = self.completed_readback(Path(directory))
+            legacy = json.loads((value.folder / 'completion.json').read_text())
+            self.assertNotIn('buildkitArchive', legacy)
+            complete, request, published = self.complete_with_builder_input(value)
+            self.assertEqual(set(legacy) | {'buildkitArchive'}, set(complete))
+            expected = tools.validate_builder_input_arguments(request)
+            self.assertEqual(expected, complete['buildkitArchive'])
+            self.assertEqual(expected, complete['result']['buildkitArchive'])
+            self.assertEqual(expected, published['buildkitArchive'])
+            with mock.patch.object(value, 'validate_builder') as validate:
+                result = value.read_prepared()
+            self.assertTrue(result['readbackValidated'])
+            self.assertEqual(expected, result['buildkitArchive'])
+            validate.assert_called_once_with(complete['result']['candidateBuilderTools'])
+
+    def test_readback_rejects_removed_rebound_or_unexpected_buildkit_request(self):
+        for mutation in ('missing-field', 'bytes', 'sha-path', 'no-cli', 'unexpected-field', 'boolean-bytes',
+                         'result-missing', 'result-bytes', 'result-extra', 'result-boolean'):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                value, _, _, calls = self.completed_readback(Path(directory))
+                complete, _, _ = self.complete_with_builder_input(value)
+                if mutation == 'missing-field': complete.pop('buildkitArchive')
+                if mutation == 'bytes': value.args.buildkit_archive_bytes += 1
+                if mutation == 'sha-path':
+                    value.args.buildkit_archive_sha256 = 'd' * 64
+                    value.args.buildkit_archive = str(value.root / 'build-inputs' / 'buildkit-v0.34.2' / ('d' * 64 + '.tar'))
+                if mutation == 'no-cli':
+                    for name in ('buildkit_archive', 'buildkit_archive_sha256', 'buildkit_archive_bytes'):
+                        delattr(value.args, name)
+                if mutation == 'unexpected-field': complete['unexpectedBuildInput'] = complete['buildkitArchive']
+                if mutation == 'boolean-bytes': complete['buildkitArchive']['bytes'] = True
+                if mutation == 'result-missing': complete['result'].pop('buildkitArchive')
+                if mutation == 'result-bytes': complete['result']['buildkitArchive']['bytes'] += 1
+                if mutation == 'result-extra': complete['result']['buildkitArchive']['foreign'] = True
+                if mutation == 'result-boolean': complete['result']['buildkitArchive']['bytes'] = True
+                (value.folder / 'completion.json').write_text(json.dumps(complete))
+                with self.assertRaisesRegex(ValueError, 'request mode|result archive binding'): value.read_prepared()
+                self.assertEqual([], calls)
+
+    def test_builder_readback_requires_same_archive_and_checks_current_original_before_docker(self):
+        for mode in ('changed-original', 'changed-binding', 'unrequested-binding'):
+            with self.subTest(mode=mode):
+                value = object.__new__(tools.PreparedReadback)
+                value.args = self.builder_input_args(); value.root = Path(value.args.root)
+                value.inbox = value.root / 'inbox' / ('ci-1-' + COMMIT[:12])
+                value.folder = value.inbox / 'python-tools'; value.owner = {}
+                binding = tools.validate_builder_input_arguments(value.args)
+                document = {'buildkitArchive': dict(binding)}
+                if mode == 'changed-binding': document['buildkitArchive']['bytes'] += 1
+                if mode == 'unrequested-binding':
+                    for name in ('buildkit_archive', 'buildkit_archive_sha256', 'buildkit_archive_bytes'):
+                        delattr(value.args, name)
+                    binding = None
+                helper = SimpleNamespace(IMAGE_ID='sha256:' + 'd' * 64,
+                    admit_tools=mock.Mock(return_value={'file': 'tools.json', 'sha256': 'e' * 64}),
+                    buildkit_input=mock.Mock(return_value=binding),
+                    validate_buildkit_archive=mock.Mock(side_effect=ValueError('current original changed')))
+                spec = SimpleNamespace(loader=SimpleNamespace(exec_module=mock.Mock()))
+                reference = {**helper.admit_tools.return_value, 'imageId': helper.IMAGE_ID, 'status': 'PREPARED'}
+                with mock.patch.object(tools.importlib.util, 'spec_from_file_location', return_value=spec), \
+                        mock.patch.object(tools.importlib.util, 'module_from_spec', return_value=helper), \
+                        mock.patch.object(tools, 'control_bytes', return_value=json.dumps(document).encode()), \
+                        mock.patch.object(value, 'call') as docker:
+                    with self.assertRaisesRegex(ValueError, 'current original changed' if mode == 'changed-original' else 'archive binding'):
+                        value.validate_builder(reference)
+                    docker.assert_not_called()
+                if mode == 'changed-original': helper.validate_buildkit_archive.assert_called_once_with(value.root, binding)
+                else: helper.validate_buildkit_archive.assert_not_called()
+
     def test_atomic_completion_never_overwrites_success_or_leaves_pending_bytes(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'completion.json'
@@ -546,6 +672,17 @@ class ToolPreparationTests(unittest.TestCase):
                     mock.patch.object(tools, 'PreparedReadback', side_effect=error), \
                     mock.patch.object(tools.signal, 'signal'), mock.patch('sys.stderr', io.StringIO()):
                 self.assertEqual(code, tools.main(arguments)); prepare.assert_not_called()
+
+    def test_main_rejects_incomplete_archive_before_dispatching_prepare_or_readback(self):
+        arguments = ['--root', '/home/owned', '--tag', 'ci-1-' + COMMIT[:12], '--commit', COMMIT,
+                     '--source-sha256', SOURCE_SHA, '--instance-id', tools.INSTANCE, '--machine-id', tools.MACHINE,
+                     '--prepare-candidate-builder', '--buildkit-archive-bytes', '120000000']
+        for mode in ([], ['--read-prepared']):
+            with self.subTest(mode=mode), mock.patch.object(tools, 'Preparation') as prepare, \
+                    mock.patch.object(tools, 'PreparedReadback') as readback, \
+                    mock.patch.object(tools.signal, 'signal'), mock.patch('sys.stderr', io.StringIO()):
+                self.assertEqual(2, tools.main(arguments + mode))
+                prepare.assert_not_called(); readback.assert_not_called()
 
 
 if __name__ == '__main__':

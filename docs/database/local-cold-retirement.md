@@ -1,6 +1,8 @@
 # 本地固定冷存储清退开发说明
 
-入口为 [`retire-local-cold-stores.py`](../../script/jenkins/retire-local-cold-stores.py)，服务器证明复用 [`preserve-cold-stores.py`](../../script/jenkins/preserve-cold-stores.py)。本页描述新增源码与门禁，不代表已执行清退或通过实际 Win32 验收。遵循 [ECS 运行约定](../ECS-only-runtime.md) 与 [本地 Jenkins CI/CD](../本地Jenkins-CICD.md)：本地编辑、构建，测试由 Jenkins 在 ECS 执行；Linux 合成后端测试也不能替代 Windows 原生句柄行为验收。
+入口为 [`retire-local-cold-stores.py`](../../script/jenkins/retire-local-cold-stores.py)，服务器证明复用 [`preserve-cold-stores.py`](../../script/jenkins/preserve-cold-stores.py)。遵循 [ECS 运行约定](../ECS-only-runtime.md) 与 [本地 Jenkins CI/CD](../本地Jenkins-CICD.md)：本地编辑、构建，测试由 Jenkins 在 ECS 执行；Linux 合成后端测试不能替代 Windows 原生句柄行为验收。
+
+2026-11-08 已实际执行：固定提交 `b756a578` 的 #109 必需源码 PASS、#107 更早全量恢复及当次新鲜 ECS 证明均已核对。v1 已清退 15,750 文件、624 空目录；v2 已清退 16,409 文件、11,377 空目录，按设计保留下面两个工具根的 8 文件/2 目录/117,235 字节，结果为 `PARTIAL_FIXED_PROFILE_PROTECTED_ROOTS_RETAINED`。原始计划、计划 SHA、逐文件同句柄意图/结果及最终回执存于 Git 忽略的 `work/jenkins/retirement-109-cold-v1-*`、`retirement-109-cold-v2-*`，不可重放已完成的执行。运输包仍供后续验收，未纳入本次删除。
 
 ## 固定范围
 

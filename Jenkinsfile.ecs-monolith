@@ -25,6 +25,7 @@ pipeline {
         string(name: 'DOORHANDLE_CI_FIXTURE_SETTINGS', defaultValue: '', trim: true, description: '自动夹具：ECS 现有私有 JSON 路径，仅指定原库身份、已核对时区和既有 Java')
         booleanParam(name: 'PRODUCTION_RELEASE_ENABLED', defaultValue: false, description: '发布/回滚开关；机器环境 DOORHANDLE_COMPACT_RELEASE_READY 仍须为 true')
         string(name: 'COMPACT_CUTOVER_SETTINGS', defaultValue: '', trim: true, description: '可复用夹具设置：ECS私有JSON，version/sourceMysqlContainerId/sourceSchema/sourceOffsets/java，不含密码')
+        string(name: 'CANDIDATE_BUILD_TOOLS_ARCHIVE', defaultValue: '', trim: true, description: '运行验收/首次切换的公开BuildKit OCI包；空值自动准备固定D盘缓存，不归档原tar')
         string(name: 'LEGACY_SOURCE_SNAPSHOT', defaultValue: '', trim: true, description: '可选本地原始数据字节封存目录；源码验证通过后上传ECS并逐文件恢复核对，不在本地打开数据库')
         string(name: 'LEGACY_SOURCE_ECS_SNAPSHOT', defaultValue: '', trim: true, description: '后续复用ECS已恢复核验的旧数据封存目录；与本地输入互斥，业务原件不回传本地')
         string(name: 'LOCAL_ARTIFACTS_SNAPSHOT', defaultValue: '', trim: true, description: '首次上传额外历史模型、备份、日志与上传文件的私有字节封存目录')
@@ -118,6 +119,8 @@ pipeline {
                     env.COLD_HISTORY_ECS_SNAPSHOT = params.COLD_HISTORY_ECS_SNAPSHOT?.trim() ?: ''
                     env.LOCAL_MYSQL_SNAPSHOT = params.LOCAL_MYSQL_SNAPSHOT?.trim() ?: ''
                     env.LOCAL_MYSQL_FIXTURE_SETTINGS = params.LOCAL_MYSQL_FIXTURE_SETTINGS?.trim() ?: ''
+                    env.CANDIDATE_BUILD_TOOLS_ARCHIVE = params.CANDIDATE_BUILD_TOOLS_ARCHIVE?.trim() ?: ''
+                    if (env.CANDIDATE_BUILD_TOOLS_ARCHIVE && !(params.ACTION in ['verify-runtime', 'compact-cutover'])) error('Candidate build inputs are only accepted by runtime verification or compact cutover')
                     if (env.LEGACY_SOURCE_SNAPSHOT && env.LEGACY_SOURCE_ECS_SNAPSHOT) error('Choose exactly one local or ECS legacy snapshot input')
                     if (env.LOCAL_ARTIFACTS_SNAPSHOT && env.LOCAL_ARTIFACTS_ECS_SNAPSHOT) error('Choose exactly one local or ECS additional artifact snapshot input')
                     if (env.COLD_STORES_SNAPSHOT && env.COLD_STORES_ECS_SNAPSHOT) error('Choose exactly one local or ECS historical cold-store snapshot input')

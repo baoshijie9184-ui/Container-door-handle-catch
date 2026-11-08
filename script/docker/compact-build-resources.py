@@ -10,7 +10,7 @@ import hashlib
 import importlib.util
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 try:
     import resource
@@ -36,6 +36,8 @@ LABEL = 'io.doorhandle.candidate-builder'
 VERSION = 'v0.34.2'
 REFERENCE = 'docker.io/moby/buildkit@sha256:b2eef63fa76615a59fdab47309743d3018219574b8fcece77d38296704154f44'
 IMAGE_ID = 'sha256:e164dcf5aa147a29659dea4e2e6b909db541c2dfe0b512dac38a2ffaf063fc18'
+BUILDKIT_ARCHIVE_MAX = 128 * MIB
+BUILDKIT_LAYER_BYTES = 119868658
 LICENSE_URL = 'https://raw.githubusercontent.com/moby/buildkit/v0.34.2/LICENSE'
 LICENSE_SHA = 'c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4'
 RECIPES = ('script/docker/compact-build-resources.py', 'script/docker/compact-image-inputs.py')
@@ -436,9 +438,166 @@ class RegistryRedirect(urllib.request.HTTPRedirectHandler):
         return result
 
 
+def buildkit_input(args):
+    values = [getattr(args, name, None) for name in ('buildkit_archive', 'buildkit_archive_sha256', 'buildkit_archive_bytes')]
+    if all(value is None for value in values): return None
+    path, checksum, size = values
+    require(all(value is not None for value in values) and getattr(args, 'prepare_candidate_builder', False) is True
+            and type(path) is str and type(checksum) is str and SHA.fullmatch(checksum)
+            and type(size) is int and 0 < size <= BUILDKIT_ARCHIVE_MAX, 'Complete bounded BuildKit archive input is required')
+    root_value = str(args.root); root = PurePosixPath(root_value)
+    require(root.is_absolute() and str(root) == root_value and '\\' not in root_value and '..' not in root.parts
+            and path == str(root / 'build-inputs' / ('buildkit-' + VERSION) / (checksum + '.tar')),
+            'BuildKit archive must use its exact immutable cache path')
+    return {'file': path, 'sha256': checksum, 'bytes': size}
+
+
+def archive_metadata(info):
+    return (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid,
+            info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
+@contextlib.contextmanager
+def buildkit_archive_source(root, binding, check):
+    require(type(binding) is dict and set(binding) == {'file', 'sha256', 'bytes'}, 'Closed BuildKit archive binding is required')
+    expected = buildkit_input(argparse.Namespace(root=str(root), prepare_candidate_builder=True,
+        buildkit_archive=binding['file'], buildkit_archive_sha256=binding['sha256'], buildkit_archive_bytes=binding['bytes']))
+    require(expected == binding, 'BuildKit archive binding differs')
+    root = safe(root); path = safe(Path(binding['file']))
+    directories = {}
+    for parent in path.parents:
+        info = parent.lstat()
+        require(stat.S_ISDIR(info.st_mode) and not info.st_mode & 0o022 and info.st_uid in (0, 1000)
+                and (not parent.is_relative_to(root) or info.st_uid == 1000), 'BuildKit archive ancestor is not owned and immutable')
+        directories[parent] = (info.st_dev, info.st_ino, info.st_uid, info.st_gid, info.st_mode)
+    def signature():
+        info = path.lstat()
+        require(stat.S_ISREG(info.st_mode) and info.st_uid == 1000 and info.st_nlink == 1
+                and stat.S_IMODE(info.st_mode) == 0o600 and info.st_size == binding['bytes'], 'Private bounded BuildKit archive is required')
+        return archive_metadata(info)
+    admitted = signature()
+    with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), 'rb') as stream:
+        require(archive_metadata(os.fstat(stream.fileno())) == admitted, 'BuildKit archive changed at open')
+        def verify():
+            stream.seek(0); checksum = hashlib.sha256(); size = 0
+            for block in iter(lambda: stream.read(MIB), b''):
+                size += len(block); require(size <= binding['bytes'], 'BuildKit archive grew during verification')
+                checksum.update(block); check()
+            require(size == binding['bytes'] and checksum.hexdigest() == binding['sha256']
+                    and archive_metadata(os.fstat(stream.fileno())) == admitted == signature(), 'BuildKit archive original bytes changed')
+            for parent, metadata in directories.items():
+                info = parent.lstat()
+                require(stat.S_ISDIR(info.st_mode) and (info.st_dev, info.st_ino, info.st_uid, info.st_gid, info.st_mode) == metadata,
+                        'BuildKit archive ancestor changed')
+            stream.seek(0)
+        verify()
+        try: yield stream
+        finally: verify()
+
+
+def validate_buildkit_archive(root, binding, check=lambda: None):
+    with buildkit_archive_source(root, binding, check): pass
+    return dict(binding)
+
+
+def archive_json(raw):
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            require(key not in result, 'Duplicate OCI metadata field')
+            result[key] = value
+        return result
+    return json.loads(raw, object_pairs_hook=pairs,
+        parse_constant=lambda value: (_ for _ in ()).throw(BuildResourceError('Nonfinite OCI metadata field')))
+
+
+class ClosedBuildkitInfo(tarfile.TarInfo):
+    @staticmethod
+    def checked_header(entry):
+        regular = entry.type in (tarfile.REGTYPE, tarfile.AREGTYPE)
+        require((regular and 0 < entry.size <= BUILDKIT_ARCHIVE_MAX
+                 and (entry.name in ('index.json', 'oci-layout') or re.fullmatch(r'blobs/sha256/[a-f0-9]{64}', entry.name)))
+                or (entry.type == tarfile.DIRTYPE and entry.size == 0
+                    and entry.name in ('blobs', 'blobs/', 'blobs/sha256', 'blobs/sha256/')), 'Foreign BuildKit OCI archive header')
+        return entry
+    @classmethod
+    def frombuf(cls, raw, encoding, errors):
+        return cls.checked_header(super().frombuf(raw, encoding, errors))
+    def _proc_member(self, package):
+        self.checked_header(self)
+        return super()._proc_member(package)
+
+
+def archive_layout(actor, root, binding, destination, inputs):
+    """Read the pinned upstream OCI graph from one held, content-addressed input."""
+    actor.begin('official-archive-validation', 4 * MIB, {'buildkitArchive': binding}, 128 * MIB)
+    with buildkit_archive_source(root, binding, actor.check) as source:
+        with tarfile.open(fileobj=source, mode='r:', tarinfo=ClosedBuildkitInfo) as package:
+            members = {}
+            for entry in package:
+                name = entry.name.rstrip('/') if entry.isdir() else entry.name
+                require(name not in members and len(members) < 128 and not entry.pax_headers and not entry.issparse(),
+                        'Duplicate or extended BuildKit OCI archive member')
+                members[name] = entry; actor.check()
+            source.seek(package.offset); tail = 0
+            for block in iter(lambda: source.read(MIB), b''):
+                tail += len(block); require(not block.strip(b'\0'), 'Nonzero BuildKit OCI archive tail'); actor.check()
+            require(tail >= 1024 and binding['bytes'] % 512 == 0, 'Truncated BuildKit OCI archive terminator')
+            def small(name):
+                require(name in members and members[name].isfile() and members[name].size <= 4 * MIB, 'Bounded OCI metadata is missing')
+                raw = package.extractfile(members[name]).read(4 * MIB + 1)
+                require(len(raw) == members[name].size, 'Truncated BuildKit OCI metadata')
+                return raw
+            require(archive_json(small('oci-layout')) == {'imageLayoutVersion': '1.0.0'}, 'BuildKit OCI layout differs')
+            index = archive_json(small('index.json'))
+            require(type(index) is dict and set(index) == {'schemaVersion', 'manifests'}
+                    and type(index['schemaVersion']) is int and index['schemaVersion'] == 2
+                    and type(index['manifests']) is list and len(index['manifests']) == 1, 'Single pinned BuildKit OCI index is required')
+            descriptor = index['manifests'][0]; upstream = REFERENCE.split('@', 1)[1]
+            require(type(descriptor) is dict and set(descriptor) == {'mediaType', 'digest', 'size'}
+                    and descriptor['mediaType'] == 'application/vnd.oci.image.manifest.v1+json'
+                    and descriptor['digest'] == upstream and type(descriptor['size']) is int and 0 < descriptor['size'] <= 4 * MIB,
+                    'BuildKit OCI index is not the pinned upstream manifest')
+            manifest_name = 'blobs/sha256/' + upstream[7:]; raw = small(manifest_name)
+            require(len(raw) == descriptor['size'] and 'sha256:' + hashlib.sha256(raw).hexdigest() == upstream, 'Upstream BuildKit manifest bytes differ')
+            manifest = archive_json(raw)
+            require(type(manifest) is dict and type(manifest.get('schemaVersion')) is int and manifest['schemaVersion'] == 2
+                    and manifest.get('mediaType') == 'application/vnd.oci.image.manifest.v1+json'
+                    and type(manifest.get('config')) is dict and type(manifest.get('layers')) is list
+                    and 0 < len(manifest['layers']) <= 128, 'Pinned BuildKit manifest metadata differs')
+            descriptors = [manifest['config'], *manifest['layers']]
+            for number, row in enumerate(descriptors):
+                require(type(row) is dict and set(row) == {'mediaType', 'digest', 'size'}
+                        and type(row['digest']) is str and IMAGE.fullmatch(row['digest'])
+                        and type(row['size']) is int and 0 < row['size'] <= BUILDKIT_ARCHIVE_MAX
+                        and row['mediaType'] == ('application/vnd.oci.image.config.v1+json' if number == 0
+                                                else 'application/vnd.oci.image.layer.v1.tar+gzip'), 'BuildKit OCI descriptor is invalid')
+            require(manifest['config']['digest'] == IMAGE_ID and len({row['digest'] for row in descriptors}) == len(descriptors)
+                    and sum(row['size'] for row in manifest['layers']) == BUILDKIT_LAYER_BYTES, 'Pinned BuildKit config or original layer bytes differ')
+            wanted = {'oci-layout', 'index.json', manifest_name, *['blobs/sha256/' + row['digest'][7:] for row in descriptors]}
+            require({name for name, entry in members.items() if entry.isfile()} == wanted
+                    and all(members['blobs/sha256/' + row['digest'][7:]].size == row['size'] for row in descriptors), 'BuildKit OCI member closure differs')
+            total = sum(row['size'] for row in descriptors)
+            actor.begin('copy-official-oci', total + 8 * MIB, {'buildkitArchive': binding, 'compressedInputBytes': total}, 128 * MIB)
+            require(not destination.exists() and not destination.is_symlink(), 'BuildKit OCI output must be fresh')
+            destination.mkdir(mode=0o700); (destination / 'blobs').mkdir(mode=0o700); (destination / 'blobs/sha256').mkdir(mode=0o700)
+            expected = {'blobs/sha256/' + row['digest'][7:]: row['digest'][7:] for row in descriptors}
+            expected[manifest_name] = upstream[7:]
+            for name in sorted(wanted):
+                checksum = hashlib.sha256(); count = 0
+                with package.extractfile(members[name]) as origin, os.fdopen(os.open(destination / name, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600), 'wb') as output:
+                    for block in iter(lambda: origin.read(MIB), b''):
+                        count += len(block); require(count <= members[name].size, 'BuildKit OCI member grew')
+                        checksum.update(block); output.write(block); actor.check()
+                    output.flush(); os.fsync(output.fileno())
+                require(count == members[name].size and (name not in expected or checksum.hexdigest() == expected[name]), 'BuildKit OCI member bytes differ')
+    return measure_registry_layout(actor, destination, inputs, raw, manifest, total)
+
+
 def prepare_tools(args, identity, recipe_directory):
     """Called only by the existing pinned PrepareTools entry, entirely on ECS."""
     require(sys.platform == 'linux' and os.getuid() == 1000, 'The admitted ECS tool owner is required')
+    supplied = buildkit_input(args)
     root = safe(args.root); inbox = safe(root / 'inbox' / args.tag); recipe_directory = safe(recipe_directory)
     require(digest(recipe_directory / 'LICENSE') == LICENSE_SHA, 'Pinned upstream license differs')
     context = {'release': args.tag, 'commit': args.commit, 'sourceSha256': args.source_sha256, 'identity': identity}
@@ -452,8 +611,9 @@ def prepare_tools(args, identity, recipe_directory):
         # An already installed config ID alone does not establish that this
         # Docker engine accepts the OCI output format used below. Re-admit the
         # exact official bytes and perform the same bounded OCI load each time.
-        proof = registry_layout(actor, REFERENCE, actor.directory / 'official-oci', inputs)
-        require(proof['imageId'] == IMAGE_ID and proof['compressedBytes'] == 119868658, 'Pinned official BuildKit bytes differ')
+        proof = (archive_layout(actor, root, supplied, actor.directory / 'official-oci', inputs) if supplied is not None
+                 else registry_layout(actor, REFERENCE, actor.directory / 'official-oci', inputs))
+        require(proof['imageId'] == IMAGE_ID and proof['compressedBytes'] == BUILDKIT_LAYER_BYTES, 'Pinned official BuildKit bytes differ')
         write(actor.directory / 'official-layer-measurements.json', proof)
         actor.begin('tool-image-archive', proof['compressedBytes'] + 8 * MIB,
                     {'officialLayerMeasurementsSha256': digest(actor.directory / 'official-layer-measurements.json')}, 128 * MIB)
@@ -477,6 +637,7 @@ def prepare_tools(args, identity, recipe_directory):
             log = actor.run(['docker', 'exec', actor.builder['id'], name, '--version'], name + '-version', maximum=MIB, timeout=30)
             text = log.read_text(encoding='utf8'); require(VERSION in text and len(text) <= 4096, 'Actual BuildKit version differs')
             versions[name] = {'file': log.name, 'sha256': digest(log)}
+        if supplied is not None: validate_buildkit_archive(root, supplied, actor.check)
         resources = actor.finish('PASS')
         value = {'version': 1, 'kind': 'doorhandle-candidate-build-tools', 'status': 'PREPARED', **context,
                  'imageId': IMAGE_ID, 'imageReference': REFERENCE, 'upstreamVersion': VERSION,
@@ -486,6 +647,7 @@ def prepare_tools(args, identity, recipe_directory):
                  'reusedImage': installed, 'resourceEvidence': resources,
                  'helperSha256': digest(recipe_directory / 'compact-build-resources.py'),
                  'imageInputsHelperSha256': digest(recipe_directory / 'compact-image-inputs.py')}
+        if supplied is not None: value['buildkitArchive'] = supplied
         write(actor.directory / 'tools.json', value)
         return {'file': str(actor.directory / 'tools.json'), 'sha256': digest(actor.directory / 'tools.json'),
                 'imageId': IMAGE_ID, 'status': 'PREPARED'}
@@ -570,6 +732,11 @@ def registry_layout(actor, reference, destination, inputs):
     write(destination / 'oci-layout', {'imageLayoutVersion': '1.0.0'})
     write(destination / 'index.json', {'schemaVersion': 2, 'manifests': [{'mediaType': value.get('mediaType', 'application/vnd.oci.image.manifest.v1+json'),
         'digest': 'sha256:' + manifest_sha, 'size': len(raw)}]})
+    return measure_registry_layout(actor, destination, inputs, raw, value, total)
+
+
+def measure_registry_layout(actor, destination, inputs, raw, value, total):
+    manifest_sha = hashlib.sha256(raw).hexdigest()
     # A bounded temporary tar permits the same layer/DiffID/expansion verifier
     # as custom host images. Only this new, reproducible archive is removed.
     actor.begin('measure-' + destination.name, total + 8 * MIB, {'compressedInputBytes': total}, 128 * MIB)

@@ -5,10 +5,13 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import tarfile
 import tempfile
+from types import SimpleNamespace
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -43,6 +46,44 @@ def image_bytes():
     return tar_bytes([('manifest.json', manifest), (image[7:] + '.json', config), ('dependency/layer.tar', layer)]), image, diff
 
 
+def official_oci_fixture():
+    layer = gzip.compress(tar_bytes([('app/source.txt', b'immutable upstream bytes\n')]), mtime=0)
+    diff = 'sha256:' + hashlib.sha256(gzip.decompress(layer)).hexdigest()
+    config = OCI.encoded({'architecture': 'amd64', 'os': 'linux', 'rootfs': {'type': 'layers', 'diff_ids': [diff]},
+                          'config': {'User': '1000:1000', 'Env': []}})
+    image = 'sha256:' + hashlib.sha256(config).hexdigest(); blob = 'sha256:' + hashlib.sha256(layer).hexdigest()
+    manifest = OCI.encoded({'schemaVersion': 2, 'mediaType': 'application/vnd.oci.image.manifest.v1+json',
+        'config': {'mediaType': 'application/vnd.oci.image.config.v1+json', 'digest': image, 'size': len(config)},
+        'layers': [{'mediaType': 'application/vnd.oci.image.layer.v1.tar+gzip', 'digest': blob, 'size': len(layer)}]})
+    checksum = 'sha256:' + hashlib.sha256(manifest).hexdigest()
+    descriptor = {'mediaType': 'application/vnd.oci.image.manifest.v1+json', 'digest': checksum, 'size': len(manifest)}
+    members = {'oci-layout': OCI.encoded({'imageLayoutVersion': '1.0.0'}),
+        'index.json': OCI.encoded({'schemaVersion': 2, 'manifests': [descriptor]}),
+        'blobs/sha256/' + checksum[7:]: manifest, 'blobs/sha256/' + image[7:]: config,
+        'blobs/sha256/' + blob[7:]: layer}
+    return members, image, diff, checksum, len(layer)
+
+
+def cache_archive(root, raw):
+    checksum = hashlib.sha256(raw).hexdigest(); folder = root / 'build-inputs' / ('buildkit-' + RES.VERSION)
+    folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+    folder.parent.chmod(0o700); folder.chmod(0o700)
+    path = folder / (checksum + '.tar'); path.write_bytes(raw); path.chmod(0o600)
+    return {'file': str(path), 'sha256': checksum, 'bytes': len(raw)}
+
+
+def archive_actor(directory):
+    directory.mkdir(mode=0o700)
+    actor = SimpleNamespace(directory=directory, phases=[], checks=0, calls=[], builder=None, finishes=[])
+    actor.begin = lambda name, growth, measured, memory: actor.phases.append((name, growth, measured, memory))
+    actor.check = lambda: setattr(actor, 'checks', actor.checks + 1)
+    actor.finish = lambda status: actor.finishes.append(status) or {'status': status}
+    def run(args, name, **_kwargs):
+        actor.calls.append((name, args)); log = directory / (name + '.log'); log.write_text(RES.VERSION); return log
+    actor.run = run
+    return actor
+
+
 def evidence(directory):
     baseline = {'monotonic': 1.0, 'diskAvailableBytes': 16 * RES.GIB, 'memoryAvailableBytes': 8 * RES.GIB, 'filesystemBlockBytes': 4096}
     phases = []
@@ -73,6 +114,139 @@ def evidence(directory):
 
 
 class CompactBuildResourceTests(unittest.TestCase):
+    def test_optional_archive_arguments_keep_the_original_default_and_exact_cache_contract(self):
+        args = SimpleNamespace(root='/home/ecs-user/ci', prepare_candidate_builder=False)
+        self.assertIsNone(RES.buildkit_input(args))
+        fields = dict(buildkit_archive='/home/ecs-user/ci/build-inputs/buildkit-' + RES.VERSION + '/' + 'a' * 64 + '.tar',
+                      buildkit_archive_sha256='a' * 64, buildkit_archive_bytes=10240)
+        args.prepare_candidate_builder = True
+        self.assertEqual({'file': fields['buildkit_archive'], 'sha256': 'a' * 64, 'bytes': 10240},
+                         RES.buildkit_input(SimpleNamespace(**vars(args), **fields)))
+        for change in ({'buildkit_archive': None}, {'buildkit_archive_sha256': ''}, {'buildkit_archive_bytes': True},
+                       {'buildkit_archive_bytes': RES.BUILDKIT_ARCHIVE_MAX + 1}, {'buildkit_archive': fields['buildkit_archive'] + '/other'}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                RES.buildkit_input(SimpleNamespace(**vars(args), **dict(fields, **change)))
+        args.prepare_candidate_builder = False
+        invalid = SimpleNamespace(**vars(args), **fields)
+        with self.assertRaises(ValueError): RES.buildkit_input(invalid)
+        with mock.patch.object(RES, 'Supervisor') as supervisor, mock.patch.object(RES.subprocess, 'run') as docker:
+            with self.assertRaises(ValueError): RES.prepare_tools(invalid, CONTEXT['identity'], ROOT / 'deploy/buildkit')
+            supervisor.assert_not_called(); docker.assert_not_called()
+
+    def test_official_archive_preserves_raw_manifest_config_blobs_and_real_diffid_measurement(self):
+        members, image, diff, checksum, size = official_oci_fixture()
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.multiple(RES, REFERENCE='docker.io/moby/buildkit@' + checksum,
+                IMAGE_ID=image, BUILDKIT_LAYER_BYTES=size):
+            root = Path(temporary); binding = cache_archive(root, tar_bytes(list(members.items())))
+            actor = archive_actor(root / 'output'); destination = actor.directory / 'official-oci'
+            proof = RES.archive_layout(actor, root, binding, destination, OCI)
+            self.assertEqual(image, proof['imageId']); self.assertEqual(size, proof['compressedBytes'])
+            self.assertEqual(diff, proof['layers'][0]['diffId']); self.assertGreater(actor.checks, 0)
+            self.assertEqual({'official-archive-validation', 'copy-official-oci', 'measure-official-oci'}, {row[0] for row in actor.phases})
+            self.assertEqual(proof['manifestDigest'], json.loads((destination / 'index.json').read_bytes())['manifests'][0]['digest'])
+            self.assertEqual(binding, RES.validate_buildkit_archive(root, binding))
+
+    def test_archive_rejects_wrong_pins_extra_graph_metadata_types_and_blob_changes(self):
+        members, image, _diff, checksum, size = official_oci_fixture()
+        for change in ('wrong-pin', 'wrong-config', 'extra-index', 'index-bool', 'size-bool', 'duplicate-json',
+                       'extra-blob', 'missing-blob', 'corrupt-blob', 'short-blob', 'duplicate-member'):
+            altered = copy.deepcopy(members); index = json.loads(altered['index.json']); layers = json.loads(altered['blobs/sha256/' + checksum[7:]])['layers']
+            layer = 'blobs/sha256/' + layers[0]['digest'][7:]
+            if change == 'extra-index': index['manifests'].append(copy.deepcopy(index['manifests'][0]))
+            if change == 'index-bool': index['schemaVersion'] = True
+            if change == 'size-bool': index['manifests'][0]['size'] = True
+            altered['index.json'] = OCI.encoded(index)
+            if change == 'duplicate-json': altered['index.json'] = altered['index.json'].replace(b'"schemaVersion":2', b'"schemaVersion":2,"schemaVersion":2')
+            if change == 'extra-blob': altered['blobs/sha256/' + 'f' * 64] = b'foreign'
+            if change == 'missing-blob': del altered[layer]
+            if change == 'corrupt-blob': altered[layer] = b'x' + altered[layer][1:]
+            if change == 'short-blob': altered[layer] = altered[layer][:-1]
+            entries = list(altered.items())
+            if change == 'duplicate-member': entries.append(('oci-layout', altered['oci-layout']))
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as temporary, \
+                    mock.patch.multiple(RES, REFERENCE='docker.io/moby/buildkit@' + ('sha256:' + 'f' * 64 if change == 'wrong-pin' else checksum),
+                                        IMAGE_ID='sha256:' + 'f' * 64 if change == 'wrong-config' else image, BUILDKIT_LAYER_BYTES=size):
+                root = Path(temporary); binding = cache_archive(root, tar_bytes(entries)); actor = archive_actor(root / 'output')
+                with self.assertRaises(ValueError): RES.archive_layout(actor, root, binding, actor.directory / 'official-oci', OCI)
+
+    def test_raw_archive_header_gate_precedes_pax_sparse_and_link_dispatch(self):
+        for kind in (tarfile.XHDTYPE, tarfile.XGLTYPE, tarfile.GNUTYPE_LONGNAME, tarfile.GNUTYPE_SPARSE, tarfile.SYMTYPE, tarfile.LNKTYPE):
+            header = tarfile.TarInfo('index.json'); header.type = kind; header.size = 2 * RES.GIB
+            raw = header.tobuf(format=tarfile.USTAR_FORMAT) + b'\0' * 1024
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary); binding = cache_archive(root, raw); actor = archive_actor(root / 'output')
+                with mock.patch.object(tarfile.TarInfo, '_proc_pax', side_effect=AssertionError('PAX must not allocate')), \
+                        mock.patch.object(tarfile.TarInfo, '_proc_gnusparse_00', side_effect=AssertionError('Sparse must not dispatch')):
+                    with self.assertRaises(ValueError): RES.archive_layout(actor, root, binding, actor.directory / 'official-oci', OCI)
+
+    def test_archive_transport_and_owned_cache_freshness_are_independent(self):
+        members, _image, _diff, _checksum, _size = official_oci_fixture(); raw = tar_bytes(list(members.items()))
+        for change in ('sha', 'size', 'mode', 'hardlink', 'symlink', 'parent-write', 'fifo', 'held-metadata'):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary); binding = cache_archive(root, raw); path = Path(binding['file'])
+                if change == 'sha': path.write_bytes(b'x' + raw[1:])
+                if change == 'size': path.write_bytes(raw[:-1])
+                if change == 'mode': path.chmod(0o644)
+                if change == 'hardlink': os.link(path, path.with_suffix('.alias'))
+                if change == 'symlink': path.rename(path.with_suffix('.original')); path.symlink_to(path.with_suffix('.original'))
+                if change == 'parent-write': path.parent.chmod(0o777)
+                if change == 'fifo': path.unlink(); os.mkfifo(path, 0o600)
+                with self.assertRaises(ValueError):
+                    if change == 'held-metadata':
+                        with RES.buildkit_archive_source(root, binding, lambda: None):
+                            before = path.stat(); os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns + 1))
+                    else: RES.validate_buildkit_archive(root, binding)
+
+    def test_archive_rejects_nonzero_tail_and_missing_tar_terminator(self):
+        members, image, _diff, checksum, size = official_oci_fixture(); raw = tar_bytes(list(members.items()))
+        end = sum(512 + ((len(value) + 511) // 512) * 512 for value in members.values())
+        for changed in (raw + b'nonzero-tail', raw[:end]):
+            with self.subTest(size=len(changed)), tempfile.TemporaryDirectory() as temporary, \
+                    mock.patch.multiple(RES, REFERENCE='docker.io/moby/buildkit@' + checksum, IMAGE_ID=image, BUILDKIT_LAYER_BYTES=size):
+                root = Path(temporary); binding = cache_archive(root, changed); actor = archive_actor(root / 'output')
+                with self.assertRaises(ValueError): RES.archive_layout(actor, root, binding, actor.directory / 'official-oci', OCI)
+
+    def test_offline_preparation_keeps_real_load_bootstrap_version_stop_and_current_original_checks(self):
+        members, image, _diff, checksum, size = official_oci_fixture()
+        for failure in (None, 'load', 'version', 'original-drift'):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temporary, \
+                    mock.patch.multiple(RES, REFERENCE='docker.io/moby/buildkit@' + checksum, IMAGE_ID=image, BUILDKIT_LAYER_BYTES=size):
+                root = Path(temporary); binding = cache_archive(root, tar_bytes(list(members.items())))
+                inbox = root / 'inbox' / CONTEXT['release']; inbox.mkdir(mode=0o700, parents=True)
+                recipe = root / 'recipe'; recipe.mkdir(mode=0o700)
+                for name, source in [('LICENSE', ROOT / 'deploy/buildkit/LICENSE'),
+                                     *[(Path(relative).name, ROOT / relative) for relative in RES.RECIPES]]:
+                    (recipe / name).write_bytes(source.read_bytes())
+                actor = archive_actor(inbox / 'candidate-build-tools'); real_run = actor.run
+                def run(arguments, name, **kwargs):
+                    if failure == 'load' and name == 'official-image-load': raise ValueError('Fixture load failed')
+                    path = real_run(arguments, name, **kwargs)
+                    if failure == 'version' and name == 'buildctl-version': path.write_text('wrong-version')
+                    return path
+                actor.run = run
+                actor.docker = lambda *args: json.dumps([{'Id': image, 'Os': 'linux', 'Architecture': 'amd64', 'Size': 1,
+                    'RootFS': {'Layers': []}, 'Config': {'User': '1000:1000', 'Env': []}}]).encode()
+                def bootstrap(value):
+                    self.assertTrue(any(name == 'official-image-load' for name, _args in value.calls))
+                    value.builder = {'id': 'd' * 64}
+                    if failure == 'original-drift': Path(binding['file']).write_bytes(b'changed')
+                args = SimpleNamespace(root=str(root), tag=CONTEXT['release'], commit=CONTEXT['commit'],
+                    source_sha256=CONTEXT['sourceSha256'], prepare_candidate_builder=True,
+                    buildkit_archive=binding['file'], buildkit_archive_sha256=binding['sha256'], buildkit_archive_bytes=binding['bytes'])
+                with mock.patch.object(RES, 'Supervisor', return_value=actor), mock.patch.object(RES, 'load_module', return_value=OCI), \
+                        mock.patch.object(RES.subprocess, 'run', return_value=SimpleNamespace(returncode=0)), \
+                        mock.patch.object(RES, 'host_diff_ids', return_value=set()), mock.patch.object(RES, 'bootstrap_builder', side_effect=bootstrap), \
+                        mock.patch.object(RES, 'registry_layout', side_effect=AssertionError('Offline input may not fetch the network')):
+                    if failure is not None:
+                        with self.assertRaises(ValueError): RES.prepare_tools(args, CONTEXT['identity'], recipe)
+                        self.assertFalse((actor.directory / 'tools.json').exists()); self.assertEqual(['FAILED'], actor.finishes)
+                    else:
+                        result = RES.prepare_tools(args, CONTEXT['identity'], recipe)
+                        value = json.loads((actor.directory / 'tools.json').read_bytes())
+                        self.assertEqual('PREPARED', result['status']); self.assertEqual(binding, value['buildkitArchive'])
+                        self.assertTrue(value['ociImageLoadVerified']); self.assertEqual(['PASS'], actor.finishes)
+                        self.assertEqual(['official-image-load', 'buildctl-version', 'buildkitd-version'], [name for name, _args in actor.calls])
+
     def test_actual_floor_and_memory_admission_are_independent(self):
         baseline = {'diskAvailableBytes': RES.DISK_FLOOR + RES.MIB, 'memoryAvailableBytes': RES.BUILDER_MEMORY + RES.MEMORY_FLOOR}
         self.assertEqual('MEASUREMENT_ADMITTED', RES.phase_plan(CONTEXT, 'fixture', baseline, RES.MIB, RES.BUILDER_MEMORY, {'bytes': 1})['status'])

@@ -62,6 +62,7 @@ def variables = [
     'DOORHANDLE_ECS_MACHINE_ID': settings.machineId,
     'DOORHANDLE_COMPACT_RELEASE_READY': 'false',
     'DOORHANDLE_COMPACT_REHEARSAL_READY': 'false',
+    'CANDIDATE_BUILD_INPUT_CACHE_ROOT': new File(project, 'work/jenkins/build-deps').path,
     'PATH+DOORHANDLE': settings.extraPath
 ]
 // Compact release/rehearsal readiness is deliberately not a user-editable job parameter.
@@ -78,6 +79,7 @@ def parameters = [
     new StringParameterDefinition('DOORHANDLE_CI_FIXTURE_SETTINGS', '', 'Automatic fixture preparation: reviewed private ECS source identity, offsets and existing Java settings.'),
     new BooleanParameterDefinition('PRODUCTION_RELEASE_ENABLED', false, 'Keep false until compact schema and release compatibility are accepted.'),
     new StringParameterDefinition('COMPACT_CUTOVER_SETTINGS', '', 'Reuse reviewed fixture settings: version, sourceMysqlContainerId, sourceSchema, sourceOffsets, java; no passwords.'),
+    new StringParameterDefinition('CANDIDATE_BUILD_TOOLS_ARCHIVE', '', 'Runtime/cutover public BuildKit OCI tar; blank prepares the pinned global D project cache. Raw tar is never archived.'),
     new StringParameterDefinition('LEGACY_SOURCE_SNAPSHOT', '', 'Optional sealed project snapshot directory; restoration occurs only on ECS after fixed-source verification.'),
     new StringParameterDefinition('LEGACY_SOURCE_ECS_SNAPSHOT', '', 'Reuse an independently restored ECS legacy snapshot; mutually exclusive with the local input.'),
     new StringParameterDefinition('LOCAL_ARTIFACTS_SNAPSHOT', '', 'Initial sealed local historical artifacts; transfer and recovery occur only after fixed-source verification.'),
