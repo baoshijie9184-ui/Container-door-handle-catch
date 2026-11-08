@@ -148,6 +148,7 @@ class AgentJournalIntegrationTest {
     @Test void aguiCompletesOneDurableRunAndDuplicateClientRunIdDoesNotGenerateAgain() throws Exception {
         var service=new AgentScopeConversationService(factory,new AgentRunRegistry(),settings,journal);
         AgentChatSessionApi gateway=(user,session,requestId,question,events)->{
+            service.checkRequest(user,"AGUI",requestId);
             var run=service.start(user,session,List.of(new AgentConversationApi.Message("user",question)),"",events,"AGUI",requestId);
             return new AgentChatSessionApi.Run(run.result().thenApply(text->new AgentChatSessionApi.Reply(text,run.runId(),run.cards().get())),run.cancel());
         };
@@ -159,6 +160,12 @@ class AgentJournalIntegrationTest {
         assertThat(journal.list(actor,"s1",null,20)).singleElement().satisfies(saved->{assertThat(saved.entryPoint()).isEqualTo("AGUI");assertThat(saved.status()).isEqualTo("COMPLETED");});
         mvc.perform(post("/agui/run").principal(auth()).contentType("application/json").content(body)).andExpect(status().isConflict());
         assertThat(journal.list(actor,"s1",null,20)).hasSize(1);
+        verify(model,times(1)).stream(anyList(),anyList(),any());
+        var next=mvc.perform(post("/agui/run").principal(auth()).contentType("application/json").content(body.replace("request-1","request-2"))).andExpect(request().asyncStarted()).andReturn();
+        next.getAsyncResult(10000);
+        mvc.perform(asyncDispatch(next)).andExpect(status().isOk()).andExpect(content().string(org.hamcrest.Matchers.containsString("RUN_FINISHED")));
+        assertThat(journal.list(actor,"s1",null,20)).hasSize(2);
+        verify(model,times(2)).stream(anyList(),anyList(),any());
     }
     @Test void historyAndCursorApiAreReadOnlyAndCancellationRequiresTheActionHeader() throws Exception {
         var run=journal.begin(actor,"s1","employee-main","CHAT","request-1","fixture-model");run.bindCancel(()->run.finish("CANCELLED"));

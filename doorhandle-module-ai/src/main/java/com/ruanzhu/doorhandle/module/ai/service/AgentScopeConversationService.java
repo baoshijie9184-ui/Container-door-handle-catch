@@ -26,6 +26,25 @@ import java.util.function.Consumer;
 @Service
 @ConditionalOnProperty(prefix = "agentscope.ai", name = "enabled", havingValue = "true")
 public class AgentScopeConversationService implements AgentConversationApi {
+    private record Outcome(String text, boolean interrupted) {}
+    /** Public completion must follow native cleanup, including caller cancellation. */
+    private static final class RunResult extends CompletableFuture<String> {
+        private final CompletableFuture<Outcome> outcome;
+        RunResult(CompletableFuture<Outcome> outcome) { this.outcome = outcome; }
+        @Override public boolean cancel(boolean mayInterruptIfRunning) {
+            // A concurrent/reentrant cancellation must not claim publication
+            // while another caller is still closing the native execution.
+            boolean accepted = outcome.completeExceptionally(new java.util.concurrent.CancellationException());
+            if (!accepted) return false;
+            if (!super.isDone()) super.handle((value, error) -> null).join();
+            return super.isCancelled();
+        }
+        void publish(Outcome value, Throwable error, boolean cancelled) {
+            if (cancelled) super.cancel(false);
+            else if (error != null) super.completeExceptionally(error);
+            else super.complete(value.text());
+        }
+    }
     // Forward only actual middleware receipts; never infer completion from model text.
     static AgentJournal.Run uiJournal(AgentJournal.Run stored, Consumer<Event> events) {
         return new AgentJournal.Run() {
@@ -119,10 +138,11 @@ public class AgentScopeConversationService implements AgentConversationApi {
             if(command!=null&&command.reply()!=null){
                 consumer.accept(new Event("RUN_STARTED",main,null,null,0));
                 consumer.accept(new Event("TEXT_CHUNK",main,null,command.reply(),0));
-                consumer.accept(new Event("RUN_FINISHED",main,null,null,0));
-                audit.finish("COMPLETED");registry.release(session);
+                if(work!=null)work.finish("COMPLETED",command.reply());
                 if(control!=null)control.close();
-                if(work!=null){work.finish("COMPLETED",command.reply());work.release();}
+                if(work!=null)work.release();
+                registry.release(session);audit.finish("COMPLETED");
+                consumer.accept(new Event("RUN_FINISHED",main,null,null,0));
                 return new Run(CompletableFuture.completedFuture(command.reply()),()->{},audit.id());
             }
             if(command!=null){messages.set(messages.size()-1,new UserMessage(command.question()));if(work!=null)work.bindContextInput(messages,history.size()-1);
@@ -134,32 +154,73 @@ public class AgentScopeConversationService implements AgentConversationApi {
                 agent=factory.create(actor,main,middleware,cards,null,control,work,answerEvidence);
             }
         }
-        catch (RuntimeException error) { try { if(work!=null){work.finish("NEEDS_REVIEW","");work.release();}audit.finish("ERROR"); } finally { if(control!=null)control.close();registry.release(session); } throw error; }
+        catch (RuntimeException error) {
+            try {
+                try {
+                    if(work!=null)try { work.finish("NEEDS_REVIEW",""); } finally { work.release(); }
+                } finally { audit.finish("ERROR"); }
+            } finally {
+                try { if(control!=null)control.close(); }
+                finally { registry.release(session); }
+            }
+            throw error;
+        }
 
-        var result = new CompletableFuture<String>();
+        var outcome = new CompletableFuture<Outcome>();
+        var result = new RunResult(outcome);
         var subscription = new AtomicReference<Disposable>();
         var closed = new AtomicBoolean();
         var reply = new AtomicReference<String>();
         long started = System.nanoTime();
         Runnable cleanup = () -> {
             if (closed.compareAndSet(false, true)) {
-                if(control!=null)control.close();
-                try { AgentRuntime.close(agent); }
+                try { if(control!=null)control.close(); }
                 finally {
-                    if(work!=null)work.release();
-                    var disposable = subscription.get(); if (disposable != null) disposable.dispose();
-                    registry.release(session);
+                    try { AgentRuntime.close(agent); }
+                    finally {
+                        try { if(work!=null)work.release(); }
+                        finally {
+                            try { var disposable = subscription.get(); if (disposable != null) disposable.dispose(); }
+                            finally { registry.release(session); }
+                        }
+                    }
                 }
             }
         };
-        result.orTimeout(controls==null?180:controls.maxRunSeconds(), java.util.concurrent.TimeUnit.SECONDS);
-        result.whenComplete((value, error) -> {
-            if (error != null) {
-                try { if(work!=null)work.finish(result.isCancelled()?"CANCELLED":"NEEDS_REVIEW","");audit.finish(result.isCancelled() ? "CANCELLED" : "ERROR"); } finally { cleanup.run(); }
+        outcome.whenComplete((value, error) -> {
+            boolean cancelled = outcome.isCancelled();
+            Throwable failure = error;
+            String terminal = cancelled ? "CANCELLED" : error != null ? "ERROR" : value.interrupted() ? "INTERRUPTED" : "COMPLETED";
+            boolean finalized = false;
+            try {
+            try {
+                if (work != null) {
+                    if (cancelled) work.cancel();
+                    if (!"INTERRUPTED".equals(terminal)) work.finish(error == null ? "COMPLETED" : cancelled ? "CANCELLED" : "NEEDS_REVIEW", error == null ? value.text() : "");
+                }
+            } catch (RuntimeException finalizationError) {
+                failure = new IllegalStateException("AgentScope 执行收尾失败，请稍后重试");
+            }
+            try { cleanup.run(); }
+            catch (RuntimeException cleanupError) { failure = new IllegalStateException("AgentScope 执行清理失败，请稍后重试"); }
+            try { audit.finish(failure != null && !cancelled ? "ERROR" : terminal); }
+            catch (RuntimeException journalError) { failure = new IllegalStateException("AgentScope 运行状态保存失败，请稍后重试"); }
+            if (failure == null && !value.interrupted()) {
+                try { consumer.accept(new Event("RUN_FINISHED", main, null, null, (System.nanoTime() - started) / 1_000_000)); }
+                catch (RuntimeException channelError) { failure = new IllegalStateException("聊天通道已关闭"); }
+            } else if (failure != null && !cancelled) {
+                try { consumer.accept(new Event("RUN_ERROR", main, null, null, (System.nanoTime() - started) / 1_000_000)); }
+                catch (RuntimeException ignored) {}
+            }
+            finalized = true;
+            } finally {
+                if (!finalized) failure = new IllegalStateException("AgentScope 执行收尾失败，请稍后重试");
+                result.publish(value, failure, cancelled);
             }
         });
-        audit.bindCancel(() -> { if(work!=null)work.cancel();result.cancel(true); cleanup.run(); });
-        if(work!=null)work.bindCancel(()->{work.cancel();result.cancel(true);cleanup.run();});
+        outcome.orTimeout(maxRunSeconds(), java.util.concurrent.TimeUnit.SECONDS);
+        audit.bindCancel(() -> outcome.cancel(true));
+        if(work!=null)work.bindCancel(()->outcome.cancel(true));
         try {
             consumer.accept(new Event("RUN_STARTED", main, null, null, 0));
             var runtime = RuntimeContext.builder().userId(Long.toString(actor.userId())).sessionId(work==null?session:work.sdkSession()).build();
@@ -169,8 +230,8 @@ public class AgentScopeConversationService implements AgentConversationApi {
                     .contextWrite(context -> context.put(AgentBase.RUNTIME_CONTEXT_KEY, runtime)
                             .put(com.ruanzhu.doorhandle.module.ai.model.ModelBudgetContext.CONTEXT_KEY,
                                     new com.ruanzhu.doorhandle.module.ai.model.ModelBudgetContext(actor,audit.id())))
-                    .subscribeOn(Schedulers.boundedElastic()).timeout(Duration.ofSeconds(controls==null?180:controls.maxRunSeconds()))
-                    .doFinally(signal -> cleanup.run()).subscribe(event -> {
+                    .subscribeOn(Schedulers.boundedElastic()).timeout(Duration.ofSeconds(maxRunSeconds()))
+                    .doFinally(signal -> { if (!outcome.isDone()) outcome.cancel(false); }).subscribe(event -> {
                         if (closed.get()) return;
                         var source = event.getSource();
                         String name = source == null || source.getAgentName() == null ? main : source.getAgentName();
@@ -190,33 +251,29 @@ public class AgentScopeConversationService implements AgentConversationApi {
                                 consumer.accept(new Event("TOOL_CALL", name, tool.getName(), null, elapsed));
                         }
                     }, error -> {
-                        if(work!=null&&work.waiting()){audit.finish("INTERRUPTED");result.complete(work.waitingReply());return;}
-                        if(work!=null)work.finish("NEEDS_REVIEW","");
-                        try { if (!closed.get()) consumer.accept(new Event("RUN_ERROR", main, null, null, (System.nanoTime() - started) / 1_000_000)); }
+                        if (outcome.isDone()) return;
+                        try { if(work!=null&&work.waiting()){outcome.complete(new Outcome(work.waitingReply(), true));return;} }
                         catch (RuntimeException ignored) {}
-                        result.completeExceptionally(new IllegalStateException("AgentScope 执行失败，请稍后重试"));
+                        outcome.completeExceptionally(new IllegalStateException("AgentScope 执行失败，请稍后重试"));
                     }, () -> {
+                        if (outcome.isDone()) return;
                         String text = reply.get();
-                        if (text == null || text.isBlank()) result.completeExceptionally(new IllegalStateException("AgentScope 未返回有效回答"));
+                        if (text == null || text.isBlank()) outcome.completeExceptionally(new IllegalStateException("AgentScope 未返回有效回答"));
                         else {
                             try {
-                                if(work!=null){text=work.resolveReply(text);if(work.waiting()){audit.finish("INTERRUPTED");result.complete(text);return;}}
+                                if(work!=null){text=work.resolveReply(text);if(work.waiting()){outcome.complete(new Outcome(text, true));return;}}
                                 if(answerEvidence.unsupportedHandoff(text)&&!(work!=null&&work.handoffRecorded())){
                                     audit.event("ANSWER_REJECTED",java.util.Map.of("agent",main,"decision","DENY","policyVersion","answer-evidence-v1"));
-                                    consumer.accept(new Event("RUN_ERROR",main,null,null,(System.nanoTime()-started)/1_000_000));
-                                    result.completeExceptionally(new AgentConversationApi.UnverifiedAnswerException());
+                                    outcome.completeExceptionally(new AgentConversationApi.UnverifiedAnswerException());
                                     return;
                                 }
                                 if(research!=null)research.recordAnswer(actor,audit.id(),text);
-                                consumer.accept(new Event("RUN_FINISHED", main, null, null, (System.nanoTime() - started) / 1_000_000));
-                                if(work!=null)work.finish("COMPLETED",text);
-                                audit.finish("COMPLETED");
-                                result.complete(text);
-                            } catch (RuntimeException error) { result.completeExceptionally(new IllegalStateException("聊天通道已关闭")); }
+                                outcome.complete(new Outcome(text, false));
+                            } catch (RuntimeException error) { outcome.completeExceptionally(new IllegalStateException("聊天通道已关闭")); }
                         }
                     });
             subscription.set(disposable); if (closed.get()) disposable.dispose();
-        } catch (RuntimeException error) { cleanup.run(); result.completeExceptionally(new IllegalStateException("AgentScope 执行失败，请稍后重试")); }
-        return new Run(result, () -> { result.cancel(true); cleanup.run(); }, audit.id(), cards::snapshot);
+        } catch (RuntimeException error) { outcome.completeExceptionally(new IllegalStateException("AgentScope 执行失败，请稍后重试")); }
+        return new Run(result, () -> outcome.cancel(true), audit.id(), cards::snapshot);
     }
 }

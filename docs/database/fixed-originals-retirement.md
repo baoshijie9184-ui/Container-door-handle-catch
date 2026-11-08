@@ -17,7 +17,13 @@
 
 模型别名 profile 必须显式选择，仅允许项目根 `best_stg2.pth` 与 `work/quality-platform-20261103/ecs-stage-04/model/best_stg2.pth`，各159,274,200字节、SHA `eb10caf9fe5fa41e1ce0cfe2bcfaaa728ff44c4fa56f3c6994d6fadb66da434b`。必须先绑定36包的 `work/cloud/pth-model/best_stg2.pth` 精确成员，再获得同次现场证明：服务器 `/srv/doorhandle/models/best_stg2.pth` 实物及 worker 只读挂载、实际允许的模型配置与固定 manifest 路径关联。旧别名审计和旧运行回读只作设计依据，不代替当次现场证明。
 
-模型与配置文件的只读规则仅接受此次实际观测的 owner UID 0 或1000、无链接、单硬链接、不可组/其他用户写；执行身份仍为1000，不提权、不修改云端原件。证明只确认磁盘字节和配置关联，不执行或反序列化模型，不声称 worker 已将模型加载到内存。配置、挂载或精确文件无法证实时，别名 profile 拒绝且本地两份保留。
+2026-11-08 实际零删除预检发现，36包的上述原模型与项目根别名属于同一 NTFS 文件，链接数恰为2；另一处 quality-platform 模型为独立单链接文件。原执行器按单链接规则拒绝，尚未生成可执行计划，也未删除原件。补充实现只允许 `additional-originals-v1` 的这一精确模型成员形成固定两名称组：两个不同且祖先无重解析点的路径须具有相同完整指纹、固定大小和摘要，且原生链接数恰为2。未知第三链接、名称替换、缺失、符号链接及其他 profile 的多链接文件仍拒绝。
+
+该组写入计划并绑定计划原始 SHA。删除仍仅持有36项原成员的既有独占句柄，不为根别名另开数据句柄，也不把别名加入本轮删除成员；持锁后、完整哈希后及原名称删除意图落盘后均重核该组和有效现场证明。Windows 的共享规则作用于整个文件，既有句柄的删除 disposition 标记其打开的链接，依据微软的[硬链接共享规则](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-createhardlinkw)和[文件删除规范](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/386d9ec5-e0f6-4853-b175-c05be01419e0)。删除后必须确认根别名仍保有原身份和字节长度，链接数变为1，并单独记入审计；不能把删除一个名称的逻辑字节数当成已释放的物理空间。
+
+顺序为先完成36项 profile，再为两处模型别名分别取得独立 profile 的完整计划与新鲜服务器实物证明。先执行别名 profile 时若仍有多链接，会明确拒绝。新组处理仍须固定提交在 ECS 回归通过，之后先作真实 Windows 只读计划核查；独占期间若无法取得元数据，在首次删除前拒绝，不通过复制替换或先删除名称来满足单链接条件。
+
+服务器模型与配置文件的只读规则仅接受此次实际观测的 owner UID 0 或1000、无链接、单硬链接、不可组/其他用户写；执行身份仍为1000，不提权、不修改云端原件。证明只确认磁盘字节和配置关联，不执行或反序列化模型，不声称 worker 已将模型加载到内存。配置、挂载或精确文件无法证实时，别名 profile 拒绝且本地两份保留。
 
 配置关联遵循现有 worker：`DETECTION_MODEL_MANIFEST` 指向单份 manifest，`modelFile` 指向固定模型文件；`DETECTION_MODEL_ID` 是 Kafka 任务的正整数模型编号守卫。固定六类 `classNames` 沿用现有 PTH 引擎契约，不表示按编号在 manifest 中选择多条模型。
 

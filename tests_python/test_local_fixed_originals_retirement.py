@@ -5,6 +5,7 @@ import datetime as dt
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -430,3 +431,182 @@ def test_linux_cannot_enter_real_plan_or_apply_native_backend(capsys):
     assert fixed.os.name != 'nt'
     assert fixed.main(['--profile', PROFILE, '--manifest', 'not-opened', '--output', 'not-created']) == 1
     assert json.loads(capsys.readouterr().err)['status'] == 'REFUSED_OR_PARTIAL'
+
+
+@pytest.fixture
+def model_links(tmp_path, monkeypatch):
+    root = tmp_path / 'project'; origin = root / fixed.MODEL_ORIGIN_MEMBER
+    origin.parent.mkdir(parents=True); body = b'opaque fixed model fixture'; origin.write_bytes(body)
+    alias = root / fixed.MODEL_ALIASES[0]; os.link(origin, alias)
+    monkeypatch.setattr(fixed, 'ROOT', str(root))
+    monkeypatch.setattr(fixed, 'MODEL_BYTES', len(body)); monkeypatch.setattr(fixed, 'MODEL_SHA256', fixed.sha(body))
+    cold = fixed.load('preserve-cold-stores.py'); native_fingerprint = cold.fingerprint
+    creation = origin.stat().st_ctime_ns
+    def windows_creation_fingerprint(info):
+        result = native_fingerprint(info)
+        # Windows stores creation time at index 4. Linux ctime changes when a
+        # link is removed; model only that Windows field in this ECS fixture.
+        result[4] = creation
+        return result
+    monkeypatch.setattr(cold, 'fingerprint', windows_creation_fingerprint)
+    resolver = lambda name: str(root / name)
+    selected = [{'path': fixed.MODEL_ORIGIN_MEMBER, 'bytes': len(body), 'sha256': fixed.sha(body)}]
+    profile = 'additional-originals-v1'
+    members = fixed.observed_members(selected, cold, resolver, profile)
+    group = fixed.observe_model_link_group(profile, members, cold, resolver)
+    return SimpleNamespace(root=root, origin=origin, alias=alias, body=body, cold=cold, resolver=resolver,
+                           profile=profile, selected=selected, members=members, group=group)
+
+
+def test_fixed_model_group_binds_both_distinct_names_and_the_same_complete_two_link_identity(model_links):
+    value = model_links
+    fixed.validate_observations(value.selected, value.members, value.profile, value.group)
+    assert value.group['source'] == fixed.MODEL_ORIGIN_MEMBER
+    assert value.group['retained']['path'] == fixed.MODEL_ALIASES[0]
+    assert value.group['retained']['fingerprint'] == value.members[0]['fingerprint']
+    assert value.members[0]['fingerprint'][5] == 2 and value.origin.exists() and value.alias.exists()
+
+
+@pytest.mark.parametrize('profile', [None, PROFILE, 'residual-project-originals-v1', 'pth-aliases-v1'])
+def test_other_profiles_never_admit_the_model_two_link_source(model_links, profile):
+    with pytest.raises(ValueError):
+        fixed.observed_members(model_links.selected, model_links.cold, model_links.resolver, profile)
+
+
+@pytest.mark.parametrize('damage', ['third-link', 'alias-replaced', 'alias-symlink', 'alias-missing', 'alias-renamed'])
+def test_changed_or_unknown_model_link_topology_refuses_under_the_existing_hold_before_any_delete(model_links, damage):
+    value = model_links
+    if damage == 'third-link': os.link(value.origin, value.root / 'unknown.pth')
+    elif damage == 'alias-renamed': value.alias.rename(value.root / 'unknown.pth')
+    else:
+        value.alias.unlink()
+        if damage == 'alias-replaced': value.alias.write_bytes(value.body)
+        elif damage == 'alias-symlink': value.alias.symlink_to(value.origin)
+    events = []; backend = FakeBackend(events)
+    with backend.hold(fixed.value_for(value.members)):
+        with pytest.raises((ValueError, OSError)):
+            fixed.verify_model_link_group(value.group, value.members, value.cold, value.resolver, backend)
+    assert not any(row[0] == 'delete-held' for row in events)
+    assert value.origin.exists()
+
+
+@pytest.mark.parametrize('damage', ['missing-group', 'extra-key', 'wrong-source', 'wrong-retained-path',
+                                  'retained-id', 'retained-hash', 'retained-count', 'source-count'])
+def test_reviewed_group_cannot_admit_unbound_names_identity_or_unknown_links(model_links, damage):
+    value = model_links; group = copy.deepcopy(value.group); members = copy.deepcopy(value.members)
+    if damage == 'missing-group': group = None
+    elif damage == 'extra-key': group['allowUnknownLinks'] = True
+    elif damage == 'wrong-source': group['source'] = 'uploads/another.pth'
+    elif damage == 'wrong-retained-path': group['retained']['path'] = fixed.MODEL_ALIASES[1]
+    elif damage == 'retained-id': group['retained']['fingerprint'][1] += 1
+    elif damage == 'retained-hash': group['retained']['sha256'] = 'e' * 64
+    elif damage == 'retained-count': group['retained']['fingerprint'][5] = 3
+    else: members[0]['fingerprint'][5] = 3
+    with pytest.raises(ValueError):
+        fixed.validate_observations(value.selected, members, value.profile, group)
+
+
+def test_plan_records_live_closed_group_and_rechecks_it_while_sources_are_held(model_links, packet, tmp_path, monkeypatch):
+    value = model_links
+    raw = packet.seal([{'sourcePath': str(value.origin), 'bytes': len(value.body), 'sha256': fixed.sha(value.body)}])
+    monkeypatch.setitem(fixed.RECIPES, value.profile, {'manifestSha256': fixed.sha(raw), 'members': 1,
+        'selected': 1, 'bytes': len(value.body), 'retained': 0})
+    manifest = tmp_path / 'model-manifest.json'; manifest.write_bytes(raw)
+    monkeypatch.setattr(core, 'canonical_control', lambda path: Path(path))
+    monkeypatch.setattr(fixed, 'StrictResolver', lambda *args: value.resolver)
+    monkeypatch.setattr(fixed, 'code_bindings', lambda *args: {'executorSha256': 'e' * 64})
+    events = []; backend = FakeBackend(events)
+    plan = fixed.make_plan(value.profile, manifest, None, None, core, value.cold, SimpleNamespace(), lambda _: backend)
+    assert plan['closedModelHardlinkGroup'] == value.group and plan['members'] == value.members
+    assert plan['originalFilesDeleted'] == 0 and plan['retained'] == []
+    assert len([row for row in events if row[0] == 'hash']) == 1
+    assert not any(row[0] in ('delete-held', 'live-ssh-proof') for row in events)
+
+
+def test_fixed_source_disposition_preserves_root_alias_as_one_link_before_separate_alias_retirement(model_links, scope, monkeypatch):
+    value = model_links
+    scope.plan.update(profile=value.profile, members=value.members, closedModelHardlinkGroup=value.group, retained=[])
+    monkeypatch.setattr(fixed, 'StrictResolver', lambda *args: value.resolver)
+    scope.backend.cold = value.cold
+    original_delete = scope.backend.delete_file
+    def remove_selected_name(row):
+        original_delete(row); Path(value.resolver(row['path'])).unlink()
+    scope.backend.delete_file = remove_selected_name
+    result = apply(scope)
+    assert result['filesDeleted'] == 1 and result['retainedModelLink'] == {'path': fixed.MODEL_ALIASES[0], 'remainingLinks': 1}
+    assert not value.origin.exists() and value.alias.read_bytes() == value.body and value.alias.stat().st_nlink == 1
+    first_delete = next(i for i, row in enumerate(scope.events) if row[0] == 'delete-held')
+    assert any(row[0] == 'hash' for row in scope.events[:first_delete])
+    assert any(row[0] == 'live-ssh-proof' for row in scope.events[:first_delete])
+    assert any(row[0:2] == ('audit', 'MODEL_ALIAS_RETAINED') for row in scope.events)
+    alias_rows = [{'path': fixed.MODEL_ALIASES[0], 'bytes': len(value.body), 'sha256': fixed.sha(value.body)}]
+    assert fixed.observed_members(alias_rows, value.cold, value.resolver, 'pth-aliases-v1')[0]['fingerprint'][5] == 1
+
+
+def test_group_metadata_delay_after_intent_requires_new_live_proof_before_any_disposition(model_links, scope, monkeypatch):
+    value = model_links
+    scope.plan.update(profile=value.profile, members=value.members, closedModelHardlinkGroup=value.group, retained=[])
+    monkeypatch.setattr(fixed, 'StrictResolver', lambda *args: value.resolver)
+    scope.backend.cold = value.cold; original = fixed.verify_model_link_group; calls = []
+    def delayed(*args):
+        original(*args); calls.append(True)
+        if len(calls) == 4:
+            scope.proof.now += dt.timedelta(seconds=301); scope.attestor.failure = True
+    monkeypatch.setattr(fixed, 'verify_model_link_group', delayed)
+    with pytest.raises(ValueError, match='AUTHENTICATED_LIVE_SERVER_ATTESTATION_REQUIRED'): apply(scope)
+    partial = [event[2] for event in scope.events if event[:2] == ('audit', 'PARTIAL_OR_REFUSED')][-1]
+    assert partial['confirmedFilesDeleted'] == partial['fileDispositionAttempts'] == 0
+    assert not any(event[0] == 'delete-held' for event in scope.events)
+    assert value.origin.exists() and value.alias.exists()
+
+
+@pytest.mark.parametrize('damage', ['new-third-name', 'source-name-recreated'])
+def test_post_disposition_uncertainty_reports_the_confirmed_source_name_and_keeps_remaining_names(model_links, scope, monkeypatch, damage):
+    value = model_links
+    scope.plan.update(profile=value.profile, members=value.members, closedModelHardlinkGroup=value.group, retained=[])
+    monkeypatch.setattr(fixed, 'StrictResolver', lambda *args: value.resolver)
+    scope.backend.cold = value.cold; original_delete = scope.backend.delete_file
+    def remove_and_observe_change(row):
+        original_delete(row); value.origin.unlink()
+        if damage == 'new-third-name': os.link(value.alias, value.root / 'new-unknown.pth')
+        else: value.origin.write_bytes(value.body)
+    scope.backend.delete_file = remove_and_observe_change
+    with pytest.raises(ValueError): apply(scope)
+    partial = [event[2] for event in scope.events if event[:2] == ('audit', 'PARTIAL_OR_REFUSED')][-1]
+    assert partial['confirmedFilesDeleted'] == partial['fileDispositionAttempts'] == 1
+    assert partial['unconfirmedFileDispositions'] == 0 and partial['automaticResumeAllowed'] is False
+    assert value.alias.read_bytes() == value.body
+    assert not any(event[:2] == ('audit', 'COMPLETED') for event in scope.events)
+
+
+def test_alias_profile_must_not_remove_root_link_before_the_additional_source(model_links):
+    value = model_links
+    aliases = [{'path': fixed.MODEL_ALIASES[0], 'bytes': len(value.body), 'sha256': fixed.sha(value.body)}]
+    with pytest.raises(ValueError, match='RETIRE_ADDITIONAL_MODEL_ORIGIN_BEFORE_ALIASES'):
+        fixed.observed_members(aliases, value.cold, value.resolver, 'pth-aliases-v1')
+    assert value.origin.exists() and value.alias.exists()
+
+
+def test_real_active_reference_scan_resolves_only_the_declared_retained_alias_without_adding_a_delete_member(model_links, monkeypatch):
+    value = model_links; resolver = fixed.StrictResolver(value.members, value.group)
+    backend = core.WindowsBackend.__new__(core.WindowsBackend); backend.source_resolver = resolver
+    calls = []
+    def process_scan(command, **options):
+        calls.append((command, options)); return SimpleNamespace(returncode=0, stdout=b'[]')
+    monkeypatch.setattr(core.subprocess, 'run', process_scan)
+    backend.active_references(fixed.value_for(value.members + [value.group['retained']]))
+    assert len(calls) == 1 and calls[0][0][0] == 'powershell.exe'
+    assert fixed.MODEL_ALIASES[0] in resolver.retained and fixed.MODEL_ALIASES[0] not in resolver.members
+    assert [row['path'] for row in value.members] == [fixed.MODEL_ORIGIN_MEMBER]
+    with pytest.raises(ValueError, match='OUTSIDE_FIXED_SELECTED_FILES'): resolver('unknown.pth')
+
+
+@pytest.mark.parametrize('error, code', [(ValueError('ORIGINAL_FILE_ID_OR_SIZE_NOT_ESTABLISHED'), 'ORIGINAL_FILE_ID_OR_SIZE_NOT_ESTABLISHED'),
+    (ValueError('A' * 128), 'A' * 128), (ValueError('A' * 129), None),
+    (ValueError(r'C:\private\secret.db'), None), (ValueError('lowercase detail'), None),
+    (OSError('ORIGINAL_FILE_ID_OR_SIZE_NOT_ESTABLISHED'), None)])
+def test_public_failure_exposes_only_bounded_authored_valueerror_codes(error, code):
+    result = fixed.public_failure(error)
+    assert result.get('errorCode') == code and result['errorType'] == type(error).__name__
+    assert result['automaticResumeAllowed'] is False and result['scopeExpanded'] is False
+    if code is None: assert 'errorCode' not in result and 'private' not in json.dumps(result)

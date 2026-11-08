@@ -53,6 +53,14 @@ def need(value, code):
 def sha(raw): return hashlib.sha256(raw).hexdigest()
 
 
+def public_failure(error):
+    value = {'status': 'REFUSED_OR_PARTIAL', 'errorType': type(error).__name__,
+             'automaticResumeAllowed': False, 'scopeExpanded': False}
+    if isinstance(error, ValueError) and re.fullmatch(r'[A-Z][A-Z0-9_]{0,127}', str(error)):
+        value['errorCode'] = str(error)
+    return value
+
+
 def relative_source(source):
     need(isinstance(source, str) and ntpath.isabs(source) and not source.startswith(('\\\\', '//')),
          'ABSOLUTE_PROJECT_SOURCE_REQUIRED')
@@ -112,15 +120,19 @@ def select_manifest(profile, raw):
 
 
 class StrictResolver:
-    """Only the immutable manifest's exact selected files and parent lock paths."""
-    def __init__(self, members):
+    """Exact selected files, their parents and one explicitly retained link."""
+    def __init__(self, members, group=None):
         self.members = {row['path'] for row in members}
         need(len(self.members) == len(members), 'DUPLICATE_SELECTED_MEMBER')
         self.parents = {name.rsplit('/', 1)[0] for name in self.members if '/' in name}
+        self.retained = set()
+        if group is not None:
+            validate_model_link_group('additional-originals-v1', members, group)
+            self.retained.add(group['retained']['path'])
 
     def __call__(self, name):
         validate_relative(name)
-        need(name in self.members or name in self.parents, 'OUTSIDE_FIXED_SELECTED_FILES')
+        need(name in self.members or name in self.parents or name in self.retained, 'OUTSIDE_FIXED_SELECTED_FILES')
         return ntpath.join(ROOT, *name.split('/'))
 
 
@@ -129,22 +141,108 @@ def value_for(members):
     return {'members': members, 'directories': [], 'roots': [{'path': name} for name in roots]}
 
 
-def observed_members(selected, cold, resolver):
+def original_info(path):
+    for parent in (path, *path.parents):
+        info = parent.lstat()
+        need(not stat.S_ISLNK(info.st_mode) and not getattr(info, 'st_file_attributes', 0) & 0x400,
+             'ORIGINAL_ANCESTOR_LINK_OR_REPARSE_REFUSED')
+    return path.lstat()
+
+
+def fixed_link_source(profile, row):
+    return (profile == 'additional-originals-v1' and row.get('path') == MODEL_ORIGIN_MEMBER
+            and type(row.get('bytes')) is int and row['bytes'] == MODEL_BYTES and row.get('sha256') == MODEL_SHA256)
+
+
+def validate_model_link_group(profile, members, group):
+    linked = [row for row in members if row['fingerprint'][5] != 1]
+    if not linked:
+        need(group is None, 'UNEXPECTED_MODEL_HARDLINK_GROUP')
+        return
+    need(len(linked) == 1 and fixed_link_source(profile, linked[0])
+         and type(linked[0]['fingerprint']) is list and len(linked[0]['fingerprint']) == 8
+         and all(type(v) is int for v in linked[0]['fingerprint']) and linked[0]['fingerprint'][5] == 2,
+         'ONLY_FIXED_ADDITIONAL_MODEL_TWO_LINK_GROUP_ALLOWED')
+    need(type(group) is dict and set(group) == {'kind', 'source', 'retained'}
+         and group['kind'] == 'fixed-model-two-name-hardlink-group' and group['source'] == MODEL_ORIGIN_MEMBER,
+         'EXACT_CLOSED_MODEL_HARDLINK_GROUP_REQUIRED')
+    retained = group['retained']
+    need(type(retained) is dict and set(retained) == {'path', 'bytes', 'sha256', 'fingerprint'}
+         and retained.get('path') == MODEL_ALIASES[0] and retained['path'] != group['source']
+         and type(retained.get('bytes')) is int and retained['bytes'] == MODEL_BYTES
+         and retained.get('sha256') == MODEL_SHA256
+         and type(retained.get('fingerprint')) is list and len(retained['fingerprint']) == 8
+         and all(type(v) is int for v in retained['fingerprint'])
+         and retained['fingerprint'] == linked[0]['fingerprint'], 'MODEL_RETAINED_LINK_IDENTITY_OR_BYTES_DRIFT')
+
+
+def model_link_paths(resolver):
+    source = Path(resolver(MODEL_ORIGIN_MEMBER)); root = Path(ROOT)
+    need(source == root.joinpath(*MODEL_ORIGIN_MEMBER.split('/')), 'FIXED_MODEL_SOURCE_RESOLVER_REQUIRED')
+    return source, root / MODEL_ALIASES[0]
+
+
+def observe_model_link_group(profile, members, cold, resolver):
+    linked = [row for row in members if row['fingerprint'][5] != 1]
+    if not linked: return None
+    need(len(linked) == 1 and fixed_link_source(profile, linked[0]) and linked[0]['fingerprint'][5] == 2,
+         'ONLY_FIXED_ADDITIONAL_MODEL_TWO_LINK_GROUP_ALLOWED')
+    _, alias = model_link_paths(resolver)
+    group = {'kind': 'fixed-model-two-name-hardlink-group', 'source': MODEL_ORIGIN_MEMBER,
+             'retained': {'path': MODEL_ALIASES[0], 'bytes': MODEL_BYTES, 'sha256': MODEL_SHA256,
+                          'fingerprint': cold.fingerprint(original_info(alias))}}
+    validate_model_link_group(profile, members, group)
+    return group
+
+
+def verify_model_link_group(group, members, cold, resolver, backend):
+    if group is None: return
+    row = next(row for row in members if row['path'] == group['source'])
+    # The original backend holds READ|DELETE with ShareMode=0 on the selected
+    # name. Sharing applies to the file across links; no alias data handle is
+    # opened. Two distinct fixed non-reparse names plus native link count 2
+    # close the group, with unknown third links rejected by the same held FD.
+    # MS-FSA 2.1.5.15.3 marks Open.Link, not every name of the underlying file:
+    # https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/386d9ec5-e0f6-4853-b175-c05be01419e0
+    # https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-createhardlinkw
+    backend.verify_file(row)
+    source, alias = model_link_paths(resolver)
+    need(cold.fingerprint(original_info(source)) == row['fingerprint']
+         and cold.fingerprint(original_info(alias)) == group['retained']['fingerprint'],
+         'CLOSED_MODEL_HARDLINK_GROUP_CHANGED_WHILE_HELD')
+
+
+def verify_retained_model_link(group, cold, resolver):
+    source, alias = model_link_paths(resolver)
+    try:
+        source.lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        need(False, 'MODEL_SOURCE_NAME_STILL_PRESENT_AFTER_DISPOSITION')
+    expected = list(group['retained']['fingerprint']); expected[5] = 1
+    need(cold.fingerprint(original_info(alias)) == expected, 'MODEL_RETAINED_SINGLE_LINK_NOT_CONFIRMED')
+
+
+def model_link_bindings(group):
+    return {'closedModelHardlinkGroup': group} if group is not None else {}
+
+
+def observed_members(selected, cold, resolver, profile=None):
     rows, identities = [], set()
     for row in selected:
         path = Path(resolver(row['path']))
-        for parent in (path, *path.parents):
-            info = parent.lstat()
-            need(not stat.S_ISLNK(info.st_mode) and not getattr(info, 'st_file_attributes', 0) & 0x400,
-                 'ORIGINAL_ANCESTOR_LINK_OR_REPARSE_REFUSED')
-        info = path.lstat(); fingerprint = cold.fingerprint(info)
-        need(stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and info.st_ino != 0 and info.st_size == row['bytes']
+        info = original_info(path); fingerprint = cold.fingerprint(info)
+        if profile == 'pth-aliases-v1':
+            need(info.st_nlink == 1, 'RETIRE_ADDITIONAL_MODEL_ORIGIN_BEFORE_ALIASES_OR_REVIEW_UNKNOWN_LINKS')
+        allowed_links = info.st_nlink == 1 or (fixed_link_source(profile, row) and info.st_nlink == 2)
+        need(stat.S_ISREG(info.st_mode) and allowed_links and info.st_ino != 0 and info.st_size == row['bytes']
              and tuple(fingerprint[:2]) not in identities, 'ORIGINAL_FILE_ID_OR_SIZE_NOT_ESTABLISHED')
         identities.add(tuple(fingerprint[:2])); rows.append({**row, 'fingerprint': fingerprint})
     return rows
 
 
-def validate_observations(selected, observations):
+def validate_observations(selected, observations, profile=None, group=None):
     need(type(observations) is list and len(selected) == len(observations), 'COMPLETE_IDENTITY_PLAN_REQUIRED')
     seen = set()
     for expected, actual in zip(selected, observations):
@@ -152,9 +250,12 @@ def validate_observations(selected, observations):
              and all(actual.get(k) == v for k, v in expected.items()), 'PLAN_MEMBER_OR_BYTE_BINDING_DRIFT')
         fp = actual['fingerprint']
         need(type(fp) is list and len(fp) == 8 and all(type(v) is int for v in fp)
-             and fp[1] != 0 and fp[2] == actual['bytes'] and fp[5] == 1 and stat.S_ISREG(fp[6]) and not fp[7] & 0x400
+             and fp[1] != 0 and fp[2] == actual['bytes']
+             and (fp[5] == 1 or (fixed_link_source(profile, actual) and fp[5] == 2))
+             and stat.S_ISREG(fp[6]) and not fp[7] & 0x400
              and tuple(fp[:2]) not in seen, 'PLAN_IDENTITY_OR_LINK_DRIFT')
         seen.add(tuple(fp[:2]))
+    validate_model_link_group(profile, observations, group)
 
 
 def bindings(core, proof, profile, current_file, custody_file):
@@ -200,14 +301,20 @@ def residual_source_guard(profile, members):
 def make_plan(profile, manifest_file, current_file, custody_file, core, cold, proof, backend_factory):
     path = core.canonical_control(manifest_file); selected, retained = select_manifest(profile, path.read_bytes())
     residual_source_guard(profile, selected)
-    resolver = StrictResolver(selected); members = observed_members(selected, cold, resolver)
-    validate_observations(selected, members)
+    resolver = StrictResolver(selected); members = observed_members(selected, cold, resolver, profile)
+    group = observe_model_link_group(profile, members, cold, resolver)
+    validate_observations(selected, members, profile, group)
+    if group is not None: resolver = StrictResolver(members, group)
     backend = backend_factory(resolver); value = value_for(members)
-    need(not any(r['path'].lower() in backend.tracked_sources() for r in members), 'TRACKED_SOURCE_REFUSED')
-    backend.active_references(value)
+    observed = members + ([group['retained']] if group is not None else [])
+    tracked = backend.tracked_sources()
+    need(not any(r['path'].lower() in tracked for r in observed), 'TRACKED_SOURCE_REFUSED')
+    backend.active_references(value_for(observed))
     with backend.hold(value):
+        verify_model_link_group(group, members, cold, resolver, backend)
         for row in members: backend.hash_file(row)
         for row in members: backend.verify_file(row)
+        verify_model_link_group(group, members, cold, resolver, backend)
     current, custody = bindings(core, proof, profile, current_file, custody_file)
     return {'schemaVersion': 1, 'kind': 'doorhandle-fixed-originals-local-retirement', 'status': 'PLAN_ONLY',
         'profile': profile, 'projectRoot': ROOT, 'manifestFile': str(path), 'manifestSha256': RECIPES[profile]['manifestSha256'],
@@ -215,13 +322,14 @@ def make_plan(profile, manifest_file, current_file, custody_file, core, cold, pr
         'currentReceiptFile': str(core.canonical_control(current_file)) if current_file else None,
         'custodyReceiptFile': str(core.canonical_control(custody_file)) if custody_file else None,
         'current': current, 'custody': custody, 'originalFilesDeleted': 0, **code_bindings(core, cold, proof),
-        **alias_bindings(profile, proof), **residual_bindings(profile)}
+        **alias_bindings(profile, proof), **residual_bindings(profile), **model_link_bindings(group)}
 
 
 def load_plan(args, core, cold, proof):
     plan, checksum = core.control(args.plan); need(checksum == args.plan_sha256, 'EXACT_REVIEWED_PLAN_SHA_REQUIRED')
     path = core.canonical_control(args.manifest); selected, retained = select_manifest(args.profile, path.read_bytes())
-    validate_observations(selected, plan.get('members'))
+    group = plan.get('closedModelHardlinkGroup')
+    validate_observations(selected, plan.get('members'), args.profile, group)
     current, custody = bindings(core, proof, args.profile, args.current_receipt, args.custody_receipt)
     expected = {'schemaVersion': 1, 'kind': 'doorhandle-fixed-originals-local-retirement', 'status': 'PLAN_ONLY',
         'profile': args.profile, 'projectRoot': ROOT, 'manifestFile': str(path), 'manifestSha256': RECIPES[args.profile]['manifestSha256'],
@@ -229,13 +337,15 @@ def load_plan(args, core, cold, proof):
         'currentReceiptFile': str(core.canonical_control(args.current_receipt)),
         'custodyReceiptFile': str(core.canonical_control(args.custody_receipt)),
         'current': current, 'custody': custody, 'originalFilesDeleted': 0, **code_bindings(core, cold, proof),
-        **alias_bindings(args.profile, proof), **residual_bindings(args.profile)}
+        **alias_bindings(args.profile, proof), **residual_bindings(args.profile), **model_link_bindings(group)}
     need(plan == expected and current is not None and custody is not None, 'PLAN_SOURCE_OR_CLOUD_BINDING_DRIFT')
     return plan
 
 
 def apply_plan(plan, core, proof, backend, attestor, audit):
     need(plan.get('current') is not None and plan.get('custody') is not None, 'CLOUD_RECEIPTS_REQUIRED')
+    group = plan.get('closedModelHardlinkGroup')
+    validate_model_link_group(plan['profile'], plan['members'], group)
     if plan['profile'] == 'residual-project-originals-v1':
         need(all(plan.get(key) == value for key, value in residual_bindings(plan['profile']).items()),
              'FIXED_RESIDUAL_SOURCE_GUARD_REQUIRED')
@@ -246,25 +356,40 @@ def apply_plan(plan, core, proof, backend, attestor, audit):
         need(plan.get('manifestSha256') == RECIPES['pth-aliases-v1']['manifestSha256'] and plan.get('retained') == []
              and all(plan.get(key) == value for key, value in alias_bindings('pth-aliases-v1', proof).items()),
              'FIXED_ALIAS_SOURCE_AND_MODEL_REFERENCE_REQUIRED')
-    members = plan['members']; value = value_for(members)
-    need(not any(row['path'].lower() in backend.tracked_sources() for row in members), 'TRACKED_SOURCE_REFUSED')
-    backend.active_references(value); deleted = attempts = 0
+    members = plan['members']; value = value_for(members); resolver = StrictResolver(members, group)
+    observed = members + ([group['retained']] if group is not None else [])
+    tracked = backend.tracked_sources()
+    need(not any(row['path'].lower() in tracked for row in observed), 'TRACKED_SOURCE_REFUSED')
+    backend.active_references(value_for(observed)); deleted = attempts = 0
     audit.record('BEGIN', profile=plan['profile'], files=len(members), manifestSha256=plan['manifestSha256'])
     try:
         with backend.hold(value):
+            verify_model_link_group(group, members, backend.cold if group is not None else None, resolver, backend)
             for row in members: backend.hash_file(row)
             for row in members: backend.verify_file(row)
+            verify_model_link_group(group, members, backend.cold if group is not None else None, resolver, backend)
             fresh = core.FreshProof(proof, plan, attestor, audit); fresh.ensure()
             audit.record('PREFLIGHT_COMPLETE', files=len(members), proofRenewal=fresh.sequence)
             for row in members:
+                selected_group = group if group is not None and row['path'] == group['source'] else None
                 fresh.ensure(); backend.verify_file(row)
+                verify_model_link_group(selected_group, members, backend.cold if group is not None else None, resolver, backend)
                 audit.record('FILE_DELETE_INTENT', **row)
-                fresh.ensure(); backend.verify_file(row); attempts += 1
+                fresh.ensure(); backend.verify_file(row)
+                verify_model_link_group(selected_group, members, backend.cold if group is not None else None, resolver, backend)
+                if selected_group is not None:
+                    # Ancestor metadata reads must not spend the proof's TTL.
+                    fresh.ensure(); backend.verify_file(row)
+                attempts += 1
                 backend.delete_file(row); deleted += 1
                 audit.record('FILE_DELETED', path=row['path'])
+                if selected_group is not None:
+                    verify_retained_model_link(selected_group, backend.cold, resolver)
+                    audit.record('MODEL_ALIAS_RETAINED', path=group['retained']['path'], remainingLinks=1)
         result = {'status': 'SELECTED_FIXED_ORIGINALS_RETIRED', 'profile': plan['profile'], 'filesDeleted': deleted,
                   'directoriesRemoved': 0, 'retained': plan['retained'], 'allDirectoriesRetained': True,
-                  'manifestSha256': plan['manifestSha256'], 'unknownCandidatesTouched': False}
+                  'manifestSha256': plan['manifestSha256'], 'unknownCandidatesTouched': False,
+                  **({'retainedModelLink': {'path': group['retained']['path'], 'remainingLinks': 1}} if group is not None else {})}
         audit.record('COMPLETED', **result); return result
     except BaseException:
         audit.record('PARTIAL_OR_REFUSED', confirmedFilesDeleted=deleted, fileDispositionAttempts=attempts,
@@ -294,14 +419,14 @@ def main(argv=None):
                               'files': len(plan['members']), 'originalFilesDeleted': 0})); return 0
         need(args.ssh_host and args.plan and args.plan_sha256 and args.current_receipt and args.custody_receipt,
              'EXPLICIT_CURRENT_HOST_PLAN_AND_CLOUD_CONTROLS_REQUIRED')
-        plan = load_plan(args, core, cold, proof); resolver = StrictResolver(plan['members'])
+        plan = load_plan(args, core, cold, proof)
+        resolver = StrictResolver(plan['members'], plan.get('closedModelHardlinkGroup'))
         audit = core.Audit(args.output, cold)
         result = apply_plan(plan, core, proof, core.WindowsBackend(cold, source_resolver=resolver),
                             core.LiveAttestor(proof, args, helper_name='attest-fixed-originals.py'), audit)
         cold.utility().write_json(audit.directory / 'result.json', result); print(json.dumps(result)); return 0
     except BaseException as error:
-        print(json.dumps({'status': 'REFUSED_OR_PARTIAL', 'errorType': type(error).__name__,
-            'automaticResumeAllowed': False, 'scopeExpanded': False}), file=sys.stderr); return 1
+        print(json.dumps(public_failure(error)), file=sys.stderr); return 1
     finally:
         if audit is not None: audit.close()
 

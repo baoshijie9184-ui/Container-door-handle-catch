@@ -717,6 +717,16 @@
     "allowInfrastructureOptInSkips": true,
     "requiredClasses": [
       {
+        "className": "com.ruanzhu.doorhandle.module.ai.service.AgentScopeConversationServiceTest",
+        "minimumTests": 23,
+        "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/service/AgentScopeConversationServiceTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.ai.journal.AgentJournalIntegrationTest",
+        "minimumTests": 7,
+        "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/journal/AgentJournalIntegrationTest.java"
+      },
+      {
         "className": "com.ruanzhu.doorhandle.common.SafePathResolverTest",
         "minimumTests": 6,
         "source": "doorhandle-common/src/test/java/com/ruanzhu/doorhandle/common/SafePathResolverTest.java"
@@ -1094,7 +1104,7 @@
       },
       {
         "module": "tests_python.test_local_fixed_originals_retirement",
-        "minimumTests": 76,
+        "minimumTests": 107,
         "source": "tests_python/test_local_fixed_originals_retirement.py",
         "allowedSkippedTests": []
       },
