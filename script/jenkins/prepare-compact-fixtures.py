@@ -359,13 +359,17 @@ class PreparationMonitor:
             while not self.stop.wait(0.5):
                 self.measure()
         except BaseException as error:
-            self.fail(type(error).__name__)
+            self.fail(error, worker='collector')
 
-    def fail(self, reason):
+    def fail(self, error, *, worker):
+        details = failure_details(error)
         with self.lock:
             if self.failed.is_set() or self.stop.is_set():
                 return
-            self.failure = {'status': 'FAILED_OR_UNKNOWN', 'reason': reason, 'ownerToken': self.token,
+            self.failure = {'status': 'FAILED_OR_UNKNOWN', 'reason': details['errorType'],
+                            'worker': worker if worker in ('collector', 'watcher') else 'unknown',
+                            **details, 'ownerToken': self.token,
+                            'lastProbeAgeSeconds': max(0, time.monotonic() - self.measured_at),
                             'stopScope': 'OWNED_ATTEMPT_ONLY', 'evidenceRetained': True}
             self.failed.set()
         try:
@@ -395,7 +399,7 @@ class PreparationMonitor:
                     result = self.budget.check_phase(phase, probe)
                     require(result['status'] == 'MEASUREMENT_ADMITTED', 'Current owned phase exceeded its admitted resource envelope')
         except BaseException as error:
-            self.fail(type(error).__name__)
+            self.fail(error, worker='watcher')
 
     def admit(self, name, growth, inputs, *, mysql=False, java=False):
         self.check(); probe = self.measure(); self.phase_index += 1
@@ -697,6 +701,21 @@ class Preparation:
         self.journal['updatedAtUtc'] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
         write_json(self.journal_file, self.journal, replace=True)
 
+    def retain_failure(self, error):
+        if getattr(self, 'failure_origin', None) is not None:
+            return self.failure_origin
+        self.failure_origin = failure_details(error)
+        if self.journal is not None:
+            try:
+                write_json(self.work / 'failure.json', {
+                    'schemaVersion': 1, 'kind': 'doorhandle-compact-fixture-failure',
+                    'release': self.args.tag, 'commit': self.args.commit, 'sourceSha256': self.args.source_sha256,
+                    'phase': self.journal.get('phase'),
+                    'resourcePhase': self.journal.get('activeResourcePhase'), **self.failure_origin})
+            except BaseException:
+                pass
+        return self.failure_origin
+
     def bind_source_exports(self, original):
         source = {'containerId': original['Id'], 'imageId': original['Image'],
                   'project': PROJECT, 'service': 'mysql'}
@@ -816,6 +835,9 @@ class Preparation:
         try:
             result = self.prepare_controlled()
             succeeded = True
+        except BaseException as error:
+            self.retain_failure(error)
+            raise
         finally:
             if self.resources is not None:
                 self.resources.close(not succeeded)
@@ -1270,22 +1292,18 @@ def main():
         print(json.dumps(result)); return 0
     except BaseException as error:
         details = failure_details(error)
+        final_details = details
         if instance and instance.journal:
             if args.phase == 'prepare':
-                try:
-                    write_json(instance.work / 'failure.json', {
-                        'schemaVersion': 1, 'kind': 'doorhandle-compact-fixture-failure',
-                        'release': args.tag, 'commit': args.commit, 'sourceSha256': args.source_sha256,
-                        'phase': instance.journal.get('phase'),
-                        'resourcePhase': instance.journal.get('activeResourcePhase'), **details})
-                except BaseException:
-                    pass
+                details = instance.retain_failure(error)
             try:
                 instance.save('FAILED_OR_UNKNOWN_RETAINED')
             except BaseException:
                 pass
         print('Fixture preparation/control failed; do not use a readiness flag. Preserve private owned evidence on ECS.', file=sys.stderr)
         print(json.dumps(details, sort_keys=True), file=sys.stderr)
+        if final_details != details:
+            print(json.dumps({'cleanupOrControlFailure': final_details}, sort_keys=True), file=sys.stderr)
         return 2
 
 

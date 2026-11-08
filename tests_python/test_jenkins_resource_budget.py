@@ -14,6 +14,7 @@ import threading
 import time
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 
 MODULE = Path(__file__).resolve().parents[1] / 'script' / 'jenkins' / 'ecs-resource-budget.py'
@@ -278,6 +279,78 @@ class ControlledPreparationBudgetTests(unittest.TestCase):
 
 
 class PreparationEnforcementTests(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == 'linux', 'Private failure retention is verified only on ECS Linux')
+    def test_primary_failure_is_preserved_before_cleanup_and_never_replaced_by_it(self):
+        with tempfile.TemporaryDirectory() as temp:
+            preparation = preparer.Preparation.__new__(preparer.Preparation)
+            preparation.work = Path(temp)
+            preparation.attempt = preparation.work / 'attempt'
+            preparation.args = SimpleNamespace(tag='ci-123-' + 'b' * 12, commit='b' * 40, source_sha256='a' * 64)
+            preparation.journal = {'phase': 'SOURCE_EXPORT_BOUND', 'activeResourcePhase': 'source-export'}
+            def prepare_controlled():
+                preparer.require(False, 'MYSQL_PWD=synthetic-primary-secret')
+            def close(failed):
+                self.assertTrue(failed)
+                self.assertTrue((preparation.work / 'failure.json').is_file())
+                preparation.journal['phase'] = 'OWNED_SERVER_STOPPED'
+                raise ValueError('synthetic-secondary-cleanup-secret')
+            preparation.prepare_controlled = prepare_controlled
+            preparation.resources = SimpleNamespace(close=close)
+            with self.assertRaisesRegex(ValueError, 'synthetic-secondary-cleanup-secret'):
+                preparation.prepare()
+            file = preparation.work / 'failure.json'
+            raw = file.read_bytes(); value = json.loads(raw)
+            self.assertEqual('SOURCE_EXPORT_BOUND', value['phase'])
+            self.assertEqual('source-export', value['resourcePhase'])
+            self.assertEqual('ValueError', value['errorType'])
+            self.assertTrue(any(v['function'] == 'require' for v in value['locations']))
+            self.assertEqual(preparation.failure_origin, preparation.retain_failure(KeyError('later secret')))
+            self.assertEqual(raw, file.read_bytes())
+            self.assertNotIn(b'secret', raw)
+            self.assertFalse((preparation.attempt / '.fixtures-ready.json').exists())
+
+    def failed_monitor(self, folder):
+        monitor = preparer.PreparationMonitor.__new__(preparer.PreparationMonitor)
+        monitor.lock = threading.Lock(); monitor.failed = threading.Event(); monitor.stop = threading.Event()
+        monitor.token = 'e' * 32; monitor.measured_at = time.monotonic()
+        monitor.preparation = SimpleNamespace(work=folder)
+        return monitor
+
+    @unittest.skipUnless(sys.platform == 'linux', 'Native monitoring failure evidence is verified only on ECS Linux')
+    def test_collector_retains_its_source_location_without_error_payload(self):
+        with tempfile.TemporaryDirectory() as temp:
+            monitor = self.failed_monitor(Path(temp))
+            def measure():
+                preparer.require(False, 'MYSQL_PWD=synthetic-measure-secret')
+            monitor.measure = measure
+            with patch.object(preparer.os, 'kill') as kill:
+                monitor.collect()
+                kill.assert_called_once_with(os.getpid(), signal.SIGUSR1)
+            raw = (Path(temp) / 'resource-failure.json').read_bytes(); value = json.loads(raw)
+            self.assertTrue(monitor.failed.is_set())
+            self.assertEqual('collector', value['worker'])
+            self.assertEqual('ValueError', value['errorType'])
+            self.assertTrue(any(v['function'] == 'collect' for v in value['locations']))
+            self.assertGreaterEqual(value['lastProbeAgeSeconds'], 0)
+            self.assertNotIn(b'synthetic-measure-secret', raw)
+
+    @unittest.skipUnless(sys.platform == 'linux', 'Monotonic monitoring gates are verified only on ECS Linux')
+    def test_watcher_distinguishes_missed_schedule_from_stale_measurement_without_weakening_either(self):
+        locations = []
+        for case, ticks, measured in (('schedule', [10, 13, 14], 10), ('stale', [10, 11, 12], 8)):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temp:
+                monitor = self.failed_monitor(Path(temp)); monitor.measured_at = measured
+                with patch.object(preparer.time, 'monotonic', side_effect=ticks), patch.object(preparer.os, 'kill') as kill:
+                    monitor.watch()
+                    kill.assert_called_once_with(os.getpid(), signal.SIGUSR1)
+                value = json.loads((Path(temp) / 'resource-failure.json').read_bytes())
+                self.assertTrue(monitor.failed.is_set())
+                self.assertEqual('watcher', value['worker'])
+                self.assertEqual(4, value['lastProbeAgeSeconds'])
+                frames = [v for v in value['locations'] if v['function'] == 'watch']
+                self.assertEqual(1, len(frames)); locations.append(frames[0]['line'])
+        self.assertNotEqual(locations[0], locations[1])
+
     @unittest.skipUnless(sys.platform == 'linux', 'The real source-capability shell runs only on ECS Linux')
     def test_source_capability_reads_the_explicit_shell_pid_and_only_publishes_after_success(self):
         source_id = 'c' * 64

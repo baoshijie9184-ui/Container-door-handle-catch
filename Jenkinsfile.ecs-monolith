@@ -37,6 +37,7 @@ pipeline {
         string(name: 'COLD_HISTORY_SNAPSHOT', defaultValue: '', trim: true, description: '同次验证额外保全4041个历史测试和工具回执目录的固定v2字节包')
         string(name: 'COLD_HISTORY_ECS_SNAPSHOT', defaultValue: '', trim: true, description: '同次验证复用ECS上已核验的v2历史目录包；与对应本地输入互斥')
         string(name: 'LOCAL_MYSQL_SNAPSHOT', defaultValue: '', trim: true, description: '已授权本机45表只读导出包；源码验证后在ECS独立双恢复核验，不合入生产')
+        string(name: 'LOCAL_MYSQL_ECS_SNAPSHOT', defaultValue: '', trim: true, description: '复用ECS已核验的45表导出封存目录；与本地输入互斥，在本轮重新独立双恢复')
         string(name: 'LOCAL_MYSQL_FIXTURE_SETTINGS', defaultValue: '', trim: true, description: '45表恢复使用的现有ECS私有夹具JSON；仅读取已核对的MySQL镜像身份')
         booleanParam(name: 'RECLAIM_OLD_BUILD_OUTPUTS', defaultValue: true, description: '本构建完整验证通过后，按原始证据与精确计划清理旧构建可再生输出，保留业务数据和报告')
         string(name: 'DEPLOY_HOST', defaultValue: "${params.DEPLOY_HOST ?: ''}", trim: true, description: '流水线外启动 ECS 后核对的当前地址；首次为空，不自动开机')
@@ -118,6 +119,7 @@ pipeline {
                     env.COLD_HISTORY_SNAPSHOT = params.COLD_HISTORY_SNAPSHOT?.trim() ?: ''
                     env.COLD_HISTORY_ECS_SNAPSHOT = params.COLD_HISTORY_ECS_SNAPSHOT?.trim() ?: ''
                     env.LOCAL_MYSQL_SNAPSHOT = params.LOCAL_MYSQL_SNAPSHOT?.trim() ?: ''
+                    env.LOCAL_MYSQL_ECS_SNAPSHOT = params.LOCAL_MYSQL_ECS_SNAPSHOT?.trim() ?: ''
                     env.LOCAL_MYSQL_FIXTURE_SETTINGS = params.LOCAL_MYSQL_FIXTURE_SETTINGS?.trim() ?: ''
                     env.CANDIDATE_BUILD_TOOLS_ARCHIVE = params.CANDIDATE_BUILD_TOOLS_ARCHIVE?.trim() ?: ''
                     if (env.CANDIDATE_BUILD_TOOLS_ARCHIVE && !(params.ACTION in ['verify-runtime', 'compact-cutover'])) error('Candidate build inputs are only accepted by runtime verification or compact cutover')
@@ -126,8 +128,9 @@ pipeline {
                     if (env.COLD_STORES_SNAPSHOT && env.COLD_STORES_ECS_SNAPSHOT) error('Choose exactly one local or ECS historical cold-store snapshot input')
                     if (env.COLD_HISTORY_SNAPSHOT && env.COLD_HISTORY_ECS_SNAPSHOT) error('Choose exactly one local or ECS additional historical test-store input')
                     if ((env.COLD_HISTORY_SNAPSHOT || env.COLD_HISTORY_ECS_SNAPSHOT) && env.COLD_STORES_PROFILE == 'cold-store-history-v2' && (env.COLD_STORES_SNAPSHOT || env.COLD_STORES_ECS_SNAPSHOT)) error('The same fixed history profile cannot be preserved twice in one build')
-                    if ((env.LOCAL_MYSQL_SNAPSHOT && !env.LOCAL_MYSQL_FIXTURE_SETTINGS) || (!env.LOCAL_MYSQL_SNAPSHOT && env.LOCAL_MYSQL_FIXTURE_SETTINGS)) error('Local MySQL custody requires both the sealed export packet and reviewed private ECS image settings')
-                    if (params.ACTION == 'verify-embedding' && (params.DOORHANDLE_CI_SCOPE != 'source' || params.DOORHANDLE_CI_AUTO_COMPACT_FIXTURES || env.LEGACY_SOURCE_SNAPSHOT || env.LEGACY_SOURCE_ECS_SNAPSHOT || env.LOCAL_ARTIFACTS_SNAPSHOT || env.LOCAL_ARTIFACTS_ECS_SNAPSHOT || env.LOCAL_ARTIFACTS_PROFILE != 'additional-local-artifacts-v1' || env.COLD_STORES_SNAPSHOT || env.COLD_STORES_ECS_SNAPSHOT || env.COLD_HISTORY_SNAPSHOT || env.COLD_HISTORY_ECS_SNAPSHOT || env.LOCAL_MYSQL_SNAPSHOT || env.LOCAL_MYSQL_FIXTURE_SETTINGS || params.PRODUCTION_RELEASE_ENABLED)) error('Embedding verification is an independent source component check without legacy migration or production release')
+                    if (env.LOCAL_MYSQL_SNAPSHOT && env.LOCAL_MYSQL_ECS_SNAPSHOT) error('Choose exactly one local or ECS MySQL export snapshot input')
+                    if (((env.LOCAL_MYSQL_SNAPSHOT || env.LOCAL_MYSQL_ECS_SNAPSHOT) && !env.LOCAL_MYSQL_FIXTURE_SETTINGS) || (!(env.LOCAL_MYSQL_SNAPSHOT || env.LOCAL_MYSQL_ECS_SNAPSHOT) && env.LOCAL_MYSQL_FIXTURE_SETTINGS)) error('MySQL custody requires one sealed local or ECS export packet and reviewed private ECS image settings')
+                    if (params.ACTION == 'verify-embedding' && (params.DOORHANDLE_CI_SCOPE != 'source' || params.DOORHANDLE_CI_AUTO_COMPACT_FIXTURES || env.LEGACY_SOURCE_SNAPSHOT || env.LEGACY_SOURCE_ECS_SNAPSHOT || env.LOCAL_ARTIFACTS_SNAPSHOT || env.LOCAL_ARTIFACTS_ECS_SNAPSHOT || env.LOCAL_ARTIFACTS_PROFILE != 'additional-local-artifacts-v1' || env.COLD_STORES_SNAPSHOT || env.COLD_STORES_ECS_SNAPSHOT || env.COLD_HISTORY_SNAPSHOT || env.COLD_HISTORY_ECS_SNAPSHOT || env.LOCAL_MYSQL_SNAPSHOT || env.LOCAL_MYSQL_ECS_SNAPSHOT || env.LOCAL_MYSQL_FIXTURE_SETTINGS || params.PRODUCTION_RELEASE_ENABLED)) error('Embedding verification is an independent source component check without legacy migration or production release')
                     if (params.DOORHANDLE_CI_SCOPE == 'source' && env.DOORHANDLE_CI_FIXTURE_MANIFEST) error('Source verification cannot accept a MySQL fixture manifest')
                     if (params.DOORHANDLE_CI_AUTO_COMPACT_FIXTURES) {
                         if (params.DOORHANDLE_CI_SCOPE != 'mysql' || env.DOORHANDLE_CI_FIXTURE_MANIFEST || !env.DOORHANDLE_CI_FIXTURE_SETTINGS) error('Automatic compact fixtures require mysql scope, private ECS settings and no conflicting manual manifest')
@@ -283,7 +286,7 @@ pipeline {
             }
         }
         stage('Recover approved local MySQL export on ECS') {
-            when { expression { params.ACTION != 'rollback' && env.LOCAL_MYSQL_SNAPSHOT } }
+            when { expression { params.ACTION != 'rollback' && (env.LOCAL_MYSQL_SNAPSHOT || env.LOCAL_MYSQL_ECS_SNAPSHOT) } }
             steps {
                 script { env.CI_LOCAL_MYSQL_ATTEMPTED = 'true' }
                 withCredentials([

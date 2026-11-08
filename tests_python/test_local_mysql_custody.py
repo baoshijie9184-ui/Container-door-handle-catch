@@ -3,6 +3,7 @@ import copy
 import gzip
 import hashlib
 import importlib.util
+import os
 from pathlib import Path
 import shutil
 import select
@@ -504,3 +505,198 @@ with open(sys.argv[1],'x+b') as stream:
     finally:
         _, errors = process.communicate(b'x', timeout=5)
     assert process.returncode == 0 and not errors
+
+
+@pytest.fixture
+def retained_sql_fixture(export_fixture, monkeypatch):
+    """Real closed bytes/logical receipts; the existing CI envelope guard is isolated."""
+    source = export_fixture; custody.pack(source.export, source.control, source.output)
+    root = source.output.parent / 'remote-root'; old_tag = 'ci-7-' + 'a' * 12; new_tag = 'ci-8-' + 'b' * 12
+    old_work = root / 'verification' / old_tag / 'checkout/work'; old_work.mkdir(parents=True)
+    new_work = root / 'verification' / new_tag / 'checkout/work'; new_work.mkdir(parents=True)
+    inbox = root / 'inbox' / old_tag; (inbox / 'tool-runtime').mkdir(parents=True)
+    (inbox / 'source.tar.gz').write_bytes(b'closed synthetic source bytes, never executed')
+    (inbox / 'tool-runtime/manifest.json').write_bytes(b'{"synthetic":"tool binding"}')
+    driver = old_work.parent / 'driver.log'; driver.write_bytes(b'')  # Empty CI logs are legitimate.
+    identity = {'instanceId': 'i-fixture', 'machineId': 'c' * 32, 'executionLocation': 'ECS'}
+    record = {'schema': 1, 'kind': 'doorhandle-ecs-ci', 'release': old_tag, 'commit': 'a' * 40,
+        'sourceSha256': custody.digest(inbox / 'source.tar.gz'), 'identity': identity, 'scope': 'source',
+        'status': 'PASS', 'verificationExitCode': 0, 'finishedAt': 'synthetic-finished', 'lifecycle': 'managed-outside-jenkins',
+        'toolRuntime': {'manifestSha256': custody.digest(inbox / 'tool-runtime/manifest.json')},
+        'reportFiles': [{'path': 'driver.log', 'bytes': 0, 'sha256': custody.digest(driver)}]}
+    custody.write(old_work.parents[1] / 'verification-receipt.json', record)
+    old_context = {'version': 1, 'kind': custody.KIND, 'profile': custody.PROFILE,
+        **{key: record[key] for key in ('release', 'commit', 'sourceSha256', 'identity')},
+        'verificationReceiptSha256': custody.digest(old_work.parents[1] / 'verification-receipt.json')}
+    context = dict(old_context, release=new_tag, commit='b' * 40, sourceSha256='d' * 64, verificationReceiptSha256='e' * 64)
+    utility = custody.common(); utility.resource_guard = lambda *args: None
+    monkeypatch.setattr(custody, 'common', lambda: utility)
+    monkeypatch.setattr(custody, 'admit', lambda args: (old_work, old_context))
+    bindings = {'manifest_sha256': custody.digest(source.output / 'custody.json'),
+        'manifest_bytes': (source.output / 'custody.json').stat().st_size,
+        'archive_sha256': custody.digest(source.output / 'originals.tar.gz'),
+        'archive_bytes': (source.output / 'originals.tar.gz').stat().st_size}
+    args = SimpleNamespace(root=root, tag=new_tag, commit='b' * 40, source_sha256='d' * 64,
+        instance_id=identity['instanceId'], machine_id=identity['machineId'], source_snapshot_directory=old_work / custody.SNAPSHOT, **bindings)
+    custody.prepare(args)
+    for name in ('custody.json', 'originals.tar.gz'):
+        (old_work / custody.SNAPSHOT / name).write_bytes((source.output / name).read_bytes())
+    custody.verify_restore(args)
+    directory = old_work / 'local-mysql-recovery'; directory.mkdir(mode=0o700)
+    first, second = snapshots(); servers = []
+    for ordinal, value in zip(('a', 'b'), (first, second)):
+        value['metadataSha256'] = custody.sha(value['metadata'])
+        folder = directory / ordinal; folder.mkdir(mode=0o700)
+        custody.write(folder / 'full-recovery-private.json', value)
+        servers.append({**{key: value[key] for key in ('containerId', 'serverUuid', 'volume')}, 'ordinal': ordinal,
+            'stopped': True, 'exitCode': 0, 'oomKilled': False, 'containerRemoved': True, 'volumeRemoved': True})
+    (directory / 'resource-probes.jsonl').write_bytes(b'{"syntheticMeasured":true}\n')
+    controller = object.__new__(recovery.Recovery); controller.work = old_work; controller.directory = directory
+    controller.bytes = custody; controller.utility = utility; controller.context = old_context
+    controller.state = {'servers': servers}
+    owner = {**old_context, 'directory': str(directory), 'originalContainerId': 'f' * 64,
+             'servers': servers, 'status': 'SQL_DOUBLE_RESTORED_VERIFIED',
+             'byteReceiptSha256': custody.digest(old_work / custody.RESTORE / 'restore-receipt.json')}
+    public = {**old_context, 'status': 'SQL_DOUBLE_RESTORED_VERIFIED', 'tableCount': 45, 'restoredRows': 45,
+        'rawSqlSha256': custody.RAW_SHA, 'gzipSha256': custody.GZIP_SHA, 'allOriginalRowsPreserved': True,
+        'liveSourceRowHashesVerified': False, 'productionMerged': False, 'retirementAllowed': False,
+        'eventsExecuted': False, 'paidModelCalls': 0, 'cleanup': 'STOPPED',
+        'snapshotSha256': first['snapshot']['snapshotSha256'], 'metadataSha256': first['metadataSha256'],
+        'byteReceiptSha256': owner['byteReceiptSha256'], 'resourceProbeSha256': custody.digest(directory / 'resource-probes.jsonl')}
+    def seal():
+        owner['cleanupEvidence'] = {name: custody.digest(old_work / name) for name in catalogue_names}
+        public['logicalEvidenceCatalogueSha256'] = custody.sha(owner['cleanupEvidence'])
+        (directory / 'public-recovery.json').write_bytes(custody.encoded(public))
+        owner['publicRecoverySha256'] = custody.digest(directory / 'public-recovery.json')
+        (old_work / 'local-mysql-recovery-owner.json').write_bytes(custody.encoded(owner))
+        for path in (directory / 'public-recovery.json', old_work / 'local-mysql-recovery-owner.json'): path.chmod(0o600)
+    # Build the same raw evidence catalogue without running either recovery DB.
+    for path in root.rglob('*'):
+        path.chmod(0o700 if path.is_dir() else 0o600)
+    root.chmod(0o700); catalogue_names = controller.evidence_bindings(); seal()
+    stopped = {**old_context, 'status': 'STOPPED', 'containers': [node['containerId'] for node in servers],
+        'originalsChanged': False, 'derivedContainersRemoved': 2, 'derivedVolumesRemoved': 2,
+        'derivedVolumesRetained': 0, 'recoveryVolumesRetained': False}
+    custody.write(directory / 'public-cleanup.json', stopped)
+    cleanup = load('sql_reuse_quiescence_contract', 'script/jenkins/cleanup-ecs-builds.py')
+    state = SimpleNamespace(rows=[], calls=[], root=root, old_work=old_work, new_work=new_work, args=args,
+        owner=owner, public=public, stopped=stopped, directory=directory, seal=seal)
+    monkeypatch.setattr(cleanup, 'docker_snapshot', lambda: state.rows)
+    monkeypatch.setattr(cleanup, 'process_references', lambda path: state.calls.append(('process', path)))
+    guard = load('sql_reuse_terminal_contract', 'script/jenkins/reuse-legacy-source.py')
+    def terminal(root, attempt, actual, observed, cleaner, verifier):
+        state.calls.append(('terminal', attempt)); assert actual == record and observed == identity
+        binding = {'checkout': old_work.parent, 'token': '9' * 24}
+        cleaner.quiescent(binding, old_tag, cleaner.docker_snapshot()); return binding
+    monkeypatch.setattr(guard, 'terminal_build', terminal)
+    monkeypatch.setattr(custody, 'reuse_modules', lambda args: (guard, SimpleNamespace(MAX_FILE_BYTES=32 * custody.MIB), cleanup))
+    monkeypatch.setattr(custody, 'admit', lambda args: (new_work, context))
+    return state
+
+
+def test_ecs_sql_description_and_same_fd_copy_restore_every_byte_without_database(retained_sql_fixture):
+    value = retained_sql_fixture; old = value.old_work / custody.SNAPSHOT
+    before = {name: custody.digest(old / name) for name in ('custody.json', 'originals.tar.gz')}
+    description = custody.describe(value.args)
+    value.args.source_receipt_sha256 = description['sourceCustodyReceiptSha256']
+    result = custody.reuse(value.args)
+    assert description['status'] == 'DESCRIBED' and description['files'] == 13
+    assert result['status'] == 'BYTES_RESTORED_VERIFIED' and result['databasesOpened'] == 0
+    assert result['sqlDoubleRestoreVerified'] is False and result['retirementAllowed'] is False and result['productionMerged'] is False
+    for name, checksum in before.items():
+        assert custody.digest(old / name) == checksum == custody.digest(value.new_work / custody.SNAPSHOT / name)
+    assert (value.new_work / custody.RESTORE / 'database.sql').read_bytes() == (value.old_work / custody.RESTORE / 'database.sql').read_bytes()
+    assert len([call for call in value.calls if call[0] == 'terminal']) == 2
+
+
+@pytest.mark.parametrize('damage', ['same-build', 'future-build', 'outside-root', 'extra-snapshot-file', 'archive', 'member',
+    'double-row', 'same-server', 'unremoved', 'retained-volume', 'cleanup-pair', 'byte-claim', 'logical-claim',
+    'missing-logical-file', 'source-archive', 'raw-report', 'owned-container', 'checkout-bind'])
+def test_ecs_sql_reuse_requires_complete_older_bytes_double_restore_and_quiescence(retained_sql_fixture, damage):
+    value = retained_sql_fixture; old = value.old_work / custody.SNAPSHOT
+    if damage == 'same-build': value.args.tag = 'ci-7-' + 'a' * 12
+    if damage == 'future-build': value.args.tag = 'ci-6-' + 'b' * 12
+    if damage == 'outside-root': value.args.source_snapshot_directory = value.new_work
+    if damage == 'extra-snapshot-file': (old / 'unknown').write_bytes(b'unreviewed')
+    if damage == 'archive': (old / 'originals.tar.gz').write_bytes(b'X' * (old / 'originals.tar.gz').stat().st_size)
+    if damage == 'member': (value.old_work / custody.RESTORE / 'database.sql').write_bytes(b'X' * custody.RAW_BYTES)
+    if damage in ('double-row', 'same-server'):
+        path = value.directory / 'b/full-recovery-private.json'; document = custody.read(path)
+        if damage == 'double-row': document['snapshot']['tables']['table_0']['rowsSha256'] = '0' * 64
+        else:
+            document['containerId'] = value.owner['servers'][0]['containerId']; value.owner['servers'][1]['containerId'] = document['containerId']
+            value.stopped['containers'] = [node['containerId'] for node in value.owner['servers']]
+            (value.directory / 'public-cleanup.json').write_bytes(custody.encoded(value.stopped))
+        path.write_bytes(custody.encoded(document)); value.seal()
+    if damage == 'unremoved': value.owner['servers'][1]['volumeRemoved'] = False; value.seal()
+    if damage == 'retained-volume': value.stopped['derivedVolumesRetained'] = 1
+    if damage == 'cleanup-pair': value.stopped['containers'] = ['0' * 64, '1' * 64]
+    if damage in ('retained-volume', 'cleanup-pair'): (value.directory / 'public-cleanup.json').write_bytes(custody.encoded(value.stopped))
+    if damage == 'byte-claim':
+        path = value.old_work / custody.PUBLIC; document = custody.read(path); document['retirementAllowed'] = True
+        path.write_bytes(custody.encoded(document))
+    if damage == 'logical-claim': value.public['productionMerged'] = True; value.seal()
+    if damage == 'missing-logical-file': (value.directory / 'b/full-recovery-private.json').unlink()
+    if damage == 'source-archive': (value.root / 'inbox' / ('ci-7-' + 'a' * 12) / 'source.tar.gz').write_bytes(b'changed')
+    if damage == 'raw-report': (value.old_work.parent / 'driver.log').write_bytes(b'changed')
+    if damage == 'owned-container': value.rows = [('a' * 64, False, False, 0, 'ci-7-' + 'a' * 12, '', [])]
+    if damage == 'checkout-bind': value.rows = [('a' * 64, False, False, 0, 'foreign', '', [{'Type': 'bind', 'Source': str(value.old_work.parent)}])]
+    with pytest.raises((ValueError, OSError, custody.common().CustodyError)): custody.describe(value.args)
+    assert not (value.new_work / custody.SNAPSHOT).exists()
+
+
+@pytest.mark.parametrize('damage', ['description', 'manifest-size', 'archive-sha', 'existing-target'])
+def test_sql_reuse_never_overwrites_or_accepts_drift_after_description(retained_sql_fixture, damage):
+    value = retained_sql_fixture; description = custody.describe(value.args)
+    value.args.source_receipt_sha256 = description['sourceCustodyReceiptSha256']
+    if damage == 'description':
+        path = value.old_work / custody.PUBLIC; path.write_bytes(path.read_bytes() + b'\n')
+    if damage == 'manifest-size': value.args.manifest_bytes += 1
+    if damage == 'archive-sha': value.args.archive_sha256 = '0' * 64
+    if damage == 'existing-target':
+        target = value.new_work / custody.SNAPSHOT; target.mkdir(mode=0o700); (target / 'unknown').write_bytes(b'keep')
+    with pytest.raises(ValueError): custody.reuse(value.args)
+    assert not (value.new_work / custody.PUBLIC).exists()
+    if damage == 'existing-target': assert (value.new_work / custody.SNAPSHOT / 'unknown').read_bytes() == b'keep'
+
+
+@pytest.mark.parametrize('damage', ['symlink', 'hardlink', 'fifo', 'writable', 'during-copy'])
+def test_old_sql_files_need_stable_private_regular_single_link_fds(retained_sql_fixture, monkeypatch, damage):
+    value = retained_sql_fixture; description = custody.describe(value.args)
+    value.args.source_receipt_sha256 = description['sourceCustodyReceiptSha256']
+    path = value.old_work / custody.SNAPSHOT / 'originals.tar.gz'
+    if damage == 'symlink':
+        target = path.with_suffix('.retained'); path.rename(target); path.symlink_to(target)
+    if damage == 'hardlink': os.link(path, value.old_work / 'extra-alias')
+    if damage == 'fifo': path.unlink(); os.mkfifo(path, 0o600)
+    if damage == 'writable': path.chmod(0o666)
+    if damage == 'during-copy':
+        fired = []
+        def drift(_path, additional=0):
+            if additional == 0 and not fired:
+                fired.append(True); before = path.stat(); os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns + 1))
+        monkeypatch.setattr(custody.common(), 'resource_guard', drift)
+    with pytest.raises((ValueError, OSError, custody.common().CustodyError)): custody.reuse(value.args)
+    assert not (value.new_work / custody.PUBLIC).exists()
+
+
+@pytest.mark.parametrize('damage', ['changed-source', 'missing-member', 'linked-source'])
+def test_sql_reuse_guards_cannot_be_imported_before_their_fixed_archive_hashes_match(tmp_path, monkeypatch, damage):
+    utility = custody.common(); original_root = custody.ROOT
+    root = tmp_path / 'ci'; tag = 'ci-9-' + 'a' * 12; checkout = root / 'verification' / tag / 'checkout'
+    names = ('reuse-legacy-source.py', 'verify-remote.py', 'cleanup-ecs-builds.py')
+    for name in names:
+        path = checkout / 'script/jenkins' / name; path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes((original_root / 'script/jenkins' / name).read_bytes())
+    archive = root / 'inbox' / tag / 'source.tar.gz'; archive.parent.mkdir(parents=True)
+    with tarfile.open(archive, 'x:gz', format=tarfile.PAX_FORMAT, pax_headers={'comment': 'a' * 40}) as package:
+        for name in names:
+            if damage != 'missing-member' or name != names[-1]: package.add(checkout / 'script/jenkins' / name, arcname='script/jenkins/' + name)
+    target = checkout / 'script/jenkins' / names[-1]
+    if damage == 'changed-source': target.write_bytes(target.read_bytes() + b'\n# changed guard\n')
+    if damage == 'linked-source':
+        retained = target.with_suffix('.saved'); target.rename(retained); target.symlink_to(retained)
+    monkeypatch.setattr(custody, 'ROOT', checkout); monkeypatch.setattr(custody, 'common', lambda: utility)
+    monkeypatch.setattr(custody, 'module', lambda *args: pytest.fail('Unverified reuse code must never be imported'))
+    with pytest.raises((ValueError, KeyError, OSError, utility.CustodyError)):
+        custody.reuse_modules(SimpleNamespace(root=root, tag=tag))

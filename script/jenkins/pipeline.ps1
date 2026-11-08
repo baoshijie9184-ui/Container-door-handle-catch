@@ -331,7 +331,7 @@ if ($Action -in @('PreserveLocalArtifacts', 'PreserveColdStores', 'PreserveLocal
     } elseif ($Action -eq 'PreserveColdStores') {
         & ./script/jenkins/preserve-cold-stores.ps1 -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha -SnapshotDirectory $env:COLD_STORES_SNAPSHOT -EcsSnapshotDirectory $env:COLD_STORES_ECS_SNAPSHOT -Profile $env:COLD_STORES_PROFILE
     } elseif ($Action -eq 'PreserveLocalMySql') {
-        & ./script/jenkins/preserve-local-mysql.ps1 -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha -SnapshotDirectory $env:LOCAL_MYSQL_SNAPSHOT -FixtureSettings $env:LOCAL_MYSQL_FIXTURE_SETTINGS
+        & ./script/jenkins/preserve-local-mysql.ps1 -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha -SnapshotDirectory $env:LOCAL_MYSQL_SNAPSHOT -EcsSnapshotDirectory $env:LOCAL_MYSQL_ECS_SNAPSHOT -FixtureSettings $env:LOCAL_MYSQL_FIXTURE_SETTINGS
     } else {
         & ./script/jenkins/reclaim-build-outputs.ps1 -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha
     }

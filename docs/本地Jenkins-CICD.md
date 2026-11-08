@@ -1,5 +1,9 @@
 # 本地 Jenkins CI/CD 约定
 
+2026-11-08 #118 已终态失败并完成流水线外 `Stopped / StopCharging`。显式 shell PID 导出探测已真实通过；原库只读导出随后遇资源监测失败，未进入测试或数据库验收，已记录资源采样均未越界。当前补齐采集/监测源头位置、观测年龄及清理前首次异常保留，保持原有资源门限，待后续 ECS 回归。14 份 Jenkins 和 43 份 ECS 原始控制已保全，Jenkins 保持运行。
+
+新增 `LOCAL_MYSQL_ECS_SNAPSHOT`：填写旧构建的 `/home/ecs-user/doorhandle-ci/verification/ci-<构建号>-<提交前12位>/checkout/work/local-mysql-export-snapshot`，与 `LOCAL_MYSQL_SNAPSHOT` 互斥，仍需 `LOCAL_MYSQL_FIXTURE_SETTINGS`。只有旧原始验证、完整字节与双恢复、资源移除和静止证明全部闭合才允许同机复用，本轮继续执行双恢复、清理及原有分类。此能力用于后续摆脱本地传输包依赖，不授予生产合入、业务原库删除或本地 SQL 查询权限；新增 31 例尚未实跑。变更后的任务参数须由已提交的 `configure-local.groovy` 配置，不能只手改 Jenkins 页面。
+
 2026-11-08 #117 已终态失败，但固定 OCI、现有 AppArmor profile、RootlessKit 启动和版本探测已实际通过，工具准备为 `PREPARED`。应用包和 Java 17 校验通过后，原库只读导出探测读取 `/proc/self/environ` 未找到合成 nonce；有限只读诊断确认显式 `/proc/$$/environ` 可匹配。当前仅修复探测的三个进程路径，并补充不含消息/SQL/环境的异常类型及控制脚本位置诊断。新增回归只在后续 ECS 流水线执行；本轮没有创建隔离数据库或开始测试、迁移、正式发布。原始证据和清理 `STOPPED` 已保全，实例已从流水线外回读 `Stopped / StopCharging`，Jenkins 保持运行。详见 [ECS 运行约定](ECS-only-runtime.md)。
 
 2026-11-08 #116 终态失败：镜像身份和安全选项检查已通过，RootlessKit 启动约 0.205 秒后被用户命名空间权限拒绝。只读发现 Ubuntu 限制开关为 1，且现有 `rootlesskit (unconfined)` 专用策略已经加载。下一实现显式选择该已有 profile，按固定原文 SHA、root 所有权、稳定句柄及无有效覆盖规则准入，绑定实际请求和启动后的应用名称；不修改、安装或重载主机策略。资源模块登记 30 例，静态与独立复核已过，实际启动与后续数据库验收仍待新提交。原始日志、准确停止回执及 `Stopped / StopCharging` 已保全，Jenkins 保持运行。

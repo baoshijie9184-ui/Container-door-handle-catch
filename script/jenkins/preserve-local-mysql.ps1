@@ -6,7 +6,8 @@ param(
     [Parameter(Mandatory = $true)][string]$Tag,
     [Parameter(Mandatory = $true)][string]$Commit,
     [Parameter(Mandatory = $true)][string]$SourceSha256,
-    [string]$SnapshotDirectory,
+    [string]$SnapshotDirectory = '',
+    [string]$EcsSnapshotDirectory = '',
     [string]$FixtureSettings,
     [ValidateSet('Preserve','Cleanup')][string]$Mode = 'Preserve'
 )
@@ -95,6 +96,15 @@ if ($Mode -eq 'Cleanup') {
     Collect-SqlCleanup | ConvertTo-Json -Compress
     return
 }
+function Ecs-SqlCustody([string]$Operation, [string]$Flags = '') {
+    $result = Invoke-SqlCustody $ssh ($SshOptions + @('-p',$PortText,$Destination,"${helperGuard}python3 -I -B '$helper' $Operation $context $Flags"))
+    return ($result | Select-Object -Last 1) | ConvertFrom-Json
+}
+$localInput = -not [string]::IsNullOrWhiteSpace($SnapshotDirectory)
+$ecsInput = -not [string]::IsNullOrWhiteSpace($EcsSnapshotDirectory)
+Require-SqlCustody ($localInput -xor $ecsInput) 'Choose exactly one local SQL packet or verified older ECS snapshot.'
+$sourceReceiptSha = ''
+if ($localInput) {
 Require-SqlCustody ([IO.Path]::IsPathFullyQualified($SnapshotDirectory)) 'A full local byte-only packet path is required.'
 $local = [IO.Path]::GetFullPath($SnapshotDirectory).TrimEnd('\','/')
 Require-SqlCustody ($local -match '^D:\\AI\\lunwen1\\DoorHandleCatch\\work\\data-migration-20261107\\local-mysql-custody-[A-Za-z0-9_.-]+$') 'Use only the approved new local SQL packet.'
@@ -112,19 +122,42 @@ Require-SqlCustody ($manifest.kind -ceq 'doorhandle-local-mysql-custody' -and $m
     $manifest.status -ceq 'PACKED' -and @($manifest.files).Count -eq 13 -and $manifest.archiveEncoding -ceq 'TAR_GZIP' -and
     $manifest.archiveSha256 -ceq $bindings['originals.tar.gz'].sha256 -and $manifest.archiveBytes -eq $bindings['originals.tar.gz'].bytes -and
     $manifest.exportManifestSha256 -ceq '0b58012469e0babb2031b54d34ed906910b75f9385d8950776776153dde3495d') 'The local packet is not the fixed successful export.'
-$inputFlags = "--manifest-sha256 '$($bindings['custody.json'].sha256)' --manifest-bytes $($bindings['custody.json'].bytes) --archive-sha256 '$($bindings['originals.tar.gz'].sha256)' --archive-bytes $($bindings['originals.tar.gz'].bytes)"
-function Ecs-SqlCustody([string]$Mode) {
-    $result = Invoke-SqlCustody $ssh ($SshOptions + @('-p',$PortText,$Destination,"${helperGuard}python3 -I -B '$helper' $Mode $context $inputFlags"))
-    return ($result | Select-Object -Last 1) | ConvertFrom-Json
+} else {
+    $pattern = '^' + [regex]::Escape($RemoteRoot) + '/verification/ci-[1-9][0-9]*-[a-f0-9]{12}/checkout/work/local-mysql-export-snapshot$'
+    Require-SqlCustody ($EcsSnapshotDirectory -cmatch $pattern -and $EcsSnapshotDirectory -cne "$RemoteRoot/verification/$Tag/checkout/work/local-mysql-export-snapshot") 'SQL reuse requires an earlier same-root fixed snapshot.'
+    $description = Ecs-SqlCustody 'describe' "--source-snapshot-directory '$EcsSnapshotDirectory'"
+    Require-SqlCustody ($description.status -ceq 'DESCRIBED' -and $description.kind -ceq 'doorhandle-local-mysql-custody' -and
+        $description.profile -ceq 'local-mysql-export45-v1' -and $description.release -ceq $Tag -and $description.commit -ceq $Commit -and
+        $description.sourceSha256 -ceq $SourceSha256 -and $description.verificationReceiptSha256 -ceq $verificationSha -and
+        $description.identity.instanceId -ceq $instance -and $description.identity.machineId -ceq $machine -and
+        $description.identity.executionLocation -ceq 'ECS' -and $description.files -eq 13 -and
+        $description.rawSqlSha256 -ceq '6b8bce0cc4da19384d9fc4ce894946c34b9b285dd2e9a150f1211967999e2464' -and
+        $description.gzipSha256 -ceq '8f0a2e9014233dc20f4e26321eb855846bda0ddb689c39d85db33133e447b627' -and
+        $description.productionMerged -is [bool] -and -not $description.productionMerged -and
+        $description.retirementAllowed -is [bool] -and -not $description.retirementAllowed -and
+        $description.sourceCustodyReceiptSha256 -cmatch '^[a-f0-9]{64}$') 'Old ECS SQL custody did not prove its exact source and complete independent recovery.'
+    $bindings = @{'custody.json'=@{bytes=$description.manifestBytes;sha256=$description.manifestSha256};
+                  'originals.tar.gz'=@{bytes=$description.archiveBytes;sha256=$description.archiveSha256}}
+    foreach ($name in @('custody.json','originals.tar.gz')) {
+        $binding = $bindings[$name]; $maximum = if ($name -ceq 'custody.json') { 1MB } else { 32MB }
+        Require-SqlCustody (($binding.bytes -is [int] -or $binding.bytes -is [long]) -and $binding.bytes -gt 0 -and
+            $binding.bytes -le $maximum -and $binding.sha256 -cmatch '^[a-f0-9]{64}$') 'Old ECS SQL input byte bindings are missing or exceed the fixed limits.'
+    }
+    $sourceReceiptSha = $description.sourceCustodyReceiptSha256
 }
-$prepared = Ecs-SqlCustody 'prepare'
+$inputFlags = "--manifest-sha256 '$($bindings['custody.json'].sha256)' --manifest-bytes $($bindings['custody.json'].bytes) --archive-sha256 '$($bindings['originals.tar.gz'].sha256)' --archive-bytes $($bindings['originals.tar.gz'].bytes)"
+if ($localInput) {
+$prepared = Ecs-SqlCustody 'prepare' $inputFlags
 Require-SqlCustody ($prepared.status -ceq 'PREPARED' -and $prepared.release -ceq $Tag -and $prepared.commit -ceq $Commit) 'ECS did not admit the SQL custody destination.'
 foreach ($name in @('custody.json','originals.tar.gz')) {
     $file = Join-Path $local $name
     Invoke-SqlCustody $scp ($SshOptions + @('-P',$PortText,$file,"${Destination}:$RemoteRoot/verification/$Tag/checkout/work/local-mysql-export-snapshot/$name")) | Out-Null
     Require-SqlCustody ((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant() -ceq $bindings[$name].sha256) 'Local packet changed while transferring.'
 }
-$bytes = Ecs-SqlCustody 'verify-restore'
+$bytes = Ecs-SqlCustody 'verify-restore' $inputFlags
+} else {
+    $bytes = Ecs-SqlCustody 'reuse' "$inputFlags --source-snapshot-directory '$EcsSnapshotDirectory' --source-receipt-sha256 '$sourceReceiptSha'"
+}
 Require-SqlCustody ($bytes.status -ceq 'BYTES_RESTORED_VERIFIED' -and $bytes.rawSqlSha256 -ceq '6b8bce0cc4da19384d9fc4ce894946c34b9b285dd2e9a150f1211967999e2464' -and
     $bytes.manifestSha256 -ceq $bindings['custody.json'].sha256 -and $bytes.archiveSha256 -ceq $bindings['originals.tar.gz'].sha256) 'Exact SQL byte preservation failed.'
 $byteArtifact = Join-Path $workspace 'artifacts/local-mysql-custody.json'

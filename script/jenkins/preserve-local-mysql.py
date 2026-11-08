@@ -7,6 +7,7 @@ production activation, local deletion admission or a source row-hash proof.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import gzip
 import hashlib
 import importlib.util
@@ -18,6 +19,7 @@ import shutil
 import stat
 import tarfile
 import time
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[2]
 LOCAL_ROOT = Path('D:/AI/lunwen1/DoorHandleCatch')
@@ -43,6 +45,7 @@ SNAPSHOT = 'local-mysql-export-snapshot'
 RESTORE = 'local-mysql-export-restore'
 OWNER = 'local-mysql-export-owner.json'
 PUBLIC = 'local-mysql-export-public.json'
+TAG = re.compile(r'ci-([1-9][0-9]*)-([a-f0-9]{12})')
 
 
 def need(value, message):
@@ -219,18 +222,23 @@ def admit(args):
 
 
 def inputs(args):
-    need(SHA.fullmatch(args.manifest_sha256) and SHA.fullmatch(args.archive_sha256)
-         and 0 < args.manifest_bytes <= MIB and 0 < args.archive_bytes <= MAX_BYTES, 'Explicit sealed byte bindings required')
+    need(type(args.manifest_sha256) is str and SHA.fullmatch(args.manifest_sha256)
+         and type(args.archive_sha256) is str and SHA.fullmatch(args.archive_sha256)
+         and type(args.manifest_bytes) is int and 0 < args.manifest_bytes <= MIB
+         and type(args.archive_bytes) is int and 0 < args.archive_bytes <= MAX_BYTES, 'Explicit sealed byte bindings required')
     return {'custody.json': {'bytes': args.manifest_bytes, 'sha256': args.manifest_sha256},
             'originals.tar.gz': {'bytes': args.archive_bytes, 'sha256': args.archive_sha256}}
 
 
-def prepare(args):
+def prepare(args, *, retained_targets=None):
     work, context = admit(args); utility = common(); expected = inputs(args)
-    need(not any((work / name).exists() for name in (SNAPSHOT, RESTORE, OWNER, PUBLIC)), 'Use a fresh SQL custody attempt')
+    need(not any((work / name).exists() or (work / name).is_symlink() for name in (SNAPSHOT, RESTORE, OWNER, PUBLIC)), 'Use a fresh SQL custody attempt')
     utility.resource_guard(work, MAX_BYTES * 2)
     write(work / OWNER, {**context, 'inputs': expected}); utility.private_directory(work / SNAPSHOT)
-    for name in expected: os.close(os.open(work / SNAPSHOT / name, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+    for name in expected:
+        fd = os.open(work / SNAPSHOT / name, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+        if retained_targets is None: os.close(fd)
+        else: retained_targets[name] = fd
     return {**context, 'status': 'PREPARED'}
 
 
@@ -292,15 +300,241 @@ def verify_restore(args):
     return {**result, 'publicReceiptSha256': digest(work / PUBLIC)}
 
 
+def reuse_modules(args):
+    """Import only this admitted source archive's read-only evidence guards."""
+    names = ('reuse-legacy-source.py', 'verify-remote.py', 'cleanup-ecs-builds.py')
+    with tarfile.open(Path(args.root) / 'inbox' / args.tag / 'source.tar.gz', 'r:gz') as archive:
+        for name in names:
+            member = archive.getmember('script/jenkins/' + name)
+            need(member.isfile() and 0 < member.size <= MIB
+                 and hashlib.sha256(archive.extractfile(member).read(MIB + 1)).hexdigest()
+                     == digest(common().safe(ROOT / 'script/jenkins' / name)), 'SQL reuse guard differs from fixed source')
+    return tuple(module('sql_reuse_' + name.replace('-', '_').replace('.', '_'), ROOT / 'script/jenkins' / name) for name in names)
+
+
+def reuse_json(path):
+    utility = common(); path = utility.owner_path(path); before = utility.fingerprint(path.lstat())
+    need(0 < path.stat().st_size <= MIB, 'Bounded old SQL control required')
+    with os.fdopen(os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK), 'rb') as stream:
+        need(utility.fingerprint(os.fstat(stream.fileno())) == before, 'Old SQL control changed during open')
+        raw = stream.read(MIB + 1)
+        need(len(raw) <= MIB and utility.fingerprint(os.fstat(stream.fileno())) == before
+             == utility.fingerprint(utility.owner_path(path).lstat()), 'Old SQL control changed during read')
+    def unique(pairs):
+        value = {}
+        for key, item in pairs:
+            need(key not in value, 'Repeated old SQL metadata key'); value[key] = item
+        return value
+    return json.loads(raw, object_pairs_hook=unique), {'bytes': len(raw), 'sha256': hashlib.sha256(raw).hexdigest(), 'maximum': MIB}
+
+
+@contextmanager
+def held_reuse_files(bindings, root):
+    """Hold the closed old evidence set; copy and hash the same regular FDs."""
+    utility = common(); held = {}; parents = {}
+    def stamp(info):
+        return (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid, info.st_nlink,
+                info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+    def verify():
+        for path, (stream, before) in held.items():
+            need(stamp(os.fstat(stream.fileno())) == before == stamp(utility.owner_path(path).lstat()),
+                 'Old SQL custody file identity changed')
+        for path, before in parents.items():
+            info = utility.owned_ancestor(path).lstat()
+            need((info.st_dev, info.st_ino, info.st_uid, info.st_gid, info.st_mode) == before,
+                 'Old SQL custody ancestor changed')
+    try:
+        for path, binding in bindings.items():
+            path = utility.owner_path(path); before = stamp(path.lstat())
+            need(type(binding['bytes']) is int and binding.get('minimum', 1) <= binding['bytes'] <= binding['maximum']
+                 and before[6] == binding['bytes'] and type(binding['sha256']) is str and SHA.fullmatch(binding['sha256']),
+                 'Closed SQL reuse file size or digest is invalid')
+            for parent in path.parents:
+                if parent != root and not parent.is_relative_to(root): break
+                info = utility.owned_ancestor(parent).lstat()
+                parents[parent] = (info.st_dev, info.st_ino, info.st_uid, info.st_gid, info.st_mode)
+            stream = os.fdopen(os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK), 'rb')
+            held[path] = stream, before
+            need(stamp(os.fstat(stream.fileno())) == before, 'Old SQL custody changed during open')
+            checksum, copied = hashlib.sha256(), 0
+            for block in iter(lambda: stream.read(MIB), b''):
+                copied += len(block); need(copied <= binding['bytes'], 'Old SQL custody grew while hashing'); checksum.update(block)
+            need(copied == binding['bytes'] and checksum.hexdigest() == binding['sha256'], 'Old SQL custody raw bytes changed')
+            stream.seek(0)
+        verify(); yield {path: item[0] for path, item in held.items()}, verify; verify()
+    finally:
+        for stream, _ in held.values(): stream.close()
+
+
+def original_snapshot(args):
+    work, context = admit(args); utility = common(); root = utility.safe(args.root)
+    old = utility.safe(args.source_snapshot_directory)
+    parts = old.relative_to(root / 'verification').parts if old.is_relative_to(root / 'verification') else ()
+    need(len(parts) == 4 and TAG.fullmatch(parts[0]) and parts[1:] == ('checkout', 'work', SNAPSHOT)
+         and int(TAG.fullmatch(parts[0])[1]) < int(TAG.fullmatch(args.tag)[1]), 'SQL reuse requires an exact older same-root snapshot')
+    utility.owner_path(old, directory=True); old_work = old.parent
+    files = {}
+    def control(path):
+        value, files[path] = reuse_json(path)
+        return value
+    reuse_guard, verifier, cleanup = reuse_modules(args)
+    record_file = old.parents[2] / 'verification-receipt.json'
+    record = reuse_guard.passing_receipt(record_file, root, parts[0], context['identity'])
+    need(record == control(record_file), 'Old SQL verification changed during admission')
+    binding = reuse_guard.terminal_build(root, old.parents[2], record, context['identity'], cleanup, verifier)
+    old_context = {key: record[key] for key in ('release', 'commit', 'sourceSha256', 'identity')}
+    old_context.update(version=1, kind=KIND, profile=PROFILE, verificationReceiptSha256=files[record_file]['sha256'])
+    public_file = utility.owner_path(old_work / PUBLIC); public = control(public_file)
+    need(type(public.get('version')) is int and all(public.get(key) == value for key, value in old_context.items())
+         and public.get('status') == 'BYTES_RESTORED_VERIFIED'
+         and public.get('databasesOpened') == 0 and type(public.get('databasesOpened')) is int
+         and public.get('sqlDoubleRestoreVerified') is False and public.get('productionMerged') is False
+         and public.get('retirementAllowed') is False, 'Old SQL byte custody does not prove the fixed source')
+    need({p.name for p in old.iterdir()} == {'custody.json', 'originals.tar.gz'}, 'Old SQL custody snapshot membership changed')
+    manifest_file = utility.owner_path(old / 'custody.json'); manifest = control(manifest_file); rows = validate_package(manifest)
+    byte_owner = control(old_work / OWNER)
+    need(all(byte_owner.get(key) == value for key, value in old_context.items()) and byte_owner.get('inputs') == {
+        'custody.json': {'bytes': files[manifest_file]['bytes'], 'sha256': files[manifest_file]['sha256']},
+        'originals.tar.gz': {'bytes': manifest['archiveBytes'], 'sha256': manifest['archiveSha256']}}, 'Old SQL byte owner binding differs')
+    byte_receipt = utility.owner_path(old_work / RESTORE / 'restore-receipt.json'); byte = control(byte_receipt)
+    need(all(byte.get(key) == value for key, value in public.items() if key != 'restoreReceiptSha256')
+         and files[byte_receipt]['sha256'] == public.get('restoreReceiptSha256')
+         and files[manifest_file]['sha256'] == public.get('manifestSha256') and public.get('archiveSha256') == manifest['archiveSha256']
+         and type(public.get('files')) is int and public.get('files') == len(MEMBERS) and public.get('bytes') == manifest['originalBytes']
+         and public.get('rawSqlSha256') == RAW_SHA and public.get('gzipSha256') == GZIP_SHA,
+         'Old SQL byte restoration no longer closes')
+    need({p.name for p in (old_work / RESTORE).iterdir()} == MEMBERS | {'restore-receipt.json'}, 'Old SQL restored member set changed')
+    owner_file = utility.owner_path(old_work / 'local-mysql-recovery-owner.json'); owner = control(owner_file)
+    recovery_dir = utility.owner_path(old_work / 'local-mysql-recovery', directory=True)
+    recovery_file = utility.owner_path(recovery_dir / 'public-recovery.json'); recovered = control(recovery_file)
+    cleanup_file = utility.owner_path(recovery_dir / 'public-cleanup.json'); stopped = control(cleanup_file)
+    for value in (owner, recovered, stopped):
+        need(type(value.get('version')) is int and all(value.get(key) == expected for key, expected in old_context.items()),
+             'Old SQL recovery belongs to another attempt')
+    need(owner.get('directory') == str(recovery_dir) and owner.get('status') == recovered.get('status') == 'SQL_DOUBLE_RESTORED_VERIFIED'
+         and owner.get('publicRecoverySha256') == files[recovery_file]['sha256']
+         and recovered.get('byteReceiptSha256') == owner.get('byteReceiptSha256') == files[byte_receipt]['sha256']
+         and recovered.get('logicalEvidenceCatalogueSha256') == sha(owner.get('cleanupEvidence'))
+         and recovered.get('tableCount') == 45 and type(recovered.get('tableCount')) is int
+         and recovered.get('rawSqlSha256') == RAW_SHA and recovered.get('gzipSha256') == GZIP_SHA
+         and recovered.get('allOriginalRowsPreserved') is True and recovered.get('liveSourceRowHashesVerified') is False
+         and recovered.get('productionMerged') is False and recovered.get('retirementAllowed') is False
+         and recovered.get('eventsExecuted') is False and recovered.get('paidModelCalls') == 0
+         and type(recovered.get('paidModelCalls')) is int and recovered.get('cleanup') == 'STOPPED',
+         'Old SQL complete double restoration is not proved')
+    need(stopped.get('status') == 'STOPPED' and stopped.get('originalsChanged') is False
+         and stopped.get('derivedContainersRemoved') == stopped.get('derivedVolumesRemoved') == 2
+         and all(type(stopped.get(key)) is int for key in ('derivedContainersRemoved', 'derivedVolumesRemoved', 'derivedVolumesRetained'))
+         and stopped.get('derivedVolumesRetained') == 0 and stopped.get('recoveryVolumesRetained') is False,
+         'Old SQL derived recovery cleanup is not complete')
+    servers = owner.get('servers')
+    need(type(owner.get('originalContainerId')) is str and SHA.fullmatch(owner['originalContainerId'])
+         and type(servers) is list and len(servers) == 2 and all(type(node) is dict for node in servers)
+         and {node.get('ordinal') for node in servers} == {'a', 'b'}
+         and all(node.get('containerRemoved') is True and node.get('volumeRemoved') is True and node.get('stopped') is True
+                 and type(node.get('containerId')) is str and SHA.fullmatch(node['containerId'])
+                 and node['containerId'] != owner.get('originalContainerId')
+                 and node.get('exitCode') == 0 and type(node.get('exitCode')) is int and node.get('oomKilled') is False for node in servers),
+         'Old SQL recovery pair was not independently stopped and removed')
+    need(type(stopped.get('containers')) is list and len(stopped['containers']) == 2
+         and set(stopped['containers']) == {node['containerId'] for node in servers}, 'Old SQL cleanup pair binding differs')
+    expected = {SNAPSHOT + '/custody.json', SNAPSHOT + '/originals.tar.gz', RESTORE + '/restore-receipt.json',
+        *[RESTORE + '/' + row['member'] for row in rows], 'local-mysql-recovery/a/full-recovery-private.json',
+        'local-mysql-recovery/b/full-recovery-private.json', 'local-mysql-recovery/resource-probes.jsonl'}
+    catalogue = owner.get('cleanupEvidence')
+    need(type(catalogue) is dict and set(catalogue) == expected and all(type(v) is str and SHA.fullmatch(v) for v in catalogue.values()),
+         'Old SQL complete logical evidence catalogue is missing')
+    for name, value in catalogue.items():
+        path = old_work / name
+        if path in files: need(files[path]['sha256'] == value, 'Parsed old SQL control differs from catalogue')
+        else: files[path] = {'sha256': value, 'bytes': utility.owner_path(path).stat().st_size, 'maximum': MAX_BYTES}
+    source = root / 'inbox' / parts[0] / 'source.tar.gz'
+    files[source] = {'sha256': record['sourceSha256'], 'bytes': utility.owner_path(source).stat().st_size, 'maximum': 128 * MIB}
+    tool_manifest = source.parent / 'tool-runtime/manifest.json'
+    files[tool_manifest] = {'sha256': record['toolRuntime']['manifestSha256'],
+        'bytes': utility.owner_path(tool_manifest).stat().st_size, 'maximum': MIB}
+    for row in record['reportFiles']:
+        name = row['path']; path = binding['checkout'] / ('driver.log' if name == 'driver.log' else 'work/ci-evidence/' + name[8:])
+        files[path] = {'sha256': row['sha256'], 'bytes': row['bytes'], 'maximum': verifier.MAX_FILE_BYTES, 'minimum': 0}
+    need(files[old / 'custody.json']['sha256'] == public['manifestSha256']
+         and files[old / 'originals.tar.gz']['sha256'] == manifest['archiveSha256']
+         and files[old / 'originals.tar.gz']['bytes'] == manifest['archiveBytes'], 'Old SQL archive catalogue changed')
+    full = []
+    for ordinal in ('a', 'b'):
+        path = old_work / ('local-mysql-recovery/' + ordinal + '/full-recovery-private.json')
+        expected_sha = files[path]['sha256']; full.append(control(path))
+        need(files[path]['sha256'] == expected_sha, 'Parsed full SQL recovery differs from catalogue')
+    for ordinal, value in zip(('a', 'b'), full):
+        node = next(node for node in servers if node['ordinal'] == ordinal)
+        need(all(value.get(key) == node.get(key) for key in ('containerId', 'serverUuid', 'volume'))
+             and value.get('metadataSha256') == sha(value.get('metadata')), 'Old SQL full recovery identity or metadata differs')
+    comparison = module('sql_reuse_recovery_comparison', ROOT / 'script/jenkins/restore-local-mysql.py')
+    comparison.compare_recoveries(*full)
+    need(recovered.get('snapshotSha256') == full[0]['snapshot']['snapshotSha256']
+         and recovered.get('metadataSha256') == full[0]['metadataSha256']
+         and recovered.get('restoredRows') == sum(row['rows'] for row in full[0]['snapshot']['tables'].values())
+         and recovered.get('resourceProbeSha256') == catalogue['local-mysql-recovery/resource-probes.jsonl'],
+         'Old SQL public logical proof differs')
+    with held_reuse_files(files, root):
+        cleanup.quiescent(binding, record['release'], cleanup.docker_snapshot())
+        cleanup.process_references(binding['checkout'])
+    return work, context, old, public, files[public_file]['sha256'], files, SimpleNamespace(cleanup=cleanup, binding=binding, tag=record['release'])
+
+
+def describe(args):
+    _, context, old, public, receipt_sha, files, _ = original_snapshot(args)
+    return {**context, 'status': 'DESCRIBED', 'sourceCustodyReceiptSha256': receipt_sha,
+        'manifestSha256': files[old / 'custody.json']['sha256'], 'manifestBytes': files[old / 'custody.json']['bytes'],
+        'archiveSha256': files[old / 'originals.tar.gz']['sha256'], 'archiveBytes': files[old / 'originals.tar.gz']['bytes'],
+        'files': public['files'], 'bytes': public['bytes'], 'rawSqlSha256': RAW_SHA, 'gzipSha256': GZIP_SHA,
+        'productionMerged': False, 'retirementAllowed': False}
+
+
+def reuse(args):
+    work, _, old, public, receipt_sha, files, state = original_snapshot(args); expected = inputs(args)
+    need(type(args.source_receipt_sha256) is str and SHA.fullmatch(args.source_receipt_sha256)
+         and args.source_receipt_sha256 == receipt_sha, 'Old SQL custody changed since description')
+    need(all(files[old / name]['sha256'] == row['sha256'] and files[old / name]['bytes'] == row['bytes']
+             for name, row in expected.items()), 'SQL reuse input bindings differ from description')
+    targets = {}
+    try:
+        with held_reuse_files(files, common().safe(args.root)) as (held, verify_old):
+            prepare(args, retained_targets=targets)
+            for name, row in expected.items():
+                source = held[old / name]; source.seek(0); total = 0; checksum = hashlib.sha256()
+                target = common().owner_path(work / SNAPSHOT / name)
+                with os.fdopen(targets.pop(name), 'wb') as output:
+                    info = os.fstat(output.fileno()); need(stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid()
+                        and info.st_nlink == 1 and info.st_size == 0 and not info.st_mode & 0o077
+                        and (info.st_dev, info.st_ino) == (target.stat().st_dev, target.stat().st_ino), 'Fresh SQL reuse target changed')
+                    for block in iter(lambda: source.read(MIB), b''):
+                        total += len(block); need(total <= row['bytes'], 'Old SQL custody grew during copying')
+                        output.write(block); checksum.update(block); common().resource_guard(work)
+                    output.flush(); os.fsync(output.fileno())
+                need(total == row['bytes'] and checksum.hexdigest() == row['sha256'], 'SQL reuse copied bytes differ')
+            need(digest(old.parent / PUBLIC) == receipt_sha, 'Old SQL public description drifted during copying')
+            verify_old()
+            state.cleanup.quiescent(state.binding, state.tag, state.cleanup.docker_snapshot())
+            result = verify_restore(args)
+            state.cleanup.quiescent(state.binding, state.tag, state.cleanup.docker_snapshot())
+    finally:
+        for fd in targets.values(): os.close(fd)
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__); sub = parser.add_subparsers(dest='action', required=True)
     local = sub.add_parser('pack')
     for key in ('export-directory', 'control-receipt', 'output'): local.add_argument('--' + key, required=True)
-    for action in ('prepare', 'verify-restore'):
+    for action in ('prepare', 'verify-restore', 'describe', 'reuse'):
         command = sub.add_parser(action)
-        for key in ('root', 'tag', 'commit', 'source-sha256', 'instance-id', 'machine-id', 'manifest-sha256', 'archive-sha256'):
+        for key in ('root', 'tag', 'commit', 'source-sha256', 'instance-id', 'machine-id'):
             command.add_argument('--' + key, required=True)
-        for key in ('manifest-bytes', 'archive-bytes'): command.add_argument('--' + key, type=int, required=True)
+        if action != 'describe':
+            for key in ('manifest-sha256', 'archive-sha256'): command.add_argument('--' + key, required=True)
+            for key in ('manifest-bytes', 'archive-bytes'): command.add_argument('--' + key, type=int, required=True)
+        if action in ('describe', 'reuse'): command.add_argument('--source-snapshot-directory', required=True)
+        if action == 'reuse': command.add_argument('--source-receipt-sha256', required=True)
     args = parser.parse_args()
     try:
         result = pack(args.export_directory, args.control_receipt, args.output) if args.action == 'pack' else globals()[args.action.replace('-', '_')](args)

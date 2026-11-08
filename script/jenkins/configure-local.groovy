@@ -91,6 +91,7 @@ def parameters = [
     new StringParameterDefinition('COLD_HISTORY_SNAPSHOT', '', 'Additionally preserve the fixed v2 historical test/receipt packet in the same verified build.'),
     new StringParameterDefinition('COLD_HISTORY_ECS_SNAPSHOT', '', 'Reuse an independently verified v2 history packet on ECS; mutually exclusive with its local input.'),
     new StringParameterDefinition('LOCAL_MYSQL_SNAPSHOT', '', 'Approved local 45-table export packet; two independent recoveries run only on ECS after source verification.'),
+    new StringParameterDefinition('LOCAL_MYSQL_ECS_SNAPSHOT', '', 'Reuse an ECS-verified 45-table export packet; mutually exclusive with its local input, with two new independent ECS recoveries.'),
     new StringParameterDefinition('LOCAL_MYSQL_FIXTURE_SETTINGS', '', 'Existing private ECS fixture JSON; only the reviewed MySQL image identity is used for local export recovery.'),
     new BooleanParameterDefinition('RECLAIM_OLD_BUILD_OUTPUTS', true, 'After complete source verification, reclaim only proven terminal reproducible build output; retain business data and evidence.'),
     new StringParameterDefinition('DEPLOY_HOST', '', 'Start ECS outside Jenkins, then configure its current verified SSH address.'),

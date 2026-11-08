@@ -1110,7 +1110,7 @@
       },
       {
         "module": "tests_python.test_local_mysql_custody",
-        "minimumTests": 67,
+        "minimumTests": 98,
         "source": "tests_python/test_local_mysql_custody.py",
         "allowedSkippedTests": []
       },
@@ -1158,7 +1158,7 @@
       },
       {
         "module": "tests_python.test_jenkins_resource_budget",
-        "minimumTests": 39,
+        "minimumTests": 42,
         "source": "tests_python/test_jenkins_resource_budget.py",
         "allowedSkippedTests": []
       },
