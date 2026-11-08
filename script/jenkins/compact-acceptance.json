@@ -1164,7 +1164,7 @@
       },
       {
         "module": "tests_python.test_jenkins_resource_budget",
-        "minimumTests": 42,
+        "minimumTests": 53,
         "source": "tests_python/test_jenkins_resource_budget.py",
         "allowedSkippedTests": []
       },

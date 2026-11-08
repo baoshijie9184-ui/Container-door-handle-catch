@@ -1,5 +1,6 @@
 """Resource safety contracts. Run on the admitted ECS, never on the workstation."""
 import importlib.util
+from contextlib import contextmanager
 import io
 import hashlib
 import json
@@ -597,6 +598,217 @@ assert receipt['stopScope']=='OWNED_ATTEMPT_ONLY' and receipt['evidenceRetained'
             child = subprocess.run([sys.executable, '-I', '-B', '-c', script, str(PREPARER_MODULE), temp],
                                    capture_output=True, timeout=10)
             self.assertEqual(0, child.returncode, child.stderr.decode('utf8', errors='replace'))
+
+
+@unittest.skipUnless(sys.platform == 'linux', 'Bounded fixture measurement is verified only on ECS Linux')
+class DuMeasurementTests(unittest.TestCase):
+    @contextmanager
+    def measurement(self, folder, command, clock):
+        monitor = preparer.PreparationMonitor.__new__(preparer.PreparationMonitor)
+        monitor.measure_lock = threading.Lock(); monitor.lock = threading.RLock()
+        monitor.failed = threading.Event(); monitor.stop = threading.Event()
+        monitor.token = 'e' * 32; monitor.du_failure = None; monitor.measured_at = 9.0
+        monitor.last = {'retained': True}; monitor.current = None; monitor.phase_observations = None
+        monitor.stream = io.StringIO(); monitor.sudo = Path('/usr/bin/sudo')
+        monitor.timeout = Path('/usr/bin/timeout'); monitor.du = Path('/usr/bin/du')
+        monitor.preparation = SimpleNamespace(work=folder, attempt=folder / 'attempt',
+                                              args=SimpleNamespace(commit='b' * 40))
+        monitor.fixture_memory = lambda: (0, 0)
+        filesystem = SimpleNamespace(f_blocks=100000, f_frsize=4096, f_bavail=90000)
+        with patch.object(preparer.subprocess, 'run', side_effect=command) as run, \
+                patch.object(preparer.time, 'monotonic', side_effect=lambda: clock[0]), \
+                patch.object(preparer.Path, 'read_text', return_value='MemAvailable: 123456 kB\n'), \
+                patch.object(preparer.os, 'statvfs', return_value=filesystem), \
+                patch.object(preparer, 'owned_tree_memory', return_value=64):
+            yield monitor, run
+
+    @staticmethod
+    def output(folder, number=b'8192'):
+        return number + b'\t' + str(folder / 'attempt').encode() + b'\n'
+
+    def assert_unpublished(self, monitor):
+        self.assertEqual({'retained': True}, monitor.last)
+        self.assertEqual(9.0, monitor.measured_at)
+        self.assertEqual('', monitor.stream.getvalue())
+
+    def test_one_exit_one_retry_uses_remaining_deadlines_and_only_publishes_complete_result(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp); clock = [10.0]; calls = []
+            def command(arguments, **kwargs):
+                calls.append((arguments, kwargs))
+                self.assert_unpublished(monitor)
+                clock[0] += .3 if len(calls) == 1 else .2
+                return subprocess.CompletedProcess(arguments, 1 if len(calls) == 1 else 0,
+                    b'partial' if len(calls) == 1 else self.output(folder),
+                    b'du: opaque-secret: No such file or directory' if len(calls) == 1 else b'')
+            with self.measurement(folder, command, clock) as (monitor, run):
+                monitor.du_failure = (ValueError('obsolete'), {'attempts': ['obsolete']})
+                value = monitor.measure()
+                self.assertEqual(2, run.call_count)
+                self.assertEqual('1.200000000s', calls[0][0][4])
+                self.assertEqual('0.900000000s', calls[1][0][4])
+                self.assertEqual('--kill-after=0.2s', calls[1][0][3])
+                self.assertEqual([str(monitor.du), '-B1', '-x', '-s', '--', str(folder / 'attempt')], calls[1][0][5:])
+                self.assertEqual(2, calls[0][1]['timeout'])
+                self.assertAlmostEqual(1.7, calls[1][1]['timeout'])
+                self.assertEqual('C', calls[1][1]['env']['LC_ALL'])
+                self.assertEqual(8192, value['ownedDiskBytes'])
+                self.assertEqual([value], [json.loads(line) for line in monitor.stream.getvalue().splitlines()])
+                self.assertEqual(10.5, monitor.measured_at)
+                self.assertIsNone(monitor.du_failure)
+                self.assertNotIn('duFailure', value)
+
+    def test_persistent_exit_one_retains_only_bounded_hashed_attempts_for_exact_exception(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp); clock = [10.0]
+            stdout = b'partial MYSQL_PWD=opaque-secret'; stderr = b'/private/opaque-secret: No such file or directory'
+            def command(arguments, **kwargs):
+                clock[0] += .1
+                return subprocess.CompletedProcess(arguments, 1, stdout, stderr)
+            with self.measurement(folder, command, clock) as (monitor, run):
+                with self.assertRaises(ValueError) as caught:
+                    monitor.measure()
+                self.assertEqual(2, run.call_count); self.assert_unpublished(monitor)
+                self.assertIs(caught.exception, monitor.du_failure[0])
+                with patch.object(preparer.os, 'kill') as kill:
+                    monitor.fail(caught.exception, worker='collector')
+                    kill.assert_called_once_with(os.getpid(), signal.SIGUSR1)
+                raw = (folder / 'resource-failure.json').read_bytes(); value = json.loads(raw)
+                rows = value['duFailure']['attempts']; self.assertEqual(2, len(rows))
+                for row in rows:
+                    self.assertEqual({'exitCode', 'elapsedSeconds', 'stdoutBytes', 'stdoutSha256',
+                                      'stderrBytes', 'stderrSha256', 'stderrMentionsMissingPath'}, set(row))
+                    self.assertEqual(1, row['exitCode']); self.assertAlmostEqual(.1, row['elapsedSeconds'])
+                    self.assertEqual(len(stdout), row['stdoutBytes']); self.assertEqual(len(stderr), row['stderrBytes'])
+                    self.assertEqual(hashlib.sha256(stdout).hexdigest(), row['stdoutSha256'])
+                    self.assertEqual(hashlib.sha256(stderr).hexdigest(), row['stderrSha256'])
+                    self.assertIs(True, row['stderrMentionsMissingPath'])
+                self.assertNotIn(b'opaque-secret', raw); self.assertNotIn(str(folder).encode(), raw)
+
+    def test_special_exit_codes_and_signals_never_start_a_second_du(self):
+        for code in (2, 124, 125, 126, 127, 137, -9, -15):
+            with self.subTest(code=code), tempfile.TemporaryDirectory() as temp:
+                folder = Path(temp); clock = [10.0]
+                def command(arguments, **kwargs):
+                    clock[0] += .1
+                    return subprocess.CompletedProcess(arguments, code, self.output(folder), b'opaque-secret')
+                with self.measurement(folder, command, clock) as (monitor, run):
+                    with self.assertRaises(ValueError): monitor.measure()
+                    self.assertEqual(1, run.call_count); self.assert_unpublished(monitor)
+                    self.assertEqual(code, monitor.du_failure[1]['attempts'][0]['exitCode'])
+
+    def test_python_launch_and_timeout_errors_never_retry_or_export_exception_payload(self):
+        errors = (subprocess.TimeoutExpired(['opaque-secret'], 2),
+                  subprocess.TimeoutExpired(['opaque-secret'], 2, output=b'opaque-secret', stderr=b'opaque-secret'),
+                  OSError('MYSQL_PWD=opaque-secret'))
+        for error in errors:
+            with self.subTest(error=type(error).__name__, output=getattr(error, 'output', None) is not None), tempfile.TemporaryDirectory() as temp:
+                folder = Path(temp); clock = [10.0]
+                def command(arguments, **kwargs):
+                    clock[0] += .1
+                    raise error
+                with self.measurement(folder, command, clock) as (monitor, run):
+                    with self.assertRaises(type(error)) as caught: monitor.measure()
+                    self.assertIs(error, caught.exception); self.assertEqual(1, run.call_count)
+                    self.assert_unpublished(monitor)
+                    metadata = monitor.du_failure[1]['attempts'][0]
+                    self.assertIsNone(metadata['exitCode'])
+                    self.assertEqual(len(getattr(error, 'stdout', None) or b''), metadata['stdoutBytes'])
+                    self.assertEqual(len(getattr(error, 'stderr', None) or b''), metadata['stderrBytes'])
+                    with patch.object(preparer.os, 'kill'):
+                        monitor.fail(error, worker='collector')
+                    self.assertNotIn(b'opaque-secret', (folder / 'resource-failure.json').read_bytes())
+
+    def test_invalid_success_output_is_terminal_instead_of_retrying_or_publishing(self):
+        for case in ('oversize', 'utf8', 'separator', 'decimal', 'negative', 'path'):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temp:
+                folder = Path(temp); clock = [10.0]
+                outputs = {'oversize': b'x' * 4096, 'utf8': b'\xff\t' + str(folder / 'attempt').encode(),
+                           'separator': b'8192', 'decimal': self.output(folder, b'8x'),
+                           'negative': self.output(folder, b'-1'), 'path': b'8192\t/private/opaque-secret\n'}
+                def command(arguments, **kwargs):
+                    clock[0] += .1
+                    return subprocess.CompletedProcess(arguments, 0, outputs[case], b'')
+                with self.measurement(folder, command, clock) as (monitor, run):
+                    with self.assertRaises((ValueError, UnicodeError)): monitor.measure()
+                    self.assertEqual(1, run.call_count); self.assert_unpublished(monitor)
+                    self.assertEqual(0, monitor.du_failure[1]['attempts'][0]['exitCode'])
+
+    def test_exit_one_at_deadline_has_no_second_attempt(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp); clock = [10.0]
+            def command(arguments, **kwargs):
+                clock[0] = 11.2
+                return subprocess.CompletedProcess(arguments, 1, b'partial', b'')
+            with self.measurement(folder, command, clock) as (monitor, run):
+                with self.assertRaises(ValueError): monitor.measure()
+                self.assertEqual(1, run.call_count); self.assert_unpublished(monitor)
+
+    def test_positive_remainder_rounded_to_zero_never_launches_unbounded_timeout(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp); clock = [10.0]
+            with self.measurement(folder, lambda *_a, **_k: None, clock) as (monitor, run), \
+                    patch.object(preparer.time, 'monotonic', side_effect=[10.0, 11.1999999999]):
+                with self.assertRaises(ValueError): monitor.measure()
+                run.assert_not_called(); self.assert_unpublished(monitor)
+                self.assertEqual([], monitor.du_failure[1]['attempts'])
+
+    def test_complete_zero_after_native_deadline_cannot_publish_a_probe(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp); clock = [10.0]
+            def command(arguments, **kwargs):
+                clock[0] = 11.200001
+                return subprocess.CompletedProcess(arguments, 0, self.output(folder), b'')
+            with self.measurement(folder, command, clock) as (monitor, run):
+                with self.assertRaises(ValueError): monitor.measure()
+                self.assertEqual(1, run.call_count); self.assert_unpublished(monitor)
+
+    def test_deadline_is_rechecked_after_other_metrics_and_before_publication(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp); clock = [10.0]
+            def command(arguments, **kwargs):
+                clock[0] += .1
+                return subprocess.CompletedProcess(arguments, 0, self.output(folder), b'')
+            def memory(_pid):
+                clock[0] = 11.3
+                return 64
+            with self.measurement(folder, command, clock) as (monitor, run), \
+                    patch.object(preparer, 'owned_tree_memory', side_effect=memory):
+                with self.assertRaises(ValueError) as caught: monitor.measure()
+                self.assertEqual(1, run.call_count); self.assert_unpublished(monitor)
+                self.assertIs(caught.exception, monitor.du_failure[0])
+
+    def test_unrelated_same_type_and_message_failure_cannot_inherit_du_metadata(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp); clock = [10.0]
+            def command(arguments, **kwargs):
+                clock[0] += .1
+                return subprocess.CompletedProcess(arguments, 127, b'', b'opaque-secret')
+            with self.measurement(folder, command, clock) as (monitor, run):
+                with self.assertRaises(ValueError) as caught: monitor.measure()
+                other = ValueError(str(caught.exception))
+                with patch.object(preparer.os, 'kill'):
+                    monitor.fail(other, worker='watcher')
+                value = json.loads((folder / 'resource-failure.json').read_bytes())
+                self.assertNotIn('duFailure', value)
+                self.assertEqual('watcher', value['worker'])
+
+    def test_recovered_du_does_not_contaminate_later_non_du_metric_failure(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp); clock = [10.0]; calls = []
+            def command(arguments, **kwargs):
+                calls.append(arguments); clock[0] += .1
+                return subprocess.CompletedProcess(arguments, 1 if len(calls) == 1 else 0,
+                    self.output(folder), b'opaque-secret')
+            with self.measurement(folder, command, clock) as (monitor, run), \
+                    patch.object(preparer.os, 'statvfs', side_effect=OSError('opaque-secret')):
+                with self.assertRaises(OSError) as caught: monitor.measure()
+                self.assertEqual(2, run.call_count); self.assert_unpublished(monitor)
+                self.assertIsNone(monitor.du_failure)
+                with patch.object(preparer.os, 'kill'):
+                    monitor.fail(caught.exception, worker='collector')
+                raw = (folder / 'resource-failure.json').read_bytes()
+                self.assertNotIn('duFailure', json.loads(raw)); self.assertNotIn(b'opaque-secret', raw)
 
 
 if __name__ == '__main__':

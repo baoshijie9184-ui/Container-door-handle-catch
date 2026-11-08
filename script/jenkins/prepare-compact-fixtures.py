@@ -244,7 +244,7 @@ class PreparationMonitor:
         self.stop = threading.Event(); self.failed = threading.Event(); self.cleaning = False
         self.failure = None; self.current = None; self.previous = None; self.phase_index = 0
         self.phase_observations = None
-        self.source = None; self.last = None; self.measured_at = 0.0
+        self.source = None; self.last = None; self.measured_at = 0.0; self.du_failure = None
         self.sudo, self.timeout, self.du = [canonical(shutil.which(name)) for name in ('sudo', 'timeout', 'du')]
         self.file = preparation.work / 'resource-probes.jsonl'
         self.stream = self.file.open('x', encoding='utf8'); os.chmod(self.file, 0o600)
@@ -323,16 +323,57 @@ class PreparationMonitor:
         events = dict(line.split() for line in (path / 'memory.events').read_text().splitlines())
         return int((path / 'memory.current').read_text()), int(events.get('oom_kill', 0))
 
+    @staticmethod
+    def _du_attempt_metadata(exit_code, started, stdout, stderr):
+        stdout = stdout if isinstance(stdout, bytes) else b''
+        stderr = stderr if isinstance(stderr, bytes) else b''
+        return {'exitCode': exit_code, 'elapsedSeconds': max(0, time.monotonic() - started),
+                'stdoutBytes': len(stdout), 'stdoutSha256': hashlib.sha256(stdout).hexdigest(),
+                'stderrBytes': len(stderr), 'stderrSha256': hashlib.sha256(stderr).hexdigest(),
+                'stderrMentionsMissingPath': b'No such file or directory' in stderr}
+
     def measure(self):
         with self.measure_lock:
-            # Native timeout owns/cancels its root du child. No arbitrary path or
-            # shell is accepted, and no source/production data directory is read.
-            result = subprocess.run([str(self.sudo), '-n', str(self.timeout), '--kill-after=0.2s', '1.2s',
-                str(self.du), '-B1', '-x', '-s', '--', str(self.preparation.attempt)],
-                capture_output=True, timeout=2, env={'PATH': os.environ.get('PATH', ''), 'LC_ALL': 'C'})
-            require(result.returncode == 0 and len(result.stdout) < 4096, 'Owned physical allocation measurement failed or exceeded its deadline')
-            number, path = result.stdout.decode().strip().split('\t', 1)
-            require(number.isdecimal() and path == str(self.preparation.attempt), 'Allocation measurement escaped the owned attempt')
+            self.du_failure = None
+            started = time.monotonic(); native_deadline = started + 1.2; outer_deadline = started + 2
+            attempts = []
+            try:
+                for index in range(2):
+                    current = time.monotonic()
+                    remaining, outer_remaining = native_deadline - current, outer_deadline - current
+                    duration = format(remaining, '.9f')
+                    # GNU timeout treats zero as no timeout, including a positive
+                    # remainder rounded to zero. Never launch in that case.
+                    require(remaining > 0 and float(duration) > 0 and outer_remaining > 0,
+                            'Owned physical allocation measurement exceeded its deadline')
+                    attempt_started = time.monotonic()
+                    try:
+                        # Native timeout owns/cancels its root du child. Both
+                        # attempts share the original native and outer deadlines.
+                        result = subprocess.run([str(self.sudo), '-n', str(self.timeout), '--kill-after=0.2s', duration + 's',
+                            str(self.du), '-B1', '-x', '-s', '--', str(self.preparation.attempt)],
+                            capture_output=True, timeout=outer_remaining,
+                            env={'PATH': os.environ.get('PATH', ''), 'LC_ALL': 'C'})
+                    except (OSError, subprocess.TimeoutExpired) as error:
+                        attempts.append(self._du_attempt_metadata(None, attempt_started,
+                            getattr(error, 'stdout', None), getattr(error, 'stderr', None)))
+                        raise
+                    attempts.append(self._du_attempt_metadata(result.returncode, attempt_started, result.stdout, result.stderr))
+                    if (index == 0 and result.returncode == 1 and time.monotonic() < native_deadline
+                            and not self.failed.is_set() and not self.stop.is_set()):
+                        continue
+                    require(result.returncode == 0 and len(result.stdout) < 4096,
+                            'Owned physical allocation measurement failed or exceeded its deadline')
+                    number, path = result.stdout.decode().strip().split('\t', 1)
+                    require(number.isdecimal() and path == str(self.preparation.attempt),
+                            'Allocation measurement escaped the owned attempt')
+                    require(time.monotonic() <= native_deadline,
+                            'Owned physical allocation measurement exceeded its deadline')
+                    break
+            except Exception as error:
+                self.du_failure = (error, {'attempts': attempts})
+                raise
+            self.du_failure = None
             memory = {line.split(':', 1)[0]: int(line.split()[1]) * 1024 for line in Path('/proc/meminfo').read_text().splitlines()}
             disk = os.statvfs(self.preparation.attempt)
             fixture, oom = self.fixture_memory()
@@ -343,7 +384,12 @@ class PreparationMonitor:
                 'ownedMemoryBytes': owned_tree_memory(os.getpid()) + fixture, 'oomKills': oom,
                 'ownedDiskMeasurement': 'ALLOCATED_BLOCKS_DU', 'ownedFixtureMemoryBytes': fixture}
             with self.lock:
-                self.last = value; self.measured_at = time.monotonic()
+                measured_at = time.monotonic()
+                if measured_at > native_deadline:
+                    error = ValueError('Owned physical allocation measurement exceeded its deadline')
+                    self.du_failure = (error, {'attempts': attempts})
+                    raise error
+                self.last = value; self.measured_at = measured_at
                 if self.current is not None and self.phase_observations is not None:
                     observed = self.phase_observations
                     observed['probeCount'] += 1
@@ -371,6 +417,9 @@ class PreparationMonitor:
                             **details, 'ownerToken': self.token,
                             'lastProbeAgeSeconds': max(0, time.monotonic() - self.measured_at),
                             'stopScope': 'OWNED_ATTEMPT_ONLY', 'evidenceRetained': True}
+            du_failure = getattr(self, 'du_failure', None)
+            if du_failure is not None and du_failure[0] is error:
+                self.failure['duFailure'] = du_failure[1]
             self.failed.set()
         try:
             write_json(self.preparation.work / 'resource-failure.json', self.failure)
