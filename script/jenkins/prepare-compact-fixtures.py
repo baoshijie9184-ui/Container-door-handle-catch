@@ -491,6 +491,25 @@ def require(condition, message):
         raise ValueError(message)
 
 
+def failure_details(error):
+    # Exception messages and external frames may contain SQL, credentials or
+    # business data. Only this versioned controller's code locations are public.
+    name = type(error).__name__
+    result = {'errorType': name if re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{0,99}', name) else 'Exception',
+              'locations': []}
+    frame = error.__traceback__
+    for _ in range(1024):
+        if frame is None:
+            break
+        if frame.tb_frame.f_code.co_filename == __file__:
+            function = frame.tb_frame.f_code.co_name
+            if re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,99}', function):
+                result['locations'].append({'function': function, 'line': frame.tb_lineno})
+                result['locations'] = result['locations'][-8:]
+        frame = frame.tb_next
+    return result
+
+
 def digest(path):
     value = hashlib.sha256()
     with Path(path).open('rb') as stream:
@@ -693,9 +712,9 @@ class Preparation:
             'command -v tr >/dev/null; command -v grep >/dev/null; command -v sleep >/dev/null; '
             'ulimit -v ' + str(SOURCE_CLIENT_AS_KIB) + '; '
             '[ "$(ulimit -v)" = "' + str(SOURCE_CLIENT_AS_KIB) + '" ]; '
-            '[ -r /proc/self/stat ]; '
-            'tr "\\000" "\\n" </proc/self/environ | grep -Fqx -- "DOORHANDLE_CANCEL_PROBE=$1"; '
-            'IFS= read -r value </proc/self/stat; rest=${value##*) }; set -- $rest; '
+            '[ -r "/proc/$$/stat" ]; '
+            'tr "\\000" "\\n" <"/proc/$$/environ" | grep -Fqx -- "DOORHANDLE_CANCEL_PROBE=$1"; '
+            'IFS= read -r value <"/proc/$$/stat"; rest=${value##*) }; set -- $rest; '
             '[ "$#" -ge 20 ]; shift 19; case "$1" in *[!0-9]*|\'\') exit 2;; esac; '
             'kill -0 "$$"', '--', probe_token, timeout=15)
         self.journal['sourceExportCancellationVerified'] = True
@@ -1249,13 +1268,24 @@ def main():
             instance.load(); result = {'status': instance.journal['phase'], 'release': args.tag,
                                        'containerId': instance.journal.get('containerId')}
         print(json.dumps(result)); return 0
-    except BaseException:
+    except BaseException as error:
+        details = failure_details(error)
         if instance and instance.journal:
+            if args.phase == 'prepare':
+                try:
+                    write_json(instance.work / 'failure.json', {
+                        'schemaVersion': 1, 'kind': 'doorhandle-compact-fixture-failure',
+                        'release': args.tag, 'commit': args.commit, 'sourceSha256': args.source_sha256,
+                        'phase': instance.journal.get('phase'),
+                        'resourcePhase': instance.journal.get('activeResourcePhase'), **details})
+                except BaseException:
+                    pass
             try:
                 instance.save('FAILED_OR_UNKNOWN_RETAINED')
             except BaseException:
                 pass
         print('Fixture preparation/control failed; do not use a readiness flag. Preserve private owned evidence on ECS.', file=sys.stderr)
+        print(json.dumps(details, sort_keys=True), file=sys.stderr)
         return 2
 
 

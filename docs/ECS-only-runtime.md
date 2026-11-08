@@ -1,5 +1,11 @@
 # 单体 ECS 运行与测试
 
+2026-11-08 #117：固定提交 `8c898996cc28ce30fd6531710511f833cccb4864` 已实际完成构建工具准备：固定 OCI 输入、引擎身份、现有 AppArmor profile 准入、RootlessKit 启动、版本检查及拥有进程停止均通过；工具回执为 `PREPARED`。随后上传并核验 380,060,844 字节应用包，Java 17 探测退出 0 且容器已移除，但在原库只读导出能力探测处终态失败，尚未创建隔离 MySQL，也未执行项目测试、整库迁移或业务验收。
+
+只读诊断确认工具、资源限额、原 MySQL/后端身份及数据库配置正常；同一合成 nonce 在 shell 参数和导出环境中匹配，读取 `/proc/self/environ` 不匹配，读取 `/proc/$$/environ` 匹配。当前修复将三处 proc 路径统一绑定发起检查的 shell PID，保留原来的 token、启动时间和取消校验。新增失败诊断仅记录异常类型和本版本控制脚本的函数/行号，不输出异常消息、局部变量、环境、SQL 或业务内容；准备阶段首次失败写独立回执，清理不覆盖它。修复和回归尚待下一固定提交在 ECS 验证。
+
+本轮原始工具与夹具控制回执、源码闭包、有限只读诊断均已保全；工具和夹具清理为 `STOPPED`，唯一保留的本轮构建器为 exited/PID 0。最后可用空间 4,405,911,552 字节（约 4.10 GiB），并非完整验收空间已通过。实例已从流水线外实际回读 `Stopped / StopCharging`，Jenkins 保持运行。生产仍为旧版本及 131 表，未正式切换。
+
 2026-11-08 #116：固定提交 `6d37e1b0b6f8d54e9213d09d436d41cc0eb8d222` 实际通过 OCI 身份及安全选项语义检查，构建器启动约 0.205 秒后退出 1。原日志为 RootlessKit `fork/exec /proc/self/exe: permission denied`，只读核对又确认 Ubuntu `apparmor_restrict_unprivileged_userns=1`；该错误与系统对 unconfined 程序的用户命名空间限制一致，未出现 OOM 或资源监测失败。原清理回执三项停止均为 true，实际 CID 为 exited/PID 0；精确容器及状态卷作为失败证据保留。22 份原始控制/日志及固定源码闭包已保全，实例已在流水线外回读 `Stopped / StopCharging`。
 
 服务器已加载 `rootlesskit (unconfined)`，现有 `/etc/apparmor.d/rootlesskit` 原文 SHA 为 `a6a1a760d88312275d64f195e6b2f51627e8cabfdf4e355262c86f0578c66d80`，其规则明确允许 userns。后续实现显式请求 `apparmor=rootlesskit`；启动前只读验证 root 所有的稳定配置、准确字节 SHA、已有加载名称及无有效本地覆盖规则，启动后核对实际应用名称。工具、资源摘要、bootstrap、归属和断线回读绑定同一五字段证明。不会安装、重载或写入主机策略，也不改变 sysctl、特权模式或原有资源限额。机制参见 [Ubuntu 官方说明](https://ubuntu.com/blog/ubuntu-23-10-restricted-unprivileged-user-namespaces)。

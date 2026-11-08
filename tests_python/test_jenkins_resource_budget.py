@@ -2,6 +2,7 @@
 import importlib.util
 import io
 import hashlib
+import json
 import os
 from pathlib import Path
 import signal
@@ -277,6 +278,77 @@ class ControlledPreparationBudgetTests(unittest.TestCase):
 
 
 class PreparationEnforcementTests(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == 'linux', 'The real source-capability shell runs only on ECS Linux')
+    def test_source_capability_reads_the_explicit_shell_pid_and_only_publishes_after_success(self):
+        source_id = 'c' * 64
+        original = {'Id': source_id, 'Image': 'sha256:' + 'd' * 64, 'State': {'Running': True}}
+        for case in ('correct', 'missing', 'mismatch'):
+            with self.subTest(case=case):
+                preparation = preparer.Preparation.__new__(preparer.Preparation)
+                preparation.journal = {'sourceContainerId': source_id}
+                preparation.resources = SimpleNamespace(source=None)
+                phases, captured = [], []
+                def save(phase):
+                    phases.append(phase); preparation.journal['phase'] = phase
+                preparation.save = save
+                def docker_call(*arguments, **kwargs):
+                    captured.append(arguments)
+                    self.assertEqual(9, len(arguments))
+                    self.assertEqual(('exec', '--env'), arguments[:2])
+                    self.assertEqual((source_id, 'sh', '-ec'), arguments[3:6])
+                    self.assertEqual('--', arguments[7]); self.assertEqual({'timeout': 15}, kwargs)
+                    key, _, nonce = arguments[2].partition('=')
+                    self.assertEqual('DOORHANDLE_CANCEL_PROBE', key)
+                    self.assertEqual(nonce, arguments[8])
+                    self.assertEqual(32, len(nonce)); self.assertTrue(all(c in '0123456789abcdef' for c in nonce))
+                    script = arguments[6]
+                    self.assertNotIn('/proc/self', script)
+                    self.assertEqual(2, script.count('"/proc/$$/stat"'))
+                    self.assertEqual(1, script.count('"/proc/$$/environ"'))
+                    self.assertEqual(['SOURCE_EXPORT_BOUND'], phases)
+                    self.assertIsNot(True, preparation.journal.get('sourceExportCancellationVerified'))
+                    environment = {'PATH': '/usr/bin:/bin', 'LANG': 'C'}
+                    if case == 'correct': environment[key] = nonce
+                    if case == 'mismatch': environment[key] = '0' * 32 if nonce != '0' * 32 else '1' * 32
+                    child = subprocess.run(['/bin/sh', '-ec', script, '--', nonce], env=environment,
+                                           capture_output=True, timeout=5)
+                    self.assertTrue(child.stdout == b'', 'The capability probe must not emit environment or proc bytes')
+                    self.assertTrue(child.stderr == b'', 'The capability probe must not expose its synthetic nonce')
+                    if child.returncode:
+                        raise ValueError('Controlled synthetic capability probe failed')
+                    return child.stdout
+                preparation.docker_call = docker_call
+                if case == 'correct':
+                    preparation.bind_source_exports(original)
+                    self.assertIs(True, preparation.journal.get('sourceExportCancellationVerified'))
+                    self.assertEqual('SOURCE_EXPORT_CANCELLATION_READY', phases[-1])
+                else:
+                    with self.assertRaises(ValueError): preparation.bind_source_exports(original)
+                    self.assertIsNot(True, preparation.journal.get('sourceExportCancellationVerified'))
+                    self.assertNotIn('SOURCE_EXPORT_CANCELLATION_READY', phases)
+                self.assertEqual(1, len(captured))
+
+    def test_fixture_failure_details_only_export_own_locations_without_exception_payload(self):
+        secret = 'MYSQL_PWD=synthetic-secret-never-exported'
+        try:
+            preparer.require(False, secret)
+        except ValueError as error:
+            details = preparer.failure_details(error)
+        else:
+            self.fail('The real controller require must raise')
+        self.assertEqual({'errorType', 'locations'}, set(details))
+        self.assertEqual('ValueError', details['errorType'])
+        self.assertEqual(1, len(details['locations']))
+        for location in details['locations']:
+            self.assertEqual({'function', 'line'}, set(location))
+            self.assertEqual('require', location['function'])
+            self.assertIs(type(location['line']), int); self.assertGreater(location['line'], 0)
+        raw = json.dumps(details)
+        self.assertNotIn(secret, raw)
+        self.assertNotIn(str(Path(__file__).resolve()), raw)
+        self.assertNotIn(Path(__file__).name, raw)
+        self.assertNotIn('test_fixture_failure_details', raw)
+
     @unittest.skipUnless(sys.platform == 'linux', 'Native signal restoration is verified only on ECS Linux')
     def test_late_monitor_failure_cannot_close_successfully_and_publish_readiness(self):
         controller = self.controller()
