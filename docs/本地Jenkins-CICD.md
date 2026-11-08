@@ -1,6 +1,10 @@
 # 本地 Jenkins CI/CD 约定
 
-2026-11-08 最新实际结果：固定提交 `b756a5781f44da0372e412132b212e8c07a91eb6` 的 #110 为 `SUCCESS`，Java 810 通过/612 条件跳过、Python 1,923 通过/24 条件跳过、双前端 157/20 项通过并完成两套构建。#109 同提交的必需源码验证也已 PASS，整体随后被可选旧构建回收的 `ValueError` 阻断，未删除业务数据；#110 使用既有 `RECLAIM_OLD_BUILD_OUTPUTS=false`，完整必需验证与旧源独立恢复正常完成。该可选失败的精确原因未证明，不据推测放宽回收门禁。
+2026-11-08 #113 的实际结果：提交 `f39b2c38` 的自动 OCI 准备、119,889,920 字节传输、SHA 核验、ECS 缓存发布/临时上传清理，以及原层测量和 Docker 加载均通过。后续按 config 摘要查找镜像失败：Docker 29.9 containerd 存储把已加载 OCI manifest 摘要作为引擎 ID；原 config 摘要和镜像内容均未变化。正补齐 config 身份、实际加载 graph 和引擎 ID 的显式关联，不替换上游镜像或放宽内容校验。项目测试、夹具和迁移尚未开始，不能声称本次新增回归已通过。原始证据、拥有容器为空及流水线外 `Stopped / StopCharging` 已核实，Jenkins 保持运行，详见 [ECS 运行约定](ECS-only-runtime.md)。
+
+兼容实现保留 `imageId`/`configDigest` 的内容校验语义，并额外记录 `loadDescriptor`（实际送入 Docker 的原始 graph 身份）和 `engineIdentity`。后者只关联已验证 config 或 graph 的精确摘要、平台及有序 DiffID；Docker 操作使用已核实的引擎 ID。基础镜像的 save 流按实际 engine descriptor 与全 graph 闭合验证，候选原 OCI 的加载身份与重新编码的 `manifestDigest` 分别保存。工具准备、容器身份、采样、停止、断线回读和候选镜像返回值须使用同一关联；不能按名称猜测等价镜像。此为开发状态，新增用例只在后续 ECS 流水线执行。上游实现可参阅 [Moby containerd 镜像检查](https://github.com/moby/moby/blob/master/daemon/containerd/image_inspect.go)及[镜像导出与加载](https://github.com/moby/moby/blob/master/daemon/containerd/image_exporter.go)。
+
+2026-11-08 前次完整 source 成功：固定提交 `b756a5781f44da0372e412132b212e8c07a91eb6` 的 #110 为 `SUCCESS`，Java 810 通过/612 条件跳过、Python 1,923 通过/24 条件跳过、双前端 157/20 项通过并完成两套构建。#109 同提交的必需源码验证也已 PASS，整体随后被可选旧构建回收的 `ValueError` 阻断，未删除业务数据；#110 使用既有 `RECLAIM_OLD_BUILD_OUTPUTS=false`，完整必需验证与旧源独立恢复正常完成。该可选失败的精确原因未证明，不据推测放宽回收门禁。
 
 #111 使用运行验收与 45 表恢复参数，但在候选 BuildKit 注册表元数据下载阶段以 `URLError` 失败；未执行夹具、131→29 整库迁移、45↔131 分类或九项运行场景。已保全原始报告并实际从流水线外回读 `Stopped / StopCharging`。#109/#110 之后六个固定 profile 的本地原件清退另已执行：39,763 文件、12,001 空目录；归属未明、共享数据库及运输包仍保留，详见 [ECS 运行约定](ECS-only-runtime.md)。
 

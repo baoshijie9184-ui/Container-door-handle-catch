@@ -137,6 +137,84 @@ def unique_image_inputs(rows):
     return images
 
 
+def engine_descriptor(value, *, metadata=False):
+    """Identity is three typed fields; optional OCI metadata cannot change it."""
+    keys = {'mediaType', 'digest', 'size'}
+    require(type(value) is dict and keys <= set(value)
+            and set(value) <= keys | ({'annotations', 'platform'} if metadata else set())
+            and value['mediaType'] in ('application/vnd.oci.image.manifest.v1+json',
+                'application/vnd.oci.image.index.v1+json', 'application/vnd.docker.distribution.manifest.v2+json',
+                'application/vnd.docker.distribution.manifest.list.v2+json')
+            and type(value['digest']) is str and IMAGE.fullmatch(value['digest'])
+            and type(value['size']) is int and 0 < value['size'] <= 4 * MIB,
+            'Loaded image descriptor identity differs')
+    if 'annotations' in value:
+        require(type(value['annotations']) is dict and all(type(k) is str and type(v) is str
+                for k, v in value['annotations'].items()), 'Loaded image annotations differ')
+    if 'platform' in value:
+        platform = value['platform']
+        require(type(platform) is dict and {'os', 'architecture'} <= set(platform)
+                and set(platform) <= {'os', 'architecture', 'variant', 'os.version', 'os.features'}
+                and platform['os'] == 'linux' and platform['architecture'] == 'amd64'
+                and all(type(platform[key]) is str for key in ('os', 'architecture', 'variant', 'os.version') if key in platform)
+                and ('os.features' not in platform or (type(platform['os.features']) is list
+                    and all(type(item) is str for item in platform['os.features']))), 'Loaded image platform metadata differs')
+    return {key: value[key] for key in ('mediaType', 'digest', 'size')}
+
+
+def engine_identity(row, measurement, load_descriptor):
+    """Bind an engine handle to verified OCI content without changing config pins."""
+    config = measurement.get('configDigest')
+    require(type(config) is str and IMAGE.fullmatch(config) and measurement.get('imageId', config) == config,
+            'Measured image config identity differs')
+    layers = measurement.get('layers')
+    require(type(layers) is list and 0 < len(layers) <= 256
+            and all(type(item) is dict and type(item.get('diffId')) is str and IMAGE.fullmatch(item['diffId']) for item in layers),
+            'Measured ordered image DiffIDs differ')
+    diff_ids = [item['diffId'] for item in layers]
+    descriptor = None if load_descriptor is None else engine_descriptor(load_descriptor)
+    require(type(row) is dict and type(row.get('Id')) is str and IMAGE.fullmatch(row['Id'])
+            and row['Id'] in ({config} if descriptor is None else {config, descriptor['digest']})
+            and row.get('Os') == 'linux' and row.get('Architecture') == 'amd64'
+            and type(row.get('RootFS')) is dict and row['RootFS'].get('Type', 'layers') == 'layers'
+            and row['RootFS'].get('Layers') == diff_ids, 'Loaded engine image is not the verified config/manifest/platform')
+    if row['Id'] != config or row.get('Descriptor') is not None:
+        require(descriptor is not None and engine_descriptor(row.get('Descriptor'), metadata=True) == descriptor,
+                'Loaded engine target descriptor differs')
+    return {'engineImageId': row['Id'], 'configDigest': config, 'loadDescriptor': descriptor,
+            'diffIds': diff_ids, 'os': 'linux', 'architecture': 'amd64'}
+
+
+def validate_engine_identity(row, binding):
+    require(type(binding) is dict and set(binding) == {'engineImageId', 'configDigest', 'loadDescriptor', 'diffIds', 'os', 'architecture'}
+            and type(binding['diffIds']) is list, 'Closed engine identity binding required')
+    measured = {'configDigest': binding['configDigest'], 'layers': [{'diffId': value} for value in binding['diffIds']]}
+    actual = engine_identity(row, measured, binding['loadDescriptor'])
+    require(actual == binding, 'Loaded engine identity binding changed')
+    return actual
+
+
+def stored_builder_identity(binding):
+    require(type(binding) is dict and set(binding) == {'engineImageId', 'configDigest', 'loadDescriptor', 'diffIds', 'os', 'architecture'},
+            'Stored builder engine identity is missing')
+    row = {'Id': binding['engineImageId'], 'Descriptor': binding['loadDescriptor'], 'Os': binding['os'],
+           'Architecture': binding['architecture'], 'RootFS': {'Layers': binding['diffIds']}}
+    require(binding['configDigest'] == IMAGE_ID, 'Stored builder config pin differs')
+    return validate_engine_identity(row, binding)
+
+
+def engine_lookup_id(actor, measurement, load_descriptor):
+    rows = json.loads(actor.docker('info', '--format', '{{json .DriverStatus}}'))
+    require(type(rows) is list and all(type(item) is list and len(item) == 2
+            and all(type(value) is str for value in item) for item in rows), 'Docker image-store evidence differs')
+    stores = [value for key, value in rows if key == 'driver-type']
+    require(not stores or stores == ['io.containerd.snapshotter.v1'], 'Unsupported Docker image-store identity')
+    if stores:
+        require(load_descriptor is not None, 'Containerd load requires its verified source descriptor')
+        return engine_descriptor(load_descriptor)['digest']
+    return measurement['configDigest']
+
+
 def effective_dockerfile(body, original_from, alias):
     lines = body.splitlines(); count = 0; output = []
     for line in lines:
@@ -158,6 +236,7 @@ class Supervisor:
         self.initial = probe(self.directory); self.last = self.initial; self.process = None; self.failed = None
         self.process_deadline = None
         self.builder_stopping = False
+        self.engine_identity = None
         self.daemon_import_unknown = False
         self.builder_last = None
         self.lock = threading.RLock(); self.stop = threading.Event(); self.started = time.monotonic()
@@ -196,7 +275,7 @@ class Supervisor:
 
     def owned_builder(self):
         row = json.loads(self.docker('inspect', self.builder['id']))[0]
-        require(row['Id'] == self.builder['id'] and row['Image'] == IMAGE_ID
+        require(row['Id'] == self.builder['id'] and row['Image'] == self.builder['engineIdentity']['engineImageId']
                 and row['Config']['Labels'].get(LABEL) == self.token
                 and row['Config']['Labels'].get('io.doorhandle.release') == self.context['release']
                 and not row['HostConfig']['Privileged'] and row['HostConfig']['Memory'] == BUILDER_MEMORY
@@ -224,10 +303,10 @@ class Supervisor:
         claim = self.builder['claim']; pid = claim['pid']
         info = Path('/proc/' + str(pid) + '/stat')
         if not info.exists() and self.builder_stopping:
-            return {'id': self.builder['id'], 'image': IMAGE_ID, 'running': False, 'pid': 0}
+            return {'id': self.builder['id'], 'image': self.builder['engineIdentity']['engineImageId'], 'running': False, 'pid': 0}
         require(info.exists() and info.read_text().rsplit(')', 1)[1].split()[19] == claim['startTicks'],
                 'Owned builder PID identity changed')
-        result = {'id': self.builder['id'], 'image': IMAGE_ID, 'running': True, 'pid': pid,
+        result = {'id': self.builder['id'], 'image': self.builder['engineIdentity']['engineImageId'], 'running': True, 'pid': pid,
                   'memoryLimitBytes': BUILDER_MEMORY}
         if pid:
             relative = next(x.split(':', 2)[2] for x in Path('/proc/' + str(pid) + '/cgroup').read_text().splitlines() if x.startswith('0::'))
@@ -357,14 +436,17 @@ class Supervisor:
                   'baselineProbe': self.initial, 'finalProbe': probe(self.directory), 'phases': self.phases,
                   'probeFile': 'resource-probes.jsonl', 'probeSha256': digest(self.directory / 'resource-probes.jsonl'),
                   'monitorFailure': self.failed, 'cleanup': cleanup, 'originalDataChanged': False, **extra}
+        if self.engine_identity is not None: result['engineIdentity'] = self.engine_identity
         write(self.directory / 'resource-summary.json', result)
         require(requested != 'PASS' or status == 'PASS', 'Candidate resource finalization failed; raw evidence retained')
         return {'file': str(self.directory / 'resource-summary.json'), 'sha256': digest(self.directory / 'resource-summary.json')}
 
 
-def bootstrap_builder(actor, mounts=()):
+def bootstrap_builder(actor, mounts=(), *, image_identity):
     """Official rootless daemon, no host socket, no privilege/host setting change."""
-    actor.begin('builder-bootstrap', 64 * MIB, {'imageId': IMAGE_ID, 'version': VERSION}, BUILDER_MEMORY)
+    image_identity = stored_builder_identity(image_identity)
+    actor.engine_identity = image_identity
+    actor.begin('builder-bootstrap', 64 * MIB, {'imageId': IMAGE_ID, 'engineIdentity': image_identity, 'version': VERSION}, BUILDER_MEMORY)
     name = 'doorhandle-builder-' + actor.token; volume = name + '-state'
     labels = {LABEL: actor.token, 'io.doorhandle.release': actor.context['release'],
               'io.doorhandle.source': actor.context['sourceSha256']}
@@ -404,11 +486,11 @@ def bootstrap_builder(actor, mounts=()):
         source = safe(source)
         command += ['--mount', 'type=bind,src=' + str(source) + ',dst=' + target + ('' if writable else ',readonly')]
         expected.append(('bind', str(source), target, writable))
-    command += ['--entrypoint', 'rootlesskit', IMAGE_ID, 'buildkitd', '--addr', 'unix:///run/user/1000/buildkit/buildkitd.sock',
+    command += ['--entrypoint', 'rootlesskit', image_identity['engineImageId'], 'buildkitd', '--addr', 'unix:///run/user/1000/buildkit/buildkitd.sock',
                 '--root', '/home/user/.local/share/buildkit', '--oci-worker-snapshotter=' + snapshotter]
     cid = actor.docker(*command).decode().strip(); require(re.fullmatch(r'[a-f0-9]{64}', cid), 'Builder container ID unavailable')
     actor.builder = {'id': cid, 'mounts': sorted(expected), 'volume': volume, 'labels': labels, 'snapshotter': snapshotter,
-                     'ioDevice': io_device, 'ioMajorMinor': io_major_minor}
+                     'ioDevice': io_device, 'ioMajorMinor': io_major_minor, 'engineIdentity': image_identity}
     actor.owned_builder(); actor.run(['docker', 'start', cid], 'builder-start', timeout=90)
     row = actor.owned_builder(); pid = row['State']['Pid']; require(row['State']['Running'] and pid > 1, 'Rootless builder did not start')
     actor.builder['claim'] = {'pid': pid, 'startTicks': Path('/proc/' + str(pid) + '/stat').read_text().rsplit(')', 1)[1].split()[19],
@@ -606,8 +688,6 @@ def prepare_tools(args, identity, recipe_directory):
     try:
         actor.begin('tool-metadata', 4 * MIB, {'imageReference': REFERENCE, 'imageId': IMAGE_ID}, 128 * MIB)
         (actor.directory / 'LICENSE').write_bytes((recipe_directory / 'LICENSE').read_bytes()); os.chmod(actor.directory / 'LICENSE', 0o600)
-        result = subprocess.run(['docker', 'image', 'inspect', IMAGE_ID], capture_output=True, timeout=15)
-        installed = result.returncode == 0
         # An already installed config ID alone does not establish that this
         # Docker engine accepts the OCI output format used below. Re-admit the
         # exact official bytes and perform the same bounded OCI load each time.
@@ -615,6 +695,9 @@ def prepare_tools(args, identity, recipe_directory):
                  else registry_layout(actor, REFERENCE, actor.directory / 'official-oci', inputs))
         require(proof['imageId'] == IMAGE_ID and proof['compressedBytes'] == BUILDKIT_LAYER_BYTES, 'Pinned official BuildKit bytes differ')
         write(actor.directory / 'official-layer-measurements.json', proof)
+        engine_id = engine_lookup_id(actor, proof, proof['loadDescriptor'])
+        result = subprocess.run(['docker', 'image', 'inspect', engine_id], capture_output=True, timeout=15)
+        installed = result.returncode == 0
         actor.begin('tool-image-archive', proof['compressedBytes'] + 8 * MIB,
                     {'officialLayerMeasurementsSha256': digest(actor.directory / 'official-layer-measurements.json')}, 128 * MIB)
         archive = actor.directory / 'official-image.tar'; layout = actor.directory / 'official-oci'
@@ -629,9 +712,10 @@ def prepare_tools(args, identity, recipe_directory):
         actor.daemon_import_unknown = True
         actor.run(['docker', 'load', '--input', str(archive)], 'official-image-load', timeout=300)
         actor.daemon_import_unknown = False
-        row = json.loads(actor.docker('image', 'inspect', IMAGE_ID))[0]
+        row = json.loads(actor.docker('image', 'inspect', engine_id))[0]
+        engine = engine_identity(row, proof, proof['loadDescriptor'])
         unique_image_inputs([row]); require(row['Config'].get('User') in ('1000', '1000:1000'), 'Official builder is not rootless UID1000')
-        bootstrap_builder(actor)
+        bootstrap_builder(actor, image_identity=engine)
         versions = {}
         for name in ('buildctl', 'buildkitd'):
             log = actor.run(['docker', 'exec', actor.builder['id'], name, '--version'], name + '-version', maximum=MIB, timeout=30)
@@ -646,7 +730,8 @@ def prepare_tools(args, identity, recipe_directory):
                  'buildctlBundled': True, 'versions': versions, 'ociImageLoadVerified': True,
                  'reusedImage': installed, 'resourceEvidence': resources,
                  'helperSha256': digest(recipe_directory / 'compact-build-resources.py'),
-                 'imageInputsHelperSha256': digest(recipe_directory / 'compact-image-inputs.py')}
+                 'imageInputsHelperSha256': digest(recipe_directory / 'compact-image-inputs.py'),
+                 'engineIdentity': engine, 'imageMeasurementSha256': digest(actor.directory / 'official-layer-measurements.json')}
         if supplied is not None: value['buildkitArchive'] = supplied
         write(actor.directory / 'tools.json', value)
         return {'file': str(actor.directory / 'tools.json'), 'sha256': digest(actor.directory / 'tools.json'),
@@ -756,6 +841,8 @@ def measure_registry_layout(actor, destination, inputs, raw, value, total):
     if manifest_sha != result['manifestDigest'][7:]: (destination / 'blobs/sha256' / manifest_sha).unlink()
     (destination / 'index.json').write_bytes(encoded({'schemaVersion': 2, 'manifests': [{'mediaType': 'application/vnd.oci.image.manifest.v1+json',
         'digest': result['manifestDigest'], 'size': len(normalized)}]}))
+    result['loadDescriptor'] = {'mediaType': 'application/vnd.oci.image.manifest.v1+json',
+                                'digest': result['manifestDigest'], 'size': len(normalized)}
     config = result.pop('config'); unique_image_inputs([{'Id': result['imageId'], 'Os': config['os'],
         'Architecture': config['architecture'], 'Config': config.get('config') or {}, 'RootFS': {'Layers': [row['diffId'] for row in result['layers']]}, 'Size': 0}])
     return result
@@ -764,6 +851,8 @@ def measure_registry_layout(actor, destination, inputs, raw, value, total):
 def local_layout(actor, image, destination, inputs):
     row = json.loads(actor.docker('image', 'inspect', image))[0]
     item = unique_image_inputs([row])[image]; require(item['diffIds'], 'Immutable dependency has no layers')
+    descriptor = engine_descriptor(row['Descriptor'], metadata=True) if row.get('Descriptor') is not None else None
+    native = descriptor is not None and row['Id'] == descriptor['digest']
     # Stream Docker's byte export directly into OCI blobs. Declared tar member
     # sizes are admitted before writing; no second full Torch archive is made.
     actor.begin('export-' + destination.name, 16 * MIB, {'imageId': image, 'diffIds': item['diffIds'], 'measurement': 'STREAM_HEADERS'}, 256 * MIB)
@@ -779,8 +868,10 @@ def local_layout(actor, image, destination, inputs):
             actor.begin('export-member-' + destination.name, size + 8 * MIB,
                 {'imageId': image, 'memberBytes': size, 'memberNameSha256': hashlib.sha256(name.encode()).hexdigest()}, 256 * MIB)
     try:
-        result = inputs.export_stream_to_oci(process.stdout, destination, image, item['diffIds'], 8 * GIB, before, check)
+        result = inputs.export_stream_to_oci(process.stdout, destination, None if native else image, item['diffIds'], 8 * GIB,
+                                             before, check, expected_engine_descriptor=descriptor if native else None)
         require(process.wait(timeout=10) == 0, 'Dependency byte export failed')
+        engine_identity(row, result, result['loadDescriptor'])
         return result
     finally:
         process.stdout.close()
@@ -802,13 +893,38 @@ def admit_tools(root, context, module_directory):
     reference = value['resourceEvidence']; summary = read(directory / 'resource-summary.json')
     require(reference == {'file': str(directory / 'resource-summary.json'), 'sha256': digest(directory / 'resource-summary.json')}, 'Builder preparation receipt changed')
     validate_files(directory, context, require_services=False)
+    engine = measured_tool_identity(directory, value)
+    require(summary.get('engineIdentity') == engine, 'Builder resource and tool engine identities differ')
     require(summary['status'] == 'PASS', 'Builder preparation did not pass')
     return {'file': str(directory / 'tools.json'), 'sha256': digest(directory / 'tools.json')}
+
+
+def measured_tool_identity(directory, value):
+    measurement_file = Path(directory) / 'official-layer-measurements.json'; measurement = read(measurement_file)
+    require(value.get('imageMeasurementSha256') == digest(measurement_file)
+            and measurement.get('configDigest') == IMAGE_ID and measurement.get('imageId') == IMAGE_ID
+            and measurement.get('compressedBytes') == BUILDKIT_LAYER_BYTES
+            and measurement.get('loadDescriptor', {}).get('digest') == measurement.get('manifestDigest'),
+            'Official builder measurement identity differs')
+    engine = stored_builder_identity(value.get('engineIdentity'))
+    row = {'Id': engine['engineImageId'], 'Descriptor': engine['loadDescriptor'], 'Os': engine['os'],
+           'Architecture': engine['architecture'], 'RootFS': {'Layers': engine['diffIds']}}
+    require(engine_identity(row, measurement, measurement['loadDescriptor']) == engine,
+            'Official builder engine/config/measurement binding differs')
+    return engine
+
+
+def tool_engine_identity(root, context, module_directory):
+    """Read-only complete same-attempt tool proof; Docker is inspected by callers."""
+    admit_tools(root, context, module_directory)
+    directory = Path(root) / 'inbox' / context['release'] / 'candidate-build-tools'
+    return measured_tool_identity(directory, read(directory / 'tools.json'))
 
 
 def build_images(actor, root, source, specifications):
     """One fresh builder, serial images, exact OCI input and output bytes."""
     module_directory = source / 'script/docker'; tool_proof = admit_tools(root, {key: value for key, value in actor.context.items() if key != 'ownerToken'}, module_directory)
+    engine = tool_engine_identity(root, {key: value for key, value in actor.context.items() if key != 'ownerToken'}, module_directory)
     inputs = load_module('candidate_image_inputs', module_directory / 'compact-image-inputs.py')
     require(0 < len(specifications) <= 4 and len({item['service'] for item in specifications}) == len(specifications), 'Candidate image set is invalid')
     oci = actor.directory / 'oci-inputs'; oci.mkdir(mode=0o700)
@@ -838,7 +954,7 @@ def build_images(actor, root, source, specifications):
         os.chmod(effective, 0o600)
         prepared.append({**item, 'inventory': inventory, 'base': catalogue[base], 'alias': alias, 'dockerfileSha256': digest(effective)})
         mounts.append((context, '/contexts/' + service, False))
-    mounts.append((output, '/outputs', True)); bootstrap_builder(actor, mounts)
+    mounts.append((output, '/outputs', True)); bootstrap_builder(actor, mounts, image_identity=engine)
     results = {}
     for item in prepared:
         service = item['service']; base = item['base']; layers = base['proof']['layers']; context = item['inventory']
@@ -891,10 +1007,16 @@ def build_images(actor, root, source, specifications):
         actor.daemon_import_unknown = True
         actor.run(['docker', 'load', '--input', str(archive)], 'load-' + service, timeout=600)
         actor.daemon_import_unknown = False
-        actor.run(['docker', 'tag', result['imageId'], item['tag']], 'tag-' + service, timeout=30)
+        engine_id = engine_lookup_id(actor, result, result['loadDescriptor'])
+        loaded = json.loads(actor.docker('image', 'inspect', engine_id))[0]
+        loaded_identity = engine_identity(loaded, result, result['loadDescriptor'])
+        unique_image_inputs([loaded])
+        actor.run(['docker', 'tag', loaded_identity['engineImageId'], item['tag']], 'tag-' + service, timeout=30)
         actual = json.loads(actor.docker('image', 'inspect', item['tag']))[0]
-        require(actual['Id'] == result['imageId'] and actual['RootFS']['Layers'] == [row['diffId'] for row in result['layers']], 'Loaded candidate image differs from actual OCI output')
-        results[service] = {'imageId': result['imageId'], 'ociArchiveSha256': result['archiveSha256'], 'ociArchiveBytes': result['archiveBytes'],
+        validate_engine_identity(actual, loaded_identity)
+        results[service] = {'imageId': loaded_identity['engineImageId'], 'configDigest': result['configDigest'],
+            'manifestDigest': result['manifestDigest'], 'loadDescriptor': result['loadDescriptor'], 'engineIdentity': loaded_identity,
+            'ociArchiveSha256': result['archiveSha256'], 'ociArchiveBytes': result['archiveBytes'],
             'inputContext': context, 'controlledDockerfileSha256': item['dockerfileSha256'], 'layers': result['layers']}
         write(actor.directory / ('image-' + service + '.json'), results[service])
         # These are newly produced, reproducible build outputs only. Retain
@@ -940,7 +1062,8 @@ def fixture_build_evidence(runtime, require_pass=False):
             require(re.fullmatch(r'[a-f0-9]{64}', cid), 'Fixture builder ID is invalid')
             row = json.loads(runtime.ops.docker('inspect', cid))[0]
             labels = row['Config'].get('Labels') or {}
-            require(row['Id'] == cid and row['Image'] == IMAGE_ID and labels.get(LABEL) == summary['ownerToken']
+            engine = stored_builder_identity(summary.get('engineIdentity'))
+            require(row['Id'] == cid and row['Image'] == engine['engineImageId'] and labels.get(LABEL) == summary['ownerToken']
                     and labels.get('io.doorhandle.release') == runtime.args.tag and labels.get('io.doorhandle.source') == runtime.args.source_sha256
                     and not row['State']['Running'] and row['State']['Pid'] == 0, 'Fixture image builder remains active or lost ownership')
         if require_pass:
@@ -965,6 +1088,7 @@ def validate_files(directory, context, require_services=True):
             and summary.get('monitorFailure') is None and summary.get('originalDataChanged') is False
             and all(summary.get('cleanup', {}).get(key) is True for key in ('creatorStopped', 'builderStopped', 'daemonImportTerminated')),
             'Candidate resource identity, monitor or owned cleanup did not pass')
+    engine = stored_builder_identity(summary.get('engineIdentity'))
     probes = (directory / 'resource-probes.jsonl').read_bytes()
     require(summary.get('probeFile') == 'resource-probes.jsonl' and 0 < len(probes) <= 64 * MIB
             and hashlib.sha256(probes).hexdigest() == summary.get('probeSha256'), 'Candidate raw resource observations changed')
@@ -990,7 +1114,7 @@ def validate_files(directory, context, require_services=True):
             observed.add(phase)
         if row.get('builder'):
             builder = row['builder']; require(builder.get('oomKills') == 0 and builder.get('memoryLimitBytes') == BUILDER_MEMORY
-                and 0 <= builder['currentBytes'] <= builder['peakBytes'] <= BUILDER_MEMORY and builder.get('image') == IMAGE_ID,
+                and 0 <= builder['currentBytes'] <= builder['peakBytes'] <= BUILDER_MEMORY and builder.get('image') == engine['engineImageId'],
                 'Candidate builder cgroup/OOM evidence is invalid'); builder_seen = True
             require(builder.get('writeRateLimitBytesPerSecond') == 64 * MIB, 'Builder resource observations lost their write ceiling')
             identity = (builder.get('id'), builder.get('pid'))
@@ -999,6 +1123,8 @@ def validate_files(directory, context, require_services=True):
                     'Builder cgroup identity or peak was rewritten')
             builder_identity = identity; builder_peak = builder['peakBytes']
     require(observed == set(phases) and builder_seen, 'Candidate phases or owned builder observations are incomplete')
+    require(any(name.startswith('builder-bootstrap-') and value['measuredInputs'].get('engineIdentity') == engine
+                for name, value in phases.items()), 'Builder bootstrap and actual engine identity differ')
     final = summary['finalProbe']
     require(final['diskAvailableBytes'] >= DISK_FLOOR and final['memoryAvailableBytes'] >= MEMORY_FLOOR
             and 0 <= final['monotonic'] - previous <= 2 and summary['cleanup'].get('builderContainerId') == builder_identity[0],
@@ -1014,6 +1140,15 @@ def validate_files(directory, context, require_services=True):
                 and image['ociArchiveBytes'] > 0 and SHA.fullmatch(image.get('controlledDockerfileSha256', ''))
                 and SHA.fullmatch(image.get('inputContext', {}).get('sha256', '')) and 0 < len(image.get('layers', [])) <= 256,
                 'Candidate image byte evidence is incomplete')
+        binding = image.get('engineIdentity')
+        require(type(binding) is dict and image['imageId'] == binding.get('engineImageId')
+                and image.get('configDigest') == binding.get('configDigest')
+                and image.get('loadDescriptor') == binding.get('loadDescriptor')
+                and type(image.get('manifestDigest')) is str and IMAGE.fullmatch(image['manifestDigest']),
+                'Candidate engine/config/load descriptor evidence differs')
+        synthetic = {'Id': image['imageId'], 'Descriptor': image['loadDescriptor'], 'Os': 'linux', 'Architecture': 'amd64',
+                     'RootFS': {'Layers': [item['diffId'] for item in image['layers']]}}
+        validate_engine_identity(synthetic, binding)
         require(all(IMAGE.fullmatch(layer.get('diffId', '')) and IMAGE.fullmatch(layer.get('blobDigest', ''))
                     and type(layer.get('allocationUpperBoundBytes')) is int and layer['allocationUpperBoundBytes'] > 0
                     for layer in image['layers']), 'Candidate image layer evidence is incomplete')

@@ -935,13 +935,14 @@ class PreparedReadback(Preparation):
             raw = control_bytes(directory / evidence['file'], maximum=4096)
             require(hashlib.sha256(raw).hexdigest() == evidence['sha256'] and helper.VERSION.encode() in raw,
                     'Actual builder version evidence differs')
-        image = json.loads(self.call('image', 'inspect', helper.IMAGE_ID))[0]
-        require(image['Id'] == helper.IMAGE_ID and image['Os'] == 'linux'
+        engine = helper.tool_engine_identity(self.root, context, self.folder)
+        image = json.loads(self.call('image', 'inspect', engine['engineImageId']))[0]
+        require(helper.validate_engine_identity(image, engine) == engine and image['Os'] == 'linux'
                 and image['Config'].get('User') in ('1000', '1000:1000'), 'Prepared builder image is not rootless')
         summary = json.loads(control_bytes(directory / 'resource-summary.json'))
         cid = summary['cleanup']['builderContainerId']; require(SHA.fullmatch(cid), 'Stopped builder ID is invalid')
         row = json.loads(self.call('inspect', cid))[0]; labels = row['Config'].get('Labels') or {}; state = row['State']
-        require(row['Id'] == cid and row['Image'] == helper.IMAGE_ID
+        require(row['Id'] == cid and row['Image'] == engine['engineImageId']
                 and labels.get(helper.LABEL) == summary['ownerToken'] and labels.get('io.doorhandle.release') == self.args.tag
                 and labels.get('io.doorhandle.source') == self.args.source_sha256
                 and row['Config'].get('User') in ('1000', '1000:1000') and not row['HostConfig'].get('Privileged')

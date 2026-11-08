@@ -656,6 +656,77 @@ class ToolPreparationTests(unittest.TestCase):
                 if mode == 'changed-original': helper.validate_buildkit_archive.assert_called_once_with(value.root, binding)
                 else: helper.validate_buildkit_archive.assert_not_called()
 
+    def completed_builder_readback(self, native=True):
+        value = object.__new__(tools.PreparedReadback)
+        value.args = SimpleNamespace(root='/home/owned', tag='ci-1-' + COMMIT[:12], source_sha256=SOURCE_SHA)
+        value.root = Path(value.args.root); value.inbox = value.root / 'inbox' / value.args.tag
+        value.folder = value.inbox / 'python-tools'; value.owner = {}
+        config = 'sha256:' + 'd' * 64; descriptor = {'mediaType': 'application/vnd.oci.image.manifest.v1+json',
+                                                  'digest': 'sha256:' + '1' * 64, 'size': 1192}
+        engine = {'engineImageId': descriptor['digest'] if native else config, 'configDigest': config,
+                  'loadDescriptor': descriptor, 'diffIds': ['sha256:' + '2' * 64], 'os': 'linux', 'architecture': 'amd64'}
+        directory = value.inbox / 'candidate-build-tools'; log = b'v0.34.2\n'; license_raw = b'approved-license'
+        helper = SimpleNamespace(IMAGE_ID=config, LABEL='io.doorhandle.candidate-builder', VERSION='v0.34.2',
+            BUILDER_MEMORY=2 * GIB, LICENSE_SHA=hashlib.sha256(license_raw).hexdigest(),
+            admit_tools=mock.Mock(return_value={'file': 'tools.json', 'sha256': 'e' * 64}),
+            buildkit_input=mock.Mock(return_value=None), tool_engine_identity=mock.Mock(return_value=engine),
+            validate_engine_identity=mock.Mock(return_value=engine))
+        document = {'licenseFile': str(directory / 'LICENSE'), 'engineIdentity': engine,
+                    'versions': {name: {'file': name + '-version.log', 'sha256': hashlib.sha256(log).hexdigest()}
+                                 for name in ('buildctl', 'buildkitd')}}
+        cid = 'c' * 64; token = 'f' * 24
+        summary = {'ownerToken': token, 'cleanup': {'builderContainerId': cid, 'builderExitCode': 0}}
+        image = {'Id': engine['engineImageId'], 'Os': 'linux', 'Architecture': 'amd64', 'Config': {'User': '1000:1000'}}
+        container = {'Id': cid, 'Image': engine['engineImageId'],
+            'Config': {'User': '1000:1000', 'Labels': {helper.LABEL: token, 'io.doorhandle.release': value.args.tag,
+                                                       'io.doorhandle.source': SOURCE_SHA}},
+            'HostConfig': {'Privileged': False, 'Memory': 2 * GIB, 'MemorySwap': 2 * GIB, 'RestartPolicy': {'Name': 'no'},
+                           'NetworkMode': 'bridge', 'NanoCpus': 2 * 10 ** 9, 'PidsLimit': 1024,
+                           'SecurityOpt': ['seccomp=unconfined', 'apparmor=unconfined', 'systempaths=unconfined']},
+            'State': {'Status': 'exited', 'Running': False, 'Restarting': False, 'Paused': False, 'OOMKilled': False,
+                      'StartedAt': '2026-11-08T00:00:00Z', 'Pid': 0, 'ExitCode': 0}}
+        def read(path, **_kwargs):
+            if path == directory / 'tools.json': return json.dumps(document).encode()
+            if path == directory / 'LICENSE': return license_raw
+            if path.name in ('buildctl-version.log', 'buildkitd-version.log'): return log
+            if path == directory / 'resource-summary.json': return json.dumps(summary).encode()
+            raise AssertionError('Unexpected control read')
+        def docker(*args):
+            if args == ('image', 'inspect', engine['engineImageId']): return json.dumps([image]).encode()
+            if args == ('inspect', cid): return json.dumps([container]).encode()
+            raise AssertionError('Readback used an unbound image or Docker mutation')
+        value.call = mock.Mock(side_effect=docker)
+        reference = {**helper.admit_tools.return_value, 'imageId': helper.IMAGE_ID, 'status': 'PREPARED'}
+        return value, helper, reference, read, image, container, engine
+
+    def test_completed_builder_readback_uses_bound_engine_id_for_both_stores(self):
+        for native in (False, True):
+            with self.subTest(native=native):
+                value, helper, reference, read, image, container, engine = self.completed_builder_readback(native)
+                spec = SimpleNamespace(loader=SimpleNamespace(exec_module=mock.Mock()))
+                with mock.patch.object(tools.importlib.util, 'spec_from_file_location', return_value=spec), \
+                        mock.patch.object(tools.importlib.util, 'module_from_spec', return_value=helper), \
+                        mock.patch.object(tools, 'control_bytes', side_effect=read):
+                    value.validate_builder(reference)
+                helper.validate_engine_identity.assert_called_once_with(image, engine)
+                self.assertEqual([mock.call('image', 'inspect', engine['engineImageId']), mock.call('inspect', container['Id'])],
+                                 value.call.call_args_list)
+                if native: self.assertNotEqual(helper.IMAGE_ID, engine['engineImageId'])
+
+    def test_builder_readback_rejects_engine_drift_and_wrong_container_image(self):
+        for change in ('identity-drift', 'root-user', 'container-config-id'):
+            with self.subTest(change=change):
+                value, helper, reference, read, image, container, engine = self.completed_builder_readback()
+                if change == 'identity-drift': helper.validate_engine_identity.side_effect = ValueError('engine identity drift')
+                if change == 'root-user': image['Config']['User'] = '0'
+                if change == 'container-config-id': container['Image'] = helper.IMAGE_ID
+                spec = SimpleNamespace(loader=SimpleNamespace(exec_module=mock.Mock()))
+                with mock.patch.object(tools.importlib.util, 'spec_from_file_location', return_value=spec), \
+                        mock.patch.object(tools.importlib.util, 'module_from_spec', return_value=helper), \
+                        mock.patch.object(tools, 'control_bytes', side_effect=read), self.assertRaises(ValueError):
+                    value.validate_builder(reference)
+                self.assertEqual(2 if change == 'container-config-id' else 1, value.call.call_count)
+
     def test_atomic_completion_never_overwrites_success_or_leaves_pending_bytes(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'completion.json'

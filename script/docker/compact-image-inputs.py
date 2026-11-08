@@ -15,6 +15,13 @@ import tarfile
 
 MIB = 1024 ** 2
 SHA = re.compile(r'sha256:[a-f0-9]{64}')
+MANIFEST_TYPES = {'application/vnd.oci.image.manifest.v1+json', 'application/vnd.docker.distribution.manifest.v2+json'}
+INDEX_TYPES = {'application/vnd.oci.image.index.v1+json', 'application/vnd.docker.distribution.manifest.list.v2+json'}
+CONFIG_TYPES = {'application/vnd.oci.image.config.v1+json', 'application/vnd.docker.container.image.v1+json'}
+LAYER_TYPES = {'application/vnd.oci.image.layer.v1.tar': 'application/vnd.oci.image.layer.v1.tar',
+               'application/vnd.oci.image.layer.v1.tar+gzip': 'application/vnd.oci.image.layer.v1.tar+gzip',
+               'application/vnd.docker.image.rootfs.diff.tar': 'application/vnd.oci.image.layer.v1.tar',
+               'application/vnd.docker.image.rootfs.diff.tar.gzip': 'application/vnd.oci.image.layer.v1.tar+gzip'}
 
 
 def require(value, message):
@@ -33,6 +40,74 @@ def checksum(path):
     return 'sha256:' + h.hexdigest()
 
 
+def decoded(raw):
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            require(key not in result, 'Duplicate image metadata key')
+            result[key] = value
+        return result
+    return json.loads(raw, object_pairs_hook=unique)
+
+
+def image_descriptor(value, media_types, metadata=True):
+    keys = {'mediaType', 'digest', 'size'}
+    require(type(value) is dict and keys <= value.keys()
+            and value.keys() <= keys | ({'annotations', 'platform'} if metadata else set())
+            and type(value['mediaType']) is str and value['mediaType'] in media_types
+            and type(value['digest']) is str and SHA.fullmatch(value['digest'])
+            and type(value['size']) is int and value['size'] > 0, 'Invalid typed image descriptor')
+    if 'annotations' in value:
+        require(type(value['annotations']) is dict and all(type(k) is str and type(v) is str for k, v in value['annotations'].items()),
+                'Invalid image descriptor annotations')
+    if 'platform' in value:
+        platform = value['platform']
+        require(type(platform) is dict and {'os', 'architecture'} <= platform.keys()
+                and platform.keys() <= {'os', 'architecture', 'variant', 'os.version', 'os.features'}
+                and platform['os'] == 'linux' and platform['architecture'] == 'amd64'
+                and all(type(platform[k]) is str for k in ('os', 'architecture', 'variant', 'os.version') if k in platform)
+                and ('os.features' not in platform or type(platform['os.features']) is list
+                     and all(type(v) is str for v in platform['os.features'])), 'Unsupported image descriptor platform')
+    return {key: value[key] for key in ('mediaType', 'digest', 'size')}
+
+
+def oci_source(members, small):
+    """Verify the original single-platform graph, retaining its load identity."""
+    require('index.json' in members and 'oci-layout' in members
+            and decoded(small('oci-layout')) == {'imageLayoutVersion': '1.0.0'}, 'Incomplete engine OCI metadata')
+    value = decoded(small('index.json')); allowed = {'index.json', 'oci-layout'}; root = None; expected_media = None
+    for depth in range(4):
+        require(type(value) is dict and type(value.get('schemaVersion')) is int and value['schemaVersion'] == 2,
+                'Unsupported engine OCI graph')
+        if expected_media is not None:
+            require(value.get('mediaType') == expected_media, 'Engine descriptor media type differs from its raw graph')
+        if 'annotations' in value:
+            require(type(value['annotations']) is dict and all(type(k) is str and type(v) is str for k, v in value['annotations'].items()),
+                    'Invalid engine graph annotations')
+        if 'manifests' not in value:
+            require(value.keys() <= {'schemaVersion', 'mediaType', 'config', 'layers', 'annotations'}
+                    and value.get('mediaType') in MANIFEST_TYPES and type(value.get('layers')) is list
+                    and len(value['layers']) <= 256 and root is not None, 'Unsupported engine image manifest')
+            config = image_descriptor(value.get('config'), CONFIG_TYPES)
+            layers = [image_descriptor(row, LAYER_TYPES) for row in value['layers']]
+            for descriptor in [config, *layers]:
+                name = 'blobs/sha256/' + descriptor['digest'][7:]; item = members.get(name)
+                size = item.size if isinstance(item, tarfile.TarInfo) and item.isfile() else item.get('size') if type(item) is dict else None
+                require(size == descriptor['size'], 'Engine OCI config/layer size differs')
+                allowed.add(name)
+            return root, value, allowed
+        require(depth < 3 and value.keys() <= {'schemaVersion', 'mediaType', 'manifests', 'annotations'}
+                and ('mediaType' not in value or value['mediaType'] in INDEX_TYPES)
+                and type(value['manifests']) is list and len(value['manifests']) == 1, 'Engine export contains another image/platform')
+        descriptor = image_descriptor(value['manifests'][0], MANIFEST_TYPES | INDEX_TYPES)
+        if root is None: root = descriptor
+        name = 'blobs/sha256/' + descriptor['digest'][7:]; raw = small(name)
+        require(len(raw) == descriptor['size'] and 'sha256:' + hashlib.sha256(raw).hexdigest() == descriptor['digest'],
+                'Engine OCI metadata bytes differ')
+        allowed.add(name); value = decoded(raw); expected_media = descriptor['mediaType']
+    raise ValueError('Unsupported engine OCI graph depth')
+
+
 def archive_catalog(package, maximum):
     catalog = {}; size = 0
     for entry in package:
@@ -47,7 +122,7 @@ def archive_catalog(package, maximum):
     return catalog
 
 
-def source_closure(members, small, source, config_id, layer_digests):
+def source_closure(members, small, source, config_id, layer_digests, layer_media_types=None):
     """Close both legacy save metadata and the engine's content-addressed graph."""
     allowed = {'manifest.json', source['Config'], *source['Layers']}
     for name in source['Layers']:
@@ -61,27 +136,21 @@ def source_closure(members, small, source, config_id, layer_digests):
                     allowed.add(metadata)
     if 'repositories' in members:
         require(isinstance(json.loads(small('repositories')), dict), 'Invalid legacy repository metadata'); allowed.add('repositories')
+    load_descriptor = None
     if 'index.json' in members or 'oci-layout' in members:
-        require('index.json' in members and 'oci-layout' in members and json.loads(small('oci-layout')) == {'imageLayoutVersion': '1.0.0'},
-                'Incomplete engine OCI metadata')
-        allowed.update(('index.json', 'oci-layout'))
-        def visit(value, depth):
-            require(depth <= 3 and value.get('schemaVersion') == 2, 'Unsupported engine OCI graph')
-            if 'manifests' in value:
-                require(len(value['manifests']) == 1, 'Engine export contains another image/platform')
-                descriptor = value['manifests'][0]
-                require(SHA.fullmatch(descriptor.get('digest', '')), 'Engine descriptor digest is invalid')
-                name = 'blobs/sha256/' + descriptor['digest'][7:]; raw = small(name)
-                require(len(raw) == descriptor['size'] and 'sha256:' + hashlib.sha256(raw).hexdigest() == descriptor['digest'], 'Engine OCI metadata bytes differ')
-                allowed.add(name); visit(json.loads(raw), depth + 1)
-            else:
-                require(value.get('config', {}).get('digest') == config_id
-                        and [row['digest'] for row in value.get('layers', [])] == layer_digests,
-                        'Legacy and OCI compatibility graphs differ')
-        visit(json.loads(small('index.json')), 0)
+        load_descriptor, manifest, graph = oci_source(members, small); allowed.update(graph)
+        require(manifest['config']['digest'] == config_id
+                and [row['digest'] for row in manifest['layers']] == layer_digests
+                and source['Config'] == 'blobs/sha256/' + config_id[7:]
+                and source['Layers'] == ['blobs/sha256/' + digest[7:] for digest in layer_digests],
+                'Legacy and OCI compatibility graphs differ')
+        if layer_media_types is not None:
+            require([LAYER_TYPES[row['mediaType']] for row in manifest['layers']] == layer_media_types,
+                    'Engine OCI layer media type differs from its bytes')
     for name, item in members.items():
         directory = item is None or isinstance(item, tarfile.TarInfo) and item.isdir()
         require(directory or name in allowed, 'Unreferenced image export member is refused')
+    return load_descriptor
 
 
 def inspect_docker_archive(archive, expected_image_id=None, expected_diff_ids=None,
@@ -121,40 +190,30 @@ def inspect_docker_archive(archive, expected_image_id=None, expected_diff_ids=No
                     'Required bounded image metadata is missing')
             with package.extractfile(catalog[name]) as stream: return stream.read(4 * MIB + 1)
         if 'manifest.json' in catalog:
-            manifest = json.loads(small('manifest.json'))
+            manifest = decoded(small('manifest.json'))
             require(isinstance(manifest, list) and len(manifest) == 1 and isinstance(manifest[0], dict),
                     'Only one explicit image may be exported/imported')
             source = manifest[0]
         else:
-            require(json.loads(small('oci-layout')) == {'imageLayoutVersion': '1.0.0'}, 'Unsupported OCI image layout')
-            index = json.loads(small('index.json'))
-            require(index.get('schemaVersion') == 2 and len(index.get('manifests', [])) == 1,
-                    'One OCI image manifest is required')
-            descriptor = index['manifests'][0]
-            require(SHA.fullmatch(descriptor.get('digest', '')), 'OCI manifest digest is invalid')
-            raw = small('blobs/sha256/' + descriptor['digest'][7:])
-            require(len(raw) == descriptor['size'] and 'sha256:' + hashlib.sha256(raw).hexdigest() == descriptor['digest'],
-                    'OCI manifest bytes differ')
-            manifest = json.loads(raw)
-            require(manifest.get('schemaVersion') == 2 and 'layers' in manifest and 'config' in manifest,
-                    'OCI index must resolve directly to an image, not an artifact or nested index')
+            _load_descriptor, manifest, _graph = oci_source(catalog, small)
             digests = [manifest['config']['digest'], *[row['digest'] for row in manifest['layers']]]
             require(all(SHA.fullmatch(value) for value in digests), 'OCI content digest is invalid')
             source = {'Config': 'blobs/sha256/' + digests[0][7:],
                       'Layers': ['blobs/sha256/' + value[7:] for value in digests[1:]]}
-            allowed = {'oci-layout', 'index.json', 'blobs/sha256/' + descriptor['digest'][7:],
-                       source['Config'], *source['Layers']}
-            require(all(name in allowed or row.isdir() for name, row in catalog.items()), 'Unreferenced OCI content is refused')
-        config_raw = small(source['Config']); config = json.loads(config_raw)
+        require(type(source.get('Config')) is str and type(source.get('Layers')) is list
+                and all(type(name) is str for name in source['Layers']), 'Invalid image Config/Layers metadata')
+        config_raw = small(source['Config']); config = decoded(config_raw)
         config_id = 'sha256:' + hashlib.sha256(config_raw).hexdigest()
         if source['Config'].startswith('blobs/sha256/'):
             require(source['Config'].split('/')[-1] == config_id[7:], 'Content-addressed image config differs')
-        require(SHA.fullmatch(config_id) and (expected_image_id is None or config_id == expected_image_id)
+        require(type(config) is dict and type(config.get('rootfs')) is dict
+                and SHA.fullmatch(config_id) and (expected_image_id is None or config_id == expected_image_id)
                 and config.get('os') == 'linux' and config.get('architecture') == 'amd64'
                 and config.get('rootfs', {}).get('type') == 'layers', 'Image config identity/platform differs')
         diff_ids = config['rootfs']['diff_ids']; names = source['Layers']
         require(isinstance(names, list) and isinstance(diff_ids, list) and len(names) == len(diff_ids)
-                and len(set(names)) == len(names) and len(names) <= 256 and all(SHA.fullmatch(x) for x in diff_ids)
+                and len(set(names)) == len(names) and len(names) <= 256
+                and all(type(x) is str and SHA.fullmatch(x) for x in diff_ids)
                 and (expected_diff_ids is None or diff_ids == expected_diff_ids), 'Image layer/DiffID catalog differs')
         layers = []; descriptors = []; expanded_total = 0
         for name, diff_id in zip(names, diff_ids):
@@ -212,7 +271,8 @@ def inspect_docker_archive(archive, expected_image_id=None, expected_diff_ids=No
                                'filesystemEntries': entries, 'mediaType': media})
             finally:
                 if target is not None: target.close()
-        source_closure(catalog, small, source, config_id, [row['blobDigest'] for row in layers])
+        load_descriptor = source_closure(catalog, small, source, config_id,
+                                         [row['blobDigest'] for row in layers], [row['mediaType'] for row in layers])
         config_ref = write_blob(config_raw)
         oci_manifest = {'schemaVersion': 2, 'mediaType': 'application/vnd.oci.image.manifest.v1+json',
             'config': {'mediaType': 'application/vnd.oci.image.config.v1+json', **config_ref}, 'layers': descriptors}
@@ -222,7 +282,7 @@ def inspect_docker_archive(archive, expected_image_id=None, expected_diff_ids=No
                                 ('index.json', {'schemaVersion': 2, 'manifests': [descriptor]})]:
                 with os.fdopen(os.open(destination / name, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600), 'wb') as stream:
                     stream.write(encoded(value))
-        return {'imageId': config_id, 'manifestDigest': descriptor['digest'], 'configDigest': config_id,
+        return {'imageId': config_id, 'manifestDigest': descriptor['digest'], 'configDigest': config_id, 'loadDescriptor': load_descriptor,
                 'archiveBytes': archive.stat().st_size, 'archiveSha256': checksum(archive)[7:],
                 'compressedBytes': sum(x['bytes'] for x in layers), 'uncompressedLayerBytes': expanded_total,
                 'layers': layers, 'layerCount': len(layers), 'config': config}
@@ -234,13 +294,22 @@ def export_to_oci(archive, destination, expected_image_id, expected_diff_ids, ma
 
 
 def export_stream_to_oci(origin, destination, expected_image_id, expected_diff_ids,
-                         maximum_uncompressed_bytes, before_member, check):
+                         maximum_uncompressed_bytes, before_member, check, *, expected_engine_descriptor=None):
     """Save directly into OCI blobs: no second full Torch TAR on this disk.
 
     Every next member's real declared bytes are admitted before they are
     written. A complete manifest/config/DiffID verification closes the stream.
     The host dependency image remains untouched and can recreate these inputs.
     """
+    if expected_engine_descriptor is not None:
+        expected_engine_descriptor = image_descriptor(expected_engine_descriptor, MANIFEST_TYPES | INDEX_TYPES, metadata=False)
+    require((type(expected_image_id) is str and SHA.fullmatch(expected_image_id))
+            or expected_image_id is None and expected_engine_descriptor is not None,
+            'A pinned config or complete engine descriptor is required')
+    require(type(expected_diff_ids) is list and len(expected_diff_ids) <= 256
+            and all(type(value) is str and SHA.fullmatch(value) for value in expected_diff_ids)
+            and type(maximum_uncompressed_bytes) is int and maximum_uncompressed_bytes > 0,
+            'Typed image DiffIDs and expansion bound are required')
     destination = Path(destination); require(not destination.exists(), 'Fresh OCI stream destination required')
     (destination / 'blobs/sha256').mkdir(mode=0o700, parents=True)
     members = {}; total = 0; stream_sha = hashlib.sha256(); stream_bytes = 0
@@ -281,38 +350,39 @@ def export_stream_to_oci(origin, destination, expected_image_id, expected_diff_i
         require(item is not None and item['size'] <= 4 * MIB, 'Bounded Docker export metadata missing')
         return item['path'].read_bytes()
     if 'manifest.json' in members:
-        manifest = json.loads(small('manifest.json'))
-        require(isinstance(manifest, list) and len(manifest) == 1, 'Docker export must contain exactly one image')
+        manifest = decoded(small('manifest.json'))
+        require(isinstance(manifest, list) and len(manifest) == 1 and type(manifest[0]) is dict,
+                'Docker export must contain exactly one image')
         row = manifest[0]
     else:
-        require(json.loads(small('oci-layout')) == {'imageLayoutVersion': '1.0.0'}, 'Unsupported engine OCI export')
-        value = json.loads(small('index.json')); depth = 0
-        while 'manifests' in value:
-            depth += 1
-            require(depth <= 3 and value.get('schemaVersion') == 2 and len(value['manifests']) == 1,
-                    'Engine OCI export must resolve to one immutable platform')
-            descriptor = value['manifests'][0]
-            require(SHA.fullmatch(descriptor.get('digest', '')), 'Engine OCI descriptor digest is invalid')
-            raw = small('blobs/sha256/' + descriptor['digest'][7:])
-            require(len(raw) == descriptor['size'] and 'sha256:' + hashlib.sha256(raw).hexdigest() == descriptor['digest'],
-                    'Engine OCI manifest bytes differ')
-            value = json.loads(raw)
-        require(value.get('schemaVersion') == 2 and 'config' in value and 'layers' in value
-                and value['config']['digest'] == expected_image_id, 'Engine OCI export does not contain the pinned image config')
-        descriptors = [value['config'], *value['layers']]
-        require(all(SHA.fullmatch(item.get('digest', '')) and members.get('blobs/sha256/' + item['digest'][7:], {}).get('size') == item['size']
-                    for item in descriptors), 'Engine OCI config/layer catalogue differs')
+        _load_descriptor, value, _graph = oci_source(members, small)
         row = {'Config': 'blobs/sha256/' + value['config']['digest'][7:],
                'Layers': ['blobs/sha256/' + item['digest'][7:] for item in value['layers']]}
-    config_raw = small(row['Config']); config = json.loads(config_raw)
-    require('sha256:' + hashlib.sha256(config_raw).hexdigest() == expected_image_id
+    require(type(row.get('Config')) is str and type(row.get('Layers')) is list
+            and all(type(name) is str for name in row['Layers']), 'Invalid image Config/Layers metadata')
+    # Validate the original raw graph before deriving a config identity from
+    # an engine manifest/index handle. The handle never replaces that digest.
+    if expected_engine_descriptor is not None:
+        require('index.json' in members and oci_source(members, small)[0] == expected_engine_descriptor,
+                'Original engine load descriptor differs')
+    config_raw = small(row['Config']); config = decoded(config_raw)
+    config_id = 'sha256:' + hashlib.sha256(config_raw).hexdigest()
+    require(type(config) is dict and type(config.get('rootfs')) is dict
+            and (expected_image_id is None or config_id == expected_image_id)
             and config.get('architecture') == 'amd64' and config.get('os') == 'linux'
+            and config.get('rootfs', {}).get('type') == 'layers'
             and config.get('rootfs', {}).get('diff_ids') == expected_diff_ids
-            and len(row['Layers']) == len(expected_diff_ids), 'Exported dependency image config differs')
+            and type(row['Layers']) is list and len(row['Layers']) == len(expected_diff_ids)
+            and all(type(name) is str for name in row['Layers']) and len(set(row['Layers'])) == len(row['Layers']),
+            'Exported dependency image config differs')
+    if row['Config'].startswith('blobs/sha256/'):
+        require(row['Config'] == 'blobs/sha256/' + config_id[7:], 'Content-addressed image config differs')
     layers = []; descriptors = []; unpacked_total = 0
-    keep = {expected_image_id[7:]}
+    keep = {config_id[7:]}
     for name, expected in zip(row['Layers'], expected_diff_ids):
         item = members.get(name); require(item is not None, 'Exported dependency layer missing')
+        if name.startswith('blobs/sha256/'):
+            require(name == 'blobs/sha256/' + item['digest'][7:], 'Content-addressed layer bytes differ')
         path = item['path']; keep.add(item['digest'][7:])
         with path.open('rb') as raw: compressed = raw.read(2) == b'\x1f\x8b'
         h = hashlib.sha256(); unpacked = 0
@@ -337,9 +407,10 @@ def export_stream_to_oci(origin, destination, expected_image_id, expected_diff_i
         layers.append({'blobDigest': item['digest'], 'diffId': expected, 'bytes': item['size'],
                        'uncompressedBytes': unpacked, 'allocationUpperBoundBytes': allocated,
                        'filesystemEntries': entries, 'mediaType': media})
-    source_closure(members, small, row, expected_image_id, [item['blobDigest'] for item in layers])
+    load_descriptor = source_closure(members, small, row, config_id,
+                                     [item['blobDigest'] for item in layers], [item['mediaType'] for item in layers])
     value = {'schemaVersion': 2, 'mediaType': 'application/vnd.oci.image.manifest.v1+json',
-             'config': {'mediaType': 'application/vnd.oci.image.config.v1+json', 'digest': expected_image_id, 'size': len(config_raw)},
+             'config': {'mediaType': 'application/vnd.oci.image.config.v1+json', 'digest': config_id, 'size': len(config_raw)},
              'layers': descriptors}
     raw = encoded(value); manifest_digest = 'sha256:' + hashlib.sha256(raw).hexdigest(); keep.add(manifest_digest[7:])
     target = destination / 'blobs/sha256' / manifest_digest[7:]
@@ -349,7 +420,7 @@ def export_stream_to_oci(origin, destination, expected_image_id, expected_diff_i
     for name, content in [('oci-layout', {'imageLayoutVersion': '1.0.0'}), ('index.json', {'schemaVersion': 2,
             'manifests': [{'mediaType': value['mediaType'], 'digest': manifest_digest, 'size': len(raw)}]})]:
         with os.fdopen(os.open(destination / name, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600), 'wb') as output: output.write(encoded(content))
-    return {'imageId': expected_image_id, 'manifestDigest': manifest_digest, 'configDigest': expected_image_id,
+    return {'imageId': config_id, 'manifestDigest': manifest_digest, 'configDigest': config_id, 'loadDescriptor': load_descriptor,
             'dockerSaveStreamSha256': stream_sha.hexdigest(), 'dockerSaveStreamBytes': stream_bytes,
             'compressedBytes': sum(item['bytes'] for item in layers), 'uncompressedLayerBytes': unpacked_total,
             'layers': layers, 'layerCount': len(layers)}

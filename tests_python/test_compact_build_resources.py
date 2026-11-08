@@ -84,17 +84,34 @@ def archive_actor(directory):
     return actor
 
 
+def identity_fixture(config=None, *, native=False, diff_ids=None):
+    config = config or RES.IMAGE_ID
+    diff_ids = diff_ids or ['sha256:' + '5' * 64]
+    descriptor = {'mediaType': 'application/vnd.oci.image.manifest.v1+json', 'digest': 'sha256:' + '8' * 64, 'size': 1192}
+    measurement = {'imageId': config, 'configDigest': config, 'manifestDigest': 'sha256:' + '9' * 64,
+                   'layers': [{'diffId': value} for value in diff_ids]}
+    row = {'Id': descriptor['digest'] if native else config, 'Os': 'linux', 'Architecture': 'amd64',
+           'RootFS': {'Type': 'layers', 'Layers': diff_ids}, 'Config': {'User': '1000:1000', 'Env': []}, 'Size': 1}
+    if native: row['Descriptor'] = copy.deepcopy(descriptor)
+    binding = {'engineImageId': row['Id'], 'configDigest': config, 'loadDescriptor': descriptor if native else None,
+               'diffIds': diff_ids, 'os': 'linux', 'architecture': 'amd64'}
+    return row, measurement, binding
+
+
 def evidence(directory):
     baseline = {'monotonic': 1.0, 'diskAvailableBytes': 16 * RES.GIB, 'memoryAvailableBytes': 8 * RES.GIB, 'filesystemBlockBytes': 4096}
     phases = []
     probes = []
-    builder = {'id': 'd' * 64, 'image': RES.IMAGE_ID, 'running': True, 'pid': 1234, 'memoryLimitBytes': RES.BUILDER_MEMORY,
+    engine = identity_fixture()[2]
+    builder = {'id': 'd' * 64, 'image': engine['engineImageId'], 'running': True, 'pid': 1234, 'memoryLimitBytes': RES.BUILDER_MEMORY,
                'currentBytes': RES.MIB, 'peakBytes': 2 * RES.MIB, 'oomKills': 0, 'writeRateLimitBytesPerSecond': 64 * RES.MIB}
-    names = ['source-extraction', 'stage-contexts', *['build-' + service for service in RES.SERVICES],
+    names = ['source-extraction', 'stage-contexts', 'builder-bootstrap', *['build-' + service for service in RES.SERVICES],
              *['load-' + service for service in RES.SERVICES], 'candidate-jar-readback']
     for index, phase in enumerate(names, 1):
         name = phase + '-%03d' % index
-        plan = RES.phase_plan({**CONTEXT, 'ownerToken': 'e' * 24}, name, baseline, RES.GIB, RES.BUILDER_MEMORY, {'actualInputBytes': 1024})
+        measured = {'actualInputBytes': 1024}
+        if phase == 'builder-bootstrap': measured['engineIdentity'] = engine
+        plan = RES.phase_plan({**CONTEXT, 'ownerToken': 'e' * 24}, name, baseline, RES.GIB, RES.BUILDER_MEMORY, measured)
         path = directory / ('phase-%02d.json' % index); path.write_bytes(RES.encoded(plan))
         phases.append({'file': path.name, 'sha256': RES.digest(path)})
         probes.append({**baseline, 'monotonic': 1.0 + index * .05, 'phase': name, 'builder': builder})
@@ -102,8 +119,10 @@ def evidence(directory):
     image = {'imageId': 'sha256:' + '1' * 64, 'ociArchiveSha256': '2' * 64, 'ociArchiveBytes': 20480,
              'controlledDockerfileSha256': '3' * 64, 'inputContext': {'sha256': '4' * 64},
              'layers': [{'diffId': 'sha256:' + '5' * 64, 'blobDigest': 'sha256:' + '6' * 64, 'allocationUpperBoundBytes': 8192}]}
+    image.update(configDigest=image['imageId'], manifestDigest='sha256:' + '9' * 64, loadDescriptor=None,
+                 engineIdentity=identity_fixture(image['imageId'])[2])
     summary = {'version': 1, 'kind': 'doorhandle-candidate-build-resources', **CONTEXT, 'ownerToken': 'e' * 24,
-               'status': 'PASS', 'capacityVerdict': 'CONTROLLED_MEASUREMENT', 'productionCapacityVerified': False,
+               'status': 'PASS', 'capacityVerdict': 'CONTROLLED_MEASUREMENT', 'productionCapacityVerified': False, 'engineIdentity': engine,
                'baselineProbe': baseline, 'finalProbe': {**baseline, 'monotonic': probes[-1]['monotonic'] + .05}, 'phases': phases, 'probeFile': 'resource-probes.jsonl',
                'probeSha256': hashlib.sha256(raw).hexdigest(), 'monitorFailure': None, 'originalDataChanged': False,
                'cleanup': {'creatorStopped': True, 'builderStopped': True, 'daemonImportTerminated': True, 'builderContainerId': 'd' * 64},
@@ -208,8 +227,8 @@ class CompactBuildResourceTests(unittest.TestCase):
 
     def test_offline_preparation_keeps_real_load_bootstrap_version_stop_and_current_original_checks(self):
         members, image, _diff, checksum, size = official_oci_fixture()
-        for failure in (None, 'load', 'version', 'original-drift'):
-            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temporary, \
+        for backend, failure in [(backend, failure) for backend in ('classic', 'containerd') for failure in (None, 'load', 'version', 'original-drift')]:
+            with self.subTest(backend=backend, failure=failure), tempfile.TemporaryDirectory() as temporary, \
                     mock.patch.multiple(RES, REFERENCE='docker.io/moby/buildkit@' + checksum, IMAGE_ID=image, BUILDKIT_LAYER_BYTES=size):
                 root = Path(temporary); binding = cache_archive(root, tar_bytes(list(members.items())))
                 inbox = root / 'inbox' / CONTEXT['release']; inbox.mkdir(mode=0o700, parents=True)
@@ -224,10 +243,19 @@ class CompactBuildResourceTests(unittest.TestCase):
                     if failure == 'version' and name == 'buildctl-version': path.write_text('wrong-version')
                     return path
                 actor.run = run
-                actor.docker = lambda *args: json.dumps([{'Id': image, 'Os': 'linux', 'Architecture': 'amd64', 'Size': 1,
-                    'RootFS': {'Layers': []}, 'Config': {'User': '1000:1000', 'Env': []}}]).encode()
-                def bootstrap(value):
+                def docker(*arguments):
+                    if arguments[0] == 'info': return json.dumps([['driver-type', 'io.containerd.snapshotter.v1']] if backend == 'containerd' else []).encode()
+                    proof = json.loads((actor.directory / 'official-layer-measurements.json').read_bytes())
+                    row = {'Id': proof['loadDescriptor']['digest'] if backend == 'containerd' else image,
+                           'Os': 'linux', 'Architecture': 'amd64', 'Size': 1,
+                           'RootFS': {'Type': 'layers', 'Layers': [_diff]}, 'Config': {'User': '1000:1000', 'Env': []}}
+                    if backend == 'containerd': row['Descriptor'] = proof['loadDescriptor']
+                    self.assertEqual(('image', 'inspect', row['Id']), arguments)
+                    return json.dumps([row]).encode()
+                actor.docker = docker
+                def bootstrap(value, *, image_identity):
                     self.assertTrue(any(name == 'official-image-load' for name, _args in value.calls))
+                    self.assertEqual(image, image_identity['configDigest']); self.assertEqual([_diff], image_identity['diffIds'])
                     value.builder = {'id': 'd' * 64}
                     if failure == 'original-drift': Path(binding['file']).write_bytes(b'changed')
                 args = SimpleNamespace(root=str(root), tag=CONTEXT['release'], commit=CONTEXT['commit'],
@@ -244,8 +272,122 @@ class CompactBuildResourceTests(unittest.TestCase):
                         result = RES.prepare_tools(args, CONTEXT['identity'], recipe)
                         value = json.loads((actor.directory / 'tools.json').read_bytes())
                         self.assertEqual('PREPARED', result['status']); self.assertEqual(binding, value['buildkitArchive'])
+                        self.assertEqual(value['engineIdentity'], RES.measured_tool_identity(actor.directory, value))
+                        self.assertEqual(image, value['imageId']); self.assertEqual(image, value['engineIdentity']['configDigest'])
                         self.assertTrue(value['ociImageLoadVerified']); self.assertEqual(['PASS'], actor.finishes)
                         self.assertEqual(['official-image-load', 'buildctl-version', 'buildkitd-version'], [name for name, _args in actor.calls])
+
+    def test_classic_and_manifest_engine_handles_keep_the_original_config_identity(self):
+        for native in (False, True):
+            row, measurement, binding = identity_fixture(native=native)
+            with self.subTest(native=native):
+                self.assertEqual(binding, RES.engine_identity(row, measurement, binding['loadDescriptor']))
+                self.assertEqual(binding, RES.validate_engine_identity(row, binding))
+                self.assertEqual(RES.IMAGE_ID, binding['configDigest'])
+                if native: self.assertNotEqual(measurement['manifestDigest'], binding['engineImageId'])
+
+    def test_engine_target_descriptor_accepts_only_typed_standard_metadata(self):
+        row, measurement, binding = identity_fixture(native=True)
+        row['Descriptor'].update(annotations={'org.opencontainers.image.ref.name': 'fixture'},
+            platform={'os': 'linux', 'architecture': 'amd64', 'variant': '', 'os.version': '', 'os.features': ['fixture']})
+        self.assertEqual(binding, RES.engine_identity(row, measurement, binding['loadDescriptor']))
+        for change in ({'url': 'unbound'}, {'annotations': {'key': 3}}, {'platform': {'os': 'linux', 'architecture': 'arm64'}},
+                       {'platform': {'os': 'linux', 'architecture': 'amd64', 'os.features': 'feature'}}, {'size': True}):
+            damaged = copy.deepcopy(row); damaged['Descriptor'].update(change)
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                RES.engine_identity(damaged, measurement, binding['loadDescriptor'])
+
+    def test_engine_identity_rejects_unrelated_config_layers_platform_and_descriptor(self):
+        row, measurement, binding = identity_fixture(native=True, diff_ids=['sha256:' + '5' * 64, 'sha256:' + '6' * 64])
+        for change in ('id', 'descriptor', 'missing-descriptor', 'ordered-layers', 'os', 'architecture', 'rootfs-type', 'config', 'binding-extra'):
+            damaged = copy.deepcopy(row); proof = copy.deepcopy(measurement); expected = copy.deepcopy(binding)
+            if change == 'id': damaged['Id'] = 'sha256:' + '7' * 64
+            if change == 'descriptor': damaged['Descriptor']['digest'] = 'sha256:' + '7' * 64
+            if change == 'missing-descriptor': del damaged['Descriptor']
+            if change == 'ordered-layers': damaged['RootFS']['Layers'].reverse()
+            if change == 'os': damaged['Os'] = 'windows'
+            if change == 'architecture': damaged['Architecture'] = 'arm64'
+            if change == 'rootfs-type': damaged['RootFS']['Type'] = 'unknown'
+            if change == 'config': proof['imageId'] = 'sha256:' + '7' * 64
+            if change == 'binding-extra': expected['unbound'] = True
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                if change == 'binding-extra': RES.validate_engine_identity(damaged, expected)
+                else: RES.engine_identity(damaged, proof, binding['loadDescriptor'])
+
+    def test_engine_lookup_selects_the_proven_store_without_inspect_error_fallback(self):
+        _row, measurement, binding = identity_fixture(native=True)
+        for driver, expected in (([], RES.IMAGE_ID), ([['driver-type', 'io.containerd.snapshotter.v1']], binding['engineImageId'])):
+            actor = SimpleNamespace(docker=mock.Mock(return_value=json.dumps(driver).encode()))
+            self.assertEqual(expected, RES.engine_lookup_id(actor, measurement, binding['loadDescriptor']))
+            actor.docker.assert_called_once_with('info', '--format', '{{json .DriverStatus}}')
+        for driver, descriptor in (([['driver-type', 'unknown']], binding['loadDescriptor']),
+                ([['driver-type', 'io.containerd.snapshotter.v1']] * 2, binding['loadDescriptor']),
+                ([['driver-type', 'io.containerd.snapshotter.v1']], None), ({'driver-type': 'io.containerd.snapshotter.v1'}, binding['loadDescriptor'])):
+            with self.subTest(driver=driver, descriptor=descriptor), self.assertRaises(ValueError):
+                RES.engine_lookup_id(SimpleNamespace(docker=lambda *_: json.dumps(driver).encode()), measurement, descriptor)
+
+    def test_local_save_stream_uses_the_verified_original_manifest_not_the_engine_as_config(self):
+        members, config, diff, _manifest, _size = official_oci_fixture()
+        descriptor = json.loads(members['index.json'])['manifests'][0]
+        row = {'Id': descriptor['digest'], 'Descriptor': dict(descriptor, annotations={'fixture': 'retained'}),
+               'Os': 'linux', 'Architecture': 'amd64', 'Config': {'Env': []}, 'RootFS': {'Layers': [diff]}, 'Size': 1}
+        with tempfile.TemporaryDirectory() as temporary:
+            actor = archive_actor(Path(temporary) / 'attempt'); actor.docker = lambda *_: json.dumps([row]).encode()
+            process = SimpleNamespace(stdout=io.BytesIO(tar_bytes(list(members.items()))), wait=lambda **_: 0, poll=lambda: 0)
+            with mock.patch.object(RES.subprocess, 'Popen', return_value=process), \
+                    mock.patch.object(OCI, 'export_stream_to_oci', wraps=OCI.export_stream_to_oci) as export:
+                proof = RES.local_layout(actor, row['Id'], actor.directory / 'layout', OCI)
+            self.assertIsNone(export.call_args.args[2]); self.assertEqual(descriptor, export.call_args.kwargs['expected_engine_descriptor'])
+            self.assertEqual(config, proof['imageId']); self.assertEqual(config, proof['configDigest'])
+            self.assertEqual(descriptor, proof['loadDescriptor']); self.assertIsNone(actor.process)
+
+    def test_rehashed_tool_measurements_still_require_the_pinned_config_and_ordered_diffids(self):
+        _row, measurement, engine = identity_fixture(native=True)
+        measurement.update(compressedBytes=RES.BUILDKIT_LAYER_BYTES, manifestDigest=engine['loadDescriptor']['digest'], loadDescriptor=engine['loadDescriptor'])
+        for damage in (None, 'config', 'layers', 'manifest', 'measurement-sha', 'binding-pin'):
+            with self.subTest(damage=damage), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary); proof = copy.deepcopy(measurement); binding = copy.deepcopy(engine)
+                if damage == 'config': proof['configDigest'] = 'sha256:' + '7' * 64
+                if damage == 'layers': proof['layers'][0]['diffId'] = 'sha256:' + '7' * 64
+                if damage == 'manifest': proof['manifestDigest'] = 'sha256:' + '7' * 64
+                if damage == 'binding-pin': binding['configDigest'] = 'sha256:' + '7' * 64
+                path = directory / 'official-layer-measurements.json'; path.write_bytes(RES.encoded(proof))
+                value = {'engineIdentity': binding, 'imageMeasurementSha256': RES.digest(path)}
+                if damage == 'measurement-sha': value['imageMeasurementSha256'] = '0' * 64
+                if damage is None: self.assertEqual(engine, RES.measured_tool_identity(directory, value))
+                else:
+                    with self.assertRaises(ValueError): RES.measured_tool_identity(directory, value)
+
+    def test_owned_container_requires_the_bound_engine_handle_and_all_existing_resource_guards(self):
+        engine = identity_fixture(native=True)[2]; actor = RES.Supervisor.__new__(RES.Supervisor)
+        actor.token = 'e' * 24; actor.context = CONTEXT
+        actor.builder = {'id': 'd' * 64, 'engineIdentity': engine, 'ioDevice': '/dev/vda', 'mounts': []}
+        row = {'Id': actor.builder['id'], 'Image': engine['engineImageId'],
+            'Config': {'User': '1000:1000', 'Labels': {RES.LABEL: actor.token, 'io.doorhandle.release': CONTEXT['release'], 'io.doorhandle.source': CONTEXT['sourceSha256']}},
+            'HostConfig': {'Privileged': False, 'Memory': RES.BUILDER_MEMORY, 'MemorySwap': RES.BUILDER_MEMORY,
+                'BlkioDeviceWriteBps': [{'Path': '/dev/vda', 'Rate': 64 * RES.MIB}],
+                'SecurityOpt': ['seccomp=unconfined', 'apparmor=unconfined', 'systempaths=unconfined'], 'Tmpfs': {'/tmp': '', '/run/user/1000': ''}}, 'Mounts': []}
+        actor.docker = lambda *_: json.dumps([row]).encode()
+        self.assertEqual(row, actor.owned_builder())
+        for field, value in (('Image', RES.IMAGE_ID), ('Id', '7' * 64)):
+            damaged = dict(row, **{field: value}); actor.docker = lambda *_: json.dumps([damaged]).encode()
+            with self.subTest(field=field), self.assertRaises(ValueError): actor.owned_builder()
+
+    def test_resource_validator_rejects_rehashed_engine_and_bootstrap_binding_drift(self):
+        for damage in ('missing-engine', 'builder-probe', 'bootstrap', 'candidate-config', 'candidate-engine'):
+            with self.subTest(damage=damage), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary); summary, probes = evidence(directory)
+                if damage == 'missing-engine': del summary['engineIdentity']
+                if damage == 'builder-probe': probes[0]['builder']['image'] = 'sha256:' + '7' * 64
+                if damage == 'bootstrap':
+                    reference = summary['phases'][2]; path = directory / reference['file']; phase = json.loads(path.read_bytes())
+                    phase['measuredInputs']['engineIdentity']['configDigest'] = 'sha256:' + '7' * 64
+                    path.write_bytes(RES.encoded(phase)); reference['sha256'] = RES.digest(path)
+                if damage == 'candidate-config': summary['build']['images']['backend']['configDigest'] = 'sha256:' + '7' * 64
+                if damage == 'candidate-engine': summary['build']['images']['backend']['engineIdentity']['engineImageId'] = 'sha256:' + '7' * 64
+                raw = b''.join(RES.encoded(row) + b'\n' for row in probes); (directory / 'resource-probes.jsonl').write_bytes(raw)
+                summary['probeSha256'] = hashlib.sha256(raw).hexdigest(); (directory / 'resource-summary.json').write_bytes(RES.encoded(summary))
+                with self.assertRaises(ValueError): RES.validate_files(directory, CONTEXT)
 
     def test_actual_floor_and_memory_admission_are_independent(self):
         baseline = {'diskAvailableBytes': RES.DISK_FLOOR + RES.MIB, 'memoryAvailableBytes': RES.BUILDER_MEMORY + RES.MEMORY_FLOOR}

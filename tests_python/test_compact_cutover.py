@@ -34,6 +34,9 @@ def fixture_build_resources(directory, context, name):
                 'memoryAvailableBytes': 12 * runtime.GIB, 'filesystemBlockBytes': 4096}
     token = hashlib.sha256(('owner:' + name).encode()).hexdigest()[:24]
     cid = hashlib.sha256(('builder:' + name).encode()).hexdigest()
+    builder_engine = {'engineImageId': build_resources.IMAGE_ID, 'configDigest': build_resources.IMAGE_ID,
+        'loadDescriptor': None, 'diffIds': ['sha256:' + hashlib.sha256(b'fixture-builder-layer').hexdigest()],
+        'os': 'linux', 'architecture': 'amd64'}
     builder = {'id': cid, 'pid': 1200 if name == 'model' else 1201, 'image': build_resources.IMAGE_ID,
                'memoryLimitBytes': build_resources.BUILDER_MEMORY, 'currentBytes': 8 * runtime.MIB,
                'peakBytes': 16 * runtime.MIB, 'oomKills': 0, 'writeRateLimitBytesPerSecond': 64 * runtime.MIB}
@@ -42,7 +45,8 @@ def fixture_build_resources(directory, context, name):
     for index, phase in enumerate(('builder-bootstrap', 'build-' + name, 'load-' + name), 1):
         phase += '-%03d' % index
         value = build_resources.phase_plan({**build_context, 'ownerToken': token}, phase, baseline,
-            64 * runtime.MIB, build_resources.BUILDER_MEMORY, {'retainedFixtureInputBytes': 1024})
+            64 * runtime.MIB, build_resources.BUILDER_MEMORY,
+            {'retainedFixtureInputBytes': 1024, **({'engineIdentity': builder_engine} if phase.startswith('builder-bootstrap-') else {})})
         file = resource / ('phase-%02d.json' % index); write(file, value)
         plans.append({'file': file.name, 'sha256': cutover.sha_file(file)})
         samples.append({**baseline, 'monotonic': 100.0 + index * .5, 'phase': phase, 'builder': builder})
@@ -55,8 +59,13 @@ def fixture_build_resources(directory, context, name):
              'layers': [{'diffId': 'sha256:' + hashlib.sha256(('layer:' + name).encode()).hexdigest(),
                          'blobDigest': 'sha256:' + hashlib.sha256(('blob:' + name).encode()).hexdigest(),
                          'allocationUpperBoundBytes': 8192}]}
+    image.update(configDigest=image_id,
+        manifestDigest='sha256:' + hashlib.sha256(('manifest:' + name).encode()).hexdigest(), loadDescriptor=None,
+        engineIdentity={'engineImageId': image_id, 'configDigest': image_id, 'loadDescriptor': None,
+                        'diffIds': [row['diffId'] for row in image['layers']], 'os': 'linux', 'architecture': 'amd64'})
     summary = {'version': 1, 'kind': 'doorhandle-candidate-build-resources', **build_context, 'ownerToken': token,
         'status': 'PASS', 'capacityVerdict': 'CONTROLLED_MEASUREMENT', 'productionCapacityVerified': False,
+        'engineIdentity': builder_engine,
         'baselineProbe': baseline, 'finalProbe': {**baseline, 'monotonic': 102.0}, 'phases': plans,
         'probeFile': 'resource-probes.jsonl', 'probeSha256': hashlib.sha256(raw).hexdigest(), 'monitorFailure': None,
         'originalDataChanged': False, 'cleanup': {'creatorStopped': True, 'builderStopped': True,

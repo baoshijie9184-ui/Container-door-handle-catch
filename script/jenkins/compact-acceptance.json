@@ -1122,8 +1122,14 @@
       },
       {
         "module": "tests_python.test_compact_build_resources",
-        "minimumTests": 19,
+        "minimumTests": 27,
         "source": "tests_python/test_compact_build_resources.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_compact_image_inputs_identity",
+        "minimumTests": 34,
+        "source": "tests_python/test_compact_image_inputs_identity.py",
         "allowedSkippedTests": []
       },
       {
@@ -1158,7 +1164,7 @@
       },
       {
         "module": "tests_python.test_jenkins_tool_preparation",
-        "minimumTests": 33,
+        "minimumTests": 35,
         "source": "tests_python/test_jenkins_tool_preparation.py",
         "allowedSkippedTests": []
       },
