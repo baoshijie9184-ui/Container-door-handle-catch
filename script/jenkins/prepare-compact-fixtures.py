@@ -85,13 +85,17 @@ def owned_tree_memory(pid):
                     records[record['pid']] = record
             except (PermissionError, ValueError):
                 continue
-    owned = {pid}
-    while True:
-        added = {key for key, value in records.items() if value['parent'] in owned}
-        if added <= owned:
-            break
-        owned.update(added)
-        require(len(owned) <= 256, 'Owned controller process tree exceeded its bound')
+    # Traverse the same complete process snapshot once, rather than rescanning
+    # every host record for each generation of the owned process tree.
+    children = {}
+    for key, value in records.items():
+        children.setdefault(value['parent'], []).append(key)
+    owned = {pid}; pending = [pid]
+    while pending:
+        for child in children.get(pending.pop(), ()):
+            if child not in owned:
+                owned.add(child); pending.append(child)
+                require(len(owned) <= 256, 'Owned controller process tree exceeded its bound')
     return sum(records[key]['rssBytes'] for key in owned if key in records)
 
 
