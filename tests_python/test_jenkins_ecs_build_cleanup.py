@@ -12,6 +12,7 @@ import io
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 import tarfile
@@ -1087,3 +1088,102 @@ def test_windows_local_custody_dispatch_does_not_require_linux_privilege_api(tmp
     output = tmp_path / 'custody.json'
     cleanup.main(['custody', '--retained-directory', str(tmp_path), '--output', str(output)])
     assert writes == [(output, expected)] and json.loads(capsys.readouterr().out) == expected
+
+
+def test_failure_metadata_parses_the_same_fixed_source_once_for_one_hundred_diagnostics(monkeypatch):
+    source = b'def fixed_guard():\n    require(False, "CACHED_AUTHORED_GUARD")\n'
+    cleanup._failure_source_metadata.cache_clear()
+    monkeypatch.setattr(cleanup, 'LOADED_SOURCE', source)
+    original = ast.parse; calls = []
+    def tracked(raw, *args, **kwargs):
+        calls.append(raw)
+        return original(raw, *args, **kwargs)
+    monkeypatch.setattr(cleanup.ast, 'parse', tracked)
+    for _ in range(100):
+        error = ValueError('CACHED_AUTHORED_GUARD')
+        assert cleanup.failure_guard_code(error) == 'CACHED_AUTHORED_GUARD'
+        assert cleanup.failure_details(error) == {'guardCode': 'CACHED_AUTHORED_GUARD', 'locations': []}
+    assert calls == [source]
+
+
+def test_failure_metadata_reparses_changed_source_and_replaces_its_guard_and_function_sets(monkeypatch):
+    first = (b'def first_guard():\n    require(False, "FIRST_AUTHORED_GUARD")\n'
+             b'async def first_async_guard():\n    pass\n')
+    second = b'def second_guard():\n    require(False, "SECOND_AUTHORED_GUARD")\n'
+    cleanup._failure_source_metadata.cache_clear()
+    original = ast.parse; calls = []
+    def tracked(raw, *args, **kwargs):
+        calls.append(raw)
+        return original(raw, *args, **kwargs)
+    monkeypatch.setattr(cleanup.ast, 'parse', tracked)
+    monkeypatch.setattr(cleanup, 'LOADED_SOURCE', first)
+    assert cleanup.failure_guard_code(ValueError('FIRST_AUTHORED_GUARD')) == 'FIRST_AUTHORED_GUARD'
+    assert cleanup._failure_source_metadata(first) == (
+        frozenset({'FIRST_AUTHORED_GUARD'}), frozenset({'<module>', 'first_guard', 'first_async_guard'}), 4)
+    monkeypatch.setattr(cleanup, 'LOADED_SOURCE', second)
+    assert cleanup.failure_guard_code(ValueError('FIRST_AUTHORED_GUARD')) == 'UNCLASSIFIED_VALIDATION_ERROR'
+    assert cleanup.failure_guard_code(ValueError('SECOND_AUTHORED_GUARD')) == 'SECOND_AUTHORED_GUARD'
+    assert cleanup._failure_source_metadata(second) == (
+        frozenset({'SECOND_AUTHORED_GUARD'}), frozenset({'<module>', 'second_guard'}), 2)
+    assert calls == [first, second]
+
+
+@pytest.mark.parametrize('source', [None, b''])
+def test_absent_failure_source_has_no_authored_metadata_and_never_enters_the_parser(monkeypatch, source):
+    cleanup._failure_source_metadata.cache_clear()
+    monkeypatch.setattr(cleanup, 'LOADED_SOURCE', source)
+    def forbidden(*args, **kwargs):
+        raise AssertionError('Absent fixed source must not enter ast.parse')
+    monkeypatch.setattr(cleanup.ast, 'parse', forbidden)
+    assert cleanup._failure_source_metadata(source) == (frozenset(), frozenset(), 0)
+    assert cleanup.failure_details(ValueError('PRIVATE_UNREVIEWED_PAYLOAD')) == {
+        'guardCode': 'UNCLASSIFIED_VALIDATION_ERROR', 'locations': []}
+
+
+def test_failure_details_redact_arbitrary_valueerror_arguments_and_keep_exact_guard_matching():
+    private = 'CURRENT_FIXED_SOURCE_INVALID private=/home/private/originals.sql password=PRIVATE_SENTINEL'
+    details = cleanup.failure_details(ValueError(private))
+    assert details == {'guardCode': 'UNCLASSIFIED_VALIDATION_ERROR', 'locations': []}
+    raw = json.dumps(details)
+    assert 'PRIVATE_SENTINEL' not in raw and '/home/private' not in raw and 'password' not in raw
+    assert cleanup.failure_guard_code(ValueError('CURRENT_FIXED_SOURCE_INVALID', private)) == 'UNCLASSIFIED_VALIDATION_ERROR'
+    assert cleanup.failure_guard_code(RuntimeError(private)) == 'UNCLASSIFIED_OS_ERROR'
+
+
+def test_failure_details_keep_only_the_nearest_eight_known_frames_from_the_exact_controller_filename():
+    private = 'PRIVATE_TRACE_PAYLOAD /home/private/originals.sql'
+    foreign = {'payload': private}
+    exec(compile('def require():\n    raise ValueError(payload)\n', '<foreign-diagnostic-fixture>', 'exec'), foreign)
+    own = {'foreign_guard': foreign['require']}
+    program = ('def require(depth):\n'
+               '    if depth: return require(depth - 1)\n'
+               '    return unreviewed_diagnostic_frame()\n'
+               'def unreviewed_diagnostic_frame():\n'
+               '    return foreign_guard()\n')
+    assert 'unreviewed_diagnostic_frame' not in cleanup._failure_source_metadata(cleanup.LOADED_SOURCE)[1]
+    exec(compile(program, cleanup.__file__, 'exec'), own)
+    with pytest.raises(ValueError) as caught:
+        own['require'](16)
+    details = cleanup.failure_details(caught.value)
+    assert details == {'guardCode': 'UNCLASSIFIED_VALIDATION_ERROR', 'locations':
+        [{'function': 'require', 'line': 2}] * 7 + [{'function': 'require', 'line': 3}]}
+    raw = json.dumps(details)
+    assert 'PRIVATE_TRACE_PAYLOAD' not in raw and '/home/private' not in raw
+    assert cleanup.__file__ not in raw and 'foreign-diagnostic-fixture' not in raw
+
+
+def test_real_cleanup_cli_reports_a_known_guard_and_bounded_locations_before_any_output_write(tmp_path):
+    output = tmp_path / 'must-not-be-created.json'
+    result = subprocess.run([sys.executable, '-I', '-B', cleanup.__file__, 'plan',
+        '--output', str(output), '--current-tag', 'not-an-admitted-tag'],
+        capture_output=True, text=True, timeout=15)
+    assert result.returncode == 2 and result.stdout == '' and not output.exists()
+    details = json.loads(result.stderr)
+    assert set(details) == {'status', 'errorType', 'guardCode', 'locations'}
+    assert details['status'] == 'REFUSED' and details['errorType'] == 'ValueError'
+    assert details['guardCode'] == 'CURRENT_FIXED_SOURCE_INVALID'
+    assert 1 <= len(details['locations']) <= 8
+    assert all(set(row) == {'function', 'line'} and type(row['line']) is int and row['line'] > 0
+               for row in details['locations'])
+    assert {'main', 'require'} <= {row['function'] for row in details['locations']}
+    assert cleanup.__file__ not in result.stderr and str(output) not in result.stderr

@@ -10,6 +10,7 @@ import argparse
 import ast
 from contextlib import contextmanager, ExitStack
 from datetime import datetime, timezone
+from functools import lru_cache
 import gzip
 import hashlib
 import importlib.util
@@ -65,16 +66,39 @@ def require(condition, code):
         raise ValueError(code)
 
 
+@lru_cache(maxsize=1)
+def _failure_source_metadata(source):
+    """Cache the fixed byte source's literal guards and own function names."""
+    if not source: return frozenset(), frozenset(), 0
+    codes, functions = set(), {'<module>'}
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            functions.add(node.name)
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == 'require'
+                and len(node.args) >= 2 and isinstance(node.args[1], ast.Constant)
+                and isinstance(node.args[1].value, str) and re.fullmatch(r'[A-Z][A-Z0-9_]{0,99}', node.args[1].value)):
+            codes.add(node.args[1].value)
+    return frozenset(codes), frozenset(functions), len(source.splitlines())
+
+
 def failure_guard_code(error):
     """Return only a literal refusal code from this fixed controller's source."""
     if isinstance(error, ValueError) and len(error.args) == 1 and isinstance(error.args[0], str) and LOADED_SOURCE:
-        for node in ast.walk(ast.parse(LOADED_SOURCE)):
-            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == 'require'
-                    and len(node.args) >= 2 and isinstance(node.args[1], ast.Constant)
-                    and isinstance(node.args[1].value, str) and node.args[1].value == error.args[0]
-                    and re.fullmatch(r'[A-Z][A-Z0-9_]{0,99}', node.args[1].value)):
-                return node.args[1].value
+        if error.args[0] in _failure_source_metadata(LOADED_SOURCE)[0]: return error.args[0]
     return 'UNCLASSIFIED_VALIDATION_ERROR' if isinstance(error, ValueError) else 'UNCLASSIFIED_OS_ERROR'
+
+
+def failure_details(error):
+    """Expose at most eight fixed-controller locations, never private payload."""
+    _, functions, line_count = _failure_source_metadata(LOADED_SOURCE)
+    locations = []; trace = error.__traceback__
+    while trace is not None:
+        code = trace.tb_frame.f_code
+        if (code.co_filename == __file__ and code.co_name in functions
+                and type(trace.tb_lineno) is int and 0 < trace.tb_lineno <= line_count):
+            locations.append({'function': code.co_name, 'line': trace.tb_lineno})
+        trace = trace.tb_next
+    return {'guardCode': failure_guard_code(error), 'locations': locations[-8:]}
 
 
 def canonical(value):
@@ -1154,5 +1178,5 @@ def main(argv=None):
 if __name__ == '__main__':
     try: main()
     except (ValueError, OSError, KeyError, RuntimeError, TypeError) as error:
-        print(json.dumps({'status': 'REFUSED', 'errorType': type(error).__name__}), file=sys.stderr)
+        print(json.dumps({'status': 'REFUSED', 'errorType': type(error).__name__, **failure_details(error)}), file=sys.stderr)
         raise SystemExit(2)
