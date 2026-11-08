@@ -11,6 +11,7 @@ import importlib.util
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -78,7 +79,7 @@ def seal(state):
         'work/ci-evidence/' + name[8:])).read_bytes() for name in state.reports})
     package(state.archive, members, 'a' * 40)
     custody = {'schema': 1, 'kind': 'doorhandle-retained-ecs-evidence', 'status': 'VERIFY_RETAINED_ECS_BYTES',
-        'release': OLD, 'commit': 'a' * 40, 'sourceSha256': state.record['sourceSha256'], 'identity': IDENTITY,
+        'release': state.record['release'], 'commit': 'a' * 40, 'sourceSha256': state.record['sourceSha256'], 'identity': IDENTITY,
         'verificationReceiptSha256': cleanup.digest(receipt),
         'reportCatalogSha256': cleanup.sha(cleanup.canonical(catalog)), 'reportFiles': len(catalog),
         'reportBytes': sum(row['bytes'] for row in catalog), 'originalEvidenceArchive': None}
@@ -1187,3 +1188,171 @@ def test_real_cleanup_cli_reports_a_known_guard_and_bounded_locations_before_any
                for row in details['locations'])
     assert {'main', 'require'} <= {row['function'] for row in details['locations']}
     assert cleanup.__file__ not in result.stderr and str(output) not in result.stderr
+
+
+def clone_cleanup_candidate(state, tag):
+    """Create another independently sealed synthetic attempt in the same CI root."""
+    attempt = state.root / 'verification' / tag; inbox = state.root / 'inbox' / tag
+    shutil.copytree(state.attempt, attempt); shutil.copytree(state.inbox, inbox)
+    def relocated(path):
+        for old, new in ((state.attempt, attempt), (state.inbox, inbox)):
+            if path == old or path.is_relative_to(old): return new / path.relative_to(old)
+        return path
+    value = SimpleNamespace(root=state.root, attempt=attempt, checkout=relocated(state.checkout),
+        evidence=relocated(state.evidence), inbox=inbox, manifest=relocated(state.manifest),
+        record=copy.deepcopy(state.record), archive=relocated(state.archive), classes=relocated(state.classes),
+        reports=list(state.reports), keep=[relocated(path) for path in state.keep])
+    value.record['release'] = tag
+    manifest = cleanup.read_json(value.manifest)
+    manifest.update(release=tag, directory=str(value.manifest.parent), checkout=str(value.checkout), token='7' * 24)
+    put_json(value.manifest, manifest)
+    claim = cleanup.read_json(attempt / '.verification-claimed/claim.json'); claim['release'] = tag
+    put_json(attempt / '.verification-claimed/claim.json', claim)
+    tools = cleanup.read_json(value.evidence / 'tool-runtime.json')
+    tools.update(release=tag, manifestSha256=cleanup.digest(value.manifest))
+    tools['cleanup'].update(release=tag, manifestSha256=cleanup.digest(value.manifest))
+    for ordinal, command in enumerate(tools.get('commands', [])):
+        if command.get('containerId') is not None:
+            command['containerId'] = format(ordinal + 7, '064x')
+            if isinstance(command.get('cleanup'), dict): command['cleanup']['containerId'] = command['containerId']
+        if command.get('tool') == 'python':
+            arguments = ['-B', '-m', 'pytest', 'tests_python', '-q',
+                '--basetemp=' + str(value.evidence / 'tmp/pytest'),
+                '--junitxml=' + str(value.evidence / 'python.xml')]
+            command['argumentsSha256'] = cleanup.sha(json.dumps(arguments, ensure_ascii=True).encode())
+    put_json(value.evidence / 'tool-runtime.json', tools)
+    seal(value)
+    return value
+
+
+def target_canonical_cost(targets):
+    return sum(len(cleanup.canonical(target)) + 1 for target in targets)
+
+
+def test_tiny_batch_skips_an_early_large_case_then_reclaims_it_next_time_with_the_same_budget(state, monkeypatch):
+    cases = add_pytest_cases(state, monkeypatch)
+    large = put(cases.base / 'test_a_large0/payload-a.bin', b'first synthetic payload').parent
+    put(large / 'payload-b.bin', b'second synthetic payload')
+    complete = plan(state); targets = complete['candidates'][0]['targets']
+    base_cost = target_canonical_cost([row for row in targets if row['kind'] != 'PYTEST_CASE_DIRECTORY'])
+    small = next(row for row in targets if row['path'] == cases.first.relative_to(state.root).as_posix())
+    large_target = next(row for row in targets if row['path'] == large.relative_to(state.root).as_posix())
+    limit = base_cost + target_canonical_cost([small])
+    assert target_canonical_cost([small]) < target_canonical_cost([large_target]) <= limit
+    monkeypatch.setattr(cleanup, 'MAX_TARGET_CANONICAL', limit)
+    inventory = cleanup.tree_inventory
+    def no_large_hash(path):
+        assert path != large, 'An over-budget case must stop before content hashing'
+        return inventory(path)
+    monkeypatch.setattr(cleanup, 'tree_inventory', no_large_hash)
+    before = preserved_bytes(state); value = plan(state)
+    assert value == plan(state)
+    candidate = value['candidates'][0]
+    assert [row['path'] for row in candidate['targets'] if row['kind'] == 'PYTEST_CASE_DIRECTORY'] == [small['path']]
+    assert {'name': large.name, 'reason': 'PYTEST_TARGET_CANONICAL_BUDGET_EXCEEDED'} in candidate['pytestTmp']['skippedCases']
+    result = cleanup.apply_plan(state.root, state.request, value, remote)
+    assert result['status'] == 'REMOVED' and not cases.first.exists() and large.is_dir() and cases.second.is_dir()
+    assert not state.classes.exists() and preserved_bytes(state) == before
+    monkeypatch.setattr(cleanup, 'tree_inventory', inventory)
+    following = 'ci-73-' + 'd' * 12
+    (state.root / 'inbox' / following).mkdir(mode=0o700)
+    state.request.update(currentRelease=following, protectedReleases=[following, CURRENT])
+    assert cleanup.MAX_TARGET_CANONICAL == limit
+    next_plan = plan(state)
+    assert any(row['path'] == large_target['path'] for row in next_plan['candidates'][0]['targets'])
+    next_result = cleanup.apply_plan(state.root, state.request, next_plan, remote)
+    assert next_result['status'] == 'REMOVED' and not large.exists()
+    assert preserved_bytes(state) == before
+
+
+def test_all_candidates_compiled_and_npm_targets_get_the_shared_budget_before_pytest_cases(state, monkeypatch):
+    cases = add_pytest_cases(state, monkeypatch)
+    later = clone_cleanup_candidate(state, 'ci-71-' + 'a' * 12)
+    cache = add_npm_cache(later)
+    inner = cleanup.read_json(later.evidence / 'receipt.json'); inner['status'] = 'FAILED'
+    put_json(later.evidence / 'receipt.json', inner)
+    later.record.update(status='FAILED', verificationExitCode=1)
+    tools = cleanup.read_json(later.evidence / 'tool-runtime.json')
+    tools['commands'][0]['containerId'] = '8' * 64; tools['commands'][0]['cleanup']['containerId'] = '8' * 64
+    put_json(later.evidence / 'tool-runtime.json', tools); seal(later)
+    state.keep.extend(later.keep); state.request['candidates'].extend(later.request['candidates'])
+    complete = plan(state)
+    base = [row for candidate in complete['candidates'] for row in candidate['targets']
+            if row['kind'] != 'PYTEST_CASE_DIRECTORY']
+    assert any(row['kind'] == 'NPM_CACHE' for row in base)
+    monkeypatch.setattr(cleanup, 'MAX_TARGET_CANONICAL', target_canonical_cost(base))
+    before = preserved_bytes(state); value = plan(state)
+    assert [row['release'] for row in value['candidates']] == [OLD, later.record['release']]
+    selected = [row for candidate in value['candidates'] for row in candidate['targets']]
+    assert selected == base and all(row['kind'] != 'PYTEST_CASE_DIRECTORY' for row in selected)
+    result = cleanup.apply_plan(state.root, state.request, value, remote)
+    assert result['status'] == 'REMOVED' and not cache.exists() and not later.classes.exists()
+    assert not state.classes.exists() and cases.first.is_dir() and cases.second.is_dir()
+    assert preserved_bytes(state) == before
+
+
+def test_rejected_base_candidate_returns_its_whole_budget_to_the_next_candidate(state, monkeypatch):
+    later = clone_cleanup_candidate(state, 'ci-71-' + 'a' * 12)
+    for ordinal in range(12): put(state.classes / ('extra-' + str(ordinal) + '.class'), b'synthetic compiled output')
+    state.keep.extend(later.keep); state.request['candidates'].extend(later.request['candidates'])
+    complete = plan(state); first, second = complete['candidates']
+    later_cost = target_canonical_cost(second['targets'])
+    assert target_canonical_cost(first['targets']) > later_cost
+    monkeypatch.setattr(cleanup, 'MAX_TARGET_CANONICAL', later_cost)
+    before = preserved_bytes(state); value = plan(state)
+    assert [row['release'] for row in value['candidates']] == [later.record['release']]
+    assert {'release': OLD, 'reason': 'TARGET_CANONICAL_BUDGET_EXCEEDED'} in value['skipped']
+    assert target_canonical_cost(value['candidates'][0]['targets']) == later_cost
+    result = cleanup.apply_plan(state.root, state.request, value, remote)
+    assert result['status'] == 'REMOVED' and state.classes.is_dir() and not later.classes.exists()
+    assert preserved_bytes(state) == before
+
+
+def test_skip_details_are_capped_but_the_full_ordered_digest_detects_changes_after_the_cap(state, monkeypatch):
+    cases = add_pytest_cases(state, monkeypatch)
+    names = ['case_alias_' + format(ordinal, '03d') for ordinal in range(70)]
+    for name in names: (cases.base / name).symlink_to(cases.first, target_is_directory=True)
+    expected = [{'name': name, 'reason': 'PYTEST_CASE_NOT_REGULAR_DIRECTORY'} for name in names]
+    before = preserved_bytes(state); value = plan(state); proof = value['candidates'][0]['pytestTmp']
+    assert cleanup.PYTEST_SKIP_DETAIL_LIMIT == 64
+    assert proof['skippedCases'] == expected[:64] and proof['skippedCaseCount'] == 70
+    assert proof['skippedCasesSha256'] == cleanup.sha(b''.join(cleanup.canonical(row) + b'\n' for row in expected))
+    (cases.base / names[-1]).rename(cases.base / 'case_alias_zzzz')
+    changed = plan(state)['candidates'][0]['pytestTmp']
+    assert changed['skippedCases'] == proof['skippedCases'] and changed['skippedCaseCount'] == 70
+    assert changed['skippedCasesSha256'] != proof['skippedCasesSha256']
+    with pytest.raises(ValueError, match='PLAN_OR_ORIGINAL_EVIDENCE_CHANGED_NO_DELETION'):
+        cleanup.apply_plan(state.root, state.request, value, remote)
+    assert state.classes.is_dir() and cases.first.is_dir() and cases.second.is_dir()
+    assert not (state.root / 'inbox' / CURRENT / 'build-cleanup-journal.jsonl').exists()
+    assert preserved_bytes(state) == before
+
+
+def test_metadata_estimate_matches_the_descriptor_and_rejects_one_byte_short_without_hashing(state, monkeypatch):
+    cases = add_pytest_cases(state, monkeypatch)
+    target = {'path': cases.first.relative_to(state.root).as_posix(), 'kind': 'PYTEST_CASE_DIRECTORY',
+              **cleanup.tree_inventory(cases.first)}
+    exact = target_canonical_cost([target])
+    assert cleanup.pytest_case_preflight(cases.first, state.root, remaining=exact) == exact
+    def forbidden(path): raise AssertionError('Metadata admission must not hash content')
+    monkeypatch.setattr(cleanup, 'digest', forbidden)
+    with pytest.raises(ValueError, match='PYTEST_TARGET_CANONICAL_BUDGET_EXCEEDED'):
+        cleanup.pytest_case_preflight(cases.first, state.root, remaining=exact - 1)
+
+
+def test_case_growth_after_metadata_admission_is_skipped_without_consuming_the_exact_budget(state, monkeypatch):
+    cases = add_pytest_cases(state, monkeypatch)
+    target = {'path': cases.first.relative_to(state.root).as_posix(), 'kind': 'PYTEST_CASE_DIRECTORY',
+              **cleanup.tree_inventory(cases.first)}
+    available = target_canonical_cost([target]); budget = {'remaining': available}
+    binding = cleanup.evidence_binding(state.root, state.request['candidates'][0], IDENTITY, remote)
+    original = cleanup.pytest_case_preflight
+    def grow_after_preflight(path, root, *, remaining=None):
+        estimate = original(path, root, remaining=remaining)
+        if path == cases.first: put(path / 'new-after-preflight.bin', b'a new synthetic row after metadata admission')
+        return estimate
+    monkeypatch.setattr(cleanup, 'pytest_case_preflight', grow_after_preflight)
+    selected = cleanup.pytest_case_targets(state.root, binding, budget=budget)
+    assert selected == [] and budget == {'remaining': available}
+    assert {'name': cases.first.name, 'reason': 'PYTEST_TARGET_CANONICAL_BUDGET_EXCEEDED'} in binding['pytestTmp']['skippedCases']
+    assert (cases.first / 'new-after-preflight.bin').is_file() and cases.second.is_dir()

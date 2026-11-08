@@ -34,6 +34,8 @@ MODULE = re.compile(r'doorhandle-[a-z0-9-]+')
 COMPILE_DIRS = {'classes', 'test-classes', 'generated-sources', 'generated-test-sources',
                 'maven-status', 'maven-archiver'}
 MAX_PLAN = 32 * 1024 ** 2
+MAX_TARGET_CANONICAL = 16 * 1024 ** 2
+PYTEST_SKIP_DETAIL_LIMIT = 64
 MAX_TREE_BYTES = 4 * 1024 ** 3
 MAX_TREE_FILES = 100000
 MAX_TREE_ENTRIES = 150000
@@ -780,7 +782,7 @@ def locked_inodes(path=Path('/proc/locks')):
     return result
 
 
-def pytest_case_preflight(path, root):
+def pytest_case_preflight(path, root, *, remaining=None):
     """Reject synthetic negative fixtures before hashing any sparse/special file."""
     require(re.fullmatch(r'[A-Za-z0-9_.-]{1,180}', path.name) and path.name not in ('.', '..'),
             'PYTEST_CASE_NAME_INVALID')
@@ -788,10 +790,18 @@ def pytest_case_preflight(path, root):
     require(stat.S_ISDIR(info.st_mode), 'PYTEST_CASE_NOT_REGULAR_DIRECTORY')
     require(info.st_dev == Path(root).stat().st_dev, 'PYTEST_CASE_METADATA_UNSAFE')
     owned_chain(path, root, directory=True); device = info.st_dev
-    files = size = entries = 0
+    descriptor = {'path': path.relative_to(root).as_posix(), 'kind': 'PYTEST_CASE_DIRECTORY',
+                  'files': 0, 'bytes': 0, 'allocatedBytes': 0, 'rootMetadata': metadata(info),
+                  'inventorySha256': '0' * 64, 'entries': []}
+    files = size = entries = allocated = row_bytes = 0
+    def projected():
+        descriptor.update(files=files, bytes=size, allocatedBytes=allocated)
+        return len(canonical(descriptor)) + (row_bytes - 1 if entries else 0) + 1
+    if remaining is not None:
+        require(projected() <= remaining, 'PYTEST_TARGET_CANONICAL_BUDGET_EXCEEDED')
     def unreadable(error): raise error
     for current, dirs, names in os.walk(path, followlinks=False, onerror=unreadable):
-        for name in dirs + names:
+        for name in sorted(dirs + names):
             item = Path(current) / name; info = item.lstat(); entries += 1
             require(info.st_uid == os.getuid() and info.st_dev == device and not info.st_mode & 0o022
                     and (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)), 'PYTEST_CASE_METADATA_UNSAFE')
@@ -800,13 +810,22 @@ def pytest_case_preflight(path, root):
                 files += 1; size += info.st_size
             require(files <= MAX_TREE_FILES and size <= MAX_TREE_BYTES and entries <= MAX_TREE_ENTRIES,
                     'PYTEST_CASE_BOUND_EXCEEDED')
+            row = {'path': item.relative_to(path).as_posix(), 'metadata': metadata(info)}
+            if stat.S_ISREG(info.st_mode): row['sha256'] = '0' * 64
+            row_bytes += len(canonical(row)) + 1; allocated += info.st_blocks * 512
+            if remaining is not None:
+                require(projected() <= remaining, 'PYTEST_TARGET_CANONICAL_BUDGET_EXCEEDED')
+        dirs.sort()
+    return projected()
 
 
-def pytest_case_targets(root, binding):
+def pytest_case_targets(root, binding, *, budget=None):
     proof = binding.get('pytestTmp')
     if not isinstance(proof, dict) or proof.get('status') != 'PROVEN': return []
+    if budget is None: budget = {'remaining': MAX_TARGET_CANONICAL}
     parent = binding['checkout'] / PYTEST_TMP_SUFFIX
-    proof['skippedCases'] = []
+    proof['skippedCases'] = []; proof['skippedCaseCount'] = 0
+    skipped_sha = hashlib.sha256(); proof['skippedCasesSha256'] = skipped_sha.hexdigest()
     try:
         owned_chain(parent, root, directory=True)
         children = sorted(parent.iterdir(), key=lambda path: path.name)
@@ -818,17 +837,24 @@ def pytest_case_targets(root, binding):
     proof['rootStatus'] = 'INSPECTED'; result = []
     for child in children:
         try:
-            pytest_case_preflight(child, root)
+            pytest_case_preflight(child, root, remaining=budget['remaining'])
             data = tree_inventory(child)
-            result.append({'path': child.relative_to(root).as_posix(), 'kind': 'PYTEST_CASE_DIRECTORY', **data})
+            target = {'path': child.relative_to(root).as_posix(), 'kind': 'PYTEST_CASE_DIRECTORY', **data}
+            cost = len(canonical(target)) + 1
+            require(cost <= budget['remaining'], 'PYTEST_TARGET_CANONICAL_BUDGET_EXCEEDED')
+            budget['remaining'] -= cost; result.append(target)
         except (OSError, ValueError) as error:
             label = {'name': child.name} if re.fullmatch(r'[A-Za-z0-9_.-]{1,180}', child.name) else {
                 'nameSha256': sha(os.fsencode(child.name))}
-            proof['skippedCases'].append({**label, 'reason': failure_guard_code(error)})
+            row = {**label, 'reason': failure_guard_code(error)}
+            proof['skippedCaseCount'] += 1; skipped_sha.update(canonical(row) + b'\n')
+            if len(proof['skippedCases']) < PYTEST_SKIP_DETAIL_LIMIT: proof['skippedCases'].append(row)
+    proof['skippedCasesSha256'] = skipped_sha.hexdigest()
     return result
 
 
-def target_descriptors(root, binding):
+def target_descriptors(root, binding, *, include_pytest=True, budget=None):
+    if budget is None: budget = {'remaining': MAX_TARGET_CANONICAL}
     checkout = binding['checkout']; evidence = checkout / 'work/ci-evidence'
     candidates = []
     suites = [(evidence / 'java-suites' / row['id']) for row in binding['inner'].get('javaSuites', [])
@@ -864,7 +890,10 @@ def target_descriptors(root, binding):
         owned_chain(target, root, directory=True)
         data = tree_inventory(target)
         result.append({'path': relative, 'kind': kind, **data})
-    result.extend(pytest_case_targets(root, binding))
+    cost = sum(len(canonical(target)) + 1 for target in result)
+    require(cost <= budget['remaining'], 'TARGET_CANONICAL_BUDGET_EXCEEDED')
+    budget['remaining'] -= cost
+    if include_pytest: result.extend(pytest_case_targets(root, binding, budget=budget))
     return result
 
 
@@ -896,7 +925,8 @@ def build_plan(root, request, verifier, containers, *, held_releases=()):
     require(isinstance(protected, list) and current in protected and all(TAG.fullmatch(tag) for tag in protected), 'CURRENT_OR_ROLLBACK_PROTECTION_MISSING')
     require(isinstance(request['candidates'], list) and len(request['candidates']) <= 256, 'TOO_MANY_CLEANUP_CANDIDATES')
     require(all(isinstance(item, dict) for item in request['candidates']), 'CLEANUP_CANDIDATE_NOT_AN_OBJECT')
-    accepted = []; skipped = []; seen = set()
+    accepted = []; skipped = []; seen = set(); pending_pytest = []
+    budget = {'remaining': MAX_TARGET_CANONICAL}
     for custody in request['candidates']:
         tag = custody.get('release', '')
         try:
@@ -914,14 +944,28 @@ def build_plan(root, request, verifier, containers, *, held_releases=()):
                 if tag not in held_releases: locks.enter_context(attempt_lock(root, tag))
                 binding = evidence_binding(root, custody, request['identity'], verifier)
                 quiescent(binding, tag, containers)
-                targets = target_descriptors(root, binding)
-            accepted.append({'release': tag, 'custodySha256': sha(canonical(custody)),
+                candidate_budget = dict(budget)
+                targets = target_descriptors(root, binding, include_pytest=False, budget=candidate_budget)
+            candidate = {'release': tag, 'custodySha256': sha(canonical(custody)),
                 'evidenceArchive': binding['evidenceArchive'], 'claimSha256': binding['claimSha256'],
                 'toolManifestSha256': binding['toolManifestSha256'], 'targets': targets,
                 **({'npmCache': binding['npmCache']} if 'npmCache' in binding else {}),
-                **({'pytestTmp': binding['pytestTmp']} if 'pytestTmp' in binding else {})})
+                **({'pytestTmp': binding['pytestTmp']} if 'pytestTmp' in binding else {})}
+            accepted.append(candidate); budget = candidate_budget
+            pending_pytest.append((tag, binding, candidate))
         except (ValueError, OSError, KeyError, TypeError, ET.ParseError, verifier.VerificationError) as error:
             skipped.append({'release': tag, 'reason': str(error) if isinstance(error, ValueError) else type(error).__name__})
+    # Every original category has first claim on the one shared target budget.
+    # Retained Python bindings are private process state, never serialized code.
+    for tag, binding, candidate in pending_pytest:
+        if binding.get('pytestTmp', {}).get('status') != 'PROVEN': continue
+        try:
+            with ExitStack() as locks:
+                if tag not in held_releases: locks.enter_context(attempt_lock(root, tag))
+                quiescent(binding, tag, docker_snapshot())
+                candidate['targets'].extend(pytest_case_targets(root, binding, budget=budget))
+        except (OSError, ValueError) as error:
+            candidate['pytestTmp'].update(rootStatus='SKIPPED', rootReason=failure_guard_code(error))
     return {'schema': 1, 'kind': 'doorhandle-old-build-cleanup-plan', 'root': str(root), 'currentRelease': current,
         'identity': request['identity'], 'requestSha256': sha(canonical(request)), 'request': request,
         'executorSha256': digest(Path(__file__).resolve()), 'verifierSha256': digest(Path(verifier.__file__).resolve()),
