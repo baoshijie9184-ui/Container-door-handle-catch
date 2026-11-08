@@ -310,18 +310,77 @@ class PreparationMonitor:
 
     def fixture_memory(self):
         journal = self.preparation.journal
+        cached = getattr(self, '_fixture_cgroup', None)
         if not journal.get('containerId'):
+            require(cached is None, 'Owned fixture container identity disappeared')
             return 0, 0
-        row = self.preparation.inspect_owned()
-        require(row['HostConfig'].get('Memory') == MYSQL_MEMORY and row['HostConfig'].get('MemorySwap') == MYSQL_MEMORY,
-                'Owned fixture memory cgroup differs')
-        if not row['State'].get('Pid'):
-            return 0, int(bool(row['State'].get('OOMKilled')))
-        relative = next(line.split(':', 2)[2] for line in Path('/proc/' + str(row['State']['Pid']) + '/cgroup').read_text().splitlines() if line.startswith('0::'))
-        require(relative.startswith('/') and '..' not in Path(relative).parts, 'Owned fixture cgroup identity differs')
-        path = Path('/sys/fs/cgroup') / relative.lstrip('/')
-        events = dict(line.split() for line in (path / 'memory.events').read_text().splitlines())
-        return int((path / 'memory.current').read_text()), int(events.get('oom_kill', 0))
+        ownership_keys = ('containerId', 'sourceContainerId', 'image', 'token',
+            'containerName', 'work', 'dataDirectory', 'port')
+        ownership = tuple(journal.get(key) for key in ownership_keys)
+
+        def process_cgroup(pid):
+            lines = [line[3:] for line in Path('/proc/' + str(pid) + '/cgroup').read_text().splitlines()
+                     if line.startswith('0::')]
+            require(len(lines) == 1, 'Owned fixture needs one unified cgroup')
+            relative = lines[0]
+            require(relative.startswith('/') and relative != '/' and '..' not in Path(relative).parts,
+                    'Owned fixture cgroup identity differs')
+            return relative
+
+        def directory_stamp(path):
+            info = path.lstat()
+            require(stat.S_ISDIR(info.st_mode) and path.resolve() == path,
+                    'Owned fixture cgroup directory differs')
+            return info.st_dev, info.st_ino
+
+        if cached is None:
+            # Docker proves ownership/configuration once. The hot probe then
+            # pins the live kernel process/cgroup instead of spawning a CLI.
+            row = self.preparation.inspect_owned()
+            require(row['Id'] == journal['containerId'] and row['HostConfig'].get('Memory') == MYSQL_MEMORY
+                    and row['HostConfig'].get('MemorySwap') == MYSQL_MEMORY, 'Owned fixture memory cgroup differs')
+            pid = row['State'].get('Pid')
+            if not pid:
+                return 0, int(bool(row['State'].get('OOMKilled')))
+            require(type(pid) is int and pid > 0, 'Owned fixture process identity differs')
+            identity = proc_identity(pid)
+            require(identity is not None and identity['pid'] == pid and identity['startTicks'] > 0,
+                    'Owned fixture process identity differs')
+            relative = process_cgroup(pid)
+            path = Path('/sys/fs/cgroup') / relative.lstrip('/')
+            cached = {'ownership': ownership, 'pid': pid, 'startTicks': identity['startTicks'],
+                'relative': relative, 'path': path, 'directory': directory_stamp(path),
+                'bootstrapOom': int(bool(row['State'].get('OOMKilled')))}
+
+        def current_identity():
+            require(tuple(self.preparation.journal.get(key) for key in ownership_keys) == cached['ownership'],
+                    'Owned fixture container identity changed')
+            identity = proc_identity(cached['pid'])
+            require(identity is not None and identity['pid'] == cached['pid']
+                    and identity['startTicks'] == cached['startTicks'], 'Owned fixture process identity changed')
+            require(process_cgroup(cached['pid']) == cached['relative']
+                    and directory_stamp(cached['path']) == cached['directory'],
+                    'Owned fixture cgroup identity changed')
+
+        def read_control(name):
+            with os.fdopen(os.open(cached['path'] / name, os.O_RDONLY | os.O_NOFOLLOW), 'rb') as stream:
+                require(stat.S_ISREG(os.fstat(stream.fileno()).st_mode), 'Owned fixture cgroup control differs')
+                value = stream.read(4097)
+            require(0 < len(value) <= 4096, 'Owned fixture cgroup control exceeded its bound')
+            return value.decode('ascii').strip()
+
+        current_identity()
+        require(read_control('memory.max') == str(MYSQL_MEMORY) and read_control('memory.swap.max') == '0',
+                'Owned fixture kernel memory limits differ')
+        memory = read_control('memory.current')
+        events = dict(line.split() for line in read_control('memory.events').splitlines())
+        require(memory.isdecimal() and 'oom_kill' in events and events['oom_kill'].isdecimal(),
+                'Owned fixture cgroup measurement differs')
+        require(read_control('memory.max') == str(MYSQL_MEMORY) and read_control('memory.swap.max') == '0',
+                'Owned fixture kernel memory limits changed')
+        current_identity()
+        self._fixture_cgroup = cached
+        return int(memory), max(int(events['oom_kill']), cached['bootstrapOom'])
 
     @staticmethod
     def _du_attempt_metadata(exit_code, started, stdout, stderr):
@@ -335,6 +394,7 @@ class PreparationMonitor:
     def measure(self):
         with self.measure_lock:
             self.du_failure = None
+            self.measurement_failure = None
             started = time.monotonic(); native_deadline = started + 1.2; outer_deadline = started + 2
             attempts = []
             try:
@@ -374,31 +434,51 @@ class PreparationMonitor:
                 self.du_failure = (error, {'attempts': attempts})
                 raise
             self.du_failure = None
-            memory = {line.split(':', 1)[0]: int(line.split()[1]) * 1024 for line in Path('/proc/meminfo').read_text().splitlines()}
-            disk = os.statvfs(self.preparation.attempt)
-            fixture, oom = self.fixture_memory()
-            value = {'ownerToken': self.token, 'sourceCommit': self.preparation.args.commit,
-                'capturedAtUtc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
-                'diskTotalBytes': disk.f_blocks * disk.f_frsize, 'diskAvailableBytes': disk.f_bavail * disk.f_frsize,
-                'memoryAvailableBytes': memory['MemAvailable'], 'ownedDiskBytes': int(number),
-                'ownedMemoryBytes': owned_tree_memory(os.getpid()) + fixture, 'oomKills': oom,
-                'ownedDiskMeasurement': 'ALLOCATED_BLOCKS_DU', 'ownedFixtureMemoryBytes': fixture}
-            with self.lock:
-                measured_at = time.monotonic()
-                if measured_at > native_deadline:
-                    error = ValueError('Owned physical allocation measurement exceeded its deadline')
-                    self.du_failure = (error, {'attempts': attempts})
-                    raise error
-                self.last = value; self.measured_at = measured_at
-                if self.current is not None and self.phase_observations is not None:
-                    observed = self.phase_observations
-                    observed['probeCount'] += 1
-                    observed['peakOwnedDiskBytes'] = max(observed['peakOwnedDiskBytes'], value['ownedDiskBytes'])
-                    observed['peakOwnedMemoryBytes'] = max(observed['peakOwnedMemoryBytes'], value['ownedMemoryBytes'])
-                    observed['minimumFreeDiskBytes'] = min(observed['minimumFreeDiskBytes'], value['diskAvailableBytes'])
-                    observed['minimumAvailableMemoryBytes'] = min(observed['minimumAvailableMemoryBytes'], value['memoryAvailableBytes'])
-                self.stream.write(json.dumps(value, sort_keys=True) + '\n'); self.stream.flush()
-            return value
+            timings = {'du': max(0, time.monotonic() - started)}
+            stage = 'hostMetrics'; stage_started = time.monotonic()
+            try:
+                memory = {line.split(':', 1)[0]: int(line.split()[1]) * 1024 for line in Path('/proc/meminfo').read_text().splitlines()}
+                disk = os.statvfs(self.preparation.attempt)
+                timings[stage] = max(0, time.monotonic() - stage_started)
+                stage = 'fixtureMemory'; stage_started = time.monotonic()
+                fixture, oom = self.fixture_memory()
+                timings[stage] = max(0, time.monotonic() - stage_started)
+                stage = 'ownedProcessMemory'; stage_started = time.monotonic()
+                owned_memory = owned_tree_memory(os.getpid())
+                timings[stage] = max(0, time.monotonic() - stage_started)
+                value = {'ownerToken': self.token, 'sourceCommit': self.preparation.args.commit,
+                    'capturedAtUtc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+                    'diskTotalBytes': disk.f_blocks * disk.f_frsize, 'diskAvailableBytes': disk.f_bavail * disk.f_frsize,
+                    'memoryAvailableBytes': memory['MemAvailable'], 'ownedDiskBytes': int(number),
+                    'ownedMemoryBytes': owned_memory + fixture, 'oomKills': oom,
+                    'ownedDiskMeasurement': 'ALLOCATED_BLOCKS_DU', 'ownedFixtureMemoryBytes': fixture}
+                stage = 'publication'; stage_started = time.monotonic()
+                with self.lock:
+                    measured_at = time.monotonic()
+                    timings[stage] = max(0, measured_at - stage_started)
+                    # The native 1.2s limit belongs to du. All other metrics
+                    # retain the original 2s whole-probe freshness boundary.
+                    require(measured_at <= outer_deadline, 'Owned resource measurement exceeded its deadline')
+                    require(self.last is None or measured_at - self.measured_at <= 2,
+                            'Owned allocation/memory monitor is stale')
+                    value['measurementTimingsSeconds'] = dict(timings)
+                    value['measurementElapsedSeconds'] = max(0, measured_at - started)
+                    self.last = value; self.measured_at = measured_at
+                    if self.current is not None and self.phase_observations is not None:
+                        observed = self.phase_observations
+                        observed['probeCount'] += 1
+                        observed['peakOwnedDiskBytes'] = max(observed['peakOwnedDiskBytes'], value['ownedDiskBytes'])
+                        observed['peakOwnedMemoryBytes'] = max(observed['peakOwnedMemoryBytes'], value['ownedMemoryBytes'])
+                        observed['minimumFreeDiskBytes'] = min(observed['minimumFreeDiskBytes'], value['diskAvailableBytes'])
+                        observed['minimumAvailableMemoryBytes'] = min(observed['minimumAvailableMemoryBytes'], value['memoryAvailableBytes'])
+                    self.stream.write(json.dumps(value, sort_keys=True) + '\n'); self.stream.flush()
+                return value
+            except Exception as error:
+                now = time.monotonic()
+                timings[stage] = max(0, now - stage_started)
+                self.measurement_failure = (error, {'stage': stage, 'elapsedSeconds': max(0, now - started),
+                    'timingsSeconds': timings, 'duAttempts': attempts})
+                raise
 
     def collect(self):
         try:
@@ -420,6 +500,9 @@ class PreparationMonitor:
             du_failure = getattr(self, 'du_failure', None)
             if du_failure is not None and du_failure[0] is error:
                 self.failure['duFailure'] = du_failure[1]
+            measurement_failure = getattr(self, 'measurement_failure', None)
+            if measurement_failure is not None and measurement_failure[0] is error:
+                self.failure['measurementFailure'] = measurement_failure[1]
             self.failed.set()
         try:
             write_json(self.preparation.work / 'resource-failure.json', self.failure)

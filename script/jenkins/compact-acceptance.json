@@ -1164,8 +1164,14 @@
       },
       {
         "module": "tests_python.test_jenkins_resource_budget",
-        "minimumTests": 53,
+        "minimumTests": 57,
         "source": "tests_python/test_jenkins_resource_budget.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_jenkins_fixture_cgroup_probe",
+        "minimumTests": 24,
+        "source": "tests_python/test_jenkins_fixture_cgroup_probe.py",
         "allowedSkippedTests": []
       },
       {

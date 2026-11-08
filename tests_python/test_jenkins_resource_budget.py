@@ -763,7 +763,7 @@ class DuMeasurementTests(unittest.TestCase):
                 with self.assertRaises(ValueError): monitor.measure()
                 self.assertEqual(1, run.call_count); self.assert_unpublished(monitor)
 
-    def test_deadline_is_rechecked_after_other_metrics_and_before_publication(self):
+    def test_other_metrics_may_exceed_du_deadline_within_fresh_whole_probe(self):
         with tempfile.TemporaryDirectory() as temp:
             folder = Path(temp); clock = [10.0]
             def command(arguments, **kwargs):
@@ -774,9 +774,62 @@ class DuMeasurementTests(unittest.TestCase):
                 return 64
             with self.measurement(folder, command, clock) as (monitor, run), \
                     patch.object(preparer, 'owned_tree_memory', side_effect=memory):
+                monitor.measured_at = 10.0
+                value = monitor.measure()
+                self.assertEqual(1, run.call_count)
+                self.assertEqual(11.3, monitor.measured_at)
+                self.assertAlmostEqual(1.3, value['measurementElapsedSeconds'])
+                self.assertAlmostEqual(1.2, value['measurementTimingsSeconds']['ownedProcessMemory'])
+                self.assertIsNone(monitor.du_failure)
+                self.assertIsNone(monitor.measurement_failure)
+
+    def test_whole_probe_deadline_is_rechecked_after_other_metrics_before_publication(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp); clock = [10.0]
+            def command(arguments, **kwargs):
+                clock[0] += .1
+                return subprocess.CompletedProcess(arguments, 0, self.output(folder), b'')
+            def memory(_pid):
+                clock[0] = 12.000001
+                return 64
+            with self.measurement(folder, command, clock) as (monitor, run), \
+                    patch.object(preparer, 'owned_tree_memory', side_effect=memory):
                 with self.assertRaises(ValueError) as caught: monitor.measure()
                 self.assertEqual(1, run.call_count); self.assert_unpublished(monitor)
-                self.assertIs(caught.exception, monitor.du_failure[0])
+                self.assertIsNone(monitor.du_failure)
+                self.assertIs(caught.exception, monitor.measurement_failure[0])
+                with patch.object(preparer.os, 'kill'):
+                    monitor.fail(caught.exception, worker='collector')
+                raw = (folder / 'resource-failure.json').read_bytes(); failure = json.loads(raw)
+                self.assertNotIn('duFailure', failure)
+                self.assertEqual('publication', failure['measurementFailure']['stage'])
+                self.assertEqual({'du', 'hostMetrics', 'fixtureMemory', 'ownedProcessMemory', 'publication'},
+                                 set(failure['measurementFailure']['timingsSeconds']))
+                self.assertNotIn(str(folder).encode(), raw)
+
+    def test_fast_whole_probe_cannot_publish_after_previous_probe_became_stale(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp); clock = [10.0]
+            def command(arguments, **kwargs):
+                clock[0] = 11.01
+                return subprocess.CompletedProcess(arguments, 0, self.output(folder), b'')
+            with self.measurement(folder, command, clock) as (monitor, run):
+                with self.assertRaisesRegex(ValueError, 'monitor is stale') as caught:
+                    monitor.measure()
+                self.assertEqual(1, run.call_count); self.assert_unpublished(monitor)
+                self.assertIsNone(monitor.du_failure)
+                self.assertIs(caught.exception, monitor.measurement_failure[0])
+
+    def test_first_probe_has_bounded_deadline_without_a_previous_probe(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp); clock = [10.0]
+            def command(arguments, **kwargs):
+                clock[0] = 10.1
+                return subprocess.CompletedProcess(arguments, 0, self.output(folder), b'')
+            with self.measurement(folder, command, clock) as (monitor, run):
+                monitor.last = None; monitor.measured_at = 0.0
+                self.assertEqual(8192, monitor.measure()['ownedDiskBytes'])
+                self.assertEqual(10.1, monitor.measured_at)
 
     def test_unrelated_same_type_and_message_failure_cannot_inherit_du_metadata(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -809,6 +862,21 @@ class DuMeasurementTests(unittest.TestCase):
                     monitor.fail(caught.exception, worker='collector')
                 raw = (folder / 'resource-failure.json').read_bytes()
                 self.assertNotIn('duFailure', json.loads(raw)); self.assertNotIn(b'opaque-secret', raw)
+
+    def test_unrelated_exception_cannot_inherit_metric_timings(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp); clock = [10.0]
+            def command(arguments, **kwargs):
+                return subprocess.CompletedProcess(arguments, 0, self.output(folder), b'')
+            with self.measurement(folder, command, clock) as (monitor, run), \
+                    patch.object(preparer.os, 'statvfs', side_effect=OSError('opaque-secret')):
+                with self.assertRaises(OSError) as caught: monitor.measure()
+                other = OSError(str(caught.exception))
+                with patch.object(preparer.os, 'kill'):
+                    monitor.fail(other, worker='watcher')
+                raw = (folder / 'resource-failure.json').read_bytes()
+                self.assertNotIn('measurementFailure', json.loads(raw))
+                self.assertNotIn(b'opaque-secret', raw)
 
 
 if __name__ == '__main__':
