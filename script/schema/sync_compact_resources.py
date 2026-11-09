@@ -34,6 +34,10 @@ def expected():
                           + '\n\n'.join(definitions[name].replace('CREATE TABLE ',
                                 'CREATE TABLE IF NOT EXISTS ', 1) + ';' for name in names) + '\n')
     result['007-runtime-guards.sql'] = (ROOT / 'sql/mysql/compact/baseline/35-runtime-guards.sql').read_text(encoding='utf-8')
+    for number, table in ((8, 'agent_run'), (9, 'agent_connector')):
+        result[str(number).zfill(3) + '-' + table.replace('_', '-') + '-clock-guards.sql'] = (
+            ROOT / 'sql/mysql/compact/baseline' / ('35-legacy-clock-' + table.replace('_', '-') + '.sql')
+        ).read_text(encoding='utf-8')
     # Comment masking preserves offsets, but blank whitespace is not part of SQL.
     return {name: re.sub(r'(?m)^[ \t]+$', '', text) for name, text in result.items()}
 

@@ -15,7 +15,8 @@ if str(DIRECTORY) not in sys.path:
     sys.path.insert(0, str(DIRECTORY))
 import author_legacy_clock_copy as clock
 import author_legacy_clock_schema as schema
-from build_compact_schema import split_top_level, without_comments
+from build_compact_schema import (AFTER_GUARDS, LEGACY_CLOCK_AFTER_BINDINGS, check_columns,
+                                  compile_schema, parse_table, split_top_level, without_comments)
 
 
 def test_full_source_row_encoding_includes_every_original_column_and_exact_wall_cast():
@@ -102,6 +103,42 @@ def test_chat_projection_exception_requires_exact_immutable_audit_reference():
 def test_chat_changed_wall_expression_is_refused_during_authoring():
     with pytest.raises(ValueError, match='Reviewed chat raw wall source changed'):
         clock.chat_payloads("JSON_OBJECT('createdAtSource',DATE_FORMAT(x.created_at,'%Y-%m-%d'))")
+
+
+@pytest.mark.parametrize('table', LEGACY_CLOCK_AFTER_BINDINGS)
+def test_auto_increment_source_keys_use_final_row_after_guards_and_keep_shape_checks(table):
+    generated, bindings = schema.build()
+    baseline = generated[ROOT / 'sql/mysql/compact/baseline' / clock.TABLE_FILES[table]]
+    assert 'CONSTRAINT ck_legacy_clock_binding_' + table + ' CHECK' not in baseline
+    assert 'CONSTRAINT ck_legacy_clock_shape_' + table + ' CHECK' in baseline
+    guards = generated[ROOT / 'sql/mysql/compact/baseline' / ('35-legacy-clock-' + table.replace('_', '-') + '.sql')]
+    definition = next(statement for statement in split_top_level(without_comments(baseline), ';')
+                      if statement.startswith('CREATE TABLE ' + table + ' ('))
+    expected = 'legacy_clock_json IS NULL OR COALESCE(('
+    expected += ' OR '.join('(' + condition + ')' for condition in sorted({row[1] for row in bindings[table]})) + '),0)=1'
+    expected = schema.row_expression(expected, parse_table(definition, clock.TABLE_FILES[table])['columns'])
+    # Both insertion and re-keying are checked against the exact original route;
+    # explicit source ids and server-assigned ids use the same NEW.id.
+    for event in ('INSERT', 'UPDATE'):
+        assert 'AFTER ' + event + ' ON ' + table + ' FOR EACH ROW' in guards
+    assert guards.count('IF NOT(' + expected + ') THEN') == 2
+    assert 'BINARY NEW.id<=>BINARY' in guards
+    assert 'BEFORE UPDATE ON ' + table in guards and 'BEFORE DELETE ON ' + table in guards
+
+
+def test_row_guard_qualification_preserves_json_paths_literals_and_whole_column_names():
+    value = "id=CAST(JSON_UNQUOTE(JSON_EXTRACT(legacy_clock_json,'$.sourceKey.id')) AS DECIMAL(20,0)) AND kind='id legacy_clock_json' AND legacy_id=1"
+    assert schema.row_expression(value, {'id', 'legacy_clock_json', 'kind'}) == (
+        "NEW.id=CAST(JSON_UNQUOTE(JSON_EXTRACT(NEW.legacy_clock_json,'$.sourceKey.id')) AS DECIMAL(20,0)) AND NEW.kind='id legacy_clock_json' AND legacy_id=1")
+
+
+def test_compiled_schema_has_no_auto_increment_check_reference_and_exact_after_timing():
+    _, compiled = compile_schema()
+    for table in compiled['tables'].values():
+        automatic = {name for name, value in table['columns'].items() if 'AUTO_INCREMENT' in value['declaration'].upper()}
+        assert not any(check_columns(field, table['columns']) & automatic for field in table['constraints'])
+    after = {trigger['name']: trigger['event'] for trigger in compiled['triggers'] if trigger['timing'] == 'AFTER'}
+    assert after == AFTER_GUARDS
 
 
 def mysql(tmp_path):

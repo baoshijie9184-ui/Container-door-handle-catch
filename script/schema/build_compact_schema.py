@@ -36,12 +36,20 @@ GUARD_RESOURCES = {'35-runtime-guards.sql': ('runtime_state', RUNTIME_GUARDS),
                    '39-workflow-guards.sql': ('workflow_instance', WORKFLOW_GUARDS)}
 LEGACY_CLOCK_TABLES = ('content_asset', 'content_revision', 'content_link', 'agent_run',
                        'agent_connector', 'runtime_state', 'workflow_instance', 'audit_event')
+# MySQL CHECK cannot read an AUTO_INCREMENT column. These bindings must see
+# the final generated id, so their rejecting guards run AFTER the row write.
+LEGACY_CLOCK_AFTER_BINDINGS = ('agent_run', 'agent_connector')
+AFTER_GUARDS = { 'compact_legacy_clock_' + table + '_binding_' + event.lower(): event
+                for table in LEGACY_CLOCK_AFTER_BINDINGS for event in ('INSERT', 'UPDATE') }
 LEGACY_CLOCK_GUARDS = {}
 for clock_table, clock_parent in ([(name, False) for name in LEGACY_CLOCK_TABLES]
                                   + [(name, True) for name in ('model_management', 'chat_session', 'users')]):
     prefix = 'compact_legacy_clock_' + ('parent_' if clock_parent else '') + clock_table
     filename = '35-legacy-clock-' + ('parent-' if clock_parent else '') + clock_table.replace('_', '-') + '.sql'
     guards = {prefix + '_update': 'UPDATE', prefix + '_delete': 'DELETE'}
+    if not clock_parent and clock_table in LEGACY_CLOCK_AFTER_BINDINGS:
+        guards.update({name: event for name, event in AFTER_GUARDS.items()
+                       if name.startswith(prefix + '_binding_')})
     LEGACY_CLOCK_GUARDS.update(guards)
     GUARD_RESOURCES[filename] = (clock_table, guards)
 CHAT_CLOCK_PROJECTION_GUARDS = {'compact_legacy_chat_projection_insert': 'INSERT',
@@ -178,6 +186,15 @@ def validate_check_tail(field, table):
     raise ValueError(table + ' has an unclosed CHECK')
 
 
+def check_columns(field, columns):
+    """Read CHECK column references without treating JSON schema strings as SQL."""
+    match = re.match(r'(?:CONSTRAINT\s+`?\w+`?\s+)?CHECK\s*\(', field, re.I)
+    if not match:
+        return set()
+    expression = re.sub(r"'(?:''|\\.|[^'\\])*'", "''", field[match.end():])
+    return set(re.findall(r'\b[a-z_][a-z0-9_]*\b', expression.lower())) & set(columns)
+
+
 def parse_table(statement, source):
     match = re.fullmatch(r'CREATE\s+TABLE\s+' + IDENT + r'\s*\((.*)\)\s*(ENGINE\s*=.*)',
                          statement, re.I | re.S)
@@ -260,14 +277,15 @@ def compile_schema():
             for declaration in clean[:-2].split('$$'):
                 match = re.fullmatch(
                     r'\s*CREATE\s+TRIGGER\s+' + IDENT
-                    + r'\s+BEFORE\s+(INSERT|DELETE|UPDATE)\s+ON\s+' + guard_table
+                    + r'\s+(BEFORE|AFTER)\s+(INSERT|DELETE|UPDATE)\s+ON\s+' + guard_table
                     + r'\s+FOR\s+EACH\s+ROW\s+BEGIN\s+(.*)\s+END\s*',
                     declaration, re.I | re.S)
                 if not match:
                     raise ValueError('Unexpected runtime guard declaration')
-                name, event, trigger_body = match.groups()
-                name, event = name.lower(), event.upper()
-                if expected_guards.get(name) != event or name in found:
+                name, timing, event, trigger_body = match.groups()
+                name, timing, event = name.lower(), timing.upper(), event.upper()
+                expected_timing = 'AFTER' if name in AFTER_GUARDS else 'BEFORE'
+                if expected_guards.get(name) != event or name in found or timing != expected_timing:
                     raise ValueError('Unexpected or repeated runtime guard: ' + name)
                 executable = re.sub(r"'(?:''|\\.|[^'\\])*'", "''", trigger_body)
                 if re.search(r'\b(CREATE|DROP|ALTER|TRUNCATE|INSERT|DELETE|UPDATE|CALL|EXECUTE|GRANT|REVOKE|REPLACE)\b', executable, re.I):
@@ -275,7 +293,7 @@ def compile_schema():
                 if not re.search(r"SIGNAL\s+SQLSTATE\s+'45000'", trigger_body, re.I):
                     raise ValueError('Runtime guard has no rejection signal: ' + name)
                 found[name] = event
-                triggers.append({'name': name, 'table': guard_table, 'timing': 'BEFORE', 'event': event,
+                triggers.append({'name': name, 'table': guard_table, 'timing': timing, 'event': event,
                                  'source': part})
             if found != expected_guards:
                 raise ValueError('Protected persistence state requires both guards: ' + part)
@@ -347,6 +365,19 @@ def compile_schema():
                 raise ValueError('Foreign-key type mismatch: ' + foreign['table'] + '.' + local + ' -> ' + foreign['parent'] + '.' + remote)
             if re.match(r'(?:VAR)?CHAR\b', left['type']) and left['collation'] != right['collation']:
                 raise ValueError('Foreign-key collation mismatch: ' + foreign['declaration'])
+        # MySQL rejects actions that rewrite a child CHECK column. DELETE
+        # CASCADE removes the row and is legal; RESTRICT/NO ACTION are legal.
+        # Keep these original lifecycle actions instead of weakening the CHECK.
+        if re.search(r'\bON\s+DELETE\s+SET\s+(?:NULL|DEFAULT)\b|\bON\s+UPDATE\s+(?:CASCADE|SET\s+(?:NULL|DEFAULT))\b',
+                     foreign['declaration'], re.I):
+            for field in child['constraints']:
+                if check_columns(field, child['columns']) & set(foreign['columns']):
+                    raise ValueError('CHECK column participates in a rewriting foreign-key action: ' + foreign['declaration'])
+    for name, table in tables.items():
+        automatic = {column for column, value in table['columns'].items()
+                     if re.search(r'\bAUTO_INCREMENT\b', value['declaration'], re.I)}
+        if any(check_columns(field, table['columns']) & automatic for field in table['constraints']):
+            raise ValueError(name + ' CHECK cannot reference an AUTO_INCREMENT column; use a reviewed AFTER guard')
     sql = '-- Generated source build. Execute only on an admitted empty ECS candidate database.\n' + '\n'.join(output)
     catalog = {'status': 'SOURCE_COMPILED_MYSQL_EXECUTION_NOT_PROVEN',
                'designStatus': contract['status'],

@@ -382,7 +382,7 @@
         "doorhandle.mcp.mysql.config"
       ],
       "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/mcp/McpMigrationMySqlTest.java",
-      "minimumTests": 5,
+      "minimumTests": 16,
       "coverage": [
         "MCP durable install, execution and unknown-result protocol"
       ]
@@ -494,7 +494,7 @@
         "agent.journal.mysql-file"
       ],
       "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/journal/MysqlAgentJournalTest.java",
-      "minimumTests": 1,
+      "minimumTests": 15,
       "coverage": [
         "agent journal and owner-lock fencing"
       ]
@@ -975,7 +975,7 @@
       },
       {
         "module": "tests_python.test_legacy_clock_sql",
-        "minimumTests": 14,
+        "minimumTests": 18,
         "source": "tests_python/test_legacy_clock_sql.py",
         "allowedSkippedTests": []
       },
@@ -1037,7 +1037,7 @@
       },
       {
         "module": "tests_python.test_compact_schema_source",
-        "minimumTests": 16,
+        "minimumTests": 25,
         "source": "tests_python/test_compact_schema_source.py",
         "allowedSkippedTests": []
       },

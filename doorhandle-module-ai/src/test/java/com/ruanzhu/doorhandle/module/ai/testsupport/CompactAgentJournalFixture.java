@@ -19,6 +19,7 @@ public final class CompactAgentJournalFixture {
             }
         }
         new ResourceDatabasePopulator(new ByteArrayResource(ddl.getBytes(StandardCharsets.UTF_8))).execute(jdbc.getDataSource());
+        CompactBaselineParts.installClockGuards(jdbc,"db/compact/008-agent-run-clock-guards.sql","agent_run");
         boolean journalForeignKey=false,exportForeignKey=false;
         try(var connection=jdbc.getDataSource().getConnection()) {
             String schema="H2".equals(connection.getMetaData().getDatabaseProductName())?connection.getSchema():null;

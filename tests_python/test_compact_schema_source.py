@@ -160,12 +160,13 @@ def copy_current_schema_sources(tmp_path, monkeypatch):
 def test_generated_cli_schema_keeps_trigger_bodies_and_restores_statement_separator():
     sql, catalog = builder.compile_schema()
     assert {guard['name'] for guard in catalog['triggers']} == set(builder.RUNTIME_GUARDS) | set(builder.IDENTITY_GUARDS) | set(builder.QUOTA_GUARDS) | set(builder.AUDIT_GUARDS) | set(builder.WORKFLOW_GUARDS) | set(builder.LEGACY_CLOCK_GUARDS)
+    assert {guard['name']: guard['event'] for guard in catalog['triggers'] if guard['timing'] == 'AFTER'} == builder.AFTER_GUARDS
     assert 'DELIMITER $$\n' in sql
     assert 'END$$\nDELIMITER ;' in sql
     assert sql.index('DELIMITER ;') < sql.index('ADD CONSTRAINT fk_audit_journal_run')
 
 
-@pytest.mark.parametrize('mutation', ['missing-protection', 'unexpected-name', 'nested-delete'])
+@pytest.mark.parametrize('mutation', ['missing-protection', 'unexpected-name', 'nested-delete', 'wrong-timing'])
 def test_runtime_guard_resource_cannot_drop_a_protection_or_hide_executable_dml(tmp_path, monkeypatch, mutation):
     guard = copy_current_schema_sources(tmp_path, monkeypatch)
     body = guard.read_text(encoding='utf-8')
@@ -173,8 +174,31 @@ def test_runtime_guard_resource_cannot_drop_a_protection_or_hide_executable_dml(
         body = body[:body.index('CREATE TRIGGER compact_runtime_protect_update')]
     elif mutation == 'unexpected-name':
         body = body.replace('compact_runtime_protect_delete', 'unregistered_trigger', 1)
+    elif mutation == 'wrong-timing':
+        body = body.replace('BEFORE DELETE', 'AFTER DELETE', 1)
     else:
         body = body.replace('END$$', 'DELETE FROM runtime_state;\nEND$$', 1)
     guard.write_text(body, encoding='utf-8')
     with pytest.raises(ValueError, match='both guards|Unexpected or repeated|nested DDL/DML'):
+        builder.compile_schema()
+
+
+def test_source_compiler_refuses_auto_increment_check_before_ecs_ddl(tmp_path, monkeypatch):
+    copy_current_schema_sources(tmp_path, monkeypatch)
+    path = tmp_path / 'sql/mysql/compact/baseline/25-agent.sql'
+    sql = path.read_text('utf8').replace('CREATE TABLE agent_run (',
+        'CREATE TABLE agent_run (\n CONSTRAINT ck_probe_auto CHECK(id>0),', 1)
+    path.write_text(sql, encoding='utf8')
+    with pytest.raises(ValueError, match='agent_run CHECK cannot reference an AUTO_INCREMENT'):
+        builder.compile_schema()
+
+
+def test_source_compiler_refuses_rewriting_fk_action_on_check_column(tmp_path, monkeypatch):
+    copy_current_schema_sources(tmp_path, monkeypatch)
+    path = tmp_path / 'sql/mysql/compact/baseline/40-relations.sql'
+    before = 'fk_chat_session_user FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE ON UPDATE RESTRICT'
+    sql = path.read_text('utf8')
+    assert sql.count(before) == 1
+    path.write_text(sql.replace(before, before.replace('ON UPDATE RESTRICT', 'ON UPDATE CASCADE')), encoding='utf8')
+    with pytest.raises(ValueError, match='CHECK column participates in a rewriting foreign-key action'):
         builder.compile_schema()

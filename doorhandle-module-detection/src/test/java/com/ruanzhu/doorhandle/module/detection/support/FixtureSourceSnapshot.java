@@ -69,7 +69,7 @@ public final class FixtureSourceSnapshot {
         try(var files=java.nio.file.Files.list(baseline)){
             for(var path:files.filter(file->file.getFileName().toString().startsWith("35-legacy-clock-")&&file.getFileName().toString().endsWith(".sql")).sorted().toList()){
                 String sql=java.nio.file.Files.readString(path);
-                var table=java.util.regex.Pattern.compile("(?m)^BEFORE (?:UPDATE|DELETE) ON ([a-z_]+) ").matcher(sql);
+                var table=java.util.regex.Pattern.compile("(?m)^(?:BEFORE|AFTER) (?:INSERT|UPDATE|DELETE) ON ([a-z_]+) ").matcher(sql);
                 if(!table.find())throw new IllegalStateException("Unreviewed legacy clock fixture guard");
                 var required=new java.util.HashSet<String>();required.add(table.group(1));
                 var references=java.util.regex.Pattern.compile("\\b(?:FROM|JOIN) ([a-z_]+)").matcher(sql);while(references.find())required.add(references.group(1));

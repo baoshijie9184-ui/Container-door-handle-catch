@@ -33,5 +33,6 @@ public final class CompactMcpFixture {
         var script = new ResourceDatabasePopulator(new ByteArrayResource(ddl.getBytes(StandardCharsets.UTF_8)));
         script.setSqlScriptEncoding("UTF-8");
         script.execute(jdbc.getDataSource());
+        CompactBaselineParts.installClockGuards(jdbc,"db/compact/009-agent-connector-clock-guards.sql","agent_connector");
     }
 }

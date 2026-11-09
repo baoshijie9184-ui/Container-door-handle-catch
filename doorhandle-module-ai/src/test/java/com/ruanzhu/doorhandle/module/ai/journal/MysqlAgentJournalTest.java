@@ -35,4 +35,27 @@ class MysqlAgentJournalTest extends JdbcAgentJournalTest {
         assertThat(jdbc.queryForObject("SELECT active_slot FROM agent_run WHERE run_id=?",Integer.class,run)).isEqualTo(1);
         assertThat(jdbc.queryForObject("SELECT lease_expires_at FROM agent_run WHERE run_id=?",java.time.LocalDateTime.class,run)).isNull();
     }
+    @Test void legacySourceKeyGuardsAllowGeneratedIdsAndRollbackMismatchedInsertAndRekey()throws Exception{
+        com.ruanzhu.doorhandle.module.ai.testsupport.CompactBaselineParts.installClockGuards(jdbc,"db/compact/008-agent-run-clock-guards.sql","agent_run");
+        var normal=journal.begin(alice,UUID.randomUUID().toString(),"employee-main","CHAT",UUID.randomUUID().toString(),"fixture-model");
+        assertThat(jdbc.queryForObject("SELECT id FROM agent_run WHERE run_id=?",Long.class,normal.id())).isPositive();
+        normal.finish("COMPLETED");
+        long sourceId=java.util.concurrent.ThreadLocalRandom.current().nextLong(2_000_000_000_000L,3_000_000_000_000L);
+        var wall=new LinkedHashMap<String,Object>();wall.put("started_at","2020-01-02 00:00:00");wall.put("ended_at",null);
+        wall.put("heartbeat_at","2020-01-02 00:00:01");wall.put("lease_expires_at","2020-01-02 00:01:31");
+        String evidence=new ObjectMapper().writeValueAsString(Map.of("protocol","doorhandle-legacy-clock-v1","status","UNRESOLVED",
+            "sourceTable","agent_run","sourceKey",Map.of("id",sourceId),"sourceSnapshotSha256","a".repeat(64),
+            "sourceRowSha256","b".repeat(64),"sourceWallTimes",wall));
+        String insert="INSERT INTO agent_run(id,run_id,user_id,session_id,main_agent,entry_point,request_key,status,default_model,policy_version,instance_id,started_at,heartbeat_at,lease_expires_at,legacy_clock_json) VALUES(?,?,?,?,'employee-main','CHAT',?,'COMPLETED','fixture-model','role-readonly-v1',?,NULL,NULL,NULL,?)";
+        String valid=UUID.randomUUID().toString();
+        jdbc.update(insert,sourceId,valid,alice.userId(),"valid-"+valid,valid,valid,evidence);
+        String invalid=UUID.randomUUID().toString();
+        assertThatThrownBy(()->jdbc.update(insert,sourceId+1,invalid,alice.userId(),"invalid-"+invalid,invalid,invalid,evidence))
+            .isInstanceOf(org.springframework.dao.DataAccessException.class).hasStackTraceContaining("Original legacy source key does not match target row");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM agent_run WHERE run_id=?",Integer.class,invalid)).isZero();
+        assertThatThrownBy(()->jdbc.update("UPDATE agent_run SET id=? WHERE id=?",sourceId+1,sourceId))
+            .isInstanceOf(org.springframework.dao.DataAccessException.class).hasStackTraceContaining("Original legacy source key does not match target row");
+        assertThat(jdbc.queryForObject("SELECT id FROM agent_run WHERE run_id=?",Long.class,valid)).isEqualTo(sourceId);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM agent_run WHERE id=?",Integer.class,sourceId+1)).isZero();
+    }
 }

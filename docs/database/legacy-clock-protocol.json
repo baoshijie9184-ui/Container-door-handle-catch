@@ -101,14 +101,18 @@
       "table": "agent_run",
       "triggers": [
         "compact_legacy_clock_agent_run_update",
-        "compact_legacy_clock_agent_run_delete"
+        "compact_legacy_clock_agent_run_delete",
+        "compact_legacy_clock_agent_run_binding_insert",
+        "compact_legacy_clock_agent_run_binding_update"
       ]
     },
     "35-legacy-clock-agent-connector.sql": {
       "table": "agent_connector",
       "triggers": [
         "compact_legacy_clock_agent_connector_update",
-        "compact_legacy_clock_agent_connector_delete"
+        "compact_legacy_clock_agent_connector_delete",
+        "compact_legacy_clock_agent_connector_binding_insert",
+        "compact_legacy_clock_agent_connector_binding_update"
       ]
     },
     "35-legacy-clock-runtime-state.sql": {

@@ -46,6 +46,31 @@ class McpMigrationMySqlTest {
     }
     @AfterEach void close()throws Exception{if(fixture!=null)fixture.close();}
 
+    @Test void legacyConnectorSourceKeyGuardsAllowGeneratedIdsAndRollbackMismatchedInsertAndRekey()throws Exception{
+        com.ruanzhu.doorhandle.module.ai.testsupport.CompactBaselineParts.installClockGuards(target,"db/compact/009-agent-connector-clock-guards.sql","agent_connector");
+        long owner=java.util.concurrent.ThreadLocalRandom.current().nextLong(1_000_000,1_000_000_000);
+        String normal="normal-"+java.util.UUID.randomUUID().toString().substring(0,20);
+        target.update("INSERT INTO agent_connector(owner_user_id,server_key,package_version,created_at,updated_at) VALUES(?,?,'fixture',UTC_TIMESTAMP(),UTC_TIMESTAMP())",owner,normal);
+        assertThat(target.queryForObject("SELECT id FROM agent_connector WHERE owner_user_id=? AND server_key=?",Long.class,owner,normal)).isPositive();
+        long sourceId=java.util.concurrent.ThreadLocalRandom.current().nextLong(2_000_000_000_000L,3_000_000_000_000L);
+        var wall=new java.util.LinkedHashMap<String,Object>();wall.put("lease_expires_at",null);
+        wall.put("created_at","2020-01-02 00:00:00");wall.put("updated_at","2020-01-02 00:00:01");
+        String evidence=json.writeValueAsString(Map.of("protocol","doorhandle-legacy-clock-v1","status","UNRESOLVED",
+            "sourceTable","agent_local_mcp","sourceKey",Map.of("id",sourceId),"sourceSnapshotSha256","a".repeat(64),
+            "sourceRowSha256","b".repeat(64),"sourceWallTimes",wall));
+        String insert="INSERT INTO agent_connector(id,owner_user_id,server_key,package_version,legacy_clock_json) VALUES(?,?,?,'fixture',?)";
+        String valid="valid-"+java.util.UUID.randomUUID().toString().substring(0,20);
+        target.update(insert,sourceId,owner,valid,evidence);
+        String invalid="invalid-"+java.util.UUID.randomUUID().toString().substring(0,20);
+        assertThatThrownBy(()->target.update(insert,sourceId+1,owner,invalid,evidence))
+            .isInstanceOf(org.springframework.dao.DataAccessException.class).hasStackTraceContaining("Original legacy source key does not match target row");
+        assertThat(target.queryForObject("SELECT COUNT(*) FROM agent_connector WHERE owner_user_id=? AND server_key=?",Integer.class,owner,invalid)).isZero();
+        assertThatThrownBy(()->target.update("UPDATE agent_connector SET id=? WHERE id=?",sourceId+1,sourceId))
+            .isInstanceOf(org.springframework.dao.DataAccessException.class).hasStackTraceContaining("Original legacy source key does not match target row");
+        assertThat(target.queryForObject("SELECT id FROM agent_connector WHERE owner_user_id=? AND server_key=?",Long.class,owner,valid)).isEqualTo(sourceId);
+        assertThat(target.queryForObject("SELECT COUNT(*) FROM agent_connector WHERE id=?",Integer.class,sourceId+1)).isZero();
+    }
+
     @Test void preservesAllOneHundredFortyFieldsOwnerScopedIdentitiesOrphansAndUnknownExitEvidence()throws Exception{
         var before=snapshot();var seq=sequences();fixture.migrate("+08:00");
         assertThat(target.queryForObject("SELECT COUNT(*) FROM users",Integer.class)).isZero();

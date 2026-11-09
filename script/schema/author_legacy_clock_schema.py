@@ -6,7 +6,7 @@ import re
 
 from author_legacy_clock_copy import (COPIES, PROTOCOL, ROOT, TABLE_FILES, catalog,
                                       parsed_insert, q)
-from build_compact_schema import split_top_level, without_comments
+from build_compact_schema import LEGACY_CLOCK_AFTER_BINDINGS, parse_table, split_top_level, without_comments
 
 
 def object_schema(properties):
@@ -146,6 +146,24 @@ def replace_checks(body, table):
     return output
 
 
+def row_expression(expression, columns):
+    """Qualify actual target columns without rewriting JSON paths or literals."""
+    tokens = r"'(?:''|\\.|[^'\\])*'|`(?:``|[^`])+`|[A-Za-z_][A-Za-z0-9_]*"
+    def qualify(match):
+        token = match[0]
+        return 'NEW.' + token if token.strip('`') in columns and not token.startswith("'") else token
+    return re.sub(tokens, qualify, expression)
+
+
+def binding_guards(table, condition, columns):
+    """AFTER observes generated ids; SIGNAL rolls back the InnoDB statement."""
+    condition = row_expression(condition, columns)
+    return [('CREATE TRIGGER compact_legacy_clock_' + table + '_binding_' + event.lower()
+             + '\nAFTER ' + event + ' ON ' + table + ' FOR EACH ROW\nBEGIN\n    IF NOT(' + condition
+             + ") THEN\n        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Original legacy source key does not match target row';\n    END IF;\nEND$$")
+            for event in ('INSERT', 'UPDATE')]
+
+
 def chat_projection_guards():
     """NULL projection times require this exact immutable audit provenance."""
     checks = []
@@ -207,8 +225,10 @@ def build():
             fields.append('CONSTRAINT ck_legacy_clock_shape_' + table + ' CHECK (legacy_clock_json IS NULL OR COALESCE(JSON_SCHEMA_VALID('
                 + q(json.dumps(schema, separators=(',', ':'))) + ',legacy_clock_json),0)=1)')
             conditions = sorted({condition for _, condition in bindings[table]})
-            fields.append('CONSTRAINT ck_legacy_clock_binding_' + table + ' CHECK (legacy_clock_json IS NULL OR COALESCE(('
-                + ' OR '.join('(' + condition + ')' for condition in conditions) + '),0)=1)')
+            binding = 'legacy_clock_json IS NULL OR COALESCE(('
+            binding += ' OR '.join('(' + condition + ')' for condition in conditions) + '),0)=1'
+            if table not in LEGACY_CLOCK_AFTER_BINDINGS:
+                fields.append('CONSTRAINT ck_legacy_clock_binding_' + table + ' CHECK (' + binding + ')')
             rendered.append(match[1] + '(\n ' + ',\n '.join(fields) + '\n)' + match[4])
             guard_file = '35-legacy-clock-' + table.replace('_', '-') + '.sql'
             triggers = []
@@ -224,6 +244,9 @@ def build():
                     condition += " OR (OLD.legacy_clock_json IS NOT NULL AND OLD.kind IN ('MESSAGE_EXECUTION','MESSAGE_WORKSPACE_SNAPSHOT') AND (" + changed + '))'
                 triggers.append('CREATE TRIGGER ' + name + '\nBEFORE ' + event + ' ON ' + table + ' FOR EACH ROW\nBEGIN\n    IF ' + condition
                     + " THEN\n        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Original legacy clock evidence must be retained unchanged';\n    END IF;\nEND$$")
+            if table in LEGACY_CLOCK_AFTER_BINDINGS:
+                columns = set(parse_table(statement, filename)['columns']) | {'legacy_clock_json'}
+                triggers.extend(binding_guards(table, binding, columns))
             generated[ROOT / 'sql/mysql/compact/baseline' / guard_file] = '\n\n'.join(triggers) + '\n'
         generated[path] = '-- Clock protocol authored by author_legacy_clock_schema.py; ECS validation required.\n' + ';\n\n'.join(rendered) + ';\n'
     generated[ROOT / 'sql/mysql/compact/baseline/35-legacy-clock-chat-projection.sql'] = chat_projection_guards()
