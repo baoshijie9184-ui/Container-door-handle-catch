@@ -551,7 +551,8 @@ def main(argv=None):
         need(args.ssh_host and args.plan and args.plan_sha256 and args.current_receipt and args.custody_receipt,
              'EXPLICIT_CURRENT_HOST_PLAN_AND_CLOUD_CONTROLS_REQUIRED')
         plan = load_plan(args, core, cold, proof)
-        resolver = StrictResolver(plan['members'], plan.get('closedModelHardlinkGroup'))
+        resolver = StrictResolver(plan['members'], plan.get('closedModelHardlinkGroup'),
+            **({'profile': plan['profile']} if plan['profile'] == 'remaining-business-records-v1' else {}))
         audit = core.Audit(args.output, cold)
         result = apply_plan(plan, core, proof, core.WindowsBackend(cold, source_resolver=resolver),
                             core.LiveAttestor(proof, args, helper_name='attest-fixed-originals.py'), audit)

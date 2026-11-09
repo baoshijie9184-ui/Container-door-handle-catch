@@ -370,6 +370,39 @@ def test_business_record_envelope_groups_and_jenkins_exception_cannot_expand(bus
         with pytest.raises(ValueError): fixed.select_manifest(packet.profile, raw)
 
 
+def test_business_record_apply_cli_passes_its_exact_receipt_resolver_to_the_windows_backend(tmp_path, monkeypatch, capsys):
+    profile = 'remaining-business-records-v1'; events = []
+    plan = {'profile': profile, 'members': [{'path': name} for name in sorted(fixed.BUSINESS_RECEIPTS)]}
+    audit = SimpleNamespace(directory=tmp_path, close=lambda: events.append('audit-closed'))
+    cold = SimpleNamespace(utility=lambda: SimpleNamespace(write_json=lambda path, value: events.append((path, value))))
+    proof = object(); attestor = object()
+    def windows_backend(actual_cold, *, source_resolver):
+        assert actual_cold is cold
+        return SimpleNamespace(source_resolver=source_resolver)
+    def live_attestor(actual_proof, args, *, helper_name):
+        assert actual_proof is proof and args.profile == profile and helper_name == 'attest-fixed-originals.py'
+        return attestor
+    control = SimpleNamespace(Audit=lambda *_: audit, WindowsBackend=windows_backend, LiveAttestor=live_attestor)
+    monkeypatch.setattr(fixed, 'os', SimpleNamespace(name='nt'))
+    modules = {'retire-local-cold-stores.py': control, 'preserve-cold-stores.py': cold, 'attest-fixed-originals.py': proof}
+    monkeypatch.setattr(fixed, 'load', lambda name: modules[name])
+    monkeypatch.setattr(fixed, 'load_plan', lambda args, *_: plan)
+    def apply_cli(actual_plan, actual_core, actual_proof, backend, actual_attestor, actual_audit):
+        assert actual_plan is plan and actual_core is control and actual_proof is proof
+        assert actual_attestor is attestor and actual_audit is audit
+        for row in plan['members']:
+            assert backend.source_resolver(row['path']) == fixed.ROOT + '\\' + row['path'].replace('/', '\\')
+        with pytest.raises(ValueError): backend.source_resolver('work/jenkins/private.env')
+        with pytest.raises(ValueError): backend.source_resolver('work/jenkins/business-workbench-final.json.bak')
+        return {'status': 'SYNTHETIC_CLI_BACKEND_WIRED', 'originalFilesDeleted': 0}
+    monkeypatch.setattr(fixed, 'apply_plan', apply_cli)
+    assert fixed.main(['--profile', profile, '--manifest', 'not-opened', '--output', 'not-created', '--apply',
+        '--ssh-host', 'not-contacted', '--plan', 'not-opened', '--plan-sha256', 'a' * 64,
+        '--current-receipt', 'not-opened', '--custody-receipt', 'not-opened']) == 0
+    assert json.loads(capsys.readouterr().out)['status'] == 'SYNTHETIC_CLI_BACKEND_WIRED'
+    assert events[-1] == 'audit-closed' and events[0][0] == tmp_path / 'result.json'
+
+
 def test_partial_transport_production_recipe_selects_only_four_fixed_early_files():
     recipe = fixed.RECIPES['legacy-partial-transports-v1']
     assert (recipe['members'], recipe['selected'], recipe['retained'], recipe['bytes']) == (4, 4, 0, 155793058)

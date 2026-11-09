@@ -1115,7 +1115,7 @@
       },
       {
         "module": "tests_python.test_local_fixed_originals_retirement",
-        "minimumTests": 128,
+        "minimumTests": 129,
         "source": "tests_python/test_local_fixed_originals_retirement.py",
         "allowedSkippedTests": []
       },
