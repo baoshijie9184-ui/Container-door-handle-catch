@@ -95,6 +95,79 @@ def residual_plan(scope, residual_packet):
     return members
 
 
+@pytest.fixture
+def remaining_packet(packet, monkeypatch):
+    profile = 'remaining-system-data-v1'
+    groups = ['local-mysql45-export', 'protected-tool-receipts', 'remaining-agent-workspace',
+              'remaining-memory-export', 'remaining-mysql-archives', 'remaining-user-skill-downloads']
+    rows = [{'sourcePath': fixed.ROOT + '\\work\\remaining\\' + group + '\\opaque.bin',
+             'member': 'work/remaining/' + group + '/opaque.bin', 'group': group, 'bytes': number,
+             'sha256': str(number) * 64} for number, group in enumerate(groups, 1)]
+    value = {'kind': 'doorhandle-additional-local-artifact-custody', 'version': 1, 'status': 'COMPLETE',
+             'profile': profile, 'catalogSha256': 'd' * 64, 'originalFiles': len(rows),
+             'originalBytes': sum(row['bytes'] for row in rows), 'files': rows}
+    raw = json.dumps(value, sort_keys=True).encode()
+    recipe = {'manifestSha256': fixed.sha(raw), 'catalogSha256': value['catalogSha256'], 'members': 6,
+              'selected': 5, 'retained': 1, 'bytes': value['originalBytes'],
+              'groups': {row['group']: [1, row['bytes']] for row in rows}}
+    monkeypatch.setitem(fixed.RECIPES, profile, recipe)
+    return SimpleNamespace(profile=profile, value=value, raw=raw, rows=rows, recipe=recipe)
+
+
+def test_remaining_production_recipe_keeps_eight_unproved_tools_out_of_the_selected_78():
+    recipe = fixed.RECIPES['remaining-system-data-v1']
+    assert (recipe['members'], recipe['selected'], recipe['retained'], recipe['bytes']) == (86, 78, 8, 28695377)
+    assert recipe['groups']['protected-tool-receipts'] == [8, 117235]
+    assert sum(row[0] for row in recipe['groups'].values()) == 86
+    assert sum(row[1] for row in recipe['groups'].values()) == 28695377
+
+
+def test_remaining_selection_keeps_complete_tool_ownership_explicitly_blocked(remaining_packet):
+    selected, retained = fixed.select_manifest(remaining_packet.profile, remaining_packet.raw)
+    assert len(selected) == 5 and len(retained) == 1
+    assert retained[0]['reason'] == 'COMPLETE_TOOL_TREE_OWNERSHIP_UNPROVED'
+    assert 'protected-tool-receipts' in retained[0]['sourcePath']
+    assert not any('protected-tool-receipts' in row['path'] for row in selected)
+
+
+@pytest.mark.parametrize('damage', ['raw', 'profile', 'catalog', 'counts', 'group', 'group-counts'])
+def test_remaining_profile_catalog_groups_and_raw_manifest_cannot_drift(remaining_packet, damage):
+    value = copy.deepcopy(remaining_packet.value)
+    if damage == 'profile': value['profile'] = 'residual-project-originals-v1'
+    elif damage == 'catalog': value['catalogSha256'] = 'e' * 64
+    elif damage == 'counts': value['originalFiles'] += 1
+    elif damage == 'group': value['files'][0]['group'] = 'unreviewed'
+    elif damage == 'group-counts': value['files'][0]['group'] = value['files'][-1]['group']
+    raw = json.dumps(value, sort_keys=True).encode()
+    if damage == 'raw': raw += b' '
+    else: remaining_packet.recipe['manifestSha256'] = fixed.sha(raw)
+    with pytest.raises(ValueError):
+        fixed.select_manifest(remaining_packet.profile, raw)
+
+
+def test_remaining_fake_apply_keeps_tools_and_directories_and_requires_source_guard_before_handles(scope, remaining_packet, monkeypatch):
+    selected, retained = fixed.select_manifest(remaining_packet.profile, remaining_packet.raw)
+    members = [{**row, 'fingerprint': [7, i + 10, row['bytes'], 40, 50, 1, 0o100600, 32]} for i, row in enumerate(selected)]
+    scope.plan.update(profile=remaining_packet.profile, manifestSha256=remaining_packet.recipe['manifestSha256'],
+                      members=members, retained=retained, **fixed.residual_bindings(remaining_packet.profile))
+    def checked(profile, rows):
+        assert profile == remaining_packet.profile and rows == members
+        scope.events.append(('remaining-source-guard',))
+    monkeypatch.setattr(fixed, 'residual_source_guard', checked)
+    result = apply(scope)
+    assert result['filesDeleted'] == 5 and result['directoriesRemoved'] == 0 and result['retained'] == retained
+    assert scope.events[0] == ('remaining-source-guard',)
+    assert not any('protected-tool-receipts' in event[1] for event in scope.events if event[0] in ('hash', 'verify', 'delete-held'))
+
+
+def test_remaining_source_guard_reads_only_registered_git_and_ancestor_metadata(remaining_packet, monkeypatch):
+    selected, _ = fixed.select_manifest(remaining_packet.profile, remaining_packet.raw); observed = []
+    helper = SimpleNamespace(residual_repository_guard=lambda paths: observed.extend(paths))
+    monkeypatch.setattr(fixed, 'load', lambda name: helper if name == 'preserve-local-artifacts.py' else pytest.fail('unexpected helper'))
+    fixed.residual_source_guard(remaining_packet.profile, selected)
+    assert observed == [fixed.ROOT + '\\' + row['path'].replace('/', '\\') for row in selected]
+
+
 def test_residual_scope_uses_frozen_manifest_and_a_separate_metadata_only_source_guard(residual_packet, monkeypatch):
     selected, retained = fixed.select_manifest(residual_packet.profile, residual_packet.raw)
     assert len(selected) == 2 and retained == []

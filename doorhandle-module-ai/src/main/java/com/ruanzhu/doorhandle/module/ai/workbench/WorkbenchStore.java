@@ -149,7 +149,10 @@ public class WorkbenchStore {
             jdbc.update("""
                 INSERT INTO workflow_instance(workflow_id,kind,idempotency_scope,request_id,request_sha256,owner_user_id,actor_user_id,resource_type,resource_id,status,payload_version,payload_json,result_version,result_json,result_sha256,finished_at)
                 VALUES(?,'WORKBENCH_COMMAND',?,?,?,?,?,'WORKBENCH_COMMAND',?,'COMPLETED',1,?,1,?,?,UTC_TIMESTAMP(6))
-                """,UUID.randomUUID().toString(),"OWNER:"+user,request,hash(signature),user,user,request,protocol.write(new WorkbenchProtocol.CommandV1(responseType)),body,hash(body));return result;});
+                """,UUID.randomUUID().toString(),"OWNER:"+user,request,hash(signature),user,user,request,protocol.write(new WorkbenchProtocol.CommandV1(responseType)),body,hash(body));
+            // The first reply and retries share the exact stored representation,
+            // including the numeric types inside public map-valued item data.
+            return protocol.result(body,responseType,type);});
     }
     private void audit(Row row,String action){jdbc.update("""
         INSERT INTO audit_event(event_id,kind,owner_user_id,actor_user_id,resource_type,resource_id,session_id,action,revision,content_sha256,payload_version,payload_json)

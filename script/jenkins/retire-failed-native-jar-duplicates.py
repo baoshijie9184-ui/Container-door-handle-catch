@@ -50,8 +50,8 @@ PUBLIC_LAYER_TAGS = frozenset((
     'ci-132-69f2ef0fb309', 'ci-134-df30e17036de', 'ci-137-facc2ed94047',
     'ci-139-384439388a8c', 'ci-141-56da3c4f7800', 'ci-143-f4b5c8d9e39b',
     'ci-145-dd85b09748a9', 'ci-154-38293aa306b3', 'ci-156-9e1927880595',
-    'ci-160-9d011d9d5ed8', 'ci-162-97844cecb2f4', 'ci-166-a3c084e1cf56',
-    'ci-168-a40c779d03a4'))
+    'ci-160-9d011d9d5ed8', 'ci-166-a3c084e1cf56', 'ci-168-a40c779d03a4',
+    'ci-173-45465e873d92'))
 PUBLIC_LAYERS = {
     '4aa1a2a1517cd8ba9f5afb587e3c14ec7d2d8bd815bdc3fc78399136e481960c': 12178906,
     '5e9b4a97f6395abf54a5c584be133078deb2295e280dd0b9e77638874d07b637': 3852227,
@@ -77,9 +77,9 @@ APPROVED_OLD = {
     'ci-154-38293aa306b3': '38293aa306b368964bbc2a7f66bb6a6b5c414016',
     'ci-156-9e1927880595': '9e1927880595e78c778288e45423bdd27bd818a8',
     'ci-160-9d011d9d5ed8': '9d011d9d5ed8ef1b6e5526c0964ee5f405ed421b',
-    'ci-162-97844cecb2f4': '97844cecb2f45a0e469cda24ceaafdc6df1fee1a',
     'ci-166-a3c084e1cf56': 'a3c084e1cf568206baca89908542537ad825fef8',
     'ci-168-a40c779d03a4': 'a40c779d03a43b894ead5569b8eb26ee7dc22a2e',
+    'ci-173-45465e873d92': '45465e873d92822abe446fd7be3f9f00b7816f70',
 }
 # Original tool bytes recorded by the retained Jenkins preparation receipts.
 # These values authenticate the owner chain; matching self-described fields
@@ -98,9 +98,9 @@ APPROVED_BUILDER_TOOLS = {
     'ci-154-38293aa306b3': 'eb0d82fc9983279390d467849029786648a1dbceda53371924e3894232e25c27',
     'ci-156-9e1927880595': '8ef758580e6ef99418a040ff902b69836ed48c6968da6716da535ddf61d914a4',
     'ci-160-9d011d9d5ed8': '14eb0f10f654b843eb09678d87b1b56dc04478f9b6c1151390cf07496a4747bb',
-    'ci-162-97844cecb2f4': 'e8f6c45893a6f7d4b093e8e0e029a0b852fdc32bda6d7d22a5ca0932657af242',
     'ci-166-a3c084e1cf56': '505328c60fa3f2d92361686eb8114477d1350ceb0d3d6dcf728e2b970e444886',
     'ci-168-a40c779d03a4': '005ae7aa23900ca7bcbf4e72d51c8fef814208a7d55b279a3b0cb34ea0c93131',
+    'ci-173-45465e873d92': '45bad0430d3cb6ef8f216690e5ab263c7c143dea8899b7811b201a0254d0746d',
 }
 
 

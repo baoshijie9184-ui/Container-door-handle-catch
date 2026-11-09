@@ -49,7 +49,10 @@ class AgentWorkbenchServiceTest {
     private void commitBoundary(AgentWorkbenchService.Scope scope){
         var current=scope.stateStore().getVersioned("1",scope.sdkSession(),"agent_state",AgentState.class);
         long saved=scope.stateStore().saveIfVersion("1",scope.sdkSession(),"agent_state",AgentState.builder().userId("1").sessionId(scope.sdkSession()).context(List.of(new UserMessage("explicit fixture boundary"))).build(),current.version());
-        String parent=item("EXECUTION").id();var data=Map.<String,Object>of("parentId",parent,"logicalTaskId",scope.contextTask(),"runId",scope.runId(),"phase","AFTER_TOOLS","sdkRevision",saved);
+        String parent=scope.jobId;var execution=store.require(1,"s1",parent);
+        assertThat(execution.kind()).isIn("EXECUTION","CHILD");
+        assertThat(execution.data()).containsEntry("logicalTaskId",scope.contextTask()).containsEntry("runId",scope.runId());
+        var data=Map.<String,Object>of("parentId",parent,"logicalTaskId",scope.contextTask(),"runId",scope.runId(),"phase","AFTER_TOOLS","sdkRevision",saved);
         String id=WorkbenchStore.stable(1,"s1","checkpoint:"+parent);var previous=store.find(1,"s1",id);if(previous==null)store.create(1,"s1",id,"CHECKPOINT","SAVED",data);else store.update(previous,"SAVED",data,"CHECKPOINT_SAVED");
     }
     @Test void logicalTasksAndAttemptFencesSurviveReuseAndRejectLateSdkSaves(){
@@ -233,7 +236,11 @@ class AgentWorkbenchServiceTest {
     @Test void unknownWriteBlocksRecoveryAndNeverReexecutesTheTool(){
         var scope=scope("查看任务");AgentTool underlying=mock(AgentTool.class);when(underlying.getName()).thenReturn("save_draft");when(underlying.getParameters()).thenReturn(Map.of());when(underlying.callAsync(any())).thenReturn(Mono.error(new IllegalStateException("lost-result")));
         var wrapped=scope.wrap(underlying);var input=ToolCallParam.builder().toolUseBlock(new ToolUseBlock("write-1","save_draft",Map.of())).input(Map.of()).build();assertThatThrownBy(()->wrapped.callAsync(input).block()).hasMessageContaining("lost-result");scope.finish("NEEDS_REVIEW","");var job=item("EXECUTION");
-        assertThatThrownBy(()->service.command(alice,"s1",job.id(),job.revision(),UUID.randomUUID().toString(),"resume",Map.of())).hasMessageContaining("未知");assertThatThrownBy(()->wrapped.callAsync(input).block()).hasMessageContaining("执行尝试");verify(underlying,times(1)).callAsync(any());
+        assertThatThrownBy(()->service.command(alice,"s1",job.id(),job.revision(),UUID.randomUUID().toString(),"resume",Map.of())).hasMessageContaining("未知");
+        assertThatThrownBy(()->wrapped.callAsync(input).block()).isInstanceOf(org.springframework.web.server.ResponseStatusException.class)
+                .satisfies(error->assertThat(((org.springframework.web.server.ResponseStatusException)error).getStatusCode()).isEqualTo(org.springframework.http.HttpStatus.CONFLICT));
+        var stopped=store.require(1,"s1",job.id());assertThat(stopped.status()).isEqualTo("NEEDS_REVIEW");assertThat(stopped.claimToken()).isNull();assertThat(stopped.lease()).isNull();
+        assertThat(store.rows(1,"s1","TOOL","UNKNOWN")).hasSize(1);verify(underlying,times(1)).callAsync(any());
     }
     @Test void auditFailureRollsBackInteractionStateAndRequestReceipt(){
         var scope=scope("查看任务");call(scope,"ask_user_question","q",Map.of("text","批次","questionType","TEXT"));var question=item("QUESTION");store.jdbc().execute("ALTER TABLE audit_event ADD CONSTRAINT deny_answer CHECK(kind<>'WORKBENCH' OR action<>'ANSWER')");
@@ -269,7 +276,7 @@ class AgentWorkbenchServiceTest {
     }
     @Test void staleRemoteExecutionBecomesReviewableButLocalHeartbeatKeepsItsLease(){
         var local=scope("查看任务");store.jdbc().update("UPDATE workflow_instance SET updated_at=? WHERE workbench_item_id=?",store.jdbc().queryForObject("SELECT UTC_TIMESTAMP(6)",java.time.LocalDateTime.class).minusMinutes(5),item("EXECUTION").id());service.recoverStale();assertThat(item("EXECUTION").status()).isEqualTo("RUNNING");
-        local.release();store.jdbc().update("UPDATE workflow_instance SET lease_expires_at=? WHERE workbench_item_id=?",store.jdbc().queryForObject("SELECT UTC_TIMESTAMP(6)",java.time.LocalDateTime.class).minusMinutes(5),item("EXECUTION").id());service.recoverStale();assertThat(item("EXECUTION").status()).isEqualTo("NEEDS_REVIEW");
+        local.release();assertThat(store.jdbc().update("UPDATE workflow_instance SET lease_expires_at=? WHERE workbench_item_id=? AND claim_token IS NOT NULL AND lease_expires_at IS NOT NULL",store.jdbc().queryForObject("SELECT UTC_TIMESTAMP(6)",java.time.LocalDateTime.class).minusMinutes(5),item("EXECUTION").id())).isEqualTo(1);service.recoverStale();assertThat(item("EXECUTION").status()).isEqualTo("NEEDS_REVIEW");
         var interrupted=item("EXECUTION");assertThatThrownBy(()->service.command(alice,"s1",interrupted.id(),interrupted.revision(),UUID.randomUUID().toString(),"resume",Map.of())).hasMessageContaining("检查点");
     }
     @Test void answeringBeforeSdkHasCommittedItsWaitIsRejected(){
@@ -316,8 +323,17 @@ class AgentWorkbenchServiceTest {
         var input=ToolCallParam.builder().toolUseBlock(new ToolUseBlock("call-1","lookup",Map.of())).input(Map.of()).build();var first=scope("查看任务");first.wrap(tool).callAsync(input).block();first.finish("COMPLETED","done");first.release();var next=service.prepare(alice,"s1","查看任务","run-2");next.wrap(tool).callAsync(input).block();assertThat(calls.get()).isEqualTo(2);next.release();
     }
     @Test void cancellingAChildQuestionUnblocksTheWaitingParentWithoutGuessingTheAnswer(){
-        var main=scope("查看任务");call(main,"start_background_task","child-1",Map.of("specialist","detection-task","question","批次 A"));var child=item("CHILD");var data=new LinkedHashMap<>(store.require(1,"s1",child.id()).data());data.put("runId","child-run");store.update(store.require(1,"s1",child.id()),"RUNNING",data,"TEST_STARTED");
-        var specialist=service.new Scope(alice,"s1",child.id(),"child-run","detection-task");call(specialist,"ask_user_question","child-question",Map.of("text","缺少批次编号","questionType","TEXT"));var question=item("QUESTION");service.command(alice,"s1",question.id(),question.revision(),"cancel-question","cancel",Map.of());assertThat(store.require(1,"s1",child.id()).status()).isEqualTo("CANCELLED");assertThat(item("EXECUTION").status()).isEqualTo("READY");
+        var main=scope("查看任务");call(main,"start_background_task","child-1",Map.of("specialist","detection-task","question","批次 A"));
+        var mainCheckpoint=store.require(1,"s1",WorkbenchStore.stable(1,"s1","checkpoint:"+main.jobId));
+        var child=item("CHILD");var data=new LinkedHashMap<>(store.require(1,"s1",child.id()).data());data.put("runId","child-run");store.update(store.require(1,"s1",child.id()),"RUNNING",data,"TEST_STARTED");
+        var specialist=service.new Scope(alice,"s1",child.id(),"child-run","detection-task");call(specialist,"ask_user_question","child-question",Map.of("text","缺少批次编号","questionType","TEXT"));
+        var question=item("QUESTION");var waiting=store.require(1,"s1",child.id());
+        assertThat(waiting.status()).isEqualTo("WAITING_INPUT");assertThat(waiting.data()).containsEntry("yieldReady",true);
+        assertThat(store.committedWait(waiting)).isTrue();assertThat(question.data()).containsEntry("parentId",child.id());
+        assertThat(store.require(1,"s1",mainCheckpoint.id())).isEqualTo(mainCheckpoint);
+        service.command(alice,"s1",question.id(),question.revision(),"cancel-question","cancel",Map.of());
+        assertThat(store.require(1,"s1",child.id()).status()).isEqualTo("CANCELLED");assertThat(item("EXECUTION").status()).isEqualTo("READY");
+        var cancelled=store.require(1,"s1",question.id());assertThat(cancelled.status()).isEqualTo("CANCELLED");assertThat(cancelled.data()).doesNotContainKey("answer");
     }
     @Test @Timeout(180) @org.junit.jupiter.api.condition.EnabledIfSystemProperty(named="workbench.mysql",matches="true")
     void processDeathAfterCompletedToolRestoresSdkWithoutRepeatingTheEffect()throws Exception{crashAndRecover("completed",24);}
@@ -326,7 +342,8 @@ class AgentWorkbenchServiceTest {
     @org.junit.jupiter.params.ParameterizedTest @org.junit.jupiter.params.provider.ValueSource(strings={"before-model","before-effect","waiting","child"})
     @Timeout(75) @org.junit.jupiter.api.condition.EnabledIfSystemProperty(named="workbench.mysql",matches="true")
     void processDeathAtOtherBoundariesRequiresExplicitContinuationAndDoesNotInventEffects(String scenario)throws Exception{
-        haltProcess(scenario,Map.of("before-model",25,"before-effect",26,"waiting",27,"child",28).get(scenario));store.jdbc().update("UPDATE workflow_instance SET lease_expires_at=? WHERE kind IN ('WORKBENCH_EXECUTION','WORKBENCH_CHILD')",store.jdbc().queryForObject("SELECT UTC_TIMESTAMP(6)",java.time.LocalDateTime.class).minusMinutes(5));service.recoverStale();
+        haltProcess(scenario,Map.of("before-model",25,"before-effect",26,"waiting",27,"child",28).get(scenario));
+        assertThat(store.jdbc().update("UPDATE workflow_instance SET lease_expires_at=? WHERE kind IN ('WORKBENCH_EXECUTION','WORKBENCH_CHILD') AND claim_token IS NOT NULL AND lease_expires_at IS NOT NULL",store.jdbc().queryForObject("SELECT UTC_TIMESTAMP(6)",java.time.LocalDateTime.class).minusMinutes(5))).isEqualTo(1);service.recoverStale();
         if(scenario.equals("waiting")){assertThat(item("EXECUTION").status()).isEqualTo("WAITING_INPUT");var question=item("QUESTION");service.command(alice,"s1",question.id(),question.revision(),"answer-after-restart","answer",Map.of("answer","batch-A"));assertThat(item("EXECUTION").status()).isEqualTo("READY");}
         else if(scenario.equals("child")){assertThat(item("EXECUTION").status()).isEqualTo("WAITING_CHILD");var child=item("CHILD");assertThat(child.status()).isEqualTo("NEEDS_REVIEW");service.command(alice,"s1",child.id(),child.revision(),"resume-child","resume",Map.of());assertThat(item("CHILD").status()).isEqualTo("QUEUED");}
         else{var job=item("EXECUTION");assertThat(job.status()).isEqualTo("NEEDS_REVIEW");if(scenario.equals("before-effect"))assertThatThrownBy(()->service.command(alice,"s1",job.id(),job.revision(),"resume-no-proof","resume",Map.of())).hasMessageContaining("未知");else{service.command(alice,"s1",job.id(),job.revision(),"resume-model","resume",Map.of());assertThat(item("EXECUTION").status()).isEqualTo("READY");}}
@@ -340,7 +357,7 @@ class AgentWorkbenchServiceTest {
     }
     private void crashAndRecover(String scenario,int expectedExit)throws Exception{
         haltProcess(scenario,expectedExit);
-        store.jdbc().update("UPDATE workflow_instance SET lease_expires_at=? WHERE kind='WORKBENCH_EXECUTION'",store.jdbc().queryForObject("SELECT UTC_TIMESTAMP(6)",java.time.LocalDateTime.class).minusMinutes(5));service.recoverStale();var interrupted=item("EXECUTION");assertThat(interrupted.status()).isEqualTo("NEEDS_REVIEW");
+        assertThat(store.jdbc().update("UPDATE workflow_instance SET lease_expires_at=? WHERE kind='WORKBENCH_EXECUTION' AND claim_token IS NOT NULL AND lease_expires_at IS NOT NULL",store.jdbc().queryForObject("SELECT UTC_TIMESTAMP(6)",java.time.LocalDateTime.class).minusMinutes(5))).isEqualTo(1);service.recoverStale();var interrupted=item("EXECUTION");assertThat(interrupted.status()).isEqualTo("NEEDS_REVIEW");
         if(scenario.equals("unknown")){assertThatThrownBy(()->service.command(alice,"s1",interrupted.id(),interrupted.revision(),UUID.randomUUID().toString(),"resume",Map.of())).hasMessageContaining("未知");assertThat(item("EXECUTION").status()).isEqualTo("NEEDS_REVIEW");assertThat(store.jdbc().queryForObject("SELECT status FROM workflow_instance WHERE kind='WORKBENCH_TOOL'",String.class)).isEqualTo("UNKNOWN");verify(app,never()).continueSession(any(),anyString(),anyString(),anyString());}
         else resumeKnownEffectThroughOneWinningSdkExecution(interrupted);
         assertThat(store.jdbc().queryForObject("SELECT COUNT(*) FROM workbench_crash_effect",Integer.class)).isEqualTo(1);

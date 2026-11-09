@@ -3,7 +3,10 @@
 One retirement export, not a development/test runtime or a migration result.
 Do not run until the user explicitly approves this one local read-only SQL
 exception. The acknowledgement flag records that decision; it cannot grant it.
-Only the already running MySQL83 / 127.0.0.1:3306 / doorhandledb is accepted.
+Only the already running MySQL83 / 127.0.0.1:3306 and the closed schema
+allowlist below are accepted. The two fixture schemas require separate fresh
+user authorization and an additional acknowledgement; old doorhandledb approval
+cannot authorize them.
 No service change, source deletion, local restore, cloud call or retry exists.
 
 The private env uses the existing DB_USERNAME / DB_PASSWORD dotenv format.
@@ -16,6 +19,8 @@ https://dev.mysql.com/doc/refman/8.0/en/option-file-options.html
 param(
     [Parameter(Mandatory = $true)][string]$PrivateEnvFile,
     [Parameter(Mandatory = $true)][string]$UserAuthorizationReference,
+    [ValidateSet('doorhandledb', 'doorhandle_agent_verify_ef8d5844c1', 'doorhandle_model_verify_22e4bc5566')][string]$SourceSchema = 'doorhandledb',
+    [switch]$AcknowledgeAdditionalFixtureReadOnlyExport,
     [switch]$AcknowledgeOneTimeLocalReadOnlyExport
 )
 $ErrorActionPreference = 'Stop'
@@ -240,17 +245,17 @@ function Invoke-PrivateClient([string]$Executable, [string[]]$Arguments, [string
 function Observe-Project([string]$Prefix) {
     $identityFile = Join-Path $script:output "$Prefix-identity-private.json"
     Invoke-PrivateClient $script:mysql ($script:mysqlArgs + @('--batch','--raw','--silent','--skip-column-names', '--skip-auto-rehash',
-        '--init-command=SET SESSION TRANSACTION READ ONLY', '--database=doorhandledb')) $identityFile `
+        '--init-command=SET SESSION TRANSACTION READ ONLY', ('--database=' + $script:SourceSchema))) $identityFile `
         $script:identitySql -IdentityProbe | Out-Null
     $identity = [IO.File]::ReadAllText($identityFile) | ConvertFrom-Json
-    Require-Export ($identity.schema -ceq 'doorhandledb' -and $identity.version -match '^8\.3\.' -and $identity.port -eq 3306 -and
+    Require-Export ($identity.schema -ceq $script:SourceSchema -and $identity.version -match '^8\.3\.' -and $identity.port -eq 3306 -and
         $identity.serverUuid -ceq $script:sourceProcess.configuration.expectedServerUuid -and
         [IO.Path]::GetFullPath($identity.dataDirectory).TrimEnd('\') -ieq $script:sourceProcess.configuration.expectedDataDirectory) 'The actual connection does not match the proven local UUID/data directory/schema/version/port.' 'ACTUAL_SOURCE_IDENTITY_MISMATCH'
     $script:actualClientIdentityVerified = $true
     $catalogFile = Join-Path $script:output "$Prefix-catalog-private.jsonl"
     Invoke-PrivateClient $script:mysql ($script:mysqlArgs + @('--batch','--raw','--silent','--skip-column-names','--skip-auto-rehash',
-        '--init-command=SET SESSION TRANSACTION READ ONLY', '--database=doorhandledb')) $catalogFile `
-        "SELECT JSON_OBJECT('table',TABLE_NAME,'kind',TABLE_TYPE,'engine',ENGINE,'collation',TABLE_COLLATION) FROM information_schema.TABLES WHERE TABLE_SCHEMA='doorhandledb' ORDER BY TABLE_NAME;" | Out-Null
+        '--init-command=SET SESSION TRANSACTION READ ONLY', ('--database=' + $script:SourceSchema))) $catalogFile `
+        "SELECT JSON_OBJECT('table',TABLE_NAME,'kind',TABLE_TYPE,'engine',ENGINE,'collation',TABLE_COLLATION) FROM information_schema.TABLES WHERE TABLE_SCHEMA='$script:SourceSchema' ORDER BY TABLE_NAME;" | Out-Null
     $catalog = @([IO.File]::ReadAllLines($catalogFile) | Where-Object { $_ } | ForEach-Object { $_ | ConvertFrom-Json })
     Require-Export ($catalog.Count -gt 0 -and $catalog.Count -le 128) 'The source table catalogue exceeds the reviewed project bound.'
     foreach ($table in $catalog) {
@@ -258,11 +263,12 @@ function Observe-Project([string]$Prefix) {
             $table.engine -ceq 'InnoDB') 'Views, nontransactional tables or unusual identifiers need separate export review.'
     }
     $countSql = ($catalog | ForEach-Object {
-        "SELECT JSON_OBJECT('table','" + $_.table + "','rows',COUNT(*)) FROM ``doorhandledb``.``" + $_.table + '`;'
+        "SELECT JSON_OBJECT('table','" + $_.table + "','rows',COUNT(*)) FROM " +
+            '`' + $script:SourceSchema + '`.`' + $_.table + '`;'
     }) -join "`n"
     $countFile = Join-Path $script:output "$Prefix-row-counts-private.jsonl"
     Invoke-PrivateClient $script:mysql ($script:mysqlArgs + @('--batch','--raw','--silent','--skip-column-names','--skip-auto-rehash',
-        '--init-command=SET SESSION TRANSACTION READ ONLY','--database=doorhandledb')) $countFile $countSql | Out-Null
+        '--init-command=SET SESSION TRANSACTION READ ONLY',('--database=' + $script:SourceSchema))) $countFile $countSql | Out-Null
     $counts = @([IO.File]::ReadAllLines($countFile) | Where-Object { $_ } | ForEach-Object { $_ | ConvertFrom-Json })
     Require-Export ($counts.Count -eq $catalog.Count) 'The restricted row observation is incomplete.'
     for ($i = 0; $i -lt $counts.Count; $i++) {
@@ -280,6 +286,8 @@ $diskFloor = [long](2GB + 256MB)
 try {
     Require-Export ($IsWindows -and $AcknowledgeOneTimeLocalReadOnlyExport -and
         $UserAuthorizationReference -match '^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,180}$') 'Explicit user approval for this one local read-only export is required.' 'USER_AUTHORIZATION_REQUIRED'
+    Require-Export ($SourceSchema -cin @('doorhandledb', 'doorhandle_agent_verify_ef8d5844c1', 'doorhandle_model_verify_22e4bc5566')) 'Only the three exact reviewed project schemas are eligible.' 'FIXED_SOURCE_SCHEMA_REQUIRED'
+    Require-Export ($SourceSchema -ceq 'doorhandledb' -or $AcknowledgeAdditionalFixtureReadOnlyExport) 'The two remaining fixture schemas require a new separately approved read-only export acknowledgement.' 'ADDITIONAL_FIXTURE_AUTHORIZATION_REQUIRED'
     $stage = 'ADMINISTRATOR_METADATA_GATE'
     $principal = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
     Require-Export ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) 'Run only inside the separately approved administrator token; this script never elevates itself.' 'ADMINISTRATOR_TOKEN_REQUIRED'
@@ -310,7 +318,7 @@ try {
     New-Item -ItemType Directory -Path $output -ErrorAction Stop | Out-Null
     Set-PrivateDirectory $output
     Write-PrivateJson (Join-Path $output 'authorization-private.json') ([ordered]@{ userAuthorizationReference = $UserAuthorizationReference;
-        oneTimeReadOnlyExceptionAcknowledged = $true; ownerSid = $owner.Value; serviceName = 'MySQL83'; sourceProcess = $sourceProcess })
+        oneTimeReadOnlyExceptionAcknowledged = $true; additionalFixtureReadOnlyExceptionAcknowledged = [bool]$AcknowledgeAdditionalFixtureReadOnlyExport; sourceSchema = $SourceSchema; ownerSid = $owner.Value; serviceName = 'MySQL83'; sourceProcess = $sourceProcess })
     $stage = 'PRIVATE_INPUT_PREPARATION'
     $credentials = @{}
     foreach ($line in [IO.File]::ReadAllLines($private, [Text.UTF8Encoding]::new($false, $true))) {
@@ -335,13 +343,13 @@ try {
         '--skip-add-locks','--skip-add-drop-table','--skip-disable-keys')
     $stage = 'RESTRICTED_SOURCE_OBSERVATION'; $before = Observe-Project 'before'
     $ddlBefore = Join-Path $output 'schema-before.sql'
-    Invoke-PrivateClient $dump ($dumpArgs + @('--no-data','doorhandledb')) $ddlBefore -MaximumBytes 16777216 | Out-Null
+    Invoke-PrivateClient $dump ($dumpArgs + @('--no-data',$SourceSchema)) $ddlBefore -MaximumBytes 16777216 | Out-Null
     $stage = 'SINGLE_TRANSACTION_LOGICAL_EXPORT'; $raw = Join-Path $output 'database.sql.partial'
-    $rawBytes = Invoke-PrivateClient $dump ($dumpArgs + @('doorhandledb')) $raw -MaximumBytes 536870912 -TimeoutSeconds 1800
+    $rawBytes = Invoke-PrivateClient $dump ($dumpArgs + @($SourceSchema)) $raw -MaximumBytes 536870912 -TimeoutSeconds 1800
     Require-Export ($rawBytes -gt 0) 'The logical export is empty.'
     $stage = 'RESTRICTED_AFTER_OBSERVATION'; $after = Observe-Project 'after'
     $ddlAfter = Join-Path $output 'schema-after.sql'
-    Invoke-PrivateClient $dump ($dumpArgs + @('--no-data','doorhandledb')) $ddlAfter -MaximumBytes 16777216 | Out-Null
+    Invoke-PrivateClient $dump ($dumpArgs + @('--no-data',$SourceSchema)) $ddlAfter -MaximumBytes 16777216 | Out-Null
     Require-Export ($before.identity.serverUuid -ceq $after.identity.serverUuid -and
         (File-Sha $before.catalogFile) -ceq (File-Sha $after.catalogFile) -and (File-Sha $before.countFile) -ceq (File-Sha $after.countFile) -and
         (File-Sha $ddlBefore) -ceq (File-Sha $ddlAfter)) 'Source identity, DDL or observed row counts changed; the outcome requires review.'
@@ -390,7 +398,7 @@ if ($failure) {
 $files = @{}
 foreach ($file in Get-ChildItem -LiteralPath $output -File) { $files[$file.Name] = [ordered]@{ bytes = $file.Length; sha256 = File-Sha $file.FullName } }
 $public = [ordered]@{ schemaVersion = 1; kind = 'doorhandle-local-mysql-export'; status = 'LOCAL_EXPORT_COMPLETE_RESTORE_PENDING';
-    exportedAtUtc = [DateTimeOffset]::UtcNow.ToString('o'); sourceSchema = 'doorhandledb'; sourceEndpoint = '127.0.0.1:3306';
+    exportedAtUtc = [DateTimeOffset]::UtcNow.ToString('o'); sourceSchema = $SourceSchema; sourceEndpoint = '127.0.0.1:3306';
     scriptSha256 = File-Sha $PSCommandPath; tableCount = $before.catalog.Count;
     observedRowsBefore = [long](($before.counts | Measure-Object -Property rows -Sum).Sum);
     observedRowsAfter = [long](($after.counts | Measure-Object -Property rows -Sum).Sum);
@@ -403,5 +411,5 @@ $public = [ordered]@{ schemaVersion = 1; kind = 'doorhandle-local-mysql-export';
     sourceDeleted = $false; servicesChanged = $false; testsExecuted = $false; cloudUploaded = $false;
     backupRestoreVerified = $false; retirementAllowed = $false }
 Write-PrivateJson (Join-Path $output 'public-manifest.json') $public
-Write-Output ([ordered]@{ status = $public.status; exportDirectory = $output; rawSqlSha256 = $rawSha;
+Write-Output ([ordered]@{ status = $public.status; sourceSchema = $SourceSchema; exportDirectory = $output; rawSqlSha256 = $rawSha;
     gzipSha256 = $public.gzipSha256; tableCount = $public.tableCount; backupRestoreVerified = $false; retirementAllowed = $false } | ConvertTo-Json -Compress)

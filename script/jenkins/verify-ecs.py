@@ -574,6 +574,72 @@ def remove_owned_build(path, parent, *, allow_links=False):
     return {'status': 'REMOVED', 'relativePath': path.relative_to(ROOT).as_posix(), **result}
 
 
+def java_source_inventory(root):
+    """Bind reusable compilation to the same reactor POMs, sources and resources."""
+    root = Path(root)
+    pom = root / 'pom.xml'
+    if pom.resolve(strict=True) != pom or pom.is_symlink():
+        raise ValueError('Java reactor source must be canonical')
+    modules = [node.text for node in ET.parse(pom).findall('./{*}modules/{*}module')]
+    if not modules or len(modules) != len(set(modules)) or any(
+            not isinstance(name, str) or not re.fullmatch(r'[A-Za-z0-9_.-]+', name) or name in ('.', '..') for name in modules):
+        raise ValueError('Java reuse requires the fixed explicit reactor modules')
+    result = {'poms': {}, 'trees': {}}
+    for name in ('', *modules):
+        path = root / name / 'pom.xml'
+        if path.resolve(strict=True) != path or path.is_symlink() or not path.is_file():
+            raise ValueError('Java reactor POM changed or was redirected')
+        result['poms'][path.relative_to(root).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
+    for path in [root / name / 'src' for name in modules] + [root / '.mvn']:
+        if path.exists() or path.is_symlink():
+            owned_directory(path, root)
+            result['trees'][path.relative_to(root).as_posix()] = tree_inventory(path, hash_files=True)
+    return result
+
+
+def java_compiled_inventory(build_root, output):
+    """Classes and copied resources only; reports and JVM scratch are never reused."""
+    build_root = owned_directory(build_root, output); result = {}
+    for module in sorted(build_root.iterdir()):
+        if not re.fullmatch(r'[A-Za-z0-9_.-]+', module.name):
+            raise ValueError('Unexpected shared Java module output')
+        owned_directory(module, build_root)
+        for name in ('classes', 'test-classes'):
+            path = module / name
+            if path.exists() or path.is_symlink():
+                owned_directory(path, build_root)
+                result[path.relative_to(build_root).as_posix()] = tree_inventory(path, hash_files=True)
+    if not result or not any(row['files'] for row in result.values()):
+        raise ValueError('A reusable Java compilation must contain actual compiled files')
+    return result
+
+
+def require_java_reuse(build_root, output, expected_source, expected_compiled):
+    if java_source_inventory(ROOT) != expected_source:
+        raise ValueError('Fixed Java source changed before compilation reuse')
+    if java_compiled_inventory(build_root, output) != expected_compiled:
+        raise ValueError('Compiled Java classes or resources changed before reuse')
+    if any(build_root.glob('*/surefire-reports')):
+        raise ValueError('Previous Java reports must be archived and removed before another suite')
+
+
+def clear_java_reports(build_root, output):
+    build_root = owned_directory(build_root, output)
+    return [remove_owned_build(path, build_root) for path in sorted(build_root.glob('*/surefire-reports'))]
+
+
+def java_maven_arguments(suite, tools, build_root, *, initial, source_regression=False):
+    arguments = [tools['MAVEN_CMD'], '-B', '-ntp', '-Ddoorhandle.isolated-verification=true',
+                 '-Ddoorhandle.verification-root=' + str(build_root),
+                 '-Dmaven.repo.local=' + tools.get('MAVEN_REPOSITORY', str(ROOT / 'work' / 'ecs-maven-repository'))]
+    if initial:
+        arguments.append('clean')
+    arguments.append('test' if suite['fixtureProperties'] else 'verify')
+    if suite['javaSelection'] and not source_regression:
+        arguments += ['-Dtest=' + ','.join(suite['javaSelection']), '-Dsurefire.failIfNoSpecifiedTests=false']
+    return arguments + suite['fixtureOptions']
+
+
 def cleanup_source_pytest_temporary(output, receipt, *, ordinary_source, python_succeeded, stop_tools=None):
     """Release only passed source-test scratch; native migration evidence stays."""
     record = receipt['pythonTemporaryCleanup'] = {'status': 'RETAINED_NATIVE_EVIDENCE'}
@@ -735,26 +801,30 @@ def main():
         if process.returncode:
             raise RuntimeError(label + ' failed; original log preserved')
     try:
+        shared_build_root = None; compiled_outputs = None; source_inputs = None
         def run_java(suite, *, source_regression=False):
+            nonlocal shared_build_root, compiled_outputs, source_inputs
             label = 'java-source-regression' if source_regression else 'java-' + suite['id']
-            build_root = output / ('source-regression/build' if source_regression else 'java-suites/' + suite['id'])
             destination = output / ('source-regression/java' if source_regression else 'java')
-            if build_root.exists() or build_root.is_symlink():
-                raise ValueError('Each Java invocation requires a fresh owned build output')
-            build_root.mkdir(mode=0o700, parents=True)
+            initial = shared_build_root is None
+            if initial:
+                build_root = output / ('java-suites/' + suite['id'])
+                if build_root.exists() or build_root.is_symlink():
+                    raise ValueError('The shared Java compilation requires a fresh owned build output')
+                build_root.mkdir(mode=0o700, parents=True); shared_build_root = build_root
+                source_inputs = java_source_inventory(ROOT)
+            else:
+                build_root = shared_build_root
+                require_java_reuse(build_root, output, source_inputs, compiled_outputs)
             entry = {key: suite[key] for key in ('id', 'javaSelection', 'fixtureProperties')}
-            entry.update(status='FAILED', javaTests=empty_counts(), selectedJavaClasses={}, reportFiles=[])
+            entry.update(status='FAILED', javaTests=empty_counts(), selectedJavaClasses={}, reportFiles=[],
+                         compilationMode='FRESH_REACTOR' if initial else 'SAME_ATTEMPT_COMPILED_BYTES',
+                         compiledBuildRoot=build_root.relative_to(output).as_posix())
             if source_regression:
                 receipt['sourceRegression'] = entry
             else:
                 receipt['javaSuites'].append(entry)
-            arguments = [tools['MAVEN_CMD'], '-B', '-ntp', '-Ddoorhandle.isolated-verification=true',
-                         '-Ddoorhandle.verification-root=' + str(build_root),
-                         '-Dmaven.repo.local=' + tools.get('MAVEN_REPOSITORY', str(ROOT / 'work' / 'ecs-maven-repository')), 'clean',
-                         'test' if suite['fixtureProperties'] else 'verify']
-            if suite['javaSelection'] and not source_regression:
-                arguments += ['-Dtest=' + ','.join(suite['javaSelection']), '-Dsurefire.failIfNoSpecifiedTests=false']
-            arguments += suite['fixtureOptions']
+            arguments = java_maven_arguments(suite, tools, build_root, initial=initial, source_regression=source_regression)
             try:
                 require_unchanged_inputs(suite.get('privateInputs', {}))
                 execute(label, arguments, ROOT)
@@ -763,6 +833,14 @@ def main():
                 entry['javaTests'], entry['selectedJavaClasses'] = java_report_counts(output, entry['reportFiles'], suite['javaSelection'])
                 receipt['javaTests'], receipt['selectedJavaClasses'], receipt['javaReportFiles'] = aggregate_java_suites(receipt['javaSuites'])
             require_java_pass(entry['javaTests'], entry['selectedJavaClasses'], fixture=bool(suite['fixtureProperties']))
+            if java_source_inventory(ROOT) != source_inputs:
+                raise ValueError('Fixed Java source changed during verification')
+            observed_compiled = java_compiled_inventory(build_root, output)
+            if compiled_outputs is not None and observed_compiled != compiled_outputs:
+                raise ValueError('Compiled Java classes or resources changed during reuse')
+            compiled_outputs = observed_compiled
+            entry['compiledBytesSha256'] = hashlib.sha256(json.dumps(compiled_outputs, sort_keys=True).encode()).hexdigest()
+            entry['sourceInputsSha256'] = hashlib.sha256(json.dumps(source_inputs, sort_keys=True).encode()).hexdigest()
             if source_regression:
                 # Opt-in infrastructure suites may skip in the ordinary reactor;
                 # each explicitly audited pure-logic class must execute in full.
@@ -771,12 +849,13 @@ def main():
                     if tally['passed'] < required['minimumTests'] or tally['skipped']:
                         raise RuntimeError('Ordinary Java regression omitted a required pure-logic class')
             entry['status'] = 'PASS'
-            entry['buildOutputCleanup'] = remove_owned_build(build_root, output)
+            entry['reportOutputCleanup'] = clear_java_reports(build_root, output)
         for suite in args.java_suites:
             run_java(suite)
         if args.source_regression:
             required = java_classes([item['className'] for item in profile['sourceRegression']['requiredClasses']])
             run_java({'id': 'source-regression', 'javaSelection': required, 'fixtureProperties': [], 'fixtureOptions': []}, source_regression=True)
+        receipt['sharedJavaBuildCleanup'] = remove_owned_build(shared_build_root, output)
         if not args.java_only:
             require_unchanged_inputs({file: digest for file, digest in (
                 (args.compact_migration_config, args.compact_migration_config_sha256),

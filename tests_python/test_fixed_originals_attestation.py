@@ -65,7 +65,9 @@ def build_custody_state(profile, old_state, tmp_path, monkeypatch):
     else:
         original_root = tmp_path / 'additional-fixture'; original_root.mkdir(mode=0o700)
         metadata_run = additional.custody.subprocess.run
-        if profile == 'residual-project-originals-v1':
+        if profile == 'remaining-system-data-v1':
+            originals = additional.remaining_originals.__wrapped__(original_root, monkeypatch)
+        elif profile == 'residual-project-originals-v1':
             originals = additional.residual_originals.__wrapped__(original_root, monkeypatch)
         else:
             originals = additional.originals.__wrapped__(original_root, monkeypatch)
@@ -73,7 +75,7 @@ def build_custody_state(profile, old_state, tmp_path, monkeypatch):
         try:
             additional.custody.pack(originals.catalog, package)
         finally:
-            if profile == 'residual-project-originals-v1':
+            if profile in ('residual-project-originals-v1', 'remaining-system-data-v1'):
                 # The synthetic Git dispatcher belongs only to local pack's
                 # real metadata guard, never the later CI/old-custody chain.
                 monkeypatch.setattr(additional.custody.subprocess, 'run', metadata_run)
@@ -98,6 +100,8 @@ def build_custody_state(profile, old_state, tmp_path, monkeypatch):
     args.source_snapshot_directory = str(old)
     fixed = {**attest.PROFILES[profile], 'FILES': public['files'], 'ORIGINAL_BYTES': public['bytes']}
     fixed['MANIFEST_SHA256'] = attest.sha((old / fixed['MANIFEST']).read_bytes())
+    if profile == 'remaining-system-data-v1':
+        fixed.update(CATALOG_SHA256=public['catalogSha256'], ARCHIVE_SHA256=public['archiveSha256'], ARCHIVE_BYTES=public['archiveBytes'])
     monkeypatch.setitem(attest.PROFILES, profile, fixed); helpers.fixed = fixed
     monkeypatch.setattr(attest, 'fixed_modules', lambda _: helpers)
     monkeypatch.setattr(attest, 'current_pass', lambda *_: copy.deepcopy(current))
@@ -109,7 +113,7 @@ def build_custody_state(profile, old_state, tmp_path, monkeypatch):
         current=current, custody=custody, public_file=public_file)
 
 
-@pytest.fixture(params=['legacy-project-originals-v1', 'additional-originals-v1', 'residual-project-originals-v1'])
+@pytest.fixture(params=['legacy-project-originals-v1', 'additional-originals-v1', 'residual-project-originals-v1', 'remaining-system-data-v1'])
 def custody_state(request, old_state, tmp_path, monkeypatch):
     return build_custody_state(request.param, old_state, tmp_path, monkeypatch)
 
@@ -119,6 +123,84 @@ def validate(value, state, **overrides):
                 expected_custody=state.custody, now_utc=state.now)
     args.update(overrides)
     return attest.validate_retirement_attestation(value, **args)
+
+
+@pytest.fixture
+def remaining_state(old_state, tmp_path, monkeypatch):
+    return build_custody_state('remaining-system-data-v1', old_state, tmp_path, monkeypatch)
+
+
+def test_remaining_fixed_profile_is_the_actual_86_member_snapshot_not_a_wider_deletion_scope():
+    fixed = attest.PROFILES['remaining-system-data-v1']
+    assert (fixed['FILES'], fixed['ORIGINAL_BYTES'], fixed['ARCHIVE_BYTES']) == (86, 28695377, 28825600)
+    assert fixed['MANIFEST_SHA256'] == '6c8c5c1f9db87f8aed0c5578ff9781f69e93cb85f318a8797c63e2a66a340842'
+    assert fixed['CATALOG_SHA256'] == '0f92d397bed2b6f6a56a4dfec37d7c4bd6f41d195182b10604438ed10747baf4'
+    assert fixed['MAX_ARCHIVE'] == 64 * 1024 ** 2 and fixed['MAX_MANIFEST'] == 2 * 1024 ** 2
+
+
+def test_remaining_attestation_rehashes_every_independent_restore_and_keeps_all_bytes(remaining_state, monkeypatch):
+    state = remaining_state; fixed = state.helpers.fixed; seen = []; previous = attest.file_digest
+    def observed(path, *args, **kwargs):
+        seen.append(Path(path)); return previous(path, *args, **kwargs)
+    monkeypatch.setattr(attest, 'file_digest', observed)
+    before = tree_bytes(state.state.root); value = attest.fresh_retirement_attest(state.args)
+    assert validate(value, state) is value and tree_bytes(state.state.root) == before
+    manifest = json.loads((state.old / fixed['MANIFEST']).read_bytes())
+    assert all(state.old.parent / fixed['RESTORE'] / row['member'] in seen for row in manifest['files'])
+
+
+@pytest.mark.parametrize('damage', ['changed', 'missing', 'extra', 'hardlink', 'symlink', 'mode', 'directory-mode'])
+def test_remaining_restore_receipt_alone_cannot_replace_fresh_complete_member_bytes(remaining_state, damage):
+    state = remaining_state; fixed = state.helpers.fixed
+    manifest = json.loads((state.old / fixed['MANIFEST']).read_bytes())
+    restore = state.old.parent / fixed['RESTORE']; target = restore / manifest['files'][0]['member']
+    if damage == 'changed': target.write_bytes(target.read_bytes() + b'drift')
+    elif damage == 'missing': target.unlink()
+    elif damage == 'extra': put(restore / 'unreviewed.bin', b'extra')
+    elif damage == 'hardlink': os.link(target, state.work / 'foreign-link.bin')
+    elif damage == 'symlink':
+        outside = put(state.work / 'foreign.bin', target.read_bytes()); target.unlink(); target.symlink_to(outside)
+    elif damage == 'mode': target.chmod(0o644)
+    else: target.parent.chmod(0o755)
+    with pytest.raises(attest.AttestationError):
+        attest.fresh_retirement_attest(state.args)
+
+
+@pytest.mark.parametrize('field', ['archiveSha256', 'archiveBytes'])
+def test_remaining_projection_keeps_the_exact_original_archive_pin(remaining_state, field):
+    state = remaining_state; value = attest.fresh_retirement_attest(state.args)
+    value['custody'][field] = 'e' * 64 if field.endswith('Sha256') else value['custody'][field] + 1
+    expected = copy.deepcopy(value['custody']); resign(value)
+    with pytest.raises(attest.AttestationError, match='REMAINING_FIXED_ARCHIVE_DRIFT'):
+        validate(value, state, expected_custody=expected)
+
+
+def test_remaining_empty_preserved_member_still_has_a_complete_zero_byte_hash_bound(tmp_path):
+    old = tmp_path / 'snapshot'; old.mkdir(mode=0o700)
+    manifest = put_json(old / 'custody.json', {'opaque': True})
+    restore = tmp_path / 'restore'; restore.mkdir(mode=0o700)
+    target = put(restore / 'empty.log', b''); put_json(restore / 'restore-receipt.json', {'status': 'RESTORED_VERIFIED'})
+    rows = [{'member': 'empty.log', 'bytes': 0, 'sha256': attest.sha(b'')}]
+    state = SimpleNamespace(fixed={'PUBLIC_PROFILE': 'remaining-system-data-v1', 'MANIFEST': 'custody.json',
+        'MANIFEST_SHA256': attest.sha(manifest.read_bytes()), 'MAX_MANIFEST': 1024, 'RESTORE': 'restore'},
+        artifacts=SimpleNamespace(read_json=lambda *_args, **_kwargs: {}, validate_manifest=lambda _: rows))
+    assert attest.remaining_restored_bindings(state, old) == ((target, attest.sha(b''), 0),)
+    assert attest.file_digest(target, 0, private=True)[:2] == (attest.sha(b''), 0)
+
+
+@pytest.mark.parametrize('damage', ['kind', 'scope', 'controlsOnly', 'fullProjectVerified'])
+def test_current_custody_attestor_never_accepts_a_control_only_result_as_project_pass(damage):
+    identity = copy.deepcopy(legacy.support.IDENTITY)
+    record = {'kind': 'doorhandle-ecs-ci', 'scope': 'source', 'release': 'ci-99-' + 'a' * 12,
+              'commit': 'a' * 40, 'sourceSha256': 'b' * 64, 'identity': identity}
+    record[damage] = {'kind': 'doorhandle-controls-only-source', 'scope': 'controls',
+                      'controlsOnly': True, 'fullProjectVerified': False}[damage]
+    state = SimpleNamespace(root=None, artifacts=SimpleNamespace(identity=lambda *_: identity),
+        cold=SimpleNamespace(stopped_receipt=lambda *_args, **_kwargs: (record, 'c' * 64)), verifier=None, cleanup=None)
+    args = SimpleNamespace(tag=record['release'], commit=record['commit'], source_sha256=record['sourceSha256'],
+                           expected_instance_id=identity['instanceId'], expected_machine_id=identity['machineId'])
+    with pytest.raises(attest.AttestationError, match='ACTUAL_PROJECT_PASS_NOT_CONTROLS_REQUIRED'):
+        attest.current_pass(args, state)
 
 
 def resign(value):
@@ -260,7 +342,7 @@ def test_live_output_still_requires_exact_challenge_context_fixed_recipe_and_tim
         validate(proof, state, expected_current=expected_current, expected_custody=expected_old, now_utc=now)
 
 
-@pytest.fixture(params=['legacy-project-originals-v1', 'additional-originals-v1', 'residual-project-originals-v1'])
+@pytest.fixture(params=['legacy-project-originals-v1', 'additional-originals-v1', 'residual-project-originals-v1', 'remaining-system-data-v1'])
 def fixed_source(tmp_path, monkeypatch, request):
     if request.param == 'residual-project-originals-v1':
         monkeypatch.setitem(attest.PROFILES, request.param, {**attest.PROFILES[request.param], 'MANIFEST_SHA256': 'e' * 64})

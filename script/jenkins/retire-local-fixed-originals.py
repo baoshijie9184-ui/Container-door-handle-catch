@@ -30,6 +30,12 @@ RECIPES = {
         'members': 36, 'selected': 2, 'bytes': 465240718, 'retained': 0},
     'residual-project-originals-v1': {'manifestSha256': '471dedbba39f7220f760797ba1827040dd1cef7ac51af76daa8d7613117a6025',
         'members': 1968, 'selected': 1968, 'bytes': 8779830, 'retained': 0},
+    'remaining-system-data-v1': {'manifestSha256': '6c8c5c1f9db87f8aed0c5578ff9781f69e93cb85f318a8797c63e2a66a340842',
+        'catalogSha256': '0f92d397bed2b6f6a56a4dfec37d7c4bd6f41d195182b10604438ed10747baf4',
+        'members': 86, 'selected': 78, 'bytes': 28695377, 'retained': 8,
+        'groups': {'local-mysql45-export': [12, 13156204], 'protected-tool-receipts': [8, 117235],
+            'remaining-agent-workspace': [5, 3927], 'remaining-memory-export': [1, 740781],
+            'remaining-mysql-archives': [3, 13857690], 'remaining-user-skill-downloads': [57, 819540]}},
 }
 SHA = re.compile(r'[a-f0-9]{64}')
 RETAINED_C_HISTORY = r'C:\Users\19771\.mem0\history.db'
@@ -94,6 +100,17 @@ def select_manifest(profile, raw):
     need(sha(raw) == recipe['manifestSha256'], 'FIXED_RAW_MANIFEST_SHA_REQUIRED')
     core = load('retire-local-cold-stores.py'); value = core.decode_control(raw)
     rows = value.get('files'); need(type(rows) is list and len(rows) == recipe['members'], 'COMPLETE_FIXED_MEMBERS_REQUIRED')
+    if profile == 'remaining-system-data-v1':
+        need(value.get('kind') == 'doorhandle-additional-local-artifact-custody' and value.get('version') == 1
+             and value.get('status') == 'COMPLETE' and value.get('profile') == profile
+             and value.get('catalogSha256') == recipe['catalogSha256'] and value.get('originalFiles') == recipe['members']
+             and value.get('originalBytes') == recipe['bytes'], 'FIXED_REMAINING_MANIFEST_PROFILE_REQUIRED')
+        groups = {}
+        for row in rows:
+            need(type(row) is dict and row.get('group') in recipe['groups']
+                 and type(row.get('bytes')) is int and row['bytes'] >= 0, 'FIXED_REMAINING_GROUP_REQUIRED')
+            group = groups.setdefault(row['group'], [0, 0]); group[0] += 1; group[1] += row['bytes']
+        need(groups == recipe['groups'], 'COMPLETE_FIXED_REMAINING_GROUPS_REQUIRED')
     if profile == 'pth-aliases-v1':
         origin = [r for r in rows if r.get('member') == MODEL_ORIGIN_MEMBER]
         need(len(origin) == 1 and origin[0].get('sourcePath') == ntpath.join(ROOT, *MODEL_ORIGIN_MEMBER.split('/'))
@@ -113,6 +130,10 @@ def select_manifest(profile, raw):
             continue
         name = relative_source(source)
         need(name.lower() not in seen, 'CASE_OR_SOURCE_ALIAS_REFUSED'); seen.add(name.lower())
+        if profile == 'remaining-system-data-v1' and row['group'] == 'protected-tool-receipts':
+            retained.append({'sourcePath': ntpath.join(ROOT, *name.split('/')), 'bytes': row['bytes'],
+                'sha256': row['sha256'], 'reason': 'COMPLETE_TOOL_TREE_OWNERSHIP_UNPROVED'})
+            continue
         selected.append({'path': name, 'bytes': row['bytes'], 'sha256': row['sha256']})
     need(len(selected) == recipe['selected'] and len(retained) == recipe['retained']
          and sum(r['bytes'] for r in selected + retained) == recipe['bytes'], 'FIXED_SELECTED_OR_RETAINED_COUNTS_DRIFT')
@@ -287,12 +308,13 @@ def alias_bindings(profile, proof):
 
 
 def residual_bindings(profile):
-    if profile != 'residual-project-originals-v1': return {}
-    return {'residualScopeHelperSha256': sha(SELF.with_name('preserve-local-artifacts.py').read_bytes())}
+    if profile not in ('residual-project-originals-v1', 'remaining-system-data-v1'): return {}
+    key = 'remainingScopeHelperSha256' if profile == 'remaining-system-data-v1' else 'residualScopeHelperSha256'
+    return {key: sha(SELF.with_name('preserve-local-artifacts.py').read_bytes())}
 
 
 def residual_source_guard(profile, members):
-    if profile != 'residual-project-originals-v1': return
+    if profile not in ('residual-project-originals-v1', 'remaining-system-data-v1'): return
     # Reuse the same metadata-only scope policy as the fixed opaque producer.
     helper = load('preserve-local-artifacts.py')
     helper.residual_repository_guard([ROOT + '\\' + row['path'].replace('/', '\\') for row in members])
@@ -346,7 +368,7 @@ def apply_plan(plan, core, proof, backend, attestor, audit):
     need(plan.get('current') is not None and plan.get('custody') is not None, 'CLOUD_RECEIPTS_REQUIRED')
     group = plan.get('closedModelHardlinkGroup')
     validate_model_link_group(plan['profile'], plan['members'], group)
-    if plan['profile'] == 'residual-project-originals-v1':
+    if plan['profile'] in ('residual-project-originals-v1', 'remaining-system-data-v1'):
         need(all(plan.get(key) == value for key, value in residual_bindings(plan['profile']).items()),
              'FIXED_RESIDUAL_SOURCE_GUARD_REQUIRED')
         residual_source_guard(plan['profile'], plan['members'])

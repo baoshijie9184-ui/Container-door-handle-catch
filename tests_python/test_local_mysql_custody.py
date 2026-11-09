@@ -74,7 +74,8 @@ def test_byte_pack_preserves_the_complete_closed_export_and_originals(export_fix
     assert {path.name: path.read_bytes() for path in source.export.iterdir()} == before
 
 
-@pytest.mark.parametrize('damage', ['partial', 'credential-side-file', 'missing-file', 'raw-changed', 'identity-unverified', 'source-row-hash-claim'])
+@pytest.mark.parametrize('damage', ['partial', 'credential-side-file', 'missing-file', 'raw-changed', 'identity-unverified',
+    'source-row-hash-claim', 'remaining-agent-schema', 'remaining-model-schema', 'new-export-worker'])
 def test_pack_refuses_incomplete_or_unreviewed_source_before_reporting_success(export_fixture, monkeypatch, damage):
     source = export_fixture
     if damage == 'credential-side-file': (source.export / 'temporary-client-private.ini').write_text('never archived')
@@ -85,6 +86,13 @@ def test_pack_refuses_incomplete_or_unreviewed_source_before_reporting_success(e
         if damage == 'partial': value['status'] = 'FAILED'
         if damage == 'identity-unverified': value['actualClientIdentityVerified'] = False
         if damage == 'source-row-hash-claim': value['rowEvidence'] = 'SAME_TRANSACTION_SOURCE_ROW_HASHES'
+        # New authorised exports have their own evidence and must never be
+        # promoted by relabelling the original 45-table custody protocol.
+        if damage == 'remaining-agent-schema': value['sourceSchema'] = 'doorhandle_agent_verify_ef8d5844c1'
+        if damage == 'remaining-model-schema': value['sourceSchema'] = 'doorhandle_model_verify_22e4bc5566'
+        if damage == 'new-export-worker':
+            value['scriptSha256'] = custody.digest(ROOT / 'script/jenkins/export-legacy-local-mysql.ps1')
+            assert value['scriptSha256'] != custody.EXPORT_SCRIPT_SHA
         (source.export / 'public-manifest.json').write_bytes(custody.encoded(value))
         monkeypatch.setattr(custody, 'EXPORT_SHA', custody.digest(source.export / 'public-manifest.json'))
     with pytest.raises(ValueError): custody.pack(source.export, source.control, source.output)

@@ -30,6 +30,101 @@ inner = module('serial_suite_ecs_evidence', 'verify-ecs.py')
 cleanup = module('serial_suite_original_custody', 'cleanup-ecs-builds.py')
 
 
+@pytest.fixture
+def java_workspace(tmp_path, monkeypatch):
+    root = tmp_path / 'checkout'; root.mkdir()
+    (root / 'pom.xml').write_text('<project><modules><module>module</module></modules></project>')
+    (root / 'module').mkdir(); (root / 'module/pom.xml').write_text('<project/>')
+    for name, raw in (('src/main/java/A.java', b'fixed source'), ('src/test/java/T.java', b'fixed test source'),
+                      ('src/main/resources/schema.sql', b'fixed SQL resource')):
+        path = root / 'module' / name; path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(raw)
+    output = root / 'work/ci-evidence'; build = output / 'java-suites/suite-001'
+    for name, raw in (('classes/A.class', b'compiled main'), ('test-classes/T.class', b'compiled tests'),
+                      ('classes/schema.sql', b'fixed SQL resource')):
+        path = build / 'module' / name; path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(raw)
+    monkeypatch.setattr(inner, 'ROOT', root)
+    return SimpleNamespace(root=root, output=output, build=build,
+                           sources=inner.java_source_inventory(root), compiled=inner.java_compiled_inventory(build, output))
+
+
+@pytest.mark.parametrize('initial', [True, False])
+def test_java_reuse_keeps_the_full_lifecycle_and_each_exact_fixture_switch(tmp_path, initial):
+    tools = {'MAVEN_CMD': '/fixed/mvn', 'MAVEN_REPOSITORY': '/fixed/repository'}
+    first = {'javaSelection': ['org.example.OneTest'], 'fixtureProperties': ['first.fixture'],
+             'fixtureOptions': ['-Dfirst.fixture=/private/first.json']}
+    second = {'javaSelection': ['org.example.TwoTest'], 'fixtureProperties': ['second.fixture'],
+              'fixtureOptions': ['-Dsecond.fixture=/private/second.json']}
+    a = inner.java_maven_arguments(first, tools, tmp_path, initial=initial)
+    b = inner.java_maven_arguments(second, tools, tmp_path, initial=initial)
+    assert ('clean' in a) is initial and ('clean' in b) is initial
+    assert 'test' in a and 'test' in b and not any('skipTests' in value or value == 'surefire:test' for value in a + b)
+    assert '-Dtest=org.example.OneTest' in a and first['fixtureOptions'][0] in a and second['fixtureOptions'][0] not in a
+    assert '-Dtest=org.example.TwoTest' in b and second['fixtureOptions'][0] in b and first['fixtureOptions'][0] not in b
+    assert '-Ddoorhandle.verification-root=' + str(tmp_path) in a and '-Dmaven.repo.local=/fixed/repository' in a
+
+
+def test_warm_source_regression_runs_the_ordinary_reactor_without_fixture_or_selected_test_flags(tmp_path):
+    suite = {'javaSelection': ['org.example.RequiredPureTest'], 'fixtureProperties': [], 'fixtureOptions': []}
+    arguments = inner.java_maven_arguments(suite, {'MAVEN_CMD': '/fixed/mvn'}, tmp_path,
+                                           initial=False, source_regression=True)
+    assert 'verify' in arguments and 'clean' not in arguments and 'test' not in arguments
+    assert not any(value.startswith('-Dtest=') or 'skipTests' in value for value in arguments)
+
+
+def test_two_suites_reuse_only_compiled_bytes_and_archive_distinct_fresh_xml(java_workspace):
+    state = java_workspace; archived = []
+    for name in ('org.example.OneTest', 'org.example.TwoTest'):
+        inner.require_java_reuse(state.build, state.output, state.sources, state.compiled)
+        raw = ('<testsuite><testcase classname="' + name + '" name="fresh-execution"/></testsuite>').encode()
+        report = state.build / 'module/surefire-reports' / ('TEST-' + name + '.xml')
+        report.parent.mkdir(); report.write_bytes(raw)
+        catalog = inner.archive_java_reports(state.build, state.output / 'java', state.output)
+        counts, selected = inner.java_report_counts(state.output, catalog, [name])
+        inner.require_java_pass(counts, selected, fixture=True)
+        assert (state.output / catalog[0]['path']).read_bytes() == raw
+        archived.extend(catalog)
+        result = inner.clear_java_reports(state.build, state.output)
+        assert len(result) == 1 and result[0]['status'] == 'REMOVED'
+        assert inner.java_compiled_inventory(state.build, state.output) == state.compiled
+    assert len({row['path'] for row in archived}) == 2
+    assert not list(state.build.glob('*/surefire-reports'))
+
+
+@pytest.mark.parametrize('damage', ['reactor-pom', 'module-pom', 'source', 'source-resource', 'class', 'test-class', 'compiled-resource', 'extra-class'])
+def test_java_reuse_refuses_changed_fixed_sources_classes_or_resources(java_workspace, damage):
+    state = java_workspace
+    path = {'reactor-pom': state.root / 'pom.xml', 'module-pom': state.root / 'module/pom.xml',
+            'source': state.root / 'module/src/main/java/A.java',
+            'source-resource': state.root / 'module/src/main/resources/schema.sql',
+            'class': state.build / 'module/classes/A.class', 'test-class': state.build / 'module/test-classes/T.class',
+            'compiled-resource': state.build / 'module/classes/schema.sql',
+            'extra-class': state.build / 'module/classes/Injected.class'}[damage]
+    path.write_bytes((path.read_bytes() if path.exists() else b'') + b' ')
+    with pytest.raises(ValueError, match='changed before'):
+        inner.require_java_reuse(state.build, state.output, state.sources, state.compiled)
+
+
+def test_previous_surefire_xml_cannot_count_as_a_new_java_invocation(java_workspace):
+    state = java_workspace; reports = state.build / 'module/surefire-reports'; reports.mkdir()
+    stale = reports / 'TEST-org.example.PreviousTest.xml'; stale.write_bytes(b'<testsuite/>')
+    with pytest.raises(ValueError, match='Previous Java reports'):
+        inner.require_java_reuse(state.build, state.output, state.sources, state.compiled)
+    assert stale.read_bytes() == b'<testsuite/>'
+
+
+@pytest.mark.parametrize('where', ['source', 'compiled', 'reports'])
+def test_shared_java_paths_cannot_follow_links_into_other_sources_or_reports(java_workspace, where):
+    state = java_workspace; outside = state.root / 'outside'; outside.mkdir(); marker = outside / 'preserved.bin'; marker.write_bytes(b'keep')
+    if where == 'source': target = state.root / 'module/src/redirected'
+    elif where == 'compiled': target = state.build / 'module/classes/redirected'
+    else: target = state.build / 'module/surefire-reports'
+    target.symlink_to(outside, target_is_directory=True)
+    with pytest.raises(ValueError):
+        if where == 'reports': inner.clear_java_reports(state.build, state.output)
+        else: inner.require_java_reuse(state.build, state.output, state.sources, state.compiled)
+    assert marker.read_bytes() == b'keep' and target.is_symlink()
+
+
 def preparation_transport_source():
     source = (ROOT / 'script/jenkins/pipeline.ps1').read_text(encoding='utf8')
     begin = source.index('        $prepareCommand = ')

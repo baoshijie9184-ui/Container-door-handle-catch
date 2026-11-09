@@ -58,6 +58,15 @@ PROFILES = {
         'PUBLIC_IN_SNAPSHOT': False, 'PUBLIC_KIND': 'doorhandle-additional-local-artifact-custody',
         'PUBLIC_PROFILE': 'residual-project-originals-v1', 'PUBLIC_MANIFEST_FIELD': 'manifestSha256',
         'MAX_ARCHIVE': 32 * MIB, 'MAX_MANIFEST': 2 * MIB},
+    'remaining-system-data-v1': {'FILES': 86, 'ORIGINAL_BYTES': 28695377,
+        'MANIFEST_SHA256': '6c8c5c1f9db87f8aed0c5578ff9781f69e93cb85f318a8797c63e2a66a340842',
+        'CATALOG_SHA256': '0f92d397bed2b6f6a56a4dfec37d7c4bd6f41d195182b10604438ed10747baf4',
+        'ARCHIVE_SHA256': '320d2dcee2d016391ae43960fd4777e995e9279e6689caf05d4ffa4973fd56a0', 'ARCHIVE_BYTES': 28825600,
+        'SNAPSHOT': 'remaining-system-data-snapshot', 'MANIFEST': 'custody.json', 'ARCHIVE': 'originals.tar',
+        'RESTORE': 'remaining-system-data-restore', 'PUBLIC': 'remaining-system-data-public-receipt.json',
+        'PUBLIC_IN_SNAPSHOT': False, 'PUBLIC_KIND': 'doorhandle-additional-local-artifact-custody',
+        'PUBLIC_PROFILE': 'remaining-system-data-v1', 'PUBLIC_MANIFEST_FIELD': 'manifestSha256',
+        'MAX_ARCHIVE': 64 * MIB, 'MAX_MANIFEST': 2 * MIB},
 }
 PROFILES['pth-aliases-v1'] = dict(PROFILES['additional-originals-v1'])
 MODEL_SOURCE = Path('/srv/doorhandle/models/best_stg2.pth')
@@ -210,6 +219,9 @@ def validate_retirement_attestation(value, profile, nonce, expected_current, exp
          and type(old['bytes']) is int and old['bytes'] == fixed['ORIGINAL_BYTES']
          and type(old['archiveBytes']) is int and 0 < old['archiveBytes'] <= fixed['MAX_ARCHIVE'],
          'ORIGINALS_ATTESTATION_FIXED_PROFILE_DRIFT')
+    if profile == 'remaining-system-data-v1':
+        need(old['archiveSha256'] == fixed['ARCHIVE_SHA256'] and old['archiveBytes'] == fixed['ARCHIVE_BYTES'],
+             'REMAINING_FIXED_ARCHIVE_DRIFT')
     issued, expires = attestation_time(value['issuedAtUtc']), attestation_time(value['expiresAtUtc'])
     now = utc_now() if now_utc is None else now_utc
     need(isinstance(now, dt.datetime) and now.tzinfo is not None and now.utcoffset() == dt.timedelta(0),
@@ -313,7 +325,7 @@ def fixed_modules(args):
         reuse=modules['script/jenkins/reuse-legacy-source.py'], artifacts=modules['script/jenkins/preserve-local-artifacts.py'],
         cold=modules['script/jenkins/preserve-cold-stores.py'], cleanup=modules['script/jenkins/cleanup-ecs-builds.py'],
         verifier=modules['script/jenkins/verify-remote.py'], migration=modules['script/memory/migrate_legacy_stores.py'])
-    if args.profile == 'residual-project-originals-v1':
+    if args.profile in ('residual-project-originals-v1', 'remaining-system-data-v1'):
         state.artifacts.select_profile(args.profile)
         need(state.artifacts.PROFILE == fixed['PUBLIC_PROFILE'] and state.artifacts.FILE_COUNT == fixed['FILES']
              and state.artifacts.ORIGINAL_BYTES == fixed['ORIGINAL_BYTES']
@@ -329,6 +341,9 @@ def fixed_modules(args):
 def current_pass(args, state):
     identity = state.artifacts.identity(args.expected_instance_id, args.expected_machine_id)
     record, checksum = state.cold.stopped_receipt(state.root, args.tag, identity, state.verifier, state.cleanup, current=True)
+    need(record.get('kind') == 'doorhandle-ecs-ci' and record.get('scope') in ('source', 'mysql')
+         and record.get('controlsOnly') is not True and record.get('fullProjectVerified') is not False,
+         'ACTUAL_PROJECT_PASS_NOT_CONTROLS_REQUIRED')
     need(record['commit'] == args.commit and record['sourceSha256'] == args.source_sha256, 'CURRENT_ORIGINALS_PASS_SOURCE_CHANGED')
     return {key: record[key] for key in CURRENT_FIELDS if key != 'verificationReceiptSha256'} | {'verificationReceiptSha256': checksum}
 
@@ -490,6 +505,27 @@ def physical_model_proof():
     return validate_physical_model(model)
 
 
+def remaining_restored_bindings(state, old):
+    """Freshly hash every independent opaque restore; never activate its data."""
+    if state.fixed['PUBLIC_PROFILE'] != 'remaining-system-data-v1': return ()
+    need(file_digest(old / state.fixed['MANIFEST'], state.fixed['MAX_MANIFEST'], private=True)[0]
+         == state.fixed['MANIFEST_SHA256'], 'ORIGINALS_ATTESTATION_RAW_INPUT_CHANGED')
+    manifest = state.artifacts.read_json(old / state.fixed['MANIFEST'], private=True)
+    rows = state.artifacts.validate_manifest(manifest)
+    restore = owned(old.parent / state.fixed['RESTORE'], directory=True, private=True)
+    expected = {row['member'] for row in rows} | {'restore-receipt.json'}
+    directories = {parent.as_posix() for name in expected for parent in Path(name).parents if str(parent) != '.'}
+    observed_files, observed_directories = set(), set()
+    for base, folders, files in os.walk(restore, followlinks=False):
+        for name in folders + files:
+            path = Path(base) / name; relative = path.relative_to(restore).as_posix()
+            need(relative in (directories if name in folders else expected), 'REMAINING_RESTORE_MEMBERSHIP_DRIFT')
+            owned(path, directory=name in folders, private=True)
+            (observed_directories if name in folders else observed_files).add(relative)
+    need(observed_files == expected and observed_directories == directories, 'REMAINING_RESTORE_INCOMPLETE')
+    return tuple((restore / row['member'], row['sha256'], row['bytes']) for row in rows)
+
+
 def fresh_retirement_attest(args):
     fixed = recipe(args.profile); nonce = getattr(args, 'nonce', None); seconds = getattr(args, 'attestation_seconds', 120)
     need(isinstance(nonce, str) and SHA.fullmatch(nonce), 'ORIGINALS_ATTESTATION_NONCE_REQUIRED')
@@ -497,12 +533,13 @@ def fresh_retirement_attest(args):
     issued, started = utc_now(), time.monotonic()
     state = fixed_modules(args); current = current_pass(args, state); old, custody = old_snapshot(args, state, current)
     public_file = (old if fixed['PUBLIC_IN_SNAPSHOT'] else old.parent) / fixed['PUBLIC']
+    restored = remaining_restored_bindings(state, old)
     bindings = ((old / fixed['MANIFEST'], custody['manifestSha256'], fixed.get('MAX_MANIFEST', 16 * MIB)),
         (old / fixed['ARCHIVE'], custody['archiveSha256'], fixed['MAX_ARCHIVE']),
         (public_file, custody['publicReceiptSha256'], MIB),
         (old.parent / fixed['RESTORE'] / 'restore-receipt.json', custody['restoreReceiptSha256'], 16 * MIB),
         (state.checkout.parent / 'verification-receipt.json', current['verificationReceiptSha256'], MIB),
-        (state.source, args.source_sha256, 128 * MIB))
+        (state.source, args.source_sha256, 128 * MIB)) + restored
     observations = []
     for path, expected, maximum in bindings:
         observed, size, stamp = file_digest(path, maximum, private=True)
@@ -512,6 +549,7 @@ def fresh_retirement_attest(args):
     physical = physical_model_proof() if args.profile == 'pth-aliases-v1' else None
     need(all(metadata(owned(path, private=True).lstat()) == stamp for path, stamp in observations),
          'ORIGINALS_ATTESTATION_INPUT_CHANGED_AFTER_HASH')
+    need(remaining_restored_bindings(state, old) == restored, 'REMAINING_RESTORE_CHANGED_AFTER_HASH')
     need(0 <= time.monotonic() - started < seconds, 'ORIGINALS_ATTESTATION_OBSERVATION_EXPIRED')
     value = {'kind': ATTESTATION_KIND, 'schemaVersion': 1, 'status': 'CUSTODY_FRESHLY_ATTESTED',
         'profile': args.profile, 'nonce': nonce, 'current': current, 'custody': custody,

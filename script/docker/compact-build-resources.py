@@ -1037,9 +1037,9 @@ HISTORICAL_BUILDERS = {
     'ci-154-38293aa306b3': '38293aa306b368964bbc2a7f66bb6a6b5c414016',
     'ci-156-9e1927880595': '9e1927880595e78c778288e45423bdd27bd818a8',
     'ci-160-9d011d9d5ed8': '9d011d9d5ed8ef1b6e5526c0964ee5f405ed421b',
-    'ci-162-97844cecb2f4': '97844cecb2f45a0e469cda24ceaafdc6df1fee1a',
     'ci-166-a3c084e1cf56': 'a3c084e1cf568206baca89908542537ad825fef8',
     'ci-168-a40c779d03a4': 'a40c779d03a43b894ead5569b8eb26ee7dc22a2e',
+    'ci-173-45465e873d92': '45465e873d92822abe446fd7be3f9f00b7816f70',
 }
 
 
@@ -1240,6 +1240,10 @@ def historical_mysql_fixture_descriptor(root, context, identity, owner, cleanup,
     if context['release'] == 'ci-168-a40c779d03a4':
         require(context['commit'] == 'a40c779d03a43b894ead5569b8eb26ee7dc22a2e'
                 and owner.get('binaryLoggingDisabled') is True, 'Historical MySQL 168 binary logging proof differs')
+        expected_cmd.insert(6, '--skip-log-bin')
+    elif context['release'] == 'ci-173-45465e873d92':
+        require(context['commit'] == '45465e873d92822abe446fd7be3f9f00b7816f70'
+                and owner.get('binaryLoggingDisabled') is True, 'Historical MySQL 173 binary logging proof differs')
         expected_cmd.insert(6, '--skip-log-bin')
     else:
         require('binaryLoggingDisabled' not in owner, 'Historical MySQL legacy binary logging profile differs')

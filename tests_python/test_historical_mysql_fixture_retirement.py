@@ -110,24 +110,24 @@ def test_projection_and_descriptor_never_copy_env_password_or_other_unreviewed_f
         assert b'UnreviewedPrivateField' not in evidence and b'rootPassword' not in evidence
 
 
-def test_only_the_fixed_168_source_accepts_its_exact_binlog_disabled_command_and_owner(fixture):
-    for tag in ('ci-162-97844cecb2f4', 'ci-166-a3c084e1cf56', 'ci-168-a40c779d03a4'):
+def test_only_the_fixed_binlog_disabled_sources_accept_their_exact_command_and_owner(fixture):
+    for tag in ('ci-166-a3c084e1cf56', 'ci-168-a40c779d03a4', 'ci-173-45465e873d92'):
         encoded = json.dumps(vars(fixture)).replace(fixture.context['release'], tag).replace(
             fixture.context['commit'], resources.HISTORICAL_BUILDERS[tag])
         value = SimpleNamespace(**json.loads(encoded))
-        if tag == 'ci-168-a40c779d03a4':
+        if tag in ('ci-168-a40c779d03a4', 'ci-173-45465e873d92'):
             value.owner['binaryLoggingDisabled'] = True
             value.row['Config']['Cmd'].insert(6, '--skip-log-bin')
         assert describe(value)['preservedData'] is True
         wrong_owner = copy.deepcopy(value)
-        if tag == 'ci-168-a40c779d03a4':
+        if tag in ('ci-168-a40c779d03a4', 'ci-173-45465e873d92'):
             wrong_owner.owner.pop('binaryLoggingDisabled')
         else:
             wrong_owner.owner['binaryLoggingDisabled'] = True
         with pytest.raises(ValueError):
             describe(wrong_owner)
         wrong_command = copy.deepcopy(value)
-        if tag == 'ci-168-a40c779d03a4':
+        if tag in ('ci-168-a40c779d03a4', 'ci-173-45465e873d92'):
             wrong_command.row['Config']['Cmd'].remove('--skip-log-bin')
         else:
             wrong_command.row['Config']['Cmd'].insert(6, '--skip-log-bin')
