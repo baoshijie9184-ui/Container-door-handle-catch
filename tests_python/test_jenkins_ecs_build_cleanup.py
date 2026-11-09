@@ -39,6 +39,47 @@ CURRENT = 'ci-72-' + 'c' * 12
 MODULE = 'doorhandle-module-fixture'
 
 
+@pytest.mark.parametrize('include_plan', [False, True])
+def test_actual_control_budget_accounts_for_block_rounding_and_preserves_two_gib(state, include_plan):
+    value = plan(state)
+    budget = cleanup.control_growth_budget(value, include_plan=include_plan)
+    assert budget['planBytes'] == len(cleanup.canonical(value)) + 1
+    rounded = lambda size: ((size + 4095) // 4096) * 4096
+    expected = rounded(budget['journalBytes']) + rounded(budget['receiptBytes']) + 1024 ** 2
+    if include_plan: expected += rounded(budget['planBytes'])
+    assert budget['remainingGrowthBytes'] == expected
+    assert budget['requiredBytes'] == 2 * 1024 ** 3 + expected
+    assert max(budget['planBytes'], budget['journalBytes'], budget['receiptBytes']) <= cleanup.MAX_PLAN
+
+
+def test_control_budget_bounds_all_receipt_prefixes_and_the_failure_journal_tail(state):
+    value = plan(state); budget = cleanup.control_growth_budget(value, include_plan=False)
+    targets = [cleanup.deleted_projection(t) for c in value['candidates'] for t in c['targets']]
+    events = [{'phase': 'STARTED', 'planSha256': cleanup.sha(cleanup.canonical(value)), 'identity': value['identity']}]
+    for target in targets:
+        events += [{'phase': 'DELETE_STARTED', 'path': target['path'], 'inventorySha256': target['inventorySha256']},
+                   {'phase': 'DELETE_FINISHED', **target}]
+    events += [{'phase': 'FINISHED', 'deletedTargets': len(targets)}]
+    assert sum(len(cleanup.canonical(event)) + 1 for event in events) + 4096 == budget['journalBytes']
+    for count in range(len(targets) + 1):
+        for error in (None, 'OSError', 'ValueError'):
+            result = cleanup.cleanup_receipt(value, targets[:count], 2 ** 128 - 1, 2 ** 128 - 1,
+                'f' * 64, error, '9999-12-31T23:59:59.999999+00:00')
+            assert len(cleanup.canonical(result)) + 1 <= budget['receiptBytes']
+
+
+@pytest.mark.parametrize('phase', ['plan', 'apply'])
+def test_one_byte_below_actual_remaining_control_budget_refuses_before_mutation(state, monkeypatch, phase):
+    value = plan(state); before = preserved_bytes(state)
+    budget = cleanup.control_growth_budget(value, include_plan=phase == 'plan')
+    monkeypatch.setattr(cleanup.os, 'statvfs', lambda _p: SimpleNamespace(f_bavail=budget['requiredBytes'] - 1, f_frsize=1))
+    with pytest.raises(ValueError, match='CONTROL_GROWTH_WOULD_EXHAUST_DISK_RESERVE'):
+        if phase == 'plan': cleanup.admit_control_growth(state.root, value, include_plan=True)
+        else: cleanup.apply_plan(state.root, state.request, value, remote)
+    assert not (state.root / 'inbox' / CURRENT / 'build-cleanup-journal.jsonl').exists()
+    assert preserved_bytes(state) == before and state.classes.is_dir()
+
+
 def put(path, raw):
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     path.write_bytes(raw)
@@ -732,21 +773,16 @@ def test_late_quiescence_failure_records_only_controlled_stage_release_and_guard
     assert preserved_bytes(state) == before and state.classes.is_dir()
 
 
-def test_journal_capacity_refuses_the_next_delete_record_and_preserves_space_for_failure(state, monkeypatch):
+def test_full_control_capacity_refuses_before_any_journal_or_deletion(state, monkeypatch):
     value = plan(state); before = preserved_bytes(state)
     started = {'phase': 'STARTED', 'planSha256': cleanup.sha(cleanup.canonical(value)), 'identity': IDENTITY}
     target = value['candidates'][0]['targets'][0]
     deleting = {'phase': 'DELETE_STARTED', 'path': target['path'], 'inventorySha256': target['inventorySha256']}
     normal_limit = len(cleanup.canonical(started)) + 1 + len(cleanup.canonical(deleting))
     monkeypatch.setattr(cleanup, 'MAX_PLAN', normal_limit + 4096)
-    result = cleanup.apply_plan(state.root, state.request, value, remote)
-    assert result['status'] == 'PARTIAL_FAILURE' and result['deleted'] == []
-    raw = (state.root / 'inbox' / CURRENT / 'build-cleanup-journal.jsonl').read_bytes()
-    entries = [json.loads(line) for line in raw.splitlines()]
-    assert entries[0] == started and [row['phase'] for row in entries] == ['STARTED', 'FAILED']
-    assert entries[-1]['guardCode'] == 'CLEANUP_JOURNAL_BOUND_EXCEEDED'
-    assert entries[-1]['stage'] == 'DELETE_START_JOURNAL' and entries[-1]['release'] == OLD
-    assert len(raw) <= cleanup.MAX_PLAN and len(cleanup.canonical(entries[-1])) + 1 <= 4096
+    with pytest.raises(ValueError, match='CONTROL_PLAN_JOURNAL_OR_RECEIPT_EXCEEDS_LIMIT'):
+        cleanup.apply_plan(state.root, state.request, value, remote)
+    assert not (state.root / 'inbox' / CURRENT / 'build-cleanup-journal.jsonl').exists()
     assert preserved_bytes(state) == before and state.classes.is_dir()
 
 

@@ -34,6 +34,8 @@ MODULE = re.compile(r'doorhandle-[a-z0-9-]+')
 COMPILE_DIRS = {'classes', 'test-classes', 'generated-sources', 'generated-test-sources',
                 'maven-status', 'maven-archiver'}
 MAX_PLAN = 32 * 1024 ** 2
+CONTROL_DISK_RESERVE = 2 * 1024 ** 3
+CONTROL_METADATA_BYTES = 1024 ** 2
 MAX_TARGET_CANONICAL = 16 * 1024 ** 2
 PYTEST_SKIP_DETAIL_LIMIT = 64
 MAX_TREE_BYTES = 4 * 1024 ** 3
@@ -159,11 +161,11 @@ def read_json(path, maximum=MAX_PLAN):
                       object_pairs_hook=unique, parse_constant=lambda _value: require(False, 'NONFINITE_JSON_VALUE'))
 
 
-def write_json(path, value):
+def write_json(path, value, *, byte_limit=MAX_PLAN):
     path = Path(path)
     owned(path.parent, directory=True)
     raw = canonical(value) + b'\n'
-    require(len(raw) <= MAX_PLAN, 'OUTPUT_EXCEEDS_BOUNDED_PLAN')
+    require(len(raw) <= min(MAX_PLAN, byte_limit), 'OUTPUT_EXCEEDS_BOUNDED_PLAN')
     with os.fdopen(os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, 'O_NOFOLLOW', 0), 0o600), 'wb') as output:
         output.write(raw); output.flush(); os.fsync(output.fileno())
 
@@ -1054,15 +1056,73 @@ def cleanup_lock(root):
         finally: fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
 
 
+def deleted_projection(target):
+    return {key: target[key] for key in ('path', 'kind', 'files', 'bytes', 'allocatedBytes', 'inventorySha256')}
+
+
+def cleanup_receipt(plan, deleted, before_bytes, after_bytes, journal_sha, failure, finished):
+    require(type(before_bytes) is int and type(after_bytes) is int and 0 <= before_bytes < 2 ** 128
+            and 0 <= after_bytes < 2 ** 128, 'CLEANUP_DISK_COUNTER_EXCEEDS_CONTROL_BOUND')
+    require(failure in (None, 'OSError', 'ValueError') and type(finished) is str and len(finished) <= 32
+            and re.fullmatch(r'[0-9T:.+\-Z]+', finished) and type(journal_sha) is str and SHA.fullmatch(journal_sha),
+            'CLEANUP_RECEIPT_FIXED_FIELD_BOUND_EXCEEDED')
+    return {'schema': 1, 'kind': 'doorhandle-old-build-cleanup-receipt', 'status': 'PARTIAL_FAILURE' if failure else 'REMOVED' if deleted else 'NO_ACTION',
+        'currentRelease': plan['currentRelease'], 'identity': plan['identity'], 'planSha256': sha(canonical(plan)),
+        'deleted': deleted, 'skipped': plan['skipped'], 'availableBytesBefore': before_bytes,
+        'availableBytesAfter': after_bytes, 'originalEvidencePreserved': True,
+        'journalSha256': journal_sha, 'errorType': failure, 'sharedMavenCachePreserved': True,
+        'publishedArtifactsPreserved': True, 'oldMavenRepositoriesPreserved': True,
+        'businessDataDeleted': False, 'finishedAtUtc': finished}
+
+
+def control_growth_budget(plan, *, include_plan, allocation_unit=4096):
+    """Bound only the remaining immutable controls; never credit future deletions.
+
+    Every successful journal event is known from the approved plan. Any partial
+    execution is a prefix of those events plus the existing 4096-byte failure
+    reserve. A receipt contains a prefix of the exact six-field projections and
+    the unchanged skipped list; all variable fixed fields are bounded below.
+    """
+    require(type(allocation_unit) is int and 4096 <= allocation_unit <= 1024 ** 2
+            and not allocation_unit & (allocation_unit - 1), 'CONTROL_ALLOCATION_UNIT_INVALID')
+    plan_bytes = len(canonical(plan)) + 1
+    projected = [deleted_projection(target) for candidate in plan['candidates'] for target in candidate['targets']]
+    normal = len(canonical({'phase': 'STARTED', 'planSha256': sha(canonical(plan)), 'identity': plan['identity']})) + 1
+    for target in projected:
+        normal += len(canonical({'phase': 'DELETE_STARTED', 'path': target['path'], 'inventorySha256': target['inventorySha256']})) + 1
+        normal += len(canonical({'phase': 'DELETE_FINISHED', **target})) + 1
+    normal += len(canonical({'phase': 'FINISHED', 'deletedTargets': len(projected)})) + 1
+    journal_bytes = normal + 4096
+    receipt = cleanup_receipt(plan, projected, 2 ** 128 - 1, 2 ** 128 - 1, 'f' * 64,
+                              'ValueError', '9999-12-31T23:59:59.999999+00:00')
+    receipt_bytes = len(canonical(receipt)) + 1
+    require(max(plan_bytes, journal_bytes, receipt_bytes) <= MAX_PLAN, 'CONTROL_PLAN_JOURNAL_OR_RECEIPT_EXCEEDS_LIMIT')
+    allocated = lambda size: ((size + allocation_unit - 1) // allocation_unit) * allocation_unit
+    growth = (allocated(plan_bytes) if include_plan else 0) + allocated(journal_bytes) + allocated(receipt_bytes) + CONTROL_METADATA_BYTES
+    return {'planBytes': plan_bytes, 'journalBytes': journal_bytes, 'receiptBytes': receipt_bytes,
+            'allocationUnitBytes': allocation_unit, 'remainingGrowthBytes': growth,
+            'reserveBytes': CONTROL_DISK_RESERVE, 'requiredBytes': CONTROL_DISK_RESERVE + growth}
+
+
+def admit_control_growth(root, plan, *, include_plan):
+    current = os.statvfs(root)
+    budget = control_growth_budget(plan, include_plan=include_plan, allocation_unit=max(4096, current.f_frsize))
+    available = current.f_bavail * current.f_frsize
+    require(available >= budget['requiredBytes'], 'CONTROL_GROWTH_WOULD_EXHAUST_DISK_RESERVE')
+    return {**budget, 'availableBytes': available}
+
+
 def apply_plan(root, request, plan, verifier):
     root = owned(root, directory=True)
     require(sys.platform == 'linux', 'APPLY_REQUIRES_ADMITTED_LINUX_ECS')
+    control_budget = admit_control_growth(root, plan, include_plan=False)
     with cleanup_lock(root), ExitStack() as locks:
         tags = [candidate['release'] for candidate in plan['candidates']]
         require(len(tags) == len(set(tags)) and all(TAG.fullmatch(tag) for tag in tags), 'PLAN_CANDIDATES_INVALID')
         for tag in sorted(tags): locks.enter_context(attempt_lock(root, tag))
         fresh = build_plan(root, request, verifier, docker_snapshot(), held_releases=tags)
         require(fresh == plan, 'PLAN_OR_ORIGINAL_EVIDENCE_CHANGED_NO_DELETION')
+        control_budget = admit_control_growth(root, plan, include_plan=False)
         before = os.statvfs(root); deleted = []; failure = None
         journal_file = root / 'inbox' / plan['currentRelease'] / 'build-cleanup-journal.jsonl'
         owned(journal_file.parent, directory=True)
@@ -1073,7 +1133,7 @@ def apply_plan(root, request, plan, verifier):
             nonlocal journal_bytes
             data = canonical(event) + b'\n'
             failed = event.get('phase') == 'FAILED'
-            limit = MAX_PLAN if failed else MAX_PLAN - 4096
+            limit = control_budget['journalBytes'] if failed else control_budget['journalBytes'] - 4096
             require(not failed or len(data) <= 4096, 'CLEANUP_FAILURE_RECORD_EXCEEDS_RESERVE')
             require(journal_bytes + len(data) <= limit, 'CLEANUP_JOURNAL_BOUND_EXCEEDED')
             view = memoryview(data)
@@ -1102,25 +1162,22 @@ def apply_plan(root, request, plan, verifier):
                     journal({'phase': 'DELETE_STARTED', 'path': target['path'], 'inventorySha256': target['inventorySha256']})
                     stage = 'DELETE_TARGET'
                     remove_target(root_fd, target)
-                    deleted.append({key: target[key] for key in ('path', 'kind', 'files', 'bytes', 'allocatedBytes', 'inventorySha256')})
+                    deleted.append(deleted_projection(target))
                     stage = 'DELETE_FINISH_JOURNAL'
                     journal({'phase': 'DELETE_FINISHED', **deleted[-1]})
             stage = 'FINISH_JOURNAL'
             journal({'phase': 'FINISHED', 'deletedTargets': len(deleted)})
         except (OSError, ValueError) as error:
-            failure = type(error).__name__
+            failure = 'ValueError' if isinstance(error, ValueError) else 'OSError'
             journal({'phase': 'FAILED', 'errorType': failure, 'deletedTargets': len(deleted),
                      'stage': stage, 'release': active_release, 'guardCode': failure_guard_code(error)})
         finally:
             os.close(root_fd); os.close(journal_fd)
         after = os.statvfs(root)
-        return {'schema': 1, 'kind': 'doorhandle-old-build-cleanup-receipt', 'status': 'PARTIAL_FAILURE' if failure else 'REMOVED' if deleted else 'NO_ACTION',
-            'currentRelease': plan['currentRelease'], 'identity': plan['identity'], 'planSha256': sha(canonical(plan)),
-            'deleted': deleted, 'skipped': plan['skipped'], 'availableBytesBefore': before.f_bavail * before.f_frsize,
-            'availableBytesAfter': after.f_bavail * after.f_frsize, 'originalEvidencePreserved': True,
-            'journalSha256': digest(journal_file), 'errorType': failure, 'sharedMavenCachePreserved': True,
-            'publishedArtifactsPreserved': True, 'oldMavenRepositoriesPreserved': True,
-            'businessDataDeleted': False, 'finishedAtUtc': datetime.now(timezone.utc).isoformat()}
+        result = cleanup_receipt(plan, deleted, before.f_bavail * before.f_frsize, after.f_bavail * after.f_frsize,
+                                 digest(journal_file), failure, datetime.now(timezone.utc).isoformat())
+        require(len(canonical(result)) + 1 <= control_budget['receiptBytes'], 'CLEANUP_RECEIPT_EXCEEDS_ADMITTED_BOUND')
+        return result
 
 
 def fixed_helper(args, verifier=None, *, executor=None, verifier_path=None):
@@ -1210,12 +1267,17 @@ def main(argv=None):
                 request = discover_request(root, args.current_tag, identity, args.protected_release)
             require(request['currentRelease'] == args.current_tag and request['identity'] == identity, 'REQUEST_BELONGS_TO_ANOTHER_BUILD_OR_ECS')
             result = build_plan(root, request, verifier, docker_snapshot())
+            control_budget = admit_control_growth(root, result, include_plan=True)
         else:
             plan, request = admitted_plan(args.plan, expected_output.with_name('build-cleanup-plan.json'),
                                          args.plan_sha256, args.current_tag, identity)
             result = apply_plan(root, request, plan, verifier)
-    write_json(Path(args.output).absolute(), result)
-    print(json.dumps({key: result[key] for key in ('kind', 'status', 'currentRelease', 'candidateBytes', 'candidateAllocatedBytes') if key in result}))
+            control_budget = control_growth_budget(plan, include_plan=False)
+    byte_limit = (control_budget['planBytes'] if args.phase == 'plan' else control_budget['receiptBytes']) if args.phase != 'custody' else MAX_PLAN
+    write_json(Path(args.output).absolute(), result, byte_limit=byte_limit)
+    summary = {key: result[key] for key in ('kind', 'status', 'currentRelease', 'candidateBytes', 'candidateAllocatedBytes') if key in result}
+    if args.phase != 'custody': summary['controlBudget'] = control_budget
+    print(json.dumps(summary))
     if result.get('status') == 'PARTIAL_FAILURE': raise SystemExit(2)
 
 

@@ -20,12 +20,25 @@ pytestmark = pytest.mark.skipif(
 ROOT = Path(__file__).resolve().parents[1]
 COMMIT = 'a' * 40
 TAG = 'ci-9-' + COMMIT[:12]
-CONTROL_BYTES = 99 * 1024 ** 2
+CONTROL_METADATA_BYTES = 1024 ** 2
 RESERVE = 2 * 1024 ** 3
 HELPERS = {
     'script/jenkins/cleanup-ecs-builds.py': b'raise RuntimeError("Opaque cleanup helper must not be imported")\n',
     'script/jenkins/verify-remote.py': b'raise RuntimeError("Opaque verifier must not be imported")\n',
 }
+
+
+def allocated_bytes(size, block=4096):
+    return ((size + block - 1) // block) * block
+
+
+def helper_growth(value):
+    block = max(4096, value.frsize)
+    return sum(allocated_bytes(row['bytes'], block) for row in value.context['helpers'].values()) + CONTROL_METADATA_BYTES
+
+
+def bootstrap_growth(value):
+    return allocated_bytes(len(value.raw), max(4096, value.frsize)) + helper_growth(value)
 
 
 def source_bytes(damage=None):
@@ -68,7 +81,8 @@ def metadata_env(tmp_path, monkeypatch):
         'helpers': {name: {'bytes': len(content), 'sha256': hashlib.sha256(content).hexdigest()}
                     for name, content in HELPERS.items()}}
     value = SimpleNamespace(root=root, program=program, context=context, raw=raw,
-                            machine=context['machineId'], instance=context['instanceId'], available=8 * 1024 ** 3)
+                            machine=context['machineId'], instance=context['instanceId'], available=8 * 1024 ** 3,
+                            frsize=1)
     read_text = Path.read_text
     def machine_read(path, *args, **kwargs):
         if path == Path('/etc/machine-id'):
@@ -84,7 +98,7 @@ def metadata_env(tmp_path, monkeypatch):
             return io.BytesIO(value.instance.encode())
     monkeypatch.setattr(Path, 'read_text', machine_read)
     monkeypatch.setattr(urllib.request, 'build_opener', lambda *args: MetadataOpener())
-    monkeypatch.setattr(os, 'statvfs', lambda path: SimpleNamespace(f_bavail=value.available, f_frsize=1))
+    monkeypatch.setattr(os, 'statvfs', lambda path: SimpleNamespace(f_bavail=value.available, f_frsize=value.frsize))
     return value
 
 
@@ -125,7 +139,7 @@ def test_identity_must_match_before_any_maintenance_write(metadata_env, monkeypa
 def test_bootstrap_refuses_without_overwriting_or_partial_directory_creation(metadata_env, monkeypatch, capsys, failure):
     value = metadata_env
     if failure == 'low-disk':
-        value.available = RESERVE + len(value.raw) + CONTROL_BYTES - 1
+        value.available = RESERVE + bootstrap_growth(value) - 1
     else:
         attempt = value.root / 'verification' / TAG; attempt.mkdir(mode=0o700)
         (attempt / 'keep').write_bytes(b'previous owner bytes')
@@ -144,13 +158,28 @@ def test_bootstrap_creates_only_fresh_private_directories_and_one_exclusive_sour
     assert receipt['sourceSha256'] == value.context['sourceSha256'] and receipt['sourceBytes'] == len(value.raw)
     assert receipt['identity'] == {'instanceId': value.context['instanceId'],
         'machineId': value.context['machineId'], 'executionLocation': 'ECS'}
-    assert receipt['requiredBytes'] == RESERVE + len(value.raw) + CONTROL_BYTES
-    assert receipt['controlGrowthBytes'] == CONTROL_BYTES and receipt['reserveBytes'] == RESERVE
+    assert receipt['requiredBytes'] == RESERVE + bootstrap_growth(value)
+    assert receipt['controlGrowthBytes'] == bootstrap_growth(value) - len(value.raw) and receipt['reserveBytes'] == RESERVE
     assert receipt['uploadIdentity'] == {'device': info.st_dev, 'inode': info.st_ino}
     assert stat.S_ISREG(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o600
     assert info.st_uid == 1000 and info.st_nlink == 1 and info.st_size == 0
     assert stat.S_IMODE(inbox.stat().st_mode) == stat.S_IMODE(attempt.stat().st_mode) == 0o700
     assert {path.name for path in inbox.iterdir()} == {'cleanup-source.tar.gz'} and not list(attempt.iterdir())
+
+
+@pytest.mark.parametrize('shortfall', [0, 1])
+def test_bootstrap_uses_exact_rounded_growth_without_borrowing_from_the_disk_floor(metadata_env, monkeypatch, capsys, shortfall):
+    value = metadata_env; growth = bootstrap_growth(value)
+    value.available = RESERVE + growth - shortfall
+    if shortfall:
+        before = filesystem_state(value.root)
+        with pytest.raises(ValueError, match='Fixed cleanup admission failed'):
+            run_metadata(value, 'bootstrap', monkeypatch)
+        assert filesystem_state(value.root) == before and capsys.readouterr().out == ''
+    else:
+        receipt = bootstrap(value, monkeypatch, capsys)
+        assert receipt['requiredBytes'] == value.available == RESERVE + growth
+        assert receipt['controlGrowthBytes'] == growth - len(value.raw)
 
 
 def test_prepare_preserves_the_uploaded_inode_and_only_extracts_the_two_fixed_helpers(metadata_env, monkeypatch, capsys):
@@ -169,6 +198,17 @@ def test_prepare_preserves_the_uploaded_inode_and_only_extracts_the_two_fixed_he
         path = archive.parent / Path(name).name
         assert path.read_bytes() == raw and stat.S_IMODE(path.stat().st_mode) == 0o600
     assert not (value.root / 'verification' / TAG / 'verification-receipt.json').exists()
+
+
+def test_prepare_rechecks_remaining_helper_growth_before_writing_any_helper(metadata_env, monkeypatch, capsys):
+    value = metadata_env; receipt = bootstrap(value, monkeypatch, capsys)
+    archive = Path(receipt['file']); archive.write_bytes(value.raw)
+    value.available = RESERVE + helper_growth(value) - 1
+    before = filesystem_state(value.root)
+    with pytest.raises(ValueError, match='Fixed cleanup admission failed'):
+        run_metadata(value, 'prepare', monkeypatch)
+    assert filesystem_state(value.root) == before and capsys.readouterr().out == ''
+    assert not any((archive.parent / Path(name).name).exists() for name in HELPERS)
 
 
 @pytest.mark.parametrize('damage', ['inode', 'bytes', 'sha', 'mode', 'commit', 'duplicate-helper', 'link-member'])

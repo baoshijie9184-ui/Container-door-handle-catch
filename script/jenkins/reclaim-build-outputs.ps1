@@ -153,14 +153,23 @@ root=Path(data['root']); inbox=root/'inbox'/data['tag']
 identity={'instanceId':data['instanceId'],'machineId':data['machineId'],'executionLocation':'ECS'}
 for path in (root,root/'inbox',root/'verification'):chain(path,True)
 archive=inbox/('cleanup-source.tar.gz' if data['mode']=='Maintenance' else 'source.tar.gz')
+def control_growth(include_source):
+    usage=os.statvfs(root); unit=max(4096,usage.f_frsize)
+    need(unit<=1048576 and unit&(unit-1)==0)
+    need(set(data['helpers'])=={'script/jenkins/cleanup-ecs-builds.py','script/jenkins/verify-remote.py'})
+    sizes=[value['bytes'] for value in data['helpers'].values()]
+    need(all(type(size) is int and 0<size<=1048576 for size in sizes))
+    if include_source:sizes.append(data['sourceBytes'])
+    # Only fixed archive/helper bytes and the existing directory/inode allowance
+    # are written by this stage. The generated plan/journal/receipt are admitted
+    # later from the actual in-memory plan; no file limit is reduced here.
+    growth=sum(((size+unit-1)//unit)*unit for size in sizes)+1048576
+    available=usage.f_bavail*usage.f_frsize
+    need(available>=2147483648+growth)
+    return growth,available,unit
 if mode=='bootstrap':
     need(data['mode']=='Maintenance' and 0<data['sourceBytes']<=134217728)
-    # The 2 GiB reserve is separate from test admission. Growth covers the actual
-    # archive, two bounded helpers, plan/receipt/journal (32 MiB each), and 1 MiB
-    # of directory/controller metadata. No application runtime is prepared.
-    growth=data['sourceBytes']+2*1048576+3*33554432+1048576
-    available=os.statvfs(root);available=available.f_bavail*available.f_frsize
-    need(available>=2147483648+growth)
+    growth,available,unit=control_growth(True)
     targets=(inbox,root/'verification'/data['tag'])
     need(all(not os.path.lexists(path) for path in targets))
     for path in targets:
@@ -178,7 +187,7 @@ if mode=='bootstrap':
     fd=os.open(inbox,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
     try:os.fsync(fd)
     finally:os.close(fd)
-    print(json.dumps({'status':'UPLOAD_REQUIRED','release':data['tag'],'commit':data['commit'],'sourceSha256':data['sourceSha256'],'sourceBytes':data['sourceBytes'],'identity':identity,'file':str(archive),'uploadIdentity':uploadIdentity,'availableBytes':available,'requiredBytes':2147483648+growth,'reserveBytes':2147483648,'controlGrowthBytes':growth-data['sourceBytes']}))
+    print(json.dumps({'status':'UPLOAD_REQUIRED','release':data['tag'],'commit':data['commit'],'sourceSha256':data['sourceSha256'],'sourceBytes':data['sourceBytes'],'identity':identity,'file':str(archive),'uploadIdentity':uploadIdentity,'availableBytes':available,'requiredBytes':2147483648+growth,'reserveBytes':2147483648,'controlGrowthBytes':growth-data['sourceBytes'],'allocationUnitBytes':unit}))
     raise SystemExit(0)
 for path in (inbox,root/'verification'/data['tag']):chain(path,True)
 if data['mode']=='Verified':
@@ -191,6 +200,7 @@ else:
     need(not os.path.lexists(root/'verification'/data['tag']/'verification-receipt.json'))
 chain(archive,maximum=134217728);need(digest(archive)==data['sourceSha256'])
 if mode=='prepare':
+    control_growth(False)
     class Bounded:
         def __init__(self,s):self.s,self.n=s,0
         def read(self,size=-1):
@@ -277,7 +287,11 @@ try {
         # This is the first remote write path. Its program validates Linux actor,
         # IMDS, machine ID and private root chains before creating fresh names.
         $bootstrap = (Invoke-Reclaim $ssh ($SshOptions + @('-p', $PortText, $Destination, "$baseCommand bootstrap")) | Select-Object -Last 1) | ConvertFrom-Json
-        Require-Reclaim ($bootstrap.status -ceq 'UPLOAD_REQUIRED' -and $bootstrap.release -ceq $Tag -and $bootstrap.commit -ceq $Commit -and $bootstrap.sourceSha256 -ceq $SourceSha256 -and $bootstrap.sourceBytes -eq $sourceBytes -and $bootstrap.identity.instanceId -ceq $instance -and $bootstrap.identity.machineId -ceq $machine -and $bootstrap.identity.executionLocation -ceq 'ECS' -and $bootstrap.file -ceq "$remoteInbox/cleanup-source.tar.gz" -and $bootstrap.reserveBytes -eq 2147483648 -and $bootstrap.requiredBytes -eq (2147483648L + $sourceBytes + 103809024L) -and $bootstrap.availableBytes -ge $bootstrap.requiredBytes -and $bootstrap.uploadIdentity.device -is [long] -and $bootstrap.uploadIdentity.inode -is [long] -and $bootstrap.uploadIdentity.device -ge 0 -and $bootstrap.uploadIdentity.inode -gt 0 -and @($bootstrap.uploadIdentity.PSObject.Properties).Count -eq 2) 'Maintenance source upload lacks its exact fresh directory, ECS identity or bounded reserve.'
+        $unit=$bootstrap.allocationUnitBytes
+        Require-Reclaim ($unit -is [long] -and $unit -ge 4096 -and $unit -le 1048576 -and ($unit -band ($unit-1)) -eq 0) 'Maintenance filesystem allocation unit is invalid.'
+        $expectedGrowth=1048576L + [long]([Math]::Ceiling($sourceBytes/[double]$unit)*$unit)
+        foreach ($binding in $helpers.Values) { $expectedGrowth += [long]([Math]::Ceiling($binding.bytes/[double]$unit)*$unit) }
+        Require-Reclaim ($bootstrap.status -ceq 'UPLOAD_REQUIRED' -and $bootstrap.release -ceq $Tag -and $bootstrap.commit -ceq $Commit -and $bootstrap.sourceSha256 -ceq $SourceSha256 -and $bootstrap.sourceBytes -eq $sourceBytes -and $bootstrap.identity.instanceId -ceq $instance -and $bootstrap.identity.machineId -ceq $machine -and $bootstrap.identity.executionLocation -ceq 'ECS' -and $bootstrap.file -ceq "$remoteInbox/cleanup-source.tar.gz" -and $bootstrap.reserveBytes -eq 2147483648 -and $bootstrap.requiredBytes -eq (2147483648L + $expectedGrowth) -and $bootstrap.controlGrowthBytes -eq ($expectedGrowth-$sourceBytes) -and $bootstrap.availableBytes -ge $bootstrap.requiredBytes -and $bootstrap.uploadIdentity.device -is [long] -and $bootstrap.uploadIdentity.inode -is [long] -and $bootstrap.uploadIdentity.device -ge 0 -and $bootstrap.uploadIdentity.inode -gt 0 -and @($bootstrap.uploadIdentity.PSObject.Properties).Count -eq 2) 'Maintenance source upload lacks its exact fresh directory, ECS identity or bounded reserve.'
         $context.uploadIdentity = @{ device = $bootstrap.uploadIdentity.device; inode = $bootstrap.uploadIdentity.inode }
         $baseCommand = Get-ReclaimCommand
         Assert-ReclaimPath $archive
