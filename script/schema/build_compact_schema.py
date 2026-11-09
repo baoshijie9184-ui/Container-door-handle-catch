@@ -54,7 +54,8 @@ IDENT = r'`?([a-z][a-z0-9_]*)`?'
 
 def without_comments(sql):
     """Preserve strings, quoted identifiers and line offsets while masking comments."""
-    chars = list(sql)
+    parts = []
+    copied_until = 0
     quote = None
     i = 0
     while i < len(sql):
@@ -89,13 +90,16 @@ def without_comments(sql):
         if end is None:
             i += 1
         else:
-            for position in range(i, end):
-                if chars[position] not in '\r\n':
-                    chars[position] = ' '
+            parts.append(sql[copied_until:i])
+            parts.append(re.sub(r'[^\r\n]', ' ', sql[i:end]))
+            copied_until = end
             i = end
     if quote:
         raise ValueError('Unclosed SQL string or identifier')
-    return ''.join(chars)
+    if not parts:
+        return sql
+    parts.append(sql[copied_until:])
+    return ''.join(parts)
 
 
 def split_top_level(sql, delimiter):

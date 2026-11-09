@@ -20,6 +20,23 @@ builder = module('build_compact_schema')
 inspector = module('inspect_compact_schema')
 
 
+def test_large_comment_free_insert_is_not_copied_into_character_storage():
+    source = "INSERT INTO `item` VALUES ('" + 'x' * (1024 * 1024) + "');"
+    assert builder.without_comments(source) is source
+
+
+def test_fragment_comment_masking_preserves_offsets_and_quoted_markers():
+    source = "/*a\r\nb*/ SELECT '/*literal*/', `--id`; -- note\r\n#last"
+    expected = "   \r\n    SELECT '/*literal*/', `--id`;        \r\n     "
+    assert builder.without_comments(source) == expected
+    assert len(builder.without_comments(source)) == len(source)
+
+
+def test_comment_free_fast_return_still_rejects_unclosed_quotes():
+    with pytest.raises(ValueError, match='Unclosed SQL'):
+        builder.without_comments("INSERT INTO item VALUES ('unterminated")
+
+
 def test_commented_create_is_not_a_table_and_quoted_comment_markers_are_preserved():
     source = "-- CREATE TABLE fake(id INT);\nCREATE TABLE actual(id BIGINT PRIMARY KEY, note TEXT COMMENT '-- ; /* text */') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;"
     statements = list(builder.split_top_level(builder.without_comments(source), ';'))
