@@ -1,5 +1,7 @@
 # 本地 Jenkins CI/CD 约定
 
+2026-11-10 05:27（北京时间）最新：#180 为 FAILURE，Java 817 通过/614 条件跳过，Python 2,990 通过/24 条件跳过/2 失败。真实错误是把同名内层归档误用外层大小校验，精确路径修复已开发，尚待 ECS 验证。双前端及本轮 4 文件恢复未执行；218 份报告与 19 份控制原件已保全，本轮工具已停止，ECS 已从流水线外实际回读 `Stopped / StopCharging`，Jenkins 保持运行。正式业务库仍是 131 表，29 表目标的数据迁移、对账、恢复验收及切库均未完成，文件恢复或 source PASS 均不替代该验收。
+
 新增待验证的 `legacy-partial-transports-v1` 复用 `LOCAL_ARTIFACTS_*` 原参数和 source 保全入口，固定两个早期运输包及其清单，不改变 runtime/cutover 的原 profile 限制。参数选项更新由版本库中的 `update-local-artifact-profiles.groovy` 在任务空闲且无队列时仅替换该 ChoiceParameterDefinition，保留其他参数对象、SCM、任务属性和节点配置；不以全量重配或手改页面交付。控制模块最低数为 17 模块、1,178 项；source 完整验证通过后才上传恢复，后续清退仍须实时原件证明。这一 source 任务使用现有 70 GiB，不启动已知容量不足的完整 runtime 验收。
 
 2026-11-10 04:06（北京时间）最新：固定 `000ab923` 的 #179 整轮 SUCCESS，Java 817 通过/614 条件跳过、Python 2,978 通过/24 条件跳过、双前端 157/20 项和两套构建完成；86 个补充文件在 ECS 独立恢复，224 原报告及原始回执保全。工具已停止，ECS 已从流水线外实际回读 `Stopped / StopCharging`，Jenkins 保持运行。正式 131 表未切换；后续完整 native 的空间预算不足，70→80 GiB 收费方案待用户批准，不排队运行已知容量不足的任务，也不把 source PASS 当作整库或运行验收通过。

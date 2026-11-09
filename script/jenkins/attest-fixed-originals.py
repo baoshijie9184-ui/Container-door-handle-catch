@@ -554,7 +554,7 @@ def fresh_retirement_attest(args):
     observations = []
     for path, expected, maximum in bindings:
         observed, size, stamp = file_digest(path, maximum, private=True)
-        need(observed == expected and (path.name != fixed['ARCHIVE'] or size == custody['archiveBytes']),
+        need(observed == expected and (path != old / fixed['ARCHIVE'] or size == custody['archiveBytes']),
              'ORIGINALS_ATTESTATION_RAW_INPUT_CHANGED')
         observations.append((path, stamp))
     physical = physical_model_proof() if args.profile == 'pth-aliases-v1' else None

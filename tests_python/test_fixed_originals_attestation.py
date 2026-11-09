@@ -217,6 +217,15 @@ def test_partial_transport_attestation_rehashes_all_four_private_restores_before
     manifest = json.loads((state.old / fixed['MANIFEST']).read_bytes())
     assert len(manifest['files']) == 4
     assert all((state.old.parent / fixed['RESTORE'] / row['member'], True) in seen for row in manifest['files'])
+    inner_archives = [row for row in manifest['files'] if Path(row['member']).name == fixed['ARCHIVE']]
+    assert len(inner_archives) == 2
+    for row in inner_archives:
+        target = state.old.parent / fixed['RESTORE'] / row['member']; raw = target.read_bytes()
+        assert len(raw) == row['bytes'] and row['bytes'] != state.custody['archiveBytes']
+        target.write_bytes(b'X' + raw[1:])
+        with pytest.raises(attest.AttestationError, match='ORIGINALS_ATTESTATION_RAW_INPUT_CHANGED'):
+            attest.fresh_retirement_attest(state.args)
+        target.write_bytes(raw)
     target = state.old.parent / fixed['RESTORE'] / manifest['files'][0]['member']
     target.write_bytes(target.read_bytes() + b'drift')
     with pytest.raises(attest.AttestationError): attest.fresh_retirement_attest(state.args)
