@@ -43,6 +43,14 @@ NPM_NODE_OPTIONS = '--max-old-space-size=2048'
 DISK_FLOOR = (2 * 1024 + 256) * 1024 ** 2
 MEMORY_FLOOR = 1024 ** 3
 CACHE_PROTOCOL = 'doorhandle-maven-release-cache-v1'
+# Only source-reviewed original receipt digests may authorize recovery of an
+# interrupted cache. Ownership of a locally discovered JSON file is insufficient.
+# Authenticated against build #173's preserved successful tool-runtime command
+# report (SHA256 9288a489835b301119764b1f0bddb89c119f24e82ea1722c9b57dea4aeefd79b).
+MAVEN_CACHE_RECOVERY_PINS = {
+    '7c42577d50d6697a5ad00e8ba980adae839cb8c3540184b7d0c5c9221d435484': {
+        '30babb7b2a92c095720ed9e0562a01a9790cb9c6d14de85ee1589c8f43fce80c':
+            '0f72406c98e3b050ab82229a03d71daeae9a196430da04e6d62c89f423a90306'}}
 
 
 def require(value, message):
@@ -153,8 +161,12 @@ def initialize_maven_cache(value):
         cache_directory(path, create=True)
     with maven_cache_lock(value):
         before = maven_cache_inventory(value)
-        verify_maven_cache_state(value, before)
-        persist_maven_cache(value, before, before)
+        try:
+            verify_maven_cache_state(value, before)
+        except ValueError:
+            recover_maven_cache(value, before)
+        else:
+            persist_maven_cache(value, before, before)
 
 
 @contextmanager
@@ -241,7 +253,7 @@ def discard_maven_transients(value):
             path.unlink()
 
 
-def persist_maven_cache(value, before, after):
+def persist_maven_cache(value, before, after, *, recovery=None):
     binding = registered_maven_cache(value)
     previous = {tuple(row) for row in before['artifacts']}
     summary = {'key': binding['key'], 'inputsSha256': binding['inputsSha256'], 'mavenImage': binding['mavenImage'],
@@ -252,13 +264,106 @@ def persist_maven_cache(value, before, after):
         'allocatedGrowthBytes': max(0, after['allocatedBytes'] - before['allocatedBytes'])}
     directory = Path(binding['directory'])
     state = directory / 'state.json'
-    previous_receipt = private_json(state).get('receiptSha256') if state.exists() else None
+    previous_receipt = (recovery['sourceReceiptSha256'] if recovery is not None
+                        else private_json(state).get('receiptSha256') if state.exists() else None)
     receipt = directory / 'receipts' / (value['release'] + '-' + secrets.token_hex(6) + '.json')
     write_json(receipt, {**summary, 'release': value['release'], 'commit': value['commit'],
         'sourceSha256': value['sourceSha256'], 'identity': value['identity'], 'catalog': after['records'],
-        'previousReceiptSha256': previous_receipt})
+        'previousReceiptSha256': previous_receipt,
+        **({'recoveryReceiptSha256': recovery['recoveryReceiptSha256']} if recovery is not None else {})})
     write_json(directory / 'state.json', {**summary, 'receipt': receipt.name, 'receiptSha256': digest(receipt)})
     return {**summary, 'receiptSha256': digest(receipt)}
+
+
+def read_maven_recovery_json(path, limit):
+    """Read one bounded private original without accepting replacement or linked metadata."""
+    path = canonical(path)
+    def metadata(info):
+        return (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid,
+                info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+    original = path.lstat()
+    require(stat.S_ISREG(original.st_mode) and original.st_uid == os.getuid() and original.st_nlink == 1
+            and stat.S_IMODE(original.st_mode) == 0o600 and 0 < original.st_size <= limit,
+            'Maven recovery requires a bounded private owned single-link original')
+    with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), 'rb') as stream:
+        opened = os.fstat(stream.fileno())
+        require(metadata(opened) == metadata(original), 'Maven recovery original changed before reading')
+        raw = stream.read(limit + 1)
+        require(len(raw) == original.st_size and metadata(os.fstat(stream.fileno())) == metadata(original)
+                and metadata(path.lstat()) == metadata(original) and canonical(path) == path,
+                'Maven recovery original changed while reading')
+    value = json.loads(raw.decode('utf-8-sig'))
+    require(isinstance(value, dict), 'Maven recovery original must be an object')
+    return value, raw, hashlib.sha256(raw).hexdigest()
+
+
+def recover_maven_cache(value, before):
+    """Under the caller's cache lock, recover only bytes proven by an original READY receipt."""
+    binding = registered_maven_cache(value); directory = Path(binding['directory'])
+    failed, failed_raw, failed_sha = read_maven_recovery_json(directory / 'state.json', 1024 ** 2)
+    require(set(failed) == {'status', 'key', 'errorType'} and failed.get('status') == 'FAILED_OR_UNKNOWN'
+            and failed.get('key') == binding['key'] and isinstance(failed.get('errorType'), str)
+            and re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{0,99}', failed['errorType']),
+            'Only an exact matching failed or unknown Maven cache can be recovered')
+    pins = MAVEN_CACHE_RECOVERY_PINS.get(binding['key'], {})
+    require(isinstance(pins, dict) and pins and all(isinstance(key, str) and SHA.fullmatch(key)
+            and isinstance(catalog, str) and SHA.fullmatch(catalog) for key, catalog in pins.items()),
+            'Maven cache has no source-approved original recovery receipt')
+    folder = cache_directory(directory / 'receipts')
+    candidates = []
+    for path in folder.iterdir():
+        require(len(candidates) < 1024, 'Too many Maven recovery source receipts')
+        match = re.fullmatch(r'ci-([0-9]+)-([a-f0-9]{12})-[a-f0-9]{12}\.json', path.name)
+        require(match is not None, 'Unexpected Maven recovery source receipt name')
+        candidates.append((int(match[1]), path.name, path))
+    source = None
+    fields = {'key', 'inputsSha256', 'mavenImage', 'scope', 'status', 'beforeCatalogSha256',
+        'afterCatalogSha256', 'artifactCount', 'reusedArtifacts', 'files', 'bytes', 'allocatedBytes',
+        'allocatedGrowthBytes', 'release', 'commit', 'sourceSha256', 'identity', 'catalog', 'previousReceiptSha256'}
+    for _, _, path in sorted(candidates, reverse=True):
+        proof, _, proof_sha = read_maven_recovery_json(path, 16 * 1024 ** 2)
+        if not (pins.get(proof_sha) == before['catalogSha256']
+                and set(proof) in (fields, fields | {'recoveryReceiptSha256'})
+                and proof.get('status') == 'READY' and proof.get('scope') == 'SHARED_THIRD_PARTY_RELEASE_DEPENDENCIES'
+                and all(proof.get(key) == binding[key] for key in ('key', 'inputsSha256', 'mavenImage'))
+                and proof.get('identity') == value['identity']
+                and isinstance(proof.get('sourceSha256'), str) and SHA.fullmatch(proof['sourceSha256'])
+                and isinstance(proof.get('commit'), str) and re.fullmatch(r'[a-f0-9]{40}', proof['commit'])
+                and isinstance(proof.get('release'), str) and TAG.fullmatch(proof['release'])
+                and proof['release'].endswith('-' + proof['commit'][:12])
+                and path.name.startswith(proof['release'] + '-')
+                and (proof['previousReceiptSha256'] is None or isinstance(proof['previousReceiptSha256'], str)
+                     and SHA.fullmatch(proof['previousReceiptSha256']))
+                and ('recoveryReceiptSha256' not in proof or isinstance(proof['recoveryReceiptSha256'], str)
+                     and SHA.fullmatch(proof['recoveryReceiptSha256']))
+                and proof.get('catalog') == before['records']
+                and proof.get('afterCatalogSha256') == before['catalogSha256']
+                and isinstance(proof.get('beforeCatalogSha256'), str) and SHA.fullmatch(proof['beforeCatalogSha256'])
+                and all(type(proof.get(key)) is int and proof[key] == expected for key, expected in
+                    (('artifactCount', len(before['artifacts'])), ('files', before['files']),
+                     ('bytes', before['bytes'])))
+                and type(proof.get('allocatedBytes')) is int and proof['allocatedBytes'] >= 0
+                and type(proof.get('reusedArtifacts')) is int and 0 <= proof['reusedArtifacts'] <= proof['artifactCount']
+                and type(proof.get('allocatedGrowthBytes')) is int and 0 <= proof['allocatedGrowthBytes'] <= proof['allocatedBytes']):
+            continue
+        source = {'sourceReceipt': path.name, 'sourceReceiptSha256': proof_sha}
+        break
+    require(source is not None, 'No original READY Maven receipt proves the current dependency bytes')
+    after = maven_cache_inventory(value)
+    require(after == before, 'Maven dependency bytes changed during recovery')
+    _, _, source_sha = read_maven_recovery_json(folder / source['sourceReceipt'], 16 * 1024 ** 2)
+    require(source_sha == source['sourceReceiptSha256'], 'Original READY Maven receipt changed during recovery')
+    current, current_raw, current_sha = read_maven_recovery_json(directory / 'state.json', 1024 ** 2)
+    require(current == failed and current_raw == failed_raw and current_sha == failed_sha,
+            'Failed Maven cache state changed during recovery')
+    recovery_folder = cache_directory(directory / 'recoveries', create=True)
+    recovery_file = recovery_folder / (value['release'] + '-' + secrets.token_hex(6) + '.json')
+    write_json(recovery_file, {'schema': 1, 'kind': 'doorhandle-maven-cache-recovery', 'status': 'RECOVERY_VALIDATED',
+        'release': value['release'], 'commit': value['commit'], 'sourceSha256': value['sourceSha256'],
+        'identity': value['identity'], 'key': binding['key'], 'inputsSha256': binding['inputsSha256'],
+        'mavenImage': binding['mavenImage'], 'catalogSha256': after['catalogSha256'],
+        'failedStateBytesHex': failed_raw.hex(), 'failedStateSha256': failed_sha, **source})
+    persist_maven_cache(value, before, after, recovery={**source, 'recoveryReceiptSha256': digest(recovery_file)})
 
 
 def verify_maven_cache_state(value, inventory):

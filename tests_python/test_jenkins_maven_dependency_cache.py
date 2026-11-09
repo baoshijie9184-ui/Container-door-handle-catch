@@ -6,6 +6,7 @@ import io
 import os
 from pathlib import Path
 import tarfile
+from types import SimpleNamespace
 
 import pytest
 
@@ -169,3 +170,166 @@ def test_archive_catalog_and_commit_bind_maven_execution_before_cache_access(cac
     cache['sourceSha256'] = tools.digest(archive); tools.verify_maven_source(cache)
     archive.write_bytes(b'changed fixed source archive')
     with pytest.raises(ValueError, match='archive changed'): tools.verify_maven_source(cache)
+
+
+@pytest.fixture
+def failed_cache(cache, monkeypatch):
+    artifact, _ = commit_downloads(cache)
+    directory = Path(cache['mavenCache']['directory']); state = directory / 'state.json'
+    original = tools.private_json(state); source = directory / 'receipts' / original['receipt']
+    before = tools.maven_cache_inventory(cache)
+    monkeypatch.setattr(tools, 'MAVEN_CACHE_RECOVERY_PINS', {
+        cache['mavenCache']['key']: {tools.digest(source): before['catalogSha256']}})
+    tools.write_json(state, {'status': 'FAILED_OR_UNKNOWN', 'key': cache['mavenCache']['key'], 'errorType': 'ValueError'})
+    cache['commit'] = 'e' * 40; cache['release'] = 'ci-70-' + cache['commit'][:12]
+    return SimpleNamespace(value=cache, directory=directory, state=state, source=source, before=before,
+        failed=state.read_bytes(), artifact=artifact,
+        originals={path: path.read_bytes() for path in (directory / 'receipts').iterdir()},
+        repository={path: path.read_bytes() for path in Path(cache['mavenCache']['repository']).rglob('*') if path.is_file()})
+
+
+def test_unknown_cache_recovers_only_authenticated_unchanged_bytes_under_one_lock(failed_cache, monkeypatch):
+    item = failed_cache; inventory = tools.maven_cache_inventory; calls = []
+    def observed(value):
+        with pytest.raises(ValueError, match='already in use'):
+            with tools.maven_cache_lock(value): pytest.fail('recovery inventory ran without its cache lease')
+        calls.append(1)
+        return inventory(value)
+    monkeypatch.setattr(tools, 'maven_cache_inventory', observed)
+    tools.initialize_maven_cache(item.value)
+    assert len(calls) == 2
+    assert all(path.read_bytes() == raw for path, raw in item.originals.items())
+    assert all(path.read_bytes() == raw for path, raw in item.repository.items())
+    state = tools.private_json(item.state)
+    ready = tools.private_json(item.directory / 'receipts' / state['receipt'])
+    proofs = list((item.directory / 'recoveries').iterdir()); assert len(proofs) == 1
+    recovery = tools.private_json(proofs[0])
+    assert recovery['status'] == 'RECOVERY_VALIDATED'
+    assert recovery['failedStateBytesHex'] == item.failed.hex()
+    assert recovery['failedStateSha256'] == hashlib.sha256(item.failed).hexdigest()
+    assert recovery['sourceReceiptSha256'] == ready['previousReceiptSha256'] == tools.digest(item.source)
+    assert ready['recoveryReceiptSha256'] == tools.digest(proofs[0])
+    assert ready['release'] == item.value['release'] and ready['commit'] == item.value['commit']
+    assert ready['catalog'] == item.before['records']
+    tools.verify_maven_cache_state(item.value, item.before)
+
+
+def test_ready_initialization_does_not_search_or_create_recovery_evidence(cache, monkeypatch):
+    def forbidden(*_): pytest.fail('an already READY cache entered recovery')
+    monkeypatch.setattr(tools, 'recover_maven_cache', forbidden)
+    tools.initialize_maven_cache(cache)
+    assert not (Path(cache['mavenCache']['directory']) / 'recoveries').exists()
+
+
+def test_equal_verified_content_can_recover_despite_different_historical_directory_allocation(failed_cache, monkeypatch):
+    item = failed_cache; proof = tools.private_json(item.source)
+    proof['allocatedBytes'] += 4096
+    tools.write_json(item.source, proof)
+    monkeypatch.setattr(tools, 'MAVEN_CACHE_RECOVERY_PINS', {
+        item.value['mavenCache']['key']: {tools.digest(item.source): item.before['catalogSha256']}})
+    tools.initialize_maven_cache(item.value)
+    assert tools.private_json(item.state)['allocatedBytes'] == item.before['allocatedBytes']
+
+
+def test_failure_writing_ready_retains_unknown_state_and_only_validated_inputs_evidence(failed_cache, monkeypatch):
+    item = failed_cache
+    def refused(*args, **kwargs): raise OSError('synthetic exhausted storage')
+    monkeypatch.setattr(tools, 'persist_maven_cache', refused)
+    with pytest.raises(OSError, match='synthetic exhausted storage'):
+        tools.initialize_maven_cache(item.value)
+    proofs = list((item.directory / 'recoveries').iterdir())
+    assert len(proofs) == 1 and tools.private_json(proofs[0])['status'] == 'RECOVERY_VALIDATED'
+    assert item.state.read_bytes() == item.failed
+    assert all(path.read_bytes() == raw for path, raw in item.originals.items())
+
+
+@pytest.mark.parametrize('damage', ['wrong-key', 'wrong-status', 'extra-field', 'unregistered-key', 'unregistered-digest', 'wrong-pinned-catalog'])
+def test_unknown_recovery_requires_exact_failure_and_independent_source_approval(failed_cache, monkeypatch, damage):
+    item = failed_cache; failed = tools.private_json(item.state)
+    if damage == 'wrong-key': failed['key'] = 'f' * 64
+    if damage == 'wrong-status': failed['status'] = 'FAILED'
+    if damage == 'extra-field': failed['unreviewed'] = True
+    if damage in ('wrong-key', 'wrong-status', 'extra-field'): tools.write_json(item.state, failed)
+    if damage == 'unregistered-key': monkeypatch.setattr(tools, 'MAVEN_CACHE_RECOVERY_PINS', {})
+    if damage == 'unregistered-digest':
+        monkeypatch.setattr(tools, 'MAVEN_CACHE_RECOVERY_PINS', {item.value['mavenCache']['key']: {'0' * 64: item.before['catalogSha256']}})
+    if damage == 'wrong-pinned-catalog':
+        monkeypatch.setattr(tools, 'MAVEN_CACHE_RECOVERY_PINS', {item.value['mavenCache']['key']: {tools.digest(item.source): '0' * 64}})
+    raw = item.state.read_bytes()
+    with pytest.raises(ValueError): tools.initialize_maven_cache(item.value)
+    assert item.state.read_bytes() == raw and not (item.directory / 'recoveries').exists()
+    assert all(path.read_bytes() == original for path, original in item.repository.items())
+
+
+@pytest.mark.parametrize('field', ['key', 'inputsSha256', 'mavenImage', 'identity', 'release', 'commit', 'catalog', 'afterCatalogSha256'])
+def test_even_a_pinned_receipt_must_match_identity_source_name_and_every_dependency(failed_cache, monkeypatch, field):
+    item = failed_cache; proof = tools.private_json(item.source)
+    if field == 'identity': proof[field] = {**proof[field], 'instanceId': 'i-other'}
+    elif field == 'catalog': proof[field] = proof[field][:-1]
+    elif field == 'release': proof[field] = 'ci-61-' + proof['commit'][:12]
+    elif field == 'commit': proof[field] = 'f' * 40
+    elif field == 'mavenImage': proof[field] = 'sha256:' + 'f' * 64
+    else: proof[field] = 'f' * 64
+    tools.write_json(item.source, proof)
+    monkeypatch.setattr(tools, 'MAVEN_CACHE_RECOVERY_PINS', {
+        item.value['mavenCache']['key']: {tools.digest(item.source): item.before['catalogSha256']}})
+    with pytest.raises(ValueError): tools.initialize_maven_cache(item.value)
+    assert item.state.read_bytes() == item.failed and not (item.directory / 'recoveries').exists()
+
+
+@pytest.mark.parametrize('damage', ['hardlink', 'symlink', 'permissions', 'owner', 'oversize', 'too-many'])
+def test_recovery_refuses_unbounded_or_nonprivate_original_receipts(failed_cache, monkeypatch, damage):
+    item = failed_cache
+    if damage == 'hardlink': os.link(item.source, item.directory / 'linked-original')
+    if damage == 'symlink':
+        original = item.directory / 'original.json'; item.source.rename(original); item.source.symlink_to(original)
+    if damage == 'permissions': item.source.chmod(0o644)
+    if damage == 'owner': monkeypatch.setattr(tools.os, 'getuid', lambda: os.stat(item.source).st_uid + 1)
+    if damage == 'oversize':
+        with item.source.open('ab') as stream: stream.truncate(16 * 1024 ** 2 + 1)
+    if damage == 'too-many':
+        folder = item.directory / 'receipts'; original = Path.iterdir
+        monkeypatch.setattr(Path, 'iterdir', lambda path: iter([item.source] * 1025) if path == folder else original(path))
+    with pytest.raises(ValueError): tools.initialize_maven_cache(item.value)
+    assert item.state.read_bytes() == item.failed and not (item.directory / 'recoveries').exists()
+
+
+def test_recovery_checks_newest_build_first_without_rehashing_repository_per_candidate(failed_cache, monkeypatch):
+    item = failed_cache; observed = []; read = tools.read_maven_recovery_json
+    # These unapproved older files must not be opened once the pinned ci-60 proof matches.
+    for build in (9, 10):
+        tools.write_json(item.directory / 'receipts' / ('ci-' + str(build) + '-' + 'a' * 12 + '-' + '0' * 12 + '.json'), {})
+    def tracked(path, limit):
+        observed.append(Path(path))
+        return read(path, limit)
+    monkeypatch.setattr(tools, 'read_maven_recovery_json', tracked)
+    tools.initialize_maven_cache(item.value)
+    assert not any(path.name.startswith(('ci-9-', 'ci-10-')) for path in observed)
+
+
+@pytest.mark.parametrize('changed', ['inventory', 'source-receipt', 'failed-state'])
+def test_recovery_rechecks_dependency_and_original_evidence_before_committing(failed_cache, monkeypatch, changed):
+    item = failed_cache; inventory = tools.maven_cache_inventory; calls = []
+    def altered(value):
+        current = inventory(value); calls.append(1)
+        if len(calls) == 2:
+            if changed == 'inventory': current = {**current, 'catalogSha256': 'f' * 64}
+            elif changed == 'source-receipt': item.source.write_bytes(item.source.read_bytes() + b'\n')
+            else: item.state.write_bytes(item.failed + b'\n')
+        return current
+    monkeypatch.setattr(tools, 'maven_cache_inventory', altered)
+    with pytest.raises(ValueError, match='changed'): tools.initialize_maven_cache(item.value)
+    assert not (item.directory / 'recoveries').exists()
+
+
+def test_recovery_original_reader_rejects_metadata_changes_on_the_same_descriptor(failed_cache, monkeypatch):
+    original = tools.os.fstat; calls = []
+    def changed(fd):
+        info = original(fd); calls.append(1)
+        if len(calls) == 2:
+            fields = ('st_dev', 'st_ino', 'st_mode', 'st_uid', 'st_gid', 'st_nlink', 'st_size', 'st_mtime_ns', 'st_ctime_ns')
+            return SimpleNamespace(**{field: getattr(info, field) + (field == 'st_mtime_ns') for field in fields})
+        return info
+    monkeypatch.setattr(tools.os, 'fstat', changed)
+    with pytest.raises(ValueError, match='changed while reading'):
+        tools.read_maven_recovery_json(failed_cache.source, 16 * 1024 ** 2)

@@ -28,7 +28,7 @@ def test_current_fixed_profile_contains_every_focused_module():
         'test_historical_python_build_cache_retirement', 'test_local_artifact_custody',
         'test_compose_container_selection', 'test_compact_schema_source',
         'test_local_fixed_originals_retirement', 'test_fixed_originals_attestation',
-        'test_local_mysql_custody', 'test_jenkins_suite_evidence',
+        'test_local_mysql_custody', 'test_jenkins_suite_evidence', 'test_jenkins_maven_dependency_cache',
         'test_control_preflight',
     }
     assert minimum['test_public_buildkit_layer_retirement'] >= 34
