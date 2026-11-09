@@ -714,7 +714,7 @@ def builder_references(root, historical, descriptor, cleanup, builder):
         for value in values:
             need(type(value) is str, 'CONTAINER_REFERENCE_METADATA_INVALID')
             parts = value.replace('/', ':').split(':')
-            need(not any(item == name or len(item) >= 12 and cid.startswith(item) for item in parts),
+            need(not any(item == name or re.fullmatch(r'[a-f0-9]+', item) and cid.startswith(item) for item in parts),
                  'ANOTHER_CONTAINER_REFERENCES_HISTORICAL_BUILDER')
     # No fallback kills or cgroup writes. A still-populated retained group stops
     # maintenance even if Docker reports an exited root process.
