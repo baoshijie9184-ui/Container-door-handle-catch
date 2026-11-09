@@ -3,8 +3,8 @@
 The CLI authenticates fixed current source and ECS identity before importing
 the existing strict cleanup admission library. The local Jenkins controller
 authenticates the request SHA and the original C/D control-file byte provenance.
-No source archive, inbox artifact, database, report, image or directory has a
-deletion API here. Historical metadata never substitutes for keeper bytes.
+No retained source archive, inbox original, database, report, image or directory
+has a deletion API here. Historical metadata never substitutes for keeper bytes.
 """
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 import stat
 import sys
 import tarfile
@@ -220,8 +221,56 @@ def describe_duplicate(root, tag, jar_sha, jar_bytes):
                 'metadata': keeper_info, 'sha256': jar_sha, 'bytes': jar_bytes}}
 
 
-def remove_duplicate(root, descriptor):
-    """Unlink only candidate-app.jar; the exact inbox keeper stays open throughout."""
+def reserve_quarantine(root, current_tag=None):
+    """Reserve a new, private, helper-owned directory; never reuse a path."""
+    root=Path(root)
+    need(current_tag is None or type(current_tag) is str and TAG.fullmatch(current_tag), 'EXACT_CURRENT_QUARANTINE_TAG_REQUIRED')
+    parent=root if current_tag is None else root/'inbox'/current_tag
+    owned_path(root,parent,directory=True)
+    name='native-jar-quarantine-'+secrets.token_hex(12)
+    parent_fd=os.open(parent,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+    try:
+        need(metadata(os.fstat(parent_fd))==metadata(parent.lstat()), 'QUARANTINE_PARENT_MOVED')
+        os.mkdir(name,0o700,dir_fd=parent_fd);os.fsync(parent_fd)
+        directory=parent/name;info=directory.lstat()
+        need(stat.S_ISDIR(info.st_mode) and stat.S_IMODE(info.st_mode)==0o700 and info.st_uid==os.getuid(),
+             'PRIVATE_NEW_QUARANTINE_REQUIRED')
+        return {'directory':directory.relative_to(root).as_posix(),
+                'path':(directory/'candidate-app.jar').relative_to(root).as_posix(),
+                'directoryIdentity':[info.st_dev,info.st_ino,info.st_mode,info.st_uid,info.st_gid]}
+    finally:os.close(parent_fd)
+
+
+def _capture_no_replace(source_fd, source_name, destination_fd, destination_name):
+    """Linux atomic rename with NOREPLACE, never an overwriting rename fallback."""
+    import ctypes
+    import errno
+    library=ctypes.CDLL(None,use_errno=True)
+    operation=getattr(library,'renameat2',None)
+    need(operation is not None, 'ATOMIC_NOREPLACE_RENAME_REQUIRED')
+    operation.argtypes=[ctypes.c_int,ctypes.c_char_p,ctypes.c_int,ctypes.c_char_p,ctypes.c_uint]
+    operation.restype=ctypes.c_int
+    result=operation(source_fd,os.fsencode(source_name),destination_fd,os.fsencode(destination_name),1)
+    if result!=0:
+        number=ctypes.get_errno()
+        need(number!=errno.EEXIST,'PRIVATE_QUARANTINE_ALREADY_OCCUPIED')
+        raise OSError(number,os.strerror(number))
+
+
+def _renamed_copy_matches(before, after):
+    # rename may change ctime only. Ownership, mode, links, full length, mtime,
+    # allocation and the exact device/inode must remain those of the held copy.
+    return (after[:8]==before[:8] and after[9:]==before[9:]
+            and type(after[8]) is int and after[8]>=before[8])
+
+
+def remove_duplicate(root, descriptor, quarantine=None):
+    """Capture the old path privately, prove its inode, then unlink only that copy.
+
+    A race replacing the old path can only move an unexpected file into this
+    fresh directory. An unexpected capture is retained, never unlinked or
+    automatically moved back over a possibly new original path.
+    """
     need(type(descriptor) is dict and set(descriptor) == {'kind', 'release', 'path', 'metadata', 'sha256', 'bytes', 'allocatedBytes', 'keeper'}
          and descriptor['kind'] == 'FAILED_NATIVE_CANDIDATE_JAR_COPY', 'EXACT_SINGLE_FILE_DESCRIPTOR_REQUIRED')
     root = Path(root); target, keeper = duplicate_paths(root, descriptor['release'])
@@ -230,12 +279,31 @@ def remove_duplicate(root, descriptor):
          and descriptor['keeper']['path'] == keeper.relative_to(root).as_posix(), 'INBOX_KEEPER_HAS_NO_DELETION_API')
     need(describe_duplicate(root, descriptor['release'], descriptor['sha256'], descriptor['bytes']) == descriptor,
          'DUPLICATE_CHANGED_AFTER_PLAN')
+    quarantine=reserve_quarantine(root) if quarantine is None else quarantine
+    need(type(quarantine) is dict and set(quarantine)=={'directory','path','directoryIdentity'}, 'EXACT_PRIVATE_QUARANTINE_REQUIRED')
+    relative=Path(quarantine['directory']);parts=relative.parts
+    need((len(parts)==1 or len(parts)==3 and parts[0]=='inbox' and TAG.fullmatch(parts[1]))
+         and re.fullmatch(r'native-jar-quarantine-[a-f0-9]{24}',parts[-1])
+         and quarantine['path']==(relative/'candidate-app.jar').as_posix(), 'QUARANTINE_OUTSIDE_PRIVATE_ALLOWLIST')
+    private=owned_path(root,root/relative,directory=True)
+    info=private.lstat()
+    need([info.st_dev,info.st_ino,info.st_mode,info.st_uid,info.st_gid]==quarantine['directoryIdentity']
+         and stat.S_IMODE(info.st_mode)==0o700,'PRIVATE_QUARANTINE_IDENTITY_CHANGED')
     with held_file(root, keeper, MAX_JAR) as (kept, keeper_info), os.fdopen(os.open(target, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), 'rb') as copy:
         copy_info = metadata(os.fstat(copy.fileno()))
         need(keeper_info == descriptor['keeper']['metadata'] and copy_info == descriptor['metadata']
              and hash_stream(kept) == hash_stream(copy) == descriptor['sha256'], 'DUPLICATE_CHANGED_BEFORE_UNLINK')
         stack = [os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)]
+        quarantine_fd=None
         try:
+            quarantine_fd=os.open(private,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+            def private_identity():
+                value=os.fstat(quarantine_fd);linked=private.lstat()
+                need([value.st_dev,value.st_ino,value.st_mode,value.st_uid,value.st_gid]
+                     ==[linked.st_dev,linked.st_ino,linked.st_mode,linked.st_uid,linked.st_gid]
+                     ==quarantine['directoryIdentity'],'PRIVATE_QUARANTINE_MOVED')
+            private_identity()
+            need(not os.listdir(quarantine_fd),'PRIVATE_QUARANTINE_ALREADY_OCCUPIED')
             device = os.fstat(stack[0]).st_dev
             for part in target.relative_to(root).parts[:-1]:
                 fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=stack[-1]); stack.append(fd)
@@ -245,14 +313,33 @@ def remove_duplicate(root, descriptor):
             need(metadata(os.stat(target.name, dir_fd=stack[-1], follow_symlinks=False)) == copy_info
                  and metadata(os.fstat(copy.fileno())) == copy_info and metadata(keeper.lstat()) == keeper_info,
                  'TARGET_OR_KEEPER_MOVED_BEFORE_UNLINK')
-            os.unlink(target.name, dir_fd=stack[-1]); os.fsync(stack[-1])
+            _capture_no_replace(stack[-1],target.name,quarantine_fd,'candidate-app.jar')
+            os.fsync(stack[-1]);os.fsync(quarantine_fd)
+            captured=metadata(os.stat('candidate-app.jar',dir_fd=quarantine_fd,follow_symlinks=False))
+            held_copy=metadata(os.fstat(copy.fileno()))
+            need(captured[:2]==copy_info[:2] and captured[:2]!=keeper_info[:2]
+                 and captured==held_copy and _renamed_copy_matches(copy_info,captured),
+                 'UNEXPECTED_CAPTURED_INODE_RETAINED')
+            need(metadata(os.fstat(kept.fileno()))==keeper_info==metadata(keeper.lstat())
+                 and hash_stream(kept)==hash_stream(copy)==descriptor['sha256'],
+                 'KEEPER_OR_CAPTURE_CHANGED_RETAIN_QUARANTINE')
+            need(not target.exists() and not target.is_symlink(),'ORIGINAL_TARGET_REAPPEARED_RETAIN_QUARANTINE')
+            private_identity()
+            need(os.listdir(quarantine_fd)==['candidate-app.jar']
+                 and metadata(os.stat('candidate-app.jar',dir_fd=quarantine_fd,follow_symlinks=False))==captured
+                 and metadata(os.fstat(copy.fileno()))==captured
+                 and metadata(keeper.lstat())==keeper_info,'CAPTURE_OR_KEEPER_MOVED_RETAIN_QUARANTINE')
+            os.unlink('candidate-app.jar',dir_fd=quarantine_fd);os.fsync(quarantine_fd)
+            need(not os.listdir(quarantine_fd),'QUARANTINE_REMOVAL_NOT_CONFIRMED')
             need(not target.exists() and not target.is_symlink(), 'EXACT_DUPLICATE_REMOVAL_NOT_CONFIRMED')
             need(metadata(os.fstat(kept.fileno())) == keeper_info == metadata(keeper.lstat())
                  and hash_stream(kept) == descriptor['sha256'], 'KEEPER_CHANGED_AFTER_UNLINK_REVIEW_REQUIRED')
         finally:
+            if quarantine_fd is not None:os.close(quarantine_fd)
             for fd in reversed(stack): os.close(fd)
         return {'path': descriptor['path'], 'bytes': descriptor['bytes'], 'allocatedBytes': descriptor['allocatedBytes'],
-                'sha256': descriptor['sha256'], 'keeperPath': descriptor['keeper']['path'], 'keeperVerifiedAfter': True}
+                'sha256': descriptor['sha256'], 'keeperPath': descriptor['keeper']['path'], 'keeperVerifiedAfter': True,
+                'quarantinePath':quarantine['path'],'capturedInodeVerified':True}
 
 
 def source_proof(root, tag, commit, source_sha):
@@ -426,6 +513,7 @@ def apply(root, raw_request, prepared_plan, *, request_sha256, plan_sha256, expe
     journal_path = Path(root) / 'inbox' / expected_current['release'] / 'native-jar-duplicate-journal.jsonl'
     owned_path(root, journal_path.parent, directory=True)
     deleted, failure, active, mutation_attempted = [], None, None, False
+    active_quarantine=None;quarantines=[]
     with controller_lock(root), os.fdopen(os.open(journal_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600), 'wb') as journal:
         total = 0
         def record(value):
@@ -438,26 +526,33 @@ def apply(root, raw_request, prepared_plan, *, request_sha256, plan_sha256, expe
         try:
             for candidate in selected:
                 active = candidate['context']['release']
+                active_quarantine=None
                 row = next(row for row in request['candidates'] if row['release'] == active)
                 with attempt_lock(root, active):
                     need(admit_candidate(root, request, row, quiescence) == candidate, 'CANDIDATE_CHANGED_AFTER_PLAN')
                     need(quiescence(Path(root) / 'verification' / active / 'checkout', active, candidate['ownerToken']) is None,
                          'STRICT_QUIESCENCE_MUST_RETURN_ONLY_AFTER_SUCCESS')
+                    active_quarantine=reserve_quarantine(root,expected_current['release']);quarantines.append(active_quarantine)
                     record({'phase': 'DELETE_STARTED', 'release': active, 'path': candidate['target']['path'],
-                            'keeperPath': candidate['target']['keeper']['path'], 'sha256': candidate['target']['sha256']})
+                            'keeperPath': candidate['target']['keeper']['path'], 'sha256': candidate['target']['sha256'],
+                            'quarantinePath':active_quarantine['path']})
                     mutation_attempted = True
-                    result = remove_duplicate(root, candidate['target']); deleted.append(result)
+                    result = remove_duplicate(root, candidate['target'],quarantine=active_quarantine); deleted.append(result)
                     record({'phase': 'DELETE_FINISHED', **result})
             record({'phase': 'FINISHED', 'deletedFiles': len(deleted)})
         except (RetirementError, OSError, ValueError, KeyError, TypeError, tarfile.TarError, EOFError) as error:
             failure = str(error) if isinstance(error, RetirementError) else type(error).__name__
             record({'phase': 'FAILED_OR_UNKNOWN', 'release': active, 'reason': failure,
-                    'completedDeletions': len(deleted), 'mutationAttempted': mutation_attempted})
+                    'completedDeletions': len(deleted), 'mutationAttempted': mutation_attempted,
+                    'quarantinePath':active_quarantine['path'] if active_quarantine else None})
         after = os.statvfs(root)
     return {'schemaVersion': 1, 'kind': KIND + '-receipt', 'current': expected_current, 'identity': identity,
             'status': 'FAILED_OR_UNKNOWN' if failure else 'REMOVED' if deleted else 'NO_ACTION',
             'requestSha256': request_sha256, 'planSha256': plan_sha256, 'deleted': deleted, 'failure': failure,
             'mutationAttempted': mutation_attempted, 'lastAttemptedRelease': active,
+            'lastQuarantinePath':active_quarantine['path'] if active_quarantine else None,
+            'retainedQuarantinePaths':[row['path'] for row in quarantines
+                                       if (Path(root)/row['path']).exists() or (Path(root)/row['path']).is_symlink()],
             'journalSha256': digest_bytes(journal_path.read_bytes()),
             'availableBytesBefore': before.f_bavail * before.f_frsize, 'availableBytesAfter': after.f_bavail * after.f_frsize,
             'inboxKeepersPreserved': failure is None, 'sourceArchivesDataAndReportsHaveNoDeletionApi': True}

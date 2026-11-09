@@ -10,6 +10,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import stat
 import sys
 import tarfile
 from types import SimpleNamespace
@@ -259,12 +260,104 @@ def described(copies):
     return retirer.describe_duplicate(copies.root, copies.tag, copies.sha, copies.size)
 
 
-def test_exact_transport_copy_can_be_unlinked_while_original_inbox_bytes_remain(copies):
+def test_exact_transport_copy_can_be_unlinked_while_original_inbox_bytes_remain(copies, monkeypatch):
     original_keeper = copies.keeper.stat()
+    reserved = []
+    reserve = retirer.reserve_quarantine
+    def remember_reservation(*args, **kwargs):
+        result = reserve(*args, **kwargs); reserved.append(result)
+        return result
+    monkeypatch.setattr(retirer, 'reserve_quarantine', remember_reservation)
     result = retirer.remove_duplicate(copies.root, described(copies))
     assert not copies.target.exists() and copies.keeper.read_bytes() == copies.payload
     assert copies.keeper.stat().st_ino == original_keeper.st_ino
     assert result['keeperVerifiedAfter'] is True and result['bytes'] == copies.size
+    assert len(reserved) == 1
+    assert list((copies.root / reserved[0]['directory']).iterdir()) == []
+
+
+@pytest.mark.parametrize('scoped_to_current', [False, True])
+def test_quarantine_reservation_is_a_fresh_private_directory_with_no_file(copies, scoped_to_current):
+    current = copies.tag if scoped_to_current else None
+    first = retirer.reserve_quarantine(copies.root, current)
+    second = retirer.reserve_quarantine(copies.root, current)
+    assert first['directory'] != second['directory']
+    for reservation in (first, second):
+        assert set(reservation) == {'directory', 'path', 'directoryIdentity'}
+        directory = copies.root / reservation['directory']; path = copies.root / reservation['path']
+        observed = directory.lstat()
+        assert directory.resolve(strict=True) == directory and directory.is_relative_to(copies.root)
+        assert stat.S_ISDIR(observed.st_mode) and stat.S_IMODE(observed.st_mode) == 0o700
+        assert reservation['directoryIdentity'] == [observed.st_dev, observed.st_ino, observed.st_mode,
+                                                    observed.st_uid, observed.st_gid]
+        assert path.parent == directory and path.name == 'candidate-app.jar'
+        assert not path.exists() and not path.is_symlink() and list(directory.iterdir()) == []
+        if scoped_to_current:
+            assert directory.is_relative_to(copies.keeper.parent)
+
+
+def test_keeper_swapped_into_target_at_capture_is_quarantined_never_unlinked(copies, monkeypatch):
+    descriptor = described(copies); reservation = retirer.reserve_quarantine(copies.root)
+    captured = copies.root / reservation['path']; keeper_inode = copies.keeper.stat().st_ino
+    capture = retirer._capture_no_replace; calls = []
+    def substitute_keeper(*args, **kwargs):
+        calls.append(True)
+        os.replace(copies.keeper, copies.target)
+        return capture(*args, **kwargs)
+    def refuse_unlink(*_args, **_kwargs):
+        pytest.fail('An unrecognized captured inode must be retained, never unlinked')
+    monkeypatch.setattr(retirer, '_capture_no_replace', substitute_keeper)
+    monkeypatch.setattr(retirer.os, 'unlink', refuse_unlink)
+    with pytest.raises((retirer.RetirementError, OSError)):
+        retirer.remove_duplicate(copies.root, descriptor, quarantine=reservation)
+    assert calls == [True]
+    assert captured.is_file() and captured.stat().st_ino == keeper_inode
+    assert captured.read_bytes() == copies.payload
+    assert not copies.keeper.exists() and not copies.target.exists()
+
+
+def test_keeper_moved_to_old_target_at_quarantine_unlink_keeps_its_bytes(copies, monkeypatch):
+    descriptor = described(copies); reservation = retirer.reserve_quarantine(copies.root)
+    captured = copies.root / reservation['path']; directory = captured.parent
+    keeper_inode = copies.keeper.stat().st_ino; unlink = os.unlink; calls = []
+    def substitute_keeper_at_unlink(name, *args, **kwargs):
+        assert Path(name).name == captured.name
+        if 'dir_fd' in kwargs:
+            assert os.fstat(kwargs['dir_fd']).st_ino == directory.stat().st_ino
+        else:
+            assert Path(name) == captured
+        calls.append(True)
+        os.replace(copies.keeper, copies.target)
+        return unlink(name, *args, **kwargs)
+    monkeypatch.setattr(retirer.os, 'unlink', substitute_keeper_at_unlink)
+    with pytest.raises((retirer.RetirementError, OSError)):
+        retirer.remove_duplicate(copies.root, descriptor, quarantine=reservation)
+    assert calls == [True]
+    assert copies.target.is_file() and copies.target.stat().st_ino == keeper_inode
+    assert copies.target.read_bytes() == copies.payload
+    assert not copies.keeper.exists() and not captured.exists()
+
+
+@pytest.mark.parametrize('appears_at_capture', [False, True])
+def test_unknown_quarantine_file_is_never_replaced_or_deleted(copies, monkeypatch, appears_at_capture):
+    descriptor = described(copies); reservation = retirer.reserve_quarantine(copies.root)
+    captured = copies.root / reservation['path']; unrecognized = b'unrecognized retained original\x00\xff'
+    initial_target_inode = copies.target.stat().st_ino
+    def insert_unrecognized():
+        captured.write_bytes(unrecognized); captured.chmod(0o600)
+    if appears_at_capture:
+        capture = retirer._capture_no_replace
+        def insert_before_capture(*args, **kwargs):
+            insert_unrecognized()
+            return capture(*args, **kwargs)
+        monkeypatch.setattr(retirer, '_capture_no_replace', insert_before_capture)
+    else:
+        insert_unrecognized()
+    with pytest.raises((retirer.RetirementError, OSError)):
+        retirer.remove_duplicate(copies.root, descriptor, quarantine=reservation)
+    assert captured.read_bytes() == unrecognized
+    assert copies.target.stat().st_ino == initial_target_inode
+    assert copies.target.read_bytes() == copies.keeper.read_bytes() == copies.payload
 
 
 @pytest.mark.parametrize('which', ['target', 'keeper'])
@@ -320,15 +413,19 @@ def test_symlink_replacement_cannot_redirect_the_descriptor(copies, which):
 
 def test_modified_keeper_during_unlink_is_unknown_never_a_success(copies, monkeypatch):
     descriptor = described(copies); original = os.unlink
+    reservation = retirer.reserve_quarantine(copies.root); captured = copies.root / reservation['path']
     def mutate_keeper(name, *args, **kwargs):
+        assert Path(name).name == captured.name
+        if 'dir_fd' in kwargs:
+            assert os.fstat(kwargs['dir_fd']).st_ino == captured.parent.stat().st_ino
         copies.keeper.write_bytes(b'Y' * copies.size)
         return original(name, *args, **kwargs)
     monkeypatch.setattr(retirer.os, 'unlink', mutate_keeper)
     with pytest.raises(retirer.RetirementError, match='KEEPER_CHANGED_AFTER_UNLINK'):
-        retirer.remove_duplicate(copies.root, descriptor)
+        retirer.remove_duplicate(copies.root, descriptor, quarantine=reservation)
     # The authorized copy may already be gone. The API must not claim keeper
     # verification or retry a deletion against an unrelated replacement.
-    assert copies.keeper.is_file() and not copies.target.exists()
+    assert copies.keeper.is_file() and not copies.target.exists() and not captured.exists()
 
 
 def test_small_declared_jar_limit_does_not_read_or_delete_an_oversize_file(copies, monkeypatch):
@@ -416,6 +513,38 @@ def test_apply_rechecks_a_fixed_plan_and_journals_only_the_exact_duplicate(copie
     journal = copies.root / 'inbox' / current['release'] / 'native-jar-duplicate-journal.jsonl'
     events = [json.loads(line) for line in journal.read_bytes().splitlines()]
     assert [row['phase'] for row in events] == ['STARTED', 'DELETE_STARTED', 'DELETE_FINISHED', 'FINISHED']
+    quarantine_path = events[1]['quarantinePath']
+    quarantine = copies.root / quarantine_path
+    assert quarantine.is_relative_to(copies.root / 'inbox' / current['release'])
+    assert quarantine.name == 'candidate-app.jar' and list(quarantine.parent.iterdir()) == []
+    assert events[2]['quarantinePath'] == result['lastQuarantinePath'] == quarantine_path
+    assert result['retainedQuarantinePaths'] == []
+
+
+def test_apply_journals_the_retained_keeper_capture_before_reporting_failure(copies, bundle, monkeypatch):
+    current, raw = retirement_request(copies, bundle)
+    monkeypatch.setattr(retirer, 'admit_candidate', lifecycle_admission(copies, bundle))
+    options = dict(request_sha256=sha(raw), expected_current=current, identity=bundle.identity, quiescence=lambda *_a: None)
+    plan = retirer.plan(copies.root, raw, **options)
+    keeper_inode = copies.keeper.stat().st_ino; capture = retirer._capture_no_replace
+    def substitute_keeper(*args, **kwargs):
+        os.replace(copies.keeper, copies.target)
+        return capture(*args, **kwargs)
+    monkeypatch.setattr(retirer, '_capture_no_replace', substitute_keeper)
+    result = retirer.apply(copies.root, raw, plan, plan_sha256=sha(retirer.canonical(plan)), **options)
+    assert result['status'] == 'FAILED_OR_UNKNOWN' and result['deleted'] == []
+    assert result['mutationAttempted'] is True and result['inboxKeepersPreserved'] is False
+    journal = copies.root / 'inbox' / current['release'] / 'native-jar-duplicate-journal.jsonl'
+    events = [json.loads(line) for line in journal.read_bytes().splitlines()]
+    assert [row['phase'] for row in events] == ['STARTED', 'DELETE_STARTED', 'FAILED_OR_UNKNOWN']
+    quarantine_path = events[1]['quarantinePath']
+    assert result['lastQuarantinePath'] == quarantine_path
+    assert result['retainedQuarantinePaths'] == [quarantine_path]
+    retained = copies.root / quarantine_path
+    assert retained.is_relative_to(copies.root / 'inbox' / current['release'])
+    assert retained.name == 'candidate-app.jar' and retained.stat().st_ino == keeper_inode
+    assert retained.read_bytes() == copies.payload
+    assert not copies.keeper.exists() and not copies.target.exists()
 
 
 def test_apply_rejects_drift_and_records_failure_without_deleting_files(copies, bundle, monkeypatch):
