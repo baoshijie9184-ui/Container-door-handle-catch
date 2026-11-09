@@ -4,6 +4,7 @@ These tests never address Docker, historical source executors, or business
 data. Local inspection is restricted to parsing this file without importing it.
 """
 import copy
+import ast
 import hashlib
 import importlib.util
 import json
@@ -36,6 +37,36 @@ def raw(value):
 
 def sha(value):
     return hashlib.sha256(value).hexdigest()
+
+
+def test_reviewed_manifest_is_identical_across_python_controller_and_builder_and_powershell():
+    root = MODULE.parents[2]
+    source = (root / 'script/jenkins/retire-failed-native-jar-duplicates.py').read_text(encoding='utf8')
+    def assigned(tree, name):
+        return next(ast.literal_eval(node.value) for node in tree.body if isinstance(node, ast.Assign)
+                    and any(isinstance(target, ast.Name) and target.id == name for target in node.targets))
+    syntax = ast.parse(source)
+    approved = assigned(syntax, 'APPROVED_OLD'); pins = assigned(syntax, 'APPROVED_BUILDER_TOOLS')
+    script = (root / 'script/jenkins/retire-failed-native-jar-duplicates.ps1').read_text(encoding='utf8')
+    reader = script.split("$reader=@'\n", 1)[1].split("\n'@", 1)[0]
+    local = assigned(ast.parse(reader), 'approved')
+    numbers = {117, 118, 130, 132, 134, 137, 139, 141, 143, 145}
+    assert {int(tag.split('-')[1]) for tag in approved} == numbers
+    assert approved == resources.HISTORICAL_BUILDERS and set(pins) == set(approved)
+    assert len(local) == len(approved) == 10 and len({number for number, _, _ in local}) == 10
+    for number, commit, preservation_sha in local:
+        tag = 'ci-' + str(number) + '-' + commit[:12]
+        assert approved[tag] == commit and resources.SHA.fullmatch(preservation_sha) and resources.SHA.fullmatch(pins[tag])
+
+
+def test_newly_reviewed_terminal_builders_use_the_same_complete_original_control_guards():
+    for tag, commit in resources.HISTORICAL_BUILDERS.items():
+        if int(tag.split('-')[1]) < 132: continue
+        state = fixture_state((tag, commit, 'a' * 64, 'b' * 24))
+        result = describe(state)
+        assert result['release'] == tag and result['commit'] == commit
+        state.row['State']['Running'] = True
+        with pytest.raises(ValueError): describe(state)
 
 
 def refresh_references(state):
@@ -120,7 +151,7 @@ def change(value, path, replacement):
 
 
 @pytest.mark.parametrize('old', OLD)
-def test_only_three_reviewed_builders_can_bind_complete_original_control_bytes(old, monkeypatch):
+def test_reviewed_builders_can_bind_complete_original_control_bytes(old, monkeypatch):
     state = fixture_state(old)
     def refuse(*_args, **_kwargs):
         pytest.fail('The descriptor must use supplied original bytes, not filesystem, Docker or old code')

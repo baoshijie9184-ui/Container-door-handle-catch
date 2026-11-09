@@ -48,7 +48,7 @@ Require-NativeJar ([IO.Path]::IsPathFullyQualified($RetainedControlRoot) -and [I
 
 # Stdlib byte/metadata inspection only. No project module, DB, application or
 # test is imported or run on the workstation. D evidence is pinned to original
-# preservation manifests reviewed for these three exact historical attempts.
+# preservation manifests reviewed for these ten exact historical attempts.
 $reader=@'
 import gzip,hashlib,json,os,stat,sys,tarfile
 from pathlib import Path
@@ -70,7 +70,14 @@ def unique(pairs):
 archive,commit,retained,jhome,remote,current=sys.argv[1:]
 approved=[(117,'8c898996cc28ce30fd6531710511f833cccb4864','e1eec611a0dcbb93158d8e5a68fc5d16e6f96d65dcb82e6930f54abdd84d2e2c'),
  (118,'6481f7fa6021eb36592a081d04f385886c03412a','e73474da34762eedf1438c835dbc741091f02c69fb5c3664dbba6cca30395f8a'),
- (130,'9a588271dadb135ec4284392ef7b9c9c55ea511d','f53a73fa4ce45e44b666cbf963145b353f6e478c7cc594ca849b59bfe0b924d2')]
+ (130,'9a588271dadb135ec4284392ef7b9c9c55ea511d','f53a73fa4ce45e44b666cbf963145b353f6e478c7cc594ca849b59bfe0b924d2'),
+ (132,'69f2ef0fb3091cc204b75194aa6da96c696136f0','a52af50762c2b5629aa6ab3f2f453ab50252d1ac965471b4e0ee3fed46b1c3e5'),
+ (134,'df30e17036de96863957b13e57f12b129bbfa951','78039d10d7e9415a5c9c798ad67e01ca5760e525814d0874c64703fe7fb9f62b'),
+ (137,'facc2ed94047d7cc01da8072195e6d769c6f1385','ae89a08f1c3d046a3a02bdfff4583b97b34d7ad64497f7b0cf4d08cfadf0ae69'),
+ (139,'384439388a8c6de52ca90be62722c382ff8973bb','8981260defa80777c4c09d8c1dd9a4230fe5dcc4ac50578544da3b1fa7ec0404'),
+ (141,'56da3c4f780055e4f1f1ae835888189e85807bec','c00b42067d0b6786e1daaad88c57570ecab0a14901c31cbc0ddea44e30bba9bc'),
+ (143,'f4b5c8d9e39bfe621c97fb1d9e82aea667bab08f','032b3ae99967219534fe34131be8f8af7c6acd133ec61238d0cf005c3a9b8afa'),
+ (145,'dd85b09748a996f68e909fa54bc9412110e78134','372c5f0713c02051be0f5c9bcd2179e805a39e1c0aea4d96a3e1aee88fe9dac4')]
 helpers={};wanted={'script/jenkins/retire-failed-native-jar-duplicates.py','script/jenkins/cleanup-ecs-builds.py','script/jenkins/verify-remote.py','script/docker/compact-build-resources.py'}
 class Bounded:
  def __init__(self,s):self.s,self.n=s,0
@@ -134,7 +141,10 @@ $specSha=$uploads[-1].sha256
 if ($Mode -ceq 'Maintenance') {
     $uploads+=@{relative="inbox/$Tag/native-jar-duplicate-maintenance-package.json";source=$currentReceipt;bytes=(Get-Item -LiteralPath $currentReceipt).Length;sha256=$currentReceiptSha}
 }
-$context=@{root=$RemoteRoot;tag=$Tag;commit=$Commit;sourceSha256=$SourceSha256;mode=$Mode;instanceId=$instance;machineId=$machine;helpers=$local.helpers;uploads=$uploads}
+# Local source paths are used only by the SCP loop; the remote byte verifier
+# receives its exact relative path/length/SHA contract without unused D paths.
+$remoteUploads=@($uploads | ForEach-Object { @{relative=$_.relative;bytes=$_.bytes;sha256=$_.sha256} })
+$context=@{root=$RemoteRoot;tag=$Tag;commit=$Commit;sourceSha256=$SourceSha256;mode=$Mode;instanceId=$instance;machineId=$machine;helpers=$local.helpers;uploads=$remoteUploads}
 $bootstrap=@'
 import base64,gzip,hashlib,json,os,stat,sys,tarfile
 from pathlib import Path

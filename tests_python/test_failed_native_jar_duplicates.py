@@ -51,7 +51,7 @@ def flow_xml(context, *, result='FAILURE', completed='true', done='true'):
     execution = ET.SubElement(root, 'execution', {'class': 'org.jenkinsci.plugins.workflow.cps.CpsFlowExecution'})
     ET.SubElement(execution, 'done').text = done
     # Actual persisted Jenkins flow-build originals use this declaration.
-    return b"<?xml version='1.1' encoding='UTF-8'?>\n" + ET.tostring(root, encoding='utf8')
+    return b"<?xml version='1.1' encoding='UTF-8'?>\n" + ET.tostring(root, encoding='utf-8', xml_declaration=False)
 
 
 @pytest.fixture
@@ -95,10 +95,13 @@ def test_equal_jar_digest_and_valid_controls_do_not_perform_file_or_process_oper
     frozen = copy.deepcopy(bundle.values)
     def refuse(*_args, **_kwargs):
         pytest.fail('Pure evidence validation must not inspect or retire filesystem objects')
-    for name in ('open', 'read_bytes', 'stat', 'unlink', 'rename'):
-        monkeypatch.setattr(Path, name, refuse)
-    monkeypatch.setattr(os, 'unlink', refuse)
-    monkeypatch.setattr(os, 'remove', refuse)
+    class EvidencePath(type(Path())):
+        open = read_bytes = stat = unlink = rename = refuse
+    # Patch only this module's aliases. Pytest still needs pathlib and os to
+    # render a regression failure and write its original report.
+    monkeypatch.setattr(retirer, 'Path', EvidencePath)
+    monkeypatch.setattr(retirer, 'os', SimpleNamespace(open=refuse, stat=refuse, unlink=refuse, remove=refuse))
+    monkeypatch.setattr(retirer, 'subprocess', SimpleNamespace(run=refuse, Popen=refuse))
     assert isinstance(validate(bundle), dict)
     assert bundle.values == frozen
 
@@ -611,12 +614,12 @@ def test_cli_capture_missing_actual_ecs_evidence_is_an_explicit_skip(tmp_path,bu
     assert request['candidates']==[] and skipped==[{'release':state.tag,'reason':'REQUIRED_ECS_CONTROL_MISSING_'+role.upper()}]
 
 
-def test_cli_cannot_extend_the_three_reviewed_candidates_through_an_input_document(bundle):
+def test_cli_cannot_extend_reviewed_candidates_through_an_input_document(bundle):
     current={'release':'ci-200-'+'f'*12,'commit':'f'*40,'sourceSha256':'e'*64}
     spec={'schemaVersion':1,'kind':retirer.KIND+'-request','current':current,'identity':bundle.identity,
-          'protectedReleases':[current['release']],'candidates':[{**bundle.context,'controls':{}}]}
+          'protectedReleases':[current['release']],'candidates':[{**bundle.context,'release':'ci-131-'+'a'*12,'controls':{}}]}
     raw=encoded(spec)
-    with pytest.raises(retirer.RetirementError,match='ONLY_THREE_REVIEWED_OLD_ATTEMPTS_ALLOWED'):
+    with pytest.raises(retirer.RetirementError,match='ONLY_REVIEWED_OLD_ATTEMPTS_ALLOWED'):
         retirer.approved_request(raw,sha(raw),current,bundle.identity)
 
 

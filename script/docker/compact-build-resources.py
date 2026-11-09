@@ -1027,6 +1027,13 @@ HISTORICAL_BUILDERS = {
     'ci-117-8c898996cc28': '8c898996cc28ce30fd6531710511f833cccb4864',
     'ci-118-6481f7fa6021': '6481f7fa6021eb36592a081d04f385886c03412a',
     'ci-130-9a588271dadb': '9a588271dadb135ec4284392ef7b9c9c55ea511d',
+    'ci-132-69f2ef0fb309': '69f2ef0fb3091cc204b75194aa6da96c696136f0',
+    'ci-134-df30e17036de': 'df30e17036de96863957b13e57f12b129bbfa951',
+    'ci-137-facc2ed94047': 'facc2ed94047d7cc01da8072195e6d769c6f1385',
+    'ci-139-384439388a8c': '384439388a8c6de52ca90be62722c382ff8973bb',
+    'ci-141-56da3c4f7800': '56da3c4f780055e4f1f1ae835888189e85807bec',
+    'ci-143-f4b5c8d9e39b': 'f4b5c8d9e39bfe621c97fb1d9e82aea667bab08f',
+    'ci-145-dd85b09748a9': 'dd85b09748a996f68e909fa54bc9412110e78134',
 }
 
 
@@ -1053,7 +1060,7 @@ def historical_builder_inspect(raw):
 
 
 def historical_builder_descriptor(root, context, identity, tools_raw, summary_raw, measurement_raw, old_helper_shas, row):
-    """Admit only three terminal, owned builders; no mutation or old code execution.
+    """Admit only reviewed terminal, owned builders; no old code execution.
 
     The caller authenticates the failed Jenkins terminal and the original source
     archive before supplying the two old helper SHA values. The state volume is
@@ -1062,7 +1069,7 @@ def historical_builder_descriptor(root, context, identity, tools_raw, summary_ra
     require(type(context) is dict and set(context) == {'release', 'commit', 'sourceSha256'}
             and HISTORICAL_BUILDERS.get(context.get('release')) == context.get('commit')
             and type(context.get('sourceSha256')) is str and SHA.fullmatch(context['sourceSha256']),
-            'Only the three reviewed historical builders are eligible')
+            'Only the reviewed historical builders are eligible')
     require(type(identity) is dict and identity.get('executionLocation') == 'ECS'
             and set(identity) == {'instanceId', 'machineId', 'executionLocation'}, 'Exact historical ECS identity required')
     require(type(old_helper_shas) is dict and set(old_helper_shas) == {'compact-build-resources.py', 'compact-image-inputs.py'}

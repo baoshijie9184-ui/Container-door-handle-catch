@@ -1151,7 +1151,7 @@
       },
       {
         "module": "tests_python.test_historical_builder_retirement",
-        "minimumTests": 86,
+        "minimumTests": 88,
         "source": "tests_python/test_historical_builder_retirement.py",
         "allowedSkippedTests": []
       },

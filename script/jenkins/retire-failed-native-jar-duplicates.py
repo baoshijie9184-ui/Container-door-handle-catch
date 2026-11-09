@@ -43,6 +43,13 @@ APPROVED_OLD = {
     'ci-117-8c898996cc28': '8c898996cc28ce30fd6531710511f833cccb4864',
     'ci-118-6481f7fa6021': '6481f7fa6021eb36592a081d04f385886c03412a',
     'ci-130-9a588271dadb': '9a588271dadb135ec4284392ef7b9c9c55ea511d',
+    'ci-132-69f2ef0fb309': '69f2ef0fb3091cc204b75194aa6da96c696136f0',
+    'ci-134-df30e17036de': 'df30e17036de96863957b13e57f12b129bbfa951',
+    'ci-137-facc2ed94047': 'facc2ed94047d7cc01da8072195e6d769c6f1385',
+    'ci-139-384439388a8c': '384439388a8c6de52ca90be62722c382ff8973bb',
+    'ci-141-56da3c4f7800': '56da3c4f780055e4f1f1ae835888189e85807bec',
+    'ci-143-f4b5c8d9e39b': 'f4b5c8d9e39bfe621c97fb1d9e82aea667bab08f',
+    'ci-145-dd85b09748a9': 'dd85b09748a996f68e909fa54bc9412110e78134',
 }
 # Original tool bytes recorded by the retained Jenkins preparation receipts.
 # These values authenticate the owner chain; matching self-described fields
@@ -51,6 +58,13 @@ APPROVED_BUILDER_TOOLS = {
     'ci-117-8c898996cc28': 'da96602b35fc023d3b07ea853026dcc311739c1c3903e086f81af3d7e912a9e4',
     'ci-118-6481f7fa6021': 'ff6df0c9f30b38d66f6bc6bbfd42c2fae86d6fe75a7906fafbe19ce10fcb326a',
     'ci-130-9a588271dadb': '805a2a101db89e26ef54224cd4f1456f4f4b545675485a114374cacbc2bc3fb1',
+    'ci-132-69f2ef0fb309': '3123890d98586741cb14d2c2af0d269337b04243d985665b7e46a2c7b2a490d5',
+    'ci-134-df30e17036de': 'f8cf1deacead2aad74b133409813bd4448218a68231fda43e3cf1c0088b29252',
+    'ci-137-facc2ed94047': 'c8499b18b72497ec1d46d239ebbfcdbf5b2c1a24b6989a194f79eff9685e6313',
+    'ci-139-384439388a8c': '0d01a488d105dca27e5926b2ff0fb0070c8a50ce615b79ab4ac1032ca4d6bf9a',
+    'ci-141-56da3c4f7800': '332eaa16ca7c39154ff4f81dc9956ad6cf51f1ee3fda8075787c2067a255b87b',
+    'ci-143-f4b5c8d9e39b': '74d9b97fbaaa8d5af0cea2d3cfa32df7b5f831e392bcca39340eac02d46cac04',
+    'ci-145-dd85b09748a9': '7e55b094d7b558fd66d299a6c872749d6cb87071b50bb031ce2a5d71d03283d4',
 }
 
 
@@ -679,7 +693,7 @@ def admitted_current(args):
 
 def approved_request(raw, checksum, current, identity):
     request = validate_request(raw, checksum, current, identity)
-    need(all(APPROVED_OLD.get(row['release']) == row['commit'] for row in request['candidates']), 'ONLY_THREE_REVIEWED_OLD_ATTEMPTS_ALLOWED')
+    need(all(APPROVED_OLD.get(row['release']) == row['commit'] for row in request['candidates']), 'ONLY_REVIEWED_OLD_ATTEMPTS_ALLOWED')
     return request
 
 
