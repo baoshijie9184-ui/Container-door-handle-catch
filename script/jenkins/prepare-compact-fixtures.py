@@ -1326,21 +1326,27 @@ class Preparation:
             '--memory-swap', str(1536 * 1024 ** 2), '--cpus', '1', '--pids-limit', '256',
             '--mount', 'type=bind,source=' + str(data) + ',target=' + str(data),
             '--tmpfs', '/var/lib/mysql', image, '--datadir=' + str(data), '--port=' + str(port),
-            '--bind-address=0.0.0.0', '--mysqlx=OFF', '--event-scheduler=OFF', '--local-infile=OFF',
+            '--bind-address=0.0.0.0', '--mysqlx=OFF', '--event-scheduler=OFF', '--local-infile=OFF', '--skip-log-bin',
             '--innodb-buffer-pool-size=268435456', '--max-connections=120', timeout=120).decode().strip()
         require(CID.fullmatch(container), 'Owned MySQL container identity unavailable')
         self.journal['containerId'] = container; self.save('MYSQL_STARTED')
         deadline = time.monotonic() + 240
         while True:
             try:
-                row = self.admin_query("SELECT JSON_OBJECT('uuid',@@server_uuid,'version',@@version,'port',@@port,'data',@@datadir,'fk',@@foreign_key_checks);")
-                require(row['version'].startswith('8.4.') and row['port'] == port and row['fk'] == 1
-                        and row['data'].rstrip('/') == str(data), 'Owned MySQL actual storage/port/version differs')
-                self.journal['serverUuid'] = row['uuid']; break
+                row = self.admin_query("SELECT JSON_OBJECT('uuid',@@server_uuid,'version',@@version,'port',@@port,'data',@@datadir,'fk',@@foreign_key_checks,'logBin',@@GLOBAL.log_bin);")
             except Exception:
                 require(time.monotonic() < deadline and json.loads(self.docker_call('inspect', container))[0]['State']['Running'],
                         'Owned MySQL failed readiness; no other server or image will be substituted')
                 time.sleep(2)
+                continue
+            # This owned server serves the Java suites and both whole-migration
+            # recovery schemas. No replication or binary-log recovery is used.
+            require(row['version'].startswith('8.4.') and row['port'] == port and row['fk'] == 1
+                    and row['data'].rstrip('/') == str(data), 'Owned MySQL actual storage/port/version differs')
+            require(type(row.get('logBin')) is int and row['logBin'] == 0,
+                    'Owned disposable MySQL binary logging must be disabled at startup')
+            self.journal['serverUuid'] = row['uuid']; self.journal['binaryLoggingDisabled'] = True
+            break
         self.save('MYSQL_READY'); self.inspect_owned()
         output = self.work / 'mysql-client'; output.mkdir(mode=0o700); (output / 'private').mkdir(mode=0o700)
         self.mysql = self.runtime.Mysql({'scope': 'ecs-disposable-migration', 'serverUuid': self.journal['serverUuid'],
@@ -1431,6 +1437,8 @@ class Preparation:
         return result
 
     def whole_config(self, settings, java, jar):
+        require(self.journal.get('binaryLoggingDisabled') is True,
+                'Whole migration and its recovery schemas require the checked binlog-disabled fixture')
         token = self.journal['token']; user = 'mig_' + token; secret = secrets.token_hex(32)
         target = 'doorhandle_compact_candidate_' + token
         recovery = {'source': 'doorhandle_legacy_restore_' + token, 'target': 'doorhandle_compact_restore_' + token}

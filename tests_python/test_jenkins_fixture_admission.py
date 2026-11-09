@@ -1,6 +1,7 @@
 """ECS-run admission tests: a private manifest cannot promote production to a fixture."""
 import argparse
 import builtins
+from contextlib import nullcontext
 import hashlib
 import importlib.util
 import json
@@ -269,3 +270,96 @@ def test_a_later_suite_cannot_change_its_admitted_private_database_binding(tmp_p
     path.write_text(json.dumps(config), encoding='utf8')
     with pytest.raises(ValueError, match='changed after whole-plan admission'):
         verifier.require_unchanged_inputs(references)
+
+
+def mysql_control_module(filename, monkeypatch):
+    name = 'fixture_binlog_admission_' + filename.replace('-', '_').removesuffix('.py')
+    spec = importlib.util.spec_from_file_location(name, SOURCE.with_name(filename))
+    module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, name, module)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize('log_bin', [0, 1, None])
+def test_disposable_start_disables_binlog_before_suites_and_whole_migration(tmp_path, monkeypatch, log_bin):
+    preparer = mysql_control_module('prepare-compact-fixtures.py', monkeypatch)
+    controller = object.__new__(preparer.Preparation)
+    controller.work = tmp_path / 'fixture'; controller.work.mkdir()
+    controller.journal = {'token': 'e' * 24}
+    controller.args = types.SimpleNamespace(tag='ci-999-' + 'c' * 12, source_sha256='d' * 64)
+    controller.identity = IDENTITY; controller.docker = Path('/usr/bin/docker')
+    calls, configs, saved, statements = [], [], [], []
+    cid, image = 'b' * 64, 'sha256:' + 'f' * 64
+    class AvailablePort:
+        def __enter__(self): return self
+        def __exit__(self, *unused): return None
+        def bind(self, address): assert address == ('127.0.0.1', 0)
+        def getsockname(self): return ('127.0.0.1', 15444)
+    monkeypatch.setattr(preparer, 'socket', types.SimpleNamespace(socket=AvailablePort))
+    def docker(*args, **kwargs):
+        calls.append(args)
+        if args[:2] == ('image', 'inspect'): return json.dumps([{'Id': image}]).encode()
+        assert args[0] == 'run'
+        return cid.encode()
+    controller.docker_call = docker
+    controller.save = saved.append; controller.inspect_owned = lambda: {}
+    def query(sql):
+        assert "'logBin',@@GLOBAL.log_bin" in sql
+        return {'uuid': SERVER, 'version': '8.4.6', 'port': 15444, 'fk': 1,
+                'data': str(controller.work / 'mysql-data') + '/', 'logBin': log_bin}
+    controller.admin_query = query
+    def mysql(config, output):
+        configs.append(config)
+        return types.SimpleNamespace(admitted_server=lambda: {}, script=lambda sql, **kwargs: statements.append(sql))
+    controller.runtime = types.SimpleNamespace(Mysql=mysql, quoted=lambda value: '`' + value + '`')
+    if log_bin != 0:
+        with pytest.raises(ValueError, match='binary logging must be disabled'):
+            controller.start_mysql(image)
+        assert not configs and 'MYSQL_READY' not in saved
+    else:
+        controller.start_mysql(image)
+        assert controller.journal['binaryLoggingDisabled'] is True
+        controller.journal.update(sourceClone='doorhandle_migration_verify_fixture', sourceCollations={})
+        whole = controller.whole_config({'sourceOffsets': {}, 'applicationJarSha256': 'a' * 64}, '/tool/java', '/private/app.jar')
+        # Source/target backup restorations are separate schemas on this same
+        # checked server, not another unconfigured MySQL container.
+        assert whole['client']['containerId'] == configs[0]['client']['containerId'] == cid
+        assert whole['serverUuid'] == SERVER and whole['connection']['port'] == 15444
+        assert set(whole['recoverySchemas']) == {'source', 'target'}
+        assert not any('SUPER' in sql for sql in statements)
+    launched = next(row for row in calls if row[0] == 'run')
+    assert launched.count('--skip-log-bin') == 1
+    assert not any('log-bin-trust-function-creators' in item for item in launched)
+
+
+@pytest.mark.parametrize('log_bin', [0, 1, None])
+def test_independent_sql_recovery_checks_actual_binlog_before_import(tmp_path, monkeypatch, log_bin):
+    recovery = mysql_control_module('restore-local-mysql.py', monkeypatch)
+    controller = object.__new__(recovery.Recovery)
+    controller.directory = tmp_path / 'recovery'; controller.directory.mkdir()
+    controller.guard = lambda: None; controller.creation_lock = nullcontext
+    node = {'containerId': 'b' * 64}; persisted = []
+    controller.create_registered = lambda ordinal: node
+    def query(sql):
+        assert "'logBin',@@GLOBAL.log_bin" in sql
+        return {'uuid': SERVER, 'version': '8.4.6', 'port': 3306, 'events': 'DISABLED',
+                'datadir': '/var/lib/mysql/', 'logBin': log_bin}
+    client = types.SimpleNamespace(single=query)
+    controller.sql_client = lambda cid, output: client
+    controller.persist = lambda: persisted.append(True)
+    if log_bin != 0:
+        with pytest.raises(ValueError, match='binary logging must be disabled'):
+            controller.start('a')
+        assert not persisted and 'serverUuid' not in node
+    else:
+        observed, actual = controller.start('a')
+        assert actual is client and observed['serverUuid'] == SERVER
+        assert observed['binaryLoggingDisabled'] is True and persisted
+
+
+def test_whole_migration_cannot_use_a_fixture_without_actual_binlog_readback(monkeypatch):
+    preparer = mysql_control_module('prepare-compact-fixtures.py', monkeypatch)
+    controller = object.__new__(preparer.Preparation); controller.journal = {}
+    with pytest.raises(ValueError, match='recovery schemas require the checked binlog-disabled fixture'):
+        controller.whole_config({}, '/unused/java', '/unused/app.jar')

@@ -2,7 +2,7 @@
 
 ## 收尾时按失败阶段重跑
 
-控制脚本修改先选择 `ACTION=verify-controls`、`DOORHANDLE_CI_SCOPE=source`，业务快照、夹具和发布参数留空/关闭。该入口只打包固定提交源码，在 ECS 准备测试工具、执行控制检查并收集报告；跳过本地 Java 构建、应用 JAR 传输、数据库准备和业务测试。当前最低 491 例，包含 29 表源码/MySQL 规则、旧 Python 缓存回收与补充数据封存检查。#163 的实际结果为较早版本 424 项通过，新增检查仍须 ECS 实测；控制预检不代表真实 MySQL 或迁移通过。
+控制脚本修改先选择 `ACTION=verify-controls`、`DOORHANDLE_CI_SCOPE=source`，业务快照、夹具和发布参数留空/关闭。该入口只打包固定提交源码，在 ECS 准备测试工具、执行控制检查并收集报告；跳过本地 Java 构建、应用 JAR 传输、数据库准备和业务测试。当前最低 498 例，包含 29 表源码/MySQL 规则、旧 Python 缓存回收、补充数据封存和隔离 MySQL binlog 边界检查。#164 实际为较早版本 491 项通过，新增 7 项仍须 ECS 实测；控制预检不代表真实 MySQL 或迁移通过。
 
 补充系统数据使用独立的 `REMAINING_SYSTEM_DATA_SNAPSHOT` / `REMAINING_SYSTEM_DATA_ECS_SNAPSHOT` 二选一参数及 `remaining-system-data-custody.json` 回执，在验证后保全固定 86 项原件，不覆盖原模型附件 profile、恢复目标或回执。控制预检、容量维护及 embedding 专项拒绝该业务输入。容量维护仅精确删除已登记且再次核验的旧 Python 构建对象，真实回收量按维护回执的磁盘读回判断。
 

@@ -269,13 +269,17 @@ class Recovery:
         while True:
             self.guard()
             try:
-                identity = client.single("SELECT JSON_OBJECT('uuid',@@server_uuid,'version',@@version,'port',@@port,'datadir',@@datadir,'events',@@event_scheduler);")
-                need(identity['version'].startswith('8.4.') and identity['events'] == 'DISABLED' and identity['port'] == 3306
-                     and identity['datadir'] == '/var/lib/mysql/', 'Recovered server version/data-directory/event boundary differs')
-                node['serverUuid'] = identity['uuid']; self.persist(); return node, client
+                identity = client.single("SELECT JSON_OBJECT('uuid',@@server_uuid,'version',@@version,'port',@@port,'datadir',@@datadir,'events',@@event_scheduler,'logBin',@@GLOBAL.log_bin);")
             except Exception:
                 need(time.monotonic() < deadline and self.inspect(cid)['State']['Running'], 'Owned recovery MySQL readiness failed')
                 time.sleep(1)
+                continue
+            need(identity['version'].startswith('8.4.') and identity['events'] == 'DISABLED' and identity['port'] == 3306
+                 and identity['datadir'] == '/var/lib/mysql/', 'Recovered server version/data-directory/event boundary differs')
+            need(type(identity.get('logBin')) is int and identity['logBin'] == 0,
+                 'Owned SQL recovery binary logging must be disabled at startup')
+            node['serverUuid'] = identity['uuid']; node['binaryLoggingDisabled'] = True
+            self.persist(); return node, client
 
     def import_original(self, client, file):
         client.script('CREATE DATABASE ' + quote(SCHEMA) + ' CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;', label='fresh-project-schema')

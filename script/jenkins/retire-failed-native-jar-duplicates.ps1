@@ -326,16 +326,24 @@ if ($pythonCacheRequested) {
 $summary=[ordered]@{schemaVersion=1;kind='doorhandle-failed-native-jar-duplicate-ci';current=$spec.current;identity=$spec.identity;status=$receipt.status;requestSha256=$requestSha;planSha256=$planned.plan.sha256;deletedFiles=@($receipt.deleted).Count;candidateAllocatedBytes=$planned.candidateAllocatedBytes;localControlCustody=$local.custody;localSkipped=$local.skipped;captureSkipped=$captured.skipped;planSkipped=$planned.skipped;builderStatus=$builderReceipt.status;retiredBuilders=@($builderReceipt.removed).Count;retiredMysqlObjects=@($builderReceipt.retiredMysqlObjects).Count;mysqlDataDirectoriesPreserved=$true;builderSkipped=$builderReceipt.skipped;builderPlanSha256=$builderPlanned.plan.sha256;availableBytesBefore=$receipt.availableBytesBefore;availableBytesAfter=$receipt.availableBytesAfter;inboxKeepersPreserved=$true;imagesPreserved=$true;volumesPreserved=$true;testsRunByRetirement=$false}
 $summary.publicLayerStatus=$publicLayerReceipt.status
 $summary.publicLayerDeletedFiles=@($publicLayerReceipt.deleted).Count
-$summary.publicLayerDeletedBytes=[long](@($publicLayerReceipt.deleted) | Measure-Object -Property bytes -Sum).Sum
-$summary.publicLayerDeletedAllocatedBytes=[long](@($publicLayerReceipt.deleted) | Measure-Object -Property allocatedBytes -Sum).Sum
+$summary.publicLayerDeletedBytes=[long]0
+$summary.publicLayerDeletedAllocatedBytes=[long]0
+foreach ($deletedLayer in @($publicLayerReceipt.deleted)) {
+    $summary.publicLayerDeletedBytes += [long]$deletedLayer.bytes
+    $summary.publicLayerDeletedAllocatedBytes += [long]$deletedLayer.allocatedBytes
+}
 $summary.publicLayerCandidateAllocatedBytes=$publicLayerPlanned.candidateAllocatedBytes
 $summary.publicLayerPlanSha256=$publicLayerPlanned.plan.sha256
 $summary.publicLayerSkipped=$publicLayerReceipt.skipped
 $summary.upstreamTarAndKeeper117Preserved=$true
 $summary.generatedArchiveStatus=$generatedArchiveReceipt.status
 $summary.generatedArchiveDeletedFiles=@($generatedArchiveReceipt.deleted).Count
-$summary.generatedArchiveDeletedBytes=[long](@($generatedArchiveReceipt.deleted) | Measure-Object -Property bytes -Sum).Sum
-$summary.generatedArchiveDeletedAllocatedBytes=[long](@($generatedArchiveReceipt.deleted) | Measure-Object -Property allocatedBytes -Sum).Sum
+$summary.generatedArchiveDeletedBytes=[long]0
+$summary.generatedArchiveDeletedAllocatedBytes=[long]0
+foreach ($deletedArchive in @($generatedArchiveReceipt.deleted)) {
+    $summary.generatedArchiveDeletedBytes += [long]$deletedArchive.bytes
+    $summary.generatedArchiveDeletedAllocatedBytes += [long]$deletedArchive.allocatedBytes
+}
 $summary.generatedArchivePlanSha256=$generatedArchivePlanned.plan.sha256
 $summary.generatedArchiveSkipped=$generatedArchiveReceipt.skipped
 $summary.availableBytesAfter=$generatedArchiveReceipt.availableBytesAfter

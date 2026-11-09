@@ -1217,7 +1217,7 @@
       },
       {
         "module": "tests_python.test_jenkins_fixture_admission",
-        "minimumTests": 23,
+        "minimumTests": 30,
         "source": "tests_python/test_jenkins_fixture_admission.py",
         "allowedSkippedTests": []
       },
