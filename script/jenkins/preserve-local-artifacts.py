@@ -520,7 +520,14 @@ def verify_restore(args):
             name = member_name(entry.name)
             need(entry.isfile() and name in expected and name not in seen and entry.size == expected[name]["bytes"],
                  "Custody archive contains an extra, changed or linked member")
-            target = restore / name; target.parent.mkdir(mode=0o700, parents=True, exist_ok=True); safe(target, exists=False)
+            target = restore / name; parent = owner_path(restore, directory=True)
+            # pathlib's parents=True gives intermediate directories the process
+            # default mode, which can expose nested restored originals.
+            for part in Path(name).parts[:-1]:
+                parent = parent / part
+                if not parent.exists(): private_directory(parent)
+                owner_path(parent, directory=True)
+            safe(target, exists=False)
             checksum = hashlib.sha256(); copied = 0
             with tar.extractfile(entry) as source, os.fdopen(os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600), "wb") as output:
                 for chunk in iter(lambda: source.read(1024 * 1024), b""):

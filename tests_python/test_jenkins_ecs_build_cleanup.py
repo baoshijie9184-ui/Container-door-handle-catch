@@ -1130,10 +1130,10 @@ def test_windows_local_custody_dispatch_does_not_require_linux_privilege_api(tmp
     expected = {'kind': 'local-custody-contract', 'status': 'VERIFIED_LOCAL_BYTES'}; writes = []
     monkeypatch.setattr(cleanup, 'verifier_module', lambda path: object())
     monkeypatch.setattr(cleanup, 'local_custody', lambda directory, verifier: expected)
-    monkeypatch.setattr(cleanup, 'write_json', lambda path, value: writes.append((path, value)))
+    monkeypatch.setattr(cleanup, 'write_json', lambda path, value, *, byte_limit: writes.append((path, value, byte_limit)))
     output = tmp_path / 'custody.json'
     cleanup.main(['custody', '--retained-directory', str(tmp_path), '--output', str(output)])
-    assert writes == [(output, expected)] and json.loads(capsys.readouterr().out) == expected
+    assert writes == [(output, expected, cleanup.MAX_PLAN)] and json.loads(capsys.readouterr().out) == expected
 
 
 def test_failure_metadata_parses_the_same_fixed_source_once_for_one_hundred_diagnostics(monkeypatch):

@@ -194,7 +194,14 @@ def test_remaining_opaque_pack_restore_and_reuse_never_activate_payloads(remaini
     before = {name: custody.digest(fixture.source / name) for name, _, _ in fixture.rows}
     custody.pack(fixture.catalog, package)
     args, work = create_attempt(tmp_path, monkeypatch, package)
-    custody.prepare(args); upload(package, work); first = custody.verify_restore(args)
+    previous_umask = os.umask(0o022)
+    try:
+        custody.prepare(args); upload(package, work); first = custody.verify_restore(args)
+    finally:
+        os.umask(previous_umask)
+    restore = work / custody.RESTORE
+    assert all(stat.S_IMODE(path.stat().st_mode) == (0o700 if path.is_dir() else 0o600)
+               for path in (restore, *restore.rglob('*')))
     assert first['profile'] == 'remaining-system-data-v1'
     assert first['databasesOpened'] == first['modelsExecuted'] == first['originalFilesDeleted'] == 0
     args, newer = create_attempt(tmp_path, monkeypatch, package, number=72)
