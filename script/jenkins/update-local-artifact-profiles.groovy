@@ -11,7 +11,7 @@ import org.jenkinsci.plugins.workflow.job.WorkflowJob
 
 def ci = Jenkins.get()
 def choices = ['additional-local-artifacts-v1', 'residual-project-originals-v1',
-               'legacy-partial-transports-v1']
+               'legacy-partial-transports-v1', 'remaining-business-records-v1']
 
 Queue.withLock({ ->
     def job = ci.getItem('doorhandle-java')

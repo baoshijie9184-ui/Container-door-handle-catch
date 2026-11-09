@@ -251,6 +251,64 @@ def partial_transport_originals(originals, monkeypatch):
     return originals
 
 
+@pytest.fixture
+def business_record_originals(originals, monkeypatch):
+    for field in custody.PROFILE_FIELDS:
+        monkeypatch.setattr(custody, field, getattr(custody, field))
+    custody.select_profile('remaining-business-records-v1')
+    originals.names[:] = [
+        ('work/business-data-cleanup/inventory.json', 'remaining-business-cleanup', b'opaque-not-json'),
+        ('work/agent-cards-local-mysql.json', 'retained-mysql-query-fixture-evidence', b'unknown-query-not-opened'),
+        ('work/jenkins/business-workbench-final.json', 'remaining-business-operations-evidence', b'opaque-business-receipt')]
+    for name, _, raw in originals.names:
+        path = originals.source / name; path.parent.mkdir(parents=True, mode=0o700, exist_ok=True); path.write_bytes(raw)
+    monkeypatch.setattr(custody, 'FILE_COUNT', len(originals.names)); originals.pin()
+    def metadata_only(args, **kwargs):
+        assert args[:3] == ['git', '-C', str(originals.source)]
+        if args[3:] == ['worktree', 'list', '--porcelain', '-z']:
+            return SimpleNamespace(returncode=0, stdout=('worktree ' + str(originals.source) + '\0\0').encode())
+        assert args[3:] == ['ls-files', '-z']
+        return SimpleNamespace(returncode=0, stdout=b'')
+    monkeypatch.setattr(custody.subprocess, 'run', metadata_only)
+    return originals
+
+
+def test_business_records_preserve_unknown_mysql_bytes_without_activation_and_reuse_independent_private_files(business_record_originals, tmp_path, monkeypatch):
+    fixture = business_record_originals; fixed = custody.PROFILES['remaining-business-records-v1']
+    assert (fixed['FILE_COUNT'], fixed['ORIGINAL_BYTES']) == (250, 11537819)
+    assert fixed['CATALOG_SHA256'] == '9753e37fe52e2cd8beebb971d71cae9a961246d0de12128604a43ea83d7b898f'
+    assert custody.MAX_BYTES == 32 * 1024 ** 2 and custody.MAX_MANIFEST == 256 * 1024
+    before = {name: (fixture.source / name).read_bytes() for name, _, _ in fixture.names}
+    package = fixture.parent / 'business-records'; custody.pack(fixture.catalog, package)
+    args, work = create_attempt(tmp_path, monkeypatch, package)
+    custody.prepare(args); upload(package, work); first = custody.verify_restore(args)
+    assert first['profile'] == 'remaining-business-records-v1'
+    assert first['databasesOpened'] == first['modelsExecuted'] == first['originalFilesDeleted'] == 0
+    args, newer = create_attempt(tmp_path, monkeypatch, package, number=72)
+    args.source_snapshot_directory = str(work / custody.SNAPSHOT)
+    args.source_receipt_sha256 = custody.describe(args)['sourceCustodyReceiptSha256']
+    assert custody.reuse(args)['status'] == 'RESTORED_VERIFIED'
+    for name, raw in before.items():
+        assert (fixture.source / name).read_bytes() == (newer / custody.RESTORE / name).read_bytes() == raw
+    assert all(stat.S_IMODE(path.stat().st_mode) == (0o700 if path.is_dir() else 0o600)
+               for path in (newer / custody.RESTORE, *(newer / custody.RESTORE).rglob('*')))
+
+
+def test_business_receipt_scope_exception_is_exact_and_does_not_admit_other_jenkins_inputs(business_record_originals, monkeypatch):
+    fixture = business_record_originals
+    paths = [str(fixture.source / name) for name in custody.BUSINESS_RECEIPTS]
+    custody.residual_repository_guard(paths, profile='remaining-business-records-v1')
+    for profile in (None, 'remaining-system-data-v1', 'legacy-partial-transports-v1'):
+        with pytest.raises(custody.CustodyError): custody.residual_repository_guard(paths, profile=profile)
+    for name in ('work/jenkins/private.env', 'work/jenkins/business-workbench-final.json.bak'):
+        with pytest.raises(custody.CustodyError):
+            custody.residual_repository_guard([str(fixture.source / name)], profile='remaining-business-records-v1')
+    value = custody.read_json(fixture.catalog); value['members'][0]['path'] = 'work/jenkins/private.env'
+    fixture.catalog.write_bytes(custody.encoded(value))
+    monkeypatch.setattr(custody, 'permissions', lambda *_: pytest.fail('unreviewed source was opened'))
+    with pytest.raises(custody.CustodyError): custody.pack(fixture.catalog, fixture.parent / 'rejected')
+
+
 def test_partial_transport_profile_keeps_four_opaque_inputs_in_an_independent_restore_and_reuse(partial_transport_originals, tmp_path, monkeypatch):
     fixture = partial_transport_originals; package = fixture.parent / 'partial-transports'
     before = {name: (fixture.source / name).read_bytes() for name, _, _ in fixture.names}

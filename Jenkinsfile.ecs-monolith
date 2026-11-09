@@ -30,7 +30,7 @@ pipeline {
         string(name: 'LEGACY_SOURCE_ECS_SNAPSHOT', defaultValue: '', trim: true, description: '后续复用ECS已恢复核验的旧数据封存目录；与本地输入互斥，业务原件不回传本地')
         string(name: 'LOCAL_ARTIFACTS_SNAPSHOT', defaultValue: '', trim: true, description: '首次上传额外历史模型、备份、日志与上传文件的私有字节封存目录')
         string(name: 'LOCAL_ARTIFACTS_ECS_SNAPSHOT', defaultValue: '', trim: true, description: '后续复用ECS已恢复核验的额外原件；与对应本地输入互斥')
-        choice(name: 'LOCAL_ARTIFACTS_PROFILE', choices: ['additional-local-artifacts-v1', 'residual-project-originals-v1', 'legacy-partial-transports-v1'], description: '固定原件清单：原36项、项目残留文件或两个早期运输包及其清单')
+        choice(name: 'LOCAL_ARTIFACTS_PROFILE', choices: ['additional-local-artifacts-v1', 'residual-project-originals-v1', 'legacy-partial-transports-v1', 'remaining-business-records-v1'], description: '固定原件清单：原36项、项目残留文件、早期运输包或250项业务记录与历史回执')
         string(name: 'COLD_STORES_SNAPSHOT', defaultValue: '', trim: true, description: '可选历史测试存储冷归档私有目录；完整验证后在ECS逐存储树独立恢复核验')
         string(name: 'COLD_STORES_ECS_SNAPSHOT', defaultValue: '', trim: true, description: '复用ECS已核验的历史测试存储冷归档；与对应本地输入互斥')
         choice(name: 'COLD_STORES_PROFILE', choices: ['cold-store-originals-v1', 'cold-store-history-v2'], description: '固定冷归档清单；v1为原70存储根，v2为额外4041历史测试与工具回执根')
@@ -114,7 +114,7 @@ pipeline {
                     env.LOCAL_ARTIFACTS_SNAPSHOT = params.LOCAL_ARTIFACTS_SNAPSHOT?.trim() ?: ''
                     env.LOCAL_ARTIFACTS_ECS_SNAPSHOT = params.LOCAL_ARTIFACTS_ECS_SNAPSHOT?.trim() ?: ''
                     env.LOCAL_ARTIFACTS_PROFILE = params.LOCAL_ARTIFACTS_PROFILE ?: 'additional-local-artifacts-v1'
-                    if (!(env.LOCAL_ARTIFACTS_PROFILE in ['additional-local-artifacts-v1', 'residual-project-originals-v1', 'legacy-partial-transports-v1'])) error('Unsupported fixed artifact profile')
+                    if (!(env.LOCAL_ARTIFACTS_PROFILE in ['additional-local-artifacts-v1', 'residual-project-originals-v1', 'legacy-partial-transports-v1', 'remaining-business-records-v1'])) error('Unsupported fixed artifact profile')
                     env.COLD_STORES_SNAPSHOT = params.COLD_STORES_SNAPSHOT?.trim() ?: ''
                     env.COLD_STORES_ECS_SNAPSHOT = params.COLD_STORES_ECS_SNAPSHOT?.trim() ?: ''
                     if (!(params.COLD_STORES_PROFILE in ['cold-store-originals-v1', 'cold-store-history-v2'])) error('Unsupported fixed cold-store profile')

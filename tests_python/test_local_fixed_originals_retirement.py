@@ -282,6 +282,94 @@ def partial_transport_packet(packet, monkeypatch):
     return SimpleNamespace(profile=profile, value=value, raw=raw, rows=rows, recipe=recipe)
 
 
+@pytest.fixture
+def business_record_packet(packet, monkeypatch):
+    profile = 'remaining-business-records-v1'
+    names = [('work/business-data-cleanup/query.json', 'remaining-business-cleanup'),
+             ('work/agent-cards-local-mysql.json', 'retained-mysql-query-fixture-evidence'),
+             ('work/jenkins/business-workbench-final.json', 'remaining-business-operations-evidence')]
+    rows = [{'sourcePath': fixed.ROOT + '\\' + name.replace('/', '\\'), 'member': name,
+             'group': group, 'bytes': number, 'sha256': str(number) * 64}
+            for number, (name, group) in enumerate(names, 1)]
+    value = {'kind': 'doorhandle-additional-local-artifact-custody', 'version': 1, 'status': 'COMPLETE',
+             'profile': profile, 'catalogSha256': 'd' * 64, 'originalFiles': 3, 'originalBytes': 6,
+             'archiveSha256': 'e' * 64, 'archiveBytes': 100, 'files': rows}
+    raw = json.dumps(value, sort_keys=True).encode()
+    recipe = {'manifestSha256': fixed.sha(raw), 'manifestBytes': len(raw), 'catalogSha256': value['catalogSha256'],
+              'archiveSha256': value['archiveSha256'], 'archiveBytes': value['archiveBytes'],
+              'members': 3, 'selected': 2, 'retained': 1, 'bytes': 6,
+              'groups': {row['group']: [1, row['bytes']] for row in rows}}
+    monkeypatch.setitem(fixed.RECIPES, profile, recipe)
+    return SimpleNamespace(profile=profile, value=value, raw=raw, rows=rows, recipe=recipe)
+
+
+def test_business_record_production_recipe_preserves_fourteen_unknowns_and_pins_only_the_250_reviewed_sources():
+    recipe = fixed.RECIPES['remaining-business-records-v1']
+    assert (recipe['members'], recipe['selected'], recipe['retained'], recipe['bytes']) == (250, 236, 14, 11537819)
+    assert recipe['groups']['retained-mysql-query-fixture-evidence'] == [14, 5455]
+    assert recipe['manifestSha256'] == 'd1531e2fee6325912f053492ebb91c47037fb36783216a0cf3f5c66c69e6406a'
+    assert recipe['archiveSha256'] == 'cef73e24e689b7889f2a4903f091e35e686cf0f7bd0e68705106ed0cbda90612'
+    assert (recipe['manifestBytes'], recipe['archiveBytes']) == (179248, 11735040)
+    assert sum(row[0] for row in recipe['groups'].values()) == 250
+    assert sum(row[1] for row in recipe['groups'].values()) == 11537819
+    assert fixed.BUSINESS_RECEIPTS == fixed.load('preserve-local-artifacts.py').BUSINESS_RECEIPTS
+    rows = [{'path': name} for name in fixed.BUSINESS_PROCESS_FILES]
+    roots = {row['path'] for row in fixed.value_for(rows, profile='remaining-business-records-v1')['roots']}
+    assert roots == fixed.BUSINESS_PROCESS_FILES
+    assert {row['path'] for row in fixed.value_for(rows)['roots']} == {'work', 'work/jenkins'}
+    with pytest.raises(ValueError, match='FIXED_BUSINESS_PROCESS_RECEIPTS_REQUIRED'):
+        fixed.value_for([{'path': 'work/unreviewed.json'}], profile='remaining-business-records-v1')
+
+
+def test_business_record_fake_retirement_never_opens_retained_mysql_and_still_requires_live_proof(scope, business_record_packet, monkeypatch):
+    packet = business_record_packet; selected, retained = fixed.select_manifest(packet.profile, packet.raw)
+    assert len(selected) == 2 and len(retained) == 1 and retained[0]['reason'] == 'MYSQL_QUERY_OR_FIXTURE_PURPOSE_UNCONFIRMED'
+    members = [{**row, 'fingerprint': [7, i + 10, row['bytes'], 40, 50, 1, 0o100600, 32]} for i, row in enumerate(selected)]
+    scope.plan.update(profile=packet.profile, manifestSha256=packet.recipe['manifestSha256'],
+                      members=members, retained=retained, **fixed.residual_bindings(packet.profile))
+    def guard(profile, rows):
+        assert profile == packet.profile and rows == members
+        scope.events.append(('business-source-guard',))
+    monkeypatch.setattr(fixed, 'residual_source_guard', guard)
+    scope.attestor.failure = True
+    with pytest.raises(ValueError, match='AUTHENTICATED_LIVE_SERVER_ATTESTATION_REQUIRED'): apply(scope)
+    assert not any(row[0] == 'delete-held' for row in scope.events)
+    scope.events.clear(); scope.attestor.failure = False
+    result = apply(scope)
+    assert result['filesDeleted'] == 2 and result['directoriesRemoved'] == 0 and result['retained'] == retained
+    assert scope.events[0] == ('business-source-guard',)
+    assert not any('agent-cards-local-mysql.json' in row[1] for row in scope.events if row[0] in ('hash', 'verify', 'delete-held'))
+    scope.events.clear(); scope.plan.pop('businessRecordsScopeHelperSha256')
+    with pytest.raises(ValueError, match='FIXED_RESIDUAL_SOURCE_GUARD_REQUIRED'): apply(scope)
+    assert scope.events == []
+
+
+def test_business_record_envelope_groups_and_jenkins_exception_cannot_expand(business_record_packet):
+    packet = business_record_packet; original_recipe = copy.deepcopy(packet.recipe)
+    selected, _ = fixed.select_manifest(packet.profile, packet.raw)
+    resolver = fixed.StrictResolver(selected, profile=packet.profile)
+    assert resolver('work/jenkins/business-workbench-final.json').endswith(r'\work\jenkins\business-workbench-final.json')
+    assert resolver('work/jenkins').endswith(r'\work\jenkins')
+    with pytest.raises(ValueError): resolver('work/jenkins/private.env')
+    with pytest.raises(ValueError): fixed.StrictResolver(selected)('work/jenkins/business-workbench-final.json')
+    for damage in ('raw', 'profile', 'catalog', 'group', 'retained-group', 'archiveSha256', 'archiveBytes', 'protected-path', 'member-alias'):
+        value = copy.deepcopy(packet.value); packet.recipe.clear(); packet.recipe.update(original_recipe)
+        if damage == 'profile': value['profile'] = 'remaining-system-data-v1'
+        elif damage == 'catalog': value['catalogSha256'] = 'f' * 64
+        elif damage == 'group': value['files'][0]['group'] = 'unreviewed'
+        elif damage == 'retained-group': value['files'][1]['group'] = 'remaining-business-cleanup'
+        elif damage == 'archiveSha256': value['archiveSha256'] = 'f' * 64
+        elif damage == 'archiveBytes': value['archiveBytes'] += 1
+        elif damage == 'protected-path':
+            value['files'][2]['sourcePath'] = fixed.ROOT + r'\work\jenkins\private.env'
+            value['files'][2]['member'] = 'work/jenkins/private.env'
+        elif damage == 'member-alias': value['files'][0]['member'] = 'work/business-data-cleanup/other.json'
+        raw = json.dumps(value, sort_keys=True).encode()
+        if damage == 'raw': raw += b' '
+        else: packet.recipe.update(manifestSha256=fixed.sha(raw), manifestBytes=len(raw))
+        with pytest.raises(ValueError): fixed.select_manifest(packet.profile, raw)
+
+
 def test_partial_transport_production_recipe_selects_only_four_fixed_early_files():
     recipe = fixed.RECIPES['legacy-partial-transports-v1']
     assert (recipe['members'], recipe['selected'], recipe['retained'], recipe['bytes']) == (4, 4, 0, 155793058)

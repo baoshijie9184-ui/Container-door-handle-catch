@@ -76,6 +76,15 @@ PROFILES = {
         'PUBLIC_IN_SNAPSHOT': False, 'PUBLIC_KIND': 'doorhandle-additional-local-artifact-custody',
         'PUBLIC_PROFILE': 'legacy-partial-transports-v1', 'PUBLIC_MANIFEST_FIELD': 'manifestSha256',
         'MAX_ARCHIVE': 256 * MIB, 'MAX_MANIFEST': 64 * 1024},
+    'remaining-business-records-v1': {'FILES': 250, 'ORIGINAL_BYTES': 11537819,
+        'MANIFEST_SHA256': 'd1531e2fee6325912f053492ebb91c47037fb36783216a0cf3f5c66c69e6406a', 'MANIFEST_BYTES': 179248,
+        'CATALOG_SHA256': '9753e37fe52e2cd8beebb971d71cae9a961246d0de12128604a43ea83d7b898f',
+        'ARCHIVE_SHA256': 'cef73e24e689b7889f2a4903f091e35e686cf0f7bd0e68705106ed0cbda90612', 'ARCHIVE_BYTES': 11735040,
+        'SNAPSHOT': 'remaining-business-records-snapshot', 'MANIFEST': 'custody.json', 'ARCHIVE': 'originals.tar',
+        'RESTORE': 'remaining-business-records-restore', 'PUBLIC': 'remaining-business-records-public-receipt.json',
+        'PUBLIC_IN_SNAPSHOT': False, 'PUBLIC_KIND': 'doorhandle-additional-local-artifact-custody',
+        'PUBLIC_PROFILE': 'remaining-business-records-v1', 'PUBLIC_MANIFEST_FIELD': 'manifestSha256',
+        'MAX_ARCHIVE': 32 * MIB, 'MAX_MANIFEST': 256 * 1024},
 }
 PROFILES['pth-aliases-v1'] = dict(PROFILES['additional-originals-v1'])
 MODEL_SOURCE = Path('/srv/doorhandle/models/best_stg2.pth')
@@ -228,9 +237,10 @@ def validate_retirement_attestation(value, profile, nonce, expected_current, exp
          and type(old['bytes']) is int and old['bytes'] == fixed['ORIGINAL_BYTES']
          and type(old['archiveBytes']) is int and 0 < old['archiveBytes'] <= fixed['MAX_ARCHIVE'],
          'ORIGINALS_ATTESTATION_FIXED_PROFILE_DRIFT')
-    if profile in ('remaining-system-data-v1', 'legacy-partial-transports-v1'):
+    if profile in ('remaining-system-data-v1', 'legacy-partial-transports-v1', 'remaining-business-records-v1'):
         need(old['archiveSha256'] == fixed['ARCHIVE_SHA256'] and old['archiveBytes'] == fixed['ARCHIVE_BYTES'],
-             'REMAINING_FIXED_ARCHIVE_DRIFT' if profile == 'remaining-system-data-v1' else 'PARTIAL_TRANSPORT_FIXED_ARCHIVE_DRIFT')
+             'BUSINESS_RECORDS_FIXED_ARCHIVE_DRIFT' if profile == 'remaining-business-records-v1'
+             else 'REMAINING_FIXED_ARCHIVE_DRIFT' if profile == 'remaining-system-data-v1' else 'PARTIAL_TRANSPORT_FIXED_ARCHIVE_DRIFT')
     issued, expires = attestation_time(value['issuedAtUtc']), attestation_time(value['expiresAtUtc'])
     now = utc_now() if now_utc is None else now_utc
     need(isinstance(now, dt.datetime) and now.tzinfo is not None and now.utcoffset() == dt.timedelta(0),
@@ -334,7 +344,7 @@ def fixed_modules(args):
         reuse=modules['script/jenkins/reuse-legacy-source.py'], artifacts=modules['script/jenkins/preserve-local-artifacts.py'],
         cold=modules['script/jenkins/preserve-cold-stores.py'], cleanup=modules['script/jenkins/cleanup-ecs-builds.py'],
         verifier=modules['script/jenkins/verify-remote.py'], migration=modules['script/memory/migrate_legacy_stores.py'])
-    if args.profile in ('residual-project-originals-v1', 'remaining-system-data-v1', 'legacy-partial-transports-v1'):
+    if args.profile in ('residual-project-originals-v1', 'remaining-system-data-v1', 'legacy-partial-transports-v1', 'remaining-business-records-v1'):
         state.artifacts.select_profile(args.profile)
         need(state.artifacts.PROFILE == fixed['PUBLIC_PROFILE'] and state.artifacts.FILE_COUNT == fixed['FILES']
              and state.artifacts.ORIGINAL_BYTES == fixed['ORIGINAL_BYTES']
@@ -518,7 +528,7 @@ def physical_model_proof():
 
 def remaining_restored_bindings(state, old):
     """Freshly hash every independent opaque restore; never activate its data."""
-    if state.fixed['PUBLIC_PROFILE'] not in ('remaining-system-data-v1', 'legacy-partial-transports-v1'): return ()
+    if state.fixed['PUBLIC_PROFILE'] not in ('remaining-system-data-v1', 'legacy-partial-transports-v1', 'remaining-business-records-v1'): return ()
     need(file_digest(old / state.fixed['MANIFEST'], state.fixed['MAX_MANIFEST'], private=True)[0]
          == state.fixed['MANIFEST_SHA256'], 'ORIGINALS_ATTESTATION_RAW_INPUT_CHANGED')
     manifest = state.artifacts.read_json(old / state.fixed['MANIFEST'], private=True)

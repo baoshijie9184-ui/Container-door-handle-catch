@@ -32,7 +32,7 @@ function Assert-ControlSourcePackage($Package,[string]$Commit,[string]$SourceSha
 function Get-LocalArtifactsProfile {
     $selected = $env:LOCAL_ARTIFACTS_PROFILE
     if ([string]::IsNullOrWhiteSpace($selected)) { $selected = 'additional-local-artifacts-v1' }
-    if ($selected -cnotin @('additional-local-artifacts-v1', 'residual-project-originals-v1', 'legacy-partial-transports-v1')) { throw 'Unsupported fixed artifact profile.' }
+    if ($selected -cnotin @('additional-local-artifacts-v1', 'residual-project-originals-v1', 'legacy-partial-transports-v1', 'remaining-business-records-v1')) { throw 'Unsupported fixed artifact profile.' }
     return $selected
 }
 function Get-PinnedSourceFile([string]$RelativePath) {

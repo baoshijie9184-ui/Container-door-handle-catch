@@ -8,7 +8,7 @@ param(
     [Parameter(Mandatory = $true)][string]$SourceSha256,
     [string]$SnapshotDirectory,
     [string]$EcsSnapshotDirectory,
-    [ValidateSet('additional-local-artifacts-v1', 'residual-project-originals-v1', 'remaining-system-data-v1', 'legacy-partial-transports-v1')][string]$Profile = 'additional-local-artifacts-v1'
+    [ValidateSet('additional-local-artifacts-v1', 'residual-project-originals-v1', 'remaining-system-data-v1', 'legacy-partial-transports-v1', 'remaining-business-records-v1')][string]$Profile = 'additional-local-artifacts-v1'
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -19,6 +19,8 @@ $profileSettings = if ($Profile -ceq 'additional-local-artifacts-v1') {
     @{ CatalogSha = 'a9b6498c0f0e59b8821b0dbd9a8a4c1488bd300a67d92049f673e687fd49a00c'; Files = 1968; Bytes = 8779830; MaximumArchive = 32MB; MaximumManifest = 2MB; Snapshot = 'residual-project-originals-snapshot'; Public = 'residual-project-originals-public-receipt.json'; Artifact = 'residual-artifact-custody'; }
 } elseif ($Profile -ceq 'legacy-partial-transports-v1') {
     @{ CatalogSha = 'a2669cdf5cb129eadb62361e1de1658482dc002f8dc53b193c11dd5fd5a9e477'; Files = 4; Bytes = 155793058; MaximumArchive = 256MB; MaximumManifest = 64KB; Snapshot = 'legacy-partial-transports-snapshot'; Public = 'legacy-partial-transports-public-receipt.json'; Artifact = 'legacy-partial-transports-custody'; }
+} elseif ($Profile -ceq 'remaining-business-records-v1') {
+    @{ CatalogSha = '9753e37fe52e2cd8beebb971d71cae9a961246d0de12128604a43ea83d7b898f'; Files = 250; Bytes = 11537819; MaximumArchive = 32MB; MaximumManifest = 256KB; Snapshot = 'remaining-business-records-snapshot'; Public = 'remaining-business-records-public-receipt.json'; Artifact = 'remaining-business-records-custody'; }
 } else {
     @{ CatalogSha = '0f92d397bed2b6f6a56a4dfec37d7c4bd6f41d195182b10604438ed10747baf4'; Files = 86; Bytes = 28695377; MaximumArchive = 64MB; MaximumManifest = 2MB; Snapshot = 'remaining-system-data-snapshot'; Public = 'remaining-system-data-public-receipt.json'; Artifact = 'remaining-system-data-custody'; }
 }

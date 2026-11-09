@@ -65,7 +65,10 @@ def build_custody_state(profile, old_state, tmp_path, monkeypatch):
     else:
         original_root = tmp_path / 'additional-fixture'; original_root.mkdir(mode=0o700)
         metadata_run = additional.custody.subprocess.run
-        if profile == 'legacy-partial-transports-v1':
+        if profile == 'remaining-business-records-v1':
+            originals = additional.originals.__wrapped__(original_root, monkeypatch)
+            originals = additional.business_record_originals.__wrapped__(originals, monkeypatch)
+        elif profile == 'legacy-partial-transports-v1':
             originals = additional.originals.__wrapped__(original_root, monkeypatch)
             originals = additional.partial_transport_originals.__wrapped__(originals, monkeypatch)
         elif profile == 'remaining-system-data-v1':
@@ -78,7 +81,7 @@ def build_custody_state(profile, old_state, tmp_path, monkeypatch):
         try:
             additional.custody.pack(originals.catalog, package)
         finally:
-            if profile in ('residual-project-originals-v1', 'remaining-system-data-v1', 'legacy-partial-transports-v1'):
+            if profile in ('residual-project-originals-v1', 'remaining-system-data-v1', 'legacy-partial-transports-v1', 'remaining-business-records-v1'):
                 # The synthetic Git dispatcher belongs only to local pack's
                 # real metadata guard, never the later CI/old-custody chain.
                 monkeypatch.setattr(additional.custody.subprocess, 'run', metadata_run)
@@ -103,9 +106,9 @@ def build_custody_state(profile, old_state, tmp_path, monkeypatch):
     args.source_snapshot_directory = str(old)
     fixed = {**attest.PROFILES[profile], 'FILES': public['files'], 'ORIGINAL_BYTES': public['bytes']}
     fixed['MANIFEST_SHA256'] = attest.sha((old / fixed['MANIFEST']).read_bytes())
-    if profile in ('remaining-system-data-v1', 'legacy-partial-transports-v1'):
+    if profile in ('remaining-system-data-v1', 'legacy-partial-transports-v1', 'remaining-business-records-v1'):
         fixed.update(CATALOG_SHA256=public['catalogSha256'], ARCHIVE_SHA256=public['archiveSha256'], ARCHIVE_BYTES=public['archiveBytes'])
-    if profile == 'legacy-partial-transports-v1':
+    if profile in ('legacy-partial-transports-v1', 'remaining-business-records-v1'):
         fixed['MANIFEST_BYTES'] = (old / fixed['MANIFEST']).stat().st_size
     monkeypatch.setitem(attest.PROFILES, profile, fixed); helpers.fixed = fixed
     monkeypatch.setattr(attest, 'fixed_modules', lambda _: helpers)
@@ -196,6 +199,51 @@ def test_remaining_empty_preserved_member_still_has_a_complete_zero_byte_hash_bo
 @pytest.fixture
 def partial_transport_state(old_state, tmp_path, monkeypatch):
     return build_custody_state('legacy-partial-transports-v1', old_state, tmp_path, monkeypatch)
+
+
+@pytest.fixture
+def business_record_state(old_state, tmp_path, monkeypatch):
+    return build_custody_state('remaining-business-records-v1', old_state, tmp_path, monkeypatch)
+
+
+def test_business_record_profile_pins_the_actual_250_file_package_and_its_source_helper(tmp_path, monkeypatch):
+    fixed = attest.PROFILES['remaining-business-records-v1']
+    assert (fixed['FILES'], fixed['ORIGINAL_BYTES'], fixed['MANIFEST_BYTES'], fixed['ARCHIVE_BYTES']) == (250, 11537819, 179248, 11735040)
+    assert fixed['MANIFEST_SHA256'] == 'd1531e2fee6325912f053492ebb91c47037fb36783216a0cf3f5c66c69e6406a'
+    assert fixed['ARCHIVE_SHA256'] == 'cef73e24e689b7889f2a4903f091e35e686cf0f7bd0e68705106ed0cbda90612'
+    source = fixed_source.__wrapped__(tmp_path, monkeypatch, SimpleNamespace(param='remaining-business-records-v1'))
+    state = attest.fixed_modules(source.args)
+    assert state.artifacts.CATALOG_SHA256 == fixed['CATALOG_SHA256']
+    assert state.artifacts.MAX_BYTES == fixed['MAX_ARCHIVE'] == 32 * 1024 ** 2
+    assert state.artifacts.MAX_MANIFEST == fixed['MAX_MANIFEST'] == 256 * 1024
+    helper = source.checkout / 'script/jenkins/preserve-local-artifacts.py'; helper.write_bytes(helper.read_bytes() + b'\n')
+    with pytest.raises(attest.AttestationError, match='FIXED_ORIGINALS_RECIPE_CHANGED'): attest.fixed_modules(source.args)
+
+
+def test_business_records_attestation_rehashes_unknown_retained_mysql_and_every_other_restore(business_record_state, monkeypatch):
+    state = business_record_state; fixed = state.helpers.fixed; seen = []; original = attest.file_digest
+    def observed(path, *args, **kwargs):
+        seen.append((Path(path), kwargs.get('private'))); return original(path, *args, **kwargs)
+    monkeypatch.setattr(attest, 'file_digest', observed)
+    before = tree_bytes(state.state.root); value = attest.fresh_retirement_attest(state.args)
+    assert validate(value, state) is value and tree_bytes(state.state.root) == before
+    rows = json.loads((state.old / fixed['MANIFEST']).read_bytes())['files']
+    assert all((state.old.parent / fixed['RESTORE'] / row['member'], True) in seen for row in rows)
+    unknown = next(row for row in rows if row['group'] == 'retained-mysql-query-fixture-evidence')
+    target = state.old.parent / fixed['RESTORE'] / unknown['member']; raw = target.read_bytes()
+    target.write_bytes(b'X' + raw[1:])
+    with pytest.raises(attest.AttestationError, match='ORIGINALS_ATTESTATION_RAW_INPUT_CHANGED'):
+        attest.fresh_retirement_attest(state.args)
+
+
+def test_business_record_custody_cannot_reseal_a_different_archive_or_size(business_record_state):
+    state = business_record_state; original = attest.fresh_retirement_attest(state.args)
+    for field in ('archiveSha256', 'archiveBytes'):
+        value = copy.deepcopy(original)
+        value['custody'][field] = 'e' * 64 if field.endswith('Sha256') else value['custody'][field] + 1
+        expected = copy.deepcopy(value['custody']); resign(value)
+        with pytest.raises(attest.AttestationError, match='BUSINESS_RECORDS_FIXED_ARCHIVE_DRIFT'):
+            validate(value, state, expected_custody=expected)
 
 
 def test_partial_transport_recipe_pins_only_the_actual_four_file_archive():

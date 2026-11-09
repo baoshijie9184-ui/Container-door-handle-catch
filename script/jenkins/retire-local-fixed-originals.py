@@ -4,7 +4,7 @@ Default plan captures current identities and byte hashes without deleting.
 Only explicit Windows --apply and live authenticated custody authorize removal.
 The default source selection excludes C-drive history, unknowns and all but
 four explicitly frozen early transport files. The explicit transport selection
-is limited to the manifest and archive in five fixed, authenticated packages.
+is limited to the manifest and archive in six fixed, authenticated packages.
 PTH aliases require their independent explicit profile and fresh physical proof.
 """
 from __future__ import annotations
@@ -43,10 +43,21 @@ RECIPES = {
         'archiveSha256': '904d67de3b7a57bc5cf40c8f1e6894a2445fa867bf5c65dfa1e809e8c12f041b', 'archiveBytes': 155801600,
         'members': 4, 'selected': 4, 'bytes': 155793058, 'retained': 0,
         'groups': {'legacy-memory-rag-transport': [2, 3679161], 'legacy-windows-mcp-transport': [2, 152113897]}},
+    'remaining-business-records-v1': {'manifestSha256': 'd1531e2fee6325912f053492ebb91c47037fb36783216a0cf3f5c66c69e6406a',
+        'manifestBytes': 179248, 'catalogSha256': '9753e37fe52e2cd8beebb971d71cae9a961246d0de12128604a43ea83d7b898f',
+        'archiveSha256': 'cef73e24e689b7889f2a4903f091e35e686cf0f7bd0e68705106ed0cbda90612', 'archiveBytes': 11735040,
+        'members': 250, 'selected': 236, 'bytes': 11537819, 'retained': 14,
+        'groups': {'remaining-business-cleanup': [46, 787265], 'remaining-business-candidate-receipts': [85, 4576789],
+            'remaining-business-workbench-evidence': [50, 1610593], 'remaining-business-browser-evidence': [40, 4048046],
+            'remaining-business-operations-evidence': [5, 8536], 'remaining-business-demo-material': [4, 145788],
+            'remaining-business-quality-evidence': [6, 355347], 'retained-mysql-query-fixture-evidence': [14, 5455]}},
 }
 SHA = re.compile(r'[a-f0-9]{64}')
 RETAINED_C_HISTORY = r'C:\Users\19771\.mem0\history.db'
 PROTECTED = ('.git', 'work/jenkins', 'work/ecs-only-20261105/micro-followup/checkout')
+BUSINESS_RECEIPTS = frozenset({'work/jenkins/business-workbench-final.json',
+    'work/jenkins/business-composer-final.json', 'work/jenkins/business-ops-after-20261018.json'})
+BUSINESS_PROCESS_FILES = BUSINESS_RECEIPTS | {'work/ops-cloud-acceptance-20261018.json'}
 MODEL_BYTES = 159274200
 MODEL_SHA256 = 'eb10caf9fe5fa41e1ce0cfe2bcfaaa728ff44c4fa56f3c6994d6fadb66da434b'
 MODEL_ORIGIN_MEMBER = 'work/cloud/pth-model/best_stg2.pth'
@@ -57,6 +68,7 @@ TRANSPORT_DIRECTORIES = {
     'residual-project-originals-v1': 'work/data-migration-20261107/residual-project-originals-snapshot-20261107T2236',
     'remaining-system-data-v1': 'work/data-migration-20261109/remaining-system-data-snapshot-20261109T1340',
     'legacy-partial-transports-v1': 'work/data-migration-20261110/legacy-partial-transports-20261109T202929Z-05f2cc23/snapshot',
+    'remaining-business-records-v1': 'work/data-migration-20261110/remaining-business-records-20261109T222825Z-401bdbd9/snapshot',
 }
 
 
@@ -81,7 +93,7 @@ def public_failure(error):
     return value
 
 
-def relative_source(source):
+def relative_source(source, *, profile=None):
     need(isinstance(source, str) and ntpath.isabs(source) and not source.startswith(('\\\\', '//')),
          'ABSOLUTE_PROJECT_SOURCE_REQUIRED')
     path = ntpath.normpath(source)
@@ -90,18 +102,20 @@ def relative_source(source):
     # Reject aliases before normalization can erase their evidence.
     original = source.replace('\\', '/').split('/')
     need(all(p not in ('.', '..') for p in original), 'SOURCE_TRAVERSAL_REFUSED')
-    validate_relative(name)
+    validate_relative(name, profile=profile)
     return name
 
 
-def validate_relative(name):
+def validate_relative(name, *, profile=None, metadata_parent=False):
     need(isinstance(name, str) and 0 < len(name) <= 2048 and not ntpath.isabs(name)
          and '\\' not in name and ':' not in name and '\x00' not in name
          and all(p not in ('', '.', '..') and not p.endswith((' ', '.'))
                      and not re.fullmatch(r'(?i)(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?', p)
                  for p in name.split('/')), 'EXACT_UNALIASED_PROJECT_MEMBER_REQUIRED')
     lower = name.lower()
-    need(not any(lower == p or lower.startswith(p + '/') for p in PROTECTED), 'PROTECTED_ORIGINAL_SCOPE')
+    approved_receipt = profile == 'remaining-business-records-v1' and (
+        name in BUSINESS_RECEIPTS or metadata_parent and name == 'work/jenkins')
+    need(not any(lower == p or lower.startswith(p + '/') for p in PROTECTED) or approved_receipt, 'PROTECTED_ORIGINAL_SCOPE')
     if lower == 'work/middlewares' or lower.startswith('work/middlewares/'):
         need(any(lower == p or lower.startswith(p + '/') for p in ('work/middlewares/chroma', 'work/middlewares/kafka-data')),
              'SHARED_MYSQL_REDIS_OR_UNKNOWN_MIDDLEWARE_REFUSED')
@@ -114,11 +128,12 @@ def select_manifest(profile, raw):
     need(sha(raw) == recipe['manifestSha256'], 'FIXED_RAW_MANIFEST_SHA_REQUIRED')
     core = load('retire-local-cold-stores.py'); value = core.decode_control(raw)
     rows = value.get('files'); need(type(rows) is list and len(rows) == recipe['members'], 'COMPLETE_FIXED_MEMBERS_REQUIRED')
-    if profile == 'legacy-partial-transports-v1':
+    if profile in ('legacy-partial-transports-v1', 'remaining-business-records-v1'):
         need(len(raw) == recipe['manifestBytes'] and value.get('archiveSha256') == recipe['archiveSha256']
              and type(value.get('archiveBytes')) is int and value['archiveBytes'] == recipe['archiveBytes'],
-             'FIXED_PARTIAL_TRANSPORT_ENVELOPE_REQUIRED')
-    if profile in ('remaining-system-data-v1', 'legacy-partial-transports-v1'):
+             'FIXED_BUSINESS_RECORDS_ENVELOPE_REQUIRED' if profile == 'remaining-business-records-v1'
+             else 'FIXED_PARTIAL_TRANSPORT_ENVELOPE_REQUIRED')
+    if profile in ('remaining-system-data-v1', 'legacy-partial-transports-v1', 'remaining-business-records-v1'):
         need(value.get('kind') == 'doorhandle-additional-local-artifact-custody' and value.get('version') == 1
              and value.get('status') == 'COMPLETE' and value.get('profile') == profile
              and value.get('catalogSha256') == recipe['catalogSha256'] and value.get('originalFiles') == recipe['members']
@@ -146,8 +161,14 @@ def select_manifest(profile, raw):
                  'ONLY_FIXED_C_HISTORY_MAY_BE_RETAINED')
             retained.append({'sourcePath': RETAINED_C_HISTORY, 'reason': 'C_DRIVE_HISTORY_NEVER_ACCESSED', 'bytes': row['bytes']})
             continue
-        name = relative_source(source)
+        name = relative_source(source, profile=profile)
         need(name.lower() not in seen, 'CASE_OR_SOURCE_ALIAS_REFUSED'); seen.add(name.lower())
+        if profile == 'remaining-business-records-v1':
+            need(row.get('member') == name, 'FIXED_BUSINESS_MEMBER_SOURCE_DRIFT')
+            if row['group'] == 'retained-mysql-query-fixture-evidence':
+                retained.append({'sourcePath': ntpath.join(ROOT, *name.split('/')), 'bytes': row['bytes'],
+                    'sha256': row['sha256'], 'reason': 'MYSQL_QUERY_OR_FIXTURE_PURPOSE_UNCONFIRMED'})
+                continue
         if profile == 'remaining-system-data-v1' and row['group'] == 'protected-tool-receipts':
             retained.append({'sourcePath': ntpath.join(ROOT, *name.split('/')), 'bytes': row['bytes'],
                 'sha256': row['sha256'], 'reason': 'COMPLETE_TOOL_TREE_OWNERSHIP_UNPROVED'})
@@ -191,7 +212,8 @@ def transport_custody(members, custody):
 
 class StrictResolver:
     """Exact selected files, their parents and one explicitly retained link."""
-    def __init__(self, members, group=None):
+    def __init__(self, members, group=None, *, profile=None):
+        self.profile = profile
         self.members = {row['path'] for row in members}
         need(len(self.members) == len(members), 'DUPLICATE_SELECTED_MEMBER')
         self.parents = {name.rsplit('/', 1)[0] for name in self.members if '/' in name}
@@ -201,13 +223,21 @@ class StrictResolver:
             self.retained.add(group['retained']['path'])
 
     def __call__(self, name):
-        validate_relative(name)
+        validate_relative(name, profile=self.profile, metadata_parent=name in self.parents)
         need(name in self.members or name in self.parents or name in self.retained, 'OUTSIDE_FIXED_SELECTED_FILES')
         return ntpath.join(ROOT, *name.split('/'))
 
 
-def value_for(members):
-    roots = sorted({r['path'].rsplit('/', 1)[0] if '/' in r['path'] else r['path'] for r in members})
+def value_for(members, *, profile=None):
+    roots = {r['path'].rsplit('/', 1)[0] if '/' in r['path'] else r['path'] for r in members}
+    if profile == 'remaining-business-records-v1':
+        # A control-directory root would match this executor's own plan/output
+        # arguments. Scan these fixed receipt files, retaining directory scans
+        # for every other business-data root and all older profiles.
+        receipts = {r['path'] for r in members if r['path'].rsplit('/', 1)[0] in ('work', 'work/jenkins')}
+        need(receipts <= BUSINESS_PROCESS_FILES, 'FIXED_BUSINESS_PROCESS_RECEIPTS_REQUIRED')
+        roots -= {'work', 'work/jenkins'}; roots.update(receipts)
+    roots = sorted(roots)
     return {'members': members, 'directories': [], 'roots': [{'path': name} for name in roots]}
 
 
@@ -357,31 +387,34 @@ def alias_bindings(profile, proof):
 
 
 def residual_bindings(profile):
-    if profile not in ('residual-project-originals-v1', 'remaining-system-data-v1', 'legacy-partial-transports-v1'): return {}
-    key = ('partialTransportScopeHelperSha256' if profile == 'legacy-partial-transports-v1'
+    if profile not in ('residual-project-originals-v1', 'remaining-system-data-v1', 'legacy-partial-transports-v1', 'remaining-business-records-v1'): return {}
+    key = ('businessRecordsScopeHelperSha256' if profile == 'remaining-business-records-v1'
+           else 'partialTransportScopeHelperSha256' if profile == 'legacy-partial-transports-v1'
            else 'remainingScopeHelperSha256' if profile == 'remaining-system-data-v1' else 'residualScopeHelperSha256')
     return {key: sha(SELF.with_name('preserve-local-artifacts.py').read_bytes())}
 
 
 def residual_source_guard(profile, members):
-    if profile not in ('residual-project-originals-v1', 'remaining-system-data-v1', 'legacy-partial-transports-v1'): return
+    if profile not in ('residual-project-originals-v1', 'remaining-system-data-v1', 'legacy-partial-transports-v1', 'remaining-business-records-v1'): return
     # Reuse the same metadata-only scope policy as the fixed opaque producer.
     helper = load('preserve-local-artifacts.py')
-    helper.residual_repository_guard([ROOT + '\\' + row['path'].replace('/', '\\') for row in members])
+    helper.residual_repository_guard([ROOT + '\\' + row['path'].replace('/', '\\') for row in members],
+        **({'profile': profile} if profile == 'remaining-business-records-v1' else {}))
 
 
 def make_plan(profile, manifest_file, current_file, custody_file, core, cold, proof, backend_factory, *, selection='originals'):
     path = core.canonical_control(manifest_file); selected, retained = select_files(profile, path, path.read_bytes(), selection)
     residual_source_guard(profile, selected)
-    resolver = StrictResolver(selected); members = observed_members(selected, cold, resolver, profile)
+    resolver = StrictResolver(selected, **({'profile': profile} if profile == 'remaining-business-records-v1' else {}))
+    members = observed_members(selected, cold, resolver, profile)
     group = observe_model_link_group(profile, members, cold, resolver) if selection == 'originals' else None
     validate_observations(selected, members, profile, group)
     if group is not None: resolver = StrictResolver(members, group)
-    backend = backend_factory(resolver); value = value_for(members)
+    backend = backend_factory(resolver); value = value_for(members, profile=profile)
     observed = members + ([group['retained']] if group is not None else [])
     tracked = backend.tracked_sources()
     need(not any(r['path'].lower() in tracked for r in observed), 'TRACKED_SOURCE_REFUSED')
-    backend.active_references(value_for(observed))
+    backend.active_references(value_for(observed, profile=profile))
     with backend.hold(value):
         if selection == 'originals': verify_model_link_group(group, members, cold, resolver, backend)
         for row in members: backend.hash_file(row)
@@ -441,7 +474,7 @@ def apply_plan(plan, core, proof, backend, attestor, audit):
         transport_custody(plan['members'], plan['custody'])
     else:
         validate_model_link_group(plan['profile'], plan['members'], group)
-    if plan['profile'] in ('residual-project-originals-v1', 'remaining-system-data-v1', 'legacy-partial-transports-v1'):
+    if plan['profile'] in ('residual-project-originals-v1', 'remaining-system-data-v1', 'legacy-partial-transports-v1', 'remaining-business-records-v1'):
         need(all(plan.get(key) == value for key, value in residual_bindings(plan['profile']).items()),
              'FIXED_RESIDUAL_SOURCE_GUARD_REQUIRED')
         residual_source_guard(plan['profile'], plan['members'])
@@ -451,11 +484,12 @@ def apply_plan(plan, core, proof, backend, attestor, audit):
         need(plan.get('manifestSha256') == RECIPES['pth-aliases-v1']['manifestSha256'] and plan.get('retained') == []
              and all(plan.get(key) == value for key, value in alias_bindings('pth-aliases-v1', proof).items()),
              'FIXED_ALIAS_SOURCE_AND_MODEL_REFERENCE_REQUIRED')
-    members = plan['members']; value = value_for(members); resolver = StrictResolver(members, group)
+    members = plan['members']; value = value_for(members, profile=plan['profile'])
+    resolver = StrictResolver(members, group, **({'profile': plan['profile']} if plan['profile'] == 'remaining-business-records-v1' else {}))
     observed = members + ([group['retained']] if group is not None else [])
     tracked = backend.tracked_sources()
     need(not any(row['path'].lower() in tracked for row in observed), 'TRACKED_SOURCE_REFUSED')
-    backend.active_references(value_for(observed)); deleted = attempts = 0
+    backend.active_references(value_for(observed, profile=plan['profile'])); deleted = attempts = 0
     audit.record('BEGIN', profile=plan['profile'], files=len(members), manifestSha256=plan['manifestSha256'])
     try:
         with backend.hold(value):

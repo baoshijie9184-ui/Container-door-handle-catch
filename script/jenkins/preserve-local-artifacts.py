@@ -41,6 +41,8 @@ SHA = re.compile(r"[a-f0-9]{64}")
 GROUPS = {"doorhandle-server/uploads", "uploads", "logs", "work/cloud/wacga-runtime-v2",
           "work/cloud/wacga-runtime-v3", "work/cloud/wacga-runtime-v4", "work/cloud/pth-model", "historical-archives"}
 DEFAULT_PROFILE = PROFILE
+BUSINESS_RECEIPTS = frozenset({'work/jenkins/business-workbench-final.json',
+    'work/jenkins/business-composer-final.json', 'work/jenkins/business-ops-after-20261018.json'})
 PROFILE_FIELDS = ('PROFILE', 'CATALOG_SHA256', 'FILE_COUNT', 'ORIGINAL_BYTES', 'MAX_BYTES', 'MAX_MANIFEST',
                   'SNAPSHOT', 'RESTORE', 'OWNER', 'PUBLIC', 'GROUPS')
 PROFILES = {
@@ -72,6 +74,18 @@ PROFILES = {
         'SNAPSHOT': 'legacy-partial-transports-snapshot', 'RESTORE': 'legacy-partial-transports-restore',
         'OWNER': 'legacy-partial-transports-owner.json', 'PUBLIC': 'legacy-partial-transports-public-receipt.json',
         'GROUPS': {'legacy-memory-rag-transport', 'legacy-windows-mcp-transport'},
+    },
+    'remaining-business-records-v1': {
+        'PROFILE': 'remaining-business-records-v1',
+        'CATALOG_SHA256': '9753e37fe52e2cd8beebb971d71cae9a961246d0de12128604a43ea83d7b898f',
+        'FILE_COUNT': 250, 'ORIGINAL_BYTES': 11537819,
+        'MAX_BYTES': 32 * 1024 ** 2, 'MAX_MANIFEST': 256 * 1024,
+        'SNAPSHOT': 'remaining-business-records-snapshot', 'RESTORE': 'remaining-business-records-restore',
+        'OWNER': 'remaining-business-records-owner.json', 'PUBLIC': 'remaining-business-records-public-receipt.json',
+        'GROUPS': {'remaining-business-cleanup', 'remaining-business-candidate-receipts',
+            'remaining-business-workbench-evidence', 'remaining-business-browser-evidence',
+            'remaining-business-operations-evidence', 'remaining-business-demo-material',
+            'remaining-business-quality-evidence', 'retained-mysql-query-fixture-evidence'},
     },
 }
 
@@ -222,7 +236,7 @@ def catalogue(rows):
     return hashlib.sha256(encoded(sorted([[r["group"], r["member"], r["bytes"], r["sha256"]] for r in rows]))).hexdigest()
 
 
-def residual_repository_guard(paths):
+def residual_repository_guard(paths, *, profile=None):
     """Read Git/ancestor metadata only; never enter another source checkout."""
     root = safe(SOURCE_ROOT)
     result = subprocess.run(['git', '-C', str(root), 'worktree', 'list', '--porcelain', '-z'],
@@ -241,7 +255,9 @@ def residual_repository_guard(paths):
         need(not any(path == other or path.is_relative_to(other) for other in others)
              and relative.casefold() not in tracked, 'Residual custody cannot include a source checkout')
         need(not any(part in ('.git', 'node_modules', 'target', 'dist', '.cache', 'deepseek-harness') for part in path.relative_to(root).parts)
-             and not relative.casefold().startswith(('work/jenkins/', 'work/ecs-only-20261105/micro-followup/checkout/')),
+             and not relative.casefold().startswith('work/ecs-only-20261105/micro-followup/checkout/')
+             and (not relative.casefold().startswith('work/jenkins/')
+                  or profile == 'remaining-business-records-v1' and relative in BUSINESS_RECEIPTS),
              'Residual custody cannot include protected development resources')
         for ancestor in path.parents:
             if ancestor == root: break
@@ -307,8 +323,9 @@ def pack(catalog_file, output):
             "permissions": {"mode": 0, "uid": 0, "gid": 0, "atimeNs": 0, "mtimeNs": 0}})
     # Reject any extra/secret source before opening even one original file.
     validate_rows(rows)
-    if PROFILE in ('residual-project-originals-v1', 'remaining-system-data-v1', 'legacy-partial-transports-v1'):
-        residual_repository_guard([row['sourcePath'] for row in rows])
+    if PROFILE in ('residual-project-originals-v1', 'remaining-system-data-v1', 'legacy-partial-transports-v1', 'remaining-business-records-v1'):
+        residual_repository_guard([row['sourcePath'] for row in rows],
+            **({'profile': PROFILE} if PROFILE == 'remaining-business-records-v1' else {}))
     for row in rows:
         path = safe(row["sourcePath"]); info = path.stat()
         need(stat.S_ISREG(info.st_mode), "A reviewed custody source is not a regular file")

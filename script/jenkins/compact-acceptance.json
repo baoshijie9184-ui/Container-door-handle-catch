@@ -1091,7 +1091,7 @@
       },
       {
         "module": "tests_python.test_local_artifact_custody",
-        "minimumTests": 50,
+        "minimumTests": 52,
         "source": "tests_python/test_local_artifact_custody.py",
         "allowedSkippedTests": []
       },
@@ -1109,13 +1109,13 @@
       },
       {
         "module": "tests_python.test_fixed_originals_attestation",
-        "minimumTests": 299,
+        "minimumTests": 302,
         "source": "tests_python/test_fixed_originals_attestation.py",
         "allowedSkippedTests": []
       },
       {
         "module": "tests_python.test_local_fixed_originals_retirement",
-        "minimumTests": 125,
+        "minimumTests": 128,
         "source": "tests_python/test_local_fixed_originals_retirement.py",
         "allowedSkippedTests": []
       },
