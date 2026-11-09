@@ -223,7 +223,7 @@ pipeline {
             }
         }
         stage('Preflight control scripts on ECS') {
-            when { expression { params.ACTION == 'verify-controls' || (params.ACTION == 'verify-runtime' && params.DOORHANDLE_CI_SCOPE == 'mysql') } }
+            when { expression { params.ACTION == 'verify-controls' || (params.ACTION in ['verify', 'verify-runtime'] && params.DOORHANDLE_CI_SCOPE == 'mysql') } }
             steps {
                 script { env.CI_CONTROL_PREFLIGHT_PASS = 'false' }
                 withCredentials([

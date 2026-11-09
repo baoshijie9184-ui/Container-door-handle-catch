@@ -157,6 +157,30 @@ def copy_current_schema_sources(tmp_path, monkeypatch):
     return tmp_path / 'sql/mysql/compact/baseline/35-runtime-guards.sql'
 
 
+def test_migration_target_compilation_accepts_the_real_baseline_with_exact_after_identity_guards(monkeypatch):
+    monkeypatch.syspath_prepend(str(ROOT / 'script/schema'))
+    runtime = module('compact_migration_runtime')
+    _, catalog, base, foreign, guards = runtime.compiled_target_parts()
+    assert len(base) == catalog['tableCount'] == 29 and foreign
+    assert any('AFTER INSERT ON agent_run' in guard for guard in guards)
+    assert any('AFTER UPDATE ON agent_connector' in guard for guard in guards)
+
+
+def test_migration_target_compilation_refuses_changed_before_or_after_timing(monkeypatch):
+    monkeypatch.syspath_prepend(str(ROOT / 'script/schema'))
+    runtime = module('compact_migration_runtime'); original = runtime.compile_schema
+    for name, timing in (('compact_legacy_clock_agent_run_binding_insert', 'BEFORE'),
+                         ('compact_runtime_protect_delete', 'AFTER')):
+        def changed(name=name, timing=timing):
+            sql, catalog = original()
+            target = next(guard for guard in catalog['triggers'] if guard['name'] == name)
+            target['timing'] = timing
+            return sql, catalog
+        monkeypatch.setattr(runtime, 'compile_schema', changed)
+        with pytest.raises(ValueError, match='Compiled compact target'):
+            runtime.compiled_target_parts()
+
+
 def test_generated_cli_schema_keeps_trigger_bodies_and_restores_statement_separator():
     sql, catalog = builder.compile_schema()
     assert {guard['name'] for guard in catalog['triggers']} == set(builder.RUNTIME_GUARDS) | set(builder.IDENTITY_GUARDS) | set(builder.QUOTA_GUARDS) | set(builder.AUDIT_GUARDS) | set(builder.WORKFLOW_GUARDS) | set(builder.LEGACY_CLOCK_GUARDS)

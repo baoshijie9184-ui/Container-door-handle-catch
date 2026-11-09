@@ -1401,3 +1401,50 @@ def test_case_growth_after_metadata_admission_is_skipped_without_consuming_the_e
     assert selected == [] and budget == {'remaining': available}
     assert {'name': cases.first.name, 'reason': 'PYTEST_TARGET_CANONICAL_BUDGET_EXCEEDED'} in binding['pytestTmp']['skippedCases']
     assert (cases.first / 'new-after-preflight.bin').is_file() and cases.second.is_dir()
+
+
+@pytest.mark.parametrize('reference', ['cwd', 'argv', 'fd', 'mmap'])
+def test_dual_root_single_pid_probe_refuses_same_tag_inbox_references(process_namespace, reference):
+    value = process_namespace; inbox = cleanup.checked_probe_inbox(value.checkout)
+    target = inbox / 'application.jar'
+    if reference == 'cwd':
+        (value.directory / 'cwd').unlink(); (value.directory / 'cwd').symlink_to(inbox, target_is_directory=True)
+    elif reference == 'argv': (value.directory / 'cmdline').write_bytes(b'process\0--jar=' + os.fsencode(target) + b'\0')
+    elif reference == 'fd':
+        (value.directory / 'fd/9').unlink(); (value.directory / 'fd/9').symlink_to(inbox / ('native-jar-quarantine-' + 'a' * 24) / 'candidate-app.jar')
+    else: (value.directory / 'maps').write_bytes(b'0-1 r--p 0 00:00 1 ' + os.fsencode(target) + b' (deleted)\n')
+    with pytest.raises(ValueError, match='REFERENCES_OLD_CHECKOUT'):
+        cleanup.single_process_metadata(value.checkout, value.pid, 1000, value.nonce, proc=value.proc, include_inbox=True)
+
+
+@pytest.mark.parametrize('scope', ['parent', 'exact', 'quarantine'])
+def test_dual_root_quiescence_includes_stopped_container_binds_of_the_old_inbox(state, scope):
+    inbox = cleanup.checked_probe_inbox(state.checkout)
+    source = {'parent': inbox.parent, 'exact': inbox, 'quarantine': inbox / 'native-jar-quarantine-fixed'}[scope]
+    container = ('f' * 64, False, False, 0, 'unrelated-release', 'unrelated-token', [{'Type': 'bind', 'Source': str(source)}])
+    with pytest.raises(ValueError, match='CONTAINER_REFERENCES_OLD_CHECKOUT'):
+        cleanup.quiescent({'checkout': state.checkout, 'token': 'b' * 24}, OLD, [container], include_inbox=True)
+
+
+@pytest.mark.parametrize('response', ['bound', 'legacy-checkout-only', 'other-inbox'])
+def test_dual_root_privileged_response_is_bound_to_both_actual_roots(denied_real_process, monkeypatch, response):
+    value = denied_real_process; original = value.run
+    def run(command, **kwargs):
+        result = original(command, **kwargs); payload = json.loads(result.stdout)
+        if response != 'legacy-checkout-only': payload['inbox'] = str(cleanup.checked_probe_inbox(value.checkout))
+        if response == 'other-inbox': payload['inbox'] += '-other'
+        result.stdout = cleanup.canonical(payload); return result
+    monkeypatch.setattr(cleanup.subprocess, 'run', run)
+    if response == 'bound': cleanup.process_references(value.checkout, include_inbox=True)
+    else:
+        with pytest.raises(ValueError, match='PROCESS_PROBE_RESPONSE_NOT_BOUND'):
+            cleanup.process_references(value.checkout, include_inbox=True)
+    assert len(value.calls) == 1 and '--include-inbox' in value.calls[0][0]
+
+
+def test_dual_root_inbox_is_derived_from_authenticated_checkout_and_never_follows_a_link(state):
+    assert cleanup.checked_probe_inbox(state.checkout) == state.inbox
+    saved = state.inbox.with_name(state.inbox.name + '-retained'); state.inbox.rename(saved)
+    state.inbox.symlink_to(saved, target_is_directory=True)
+    with pytest.raises(ValueError, match='PROCESS_PROBE_INBOX_NOT_CANONICAL'):
+        cleanup.checked_probe_inbox(state.checkout)

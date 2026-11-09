@@ -1,15 +1,16 @@
-"""Retire one exact, proven failed-native JAR copy while retaining its keeper.
+"""Retire exact, proven failed native build binaries under distinct policies.
 
 The CLI authenticates fixed current source and ECS identity before importing
 the existing strict cleanup admission library. The local Jenkins controller
 authenticates the request SHA and the original C/D control-file byte provenance.
-No retained source archive, inbox original, database, report or directory has a
-deletion API here. Only separately reviewed old Python build images may retire;
-historical metadata never substitutes for keeper bytes in the JAR-copy path.
+The default duplicate API never deletes its inbox keeper. A separate Maintenance
+policy can retire only the closed, failed unpublished canonical JARs after fresh
+publication and dual-root reference checks. Sources, databases and reports never
+have a deletion API; retiring a binary does not promise a byte-identical rebuild.
 """
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import argparse
 import ast
 import gzip
@@ -41,6 +42,8 @@ UPLOADED_NAMES = {'buildXml': 'build.xml', 'release': 'release.json', 'localBuil
                   'fixtureCleanupPublic': 'fixture-cleanup.json'}
 KIND = 'doorhandle-failed-native-jar-duplicate'
 JAR_COPY_KIND = 'FAILED_NATIVE_CANDIDATE_JAR_COPY'
+CANONICAL_KIND = 'doorhandle-failed-native-canonical-jar-retirement'
+CANONICAL_JAR_KIND = 'FAILED_UNPUBLISHED_CANONICAL_JAR'
 PUBLIC_LAYER_KIND = 'FAILED_NATIVE_PUBLIC_BUILDKIT_LAYER_COPY'
 PUBLIC_LAYER_KEEPER = 'ci-117-8c898996cc28'
 # A separate, closed set: adding another historical JAR does not authorize
@@ -80,6 +83,29 @@ APPROVED_OLD = {
     'ci-166-a3c084e1cf56': 'a3c084e1cf568206baca89908542537ad825fef8',
     'ci-168-a40c779d03a4': 'a40c779d03a43b894ead5569b8eb26ee7dc22a2e',
     'ci-173-45465e873d92': '45465e873d92822abe446fd7be3f9f00b7816f70',
+}
+# Reviewed historical publication predicates, authenticated against actual
+# retained archive members (not the current checkout or a synthesized report).
+# Each pair is Jenkinsfile.ecs-monolith, script/jenkins/pipeline.ps1. All these
+# sources restrict publishing to verify-deploy/rollback or compact-cutover and
+# return from VerifyRuntime. The terminal original XML must independently match.
+APPROVED_CANONICAL_SOURCES = {
+    'ci-117-8c898996cc28': ('4f8b3274861c913955ca716482fd183d9796d7c0d418da9527ca923e30fe4e37', '8a337d098a5715a3804116ba45fd0f127b339710605d3a3ed959294f4d988765'),
+    'ci-118-6481f7fa6021': ('4f8b3274861c913955ca716482fd183d9796d7c0d418da9527ca923e30fe4e37', '8a337d098a5715a3804116ba45fd0f127b339710605d3a3ed959294f4d988765'),
+    'ci-130-9a588271dadb': ('d1dcfa1277111c5535e59cf315e14a74670ad1f3b187d36debda9e55951f9e12', '0e528f57dfab5dca6f76a90991f26619477dac1a4e85d223447fa02593a892a4'),
+    'ci-132-69f2ef0fb309': ('d1dcfa1277111c5535e59cf315e14a74670ad1f3b187d36debda9e55951f9e12', '0e528f57dfab5dca6f76a90991f26619477dac1a4e85d223447fa02593a892a4'),
+    'ci-134-df30e17036de': ('d1dcfa1277111c5535e59cf315e14a74670ad1f3b187d36debda9e55951f9e12', '0e528f57dfab5dca6f76a90991f26619477dac1a4e85d223447fa02593a892a4'),
+    'ci-137-facc2ed94047': ('d1dcfa1277111c5535e59cf315e14a74670ad1f3b187d36debda9e55951f9e12', '0e528f57dfab5dca6f76a90991f26619477dac1a4e85d223447fa02593a892a4'),
+    'ci-139-384439388a8c': ('d1dcfa1277111c5535e59cf315e14a74670ad1f3b187d36debda9e55951f9e12', '0e528f57dfab5dca6f76a90991f26619477dac1a4e85d223447fa02593a892a4'),
+    'ci-141-56da3c4f7800': ('d1dcfa1277111c5535e59cf315e14a74670ad1f3b187d36debda9e55951f9e12', '0e528f57dfab5dca6f76a90991f26619477dac1a4e85d223447fa02593a892a4'),
+    'ci-143-f4b5c8d9e39b': ('d1dcfa1277111c5535e59cf315e14a74670ad1f3b187d36debda9e55951f9e12', '0e528f57dfab5dca6f76a90991f26619477dac1a4e85d223447fa02593a892a4'),
+    'ci-145-dd85b09748a9': ('71e7d874bc38de370179eeda9675b1fe5c74e613ddec394d2540dea1a4c3c054', 'a77ecf39d00a2debccbf2c646aa1ec02cc62b58ce72157f25ffac452610fbab8'),
+    'ci-154-38293aa306b3': ('71e7d874bc38de370179eeda9675b1fe5c74e613ddec394d2540dea1a4c3c054', '91acb59fcd4ecdcb331d01914d0b79eac5b95b48e18e937d5b4f8578cb28c364'),
+    'ci-156-9e1927880595': ('71e7d874bc38de370179eeda9675b1fe5c74e613ddec394d2540dea1a4c3c054', '91acb59fcd4ecdcb331d01914d0b79eac5b95b48e18e937d5b4f8578cb28c364'),
+    'ci-160-9d011d9d5ed8': ('b6a326526abceba1ffea41ccc4d21b14e5215cf9bdfe24ae50d0c9086d634033', '462c7fb838342cb1a0506c5d00bfde78c3537d2090087df8624d7e40e91cd479'),
+    'ci-166-a3c084e1cf56': ('aaae4dbdc779fe665efc0b02fc8123f8fa562280177c424f40c68c225376e64a', '83a937f54c651747b19c53b59053550ba0c1c8ed3c7b223e5f277ca7bd92590f'),
+    'ci-168-a40c779d03a4': ('aaae4dbdc779fe665efc0b02fc8123f8fa562280177c424f40c68c225376e64a', '83a937f54c651747b19c53b59053550ba0c1c8ed3c7b223e5f277ca7bd92590f'),
+    'ci-173-45465e873d92': ('aaae4dbdc779fe665efc0b02fc8123f8fa562280177c424f40c68c225376e64a', 'da877add8d55d160bb4a9f005f096879c5607167bc0b34f3c343d0f6309b3952'),
 }
 # Original tool bytes recorded by the retained Jenkins preparation receipts.
 # These values authenticate the owner chain; matching self-described fields
@@ -412,13 +438,14 @@ def remove_duplicate(root, descriptor, quarantine=None):
                 'quarantinePath':quarantine['path'],'capturedInodeVerified':True}
 
 
-def source_proof(root, tag, commit, source_sha, *, builder_helpers=False):
+def source_proof(root, tag, commit, source_sha, *, builder_helpers=False, canonical_jar=False):
     """Read and authenticate the retained archive; never extract or run it."""
     path = Path(root) / 'inbox' / tag / 'source.tar.gz'
     need(path.exists() or path.is_symlink(), 'OLD_SOURCE_ARCHIVE_MISSING')
     with held_file(root, path, MAX_SOURCE_ARCHIVE) as (stream, signature):
         need(hash_stream(stream, MAX_SOURCE_ARCHIVE) == source_sha, 'OLD_SOURCE_ARCHIVE_SHA_DRIFT')
-        stream.seek(0); recipe = None; builder_shas = {}
+        stream.seek(0); recipe = None; builder_shas = {}; publication_shas = {}
+        publication_names = ('Jenkinsfile.ecs-monolith', 'script/jenkins/pipeline.ps1')
         builder_names = {'script/docker/compact-build-resources.py', 'script/docker/compact-image-inputs.py'}
         class Bounded:
             def __init__(self, source): self.source, self.total = source, 0
@@ -431,6 +458,12 @@ def source_proof(root, tag, commit, source_sha, *, builder_helpers=False):
             count = 0
             for member in archive:
                 count += 1; need(count <= 50_000 and 0 <= member.size <= 32 * 1024 ** 2, 'SOURCE_MEMBER_BOUND_EXCEEDED')
+                if canonical_jar and member.name in publication_names:
+                    need(member.name not in publication_shas and member.isfile() and 0 < member.size <= 1024 ** 2,
+                         'UNIQUE_OLD_PUBLICATION_SOURCE_REQUIRED')
+                    raw = archive.extractfile(member).read(1024 ** 2 + 1)
+                    need(len(raw) == member.size, 'OLD_PUBLICATION_SOURCE_TRUNCATED')
+                    publication_shas[member.name] = digest_bytes(raw)
                 if builder_helpers and member.name in builder_names:
                     key = Path(member.name).name
                     need(key not in builder_shas and member.isfile() and 0 < member.size <= 1024 ** 2,
@@ -461,6 +494,11 @@ def source_proof(root, tag, commit, source_sha, *, builder_helpers=False):
         if builder_helpers:
             need(set(builder_shas) == {Path(name).name for name in builder_names}, 'ORIGINAL_BUILDER_HELPER_CLOSURE_MISSING')
             proof['builderHelperSha256'] = builder_shas
+        if canonical_jar:
+            need(APPROVED_OLD.get(tag) == commit and set(publication_shas) == set(publication_names)
+                 and tuple(publication_shas[name] for name in publication_names) == APPROVED_CANONICAL_SOURCES.get(tag),
+                 'CLOSED_REVIEWED_UNPUBLISHED_SOURCE_REQUIRED')
+            proof['unpublishedPipelineSourceSha256'] = publication_shas
         return proof
 
 
@@ -507,7 +545,7 @@ def fixture_owner_projection(owner):
     return projected
 
 
-def admit_historical_controls(root, request, row, *, builder_helpers=False):
+def admit_historical_controls(root, request, row, *, builder_helpers=False, canonical_jar=False):
     context = {key: row[key] for key in ('release', 'commit', 'sourceSha256')}; tag = row['release']
     controls = row['controls']; names = expected_control_paths(request['current']['release'], tag)
     need(type(controls) is dict and REQUIRED_CONTROLS <= set(controls) <= REQUIRED_CONTROLS | OPTIONAL_CONTROLS,
@@ -525,8 +563,11 @@ def admit_historical_controls(root, request, row, *, builder_helpers=False):
             raw_docs[role] = raw; bindings[role] = {**reference, 'metadata': signature}
     evidence = validate_control_documents(raw_docs, context, request['identity'])
     need(evidence['work'] == str(Path(root) / 'verification' / tag / 'checkout/work/compact-fixtures'), 'FIXTURE_OWNER_OUTSIDE_EXACT_OLD_ATTEMPT')
-    original_source = (source_proof(root, tag, context['commit'], context['sourceSha256'], builder_helpers=True)
-                       if builder_helpers else source_proof(root, tag, context['commit'], context['sourceSha256']))
+    if canonical_jar:
+        original_source = source_proof(root, tag, context['commit'], context['sourceSha256'], canonical_jar=True)
+    else:
+        original_source = (source_proof(root, tag, context['commit'], context['sourceSha256'], builder_helpers=True)
+                           if builder_helpers else source_proof(root, tag, context['commit'], context['sourceSha256']))
     result = {'context': context, 'evidence': evidence, 'controls': bindings, 'sourceArchive': original_source}
     if builder_helpers:
         # Original owner contains a root password. Only these nonsecret control
@@ -551,6 +592,128 @@ def admit_candidate(root, request, row, quiescence):
     target = describe_duplicate(root, tag, evidence['jarSha256'], evidence['jarBytes'])
     return {'context': context, 'jenkinsResult': evidence['jenkinsResult'], 'controls': admitted['controls'],
             'sourceArchive': admitted['sourceArchive'], 'ownerToken': evidence['ownerToken'], 'target': target}
+
+
+@contextmanager
+def publication_lock(root):
+    """Use the deployment's own lock while reading its live/rollback pointers."""
+    import fcntl
+    root = owned_path(root, Path(root), directory=True); state = root / 'state'
+    try: state.mkdir(mode=0o700)
+    except FileExistsError: pass
+    owned_path(root, state, directory=True); path = state / 'deploy.lock'
+    with os.fdopen(os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600), 'r+b') as stream:
+        info = os.fstat(stream.fileno())
+        need(stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and info.st_uid == os.getuid()
+             and not info.st_mode & 0o022 and metadata(info) == metadata(path.lstat()), 'PUBLICATION_LOCK_IDENTITY_CHANGED')
+        try: fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError: raise RetirementError('PUBLICATION_IN_PROGRESS') from None
+        yield
+
+
+def canonical_publication_refs(root, tag):
+    root = Path(root); release = root / 'releases' / tag
+    need(not release.exists() and not release.is_symlink(), 'BUILD_HAS_RETAINED_RELEASE_OR_ROLLBACK_ARTIFACTS')
+    references = []
+    for name in ('current-directory', 'previous-directory', 'release-publication.json'):
+        path = root / 'state' / name
+        if not path.exists() and not path.is_symlink():
+            references.append({'path': path.relative_to(root).as_posix(), 'absent': True}); continue
+        with held_file(root, path, MAX_CONTROL) as (stream, signature):
+            raw = stream.read(MAX_CONTROL + 1)
+            if name.endswith('.json'):
+                value = decode(raw)
+                need(value.get('schema') == 1 and value.get('project') == 'doorhandlecatch-monolith',
+                     'CURRENT_PUBLICATION_RECORD_INVALID')
+                paths = [value.get('current'), value.get('previous')]
+            else:
+                paths = [raw.decode('utf-8').strip()]
+            for value in paths:
+                need(type(value) is str and value and Path(value).is_absolute() and '..' not in Path(value).parts,
+                     'CURRENT_PUBLICATION_POINTER_INVALID')
+                pointer = Path(value)
+                need(pointer.resolve(strict=True) == pointer and pointer.is_dir(), 'CURRENT_PUBLICATION_POINTER_INVALID')
+                roots = (root / 'inbox' / tag, root / 'verification' / tag / 'checkout')
+                need(tag not in pointer.parts and not any(pointer == item or item.is_relative_to(pointer) for item in roots),
+                     'CANONICAL_JAR_HAS_CURRENT_OR_ROLLBACK_REFERENCE')
+            references.append({'path': path.relative_to(root).as_posix(), 'metadata': signature, 'sha256': digest_bytes(raw)})
+    return references
+
+
+def describe_canonical_jar(root, tag, jar_sha, jar_bytes):
+    need(tag in APPROVED_OLD and type(jar_sha) is str and SHA.fullmatch(jar_sha)
+         and type(jar_bytes) is int and 0 < jar_bytes <= MAX_JAR, 'EXACT_CLOSED_CANONICAL_JAR_REQUIRED')
+    path = Path(root) / 'inbox' / tag / 'application.jar'
+    with held_file(root, path, MAX_JAR) as (stream, signature):
+        need(signature[6] == jar_bytes and hash_stream(stream) == jar_sha, 'ACTUAL_CANONICAL_JAR_BYTES_DRIFT')
+        return {'kind': CANONICAL_JAR_KIND, 'release': tag, 'path': path.relative_to(root).as_posix(),
+                'metadata': signature, 'sha256': jar_sha, 'bytes': jar_bytes, 'allocatedBytes': signature[9]}
+
+
+def admit_canonical_candidate(root, request, row, quiescence):
+    need(APPROVED_OLD.get(row['release']) == row['commit'], 'ONLY_REVIEWED_OLD_ATTEMPTS_ALLOWED')
+    admitted = admit_historical_controls(root, request, row, canonical_jar=True)
+    evidence = admitted['evidence']; tag = row['release']
+    references = canonical_publication_refs(root, tag)
+    need(callable(quiescence) and quiescence(Path(root) / 'verification' / tag / 'checkout', tag, evidence['ownerToken']) is None,
+         'ACTUAL_DUAL_ROOT_QUIESCENCE_REQUIRED')
+    target = describe_canonical_jar(root, tag, evidence['jarSha256'], evidence['jarBytes'])
+    return {'context': admitted['context'], 'jenkinsResult': evidence['jenkinsResult'], 'controls': admitted['controls'],
+            'sourceArchive': admitted['sourceArchive'], 'publicationReferences': references,
+            'ownerToken': evidence['ownerToken'], 'target': target}
+
+
+def remove_canonical_jar(root, descriptor, quarantine, *, quiescence):
+    """A separate closed single-file API; the duplicate keeper API stays closed."""
+    need(type(descriptor) is dict and set(descriptor) == {'kind', 'release', 'path', 'metadata', 'sha256', 'bytes', 'allocatedBytes'}
+         and descriptor['kind'] == CANONICAL_JAR_KIND, 'EXACT_CANONICAL_SINGLE_FILE_DESCRIPTOR_REQUIRED')
+    root = Path(root); tag = descriptor['release']; target = root / 'inbox' / tag / 'application.jar'
+    need(describe_canonical_jar(root, tag, descriptor['sha256'], descriptor['bytes']) == descriptor,
+         'CANONICAL_JAR_CHANGED_AFTER_PLAN')
+    need(type(quarantine) is dict and set(quarantine) == {'directory', 'path', 'directoryIdentity'}, 'EXACT_PRIVATE_QUARANTINE_REQUIRED')
+    relative = Path(quarantine['directory']); parts = relative.parts
+    need(len(parts) == 3 and parts[:2] == ('inbox', tag)
+         and re.fullmatch(r'native-jar-quarantine-[a-f0-9]{24}', parts[2])
+         and quarantine['path'] == (relative / 'candidate-app.jar').as_posix(), 'CANONICAL_QUARANTINE_MUST_STAY_IN_OLD_INBOX')
+    private = owned_path(root, root / relative, directory=True)
+    with os.fdopen(os.open(target, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), 'rb') as copy:
+        original = metadata(os.fstat(copy.fileno()))
+        need(original == descriptor['metadata'] == metadata(target.lstat()) and hash_stream(copy) == descriptor['sha256'],
+             'CANONICAL_JAR_CHANGED_BEFORE_CAPTURE')
+        stack = [os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)]; private_fd = None
+        try:
+            private_fd = os.open(private, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            def private_identity():
+                info = os.fstat(private_fd); linked = private.lstat()
+                need([info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid]
+                     == [linked.st_dev, linked.st_ino, linked.st_mode, linked.st_uid, linked.st_gid]
+                     == quarantine['directoryIdentity'] and stat.S_IMODE(info.st_mode) == 0o700, 'PRIVATE_QUARANTINE_MOVED')
+            private_identity(); need(not os.listdir(private_fd), 'PRIVATE_QUARANTINE_ALREADY_OCCUPIED')
+            for part in target.relative_to(root).parts[:-1]:
+                fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=stack[-1]); stack.append(fd)
+                info = os.fstat(fd)
+                need(info.st_uid == os.getuid() and info.st_dev == original[0] and not info.st_mode & 0o022, 'DELETION_ANCESTOR_CHANGED')
+            need(metadata(os.stat(target.name, dir_fd=stack[-1], follow_symlinks=False)) == original
+                 == metadata(os.fstat(copy.fileno())), 'CANONICAL_JAR_MOVED_BEFORE_CAPTURE')
+            _capture_no_replace(stack[-1], target.name, private_fd, 'candidate-app.jar')
+            os.fsync(stack[-1]); os.fsync(private_fd)
+            captured = metadata(os.stat('candidate-app.jar', dir_fd=private_fd, follow_symlinks=False))
+            need(captured == metadata(os.fstat(copy.fileno())) and _renamed_copy_matches(original, captured)
+                 and hash_stream(copy) == descriptor['sha256'], 'UNEXPECTED_CAPTURED_INODE_RETAINED')
+            need(callable(quiescence) and quiescence() is None, 'ACTUAL_DUAL_ROOT_QUIESCENCE_REQUIRED')
+            need(not target.exists() and not target.is_symlink(), 'ORIGINAL_TARGET_REAPPEARED_RETAIN_QUARANTINE')
+            private_identity()
+            need(os.listdir(private_fd) == ['candidate-app.jar']
+                 and metadata(os.stat('candidate-app.jar', dir_fd=private_fd, follow_symlinks=False)) == captured
+                 == metadata(os.fstat(copy.fileno())), 'CAPTURE_CHANGED_RETAIN_QUARANTINE')
+            os.unlink('candidate-app.jar', dir_fd=private_fd); os.fsync(private_fd)
+            need(not os.listdir(private_fd) and not target.exists() and not target.is_symlink(), 'CANONICAL_REMOVAL_NOT_CONFIRMED')
+        finally:
+            if private_fd is not None: os.close(private_fd)
+            for fd in reversed(stack): os.close(fd)
+    return {'kind': CANONICAL_JAR_KIND, 'path': descriptor['path'], 'bytes': descriptor['bytes'],
+            'allocatedBytes': descriptor['allocatedBytes'], 'sha256': descriptor['sha256'],
+            'quarantinePath': quarantine['path'], 'capturedInodeVerified': True, 'binaryDisposition': 'RETIRED'}
 
 
 @contextmanager
@@ -580,17 +743,20 @@ def controller_lock(root):
         yield
 
 
-def plan(root, raw_request, *, request_sha256, expected_current, identity, quiescence):
-    """Discover only admitted duplicates; rejection is explicit, never approval."""
+def plan(root, raw_request, *, request_sha256, expected_current, identity, quiescence, canonical_jar=False):
+    """Discover admitted single files; the default remains keeper-preserving."""
     request = validate_request(raw_request, request_sha256, expected_current, identity)
+    need(type(canonical_jar) is bool, 'EXACT_RETIREMENT_POLICY_REQUIRED')
+    admit = admit_canonical_candidate if canonical_jar else admit_candidate
+    kind = CANONICAL_KIND if canonical_jar else KIND
     accepted, skipped = [], []
-    with controller_lock(root):
+    with controller_lock(root), publication_lock(root) if canonical_jar else nullcontext():
         for row in request['candidates']:
             try:
-                with attempt_lock(root, row['release']): accepted.append(admit_candidate(root, request, row, quiescence))
+                with attempt_lock(root, row['release']): accepted.append(admit(root, request, row, quiescence))
             except (RetirementError, OSError, ValueError, KeyError, TypeError, tarfile.TarError, EOFError) as error:
                 skipped.append({'release': row['release'], 'reason': str(error) if isinstance(error, RetirementError) else type(error).__name__})
-    result = {'schemaVersion': 1, 'kind': KIND + '-plan', 'requestSha256': request_sha256,
+    result = {'schemaVersion': 1, 'kind': kind + '-plan', 'requestSha256': request_sha256,
               'current': expected_current, 'identity': identity, 'candidates': accepted, 'skipped': skipped,
               'candidateBytes': sum(row['target']['bytes'] for row in accepted),
               'candidateAllocatedBytes': sum(row['target']['allocatedBytes'] for row in accepted),
@@ -599,16 +765,19 @@ def plan(root, raw_request, *, request_sha256, expected_current, identity, quies
     return result
 
 
-def apply(root, raw_request, prepared_plan, *, request_sha256, plan_sha256, expected_current, identity, quiescence):
+def apply(root, raw_request, prepared_plan, *, request_sha256, plan_sha256, expected_current, identity, quiescence, canonical_jar=False):
     """Re-admit every selected input before exact single-file mutation.
 
     An interrupted/partial result must be reviewed; retry requires a newly
     prepared plan. A prior success is never synthesized for a missing file.
     """
     request = validate_request(raw_request, request_sha256, expected_current, identity)
+    need(type(canonical_jar) is bool, 'EXACT_RETIREMENT_POLICY_REQUIRED')
+    admit = admit_canonical_candidate if canonical_jar else admit_candidate
+    kind = CANONICAL_KIND if canonical_jar else KIND
     need(type(prepared_plan) is dict and type(plan_sha256) is str and SHA.fullmatch(plan_sha256)
          and digest_bytes(canonical(prepared_plan)) == plan_sha256
-         and prepared_plan.get('kind') == KIND + '-plan' and prepared_plan.get('requestSha256') == request_sha256
+         and prepared_plan.get('kind') == kind + '-plan' and prepared_plan.get('requestSha256') == request_sha256
          and prepared_plan.get('current') == expected_current and prepared_plan.get('identity') == identity
          and prepared_plan.get('inboxKeepersPreserved') is True and prepared_plan.get('deletionPerformed') is False,
          'EXACT_APPROVED_PLAN_SHA_REQUIRED')
@@ -617,11 +786,12 @@ def apply(root, raw_request, prepared_plan, *, request_sha256, plan_sha256, expe
          and all(type(row) is dict and type(row.get('context')) is dict for row in selected), 'BOUNDED_SELECTED_PLAN_REQUIRED')
     tags = [row['context']['release'] for row in selected]
     need(len(tags) == len(set(tags)) and set(tags) <= {row['release'] for row in request['candidates']}, 'SELECTED_PLAN_TAG_DRIFT')
-    journal_path = Path(root) / 'inbox' / expected_current['release'] / 'native-jar-duplicate-journal.jsonl'
+    journal_path = Path(root) / 'inbox' / expected_current['release'] / (
+        'native-jar-duplicate-canonical-journal.jsonl' if canonical_jar else 'native-jar-duplicate-journal.jsonl')
     owned_path(root, journal_path.parent, directory=True)
     deleted, failure, active, mutation_attempted = [], None, None, False
     active_quarantine=None;quarantines=[]
-    with controller_lock(root), os.fdopen(os.open(journal_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600), 'wb') as journal:
+    with controller_lock(root), publication_lock(root) if canonical_jar else nullcontext(), os.fdopen(os.open(journal_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600), 'wb') as journal:
         total = 0
         def record(value):
             nonlocal total
@@ -636,15 +806,24 @@ def apply(root, raw_request, prepared_plan, *, request_sha256, plan_sha256, expe
                 active_quarantine=None
                 row = next(row for row in request['candidates'] if row['release'] == active)
                 with attempt_lock(root, active):
-                    need(admit_candidate(root, request, row, quiescence) == candidate, 'CANDIDATE_CHANGED_AFTER_PLAN')
+                    need(admit(root, request, row, quiescence) == candidate, 'CANDIDATE_CHANGED_AFTER_PLAN')
                     need(quiescence(Path(root) / 'verification' / active / 'checkout', active, candidate['ownerToken']) is None,
                          'STRICT_QUIESCENCE_MUST_RETURN_ONLY_AFTER_SUCCESS')
-                    active_quarantine=reserve_quarantine(root,expected_current['release']);quarantines.append(active_quarantine)
+                    active_quarantine=reserve_quarantine(root,active if canonical_jar else expected_current['release']);quarantines.append(active_quarantine)
                     record({'phase': 'DELETE_STARTED', 'release': active, 'path': candidate['target']['path'],
-                            'keeperPath': candidate['target']['keeper']['path'], 'sha256': candidate['target']['sha256'],
+                            **({'kind': CANONICAL_JAR_KIND} if canonical_jar else {'keeperPath': candidate['target']['keeper']['path']}),
+                            'sha256': candidate['target']['sha256'],
                             'quarantinePath':active_quarantine['path']})
                     mutation_attempted = True
-                    result = remove_duplicate(root, candidate['target'],quarantine=active_quarantine); deleted.append(result)
+                    if canonical_jar:
+                        def captured_quiescence():
+                            need(canonical_publication_refs(root, active) == candidate['publicationReferences'],
+                                 'PUBLICATION_REFERENCE_CHANGED_RETAIN_QUARANTINE')
+                            return quiescence(Path(root) / 'verification' / active / 'checkout', active, candidate['ownerToken'])
+                        result = remove_canonical_jar(root, candidate['target'], active_quarantine, quiescence=captured_quiescence)
+                    else:
+                        result = remove_duplicate(root, candidate['target'],quarantine=active_quarantine)
+                    deleted.append(result)
                     record({'phase': 'DELETE_FINISHED', **result})
             record({'phase': 'FINISHED', 'deletedFiles': len(deleted)})
         except (RetirementError, OSError, ValueError, KeyError, TypeError, tarfile.TarError, EOFError) as error:
@@ -653,7 +832,7 @@ def apply(root, raw_request, prepared_plan, *, request_sha256, plan_sha256, expe
                     'completedDeletions': len(deleted), 'mutationAttempted': mutation_attempted,
                     'quarantinePath':active_quarantine['path'] if active_quarantine else None})
         after = os.statvfs(root)
-    return {'schemaVersion': 1, 'kind': KIND + '-receipt', 'current': expected_current, 'identity': identity,
+    return {'schemaVersion': 1, 'kind': kind + '-receipt', 'current': expected_current, 'identity': identity,
             'status': 'FAILED_OR_UNKNOWN' if failure else 'REMOVED' if deleted else 'NO_ACTION',
             'requestSha256': request_sha256, 'planSha256': plan_sha256, 'deleted': deleted, 'failure': failure,
             'mutationAttempted': mutation_attempted, 'lastAttemptedRelease': active,
@@ -662,7 +841,11 @@ def apply(root, raw_request, prepared_plan, *, request_sha256, plan_sha256, expe
                                        if (Path(root)/row['path']).exists() or (Path(root)/row['path']).is_symlink()],
             'journalSha256': digest_bytes(journal_path.read_bytes()),
             'availableBytesBefore': before.f_bavail * before.f_frsize, 'availableBytesAfter': after.f_bavail * after.f_frsize,
-            'inboxKeepersPreserved': failure is None, 'sourceArchivesDataAndReportsHaveNoDeletionApi': True}
+            'inboxKeepersPreserved': not mutation_attempted if canonical_jar else failure is None,
+            **({'binaryDisposition': 'FAILED_OR_UNKNOWN' if failure else 'RETIRED' if deleted else 'UNCHANGED',
+                'binaryRebuildByteIdentityClaimed': False, 'skipped': prepared_plan['skipped'],
+                'testsRunByRetirement': False} if canonical_jar else {}),
+            'sourceArchivesDataAndReportsHaveNoDeletionApi': True}
 
 
 @contextmanager
@@ -1743,6 +1926,7 @@ def apply_python_build_cache(root, prepared, *, plan_sha256, expected_current, i
 def cli(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--phase', choices=('capture-request', 'plan-builders', 'apply-builders', 'plan', 'apply',
+                                           'plan-canonical', 'apply-canonical',
                                            'plan-public-layers', 'apply-public-layers', 'plan-generated-image-archives',
                                            'apply-generated-image-archives', 'plan-python-build-cache',
                                            'apply-python-build-cache', 'inspect'), required=True)
@@ -1761,6 +1945,8 @@ def cli(argv=None):
         generated_receipt_file = inbox / 'native-generated-public-image-archive-receipt.json'
         python_cache_plan_file = inbox / 'native-python-build-cache-plan.json'
         python_cache_receipt_file = inbox / 'native-python-build-cache-receipt.json'
+        canonical_plan_file = inbox / 'native-jar-duplicate-canonical-plan.json'
+        canonical_receipt_file = inbox / 'native-jar-duplicate-canonical-receipt.json'
         if args.phase == 'capture-request':
             raw = private_bytes(root, inbox / 'native-jar-duplicate-local-spec.json')
             request, skipped = capture_request(root, raw, local_spec_sha256=args.local_spec_sha256, expected_current=current, identity=identity)
@@ -1777,7 +1963,9 @@ def cli(argv=None):
                                ('generatedArchivePlan', generated_plan_file), ('generatedArchiveReceipt', generated_receipt_file),
                                ('generatedArchiveJournal', inbox / 'native-generated-public-image-archive-journal.jsonl'),
                                ('pythonCachePlan', python_cache_plan_file), ('pythonCacheReceipt', python_cache_receipt_file),
-                               ('pythonCacheJournal', inbox / 'native-python-build-cache-journal.jsonl')):
+                               ('pythonCacheJournal', inbox / 'native-python-build-cache-journal.jsonl'),
+                               ('canonicalPlan', canonical_plan_file), ('canonicalReceipt', canonical_receipt_file),
+                               ('canonicalJournal', inbox / 'native-jar-duplicate-canonical-journal.jsonl')):
                 if path.exists():
                     raw = private_bytes(root, path); files[name] = {'file': path.name, 'bytes': len(raw), 'sha256': digest_bytes(raw)}
             originals = []; directory = inbox / 'native-python-build-cache-inspect'
@@ -1793,6 +1981,27 @@ def cli(argv=None):
                                       'bytes': len(raw), 'sha256': digest_bytes(raw)})
             result = {'status': 'INSPECTED', 'current': current, 'identity': identity, 'files': files,
                       'pythonCacheOriginals': originals}
+        elif args.phase in ('plan-canonical', 'apply-canonical'):
+            need(args.mode == 'Maintenance', 'CANONICAL_RETIREMENT_REQUIRES_MAINTENANCE')
+            raw = private_bytes(root, request_file); approved_request(raw, args.request_sha256, current, identity)
+            def canonical_quiescence(checkout, tag, token):
+                need(checkout == root / 'verification' / tag / 'checkout' and tag in APPROVED_OLD,
+                     'EXACT_CANONICAL_REFERENCE_ROOTS_REQUIRED')
+                modules['cleanup'].quiescent({'checkout': checkout, 'token': token}, tag,
+                                             modules['cleanup'].docker_snapshot(), include_inbox=True)
+            options = {'request_sha256': args.request_sha256, 'expected_current': current, 'identity': identity,
+                       'quiescence': canonical_quiescence, 'canonical_jar': True}
+            if args.phase == 'plan-canonical':
+                value = plan(root, raw, **options)
+                result = {'status': 'PLANNED', 'current': current, 'identity': identity,
+                          'plan': write_new(canonical_plan_file, value), 'skipped': value['skipped'],
+                          'candidateBytes': value['candidateBytes'], 'candidateAllocatedBytes': value['candidateAllocatedBytes']}
+            else:
+                plan_raw = private_bytes(root, canonical_plan_file)
+                need(digest_bytes(plan_raw) == args.plan_sha256, 'ORIGINAL_CANONICAL_PLAN_RAW_SHA_DRIFT')
+                value = apply(root, raw, decode(plan_raw), plan_sha256=args.plan_sha256, **options)
+                result = {'status': value['status'], 'current': current, 'identity': identity,
+                          'receipt': write_new(canonical_receipt_file, value)}
         elif args.phase in ('plan-python-build-cache', 'apply-python-build-cache'):
             options = {'expected_current': current, 'identity': identity, 'modules': modules}
             if args.phase == 'plan-python-build-cache':

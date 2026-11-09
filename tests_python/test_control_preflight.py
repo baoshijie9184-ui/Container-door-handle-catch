@@ -22,6 +22,7 @@ def test_current_fixed_profile_contains_every_focused_module():
     minimum = preflight.required_minimum(profile)
     assert set(minimum) == {
         'test_jenkins_resource_budget', 'test_jenkins_fixture_admission',
+        'test_jenkins_ecs_build_cleanup',
         'test_failed_native_jar_duplicates', 'test_historical_builder_retirement',
         'test_historical_mysql_fixture_retirement', 'test_public_buildkit_layer_retirement',
         'test_generated_public_image_archive_retirement',

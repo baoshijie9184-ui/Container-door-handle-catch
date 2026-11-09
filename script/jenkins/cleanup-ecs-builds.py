@@ -524,16 +524,19 @@ def docker_snapshot():
     return [json.loads(line) for line in result.stdout.decode().splitlines()]
 
 
-def quiescent(binding, tag, containers):
+def quiescent(binding, tag, containers, *, include_inbox=False):
+    require(type(include_inbox) is bool, 'PROCESS_PROBE_ROOT_SELECTION_INVALID')
     checkout = binding['checkout']
+    roots = (checkout, checked_probe_inbox(checkout)) if include_inbox else (checkout,)
     for _cid, running, restarting, pid, release, token, mounts in containers:
         require(release != tag and token != binding['token'], 'OLD_BUILD_CONTAINER_STILL_PRESENT')
         for mount in mounts:
             if mount.get('Type') != 'bind' or not mount.get('Source'): continue
             source = Path(mount['Source'])
-            require(not (source == checkout or source.is_relative_to(checkout) or checkout.is_relative_to(source)),
+            require(not any(source == root or source.is_relative_to(root) or root.is_relative_to(source) for root in roots),
                     'CONTAINER_REFERENCES_OLD_CHECKOUT')
-    process_references(checkout)
+    if include_inbox: process_references(checkout, include_inbox=True)
+    else: process_references(checkout)
 
 
 def process_reference(raw, checkout):
@@ -543,9 +546,11 @@ def process_reference(raw, checkout):
     return path.is_absolute() and (path == checkout or path.is_relative_to(checkout))
 
 
-def probe_result(status, checkout, pid, uid, nonce):
-    return {'schema': 1, 'kind': PROCESS_PROBE_KIND, 'status': status,
-            'pid': pid, 'uid': uid, 'checkout': str(checkout), 'nonce': nonce}
+def probe_result(status, checkout, pid, uid, nonce, *, include_inbox=False):
+    value = {'schema': 1, 'kind': PROCESS_PROBE_KIND, 'status': status,
+             'pid': pid, 'uid': uid, 'checkout': str(checkout), 'nonce': nonce}
+    if include_inbox: value['inbox'] = str(checked_probe_inbox(checkout))
+    return value
 
 
 def checked_probe_checkout(checkout):
@@ -562,6 +567,20 @@ def checked_probe_checkout(checkout):
         require(stat.S_ISDIR(info.st_mode) and info.st_uid == 1000 and not info.st_mode & 0o022,
                 'PROCESS_PROBE_CHECKOUT_OWNER_OR_MODE_CHANGED')
     return checkout
+
+
+def checked_probe_inbox(checkout):
+    """The sole optional sibling root; never accept a caller-selected path."""
+    checkout = checked_probe_checkout(checkout)
+    root = checkout.parent.parent.parent
+    inbox = root / 'inbox' / checkout.parent.name
+    for path in (root / 'inbox', inbox):
+        require(path.resolve(strict=True) == path and not path.is_symlink(),
+                'PROCESS_PROBE_INBOX_NOT_CANONICAL')
+        info = path.lstat()
+        require(stat.S_ISDIR(info.st_mode) and info.st_uid == 1000 and not info.st_mode & 0o022,
+                'PROCESS_PROBE_INBOX_OWNER_OR_MODE_CHANGED')
+    return inbox
 
 
 def probe_read(pid_fd, name, maximum):
@@ -608,12 +627,15 @@ def confirm_pid_gone(proc_fd, pid):
         raise ValueError('PROCESS_DISAPPEARANCE_NOT_PROVEN')
 
 
-def single_process_metadata(checkout, pid, uid, nonce, *, proc=Path('/proc')):
+def single_process_metadata(checkout, pid, uid, nonce, *, proc=Path('/proc'), include_inbox=False):
     """Root-only read-only probe. ``proc`` is internal synthetic-test injection."""
     require(sys.platform == 'linux' and os.geteuid() == 0, 'ROOT_PROCESS_METADATA_MODE_REQUIRED')
     require(type(pid) is int and 0 < pid <= 2 ** 31 - 1 and type(uid) is int and uid == 1000
             and isinstance(nonce, str) and re.fullmatch(r'[a-f0-9]{32}', nonce), 'PROCESS_PROBE_REQUEST_INVALID')
     checkout = checked_probe_checkout(checkout)
+    require(type(include_inbox) is bool, 'PROCESS_PROBE_ROOT_SELECTION_INVALID')
+    roots = (checkout, checked_probe_inbox(checkout)) if include_inbox else (checkout,)
+    def references(raw): return any(process_reference(raw, root) for root in roots)
     proc_fd = os.open(proc, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     pid_fd = None
     try:
@@ -621,14 +643,14 @@ def single_process_metadata(checkout, pid, uid, nonce, *, proc=Path('/proc')):
             pid_fd = os.open(str(pid), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=proc_fd)
         except (FileNotFoundError, ProcessLookupError):
             confirm_pid_gone(proc_fd, pid)
-            return probe_result('GONE', checkout, pid, uid, nonce)
+            return probe_result('GONE', checkout, pid, uid, nonce, include_inbox=include_inbox)
         before = os.fstat(pid_fd); before_identity = None
         try:
             before_identity = process_identity_at(pid_fd, pid, uid)
-            require(not process_reference(os.readlink('cwd', dir_fd=pid_fd), checkout),
+            require(not references(os.readlink('cwd', dir_fd=pid_fd)),
                     'ACTIVE_PROCESS_REFERENCES_OLD_CHECKOUT')
             argv = probe_read(pid_fd, 'cmdline', 1024 ** 2)
-            require(not any(process_reference(arg, checkout) for arg in argv.split(b'\0') if arg),
+            require(not any(references(arg) for arg in argv.split(b'\0') if arg),
                     'ACTIVE_PROCESS_REFERENCES_OLD_CHECKOUT')
             fd_fd = os.open('fd', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=pid_fd)
             try:
@@ -644,31 +666,33 @@ def single_process_metadata(checkout, pid, uid, nonce, *, proc=Path('/proc')):
                         except (FileNotFoundError, ProcessLookupError):
                             continue  # Only this vanished descriptor is skipped.
                         raise ValueError('PROCESS_DESCRIPTOR_CHANGED_DURING_SCAN')
-                    require(not process_reference(target, checkout), 'ACTIVE_FILE_DESCRIPTOR_REFERENCES_OLD_CHECKOUT')
+                    require(not references(target), 'ACTIVE_FILE_DESCRIPTOR_REFERENCES_OLD_CHECKOUT')
             finally:
                 os.close(fd_fd)
             maps = probe_read(pid_fd, 'maps', 16 * 1024 ** 2)
             for line in maps.splitlines():
                 fields = line.split(None, 5)
                 if len(fields) == 6:
-                    require(not process_reference(fields[5], checkout), 'ACTIVE_MEMORY_MAP_REFERENCES_OLD_CHECKOUT')
+                    require(not references(fields[5]), 'ACTIVE_MEMORY_MAP_REFERENCES_OLD_CHECKOUT')
             after_identity = process_identity_at(pid_fd, pid, uid)
             current = os.stat(str(pid), dir_fd=proc_fd, follow_symlinks=False)
             require((current.st_dev, current.st_ino) == (before.st_dev, before.st_ino)
                     and after_identity == before_identity, 'PROCESS_PID_OR_IDENTITY_REUSED')
         except (FileNotFoundError, ProcessLookupError):
             confirm_pid_gone(proc_fd, pid)
-            return probe_result('GONE', checkout, pid, uid, nonce)
-        return probe_result('QUIESCENT', checkout, pid, uid, nonce)
+            return probe_result('GONE', checkout, pid, uid, nonce, include_inbox=include_inbox)
+        return probe_result('QUIESCENT', checkout, pid, uid, nonce, include_inbox=include_inbox)
     finally:
         if pid_fd is not None: os.close(pid_fd)
         os.close(proc_fd)
 
 
-def privileged_process_probe(checkout, pid, proc):
+def privileged_process_probe(checkout, pid, proc, *, include_inbox=False):
     require(sys.platform == 'linux' and proc == Path('/proc') and os.getuid() == 1000 and os.geteuid() == 1000,
             'PRIVILEGED_PROCESS_PROBE_SCOPE_REFUSED')
     checkout = checked_probe_checkout(checkout)
+    require(type(include_inbox) is bool, 'PROCESS_PROBE_ROOT_SELECTION_INVALID')
+    if include_inbox: checked_probe_inbox(checkout)
     require(LOADED_SOURCE is not None and len(LOADED_SOURCE) <= 1024 ** 2, 'FIXED_PROCESS_PROBE_SOURCE_REQUIRED')
     source = owned(Path(__file__).absolute(), maximum=1024 ** 2)
     admitted = metadata(source.lstat())
@@ -683,6 +707,7 @@ def privileged_process_probe(checkout, pid, proc):
     nonce = secrets.token_hex(16)
     command = ['/usr/bin/sudo', '-n', '/usr/bin/python3', '-I', '-B', '-', 'inspect-process',
                '--checkout', str(checkout), '--pid', str(pid), '--uid', '1000', '--nonce', nonce]
+    if include_inbox: command.append('--include-inbox')
     result = subprocess.run(command, input=raw, capture_output=True, timeout=20,
                             env={'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LANG': 'C', 'LC_ALL': 'C'})
     require(result.returncode == 0 and len(result.stdout) <= 4096 and len(result.stderr) <= 4096,
@@ -694,16 +719,18 @@ def privileged_process_probe(checkout, pid, proc):
         return value
     value = json.loads(result.stdout, object_pairs_hook=unique,
                        parse_constant=lambda unused: require(False, 'NONFINITE_PROCESS_PROBE_FIELD'))
-    expected = probe_result(value.get('status') if isinstance(value, dict) else None, checkout, pid, 1000, nonce)
+    expected = probe_result(value.get('status') if isinstance(value, dict) else None, checkout, pid, 1000, nonce,
+                            include_inbox=include_inbox)
     require(isinstance(value, dict) and set(value) == set(expected) and value == expected
             and type(value['schema']) is int and type(value['pid']) is int and type(value['uid']) is int
             and value['status'] in ('QUIESCENT', 'GONE'), 'PROCESS_PROBE_RESPONSE_NOT_BOUND')
 
 
-def process_references(checkout, proc=Path('/proc')):
+def process_references(checkout, proc=Path('/proc'), *, include_inbox=False):
     """Read only cwd/argv/fd paths; root fallback is restricted to one denied PID."""
-    def references(raw):
-        return process_reference(raw, checkout)
+    require(type(include_inbox) is bool, 'PROCESS_PROBE_ROOT_SELECTION_INVALID')
+    roots = (checkout, checked_probe_inbox(checkout)) if include_inbox else (checkout,)
+    def references(raw): return any(process_reference(raw, root) for root in roots)
 
     entries = list(proc.iterdir()); require(len(entries) <= 65536, 'PROCESS_SCAN_BOUND_EXCEEDED')
     for entry in entries:
@@ -740,7 +767,8 @@ def process_references(checkout, proc=Path('/proc')):
         except PermissionError:
             if not same_uid or sys.platform != 'linux' or proc != Path('/proc') or os.getuid() != 1000 or os.geteuid() != 1000:
                 raise
-            privileged_process_probe(checkout, int(entry.name), proc)
+            if include_inbox: privileged_process_probe(checkout, int(entry.name), proc, include_inbox=True)
+            else: privileged_process_probe(checkout, int(entry.name), proc)
 
 
 def metadata(info):
@@ -1233,8 +1261,10 @@ def main(argv=None):
         parser.add_argument('--pid', required=True, type=int)
         parser.add_argument('--uid', required=True, type=int)
         parser.add_argument('--nonce', required=True)
+        parser.add_argument('--include-inbox', action='store_true')
         args = parser.parse_args(argv[1:])
-        result = single_process_metadata(Path(args.checkout), args.pid, args.uid, args.nonce)
+        result = single_process_metadata(Path(args.checkout), args.pid, args.uid, args.nonce,
+                                         include_inbox=args.include_inbox)
         print(json.dumps(result, sort_keys=True)); return
     require(not (sys.platform == 'linux' and os.geteuid() == 0), 'ROOT_PERMITS_ONLY_PROCESS_METADATA_MODE')
     parser = argparse.ArgumentParser(description=__doc__)

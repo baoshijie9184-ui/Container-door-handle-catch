@@ -24,7 +24,7 @@ import uuid
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'scripts'))
 from ecs_execution import require_ecs_execution
-from build_compact_schema import GUARD_RESOURCES, compile_schema, split_top_level, without_comments
+from build_compact_schema import AFTER_GUARDS, GUARD_RESOURCES, compile_schema, split_top_level, without_comments
 import compact_clock_policy as clocks
 import compact_ddl_policy as ddl_policy
 
@@ -813,7 +813,7 @@ def compiled_target_parts():
                 else:
                     require(re.fullmatch(r'SET\s+NAMES\s+utf8mb4(?:\s+COLLATE\s+utf8mb4_0900_ai_ci)?', statement, re.I),
                             'Unregistered baseline statement')
-    expected_guards = {(name, table, 'BEFORE', event) for table, resources in GUARD_RESOURCES.values()
+    expected_guards = {(name, table, 'AFTER' if name in AFTER_GUARDS else 'BEFORE', event) for table, resources in GUARD_RESOURCES.values()
                        for name, event in resources.items()}
     actual_guards = {(item['name'], item['table'], item['timing'], item['event']) for item in catalog['triggers']}
     require(len(base) == catalog['tableCount'] == 29 and actual_guards == expected_guards,

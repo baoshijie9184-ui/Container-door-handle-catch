@@ -13,7 +13,7 @@ function Require-Value([string]$Name, [string]$Pattern) {
     return $value
 }
 function Assert-ControlPreflight([string]$Commit,[string]$SourceSha) {
-    if ($env:ACTION -cne 'verify-runtime') { return }
+    if ($env:ACTION -cne 'verify-runtime' -and -not ($env:ACTION -ceq 'verify' -and $env:DOORHANDLE_CI_SCOPE -ceq 'mysql')) { return }
     if ($env:CI_CONTROL_PREFLIGHT_PASS -cne 'true') { throw 'Native verification requires the ECS control-script preflight first.' }
     $gate=Get-Content -LiteralPath artifacts/control-preflight-gate.json -Raw | ConvertFrom-Json
     $receipt=Get-Content -LiteralPath artifacts/control-preflight/receipt.json -Raw | ConvertFrom-Json
@@ -358,7 +358,7 @@ if ($Action -ceq 'ReclaimBuildOutputs' -and $env:ACTION -ceq 'reclaim-build-outp
     return
 }
 if ($Action -eq 'Preflight') {
-    if ($env:ACTION -cin @('verify-runtime','verify-controls')) {
+    if ($env:ACTION -cin @('verify','verify-runtime','verify-controls')) {
         $expectedScope=if ($env:ACTION -ceq 'verify-controls') {'source'} else {'mysql'}
         if ($env:CI_TOOLS_PREPARED -cne 'true' -or $env:DOORHANDLE_CI_SCOPE -cne $expectedScope) { throw 'Control preflight requires this fixed build prepared ECS tools and its explicit verification scope.' }
         $commit=Require-Value 'GIT_COMMIT' '^[a-f0-9]{40}$'

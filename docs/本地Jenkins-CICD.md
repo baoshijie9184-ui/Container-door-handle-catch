@@ -1,5 +1,9 @@
 # 本地 Jenkins CI/CD 约定
 
+2026-11-10 05:47（北京时间）最新：#181 控制预检 17 模块、1,178 项全通过，零失败/错误/跳过。#182 在夹具准备时被普通停止：并行复核已证明旧迁移入口将 4 个 AFTER 触发器误作 BEFORE，继续至整库阶段必然拒绝；该轮 ABORTED、无项目测试报告，不计为数据迁移通过。夹具/工具清理及流水线外 ECS `Stopped / StopCharging` 已实际回读，Jenkins 保持运行。修复将原完整触发器集合按构建器精确名单校验，schema 最低数增至 27；现有 `verify/mysql` 同时接入原控制预检和回执门，顺序为工具准备、控制预检、JAR 上传及夹具准备、完整验证，不能用独立 controls PASS 代替项目 PASS。新改动待固定提交 ECS 实测。
+
+同批待验证的维护策略在 `reclaim-build-outputs` 的原精确阶段之后执行独立 canonical JAR plan/apply，收集各自的 plan、receipt 和 journal。只处理原闭集的失败未发布构建，复用真实部署锁并同时检查同 tag checkout/inbox 的挂载及进程引用；保留原 keeper 去重接口的规则。新增 cleanup 回归纳入控制预检，最低为 18 模块、1,385 项；须固定提交推送、先通过 ECS 控制预检，再执行维护并按实际删除和可用字节核定空间。历史 16 份制品合计约 5.66 GiB 只是逻辑候选，不是实际已回收量；维护成功也不表示数据库迁移或生产发布通过。
+
 2026-11-10 05:27（北京时间）最新：#180 为 FAILURE，Java 817 通过/614 条件跳过，Python 2,990 通过/24 条件跳过/2 失败。真实错误是把同名内层归档误用外层大小校验，精确路径修复已开发，尚待 ECS 验证。双前端及本轮 4 文件恢复未执行；218 份报告与 19 份控制原件已保全，本轮工具已停止，ECS 已从流水线外实际回读 `Stopped / StopCharging`，Jenkins 保持运行。正式业务库仍是 131 表，29 表目标的数据迁移、对账、恢复验收及切库均未完成，文件恢复或 source PASS 均不替代该验收。
 
 新增待验证的 `legacy-partial-transports-v1` 复用 `LOCAL_ARTIFACTS_*` 原参数和 source 保全入口，固定两个早期运输包及其清单，不改变 runtime/cutover 的原 profile 限制。参数选项更新由版本库中的 `update-local-artifact-profiles.groovy` 在任务空闲且无队列时仅替换该 ChoiceParameterDefinition，保留其他参数对象、SCM、任务属性和节点配置；不以全量重配或手改页面交付。控制模块最低数为 17 模块、1,178 项；source 完整验证通过后才上传恢复，后续清退仍须实时原件证明。这一 source 任务使用现有 70 GiB，不启动已知容量不足的完整 runtime 验收。

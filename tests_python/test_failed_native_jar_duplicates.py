@@ -490,13 +490,16 @@ def test_small_declared_jar_limit_does_not_read_or_delete_an_oversize_file(copie
     assert copies.target.exists() and copies.keeper.exists()
 
 
-def source_archive(copies, *, comment=None, recipe=None):
+def source_archive(copies, *, comment=None, recipe=None, publication=None):
     archive = copies.keeper.parent / 'source.tar.gz'
     body = recipe if recipe is not None else b"def prepare(self):\n jar = canonical(self.inbox / 'application.jar')\n uploaded = self.work / 'candidate-app.jar'\n shutil.copyfile(jar, uploaded)\n"
     with tarfile.open(archive, 'w:gz', format=tarfile.PAX_FORMAT,
                       pax_headers={'comment': comment or 'a' * 40}) as output:
         member = tarfile.TarInfo('script/jenkins/prepare-compact-fixtures.py'); member.size = len(body)
         output.addfile(member, io.BytesIO(body))
+        for name, raw in (publication or {}).items():
+            member = tarfile.TarInfo(name); member.size = len(raw)
+            output.addfile(member, io.BytesIO(raw))
     archive.chmod(0o600)
     return archive
 
@@ -693,3 +696,114 @@ def test_cli_unsafe_execution_uid_is_rejected_before_current_source_or_imds(monk
     monkeypatch.setattr(retirer,'fixed_current_source',lambda *_a,**_k:pytest.fail('Admitted wrong UID before source validation'))
     with pytest.raises(retirer.RetirementError,match='ACTUAL_ECS_UID_1000_REQUIRED'):
         retirer.admitted_current(SimpleNamespace())
+
+
+@pytest.fixture
+def canonical_case(copies, bundle, monkeypatch):
+    publication = {'Jenkinsfile.ecs-monolith': b'synthetic reviewed publish guard\n',
+                   'script/jenkins/pipeline.ps1': b'synthetic reviewed VerifyRuntime return\n'}
+    # A closed synthetic registry is isolated from the production registry. The
+    # complete actual archive and original controls are still read and hashed.
+    monkeypatch.setitem(retirer.APPROVED_OLD, copies.tag, bundle.context['commit'])
+    monkeypatch.setitem(retirer.APPROVED_CANONICAL_SOURCES, copies.tag, tuple(sha(raw) for raw in publication.values()))
+    source = source_archive(copies, publication=publication)
+    bundle.context['sourceSha256'] = sha(source.read_bytes())
+    for value in bundle.values.values(): value.update(bundle.context)
+    work = copies.root / 'verification' / copies.tag / 'checkout/work/compact-fixtures'
+    bundle.values['fixtureOwner']['work'] = str(work)
+    bundle.values['fixtureCleanup']['dataDirectoryRetained'] = str(work / 'data')
+    bundle.xml = flow_xml(bundle.context)
+    current, raw = retirement_request(copies, bundle); request = json.loads(raw)
+    refs = request['candidates'][0]['controls']; originals = [source, copies.target]
+    paths = retirer.expected_control_paths(current['release'], copies.tag)
+    for role, raw in documents(bundle).items():
+        path = copies.root / paths[role]; path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+        path.write_bytes(raw); path.chmod(0o600); originals.append(path)
+        refs[role] = {'path': paths[role], 'bytes': len(raw), 'sha256': sha(raw)}
+    for name in ('original-source.sql', 'original-test-report.xml'):
+        path = work / name; path.write_bytes(b'original evidence or business bytes'); path.chmod(0o600); originals.append(path)
+    calls = []
+    def quiescence(checkout, tag, token): calls.append((checkout, tag, token))
+    return SimpleNamespace(copies=copies, bundle=bundle, current=current, request=request, paths=paths,
+                           originals=originals, publication=publication, calls=calls, quiescence=quiescence)
+
+
+def canonical_options(state):
+    raw = encoded(state.request)
+    return raw, dict(request_sha256=sha(raw), expected_current=state.current, identity=state.bundle.identity,
+                     quiescence=state.quiescence, canonical_jar=True)
+
+
+@pytest.mark.parametrize('result', ['FAILURE', 'ABORTED'])
+def test_canonical_retirement_authenticates_originals_and_reports_deliberate_binary_disposition(canonical_case, result):
+    state = canonical_case; path = state.copies.root / state.paths['buildXml']
+    xml = flow_xml(state.bundle.context, result=result); path.write_bytes(xml)
+    state.request['candidates'][0]['controls']['buildXml'].update(bytes=len(xml), sha256=sha(xml))
+    original_bytes = {path: path.read_bytes() for path in state.originals}
+    raw, options = canonical_options(state); prepared = retirer.plan(state.copies.root, raw, **options)
+    assert len(prepared['candidates']) == 1 and prepared['skipped'] == []
+    assert prepared['kind'] == retirer.CANONICAL_KIND + '-plan'
+    assert prepared['candidates'][0]['jenkinsResult'] == result
+    receipt = retirer.apply(state.copies.root, raw, prepared, plan_sha256=sha(encoded(prepared)), **options)
+    assert receipt['status'] == 'REMOVED' and receipt['binaryDisposition'] == 'RETIRED'
+    assert receipt['inboxKeepersPreserved'] is False and receipt['binaryRebuildByteIdentityClaimed'] is False
+    assert not state.copies.keeper.exists() and len(receipt['deleted']) == 1 and len(state.calls) >= 4
+    assert all(path.read_bytes() == body for path, body in original_bytes.items())
+    assert (state.copies.root / receipt['lastQuarantinePath']).parent.parent == state.copies.keeper.parent
+    assert receipt['retainedQuarantinePaths'] == []
+
+
+@pytest.mark.parametrize('reference', ['release-directory', 'current-directory', 'previous-directory', 'release-publication.json'])
+def test_canonical_actual_published_or_rollback_reference_is_an_explicit_skip(canonical_case, reference):
+    state = canonical_case; root = state.copies.root
+    if reference == 'release-directory': (root / 'releases' / state.copies.tag).mkdir(parents=True)
+    else:
+        (root / 'state').mkdir(mode=0o700)
+        raw = (encoded({'schema': 1, 'project': 'doorhandlecatch-monolith', 'current': str(state.copies.keeper.parent),
+                        'previous': str(state.copies.keeper.parent)}) if reference.endswith('.json')
+               else str(state.copies.keeper.parent).encode())
+        path = root / 'state' / reference; path.write_bytes(raw); path.chmod(0o600)
+    raw, options = canonical_options(state); prepared = retirer.plan(root, raw, **options)
+    assert prepared['candidates'] == [] and prepared['candidateBytes'] == 0 and prepared['skipped']
+    assert 'REFERENCE' in prepared['skipped'][0]['reason'] or 'RETAINED_RELEASE' in prepared['skipped'][0]['reason']
+    assert state.copies.keeper.read_bytes() == state.copies.payload
+
+
+def test_canonical_archive_must_authenticate_the_closed_reviewed_publication_source(canonical_case):
+    state = canonical_case; damaged = {**state.publication, 'script/jenkins/pipeline.ps1': b'unknown publication behavior'}
+    archive = source_archive(state.copies, publication=damaged)
+    with pytest.raises(retirer.RetirementError, match='CLOSED_REVIEWED_UNPUBLISHED_SOURCE'):
+        retirer.source_proof(state.copies.root, state.copies.tag, state.bundle.context['commit'], sha(archive.read_bytes()), canonical_jar=True)
+    assert state.copies.keeper.exists()
+
+
+def test_canonical_plan_cannot_be_applied_with_the_old_duplicate_api(canonical_case):
+    state = canonical_case; raw, options = canonical_options(state); prepared = retirer.plan(state.copies.root, raw, **options)
+    with pytest.raises(retirer.RetirementError, match='EXACT_SINGLE_FILE_DESCRIPTOR'):
+        retirer.remove_duplicate(state.copies.root, prepared['candidates'][0]['target'])
+    options.pop('canonical_jar')
+    with pytest.raises(retirer.RetirementError, match='EXACT_APPROVED_PLAN_SHA'):
+        retirer.apply(state.copies.root, raw, prepared, plan_sha256=sha(encoded(prepared)), **options)
+    assert state.copies.keeper.exists() and state.copies.target.exists()
+
+
+def test_canonical_late_inbox_reference_keeps_captured_bytes_and_records_unknown(canonical_case):
+    state = canonical_case; raw, options = canonical_options(state); prepared = retirer.plan(state.copies.root, raw, **options)
+    def late_reference(*args):
+        if not state.copies.keeper.exists(): raise retirer.RetirementError('ACTIVE_FILE_DESCRIPTOR_REFERENCES_OLD_CHECKOUT')
+    options['quiescence'] = late_reference
+    receipt = retirer.apply(state.copies.root, raw, prepared, plan_sha256=sha(encoded(prepared)), **options)
+    assert receipt['status'] == 'FAILED_OR_UNKNOWN' and receipt['deleted'] == []
+    assert receipt['retainedQuarantinePaths'] == [receipt['lastQuarantinePath']]
+    retained = state.copies.root / receipt['lastQuarantinePath']
+    assert retained.read_bytes() == state.copies.payload and retained.parent.parent == state.copies.keeper.parent
+    assert all(path.is_file() for path in state.originals)
+
+
+def test_canonical_quarantine_can_only_be_inside_the_same_old_inbox(canonical_case):
+    state = canonical_case
+    descriptor = retirer.describe_canonical_jar(state.copies.root, state.copies.tag, state.copies.sha, state.copies.size)
+    wrong = retirer.reserve_quarantine(state.copies.root, state.current['release'])
+    with pytest.raises(retirer.RetirementError, match='CANONICAL_QUARANTINE_MUST_STAY_IN_OLD_INBOX'):
+        retirer.remove_canonical_jar(state.copies.root, descriptor, wrong, quiescence=lambda: None)
+    assert state.copies.keeper.exists()
