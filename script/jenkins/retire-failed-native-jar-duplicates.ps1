@@ -133,7 +133,7 @@ foreach ($row in $local.rows) {
     $spec.candidates+=@{release=$row.release;commit=$row.commit;sourceSha256=$row.sourceSha256;controls=$controls}
 }
 $work=Join-Path $workspace 'work'; New-Item -ItemType Directory -Path $work -Force | Out-Null
-$specFile=Join-Path $work 'native-jar-duplicate-local-spec.json'
+$specFile=Join-Path $work ('native-jar-duplicate-local-spec-'+$Tag+'.json')
 Require-NativeJar (-not (Test-Path -LiteralPath $specFile)) 'Use a fresh build; local retirement request already exists.'
 $spec | ConvertTo-Json -Depth 12 -Compress | Set-Content -LiteralPath $specFile -Encoding utf8
 $uploads+=@{relative="inbox/$Tag/native-jar-duplicate-local-spec.json";source=$specFile;bytes=(Get-Item -LiteralPath $specFile).Length;sha256=(Get-FileHash -LiteralPath $specFile -Algorithm SHA256).Hash.ToLowerInvariant()}
