@@ -16,6 +16,7 @@ import uuid
 import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parents[2]
+WORKER_FIXTURE_HELPER = ROOT / 'script/schema/worker_mysql_fixture.py'
 sys.path.insert(0, str(ROOT / 'scripts'))
 from ecs_execution import require_ecs_execution
 
@@ -301,11 +302,10 @@ def fixture_arguments(args, identity):
                 if manifest.get('javaOnly', False):
                     raise ValueError('Worker MySQL acceptance requires Python execution, not javaOnly')
                 path, config, worker_digest = private_json(worker)
-                sys.path.insert(0, str(ROOT))
-                specification = importlib.util.spec_from_file_location('admitted_worker_fixture', ROOT / 'tests_python/test_detection_worker_receipts.py')
+                specification = importlib.util.spec_from_file_location('admitted_worker_fixture', WORKER_FIXTURE_HELPER)
                 helper = importlib.util.module_from_spec(specification)
                 specification.loader.exec_module(helper)
-                if helper._read_mysql_fixture(str(path), ROOT, identity) != config:
+                if helper.read_mysql_fixture(str(path), ROOT, identity) != config:
                     raise ValueError('Worker fixture configuration changed during admission')
                 args.worker_mysql_config, args.worker_mysql_config_sha256 = str(path), worker_digest
         args.java_only = manifest.get('javaOnly', False)

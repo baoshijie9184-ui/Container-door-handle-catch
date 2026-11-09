@@ -1,5 +1,7 @@
 """ECS-run admission tests: a private manifest cannot promote production to a fixture."""
 import argparse
+import builtins
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -128,6 +130,63 @@ def test_v2_keeps_each_suite_properties_separate_and_records_one_global_class_sc
         assert admitted['fixtureOptions'] == ['-D' + key + '=' + value for key, value in configured['fixtureProperties'].items()]
         assert admitted['javaSelection'] == configured['javaTests']
     assert len(arguments) == 4  # Compatibility aggregate is never the Maven invocation.
+
+
+def worker_version_two(tmp_path, monkeypatch):
+    args, manifest, file = version_two(tmp_path, monkeypatch)
+    suffix = 'f' * 10
+    database = 'doorhandle_worker_verify_' + suffix
+    config = {'scope': 'ecs-disposable-mysql', **{key: IDENTITY[key] for key in ('instanceId', 'machineId')},
+              'database': database, 'username': 'ecsit_' + suffix, 'password': 'synthetic-worker-only',
+              'port': 15444, 'serverUuid': SERVER, 'dataDirectory': str(file.parent / 'mysql-data'),
+              'url': f'jdbc:mysql://127.0.0.1:15444/{database}?sslMode=DISABLED&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai'}
+    worker = file.parent / 'worker.json'
+    worker.write_text(json.dumps(config), encoding='utf8')
+    manifest['workerMysqlConfig'] = str(worker)
+    file.write_text(json.dumps(manifest), encoding='utf8')
+    return args, manifest, worker, config
+
+
+def test_v2_worker_admission_loads_only_the_fixed_pure_helper_without_pytest_or_worker_runtime(tmp_path, monkeypatch):
+    args, manifest, worker, _ = worker_version_two(tmp_path, monkeypatch)
+    migration_loader(monkeypatch)
+    pure_helper = verifier.WORKER_FIXTURE_HELPER.resolve(strict=True)
+    actual_spec = importlib.util.spec_from_file_location
+    loaded_origins, imports = [], []
+    def record_spec(name, location, *positional, **keywords):
+        specification = actual_spec(name, location, *positional, **keywords)
+        loaded_origins.append(Path(specification.origin).resolve(strict=True))
+        return specification
+    actual_import = builtins.__import__
+    def only_stdlib_or_migration_stub(name, globals=None, locals=None, fromlist=(), level=0):
+        imports.append(name)
+        root = name.partition('.')[0]
+        if root not in sys.stdlib_module_names and root != 'compact_migration_runtime':
+            raise AssertionError('Host admission attempted a non-stdlib dependency: ' + name)
+        return actual_import(name, globals, locals, fromlist, level)
+    monkeypatch.setattr(importlib.util, 'spec_from_file_location', record_spec)
+    # Keep the import guard local to the host admission call. Pytest already
+    # being imported must not let a newly executed test module import it again.
+    with monkeypatch.context() as admission:
+        admission.setattr(builtins, '__import__', only_stdlib_or_migration_stub)
+        arguments, selected, proof = verifier.fixture_arguments(args, IDENTITY)
+    assert loaded_origins == [pure_helper]
+    assert pure_helper == SOURCE.parent.parent / 'schema/worker_mysql_fixture.py'
+    assert not any('pytest' in name or 'detection_worker_receipts' in name for name in imports)
+    assert args.worker_mysql_config == str(worker)
+    assert args.worker_mysql_config_sha256 == hashlib.sha256(worker.read_bytes()).hexdigest()
+    assert args.compact_migration_config == manifest['wholeMigrationConfig'] and proof['version'] == 2
+    assert selected == [suite['javaTests'][0] for suite in manifest['javaSuites']] and len(arguments) == 4
+
+
+@pytest.mark.parametrize(('field', 'replacement'), [('scope', 'production'), ('port', 3306)])
+def test_v2_worker_admission_still_refuses_production_or_default_mysql_port(tmp_path, monkeypatch, field, replacement):
+    args, _, worker, config = worker_version_two(tmp_path, monkeypatch)
+    migration_loader(monkeypatch)
+    config[field] = replacement
+    worker.write_text(json.dumps(config), encoding='utf8')
+    with pytest.raises(ValueError):
+        verifier.fixture_arguments(args, IDENTITY)
 
 
 def test_v2_refuses_simple_and_fully_qualified_aliases_of_one_class(tmp_path, monkeypatch):

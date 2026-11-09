@@ -50,6 +50,7 @@ APPROVED_OLD = {
     'ci-141-56da3c4f7800': '56da3c4f780055e4f1f1ae835888189e85807bec',
     'ci-143-f4b5c8d9e39b': 'f4b5c8d9e39bfe621c97fb1d9e82aea667bab08f',
     'ci-145-dd85b09748a9': 'dd85b09748a996f68e909fa54bc9412110e78134',
+    'ci-154-38293aa306b3': '38293aa306b368964bbc2a7f66bb6a6b5c414016',
 }
 # Original tool bytes recorded by the retained Jenkins preparation receipts.
 # These values authenticate the owner chain; matching self-described fields
@@ -65,6 +66,7 @@ APPROVED_BUILDER_TOOLS = {
     'ci-141-56da3c4f7800': '332eaa16ca7c39154ff4f81dc9956ad6cf51f1ee3fda8075787c2067a255b87b',
     'ci-143-f4b5c8d9e39b': '74d9b97fbaaa8d5af0cea2d3cfa32df7b5f831e392bcca39340eac02d46cac04',
     'ci-145-dd85b09748a9': '7e55b094d7b558fd66d299a6c872749d6cb87071b50bb031ce2a5d71d03283d4',
+    'ci-154-38293aa306b3': 'eb0d82fc9983279390d467849029786648a1dbceda53371924e3894232e25c27',
 }
 
 

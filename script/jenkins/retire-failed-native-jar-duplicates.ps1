@@ -48,7 +48,7 @@ Require-NativeJar ([IO.Path]::IsPathFullyQualified($RetainedControlRoot) -and [I
 
 # Stdlib byte/metadata inspection only. No project module, DB, application or
 # test is imported or run on the workstation. D evidence is pinned to original
-# preservation manifests reviewed for these ten exact historical attempts.
+# preservation manifests reviewed for these eleven exact historical attempts.
 $reader=@'
 import gzip,hashlib,json,os,stat,sys,tarfile
 from pathlib import Path
@@ -77,7 +77,8 @@ approved=[(117,'8c898996cc28ce30fd6531710511f833cccb4864','e1eec611a0dcbb93158d8
  (139,'384439388a8c6de52ca90be62722c382ff8973bb','8981260defa80777c4c09d8c1dd9a4230fe5dcc4ac50578544da3b1fa7ec0404'),
  (141,'56da3c4f780055e4f1f1ae835888189e85807bec','c00b42067d0b6786e1daaad88c57570ecab0a14901c31cbc0ddea44e30bba9bc'),
  (143,'f4b5c8d9e39bfe621c97fb1d9e82aea667bab08f','032b3ae99967219534fe34131be8f8af7c6acd133ec61238d0cf005c3a9b8afa'),
- (145,'dd85b09748a996f68e909fa54bc9412110e78134','372c5f0713c02051be0f5c9bcd2179e805a39e1c0aea4d96a3e1aee88fe9dac4')]
+ (145,'dd85b09748a996f68e909fa54bc9412110e78134','372c5f0713c02051be0f5c9bcd2179e805a39e1c0aea4d96a3e1aee88fe9dac4'),
+ (154,'38293aa306b368964bbc2a7f66bb6a6b5c414016','ba9dccb622fd030ae877b861ac53b1006b6021ecfcd7f247f4d51d30b72cd76e')]
 helpers={};wanted={'script/jenkins/retire-failed-native-jar-duplicates.py','script/jenkins/cleanup-ecs-builds.py','script/jenkins/verify-remote.py','script/docker/compact-build-resources.py'}
 class Bounded:
  def __init__(self,s):self.s,self.n=s,0
