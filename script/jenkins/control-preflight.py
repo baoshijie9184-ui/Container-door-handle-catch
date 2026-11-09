@@ -46,6 +46,7 @@ REFUSAL_CODES = frozenset({
     'CONTROL_SCRATCH_IDENTITY_CHANGED', 'CONTROL_SOURCE_AND_SCRATCH_RESERVE_REQUIRED',
     'CONTROL_SOURCE_CHANGED_DURING_ADMISSION', 'CONTROL_SOURCE_COMMIT_DIFFERS',
     'CONTROL_SOURCE_EXPANSION_EXCEEDED', 'CONTROL_SOURCE_MEMBER_BOUND_EXCEEDED', 'CONTROL_SOURCE_SHA_DIFFERS',
+    'CONTROL_FORMAL_VERIFICATION_PATH_OCCUPIED',
     'CONTROL_TESTS_FAILED_SKIPPED_OR_INCOMPLETE', 'CONTROL_TEST_DISK_RESERVE_EXHAUSTED',
     'CONTROL_TEST_EXIT_UNKNOWN', 'CONTROL_TEST_TIMEOUT', 'CONTROL_TOOL_MANIFEST_SHA_DIFFERS',
     'CONTROL_XML_UNEXPECTED_MODULE', 'EXACT_CONTROL_CONTAINER_REQUIRED',
@@ -174,6 +175,12 @@ def required_minimum(profile):
     return minimum
 
 
+def require_fresh_verification_paths(inbox):
+    for name in ('verify-remote.py', '.verification-upload'):
+        path = inbox / name
+        need(not path.exists() and not path.is_symlink(), 'CONTROL_FORMAL_VERIFICATION_PATH_OCCUPIED')
+
+
 def remove_owned_tree(path, expected):
     path = owned(path, directory=True); info = path.lstat()
     need([info.st_dev, info.st_ino, info.st_uid] == expected and shutil.rmtree.avoids_symlink_attacks,
@@ -192,6 +199,7 @@ def run(args):
     identity = modules['verifier'].ecs_identity(args.instance_id, args.machine_id)
     context = {'release': args.tag, 'commit': args.commit, 'sourceSha256': args.source_sha256}
     inbox = owned(root / 'inbox' / args.tag, directory=True)
+    require_fresh_verification_paths(inbox)
     base = inbox / 'control-preflight'; need(not base.exists() and not base.is_symlink(), 'FRESH_CONTROL_ATTEMPT_REQUIRED')
     disk = os.statvfs(root)
     need(disk.f_bavail * disk.f_frsize >= 2 * 1024 ** 3 + allocation + 144 * MIB, 'CONTROL_SOURCE_AND_SCRATCH_RESERVE_REQUIRED')

@@ -38,6 +38,20 @@ def test_current_fixed_profile_contains_every_focused_module():
         with pytest.raises(ValueError): preflight.required_minimum(changed)
 
 
+def test_unclaimed_formal_verification_paths_are_available(tmp_path):
+    preflight.require_fresh_verification_paths(tmp_path)
+
+
+@pytest.mark.parametrize('name', ['verify-remote.py', '.verification-upload'])
+@pytest.mark.parametrize('kind', ['file', 'dangling-link'])
+def test_occupied_formal_verification_paths_fail_before_database_preparation(tmp_path, name, kind):
+    path = tmp_path / name
+    if kind == 'file': path.write_text('reserved by another phase')
+    else: path.symlink_to(tmp_path / 'absent')
+    with pytest.raises(ValueError, match='CONTROL_FORMAL_VERIFICATION_PATH_OCCUPIED'):
+        preflight.require_fresh_verification_paths(tmp_path)
+
+
 def report(tmp_path, mutation=None):
     minimum = {'test_control_preflight': 2, 'test_jenkins_fixture_admission': 1}
     root = ET.Element('testsuites'); suite = ET.SubElement(root, 'testsuite')

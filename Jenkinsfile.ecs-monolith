@@ -17,7 +17,7 @@ pipeline {
     }
     triggers { pollSCM('H/5 * * * *') }
     parameters {
-        choice(name: 'ACTION', choices: ['verify', 'verify-embedding', 'verify-runtime', 'verify-deploy', 'rehearse', 'rollback', 'compact-cutover', 'reclaim-build-outputs'], description: 'verify-embedding独立验证免费向量模型；verify-runtime验收隔离应用；reclaim-build-outputs仅维护旧构建输出；切库仍须完整证据')
+        choice(name: 'ACTION', choices: ['verify', 'verify-controls', 'verify-embedding', 'verify-runtime', 'verify-deploy', 'rehearse', 'rollback', 'compact-cutover', 'reclaim-build-outputs'], description: 'verify-controls仅运行ECS控制脚本预检；verify-embedding独立验证免费向量模型；verify-runtime验收隔离应用；reclaim-build-outputs仅维护旧构建输出；切库仍须完整证据')
         string(name: 'TRUSTED_COMMIT', defaultValue: '', trim: true, description: '可选 java-cloud 完整提交；留空时固定本次 SCM 检出的提交')
         choice(name: 'DOORHANDLE_CI_SCOPE', choices: ['source', 'mysql'], description: 'source 记录可选套件跳过；mysql 要求显式隔离夹具及所有选择用例实际执行')
         string(name: 'DOORHANDLE_CI_FIXTURE_MANIFEST', defaultValue: '', trim: true, description: '仅 mysql：本次远端 checkout/work 内预先准备的绝对私有清单路径；source 必须留空')
@@ -59,6 +59,7 @@ pipeline {
             steps {
                 script {
                     env.CI_ECS_VERIFIED = 'false'
+                    env.CI_CONTROL_PREFLIGHT_PASS = 'false'
                     env.CI_ARTIFACTS_READY = 'false'
                     env.CI_FIXTURES_PREPARED = 'false'
                     env.CI_TOOLS_PREPARED = 'false'
@@ -93,7 +94,7 @@ pipeline {
         stage('Configuration gate') {
             steps {
                 script {
-                    if (!(params.ACTION in ['verify', 'verify-embedding', 'verify-runtime', 'verify-deploy', 'rehearse', 'rollback', 'compact-cutover', 'reclaim-build-outputs'])) error('Unsupported pipeline action')
+                    if (!(params.ACTION in ['verify', 'verify-controls', 'verify-embedding', 'verify-runtime', 'verify-deploy', 'rehearse', 'rollback', 'compact-cutover', 'reclaim-build-outputs'])) error('Unsupported pipeline action')
                     if (env.DOORHANDLE_ECS_INSTANCE_ID != 'i-2zeieuov2aum486jm1ek' || !(env.DOORHANDLE_ECS_MACHINE_ID ==~ /[a-f0-9]{32}/)) error('Configure the admitted ECS instance and machine identity on the control node')
                     env.DEPLOY_HOST = params.DEPLOY_HOST?.trim() ?: ''
                     if (!env.DEPLOY_HOST) {
@@ -122,7 +123,7 @@ pipeline {
                     env.LOCAL_MYSQL_ECS_SNAPSHOT = params.LOCAL_MYSQL_ECS_SNAPSHOT?.trim() ?: ''
                     env.LOCAL_MYSQL_FIXTURE_SETTINGS = params.LOCAL_MYSQL_FIXTURE_SETTINGS?.trim() ?: ''
                     env.CANDIDATE_BUILD_TOOLS_ARCHIVE = params.CANDIDATE_BUILD_TOOLS_ARCHIVE?.trim() ?: ''
-                    if (params.ACTION == 'reclaim-build-outputs') {
+                    if (params.ACTION in ['reclaim-build-outputs', 'verify-controls']) {
                         def businessInputs = [env.LEGACY_SOURCE_SNAPSHOT, env.LEGACY_SOURCE_ECS_SNAPSHOT,
                             env.LOCAL_ARTIFACTS_SNAPSHOT, env.LOCAL_ARTIFACTS_ECS_SNAPSHOT,
                             env.COLD_STORES_SNAPSHOT, env.COLD_STORES_ECS_SNAPSHOT,
@@ -135,10 +136,12 @@ pipeline {
                             || env.CANDIDATE_BUILD_TOOLS_ARCHIVE || params.PRODUCTION_RELEASE_ENABLED || params.REHEARSAL_KEEP
                             || env.LOCAL_ARTIFACTS_PROFILE != 'additional-local-artifacts-v1' || env.COLD_STORES_PROFILE != 'cold-store-originals-v1'
                             || env.DOORHANDLE_COMPACT_RELEASE_READY == 'true' || env.DOORHANDLE_COMPACT_REHEARSAL_READY == 'true') {
-                            error('Build output maintenance accepts only fixed source and ECS connection inputs; business, fixture, model and release inputs are forbidden')
+                            error('Independent control verification or build maintenance accepts only fixed source and ECS connection inputs; business, fixture, model and release inputs are forbidden')
                         }
                         env.CI_ECS_VERIFIED = 'false'
-                        currentBuild.description = 'Maintenance only: pinned source and proven old build outputs; no project tests or application runtime.'
+                        currentBuild.description = params.ACTION == 'verify-controls'
+                            ? 'Control verification only: pinned source and ECS control-script tests; no Java build, databases or business verification.'
+                            : 'Maintenance only: pinned source and proven old build outputs; no project tests or application runtime.'
                     }
                     if (env.CANDIDATE_BUILD_TOOLS_ARCHIVE && !(params.ACTION in ['verify-runtime', 'compact-cutover'])) error('Candidate build inputs are only accepted by runtime verification or compact cutover')
                     if (env.LEGACY_SOURCE_SNAPSHOT && env.LEGACY_SOURCE_ECS_SNAPSHOT) error('Choose exactly one local or ECS legacy snapshot input')
@@ -171,7 +174,7 @@ pipeline {
             }
         }
         stage('Build locally without tests') {
-            when { expression { !(params.ACTION in ['rollback', 'reclaim-build-outputs']) } }
+            when { expression { !(params.ACTION in ['rollback', 'reclaim-build-outputs', 'verify-controls']) } }
             steps { pwsh '& ./script/jenkins/build-local.ps1' }
         }
         stage('Package pinned source') {
@@ -180,6 +183,8 @@ pipeline {
                 script {
                     if (params.ACTION == 'reclaim-build-outputs') {
                         pwsh '& ./script/jenkins/pipeline.ps1 -Action PackageSourceOnly'
+                    } else if (params.ACTION == 'verify-controls') {
+                        pwsh '& ./script/jenkins/pipeline.ps1 -Action PackageControls'
                     } else {
                         pwsh '& ./script/jenkins/pipeline.ps1 -Action Package'
                     }
@@ -211,7 +216,7 @@ pipeline {
             }
         }
         stage('Preflight control scripts on ECS') {
-            when { expression { params.ACTION == 'verify-runtime' && params.DOORHANDLE_CI_SCOPE == 'mysql' } }
+            when { expression { params.ACTION == 'verify-controls' || (params.ACTION == 'verify-runtime' && params.DOORHANDLE_CI_SCOPE == 'mysql') } }
             steps {
                 script { env.CI_CONTROL_PREFLIGHT_PASS = 'false' }
                 withCredentials([
@@ -224,7 +229,7 @@ pipeline {
             }
         }
         stage('Prepare isolated ECS fixtures') {
-            when { expression { !(params.ACTION in ['rollback', 'reclaim-build-outputs']) && params.DOORHANDLE_CI_AUTO_COMPACT_FIXTURES } }
+            when { expression { !(params.ACTION in ['rollback', 'reclaim-build-outputs', 'verify-controls']) && params.DOORHANDLE_CI_AUTO_COMPACT_FIXTURES } }
             steps {
                 script { env.CI_FIXTURE_PREPARATION_ATTEMPTED = 'true' }
                 withCredentials([
@@ -252,7 +257,7 @@ pipeline {
             }
         }
         stage('Verify on ECS over SSH') {
-            when { expression { !(params.ACTION in ['rollback', 'verify-embedding', 'reclaim-build-outputs']) } }
+            when { expression { !(params.ACTION in ['rollback', 'verify-controls', 'verify-embedding', 'reclaim-build-outputs']) } }
             steps {
                 withCredentials([
                     sshUserPrivateKey(credentialsId: 'doorhandle-ecs-ssh', keyFileVariable: 'DEPLOY_KEY', usernameVariable: 'DEPLOY_USER'),
@@ -269,7 +274,7 @@ pipeline {
             }
         }
         stage('Repair registered prior CI evidence permissions') {
-            when { expression { params.ACTION != 'reclaim-build-outputs' && env.CI_ECS_VERIFIED == 'true' && (env.LEGACY_SOURCE_ECS_SNAPSHOT || (env.LOCAL_ARTIFACTS_PROFILE == 'additional-local-artifacts-v1' && env.LOCAL_ARTIFACTS_ECS_SNAPSHOT)) } }
+            when { expression { !(params.ACTION in ['reclaim-build-outputs', 'verify-controls']) && env.CI_ECS_VERIFIED == 'true' && (env.LEGACY_SOURCE_ECS_SNAPSHOT || (env.LOCAL_ARTIFACTS_PROFILE == 'additional-local-artifacts-v1' && env.LOCAL_ARTIFACTS_ECS_SNAPSHOT)) } }
             steps {
                 withCredentials([
                     sshUserPrivateKey(credentialsId: 'doorhandle-ecs-ssh', keyFileVariable: 'DEPLOY_KEY', usernameVariable: 'DEPLOY_USER'),
@@ -280,7 +285,7 @@ pipeline {
             }
         }
         stage('Reclaim proven old build outputs') {
-            when { expression { params.ACTION != 'reclaim-build-outputs' && params.RECLAIM_OLD_BUILD_OUTPUTS && env.CI_ECS_VERIFIED == 'true' } }
+            when { expression { !(params.ACTION in ['reclaim-build-outputs', 'verify-controls']) && params.RECLAIM_OLD_BUILD_OUTPUTS && env.CI_ECS_VERIFIED == 'true' } }
             steps {
                 withCredentials([
                     sshUserPrivateKey(credentialsId: 'doorhandle-ecs-ssh', keyFileVariable: 'DEPLOY_KEY', usernameVariable: 'DEPLOY_USER'),
@@ -291,7 +296,7 @@ pipeline {
             }
         }
         stage('Preserve legacy source bytes on ECS') {
-            when { expression { !(params.ACTION in ['rollback', 'reclaim-build-outputs']) && (env.LEGACY_SOURCE_SNAPSHOT || env.LEGACY_SOURCE_ECS_SNAPSHOT) } }
+            when { expression { !(params.ACTION in ['rollback', 'reclaim-build-outputs', 'verify-controls']) && (env.LEGACY_SOURCE_SNAPSHOT || env.LEGACY_SOURCE_ECS_SNAPSHOT) } }
             steps {
                 withCredentials([
                     sshUserPrivateKey(credentialsId: 'doorhandle-ecs-ssh', keyFileVariable: 'DEPLOY_KEY', usernameVariable: 'DEPLOY_USER'),
@@ -302,7 +307,7 @@ pipeline {
             }
         }
         stage('Preserve additional business artifacts on ECS') {
-            when { expression { !(params.ACTION in ['rollback', 'reclaim-build-outputs']) && (env.LOCAL_ARTIFACTS_SNAPSHOT || env.LOCAL_ARTIFACTS_ECS_SNAPSHOT) } }
+            when { expression { !(params.ACTION in ['rollback', 'reclaim-build-outputs', 'verify-controls']) && (env.LOCAL_ARTIFACTS_SNAPSHOT || env.LOCAL_ARTIFACTS_ECS_SNAPSHOT) } }
             steps {
                 withCredentials([
                     sshUserPrivateKey(credentialsId: 'doorhandle-ecs-ssh', keyFileVariable: 'DEPLOY_KEY', usernameVariable: 'DEPLOY_USER'),
@@ -313,7 +318,7 @@ pipeline {
             }
         }
         stage('Preserve historical cold stores on ECS') {
-            when { expression { !(params.ACTION in ['rollback', 'reclaim-build-outputs']) && (env.COLD_STORES_SNAPSHOT || env.COLD_STORES_ECS_SNAPSHOT) } }
+            when { expression { !(params.ACTION in ['rollback', 'reclaim-build-outputs', 'verify-controls']) && (env.COLD_STORES_SNAPSHOT || env.COLD_STORES_ECS_SNAPSHOT) } }
             steps {
                 withCredentials([
                     sshUserPrivateKey(credentialsId: 'doorhandle-ecs-ssh', keyFileVariable: 'DEPLOY_KEY', usernameVariable: 'DEPLOY_USER'),
@@ -324,7 +329,7 @@ pipeline {
             }
         }
         stage('Preserve additional historical test stores on ECS') {
-            when { expression { !(params.ACTION in ['rollback', 'reclaim-build-outputs']) && (env.COLD_HISTORY_SNAPSHOT || env.COLD_HISTORY_ECS_SNAPSHOT) } }
+            when { expression { !(params.ACTION in ['rollback', 'reclaim-build-outputs', 'verify-controls']) && (env.COLD_HISTORY_SNAPSHOT || env.COLD_HISTORY_ECS_SNAPSHOT) } }
             steps {
                 withCredentials([
                     sshUserPrivateKey(credentialsId: 'doorhandle-ecs-ssh', keyFileVariable: 'DEPLOY_KEY', usernameVariable: 'DEPLOY_USER'),
@@ -337,7 +342,7 @@ pipeline {
             }
         }
         stage('Recover approved local MySQL export on ECS') {
-            when { expression { !(params.ACTION in ['rollback', 'reclaim-build-outputs']) && (env.LOCAL_MYSQL_SNAPSHOT || env.LOCAL_MYSQL_ECS_SNAPSHOT) } }
+            when { expression { !(params.ACTION in ['rollback', 'reclaim-build-outputs', 'verify-controls']) && (env.LOCAL_MYSQL_SNAPSHOT || env.LOCAL_MYSQL_ECS_SNAPSHOT) } }
             steps {
                 script { env.CI_LOCAL_MYSQL_ATTEMPTED = 'true' }
                 withCredentials([

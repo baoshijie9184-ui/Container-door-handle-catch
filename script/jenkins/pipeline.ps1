@@ -1,4 +1,4 @@
-param([Parameter(Mandatory = $true)][ValidateSet('Preflight', 'Package', 'PackageSourceOnly', 'PrepareTools', 'CleanupTools', 'PrepareFixtures', 'CleanupFixtures', 'VerifyEcs', 'VerifyEmbedding', 'RepairPriorEvidence', 'PreserveLegacy', 'PreserveLocalArtifacts', 'PreserveColdStores', 'PreserveLocalMySql', 'CleanupLocalMySql', 'ReclaimBuildOutputs', 'PrepareLegacyCandidate', 'CleanupLegacyCandidate', 'VerifyRuntime', 'CleanupRuntime', 'Publish', 'Rehearse', 'CompactCutover')][string]$Action)
+param([Parameter(Mandatory = $true)][ValidateSet('Preflight', 'Package', 'PackageSourceOnly', 'PackageControls', 'PrepareTools', 'CleanupTools', 'PrepareFixtures', 'CleanupFixtures', 'VerifyEcs', 'VerifyEmbedding', 'RepairPriorEvidence', 'PreserveLegacy', 'PreserveLocalArtifacts', 'PreserveColdStores', 'PreserveLocalMySql', 'CleanupLocalMySql', 'ReclaimBuildOutputs', 'PrepareLegacyCandidate', 'CleanupLegacyCandidate', 'VerifyRuntime', 'CleanupRuntime', 'Publish', 'Rehearse', 'CompactCutover')][string]$Action)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 Set-Location -LiteralPath (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
@@ -19,6 +19,15 @@ function Assert-ControlPreflight([string]$Commit,[string]$SourceSha) {
     $receipt=Get-Content -LiteralPath artifacts/control-preflight/receipt.json -Raw | ConvertFrom-Json
     $actual=(Get-FileHash -LiteralPath artifacts/control-preflight/receipt.json -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($gate.status -cne 'CONTROL_PREFLIGHT_PASS' -or $gate.receiptSha256 -cne $actual -or $gate.release -cne $tag -or $gate.commit -cne $Commit -or $gate.sourceSha256 -cne $SourceSha -or $receipt.status -cne 'CONTROL_PREFLIGHT_PASS' -or $receipt.release -cne $tag -or $receipt.commit -cne $Commit -or $receipt.sourceSha256 -cne $SourceSha -or $receipt.fullProjectVerified -ne $false -or $receipt.containerCleanupConfirmed -ne $true -or $receipt.sourceScratchCleanupConfirmed -ne $true) { throw 'The native control-script preflight lacks matching original evidence and cleanup.' }
+}
+function Assert-ControlSourcePackage($Package,[string]$Commit,[string]$SourceSha) {
+    if ($env:ACTION -cne 'verify-controls') { return }
+    if ($Package.kind -cne 'doorhandle-controls-only-source' -or $Package.action -cne 'verify-controls' -or $Package.release -cne $tag -or $Package.commit -cne $Commit -or $Package.sourceSha256 -cne $SourceSha) { throw 'Control verification requires its own full pinned-source package.' }
+    $flags=@{controlsOnly=$true;maintenanceOnly=$false;testsExecuted=$false;applicationBuilt=$false;fullProjectVerified=$false}
+    foreach ($name in $flags.Keys) {
+        if ($Package.$name -isnot [bool] -or $Package.$name -ne $flags[$name]) { throw 'Control-only source metadata cannot authorize maintenance, application build or business verification.' }
+    }
+    if ((Test-Path -LiteralPath artifacts/application.jar) -or (Test-Path -LiteralPath artifacts/local-build.json)) { throw 'Control verification cannot use an application build artifact.' }
 }
 function Get-LocalArtifactsProfile {
     $selected = $env:LOCAL_ARTIFACTS_PROFILE
@@ -162,6 +171,15 @@ if ($env:ACTION -ceq 'reclaim-build-outputs') {
         if ([Environment]::GetEnvironmentVariable($name) -ceq 'true') { throw 'Standalone build maintenance cannot enable fixtures or application release.' }
     }
 } elseif ($Action -ceq 'PackageSourceOnly') { throw 'Source-only maintenance packaging requires the explicit reclaim-build-outputs action.' }
+if ($env:ACTION -ceq 'verify-controls') {
+    if ($Action -cnotin @('PackageControls','PrepareTools','Preflight','CleanupTools') -or $env:CI_ECS_VERIFIED -cne 'false' -or $env:DOORHANDLE_CI_SCOPE -cne 'source') { throw 'Control verification only packages fixed source, prepares tools, runs the control preflight and cleans its tools.' }
+    foreach ($name in @('LEGACY_SOURCE_SNAPSHOT','LEGACY_SOURCE_ECS_SNAPSHOT','LOCAL_ARTIFACTS_SNAPSHOT','LOCAL_ARTIFACTS_ECS_SNAPSHOT','COLD_STORES_SNAPSHOT','COLD_STORES_ECS_SNAPSHOT','COLD_HISTORY_SNAPSHOT','COLD_HISTORY_ECS_SNAPSHOT','LOCAL_MYSQL_SNAPSHOT','LOCAL_MYSQL_ECS_SNAPSHOT','LOCAL_MYSQL_FIXTURE_SETTINGS','DOORHANDLE_CI_FIXTURE_MANIFEST','DOORHANDLE_CI_FIXTURE_SETTINGS','CANDIDATE_BUILD_TOOLS_ARCHIVE','COMPACT_CUTOVER_SETTINGS','COMPATIBLE_BACKEND_IMAGE','COMPATIBLE_RUNNER_IMAGE','REHEARSAL_MEMORY_EXTRACTION_MODEL')) {
+        if (-not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) { throw 'Control verification cannot accept business, fixture, model or release inputs.' }
+    }
+    foreach ($name in @('DOORHANDLE_CI_AUTO_COMPACT_FIXTURES','PRODUCTION_RELEASE_ENABLED','DOORHANDLE_COMPACT_RELEASE_READY','DOORHANDLE_COMPACT_REHEARSAL_READY','REHEARSAL_KEEP')) {
+        if ([Environment]::GetEnvironmentVariable($name) -ceq 'true') { throw 'Control verification cannot enable fixtures, application release or rehearsal.' }
+    }
+} elseif ($Action -ceq 'PackageControls') { throw 'Control-only source packaging requires the explicit verify-controls action.' }
 if ($env:CANDIDATE_BUILD_TOOLS_ARCHIVE -and ($env:ACTION -cnotin @('verify-runtime', 'compact-cutover') -or $env:DOORHANDLE_CI_SCOPE -cne 'mysql')) {
     throw 'Candidate build input is only accepted by runtime verification or compact cutover.'
 }
@@ -250,6 +268,23 @@ if ($Action -ceq 'PackageSourceOnly') {
     finally { $stream.Dispose() }
     return
 }
+if ($Action -ceq 'PackageControls') {
+    $commit=Require-Value 'GIT_COMMIT' '^[a-f0-9]{40}$'
+    $actualCommit=((Invoke-Checked 'git.exe' @('rev-parse','HEAD'))|Select-Object -Last 1).Trim()
+    if ($actualCommit -cne $commit -or -not $tag.EndsWith('-'+$commit.Substring(0,12))) { throw 'Control packaging must match the exact checked out commit and release tag.' }
+    foreach ($file in @('artifacts/source.tar.gz','artifacts/release.json','artifacts/application.jar','artifacts/local-build.json')) {
+        if (Test-Path -LiteralPath $file) { throw 'Control packaging requires fresh source metadata without application build output.' }
+    }
+    Invoke-Checked 'git.exe' @('diff','--quiet','HEAD','--')
+    Invoke-Checked 'git.exe' @('-c','core.autocrlf=false','archive','--format=tar.gz','--output=artifacts/source.tar.gz',$commit)
+    $sha=(Get-FileHash -LiteralPath artifacts/source.tar.gz -Algorithm SHA256).Hash.ToLowerInvariant()
+    $record=[ordered]@{schema=1;kind='doorhandle-controls-only-source';action='verify-controls';release=$tag;commit=$commit;
+        sourceSha256=$sha;sourceBytes=(Get-Item -LiteralPath artifacts/source.tar.gz).Length;
+        controlsOnly=$true;maintenanceOnly=$false;testsExecuted=$false;applicationBuilt=$false;fullProjectVerified=$false}
+    $stream=[IO.File]::Open((Join-Path (Get-Location) 'artifacts/release.json'),[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
+    try {$bytes=[Text.UTF8Encoding]::new($false).GetBytes(($record|ConvertTo-Json));$stream.Write($bytes,0,$bytes.Length);$stream.Flush($true)} finally {$stream.Dispose()}
+    return
+}
 if ($Action -eq 'Package') {
     $commit = Require-Value 'GIT_COMMIT' '^[a-f0-9]{40}$'
     $actualCommit = ((Invoke-Checked 'git.exe' @('rev-parse', 'HEAD')) | Select-Object -Last 1).Trim()
@@ -323,13 +358,15 @@ if ($Action -ceq 'ReclaimBuildOutputs' -and $env:ACTION -ceq 'reclaim-build-outp
     return
 }
 if ($Action -eq 'Preflight') {
-    if ($env:ACTION -ceq 'verify-runtime') {
-        if ($env:CI_TOOLS_PREPARED -cne 'true' -or $env:DOORHANDLE_CI_SCOPE -cne 'mysql') { throw 'Control preflight requires this native build prepared ECS tools.' }
+    if ($env:ACTION -cin @('verify-runtime','verify-controls')) {
+        $expectedScope=if ($env:ACTION -ceq 'verify-controls') {'source'} else {'mysql'}
+        if ($env:CI_TOOLS_PREPARED -cne 'true' -or $env:DOORHANDLE_CI_SCOPE -cne $expectedScope) { throw 'Control preflight requires this fixed build prepared ECS tools and its explicit verification scope.' }
         $commit=Require-Value 'GIT_COMMIT' '^[a-f0-9]{40}$'
         $instance=Require-Value 'DOORHANDLE_ECS_INSTANCE_ID' '^i-[a-z0-9]+$'
         $machine=Require-Value 'DOORHANDLE_ECS_MACHINE_ID' '^[a-f0-9]{32}$'
         $sha=(Get-FileHash -LiteralPath artifacts/source.tar.gz -Algorithm SHA256).Hash.ToLowerInvariant()
         $package=Get-Content -LiteralPath artifacts/release.json -Raw | ConvertFrom-Json
+        Assert-ControlSourcePackage $package $commit $sha
         $tools=Get-Content -LiteralPath artifacts/ecs-tool-runtime.json -Raw | ConvertFrom-Json
         $remoteInbox="$remoteRoot/inbox/$tag"
         if ($package.release -cne $tag -or $package.commit -cne $commit -or $package.sourceSha256 -cne $sha -or $tools.status -cne 'PREPARED' -or $tools.release -cne $tag -or $tools.manifest -cne "$remoteInbox/tool-runtime/manifest.json" -or $tools.manifestSha256 -cnotmatch '^[a-f0-9]{64}$') { throw 'Control preflight source or tool registration differs from this fixed build.' }
@@ -544,6 +581,7 @@ if ($Action -in @('PrepareTools', 'CleanupTools')) {
     $machine = Require-Value 'DOORHANDLE_ECS_MACHINE_ID' '^[a-f0-9]{32}$'
     $sha = (Get-FileHash -LiteralPath artifacts/source.tar.gz -Algorithm SHA256).Hash.ToLowerInvariant()
     $package = Get-Content -LiteralPath artifacts/release.json -Raw | ConvertFrom-Json
+    Assert-ControlSourcePackage $package $commit $sha
     if ($package.release -ne $tag -or $package.commit -ne $commit -or $package.sourceSha256 -ne $sha) { throw 'Tool preparation requires this build pinned source package.' }
     $executor = "$remoteInbox/ecs-tool-runtime.py"
     if ($Action -eq 'PrepareTools') {

@@ -71,7 +71,7 @@ node.getNodeProperties().replace(new EnvironmentVariablesNodeProperty(entries))
 if (existingNode == null) ci.addNode(node) else node.save()
 
 def parameters = [
-    new ChoiceParameterDefinition('ACTION', ['verify', 'verify-embedding', 'verify-runtime', 'verify-deploy', 'rehearse', 'rollback', 'compact-cutover', 'reclaim-build-outputs'] as String[], 'Build output maintenance uses pinned source without running project tests or application runtime. Compact cutover requires complete source, database and runtime evidence.'),
+    new ChoiceParameterDefinition('ACTION', ['verify', 'verify-controls', 'verify-embedding', 'verify-runtime', 'verify-deploy', 'rehearse', 'rollback', 'compact-cutover', 'reclaim-build-outputs'] as String[], 'verify-controls runs only ECS control checks without building Java or preparing databases. Compact cutover requires complete source, database and runtime evidence.'),
     new StringParameterDefinition('TRUSTED_COMMIT', '', 'Optional expected complete java-cloud commit; blank pins this SCM checkout.'),
     new ChoiceParameterDefinition('DOORHANDLE_CI_SCOPE', ['source', 'mysql'] as String[], 'source is ordinary verification; mysql requires explicit ECS fixtures.'),
     new StringParameterDefinition('DOORHANDLE_CI_FIXTURE_MANIFEST', '', 'mysql only: absolute private manifest inside the current ECS checkout/work.'),
