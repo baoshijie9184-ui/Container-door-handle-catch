@@ -1,5 +1,13 @@
 # 单体 ECS 运行与测试
 
+2026-11-09 后续：固定 `dd85b09748a996f68e909fa54bc9412110e78134` 的 source #144 已终态 SUCCESS，Java 810 通过/612 条件跳过、Python 2,369 通过/24 条件跳过、双前端 157/20 项及两套构建通过；223 份原报告、归档和摘要已独立核验。采样 21、主键摘要采集 36、分类 112 例均实际通过且无跳过。原有受控构建回收已实际 REMOVED，未执行资料合入或切库。
+
+同提交 verify-runtime/mysql #145 已越过原采样过期拒绝，源库 131 表、5,755 行完成导出后，在 `clone_source:1336` 的快照一致性检查被拒；没有进入数据库矩阵、旧库双恢复或完整运行场景。此次没有 ResourceLimitExceeded、资源失败文件或 OOM。已留存 catalog 的只读回放确认元数据摘要完全一致；131 表结构中有 61 个 AUTO_INCREMENT 字段差异和 29 个 DDL 摘要差异，源统计值自身与 SHOW CREATE 高水位还有 28 表不一致。字符集差异是有列目录证明的冗余 `CHARACTER SET utf8mb4` / `COLLATE utf8mb4_bin` 表示；没有克隆逐行哈希流原件，不能推定行内容已一致。原始终态、14 份资源控制及诊断摘要在 `work/jenkins/data-residency-20261107/ci-145-*`，诊断明确标记未收集的原 stdout SHA/fstat，未补造证据。工具/夹具均 STOPPED，ECS 已从流水线外实际回读 `Stopped / StopCharging`，Jenkins 保持运行。
+
+当前待验证修复：Python 查询会话及 Java 工作台迁移的同一物理连接均设置并回读 `information_schema_stats_expiry=0`，从存储引擎读取动态统计，不使用 ANALYZE 或修改全局配置；完整快照额外核对高水位与同轮 SHOW CREATE 自洽。官方依据见 [MySQL 统计缓存说明](https://dev.mysql.com/doc/refman/8.4/en/server-system-variables.html#sysvar_information_schema_stats_expiry)。新 DDL 策略 `CATALOG_VERIFIED_UTF8MB4_BIN_CHARSET_V1` 显式进入快照 SHA，只规范化元数据已证明冗余的声明；旧无标记回执按 RAW 策略原样认证，恢复明确按其原策略执行，未知策略拒绝，源/克隆/双恢复仍严格比较完整摘要。新失败还会保留克隆实际快照、元数据及字段级差异，禁止以缺少诊断为由跳过一致性。
+
+为下一轮保留空间，source 实际 PASS 且原构建回收完成后增加三个已审定历史失败 native 构建（#117/#118/#130）的 JAR 运输副本去重。仅允许删除其 `candidate-app.jar`，同轮 `inbox/application.jar` 原字节完整保留；须核原始终态/源码/制品/owner/cleanup、两份实际字节 SHA、持有 keeper FD、私有路径/无链接、精确计划及严格无容器/进程引用，无法证明即跳过。不存在删除业务库、SQL 备份、报告、镜像或 inbox 原件的接口，不能预报全部候选可回收。此修复和新检查均仍待新固定提交经 Jenkins 在 ECS 验证，当前运行库仍为 131 表、目标为 29 表，发布和旧库清退门禁继续关闭。
+
 2026-11-09 本轮验证：固定提交 `f4b5c8d9e39bfe621c97fb1d9e82aea667bab08f` 的 source #142 已成功；随后 verify-runtime/mysql #143 在隔离夹具 `fixture-clone` 阶段终态 FAILURE，尚未进入数据库矩阵、旧资料恢复或完整运行场景，没有本轮测试报告。资源失败回执显示 watcher 探针年龄 `2.194360801` 秒，进行中的拥有进程内存采样耗时 `1.583184488` 秒；主线程在 SQL 恢复输入校验，collector 在全机 `/proc` 读取中。最后成功采样仍有约 4.41 GiB 磁盘、11.42 GiB 可用内存，OOM 0，不能将其解释为容量越界。原始终态/制品、15 份服务器资源控制及摘要已保全，工具和夹具均 STOPPED，流水线外已实际回读 `Stopped / StopCharging`（`work/jenkins/data-residency-20261107/after-ci-143-stop.json`），Jenkins 保持运行。
 
 本轮新增源码将完整进程快照/BFS 放到固定主 helper 的有界独立 Python 进程，保留全机扫描及原 256 后代限制，不使用可能遗漏动态子进程的 `/proc/.../children` 替代完整覆盖；子进程限时 1 秒、地址空间 128 MiB，核对目标 UID、根 PID/startTicks 前中后身份与固定四字段协议。原 2 秒时效门、资源保底和失败保留不变。GIL/I/O 争用是待验证的原因假设，不能把静态复核当作实际修复成功。

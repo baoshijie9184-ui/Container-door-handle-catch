@@ -7,6 +7,8 @@ import com.ruanzhu.doorhandle.common.LocalDateTimeRow;
 import com.ruanzhu.doorhandle.common.time.LegacyClockEvidence;
 import com.ruanzhu.doorhandle.contracts.agent.AgentWorkbenchApi;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.ConnectionCallback;
+import org.springframework.jdbc.datasource.SingleConnectionDataSource;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
@@ -162,7 +164,27 @@ public final class WorkbenchLegacyMigration {
         }catch(java.io.IOException error){throw new IllegalArgumentException("Legacy command result is not readable",error);}
         return new CommandPlan(row,"wb-command:"+number(row.get("id")),owner,(String)row.get("request_id"),digest(row.get("request_sha256")),type,protocol.write(new WorkbenchProtocol.CommandResultV1(type,raw)));
     }
+    static <T> T withFreshStatistics(JdbcTemplate source, java.util.function.Function<JdbcTemplate,T> observer){
+        return source.execute((ConnectionCallback<T>)connection->{
+            try(var statement=connection.createStatement()){
+                statement.execute("SET SESSION information_schema_stats_expiry=0");
+                try(var rows=statement.executeQuery("SELECT @@SESSION.information_schema_stats_expiry")){
+                    check(rows.next(),"The metadata session freshness readback is missing");
+                    long expiry=rows.getLong(1);boolean missing=rows.wasNull();
+                    check(!missing&&expiry==0&&!rows.next(),"Metadata must read uncached engine statistics in the same session");
+                }
+            }
+            // Keep both transactional and standalone metadata observations on
+            // the exact connection whose session setting was just verified.
+            var scoped=new JdbcTemplate(new SingleConnectionDataSource(connection,true));
+            scoped.setQueryTimeout(source.getQueryTimeout());
+            return observer.apply(scoped);
+        });
+    }
     private SourceShape shape(Admission a,String table){
+        return withFreshStatistics(jdbc,scoped->shape(scoped,a,table));
+    }
+    private SourceShape shape(JdbcTemplate jdbc,Admission a,String table){
         var tableInfo=jdbc.queryForMap("SELECT table_type,engine,table_collation,auto_increment FROM information_schema.tables WHERE table_schema=? AND table_name=?",a.sourceSchema(),table);
         check("BASE TABLE".equals(tableInfo.get("table_type"))&&"InnoDB".equals(tableInfo.get("engine"))&&a.sourceCollations().get(table).equals(tableInfo.get("table_collation")),"Unreviewed source table engine or collation: "+table);
         var columns=jdbc.queryForList("SELECT column_name,column_type,is_nullable,column_default,extra,character_set_name,collation_name,datetime_precision FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position",a.sourceSchema(),table);

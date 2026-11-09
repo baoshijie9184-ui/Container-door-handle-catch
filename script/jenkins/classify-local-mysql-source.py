@@ -8,12 +8,19 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
 import re
 import stat
 import sys
+
+
+_DDL_HELPER_PATH = Path(__file__).resolve().parents[1] / 'schema/compact_ddl_policy.py'
+_DDL_SPEC = importlib.util.spec_from_file_location('fixed_source_snapshot_ddl_policy', _DDL_HELPER_PATH)
+_DDL_POLICY = importlib.util.module_from_spec(_DDL_SPEC)
+_DDL_SPEC.loader.exec_module(_DDL_POLICY)
 
 
 MAX_JSON = 16 * 1024 ** 2
@@ -106,7 +113,17 @@ def same_context(value, context):
     need(all(value.get(key) == expected for key, expected in context.items()), 'CROSS_BUILD_OR_MACHINE_EVIDENCE')
 
 
-def validate_tables(tables, create_tables, schema, expected_count):
+def snapshot_policy(value):
+    if 'ddlHashPolicy' not in value:
+        return None
+    policy = value['ddlHashPolicy']
+    need(policy in (_DDL_POLICY.RAW_POLICY, _DDL_POLICY.CANONICAL_POLICY), 'UNKNOWN_SNAPSHOT_DDL_HASH_POLICY')
+    return policy
+
+
+def validate_tables(tables, create_tables, schema, expected_count, *, ddl_hash_policy=None):
+    need(ddl_hash_policy is None or ddl_hash_policy in (_DDL_POLICY.RAW_POLICY, _DDL_POLICY.CANONICAL_POLICY),
+         'UNKNOWN_SNAPSHOT_DDL_HASH_POLICY')
     need(type(tables) is dict and len(tables) == expected_count and type(create_tables) is dict
          and set(create_tables) == set(tables) and isinstance(schema, str) and IDENT.fullmatch(schema),
          'COMPLETE_TABLE_SNAPSHOT_REQUIRED')
@@ -139,15 +156,25 @@ def validate_tables(tables, create_tables, schema, expected_count):
              and [item['ordinal'] for item in primary] == list(range(1, len(primary) + 1)),
              'EXPLICIT_PRIMARY_ORDER_REQUIRED')
         ddl = create_tables[name]
-        need(isinstance(ddl, str) and 0 < len(ddl.encode('utf8')) <= MAX_JSON
-             and digest(normalize_ddl(ddl, schema).encode('utf8')) == row['ddlSha256'], 'CREATE_TABLE_DIGEST_DRIFT')
-    return sha_json({'schemaVersion': 1, 'tables': tables})
+        need(isinstance(ddl, str) and 0 < len(ddl.encode('utf8')) <= MAX_JSON, 'COMPLETE_CREATE_TABLE_REQUIRED')
+        try:
+            normalized_ddl = _DDL_POLICY.normalize_ddl(ddl, schema, columns,
+                policy=ddl_hash_policy or _DDL_POLICY.RAW_POLICY)
+        except ValueError:
+            raise ClassificationError('DDL_CANONICALIZATION_NOT_PROVEN_BY_COLUMNS') from None
+        need(digest(normalized_ddl.encode('utf8')) == row['ddlSha256'], 'CREATE_TABLE_DIGEST_DRIFT')
+    payload = {'schemaVersion': 1, 'tables': tables}
+    if ddl_hash_policy is not None:
+        payload['ddlHashPolicy'] = ddl_hash_policy
+    return sha_json(payload)
 
 
 def validate_snapshot(value, expected_count):
-    need(type(value) is dict and set(value) == {'schema', 'schemaVersion', 'snapshotSha256', 'tables', 'createTables'}
+    base_fields = {'schema', 'schemaVersion', 'snapshotSha256', 'tables', 'createTables'}
+    need(type(value) is dict and set(value) in (base_fields, base_fields | {'ddlHashPolicy'})
          and type(value['schemaVersion']) is int and value['schemaVersion'] == 1, 'SUPPORTED_COMPLETE_SNAPSHOT_REQUIRED')
-    checksum = validate_tables(value['tables'], value['createTables'], value['schema'], expected_count)
+    checksum = validate_tables(value['tables'], value['createTables'], value['schema'], expected_count,
+                               ddl_hash_policy=snapshot_policy(value))
     need(value['snapshotSha256'] == checksum, 'SNAPSHOT_PAYLOAD_DIGEST_DRIFT')
     return checksum
 
@@ -230,7 +257,8 @@ def classify_documents(raw_documents, *, expected_context, anchors):
          and manifest.get('migrationContext') == {'kind': 'fixture-origin-copy', 'sourceCommit': expected_context['commit'],
                                                  'sourceSha256': expected_context['sourceSha256']},
          'FIXTURE_ORIGIN_COPY_PROVENANCE_DRIFT')
-    source_sha = validate_tables(manifest.get('tables'), manifest.get('createTables'), manifest.get('schema'), 131)
+    source_sha = validate_tables(manifest.get('tables'), manifest.get('createTables'), manifest.get('schema'), 131,
+                                 ddl_hash_policy=snapshot_policy(manifest))
     need(manifest.get('snapshotSha256') == fixture.get('sourceSnapshotSha256') == source_sha
          and type(fixture.get('sourceRows')) is int and fixture['sourceRows'] == sum(row['rows'] for row in manifest['tables'].values())
          and hash_field(manifest.get('metadataSha256')) and type(manifest.get('triggers')) is list,

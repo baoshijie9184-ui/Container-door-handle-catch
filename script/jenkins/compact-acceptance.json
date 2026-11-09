@@ -717,6 +717,11 @@
     "allowInfrastructureOptInSkips": true,
     "requiredClasses": [
       {
+        "className": "com.ruanzhu.doorhandle.module.ai.workbench.WorkbenchMigrationStatisticsSessionTest",
+        "minimumTests": 7,
+        "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/workbench/WorkbenchMigrationStatisticsSessionTest.java"
+      },
+      {
         "className": "com.ruanzhu.doorhandle.module.ai.service.AgentScopeConversationServiceTest",
         "minimumTests": 23,
         "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/service/AgentScopeConversationServiceTest.java"
@@ -1128,8 +1133,32 @@
       },
       {
         "module": "tests_python.test_compact_keyed_row_capture",
-        "minimumTests": 36,
+        "minimumTests": 37,
         "source": "tests_python/test_compact_keyed_row_capture.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_mysql_snapshot_session",
+        "minimumTests": 12,
+        "source": "tests_python/test_mysql_snapshot_session.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_failed_native_jar_duplicates",
+        "minimumTests": 99,
+        "source": "tests_python/test_failed_native_jar_duplicates.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_compact_ddl_policy",
+        "minimumTests": 56,
+        "source": "tests_python/test_compact_ddl_policy.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_compact_snapshot_ddl_policy",
+        "minimumTests": 18,
+        "source": "tests_python/test_compact_snapshot_ddl_policy.py",
         "allowedSkippedTests": []
       },
       {

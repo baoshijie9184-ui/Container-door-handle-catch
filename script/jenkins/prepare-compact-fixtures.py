@@ -1331,8 +1331,24 @@ class Preparation:
                 self.mysql.script('ALTER TABLE ' + self.runtime.quoted(table) + ' AUTO_INCREMENT=' + detail['autoIncrement'] + ';', database=clone, label='clone-hwm')
         self.runtime.install_relations(self.mysql, clone, foreign)
         self.runtime.install_triggers(self.mysql, clone, snapshot['schema'], manifest['triggers'])
-        actual = self.runtime.schema_snapshot(self.mysql, clone, manifest['tables'])
-        _, metadata_sha = self.runtime.metadata_snapshot(self.mysql, clone)
+        actual = self.runtime.schema_snapshot(self.mysql, clone, manifest['tables'],
+                                              ddl_hash_policy=self.runtime.snapshot_ddl_policy(manifest))
+        actual_metadata, metadata_sha = self.runtime.metadata_snapshot(self.mysql, clone)
+        # Retain actual private hashes/catalogs before asserting equality. These
+        # contain metadata and row digests, never business row values or SQL
+        # credentials, and let a stopped failed attempt be diagnosed offline.
+        write_json(self.work / 'source-clone-snapshot-private.json', actual)
+        write_json(self.work / 'source-clone-metadata-private.json', actual_metadata)
+        write_json(self.work / 'source-clone-comparison-private.json', {
+            'schemaVersion': 1, 'kind': 'doorhandle-source-clone-comparison',
+            'release': self.args.tag, 'commit': self.args.commit, 'sourceSha256': self.args.source_sha256,
+            'identity': self.identity, 'sourceSnapshotSha256': snapshot['snapshotSha256'],
+            'cloneSnapshotSha256': actual['snapshotSha256'], 'sourceMetadataSha256': manifest['metadataSha256'],
+            'cloneMetadataSha256': metadata_sha, 'ddlHashPolicy': manifest.get('ddlHashPolicy'),
+            'snapshotFieldsDifferent': {name: sorted(key for key in set(snapshot['tables'][name]) | set(detail)
+                if snapshot['tables'][name].get(key) != detail.get(key))
+                for name, detail in actual['tables'].items() if snapshot['tables'][name] != detail},
+            'businessRowValuesIncluded': False})
         require(actual['snapshotSha256'] == snapshot['snapshotSha256'] and metadata_sha == manifest['metadataSha256'],
                 'Read-only actual source clone differs in rows/NULL/clocks/keys/triggers/DDL/high water')
         self.journal.update(sourceClone=clone, sourceCloneSnapshotSha256=actual['snapshotSha256'], sourceCollations={name: detail['collation'] for name, detail in actual['tables'].items()})

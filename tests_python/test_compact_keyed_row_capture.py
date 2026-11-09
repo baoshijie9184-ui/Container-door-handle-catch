@@ -271,7 +271,7 @@ class SnapshotMysql:
         self.runtime, self.no_primary, self.second, self.drift = runtime, no_primary, second, drift
         self.calls = []
         self.columns = [{'name': 'id', 'ordinal': 1, 'type': 'bigint', 'nullable': 'NO',
-                         'default': None, 'extra': '', 'generation': '', 'charset': None,
+                         'default': None, 'extra': 'auto_increment', 'generation': '', 'charset': None,
                          'collation': None, 'datetimePrecision': None},
                         {'name': 'payload', 'ordinal': 2, 'type': 'varbinary(16)', 'nullable': 'YES',
                          'default': None, 'extra': '', 'generation': '', 'charset': None,
@@ -294,7 +294,7 @@ class SnapshotMysql:
 
     def script(self, sql, *, label):
         table = re.search(r'SHOW CREATE TABLE `doorhandledb`\.`([a-z]+)`;', sql).group(1)
-        return (table + '\tCREATE TABLE `' + table + '` (`id` bigint NOT NULL,`payload` varbinary(16))').encode()
+        return (table + '\tCREATE TABLE `' + table + '` (`id` bigint NOT NULL AUTO_INCREMENT,`payload` varbinary(16)) ENGINE=InnoDB AUTO_INCREMENT=2').encode()
 
     def row_hashes(self, schema, table, columns, primary, **kwargs):
         self.calls.append((schema, table, columns, primary, kwargs))
@@ -305,7 +305,7 @@ class SnapshotMysql:
         return len(self.rows), '0' * 64 if self.drift else chain(self.rows)
 
 
-def test_snapshot_opt_in_keeps_original_snapshot_v1_unchanged(runtime):
+def test_sidecar_capture_keeps_the_current_explicit_snapshot_policy_unchanged(runtime):
     old_client = SnapshotMysql(runtime)
     old = runtime.schema_snapshot(old_client, 'doorhandledb', ['item'])
     assert old_client.calls[0][-1] == {}
@@ -346,6 +346,20 @@ def test_snapshot_requires_sidecar_chain_to_equal_the_actual_snapshot(runtime):
     with pytest.raises(ValueError, match='complete actual table row chain'):
         runtime.schema_snapshot(SnapshotMysql(runtime, drift=True), 'doorhandledb', ['item'], keyed_rows_directory=directory)
     assert not (directory / 'index.json').exists()
+
+
+def test_snapshot_high_water_contradiction_retains_diagnostics_instead_of_taking_max(runtime):
+    client = SnapshotMysql(runtime)
+    client.single = lambda _sql: {'autoIncrement': '1'}
+    client.output = private_folder(runtime, 'client')
+    (client.output / 'private').mkdir(mode=0o700)
+    with pytest.raises(ValueError, match='Fresh AUTO_INCREMENT statistics'):
+        runtime.schema_snapshot(client, 'doorhandledb', ['item'])
+    files = list((client.output / 'private').glob('snapshot-high-water-*.json'))
+    assert len(files) == 1
+    _, detail, _ = runtime.private_json(files[0])
+    assert detail['catalogAutoIncrement'] == '1' and detail['showCreateAutoIncrement'] == '2'
+    assert detail['businessRowValuesIncluded'] is False
 
 
 def test_snapshot_refuses_extra_members_before_publishing_complete_index(runtime):

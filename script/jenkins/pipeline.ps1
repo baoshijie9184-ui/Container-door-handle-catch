@@ -417,6 +417,9 @@ if ($Action -in @('PreserveLocalArtifacts', 'PreserveColdStores', 'PreserveLocal
         & ./script/jenkins/preserve-local-mysql.ps1 -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha -SnapshotDirectory $env:LOCAL_MYSQL_SNAPSHOT -EcsSnapshotDirectory $env:LOCAL_MYSQL_ECS_SNAPSHOT -FixtureSettings $env:LOCAL_MYSQL_FIXTURE_SETTINGS
     } else {
         & ./script/jenkins/reclaim-build-outputs.ps1 -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha
+        if ($env:DOORHANDLE_CI_SCOPE -ceq 'source') {
+            & ./script/jenkins/retire-failed-native-jar-duplicates.ps1 -Mode Verified -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha
+        }
     }
     return
 }

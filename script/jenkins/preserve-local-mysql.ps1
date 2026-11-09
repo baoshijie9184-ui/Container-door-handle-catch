@@ -59,6 +59,7 @@ with tarfile.open(sys.argv[1],'r:gz') as archive:
     assert archive.pax_headers.get('comment')==sys.argv[2]
     members={name:'script/jenkins/'+name for name in ('preserve-local-mysql.py','restore-local-mysql.py','classify-local-mysql-source.py')}
     members['compact-schema-contract.json']='docs/database/compact-schema-contract.json'
+    members['compact_ddl_policy.py']='script/schema/compact_ddl_policy.py'
     for name,path in members.items():
         entry=archive.getmember(path)
         assert entry.isfile() and 0<entry.size<=1048576
@@ -73,8 +74,10 @@ $ssh = (Get-Command ssh.exe -ErrorAction Stop | Select-Object -First 1).Source
 $scp = (Get-Command scp.exe -ErrorAction Stop | Select-Object -First 1).Source
 $helper = "$RemoteRoot/verification/$Tag/checkout/script/jenkins/preserve-local-mysql.py"
 $recovery = "$RemoteRoot/verification/$Tag/checkout/script/jenkins/restore-local-mysql.py"
+$ddlPolicy = "$RemoteRoot/verification/$Tag/checkout/script/schema/compact_ddl_policy.py"
+$ddlPolicyGuard = "test `"`$(sha256sum '$ddlPolicy' | cut -d ' ' -f 1)`" = '$($sourceHashes.'compact_ddl_policy.py')' && "
 $helperGuard = "test `"`$(sha256sum '$helper' | cut -d ' ' -f 1)`" = '$($sourceHashes.'preserve-local-mysql.py')' && "
-$recoveryGuard = "test `"`$(sha256sum '$recovery' | cut -d ' ' -f 1)`" = '$($sourceHashes.'restore-local-mysql.py')' && "
+$recoveryGuard = $ddlPolicyGuard + "test `"`$(sha256sum '$recovery' | cut -d ' ' -f 1)`" = '$($sourceHashes.'restore-local-mysql.py')' && "
 $context = "--root '$RemoteRoot' --tag '$Tag' --commit '$Commit' --source-sha256 '$SourceSha256' --instance-id '$instance' --machine-id '$machine'"
 function Collect-SqlCleanup {
     $text = Invoke-SqlCustody $ssh ($SshOptions + @('-p',$PortText,$Destination,"${recoveryGuard}python3 -I -B '$recovery' cleanup $context"))
@@ -238,7 +241,7 @@ print(json.dumps(result))
     $remoteReport = "$RemoteRoot/verification/$Tag/checkout/work/local-mysql-source-classification.json"
     $classifierSha = $sourceHashes.'classify-local-mysql-source.py'; $contractSha = $sourceHashes.'compact-schema-contract.json'
     Require-SqlCustody ($classifierSha -cmatch '^[a-f0-9]{64}$' -and $contractSha -cmatch '^[a-f0-9]{64}$') 'Classification code and contract must be bound to the immutable source archive.'
-    $classifierGuard = "test `"`$(sha256sum '$classifier' | cut -d ' ' -f 1)`" = '$classifierSha' && "
+    $classifierGuard = $ddlPolicyGuard + "test `"`$(sha256sum '$classifier' | cut -d ' ' -f 1)`" = '$classifierSha' && "
     $flags = "--verification-receipt-sha256 '$verificationSha' --local-owner-sha256 '$($anchors.localOwner.sha256)' --fixture-owner-sha256 '$($anchors.fixtureOwner.sha256)' --contract-sha256 '$contractSha' --output '$remoteReport'"
     $classificationLines = @(Invoke-SqlCustody $ssh ($classificationSshOptions + @('-p',$PortText,$Destination,"${classifierGuard}python3 -I -B '$classifier' $context $flags")))
     Require-SqlCustody ($classificationLines.Count -eq 1) 'Classification must return one bounded summary.'

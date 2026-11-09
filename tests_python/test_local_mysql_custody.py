@@ -189,7 +189,8 @@ def test_owned_sql_client_never_regenerates_dump_or_switches_to_another_schema(t
 def test_isolated_launcher_imports_only_fixed_checkout_snapshot_helpers_without_database(tmp_path):
     checkout = tmp_path / 'separate-checkout'; checkout.mkdir()
     for relative in ('script/jenkins/restore-local-mysql.py', 'script/schema/compact_migration_runtime.py',
-                     'script/schema/build_compact_schema.py', 'script/schema/compact_clock_policy.py', 'scripts/ecs_execution.py'):
+                     'script/schema/build_compact_schema.py', 'script/schema/compact_clock_policy.py',
+                     'script/schema/compact_ddl_policy.py', 'scripts/ecs_execution.py'):
         target = checkout / relative; target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(ROOT / relative, target)
     # Run the real -I launcher with a distinct CWD and no PYTHONPATH. Importing

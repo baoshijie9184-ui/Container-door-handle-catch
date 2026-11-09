@@ -1,0 +1,242 @@
+param(
+    [ValidateSet('Verified','Maintenance')][string]$Mode = 'Verified',
+    [Parameter(Mandatory=$true)][string[]]$SshOptions,
+    [Parameter(Mandatory=$true)][string]$Destination,
+    [Parameter(Mandatory=$true)][string]$PortText,
+    [Parameter(Mandatory=$true)][string]$RemoteRoot,
+    [Parameter(Mandatory=$true)][string]$Tag,
+    [Parameter(Mandatory=$true)][string]$Commit,
+    [Parameter(Mandatory=$true)][string]$SourceSha256,
+    [string]$RetainedControlRoot = 'D:/AI/lunwen1/DoorHandleCatch/work/jenkins/data-residency-20261107'
+)
+$ErrorActionPreference='Stop'
+Set-StrictMode -Version Latest
+function Require-NativeJar([bool]$Condition,[string]$Message) { if (-not $Condition) { throw $Message } }
+function Assert-NativeJarPath([string]$Path) {
+    $item=Get-Item -LiteralPath $Path -Force
+    while ($null -ne $item) {
+        Require-NativeJar (-not ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) 'Native JAR controls cannot contain links or junctions.'
+        $item=if ($item -is [IO.FileInfo]) {$item.Directory} else {$item.Parent}
+    }
+}
+function Invoke-NativeJar([string]$Executable,[string[]]$Arguments) {
+    $lines=@(& $Executable @Arguments)
+    if ($LASTEXITCODE -ne 0) { throw 'Native JAR retirement admission failed; original artifacts are retained.' }
+    return $lines
+}
+Require-NativeJar ($Mode -ceq 'Maintenance' -or ($env:CI_ECS_VERIFIED -ceq 'true' -and $env:DOORHANDLE_CI_SCOPE -ceq 'source')) 'Verified retirement follows this build actual source PASS only.'
+Require-NativeJar ($Mode -cne 'Maintenance' -or ($env:ACTION -ceq 'reclaim-build-outputs' -and $env:CI_ECS_VERIFIED -ceq 'false' -and $env:DOORHANDLE_CI_SCOPE -ceq 'source')) 'Maintenance must be the explicit source-only Jenkins action.'
+Require-NativeJar ($Destination -cmatch '^[a-z_][a-z0-9_-]{0,31}@[A-Za-z0-9][A-Za-z0-9.-]{0,252}$' -and $PortText -match '^[0-9]{1,5}$' -and [int]$PortText -ge 1 -and [int]$PortText -le 65535) 'Invalid fixed SSH endpoint.'
+Require-NativeJar ($RemoteRoot -cmatch '^/(home|srv|opt)/[A-Za-z0-9_./-]+$' -and $RemoteRoot -notmatch '(^|/)\.\.(/|$)|//' -and -not $RemoteRoot.EndsWith('/')) 'Invalid explicit ECS CI root.'
+Require-NativeJar ($Tag -cmatch '^ci-[1-9][0-9]*-[a-f0-9]{12}$' -and $Commit -cmatch '^[a-f0-9]{40}$' -and $Tag.EndsWith('-'+$Commit.Substring(0,12)) -and $SourceSha256 -cmatch '^[a-f0-9]{64}$') 'Invalid fixed source context.'
+Require-NativeJar ($SshOptions -ccontains 'StrictHostKeyChecking=yes' -and $SshOptions -ccontains 'HostKeyAlias=doorhandle-bj') 'Pinned ECS host authentication is required.'
+$instance=$env:DOORHANDLE_ECS_INSTANCE_ID; $machine=$env:DOORHANDLE_ECS_MACHINE_ID
+Require-NativeJar ($instance -cmatch '^i-[a-z0-9]+$' -and $machine -cmatch '^[a-f0-9]{32}$') 'Explicit expected ECS identity required.'
+$ssh=(Get-Command ssh.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+$scp=(Get-Command scp.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+$python=$env:LOCAL_PYTHON_EXE; if ([string]::IsNullOrWhiteSpace($python)) {$python=$env:PYTHON_EXE}
+Require-NativeJar ($python -and [IO.Path]::IsPathFullyQualified($python) -and (Test-Path -LiteralPath $python -PathType Leaf)) 'Existing local packaging Python is required.'
+$workspace=(Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '../..')).Path
+$archive=Join-Path $workspace 'artifacts/source.tar.gz'; Assert-NativeJarPath $archive
+Require-NativeJar ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ceq $SourceSha256) 'Current immutable source archive differs.'
+$currentReceipt=if ($Mode -ceq 'Verified') {Join-Path $workspace 'artifacts/ecs/evidence/verification-receipt.json'} else {Join-Path $workspace 'artifacts/release.json'}
+Assert-NativeJarPath $currentReceipt
+$currentReceiptSha=(Get-FileHash -LiteralPath $currentReceipt -Algorithm SHA256).Hash.ToLowerInvariant()
+$jenkinsHome=$env:JENKINS_HOME
+if ([string]::IsNullOrWhiteSpace($jenkinsHome)) {$jenkinsHome=Join-Path ([Environment]::GetFolderPath('UserProfile')) '.jenkins'}
+Require-NativeJar ([IO.Path]::IsPathFullyQualified($RetainedControlRoot) -and [IO.Path]::IsPathFullyQualified($jenkinsHome)) 'Existing absolute C/D custody locations are required.'
+
+# Stdlib byte/metadata inspection only. No project module, DB, application or
+# test is imported or run on the workstation. D evidence is pinned to original
+# preservation manifests reviewed for these three exact historical attempts.
+$reader=@'
+import gzip,hashlib,json,os,stat,sys,tarfile
+from pathlib import Path
+def need(v,code='LOCAL_CONTROL_ADMISSION_REJECTED'):
+ if not v:raise ValueError(code)
+def stable(path,maximum=2097152):
+ path=Path(path);need(path.resolve(strict=True)==path)
+ for p in (path,*path.parents):need(not p.is_symlink())
+ with path.open('rb') as f:
+  a=os.fstat(f.fileno());need(stat.S_ISREG(a.st_mode) and a.st_nlink==1 and 0<a.st_size<=maximum)
+  raw=f.read(maximum+1);b=os.fstat(f.fileno());c=path.stat()
+ sig=lambda s:(s.st_dev,s.st_ino,s.st_size,s.st_mtime_ns,s.st_ctime_ns,s.st_nlink)
+ need(sig(a)==sig(b)==sig(c) and len(raw)==a.st_size);return raw
+def sha(raw):return hashlib.sha256(raw).hexdigest()
+def unique(pairs):
+ result={}
+ for k,v in pairs:need(k not in result);result[k]=v
+ return result
+archive,commit,retained,jhome,remote,current=sys.argv[1:]
+approved=[(117,'8c898996cc28ce30fd6531710511f833cccb4864','e1eec611a0dcbb93158d8e5a68fc5d16e6f96d65dcb82e6930f54abdd84d2e2c'),
+ (118,'6481f7fa6021eb36592a081d04f385886c03412a','e73474da34762eedf1438c835dbc741091f02c69fb5c3664dbba6cca30395f8a'),
+ (130,'9a588271dadb135ec4284392ef7b9c9c55ea511d','f53a73fa4ce45e44b666cbf963145b353f6e478c7cc594ca849b59bfe0b924d2')]
+helpers={};wanted={'script/jenkins/retire-failed-native-jar-duplicates.py','script/jenkins/cleanup-ecs-builds.py','script/jenkins/verify-remote.py'}
+class Bounded:
+ def __init__(self,s):self.s,self.n=s,0
+ def read(self,size=-1):
+  rem=536870912-self.n;raw=self.s.read(rem+1 if size<0 else min(size,rem+1));self.n+=len(raw);need(self.n<=536870912);return raw
+with gzip.open(archive,'rb') as gz,tarfile.open(fileobj=Bounded(gz),mode='r|') as arc:
+ count=0
+ for member in arc:
+  count+=1;need(count<=50000 and 0<=member.size<=33554432)
+  if member.name not in wanted:continue
+  need(member.name not in helpers and member.isfile() and 0<member.size<=1048576)
+  raw=arc.extractfile(member).read(1048577);need(len(raw)==member.size);helpers[member.name]={'bytes':len(raw),'sha256':sha(raw)}
+ need(set(helpers)==wanted and arc.pax_headers.get('comment')==commit)
+rows=[];skipped=[];custody=[]
+for number,oldcommit,preservation_sha in approved:
+ tag='ci-'+str(number)+'-'+oldcommit[:12];folder=Path(retained)/('ci-'+str(number)+'-raw-receipts');preservation=None
+ try:
+  files={};origins={}
+  for role,name in [('buildXml','build.xml'),('release','release.json'),('localBuild','local-build.json'),('fixtureCleanupPublic','fixture-cleanup.json')]:
+   source=Path(jhome)/'jobs/doorhandle-java/builds'/str(number)/('build.xml' if role=='buildXml' else 'archive/artifacts/'+name)
+   if source.is_file():
+    raw=stable(source);origin='ACTUAL_JENKINS_ORIGINAL'
+   elif (folder/name).is_file():
+    if preservation is None:
+     proof=stable(folder/'preservation.json');need(sha(proof)==preservation_sha,'PRESERVED_CUSTODY_SHA_DRIFT');preservation=json.loads(proof,object_pairs_hook=unique)
+     need(preservation.get('build')==number and type(preservation.get('files')) is list)
+    matches=[r for r in preservation['files'] if r.get('path')==name];need(len(matches)==1)
+    source=folder/name;raw=stable(source);row=matches[0]
+    suffix='/jobs/doorhandle-java/builds/'+str(number)+('/build.xml' if role=='buildXml' else '/archive/artifacts/'+name)
+    need(row.get('bytes')==len(raw) and row.get('sha256')==sha(raw) and str(row.get('original','')).replace(chr(92),'/').endswith(suffix),'PRESERVED_ORIGINAL_CONTROL_DRIFT')
+    origin='PINNED_PRESERVED_JENKINS_ORIGINAL'
+   else:
+    need(role not in ('buildXml','release'),'MISSING_LOCAL_CONTROL_'+role.upper());continue
+   files[role]={'source':str(source),'file':name,'bytes':len(raw),'sha256':sha(raw)};origins[role]={'origin':origin,'bytes':len(raw),'sha256':sha(raw)}
+  rel=json.loads(stable(files['release']['source']),object_pairs_hook=unique)
+  need(rel.get('release')==tag and rel.get('commit')==oldcommit and type(rel.get('sourceSha256')) is str and len(rel['sourceSha256'])==64)
+  rows.append({'release':tag,'commit':oldcommit,'sourceSha256':rel['sourceSha256'],'files':files})
+  custody.append({'release':tag,'controls':origins,'preservationSha256':preservation_sha if preservation else None})
+ except Exception as error:skipped.append({'release':tag,'reason':str(error) if type(error) is ValueError and str(error).replace('_','').isalnum() else type(error).__name__})
+print(json.dumps({'helpers':helpers,'rows':rows,'skipped':skipped,'custody':custody}))
+'@
+$local=(Invoke-NativeJar $python @('-I','-B','-c',$reader,$archive,$Commit,$RetainedControlRoot,$jenkinsHome,$RemoteRoot,$Tag) | Select-Object -Last 1) | ConvertFrom-Json -AsHashtable
+$spec=[ordered]@{schemaVersion=1;kind='doorhandle-failed-native-jar-duplicate-request';current=@{release=$Tag;commit=$Commit;sourceSha256=$SourceSha256};identity=@{instanceId=$instance;machineId=$machine;executionLocation='ECS'};protectedReleases=@($Tag);candidates=@()}
+$uploads=@()
+foreach ($row in $local.rows) {
+    $controls=@{}
+    foreach ($entry in $row.files.GetEnumerator()) {
+        $binding=$entry.Value
+        $relative="inbox/$Tag/native-jar-duplicate-controls/$($row.release)/$($binding.file)"
+        $controls[$entry.Key]=@{path=$relative;bytes=$binding.bytes;sha256=$binding.sha256}
+        $uploads+=@{relative=$relative;source=$binding.source;bytes=$binding.bytes;sha256=$binding.sha256}
+    }
+    $spec.candidates+=@{release=$row.release;commit=$row.commit;sourceSha256=$row.sourceSha256;controls=$controls}
+}
+$work=Join-Path $workspace 'work'; New-Item -ItemType Directory -Path $work -Force | Out-Null
+$specFile=Join-Path $work 'native-jar-duplicate-local-spec.json'
+Require-NativeJar (-not (Test-Path -LiteralPath $specFile)) 'Use a fresh build; local retirement request already exists.'
+$spec | ConvertTo-Json -Depth 12 -Compress | Set-Content -LiteralPath $specFile -Encoding utf8
+$uploads+=@{relative="inbox/$Tag/native-jar-duplicate-local-spec.json";source=$specFile;bytes=(Get-Item -LiteralPath $specFile).Length;sha256=(Get-FileHash -LiteralPath $specFile -Algorithm SHA256).Hash.ToLowerInvariant()}
+$specSha=$uploads[-1].sha256
+if ($Mode -ceq 'Maintenance') {
+    $uploads+=@{relative="inbox/$Tag/native-jar-duplicate-maintenance-package.json";source=$currentReceipt;bytes=(Get-Item -LiteralPath $currentReceipt).Length;sha256=$currentReceiptSha}
+}
+$context=@{root=$RemoteRoot;tag=$Tag;commit=$Commit;sourceSha256=$SourceSha256;mode=$Mode;instanceId=$instance;machineId=$machine;helpers=$local.helpers;uploads=$uploads}
+$bootstrap=@'
+import base64,gzip,hashlib,json,os,stat,sys,tarfile
+from pathlib import Path
+from urllib.request import ProxyHandler,Request,build_opener
+def need(v):
+ if not v:raise ValueError('Native JAR fixed-source bootstrap refused')
+data=json.loads(base64.b64decode(sys.argv[1]));root=Path(data['root']);inbox=root/'inbox'/data['tag']
+need(sys.platform=='linux' and os.getuid()==os.geteuid()==1000 and Path('/etc/machine-id').read_text().strip()==data['machineId'])
+opener=build_opener(ProxyHandler({}));base='http://100.100.100.200/latest/'
+with opener.open(Request(base+'api/token',data=b'',method='PUT',headers={'X-aliyun-ecs-metadata-token-ttl-seconds':'60'}),timeout=4) as r:token=r.read(4096).decode()
+with opener.open(Request(base+'meta-data/instance-id',headers={'X-aliyun-ecs-metadata-token':token}),timeout=4) as r:need(r.read(256).decode().strip()==data['instanceId'])
+def owned(p,directory=False):
+ need(p.is_absolute() and '..' not in p.parts and p.resolve(strict=True)==p and (p==root or p.is_relative_to(root)))
+ for parent in (p,*p.parents):need(not parent.is_symlink())
+ s=p.stat();need(s.st_uid==1000 and not s.st_mode&0o022 and (stat.S_ISDIR(s.st_mode) if directory else stat.S_ISREG(s.st_mode) and s.st_nlink==1));return s
+owned(root,True);owned(inbox,True)
+archive=inbox/('source.tar.gz' if data['mode']=='Verified' else 'cleanup-source.tar.gz');info=owned(archive)
+need(0<info.st_size<=134217728)
+with archive.open('rb') as f:need(hashlib.file_digest(f,'sha256').hexdigest()==data['sourceSha256'])
+class Bounded:
+ def __init__(self,s):self.s,self.n=s,0
+ def read(self,size=-1):
+  rem=536870912-self.n;raw=self.s.read(rem+1 if size<0 else min(size,rem+1));self.n+=len(raw);need(self.n<=536870912);return raw
+found={};count=0
+with gzip.open(archive,'rb') as gz,tarfile.open(fileobj=Bounded(gz),mode='r|') as arc:
+ for entry in arc:
+  count+=1;need(count<=50000 and 0<=entry.size<=33554432)
+  if entry.name not in data['helpers']:continue
+  need(entry.name not in found and entry.isfile() and 0<entry.size<=1048576)
+  raw=arc.extractfile(entry).read(1048577);want=data['helpers'][entry.name]
+  need(len(raw)==entry.size==want['bytes'] and hashlib.sha256(raw).hexdigest()==want['sha256']);found[entry.name]=raw
+ need(arc.pax_headers.get('comment')==data['commit'] and set(found)==set(data['helpers']))
+need(os.statvfs(root).f_bavail*os.statvfs(root).f_frsize>=2147483648+sum(r['bytes'] for r in data['uploads'])+8388608)
+for name,raw in found.items():
+ target=inbox/Path(name).name
+ if target.exists() or target.is_symlink():
+  owned(target)
+  with target.open('rb') as f:need(f.read(1048577)==raw)
+ else:
+  with os.fdopen(os.open(target,os.O_CREAT|os.O_EXCL|os.O_WRONLY|os.O_NOFOLLOW,0o600),'wb') as f:f.write(raw);f.flush();os.fsync(f.fileno())
+if len(sys.argv)>2 and sys.argv[2]=='finish':
+ for row in data['uploads']:
+  p=root/row['relative'];owned(p);expected=data['uploadIdentities'][row['relative']]
+  with os.fdopen(os.open(p,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK),'rb') as f:
+   a=os.fstat(f.fileno());need([a.st_dev,a.st_ino]==expected and a.st_size==row['bytes'] and hashlib.file_digest(f,'sha256').hexdigest()==row['sha256'])
+   need([p.lstat().st_dev,p.lstat().st_ino]==expected);os.fchmod(f.fileno(),0o600);os.fsync(f.fileno())
+ print(json.dumps({'status':'FINALIZED','release':data['tag']}));raise SystemExit(0)
+identities={}
+for row in data['uploads']:
+ p=root/row['relative'];need(p.is_relative_to(inbox) and '..' not in p.parts and not p.exists() and not p.is_symlink())
+ parents=[];parent=p.parent
+ while not parent.exists():parents.append(parent);parent=parent.parent
+ owned(parent,True)
+ for parent in reversed(parents):parent.mkdir(mode=0o700);owned(parent,True)
+ with os.fdopen(os.open(p,os.O_CREAT|os.O_EXCL|os.O_WRONLY|os.O_NOFOLLOW,0o600),'wb') as f:
+  f.flush();os.fsync(f.fileno());s=os.fstat(f.fileno());identities[row['relative']]=[s.st_dev,s.st_ino]
+print(json.dumps({'status':'PREPARED','release':data['tag'],'commit':data['commit'],'sourceSha256':data['sourceSha256'],'uploadIdentities':identities,'identity':{'instanceId':data['instanceId'],'machineId':data['machineId'],'executionLocation':'ECS'}}))
+'@
+$encodedProgram=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($bootstrap))
+$encodedContext=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($context | ConvertTo-Json -Depth 12 -Compress)))
+$launcher='import base64;exec(compile(base64.b64decode("'+$encodedProgram+'"),"fixed-native-jar-bootstrap","exec"))'
+$prepared=(Invoke-NativeJar $ssh ($SshOptions+@('-p',$PortText,$Destination,"python3 -I -B -c '$launcher' '$encodedContext'")) | Select-Object -Last 1) | ConvertFrom-Json
+Require-NativeJar ($prepared.status -ceq 'PREPARED' -and $prepared.release -ceq $Tag -and $prepared.commit -ceq $Commit -and $prepared.sourceSha256 -ceq $SourceSha256 -and $prepared.identity.instanceId -ceq $instance -and $prepared.identity.machineId -ceq $machine) 'The fixed helper was not prepared on the admitted ECS.'
+foreach ($upload in $uploads) {
+    Assert-NativeJarPath $upload.source
+    Require-NativeJar ((Get-Item -LiteralPath $upload.source).Length -eq $upload.bytes -and (Get-FileHash -LiteralPath $upload.source -Algorithm SHA256).Hash.ToLowerInvariant() -ceq $upload.sha256) 'Original control drifted before upload.'
+    $null=Invoke-NativeJar $scp ($SshOptions+@('-P',$PortText,$upload.source,"${Destination}:$RemoteRoot/$($upload.relative)"))
+    Require-NativeJar ((Get-Item -LiteralPath $upload.source).Length -eq $upload.bytes -and (Get-FileHash -LiteralPath $upload.source -Algorithm SHA256).Hash.ToLowerInvariant() -ceq $upload.sha256) 'Original control drifted during upload.'
+}
+$context.uploadIdentities=$prepared.uploadIdentities
+$finalContext=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($context | ConvertTo-Json -Depth 12 -Compress)))
+$finalized=(Invoke-NativeJar $ssh ($SshOptions+@('-p',$PortText,$Destination,"python3 -I -B -c '$launcher' '$finalContext' finish")) | Select-Object -Last 1) | ConvertFrom-Json
+Require-NativeJar ($finalized.status -ceq 'FINALIZED' -and $finalized.release -ceq $Tag) 'The original uploaded control files changed or lost their private identity.'
+$helper="$RemoteRoot/inbox/$Tag/retire-failed-native-jar-duplicates.py"
+$helperSha=$local.helpers.'script/jenkins/retire-failed-native-jar-duplicates.py'.sha256
+$common="--root '$RemoteRoot' --tag '$Tag' --commit '$Commit' --source-sha256 '$SourceSha256' --mode '$Mode' --instance-id '$instance' --machine-id '$machine' --current-receipt-sha256 '$currentReceiptSha'"
+function Invoke-NativeJarPhase([string]$Phase,[string]$Flags='') {
+    $guard="test `"`$(sha256sum '$helper' | cut -d ' ' -f 1)`" = '$helperSha' && "
+    return (Invoke-NativeJar $ssh ($SshOptions+@('-p',$PortText,$Destination,"${guard}python3 -I -B '$helper' --phase '$Phase' $common $Flags")) | Select-Object -Last 1) | ConvertFrom-Json
+}
+$captured=Invoke-NativeJarPhase 'capture-request' "--local-spec-sha256 '$specSha'"
+Require-NativeJar ($captured.status -ceq 'CAPTURED' -and $captured.request.sha256 -cmatch '^[a-f0-9]{64}$') 'The actual ECS control snapshot was not captured.'
+$requestSha=$captured.request.sha256
+$planned=Invoke-NativeJarPhase 'plan' "--request-sha256 '$requestSha'"
+Require-NativeJar ($planned.status -ceq 'PLANNED' -and $planned.plan.sha256 -cmatch '^[a-f0-9]{64}$') 'No exact native JAR retirement plan was produced.'
+$applyFailed=$false
+try {$result=Invoke-NativeJarPhase 'apply' "--request-sha256 '$requestSha' --plan-sha256 '$($planned.plan.sha256)'"} catch {$applyFailed=$true}
+$observed=Invoke-NativeJarPhase 'inspect'
+foreach ($entry in @(@('capture','native-jar-duplicate-capture.json'),@('request','native-jar-duplicate-request.json'),@('plan','native-jar-duplicate-plan.json'),@('receipt','native-jar-duplicate-receipt.json'),@('journal','native-jar-duplicate-journal.jsonl'))) {
+    $property=$observed.files.PSObject.Properties[$entry[0]]
+    if ($null -eq $property) {continue}
+    $binding=$property.Value
+    Require-NativeJar ($binding.file -ceq $entry[1] -and $binding.bytes -gt 0 -and $binding.bytes -le 2MB -and $binding.sha256 -cmatch '^[a-f0-9]{64}$') 'Native JAR evidence escaped its bounded allowlist.'
+    $destinationFile=Join-Path $workspace ('artifacts/'+$entry[1]); Require-NativeJar (-not (Test-Path -LiteralPath $destinationFile)) 'Existing original evidence cannot be overwritten.'
+    $null=Invoke-NativeJar $scp ($SshOptions+@('-P',$PortText,"${Destination}:$RemoteRoot/inbox/$Tag/$($entry[1])",$destinationFile))
+    Assert-NativeJarPath $destinationFile
+    Require-NativeJar ((Get-Item -LiteralPath $destinationFile).Length -eq $binding.bytes -and (Get-FileHash -LiteralPath $destinationFile -Algorithm SHA256).Hash.ToLowerInvariant() -ceq $binding.sha256) 'Collected native JAR evidence changed.'
+}
+$receiptFile=Join-Path $workspace 'artifacts/native-jar-duplicate-receipt.json'
+Require-NativeJar (Test-Path -LiteralPath $receiptFile -PathType Leaf) 'Native JAR retirement lacks an actual server receipt.'
+$receipt=Get-Content -LiteralPath $receiptFile -Raw -Encoding utf8 | ConvertFrom-Json -Depth 20
+Require-NativeJar (-not $applyFailed -and $receipt.status -cin @('REMOVED','NO_ACTION') -and $receipt.current.release -ceq $Tag -and $receipt.current.commit -ceq $Commit -and $receipt.current.sourceSha256 -ceq $SourceSha256 -and $receipt.identity.instanceId -ceq $instance -and $receipt.identity.machineId -ceq $machine -and $receipt.requestSha256 -ceq $requestSha -and $receipt.planSha256 -ceq $planned.plan.sha256 -and $receipt.inboxKeepersPreserved -is [bool] -and $receipt.inboxKeepersPreserved) 'Native JAR retirement failed or has an unknown outcome; review the retained originals.'
+$summary=[ordered]@{schemaVersion=1;kind='doorhandle-failed-native-jar-duplicate-ci';current=$spec.current;identity=$spec.identity;status=$receipt.status;requestSha256=$requestSha;planSha256=$planned.plan.sha256;deletedFiles=@($receipt.deleted).Count;candidateAllocatedBytes=$planned.candidateAllocatedBytes;localControlCustody=$local.custody;localSkipped=$local.skipped;captureSkipped=$captured.skipped;planSkipped=$planned.skipped;availableBytesBefore=$receipt.availableBytesBefore;availableBytesAfter=$receipt.availableBytesAfter;inboxKeepersPreserved=$true;testsRunByRetirement=$false}
+$summary | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $workspace 'artifacts/native-jar-duplicate-ci.json') -Encoding utf8
+Write-Output ($summary | ConvertTo-Json -Depth 12 -Compress)

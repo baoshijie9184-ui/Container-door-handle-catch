@@ -104,6 +104,9 @@ def restore_clone(ctx, manifest_path, schema, context):
             and manifest['migrationContext'] == context and manifest['serverUuid'] == ctx.owner['serverUuid']
             and manifest['schema'] == ctx.owner['targetSchema'] and len(manifest['tables']) == 29,
             'Post-business backup is not bound to this exact runtime and server')
+    restoration_policy = m.snapshot_ddl_policy(manifest)
+    require(m.sha_json(m.snapshot_hash_payload(manifest)) == manifest['snapshotSha256'],
+            'Post-business backup snapshot or its explicit DDL policy digest differs')
     data = manifest_path.parent / manifest['data']['file']
     require(data.name == 'data.sql' and data.resolve(strict=True) == data and data.is_file()
             and data.stat().st_size == manifest['data']['bytes'] and digest(data) == manifest['data']['sha256'],
@@ -112,7 +115,9 @@ def restore_clone(ctx, manifest_path, schema, context):
     foreign = []
     for table in sorted(manifest['tables']):
         ddl = manifest['createTables'][table]
-        require(hashlib.sha256(m.normalize_self(ddl, manifest['schema']).encode()).hexdigest()
+        backed_up_ddl = m.ddl_policy.normalize_ddl(ddl, manifest['schema'], manifest['tables'][table]['columns'],
+                                                  policy=restoration_policy or m.ddl_policy.RAW_POLICY)
+        require(hashlib.sha256(backed_up_ddl.encode()).hexdigest()
                 == manifest['tables'][table]['ddlSha256'], 'Backed-up post-business DDL changed')
         ddl = m.normalize_self(ddl, manifest['schema'], schema)
         create, relations = m.remove_inline_foreign_keys(ddl, schema)
@@ -140,7 +145,7 @@ def restore_clone(ctx, manifest_path, schema, context):
         mysql.script('GRANT SELECT,TRIGGER ON ' + m.quoted(schema) + '.* TO ' + m.literal(user) + '@' + m.literal(host) + ';',
                      label='runtime-restore-definer')
     m.install_triggers(mysql, schema, manifest['schema'], manifest['triggers'])
-    snapshot = m.schema_snapshot(mysql, schema, manifest['tables'])
+    snapshot = m.schema_snapshot(mysql, schema, manifest['tables'], ddl_hash_policy=restoration_policy)
     _, meta = m.metadata_snapshot(mysql, schema)
     require(snapshot['snapshotSha256'] == manifest['snapshotSha256'] and meta == manifest['metadataSha256'],
             'The actual restored 29-table rows, NULLs, DDL, guards, foreign keys or high-water marks differ')

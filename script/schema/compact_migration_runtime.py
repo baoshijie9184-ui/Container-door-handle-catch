@@ -26,6 +26,7 @@ sys.path.insert(0, str(ROOT / 'scripts'))
 from ecs_execution import require_ecs_execution
 from build_compact_schema import GUARD_RESOURCES, compile_schema, split_top_level, without_comments
 import compact_clock_policy as clocks
+import compact_ddl_policy as ddl_policy
 
 IDENT = re.compile(r'[a-z][a-z0-9_]{0,63}\Z')
 UUID = re.compile(r'[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\Z')
@@ -34,6 +35,7 @@ WORKBENCH_SOURCES = {'agent_workbench_item', 'agent_workbench_request', 'agent_w
 MAX_PRIVATE_JSON = 16 * 1024 * 1024
 MAX_DUMP_BYTES = 4 * 1024 * 1024 * 1024
 MAX_QUERY_BYTES = 64 * 1024 * 1024
+STATS_EXPIRY_MARKER = b'doorhandle-stats-expiry-v1:0\n'
 MAX_KEYED_ROWS_PER_TABLE = 50_000
 MAX_KEYED_ROW_BYTES_PER_TABLE = 16 * 1024 * 1024
 MAX_KEYED_ROWS_TOTAL = 250_000
@@ -64,6 +66,26 @@ def canonical(value):
 
 def sha_json(value):
     return hashlib.sha256(canonical(value)).hexdigest()
+
+
+def snapshot_ddl_policy(snapshot):
+    """An absent marker is the original raw SHOW CREATE policy, never an alias."""
+    if 'ddlHashPolicy' not in snapshot:
+        return None
+    policy = snapshot['ddlHashPolicy']
+    require(policy in (ddl_policy.RAW_POLICY, ddl_policy.CANONICAL_POLICY), 'Unknown snapshot DDL hash policy')
+    return policy
+
+
+def snapshot_hash_payload(snapshot):
+    require(type(snapshot) is dict and type(snapshot.get('schemaVersion')) is int
+            and snapshot['schemaVersion'] == 1 and type(snapshot.get('tables')) is dict,
+            'Complete supported snapshot payload required')
+    policy = snapshot_ddl_policy(snapshot)
+    payload = {'schemaVersion': 1, 'tables': snapshot['tables']}
+    if policy is not None:
+        payload['ddlHashPolicy'] = policy
+    return payload
 
 
 def row_hash_expression(columns):
@@ -328,13 +350,21 @@ class Mysql:
             os.chmod(input_file, 0o600)
             target.write(prefix)
             target.write(b"SET SESSION time_zone='+00:00'; SET SESSION sql_mode='STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION,NO_AUTO_VALUE_ON_ZERO';\n")
+            # AUTO_INCREMENT and allocation statistics otherwise come from a
+            # potentially day-old INFORMATION_SCHEMA cache. Read the engine
+            # directly without ANALYZE or changing global/source statistics.
+            target.write(b"SET SESSION information_schema_stats_expiry=0;\n"
+                         b"SELECT CONCAT('doorhandle-stats-expiry-v1:',@@SESSION.information_schema_stats_expiry);\n")
             target.write(body)
         with input_file.open('rb') as source, out_file.open('xb') as stdout, err_file.open('xb') as stderr:
             os.chmod(out_file, 0o600); os.chmod(err_file, 0o600)
             process = subprocess.run(command, stdin=source, stdout=stdout, stderr=stderr, env=self.environment(), timeout=timeout)
         require(process.returncode == 0, 'MySQL operation failed; private operation evidence retained: ' + key)
-        require(out_file.stat().st_size <= MAX_QUERY_BYTES, 'MySQL response exceeds the bounded query size')
-        return out_file.read_bytes()
+        require(out_file.stat().st_size <= MAX_QUERY_BYTES + len(STATS_EXPIRY_MARKER), 'MySQL response exceeds the bounded query size')
+        response = out_file.read_bytes()
+        require(response.startswith(STATS_EXPIRY_MARKER),
+                'The same MySQL query session did not verify uncached engine statistics')
+        return response[len(STATS_EXPIRY_MARKER):]
 
     def json_rows(self, sql, *, database=None):
         return [json.loads(line) for line in self.script(sql, database=database, label='catalog').splitlines() if line]
@@ -513,8 +543,11 @@ def show_create(mysql, schema, table):
     return raw.split('\t', 1)[1].rstrip('\r\n')
 
 
-def schema_snapshot(mysql, schema, expected_tables, *, keyed_rows_directory=None):
+def schema_snapshot(mysql, schema, expected_tables, *, keyed_rows_directory=None,
+                    ddl_hash_policy=ddl_policy.CANONICAL_POLICY):
     """Every ordinary/generated column, all rows, keys, DDL, clocks and high-water marks."""
+    require(ddl_hash_policy is None or ddl_hash_policy in (ddl_policy.RAW_POLICY, ddl_policy.CANONICAL_POLICY),
+            'Unknown snapshot DDL hash policy')
     actual = schema_tables(mysql, schema)
     require({row['name'] for row in actual} == set(expected_tables), 'Actual complete table catalog differs from the admitted schema')
     keyed_directory = None
@@ -558,11 +591,23 @@ def schema_snapshot(mysql, schema, expected_tables, *, keyed_rows_directory=None
                                  'primary': primary, **inventory}
         sequence = mysql.single("SELECT JSON_OBJECT('autoIncrement',CAST(AUTO_INCREMENT AS CHAR)) FROM information_schema.tables WHERE " + where + ';')
         ddl = show_create(mysql, schema, name)
+        actual_high_water = ddl_policy.table_auto_increment(ddl, columns)
+        if sequence.get('autoIncrement') != actual_high_water:
+            write_json(mysql.output / 'private' / ('snapshot-high-water-' + schema + '-' + name + '-' + uuid.uuid4().hex + '.json'), {
+                'schemaVersion': 1, 'kind': 'doorhandle-snapshot-high-water-mismatch', 'schema': schema, 'table': name,
+                'catalogAutoIncrement': sequence.get('autoIncrement'), 'showCreateAutoIncrement': actual_high_water,
+                'actualRowCount': count, 'ddlHashPolicy': ddl_hash_policy,
+                'showCreateSha256': hashlib.sha256(ddl.encode('utf8')).hexdigest(), 'businessRowValuesIncluded': False})
+        require(sequence.get('autoIncrement') == actual_high_water,
+                'Fresh AUTO_INCREMENT statistics and the same snapshot SHOW CREATE high water differ')
+        ddl_normalized = ddl_policy.normalize_ddl(ddl, schema, columns, policy=ddl_hash_policy or ddl_policy.RAW_POLICY)
         result[name] = {'rows': count, 'rowsSha256': row_sha, 'autoIncrement': sequence['autoIncrement'],
                         'columns': columns, 'indexes': indexes, 'collation': row['collation'],
-                        'ddl': ddl, 'ddlSha256': hashlib.sha256(normalize_self(ddl, schema).encode('utf8')).hexdigest()}
+                        'ddl': ddl, 'ddlSha256': hashlib.sha256(ddl_normalized.encode('utf8')).hexdigest()}
     payload = {'schemaVersion': 1, 'tables': {name: {key: value for key, value in detail.items() if key != 'ddl'}
                                            for name, detail in result.items()}}
+    if ddl_hash_policy is not None:
+        payload['ddlHashPolicy'] = ddl_hash_policy
     snapshot = {'schema': schema, 'snapshotSha256': sha_json(payload), **payload,
                 'createTables': {name: row['ddl'] for name, row in result.items()}}
     if keyed_directory is not None:
@@ -841,6 +886,9 @@ def install_triggers(mysql, schema, original_schema, triggers):
 
 
 def backup_schema(mysql, snapshot, path, *, purpose, migration_context):
+    policy = snapshot_ddl_policy(snapshot)
+    require(sha_json(snapshot_hash_payload(snapshot)) == snapshot['snapshotSha256'],
+            'Backup snapshot or its DDL policy binding differs')
     path.mkdir(mode=0o700)
     data = mysql.data_dump(snapshot['schema'], snapshot['tables'], path / 'data.sql')
     meta, meta_sha = metadata_snapshot(mysql, snapshot['schema'])
@@ -851,6 +899,8 @@ def backup_schema(mysql, snapshot, path, *, purpose, migration_context):
                 'triggers': trigger_catalog(mysql, snapshot['schema']),
                 'data': {'file': 'data.sql', 'sha256': data['sha256'], 'bytes': data['bytes']},
                 'migrationContext': migration_context}
+    if policy is not None:
+        manifest['ddlHashPolicy'] = policy
     write_json(path / 'manifest.json', manifest)
     return path / 'manifest.json'
 
@@ -906,6 +956,9 @@ def restore_backup(mysql, backup_file, restore_schema, output, evidence_file):
     evidence_file, evidence, evidence_sha = private_json(evidence_file)
     require(manifest.get('kind') == 'doorhandle-mysql-private-backup' and manifest.get('schemaVersion') == 1
             and manifest.get('serverUuid') == mysql.config['serverUuid'], 'Backup identity differs')
+    restoration_policy = snapshot_ddl_policy(manifest)
+    require(sha_json(snapshot_hash_payload(manifest)) == manifest['snapshotSha256'],
+            'Backup complete snapshot and its explicit DDL policy digest differ')
     require(evidence.get('kind') == 'doorhandle-compact-migration-evidence' and evidence.get('status') == 'COPY_VERIFIED',
             'Recovery must bind a completed, verified copy evidence file')
     require(manifest['migrationContext'] == evidence['migrationContext'], 'Backup belongs to another migration attempt')
@@ -922,7 +975,9 @@ def restore_backup(mysql, backup_file, restore_schema, output, evidence_file):
     foreign = []
     for table in sorted(manifest['tables']):
         ddl = manifest['createTables'][table]
-        require(hashlib.sha256(normalize_self(ddl, manifest['schema']).encode('utf8')).hexdigest()
+        backed_up_ddl = ddl_policy.normalize_ddl(ddl, manifest['schema'], manifest['tables'][table]['columns'],
+                                                policy=restoration_policy or ddl_policy.RAW_POLICY)
+        require(hashlib.sha256(backed_up_ddl.encode('utf8')).hexdigest()
                 == manifest['tables'][table]['ddlSha256'], 'Backed-up DDL checksum differs')
         ddl = normalize_self(ddl, manifest['schema'], restore_schema)
         create, relations = remove_inline_foreign_keys(ddl, restore_schema)
@@ -937,7 +992,9 @@ def restore_backup(mysql, backup_file, restore_schema, output, evidence_file):
                          database=restore_schema, label='restore-sequence')
     install_relations(mysql, restore_schema, foreign)
     install_triggers(mysql, restore_schema, manifest['schema'], manifest['triggers'])
-    observed = schema_snapshot(mysql, restore_schema, manifest['tables'])
+    # Old unmarked backups retain raw DDL interpretation. Never recompute their
+    # expected digest using a newer policy or alter their original receipt.
+    observed = schema_snapshot(mysql, restore_schema, manifest['tables'], ddl_hash_policy=restoration_policy)
     _, metadata_sha = metadata_snapshot(mysql, restore_schema)
     require(observed['snapshotSha256'] == expected and metadata_sha == manifest['metadataSha256'],
             'The full restored rows, columns, DDL, indexes, triggers or high-water marks differ')
@@ -1003,7 +1060,7 @@ def validate_migration_receipt(path, expected_context=None):
         require(isinstance(snapshot, dict) and snapshot.get('schemaVersion') == 1
                 and snapshot.get('schema') == value[purpose + 'Schema'] and isinstance(snapshot.get('tables'), dict)
                 and len(snapshot['tables']) == (131 if purpose == 'source' else 29)
-                and sha_json({'schemaVersion': 1, 'tables': snapshot['tables']}) == value[purpose + 'SnapshotSha256']
+                and sha_json(snapshot_hash_payload(snapshot)) == value[purpose + 'SnapshotSha256']
                 and snapshot.get('snapshotSha256') == value[purpose + 'SnapshotSha256'],
                 'The migration full table/column/row snapshot is incomplete or changed')
         proof = receipt_member(path.parent, value['recovery'][purpose])
