@@ -445,6 +445,31 @@ class PreparationMonitor:
                 'stderrBytes': len(stderr), 'stderrSha256': hashlib.sha256(stderr).hexdigest(),
                 'stderrMentionsMissingPath': b'No such file or directory' in stderr}
 
+    def _retain_du_diagnostics(self, attempts, raw_attempts):
+        """Retain bounded failed-measurement bytes privately, after du has ended.
+
+        Direct exclusive writes avoid introducing atomic JSON temporary names
+        while du traverses this attempt. Only relative references enter reports.
+        """
+        require(len(attempts) == len(raw_attempts) <= 6, 'Bounded failed du diagnostics required')
+        folder = canonical(self.preparation.work / 'private'); info = folder.stat()
+        require(folder.is_dir() and info.st_uid == os.getuid() and not info.st_mode & 0o077,
+                'Private owned du diagnostics directory required')
+        prefix = 'du-failure-' + secrets.token_hex(6); references = []
+        for index, (metadata, raw) in enumerate(zip(attempts, raw_attempts), 1):
+            row = {'attempt': index}
+            for field, maximum in (('stdout', 4096), ('stderr', 65536)):
+                body = raw[field][:maximum]; path = folder / (prefix + '-' + str(index) + '.' + field)
+                with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600), 'wb') as stream:
+                    stream.write(body); stream.flush(); os.fsync(stream.fileno())
+                row[field] = {'file': 'private/' + path.name, 'bytes': len(body),
+                              'sha256': hashlib.sha256(body).hexdigest(), 'truncated': len(body) < metadata[field + 'Bytes']}
+            references.append(row)
+        descriptor = os.open(folder, os.O_DIRECTORY | os.O_RDONLY | os.O_NOFOLLOW)
+        try: os.fsync(descriptor)
+        finally: os.close(descriptor)
+        return references
+
     def measure(self):
         with self.measure_lock:
             self.du_failure = None
@@ -452,9 +477,14 @@ class PreparationMonitor:
             started = time.monotonic(); native_deadline = started + 1.2; outer_deadline = started + 2
             self.active_measurement = {'stage': 'physicalAllocation', 'started': started,
                 'stageStarted': started, 'timingsSeconds': {}}
-            attempts = []
+            attempts, raw_attempts = [], []
+            def remember(exit_code, attempt_started, stdout, stderr):
+                attempts.append(self._du_attempt_metadata(exit_code, attempt_started, stdout, stderr))
+                raw_attempts.append({'stdout': stdout[:4096] if isinstance(stdout, bytes) else b'',
+                                     'stderr': stderr[:65536] if isinstance(stderr, bytes) else b''})
             try:
-                for index in range(2):
+                for index in range(6):
+                    require(not self.failed.is_set() and not self.stop.is_set(), 'Owned allocation measurement was cancelled')
                     current = time.monotonic()
                     remaining, outer_remaining = native_deadline - current, outer_deadline - current
                     duration = format(remaining, '.9f')
@@ -471,12 +501,16 @@ class PreparationMonitor:
                             capture_output=True, timeout=outer_remaining,
                             env={'PATH': os.environ.get('PATH', ''), 'LC_ALL': 'C'})
                     except (OSError, subprocess.TimeoutExpired) as error:
-                        attempts.append(self._du_attempt_metadata(None, attempt_started,
-                            getattr(error, 'stdout', None), getattr(error, 'stderr', None)))
+                        remember(None, attempt_started, getattr(error, 'stdout', None), getattr(error, 'stderr', None))
                         raise
-                    attempts.append(self._du_attempt_metadata(result.returncode, attempt_started, result.stdout, result.stderr))
-                    if (index == 0 and result.returncode == 1 and time.monotonic() < native_deadline
+                    remember(result.returncode, attempt_started, result.stdout, result.stderr)
+                    require(not self.failed.is_set() and not self.stop.is_set(), 'Owned allocation measurement was cancelled')
+                    if (index < 5 and result.returncode == 1
                             and not self.failed.is_set() and not self.stop.is_set()):
+                        current = time.monotonic()
+                        require(native_deadline - current > 0.05 and outer_deadline - current > 0.05,
+                                'Owned physical allocation measurement exceeded its deadline')
+                        time.sleep(0.05)
                         continue
                     require(result.returncode == 0 and len(result.stdout) < 4096,
                             'Owned physical allocation measurement failed or exceeded its deadline')
@@ -487,8 +521,15 @@ class PreparationMonitor:
                             'Owned physical allocation measurement exceeded its deadline')
                     break
             except Exception as error:
-                self.du_failure = (error, {'attempts': attempts})
+                details = {'attempts': attempts}
+                self.du_failure = (error, details)
                 self.active_measurement = None
+                try:
+                    details['privateDiagnostics'] = self._retain_du_diagnostics(attempts, raw_attempts)
+                except Exception as diagnostic_error:
+                    # Keep the original measurement failure and never substitute
+                    # a diagnostic write failure or its potentially private text.
+                    details['privateDiagnosticsError'] = type(diagnostic_error).__name__
                 raise
             self.du_failure = None
             timings = {'du': max(0, time.monotonic() - started)}

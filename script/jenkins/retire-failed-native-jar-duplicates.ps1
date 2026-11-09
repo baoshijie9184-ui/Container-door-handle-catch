@@ -48,7 +48,7 @@ Require-NativeJar ([IO.Path]::IsPathFullyQualified($RetainedControlRoot) -and [I
 
 # Stdlib byte/metadata inspection only. No project module, DB, application or
 # test is imported or run on the workstation. D evidence is pinned to original
-# preservation manifests reviewed for these eleven exact historical attempts.
+# preservation manifests reviewed for these twelve exact historical attempts.
 $reader=@'
 import gzip,hashlib,json,os,stat,sys,tarfile
 from pathlib import Path
@@ -78,7 +78,8 @@ approved=[(117,'8c898996cc28ce30fd6531710511f833cccb4864','e1eec611a0dcbb93158d8
  (141,'56da3c4f780055e4f1f1ae835888189e85807bec','c00b42067d0b6786e1daaad88c57570ecab0a14901c31cbc0ddea44e30bba9bc'),
  (143,'f4b5c8d9e39bfe621c97fb1d9e82aea667bab08f','032b3ae99967219534fe34131be8f8af7c6acd133ec61238d0cf005c3a9b8afa'),
  (145,'dd85b09748a996f68e909fa54bc9412110e78134','372c5f0713c02051be0f5c9bcd2179e805a39e1c0aea4d96a3e1aee88fe9dac4'),
- (154,'38293aa306b368964bbc2a7f66bb6a6b5c414016','ba9dccb622fd030ae877b861ac53b1006b6021ecfcd7f247f4d51d30b72cd76e')]
+ (154,'38293aa306b368964bbc2a7f66bb6a6b5c414016','ba9dccb622fd030ae877b861ac53b1006b6021ecfcd7f247f4d51d30b72cd76e'),
+ (156,'9e1927880595e78c778288e45423bdd27bd818a8','f1acdd4775932c06ca2bcb0aa548b6074083ca80d45f83d5d300ef924158640c')]
 helpers={};wanted={'script/jenkins/retire-failed-native-jar-duplicates.py','script/jenkins/cleanup-ecs-builds.py','script/jenkins/verify-remote.py','script/docker/compact-build-resources.py'}
 class Bounded:
  def __init__(self,s):self.s,self.n=s,0
@@ -232,7 +233,7 @@ $requestSha=$captured.request.sha256
 $builderPlanned=Invoke-NativeJarPhase 'plan-builders' "--request-sha256 '$requestSha'"
 Require-NativeJar ($builderPlanned.status -ceq 'PLANNED' -and $builderPlanned.plan.sha256 -cmatch '^[a-f0-9]{64}$') 'No exact historical builder retirement plan was produced.'
 function Copy-NativeJarEvidence($Observed) {
-    foreach ($entry in @(@('capture','native-jar-duplicate-capture.json'),@('request','native-jar-duplicate-request.json'),@('plan','native-jar-duplicate-plan.json'),@('receipt','native-jar-duplicate-receipt.json'),@('journal','native-jar-duplicate-journal.jsonl'),@('builderPlan','native-builder-retirement-plan.json'),@('builderReceipt','native-builder-retirement-receipt.json'),@('builderJournal','native-builder-retirement-journal.jsonl'))) {
+    foreach ($entry in @(@('capture','native-jar-duplicate-capture.json'),@('request','native-jar-duplicate-request.json'),@('plan','native-jar-duplicate-plan.json'),@('receipt','native-jar-duplicate-receipt.json'),@('journal','native-jar-duplicate-journal.jsonl'),@('builderPlan','native-builder-retirement-plan.json'),@('builderReceipt','native-builder-retirement-receipt.json'),@('builderJournal','native-builder-retirement-journal.jsonl'),@('publicLayerPlan','native-public-layer-duplicate-plan.json'),@('publicLayerReceipt','native-public-layer-duplicate-receipt.json'),@('publicLayerJournal','native-public-layer-duplicate-journal.jsonl'))) {
         $property=$Observed.files.PSObject.Properties[$entry[0]]
         if ($null -eq $property) {continue}
         $binding=$property.Value
@@ -258,6 +259,14 @@ try {
 }
 $applyFailed=$false
 try {$result=Invoke-NativeJarPhase 'apply' "--request-sha256 '$requestSha' --plan-sha256 '$($planned.plan.sha256)'"} catch {$applyFailed=$true}
+$publicLayerFailed=$false; $publicLayerPlanned=$null
+if (-not $applyFailed) {
+    try {
+        $publicLayerPlanned=Invoke-NativeJarPhase 'plan-public-layers' "--request-sha256 '$requestSha'"
+        Require-NativeJar ($publicLayerPlanned.status -ceq 'PLANNED' -and $publicLayerPlanned.plan.sha256 -cmatch '^[a-f0-9]{64}$') 'No exact public BuildKit layer plan was produced.'
+        $publicLayerResult=Invoke-NativeJarPhase 'apply-public-layers' "--request-sha256 '$requestSha' --plan-sha256 '$($publicLayerPlanned.plan.sha256)'"
+    } catch {$publicLayerFailed=$true}
+}
 $observed=Invoke-NativeJarPhase 'inspect'
 Copy-NativeJarEvidence $observed
 $builderReceiptFile=Join-Path $workspace 'artifacts/native-builder-retirement-receipt.json'
@@ -268,6 +277,20 @@ $receiptFile=Join-Path $workspace 'artifacts/native-jar-duplicate-receipt.json'
 Require-NativeJar (Test-Path -LiteralPath $receiptFile -PathType Leaf) 'Native JAR retirement lacks an actual server receipt.'
 $receipt=Get-Content -LiteralPath $receiptFile -Raw -Encoding utf8 | ConvertFrom-Json -Depth 20
 Require-NativeJar (-not $applyFailed -and $receipt.status -cin @('REMOVED','NO_ACTION') -and $receipt.current.release -ceq $Tag -and $receipt.current.commit -ceq $Commit -and $receipt.current.sourceSha256 -ceq $SourceSha256 -and $receipt.identity.instanceId -ceq $instance -and $receipt.identity.machineId -ceq $machine -and $receipt.requestSha256 -ceq $requestSha -and $receipt.planSha256 -ceq $planned.plan.sha256 -and $receipt.inboxKeepersPreserved -is [bool] -and $receipt.inboxKeepersPreserved) 'Native JAR retirement failed or has an unknown outcome; review the retained originals.'
+$publicLayerReceiptFile=Join-Path $workspace 'artifacts/native-public-layer-duplicate-receipt.json'
+Require-NativeJar (-not $publicLayerFailed -and $null -ne $publicLayerPlanned -and (Test-Path -LiteralPath $publicLayerReceiptFile -PathType Leaf)) 'Public BuildKit layer retirement failed or is unknown; original controls were collected.'
+$publicLayerReceipt=Get-Content -LiteralPath $publicLayerReceiptFile -Raw -Encoding utf8 | ConvertFrom-Json -Depth 24
+Require-NativeJar ($publicLayerReceipt.status -cin @('REMOVED','NO_ACTION') -and $publicLayerReceipt.current.release -ceq $Tag -and $publicLayerReceipt.current.commit -ceq $Commit -and $publicLayerReceipt.current.sourceSha256 -ceq $SourceSha256 -and $publicLayerReceipt.identity.instanceId -ceq $instance -and $publicLayerReceipt.identity.machineId -ceq $machine -and $publicLayerReceipt.requestSha256 -ceq $requestSha -and $publicLayerReceipt.planSha256 -ceq $publicLayerPlanned.plan.sha256 -and $publicLayerReceipt.upstreamTarAndKeeper117Preserved -eq $true -and $publicLayerReceipt.directoriesImagesAndBusinessDataPreserved -eq $true -and $publicLayerReceipt.testsRunByRetirement -eq $false) 'Public layer retirement lacks exact source, host, plan or preservation evidence.'
 $summary=[ordered]@{schemaVersion=1;kind='doorhandle-failed-native-jar-duplicate-ci';current=$spec.current;identity=$spec.identity;status=$receipt.status;requestSha256=$requestSha;planSha256=$planned.plan.sha256;deletedFiles=@($receipt.deleted).Count;candidateAllocatedBytes=$planned.candidateAllocatedBytes;localControlCustody=$local.custody;localSkipped=$local.skipped;captureSkipped=$captured.skipped;planSkipped=$planned.skipped;builderStatus=$builderReceipt.status;retiredBuilders=@($builderReceipt.removed).Count;retiredMysqlObjects=@($builderReceipt.retiredMysqlObjects).Count;mysqlDataDirectoriesPreserved=$true;builderSkipped=$builderReceipt.skipped;builderPlanSha256=$builderPlanned.plan.sha256;availableBytesBefore=$receipt.availableBytesBefore;availableBytesAfter=$receipt.availableBytesAfter;inboxKeepersPreserved=$true;imagesPreserved=$true;volumesPreserved=$true;testsRunByRetirement=$false}
+$summary.publicLayerStatus=$publicLayerReceipt.status
+$summary.publicLayerDeletedFiles=@($publicLayerReceipt.deleted).Count
+$summary.publicLayerDeletedBytes=[long](@($publicLayerReceipt.deleted) | Measure-Object -Property bytes -Sum).Sum
+$summary.publicLayerDeletedAllocatedBytes=[long](@($publicLayerReceipt.deleted) | Measure-Object -Property allocatedBytes -Sum).Sum
+$summary.publicLayerCandidateAllocatedBytes=$publicLayerPlanned.candidateAllocatedBytes
+$summary.publicLayerPlanSha256=$publicLayerPlanned.plan.sha256
+$summary.publicLayerSkipped=$publicLayerReceipt.skipped
+$summary.upstreamTarAndKeeper117Preserved=$true
+$summary.availableBytesAfter=$publicLayerReceipt.availableBytesAfter
+$summary.status=if ($receipt.status -ceq 'REMOVED' -or $publicLayerReceipt.status -ceq 'REMOVED') {'REMOVED'} else {'NO_ACTION'}
 $summary | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $workspace 'artifacts/native-jar-duplicate-ci.json') -Encoding utf8
 Write-Output ($summary | ConvertTo-Json -Depth 12 -Compress)

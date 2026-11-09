@@ -39,6 +39,25 @@ OPTIONAL_CONTROLS = {'localBuild', 'fixtureCleanupPublic'}
 UPLOADED_NAMES = {'buildXml': 'build.xml', 'release': 'release.json', 'localBuild': 'local-build.json',
                   'fixtureCleanupPublic': 'fixture-cleanup.json'}
 KIND = 'doorhandle-failed-native-jar-duplicate'
+JAR_COPY_KIND = 'FAILED_NATIVE_CANDIDATE_JAR_COPY'
+PUBLIC_LAYER_KIND = 'FAILED_NATIVE_PUBLIC_BUILDKIT_LAYER_COPY'
+PUBLIC_LAYER_KEEPER = 'ci-117-8c898996cc28'
+# A separate, closed set: adding another historical JAR does not authorize
+# deleting any of its public tool files.
+PUBLIC_LAYER_TAGS = frozenset((
+    'ci-117-8c898996cc28', 'ci-118-6481f7fa6021', 'ci-130-9a588271dadb',
+    'ci-132-69f2ef0fb309', 'ci-134-df30e17036de', 'ci-137-facc2ed94047',
+    'ci-139-384439388a8c', 'ci-141-56da3c4f7800', 'ci-143-f4b5c8d9e39b',
+    'ci-145-dd85b09748a9', 'ci-154-38293aa306b3', 'ci-156-9e1927880595'))
+PUBLIC_LAYERS = {
+    '4aa1a2a1517cd8ba9f5afb587e3c14ec7d2d8bd815bdc3fc78399136e481960c': 12178906,
+    '5e9b4a97f6395abf54a5c584be133078deb2295e280dd0b9e77638874d07b637': 3852227,
+    'd27f550f8c61406359cf1cdfcf92148f25f78420785f1bb168998a793201ab05': 93368900,
+    'ee5a8219dd90c7f5048bc9378431acfe6b8863dadf3620acc1d171d7033484b9': 10466584,
+}
+PUBLIC_ARCHIVE_SHA = 'f706cb2289c61a04311882a3abbba15d56928a91d3fe9e13b96e1a8d44f378c8'
+PUBLIC_ARCHIVE_BYTES = 119889920
+PUBLIC_KIND = 'doorhandle-failed-native-public-layer-duplicate'
 APPROVED_OLD = {
     'ci-117-8c898996cc28': '8c898996cc28ce30fd6531710511f833cccb4864',
     'ci-118-6481f7fa6021': '6481f7fa6021eb36592a081d04f385886c03412a',
@@ -51,6 +70,7 @@ APPROVED_OLD = {
     'ci-143-f4b5c8d9e39b': 'f4b5c8d9e39bfe621c97fb1d9e82aea667bab08f',
     'ci-145-dd85b09748a9': 'dd85b09748a996f68e909fa54bc9412110e78134',
     'ci-154-38293aa306b3': '38293aa306b368964bbc2a7f66bb6a6b5c414016',
+    'ci-156-9e1927880595': '9e1927880595e78c778288e45423bdd27bd818a8',
 }
 # Original tool bytes recorded by the retained Jenkins preparation receipts.
 # These values authenticate the owner chain; matching self-described fields
@@ -67,6 +87,7 @@ APPROVED_BUILDER_TOOLS = {
     'ci-143-f4b5c8d9e39b': '74d9b97fbaaa8d5af0cea2d3cfa32df7b5f831e392bcca39340eac02d46cac04',
     'ci-145-dd85b09748a9': '7e55b094d7b558fd66d299a6c872749d6cb87071b50bb031ce2a5d71d03283d4',
     'ci-154-38293aa306b3': 'eb0d82fc9983279390d467849029786648a1dbceda53371924e3894232e25c27',
+    'ci-156-9e1927880595': '8ef758580e6ef99418a040ff902b69836ed48c6968da6716da535ddf61d914a4',
 }
 
 
@@ -223,24 +244,32 @@ def hash_stream(stream, maximum=MAX_JAR):
     return checksum.hexdigest()
 
 
-def duplicate_paths(root, tag):
+def duplicate_paths(root, tag, *, kind=JAR_COPY_KIND, blob_sha=None):
     need(type(tag) is str and TAG.fullmatch(tag), 'EXACT_OLD_TAG_REQUIRED')
     root = Path(root)
+    if kind == PUBLIC_LAYER_KIND:
+        need(tag in PUBLIC_LAYER_TAGS and tag != PUBLIC_LAYER_KEEPER and blob_sha in PUBLIC_LAYERS,
+             'ONLY_FIXED_PUBLIC_LAYER_COPIES_HAVE_A_DELETION_API')
+        suffix = Path('candidate-build-tools/official-oci/blobs/sha256') / blob_sha
+        return root / 'inbox' / tag / suffix, root / 'inbox' / PUBLIC_LAYER_KEEPER / suffix
+    need(kind == JAR_COPY_KIND and blob_sha is None, 'EXACT_DUPLICATE_KIND_REQUIRED')
     return (root / 'verification' / tag / 'checkout/work/compact-fixtures/candidate-app.jar',
             root / 'inbox' / tag / 'application.jar')
 
 
-def describe_duplicate(root, tag, jar_sha, jar_bytes):
+def describe_duplicate(root, tag, jar_sha, jar_bytes, *, kind=JAR_COPY_KIND):
     need(type(jar_sha) is str and SHA.fullmatch(jar_sha) and type(jar_bytes) is int and 0 < jar_bytes <= MAX_JAR,
          'EXACT_DECLARED_JAR_REQUIRED')
-    root = Path(root); target, keeper = duplicate_paths(root, tag)
+    need(kind != PUBLIC_LAYER_KIND or PUBLIC_LAYERS.get(jar_sha) == jar_bytes, 'EXACT_FIXED_PUBLIC_LAYER_REQUIRED')
+    root = Path(root); target, keeper = duplicate_paths(root, tag, kind=kind,
+        blob_sha=jar_sha if kind == PUBLIC_LAYER_KIND else None)
     need(target.exists() or target.is_symlink(), 'EXACT_CANDIDATE_COPY_MISSING')
     need(keeper.exists() or keeper.is_symlink(), 'EXACT_ECS_KEEPER_MISSING')
     with held_file(root, target, MAX_JAR) as (target_stream, target_info), held_file(root, keeper, MAX_JAR) as (keeper_stream, keeper_info):
         need(target_info[:2] != keeper_info[:2] and target_info[0] == keeper_info[0]
              and target_info[6] == keeper_info[6] == jar_bytes, 'INDEPENDENT_SAME_SIZE_DUPLICATE_REQUIRED')
         need(hash_stream(target_stream) == hash_stream(keeper_stream) == jar_sha, 'ACTUAL_KEEPER_BYTES_MUST_EQUAL_TARGET')
-        return {'kind': 'FAILED_NATIVE_CANDIDATE_JAR_COPY', 'release': tag,
+        return {'kind': kind, 'release': tag,
             'path': target.relative_to(root).as_posix(), 'metadata': target_info, 'sha256': jar_sha, 'bytes': jar_bytes,
             'allocatedBytes': target_info[9], 'keeper': {'path': keeper.relative_to(root).as_posix(),
                 'metadata': keeper_info, 'sha256': jar_sha, 'bytes': jar_bytes}}
@@ -297,12 +326,15 @@ def remove_duplicate(root, descriptor, quarantine=None):
     automatically moved back over a possibly new original path.
     """
     need(type(descriptor) is dict and set(descriptor) == {'kind', 'release', 'path', 'metadata', 'sha256', 'bytes', 'allocatedBytes', 'keeper'}
-         and descriptor['kind'] == 'FAILED_NATIVE_CANDIDATE_JAR_COPY', 'EXACT_SINGLE_FILE_DESCRIPTOR_REQUIRED')
-    root = Path(root); target, keeper = duplicate_paths(root, descriptor['release'])
+         and descriptor['kind'] in (JAR_COPY_KIND, PUBLIC_LAYER_KIND), 'EXACT_SINGLE_FILE_DESCRIPTOR_REQUIRED')
+    kind = descriptor['kind']
+    root = Path(root); target, keeper = duplicate_paths(root, descriptor['release'], kind=kind,
+        blob_sha=descriptor['sha256'] if kind == PUBLIC_LAYER_KIND else None)
     need(descriptor['path'] == target.relative_to(root).as_posix() and type(descriptor['keeper']) is dict
          and set(descriptor['keeper']) == {'path', 'metadata', 'sha256', 'bytes'}
          and descriptor['keeper']['path'] == keeper.relative_to(root).as_posix(), 'INBOX_KEEPER_HAS_NO_DELETION_API')
-    need(describe_duplicate(root, descriptor['release'], descriptor['sha256'], descriptor['bytes']) == descriptor,
+    need(describe_duplicate(root, descriptor['release'], descriptor['sha256'], descriptor['bytes'], **(
+        {'kind': kind} if kind != JAR_COPY_KIND else {})) == descriptor,
          'DUPLICATE_CHANGED_AFTER_PLAN')
     quarantine=reserve_quarantine(root) if quarantine is None else quarantine
     need(type(quarantine) is dict and set(quarantine)=={'directory','path','directoryIdentity'}, 'EXACT_PRIVATE_QUARANTINE_REQUIRED')
@@ -610,6 +642,188 @@ def apply(root, raw_request, prepared_plan, *, request_sha256, plan_sha256, expe
             'journalSha256': digest_bytes(journal_path.read_bytes()),
             'availableBytesBefore': before.f_bavail * before.f_frsize, 'availableBytesAfter': after.f_bavail * after.f_frsize,
             'inboxKeepersPreserved': failure is None, 'sourceArchivesDataAndReportsHaveNoDeletionApi': True}
+
+
+@contextmanager
+def held_public_layer_archive(root):
+    """Authenticate the public upstream tar without extracting or deleting it."""
+    root = Path(root)
+    path = root / 'build-inputs/buildkit-v0.34.2' / (PUBLIC_ARCHIVE_SHA + '.tar')
+    with held_file(root, path, PUBLIC_ARCHIVE_BYTES) as (stream, signature):
+        need(signature[6] == PUBLIC_ARCHIVE_BYTES and hash_stream(stream, PUBLIC_ARCHIVE_BYTES) == PUBLIC_ARCHIVE_SHA,
+             'EXACT_PUBLIC_UPSTREAM_ARCHIVE_REQUIRED')
+        stream.seek(0); seen, layers, total = set(), {}, 0
+        with tarfile.open(fileobj=stream, mode='r:') as archive:
+            for member in archive:
+                name = Path(member.name); total += member.size
+                need(len(seen) < 256 and member.name not in seen and member.isfile()
+                     and not name.is_absolute() and '..' not in name.parts and '\\' not in member.name
+                     and name.as_posix() == member.name and 0 <= member.size <= PUBLIC_ARCHIVE_BYTES
+                     and total <= PUBLIC_ARCHIVE_BYTES, 'BOUNDED_REGULAR_PUBLIC_ARCHIVE_MEMBERS_REQUIRED')
+                seen.add(member.name)
+                if len(name.parts) != 3 or name.parts[:2] != ('blobs', 'sha256') or name.name not in PUBLIC_LAYERS:
+                    continue
+                need(member.size == PUBLIC_LAYERS[name.name], 'PUBLIC_LAYER_TAR_SIZE_CHANGED')
+                checksum = hashlib.sha256(); count = 0
+                with archive.extractfile(member) as layer:
+                    for block in iter(lambda: layer.read(1024 * 1024), b''):
+                        count += len(block); need(count <= member.size, 'PUBLIC_LAYER_TAR_BYTE_LIMIT'); checksum.update(block)
+                need(count == member.size and checksum.hexdigest() == name.name, 'PUBLIC_LAYER_TAR_BYTES_CHANGED')
+                layers[name.name] = member.size
+        need(layers == PUBLIC_LAYERS, 'ALL_FOUR_PUBLIC_UPSTREAM_LAYERS_REQUIRED')
+        proof = {'path': path.relative_to(root).as_posix(), 'metadata': signature,
+                 'sha256': PUBLIC_ARCHIVE_SHA, 'bytes': PUBLIC_ARCHIVE_BYTES,
+                 'layers': [{'sha256': sha, 'bytes': size} for sha, size in sorted(layers.items())]}
+        yield proof
+        need(hash_stream(stream, PUBLIC_ARCHIVE_BYTES) == PUBLIC_ARCHIVE_SHA, 'PUBLIC_UPSTREAM_ARCHIVE_CHANGED_AFTER_ACTION')
+
+
+def public_layer_archive(root):
+    with held_public_layer_archive(root) as proof:
+        return proof
+
+
+def admit_public_layer_attempt(root, request, row, quiescence):
+    tag = row['release']
+    need(tag in PUBLIC_LAYER_TAGS and APPROVED_OLD.get(tag) == row['commit'], 'FIXED_PUBLIC_LAYER_ATTEMPT_REQUIRED')
+    admitted = admit_historical_controls(root, request, row)
+    need(callable(quiescence) and quiescence(Path(root) / 'verification' / tag / 'checkout', tag,
+         admitted['evidence']['ownerToken']) is None, 'STRICT_PUBLIC_LAYER_QUIESCENCE_REQUIRED')
+    tools = Path(root) / 'inbox' / tag / 'candidate-build-tools/tools.json'
+    with held_file(root, tools, MAX_CONTROL) as (stream, signature):
+        raw = stream.read(MAX_CONTROL + 1)
+        need(digest_bytes(raw) == APPROVED_BUILDER_TOOLS[tag], 'ORIGINAL_PUBLIC_LAYER_TOOL_OWNER_REQUIRED')
+        tools_proof = {'path': tools.relative_to(root).as_posix(), 'metadata': signature,
+                       'bytes': len(raw), 'sha256': digest_bytes(raw)}
+    return {'context': admitted['context'], 'jenkinsResult': admitted['evidence']['jenkinsResult'],
+            'controls': admitted['controls'], 'sourceArchive': admitted['sourceArchive'],
+            'ownerToken': admitted['evidence']['ownerToken'], 'tools': tools_proof}
+
+
+def public_layer_quiescence(root, cleanup, original):
+    """Keep the original process gate and also exclude inbox tool bind mounts."""
+    def check(checkout, tag, token):
+        need(original(checkout, tag, token) is None, 'STRICT_PUBLIC_LAYER_QUIESCENCE_REQUIRED')
+        public = Path(root) / 'inbox' / tag / 'candidate-build-tools'
+        for _cid, _running, _restarting, _pid, _release, _token, mounts in cleanup.docker_snapshot():
+            for mount in mounts:
+                if mount.get('Type') != 'bind' or not mount.get('Source'): continue
+                source = Path(mount['Source'])
+                need(not (source == public or source.is_relative_to(public) or public.is_relative_to(source)),
+                     'CONTAINER_REFERENCES_PUBLIC_TOOL_INPUTS')
+    return check
+
+
+def plan_public_layers(root, raw_request, *, request_sha256, expected_current, identity, quiescence):
+    request = approved_request(raw_request, request_sha256, expected_current, identity)
+    accepted, skipped, archive_proof, keeper = [], [], None, None
+    rows = {row['release']: row for row in request['candidates'] if row['release'] in PUBLIC_LAYER_TAGS}
+    with controller_lock(root):
+        try:
+            need(PUBLIC_LAYER_KEEPER in rows, 'AUTHENTICATED_PUBLIC_LAYER_KEEPER_ATTEMPT_REQUIRED')
+            with attempt_lock(root, PUBLIC_LAYER_KEEPER), held_public_layer_archive(root) as archive:
+                keeper = admit_public_layer_attempt(root, request, rows[PUBLIC_LAYER_KEEPER], quiescence)
+                # All four real ECS keepers must exist and match upstream first.
+                for sha, size in PUBLIC_LAYERS.items():
+                    path = Path(root) / 'inbox' / PUBLIC_LAYER_KEEPER / 'candidate-build-tools/official-oci/blobs/sha256' / sha
+                    with held_file(root, path, MAX_JAR) as (stream, signature):
+                        need(signature[6] == size and hash_stream(stream) == sha, 'ALL_FOUR_REAL_ECS_LAYER_KEEPERS_REQUIRED')
+                archive_proof = archive
+                for tag, row in rows.items():
+                    if tag == PUBLIC_LAYER_KEEPER: continue
+                    try:
+                        with attempt_lock(root, tag):
+                            attempt = admit_public_layer_attempt(root, request, row, quiescence)
+                            targets = [describe_duplicate(root, tag, sha, size, kind=PUBLIC_LAYER_KIND)
+                                       for sha, size in PUBLIC_LAYERS.items()]
+                            accepted.append({**attempt, 'targets': targets})
+                    except (OSError, ValueError, KeyError, TypeError, tarfile.TarError, EOFError) as error:
+                        skipped.append({'release': tag, 'reason': str(error) if isinstance(error, RetirementError) else type(error).__name__})
+        except (OSError, ValueError, KeyError, TypeError, tarfile.TarError, EOFError) as error:
+            # No target is usable if the complete archive/keeper proof failed.
+            accepted, archive_proof, keeper = [], None, None
+            skipped.append({'release': PUBLIC_LAYER_KEEPER, 'reason': str(error) if isinstance(error, RetirementError) else type(error).__name__})
+    result = {'schemaVersion': 1, 'kind': PUBLIC_KIND + '-plan', 'current': expected_current, 'identity': identity,
+              'requestSha256': request_sha256, 'archive': archive_proof, 'keeper': keeper,
+              'candidates': accepted, 'skipped': skipped, 'deletionPerformed': False,
+              'candidateBytes': sum(target['bytes'] for row in accepted for target in row['targets']),
+              'candidateAllocatedBytes': sum(target['allocatedBytes'] for row in accepted for target in row['targets']),
+              'upstreamTarAndKeeper117Preserved': True, 'directoriesImagesAndBusinessDataPreserved': True}
+    need(len(canonical(result)) <= MAX_CONTROL, 'BOUNDED_PUBLIC_LAYER_PLAN_REQUIRED')
+    return result
+
+
+def apply_public_layers(root, raw_request, prepared, *, request_sha256, plan_sha256, expected_current, identity, quiescence):
+    request = approved_request(raw_request, request_sha256, expected_current, identity)
+    need(type(prepared) is dict and digest_bytes(canonical(prepared)) == plan_sha256
+         and prepared.get('kind') == PUBLIC_KIND + '-plan' and prepared.get('current') == expected_current
+         and prepared.get('identity') == identity and prepared.get('requestSha256') == request_sha256
+         and prepared.get('deletionPerformed') is False and prepared.get('upstreamTarAndKeeper117Preserved') is True,
+         'EXACT_PUBLIC_LAYER_PLAN_REQUIRED')
+    selected = prepared.get('candidates'); rows = {row['release']: row for row in request['candidates']}
+    need(type(selected) is list and len(selected) <= len(PUBLIC_LAYER_TAGS) - 1
+         and all(type(row) is dict and type(row.get('context')) is dict for row in selected), 'BOUNDED_PUBLIC_LAYER_SELECTION_REQUIRED')
+    tags = [row['context']['release'] for row in selected]
+    need(len(tags) == len(set(tags)) and set(tags) <= (set(rows) & PUBLIC_LAYER_TAGS) - {PUBLIC_LAYER_KEEPER}
+         and all(type(row.get('targets')) is list and len(row['targets']) == len(PUBLIC_LAYERS)
+                 and {target.get('sha256') for target in row['targets']} == set(PUBLIC_LAYERS)
+                 and all(target.get('kind') == PUBLIC_LAYER_KIND for target in row['targets']) for row in selected),
+         'ONLY_FOUR_FIXED_PUBLIC_LAYERS_PER_ATTEMPT')
+    journal_path = Path(root) / 'inbox' / expected_current['release'] / 'native-public-layer-duplicate-journal.jsonl'
+    owned_path(root, journal_path.parent, directory=True)
+    deleted, quarantines, failure, active, active_quarantine, mutation_attempted = [], [], None, None, None, False
+    with controller_lock(root), os.fdopen(os.open(journal_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600), 'wb') as journal:
+        total = 0
+        def record(value):
+            nonlocal total
+            raw = canonical(value) + b'\n'; total += len(raw)
+            need(total <= MAX_CONTROL, 'PUBLIC_LAYER_JOURNAL_LIMIT_EXCEEDED')
+            journal.write(raw); journal.flush(); os.fsync(journal.fileno())
+        before = os.statvfs(root)
+        record({'phase': 'STARTED', 'planSha256': plan_sha256, 'requestSha256': request_sha256, 'identity': identity})
+        try:
+            if selected:
+                need(PUBLIC_LAYER_KEEPER in rows, 'AUTHENTICATED_PUBLIC_LAYER_KEEPER_ATTEMPT_REQUIRED')
+                with attempt_lock(root, PUBLIC_LAYER_KEEPER), held_public_layer_archive(root) as archive:
+                    need(archive == prepared['archive'] and admit_public_layer_attempt(root, request,
+                         rows[PUBLIC_LAYER_KEEPER], quiescence) == prepared['keeper'], 'PUBLIC_LAYER_KEEPER_OR_ARCHIVE_CHANGED_AFTER_PLAN')
+                    for candidate in selected:
+                        active, active_quarantine = candidate['context']['release'], None
+                        with attempt_lock(root, active):
+                            need(admit_public_layer_attempt(root, request, rows[active], quiescence)
+                                 == {key: value for key, value in candidate.items() if key != 'targets'}, 'PUBLIC_LAYER_ATTEMPT_CHANGED_AFTER_PLAN')
+                            need([describe_duplicate(root, active, target['sha256'], target['bytes'], kind=PUBLIC_LAYER_KIND)
+                                  for target in candidate['targets']] == candidate['targets'], 'ALL_FOUR_PUBLIC_LAYER_COPIES_CHANGED_AFTER_PLAN')
+                            for target in candidate['targets']:
+                                active_quarantine = None
+                                need(quiescence(Path(root) / 'verification' / active / 'checkout', active, candidate['ownerToken']) is None
+                                     and quiescence(Path(root) / 'verification' / PUBLIC_LAYER_KEEPER / 'checkout',
+                                         PUBLIC_LAYER_KEEPER, prepared['keeper']['ownerToken']) is None, 'STRICT_PUBLIC_LAYER_QUIESCENCE_REQUIRED')
+                                need(describe_duplicate(root, active, target['sha256'], target['bytes'], kind=PUBLIC_LAYER_KIND) == target,
+                                     'PUBLIC_LAYER_BYTES_CHANGED_AFTER_PLAN')
+                                active_quarantine = reserve_quarantine(root, expected_current['release']); quarantines.append(active_quarantine)
+                                record({'phase': 'DELETE_STARTED', 'release': active, 'path': target['path'],
+                                        'keeperPath': target['keeper']['path'], 'sha256': target['sha256'], 'quarantinePath': active_quarantine['path']})
+                                mutation_attempted = True
+                                result = remove_duplicate(root, target, quarantine=active_quarantine); deleted.append(result)
+                                record({'phase': 'DELETE_FINISHED', **result})
+            record({'phase': 'FINISHED', 'deletedFiles': len(deleted)})
+        except Exception as error:
+            failure = str(error) if isinstance(error, RetirementError) else type(error).__name__
+            record({'phase': 'FAILED_OR_UNKNOWN', 'release': active, 'reason': failure,
+                    'completedDeletions': len(deleted), 'mutationAttempted': mutation_attempted,
+                    'quarantinePath': active_quarantine['path'] if active_quarantine else None})
+        after = os.statvfs(root)
+    return {'schemaVersion': 1, 'kind': PUBLIC_KIND + '-receipt', 'current': expected_current, 'identity': identity,
+            'status': 'FAILED_OR_UNKNOWN' if failure else 'REMOVED' if deleted else 'NO_ACTION',
+            'requestSha256': request_sha256, 'planSha256': plan_sha256, 'deleted': deleted, 'failure': failure,
+            'mutationAttempted': mutation_attempted, 'lastAttemptedRelease': active,
+            'lastQuarantinePath': active_quarantine['path'] if active_quarantine else None,
+            'retainedQuarantinePaths': [row['path'] for row in quarantines if (Path(root) / row['path']).exists() or (Path(root) / row['path']).is_symlink()],
+            'journalSha256': digest_bytes(journal_path.read_bytes()), 'skipped': prepared['skipped'],
+            'availableBytesBefore': before.f_bavail * before.f_frsize, 'availableBytesAfter': after.f_bavail * after.f_frsize,
+            'upstreamTarAndKeeper117Preserved': failure is None, 'directoriesImagesAndBusinessDataPreserved': True,
+            'testsRunByRetirement': False}
 
 
 def private_bytes(root, path, maximum=MAX_CONTROL):
@@ -923,7 +1137,8 @@ def capture_request(root, raw_local_spec, *, local_spec_sha256, expected_current
 
 def cli(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--phase', choices=('capture-request', 'plan-builders', 'apply-builders', 'plan', 'apply', 'inspect'), required=True)
+    parser.add_argument('--phase', choices=('capture-request', 'plan-builders', 'apply-builders', 'plan', 'apply',
+                                           'plan-public-layers', 'apply-public-layers', 'inspect'), required=True)
     parser.add_argument('--mode', choices=('Verified', 'Maintenance'), required=True)
     for name in ('root', 'tag', 'commit', 'source-sha256', 'instance-id', 'machine-id', 'current-receipt-sha256'):
         parser.add_argument('--' + name, required=True)
@@ -934,6 +1149,7 @@ def cli(argv=None):
         request_file = inbox / 'native-jar-duplicate-request.json'; plan_file = inbox / 'native-jar-duplicate-plan.json'
         receipt_file = inbox / 'native-jar-duplicate-receipt.json'; capture_file = inbox / 'native-jar-duplicate-capture.json'
         builder_plan_file = inbox / 'native-builder-retirement-plan.json'; builder_receipt_file = inbox / 'native-builder-retirement-receipt.json'
+        public_plan_file = inbox / 'native-public-layer-duplicate-plan.json'; public_receipt_file = inbox / 'native-public-layer-duplicate-receipt.json'
         if args.phase == 'capture-request':
             raw = private_bytes(root, inbox / 'native-jar-duplicate-local-spec.json')
             request, skipped = capture_request(root, raw, local_spec_sha256=args.local_spec_sha256, expected_current=current, identity=identity)
@@ -944,10 +1160,27 @@ def cli(argv=None):
             files = {}
             for name, path in (('request', request_file), ('plan', plan_file), ('receipt', receipt_file), ('capture', capture_file),
                                ('journal', inbox / 'native-jar-duplicate-journal.jsonl'), ('builderPlan', builder_plan_file),
-                               ('builderReceipt', builder_receipt_file), ('builderJournal', inbox / 'native-builder-retirement-journal.jsonl')):
+                               ('builderReceipt', builder_receipt_file), ('builderJournal', inbox / 'native-builder-retirement-journal.jsonl'),
+                               ('publicLayerPlan', public_plan_file), ('publicLayerReceipt', public_receipt_file),
+                               ('publicLayerJournal', inbox / 'native-public-layer-duplicate-journal.jsonl')):
                 if path.exists():
                     raw = private_bytes(root, path); files[name] = {'file': path.name, 'bytes': len(raw), 'sha256': digest_bytes(raw)}
             result = {'status': 'INSPECTED', 'current': current, 'identity': identity, 'files': files}
+        elif args.phase in ('plan-public-layers', 'apply-public-layers'):
+            raw = private_bytes(root, request_file); approved_request(raw, args.request_sha256, current, identity)
+            options = {'request_sha256': args.request_sha256, 'expected_current': current, 'identity': identity,
+                       'quiescence': public_layer_quiescence(root, modules['cleanup'], quiescence)}
+            if args.phase == 'plan-public-layers':
+                value = plan_public_layers(root, raw, **options)
+                result = {'status': 'PLANNED', 'current': current, 'identity': identity,
+                          'plan': write_new(public_plan_file, value), 'skipped': value['skipped'],
+                          'candidateBytes': value['candidateBytes'], 'candidateAllocatedBytes': value['candidateAllocatedBytes']}
+            else:
+                plan_raw = private_bytes(root, public_plan_file)
+                need(digest_bytes(plan_raw) == args.plan_sha256, 'ORIGINAL_PUBLIC_LAYER_PLAN_RAW_SHA_DRIFT')
+                value = apply_public_layers(root, raw, decode(plan_raw), plan_sha256=args.plan_sha256, **options)
+                result = {'status': value['status'], 'current': current, 'identity': identity,
+                          'receipt': write_new(public_receipt_file, value)}
         elif args.phase in ('plan-builders', 'apply-builders'):
             raw = private_bytes(root, request_file); approved_request(raw, args.request_sha256, current, identity)
             options = {'request_sha256': args.request_sha256, 'expected_current': current, 'identity': identity, 'modules': modules}

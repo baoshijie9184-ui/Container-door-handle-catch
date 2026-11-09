@@ -210,6 +210,19 @@ pipeline {
                 script { env.CI_TOOLS_PREPARED = 'true' }
             }
         }
+        stage('Preflight control scripts on ECS') {
+            when { expression { params.ACTION == 'verify-runtime' && params.DOORHANDLE_CI_SCOPE == 'mysql' } }
+            steps {
+                script { env.CI_CONTROL_PREFLIGHT_PASS = 'false' }
+                withCredentials([
+                    sshUserPrivateKey(credentialsId: 'doorhandle-ecs-ssh', keyFileVariable: 'DEPLOY_KEY', usernameVariable: 'DEPLOY_USER'),
+                    file(credentialsId: 'doorhandle-ecs-known-hosts', variable: 'DEPLOY_KNOWN_HOSTS')
+                ]) {
+                    pwsh '& ./script/jenkins/pipeline.ps1 -Action Preflight'
+                }
+                script { env.CI_CONTROL_PREFLIGHT_PASS = 'true' }
+            }
+        }
         stage('Prepare isolated ECS fixtures') {
             when { expression { !(params.ACTION in ['rollback', 'reclaim-build-outputs']) && params.DOORHANDLE_CI_AUTO_COMPACT_FIXTURES } }
             steps {
@@ -459,7 +472,7 @@ pipeline {
                     }
                     if (env.CI_ARTIFACTS_READY == 'true') {
                         try {
-                            junit testResults: 'artifacts/ecs/**/TEST-*.xml,artifacts/ecs/**/python.xml,artifacts/embedding/python.xml', allowEmptyResults: env.CI_ECS_VERIFIED != 'true'
+                            junit testResults: 'artifacts/ecs/**/TEST-*.xml,artifacts/ecs/**/python.xml,artifacts/embedding/python.xml,artifacts/control-preflight/python.xml', allowEmptyResults: env.CI_ECS_VERIFIED != 'true'
                         } finally {
                             archiveArtifacts artifacts: 'artifacts/**/*.json,artifacts/**/*.xml,artifacts/**/*.log,artifacts/ecs/verification-evidence.tar.gz,artifacts/runtime-resources/resource-probes.jsonl,artifacts/candidate-build-resources/resource-probes.jsonl,artifacts/fixture-build-resources/*/resource-probes.jsonl,artifacts/application.jar,artifacts/source.tar.gz', allowEmptyArchive: currentBuild.currentResult != 'SUCCESS', fingerprint: true
                         }

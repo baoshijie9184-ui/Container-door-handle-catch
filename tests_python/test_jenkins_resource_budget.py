@@ -604,6 +604,7 @@ assert receipt['stopScope']=='OWNED_ATTEMPT_ONLY' and receipt['evidenceRetained'
 class DuMeasurementTests(unittest.TestCase):
     @contextmanager
     def measurement(self, folder, command, clock):
+        (folder / 'private').mkdir(mode=0o700, exist_ok=True)
         monitor = preparer.PreparationMonitor.__new__(preparer.PreparationMonitor)
         monitor.measure_lock = threading.Lock(); monitor.lock = threading.RLock()
         monitor.failed = threading.Event(); monitor.stop = threading.Event()
@@ -615,8 +616,11 @@ class DuMeasurementTests(unittest.TestCase):
                                               args=SimpleNamespace(commit='b' * 40))
         monitor.fixture_memory = lambda: (0, 0)
         filesystem = SimpleNamespace(f_blocks=100000, f_frsize=4096, f_bavail=90000)
+        def pause(delay):
+            clock[0] += delay
         with patch.object(preparer.subprocess, 'run', side_effect=command) as run, \
                 patch.object(preparer.time, 'monotonic', side_effect=lambda: clock[0]), \
+                patch.object(preparer.time, 'sleep', side_effect=pause), \
                 patch.object(preparer.Path, 'read_text', return_value='MemAvailable: 123456 kB\n'), \
                 patch.object(preparer.os, 'statvfs', return_value=filesystem), \
                 patch.object(preparer, 'owned_tree_memory', return_value=64):
@@ -646,15 +650,15 @@ class DuMeasurementTests(unittest.TestCase):
                 value = monitor.measure()
                 self.assertEqual(2, run.call_count)
                 self.assertEqual('1.200000000s', calls[0][0][4])
-                self.assertEqual('0.900000000s', calls[1][0][4])
+                self.assertEqual('0.850000000s', calls[1][0][4])
                 self.assertEqual('--kill-after=0.2s', calls[1][0][3])
                 self.assertEqual([str(monitor.du), '-B1', '-x', '-s', '--', str(folder / 'attempt')], calls[1][0][5:])
                 self.assertEqual(2, calls[0][1]['timeout'])
-                self.assertAlmostEqual(1.7, calls[1][1]['timeout'])
+                self.assertAlmostEqual(1.65, calls[1][1]['timeout'])
                 self.assertEqual('C', calls[1][1]['env']['LC_ALL'])
                 self.assertEqual(8192, value['ownedDiskBytes'])
                 self.assertEqual([value], [json.loads(line) for line in monitor.stream.getvalue().splitlines()])
-                self.assertEqual(10.5, monitor.measured_at)
+                self.assertAlmostEqual(10.55, monitor.measured_at)
                 self.assertIsNone(monitor.du_failure)
                 self.assertNotIn('duFailure', value)
 
@@ -668,13 +672,13 @@ class DuMeasurementTests(unittest.TestCase):
             with self.measurement(folder, command, clock) as (monitor, run):
                 with self.assertRaises(ValueError) as caught:
                     monitor.measure()
-                self.assertEqual(2, run.call_count); self.assert_unpublished(monitor)
+                self.assertEqual(6, run.call_count); self.assert_unpublished(monitor)
                 self.assertIs(caught.exception, monitor.du_failure[0])
                 with patch.object(preparer.os, 'kill') as kill:
                     monitor.fail(caught.exception, worker='collector')
                     kill.assert_called_once_with(os.getpid(), signal.SIGUSR1)
                 raw = (folder / 'resource-failure.json').read_bytes(); value = json.loads(raw)
-                rows = value['duFailure']['attempts']; self.assertEqual(2, len(rows))
+                rows = value['duFailure']['attempts']; self.assertEqual(6, len(rows))
                 for row in rows:
                     self.assertEqual({'exitCode', 'elapsedSeconds', 'stdoutBytes', 'stdoutSha256',
                                       'stderrBytes', 'stderrSha256', 'stderrMentionsMissingPath'}, set(row))
@@ -684,6 +688,119 @@ class DuMeasurementTests(unittest.TestCase):
                     self.assertEqual(hashlib.sha256(stderr).hexdigest(), row['stderrSha256'])
                     self.assertIs(True, row['stderrMentionsMissingPath'])
                 self.assertNotIn(b'opaque-secret', raw); self.assertNotIn(str(folder).encode(), raw)
+
+    def test_two_exit_one_samples_can_recover_on_third_complete_measurement(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp); clock = [10.0]; calls = []
+            def command(arguments, **kwargs):
+                self.assert_unpublished(monitor)
+                calls.append((arguments, kwargs)); clock[0] += .1
+                retry = len(calls) < 3
+                return subprocess.CompletedProcess(arguments, 1 if retry else 0,
+                    b'partial' if retry else self.output(folder), b'du: missing transient file' if retry else b'')
+            with self.measurement(folder, command, clock) as (monitor, run), \
+                    patch.object(preparer.time, 'sleep', side_effect=lambda delay: clock.__setitem__(0, clock[0] + delay)) as pause:
+                result = monitor.measure()
+                self.assertEqual(3, run.call_count)
+                self.assertEqual([.05, .05], [call.args[0] for call in pause.call_args_list])
+                self.assertEqual(['1.200000000s', '1.050000000s', '0.900000000s'], [call[0][4] for call in calls])
+                self.assertEqual(8192, result['ownedDiskBytes']); self.assertAlmostEqual(10.4, monitor.measured_at)
+                self.assertIsNone(monitor.du_failure)
+                self.assertEqual([], list((folder / 'private').iterdir()))
+                self.assertEqual([result], [json.loads(line) for line in monitor.stream.getvalue().splitlines()])
+
+    def test_rc_one_with_less_than_one_backoff_remaining_never_sleeps_or_relaunches(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp); clock = [10.0]
+            def command(arguments, **kwargs):
+                clock[0] = 11.16
+                return subprocess.CompletedProcess(arguments, 1, b'partial', b'')
+            with self.measurement(folder, command, clock) as (monitor, run), \
+                    patch.object(preparer.time, 'sleep') as pause:
+                with self.assertRaises(ValueError): monitor.measure()
+                self.assertEqual(1, run.call_count); pause.assert_not_called(); self.assert_unpublished(monitor)
+
+    def test_delayed_backoff_wakeup_cannot_start_an_attempt_after_native_deadline(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp); clock = [10.0]
+            def command(arguments, **kwargs):
+                clock[0] = 11.14
+                return subprocess.CompletedProcess(arguments, 1, b'partial', b'')
+            def delayed_wakeup(delay):
+                self.assertEqual(.05, delay); clock[0] += .061
+            with self.measurement(folder, command, clock) as (monitor, run), \
+                    patch.object(preparer.time, 'sleep', side_effect=delayed_wakeup) as pause:
+                with self.assertRaises(ValueError): monitor.measure()
+                self.assertEqual(1, run.call_count); pause.assert_called_once_with(.05); self.assert_unpublished(monitor)
+
+    def test_rc_one_resamples_share_the_original_native_and_outer_deadlines(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp); clock = [10.0]; calls = []
+            def command(arguments, **kwargs):
+                calls.append((arguments, kwargs)); clock[0] += .6
+                return subprocess.CompletedProcess(arguments, 1, b'partial', b'')
+            with self.measurement(folder, command, clock) as (monitor, run):
+                with self.assertRaises(ValueError): monitor.measure()
+                self.assertEqual(2, run.call_count)
+                self.assertEqual('0.550000000s', calls[1][0][4]); self.assertAlmostEqual(1.35, calls[1][1]['timeout'])
+                self.assert_unpublished(monitor)
+
+    def test_cancelled_or_failed_measurement_never_retries_an_exit_one_result(self):
+        for event in ('stop', 'failed'):
+            with self.subTest(event=event), tempfile.TemporaryDirectory() as temp:
+                folder = Path(temp); clock = [10.0]
+                def command(arguments, **kwargs):
+                    clock[0] += .1; getattr(monitor, event).set()
+                    return subprocess.CompletedProcess(arguments, 1, b'partial', b'')
+                with self.measurement(folder, command, clock) as (monitor, run), \
+                        patch.object(preparer.time, 'sleep') as pause:
+                    with self.assertRaises(ValueError): monitor.measure()
+                    self.assertEqual(1, run.call_count); pause.assert_not_called(); self.assert_unpublished(monitor)
+
+    def test_cancellation_during_backoff_never_starts_the_next_du(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp); clock = [10.0]
+            def command(arguments, **kwargs):
+                clock[0] += .1
+                return subprocess.CompletedProcess(arguments, 1, b'partial', b'')
+            def cancel_after_backoff(delay):
+                clock[0] += delay; monitor.stop.set()
+            with self.measurement(folder, command, clock) as (monitor, run), \
+                    patch.object(preparer.time, 'sleep', side_effect=cancel_after_backoff) as pause:
+                with self.assertRaises(ValueError): monitor.measure()
+                self.assertEqual(1, run.call_count); pause.assert_called_once_with(.05); self.assert_unpublished(monitor)
+
+    def test_failed_du_private_diagnostics_preserve_bounded_original_prefixes_without_public_payload(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp); clock = [10.0]
+            stdout = (b'MYSQL_PWD=opaque-secret\x00\xff\n' * 300)
+            stderr = (b'/private/opaque-secret: No such file or directory\x00\xff\n' * 2000)
+            def command(arguments, **kwargs):
+                clock[0] += .1
+                return subprocess.CompletedProcess(arguments, 2, stdout, stderr)
+            with self.measurement(folder, command, clock) as (monitor, run):
+                with self.assertRaises(ValueError) as caught: monitor.measure()
+                self.assertEqual(1, run.call_count); self.assert_unpublished(monitor)
+                self.assertIs(caught.exception, monitor.du_failure[0])
+                diagnostics = monitor.du_failure[1]['privateDiagnostics']
+                self.assertEqual(1, len(diagnostics)); self.assertEqual(1, diagnostics[0]['attempt'])
+                for field, maximum, original in (('stdout', 4096, stdout), ('stderr', 65536, stderr)):
+                    reference = diagnostics[0][field]
+                    self.assertEqual({'file', 'bytes', 'sha256', 'truncated'}, set(reference))
+                    file = folder / reference['file']; info = file.stat()
+                    self.assertEqual(folder / 'private', file.parent)
+                    self.assertEqual(original[:maximum], file.read_bytes())
+                    self.assertEqual(maximum, reference['bytes'])
+                    self.assertEqual(hashlib.sha256(original[:maximum]).hexdigest(), reference['sha256'])
+                    self.assertIs(True, reference['truncated'])
+                    self.assertEqual(0o600, info.st_mode & 0o777)
+                    self.assertEqual(os.getuid(), info.st_uid); self.assertEqual(1, info.st_nlink)
+                self.assertEqual(2, len(list((folder / 'private').iterdir())))
+                with patch.object(preparer.os, 'kill'):
+                    monitor.fail(caught.exception, worker='collector')
+                public = (folder / 'resource-failure.json').read_bytes()
+                self.assertNotIn(b'opaque-secret', public); self.assertNotIn(str(folder).encode(), public)
+                self.assertEqual(diagnostics, json.loads(public)['duFailure']['privateDiagnostics'])
 
     def test_special_exit_codes_and_signals_never_start_a_second_du(self):
         for code in (2, 124, 125, 126, 127, 137, -9, -15):

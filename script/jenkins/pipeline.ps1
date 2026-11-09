@@ -12,6 +12,14 @@ function Require-Value([string]$Name, [string]$Pattern) {
     if ([string]::IsNullOrWhiteSpace($value) -or $value -notmatch $Pattern) { throw "Invalid or missing $Name" }
     return $value
 }
+function Assert-ControlPreflight([string]$Commit,[string]$SourceSha) {
+    if ($env:ACTION -cne 'verify-runtime') { return }
+    if ($env:CI_CONTROL_PREFLIGHT_PASS -cne 'true') { throw 'Native verification requires the ECS control-script preflight first.' }
+    $gate=Get-Content -LiteralPath artifacts/control-preflight-gate.json -Raw | ConvertFrom-Json
+    $receipt=Get-Content -LiteralPath artifacts/control-preflight/receipt.json -Raw | ConvertFrom-Json
+    $actual=(Get-FileHash -LiteralPath artifacts/control-preflight/receipt.json -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($gate.status -cne 'CONTROL_PREFLIGHT_PASS' -or $gate.receiptSha256 -cne $actual -or $gate.release -cne $tag -or $gate.commit -cne $Commit -or $gate.sourceSha256 -cne $SourceSha -or $receipt.status -cne 'CONTROL_PREFLIGHT_PASS' -or $receipt.release -cne $tag -or $receipt.commit -cne $Commit -or $receipt.sourceSha256 -cne $SourceSha -or $receipt.fullProjectVerified -ne $false -or $receipt.containerCleanupConfirmed -ne $true -or $receipt.sourceScratchCleanupConfirmed -ne $true) { throw 'The native control-script preflight lacks matching original evidence and cleanup.' }
+}
 function Get-LocalArtifactsProfile {
     $selected = $env:LOCAL_ARTIFACTS_PROFILE
     if ([string]::IsNullOrWhiteSpace($selected)) { $selected = 'additional-local-artifacts-v1' }
@@ -315,6 +323,59 @@ if ($Action -ceq 'ReclaimBuildOutputs' -and $env:ACTION -ceq 'reclaim-build-outp
     return
 }
 if ($Action -eq 'Preflight') {
+    if ($env:ACTION -ceq 'verify-runtime') {
+        if ($env:CI_TOOLS_PREPARED -cne 'true' -or $env:DOORHANDLE_CI_SCOPE -cne 'mysql') { throw 'Control preflight requires this native build prepared ECS tools.' }
+        $commit=Require-Value 'GIT_COMMIT' '^[a-f0-9]{40}$'
+        $instance=Require-Value 'DOORHANDLE_ECS_INSTANCE_ID' '^i-[a-z0-9]+$'
+        $machine=Require-Value 'DOORHANDLE_ECS_MACHINE_ID' '^[a-f0-9]{32}$'
+        $sha=(Get-FileHash -LiteralPath artifacts/source.tar.gz -Algorithm SHA256).Hash.ToLowerInvariant()
+        $package=Get-Content -LiteralPath artifacts/release.json -Raw | ConvertFrom-Json
+        $tools=Get-Content -LiteralPath artifacts/ecs-tool-runtime.json -Raw | ConvertFrom-Json
+        $remoteInbox="$remoteRoot/inbox/$tag"
+        if ($package.release -cne $tag -or $package.commit -cne $commit -or $package.sourceSha256 -cne $sha -or $tools.status -cne 'PREPARED' -or $tools.release -cne $tag -or $tools.manifest -cne "$remoteInbox/tool-runtime/manifest.json" -or $tools.manifestSha256 -cnotmatch '^[a-f0-9]{64}$') { throw 'Control preflight source or tool registration differs from this fixed build.' }
+        if (Test-Path -LiteralPath artifacts/control-preflight) { throw 'Use a fresh build; control-preflight evidence already exists.' }
+        New-Item -ItemType Directory -Path artifacts/control-preflight | Out-Null
+        foreach ($relative in @('script/jenkins/control-preflight.py','script/jenkins/verify-remote.py')) {
+            $inputFile=Get-PinnedSourceFile $relative
+            $name=[IO.Path]::GetFileName($relative)
+            Invoke-Checked 'scp.exe' ($sshOptions+@('-P',$portText,$inputFile,"${destination}:$remoteInbox/$name"))
+        }
+        $helper="$remoteInbox/control-preflight.py"
+        $fixedHelper=Get-PinnedSourceFile 'script/jenkins/control-preflight.py'
+        $helperSha=(Get-FileHash -LiteralPath $fixedHelper -Algorithm SHA256).Hash.ToLowerInvariant()
+        $command="test `"`$(sha256sum '$helper' | cut -d ' ' -f 1)`" = '$helperSha' && python3 -I -B '$helper' --root '$remoteRoot' --tag '$tag' --commit '$commit' --source-sha256 '$sha' --instance-id '$instance' --machine-id '$machine' --tool-manifest-sha256 '$($tools.manifestSha256)'"
+        $lines=@(& ssh.exe @sshOptions -p $portText $destination $command 2> artifacts/control-preflight/transport.stderr.log)
+        $controlExit=$LASTEXITCODE
+        $lines | Set-Content -LiteralPath artifacts/control-preflight/transport.stdout.log -Encoding utf8
+        $remoteResult=$null
+        try { $remoteResult=($lines|Select-Object -Last 1)|ConvertFrom-Json } catch { $remoteResult=$null }
+        $remoteOutput="$remoteInbox/control-preflight/output"
+        $collected=$false
+        try {
+            Invoke-Checked 'scp.exe' ($sshOptions+@('-P',$portText,"${destination}:$remoteOutput/receipt.json",'artifacts/control-preflight/receipt.json'))
+            $file=Get-Item -LiteralPath artifacts/control-preflight/receipt.json
+            if ($file.Length -le 0 -or $file.Length -gt 2MB -or ($file.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Control receipt is missing, oversized or redirected.' }
+            $receipt=Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json -Depth 20
+            if ($null -ne $remoteResult -and $remoteResult.receiptSha256 -cmatch '^[a-f0-9]{64}$' -and (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant() -cne $remoteResult.receiptSha256) { throw 'Original control receipt changed during collection.' }
+            if ($receipt.kind -cne 'doorhandle-control-preflight' -or $receipt.release -cne $tag -or $receipt.commit -cne $commit -or $receipt.sourceSha256 -cne $sha -or $receipt.identity.instanceId -cne $instance -or $receipt.identity.machineId -cne $machine -or $receipt.toolManifestSha256 -cne $tools.manifestSha256) { throw 'Control receipt belongs to another source, build, tool image or ECS.' }
+            foreach ($entry in $receipt.reports.PSObject.Properties) {
+                $name=$entry.Name; $binding=$entry.Value
+                $maximum=if ($name -ceq 'python.xml') {2MB} elseif ($name -ceq 'pytest.log') {8MB} else {throw 'Control report escaped its fixed catalog.'}
+                if ($binding.file -cne $name -or $binding.bytes -lt 0 -or $binding.bytes -gt $maximum -or $binding.sha256 -cnotmatch '^[a-f0-9]{64}$') { throw 'Control report lacks bounded original byte identity.' }
+                $local="artifacts/control-preflight/$name"
+                Invoke-Checked 'scp.exe' ($sshOptions+@('-P',$portText,"${destination}:$remoteOutput/$name",$local))
+                if ((Get-Item -LiteralPath $local).Length -ne $binding.bytes -or (Get-FileHash -LiteralPath $local -Algorithm SHA256).Hash.ToLowerInvariant() -cne $binding.sha256) { throw 'Control report changed during collection.' }
+            }
+            $collected=$true
+        } finally {
+            @{status=$(if($collected -and $controlExit -eq 0){'COLLECTED'}else{'FAILED_OR_UNKNOWN'});release=$tag;commit=$commit;sourceSha256=$sha;exitCode=$controlExit;receiptCollected=$collected;fullProjectVerified=$false} | ConvertTo-Json | Set-Content -LiteralPath artifacts/control-preflight/transport.json -Encoding utf8
+        }
+        $expected=@('test_jenkins_resource_budget','test_jenkins_fixture_admission','test_failed_native_jar_duplicates','test_historical_builder_retirement','test_historical_mysql_fixture_retirement','test_public_buildkit_layer_retirement','test_control_preflight')
+        if ($controlExit -ne 0 -or $null -eq $remoteResult -or $remoteResult.status -cne 'CONTROL_PREFLIGHT_PASS' -or $remoteResult.receipt -cne "$remoteOutput/receipt.json" -or $remoteResult.receiptSha256 -cnotmatch '^[a-f0-9]{64}$' -or $receipt.status -cne 'CONTROL_PREFLIGHT_PASS' -or $receipt.fullProjectVerified -ne $false -or $receipt.businessRuntimeStarted -ne $false -or $receipt.containerCleanupConfirmed -ne $true -or $receipt.sourceScratchCleanupConfirmed -ne $true -or (@($receipt.selectedModules|Sort-Object)-join ',') -cne (@($expected|Sort-Object)-join ',') -or (@($receipt.modules.PSObject.Properties.Name|Sort-Object)-join ',') -cne (@($expected|Sort-Object)-join ',') -or -not (Test-Path -LiteralPath artifacts/control-preflight/python.xml) -or -not (Test-Path -LiteralPath artifacts/control-preflight/pytest.log)) { throw 'ECS control-script preflight did not pass with complete reports and owned cleanup; native preparation is blocked.' }
+        foreach ($module in $expected) { $counts=$receipt.modules.$module; if ($counts.passed -lt 1 -or $counts.failed -ne 0 -or $counts.skipped -ne 0) { throw 'Control preflight omitted or failed a required module.' } }
+        @{status='CONTROL_PREFLIGHT_PASS';release=$tag;commit=$commit;sourceSha256=$sha;receiptSha256=(Get-FileHash -LiteralPath artifacts/control-preflight/receipt.json -Algorithm SHA256).Hash.ToLowerInvariant();fullProjectVerified=$false} | ConvertTo-Json | Set-Content -LiteralPath artifacts/control-preflight-gate.json -Encoding utf8
+        return
+    }
     Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "test -r '$runtime/deploy/cloud.env' && docker info --format '{{.ServerVersion}}' && docker compose version --short"))
     return
 }
@@ -641,6 +702,7 @@ if ($Action -in @('PrepareFixtures', 'CleanupFixtures')) {
     $helper = "$remoteInbox/prepare-compact-fixtures.py"
     $arguments = "--root '$remoteRoot' --tag '$tag' --commit '$commit' --source-sha256 '$sha' --instance-id '$instance' --machine-id '$machine' --settings '$settings'"
     if ($Action -eq 'PrepareFixtures') {
+        Assert-ControlPreflight $commit $sha
         $jarSha = (Get-FileHash -LiteralPath artifacts/application.jar -Algorithm SHA256).Hash.ToLowerInvariant()
         $jarBytes = (Get-Item -LiteralPath artifacts/application.jar).Length
         if ($package.applicationJarSha256 -ne $jarSha) { throw 'Fixture migration jar differs from the fixed commit build.' }
@@ -687,6 +749,7 @@ if ($Action -eq 'VerifyEcs') {
     $package = Get-Content -LiteralPath artifacts/release.json -Raw | ConvertFrom-Json
     $sha = (Get-FileHash -LiteralPath artifacts/source.tar.gz -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($package.release -ne $tag -or $package.commit -ne $commit -or $package.sourceSha256 -ne $sha) { throw 'The immutable source package metadata differs.' }
+    Assert-ControlPreflight $commit $sha
     if (Test-Path -LiteralPath artifacts/ecs) { throw 'Use a fresh build artifacts directory; existing ECS evidence is retained.' }
     New-Item -ItemType Directory -Path artifacts/ecs | Out-Null
     $attempt = [guid]::NewGuid().ToString('N')
