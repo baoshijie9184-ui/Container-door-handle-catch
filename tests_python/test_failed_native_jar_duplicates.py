@@ -622,7 +622,7 @@ def test_cli_cannot_extend_the_three_reviewed_candidates_through_an_input_docume
 
 def test_current_source_hash_is_checked_before_any_deployed_dependency_import(tmp_path,monkeypatch):
     root=tmp_path/'ci';inbox=root/'inbox'/('ci-200-'+'f'*12);inbox.mkdir(parents=True,mode=0o700)
-    for name in ('retire-failed-native-jar-duplicates.py','cleanup-ecs-builds.py','verify-remote.py','source.tar.gz'):
+    for name in ('retire-failed-native-jar-duplicates.py','cleanup-ecs-builds.py','verify-remote.py','compact-build-resources.py','source.tar.gz'):
         path=inbox/name;path.write_bytes(b'never execute this synthetic helper');path.chmod(0o600)
     monkeypatch.setattr(retirer,'__file__',str(inbox/'retire-failed-native-jar-duplicates.py'))
     monkeypatch.setattr(retirer.importlib.util,'spec_from_file_location',lambda *_a,**_k:pytest.fail('Imported helper before fixed archive validation'))

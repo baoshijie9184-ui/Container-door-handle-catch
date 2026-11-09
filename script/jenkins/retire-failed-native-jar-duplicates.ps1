@@ -71,7 +71,7 @@ archive,commit,retained,jhome,remote,current=sys.argv[1:]
 approved=[(117,'8c898996cc28ce30fd6531710511f833cccb4864','e1eec611a0dcbb93158d8e5a68fc5d16e6f96d65dcb82e6930f54abdd84d2e2c'),
  (118,'6481f7fa6021eb36592a081d04f385886c03412a','e73474da34762eedf1438c835dbc741091f02c69fb5c3664dbba6cca30395f8a'),
  (130,'9a588271dadb135ec4284392ef7b9c9c55ea511d','f53a73fa4ce45e44b666cbf963145b353f6e478c7cc594ca849b59bfe0b924d2')]
-helpers={};wanted={'script/jenkins/retire-failed-native-jar-duplicates.py','script/jenkins/cleanup-ecs-builds.py','script/jenkins/verify-remote.py'}
+helpers={};wanted={'script/jenkins/retire-failed-native-jar-duplicates.py','script/jenkins/cleanup-ecs-builds.py','script/jenkins/verify-remote.py','script/docker/compact-build-resources.py'}
 class Bounded:
  def __init__(self,s):self.s,self.n=s,0
  def read(self,size=-1):
@@ -218,25 +218,45 @@ function Invoke-NativeJarPhase([string]$Phase,[string]$Flags='') {
 $captured=Invoke-NativeJarPhase 'capture-request' "--local-spec-sha256 '$specSha'"
 Require-NativeJar ($captured.status -ceq 'CAPTURED' -and $captured.request.sha256 -cmatch '^[a-f0-9]{64}$') 'The actual ECS control snapshot was not captured.'
 $requestSha=$captured.request.sha256
-$planned=Invoke-NativeJarPhase 'plan' "--request-sha256 '$requestSha'"
-Require-NativeJar ($planned.status -ceq 'PLANNED' -and $planned.plan.sha256 -cmatch '^[a-f0-9]{64}$') 'No exact native JAR retirement plan was produced.'
+$builderPlanned=Invoke-NativeJarPhase 'plan-builders' "--request-sha256 '$requestSha'"
+Require-NativeJar ($builderPlanned.status -ceq 'PLANNED' -and $builderPlanned.plan.sha256 -cmatch '^[a-f0-9]{64}$') 'No exact historical builder retirement plan was produced.'
+function Copy-NativeJarEvidence($Observed) {
+    foreach ($entry in @(@('capture','native-jar-duplicate-capture.json'),@('request','native-jar-duplicate-request.json'),@('plan','native-jar-duplicate-plan.json'),@('receipt','native-jar-duplicate-receipt.json'),@('journal','native-jar-duplicate-journal.jsonl'),@('builderPlan','native-builder-retirement-plan.json'),@('builderReceipt','native-builder-retirement-receipt.json'),@('builderJournal','native-builder-retirement-journal.jsonl'))) {
+        $property=$Observed.files.PSObject.Properties[$entry[0]]
+        if ($null -eq $property) {continue}
+        $binding=$property.Value
+        Require-NativeJar ($binding.file -ceq $entry[1] -and $binding.bytes -gt 0 -and $binding.bytes -le 2MB -and $binding.sha256 -cmatch '^[a-f0-9]{64}$') 'Native retirement evidence escaped its bounded allowlist.'
+        $destinationFile=Join-Path $workspace ('artifacts/'+$entry[1]); Require-NativeJar (-not (Test-Path -LiteralPath $destinationFile)) 'Existing original evidence cannot be overwritten.'
+        $null=Invoke-NativeJar $scp ($SshOptions+@('-P',$PortText,"${Destination}:$RemoteRoot/inbox/$Tag/$($entry[1])",$destinationFile))
+        Assert-NativeJarPath $destinationFile
+        Require-NativeJar ((Get-Item -LiteralPath $destinationFile).Length -eq $binding.bytes -and (Get-FileHash -LiteralPath $destinationFile -Algorithm SHA256).Hash.ToLowerInvariant() -ceq $binding.sha256) 'Collected native retirement evidence changed.'
+    }
+}
+$builderFailed=$false
+try {$builderResult=Invoke-NativeJarPhase 'apply-builders' "--request-sha256 '$requestSha' --plan-sha256 '$($builderPlanned.plan.sha256)'"} catch {$builderFailed=$true}
+if ($builderFailed) {
+    Copy-NativeJarEvidence (Invoke-NativeJarPhase 'inspect')
+    throw 'Historical builder retirement failed or is unknown; frozen evidence is retained and JAR deletion was not started.'
+}
+try {
+    $planned=Invoke-NativeJarPhase 'plan' "--request-sha256 '$requestSha'"
+    Require-NativeJar ($planned.status -ceq 'PLANNED' -and $planned.plan.sha256 -cmatch '^[a-f0-9]{64}$') 'No exact native JAR retirement plan was produced.'
+} catch {
+    Copy-NativeJarEvidence (Invoke-NativeJarPhase 'inspect')
+    throw 'JAR planning failed after historical builder retirement; original builder receipts were collected.'
+}
 $applyFailed=$false
 try {$result=Invoke-NativeJarPhase 'apply' "--request-sha256 '$requestSha' --plan-sha256 '$($planned.plan.sha256)'"} catch {$applyFailed=$true}
 $observed=Invoke-NativeJarPhase 'inspect'
-foreach ($entry in @(@('capture','native-jar-duplicate-capture.json'),@('request','native-jar-duplicate-request.json'),@('plan','native-jar-duplicate-plan.json'),@('receipt','native-jar-duplicate-receipt.json'),@('journal','native-jar-duplicate-journal.jsonl'))) {
-    $property=$observed.files.PSObject.Properties[$entry[0]]
-    if ($null -eq $property) {continue}
-    $binding=$property.Value
-    Require-NativeJar ($binding.file -ceq $entry[1] -and $binding.bytes -gt 0 -and $binding.bytes -le 2MB -and $binding.sha256 -cmatch '^[a-f0-9]{64}$') 'Native JAR evidence escaped its bounded allowlist.'
-    $destinationFile=Join-Path $workspace ('artifacts/'+$entry[1]); Require-NativeJar (-not (Test-Path -LiteralPath $destinationFile)) 'Existing original evidence cannot be overwritten.'
-    $null=Invoke-NativeJar $scp ($SshOptions+@('-P',$PortText,"${Destination}:$RemoteRoot/inbox/$Tag/$($entry[1])",$destinationFile))
-    Assert-NativeJarPath $destinationFile
-    Require-NativeJar ((Get-Item -LiteralPath $destinationFile).Length -eq $binding.bytes -and (Get-FileHash -LiteralPath $destinationFile -Algorithm SHA256).Hash.ToLowerInvariant() -ceq $binding.sha256) 'Collected native JAR evidence changed.'
-}
+Copy-NativeJarEvidence $observed
+$builderReceiptFile=Join-Path $workspace 'artifacts/native-builder-retirement-receipt.json'
+Require-NativeJar (Test-Path -LiteralPath $builderReceiptFile -PathType Leaf) 'Historical builder retirement lacks its original server receipt.'
+$builderReceipt=Get-Content -LiteralPath $builderReceiptFile -Raw -Encoding utf8 | ConvertFrom-Json -Depth 24
+Require-NativeJar ($builderReceipt.status -cin @('REMOVED','NO_ACTION') -and $builderReceipt.current.release -ceq $Tag -and $builderReceipt.current.commit -ceq $Commit -and $builderReceipt.current.sourceSha256 -ceq $SourceSha256 -and $builderReceipt.identity.instanceId -ceq $instance -and $builderReceipt.identity.machineId -ceq $machine -and $builderReceipt.requestSha256 -ceq $requestSha -and $builderReceipt.planSha256 -ceq $builderPlanned.plan.sha256 -and $builderReceipt.imagesPreserved -eq $true -and $builderReceipt.volumesPreserved -eq $true -and $builderReceipt.directoriesPreserved -eq $true -and $builderReceipt.jarDeletionPerformed -eq $false) 'Historical builder retirement lacks matching source, host or preservation evidence.'
 $receiptFile=Join-Path $workspace 'artifacts/native-jar-duplicate-receipt.json'
 Require-NativeJar (Test-Path -LiteralPath $receiptFile -PathType Leaf) 'Native JAR retirement lacks an actual server receipt.'
 $receipt=Get-Content -LiteralPath $receiptFile -Raw -Encoding utf8 | ConvertFrom-Json -Depth 20
 Require-NativeJar (-not $applyFailed -and $receipt.status -cin @('REMOVED','NO_ACTION') -and $receipt.current.release -ceq $Tag -and $receipt.current.commit -ceq $Commit -and $receipt.current.sourceSha256 -ceq $SourceSha256 -and $receipt.identity.instanceId -ceq $instance -and $receipt.identity.machineId -ceq $machine -and $receipt.requestSha256 -ceq $requestSha -and $receipt.planSha256 -ceq $planned.plan.sha256 -and $receipt.inboxKeepersPreserved -is [bool] -and $receipt.inboxKeepersPreserved) 'Native JAR retirement failed or has an unknown outcome; review the retained originals.'
-$summary=[ordered]@{schemaVersion=1;kind='doorhandle-failed-native-jar-duplicate-ci';current=$spec.current;identity=$spec.identity;status=$receipt.status;requestSha256=$requestSha;planSha256=$planned.plan.sha256;deletedFiles=@($receipt.deleted).Count;candidateAllocatedBytes=$planned.candidateAllocatedBytes;localControlCustody=$local.custody;localSkipped=$local.skipped;captureSkipped=$captured.skipped;planSkipped=$planned.skipped;availableBytesBefore=$receipt.availableBytesBefore;availableBytesAfter=$receipt.availableBytesAfter;inboxKeepersPreserved=$true;testsRunByRetirement=$false}
+$summary=[ordered]@{schemaVersion=1;kind='doorhandle-failed-native-jar-duplicate-ci';current=$spec.current;identity=$spec.identity;status=$receipt.status;requestSha256=$requestSha;planSha256=$planned.plan.sha256;deletedFiles=@($receipt.deleted).Count;candidateAllocatedBytes=$planned.candidateAllocatedBytes;localControlCustody=$local.custody;localSkipped=$local.skipped;captureSkipped=$captured.skipped;planSkipped=$planned.skipped;builderStatus=$builderReceipt.status;retiredBuilders=@($builderReceipt.removed).Count;builderSkipped=$builderReceipt.skipped;builderPlanSha256=$builderPlanned.plan.sha256;availableBytesBefore=$receipt.availableBytesBefore;availableBytesAfter=$receipt.availableBytesAfter;inboxKeepersPreserved=$true;imagesPreserved=$true;volumesPreserved=$true;testsRunByRetirement=$false}
 $summary | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $workspace 'artifacts/native-jar-duplicate-ci.json') -Encoding utf8
 Write-Output ($summary | ConvertTo-Json -Depth 12 -Compress)

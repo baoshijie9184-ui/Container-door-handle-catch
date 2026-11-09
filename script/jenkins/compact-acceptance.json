@@ -1150,6 +1150,12 @@
         "allowedSkippedTests": []
       },
       {
+        "module": "tests_python.test_historical_builder_retirement",
+        "minimumTests": 86,
+        "source": "tests_python/test_historical_builder_retirement.py",
+        "allowedSkippedTests": []
+      },
+      {
         "module": "tests_python.test_compact_ddl_policy",
         "minimumTests": 56,
         "source": "tests_python/test_compact_ddl_policy.py",

@@ -20,6 +20,7 @@ from pathlib import Path
 import re
 import secrets
 import stat
+import subprocess
 import sys
 import tarfile
 from types import SimpleNamespace
@@ -42,6 +43,14 @@ APPROVED_OLD = {
     'ci-117-8c898996cc28': '8c898996cc28ce30fd6531710511f833cccb4864',
     'ci-118-6481f7fa6021': '6481f7fa6021eb36592a081d04f385886c03412a',
     'ci-130-9a588271dadb': '9a588271dadb135ec4284392ef7b9c9c55ea511d',
+}
+# Original tool bytes recorded by the retained Jenkins preparation receipts.
+# These values authenticate the owner chain; matching self-described fields
+# alone never authorize retiring an old container.
+APPROVED_BUILDER_TOOLS = {
+    'ci-117-8c898996cc28': 'da96602b35fc023d3b07ea853026dcc311739c1c3903e086f81af3d7e912a9e4',
+    'ci-118-6481f7fa6021': 'ff6df0c9f30b38d66f6bc6bbfd42c2fae86d6fe75a7906fafbe19ce10fcb326a',
+    'ci-130-9a588271dadb': '805a2a101db89e26ef54224cd4f1456f4f4b545675485a114374cacbc2bc3fb1',
 }
 
 
@@ -342,13 +351,14 @@ def remove_duplicate(root, descriptor, quarantine=None):
                 'quarantinePath':quarantine['path'],'capturedInodeVerified':True}
 
 
-def source_proof(root, tag, commit, source_sha):
+def source_proof(root, tag, commit, source_sha, *, builder_helpers=False):
     """Read and authenticate the retained archive; never extract or run it."""
     path = Path(root) / 'inbox' / tag / 'source.tar.gz'
     need(path.exists() or path.is_symlink(), 'OLD_SOURCE_ARCHIVE_MISSING')
     with held_file(root, path, MAX_SOURCE_ARCHIVE) as (stream, signature):
         need(hash_stream(stream, MAX_SOURCE_ARCHIVE) == source_sha, 'OLD_SOURCE_ARCHIVE_SHA_DRIFT')
-        stream.seek(0); recipe = None
+        stream.seek(0); recipe = None; builder_shas = {}
+        builder_names = {'script/docker/compact-build-resources.py', 'script/docker/compact-image-inputs.py'}
         class Bounded:
             def __init__(self, source): self.source, self.total = source, 0
             def read(self, size=-1):
@@ -360,6 +370,12 @@ def source_proof(root, tag, commit, source_sha):
             count = 0
             for member in archive:
                 count += 1; need(count <= 50_000 and 0 <= member.size <= 32 * 1024 ** 2, 'SOURCE_MEMBER_BOUND_EXCEEDED')
+                if builder_helpers and member.name in builder_names:
+                    key = Path(member.name).name
+                    need(key not in builder_shas and member.isfile() and 0 < member.size <= 1024 ** 2,
+                         'UNIQUE_OLD_BUILDER_HELPER_REQUIRED')
+                    raw = archive.extractfile(member).read(1024 ** 2 + 1)
+                    need(len(raw) == member.size, 'OLD_BUILDER_HELPER_TRUNCATED'); builder_shas[key] = digest_bytes(raw)
                 if member.name != 'script/jenkins/prepare-compact-fixtures.py': continue
                 need(recipe is None and member.isfile() and 0 < member.size <= 1024 ** 2, 'UNIQUE_TRANSPORT_RECIPE_REQUIRED')
                 recipe = archive.extractfile(member).read(1024 ** 2 + 1)
@@ -379,8 +395,12 @@ def source_proof(root, tag, commit, source_sha):
             calls = {ast.dump(item, include_attributes=False) for item in ast.walk(node) if isinstance(item, ast.Call)}
             if expected_target in statements and expected_keeper in statements and expected_copy in calls: proven = True
         need(proven, 'EXACT_REVIEWED_JAR_COPY_RECIPE_REQUIRED')
-        return {'path': path.relative_to(root).as_posix(), 'metadata': signature, 'bytes': signature[6],
-                'sha256': source_sha, 'transportRecipeSha256': digest_bytes(recipe)}
+        proof = {'path': path.relative_to(root).as_posix(), 'metadata': signature, 'bytes': signature[6],
+                 'sha256': source_sha, 'transportRecipeSha256': digest_bytes(recipe)}
+        if builder_helpers:
+            need(set(builder_shas) == {Path(name).name for name in builder_names}, 'ORIGINAL_BUILDER_HELPER_CLOSURE_MISSING')
+            proof['builderHelperSha256'] = builder_shas
+        return proof
 
 
 def validate_request(raw_request, request_sha256, expected_current, identity):
@@ -416,7 +436,7 @@ def expected_control_paths(current_tag, old_tag):
     return paths
 
 
-def admit_candidate(root, request, row, quiescence):
+def admit_historical_controls(root, request, row, *, builder_helpers=False):
     context = {key: row[key] for key in ('release', 'commit', 'sourceSha256')}; tag = row['release']
     controls = row['controls']; names = expected_control_paths(request['current']['release'], tag)
     need(type(controls) is dict and REQUIRED_CONTROLS <= set(controls) <= REQUIRED_CONTROLS | OPTIONAL_CONTROLS,
@@ -434,7 +454,14 @@ def admit_candidate(root, request, row, quiescence):
             raw_docs[role] = raw; bindings[role] = {**reference, 'metadata': signature}
     evidence = validate_control_documents(raw_docs, context, request['identity'])
     need(evidence['work'] == str(Path(root) / 'verification' / tag / 'checkout/work/compact-fixtures'), 'FIXTURE_OWNER_OUTSIDE_EXACT_OLD_ATTEMPT')
-    original_source = source_proof(root, tag, context['commit'], context['sourceSha256'])
+    original_source = (source_proof(root, tag, context['commit'], context['sourceSha256'], builder_helpers=True)
+                       if builder_helpers else source_proof(root, tag, context['commit'], context['sourceSha256']))
+    return {'context': context, 'evidence': evidence, 'controls': bindings, 'sourceArchive': original_source}
+
+
+def admit_candidate(root, request, row, quiescence):
+    admitted = admit_historical_controls(root, request, row)
+    context, evidence = admitted['context'], admitted['evidence']; tag = row['release']
     # The adapter must call the existing fixed cleanup.quiescent with a fresh
     # docker_snapshot. No weaker path-only or stopped-container exception is
     # implemented by this new library.
@@ -442,8 +469,8 @@ def admit_candidate(root, request, row, quiescence):
     need(quiescence(Path(root) / 'verification' / tag / 'checkout', tag, evidence['ownerToken']) is None,
          'STRICT_QUIESCENCE_MUST_RETURN_ONLY_AFTER_SUCCESS')
     target = describe_duplicate(root, tag, evidence['jarSha256'], evidence['jarBytes'])
-    return {'context': context, 'jenkinsResult': evidence['jenkinsResult'], 'controls': bindings,
-            'sourceArchive': original_source, 'ownerToken': evidence['ownerToken'], 'target': target}
+    return {'context': context, 'jenkinsResult': evidence['jenkinsResult'], 'controls': admitted['controls'],
+            'sourceArchive': admitted['sourceArchive'], 'ownerToken': evidence['ownerToken'], 'target': target}
 
 
 @contextmanager
@@ -583,7 +610,8 @@ def fixed_current_source(root, args):
     need(own == inbox / 'retire-failed-native-jar-duplicates.py', 'FIXED_CURRENT_INBOX_EXECUTOR_REQUIRED')
     paths = {'script/jenkins/retire-failed-native-jar-duplicates.py': own,
              'script/jenkins/cleanup-ecs-builds.py': inbox / 'cleanup-ecs-builds.py',
-             'script/jenkins/verify-remote.py': inbox / 'verify-remote.py'}
+             'script/jenkins/verify-remote.py': inbox / 'verify-remote.py',
+             'script/docker/compact-build-resources.py': inbox / 'compact-build-resources.py'}
     expected = {}
     for name, path in paths.items():
         raw = private_bytes(root, path, 1024 ** 2); expected[name] = digest_bytes(raw)
@@ -608,7 +636,8 @@ def fixed_current_source(root, args):
                 seen.add(member.name)
             need(archive.pax_headers.get('comment') == args.commit and seen == set(paths), 'CURRENT_SOURCE_COMMIT_AND_CLOSURE_REQUIRED')
     modules = {}
-    for name, filename in (('cleanup', 'cleanup-ecs-builds.py'), ('verifier', 'verify-remote.py')):
+    for name, filename in (('cleanup', 'cleanup-ecs-builds.py'), ('verifier', 'verify-remote.py'),
+                           ('builder', 'compact-build-resources.py')):
         spec = importlib.util.spec_from_file_location('native_jar_fixed_' + name, inbox / filename)
         module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module); modules[name] = module
     return modules
@@ -645,13 +674,157 @@ def admitted_current(args):
              and not (root / 'verification' / args.tag / 'verification-receipt.json').exists(), 'EXACT_SOURCE_ONLY_MAINTENANCE_REQUIRED')
     def quiescence(checkout, tag, token):
         cleanup.quiescent({'checkout': checkout, 'token': token}, tag, cleanup.docker_snapshot())
-    return root, current, identity, quiescence
+    return root, current, identity, quiescence, modules
 
 
 def approved_request(raw, checksum, current, identity):
     request = validate_request(raw, checksum, current, identity)
     need(all(APPROVED_OLD.get(row['release']) == row['commit'] for row in request['candidates']), 'ONLY_THREE_REVIEWED_OLD_ATTEMPTS_ALLOWED')
     return request
+
+
+def builder_docker(*arguments):
+    result = subprocess.run(['/usr/bin/docker', *arguments], capture_output=True, timeout=20,
+                            env={key: value for key, value in os.environ.items() if key in ('PATH', 'LANG', 'LC_ALL')})
+    need(result.returncode == 0 and len(result.stdout) <= MAX_CONTROL, 'HISTORICAL_BUILDER_DOCKER_OPERATION_FAILED')
+    return result.stdout
+
+
+def builder_container_ids():
+    ids = builder_docker('ps', '-aq', '--no-trunc').decode('ascii').split()
+    need(len(ids) <= 256 and len(ids) == len(set(ids)) and all(SHA.fullmatch(cid) for cid in ids),
+         'BOUNDED_ACTUAL_CONTAINER_IDS_REQUIRED')
+    return ids
+
+
+def builder_references(root, historical, descriptor, cleanup, builder):
+    """The one admitted exited builder may be retired; every other guard stays strict."""
+    cid = descriptor['containerId']; tag = historical['context']['release']
+    containers = cleanup.docker_snapshot()
+    need(sum(row[0] == cid for row in containers) == 1, 'EXACT_HISTORICAL_BUILDER_MISSING')
+    cleanup.quiescent({'checkout': Path(root) / 'verification' / tag / 'checkout',
+                       'token': historical['evidence']['ownerToken']}, tag,
+                      [row for row in containers if row[0] != cid])
+    name = 'doorhandle-builder-' + descriptor['ownerToken']
+    for other in builder_container_ids():
+        if other == cid: continue
+        row = builder.historical_builder_inspect(builder_docker('inspect', other)); host = row.get('HostConfig') or {}
+        values = [host.get(key, '') for key in ('NetworkMode', 'PidMode', 'IpcMode')]
+        values += list(host.get('VolumesFrom') or []) + list(host.get('Links') or [])
+        for value in values:
+            need(type(value) is str, 'CONTAINER_REFERENCE_METADATA_INVALID')
+            parts = value.replace('/', ':').split(':')
+            need(not any(item == name or len(item) >= 12 and cid.startswith(item) for item in parts),
+                 'ANOTHER_CONTAINER_REFERENCES_HISTORICAL_BUILDER')
+    # No fallback kills or cgroup writes. A still-populated retained group stops
+    # maintenance even if Docker reports an exited root process.
+    for group in (Path('/sys/fs/cgroup/system.slice') / ('docker-' + cid + '.scope'),
+                  Path('/sys/fs/cgroup/docker') / cid):
+        if group.exists():
+            need(group.resolve(strict=True) == group and not group.is_symlink(), 'BUILDER_CGROUP_LINK_REJECTED')
+            value = (group / 'cgroup.events').read_bytes()
+            need(len(value) <= 4096 and dict(line.split() for line in value.decode('ascii').splitlines()).get('populated') == '0',
+                 'HISTORICAL_BUILDER_CGROUP_REMAINS_POPULATED')
+
+
+def capture_builder(root, request, row, builder):
+    historical = admit_historical_controls(root, request, row, builder_helpers=True)
+    directory = Path(root) / 'inbox' / row['release'] / 'candidate-build-tools'
+    controls, raw = {}, {}
+    for role, filename in (('tools', 'tools.json'), ('summary', 'resource-summary.json'),
+                            ('measurement', 'official-layer-measurements.json')):
+        path = directory / filename
+        with held_file(root, path, MAX_CONTROL) as (stream, signature):
+            content = stream.read(MAX_CONTROL + 1)
+            need(0 < len(content) <= MAX_CONTROL, 'BOUNDED_ORIGINAL_BUILDER_CONTROL_REQUIRED')
+            raw[role] = content
+            controls[role] = {'path': path.relative_to(root).as_posix(), 'bytes': len(content),
+                              'sha256': digest_bytes(content), 'metadata': signature}
+    need(digest_bytes(raw['tools']) == APPROVED_BUILDER_TOOLS.get(row['release']),
+         'HISTORICAL_BUILDER_TOOLS_DIFFERS_FROM_ORIGINAL_JENKINS_REFERENCE')
+    summary = decode(raw['summary']); cid = summary.get('cleanup', {}).get('builderContainerId')
+    need(type(cid) is str and SHA.fullmatch(cid), 'ORIGINAL_BUILDER_CONTAINER_ID_REQUIRED')
+    inspected = builder_docker('inspect', cid); actual = builder.historical_builder_inspect(inspected)
+    descriptor = builder.historical_builder_descriptor(root, historical['context'], request['identity'],
+        raw['tools'], raw['summary'], raw['measurement'], historical['sourceArchive']['builderHelperSha256'], actual)
+    return {'historical': historical, 'builderControls': controls, 'descriptor': descriptor}, inspected
+
+
+def plan_builders(root, raw_request, *, request_sha256, expected_current, identity, modules):
+    request = approved_request(raw_request, request_sha256, expected_current, identity)
+    accepted, skipped = [], []; builder, cleanup = modules['builder'], modules['cleanup']
+    directory = Path(root) / 'inbox' / expected_current['release'] / 'native-builder-retirement-inspect'
+    with controller_lock(root):
+        for row in request['candidates']:
+            try:
+                with attempt_lock(root, row['release']):
+                    value, inspected = capture_builder(root, request, row, builder)
+                    builder_references(root, value['historical'], value['descriptor'], cleanup, builder)
+                    if not directory.exists(): directory.mkdir(mode=0o700)
+                    owned_path(root, directory, directory=True)
+                    path = directory / (row['release'] + '.json')
+                    need(not path.exists() and not path.is_symlink(), 'FRESH_ORIGINAL_BUILDER_INSPECTION_REQUIRED')
+                    with os.fdopen(os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600), 'wb') as stream:
+                        stream.write(inspected); stream.flush(); os.fsync(stream.fileno())
+                    value['inspection'] = {'path': path.relative_to(root).as_posix(), 'bytes': len(inspected),
+                                           'sha256': digest_bytes(inspected), 'metadata': metadata(path.lstat())}
+                    accepted.append(value)
+            except (OSError, ValueError, KeyError, TypeError, tarfile.TarError, EOFError) as error:
+                skipped.append({'release': row['release'], 'reason': str(error) if isinstance(error, RetirementError)
+                                or getattr(error, 'doorhandle_public_resource_error', False) else type(error).__name__})
+    return {'schemaVersion': 1, 'kind': 'doorhandle-historical-builder-retirement-plan', 'current': expected_current,
+            'identity': identity, 'requestSha256': request_sha256, 'candidates': accepted, 'skipped': skipped,
+            'deletionPerformed': False, 'imagesPreserved': True, 'volumesPreserved': True, 'directoriesPreserved': True}
+
+
+def apply_builders(root, raw_request, prepared, *, request_sha256, plan_sha256, expected_current, identity, modules):
+    request = approved_request(raw_request, request_sha256, expected_current, identity)
+    need(digest_bytes(canonical(prepared)) == plan_sha256 and prepared.get('kind') == 'doorhandle-historical-builder-retirement-plan'
+         and prepared.get('current') == expected_current and prepared.get('identity') == identity
+         and prepared.get('requestSha256') == request_sha256 and prepared.get('deletionPerformed') is False,
+         'EXACT_HISTORICAL_BUILDER_PLAN_REQUIRED')
+    selected = prepared.get('candidates'); rows = {row['release']: row for row in request['candidates']}
+    need(type(selected) is list and len(selected) <= len(rows)
+         and len({row['descriptor']['release'] for row in selected}) == len(selected)
+         and all(row['descriptor']['release'] in rows for row in selected), 'BOUNDED_HISTORICAL_BUILDER_SELECTION_REQUIRED')
+    builder, cleanup = modules['builder'], modules['cleanup']; removed, failure = [], None
+    journal_path = Path(root) / 'inbox' / expected_current['release'] / 'native-builder-retirement-journal.jsonl'
+    with controller_lock(root), os.fdopen(os.open(journal_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600), 'wb') as journal:
+        def record(value):
+            journal.write(canonical(value) + b'\n'); journal.flush(); os.fsync(journal.fileno())
+        record({'phase': 'STARTED', 'planSha256': plan_sha256, 'requestSha256': request_sha256})
+        active = None
+        try:
+            for candidate in selected:
+                active = candidate['descriptor']['release']
+                with attempt_lock(root, active):
+                    current, _inspected = capture_builder(root, request, rows[active], builder)
+                    need(current == {key: value for key, value in candidate.items() if key != 'inspection'},
+                         'HISTORICAL_BUILDER_OR_CONTROLS_CHANGED_AFTER_PLAN')
+                    reference = candidate['inspection']; path = Path(root) / reference['path']
+                    with held_file(root, path, MAX_CONTROL) as (stream, signature):
+                        raw = stream.read(MAX_CONTROL + 1)
+                        need(signature == reference['metadata'] and len(raw) == reference['bytes']
+                             and digest_bytes(raw) == reference['sha256']
+                             and digest_bytes(builder.encoded(builder.historical_builder_inspect(raw))) == candidate['descriptor']['inspectSha256'],
+                             'FROZEN_HISTORICAL_BUILDER_INSPECTION_DRIFT')
+                    record({'phase': 'REMOVE_STARTED', 'release': active, 'containerId': candidate['descriptor']['containerId'],
+                            'inspection': reference})
+                    value = builder.historical_builder_remove(candidate['descriptor'],
+                        lambda cid: builder.historical_builder_inspect(builder_docker('inspect', cid)),
+                        lambda cid: builder_docker('rm', cid), builder_container_ids,
+                        lambda _cid: builder_references(root, current['historical'], current['descriptor'], cleanup, builder))
+                    removed.append(value); record({'phase': 'REMOVED', **value})
+        except Exception as error:
+            failure = {'release': active, 'reason': str(error) if isinstance(error, RetirementError)
+                       or getattr(error, 'doorhandle_public_resource_error', False) else type(error).__name__}
+            record({'phase': 'FAILED_OR_UNKNOWN', **failure})
+        record({'phase': 'FINISHED', 'removedContainers': len(removed)})
+    return {'schemaVersion': 1, 'kind': 'doorhandle-historical-builder-retirement-receipt',
+            'status': 'FAILED_OR_UNKNOWN' if failure else 'REMOVED' if removed else 'NO_ACTION',
+            'current': expected_current, 'identity': identity, 'requestSha256': request_sha256, 'planSha256': plan_sha256,
+            'removed': removed, 'failure': failure, 'skipped': prepared['skipped'], 'imagesPreserved': True,
+            'volumesPreserved': True, 'directoriesPreserved': True, 'jarDeletionPerformed': False}
 
 
 def capture_request(root, raw_local_spec, *, local_spec_sha256, expected_current, identity):
@@ -680,16 +853,17 @@ def capture_request(root, raw_local_spec, *, local_spec_sha256, expected_current
 
 def cli(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--phase', choices=('capture-request', 'plan', 'apply', 'inspect'), required=True)
+    parser.add_argument('--phase', choices=('capture-request', 'plan-builders', 'apply-builders', 'plan', 'apply', 'inspect'), required=True)
     parser.add_argument('--mode', choices=('Verified', 'Maintenance'), required=True)
     for name in ('root', 'tag', 'commit', 'source-sha256', 'instance-id', 'machine-id', 'current-receipt-sha256'):
         parser.add_argument('--' + name, required=True)
     parser.add_argument('--local-spec-sha256'); parser.add_argument('--request-sha256'); parser.add_argument('--plan-sha256')
     args = parser.parse_args(argv)
     try:
-        root, current, identity, quiescence = admitted_current(args); inbox = root / 'inbox' / args.tag
+        root, current, identity, quiescence, modules = admitted_current(args); inbox = root / 'inbox' / args.tag
         request_file = inbox / 'native-jar-duplicate-request.json'; plan_file = inbox / 'native-jar-duplicate-plan.json'
         receipt_file = inbox / 'native-jar-duplicate-receipt.json'; capture_file = inbox / 'native-jar-duplicate-capture.json'
+        builder_plan_file = inbox / 'native-builder-retirement-plan.json'; builder_receipt_file = inbox / 'native-builder-retirement-receipt.json'
         if args.phase == 'capture-request':
             raw = private_bytes(root, inbox / 'native-jar-duplicate-local-spec.json')
             request, skipped = capture_request(root, raw, local_spec_sha256=args.local_spec_sha256, expected_current=current, identity=identity)
@@ -699,10 +873,24 @@ def cli(argv=None):
         elif args.phase == 'inspect':
             files = {}
             for name, path in (('request', request_file), ('plan', plan_file), ('receipt', receipt_file), ('capture', capture_file),
-                               ('journal', inbox / 'native-jar-duplicate-journal.jsonl')):
+                               ('journal', inbox / 'native-jar-duplicate-journal.jsonl'), ('builderPlan', builder_plan_file),
+                               ('builderReceipt', builder_receipt_file), ('builderJournal', inbox / 'native-builder-retirement-journal.jsonl')):
                 if path.exists():
                     raw = private_bytes(root, path); files[name] = {'file': path.name, 'bytes': len(raw), 'sha256': digest_bytes(raw)}
             result = {'status': 'INSPECTED', 'current': current, 'identity': identity, 'files': files}
+        elif args.phase in ('plan-builders', 'apply-builders'):
+            raw = private_bytes(root, request_file); approved_request(raw, args.request_sha256, current, identity)
+            options = {'request_sha256': args.request_sha256, 'expected_current': current, 'identity': identity, 'modules': modules}
+            if args.phase == 'plan-builders':
+                value = plan_builders(root, raw, **options)
+                result = {'status': 'PLANNED', 'current': current, 'identity': identity,
+                          'plan': write_new(builder_plan_file, value), 'skipped': value['skipped']}
+            else:
+                plan_raw = private_bytes(root, builder_plan_file)
+                need(digest_bytes(plan_raw) == args.plan_sha256, 'ORIGINAL_BUILDER_PLAN_RAW_SHA_DRIFT')
+                value = apply_builders(root, raw, decode(plan_raw), plan_sha256=args.plan_sha256, **options)
+                result = {'status': value['status'], 'current': current, 'identity': identity,
+                          'receipt': write_new(builder_receipt_file, value)}
         else:
             raw = private_bytes(root, request_file); approved_request(raw, args.request_sha256, current, identity)
             options = {'request_sha256': args.request_sha256, 'expected_current': current, 'identity': identity, 'quiescence': quiescence}
@@ -718,8 +906,13 @@ def cli(argv=None):
         print(json.dumps(result, sort_keys=True))
         return 0 if result['status'] != 'FAILED_OR_UNKNOWN' else 2
     except Exception as error:
-        print(json.dumps({'status': 'REJECTED', 'errorType': type(error).__name__,
-                          'reason': str(error) if isinstance(error, RetirementError) else 'NATIVE_DUPLICATE_ADMISSION_FAILED'}))
+        location = error.__traceback__
+        while location is not None and location.tb_next is not None: location = location.tb_next
+        point = None if location is None else {'file': Path(location.tb_frame.f_code.co_filename).name[:96],
+            'function': location.tb_frame.f_code.co_name[:96], 'line': location.tb_lineno}
+        print(json.dumps({'status': 'REJECTED', 'phase': args.phase, 'errorType': type(error).__name__, 'location': point,
+                          'reason': str(error) if isinstance(error, RetirementError)
+                          or getattr(error, 'doorhandle_public_resource_error', False) else 'NATIVE_DUPLICATE_ADMISSION_FAILED'}))
         return 2
 
 

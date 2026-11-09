@@ -1005,7 +1005,12 @@ def admit_tools(root, context, module_directory):
 
 def measured_tool_identity(directory, value):
     measurement_file = Path(directory) / 'official-layer-measurements.json'; measurement = read(measurement_file)
-    require(value.get('imageMeasurementSha256') == digest(measurement_file)
+    return measured_tool_identity_value(value, measurement, digest(measurement_file))
+
+
+def measured_tool_identity_value(value, measurement, measurement_sha256):
+    """The same pinned engine proof, also usable with authenticated old bytes."""
+    require(value.get('imageMeasurementSha256') == measurement_sha256
             and measurement.get('configDigest') == IMAGE_ID and measurement.get('imageId') == IMAGE_ID
             and measurement.get('compressedBytes') == BUILDKIT_LAYER_BYTES
             and measurement.get('loadDescriptor', {}).get('digest') == measurement.get('manifestDigest'),
@@ -1016,6 +1021,144 @@ def measured_tool_identity(directory, value):
     require(engine_identity(row, measurement, measurement['loadDescriptor']) == engine,
             'Official builder engine/config/measurement binding differs')
     return engine
+
+
+HISTORICAL_BUILDERS = {
+    'ci-117-8c898996cc28': '8c898996cc28ce30fd6531710511f833cccb4864',
+    'ci-118-6481f7fa6021': '6481f7fa6021eb36592a081d04f385886c03412a',
+    'ci-130-9a588271dadb': '9a588271dadb135ec4284392ef7b9c9c55ea511d',
+}
+
+
+def _historical_json(raw):
+    require(type(raw) is bytes and 0 < len(raw) <= 2 * MIB, 'Bounded historical builder control required')
+    def unique(pairs):
+        value = {}
+        for key, item in pairs:
+            require(key not in value, 'Duplicate historical builder control field'); value[key] = item
+        return value
+    value = json.loads(raw, object_pairs_hook=unique,
+                       parse_constant=lambda _value: require(False, 'Nonfinite historical builder control'))
+    require(type(value) is dict, 'Historical builder control object required')
+    return value
+
+
+def historical_builder_inspect(raw):
+    """Decode one bounded actual Docker inspection, rejecting duplicate fields."""
+    require(type(raw) is bytes and 0 < len(raw) <= 2 * MIB, 'Bounded historical builder inspection required')
+    value = _historical_json(b'{"inspection":' + raw + b'}')['inspection']
+    require(type(value) is list and len(value) == 1 and type(value[0]) is dict,
+            'One exact historical builder inspection required')
+    return value[0]
+
+
+def historical_builder_descriptor(root, context, identity, tools_raw, summary_raw, measurement_raw, old_helper_shas, row):
+    """Admit only three terminal, owned builders; no mutation or old code execution.
+
+    The caller authenticates the failed Jenkins terminal and the original source
+    archive before supplying the two old helper SHA values. The state volume is
+    deliberately retained; this API never deletes images, volumes or directories.
+    """
+    require(type(context) is dict and set(context) == {'release', 'commit', 'sourceSha256'}
+            and HISTORICAL_BUILDERS.get(context.get('release')) == context.get('commit')
+            and type(context.get('sourceSha256')) is str and SHA.fullmatch(context['sourceSha256']),
+            'Only the three reviewed historical builders are eligible')
+    require(type(identity) is dict and identity.get('executionLocation') == 'ECS'
+            and set(identity) == {'instanceId', 'machineId', 'executionLocation'}, 'Exact historical ECS identity required')
+    require(type(old_helper_shas) is dict and set(old_helper_shas) == {'compact-build-resources.py', 'compact-image-inputs.py'}
+            and all(type(value) is str and SHA.fullmatch(value) for value in old_helper_shas.values()),
+            'Authenticated original builder helper hashes required')
+    root = Path(root)
+    require(root.is_absolute() and '..' not in root.parts, 'Absolute admitted CI root required')
+    directory = root / 'inbox' / context['release'] / 'candidate-build-tools'
+    tools, summary, measurement = (_historical_json(raw) for raw in (tools_raw, summary_raw, measurement_raw))
+    expected = {**context, 'identity': identity}
+    require(all(tools.get(key) == value and summary.get(key) == value for key, value in expected.items()),
+            'Historical builder controls belong to another source or host')
+    require(tools.get('version') == 1 and tools.get('kind') == 'doorhandle-candidate-build-tools'
+            and tools.get('status') == 'PREPARED' and tools.get('imageId') == IMAGE_ID
+            and tools.get('imageReference') == REFERENCE and tools.get('licenseSha256') == LICENSE_SHA
+            and tools.get('buildctlBundled') is True and tools.get('ociImageLoadVerified') is True
+            and tools.get('hostPluginInstalled') is False
+            and tools.get('helperSha256') == old_helper_shas['compact-build-resources.py']
+            and tools.get('imageInputsHelperSha256') == old_helper_shas['compact-image-inputs.py'],
+            'Original prepared builder tools or helper bytes differ')
+    require(tools.get('resourceEvidence') == {'file': str(directory / 'resource-summary.json'),
+            'sha256': hashlib.sha256(summary_raw).hexdigest()}, 'Original builder summary binding differs')
+    cleanup = summary.get('cleanup', {})
+    require(summary.get('version') == 1 and summary.get('kind') == 'doorhandle-candidate-build-resources'
+            and summary.get('status') == 'PASS' and summary.get('capacityVerdict') == 'CONTROLLED_MEASUREMENT'
+            and summary.get('productionCapacityVerified') is False and summary.get('monitorFailure') is None
+            and summary.get('originalDataChanged') is False and type(summary.get('ownerToken')) is str
+            and re.fullmatch(r'[a-f0-9]{24}', summary['ownerToken'])
+            and all(cleanup.get(key) is True for key in ('creatorStopped', 'builderStopped', 'daemonImportTerminated'))
+            and type(cleanup.get('builderContainerId')) is str and SHA.fullmatch(cleanup['builderContainerId'])
+            and type(cleanup.get('builderExitCode')) is int, 'Original stopped builder owner or cleanup is incomplete')
+    profile = rootless_profile_proof()
+    require(tools.get('rootlessProfile') == summary.get('rootlessProfile') == profile,
+            'Historical rootless profile proof differs')
+    engine = measured_tool_identity_value(tools, measurement, hashlib.sha256(measurement_raw).hexdigest())
+    require(summary.get('engineIdentity') == engine, 'Historical builder engine identity differs')
+    require(type(row) is dict, 'Actual historical container inspection required')
+    cid = cleanup['builderContainerId']; token = summary['ownerToken']; volume = 'doorhandle-builder-' + token + '-state'
+    config, host, state = (row.get(name) or {} for name in ('Config', 'HostConfig', 'State'))
+    labels = config.get('Labels') or {}
+    require(row.get('Id') == cid and row.get('Name') == '/doorhandle-builder-' + token
+            and row.get('Image') == engine['engineImageId'] and labels.get(LABEL) == token
+            and labels.get('io.doorhandle.release') == context['release']
+            and labels.get('io.doorhandle.source') == context['sourceSha256']
+            and config.get('User') in ('1000', '1000:1000') and host.get('Privileged') is False
+            and host.get('Memory') == host.get('MemorySwap') == BUILDER_MEMORY
+            and host.get('NanoCpus') == 2 * 10 ** 9 and host.get('PidsLimit') == 1024
+            and (host.get('RestartPolicy') or {}).get('Name') == 'no' and host.get('AutoRemove') is False
+            and host.get('NetworkMode') == 'bridge' and rootless_security_options(host)
+            and row.get('AppArmorProfile') == ROOTLESS_PROFILE, 'Actual historical builder ownership or sandbox differs')
+    require(state.get('Status') == 'exited' and state.get('Running') is False and state.get('Restarting') is False
+            and state.get('Paused') is False and state.get('OOMKilled') is False
+            and type(state.get('Pid')) is int and state['Pid'] == 0
+            and state.get('ExitCode') == cleanup['builderExitCode'] and type(state.get('StartedAt')) is str
+            and state['StartedAt'] and not state['StartedAt'].startswith('0001-')
+            and not row.get('ExecIDs') and (state.get('Health') or {}).get('Status') not in ('healthy', 'starting'),
+            'Historical builder is not a proven inactive terminal container')
+    mounts = row.get('Mounts')
+    require(type(mounts) is list and all(type(item) is dict for item in mounts), 'Actual builder mount catalogue required')
+    persistent = [item for item in mounts if item.get('Type') != 'tmpfs']
+    require(len(persistent) == 1 and persistent[0].get('Type') == 'volume' and persistent[0].get('Name') == volume
+            and persistent[0].get('Destination') == '/home/user/.local/share/buildkit' and persistent[0].get('RW') is True
+            and set(host.get('Tmpfs') or {}) == {'/run/user/1000', '/tmp'}
+            and all(item.get('Destination') in ('/run/user/1000', '/tmp') for item in mounts if item.get('Type') == 'tmpfs'),
+            'Historical builder has an unexpected bind mount or volume')
+    return {**context, 'identity': identity, 'ownerToken': token, 'containerId': cid,
+            'engineImageId': engine['engineImageId'], 'exitCode': cleanup['builderExitCode'], 'preservedVolume': volume,
+            'inspectSha256': hashlib.sha256(encoded(row)).hexdigest(),
+            'controlSha256': {'tools': hashlib.sha256(tools_raw).hexdigest(), 'summary': hashlib.sha256(summary_raw).hexdigest(),
+                              'measurement': hashlib.sha256(measurement_raw).hexdigest()},
+            'imagesPreserved': True, 'volumesPreserved': True, 'directoriesPreserved': True}
+
+
+def historical_builder_remove(descriptor, inspect_fn, remove_fn, list_fn, references_fn):
+    """Remove one exact exited CID, without force or volume deletion.
+
+    Docker refuses an ordinary rm if another actor starts this container after
+    the last inspection. Failure or missing readback is never reported as success.
+    """
+    require(type(descriptor) is dict and HISTORICAL_BUILDERS.get(descriptor.get('release')) == descriptor.get('commit')
+            and type(descriptor.get('containerId')) is str and SHA.fullmatch(descriptor['containerId'])
+            and type(descriptor.get('inspectSha256')) is str and SHA.fullmatch(descriptor['inspectSha256']),
+            'Reviewed fixed builder descriptor required')
+    cid = descriptor['containerId']
+    def unchanged():
+        row = inspect_fn(cid)
+        require(type(row) is dict and row.get('Id') == cid
+                and hashlib.sha256(encoded(row)).hexdigest() == descriptor['inspectSha256'], 'Historical builder changed after its plan')
+    unchanged(); require(references_fn(cid) is None, 'Historical builder reference audit did not finish')
+    unchanged(); remove_fn(cid)
+    ids = list_fn()
+    require(type(ids) is list and all(type(item) is str and SHA.fullmatch(item) for item in ids)
+            and cid not in ids, 'Historical builder removal lacks actual absent-container readback')
+    return {'status': 'REMOVED', 'release': descriptor['release'], 'containerId': cid,
+            'preservedVolume': descriptor['preservedVolume'], 'imagesPreserved': True,
+            'volumesPreserved': True, 'directoriesPreserved': True}
 
 
 def tool_engine_identity(root, context, module_directory):
