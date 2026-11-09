@@ -70,6 +70,172 @@ def classify(fixture):
     return classifier.classify_documents(documents, expected_context=fixture.context, anchors=anchors)
 
 
+def row_chain(rows):
+    chain = hashlib.sha256(b'compact-row-hash-chain-v1\n')
+    for _key, value in rows: chain.update(bytes.fromhex(value))
+    return chain.hexdigest()
+
+
+def refresh_keyed(fixture):
+    """Synthetic authenticated collector output; no DB, process or file I/O."""
+    captures = {}; values = fixture.values
+    for role in classifier.KEYED_ROLES:
+        snap = values['sourceManifest'] if role == 'source' else values[role]['snapshot']
+        for name, table in snap['tables'].items():
+            rows = fixture.keyed_rows[role][name]
+            table.update(rows=len(rows), rowsSha256=row_chain(rows))
+        snap['snapshotSha256'] = sha(raw({'schemaVersion': 1, 'tables': snap['tables']}))
+        index = {'schemaVersion': 1, 'kind': 'doorhandle-mysql-keyed-row-index', 'schema': snap['schema'],
+                 'snapshotSha256': snap['snapshotSha256'], 'tables': {}}
+        members = {}
+        for name, table in snap['tables'].items():
+            primary = classifier.primary_columns(table); rows = fixture.keyed_rows[role][name]
+            body = b''.join(raw({'keySha256': key, 'rowSha256': value}) + b'\n' for key, value in rows)
+            index['tables'][name] = {'status': 'KEYED' if primary else 'NO_PRIMARY_KEY', 'rows': len(rows),
+                'rowsSha256': table['rowsSha256'], 'columnsSha256': sha(raw(table['columns'])), 'primary': primary,
+                'file': name + '.jsonl' if primary else None, 'fileSha256': sha(body) if primary else None,
+                'bytes': len(body) if primary else 0, 'entries': len(rows) if primary else 0}
+            if primary: members[name] = body
+        index_raw = raw(index) + b'\n'
+        ref = {'file': 'source-keyed-rows/index.json' if role == 'source' else 'keyed-rows/index.json',
+               'sha256': sha(index_raw), 'bytes': len(index_raw)}
+        if role == 'source': values['fixtureOwner']['sourceKeyedRowsIndex'] = ref
+        else: values[role]['keyedRowsIndex'] = ref
+        captures[role] = {'index': index_raw, 'tables': members}
+    values['localPublic']['snapshotSha256'] = values['localA']['snapshot']['snapshotSha256']
+    values['localPublic']['restoredRows'] = sum(row['rows'] for row in values['localA']['snapshot']['tables'].values())
+    update_source(fixture); fixture.keyed_documents = captures
+    return fixture
+
+
+def reconcile(fixture):
+    documents, anchors = bind(fixture)
+    return classifier.reconcile_keyed_documents(documents, expected_context=fixture.context, anchors=anchors,
+                                                keyed_documents=fixture.keyed_documents)
+
+
+@pytest.fixture
+def keyed_bundle(bundle):
+    bundle.keyed_rows = {}
+    for role in classifier.KEYED_ROLES:
+        snap = bundle.values['sourceManifest'] if role == 'source' else bundle.values[role]['snapshot']
+        bundle.keyed_rows[role] = {name: [(sha((name + '/key').encode()), sha((name + '/row').encode()))]
+                                  for name in snap['tables']}
+    return refresh_keyed(bundle)
+
+
+def test_old_snapshot_classification_explicitly_blocks_uncollected_key_subgate(bundle):
+    result = classify(bundle)['perKeyReconciliation']
+    assert result['status'] == 'NOT_COLLECTED' and result['cutoverBlocked'] is True
+    assert result['legacyRowsPresentInSource'] is False and result['requiredBeforeCutover'] is True
+    assert result['wholeMigrationAndRuntimeAcceptanceStillRequired'] is True
+
+
+def test_keyed_full_row_inclusion_has_no_merge_or_target29_authority(keyed_bundle, monkeypatch):
+    monkeypatch.setattr(Path, 'open', lambda *_a, **_k: pytest.fail('Pure reconciliation performed file I/O'))
+    result = reconcile(keyed_bundle); summary = result['summary']
+    assert summary['status'] == 'RECONCILED' and summary['legacyRowsPresentInSource'] is True
+    assert summary['counts'] == {'MATCH': 45, 'LOCAL_ONLY': 0, 'SOURCE_ONLY': 0, 'ROW_CONFLICT': 0}
+    assert summary['gateScope'] == 'PER_KEY_SOURCE_INCLUSION_ONLY' and summary['cutoverBlocked'] is False
+    assert summary['wholeMigrationAndRuntimeAcceptanceStillRequired'] is True and result['differences'] == []
+    assert all(summary[field] is False for field in ('coverageVerified', 'targetDataCompared', 'productionMerged', 'retirementAllowed'))
+    assert summary['clockPolicy'] == 'EXACT_ORIGINAL_BYTES_NO_TIMEZONE_INFERENCE'
+
+
+def test_source_superset_keeps_every_local_row_and_lists_only_opaque_differences(keyed_bundle):
+    keyed_bundle.keyed_rows['source']['table_000'].append(('e' * 64, 'f' * 64)); refresh_keyed(keyed_bundle)
+    result = reconcile(keyed_bundle)
+    assert result['summary']['status'] == 'RECONCILED' and result['summary']['counts']['SOURCE_ONLY'] == 1
+    assert result['differences'] == [{'table': 'table_000', 'status': 'SOURCE_ONLY', 'keySha256': 'e' * 64,
+                                     'localRowSha256': None, 'sourceRowSha256': 'f' * 64}]
+
+
+def test_missing_legacy_key_is_a_cutover_blocker_even_with_valid_source_snapshot(keyed_bundle):
+    keyed_bundle.keyed_rows['source']['table_000'] = []; refresh_keyed(keyed_bundle)
+    result = reconcile(keyed_bundle)
+    assert result['summary']['status'] == 'NEEDS_REVIEW' and result['summary']['cutoverBlocked'] is True
+    assert result['summary']['counts']['LOCAL_ONLY'] == 1
+    assert result['differences'][0]['sourceRowSha256'] is None
+
+
+def test_same_primary_key_with_changed_complete_row_is_not_merged(keyed_bundle):
+    key, _row = keyed_bundle.keyed_rows['source']['table_000'][0]
+    keyed_bundle.keyed_rows['source']['table_000'] = [(key, 'd' * 64)]; refresh_keyed(keyed_bundle)
+    result = reconcile(keyed_bundle)
+    assert result['summary']['counts']['ROW_CONFLICT'] == 1 and result['summary']['cutoverBlocked'] is True
+    assert result['differences'][0]['status'] == 'ROW_CONFLICT'
+
+
+@pytest.mark.parametrize('field,value', [('type', 'bigint unsigned'), ('nullable', 'YES'), ('default', '0'),
+                                        ('collation', 'utf8mb4_bin'), ('datetimePrecision', 6)])
+def test_no_common_column_projection_or_clock_guess_for_incompatible_schema(keyed_bundle, field, value):
+    keyed_bundle.values['sourceManifest']['tables']['table_000']['columns'][0][field] = value
+    refresh_keyed(keyed_bundle); result = reconcile(keyed_bundle)['summary']
+    row = next(row for row in result['tableComparisons'] if row['table'] == 'table_000')
+    assert row['status'] == 'NOT_COMPARABLE' and row['reasonCode'] == 'FULL_TYPED_COLUMNS_OR_PRIMARY_ORDER_DIFFER'
+    assert result['cutoverBlocked'] is True and result['legacyRowsPresentInSource'] is False
+
+
+def test_without_complete_primary_key_no_key_comparability_is_claimed(keyed_bundle):
+    for role in classifier.KEYED_ROLES:
+        snapshot = keyed_bundle.values['sourceManifest'] if role == 'source' else keyed_bundle.values[role]['snapshot']
+        snapshot['tables']['table_000']['indexes'] = []
+    refresh_keyed(keyed_bundle); result = reconcile(keyed_bundle)['summary']
+    assert result['cutoverBlocked'] is True
+    assert {'table': 'table_000', 'reasonCode': 'NO_PRIMARY_KEY'} in result['blockingTables']
+
+
+def test_duplicate_key_is_rejected_instead_of_overwriting_prior_row(keyed_bundle):
+    for role in ('localA', 'localB'):
+        keyed_bundle.keyed_rows[role]['table_000'].append(keyed_bundle.keyed_rows[role]['table_000'][0])
+    refresh_keyed(keyed_bundle)
+    with pytest.raises(classifier.ClassificationError, match='DUPLICATE_PRIMARY_KEY_DIGEST'):
+        reconcile(keyed_bundle)
+
+
+@pytest.mark.parametrize('role', ['localA', 'localB', 'source'])
+def test_sidecar_file_tampering_is_rejected_by_trusted_index(keyed_bundle, role):
+    keyed_bundle.keyed_documents[role]['tables']['table_000'] = b''
+    with pytest.raises(classifier.ClassificationError, match='KEYED_ROWS_FILE_DIGEST_DRIFT'):
+        reconcile(keyed_bundle)
+
+
+def test_standalone_self_consistent_index_cannot_replace_owner_authentication(keyed_bundle):
+    index = json.loads(keyed_bundle.keyed_documents['source']['index'])
+    index['tables']['table_000']['fileSha256'] = 'f' * 64
+    keyed_bundle.keyed_documents['source']['index'] = raw(index) + b'\n'
+    with pytest.raises(classifier.ClassificationError, match='TRUSTED_KEYED_INDEX_BINDING_DRIFT'):
+        reconcile(keyed_bundle)
+
+
+def test_different_local_key_streams_fail_independent_recovery_check(keyed_bundle):
+    _key, row = keyed_bundle.keyed_rows['localB']['table_000'][0]
+    keyed_bundle.keyed_rows['localB']['table_000'] = [('f' * 64, row)]; refresh_keyed(keyed_bundle)
+    with pytest.raises(classifier.ClassificationError, match='INDEPENDENT_KEYED_RECOVERY_INDEXES_DIFFER'):
+        reconcile(keyed_bundle)
+
+
+def test_source_only_table_digest_is_checked_even_without_legacy_rows(keyed_bundle):
+    keyed_bundle.keyed_documents['source']['tables']['table_130'] = b''
+    with pytest.raises(classifier.ClassificationError, match='KEYED_ROWS_FILE_DIGEST_DRIFT'):
+        reconcile(keyed_bundle)
+
+
+@pytest.mark.parametrize('damage', ['missing-table', 'extra-table', 'missing-role'])
+def test_keyed_evidence_membership_is_closed(keyed_bundle, damage):
+    if damage == 'missing-table': keyed_bundle.keyed_documents['source']['tables'].pop('table_000')
+    elif damage == 'extra-table': keyed_bundle.keyed_documents['source']['tables']['unknown'] = b''
+    else: keyed_bundle.keyed_documents.pop('localB')
+    with pytest.raises(classifier.ClassificationError, match='COMPLETE_KEYED_'):
+        reconcile(keyed_bundle)
+
+
+def test_keyed_bundle_limits_are_enforced_without_partial_success(keyed_bundle, monkeypatch):
+    monkeypatch.setattr(classifier, 'MAX_KEYED_BUNDLE_BYTES', 1)
+    with pytest.raises(classifier.ClassificationError, match='KEYED_.*BUDGET_EXCEEDED|KEYED_BUNDLE_BYTE_LIMIT_EXCEEDED'):
+        reconcile(keyed_bundle)
+
+
 @pytest.fixture
 def bundle():
     context = {'release': 'ci-96-' + 'a' * 12, 'commit': 'a' * 40, 'sourceSha256': 'b' * 64,

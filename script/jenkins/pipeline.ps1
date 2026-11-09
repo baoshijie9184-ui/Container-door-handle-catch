@@ -170,6 +170,52 @@ if ($Action -eq 'CompactCutover') {
     if ($env:ACTION -ne 'compact-cutover' -or $env:PRODUCTION_RELEASE_ENABLED -ne 'true' -or $env:DOORHANDLE_COMPACT_RELEASE_READY -ne 'true' -or $env:DOORHANDLE_CI_SCOPE -ne 'mysql' -or $env:CI_ECS_VERIFIED -ne 'true') {
         throw 'First compact cutover requires the accepted machine release gate and this build passing MySQL ECS verification.'
     }
+    if ((-not $env:LOCAL_MYSQL_SNAPSHOT -and -not $env:LOCAL_MYSQL_ECS_SNAPSHOT) -or -not $env:LOCAL_MYSQL_FIXTURE_SETTINGS) {
+        throw 'First compact cutover cannot omit the approved legacy MySQL recovery and source-inclusion audit.'
+    }
+    $legacyFiles = @('artifacts/local-mysql-source-classification.json', 'artifacts/local-mysql-source-classification-ci.json', 'artifacts/release.json')
+    foreach ($legacyFile in $legacyFiles) {
+        $legacyItem = Get-Item -LiteralPath $legacyFile -Force -ErrorAction Stop
+        if ($legacyItem.PSIsContainer -or ($legacyItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or $legacyItem.Length -le 0 -or $legacyItem.Length -gt 1MB) {
+            throw 'First compact cutover requires bounded original classification controls from this build.'
+        }
+    }
+    $legacyReport = Get-Content -LiteralPath $legacyFiles[0] -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 32
+    $legacyBinding = Get-Content -LiteralPath $legacyFiles[1] -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 32
+    $legacyRelease = Get-Content -LiteralPath $legacyFiles[2] -Raw -Encoding UTF8 | ConvertFrom-Json
+    $legacyCommit = Require-Value 'GIT_COMMIT' '^[a-f0-9]{40}$'
+    if ($legacyBinding.kind -cne 'doorhandle-local-mysql-source-classification-ci' -or $legacyBinding.status -cne 'CLASSIFIED' -or
+        $legacyRelease.commit -cne $legacyCommit -or $legacyBinding.commit -cne $legacyCommit -or
+        $legacyRelease.release -cne $env:RELEASE_TAG -or
+        $legacyBinding.release -cne $legacyRelease.release -or $legacyBinding.sourceSha256 -cne $legacyRelease.sourceSha256 -or
+        $legacyReport.context.commit -cne $legacyCommit -or $legacyReport.context.release -cne $legacyRelease.release -or
+        $legacyReport.context.sourceSha256 -cne $legacyRelease.sourceSha256 -or
+        $legacyBinding.reportSha256 -cne (Get-FileHash -LiteralPath $legacyFiles[0] -Algorithm SHA256).Hash.ToLowerInvariant() -or
+        $legacyBinding.identity.instanceId -cne $env:DOORHANDLE_ECS_INSTANCE_ID -or
+        $legacyBinding.identity.machineId -cne $env:DOORHANDLE_ECS_MACHINE_ID -or
+        $legacyReport.context.identity.instanceId -cne $env:DOORHANDLE_ECS_INSTANCE_ID -or
+        $legacyReport.context.identity.machineId -cne $env:DOORHANDLE_ECS_MACHINE_ID -or
+        ($legacyReport.perKeyReconciliation | ConvertTo-Json -Depth 32 -Compress) -cne
+            ($legacyBinding.perKeyReconciliation | ConvertTo-Json -Depth 32 -Compress)) {
+        throw 'Legacy MySQL audit differs from this fixed build, original report or ECS identity.'
+    }
+    foreach ($legacyControl in @($legacyReport, $legacyBinding)) {
+        $legacyKeyProof = $legacyControl.perKeyReconciliation
+        foreach ($legacyProofFlag in @('cutoverBlocked', 'legacyRowsPresentInSource', 'wholeMigrationAndRuntimeAcceptanceStillRequired', 'requiredBeforeCutover')) {
+            if ($legacyKeyProof.$legacyProofFlag -isnot [bool]) { throw 'Legacy source-inclusion proof flags must be exact booleans.' }
+        }
+        if ($legacyKeyProof.scope -cne 'EXACT_TYPED_PRIMARY_KEYS_V1' -or $legacyKeyProof.gateScope -cne 'PER_KEY_SOURCE_INCLUSION_ONLY' -or
+            $legacyKeyProof.status -cne 'RECONCILED' -or $legacyKeyProof.cutoverBlocked -ne $false -or
+            $legacyKeyProof.legacyRowsPresentInSource -ne $true -or $legacyKeyProof.wholeMigrationAndRuntimeAcceptanceStillRequired -ne $true -or
+            $legacyKeyProof.requiredBeforeCutover -ne $true) {
+            throw 'Unresolved, conflicting or absent legacy MySQL rows block first production cutover.'
+        }
+        foreach ($legacyClaim in @('coverageVerified', 'targetDataCompared', 'productionMerged', 'retirementAllowed')) {
+            if ($legacyControl.$legacyClaim -isnot [bool] -or $legacyControl.$legacyClaim -ne $false) {
+                throw 'A source-inclusion audit cannot authorize migration completion or deletion of original data.'
+            }
+        }
+    }
 }
 if ($Action -eq 'VerifyRuntime' -and ($env:ACTION -ne 'verify-runtime' -or $env:DOORHANDLE_CI_SCOPE -ne 'mysql' -or $env:CI_ECS_VERIFIED -ne 'true')) {
     throw 'Runtime acceptance requires this build passing the complete MySQL ECS verification.'

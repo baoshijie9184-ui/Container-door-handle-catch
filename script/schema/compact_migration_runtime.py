@@ -34,6 +34,11 @@ WORKBENCH_SOURCES = {'agent_workbench_item', 'agent_workbench_request', 'agent_w
 MAX_PRIVATE_JSON = 16 * 1024 * 1024
 MAX_DUMP_BYTES = 4 * 1024 * 1024 * 1024
 MAX_QUERY_BYTES = 64 * 1024 * 1024
+MAX_KEYED_ROWS_PER_TABLE = 50_000
+MAX_KEYED_ROW_BYTES_PER_TABLE = 16 * 1024 * 1024
+MAX_KEYED_ROWS_TOTAL = 250_000
+MAX_KEYED_ROW_BYTES_TOTAL = 64 * 1024 * 1024
+KEYED_ROW_LINE = re.compile(rb'\{"keySha256":"([a-f0-9]{64})","rowSha256":"([a-f0-9]{64})"\}\n')
 
 
 def require(ok, message):
@@ -59,6 +64,66 @@ def canonical(value):
 
 def sha_json(value):
     return hashlib.sha256(canonical(value)).hexdigest()
+
+
+def row_hash_expression(columns):
+    """Keep SQL NULL, empty values and complete original binary bytes distinct."""
+    require(isinstance(columns, (list, tuple)) and columns and len(columns) == len(set(columns)),
+            'A complete ordered, unique column vector is required for row hashing')
+    chunks = ["IF(" + quoted(column) + " IS NULL,'N;',CONCAT('V',OCTET_LENGTH(CAST(" + quoted(column)
+              + " AS BINARY)),':',HEX(CAST(" + quoted(column) + " AS BINARY)),';'))" for column in columns]
+    return 'SHA2(CONCAT(' + ','.join(chunks) + '),256)'
+
+
+def keyed_row_output(path):
+    """Open one new, owner-only sidecar in an already admitted private folder."""
+    path = Path(path)
+    require(path.is_absolute() and path.is_relative_to(ROOT / 'work')
+            and path.parent.resolve(strict=True) == path.parent and not path.exists()
+            and not path.is_symlink(), 'Use a new canonical keyed-row file below checkout/work')
+    parent = path.parent.stat()
+    require(stat.S_ISDIR(parent.st_mode) and parent.st_uid == os.getuid()
+            and stat.S_IMODE(parent.st_mode) == 0o700, 'Keyed-row parent must be private and owned')
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, 'O_NOFOLLOW', 0)
+    descriptor = os.open(path, flags, 0o600)
+    return os.fdopen(descriptor, 'wb')
+
+
+def keyed_row_inventory(path, expected_rows, expected_chain):
+    """Independently reread a fresh sidecar before it can enter an index."""
+    path = Path(path)
+    require(path.is_absolute() and path.resolve(strict=True) == path
+            and path.is_relative_to(ROOT / 'work') and not path.is_symlink(),
+            'A canonical keyed-row sidecar below checkout/work is required')
+    before = path.lstat()
+    require(stat.S_ISREG(before.st_mode) and before.st_uid == os.getuid()
+            and stat.S_IMODE(before.st_mode) == 0o600 and before.st_nlink == 1
+            and before.st_size <= MAX_KEYED_ROW_BYTES_PER_TABLE,
+            'Keyed-row evidence must be bounded, private, regular and unlinked')
+    signature = lambda value: (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns,
+                               value.st_ctime_ns, value.st_nlink, value.st_uid, value.st_mode)
+    raw_digest, chain = hashlib.sha256(), hashlib.sha256(b'compact-row-hash-chain-v1\n')
+    keys, count, size = set(), 0, 0
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
+    with os.fdopen(descriptor, 'rb') as source:
+        require(signature(os.fstat(source.fileno())) == signature(before), 'Keyed-row file changed before reread')
+        while True:
+            line = source.readline(192)
+            if not line:
+                break
+            match = KEYED_ROW_LINE.fullmatch(line)
+            require(match is not None, 'Keyed-row file must contain complete canonical digest records')
+            key, row = match.groups()
+            require(key not in keys, 'Duplicate complete primary-key digest in keyed-row evidence')
+            keys.add(key); count += 1; size += len(line)
+            require(count <= MAX_KEYED_ROWS_PER_TABLE and size <= MAX_KEYED_ROW_BYTES_PER_TABLE,
+                    'Keyed-row evidence exceeds the per-table limit')
+            raw_digest.update(line); chain.update(bytes.fromhex(row.decode('ascii')))
+        require(signature(os.fstat(source.fileno())) == signature(before)
+                and signature(path.lstat()) == signature(before), 'Keyed-row file changed during reread')
+    require(count == expected_rows and chain.hexdigest() == expected_chain and size == before.st_size,
+            'Keyed-row index differs from the complete actual table row chain')
+    return {'file': path.name, 'fileSha256': raw_digest.hexdigest(), 'bytes': size, 'entries': count}
 
 
 def no_duplicate_keys(pairs):
@@ -327,22 +392,28 @@ class Mysql:
         process = getattr(self, 'source_lock_process', None)
         require(process is not None and process.poll() is None, 'The independent complete source read-lock session is no longer alive')
 
-    def row_hashes(self, schema, table, columns, primary):
-        chunks = ["IF(" + quoted(column) + " IS NULL,'N;',CONCAT('V',OCTET_LENGTH(CAST(" + quoted(column)
-                  + " AS BINARY)),':',HEX(CAST(" + quoted(column) + " AS BINARY)),';'))" for column in columns]
-        expression = 'SHA2(CONCAT(' + ','.join(chunks) + '),256)'
+    def row_hashes(self, schema, table, columns, primary, *, keyed_rows_path=None):
+        expression = row_hash_expression(columns)
+        capture = keyed_rows_path is not None
+        require(not capture or primary and len(primary) == len(set(primary)) and set(primary) <= set(columns),
+                'Keyed-row capture requires the complete nonempty ordered primary key')
         order = ','.join(quoted(column) for column in primary) if primary else 'row_sha'
-        sql = ("SET SESSION time_zone='+00:00'; SELECT " + expression + ' AS row_sha FROM '
+        selected = (row_hash_expression(primary) + ' AS key_sha,' if capture else '') + expression
+        sql = ("SET SESSION time_zone='+00:00'; SELECT " + selected + ' AS row_sha FROM '
                + quoted(schema) + '.' + quoted(table) + ' ORDER BY ' + order + ';\n')
         command, prefix = self.command()
         error_file = self.output / 'private' / ('snapshot-' + schema + '-' + table + '.stderr-' + uuid.uuid4().hex)
         count, digest = 0, hashlib.sha256(b'compact-row-hash-chain-v1\n')
+        keyed_output, keyed_bytes, seen_keys = None, 0, set()
         with error_file.open('xb') as stderr:
             os.chmod(error_file, 0o600)
-            process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr, env=self.environment())
-            selector = selectors.DefaultSelector()
-            pending, deadline = b'', time.monotonic() + 3600
+            process, selector = None, None
             try:
+                if capture:
+                    keyed_output = keyed_row_output(keyed_rows_path)
+                process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr, env=self.environment())
+                selector = selectors.DefaultSelector()
+                pending, deadline = b'', time.monotonic() + 3600
                 process.stdin.write(prefix + sql.encode('utf8')); process.stdin.close()
                 selector.register(process.stdout, selectors.EVENT_READ)
                 while True:
@@ -353,14 +424,34 @@ class Mysql:
                         break
                     pending += block
                     lines = pending.split(b'\n'); pending = lines.pop()
-                    require(len(pending) <= 64, 'Unexpected partial row hash length')
+                    require(len(pending) <= (129 if capture else 64), 'Unexpected partial row hash length')
                     for line in lines:
-                        require(len(line) == 64 and SHA.fullmatch(line.decode('ascii')), 'Unexpected source row hash response')
-                        digest.update(bytes.fromhex(line.decode('ascii'))); count += 1
+                        parts = line.split(b'\t') if capture else [line]
+                        require(len(parts) == (2 if capture else 1)
+                                and all(len(part) == 64 and re.fullmatch(rb'[a-f0-9]{64}', part) for part in parts),
+                                'Unexpected source row hash response')
+                        row_sha = parts[-1]
+                        if capture:
+                            key_sha = parts[0]
+                            require(key_sha not in seen_keys, 'Duplicate complete primary-key digest in source rows')
+                            seen_keys.add(key_sha)
+                            record = canonical({'keySha256': key_sha.decode('ascii'), 'rowSha256': row_sha.decode('ascii')}) + b'\n'
+                            keyed_bytes += len(record)
+                            require(count < MAX_KEYED_ROWS_PER_TABLE and keyed_bytes <= MAX_KEYED_ROW_BYTES_PER_TABLE,
+                                    'Keyed-row capture exceeds the per-table limit')
+                            keyed_output.write(record)
+                        digest.update(bytes.fromhex(row_sha.decode('ascii'))); count += 1
                 require(not pending and process.wait(timeout=30) == 0, 'Full-table row hashing failed; private error retained')
+                if keyed_output is not None:
+                    keyed_output.flush(); os.fsync(keyed_output.fileno())
             finally:
-                selector.close(); process.stdout.close()
-                if process.poll() is None:
+                if keyed_output is not None:
+                    keyed_output.close()
+                if selector is not None:
+                    selector.close()
+                if process is not None:
+                    process.stdout.close()
+                if process is not None and process.poll() is None:
                     process.terminate()
                     try: process.wait(timeout=10)
                     except subprocess.TimeoutExpired: process.kill(); process.wait(timeout=10)
@@ -422,11 +513,22 @@ def show_create(mysql, schema, table):
     return raw.split('\t', 1)[1].rstrip('\r\n')
 
 
-def schema_snapshot(mysql, schema, expected_tables):
+def schema_snapshot(mysql, schema, expected_tables, *, keyed_rows_directory=None):
     """Every ordinary/generated column, all rows, keys, DDL, clocks and high-water marks."""
     actual = schema_tables(mysql, schema)
     require({row['name'] for row in actual} == set(expected_tables), 'Actual complete table catalog differs from the admitted schema')
-    result = {}
+    keyed_directory = None
+    if keyed_rows_directory is not None:
+        keyed_directory = Path(keyed_rows_directory)
+        require(keyed_directory.is_absolute() and keyed_directory.is_relative_to(ROOT / 'work')
+                and keyed_directory.parent.resolve(strict=True) == keyed_directory.parent
+                and not keyed_directory.exists() and not keyed_directory.is_symlink(),
+                'Use a new canonical keyed-row directory below checkout/work')
+        keyed_directory.mkdir(mode=0o700)
+        directory_info = keyed_directory.stat()
+        require(directory_info.st_uid == os.getuid() and stat.S_IMODE(directory_info.st_mode) == 0o700,
+                'Keyed-row directory must be private and owned')
+    result, keyed_tables, keyed_rows, keyed_bytes = {}, {}, 0, 0
     for row in actual:
         name = row['name']
         where = 'table_schema=' + literal(schema) + ' AND table_name=' + literal(name)
@@ -439,7 +541,21 @@ def schema_snapshot(mysql, schema, expected_tables):
             'FROM information_schema.statistics WHERE ' + where + ' ORDER BY INDEX_NAME,SEQ_IN_INDEX;')
         primary = [item['column'] for item in indexes if item['name'] == 'PRIMARY']
         require(all(primary) or not primary, 'An expression primary key cannot be snapshotted')
-        count, row_sha = mysql.row_hashes(schema, name, [item['name'] for item in columns], primary)
+        if keyed_directory is not None and primary:
+            row_file = keyed_directory / (identifier(name) + '.jsonl')
+            count, row_sha = mysql.row_hashes(schema, name, [item['name'] for item in columns], primary,
+                                              keyed_rows_path=row_file)
+            inventory = keyed_row_inventory(row_file, count, row_sha)
+            keyed_rows += count; keyed_bytes += inventory['bytes']
+            require(keyed_rows <= MAX_KEYED_ROWS_TOTAL and keyed_bytes <= MAX_KEYED_ROW_BYTES_TOTAL,
+                    'Keyed-row index exceeds the complete schema budget')
+        else:
+            count, row_sha = mysql.row_hashes(schema, name, [item['name'] for item in columns], primary)
+            inventory = {'file': None, 'fileSha256': None, 'bytes': 0, 'entries': 0}
+        if keyed_directory is not None:
+            keyed_tables[name] = {'status': 'KEYED' if primary else 'NO_PRIMARY_KEY', 'rows': count,
+                                 'rowsSha256': row_sha, 'columnsSha256': sha_json(columns),
+                                 'primary': primary, **inventory}
         sequence = mysql.single("SELECT JSON_OBJECT('autoIncrement',CAST(AUTO_INCREMENT AS CHAR)) FROM information_schema.tables WHERE " + where + ';')
         ddl = show_create(mysql, schema, name)
         result[name] = {'rows': count, 'rowsSha256': row_sha, 'autoIncrement': sequence['autoIncrement'],
@@ -447,8 +563,20 @@ def schema_snapshot(mysql, schema, expected_tables):
                         'ddl': ddl, 'ddlSha256': hashlib.sha256(normalize_self(ddl, schema).encode('utf8')).hexdigest()}
     payload = {'schemaVersion': 1, 'tables': {name: {key: value for key, value in detail.items() if key != 'ddl'}
                                            for name, detail in result.items()}}
-    return {'schema': schema, 'snapshotSha256': sha_json(payload), **payload,
-            'createTables': {name: row['ddl'] for name, row in result.items()}}
+    snapshot = {'schema': schema, 'snapshotSha256': sha_json(payload), **payload,
+                'createTables': {name: row['ddl'] for name, row in result.items()}}
+    if keyed_directory is not None:
+        expected_files = {row['file'] for row in keyed_tables.values() if row['file'] is not None}
+        require({entry.name for entry in keyed_directory.iterdir()} == expected_files,
+                'The complete keyed-row folder contains unexpected members')
+        for row in keyed_tables.values():
+            if row['status'] == 'KEYED':
+                reread = keyed_row_inventory(keyed_directory / row['file'], row['rows'], row['rowsSha256'])
+                require(all(row[key] == value for key, value in reread.items()),
+                        'A keyed-row sidecar changed before the complete index was published')
+        write_json(keyed_directory / 'index.json', {'schemaVersion': 1, 'kind': 'doorhandle-mysql-keyed-row-index',
+                   'schema': schema, 'snapshotSha256': snapshot['snapshotSha256'], 'tables': keyed_tables})
+    return snapshot
 
 
 def metadata_snapshot(mysql, schema):

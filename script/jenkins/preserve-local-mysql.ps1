@@ -244,6 +244,8 @@ print(json.dumps(result))
     Require-SqlCustody ($classificationLines.Count -eq 1) 'Classification must return one bounded summary.'
     $classified = $classificationLines[0] | ConvertFrom-Json
     Require-SqlCustody ($classified.status -ceq 'CLASSIFIED' -and $classified.reportSha256 -cmatch '^[a-f0-9]{64}$' -and
+        $classified.perKeyStatus -cin @('NOT_COLLECTED','NEEDS_REVIEW','RECONCILED') -and
+        $classified.cutoverBlocked -is [bool] -and
         $classified.coverageVerified -is [bool] -and -not $classified.coverageVerified -and
         $classified.productionMerged -is [bool] -and -not $classified.productionMerged -and
         $classified.retirementAllowed -is [bool] -and -not $classified.retirementAllowed) 'Classification did not return the expected non-authorizing result.'
@@ -269,14 +271,30 @@ print(json.dumps(result))
     foreach ($field in @('coverageVerified','targetDataCompared','productionMerged','retirementAllowed','sourceDataBytesRehashed')) {
         Require-SqlCustody ($report.$field -is [bool] -and -not $report.$field) 'A classification report attempted an unproved coverage, data or retirement claim.'
     }
+    $perKey = $report.perKeyReconciliation
+    Require-SqlCustody ($perKey.scope -ceq 'EXACT_TYPED_PRIMARY_KEYS_V1' -and
+        $perKey.gateScope -ceq 'PER_KEY_SOURCE_INCLUSION_ONLY' -and
+        $perKey.wholeMigrationAndRuntimeAcceptanceStillRequired -eq $true -and
+        $perKey.requiredBeforeCutover -eq $true -and $perKey.cutoverBlocked -is [bool] -and
+        $perKey.legacyRowsPresentInSource -is [bool] -and $perKey.targetDataCompared -eq $false -and
+        $perKey.status -ceq $classified.perKeyStatus -and $perKey.cutoverBlocked -eq $classified.cutoverBlocked -and
+        (($perKey.status -ceq 'RECONCILED' -and -not $perKey.cutoverBlocked -and $perKey.legacyRowsPresentInSource) -or
+         ($perKey.status -cin @('NOT_COLLECTED','NEEDS_REVIEW') -and $perKey.cutoverBlocked -and -not $perKey.legacyRowsPresentInSource))) 'Per-key audit does not establish its exact limited source-inclusion boundary.'
     $wiring = [ordered]@{schemaVersion=1;kind='doorhandle-local-mysql-source-classification-ci';status='CLASSIFIED';
         release=$Tag;commit=$Commit;sourceSha256=$SourceSha256;identity=$report.context.identity;
         classifierSha256=$classifierSha;contractSha256=$contractSha;
         anchors=[ordered]@{verification=$verificationSha;localOwner=$anchors.localOwner.sha256;fixtureOwner=$anchors.fixtureOwner.sha256;contract=$contractSha};
         recoveryReceiptSha256=$result.recoveryReceiptSha256;cleanupReceiptSha256=$cleanup.cleanupReceiptSha256;
         reportSha256=$classified.reportSha256;reportBytes=$remoteBinding.bytes;counts=$report.counts;
+        perKeyReconciliation=$perKey;
         coverageVerified=$false;targetDataCompared=$false;productionMerged=$false;retirementAllowed=$false}
     $wiring | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $wiringArtifact -Encoding utf8
+    # Verification may retain unresolved differences for review. A requested
+    # first production cutover must not advance past this unverified subgate.
+    if ($env:ACTION -ceq 'compact-cutover') {
+        Require-SqlCustody ($perKey.status -ceq 'RECONCILED' -and -not $perKey.cutoverBlocked -and
+            $perKey.legacyRowsPresentInSource) 'Legacy 45-table rows are not yet verified in the 131-table source; production cutover remains blocked.'
+    }
 } else {
     Require-SqlCustody ($accepted.scope -ceq 'source') 'Classification supports only the established source or mysql verification scopes.'
     Write-Host '45-to-131 classification is not run in source scope; this build has no complete 131-table fixture-origin copy.'

@@ -1122,8 +1122,14 @@
       },
       {
         "module": "tests_python.test_local_mysql_source_classification",
-        "minimumTests": 90,
+        "minimumTests": 112,
         "source": "tests_python/test_local_mysql_source_classification.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_compact_keyed_row_capture",
+        "minimumTests": 36,
+        "source": "tests_python/test_compact_keyed_row_capture.py",
         "allowedSkippedTests": []
       },
       {
@@ -1170,7 +1176,7 @@
       },
       {
         "module": "tests_python.test_jenkins_owned_memory_tree",
-        "minimumTests": 5,
+        "minimumTests": 21,
         "source": "tests_python/test_jenkins_owned_memory_tree.py",
         "allowedSkippedTests": []
       },

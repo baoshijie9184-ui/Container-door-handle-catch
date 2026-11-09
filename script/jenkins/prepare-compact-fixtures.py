@@ -75,10 +75,15 @@ def proc_identity(pid):
         return None
 
 
-def owned_tree_memory(pid):
-    records = {}
+def owned_tree_memory_snapshot(pid, start_ticks):
+    """Complete host snapshot, executed outside the SQL controller's GIL."""
+    before = proc_identity(pid)
+    require(before is not None and before['startTicks'] == start_ticks, 'Owned RSS root identity changed')
+    records = {}; examined = 0
     for path in Path('/proc').iterdir():
         if path.name.isdecimal():
+            examined += 1
+            require(examined <= 16384, 'Complete host process snapshot exceeded its bounded budget')
             try:
                 record = proc_identity(int(path.name))
                 if record:
@@ -96,7 +101,52 @@ def owned_tree_memory(pid):
             if child not in owned:
                 owned.add(child); pending.append(child)
                 require(len(owned) <= 256, 'Owned controller process tree exceeded its bound')
-    return sum(records[key]['rssBytes'] for key in owned if key in records)
+    root = records.get(pid)
+    after = proc_identity(pid)
+    require(root is not None and root['startTicks'] == start_ticks and after is not None
+            and after['startTicks'] == start_ticks, 'Owned RSS root changed during the complete snapshot')
+    return {'rootPid': pid, 'rootStartTicks': start_ticks,
+            'rssBytes': sum(records[key]['rssBytes'] for key in owned if key in records),
+            'processCount': len(owned)}
+
+
+def owned_tree_memory(pid):
+    # Hundreds of separate /proc I/O calls repeatedly reacquire the controller
+    # GIL while its main thread validates a large SQL dump. A bounded child
+    # retains the complete host snapshot and includes its own RSS in the tree.
+    identity = proc_identity(pid)
+    require(identity is not None, 'Owned RSS root is no longer alive')
+    result = subprocess.run([sys.executable, '-I', '-B', str(Path(__file__).resolve(strict=True)),
+                             '--sample-owned-memory', str(pid), str(identity['startTicks'])],
+                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            timeout=1, check=False)
+    require(result.returncode == 0 and not result.stderr and 0 < len(result.stdout) <= 1024,
+            'Independent owned RSS sampling failed or returned unbounded output')
+    def exact_fields(pairs):
+        require(len(pairs) == 4 and len({key for key, _ in pairs}) == 4,
+                'Independent owned RSS sampling returned duplicate or missing fields')
+        return dict(pairs)
+    value = json.loads(result.stdout, object_pairs_hook=exact_fields)
+    require(type(value) is dict and set(value) == {'rootPid', 'rootStartTicks', 'rssBytes', 'processCount'}
+            and all(type(item) is int for item in value.values()) and value['rootPid'] == pid
+            and value['rootStartTicks'] == identity['startTicks'] and value['rssBytes'] >= 0
+            and 1 <= value['processCount'] <= 256, 'Independent owned RSS sampling identity or counters differ')
+    return value['rssBytes']
+
+
+def sample_owned_memory_entry(arguments):
+    require(sys.platform == 'linux' and os.getuid() == os.geteuid() == 1000,
+            'Owned RSS sampling runs only under the admitted ECS identity')
+    require(len(arguments) == 2 and all(re.fullmatch(r'[1-9][0-9]{0,19}', value) for value in arguments),
+            'Owned RSS sampling requires an exact PID and start identity')
+    pid, ticks = map(int, arguments)
+    require(Path('/proc/' + str(pid)).stat().st_uid == os.getuid(), 'Owned RSS root belongs to another user')
+    import resource
+    resource.setrlimit(resource.RLIMIT_AS, (128 * MIB, 128 * MIB))
+    require(resource.getrlimit(resource.RLIMIT_AS) == (128 * MIB, 128 * MIB),
+            'Independent owned RSS sampler address-space limit was not applied')
+    print(json.dumps(owned_tree_memory_snapshot(pid, ticks), sort_keys=True))
+    return 0
 
 
 def group_members(group, owner, claim):
@@ -1154,7 +1204,10 @@ class Preparation:
                 'Source routines/events need a separate reviewed restore plan; no facts will be silently omitted')
         self.journal['resources'] = self.resource_gate(self.source, settings['sourceSchema'], len(suites))
         _, original_metadata = self.runtime.metadata_snapshot(self.source, settings['sourceSchema'])
-        snapshot = self.runtime.schema_snapshot(self.source, settings['sourceSchema'], sources)
+        source_keyed_directory = self.work / 'source-keyed-rows'
+        snapshot = self.runtime.schema_snapshot(self.source, settings['sourceSchema'], sources,
+                                                keyed_rows_directory=source_keyed_directory)
+        source_keyed_index = canonical(source_keyed_directory / 'index.json')
         self.runtime.clocks.require_empty_sources(settings['sourceOffsets'], settings.get('legacyClockPolicy'), snapshot)
         require(sum(table['rows'] for table in snapshot['tables'].values()) > 0, 'An empty source cannot prove existing-data preservation')
         backup = self.runtime.backup_schema(self.source, snapshot, self.work / 'source-backup', purpose='source',
@@ -1190,7 +1243,9 @@ class Preparation:
         self.journal.update(manifest=str(self.work / 'manifest.json'), manifestSha256=digest(self.work / 'manifest.json'),
             profileSha256=digest(profile_file), sourceServerUuid=actual['uuid'], sourceSnapshotSha256=snapshot['snapshotSha256'],
             sourceTableCount=131, sourceRows=sum(table['rows'] for table in snapshot['tables'].values()),
-            sourceBackupSha256=digest(backup), javaSuiteCount=len(java_suites), fixtureConfigCount=len(self.journal['schemas']))
+            sourceBackupSha256=digest(backup), javaSuiteCount=len(java_suites), fixtureConfigCount=len(self.journal['schemas']),
+            sourceKeyedRowsIndex={'file': 'source-keyed-rows/index.json', 'sha256': digest(source_keyed_index),
+                                 'bytes': source_keyed_index.stat().st_size})
         self.inspect_owned()
         self.resources.finish_phase()
         return {'status': 'PREPARED', 'commit': self.args.commit, 'release': self.args.tag,
@@ -1493,4 +1548,10 @@ def main():
 
 
 if __name__ == '__main__':
+    if sys.argv[1:2] == ['--sample-owned-memory']:
+        try:
+            raise SystemExit(sample_owned_memory_entry(sys.argv[2:]))
+        except Exception:
+            print('Independent owned RSS sampling failed.', file=sys.stderr)
+            raise SystemExit(2)
     raise SystemExit(main())

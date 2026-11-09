@@ -159,6 +159,7 @@ pipeline {
                     if (params.ACTION == 'compact-cutover') {
                         def selectedSettings = params.COMPACT_CUTOVER_SETTINGS?.trim() ?: env.DOORHANDLE_CI_FIXTURE_SETTINGS
                         if (params.DOORHANDLE_CI_SCOPE != 'mysql' || !selectedSettings) error('First cutover requires complete MySQL acceptance and explicit reviewed private ECS settings')
+                        if ((!env.LOCAL_MYSQL_SNAPSHOT && !env.LOCAL_MYSQL_ECS_SNAPSHOT) || !env.LOCAL_MYSQL_FIXTURE_SETTINGS) error('First cutover requires the approved legacy MySQL export and independent recovery/source-inclusion audit; its stage cannot be skipped')
                         if (env.DOORHANDLE_CI_FIXTURE_SETTINGS && selectedSettings != env.DOORHANDLE_CI_FIXTURE_SETTINGS) error('Fixture and cutover must use the same reviewed source settings')
                         env.COMPACT_CUTOVER_SETTINGS = selectedSettings
                     }

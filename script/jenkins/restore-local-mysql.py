@@ -100,6 +100,8 @@ def compare_recoveries(first, second):
          and first['findings'] == second['findings'] and first['observedCountsMatch'] is True
          and second['observedCountsMatch'] is True and len(first['snapshot']['tables']) == 45,
          'Independent recoveries differ in original rows/types/NULLs/clocks/DDL/indexes/constraints/high-water marks')
+    need(first.get('keyedRowsIndex') == second.get('keyedRowsIndex'),
+         'Independent recoveries differ in their complete primary-key/row digest indexes')
     need(first['serverUuid'] != second['serverUuid'] and first['containerId'] != second['containerId']
          and first['volume'] != second['volume'], 'The second recovery must be an independent server and fresh volume')
 
@@ -297,7 +299,10 @@ class Recovery:
         need(self.bytes.digest(file) == self.bytes.RAW_SHA, 'Original SQL changed during recovery')
 
     def capture(self, node, client, expected_catalog, observed_counts):
-        self.guard(); actual = self.runtime.schema_snapshot(client, SCHEMA, expected_catalog)
+        self.guard()
+        keyed_directory = client.output / 'keyed-rows'
+        actual = self.runtime.schema_snapshot(client, SCHEMA, expected_catalog, keyed_rows_directory=keyed_directory)
+        keyed_index = self.utility.owner_path(keyed_directory / 'index.json')
         metadata, metadata_sha = self.runtime.metadata_snapshot(client, SCHEMA)
         extra = {}
         definitions = {
@@ -312,6 +317,8 @@ class Recovery:
         defects = findings(client, metadata)
         result = {'containerId': node['containerId'], 'volume': node['volume'], 'serverUuid': node['serverUuid'],
             'snapshot': actual, 'metadata': metadata, 'metadataSha256': metadata_sha, 'extraObjects': extra, 'findings': defects,
+            'keyedRowsIndex': {'file': 'keyed-rows/index.json', 'bytes': keyed_index.stat().st_size,
+                               'sha256': self.bytes.digest(keyed_index)},
             'observedCountsMatch': {name: row['rows'] for name, row in actual['tables'].items()} == observed_counts,
             'liveSourceRowHashesVerified': False, 'eventsExecuted': False}
         self.bytes.write(client.output / 'full-recovery-private.json', result); return result
@@ -356,6 +363,31 @@ class Recovery:
             value = self.bytes.read(path)
             need(value['containerId'] == node['containerId'] and value['volume'] == node['volume']
                  and value['serverUuid'] == node['serverUuid'], 'Full row/schema evidence belongs to another recovered server')
+            reference = value.get('keyedRowsIndex')
+            if reference is not None:
+                need(type(reference) is dict and set(reference) == {'file', 'bytes', 'sha256'}
+                     and reference['file'] == 'keyed-rows/index.json', 'Unexpected recovered keyed-row reference')
+                index_path = self.utility.owner_path(path.parent / 'keyed-rows/index.json')
+                need(index_path.stat().st_size == reference['bytes'] and self.bytes.digest(index_path) == reference['sha256'],
+                     'Recovered keyed-row index changed before derived cleanup')
+                index = self.bytes.read(index_path)
+                need(index.get('kind') == 'doorhandle-mysql-keyed-row-index'
+                     and index.get('snapshotSha256') == value['snapshot']['snapshotSha256']
+                     and type(index.get('tables')) is dict and set(index['tables']) == set(value['snapshot']['tables']),
+                     'Recovered keyed-row index no longer closes to its complete snapshot')
+                names = set()
+                for name, item in index['tables'].items():
+                    if item['status'] == 'NO_PRIMARY_KEY':
+                        need(item['file'] is None and item['entries'] == item['bytes'] == 0,
+                             'An unkeyed table cannot claim captured rows')
+                        continue
+                    need(item['status'] == 'KEYED' and item['file'] == name + '.jsonl', 'Unexpected keyed-row member')
+                    member = self.utility.owner_path(index_path.parent / item['file'])
+                    need(member.stat().st_size == item['bytes'] and self.bytes.digest(member) == item['fileSha256'],
+                         'Recovered keyed-row member changed before derived cleanup')
+                    names.add(item['file'])
+                need({item.name for item in index_path.parent.iterdir()} == names | {'index.json'},
+                     'Recovered keyed-row directory membership changed')
             recovered.append(value); files.append(path)
         compare_recoveries(*recovered)
         files.append(self.utility.owner_path(self.directory / 'resource-probes.jsonl'))

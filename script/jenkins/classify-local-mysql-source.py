@@ -32,6 +32,12 @@ COLUMN_FIELDS = {'name', 'ordinal', 'type', 'nullable', 'default', 'extra', 'gen
 INDEX_FIELDS = {'name', 'ordinal', 'column', 'expression', 'nonUnique', 'subPart', 'collation', 'type', 'visible'}
 METADATA_FIELDS = {'catalog', 'columns', 'indexes', 'checks', 'foreignKeys', 'triggers'}
 CONTEXT_FIELDS = {'release', 'commit', 'sourceSha256', 'identity'}
+KEYED_ROLES = ('localA', 'localB', 'source')
+KEYED_FIELDS = {'status', 'rows', 'rowsSha256', 'columnsSha256', 'primary', 'file', 'fileSha256', 'bytes', 'entries'}
+KEYED_LINE = re.compile(rb'\{"keySha256":"([a-f0-9]{64})","rowSha256":"([a-f0-9]{64})"\}\n')
+MAX_KEYED_ROWS = 50_000
+MAX_KEYED_TOTAL_ROWS = 250_000
+MAX_KEYED_BUNDLE_BYTES = 64 * 1024 ** 2
 
 
 class ClassificationError(ValueError):
@@ -281,7 +287,150 @@ def classify_documents(raw_documents, *, expected_context, anchors):
         'localTableCount': 45, 'sourceTableCount': 131, 'tableClassifications': classifications,
         'declaredSourceDataSha256': data['sha256'], 'sourceDataBytesRehashed': False,
         'trustAnchorAuthentication': 'REQUIRED_FROM_CALLER', 'contractProjectionOnly': True,
-        'coverageVerified': False, 'targetDataCompared': False, 'productionMerged': False, 'retirementAllowed': False}
+        'coverageVerified': False, 'targetDataCompared': False, 'productionMerged': False, 'retirementAllowed': False,
+        'perKeyReconciliation': {'status': 'NOT_COLLECTED', 'scope': 'EXACT_TYPED_PRIMARY_KEYS_V1',
+            'gateScope': 'PER_KEY_SOURCE_INCLUSION_ONLY', 'wholeMigrationAndRuntimeAcceptanceStillRequired': True,
+            'requiredBeforeCutover': True, 'cutoverBlocked': True, 'legacyRowsPresentInSource': False,
+            'reasonCodes': ['TRUSTED_PER_KEY_EVIDENCE_NOT_COLLECTED'], 'targetDataCompared': False}}
+
+
+def primary_columns(table):
+    primary = sorted((item for item in table['indexes'] if item['name'] == 'PRIMARY'), key=lambda item: item['ordinal'])
+    need([item['ordinal'] for item in primary] == list(range(1, len(primary) + 1))
+         and all(isinstance(item['column'], str) for item in primary)
+         and len({item['column'] for item in primary}) == len(primary), 'COMPLETE_UNIQUE_PRIMARY_ORDER_REQUIRED')
+    return [item['column'] for item in primary]
+
+
+def keyed_references(docs):
+    return {'localA': docs['localA'].get('keyedRowsIndex'), 'localB': docs['localB'].get('keyedRowsIndex'),
+            'source': docs['fixtureOwner'].get('sourceKeyedRowsIndex')}
+
+
+def validate_keyed_index(raw, reference, snapshot, *, role):
+    need(type(raw) is bytes and type(reference) is dict and set(reference) == {'file', 'sha256', 'bytes'}
+         and reference['file'] == ('source-keyed-rows/index.json' if role == 'source' else 'keyed-rows/index.json')
+         and type(reference['bytes']) is int and reference['bytes'] == len(raw)
+         and hash_field(reference['sha256']) and digest(raw) == reference['sha256'], 'TRUSTED_KEYED_INDEX_BINDING_DRIFT')
+    index = decode(raw)
+    need(set(index) == {'schemaVersion', 'kind', 'schema', 'snapshotSha256', 'tables'}
+         and type(index['schemaVersion']) is int and index['schemaVersion'] == 1
+         and index['kind'] == 'doorhandle-mysql-keyed-row-index' and index['schema'] == snapshot['schema']
+         and index['snapshotSha256'] == snapshot['snapshotSha256'] and type(index['tables']) is dict
+         and set(index['tables']) == set(snapshot['tables']), 'COMPLETE_KEYED_INDEX_SNAPSHOT_REQUIRED')
+    total_rows = total_bytes = 0
+    for name, item in index['tables'].items():
+        expected = snapshot['tables'][name]; primary = primary_columns(expected)
+        need(type(item) is dict and set(item) == KEYED_FIELDS and type(item['rows']) is int
+             and item['rows'] == expected['rows'] and item['rowsSha256'] == expected['rowsSha256']
+             and item['columnsSha256'] == sha_json(expected['columns']) and item['primary'] == primary,
+             'KEYED_TABLE_TYPED_SNAPSHOT_DRIFT')
+        if primary:
+            need(item['status'] == 'KEYED' and item['file'] == name + '.jsonl' and hash_field(item['fileSha256'])
+                 and type(item['entries']) is int and item['entries'] == item['rows'] <= MAX_KEYED_ROWS
+                 and type(item['bytes']) is int and 0 <= item['bytes'] <= MAX_JSON,
+                 'BOUNDED_COMPLETE_KEYED_TABLE_REQUIRED')
+            total_rows += item['entries']; total_bytes += item['bytes']
+        else:
+            need(item['status'] == 'NO_PRIMARY_KEY' and item['file'] is None and item['fileSha256'] is None
+                 and type(item['entries']) is int and item['entries'] == 0
+                 and type(item['bytes']) is int and item['bytes'] == 0, 'UNKEYED_TABLE_CANNOT_CLAIM_KEY_COVERAGE')
+    need(total_rows <= MAX_KEYED_TOTAL_ROWS and total_bytes <= MAX_KEYED_BUNDLE_BYTES, 'KEYED_SCHEMA_BUDGET_EXCEEDED')
+    return index
+
+
+def validate_keyed_rows(raw, descriptor):
+    need(type(raw) is bytes and len(raw) == descriptor['bytes'] and digest(raw) == descriptor['fileSha256'],
+         'KEYED_ROWS_FILE_DIGEST_DRIFT')
+    rows = {}; chain = hashlib.sha256(b'compact-row-hash-chain-v1\n')
+    for line in raw.splitlines(keepends=True):
+        match = KEYED_LINE.fullmatch(line)
+        need(match is not None, 'CANONICAL_KEYED_HASH_ROW_REQUIRED')
+        key, row = (part.decode('ascii') for part in match.groups())
+        need(key not in rows, 'DUPLICATE_PRIMARY_KEY_DIGEST')
+        rows[key] = row; chain.update(bytes.fromhex(row))
+        need(len(rows) <= MAX_KEYED_ROWS, 'KEYED_TABLE_ROW_LIMIT_EXCEEDED')
+    need(len(rows) == descriptor['entries'] == descriptor['rows'] and chain.hexdigest() == descriptor['rowsSha256'],
+         'KEYED_FULL_ROW_CHAIN_DRIFT')
+    return rows
+
+
+def reconcile_keyed_documents(raw_documents, *, expected_context, anchors, keyed_documents):
+    """Audit captured full typed rows; hashes only, no DB access or merge authority.
+
+    The existing complete evidence chain authenticates both recovered local
+    indexes and the source index. Key digests come from that fixed collector;
+    a matching full row chain alone is never accepted as a trusted key source.
+    Returned differences are private ECS evidence, not the public CI report.
+    """
+    base = classify_documents(raw_documents, expected_context=expected_context, anchors=anchors)
+    docs = {key: decode(raw) for key, raw in raw_documents.items()}; refs = keyed_references(docs)
+    need(all(type(refs[role]) is dict for role in KEYED_ROLES), 'ALL_THREE_TRUSTED_KEYED_INDEXES_REQUIRED')
+    need(type(keyed_documents) is dict and set(keyed_documents) == set(KEYED_ROLES), 'COMPLETE_KEYED_DOCUMENT_BUNDLE_REQUIRED')
+    source = docs['sourceManifest']
+    snapshots = {'localA': docs['localA']['snapshot'], 'localB': docs['localB']['snapshot'],
+                'source': {'schema': source['schema'], 'snapshotSha256': source['snapshotSha256'], 'tables': source['tables']}}
+    indexes = {}; total_bytes = 0
+    for role in KEYED_ROLES:
+        packet = keyed_documents[role]
+        need(type(packet) is dict and set(packet) == {'index', 'tables'} and type(packet['tables']) is dict,
+             'EXACT_KEYED_DOCUMENT_PACKET_REQUIRED')
+        indexes[role] = validate_keyed_index(packet['index'], refs[role], snapshots[role], role=role)
+        names = {name for name, entry in indexes[role]['tables'].items() if entry['status'] == 'KEYED'}
+        need(set(packet['tables']) == names and all(type(raw) is bytes for raw in packet['tables'].values()),
+             'COMPLETE_KEYED_ROW_MEMBERS_REQUIRED')
+        total_bytes += len(packet['index']) + sum(len(raw) for raw in packet['tables'].values())
+        need(total_bytes <= MAX_KEYED_BUNDLE_BYTES, 'KEYED_BUNDLE_BYTE_LIMIT_EXCEEDED')
+    need(indexes['localA'] == indexes['localB'], 'INDEPENDENT_KEYED_RECOVERY_INDEXES_DIFFER')
+    counts = {'MATCH': 0, 'LOCAL_ONLY': 0, 'SOURCE_ONLY': 0, 'ROW_CONFLICT': 0}
+    comparisons, differences, blockers = [], [], []
+    local_tables, source_tables = snapshots['localA']['tables'], snapshots['source']['tables']
+    for name in sorted(set(local_tables) | set(source_tables)):
+        maps = {}
+        for role in KEYED_ROLES:
+            descriptor = indexes[role]['tables'].get(name)
+            if descriptor is not None and descriptor['status'] == 'KEYED':
+                maps[role] = validate_keyed_rows(keyed_documents[role]['tables'][name], descriptor)
+        if name in local_tables and 'localA' in maps:
+            need(maps['localA'] == maps['localB'], 'INDEPENDENT_KEYED_RECOVERY_ROWS_DIFFER')
+        local, cloud = local_tables.get(name), source_tables.get(name)
+        if local is None:
+            # New cloud-only tables have no legacy rows requiring inclusion.
+            comparisons.append({'table': name, 'status': 'SOURCE_TABLE_ONLY', 'sourceRows': cloud['rows']})
+            continue
+        reason = ('LOCAL_TABLE_MISSING_FROM_SOURCE' if cloud is None else
+                  'FULL_TYPED_COLUMNS_OR_PRIMARY_ORDER_DIFFER' if local['columns'] != cloud['columns']
+                  or primary_columns(local) != primary_columns(cloud) else
+                  'NO_PRIMARY_KEY' if not primary_columns(local) else None)
+        if reason is not None:
+            comparisons.append({'table': name, 'status': 'NOT_COMPARABLE', 'reasonCode': reason,
+                                'localRows': local['rows'], 'sourceRows': cloud['rows'] if cloud else None})
+            blockers.append({'table': name, 'reasonCode': reason}); continue
+        local_rows, cloud_rows = maps['localA'], maps['source']
+        table_counts = {key: 0 for key in counts}
+        for key in sorted(set(local_rows) | set(cloud_rows)):
+            before, after = local_rows.get(key), cloud_rows.get(key)
+            state = 'SOURCE_ONLY' if before is None else 'LOCAL_ONLY' if after is None else 'MATCH' if before == after else 'ROW_CONFLICT'
+            table_counts[state] += 1; counts[state] += 1
+            if state != 'MATCH': differences.append({'table': name, 'status': state, 'keySha256': key,
+                                                     'localRowSha256': before, 'sourceRowSha256': after})
+        if table_counts['LOCAL_ONLY'] or table_counts['ROW_CONFLICT']:
+            blockers.append({'table': name, 'reasonCode': 'LEGACY_ROWS_MISSING_OR_CONFLICTING'})
+        comparisons.append({'table': name, 'status': 'COMPARED', 'counts': table_counts,
+                            'localRows': local['rows'], 'sourceRows': cloud['rows']})
+    summary = {'status': 'RECONCILED' if not blockers else 'NEEDS_REVIEW', 'scope': 'EXACT_TYPED_PRIMARY_KEYS_V1',
+        'gateScope': 'PER_KEY_SOURCE_INCLUSION_ONLY', 'wholeMigrationAndRuntimeAcceptanceStillRequired': True,
+        'requiredBeforeCutover': True, 'cutoverBlocked': bool(blockers), 'legacyRowsPresentInSource': not blockers,
+        'counts': counts, 'rowCountScope': 'COMPARABLE_COMMON_TABLES_ONLY',
+        'sourceOnlyTableCount': len(set(source_tables) - set(local_tables)),
+        'sourceOnlyTableRows': sum(source_tables[name]['rows'] for name in set(source_tables) - set(local_tables)),
+        'tableComparisons': comparisons, 'blockingTables': blockers,
+        'indexSha256': {role: digest(keyed_documents[role]['index']) for role in KEYED_ROLES},
+        'localSnapshotSha256': base['localSnapshotSha256'], 'sourceSnapshotSha256': base['sourceSnapshotSha256'],
+        'coverageVerified': False, 'targetDataCompared': False, 'productionMerged': False, 'retirementAllowed': False,
+        'excludedComparisons': ['TARGET29_DATA', 'SCHEMA_WIDE_METADATA', 'TRIGGERS', 'ROUTINES', 'EVENTS'],
+        'clockPolicy': 'EXACT_ORIGINAL_BYTES_NO_TIMEZONE_INFERENCE'}
+    return {'summary': summary, 'differences': differences}
 
 
 def read_control(path):
@@ -294,6 +443,59 @@ def read_control(path):
     signature = lambda value: (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns, value.st_nlink)
     need(signature(before) == signature(after) and len(raw) == before.st_size, 'CONTROL_CHANGED_DURING_READ')
     return raw
+
+
+def read_keyed_member(path):
+    """Stable private read; an empty table legitimately has a zero-byte file."""
+    need(path.is_absolute() and '..' not in path.parts and path.resolve(strict=True) == path, 'CANONICAL_KEYED_MEMBER_REQUIRED')
+    for parent in (path, *path.parents): need(not parent.is_symlink(), 'KEYED_MEMBER_LINK_REFUSED')
+    with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW), 'rb') as stream:
+        before = os.fstat(stream.fileno())
+        need(stat.S_ISREG(before.st_mode) and before.st_nlink == 1 and before.st_uid == os.getuid()
+             and not before.st_mode & 0o077 and 0 <= before.st_size <= MAX_JSON, 'PRIVATE_BOUNDED_KEYED_MEMBER_REQUIRED')
+        raw = stream.read(MAX_JSON + 1); after = os.fstat(stream.fileno()); linked = path.lstat()
+    signature = lambda value: (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns, value.st_nlink, value.st_mode)
+    need(signature(before) == signature(after) == signature(linked) and len(raw) == before.st_size, 'KEYED_MEMBER_CHANGED_DURING_READ')
+    return raw
+
+
+def load_keyed_documents(work, docs):
+    references = keyed_references(docs); result = {}; total = 0
+    for role in KEYED_ROLES:
+        directory = (work / 'compact-fixtures/source-keyed-rows' if role == 'source'
+                     else work / 'local-mysql-recovery' / ('a' if role == 'localA' else 'b') / 'keyed-rows')
+        need(directory.resolve(strict=True) == directory and not directory.is_symlink(), 'CANONICAL_KEYED_DIRECTORY_REQUIRED')
+        info = directory.stat()
+        need(stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid() and stat.S_IMODE(info.st_mode) == 0o700,
+             'PRIVATE_KEYED_DIRECTORY_REQUIRED')
+        raw_index = read_control(directory / 'index.json')
+        snapshot = (docs[role]['snapshot'] if role != 'source' else
+                    {key: docs['sourceManifest'][key] for key in ('schema', 'snapshotSha256', 'tables')})
+        index = validate_keyed_index(raw_index, references[role], snapshot, role=role)
+        names = {name for name, item in index['tables'].items() if item['status'] == 'KEYED'}
+        need({entry.name for entry in directory.iterdir()} == {'index.json'} | {name + '.jsonl' for name in names},
+             'CLOSED_KEYED_DIRECTORY_MEMBERSHIP_REQUIRED')
+        total += len(raw_index); members = {}
+        for name in sorted(names):
+            need(total + index['tables'][name]['bytes'] <= MAX_KEYED_BUNDLE_BYTES, 'KEYED_BUNDLE_BYTE_LIMIT_EXCEEDED')
+            members[name] = read_keyed_member(directory / (name + '.jsonl')); total += len(members[name])
+        result[role] = {'index': raw_index, 'tables': members}
+    return result
+
+
+def write_private_differences(path, context, differences):
+    need(not path.exists() and not path.is_symlink() and path.parent.resolve(strict=True) == path.parent,
+         'NEW_PRIVATE_DIFFERENCE_REPORT_REQUIRED')
+    checksum = hashlib.sha256(); written = 0
+    with os.fdopen(os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600), 'wb') as target:
+        header = {'schemaVersion': 1, 'kind': 'doorhandle-keyed-differences-private', 'context': context,
+                  'comparisonScope': 'EXACT_TYPED_PRIMARY_KEYS_V1', 'entries': len(differences)}
+        for item in (header, *differences):
+            record = canonical(item) + b'\n'; written += len(record)
+            need(written <= MAX_KEYED_BUNDLE_BYTES, 'PRIVATE_KEY_DIFFERENCE_REPORT_LIMIT_EXCEEDED')
+            target.write(record); checksum.update(record)
+        target.flush(); os.fsync(target.fileno())
+    return {'file': path.name, 'sha256': checksum.hexdigest(), 'bytes': written, 'entries': len(differences)}
 
 
 def main(argv=None):
@@ -329,6 +531,15 @@ def main(argv=None):
         anchors = {'verification': args.verification_receipt_sha256, 'localOwner': args.local_owner_sha256,
                    'fixtureOwner': args.fixture_owner_sha256, 'contract': args.contract_sha256}
         report = classify_documents(raw, expected_context=context, anchors=anchors)
+        docs = {key: decode(value) for key, value in raw.items()}; references = keyed_references(docs)
+        need(all(value is None or type(value) is dict for value in references.values()), 'MALFORMED_KEYED_INDEX_REFERENCE')
+        if all(value is not None for value in references.values()):
+            compared = reconcile_keyed_documents(raw, expected_context=context, anchors=anchors,
+                keyed_documents=load_keyed_documents(work, docs))
+            detail = write_private_differences(work / 'local-mysql-keyed-reconciliation-private.jsonl', context, compared['differences'])
+            report['perKeyReconciliation'] = {**compared['summary'], 'privateDifferences': detail}
+        else:
+            report['perKeyReconciliation']['missingIndexes'] = [role for role in KEYED_ROLES if references[role] is None]
         output = Path(args.output)
         need(output.is_absolute() and output.is_relative_to(work) and '..' not in output.parts
              and output.parent.resolve(strict=True) == output.parent and not output.exists() and not output.is_symlink(),
@@ -337,7 +548,9 @@ def main(argv=None):
         with os.fdopen(os.open(output, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600), 'wb') as target:
             target.write(canonical(report) + b'\n'); target.flush(); os.fsync(target.fileno())
         print(json.dumps({'status': 'CLASSIFIED', 'reportSha256': digest(output.read_bytes()), 'counts': report['counts'],
-                          'coverageVerified': False, 'productionMerged': False, 'retirementAllowed': False}))
+                          'coverageVerified': False, 'productionMerged': False, 'retirementAllowed': False,
+                          'perKeyStatus': report['perKeyReconciliation']['status'],
+                          'cutoverBlocked': report['perKeyReconciliation']['cutoverBlocked']}))
         return 0
     except Exception as error:
         print(json.dumps({'status': 'REJECTED', 'errorType': type(error).__name__,
