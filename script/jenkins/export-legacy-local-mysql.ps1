@@ -16,8 +16,13 @@ independently restores/verifies it on ECS. Nothing here authorizes retirement.
 References: https://dev.mysql.com/doc/refman/8.0/en/mysqldump.html
 https://dev.mysql.com/doc/refman/8.0/en/option-file-options.html
 #>
+[CmdletBinding(DefaultParameterSetName = 'AdministratorEnv')]
 param(
-    [Parameter(Mandatory = $true)][string]$PrivateEnvFile,
+    [Parameter(Mandatory = $true, ParameterSetName = 'AdministratorEnv')][string]$PrivateEnvFile,
+    [Parameter(Mandatory = $true, ParameterSetName = 'ProjectJson')][switch]$NonAdministratorReadOnlyExport,
+    [Parameter(Mandatory = $true, ParameterSetName = 'ProjectJson')][string]$ExpectedSourceHelperSha256,
+    [Parameter(Mandatory = $true, ParameterSetName = 'ProjectJson')][string]$ExpectedPolicySha256,
+    [Parameter(Mandatory = $true, ParameterSetName = 'ProjectJson')][string]$ExpectedPolicyInterpreterSha256,
     [Parameter(Mandatory = $true)][string]$UserAuthorizationReference,
     [ValidateSet('doorhandledb', 'doorhandle_agent_verify_ef8d5844c1', 'doorhandle_model_verify_22e4bc5566')][string]$SourceSchema = 'doorhandledb',
     [switch]$AcknowledgeAdditionalFixtureReadOnlyExport,
@@ -130,6 +135,7 @@ function Get-ReviewedServerConfiguration {
         sourceIniSha256 = File-Sha $ini; sourceUuidMetadataSha256 = File-Sha $autoFile }
 }
 function Get-ReviewedSource {
+    if ($script:NonAdministratorReadOnlyExport) { return Get-NonAdminReviewedSource }
     $service = Get-CimInstance Win32_Service -Filter "Name='MySQL83'"
     $executable = 'C:\Program Files\MySQL\MySQL Server 8.3\bin\mysqld.exe'
     Require-Export ($null -ne $service -and $service.State -ceq 'Running' -and
@@ -177,6 +183,7 @@ function Invoke-PrivateClient([string]$Executable, [string[]]$Arguments, [string
     Require-Export ($script:actualClientIdentityVerified -or ($IdentityProbe -and $Executable -ceq $script:mysql -and $Sql -ceq $script:identitySql)) 'No data/DDL export is allowed before the actual client identity is verified.'
     $freshSource = Get-ReviewedSource
     Require-Export (($freshSource | ConvertTo-Json -Depth 8 -Compress) -ceq ($script:sourceProcess | ConvertTo-Json -Depth 8 -Compress)) 'Source endpoint/process/configuration changed before credentials could be sent.'
+    if ($script:NonAdministratorReadOnlyExport) { [void](Assert-NonAdminCredentialHandle) }
     $start = [Diagnostics.ProcessStartInfo]::new()
     $start.FileName = $Executable
     $start.WorkingDirectory = $script:output
@@ -251,7 +258,12 @@ function Observe-Project([string]$Prefix) {
     Require-Export ($identity.schema -ceq $script:SourceSchema -and $identity.version -match '^8\.3\.' -and $identity.port -eq 3306 -and
         $identity.serverUuid -ceq $script:sourceProcess.configuration.expectedServerUuid -and
         [IO.Path]::GetFullPath($identity.dataDirectory).TrimEnd('\') -ieq $script:sourceProcess.configuration.expectedDataDirectory) 'The actual connection does not match the proven local UUID/data directory/schema/version/port.' 'ACTUAL_SOURCE_IDENTITY_MISMATCH'
+    if ($script:NonAdministratorReadOnlyExport) {
+        Require-Export ($identity.hostName -ieq $script:sourceProcess.hostName -and
+            ($identity.currentAccount -split '@', 2)[0] -ceq $script:expectedCredentialUser) 'The live SQL hostname or authenticated account differs.' 'NONADMIN_SQL_HOST_OR_ACCOUNT_MISMATCH'
+    }
     $script:actualClientIdentityVerified = $true
+    if ($script:NonAdministratorReadOnlyExport) { [void](Get-NonAdminPrivilegeObservation $Prefix) }
     $catalogFile = Join-Path $script:output "$Prefix-catalog-private.jsonl"
     Invoke-PrivateClient $script:mysql ($script:mysqlArgs + @('--batch','--raw','--silent','--skip-column-names','--skip-auto-rehash',
         '--init-command=SET SESSION TRANSACTION READ ONLY', ('--database=' + $script:SourceSchema))) $catalogFile `
@@ -281,6 +293,8 @@ function Observe-Project([string]$Prefix) {
 
 $output = $null; $optionFile = $null; $loginFile = $null; $stage = 'AUTHORIZATION_REQUIRED'; $failure = $null; $reason = 'EXPORT_FAILED'
 $sourceProcess = $null; $actualClientIdentityVerified = $false
+$credentialStream = $null; $credentialObservation = $null
+$createdPrivateInputs = [Collections.Generic.List[string]]::new()
 $identitySql = "SELECT JSON_OBJECT('schema',DATABASE(),'serverUuid',@@server_uuid,'version',@@version,'port',@@port,'dataDirectory',@@datadir);"
 $diskFloor = [long](2GB + 256MB)
 try {
@@ -288,12 +302,30 @@ try {
         $UserAuthorizationReference -match '^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,180}$') 'Explicit user approval for this one local read-only export is required.' 'USER_AUTHORIZATION_REQUIRED'
     Require-Export ($SourceSchema -cin @('doorhandledb', 'doorhandle_agent_verify_ef8d5844c1', 'doorhandle_model_verify_22e4bc5566')) 'Only the three exact reviewed project schemas are eligible.' 'FIXED_SOURCE_SCHEMA_REQUIRED'
     Require-Export ($SourceSchema -ceq 'doorhandledb' -or $AcknowledgeAdditionalFixtureReadOnlyExport) 'The two remaining fixture schemas require a new separately approved read-only export acknowledgement.' 'ADDITIONAL_FIXTURE_AUTHORIZATION_REQUIRED'
-    $stage = 'ADMINISTRATOR_METADATA_GATE'
+    $stage = if ($NonAdministratorReadOnlyExport) { 'NONADMINISTRATOR_METADATA_GATE' } else { 'ADMINISTRATOR_METADATA_GATE' }
     $principal = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
-    Require-Export ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) 'Run only inside the separately approved administrator token; this script never elevates itself.' 'ADMINISTRATOR_TOKEN_REQUIRED'
+    if ($NonAdministratorReadOnlyExport) {
+        Require-Export (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) 'Use the ordinary user token for this explicit source mode.' 'NONADMIN_TOKEN_REQUIRED'
+    } else {
+        Require-Export ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) 'Run only inside the separately approved administrator token; this script never elevates itself.' 'ADMINISTRATOR_TOKEN_REQUIRED'
+    }
     $project = 'D:\AI\lunwen1\DoorHandleCatch'
     Require-Export ((Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '../..')).Path -ceq $project) 'Use the reviewed project checkout.'
     $owner = [Security.Principal.WindowsIdentity]::GetCurrent().User
+    if ($NonAdministratorReadOnlyExport) {
+        $nonAdminSourceHelper = Join-Path $PSScriptRoot 'nonadmin-local-mysql-source.ps1'
+        $nonAdminPolicy = Join-Path $PSScriptRoot 'nonadmin-local-mysql-policy.py'
+        foreach ($helper in @($nonAdminSourceHelper, $nonAdminPolicy)) { Assert-Unlinked $helper }
+        $nonAdminSourceHelperSha = File-Sha $nonAdminSourceHelper; $nonAdminPolicySha = File-Sha $nonAdminPolicy
+        $policyPython = (Get-Command python -CommandType Application -ErrorAction Stop).Source
+        Assert-Unlinked $policyPython; $policyPythonSha = File-Sha $policyPython
+        Require-Export ($ExpectedSourceHelperSha256 -cmatch '^[a-f0-9]{64}$' -and
+            $ExpectedPolicySha256 -cmatch '^[a-f0-9]{64}$' -and $ExpectedPolicyInterpreterSha256 -cmatch '^[a-f0-9]{64}$' -and
+            $nonAdminSourceHelperSha -ceq $ExpectedSourceHelperSha256 -and $nonAdminPolicySha -ceq $ExpectedPolicySha256 -and
+            $policyPythonSha -ceq $ExpectedPolicyInterpreterSha256) 'The worker dependencies differ from the admitted batch.' 'NONADMIN_BATCH_HELPER_BINDING_REQUIRED'
+        . $nonAdminSourceHelper
+        $identitySql = "SELECT JSON_OBJECT('schema',DATABASE(),'serverUuid',@@server_uuid,'version',@@version,'port',@@port,'dataDirectory',@@datadir,'hostName',@@hostname,'currentAccount',CURRENT_USER());"
+    } else {
     $private = [IO.Path]::GetFullPath($PrivateEnvFile)
     Require-Export ($private.StartsWith($project + '\', [StringComparison]::OrdinalIgnoreCase)) 'Use an existing private credential file inside the project.'
     Assert-Unlinked $private
@@ -305,22 +337,40 @@ try {
     }
     & git -C $project check-ignore --quiet -- $private
     Require-Export ($LASTEXITCODE -eq 0) 'The private credential file must be Git ignored.'
+    }
     $binaryRoot = 'C:\Program Files\MySQL\MySQL Server 8.3'
     $mysql = Join-Path $binaryRoot 'bin/mysql.exe'; $dump = Join-Path $binaryRoot 'bin/mysqldump.exe'
     foreach ($file in @($mysql, $dump)) {
         Assert-Unlinked $file
         Require-Export ((Get-Item -LiteralPath $file).VersionInfo.ProductVersion -match '^8\.3\.') 'Use only the installed MySQL 8.3 clients.'
     }
-    Assert-GlobalClientOptions
+    # The explicit mode reads only our private defaults file and empty login
+    # file, rather than inspecting any protected C option or data directory.
+    if (-not $NonAdministratorReadOnlyExport) { Assert-GlobalClientOptions }
     $stage = 'LOCAL_SOURCE_METADATA_GATE'; $sourceProcess = Get-ReviewedSource
     $parent = Join-Path $project 'work/data-migration-20261107'; Assert-Unlinked $parent
     $output = Join-Path $parent ('local-mysql-export-' + [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ') + '-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
     New-Item -ItemType Directory -Path $output -ErrorAction Stop | Out-Null
     Set-PrivateDirectory $output
-    Write-PrivateJson (Join-Path $output 'authorization-private.json') ([ordered]@{ userAuthorizationReference = $UserAuthorizationReference;
-        oneTimeReadOnlyExceptionAcknowledged = $true; additionalFixtureReadOnlyExceptionAcknowledged = [bool]$AcknowledgeAdditionalFixtureReadOnlyExport; sourceSchema = $SourceSchema; ownerSid = $owner.Value; serviceName = 'MySQL83'; sourceProcess = $sourceProcess })
+    $authorization = [ordered]@{ userAuthorizationReference = $UserAuthorizationReference;
+        oneTimeReadOnlyExceptionAcknowledged = $true; additionalFixtureReadOnlyExceptionAcknowledged = [bool]$AcknowledgeAdditionalFixtureReadOnlyExport; sourceSchema = $SourceSchema; ownerSid = $owner.Value; serviceName = 'MySQL83'; sourceProcess = $sourceProcess }
+    if ($NonAdministratorReadOnlyExport) {
+        $authorization['kind'] = 'doorhandle-nonadmin-local-mysql-export-authorization'
+        $authorization['sourceMode'] = 'PINNED_HISTORY_FRESH_SERVICE_TCP'
+        $authorization['sourceHelperSha256'] = $nonAdminSourceHelperSha; $authorization['policySha256'] = $nonAdminPolicySha
+        $authorization['policyInterpreterSha256'] = $policyPythonSha
+        $authorization['credentialSourceSha256'] = '97c366105bd23057d4733636b05766eb36e03da1a07af6e8b37dd0c4c90e6b2b'
+    }
+    Write-PrivateJson (Join-Path $output 'authorization-private.json') $authorization
     $stage = 'PRIVATE_INPUT_PREPARATION'
     $credentials = @{}
+    if ($NonAdministratorReadOnlyExport) {
+        $credentials = Read-NonAdminProjectCredentials
+        Write-PrivateJson (Join-Path $output 'credential-handle-private.json') ([ordered]@{
+            kind = 'doorhandle-fixed-credential-read-observation'; sourceContentModified = $false; sourceAclModified = $false;
+            sourceSha256 = '97c366105bd23057d4733636b05766eb36e03da1a07af6e8b37dd0c4c90e6b2b';
+            ownerAndIdentity = $credentialObservation; credentialValuesIncluded = $false })
+    } else {
     foreach ($line in [IO.File]::ReadAllLines($private, [Text.UTF8Encoding]::new($false, $true))) {
         if ($line -notmatch '^\s*(?:export\s+)?(DB_USERNAME|DB_PASSWORD)\s*=(.*)$') { continue }
         $name = $Matches[1]; $value = $Matches[2].Trim()
@@ -328,13 +378,27 @@ try {
         if ($value.Length -ge 2 -and $value[0] -eq $value[-1] -and $value[0] -in @('"', "'")) { $value = $value.Substring(1, $value.Length - 2) }
         $credentials[$name] = $value
     }
+    }
     Require-Export ($credentials.Count -eq 2 -and $credentials.DB_USERNAME -match '^[A-Za-z0-9_]{1,32}$' -and
         $credentials.DB_PASSWORD.Length -gt 0 -and $credentials.DB_PASSWORD.Length -le 4096) 'The existing DB_USERNAME / DB_PASSWORD credentials are incomplete.'
     $optionFile = Join-Path $output 'temporary-client-private.ini'; $loginFile = Join-Path $output 'temporary-empty-login-private.cnf'
-    [IO.File]::WriteAllText($optionFile, ("[client]`nhost=127.0.0.1`nport=3306`nprotocol=TCP`nuser=" +
-        (Option-Value $credentials.DB_USERNAME) + "`npassword=" + (Option-Value $credentials.DB_PASSWORD) + "`n"), [Text.UTF8Encoding]::new($false))
-    [IO.File]::WriteAllBytes($loginFile, [byte[]]::new(0)); $credentials.Clear(); $value = $null
-    $clientArgs = @(('--defaults-extra-file=' + $optionFile), '--host=127.0.0.1','--port=3306','--protocol=TCP','--default-character-set=utf8mb4')
+    $options = "[client]`nhost=127.0.0.1`nport=3306`nprotocol=TCP`nuser=" +
+        (Option-Value $credentials.DB_USERNAME) + "`npassword=" + (Option-Value $credentials.DB_PASSWORD) + "`n"
+    if ($NonAdministratorReadOnlyExport) {
+        foreach ($entry in @(@{ path = $optionFile; bytes = [Text.UTF8Encoding]::new($false).GetBytes($options) },
+                              @{ path = $loginFile; bytes = [byte[]]::new(0) })) {
+            $privateStream = [IO.File]::Open($entry.path, 'CreateNew', 'Write', 'None')
+            $createdPrivateInputs.Add($entry.path)
+            try { $privateStream.Write($entry.bytes, 0, $entry.bytes.Length); $privateStream.Flush($true) }
+            finally { $privateStream.Dispose() }
+        }
+    } else {
+        [IO.File]::WriteAllText($optionFile, $options, [Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllBytes($loginFile, [byte[]]::new(0))
+    }
+    $credentials.Clear(); $value = $null; $options = $null; $entry = $null
+    $defaultsOption = if ($NonAdministratorReadOnlyExport) { '--defaults-file=' } else { '--defaults-extra-file=' }
+    $clientArgs = @(($defaultsOption + $optionFile), '--host=127.0.0.1','--port=3306','--protocol=TCP','--default-character-set=utf8mb4')
     # mysql supports this connection option; the installed mysqldump 8.3 does
     # not. Both clients remain bounded by Invoke-PrivateClient's process timeout.
     $mysqlArgs = $clientArgs + @('--connect-timeout=10')
@@ -355,6 +419,10 @@ try {
         (File-Sha $ddlBefore) -ceq (File-Sha $ddlAfter)) 'Source identity, DDL or observed row counts changed; the outcome requires review.'
     $currentSource = Get-ReviewedSource
     Require-Export (($currentSource | ConvertTo-Json -Compress -Depth 5) -ceq ($sourceProcess | ConvertTo-Json -Compress -Depth 5)) 'The source service or direct listener process changed during export.'
+    if ($NonAdministratorReadOnlyExport) {
+        [void](Assert-NonAdminCredentialHandle)
+        Require-Export ((File-Sha $nonAdminSourceHelper) -ceq $nonAdminSourceHelperSha) 'The reviewed source helper changed.' 'NONADMIN_SOURCE_HELPER_CHANGED'
+    }
     $stage = 'BYTE_ONLY_COMPRESSION'; $compressed = Join-Path $output 'database.sql.gz'
     $inputStream = $null; $outputStream = $null; $gzip = $null
     try {
@@ -379,11 +447,22 @@ try {
     $stage = 'PRIVATE_CREDENTIAL_CLEANUP'
 } catch { $failure = $_.Exception.GetType().Name; $reason = $_.Exception.Data['ExportReason'] }
 finally {
+    try {
     foreach ($file in @($optionFile, $loginFile)) {
+        if ($NonAdministratorReadOnlyExport -and -not $createdPrivateInputs.Contains($file)) { continue }
         if ($file -and (Test-Path -LiteralPath $file)) {
             try { Assert-Unlinked $file; Remove-Item -LiteralPath $file -Force -ErrorAction Stop }
             catch { $failure = 'PrivateCredentialCleanupFailed' }
         }
+    }
+    } catch {
+        if ($NonAdministratorReadOnlyExport) { $failure = 'PrivateCredentialCleanupFailed' } else { throw }
+    } finally {
+    if ($null -ne $credentialStream) {
+        try { if ($null -ne $credentialObservation) { [void](Assert-NonAdminCredentialHandle) } }
+        catch { $failure = 'CredentialSourceIdentityChanged' }
+        finally { $credentialStream.Dispose(); $credentialStream = $null }
+    }
     }
 }
 if ($failure) {
@@ -392,6 +471,10 @@ if ($failure) {
         sourceSeenState = if ($sourceProcess) { @($sourceProcess.sourceSeenState) } else { @() };
         actualClientIdentityVerified = $actualClientIdentityVerified;
         backupRestoreVerified = $false; retirementAllowed = $false }
+    if ($NonAdministratorReadOnlyExport) {
+        $report.schemaVersion = 2; $report.kind = 'doorhandle-nonadmin-local-mysql-export'
+        $report['sourceMode'] = 'PINNED_HISTORY_FRESH_SERVICE_TCP'
+    }
     if ($output -and (Test-Path -LiteralPath $output -PathType Container)) { Write-PrivateJson (Join-Path $output 'public-failure.json') $report }
     Write-Output ($report | ConvertTo-Json -Compress); throw 'Local export did not complete. Preserve partial business artifacts; no source deletion is authorized.'
 }
@@ -410,6 +493,18 @@ $public = [ordered]@{ schemaVersion = 1; kind = 'doorhandle-local-mysql-export';
     privateInputFilesRemoved = $true; credentialsArchived = $false; files = $files;
     sourceDeleted = $false; servicesChanged = $false; testsExecuted = $false; cloudUploaded = $false;
     backupRestoreVerified = $false; retirementAllowed = $false }
+if ($NonAdministratorReadOnlyExport) {
+    $public.schemaVersion = 2; $public.kind = 'doorhandle-nonadmin-local-mysql-export'
+    $public['sourceMode'] = 'PINNED_HISTORY_FRESH_SERVICE_TCP'
+    $public.sourceConfigurationVerified = $false
+    $public['historicalConfigurationPinVerified'] = $true; $public['freshServiceEndpointVerified'] = $true
+    $public['freshDirectPrivilegesVerified'] = $true; $public['restorePending'] = $true
+    $public['sourceHelperSha256'] = $nonAdminSourceHelperSha; $public['policySha256'] = $nonAdminPolicySha
+    $public['policyInterpreterSha256'] = $policyPythonSha
+    $public['credentialSourceSha256'] = '97c366105bd23057d4733636b05766eb36e03da1a07af6e8b37dd0c4c90e6b2b'
+}
 Write-PrivateJson (Join-Path $output 'public-manifest.json') $public
-Write-Output ([ordered]@{ status = $public.status; sourceSchema = $SourceSchema; exportDirectory = $output; rawSqlSha256 = $rawSha;
-    gzipSha256 = $public.gzipSha256; tableCount = $public.tableCount; backupRestoreVerified = $false; retirementAllowed = $false } | ConvertTo-Json -Compress)
+$result = [ordered]@{ status = $public.status; sourceSchema = $SourceSchema; exportDirectory = $output; rawSqlSha256 = $rawSha;
+    gzipSha256 = $public.gzipSha256; tableCount = $public.tableCount; backupRestoreVerified = $false; retirementAllowed = $false }
+if ($NonAdministratorReadOnlyExport) { $result['kind'] = $public.kind; $result['schemaVersion'] = 2; $result['restorePending'] = $true }
+Write-Output ($result | ConvertTo-Json -Compress)

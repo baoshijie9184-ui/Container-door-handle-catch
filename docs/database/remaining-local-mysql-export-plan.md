@@ -36,6 +36,29 @@ pwsh -NoProfile -File .\script\jenkins\export-remaining-local-mysql.ps1 `
 
 脚本本身不请求 UAC、不替用户授权。旧许可是已使用的一次 `doorhandledb` 只读导出，不能扩展为当前两个库的读取许可；额外 acknowledgement 仅记录新许可。启动本脚本必须在新许可后由操作者从外部进入管理员会话。
 
+## 普通用户只读模式（开发待验证）
+
+新增显式 `-NonAdministratorReadOnlyExport` 参数集，管理员模式仍是默认值。此模式不接受 `PrivateEnvFile`，要求本次新的只读迁移授权、三个精确 schema 和 `-IncludeLegacyBusinessSource` 同时选定；源服务必须已运行，实际执行由操作者独立批准。当前仅完成代码开发和静态检查，没有运行客户端或实际导出。
+
+新路径只读取固定 `work/model-mysql.private.json` 的 234 字节、完整 SHA；以同一只读句柄核当前用户所有权、单链接、最终路径、非 reparse、前后文件身份和原字节，不修改原文件内容或 ACL。凭据仅进入内存和 D 盘新私有目录中的短时 defaults 文件，结束时删除；不新建永久 dotenv，不向参数、日志或 Python metadata validator 发送用户名或密码。
+
+来源仍需每次客户端启动前重新读取 `MySQL83` 服务、服务进程及固定端口 owner PID、进程创建时间和父子关系。普通权限读不到必要信息即拒绝；可见的完整路径和命令行必须匹配原固定安装。原始 TCP 状态 0 继续明确记为 UNKNOWN owner-bound，不冒充 LISTEN；真实连接随后必须匹配已认证 UUID、数据目录、版本、端口、系统主机名和认证账号，再核本次 schema 的直接读取、事件和触发器权限。历史身份 pin 不是现场身份。
+
+已在清退前从四份原件逐一认证 SHA、对照 remaining86 清单和 #179 原始恢复回执，生成不含凭据或业务行的私有 bundle：`work/jenkins/nonadmin-local-export-assessment-20261109T230447Z/source-pins-20261109T232421Z-f085d724/history-pins-private.json`，SHA `1b7e580828c50d815d5d470461681a313867d07e9ef69c26e4b9b07371c3d530`。validator 只接受这一精确路径和摘要；原四份后续清退不会要求重新读取受保护的 C 盘目录，也没有任意路径或网络 fallback。
+
+新模式使用 `--defaults-file` 仅读取自行生成的私有配置，同时保留空 login-file 隔离；不读取 C 盘全局 option 或数据目录。保留原单事务、InnoDB 基表、GTID_PURGED=OFF、跳过锁表和 tablespace、routines/events/triggers、前后身份/DDL/行数及压缩解压摘要核验。[MySQL 官方 option-file 说明](https://dev.mysql.com/doc/refman/8.0/en/option-file-options.html)支持该配置隔离；[mysqldump 官方说明](https://dev.mysql.com/doc/refman/8.0/en/mysqldump.html)要求 `--routines` 具有全局 SELECT，因此仅有 SHOW_ROUTINE 不足以通过本模式。
+
+只供后续审阅的调用形状如下，不能将 acknowledgement 当成实际授权：
+
+```powershell
+pwsh -NoProfile -File .\script\jenkins\export-remaining-local-mysql.ps1 `
+  -NonAdministratorReadOnlyExport -IncludeLegacyBusinessSource `
+  -UserAuthorizationReference '<本次新的普通用户只读迁移授权记录>' `
+  -AcknowledgeRemainingSchemasReadOnlyExport
+```
+
+新导出使用独立 `doorhandle-nonadmin-local-mysql-export` / schemaVersion 2，批次使用 `doorhandle-nonadmin-remaining-local-mysql-export`，始终 `restorePending=true`、`backupRestoreVerified=false`、`retirementAllowed=false`。原 `local-mysql-export45-v1` 接收器不接受此证明；待实际产生固定 SQL、manifest 和摘要后，须单独扩展既有 ECS 独立恢复器的精确三库 profile，不能冒认原 45 表恢复成功。原件和临时失败产物保留，不自动重试或清退。
+
 ## 导出后的验收与边界
 
 本机成功最多产生 `LOCAL_EXPORTS_COMPLETE_ECS_RESTORE_PENDING`。随后需要由固定提交的本地 Jenkins 将私有包传至 ECS，在新建且隔离的 MySQL 中核验每库表结构、逐表实际行数、内容摘要、约束及独立恢复，并保留原始回执。这两个新 schema 不属于现有仅接受 `doorhandledb` 的 45 表恢复协议，不能冒用其旧回执或把参数改名视为验收完成。

@@ -8,8 +8,10 @@ It reuses the reviewed single-schema worker and the already running MySQL83.
 IncludeLegacyBusinessSource additionally requires fresh approval for doorhandledb.
 Acknowledgements record approval; they cannot provide it.
 #>
+[CmdletBinding(DefaultParameterSetName = 'AdministratorEnv')]
 param(
-    [Parameter(Mandatory = $true)][string]$PrivateEnvFile,
+    [Parameter(Mandatory = $true, ParameterSetName = 'AdministratorEnv')][string]$PrivateEnvFile,
+    [Parameter(Mandatory = $true, ParameterSetName = 'ProjectJson')][switch]$NonAdministratorReadOnlyExport,
     [Parameter(Mandatory = $true)][string]$UserAuthorizationReference,
     [switch]$AcknowledgeRemainingSchemasReadOnlyExport,
     [switch]$IncludeLegacyBusinessSource
@@ -35,12 +37,30 @@ function Write-BatchJson([string]$Path, $Value) {
 Require-Batch ($IsWindows -and $AcknowledgeRemainingSchemasReadOnlyExport -and
     $UserAuthorizationReference -cmatch '^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,180}$') 'New explicit user approval for this one fixed-schema read-only batch is required.'
 $principal = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
-Require-Batch ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) 'Use only the separately approved administrator token; this script never requests elevation.'
+if ($NonAdministratorReadOnlyExport) {
+    Require-Batch (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) -and
+        $IncludeLegacyBusinessSource) 'The explicit ordinary-user mode requires approval and selection of exactly all three reviewed schemas.'
+} else {
+    Require-Batch ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) 'Use only the separately approved administrator token; this script never requests elevation.'
+}
 $project = 'D:\AI\lunwen1\DoorHandleCatch'
 Require-Batch ((Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '../..')).Path -ceq $project) 'Use the reviewed project checkout.'
 $worker = Join-Path $PSScriptRoot 'export-legacy-local-mysql.ps1'
 Assert-BatchUnlinked $worker
 $workerSha = (Get-FileHash -LiteralPath $worker -Algorithm SHA256).Hash.ToLowerInvariant()
+$nonAdminDependencies = @{}
+if ($NonAdministratorReadOnlyExport) {
+    $nonAdminDependencies = @{
+        sourceHelper = Join-Path $PSScriptRoot 'nonadmin-local-mysql-source.ps1';
+        policy = Join-Path $PSScriptRoot 'nonadmin-local-mysql-policy.py';
+        interpreter = (Get-Command python -CommandType Application -ErrorAction Stop).Source
+    }
+    $nonAdminDependencySha = @{}
+    foreach ($name in $nonAdminDependencies.Keys) {
+        Assert-BatchUnlinked $nonAdminDependencies[$name]
+        $nonAdminDependencySha[$name] = (Get-FileHash -LiteralPath $nonAdminDependencies[$name] -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
+}
 $schemas = @('doorhandle_agent_verify_ef8d5844c1', 'doorhandle_model_verify_22e4bc5566')
 if ($IncludeLegacyBusinessSource) { $schemas += 'doorhandledb' }
 
@@ -56,13 +76,19 @@ foreach ($sid in @($owner, [Security.Principal.SecurityIdentifier]::new('S-1-5-1
 }
 Set-Acl -LiteralPath $directory -AclObject $acl
 Require-Batch (Get-Acl -LiteralPath $directory).AreAccessRulesProtected 'Batch directory permissions were not protected.'
-Write-BatchJson (Join-Path $directory 'authorization-private.json') ([ordered]@{
+$authorization = [ordered]@{
     kind = 'doorhandle-remaining-local-mysql-export-authorization'; sourceSchemas = $schemas;
     userAuthorizationReference = $UserAuthorizationReference; newOneTimeReadOnlyExceptionAcknowledged = $true;
     includeLegacyBusinessSource = [bool]$IncludeLegacyBusinessSource; workerScriptSha256 = $workerSha;
     batchScriptSha256 = (Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash.ToLowerInvariant();
     serviceName = 'MySQL83'; sourceEndpoint = '127.0.0.1:3306'; ownerSid = $owner.Value
-})
+}
+if ($NonAdministratorReadOnlyExport) {
+    $authorization.kind = 'doorhandle-nonadmin-remaining-local-mysql-export-authorization'
+    $authorization['sourceMode'] = 'PINNED_HISTORY_FRESH_SERVICE_TCP'
+    $authorization['dependencySha256'] = $nonAdminDependencySha
+}
+Write-BatchJson (Join-Path $directory 'authorization-private.json') $authorization
 
 $results = [Collections.Generic.List[object]]::new()
 $activeSchema = $null; $failureType = $null
@@ -70,11 +96,24 @@ try {
     foreach ($schema in $schemas) {
         $activeSchema = $schema
         Require-Batch ((Get-FileHash -LiteralPath $worker -Algorithm SHA256).Hash.ToLowerInvariant() -ceq $workerSha) 'The reviewed export worker changed before invocation.'
+        if ($NonAdministratorReadOnlyExport) {
+            foreach ($name in $nonAdminDependencies.Keys) {
+                Assert-BatchUnlinked $nonAdminDependencies[$name]
+                Require-Batch ((Get-FileHash -LiteralPath $nonAdminDependencies[$name] -Algorithm SHA256).Hash.ToLowerInvariant() -ceq $nonAdminDependencySha[$name]) 'The admitted batch dependencies changed before invocation.'
+            }
+        }
         $arguments = @{
-            PrivateEnvFile = $PrivateEnvFile; UserAuthorizationReference = $UserAuthorizationReference;
+            UserAuthorizationReference = $UserAuthorizationReference;
             SourceSchema = $schema; AcknowledgeOneTimeLocalReadOnlyExport = $true;
             AcknowledgeAdditionalFixtureReadOnlyExport = $true
         }
+        if ($NonAdministratorReadOnlyExport) {
+            $arguments['NonAdministratorReadOnlyExport'] = $true
+            $arguments['ExpectedSourceHelperSha256'] = $nonAdminDependencySha.sourceHelper
+            $arguments['ExpectedPolicySha256'] = $nonAdminDependencySha.policy
+            $arguments['ExpectedPolicyInterpreterSha256'] = $nonAdminDependencySha.interpreter
+        }
+        else { $arguments['PrivateEnvFile'] = $PrivateEnvFile }
         $lines = @(& $worker @arguments)
         Require-Batch ($lines.Count -eq 1) 'The export worker did not return its single bounded public result.'
         $result = $lines[0] | ConvertFrom-Json
@@ -86,11 +125,25 @@ try {
         Assert-BatchUnlinked $exportDirectory
         $manifestPath = Join-Path $exportDirectory 'public-manifest.json'
         $manifest = [IO.File]::ReadAllText($manifestPath) | ConvertFrom-Json
+        if ($NonAdministratorReadOnlyExport) {
+            Require-Batch ($manifest.kind -ceq 'doorhandle-nonadmin-local-mysql-export' -and $manifest.schemaVersion -eq 2 -and
+                $manifest.sourceMode -ceq 'PINNED_HISTORY_FRESH_SERVICE_TCP' -and $manifest.restorePending -eq $true -and
+                $manifest.historicalConfigurationPinVerified -eq $true -and $manifest.freshServiceEndpointVerified -eq $true -and
+                $manifest.freshDirectPrivilegesVerified -eq $true -and $manifest.actualClientIdentityVerified -eq $true -and
+                $manifest.sourceHelperSha256 -ceq $nonAdminDependencySha.sourceHelper -and $manifest.policySha256 -ceq $nonAdminDependencySha.policy -and
+                $manifest.policyInterpreterSha256 -ceq $nonAdminDependencySha.interpreter) 'The ordinary-user export did not prove its distinct source/permission contract.'
+        }
         Require-Batch ($manifest.sourceSchema -ceq $schema -and $manifest.scriptSha256 -ceq $workerSha -and
             $manifest.rawSqlSha256 -ceq $result.rawSqlSha256 -and $manifest.gzipSha256 -ceq $result.gzipSha256 -and
             $manifest.privateInputFilesRemoved -eq $true -and $manifest.credentialsArchived -eq $false -and
             $manifest.sourceDeleted -eq $false -and $manifest.servicesChanged -eq $false) 'The original per-schema export manifest is missing or inconsistent.'
         Require-Batch ((Get-FileHash -LiteralPath $worker -Algorithm SHA256).Hash.ToLowerInvariant() -ceq $workerSha) 'The reviewed export worker changed during invocation.'
+        if ($NonAdministratorReadOnlyExport) {
+            foreach ($name in $nonAdminDependencies.Keys) {
+                Assert-BatchUnlinked $nonAdminDependencies[$name]
+                Require-Batch ((Get-FileHash -LiteralPath $nonAdminDependencies[$name] -Algorithm SHA256).Hash.ToLowerInvariant() -ceq $nonAdminDependencySha[$name]) 'The admitted batch dependencies changed during invocation.'
+            }
+        }
         $results.Add([ordered]@{
             sourceSchema = $schema; status = $result.status; exportDirectory = $exportDirectory;
             tableCount = $manifest.tableCount; observedRowsBefore = $manifest.observedRowsBefore;
@@ -110,6 +163,11 @@ $receipt = [ordered]@{
     workerScriptSha256 = $workerSha; sourceMutationsRequested = $false; servicesChanged = $false;
     testsExecuted = $false; cloudUploaded = $false; backupRestoreVerified = $false; retirementAllowed = $false;
     automaticRetryAllowed = $false
+}
+if ($NonAdministratorReadOnlyExport) {
+    $receipt.kind = 'doorhandle-nonadmin-remaining-local-mysql-export'; $receipt.schemaVersion = 2
+    $receipt['sourceMode'] = 'PINNED_HISTORY_FRESH_SERVICE_TCP'; $receipt['restorePending'] = $true
+    $receipt['dependencySha256'] = $nonAdminDependencySha
 }
 Write-BatchJson (Join-Path $directory 'batch-result-private.json') $receipt
 Write-Output ([ordered]@{ status = $receipt.status; completedSchemas = $receipt.completedSchemas;

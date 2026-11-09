@@ -835,3 +835,252 @@ def test_sql_failure_locations_filter_foreign_payload_frames_and_keep_only_the_l
     raw = json.dumps(locations)
     assert 'PRIVATE_SQL_DIAGNOSTIC' not in raw and '/home/private' not in raw and 'PRIVATE_SENTINEL' not in raw
     assert custody.__file__ not in raw and 'foreign-sql-diagnostic' not in raw
+
+# Pure gates used by the separately acknowledged, fixed nonadministrator export.
+import io as nonadmin_io
+
+nonadmin_spec = importlib.util.spec_from_file_location('nonadmin_fixed_mysql_policy_contract', ROOT / 'script/jenkins/nonadmin-local-mysql-policy.py')
+nonadmin_policy = importlib.util.module_from_spec(nonadmin_spec)
+nonadmin_spec.loader.exec_module(nonadmin_policy)
+
+@pytest.fixture
+def nonadmin_source():
+    historical = {'expectedServerUuid': '11111111-2222-3333-4444-555555555555', 'expectedDataDirectory': nonadmin_policy.DATA_DIRECTORY, 'sourceIniSha256': 'a' * 64, 'sourceUuidMetadataSha256': 'b' * 64}
+    command = '"' + nonadmin_policy.EXECUTABLE + '" "' + nonadmin_policy.DEFAULTS + '" MySQL83'
+    parent = {'processId': 1000, 'parentProcessId': 500, 'name': 'mysqld.exe', 'createdAtUtc': '2026-11-10T01:00:00.1234567+00:00', 'executablePath': None, 'commandLine': None}
+    worker = {**parent, 'processId': 1001, 'parentProcessId': 1000, 'createdAtUtc': '2026-11-10T01:00:01.1234567+00:00'}
+    endpoint = {'localAddress': '127.0.0.1', 'localPort': 3306, 'remoteAddress': '0.0.0.0', 'remotePort': 0, 'owningProcess': 1001, 'state': 0}
+    record = {'service': {'name': 'MySQL83', 'state': 'Running', 'processId': 1000, 'pathName': command}, 'serviceProcess': parent, 'worker': worker, 'endpoints': [endpoint], 'hostName': 'TEST-WINDOWS'}
+    return SimpleNamespace(record=record, historical=historical, command=command)
+
+@pytest.fixture
+def nonadmin_history(nonadmin_source, tmp_path, monkeypatch):
+    folder = tmp_path / 'fixed-history'
+    folder.mkdir(mode=448)
+    path = folder / 'history-pins-private.json'
+    ownership = {schema: {'matchesPreviouslyInventoriedSchema': True,
+        'evidence': [{'path': 'work/fixture-metadata/' + str(index) + '-' + str(number) + '.json', 'sha256': 'f' * 64}
+                     for number in range(2 if schema == 'doorhandledb' else 3)]}
+        for index, schema in enumerate(nonadmin_policy.SCHEMA_ORDER)}
+    bundle = {'kind': 'doorhandle-local-mysql-history-pin-bundle', 'schemaVersion': 1,
+        'configuration': nonadmin_source.historical, 'schemas': list(nonadmin_policy.SCHEMA_ORDER),
+        'ownership': ownership, 'originalEvidenceSha256': dict(nonadmin_policy.ORIGINAL_EVIDENCE_PINS)}
+    raw = nonadmin_policy.encoded(bundle); path.write_bytes(raw)
+    monkeypatch.setattr(nonadmin_policy, 'HISTORY_BUNDLE', path)
+    monkeypatch.setattr(nonadmin_policy, 'HISTORY_BUNDLE_SHA256', hashlib.sha256(raw).hexdigest())
+    monkeypatch.setattr(nonadmin_policy, 'HISTORY_CANONICAL_SHA256', nonadmin_policy.checksum(bundle))
+    monkeypatch.setattr(nonadmin_policy, 'OWNERSHIP_SHA256', nonadmin_policy.checksum(ownership))
+    return SimpleNamespace(path=path, bundle=bundle, raw=raw)
+
+def test_nonadmin_complete_fresh_source_keeps_unknown_truthful_and_hashes_full_observations(nonadmin_source):
+    before = copy.deepcopy(nonadmin_source.record)
+    result = nonadmin_policy.validate_source(nonadmin_source.record, nonadmin_source.historical)
+    assert nonadmin_source.record == before and result['configuration'] == nonadmin_source.historical
+    assert result['sourceSeenState'] == [0] and result['tcpEvidenceKind'] == 'UNKNOWN_OWNER_BOUND_ENDPOINT'
+    assert result['worker']['processId'] == 1001 and result['serviceProcessId'] == 1000
+    visible = copy.deepcopy(nonadmin_source.record)
+    visible['worker'].update(executablePath=nonadmin_policy.EXECUTABLE, commandLine=nonadmin_source.command)
+    assert nonadmin_policy.validate_source(visible, nonadmin_source.historical)['processObservationSha256'] != result['processObservationSha256']
+    listen = copy.deepcopy(nonadmin_source.record)
+    listen['endpoints'][0]['state'] = 2
+    listen['endpoints'].append({**listen['endpoints'][0], 'localAddress': '::', 'remoteAddress': '::'})
+    first = nonadmin_policy.validate_source(listen, nonadmin_source.historical)
+    listen['endpoints'].reverse()
+    second = nonadmin_policy.validate_source(listen, nonadmin_source.historical)
+    assert first == second and first['tcpEvidenceKind'] == 'REPORTED_LISTEN_OWNER_BOUND_ENDPOINT'
+    assert first['endpointBindingsSha256'] != result['endpointBindingsSha256']
+
+def test_nonadmin_incomplete_records_and_untyped_service_metadata_cannot_become_source_proof(nonadmin_source):
+    for damage in ('missing-service', 'extra-secret', 'missing-host', 'missing-state', 'bool-pid', 'zero-pid', 'wrong-name', 'stopped'):
+        value = copy.deepcopy(nonadmin_source.record)
+        if damage == 'missing-service':
+            value.pop('service')
+        elif damage == 'extra-secret':
+            value['password'] = 'synthetic-never-output'
+        elif damage == 'missing-host':
+            value.pop('hostName')
+        elif damage == 'missing-state':
+            value['service'].pop('state')
+        elif damage == 'bool-pid':
+            value['service']['processId'] = True
+        elif damage == 'zero-pid':
+            value['service']['processId'] = 0
+        elif damage == 'wrong-name':
+            value['service']['name'] = 'OtherMySQL'
+        else:
+            value['service']['state'] = 'Stopped'
+        with pytest.raises(nonadmin_policy.PolicyError):
+            nonadmin_policy.validate_source(value, nonadmin_source.historical)
+
+def test_nonadmin_server_command_accepts_only_the_reviewed_quoted_defaults_and_no_overrides(nonadmin_source):
+    nonadmin_policy.command(nonadmin_source.command)
+    nonadmin_policy.command('"' + nonadmin_policy.EXECUTABLE + '" --defaults-file="C:\\ProgramData\\MySQL\\MySQL Server 8.3\\my.ini"')
+    for value in (nonadmin_source.command + ' --port=3307', nonadmin_source.command + ' --datadir=D:\\other', nonadmin_source.command.replace('my.ini', 'foreign.ini'), nonadmin_source.command.replace('mysqld.exe', 'other.exe'), nonadmin_source.command.replace(' MySQL83', ' OtherService'), nonadmin_source.command + '\n', '"' + nonadmin_policy.EXECUTABLE + '""' + nonadmin_policy.DEFAULTS + '"', nonadmin_source.command.replace('"', '\\"')):
+        with pytest.raises(nonadmin_policy.PolicyError):
+            nonadmin_policy.command(value)
+
+def test_nonadmin_parent_child_identity_and_every_visible_process_field_are_required_to_agree(nonadmin_source):
+    for damage in ('missing-pid', 'bad-parent', 'other-name', 'missing-creation', 'bad-creation', 'non-utc', 'older-child', 'other-exe', 'command-override', 'extra-field', 'service-pid-mismatch'):
+        value = copy.deepcopy(nonadmin_source.record)
+        if damage == 'missing-pid':
+            value['worker'].pop('processId')
+        elif damage == 'bad-parent':
+            value['worker']['parentProcessId'] = 500
+        elif damage == 'other-name':
+            value['worker']['name'] = 'other.exe'
+        elif damage == 'missing-creation':
+            value['worker']['createdAtUtc'] = None
+        elif damage == 'bad-creation':
+            value['worker']['createdAtUtc'] = '2026-99-99T01:00:00Z'
+        elif damage == 'non-utc':
+            value['worker']['createdAtUtc'] = '2026-11-10T01:00:00+08:00'
+        elif damage == 'older-child':
+            value['worker']['createdAtUtc'] = '2026-11-09T01:00:00Z'
+        elif damage == 'other-exe':
+            value['worker']['executablePath'] = 'D:\\unreviewed\\mysqld.exe'
+        elif damage == 'command-override':
+            value['worker']['commandLine'] = nonadmin_source.command + ' --port=3307'
+        elif damage == 'extra-field':
+            value['worker']['unreviewed'] = 1
+        else:
+            value['serviceProcess']['processId'] = 900
+        with pytest.raises(nonadmin_policy.PolicyError):
+            nonadmin_policy.validate_source(value, nonadmin_source.historical)
+    direct = copy.deepcopy(nonadmin_source.record)
+    direct['worker'] = copy.deepcopy(direct['serviceProcess'])
+    direct['endpoints'][0]['owningProcess'] = direct['service']['processId']
+    assert nonadmin_policy.validate_source(direct, nonadmin_source.historical)['worker']['processId'] == 1000
+    direct['worker']['parentProcessId'] += 1
+    with pytest.raises(nonadmin_policy.PolicyError):
+        nonadmin_policy.validate_source(direct, nonadmin_source.historical)
+
+def test_nonadmin_endpoint_owner_state_port_and_membership_cannot_be_relaxed(nonadmin_source):
+    for damage in ('no-endpoints', 'bool-state', 'other-state', 'other-port', 'wrong-owner', 'other-address', 'connected-peer', 'missing-field', 'other-owner', 'duplicate'):
+        value = copy.deepcopy(nonadmin_source.record)
+        endpoint = value['endpoints'][0]
+        if damage == 'no-endpoints':
+            value['endpoints'] = []
+        elif damage == 'bool-state':
+            endpoint['state'] = False
+        elif damage == 'other-state':
+            endpoint['state'] = 5
+        elif damage == 'other-port':
+            endpoint['localPort'] = 3307
+        elif damage == 'wrong-owner':
+            endpoint['owningProcess'] = 99
+        elif damage == 'other-address':
+            endpoint['localAddress'] = '192.0.2.1'
+        elif damage == 'connected-peer':
+            endpoint['remotePort'] = 12345
+        elif damage == 'missing-field':
+            endpoint.pop('owningProcess')
+        elif damage == 'other-owner':
+            value['endpoints'].append({**endpoint, 'owningProcess': 99})
+        else:
+            value['endpoints'].append(copy.deepcopy(endpoint))
+        with pytest.raises(nonadmin_policy.PolicyError):
+            nonadmin_policy.validate_source(value, nonadmin_source.historical)
+
+def test_nonadmin_fixed_history_bundle_closes_identity_ownership_schemas_and_exact_sha(nonadmin_history, nonadmin_source, monkeypatch):
+    reads = []; original_reader = nonadmin_policy.read_fixed_json
+    def observed(path, pin):
+        reads.append(path); return original_reader(path, pin)
+    monkeypatch.setattr(nonadmin_policy, 'read_fixed_json', observed)
+    assert nonadmin_policy.load_historical() == nonadmin_source.historical
+    assert reads == [nonadmin_history.path]
+    assert nonadmin_policy.validate_history(nonadmin_history.bundle) == nonadmin_source.historical
+    for (field, changed) in [('expectedServerUuid', 'not-a-uuid'), ('expectedDataDirectory', 'D:\\other'), ('sourceIniSha256', 'short')]:
+        value = {**nonadmin_source.historical, field: changed}
+        with pytest.raises(nonadmin_policy.PolicyError):
+            nonadmin_policy.validate_source(nonadmin_source.record, value)
+    for damage in ('kind', 'bool-version', 'extra-schema', 'ownership', 'evidence-path', 'original-sha', 'uuid'):
+        value = copy.deepcopy(nonadmin_history.bundle)
+        if damage == 'kind': value['kind'] = 'unreviewed-history'
+        elif damage == 'bool-version': value['schemaVersion'] = True
+        elif damage == 'extra-schema': value['schemas'].append('other_project')
+        elif damage == 'ownership': value['ownership']['doorhandledb']['matchesPreviouslyInventoriedSchema'] = False
+        elif damage == 'evidence-path': value['ownership']['doorhandledb']['evidence'][0]['path'] = '../private.json'
+        elif damage == 'original-sha': value['originalEvidenceSha256']['public-manifest.json'] = 'e' * 64
+        else: value['configuration']['expectedServerUuid'] = '99999999-2222-3333-4444-555555555555'
+        with pytest.raises(nonadmin_policy.PolicyError): nonadmin_policy.validate_history(value)
+    nonadmin_history.path.write_bytes(b'{"changed":true}')
+    with pytest.raises(nonadmin_policy.PolicyError, match='HISTORY_PIN_MISMATCH'):
+        nonadmin_policy.load_historical()
+
+def test_nonadmin_history_reader_rejects_links_oversize_and_same_fd_changes_without_writing_source(tmp_path, monkeypatch):
+    path = tmp_path / 'receipt.json'
+    path.write_bytes(b'{}')
+    pin = hashlib.sha256(b'{}').hexdigest()
+    assert nonadmin_policy.read_fixed_json(path, pin) == {} and path.read_bytes() == b'{}'
+    link = tmp_path / 'hardlink'
+    os.link(path, link)
+    with pytest.raises(nonadmin_policy.PolicyError):
+        nonadmin_policy.read_fixed_json(path, pin)
+    link.unlink()
+    alias = tmp_path / 'symlink'
+    alias.symlink_to(path)
+    with pytest.raises(nonadmin_policy.PolicyError, match='HISTORY_LINK'):
+        nonadmin_policy.read_fixed_json(alias, pin)
+    oversized = tmp_path / 'oversized.json'
+    oversized.write_bytes(b'x' * (nonadmin_policy.MAXIMUM + 1))
+    with pytest.raises(nonadmin_policy.PolicyError):
+        nonadmin_policy.read_fixed_json(oversized, 'a' * 64)
+    original = nonadmin_policy.os.fstat
+    calls = []
+
+    def changed(descriptor):
+        value = original(descriptor)
+        calls.append(True)
+        if len(calls) == 1:
+            return value
+        return SimpleNamespace(**{key: getattr(value, key) for key in ('st_dev', 'st_ino', 'st_size', 'st_ctime_ns', 'st_mode', 'st_nlink')}, st_mtime_ns=value.st_mtime_ns + 1)
+    monkeypatch.setattr(nonadmin_policy.os, 'fstat', changed)
+    with pytest.raises(nonadmin_policy.PolicyError, match='HISTORY_CHANGED_DURING_READ'):
+        nonadmin_policy.read_fixed_json(path, pin)
+
+def test_nonadmin_source_cli_uses_fixed_history_and_never_echoes_invalid_input_values(nonadmin_history, nonadmin_source, monkeypatch, capsys):
+    monkeypatch.setattr(nonadmin_policy.sys, 'stdin', nonadmin_io.StringIO(json.dumps(nonadmin_source.record)))
+    assert nonadmin_policy.main(['source']) == 0
+    assert json.loads(capsys.readouterr().out) == nonadmin_policy.validate_source(nonadmin_source.record, nonadmin_source.historical)
+    marker = 'synthetic-value-must-never-be-echoed'
+    for (arguments, raw) in [(['source'], json.dumps({**nonadmin_source.record, 'password': marker})), (['source', marker], '{}'), (['source'], '{"key":1,"key":2}'), (['source'], '{invalid-' + marker), (['source'], 'x' * (nonadmin_policy.MAXIMUM + 1))]:
+        monkeypatch.setattr(nonadmin_policy.sys, 'stdin', nonadmin_io.StringIO(raw))
+        assert nonadmin_policy.main(arguments) == 1
+        output = capsys.readouterr()
+        assert marker not in output.out + output.err
+        assert json.loads(output.out)['status'] == 'REFUSED' and (not output.err)
+
+def test_nonadmin_direct_global_or_schema_grants_prove_the_requested_export_without_account_values():
+    for schema in nonadmin_policy.SCHEMAS:
+        all_grants = {'schema': schema, 'grants': [{'scope': '*.*', 'privileges': ['ALL PRIVILEGES']}]}
+        split = {'schema': schema, 'grants': [{'scope': '*.*', 'privileges': ['SELECT']}, {'scope': schema + '.*', 'privileges': ['TRIGGER', 'EVENT']}]}
+        expected = {'scope': schema, 'select': True, 'trigger': True, 'event': True, 'routines': True, 'directGrantsVerified': True}
+        assert nonadmin_policy.validate_privileges(all_grants) == nonadmin_policy.validate_privileges(split) == expected
+
+def test_nonadmin_privilege_scope_roles_and_missing_global_select_cannot_authorize_routine_export():
+    schema = 'doorhandledb'
+    good = {'schema': schema, 'grants': [{'scope': '*.*', 'privileges': ['SELECT', 'TRIGGER', 'EVENT']}]}
+    for damage in ('schema', 'schema-type', 'no-global-select', 'show-routine-only', 'no-event', 'foreign-scope', 'role-only', 'unknown-field', 'lowercase', 'duplicate'):
+        value = copy.deepcopy(good)
+        if damage == 'schema':
+            value['schema'] = 'other_project'
+        elif damage == 'schema-type':
+            value['schema'] = []
+        elif damage == 'no-global-select':
+            value['grants'][0]['scope'] = schema + '.*'
+        elif damage == 'show-routine-only':
+            value['grants'][0]['privileges'] = ['SHOW_ROUTINE', 'TRIGGER', 'EVENT']
+        elif damage == 'no-event':
+            value['grants'][0]['privileges'].remove('EVENT')
+        elif damage == 'foreign-scope':
+            value['grants'].append({'scope': 'other_project.*', 'privileges': ['ALL PRIVILEGES']})
+        elif damage == 'role-only':
+            value['grants'] = [{'role': 'not-direct'}]
+        elif damage == 'unknown-field':
+            value['grants'][0]['username'] = 'not-accepted'
+        elif damage == 'lowercase':
+            value['grants'][0]['privileges'] = ['select', 'TRIGGER', 'EVENT']
+        else:
+            value['grants'][0]['privileges'].append('SELECT')
+        with pytest.raises(nonadmin_policy.PolicyError):
+            nonadmin_policy.validate_privileges(value)
