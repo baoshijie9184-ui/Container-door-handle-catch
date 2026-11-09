@@ -50,10 +50,10 @@ def test_reviewed_manifest_is_identical_across_python_controller_and_builder_and
     script = (root / 'script/jenkins/retire-failed-native-jar-duplicates.ps1').read_text(encoding='utf8')
     reader = script.split("$reader=@'\n", 1)[1].split("\n'@", 1)[0]
     local = assigned(ast.parse(reader), 'approved')
-    numbers = {117, 118, 130, 132, 134, 137, 139, 141, 143, 145, 154, 156}
+    numbers = {117, 118, 130, 132, 134, 137, 139, 141, 143, 145, 154, 156, 160}
     assert {int(tag.split('-')[1]) for tag in approved} == numbers
     assert approved == resources.HISTORICAL_BUILDERS and set(pins) == set(approved)
-    assert len(local) == len(approved) == 12 and len({number for number, _, _ in local}) == 12
+    assert len(local) == len(approved) == 13 and len({number for number, _, _ in local}) == 13
     for number, commit, preservation_sha in local:
         tag = 'ci-' + str(number) + '-' + commit[:12]
         assert approved[tag] == commit and resources.SHA.fullmatch(preservation_sha) and resources.SHA.fullmatch(pins[tag])

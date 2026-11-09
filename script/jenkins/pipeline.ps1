@@ -337,10 +337,10 @@ if ($Action -eq 'Preflight') {
         New-Item -ItemType Directory -Path artifacts/control-preflight | Out-Null
         foreach ($relative in @('script/jenkins/control-preflight.py','script/jenkins/verify-remote.py')) {
             $inputFile=Get-PinnedSourceFile $relative
-            $name=[IO.Path]::GetFileName($relative)
+            $name=if ($relative -ceq 'script/jenkins/verify-remote.py') {'control-verify-remote.py'} else {[IO.Path]::GetFileName($relative)}
             Invoke-Checked 'scp.exe' ($sshOptions+@('-P',$portText,$inputFile,"${destination}:$remoteInbox/$name"))
         }
-        Invoke-Checked 'ssh.exe' ($sshOptions+@('-p',$portText,$destination,"chmod 600 '$remoteInbox/control-preflight.py' '$remoteInbox/verify-remote.py'"))
+        Invoke-Checked 'ssh.exe' ($sshOptions+@('-p',$portText,$destination,"chmod 600 '$remoteInbox/control-preflight.py' '$remoteInbox/control-verify-remote.py'"))
         $helper="$remoteInbox/control-preflight.py"
         $fixedHelper=Get-PinnedSourceFile 'script/jenkins/control-preflight.py'
         $helperSha=(Get-FileHash -LiteralPath $fixedHelper -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -371,7 +371,7 @@ if ($Action -eq 'Preflight') {
         } finally {
             @{status=$(if($collected -and $controlExit -eq 0){'COLLECTED'}else{'FAILED_OR_UNKNOWN'});release=$tag;commit=$commit;sourceSha256=$sha;exitCode=$controlExit;receiptCollected=$collected;fullProjectVerified=$false} | ConvertTo-Json | Set-Content -LiteralPath artifacts/control-preflight/transport.json -Encoding utf8
         }
-        $expected=@('test_jenkins_resource_budget','test_jenkins_fixture_admission','test_failed_native_jar_duplicates','test_historical_builder_retirement','test_historical_mysql_fixture_retirement','test_public_buildkit_layer_retirement','test_control_preflight')
+        $expected=@('test_jenkins_resource_budget','test_jenkins_fixture_admission','test_failed_native_jar_duplicates','test_historical_builder_retirement','test_historical_mysql_fixture_retirement','test_public_buildkit_layer_retirement','test_generated_public_image_archive_retirement','test_control_preflight')
         if ($controlExit -ne 0 -or $null -eq $remoteResult -or $remoteResult.status -cne 'CONTROL_PREFLIGHT_PASS' -or $remoteResult.receipt -cne "$remoteOutput/receipt.json" -or $remoteResult.receiptSha256 -cnotmatch '^[a-f0-9]{64}$' -or $receipt.status -cne 'CONTROL_PREFLIGHT_PASS' -or $receipt.fullProjectVerified -ne $false -or $receipt.businessRuntimeStarted -ne $false -or $receipt.containerCleanupConfirmed -ne $true -or $receipt.sourceScratchCleanupConfirmed -ne $true -or (@($receipt.selectedModules|Sort-Object)-join ',') -cne (@($expected|Sort-Object)-join ',') -or (@($receipt.modules.PSObject.Properties.Name|Sort-Object)-join ',') -cne (@($expected|Sort-Object)-join ',') -or -not (Test-Path -LiteralPath artifacts/control-preflight/python.xml) -or -not (Test-Path -LiteralPath artifacts/control-preflight/pytest.log)) { throw 'ECS control-script preflight did not pass with complete reports and owned cleanup; native preparation is blocked.' }
         foreach ($module in $expected) { $counts=$receipt.modules.$module; if ($counts.passed -lt 1 -or $counts.failed -ne 0 -or $counts.skipped -ne 0) { throw 'Control preflight omitted or failed a required module.' } }
         @{status='CONTROL_PREFLIGHT_PASS';release=$tag;commit=$commit;sourceSha256=$sha;receiptSha256=(Get-FileHash -LiteralPath artifacts/control-preflight/receipt.json -Algorithm SHA256).Hash.ToLowerInvariant();fullProjectVerified=$false} | ConvertTo-Json | Set-Content -LiteralPath artifacts/control-preflight-gate.json -Encoding utf8

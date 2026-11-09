@@ -1168,6 +1168,12 @@
         "allowedSkippedTests": []
       },
       {
+        "module": "tests_python.test_generated_public_image_archive_retirement",
+        "minimumTests": 22,
+        "source": "tests_python/test_generated_public_image_archive_retirement.py",
+        "allowedSkippedTests": []
+      },
+      {
         "module": "tests_python.test_control_preflight",
         "minimumTests": 12,
         "source": "tests_python/test_control_preflight.py",

@@ -48,7 +48,8 @@ PUBLIC_LAYER_TAGS = frozenset((
     'ci-117-8c898996cc28', 'ci-118-6481f7fa6021', 'ci-130-9a588271dadb',
     'ci-132-69f2ef0fb309', 'ci-134-df30e17036de', 'ci-137-facc2ed94047',
     'ci-139-384439388a8c', 'ci-141-56da3c4f7800', 'ci-143-f4b5c8d9e39b',
-    'ci-145-dd85b09748a9', 'ci-154-38293aa306b3', 'ci-156-9e1927880595'))
+    'ci-145-dd85b09748a9', 'ci-154-38293aa306b3', 'ci-156-9e1927880595',
+    'ci-160-9d011d9d5ed8'))
 PUBLIC_LAYERS = {
     '4aa1a2a1517cd8ba9f5afb587e3c14ec7d2d8bd815bdc3fc78399136e481960c': 12178906,
     '5e9b4a97f6395abf54a5c584be133078deb2295e280dd0b9e77638874d07b637': 3852227,
@@ -58,6 +59,8 @@ PUBLIC_LAYERS = {
 PUBLIC_ARCHIVE_SHA = 'f706cb2289c61a04311882a3abbba15d56928a91d3fe9e13b96e1a8d44f378c8'
 PUBLIC_ARCHIVE_BYTES = 119889920
 PUBLIC_KIND = 'doorhandle-failed-native-public-layer-duplicate'
+GENERATED_CACHE_KIND = 'GENERATED_PUBLIC_IMAGE_ARCHIVE_CACHE'
+GENERATED_KIND = 'doorhandle-generated-public-image-archive-cache'
 APPROVED_OLD = {
     'ci-117-8c898996cc28': '8c898996cc28ce30fd6531710511f833cccb4864',
     'ci-118-6481f7fa6021': '6481f7fa6021eb36592a081d04f385886c03412a',
@@ -71,6 +74,7 @@ APPROVED_OLD = {
     'ci-145-dd85b09748a9': 'dd85b09748a996f68e909fa54bc9412110e78134',
     'ci-154-38293aa306b3': '38293aa306b368964bbc2a7f66bb6a6b5c414016',
     'ci-156-9e1927880595': '9e1927880595e78c778288e45423bdd27bd818a8',
+    'ci-160-9d011d9d5ed8': '9d011d9d5ed8ef1b6e5526c0964ee5f405ed421b',
 }
 # Original tool bytes recorded by the retained Jenkins preparation receipts.
 # These values authenticate the owner chain; matching self-described fields
@@ -88,6 +92,7 @@ APPROVED_BUILDER_TOOLS = {
     'ci-145-dd85b09748a9': '7e55b094d7b558fd66d299a6c872749d6cb87071b50bb031ce2a5d71d03283d4',
     'ci-154-38293aa306b3': 'eb0d82fc9983279390d467849029786648a1dbceda53371924e3894232e25c27',
     'ci-156-9e1927880595': '8ef758580e6ef99418a040ff902b69836ed48c6968da6716da535ddf61d914a4',
+    'ci-160-9d011d9d5ed8': '14eb0f10f654b843eb09678d87b1b56dc04478f9b6c1151390cf07496a4747bb',
 }
 
 
@@ -826,6 +831,178 @@ def apply_public_layers(root, raw_request, prepared, *, request_sha256, plan_sha
             'testsRunByRetirement': False}
 
 
+def generated_image_archive_path(root, tag):
+    need(type(tag) is str and tag in APPROVED_OLD, 'ONLY_REVIEWED_GENERATED_PUBLIC_ARCHIVE_PATHS_ALLOWED')
+    return Path(root) / 'inbox' / tag / 'candidate-build-tools/official-image.tar'
+
+
+def describe_generated_image_archive_cache(root, tag):
+    path = generated_image_archive_path(root, tag)
+    with held_file(root, path, MAX_SOURCE_ARCHIVE) as (stream, signature):
+        need(0 < signature[6] <= MAX_SOURCE_ARCHIVE, 'BOUNDED_GENERATED_PUBLIC_ARCHIVE_REQUIRED')
+        return {'kind': GENERATED_CACHE_KIND, 'release': tag, 'path': path.relative_to(root).as_posix(),
+                'metadata': signature, 'sha256': hash_stream(stream, MAX_SOURCE_ARCHIVE),
+                'bytes': signature[6], 'allocatedBytes': signature[9]}
+
+
+def remove_generated_image_archive_cache(root, descriptor, seed, quarantine=None):
+    """Retire a rebuildable import cache, NOT a byte-identical seed copy."""
+    need(type(descriptor) is dict and set(descriptor) == {'kind', 'release', 'path', 'metadata', 'sha256', 'bytes', 'allocatedBytes'}
+         and descriptor['kind'] == GENERATED_CACHE_KIND, 'EXACT_GENERATED_CACHE_DESCRIPTOR_REQUIRED')
+    root = Path(root); target = generated_image_archive_path(root, descriptor['release'])
+    need(describe_generated_image_archive_cache(root, descriptor['release']) == descriptor, 'GENERATED_CACHE_CHANGED_AFTER_PLAN')
+    quarantine = reserve_quarantine(root) if quarantine is None else quarantine
+    need(type(quarantine) is dict and set(quarantine) == {'directory', 'path', 'directoryIdentity'}, 'EXACT_PRIVATE_QUARANTINE_REQUIRED')
+    relative = Path(quarantine['directory']); parts = relative.parts
+    need((len(parts) == 1 or len(parts) == 3 and parts[0] == 'inbox' and TAG.fullmatch(parts[1]))
+         and re.fullmatch(r'native-jar-quarantine-[a-f0-9]{24}', parts[-1])
+         and quarantine['path'] == (relative / 'candidate-app.jar').as_posix(), 'QUARANTINE_OUTSIDE_PRIVATE_ALLOWLIST')
+    private = owned_path(root, root / relative, directory=True)
+    with held_public_layer_archive(root) as actual_seed, os.fdopen(os.open(target, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), 'rb') as copy:
+        need(actual_seed == seed, 'FIXED_PUBLIC_SEED_CHANGED_AFTER_PLAN')
+        copy_info = metadata(os.fstat(copy.fileno()))
+        need(copy_info == descriptor['metadata'] and copy_info[:2] != seed['metadata'][:2]
+             and hash_stream(copy, MAX_SOURCE_ARCHIVE) == descriptor['sha256'], 'GENERATED_CACHE_CHANGED_BEFORE_CAPTURE')
+        stack = [os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)]; qfd = None
+        try:
+            qfd = os.open(private, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            def private_identity():
+                value, linked = os.fstat(qfd), private.lstat()
+                need([value.st_dev, value.st_ino, value.st_mode, value.st_uid, value.st_gid]
+                     == [linked.st_dev, linked.st_ino, linked.st_mode, linked.st_uid, linked.st_gid]
+                     == quarantine['directoryIdentity'] and stat.S_IMODE(value.st_mode) == 0o700,
+                     'PRIVATE_QUARANTINE_MOVED')
+            private_identity(); need(not os.listdir(qfd), 'PRIVATE_QUARANTINE_ALREADY_OCCUPIED')
+            device = os.fstat(stack[0]).st_dev
+            for part in target.relative_to(root).parts[:-1]:
+                fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=stack[-1]); stack.append(fd)
+                info = os.fstat(fd)
+                need(info.st_uid == os.getuid() and info.st_dev == device and not info.st_mode & 0o022, 'DELETION_ANCESTOR_CHANGED')
+            need(metadata(os.stat(target.name, dir_fd=stack[-1], follow_symlinks=False)) == copy_info
+                 == metadata(os.fstat(copy.fileno())), 'GENERATED_CACHE_MOVED_BEFORE_CAPTURE')
+            _capture_no_replace(stack[-1], target.name, qfd, 'candidate-app.jar'); os.fsync(stack[-1]); os.fsync(qfd)
+            captured = metadata(os.stat('candidate-app.jar', dir_fd=qfd, follow_symlinks=False))
+            need(captured == metadata(os.fstat(copy.fileno())) and captured[:2] == copy_info[:2]
+                 and captured[:2] != seed['metadata'][:2] and _renamed_copy_matches(copy_info, captured), 'UNEXPECTED_CAPTURED_INODE_RETAINED')
+            need(hash_stream(copy, MAX_SOURCE_ARCHIVE) == descriptor['sha256']
+                 and metadata((root / seed['path']).lstat()) == seed['metadata'], 'PUBLIC_SEED_OR_CAPTURE_CHANGED_RETAIN_QUARANTINE')
+            need(not target.exists() and not target.is_symlink(), 'ORIGINAL_TARGET_REAPPEARED_RETAIN_QUARANTINE')
+            private_identity()
+            need(os.listdir(qfd) == ['candidate-app.jar'] and metadata(os.stat('candidate-app.jar', dir_fd=qfd, follow_symlinks=False))
+                 == captured == metadata(os.fstat(copy.fileno())), 'CAPTURE_MOVED_RETAIN_QUARANTINE')
+            os.unlink('candidate-app.jar', dir_fd=qfd); os.fsync(qfd)
+            need(not os.listdir(qfd) and not target.exists() and not target.is_symlink(), 'GENERATED_CACHE_REMOVAL_NOT_CONFIRMED')
+        finally:
+            if qfd is not None: os.close(qfd)
+            for fd in reversed(stack): os.close(fd)
+    return {'path': descriptor['path'], 'bytes': descriptor['bytes'], 'allocatedBytes': descriptor['allocatedBytes'],
+            'sha256': descriptor['sha256'], 'quarantinePath': quarantine['path'], 'capturedInodeVerified': True,
+            'publicSeedVerifiedAfter': True, 'sameBytesAsSeedClaimed': False}
+
+
+def admit_generated_image_archive_attempt(root, request, row, quiescence):
+    admitted = admit_historical_controls(root, request, row, builder_helpers=True)
+    context, evidence = admitted['context'], admitted['evidence']; tag = context['release']
+    need(APPROVED_OLD.get(tag) == context['commit'] and callable(quiescence)
+         and quiescence(Path(root) / 'verification' / tag / 'checkout', tag, evidence['ownerToken']) is None,
+         'STRICT_GENERATED_PUBLIC_CACHE_QUIESCENCE_REQUIRED')
+    path = Path(root) / 'inbox' / tag / 'candidate-build-tools/tools.json'
+    with held_file(root, path, MAX_CONTROL) as (stream, signature):
+        raw = stream.read(MAX_CONTROL + 1); tools = decode(raw)
+        need(digest_bytes(raw) == APPROVED_BUILDER_TOOLS.get(tag), 'ORIGINAL_GENERATED_CACHE_TOOL_OWNER_REQUIRED')
+        same_context(tools, context)
+        helpers = admitted['sourceArchive']['builderHelperSha256']
+        need(tools.get('status') == 'PREPARED' and tools.get('identity') == request['identity']
+             and tools.get('helperSha256') == helpers['compact-build-resources.py']
+             and tools.get('imageInputsHelperSha256') == helpers['compact-image-inputs.py'], 'FIXED_GENERATED_CACHE_PRODUCER_REQUIRED')
+        tool_proof = {'path': path.relative_to(root).as_posix(), 'bytes': len(raw), 'sha256': digest_bytes(raw), 'metadata': signature}
+    return {'context': context, 'ownerToken': evidence['ownerToken'], 'jenkinsResult': evidence['jenkinsResult'],
+            'controls': admitted['controls'], 'sourceArchive': admitted['sourceArchive'], 'tools': tool_proof,
+            'rebuildBasis': {'protocol': 'FIXED_SOURCE_PUBLIC_OCI_IMPORT_CACHE_V1',
+                'producer': 'script/docker/compact-build-resources.py:monitored_tar_file',
+                'producerSha256': helpers['compact-build-resources.py'],
+                'inputHelperSha256': helpers['compact-image-inputs.py'], 'publicInputSha256': PUBLIC_ARCHIVE_SHA,
+                'publicInputBytes': PUBLIC_ARCHIVE_BYTES, 'sameBytesAsSeedClaimed': False},
+            'target': describe_generated_image_archive_cache(root, tag)}
+
+
+def plan_generated_image_archives(root, raw_request, *, request_sha256, expected_current, identity, quiescence):
+    request = approved_request(raw_request, request_sha256, expected_current, identity)
+    accepted, skipped, seed = [], [], None
+    with controller_lock(root):
+        try:
+            with held_public_layer_archive(root) as actual_seed:
+                seed = actual_seed
+                for row in request['candidates']:
+                    try:
+                        with attempt_lock(root, row['release']):
+                            accepted.append(admit_generated_image_archive_attempt(root, request, row, quiescence))
+                    except (OSError, ValueError, KeyError, TypeError, tarfile.TarError, EOFError) as error:
+                        skipped.append({'release': row['release'], 'reason': str(error) if isinstance(error, RetirementError) else type(error).__name__})
+        except (OSError, ValueError, KeyError, TypeError, tarfile.TarError, EOFError) as error:
+            accepted, seed = [], None
+            skipped.append({'release': None, 'reason': str(error) if isinstance(error, RetirementError) else type(error).__name__})
+    result = {'schemaVersion': 1, 'kind': GENERATED_KIND + '-plan', 'current': expected_current, 'identity': identity,
+              'requestSha256': request_sha256, 'seed': seed, 'candidates': accepted, 'skipped': skipped,
+              'candidateBytes': sum(row['target']['bytes'] for row in accepted),
+              'candidateAllocatedBytes': sum(row['target']['allocatedBytes'] for row in accepted),
+              'deletionPerformed': False, 'publicInputsDirectoriesImagesAndBusinessDataPreserved': True, 'sameBytesAsSeedClaimed': False}
+    need(len(canonical(result)) <= MAX_CONTROL, 'BOUNDED_GENERATED_PUBLIC_CACHE_PLAN_REQUIRED')
+    return result
+
+
+def apply_generated_image_archives(root, raw_request, prepared, *, request_sha256, plan_sha256, expected_current, identity, quiescence):
+    request = approved_request(raw_request, request_sha256, expected_current, identity)
+    need(type(prepared) is dict and digest_bytes(canonical(prepared)) == plan_sha256
+         and prepared.get('kind') == GENERATED_KIND + '-plan' and prepared.get('current') == expected_current
+         and prepared.get('identity') == identity and prepared.get('requestSha256') == request_sha256
+         and prepared.get('deletionPerformed') is False and prepared.get('sameBytesAsSeedClaimed') is False,
+         'EXACT_GENERATED_PUBLIC_CACHE_PLAN_REQUIRED')
+    rows = {row['release']: row for row in request['candidates']}; selected = prepared.get('candidates')
+    need(type(selected) is list and len(selected) <= len(rows)
+         and all(type(row) is dict and type(row.get('context')) is dict for row in selected), 'BOUNDED_GENERATED_CACHE_SELECTION_REQUIRED')
+    tags = [row['context']['release'] for row in selected]
+    need(len(tags) == len(set(tags)) and set(tags) <= set(rows), 'GENERATED_CACHE_SELECTED_TAG_DRIFT')
+    journal_path = Path(root) / 'inbox' / expected_current['release'] / 'native-generated-public-image-archive-journal.jsonl'
+    owned_path(root, journal_path.parent, directory=True)
+    deleted, quarantines, failure, active, current_q, mutation_attempted = [], [], None, None, None, False
+    with controller_lock(root), os.fdopen(os.open(journal_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600), 'wb') as journal:
+        total = 0
+        def record(value):
+            nonlocal total
+            raw = canonical(value) + b'\n'; total += len(raw); need(total <= MAX_CONTROL, 'GENERATED_CACHE_JOURNAL_LIMIT_EXCEEDED')
+            journal.write(raw); journal.flush(); os.fsync(journal.fileno())
+        before = os.statvfs(root)
+        record({'phase': 'STARTED', 'planSha256': plan_sha256, 'requestSha256': request_sha256})
+        try:
+            for candidate in selected:
+                active, current_q = candidate['context']['release'], None
+                with attempt_lock(root, active):
+                    need(admit_generated_image_archive_attempt(root, request, rows[active], quiescence) == candidate,
+                         'GENERATED_PUBLIC_CACHE_CHANGED_AFTER_PLAN')
+                    current_q = reserve_quarantine(root, expected_current['release']); quarantines.append(current_q)
+                    record({'phase': 'DELETE_STARTED', 'release': active, 'path': candidate['target']['path'],
+                            'sha256': candidate['target']['sha256'], 'quarantinePath': current_q['path']})
+                    mutation_attempted = True
+                    value = remove_generated_image_archive_cache(root, candidate['target'], prepared['seed'], quarantine=current_q)
+                    deleted.append(value); record({'phase': 'DELETE_FINISHED', **value})
+            record({'phase': 'FINISHED', 'deletedFiles': len(deleted)})
+        except Exception as error:
+            failure = str(error) if isinstance(error, RetirementError) else type(error).__name__
+            record({'phase': 'FAILED_OR_UNKNOWN', 'release': active, 'reason': failure,
+                    'quarantinePath': current_q['path'] if current_q else None, 'completedDeletions': len(deleted)})
+        after = os.statvfs(root)
+    return {'schemaVersion': 1, 'kind': GENERATED_KIND + '-receipt', 'current': expected_current, 'identity': identity,
+            'status': 'FAILED_OR_UNKNOWN' if failure else 'REMOVED' if deleted else 'NO_ACTION', 'deleted': deleted,
+            'requestSha256': request_sha256, 'planSha256': plan_sha256, 'failure': failure, 'mutationAttempted': mutation_attempted,
+            'lastAttemptedRelease': active, 'lastQuarantinePath': current_q['path'] if current_q else None,
+            'retainedQuarantinePaths': [row['path'] for row in quarantines if (Path(root) / row['path']).exists() or (Path(root) / row['path']).is_symlink()],
+            'journalSha256': digest_bytes(journal_path.read_bytes()), 'skipped': prepared['skipped'],
+            'availableBytesBefore': before.f_bavail * before.f_frsize, 'availableBytesAfter': after.f_bavail * after.f_frsize,
+            'publicInputsDirectoriesImagesAndBusinessDataPreserved': failure is None, 'sameBytesAsSeedClaimed': False,
+            'testsRunByRetirement': False}
+
+
 def private_bytes(root, path, maximum=MAX_CONTROL):
     with held_file(root, path, maximum) as (stream, info):
         need(stat.S_IMODE(info[2]) == 0o600, 'PRIVATE_CONTROL_MODE_REQUIRED')
@@ -1138,7 +1315,8 @@ def capture_request(root, raw_local_spec, *, local_spec_sha256, expected_current
 def cli(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--phase', choices=('capture-request', 'plan-builders', 'apply-builders', 'plan', 'apply',
-                                           'plan-public-layers', 'apply-public-layers', 'inspect'), required=True)
+                                           'plan-public-layers', 'apply-public-layers', 'plan-generated-image-archives',
+                                           'apply-generated-image-archives', 'inspect'), required=True)
     parser.add_argument('--mode', choices=('Verified', 'Maintenance'), required=True)
     for name in ('root', 'tag', 'commit', 'source-sha256', 'instance-id', 'machine-id', 'current-receipt-sha256'):
         parser.add_argument('--' + name, required=True)
@@ -1150,6 +1328,8 @@ def cli(argv=None):
         receipt_file = inbox / 'native-jar-duplicate-receipt.json'; capture_file = inbox / 'native-jar-duplicate-capture.json'
         builder_plan_file = inbox / 'native-builder-retirement-plan.json'; builder_receipt_file = inbox / 'native-builder-retirement-receipt.json'
         public_plan_file = inbox / 'native-public-layer-duplicate-plan.json'; public_receipt_file = inbox / 'native-public-layer-duplicate-receipt.json'
+        generated_plan_file = inbox / 'native-generated-public-image-archive-plan.json'
+        generated_receipt_file = inbox / 'native-generated-public-image-archive-receipt.json'
         if args.phase == 'capture-request':
             raw = private_bytes(root, inbox / 'native-jar-duplicate-local-spec.json')
             request, skipped = capture_request(root, raw, local_spec_sha256=args.local_spec_sha256, expected_current=current, identity=identity)
@@ -1162,10 +1342,26 @@ def cli(argv=None):
                                ('journal', inbox / 'native-jar-duplicate-journal.jsonl'), ('builderPlan', builder_plan_file),
                                ('builderReceipt', builder_receipt_file), ('builderJournal', inbox / 'native-builder-retirement-journal.jsonl'),
                                ('publicLayerPlan', public_plan_file), ('publicLayerReceipt', public_receipt_file),
-                               ('publicLayerJournal', inbox / 'native-public-layer-duplicate-journal.jsonl')):
+                               ('publicLayerJournal', inbox / 'native-public-layer-duplicate-journal.jsonl'),
+                               ('generatedArchivePlan', generated_plan_file), ('generatedArchiveReceipt', generated_receipt_file),
+                               ('generatedArchiveJournal', inbox / 'native-generated-public-image-archive-journal.jsonl')):
                 if path.exists():
                     raw = private_bytes(root, path); files[name] = {'file': path.name, 'bytes': len(raw), 'sha256': digest_bytes(raw)}
             result = {'status': 'INSPECTED', 'current': current, 'identity': identity, 'files': files}
+        elif args.phase in ('plan-generated-image-archives', 'apply-generated-image-archives'):
+            raw = private_bytes(root, request_file); approved_request(raw, args.request_sha256, current, identity)
+            options = {'request_sha256': args.request_sha256, 'expected_current': current, 'identity': identity,
+                       'quiescence': public_layer_quiescence(root, modules['cleanup'], quiescence)}
+            if args.phase == 'plan-generated-image-archives':
+                value = plan_generated_image_archives(root, raw, **options)
+                result = {'status': 'PLANNED', 'current': current, 'identity': identity, 'plan': write_new(generated_plan_file, value),
+                          'skipped': value['skipped'], 'candidateAllocatedBytes': value['candidateAllocatedBytes']}
+            else:
+                plan_raw = private_bytes(root, generated_plan_file)
+                need(digest_bytes(plan_raw) == args.plan_sha256, 'ORIGINAL_GENERATED_CACHE_PLAN_RAW_SHA_DRIFT')
+                value = apply_generated_image_archives(root, raw, decode(plan_raw), plan_sha256=args.plan_sha256, **options)
+                result = {'status': value['status'], 'current': current, 'identity': identity,
+                          'receipt': write_new(generated_receipt_file, value)}
         elif args.phase in ('plan-public-layers', 'apply-public-layers'):
             raw = private_bytes(root, request_file); approved_request(raw, args.request_sha256, current, identity)
             options = {'request_sha256': args.request_sha256, 'expected_current': current, 'identity': identity,

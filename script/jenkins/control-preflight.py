@@ -26,7 +26,7 @@ import xml.etree.ElementTree as ET
 MODULES = ('test_jenkins_resource_budget', 'test_jenkins_fixture_admission',
            'test_failed_native_jar_duplicates', 'test_historical_builder_retirement',
            'test_historical_mysql_fixture_retirement', 'test_public_buildkit_layer_retirement',
-           'test_control_preflight')
+           'test_generated_public_image_archive_retirement', 'test_control_preflight')
 TAG = re.compile(r'ci-[1-9][0-9]*-[a-f0-9]{12}')
 SHA = re.compile(r'[a-f0-9]{64}')
 MIB = 1024 ** 2
@@ -92,7 +92,7 @@ def fixed_modules(root, args):
     inbox = root / 'inbox' / args.tag; source = owned(inbox / 'source.tar.gz')
     need(digest(source) == args.source_sha256, 'CONTROL_SOURCE_SHA_DIFFERS')
     paths = {'script/jenkins/control-preflight.py': Path(__file__).absolute(),
-             'script/jenkins/verify-remote.py': inbox / 'verify-remote.py',
+             'script/jenkins/verify-remote.py': inbox / 'control-verify-remote.py',
              'script/jenkins/ecs-tool-runtime.py': inbox / 'ecs-tool-runtime.py'}
     need(paths['script/jenkins/control-preflight.py'] == inbox / 'control-preflight.py', 'FIXED_CONTROL_EXECUTOR_REQUIRED')
     expected = {name: digest(owned(path, maximum=MIB)) for name, path in paths.items()}
@@ -115,7 +115,7 @@ def fixed_modules(root, args):
         need(archive.pax_headers.get('comment') == args.commit and seen == set(paths), 'CONTROL_SOURCE_COMMIT_DIFFERS')
     need(digest(source) == args.source_sha256, 'CONTROL_SOURCE_CHANGED_DURING_ADMISSION')
     result = {}
-    for key, name in (('verifier', 'verify-remote.py'), ('tools', 'ecs-tool-runtime.py')):
+    for key, name in (('verifier', 'control-verify-remote.py'), ('tools', 'ecs-tool-runtime.py')):
         spec = importlib.util.spec_from_file_location('fixed_control_' + key, inbox / name)
         module = importlib.util.module_from_spec(spec); sys.modules[spec.name] = module; spec.loader.exec_module(module)
         result[key] = module
