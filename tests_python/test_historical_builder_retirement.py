@@ -279,7 +279,8 @@ def test_inspect_decoder_accepts_only_one_bounded_json_container(builder):
     assert resources.historical_builder_inspect(raw([builder.row])) == builder.row
 
 
-@pytest.mark.parametrize('body', [b'', b'[]', b'[{},{}]', b'{}', b'[{"Id":"a","Id":"b"}]', b'null', b'[' + b' ' * (2 * 1024 ** 2) + b']'])
+@pytest.mark.parametrize('body', [b'', b'[]', b'[{},{}]', b'{}', b'[{"Id":"a","Id":"b"}]', b'null', b'[' + b' ' * (2 * 1024 ** 2) + b']'],
+                         ids=['empty', 'empty-list', 'multiple-rows', 'object', 'duplicate-key', 'null', 'oversized'])
 def test_inspect_decoder_rejects_ambiguous_or_oversize_originals(body):
     with pytest.raises(ValueError):
         resources.historical_builder_inspect(body)

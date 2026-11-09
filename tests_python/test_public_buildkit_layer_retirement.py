@@ -198,6 +198,10 @@ def planning(copies, monkeypatch):
                'protectedReleases': [current['release']], 'candidates': rows}
     raw = retirer.canonical(request)
     private_file(copies.root, 'inbox/' + current['release'] + '/retained-control', b'synthetic')
+    # Keep the real old-attempt directory locks: even a synthetic admission
+    # needs each precise verification/<tag> directory, separately from inbox.
+    for tag in (KEEPER, TARGET):
+        private_file(copies.root, 'verification/' + tag + '/checkout/retained-source.py', b'synthetic fixed source')
     proof = {'path': 'global-original-public.tar', 'sha256': 'e' * 64, 'metadata': [1], 'bytes': 1, 'layers': []}
     @contextmanager
     def archive(_root): yield copy.deepcopy(proof)
@@ -227,6 +231,7 @@ def applied(planning, plan):
 
 def test_public_plan_has_four_targets_and_no_keeper_deletion(planning):
     plan = planned(planning)
+    assert not plan['skipped'], plan['skipped']
     assert len(plan['candidates']) == 1 and len(plan['candidates'][0]['targets']) == 4
     assert plan['candidateBytes'] == sum(len(raw) for raw in planning.copies.payloads)
     assert plan['keeper']['context']['release'] == KEEPER
