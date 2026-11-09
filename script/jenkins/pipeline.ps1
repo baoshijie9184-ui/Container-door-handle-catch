@@ -1,4 +1,4 @@
-param([Parameter(Mandatory = $true)][ValidateSet('Preflight', 'Package', 'PackageSourceOnly', 'PackageControls', 'PrepareTools', 'CleanupTools', 'PrepareFixtures', 'CleanupFixtures', 'VerifyEcs', 'VerifyEmbedding', 'RepairPriorEvidence', 'PreserveLegacy', 'PreserveLocalArtifacts', 'PreserveColdStores', 'PreserveLocalMySql', 'CleanupLocalMySql', 'ReclaimBuildOutputs', 'PrepareLegacyCandidate', 'CleanupLegacyCandidate', 'VerifyRuntime', 'CleanupRuntime', 'Publish', 'Rehearse', 'CompactCutover')][string]$Action)
+param([Parameter(Mandatory = $true)][ValidateSet('Preflight', 'Package', 'PackageSourceOnly', 'PackageControls', 'PrepareTools', 'CleanupTools', 'PrepareFixtures', 'CleanupFixtures', 'VerifyEcs', 'VerifyEmbedding', 'RepairPriorEvidence', 'PreserveLegacy', 'PreserveLocalArtifacts', 'PreserveRemainingArtifacts', 'PreserveColdStores', 'PreserveLocalMySql', 'CleanupLocalMySql', 'ReclaimBuildOutputs', 'PrepareLegacyCandidate', 'CleanupLegacyCandidate', 'VerifyRuntime', 'CleanupRuntime', 'Publish', 'Rehearse', 'CompactCutover')][string]$Action)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 Set-Location -LiteralPath (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
@@ -164,7 +164,7 @@ if ($env:ACTION -ceq 'reclaim-build-outputs') {
     if ($Action -cnotin @('PackageSourceOnly', 'ReclaimBuildOutputs') -or $env:CI_ECS_VERIFIED -cne 'false' -or $env:DOORHANDLE_CI_SCOPE -cne 'source') {
         throw 'Standalone build maintenance only packages pinned source and reclaims proven old outputs without a test PASS.'
     }
-    foreach ($name in @('LEGACY_SOURCE_SNAPSHOT', 'LEGACY_SOURCE_ECS_SNAPSHOT', 'LOCAL_ARTIFACTS_SNAPSHOT', 'LOCAL_ARTIFACTS_ECS_SNAPSHOT', 'COLD_STORES_SNAPSHOT', 'COLD_STORES_ECS_SNAPSHOT', 'COLD_HISTORY_SNAPSHOT', 'COLD_HISTORY_ECS_SNAPSHOT', 'LOCAL_MYSQL_SNAPSHOT', 'LOCAL_MYSQL_ECS_SNAPSHOT', 'LOCAL_MYSQL_FIXTURE_SETTINGS', 'DOORHANDLE_CI_FIXTURE_MANIFEST', 'DOORHANDLE_CI_FIXTURE_SETTINGS', 'CANDIDATE_BUILD_TOOLS_ARCHIVE', 'COMPACT_CUTOVER_SETTINGS', 'COMPATIBLE_BACKEND_IMAGE', 'COMPATIBLE_RUNNER_IMAGE', 'REHEARSAL_MEMORY_EXTRACTION_MODEL')) {
+    foreach ($name in @('LEGACY_SOURCE_SNAPSHOT', 'LEGACY_SOURCE_ECS_SNAPSHOT', 'LOCAL_ARTIFACTS_SNAPSHOT', 'LOCAL_ARTIFACTS_ECS_SNAPSHOT', 'COLD_STORES_SNAPSHOT', 'COLD_STORES_ECS_SNAPSHOT', 'COLD_HISTORY_SNAPSHOT', 'COLD_HISTORY_ECS_SNAPSHOT', 'LOCAL_MYSQL_SNAPSHOT', 'LOCAL_MYSQL_ECS_SNAPSHOT', 'LOCAL_MYSQL_FIXTURE_SETTINGS', 'REMAINING_SYSTEM_DATA_SNAPSHOT', 'REMAINING_SYSTEM_DATA_ECS_SNAPSHOT', 'DOORHANDLE_CI_FIXTURE_MANIFEST', 'DOORHANDLE_CI_FIXTURE_SETTINGS', 'CANDIDATE_BUILD_TOOLS_ARCHIVE', 'COMPACT_CUTOVER_SETTINGS', 'COMPATIBLE_BACKEND_IMAGE', 'COMPATIBLE_RUNNER_IMAGE', 'REHEARSAL_MEMORY_EXTRACTION_MODEL')) {
         if (-not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) { throw 'Standalone build maintenance cannot accept business, fixture, model or build-image inputs.' }
     }
     foreach ($name in @('DOORHANDLE_CI_AUTO_COMPACT_FIXTURES', 'PRODUCTION_RELEASE_ENABLED', 'DOORHANDLE_COMPACT_RELEASE_READY', 'DOORHANDLE_COMPACT_REHEARSAL_READY', 'REHEARSAL_KEEP')) {
@@ -173,7 +173,7 @@ if ($env:ACTION -ceq 'reclaim-build-outputs') {
 } elseif ($Action -ceq 'PackageSourceOnly') { throw 'Source-only maintenance packaging requires the explicit reclaim-build-outputs action.' }
 if ($env:ACTION -ceq 'verify-controls') {
     if ($Action -cnotin @('PackageControls','PrepareTools','Preflight','CleanupTools') -or $env:CI_ECS_VERIFIED -cne 'false' -or $env:DOORHANDLE_CI_SCOPE -cne 'source') { throw 'Control verification only packages fixed source, prepares tools, runs the control preflight and cleans its tools.' }
-    foreach ($name in @('LEGACY_SOURCE_SNAPSHOT','LEGACY_SOURCE_ECS_SNAPSHOT','LOCAL_ARTIFACTS_SNAPSHOT','LOCAL_ARTIFACTS_ECS_SNAPSHOT','COLD_STORES_SNAPSHOT','COLD_STORES_ECS_SNAPSHOT','COLD_HISTORY_SNAPSHOT','COLD_HISTORY_ECS_SNAPSHOT','LOCAL_MYSQL_SNAPSHOT','LOCAL_MYSQL_ECS_SNAPSHOT','LOCAL_MYSQL_FIXTURE_SETTINGS','DOORHANDLE_CI_FIXTURE_MANIFEST','DOORHANDLE_CI_FIXTURE_SETTINGS','CANDIDATE_BUILD_TOOLS_ARCHIVE','COMPACT_CUTOVER_SETTINGS','COMPATIBLE_BACKEND_IMAGE','COMPATIBLE_RUNNER_IMAGE','REHEARSAL_MEMORY_EXTRACTION_MODEL')) {
+    foreach ($name in @('LEGACY_SOURCE_SNAPSHOT','LEGACY_SOURCE_ECS_SNAPSHOT','LOCAL_ARTIFACTS_SNAPSHOT','LOCAL_ARTIFACTS_ECS_SNAPSHOT','COLD_STORES_SNAPSHOT','COLD_STORES_ECS_SNAPSHOT','COLD_HISTORY_SNAPSHOT','COLD_HISTORY_ECS_SNAPSHOT','LOCAL_MYSQL_SNAPSHOT','LOCAL_MYSQL_ECS_SNAPSHOT','LOCAL_MYSQL_FIXTURE_SETTINGS','REMAINING_SYSTEM_DATA_SNAPSHOT','REMAINING_SYSTEM_DATA_ECS_SNAPSHOT','DOORHANDLE_CI_FIXTURE_MANIFEST','DOORHANDLE_CI_FIXTURE_SETTINGS','CANDIDATE_BUILD_TOOLS_ARCHIVE','COMPACT_CUTOVER_SETTINGS','COMPATIBLE_BACKEND_IMAGE','COMPATIBLE_RUNNER_IMAGE','REHEARSAL_MEMORY_EXTRACTION_MODEL')) {
         if (-not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) { throw 'Control verification cannot accept business, fixture, model or release inputs.' }
     }
     foreach ($name in @('DOORHANDLE_CI_AUTO_COMPACT_FIXTURES','PRODUCTION_RELEASE_ENABLED','DOORHANDLE_COMPACT_RELEASE_READY','DOORHANDLE_COMPACT_REHEARSAL_READY','REHEARSAL_KEEP')) {
@@ -408,7 +408,7 @@ if ($Action -eq 'Preflight') {
         } finally {
             @{status=$(if($collected -and $controlExit -eq 0){'COLLECTED'}else{'FAILED_OR_UNKNOWN'});release=$tag;commit=$commit;sourceSha256=$sha;exitCode=$controlExit;receiptCollected=$collected;fullProjectVerified=$false} | ConvertTo-Json | Set-Content -LiteralPath artifacts/control-preflight/transport.json -Encoding utf8
         }
-        $expected=@('test_jenkins_resource_budget','test_jenkins_fixture_admission','test_failed_native_jar_duplicates','test_historical_builder_retirement','test_historical_mysql_fixture_retirement','test_public_buildkit_layer_retirement','test_generated_public_image_archive_retirement','test_compact_schema_source','test_control_preflight')
+        $expected=@('test_jenkins_resource_budget','test_jenkins_fixture_admission','test_failed_native_jar_duplicates','test_historical_builder_retirement','test_historical_mysql_fixture_retirement','test_public_buildkit_layer_retirement','test_generated_public_image_archive_retirement','test_historical_python_build_cache_retirement','test_local_artifact_custody','test_compact_schema_source','test_control_preflight')
         if ($controlExit -ne 0 -or $null -eq $remoteResult -or $remoteResult.status -cne 'CONTROL_PREFLIGHT_PASS' -or $remoteResult.receipt -cne "$remoteOutput/receipt.json" -or $remoteResult.receiptSha256 -cnotmatch '^[a-f0-9]{64}$' -or $receipt.status -cne 'CONTROL_PREFLIGHT_PASS' -or $receipt.fullProjectVerified -ne $false -or $receipt.businessRuntimeStarted -ne $false -or $receipt.containerCleanupConfirmed -ne $true -or $receipt.sourceScratchCleanupConfirmed -ne $true -or (@($receipt.selectedModules|Sort-Object)-join ',') -cne (@($expected|Sort-Object)-join ',') -or (@($receipt.modules.PSObject.Properties.Name|Sort-Object)-join ',') -cne (@($expected|Sort-Object)-join ',') -or -not (Test-Path -LiteralPath artifacts/control-preflight/python.xml) -or -not (Test-Path -LiteralPath artifacts/control-preflight/pytest.log)) { throw 'ECS control-script preflight did not pass with complete reports and owned cleanup; native preparation is blocked.' }
         foreach ($module in $expected) { $counts=$receipt.modules.$module; if ($counts.passed -lt 1 -or $counts.failed -ne 0 -or $counts.skipped -ne 0) { throw 'Control preflight omitted or failed a required module.' } }
         @{status='CONTROL_PREFLIGHT_PASS';release=$tag;commit=$commit;sourceSha256=$sha;receiptSha256=(Get-FileHash -LiteralPath artifacts/control-preflight/receipt.json -Algorithm SHA256).Hash.ToLowerInvariant();fullProjectVerified=$false} | ConvertTo-Json | Set-Content -LiteralPath artifacts/control-preflight-gate.json -Encoding utf8
@@ -502,7 +502,7 @@ if ($Action -eq 'CleanupLocalMySql') {
     & ./script/jenkins/preserve-local-mysql.ps1 -Mode Cleanup -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha
     return
 }
-if ($Action -in @('PreserveLocalArtifacts', 'PreserveColdStores', 'PreserveLocalMySql', 'ReclaimBuildOutputs')) {
+if ($Action -in @('PreserveLocalArtifacts', 'PreserveRemainingArtifacts', 'PreserveColdStores', 'PreserveLocalMySql', 'ReclaimBuildOutputs')) {
     if ($env:CI_ECS_VERIFIED -ne 'true') { throw 'Original data retention and build reclamation require this fixed commit ECS verification first.' }
     $commit = Require-Value 'GIT_COMMIT' '^[a-f0-9]{40}$'
     $sha = (Get-FileHash -LiteralPath artifacts/source.tar.gz -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -511,6 +511,8 @@ if ($Action -in @('PreserveLocalArtifacts', 'PreserveColdStores', 'PreserveLocal
         $profileOptions = @{}
         if ($artifactProfile -cne 'additional-local-artifacts-v1') { $profileOptions['Profile'] = $artifactProfile }
         & ./script/jenkins/preserve-local-artifacts.ps1 -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha -SnapshotDirectory $env:LOCAL_ARTIFACTS_SNAPSHOT -EcsSnapshotDirectory $env:LOCAL_ARTIFACTS_ECS_SNAPSHOT @profileOptions
+    } elseif ($Action -eq 'PreserveRemainingArtifacts') {
+        & ./script/jenkins/preserve-local-artifacts.ps1 -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha -SnapshotDirectory $env:REMAINING_SYSTEM_DATA_SNAPSHOT -EcsSnapshotDirectory $env:REMAINING_SYSTEM_DATA_ECS_SNAPSHOT -Profile 'remaining-system-data-v1'
     } elseif ($Action -eq 'PreserveColdStores') {
         & ./script/jenkins/preserve-cold-stores.ps1 -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha -SnapshotDirectory $env:COLD_STORES_SNAPSHOT -EcsSnapshotDirectory $env:COLD_STORES_ECS_SNAPSHOT -Profile $env:COLD_STORES_PROFILE
     } elseif ($Action -eq 'PreserveLocalMySql') {

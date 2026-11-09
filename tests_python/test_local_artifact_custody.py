@@ -132,6 +132,94 @@ def test_original_default_profile_facts_and_limits_are_not_replaced_by_residual_
     assert custody.CATALOG_SHA256 == 'e1258807aae1df63412e2190268351b1d63e770219ce9aba2d760f2f1bae1383'
 
 
+def test_remaining_profile_is_fixed_and_uses_independent_receipt_and_directory_names(monkeypatch):
+    for field in custody.PROFILE_FIELDS:
+        monkeypatch.setattr(custody, field, getattr(custody, field))
+    original = dict(custody.PROFILES[custody.DEFAULT_PROFILE])
+    residual = dict(custody.PROFILES['residual-project-originals-v1'])
+    custody.select_profile('remaining-system-data-v1')
+    assert custody.FILE_COUNT == 86 and custody.ORIGINAL_BYTES == 28695377
+    assert custody.CATALOG_SHA256 == '0f92d397bed2b6f6a56a4dfec37d7c4bd6f41d195182b10604438ed10747baf4'
+    assert custody.MAX_BYTES == 64 * 1024 ** 2 and custody.MAX_MANIFEST == 2 * 1024 ** 2
+    assert custody.GROUPS == {'remaining-mysql-archives', 'remaining-memory-export', 'remaining-user-skill-downloads',
+                             'remaining-agent-workspace', 'protected-tool-receipts', 'local-mysql45-export'}
+    for field in ('SNAPSHOT', 'RESTORE', 'OWNER', 'PUBLIC'):
+        assert getattr(custody, field).startswith('remaining-system-data-')
+        assert getattr(custody, field) not in (original[field], residual[field])
+    custody.select_profile(custody.DEFAULT_PROFILE)
+    assert {field: getattr(custody, field) for field in custody.PROFILE_FIELDS} == original
+    assert custody.PROFILES['residual-project-originals-v1'] == residual
+
+
+@pytest.fixture
+def remaining_originals(tmp_path, monkeypatch):
+    for field in custody.PROFILE_FIELDS:
+        monkeypatch.setattr(custody, field, getattr(custody, field))
+    custody.select_profile('remaining-system-data-v1')
+    source = tmp_path / 'remaining-originals'; source.mkdir(mode=0o700)
+    parent = source / 'work/data-migration-remaining'; parent.mkdir(parents=True, mode=0o700)
+    # Deliberately invalid payload formats prove that custody only copies bytes.
+    rows = [('work/old/private-data-archive.zip', 'remaining-mysql-archives', b'PK\x00not-a-zip'),
+            ('work/old/private-legacy-export.json', 'remaining-memory-export', b'opaque-not-json'),
+            ('.agentscope/workspace/users/18/skill-downloads/fixed/SKILL.md', 'remaining-user-skill-downloads', b'opaque-skill'),
+            ('.agentscope/workspace/users/18/employee-main/session.jsonl', 'remaining-agent-workspace', b'opaque-session'),
+            ('work/tools/receipts.sqlite', 'protected-tool-receipts', b'not-a-sqlite-database'),
+            ('work/export/database.sql', 'local-mysql45-export', b'opaque-not-sql')]
+    for name, _, raw in rows:
+        path = source / name; path.parent.mkdir(parents=True, mode=0o700, exist_ok=True); path.write_bytes(raw)
+    members = [{'group': group, 'path': name, 'bytes': len(raw), 'sha256': hashlib.sha256(raw).hexdigest()}
+               for name, group, raw in rows]
+    monkeypatch.setattr(custody, 'SOURCE_ROOT', str(source))
+    monkeypatch.setattr(custody, 'FILE_COUNT', len(rows))
+    monkeypatch.setattr(custody, 'ORIGINAL_BYTES', sum(len(raw) for _, _, raw in rows))
+    monkeypatch.setattr(custody, 'CATALOG_SHA256', hashlib.sha256(custody.encoded(sorted(
+        [[r['group'], r['path'], r['bytes'], r['sha256']] for r in members]))).hexdigest())
+    monkeypatch.setattr(custody.shutil, 'disk_usage', lambda _: SimpleNamespace(free=10 * 1024 ** 3))
+    def metadata_only(args, **kwargs):
+        assert args[:3] == ['git', '-C', str(source)]
+        if args[3:] == ['worktree', 'list', '--porcelain', '-z']:
+            return SimpleNamespace(returncode=0, stdout=('worktree ' + str(source) + '\0\0').encode())
+        assert args[3:] == ['ls-files', '-z']
+        return SimpleNamespace(returncode=0, stdout=b'')
+    monkeypatch.setattr(custody.subprocess, 'run', metadata_only)
+    catalog = tmp_path / 'remaining-catalog.json'
+    catalog.write_bytes(custody.encoded({'kind': 'doorhandle-additional-local-data-inventory',
+        'observedAtUtc': '2026-11-09T00:00:00Z', 'readOnlySources': True, 'notUploaded': True,
+        'files': len(rows), 'bytes': custody.ORIGINAL_BYTES, 'members': members}))
+    return SimpleNamespace(source=source, parent=parent, catalog=catalog, rows=rows)
+
+
+def test_remaining_opaque_pack_restore_and_reuse_never_activate_payloads(remaining_originals, tmp_path, monkeypatch):
+    fixture = remaining_originals; package = fixture.parent / 'package'
+    before = {name: custody.digest(fixture.source / name) for name, _, _ in fixture.rows}
+    custody.pack(fixture.catalog, package)
+    args, work = create_attempt(tmp_path, monkeypatch, package)
+    custody.prepare(args); upload(package, work); first = custody.verify_restore(args)
+    assert first['profile'] == 'remaining-system-data-v1'
+    assert first['databasesOpened'] == first['modelsExecuted'] == first['originalFilesDeleted'] == 0
+    args, newer = create_attempt(tmp_path, monkeypatch, package, number=72)
+    args.source_snapshot_directory = str(work / custody.SNAPSHOT)
+    description = custody.describe(args); args.source_receipt_sha256 = description['sourceCustodyReceiptSha256']
+    second = custody.reuse(args)
+    assert second['status'] == 'RESTORED_VERIFIED'
+    assert before == {name: custody.digest(fixture.source / name) for name, _, _ in fixture.rows}
+    assert all(custody.digest(newer / custody.RESTORE / name) == digest for name, digest in before.items())
+    assert not (newer / 'additional-local-artifacts-snapshot').exists()
+    assert not (newer / 'residual-project-originals-snapshot').exists()
+
+
+@pytest.mark.parametrize('mutation', ['extra-secret', 'changed-hash', 'changed-group'])
+def test_remaining_catalog_drift_is_rejected_before_any_source_is_opened(remaining_originals, monkeypatch, mutation):
+    fixture = remaining_originals; value = custody.read_json(fixture.catalog)
+    if mutation == 'extra-secret':
+        value['members'].append({'path': 'work/private.env', 'group': 'remaining-agent-workspace', 'bytes': 1, 'sha256': '0' * 64})
+    elif mutation == 'changed-hash': value['members'][0]['sha256'] = '0' * 64
+    else: value['members'][0]['group'] = 'local-mysql45-export'
+    fixture.catalog.write_bytes(custody.encoded(value))
+    monkeypatch.setattr(custody, 'permissions', lambda *_: pytest.fail('unreviewed source was opened'))
+    with pytest.raises(custody.CustodyError): custody.pack(fixture.catalog, fixture.parent / 'rejected')
+
+
 def test_residual_opaque_pack_restore_and_later_reuse_bind_the_same_private_bytes(residual_originals, tmp_path, monkeypatch):
     fixture = residual_originals; package = fixture.parent / 'package'
     before = {name: custody.digest(fixture.source / name) for name, _, _ in fixture.rows}

@@ -54,6 +54,16 @@ PROFILES = {
         'OWNER': 'residual-project-originals-owner.json', 'PUBLIC': 'residual-project-originals-public-receipt.json',
         'GROUPS': {'residual-sql', 'residual-model'},
     },
+    'remaining-system-data-v1': {
+        'PROFILE': 'remaining-system-data-v1',
+        'CATALOG_SHA256': '0f92d397bed2b6f6a56a4dfec37d7c4bd6f41d195182b10604438ed10747baf4',
+        'FILE_COUNT': 86, 'ORIGINAL_BYTES': 28695377,
+        'MAX_BYTES': 64 * 1024 ** 2, 'MAX_MANIFEST': 2 * 1024 ** 2,
+        'SNAPSHOT': 'remaining-system-data-snapshot', 'RESTORE': 'remaining-system-data-restore',
+        'OWNER': 'remaining-system-data-owner.json', 'PUBLIC': 'remaining-system-data-public-receipt.json',
+        'GROUPS': {'remaining-mysql-archives', 'remaining-memory-export', 'remaining-user-skill-downloads',
+                   'remaining-agent-workspace', 'protected-tool-receipts', 'local-mysql45-export'},
+    },
 }
 
 
@@ -288,7 +298,7 @@ def pack(catalog_file, output):
             "permissions": {"mode": 0, "uid": 0, "gid": 0, "atimeNs": 0, "mtimeNs": 0}})
     # Reject any extra/secret source before opening even one original file.
     validate_rows(rows)
-    if PROFILE == 'residual-project-originals-v1':
+    if PROFILE in ('residual-project-originals-v1', 'remaining-system-data-v1'):
         residual_repository_guard([row['sourcePath'] for row in rows])
     for row in rows:
         path = safe(row["sourcePath"]); info = path.stat()

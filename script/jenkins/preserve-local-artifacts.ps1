@@ -8,15 +8,17 @@ param(
     [Parameter(Mandatory = $true)][string]$SourceSha256,
     [string]$SnapshotDirectory,
     [string]$EcsSnapshotDirectory,
-    [ValidateSet('additional-local-artifacts-v1', 'residual-project-originals-v1')][string]$Profile = 'additional-local-artifacts-v1'
+    [ValidateSet('additional-local-artifacts-v1', 'residual-project-originals-v1', 'remaining-system-data-v1')][string]$Profile = 'additional-local-artifacts-v1'
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $profileSettings = if ($Profile -ceq 'additional-local-artifacts-v1') {
     @{ CatalogSha = 'e1258807aae1df63412e2190268351b1d63e770219ce9aba2d760f2f1bae1383'; Files = 36; Bytes = 465240718; MaximumArchive = 512MB; MaximumManifest = 2MB; Snapshot = 'additional-local-artifacts-snapshot'; Public = 'additional-local-artifacts-public-receipt.json'; Artifact = 'local-artifact-custody'; }
-} else {
+} elseif ($Profile -ceq 'residual-project-originals-v1') {
     @{ CatalogSha = 'a9b6498c0f0e59b8821b0dbd9a8a4c1488bd300a67d92049f673e687fd49a00c'; Files = 1968; Bytes = 8779830; MaximumArchive = 32MB; MaximumManifest = 2MB; Snapshot = 'residual-project-originals-snapshot'; Public = 'residual-project-originals-public-receipt.json'; Artifact = 'residual-artifact-custody'; }
+} else {
+    @{ CatalogSha = '0f92d397bed2b6f6a56a4dfec37d7c4bd6f41d195182b10604438ed10747baf4'; Files = 86; Bytes = 28695377; MaximumArchive = 64MB; MaximumManifest = 2MB; Snapshot = 'remaining-system-data-snapshot'; Public = 'remaining-system-data-public-receipt.json'; Artifact = 'remaining-system-data-custody'; }
 }
 
 function Require-Custody([bool]$Condition, [string]$Message) {

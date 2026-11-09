@@ -26,7 +26,8 @@ import xml.etree.ElementTree as ET
 MODULES = ('test_jenkins_resource_budget', 'test_jenkins_fixture_admission',
            'test_failed_native_jar_duplicates', 'test_historical_builder_retirement',
            'test_historical_mysql_fixture_retirement', 'test_public_buildkit_layer_retirement',
-           'test_generated_public_image_archive_retirement', 'test_compact_schema_source', 'test_control_preflight')
+           'test_generated_public_image_archive_retirement', 'test_historical_python_build_cache_retirement',
+           'test_local_artifact_custody', 'test_compact_schema_source', 'test_control_preflight')
 TAG = re.compile(r'ci-[1-9][0-9]*-[a-f0-9]{12}')
 SHA = re.compile(r'[a-f0-9]{64}')
 MIB = 1024 ** 2

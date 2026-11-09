@@ -3,8 +3,9 @@
 The CLI authenticates fixed current source and ECS identity before importing
 the existing strict cleanup admission library. The local Jenkins controller
 authenticates the request SHA and the original C/D control-file byte provenance.
-No retained source archive, inbox original, database, report, image or directory
-has a deletion API here. Historical metadata never substitutes for keeper bytes.
+No retained source archive, inbox original, database, report or directory has a
+deletion API here. Only separately reviewed old Python build images may retire;
+historical metadata never substitutes for keeper bytes in the JAR-copy path.
 """
 from __future__ import annotations
 
@@ -1312,11 +1313,424 @@ def capture_request(root, raw_local_spec, *, local_spec_sha256, expected_current
     return request, skipped
 
 
+# This independent allowlist never inherits the failed-native JAR candidates.
+# Immutable IDs and names were observed read-only on the admitted ECS.
+PYTHON_CACHE_APPROVED = {
+    'ci-88-eee02f041acc': ('sha256:bb13a047fc8eef3a6f39bee137a42cc09cb43d04a56baea3ec96d049e400f0de',
+        'doorhandlecatch/ci-python:ci-88-eee02f041acc-0114554bdab3',
+        '6af65eac7235fc24fc8b98f7c3f8a6f86b3d27a9901400e9f9c299452a67af6f'),
+    'ci-89-02644b8cabb0': ('sha256:4142687d827dac19dcb0567dce738abf59b51ece6b007db090cdc337504f2d57',
+        'doorhandlecatch/ci-python:ci-89-02644b8cabb0-39d4480521f2',
+        'a5140d02a3bfa235cefa388ae33e8bd3d0ba1eedbb57052ff845a617eb2f350f'),
+    'ci-90-5dec4a42ba4f': ('sha256:ff99a08bb9f6e0b75f9844504ab802159004ae4dfd2135537f8411b99d8dfab6',
+        'doorhandlecatch/ci-python:ci-90-5dec4a42ba4f-e8f33679de1c',
+        '6f46600b75e1b494ef4ebd4fda4838d9565efacc4ebaa38ecab7b3db920e0300'),
+    'ci-92-6ce63d55f407': ('sha256:345cbb7c263cbc4606fdbe17b36e6a3e7ed378fda72ff7e11e1b2588c0508cfc',
+        'doorhandlecatch/ci-python:ci-92-6ce63d55f407-7250de57d776',
+        'fccde5be4ed5d417ad2faa6d145c4047c19c17f34170ec3b9a1966666b1e5480'),
+    'ci-94-0f482e27eacf': ('sha256:37c6b3836a0576ef8abc8af2f57d63bc5a4dd85952b8575164b6f5c325db958c',
+        'doorhandlecatch/ci-python:ci-94-0f482e27eacf-3732c8e87b8d',
+        'ae0a83c49f7477ff9abdda140dcb6c17e9dc311f2d4add31204eb390d7017d83'),
+    'ci-95-8d8e6e3d26e9': ('sha256:51074899578138f8e8d4d3a2ff9ec214230b3bb95a436cfae59bfe29b520f1d1',
+        'doorhandlecatch/ci-python:ci-95-8d8e6e3d26e9-ec29e7eb29bc',
+        'cec422153bb655cb5281c946ee49cf3cfd17db19bd7bbff264938e24be9fd041'),
+    'ci-96-32ee1215f215': ('sha256:c897c613928983868f829bd9dc37cec1c2ed8aad9f2764fe9e81aa2b6df2cbff',
+        'doorhandlecatch/ci-python:ci-96-32ee1215f215-0a1eb0ae9d21',
+        '01aa6cbc3c08f2168480afd1022b326e20eb7de4b348b4b1d5e0d776106a5c37'),
+}
+PYTHON_CACHE_BASE = 'sha256:d9489c281e69291fec34ee6bd470197c4c41d06fdc29a822d3a5aaad66f1b2fa'
+PYTHON_CACHE_PROTECTED_IMAGES = frozenset((PYTHON_CACHE_BASE,
+    'sha256:f58d59b6273e785ac0a4477f6e9b5ba1d7731c75b906c0f7b34076f1851318cc',
+    'sha256:44fce696f38ba8c987c4db89954051000bbd05ffd8d8659ba15ed4a8602e937f',
+    'sha256:4e8c4a575022713b56227dbf8a4df04e37bf6659e7d1828cd29a884368a1c66d'))
+PYTHON_CACHE_PROTECTED_CONTAINER = 'a44d54b9a56f6d5d0e1a0f1fb6dd34c441ae424824e17fa24dc807675c629c2a'
+PYTHON_CACHE_RECIPE = 'script/jenkins/prepare-ecs-tools.py'
+PYTHON_CACHE_REQUIREMENTS = 'script/jenkins/python-test-requirements.txt'
+PYTHON_CACHE_KIND = 'doorhandle-historical-python-build-cache'
+
+
+def python_cache_owner(owner, release, identity):
+    """Pure admission of the actual older pip producer, never metadata reuse."""
+    need(release in PYTHON_CACHE_APPROVED and int(TAG.fullmatch(release)[1]) < 97,
+         'PYTHON_CACHE_CLOSED_OLD_RELEASE_REQUIRED')
+    validate_context({key: owner.get(key) for key in ('release', 'commit', 'sourceSha256')})
+    need(owner['release'] == release and owner.get('identity') == identity
+         and owner.get('baseImageId') == PYTHON_CACHE_BASE
+         and type(owner.get('ownerToken')) is str and re.fullmatch(r'[a-f0-9]{24}', owner['ownerToken'])
+         and owner.get('containerName') == 'doorhandle-ci-python-' + owner['ownerToken']
+         and owner.get('diskReserveBytes') == 2 * 1024 ** 3
+         and owner.get('diskOvershootBytes') == 256 * 1024 ** 2
+         and owner.get('maximumGrowthBytes') == 2 * 1024 ** 3
+         and type(owner.get('sourceFiles')) is dict
+         and set(owner['sourceFiles']) == {PYTHON_CACHE_RECIPE, PYTHON_CACHE_REQUIREMENTS}
+         and all(type(value) is str and SHA.fullmatch(value) for value in owner['sourceFiles'].values()),
+         'PYTHON_CACHE_ORIGINAL_OWNER_REQUIRED')
+    return owner
+
+
+def python_cache_source_proof(root, owner):
+    """Hash the whole retained source, and read two members without executing it."""
+    root = Path(root); release = owner['release']; archive_path = root / 'inbox' / release / 'source.tar.gz'
+    wanted = {}; source_signature = None
+    with held_file(root, archive_path, MAX_SOURCE_ARCHIVE) as (stream, signature):
+        need(hash_stream(stream, MAX_SOURCE_ARCHIVE) == owner['sourceSha256'], 'PYTHON_CACHE_SOURCE_SHA_DRIFT')
+        source_signature = signature; stream.seek(0)
+        class Bounded:
+            def __init__(self, source): self.source, self.total = source, 0
+            def read(self, size=-1):
+                remaining = MAX_EXPANDED_SOURCE - self.total
+                raw = self.source.read(remaining + 1 if size < 0 else min(size, remaining + 1))
+                self.total += len(raw); need(self.total <= MAX_EXPANDED_SOURCE, 'PYTHON_CACHE_SOURCE_EXPANSION_BOUND')
+                return raw
+        with gzip.GzipFile(fileobj=stream, mode='rb') as expanded, tarfile.open(fileobj=Bounded(expanded), mode='r|') as archive:
+            count = 0
+            for member in archive:
+                count += 1
+                need(count <= 50_000 and 0 <= member.size <= 32 * 1024 ** 2, 'PYTHON_CACHE_SOURCE_MEMBER_BOUND')
+                if member.name not in owner['sourceFiles']: continue
+                need(member.name not in wanted and member.isfile() and 0 < member.size <= 1024 ** 2,
+                     'PYTHON_CACHE_UNIQUE_SOURCE_MEMBERS_REQUIRED')
+                raw = archive.extractfile(member).read(1024 ** 2 + 1)
+                need(len(raw) == member.size and digest_bytes(raw) == owner['sourceFiles'][member.name],
+                     'PYTHON_CACHE_SOURCE_MEMBER_SHA_DRIFT')
+                wanted[member.name] = raw
+            need(archive.pax_headers.get('comment') == owner['commit'] and set(wanted) == set(owner['sourceFiles']),
+                 'PYTHON_CACHE_SOURCE_COMMIT_AND_CLOSURE_REQUIRED')
+    files = {}
+    for name, raw in wanted.items():
+        path = root / 'inbox' / release / 'python-tools' / Path(name).name
+        with held_file(root, path, 1024 ** 2) as (stream, signature):
+            need(stream.read(1024 ** 2 + 1) == raw, 'PYTHON_CACHE_RETAINED_RECIPE_OR_REQUIREMENTS_CHANGED')
+            files[name] = {'path': path.relative_to(root).as_posix(), 'metadata': signature, 'sha256': digest_bytes(raw)}
+    try:
+        syntax = ast.parse(wanted[PYTHON_CACHE_RECIPE]); scripts = [ast.literal_eval(node.value) for node in syntax.body
+            if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == 'INSTALL' for target in node.targets)]
+        need(len(scripts) == 1 and type(scripts[0]) is str, 'PYTHON_CACHE_FIXED_INSTALLER_REQUIRED')
+        pins = {}
+        for line in wanted[PYTHON_CACHE_REQUIREMENTS].decode('utf8').splitlines():
+            value = line.strip()
+            if not value or value.startswith('#'): continue
+            match = re.fullmatch(r'([A-Za-z0-9][A-Za-z0-9._-]*)==([0-9][A-Za-z0-9.!+_-]*)', value)
+            need(match is not None, 'PYTHON_CACHE_PINNED_REQUIREMENTS_REQUIRED')
+            key = re.sub(r'[-_.]+', '-', match[1]).lower()
+            need(key not in pins, 'PYTHON_CACHE_DUPLICATE_REQUIREMENT'); pins[key] = match[2]
+        need(0 < len(pins) <= 64, 'PYTHON_CACHE_BOUNDED_REQUIREMENTS_REQUIRED')
+    except (SyntaxError, UnicodeError, RecursionError, TypeError, ValueError) as error:
+        if isinstance(error, RetirementError): raise
+        raise RetirementError('PYTHON_CACHE_INVALID_RETAINED_RECIPE') from None
+    command = ['-I', '-B', '-c', scripts[0], json.dumps(pins, sort_keys=True)]
+    return {'archive': {'path': archive_path.relative_to(root).as_posix(), 'metadata': source_signature,
+                        'sha256': owner['sourceSha256']}, 'files': files,
+            'installerCommandSha256': digest_bytes(canonical(command))}
+
+
+def python_cache_container_descriptor(root, row, owner, source):
+    """The two original binds and complete inert/stopped resource model."""
+    release = owner['release']; approved = PYTHON_CACHE_APPROVED.get(release)
+    need(approved is not None and row.get('Id') == approved[2] and row['Id'] != PYTHON_CACHE_PROTECTED_CONTAINER,
+         'PYTHON_CACHE_EXACT_OLD_CONTAINER_REQUIRED')
+    cfg = row.get('Config') or {}; host = row.get('HostConfig') or {}; labels = cfg.get('Labels') or {}; state = row.get('State') or {}
+    folder = Path(root) / 'inbox' / release / 'python-tools'
+    need(row.get('Image') == cfg.get('Image') == PYTHON_CACHE_BASE
+         and row.get('Name') == '/' + owner['containerName']
+         and labels.get('io.doorhandle.ci-tool-preparation') == owner['ownerToken']
+         and labels.get('io.doorhandle.release') == release and labels.get('io.doorhandle.source') == owner['sourceSha256']
+         and not labels.get('io.doorhandle.ci-tool-preparation-role')
+         and cfg.get('User') == '0:0' and cfg.get('Entrypoint') == ['/usr/local/bin/python']
+         and cfg.get('WorkingDir') == '/' and cfg.get('Healthcheck', {}).get('Test') == ['NONE']
+         and not cfg.get('Volumes') and digest_bytes(canonical(cfg.get('Cmd'))) == source['installerCommandSha256'],
+         'PYTHON_CACHE_CONTAINER_SOURCE_OR_COMMAND_DIFFERS')
+    need(state.get('Status') == 'exited' and state.get('Running') is False and state.get('Restarting') is False
+         and state.get('Paused') is False and state.get('Dead') is False and type(state.get('Pid')) is int and state['Pid'] == 0
+         and state.get('FinishedAt') and state['FinishedAt'] != '0001-01-01T00:00:00Z',
+         'PYTHON_CACHE_CONTAINER_NOT_COMPLETELY_STOPPED')
+    expected_host = {'Privileged': False, 'ReadonlyRootfs': False, 'Memory': 2 * 1024 ** 3,
+        'MemorySwap': 2 * 1024 ** 3, 'NanoCpus': 2 * 10 ** 9, 'PidsLimit': 256, 'NetworkMode': 'bridge',
+        'PidMode': '', 'IpcMode': 'private', 'UTSMode': '', 'UsernsMode': '',
+        'RestartPolicy': {'Name': 'no', 'MaximumRetryCount': 0},
+        'Tmpfs': {'/tmp': 'rw,nosuid,nodev,size=268435456'},
+        'LogConfig': {'Type': 'json-file', 'Config': {'max-file': '1', 'max-size': '10m'}}}
+    need(all(host.get(key) == value for key, value in expected_host.items())
+         and host.get('CapDrop') == ['ALL'] and host.get('SecurityOpt') == ['no-new-privileges:true']
+         and all(not host.get(key) for key in ('CapAdd', 'Devices', 'DeviceRequests', 'VolumesFrom', 'Binds', 'Links', 'PortBindings')),
+         'PYTHON_CACHE_CONTAINER_RESOURCE_OR_PRIVILEGE_DIFFERS')
+    mounts = row.get('Mounts')
+    need(type(mounts) is list and len(mounts) == 2, 'PYTHON_CACHE_EXACT_TWO_BINDS_REQUIRED')
+    expected = {(str(folder / 'python-test-requirements.txt'), '/ci-input/requirements.txt'): False,
+                (str(folder / 'reports'), '/ci-report'): True}
+    for mount in mounts:
+        pair = (mount.get('Source'), mount.get('Destination'))
+        need(mount.get('Type') == 'bind' and pair in expected and mount.get('RW') is expected.pop(pair)
+             and mount.get('Propagation') == 'rprivate', 'PYTHON_CACHE_FOREIGN_OR_WRITABLE_INPUT_MOUNT')
+    need(not expected and type(row.get('SizeRw')) is int and 0 <= row['SizeRw'] <= 2 * 1024 ** 3,
+         'PYTHON_CACHE_WRITABLE_LAYER_BOUND_REQUIRED')
+    return {'release': release, 'containerId': row['Id'], 'writableBytes': row['SizeRw'],
+            'inspectSha256': digest_bytes(canonical(row)), 'ownerSha256': digest_bytes(canonical(owner)), 'source': source}
+
+
+def python_cache_image_descriptor(row, owner, source, references, base_layers, usage):
+    release = owner['release']; approved = PYTHON_CACHE_APPROVED.get(release); cfg = row.get('Config') or {}; labels = cfg.get('Labels') or {}
+    need(approved is not None and row.get('Id') == approved[0] and row['Id'] not in PYTHON_CACHE_PROTECTED_IMAGES
+         and row.get('RepoTags') == [approved[1]] and row['Id'] not in references,
+         'PYTHON_CACHE_EXACT_UNREFERENCED_IMAGE_REQUIRED')
+    layers = row.get('RootFS', {}).get('Layers')
+    need(row.get('Os') == 'linux' and row.get('Architecture') == 'amd64'
+         and cfg.get('User') == '1000:1000' and cfg.get('Entrypoint') == ['/usr/local/bin/python']
+         and cfg.get('Cmd') == ['--version'] and cfg.get('WorkingDir') == '/'
+         and cfg.get('Healthcheck', {}).get('Test') == ['NONE'] and not cfg.get('Volumes')
+         and labels.get('io.doorhandle.ci-tools') == 'python-v1'
+         and labels.get('io.doorhandle.source') == owner['sourceSha256'] and labels.get('io.doorhandle.commit') == owner['commit']
+         and labels.get('io.doorhandle.ci-tools-recipe-sha256') == owner['sourceFiles'][PYTHON_CACHE_RECIPE]
+         and labels.get('io.doorhandle.ci-tools-requirements-sha256') == owner['sourceFiles'][PYTHON_CACHE_REQUIREMENTS]
+         and type(layers) is list and len(layers) == len(base_layers) + 1 and layers[:-1] == base_layers
+         and type(row.get('Size')) is int and 0 < row['Size'] <= 2 * 1024 ** 3,
+         'PYTHON_CACHE_IMAGE_FIXED_RECIPE_OR_BASE_DIFFERS')
+    accounting = usage.get(row['Id']) or {}
+    need(accounting.get('Containers') == 0 and accounting.get('Size') == row['Size']
+         and type(accounting.get('SharedSize')) is int and 0 <= accounting['SharedSize'] <= row['Size'],
+         'PYTHON_CACHE_EXACT_IMAGE_DISK_ACCOUNTING_REQUIRED')
+    return {'release': release, 'imageId': row['Id'], 'repoTags': row['RepoTags'],
+            'uniqueBytes': row['Size'] - accounting['SharedSize'], 'inspectSha256': digest_bytes(canonical(row)),
+            'ownerSha256': digest_bytes(canonical(owner)), 'source': source}
+
+
+def _python_cache_projection(row, *, image=False):
+    """Only public Docker metadata enters original inspection files, never Env."""
+    cfg = row.get('Config') or {}; labels = cfg.get('Labels') or {}
+    for entry in cfg.get('Env') or []:
+        key, _, value = entry.partition('=')
+        need(not value or not re.search(r'PASSWORD|PASSWD|SECRET|API_KEY|ACCESS_KEY|TOKEN|DATABASE_URL|DB_URL', key, re.I),
+             'PYTHON_CACHE_SENSITIVE_ENVIRONMENT_REFUSED')
+    keys = ('Id', 'RepoTags', 'Os', 'Architecture', 'Size', 'RootFS') if image else ('Id', 'Name', 'Image', 'State', 'HostConfig', 'Mounts', 'SizeRw')
+    value = {key: row.get(key) for key in keys}
+    value['Config'] = {key: cfg.get(key) for key in ('Image', 'User', 'Entrypoint', 'Cmd', 'WorkingDir', 'Healthcheck', 'Volumes')}
+    value['Config']['Labels'] = {key: labels[key] for key in labels if key.startswith('io.doorhandle.ci-tool')
+        or key in ('io.doorhandle.source', 'io.doorhandle.commit', 'io.doorhandle.release')}
+    value['labelKeys'] = sorted(labels)
+    return value
+
+
+def _python_cache_inspect(identifier, *, image=False):
+    raw = builder_docker(*(['image', 'inspect', identifier] if image else ['inspect', '--size', identifier]))
+    rows = json.loads(raw)
+    need(type(rows) is list and len(rows) == 1 and type(rows[0]) is dict, 'PYTHON_CACHE_SINGLE_DOCKER_OBJECT_REQUIRED')
+    return _python_cache_projection(rows[0], image=image)
+
+
+def _python_cache_image_ids():
+    values = builder_docker('image', 'ls', '-aq', '--no-trunc').decode('ascii').split()
+    need(len(values) <= 1024 and all(re.fullmatch(r'sha256:[a-f0-9]{64}', value) for value in values),
+         'PYTHON_CACHE_BOUNDED_FULL_IMAGE_IDS_REQUIRED')
+    return set(values)
+
+
+def _python_cache_references():
+    ids = builder_container_ids()
+    if not ids: return []
+    rows = json.loads(builder_docker('inspect', *ids))
+    need(type(rows) is list and len(rows) == len(ids) and {row.get('Id') for row in rows} == set(ids),
+         'PYTHON_CACHE_COMPLETE_CONTAINER_REFERENCE_SCAN_REQUIRED')
+    # No environment, command, label value or business configuration is returned.
+    return [{'Id': row['Id'], 'Image': row.get('Image'), 'Name': row.get('Name'),
+             'HostConfig': {key: (row.get('HostConfig') or {}).get(key)
+                            for key in ('VolumesFrom', 'Links', 'NetworkMode', 'PidMode', 'IpcMode')},
+             'Mounts': row.get('Mounts') or []} for row in rows]
+
+
+def _python_cache_usage():
+    # Docker's CLI formats unique sizes to rounded text. This read-only Engine
+    # endpoint retains the original integer byte accounting instead.
+    import socket
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+        connection.settimeout(20); connection.connect('/var/run/docker.sock')
+        connection.sendall(b'GET /system/df HTTP/1.0\r\nHost: docker\r\nConnection: close\r\n\r\n')
+        raw = bytearray()
+        while True:
+            block = connection.recv(1024 ** 2)
+            if not block: break
+            raw.extend(block); need(len(raw) <= 32 * 1024 ** 2, 'PYTHON_CACHE_DISK_USAGE_BOUND')
+    header, body = bytes(raw).split(b'\r\n\r\n', 1)
+    need(header.splitlines()[0].split()[1] == b'200', 'PYTHON_CACHE_DISK_USAGE_HTTP_FAILED')
+    rows = json.loads(body).get('Images')
+    need(type(rows) is list and len(rows) <= 1024, 'PYTHON_CACHE_IMAGE_USAGE_CATALOG_REQUIRED')
+    return {row['Id']: {key: row.get(key) for key in ('Size', 'SharedSize', 'Containers')} for row in rows}
+
+
+def _python_cache_protected():
+    images = _python_cache_image_ids()
+    need(PYTHON_CACHE_PROTECTED_IMAGES <= images, 'PYTHON_CACHE_GLOBAL_DEPENDENCY_MISSING')
+    ids = builder_container_ids()
+    need(PYTHON_CACHE_PROTECTED_CONTAINER in ids, 'PYTHON_CACHE_97_ORIGINAL_CONTAINER_MISSING')
+    protected = _python_cache_inspect(PYTHON_CACHE_PROTECTED_CONTAINER)
+    need(protected['Image'] == PYTHON_CACHE_BASE and protected['Config']['Labels'].get('io.doorhandle.release') == 'ci-97-abedbf81a73d',
+         'PYTHON_CACHE_97_PROTECTED_IDENTITY_CHANGED')
+    base = _python_cache_inspect(PYTHON_CACHE_BASE, image=True)
+    layers = base.get('RootFS', {}).get('Layers')
+    need(type(layers) is list and layers and all(re.fullmatch(r'sha256:[a-f0-9]{64}', layer) for layer in layers),
+         'PYTHON_CACHE_PROTECTED_BASE_LAYERS_REQUIRED')
+    return {'imageIds': sorted(PYTHON_CACHE_PROTECTED_IMAGES), 'container97InspectSha256': digest_bytes(canonical(protected)),
+            'baseLayers': layers}
+
+
+def _python_cache_owner_source(root, release, identity):
+    path = Path(root) / 'inbox' / release / 'python-tools' / 'owner.json'
+    raw = private_bytes(root, path); owner = python_cache_owner(decode(raw), release, identity)
+    source = python_cache_source_proof(root, owner)
+    source['owner'] = {'path': path.relative_to(root).as_posix(), 'sha256': digest_bytes(raw), 'metadata': metadata(path.lstat())}
+    return owner, source
+
+
+def _python_cache_quiescent(root, release, descriptor, references, cleanup):
+    checkout = owned_path(root, Path(root) / 'verification' / release / 'checkout', directory=True)
+    cleanup.process_references(checkout)
+    cid = descriptor['containerId']; name = 'doorhandle-ci-python-' + descriptor['containerToken']
+    for row in references:
+        if row['Id'] == cid: continue
+        host = row['HostConfig']
+        values = list(host.get('VolumesFrom') or []) + list(host.get('Links') or [])
+        values += [host.get(key) or '' for key in ('NetworkMode', 'PidMode', 'IpcMode')]
+        need(not any(cid in value or name in value for value in values), 'PYTHON_CACHE_FOREIGN_CONTAINER_REFERENCE')
+        for mount in row['Mounts']:
+            if mount.get('Type') != 'bind': continue
+            path = Path(mount.get('Source') or '/')
+            need(not (path == checkout or path.is_relative_to(checkout) or checkout.is_relative_to(path)),
+                 'PYTHON_CACHE_FOREIGN_CHECKOUT_BIND')
+
+
+def _python_cache_available(root):
+    info = os.statvfs(root)
+    return info.f_bavail * info.f_frsize
+
+
+def _python_cache_save_inspect(root, directory, value, *, image=False):
+    identifier = value['Id'].removeprefix('sha256:')
+    path = directory / (('image-' if image else 'container-') + identifier + '.json')
+    binding = write_new(path, value)
+    return {'path': path.relative_to(root).as_posix(), 'bytes': binding['bytes'], 'sha256': binding['sha256']}
+
+
+def _python_cache_capture(root, release, identity, protected, usage, *, image=False):
+    owner, source = _python_cache_owner_source(root, release, identity)
+    identifier = PYTHON_CACHE_APPROVED[release][0 if image else 2]
+    row = _python_cache_inspect(identifier, image=image)
+    references = _python_cache_references()
+    if image:
+        descriptor = python_cache_image_descriptor(row, owner, source, {item['Image'] for item in references}, protected['baseLayers'], usage)
+    else:
+        descriptor = python_cache_container_descriptor(root, row, owner, source)
+        descriptor['containerToken'] = owner['ownerToken']
+    return descriptor, row, references
+
+
+def plan_python_build_cache(root, *, expected_current, identity, modules):
+    validate_context(expected_current); root = Path(root)
+    need(int(TAG.fullmatch(expected_current['release'])[1]) > 97, 'PYTHON_CACHE_NEW_CURRENT_BUILD_REQUIRED')
+    containers, images, skipped = [], [], []
+    directory = root / 'inbox' / expected_current['release'] / 'native-python-build-cache-inspect'
+    owned_path(root, directory.parent, directory=True)
+    with controller_lock(root):
+        need(not directory.exists() and not directory.is_symlink(), 'PYTHON_CACHE_FRESH_INSPECTION_DIRECTORY_REQUIRED')
+        directory.mkdir(mode=0o700); protected = _python_cache_protected(); usage = _python_cache_usage()
+        present_containers, present_images = set(builder_container_ids()), _python_cache_image_ids()
+        for release, (image_id, _tag, cid) in PYTHON_CACHE_APPROVED.items():
+            for image, identifier, present in ((False, cid, present_containers), (True, image_id, present_images)):
+                try:
+                    need(identifier in present, 'PYTHON_CACHE_ALREADY_ABSENT')
+                    with attempt_lock(root, release):
+                        descriptor, row, refs = _python_cache_capture(root, release, identity, protected, usage, image=image)
+                        if not image: _python_cache_quiescent(root, release, descriptor, refs, modules['cleanup'])
+                        descriptor['inspection'] = _python_cache_save_inspect(root, directory, row, image=image)
+                        (images if image else containers).append(descriptor)
+                except (OSError, ValueError, KeyError, TypeError, tarfile.TarError, EOFError) as error:
+                    skipped.append({'release': release, 'object': 'image' if image else 'container',
+                                    'reason': str(error) if isinstance(error, RetirementError) else type(error).__name__})
+        need(protected == _python_cache_protected(), 'PYTHON_CACHE_PROTECTED_INPUTS_CHANGED')
+    return {'schemaVersion': 1, 'kind': PYTHON_CACHE_KIND + '-plan', 'current': expected_current, 'identity': identity,
+            'containers': containers, 'images': images, 'skipped': skipped, 'protected': protected,
+            'candidateContainerWritableBytes': sum(row['writableBytes'] for row in containers),
+            'candidateImageUniqueBytes': sum(row['uniqueBytes'] for row in images), 'deletionPerformed': False,
+            'cachedInputsPreserved': True, 'businessDataVolumesDirectoriesSourcesReportsPreserved': True,
+            'testsRunByRetirement': False}
+
+
+def apply_python_build_cache(root, prepared, *, plan_sha256, expected_current, identity, modules):
+    validate_context(expected_current); root = Path(root)
+    need(digest_bytes(canonical(prepared)) == plan_sha256 and prepared.get('kind') == PYTHON_CACHE_KIND + '-plan'
+         and prepared.get('current') == expected_current and prepared.get('identity') == identity
+         and prepared.get('deletionPerformed') is False, 'PYTHON_CACHE_EXACT_REVIEWED_PLAN_REQUIRED')
+    for key, identifier in (('containers', 'containerId'), ('images', 'imageId')):
+        rows = prepared.get(key)
+        need(type(rows) is list and len(rows) <= 7 and len({row[identifier] for row in rows}) == len(rows)
+             and all(row.get('release') in PYTHON_CACHE_APPROVED and row[identifier] ==
+                     PYTHON_CACHE_APPROVED[row['release']][2 if key == 'containers' else 0] for row in rows),
+             'PYTHON_CACHE_CLOSED_PLAN_SELECTION_REQUIRED')
+    removed_containers, removed_images, failure = [], [], None
+    journal_path = root / 'inbox' / expected_current['release'] / 'native-python-build-cache-journal.jsonl'
+    before = _python_cache_available(root)
+    with controller_lock(root), os.fdopen(os.open(journal_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600), 'wb') as journal:
+        def record(value):
+            journal.write(canonical(value) + b'\n'); journal.flush(); os.fsync(journal.fileno())
+        record({'phase': 'STARTED', 'planSha256': plan_sha256, 'availableBytes': before})
+        active = None
+        try:
+            protected = _python_cache_protected(); need(protected == prepared['protected'], 'PYTHON_CACHE_PROTECTED_INPUTS_CHANGED')
+            usage = _python_cache_usage()
+            planned_images = {row['imageId'] for row in prepared['images']}
+            need(not planned_images & {row['Image'] for row in _python_cache_references()},
+                 'PYTHON_CACHE_PLANNED_IMAGE_NEW_REFERENCE')
+            for image, candidates in ((False, prepared['containers']), (True, prepared['images'])):
+                for candidate in candidates:
+                    active = candidate['release']
+                    with attempt_lock(root, active):
+                        need(protected == _python_cache_protected(), 'PYTHON_CACHE_PROTECTED_INPUTS_CHANGED')
+                        current, inspected, refs = _python_cache_capture(root, active, identity, protected, usage, image=image)
+                        need(not planned_images & {row['Image'] for row in refs}, 'PYTHON_CACHE_PLANNED_IMAGE_NEW_REFERENCE')
+                        need(current == {key: value for key, value in candidate.items() if key != 'inspection'},
+                             'PYTHON_CACHE_OBJECT_OR_SOURCE_CHANGED_AFTER_PLAN')
+                        reference = candidate['inspection']; expected_name = ('image-' if image else 'container-') + inspected['Id'].removeprefix('sha256:') + '.json'
+                        path = root / 'inbox' / expected_current['release'] / 'native-python-build-cache-inspect' / expected_name
+                        need(reference['path'] == path.relative_to(root).as_posix(), 'PYTHON_CACHE_EXACT_INSPECTION_PATH_REQUIRED')
+                        raw = private_bytes(root, path)
+                        need(len(raw) == reference['bytes'] and digest_bytes(raw) == reference['sha256']
+                             and raw == canonical(inspected), 'PYTHON_CACHE_ORIGINAL_INSPECTION_DRIFT')
+                        if not image: _python_cache_quiescent(root, active, current, refs, modules['cleanup'])
+                        # Journal fsync precedes one last complete object/reference read.
+                        record({'phase': 'IMAGE_REMOVE_STARTED' if image else 'CONTAINER_REMOVE_STARTED',
+                                'release': active, 'inspection': reference})
+                        again, _row, refs = _python_cache_capture(root, active, identity, protected, usage, image=image)
+                        need(again == current and protected == _python_cache_protected(), 'PYTHON_CACHE_FINAL_REINSPECTION_DRIFT')
+                        need(not planned_images & {row['Image'] for row in refs}, 'PYTHON_CACHE_PLANNED_IMAGE_NEW_REFERENCE')
+                        if not image: _python_cache_quiescent(root, active, again, refs, modules['cleanup'])
+                        identifier = current['imageId' if image else 'containerId']
+                        output = builder_docker(*(['image', 'rm', identifier] if image else ['rm', identifier]))
+                        need(identifier not in (_python_cache_image_ids() if image else set(builder_container_ids())),
+                             'PYTHON_CACHE_REMOVAL_NOT_CONFIRMED')
+                        removed = {'release': active, 'imageId' if image else 'containerId': identifier,
+                                   'uniqueBytes' if image else 'writableBytes': current['uniqueBytes' if image else 'writableBytes'],
+                                   'commandOutputSha256': digest_bytes(output)}
+                        (removed_images if image else removed_containers).append(removed)
+                        record({'phase': 'IMAGE_REMOVED' if image else 'CONTAINER_REMOVED', **removed})
+            need(protected == _python_cache_protected(), 'PYTHON_CACHE_PROTECTED_INPUTS_CHANGED')
+        except Exception as error:
+            failure = {'release': active, 'reason': str(error) if isinstance(error, RetirementError) else type(error).__name__}
+            record({'phase': 'FAILED_OR_UNKNOWN', **failure})
+        after = _python_cache_available(root)
+        record({'phase': 'FINISHED', 'availableBytes': after, 'removedContainers': len(removed_containers), 'removedImages': len(removed_images)})
+    return {'schemaVersion': 1, 'kind': PYTHON_CACHE_KIND + '-receipt', 'current': expected_current, 'identity': identity,
+            'status': 'FAILED_OR_UNKNOWN' if failure else 'REMOVED' if removed_containers or removed_images else 'NO_ACTION',
+            'planSha256': plan_sha256, 'removedContainers': removed_containers, 'removedImages': removed_images,
+            'failure': failure, 'skipped': prepared['skipped'], 'availableBytesBefore': before, 'availableBytesAfter': after,
+            'journalSha256': digest_bytes(private_bytes(root, journal_path)), 'cachedInputsPreserved': True,
+            'businessDataVolumesDirectoriesSourcesReportsPreserved': True, 'testsRunByRetirement': False,
+            'automaticResumeAllowed': False}
+
+
 def cli(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--phase', choices=('capture-request', 'plan-builders', 'apply-builders', 'plan', 'apply',
                                            'plan-public-layers', 'apply-public-layers', 'plan-generated-image-archives',
-                                           'apply-generated-image-archives', 'inspect'), required=True)
+                                           'apply-generated-image-archives', 'plan-python-build-cache',
+                                           'apply-python-build-cache', 'inspect'), required=True)
     parser.add_argument('--mode', choices=('Verified', 'Maintenance'), required=True)
     for name in ('root', 'tag', 'commit', 'source-sha256', 'instance-id', 'machine-id', 'current-receipt-sha256'):
         parser.add_argument('--' + name, required=True)
@@ -1330,6 +1744,8 @@ def cli(argv=None):
         public_plan_file = inbox / 'native-public-layer-duplicate-plan.json'; public_receipt_file = inbox / 'native-public-layer-duplicate-receipt.json'
         generated_plan_file = inbox / 'native-generated-public-image-archive-plan.json'
         generated_receipt_file = inbox / 'native-generated-public-image-archive-receipt.json'
+        python_cache_plan_file = inbox / 'native-python-build-cache-plan.json'
+        python_cache_receipt_file = inbox / 'native-python-build-cache-receipt.json'
         if args.phase == 'capture-request':
             raw = private_bytes(root, inbox / 'native-jar-duplicate-local-spec.json')
             request, skipped = capture_request(root, raw, local_spec_sha256=args.local_spec_sha256, expected_current=current, identity=identity)
@@ -1344,10 +1760,38 @@ def cli(argv=None):
                                ('publicLayerPlan', public_plan_file), ('publicLayerReceipt', public_receipt_file),
                                ('publicLayerJournal', inbox / 'native-public-layer-duplicate-journal.jsonl'),
                                ('generatedArchivePlan', generated_plan_file), ('generatedArchiveReceipt', generated_receipt_file),
-                               ('generatedArchiveJournal', inbox / 'native-generated-public-image-archive-journal.jsonl')):
+                               ('generatedArchiveJournal', inbox / 'native-generated-public-image-archive-journal.jsonl'),
+                               ('pythonCachePlan', python_cache_plan_file), ('pythonCacheReceipt', python_cache_receipt_file),
+                               ('pythonCacheJournal', inbox / 'native-python-build-cache-journal.jsonl')):
                 if path.exists():
                     raw = private_bytes(root, path); files[name] = {'file': path.name, 'bytes': len(raw), 'sha256': digest_bytes(raw)}
-            result = {'status': 'INSPECTED', 'current': current, 'identity': identity, 'files': files}
+            originals = []; directory = inbox / 'native-python-build-cache-inspect'
+            if directory.exists():
+                owned_path(root, directory, directory=True)
+                paths = sorted(directory.iterdir())
+                need(len(paths) <= 64, 'BOUNDED_PYTHON_CACHE_ORIGINALS_REQUIRED')
+                for path in paths:
+                    need(re.fullmatch(r'(?:container|image|owner)-[a-f0-9]{64}\.json', path.name),
+                         'FIXED_PYTHON_CACHE_ORIGINAL_NAME_REQUIRED')
+                    raw = private_bytes(root, path)
+                    originals.append({'file': 'native-python-build-cache-inspect/' + path.name,
+                                      'bytes': len(raw), 'sha256': digest_bytes(raw)})
+            result = {'status': 'INSPECTED', 'current': current, 'identity': identity, 'files': files,
+                      'pythonCacheOriginals': originals}
+        elif args.phase in ('plan-python-build-cache', 'apply-python-build-cache'):
+            options = {'expected_current': current, 'identity': identity, 'modules': modules}
+            if args.phase == 'plan-python-build-cache':
+                value = plan_python_build_cache(root, **options)
+                result = {'status': 'PLANNED', 'current': current, 'identity': identity,
+                          'plan': write_new(python_cache_plan_file, value), 'skipped': value['skipped'],
+                          'candidateContainerWritableBytes': value['candidateContainerWritableBytes'],
+                          'candidateImageUniqueBytes': value['candidateImageUniqueBytes']}
+            else:
+                plan_raw = private_bytes(root, python_cache_plan_file)
+                need(digest_bytes(plan_raw) == args.plan_sha256, 'ORIGINAL_PYTHON_CACHE_PLAN_RAW_SHA_DRIFT')
+                value = apply_python_build_cache(root, decode(plan_raw), plan_sha256=args.plan_sha256, **options)
+                result = {'status': value['status'], 'current': current, 'identity': identity,
+                          'receipt': write_new(python_cache_receipt_file, value)}
         elif args.phase in ('plan-generated-image-archives', 'apply-generated-image-archives'):
             raw = private_bytes(root, request_file); approved_request(raw, args.request_sha256, current, identity)
             options = {'request_sha256': args.request_sha256, 'expected_current': current, 'identity': identity,

@@ -234,7 +234,7 @@ $requestSha=$captured.request.sha256
 $builderPlanned=Invoke-NativeJarPhase 'plan-builders' "--request-sha256 '$requestSha'"
 Require-NativeJar ($builderPlanned.status -ceq 'PLANNED' -and $builderPlanned.plan.sha256 -cmatch '^[a-f0-9]{64}$') 'No exact historical builder retirement plan was produced.'
 function Copy-NativeJarEvidence($Observed) {
-    foreach ($entry in @(@('capture','native-jar-duplicate-capture.json'),@('request','native-jar-duplicate-request.json'),@('plan','native-jar-duplicate-plan.json'),@('receipt','native-jar-duplicate-receipt.json'),@('journal','native-jar-duplicate-journal.jsonl'),@('builderPlan','native-builder-retirement-plan.json'),@('builderReceipt','native-builder-retirement-receipt.json'),@('builderJournal','native-builder-retirement-journal.jsonl'),@('publicLayerPlan','native-public-layer-duplicate-plan.json'),@('publicLayerReceipt','native-public-layer-duplicate-receipt.json'),@('publicLayerJournal','native-public-layer-duplicate-journal.jsonl'),@('generatedArchivePlan','native-generated-public-image-archive-plan.json'),@('generatedArchiveReceipt','native-generated-public-image-archive-receipt.json'),@('generatedArchiveJournal','native-generated-public-image-archive-journal.jsonl'))) {
+    foreach ($entry in @(@('capture','native-jar-duplicate-capture.json'),@('request','native-jar-duplicate-request.json'),@('plan','native-jar-duplicate-plan.json'),@('receipt','native-jar-duplicate-receipt.json'),@('journal','native-jar-duplicate-journal.jsonl'),@('builderPlan','native-builder-retirement-plan.json'),@('builderReceipt','native-builder-retirement-receipt.json'),@('builderJournal','native-builder-retirement-journal.jsonl'),@('publicLayerPlan','native-public-layer-duplicate-plan.json'),@('publicLayerReceipt','native-public-layer-duplicate-receipt.json'),@('publicLayerJournal','native-public-layer-duplicate-journal.jsonl'),@('generatedArchivePlan','native-generated-public-image-archive-plan.json'),@('generatedArchiveReceipt','native-generated-public-image-archive-receipt.json'),@('generatedArchiveJournal','native-generated-public-image-archive-journal.jsonl'),@('pythonCachePlan','native-python-build-cache-plan.json'),@('pythonCacheReceipt','native-python-build-cache-receipt.json'),@('pythonCacheJournal','native-python-build-cache-journal.jsonl'))) {
         $property=$Observed.files.PSObject.Properties[$entry[0]]
         if ($null -eq $property) {continue}
         $binding=$property.Value
@@ -243,6 +243,20 @@ function Copy-NativeJarEvidence($Observed) {
         $null=Invoke-NativeJar $scp ($SshOptions+@('-P',$PortText,"${Destination}:$RemoteRoot/inbox/$Tag/$($entry[1])",$destinationFile))
         Assert-NativeJarPath $destinationFile
         Require-NativeJar ((Get-Item -LiteralPath $destinationFile).Length -eq $binding.bytes -and (Get-FileHash -LiteralPath $destinationFile -Algorithm SHA256).Hash.ToLowerInvariant() -ceq $binding.sha256) 'Collected native retirement evidence changed.'
+    }
+    $originals=$Observed.PSObject.Properties['pythonCacheOriginals']
+    if ($null -ne $originals) {
+        $rows=@($originals.Value)
+        Require-NativeJar ($rows.Count -le 64 -and @($rows | ForEach-Object {$_.file} | Select-Object -Unique).Count -eq $rows.Count) 'Python cache originals must be a bounded unique catalog.'
+        foreach ($binding in $rows) {
+            Require-NativeJar ($binding.file -cmatch '^native-python-build-cache-inspect/(container|image|owner)-[a-f0-9]{64}\.json$' -and $binding.bytes -gt 0 -and $binding.bytes -le 2MB -and $binding.sha256 -cmatch '^[a-f0-9]{64}$') 'Python cache original escaped its fixed bounded catalog.'
+            $destinationFile=Join-Path $workspace ('artifacts/'+$binding.file)
+            Require-NativeJar (-not (Test-Path -LiteralPath $destinationFile)) 'Existing Python cache original cannot be overwritten.'
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $destinationFile) | Out-Null
+            $null=Invoke-NativeJar $scp ($SshOptions+@('-P',$PortText,"${Destination}:$RemoteRoot/inbox/$Tag/$($binding.file)",$destinationFile))
+            Assert-NativeJarPath $destinationFile
+            Require-NativeJar ((Get-Item -LiteralPath $destinationFile).Length -eq $binding.bytes -and (Get-FileHash -LiteralPath $destinationFile -Algorithm SHA256).Hash.ToLowerInvariant() -ceq $binding.sha256) 'Collected Python cache original changed.'
+        }
     }
 }
 $builderFailed=$false
@@ -276,6 +290,14 @@ if (-not $applyFailed -and -not $publicLayerFailed) {
         $generatedArchiveResult=Invoke-NativeJarPhase 'apply-generated-image-archives' "--request-sha256 '$requestSha' --plan-sha256 '$($generatedArchivePlanned.plan.sha256)'"
     } catch {$generatedArchiveFailed=$true}
 }
+$pythonCacheRequested=$Mode -ceq 'Maintenance'; $pythonCacheFailed=$false; $pythonCachePlanned=$null
+if ($pythonCacheRequested -and -not $applyFailed -and -not $publicLayerFailed -and -not $generatedArchiveFailed) {
+    try {
+        $pythonCachePlanned=Invoke-NativeJarPhase 'plan-python-build-cache'
+        Require-NativeJar ($pythonCachePlanned.status -ceq 'PLANNED' -and $pythonCachePlanned.plan.sha256 -cmatch '^[a-f0-9]{64}$') 'No exact historical Python cache retirement plan was produced.'
+        $pythonCacheResult=Invoke-NativeJarPhase 'apply-python-build-cache' "--plan-sha256 '$($pythonCachePlanned.plan.sha256)'"
+    } catch {$pythonCacheFailed=$true}
+}
 $observed=Invoke-NativeJarPhase 'inspect'
 Copy-NativeJarEvidence $observed
 $builderReceiptFile=Join-Path $workspace 'artifacts/native-builder-retirement-receipt.json'
@@ -294,6 +316,13 @@ $generatedArchiveReceiptFile=Join-Path $workspace 'artifacts/native-generated-pu
 Require-NativeJar (-not $generatedArchiveFailed -and $null -ne $generatedArchivePlanned -and (Test-Path -LiteralPath $generatedArchiveReceiptFile -PathType Leaf)) 'Generated public image cache retirement failed or is unknown; original controls were collected.'
 $generatedArchiveReceipt=Get-Content -LiteralPath $generatedArchiveReceiptFile -Raw -Encoding utf8 | ConvertFrom-Json -Depth 24
 Require-NativeJar ($generatedArchiveReceipt.status -cin @('REMOVED','NO_ACTION') -and $generatedArchiveReceipt.current.release -ceq $Tag -and $generatedArchiveReceipt.current.commit -ceq $Commit -and $generatedArchiveReceipt.current.sourceSha256 -ceq $SourceSha256 -and $generatedArchiveReceipt.identity.instanceId -ceq $instance -and $generatedArchiveReceipt.identity.machineId -ceq $machine -and $generatedArchiveReceipt.requestSha256 -ceq $requestSha -and $generatedArchiveReceipt.planSha256 -ceq $generatedArchivePlanned.plan.sha256 -and $generatedArchiveReceipt.publicInputsDirectoriesImagesAndBusinessDataPreserved -eq $true -and $generatedArchiveReceipt.sameBytesAsSeedClaimed -eq $false -and $generatedArchiveReceipt.testsRunByRetirement -eq $false) 'Generated cache retirement lacks exact source, host, plan or preserved public inputs.'
+$pythonCacheReceipt=$null
+if ($pythonCacheRequested) {
+    $pythonCacheReceiptFile=Join-Path $workspace 'artifacts/native-python-build-cache-receipt.json'
+    Require-NativeJar (-not $pythonCacheFailed -and $null -ne $pythonCachePlanned -and (Test-Path -LiteralPath $pythonCacheReceiptFile -PathType Leaf)) 'Historical Python cache retirement failed or is unknown; original controls were collected.'
+    $pythonCacheReceipt=Get-Content -LiteralPath $pythonCacheReceiptFile -Raw -Encoding utf8 | ConvertFrom-Json -Depth 24
+    Require-NativeJar ($pythonCacheReceipt.kind -ceq 'doorhandle-historical-python-build-cache-receipt' -and $pythonCacheReceipt.status -cin @('REMOVED','NO_ACTION') -and $pythonCacheReceipt.current.release -ceq $Tag -and $pythonCacheReceipt.current.commit -ceq $Commit -and $pythonCacheReceipt.current.sourceSha256 -ceq $SourceSha256 -and $pythonCacheReceipt.identity.instanceId -ceq $instance -and $pythonCacheReceipt.identity.machineId -ceq $machine -and $pythonCacheReceipt.planSha256 -ceq $pythonCachePlanned.plan.sha256 -and $pythonCacheReceipt.cachedInputsPreserved -is [bool] -and $pythonCacheReceipt.cachedInputsPreserved -and $pythonCacheReceipt.businessDataVolumesDirectoriesSourcesReportsPreserved -is [bool] -and $pythonCacheReceipt.businessDataVolumesDirectoriesSourcesReportsPreserved -and $pythonCacheReceipt.testsRunByRetirement -is [bool] -and -not $pythonCacheReceipt.testsRunByRetirement) 'Historical Python cache retirement lacks exact source, host, plan or protected-data evidence.'
+}
 $summary=[ordered]@{schemaVersion=1;kind='doorhandle-failed-native-jar-duplicate-ci';current=$spec.current;identity=$spec.identity;status=$receipt.status;requestSha256=$requestSha;planSha256=$planned.plan.sha256;deletedFiles=@($receipt.deleted).Count;candidateAllocatedBytes=$planned.candidateAllocatedBytes;localControlCustody=$local.custody;localSkipped=$local.skipped;captureSkipped=$captured.skipped;planSkipped=$planned.skipped;builderStatus=$builderReceipt.status;retiredBuilders=@($builderReceipt.removed).Count;retiredMysqlObjects=@($builderReceipt.retiredMysqlObjects).Count;mysqlDataDirectoriesPreserved=$true;builderSkipped=$builderReceipt.skipped;builderPlanSha256=$builderPlanned.plan.sha256;availableBytesBefore=$receipt.availableBytesBefore;availableBytesAfter=$receipt.availableBytesAfter;inboxKeepersPreserved=$true;imagesPreserved=$true;volumesPreserved=$true;testsRunByRetirement=$false}
 $summary.publicLayerStatus=$publicLayerReceipt.status
 $summary.publicLayerDeletedFiles=@($publicLayerReceipt.deleted).Count
@@ -311,5 +340,20 @@ $summary.generatedArchivePlanSha256=$generatedArchivePlanned.plan.sha256
 $summary.generatedArchiveSkipped=$generatedArchiveReceipt.skipped
 $summary.availableBytesAfter=$generatedArchiveReceipt.availableBytesAfter
 $summary.status=if ($receipt.status -ceq 'REMOVED' -or $publicLayerReceipt.status -ceq 'REMOVED' -or $generatedArchiveReceipt.status -ceq 'REMOVED') {'REMOVED'} else {'NO_ACTION'}
+if ($null -ne $pythonCacheReceipt) {
+    $summary.pythonCacheStatus=$pythonCacheReceipt.status
+    $summary.pythonCacheRemovedContainers=@($pythonCacheReceipt.removedContainers).Count
+    $summary.pythonCacheRemovedImages=@($pythonCacheReceipt.removedImages).Count
+    $summary.pythonCacheCandidateContainerWritableBytes=$pythonCachePlanned.candidateContainerWritableBytes
+    $summary.pythonCacheCandidateImageUniqueBytes=$pythonCachePlanned.candidateImageUniqueBytes
+    $summary.pythonCachePlanSha256=$pythonCachePlanned.plan.sha256
+    $summary.pythonCacheSkipped=$pythonCacheReceipt.skipped
+    $summary.pythonCacheAvailableBytesBefore=$pythonCacheReceipt.availableBytesBefore
+    $summary.availableBytesAfter=$pythonCacheReceipt.availableBytesAfter
+    $summary.imagesPreserved=@($pythonCacheReceipt.removedImages).Count -eq 0
+    $summary.cachedInputsPreserved=$true
+    $summary.businessDataVolumesDirectoriesSourcesReportsPreserved=$true
+    if ($pythonCacheReceipt.status -ceq 'REMOVED') {$summary.status='REMOVED'}
+}
 $summary | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $workspace 'artifacts/native-jar-duplicate-ci.json') -Encoding utf8
 Write-Output ($summary | ConvertTo-Json -Depth 12 -Compress)
