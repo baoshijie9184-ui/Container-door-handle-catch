@@ -33,10 +33,34 @@ MIB = 1024 ** 2
 MEMORY = 2 * 1024 ** 3
 TIMEOUT = 360
 LABEL = 'io.doorhandle.control-preflight'
+REFUSAL_CODES = frozenset({
+    'BOUNDED_CONTROL_XML_REQUIRED', 'CANONICAL_CONTROL_PATH_REQUIRED',
+    'CONTROL_CONTAINER_DID_NOT_STOP', 'CONTROL_CONTAINER_ID_REQUIRED',
+    'CONTROL_CONTAINER_MOUNTS_DIFFER', 'CONTROL_CONTAINER_OWNER_OR_SANDBOX_DIFFERS',
+    'CONTROL_CONTAINER_REMOVAL_UNKNOWN', 'CONTROL_CREATE_OUTCOME_UNKNOWN',
+    'CONTROL_DOCKER_OPERATION_FAILED', 'CONTROL_ECS_UID_1000_REQUIRED', 'CONTROL_FIXED_CONTEXT_REQUIRED',
+    'CONTROL_HELPER_CLOSURE_DIFFERS', 'CONTROL_HELPER_SHA_DIFFERS', 'CONTROL_IMMUTABLE_PYTHON_IMAGE_REQUIRED',
+    'CONTROL_LINK_REJECTED', 'CONTROL_LOG_BOUND_OR_READ_FAILED', 'CONTROL_OWNER_TYPE_OR_BOUND_DIFFERS',
+    'CONTROL_PYTEST_FAILED_OR_OOM', 'CONTROL_PYTHON_IMAGE_DIFFERS', 'CONTROL_RECEIPT_BOUND_EXCEEDED',
+    'CONTROL_REQUIRED_TEST_PROFILE_INCOMPLETE', 'CONTROL_SCRATCH_CLEANUP_UNKNOWN',
+    'CONTROL_SCRATCH_IDENTITY_CHANGED', 'CONTROL_SOURCE_AND_SCRATCH_RESERVE_REQUIRED',
+    'CONTROL_SOURCE_CHANGED_DURING_ADMISSION', 'CONTROL_SOURCE_COMMIT_DIFFERS',
+    'CONTROL_SOURCE_EXPANSION_EXCEEDED', 'CONTROL_SOURCE_MEMBER_BOUND_EXCEEDED', 'CONTROL_SOURCE_SHA_DIFFERS',
+    'CONTROL_TESTS_FAILED_SKIPPED_OR_INCOMPLETE', 'CONTROL_TEST_DISK_RESERVE_EXHAUSTED',
+    'CONTROL_TEST_EXIT_UNKNOWN', 'CONTROL_TEST_TIMEOUT', 'CONTROL_TOOL_MANIFEST_SHA_DIFFERS',
+    'CONTROL_XML_UNEXPECTED_MODULE', 'EXACT_CONTROL_CONTAINER_REQUIRED',
+    'FIXED_CONTROL_EXECUTOR_REQUIRED', 'FRESH_CONTROL_ATTEMPT_REQUIRED',
+})
 
 
 def need(value, code):
     if not value: raise ValueError(code)
+
+
+def safe_failure(error):
+    code = error.args[0] if isinstance(error, ValueError) and len(error.args) == 1 else None
+    return {'errorType': type(error).__name__,
+            'code': code if type(code) is str and code in REFUSAL_CODES else 'CONTROL_EXECUTION_FAILED'}
 
 
 def encoded(value):
@@ -224,8 +248,7 @@ def run(args):
         receipt['modules'] = tally_report(output / 'python.xml', minimum)
     except Exception as caught:
         error = caught
-        receipt['failure'] = {'errorType': type(caught).__name__, 'code': str(caught) if isinstance(caught, ValueError)
-                              and re.fullmatch(r'[A-Z][A-Z0-9_]{0,99}', str(caught)) else 'CONTROL_EXECUTION_FAILED'}
+        receipt['failure'] = safe_failure(caught)
     finally:
         for event in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT): signal.signal(event, signal.SIG_IGN)
         cleanup_errors = []
@@ -290,7 +313,7 @@ def main():
             'reports': receipt['reports'], 'fullProjectVerified': False}))
         return 0 if receipt['status'] == 'CONTROL_PREFLIGHT_PASS' else 2
     except Exception as error:
-        print(json.dumps({'status': 'CONTROL_PREFLIGHT_REJECTED', 'errorType': type(error).__name__}))
+        print(json.dumps({'status': 'CONTROL_PREFLIGHT_REJECTED', **safe_failure(error)}))
         return 2
 
 

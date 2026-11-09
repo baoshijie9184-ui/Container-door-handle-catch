@@ -415,7 +415,7 @@ pipeline {
             script {
                 if (params.ACTION == 'reclaim-build-outputs') {
                     if (env.CI_ARTIFACTS_READY == 'true') {
-                        archiveArtifacts artifacts: 'artifacts/source.tar.gz,artifacts/release.json,artifacts/build-cleanup-plan.json,artifacts/build-cleanup-receipt.json,artifacts/build-cleanup-result.json', allowEmptyArchive: currentBuild.currentResult != 'SUCCESS', fingerprint: true
+                        archiveArtifacts artifacts: 'artifacts/source.tar.gz,artifacts/release.json,artifacts/build-cleanup-plan.json,artifacts/build-cleanup-receipt.json,artifacts/build-cleanup-result.json,artifacts/native-jar-duplicate-*.json,artifacts/native-jar-duplicate-*.jsonl,artifacts/native-builder-retirement-*.json,artifacts/native-builder-retirement-*.jsonl,artifacts/native-public-layer-duplicate-*.json,artifacts/native-public-layer-duplicate-*.jsonl', allowEmptyArchive: currentBuild.currentResult != 'SUCCESS', fingerprint: true
                     }
                 } else {
                     // A cutover can fail after runtime acceptance and its owned

@@ -340,6 +340,7 @@ if ($Action -eq 'Preflight') {
             $name=[IO.Path]::GetFileName($relative)
             Invoke-Checked 'scp.exe' ($sshOptions+@('-P',$portText,$inputFile,"${destination}:$remoteInbox/$name"))
         }
+        Invoke-Checked 'ssh.exe' ($sshOptions+@('-p',$portText,$destination,"chmod 600 '$remoteInbox/control-preflight.py' '$remoteInbox/verify-remote.py'"))
         $helper="$remoteInbox/control-preflight.py"
         $fixedHelper=Get-PinnedSourceFile 'script/jenkins/control-preflight.py'
         $helperSha=(Get-FileHash -LiteralPath $fixedHelper -Algorithm SHA256).Hash.ToLowerInvariant()
