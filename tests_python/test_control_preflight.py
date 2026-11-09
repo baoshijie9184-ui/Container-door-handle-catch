@@ -1,8 +1,10 @@
 """Synthetic preflight controls; execution belongs to Jenkins on ECS only."""
+import ast
 import copy
 import importlib.util
 import json
 from pathlib import Path
+import re
 import sys
 from types import SimpleNamespace
 import xml.etree.ElementTree as ET
@@ -33,6 +35,12 @@ def test_current_fixed_profile_contains_every_focused_module():
         'test_control_preflight',
     }
     assert minimum['test_public_buildkit_layer_retirement'] >= 34
+    controller = (ROOT / 'script/jenkins/pipeline.ps1').read_text(encoding='utf8')
+    declaration = re.search(r'(?m)^\s*\$expected=@\(([^\r\n]+)\)\r?$', controller)
+    assert declaration, 'Controller must declare its exact preflight module contract'
+    controller_modules = ast.literal_eval('(' + declaration.group(1) + ')')
+    assert len(controller_modules) == len(set(controller_modules)) and set(controller_modules) == set(minimum), \
+        'Controller and ECS must agree on every preflight module before fixture preparation'
     assert minimum['test_control_preflight'] >= 8
     assert all(type(value) is int and value > 0 for value in minimum.values())
     for mutation in ('missing', 'boolean', 'zero'):

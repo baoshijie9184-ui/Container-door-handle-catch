@@ -1,5 +1,17 @@
 # ECS 隔离验收的资源预算
 
+## 2026-11-10：70 GiB 原盘预留调整已核验
+
+原盘容量仍为 70 GiB。#183 的 Java 原 XML 为 817 通过、614 条件跳过，但工具监测最低可用 `2,243,117,056` 字节，低于 `2,415,919,104` 字节门限，整轮失败；Python、双前端及迁移未执行。原件保全、工具停止后已在流水线外实际节省停机。随后先完成一次原盘操作系统容量维护，再启动 Jenkins 验证；没有扩盘或新建快照。
+
+只读核验确认 `/dev/vda` 为原 70 GiB 盘，序列号 `2zeieuov2aum486inund`；根分区 `/dev/vda3` 的 ext4 UUID 为 `e7bc2351-b570-4581-b2d8-14e69f9c75d0`，PARTUUID 为 `9b694bad-5bbb-4485-860f-e5544ae47410`，块大小 4096 字节。超级块 root 保留量为 781,543 blocks，内核另保留 4,096 clusters；两项之和与 `statvfs` 的 free/available 差值精确一致。不能只按该差值推定全部是可调整的超级块保留量。
+
+在 Jenkins 已终态且无队列、原盘身份再次匹配后，仅将 root 专用保留量设置为 262,144 blocks，即 **1 GiB**，并重新读取设备、分区、超级块和可用字节。实际可用由 `2,227,544,064` 增至 `4,355,002,368` 字节，增加 **2,127,458,304 字节，约 1.981 GiB**；云盘、分区及文件系统块数未变，没有删除文件，原 `2.25 GiB` 工具门不变。这是可逆的 OS 容量配置调整，不增加云盘容量或存储费用。root 及特权 Docker 进程仍可能使用该预留，不能把 1 GiB 当作所有写入都无法触及的隔离区。
+
+原始 inspect/apply stdout、超级块原文、stderr、已审定脚本 SHA 及回退值保存在忽略目录 `work/jenkins/data-residency-20261107/root-reserve-{before,after}-private.json` 和 `root-reserve-capacity-plan.json`；一次性 helper 为同目录 `adjust-70gib-root-reserve.py`。回退命令为 `sudo -n /usr/sbin/tune2fs -r 781543 /dev/vda3`，执行前仍须核设备及回退后的可用余量，已被使用的空间不会自动释放。操作语义见 [e2fsprogs 官方手册](https://raw.githubusercontent.com/tytso/e2fsprogs/v1.47.0/misc/tune2fs.8.in)和 [ext4 内部预留说明](https://www.kernel.org/doc/html/latest/admin-guide/ext4.html)。
+
+#184 的 18 模块、1,385 项控制测试随后全部通过，零失败/错误/跳过，工具及 scratch 清理已确认；Jenkins 因控制器名单仍是 17 模块而拒绝回执，原终态保持 FAILURE。补齐名单并增加两端一致性回归后仍须重新执行真实预检。接下来先按固定源码 Jenkins 维护原 16 个失败未发布 JAR，再核实际释放量；该约 5.66 GiB 仍是历史逻辑候选，不能提前计入空间。完整整库及 runtime 峰值仍须实测。下面 80 GiB 收费方案保留为历史备选，尚未批准或执行，不作为已购买资源。
+
 ## 2026-11-10：70 GiB 到 80 GiB 待审批方案
 
 本节仅为方案，尚未创建新快照或扩盘；此前授权上限为 70 GiB。#179 已完整通过 source 验证，并将 86 文件、28,695,377 字节在 ECS 独立恢复。实例已于北京时间 04:06 从流水线外实际回读 `Stopped / StopCharging`，Jenkins 保持运行；正式库仍为 131 表，整库迁移和正式切库未完成。
