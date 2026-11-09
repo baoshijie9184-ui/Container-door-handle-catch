@@ -19,8 +19,8 @@ function Assert-NativeJarPath([string]$Path) {
         $item=if ($item -is [IO.FileInfo]) {$item.Directory} else {$item.Parent}
     }
 }
-function Invoke-NativeJar([string]$Executable,[string[]]$Arguments) {
-    $lines=@(& $Executable @Arguments)
+function Invoke-NativeJar([string]$Executable,[string[]]$Arguments,[string]$InputText) {
+    $lines=@(if ($PSBoundParameters.ContainsKey('InputText')) {$InputText | & $Executable @Arguments} else {& $Executable @Arguments})
     if ($LASTEXITCODE -ne 0) { throw 'Native JAR retirement admission failed; original artifacts are retained.' }
     return $lines
 }
@@ -48,7 +48,7 @@ Require-NativeJar ([IO.Path]::IsPathFullyQualified($RetainedControlRoot) -and [I
 
 # Stdlib byte/metadata inspection only. No project module, DB, application or
 # test is imported or run on the workstation. D evidence is pinned to original
-# preservation manifests reviewed for these thirteen exact historical attempts.
+# preservation manifests reviewed for these sixteen exact historical attempts.
 $reader=@'
 import gzip,hashlib,json,os,stat,sys,tarfile
 from pathlib import Path
@@ -80,7 +80,10 @@ approved=[(117,'8c898996cc28ce30fd6531710511f833cccb4864','e1eec611a0dcbb93158d8
  (145,'dd85b09748a996f68e909fa54bc9412110e78134','372c5f0713c02051be0f5c9bcd2179e805a39e1c0aea4d96a3e1aee88fe9dac4'),
  (154,'38293aa306b368964bbc2a7f66bb6a6b5c414016','ba9dccb622fd030ae877b861ac53b1006b6021ecfcd7f247f4d51d30b72cd76e'),
  (156,'9e1927880595e78c778288e45423bdd27bd818a8','f1acdd4775932c06ca2bcb0aa548b6074083ca80d45f83d5d300ef924158640c'),
- (160,'9d011d9d5ed8ef1b6e5526c0964ee5f405ed421b','4b9e9eea10bfe6badb2d3a4cbaeb10e99ed1aa7ff6e54b1f59ed6c43f2dd6ff3')]
+ (160,'9d011d9d5ed8ef1b6e5526c0964ee5f405ed421b','4b9e9eea10bfe6badb2d3a4cbaeb10e99ed1aa7ff6e54b1f59ed6c43f2dd6ff3'),
+ (162,'97844cecb2f45a0e469cda24ceaafdc6df1fee1a','877ff27ea77acc13c3b3c439148684abc959487da017c1fade84e2b24b2ab018'),
+ (166,'a3c084e1cf568206baca89908542537ad825fef8','1cf175ceb8f1dee1e6164a112e400f3427d9bffd55d1632ef7398a58cbd44553'),
+ (168,'a40c779d03a43b894ead5569b8eb26ee7dc22a2e','cc986ad9ae3483d8663e811b73e0e2d53d7bdc1e886c4904071b5f996aa993ce')]
 helpers={};wanted={'script/jenkins/retire-failed-native-jar-duplicates.py','script/jenkins/cleanup-ecs-builds.py','script/jenkins/verify-remote.py','script/docker/compact-build-resources.py'}
 class Bounded:
  def __init__(self,s):self.s,self.n=s,0
@@ -154,7 +157,9 @@ from pathlib import Path
 from urllib.request import ProxyHandler,Request,build_opener
 def need(v):
  if not v:raise ValueError('Native JAR fixed-source bootstrap refused')
-data=json.loads(base64.b64decode(sys.argv[1]));root=Path(data['root']);inbox=root/'inbox'/data['tag']
+encoded=sys.stdin.buffer.read(131073).strip() if sys.argv[1]=='--context-stdin' else sys.argv[1].encode('ascii')
+need(0<len(encoded)<=131072)
+data=json.loads(base64.b64decode(encoded,validate=True));root=Path(data['root']);inbox=root/'inbox'/data['tag']
 need(sys.platform=='linux' and os.getuid()==os.geteuid()==1000 and Path('/etc/machine-id').read_text().strip()==data['machineId'])
 opener=build_opener(ProxyHandler({}));base='http://100.100.100.200/latest/'
 with opener.open(Request(base+'api/token',data=b'',method='PUT',headers={'X-aliyun-ecs-metadata-token-ttl-seconds':'60'}),timeout=4) as r:token=r.read(4096).decode()
@@ -219,7 +224,8 @@ foreach ($upload in $uploads) {
 }
 $context.uploadIdentities=$prepared.uploadIdentities
 $finalContext=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($context | ConvertTo-Json -Depth 12 -Compress)))
-$finalized=(Invoke-NativeJar $ssh ($SshOptions+@('-p',$PortText,$Destination,"python3 -I -B -c '$launcher' '$finalContext' finish")) | Select-Object -Last 1) | ConvertFrom-Json
+Require-NativeJar ($finalContext.Length -le 131072) 'The fixed final control context exceeds its bounded stdin transport.'
+$finalized=(Invoke-NativeJar $ssh ($SshOptions+@('-p',$PortText,$Destination,"python3 -I -B -c '$launcher' --context-stdin finish")) -InputText $finalContext | Select-Object -Last 1) | ConvertFrom-Json
 Require-NativeJar ($finalized.status -ceq 'FINALIZED' -and $finalized.release -ceq $Tag) 'The original uploaded control files changed or lost their private identity.'
 $helper="$RemoteRoot/inbox/$Tag/retire-failed-native-jar-duplicates.py"
 $helperSha=$local.helpers.'script/jenkins/retire-failed-native-jar-duplicates.py'.sha256

@@ -5,8 +5,8 @@ import com.ruanzhu.doorhandle.framework.persistence.JdbcOwnerLock;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
-import org.springframework.dao.DataIntegrityViolationException;
 import static org.assertj.core.api.Assertions.*;
+import static com.ruanzhu.doorhandle.module.ai.EcsIsolatedMysql.assertCheckViolation;
 
 /** Executes the same concurrency contracts on MySQL 8.4 after the existing ECS fixture guard. */
 @EnabledIfSystemProperty(named = "agent.journal.mysql", matches = "true")
@@ -17,12 +17,9 @@ class JdbcOwnerLockMySqlTest extends JdbcOwnerLockTest {
     }
 
     @Test void persistedCoordinationStateEnforcesCounterRevisionAndObjectSettings() {
-        assertThatThrownBy(() -> jdbc.update("INSERT INTO runtime_state(namespace,owner_id,revision) VALUES('WORKSPACE',?,-1)", owner))
-                .isInstanceOf(DataIntegrityViolationException.class);
-        assertThatThrownBy(() -> jdbc.update("INSERT INTO runtime_state(namespace,owner_id,counter_value) VALUES('WORKSPACE',?,-1)", owner))
-                .isInstanceOf(DataIntegrityViolationException.class);
-        assertThatThrownBy(() -> jdbc.update("INSERT INTO runtime_state(namespace,owner_id,payload_json) VALUES('WORKSPACE',?,'[]')", owner))
-                .isInstanceOf(DataIntegrityViolationException.class);
+        assertCheckViolation(() -> jdbc.update("INSERT INTO runtime_state(namespace,owner_id,revision) VALUES('WORKSPACE',?,-1)", owner), "ck_runtime_revision");
+        assertCheckViolation(() -> jdbc.update("INSERT INTO runtime_state(namespace,owner_id,counter_value) VALUES('WORKSPACE',?,-1)", owner), "ck_runtime_counter");
+        assertCheckViolation(() -> jdbc.update("INSERT INTO runtime_state(namespace,owner_id,payload_json) VALUES('WORKSPACE',?,'[]')", owner), "ck_runtime_payload");
         jdbc.update("INSERT INTO runtime_state(namespace,owner_id,payload_json) VALUES('WORKSPACE',?,'{}')", owner);
         assertThat(jdbc.queryForObject("SELECT JSON_TYPE(payload_json) FROM runtime_state WHERE namespace='WORKSPACE' AND owner_id=? AND scope_key=''", String.class, owner))
                 .isEqualTo("OBJECT");

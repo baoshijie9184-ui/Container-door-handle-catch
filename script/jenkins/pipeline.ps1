@@ -978,15 +978,79 @@ if ($Action -in @('CompactCutover', 'VerifyRuntime', 'CleanupRuntime')) {
     $jarBytes = (Get-Item -LiteralPath artifacts/application.jar).Length
     if ($package.applicationJarSha256 -ne $jarSha) { throw 'Candidate image must contain the fixed-commit application artifact.' }
     $artifactPlan = [ordered]@{ schema=1; kind='doorhandle-compact-fixture-artifacts'; release=$tag; commit=$commit; sourceSha256=$sha; applicationJarSha256=$jarSha; applicationJarBytes=$jarBytes }
+    $reuseFixtureArtifacts = $Action -ceq 'VerifyRuntime' -and $env:CI_FIXTURES_PREPARED -ceq 'true'
     if (Test-Path -LiteralPath artifacts/fixture-build-artifacts.json) {
         $existingPlan = Get-Content -LiteralPath artifacts/fixture-build-artifacts.json -Raw | ConvertFrom-Json
         foreach ($key in $artifactPlan.Keys) { if ($existingPlan.$key -ne $artifactPlan[$key]) { throw 'Candidate and fixture artifact plans differ.' } }
+        if ($reuseFixtureArtifacts) {
+            if (@($existingPlan.PSObject.Properties).Count -ne $artifactPlan.Count) { throw 'Prepared fixture artifact plan fields differ.' }
+            foreach ($key in $artifactPlan.Keys) {
+                $validType = if ($artifactPlan[$key] -is [string]) { $existingPlan.$key -is [string] } else { $existingPlan.$key -is [int] -or $existingPlan.$key -is [long] }
+                if (-not $validType -or $existingPlan.$key -cne $artifactPlan[$key]) { throw 'Prepared fixture artifact plan values differ.' }
+            }
+        }
     } else {
+        if ($reuseFixtureArtifacts) { throw 'Prepared fixture artifact reuse requires its original local artifact plan.' }
         $artifactPlan | ConvertTo-Json | Set-Content -LiteralPath artifacts/fixture-build-artifacts.json -Encoding utf8
     }
-    Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, 'artifacts/application.jar', "${destination}:$remoteInbox/application.jar"))
-    Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, 'artifacts/fixture-build-artifacts.json', "${destination}:$remoteInbox/build-artifacts.json"))
-    Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "chmod 600 '$remoteInbox/application.jar' '$remoteInbox/build-artifacts.json'"))
+    $transport = [ordered]@{ schema=1; kind='doorhandle-runtime-artifact-transport'; status='FAILED'; release=$tag; commit=$commit; sourceSha256=$sha;
+        applicationJarSha256=$jarSha; applicationJarBytes=$jarBytes; reusedPreparedFixture=$reuseFixtureArtifacts; applicationJarTransferredBytes=[long]0 }
+    $transport | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath artifacts/runtime-artifact-transport.json -Encoding utf8
+    if ($reuseFixtureArtifacts) {
+        $expectedPlan = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($artifactPlan | ConvertTo-Json -Compress)))
+        $reuseProbe = @'
+import base64,contextlib,hashlib,json,os,stat,sys
+from pathlib import Path
+inbox=Path(sys.argv[1]);expected=json.loads(base64.b64decode(sys.argv[2],validate=True))
+if inbox.resolve(strict=True)!=inbox or Path('/etc/machine-id').read_text().strip()!=sys.argv[3]: raise ValueError('FIXED_ARTIFACT_HOST_PATH_REQUIRED')
+def unique(pairs):
+    result={}
+    for key,value in pairs:
+        if key in result: raise ValueError('DUPLICATE_ARTIFACT_PLAN_FIELD')
+        result[key]=value
+    return result
+def identity(value):
+    return tuple(getattr(value,key) for key in ('st_dev','st_ino','st_mode','st_uid','st_gid','st_nlink','st_size','st_mtime_ns','st_ctime_ns'))
+@contextlib.contextmanager
+def owned(path,maximum):
+    if path.resolve(strict=True)!=path: raise ValueError('CANONICAL_ARTIFACT_REQUIRED')
+    stream=os.fdopen(os.open(path,os.O_RDONLY|os.O_NOFOLLOW),'rb');info=os.fstat(stream.fileno())
+    if not(stat.S_ISREG(info.st_mode) and info.st_uid==os.getuid() and info.st_nlink==1 and not info.st_mode&0o077 and 0<info.st_size<=maximum):
+        stream.close();raise ValueError('PRIVATE_OWNED_SINGLE_LINK_ARTIFACT_REQUIRED')
+    try: yield stream,info
+    finally: stream.close()
+plan_path=inbox/'build-artifacts.json';jar_path=inbox/'application.jar'
+with owned(plan_path,65536) as (plan_stream,plan_before),owned(jar_path,512*1024**2) as (jar_stream,jar_before):
+    raw=plan_stream.read(65537);plan=json.loads(raw,object_pairs_hook=unique)
+    if type(plan) is not dict or plan!=expected or any(type(plan[key]) is not type(expected[key]) for key in expected): raise ValueError('PREPARED_ARTIFACT_PLAN_DIFFERS')
+    if jar_before.st_size!=expected['applicationJarBytes']: raise ValueError('PREPARED_JAR_SIZE_DIFFERS')
+    digest=hashlib.sha256();remaining=jar_before.st_size
+    while remaining:
+        block=jar_stream.read(min(remaining,1024*1024))
+        if not block: raise ValueError('PREPARED_JAR_TRUNCATED')
+        digest.update(block);remaining-=len(block)
+    if jar_stream.read(1): raise ValueError('PREPARED_JAR_GREW')
+    if digest.hexdigest()!=expected['applicationJarSha256']: raise ValueError('PREPARED_JAR_SHA_DIFFERS')
+    for path,stream,before in ((plan_path,plan_stream,plan_before),(jar_path,jar_stream,jar_before)):
+        if identity(before)!=identity(os.fstat(stream.fileno())) or identity(before)!=identity(path.lstat()): raise ValueError('PREPARED_ARTIFACT_CHANGED_DURING_READ')
+print(json.dumps({'status':'REUSED_VERIFIED','release':expected['release'],'commit':expected['commit'],'sourceSha256':expected['sourceSha256'],
+    'applicationJarSha256':digest.hexdigest(),'applicationJarBytes':jar_before.st_size,'artifactPlanSha256':hashlib.sha256(raw).hexdigest(),
+    'identity':{'instanceId':sys.argv[4],'machineId':sys.argv[3],'executionLocation':'ECS'}},sort_keys=True))
+'@
+        $reuseArguments = $sshOptions + @('-p', $portText, $destination, "python3 -I -B - '$remoteInbox' '$expectedPlan' '$machine' '$instance'")
+        $reuseOutput = $reuseProbe | & 'ssh.exe' @reuseArguments
+        if ($LASTEXITCODE -ne 0) { throw 'Prepared fixture artifact reuse failed; existing ECS files were not overwritten.' }
+        $reused = ($reuseOutput | Select-Object -Last 1) | ConvertFrom-Json
+        foreach ($key in @('release','commit','sourceSha256','applicationJarSha256','applicationJarBytes')) { if ($reused.$key -cne $artifactPlan[$key]) { throw 'Prepared fixture artifact reuse response differs.' } }
+        if ($reused.status -cne 'REUSED_VERIFIED' -or $reused.artifactPlanSha256 -notmatch '^[a-f0-9]{64}$' -or $reused.identity.instanceId -cne $instance -or $reused.identity.machineId -cne $machine -or $reused.identity.executionLocation -cne 'ECS') { throw 'Prepared fixture artifact reuse lacks this build and host evidence.' }
+        $transport.status='REUSED_VERIFIED';$transport['artifactPlanSha256']=$reused.artifactPlanSha256
+    } else {
+        Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, 'artifacts/application.jar', "${destination}:$remoteInbox/application.jar"))
+        Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, 'artifacts/fixture-build-artifacts.json', "${destination}:$remoteInbox/build-artifacts.json"))
+        Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "chmod 600 '$remoteInbox/application.jar' '$remoteInbox/build-artifacts.json'"))
+        $transport.status='UPLOADED';$transport.applicationJarTransferredBytes=[long]$jarBytes
+    }
+    $transport | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath artifacts/runtime-artifact-transport.json -Encoding utf8
     foreach ($file in @('memory-compat.py', 'model-secrets.py', 'assignment-compat.py', 'mcp-compat.py', 'mcp-runtime.py', 'compact-schema-guard.py', 'compact-cutover.py')) {
         Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, (Get-PinnedSourceFile "script/docker/$file"), "${destination}:$remoteInbox/$file"))
     }

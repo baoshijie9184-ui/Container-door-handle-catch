@@ -20,6 +20,7 @@ import java.time.ZoneOffset;
 import java.util.Map;
 import java.util.UUID;
 import static org.assertj.core.api.Assertions.*;
+import static com.ruanzhu.doorhandle.module.detection.EcsIsolatedMysql.assertCheckViolation;
 
 /** Actual historical DDL, actual public baseline and unchanged copy script; ECS execution remains opt-in. */
 @EnabledIfSystemProperty(named="report.copy.source-config",matches=".+")
@@ -99,8 +100,8 @@ class ReportWorkflowMigrationMySqlTest {
         assertThat(confirmation.createdAt()).isNull();assertThat(confirmation.updatedAt()).isNull();
         assertThat(confirmation.finishedAt()).isNull();assertThat(confirmation.status()).isEqualTo("PENDING");
         assertThat(confirmation.expiresAt()).isEqualTo(utc.plusHours(2));
-        assertThatThrownBy(()->jdbc.update("UPDATE workflow_instance SET legacy_source=NULL WHERE kind='REPORT_CONFIRMATION'"))
-                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+        assertCheckViolation(()->jdbc.update("UPDATE workflow_instance SET legacy_source=NULL WHERE kind='REPORT_CONFIRMATION'"),
+                "ck_workflow_legacy", "ck_legacy_clock_binding_workflow_instance");
         assertThat(legacy.queryForObject("SELECT used_at FROM detection_report_confirmation",LocalDateTime.class)).isNull();
     }
     @ParameterizedTest

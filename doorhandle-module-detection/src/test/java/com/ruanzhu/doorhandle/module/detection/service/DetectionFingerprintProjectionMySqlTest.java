@@ -11,6 +11,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.*;
+import static com.ruanzhu.doorhandle.module.detection.EcsIsolatedMysql.assertCheckViolation;
 
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @EnabledIfSystemProperty(named="doorhandle.fingerprint.mysql.config",matches=".+")
@@ -41,8 +42,7 @@ class DetectionFingerprintProjectionMySqlTest {
         assertThat(value.getObjectKey()).isEqualTo("old/original.jpg");assertThat(fingerprints.findBySha256(List.of())).isEmpty();
     }
     @Test void malformedSourceOwnerCannotBecomeAnAccountId() {
-        assertThatThrownBy(()->jdbc.update("UPDATE runtime_state SET payload_json=? WHERE namespace='DETECTION_FINGERPRINT'","{\"originalId\":777,\"sourceOwnerKey\":12}"))
-                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+        assertCheckViolation(()->jdbc.update("UPDATE runtime_state SET payload_json=? WHERE namespace='DETECTION_FINGERPRINT'","{\"originalId\":777,\"sourceOwnerKey\":12}"), "ck_runtime_fingerprint");
         assertThat(fingerprints.findBySha256(List.of(hash)).get(0).getOwnerUserId()).isEqualTo("staff-X");
     }
     @Test void missingContentVersionFailsInsteadOfSilentlyReportingNewImage() {
@@ -54,7 +54,6 @@ class DetectionFingerprintProjectionMySqlTest {
         assertThat(fingerprints.findBySha256(List.of(hash))).hasSize(1);
     }
     @Test void aKnownFingerprintClockCannotBeErasedByClaimingImportProvenance() {
-        assertThatThrownBy(()->jdbc.update("UPDATE content_revision SET legacy_source='detection_image_fingerprint',legacy_id=777,created_at=NULL WHERE asset_id='fingerprint-777'"))
-                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+        assertCheckViolation(()->jdbc.update("UPDATE content_revision SET legacy_source='detection_image_fingerprint',legacy_id=777,created_at=NULL WHERE asset_id='fingerprint-777'"), "ck_legacy_content_revision_created_at");
     }
 }

@@ -10,6 +10,30 @@ import java.nio.file.Path;
 public final class EcsIsolatedMysql {
     private EcsIsolatedMysql() {}
 
+    /** Checks the actual engine CHECK refusal, independent of Spring exception classification. */
+    public static void assertCheckViolation(org.assertj.core.api.ThrowableAssert.ThrowingCallable command,
+            String... constraints) {
+        org.assertj.core.api.Assertions.assertThat(constraints).isNotEmpty().doesNotContainNull();
+        org.assertj.core.api.Assertions.assertThatThrownBy(command)
+                .isInstanceOf(org.springframework.dao.DataAccessException.class)
+                .satisfies(failure -> {
+                    var cause = ((org.springframework.dao.DataAccessException) failure).getMostSpecificCause();
+                    org.assertj.core.api.Assertions.assertThat(cause).isInstanceOf(java.sql.SQLException.class);
+                    var sql = (java.sql.SQLException) cause;
+                    boolean mysqlCheck = sql.getErrorCode() == 3819 && "HY000".equals(sql.getSQLState());
+                    boolean h2Check = sql.getErrorCode() == 23513 && "23513".equals(sql.getSQLState());
+                    org.assertj.core.api.Assertions.assertThat(mysqlCheck || h2Check)
+                            .as("MySQL or H2 CHECK violation code/state").isTrue();
+                    boolean namedConstraint = java.util.Arrays.stream(constraints).anyMatch(name ->
+                            mysqlCheck ? sql.getMessage().contains("'" + name + "'")
+                                    : java.util.regex.Pattern.compile("(?i)(?<![A-Z0-9_])"
+                                            + java.util.regex.Pattern.quote(name) + "(?=\\s*[:\"])")
+                                            .matcher(sql.getMessage()).find());
+                    org.assertj.core.api.Assertions.assertThat(namedConstraint)
+                            .as("Expected CHECK constraint name").isTrue();
+                });
+    }
+
     public static DriverManagerDataSource open(String file, String prefix) throws Exception {
         return open(file, prefix, "ecsit_");
     }

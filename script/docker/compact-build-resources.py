@@ -1037,6 +1037,9 @@ HISTORICAL_BUILDERS = {
     'ci-154-38293aa306b3': '38293aa306b368964bbc2a7f66bb6a6b5c414016',
     'ci-156-9e1927880595': '9e1927880595e78c778288e45423bdd27bd818a8',
     'ci-160-9d011d9d5ed8': '9d011d9d5ed8ef1b6e5526c0964ee5f405ed421b',
+    'ci-162-97844cecb2f4': '97844cecb2f45a0e469cda24ceaafdc6df1fee1a',
+    'ci-166-a3c084e1cf56': 'a3c084e1cf568206baca89908542537ad825fef8',
+    'ci-168-a40c779d03a4': 'a40c779d03a43b894ead5569b8eb26ee7dc22a2e',
 }
 
 
@@ -1234,6 +1237,12 @@ def historical_mysql_fixture_descriptor(root, context, identity, owner, cleanup,
             'Historical MySQL object acquired an unapproved data or namespace mount')
     expected_cmd = ['--datadir=' + data, '--port=' + str(port), '--bind-address=0.0.0.0', '--mysqlx=OFF',
                     '--event-scheduler=OFF', '--local-infile=OFF', '--innodb-buffer-pool-size=268435456', '--max-connections=120']
+    if context['release'] == 'ci-168-a40c779d03a4':
+        require(context['commit'] == 'a40c779d03a43b894ead5569b8eb26ee7dc22a2e'
+                and owner.get('binaryLoggingDisabled') is True, 'Historical MySQL 168 binary logging proof differs')
+        expected_cmd.insert(6, '--skip-log-bin')
+    else:
+        require('binaryLoggingDisabled' not in owner, 'Historical MySQL legacy binary logging profile differs')
     require(projection['Config']['Cmd'] == expected_cmd, 'Historical MySQL actual datadir command differs')
     return {**context, 'identity': identity, 'containerId': cid, 'sourceContainerId': source, 'ownerToken': token,
             'dataDirectory': data, 'dataMetadata': data_metadata, 'inspectProjection': projection,

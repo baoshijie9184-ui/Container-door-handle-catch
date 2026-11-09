@@ -21,6 +21,7 @@ import javax.sql.DataSource;
 import java.util.*;
 import java.util.concurrent.*;
 import static org.assertj.core.api.Assertions.*;
+import static com.ruanzhu.doorhandle.module.system.support.EcsIsolatedMysql.assertCheckViolation;
 
 /** Actual compact DDL, mapper, FK, triggers and transaction behavior; ECS execution only. */
 @EnabledIfSystemProperty(named="doorhandle.operations.mysql.config",matches=".+")
@@ -97,7 +98,7 @@ class AccountIdentityServiceTest {
     }
     @Test void failedAuditRollsBackBinding() {
         jdbc.execute("ALTER TABLE audit_event ADD CONSTRAINT fail_audit CHECK(action<>'BIND')");
-        assertThatThrownBy(() -> service.bind(boss, 2L, 10L, 0)).isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+        assertCheckViolation(() -> service.bind(boss, 2L, 10L, 0), "fail_audit");
         assertThat(service.mine(alice).bindingVersion()).isZero();
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM users WHERE employee_id IS NOT NULL OR binding_version<>0 OR binding_history_present=TRUE", Long.class)).isZero();
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM users", Long.class)).isEqualTo(3);
@@ -119,7 +120,7 @@ class AccountIdentityServiceTest {
     @Test void failedUnbindAuditRollsBackTheExistingEmployeeAndVersion() {
         service.bind(boss, 2L, 10L, 0);
         jdbc.execute("ALTER TABLE audit_event ADD CONSTRAINT fail_unbind_audit CHECK(action<>'UNBIND')");
-        assertThatThrownBy(() -> service.bind(boss, 2L, null, 1)).isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+        assertCheckViolation(() -> service.bind(boss, 2L, null, 1), "fail_unbind_audit");
         assertThat(service.mine(alice).employeeId()).isEqualTo(10L);
         assertThat(service.mine(alice).bindingVersion()).isEqualTo(1);
         assertThat(service.audit(boss, 2L)).hasSize(1);

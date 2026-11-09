@@ -26,6 +26,7 @@ import java.nio.file.*;
 import java.util.*;
 import java.util.concurrent.*;
 import static org.assertj.core.api.Assertions.*;
+import static com.ruanzhu.doorhandle.module.detection.EcsIsolatedMysql.assertCheckViolation;
 import static org.mockito.Mockito.*;
 
 /** Real report services and active MySQL baseline constraints; executed only in an isolated ECS schema. */
@@ -89,7 +90,7 @@ class QualityReportServiceTest {
     @Test void retryAuditFailureRollsBackQueueChangeAndCommand(){
         var row=submitted();var event=service.events(alice,row.reportId()).get(0);jdbc.update("UPDATE workflow_instance SET status='FAILED',attempts=1 WHERE kind='REPORT_DELIVERY' AND report_request_id=?",event.eventId());
         jdbc.execute("ALTER TABLE audit_event ADD CONSTRAINT fail_retry CHECK(action<>'EVENT_RETRY')");long before=count("REPORT_COMMAND");
-        assertThatThrownBy(()->service.retryEvent(boss,row.reportId(),event.eventId(),new RetryEvent(1,true,key()))).isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+        assertCheckViolation(()->service.retryEvent(boss,row.reportId(),event.eventId(),new RetryEvent(1,true,key())), "fail_retry");
         assertThat(service.events(alice,row.reportId()).get(0).deliveryStatus()).isEqualTo("FAILED");assertThat(count("REPORT_COMMAND")).isEqualTo(before);
     }
     @Test void normalApprovalFreezesSourceAndExportsWithAuditWithoutTaskWrite(){
@@ -196,14 +197,14 @@ class QualityReportServiceTest {
     @Test void auditFailureRollsBackDecisionTokenCommandAndOutbox(){
         var row=submitted();var request=approvedRequest(row,boss);
         jdbc.execute("ALTER TABLE audit_event ADD CONSTRAINT fail_audit CHECK(action<>'APPROVE')");
-        assertThatThrownBy(()->service.decide(boss,row.reportId(),request)).isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+        assertCheckViolation(()->service.decide(boss,row.reportId(),request), "fail_audit");
         assertThat(service.get(alice,row.reportId()).status()).isEqualTo("SUBMITTED");
         assertThat(count("REPORT_COMMAND")).isEqualTo(2);assertThat(count("REPORT_DELIVERY")).isEqualTo(1);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM workflow_instance WHERE kind='REPORT_CONFIRMATION' AND status='USED'",Long.class)).isZero();
     }
     @Test void outboxFailureRollsBackSubmissionAndAudit(){
         var row=create();jdbc.execute("ALTER TABLE workflow_instance ADD CONSTRAINT fail_event CHECK(kind<>'REPORT_DELIVERY' OR JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.eventType'))<>'detection.report.submitted.v1')");
-        assertThatThrownBy(()->service.submit(alice,row.reportId(),new Command(row.version(),key()))).isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+        assertCheckViolation(()->service.submit(alice,row.reportId(),new Command(row.version(),key())), "fail_event");
         assertThat(service.get(alice,row.reportId()).status()).isEqualTo("DRAFT");assertThat(count("QUALITY_REPORT")).isEqualTo(1);
     }
     @Test void revokedRoleAndTaskReassignmentApplyToExistingSessionsAndRecordedRequests(){
@@ -243,8 +244,8 @@ class QualityReportServiceTest {
         var api=context.getBean(com.ruanzhu.doorhandle.contracts.agent.QualityReportAgentApi.class);
         jdbc.execute("ALTER TABLE workflow_instance ADD CONSTRAINT fail_origin CHECK(kind<>'REPORT_AGENT_ORIGIN' OR JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.toolName'))<>'create_report_draft')");
         var actor=new com.ruanzhu.doorhandle.contracts.agent.AgentActor(1,"alice",com.ruanzhu.doorhandle.contracts.agent.AgentActor.Role.INSPECTOR);
-        assertThatThrownBy(()->api.createDraft(actor,new com.ruanzhu.doorhandle.contracts.agent.QualityReportAgentApi.Draft("task-1","草稿","意见"),
-                new com.ruanzhu.doorhandle.contracts.agent.QualityReportAgentApi.Origin(key(),"run-1","call-1","create_report_draft"))).isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+        assertCheckViolation(()->api.createDraft(actor,new com.ruanzhu.doorhandle.contracts.agent.QualityReportAgentApi.Draft("task-1","草稿","意见"),
+                new com.ruanzhu.doorhandle.contracts.agent.QualityReportAgentApi.Origin(key(),"run-1","call-1","create_report_draft")), "fail_origin");
         assertThat(count("quality_report")).isZero();assertThat(count("QUALITY_REPORT")).isZero();assertThat(count("REPORT_COMMAND")).isZero();
     }
     @Test void agentListIsSummaryOnlyAndSubmittedReportCannotBeEditedThroughFacade(){

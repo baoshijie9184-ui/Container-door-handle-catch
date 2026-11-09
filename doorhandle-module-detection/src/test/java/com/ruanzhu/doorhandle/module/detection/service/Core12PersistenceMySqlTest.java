@@ -23,6 +23,7 @@ import java.time.LocalDateTime;
 import java.util.concurrent.*;
 
 import static org.assertj.core.api.Assertions.*;
+import static com.ruanzhu.doorhandle.module.detection.EcsIsolatedMysql.assertCheckViolation;
 
 /** Historical class name retained; verifies the current 13-table core only on an admitted empty ECS schema. */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
@@ -134,9 +135,9 @@ class Core12PersistenceMySqlTest {
     }
     @Test void duplicateConstraintsRejectIncompleteApprovalAndUnknownState(){
         var row=duplicate("duplicate-constraints");assertThat(duplicates.insert(row)).isEqualTo(1);
-        assertThatThrownBy(()->jdbc.update("UPDATE detection_duplicate_ticket SET status='RESOLVED' WHERE id=?",row.getId())).isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
-        assertThatThrownBy(()->jdbc.update("UPDATE detection_duplicate_ticket SET status='UNKNOWN' WHERE id=?",row.getId())).isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
-        assertThatThrownBy(()->jdbc.update("UPDATE detection_duplicate_ticket SET version=-1 WHERE id=?",row.getId())).isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+        assertCheckViolation(()->jdbc.update("UPDATE detection_duplicate_ticket SET status='RESOLVED' WHERE id=?",row.getId()), "ck_detection_duplicate_approval");
+        assertCheckViolation(()->jdbc.update("UPDATE detection_duplicate_ticket SET status='UNKNOWN' WHERE id=?",row.getId()), "ck_detection_duplicate_status");
+        assertCheckViolation(()->jdbc.update("UPDATE detection_duplicate_ticket SET version=-1 WHERE id=?",row.getId()), "ck_detection_duplicate_version");
         assertThat(duplicates.selectById(row.getId()).getStatus()).isEqualTo("OPEN");
     }
     @Test void duplicateApprovalUsesVersionCasAndDoesNotRewriteDetectionResults() throws Exception {
