@@ -52,6 +52,96 @@ def scope(packet):
 def apply(scope): return fixed.apply_plan(scope.plan, core, scope.proof, scope.backend, scope.attestor, scope.audit)
 
 
+@pytest.fixture
+def transport(scope, tmp_path, monkeypatch):
+    profile = 'additional-originals-v1'; directory = 'work/frozen-transport'
+    monkeypatch.setattr(fixed, 'ROOT', str(tmp_path))
+    monkeypatch.setattr(fixed, 'TRANSPORT_DIRECTORIES', {profile: directory})
+    folder = tmp_path / directory; folder.mkdir(parents=True)
+    archive = folder / 'originals.tar'; archive.write_bytes(b'opaque transport')
+    value = {'archiveSha256': fixed.sha(archive.read_bytes()), 'archiveBytes': archive.stat().st_size,
+             'files': [{'sourcePath': str(tmp_path / 'already-retired-payload.pth')}]}
+    raw = json.dumps(value, sort_keys=True).encode(); manifest = folder / 'custody.json'; manifest.write_bytes(raw)
+    recipe = {'manifestSha256': fixed.sha(raw)}; monkeypatch.setitem(fixed.RECIPES, profile, recipe)
+    custody = {'manifestSha256': fixed.sha(raw), 'archiveSha256': value['archiveSha256'], 'archiveBytes': value['archiveBytes']}
+    current = copy.deepcopy(scope.plan['current'])
+    monkeypatch.setattr(core, 'canonical_control', lambda path: Path(path))
+    monkeypatch.setattr(fixed, 'code_bindings', lambda *args: {'executorSha256': 'e' * 64})
+    monkeypatch.setattr(fixed, 'bindings', lambda *args: (copy.deepcopy(current), copy.deepcopy(custody)))
+    monkeypatch.setattr(fixed, 'observed_members', lambda rows, *_args: [
+        {**row, 'fingerprint': [7, index + 10, row['bytes'], 40, 50, 1, 0o100600, 32]} for index, row in enumerate(rows)])
+    for name in ('select_manifest', 'observe_model_link_group', 'verify_model_link_group'):
+        monkeypatch.setattr(fixed, name, lambda *_: pytest.fail('transport accessed original payload/model logic'))
+    plan = fixed.make_plan(profile, manifest, 'current', 'custody', core, SimpleNamespace(), SimpleNamespace(),
+                           lambda resolver: scope.backend, selection='transport')
+    scope.plan = plan
+    args = SimpleNamespace(plan='synthetic-plan', plan_sha256='a' * 64, profile=profile, manifest=manifest,
+        current_receipt='current', custody_receipt='custody', selection='transport')
+    monkeypatch.setattr(core, 'control', lambda _: (plan, 'a' * 64))
+    scope.events.clear()
+    return SimpleNamespace(scope=scope, profile=profile, manifest=manifest, archive=archive, raw=raw,
+        value=value, recipe=recipe, custody=custody, plan=plan, args=args, directory=directory)
+
+
+def test_transport_plan_load_and_fake_apply_touch_only_the_two_frozen_package_files(transport):
+    item = transport; assert fixed.load_plan(item.args, core, SimpleNamespace(), SimpleNamespace()) == item.plan
+    assert {row['path'] for row in item.plan['members']} == {item.directory + '/custody.json', item.directory + '/originals.tar'}
+    result = apply(item.scope)
+    assert result['status'] == 'FIXED_TRANSPORT_RETIRED' and result['selection'] == 'transport'
+    assert result['filesDeleted'] == 2 and result['directoriesRemoved'] == 0 and result['payloadFilesTouched'] is False
+    assert item.manifest.read_bytes() == item.raw and item.archive.read_bytes() == b'opaque transport'
+    assert len([row for row in item.scope.events if row[0] == 'delete-held']) == 2
+    assert not any(row[0] == 'empty-dir-held' for row in item.scope.events)
+
+
+def test_transport_refuses_a_copied_manifest_unknown_profile_and_any_cloud_archive_drift(transport):
+    item = transport; copied = item.manifest.with_name('copied.json'); copied.write_bytes(item.raw)
+    with pytest.raises(ValueError, match='FIXED_TRANSPORT_MANIFEST_LOCATION'):
+        fixed.select_files(item.profile, copied, item.raw, 'transport')
+    for profile in ('pth-aliases-v1', 'cold-store-originals-v1', 'local-mysql45-export'):
+        with pytest.raises(ValueError, match='FIXED_TRANSPORT_PROFILE'):
+            fixed.select_files(profile, item.manifest, item.raw, 'transport')
+    for field in ('manifestSha256', 'archiveSha256', 'archiveBytes'):
+        custody = copy.deepcopy(item.custody); custody[field] = custody[field] + 1 if field == 'archiveBytes' else 'f' * 64
+        with pytest.raises(ValueError, match='TRANSPORT_AND_LIVE_CUSTODY_BINDING_DRIFT'):
+            fixed.transport_custody(item.plan['members'], custody)
+
+
+def test_transport_plan_mode_targets_and_model_groups_cannot_be_rewritten(transport, monkeypatch):
+    item = transport
+    for damage in ('removed-mode', 'rewritten-mode', 'extra-target', 'changed-target', 'model-group'):
+        submitted = copy.deepcopy(item.plan)
+        if damage == 'removed-mode': submitted.pop('selection')
+        elif damage == 'rewritten-mode': submitted['selection'] = 'originals'
+        elif damage == 'extra-target': submitted['members'].append(copy.deepcopy(submitted['members'][0]))
+        elif damage == 'changed-target': submitted['members'][0]['path'] = 'work/unknown/originals.tar'
+        else: submitted['closedModelHardlinkGroup'] = None
+        monkeypatch.setattr(core, 'control', lambda _, plan=submitted: (plan, 'a' * 64))
+        with pytest.raises(ValueError): fixed.load_plan(item.args, core, SimpleNamespace(), SimpleNamespace())
+        with pytest.raises(ValueError): fixed.apply_plan(submitted, core, item.scope.proof, item.scope.backend, item.scope.attestor, item.scope.audit)
+    assert not any(row[0] == 'delete-held' for row in item.scope.events)
+
+
+def test_transport_refuses_deletion_without_a_fresh_authenticated_proof(transport):
+    item = transport; item.scope.attestor.failure = True
+    with pytest.raises(ValueError): apply(item.scope)
+    assert not any(row[0] == 'delete-held' for row in item.scope.events)
+
+
+def test_only_the_fixed_legacy_transport_has_an_approved_archive_size_when_the_manifest_omits_it(transport, monkeypatch):
+    item = transport; profile = 'legacy-project-originals-v1'; value = dict(item.value); value.pop('archiveBytes')
+    raw = json.dumps(value, sort_keys=True).encode(); manifest = item.manifest.with_name('snapshot.json')
+    monkeypatch.setitem(fixed.TRANSPORT_DIRECTORIES, profile, item.directory)
+    monkeypatch.setitem(fixed.RECIPES, profile, {'manifestSha256': fixed.sha(raw), 'approvedLegacyArchiveBytes': 81841366})
+    selected, _ = fixed.select_files(profile, manifest, raw, 'transport')
+    assert next(row['bytes'] for row in selected if row['path'].endswith('/originals.tar')) == 81841366
+    custody = {'manifestSha256': fixed.sha(raw), 'archiveSha256': value['archiveSha256'], 'archiveBytes': 81841365}
+    with pytest.raises(ValueError, match='TRANSPORT_AND_LIVE_CUSTODY_BINDING_DRIFT'): fixed.transport_custody(selected, custody)
+    item.recipe['manifestSha256'] = fixed.sha(raw)
+    with pytest.raises(ValueError, match='FIXED_TRANSPORT_ARCHIVE_BINDING_REQUIRED'):
+        fixed.select_files(item.profile, item.manifest, raw, 'transport')
+
+
 def test_fixed_legacy_selects_only_d_project_and_preserves_c_history_without_access(packet, monkeypatch):
     monkeypatch.setattr(Path, 'lstat', lambda *_: pytest.fail('Manifest selection must not inspect any source'))
     selected, retained = fixed.select_manifest(PROFILE, packet.raw)
@@ -166,6 +256,74 @@ def test_remaining_source_guard_reads_only_registered_git_and_ancestor_metadata(
     monkeypatch.setattr(fixed, 'load', lambda name: helper if name == 'preserve-local-artifacts.py' else pytest.fail('unexpected helper'))
     fixed.residual_source_guard(remaining_packet.profile, selected)
     assert observed == [fixed.ROOT + '\\' + row['path'].replace('/', '\\') for row in selected]
+
+
+@pytest.fixture
+def partial_transport_packet(packet, monkeypatch):
+    profile = 'legacy-partial-transports-v1'
+    rows = []
+    for index, (group, folder, name) in enumerate([
+            ('legacy-memory-rag-transport', 'early-memory', 'originals.tar'),
+            ('legacy-memory-rag-transport', 'early-memory', 'snapshot.json'),
+            ('legacy-windows-mcp-transport', 'early-mcp', 'originals.tar'),
+            ('legacy-windows-mcp-transport', 'early-mcp', 'snapshot.json')], 1):
+        member = 'work/data-migration-' + folder + '/' + name
+        rows.append({'sourcePath': fixed.ROOT + '\\' + member.replace('/', '\\'), 'member': member,
+                     'group': group, 'bytes': index, 'sha256': str(index) * 64})
+    value = {'kind': 'doorhandle-additional-local-artifact-custody', 'version': 1, 'status': 'COMPLETE',
+             'profile': profile, 'catalogSha256': 'd' * 64, 'originalFiles': 4, 'originalBytes': 10,
+             'archiveSha256': 'e' * 64, 'archiveBytes': 100, 'files': rows}
+    raw = json.dumps(value, sort_keys=True).encode()
+    recipe = {'manifestSha256': fixed.sha(raw), 'manifestBytes': len(raw), 'catalogSha256': value['catalogSha256'],
+              'archiveSha256': value['archiveSha256'], 'archiveBytes': value['archiveBytes'],
+              'members': 4, 'selected': 4, 'retained': 0, 'bytes': 10,
+              'groups': {'legacy-memory-rag-transport': [2, 3], 'legacy-windows-mcp-transport': [2, 7]}}
+    monkeypatch.setitem(fixed.RECIPES, profile, recipe)
+    return SimpleNamespace(profile=profile, value=value, raw=raw, rows=rows, recipe=recipe)
+
+
+def test_partial_transport_production_recipe_selects_only_four_fixed_early_files():
+    recipe = fixed.RECIPES['legacy-partial-transports-v1']
+    assert (recipe['members'], recipe['selected'], recipe['retained'], recipe['bytes']) == (4, 4, 0, 155793058)
+    assert recipe['manifestSha256'] == '7b9e2f51eb658b2eff8431b3b2fd5f003f1bfd9418e0947cd14c67ffbb12f6f2'
+    assert recipe['archiveSha256'] == '904d67de3b7a57bc5cf40c8f1e6894a2445fa867bf5c65dfa1e809e8c12f041b'
+    assert recipe['manifestBytes'] == 3583 and recipe['archiveBytes'] == 155801600
+    assert recipe['groups'] == {'legacy-memory-rag-transport': [2, 3679161], 'legacy-windows-mcp-transport': [2, 152113897]}
+
+
+def test_partial_transport_fake_apply_requires_exact_scope_helper_before_holding_four_sources(scope, partial_transport_packet, monkeypatch):
+    packet = partial_transport_packet; selected, retained = fixed.select_manifest(packet.profile, packet.raw)
+    assert len(selected) == 4 and retained == []
+    members = [{**row, 'fingerprint': [7, index + 10, row['bytes'], 40, 50, 1, 0o100600, 32]} for index, row in enumerate(selected)]
+    scope.plan.update(profile=packet.profile, manifestSha256=packet.recipe['manifestSha256'],
+                      members=members, retained=retained, **fixed.residual_bindings(packet.profile))
+    def guard(profile, rows):
+        assert profile == packet.profile and rows == members
+        scope.events.append(('partial-transport-source-guard',))
+    monkeypatch.setattr(fixed, 'residual_source_guard', guard)
+    result = apply(scope)
+    assert result['filesDeleted'] == 4 and result['directoriesRemoved'] == 0 and result['retained'] == []
+    assert scope.events[0] == ('partial-transport-source-guard',)
+    scope.events.clear(); scope.plan.pop('partialTransportScopeHelperSha256')
+    with pytest.raises(ValueError, match='FIXED_RESIDUAL_SOURCE_GUARD_REQUIRED'): apply(scope)
+    assert scope.events == []
+
+
+def test_partial_transport_selection_rejects_resealed_archive_groups_and_extra_or_protected_members(partial_transport_packet):
+    packet = partial_transport_packet; original_recipe = copy.deepcopy(packet.recipe)
+    for damage in ('raw', 'profile', 'catalog', 'group', 'fifth-member', 'archiveSha256', 'archiveBytes', 'protected-path'):
+        value = copy.deepcopy(packet.value); packet.recipe.clear(); packet.recipe.update(original_recipe)
+        if damage == 'profile': value['profile'] = 'remaining-system-data-v1'
+        elif damage == 'catalog': value['catalogSha256'] = 'f' * 64
+        elif damage == 'group': value['files'][0]['group'] = 'unknown-transport'
+        elif damage == 'fifth-member': value['files'].append(copy.deepcopy(value['files'][0]))
+        elif damage == 'archiveSha256': value['archiveSha256'] = 'f' * 64
+        elif damage == 'archiveBytes': value['archiveBytes'] += 1
+        elif damage == 'protected-path': value['files'][0]['sourcePath'] = fixed.ROOT + '\\work\\jenkins\\originals.tar'
+        raw = json.dumps(value, sort_keys=True).encode()
+        if damage == 'raw': raw += b' '
+        else: packet.recipe.update(manifestSha256=fixed.sha(raw), manifestBytes=len(raw))
+        with pytest.raises(ValueError): fixed.select_manifest(packet.profile, raw)
 
 
 def test_residual_scope_uses_frozen_manifest_and_a_separate_metadata_only_source_guard(residual_packet, monkeypatch):

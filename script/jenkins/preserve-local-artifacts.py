@@ -64,6 +64,15 @@ PROFILES = {
         'GROUPS': {'remaining-mysql-archives', 'remaining-memory-export', 'remaining-user-skill-downloads',
                    'remaining-agent-workspace', 'protected-tool-receipts', 'local-mysql45-export'},
     },
+    'legacy-partial-transports-v1': {
+        'PROFILE': 'legacy-partial-transports-v1',
+        'CATALOG_SHA256': 'a2669cdf5cb129eadb62361e1de1658482dc002f8dc53b193c11dd5fd5a9e477',
+        'FILE_COUNT': 4, 'ORIGINAL_BYTES': 155793058,
+        'MAX_BYTES': 256 * 1024 ** 2, 'MAX_MANIFEST': 64 * 1024,
+        'SNAPSHOT': 'legacy-partial-transports-snapshot', 'RESTORE': 'legacy-partial-transports-restore',
+        'OWNER': 'legacy-partial-transports-owner.json', 'PUBLIC': 'legacy-partial-transports-public-receipt.json',
+        'GROUPS': {'legacy-memory-rag-transport', 'legacy-windows-mcp-transport'},
+    },
 }
 
 
@@ -298,7 +307,7 @@ def pack(catalog_file, output):
             "permissions": {"mode": 0, "uid": 0, "gid": 0, "atimeNs": 0, "mtimeNs": 0}})
     # Reject any extra/secret source before opening even one original file.
     validate_rows(rows)
-    if PROFILE in ('residual-project-originals-v1', 'remaining-system-data-v1'):
+    if PROFILE in ('residual-project-originals-v1', 'remaining-system-data-v1', 'legacy-partial-transports-v1'):
         residual_repository_guard([row['sourcePath'] for row in rows])
     for row in rows:
         path = safe(row["sourcePath"]); info = path.stat()

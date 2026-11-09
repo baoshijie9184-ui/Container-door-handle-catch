@@ -227,6 +227,62 @@ def test_remaining_catalog_drift_is_rejected_before_any_source_is_opened(remaini
     with pytest.raises(custody.CustodyError): custody.pack(fixture.catalog, fixture.parent / 'rejected')
 
 
+@pytest.fixture
+def partial_transport_originals(originals, monkeypatch):
+    for field in custody.PROFILE_FIELDS:
+        monkeypatch.setattr(custody, field, getattr(custody, field))
+    custody.select_profile('legacy-partial-transports-v1')
+    originals.names[:] = [
+        ('work/data-migration-early-memory/originals.tar', 'legacy-memory-rag-transport', b'opaque-not-a-tar'),
+        ('work/data-migration-early-memory/snapshot.json', 'legacy-memory-rag-transport', b'opaque-not-json'),
+        ('work/data-migration-early-mcp/originals.tar', 'legacy-windows-mcp-transport', b'opaque-windows-archive'),
+        ('work/data-migration-early-mcp/snapshot.json', 'legacy-windows-mcp-transport', b'opaque-windows-manifest')]
+    for name, _, raw in originals.names:
+        path = originals.source / name; path.parent.mkdir(parents=True, mode=0o700, exist_ok=True); path.write_bytes(raw)
+    monkeypatch.setattr(custody, 'FILE_COUNT', 4)
+    originals.pin()
+    def metadata_only(args, **kwargs):
+        assert args[:3] == ['git', '-C', str(originals.source)]
+        if args[3:] == ['worktree', 'list', '--porcelain', '-z']:
+            return SimpleNamespace(returncode=0, stdout=('worktree ' + str(originals.source) + '\0\0').encode())
+        assert args[3:] == ['ls-files', '-z']
+        return SimpleNamespace(returncode=0, stdout=b'')
+    monkeypatch.setattr(custody.subprocess, 'run', metadata_only)
+    return originals
+
+
+def test_partial_transport_profile_keeps_four_opaque_inputs_in_an_independent_restore_and_reuse(partial_transport_originals, tmp_path, monkeypatch):
+    fixture = partial_transport_originals; package = fixture.parent / 'partial-transports'
+    before = {name: (fixture.source / name).read_bytes() for name, _, _ in fixture.names}
+    custody.pack(fixture.catalog, package)
+    args, work = create_attempt(tmp_path, monkeypatch, package)
+    custody.prepare(args); upload(package, work); first = custody.verify_restore(args)
+    assert first['profile'] == 'legacy-partial-transports-v1' and first['files'] == 4
+    assert first['databasesOpened'] == first['modelsExecuted'] == first['originalFilesDeleted'] == 0
+    assert custody.MAX_BYTES == 256 * 1024 ** 2 and custody.MAX_MANIFEST == 64 * 1024
+    args, newer = create_attempt(tmp_path, monkeypatch, package, number=72)
+    args.source_snapshot_directory = str(work / custody.SNAPSHOT)
+    description = custody.describe(args); args.source_receipt_sha256 = description['sourceCustodyReceiptSha256']
+    assert custody.reuse(args)['status'] == 'RESTORED_VERIFIED'
+    for name, raw in before.items():
+        assert (fixture.source / name).read_bytes() == (newer / custody.RESTORE / name).read_bytes() == raw
+    assert all(stat.S_IMODE(path.stat().st_mode) == (0o700 if path.is_dir() else 0o600)
+               for path in (newer / custody.RESTORE).rglob('*'))
+    assert not any((newer / custody.PROFILES[profile]['SNAPSHOT']).exists() for profile in custody.PROFILES
+                   if profile != 'legacy-partial-transports-v1')
+
+
+def test_partial_transport_profile_refuses_unknown_groups_and_a_fifth_member_before_opening_sources(partial_transport_originals, monkeypatch):
+    fixture = partial_transport_originals; original = fixture.catalog.read_bytes()
+    monkeypatch.setattr(custody, 'permissions', lambda *_: pytest.fail('unreviewed transport source opened'))
+    for damage in ('unknown-group', 'fifth-member'):
+        value = json.loads(original)
+        if damage == 'unknown-group': value['members'][0]['group'] = 'unreviewed-transport'
+        else: value['members'].append({'path': 'work/unreviewed/private.env', 'group': 'legacy-memory-rag-transport', 'bytes': 1, 'sha256': '0' * 64})
+        fixture.catalog.write_bytes(custody.encoded(value))
+        with pytest.raises(custody.CustodyError): custody.pack(fixture.catalog, fixture.parent / 'refused')
+
+
 def test_residual_opaque_pack_restore_and_later_reuse_bind_the_same_private_bytes(residual_originals, tmp_path, monkeypatch):
     fixture = residual_originals; package = fixture.parent / 'package'
     before = {name: custody.digest(fixture.source / name) for name, _, _ in fixture.rows}

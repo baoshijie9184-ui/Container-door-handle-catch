@@ -1,5 +1,7 @@
 # 本地 Jenkins CI/CD 约定
 
+新增待验证的 `legacy-partial-transports-v1` 复用 `LOCAL_ARTIFACTS_*` 原参数和 source 保全入口，固定两个早期运输包及其清单，不改变 runtime/cutover 的原 profile 限制。参数选项更新由版本库中的 `update-local-artifact-profiles.groovy` 在任务空闲且无队列时仅替换该 ChoiceParameterDefinition，保留其他参数对象、SCM、任务属性和节点配置；不以全量重配或手改页面交付。控制模块最低数为 17 模块、1,178 项；source 完整验证通过后才上传恢复，后续清退仍须实时原件证明。这一 source 任务使用现有 70 GiB，不启动已知容量不足的完整 runtime 验收。
+
 2026-11-10 04:06（北京时间）最新：固定 `000ab923` 的 #179 整轮 SUCCESS，Java 817 通过/614 条件跳过、Python 2,978 通过/24 条件跳过、双前端 157/20 项和两套构建完成；86 个补充文件在 ECS 独立恢复，224 原报告及原始回执保全。工具已停止，ECS 已从流水线外实际回读 `Stopped / StopCharging`，Jenkins 保持运行。正式 131 表未切换；后续完整 native 的空间预算不足，70→80 GiB 收费方案待用户批准，不排队运行已知容量不足的任务，也不把 source PASS 当作整库或运行验收通过。
 
 2026-11-10 03:40（北京时间）最新：#178 已实际恢复并独立核验缓存证明链，专项 61 项全部通过；Java 源码回归通过，Python 2,947 通过、31 失败、24 条件跳过。多层私有恢复目录及 Windows 模拟函数参数的修复已开发待新提交 ECS 验证，双前端、86 文件恢复及整库迁移未执行。218 份原报告保全，工具已停止；ECS 已在流水线外实际回读 `Stopped / StopCharging`，Jenkins 保持运行。缓存专项仍纳入 17 模块、最低 1,164 项控制预检，正式库仍为 131 表，不能将缓存恢复作为数据库迁移通过。

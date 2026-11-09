@@ -65,7 +65,10 @@ def build_custody_state(profile, old_state, tmp_path, monkeypatch):
     else:
         original_root = tmp_path / 'additional-fixture'; original_root.mkdir(mode=0o700)
         metadata_run = additional.custody.subprocess.run
-        if profile == 'remaining-system-data-v1':
+        if profile == 'legacy-partial-transports-v1':
+            originals = additional.originals.__wrapped__(original_root, monkeypatch)
+            originals = additional.partial_transport_originals.__wrapped__(originals, monkeypatch)
+        elif profile == 'remaining-system-data-v1':
             originals = additional.remaining_originals.__wrapped__(original_root, monkeypatch)
         elif profile == 'residual-project-originals-v1':
             originals = additional.residual_originals.__wrapped__(original_root, monkeypatch)
@@ -75,7 +78,7 @@ def build_custody_state(profile, old_state, tmp_path, monkeypatch):
         try:
             additional.custody.pack(originals.catalog, package)
         finally:
-            if profile in ('residual-project-originals-v1', 'remaining-system-data-v1'):
+            if profile in ('residual-project-originals-v1', 'remaining-system-data-v1', 'legacy-partial-transports-v1'):
                 # The synthetic Git dispatcher belongs only to local pack's
                 # real metadata guard, never the later CI/old-custody chain.
                 monkeypatch.setattr(additional.custody.subprocess, 'run', metadata_run)
@@ -100,8 +103,10 @@ def build_custody_state(profile, old_state, tmp_path, monkeypatch):
     args.source_snapshot_directory = str(old)
     fixed = {**attest.PROFILES[profile], 'FILES': public['files'], 'ORIGINAL_BYTES': public['bytes']}
     fixed['MANIFEST_SHA256'] = attest.sha((old / fixed['MANIFEST']).read_bytes())
-    if profile == 'remaining-system-data-v1':
+    if profile in ('remaining-system-data-v1', 'legacy-partial-transports-v1'):
         fixed.update(CATALOG_SHA256=public['catalogSha256'], ARCHIVE_SHA256=public['archiveSha256'], ARCHIVE_BYTES=public['archiveBytes'])
+    if profile == 'legacy-partial-transports-v1':
+        fixed['MANIFEST_BYTES'] = (old / fixed['MANIFEST']).stat().st_size
     monkeypatch.setitem(attest.PROFILES, profile, fixed); helpers.fixed = fixed
     monkeypatch.setattr(attest, 'fixed_modules', lambda _: helpers)
     monkeypatch.setattr(attest, 'current_pass', lambda *_: copy.deepcopy(current))
@@ -186,6 +191,56 @@ def test_remaining_empty_preserved_member_still_has_a_complete_zero_byte_hash_bo
         artifacts=SimpleNamespace(read_json=lambda *_args, **_kwargs: {}, validate_manifest=lambda _: rows))
     assert attest.remaining_restored_bindings(state, old) == ((target, attest.sha(b''), 0),)
     assert attest.file_digest(target, 0, private=True)[:2] == (attest.sha(b''), 0)
+
+
+@pytest.fixture
+def partial_transport_state(old_state, tmp_path, monkeypatch):
+    return build_custody_state('legacy-partial-transports-v1', old_state, tmp_path, monkeypatch)
+
+
+def test_partial_transport_recipe_pins_only_the_actual_four_file_archive():
+    fixed = attest.PROFILES['legacy-partial-transports-v1']
+    assert (fixed['FILES'], fixed['ORIGINAL_BYTES'], fixed['MANIFEST_BYTES'], fixed['ARCHIVE_BYTES']) == (4, 155793058, 3583, 155801600)
+    assert fixed['MANIFEST_SHA256'] == '7b9e2f51eb658b2eff8431b3b2fd5f003f1bfd9418e0947cd14c67ffbb12f6f2'
+    assert fixed['CATALOG_SHA256'] == 'a2669cdf5cb129eadb62361e1de1658482dc002f8dc53b193c11dd5fd5a9e477'
+    assert fixed['ARCHIVE_SHA256'] == '904d67de3b7a57bc5cf40c8f1e6894a2445fa867bf5c65dfa1e809e8c12f041b'
+    assert fixed['MAX_ARCHIVE'] == 256 * 1024 ** 2 and fixed['MAX_MANIFEST'] == 64 * 1024
+
+
+def test_partial_transport_attestation_rehashes_all_four_private_restores_before_accepting_custody(partial_transport_state, monkeypatch):
+    state = partial_transport_state; fixed = state.helpers.fixed; seen = []; original = attest.file_digest
+    def observed(path, *args, **kwargs):
+        seen.append((Path(path), kwargs.get('private'))); return original(path, *args, **kwargs)
+    monkeypatch.setattr(attest, 'file_digest', observed)
+    before = tree_bytes(state.state.root); value = attest.fresh_retirement_attest(state.args)
+    assert validate(value, state) is value and tree_bytes(state.state.root) == before
+    manifest = json.loads((state.old / fixed['MANIFEST']).read_bytes())
+    assert len(manifest['files']) == 4
+    assert all((state.old.parent / fixed['RESTORE'] / row['member'], True) in seen for row in manifest['files'])
+    target = state.old.parent / fixed['RESTORE'] / manifest['files'][0]['member']
+    target.write_bytes(target.read_bytes() + b'drift')
+    with pytest.raises(attest.AttestationError): attest.fresh_retirement_attest(state.args)
+
+
+def test_partial_transport_projection_cannot_reseal_a_different_archive_or_size(partial_transport_state):
+    state = partial_transport_state; original = attest.fresh_retirement_attest(state.args)
+    for field in ('archiveSha256', 'archiveBytes'):
+        value = copy.deepcopy(original)
+        value['custody'][field] = 'e' * 64 if field.endswith('Sha256') else value['custody'][field] + 1
+        expected = copy.deepcopy(value['custody']); resign(value)
+        with pytest.raises(attest.AttestationError, match='PARTIAL_TRANSPORT_FIXED_ARCHIVE_DRIFT'):
+            validate(value, state, expected_custody=expected)
+
+
+def test_partial_transport_source_admission_uses_the_same_fixed_helper_closure(tmp_path, monkeypatch):
+    source = fixed_source.__wrapped__(tmp_path, monkeypatch, SimpleNamespace(param='legacy-partial-transports-v1'))
+    state = attest.fixed_modules(source.args)
+    assert state.artifacts.PROFILE == 'legacy-partial-transports-v1'
+    assert state.artifacts.CATALOG_SHA256 == state.fixed['CATALOG_SHA256']
+    helper = source.checkout / 'script/jenkins/preserve-local-artifacts.py'
+    helper.write_bytes(helper.read_bytes() + b'\n')
+    with pytest.raises(attest.AttestationError, match='FIXED_ORIGINALS_RECIPE_CHANGED'):
+        attest.fixed_modules(source.args)
 
 
 @pytest.mark.parametrize('damage', ['kind', 'scope', 'controlsOnly', 'fullProjectVerified'])
