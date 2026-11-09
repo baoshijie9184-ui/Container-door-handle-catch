@@ -88,7 +88,7 @@ for name in sources:
 for table,where in [('runtime_state',"namespace IN ('CONTEXT_HEAD','CONTEXT_BOOTSTRAP')"),('content_asset',"asset_kind='CONTEXT_SUMMARY'"),('content_revision',"asset_kind='CONTEXT_SUMMARY'"),('content_link',"link_kind IN ('TOOL_SOURCE','CONTEXT_SOURCE')"),('audit_event',"kind='CONTEXT'")]:
     guard('SELECT IF(COUNT(*)=0,1,0) FROM '+table+' WHERE '+where)
 for name in ['agent_context_summary','agent_context_offload','agent_context_audit']:
-    offset="(IF(LEFT('__SOURCE_CONTEXT_OFFSET__',1)='-',-1,1)*(CAST(SUBSTRING('__SOURCE_CONTEXT_OFFSET__',2,2) AS UNSIGNED)*3600+CAST(SUBSTRING('__SOURCE_CONTEXT_OFFSET__',5,2) AS UNSIGNED)*60)*1000000)"
+    offset="(IF(LEFT('__SOURCE_CONTEXT_OFFSET__',1)='-',-1,1)*(CAST(SUBSTRING('__SOURCE_CONTEXT_OFFSET__',2,2) AS SIGNED)*3600+CAST(SUBSTRING('__SOURCE_CONTEXT_OFFSET__',5,2) AS SIGNED)*60)*1000000)"
     guard(f"SELECT IF(COUNT(*)=0,1,0) FROM {src(name)} s WHERE NOT COALESCE(({utc('created_at')} IS NOT NULL AND TIMESTAMPDIFF(MICROSECOND,{utc('created_at')},s.created_at)={offset}),FALSE)")
 for name in ['agent_context_origin','agent_context_offload']:
     guard(f"SELECT IF(COUNT(*)=0,1,0) FROM {src(name)} s WHERE NOT JSON_VALID(s.sources_json) OR NOT REGEXP_LIKE(s.sources_sha256,'^[A-Fa-f0-9]{{64}}$','c') OR NOT(BINARY LOWER(s.sources_sha256)<=>BINARY SHA2(s.sources_json,256))")

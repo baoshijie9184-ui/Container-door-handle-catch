@@ -81,10 +81,10 @@ INSERT INTO compact_research_export_guard SELECT NOT EXISTS(
  WHERE s.run_id IS NULL OR t.run_id IS NULL OR e.user_id<=0 OR CHAR_LENGTH(e.export_id)=0
  OR e.format_version<1 OR e.source_count<0 OR e.expired_source_count<0 OR e.payload_bytes<0
  OR e.payload_sha256 NOT REGEXP '^[a-f0-9]{64}$'
- OR CONVERT_TZ(e.created_at,'__SOURCE_EXPORT_OFFSET__','+00:00') IS NULL OR NOT(TIMESTAMPDIFF(MICROSECOND,CONVERT_TZ(e.created_at,'__SOURCE_EXPORT_OFFSET__','+00:00'),e.created_at)<=>((IF(LEFT('__SOURCE_EXPORT_OFFSET__',1)='-',-1,1)*(CAST(SUBSTRING('__SOURCE_EXPORT_OFFSET__',2,2) AS UNSIGNED)*3600+CAST(SUBSTRING('__SOURCE_EXPORT_OFFSET__',5,2) AS UNSIGNED)*60))*1000000)));
+ OR CONVERT_TZ(e.created_at,'__SOURCE_EXPORT_OFFSET__','+00:00') IS NULL OR NOT(TIMESTAMPDIFF(MICROSECOND,CONVERT_TZ(e.created_at,'__SOURCE_EXPORT_OFFSET__','+00:00'),e.created_at)<=>((IF(LEFT('__SOURCE_EXPORT_OFFSET__',1)='-',-1,1)*(CAST(SUBSTRING('__SOURCE_EXPORT_OFFSET__',2,2) AS SIGNED)*3600+CAST(SUBSTRING('__SOURCE_EXPORT_OFFSET__',5,2) AS SIGNED)*60))*1000000)));
 INSERT INTO compact_research_export_guard SELECT NOT EXISTS(
  SELECT 1 FROM `__SOURCE_SCHEMA__`.agent_research_export_limit l WHERE l.user_id<=0 OR l.export_count<0
- OR CONVERT_TZ(l.window_ends_at,'__SOURCE_EXPORT_OFFSET__','+00:00') IS NULL OR NOT(TIMESTAMPDIFF(MICROSECOND,CONVERT_TZ(l.window_ends_at,'__SOURCE_EXPORT_OFFSET__','+00:00'),l.window_ends_at)<=>((IF(LEFT('__SOURCE_EXPORT_OFFSET__',1)='-',-1,1)*(CAST(SUBSTRING('__SOURCE_EXPORT_OFFSET__',2,2) AS UNSIGNED)*3600+CAST(SUBSTRING('__SOURCE_EXPORT_OFFSET__',5,2) AS UNSIGNED)*60))*1000000)));
+ OR CONVERT_TZ(l.window_ends_at,'__SOURCE_EXPORT_OFFSET__','+00:00') IS NULL OR NOT(TIMESTAMPDIFF(MICROSECOND,CONVERT_TZ(l.window_ends_at,'__SOURCE_EXPORT_OFFSET__','+00:00'),l.window_ends_at)<=>((IF(LEFT('__SOURCE_EXPORT_OFFSET__',1)='-',-1,1)*(CAST(SUBSTRING('__SOURCE_EXPORT_OFFSET__',2,2) AS SIGNED)*3600+CAST(SUBSTRING('__SOURCE_EXPORT_OFFSET__',5,2) AS SIGNED)*60))*1000000)));
 
 -- No excerpts, URLs or export bytes enter the receipt. The source export UUID stays globally unique.
 INSERT INTO audit_event(event_id,kind,owner_user_id,actor_user_id,resource_type,resource_id,run_id,

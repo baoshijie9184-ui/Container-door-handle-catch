@@ -57,7 +57,7 @@ guard("SELECT IF(COUNT(*)=0,1,0) FROM workflow_instance WHERE kind='FILE_DELIVER
 def invalid_time(column):
     value=f"s.{column}"
     converted=f"CONVERT_TZ({value},'__SOURCE_OPERATIONS_OFFSET__','+00:00')"
-    offset="(IF(LEFT('__SOURCE_OPERATIONS_OFFSET__',1)='-',-1,1)*(CAST(SUBSTRING('__SOURCE_OPERATIONS_OFFSET__',2,2) AS UNSIGNED)*3600+CAST(SUBSTRING('__SOURCE_OPERATIONS_OFFSET__',5,2) AS UNSIGNED)*60))"
+    offset="(IF(LEFT('__SOURCE_OPERATIONS_OFFSET__',1)='-',-1,1)*(CAST(SUBSTRING('__SOURCE_OPERATIONS_OFFSET__',2,2) AS SIGNED)*3600+CAST(SUBSTRING('__SOURCE_OPERATIONS_OFFSET__',5,2) AS SIGNED)*60))"
     # A non-NULL result may be unchanged outside CONVERT_TZ's supported range.
     return f"{converted} IS NULL OR NOT(TIMESTAMPDIFF(MICROSECOND,{converted},{value})<=>({offset}*1000000))"
 

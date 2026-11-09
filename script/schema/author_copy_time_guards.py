@@ -81,8 +81,8 @@ def author():
         if guard is None or guard.start() > text.index('START TRANSACTION;'):
             raise ValueError(f'Expected a pre-existing one-column rejection guard: {filename}')
         name = guard.group(1)
-        seconds = (f"(IF(LEFT('{offset}',1)='-',-1,1)*(CAST(SUBSTRING('{offset}',2,2) AS UNSIGNED)*3600"
-                   f"+CAST(SUBSTRING('{offset}',5,2) AS UNSIGNED)*60))")
+        seconds = (f"(IF(LEFT('{offset}',1)='-',-1,1)*(CAST(SUBSTRING('{offset}',2,2) AS SIGNED)*3600"
+                   f"+CAST(SUBSTRING('{offset}',5,2) AS SIGNED)*60))")
         lines = [BEGIN,
                  f"INSERT INTO {name} SELECT IF(REGEXP_LIKE('{offset}','^[+-][0-9]{{2}}:[0-9]{{2}}$','c') "
                  f"AND CONVERT_TZ('2026-01-01','{offset}','+00:00') IS NOT NULL,1,0);"]

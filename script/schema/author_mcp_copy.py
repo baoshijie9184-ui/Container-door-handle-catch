@@ -46,7 +46,7 @@ def obj(fields):return 'JSON_OBJECT('+','.join(q(k)+','+v for k,v in fields.item
 def src(name):return '`__SOURCE_SCHEMA__`.'+name
 def utc(column):return "CONVERT_TZ(s."+column+",'__SOURCE_MCP_OFFSET__','+00:00')"
 def clock_expr(column):
-    delta="(IF(LEFT('__SOURCE_MCP_OFFSET__',1)='-',-1,1)*(CAST(SUBSTRING('__SOURCE_MCP_OFFSET__',2,2) AS UNSIGNED)*3600+CAST(SUBSTRING('__SOURCE_MCP_OFFSET__',5,2) AS UNSIGNED)*60)*1000000)"
+    delta="(IF(LEFT('__SOURCE_MCP_OFFSET__',1)='-',-1,1)*(CAST(SUBSTRING('__SOURCE_MCP_OFFSET__',2,2) AS SIGNED)*3600+CAST(SUBSTRING('__SOURCE_MCP_OFFSET__',5,2) AS SIGNED)*60)*1000000)"
     return "(s."+column+" IS NULL OR ("+utc(column)+" IS NOT NULL AND TIMESTAMPDIFF(MICROSECOND,"+utc(column)+",s."+column+")="+delta+" AND CONVERT_TZ("+utc(column)+",'+00:00','__SOURCE_MCP_OFFSET__')=s."+column+"))"
 
 sql=[]

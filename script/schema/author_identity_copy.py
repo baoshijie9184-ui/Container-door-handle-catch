@@ -198,7 +198,7 @@ for name,table in sources.items():
     if 'id' in table['columns']:guard('NOT EXISTS(SELECT 1 FROM `__SOURCE_SCHEMA__`.'+name+' WHERE id<=0)')
     for column,c in table['columns'].items():
         if c['type'].lower().startswith('datetime'):
-            offset="(IF(LEFT('__SOURCE_IDENTITY_OFFSET__',1)='-',-1,1)*(CAST(SUBSTRING('__SOURCE_IDENTITY_OFFSET__',2,2) AS UNSIGNED)*3600+CAST(SUBSTRING('__SOURCE_IDENTITY_OFFSET__',5,2) AS UNSIGNED)*60)*1000000)"
+            offset="(IF(LEFT('__SOURCE_IDENTITY_OFFSET__',1)='-',-1,1)*(CAST(SUBSTRING('__SOURCE_IDENTITY_OFFSET__',2,2) AS SIGNED)*3600+CAST(SUBSTRING('__SOURCE_IDENTITY_OFFSET__',5,2) AS SIGNED)*60)*1000000)"
             guard('NOT EXISTS(SELECT 1 FROM `__SOURCE_SCHEMA__`.'+name+' s WHERE s.'+column+' IS NOT NULL AND ('+utc(column)+" IS NULL OR TIMESTAMPDIFF(MICROSECOND,"+utc(column)+',s.'+column+')<>'+offset+" OR NOT(CONVERT_TZ("+utc(column)+",'+00:00','__SOURCE_IDENTITY_OFFSET__')<=>s."+column+')))')
 for target,kind,_ in RELATIONS.values():
     discriminator='namespace' if target=='runtime_state' else 'kind'

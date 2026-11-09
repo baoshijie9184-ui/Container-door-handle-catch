@@ -71,7 +71,7 @@ guard("SELECT IF(COUNT(*)=0,1,0) FROM audit_event WHERE kind='ORGANIZATION_BINDI
 
 utc = "CONVERT_TZ(s.created_at,'__SOURCE_BINDING_OFFSET__','+00:00')"
 original_time = "DATE_FORMAT(s.created_at,'%Y-%m-%d %H:%i:%s.%f')"
-offset_seconds = "(IF(LEFT('__SOURCE_BINDING_OFFSET__',1)='-',-1,1)*(CAST(SUBSTRING('__SOURCE_BINDING_OFFSET__',2,2) AS UNSIGNED)*3600+CAST(SUBSTRING('__SOURCE_BINDING_OFFSET__',5,2) AS UNSIGNED)*60))"
+offset_seconds = "(IF(LEFT('__SOURCE_BINDING_OFFSET__',1)='-',-1,1)*(CAST(SUBSTRING('__SOURCE_BINDING_OFFSET__',2,2) AS SIGNED)*3600+CAST(SUBSTRING('__SOURCE_BINDING_OFFSET__',5,2) AS SIGNED)*60))"
 valid = [
     's.user_id>0', 's.actor_user_id>0', 'CHAR_LENGTH(s.username) BETWEEN 1 AND 50',
     'CHAR_LENGTH(s.actor_username) BETWEEN 1 AND 50', 's.binding_version BETWEEN 1 AND 2147483647',

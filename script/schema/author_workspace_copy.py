@@ -75,7 +75,7 @@ guard("SELECT IF(COUNT(*)="+str(len(session['columns']))+" AND COALESCE(SUM(BINA
 guard('SELECT IF(COUNT(*)=0,1,0) FROM chat_session WHERE fork_owner_user_id IS NOT NULL OR fork_request_id IS NOT NULL OR fork_source_session_id IS NOT NULL OR fork_through_message_id IS NOT NULL OR fork_legacy_id IS NOT NULL')
 for name in tables:
     guard(f"SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA__`.{name} WHERE user_id"+('<0' if name=='agent_workspace_owner' else '<=0'))
-offset="(IF(LEFT('__SOURCE_WORKSPACE_OFFSET__',1)='-',-1,1)*(CAST(SUBSTRING('__SOURCE_WORKSPACE_OFFSET__',2,2) AS UNSIGNED)*3600+CAST(SUBSTRING('__SOURCE_WORKSPACE_OFFSET__',5,2) AS UNSIGNED)*60))"
+offset="(IF(LEFT('__SOURCE_WORKSPACE_OFFSET__',1)='-',-1,1)*(CAST(SUBSTRING('__SOURCE_WORKSPACE_OFFSET__',2,2) AS SIGNED)*3600+CAST(SUBSTRING('__SOURCE_WORKSPACE_OFFSET__',5,2) AS SIGNED)*60))"
 utc="CONVERT_TZ(s.created_at,'__SOURCE_WORKSPACE_OFFSET__','+00:00')"
 wall="DATE_FORMAT(s.created_at,'%Y-%m-%d %H:%i:%s.%f')"
 for name in ['agent_workspace_file','agent_workspace_file_ref','agent_workspace_audit','agent_workspace_business_ref']:

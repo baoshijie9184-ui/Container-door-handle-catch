@@ -54,7 +54,7 @@ guard("SELECT IF(COUNT(*)=0,1,0) FROM audit_event WHERE kind IN ("+','.join(map(
 guard("SELECT IF(COUNT(*)=0,1,0) FROM chat_message WHERE execution_run_id IS NOT NULL OR execution_owner_user_id IS NOT NULL OR execution_created_at IS NOT NULL OR execution_legacy_id IS NOT NULL OR execution_evidence_id IS NOT NULL OR snapshot_owner_user_id IS NOT NULL OR workspace_snapshot_json IS NOT NULL OR workspace_snapshot_sha256 IS NOT NULL OR workspace_snapshot_created_at IS NOT NULL OR workspace_snapshot_legacy_id IS NOT NULL OR snapshot_evidence_id IS NOT NULL OR context_owner_user_id IS NOT NULL OR context_sources_json IS NOT NULL OR context_sources_sha256 IS NOT NULL OR context_evidence_id IS NOT NULL")
 for name in tables:
     guard(f"SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA__`.{name} WHERE user_id<=0 OR message_id<=0")
-offset_seconds="(IF(LEFT('__SOURCE_CHAT_OFFSET__',1)='-',-1,1)*(CAST(SUBSTRING('__SOURCE_CHAT_OFFSET__',2,2) AS UNSIGNED)*3600+CAST(SUBSTRING('__SOURCE_CHAT_OFFSET__',5,2) AS UNSIGNED)*60))"
+offset_seconds="(IF(LEFT('__SOURCE_CHAT_OFFSET__',1)='-',-1,1)*(CAST(SUBSTRING('__SOURCE_CHAT_OFFSET__',2,2) AS SIGNED)*3600+CAST(SUBSTRING('__SOURCE_CHAT_OFFSET__',5,2) AS SIGNED)*60))"
 for name in ['agent_message_execution','agent_workspace_turn_snapshot']:
     utc="CONVERT_TZ(created_at,'__SOURCE_CHAT_OFFSET__','+00:00')"
     # CONVERT_TZ can return an unchanged DATETIME outside its supported range, not only NULL.

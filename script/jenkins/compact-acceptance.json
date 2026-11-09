@@ -19,6 +19,19 @@
   },
   "javaSuites": [
     {
+      "id": "CompactChatMigrationMySqlTest",
+      "className": "com.ruanzhu.doorhandle.module.app.service.impl.CompactChatMigrationMySqlTest",
+      "fixtureProperties": [
+        "doorhandle.chat-evidence.source.config",
+        "doorhandle.feature.mysql.config"
+      ],
+      "source": "doorhandle-module-app/src/test/java/com/ruanzhu/doorhandle/module/app/service/impl/CompactChatMigrationMySqlTest.java",
+      "minimumTests": 15,
+      "coverage": [
+        "workspace, chat, inbox, knowledge and memory persistence"
+      ]
+    },
+    {
       "id": "AccountIdentityServiceTest",
       "className": "com.ruanzhu.doorhandle.module.system.service.AccountIdentityServiceTest",
       "fixtureProperties": [
@@ -88,19 +101,6 @@
       "minimumTests": 5,
       "coverage": [
         "single-enterprise account identity and operation audit"
-      ]
-    },
-    {
-      "id": "CompactChatMigrationMySqlTest",
-      "className": "com.ruanzhu.doorhandle.module.app.service.impl.CompactChatMigrationMySqlTest",
-      "fixtureProperties": [
-        "doorhandle.chat-evidence.source.config",
-        "doorhandle.feature.mysql.config"
-      ],
-      "source": "doorhandle-module-app/src/test/java/com/ruanzhu/doorhandle/module/app/service/impl/CompactChatMigrationMySqlTest.java",
-      "minimumTests": 15,
-      "coverage": [
-        "workspace, chat, inbox, knowledge and memory persistence"
       ]
     },
     {

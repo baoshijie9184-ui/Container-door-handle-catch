@@ -40,7 +40,7 @@ def original(column):
 
 
 def time_valid(column, nullable=False):
-    seconds = f"(IF(LEFT('{OFFSET}',1)='-',-1,1)*(CAST(SUBSTRING('{OFFSET}',2,2) AS UNSIGNED)*3600+CAST(SUBSTRING('{OFFSET}',5,2) AS UNSIGNED)*60))"
+    seconds = f"(IF(LEFT('{OFFSET}',1)='-',-1,1)*(CAST(SUBSTRING('{OFFSET}',2,2) AS SIGNED)*3600+CAST(SUBSTRING('{OFFSET}',5,2) AS SIGNED)*60))"
     condition = f"({utc(column)} IS NOT NULL AND TIMESTAMPDIFF(MICROSECOND,{utc(column)},s.{column})={seconds}*1000000)"
     return f'(s.{column} IS NULL OR {condition})' if nullable else condition
 
