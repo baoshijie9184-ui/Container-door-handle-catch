@@ -41,15 +41,6 @@ def put_json(path, value):
 @pytest.fixture
 def old_state(tmp_path, monkeypatch):
     state = legacy.support.state.__wrapped__(tmp_path, monkeypatch)
-    # This fixture authenticates synthetic custody files, not the live process
-    # namespace of the pytest container. Keep the actual scanner and its guards,
-    # but give it this fixture's own empty process namespace.
-    proc = tmp_path / 'synthetic-proc'; proc.mkdir(mode=0o700)
-    scan = legacy.support.cleanup.process_references
-    def synthetic_process_references(checkout):
-        assert Path(checkout).is_relative_to(state.root), 'Synthetic custody may inspect only its own checkout'
-        return scan(checkout, proc=proc)
-    monkeypatch.setattr(legacy.support.cleanup, 'process_references', synthetic_process_references)
     return legacy.archive_state.__wrapped__(state, monkeypatch)
 
 

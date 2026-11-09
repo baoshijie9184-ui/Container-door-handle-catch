@@ -32,6 +32,7 @@ def load(name, filename):
 
 
 cleanup = load('ecs_old_build_cleanup_contract', 'cleanup-ecs-builds.py')
+PROCESS_REFERENCES = cleanup.process_references
 remote = load('ecs_old_build_original_evidence_contract', 'verify-remote.py')
 IDENTITY = {'instanceId': 'i-fixture123', 'machineId': 'd' * 32, 'executionLocation': 'ECS'}
 OLD = 'ci-70-' + 'a' * 12
@@ -186,6 +187,13 @@ def state(tmp_path, monkeypatch):
     seal(value)
     value.keep.extend([value.archive, value.attempt / 'verification-receipt.json'])
     monkeypatch.setattr(cleanup, 'docker_snapshot', lambda: [])
+    # General custody fixtures scan only their own synthetic process namespace.
+    # Explicit process namespaces still reach the real scanner unchanged.
+    proc = tmp_path / 'synthetic-proc'; proc.mkdir(mode=0o700)
+    def synthetic_process_references(checkout, proc=proc):
+        assert Path(checkout).is_relative_to(root), 'Synthetic custody may inspect only its own checkout'
+        return PROCESS_REFERENCES(checkout, proc=proc)
+    monkeypatch.setattr(cleanup, 'process_references', synthetic_process_references)
     return value
 
 
@@ -969,6 +977,7 @@ def test_a_descriptor_replaced_during_missing_read_is_not_treated_as_closed(proc
 
 @pytest.fixture
 def denied_real_process(state, monkeypatch):
+    monkeypatch.setattr(cleanup, 'process_references', PROCESS_REFERENCES)
     pid = os.getpid(); entry = Path('/proc') / str(pid); original_iter = Path.iterdir; original_link = os.readlink
     monkeypatch.setattr(cleanup.os, 'getpid', lambda: pid + 100000)
     monkeypatch.setattr(Path, 'iterdir', lambda path: iter([entry]) if path == Path('/proc') else original_iter(path))
