@@ -1145,7 +1145,7 @@
       },
       {
         "module": "tests_python.test_failed_native_jar_duplicates",
-        "minimumTests": 106,
+        "minimumTests": 112,
         "source": "tests_python/test_failed_native_jar_duplicates.py",
         "allowedSkippedTests": []
       },
@@ -1177,6 +1177,12 @@
         "module": "tests_python.test_historical_python_build_cache_retirement",
         "minimumTests": 19,
         "source": "tests_python/test_historical_python_build_cache_retirement.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_compose_container_selection",
+        "minimumTests": 28,
+        "source": "tests_python/test_compose_container_selection.py",
         "allowedSkippedTests": []
       },
       {

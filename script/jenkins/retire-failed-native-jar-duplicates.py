@@ -497,6 +497,16 @@ def expected_control_paths(current_tag, old_tag):
     return paths
 
 
+def fixture_owner_projection(owner):
+    """Project authenticated nonsecret owner facts without inventing old fields."""
+    projected = {key: owner.get(key) for key in ('schemaVersion', 'kind', 'release', 'commit',
+        'sourceSha256', 'identity', 'phase', 'token', 'work', 'containerId', 'sourceContainerId',
+        'dataDirectory', 'containerName', 'image', 'port')}
+    if 'binaryLoggingDisabled' in owner:
+        projected['binaryLoggingDisabled'] = owner['binaryLoggingDisabled']
+    return projected
+
+
 def admit_historical_controls(root, request, row, *, builder_helpers=False):
     context = {key: row[key] for key in ('release', 'commit', 'sourceSha256')}; tag = row['release']
     controls = row['controls']; names = expected_control_paths(request['current']['release'], tag)
@@ -522,9 +532,7 @@ def admit_historical_controls(root, request, row, *, builder_helpers=False):
         # Original owner contains a root password. Only these nonsecret control
         # fields may enter a plan or receipt; original bytes remain private.
         owner, cleanup = decode(raw_docs['fixtureOwner']), decode(raw_docs['fixtureCleanup'])
-        result['fixtureOwner'] = {key: owner.get(key) for key in ('schemaVersion', 'kind', 'release', 'commit',
-            'sourceSha256', 'identity', 'phase', 'token', 'work', 'containerId', 'sourceContainerId',
-            'dataDirectory', 'containerName', 'image', 'port')}
+        result['fixtureOwner'] = fixture_owner_projection(owner)
         result['fixtureCleanup'] = {key: cleanup.get(key) for key in ('schemaVersion', 'kind', 'release', 'commit',
             'sourceSha256', 'identity', 'status', 'errors', 'containerId', 'sourceContainerUntouched',
             'dataDirectoryRetained', 'sourceDumpAndEvidenceRetained')}

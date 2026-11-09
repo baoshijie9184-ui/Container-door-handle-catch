@@ -4,6 +4,7 @@ All files and control documents here are synthetic. Tests run only through
 Jenkins on ECS; local AST parsing does not execute the retirement helper.
 """
 import copy
+from contextlib import contextmanager
 import hashlib
 import io
 import importlib.util
@@ -82,6 +83,58 @@ def documents(bundle):
 
 def validate(bundle):
     return retirer.validate_control_documents(documents(bundle), bundle.context, bundle.identity)
+
+
+@pytest.mark.parametrize(('present', 'flag'), [(False, None), (True, True), (True, False),
+    (True, 1), (True, 'true'), (True, None)],
+    ids=['legacy-absent', 'bool-true', 'bool-false', 'integer', 'string', 'null'])
+def test_authenticated_owner_projection_preserves_only_original_nonsecret_binlog_fact(bundle, monkeypatch, present, flag):
+    owner = bundle.values['fixtureOwner']
+    owner['rootPassword'] = 'synthetic-private-password'
+    owner['unreviewedPrivateField'] = {'secret': 'synthetic-private-payload'}
+    if present:
+        owner['binaryLoggingDisabled'] = flag
+    raw_docs = documents(bundle)
+    current = {'release': 'ci-200-' + 'f' * 12, 'commit': 'f' * 40, 'sourceSha256': 'e' * 64}
+    paths = retirer.expected_control_paths(current['release'], bundle.context['release'])
+    originals = {str(Path(CI_ROOT) / paths[role]): raw for role, raw in raw_docs.items()}
+    controls = {role: {'path': paths[role], 'bytes': len(raw), 'sha256': sha(raw)}
+                for role, raw in raw_docs.items()}
+
+    class ExistingControlPath(type(Path())):
+        def exists(self): return str(self) in originals
+        def is_symlink(self): return False
+
+    @contextmanager
+    def held_control(root, path, maximum):
+        assert str(root) == CI_ROOT
+        raw = originals[str(path)]
+        assert len(raw) <= maximum
+        with io.BytesIO(raw) as stream:
+            yield stream, [1, 2, stat.S_IFREG | 0o600, 1000, 1000, 1, len(raw), 0, 0, len(raw)]
+
+    source_calls = []
+    def source_proof(root, tag, commit, source_sha, *, builder_helpers=False):
+        assert str(root) == CI_ROOT and tag == bundle.context['release']
+        assert commit == bundle.context['commit'] and source_sha == bundle.context['sourceSha256']
+        source_calls.append(builder_helpers)
+        return {'sha256': source_sha}
+
+    monkeypatch.setattr(retirer, 'Path', ExistingControlPath)
+    monkeypatch.setattr(retirer, 'held_file', held_control)
+    monkeypatch.setattr(retirer, 'source_proof', source_proof)
+    result = retirer.admit_historical_controls(CI_ROOT, {'current': current, 'identity': bundle.identity},
+        {**bundle.context, 'controls': controls}, builder_helpers=True)
+    assert source_calls == [True]
+    projected = result['fixtureOwner']
+    assert ('binaryLoggingDisabled' in projected) is present
+    if present:
+        assert type(projected['binaryLoggingDisabled']) is type(flag)
+        assert projected['binaryLoggingDisabled'] == flag
+    assert 'rootPassword' not in projected and 'unreviewedPrivateField' not in projected
+    public = encoded(result)
+    assert b'synthetic-private-password' not in public and b'synthetic-private-payload' not in public
+    assert result['controls']['fixtureOwner']['sha256'] == sha(raw_docs['fixtureOwner'])
 
 
 @pytest.mark.parametrize('result', ['FAILURE', 'ABORTED'])

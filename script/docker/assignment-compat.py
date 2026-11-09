@@ -90,15 +90,34 @@ def container(project, service, optional=False):
                  '--filter', 'label=com.docker.compose.service=' + service).decode().split()
     if optional and not ids:
         return None
-    require(len(ids) == 1 and CID.fullmatch(ids[0]), 'Expected one existing application container')
-    rows = json.loads(docker('inspect', ids[0]))
-    require(len(rows) == 1, 'Container metadata changed')
-    row = rows[0]
-    labels = row.get('Config', {}).get('Labels') or {}
-    require(row.get('Id') == ids[0] and labels.get('com.docker.compose.project') == project
-            and labels.get('com.docker.compose.service') == service and DIGEST.fullmatch(row.get('Image', '')),
-            'Container does not belong to the selected application')
-    return row
+    require(0 < len(ids) <= 64 and len(set(ids)) == len(ids) and all(CID.fullmatch(value) for value in ids),
+            'Expected bounded distinct full application container identities')
+    rows = json.loads(docker('inspect', *ids))
+    require(isinstance(rows, list) and len(rows) == len(ids)
+            and all(isinstance(row, dict) for row in rows)
+            and {row.get('Id') for row in rows} == set(ids), 'Container metadata changed')
+    for row in rows:
+        labels = row.get('Config', {}).get('Labels') or {}
+        require(labels.get('com.docker.compose.project') == project
+                and labels.get('com.docker.compose.service') == service and DIGEST.fullmatch(row.get('Image', '')),
+                'Container does not belong to the selected application')
+    if len(rows) == 1:
+        return rows[0]
+    # Old CI tool images inherited Compose labels. Their stopped objects must
+    # not hide the real service, including while its writer is frozen/stopped.
+    canonical = [row for row in rows if row.get('Name') == '/' + project + '-' + service + '-1']
+    require(len(canonical) == 1, 'Ambiguous canonical Compose service container')
+    selected = canonical[0]; labels = selected['Config']['Labels']
+    require(labels.get('com.docker.compose.container-number') == '1'
+            and labels.get('com.docker.compose.oneoff') == 'False', 'Canonical Compose service labels differ')
+    for row in rows:
+        state = row.get('State', {})
+        require(isinstance(state, dict) and state.get('Paused') is False and state.get('Restarting') is False
+                and state.get('Dead') is False and type(state.get('Pid')) is int
+                and (state.get('Running') is False and state['Pid'] == 0 and state.get('Status') in ('created', 'exited')
+                     or row is selected and state.get('Running') is True and state['Pid'] > 0 and state.get('Status') == 'running'),
+                'Competing active or uncertain Compose service container')
+    return selected
 
 
 def schema(mysql, table):
