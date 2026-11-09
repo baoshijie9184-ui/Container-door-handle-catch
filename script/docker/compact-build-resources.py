@@ -1168,6 +1168,97 @@ def historical_builder_remove(descriptor, inspect_fn, remove_fn, list_fn, refere
             'volumesPreserved': True, 'directoriesPreserved': True}
 
 
+def historical_mysql_fixture_projection(row):
+    """Retain only control fields. MySQL Config.Env is never frozen or logged."""
+    require(type(row) is dict, 'Actual historical MySQL inspection required')
+    config, host, state = (row.get(key) or {} for key in ('Config', 'HostConfig', 'State'))
+    return {'Id': row.get('Id'), 'Name': row.get('Name'), 'Image': row.get('Image'), 'ExecIDs': row.get('ExecIDs'),
+        'Config': {key: config.get(key) for key in ('User', 'Entrypoint', 'Cmd')},
+        'Labels': {key: (config.get('Labels') or {}).get(key) for key in
+                   ('io.doorhandle.compact-fixtures', 'io.doorhandle.release', 'io.doorhandle.source')},
+        'HostConfig': {key: host.get(key) for key in ('RestartPolicy', 'AutoRemove', 'Privileged', 'Memory', 'MemorySwap',
+            'NanoCpus', 'PidsLimit', 'NetworkMode', 'PidMode', 'IpcMode', 'UTSMode', 'UsernsMode', 'PortBindings',
+            'Tmpfs', 'VolumesFrom', 'Links')},
+        'State': {key: state.get(key) for key in ('Status', 'Running', 'Restarting', 'Paused', 'OOMKilled',
+            'Pid', 'ExitCode', 'StartedAt', 'FinishedAt')}, 'healthStatus': (state.get('Health') or {}).get('Status'),
+        'Mounts': [{key: mount.get(key) for key in ('Type', 'Name', 'Source', 'Destination', 'RW', 'Driver')}
+                   for mount in row.get('Mounts', [])]}
+
+
+def historical_mysql_fixture_descriptor(root, context, identity, owner, cleanup, row, data_metadata):
+    """Admit an already stopped fixture object; its bind directory has no deletion API."""
+    require(HISTORICAL_BUILDERS.get(context.get('release')) == context.get('commit'), 'Reviewed historical MySQL context required')
+    require(all(document.get(key) == value for document in (owner, cleanup)
+                for key, value in {**context, 'identity': identity}.items()), 'Historical MySQL source or host differs')
+    work = str(Path(root) / 'verification' / context['release'] / 'checkout/work/compact-fixtures')
+    data = work + '/mysql-data'; cid = owner.get('containerId'); source = owner.get('sourceContainerId'); token = owner.get('token')
+    require(owner.get('kind') == 'doorhandle-compact-fixture-owner' and owner.get('schemaVersion') == 1
+            and owner.get('phase') == 'OWNED_SERVER_STOPPED' and owner.get('work') == work
+            and type(token) is str and re.fullmatch(r'[a-f0-9]{10}', token)
+            and type(cid) is str and SHA.fullmatch(cid) and type(source) is str and SHA.fullmatch(source) and cid != source
+            and owner.get('dataDirectory') == data and IMAGE.fullmatch(owner.get('image', ''))
+            and owner.get('containerName') == 'doorhandle-compact-fixture-' + token
+            and type(owner.get('port')) is int and 1024 < owner['port'] <= 65535 and owner['port'] != 3306,
+            'Original stopped MySQL fixture identity or data path differs')
+    require(cleanup.get('kind') == 'doorhandle-compact-fixture-cleanup' and cleanup.get('schemaVersion') == 1
+            and cleanup.get('status') == 'STOPPED' and cleanup.get('errors') == [] and cleanup.get('containerId') == cid
+            and cleanup.get('sourceContainerUntouched') == source and cleanup.get('dataDirectoryRetained') == data
+            and cleanup.get('sourceDumpAndEvidenceRetained') is True, 'Original MySQL cleanup preservation proof differs')
+    require(type(data_metadata) is list and len(data_metadata) == 5 and all(type(item) is int for item in data_metadata)
+            and stat.S_ISDIR(data_metadata[2]) and stat.S_IMODE(data_metadata[2]) == 0o700 and data_metadata[3] == 999,
+            'Retained MySQL directory inode owner or mode differs')
+    projection = historical_mysql_fixture_projection(row); host = projection['HostConfig']; state = projection['State']
+    require(projection['Id'] == cid and projection['Name'] == '/' + owner['containerName'] and projection['Image'] == owner['image']
+            and projection['Labels'] == {'io.doorhandle.compact-fixtures': token, 'io.doorhandle.release': context['release'],
+                                          'io.doorhandle.source': context['sourceSha256']}, 'Actual MySQL object ownership differs')
+    require(state['Status'] == 'exited' and state['Running'] is False and state['Restarting'] is False
+            and state['Paused'] is False and state['OOMKilled'] is False and type(state['Pid']) is int and state['Pid'] == 0
+            and type(state['StartedAt']) is str and state['StartedAt'] and not state['StartedAt'].startswith('0001-')
+            and not projection['ExecIDs'] and projection['healthStatus'] not in ('healthy', 'starting'),
+            'Historical MySQL object is not a stopped terminal container')
+    port = owner['port']
+    require(host['RestartPolicy'] == {'Name': 'no', 'MaximumRetryCount': 0} and host['AutoRemove'] is False
+            and host['Privileged'] is False and host['Memory'] == host['MemorySwap'] == 1536 * MIB
+            and host['NanoCpus'] == 10 ** 9 and host['PidsLimit'] == 256 and host['NetworkMode'] in ('default', 'bridge')
+            and host['PidMode'] in ('', None) and host['IpcMode'] in ('private', '') and host['UTSMode'] in ('', None)
+            and host['UsernsMode'] in ('', None) and not host['Links'] and not host['VolumesFrom']
+            and host['PortBindings'] == {str(port) + '/tcp': [{'HostIp': '127.0.0.1', 'HostPort': str(port)}]}
+            and set(host['Tmpfs'] or {}) == {'/var/lib/mysql'}, 'Historical MySQL port resource or namespace differs')
+    mounts = projection['Mounts']; persistent = [mount for mount in mounts if mount['Type'] != 'tmpfs']
+    require(len(persistent) == 1 and persistent[0]['Type'] == 'bind' and persistent[0]['Source'] == data
+            and persistent[0]['Destination'] == data and persistent[0]['RW'] is True
+            and all(mount['Destination'] == '/var/lib/mysql' for mount in mounts if mount['Type'] == 'tmpfs'),
+            'Historical MySQL object acquired an unapproved data or namespace mount')
+    expected_cmd = ['--datadir=' + data, '--port=' + str(port), '--bind-address=0.0.0.0', '--mysqlx=OFF',
+                    '--event-scheduler=OFF', '--local-infile=OFF', '--innodb-buffer-pool-size=268435456', '--max-connections=120']
+    require(projection['Config']['Cmd'] == expected_cmd, 'Historical MySQL actual datadir command differs')
+    return {**context, 'identity': identity, 'containerId': cid, 'sourceContainerId': source, 'ownerToken': token,
+            'dataDirectory': data, 'dataMetadata': data_metadata, 'inspectProjection': projection,
+            'inspectSha256': hashlib.sha256(encoded(projection)).hexdigest(), 'preservedData': True}
+
+
+def historical_mysql_fixture_remove(descriptor, inspect_fn, remove_fn, list_fn, references_fn, data_fn):
+    cid = descriptor['containerId']
+    require(HISTORICAL_BUILDERS.get(descriptor.get('release')) == descriptor.get('commit')
+            and SHA.fullmatch(cid) and cid != descriptor['sourceContainerId']
+            and SHA.fullmatch(descriptor.get('rawInspectSha256', '')), 'Reviewed MySQL retirement descriptor required')
+    def unchanged():
+        raw = inspect_fn(cid)
+        require(type(raw) is bytes and hashlib.sha256(raw).hexdigest() == descriptor['rawInspectSha256'],
+                'Historical MySQL raw inspection changed after plan')
+        projection = historical_mysql_fixture_projection(historical_builder_inspect(raw))
+        require(projection == descriptor['inspectProjection'] and hashlib.sha256(encoded(projection)).hexdigest() == descriptor['inspectSha256']
+                and data_fn() == descriptor['dataMetadata'], 'Historical MySQL object or retained data inode changed')
+    unchanged(); require(references_fn(cid) is None, 'Historical MySQL reference audit did not finish')
+    unchanged(); remove_fn(cid)
+    ids = list_fn()
+    require(type(ids) is list and all(type(item) is str and SHA.fullmatch(item) for item in ids)
+            and cid not in ids and data_fn() == descriptor['dataMetadata'], 'MySQL object removal or retained data readback is unknown')
+    return {'status': 'REMOVED', 'release': descriptor['release'], 'containerId': cid,
+            'dataDirectory': descriptor['dataDirectory'], 'dataMetadata': descriptor['dataMetadata'],
+            'dataDirectoryPreserved': True, 'imagesPreserved': True, 'volumesPreserved': True}
+
+
 def tool_engine_identity(root, context, module_directory):
     """Read-only complete same-attempt tool proof; Docker is inspected by callers."""
     admit_tools(root, context, module_directory)

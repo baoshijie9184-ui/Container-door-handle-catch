@@ -1156,6 +1156,12 @@
         "allowedSkippedTests": []
       },
       {
+        "module": "tests_python.test_historical_mysql_fixture_retirement",
+        "minimumTests": 43,
+        "source": "tests_python/test_historical_mysql_fixture_retirement.py",
+        "allowedSkippedTests": []
+      },
+      {
         "module": "tests_python.test_compact_ddl_policy",
         "minimumTests": 56,
         "source": "tests_python/test_compact_ddl_policy.py",

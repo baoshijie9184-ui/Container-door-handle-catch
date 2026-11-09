@@ -470,7 +470,18 @@ def admit_historical_controls(root, request, row, *, builder_helpers=False):
     need(evidence['work'] == str(Path(root) / 'verification' / tag / 'checkout/work/compact-fixtures'), 'FIXTURE_OWNER_OUTSIDE_EXACT_OLD_ATTEMPT')
     original_source = (source_proof(root, tag, context['commit'], context['sourceSha256'], builder_helpers=True)
                        if builder_helpers else source_proof(root, tag, context['commit'], context['sourceSha256']))
-    return {'context': context, 'evidence': evidence, 'controls': bindings, 'sourceArchive': original_source}
+    result = {'context': context, 'evidence': evidence, 'controls': bindings, 'sourceArchive': original_source}
+    if builder_helpers:
+        # Original owner contains a root password. Only these nonsecret control
+        # fields may enter a plan or receipt; original bytes remain private.
+        owner, cleanup = decode(raw_docs['fixtureOwner']), decode(raw_docs['fixtureCleanup'])
+        result['fixtureOwner'] = {key: owner.get(key) for key in ('schemaVersion', 'kind', 'release', 'commit',
+            'sourceSha256', 'identity', 'phase', 'token', 'work', 'containerId', 'sourceContainerId',
+            'dataDirectory', 'containerName', 'image', 'port')}
+        result['fixtureCleanup'] = {key: cleanup.get(key) for key in ('schemaVersion', 'kind', 'release', 'commit',
+            'sourceSha256', 'identity', 'status', 'errors', 'containerId', 'sourceContainerUntouched',
+            'dataDirectoryRetained', 'sourceDumpAndEvidenceRetained')}
+    return result
 
 
 def admit_candidate(root, request, row, quiescence):
@@ -711,34 +722,65 @@ def builder_container_ids():
     return ids
 
 
-def builder_references(root, historical, descriptor, cleanup, builder):
-    """The one admitted exited builder may be retired; every other guard stays strict."""
+def builder_references(root, historical, descriptor, cleanup, builder, fixture=None):
+    """Exclude only the fully admitted objects about to retire, never JAR guards."""
     cid = descriptor['containerId']; tag = historical['context']['release']
+    retiring = {cid: 'doorhandle-builder-' + descriptor['ownerToken']}
+    if fixture is not None:
+        need(fixture['containerId'] != cid, 'MYSQL_FIXTURE_AND_BUILDER_ID_COLLISION')
+        retiring[fixture['containerId']] = 'doorhandle-compact-fixture-' + fixture['ownerToken']
     containers = cleanup.docker_snapshot()
-    need(sum(row[0] == cid for row in containers) == 1, 'EXACT_HISTORICAL_BUILDER_MISSING')
-    cleanup.quiescent({'checkout': Path(root) / 'verification' / tag / 'checkout',
-                       'token': historical['evidence']['ownerToken']}, tag,
-                      [row for row in containers if row[0] != cid])
-    name = 'doorhandle-builder-' + descriptor['ownerToken']
+    need(all(sum(row[0] == selected for row in containers) == 1 for selected in retiring), 'EXACT_HISTORICAL_RETIRING_OBJECT_MISSING')
+    try:
+        cleanup.quiescent({'checkout': Path(root) / 'verification' / tag / 'checkout',
+                           'token': historical['evidence']['ownerToken']}, tag,
+                          [row for row in containers if row[0] not in retiring])
+    except ValueError as error:
+        raise RetirementError('HISTORICAL_OBJECTS_NOT_QUIESCENT_' + cleanup.failure_guard_code(error)) from None
     for other in builder_container_ids():
-        if other == cid: continue
         row = builder.historical_builder_inspect(builder_docker('inspect', other)); host = row.get('HostConfig') or {}
         values = [host.get(key, '') for key in ('NetworkMode', 'PidMode', 'IpcMode')]
         values += list(host.get('VolumesFrom') or []) + list(host.get('Links') or [])
         for value in values:
             need(type(value) is str, 'CONTAINER_REFERENCE_METADATA_INVALID')
             parts = value.replace('/', ':').split(':')
-            need(not any(item == name or re.fullmatch(r'[a-f0-9]+', item) and cid.startswith(item) for item in parts),
+            need(not any(item == name or re.fullmatch(r'[a-f0-9]+', item) and selected.startswith(item)
+                         for item in parts for selected, name in retiring.items()),
                  'ANOTHER_CONTAINER_REFERENCES_HISTORICAL_BUILDER')
     # No fallback kills or cgroup writes. A still-populated retained group stops
     # maintenance even if Docker reports an exited root process.
-    for group in (Path('/sys/fs/cgroup/system.slice') / ('docker-' + cid + '.scope'),
-                  Path('/sys/fs/cgroup/docker') / cid):
-        if group.exists():
-            need(group.resolve(strict=True) == group and not group.is_symlink(), 'BUILDER_CGROUP_LINK_REJECTED')
-            value = (group / 'cgroup.events').read_bytes()
-            need(len(value) <= 4096 and dict(line.split() for line in value.decode('ascii').splitlines()).get('populated') == '0',
-                 'HISTORICAL_BUILDER_CGROUP_REMAINS_POPULATED')
+    for selected in retiring:
+        for group in (Path('/sys/fs/cgroup/system.slice') / ('docker-' + selected + '.scope'), Path('/sys/fs/cgroup/docker') / selected):
+            if group.exists():
+                need(group.resolve(strict=True) == group and not group.is_symlink(), 'BUILDER_CGROUP_LINK_REJECTED')
+                value = (group / 'cgroup.events').read_bytes()
+                need(len(value) <= 4096 and dict(line.split() for line in value.decode('ascii').splitlines()).get('populated') == '0',
+                     'HISTORICAL_BUILDER_CGROUP_REMAINS_POPULATED')
+
+
+def fixture_data_metadata(root, path):
+    """Stat the UID999 directory entry only; never open its private contents."""
+    path = Path(path); parent = owned_path(root, path.parent, directory=True)
+    need(path.name == 'mysql-data' and path.resolve(strict=True) == path, 'EXACT_RETAINED_MYSQL_DIRECTORY_REQUIRED')
+    fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        need(metadata(os.fstat(fd)) == metadata(parent.lstat()), 'MYSQL_DIRECTORY_PARENT_MOVED')
+        value = os.stat(path.name, dir_fd=fd, follow_symlinks=False)
+        need(stat.S_ISDIR(value.st_mode) and not stat.S_ISLNK(value.st_mode), 'RETAINED_MYSQL_DATA_DIRECTORY_LINK_REJECTED')
+        return [value.st_dev, value.st_ino, value.st_mode, value.st_uid, value.st_gid]
+    finally: os.close(fd)
+
+
+def capture_fixture(root, request, historical, builder):
+    owner, cleanup = historical['fixtureOwner'], historical['fixtureCleanup']; cid = owner.get('containerId')
+    if cid is None: return None
+    need(type(cid) is str and SHA.fullmatch(cid), 'ORIGINAL_MYSQL_FIXTURE_ID_REQUIRED')
+    if cid not in builder_container_ids(): return None
+    raw = builder_docker('inspect', cid)
+    descriptor = builder.historical_mysql_fixture_descriptor(root, historical['context'], request['identity'], owner, cleanup,
+        builder.historical_builder_inspect(raw), fixture_data_metadata(root, owner['dataDirectory']))
+    descriptor['rawInspectSha256'] = digest_bytes(raw)
+    return descriptor
 
 
 def capture_builder(root, request, row, builder):
@@ -761,7 +803,8 @@ def capture_builder(root, request, row, builder):
     inspected = builder_docker('inspect', cid); actual = builder.historical_builder_inspect(inspected)
     descriptor = builder.historical_builder_descriptor(root, historical['context'], request['identity'],
         raw['tools'], raw['summary'], raw['measurement'], historical['sourceArchive']['builderHelperSha256'], actual)
-    return {'historical': historical, 'builderControls': controls, 'descriptor': descriptor}, inspected
+    fixture = capture_fixture(root, request, historical, builder)
+    return {'historical': historical, 'builderControls': controls, 'descriptor': descriptor, 'fixture': fixture}, inspected
 
 
 def plan_builders(root, raw_request, *, request_sha256, expected_current, identity, modules):
@@ -773,7 +816,7 @@ def plan_builders(root, raw_request, *, request_sha256, expected_current, identi
             try:
                 with attempt_lock(root, row['release']):
                     value, inspected = capture_builder(root, request, row, builder)
-                    builder_references(root, value['historical'], value['descriptor'], cleanup, builder)
+                    builder_references(root, value['historical'], value['descriptor'], cleanup, builder, value['fixture'])
                     if not directory.exists(): directory.mkdir(mode=0o700)
                     owned_path(root, directory, directory=True)
                     path = directory / (row['release'] + '.json')
@@ -801,7 +844,7 @@ def apply_builders(root, raw_request, prepared, *, request_sha256, plan_sha256, 
     need(type(selected) is list and len(selected) <= len(rows)
          and len({row['descriptor']['release'] for row in selected}) == len(selected)
          and all(row['descriptor']['release'] in rows for row in selected), 'BOUNDED_HISTORICAL_BUILDER_SELECTION_REQUIRED')
-    builder, cleanup = modules['builder'], modules['cleanup']; removed, failure = [], None
+    builder, cleanup = modules['builder'], modules['cleanup']; removed, retired_fixtures, failure = [], [], None
     journal_path = Path(root) / 'inbox' / expected_current['release'] / 'native-builder-retirement-journal.jsonl'
     with controller_lock(root), os.fdopen(os.open(journal_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600), 'wb') as journal:
         def record(value):
@@ -822,6 +865,16 @@ def apply_builders(root, raw_request, prepared, *, request_sha256, plan_sha256, 
                              and digest_bytes(raw) == reference['sha256']
                              and digest_bytes(builder.encoded(builder.historical_builder_inspect(raw))) == candidate['descriptor']['inspectSha256'],
                              'FROZEN_HISTORICAL_BUILDER_INSPECTION_DRIFT')
+                    fixture = current['fixture']
+                    if fixture is not None:
+                        record({'phase': 'MYSQL_OBJECT_REMOVE_STARTED', 'release': active, 'containerId': fixture['containerId'],
+                                'inspectSha256': fixture['inspectSha256'], 'rawInspectSha256': fixture['rawInspectSha256'],
+                                'dataDirectory': fixture['dataDirectory'], 'dataMetadata': fixture['dataMetadata']})
+                        retired = builder.historical_mysql_fixture_remove(fixture, lambda cid: builder_docker('inspect', cid),
+                            lambda cid: builder_docker('rm', cid), builder_container_ids,
+                            lambda _cid: builder_references(root, current['historical'], current['descriptor'], cleanup, builder, fixture),
+                            lambda: fixture_data_metadata(root, fixture['dataDirectory']))
+                        retired_fixtures.append(retired); record({'phase': 'MYSQL_OBJECT_REMOVED', **retired})
                     record({'phase': 'REMOVE_STARTED', 'release': active, 'containerId': candidate['descriptor']['containerId'],
                             'inspection': reference})
                     value = builder.historical_builder_remove(candidate['descriptor'],
@@ -837,7 +890,8 @@ def apply_builders(root, raw_request, prepared, *, request_sha256, plan_sha256, 
     return {'schemaVersion': 1, 'kind': 'doorhandle-historical-builder-retirement-receipt',
             'status': 'FAILED_OR_UNKNOWN' if failure else 'REMOVED' if removed else 'NO_ACTION',
             'current': expected_current, 'identity': identity, 'requestSha256': request_sha256, 'planSha256': plan_sha256,
-            'removed': removed, 'failure': failure, 'skipped': prepared['skipped'], 'imagesPreserved': True,
+            'removed': removed, 'retiredMysqlObjects': retired_fixtures, 'mysqlDataDirectoriesPreserved': True,
+            'failure': failure, 'skipped': prepared['skipped'], 'imagesPreserved': True,
             'volumesPreserved': True, 'directoriesPreserved': True, 'jarDeletionPerformed': False}
 
 
