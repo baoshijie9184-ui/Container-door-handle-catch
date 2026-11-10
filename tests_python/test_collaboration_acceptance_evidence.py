@@ -79,4 +79,16 @@ def test_pass_labels_and_rehashed_receipts_cannot_hide_incomplete_actual_semanti
             elif damage == 'candidate-write-200': row['candidateWriteHttpStatuses'][0] = 200
             else: row['taskId'] = 'a-different-task'
         change(tmp_path, cleanup, 'collaboration-http-claim.json', mutate)
-    with pytest.raises((ValueError, OSError, KeyError)): policy.validate_files(tmp_path, cleanup, proof, browser)
+    stable_rejections = {
+        'fake-active': 'FINAL_ACTIVATION_CONTROL_REVISION_NOT_PROVEN',
+        'missing-source': 'FINAL_ACTIVATION_CONTROL_REVISION_NOT_PROVEN',
+        'flags-off': 'FINAL_STABLE_FLAGS_NOT_PROVEN',
+        'wrong-supervisor': 'FINAL_ACTIVATION_CONTROL_REVISION_NOT_PROVEN',
+        'peer-history': 'FINAL_PEER_SCOPE_NOT_DENIED',
+    }
+    if damage in stable_rejections:
+        with pytest.raises(policy.stable.StableIdentityBlocked) as rejected:
+            policy.validate_files(tmp_path, cleanup, proof, browser)
+        assert str(rejected.value) == stable_rejections[damage]
+    else:
+        with pytest.raises((ValueError, OSError, KeyError)): policy.validate_files(tmp_path, cleanup, proof, browser)
