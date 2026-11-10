@@ -92,6 +92,21 @@ RECENT_CANONICAL_ONLY = {
     'ci-198-7af0903ee840': '7af0903ee84011dc51f4abac4f4a4d9679db7322',
     'ci-201-803baf401b5f': '803baf401b5f9566283a59cb6a885a794b9d7d85',
 }
+# Independent closed batch: no builder/cache permission and no #206 binary.
+CLOSED_RUNTIME_BATCH = 'failed-204-207'
+CLOSED_RUNTIME_JARS = {
+    'ci-204-24f8eb4b02bf': {
+        'commit': '24f8eb4b02bf290c6dd4e186eb78c5f3c80f3b88',
+        'sourceSha256': '4b1fed5b2e0f0a80cd0006d7a536eff326f547448c5019ec3ceafa457532bd77',
+        'jarSha256': 'fd5d66a17d2069fc10a0c18403d2399f510b9784b1f404330d7349001e552f67',
+        'jarBytes': 380301926,
+        'containerId': 'cad56ad37f6d63465bad18260464b7c5dfe168e68159121a3308b4a0212de5b9'},
+    'ci-207-eb286c623177': {
+        'commit': 'eb286c623177b9d1bc23fe88223d81862c00bc71',
+        'sourceSha256': '5973ac068fa44a1e7b69a443a820e30d780c35e4c0939e75b3703b9b426cbf2a',
+        'jarSha256': '2accfa412ac67a244e5f0e47feba890141a68ed674ef746729c0402e62102ee1',
+        'jarBytes': 380301926, 'containerId': None},
+}
 # This independent permission covers one reviewed stopped builder, not the
 # other Recent attempts, historical cache sets, or any state-volume contents.
 RECENT_BUILDER_ONLY = {
@@ -161,6 +176,8 @@ APPROVED_CANONICAL_SOURCES = {
     'ci-195-2c2e65a0daa9': ('ef8373c5b28d6ce8394d05017cf08b8db12a27a7fff507bc4c3f10367d6480b0', '25d0f06947fa2fef23d2857aa2f2dc51358ca1981f6e425ec8150cc5b42e40f3'),
     'ci-198-7af0903ee840': ('ef8373c5b28d6ce8394d05017cf08b8db12a27a7fff507bc4c3f10367d6480b0', '25d0f06947fa2fef23d2857aa2f2dc51358ca1981f6e425ec8150cc5b42e40f3'),
     'ci-201-803baf401b5f': ('ef8373c5b28d6ce8394d05017cf08b8db12a27a7fff507bc4c3f10367d6480b0', 'c9ef58f60e0be6f9a198039da7a9cd7f03bd544a93294a254765cde2ba789d85'),
+    'ci-204-24f8eb4b02bf': ('159f84ba8ebe8e2da452d3e4e8b25780fe93b748fb02a052db16dc7cdb79b298', 'c9ef58f60e0be6f9a198039da7a9cd7f03bd544a93294a254765cde2ba789d85'),
+    'ci-207-eb286c623177': ('97690cb956375cb1e98f1f1f98a7b3a3ec0e8d73d99a8ee0f28b0f5634fde180', '983e55829ade0fe9828de4397e1f6115a2e164bc164a37688db1613bce1fa77d'),
 }
 # Original tool bytes recorded by the retained Jenkins preparation receipts.
 # These values authenticate the owner chain; matching self-described fields
@@ -234,7 +251,7 @@ def same_context(value, context):
 
 
 def canonical_commit(tag):
-    return APPROVED_OLD.get(tag) or RECENT_CANONICAL_ONLY.get(tag)
+    return APPROVED_OLD.get(tag) or RECENT_CANONICAL_ONLY.get(tag) or CLOSED_RUNTIME_JARS.get(tag, {}).get('commit')
 
 
 def terminal_xml(raw, context, *, canonical_jar=False):
@@ -421,7 +438,7 @@ def _renamed_copy_matches(before, after):
             and type(after[8]) is int and after[8]>=before[8])
 
 
-def remove_duplicate(root, descriptor, quarantine=None):
+def remove_duplicate(root, descriptor, quarantine=None, *, quiescence=None):
     """Capture the old path privately, prove its inode, then unlink only that copy.
 
     A race replacing the old path can only move an unexpected file into this
@@ -473,6 +490,8 @@ def remove_duplicate(root, descriptor, quarantine=None):
             need(metadata(os.stat(target.name, dir_fd=stack[-1], follow_symlinks=False)) == copy_info
                  and metadata(os.fstat(copy.fileno())) == copy_info and metadata(keeper.lstat()) == keeper_info,
                  'TARGET_OR_KEEPER_MOVED_BEFORE_UNLINK')
+            if quiescence is not None:
+                need(callable(quiescence) and quiescence() is None, 'DUPLICATE_CAPTURE_QUIESCENCE_REQUIRED')
             _capture_no_replace(stack[-1],target.name,quarantine_fd,'candidate-app.jar')
             os.fsync(stack[-1]);os.fsync(quarantine_fd)
             captured=metadata(os.stat('candidate-app.jar',dir_fd=quarantine_fd,follow_symlinks=False))
@@ -483,6 +502,8 @@ def remove_duplicate(root, descriptor, quarantine=None):
             need(metadata(os.fstat(kept.fileno()))==keeper_info==metadata(keeper.lstat())
                  and hash_stream(kept)==hash_stream(copy)==descriptor['sha256'],
                  'KEEPER_OR_CAPTURE_CHANGED_RETAIN_QUARANTINE')
+            if quiescence is not None:
+                need(quiescence() is None, 'DUPLICATE_CAPTURE_QUIESCENCE_REQUIRED')
             need(not target.exists() and not target.is_symlink(),'ORIGINAL_TARGET_REAPPEARED_RETAIN_QUARANTINE')
             private_identity()
             need(os.listdir(quarantine_fd)==['candidate-app.jar']
@@ -659,6 +680,72 @@ def admit_candidate(root, request, row, quiescence):
             'sourceArchive': admitted['sourceArchive'], 'ownerToken': evidence['ownerToken'], 'target': target}
 
 
+def closed_runtime_request(raw, checksum, current, identity):
+    request = validate_request(raw, checksum, current, identity)
+    need({row['release'] for row in request['candidates']} == set(CLOSED_RUNTIME_JARS), 'COMPLETE_CLOSED_RUNTIME_BATCH_REQUIRED')
+    for row in request['candidates']:
+        registered = CLOSED_RUNTIME_JARS[row['release']]
+        need(all(row[key] == registered[key] for key in ('commit', 'sourceSha256')), 'CLOSED_RUNTIME_SOURCE_DIFFERS')
+    return request
+
+
+def admit_closed_runtime_duplicate(root, request, row, quiescence):
+    admitted = admit_historical_controls(root, request, row, canonical_jar=True)
+    evidence = admitted['evidence']; tag = row['release']; registered = CLOSED_RUNTIME_JARS[tag]
+    need(evidence['jarSha256'] == registered['jarSha256'] and evidence['jarBytes'] == registered['jarBytes'],
+         'CLOSED_RUNTIME_BINARY_DIFFERS')
+    references = canonical_publication_refs(root, tag)
+    need(quiescence(Path(root) / 'verification' / tag / 'checkout', tag, evidence['ownerToken']) is None,
+         'ACTUAL_DUAL_ROOT_QUIESCENCE_REQUIRED')
+    return {'context': admitted['context'], 'jenkinsResult': evidence['jenkinsResult'], 'controls': admitted['controls'],
+        'sourceArchive': admitted['sourceArchive'], 'ownerToken': evidence['ownerToken'], 'publicationReferences': references,
+        'target': describe_duplicate(root, tag, evidence['jarSha256'], evidence['jarBytes'])}
+
+
+def closed_runtime_previous(root, request, *, canonical_jar):
+    """Bind the prior original success; a partial batch cannot enter its next phase."""
+    name = 'native-jar-duplicate-receipt.json' if canonical_jar else 'native-jar-duplicate-fixture-object-receipt.json'
+    path = Path(root) / 'inbox' / request['current']['release'] / name
+    raw = private_bytes(root, path); value = decode(raw)
+    need(value.get('current') == request['current'] and value.get('identity') == request['identity']
+         and value.get('requestSha256') == digest_bytes(canonical(request))
+         and value.get('closedJarBatch') == CLOSED_RUNTIME_BATCH and value.get('failure') is None
+         and value.get('skipped') == [], 'CLOSED_RUNTIME_PRIOR_PHASE_NOT_COMPLETE')
+    stem = name.removesuffix('-receipt.json')
+    plan_path = path.with_name(stem + '-plan.json'); journal_path = path.with_name(stem + '-journal.jsonl')
+    plan_raw, journal_raw = private_bytes(root, plan_path), private_bytes(root, journal_path)
+    previous_plan = decode(plan_raw)
+    need(value.get('planSha256') == digest_bytes(plan_raw) and value.get('journalSha256') == digest_bytes(journal_raw)
+         and previous_plan.get('kind') == value.get('kind', '').removesuffix('-receipt') + '-plan'
+         and previous_plan.get('current') == request['current'] and previous_plan.get('identity') == request['identity']
+         and previous_plan.get('requestSha256') == value['requestSha256'] and previous_plan.get('skipped') == []
+         and previous_plan.get('closedJarBatch') == CLOSED_RUNTIME_BATCH
+         and previous_plan.get('deletionPerformed') is False, 'CLOSED_RUNTIME_PRIOR_ORIGINALS_DIFFER')
+    if canonical_jar:
+        expected = {(f'verification/{tag}/checkout/work/compact-fixtures/candidate-app.jar', row['jarSha256'], row['jarBytes'])
+                    for tag, row in CLOSED_RUNTIME_JARS.items()}
+        deleted = value.get('deleted')
+        need(value.get('kind') == KIND + '-receipt' and value.get('status') == 'REMOVED'
+             and type(deleted) is list and len(deleted) == 2
+             and {(row.get('path'), row.get('sha256'), row.get('bytes')) for row in deleted} == expected
+             and all(row.get('keeperVerifiedAfter') is True and row.get('capturedInodeVerified') is True for row in deleted)
+             and value.get('inboxKeepersPreserved') is True and value.get('retainedQuarantinePaths') == []
+             and value.get('sourceArchivesDataAndReportsHaveNoDeletionApi') is True,
+             'CLOSED_RUNTIME_DUPLICATES_NOT_COMPLETE')
+    else:
+        cid = CLOSED_RUNTIME_JARS['ci-204-24f8eb4b02bf']['containerId']
+        removed, absent = value.get('removed'), value.get('alreadyAbsent')
+        need(value.get('kind') == 'doorhandle-recent-mysql-fixture-object-receipt'
+             and value.get('status') in ('REMOVED', 'NO_ACTION') and type(removed) is list and type(absent) is list
+             and [row.get('containerId') for row in removed] + absent == [cid]
+             and value.get('noObject') == ['ci-207-eb286c623177']
+             and all(value.get(key) is True for key in ('dataDirectoriesPreserved', 'imagesPreserved', 'volumesPreserved',
+                                                       'sourceArchivesAndReportsPreserved'))
+             and value.get('jarDeletionPerformed') is False, 'CLOSED_RUNTIME_FIXTURES_NOT_COMPLETE')
+    return {'path': path.relative_to(root).as_posix(), 'bytes': len(raw), 'sha256': digest_bytes(raw),
+        'planSha256': digest_bytes(plan_raw), 'journalSha256': digest_bytes(journal_raw)}
+
+
 @contextmanager
 def publication_lock(root):
     """Use the deployment's own lock while reading its live/rollback pointers."""
@@ -715,10 +802,15 @@ def describe_canonical_jar(root, tag, jar_sha, jar_bytes):
                 'metadata': signature, 'sha256': jar_sha, 'bytes': jar_bytes, 'allocatedBytes': signature[9]}
 
 
-def admit_canonical_candidate(root, request, row, quiescence):
-    need(canonical_commit(row['release']) == row['commit'], 'ONLY_REVIEWED_OLD_ATTEMPTS_ALLOWED')
+def admit_canonical_candidate(root, request, row, quiescence, *, closed_runtime=False):
+    need(canonical_commit(row['release']) == row['commit']
+         and (closed_runtime is True or row['release'] not in CLOSED_RUNTIME_JARS), 'ONLY_REVIEWED_OLD_ATTEMPTS_ALLOWED')
     admitted = admit_historical_controls(root, request, row, canonical_jar=True)
     evidence = admitted['evidence']; tag = row['release']
+    if tag in CLOSED_RUNTIME_JARS:
+        registered = CLOSED_RUNTIME_JARS[tag]
+        need(evidence['jarSha256'] == registered['jarSha256'] and evidence['jarBytes'] == registered['jarBytes'],
+             'CLOSED_RUNTIME_BINARY_DIFFERS')
     references = canonical_publication_refs(root, tag)
     need(callable(quiescence) and quiescence(Path(root) / 'verification' / tag / 'checkout', tag, evidence['ownerToken']) is None,
          'ACTUAL_DUAL_ROOT_QUIESCENCE_REQUIRED')
@@ -808,14 +900,18 @@ def controller_lock(root):
         yield
 
 
-def plan(root, raw_request, *, request_sha256, expected_current, identity, quiescence, canonical_jar=False):
+def plan(root, raw_request, *, request_sha256, expected_current, identity, quiescence, canonical_jar=False, closed_runtime=False):
     """Discover admitted single files; the default remains keeper-preserving."""
     request = validate_request(raw_request, request_sha256, expected_current, identity)
     need(type(canonical_jar) is bool, 'EXACT_RETIREMENT_POLICY_REQUIRED')
-    admit = admit_canonical_candidate if canonical_jar else admit_candidate
+    need(type(closed_runtime) is bool, 'EXACT_CLOSED_RUNTIME_POLICY_REQUIRED')
+    if closed_runtime: request = closed_runtime_request(raw_request, request_sha256, expected_current, identity)
+    admit = (lambda *args: admit_canonical_candidate(*args, closed_runtime=True)) if canonical_jar and closed_runtime \
+        else admit_canonical_candidate if canonical_jar else admit_closed_runtime_duplicate if closed_runtime else admit_candidate
     kind = CANONICAL_KIND if canonical_jar else KIND
     accepted, skipped = [], []
-    with controller_lock(root), publication_lock(root) if canonical_jar else nullcontext():
+    with controller_lock(root), publication_lock(root) if canonical_jar or closed_runtime else nullcontext():
+        previous = closed_runtime_previous(root, request, canonical_jar=canonical_jar) if closed_runtime else None
         for row in request['candidates']:
             try:
                 with attempt_lock(root, row['release']): accepted.append(admit(root, request, row, quiescence))
@@ -826,11 +922,13 @@ def plan(root, raw_request, *, request_sha256, expected_current, identity, quies
               'candidateBytes': sum(row['target']['bytes'] for row in accepted),
               'candidateAllocatedBytes': sum(row['target']['allocatedBytes'] for row in accepted),
               'inboxKeepersPreserved': True, 'deletionPerformed': False}
+    if closed_runtime: result.update(closedJarBatch=CLOSED_RUNTIME_BATCH, prerequisite=previous)
     need(len(canonical(result)) <= MAX_CONTROL, 'BOUNDED_RETIREMENT_PLAN_REQUIRED')
     return result
 
 
-def apply(root, raw_request, prepared_plan, *, request_sha256, plan_sha256, expected_current, identity, quiescence, canonical_jar=False):
+def apply(root, raw_request, prepared_plan, *, request_sha256, plan_sha256, expected_current, identity, quiescence, canonical_jar=False,
+          closed_runtime=False):
     """Re-admit every selected input before exact single-file mutation.
 
     An interrupted/partial result must be reviewed; retry requires a newly
@@ -838,7 +936,10 @@ def apply(root, raw_request, prepared_plan, *, request_sha256, plan_sha256, expe
     """
     request = validate_request(raw_request, request_sha256, expected_current, identity)
     need(type(canonical_jar) is bool, 'EXACT_RETIREMENT_POLICY_REQUIRED')
-    admit = admit_canonical_candidate if canonical_jar else admit_candidate
+    need(type(closed_runtime) is bool, 'EXACT_CLOSED_RUNTIME_POLICY_REQUIRED')
+    if closed_runtime: request = closed_runtime_request(raw_request, request_sha256, expected_current, identity)
+    admit = (lambda *args: admit_canonical_candidate(*args, closed_runtime=True)) if canonical_jar and closed_runtime \
+        else admit_canonical_candidate if canonical_jar else admit_closed_runtime_duplicate if closed_runtime else admit_candidate
     kind = CANONICAL_KIND if canonical_jar else KIND
     need(type(prepared_plan) is dict and type(plan_sha256) is str and SHA.fullmatch(plan_sha256)
          and digest_bytes(canonical(prepared_plan)) == plan_sha256
@@ -851,12 +952,15 @@ def apply(root, raw_request, prepared_plan, *, request_sha256, plan_sha256, expe
          and all(type(row) is dict and type(row.get('context')) is dict for row in selected), 'BOUNDED_SELECTED_PLAN_REQUIRED')
     tags = [row['context']['release'] for row in selected]
     need(len(tags) == len(set(tags)) and set(tags) <= {row['release'] for row in request['candidates']}, 'SELECTED_PLAN_TAG_DRIFT')
+    if closed_runtime:
+        need(set(tags) == set(CLOSED_RUNTIME_JARS) and prepared_plan.get('skipped') == []
+             and prepared_plan.get('closedJarBatch') == CLOSED_RUNTIME_BATCH, 'COMPLETE_CLOSED_RUNTIME_PLAN_REQUIRED')
     journal_path = Path(root) / 'inbox' / expected_current['release'] / (
         'native-jar-duplicate-canonical-journal.jsonl' if canonical_jar else 'native-jar-duplicate-journal.jsonl')
     owned_path(root, journal_path.parent, directory=True)
     deleted, failure, active, mutation_attempted = [], None, None, False
     active_quarantine=None;quarantines=[]
-    with controller_lock(root), publication_lock(root) if canonical_jar else nullcontext(), os.fdopen(os.open(journal_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600), 'wb') as journal:
+    with controller_lock(root), publication_lock(root) if canonical_jar or closed_runtime else nullcontext(), os.fdopen(os.open(journal_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600), 'wb') as journal:
         total = 0
         def record(value):
             nonlocal total
@@ -866,6 +970,9 @@ def apply(root, raw_request, prepared_plan, *, request_sha256, plan_sha256, expe
         before = os.statvfs(root)
         record({'phase': 'STARTED', 'planSha256': plan_sha256, 'requestSha256': request_sha256, 'identity': identity})
         try:
+            if closed_runtime:
+                need(closed_runtime_previous(root, request, canonical_jar=canonical_jar) == prepared_plan['prerequisite'],
+                     'CLOSED_RUNTIME_PRIOR_PHASE_CHANGED_AFTER_PLAN')
             for candidate in selected:
                 active = candidate['context']['release']
                 active_quarantine=None
@@ -887,7 +994,12 @@ def apply(root, raw_request, prepared_plan, *, request_sha256, plan_sha256, expe
                             return quiescence(Path(root) / 'verification' / active / 'checkout', active, candidate['ownerToken'])
                         result = remove_canonical_jar(root, candidate['target'], active_quarantine, quiescence=captured_quiescence)
                     else:
-                        result = remove_duplicate(root, candidate['target'],quarantine=active_quarantine)
+                        def captured_duplicate_quiescence():
+                            need(canonical_publication_refs(root, active) == candidate['publicationReferences'],
+                                 'PUBLICATION_REFERENCE_CHANGED_RETAIN_QUARANTINE')
+                            return quiescence(Path(root) / 'verification' / active / 'checkout', active, candidate['ownerToken'])
+                        result = remove_duplicate(root, candidate['target'], quarantine=active_quarantine,
+                            **({'quiescence': captured_duplicate_quiescence} if closed_runtime else {}))
                     deleted.append(result)
                     record({'phase': 'DELETE_FINISHED', **result})
             record({'phase': 'FINISHED', 'deletedFiles': len(deleted)})
@@ -910,6 +1022,7 @@ def apply(root, raw_request, prepared_plan, *, request_sha256, plan_sha256, expe
             **({'binaryDisposition': 'FAILED_OR_UNKNOWN' if failure else 'RETIRED' if deleted else 'UNCHANGED',
                 'binaryRebuildByteIdentityClaimed': False, 'skipped': prepared_plan['skipped'],
                 'testsRunByRetirement': False} if canonical_jar else {}),
+            **({'closedJarBatch': CLOSED_RUNTIME_BATCH, 'skipped': prepared_plan['skipped']} if closed_runtime else {}),
             'sourceArchivesDataAndReportsHaveNoDeletionApi': True}
 
 
@@ -1654,10 +1767,12 @@ def admitted_current(args):
     return root, current, identity, quiescence, modules
 
 
-def approved_request(raw, checksum, current, identity, *, canonical_jar=False):
+def approved_request(raw, checksum, current, identity, *, canonical_jar=False, closed_runtime=False):
     request = validate_request(raw, checksum, current, identity)
     need(type(canonical_jar) is bool, 'EXACT_RETIREMENT_POLICY_REQUIRED')
-    approved = canonical_commit if canonical_jar else APPROVED_OLD.get
+    need(type(closed_runtime) is bool, 'EXACT_CLOSED_RUNTIME_POLICY_REQUIRED')
+    if closed_runtime: return closed_runtime_request(raw, checksum, current, identity)
+    approved = (lambda tag: APPROVED_OLD.get(tag) or RECENT_CANONICAL_ONLY.get(tag)) if canonical_jar else APPROVED_OLD.get
     need(all(approved(row['release']) == row['commit'] for row in request['candidates']), 'ONLY_REVIEWED_OLD_ATTEMPTS_ALLOWED')
     return request
 
@@ -1750,11 +1865,31 @@ def capture_fixture(root, request, historical, builder, *, source_proof=None):
     return descriptor
 
 
-def capture_recent_fixture(root, request, row, builder):
-    need(RECENT_CANONICAL_ONLY.get(row['release']) == row['commit'], 'ONLY_REVIEWED_RECENT_FIXTURES_ALLOWED')
+def capture_recent_fixture(root, request, row, builder, *, closed_runtime=False):
+    registered = CLOSED_RUNTIME_JARS.get(row['release']) if closed_runtime else None
+    need((registered is not None and registered['commit'] == row['commit']) if closed_runtime
+         else RECENT_CANONICAL_ONLY.get(row['release']) == row['commit'], 'ONLY_REVIEWED_RECENT_FIXTURES_ALLOWED')
     historical = admit_historical_controls(root, request, row, builder_helpers=True, canonical_jar=True)
-    source = historical['sourceArchive']; builder.recent_mysql_fixture_source(historical['context'], source)
     owner = historical['fixtureOwner']; cid = owner.get('containerId')
+    if closed_runtime:
+        need(cid == registered['containerId'], 'EXACT_CLOSED_RUNTIME_FIXTURE_ID_REQUIRED')
+        if cid is None:
+            originals = {}
+            for role in ('fixtureOwner', 'fixtureCleanup'):
+                reference = historical['controls'][role]
+                original = private_bytes(root, Path(root) / reference['path'])
+                need(len(original) == reference['bytes'] and digest_bytes(original) == reference['sha256'],
+                     'CLOSED_RUNTIME_ORIGINAL_OWNER_CHANGED')
+                originals[role] = decode(original)
+            need(row['release'] == 'ci-207-eb286c623177'
+                 and all(key in originals['fixtureOwner'] and originals['fixtureOwner'][key] is None
+                         for key in ('containerId', 'containerName', 'dataDirectory'))
+                 and all(key in originals['fixtureCleanup'] and originals['fixtureCleanup'][key] is None
+                         for key in ('containerId', 'dataDirectoryRetained')),
+                 'CLOSED_RUNTIME_NEVER_CREATED_OBJECT_REQUIRED')
+            return {'historical': historical, 'fixture': None, 'containerId': None,
+                    'dataDirectory': None, 'dataMetadata': None, 'absenceKind': 'NO_OBJECT'}
+    source = historical['sourceArchive']; builder.recent_mysql_fixture_source(historical['context'], source)
     need(type(cid) is str and SHA.fullmatch(cid) and cid != owner.get('sourceContainerId')
          and owner.get('dataDirectory') == historical['evidence']['work'] + '/mysql-data', 'EXACT_RECENT_MYSQL_OBJECT_REQUIRED')
     data = fixture_data_metadata(root, owner['dataDirectory'])
@@ -1776,14 +1911,16 @@ def recent_fixture_references(root, candidate, cleanup, builder):
         {fixture['containerId']: 'doorhandle-compact-fixture-' + fixture['ownerToken']}, cleanup, builder, include_inbox=True)
 
 
-def plan_recent_fixtures(root, raw_request, *, request_sha256, expected_current, identity, modules):
-    request = approved_request(raw_request, request_sha256, expected_current, identity, canonical_jar=True)
+def plan_recent_fixtures(root, raw_request, *, request_sha256, expected_current, identity, modules, closed_runtime=False):
+    request = approved_request(raw_request, request_sha256, expected_current, identity, canonical_jar=True,
+                               **({'closed_runtime': True} if closed_runtime else {}))
     accepted, absent, skipped = [], [], []
     with controller_lock(root), publication_lock(root):
         for row in request['candidates']:
             try:
                 with attempt_lock(root, row['release']):
-                    candidate = capture_recent_fixture(root, request, row, modules['builder'])
+                    candidate = capture_recent_fixture(root, request, row, modules['builder'],
+                        **({'closed_runtime': True} if closed_runtime else {}))
                     if candidate['fixture'] is None: absent.append(candidate)
                     else:
                         recent_fixture_references(root, candidate, modules['cleanup'], modules['builder'])
@@ -1794,12 +1931,16 @@ def plan_recent_fixtures(root, raw_request, *, request_sha256, expected_current,
     value = {'schemaVersion': 1, 'kind': 'doorhandle-recent-mysql-fixture-object-plan', 'current': expected_current,
         'identity': identity, 'requestSha256': request_sha256, 'candidates': accepted, 'absent': absent,
         'skipped': skipped, 'deletionPerformed': False, 'dataDirectoriesAndVolumesPreserved': True}
+    if closed_runtime: value['closedJarBatch'] = CLOSED_RUNTIME_BATCH
     need(len(canonical(value)) <= MAX_CONTROL, 'BOUNDED_RECENT_MYSQL_PLAN_REQUIRED')
     return value
 
 
-def apply_recent_fixtures(root, raw_request, prepared, *, request_sha256, plan_sha256, expected_current, identity, modules):
-    request = approved_request(raw_request, request_sha256, expected_current, identity, canonical_jar=True)
+def apply_recent_fixtures(root, raw_request, prepared, *, request_sha256, plan_sha256, expected_current, identity, modules,
+                          closed_runtime=False):
+    request = approved_request(raw_request, request_sha256, expected_current, identity, canonical_jar=True,
+                               **({'closed_runtime': True} if closed_runtime else {}))
+    if closed_runtime: need(prepared.get('closedJarBatch') == CLOSED_RUNTIME_BATCH, 'EXACT_CLOSED_RUNTIME_PLAN_REQUIRED')
     need(digest_bytes(canonical(prepared)) == plan_sha256 and prepared.get('kind') == 'doorhandle-recent-mysql-fixture-object-plan'
          and prepared.get('current') == expected_current and prepared.get('identity') == identity
          and prepared.get('requestSha256') == request_sha256 and prepared.get('deletionPerformed') is False
@@ -1821,7 +1962,8 @@ def apply_recent_fixtures(root, raw_request, prepared, *, request_sha256, plan_s
             for candidate in absent + selected:
                 active = candidate['historical']['context']['release']
                 with attempt_lock(root, active):
-                    observed = capture_recent_fixture(root, request, rows[active], modules['builder'])
+                    observed = capture_recent_fixture(root, request, rows[active], modules['builder'],
+                        **({'closed_runtime': True} if closed_runtime else {}))
                     need(observed == candidate, 'RECENT_MYSQL_OBJECT_OR_ORIGINALS_CHANGED_AFTER_PLAN')
                     if candidate['fixture'] is None: continue
                     fixture = candidate['fixture']
@@ -1841,7 +1983,10 @@ def apply_recent_fixtures(root, raw_request, prepared, *, request_sha256, plan_s
     return {'schemaVersion': 1, 'kind': 'doorhandle-recent-mysql-fixture-object-receipt', 'current': expected_current,
         'identity': identity, 'requestSha256': request_sha256, 'planSha256': plan_sha256,
         'status': 'FAILED_OR_UNKNOWN' if failure else 'REMOVED' if removed else 'NO_ACTION',
-        'removed': removed, 'alreadyAbsent': [item['containerId'] for item in absent], 'failure': failure,
+        'removed': removed, 'alreadyAbsent': [item['containerId'] for item in absent if not closed_runtime or item['containerId'] is not None],
+        **({'closedJarBatch': CLOSED_RUNTIME_BATCH, 'skipped': prepared['skipped'],
+            'noObject': [item['historical']['context']['release'] for item in absent if item.get('absenceKind') == 'NO_OBJECT']}
+           if closed_runtime else {}), 'failure': failure,
         'dataDirectoriesPreserved': failure is None, 'imagesPreserved': True, 'volumesPreserved': True,
         'sourceArchivesAndReportsPreserved': True, 'jarDeletionPerformed': False, 'automaticResumeAllowed': False,
         'journalSha256': digest_bytes(private_bytes(root, journal_path))}
@@ -2018,8 +2163,9 @@ def apply_builders(root, raw_request, prepared, *, request_sha256, plan_sha256, 
     return value
 
 
-def capture_request(root, raw_local_spec, *, local_spec_sha256, expected_current, identity, canonical_jar=False):
-    spec = approved_request(raw_local_spec, local_spec_sha256, expected_current, identity, canonical_jar=canonical_jar)
+def capture_request(root, raw_local_spec, *, local_spec_sha256, expected_current, identity, canonical_jar=False, closed_runtime=False):
+    spec = approved_request(raw_local_spec, local_spec_sha256, expected_current, identity, canonical_jar=canonical_jar,
+                            **({'closed_runtime': True} if closed_runtime else {}))
     accepted, skipped = [], []
     for row in spec['candidates']:
         try:
@@ -2454,6 +2600,15 @@ def apply_python_build_cache(root, prepared, *, plan_sha256, expected_current, i
             'automaticResumeAllowed': False}
 
 
+def closed_runtime_cli(args):
+    if args.jar_batch is None: return False
+    need(args.jar_batch == CLOSED_RUNTIME_BATCH and args.mode == 'Maintenance'
+         and args.phase in ('capture-canonical-request', 'plan-recent-fixtures', 'apply-recent-fixtures',
+                            'plan', 'apply', 'plan-canonical', 'apply-canonical', 'inspect'),
+         'CLOSED_RUNTIME_MAINTENANCE_PHASE_REQUIRED')
+    return True
+
+
 def cli(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--phase', choices=('capture-request', 'capture-canonical-request', 'plan-builders', 'apply-builders', 'plan', 'apply',
@@ -2465,12 +2620,20 @@ def cli(argv=None):
                                            'apply-generated-image-archives', 'plan-python-build-cache',
                                            'apply-python-build-cache', 'inspect'), required=True)
     parser.add_argument('--mode', choices=('Verified', 'Maintenance'), required=True)
+    parser.add_argument('--jar-batch', choices=(CLOSED_RUNTIME_BATCH,))
     for name in ('root', 'tag', 'commit', 'source-sha256', 'instance-id', 'machine-id', 'current-receipt-sha256'):
         parser.add_argument('--' + name, required=True)
     parser.add_argument('--local-spec-sha256'); parser.add_argument('--request-sha256'); parser.add_argument('--plan-sha256')
     args = parser.parse_args(argv)
     try:
+        closed_runtime = closed_runtime_cli(args)
         root, current, identity, quiescence, modules = admitted_current(args); inbox = root / 'inbox' / args.tag
+        if closed_runtime:
+            def quiescence(checkout, tag, token):
+                need(tag in CLOSED_RUNTIME_JARS and checkout == root / 'verification' / tag / 'checkout',
+                     'EXACT_CLOSED_RUNTIME_REFERENCE_ROOTS_REQUIRED')
+                modules['cleanup'].quiescent({'checkout': checkout, 'token': token}, tag,
+                                             modules['cleanup'].docker_snapshot(), include_inbox=True)
         request_file = inbox / 'native-jar-duplicate-request.json'; plan_file = inbox / 'native-jar-duplicate-plan.json'
         receipt_file = inbox / 'native-jar-duplicate-receipt.json'; capture_file = inbox / 'native-jar-duplicate-capture.json'
         builder_plan_file = inbox / 'native-builder-retirement-plan.json'; builder_receipt_file = inbox / 'native-builder-retirement-receipt.json'
@@ -2490,7 +2653,7 @@ def cli(argv=None):
             need(not canonical_only or args.mode == 'Maintenance', 'CANONICAL_RETIREMENT_REQUIRES_MAINTENANCE')
             raw = private_bytes(root, inbox / 'native-jar-duplicate-local-spec.json')
             request, skipped = capture_request(root, raw, local_spec_sha256=args.local_spec_sha256, expected_current=current,
-                                              identity=identity, canonical_jar=canonical_only)
+                identity=identity, canonical_jar=canonical_only, **({'closed_runtime': True} if closed_runtime else {}))
             result = {'status': 'CAPTURED', 'current': current, 'identity': identity,
                       'request': write_new(request_file, request), 'skipped': skipped}
             result['capture'] = write_new(capture_file, result)
@@ -2530,11 +2693,15 @@ def cli(argv=None):
             need(args.mode == 'Maintenance', 'RECENT_MYSQL_OBJECTS_REQUIRE_MAINTENANCE')
             raw = private_bytes(root, request_file)
             options = {'request_sha256': args.request_sha256, 'expected_current': current, 'identity': identity, 'modules': modules}
+            if closed_runtime: options['closed_runtime'] = True
             if args.phase == 'plan-recent-fixtures':
                 value = plan_recent_fixtures(root, raw, **options)
                 result = {'status': 'PLANNED', 'current': current, 'identity': identity,
                     'plan': write_new(fixture_plan_file, value), 'skipped': value['skipped'],
                     'objectCount': len(value['candidates']), 'alreadyAbsent': len(value['absent'])}
+                if closed_runtime:
+                    result['alreadyAbsent'] = sum(row['containerId'] is not None for row in value['absent'])
+                    result['noObject'] = sum(row.get('absenceKind') == 'NO_OBJECT' for row in value['absent'])
             else:
                 plan_raw = private_bytes(root, fixture_plan_file)
                 need(digest_bytes(plan_raw) == args.plan_sha256, 'ORIGINAL_RECENT_MYSQL_PLAN_RAW_SHA_DRIFT')
@@ -2546,6 +2713,7 @@ def cli(argv=None):
                     'imagesPreserved': value['imagesPreserved'], 'volumesPreserved': value['volumesPreserved'],
                     'sourceArchivesAndReportsPreserved': value['sourceArchivesAndReportsPreserved'],
                     'receipt': write_new(fixture_receipt_file, value)}
+                if closed_runtime: result.update(noObject=len(value['noObject']))
         elif args.phase in ('plan-retired-candidate-copies', 'apply-retired-candidate-copies'):
             need(args.mode == 'Maintenance', 'RETIRED_COPIES_REQUIRE_MAINTENANCE')
             raw = private_bytes(root, request_file)
@@ -2575,7 +2743,9 @@ def cli(argv=None):
                         'binaryRebuildByteIdentityClaimed', 'testsRunByRetirement')}}
         elif args.phase in ('plan-canonical', 'apply-canonical'):
             need(args.mode == 'Maintenance', 'CANONICAL_RETIREMENT_REQUIRES_MAINTENANCE')
-            raw = private_bytes(root, request_file); approved_request(raw, args.request_sha256, current, identity, canonical_jar=True)
+            raw = private_bytes(root, request_file)
+            approved_request(raw, args.request_sha256, current, identity, canonical_jar=True,
+                             **({'closed_runtime': True} if closed_runtime else {}))
             def canonical_quiescence(checkout, tag, token):
                 need(checkout == root / 'verification' / tag / 'checkout' and canonical_commit(tag) is not None,
                      'EXACT_CANONICAL_REFERENCE_ROOTS_REQUIRED')
@@ -2583,6 +2753,7 @@ def cli(argv=None):
                                              modules['cleanup'].docker_snapshot(), include_inbox=True)
             options = {'request_sha256': args.request_sha256, 'expected_current': current, 'identity': identity,
                        'quiescence': canonical_quiescence, 'canonical_jar': True}
+            if closed_runtime: options['closed_runtime'] = True
             if args.phase == 'plan-canonical':
                 value = plan(root, raw, **options)
                 result = {'status': 'PLANNED', 'current': current, 'identity': identity,
@@ -2662,8 +2833,10 @@ def cli(argv=None):
                         **{key: value[key] for key in ('mysqlDataDirectoriesPreserved', 'imagesPreserved', 'volumesPreserved',
                                                       'directoriesPreserved', 'jarDeletionPerformed')})
         else:
-            raw = private_bytes(root, request_file); approved_request(raw, args.request_sha256, current, identity)
+            raw = private_bytes(root, request_file)
+            approved_request(raw, args.request_sha256, current, identity, **({'closed_runtime': True} if closed_runtime else {}))
             options = {'request_sha256': args.request_sha256, 'expected_current': current, 'identity': identity, 'quiescence': quiescence}
+            if closed_runtime: options['closed_runtime'] = True
             if args.phase == 'plan':
                 value = plan(root, raw, **options)
                 result = {'status': 'PLANNED', 'current': current, 'identity': identity, 'plan': write_new(plan_file, value),
@@ -2673,6 +2846,10 @@ def cli(argv=None):
                 need(digest_bytes(plan_raw) == args.plan_sha256, 'ORIGINAL_PLAN_RAW_SHA_DRIFT')
                 value = apply(root, raw, decode(plan_raw), plan_sha256=args.plan_sha256, **options)
                 result = {'status': value['status'], 'current': current, 'identity': identity, 'receipt': write_new(receipt_file, value)}
+        if closed_runtime and args.phase in ('plan', 'apply', 'plan-canonical', 'apply-canonical'):
+            result['closedJarBatch'] = CLOSED_RUNTIME_BATCH
+            result['candidateCount' if args.phase.startswith('plan') else 'deletedFiles'] = len(
+                value['candidates' if args.phase.startswith('plan') else 'deleted'])
         print(json.dumps(result, sort_keys=True))
         return 0 if result['status'] != 'FAILED_OR_UNKNOWN' else 2
     except Exception as error:

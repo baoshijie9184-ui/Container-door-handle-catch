@@ -1,6 +1,6 @@
 param(
     [ValidateSet('Verified','Maintenance')][string]$Mode = 'Verified',
-    [ValidateSet('Historical','Recent','RetiredCopies')][string]$CanonicalBatch = 'Historical',
+    [ValidateSet('Historical','Recent','RetiredCopies','ClosedRuntime')][string]$CanonicalBatch = 'Historical',
     [Parameter(Mandatory=$true)][string[]]$SshOptions,
     [Parameter(Mandatory=$true)][string]$Destination,
     [Parameter(Mandatory=$true)][string]$PortText,
@@ -29,6 +29,7 @@ Require-NativeJar ($Mode -ceq 'Maintenance' -or ($env:CI_ECS_VERIFIED -ceq 'true
 Require-NativeJar ($Mode -cne 'Maintenance' -or ($env:ACTION -ceq 'reclaim-build-outputs' -and $env:CI_ECS_VERIFIED -ceq 'false' -and $env:DOORHANDLE_CI_SCOPE -ceq 'source')) 'Maintenance must be the explicit source-only Jenkins action.'
 Require-NativeJar ($CanonicalBatch -cne 'Recent' -or $Mode -ceq 'Maintenance') 'The recent batch only retires the three closed failed canonical binaries in explicit maintenance.'
 Require-NativeJar ($CanonicalBatch -cne 'RetiredCopies' -or $Mode -ceq 'Maintenance') 'Retired candidate copies require the explicit source-only maintenance action.'
+Require-NativeJar ($CanonicalBatch -cne 'ClosedRuntime' -or $Mode -ceq 'Maintenance') 'The exact 204/207 batch requires source-only maintenance.'
 Require-NativeJar ($Destination -cmatch '^[a-z_][a-z0-9_-]{0,31}@[A-Za-z0-9][A-Za-z0-9.-]{0,252}$' -and $PortText -match '^[0-9]{1,5}$' -and [int]$PortText -ge 1 -and [int]$PortText -le 65535) 'Invalid fixed SSH endpoint.'
 Require-NativeJar ($RemoteRoot -cmatch '^/(home|srv|opt)/[A-Za-z0-9_./-]+$' -and $RemoteRoot -notmatch '(^|/)\.\.(/|$)|//' -and -not $RemoteRoot.EndsWith('/')) 'Invalid explicit ECS CI root.'
 Require-NativeJar ($Tag -cmatch '^ci-[1-9][0-9]*-[a-f0-9]{12}$' -and $Commit -cmatch '^[a-f0-9]{40}$' -and $Tag.EndsWith('-'+$Commit.Substring(0,12)) -and $SourceSha256 -cmatch '^[a-f0-9]{64}$') 'Invalid fixed source context.'
@@ -71,7 +72,7 @@ def unique(pairs):
  for k,v in pairs:need(k not in result);result[k]=v
  return result
 archive,commit,retained,jhome,remote,current,batch=sys.argv[1:]
-need(batch in ('Historical','Recent','RetiredCopies'))
+need(batch in ('Historical','Recent','RetiredCopies','ClosedRuntime'))
 approved=[(117,'8c898996cc28ce30fd6531710511f833cccb4864','e1eec611a0dcbb93158d8e5a68fc5d16e6f96d65dcb82e6930f54abdd84d2e2c'),
  (118,'6481f7fa6021eb36592a081d04f385886c03412a','e73474da34762eedf1438c835dbc741091f02c69fb5c3664dbba6cca30395f8a'),
  (130,'9a588271dadb135ec4284392ef7b9c9c55ea511d','f53a73fa4ce45e44b666cbf963145b353f6e478c7cc594ca849b59bfe0b924d2'),
@@ -92,6 +93,18 @@ if batch in ('Recent','RetiredCopies'):
  approved=[(195,'2c2e65a0daa94d96b327c59d720871ab70bff0a1','f923d108fd9c867f052f722fc0cef57231d2420928a881ca7780d16408dc5a8a'),
   (198,'7af0903ee84011dc51f4abac4f4a4d9679db7322','054a2b4bdfda1c97a006c2b78d0877e06260b4cef6e0df4177f58eef8ddf8ffe'),
   (201,'803baf401b5f9566283a59cb6a885a794b9d7d85','baaddc7acf7eb643f68e2e0c104decb35a90a394564dc94f601914e6710e731b')]
+closed_originals={
+ 204:{'build.xml':(302416,'36e27ddb0d87daa0d94c3d72cc64e8f70fd4a28ecf7cadecd51054cfafaa5b09'),
+      'release.json':(379,'5b0bdad3f157a07a7024f31302525f98ff07e477b1fa86aac5afa5fcbd80546d'),
+      'local-build.json':(551,'6cc1cb1d0caa01d59948c6a2813644ff3d1172218fdc301e481d61d3f10623f8'),
+      'fixture-cleanup.json':(356,'f5e900897ee241d09f1bd2bdff710332ec34b9d043723dffef2d4b292b2c66ab')},
+ 207:{'build.xml':(300291,'33d1b5f6388700d769e2900ac567568f15ed864e26b0721f9a70a0e985b7b958'),
+      'release.json':(379,'9bda38c284695d2332a9c6d818722565d5b67a8f0baa55f855c072b5a88cfa08'),
+      'local-build.json':(551,'08c2864766436a21c6108cc5f1e2ba1294c225edff3d285d467f53f86148970d'),
+      'fixture-cleanup.json':(356,'94c913a4d310e5420facb24669bcfc166adba7c8ecc52be04621cf1c6904fa91')}}
+if batch=='ClosedRuntime':
+ approved=[(204,'24f8eb4b02bf290c6dd4e186eb78c5f3c80f3b88',None),
+  (207,'eb286c623177b9d1bc23fe88223d81862c00bc71','3c5c15b15c57544e7e7195059607d33b0c807989c2fb672d36d4c4db2eefe01a')]
 helpers={};wanted={'script/jenkins/retire-failed-native-jar-duplicates.py','script/jenkins/cleanup-ecs-builds.py','script/jenkins/verify-remote.py','script/docker/compact-build-resources.py'}
 class Bounded:
  def __init__(self,s):self.s,self.n=s,0
@@ -124,7 +137,8 @@ for number,oldcommit,preservation_sha in approved:
     need(row.get('bytes')==len(raw) and row.get('sha256')==sha(raw) and str(row.get('original','')).replace(chr(92),'/').endswith(suffix),'PRESERVED_ORIGINAL_CONTROL_DRIFT')
     origin='PINNED_PRESERVED_JENKINS_ORIGINAL'
    else:
-    need(role not in ('buildXml','release'),'MISSING_LOCAL_CONTROL_'+role.upper());continue
+    need(batch!='ClosedRuntime' and role not in ('buildXml','release'),'MISSING_LOCAL_CONTROL_'+role.upper());continue
+   if batch=='ClosedRuntime':need((len(raw),sha(raw))==closed_originals[number][name],'CLOSED_RUNTIME_ORIGINAL_BYTES_DRIFT')
    files[role]={'source':str(source),'file':name,'bytes':len(raw),'sha256':sha(raw)};origins[role]={'origin':origin,'bytes':len(raw),'sha256':sha(raw)}
   rel=json.loads(stable(files['release']['source']),object_pairs_hook=unique)
   need(rel.get('release')==tag and rel.get('commit')==oldcommit and type(rel.get('sourceSha256')) is str and len(rel['sourceSha256'])==64)
@@ -279,11 +293,12 @@ Require-NativeJar ($finalized.status -ceq 'FINALIZED' -and $finalized.release -c
 $helper="$RemoteRoot/inbox/$Tag/retire-failed-native-jar-duplicates.py"
 $helperSha=$local.helpers.'script/jenkins/retire-failed-native-jar-duplicates.py'.sha256
 $common="--root '$RemoteRoot' --tag '$Tag' --commit '$Commit' --source-sha256 '$SourceSha256' --mode '$Mode' --instance-id '$instance' --machine-id '$machine' --current-receipt-sha256 '$currentReceiptSha'"
+if($CanonicalBatch -ceq 'ClosedRuntime') {$common+=" --jar-batch failed-204-207"}
 function Invoke-NativeJarPhase([string]$Phase,[string]$Flags='') {
     $guard="test `"`$(sha256sum '$helper' | cut -d ' ' -f 1)`" = '$helperSha' && "
     return (Invoke-NativeJar $ssh ($SshOptions+@('-p',$PortText,$Destination,"${guard}python3 -I -B '$helper' --phase '$Phase' $common $Flags")) | Select-Object -Last 1) | ConvertFrom-Json
 }
-$capturePhase=if($CanonicalBatch -cin @('Recent','RetiredCopies')){'capture-canonical-request'}else{'capture-request'}
+$capturePhase=if($CanonicalBatch -cin @('Recent','RetiredCopies','ClosedRuntime')){'capture-canonical-request'}else{'capture-request'}
 $captured=Invoke-NativeJarPhase $capturePhase "--local-spec-sha256 '$specSha'"
 Require-NativeJar ($captured.status -ceq 'CAPTURED' -and $captured.request.sha256 -cmatch '^[a-f0-9]{64}$') 'The actual ECS control snapshot was not captured.'
 $requestSha=$captured.request.sha256
@@ -312,6 +327,77 @@ function Copy-NativeJarEvidence($Observed) {
             Require-NativeJar ((Get-Item -LiteralPath $destinationFile).Length -eq $binding.bytes -and (Get-FileHash -LiteralPath $destinationFile -Algorithm SHA256).Hash.ToLowerInvariant() -ceq $binding.sha256) 'Collected Python cache original changed.'
         }
     }
+}
+if($CanonicalBatch -ceq 'ClosedRuntime') {
+    $closedPlans=@{};$closedResults=@{};$closedFailed=$false;$closedStage='fixture-plan'
+    try {
+        Require-NativeJar ($spec.candidates.Count -eq 2 -and @($local.skipped).Count -eq 0 -and @($captured.skipped).Count -eq 0) 'Closed runtime maintenance requires both complete original control bundles.'
+        $closedPlans.fixture=Invoke-NativeJarPhase 'plan-recent-fixtures' "--request-sha256 '$requestSha'"
+        $p=$closedPlans.fixture
+        Require-NativeJar ($p.status -ceq 'PLANNED' -and $p.plan.sha256 -cmatch '^[a-f0-9]{64}$' -and $p.skipped -is [array] -and @($p.skipped).Count -eq 0 -and ($p.objectCount+$p.alreadyAbsent) -eq 1 -and $p.noObject -eq 1) 'The 204 stopped object and 207 no-object proof must both be admitted.'
+        $closedStage='fixture-apply'
+        $closedResults.fixture=Invoke-NativeJarPhase 'apply-recent-fixtures' "--request-sha256 '$requestSha' --plan-sha256 '$($p.plan.sha256)'"
+        $r=$closedResults.fixture
+        Require-NativeJar ($r.status -cin @('REMOVED','NO_ACTION') -and ($r.removedContainers+$r.alreadyAbsent) -eq 1 -and $r.noObject -eq 1 -and -not $r.jarDeletionPerformed) 'Fixture object cleanup is incomplete; both JAR phases remain blocked.'
+        $closedStage='duplicate-plan'
+        $closedPlans.duplicate=Invoke-NativeJarPhase 'plan' "--request-sha256 '$requestSha'"
+        $p=$closedPlans.duplicate
+        Require-NativeJar ($p.status -ceq 'PLANNED' -and $p.plan.sha256 -cmatch '^[a-f0-9]{64}$' -and $p.skipped -is [array] -and @($p.skipped).Count -eq 0 -and $p.closedJarBatch -ceq 'failed-204-207' -and $p.candidateCount -eq 2 -and $p.candidateBytes -eq 760603852) 'Both candidate copies need a complete exact plan before any JAR removal.'
+        $closedStage='duplicate-apply'
+        $closedResults.duplicate=Invoke-NativeJarPhase 'apply' "--request-sha256 '$requestSha' --plan-sha256 '$($p.plan.sha256)'"
+        $r=$closedResults.duplicate
+        Require-NativeJar ($r.status -ceq 'REMOVED' -and $r.closedJarBatch -ceq 'failed-204-207' -and $r.deletedFiles -eq 2) 'Both candidate copies must be removed with their inbox keepers retained.'
+        $closedStage='canonical-plan'
+        $closedPlans.canonical=Invoke-NativeJarPhase 'plan-canonical' "--request-sha256 '$requestSha'"
+        $p=$closedPlans.canonical
+        Require-NativeJar ($p.status -ceq 'PLANNED' -and $p.plan.sha256 -cmatch '^[a-f0-9]{64}$' -and $p.skipped -is [array] -and @($p.skipped).Count -eq 0 -and $p.closedJarBatch -ceq 'failed-204-207' -and $p.candidateCount -eq 2 -and $p.candidateBytes -eq 760603852) 'Both failed unpublished inbox JARs need a complete exact plan.'
+        $closedStage='canonical-apply'
+        $closedResults.canonical=Invoke-NativeJarPhase 'apply-canonical' "--request-sha256 '$requestSha' --plan-sha256 '$($p.plan.sha256)'"
+        $r=$closedResults.canonical
+        Require-NativeJar ($r.status -ceq 'REMOVED' -and $r.closedJarBatch -ceq 'failed-204-207' -and $r.deletedFiles -eq 2) 'The closed four-file retirement is incomplete.'
+    } catch {$closedFailed=$true}
+    finally {Copy-NativeJarEvidence (Invoke-NativeJarPhase 'inspect')}
+    Require-NativeJar (-not $closedFailed) ('Closed runtime maintenance failed or is unknown at '+$closedStage+'; original evidence was collected and no partial success is permitted.')
+    function Read-ClosedRuntimeOriginal([string]$Name,$Binding) {
+        $file=Join-Path $workspace ('artifacts/'+$Name)
+        Require-NativeJar ((Get-Item -LiteralPath $file).Length -eq $Binding.bytes -and (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant() -ceq $Binding.sha256) 'Collected closed runtime plan or receipt differs from its original server bytes.'
+        return Get-Content -LiteralPath $file -Raw -Encoding utf8 | ConvertFrom-Json -Depth 32
+    }
+    function Require-ClosedRuntimeContext($Document,[string]$Kind) {
+        Require-NativeJar ($Document.kind -ceq $Kind -and $Document.closedJarBatch -ceq 'failed-204-207' -and $Document.current.release -ceq $Tag -and $Document.current.commit -ceq $Commit -and $Document.current.sourceSha256 -ceq $SourceSha256 -and $Document.identity.instanceId -ceq $instance -and $Document.identity.machineId -ceq $machine -and $Document.identity.executionLocation -ceq 'ECS' -and $Document.requestSha256 -ceq $requestSha -and $Document.skipped -is [array] -and @($Document.skipped).Count -eq 0) 'A closed runtime original has different source, host, batch or skipped members.'
+    }
+    $fixturePlan=Read-ClosedRuntimeOriginal 'native-jar-duplicate-fixture-object-plan.json' $closedPlans.fixture.plan
+    $fixtureReceipt=Read-ClosedRuntimeOriginal 'native-jar-duplicate-fixture-object-receipt.json' $closedResults.fixture.receipt
+    Require-ClosedRuntimeContext $fixturePlan 'doorhandle-recent-mysql-fixture-object-plan'
+    Require-ClosedRuntimeContext $fixtureReceipt 'doorhandle-recent-mysql-fixture-object-receipt'
+    Require-NativeJar ((Get-FileHash -LiteralPath (Join-Path $workspace 'artifacts/native-jar-duplicate-fixture-object-journal.jsonl') -Algorithm SHA256).Hash.ToLowerInvariant() -ceq $fixtureReceipt.journalSha256) 'The collected fixture journal differs from its original receipt.'
+    $fixtureIds=@($fixtureReceipt.removed | ForEach-Object {$_.containerId})+@($fixtureReceipt.alreadyAbsent)
+    Require-NativeJar ($fixtureReceipt.status -cin @('REMOVED','NO_ACTION') -and $fixtureReceipt.failure -eq $null -and $fixtureReceipt.planSha256 -ceq $closedPlans.fixture.plan.sha256 -and $fixtureIds.Count -eq 1 -and $fixtureIds[0] -ceq 'cad56ad37f6d63465bad18260464b7c5dfe168e68159121a3308b4a0212de5b9' -and $fixtureReceipt.noObject -is [array] -and @($fixtureReceipt.noObject).Count -eq 1 -and $fixtureReceipt.noObject[0] -ceq 'ci-207-eb286c623177') 'The final fixture receipt lacks the exact 204 object or explicit 207 no-object proof.'
+    foreach($flag in @('dataDirectoriesPreserved','imagesPreserved','volumesPreserved','sourceArchivesAndReportsPreserved')) {Require-NativeJar ($fixtureReceipt.$flag -is [bool] -and $fixtureReceipt.$flag) 'Fixture retirement did not preserve all original data and images.'}
+    Require-NativeJar ($fixtureReceipt.jarDeletionPerformed -is [bool] -and -not $fixtureReceipt.jarDeletionPerformed) 'The fixture phase cannot remove any JAR.'
+    $closedExpected=@{'ci-204-24f8eb4b02bf'='fd5d66a17d2069fc10a0c18403d2399f510b9784b1f404330d7349001e552f67';'ci-207-eb286c623177'='2accfa412ac67a244e5f0e47feba890141a68ed674ef746729c0402e62102ee1'}
+    foreach($stage in @('duplicate','canonical')) {
+        $stem=if($stage -ceq 'duplicate'){'native-jar-duplicate'}else{'native-jar-duplicate-canonical'}
+        $kind=if($stage -ceq 'duplicate'){'doorhandle-failed-native-jar-duplicate'}else{'doorhandle-failed-native-canonical-jar-retirement'}
+        $plan=Read-ClosedRuntimeOriginal ($stem+'-plan.json') $closedPlans[$stage].plan
+        $proof=Read-ClosedRuntimeOriginal ($stem+'-receipt.json') $closedResults[$stage].receipt
+        Require-ClosedRuntimeContext $plan ($kind+'-plan'); Require-ClosedRuntimeContext $proof ($kind+'-receipt')
+        Require-NativeJar ((Get-FileHash -LiteralPath (Join-Path $workspace ('artifacts/'+$stem+'-journal.jsonl')) -Algorithm SHA256).Hash.ToLowerInvariant() -ceq $proof.journalSha256) 'A collected JAR journal differs from its original receipt.'
+        $previous=if($stage -ceq 'duplicate'){$closedResults.fixture.receipt}else{$closedResults.duplicate.receipt}
+        Require-NativeJar ($plan.prerequisite.sha256 -ceq $previous.sha256 -and $plan.prerequisite.bytes -eq $previous.bytes) 'The next JAR phase lost its original successful predecessor binding.'
+        Require-NativeJar ($plan.candidates -is [array] -and @($plan.candidates).Count -eq 2 -and $proof.deleted -is [array] -and @($proof.deleted).Count -eq 2 -and $proof.status -ceq 'REMOVED' -and $proof.failure -eq $null -and $proof.planSha256 -ceq $closedPlans[$stage].plan.sha256 -and $proof.retainedQuarantinePaths -is [array] -and @($proof.retainedQuarantinePaths).Count -eq 0 -and $proof.sourceArchivesDataAndReportsHaveNoDeletionApi -is [bool] -and $proof.sourceArchivesDataAndReportsHaveNoDeletionApi) 'A JAR phase has partial removal or unresolved quarantine.'
+        foreach($release in $closedExpected.Keys) {
+            $path=if($stage -ceq 'duplicate'){"verification/$release/checkout/work/compact-fixtures/candidate-app.jar"}else{"inbox/$release/application.jar"}
+            $targets=@($plan.candidates | Where-Object {$_.context.release -ceq $release})
+            $deleted=@($proof.deleted | Where-Object {$_.path -ceq $path})
+            Require-NativeJar ($targets.Count -eq 1 -and $deleted.Count -eq 1 -and $targets[0].target.path -ceq $path -and $targets[0].target.sha256 -ceq $closedExpected[$release] -and $targets[0].target.bytes -eq 380301926 -and $deleted[0].sha256 -ceq $closedExpected[$release] -and $deleted[0].bytes -eq 380301926 -and $deleted[0].capturedInodeVerified -is [bool] -and $deleted[0].capturedInodeVerified) 'A retired file differs from its exact reviewed plan, bytes, SHA or captured inode.'
+            if($stage -ceq 'duplicate') {Require-NativeJar ($deleted[0].keeperPath -ceq "inbox/$release/application.jar" -and $deleted[0].keeperVerifiedAfter -is [bool] -and $deleted[0].keeperVerifiedAfter) 'The candidate phase did not preserve its exact inbox keeper.'}
+        }
+        if($stage -ceq 'duplicate') {Require-NativeJar ($proof.inboxKeepersPreserved -is [bool] -and $proof.inboxKeepersPreserved) 'Both inbox keepers must remain through candidate retirement.'}
+        else {Require-NativeJar ($proof.binaryDisposition -ceq 'RETIRED' -and $proof.testsRunByRetirement -is [bool] -and -not $proof.testsRunByRetirement -and $proof.binaryRebuildByteIdentityClaimed -is [bool] -and -not $proof.binaryRebuildByteIdentityClaimed) 'Canonical retirement cannot claim testing or byte-identical regeneration.'}
+    }
+    [ordered]@{schemaVersion=1;kind='doorhandle-closed-runtime-jar-ci';scope='CLOSED_RUNTIME_204_207';current=$spec.current;identity=$spec.identity;status='REMOVED';requestSha256=$requestSha;deletedFiles=4;noObject=@('ci-207-eb286c623177');fixturePlanSha256=$closedPlans.fixture.plan.sha256;fixtureReceiptSha256=$closedResults.fixture.receipt.sha256;duplicatePlanSha256=$closedPlans.duplicate.plan.sha256;duplicateReceiptSha256=$closedResults.duplicate.receipt.sha256;canonicalPlanSha256=$closedPlans.canonical.plan.sha256;canonicalReceiptSha256=$closedResults.canonical.receipt.sha256;localControlCustody=$local.custody;sourceArchivesDataAndReportsHaveNoDeletionApi=$true;testsRunByRetirement=$false;binaryRebuildByteIdentityClaimed=$false} | ConvertTo-Json -Depth 16 | Set-Content -LiteralPath (Join-Path $workspace 'artifacts/native-jar-duplicate-ci.json') -Encoding utf8
+    return
 }
 if($CanonicalBatch -ceq 'RetiredCopies') {
     $copyPlanned=$null;$copyResult=$null;$copyFailed=$false;$copyStage='plan'

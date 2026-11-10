@@ -885,7 +885,7 @@ def test_recent_controller_is_an_independent_three_row_canonical_only_batch():
         (198, '7af0903ee84011dc51f4abac4f4a4d9679db7322', '054a2b4bdfda1c97a006c2b78d0877e06260b4cef6e0df4177f58eef8ddf8ffe'),
         (201, '803baf401b5f9566283a59cb6a885a794b9d7d85', 'baaddc7acf7eb643f68e2e0c104decb35a90a394564dc94f601914e6710e731b')]
     assert all(number != 190 for number, _commit, _sha in recent)
-    assert re.search(r"ValidateSet\('Historical','Recent','RetiredCopies'\)\]\[string\]\$CanonicalBatch = 'Historical'", controller)
+    assert re.search(r"ValidateSet\('Historical','Recent','RetiredCopies','ClosedRuntime'\)\]\[string\]\$CanonicalBatch = 'Historical'", controller)
     assert "$CanonicalBatch -cne 'Recent' -or $Mode -ceq 'Maintenance'" in controller
     assert "{'capture-canonical-request'}else{'capture-request'}" in controller
     branch = controller.split("if($CanonicalBatch -ceq 'Recent') {", 1)[1].split('\n$builderPlanned=', 1)[0]
@@ -894,7 +894,7 @@ def test_recent_controller_is_an_independent_three_row_canonical_only_batch():
     assert all(phase not in branch for phase in ('plan-builders', 'apply-builders', 'plan-public-layers',
         'apply-public-layers', 'plan-generated-image-archives', 'apply-generated-image-archives'))
     pipeline = (root / 'script/jenkins/pipeline.ps1').read_text(encoding='utf8')
-    assert re.search(r"retire-failed-native-jar-duplicates\.ps1 -Mode Maintenance -CanonicalBatch RetiredCopies ", pipeline)
+    assert re.search(r"retire-failed-native-jar-duplicates\.ps1 -Mode Maintenance -CanonicalBatch ClosedRuntime ", pipeline)
     assert not re.search(r"retire-failed-native-jar-duplicates\.ps1 -Mode Maintenance -CanonicalBatch Recent ", pipeline)
 
 
@@ -1370,7 +1370,252 @@ def test_retired_copy_controller_archive_and_authority_contract_are_fully_wired(
     assert "candidateTargetCount -eq 3" in selected and "$copyResult.$flag -is [bool]" in selected
     assert "retiredCandidatePlan" in controller and "retiredCandidateReceipt" in controller and "retiredCandidateJournal" in controller
     pipeline = (root / 'script/jenkins/pipeline.ps1').read_text(encoding='utf8')
-    assert '-Mode Maintenance -CanonicalBatch RetiredCopies ' in pipeline
+    assert '-Mode Maintenance -CanonicalBatch ClosedRuntime ' in pipeline
     jenkinsfile = (root / 'Jenkinsfile.ecs-monolith').read_text(encoding='utf8')
     assert 'artifacts/native-retired-candidate-copy-*.json' in jenkinsfile
     assert 'artifacts/native-retired-candidate-copy-*.jsonl' in jenkinsfile
+
+
+def retain_closed_phase(folder, stem, plan, receipt):
+    plan_raw = retirer.canonical(plan)
+    (folder / (stem + '-plan.json')).write_bytes(plan_raw); (folder / (stem + '-plan.json')).chmod(0o600)
+    journal = folder / (stem + '-journal.jsonl')
+    if not journal.exists(): journal.write_bytes(b'{"phase":"FINISHED"}\n'); journal.chmod(0o600)
+    receipt.update(planSha256=sha(plan_raw), journalSha256=sha(journal.read_bytes()))
+    file = folder / (stem + '-receipt.json')
+    file.write_bytes(retirer.canonical(receipt)); file.chmod(0o600)
+    return file
+
+
+@pytest.fixture
+def closed_runtime_case(tmp_path, bundle, monkeypatch):
+    root = tmp_path / 'closed-ci'; root.mkdir(mode=0o700)
+    current = {'release': 'ci-209-' + 'f' * 12, 'commit': 'f' * 40, 'sourceSha256': 'e' * 64}
+    (root / 'inbox' / current['release']).mkdir(parents=True, mode=0o700)
+    rows, binaries, originals, registered = [], {}, {}, copy.deepcopy(retirer.CLOSED_RUNTIME_JARS)
+    for tag, fixed in registered.items():
+        work = root / 'verification' / tag / 'checkout/work/compact-fixtures'; work.mkdir(parents=True, mode=0o700)
+        inbox = root / 'inbox' / tag; inbox.mkdir(parents=True, mode=0o700)
+        payload = ('synthetic closed binary ' + tag).encode()
+        target, keeper = retirer.duplicate_paths(root, tag)
+        for file in (target, keeper): file.write_bytes(payload); file.chmod(0o600)
+        binaries[tag] = (target, keeper, payload)
+        publication = {'Jenkinsfile.ecs-monolith': b'closed synthetic publication guard',
+            'script/jenkins/pipeline.ps1': b'closed synthetic runtime return',
+            'script/docker/compact-build-resources.py': b'original synthetic helper',
+            'script/docker/compact-image-inputs.py': b'original synthetic inputs'}
+        source = source_archive(SimpleNamespace(keeper=keeper), comment=fixed['commit'], publication=publication)
+        monkeypatch.setitem(retirer.APPROVED_CANONICAL_SOURCES, tag,
+            (sha(publication['Jenkinsfile.ecs-monolith']), sha(publication['script/jenkins/pipeline.ps1'])))
+        fixed.update(sourceSha256=sha(source.read_bytes()), jarSha256=sha(payload), jarBytes=len(payload))
+        context = {key: fixed[key] for key in ('commit', 'sourceSha256')}; context['release'] = tag
+        values = copy.deepcopy(bundle.values)
+        for value in values.values(): value.update(context)
+        values['release'].update(applicationJarSha256=sha(payload))
+        values['artifactPlan'].update(applicationJarSha256=sha(payload), applicationJarBytes=len(payload))
+        cid = fixed['containerId']
+        values['fixtureOwner'].update(work=str(work), containerId=cid,
+            containerName='doorhandle-compact-fixture-0123456789' if cid else None,
+            dataDirectory=str(work / 'mysql-data') if cid else None)
+        values['fixtureCleanup'].update(containerId=cid, dataDirectoryRetained=str(work / 'mysql-data') if cid else None)
+        paths = retirer.expected_control_paths(current['release'], tag); controls = {}
+        for role, raw in {'buildXml': flow_xml(context), **{key: encoded(value) for key, value in values.items()}}.items():
+            file = root / paths[role]; file.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            file.write_bytes(raw); file.chmod(0o600)
+            controls[role] = {'path': paths[role], 'bytes': len(raw), 'sha256': sha(raw)}
+            originals[file] = raw
+        for file in (source, work / 'source.sql', work / 'original-report.xml'):
+            if not file.exists(): file.write_bytes(b'preserved original'); file.chmod(0o600)
+            originals[file] = file.read_bytes()
+        rows.append({**context, 'controls': controls})
+    monkeypatch.setattr(retirer, 'CLOSED_RUNTIME_JARS', registered)
+    request = {'schemaVersion': 1, 'kind': retirer.KIND + '-request', 'current': current, 'identity': bundle.identity,
+        'protectedReleases': [current['release']], 'candidates': rows}
+    raw = retirer.canonical(request); request_sha = sha(raw)
+    fixture = {'kind': 'doorhandle-recent-mysql-fixture-object-receipt', 'current': current, 'identity': bundle.identity,
+        'requestSha256': request_sha, 'closedJarBatch': retirer.CLOSED_RUNTIME_BATCH, 'status': 'REMOVED',
+        'removed': [{'containerId': registered['ci-204-24f8eb4b02bf']['containerId']}], 'alreadyAbsent': [],
+        'noObject': ['ci-207-eb286c623177'], 'skipped': [], 'failure': None, 'dataDirectoriesPreserved': True,
+        'imagesPreserved': True, 'volumesPreserved': True, 'sourceArchivesAndReportsPreserved': True,
+        'jarDeletionPerformed': False}
+    receipt = root / 'inbox' / current['release'] / 'native-jar-duplicate-fixture-object-receipt.json'
+    fixture_plan = {'kind': 'doorhandle-recent-mysql-fixture-object-plan', 'current': current, 'identity': bundle.identity, 'requestSha256': request_sha,
+                    'closedJarBatch': retirer.CLOSED_RUNTIME_BATCH, 'skipped': [], 'deletionPerformed': False}
+    retain_closed_phase(receipt.parent, 'native-jar-duplicate-fixture-object', fixture_plan, fixture)
+    observations = []
+    def quiescence(checkout, tag, token):
+        assert checkout == root / 'verification' / tag / 'checkout' and token == '0123456789'
+        # Every new command must keep the publication lock through capture.
+        with pytest.raises(retirer.RetirementError):
+            with retirer.publication_lock(root): pytest.fail('Publication lock was released during retirement')
+        target, keeper, _ = binaries[tag]
+        observations.append((tag, target.exists(), keeper.exists()))
+    options = {'request_sha256': request_sha, 'expected_current': current, 'identity': bundle.identity,
+               'quiescence': quiescence, 'closed_runtime': True}
+    return SimpleNamespace(root=root, request=request, raw=raw, options=options, originals=originals,
+        binaries=binaries, fixture=fixture, fixture_receipt=receipt, observations=observations)
+
+
+def test_closed_runtime_reuses_both_held_file_apis_in_order_for_exactly_four_originals(closed_runtime_case):
+    state = closed_runtime_case
+    first = retirer.plan(state.root, state.raw, **state.options)
+    assert len(first['candidates']) == 2 and first['skipped'] == []
+    copies = retirer.apply(state.root, state.raw, first, plan_sha256=sha(retirer.canonical(first)), **state.options)
+    assert copies['status'] == 'REMOVED' and len(copies['deleted']) == 2 and copies['inboxKeepersPreserved'] is True
+    assert all(not target.exists() and keeper.read_bytes() == payload for target, keeper, payload in state.binaries.values())
+    file = retain_closed_phase(state.fixture_receipt.parent, 'native-jar-duplicate', first, copies)
+    second = retirer.plan(state.root, state.raw, canonical_jar=True, **state.options)
+    assert second['prerequisite']['sha256'] == sha(file.read_bytes()) and len(second['candidates']) == 2
+    retired = retirer.apply(state.root, state.raw, second, plan_sha256=sha(retirer.canonical(second)),
+                            canonical_jar=True, **state.options)
+    assert retired['status'] == 'REMOVED' and len(retired['deleted']) == 2 and retired['binaryDisposition'] == 'RETIRED'
+    assert all(not target.exists() and not keeper.exists() for target, keeper, _ in state.binaries.values())
+    assert all(file.read_bytes() == raw for file, raw in state.originals.items())
+    assert all(any(row == (tag, False, True) for row in state.observations) for tag in state.binaries)
+
+
+@pytest.mark.parametrize('damage', ['missing-member', 'extra-206', 'source', 'commit'])
+def test_closed_runtime_request_cannot_expand_or_reduce_the_reviewed_batch(closed_runtime_case, damage):
+    state = closed_runtime_case; request = copy.deepcopy(state.request)
+    if damage == 'missing-member': request['candidates'].pop()
+    elif damage == 'extra-206': request['candidates'].append({**request['candidates'][0], 'release': 'ci-206-' + 'a' * 12, 'commit': 'a' * 40})
+    else: request['candidates'][0]['sourceSha256' if damage == 'source' else 'commit'] = 'c' * (64 if damage == 'source' else 40)
+    raw = retirer.canonical(request)
+    with pytest.raises(retirer.RetirementError):
+        retirer.closed_runtime_request(raw, sha(raw), state.request['current'], state.request['identity'])
+
+
+@pytest.mark.parametrize('canonical_jar', [False, True])
+def test_closed_runtime_tags_never_enter_the_legacy_default_permission(closed_runtime_case, canonical_jar):
+    state = closed_runtime_case
+    with pytest.raises(retirer.RetirementError, match='ONLY_REVIEWED_OLD_ATTEMPTS'):
+        retirer.approved_request(state.raw, sha(state.raw), state.request['current'], state.request['identity'], canonical_jar=canonical_jar)
+
+
+def test_default_canonical_plan_cannot_borrow_the_closed_runtime_registration(closed_runtime_case):
+    state = closed_runtime_case; options = {key: value for key, value in state.options.items() if key != 'closed_runtime'}
+    result = retirer.plan(state.root, state.raw, canonical_jar=True, **options)
+    assert result['candidates'] == [] and len(result['skipped']) == 2
+    assert all(row['reason'] == 'ONLY_REVIEWED_OLD_ATTEMPTS_ALLOWED' for row in result['skipped'])
+    assert all(target.exists() and keeper.exists() for target, keeper, _ in state.binaries.values())
+
+
+def test_default_canonical_apply_cannot_borrow_the_closed_runtime_registration(closed_runtime_case):
+    state = closed_runtime_case; options = {key: value for key, value in state.options.items() if key != 'closed_runtime'}
+    # An authentic-looking selection cannot activate the new registry through
+    # the legacy API; admission must refuse before inspecting any target.
+    plan = {'kind': retirer.CANONICAL_KIND + '-plan', 'requestSha256': sha(state.raw), 'current': state.request['current'],
+        'identity': state.request['identity'], 'inboxKeepersPreserved': True, 'deletionPerformed': False, 'skipped': [],
+        'candidates': [{'context': {key: row[key] for key in ('release', 'commit', 'sourceSha256')}}
+                       for row in state.request['candidates']]}
+    result = retirer.apply(state.root, state.raw, plan, plan_sha256=sha(retirer.canonical(plan)), canonical_jar=True, **options)
+    assert result['status'] == 'FAILED_OR_UNKNOWN' and result['mutationAttempted'] is False and result['deleted'] == []
+    assert result['failure'] == 'ONLY_REVIEWED_OLD_ATTEMPTS_ALLOWED'
+    assert all(target.exists() and keeper.exists() for target, keeper, _ in state.binaries.values())
+
+
+@pytest.mark.parametrize('damage', ['missing', 'partial-object', 'wrong-no-object', 'data-not-preserved'])
+def test_closed_runtime_copies_wait_for_the_complete_original_fixture_receipt(closed_runtime_case, damage):
+    state = closed_runtime_case; value = copy.deepcopy(state.fixture)
+    if damage == 'missing': state.fixture_receipt.unlink()
+    else:
+        if damage == 'partial-object': value['removed'] = []
+        elif damage == 'wrong-no-object': value['noObject'] = ['ci-206-' + 'a' * 12]
+        else: value['dataDirectoriesPreserved'] = False
+        state.fixture_receipt.write_bytes(retirer.canonical(value))
+    with pytest.raises((retirer.RetirementError, FileNotFoundError)):
+        retirer.plan(state.root, state.raw, **state.options)
+    assert all(target.exists() and keeper.exists() for target, keeper, _ in state.binaries.values())
+
+
+@pytest.mark.parametrize('damage', ['partial-plan', 'skip', 'previous-sha-drift'])
+def test_closed_runtime_apply_cannot_mutate_a_partial_or_changed_batch(closed_runtime_case, damage):
+    state = closed_runtime_case; prepared = retirer.plan(state.root, state.raw, **state.options)
+    if damage == 'partial-plan': prepared['candidates'].pop()
+    elif damage == 'skip': prepared['skipped'] = [{'release': 'ci-204-24f8eb4b02bf', 'reason': 'missing'}]
+    else: state.fixture_receipt.write_bytes(state.fixture_receipt.read_bytes() + b' ')
+    if damage == 'previous-sha-drift':
+        result = retirer.apply(state.root, state.raw, prepared, plan_sha256=sha(retirer.canonical(prepared)), **state.options)
+        assert result['status'] == 'FAILED_OR_UNKNOWN' and result['deleted'] == [] and result['mutationAttempted'] is False
+    else:
+        with pytest.raises(retirer.RetirementError):
+            retirer.apply(state.root, state.raw, prepared, plan_sha256=sha(retirer.canonical(prepared)), **state.options)
+    assert all(target.exists() and keeper.exists() for target, keeper, _ in state.binaries.values())
+
+
+@pytest.mark.parametrize('damage', ['none', 'missing-null-key', 'container-name', 'data-directory'])
+def test_closed_207_requires_the_actual_explicit_null_owner_before_no_object(closed_runtime_case, monkeypatch, damage):
+    state = closed_runtime_case; row = state.request['candidates'][1]; ref = row['controls']['fixtureOwner']
+    file = state.root / ref['path']; owner = json.loads(file.read_bytes())
+    if damage == 'missing-null-key': del owner['containerName']
+    elif damage == 'container-name': owner['containerName'] = 'unexpected-object'
+    elif damage == 'data-directory': owner['dataDirectory'] = '/unexpected/data'
+    raw = retirer.canonical(owner); file.write_bytes(raw); ref.update(bytes=len(raw), sha256=sha(raw))
+    builder = SimpleNamespace(recent_mysql_fixture_source=lambda *_a: pytest.fail('207 must never borrow the 204 object permission'),
+        historical_mysql_fixture_descriptor=lambda *_a, **_k: pytest.fail('A null container cannot become an object descriptor'))
+    request = state.request
+    if damage == 'none':
+        result = retirer.capture_recent_fixture(state.root, request, row, builder, closed_runtime=True)
+        assert result['absenceKind'] == 'NO_OBJECT' and result['fixture'] is result['containerId'] is result['dataDirectory'] is None
+    else:
+        with pytest.raises(retirer.RetirementError):
+            retirer.capture_recent_fixture(state.root, request, row, builder, closed_runtime=True)
+
+
+def test_new_reference_after_duplicate_capture_retains_quarantine_and_keeper(copies):
+    descriptor = described(copies); reservation = retirer.reserve_quarantine(copies.root); calls = []
+    def recheck():
+        calls.append(copies.target.exists())
+        if not copies.target.exists(): raise retirer.RetirementError('NEW_DUAL_ROOT_REFERENCE')
+    with pytest.raises(retirer.RetirementError, match='NEW_DUAL_ROOT_REFERENCE'):
+        retirer.remove_duplicate(copies.root, descriptor, quarantine=reservation, quiescence=recheck)
+    assert calls == [True, False] and copies.keeper.read_bytes() == copies.payload
+    assert (copies.root / reservation['path']).read_bytes() == copies.payload and not copies.target.exists()
+
+
+@pytest.mark.parametrize('damage', ['missing', 'partial', 'keeper-not-verified', 'wrong-sha'])
+def test_closed_inbox_retirement_cannot_skip_original_complete_copy_evidence(closed_runtime_case, damage):
+    state = closed_runtime_case
+    deleted = [{'path': f'verification/{tag}/checkout/work/compact-fixtures/candidate-app.jar',
+        'sha256': sha(payload), 'bytes': len(payload), 'keeperVerifiedAfter': True, 'capturedInodeVerified': True}
+        for tag, (_target, _keeper, payload) in state.binaries.items()]
+    prior = {'kind': retirer.KIND + '-receipt', 'current': state.request['current'], 'identity': state.request['identity'],
+        'requestSha256': sha(state.raw), 'closedJarBatch': retirer.CLOSED_RUNTIME_BATCH, 'status': 'REMOVED',
+        'failure': None, 'skipped': [], 'deleted': deleted, 'inboxKeepersPreserved': True,
+        'retainedQuarantinePaths': [], 'sourceArchivesDataAndReportsHaveNoDeletionApi': True}
+    if damage == 'partial': prior['deleted'].pop()
+    elif damage == 'keeper-not-verified': prior['deleted'][0]['keeperVerifiedAfter'] = False
+    elif damage == 'wrong-sha': prior['deleted'][0]['sha256'] = '0' * 64
+    if damage != 'missing':
+        plan = {'kind': retirer.KIND + '-plan', 'current': state.request['current'], 'identity': state.request['identity'], 'requestSha256': sha(state.raw),
+                'closedJarBatch': retirer.CLOSED_RUNTIME_BATCH, 'skipped': [], 'deletionPerformed': False}
+        retain_closed_phase(state.fixture_receipt.parent, 'native-jar-duplicate', plan, prior)
+    with pytest.raises((retirer.RetirementError, FileNotFoundError)):
+        retirer.plan(state.root, state.raw, canonical_jar=True, **state.options)
+    assert all(keeper.exists() for _target, keeper, _payload in state.binaries.values())
+
+
+@pytest.mark.parametrize(('mode', 'phase'), [('Verified', 'plan'), ('Maintenance', 'plan-builders'),
+    ('Maintenance', 'plan-public-layers'), ('Maintenance', 'plan-retired-candidate-copies')])
+def test_closed_batch_cannot_enable_other_modes_or_cleanup_apis(mode, phase):
+    with pytest.raises(retirer.RetirementError, match='CLOSED_RUNTIME_MAINTENANCE_PHASE'):
+        retirer.closed_runtime_cli(SimpleNamespace(jar_batch=retirer.CLOSED_RUNTIME_BATCH, mode=mode, phase=phase))
+
+
+def test_closed_runtime_controller_binds_capture_full_batches_and_all_original_receipts():
+    script = MODULE.with_suffix('.ps1').read_text(encoding='utf8')
+    branch = script.split("if($CanonicalBatch -ceq 'ClosedRuntime') {", 1)[1].split("if($CanonicalBatch -ceq 'RetiredCopies') {", 1)[0]
+    phases = [branch.index("Invoke-NativeJarPhase '" + phase + "'") for phase in
+        ('plan-recent-fixtures', 'apply-recent-fixtures', 'plan', 'apply', 'plan-canonical', 'apply-canonical')]
+    assert phases == sorted(phases)
+    assert "finally {Copy-NativeJarEvidence (Invoke-NativeJarPhase 'inspect')}" in branch
+    for guard in ('candidateCount -eq 2', 'deletedFiles -eq 2', 'deletedFiles=4', '$proof.retainedQuarantinePaths',
+                  '$proof.sourceArchivesDataAndReportsHaveNoDeletionApi', '$deleted[0].sha256', '$deleted[0].keeperVerifiedAfter'):
+        assert guard in branch
+    assert '--jar-batch failed-204-207' in script
+    reader = script.split("$reader=@'\n", 1)[1].split("\n'@", 1)[0]; syntax = ast.parse(reader)
+    selected = next(node for node in syntax.body if isinstance(node, ast.If)
+        and ast.dump(node.test) == ast.dump(ast.parse("batch=='ClosedRuntime'", mode='eval').body))
+    approved = ast.literal_eval(selected.body[0].value)
+    assert [row[0] for row in approved] == [204, 207]
+    assert {row[1] for row in approved} == {row['commit'] for row in retirer.CLOSED_RUNTIME_JARS.values()}
