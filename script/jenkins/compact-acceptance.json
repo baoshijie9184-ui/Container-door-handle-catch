@@ -1127,7 +1127,7 @@
       },
       {
         "module": "tests_python.test_local_mysql_source_classification",
-        "minimumTests": 112,
+        "minimumTests": 130,
         "source": "tests_python/test_local_mysql_source_classification.py",
         "allowedSkippedTests": []
       },
