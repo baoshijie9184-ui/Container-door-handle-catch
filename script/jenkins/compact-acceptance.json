@@ -19,6 +19,18 @@
   },
   "javaSuites": [
     {
+      "id": "OperationsAuditServiceTest",
+      "className": "com.ruanzhu.doorhandle.module.system.service.OperationsAuditServiceTest",
+      "fixtureProperties": [
+        "doorhandle.operations.mysql.config"
+      ],
+      "source": "doorhandle-module-system/src/test/java/com/ruanzhu/doorhandle/module/system/service/OperationsAuditServiceTest.java",
+      "minimumTests": 6,
+      "coverage": [
+        "single-enterprise account identity and operation audit"
+      ]
+    },
+    {
       "id": "ConfirmationMigrationMySqlTest",
       "className": "com.ruanzhu.doorhandle.module.ai.action.ConfirmationMigrationMySqlTest",
       "fixtureProperties": [
@@ -497,18 +509,6 @@
       "minimumTests": 15,
       "coverage": [
         "agent journal and owner-lock fencing"
-      ]
-    },
-    {
-      "id": "OperationsAuditServiceTest",
-      "className": "com.ruanzhu.doorhandle.module.system.service.OperationsAuditServiceTest",
-      "fixtureProperties": [
-        "doorhandle.operations.mysql.config"
-      ],
-      "source": "doorhandle-module-system/src/test/java/com/ruanzhu/doorhandle/module/system/service/OperationsAuditServiceTest.java",
-      "minimumTests": 6,
-      "coverage": [
-        "single-enterprise account identity and operation audit"
       ]
     },
     {
