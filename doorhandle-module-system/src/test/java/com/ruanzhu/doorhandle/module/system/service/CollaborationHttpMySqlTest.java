@@ -30,6 +30,7 @@ import org.springframework.boot.WebApplicationType;
 import org.springframework.boot.builder.SpringApplicationBuilder;
 import org.springframework.boot.autoconfigure.web.servlet.DispatcherServletRegistrationBean;
 import org.springframework.boot.web.embedded.tomcat.TomcatServletWebServerFactory;
+import org.springframework.boot.web.embedded.tomcat.TomcatWebServer;
 import org.springframework.boot.web.servlet.*;
 import org.springframework.boot.web.servlet.context.ServletWebServerApplicationContext;
 import org.springframework.context.annotation.*;
@@ -56,6 +57,7 @@ import org.springframework.web.servlet.config.annotation.EnableWebMvc;
 import org.springframework.web.util.ContentCachingResponseWrapper;
 import javax.sql.DataSource;
 import java.io.*;
+import java.lang.management.ManagementFactory;
 import java.net.*;
 import java.net.http.*;
 import java.nio.charset.StandardCharsets;
@@ -65,6 +67,9 @@ import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
 import java.util.function.Predicate;
+import org.apache.coyote.AbstractProtocol;
+import org.apache.tomcat.util.net.NioEndpoint;
+import org.apache.tomcat.util.net.SocketWrapperBase;
 import static org.assertj.core.api.Assertions.*;
 
 /** ECS only. Real loopback Tomcat, JDK CookieManager/HTTP streams and admitted MySQL; no Agent/Redis/Kafka/LLM context. */
@@ -229,6 +234,143 @@ class CollaborationHttpMySqlTest {
     Stream stream(Browser browser)throws Exception{var stream=new Stream(browser);streams.add(stream);return stream;}
     CommitGate delay(String path){var gate=new CommitGate();responseGates.add(gate);assertThat(ResponseGate.current.compareAndSet(null,new ResponseGate.Delayed(path,gate))).isTrue();return gate;}
     static void entered(CommitGate gate)throws Exception{assertThat(gate.entered.await(5,TimeUnit.SECONDS)).isTrue();}
+
+    /** Real HTTP/1.1 socket: after the headers no response byte is consumed by a client thread. */
+    final class NonReadingSse implements AutoCloseable {
+        final Socket socket=new Socket();
+        final SocketWrapperBase<?> accepted;
+        final int actualSendBuffer,actualReceiveBuffer;
+        NonReadingSse(Browser browser)throws Exception {
+            try {
+                socket.setReceiveBufferSize(1024); // Before connect, so the negotiated receive window is bounded.
+                socket.setSoTimeout(5000);
+                socket.connect(new InetSocketAddress(InetAddress.getByName("127.0.0.1"),base.getPort()),5000);
+                var request="GET /api/realtime/changes HTTP/1.1\r\nHost: "+base.getRawAuthority()
+                        +"\r\nOrigin: "+base+"\r\nAccept: text/event-stream\r\nX-Account-Context: "+browser.context
+                        +"\r\nCookie: "+AuthCookieNames.SELECTOR+"="+browser.context+"; "+AuthCookieNames.access(browser.context)+"="+browser.token()
+                        +"\r\nConnection: keep-alive\r\n\r\n";
+                socket.getOutputStream().write(request.getBytes(StandardCharsets.US_ASCII));socket.getOutputStream().flush();
+                var header=new ByteArrayOutputStream();int boundary=0;
+                while(boundary!=4&&header.size()<65536){
+                    int value=socket.getInputStream().read();if(value<0)throw new EOFException("SSE headers ended early");header.write(value);
+                    boundary=value=="\r\n\r\n".charAt(boundary)?boundary+1:value=='\r'?1:0;
+                }
+                assertThat(boundary).isEqualTo(4);
+                String headers=header.toString(StandardCharsets.ISO_8859_1);
+                assertThat(headers).startsWith("HTTP/1.1 200").containsIgnoringCase("Content-Type: text/event-stream");
+                // Target only this accepted fixture connection; the production connector and the other nine cases stay unchanged.
+                var protocol=(AbstractProtocol<?>)((TomcatWebServer)app.getWebServer()).getTomcat().getConnector().getProtocolHandler();
+                var endpointMethod=AbstractProtocol.class.getDeclaredMethod("getEndpoint");endpointMethod.setAccessible(true);
+                var endpoint=(NioEndpoint)endpointMethod.invoke(protocol);
+                accepted=endpoint.getConnections().stream().filter(value->value.getRemotePort()==socket.getLocalPort()
+                        &&value.getLocalPort()==base.getPort()).findFirst().orElseThrow();
+                var channel=((org.apache.tomcat.util.net.NioChannel)accepted.getSocket()).getIOChannel();
+                channel.setOption(StandardSocketOptions.SO_SNDBUF,1024);
+                actualSendBuffer=channel.getOption(StandardSocketOptions.SO_SNDBUF);actualReceiveBuffer=socket.getReceiveBufferSize();
+                assertThat(actualSendBuffer).isBetween(1024,16384);assertThat(actualReceiveBuffer).isBetween(1024,16384);
+                assertThat(socket.getLocalAddress().isLoopbackAddress()).isTrue();
+            }catch(Exception|AssertionError failure){socket.close();throw failure;}
+        }
+        long kernelSendQueue()throws IOException {
+            String local=String.format(":%04X",base.getPort()),remote=String.format(":%04X",socket.getLocalPort());long pending=0;
+            for(String file:List.of("/proc/net/tcp","/proc/net/tcp6")){
+                Path path=Path.of(file);if(!Files.exists(path))continue;
+                for(String line:Files.readAllLines(path,StandardCharsets.US_ASCII)){
+                    var parts=line.trim().split("\\s+");
+                    if(parts.length>4&&parts[1].endsWith(local)&&parts[2].endsWith(remote)&&parts[3].equals("01"))
+                        pending=Math.max(pending,Long.parseLong(parts[4].split(":")[0],16));
+                }
+            }
+            return pending;
+        }
+        public void close(){try{socket.close();}catch(IOException ignored){}}
+    }
+    static Object field(Object object,String name)throws ReflectiveOperationException{var field=object.getClass().getDeclaredField(name);field.setAccessible(true);return field.get(object);}
+    int actualRealtimeSlots()throws ReflectiveOperationException{var method=BusinessRealtimeService.class.getDeclaredMethod("activeSlots");method.setAccessible(true);return (int)method.invoke(app.getBean(BusinessRealtimeService.class));}
+    static int actualRealtimeWriters(){var bean=ManagementFactory.getThreadMXBean();return (int)Arrays.stream(bean.getThreadInfo(bean.getAllThreadIds(),0)).filter(Objects::nonNull).filter(value->value.getThreadName().equals("business-realtime-client")).count();}
+    static void until(java.util.function.BooleanSupplier condition,long millis)throws Exception{long end=System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(millis);while(System.nanoTime()<end){if(condition.getAsBoolean())return;Thread.sleep(10);}assertThat(condition.getAsBoolean()).isTrue();}
+    static boolean actualNioWriteWait(Thread writer){
+        var trace=writer.getStackTrace();
+        return writer.isAlive()&&(writer.getState()==Thread.State.WAITING||writer.getState()==Thread.State.TIMED_WAITING)
+                &&Arrays.stream(trace).anyMatch(value->value.getClassName().equals("org.apache.tomcat.util.net.NioEndpoint$NioSocketWrapper")&&value.getMethodName().equals("doWrite"))
+                &&Arrays.stream(trace).anyMatch(value->value.getClassName().equals("java.lang.Object")&&value.getMethodName().startsWith("wait"));
+    }
+    long confirmedTcpBackpressure(NonReadingSse socket,Thread writer,AtomicLong sendingSince)throws Exception{
+        long call=sendingSince.get(),minimum=Long.MAX_VALUE;if(call==0||!actualNioWriteWait(writer))return 0;
+        for(int sample=0;sample<3;sample++){
+            long pending=socket.kernelSendQueue();
+            if(sendingSince.get()!=call||!actualNioWriteWait(writer)||pending<=0||socket.accepted.isClosed())return 0;
+            minimum=Math.min(minimum,pending);Thread.sleep(25);
+        }
+        return minimum;
+    }
+    final class TcpLoadSamples implements AutoCloseable {
+        final BlockingQueue<?> pending;final ThreadPoolExecutor events;
+        final long baselineHeap=ManagementFactory.getMemoryMXBean().getHeapMemoryUsage().getUsed();
+        final int baselineThreads=ManagementFactory.getThreadMXBean().getThreadCount();
+        final AtomicLong heapPeak=new AtomicLong(baselineHeap);
+        final AtomicInteger threadPeak=new AtomicInteger(baselineThreads),writerPeak=new AtomicInteger(),queuePeak=new AtomicInteger(),eventQueuePeak=new AtomicInteger(),slotPeak=new AtomicInteger(),samples=new AtomicInteger();
+        final AtomicReference<Throwable> failure=new AtomicReference<>();
+        final ScheduledExecutorService sampler=Executors.newSingleThreadScheduledExecutor(r->{var thread=new Thread(r,"http-real-slow-tcp-observer");thread.setDaemon(true);return thread;});
+        TcpLoadSamples(BlockingQueue<?> pending)throws Exception{
+            this.pending=pending;events=(ThreadPoolExecutor)field(app.getBean(BusinessRealtimeService.class),"events");
+            sampler.scheduleWithFixedDelay(()->{try{
+                heapPeak.accumulateAndGet(ManagementFactory.getMemoryMXBean().getHeapMemoryUsage().getUsed(),Math::max);
+                threadPeak.accumulateAndGet(ManagementFactory.getThreadMXBean().getThreadCount(),Math::max);
+                writerPeak.accumulateAndGet(actualRealtimeWriters(),Math::max);queuePeak.accumulateAndGet(pending.size(),Math::max);
+                eventQueuePeak.accumulateAndGet(events.getQueue().size(),Math::max);slotPeak.accumulateAndGet(actualRealtimeSlots(),Math::max);samples.incrementAndGet();
+            }catch(Throwable error){failure.compareAndSet(null,error);}},0,20,TimeUnit.MILLISECONDS);
+        }
+        public void close()throws InterruptedException{sampler.shutdownNow();assertThat(sampler.awaitTermination(5,TimeUnit.SECONDS)).isTrue();}
+        void bounded(){assertThat(failure.get()).isNull();assertThat(samples.get()).isGreaterThanOrEqualTo(3);assertThat(writerPeak.get()).isLessThanOrEqualTo(2);assertThat(slotPeak.get()).isLessThanOrEqualTo(2);assertThat(queuePeak.get()).isBetween(1,32);assertThat(eventQueuePeak.get()).isLessThanOrEqualTo(256);assertThat(threadPeak.get()-baselineThreads).isLessThanOrEqualTo(16);assertThat(heapPeak.get()-baselineHeap).isLessThanOrEqualTo(64L*1024*1024);}
+    }
+
+    @Test @Order(0) @Timeout(value=45,unit=TimeUnit.SECONDS)
+    void realUnreadTcpBackpressureKeepsOtherHttpCommitsAndSseBoundedAndReleasesItsWriter()throws Exception {
+        // A bounded loopback pressure experiment, not an assertion of production throughput/capacity.
+        assertThat(System.getProperty("os.name")).containsIgnoringCase("linux");
+        until(()->{try{return actualRealtimeSlots()==0&&actualRealtimeWriters()==0;}catch(ReflectiveOperationException error){throw new IllegalStateException(error);}},5000);
+        var slowBrowser=browser(1);var healthyBrowser=browser(2);var service=app.getBean(BusinessRealtimeService.class);
+        long version=0;int writes=0;long kernelPending=0;
+        try(var healthy=stream(healthyBrowser);var slow=new NonReadingSse(slowBrowser)){
+            var actual=((Map<?,?>)field(service,"connections")).values().stream().filter(connection->{try{return ((LoginSessionAccess.Session)field(connection,"session")).accountContext().equals(slowBrowser.context);}catch(ReflectiveOperationException error){throw new IllegalStateException(error);}}).findFirst().orElseThrow();
+            var writer=(Thread)field(actual,"writer");var sendingSince=(AtomicLong)field(actual,"sendingSince");var pending=(BlockingQueue<?>)field(actual,"queue");
+            assertThat(pending.size()+pending.remainingCapacity()).isEqualTo(32);
+            try(var measurements=new TcpLoadSamples(pending)){
+                // Long but valid command IDs enlarge only locator events, never private field values.
+                String prefix="tcp-"+UUID.randomUUID()+"-"+"x".repeat(65);
+                long pressureDeadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(8);
+                for(;writes<128&&kernelPending==0&&System.nanoTime()<pressureDeadline;writes++){
+                    String request=prefix+"-"+writes;var saved=healthyBrowser.write(request,"tcp pressure "+writes,version,false,false);
+                    assertThat(saved.statusCode()).isEqualTo(200);version++;
+                    assertThat(healthy.request(request).body().path("resourceVersion").asLong()).isEqualTo(version);
+                    kernelPending=confirmedTcpBackpressure(slow,writer,sendingSince);
+                }
+                assertThat(kernelPending).as("The exact unread socket must have a positive kernel send queue and three NIO write-wait samples; send=%s receive=%s committed=%s",slow.actualSendBuffer,slow.actualReceiveBuffer,writes).isPositive();
+                long blockedCall=sendingSince.get();
+                for(int index=0;index<8;index++){
+                    String request="healthy-during-real-backpressure-"+index;long began=System.nanoTime();
+                    var saved=healthyBrowser.write(request,"healthy despite slow TCP "+index,version,false,false);
+                    assertThat(saved.statusCode()).isEqualTo(200);version++;var notification=healthy.request(request);
+                    assertThat(TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-began)).isLessThanOrEqualTo(2000);
+                    assertThat(notification.body().path("auditId").asText()).isEqualTo(saved.headers().firstValue("X-Audit-ID").orElseThrow());
+                    assertThat(notification.body().path("resourceVersion").asLong()).isEqualTo(version);
+                    assertThat(jdbc.queryForObject("SELECT version FROM organization_department WHERE id=?",Long.class,department)).isEqualTo(version);
+                    assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM audit_event WHERE kind='OPERATIONS' AND request_id=?",Integer.class,request)).isEqualTo(1);
+                    assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM workflow_instance WHERE kind='BUSINESS_COMMAND' AND request_id=?",Integer.class,request)).isEqualTo(1);
+                }
+                assertThat(sendingSince.get()).isEqualTo(blockedCall);assertThat(actualNioWriteWait(writer)).isTrue();assertThat(slow.kernelSendQueue()).isPositive();
+                assertThat(pending.size()).isBetween(1,32);assertThat(actualRealtimeSlots()).isEqualTo(2);
+                measurements.bounded();
+                slow.close();
+                until(()->{try{return !writer.isAlive()&&actualRealtimeSlots()==1;}catch(ReflectiveOperationException error){throw new IllegalStateException(error);}},8000);
+                var saved=healthyBrowser.write("after-real-slow-tcp-close","healthy after close",version,false,false);assertThat(saved.statusCode()).isEqualTo(200);healthy.request("after-real-slow-tcp-close");
+                System.out.println("A20_REAL_TCP_BACKPRESSURE "+json.writeValueAsString(Map.of("positiveKernelSendQueueBytes",kernelPending,"nioWriteWaitSamples",3,"boundedCommittedPressureWrites",writes,"healthyCommitsDuringBlockedWrite",8,"sendBufferBytes",slow.actualSendBuffer,"receiveBufferBytes",slow.actualReceiveBuffer,"peakWriterThreads",measurements.writerPeak.get(),"peakQueueDepth",measurements.queuePeak.get(),"observedHeapGrowthBytes",Math.max(0,measurements.heapPeak.get()-measurements.baselineHeap),"observedThreadGrowth",Math.max(0,measurements.threadPeak.get()-measurements.baselineThreads))));
+            }
+        }finally{
+            until(()->{try{return actualRealtimeSlots()==0&&actualRealtimeWriters()==0;}catch(ReflectiveOperationException error){throw new IllegalStateException(error);}},8000);
+        }
+    }
 
     @Test @Order(1) void fourRealCookieClientsHaveIndependentPersonnelIdentityAndRejectStalePageWrites()throws Exception{
         var a=browser(1);var b=browser(2);var c=browser(3);var d=browser(4);identity(a,1);identity(b,2);identity(c,3);identity(d,4);

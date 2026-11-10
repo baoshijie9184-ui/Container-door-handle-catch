@@ -37,7 +37,7 @@
         "doorhandle.operations.mysql.config"
       ],
       "source": "doorhandle-module-system/src/test/java/com/ruanzhu/doorhandle/module/system/service/CollaborationHttpMySqlTest.java",
-      "minimumTests": 9,
+      "minimumTests": 10,
       "coverage": [
         "real HTTP cookies, independent users, transactional SSE and delayed authentication response isolation"
       ]
