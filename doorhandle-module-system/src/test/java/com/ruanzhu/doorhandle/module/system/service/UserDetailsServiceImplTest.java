@@ -9,6 +9,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.security.core.GrantedAuthority;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -18,27 +19,21 @@ class UserDetailsServiceImplTest {
     private UserMapper userMapper;
 
     @Test
-    void mapsLegacyAdminRoleToSupervisor() {
+    void rejectsLegacyAdminWithoutAnExplicitAccountMigrationDecision() {
         User user = user("admin", "ADMIN");
         when(userMapper.findByUsername("admin")).thenReturn(user);
 
-        var details = new UserDetailsServiceImpl(userMapper).loadUserByUsername("admin");
-
-        assertThat(details.getAuthorities())
-                .extracting(GrantedAuthority::getAuthority)
-                .containsExactly("ROLE_SUPERVISOR");
+        assertThatThrownBy(()->new UserDetailsServiceImpl(userMapper).loadUserByUsername("admin"))
+                .isInstanceOf(org.springframework.security.core.userdetails.UsernameNotFoundException.class);
     }
 
     @Test
-    void defaultsUnknownRoleToInspector() {
+    void rejectsUnknownRolesInsteadOfGrantingInspectorAccess() {
         User user = user("alice", "unexpected");
         when(userMapper.findByUsername("alice")).thenReturn(user);
 
-        var details = new UserDetailsServiceImpl(userMapper).loadUserByUsername("alice");
-
-        assertThat(details.getAuthorities())
-                .extracting(GrantedAuthority::getAuthority)
-                .containsExactly("ROLE_INSPECTOR");
+        assertThatThrownBy(()->new UserDetailsServiceImpl(userMapper).loadUserByUsername("alice"))
+                .isInstanceOf(org.springframework.security.core.userdetails.UsernameNotFoundException.class);
     }
 
     private User user(String username, String role) {

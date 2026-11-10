@@ -13,6 +13,7 @@ import java.security.Key;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.Map;
+import java.time.Instant;
 
 @Component
 public class JwtUtil {
@@ -69,6 +70,27 @@ public class JwtUtil {
         claims.put("type", "refresh");
         return createToken(claims, username, refreshExpiration);
     }
+
+    public String generateSessionAccess(Long userId,String username,String sid,Instant sessionExpiresAt){
+        Instant now=Instant.now().truncatedTo(java.time.temporal.ChronoUnit.SECONDS);
+        Instant accessExpiresAt=now.plusSeconds(expiration);
+        return sessionToken(userId,username,sid,"access",now,accessExpiresAt.isBefore(sessionExpiresAt)?accessExpiresAt:sessionExpiresAt);
+    }
+    public String generateSessionRefresh(Long userId,String username,String sid,Instant createdAt,Instant expiresAt){
+        return sessionToken(userId,username,sid,"refresh",createdAt,expiresAt);
+    }
+    private String sessionToken(Long userId,String username,String sid,String type,Instant createdAt,Instant expiresAt){
+        if(userId==null||userId<=0||username==null||sid==null||!sid.matches("[A-Za-z0-9_-]{43}")||!expiresAt.isAfter(createdAt))
+            throw new IllegalArgumentException("Invalid session token identity or lifetime");
+        return Jwts.builder().claim("uid",userId).claim("sid",sid).claim("type",type).setSubject(username)
+                .setIssuedAt(Date.from(createdAt)).setExpiration(Date.from(expiresAt)).signWith(getSigningKey(),SignatureAlgorithm.HS256).compact();
+    }
+    public String getSessionId(String token){
+        try {String sid=parseClaims(token).get("sid",String.class);return sid!=null&&sid.matches("[A-Za-z0-9_-]{43}")?sid:null;}
+        catch(Exception ignored){return null;}
+    }
+    public long refreshExpirationSeconds(){return refreshExpiration;}
+    public Instant getExpiresAt(String token){try{return parseClaims(token).getExpiration().toInstant();}catch(Exception ignored){return null;}}
 
     private String createToken(Map<String, Object> claims, String subject, Long ttlSeconds) {
         return Jwts.builder()

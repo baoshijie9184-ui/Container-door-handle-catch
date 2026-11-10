@@ -33,6 +33,8 @@ class CoreCopyMigrationMySqlTest {
         long expectedNext=source.queryForObject("SELECT AUTO_INCREMENT FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name='users'",Long.class);
         fixture.copy();
         for(String table:CORE)assertThat(target.queryForObject("SELECT COUNT(*) FROM `"+table+"`",Long.class)).as(table).isPositive();
+        assertThat(source.queryForObject("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='users' AND column_name IN ('enabled','account_version')",Integer.class)).isZero();
+        assertThat(target.queryForObject("SELECT COUNT(*) FROM users WHERE enabled<>TRUE OR account_version<>0",Integer.class)).isZero();
         assertThat(target.queryForObject("SELECT binding_history_present FROM users WHERE id=1",Boolean.class)).isTrue();
         assertThat(target.queryForObject("SELECT binding_version FROM users WHERE id=1",Integer.class)).isZero();
         assertThat(target.queryForObject("SELECT employee_id FROM users WHERE id=1",Long.class)).isNull();

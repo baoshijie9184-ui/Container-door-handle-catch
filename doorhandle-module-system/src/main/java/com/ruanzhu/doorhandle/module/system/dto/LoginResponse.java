@@ -11,4 +11,10 @@ public class LoginResponse {
     private String email;
     private String phone;
     private String realName;
+    private String role;
+    private String accountContext;
+    @com.fasterxml.jackson.annotation.JsonIgnore
+    private java.time.Instant accessExpiresAt;
+    @com.fasterxml.jackson.annotation.JsonIgnore
+    private java.time.Instant refreshExpiresAt;
 } 

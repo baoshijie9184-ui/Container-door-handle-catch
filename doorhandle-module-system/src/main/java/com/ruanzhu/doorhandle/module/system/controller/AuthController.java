@@ -10,6 +10,8 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
+import com.ruanzhu.doorhandle.module.system.security.LoginSessionProperties;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -28,7 +30,6 @@ import java.util.Map;
 
 @RestController
 @RequestMapping("/api/auth")
-@RequiredArgsConstructor
 public class AuthController {
     public static final String AUTH_COOKIE_NAME = "DOOR_HANDLE_TOKEN";
     public static final String REFRESH_COOKIE_NAME = "DOOR_HANDLE_REFRESH_TOKEN";
@@ -37,6 +38,13 @@ public class AuthController {
     private final LoginRateLimiter loginRateLimiter;
 
     private final com.ruanzhu.doorhandle.module.system.service.AccountIdentityService accountIdentities;
+    private final LoginSessionProperties sessionProperties;
+    @Value("${collaboration.change-history.enabled:false}") private boolean changeHistory;
+    @Value("${collaboration.mutations.enabled:false}") private boolean mutations;
+    @Value("${collaboration.realtime.enabled:false}") private boolean realtime;
+    @Value("${operations.audit.enabled:false}") private boolean baseAudit;
+    public AuthController(AuthService auth,LoginRateLimiter limiter,com.ruanzhu.doorhandle.module.system.service.AccountIdentityService identities){this(auth,limiter,identities,new LoginSessionProperties());}
+    @Autowired public AuthController(AuthService auth,LoginRateLimiter limiter,com.ruanzhu.doorhandle.module.system.service.AccountIdentityService identities,LoginSessionProperties properties){authService=auth;loginRateLimiter=limiter;accountIdentities=identities;sessionProperties=properties;}
 
     @Value("${jwt.expiration:86400}")
     private Long jwtExpirationSeconds;
@@ -70,8 +78,8 @@ public class AuthController {
             response.setToken(null);
             response.setRefreshToken(null);
             return ResponseEntity.ok()
-                    .header(HttpHeaders.SET_COOKIE, buildAuthCookie(token, jwtExpirationSeconds).toString())
-                    .header(HttpHeaders.SET_COOKIE, buildRefreshCookie(refreshToken, refreshExpirationSeconds).toString())
+                    .header(HttpHeaders.SET_COOKIE, buildAuthCookie(token, cookieLifetime(response.getAccessExpiresAt(),jwtExpirationSeconds)).toString())
+                    .header(HttpHeaders.SET_COOKIE, buildRefreshCookie(refreshToken, cookieLifetime(response.getRefreshExpiresAt(),refreshExpirationSeconds)).toString())
                     .body(Result.success(response));
         } catch (Exception e) {
             // 登录失败，记录尝试
@@ -83,23 +91,29 @@ public class AuthController {
     @PostMapping("/refresh")
     public ResponseEntity<?> refresh(HttpServletRequest request) {
         String token = extractRefreshToken(request);
-        LoginResponse response = authService.refresh(token);
+        LoginResponse response = authService.refresh(token,request.getHeader("X-Account-Context"));
         String access = response.getToken();
         String refresh = response.getRefreshToken();
         response.setToken(null); response.setRefreshToken(null);
         return ResponseEntity.ok()
-                .header(HttpHeaders.SET_COOKIE, buildAuthCookie(access, jwtExpirationSeconds).toString())
-                .header(HttpHeaders.SET_COOKIE, buildRefreshCookie(refresh, refreshExpirationSeconds).toString())
+                .header(HttpHeaders.SET_COOKIE, buildAuthCookie(access, cookieLifetime(response.getAccessExpiresAt(),jwtExpirationSeconds)).toString())
+                .header(HttpHeaders.SET_COOKIE, buildRefreshCookie(refresh, cookieLifetime(response.getRefreshExpiresAt(),refreshExpirationSeconds)).toString())
                 .body(Result.success(response));
     }
 
     @PostMapping("/logout")
-    public ResponseEntity<Result<Void>> logout() {
+    public ResponseEntity<Result<Void>> logout(HttpServletRequest request) {
+        authService.logout(extractAccessToken(request),extractRefreshToken(request),request.getHeader("X-Account-Context"));
+        return clearedCookies();
+    }
+    private ResponseEntity<Result<Void>> clearedCookies(){
         return ResponseEntity.ok()
                 .header(HttpHeaders.SET_COOKIE, buildAuthCookie("", 0L).toString())
                 .header(HttpHeaders.SET_COOKIE, buildRefreshCookie("", 0L).toString())
                 .body(Result.success(null));
     }
+    /** Source compatibility for callers of the original cookie-only controller method. */
+    public ResponseEntity<Result<Void>> logout(){authService.logout(null,null,null);return clearedCookies();}
 
     @GetMapping("/check")
     public Result<Map<String, Object>> checkAuth() {
@@ -108,6 +122,7 @@ public class AuthController {
 
         Map<String, Object> response = new HashMap<>();
         response.put("authenticated", true);
+        response.put("capabilities",Map.of("sessionTracking",sessionProperties.isEnabled(),"changeHistory",changeHistory&&baseAudit,"mutations",mutations&&baseAudit,"realtime",realtime&&sessionProperties.isEnabled()&&changeHistory&&baseAudit));
         response.put("username", username);
         response.put("role", authentication.getAuthorities().stream()
                 .map(org.springframework.security.core.GrantedAuthority::getAuthority)
@@ -117,6 +132,7 @@ public class AuthController {
         if (authentication.getPrincipal() instanceof TenantPrincipal principal) {
             response.put("userId", principal.userId());
             response.put("identity", accountIdentities.mine(principal));
+            response.put("accountContext",principal.accountContext()!=null?principal.accountContext():com.ruanzhu.doorhandle.module.system.service.LoginSessionService.legacyAccountContext(principal.userId(),principal.username()));
         }
 
         return Result.success(response);
@@ -126,36 +142,8 @@ public class AuthController {
      * 获取客户端真实 IP
      */
     private String getClientIp(HttpServletRequest request) {
-        String ip = request.getHeader("X-Forwarded-For");
-        if (ip == null || ip.isEmpty() || "unknown".equalsIgnoreCase(ip)) {
-            ip = request.getHeader("Proxy-Client-IP");
-        }
-        if (ip == null || ip.isEmpty() || "unknown".equalsIgnoreCase(ip)) {
-            ip = request.getHeader("WL-Proxy-Client-IP");
-        }
-        if (ip == null || ip.isEmpty() || "unknown".equalsIgnoreCase(ip)) {
-            ip = request.getHeader("HTTP_X_FORWARDED_FOR");
-        }
-        if (ip == null || ip.isEmpty() || "unknown".equalsIgnoreCase(ip)) {
-            ip = request.getHeader("HTTP_X_FORWARDED");
-        }
-        if (ip == null || ip.isEmpty() || "unknown".equalsIgnoreCase(ip)) {
-            ip = request.getHeader("HTTP_FORWARDED_FOR");
-        }
-        if (ip == null || ip.isEmpty() || "unknown".equalsIgnoreCase(ip)) {
-            ip = request.getHeader("HTTP_FORWARDED");
-        }
-        if (ip == null || ip.isEmpty() || "unknown".equalsIgnoreCase(ip)) {
-            ip = request.getHeader("HTTP_CLIENT_IP");
-        }
-        if (ip == null || ip.isEmpty() || "unknown".equalsIgnoreCase(ip)) {
-            ip = request.getRemoteAddr();
-        }
-        // 多个代理时取第一个
-        if (ip != null && ip.contains(",")) {
-            ip = ip.split(",")[0].trim();
-        }
-        return ip;
+        // A forwarding header is user input unless a separately configured trusted proxy resolves it.
+        return request.getRemoteAddr();
     }
 
     private ResponseCookie buildAuthCookie(String token, Long maxAgeSeconds) {
@@ -167,6 +155,7 @@ public class AuthController {
                 .sameSite("Lax")
                 .build();
     }
+    private Long cookieLifetime(java.time.Instant expiresAt,Long fallback){return expiresAt==null?fallback:Math.max(0L,java.time.Duration.between(java.time.Instant.now(),expiresAt).getSeconds());}
 
     private ResponseCookie buildRefreshCookie(String token, Long maxAgeSeconds) {
         return ResponseCookie.from(REFRESH_COOKIE_NAME, token == null ? "" : token)
@@ -178,5 +167,11 @@ public class AuthController {
         if (request.getCookies() != null) for (var c : request.getCookies())
             if (REFRESH_COOKIE_NAME.equals(c.getName())) return c.getValue();
         return request.getHeader("X-Refresh-Token");
+    }
+    private String extractAccessToken(HttpServletRequest request){
+        String authorization=request.getHeader("Authorization");
+        if(authorization!=null&&authorization.startsWith("Bearer "))return authorization.substring(7);
+        if(request.getCookies()!=null)for(var cookie:request.getCookies())if(AUTH_COOKIE_NAME.equals(cookie.getName()))return cookie.getValue();
+        return null;
     }
 }

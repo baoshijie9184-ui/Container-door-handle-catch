@@ -191,6 +191,9 @@ for target in order:
     cols=[c['targetColumn'] for c in route['columns']];exprs=[expression(route,c['sourceColumn']) for c in route['columns']]
     join=''
     if target=='users':
+        # Historical 131/45 sources have no account-disable or access version columns.
+        # These are explicit new target facts; source declarations remain unchanged.
+        cols+=['enabled','account_version'];exprs+=['TRUE','0']
         cols+=['employee_id','binding_version','binding_history_present'];exprs+=['b.employee_id','CASE WHEN b.user_id IS NULL THEN 0 ELSE b.version END','(b.user_id IS NOT NULL)']
         join=' LEFT JOIN `__SOURCE_SCHEMA__`.account_employee_binding b ON b.user_id=s.id'
     if target=='detection_input':cols+=['content_asset_id','content_version'];exprs+=['NULL','NULL']

@@ -30,6 +30,12 @@ public class User {
     @TableField("role")
     private String role;
 
+    @TableField("enabled")
+    private Boolean enabled = true;
+
+    @TableField("account_version")
+    private Long accountVersion = 0L;
+
     @TableField("created_at")
     private LocalDateTime createdAt;
 

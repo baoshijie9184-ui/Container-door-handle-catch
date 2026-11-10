@@ -48,12 +48,15 @@ CREATE TABLE users (
     email VARCHAR(100) COLLATE utf8mb4_unicode_ci,
     phone VARCHAR(20) COLLATE utf8mb4_unicode_ci,
     role VARCHAR(16) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'INSPECTOR',
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    account_version BIGINT NOT NULL DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     employee_id BIGINT NULL,
     binding_version INT NOT NULL DEFAULT 0,
     binding_history_present BOOLEAN NOT NULL DEFAULT FALSE,
     UNIQUE KEY uk_users_employee (employee_id),
+    CONSTRAINT ck_users_access CHECK(enabled IN (0,1) AND account_version>=0),
     CONSTRAINT ck_users_binding_version CHECK(binding_version>=0),
     CONSTRAINT ck_users_binding_history CHECK(binding_history_present IN (0,1) AND (binding_history_present=1 OR (binding_version=0 AND employee_id IS NULL)))
 ) ENGINE=InnoDB ROW_FORMAT=DYNAMIC DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;

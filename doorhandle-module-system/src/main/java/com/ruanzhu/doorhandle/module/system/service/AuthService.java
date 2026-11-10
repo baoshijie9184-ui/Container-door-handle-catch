@@ -6,4 +6,6 @@ import com.ruanzhu.doorhandle.module.system.dto.LoginResponse;
 public interface AuthService {
     LoginResponse login(LoginRequest request);
     LoginResponse refresh(String refreshToken);
+    default LoginResponse refresh(String refreshToken,String accountContext){return refresh(refreshToken);}
+    default void logout(String accessToken,String refreshToken,String accountContext){ }
 } 
