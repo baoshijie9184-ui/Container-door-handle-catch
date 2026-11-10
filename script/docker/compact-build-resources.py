@@ -1047,6 +1047,10 @@ RECENT_MYSQL_FIXTURE_SOURCES = {
     'ci-195-2c2e65a0daa9': ('2c2e65a0daa94d96b327c59d720871ab70bff0a1', '259d40731626e366b9f974df221bf64ee2db7a2e13e41dc369c1e5bf47826104'),
     'ci-198-7af0903ee840': ('7af0903ee84011dc51f4abac4f4a4d9679db7322', '259d40731626e366b9f974df221bf64ee2db7a2e13e41dc369c1e5bf47826104'),
     'ci-201-803baf401b5f': ('803baf401b5f9566283a59cb6a885a794b9d7d85', '259d40731626e366b9f974df221bf64ee2db7a2e13e41dc369c1e5bf47826104'),
+    'ci-204-24f8eb4b02bf': ('24f8eb4b02bf290c6dd4e186eb78c5f3c80f3b88', '259d40731626e366b9f974df221bf64ee2db7a2e13e41dc369c1e5bf47826104'),
+}
+RECENT_MYSQL_FIXTURE_ARCHIVE_SHA256 = {
+    'ci-204-24f8eb4b02bf': '4b1fed5b2e0f0a80cd0006d7a536eff326f547448c5019ec3ceafa457532bd77',
 }
 # Helper revisions belong to the exact attempt, never a union of accepted hashes.
 RECENT_MYSQL_HELPERS = {
@@ -1060,6 +1064,10 @@ RECENT_MYSQL_HELPERS = {
     },
     'ci-201-803baf401b5f': {
         'compact-build-resources.py': '5ca8a9e3dc6d7ca7273a8aec2102fdbf0f27e5f40ada86edad2553931506d6e8',
+        'compact-image-inputs.py': '1db18e3d1aba9b426f6bfb6b34f22af96cb403c6a97ffef914ea35c308ea795e',
+    },
+    'ci-204-24f8eb4b02bf': {
+        'compact-build-resources.py': '6a2011e02a274729c346af50e14763b882db596a7e6d75c88848cccf5b6e041e',
         'compact-image-inputs.py': '1db18e3d1aba9b426f6bfb6b34f22af96cb403c6a97ffef914ea35c308ea795e',
     },
 }
@@ -1240,6 +1248,9 @@ def recent_mysql_fixture_source(context, proof):
     require(registered is not None and registered[0] == context.get('commit')
             and type(context.get('sourceSha256')) is str and SHA.fullmatch(context['sourceSha256']),
             'Reviewed recent MySQL source required')
+    if context['release'] in RECENT_MYSQL_FIXTURE_ARCHIVE_SHA256:
+        require(context['sourceSha256'] == RECENT_MYSQL_FIXTURE_ARCHIVE_SHA256[context['release']],
+                'Reviewed closed MySQL fixture source archive differs')
     expected = {'path': 'inbox/' + context['release'] + '/source.tar.gz', 'sha256': context['sourceSha256'],
                 'transportRecipeSha256': registered[1],
                 'builderHelperSha256': dict(RECENT_MYSQL_HELPERS[context['release']])}

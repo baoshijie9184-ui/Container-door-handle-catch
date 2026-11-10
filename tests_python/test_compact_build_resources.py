@@ -654,5 +654,121 @@ class CompactBuildResourceTests(unittest.TestCase):
             args, CONTEXT['identity'], Path('/business/source'), 'anything', 'model', 'doorhandle-rehearsal-' + 'a' * 12)
 
 
+def stopped_mysql_204_fixture():
+    root = Path('/home/ecs-user/doorhandle-ci'); tag = 'ci-204-24f8eb4b02bf'
+    context = {'release': tag, 'commit': '24f8eb4b02bf290c6dd4e186eb78c5f3c80f3b88',
+               'sourceSha256': '4b1fed5b2e0f0a80cd0006d7a536eff326f547448c5019ec3ceafa457532bd77'}
+    identity = {'instanceId': 'i-2zeieuov2aum486jm1ek', 'machineId': '1ebe8f77e3104ab6a49a9386e38abd20', 'executionLocation': 'ECS'}
+    work = str(root / 'verification' / tag / 'checkout/work/compact-fixtures'); data = work + '/mysql-data'
+    cid, original, token, port = 'd' * 64, 'e' * 64, 'e6e05a8cd2', 43127
+    owner = {'schemaVersion': 1, 'kind': 'doorhandle-compact-fixture-owner', **context, 'identity': identity,
+             'phase': 'OWNED_SERVER_STOPPED', 'work': work, 'dataDirectory': data, 'token': token,
+             'containerId': cid, 'sourceContainerId': original, 'image': 'sha256:' + 'f' * 64,
+             'containerName': 'doorhandle-compact-fixture-' + token, 'port': port, 'binaryLoggingDisabled': True}
+    cleanup = {'schemaVersion': 1, 'kind': 'doorhandle-compact-fixture-cleanup', **context, 'identity': identity,
+               'status': 'STOPPED', 'errors': [], 'containerId': cid, 'sourceContainerUntouched': original,
+               'dataDirectoryRetained': data, 'sourceDumpAndEvidenceRetained': True}
+    row = {'Id': cid, 'Name': '/' + owner['containerName'], 'Image': owner['image'], 'ExecIDs': None,
+           'Config': {'Env': ['MYSQL_ROOT_PASSWORD=synthetic-private-value'],
+                      'Labels': {'io.doorhandle.compact-fixtures': token, 'io.doorhandle.release': tag,
+                                 'io.doorhandle.source': context['sourceSha256']},
+                      'Cmd': ['--datadir=' + data, '--port=' + str(port), '--bind-address=0.0.0.0', '--mysqlx=OFF',
+                              '--event-scheduler=OFF', '--local-infile=OFF', '--skip-log-bin',
+                              '--innodb-buffer-pool-size=268435456', '--max-connections=120']},
+           'State': {'Status': 'exited', 'Running': False, 'Restarting': False, 'Paused': False,
+                     'OOMKilled': False, 'Pid': 0, 'ExitCode': 0,
+                     'StartedAt': '2026-11-10T14:00:00Z', 'FinishedAt': '2026-11-10T14:10:00Z'},
+           'HostConfig': {'RestartPolicy': {'Name': 'no', 'MaximumRetryCount': 0}, 'AutoRemove': False,
+                          'Privileged': False, 'Memory': 1536 * RES.MIB, 'MemorySwap': 1536 * RES.MIB,
+                          'NanoCpus': 10 ** 9, 'PidsLimit': 256, 'NetworkMode': 'bridge', 'IpcMode': 'private',
+                          'PortBindings': {str(port) + '/tcp': [{'HostIp': '127.0.0.1', 'HostPort': str(port)}]},
+                          'Tmpfs': {'/var/lib/mysql': ''}},
+           'Mounts': [{'Type': 'bind', 'Source': data, 'Destination': data, 'RW': True},
+                      {'Type': 'tmpfs', 'Source': '', 'Destination': '/var/lib/mysql', 'RW': True}]}
+    proof = {'path': 'inbox/' + tag + '/source.tar.gz', 'sha256': context['sourceSha256'],
+             'transportRecipeSha256': '259d40731626e366b9f974df221bf64ee2db7a2e13e41dc369c1e5bf47826104',
+             'builderHelperSha256': dict(RES.RECENT_MYSQL_HELPERS[tag])}
+    return SimpleNamespace(root=root, context=context, identity=identity, owner=owner, cleanup=cleanup,
+                           row=row, proof=proof, data_metadata=[64771, 1900001, stat.S_IFDIR | 0o700, 999, 999])
+
+
+class ClosedMysql204RetirementTests(unittest.TestCase):
+    def descriptor(self, state):
+        return RES.historical_mysql_fixture_descriptor(state.root, state.context, state.identity, state.owner,
+            state.cleanup, state.row, state.data_metadata, source_proof=state.proof)
+
+    def test_closed_204_source_binds_only_original_commit_archive_and_two_helpers(self):
+        state = stopped_mysql_204_fixture(); tag = state.context['release']
+        self.assertEqual(RES.RECENT_MYSQL_FIXTURE_ARCHIVE_SHA256, {tag: state.context['sourceSha256']})
+        self.assertEqual(RES.RECENT_MYSQL_HELPERS[tag], {
+            'compact-build-resources.py': '6a2011e02a274729c346af50e14763b882db596a7e6d75c88848cccf5b6e041e',
+            'compact-image-inputs.py': '1db18e3d1aba9b426f6bfb6b34f22af96cb403c6a97ffef914ea35c308ea795e'})
+        self.assertEqual(RES.recent_mysql_fixture_source(state.context, state.proof), state.proof)
+        self.assertNotIn(tag, RES.HISTORICAL_BUILDERS); self.assertNotIn(tag, RES.RECENT_BUILDER_SOURCES)
+
+    def test_closed_204_source_rejects_drift_and_cannot_authorize_206_or_uncreated_207(self):
+        for damage in ('commit', 'archive', 'recipe', 'resource-helper', 'input-helper', '206', '207'):
+            with self.subTest(damage=damage):
+                state = stopped_mysql_204_fixture()
+                if damage == 'commit': state.context['commit'] = 'a' * 40
+                elif damage == 'archive': state.context['sourceSha256'] = state.proof['sha256'] = 'a' * 64
+                elif damage == 'recipe': state.proof['transportRecipeSha256'] = 'a' * 64
+                elif damage.endswith('-helper'):
+                    key = 'compact-build-resources.py' if damage == 'resource-helper' else 'compact-image-inputs.py'
+                    state.proof['builderHelperSha256'][key] = 'a' * 64
+                elif damage == '206': state.context.update(release='ci-206-2236077d98bf', commit='2236077d98bf14b9b163e1310682e6c491481cfd')
+                else: state.context.update(release='ci-207-eb286c623177', commit='eb286c623177b9d1bc23fe88223d81862c00bc71')
+                with self.assertRaises(ValueError): RES.recent_mysql_fixture_source(state.context, state.proof)
+
+    def test_closed_204_stopped_object_removal_preserves_original_data_and_uses_only_its_cid(self):
+        state = stopped_mysql_204_fixture(); descriptor = self.descriptor(state)
+        raw = RES.encoded([state.row]); descriptor['rawInspectSha256'] = hashlib.sha256(raw).hexdigest()
+        inspected, removed, referenced = [], [], []
+        result = RES.historical_mysql_fixture_remove(descriptor,
+            lambda cid: inspected.append(cid) or raw, lambda cid: removed.append(cid),
+            lambda: [state.owner['sourceContainerId']], lambda cid: referenced.append(cid), lambda: list(state.data_metadata))
+        self.assertEqual(inspected, [state.owner['containerId']] * 2)
+        self.assertEqual(removed, [state.owner['containerId']]); self.assertEqual(referenced, removed)
+        self.assertEqual(result['status'], 'REMOVED'); self.assertEqual(result['dataMetadata'], state.data_metadata)
+        self.assertTrue(result['dataDirectoryPreserved'] and result['imagesPreserved'] and result['volumesPreserved'])
+        self.assertNotIn('synthetic-private-value', json.dumps(descriptor))
+
+    def test_closed_204_registration_keeps_all_original_stopped_owner_and_data_guards(self):
+        for damage in ('running', 'pid', 'cleanup', 'labels', 'mount', 'uid', 'inode-mode'):
+            with self.subTest(damage=damage):
+                state = stopped_mysql_204_fixture()
+                if damage == 'running': state.row['State']['Running'] = True
+                elif damage == 'pid': state.row['State']['Pid'] = 1234
+                elif damage == 'cleanup': state.cleanup['status'] = 'FAILED_OR_UNKNOWN'
+                elif damage == 'labels': state.row['Config']['Labels']['io.doorhandle.source'] = 'a' * 64
+                elif damage == 'mount': state.row['Mounts'][0]['Source'] = '/srv/production/mysql'
+                elif damage == 'uid': state.data_metadata[3] = 0
+                else: state.data_metadata[2] = stat.S_IFDIR | 0o777
+                with self.assertRaises(ValueError): self.descriptor(state)
+
+    def test_closed_204_remove_rechecks_helper_proof_before_any_object_callback(self):
+        state = stopped_mysql_204_fixture(); descriptor = self.descriptor(state)
+        descriptor['rawInspectSha256'] = hashlib.sha256(RES.encoded([state.row])).hexdigest()
+        descriptor['fixtureSourceProof']['builderHelperSha256']['compact-build-resources.py'] = 'a' * 64
+        def refused(*_args): self.fail('Unadmitted source proof reached an object operation')
+        with self.assertRaises(ValueError): RES.historical_mysql_fixture_remove(descriptor, refused, refused, refused, refused, refused)
+
+    def test_closed_204_remove_rejects_new_references_and_changed_data_identity(self):
+        for damage in ('inode-before', 'new-reference', 'inode-after'):
+            with self.subTest(damage=damage):
+                state = stopped_mysql_204_fixture(); descriptor = self.descriptor(state); removed = []
+                raw = RES.encoded([state.row]); descriptor['rawInspectSha256'] = hashlib.sha256(raw).hexdigest()
+                def data():
+                    result = list(state.data_metadata)
+                    if damage == 'inode-before' or damage == 'inode-after' and removed: result[1] += 1
+                    return result
+                def references(_cid):
+                    if damage == 'new-reference': raise ValueError('A synthetic new container references this fixture')
+                with self.assertRaises(ValueError):
+                    RES.historical_mysql_fixture_remove(descriptor, lambda _cid: raw, lambda cid: removed.append(cid),
+                        lambda: [state.owner['sourceContainerId']], references, data)
+                self.assertEqual(removed, [state.owner['containerId']] if damage == 'inode-after' else [])
+
+
 if __name__ == '__main__':
     unittest.main()
