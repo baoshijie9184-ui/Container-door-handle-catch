@@ -225,7 +225,7 @@ test('resource shrink clears exactly A rows and owned cache while B draft, zero 
   cache.writeTasks(rows,stamp);cache.writeFile('A',{name:'A-only'},stamp);cache.writeFile('B',{name:'B-unchanged'},stamp)
   data.set('doorhandle:other-owner:task_files_A','other-account-data')
   const taskList={value:rows.map(row=>({...row,...(row.taskId==='B'?{stage:'detecting'}:{})}))},selectedTaskId={value:'B'},storeCode=readFrontendFile('src','stores','taskStore.js')
-  const start=storeCode.indexOf('  const forgetTaskAccess = '),end=storeCode.indexOf('\n\n  //',start)
+  const start=storeCode.indexOf('  const forgetTaskAccess = '),end=storeCode.indexOf('  const normalizeStage = ',start)
   assert.ok(start>0&&end>start)
   let saved=0
   const forgetTaskAccess=new Function('env',`let saveTimer=null,pendingSave=true;const {accountSession,cache,taskList,selectedTaskId,saveTaskList}=env;${storeCode.slice(start,end)};return forgetTaskAccess`)(
