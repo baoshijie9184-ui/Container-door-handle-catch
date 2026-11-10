@@ -62,7 +62,8 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             return;
         }
 
-        final String jwt = resolveToken(request);
+        final String jwt;
+        try{jwt=resolveToken(request);}catch(org.springframework.security.core.AuthenticationException invalid){handleTokenInvalid(response);return;}
         if (jwt == null) {
             filterChain.doFilter(request, response);
             return;
@@ -87,6 +88,8 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                     if(!jwtUtil.validateToken(jwt)||!jwtUtil.isAccessToken(jwt)||sid==null){handleTokenInvalid(response);return;}
                     // Current account rejection must reach the durable session service before UserDetails can reject it.
                     active=sessions.requireActive(userId,username,LoginSessionService.digest(sid));
+                    String selected=AuthCookieNames.selected(request);
+                    if(selected!=null&&!selected.equals(active.accountContext())){handleTokenInvalid(response);return;}
                 }
                 UserDetails userDetails = this.userDetailsService.loadUserByUsername(username);
                 log.debug("加载用户详情成功: {}", username);
@@ -147,7 +150,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         if(supplied==null){
             String referer=request.getHeader("Referer");
             if(referer==null){
-                boolean cookieCredentials=request.getCookies()!=null&&Arrays.stream(request.getCookies()).anyMatch(c->AuthController.AUTH_COOKIE_NAME.equals(c.getName())||AuthController.REFRESH_COOKIE_NAME.equals(c.getName()));
+                boolean cookieCredentials=request.getCookies()!=null&&Arrays.stream(request.getCookies()).anyMatch(c->AuthCookieNames.authentication(c.getName()));
                 return !cookieCredentials&&((request.getHeader("Authorization")!=null&&request.getHeader("Authorization").startsWith("Bearer "))||request.getHeader("X-Refresh-Token")!=null);
             }
             try {var uri=java.net.URI.create(referer);supplied=uri.getScheme()+"://"+uri.getRawAuthority();}catch(Exception invalid){return false;}
@@ -157,6 +160,10 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     }
 
     private String resolveToken(HttpServletRequest request) {
+        if(sessions!=null&&sessions.enabled()){
+            String selected=AuthCookieNames.selected(request);
+            if(selected!=null)return AuthCookieNames.value(request,AuthCookieNames.access(selected));
+        }
         String authHeader = request.getHeader("Authorization");
         if (authHeader != null && authHeader.startsWith("Bearer ")) {
             return authHeader.substring(7);

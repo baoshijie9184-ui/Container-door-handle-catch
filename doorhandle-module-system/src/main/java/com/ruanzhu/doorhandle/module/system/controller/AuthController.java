@@ -5,6 +5,8 @@ import com.ruanzhu.doorhandle.module.system.dto.LoginRequest;
 import com.ruanzhu.doorhandle.module.system.dto.LoginResponse;
 import com.ruanzhu.doorhandle.module.system.security.LoginRateLimiter;
 import com.ruanzhu.doorhandle.module.system.security.TenantPrincipal;
+import com.ruanzhu.doorhandle.module.system.security.AuthCookieNames;
+import com.ruanzhu.doorhandle.module.system.service.LoginSessionService;
 import com.ruanzhu.doorhandle.module.system.service.AuthService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -77,10 +79,20 @@ public class AuthController {
             String refreshToken = response.getRefreshToken();
             response.setToken(null);
             response.setRefreshToken(null);
-            return ResponseEntity.ok()
-                    .header(HttpHeaders.SET_COOKIE, buildAuthCookie(token, cookieLifetime(response.getAccessExpiresAt(),jwtExpirationSeconds)).toString())
-                    .header(HttpHeaders.SET_COOKIE, buildRefreshCookie(refreshToken, cookieLifetime(response.getRefreshExpiresAt(),refreshExpirationSeconds)).toString())
-                    .body(Result.success(response));
+            var result=ResponseEntity.ok();String context=sessionProperties.isEnabled()?response.getAccountContext():null;
+            if(sessionProperties.isEnabled()&&!AuthCookieNames.validContext(context))throw new IllegalStateException("登录会话缺少有效上下文");
+            if(context!=null){
+                if(!AuthCookieNames.validContext(context))throw new IllegalStateException("登录会话缺少有效上下文");
+                // Bound response headers and delete only this application's strictly named scoped cookies.
+                var obsolete=new java.util.TreeSet<String>();
+                if(httpRequest.getCookies()!=null)for(var cookie:httpRequest.getCookies())if(AuthCookieNames.scoped(cookie.getName())
+                        &&!cookie.getName().equals(AuthCookieNames.access(context))&&!cookie.getName().equals(AuthCookieNames.refresh(context)))obsolete.add(cookie.getName());
+                obsolete.stream().limit(32).forEach(name->result.header(HttpHeaders.SET_COOKIE,
+                        cookie(name,"",0L,name.startsWith(REFRESH_COOKIE_NAME+"_")?"/api/auth":"/").toString()));
+                result.header(HttpHeaders.SET_COOKIE,cookie(AuthCookieNames.SELECTOR,context,cookieLifetime(response.getRefreshExpiresAt(),refreshExpirationSeconds),"/").toString());
+            }
+            return result.header(HttpHeaders.SET_COOKIE,buildAuthCookie(context,token,cookieLifetime(response.getAccessExpiresAt(),jwtExpirationSeconds)).toString())
+                    .header(HttpHeaders.SET_COOKIE,buildRefreshCookie(context,refreshToken,cookieLifetime(response.getRefreshExpiresAt(),refreshExpirationSeconds)).toString()).body(Result.success(response));
         } catch (Exception e) {
             // 登录失败，记录尝试
             loginRateLimiter.recordFailedAttempt(clientIp);
@@ -90,30 +102,36 @@ public class AuthController {
 
     @PostMapping("/refresh")
     public ResponseEntity<?> refresh(HttpServletRequest request) {
+        String context=selectedForWrite(request);
         String token = extractRefreshToken(request);
         LoginResponse response = authService.refresh(token,request.getHeader("X-Account-Context"));
         String access = response.getToken();
         String refresh = response.getRefreshToken();
         response.setToken(null); response.setRefreshToken(null);
         return ResponseEntity.ok()
-                .header(HttpHeaders.SET_COOKIE, buildAuthCookie(access, cookieLifetime(response.getAccessExpiresAt(),jwtExpirationSeconds)).toString())
-                .header(HttpHeaders.SET_COOKIE, buildRefreshCookie(refresh, cookieLifetime(response.getRefreshExpiresAt(),refreshExpirationSeconds)).toString())
+                .header(HttpHeaders.SET_COOKIE, buildAuthCookie(context,access, cookieLifetime(response.getAccessExpiresAt(),jwtExpirationSeconds)).toString())
+                .header(HttpHeaders.SET_COOKIE, buildRefreshCookie(context,refresh, cookieLifetime(response.getRefreshExpiresAt(),refreshExpirationSeconds)).toString())
                 .body(Result.success(response));
     }
 
     @PostMapping("/logout")
     public ResponseEntity<Result<Void>> logout(HttpServletRequest request) {
+        String context=selectedForWrite(request);
         authService.logout(extractAccessToken(request),extractRefreshToken(request),request.getHeader("X-Account-Context"));
-        return clearedCookies();
+        return clearedCookies(context);
     }
-    private ResponseEntity<Result<Void>> clearedCookies(){
+    private String selectedForWrite(HttpServletRequest request){
+        String context=sessionProperties.isEnabled()?AuthCookieNames.selected(request):null;
+        if(context!=null)LoginSessionService.context(context,request.getHeader("X-Account-Context"));return context;
+    }
+    private ResponseEntity<Result<Void>> clearedCookies(String context){
         return ResponseEntity.ok()
-                .header(HttpHeaders.SET_COOKIE, buildAuthCookie("", 0L).toString())
-                .header(HttpHeaders.SET_COOKIE, buildRefreshCookie("", 0L).toString())
+                .header(HttpHeaders.SET_COOKIE, buildAuthCookie(context,"", 0L).toString())
+                .header(HttpHeaders.SET_COOKIE, buildRefreshCookie(context,"", 0L).toString())
                 .body(Result.success(null));
     }
     /** Source compatibility for callers of the original cookie-only controller method. */
-    public ResponseEntity<Result<Void>> logout(){authService.logout(null,null,null);return clearedCookies();}
+    public ResponseEntity<Result<Void>> logout(){authService.logout(null,null,null);return clearedCookies(null);}
 
     @GetMapping("/check")
     public Result<Map<String, Object>> checkAuth() {
@@ -147,10 +165,14 @@ public class AuthController {
     }
 
     private ResponseCookie buildAuthCookie(String token, Long maxAgeSeconds) {
-        return ResponseCookie.from(AUTH_COOKIE_NAME, token == null ? "" : token)
+        return buildAuthCookie(null,token,maxAgeSeconds);
+    }
+    private ResponseCookie buildAuthCookie(String context,String token,Long maxAgeSeconds){return cookie(context==null?AUTH_COOKIE_NAME:AuthCookieNames.access(context),token,maxAgeSeconds,"/");}
+    private ResponseCookie cookie(String name,String token,Long maxAgeSeconds,String path){
+        return ResponseCookie.from(name, token == null ? "" : token)
                 .httpOnly(true)
                 .secure(Boolean.TRUE.equals(cookieSecure))
-                .path("/")
+                .path(path)
                 .maxAge(maxAgeSeconds == null ? 0L : maxAgeSeconds)
                 .sameSite("Lax")
                 .build();
@@ -158,17 +180,18 @@ public class AuthController {
     private Long cookieLifetime(java.time.Instant expiresAt,Long fallback){return expiresAt==null?fallback:Math.max(0L,java.time.Duration.between(java.time.Instant.now(),expiresAt).getSeconds());}
 
     private ResponseCookie buildRefreshCookie(String token, Long maxAgeSeconds) {
-        return ResponseCookie.from(REFRESH_COOKIE_NAME, token == null ? "" : token)
-                .httpOnly(true).secure(Boolean.TRUE.equals(cookieSecure)).path("/api/auth")
-                .maxAge(maxAgeSeconds == null ? 0L : maxAgeSeconds).sameSite("Lax").build();
+        return buildRefreshCookie(null,token,maxAgeSeconds);
     }
+    private ResponseCookie buildRefreshCookie(String context,String token,Long maxAgeSeconds){return cookie(context==null?REFRESH_COOKIE_NAME:AuthCookieNames.refresh(context),token,maxAgeSeconds,"/api/auth");}
 
     private String extractRefreshToken(HttpServletRequest request) {
+        if(sessionProperties.isEnabled()){String selected=AuthCookieNames.selected(request);if(selected!=null)return AuthCookieNames.value(request,AuthCookieNames.refresh(selected));}
         if (request.getCookies() != null) for (var c : request.getCookies())
             if (REFRESH_COOKIE_NAME.equals(c.getName())) return c.getValue();
         return request.getHeader("X-Refresh-Token");
     }
     private String extractAccessToken(HttpServletRequest request){
+        if(sessionProperties.isEnabled()){String selected=AuthCookieNames.selected(request);if(selected!=null)return AuthCookieNames.value(request,AuthCookieNames.access(selected));}
         String authorization=request.getHeader("Authorization");
         if(authorization!=null&&authorization.startsWith("Bearer "))return authorization.substring(7);
         if(request.getCookies()!=null)for(var cookie:request.getCookies())if(AUTH_COOKIE_NAME.equals(cookie.getName()))return cookie.getValue();
