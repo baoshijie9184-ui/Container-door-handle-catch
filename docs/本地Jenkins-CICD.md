@@ -1,5 +1,9 @@
 # 本地 Jenkins CI/CD 约定
 
+2026-11-10 #201 最新：本地Jenkins对单体固定提交 `803baf40` 执行完整 `verify-runtime/mysql`；跳过测试打包及ECS提前控制1,624项完成，原生阶段为43通过、2错误、零跳过，整轮终态FAILURE。两个实际错误是组织绑定迁移用例的外键准备和HTTP测试应用的属性解析装配，后续阶段被阻止。原报告、回执、源码和摘要已保全，详情见[协同验收矩阵](协同功能验收矩阵-20261110.md)。没有生产发布、旧库演练或切库。
+
+本轮拥有夹具和工具均已停止，ECS已从流水线外实际读回 `Stopped / StopCharging`；控制器与本地节点保持在线。修复期间由同一版本化配置入口设置私有 `activate=false`，任务当前 `disabled=true`、无排队；修复及本地跳过测试构建完成后，再启用、核对当次ECS公网地址并验证新固定提交，不在故障状态重复启动任务。浏览器脱敏PNG已补入源码归档规则，尚无实际浏览器报告或图片。
+
 2026-11-10 最新开发顺序：按用户要求，全部源码开发完成后再测试。#199为SCM自动触发，仅在本地编译阶段运行，已终态ABORTED，无ECS测试；ECS已在流水线外实际回读`Stopped / StopCharging`。现通过原版本化配置入口和私有`activate=false`将`doorhandle-java`暂置`disabled=true`，Jenkins控制器及专用本地节点保持在线。开发目标仍继续，源码收尾与跳过测试构建完成后再启用任务及完整ECS验证。配置回执位于Git忽略的`work/jenkins/configuration-receipt.json`；`[skip ci]`只过滤符合条件的提交，不能把它当作整批多提交推送绝不触发构建的保证。
 
 2026-11-10 #190 的失败发生在本地 Jenkins 取得固定 `6bed743a` 的 Jenkinsfile 后、CPS 字节码生成时：`WorkflowScript.___cps___45` 超出 JVM 单方法大小限制。尚未出现 Pipeline start 或执行 Trusted checkout，没有本轮应用构建、SSH、ECS测试或数据迁移。此前 Declarative 语法接口 HTTP200 不包含这一步；#189 的数据库验收未完成状态保持，正式库仍131表，未切库。

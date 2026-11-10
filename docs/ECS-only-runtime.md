@@ -1,5 +1,9 @@
 # 单体 ECS 运行与测试
 
+2026-11-10 #201 最新回执：仍为 `java-cloud` 模块化单体，固定提交 `803baf40` 的跳过测试构建及1,624项ECS控制预检完成。真实业务报告43通过、2错误、零跳过：组织绑定迁移的外键准备被MySQL拒绝，HTTP测试应用的JWT属性在Tomcat提前装配过滤器时尚未解析。HTTP11场景及后续原生、Python、前端、完整131→29迁移、旧45表重新双恢复和应用运行验收未执行，不代表项目验收通过或正式切库。
+
+33份归档文件与工作副本SHA相同，32份非应用JAR原件另存 `work/jenkins/data-residency-20261107/ci-201-collaboration-raw` 并核验第三份摘要；JAR保留在Jenkins原始归档。夹具/工具实际清理回执为 `STOPPED`、剩余拥有工具为空。实例随后从流水线外实际回读 `Stopped / StopCharging`，本地Jenkins保持运行。通过原版本化配置入口将项目任务暂禁自动触发，先集中修复、完成跳过测试构建，之后再启用并开机验证；生产和演练门禁继续关闭。
+
 2026-11-10 开发阶段更新：用户再次明确“先全部开发完，再进行测试”。`java-cloud` 已推送至 `3b996ce8`；SCM自动构建#199在本地编译阶段中止，终态ABORTED、无排队，未开始ECS测试。该次开机实际取得公网`47.93.133.0`，内网仍为`172.29.146.74`；SSH原主机密钥、UID/GID1000及machineId核对通过，旧5599文件和45表SQL快照目录存在。随后流水线外StopInstance已实际回读`Stopped / StopCharging`，未进行生产发布或切库。
 
 当前使用版本库已有`configure-local.groovy`及私有`local-node.json`的`activate=false`暂时禁止`doorhandle-java`自动构建，回执`work/jenkins/configuration-receipt.json`实际为`disabled=true`、本地节点在线、控制器运行。目标本身继续开发，并非暂停任务。先补齐源码清单和跳过测试构建，完成后再按同一配置入口启用任务、从流水线外开机并核对当次公网地址，最后统一固定提交验证。此次配置没有触发构建；之前#198的真实测试结论保持。
