@@ -1,6 +1,6 @@
 param(
     [ValidateSet('Verified','Maintenance')][string]$Mode = 'Verified',
-    [ValidateSet('Historical','Recent')][string]$CanonicalBatch = 'Historical',
+    [ValidateSet('Historical','Recent','RetiredCopies')][string]$CanonicalBatch = 'Historical',
     [Parameter(Mandatory=$true)][string[]]$SshOptions,
     [Parameter(Mandatory=$true)][string]$Destination,
     [Parameter(Mandatory=$true)][string]$PortText,
@@ -28,6 +28,7 @@ function Invoke-NativeJar([string]$Executable,[string[]]$Arguments,[string]$Inpu
 Require-NativeJar ($Mode -ceq 'Maintenance' -or ($env:CI_ECS_VERIFIED -ceq 'true' -and $env:DOORHANDLE_CI_SCOPE -ceq 'source')) 'Verified retirement follows this build actual source PASS only.'
 Require-NativeJar ($Mode -cne 'Maintenance' -or ($env:ACTION -ceq 'reclaim-build-outputs' -and $env:CI_ECS_VERIFIED -ceq 'false' -and $env:DOORHANDLE_CI_SCOPE -ceq 'source')) 'Maintenance must be the explicit source-only Jenkins action.'
 Require-NativeJar ($CanonicalBatch -cne 'Recent' -or $Mode -ceq 'Maintenance') 'The recent batch only retires the three closed failed canonical binaries in explicit maintenance.'
+Require-NativeJar ($CanonicalBatch -cne 'RetiredCopies' -or $Mode -ceq 'Maintenance') 'Retired candidate copies require the explicit source-only maintenance action.'
 Require-NativeJar ($Destination -cmatch '^[a-z_][a-z0-9_-]{0,31}@[A-Za-z0-9][A-Za-z0-9.-]{0,252}$' -and $PortText -match '^[0-9]{1,5}$' -and [int]$PortText -ge 1 -and [int]$PortText -le 65535) 'Invalid fixed SSH endpoint.'
 Require-NativeJar ($RemoteRoot -cmatch '^/(home|srv|opt)/[A-Za-z0-9_./-]+$' -and $RemoteRoot -notmatch '(^|/)\.\.(/|$)|//' -and -not $RemoteRoot.EndsWith('/')) 'Invalid explicit ECS CI root.'
 Require-NativeJar ($Tag -cmatch '^ci-[1-9][0-9]*-[a-f0-9]{12}$' -and $Commit -cmatch '^[a-f0-9]{40}$' -and $Tag.EndsWith('-'+$Commit.Substring(0,12)) -and $SourceSha256 -cmatch '^[a-f0-9]{64}$') 'Invalid fixed source context.'
@@ -70,7 +71,7 @@ def unique(pairs):
  for k,v in pairs:need(k not in result);result[k]=v
  return result
 archive,commit,retained,jhome,remote,current,batch=sys.argv[1:]
-need(batch in ('Historical','Recent'))
+need(batch in ('Historical','Recent','RetiredCopies'))
 approved=[(117,'8c898996cc28ce30fd6531710511f833cccb4864','e1eec611a0dcbb93158d8e5a68fc5d16e6f96d65dcb82e6930f54abdd84d2e2c'),
  (118,'6481f7fa6021eb36592a081d04f385886c03412a','e73474da34762eedf1438c835dbc741091f02c69fb5c3664dbba6cca30395f8a'),
  (130,'9a588271dadb135ec4284392ef7b9c9c55ea511d','f53a73fa4ce45e44b666cbf963145b353f6e478c7cc594ca849b59bfe0b924d2'),
@@ -87,7 +88,7 @@ approved=[(117,'8c898996cc28ce30fd6531710511f833cccb4864','e1eec611a0dcbb93158d8
  (166,'a3c084e1cf568206baca89908542537ad825fef8','1cf175ceb8f1dee1e6164a112e400f3427d9bffd55d1632ef7398a58cbd44553'),
  (168,'a40c779d03a43b894ead5569b8eb26ee7dc22a2e','cc986ad9ae3483d8663e811b73e0e2d53d7bdc1e886c4904071b5f996aa993ce'),
  (173,'45465e873d92822abe446fd7be3f9f00b7816f70','135267928288ee0c86c3c550815bf17b251d74ff61111d55eab2e3aadfe4789c')]
-if batch=='Recent':
+if batch in ('Recent','RetiredCopies'):
  approved=[(195,'2c2e65a0daa94d96b327c59d720871ab70bff0a1','f923d108fd9c867f052f722fc0cef57231d2420928a881ca7780d16408dc5a8a'),
   (198,'7af0903ee84011dc51f4abac4f4a4d9679db7322','054a2b4bdfda1c97a006c2b78d0877e06260b4cef6e0df4177f58eef8ddf8ffe'),
   (201,'803baf401b5f9566283a59cb6a885a794b9d7d85','baaddc7acf7eb643f68e2e0c104decb35a90a394564dc94f601914e6710e731b')]
@@ -130,7 +131,41 @@ for number,oldcommit,preservation_sha in approved:
   rows.append({'release':tag,'commit':oldcommit,'sourceSha256':rel['sourceSha256'],'files':files})
   custody.append({'release':tag,'controls':origins,'preservationSha256':preservation_sha if preservation else None})
  except Exception as error:skipped.append({'release':tag,'reason':str(error) if type(error) is ValueError and str(error).replace('_','').isalnum() else type(error).__name__})
-print(json.dumps({'helpers':helpers,'rows':rows,'skipped':skipped,'custody':custody}))
+authority_files=[];authority_custody=[]
+if batch=='RetiredCopies':
+ authority_tag='ci-203-24f8eb4b02bf';authority_commit='24f8eb4b02bf290c6dd4e186eb78c5f3c80f3b88'
+ originals={
+  'build.xml':(298698,'0cd9460dc8e062d6e88cdb0042ef9bd9d9db6d0ed7768b1d44631aa1d54d1643'),
+  'release.json':(393,'5c0a0c7038eaf7c38898aa03b89e50691e9a3585d96d1e9da12e7cd40052dbf5'),
+  'source.tar.gz':(102379,'bb6e43405b0c696923aa3f7e699872706b1cd14323e83a475c44b734d1bcc882'),
+  'native-jar-duplicate-request.json':(5101,'67ed4014faf649b1f3d269c10d70bdc6022cc16ea456af89bb8f8e8bfe1c5fd3'),
+  'native-jar-duplicate-canonical-plan.json':(12244,'1130700b7cc6a79cb50a944d18f2e2e0e55fc3df20d75f37138ecab155845cc3'),
+  'native-jar-duplicate-canonical-receipt.json':(2311,'8035c82ff336a9d39e02b8ce9f35390c7b7f6e776b2b6967d7901b57e91df9c1'),
+  'native-jar-duplicate-canonical-journal.jsonl':(2592,'2da56d51b56359cd349842bfc5cca11fd08d935adbeef5d0c9b6f2c51ab49d83'),
+ }
+ folder=Path(retained)/'ci-203-raw-receipts';preservation=None;authority_raw={}
+ for name,(size,checksum) in originals.items():
+  suffix='/jobs/doorhandle-java/builds/203'+('/build.xml' if name=='build.xml' else '/archive/artifacts/'+name)
+  source=Path(jhome)/'jobs/doorhandle-java/builds/203'/('build.xml' if name=='build.xml' else 'archive/artifacts/'+name)
+  if source.is_file():raw=stable(source);origin='ACTUAL_JENKINS_ORIGINAL'
+  else:
+   if preservation is None:
+    proof=stable(folder/'preservation.json');need(sha(proof)=='c28ba9766654a9637e18ae9e4085fc160cdb41f7751ddf92e9266ffac428d8b9','RETIRED_AUTHORITY_CUSTODY_SHA_DRIFT')
+    preservation=json.loads(proof,object_pairs_hook=unique)
+    need(preservation.get('build')==203 and preservation.get('commit')==authority_commit and preservation.get('result')=='SUCCESS' and type(preservation.get('files')) is list,'RETIRED_AUTHORITY_CUSTODY_CONTEXT_DRIFT')
+   source=folder/name;raw=stable(source)
+   if name=='build.xml':need(preservation.get('buildXmlSha256')==checksum,'RETIRED_AUTHORITY_TERMINAL_CUSTODY_DRIFT')
+   else:
+    matches=[r for r in preservation['files'] if r.get('path')==name];need(len(matches)==1,'RETIRED_AUTHORITY_CUSTODY_MEMBER_MISSING')
+    row=matches[0];need(row.get('bytes')==size and row.get('sha256')==checksum and str(row.get('original','')).replace(chr(92),'/').endswith(suffix),'RETIRED_AUTHORITY_CUSTODY_MEMBER_DRIFT')
+   origin='PINNED_PRESERVED_JENKINS_ORIGINAL'
+  need(len(raw)==size and sha(raw)==checksum,'RETIRED_AUTHORITY_ORIGINAL_BYTES_DRIFT')
+  authority_raw[name]=raw
+  authority_files.append({'source':str(source),'file':name,'bytes':size,'sha256':checksum})
+  authority_custody.append({'file':name,'origin':origin,'bytes':size,'sha256':checksum})
+ rel=json.loads(authority_raw['release.json'],object_pairs_hook=unique)
+ need(rel.get('kind')=='doorhandle-maintenance-source' and rel.get('action')=='reclaim-build-outputs' and rel.get('release')==authority_tag and rel.get('commit')==authority_commit and rel.get('sourceSha256')==originals['source.tar.gz'][1] and rel.get('maintenanceOnly') is True and rel.get('testsExecuted') is False and rel.get('applicationBuilt') is False,'RETIRED_AUTHORITY_RELEASE_CONTEXT_DRIFT')
+print(json.dumps({'helpers':helpers,'rows':rows,'skipped':skipped,'custody':custody,'authorityFiles':authority_files,'authorityCustody':authority_custody}))
 '@
 $local=(Invoke-NativeJar $python @('-I','-B','-c',$reader,$archive,$Commit,$RetainedControlRoot,$jenkinsHome,$RemoteRoot,$Tag,$CanonicalBatch) | Select-Object -Last 1) | ConvertFrom-Json -AsHashtable
 $spec=[ordered]@{schemaVersion=1;kind='doorhandle-failed-native-jar-duplicate-request';current=@{release=$Tag;commit=$Commit;sourceSha256=$SourceSha256};identity=@{instanceId=$instance;machineId=$machine;executionLocation='ECS'};protectedReleases=@($Tag);candidates=@()}
@@ -144,6 +179,13 @@ foreach ($row in $local.rows) {
         $uploads+=@{relative=$relative;source=$binding.source;bytes=$binding.bytes;sha256=$binding.sha256}
     }
     $spec.candidates+=@{release=$row.release;commit=$row.commit;sourceSha256=$row.sourceSha256;controls=$controls}
+}
+if ($CanonicalBatch -ceq 'RetiredCopies') {
+    Require-NativeJar (@($local.authorityFiles).Count -eq 7 -and @($local.authorityFiles.file | Select-Object -Unique).Count -eq 7) 'Retired copies require the complete fixed seven-original authority bundle.'
+    foreach ($binding in $local.authorityFiles) {
+        Require-NativeJar ($binding.file -cin @('build.xml','release.json','source.tar.gz','native-jar-duplicate-request.json','native-jar-duplicate-canonical-plan.json','native-jar-duplicate-canonical-receipt.json','native-jar-duplicate-canonical-journal.jsonl')) 'Unknown retired-copy authority member.'
+        $uploads+=@{relative="inbox/$Tag/native-retired-candidate-controls/ci-203-24f8eb4b02bf/$($binding.file)";source=$binding.source;bytes=$binding.bytes;sha256=$binding.sha256}
+    }
 }
 $work=Join-Path $workspace 'work'; New-Item -ItemType Directory -Path $work -Force | Out-Null
 $specFile=Join-Path $work ('native-jar-duplicate-local-spec-'+$Tag+'.json')
@@ -241,12 +283,12 @@ function Invoke-NativeJarPhase([string]$Phase,[string]$Flags='') {
     $guard="test `"`$(sha256sum '$helper' | cut -d ' ' -f 1)`" = '$helperSha' && "
     return (Invoke-NativeJar $ssh ($SshOptions+@('-p',$PortText,$Destination,"${guard}python3 -I -B '$helper' --phase '$Phase' $common $Flags")) | Select-Object -Last 1) | ConvertFrom-Json
 }
-$capturePhase=if($CanonicalBatch -ceq 'Recent'){'capture-canonical-request'}else{'capture-request'}
+$capturePhase=if($CanonicalBatch -cin @('Recent','RetiredCopies')){'capture-canonical-request'}else{'capture-request'}
 $captured=Invoke-NativeJarPhase $capturePhase "--local-spec-sha256 '$specSha'"
 Require-NativeJar ($captured.status -ceq 'CAPTURED' -and $captured.request.sha256 -cmatch '^[a-f0-9]{64}$') 'The actual ECS control snapshot was not captured.'
 $requestSha=$captured.request.sha256
 function Copy-NativeJarEvidence($Observed) {
-    foreach ($entry in @(@('capture','native-jar-duplicate-capture.json'),@('request','native-jar-duplicate-request.json'),@('plan','native-jar-duplicate-plan.json'),@('receipt','native-jar-duplicate-receipt.json'),@('journal','native-jar-duplicate-journal.jsonl'),@('builderPlan','native-builder-retirement-plan.json'),@('builderReceipt','native-builder-retirement-receipt.json'),@('builderJournal','native-builder-retirement-journal.jsonl'),@('publicLayerPlan','native-public-layer-duplicate-plan.json'),@('publicLayerReceipt','native-public-layer-duplicate-receipt.json'),@('publicLayerJournal','native-public-layer-duplicate-journal.jsonl'),@('generatedArchivePlan','native-generated-public-image-archive-plan.json'),@('generatedArchiveReceipt','native-generated-public-image-archive-receipt.json'),@('generatedArchiveJournal','native-generated-public-image-archive-journal.jsonl'),@('pythonCachePlan','native-python-build-cache-plan.json'),@('pythonCacheReceipt','native-python-build-cache-receipt.json'),@('pythonCacheJournal','native-python-build-cache-journal.jsonl'),@('canonicalPlan','native-jar-duplicate-canonical-plan.json'),@('canonicalReceipt','native-jar-duplicate-canonical-receipt.json'),@('canonicalJournal','native-jar-duplicate-canonical-journal.jsonl'),@('recentFixturePlan','native-jar-duplicate-fixture-object-plan.json'),@('recentFixtureReceipt','native-jar-duplicate-fixture-object-receipt.json'),@('recentFixtureJournal','native-jar-duplicate-fixture-object-journal.jsonl'))) {
+    foreach ($entry in @(@('capture','native-jar-duplicate-capture.json'),@('request','native-jar-duplicate-request.json'),@('plan','native-jar-duplicate-plan.json'),@('receipt','native-jar-duplicate-receipt.json'),@('journal','native-jar-duplicate-journal.jsonl'),@('builderPlan','native-builder-retirement-plan.json'),@('builderReceipt','native-builder-retirement-receipt.json'),@('builderJournal','native-builder-retirement-journal.jsonl'),@('publicLayerPlan','native-public-layer-duplicate-plan.json'),@('publicLayerReceipt','native-public-layer-duplicate-receipt.json'),@('publicLayerJournal','native-public-layer-duplicate-journal.jsonl'),@('generatedArchivePlan','native-generated-public-image-archive-plan.json'),@('generatedArchiveReceipt','native-generated-public-image-archive-receipt.json'),@('generatedArchiveJournal','native-generated-public-image-archive-journal.jsonl'),@('pythonCachePlan','native-python-build-cache-plan.json'),@('pythonCacheReceipt','native-python-build-cache-receipt.json'),@('pythonCacheJournal','native-python-build-cache-journal.jsonl'),@('canonicalPlan','native-jar-duplicate-canonical-plan.json'),@('canonicalReceipt','native-jar-duplicate-canonical-receipt.json'),@('canonicalJournal','native-jar-duplicate-canonical-journal.jsonl'),@('recentFixturePlan','native-jar-duplicate-fixture-object-plan.json'),@('recentFixtureReceipt','native-jar-duplicate-fixture-object-receipt.json'),@('recentFixtureJournal','native-jar-duplicate-fixture-object-journal.jsonl'),@('retiredCandidatePlan','native-retired-candidate-copy-plan.json'),@('retiredCandidateReceipt','native-retired-candidate-copy-receipt.json'),@('retiredCandidateJournal','native-retired-candidate-copy-journal.jsonl'))) {
         $property=$Observed.files.PSObject.Properties[$entry[0]]
         if ($null -eq $property) {continue}
         $binding=$property.Value
@@ -270,6 +312,37 @@ function Copy-NativeJarEvidence($Observed) {
             Require-NativeJar ((Get-Item -LiteralPath $destinationFile).Length -eq $binding.bytes -and (Get-FileHash -LiteralPath $destinationFile -Algorithm SHA256).Hash.ToLowerInvariant() -ceq $binding.sha256) 'Collected Python cache original changed.'
         }
     }
+}
+if($CanonicalBatch -ceq 'RetiredCopies') {
+    $copyPlanned=$null;$copyResult=$null;$copyFailed=$false;$copyStage='plan'
+    try {
+        Require-NativeJar ($spec.candidates.Count -eq 3 -and @($local.skipped).Count -eq 0 -and @($captured.skipped).Count -eq 0) 'Retired copies require all three original failed-build control bundles.'
+        $copyPlanned=Invoke-NativeJarPhase 'plan-retired-candidate-copies' "--request-sha256 '$requestSha'"
+        foreach($count in @($copyPlanned.candidateTargetCount,$copyPlanned.candidateBytes,$copyPlanned.candidateAllocatedBytes)) {Require-NativeJar (($count -is [int] -or $count -is [long]) -and $count -gt 0) 'Retired-copy planning omitted strict positive target and byte counts.'}
+        Require-NativeJar ($copyPlanned.status -ceq 'PLANNED' -and $copyPlanned.candidateTargetCount -eq 3 -and $copyPlanned.current.release -ceq $Tag -and $copyPlanned.current.commit -ceq $Commit -and $copyPlanned.current.sourceSha256 -ceq $SourceSha256 -and $copyPlanned.identity.instanceId -ceq $instance -and $copyPlanned.identity.machineId -ceq $machine -and $copyPlanned.plan.sha256 -cmatch '^[a-f0-9]{64}$' -and $copyPlanned.skipped -is [array] -and @($copyPlanned.skipped).Count -eq 0) 'Retired candidate copies lack a complete exact plan for this build and ECS.'
+        $copyStage='apply'
+        $copyResult=Invoke-NativeJarPhase 'apply-retired-candidate-copies' "--request-sha256 '$requestSha' --plan-sha256 '$($copyPlanned.plan.sha256)'"
+        foreach($count in @($copyResult.deletedFiles,$copyResult.candidateTargetCount)) {Require-NativeJar (($count -is [int] -or $count -is [long]) -and $count -eq 3) 'Retired-copy execution requires three actual verified deletions.'}
+        foreach($flag in @('sourceArchivesDataAndReportsHaveNoDeletionApi','inboxKeepersRecreated','binaryRebuildByteIdentityClaimed','testsRunByRetirement','imagesPreserved','volumesPreserved','directoriesPreserved')) {Require-NativeJar ($copyResult.$flag -is [bool]) 'Retired-copy execution omitted a strict preservation boolean.'}
+        Require-NativeJar ($copyResult.directoriesPreserved) 'Retired-copy execution must preserve every original directory.'
+        Require-NativeJar ($copyResult.status -ceq 'REMOVED' -and $copyResult.binaryDisposition -ceq 'RETIRED' -and $copyResult.current.release -ceq $Tag -and $copyResult.current.commit -ceq $Commit -and $copyResult.current.sourceSha256 -ceq $SourceSha256 -and $copyResult.identity.instanceId -ceq $instance -and $copyResult.identity.machineId -ceq $machine -and $copyResult.requestSha256 -ceq $requestSha -and $copyResult.planSha256 -ceq $copyPlanned.plan.sha256 -and $copyResult.sourceArchivesDataAndReportsHaveNoDeletionApi -and $copyResult.imagesPreserved -and $copyResult.volumesPreserved -and -not $copyResult.inboxKeepersRecreated -and -not $copyResult.binaryRebuildByteIdentityClaimed -and -not $copyResult.testsRunByRetirement) 'Retired-copy removal failed or is unknown; no successful maintenance result is permitted.'
+    } catch {$copyFailed=$true}
+    finally {Copy-NativeJarEvidence (Invoke-NativeJarPhase 'inspect')}
+    $copyReceiptFile=Join-Path $workspace 'artifacts/native-retired-candidate-copy-receipt.json'
+    $copyPlanFile=Join-Path $workspace 'artifacts/native-retired-candidate-copy-plan.json'
+    Require-NativeJar (-not $copyFailed -and $null -ne $copyPlanned -and $null -ne $copyResult -and (Test-Path -LiteralPath $copyReceiptFile -PathType Leaf) -and (Test-Path -LiteralPath $copyPlanFile -PathType Leaf)) ('Retired candidate-copy maintenance failed or is unknown at '+$copyStage+'; original controls were collected.')
+    Require-NativeJar ((Get-FileHash -LiteralPath $copyPlanFile -Algorithm SHA256).Hash.ToLowerInvariant() -ceq $copyPlanned.plan.sha256 -and (Get-FileHash -LiteralPath $copyReceiptFile -Algorithm SHA256).Hash.ToLowerInvariant() -ceq $copyResult.receipt.sha256) 'Collected retired-copy plan or receipt differs from its original server digest.'
+    $copyReceipt=Get-Content -LiteralPath $copyReceiptFile -Raw -Encoding utf8 | ConvertFrom-Json -Depth 24
+    foreach($list in @('deleted','skipped')) {Require-NativeJar ($copyReceipt.$list -is [array]) 'Collected retired-copy receipt omitted an exact operation list.'}
+    foreach($flag in @('sourceArchivesDataAndReportsHaveNoDeletionApi','inboxKeepersRecreated','binaryRebuildByteIdentityClaimed','testsRunByRetirement','imagesPreserved','volumesPreserved','directoriesPreserved')) {Require-NativeJar ($copyReceipt.$flag -is [bool]) 'Collected retired-copy receipt omitted a strict preservation boolean.'}
+    Require-NativeJar ($copyReceipt.directoriesPreserved) 'Collected retired-copy receipt must confirm all original directories were preserved.'
+    Require-NativeJar (($copyReceipt.candidateTargetCount -is [int] -or $copyReceipt.candidateTargetCount -is [long]) -and $copyReceipt.candidateTargetCount -eq 3) 'Collected retired-copy receipt omitted the exact target count.'
+    Require-NativeJar ($copyReceipt.kind -ceq 'doorhandle-retired-candidate-jar-copy-retirement-receipt' -and $copyReceipt.status -ceq 'REMOVED' -and $copyReceipt.binaryDisposition -ceq 'RETIRED' -and $copyReceipt.current.release -ceq $Tag -and $copyReceipt.current.commit -ceq $Commit -and $copyReceipt.current.sourceSha256 -ceq $SourceSha256 -and $copyReceipt.identity.instanceId -ceq $instance -and $copyReceipt.identity.machineId -ceq $machine -and $copyReceipt.requestSha256 -ceq $requestSha -and $copyReceipt.planSha256 -ceq $copyPlanned.plan.sha256 -and @($copyReceipt.deleted).Count -eq 3 -and @($copyReceipt.skipped).Count -eq 0 -and $copyReceipt.sourceArchivesDataAndReportsHaveNoDeletionApi -and $copyReceipt.imagesPreserved -and $copyReceipt.volumesPreserved -and -not $copyReceipt.inboxKeepersRecreated -and -not $copyReceipt.binaryRebuildByteIdentityClaimed -and -not $copyReceipt.testsRunByRetirement) 'Collected retired-copy receipt lacks exact source, host, plan, counts or preserved-data proof.'
+    $summary=[ordered]@{schemaVersion=1;kind='doorhandle-retired-candidate-jar-copy-ci';current=$spec.current;identity=$spec.identity;status=$copyReceipt.status;requestSha256=$requestSha;planSha256=$copyPlanned.plan.sha256;receiptSha256=$copyResult.receipt.sha256;candidateTargetCount=$copyReceipt.candidateTargetCount;deletedFiles=@($copyReceipt.deleted).Count;candidateBytes=$copyPlanned.candidateBytes;candidateAllocatedBytes=$copyPlanned.candidateAllocatedBytes;localControlCustody=$local.custody;authorityControlCustody=$local.authorityCustody;binaryDisposition=$copyReceipt.binaryDisposition;sourceArchivesDataAndReportsHaveNoDeletionApi=$copyReceipt.sourceArchivesDataAndReportsHaveNoDeletionApi;inboxKeepersRecreated=$copyReceipt.inboxKeepersRecreated;binaryRebuildByteIdentityClaimed=$copyReceipt.binaryRebuildByteIdentityClaimed;testsRunByRetirement=$copyReceipt.testsRunByRetirement;imagesPreserved=$copyReceipt.imagesPreserved;volumesPreserved=$copyReceipt.volumesPreserved}
+    $summary.directoriesPreserved=$copyReceipt.directoriesPreserved
+    $summary|ConvertTo-Json -Depth 20|Set-Content -LiteralPath (Join-Path $workspace 'artifacts/native-retired-candidate-copy-ci.json') -Encoding utf8
+    Write-Output ($summary|ConvertTo-Json -Depth 8 -Compress)
+    return
 }
 if($CanonicalBatch -ceq 'Recent') {
     $canonicalPlanned=$null;$canonicalFailed=$false;$fixturePlanned=$null;$builderPlanned=$null;$recentStage='builder-plan'
