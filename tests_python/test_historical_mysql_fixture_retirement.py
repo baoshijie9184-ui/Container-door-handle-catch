@@ -272,7 +272,7 @@ def test_missing_post_rm_container_list_does_not_claim_success(fixture):
     assert calls.removed == [fixture.owner['containerId']]
 
 
-RECENT_MYSQL_TAGS = ('ci-187-8e90ba50c691', 'ci-188-df1e1a54d48e', 'ci-189-410506ad7c82')
+RECENT_MYSQL_TAGS = ('ci-195-2c2e65a0daa9', 'ci-198-7af0903ee840', 'ci-201-803baf401b5f')
 
 
 def recent_mysql_fixture(fixture, tag=RECENT_MYSQL_TAGS[0]):
@@ -282,7 +282,7 @@ def recent_mysql_fixture(fixture, tag=RECENT_MYSQL_TAGS[0]):
     value.owner['binaryLoggingDisabled'] = True
     value.row['Config']['Cmd'].insert(6, '--skip-log-bin')
     proof = {'path': 'inbox/' + tag + '/source.tar.gz', 'sha256': value.context['sourceSha256'],
-             'transportRecipeSha256': recipe, 'builderHelperSha256': dict(resources.RECENT_MYSQL_HELPERS)}
+             'transportRecipeSha256': recipe, 'builderHelperSha256': dict(resources.RECENT_MYSQL_HELPERS[tag])}
     return value, proof
 
 
@@ -342,15 +342,45 @@ def test_recent_mysql_binlog_proof_requires_true_and_the_exact_skip_switch(fixtu
     with pytest.raises(ValueError): describe_recent(value, proof)
 
 
-def test_recent_source_helper_result_cannot_mutate_the_shared_permission_registry(fixture):
-    value, proof = recent_mysql_fixture(fixture)
-    original = dict(resources.RECENT_MYSQL_HELPERS)
+@pytest.mark.parametrize('tag', RECENT_MYSQL_TAGS)
+def test_recent_source_helper_result_cannot_mutate_the_shared_permission_registry(fixture, tag):
+    value, proof = recent_mysql_fixture(fixture, tag)
+    original = copy.deepcopy(resources.RECENT_MYSQL_HELPERS)
     admitted_source = resources.recent_mysql_fixture_source(value.context, proof)
-    assert admitted_source['builderHelperSha256'] is not resources.RECENT_MYSQL_HELPERS
+    assert admitted_source['builderHelperSha256'] is not resources.RECENT_MYSQL_HELPERS[tag]
     assert admitted_source['builderHelperSha256'] is not proof['builderHelperSha256']
     admitted_source['builderHelperSha256']['compact-build-resources.py'] = 'a' * 64
-    assert resources.RECENT_MYSQL_HELPERS == original and proof['builderHelperSha256'] == original
-    assert resources.recent_mysql_fixture_source(value.context, proof)['builderHelperSha256'] == original
+    assert resources.RECENT_MYSQL_HELPERS == original and proof['builderHelperSha256'] == original[tag]
+    assert resources.recent_mysql_fixture_source(value.context, proof)['builderHelperSha256'] == original[tag]
+
+
+@pytest.mark.parametrize(('target', 'other'), [
+    ('ci-195-2c2e65a0daa9', 'ci-201-803baf401b5f'),
+    ('ci-201-803baf401b5f', 'ci-195-2c2e65a0daa9'),
+])
+def test_recent_mysql_helper_revision_from_another_reviewed_attempt_is_rejected(fixture, target, other):
+    value, proof = recent_mysql_fixture(fixture, target)
+    proof['builderHelperSha256'] = dict(resources.RECENT_MYSQL_HELPERS[other])
+    with pytest.raises(ValueError): describe_recent(value, proof)
+
+
+@pytest.mark.parametrize('tag', RECENT_MYSQL_TAGS)
+def test_recent_mysql_source_commit_cannot_be_changed_under_a_registered_release(fixture, tag):
+    value, proof = recent_mysql_fixture(fixture, tag)
+    value.context['commit'] = 'a' * 40
+    with pytest.raises(ValueError): describe_recent(value, proof)
+
+
+@pytest.mark.parametrize(('tag', 'commit'), [
+    ('ci-187-8e90ba50c691', '8e90ba50c691d561bd26b23f037fec1600e5e9de'),
+    ('ci-188-df1e1a54d48e', 'df1e1a54d48e5005185f53459068fbe9efffe333'),
+    ('ci-189-410506ad7c82', '410506ad7c82e302e623a2ac27b63dc345fcd131'),
+])
+def test_superseded_recent_mysql_attempt_does_not_keep_source_permission(fixture, tag, commit):
+    value, proof = recent_mysql_fixture(fixture)
+    value.context.update(release=tag, commit=commit)
+    proof['path'] = 'inbox/' + tag + '/source.tar.gz'
+    with pytest.raises(ValueError): resources.recent_mysql_fixture_source(value.context, proof)
 
 
 def test_recent_remove_uses_one_ordinary_object_callback_and_preserves_retained_data_identity(fixture):

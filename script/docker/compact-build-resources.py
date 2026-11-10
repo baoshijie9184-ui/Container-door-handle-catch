@@ -1044,13 +1044,24 @@ HISTORICAL_BUILDERS = {
 
 # Separate from builder/cache permissions: only stopped MySQL fixture objects.
 RECENT_MYSQL_FIXTURE_SOURCES = {
-    'ci-187-8e90ba50c691': ('8e90ba50c691d561bd26b23f037fec1600e5e9de', 'dbbe53c5a72a3a624161245a20065e50336f37a722c5da9f91ec8b002430584d'),
-    'ci-188-df1e1a54d48e': ('df1e1a54d48e5005185f53459068fbe9efffe333', 'dbbe53c5a72a3a624161245a20065e50336f37a722c5da9f91ec8b002430584d'),
-    'ci-189-410506ad7c82': ('410506ad7c82e302e623a2ac27b63dc345fcd131', '259d40731626e366b9f974df221bf64ee2db7a2e13e41dc369c1e5bf47826104'),
+    'ci-195-2c2e65a0daa9': ('2c2e65a0daa94d96b327c59d720871ab70bff0a1', '259d40731626e366b9f974df221bf64ee2db7a2e13e41dc369c1e5bf47826104'),
+    'ci-198-7af0903ee840': ('7af0903ee84011dc51f4abac4f4a4d9679db7322', '259d40731626e366b9f974df221bf64ee2db7a2e13e41dc369c1e5bf47826104'),
+    'ci-201-803baf401b5f': ('803baf401b5f9566283a59cb6a885a794b9d7d85', '259d40731626e366b9f974df221bf64ee2db7a2e13e41dc369c1e5bf47826104'),
 }
+# Helper revisions belong to the exact attempt, never a union of accepted hashes.
 RECENT_MYSQL_HELPERS = {
-    'compact-build-resources.py': '59ad415c609056be97afa270ba6731e7eebd27fc05c30e82e18bb32c9c98205e',
-    'compact-image-inputs.py': '1db18e3d1aba9b426f6bfb6b34f22af96cb403c6a97ffef914ea35c308ea795e',
+    'ci-195-2c2e65a0daa9': {
+        'compact-build-resources.py': 'f03bd835281b43feddce8fe528e5589c723482ed10ed23e00b6f68f74d8cdda1',
+        'compact-image-inputs.py': '1db18e3d1aba9b426f6bfb6b34f22af96cb403c6a97ffef914ea35c308ea795e',
+    },
+    'ci-198-7af0903ee840': {
+        'compact-build-resources.py': 'f03bd835281b43feddce8fe528e5589c723482ed10ed23e00b6f68f74d8cdda1',
+        'compact-image-inputs.py': '1db18e3d1aba9b426f6bfb6b34f22af96cb403c6a97ffef914ea35c308ea795e',
+    },
+    'ci-201-803baf401b5f': {
+        'compact-build-resources.py': '5ca8a9e3dc6d7ca7273a8aec2102fdbf0f27e5f40ada86edad2553931506d6e8',
+        'compact-image-inputs.py': '1db18e3d1aba9b426f6bfb6b34f22af96cb403c6a97ffef914ea35c308ea795e',
+    },
 }
 
 
@@ -1208,7 +1219,8 @@ def recent_mysql_fixture_source(context, proof):
             and type(context.get('sourceSha256')) is str and SHA.fullmatch(context['sourceSha256']),
             'Reviewed recent MySQL source required')
     expected = {'path': 'inbox/' + context['release'] + '/source.tar.gz', 'sha256': context['sourceSha256'],
-                'transportRecipeSha256': registered[1], 'builderHelperSha256': dict(RECENT_MYSQL_HELPERS)}
+                'transportRecipeSha256': registered[1],
+                'builderHelperSha256': dict(RECENT_MYSQL_HELPERS[context['release']])}
     require(type(proof) is dict and all(proof.get(key) == value for key, value in expected.items()),
             'Original recent MySQL schema tool source differs')
     return expected
