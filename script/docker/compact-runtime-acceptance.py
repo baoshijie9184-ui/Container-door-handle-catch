@@ -424,6 +424,8 @@ class Runtime:
         self.native = module('runtime_legacy_candidate', source / 'script/jenkins/prepare-legacy-candidate.py')
         self.worker_fence = module('runtime_worker_unknown_result', source / 'script/docker/compact-runtime-worker-fence.py')
         self.browser = module('runtime_collaboration_browser', source / 'script/docker/compact-collaboration-browser.py')
+        self.stable_identity = module('runtime_stable_identity', source / 'script/docker/compact-runtime-stable-identity.py')
+        self.collaboration_http = module('runtime_collaboration_http', source / 'script/docker/compact-collaboration-http.py')
         self.common = module('runtime_schema_queries', source / 'script/docker/assignment-compat.py')
         self.acceptance = module('runtime_profile_contract', source / 'script/jenkins/compact-acceptance.py')
         self.profile, self.profile_sha = self.acceptance.profile(source)
@@ -837,6 +839,7 @@ with urllib.request.urlopen(r,timeout=10) as s: print(s.read().decode())
                             'interval': '5s', 'timeout': '4s', 'retries': 10}}
         config['services']['backend'].setdefault('depends_on', {})['oss-proxy'] = {'condition': 'service_healthy'}
         config['services']['nginx']['networks'].setdefault('doorhandle-network', {}).setdefault('aliases', []).append('ui')
+        config = self.stable_identity.enable_required_environment(config)
         config = bounded_config(config)
         self.validate_config(config)
         return config
@@ -923,6 +926,7 @@ print(json.dumps({p:data['properties'][p]['baseUrl'] for p in ('deepseek','dashs
             '--entrypoint', 'python', self.images['mem0'], '-B', '-c', code, data=raw, timeout=30)
 
     def start(self):
+        self.stable_identity.preflight(self)
         declared = sum(int(spec.get('mem_limit', 0)) for spec in self.config['services'].values())
         physical = allocated_bytes(Path(self.fixture_owner['dataDirectory']) / self.owner['targetSchema'])
         retained = allocated_bytes(self.checkout / 'work/compact-fixtures')
@@ -979,6 +983,7 @@ print(json.dumps({p:data['properties'][p]['baseUrl'] for p in ('deepseek','dashs
         self.owner['mcpPoolId'] = pool
         self.save('RUNNING')
         self.native.verify_runtime(self, 'after-start')
+        self.stable_identity.admit(self)
 
     def restart_backend(self):
         self.dc('restart', 'backend', timeout=120)
@@ -1511,7 +1516,10 @@ print(json.dumps({'deleted':len(keys),'keysSha256':hashlib.sha256(json.dumps(sor
             'sourceAfterSha256': self.migration.sha_json(source_after) if hasattr(self, 'migration') else None,
             'objectsCleaned': self.owner.get('objectsCleaned'), 'unresolved': failures,
             'resourceEvidence': resource_evidence, 'fixtureBuildResources': fixture_builds,
-            'browserEvidence': self.owner.get('browserEvidence')}
+            'browserEvidence': self.owner.get('browserEvidence'),
+            'stableIdentityEvidence': {stage: self.owner['stableIdentity' + stage.title()]
+                for stage in ('preflight', 'admission', 'authorization') if 'stableIdentity' + stage.title() in self.owner},
+            'collaborationHttpEvidence': self.owner.get('collaborationHttpEvidence', {})}
         file = self.directory / 'cleanup.json'; self.common.write_json(file, result)
         self.owner['cleanup'] = {'file': file.relative_to(self.attempt).as_posix(), 'sha256': sha_file(file), 'status': result['status']}
         self.save('NEEDS_REVIEW' if failures else 'STOPPED')
@@ -1667,6 +1675,7 @@ print(json.dumps({'deleted':len(keys),'keysSha256':hashlib.sha256(json.dumps(sor
         self.worker_scenario()
         fence = self.worker_fence.run(self)
         self.record('detection-pth-worker-kafka-receipts', {**self.worker_observations, 'actualUnknownResultFence': fence})
+        self.collaboration_http.claim(self)
         self.http.run_report_scenario(self)
         self.sdk_scenario(); self.mcp_scenario(); self.skill_scenario(); self.memory_scenario(); self.recovery_scenario()
         required = {item['id'] for item in self.profile['runtimeAcceptance']['scenarios']}
@@ -1677,6 +1686,10 @@ print(json.dumps({'deleted':len(keys),'keysSha256':hashlib.sha256(json.dumps(sor
                 and all(item.get('remainingSteps') == 0 and item.get('calls', 0) > 0 for item in state['markers']),
                 'The actual model/embedding interactions did not consume their intended bounded scripts')
         self.owner['finalFixtureState'] = state
+        self.collaboration_http.personnel(self)
+        self.stable_identity.prove_current_task(self, self.report_task_id)
+        stable_identity = self.stable_identity.require_receipts(self)
+        collaboration_http = self.collaboration_http.require_receipts(self)
         browser = self.browser.run(self)
         self.save('ASSERTIONS_PASSED')
         self.cleanup()
@@ -1692,6 +1705,8 @@ print(json.dumps({'deleted':len(keys),'keysSha256':hashlib.sha256(json.dumps(sor
         proof = {**self.context(), 'status': 'PASS', 'project': self.project,
             'fixtureBuildResources': fixture_builds,
             'browserAcceptance': browser,
+            'stableIdentity': stable_identity,
+            'collaborationHttpAcceptance': collaboration_http,
             'legacyData': {'candidateSha256': self.legacy_candidate_sha, 'ragManifestSha256': self.legacy_candidate['ragManifestSha256'],
                 'legacyKafkaFiles': self.legacy_candidate['legacyKafkaFiles'], 'legacyKafkaBytes': self.legacy_candidate['legacyKafkaBytes'],
                 'legacyKafkaReplay': self.legacy_candidate['legacyKafkaReplay'],
