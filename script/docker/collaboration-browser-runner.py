@@ -425,7 +425,7 @@ class Runner:
         return data
 
     async def api(self, context, method, path, body=None, auth_key=None, expected=(200,)):
-        headers = {'Origin': self.base}
+        headers = {'Origin': self.base, 'X-Agent-Action': 'workbench'}
         if auth_key:
             headers['X-Account-Context'] = self.auth[auth_key]['accountContext']
         response = await context.request.fetch(self.base + path, method=method, data=body, headers=headers, timeout=30000)
