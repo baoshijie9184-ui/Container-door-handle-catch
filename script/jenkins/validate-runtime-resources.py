@@ -73,7 +73,7 @@ def validate_files(proof_file, cleanup_file, summary_file, probes_file, phase_di
     runtime = importlib.util.module_from_spec(spec); spec.loader.exec_module(runtime)
     result = runtime.validate_resource_evidence(summary, raw, context, proof['project'])
     phases = summary['phases']
-    require(len(phases) == 3, 'All measured runtime phases must be retained')
+    require(len(phases) == (4 if proof.get('browserAcceptance') else 3), 'All measured runtime phases must be retained')
     for index, reference in enumerate(phases, 1):
         name = 'resource-phase-' + str(index) + '-' + reference['phase'] + '.json'
         require(reference['file'] == PREFIX + name, 'Runtime phase escaped its fixed evidence location')

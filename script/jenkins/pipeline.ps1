@@ -912,7 +912,7 @@ if ($Action -in @('CompactCutover', 'VerifyRuntime', 'CleanupRuntime')) {
     }
     function Receive-RuntimeResource([string]$Name, [string]$Digest) {
         $names = @('resource-summary.json', 'resource-probes.jsonl',
-            'resource-phase-1-runtime-start.json', 'resource-phase-2-runtime-backup.json', 'resource-phase-3-runtime-restore.json')
+            'resource-phase-1-runtime-start.json', 'resource-phase-2-runtime-backup.json', 'resource-phase-3-runtime-restore.json', 'resource-phase-4-runtime-browser.json')
         if ($Name -notin $names -or $Digest -notmatch '^[a-f0-9]{64}$') { throw 'Unexpected runtime resource evidence reference.' }
         New-Item -ItemType Directory -Force -Path artifacts/runtime-resources | Out-Null
         $localFile = "artifacts/runtime-resources/$Name"
@@ -925,7 +925,7 @@ if ($Action -in @('CompactCutover', 'VerifyRuntime', 'CleanupRuntime')) {
         return Get-Content -LiteralPath $localFile -Raw | ConvertFrom-Json
     }
     if ($Action -eq 'CleanupRuntime') {
-        foreach ($name in @('model', 'mcp')) {
+        foreach ($name in @('model', 'mcp', 'browser')) {
             $null = Receive-OwnedBuildResources "$remoteRoot/verification/$tag/checkout/work/runtime-acceptance/controlled-build-$name" "artifacts/fixture-build-resources/$name"
         }
         # Preserve the real exit code, but collect bounded public failure and
@@ -960,7 +960,7 @@ if ($Action -in @('CompactCutover', 'VerifyRuntime', 'CleanupRuntime')) {
                 if ($summary.rawProbeFile -ne 'checkout/work/runtime-acceptance/resource-probes.jsonl') { throw 'Unexpected failed runtime probe location.' }
                 Receive-RuntimeResource 'resource-probes.jsonl' $summary.rawProbeSha256
             }
-            if (@($summary.phases).Count -gt 3) { throw 'Failed runtime phase evidence exceeds its bound.' }
+            if (@($summary.phases).Count -gt 4) { throw 'Failed runtime phase evidence exceeds its bound.' }
             foreach ($phase in $summary.phases) {
                 $name = [System.IO.Path]::GetFileName($phase.file)
                 if ($phase.file -ne "checkout/work/runtime-acceptance/$name") { throw 'Failed runtime phase escaped its owned evidence directory.' }
@@ -1101,7 +1101,7 @@ print(json.dumps({'status':'REUSED_VERIFIED','release':expected['release'],'comm
     try {
         $result = Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "python3 -B '$runtimeHelper' run $runtimeArguments"))
     } finally {
-        foreach ($name in @('model', 'mcp')) {
+        foreach ($name in @('model', 'mcp', 'browser')) {
             $fixtureResources[$name] = Receive-OwnedBuildResources "$remoteRoot/verification/$tag/checkout/work/runtime-acceptance/controlled-build-$name" "artifacts/fixture-build-resources/$name"
         }
     }
@@ -1110,7 +1110,7 @@ print(json.dumps({'status':'REUSED_VERIFIED','release':expected['release'],'comm
     Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, "${destination}:$remoteRoot/verification/$tag/runtime-acceptance.json", 'artifacts/runtime-acceptance.json'))
     if ((Get-FileHash -LiteralPath artifacts/runtime-acceptance.json -Algorithm SHA256).Hash.ToLowerInvariant() -ne $runtimeResult.runtimeReceiptSha256) { throw 'The actual runtime acceptance receipt changed during collection.' }
     $runtimeProof = Get-Content -LiteralPath artifacts/runtime-acceptance.json -Raw | ConvertFrom-Json
-    foreach ($name in @('model', 'mcp')) {
+    foreach ($name in @('model', 'mcp', 'browser')) {
         $reference = $runtimeProof.fixtureBuildResources.$name
         $file = "artifacts/fixture-build-resources/$name/resource-summary.json"
         if (-not $fixtureResources[$name] -or $fixtureResources[$name].status -ne 'PASS' -or $reference.file -ne "checkout/work/runtime-acceptance/controlled-build-$name/resource-summary.json" -or $reference.sha256 -ne (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant()) { throw 'Runtime fixture image build lacks matching controlled resource evidence.' }
@@ -1185,7 +1185,7 @@ print(json.dumps({'status':'REUSED_VERIFIED','release':expected['release'],'comm
     $resourceSummary = Receive-RuntimeResource 'resource-summary.json' $resourceReference.sha256
     if ($resourceSummary.rawProbeFile -ne 'checkout/work/runtime-acceptance/resource-probes.jsonl') { throw 'Unexpected resource probe evidence location.' }
     Receive-RuntimeResource 'resource-probes.jsonl' $resourceSummary.rawProbeSha256
-    if (@($resourceSummary.phases).Count -ne 3) { throw 'Runtime resource phase evidence is incomplete.' }
+    if (@($resourceSummary.phases).Count -ne 4) { throw 'Runtime resource phase evidence is incomplete.' }
     foreach ($phase in $resourceSummary.phases) {
         $name = [System.IO.Path]::GetFileName($phase.file)
         if ($phase.file -ne "checkout/work/runtime-acceptance/$name") { throw 'Resource phase evidence escaped its owned directory.' }

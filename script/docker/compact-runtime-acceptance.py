@@ -61,6 +61,7 @@ SERVICE_MEMORY_MIB = {'backend': 1792, 'kafka': 1280, 'mem0': 768, 'chroma': 512
     'kafka-storage-init': 64, 'higress-seed': 128, 'higress-config': 128}
 MCP_CHILD_MEMORY = 2 * 256 * MIB
 BGE_VERIFIER_MEMORY = 768 * MIB
+BROWSER_MEMORY = 2 * GIB
 
 
 def bounded_config(config):
@@ -107,7 +108,7 @@ def host_probe(directory):
 
 
 def phase_admission(phase, probe, growth_bytes, memory_bytes, measured):
-    require(phase in ('runtime-start', 'runtime-backup', 'runtime-restore')
+    require(phase in ('runtime-start', 'runtime-backup', 'runtime-restore', 'runtime-browser')
             and type(growth_bytes) is int and growth_bytes > 0 and type(memory_bytes) is int and memory_bytes >= 0
             and isinstance(measured, dict) and measured, 'Runtime phase requires measured inputs and an explicit growth bound')
     result = {'kind': 'doorhandle-bounded-runtime-resource-phase', 'profile': RUNTIME_PROFILE, 'phase': phase,
@@ -145,7 +146,9 @@ def validate_resource_evidence(summary, raw, context, project):
     samples = [json.loads(line, object_pairs_hook=pairs,
                          parse_constant=lambda _: (_ for _ in ()).throw(ValueError('Invalid JSON number'))) for line in lines]
     plans = summary.get('phasePlans', {})
-    require(set(plans) == {'runtime-start', 'runtime-backup', 'runtime-restore'}, 'Runtime phase plans are missing')
+    expected_phases = ['runtime-start', 'runtime-backup', 'runtime-restore']
+    if 'collaboration-browser' in summary.get('requiredTransientServices', []): expected_phases.append('runtime-browser')
+    require(set(plans) == set(expected_phases), 'Runtime phase plans are missing')
     for phase, plan in plans.items():
         require(plan == phase_admission(phase, plan['baselineProbe'], plan['growthEnvelopeBytes'],
                     plan['memoryAdmissionBytes'], plan['measuredInputs']) and plan['status'] == 'MEASUREMENT_ADMITTED',
@@ -171,10 +174,10 @@ def validate_resource_evidence(summary, raw, context, project):
         for row in event['containers']:
             cid, service = row['containerId'], row['service']
             require(re.fullmatch(r'[a-f0-9]{64}', cid) and re.fullmatch(r'sha256:[a-f0-9]{64}', row['image'])
-                    and service in {*SERVICE_MEMORY_MIB, 'mcp-child', 'owned-helper', 'bge-verifier'}
+                    and service in {*SERVICE_MEMORY_MIB, 'mcp-child', 'owned-helper', 'bge-verifier', 'collaboration-browser'}
                     and all(type(row[key]) is int and row[key] >= 0 for key in ('currentBytes', 'peakBytes', 'oom', 'oomKills', 'memoryLimitBytes'))
                     and (0 < row['memoryLimitBytes'] <= 256 * MIB if service == 'owned-helper'
-                         else row['memoryLimitBytes'] == (BGE_VERIFIER_MEMORY if service == 'bge-verifier'
+                         else row['memoryLimitBytes'] == (BROWSER_MEMORY if service == 'collaboration-browser' else BGE_VERIFIER_MEMORY if service == 'bge-verifier'
                               else 256 * MIB if service == 'mcp-child' else SERVICE_MEMORY_MIB[service] * MIB))
                     and row['oom'] == row['oomKills'] == 0, 'Container resource evidence is incomplete or contains OOM')
             previous = containers.get(cid)
@@ -190,9 +193,9 @@ def validate_resource_evidence(summary, raw, context, project):
     require(required == set(SERVICE_MEMORY_MIB) - {'kafka-init', 'kafka-storage-init', 'higress-seed', 'higress-config'}
             and required <= observed, 'Some required runtime service peaks were never observed')
     transient = summary.get('requiredTransientServices', [])
-    require(transient in ([], ['bge-verifier']) and set(transient) <= observed,
+    require(transient in ([], ['bge-verifier'], ['bge-verifier', 'collaboration-browser']) and set(transient) <= observed,
             'A required free BGE verifier resource peak was not observed')
-    require([row.get('phase') for row in summary.get('phases', [])] == ['runtime-start', 'runtime-backup', 'runtime-restore']
+    require([row.get('phase') for row in summary.get('phases', [])] == expected_phases
             and all(set(row) == {'phase', 'file', 'sha256'} and re.fullmatch(r'[a-f0-9]{64}', row['sha256'])
                     and row['file'] == 'checkout/work/runtime-acceptance/resource-phase-' + str(index) + '-' + row['phase'] + '.json'
                     for index, row in enumerate(summary['phases'], 1)), 'Runtime phase evidence is incomplete')
@@ -216,7 +219,7 @@ class RuntimeResources:
             'pollIntervalSeconds': 2, 'diskFloorBytes': DISK_FLOOR, 'memoryFloorBytes': MEMORY_FLOOR,
             'containers': {}, 'phases': [], 'phasePlans': {}, 'samples': 0,
             'requiredDaemonServices': sorted(set(SERVICE_MEMORY_MIB) - {'kafka-init', 'kafka-storage-init', 'higress-seed', 'higress-config'}),
-            'requiredTransientServices': ['bge-verifier'],
+            'requiredTransientServices': ['bge-verifier', 'collaboration-browser'],
             'rawProbeFile': 'checkout/work/runtime-acceptance/resource-probes.jsonl'}
         self.raw = runtime.directory / 'resource-probes.jsonl'
 
@@ -281,8 +284,12 @@ class RuntimeResources:
                         'Resource observer found a foreign container')
                 bge = labels.get('io.doorhandle.bge-verifier') == ctx.token
                 require(not bge or ordinary and row['Image'] == ctx.images['mem0'], 'A free BGE helper has a foreign source image or owner')
-                service = 'bge-verifier' if bge else labels.get('com.docker.compose.service') or ('mcp-child' if child else 'owned-helper')
-                maximum = BGE_VERIFIER_MEMORY if bge else 256 * MIB if child or service == 'owned-helper' else SERVICE_MEMORY_MIB[service] * MIB
+                browser = labels.get('io.doorhandle.collaboration-browser') == ctx.token
+                require(not browser or ordinary and row['Image'] == ctx.owner['browserImage']
+                        and row['Name'] == '/' + ctx.owner['browserContainerName'] and cid == ctx.owner.get('browserContainerId', cid),
+                        'A browser helper has a foreign image or container identity')
+                service = 'collaboration-browser' if browser else 'bge-verifier' if bge else labels.get('com.docker.compose.service') or ('mcp-child' if child else 'owned-helper')
+                maximum = BROWSER_MEMORY if browser else BGE_VERIFIER_MEMORY if bge else 256 * MIB if child or service == 'owned-helper' else SERVICE_MEMORY_MIB[service] * MIB
                 actual_limit = row['HostConfig']['Memory']
                 memory = {'currentBytes': 0, 'peakBytes': 0, 'oom': 0, 'oomKills': 0}
                 if row['State']['Running']:
@@ -407,6 +414,7 @@ class Runtime:
         self.recovery = module('runtime_recovery_scenario', source / 'script/docker/compact-runtime-recovery.py')
         self.native = module('runtime_legacy_candidate', source / 'script/jenkins/prepare-legacy-candidate.py')
         self.worker_fence = module('runtime_worker_unknown_result', source / 'script/docker/compact-runtime-worker-fence.py')
+        self.browser = module('runtime_collaboration_browser', source / 'script/docker/compact-collaboration-browser.py')
         self.common = module('runtime_schema_queries', source / 'script/docker/assignment-compat.py')
         self.acceptance = module('runtime_profile_contract', source / 'script/jenkins/compact-acceptance.py')
         self.profile, self.profile_sha = self.acceptance.profile(source)
@@ -668,6 +676,7 @@ with urllib.request.urlopen(r,timeout=10) as s: print(s.read().decode())
         self.master_key, self.key_reference = self.prepare_key()
         self.owner['modelBaseUrls'] = self.model_routes()
         self.config = self.build_config(schema, runtime_accounts)
+        self.browser.prepare_image(self)
         self.common.write_json(self.directory / 'compose.json', self.config)
         self.save('PREPARED')
 
@@ -818,6 +827,7 @@ with urllib.request.urlopen(r,timeout=10) as s: print(s.read().decode())
             'healthcheck': {'test': ['CMD', 'python', '-c', "import urllib.request;urllib.request.urlopen('http://127.0.0.1:9000/health',timeout=3)"],
                             'interval': '5s', 'timeout': '4s', 'retries': 10}}
         config['services']['backend'].setdefault('depends_on', {})['oss-proxy'] = {'condition': 'service_healthy'}
+        config['services']['nginx']['networks'].setdefault('doorhandle-network', {}).setdefault('aliases', []).append('ui')
         config = bounded_config(config)
         self.validate_config(config)
         return config
@@ -1399,10 +1409,11 @@ print(json.dumps({'deleted':len(keys),'keysSha256':hashlib.sha256(json.dumps(sor
         creators = self.ops.docker('ps', '-aq', '--no-trunc', '--filter', 'label=io.doorhandle.rehearsal=' + self.project).decode().split()
         if creators:
             rows = json.loads(self.ops.docker('inspect', *creators))
-            for service in ('nginx', 'backend', 'mcp-runner', 'detection-worker', 'mem0'):
+            for service in ('collaboration-browser', 'nginx', 'backend', 'mcp-runner', 'detection-worker', 'mem0'):
                 for row in rows:
                     labels = row.get('Config', {}).get('Labels') or {}
-                    if labels.get('com.docker.compose.service') != service:
+                    actual_service = 'collaboration-browser' if labels.get('io.doorhandle.collaboration-browser') == self.token else labels.get('com.docker.compose.service')
+                    if actual_service != service:
                         continue
                     try:
                         require(labels.get('io.doorhandle.rehearsal') == self.project
@@ -1481,6 +1492,8 @@ print(json.dumps({'deleted':len(keys),'keysSha256':hashlib.sha256(json.dumps(sor
             require(source_after == self.owner.get('sourceBefore'), 'An original source process, configuration or database identity changed')
         except BaseException:
             failures.append('original-source-readback')
+        try: self.browser.preserve(self)
+        except BaseException: failures.append('browser-evidence-preservation')
         resource_evidence = self.resources.finish()
         result = {**self.context(), 'status': 'NEEDS_REVIEW' if failures else 'STOPPED', 'project': self.project,
             'stoppedContainers': stopped, 'preservedOwnedVolumes': True,
@@ -1488,7 +1501,8 @@ print(json.dumps({'deleted':len(keys),'keysSha256':hashlib.sha256(json.dumps(sor
             'sourceBeforeSha256': self.migration.sha_json(self.owner.get('sourceBefore')) if hasattr(self, 'migration') else None,
             'sourceAfterSha256': self.migration.sha_json(source_after) if hasattr(self, 'migration') else None,
             'objectsCleaned': self.owner.get('objectsCleaned'), 'unresolved': failures,
-            'resourceEvidence': resource_evidence, 'fixtureBuildResources': fixture_builds}
+            'resourceEvidence': resource_evidence, 'fixtureBuildResources': fixture_builds,
+            'browserEvidence': self.owner.get('browserEvidence')}
         file = self.directory / 'cleanup.json'; self.common.write_json(file, result)
         self.owner['cleanup'] = {'file': file.relative_to(self.attempt).as_posix(), 'sha256': sha_file(file), 'status': result['status']}
         self.save('NEEDS_REVIEW' if failures else 'STOPPED')
@@ -1654,6 +1668,7 @@ print(json.dumps({'deleted':len(keys),'keysSha256':hashlib.sha256(json.dumps(sor
                 and all(item.get('remainingSteps') == 0 and item.get('calls', 0) > 0 for item in state['markers']),
                 'The actual model/embedding interactions did not consume their intended bounded scripts')
         self.owner['finalFixtureState'] = state
+        browser = self.browser.run(self)
         self.save('ASSERTIONS_PASSED')
         self.cleanup()
         require(self.resources.error is None, 'Runtime resource observation failed; bounded acceptance cannot pass')
@@ -1667,6 +1682,7 @@ print(json.dumps({'deleted':len(keys),'keysSha256':hashlib.sha256(json.dumps(sor
         fixture_builds = self.build_resources.fixture_build_evidence(self, require_pass=True)
         proof = {**self.context(), 'status': 'PASS', 'project': self.project,
             'fixtureBuildResources': fixture_builds,
+            'browserAcceptance': browser,
             'legacyData': {'candidateSha256': self.legacy_candidate_sha, 'ragManifestSha256': self.legacy_candidate['ragManifestSha256'],
                 'legacyKafkaFiles': self.legacy_candidate['legacyKafkaFiles'], 'legacyKafkaBytes': self.legacy_candidate['legacyKafkaBytes'],
                 'legacyKafkaReplay': self.legacy_candidate['legacyKafkaReplay'],

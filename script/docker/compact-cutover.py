@@ -149,7 +149,7 @@ def admitted_runtime(root, tag, commit, source_sha, identity, guard, build, buil
             and proof.get('images') == {key: build['images'][key] for key in ('backend', 'nginx', 'mem0', 'detection-worker')},
             'The full runtime proof belongs to another build, model protocol or candidate image')
     fixture_builds = proof.get('fixtureBuildResources')
-    require(isinstance(fixture_builds, dict) and set(fixture_builds) == {'model', 'mcp'}, 'Owned runtime fixture build proofs are missing')
+    require(isinstance(fixture_builds, dict) and set(fixture_builds) == {'model', 'mcp', 'browser'}, 'Owned runtime fixture build proofs are missing')
     build_resources = module('cutover_fixture_build_resources', Path(__file__).with_name('compact-build-resources.py'))
     build_context = {'release': tag, 'commit': commit, 'sourceSha256': source_sha, 'identity': identity}
     for name, reference in fixture_builds.items():

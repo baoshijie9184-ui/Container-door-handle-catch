@@ -4,7 +4,25 @@
   "executionStatus": "NOT_BUILT_NOT_EXECUTED",
   "platform": "linux/amd64",
   "os": "Ubuntu 24.04 noble",
-  "baseImage": "Runtime must admit ubuntu:24.04@sha256:<verified digest>; no floating default",
+  "baseImage": {
+    "schemaVersion": 1,
+    "repository": "docker.io/library/ubuntu",
+    "tagAtDiscovery": "24.04",
+    "manifestDigest": "sha256:78d4744ead1f5b19b04d0df558ab182a5300903900755e515b2ca4d10eb2044d",
+    "configDigest": "sha256:d9b8c34d61a9b9a3c44cab883d7d2f2619d674966ab520186f799cf32e3e0377",
+    "layers": [
+      {
+        "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+        "size": 29767612,
+        "digest": "sha256:7a48b8f0e5c73d0cc2a85b008978396aa19d253dc1b96fdb0b769ee6dcbeca4a"
+      }
+    ],
+    "platform": "linux/amd64",
+    "source": "https://registry-1.docker.io/v2/library/ubuntu/manifests/sha256:78d4744ead1f5b19b04d0df558ab182a5300903900755e515b2ca4d10eb2044d",
+    "scope": "Metadata only. No image layers downloaded or image built.",
+    "reference": "ubuntu:24.04@sha256:78d4744ead1f5b19b04d0df558ab182a5300903900755e515b2ca4d10eb2044d",
+    "checkedAt": "2026-11-10"
+  },
   "python": "Ubuntu 24.04 CPython 3.12",
   "playwright": {
     "version": "1.65.0",
@@ -23,7 +41,11 @@
     "version": "158.0.8127.18",
     "revision": "1254",
     "installCommand": "python -m playwright install --with-deps --only-shell chromium",
-    "enginesNotInstalled": ["firefox", "webkit", "full chromium"],
+    "enginesNotInstalled": [
+      "firefox",
+      "webkit",
+      "full chromium"
+    ],
     "license": "Chromium BSD-style and bundled third-party licenses; preserve installed notices",
     "manifestSource": "https://raw.githubusercontent.com/microsoft/playwright/v1.65.0/packages/playwright-core/browsers.json",
     "installSource": "https://playwright.dev/python/docs/browsers",
@@ -43,9 +65,18 @@
   "capacityPlanningOnly": {
     "measuredImageSizeBytes": null,
     "measuredFortyTabPeakMemoryBytes": null,
-    "estimatedSteadyAdditionalDiskGiB": [0.5, 1.0],
-    "estimatedBuildPeakAdditionalDiskGiB": [1.0, 1.5],
-    "estimatedEvidenceDiskGiB": [0.1, 0.3],
+    "estimatedSteadyAdditionalDiskGiB": [
+      0.5,
+      1.0
+    ],
+    "estimatedBuildPeakAdditionalDiskGiB": [
+      1.0,
+      1.5
+    ],
+    "estimatedEvidenceDiskGiB": [
+      0.1,
+      0.3
+    ],
     "minimumBrowserCgroupMemoryGiB": 2,
     "note": "Estimates are not admission or measurement. Runtime must re-read disk/memory alongside all existing services, measure immutable tool image size, reserve /dev/shm/tmpfs, and fail if budgets do not fit."
   }

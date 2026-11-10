@@ -1416,7 +1416,7 @@ def build_images(actor, root, source, specifications):
 
 
 def runtime_image(root, source, args, identity, context, tag, name, project):
-    require(name in ('model', 'mcp') and context == Path(root) / 'verification' / args.tag / 'checkout/work/runtime-acceptance' / (name + '-image')
+    require(name in ('model', 'mcp', 'browser') and context == Path(root) / 'verification' / args.tag / 'checkout/work/runtime-acceptance' / (name + '-image')
             and re.fullmatch(r'doorhandle-rehearsal-[a-f0-9]{12}', project)
             and tag == 'doorhandlecatch/runtime-' + name + ':' + args.tag + '-' + project.removeprefix('doorhandle-rehearsal-'),
             'Runtime fixture build escaped its owned fixed context')
@@ -1424,6 +1424,7 @@ def runtime_image(root, source, args, identity, context, tag, name, project):
         'sourceSha256': args.source_sha256, 'identity': identity})
     try:
         build = build_images(actor, root, source, [{'service': name, 'context': context, 'tag': tag,
+            'runWriteEnvelopeBytes': GIB if name == 'browser' else 0,
             'labels': {'io.doorhandle.rehearsal': project}}])
         reference = actor.finish('PASS', build=build)
         result = validate_files(actor.directory, {'release': args.tag, 'commit': args.commit,
@@ -1439,7 +1440,7 @@ def runtime_image(root, source, args, identity, context, tag, name, project):
 def fixture_build_evidence(runtime, require_pass=False):
     result = {}
     context = {'release': runtime.args.tag, 'commit': runtime.args.commit, 'sourceSha256': runtime.args.source_sha256, 'identity': runtime.identity}
-    for name in ('model', 'mcp'):
+    for name in ('model', 'mcp', 'browser'):
         directory = runtime.directory / ('controlled-build-' + name)
         if not directory.exists():
             require(not require_pass, 'Required runtime fixture image was not built'); continue
@@ -1458,7 +1459,7 @@ def fixture_build_evidence(runtime, require_pass=False):
                     and not row['State']['Running'] and row['State']['Pid'] == 0, 'Fixture image builder remains active or lost ownership')
         if require_pass:
             validate_files(directory, context, require_services=False)
-            expected = runtime.owner['modelFixtureImage' if name == 'model' else 'runtimeMcpImage']
+            expected = runtime.owner[{'model': 'modelFixtureImage', 'mcp': 'runtimeMcpImage', 'browser': 'browserImage'}[name]]
             require(set(summary['build']['images']) == {name} and summary['build']['images'][name]['imageId'] == expected,
                     'Runtime fixture image differs from the measured build output')
         result[name] = {'file': 'checkout/work/runtime-acceptance/controlled-build-' + name + '/resource-summary.json',
@@ -1638,7 +1639,7 @@ def main(argv=None):
     parser.add_argument('action', choices=('validate', 'build-candidate'))
     for name in ('tag', 'commit', 'source-sha256', 'instance-id', 'machine-id'): parser.add_argument('--' + name, required=True)
     for name in ('directory', 'root', 'runtime', 'settings'): parser.add_argument('--' + name)
-    parser.add_argument('--fixture', choices=('model', 'mcp'))
+    parser.add_argument('--fixture', choices=('model', 'mcp', 'browser'))
     args = parser.parse_args(argv)
     if args.action == 'build-candidate':
         for event in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
