@@ -34,6 +34,7 @@ import org.springframework.boot.web.embedded.tomcat.TomcatWebServer;
 import org.springframework.boot.web.servlet.*;
 import org.springframework.boot.web.servlet.context.ServletWebServerApplicationContext;
 import org.springframework.context.annotation.*;
+import org.springframework.context.support.PropertySourcesPlaceholderConfigurer;
 import org.springframework.core.env.MapPropertySource;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
@@ -97,6 +98,9 @@ class CollaborationHttpMySqlTest {
             BusinessRealtimeService.class,BusinessRealtimeController.class,LoginSessionExceptionHandler.class,
             ResultHttpStatusAdvice.class,CollaborationConcurrencyExceptionHandler.class,AuthorizationExceptionHandler.class,GlobalExceptionHandler.class})
     static class HttpApp {
+        // This selective context omits Boot auto-configuration. Resolve @Value before
+        // Tomcat creates its filter registrations during ApplicationContext.onRefresh.
+        @Bean static PropertySourcesPlaceholderConfigurer placeholders(){return new PropertySourcesPlaceholderConfigurer();}
         @Bean TomcatServletWebServerFactory webServer()throws Exception{var server=new TomcatServletWebServerFactory(0);server.setAddress(InetAddress.getByName("127.0.0.1"));server.setBaseDirectory(tomcatFiles.toFile());return server;}
         @Bean DispatcherServlet dispatcherServlet(){return new DispatcherServlet();}
         @Bean DispatcherServletRegistrationBean dispatcher(DispatcherServlet servlet){var bean=new DispatcherServletRegistrationBean(servlet,"/");bean.setAsyncSupported(true);return bean;}
