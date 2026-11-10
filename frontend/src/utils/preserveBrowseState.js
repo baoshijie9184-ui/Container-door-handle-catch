@@ -8,13 +8,20 @@ export async function preserveBrowseState(read, { documentRef = globalThis.docum
     ...Array.from(documentRef.querySelectorAll?.('.el-scrollbar__wrap, .el-dialog__body, .el-drawer__body, [role="region"], [data-collaboration-scroll], .layout-content') || []).slice(0, 64)])]
   const positions = elements.filter(element => element?.isConnected).map(element => ({ element, top: element.scrollTop, left: element.scrollLeft }))
   let interacted = false
+  const view = documentRef.defaultView
+  const url = () => view?.location?.href || documentRef.URL || ''
+  const openedUrl = url()
+  let navigationVersion = 0
+  const navigated = () => { navigationVersion++ }
+  for (const type of ['popstate', 'hashchange']) view?.addEventListener?.(type, navigated)
+  view?.navigation?.addEventListener?.('currententrychange', navigated)
   const changed = () => { interacted = true }
   const events = ['pointerdown', 'wheel', 'touchmove', 'keydown', 'input']
   for (const type of events) documentRef.addEventListener(type, changed, { capture: true, passive: true })
   try {
     const result = await read()
     await afterRender()
-    if (!interacted && isCurrent()) {
+    if (!interacted && navigationVersion === 0 && url() === openedUrl && isCurrent()) {
       const current = documentRef.activeElement
       if (active?.isConnected && (current === active || current === documentRef.body || current === documentRef.documentElement)) {
         if (current !== active) active.focus?.({ preventScroll: true })
@@ -30,5 +37,7 @@ export async function preserveBrowseState(read, { documentRef = globalThis.docum
     return result
   } finally {
     for (const type of events) documentRef.removeEventListener(type, changed, { capture: true })
+    for (const type of ['popstate', 'hashchange']) view?.removeEventListener?.(type, navigated)
+    view?.navigation?.removeEventListener?.('currententrychange', navigated)
   }
 }

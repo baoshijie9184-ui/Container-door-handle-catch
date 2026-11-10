@@ -114,6 +114,11 @@ export function useDefectGallery() {
   }
 
   const defectFiltersDirty = computed(() => !!appliedParams.value && ['defectType','severityLevel','deviceName','batchNo','modelId'].some(key => (buildDefectGalleryParams()[key] ?? '') !== (appliedParams.value[key] ?? '')))
+  const forgetTasks=ids=>{
+    loadGeneration++;pendingKey='';defectGalleryLoading.value=false
+    const denied=new Set(ids),remaining=defectGalleryRecords.value.filter(task=>!denied.has(task.taskId))
+    if(remaining.length!==defectGalleryRecords.value.length){defectGalleryRecords.value=remaining;defectGalleryTotal.value=null}
+  }
 
   return {
     defectGalleryLoading,
@@ -129,6 +134,7 @@ export function useDefectGallery() {
     loadDefectGallery,
     searchDefectGallery,
     resetDefectGalleryFilters,
-    onDefectGallerySizeChange
+    onDefectGallerySizeChange,
+    forgetTasks
   }
 }

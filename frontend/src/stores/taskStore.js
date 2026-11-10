@@ -99,7 +99,7 @@ export const useTaskStore = defineStore('task', () => {
   }
 
   const loadTaskList = () => cache.readTasks()
-  const saveFileState = (taskId,state,stamp=accountSession.stamp()) => cache.writeFile(taskId,state,stamp)
+  const saveFileState = (taskId,state,stamp=accountSession.stamp()) => taskList.value.some(task=>task.taskId===taskId) && cache.writeFile(taskId,state,stamp)
   const loadFileState = taskId => cache.readFile(taskId)
   const removeFileState = (taskId,stamp=accountSession.stamp()) => cache.removeFile(taskId,stamp)
 
@@ -194,6 +194,19 @@ export const useTaskStore = defineStore('task', () => {
     taskList.value.splice(idx, 1)
     if (selectedTaskId.value === taskId) selectedTaskId.value = null
     saveTaskList()
+  }
+  const forgetTaskAccess = (taskIds, stamp=accountSession.stamp()) => {
+    if(!accountSession.current(stamp)||!Array.isArray(taskIds)||taskIds.length>100)return false
+    const ids=new Set(taskIds)
+    clearTimeout(saveTimer);saveTimer=null;pendingSave=false
+    for(const task of taskList.value)if(ids.has(task.taskId)&&task.pollingTimer)clearInterval(task.pollingTimer)
+    taskList.value=taskList.value.filter(task=>!ids.has(task.taskId))
+    if(ids.has(selectedTaskId.value))selectedTaskId.value=null
+    // Remove the disk projection immediately, even inside the normal save throttle.
+    const removed=cache.removeTasks([...ids],stamp)
+    // Preserve legitimate pending updates using the existing account-fenced writer.
+    saveTaskList(stamp)
+    return removed
   }
 
   // ==================== 状态/步骤工具函数 ====================
@@ -341,6 +354,7 @@ export const useTaskStore = defineStore('task', () => {
     updateTask,
     pushTaskLog,
     removeTask,
+    forgetTaskAccess,
     normalizeStage,
     taskTagColor,
     taskTagType,

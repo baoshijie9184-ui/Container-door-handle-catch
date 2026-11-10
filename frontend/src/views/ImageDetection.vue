@@ -785,6 +785,8 @@ import { useResourceChanges } from '../composables/useResourceChanges'
 import { useLatestChanges } from '../composables/useLatestChanges'
 import ResourceMutationSummary from '../components/ResourceMutationSummary.vue'
 import { resourceHistoryLink } from '../utils/changeHistory'
+import { resourceVersion } from '../utils/mutationVersion'
+import { accountSession } from '../utils/accountContext'
 import QualityAssigneePicker from '@/components/QualityAssigneePicker.vue'
 import QualityStageGuidance from '@/components/QualityStageGuidance.vue'
 import QualityTaskContext from '@/components/QualityTaskContext.vue'
@@ -865,7 +867,8 @@ const {
   qualityQueues,
   loadQualityQueue,
   switchQualityQueue,
-  onQualityQueueSizeChange
+  onQualityQueueSizeChange,
+  forgetTasks:forgetQualityTasks
 } = useQualityQueue()
 const {
   defectGalleryLoading,
@@ -880,7 +883,8 @@ const {
   loadDefectGallery,
   searchDefectGallery,
   resetDefectGalleryFilters,
-  onDefectGallerySizeChange
+  onDefectGallerySizeChange,
+  forgetTasks:forgetDefectTasks
 } = useDefectGallery()
 const {
   workOrderTraceNo,
@@ -905,7 +909,8 @@ const {
   refreshBatchTraceReport,
   batchTraceRequestedNo,
   loadBusinessWorkOrderTrace,
-  loadBusinessBatchTrace
+  loadBusinessBatchTrace,
+  forgetTasks:forgetTraceTasks
 } = useTraceReports({ getAccountScope: () => [userStore.identity?.userId || userStore.username || '', userStore.role, userStore.isAuthenticated] })
 const {
   historySearchKeyword,
@@ -928,7 +933,8 @@ const {
   onHistoryPageChange,
   onHistorySizeChange,
   refreshHistory,
-  retryHistoryRead
+  retryHistoryRead,
+  forgetTasks:forgetHistoryTasks
 } = useDetectionHistory(taskStore, pollingStore)
 const historyAppliedDescription = computed(() => Object.entries(historyAppliedFilters.value).map(([key,value]) => `${({keyword:'关键词',collector:'采集人员',deviceName:'设备名称',region:'采集区域'})[key] || key}：${value}`).join(' · ') || '全部条件')
 const historyCacheBusy = ref(false)
@@ -1425,11 +1431,25 @@ async function refreshCollaborationView(){
   collaborationChanged.value=updated===false
   return updated
 }
+function discardInaccessibleTasks({requestedIds,missingIds,isCurrent}) {
+  if(!isCurrent())return
+  const account=accountSession.stamp(),requested=new Set(requestedIds)
+  const ids=[...new Set(missingIds.filter(id=>requested.has(id)))].slice(0,100)
+  if(!ids.length||!accountSession.current(account)||!isCurrent())return
+  taskReadVersion++;refreshingTasks.value=false
+  pollingStore.invalidateTaskReads()
+  for(const forget of [forgetHistoryTasks,forgetQualityTasks,forgetDefectTasks,forgetTraceTasks]){
+    if(!isCurrent()||!accountSession.current(account))return
+    forget(ids)
+  }
+  if(isCurrent()&&accountSession.current(account))taskStore.forgetTaskAccess(ids,account)
+}
 const { latest:taskChanges } = useLatestChanges(computed(() => {
   const rows=activeTab.value==='history'?historyRecords.value:activeTab.value==='quality'?qualityQueueRecords.value
-    :activeTab.value==='defect-gallery'?defectGalleryRecords.value:filteredTaskList.value
+    :activeTab.value==='defect-gallery'?defectGalleryRecords.value:activeTab.value==='work-order-trace'?(workOrderTraceReport.value?.records||[])
+      :activeTab.value==='batch-trace'?(batchTraceReport.value?.records||[]):filteredTaskList.value.filter(task=>resourceVersion(task)!==null)
   return rows.map(task=>({taskId:task.taskId,version:task.version}))
-}), 'DETECTION_TASK', 'DETECTION', 'taskId')
+}), 'DETECTION_TASK', 'DETECTION', 'taskId', {onInaccessible:discardInaccessibleTasks})
 const collaborationOpenedTask = computed(() => {
   const opened = [[reviewTask,reviewDialogVisible],[assignmentTask,assignmentDialogVisible],
     [dispositionTask,dispositionDialogVisible],[reworkTask,reworkDialogVisible]].find(([task,visible]) => visible.value && task.value?.taskId)

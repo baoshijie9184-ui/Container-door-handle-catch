@@ -87,7 +87,14 @@ export function useTraceReports({ getAccountScope = () => null } = {}) {
         error.value = typeof failure.response?.data?.message === 'string' ? failure.response.data.message : `${label}追溯本次未能完整核实，请核对编号与当前账号范围后重新读取`
       } finally { if (!disposed && version === generation && owner === accountScope()) { controller = null; loading.value = false } }
     }
-    return { read, reset, requested }
+    function forgetTasks(ids) {
+      stop()
+      const denied=new Set(ids),value=report.value
+      if(!value?.records?.some(task=>denied.has(task.taskId)))return
+      report.value={...value,records:value.records.filter(task=>!denied.has(task.taskId)),
+        summary:null,inspection:null,quality:null,distribution:null,timeRange:null}
+    }
+    return { read, reset, requested, forgetTasks }
   }
   const workOrderReader = createReader({ field: 'workOrderNo', label: '工单', query: workOrderTraceNo, loading: workOrderTraceLoading, report: workOrderTraceReport, error: workOrderTraceError, api: fetchWorkOrderTraceReport })
   const batchReader = createReader({ field: 'batchNo', label: '批次', query: batchTraceNo, loading: batchTraceLoading, report: batchTraceReport, error: batchTraceError, api: fetchBatchTraceReport })
@@ -115,6 +122,7 @@ export function useTraceReports({ getAccountScope = () => null } = {}) {
     traceReferencesLoading, traceReferencesError, loadTraceReferences,
     loadWorkOrderTraceReport, loadBatchTraceReport, refreshWorkOrderTraceReport, refreshBatchTraceReport,
     workOrderTraceRequestedNo: workOrderReader.requested, batchTraceRequestedNo: batchReader.requested,
-    loadBusinessWorkOrderTrace, loadBusinessBatchTrace
+    loadBusinessWorkOrderTrace, loadBusinessBatchTrace,
+    forgetTasks: ids=>{workOrderReader.forgetTasks(ids);batchReader.forgetTasks(ids)}
   }
 }

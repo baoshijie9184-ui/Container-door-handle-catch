@@ -68,6 +68,11 @@ export function useQualityQueue() {
     qualityQueuePage.value = 1
     loadQualityQueue(1)
   }
+  const forgetTasks=ids=>{
+    generation++;requestedKey='';qualityQueueLoading.value=false
+    const denied=new Set(ids),remaining=qualityQueueRecords.value.filter(task=>!denied.has(task.taskId))
+    if(remaining.length!==qualityQueueRecords.value.length){qualityQueueRecords.value=remaining;qualityQueueTotal.value=null}
+  }
 
   return {
     activeQualityQueue,
@@ -81,6 +86,7 @@ export function useQualityQueue() {
     qualityQueues,
     loadQualityQueue,
     switchQualityQueue,
-    onQualityQueueSizeChange
+    onQualityQueueSizeChange,
+    forgetTasks
   }
 }

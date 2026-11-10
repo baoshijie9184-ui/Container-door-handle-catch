@@ -1703,7 +1703,7 @@
         "tests/tool-execution.test.cjs",
         "tests/trace-references.test.cjs"
       ],
-      "minimumTests": 61,
+      "minimumTests": 69,
       "requiredCommands": [
         "frontend-install",
         "frontend-test",

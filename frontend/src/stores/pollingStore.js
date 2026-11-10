@@ -11,7 +11,9 @@ export const usePollingStore = defineStore('polling', () => {
 
   // 单个全局定时器，管理所有任务的轮询
   let globalPollingTimer = null
-  accountSession.onReset(()=>{if(globalPollingTimer)clearInterval(globalPollingTimer);globalPollingTimer=null})
+  let readEpoch = 0
+  const invalidateTaskReads = () => { readEpoch++ }
+  accountSession.onReset(()=>{invalidateTaskReads();if(globalPollingTimer)clearInterval(globalPollingTimer);globalPollingTimer=null})
   const POLLING_INTERVAL = 3000 // 3秒轮询一次
 
   // 启动全局轮询
@@ -64,8 +66,10 @@ export const usePollingStore = defineStore('polling', () => {
   // ==================== 单个任务轮询 ====================
 
   const pollTaskForId = async (taskId) => {
+    const openedRead = readEpoch
     const taskStore = useTaskStore(),lifetimeRequest=captureAccountRequest()
     const progressResponse = await lifetimeRequest.get(`/api/detection/tasks/${taskId}`)
+    if(openedRead!==readEpoch)return
     if (!progressResponse.data || progressResponse.data.code !== 200) {
       throw new Error(progressResponse.data?.message || '查询任务进度失败')
     }
@@ -122,6 +126,7 @@ export const usePollingStore = defineStore('polling', () => {
 
     if (progressStatus === 'COMPLETED' || progressStatus === 'PARTIAL_FAILED') {
       const resultResponse = await lifetimeRequest.get(`/api/detection/tasks/${taskId}/result`)
+      if(openedRead!==readEpoch)return
       if (resultResponse.data && resultResponse.data.code === 200) {
         lifetimeRequest.assert()
         const result = resultResponse.data.data
@@ -221,6 +226,7 @@ export const usePollingStore = defineStore('polling', () => {
   // ==================== 从后端同步任务列表 ====================
 
   const fetchTaskList = async (page = 1, size = 50, keyword = '', status = '', filters = {}) => {
+    const openedRead = readEpoch
     const taskStore = useTaskStore()
 
     try {
@@ -231,6 +237,7 @@ export const usePollingStore = defineStore('polling', () => {
       if (filters.deviceName) params.deviceName = filters.deviceName
       if (filters.region) params.region = filters.region
       const response = await request.get('/api/detection/tasks', { params })
+      if(openedRead!==readEpoch)return {records:[],total:null,ok:false,message:'任务授权范围已变化，请重新读取'}
       if (!response.data || response.data.code !== 200) return { records: [], total: null, ok: false, httpStatus:response.data?.code || response.status, message: response.data?.message || '任务记录暂不可读取' }
 
       const data = response.data.data
@@ -399,11 +406,13 @@ export const usePollingStore = defineStore('polling', () => {
 
   // 批量获取任务结果（用于检测记录页面）
   const fetchTaskResults = async (taskIds) => {
+    const openedRead = readEpoch
     const taskStore = useTaskStore()
     const requestedIds = [...new Set((Array.isArray(taskIds) ? taskIds : []).filter(id => typeof id === 'string' && id.trim()))]
     const promises = requestedIds.map(async (taskId) => {
       try {
         const res = await request.get(`/api/detection/tasks/${taskId}/result`)
+        if(openedRead!==readEpoch)return {taskId,ok:false,message:'任务授权范围已变化，请重新读取'}
         if (res.data && res.data.code === 200) {
           const result = res.data.data
           const invalidCollections = result && ['previewImages','defectEvidence'].some(key => result[key] != null && (!Array.isArray(result[key]) || result[key].some(item => !item || typeof item !== 'object' || Array.isArray(item))))
@@ -461,6 +470,7 @@ export const usePollingStore = defineStore('polling', () => {
     fetchTaskResults,
     restoreFromSession,
     stopGlobalPolling,
-    ensurePolling
+    ensurePolling,
+    invalidateTaskReads
   }
 })

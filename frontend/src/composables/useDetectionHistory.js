@@ -32,6 +32,11 @@ export function useDetectionHistory(taskStore, pollingStore) {
   const historyFiltersDirty=computed(()=>!!appliedQuery.value&&JSON.stringify(buildHistoryFilters())!==JSON.stringify(appliedQuery.value.filters))
   const historyAppliedFilters=computed(()=>appliedQuery.value?.filters || {})
   const clearRecords=()=>{historyRecords.value=[];historyTotal.value=null;historyLoaded.value=false}
+  const forgetTasks=ids=>{
+    loadGeneration++;pendingKey='';historyLoading.value=false
+    const denied=new Set(ids),remaining=historyRecords.value.filter(task=>!denied.has(task.taskId))
+    if(remaining.length!==historyRecords.value.length){historyRecords.value=remaining;historyTotal.value=null}
+  }
 
   const fetchHistoryWithFilters=async(page,size,filterOverride)=>{
     if(disposed)return
@@ -91,5 +96,5 @@ export function useDetectionHistory(taskStore, pollingStore) {
     const query=requestedQuery.value
     return query?fetchHistoryWithFilters(query.page,query.size,query.filters):fetchHistoryWithFilters()
   }
-  return {historySearchKeyword,historyFilterCollector,historyFilterDevice,historyFilterRegion,historyPage,historyPageSize,historyTotal,historyRecords,historyLoading,historyError,historyLoaded,hasHistoryFilters,historyFiltersDirty,historyAppliedFilters,buildHistoryFilters,fetchHistoryWithFilters,onHistorySearch,onHistoryReset,onHistoryPageChange,onHistorySizeChange,refreshHistory,retryHistoryRead}
+  return {historySearchKeyword,historyFilterCollector,historyFilterDevice,historyFilterRegion,historyPage,historyPageSize,historyTotal,historyRecords,historyLoading,historyError,historyLoaded,hasHistoryFilters,historyFiltersDirty,historyAppliedFilters,buildHistoryFilters,fetchHistoryWithFilters,onHistorySearch,onHistoryReset,onHistoryPageChange,onHistorySizeChange,refreshHistory,retryHistoryRead,forgetTasks}
 }

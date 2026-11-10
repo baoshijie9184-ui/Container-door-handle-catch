@@ -5,7 +5,7 @@ import { useAccountOperationScope } from './useAccountOperationScope'
 import { useResourceChanges } from './useResourceChanges'
 
 // Page-sized authorized metadata only. Never retain another account's historical identity.
-export function useLatestChanges(records, resourceType, domain = resourceType, idField = 'id') {
+export function useLatestChanges(records, resourceType, domain = resourceType, idField = 'id', options = {}) {
   const latest = ref({}), user = useUserStore(), request = captureAccountRequest()
   const scope = useAccountOperationScope(() => { latest.value = {} }), reads = scope.channel()
   async function refresh() {
@@ -29,6 +29,11 @@ export function useLatestChanges(records, resourceType, domain = resourceType, i
         return row.latest != null && (typeof row.latest.id !== 'string' || row.latest.resourceType !== type || row.latest.resourceId !== key.resourceId)
       })) throw new Error('最近修改记录返回不完整')
       latest.value = Object.fromEntries(rows.map(row => [row.resource.resourceId, row.latest]))
+      const missingIds = keys.filter(key => !seen.has(key))
+      // A permitted resource with no history still has a returned key and null
+      // latest. Only omissions from this validated response shrink access.
+      if (missingIds.length && reads.current(token)) options.onInaccessible?.({
+        requestedIds: Object.freeze([...keys]), missingIds: Object.freeze(missingIds), isCurrent: () => reads.current(token) })
     } catch {
       if (reads.current(token)) latest.value = {}
     }
