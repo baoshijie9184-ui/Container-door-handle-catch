@@ -21,8 +21,8 @@ public final class JdbcMutationSnapshots {
             Object value=row.get(field);if(value instanceof java.sql.Timestamp timestamp)value=timestamp.toLocalDateTime().toString();
             else if(value instanceof java.sql.Date date)value=date.toLocalDate().toString();
             else if(value instanceof java.time.temporal.TemporalAccessor)value=value.toString();
-            // JavaScript cannot represent all persisted BIGINT values exactly.
-            else if(value instanceof Long||value instanceof Number&&(field.equals("id")||field.endsWith("_id")))value=value.toString();
+            // Identities and explicitly mapped revisions are strings; ordinary quantities retain their numeric type.
+            else if(value instanceof Number&&(field.equals("id")||field.equals(mapping.key())||field.endsWith("_id")||field.equals(mapping.revision())))value=value.toString();
             // Details beyond the fixed public bound are represented by content identity, never copied wholesale.
             if(value instanceof String text&&text.length()>512)value="sha256:"+sha(text);
             values.put(field,value);

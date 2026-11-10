@@ -67,4 +67,23 @@ class OperationsChangeHistoryTest {
         var first=service.changes(reader,Long.MAX_VALUE,1,noFilter);assertThat(first.items()).hasSize(1);
         assertThat(service.changes(reader,Long.parseLong(first.nextCursor()),1,noFilter).items()).isEmpty();
     }
+    @Test void numericV2ValuesRoundTripWithoutLosingTypesOrConflictingWithExactDuplicate() throws Exception {
+        var first=List.of(new ChangeHistory.Change("count","数量","REPLACE",1,new java.math.BigDecimal("2.5000"),"NUMBER",false),
+                new ChangeHistory.Change("enabled","开关","REPLACE",false,"false","SCALAR",false),
+                new ChangeHistory.Change("optional","可选值","REPLACE",null,"null","SCALAR",false),
+                new ChangeHistory.Change("ownerUserId","人员编号","REPLACE","9007199254740993","9007199254740994","ID",false),
+                new ChangeHistory.Change("precision","精确数值","REPLACE",new java.math.BigDecimal("0.1234567890123456789012345"),new java.math.BigDecimal("0.2"),"NUMBER",false));
+        var metadata=new OperationsAuditApi.Event(actor,"ENTERPRISE","DEVICE","UPDATE","41","typed-numeric-change","APPLIED",6L);
+        tx.executeWithoutResult(status->service.appendChange(new OperationsAuditApi.ChangeEvent(metadata,"DEVICE","Original Name",5L,first)));
+        var stored=new com.fasterxml.jackson.databind.ObjectMapper().readTree(jdbc.queryForObject("SELECT payload_json FROM audit_event WHERE kind='OPERATIONS'",String.class));
+        assertThat(stored.path("changes").get(0).path("before").isNumber()).isTrue();assertThat(stored.path("changes").get(0).path("after").isNumber()).isTrue();
+        assertThat(stored.path("changes").get(1).path("before").isBoolean()).isTrue();assertThat(stored.path("changes").get(1).path("after").isTextual()).isTrue();
+        assertThat(stored.path("changes").get(2).path("before").isNull()).isTrue();assertThat(stored.path("changes").get(2).path("after").isTextual()).isTrue();
+        assertThat(stored.path("changes").get(3).path("before").asText()).isEqualTo("9007199254740993");
+        var item=service.changes(reader,Long.MAX_VALUE,50,noFilter).items().get(0);assertThat(service.change(reader,item.id()).changes()).isEqualTo(first);
+        var replay=new ArrayList<>(first);replay.set(0,new ChangeHistory.Change("count","数量","REPLACE",1L,2.5,"NUMBER",false));
+        tx.executeWithoutResult(status->service.appendChange(new OperationsAuditApi.ChangeEvent(metadata,"DEVICE","Original Name",5L,replay)));
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM audit_event WHERE kind='OPERATIONS'",Long.class)).isEqualTo(1);
+        assertThat(service.changes(reader,Long.MAX_VALUE,50,noFilter).items()).singleElement().satisfies(again->assertThat(again.eventId()).isEqualTo(item.eventId()));
+    }
 }

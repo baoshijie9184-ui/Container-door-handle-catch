@@ -40,6 +40,6 @@ final class BusinessFieldChanges {
         }
         return List.copyOf(changes);
     }
-    private static Object normalize(Object value){if(value instanceof Number number)return new BigDecimal(number.toString()).stripTrailingZeros().toPlainString();if(value instanceof java.time.temporal.TemporalAccessor)return value.toString();return value;}
+    private static Object normalize(Object value){if(value instanceof Number number)return new BigDecimal(number.toString()).stripTrailingZeros();if(value instanceof java.time.temporal.TemporalAccessor)return value.toString();return value;}
     private static Object mask(Object value){if(value==null)return null;String text=value.toString();return text.isEmpty()?"":text.length()<=4?"****":"***"+text.substring(text.length()-4);}
 }

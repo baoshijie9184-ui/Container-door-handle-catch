@@ -49,7 +49,8 @@ final class OperationsAuditPersistence {
     record Decoded(String scope,String domain,String result,Long resourceVersion,OperationV2 detail) { }
     record Appended(String eventId,String auditId,java.time.Instant occurredAt,boolean created) { }
     private final JdbcTemplate jdbc;
-    private final ObjectMapper json=new ObjectMapper().enable(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_MISSING_CREATOR_PROPERTIES);
+    private final ObjectMapper json=new ObjectMapper().enable(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_MISSING_CREATOR_PROPERTIES,
+            com.fasterxml.jackson.databind.DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS);
     private final JdbcAuditStore store;
     OperationsAuditPersistence(JdbcTemplate jdbc) {
         this.jdbc=jdbc;store=new JdbcAuditStore(jdbc,json,Map.of("OPERATIONS",OperationV1.class),

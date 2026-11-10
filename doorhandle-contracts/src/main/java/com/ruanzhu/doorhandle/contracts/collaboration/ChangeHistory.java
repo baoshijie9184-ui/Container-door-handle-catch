@@ -9,7 +9,13 @@ public final class ChangeHistory {
     public record Actor(String userId, String username, String displayName, String role) { }
     /** Null is SQL NULL; absence is represented by operation ADD/REMOVE, never by an empty string. */
     public record Change(String field, String label, String operation, Object before, Object after,
-                         String valueType, boolean redacted) { }
+                         String valueType, boolean redacted) {
+        /** One numeric representation survives JDBC and JSON without collapsing numbers into strings. */
+        public Change { before=canonical(before); after=canonical(after); }
+        private static Object canonical(Object value) {
+            return value instanceof Number number?new java.math.BigDecimal(number.toString()).stripTrailingZeros():value;
+        }
+    }
     public record Item(String id, String eventId, Actor actor, String domain, String resourceType,
             String resourceId, String action, String result, String beforeVersion, String afterVersion,
             String requestId, Instant occurredAt, String scope, boolean diffAvailable) { }
