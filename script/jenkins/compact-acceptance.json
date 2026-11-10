@@ -1132,6 +1132,12 @@
         "allowedSkippedTests": []
       },
       {
+        "module": "tests_python.test_project_mysql_custody",
+        "minimumTests": 24,
+        "source": "tests_python/test_project_mysql_custody.py",
+        "allowedSkippedTests": []
+      },
+      {
         "module": "tests_python.test_compact_keyed_row_capture",
         "minimumTests": 37,
         "source": "tests_python/test_compact_keyed_row_capture.py",

@@ -31,6 +31,7 @@ MODULES = ('test_jenkins_resource_budget', 'test_jenkins_fixture_admission',
            'test_local_artifact_custody', 'test_compose_container_selection',
            'test_local_fixed_originals_retirement', 'test_fixed_originals_attestation',
            'test_local_mysql_custody', 'test_local_mysql_source_classification',
+           'test_project_mysql_custody',
            'test_jenkins_suite_evidence', 'test_jenkins_maven_dependency_cache',
            'test_compact_schema_source', 'test_control_preflight')
 TAG = re.compile(r'ci-[1-9][0-9]*-[a-f0-9]{12}')
