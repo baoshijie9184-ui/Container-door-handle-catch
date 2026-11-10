@@ -48,8 +48,16 @@ class AiCollaborationMySqlTest {
         var match=Pattern.compile("(?s)CREATE TABLE llm_configuration \\(.*?;(?=\\s*(?:--|CREATE|$))").matcher(baseline);
         if(!match.find())throw new IllegalStateException("Missing actual configuration baseline");
         new ResourceDatabasePopulator(new ByteArrayResource(match.group().getBytes(StandardCharsets.UTF_8))).execute(source);configurationTable=true;
-        privateDirectory=Files.createTempDirectory(Files.createDirectories(Path.of("target")),"ai-collaboration-");
+        String verificationRoot=System.getProperty("doorhandle.verification-root");
+        if(verificationRoot==null||verificationRoot.isBlank())throw new IllegalStateException("Owned verification root is required");
+        Path buildRoot=Path.of(verificationRoot).toRealPath();
+        Path tempRoot=Path.of(System.getProperty("java.io.tmpdir")).toAbsolutePath().normalize();
+        if(!tempRoot.startsWith(buildRoot))throw new SecurityException("AI fixture temporary files escaped the verification build");
+        Files.createDirectories(tempRoot);
+        if(!tempRoot.toRealPath().equals(tempRoot))throw new SecurityException("AI fixture temporary root contains a link");
+        privateDirectory=Files.createTempDirectory(tempRoot,"ai-collaboration-");
         Path key=privateDirectory.resolve("key");Files.writeString(key,Base64.getEncoder().encodeToString(new byte[32]));
+        Files.setPosixFilePermissions(key,java.nio.file.attribute.PosixFilePermissions.fromString("rw-------"));
         jdbc.update("INSERT INTO users(id,username,password,role,enabled) VALUES(1,'boss','fixture','SUPERVISOR',TRUE),(2,'other-boss','fixture','SUPERVISOR',TRUE),(3,'alice','fixture','INSPECTOR',TRUE),(4,'bob','fixture','INSPECTOR',TRUE)");
         REJECT.set(false);context=new AnnotationConfigApplicationContext();
         context.getEnvironment().getPropertySources().addFirst(new MapPropertySource("owned-ai-history",Map.of("app.model-budget.enabled","true","agentscope.model-config.enabled","true","operations.audit.enabled","true","collaboration.mutations.enabled","true","collaboration.change-history.enabled","true","fixture.key",key.toAbsolutePath().toString())));

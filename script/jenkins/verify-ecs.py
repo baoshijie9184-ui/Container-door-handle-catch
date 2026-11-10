@@ -124,7 +124,7 @@ FIXTURE_CLASSES = {name: ('doorhandle.ecs.mysql.config',) for name in SERVER_SWI
 for property_name, classes in (
     ('doorhandle.feature.mysql.config', ('HistoricalDetectionSummaryMySqlTest', 'QualityKnowledgeMySqlTest',
         'MessageExecutionLinksTest', 'AgentWorkspaceServiceTest', 'ConversationInboxMySqlTest',
-        'ModelBudgetMySqlTest', 'PersonalModelQuotaMySqlTest', 'QuotaAccountStoreMySqlTest')),
+        'ModelBudgetMySqlTest', 'PersonalModelQuotaMySqlTest', 'QuotaAccountStoreMySqlTest', 'AiCollaborationMySqlTest')),
     ('workbench.mysql.config', ('AgentWorkbenchServiceTest',)),
     ('agent.model-config.mysql-file', ('ModelConfigurationServiceTest', 'ModelConfigurationMigrationMySqlTest')),
     ('agent.skill.mysql-file', ('SkillDownloadLeasesTest', 'SkillMigrationMySqlTest')),
@@ -145,7 +145,7 @@ for property_name, classes in (
     ('doorhandle.operations.mysql.config', ('AccountIdentityServiceTest', 'FileDeliveryAuditMySqlTest',
         'BusinessMutationAuditTest', 'OperationsAuditServiceTest', 'LoginSessionMySqlTest',
         'BusinessMutationCollaborationTest', 'OperationsChangeHistoryTest', 'CollaborationHttpMySqlTest')),
-    ('doorhandle.report.mysql.config', ('DetectionCollaborationMySqlTest',)),
+    ('doorhandle.report.mysql.config', ('DetectionCollaborationMySqlTest', 'SystemDetectionHistoryMySqlTest')),
 ):
     for class_name in classes:
         FIXTURE_CLASSES[class_name] = (property_name,)

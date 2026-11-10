@@ -43,7 +43,7 @@
           <p v-else-if="model.hasPersonalQuota === true && model.totalTokens === null">未设个人额度上限，无需申请追加个人额度。</p>
           <p v-if="quotaNumber(model.availableTokens) !== null && Number(model.availableTokens) < 0">实际消耗超过可用额度，已完整计入用量；追加额度后仍需满足调用所需的预留量。</p>
           <p v-if="model.hasPersonalQuota === true">个人额度到期时间 {{ model.expiresAt === null ? '未设置' : utcDisplay(model.expiresAt) }} · 北京时间</p>
-          <div class="operation-actions"><el-button type="primary" plain :disabled="busy || modelsLoading || !!modelsError || !canApplyForQuota(model)" @click="openApply(model)">申请追加额度</el-button></div>
+          <div class="operation-actions"><el-button type="primary" plain :disabled="busy || modelsLoading || !!modelsError || !canApplyForQuota(model)" @click="openApply(model)">申请追加额度</el-button><router-link v-if="user.capabilities?.changeHistory && model.quotaId" :to="resourceHistoryLink('LLM_PERSONAL_QUOTA',model.quotaId,'MODEL_BUDGET')">个人额度修改记录</router-link></div>
         </article>
       </TransitionGroup>
       <CollectionEmptyState v-if="!visibleModels.length" :loading="modelsLoading" :error="modelsError" :empty-title="models.length ? '当前没有已配置的模型' : '当前模型目录为空'" empty-description="主管配置模型连接后，可在这里查看个人额度并申请使用。" @retry="loadModels" />
@@ -65,6 +65,7 @@
           <p class="llm-reason">{{ application.reason || '申请说明未记录' }}</p>
           <p v-if="application.decisionReason" class="llm-reason">审批说明：{{ application.decisionReason }}</p>
           <p class="operation-muted">提交 {{ utcDisplay(application.createdAt) }}<template v-if="application.finishedAt"> · 处理 {{ utcDisplay(application.finishedAt) }}</template> · 北京时间</p>
+          <ResourceMutationSummary v-if="user.capabilities?.changeHistory" :latest="applicationChanges[application.id]" :revision="application.version" resource-type="LLM_QUOTA_APPLICATION" :resource-id="application.id" domain="LLM_QUOTA_APPLICATION" />
           <div v-if="application.status === 'PENDING'" class="operation-actions">
             <template v-if="listScope === 'team' && supervisor">
               <el-button type="primary" :disabled="busy || activeList.loading || !!activeList.error" @click="openDecision(application, 'APPROVE')">批准</el-button>
@@ -106,6 +107,8 @@
 import { useRoute } from 'vue-router'
 import { useResourceChanges } from '../composables/useResourceChanges'
 import { resourceHistoryLink } from '../utils/changeHistory'
+import { useLatestChanges } from '../composables/useLatestChanges'
+import ResourceMutationSummary from '../components/ResourceMutationSummary.vue'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { captureAccountRequest } from '../api/request'
 const request=captureAccountRequest()
@@ -138,6 +141,7 @@ const modelRead = scope.channel(), listReads = { mine: scope.channel(), team: sc
 const visibleModels = computed(() => showUnconfigured.value ? models.value : models.value.filter(row => row.configured === true))
 const applyModels = computed(() => modelsLoading.value || modelsError.value ? [] : models.value.filter(canApplyForQuota))
 const activeList = computed(() => lists[listScope.value])
+const {latest:applicationChanges}=useLatestChanges(computed(()=>activeList.value.items),'LLM_QUOTA_APPLICATION','LLM_QUOTA_APPLICATION','id')
 const refreshing = computed(() => modelsLoading.value || activeList.value.loading)
 const locked = computed(() => busy.value || !!command.value)
 const dialogTitle = computed(() => dialogMode.value === 'apply' ? '申请个人模型额度' : dialogMode.value === 'cancel' ? '取消额度申请' : draft.decision === 'APPROVE' ? '批准额度申请' : '拒绝额度申请')

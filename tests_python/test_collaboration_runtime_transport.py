@@ -178,6 +178,13 @@ def test_missing_or_lossy_resource_versions_fail_before_any_write(version):
 
 def test_full_candidate_accepts_bigint_string_identity_and_real_employee_binding():
     scenarios.require_account(checked(), account())
+    # Binding revisions start at zero, then advance through real HTTP rebinds.
+    # They are revisions, unlike the strictly positive account/employee IDs.
+    current, expected = checked(), account()
+    current['identity']['bindingVersion'] = '2'; expected['bindingVersion'] = 2
+    scenarios.require_account(current, expected)
+    with pytest.raises(RuntimeError):
+        scenarios.require_account(current, account())
     assert set(scenarios.COLLABORATION_ENV) == {'OPERATIONS_AUDIT_ENABLED', 'COLLABORATION_SESSIONS_ENABLED',
         'COLLABORATION_CHANGE_HISTORY_ENABLED', 'COLLABORATION_MUTATIONS_ENABLED', 'COLLABORATION_REALTIME_ENABLED'}
     assert all(value == 'true' for value in scenarios.COLLABORATION_ENV.values())

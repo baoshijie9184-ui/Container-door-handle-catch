@@ -2,12 +2,13 @@
   <main class="model-config-page" aria-labelledby="model-config-title">
     <header class="page-heading"><div><h2 id="model-config-title"><AgentSectionIcon kind="models" />Agent 模型配置</h2><p>新任务使用发布后的版本，正在执行的任务保留原版本</p></div><el-button :loading="busy" @click="refresh"><AppIcon name="Refresh" :size="16" />核对版本状态</el-button></header>
     <el-alert v-if="error&&available" :title="error" type="error" :closable="false" role="alert" />
+    <el-alert v-if="modelChanged" title="模型配置已有新记录 当前编辑内容已保留" type="warning" :closable="false"><el-button text @click="refreshModelLatest">核对最新状态</el-button></el-alert>
     <p v-if="notice" role="status" class="notice">{{ notice }}</p>
     <template v-if="available && active">
       <section class="version-strip"><span>生效版本 <strong>V{{ activeRevision }}</strong></span><span>默认 {{ active.document.defaultModel }}</span><span class="memory-config-state">记忆配置<StatusBadge domain="memoryConfig" :code="active.memoryState" :label="memoryStates[active.memoryState]" /></span></section>
       <section class="version-picker"><label for="model-version">查看版本</label><el-select id="model-version" :model-value="selectedRevision" :disabled="busy" @change="selectVersion"><el-option v-for="v in versions" :key="v.revision" :value="v.revision" :label="`V${v.revision} · ${statuses[v.status] || v.status}`" /></el-select><el-button :disabled="busy" @click="editActive">编辑生效版本</el-button></section>
       <section v-if="selected" class="version-actions" aria-label="版本操作">
-        <span class="selected-config-version"><strong>V{{ selected.revision }}</strong><StatusBadge domain="modelConfig" :code="selected.status" :label="statuses[selected.status]" /><small>{{ Number.isSafeInteger(selected.baseRevision)&&selected.baseRevision>=0?`基于 V${selected.baseRevision}`:'来源版本未记录' }}</small></span>
+        <span class="selected-config-version"><strong>V{{ selected.revision }}</strong><StatusBadge domain="modelConfig" :code="selected.status" :label="statuses[selected.status]" /><small>{{ Number.isSafeInteger(selected.baseRevision)&&selected.baseRevision>=0?`基于 V${selected.baseRevision}`:'来源版本未记录' }}</small><small>配置变更版本 {{ selected.changeVersion ?? '未记录' }}</small></span>
         <el-button v-if="selected.status==='DRAFT'" :disabled="busy" @click="probe">检查提炼 JSON 兼容性</el-button>
         <el-button v-if="selected.status==='DRAFT'" :disabled="busy" @click="validate">校验草稿</el-button>
         <el-button v-if="selected.status==='VALIDATED'" type="primary" :disabled="busy" @click="publish">发布此版本</el-button>
@@ -46,6 +47,7 @@
         <ModelConfigDiff :before="active.document" :after="editor" next-label="本次草稿值"><p v-if="Object.values(keys).some(Boolean)">包含凭证替换，值已隐藏</p></ModelConfigDiff>
         <footer class="config-editor-footer"><p><AppIcon name="DocumentChecked" :size="16" />保存草稿后，当前生效版本不会立即改变。</p><el-button type="primary" native-type="submit" :loading="busy"><AppIcon name="DocumentChecked" :size="16" />保存为新草稿</el-button></footer>
       </el-form>
+      <ResourceChangeHistory v-if="user.capabilities?.changeHistory && selected" resource-type="LLM_CONFIGURATION" :resource-id="selected.revision" domain="MODEL_CONFIG" compact />
     </template>
     <CollectionEmptyState v-else :loading="busy" :error="error" empty-title="模型配置尚未读取" empty-description="请核对当前账号授权及服务状态，读取成功后再操作配置。" @retry="refresh" />
   </main>
@@ -62,6 +64,10 @@ import {readModelConfiguration} from '@/utils/modelConfigResponse'
 import CollectionEmptyState from '@/components/CollectionEmptyState.vue'
 import ModelConfigDiff from '@/components/chat/ModelConfigDiff.vue'
 import ModelConfigValue from '@/components/chat/ModelConfigValue.vue'
+import ResourceChangeHistory from '@/components/ResourceChangeHistory.vue'
+import { useResourceChanges } from '@/composables/useResourceChanges'
+import { useUserStore } from '@/stores/user'
+const user=useUserStore()
 const providers={dashscope:'百炼',deepseek:'DeepSeek 直连',openai:'灵算 Responses'}
 function modelProviderLabel(id){const prefix=typeof id==='string'?id.split(':',1)[0]:'';return prefix==='openai-official'?providers.openai:providers[prefix]||'接入类型未识别'}
 const statuses={DRAFT:'待校验',VALIDATED:'已校验，待发布',PUBLISHED:'已发布',RETIRED:'历史版本'}
@@ -78,6 +84,8 @@ const enabled=computed(()=>editor.value?.models.filter(m=>m.enabled)||[])
 const memoryCandidates=computed(()=>enabled.value.filter(m=>!m.id.startsWith('openai-official:')))
 const availableFallbacks=computed(()=>enabled.value.filter(m=>!editor.value.fallbackModels.includes(m.id)))
 const draftDirty=computed(()=>!!editor.value&&(JSON.stringify(editor.value)!==editorBaseline.value||Object.values(keys.value).some(Boolean)||!!newModel.value.trim()))
+const {changed:modelChanged}=useResourceChanges({resourceType:'LLM_CONFIGURATION',domains:['MODEL_CONFIG'],isEditing:()=>busy.value||draftDirty.value,refresh})
+async function refreshModelLatest(){if(busy.value)return;await refresh();if(available.value)modelChanged.value=false}
 // Only in-memory request receipts; never store credentials in browser storage.
 const pending=new Map()
 function clearKeys(){keys.value={dashscope:'',deepseek:'',openai:''}}

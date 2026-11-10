@@ -65,8 +65,8 @@ def require_account(checked, account):
             and same_user(identity.get('employeeId'), account['employeeId'])
             and same_user(identity.get('departmentId'), account['departmentId'])
             and identity.get('employeeStatus') == 'ACTIVE' and identity.get('employeeType') == 'DETECTION'
-            and identity.get('bindingVersion') == 0,
-            'HTTP identity did not resolve its actual qualified initial employee binding')
+            and exact_integer(identity.get('bindingVersion')) == exact_integer(account.get('bindingVersion', 0)),
+            'HTTP identity did not resolve its actual qualified employee binding and observed revision')
 
 
 def seed_owned_users(db, schema, token, candidate_load_user_count=20):

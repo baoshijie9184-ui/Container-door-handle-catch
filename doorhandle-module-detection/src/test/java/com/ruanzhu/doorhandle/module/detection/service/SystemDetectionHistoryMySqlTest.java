@@ -104,6 +104,9 @@ class SystemDetectionHistoryMySqlTest {
         var payload=payload();assertThat(payload.path("source").asText()).isEqualTo("SYSTEM");assertThat(payload.path("initiator").path("userId").asLong()).isEqualTo(1);
         assertThat(payload.toString()).doesNotContain("fixture.invalid","private/location","private/result.json","never-history");
         var item=history.changes(boss,Long.MAX_VALUE,50,filter()).items().get(0);assertThat(item.actor()).isNull();assertThat(item.source().type()).isEqualTo("SYSTEM");
+        var latest=history.latest(boss,List.of(new ChangeHistory.ResourceKey("DETECTION","DETECTION_TASK","worker-task"))).get(0).latest();
+        assertThat(latest.id()).isEqualTo(item.id());assertThat(latest.actor()).isNull();assertThat(latest.source().type()).isEqualTo("SYSTEM");
+        assertThat(history.latest(outsider,List.of(new ChangeHistory.ResourceKey("DETECTION","DETECTION_TASK","worker-task")))).isEmpty();
         assertThat(item.source().initiator().userId()).isEqualTo("1");assertThat(item.beforeVersion()).isEqualTo("0");assertThat(item.afterVersion()).isEqualTo("1");
         assertThat(history.change(boss,item.id()).changes()).anySatisfy(field->{assertThat(field.field()).isEqualTo("status");assertThat(field.before()).isEqualTo("QUEUED");assertThat(field.after()).isEqualTo("COMPLETED");});
     }

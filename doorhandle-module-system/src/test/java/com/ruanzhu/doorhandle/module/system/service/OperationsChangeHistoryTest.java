@@ -172,4 +172,28 @@ class OperationsChangeHistoryTest {
         assertThat(before.fields()).containsEntry("department_id","21").containsEntry("department_name","Original Department").hasSize(2);
         assertThat(after.fields()).containsEntry("department_id","22").containsEntry("department_name","Next Department").hasSize(2);
     }
+    @Test void appendReturnsThePersistedReceiptAndExactReplayKeepsAllIdentifiers(){
+        var event=new OperationsAuditApi.ChangeEvent(new OperationsAuditApi.Event(actor,"ENTERPRISE","DEVICE","UPDATE","41","receipt-returned","APPLIED",6L),
+                "DEVICE","Captured Name",5L,List.of(new ChangeHistory.Change("status","状态","REPLACE","IDLE","IN_USE","SCALAR",false)));
+        var first=tx.execute(status->service.appendChangeWithReceipt(event));
+        var replay=tx.execute(status->service.appendChangeWithReceipt(event));
+        assertThat(replay).isEqualTo(first);assertThat(first.resourceVersion()).isEqualTo("6");
+        var row=jdbc.queryForMap("SELECT id,event_id FROM audit_event WHERE kind='OPERATIONS' AND request_id='receipt-returned'");
+        assertThat(first.auditId()).isEqualTo(String.valueOf(row.get("id")));assertThat(first.eventId()).isEqualTo(row.get("event_id"));
+    }
+    @Test void supplementalReceiptLookupCannotCrossActorsOrTheExactBusinessCommand(){
+        append();
+        var receipt=tx.execute(status->service.findChangeReceipt(actor,"DEVICE","DEVICE","41","change-one"));
+        assertThat(receipt).isNotNull();assertThat(receipt.resourceVersion()).isEqualTo("6");
+        assertThat(tx.<OperationsAuditApi.ChangeReceipt>execute(status->service.findChangeReceipt(reader,"DEVICE","DEVICE","41","change-one"))).isNull();
+        assertThat(tx.<OperationsAuditApi.ChangeReceipt>execute(status->service.findChangeReceipt(actor,"DEVICE","DEVICE","42","change-one"))).isNull();
+        assertThat(tx.<OperationsAuditApi.ChangeReceipt>execute(status->service.findChangeReceipt(actor,"DEVICE","DEVICE_USAGE","41","change-one"))).isNull();
+        assertThat(tx.<OperationsAuditApi.ChangeReceipt>execute(status->service.findChangeReceipt(actor,"DEVICE","DEVICE","41","different"))).isNull();
+        when(users.current(actor.userId(),actor.username())).thenThrow(new SecurityException("qualification revoked"));
+        assertThatThrownBy(()->service.findChangeReceipt(actor,"DEVICE","DEVICE","41","change-one")).isInstanceOf(SecurityException.class);
+    }
+    @Test void supplementalLookupDoesNotInventVersionedReceiptsFromLegacyAudit(){
+        tx.executeWithoutResult(status->service.append(new OperationsAuditApi.Event(actor,"ENTERPRISE","DEVICE","UPDATE","41","legacy-receipt","APPLIED",6L)));
+        assertThat(tx.<OperationsAuditApi.ChangeReceipt>execute(status->service.findChangeReceipt(actor,"DEVICE","DEVICE","41","legacy-receipt"))).isNull();
+    }
 }

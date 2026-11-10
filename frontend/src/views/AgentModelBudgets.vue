@@ -2,6 +2,7 @@
   <div class="operation-page">
     <PageHero title="企业模型额度" icon="DataAnalysis" description="每个模型单独登记企业额度与核对记录。供应商剩余额度以核对时点为准；本站用量只统计已接入的 AgentScope 路由请求，不包含站外、独立记忆、独立 RAG 和探测调用。"><template #actions><el-button @click="$router.push('/agent/model-quotas')">LLM模型管理</el-button><el-button :loading="loading" @click="load">刷新</el-button><el-button type="primary" @click="configure(null)"><AppIcon name="Plus" :size="16" />登记企业额度</el-button></template></PageHero>
     <el-alert v-if="error && rows.length" :title="error" type="warning" :closable="false" />
+    <el-alert v-if="budgetChanged" title="模型额度已有新记录 当前登记或核对内容已保留" type="warning" :closable="false"><el-button text :disabled="busy" @click="readLatestBudgets">核对最新额度</el-button></el-alert>
     <section class="operation-cards" aria-label="各模型额度">
       <article v-for="row in rows" :key="row.model_id" class="operation-card">
         <h3>{{ row.model_id }}</h3>
@@ -19,6 +20,7 @@
         <p>已记录 {{ count(row.usage?.attempts) }} 次尝试 · {{ count(row.usage?.activeAttempts) }} 次未取得终态</p>
         <p v-if="Number(row.unreconciled_legacy_attempts) > 0" class="operation-muted">其中 {{ count(row.unreconciled_legacy_attempts) }} 条历史用量待核实。已报告消耗是已知下限；有限企业额度暂停新增调用。调整总量或记录供应商余额不会清除这些历史记录。</p>
         <p>提醒阈值 {{ row.warning_percent }}% · 到期时间 {{ utcDisplay(row.expires_at) }}</p>
+        <ResourceMutationSummary v-if="user.capabilities?.changeHistory" :latest="budgetChanges[row.model_id]" :revision="String(row.version ?? '')||null" resource-type="LLM_MODEL" :resource-id="row.model_id" domain="MODEL_BUDGET" />
         <div class="operation-actions"><el-button @click="configure(row)">调整登记</el-button><el-button type="primary" plain @click="observe(row)">记录供应商额度</el-button><el-button link @click="history(row)">核对历史</el-button></div>
       </article>
     </section>
@@ -33,6 +35,10 @@ import { onMounted, reactive, ref } from 'vue'
 import { captureAccountRequest } from '../api/request'
 const request=captureAccountRequest()
 import { useAccountOperationScope } from '../composables/useAccountOperationScope'
+import { useResourceChanges } from '../composables/useResourceChanges'
+import { useLatestChanges } from '../composables/useLatestChanges'
+import ResourceMutationSummary from '../components/ResourceMutationSummary.vue'
+import { useUserStore } from '../stores/user'
 import { operationData, operationError, utcDisplay } from '../utils/qualityOperations'
 import { knownCount } from '../utils/countPresentation'
 import { enterpriseAvailableValue } from '../utils/modelQuotaPresentation'
@@ -41,6 +47,10 @@ import AppIcon from '../components/AppIcon.vue'
 import CollectionEmptyState from '../components/CollectionEmptyState.vue'
 import '../assets/quality-operations.css'
 const rows=ref([]),models=ref([]),loading=ref(false),error=ref(''),busy=ref(false),formError=ref(''),policyVisible=ref(false),observationVisible=ref(false),selected=ref(null),expiry=ref(''),observedAt=ref(''),historyVisible=ref(false),observations=ref([]),historyError=ref('')
+const user=useUserStore()
+const {latest:budgetChanges}=useLatestChanges(rows,'LLM_MODEL','MODEL_BUDGET','model_id')
+const {changed:budgetChanged}=useResourceChanges({domains:['MODEL_BUDGET'],isEditing:()=>busy.value||policyVisible.value||observationVisible.value,refresh:load})
+async function readLatestBudgets(){if(busy.value)return;await load();if(!error.value)budgetChanged.value=false}
 const policy=reactive({modelId:'',totalTokens:1000000,warningPercent:80,expectedVersion:0,requestId:''}),observation=reactive({modelId:'',remainingTokens:undefined,sourceNote:'',requestId:''})
 const scope=useAccountOperationScope(()=>{rows.value=[];models.value=[];observations.value=[];policyVisible.value=false;observationVisible.value=false;historyVisible.value=false;loading.value=false;busy.value=false;error.value='';formError.value='';historyError.value='';selected.value=null;expiry.value='';observedAt.value='';policy.modelId='';policy.requestId='';observation.modelId='';observation.sourceNote='';observation.remainingTokens=undefined;observation.requestId=''}),listing=scope.channel(),historyRead=scope.channel()
 const base='/api/agent/model-budgets',headers={'X-Budget-Action':'update'},count=value=>knownCount(value)?.toLocaleString('zh-CN')??'未核对'

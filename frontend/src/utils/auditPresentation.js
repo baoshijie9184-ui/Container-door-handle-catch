@@ -1,7 +1,7 @@
 import { beijingDateTime } from './beijingTime'
 import { knownCount } from './countPresentation'
 
-const domains = { DETECTION:'检测任务', QUALITY_REPORT:'质检报告', DEVICE:'设备', DEVICE_USAGE:'设备使用', EMPLOYEE:'人员', ORGANIZATION:'账号与组织', DETECTION_MODEL:'检测模型', DETECTION_MODEL_FILE:'模型文件', MODEL_CONFIG:'Agent 模型配置', DETECTION_IDENTITY_SOURCE:'任务身份来源' }
+const domains = { DETECTION:'检测任务', QUALITY_REPORT:'质检报告', DEVICE:'设备', DEVICE_USAGE:'设备使用', EMPLOYEE:'人员', ORGANIZATION:'账号与组织', DETECTION_MODEL:'检测模型', DETECTION_MODEL_FILE:'模型文件', MODEL_CONFIG:'Agent 模型配置', MODEL_BUDGET:'模型额度', LLM_QUOTA_APPLICATION:'个人额度申请', DETECTION_IDENTITY_SOURCE:'任务身份来源' }
 export const auditDomainOptions=Object.entries(domains).map(([value,label])=>({value,label}))
 export const auditDomainLabel = value => domains[value] || value || '业务域未记录'
 export const auditScopeLabel = value => ({ENTERPRISE:'企业业务',PRIVATE:'本人私有'})[value] || '范围未记录'

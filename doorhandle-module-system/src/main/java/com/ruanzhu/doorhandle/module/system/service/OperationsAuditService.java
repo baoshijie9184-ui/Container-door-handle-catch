@@ -73,7 +73,7 @@ public class OperationsAuditService implements OperationsAuditApi, SystemChangeA
                 "ENTERPRISE",event.domain(),event.resourceType(),event.resourceId(),string(event.afterVersion()),
                 event.action(),event.requestId(),null,receipt.occurredAt()));
     }
-    @Override @Transactional(readOnly=true)
+    @Override @Transactional
     public ChangeReceipt findChangeReceipt(AgentActor requested,String domain,String type,String resource,String request){
         var actor=current(requested);
         OperationsAuditPersistence.token(domain,48);OperationsAuditPersistence.token(type,64);
@@ -131,7 +131,7 @@ public class OperationsAuditService implements OperationsAuditApi, SystemChangeA
         var terms=new ArrayList<String>();var args=new ArrayList<Object>();args.add(actor.userId());
         for(var key:permitted){terms.add("(operation_domain=? AND operation_resource_type=? AND resource_id=?)");args.add(key.domain());args.add(key.resourceType());args.add(key.resourceId());}
         String sql="SELECT * FROM (SELECT e.*,ROW_NUMBER() OVER (PARTITION BY operation_domain,operation_resource_type,resource_id ORDER BY id DESC) AS latest_rank "
-                +"FROM audit_event e WHERE kind='OPERATIONS' AND payload_version=2 AND (operation_scope='ENTERPRISE' OR actor_user_id=?) AND ("
+                +"FROM audit_event e WHERE kind='OPERATIONS' AND payload_version IN (2,3) AND (operation_scope='ENTERPRISE' OR actor_user_id=?) AND ("
                 +String.join(" OR ",terms)+")) ranked WHERE latest_rank=1";
         var found=new HashMap<ChangeHistory.ResourceKey,ChangeHistory.Item>();
         for(var row:jdbc.queryForList(sql,args.toArray())){

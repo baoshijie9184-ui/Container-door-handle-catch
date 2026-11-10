@@ -49,7 +49,7 @@
         "doorhandle.report.mysql.config"
       ],
       "source": "doorhandle-module-detection/src/test/java/com/ruanzhu/doorhandle/module/detection/service/DetectionCollaborationMySqlTest.java",
-      "minimumTests": 5,
+      "minimumTests": 11,
       "coverage": [
         "enabled task claims and stable identity diffs, exact replay and report audit rollback"
       ]
@@ -64,6 +64,18 @@
       "minimumTests": 11,
       "coverage": [
         "actual MyBatis worker completion/failure and local start, V3 system provenance, null-actor identity, current resource authorization, concurrent replay and mandatory audit rollback"
+      ]
+    },
+    {
+      "id": "AiCollaborationMySqlTest",
+      "className": "com.ruanzhu.doorhandle.module.ai.model.AiCollaborationMySqlTest",
+      "fixtureProperties": [
+        "doorhandle.feature.mysql.config"
+      ],
+      "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/model/AiCollaborationMySqlTest.java",
+      "minimumTests": 18,
+      "coverage": [
+        "actual configuration and quota command replay, required history rollback, current authorization and original response receipts"
       ]
     },
     {
@@ -98,7 +110,7 @@
         "doorhandle.operations.mysql.config"
       ],
       "source": "doorhandle-module-system/src/test/java/com/ruanzhu/doorhandle/module/system/service/OperationsChangeHistoryTest.java",
-      "minimumTests": 15,
+      "minimumTests": 18,
       "coverage": [
         "V1 and V2 history, operation-time actor snapshots and current resource authorization"
       ]
@@ -1120,6 +1132,16 @@
         "className": "com.ruanzhu.doorhandle.module.device.service.DeviceMutationParticipantReadTest",
         "minimumTests": 4,
         "source": "doorhandle-module-device/src/test/java/com/ruanzhu/doorhandle/module/device/service/DeviceMutationParticipantReadTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.detection.security.DetectionClaimCandidatesTest",
+        "minimumTests": 5,
+        "source": "doorhandle-module-detection/src/test/java/com/ruanzhu/doorhandle/module/detection/security/DetectionClaimCandidatesTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.system.service.BusinessMutationAuditNestedTest",
+        "minimumTests": 2,
+        "source": "doorhandle-module-system/src/test/java/com/ruanzhu/doorhandle/module/system/service/BusinessMutationAuditNestedTest.java"
       }
     ]
   },
@@ -1646,7 +1668,7 @@
         "tests/tool-execution.test.cjs",
         "tests/trace-references.test.cjs"
       ],
-      "minimumTests": 48,
+      "minimumTests": 49,
       "requiredCommands": [
         "frontend-install",
         "frontend-test",

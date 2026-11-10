@@ -1,13 +1,14 @@
 <template>
   <div class="resource-mutation-summary">
-    <strong>{{ latest ? actorName(latest.actor) : '修改人未核实' }}</strong>
+    <strong>{{ latest ? historyActorName(latest) : '修改人未核实' }}</strong>
+    <small v-if="latest?.source?.type==='SYSTEM'">{{ historyActorRole(latest) }} · 原发起人 {{ historyInitiator(latest) }}</small>
     <time>{{ latest?.occurredAt ? auditTime(latest.occurredAt) : '修改时间未记录' }}</time>
     <small>资料版本 {{ revision ?? '未知' }}<span v-if="latest?.afterVersion != null && revision != null && latest.afterVersion !== String(revision)"> · 最近变更 {{ latest.afterVersion }}</span></small>
     <router-link :to="resourceHistoryLink(resourceType, resourceId, domain)">查看修改记录</router-link>
   </div>
 </template>
 <script setup>
-import { actorName, resourceHistoryLink } from '../utils/changeHistory'
+import { historyActorName, historyActorRole, historyInitiator, resourceHistoryLink } from '../utils/changeHistory'
 import { auditTime } from '../utils/auditPresentation'
 defineProps({ latest: Object, revision: [String, Number], resourceType: String, resourceId: [String, Number], domain: String })
 </script>
