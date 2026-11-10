@@ -94,6 +94,11 @@ public class DetectionTaskAccessPolicy {
     public void assertCanMutate(DetectionTask task,AgentActor actor) {
         if(!canMutate(task,actor))throw new SecurityException("领取任务后才可修改任务");
     }
+    public boolean readOnlyCandidate(DetectionTask task){
+        if(!candidateReadsEnabled||task==null||task.getClaimCandidateIds()==null)return false;
+        var authentication=SecurityContextHolder.getContext().getAuthentication();
+        return canAccess(task,authentication)&&!canMutate(task,authentication);
+    }
     /** Legacy source signature; caller-supplied names and role flags no longer establish identity. */
     @Deprecated public boolean canAccess(DetectionTask task,String username,boolean supervisor) {
         var authentication=SecurityContextHolder.getContext().getAuthentication();

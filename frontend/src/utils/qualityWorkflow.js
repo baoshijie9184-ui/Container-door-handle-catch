@@ -68,12 +68,14 @@ const pickTaskValue = (task, field) => task?.[field] ?? task?.result?.[field]
 // Hints describe business state only; the server still checks current account permissions.
 // A present but malformed action list must not silently fall back to permissive legacy rules.
 const stateActionAllowed = (task, action, fallback) => {
+  if (pickTaskValue(task, 'claimReadOnly') === true) return false
   const actions = pickTaskValue(task, 'qualityActions')
   if (actions === undefined || actions === null) return fallback()
   return Array.isArray(actions) && actions.some(item => item?.action === action && item.stateAllowed === true)
 }
 
 export const qualityActionReason = (task, action) => {
+  if (pickTaskValue(task, 'claimReadOnly') === true) return '当前仅有候选读取权限 请先领取任务'
   const actions = pickTaskValue(task, 'qualityActions')
   if (!Array.isArray(actions)) return '当前阶段不支持此操作，请刷新任务核对'
   return actions.find(item => item?.action === action)?.blockedReason || '任务状态已变化，请刷新后重试'

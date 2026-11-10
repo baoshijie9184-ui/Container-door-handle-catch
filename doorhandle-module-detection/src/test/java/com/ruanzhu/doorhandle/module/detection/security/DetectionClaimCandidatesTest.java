@@ -10,6 +10,13 @@ import static org.assertj.core.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
 class DetectionClaimCandidatesTest {
+    @Test void candidateSelectorEmitsAccountIdsAsStringsWithoutJavascriptPrecisionLoss() throws Exception {
+        var accounts=mock(com.ruanzhu.doorhandle.contracts.security.QualityAssigneeDirectory.class);
+        when(accounts.search("")).thenReturn(List.of(new com.ruanzhu.doorhandle.contracts.security.QualityAssigneeDirectory.Option("large-id",9007199254740993L,"a".repeat(64))));
+        var response=new com.ruanzhu.doorhandle.module.detection.controller.DetectionRuntimeController(null,accounts).assignees("");
+        var json=new com.fasterxml.jackson.databind.ObjectMapper().valueToTree(response.getBody());
+        assertThat(json.path("data").get(0).path("userId").isTextual()).isTrue();assertThat(json.path("data").get(0).path("userId").asText()).isEqualTo("9007199254740993");
+    }
     @Test void canonicalAccountIdsRetainLongPrecisionAndUseNumericOrder(){
         assertThat(DetectionClaimCandidates.canonical(List.of("9223372036854775807","2","10"))).containsExactly("2","10","9223372036854775807");
         assertThat(DetectionClaimCandidates.encode(List.of())).isNull();

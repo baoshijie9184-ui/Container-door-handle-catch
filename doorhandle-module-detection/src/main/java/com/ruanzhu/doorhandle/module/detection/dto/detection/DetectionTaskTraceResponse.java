@@ -19,6 +19,7 @@ public class DetectionTaskTraceResponse {
     private String qualityStation;
     private String assignee;
     private java.util.List<String> claimCandidateUserIds;
+    private boolean claimReadOnly;
     private Long assignmentRevision;
     private String assignmentRemark;
     private String assignedAt;

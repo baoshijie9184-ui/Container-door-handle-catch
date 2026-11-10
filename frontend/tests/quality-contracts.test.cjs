@@ -2,6 +2,15 @@ const assert = require('node:assert/strict')
 const test = require('node:test')
 const { readFrontendFile, readProjectFile } = require('./helpers/project-source.cjs')
 
+test('candidate read permission suppresses task write hints until a fresh claimed task arrives', async () => {
+  const code=readFrontendFile('src','utils','qualityWorkflow.js')
+  const workflow=await import('data:text/javascript;base64,'+Buffer.from(code).toString('base64'))
+  const ready={qualityActions:[{action:'REVIEW',stateAllowed:true}],claimReadOnly:true}
+  assert.equal(workflow.canReviewTask(ready),false)
+  assert.match(workflow.qualityActionReason(ready,'REVIEW'),/先领取任务/)
+  assert.equal(workflow.canReviewTask({...ready,claimReadOnly:false}),true)
+})
+
 test('tests\\quality-records-contract.test.cjs', () => {
   const recordsSource = readFrontendFile('src', 'utils', 'qualityRecords.js')
   const imageDetectionSource = readFrontendFile('src', 'views', 'ImageDetection.vue')

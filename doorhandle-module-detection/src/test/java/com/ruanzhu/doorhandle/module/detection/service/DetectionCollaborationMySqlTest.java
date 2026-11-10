@@ -51,7 +51,7 @@ class DetectionCollaborationMySqlTest {
         @Bean PlatformTransactionManager transactions(DataSource data){return new DataSourceTransactionManager(data);}
         @Bean ObjectMapper json(){return new ObjectMapper().findAndRegisterModules();}
         @Bean BusinessUserDirectory users(JdbcTemplate jdbc){return new BusinessUserDirectory(){
-            public Identity current(long id,String username){var rows=jdbc.queryForList("SELECT username,role,enabled FROM users WHERE id=?",id);if(rows.size()!=1||!username.equals(rows.get(0).get("username"))||!Boolean.TRUE.equals(rows.get(0).get("enabled"))||!Set.of("INSPECTOR","SUPERVISOR").contains(rows.get(0).get("role")))throw new SecurityException("account missing or ineligible");return new Identity(id,username,"SUPERVISOR".equals(rows.get(0).get("role")));}
+            public Identity current(long id,String username){var rows=jdbc.queryForList("SELECT username,role,enabled FROM users WHERE id=?",id);if(rows.size()!=1)throw new SecurityException("account missing or ineligible");var row=rows.get(0);Object enabled=row.get("enabled");if(!username.equals(row.get("username"))||!(Boolean.TRUE.equals(enabled)||enabled instanceof Number number&&number.intValue()==1)||!Set.of("INSPECTOR","SUPERVISOR").contains(row.get("role")))throw new SecurityException("account missing or ineligible");return new Identity(id,username,"SUPERVISOR".equals(row.get("role")));}
             public Identity lockCurrent(long id,String username){jdbc.queryForList("SELECT id FROM users WHERE id=? FOR UPDATE",id);return current(id,username);}
             public Identity authenticated(){var principal=(BusinessPrincipal)SecurityContextHolder.getContext().getAuthentication().getPrincipal();return current(principal.userId(),principal.username());}
         };}
@@ -63,7 +63,10 @@ class DetectionCollaborationMySqlTest {
         @Bean DetectionTaskMapper tasks(JdbcTemplate jdbc){
             var mapper=mock(DetectionTaskMapper.class);
             when(mapper.selectOne(any())).thenAnswer(call->{var query=(com.baomidou.mybatisplus.core.conditions.AbstractWrapper<?,?,?>)call.getArgument(0);query.getSqlSegment();var id=query.getParamNameValuePairs().get("MPGENVAL1");
-                var rows=jdbc.query("SELECT * FROM detection_task WHERE task_id=?"+(query.getSqlSegment().contains("FOR UPDATE")?" FOR UPDATE":""),BeanPropertyRowMapper.newInstance(DetectionTask.class),id);return rows.isEmpty()?null:rows.get(0);});return mapper;
+                var rows=jdbc.query("SELECT * FROM detection_task WHERE task_id=?"+(query.getSqlSegment().contains("FOR UPDATE")?" FOR UPDATE":""),BeanPropertyRowMapper.newInstance(DetectionTask.class),id);return rows.isEmpty()?null:rows.get(0);});
+            when(mapper.updateById(any(DetectionTask.class))).thenAnswer(call->{DetectionTask task=call.getArgument(0);return jdbc.update("UPDATE detection_task SET assignee=?,quality_station=?,flow_status=?,assignment_remark=?,assigned_at=?,due_at=?,updated_at=? WHERE task_id=?",task.getAssignee(),task.getQualityStation(),task.getFlowStatus(),task.getAssignmentRemark(),task.getAssignedAt(),task.getDueAt(),task.getUpdatedAt(),task.getTaskId());});
+            when(mapper.clearClaimCandidates(anyString())).thenAnswer(call->jdbc.update("UPDATE detection_task SET claim_candidate_ids=NULL WHERE task_id=?",(String)call.getArgument(0)));
+            return mapper;
         }
         @Bean DetectionTaskAccessPolicy policy(){
             // The claim's persisted identity writes are enabled independently of a historical identity-mode rollout.
@@ -178,5 +181,23 @@ class DetectionCollaborationMySqlTest {
         jdbc.update("UPDATE users SET enabled=FALSE WHERE id=2");request(3,"disabled-grant");assertThatThrownBy(()->claims.authorize("claim-task",new DetectionTaskClaimService.Candidates(List.of("2"),"0","disabled-grant"))).isInstanceOf(SecurityException.class);jdbc.update("UPDATE users SET enabled=TRUE WHERE id=2");
         assertThat(count("OPERATIONS")).isZero();authorize("revoke-grant");request(2,"unauthorized-grant");assertThatThrownBy(()->claims.authorize("claim-task",new DetectionTaskClaimService.Candidates(List.of("2"),"1","unauthorized-grant"))).isInstanceOf(SecurityException.class);
         request(3,"revoke-candidates");claims.authorize("claim-task",new DetectionTaskClaimService.Candidates(List.of(),"1","revoke-candidates"));request(2,"revoked-read");assertThat(scopedIds()).doesNotContain("claim-task");assertThat(count("OPERATIONS")).isEqualTo(2);
+    }
+    @Test void directSupervisorAssignmentClearsCandidatesInTheSameVersionedAuditedTransaction() throws Exception {
+        supervisorOwnedTask();authorize("assign-grant");request(3,"direct-assignment");((MockHttpServletRequest)((ServletRequestAttributes)RequestContextHolder.getRequestAttributes()).getRequest()).addHeader("X-Expected-Version","1");
+        var service=new com.ruanzhu.doorhandle.module.detection.service.impl.DetectionTaskServiceImpl(context.getBean(DetectionTaskMapper.class),null,null,null,null,null,null,context.getBean(ObjectMapper.class),context.getBean(DetectionTaskAccessPolicy.class));
+        service.setAssignmentDirectory(context.getBean(AgentUserDirectory.class),context.getBean(BusinessUserDirectory.class));
+        var factory=new org.springframework.aop.aspectj.annotation.AspectJProxyFactory(service);factory.setProxyTargetClass(true);factory.addAspect(context.getBean(BusinessMutationAudit.class));
+        com.ruanzhu.doorhandle.module.detection.service.impl.DetectionTaskServiceImpl proxied=factory.getProxy();
+        var command=new com.ruanzhu.doorhandle.module.detection.dto.detection.DetectionTaskAssignmentRequest();command.setAssignee("alice");command.setQualityStation("review-station");
+        var saved=proxied.assignQualityTask("claim-task",command);assertThat(saved.getVersion()).isEqualTo("2");assertThat(saved.getClaimCandidateUserIds()).isEmpty();
+        assertThat(jdbc.queryForObject("SELECT claim_candidate_ids FROM detection_task WHERE task_id='claim-task'",String.class)).isNull();assertThat(jdbc.queryForObject("SELECT assignee FROM detection_task WHERE task_id='claim-task'",String.class)).isEqualTo("alice");
+        assertThat(change("assignQualityTask","DETECTION").path("changes")).anySatisfy(field->{assertThat(field.path("field").asText()).isEqualTo("claim_candidate_ids");assertThat(field.path("after").isNull()).isTrue();});
+        request(2,"assigned-loser-read");assertThat(scopedIds()).doesNotContain("claim-task");assertThat(count("OPERATIONS")).isEqualTo(2);
+    }
+    @Test void candidateStorageRejectsNonStringDuplicateOverflowAndOversizedLists(){
+        for(String invalid:List.of("[1]","[\"01\"]","[\"1\",\"1\"]","[\"9223372036854775808\"]","[\"9999999999999999999\"]","{}",java.util.stream.LongStream.rangeClosed(1,17).mapToObj(id->"\""+id+"\"").collect(java.util.stream.Collectors.joining(",","[","]"))))
+            assertThatThrownBy(()->jdbc.update("UPDATE detection_task SET claim_candidate_ids=? WHERE task_id='claim-task'",invalid)).isInstanceOf(org.springframework.dao.DataAccessException.class);
+        jdbc.update("UPDATE detection_task SET claim_candidate_ids='[\"9223372036854775807\"]' WHERE task_id='claim-task'");
+        assertThat(com.ruanzhu.doorhandle.module.detection.security.DetectionClaimCandidates.read(jdbc.queryForObject("SELECT claim_candidate_ids FROM detection_task WHERE task_id='claim-task'",String.class))).containsExactly("9223372036854775807");
     }
 }

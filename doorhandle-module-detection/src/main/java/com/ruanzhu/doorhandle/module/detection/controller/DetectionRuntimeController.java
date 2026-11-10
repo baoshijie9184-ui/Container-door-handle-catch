@@ -13,6 +13,7 @@ import java.util.List;
 @RequestMapping("/api/detection")
 @Validated
 public class DetectionRuntimeController {
+    public record AssigneeOption(String username,String userId,String revision) { }
     private final DetectionExecutionStatusService execution;
     private final QualityAssigneeDirectory assignees;
     public DetectionRuntimeController(DetectionExecutionStatusService execution, QualityAssigneeDirectory assignees) {
@@ -25,7 +26,8 @@ public class DetectionRuntimeController {
     }
     @GetMapping("/quality-assignees")
     @PreAuthorize("hasAnyRole('SUPERVISOR','ADMIN')")
-    public org.springframework.http.ResponseEntity<Result<List<QualityAssigneeDirectory.Option>>> assignees(@RequestParam(defaultValue="") @Size(max=50) String keyword) {
-        return org.springframework.http.ResponseEntity.ok().cacheControl(org.springframework.http.CacheControl.noStore()).body(Result.success(assignees.search(keyword)));
+    public org.springframework.http.ResponseEntity<Result<List<AssigneeOption>>> assignees(@RequestParam(defaultValue="") @Size(max=50) String keyword) {
+        var options=assignees.search(keyword).stream().map(option->new AssigneeOption(option.username(),option.userId()==null?null:option.userId().toString(),option.revision())).toList();
+        return org.springframework.http.ResponseEntity.ok().cacheControl(org.springframework.http.CacheControl.noStore()).body(Result.success(options));
     }
 }
