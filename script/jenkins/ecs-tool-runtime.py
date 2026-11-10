@@ -397,9 +397,22 @@ def maven_arguments(value, arguments):
     require(all('maven.repo.local' not in argument or argument == expected for argument in arguments)
             and sum(argument == expected for argument in arguments) <= 1,
             'Maven repository argument differs from its exact registered cache')
+    selected_module = None
+    verification_arguments = arguments
+    if '-pl' in arguments or '-am' in arguments:
+        require(len(arguments) >= 4 and arguments[-3] == '-pl' and arguments[-1] == '-am'
+                and arguments.count('-pl') == arguments.count('-am') == 1,
+                'One explicit Maven module selection is permitted only as the final three arguments')
+        selected_module = arguments[-2]
+        require(re.fullmatch(r'doorhandle-[a-z0-9]+(?:-[a-z0-9]+)*', selected_module),
+                'Maven module selection requires one canonical direct project directory')
+        verification_arguments = arguments[:-3]
+        require(not any(re.fullmatch(r'-D(?:[A-Za-z0-9_.-]*\.)?(?:ignoreTestFailure|testFailureIgnore)(?:=.*)?', argument)
+                        for argument in verification_arguments),
+                'Selected-module verification cannot ignore test failures')
     allowed_flags = {'-B', '--batch-mode', '-ntp', '--no-transfer-progress', '-v', '-version', '--version', '-V', '-C', '--strict-checksums'}
     require(all(argument == expected or argument in allowed_flags or argument.startswith('-D')
-                or argument in ('clean', 'test', 'verify', 'package') for argument in arguments),
+                or argument in ('clean', 'test', 'verify', 'package') for argument in verification_arguments),
             'Only fixed verification phases and properties may use the shared Maven cache')
     require(not any(argument.startswith(('-Dmaven.', '-Duser.home=', '-Duser.dir=', '-Djava.home=')) and argument != expected for argument in arguments),
             'Maven cannot redirect its fixed source or tool configuration')
@@ -416,6 +429,29 @@ def maven_arguments(value, arguments):
             file = canonical(checkout / row['path'])
             require(file.is_file() and file.stat().st_size == row['bytes'] and digest(file) == row['sha256'],
                     'Maven source input differs from the exact cache registration')
+    if selected_module is not None:
+        from xml.etree import ElementTree as ET
+        checkout = canonical(checkout)
+        pom = canonical(checkout / 'pom.xml')
+        root_input = next(row for row in binding['inputs'] if row['path'] == 'pom.xml')
+        with pom.open('rb') as stream:
+            content = stream.read(root_input['bytes'] + 1)
+        require(len(content) == root_input['bytes'] and hashlib.sha256(content).hexdigest() == root_input['sha256']
+                and b'<!DOCTYPE' not in content.upper() and b'<!ENTITY' not in content.upper(),
+                'Selected Maven modules require the unchanged entity-free bound root POM')
+        try:
+            project = ET.fromstring(content)
+        except ET.ParseError:
+            raise ValueError('Selected Maven modules require a valid bound root POM') from None
+        namespace = '{http://maven.apache.org/POM/4.0.0}' if project.tag == '{http://maven.apache.org/POM/4.0.0}project' else ''
+        require(project.tag == namespace + 'project', 'Selected Maven modules require the root project POM')
+        modules = [(node.text or '').strip() for node in project.findall(namespace + 'modules/' + namespace + 'module')]
+        require(modules.count(selected_module) == 1, 'Selected Maven module is not declared exactly once by the bound root POM')
+        directory = canonical(checkout / selected_module)
+        module_pom = canonical(directory / 'pom.xml')
+        require(directory.is_dir() and directory.is_relative_to(checkout) and module_pom.is_file()
+                and selected_module + '/pom.xml' in {row['path'] for row in binding['inputs']},
+                'Selected Maven module must remain inside the bound checkout with its registered POM')
     return ['-C', *([] if expected in arguments else [expected]), *arguments]
 
 

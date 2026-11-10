@@ -96,6 +96,92 @@ def test_execution_rechecks_materialized_pom_and_config_bytes(cache, change):
     with pytest.raises(ValueError): tools.maven_arguments(cache, ['verify'])
 
 
+REACTOR_MODULES = ('doorhandle-module-system', 'doorhandle-module-ai')
+
+
+def register_reactor_inputs(value):
+    checkout = Path(value['checkout'])
+    catalog = sorted(({'path': path.relative_to(checkout).as_posix(), 'bytes': path.stat().st_size,
+                       'sha256': tools.digest(path)} for path in checkout.rglob('pom.xml')), key=lambda row: row['path'])
+    value['mavenCache'] = tools.maven_cache_definition(Path(value['directory']).parents[2], value['images']['maven'], catalog)
+
+
+@pytest.fixture
+def reactor_cache(cache):
+    checkout = Path(cache['checkout'])
+    (checkout / 'pom.xml').write_text('<project xmlns="http://maven.apache.org/POM/4.0.0"><modules>'
+        + ''.join('<module>' + module + '</module>' for module in REACTOR_MODULES) + '</modules></project>')
+    for module in REACTOR_MODULES:
+        directory = checkout / module; directory.mkdir()
+        (directory / 'pom.xml').write_text('<project><artifactId>' + module + '</artifactId></project>')
+    register_reactor_inputs(cache)
+    return cache
+
+
+@pytest.mark.parametrize('module', REACTOR_MODULES)
+def test_one_bound_direct_module_can_be_selected_as_the_exact_trailing_triplet(reactor_cache, module):
+    arguments = ['-B', '-ntp', '-Ddoorhandle.operations.mysql.config=/owned/fixture.json', 'test', '-pl', module, '-am']
+    result = tools.maven_arguments(reactor_cache, arguments)
+    assert result == ['-C', '-Dmaven.repo.local=' + reactor_cache['mavenCache']['repository'], *arguments]
+    assert result[-3:] == ['-pl', module, '-am']
+
+
+@pytest.mark.parametrize('arguments', [
+    ['test', '-pl', REACTOR_MODULES[0]],
+    ['test', '-am'],
+    ['test', '-pl', REACTOR_MODULES[0], '-am', '-B'],
+    ['test', '-pl', REACTOR_MODULES[0], '-am', '-pl', REACTOR_MODULES[1], '-am'],
+    ['test', '-pl=' + REACTOR_MODULES[0], '-am'],
+    ['test', '-pl', REACTOR_MODULES[0] + '/nested', '-am'],
+    ['test', '-pl', '../' + REACTOR_MODULES[0], '-am'],
+    ['test', '-pl', '/tmp/' + REACTOR_MODULES[0], '-am'],
+    ['test', '-pl', ','.join(REACTOR_MODULES), '-am'],
+    ['test', '-pl', ':' + REACTOR_MODULES[0], '-am'],
+    ['test', REACTOR_MODULES[0]],
+    ['test', '-pl', 'doorhandle-module-foreign', '-am'],
+])
+def test_module_selection_never_admits_repeated_nested_nontrailing_or_arbitrary_values(reactor_cache, arguments):
+    with pytest.raises(ValueError): tools.maven_arguments(reactor_cache, arguments)
+
+
+@pytest.mark.parametrize('extra', [
+    ['-f', '/foreign/pom.xml'], ['--fail-never'], ['-DignoreTestFailure=true'],
+    ['-Dsurefire.testFailureIgnore=true'], ['-Dmaven.test.failure.ignore=true'],
+])
+def test_selected_module_cannot_redirect_its_pom_or_ignore_test_failures(reactor_cache, extra):
+    arguments = ['test', *extra, '-pl', REACTOR_MODULES[0], '-am']
+    with pytest.raises(ValueError): tools.maven_arguments(reactor_cache, arguments)
+
+
+@pytest.mark.parametrize('damage', ['undeclared', 'profile-only', 'duplicate', 'malformed', 'entity'])
+def test_selection_requires_one_explicit_direct_module_in_the_bound_root_pom(reactor_cache, damage):
+    module = REACTOR_MODULES[0]; checkout = Path(reactor_cache['checkout'])
+    declaration = '<modules><module>' + module + '</module></modules>'
+    if damage == 'undeclared': body = '<project><modules><module>' + REACTOR_MODULES[1] + '</module></modules></project>'
+    elif damage == 'profile-only': body = '<project><profiles><profile>' + declaration + '</profile></profiles></project>'
+    elif damage == 'duplicate': body = '<project><modules><module>' + module + '</module><module>' + module + '</module></modules></project>'
+    elif damage == 'malformed': body = '<project><modules>'
+    else: body = '<!DOCTYPE project [<!ENTITY selected "' + module + '">]><project><modules><module>&selected;</module></modules></project>'
+    (checkout / 'pom.xml').write_text(body); register_reactor_inputs(reactor_cache)
+    with pytest.raises(ValueError): tools.maven_arguments(reactor_cache, ['test', '-pl', module, '-am'])
+
+
+@pytest.mark.parametrize('linked', ['module-directory', 'module-pom'])
+def test_selected_module_and_its_pom_cannot_be_redirected_by_a_symlink(reactor_cache, tmp_path, linked):
+    module = REACTOR_MODULES[0]; directory = Path(reactor_cache['checkout']) / module
+    target = directory if linked == 'module-directory' else directory / 'pom.xml'
+    preserved = tmp_path / ('original-module' if linked == 'module-directory' else 'original-pom.xml')
+    target.rename(preserved); target.symlink_to(preserved, target_is_directory=linked == 'module-directory')
+    with pytest.raises(ValueError): tools.maven_arguments(reactor_cache, ['test', '-pl', module, '-am'])
+    assert preserved.exists()
+
+
+def test_selected_module_still_rejects_changed_root_pom_bytes_without_cache_reregistration(reactor_cache):
+    checkout = Path(reactor_cache['checkout']); pom = checkout / 'pom.xml'
+    pom.write_bytes(pom.read_bytes() + b'\n')
+    with pytest.raises(ValueError): tools.maven_arguments(reactor_cache, ['test', '-pl', REACTOR_MODULES[0], '-am'])
+
+
 def test_reusable_release_bytes_have_exact_checksums_and_a_source_receipt(cache):
     path, proof = commit_downloads(cache)
     current = tools.maven_cache_inventory(cache); tools.verify_maven_cache_state(cache, current)
