@@ -134,6 +134,17 @@ def stream_probe_spec(descriptor):
     return spec
 
 
+def model_reply_id(value):
+    # The existing execution.v1 endpoint sends a numeric assistant primary key.
+    # Preserve safe legacy numbers and exact new strings; reject a browser-rounded
+    # BIGINT before it can become a public string that falsely appears exact.
+    require(type(value) is int and 1 <= value <= 9007199254740991
+            or type(value) is str and re.fullmatch(r'[1-9][0-9]{0,18}', value),
+            'model_reply_identity_must_be_lossless')
+    require(int(value) <= 9223372036854775807, 'model_reply_identity_outside_signed_range')
+    return str(value)
+
+
 def read_cgroup():
     root = Path('/sys/fs/cgroup')
     def read(name):
@@ -1054,6 +1065,8 @@ class Runner:
             await page.wait_for_function('() => window.__ownedA21Streams.every(value=>value.done)',
                 timeout=spec['completionTimeoutMillis'])
             final = await state()
+            for value in final:
+                value['messageId'] = model_reply_id(value.get('messageId'))
             require(all(value['firstContent'] and value['finishedEvent'] and value['done'] and not value['error']
                 and re.fullmatch(r'[a-f0-9-]{36}', str(value['runId'])) and value['messageId'] for value in final),
                 'both_actual_agent_streams_must_finish_successfully')

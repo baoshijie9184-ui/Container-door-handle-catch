@@ -35,6 +35,17 @@ probes = load('a21_stream_probes', 'compact-collaboration-stream-probes.py')
 browser = load('a21_browser', 'collaboration-browser-runner.py')
 proxy = load('a21_proxy', 'collaboration-browser-proxy.py')
 MARKERS = ['a21-stream-' + value * 24 for value in ('a', 'b')]
+
+
+@pytest.mark.parametrize('value', [7, 9007199254740991, '9007199254740993', '9223372036854775807'])
+def test_browser_preserves_existing_numeric_and_exact_string_execution_reply_ids(value):
+    assert browser.model_reply_id(value) == str(value)
+
+
+@pytest.mark.parametrize('value', [None, True, 7.0, 0, -1, 9007199254740992, '', '0', '01', '1.0', '-1', '9223372036854775808'])
+def test_browser_rejects_missing_noncanonical_and_rounded_execution_reply_ids(value):
+    with pytest.raises(ValueError):
+        browser.model_reply_id(value)
 TOKEN = 'owned-private-runtime-token'
 
 

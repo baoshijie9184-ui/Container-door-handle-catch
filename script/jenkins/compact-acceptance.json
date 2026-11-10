@@ -1645,7 +1645,7 @@
       },
       {
         "module": "tests_python.test_collaboration_model_streams",
-        "minimumTests": 81,
+        "minimumTests": 97,
         "source": "tests_python/test_collaboration_model_streams.py",
         "allowedSkippedTests": []
       },
