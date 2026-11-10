@@ -55,6 +55,9 @@ PYTEST_TMP_SUFFIX = 'work/ci-evidence/tmp/pytest'
 # temporary cleanup revision. The main function
 # includes its nested execute callback, source environment and exact basetemp.
 PYTEST_RUNNER_MAIN_AST = {
+    # Native assertion collection/module dispatch (1663a568/3502d844); the
+    # source scope, Python command and explicit pytest basetemp are unchanged.
+    'e74678a48c24be9cabb967f451becc3a65f997e51a5326ecac9e81f0c5cd16d3',
     # Same-attempt Java compilation reuse; source pytest routing is unchanged.
     '6aa846c4321a33b653d970669bd268dcb58b85a4869f7ce40ad8cb0c6968f95d',
     '6ed391795b01ecca1c45efd86b84b5270fa35f36742c76ac957141a28cb2a4ba',
