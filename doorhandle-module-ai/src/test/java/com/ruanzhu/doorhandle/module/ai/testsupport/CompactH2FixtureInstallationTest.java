@@ -5,8 +5,10 @@ import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.regex.Pattern;
@@ -22,6 +24,9 @@ import static org.assertj.core.api.Assertions.*;
 
 /** Full current DDL installation on ECS H2; native MySQL/trigger acceptance remains separate. */
 class CompactH2FixtureInstallationTest {
+    private static final Map<String, String> INLINE_VERSION_CHECKS = Map.of(
+            "organization_department", "version", "device_usage", "version",
+            "device_alert", "version", "model_management", "row_version");
     private JdbcTemplate jdbc;
     @BeforeEach void open() throws Exception {
         jdbc = new JdbcTemplate(new DriverManagerDataSource("jdbc:h2:mem:baseline-install-" + UUID.randomUUID()
@@ -32,26 +37,45 @@ class CompactH2FixtureInstallationTest {
 
     @Test void complete29TableBaselineAndRelationsInstallWithEveryCheckRetained() throws Exception {
         Path baseline = sourceRoot().resolve("sql/mysql/compact/baseline");
-        Set<String> expectedTables = new LinkedHashSet<>(); int expectedChecks = 0, expectedForeignKeys = 0;
+        Set<String> expectedTables = new LinkedHashSet<>(), expectedNamedChecks = new LinkedHashSet<>();
+        Map<String, String> sourceInlineChecks = new LinkedHashMap<>();
+        int expectedForeignKeys = 0;
         for (String file : List.of("10-core.sql", "20-content.sql", "25-agent.sql", "30-operations.sql", "40-relations.sql")) {
             String source = Files.readString(baseline.resolve(file), StandardCharsets.UTF_8);
             var tables = Pattern.compile("(?mi)^CREATE TABLE\\s+([a-z_]+)\\s*\\(").matcher(source);
             while (tables.find()) expectedTables.add(tables.group(1));
-            expectedChecks += (int) Pattern.compile("(?mi)^[\\t ]*CONSTRAINT\\s+[a-z_][a-z0-9_]*\\s+CHECK\\s*\\(").matcher(source).results().count();
+            var checks = Pattern.compile("(?mi)^[\\t ]*CONSTRAINT\\s+([a-z_][a-z0-9_]*)\\s+CHECK\\s*\\(").matcher(source);
+            while (checks.find()) assertThat(expectedNamedChecks.add(checks.group(1))).isTrue();
+            // 四个协同版本字段使用列级 CHECK，不能只统计命名表约束。
+            var inline = Pattern.compile("(?mi)^CREATE TABLE\\s+([a-z_]+)\\s*\\(\\s*"
+                    + "(version|row_version)\\s+BIGINT\\s+NOT\\s+NULL\\s+DEFAULT\\s+0\\s+CHECK\\s*\\(\\s*\\2\\s*>=\\s*0\\s*\\)\\s*,").matcher(source);
+            while (inline.find()) assertThat(sourceInlineChecks.put(inline.group(1), inline.group(2))).isNull();
             expectedForeignKeys += (int) Pattern.compile("(?i)\\bFOREIGN KEY\\s*\\(").matcher(source).results().count();
             install(CompactH2Functions.adaptDdl(source));
         }
         String schema;
         try (var connection = jdbc.getDataSource().getConnection()) { schema = connection.getSchema(); }
         assertThat(expectedTables).hasSize(29);
+        assertThat(sourceInlineChecks).isEqualTo(INLINE_VERSION_CHECKS);
         assertThat(jdbc.queryForList("SELECT table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'", String.class, schema))
                 .containsExactlyInAnyOrderElementsOf(expectedTables);
-        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.table_constraints WHERE table_schema=? AND constraint_type='CHECK'", Integer.class, schema))
-                .isEqualTo(expectedChecks);
+        var installedChecks = jdbc.query("SELECT table_name,constraint_name FROM information_schema.table_constraints "
+                        + "WHERE table_schema=? AND constraint_type='CHECK'",
+                (row, index) -> Map.entry(row.getString("table_name"), row.getString("constraint_name")), schema);
+        assertThat(installedChecks).hasSize(expectedNamedChecks.size() + INLINE_VERSION_CHECKS.size());
+        assertThat(installedChecks.stream().map(Map.Entry::getValue).toList()).containsAll(expectedNamedChecks);
+        Map<String, String> installedInlineCheckNames = new LinkedHashMap<>();
+        for (var check : installedChecks) {
+            if (!expectedNamedChecks.contains(check.getValue())) {
+                assertThat(installedInlineCheckNames.put(check.getKey(), check.getValue())).isNull();
+            }
+        }
+        assertThat(installedInlineCheckNames.keySet()).containsExactlyInAnyOrderElementsOf(INLINE_VERSION_CHECKS.keySet());
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.table_constraints WHERE table_schema=? AND constraint_type='FOREIGN KEY'", Integer.class, schema))
                 .isEqualTo(expectedForeignKeys);
         jdbc.update("INSERT INTO employee(id,name,employee_number,contact,department,employee_type,gender,hire_date,status) "
                 + "VALUES(101,'fixture','fixture-employee','fixture','fixture','DETECTION','UNKNOWN',DATE '2026-01-01','ACTIVE')");
+        assertInlineVersionChecks(installedInlineCheckNames);
         jdbc.update("INSERT INTO users(username,password) VALUES('history-clear','fixture')");
         jdbc.update("INSERT INTO users(username,password,binding_history_present,binding_version) VALUES('history-present','fixture',TRUE,1)");
         assertThatThrownBy(() -> jdbc.update("INSERT INTO users(username,password,binding_history_present,binding_version) "
@@ -95,6 +119,31 @@ class CompactH2FixtureInstallationTest {
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM chat_project", Integer.class)).isZero();
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM chat_session", Integer.class)).isZero();
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM chat_message", Integer.class)).isZero();
+    }
+
+    private void assertInlineVersionChecks(Map<String, String> installedNames) {
+        jdbc.update("INSERT INTO organization_department(id,name) VALUES(201,'inline-version-department')");
+        jdbc.update("INSERT INTO device_management(id,device_code,device_type,model_name,serial_number,status) "
+                + "VALUES(201,'inline-version-device','IMAGE_CAPTURE','fixture','inline-version-serial','IDLE')");
+        jdbc.update("INSERT INTO device_usage(id,device_id,device_code,device_type,model_name,serial_number,"
+                + "employee_id,employee_name,employee_number,contact,start_time) "
+                + "VALUES(201,201,'inline-version-device','IMAGE_CAPTURE','fixture','inline-version-serial',"
+                + "101,'fixture','fixture-employee','fixture',TIMESTAMP '2026-01-01 00:00:00')");
+        jdbc.update("INSERT INTO device_alert(id,device_id,device_code,alert_type,alert_message) "
+                + "VALUES(201,201,'inline-version-device','CAPTURE_EXCEPTION','fixture')");
+        jdbc.update("INSERT INTO model_management(model_id,model_name,version,model_path) "
+                + "VALUES(201,'inline-version-model','v1','fixture')");
+        for (var check : INLINE_VERSION_CHECKS.entrySet()) {
+            String table = check.getKey(), column = check.getValue();
+            String row = table.equals("model_management") ? "model_id=201" : "id=201";
+            assertThat(jdbc.queryForObject("SELECT " + column + " FROM " + table + " WHERE " + row, Long.class)).isZero();
+            assertThat(jdbc.update("UPDATE " + table + " SET " + column + "=" + column + "+1 WHERE " + row)).isEqualTo(1);
+            assertThatThrownBy(() -> jdbc.update("UPDATE " + table + " SET " + column + "=-1 WHERE " + row))
+                    .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class)
+                    .satisfies(failure -> assertThat(((org.springframework.dao.DataIntegrityViolationException) failure)
+                            .getMostSpecificCause().getMessage()).containsIgnoringCase(installedNames.get(table)));
+            assertThat(jdbc.queryForObject("SELECT " + column + " FROM " + table + " WHERE " + row, Long.class)).isEqualTo(1L);
+        }
     }
 
     @Test void sharedJournalFixtureInstallsItsActualCoordinationAndWorkflowResources() throws Exception {
