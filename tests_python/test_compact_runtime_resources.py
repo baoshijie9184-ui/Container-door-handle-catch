@@ -21,6 +21,58 @@ def load(name, path):
 
 runtime = load('bounded_runtime_resource_contract', 'script/docker/compact-runtime-acceptance.py')
 candidate = load('bounded_worker_dependency_contract', 'script/docker/compact-candidate-build.py')
+schema_guard = load('native_usage_receipt_contract', 'script/docker/compact-schema-guard.py')
+
+
+def native_usage_fixture(tmp_path):
+    directory = tmp_path / 'checkout/work/runtime-acceptance'; directory.mkdir(parents=True)
+    context = {'schemaVersion': 1, 'kind': 'doorhandle-compact-runtime-acceptance', 'release': 'ci-58-' + 'a' * 12,
+        'commit': 'a' * 40, 'sourceSha256': 'b' * 64, 'identity': {'instanceId': 'i-test', 'machineId': 'c' * 32},
+        'acceptanceProfileSha256': 'd' * 64, 'candidateBuildSha256': 'e' * 64}
+    phases = ('after-start', 'after-restart', 'after-volume-restore')
+    references = {phase: {'file': 'checkout/work/runtime-acceptance/native-readback-' + phase + '.json',
+                         'sha256': str(index) * 64} for index, phase in enumerate(phases, 1)}
+    value = {**context, 'kind': 'doorhandle-native-semantic-activation', 'project': 'doorhandle-rehearsal-' + 'f' * 12,
+        'candidateSha256': '1' * 64, 'status': 'VERIFIED_AND_ACTIVATED', 'candidateSemanticVerified': True,
+        'productionDataMaterialized': False, 'productionPromotionAllowed': False, 'llmCalls': 0, 'paidModelCalls': 0,
+        'verifications': {phase: {'readback': reference, 'semantic': {'file': 'unused-by-projection'}}
+                          for phase, reference in references.items()}}
+    file = directory / 'native-semantic-activation.json'
+    def write():
+        file.write_text(json.dumps(value), encoding='utf8'); file.chmod(0o600)
+        return {'file': file.relative_to(tmp_path).as_posix(), 'sha256': runtime.sha_file(file)}
+    ctx = SimpleNamespace(directory=directory, attempt=tmp_path, project=value['project'],
+        legacy_candidate_sha=value['candidateSha256'], context=lambda: context,
+        guard=schema_guard, cutover=SimpleNamespace(canonical=lambda path: Path(path).resolve(strict=True)),
+        owner={'nativeVerifications': references})
+    return ctx, value, write, write()
+
+
+def test_native_usage_is_read_from_the_original_verified_activation(tmp_path):
+    ctx, value, _write, reference = native_usage_fixture(tmp_path)
+    actual = runtime.native_activation_usage(ctx, reference)
+    assert actual == {'llmCalls': value['llmCalls'], 'paidModelCalls': value['paidModelCalls']}
+    assert reference['sha256'] == runtime.sha_file(ctx.directory / 'native-semantic-activation.json')
+
+
+@pytest.mark.parametrize('damage', ['missing-count', 'bool-llm', 'nonzero-llm', 'nonzero-paid', 'foreign-build',
+    'different-candidate', 'changed-bytes', 'different-readback', 'wrong-path', 'unactivated'])
+def test_native_usage_rejects_unverified_counts_or_foreign_activation(tmp_path, damage):
+    ctx, value, write, reference = native_usage_fixture(tmp_path)
+    if damage == 'missing-count': value.pop('llmCalls')
+    elif damage == 'bool-llm': value['llmCalls'] = False
+    elif damage == 'nonzero-llm': value['llmCalls'] = 1
+    elif damage == 'nonzero-paid': value['paidModelCalls'] = 1
+    elif damage == 'foreign-build': value['commit'] = '2' * 40
+    elif damage == 'different-candidate': value['candidateSha256'] = '2' * 64
+    elif damage == 'changed-bytes': value['project'] = 'changed-after-receipt'
+    elif damage == 'different-readback': value['verifications']['after-start']['readback'] = {'file': 'another.json', 'sha256': '3' * 64}
+    elif damage == 'wrong-path': reference['file'] = '../native-semantic-activation.json'
+    else: value['status'] = 'PREPARED'
+    if damage != 'wrong-path':
+        rewritten = write()
+        if damage != 'changed-bytes': reference = rewritten
+    with pytest.raises(ValueError): runtime.native_activation_usage(ctx, reference)
 
 
 def evidence(include_browser=False):

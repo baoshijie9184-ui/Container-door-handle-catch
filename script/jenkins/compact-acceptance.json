@@ -1619,7 +1619,7 @@
       },
       {
         "module": "tests_python.test_compact_runtime_resources",
-        "minimumTests": 32,
+        "minimumTests": 43,
         "source": "tests_python/test_compact_runtime_resources.py",
         "allowedSkippedTests": []
       },

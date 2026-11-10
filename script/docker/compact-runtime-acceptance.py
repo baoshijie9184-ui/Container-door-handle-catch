@@ -49,6 +49,31 @@ def sha_file(path):
     return value.hexdigest()
 
 
+def native_activation_usage(ctx, reference):
+    """Project actual verified native usage, never the unrelated SDK LLM calls."""
+    expected = ctx.directory / 'native-semantic-activation.json'
+    require(isinstance(reference, dict) and set(reference) == {'file', 'sha256'}
+            and reference.get('file') == expected.relative_to(ctx.attempt).as_posix()
+            and isinstance(reference.get('sha256'), str) and re.fullmatch(r'[a-f0-9]{64}', reference['sha256']),
+            'Native usage requires its original fixed activation receipt')
+    activated, checksum = ctx.guard.read_private(ctx.cutover.canonical(expected))
+    require(checksum == reference['sha256']
+            and all(activated.get(key) == value for key, value in ctx.context().items() if key != 'kind')
+            and activated.get('kind') == 'doorhandle-native-semantic-activation'
+            and activated.get('project') == ctx.project and activated.get('candidateSha256') == ctx.legacy_candidate_sha
+            and activated.get('status') == 'VERIFIED_AND_ACTIVATED' and activated.get('candidateSemanticVerified') is True
+            and activated.get('productionDataMaterialized') is False and activated.get('productionPromotionAllowed') is False,
+            'Native usage activation bytes or source identity changed')
+    phases = ('after-start', 'after-restart', 'after-volume-restore')
+    observed = activated.get('verifications', {})
+    require(set(ctx.owner.get('nativeVerifications', {})) == set(phases) and set(observed) == set(phases)
+            and all(observed[phase].get('readback') == ctx.owner['nativeVerifications'][phase] for phase in phases),
+            'Native usage lacks the verified three-phase readbacks')
+    require(all(type(activated.get(key)) is int and activated[key] == 0 for key in ('llmCalls', 'paidModelCalls')),
+            'Actual native activation must prove zero LLM and paid model calls')
+    return {key: activated[key] for key in ('llmCalls', 'paidModelCalls')}
+
+
 MIB = 1024 ** 2
 GIB = 1024 ** 3
 RUNTIME_PROFILE = 'bounded-single-ecs-v1'
@@ -1715,6 +1740,7 @@ print(json.dumps({'deleted':len(keys),'keysSha256':hashlib.sha256(json.dumps(sor
         require(set(self.owner.get('nativeVerifications', {})) == {'after-start', 'after-restart', 'after-volume-restore'},
                 'Complete native RAG startup/restart/new-volume recovery was not verified')
         activation = self.native.finalize_semantic_activation(self)
+        native_usage = native_activation_usage(self, activation)
         fixture_builds = self.build_resources.fixture_build_evidence(self, require_pass=True)
         proof = {**self.context(), 'status': 'PASS', 'project': self.project,
             'fixtureBuildResources': fixture_builds,
@@ -1722,6 +1748,7 @@ print(json.dumps({'deleted':len(keys),'keysSha256':hashlib.sha256(json.dumps(sor
             'stableIdentity': stable_identity,
             'collaborationHttpAcceptance': collaboration_http,
             'legacyData': {'candidateSha256': self.legacy_candidate_sha, 'ragManifestSha256': self.legacy_candidate['ragManifestSha256'],
+                **native_usage,
                 'legacyKafkaFiles': self.legacy_candidate['legacyKafkaFiles'], 'legacyKafkaBytes': self.legacy_candidate['legacyKafkaBytes'],
                 'legacyKafkaReplay': self.legacy_candidate['legacyKafkaReplay'],
                 'originalLocalMem0Records': 32, 'eligibleLocalMem0Records': 30, 'activatedLocalMem0Records': 30, 'archivedLocalMem0Records': 2,
