@@ -24,4 +24,13 @@ public interface BusinessMutationParticipant {
     Object digestInput(String action, Object[] arguments);
     /** Creation has no expected existing version. All other user writes require it. */
     default boolean creates(String action) { return false; }
+    /** Domains without an ORM version atomically advance their real row revision under the existing lock. */
+    default Snapshot advanceVersion(Snapshot before, Snapshot after) { return after; }
+    /** Acquire domain participant locks in a stable order before the common actor lock. */
+    default void prepare(AgentActor actor,String domain,String action,String resourceId,Object[] arguments) { }
+    /** Secondary resources retain their own domain when a command spans domain boundaries. */
+    default String resourceDomain(Snapshot snapshot,String commandDomain) { return commandDomain; }
+    /** Explicit secondary resources of a compound command (e.g. a device and its usage rows). */
+    default java.util.List<Snapshot> related(AgentActor actor,String domain,String action,String resourceId,
+            Object[] arguments,java.util.List<Snapshot> previous,boolean lock) { return java.util.List.of(); }
 }
