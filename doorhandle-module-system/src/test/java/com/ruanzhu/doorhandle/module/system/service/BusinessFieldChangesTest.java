@@ -64,7 +64,7 @@ class BusinessFieldChangesTest {
         var persistence=new OperationsAuditPersistence(org.mockito.Mockito.mock(org.springframework.jdbc.core.JdbcTemplate.class));
         var old=persistence.decode(1,"{\"scope\":\"ENTERPRISE\",\"domain\":\"DEVICE\",\"result\":\"APPLIED\",\"resourceVersion\":-7,\"legacyId\":null,\"legacyCreatedAt\":null}");
         assertThat(old.resourceVersion()).isEqualTo(-7);assertThat(old.detail()).isNull();
-        assertThatThrownBy(()->persistence.decode(3,"{}")).hasMessageContaining("Unregistered");
+        assertThatThrownBy(()->persistence.decode(4,"{}")).hasMessageContaining("Unregistered");
         assertThatThrownBy(()->persistence.decode(1,"{\"scope\":\"ENTERPRISE\",\"domain\":\"DEVICE\",\"result\":\"APPLIED\"}"))
                 .hasMessageContaining("invalid");
     }

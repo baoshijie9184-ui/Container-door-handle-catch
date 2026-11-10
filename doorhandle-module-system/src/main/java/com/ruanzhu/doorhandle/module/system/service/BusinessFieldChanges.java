@@ -27,7 +27,21 @@ final class BusinessFieldChanges {
             Map.entry("avg_inference_ms","平均推理时间"),Map.entry("compatibility_note","兼容性说明"),
             Map.entry("deployment_strategy","部署策略"),Map.entry("canary_percent","灰度比例"),Map.entry("ab_group","实验分组"),
             Map.entry("rollback_from_model_id","回滚来源模型"),Map.entry("model_path","模型文件"),
-            Map.entry("claim_candidate_ids","领取候选账号 ID"));
+            Map.entry("claim_candidate_ids","领取候选账号 ID"),Map.entry("enabled","登录权限"),Map.entry("role","账号角色"),
+            Map.entry("workflow_uuid","业务流程编号"),Map.entry("batch_no","批次号"),Map.entry("work_order_no","工单号"),
+            Map.entry("flow_status","业务流程状态"),Map.entry("quality_station","质检工位"),Map.entry("assignee","负责人账号"),
+            Map.entry("assignment_remark","分派说明"),Map.entry("due_at","要求完成时间"),Map.entry("stage","执行阶段"),
+            Map.entry("model_id","检测模型编号"),Map.entry("model_version","检测模型版本"),Map.entry("threshold","检测阈值"),
+            Map.entry("total_images","图片总数"),Map.entry("processed_images","已处理图片数"),Map.entry("successful_images","成功图片数"),
+            Map.entry("failed_images","失败图片数"),Map.entry("defect_count","缺陷数量"),Map.entry("primary_defect_type","主要缺陷类型"),
+            Map.entry("max_defect_severity","最高缺陷级别"),Map.entry("review_status","复核状态"),Map.entry("review_conclusion","复核结论"),
+            Map.entry("severity_level","确认缺陷级别"),Map.entry("confirmed_defect_count","确认缺陷数量"),Map.entry("false_positive_count","误报数量"),
+            Map.entry("review_remark","复核说明"),Map.entry("reviewer","复核账号"),Map.entry("disposition_status","处置状态"),
+            Map.entry("disposition_action","处置动作"),Map.entry("disposition_remark","处置说明"),Map.entry("disposition_operator","处置账号"),
+            Map.entry("recheck_required","是否需要复检"),Map.entry("rework_result","返工结果"),Map.entry("rework_operator","返工账号"),
+            Map.entry("rework_remark","返工说明"),Map.entry("created_user_id","创建账号 ID"),Map.entry("assignee_user_id","负责人账号 ID"),
+            Map.entry("reviewer_user_id","复核账号 ID"),Map.entry("disposition_user_id","处置账号 ID"),Map.entry("rework_user_id","返工账号 ID"),
+            Map.entry("assigned_by_user_id","分派主管账号 ID"),Map.entry("assignment_identity_revision","分派身份版本"));
     static List<Change> compare(Snapshot before,Snapshot after) {
         Map<String,Object> old=before==null?Map.of():before.fields(),next=after==null?Map.of():after.fields();
         var fields=new TreeSet<String>();fields.addAll(old.keySet());fields.addAll(next.keySet());

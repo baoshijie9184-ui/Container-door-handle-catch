@@ -57,7 +57,12 @@ class DetectionCollaborationMySqlTest {
         };}
         @Bean OperationsAuditApi audit(JdbcTemplate jdbc,BusinessUserDirectory users){
             var actual=new OperationsAuditService(jdbc,users);
-            return new OperationsAuditApi(){public void append(Event event){actual.append(event);}public void appendChange(ChangeEvent event){if(rejectAudit.get())throw new IllegalStateException("audit unavailable");actual.appendChange(event);}};
+            return new OperationsAuditApi(){
+                public void append(Event event){actual.append(event);}
+                public void appendChange(ChangeEvent event){appendChangeWithReceipt(event);}
+                public ChangeReceipt appendChangeWithReceipt(ChangeEvent event){if(rejectAudit.get())throw new IllegalStateException("audit unavailable");return actual.appendChangeWithReceipt(event);}
+                public ChangeReceipt findChangeReceipt(AgentActor actor,String domain,String type,String id,String request){return actual.findChangeReceipt(actor,domain,type,id,request);}
+            };
         }
         @Bean BusinessMutationAudit aspect(OperationsAuditApi audit,BusinessUserDirectory users,PlatformTransactionManager manager){return new BusinessMutationAudit(audit,users,manager);}
         @Bean DetectionTaskMapper tasks(JdbcTemplate jdbc){
@@ -106,7 +111,7 @@ class DetectionCollaborationMySqlTest {
         var snapshot=jdbc.queryForMap("SELECT assignee_user_id,assigned_by_user_id,assignment_identity_revision,version FROM detection_task WHERE task_id='claim-task'");
         assertThat(((Number)snapshot.get("assignee_user_id")).longValue()).isEqualTo(1);assertThat(((Number)snapshot.get("assignment_identity_revision")).longValue()).isEqualTo(1);
         var payload=change("claimTask","DETECTION");assertThat(payload.path("beforeVersion").asLong()).isZero();assertThat(payload.path("resourceVersion").asLong()).isEqualTo(1);
-        assertThat(payload.path("changes")).anySatisfy(field->{assertThat(field.path("field").asText()).isEqualTo("assignee_user_id");assertThat(field.path("before").isNull()).isTrue();assertThat(field.path("after").asText()).isEqualTo("1");});
+        assertThat(payload.path("changes")).anySatisfy(field->{assertThat(field.path("field").asText()).isEqualTo("assignee_user_id");assertThat(field.path("label").asText()).isEqualTo("负责人账号 ID");assertThat(field.path("before").isNull()).isTrue();assertThat(field.path("after").asText()).isEqualTo("1");});
         var secondHeaders=request(1,"claim-once");var repeated=claims.claim("claim-task",new DetectionTaskClaimService.Claim("0","claim-once"));
         assertThat(repeated.getVersion()).isEqualTo(first.getVersion());assertThat(repeated.getTaskId()).isEqualTo(first.getTaskId());assertThat(secondHeaders.getHeader("X-Audit-ID")).isEqualTo(firstHeaders.getHeader("X-Audit-ID"));
         assertThat(count("BUSINESS_COMMAND")).isEqualTo(1);assertThat(count("OPERATIONS")).isEqualTo(1);
@@ -125,11 +130,40 @@ class DetectionCollaborationMySqlTest {
     }
     @Test void reportEditContainsRealPersistedDiffWithoutNarrativeOrSourceContents() throws Exception {
         var draft=reports.create(alice,new Create("report-task","Old title","private first narrative",key()));
-        var request=new Edit(draft.version(),"New title","private replacement narrative",key());var edited=reports.edit(alice,draft.reportId(),request);
+        var request=new Edit(draft.version(),"New title","private replacement narrative",key());
+        var firstHeaders=request(1,request.requestId());var edited=reports.edit(alice,draft.reportId(),request);
         var payload=change("EDIT","QUALITY_REPORT");assertThat(payload.path("beforeVersion").asInt()).isEqualTo(draft.version());assertThat(payload.path("resourceVersion").asInt()).isEqualTo(edited.version());
         assertThat(payload.toString()).doesNotContain("private first narrative","private replacement narrative","private-source");
         assertThat(payload.path("changes")).anySatisfy(field->{assertThat(field.path("field").asText()).isEqualTo("title");assertThat(field.path("before").asText()).isEqualTo("Old title");assertThat(field.path("after").asText()).isEqualTo("New title");});
+        assertThat(firstHeaders.getHeader("X-Resource-Version")).isEqualTo(Integer.toString(edited.version()));
+        assertThat(firstHeaders.getHeader("X-Audit-ID")).isNotBlank();assertThat(firstHeaders.getHeader("X-Change-Event-ID")).isNotBlank();
+        var replayHeaders=request(1,request.requestId());
         assertThat(reports.edit(alice,draft.reportId(),request)).isEqualTo(edited);assertThat(count("OPERATIONS")).isEqualTo(2);
+        for(String header:List.of("X-Resource-Version","X-Audit-ID","X-Change-Event-ID"))assertThat(replayHeaders.getHeader(header)).isEqualTo(firstHeaders.getHeader(header));
+    }
+    @Test void reportCreateReplayReturnsItsOriginalReceiptAfterLaterEdits(){
+        String command=key();var create=new Create("report-task","Original title","private original narrative",command);
+        var firstHeaders=request(1,command);var draft=reports.create(alice,create);
+        var edit=new Edit(draft.version(),"Later title","private later narrative",key());
+        request(1,edit.requestId());var edited=reports.edit(alice,draft.reportId(),edit);
+        assertThat(edited.version()).isGreaterThan(draft.version());
+        var replayHeaders=request(1,command);assertThat(reports.create(alice,create)).isEqualTo(draft);
+        for(String header:List.of("X-Resource-Version","X-Audit-ID","X-Change-Event-ID")){
+            assertThat(firstHeaders.getHeader(header)).isNotBlank();assertThat(replayHeaders.getHeader(header)).isEqualTo(firstHeaders.getHeader(header));
+        }
+        assertThat(replayHeaders.getHeader("X-Resource-Version")).isEqualTo(Integer.toString(draft.version()));
+        assertThat(count("OPERATIONS")).isEqualTo(2);assertThat(count("REPORT_COMMAND")).isEqualTo(2);
+    }
+    @Test void originalReportCommandWithoutItsAuditCannotInventAReplacementReceipt(){
+        String command=key();var create=new Create("report-task","Original title","private narrative",command);
+        request(1,command);var draft=reports.create(alice,create);
+        jdbc.update("DELETE FROM audit_event WHERE kind='OPERATIONS' AND resource_id=?",draft.reportId());
+        var replayHeaders=request(1,command);
+        assertThatThrownBy(()->reports.create(alice,create)).isInstanceOf(com.ruanzhu.doorhandle.common.BusinessException.class)
+                .satisfies(error->assertThat(((com.ruanzhu.doorhandle.common.BusinessException)error).getCode()).isEqualTo(409));
+        assertThat(count("REPORT_COMMAND")).isEqualTo(1);assertThat(count("OPERATIONS")).isZero();
+        assertThat(reports.get(alice,draft.reportId()).version()).isEqualTo(draft.version());
+        assertThat(replayHeaders.getHeader("X-Audit-ID")).isNull();assertThat(replayHeaders.getHeader("X-Change-Event-ID")).isNull();
     }
     @Test void reportApprovalAuditFailureRollsBackDecisionConfirmationAndCommand(){
         var draft=reports.create(alice,new Create("report-task","Report","private narrative",key()));var submitted=reports.submit(alice,draft.reportId(),new Command(draft.version(),key()));

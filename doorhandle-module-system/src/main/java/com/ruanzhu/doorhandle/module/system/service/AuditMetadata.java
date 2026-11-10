@@ -6,7 +6,7 @@ import java.util.*;
 /** Reads only declared identifier/version metadata, never serializes a DTO or evaluates user expressions. */
 final class AuditMetadata {
     static final String CORRELATION=AuditMetadata.class.getName()+".request";
-    private static final Set<String> PROPERTIES=Set.of("id","taskId","modelId","userId","reportId","fileId","version","bindingVersion","requestId","revision","body");
+    private static final Set<String> PROPERTIES=Set.of("id","taskId","modelId","userId","reportId","fileId","version","bindingVersion","accountVersion","requestId","revision","body");
     static Object select(String selector,Object[] args,Object result){
         if(selector==null||selector.isEmpty())return null;
         if(selector.startsWith("literal:"))return selector.substring(8);

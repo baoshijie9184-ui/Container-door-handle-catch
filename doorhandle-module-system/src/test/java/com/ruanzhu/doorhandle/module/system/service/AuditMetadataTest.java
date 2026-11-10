@@ -30,4 +30,12 @@ class AuditMetadataTest {
         for(String value:new String[]{"01","1.0","-1","9223372036854775808"})
             assertThatThrownBy(()->AuditMetadata.expectedVersion(new Object[]{new Claim(value)})).isInstanceOf(IllegalArgumentException.class);
     }
+    @Test void registeredAccountVersionReadsOnlyItsExactMetadataProperty(){
+        var view=new AccountAccessService.View(21,"supervisor",true,"SUPERVISOR",Long.MAX_VALUE);
+        assertThat(AuditMetadata.version("result.accountVersion",new Object[0],view)).isEqualTo(Long.MAX_VALUE);
+        assertThatThrownBy(()->AuditMetadata.select("result.username",new Object[0],view))
+                .isInstanceOf(IllegalStateException.class).hasMessageContaining("禁止读取");
+        assertThatThrownBy(()->AuditMetadata.select("result.password",new Object[0],view))
+                .isInstanceOf(IllegalStateException.class).hasMessageContaining("禁止读取");
+    }
 }

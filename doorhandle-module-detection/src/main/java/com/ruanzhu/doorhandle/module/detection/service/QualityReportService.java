@@ -197,7 +197,8 @@ public class QualityReportService {
             if(before!=null&&Objects.equals(old,value))continue;
             changes.add(new com.ruanzhu.doorhandle.contracts.collaboration.ChangeHistory.Change(field,REPORT_FIELD_LABELS.get(field),before==null?"ADD":"REPLACE",old,value,"STRING",false));
         }
-        api.appendChange(new com.ruanzhu.doorhandle.contracts.agent.OperationsAuditApi.ChangeEvent(metadata,"QUALITY_REPORT",null,before==null?null:(long)before.version(),changes));
+        var receipt=api.appendChangeWithReceipt(new com.ruanzhu.doorhandle.contracts.agent.OperationsAuditApi.ChangeEvent(metadata,"QUALITY_REPORT",null,before==null?null:(long)before.version(),changes));
+        reportReceipt(receipt,row.version());
     }
     private static final Map<String,String> REPORT_FIELD_LABELS=Map.ofEntries(
             Map.entry("title","报告标题"),Map.entry("status","报告状态"),Map.entry("taskId","检测任务"),
@@ -215,7 +216,29 @@ public class QualityReportService {
         var stored=workflow.command(actor.userId(),requestId);if(stored.isEmpty())return null;var command=stored.get();
         if(!digest.equals(command.requestSha256()))fail(409,"相同请求编号不能用于不同参数");
         authorized(actor,command.resourceId(),false);
-        try{return json.readValue(workflow.commandPayload(command).responseJson(),View.class);}catch(Exception error){throw new IllegalStateException("报告请求结果读取失败",error);}
+        final View response;
+        try{response=json.readValue(workflow.commandPayload(command).responseJson(),View.class);}catch(Exception error){throw new IllegalStateException("报告请求结果读取失败",error);}
+        // Only the report's immutable command and digest establish an exact replay.
+        // The audit lookup supplements it with the original response metadata.
+        if(operationsAuditEnabled&&(changeHistoryEnabled||collaborationMutationsEnabled)){
+            var api=operationsAudit==null?null:operationsAudit.getIfAvailable();
+            if(api==null)throw new IllegalStateException("必要业务审计服务不可用");
+            var receipt=api.findChangeReceipt(new com.ruanzhu.doorhandle.contracts.agent.AgentActor(actor.userId(),actor.username(),actor.supervisor()?com.ruanzhu.doorhandle.contracts.agent.AgentActor.Role.SUPERVISOR:com.ruanzhu.doorhandle.contracts.agent.AgentActor.Role.INSPECTOR),
+                    "QUALITY_REPORT","QUALITY_REPORT",command.resourceId(),requestId);
+            if(receipt==null)fail(409,"原始报告修改回执未确认，请保留请求编号核对");
+            reportReceipt(receipt,response.version());
+        }
+        return response;
+    }
+    private void reportReceipt(com.ruanzhu.doorhandle.contracts.agent.OperationsAuditApi.ChangeReceipt receipt,int version){
+        if(receipt==null||receipt.auditId()==null||receipt.eventId()==null||!Integer.toString(version).equals(receipt.resourceVersion()))
+            throw new IllegalStateException("报告修改回执与原始业务版本不一致");
+        var attributes=org.springframework.web.context.request.RequestContextHolder.getRequestAttributes();
+        if(attributes instanceof org.springframework.web.context.request.ServletRequestAttributes servlet&&servlet.getResponse()!=null){
+            servlet.getResponse().setHeader("X-Audit-ID",receipt.auditId());
+            servlet.getResponse().setHeader("X-Change-Event-ID",receipt.eventId());
+            servlet.getResponse().setHeader("X-Resource-Version",receipt.resourceVersion());
+        }
     }
     private Row authorized(Identity actor,String id,boolean lock) {
         if(id==null||!id.matches("qr-[a-f0-9-]{36}"))fail(404,"报告不存在或无访问权限");
