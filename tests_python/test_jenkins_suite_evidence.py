@@ -125,6 +125,186 @@ def test_shared_java_paths_cannot_follow_links_into_other_sources_or_reports(jav
     assert marker.read_bytes() == b'keep' and target.is_symlink()
 
 
+def assertion_group(state):
+    names = ['org.example.OneTest', 'org.example.TwoTest']
+    directory = state.build / 'module/surefire-reports'; directory.mkdir()
+    raw = ('<testsuite><testcase classname="' + names[0] + '" name="first"/>'
+        '<testcase classname="' + names[0] + '" name="business-assertion">'
+        '<failure type="org.opentest4j.AssertionFailedError">expected 200, observed 500</failure></testcase>'
+        '<testcase classname="' + names[1] + '" name="independent"/></testsuite>').encode()
+    (directory / 'TEST-org.example.OneTest.xml').write_bytes(raw)
+    catalog = inner.archive_java_reports(state.build, state.output / 'java', state.output)
+    counts, classes = inner.java_report_counts(state.output, catalog, names)
+    suite = {'id': 'suite-002', 'javaSelection': names, 'fixtureProperties': ['audited.fixture'], 'privateInputs': {}}
+    (state.output / 'java-suite-002.log').write_bytes(b'Original Maven output: complete business assertion failure\n')
+    entry = {**suite, 'status': 'FAILED', 'reportFiles': catalog, 'javaTests': counts, 'selectedJavaClasses': classes}
+    profile = {'javaSuites': [{'className': name, 'minimumTests': minimum} for name, minimum in zip(names, (2, 1))]}
+    return suite, entry, profile
+
+
+def test_complete_assertions_preserve_failed_originals_and_release_only_previous_shared_reports(java_workspace):
+    state = java_workspace; suite, entry, profile = assertion_group(state)
+    original = {item['path']: (state.output / item['path']).read_bytes() for item in entry['reportFiles']}
+    command = ['/fixed/mvn', 'test']; stopped = []
+    def stop(actual):
+        stopped.append(actual)
+        return {'cleanup': {'status': 'STOPPED', 'remaining': []}, 'command': {'exitCode': 1}}
+    assert inner.continue_native_assertions(suite, entry, profile, state.output, state.build, state.sources,
+        state.compiled, command, inner.VerificationCommandFailure('java-suite-002', 1), stop) is False
+    assert stopped == [command] and entry['status'] == 'FAILED'
+    assert entry['failureKind'] == 'COMPLETE_ASSERTION_FAILURES' and entry['javaTests']['failed'] == 1
+    assert original == {item['path']: (state.output / item['path']).read_bytes() for item in entry['reportFiles']}
+    assert not list(state.build.glob('*/surefire-reports'))
+    inner.require_java_reuse(state.build, state.output, state.sources, state.compiled)
+
+
+@pytest.mark.parametrize('mutation', ['missing-report', 'tampered-bytes', 'under-minimum', 'skip', 'error',
+    'non-assertion-failure', 'blank-case', 'omitted-class', 'wrong-counts', 'all-pass', 'foreign-class',
+    'duplicate-report', 'duplicate-profile-class', 'global-error'])
+def test_assertion_batching_refuses_incomplete_or_ambiguous_original_xml(java_workspace, mutation):
+    state = java_workspace; _, entry, profile = assertion_group(state)
+    reference = entry['reportFiles'][0]; path = state.output / reference['path']; raw = path.read_bytes()
+    if mutation == 'missing-report': path.unlink()
+    elif mutation == 'tampered-bytes': path.write_bytes(raw + b' ')
+    elif mutation == 'under-minimum': profile['javaSuites'][0]['minimumTests'] = 3
+    elif mutation == 'omitted-class': entry['javaSelection'].append('org.example.MissingTest')
+    elif mutation == 'wrong-counts': entry['javaTests']['passed'] += 1
+    elif mutation == 'duplicate-report': entry['reportFiles'].append(dict(reference))
+    elif mutation == 'duplicate-profile-class': profile['javaSuites'].append(dict(profile['javaSuites'][0]))
+    else:
+        if mutation == 'skip': raw = raw.replace(b'name="first"/>', b'name="first"><skipped/></testcase>')
+        elif mutation == 'error': raw = raw.replace(b'<failure ', b'<error ').replace(b'</failure>', b'</error>')
+        elif mutation == 'non-assertion-failure': raw = raw.replace(b'org.opentest4j.AssertionFailedError', b'java.lang.RuntimeException')
+        elif mutation == 'blank-case': raw = raw.replace(b'name="business-assertion"', b'name=""')
+        elif mutation == 'all-pass': raw = re.sub(b'<failure[^>]*>.*?</failure>', b'', raw)
+        elif mutation == 'foreign-class': raw = raw.replace(b'org.example.TwoTest', b'org.example.UnselectedTest')
+        elif mutation == 'global-error': raw = raw.replace(b'<testsuite>', b'<testsuite errors="1"><error/>')
+        path.write_bytes(raw); reference.update(bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest())
+    with pytest.raises(ValueError): inner.require_complete_assertion_reports(state.output, entry, profile)
+
+
+def assertion_runtime():
+    command = ['/owned/tools/mvn', '-B', 'test', '-Dtest=org.example.OneTest']
+    manifest = 'a' * 64
+    stopped = {'status': 'STOPPED', 'remaining': [], 'manifestSha256': manifest}
+    record = {'tool': 'mvn', 'argumentsSha256': hashlib.sha256(json.dumps(command[1:], ensure_ascii=True).encode()).hexdigest(),
+        'status': 'EXITED', 'exitCode': 1, 'resourceLimitTriggered': False,
+        'cleanup': {'removed': True, 'pid': 0, 'exitCode': 1}, 'mavenDependencyCache': {'status': 'READY'},
+        'resourceMonitoring': {'capacityVerdict': 'CONTROLLED_MEASUREMENT', 'diskFloorBytes': 100,
+            'memoryFloorBytes': 200, 'samples': 2, 'minimumDiskAvailableBytes': 1000, 'minimumMemoryAvailableBytes': 2000}}
+    proof = {'manifestSha256': manifest, 'commands': [record]}
+    runtime = SimpleNamespace(DISK_FLOOR=100, MEMORY_FLOOR=200, cleanup=lambda value: stopped,
+                              evidence=lambda value, cleanup: proof)
+    return command, manifest, stopped, record, proof, runtime
+
+
+def test_assertion_batching_binds_the_real_oci_exit_cleanup_and_safety_observations():
+    command, manifest, stopped, record, _, runtime = assertion_runtime()
+    proof = inner.assertion_tool_cleanup(runtime, {'directory': '/owned/tools'}, manifest, command)
+    assert proof == {'cleanup': stopped, 'command': record} and proof['command']['status'] == 'EXITED'
+
+
+@pytest.mark.parametrize('mutation', ['unknown-exit', 'resource-limit', 'cache-unknown', 'not-removed', 'boolean-pid',
+    'manifest-drift', 'duplicate-command', 'another-command', 'remaining-tool', 'disk-floor', 'memory-floor', 'boolean-samples'])
+def test_assertion_batching_never_turns_executor_or_resource_failure_into_a_test_failure(mutation):
+    command, manifest, stopped, record, proof, runtime = assertion_runtime()
+    if mutation == 'unknown-exit': record['status'] = 'FAILED_OR_UNKNOWN'
+    elif mutation == 'resource-limit': record['resourceLimitTriggered'] = True
+    elif mutation == 'cache-unknown': record['mavenDependencyCache']['status'] = 'FAILED_OR_UNKNOWN'
+    elif mutation == 'not-removed': record['cleanup']['removed'] = False
+    elif mutation == 'boolean-pid': record['cleanup']['pid'] = False
+    elif mutation == 'manifest-drift': proof['manifestSha256'] = 'b' * 64
+    elif mutation == 'duplicate-command': proof['commands'].append(dict(record))
+    elif mutation == 'another-command': record['argumentsSha256'] = 'b' * 64
+    elif mutation == 'remaining-tool': stopped['remaining'].append('owned-but-running')
+    elif mutation == 'disk-floor': record['resourceMonitoring']['minimumDiskAvailableBytes'] = 99
+    elif mutation == 'memory-floor': record['resourceMonitoring']['minimumMemoryAvailableBytes'] = 199
+    elif mutation == 'boolean-samples': record['resourceMonitoring']['samples'] = True
+    with pytest.raises(ValueError): inner.assertion_tool_cleanup(runtime, {'directory': '/owned/tools'}, manifest, command)
+
+
+@pytest.mark.parametrize('mutation', ['no-compiled-baseline', 'signal-exit', 'unknown-failure', 'wrong-command',
+    'source-drift', 'compiled-drift', 'cleanup-unknown', 'private-input-drift'])
+def test_assertion_batching_rechecks_inputs_and_compilation_before_advancing(java_workspace, mutation, monkeypatch):
+    state = java_workspace; suite, entry, profile = assertion_group(state)
+    compiled = state.compiled; error = inner.VerificationCommandFailure('java-suite-002', 1)
+    def stop(_command): return {'cleanup': {'status': 'STOPPED', 'remaining': []}}
+    if mutation == 'no-compiled-baseline': compiled = None
+    elif mutation == 'signal-exit': error = inner.VerificationCommandFailure('java-suite-002', 137)
+    elif mutation == 'unknown-failure': error = RuntimeError('executor admission failed')
+    elif mutation == 'wrong-command': error = inner.VerificationCommandFailure('java-another-suite', 1)
+    elif mutation == 'source-drift': (state.root / 'module/src/main/java/A.java').write_bytes(b'changed source')
+    elif mutation == 'compiled-drift': (state.build / 'module/classes/A.class').write_bytes(b'changed compiled bytes')
+    elif mutation == 'cleanup-unknown':
+        def stop(_command): return {'cleanup': {'status': 'FAILED_OR_UNKNOWN', 'remaining': []}}
+    elif mutation == 'private-input-drift':
+        monkeypatch.setattr(inner, 'require_unchanged_inputs', lambda inputs: (_ for _ in ()).throw(ValueError('private input drift')))
+    with pytest.raises((RuntimeError, ValueError)):
+        inner.continue_native_assertions(suite, entry, profile, state.output, state.build, state.sources, compiled,
+            ['/fixed/mvn', 'test'], error, stop)
+    assert (state.build / 'module/surefire-reports').is_dir()
+    assert (state.output / entry['reportFiles'][0]['path']).is_file()
+
+
+@pytest.mark.parametrize('diagnostic', [b'java.lang.OutOfMemoryError', b'Java heap space', b'Could not reserve enough space',
+    b'unable to create native thread', b'There was an error in the forked process', b'Process Exit Code: 137',
+    b'The forked VM terminated without properly saying goodbye', b'A fatal error has been detected by the Java Runtime Environment'])
+def test_http_assertion_cannot_hide_a_logged_jvm_or_fork_resource_failure(java_workspace, diagnostic):
+    state = java_workspace; suite, entry, profile = assertion_group(state)
+    (state.output / 'java-suite-002.log').write_bytes(diagnostic)
+    calls = []
+    with pytest.raises(ValueError, match='resource failure'):
+        inner.continue_native_assertions(suite, entry, profile, state.output, state.build, state.sources, state.compiled,
+            ['/fixed/mvn', 'test'], inner.VerificationCommandFailure('java-suite-002', 1), lambda command: calls.append(command))
+    assert calls == [] and (state.build / 'module/surefire-reports').is_dir()
+
+
+def test_verification_jvms_exit_on_real_heap_oom_before_a_servlet_can_mask_it_as_http_500():
+    import ast
+    tree = ast.parse((ROOT / 'script/jenkins/verify-ecs.py').read_text(encoding='utf8'))
+    options = [keyword.value.value for node in ast.walk(tree) if isinstance(node, ast.Call)
+               and isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name)
+               and node.func.value.id == 'env' and node.func.attr == 'update'
+               for keyword in node.keywords if keyword.arg == 'JAVA_TOOL_OPTIONS' and isinstance(keyword.value, ast.Constant)]
+    assert len(options) == 1 and set(options[0].split()) == {
+        '-Xmx1536m', '-XX:MaxMetaspaceSize=512m', '-XX:+ExitOnOutOfMemoryError'}
+
+
+@pytest.mark.parametrize('damage', ['missing-log', 'changed-after-cleanup'])
+def test_assertion_continuation_keeps_its_original_command_log_binding(java_workspace, damage):
+    state = java_workspace; suite, entry, profile = assertion_group(state)
+    path = state.output / 'java-suite-002.log'
+    if damage == 'missing-log': path.unlink()
+    def stop(_command):
+        path.write_bytes(b'replaced command output')
+        return {'cleanup': {'status': 'STOPPED', 'remaining': []}}
+    with pytest.raises(ValueError):
+        inner.continue_native_assertions(suite, entry, profile, state.output, state.build, state.sources, state.compiled,
+            ['/fixed/mvn', 'test'], inner.VerificationCommandFailure('java-suite-002', 1), stop)
+    assert (state.build / 'module/surefire-reports').is_dir()
+
+
+@pytest.mark.parametrize('mode', ['all-pass', 'assertions', 'unsafe-abort', 'unknown-outcome'])
+def test_independent_native_groups_collect_only_safe_assertions_and_block_all_later_stages(mode):
+    suites = [{'id': 'one'}, {'id': 'two'}, {'id': 'three'}]; visited = []; receipt = {}
+    def run(suite):
+        visited.append(suite['id'])
+        if suite['id'] == 'two':
+            if mode == 'unsafe-abort': raise ValueError('unsafe resource or input state')
+            if mode == 'assertions': return False
+            if mode == 'unknown-outcome': return None
+        return True
+    if mode == 'all-pass':
+        inner.run_native_java_groups(suites, run, receipt); visited.append('later-source-python-migration')
+        assert visited == ['one', 'two', 'three', 'later-source-python-migration']
+        assert 'nativeAssertionFailures' not in receipt
+    else:
+        with pytest.raises((RuntimeError, ValueError)):
+            inner.run_native_java_groups(suites, run, receipt); visited.append('later-source-python-migration')
+        assert visited == (['one', 'two', 'three'] if mode == 'assertions' else ['one', 'two'])
+        assert receipt.get('nativeAssertionFailures') == (['two'] if mode == 'assertions' else None)
+
+
 def preparation_transport_source():
     source = (ROOT / 'script/jenkins/pipeline.ps1').read_text(encoding='utf8')
     begin = source.index('        $prepareCommand = ')

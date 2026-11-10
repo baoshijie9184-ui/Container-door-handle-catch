@@ -433,6 +433,141 @@ def require_java_pass(counts, selected, *, fixture):
         raise RuntimeError('The selected Java suite did not execute successfully; inspect its original Surefire reports')
 
 
+class VerificationCommandFailure(RuntimeError):
+    """A real child exit, distinct from interruption or executor admission errors."""
+    def __init__(self, label, exit_code):
+        super().__init__(label + ' failed; original log preserved')
+        self.label, self.exit_code = label, exit_code
+
+
+def require_complete_assertion_reports(output, entry, profile):
+    """An incomplete/lifecycle/error report never permits another native group."""
+    selected = entry['javaSelection']; catalog = entry['reportFiles']
+    if not selected or len(set(selected)) != len(selected) or not catalog:
+        raise ValueError('Assertion continuation requires every selected original Java report')
+    counts, classes = empty_counts(), {name: empty_counts() for name in selected}
+    seen = set()
+    assertion_types = {'java.lang.AssertionError', 'org.opentest4j.AssertionFailedError',
+                       'org.opentest4j.MultipleFailuresError'}
+    for binding in catalog:
+        path = output / binding['path']
+        if binding['path'] in seen or not path.is_file() or path.is_symlink() or path.resolve(strict=True) != path \
+                or not path.is_relative_to(output) or path.stat().st_size > 32 * 1024 * 1024:
+            raise ValueError('Assertion continuation original Java report is missing or redirected')
+        seen.add(binding['path']); raw = path.read_bytes()
+        if len(raw) != binding['bytes'] or hashlib.sha256(raw).hexdigest() != binding['sha256'] \
+                or b'<!DOCTYPE' in raw.upper() or b'<!ENTITY' in raw.upper():
+            raise ValueError('Assertion continuation original Java report bytes differ')
+        root = ET.fromstring(raw)
+        if next(root.iter('error'), None) is not None or next(root.iter('skipped'), None) is not None \
+                or any(node.get(key, '0') != '0' for node in root.iter('testsuite') for key in ('errors', 'skipped')):
+            raise ValueError('Lifecycle, skipped or global Java errors prevent assertion continuation')
+        for case in root.iter('testcase'):
+            name = case.get('classname') or root.get('name', '')
+            matches = [requested for requested in selected if name == requested or name.startswith(requested + '$')]
+            failure = case.findall('failure')
+            if len(matches) != 1 or not case.get('name', '').strip() or case.find('error') is not None \
+                    or case.find('skipped') is not None or len(failure) > 1 \
+                    or (failure and failure[0].get('type') not in assertion_types):
+                raise ValueError('Only complete assertion failures may continue native Java groups')
+            result = 'failed' if failure else 'passed'
+            for target in (counts, classes[matches[0]]):
+                target['found'] += 1; target[result] += 1
+    if not counts['failed'] or counts != entry['javaTests'] or classes != entry['selectedJavaClasses']:
+        raise ValueError('Assertion continuation original Java counts differ')
+    for name, tally in classes.items():
+        required = [row for row in profile['javaSuites'] if row['className'] == name]
+        if len(required) != 1 or type(required[0]['minimumTests']) is not int or required[0]['minimumTests'] <= 0 \
+                or tally['found'] < required[0]['minimumTests']:
+            raise ValueError('Assertion continuation omitted a selected native Java class or testcase')
+
+
+def assertion_tool_cleanup(runtime, value, expected_sha, command):
+    """Bind exit=1 to the original OCI command, including successful safety cleanup."""
+    if not command or command[0] != str(Path(value['directory']) / 'mvn'):
+        raise ValueError('Only this admitted Maven command may continue after assertions')
+    stopped = runtime.cleanup(value)
+    proof = runtime.evidence(value, stopped)
+    arguments_sha = hashlib.sha256(json.dumps(command[1:], ensure_ascii=True).encode()).hexdigest()
+    matches = [row for row in proof['commands'] if row['tool'] == 'mvn' and row['argumentsSha256'] == arguments_sha]
+    if stopped.get('status') != 'STOPPED' or stopped.get('remaining') != [] \
+            or stopped.get('manifestSha256') != expected_sha or proof.get('manifestSha256') != expected_sha or len(matches) != 1:
+        raise ValueError('Assertion continuation lacks unchanged tool admission and owned cleanup')
+    record = matches[0]; cleaned = record.get('cleanup') or {}; monitoring = record.get('resourceMonitoring') or {}
+    if record.get('status') != 'EXITED' or type(record.get('exitCode')) is not int or record['exitCode'] != 1 \
+            or record.get('resourceLimitTriggered') is not False or cleaned.get('removed') is not True \
+            or type(cleaned.get('pid')) is not int or cleaned['pid'] != 0 \
+            or type(cleaned.get('exitCode')) is not int or cleaned['exitCode'] != 1 \
+            or (record.get('mavenDependencyCache') or {}).get('status') != 'READY' \
+            or monitoring.get('capacityVerdict') != 'CONTROLLED_MEASUREMENT' \
+            or monitoring.get('diskFloorBytes') != runtime.DISK_FLOOR \
+            or monitoring.get('memoryFloorBytes') != runtime.MEMORY_FLOOR \
+            or type(monitoring.get('samples')) is not int or monitoring['samples'] < 1 \
+            or any(type(monitoring.get(key)) is not int or monitoring[key] < minimum for key, minimum in (
+                ('minimumDiskAvailableBytes', runtime.DISK_FLOOR), ('minimumMemoryAvailableBytes', runtime.MEMORY_FLOOR))):
+        raise ValueError('Assertion continuation cannot hide an executor, resource, OOM or cache failure')
+    return {'cleanup': stopped, 'command': record}
+
+
+def assertion_command_log(output, label):
+    path = output / (label + '.log')
+    if not path.is_file() or path.is_symlink() or path.resolve(strict=True) != path \
+            or not path.is_relative_to(output) or not 0 < path.stat().st_size <= 32 * 1024 * 1024:
+        raise ValueError('Assertion continuation requires its bounded original command log')
+    raw = path.read_bytes()
+    # A servlet can turn a JVM heap/resource error into a plain HTTP assertion;
+    # Docker OOMKilled and the host memory floor cannot alone exclude that path.
+    if re.search(rb'OutOfMemoryError|Java heap space|Could not reserve enough space|unable to create native thread|'
+                 rb'There was an error in the forked process|Process Exit Code:\s*137|forked VM terminated|'
+                 rb'VM crash|Crashed tests:|hs_err_pid|FATAL ERROR in native method|SIGSEGV|SIGABRT|'
+                 rb'A fatal error has been detected', raw, re.I):
+        raise ValueError('JVM or forked-process resource failure prevents assertion continuation')
+    return {'file': path.relative_to(output).as_posix(), 'bytes': len(raw), 'sha256': hashlib.sha256(raw).hexdigest()}
+
+
+def continue_native_assertions(suite, entry, profile, output, build_root, source_inputs, compiled_outputs,
+                               command, error, cleanup_command):
+    if type(error) is not VerificationCommandFailure or type(error.exit_code) is not int or error.exit_code != 1 \
+            or error.label != 'java-' + suite['id'] or not suite['fixtureProperties'] \
+            or compiled_outputs is None or source_inputs is None or not callable(cleanup_command):
+        raise error
+    require_complete_assertion_reports(output, entry, profile)
+    original_log = assertion_command_log(output, error.label)
+    def unchanged():
+        require_unchanged_inputs(suite.get('privateInputs', {}))
+        if java_source_inventory(ROOT) != source_inputs or java_compiled_inventory(build_root, output) != compiled_outputs:
+            raise ValueError('Assertion continuation source, private inputs or compiled Java bytes changed')
+    unchanged()
+    proof = cleanup_command(command)
+    if type(proof) is not dict or (proof.get('cleanup') or {}).get('status') != 'STOPPED' \
+            or (proof.get('cleanup') or {}).get('remaining') != []:
+        raise ValueError('Assertion continuation requires confirmed owned-tool cleanup')
+    unchanged()
+    require_complete_assertion_reports(output, entry, profile)
+    if assertion_command_log(output, error.label) != original_log:
+        raise ValueError('Original Maven command log changed during assertion admission')
+    entry.update(status='FAILED', assertionContinuation=proof, failureKind='COMPLETE_ASSERTION_FAILURES',
+        assertionCommandLog=original_log,
+        compiledBytesSha256=hashlib.sha256(json.dumps(compiled_outputs, sort_keys=True).encode()).hexdigest(),
+        sourceInputsSha256=hashlib.sha256(json.dumps(source_inputs, sort_keys=True).encode()).hexdigest())
+    entry['reportOutputCleanup'] = clear_java_reports(build_root, output)
+    require_java_reuse(build_root, output, source_inputs, compiled_outputs)
+    return False
+
+
+def run_native_java_groups(suites, run_java, receipt):
+    failed = []
+    for suite in suites:
+        outcome = run_java(suite)
+        if type(outcome) is not bool:
+            raise ValueError('A native Java group has no explicit verified outcome')
+        if outcome is False:
+            failed.append(suite['id'])
+            receipt['nativeAssertionFailures'] = list(failed)
+    if failed:
+        raise RuntimeError('Native Java assertion failures were collected; all later verification remains blocked')
+
+
 def aggregate_java_suites(suites):
     counts, selected, reports = empty_counts(), {}, []
     for suite in suites:
@@ -524,6 +659,7 @@ def admitted_tool_executables(manifest, expected_sha, identity):
     cache = runtime.registered_maven_cache(value)
     tools['MAVEN_REPOSITORY'] = cache['repository']
     tools['_cleanup_owned_tools'] = lambda: runtime.cleanup(value)
+    tools['_assertion_failure_cleanup'] = lambda command: assertion_tool_cleanup(runtime, value, actual_sha, command)
     # This is the immutable executor identity checked exactly by verify-remote.
     # Shared dependency usage belongs to each command's tool evidence instead.
     return tools, {'manifestSha256': actual_sha, 'images': value['images']}
@@ -755,7 +891,7 @@ def main():
     env = {name: value for name, value in os.environ.items()
            if name in ('PATH', 'JAVA_HOME', 'LANG', 'LC_ALL', 'DOORHANDLE_ECS_INSTANCE_ID', 'DOORHANDLE_ECS_MACHINE_ID')}
     env.update(HOME=str(output / 'profile'), TMPDIR=str(output / 'tmp'),
-               JAVA_TOOL_OPTIONS='-Xmx1536m -XX:MaxMetaspaceSize=512m',
+               JAVA_TOOL_OPTIONS='-Xmx1536m -XX:MaxMetaspaceSize=512m -XX:+ExitOnOutOfMemoryError',
                PYTHONDONTWRITEBYTECODE='1', PYTHONNOUSERSITE='1', PYTHON_DOTENV_DISABLED='1',
                npm_config_cache=str(output / 'npm-cache'))
     python_env = env.copy()
@@ -805,7 +941,7 @@ def main():
                 entry['exitCode'] = process.returncode
                 entry['finishedAt'] = datetime.now(timezone.utc).isoformat()
         if process.returncode:
-            raise RuntimeError(label + ' failed; original log preserved')
+            raise VerificationCommandFailure(label, process.returncode)
     try:
         shared_build_root = None; compiled_outputs = None; source_inputs = None
         def run_java(suite, *, source_regression=False):
@@ -831,13 +967,22 @@ def main():
             else:
                 receipt['javaSuites'].append(entry)
             arguments = java_maven_arguments(suite, tools, build_root, initial=initial, source_regression=source_regression)
+            command_failure = None
             try:
                 require_unchanged_inputs(suite.get('privateInputs', {}))
-                execute(label, arguments, ROOT)
+                try:
+                    execute(label, arguments, ROOT)
+                except VerificationCommandFailure as error:
+                    command_failure = error
             finally:
                 entry['reportFiles'] = archive_java_reports(build_root, destination, output)
                 entry['javaTests'], entry['selectedJavaClasses'] = java_report_counts(output, entry['reportFiles'], suite['javaSelection'])
                 receipt['javaTests'], receipt['selectedJavaClasses'], receipt['javaReportFiles'] = aggregate_java_suites(receipt['javaSuites'])
+            if command_failure is not None:
+                if initial or source_regression:
+                    raise command_failure
+                return continue_native_assertions(suite, entry, profile, output, build_root, source_inputs, compiled_outputs,
+                    arguments, command_failure, tools.get('_assertion_failure_cleanup'))
             require_java_pass(entry['javaTests'], entry['selectedJavaClasses'], fixture=bool(suite['fixtureProperties']))
             if java_source_inventory(ROOT) != source_inputs:
                 raise ValueError('Fixed Java source changed during verification')
@@ -856,8 +1001,8 @@ def main():
                         raise RuntimeError('Ordinary Java regression omitted a required pure-logic class')
             entry['status'] = 'PASS'
             entry['reportOutputCleanup'] = clear_java_reports(build_root, output)
-        for suite in args.java_suites:
-            run_java(suite)
+            return True
+        run_native_java_groups(args.java_suites, run_java, receipt)
         if args.source_regression:
             required = java_classes([item['className'] for item in profile['sourceRegression']['requiredClasses']])
             run_java({'id': 'source-regression', 'javaSelection': required, 'fixtureProperties': [], 'fixtureOptions': []}, source_regression=True)
