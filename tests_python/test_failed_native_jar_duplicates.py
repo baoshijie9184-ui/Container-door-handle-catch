@@ -875,7 +875,7 @@ def test_recent_controller_is_an_independent_three_row_canonical_only_batch():
     original = next(ast.literal_eval(node.value) for node in syntax.body if isinstance(node, ast.Assign)
         and any(isinstance(target, ast.Name) and target.id == 'approved' for target in node.targets))
     selected = next(node for node in syntax.body if isinstance(node, ast.If)
-        and ast.dump(node.test) == ast.dump(ast.parse("batch=='Recent'", mode='eval').body))
+        and ast.dump(node.test) == ast.dump(ast.parse("batch in ('Recent','RetiredCopies')", mode='eval').body))
     recent = next(ast.literal_eval(node.value) for node in selected.body if isinstance(node, ast.Assign)
         and any(isinstance(target, ast.Name) and target.id == 'approved' for target in node.targets))
     assert len(original) == len(retirer.APPROVED_OLD) == 16 and len(recent) == 3
@@ -885,7 +885,7 @@ def test_recent_controller_is_an_independent_three_row_canonical_only_batch():
         (198, '7af0903ee84011dc51f4abac4f4a4d9679db7322', '054a2b4bdfda1c97a006c2b78d0877e06260b4cef6e0df4177f58eef8ddf8ffe'),
         (201, '803baf401b5f9566283a59cb6a885a794b9d7d85', 'baaddc7acf7eb643f68e2e0c104decb35a90a394564dc94f601914e6710e731b')]
     assert all(number != 190 for number, _commit, _sha in recent)
-    assert re.search(r"ValidateSet\('Historical','Recent'\)\]\[string\]\$CanonicalBatch = 'Historical'", controller)
+    assert re.search(r"ValidateSet\('Historical','Recent','RetiredCopies'\)\]\[string\]\$CanonicalBatch = 'Historical'", controller)
     assert "$CanonicalBatch -cne 'Recent' -or $Mode -ceq 'Maintenance'" in controller
     assert "{'capture-canonical-request'}else{'capture-request'}" in controller
     branch = controller.split("if($CanonicalBatch -ceq 'Recent') {", 1)[1].split('\n$builderPlanned=', 1)[0]
@@ -894,7 +894,8 @@ def test_recent_controller_is_an_independent_three_row_canonical_only_batch():
     assert all(phase not in branch for phase in ('plan-builders', 'apply-builders', 'plan-public-layers',
         'apply-public-layers', 'plan-generated-image-archives', 'apply-generated-image-archives'))
     pipeline = (root / 'script/jenkins/pipeline.ps1').read_text(encoding='utf8')
-    assert re.search(r"retire-failed-native-jar-duplicates\.ps1 -Mode Maintenance -CanonicalBatch Recent ", pipeline)
+    assert re.search(r"retire-failed-native-jar-duplicates\.ps1 -Mode Maintenance -CanonicalBatch RetiredCopies ", pipeline)
+    assert not re.search(r"retire-failed-native-jar-duplicates\.ps1 -Mode Maintenance -CanonicalBatch Recent ", pipeline)
 
 
 def test_recent_fixture_capture_authenticates_both_original_source_modes_before_projection(canonical_case, monkeypatch):
@@ -1172,3 +1173,204 @@ def test_recent_builder_scope_does_not_expand_any_historical_permission():
     assert set(retirer.RECENT_BUILDER_ONLY).isdisjoint(retirer.APPROVED_BUILDER_TOOLS)
     assert set(retirer.RECENT_BUILDER_ONLY).isdisjoint(retirer.PUBLIC_LAYER_TAGS)
     assert set(retirer.RECENT_BUILDER_ONLY).isdisjoint(retirer.PYTHON_CACHE_APPROVED)
+
+
+@pytest.fixture
+def retired_copy_case(tmp_path, bundle, monkeypatch):
+    root = tmp_path / 'ci'; root.mkdir(mode=0o700)
+    current = {'release': 'ci-205-' + 'f' * 12, 'commit': 'f' * 40, 'sourceSha256': 'e' * 64}
+    (root / 'inbox' / current['release']).mkdir(mode=0o700, parents=True)
+    targets, originals, files, preserved = {}, {}, {}, {}
+    for tag, actual in retirer.RETIRED_COPY_TARGETS.items():
+        body = ('synthetic independently copied jar ' + tag).encode()
+        targets[tag] = {**actual, 'jarSha256': sha(body), 'jarBytes': len(body)}
+        work = root / 'verification' / tag / 'checkout/work/compact-fixtures'; work.mkdir(mode=0o700, parents=True)
+        inbox = root / 'inbox' / tag; inbox.mkdir(mode=0o700, parents=True)
+        path = work / 'candidate-app.jar'; path.write_bytes(body); path.chmod(0o600); files[tag] = path
+        for path in (work / 'source.sql', work / 'original-report.xml', inbox / 'source.tar.gz'):
+            path.write_bytes(('preserved original ' + str(path)).encode()); path.chmod(0o600); preserved[path] = path.read_bytes()
+        context = {'release': tag, 'commit': actual['commit'], 'sourceSha256': actual['sourceSha256']}
+        control_sha = {'buildXml': sha(tag.encode()), 'release': 'c' * 64}
+        originals[tag] = {'context': context, 'evidence': {'jarSha256': sha(body), 'jarBytes': len(body),
+            'ownerToken': '0123456789', 'controlSha256': control_sha}, 'controls': {},
+            'sourceArchive': {'sha256': context['sourceSha256'], 'transportRecipeSha256': 'a' * 64}}
+    monkeypatch.setattr(retirer, 'RETIRED_COPY_TARGETS', targets)
+    helper = b'# synthetic original retirement policy is authenticated but never executed\n'
+    archive = io.BytesIO()
+    authority = {key: value for key, value in retirer.RETIRED_COPY_AUTHORITY.items() if key != 'files'}
+    with tarfile.open(fileobj=archive, mode='w:gz', format=tarfile.PAX_FORMAT,
+                      pax_headers={'comment': authority['commit']}) as tar:
+        member = tarfile.TarInfo('script/jenkins/retire-failed-native-jar-duplicates.py'); member.size = len(helper)
+        tar.addfile(member, io.BytesIO(helper))
+    source = archive.getvalue(); authority.update(sourceSha256=sha(source), helperSha256=sha(helper))
+    context = {key: authority[key] for key in ('release', 'commit', 'sourceSha256')}
+    old_request = {'schemaVersion': 1, 'kind': retirer.KIND + '-request', 'current': context, 'identity': bundle.identity,
+                   'protectedReleases': [context['release']],
+                   'candidates': [{**item['context'], 'controls': {}} for item in originals.values()]}
+    old_request_raw = encoded(old_request)
+    old_candidates, deleted = [], []
+    for tag, item in originals.items():
+        registered = targets[tag]
+        target = {'kind': retirer.CANONICAL_JAR_KIND, 'path': 'inbox/' + tag + '/application.jar',
+                  'sha256': registered['jarSha256'], 'bytes': registered['jarBytes']}
+        old_candidates.append({'context': item['context'], 'target': target,
+            'controls': {key: {'sha256': value} for key, value in item['evidence']['controlSha256'].items()},
+            'sourceArchive': item['sourceArchive']})
+        deleted.append({**target, 'binaryDisposition': 'RETIRED', 'capturedInodeVerified': True})
+    old_plan = {'kind': retirer.CANONICAL_KIND + '-plan', 'current': context, 'identity': bundle.identity,
+        'requestSha256': sha(old_request_raw), 'deletionPerformed': False, 'skipped': [], 'candidates': old_candidates}
+    old_plan_raw = encoded(old_plan)
+    journal = [{'phase': 'STARTED', 'identity': bundle.identity,
+                'requestSha256': sha(old_request_raw), 'planSha256': sha(old_plan_raw)}]
+    for item in deleted: journal.extend([{'phase': 'DELETE_STARTED', **item}, {'phase': 'DELETE_FINISHED', **item}])
+    journal.append({'phase': 'FINISHED', 'deletedFiles': 3})
+    journal_raw = b''.join(encoded(item) + b'\n' for item in journal)
+    old_receipt = {'kind': retirer.CANONICAL_KIND + '-receipt', 'current': context, 'identity': bundle.identity,
+        'status': 'REMOVED', 'failure': None, 'skipped': [], 'retainedQuarantinePaths': [], 'binaryDisposition': 'RETIRED',
+        'binaryRebuildByteIdentityClaimed': False, 'testsRunByRetirement': False,
+        'sourceArchivesDataAndReportsHaveNoDeletionApi': True, 'planSha256': sha(old_plan_raw),
+        'requestSha256': sha(old_request_raw), 'journalSha256': sha(journal_raw), 'deleted': deleted}
+    terminal = ET.fromstring(flow_xml(context, result='SUCCESS'))
+    for item in terminal.findall('.//hudson.model.ParametersAction/parameters/*'):
+        if item.findtext('name') == 'ACTION': item.find('value').text = 'reclaim-build-outputs'
+        if item.findtext('name') == 'DOORHANDLE_CI_SCOPE': item.find('value').text = 'source'
+    bodies = {'buildXml': ET.tostring(terminal), 'source': source, 'request': old_request_raw,
+        'plan': old_plan_raw, 'receipt': encoded(old_receipt), 'journal': journal_raw,
+        'release': encoded({**context, 'schema': 1, 'kind': 'doorhandle-maintenance-source',
+            'action': 'reclaim-build-outputs', 'maintenanceOnly': True, 'testsExecuted': False, 'applicationBuilt': False})}
+    authority_files = {}; directory = root / 'inbox' / current['release'] / 'native-retired-candidate-controls' / context['release']
+    directory.mkdir(mode=0o700, parents=True)
+    authority['files'] = {}
+    for role, (name, _size, _checksum) in retirer.RETIRED_COPY_AUTHORITY['files'].items():
+        body = bodies[role]; path = directory / name; path.write_bytes(body); path.chmod(0o600)
+        authority_files[role] = path; authority['files'][role] = (name, len(body), sha(body))
+    monkeypatch.setattr(retirer, 'RETIRED_COPY_AUTHORITY', authority)
+    checks, blocked = [], [False]
+    def original(actual_root, request, row, **options):
+        assert actual_root == root and options == {'canonical_jar': True}
+        assert row['release'] in targets and request['identity'] == bundle.identity
+        return copy.deepcopy(originals[row['release']])
+    monkeypatch.setattr(retirer, 'admit_historical_controls', original)
+    def quiescence(checkout, tag, token):
+        assert checkout == root / 'verification' / tag / 'checkout' and token == '0123456789'
+        checks.append(tag)
+        if blocked[0]: raise retirer.RetirementError('SYNTHETIC_OTHER_CONTAINER_REFERENCE')
+    request = {'schemaVersion': 1, 'kind': retirer.KIND + '-request', 'current': current, 'identity': bundle.identity,
+        'protectedReleases': [current['release']], 'candidates': [{**item['context'], 'controls': {}} for item in originals.values()]}
+    raw = encoded(request); options = {'request_sha256': sha(raw), 'expected_current': current,
+                                      'identity': bundle.identity, 'quiescence': quiescence}
+    return SimpleNamespace(root=root, current=current, identity=bundle.identity, authority=authority,
+        authority_files=authority_files, files=files, originals=originals, preserved=preserved,
+        bodies={tag: path.read_bytes() for tag, path in files.items()}, raw=raw, options=options, checks=checks, blocked=blocked)
+
+
+def test_retired_copies_require_the_real_authority_chain_and_preserve_originals(retired_copy_case):
+    state = retired_copy_case
+    prepared = retirer.plan_retired_candidate_copies(state.root, state.raw, **state.options)
+    assert prepared['candidateTargetCount'] == 3 and prepared['skipped'] == []
+    changed = copy.deepcopy(prepared); changed['candidateTargetCount'] = 2
+    with pytest.raises(retirer.RetirementError, match='COMPLETE_EXACT_RETIRED_COPY_PLAN_REQUIRED'):
+        retirer.apply_retired_candidate_copies(state.root, state.raw, changed, plan_sha256=sha(encoded(prepared)), **state.options)
+    result = retirer.apply_retired_candidate_copies(state.root, state.raw, prepared, plan_sha256=sha(encoded(prepared)), **state.options)
+    assert result['status'] == 'REMOVED' and result['candidateTargetCount'] == len(result['deleted']) == 3
+    assert result['binaryDisposition'] == 'RETIRED' and result['inboxKeepersRecreated'] is False
+    assert result['sourceArchivesDataAndReportsHaveNoDeletionApi'] is True and result['retainedQuarantinePaths'] == []
+    assert all(not path.exists() for path in state.files.values())
+    assert all(path.read_bytes() == body for path, body in state.preserved.items())
+    assert all(not (state.root / 'inbox' / tag / 'application.jar').exists() for tag in state.files)
+    assert set(state.checks) == set(state.files)
+
+
+@pytest.mark.parametrize('role', ['buildXml', 'release', 'source', 'request', 'plan', 'receipt', 'journal'])
+def test_each_original_retirement_authority_file_is_bound_before_copy_plan(retired_copy_case, role):
+    state = retired_copy_case; path = state.authority_files[role]; path.write_bytes(path.read_bytes() + b' ')
+    with pytest.raises(retirer.RetirementError, match='ORIGINAL_RETIREMENT_AUTHORITY_SHA_DRIFT'):
+        retirer.plan_retired_candidate_copies(state.root, state.raw, **state.options)
+    assert all(path.read_bytes() == state.bodies[tag] for tag, path in state.files.items())
+
+
+@pytest.mark.parametrize('obstacle', ['candidate-bytes', 'keeper-reappeared', 'other-reference'])
+def test_retired_copy_plan_is_all_three_or_no_mutation(retired_copy_case, obstacle):
+    state = retired_copy_case; tag = next(iter(state.files))
+    if obstacle == 'candidate-bytes': state.files[tag].write_bytes(b'unreviewed replacement')
+    if obstacle == 'keeper-reappeared': (state.root / 'inbox' / tag / 'application.jar').write_bytes(b'new unexpected keeper')
+    if obstacle == 'other-reference': state.blocked[0] = True
+    prepared = retirer.plan_retired_candidate_copies(state.root, state.raw, **state.options)
+    assert prepared['candidateTargetCount'] < 3 and prepared['skipped']
+    with pytest.raises(retirer.RetirementError, match='COMPLETE_EXACT_RETIRED_COPY_PLAN_REQUIRED'):
+        retirer.apply_retired_candidate_copies(state.root, state.raw, prepared, plan_sha256=sha(encoded(prepared)), **state.options)
+    assert all(path.exists() for path in state.files.values())
+
+
+@pytest.mark.parametrize('changed', ['candidate', 'authority', 'publication'])
+def test_retired_copy_apply_rechecks_plan_authority_target_and_publication(retired_copy_case, changed):
+    state = retired_copy_case; prepared = retirer.plan_retired_candidate_copies(state.root, state.raw, **state.options)
+    tag = next(iter(state.files))
+    if changed == 'candidate': state.files[tag].write_bytes(b'late candidate replacement')
+    if changed == 'authority': state.authority_files['receipt'].write_bytes(b'late authority replacement')
+    if changed == 'publication': (state.root / 'releases' / tag).mkdir(mode=0o700, parents=True)
+    result = retirer.apply_retired_candidate_copies(state.root, state.raw, prepared, plan_sha256=sha(encoded(prepared)), **state.options)
+    assert result['status'] == 'FAILED_OR_UNKNOWN' and result['deleted'] == []
+    assert all(path.exists() for path in state.files.values())
+    assert all(path.read_bytes() == body for path, body in state.preserved.items())
+
+
+@pytest.mark.parametrize('changed', ['originals', 'reference', 'inbox-reappears', 'target-reappears'])
+def test_retired_copy_changed_after_capture_is_retained_never_unlinked(retired_copy_case, monkeypatch, changed):
+    state = retired_copy_case; prepared = retirer.plan_retired_candidate_copies(state.root, state.raw, **state.options)
+    tag = next(iter(state.files)); capture = retirer._capture_no_replace
+    def changed_capture(*args):
+        capture(*args)
+        if changed == 'originals': state.originals[tag]['evidence']['controlSha256']['release'] = '0' * 64
+        if changed == 'reference': state.blocked[0] = True
+        if changed == 'inbox-reappears': (state.root / 'inbox' / tag / 'application.jar').write_bytes(b'new unexpected inbox jar')
+        if changed == 'target-reappears': state.files[tag].write_bytes(b'new unexpected target')
+    monkeypatch.setattr(retirer, '_capture_no_replace', changed_capture)
+    result = retirer.apply_retired_candidate_copies(state.root, state.raw, prepared, plan_sha256=sha(encoded(prepared)), **state.options)
+    assert result['status'] == 'FAILED_OR_UNKNOWN' and result['deleted'] == []
+    assert len(result['retainedQuarantinePaths']) == 1 and result['automaticResumeAllowed'] is False
+    assert (state.root / result['retainedQuarantinePaths'][0]).read_bytes() == state.bodies[tag]
+    if changed == 'target-reappears': assert state.files[tag].read_bytes() == b'new unexpected target'
+    assert all(path.read_bytes() == body for path, body in state.preserved.items())
+
+
+@pytest.mark.parametrize('changed', ['unknown-tag', 'old-kind'])
+def test_retired_copy_single_file_api_does_not_expand_the_original_apis(retired_copy_case, changed):
+    state = retired_copy_case; tag = next(iter(state.files)); registered = retirer.RETIRED_COPY_TARGETS[tag]
+    descriptor = retirer.describe_retired_candidate_copy(state.root, tag, registered['jarSha256'], registered['jarBytes'])
+    if changed == 'unknown-tag': descriptor['release'] = 'ci-204-' + 'a' * 12
+    else: descriptor['kind'] = retirer.JAR_COPY_KIND
+    with pytest.raises(retirer.RetirementError):
+        retirer.remove_retired_candidate_copy(state.root, descriptor, {}, quiescence=lambda: None)
+    assert state.files[tag].read_bytes() == state.bodies[tag]
+
+
+@pytest.mark.parametrize('changed', ['result', 'ACTION', 'DOORHANDLE_CI_SCOPE'])
+def test_retired_copy_authority_terminal_is_an_actual_successful_maintenance(retired_copy_case, changed):
+    state = retired_copy_case; raw = state.authority_files['buildXml'].read_bytes(); tree = ET.fromstring(raw)
+    if changed == 'result': tree.find('result').text = 'FAILURE'
+    else:
+        item = next(item for item in tree.findall('.//hudson.model.ParametersAction/parameters/*') if item.findtext('name') == changed)
+        item.find('value').text = 'verify-runtime' if changed == 'ACTION' else 'mysql'
+    with pytest.raises(retirer.RetirementError): retirer.retired_copy_terminal(ET.tostring(tree), state.authority)
+
+
+def test_retired_copy_controller_archive_and_authority_contract_are_fully_wired():
+    root = MODULE.parents[2]
+    controller = (root / 'script/jenkins/retire-failed-native-jar-duplicates.ps1').read_text(encoding='utf8')
+    reader = controller.split("$reader=@'\n", 1)[1].split("\n'@", 1)[0]; syntax = ast.parse(reader)
+    branch = next(node for node in syntax.body if isinstance(node, ast.If)
+                  and ast.dump(node.test) == ast.dump(ast.parse("batch=='RetiredCopies'", mode='eval').body))
+    originals = next(ast.literal_eval(node.value) for node in branch.body if isinstance(node, ast.Assign)
+                     and any(isinstance(target, ast.Name) and target.id == 'originals' for target in node.targets))
+    assert originals == {name: (length, checksum) for name, length, checksum in retirer.RETIRED_COPY_AUTHORITY['files'].values()}
+    selected = controller.split("if($CanonicalBatch -ceq 'RetiredCopies') {", 2)[-1].split("if($CanonicalBatch -ceq 'Recent') {", 1)[0]
+    assert selected.index("Invoke-NativeJarPhase 'plan-retired-candidate-copies'") < selected.index("Invoke-NativeJarPhase 'apply-retired-candidate-copies'")
+    assert "finally {Copy-NativeJarEvidence (Invoke-NativeJarPhase 'inspect')}" in selected
+    assert "candidateTargetCount -eq 3" in selected and "$copyResult.$flag -is [bool]" in selected
+    assert "retiredCandidatePlan" in controller and "retiredCandidateReceipt" in controller and "retiredCandidateJournal" in controller
+    pipeline = (root / 'script/jenkins/pipeline.ps1').read_text(encoding='utf8')
+    assert '-Mode Maintenance -CanonicalBatch RetiredCopies ' in pipeline
+    jenkinsfile = (root / 'Jenkinsfile.ecs-monolith').read_text(encoding='utf8')
+    assert 'artifacts/native-retired-candidate-copy-*.json' in jenkinsfile
+    assert 'artifacts/native-retired-candidate-copy-*.jsonl' in jenkinsfile

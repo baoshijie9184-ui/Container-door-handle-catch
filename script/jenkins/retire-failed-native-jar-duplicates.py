@@ -16,6 +16,7 @@ import ast
 import gzip
 import hashlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -105,6 +106,36 @@ RECENT_BUILDER_ONLY = {
     },
 }
 RECENT_BUILDER_SCOPE = 'RECENT_201_BUILDER_ONLY'
+RETIRED_COPY_KIND = 'RETIRED_FAILED_NATIVE_CANDIDATE_JAR_COPY'
+RETIRED_COPY_POLICY = 'doorhandle-retired-candidate-jar-copy-retirement'
+RETIRED_COPY_TARGETS = {
+    'ci-195-2c2e65a0daa9': {
+        'commit': '2c2e65a0daa94d96b327c59d720871ab70bff0a1',
+        'sourceSha256': 'd9a482a4e3c02d5219199b14f2e65671ebcf3aaf44cfc6d17a61421a1dfb5ec9',
+        'jarSha256': 'c877edd76216f2bcbdc4d1174e8599ebe1a153faac963880624f2ce653757670', 'jarBytes': 380063222},
+    'ci-198-7af0903ee840': {
+        'commit': '7af0903ee84011dc51f4abac4f4a4d9679db7322',
+        'sourceSha256': '32715e99750c2651370750cc6a8c9a1d380167b73e2fcacbcf5977c7da1e6453',
+        'jarSha256': 'c4240fb7dadfbf2b6a0ef033a32d77babc986ec59bf3504cb59a07dfa0261359', 'jarBytes': 380227811},
+    'ci-201-803baf401b5f': {
+        'commit': '803baf401b5f9566283a59cb6a885a794b9d7d85',
+        'sourceSha256': '5049079bdb37231b8ca2d59f7865269735ce0ce01cae56d0084a81924fa6767a',
+        'jarSha256': '91d7258b5fd0feffd4c5e8694bff851a4ed5b80058ead9711625107f5771842d', 'jarBytes': 380301926},
+}
+RETIRED_COPY_AUTHORITY = {
+    'release': 'ci-203-24f8eb4b02bf', 'commit': '24f8eb4b02bf290c6dd4e186eb78c5f3c80f3b88',
+    'sourceSha256': 'bb6e43405b0c696923aa3f7e699872706b1cd14323e83a475c44b734d1bcc882',
+    'helperSha256': '707b0f188f0ad8b37123cb727ef8b55158566e500633e584bf3441fbc68a36f0',
+    'files': {
+        'buildXml': ('build.xml', 298698, '0cd9460dc8e062d6e88cdb0042ef9bd9d9db6d0ed7768b1d44631aa1d54d1643'),
+        'release': ('release.json', 393, '5c0a0c7038eaf7c38898aa03b89e50691e9a3585d96d1e9da12e7cd40052dbf5'),
+        'source': ('source.tar.gz', 102379, 'bb6e43405b0c696923aa3f7e699872706b1cd14323e83a475c44b734d1bcc882'),
+        'request': ('native-jar-duplicate-request.json', 5101, '67ed4014faf649b1f3d269c10d70bdc6022cc16ea456af89bb8f8e8bfe1c5fd3'),
+        'plan': ('native-jar-duplicate-canonical-plan.json', 12244, '1130700b7cc6a79cb50a944d18f2e2e0e55fc3df20d75f37138ecab155845cc3'),
+        'receipt': ('native-jar-duplicate-canonical-receipt.json', 2311, '8035c82ff336a9d39e02b8ce9f35390c7b7f6e776b2b6967d7901b57e91df9c1'),
+        'journal': ('native-jar-duplicate-canonical-journal.jsonl', 2592, '2da56d51b56359cd349842bfc5cca11fd08d935adbeef5d0c9b6f2c51ab49d83'),
+    },
+}
 # Reviewed historical publication predicates, authenticated against actual
 # retained archive members (not the current checkout or a synthesized report).
 # Each pair is Jenkinsfile.ecs-monolith, script/jenkins/pipeline.ps1. All these
@@ -880,6 +911,301 @@ def apply(root, raw_request, prepared_plan, *, request_sha256, plan_sha256, expe
                 'binaryRebuildByteIdentityClaimed': False, 'skipped': prepared_plan['skipped'],
                 'testsRunByRetirement': False} if canonical_jar else {}),
             'sourceArchivesDataAndReportsHaveNoDeletionApi': True}
+
+
+def retired_copy_terminal(raw, context):
+    need(type(raw) is bytes and 0 < len(raw) <= MAX_CONTROL
+         and b'<!DOCTYPE' not in raw.upper() and b'<!ENTITY' not in raw.upper(), 'BOUNDED_AUTHORITY_TERMINAL_REQUIRED')
+    try: value = ET.fromstring(raw)
+    except ET.ParseError: raise RetirementError('INVALID_AUTHORITY_TERMINAL_XML') from None
+    need(value.tag == 'flow-build' and len(value.findall('result')) == len(value.findall('completed')) == 1
+         and value.findtext('result') == 'SUCCESS' and value.findtext('completed') == 'true'
+         and len(value.findall('execution/done')) == 1 and value.findtext('execution/done') == 'true',
+         'SUCCESSFUL_ORIGINAL_RETIREMENT_REQUIRED')
+    parameters = {}
+    for item in value.findall('.//hudson.model.ParametersAction/parameters/*'):
+        name, content = item.findtext('name'), item.findtext('value')
+        need(name and name not in parameters, 'DUPLICATE_AUTHORITY_TERMINAL_PARAMETER'); parameters[name] = content
+    need(all(parameters.get(key) == content for key, content in {
+        'ACTION': 'reclaim-build-outputs', 'DOORHANDLE_CI_SCOPE': 'source',
+        'TRUSTED_COMMIT': context['commit'], 'PRODUCTION_RELEASE_ENABLED': 'false'}.items()),
+        'EXACT_SOURCE_ONLY_RETIREMENT_TERMINAL_REQUIRED')
+
+
+def admit_retired_copy_authority(root, current, identity):
+    """Authenticate the actual successful 203 retirement, never execute its code."""
+    expected = {key: RETIRED_COPY_AUTHORITY[key] for key in ('release', 'commit', 'sourceSha256')}
+    need(int(TAG.fullmatch(current['release'])[1]) > int(TAG.fullmatch(expected['release'])[1]),
+         'RETIREMENT_AUTHORITY_MUST_PRECEDE_CURRENT_BUILD')
+    directory = Path(root) / 'inbox' / current['release'] / 'native-retired-candidate-controls' / expected['release']
+    raw, bindings = {}, {}
+    for role, (filename, length, checksum) in RETIRED_COPY_AUTHORITY['files'].items():
+        path = directory / filename
+        with held_file(root, path, MAX_SOURCE_ARCHIVE if role == 'source' else MAX_CONTROL) as (stream, signature):
+            content = stream.read(length + 1)
+            need(signature[6] == len(content) == length and digest_bytes(content) == checksum,
+                 'ORIGINAL_RETIREMENT_AUTHORITY_SHA_DRIFT')
+            raw[role] = content; bindings[role] = {'path': path.relative_to(root).as_posix(),
+                'bytes': length, 'sha256': checksum, 'metadata': signature}
+    retired_copy_terminal(raw['buildXml'], expected)
+    release, request, plan, receipt = (decode(raw[role]) for role in ('release', 'request', 'plan', 'receipt'))
+    approved_request(raw['request'], digest_bytes(raw['request']), expected, identity, canonical_jar=True)
+    need(all(release.get(key) == content for key, content in expected.items())
+         and type(release.get('schema')) is int and release['schema'] == 1 and release.get('kind') == 'doorhandle-maintenance-source'
+         and release.get('action') == 'reclaim-build-outputs' and release.get('maintenanceOnly') is True
+         and release.get('testsExecuted') is False and release.get('applicationBuilt') is False,
+         'ORIGINAL_MAINTENANCE_SOURCE_BINDING_REQUIRED')
+    for item in (request, plan, receipt):
+        need(item.get('current') == expected and item.get('identity') == identity,
+             'ORIGINAL_RETIREMENT_SOURCE_OR_HOST_DRIFT')
+    need(request.get('kind') == KIND + '-request' and plan.get('kind') == CANONICAL_KIND + '-plan' and plan.get('deletionPerformed') is False
+         and plan.get('skipped') == [] and receipt.get('kind') == CANONICAL_KIND + '-receipt'
+         and receipt.get('status') == 'REMOVED' and receipt.get('failure') is None and receipt.get('skipped') == []
+         and receipt.get('retainedQuarantinePaths') == [] and receipt.get('binaryDisposition') == 'RETIRED'
+         and receipt.get('binaryRebuildByteIdentityClaimed') is False and receipt.get('testsRunByRetirement') is False
+         and receipt.get('sourceArchivesDataAndReportsHaveNoDeletionApi') is True
+         and receipt.get('planSha256') == digest_bytes(raw['plan'])
+         and receipt.get('requestSha256') == plan.get('requestSha256') == digest_bytes(raw['request'])
+         and receipt.get('journalSha256') == digest_bytes(raw['journal']), 'SUCCESSFUL_EXACT_RETIREMENT_CHAIN_REQUIRED')
+    journal = [decode(line) for line in raw['journal'].splitlines()]
+    need([item.get('phase') for item in journal] == ['STARTED', 'DELETE_STARTED', 'DELETE_FINISHED',
+         'DELETE_STARTED', 'DELETE_FINISHED', 'DELETE_STARTED', 'DELETE_FINISHED', 'FINISHED']
+         and journal[0].get('identity') == identity and journal[0].get('planSha256') == receipt['planSha256']
+         and journal[0].get('requestSha256') == receipt['requestSha256']
+         and journal[-1].get('phase') == 'FINISHED' and journal[-1].get('deletedFiles') == 3,
+         'ORIGINAL_RETIREMENT_JOURNAL_REQUIRED')
+    candidates, deleted, original_rows = plan.get('candidates'), receipt.get('deleted'), request.get('candidates')
+    need(all(type(items) is list and len(items) == 3 for items in (candidates, deleted, original_rows)),
+         'EXACT_THREE_ORIGINAL_RETIREMENTS_REQUIRED')
+    need({item.get('context', {}).get('release') for item in candidates} == set(RETIRED_COPY_TARGETS)
+         and {item.get('release') for item in original_rows} == set(RETIRED_COPY_TARGETS),
+         'ORIGINAL_RETIREMENT_TARGET_SET_DRIFT')
+    entries = {}
+    finished = [item for item in journal if item.get('phase') == 'DELETE_FINISHED']
+    need(len(finished) == 3, 'THREE_ORIGINAL_DELETE_FINISHED_RECORDS_REQUIRED')
+    for candidate in candidates:
+        context = candidate['context']; tag = context['release']; registered = RETIRED_COPY_TARGETS[tag]
+        need(context == {key: value for key, value in {'release': tag, **registered}.items()
+                         if key in ('release', 'commit', 'sourceSha256')}, 'ORIGINAL_COPY_SOURCE_CONTEXT_DRIFT')
+        path = 'inbox/' + tag + '/application.jar'; target = candidate.get('target', {})
+        matches = [item for item in deleted if item.get('path') == path]
+        logs = [item for item in finished if item.get('path') == path]
+        need(len(matches) == len(logs) == 1, 'ONE_EXACT_ORIGINAL_RETIREMENT_ENTRY_REQUIRED')
+        for item in (target, matches[0], logs[0]):
+            need(item.get('kind') == CANONICAL_JAR_KIND and item.get('path') == path
+                 and item.get('sha256') == registered['jarSha256'] and item.get('bytes') == registered['jarBytes'],
+                 'ORIGINAL_RETIRED_JAR_BYTES_DRIFT')
+        need(matches[0].get('binaryDisposition') == 'RETIRED' and matches[0].get('capturedInodeVerified') is True,
+             'ORIGINAL_CAPTURE_AND_RETIREMENT_REQUIRED')
+        entries[tag] = {'context': context, 'jarSha256': registered['jarSha256'], 'jarBytes': registered['jarBytes'],
+            'controlSha256': {role: value['sha256'] for role, value in candidate['controls'].items()},
+            'sourceSha256': candidate['sourceArchive']['sha256'],
+            'transportRecipeSha256': candidate['sourceArchive']['transportRecipeSha256']}
+    helper = None; total = 0
+    with tarfile.open(fileobj=io.BytesIO(raw['source']), mode='r:gz') as archive:
+        count = 0
+        for member in archive:
+            count += 1; total += member.size
+            need(count <= 50_000 and 0 <= member.size <= 32 * 1024 ** 2 and total <= MAX_EXPANDED_SOURCE,
+                 'BOUNDED_ORIGINAL_RETIREMENT_SOURCE_REQUIRED')
+            if member.name != 'script/jenkins/retire-failed-native-jar-duplicates.py': continue
+            need(helper is None and member.isfile() and 0 < member.size <= 1024 ** 2,
+                 'ONE_ORIGINAL_RETIREMENT_HELPER_REQUIRED')
+            helper = archive.extractfile(member).read(1024 ** 2 + 1)
+            need(len(helper) == member.size, 'ORIGINAL_RETIREMENT_HELPER_TRUNCATED')
+        need(archive.pax_headers.get('comment') == expected['commit'] and helper is not None
+             and digest_bytes(helper) == RETIRED_COPY_AUTHORITY['helperSha256'], 'ORIGINAL_RETIREMENT_POLICY_SOURCE_DRIFT')
+    return {'context': expected, 'identity': identity, 'controls': bindings,
+            'helperSha256': RETIRED_COPY_AUTHORITY['helperSha256'], 'retiredTargets': entries}
+
+
+def retired_copy_path(root, tag):
+    need(tag in RETIRED_COPY_TARGETS, 'ONLY_THREE_RETIRED_CANDIDATE_PATHS_ALLOWED')
+    return Path(root) / 'verification' / tag / 'checkout/work/compact-fixtures/candidate-app.jar'
+
+
+def retired_keeper_absent(root, tag):
+    need(tag in RETIRED_COPY_TARGETS, 'ONLY_THREE_RETIRED_CANDIDATE_PATHS_ALLOWED')
+    path = Path(root) / 'inbox' / tag / 'application.jar'
+    need(not path.exists() and not path.is_symlink(), 'RETIRED_INBOX_JAR_REAPPEARED')
+
+
+def describe_retired_candidate_copy(root, tag, checksum, length):
+    registered = RETIRED_COPY_TARGETS.get(tag)
+    need(registered is not None and checksum == registered['jarSha256'] and length == registered['jarBytes'],
+         'EXACT_ORIGINAL_RETIRED_COPY_BYTES_REQUIRED')
+    path = retired_copy_path(root, tag); retired_keeper_absent(root, tag)
+    with held_file(root, path, MAX_JAR) as (stream, signature):
+        need(stat.S_IMODE(signature[2]) == 0o600 and signature[3] == signature[4] == 1000,
+             'EXACT_PRIVATE_RETIRED_COPY_REQUIRED')
+        need(signature[6] == length and hash_stream(stream) == checksum, 'ACTUAL_RETIRED_COPY_BYTES_DRIFT')
+        return {'kind': RETIRED_COPY_KIND, 'release': tag, 'path': path.relative_to(root).as_posix(),
+                'metadata': signature, 'sha256': checksum, 'bytes': length, 'allocatedBytes': signature[9]}
+
+
+def admit_retired_candidate_copy(root, request, row, authority, quiescence):
+    tag = row['release']; registered = RETIRED_COPY_TARGETS.get(tag)
+    need(registered is not None and all(row.get(key) == registered[key] for key in ('commit', 'sourceSha256')),
+         'ONLY_EXACT_RETIRED_COPY_SOURCES_ALLOWED')
+    original = admit_historical_controls(root, request, row, canonical_jar=True)
+    old = authority['retiredTargets'][tag]; evidence = original['evidence']; source = original['sourceArchive']
+    need(evidence['jarSha256'] == old['jarSha256'] == registered['jarSha256']
+         and evidence['jarBytes'] == old['jarBytes'] == registered['jarBytes']
+         and evidence['controlSha256'] == old['controlSha256']
+         and source['sha256'] == old['sourceSha256'] == registered['sourceSha256']
+         and source['transportRecipeSha256'] == old['transportRecipeSha256'], 'ORIGINAL_COPY_AND_RETIREMENT_PROOFS_DIFFER')
+    references = canonical_publication_refs(root, tag)
+    need(callable(quiescence) and quiescence(Path(root) / 'verification' / tag / 'checkout', tag, evidence['ownerToken']) is None,
+         'ACTUAL_DUAL_ROOT_QUIESCENCE_REQUIRED')
+    return {'context': original['context'], 'original': original, 'publicationReferences': references,
+            'ownerToken': evidence['ownerToken'],
+            'target': describe_retired_candidate_copy(root, tag, evidence['jarSha256'], evidence['jarBytes'])}
+
+
+def remove_retired_candidate_copy(root, descriptor, quarantine, *, quiescence):
+    """Capture only a separately authorized old copy; no keeper fallback exists."""
+    need(type(descriptor) is dict and set(descriptor) == {'kind', 'release', 'path', 'metadata', 'sha256', 'bytes', 'allocatedBytes'}
+         and descriptor['kind'] == RETIRED_COPY_KIND, 'EXACT_RETIRED_COPY_DESCRIPTOR_REQUIRED')
+    root = Path(root); tag = descriptor['release']; target = retired_copy_path(root, tag)
+    need(describe_retired_candidate_copy(root, tag, descriptor['sha256'], descriptor['bytes']) == descriptor,
+         'RETIRED_COPY_CHANGED_AFTER_PLAN')
+    need(type(quarantine) is dict and set(quarantine) == {'directory', 'path', 'directoryIdentity'}, 'EXACT_PRIVATE_QUARANTINE_REQUIRED')
+    relative = Path(quarantine['directory']); parts = relative.parts
+    need(len(parts) == 3 and parts[:2] == ('inbox', tag)
+         and re.fullmatch(r'native-jar-quarantine-[a-f0-9]{24}', parts[2])
+         and quarantine['path'] == (relative / 'candidate-app.jar').as_posix(), 'RETIRED_COPY_QUARANTINE_MUST_STAY_IN_OLD_INBOX')
+    private = owned_path(root, root / relative, directory=True)
+    with os.fdopen(os.open(target, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), 'rb') as copy:
+        before = metadata(os.fstat(copy.fileno()))
+        need(before == descriptor['metadata'] == metadata(target.lstat()) and hash_stream(copy) == descriptor['sha256'],
+             'RETIRED_COPY_CHANGED_BEFORE_CAPTURE')
+        stack = [os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)]; private_fd = None
+        try:
+            private_fd = os.open(private, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            def private_identity():
+                info = os.fstat(private_fd); linked = private.lstat()
+                need([info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid]
+                     == [linked.st_dev, linked.st_ino, linked.st_mode, linked.st_uid, linked.st_gid]
+                     == quarantine['directoryIdentity'] and stat.S_IMODE(info.st_mode) == 0o700, 'PRIVATE_QUARANTINE_MOVED')
+            private_identity(); need(not os.listdir(private_fd), 'PRIVATE_QUARANTINE_ALREADY_OCCUPIED')
+            for part in target.relative_to(root).parts[:-1]:
+                fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=stack[-1]); stack.append(fd)
+                info = os.fstat(fd)
+                need(info.st_uid == os.getuid() and info.st_dev == before[0] and not info.st_mode & 0o022, 'DELETION_ANCESTOR_CHANGED')
+            need(metadata(os.stat(target.name, dir_fd=stack[-1], follow_symlinks=False)) == before
+                 == metadata(os.fstat(copy.fileno())), 'RETIRED_COPY_MOVED_BEFORE_CAPTURE')
+            _capture_no_replace(stack[-1], target.name, private_fd, 'candidate-app.jar')
+            os.fsync(stack[-1]); os.fsync(private_fd)
+            captured = metadata(os.stat('candidate-app.jar', dir_fd=private_fd, follow_symlinks=False))
+            need(captured == metadata(os.fstat(copy.fileno())) and _renamed_copy_matches(before, captured)
+                 and hash_stream(copy) == descriptor['sha256'], 'UNEXPECTED_CAPTURED_INODE_RETAINED')
+            need(callable(quiescence) and quiescence() is None, 'ACTUAL_DUAL_ROOT_QUIESCENCE_REQUIRED')
+            retired_keeper_absent(root, tag)
+            need(not target.exists() and not target.is_symlink(), 'ORIGINAL_TARGET_REAPPEARED_RETAIN_QUARANTINE')
+            private_identity()
+            need(os.listdir(private_fd) == ['candidate-app.jar']
+                 and metadata(os.stat('candidate-app.jar', dir_fd=private_fd, follow_symlinks=False)) == captured
+                 == metadata(os.fstat(copy.fileno())), 'CAPTURE_CHANGED_RETAIN_QUARANTINE')
+            os.unlink('candidate-app.jar', dir_fd=private_fd); os.fsync(private_fd)
+            need(not os.listdir(private_fd) and not target.exists() and not target.is_symlink(), 'RETIRED_COPY_REMOVAL_NOT_CONFIRMED')
+            retired_keeper_absent(root, tag)
+        finally:
+            if private_fd is not None: os.close(private_fd)
+            for fd in reversed(stack): os.close(fd)
+    return {'kind': RETIRED_COPY_KIND, 'path': descriptor['path'], 'bytes': descriptor['bytes'],
+            'allocatedBytes': descriptor['allocatedBytes'], 'sha256': descriptor['sha256'],
+            'quarantinePath': quarantine['path'], 'capturedInodeVerified': True, 'binaryDisposition': 'RETIRED'}
+
+
+def retired_copy_request(root, raw, checksum, current, identity):
+    request = approved_request(raw, checksum, current, identity, canonical_jar=True)
+    need(len(request['candidates']) == 3 and {row['release'] for row in request['candidates']} == set(RETIRED_COPY_TARGETS),
+         'EXACT_THREE_RETIRED_COPY_REQUEST_REQUIRED')
+    return request
+
+
+def plan_retired_candidate_copies(root, raw_request, *, request_sha256, expected_current, identity, quiescence):
+    request = retired_copy_request(root, raw_request, request_sha256, expected_current, identity)
+    accepted, skipped = [], []
+    with controller_lock(root), publication_lock(root):
+        authority = admit_retired_copy_authority(root, expected_current, identity)
+        for row in request['candidates']:
+            try:
+                with attempt_lock(root, row['release']):
+                    accepted.append(admit_retired_candidate_copy(root, request, row, authority, quiescence))
+            except (RetirementError, OSError, ValueError, KeyError, TypeError, tarfile.TarError, EOFError) as error:
+                skipped.append({'release': row['release'], 'reason': str(error) if isinstance(error, RetirementError) else type(error).__name__})
+    result = {'schemaVersion': 1, 'kind': RETIRED_COPY_POLICY + '-plan', 'current': expected_current, 'identity': identity,
+        'requestSha256': request_sha256, 'authority': authority, 'candidates': accepted, 'skipped': skipped,
+        'candidateTargetCount': len(accepted), 'candidateBytes': sum(item['target']['bytes'] for item in accepted),
+        'candidateAllocatedBytes': sum(item['target']['allocatedBytes'] for item in accepted),
+        'deletionPerformed': False, 'inboxKeepersRecreated': False, 'sourceArchivesDataAndReportsHaveNoDeletionApi': True}
+    need(len(canonical(result)) <= MAX_CONTROL, 'BOUNDED_RETIRED_COPY_PLAN_REQUIRED')
+    return result
+
+
+def apply_retired_candidate_copies(root, raw_request, prepared, *, request_sha256, plan_sha256, expected_current, identity, quiescence):
+    request = retired_copy_request(root, raw_request, request_sha256, expected_current, identity)
+    need(type(prepared) is dict and digest_bytes(canonical(prepared)) == plan_sha256
+         and prepared.get('kind') == RETIRED_COPY_POLICY + '-plan' and prepared.get('current') == expected_current
+         and prepared.get('identity') == identity and prepared.get('requestSha256') == request_sha256
+         and prepared.get('candidateTargetCount') == 3 and prepared.get('skipped') == []
+         and prepared.get('deletionPerformed') is False and prepared.get('inboxKeepersRecreated') is False
+         and prepared.get('sourceArchivesDataAndReportsHaveNoDeletionApi') is True,
+         'COMPLETE_EXACT_RETIRED_COPY_PLAN_REQUIRED')
+    selected = prepared.get('candidates')
+    need(type(selected) is list and len(selected) == 3
+         and {row.get('context', {}).get('release') for row in selected} == set(RETIRED_COPY_TARGETS),
+         'EXACT_THREE_RETIRED_COPY_TARGETS_REQUIRED')
+    path = Path(root) / 'inbox' / expected_current['release'] / 'native-retired-candidate-copy-journal.jsonl'
+    deleted, quarantines, failure, active = [], [], None, None
+    with controller_lock(root), publication_lock(root), os.fdopen(os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600), 'wb') as journal:
+        total = 0
+        def record(item):
+            nonlocal total
+            raw = canonical(item) + b'\n'; total += len(raw); need(total <= MAX_CONTROL, 'RETIRED_COPY_JOURNAL_LIMIT_EXCEEDED')
+            journal.write(raw); journal.flush(); os.fsync(journal.fileno())
+        before = os.statvfs(root)
+        record({'phase': 'STARTED', 'requestSha256': request_sha256, 'planSha256': plan_sha256, 'identity': identity})
+        try:
+            for candidate in selected:
+                active = candidate['context']['release']; row = next(row for row in request['candidates'] if row['release'] == active)
+                with attempt_lock(root, active):
+                    authority = admit_retired_copy_authority(root, expected_current, identity)
+                    need(authority == prepared['authority'], 'RETIREMENT_AUTHORITY_CHANGED_AFTER_PLAN')
+                    need(admit_retired_candidate_copy(root, request, row, authority, quiescence) == candidate,
+                         'RETIRED_COPY_OR_ORIGINALS_CHANGED_AFTER_PLAN')
+                    quarantine = reserve_quarantine(root, active); quarantines.append(quarantine)
+                    record({'phase': 'DELETE_STARTED', 'release': active, 'path': candidate['target']['path'],
+                            'sha256': candidate['target']['sha256'], 'quarantinePath': quarantine['path']})
+                    def captured_quiescence():
+                        need(admit_retired_copy_authority(root, expected_current, identity) == prepared['authority'],
+                             'RETIREMENT_AUTHORITY_CHANGED_RETAIN_QUARANTINE')
+                        need(admit_historical_controls(root, request, row, canonical_jar=True) == candidate['original'],
+                             'COPY_ORIGINALS_CHANGED_RETAIN_QUARANTINE')
+                        need(canonical_publication_refs(root, active) == candidate['publicationReferences'],
+                             'PUBLICATION_REFERENCE_CHANGED_RETAIN_QUARANTINE')
+                        retired_keeper_absent(root, active)
+                        return quiescence(Path(root) / 'verification' / active / 'checkout', active, candidate['ownerToken'])
+                    value = remove_retired_candidate_copy(root, candidate['target'], quarantine, quiescence=captured_quiescence)
+                    deleted.append(value); record({'phase': 'DELETE_FINISHED', **value})
+            record({'phase': 'FINISHED', 'deletedFiles': len(deleted)})
+        except (RetirementError, OSError, ValueError, KeyError, TypeError, tarfile.TarError, EOFError) as error:
+            failure = str(error) if isinstance(error, RetirementError) else type(error).__name__
+            record({'phase': 'FAILED_OR_UNKNOWN', 'release': active, 'reason': failure, 'deletedFiles': len(deleted)})
+        after = os.statvfs(root)
+    return {'schemaVersion': 1, 'kind': RETIRED_COPY_POLICY + '-receipt', 'current': expected_current, 'identity': identity,
+        'requestSha256': request_sha256, 'planSha256': plan_sha256, 'candidateTargetCount': 3,
+        'authority': prepared['authority'], 'status': 'FAILED_OR_UNKNOWN' if failure else 'REMOVED',
+        'deleted': deleted, 'skipped': [], 'failure': failure, 'lastAttemptedRelease': active,
+        'retainedQuarantinePaths': [item['path'] for item in quarantines
+                                    if (Path(root) / item['path']).exists() or (Path(root) / item['path']).is_symlink()],
+        'journalSha256': digest_bytes(private_bytes(root, path)), 'automaticResumeAllowed': False,
+        'binaryDisposition': 'RETIRED' if failure is None else 'RETIRED_PARTIALLY_OR_UNKNOWN',
+        'availableBytesBefore': before.f_bavail * before.f_frsize, 'availableBytesAfter': after.f_bavail * after.f_frsize,
+        'sourceArchivesDataAndReportsHaveNoDeletionApi': True, 'imagesPreserved': True, 'volumesPreserved': True,
+        'directoriesPreserved': True, 'inboxKeepersRecreated': False, 'binaryRebuildByteIdentityClaimed': False,
+        'testsRunByRetirement': False}
 
 
 @contextmanager
@@ -2132,6 +2458,7 @@ def cli(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--phase', choices=('capture-request', 'capture-canonical-request', 'plan-builders', 'apply-builders', 'plan', 'apply',
                                            'plan-recent-builders', 'apply-recent-builders',
+                                           'plan-retired-candidate-copies', 'apply-retired-candidate-copies',
                                            'plan-recent-fixtures', 'apply-recent-fixtures',
                                            'plan-canonical', 'apply-canonical',
                                            'plan-public-layers', 'apply-public-layers', 'plan-generated-image-archives',
@@ -2156,6 +2483,8 @@ def cli(argv=None):
         canonical_receipt_file = inbox / 'native-jar-duplicate-canonical-receipt.json'
         fixture_plan_file = inbox / 'native-jar-duplicate-fixture-object-plan.json'
         fixture_receipt_file = inbox / 'native-jar-duplicate-fixture-object-receipt.json'
+        retired_copy_plan_file = inbox / 'native-retired-candidate-copy-plan.json'
+        retired_copy_receipt_file = inbox / 'native-retired-candidate-copy-receipt.json'
         if args.phase in ('capture-request', 'capture-canonical-request'):
             canonical_only = args.phase == 'capture-canonical-request'
             need(not canonical_only or args.mode == 'Maintenance', 'CANONICAL_RETIREMENT_REQUIRES_MAINTENANCE')
@@ -2179,6 +2508,8 @@ def cli(argv=None):
                                ('canonicalPlan', canonical_plan_file), ('canonicalReceipt', canonical_receipt_file),
                                ('recentFixturePlan', fixture_plan_file), ('recentFixtureReceipt', fixture_receipt_file),
                                ('recentFixtureJournal', inbox / 'native-jar-duplicate-fixture-object-journal.jsonl'),
+                               ('retiredCandidatePlan', retired_copy_plan_file), ('retiredCandidateReceipt', retired_copy_receipt_file),
+                               ('retiredCandidateJournal', inbox / 'native-retired-candidate-copy-journal.jsonl'),
                                ('canonicalJournal', inbox / 'native-jar-duplicate-canonical-journal.jsonl')):
                 if path.exists():
                     raw = private_bytes(root, path); files[name] = {'file': path.name, 'bytes': len(raw), 'sha256': digest_bytes(raw)}
@@ -2215,6 +2546,33 @@ def cli(argv=None):
                     'imagesPreserved': value['imagesPreserved'], 'volumesPreserved': value['volumesPreserved'],
                     'sourceArchivesAndReportsPreserved': value['sourceArchivesAndReportsPreserved'],
                     'receipt': write_new(fixture_receipt_file, value)}
+        elif args.phase in ('plan-retired-candidate-copies', 'apply-retired-candidate-copies'):
+            need(args.mode == 'Maintenance', 'RETIRED_COPIES_REQUIRE_MAINTENANCE')
+            raw = private_bytes(root, request_file)
+            def retired_copy_quiescence(checkout, tag, token):
+                need(tag in RETIRED_COPY_TARGETS and checkout == root / 'verification' / tag / 'checkout',
+                     'EXACT_RETIRED_COPY_REFERENCE_ROOTS_REQUIRED')
+                modules['cleanup'].quiescent({'checkout': checkout, 'token': token}, tag,
+                                             modules['cleanup'].docker_snapshot(), include_inbox=True)
+            options = {'request_sha256': args.request_sha256, 'expected_current': current, 'identity': identity,
+                       'quiescence': retired_copy_quiescence}
+            if args.phase == 'plan-retired-candidate-copies':
+                value = plan_retired_candidate_copies(root, raw, **options)
+                result = {'status': 'PLANNED', 'current': current, 'identity': identity,
+                    'plan': write_new(retired_copy_plan_file, value), 'skipped': value['skipped'],
+                    'candidateTargetCount': value['candidateTargetCount'], 'candidateBytes': value['candidateBytes'],
+                    'candidateAllocatedBytes': value['candidateAllocatedBytes']}
+            else:
+                plan_raw = private_bytes(root, retired_copy_plan_file)
+                need(digest_bytes(plan_raw) == args.plan_sha256, 'ORIGINAL_RETIRED_COPY_PLAN_RAW_SHA_DRIFT')
+                value = apply_retired_candidate_copies(root, raw, decode(plan_raw), plan_sha256=args.plan_sha256, **options)
+                result = {'status': value['status'], 'current': current, 'identity': identity,
+                    'requestSha256': value['requestSha256'], 'planSha256': value['planSha256'],
+                    'candidateTargetCount': value['candidateTargetCount'], 'deletedFiles': len(value['deleted']),
+                    'binaryDisposition': value['binaryDisposition'], 'receipt': write_new(retired_copy_receipt_file, value),
+                    **{key: value[key] for key in ('sourceArchivesDataAndReportsHaveNoDeletionApi', 'imagesPreserved',
+                        'volumesPreserved', 'directoriesPreserved', 'inboxKeepersRecreated',
+                        'binaryRebuildByteIdentityClaimed', 'testsRunByRetirement')}}
         elif args.phase in ('plan-canonical', 'apply-canonical'):
             need(args.mode == 'Maintenance', 'CANONICAL_RETIREMENT_REQUIRES_MAINTENANCE')
             raw = private_bytes(root, request_file); approved_request(raw, args.request_sha256, current, identity, canonical_jar=True)
