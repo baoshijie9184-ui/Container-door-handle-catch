@@ -38,7 +38,7 @@ def test_current_fixed_profile_contains_every_focused_module():
     }
     assert minimum['test_public_buildkit_layer_retirement'] >= 34
     assert minimum['test_local_mysql_source_classification'] >= 130
-    assert minimum['test_project_mysql_custody'] >= 24
+    assert minimum['test_project_mysql_custody'] >= 32
     controller = (ROOT / 'script/jenkins/pipeline.ps1').read_text(encoding='utf8')
     declaration = re.search(r'(?m)^\s*\$expected=@\(([^\r\n]+)\)\r?$', controller)
     assert declaration, 'Controller must declare its exact preflight module contract'

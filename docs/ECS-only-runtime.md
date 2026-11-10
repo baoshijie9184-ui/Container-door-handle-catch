@@ -4,7 +4,7 @@
 
 本轮25份控制原件与7份原报告已保全并核验原始摘要；工具与夹具均STOPPED、剩余拥有对象为空。ECS已从流水线外实际回读 `Stopped / StopCharging`，原始读回时间为2026-11-10T04:00:38Z，Jenkins保持运行。下一提交将让两个真实事务先持有同一主键行的共享锁，再进入注入重复键后的生产恢复读，明确验证锁升级行为；两个原有真实重复INSERT及旧RR快照测试保留，时间限制与完整56类矩阵不缩减。实际差异已独立复核，system及依赖的离线 `test-compile -DskipTests=true` 构建成功；没有本地测试，该调整尚待ECS实测。
 
-MySQL文档说明重复键可能持有共享索引锁，单条语句回滚会保留事务中的锁；这说明原屏障的同步前提需要单独建立，并不能证明本次超时的具体锁来源。参见[InnoDB语句锁](https://dev.mysql.com/doc/refman/8.0/en/innodb-locks-set.html)及[错误处理](https://dev.mysql.com/doc/refman/8.0/en/innodb-error-handling.html)。剩余本机三库的独立接收器已开发并通过静态复核，实际导出与Jenkins接线仍待完成，不代表三库已迁移。
+MySQL文档说明重复键可能持有共享索引锁，单条语句回滚会保留事务中的锁；这说明原屏障的同步前提需要单独建立，并不能证明本次超时的具体锁来源。参见[InnoDB语句锁](https://dev.mysql.com/doc/refman/8.0/en/innodb-locks-set.html)及[错误处理](https://dev.mysql.com/doc/refman/8.0/en/innodb-error-handling.html)。剩余本机三库的独立接收器和版本库Jenkins接线已开发并通过静态复核；新增模块32项已登记，下一提交控制为20模块最低1,596项，真实导出和ECS验证仍未完成，不代表三库已迁移。
 
 2026-11-10 开发补充：时间字段类型比较修复、完整 56 类 MySQL 的 12 次调用分组、两张历史表的完整旧列投影已合并。独立静态复核发现并修正了归档读取器与远端 guard 的 builder 路径；新增契约直接读取真实源码归档。控制预检现为 **19 模块、最低 1,564 项**，新增分类模块 130 项与控制器、自检和版本化 profile 一致。以上均待新固定提交在 ECS 实测，不能计为 #188 的通过结果。下一轮同时重新执行旧45表双恢复并采集完整逐键索引；真实缺失/冲突仍阻止切库。本地 Jenkins 控制器与专用节点已恢复运行，ECS 仍为实际 `Stopped / StopCharging`，尚未启动本轮。
 
