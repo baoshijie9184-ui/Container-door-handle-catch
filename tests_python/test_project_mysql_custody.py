@@ -1,0 +1,245 @@
+"""Synthetic byte/restore contracts; execute only through Jenkins on ECS."""
+import copy
+import gzip
+import hashlib
+import importlib.util
+import json
+from pathlib import Path
+import shutil
+from types import SimpleNamespace
+import tarfile
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def load(name, file):
+    spec = importlib.util.spec_from_file_location(name, ROOT / 'script/jenkins' / file)
+    value = importlib.util.module_from_spec(spec); spec.loader.exec_module(value)
+    return value
+
+
+packet = load('project_custody_contract', 'project-mysql-custody.py')
+restore = load('project_restore_contract', 'restore-project-mysql.py')
+
+
+def write(path, value):
+    path.write_bytes(json.dumps(value, sort_keys=True, separators=(',', ':')).encode()); path.chmod(0o600)
+
+
+@pytest.fixture
+def exported(tmp_path, monkeypatch):
+    project = tmp_path / 'project'; (project / 'work/jenkins').mkdir(parents=True)
+    base = project / 'work/data-migration-20261107'; base.mkdir()
+    batch_dir = project / 'work/jenkins/remaining-local-mysql-export-synthetic'; batch_dir.mkdir()
+    monkeypatch.setattr(packet, 'PROJECT', project)
+    producers = {name: (ROOT / 'script/jenkins' / file).read_bytes() for name, file in packet.PRODUCERS.items()}
+    hashes = {name: hashlib.sha256(body).hexdigest() for name, body in producers.items()}
+    dependency = {name: hashes[name] for name in ('sourceHelper', 'policy')}; dependency['interpreter'] = 'a' * 64
+    authorization = {'kind': 'doorhandle-nonadmin-remaining-local-mysql-export-authorization',
+        'sourceSchemas': list(packet.SCHEMAS), 'newOneTimeReadOnlyExceptionAcknowledged': True,
+        'includeLegacyBusinessSource': True, 'userAuthorizationReference': 'synthetic-authorized-export',
+        'workerScriptSha256': hashes['worker'], 'batchScriptSha256': hashes['batch'], 'dependencySha256': dependency}
+    entries = []; manifests = {}
+    for schema in packet.SCHEMAS:
+        directory = base / ('local-mysql-export-synthetic-' + schema); directory.mkdir()
+        for name in packet.EXPORT_MEMBERS - {'public-manifest.json'}: (directory / name).write_bytes(b'{}')
+        identity = {'schema': schema, 'serverUuid': '11111111-1111-1111-1111-111111111111', 'version': '8.3.0', 'port': 3306,
+                    'dataDirectory': 'C:/synthetic-owned-project-only', 'hostName': 'synthetic', 'currentAccount': 'root@localhost'}
+        credential_sha = '97c366105bd23057d4733636b05766eb36e03da1a07af6e8b37dd0c4c90e6b2b'
+        write(directory / 'authorization-private.json', {
+            'kind': 'doorhandle-nonadmin-local-mysql-export-authorization', 'sourceSchema': schema,
+            'userAuthorizationReference': authorization['userAuthorizationReference'], 'oneTimeReadOnlyExceptionAcknowledged': True,
+            'additionalFixtureReadOnlyExceptionAcknowledged': True, 'sourceMode': 'PINNED_HISTORY_FRESH_SERVICE_TCP',
+            'credentialSourceSha256': credential_sha, 'sourceProcess': {'configuration': {
+                'expectedServerUuid': identity['serverUuid'], 'expectedDataDirectory': identity['dataDirectory']}}})
+        write(directory / 'credential-handle-private.json', {'kind': 'doorhandle-fixed-credential-read-observation',
+            'sourceContentModified': False, 'sourceAclModified': False, 'credentialValuesIncluded': False, 'sourceSha256': credential_sha})
+        for phase in ('before', 'after'):
+            write(directory / (phase + '-identity-private.json'), identity)
+            (directory / (phase + '-catalog-private.jsonl')).write_bytes(b'{"table":"records","kind":"BASE TABLE","engine":"InnoDB"}\n')
+            (directory / (phase + '-row-counts-private.jsonl')).write_bytes(b'{"table":"records","rows":1}\n')
+            write(directory / (phase + '-privileges-private.json'), {'scope': schema, 'select': True, 'trigger': True,
+                'event': True, 'routines': True, 'directGrantsVerified': True})
+        sql = b'CREATE TABLE records(id BIGINT PRIMARY KEY);\nINSERT INTO records VALUES(1);\n'
+        (directory / 'database.sql').write_bytes(sql); compressed = gzip.compress(sql); (directory / 'database.sql.gz').write_bytes(compressed)
+        (directory / 'schema-before.sql').write_bytes(sql.split(b'INSERT')[0])
+        (directory / 'schema-after.sql').write_bytes(sql.split(b'INSERT')[0])
+        manifest = {'schemaVersion': 2, 'kind': 'doorhandle-nonadmin-local-mysql-export',
+            'status': 'LOCAL_EXPORT_COMPLETE_RESTORE_PENDING', 'sourceSchema': schema, 'sourceEndpoint': '127.0.0.1:3306',
+            'sourceMode': 'PINNED_HISTORY_FRESH_SERVICE_TCP', 'scriptSha256': hashes['worker'],
+            'sourceHelperSha256': hashes['sourceHelper'], 'policySha256': hashes['policy'], 'policyInterpreterSha256': dependency['interpreter'],
+            'rowEvidence': 'BEFORE_AFTER_OBSERVATIONS_NOT_THE_DUMP_TRANSACTION', 'ddlEvidence': 'MATCHING_RESTRICTED_BEFORE_AFTER_DDL',
+            'dumpConsistency': 'MYSQLDUMP_SINGLE_TRANSACTION_INNODB', 'tableCount': 1, 'observedRowsBefore': 1, 'observedRowsAfter': 1,
+            'rawSqlSha256': hashlib.sha256(sql).hexdigest(), 'rawSqlBytes': len(sql),
+            'gzipSha256': hashlib.sha256(compressed).hexdigest(), 'gzipBytes': len(compressed)}
+        manifest['credentialSourceSha256'] = credential_sha
+        manifest.update({key: True for key in ('restorePending', 'historicalConfigurationPinVerified', 'freshServiceEndpointVerified',
+            'freshDirectPrivilegesVerified', 'actualClientIdentityVerified', 'privateInputFilesRemoved', 'gzipByteReadbackVerified')})
+        manifest.update({key: False for key in ('sourceConfigurationVerified', 'credentialsArchived', 'sourceDeleted', 'servicesChanged',
+            'testsExecuted', 'cloudUploaded', 'backupRestoreVerified', 'retirementAllowed')})
+        manifest['files'] = {name: {'bytes': (directory / name).stat().st_size, 'sha256': packet.digest(directory / name)}
+                            for name in packet.EXPORT_MEMBERS - {'public-manifest.json'}}
+        write(directory / 'public-manifest.json', manifest); manifests[schema] = manifest
+        entry = {'sourceSchema': schema, 'status': manifest['status'], 'exportDirectory': str(directory),
+            **{key: manifest[key] for key in ('tableCount', 'observedRowsBefore', 'observedRowsAfter', 'rawSqlSha256', 'gzipSha256')},
+            'manifestSha256': packet.digest(directory / 'public-manifest.json'), 'backupRestoreVerified': False, 'retirementAllowed': False}
+        entries.append(entry); write(batch_dir / (schema + '-result.json'), entry)
+    batch = {'kind': 'doorhandle-nonadmin-remaining-local-mysql-export', 'schemaVersion': 2,
+        'status': 'LOCAL_EXPORTS_COMPLETE_ECS_RESTORE_PENDING', 'sourceSchemas': list(packet.SCHEMAS), 'completedSchemas': list(packet.SCHEMAS),
+        'sourceMode': 'PINNED_HISTORY_FRESH_SERVICE_TCP', 'restorePending': True, 'exports': entries, 'failedSchema': None, 'errorType': None,
+        'userAuthorizationReference': authorization['userAuthorizationReference'], 'workerScriptSha256': hashes['worker'], 'dependencySha256': dependency}
+    batch.update({key: False for key in ('sourceMutationsRequested', 'servicesChanged', 'testsExecuted', 'cloudUploaded',
+        'backupRestoreVerified', 'retirementAllowed', 'automaticRetryAllowed')})
+    write(batch_dir / 'authorization-private.json', authorization); write(batch_dir / 'batch-result-private.json', batch)
+    return SimpleNamespace(project=project, batch_dir=batch_dir, batch=batch, authorization=authorization,
+        manifests=manifests, producer=producers, batch_sha=packet.digest(batch_dir / 'batch-result-private.json'),
+        output=base / 'project-mysql-custody-synthetic')
+
+
+def test_actual_packet_preserves_all_export_members_and_producer_bytes(exported):
+    result = packet.pack(exported.batch_dir, exported.batch_sha, exported.output)
+    manifest = packet.read(exported.output / 'custody.json')
+    assert result['status'] == 'PACKED_RESTORE_PENDING' and result['databasesOpened'] == 0
+    assert result['retirementAllowed'] is False and manifest['liveSourceRowHashesVerified'] is False
+    assert set(manifest['schemas']) == set(packet.SCHEMAS)
+    assert manifest['schemas'][packet.SCHEMAS[1]]['purpose'] == 'FIXTURE_ARCHIVE_ONLY'
+    with tarfile.open(exported.output / 'originals.tar.gz', 'r:gz') as archive:
+        assert set(archive.getnames()) == packet.MEMBERS
+        for key, file in packet.PRODUCERS.items(): assert archive.extractfile('producer/' + file).read() == exported.producer[key]
+
+
+@pytest.mark.parametrize('mutation', ['missing-schema', 'wrong-source', 'partial', 'source-hash-claim', 'credential-sidefile',
+    'dependency-drift', 'authorization-drift', 'foreign-schema', 'version1'])
+def test_closed_source_contract_refuses_partial_or_relabelled_exports(exported, mutation):
+    source = exported; batch = copy.deepcopy(source.batch); auth = copy.deepcopy(source.authorization); manifests = copy.deepcopy(source.manifests)
+    public = manifests[packet.SCHEMAS[0]]
+    if mutation == 'missing-schema': batch['completedSchemas'].pop()
+    if mutation == 'wrong-source': public['sourceSchema'] = packet.SCHEMAS[1]
+    if mutation == 'partial': batch['status'] = 'PARTIAL_OR_FAILED'
+    if mutation == 'source-hash-claim': public['rowEvidence'] = 'SAME_TRANSACTION_SOURCE_ROW_HASHES'
+    if mutation == 'credential-sidefile': public['files']['client-private.ini'] = {'bytes': 5, 'sha256': 'a' * 64}
+    if mutation == 'dependency-drift': batch['dependencySha256']['policy'] = 'b' * 64
+    if mutation == 'authorization-drift': auth['includeLegacyBusinessSource'] = False
+    if mutation == 'foreign-schema': batch['sourceSchemas'][-1] = 'another_project'
+    if mutation == 'version1': public['schemaVersion'] = 1
+    with pytest.raises(ValueError): packet.validate_exports(batch, auth, manifests, source.batch_sha, source.producer)
+
+
+def test_actual_pack_refuses_changed_raw_sql_or_unapproved_batch(exported):
+    with pytest.raises(ValueError): packet.pack(exported.batch_dir, 'b' * 64, exported.output)
+    source = Path(exported.batch['exports'][0]['exportDirectory'])
+    (source / 'database.sql').write_bytes(b'changed SQL')
+    with pytest.raises(ValueError): packet.pack(exported.batch_dir, exported.batch_sha, exported.output)
+    assert not exported.output.exists()
+
+
+def test_real_packet_extraction_closes_all_original_bytes_again_on_ecs(exported, tmp_path, monkeypatch):
+    result = packet.pack(exported.batch_dir, exported.batch_sha, exported.output)
+    work = tmp_path / 'ecs-owned-work'; work.mkdir(mode=0o700)
+    snapshot = work / packet.SNAPSHOT; snapshot.mkdir(mode=0o700)
+    for name in ('custody.json', 'originals.tar.gz'):
+        shutil.copyfile(exported.output / name, snapshot / name); (snapshot / name).chmod(0o600)
+    context = {'release': 'ci-1-' + 'a' * 12, 'commit': 'a' * 40, 'sourceSha256': 'b' * 64}
+    monkeypatch.setattr(packet, 'admit', lambda _args: (work, context))
+    args = SimpleNamespace(batch_receipt_sha256=exported.batch_sha, manifest_sha256=result['manifestSha256'],
+        manifest_bytes=result['manifestBytes'], archive_sha256=result['archiveSha256'], archive_bytes=result['archiveBytes'])
+    recovered = packet.restore_bytes(args)
+    assert recovered['status'] == 'BYTES_RESTORED_VERIFIED' and recovered['sqlDoubleRestoreVerified'] is False
+    assert recovered['databasesOpened'] == 0 and recovered['retirementAllowed'] is False
+    manifest = packet.read(snapshot / 'custody.json')
+    for row in manifest['files']: assert packet.digest(work / packet.RESTORE / row['member']) == row['sha256']
+    with pytest.raises(ValueError, match='fresh ECS'): packet.restore_bytes(args)
+
+
+def test_windows_producer_raw_hashes_are_kept_while_only_git_line_endings_may_differ(exported):
+    source = exported; producer = {key: body.replace(b'\r\n', b'\n').replace(b'\n', b'\r\n') for key, body in source.producer.items()}
+    batch = copy.deepcopy(source.batch); auth = copy.deepcopy(source.authorization); manifests = copy.deepcopy(source.manifests)
+    digests = {key: hashlib.sha256(body).hexdigest() for key, body in producer.items()}
+    batch['workerScriptSha256'] = auth['workerScriptSha256'] = digests['worker']; auth['batchScriptSha256'] = digests['batch']
+    for name in ('sourceHelper', 'policy'): batch['dependencySha256'][name] = auth['dependencySha256'][name] = digests[name]
+    for value in manifests.values():
+        value['scriptSha256'] = digests['worker']; value['sourceHelperSha256'] = digests['sourceHelper']; value['policySha256'] = digests['policy']
+    packet.validate_exports(batch, auth, manifests, source.batch_sha, producer)
+    producer['worker'] += b'\nWrite-Output "changed behavior"\n'
+    with pytest.raises(ValueError): packet.validate_exports(batch, auth, manifests, source.batch_sha, producer)
+
+
+def test_cross_schema_fk_is_actually_checked_inside_the_closed_three_schema_pair():
+    queries = []
+    class Mysql:
+        def single(self, query): queries.append(query); return {'n': 2}
+    foreign = {'table': 'child', 'name': 'fk_parent', 'parentSchema': packet.SCHEMAS[1],
+        'ordinal': 1, 'parent': 'parent', 'column': 'parent_id', 'parentColumn': 'id'}
+    findings = restore.constraint_findings(Mysql(), packet.SCHEMAS[0], {'foreignKeys': [foreign], 'checks': []})
+    assert findings == [{'kind': 'FOREIGN_KEY', 'table': 'child', 'constraint': 'fk_parent', 'violations': 2}]
+    assert '`' + packet.SCHEMAS[1] + '`.`parent`' in queries[0]
+    foreign['parentSchema'] = 'unrelated_project'
+    assert restore.constraint_findings(Mysql(), packet.SCHEMAS[0], {'foreignKeys': [foreign], 'checks': []})[0]['unverified'] is True
+    assert len(queries) == 1
+
+
+def test_three_schema_cleanup_uses_separate_ownership_paths_and_reuses_original_sandbox_controls():
+    assert restore.Recovery.cancel_name != restore.existing.Recovery.cancel_name
+    assert restore.Recovery.lock_name != restore.existing.Recovery.lock_name
+    assert restore.Recovery.not_created_name != restore.existing.Recovery.not_created_name
+    for name in ('watch', 'inspect', 'stop', 'remove_derived', 'cleanup_locked'):
+        assert getattr(restore.Recovery, name) is getattr(restore.existing.Recovery, name)
+
+
+def test_second_server_is_refused_while_first_owned_server_is_still_running():
+    controller = object.__new__(restore.Recovery); controller.state = {'servers': [{'containerId': 'a' * 64}]}
+    controller.inspect = lambda _cid: {'State': {'Running': True}}
+    with pytest.raises(ValueError, match='At most one'): controller.create_registered('b')
+
+
+def test_fresh_cleanup_controller_loads_runtime_before_rechecking_completed_pair(tmp_path, monkeypatch):
+    context = {'release': 'ci-1-' + 'a' * 12}; work = tmp_path / 'work'; work.mkdir(mode=0o700)
+    utility = SimpleNamespace(safe=lambda path: Path(path), owner_path=lambda path: Path(path))
+    monkeypatch.setattr(restore.packet, 'admit', lambda _args: (work, context))
+    monkeypatch.setattr(restore.packet, 'common', lambda: utility)
+    monkeypatch.setattr(restore.packet, 'verified_inputs', lambda _args, _work: {
+        'schemas': {schema: {'rawSqlSha256': 'a' * 64} for schema in packet.SCHEMAS}})
+    monkeypatch.setattr(restore.shutil, 'which', lambda _name: '/reviewed/docker')
+    runtime = SimpleNamespace(keyed_row_inventory=lambda *_args: {'checked': True})
+    monkeypatch.setattr(restore.existing, 'load_runtime', lambda: runtime)
+    args = SimpleNamespace(tag=context['release'], source_sha256='b' * 64, manifest_sha256='c' * 64, batch_receipt_sha256='d' * 64)
+    # This constructor is new; run() was never called on it.
+    controller = restore.Recovery(args); controller.directory.mkdir(mode=0o700)
+    public = controller.directory / 'public-recovery.json'; write(public, {'status': 'PROJECT_SQL_DOUBLE_RESTORED_VERIFIED'})
+    binding_calls = []
+    def evidence():
+        binding_calls.append(controller.runtime.keyed_row_inventory(None)); return {'raw-original': 'e' * 64}
+    controller.evidence_bindings = evidence
+    state = {'owner': 'synthetic', 'status': 'SQL_DOUBLE_RESTORED_VERIFIED', 'cleanupEvidence': {'raw-original': 'e' * 64},
+        'publicRecoverySha256': restore.packet.digest(public), 'containerIntents': [],
+        'servers': [{'ordinal': name, 'containerId': name * 64, 'volume': name + '-volume'} for name in ('a', 'b')]}
+    write(controller.owner_file, state)
+    def load_owner(): controller.state = state
+    controller.load = load_owner; controller.stop = lambda _node: None
+    controller.docker_call = lambda *_args: b''
+    removed = []; controller.remove_derived = lambda node: removed.append(node['containerId'])
+    result = controller.cleanup_locked()
+    assert result['status'] == 'STOPPED' and len(removed) == 2 and binding_calls == [{'checked': True}]
+    assert result['projectSqlSha256'] == {schema: 'a' * 64 for schema in packet.SCHEMAS}
+
+
+@pytest.mark.parametrize('mutation', ['same-server', 'missing-fixture', 'changed-row', 'changed-clock', 'changed-ddl', 'changed-routine', 'unmatched-count'])
+def test_three_schema_pair_cannot_pass_narrow_or_changed_recovery_evidence(mutation):
+    schemas = {name: {'snapshot': {'tables': {'records': {'rows': 1, 'rowsSha256': 'a' * 64,
+        'columns': [{'name': 'created_at', 'type': 'datetime(6)'}], 'ddlSha256': 'b' * 64}}},
+        'metadata': {'foreignKeys': [], 'checks': []}, 'extraObjects': {'routines': [], 'events': []},
+        'observedCountsMatch': True} for name in packet.SCHEMAS}
+    first = {'containerId': 'a' * 64, 'volume': 'first', 'serverUuid': 'first', 'schemas': schemas}
+    second = copy.deepcopy(first); second.update(containerId='b' * 64, volume='second', serverUuid='second')
+    restore.compare_recoveries(first, second)
+    schema = second['schemas'][packet.SCHEMAS[0]]
+    if mutation == 'same-server': second['serverUuid'] = first['serverUuid']
+    if mutation == 'missing-fixture': second['schemas'].pop(packet.SCHEMAS[1])
+    if mutation == 'changed-row': schema['snapshot']['tables']['records']['rowsSha256'] = 'c' * 64
+    if mutation == 'changed-clock': schema['snapshot']['tables']['records']['columns'][0]['type'] = 'datetime'
+    if mutation == 'changed-ddl': schema['snapshot']['tables']['records']['ddlSha256'] = 'c' * 64
+    if mutation == 'changed-routine': schema['extraObjects']['routines'].append({'body': 'changed'})
+    if mutation == 'unmatched-count': schema['observedCountsMatch'] = False
+    with pytest.raises(ValueError): restore.compare_recoveries(first, second)

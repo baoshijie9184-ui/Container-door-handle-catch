@@ -107,6 +107,12 @@ def compare_recoveries(first, second):
 
 
 class Recovery:
+    cancel_name = 'local-mysql-recovery-cancel.json'
+    lock_name = 'local-mysql-recovery-create.lock'
+    not_created_name = 'local-mysql-recovery-not-created.json'
+
+    def cleanup_source_fields(self): return {'rawSqlSha256': self.bytes.RAW_SHA}
+
     def __init__(self, args):
         self.args, self.bytes = args, source()
         self.work, self.context = self.bytes.admit(args)
@@ -149,13 +155,13 @@ class Recovery:
 
     def guard(self):
         need(self.pressure is None, 'Recovery resource supervision failed')
-        need(not (self.work / 'local-mysql-recovery-cancel.json').exists(), 'This exact recovery attempt was cancelled')
+        need(not (self.work / self.cancel_name).exists(), 'This exact recovery attempt was cancelled')
         self.utility.resource_guard(self.directory if self.directory.exists() else self.work, 0)
 
     @contextlib.contextmanager
     def creation_lock(self, timeout=15):
         import fcntl
-        path = self.utility.safe(self.work / 'local-mysql-recovery-create.lock', exists=False)
+        path = self.utility.safe(self.work / self.lock_name, exists=False)
         descriptor = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
         try:
             self.utility.owner_path(path)
@@ -478,7 +484,7 @@ class Recovery:
         return {**public, 'recoveryReceiptSha256': self.bytes.digest(self.directory / 'public-recovery.json')}
 
     def cleanup(self):
-        cancel = self.utility.safe(self.work / 'local-mysql-recovery-cancel.json', exists=False)
+        cancel = self.utility.safe(self.work / self.cancel_name, exists=False)
         if cancel.exists(): need(self.bytes.read(self.utility.owner_path(cancel)) == self.context, 'Recovery cancellation belongs to another source')
         else: self.bytes.write(cancel, self.context)
         with self.creation_lock(): return self.cleanup_locked()
@@ -493,8 +499,8 @@ class Recovery:
             need(not self.directory.exists(), 'A partial recovery directory has no usable owner receipt; retain it for investigation')
             result = {**self.context, 'status': 'NOT_CREATED', 'containers': [], 'originalsChanged': False,
                 'derivedContainersRemoved': 0, 'derivedVolumesRemoved': 0, 'derivedVolumesRetained': 0,
-                'recoveryVolumesRetained': False, 'rawSqlSha256': self.bytes.RAW_SHA}
-            path = self.work / 'local-mysql-recovery-not-created.json'
+                'recoveryVolumesRetained': False, **self.cleanup_source_fields()}
+            path = self.work / self.not_created_name
             if path.exists(): need(self.bytes.read(self.utility.owner_path(path)) == result, 'Existing not-created cleanup receipt differs')
             else: self.bytes.write(path, result)
             return {**result, 'cleanupReceiptSha256': self.bytes.digest(path)}
@@ -535,7 +541,7 @@ class Recovery:
             'derivedContainersRemoved': sum(node.get('containerRemoved') is True for node in self.state['servers']),
             'derivedVolumesRemoved': sum(node.get('volumeRemoved') is True for node in self.state['servers']),
             'derivedVolumesRetained': len(remaining), 'recoveryVolumesRetained': bool(remaining),
-            'rawSqlSha256': self.bytes.RAW_SHA}
+            **self.cleanup_source_fields()}
         path = self.directory / 'public-cleanup.json'
         if path.exists(): need(self.bytes.read(self.utility.owner_path(path)) == result, 'Existing cleanup receipt differs from actual resources')
         else: self.bytes.write(path, result)
