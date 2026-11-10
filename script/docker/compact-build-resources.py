@@ -1080,6 +1080,48 @@ RECENT_BUILDER_SOURCES = {
         'toolsSha256': '352792942c7228c241c34637707f67d964f92ebcab2d8f31577ba6ca2affffdc',
     },
 }
+# This opt-in batch is independent of both historical and #201 permissions.
+# All retained originals and the archived three-helper source proof are pinned;
+# the stopped state volume remains outside this single-container removal API.
+CLOSED_RUNTIME_BUILDER_CONTROLS = {
+    'ci-204-24f8eb4b02bf': {
+        'commit': '24f8eb4b02bf290c6dd4e186eb78c5f3c80f3b88',
+        'sourceSha256': '4b1fed5b2e0f0a80cd0006d7a536eff326f547448c5019ec3ceafa457532bd77',
+        'toolsSha256': 'c139a726db51c56f685854b8994289915c2646c487402356e0d0c3833dc2b11d',
+        'summarySha256': 'af1150421360df666a8f4209b1071e8638ea8b8ba674ade4a8b1e8e383446d5c',
+        'measurementSha256': '0d7641f6b3666f259f4d3c505129f3e78a5e22cf0dc006e528ca678e7352fcaa',
+        'containerId': '09646d9dcc4d135e804e40dcfb9718917d2b29c4296ef9fcf8fc9bf975461724',
+        'ownerToken': '1b46c38a10f755860acc98ad',
+    },
+    'ci-207-eb286c623177': {
+        'commit': 'eb286c623177b9d1bc23fe88223d81862c00bc71',
+        'sourceSha256': '5973ac068fa44a1e7b69a443a820e30d780c35e4c0939e75b3703b9b426cbf2a',
+        'toolsSha256': '521676007cc727d3c08f6f76b10afd206f59c5c76cda06e82773140559910732',
+        'summarySha256': '9bb5bee53ee5276093d9d92a8341398b86e56f2a32a5ab46e84dc2e5fbdf5eec',
+        'measurementSha256': 'a12987a5f47809cd5ce49f45b9fe0b0621f95bdb32bcefbae9a26e06bed870c3',
+        'containerId': 'ee23bee6a53f673e013f0e92e0fd838c91514d0e30f845204ba9695dc7bce673',
+        'ownerToken': '86466c0e61f9492890688a77',
+    },
+}
+CLOSED_RUNTIME_BUILDER_RECIPE_SHA256 = '259d40731626e366b9f974df221bf64ee2db7a2e13e41dc369c1e5bf47826104'
+CLOSED_RUNTIME_BUILDER_HELPERS = {
+    'compact-build-resources.py': '6a2011e02a274729c346af50e14763b882db596a7e6d75c88848cccf5b6e041e',
+    'compact-image-inputs.py': '1db18e3d1aba9b426f6bfb6b34f22af96cb403c6a97ffef914ea35c308ea795e',
+}
+
+
+def closed_runtime_builder_source(context, control_shas, proof):
+    registered = CLOSED_RUNTIME_BUILDER_CONTROLS.get(context.get('release')) if type(context) is dict else None
+    require(registered is not None and set(context) == {'release', 'commit', 'sourceSha256'}
+            and all(context.get(key) == registered[key] for key in ('commit', 'sourceSha256'))
+            and control_shas == {name: registered[name + 'Sha256'] for name in ('tools', 'summary', 'measurement')},
+            'Exact closed runtime builder source and original controls required')
+    expected = {'path': 'inbox/' + context['release'] + '/source.tar.gz', 'sha256': registered['sourceSha256'],
+                'transportRecipeSha256': CLOSED_RUNTIME_BUILDER_RECIPE_SHA256,
+                'builderHelperSha256': dict(CLOSED_RUNTIME_BUILDER_HELPERS)}
+    require(type(proof) is dict and {key: proof.get(key) for key in expected} == expected,
+            'Authenticated closed runtime builder source archive and three helpers required')
+    return expected
 
 
 def recent_builder_source(context, tools_sha256):
@@ -1112,7 +1154,8 @@ def historical_builder_inspect(raw):
     return value[0]
 
 
-def historical_builder_descriptor(root, context, identity, tools_raw, summary_raw, measurement_raw, old_helper_shas, row):
+def historical_builder_descriptor(root, context, identity, tools_raw, summary_raw, measurement_raw, old_helper_shas, row,
+                                  *, closed_runtime=False, source_proof=None):
     """Admit only reviewed terminal, owned builders; no old code execution.
 
     The caller authenticates the failed Jenkins terminal and the original source
@@ -1122,7 +1165,15 @@ def historical_builder_descriptor(root, context, identity, tools_raw, summary_ra
     require(type(context) is dict and set(context) == {'release', 'commit', 'sourceSha256'}
             and type(context.get('sourceSha256')) is str and SHA.fullmatch(context['sourceSha256']),
             'Only the reviewed historical builders are eligible')
-    if context['release'] not in HISTORICAL_BUILDERS or HISTORICAL_BUILDERS[context['release']] != context['commit']:
+    require(type(closed_runtime) is bool, 'Exact closed runtime builder policy required')
+    closed_source = None
+    if closed_runtime:
+        controls = {name: hashlib.sha256(raw).hexdigest() if type(raw) is bytes else None
+                    for name, raw in (('tools', tools_raw), ('summary', summary_raw), ('measurement', measurement_raw))}
+        closed_source = closed_runtime_builder_source(context, controls, source_proof)
+        require(old_helper_shas == CLOSED_RUNTIME_BUILDER_HELPERS,
+                'Exact archived closed runtime builder helpers required')
+    elif context['release'] not in HISTORICAL_BUILDERS or HISTORICAL_BUILDERS[context['release']] != context['commit']:
         recent_builder_source(context, hashlib.sha256(tools_raw).hexdigest() if type(tools_raw) is bytes else None)
     require(type(identity) is dict and identity.get('executionLocation') == 'ECS'
             and set(identity) == {'instanceId', 'machineId', 'executionLocation'}, 'Exact historical ECS identity required')
@@ -1162,6 +1213,10 @@ def historical_builder_descriptor(root, context, identity, tools_raw, summary_ra
     require(summary.get('engineIdentity') == engine, 'Historical builder engine identity differs')
     require(type(row) is dict, 'Actual historical container inspection required')
     cid = cleanup['builderContainerId']; token = summary['ownerToken']; volume = 'doorhandle-builder-' + token + '-state'
+    if closed_runtime:
+        registered = CLOSED_RUNTIME_BUILDER_CONTROLS[context['release']]
+        require(cid == registered['containerId'] and token == registered['ownerToken'],
+                'Exact original closed runtime builder object and owner required')
     config, host, state = (row.get(name) or {} for name in ('Config', 'HostConfig', 'State'))
     labels = config.get('Labels') or {}
     require(row.get('Id') == cid and row.get('Name') == '/doorhandle-builder-' + token
@@ -1194,17 +1249,27 @@ def historical_builder_descriptor(root, context, identity, tools_raw, summary_ra
             'inspectSha256': hashlib.sha256(encoded(row)).hexdigest(),
             'controlSha256': {'tools': hashlib.sha256(tools_raw).hexdigest(), 'summary': hashlib.sha256(summary_raw).hexdigest(),
                               'measurement': hashlib.sha256(measurement_raw).hexdigest()},
-            'imagesPreserved': True, 'volumesPreserved': True, 'directoriesPreserved': True}
+            'imagesPreserved': True, 'volumesPreserved': True, 'directoriesPreserved': True,
+            **({'closedRuntimeSource': closed_source} if closed_runtime else {})}
 
 
-def historical_builder_remove(descriptor, inspect_fn, remove_fn, list_fn, references_fn):
+def historical_builder_remove(descriptor, inspect_fn, remove_fn, list_fn, references_fn, *, closed_runtime=False):
     """Remove one exact exited CID, without force or volume deletion.
 
     Docker refuses an ordinary rm if another actor starts this container after
     the last inspection. Failure or missing readback is never reported as success.
     """
     require(type(descriptor) is dict, 'Reviewed fixed builder descriptor required')
-    if descriptor.get('release') not in HISTORICAL_BUILDERS or HISTORICAL_BUILDERS[descriptor['release']] != descriptor.get('commit'):
+    require(type(closed_runtime) is bool, 'Exact closed runtime builder policy required')
+    if closed_runtime:
+        context = {key: descriptor.get(key) for key in ('release', 'commit', 'sourceSha256')}
+        closed_runtime_builder_source(context, descriptor.get('controlSha256'), descriptor.get('closedRuntimeSource'))
+        registered = CLOSED_RUNTIME_BUILDER_CONTROLS[context['release']]
+        require(descriptor.get('containerId') == registered['containerId']
+                and descriptor.get('ownerToken') == registered['ownerToken']
+                and descriptor.get('preservedVolume') == 'doorhandle-builder-' + registered['ownerToken'] + '-state',
+                'Exact original closed runtime builder object and state volume required')
+    elif descriptor.get('release') not in HISTORICAL_BUILDERS or HISTORICAL_BUILDERS[descriptor['release']] != descriptor.get('commit'):
         controls = descriptor.get('controlSha256')
         recent_builder_source({key: descriptor.get(key) for key in ('release', 'commit', 'sourceSha256')},
                               controls.get('tools') if type(controls) is dict else None)

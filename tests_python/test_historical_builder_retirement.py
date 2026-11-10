@@ -429,3 +429,200 @@ def test_duplicate_fields_in_any_original_control_are_not_an_authenticated_docum
     with pytest.raises(ValueError):
         resources.historical_builder_descriptor(builder.root, builder.context, builder.identity,
             values['tools'], values['summary'], values['measurement'], builder.helpers, builder.row)
+
+
+CLOSED_RUNTIME_BUILDERS = {
+    'ci-204-24f8eb4b02bf': {
+        'commit': '24f8eb4b02bf290c6dd4e186eb78c5f3c80f3b88',
+        'sourceSha256': '4b1fed5b2e0f0a80cd0006d7a536eff326f547448c5019ec3ceafa457532bd77',
+        'toolsSha256': 'c139a726db51c56f685854b8994289915c2646c487402356e0d0c3833dc2b11d',
+        'summarySha256': 'af1150421360df666a8f4209b1071e8638ea8b8ba674ade4a8b1e8e383446d5c',
+        'measurementSha256': '0d7641f6b3666f259f4d3c505129f3e78a5e22cf0dc006e528ca678e7352fcaa',
+        'containerId': '09646d9dcc4d135e804e40dcfb9718917d2b29c4296ef9fcf8fc9bf975461724',
+        'ownerToken': '1b46c38a10f755860acc98ad',
+    },
+    'ci-207-eb286c623177': {
+        'commit': 'eb286c623177b9d1bc23fe88223d81862c00bc71',
+        'sourceSha256': '5973ac068fa44a1e7b69a443a820e30d780c35e4c0939e75b3703b9b426cbf2a',
+        'toolsSha256': '521676007cc727d3c08f6f76b10afd206f59c5c76cda06e82773140559910732',
+        'summarySha256': '9bb5bee53ee5276093d9d92a8341398b86e56f2a32a5ab46e84dc2e5fbdf5eec',
+        'measurementSha256': 'a12987a5f47809cd5ce49f45b9fe0b0621f95bdb32bcefbae9a26e06bed870c3',
+        'containerId': 'ee23bee6a53f673e013f0e92e0fd838c91514d0e30f845204ba9695dc7bce673',
+        'ownerToken': '86466c0e61f9492890688a77',
+    },
+}
+
+
+def test_closed_runtime_builder_pins_are_exact_and_do_not_extend_historical_or_recent_permissions():
+    assert resources.CLOSED_RUNTIME_BUILDER_CONTROLS == CLOSED_RUNTIME_BUILDERS
+    assert resources.CLOSED_RUNTIME_BUILDER_RECIPE_SHA256 == '259d40731626e366b9f974df221bf64ee2db7a2e13e41dc369c1e5bf47826104'
+    assert resources.CLOSED_RUNTIME_BUILDER_HELPERS == {
+        'compact-build-resources.py': '6a2011e02a274729c346af50e14763b882db596a7e6d75c88848cccf5b6e041e',
+        'compact-image-inputs.py': '1db18e3d1aba9b426f6bfb6b34f22af96cb403c6a97ffef914ea35c308ea795e',
+    }
+    assert len(resources.HISTORICAL_BUILDERS) == 16 and set(resources.RECENT_BUILDER_SOURCES) == {'ci-201-803baf401b5f'}
+    assert not set(CLOSED_RUNTIME_BUILDERS).intersection(resources.HISTORICAL_BUILDERS | resources.RECENT_BUILDER_SOURCES)
+    assert 'ci-207-eb286c623177' not in resources.RECENT_MYSQL_FIXTURE_SOURCES
+
+
+@pytest.fixture(params=tuple(CLOSED_RUNTIME_BUILDERS))
+def closed_builder(request, monkeypatch):
+    tag = request.param; registered = CLOSED_RUNTIME_BUILDERS[tag]
+    state = fixture_state((tag, registered['commit'], registered['containerId'], registered['ownerToken']))
+    state.context['sourceSha256'] = registered['sourceSha256']
+    state.tools.update(state.context); state.summary.update(state.context)
+    state.helpers = dict(resources.CLOSED_RUNTIME_BUILDER_HELPERS)
+    state.tools['helperSha256'] = state.helpers['compact-build-resources.py']
+    state.tools['imageInputsHelperSha256'] = state.helpers['compact-image-inputs.py']
+    state.row['Config']['Labels']['io.doorhandle.source'] = registered['sourceSha256']
+    state.row['State']['ExitCode'] = state.summary['cleanup']['builderExitCode'] = 1
+    # The captured actual builders have only the named persistent state mount;
+    # HostConfig still records their original two tmpfs destinations.
+    state.row['Mounts'] = state.row['Mounts'][:1]
+    state.proof = {'path': 'inbox/' + tag + '/source.tar.gz', 'sha256': registered['sourceSha256'],
+        'transportRecipeSha256': resources.CLOSED_RUNTIME_BUILDER_RECIPE_SHA256,
+        'builderHelperSha256': dict(state.helpers)}
+    refresh_references(state)
+    # Unit controls have synthetic engine/layer bytes. Only their three raw
+    # control hashes are substituted locally; the literal registry is checked
+    # separately, and commit/archive/helper/object/owner pins stay unchanged.
+    registry = copy.deepcopy(resources.CLOSED_RUNTIME_BUILDER_CONTROLS)
+    for name in ('tools', 'summary', 'measurement'):
+        registry[tag][name + 'Sha256'] = sha(raw(getattr(state, name)))
+    monkeypatch.setattr(resources, 'CLOSED_RUNTIME_BUILDER_CONTROLS', registry)
+    return state
+
+
+def describe_closed(state, *, closed_runtime=True):
+    return resources.historical_builder_descriptor(state.root, state.context, state.identity,
+        raw(state.tools), raw(state.summary), raw(state.measurement), state.helpers, state.row,
+        closed_runtime=closed_runtime, source_proof=state.proof)
+
+
+def test_closed_runtime_stopped_builder_requires_the_exact_source_controls_and_retains_state(closed_builder):
+    result = describe_closed(closed_builder)
+    assert result['containerId'] == closed_builder.row['Id'] and result['ownerToken'] == closed_builder.summary['ownerToken']
+    assert result['exitCode'] == 1 and result['preservedVolume'] == closed_builder.volume
+    assert result['closedRuntimeSource'] == closed_builder.proof and result['closedRuntimeSource'] is not closed_builder.proof
+    assert result['closedRuntimeSource']['builderHelperSha256'] is not closed_builder.proof['builderHelperSha256']
+    assert result['imagesPreserved'] is result['volumesPreserved'] is result['directoriesPreserved'] is True
+
+
+def test_closed_runtime_builder_requires_an_explicit_policy_at_both_admission_and_removal(closed_builder):
+    with pytest.raises(ValueError): describe(closed_builder)
+    descriptor = describe_closed(closed_builder)
+    calls, inspect, remove, listing, references = callbacks(closed_builder)
+    with pytest.raises(ValueError): resources.historical_builder_remove(descriptor, inspect, remove, listing, references)
+    assert calls.inspected == calls.referenced == calls.removed == [] and calls.listed == 0
+
+
+def test_closed_runtime_flag_cannot_be_a_truthy_non_boolean(closed_builder):
+    descriptor = describe_closed(closed_builder)
+    for policy in (1, 'true', None):
+        with pytest.raises(ValueError): describe_closed(closed_builder, closed_runtime=policy)
+        calls, inspect, remove, listing, references = callbacks(closed_builder)
+        with pytest.raises(ValueError):
+            resources.historical_builder_remove(descriptor, inspect, remove, listing, references, closed_runtime=policy)
+        assert calls.inspected == calls.referenced == calls.removed == [] and calls.listed == 0
+
+
+def test_closed_runtime_builder_archive_recipe_and_both_helpers_cannot_drift(closed_builder):
+    for damage in ('missing', 'path', 'sha256', 'recipe', 'resource-helper', 'inputs-helper', 'extra-helper', 'helpers'):
+        state = copy.deepcopy(closed_builder)
+        if damage == 'missing': state.proof = None
+        elif damage == 'path': state.proof['path'] = 'inbox/ci-206-2236077d98bf/source.tar.gz'
+        elif damage == 'sha256': state.proof['sha256'] = 'f' * 64
+        elif damage == 'recipe': state.proof['transportRecipeSha256'] = 'f' * 64
+        elif damage == 'resource-helper': state.proof['builderHelperSha256']['compact-build-resources.py'] = 'f' * 64
+        elif damage == 'inputs-helper': state.proof['builderHelperSha256']['compact-image-inputs.py'] = 'f' * 64
+        elif damage == 'extra-helper': state.proof['builderHelperSha256']['other.py'] = 'f' * 64
+        else: state.helpers['compact-build-resources.py'] = 'f' * 64
+        with pytest.raises(ValueError): describe_closed(state)
+
+
+def test_closed_runtime_builder_original_context_and_all_three_raw_control_pins_are_required(closed_builder):
+    for damage in ('commit', 'source', 'release', 'tools', 'summary', 'measurement'):
+        state = copy.deepcopy(closed_builder)
+        if damage == 'commit': state.context['commit'] = 'f' * 40
+        elif damage == 'source': state.context['sourceSha256'] = 'f' * 64
+        elif damage == 'release': state.context['release'] = 'ci-206-2236077d98bf'
+        else: getattr(state, damage)['unreviewed-field'] = True
+        with pytest.raises(ValueError): describe_closed(state)
+
+
+def test_closed_runtime_builder_actual_ownership_inactivity_and_mount_guards_remain_enforced(closed_builder):
+    for damage in ('cid', 'owner', 'commit-label', 'source-label', 'live-pid', 'running', 'privileged', 'state-volume', 'business-bind'):
+        state = copy.deepcopy(closed_builder)
+        if damage == 'cid': state.row['Id'] = 'f' * 64
+        elif damage == 'owner': state.row['Config']['Labels'][resources.LABEL] = 'f' * 24
+        elif damage == 'commit-label': state.row['Config']['Labels']['io.doorhandle.release'] = 'ci-206-2236077d98bf'
+        elif damage == 'source-label': state.row['Config']['Labels']['io.doorhandle.source'] = 'f' * 64
+        elif damage == 'live-pid': state.row['State']['Pid'] = 1234
+        elif damage == 'running': state.row['State'].update(Status='running', Running=True, Pid=1234)
+        elif damage == 'privileged': state.row['HostConfig']['Privileged'] = True
+        elif damage == 'state-volume': state.row['Mounts'][0]['Name'] = 'business-data'
+        else: state.row['Mounts'].append({'Type': 'bind', 'Source': '/srv/business', 'Destination': '/data', 'RW': True})
+        with pytest.raises(ValueError): describe_closed(state)
+
+
+def test_closed_runtime_builder_removal_is_one_ordinary_cid_callback_with_state_volume_preserved(closed_builder):
+    descriptor = describe_closed(closed_builder)
+    calls, inspect, remove, listing, references = callbacks(closed_builder)
+    result = resources.historical_builder_remove(descriptor, inspect, remove, listing, references, closed_runtime=True)
+    assert calls.inspected == [closed_builder.row['Id'], closed_builder.row['Id']]
+    assert calls.referenced == calls.removed == [closed_builder.row['Id']] and calls.listed == 1
+    assert result == {'status': 'REMOVED', 'release': closed_builder.context['release'], 'containerId': closed_builder.row['Id'],
+        'preservedVolume': closed_builder.volume, 'imagesPreserved': True, 'volumesPreserved': True, 'directoriesPreserved': True}
+
+
+def test_closed_runtime_remove_readmits_archive_helpers_controls_owner_and_state_before_callbacks(closed_builder):
+    original = describe_closed(closed_builder)
+    for damage in ('commit', 'source', 'tools', 'summary', 'measurement', 'recipe', 'helper', 'missing-proof', 'cid', 'owner', 'volume'):
+        descriptor = copy.deepcopy(original)
+        if damage == 'commit': descriptor['commit'] = 'f' * 40
+        elif damage == 'source': descriptor['sourceSha256'] = 'f' * 64
+        elif damage in ('tools', 'summary', 'measurement'): descriptor['controlSha256'][damage] = 'f' * 64
+        elif damage == 'recipe': descriptor['closedRuntimeSource']['transportRecipeSha256'] = 'f' * 64
+        elif damage == 'helper': descriptor['closedRuntimeSource']['builderHelperSha256']['compact-image-inputs.py'] = 'f' * 64
+        elif damage == 'missing-proof': descriptor.pop('closedRuntimeSource')
+        elif damage == 'cid': descriptor['containerId'] = 'f' * 64
+        elif damage == 'owner': descriptor['ownerToken'] = 'f' * 24
+        else: descriptor['preservedVolume'] = 'business-data'
+        calls, inspect, remove, listing, references = callbacks(closed_builder)
+        with pytest.raises(ValueError):
+            resources.historical_builder_remove(descriptor, inspect, remove, listing, references, closed_runtime=True)
+        assert calls.inspected == calls.referenced == calls.removed == [] and calls.listed == 0
+
+
+def test_closed_runtime_removal_rechecks_after_reference_audit_and_never_forces_a_started_object(closed_builder):
+    descriptor = describe_closed(closed_builder)
+    calls, inspect, remove, listing, references = callbacks(closed_builder)
+    def started(cid):
+        row = inspect(cid)
+        if len(calls.inspected) == 2: row['State'].update(Status='running', Running=True, Pid=1234)
+        return row
+    with pytest.raises(ValueError):
+        resources.historical_builder_remove(descriptor, started, remove, listing, references, closed_runtime=True)
+    assert calls.referenced == [closed_builder.row['Id']] and calls.removed == [] and calls.listed == 0
+
+
+def test_closed_runtime_removal_rejects_unknown_references_or_unconfirmed_absence(closed_builder):
+    descriptor = describe_closed(closed_builder)
+    for stage in ('references', 'absence'):
+        calls, inspect, remove, listing, references = callbacks(closed_builder)
+        def checked_references(cid):
+            references(cid)
+            if stage == 'references': raise ValueError('Unadmitted stopped object still references this attempt')
+        def uncertain_listing():
+            listing(); return [closed_builder.row['Id']]
+        with pytest.raises(ValueError):
+            resources.historical_builder_remove(descriptor, inspect, remove, uncertain_listing, checked_references, closed_runtime=True)
+        assert calls.removed == ([] if stage == 'references' else [closed_builder.row['Id']])
+
+
+def test_closed_runtime_flag_does_not_admit_any_original_historical_or_201_builder(builder, recent_builder):
+    for state in (builder, recent_builder):
+        state.proof = {'path': 'inbox/' + state.context['release'] + '/source.tar.gz', 'sha256': state.context['sourceSha256'],
+            'transportRecipeSha256': resources.CLOSED_RUNTIME_BUILDER_RECIPE_SHA256,
+            'builderHelperSha256': dict(resources.CLOSED_RUNTIME_BUILDER_HELPERS)}
+        with pytest.raises(ValueError): describe_closed(state)
