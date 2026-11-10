@@ -418,3 +418,89 @@ def test_recent_remove_rechecks_source_proof_before_any_object_command(fixture):
     with pytest.raises(ValueError):
         resources.historical_mysql_fixture_remove(descriptor, inspect, remove, listing, references, data)
     assert calls.inspected == calls.removed == calls.referenced == [] and calls.data == 0
+
+
+@pytest.fixture
+def closed_mysql_204(fixture):
+    value, proof = recent_mysql_fixture(fixture, 'ci-204-24f8eb4b02bf')
+    source_sha = '4b1fed5b2e0f0a80cd0006d7a536eff326f547448c5019ec3ceafa457532bd77'
+    for document in (value.context, value.owner, value.cleanup): document['sourceSha256'] = source_sha
+    value.row['Config']['Labels']['io.doorhandle.source'] = source_sha
+    proof['sha256'] = source_sha; value.proof = proof
+    return value
+
+
+def test_closed_204_source_binds_only_original_commit_archive_and_two_helpers(closed_mysql_204):
+    state = closed_mysql_204; tag = state.context['release']
+    assert resources.RECENT_MYSQL_FIXTURE_SOURCES[tag] == (
+        '24f8eb4b02bf290c6dd4e186eb78c5f3c80f3b88', '259d40731626e366b9f974df221bf64ee2db7a2e13e41dc369c1e5bf47826104')
+    assert resources.RECENT_MYSQL_FIXTURE_ARCHIVE_SHA256 == {tag: state.context['sourceSha256']}
+    assert resources.RECENT_MYSQL_HELPERS[tag] == {
+        'compact-build-resources.py': '6a2011e02a274729c346af50e14763b882db596a7e6d75c88848cccf5b6e041e',
+        'compact-image-inputs.py': '1db18e3d1aba9b426f6bfb6b34f22af96cb403c6a97ffef914ea35c308ea795e'}
+    assert resources.recent_mysql_fixture_source(state.context, state.proof) == state.proof
+    assert tag not in resources.HISTORICAL_BUILDERS and tag not in resources.RECENT_BUILDER_SOURCES
+
+
+def test_closed_204_source_rejects_drift_and_cannot_authorize_206_or_uncreated_207(closed_mysql_204):
+    for damage in ('commit', 'archive', 'recipe', 'resource-helper', 'input-helper', '206', '207'):
+        state = copy.deepcopy(closed_mysql_204)
+        if damage == 'commit': state.context['commit'] = 'a' * 40
+        elif damage == 'archive': state.context['sourceSha256'] = state.proof['sha256'] = 'a' * 64
+        elif damage == 'recipe': state.proof['transportRecipeSha256'] = 'a' * 64
+        elif damage.endswith('-helper'):
+            key = 'compact-build-resources.py' if damage == 'resource-helper' else 'compact-image-inputs.py'
+            state.proof['builderHelperSha256'][key] = 'a' * 64
+        elif damage == '206': state.context.update(release='ci-206-2236077d98bf', commit='2236077d98bf14b9b163e1310682e6c491481cfd')
+        else: state.context.update(release='ci-207-eb286c623177', commit='eb286c623177b9d1bc23fe88223d81862c00bc71')
+        with pytest.raises(ValueError): resources.recent_mysql_fixture_source(state.context, state.proof)
+
+
+def test_closed_204_stopped_object_removal_preserves_original_data_and_uses_only_its_cid(closed_mysql_204):
+    state = closed_mysql_204; descriptor = describe_recent(state, state.proof)
+    descriptor['rawInspectSha256'] = sha(raw([state.row]))
+    calls, inspect, remove, listing, references, data = callbacks(state)
+    result = resources.historical_mysql_fixture_remove(descriptor, inspect, remove, listing, references, data)
+    assert calls.inspected == [state.owner['containerId']] * 2
+    assert calls.removed == calls.referenced == [state.owner['containerId']]
+    assert result['status'] == 'REMOVED' and result['dataMetadata'] == state.data_metadata
+    assert result['dataDirectoryPreserved'] and result['imagesPreserved'] and result['volumesPreserved']
+    assert SECRET.encode() not in raw(descriptor)
+
+
+def test_closed_204_registration_keeps_all_original_stopped_owner_and_data_guards(closed_mysql_204):
+    for damage in ('running', 'pid', 'cleanup', 'labels', 'mount', 'uid', 'inode-mode'):
+        state = copy.deepcopy(closed_mysql_204)
+        if damage == 'running': state.row['State']['Running'] = True
+        elif damage == 'pid': state.row['State']['Pid'] = 1234
+        elif damage == 'cleanup': state.cleanup['status'] = 'FAILED_OR_UNKNOWN'
+        elif damage == 'labels': state.row['Config']['Labels']['io.doorhandle.source'] = 'a' * 64
+        elif damage == 'mount': state.row['Mounts'][0]['Source'] = '/srv/production/mysql'
+        elif damage == 'uid': state.data_metadata[3] = 0
+        else: state.data_metadata[2] = stat.S_IFDIR | 0o777
+        with pytest.raises(ValueError): describe_recent(state, state.proof)
+
+
+def test_closed_204_remove_rechecks_helper_proof_before_any_object_callback(closed_mysql_204):
+    state = closed_mysql_204; descriptor = describe_recent(state, state.proof)
+    descriptor['rawInspectSha256'] = sha(raw([state.row]))
+    descriptor['fixtureSourceProof']['builderHelperSha256']['compact-build-resources.py'] = 'a' * 64
+    def refused(*_args): pytest.fail('Unadmitted source proof reached an object operation')
+    with pytest.raises(ValueError): resources.historical_mysql_fixture_remove(descriptor, refused, refused, refused, refused, refused)
+
+
+def test_closed_204_remove_rejects_new_references_and_changed_data_identity(closed_mysql_204):
+    for damage in ('inode-before', 'new-reference', 'inode-after'):
+        state = copy.deepcopy(closed_mysql_204); descriptor = describe_recent(state, state.proof)
+        descriptor['rawInspectSha256'] = sha(raw([state.row]))
+        calls, inspect, remove, listing, references, data = callbacks(state)
+        def changed_data():
+            result = data()
+            if damage == 'inode-before' or damage == 'inode-after' and calls.removed: result[1] += 1
+            return result
+        def checked_references(cid):
+            references(cid)
+            if damage == 'new-reference': raise ValueError('A synthetic new container references this fixture')
+        with pytest.raises(ValueError):
+            resources.historical_mysql_fixture_remove(descriptor, inspect, remove, listing, checked_references, changed_data)
+        assert calls.removed == ([state.owner['containerId']] if damage == 'inode-after' else [])
