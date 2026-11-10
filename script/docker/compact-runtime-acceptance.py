@@ -426,6 +426,7 @@ class Runtime:
         self.browser = module('runtime_collaboration_browser', source / 'script/docker/compact-collaboration-browser.py')
         self.stable_identity = module('runtime_stable_identity', source / 'script/docker/compact-runtime-stable-identity.py')
         self.collaboration_http = module('runtime_collaboration_http', source / 'script/docker/compact-collaboration-http.py')
+        self.stream_probes = module('runtime_collaboration_stream_probes', source / 'script/docker/compact-collaboration-stream-probes.py')
         self.common = module('runtime_schema_queries', source / 'script/docker/assignment-compat.py')
         self.acceptance = module('runtime_profile_contract', source / 'script/jenkins/compact-acceptance.py')
         self.profile, self.profile_sha = self.acceptance.profile(source)
@@ -1690,7 +1691,20 @@ print(json.dumps({'deleted':len(keys),'keysSha256':hashlib.sha256(json.dumps(sor
         self.stable_identity.prove_current_task(self, self.report_task_id)
         stable_identity = self.stable_identity.require_receipts(self)
         collaboration_http = self.collaboration_http.require_receipts(self)
+        stream_probes = self.stream_probes.arm_model_stream_probes(self)
         browser = self.browser.run(self)
+        # Read the real provider again after the browser consumed its newly armed
+        # responses; the earlier SDK state cannot prove these two streams ran.
+        state = self.fixture('GET', '/__fixture/state')
+        stream_verification = self.stream_probes.verify_model_stream_probes(stream_probes, state)
+        require(all(item.get('remainingSteps') == 0 and item.get('calls', 0) > 0 for item in state['markers']),
+                'A model script was left unused after real browser acceptance')
+        report_path = self.directory / 'browser-evidence/browser-evidence.json'
+        require(sha_file(report_path) == browser['sha256'], 'Actual browser evidence changed before persistence verification')
+        persistence = self.stream_probes.verify_persisted_model_streams(self, stream_probes, json.loads(report_path.read_bytes()))
+        self.owner.update(finalFixtureState=state, modelStreamProbeVerification=stream_verification,
+                          modelStreamPersistenceVerification=persistence)
+        self.save()
         self.save('ASSERTIONS_PASSED')
         self.cleanup()
         require(self.resources.error is None, 'Runtime resource observation failed; bounded acceptance cannot pass')
@@ -1728,6 +1742,8 @@ print(json.dumps({'deleted':len(keys),'keysSha256':hashlib.sha256(json.dumps(sor
                                'ossAdapterSourceSha256': self.owner['ossFixtureSourceSha256'],
                                'observedInternalNetworks': self.owner['observedModelNetworks'],
                                'fixtureState': self.owner['finalFixtureState'],
+                               'modelStreamProbes': self.owner['modelStreamProbeVerification'],
+                               'modelStreamPersistence': self.owner['modelStreamPersistenceVerification'],
                                'activeModelRevision': self.owner['modelRevision'],
                                'internalNetworksVerified': True, 'providerCredentialsRemoved': True}}
         self.common.write_json(self.public_file, proof)

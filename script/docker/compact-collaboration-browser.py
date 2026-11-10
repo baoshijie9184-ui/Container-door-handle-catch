@@ -97,11 +97,14 @@ def run(ctx):
     # The browser uses the existing non-root ECS UID; private inputs remain 0600.
     ctx.common.write_json(inputs / 'users.json', {'accounts': ctx.accounts})
     network = ctx.config['networks']['doorhandle-network']['name']
+    probes = ctx.owner.get('modelStreamProbes', {})
+    require(probes.get('phase') == 'ARMED' and isinstance(probes.get('descriptor'), dict),
+            'Real browser needs the privately armed bounded provider stream probes')
     descriptor = {'schemaVersion': 1, 'commit': ctx.args.commit, 'sourceSha256': ctx.args.source_sha256,
         'ownership': {'project': ctx.project, 'network': network, 'token': ctx.token}, 'upstream': 'http://ui:80',
         'runtime': {'browserImageId': image, 'browserContainerId': '', 'cpuLimit': 2,
                     'memoryLimitBytes': MEMORY, 'pidsLimit': 512},
-        'fixtures': {'reportTaskId': ctx.report_task_id},
+        'fixtures': {'reportTaskId': ctx.report_task_id, 'modelStreamProbes': probes['descriptor']},
         'budgets': {'accounts': 20, 'tabsPerAccount': 2, 'p95MaxMs': 2000,
                     'minimumLatencySamples': 20, 'timeoutSeconds': 600}}
     # Build layers are retained in the measured baseline, not credited as free space.
@@ -143,7 +146,7 @@ def run(ctx):
     require(all(result.get(key) == descriptor[key] for key in ('schemaVersion', 'commit', 'sourceSha256'))
             and result.get('runtime') == descriptor['runtime'] and result.get('status') == 'PASS'
             and result.get('fullA01A28AcceptanceClaimed') is False
-            and len(result.get('checks', {})) >= 18
+            and len(result.get('checks', {})) == 19
             and all(row.get('status') == 'PASS' for row in result['checks'].values()),
             'Real browser source/identity/check evidence is incomplete')
     for name in ('collaboration-browser-runner.py', 'collaboration-browser-proxy.py', 'collaboration-browser-sources.json'):
