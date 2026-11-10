@@ -55,6 +55,18 @@
       ]
     },
     {
+      "id": "SystemDetectionHistoryMySqlTest",
+      "className": "com.ruanzhu.doorhandle.module.detection.service.SystemDetectionHistoryMySqlTest",
+      "fixtureProperties": [
+        "doorhandle.report.mysql.config"
+      ],
+      "source": "doorhandle-module-detection/src/test/java/com/ruanzhu/doorhandle/module/detection/service/SystemDetectionHistoryMySqlTest.java",
+      "minimumTests": 11,
+      "coverage": [
+        "actual MyBatis worker completion/failure and local start, V3 system provenance, null-actor identity, current resource authorization, concurrent replay and mandatory audit rollback"
+      ]
+    },
+    {
       "id": "ModelUploadIdempotencyMySqlTest",
       "className": "com.ruanzhu.doorhandle.module.model.service.ModelUploadIdempotencyMySqlTest",
       "fixtureProperties": [
@@ -1634,7 +1646,7 @@
         "tests/tool-execution.test.cjs",
         "tests/trace-references.test.cjs"
       ],
-      "minimumTests": 46,
+      "minimumTests": 48,
       "requiredCommands": [
         "frontend-install",
         "frontend-test",

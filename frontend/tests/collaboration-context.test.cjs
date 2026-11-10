@@ -14,6 +14,21 @@ const user = (accountContext='context-a', overrides={}) => ({authenticated:true,
   accountContext,capabilities:{sessionTracking:true,realtime:true,changeHistory:true},...overrides})
 const flush = async () => { for(let i=0;i<12;i++)await Promise.resolve() }
 
+test('system execution and the historical requester remain separate without inventing an actor role',async()=>{
+  const {historyActorName,historyActorRole,historyInitiator}=await diffModule
+  const item={actor:null,source:{type:'SYSTEM',component:'DETECTION_WORKER',initiator:{userId:'9007199254740993',username:'former-inspector'}}}
+  assert.equal(historyActorName(item),'系统执行');assert.equal(historyActorRole(item),'检测执行器');assert.equal(historyInitiator(item),'former-inspector')
+  assert.equal(historyInitiator({actor:null,source:{type:'SYSTEM',component:'IMAGE_DETECTION_ASYNC',initiator:null}}),'未记录')
+  assert.equal(item.actor,null)
+})
+test('V1 unknown and V2 human history keep the historical actor instead of guessing a system source',async()=>{
+  const {historyActorName,historyActorRole,historyInitiator}=await diffModule
+  const old={actor:{userId:'31',role:null},source:{type:'UNKNOWN'}}
+  assert.equal(historyActorName(old),'账号 31');assert.equal(historyActorRole(old),'操作时角色未记录');assert.equal(historyInitiator(old),'')
+  const user={actor:{username:'alice',role:'INSPECTOR'},source:{type:'USER'}}
+  assert.equal(historyActorName(user),'alice');assert.equal(historyActorRole(user),'检测人员')
+})
+
 function browser({shared=true}={}) {
   let time=100000, sequence=0
   const sources=[], channels=new Map(), held=new Set(), timers=new Set()

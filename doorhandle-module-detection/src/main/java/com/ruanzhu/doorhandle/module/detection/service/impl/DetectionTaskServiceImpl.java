@@ -76,6 +76,9 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 @Slf4j
 public class DetectionTaskServiceImpl implements DetectionTaskService {
+    private com.ruanzhu.doorhandle.module.detection.service.DetectionSystemChanges systemChanges;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void systemChanges(com.ruanzhu.doorhandle.module.detection.service.DetectionSystemChanges value){systemChanges=value;}
     private com.ruanzhu.doorhandle.module.detection.service.DetectionIdentityService identities;
     @org.springframework.beans.factory.annotation.Autowired(required=false)
     public void setIdentities(com.ruanzhu.doorhandle.module.detection.service.DetectionIdentityService value){identities=value;}
@@ -939,22 +942,24 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
     @CacheEvict(cacheNames = {"detection-task", "dashboard"}, allEntries = true)
     public void applyFinishedEvent(DetectionTaskFinishedEvent event) {
         DetectionTask task = getTaskForSystemLocked(event.getTaskId());
-        boolean staleDispatch = StringUtils.hasText(task.getDispatchId())
-                && !Objects.equals(task.getDispatchId(), event.getDispatchId());
+        boolean staleDispatch = !Objects.equals(StringUtils.hasText(task.getDispatchId())?task.getDispatchId():null,
+                StringUtils.hasText(event.getDispatchId())?event.getDispatchId():null);
         boolean duplicateEvent = StringUtils.hasText(event.getEventId())
                 && Objects.equals(task.getLastFinishedEventId(), event.getEventId());
-        if (staleDispatch || duplicateEvent) {
+        boolean terminal=java.util.Set.of("COMPLETED","PARTIAL_FAILED","FAILED","CANCELLED").contains(Objects.toString(task.getStatus(),""));
+        if (staleDispatch || duplicateEvent || terminal) {
             log.info("忽略过期或重复的检测完成事件: taskId={}, dispatchId={}, eventId={}",
                     event.getTaskId(), event.getDispatchId(), event.getEventId());
             return;
         }
+        var before=systemChanges==null?null:systemChanges.before(task.getTaskId());
         task.setStage("UPLOADING_RESULT");
         task.setStatus("UPLOADING_RESULT");
         task.setUpdatedAt(LocalDateTime.now());
         if (StringUtils.hasText(event.getEventId())) {
             task.setLastFinishedEventId(event.getEventId());
         }
-        detectionTaskMapper.updateById(task);
+        if(detectionTaskMapper.updateById(task)!=1)throw new IllegalStateException("检测结果中间状态未保存");
         saveIdentity(task);
 
         task.setProcessedImages(event.getTotalImages() != null ? event.getTotalImages() : task.getTotalImages());
@@ -988,11 +993,16 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
                 task.setErrorMessage("远程检测服务返回失败状态");
             }
         }
-        detectionTaskMapper.updateById(task);
+        if(detectionTaskMapper.updateById(task)!=1)throw new IllegalStateException("检测完成状态未保存");
         saveIdentity(task);
+        if(systemChanges!=null)systemChanges.record(before,com.ruanzhu.doorhandle.contracts.collaboration.SystemChangeAuditApi.Component.DETECTION_WORKER,
+                event.getEventId(),"SYSTEM_"+task.getStatus(),task);
 
-        // 检测完成通知：如果任务是从聊天助手创建的，发送通知消息
-        notifyDetectionCompleted(task);
+        // Completion is observable only after the required business/audit commit.
+        if(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive())
+            org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(new org.springframework.transaction.support.TransactionSynchronization(){
+                @Override public void afterCommit(){notifyDetectionCompleted(task);}});
+        else notifyDetectionCompleted(task);
     }
 
     private void notifyDetectionCompleted(DetectionTask task) {
@@ -1026,14 +1036,27 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
 
     @CacheEvict(cacheNames = {"detection-task", "dashboard"}, allEntries = true)
     public void failTask(String taskId, String errorMessage) {
-        DetectionTask task = getTaskForSystem(taskId);
+        DetectionTask task = getTaskForSystemLocked(taskId);
+        failLocked(task,errorMessage);
+    }
+    /** A delayed dispatch failure cannot fail a newer retry of the same task. */
+    public void failTask(String taskId,String expectedDispatchId,String errorMessage){
+        DetectionTask task=getTaskForSystemLocked(taskId);
+        if(!Objects.equals(task.getDispatchId(),expectedDispatchId))return;
+        failLocked(task,errorMessage);
+    }
+    private void failLocked(DetectionTask task,String errorMessage){
+        if(java.util.Set.of("COMPLETED","PARTIAL_FAILED","FAILED","CANCELLED").contains(Objects.toString(task.getStatus(),"")))return;
+        var before=systemChanges==null?null:systemChanges.before(task.getTaskId());
         task.setStatus("FAILED");
         task.setStage("FAILED");
         task.setErrorMessage(errorMessage);
         task.setFinishedAt(LocalDateTime.now());
         task.setUpdatedAt(LocalDateTime.now());
-        detectionTaskMapper.updateById(task);
+        if(detectionTaskMapper.updateById(task)!=1)throw new IllegalStateException("检测失败状态未保存");
         saveIdentity(task);
+        if(systemChanges!=null)systemChanges.record(before,com.ruanzhu.doorhandle.contracts.collaboration.SystemChangeAuditApi.Component.DETECTION_WORKER,
+                null,"SYSTEM_FAILED",task);
     }
 
     public List<String> readJsonList(String json) {

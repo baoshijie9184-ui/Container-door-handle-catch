@@ -98,7 +98,7 @@ public class BusinessRealtimeService {
         for (var connection : connections.values()) {
             // A former assignee also needs a non-identifying invalidation to clear a stale detail.
             if ("ENTERPRISE".equals(event.scope())) connection.offer(new Frame("resync-required", null, "BUSINESS_CHANGED"));
-            if ("PRIVATE".equals(event.scope()) && connection.session.userId() != event.actorUserId()) continue;
+            if ("PRIVATE".equals(event.scope()) && !Objects.equals(connection.session.userId(), event.actorUserId())) continue;
             if (!Set.of("PRIVATE", "ENTERPRISE").contains(event.scope())) continue;
             connection.offer(new Frame("resource-changed", event, null));
         }

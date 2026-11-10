@@ -124,16 +124,13 @@ class DetectionTaskEventTest {
                 .finishedAt("2026-06-10T11:30:00+08:00")
                 .build());
 
-        ArgumentCaptor<DetectionTask> taskCaptor = ArgumentCaptor.forClass(DetectionTask.class);
-        verify(fixture.detectionTaskMapper, org.mockito.Mockito.atLeastOnce()).updateById(taskCaptor.capture());
-        DetectionTask updatedTask = taskCaptor.getAllValues().get(taskCaptor.getAllValues().size() - 1);
-
-        assertEquals("COMPLETED", updatedTask.getStatus());
-        assertEquals("RELEASED", updatedTask.getFlowStatus());
-        assertEquals("REVIEWED", updatedTask.getReviewStatus());
-        assertEquals("DISPOSED", updatedTask.getDispositionStatus());
-        assertEquals("RELEASE", updatedTask.getDispositionAction());
-        assertEquals("qa-leader", updatedTask.getDispositionOperator());
+        verify(fixture.detectionTaskMapper, Mockito.never()).updateById(any(DetectionTask.class));
+        assertEquals("COMPLETED", task.getStatus());
+        assertEquals("RELEASED", task.getFlowStatus());
+        assertEquals("REVIEWED", task.getReviewStatus());
+        assertEquals("DISPOSED", task.getDispositionStatus());
+        assertEquals("RELEASE", task.getDispositionAction());
+        assertEquals("qa-leader", task.getDispositionOperator());
     }
 
     @Test

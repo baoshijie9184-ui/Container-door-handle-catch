@@ -1,5 +1,14 @@
 export const historicalRole = role => ({ SUPERVISOR: '主管', INSPECTOR: '检测人员' })[role] || '操作时角色未记录'
 export const actorName = actor => actor?.displayName || actor?.username || (actor?.userId ? '账号 ' + actor.userId : '操作人未记录')
+export const historyActorName = item => item?.source?.type === 'SYSTEM' ? '系统执行' : actorName(item?.actor)
+export const historyActorRole = item => item?.source?.type === 'SYSTEM'
+  ? ({DETECTION_WORKER:'检测执行器',IMAGE_DETECTION_ASYNC:'图片批量检测',IMAGE_DETECTION:'单图检测'})[item.source.component] || '系统执行来源'
+  : historicalRole(item?.actor?.role)
+export function historyInitiator(item) {
+  if(item?.source?.type !== 'SYSTEM')return ''
+  const origin=item.source.initiator
+  return origin?.username || (origin?.userId ? '账号 '+origin.userId : '未记录')
+}
 export function changeValue(change, side) {
   if (change.redacted) return '内容已受保护'
   if (side === 'before' && change.operation === 'ADD' || side === 'after' && change.operation === 'REMOVE') return '字段不存在'

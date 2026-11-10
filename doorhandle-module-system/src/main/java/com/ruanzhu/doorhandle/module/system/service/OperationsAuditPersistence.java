@@ -13,6 +13,7 @@ import java.util.Objects;
 import java.util.Set;
 import com.ruanzhu.doorhandle.contracts.collaboration.ChangeHistory;
 import com.ruanzhu.doorhandle.contracts.agent.AgentActor;
+import com.ruanzhu.doorhandle.contracts.collaboration.SystemChangeAuditApi;
 
 /** Package-private append path for an actor already authorized by the owning operation. */
 final class OperationsAuditPersistence {
@@ -46,7 +47,34 @@ final class OperationsAuditPersistence {
             }
         }
     }
-    record Decoded(String scope,String domain,String result,Long resourceVersion,OperationV2 detail) { }
+    record OperationV3(String scope,String domain,String result,Long resourceVersion,String resourceType,
+            String source,String component,String sourceEventId,SystemChangeAuditApi.Initiator initiator,
+            Long beforeVersion,String causationRequestId,java.util.List<ChangeHistory.Change> changes) {
+        OperationV3 {
+            if(!"ENTERPRISE".equals(scope)||!"APPLIED".equals(result)||!"SYSTEM".equals(source))
+                throw new IllegalArgumentException("System changes require enterprise execution facts");
+            token(domain,48);token(resourceType,64);token(sourceEventId,128);token(causationRequestId,128);
+            SystemChangeAuditApi.Component.valueOf(component);
+            if(resourceVersion==null||resourceVersion<0||beforeVersion!=null&&(beforeVersion<0||beforeVersion==Long.MAX_VALUE||resourceVersion!=beforeVersion+1))
+                throw new IllegalArgumentException("System changes require an advanced persisted revision");
+            if(!sourceEventId.equals(causationRequestId))throw new IllegalArgumentException("System event and request identity differ");
+            changes=java.util.List.copyOf(changes);
+            if(changes.isEmpty()||changes.size()>64)throw new IllegalArgumentException("System changes require bounded fields");
+            var fields=new java.util.HashSet<String>();
+            for(var change:changes){
+                token(change.field(),64);
+                if(!fields.add(change.field())||change.label()==null||change.label().length()>80
+                        ||!Set.of("ADD","REMOVE","REPLACE","CHANGED").contains(change.operation())
+                        ||change.valueType()!=null&&change.valueType().length()>32
+                        ||change.redacted()&&(change.before()!=null||change.after()!=null||!"CHANGED".equals(change.operation())))
+                    throw new IllegalArgumentException("Invalid system field change");
+                scalar(change.before());scalar(change.after());
+            }
+        }
+    }
+    record Detail(String resourceType,String actorUsername,String actorDisplayName,String actorRole,Long beforeVersion,
+                  String causationRequestId,java.util.List<ChangeHistory.Change> changes,ChangeHistory.Source source) { }
+    record Decoded(String scope,String domain,String result,Long resourceVersion,Detail detail) { }
     record Appended(String eventId,String auditId,java.time.Instant occurredAt,boolean created) { }
     private final JdbcTemplate jdbc;
     private final ObjectMapper json=new ObjectMapper().enable(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_MISSING_CREATOR_PROPERTIES,
@@ -54,7 +82,7 @@ final class OperationsAuditPersistence {
     private final JdbcAuditStore store;
     OperationsAuditPersistence(JdbcTemplate jdbc) {
         this.jdbc=jdbc;store=new JdbcAuditStore(jdbc,json,Map.of("OPERATIONS",OperationV1.class),
-                Map.of("OPERATIONS",Map.of(1,OperationV1.class,2,OperationV2.class)));
+                Map.of("OPERATIONS",Map.of(1,OperationV1.class,2,OperationV2.class,3,OperationV3.class)));
     }
     void append(long actor,String scope,String domain,String action,String resource,String request,String result,Long version) {
         if(actor<=0)throw new IllegalArgumentException("审计账号无效");
@@ -78,8 +106,15 @@ final class OperationsAuditPersistence {
     }
     Decoded decode(int version,String value) {
         if(version==1){var old=decode(value);return new Decoded(old.scope(),old.domain(),old.result(),old.resourceVersion(),null);}
-        if(version!=2)throw new IllegalStateException("Unregistered operations audit version");
-        try {var item=json.readValue(value,OperationV2.class);return new Decoded(item.scope(),item.domain(),item.result(),item.resourceVersion(),item);}
+        if(version!=2&&version!=3)throw new IllegalStateException("Unregistered operations audit version");
+        try {
+            if(version==2){var item=json.readValue(value,OperationV2.class);return new Decoded(item.scope(),item.domain(),item.result(),item.resourceVersion(),
+                new Detail(item.resourceType(),item.actorUsername(),item.actorDisplayName(),item.actorRole(),item.beforeVersion(),item.causationRequestId(),item.changes(),ChangeHistory.Source.user()));}
+            var item=json.readValue(value,OperationV3.class);var origin=item.initiator();
+            var source=new ChangeHistory.Source("SYSTEM",item.component(),item.sourceEventId(),origin==null?null:new ChangeHistory.Initiator(origin.userId()==null?null:origin.userId().toString(),origin.username()));
+            return new Decoded(item.scope(),item.domain(),item.result(),item.resourceVersion(),new Detail(item.resourceType(),null,null,null,
+                    item.beforeVersion(),item.causationRequestId(),item.changes(),source));
+        }
         catch(JsonProcessingException error){throw new IllegalStateException("Stored operations audit payload is invalid",error);}
     }
     Appended appendChange(AgentActor actor,String scope,String domain,String action,String resource,String request,
@@ -97,12 +132,37 @@ final class OperationsAuditPersistence {
                     actor.userId(),domain,action,resource,request,result,type);
             if(rows.size()!=1)throw duplicate;
             var row=rows.get(0);var existing=decode(((Number)row.get("payload_version")).intValue(),String.valueOf(row.get("payload_json")));
-            if(!payload.equals(existing.detail()))throw new IllegalStateException("审计请求编号冲突");
+            var detail=existing.detail();
+            if(detail==null||!payload.equals(new OperationV2(existing.scope(),existing.domain(),existing.result(),existing.resourceVersion(),
+                    detail.resourceType(),detail.actorUsername(),detail.actorDisplayName(),detail.actorRole(),detail.beforeVersion(),detail.causationRequestId(),detail.changes())))throw new IllegalStateException("审计请求编号冲突");
             eventId=String.valueOf(row.get("event_id"));created=false;
         }
         final boolean fresh=created;
         return jdbc.queryForObject("SELECT id,event_id,occurred_at FROM audit_event WHERE event_id=?",(rs,n)->new Appended(
                 rs.getString("event_id"),rs.getString("id"),rs.getObject("occurred_at",LocalDateTime.class).toInstant(ZoneOffset.UTC),fresh),eventId);
+    }
+    Appended appendSystemChange(SystemChangeAuditApi.Event event) {
+        token(event.action(),64);token(event.resourceId(),160);
+        var payload=new OperationV3("ENTERPRISE",event.domain(),"APPLIED",event.afterVersion(),event.resourceType(),"SYSTEM",event.component().name(),
+                event.sourceEventId(),event.initiator(),event.beforeVersion(),event.requestId(),event.changes());
+        try {if(json.writeValueAsBytes(payload).length>262144)throw new IllegalArgumentException("系统审计差异超过允许大小");}
+        catch(JsonProcessingException invalid){throw new IllegalArgumentException("系统审计差异不可编码",invalid);}
+        String eventId;boolean created=true;
+        try {eventId=store.append(new AuditEvent("OPERATIONS",null,null,"OPERATIONS",event.resourceId(),null,null,null,event.requestId(),
+                event.action(),null,null,null,3,payload));}
+        catch(DuplicateKeyException duplicate){
+            var rows=jdbc.queryForList("SELECT event_id,payload_json FROM audit_event WHERE kind='OPERATIONS' AND operation_actor_key=? "
+                    +"AND operation_domain=? AND operation_resource_type=? AND action=? AND resource_id=? AND request_id=? AND operation_result='APPLIED' AND payload_version=3 FOR SHARE",
+                    "SYSTEM:"+event.component().name(),event.domain(),event.resourceType(),event.action(),event.resourceId(),event.requestId());
+            if(rows.size()!=1)throw duplicate;
+            var row=rows.get(0);
+            try {if(!payload.equals(json.readValue(String.valueOf(row.get("payload_json")),OperationV3.class)))throw new IllegalStateException("系统审计事件编号冲突");}
+            catch(JsonProcessingException invalid){throw new IllegalStateException("Stored system change payload is invalid",invalid);}
+            eventId=String.valueOf(row.get("event_id"));created=false;
+        }
+        final boolean fresh=created;
+        return jdbc.queryForObject("SELECT id,event_id,occurred_at FROM audit_event WHERE event_id=?",(rs,n)->new Appended(rs.getString("event_id"),rs.getString("id"),
+                rs.getObject("occurred_at",LocalDateTime.class).toInstant(ZoneOffset.UTC),fresh),eventId);
     }
     private static void scalar(Object value) {
         if(value==null||value instanceof Boolean||value instanceof Number)return;

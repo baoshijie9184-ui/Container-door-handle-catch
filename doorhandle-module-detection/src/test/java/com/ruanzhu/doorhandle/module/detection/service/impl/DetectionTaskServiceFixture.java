@@ -36,6 +36,7 @@ final class DetectionTaskServiceFixture {
                 .strictness(Strictness.STRICT_STUBS)
                 .startMocking();
         detectionTaskMapper = Mockito.mock(DetectionTaskMapper.class);
+        Mockito.lenient().when(detectionTaskMapper.updateById(Mockito.any( com.ruanzhu.doorhandle.module.detection.entity.DetectionTask.class))).thenReturn(1);
         modelInfoMapper = Mockito.mock(ModelInfoMapper.class);
         modelService = Mockito.mock(ModelService.class);
         ossStorageService = Mockito.mock(OssStorageService.class);

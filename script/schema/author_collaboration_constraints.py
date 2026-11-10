@@ -31,6 +31,12 @@ def build():
         text = text.replace(anchor, " operation_resource_type VARCHAR(64) COLLATE utf8mb4_bin GENERATED ALWAYS AS\n        (CASE WHEN kind='OPERATIONS' THEN CASE WHEN payload_version=1 THEN 'OPERATIONS' ELSE JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.resourceType')) END ELSE NULL END) VIRTUAL,\n" + anchor, 1)
     text = text.replace('uk_audit_operation_receipt (actor_user_id,operation_domain,action,resource_id,request_id,operation_result)',
                         'uk_audit_operation_receipt (actor_user_id,operation_domain,operation_resource_type,action,resource_id,request_id,operation_result)')
+    if ' operation_actor_key ' not in text:
+        text = text.replace(' operation_resource_type VARCHAR(64)',
+            " operation_actor_key VARCHAR(96) COLLATE utf8mb4_bin GENERATED ALWAYS AS\n"
+            "        (CASE WHEN kind='OPERATIONS' THEN CASE WHEN payload_version=3 THEN CONCAT('SYSTEM:',JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.component'))) ELSE CONCAT('USER:',actor_user_id) END ELSE NULL END) VIRTUAL,\n operation_resource_type VARCHAR(64)", 1)
+    text = text.replace('uk_audit_operation_receipt (actor_user_id,operation_domain,operation_resource_type,action,resource_id,request_id,operation_result)',
+                        'uk_audit_operation_receipt (operation_actor_key,operation_domain,operation_resource_type,action,resource_id,request_id,operation_result)')
     if 'ix_audit_operation_resource ' not in text:
         text = text.replace(' KEY ix_audit_operation_domain (kind,operation_domain,id),',
                             ' KEY ix_audit_operation_domain (kind,operation_domain,id),\n KEY ix_audit_operation_resource (kind,operation_domain,operation_resource_type,resource_id,id),')
@@ -38,6 +44,12 @@ def build():
         text = text.replace(' KEY ix_audit_operation_domain (kind,operation_domain,id),',
                             ' KEY ix_audit_operation_domain (kind,operation_domain,id),\n KEY ix_audit_operation_time (kind,occurred_at,id),')
     text = re.sub(r'(CONSTRAINT ck_audit_operations CHECK [^\n]*?)payload_version=1 AND', r'\1payload_version IN (1,2) AND', text, count=1)
+    old_actor = 'owner_user_id IS NOT NULL AND actor_user_id IS NOT NULL AND owner_user_id=actor_user_id'
+    actor = "((payload_version IN (1,2) AND " + old_actor + ") OR (payload_version=3 AND owner_user_id IS NULL AND actor_user_id IS NULL AND operation_scope='ENTERPRISE'))"
+    text = re.sub(r'(CONSTRAINT ck_audit_operations CHECK [^\n]*?)' + re.escape(old_actor),
+                  lambda match: match.group(1) + actor, text, count=1) if actor not in text else text
+    text = re.sub(r'(CONSTRAINT ck_audit_operations CHECK [^\n]*?)payload_version IN \(1,2\) AND operation_scope',
+                  r'\1payload_version IN (1,2,3) AND operation_scope', text, count=1)
     scalar = {'anyOf': [bounded('string', 512), {'type': 'number'}, {'type': 'boolean'}, {'type': 'null'}]}
     revision = nullable({'type': 'integer', 'minimum': 0, 'maximum': 9223372036854775807})
     base = {'scope': {'enum': ['ENTERPRISE', 'PRIVATE']}, 'domain': bounded('string', 48), 'result': bounded('string', 40), 'resourceVersion': revision}
@@ -56,7 +68,17 @@ def build():
                            actorDisplayName=nullable(bounded('string', 128)), actorRole={'enum': ['SUPERVISOR', 'INSPECTOR']},
                            beforeVersion=revision, causationRequestId=bounded('string', 128),
                            changes={'type': 'array', 'maxItems': 64, 'items': change}))
-    audit = " CONSTRAINT ck_audit_operation_versions CHECK (kind<>'OPERATIONS' OR COALESCE((payload_version=1 AND JSON_SCHEMA_VALID('%s',CAST(payload_json AS JSON))) OR (payload_version=2 AND OCTET_LENGTH(payload_json)<=262144 AND JSON_SCHEMA_VALID('%s',CAST(payload_json AS JSON)) AND BINARY JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.causationRequestId'))=BINARY request_id),0)=1)," % (schema_sql(v1), schema_sql(v2))
+    initiator = object_schema({'userId': nullable({'type': 'integer', 'minimum': 1, 'maximum': 9223372036854775807}),
+                              'username': nullable(dict(bounded('string', 128), minLength=1))})
+    initiator['anyOf'] = [{'properties': {'userId': {'type': 'integer'}}}, {'properties': {'username': {'type': 'string'}}}]
+    v3 = object_schema(dict(base, scope={'enum': ['ENTERPRISE']}, result={'enum': ['APPLIED']},
+                           resourceVersion={'type': 'integer', 'minimum': 0, 'maximum': 9223372036854775807},
+                           resourceType=bounded('string', 64), source={'enum': ['SYSTEM']},
+                           component={'enum': ['DETECTION_WORKER', 'IMAGE_DETECTION_ASYNC', 'IMAGE_DETECTION']},
+                           sourceEventId=dict(bounded('string', 128), minLength=1), initiator=nullable(initiator),
+                           beforeVersion=revision, causationRequestId=bounded('string', 128),
+                           changes={'type': 'array', 'minItems': 1, 'maxItems': 64, 'items': change}))
+    audit = " CONSTRAINT ck_audit_operation_versions CHECK (kind<>'OPERATIONS' OR COALESCE((payload_version=1 AND JSON_SCHEMA_VALID('%s',CAST(payload_json AS JSON))) OR (payload_version=2 AND OCTET_LENGTH(payload_json)<=262144 AND JSON_SCHEMA_VALID('%s',CAST(payload_json AS JSON)) AND BINARY JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.causationRequestId'))=BINARY request_id) OR (payload_version=3 AND OCTET_LENGTH(payload_json)<=262144 AND JSON_SCHEMA_VALID('%s',CAST(payload_json AS JSON)) AND BINARY JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.sourceEventId'))=BINARY request_id AND BINARY JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.causationRequestId'))=BINARY request_id AND (JSON_TYPE(JSON_EXTRACT(payload_json,'$.beforeVersion'))='NULL' OR CAST(JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.resourceVersion')) AS DECIMAL(20,0))=CAST(JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.beforeVersion')) AS DECIMAL(20,0))+1)),0)=1)," % (schema_sql(v1), schema_sql(v2), schema_sql(v3))
     text = re.sub(r'^ CONSTRAINT ck_audit_operation_versions CHECK .*\n', '', text, flags=re.M)
     text = text.replace(' CONSTRAINT ck_audit_operations CHECK', audit + '\n CONSTRAINT ck_audit_operations CHECK', 1)
     command = object_schema({'domain': bounded('string', 48), 'action': bounded('string', 64)})

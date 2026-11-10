@@ -128,7 +128,7 @@ class ImageDetectionServiceImplTest {
                 0.5f
         );
 
-        assertEquals("PROCESSING", response.getStatus());
+        assertEquals("QUEUED", response.getStatus());
         assertEquals(99L, response.getId());
         verify(imageDetectionAsyncService, times(1))
                 .performDetectionAsync(any(DetectionTask.class), any(List.class), any(ModelInfo.class), any(String.class), any(Float.class));
@@ -314,7 +314,7 @@ class ImageDetectionServiceImplTest {
         ImageDetectionResponse response = imageDetectionService.processImageDetection(
                 List.of(file), 7, "COCO", 0.5f);
 
-        assertEquals("PROCESSING", response.getStatus());
+        assertEquals("QUEUED", response.getStatus());
         assertEquals(101L, response.getId());
     }
 

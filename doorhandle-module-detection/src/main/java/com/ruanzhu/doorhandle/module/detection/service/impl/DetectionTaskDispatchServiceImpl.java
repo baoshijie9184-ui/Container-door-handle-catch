@@ -46,7 +46,7 @@ public class DetectionTaskDispatchServiceImpl implements DetectionTaskDispatchSe
             detectionTaskEventPublisher.publishCreated(event);
         } catch (Exception ex) {
             log.error("远程检测任务执行失败: {}", taskId, ex);
-            detectionTaskService.failTask(taskId, ex.getMessage());
+            detectionTaskService.failTask(taskId, task.getDispatchId(), ex.getMessage());
         }
     }
 

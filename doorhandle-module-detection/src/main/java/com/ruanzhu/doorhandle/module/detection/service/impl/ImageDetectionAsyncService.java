@@ -29,6 +29,7 @@ public class ImageDetectionAsyncService {
     private final DetectionTaskMapper detectionTaskMapper;
     private final ImageInferenceService imageInferenceService;
     private final ObjectMapper objectMapper;
+    private final com.ruanzhu.doorhandle.module.detection.service.DetectionSystemChanges systemChanges;
 
     @Async
     public CompletableFuture<Void> performDetectionAsync(
@@ -38,16 +39,15 @@ public class ImageDetectionAsyncService {
             String outputFormat,
             Float confidenceThreshold
     ) {
+        if(!systemChanges.startLocal(task))return CompletableFuture.completedFuture(null);
         try {
             processDetection(task, savedImagePaths, modelInfo, outputFormat, confidenceThreshold);
         } catch (Exception e) {
             log.error("批量检测任务失败, taskId={}", task.getTaskId(), e);
-            task.setStatus("FAILED");
-            task.setStage("FAILED");
-            task.setErrorMessage("检测异常: " + e.getMessage());
-            task.setFinishedAt(LocalDateTime.now());
-            task.setUpdatedAt(LocalDateTime.now());
-            detectionTaskMapper.updateById(task);
+            if(e instanceof com.ruanzhu.doorhandle.module.detection.service.DetectionSystemChanges.HistoryFailure)
+                return CompletableFuture.failedFuture(e);
+            systemChanges.failLocal(task,"检测异常: " + e.getMessage());
+            return CompletableFuture.failedFuture(e);
         }
         return CompletableFuture.completedFuture(null);
     }
@@ -151,7 +151,7 @@ public class ImageDetectionAsyncService {
         task.setStage("COMPLETED");
         task.setFinishedAt(LocalDateTime.now());
         task.setUpdatedAt(LocalDateTime.now());
-        detectionTaskMapper.updateById(task);
+        systemChanges.finishLocal(task);
     }
 
     private String replaceExtension(String fileName, String newExtension) {

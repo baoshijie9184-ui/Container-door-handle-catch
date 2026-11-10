@@ -43,6 +43,9 @@ import java.util.stream.Stream;
 @RequiredArgsConstructor
 @Slf4j
 public class ImageDetectionServiceImpl implements ImageDetectionService {
+    private com.ruanzhu.doorhandle.module.detection.service.DetectionSystemChanges systemChanges;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void systemChanges(com.ruanzhu.doorhandle.module.detection.service.DetectionSystemChanges value){systemChanges=value;}
     private com.ruanzhu.doorhandle.module.detection.service.DetectionIdentityService identities;
     @org.springframework.beans.factory.annotation.Autowired(required=false)
     public void setIdentities(com.ruanzhu.doorhandle.module.detection.service.DetectionIdentityService value){identities=value;}
@@ -116,8 +119,8 @@ public class ImageDetectionServiceImpl implements ImageDetectionService {
         DetectionTask task = new DetectionTask();
         task.setTaskId(buildTaskId());
         task.setTaskType("BATCH_DIRECT");
-        task.setStatus("PROCESSING");
-        task.setStage("PROCESSING");
+        task.setStatus("QUEUED");
+        task.setStage("QUEUED");
         task.setModelId(modelInfo.getModelId());
         task.setModelVersion(modelInfo.getVersion());
         task.setTotalImages(savedImagePaths.size());
@@ -138,17 +141,21 @@ public class ImageDetectionServiceImpl implements ImageDetectionService {
             modelService.incrementUsageStats(modelInfo.getModelId(), LocalDateTime.now());
         }
 
-        imageDetectionAsyncService.performDetectionAsync(
+        Runnable dispatch=()->imageDetectionAsyncService.performDetectionAsync(
                 task,
                 savedImagePaths,
                 modelInfo,
                 outputFormat,
                 confidenceThreshold
         );
+        if(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive())
+            org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(new org.springframework.transaction.support.TransactionSynchronization(){
+                @Override public void afterCommit(){dispatch.run();}});
+        else dispatch.run();
 
         return ImageDetectionResponse.builder()
                 .id(task.getId())
-                .status("PROCESSING")
+                .status("QUEUED")
                 .detectedImagesCount(savedImagePaths.size())
                 .modelId(modelInfo.getModelId())
                 .resultPath(task.getResultOssPrefix())
@@ -266,6 +273,7 @@ public class ImageDetectionServiceImpl implements ImageDetectionService {
             task.setUpdatedAt(LocalDateTime.now());
             detectionTaskMapper.insert(task);
         if(identities!=null)identities.recordCreation(task);
+            if(systemChanges!=null)systemChanges.createdCompleted(task);
             if (modelInfo.getModelId() != null) {
                 modelService.incrementUsageStats(modelInfo.getModelId(), LocalDateTime.now());
             }

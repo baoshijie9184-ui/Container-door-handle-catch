@@ -15,13 +15,13 @@
     <div v-if="changed" class="change-new-records" role="status"><span>有新的修改记录 当前历史位置已保留</span><el-button text type="primary" @click="reload">读取新记录</el-button></div>
     <p v-if="loaded" class="change-history-note">已读取 {{ rows.length }} 条{{ compact?'当前资源记录':'授权记录' }} 数量不代表全部历史</p>
     <ol v-if="rows.length" class="change-timeline" aria-label="修改时间线">
-      <li v-for="row in rows" :key="row.id"><div class="change-timeline-heading"><strong>{{ actorName(row.actor) }}</strong><span>{{ historicalRole(row.actor?.role) }}</span><time>{{ auditTime(row.occurredAt) }}</time></div><div class="change-timeline-body"><span>{{ auditDomainLabel(row.domain) }} · {{ row.action || '动作未记录' }}</span><strong v-if="row.resourceId">{{ row.resourceId }}</strong><span>版本 {{ row.beforeVersion ?? '未知' }} → {{ row.afterVersion ?? '未知' }}</span><el-button text type="primary" :disabled="row.diffAvailable!==true" @click="open(row)">{{ row.diffAvailable?'查看字段对比':'历史未记录或无权读取字段对比' }}</el-button></div></li>
+      <li v-for="row in rows" :key="row.id"><div class="change-timeline-heading"><strong>{{ historyActorName(row) }}</strong><span>{{ historyActorRole(row) }}</span><time>{{ auditTime(row.occurredAt) }}</time></div><p v-if="row.source?.type==='SYSTEM'" class="change-history-note">原发起人 {{ historyInitiator(row) }} · 实际由系统执行</p><div class="change-timeline-body"><span>{{ auditDomainLabel(row.domain) }} · {{ row.action || '动作未记录' }}</span><strong v-if="row.resourceId">{{ row.resourceId }}</strong><span>版本 {{ row.beforeVersion ?? '未知' }} → {{ row.afterVersion ?? '未知' }}</span><el-button text type="primary" :disabled="row.diffAvailable!==true" @click="open(row)">{{ row.diffAvailable?'查看字段对比':'历史未记录或无权读取字段对比' }}</el-button></div></li>
     </ol>
     <CollectionEmptyState v-else :loading="loading" :error="error" empty-title="暂无可查看的修改记录" empty-description="只展示当前账号有权限读取的已提交操作 旧记录不会补造历史原值" @retry="reload" />
     <el-button v-if="nextCursor" :loading="loading" @click="load(true)">加载更早记录</el-button>
     <el-dialog v-model="detailOpen" title="操作时快照与字段对比" width="min(860px,94vw)" append-to-body>
       <p v-if="detailLoading" role="status">正在核对当前资源与字段权限</p><el-alert v-if="detailError" :title="detailError" type="warning" :closable="false" />
-      <template v-if="detail"><p class="change-detail-actor"><strong>{{ actorName(detail.actor) }}</strong> · {{ historicalRole(detail.actor?.role) }} · {{ auditTime(detail.occurredAt) }}</p><p>{{ detail.resourceType }} {{ detail.resourceId }} · {{ detail.action }} · 版本 {{ detail.beforeVersion ?? '未知' }} → {{ detail.afterVersion ?? '未知' }}</p>
+      <template v-if="detail"><p class="change-detail-actor"><strong>{{ historyActorName(detail) }}</strong> · {{ historyActorRole(detail) }} · {{ auditTime(detail.occurredAt) }}</p><p v-if="detail.source?.type==='SYSTEM'">原发起人 {{ historyInitiator(detail) }} · 系统执行来源与原发起人分别记录</p><p>{{ detail.resourceType }} {{ detail.resourceId }} · {{ detail.action }} · 版本 {{ detail.beforeVersion ?? '未知' }} → {{ detail.afterVersion ?? '未知' }}</p>
         <div v-if="detail.diffAvailable && detail.changes?.length" class="change-diff-list"><section v-for="change in detail.changes" :key="change.field" class="change-diff"><h3>{{ change.label || change.field }}<small>{{ change.operation }}</small></h3><div><section><h4>修改前</h4><pre tabindex="0">{{ changeValue(change,'before') }}</pre></section><section><h4>修改后</h4><pre tabindex="0">{{ changeValue(change,'after') }}</pre></section></div></section></div>
         <p v-else>历史未记录字段对比 或本次没有可展示的字段变化</p><details><summary>核对事件与请求编号</summary><p>事件 {{ detail.eventId }}<br>请求 {{ detail.requestId || '未记录' }}</p></details>
       </template>
@@ -38,7 +38,7 @@ import { useUserStore } from '../stores/user'
 import { useResourceChanges } from '../composables/useResourceChanges'
 import { useAccountOperationScope } from '../composables/useAccountOperationScope'
 import { auditDomainOptions, auditDomainLabel, auditTime } from '../utils/auditPresentation'
-import { actorName, historicalRole, changeValue, readChangePage } from '../utils/changeHistory'
+import { historyActorName, historyActorRole, historyInitiator, changeValue, readChangePage } from '../utils/changeHistory'
 import CollectionEmptyState from './CollectionEmptyState.vue'
 const props=defineProps({resourceType:String,resourceId:[String,Number],domain:String,compact:Boolean})
 const route=useRoute(), user=useUserStore(), supervisor=computed(()=>user.role==='SUPERVISOR')
