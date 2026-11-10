@@ -39,8 +39,42 @@ def verify(value, success=True):
 def test_actual_original_report_pngs_and_external_identity_pass_byte_validation(tmp_path):
     value = fixture(tmp_path)
     result = verify(value)
-    assert result['status'] == 'VERIFIED' and result['checks'] == 18 and result['accounts'] == 20 and result['p95Ms'] == 100
+    assert result['status'] == 'VERIFIED' and result['checks'] == 19 and result['accounts'] == 20 and result['p95Ms'] == 100
     assert verify(value, False)['status'] == 'PRESERVED'
+
+
+@pytest.mark.parametrize('damage', ['missing-stream', 'same-run', 'same-session', 'same-reply', 'no-content', 'finished-before-save',
+    'slow-save', 'same-connection', 'sse-reused', 'bad-cas', 'two-audits', 'gated-response', 'provider-unconsumed',
+    'provider-unfinished', 'provider-delay', 'persisted-owner', 'persisted-run', 'persisted-session', 'persisted-message',
+    'persisted-model', 'duplicate-marker', 'assistant-count', 'execution-link', 'content-hash'])
+def test_nineteenth_check_requires_live_stream_saves_final_provider_and_real_message_persistence(tmp_path, damage):
+    value = fixture(tmp_path); actual = value.report['checks']['model-stream-save-connection-budget']
+    isolation = value.proof['modelIsolation']; persisted = isolation['modelStreamPersistence']
+    if damage == 'missing-stream': actual['actualAgentStreams'].pop()
+    elif damage.startswith('same-') and damage != 'same-connection':
+        key = {'same-run': 'runId', 'same-session': 'sessionId', 'same-reply': 'messageId'}[damage]
+        actual['actualAgentStreams'][1][key] = actual['actualAgentStreams'][0][key]
+    elif damage == 'no-content': actual['actualAgentStreams'][0]['firstContent'] = False
+    elif damage == 'finished-before-save': actual['actualAgentStreams'][0]['finishedEventAt'] = actual['ordinarySaves'][0]['saveResponseAt']
+    elif damage == 'slow-save': actual['ordinarySaves'][0]['saveMs'] = 2001
+    elif damage == 'same-connection': actual['ordinarySaves'][0]['actualConnectionId'] = actual['actualModelConnections'][0]['connectionId']
+    elif damage == 'sse-reused': actual['actualSharedSseConnectionId'] = actual['actualModelConnections'][1]['connectionId']
+    elif damage == 'bad-cas': actual['ordinarySaves'][1]['version'] = '7'
+    elif damage == 'two-audits': actual['ordinarySaves'][0]['successfulAuditCount'] = 2
+    elif damage == 'gated-response': actual['responseGatesUsed'] = True
+    elif damage in ('provider-unconsumed', 'provider-unfinished', 'provider-delay'):
+        key, number = {'provider-unconsumed': ('remainingSteps', 1), 'provider-unfinished': ('streamFinishes', 0), 'provider-delay': ('streamDelayMillisObserved', 14999)}[damage]
+        isolation['fixtureState']['markers'][0][key] = number
+    elif damage == 'assistant-count': persisted['streams'][0]['assistantRowsForRun'] = 2
+    elif damage == 'execution-link': persisted['streams'][0]['executionEvidenceMatched'] = False
+    elif damage == 'content-hash': persisted['streams'][0]['contentSha256'] = 'not-a-digest'
+    elif damage == 'duplicate-marker': persisted['streams'][1]['marker'] = persisted['streams'][0]['marker']
+    else:
+        key = {'persisted-owner': 'ownerUserId', 'persisted-run': 'runId', 'persisted-session': 'sessionId',
+               'persisted-message': 'messageId', 'persisted-model': 'modelId'}[damage]
+        persisted['streams'][0][key] = 'different-actual-value'
+    resign(value)
+    with pytest.raises(ValueError): verify(value)
 
 
 @pytest.mark.parametrize('damage', ['missing-check', 'failed-check', 'source-hash', 'commit', 'source', 'full-claim',
@@ -204,7 +238,8 @@ def test_browser_creator_uses_private_uid1000_mounts_and_a_separate_bounded_phas
     attempt = tmp_path/'verification'/value.context['release']; directory=attempt/'checkout/work/runtime-acceptance'; directory.mkdir(parents=True)
     network='owned-internal'; commands=[]; plans=[]; installed={}
     ctx=SimpleNamespace(directory=directory, attempt=attempt, source=ROOT, project=value.project, token='f'*12,
-        report_task_id='actual-worker-task', owner={'browserImage':IMAGE,'browserImageBytes':123,'browserSourceHashes':browser.source_contract(ROOT)[0]},
+        report_task_id='actual-worker-task', owner={'browserImage':IMAGE,'browserImageBytes':123,'browserSourceHashes':browser.source_contract(ROOT)[0],
+            'modelStreamProbes': {'phase': 'ARMED', 'descriptor': {'schemaVersion': 1}}},
         accounts={alias:{**row,'username':alias,'password':'private-fixture-password'} for alias,row in value.report['accounts'].items()},
         args=SimpleNamespace(commit=value.context['commit'],source_sha256=value.context['sourceSha256']),
         config={'networks':{'doorhandle-network':{'name':network}}}, context=lambda:dict(value.context), save=lambda:None,
@@ -228,7 +263,7 @@ def test_browser_creator_uses_private_uid1000_mounts_and_a_separate_bounded_phas
     assert not any('private-fixture-password' in part for part in creation)
     assert (directory/'browser-inputs/users.json').stat().st_mode & 0o777 == 0o600
     assert plans[0][0]=='runtime-browser' and plans[0][1]==512*browser.MIB and plans[0][-1]==browser.MEMORY
-    assert proof['requiredBrowserChecksPassed']==18 and proof['allA01A28Verified'] is False
+    assert proof['requiredBrowserChecksPassed']==19 and proof['allA01A28Verified'] is False
 
 
 @pytest.mark.parametrize('damage',['none','source-link','source-size','foreign-image','foreign-label','platform'])

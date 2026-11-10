@@ -990,6 +990,7 @@ class Runner:
                     ({sessionId,marker,firstContent,firstContentAt,finishedEvent,finishedEventAt,done,error,
                         frames,bytes,runId,messageId,endedAt}))''')
 
+            shared_sse_connection = [None]
             async def live():
                 values = await state()
                 require(len(values) == 2 and all(value['firstContent'] and not value['done']
@@ -1007,6 +1008,7 @@ class Runner:
                 require(len(sse) == 1 and sse[0].get('protocol') == 'http/1.1'
                     and sse[0].get('connectionId') not in ids | {None, 'None', '0'},
                     'shared_sse_needs_its_distinct_actual_http1_connection')
+                shared_sse_connection[0] = sse[0]['connectionId']
                 return values, models
 
             await page.wait_for_function('''() => window.__ownedA21Streams?.length===2 &&
@@ -1079,6 +1081,7 @@ class Runner:
                 actualAgentStreams=final, actualModelConnections=[{key: value[key] for key in
                     ('account', 'tab', 'connectionId', 'protocol', 'status')} for value in models],
                 nativeSharedSsePerAccount=1, actualTabsInModelContext=2, ordinarySaves=receipts,
+                actualSharedSseConnectionId=shared_sse_connection[0],
                 actualHttp1ModelContextConnectionsAtSave=4,
                 maximumProviderDelayMillis=spec['streamDelayMillis'], saveLimitMs=spec['saveMaxMillis'],
                 providerFinalStateMustBeReReadByRuntime=True, publicHttp2Claimed=False,

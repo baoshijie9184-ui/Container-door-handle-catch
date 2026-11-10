@@ -1201,7 +1201,7 @@
       },
       {
         "module": "tests_python.test_compact_cutover",
-        "minimumTests": 22,
+        "minimumTests": 24,
         "source": "tests_python/test_compact_cutover.py",
         "allowedSkippedTests": []
       },
@@ -1651,7 +1651,7 @@
       },
       {
         "module": "tests_python.test_collaboration_browser_evidence",
-        "minimumTests": 94,
+        "minimumTests": 118,
         "source": "tests_python/test_collaboration_browser_evidence.py",
         "allowedSkippedTests": []
       },

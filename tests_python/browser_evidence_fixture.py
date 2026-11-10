@@ -30,6 +30,20 @@ def report_value(context):
     checks['resource-samples'].update(samples=1, memoryOomDelta=0, pidsMaxEventsDelta=0)
     checks['artifact-secret-boundary'].update(passwordFieldsMasked=True, exactSecretScan=True,
         cookiesTokensStorageStateHarTraceVideoWritten=False, actualSseLocatorsOnly=True)
+    streams = [{'marker': 'a21-stream-' + str(index) * 24, 'runId': '00000000-0000-4000-8000-' + str(index).zfill(12),
+        'sessionId': 'owned-a21-session-' + str(index), 'messageId': str(100 + index), 'firstContent': True,
+        'firstContentAt': 1794268800000, 'finishedEvent': True, 'finishedEventAt': 1794268815000,
+        'done': True, 'error': False, 'endedAt': 1794268815010, 'frames': 5, 'bytes': 128} for index in (1, 2)]
+    checks['model-stream-save-connection-budget'].update(modelId='deepseek:runtime-scripted', actualAgentStreams=streams,
+        actualModelConnections=[{'account': 'supervisor', 'tab': 0, 'connectionId': str(index), 'protocol': 'http/1.1', 'status': 200} for index in (1, 2)],
+        nativeSharedSsePerAccount=1, actualTabsInModelContext=2, actualSharedSseConnectionId='3',
+        actualHttp1ModelContextConnectionsAtSave=4, maximumProviderDelayMillis=15000, saveLimitMs=2000,
+        providerFinalStateMustBeReReadByRuntime=True, publicHttp2Claimed=False, responseGatesUsed=False,
+        ordinarySaves=[{'account': alias, 'tab': 1 if index == 1 else 0, 'httpStatus': 200, 'saveMs': 100,
+            'openedVersion': str(index), 'version': str(index + 1), 'auditId': str(80 + index), 'eventId': 'stream-event-' + str(index),
+            'requestId': 'stream-request-' + str(index), 'actualConnectionId': str(3 + index),
+            'modelStreamsUnfinishedAtSaveResponse': 2, 'saveResponseAt': 1794268800000 + 100 * index,
+            'resourceReadBack': True, 'successfulAuditCount': 1} for index, alias in enumerate(('supervisor', 'reviewer'), 1)])
     sample = {'memory.max': str(browser.MEMORY), 'pids.max': '512', 'cpu.max': '200000 100000',
         'memory.current': '1048576', 'memory.peak': '2097152', 'pids.current': '10',
         'memory.events': 'oom 0\noom_kill 0\n', 'pids.events': 'max 0\n'}
@@ -68,5 +82,30 @@ def install(directory, context, project, proof, cleanup):
     digest = write(directory / 'browser-manifest.json', manifest)
     cleanup['browserEvidence'] = {'file': browser.MANIFEST, 'sha256': digest}
     proof['browserAcceptance'] = {'file': browser.REPORT, 'sha256': report_sha, 'externalContainerObservation': external,
-        'allA01A28Verified': False, 'requiredBrowserChecksPassed': 18}
+        'allA01A28Verified': False, 'requiredBrowserChecksPassed': 19}
+    install_model_stream_evidence(proof, report)
     return manifest, report
+
+
+def install_model_stream_evidence(proof, report):
+    value = report['checks']['model-stream-save-connection-budget']
+    isolation = proof.setdefault('modelIsolation', {})
+    state = isolation.setdefault('fixtureState', {'kind': 'doorhandle-owned-scripted-model', 'modelRequests': 2, 'embeddingRequests': 1})
+    rows, receipts, persisted = [], [], []
+    for index, actual in enumerate(value['actualAgentStreams'], 1):
+        script = [{'text': 'Owned stream content ' + actual['marker'], 'streamDelayMillis': 15000}]
+        checksum = hashlib.sha256(json.dumps(script, ensure_ascii=False, separators=(',', ':'), allow_nan=False).encode()).hexdigest()
+        row = {'marker': actual['marker'], 'scriptSha256': checksum, 'armedSteps': 1, 'remainingSteps': 0,
+            'calls': 1, 'toolCalls': 0, 'streamResponses': 1, 'streamFirstChunks': 1, 'streamFinishes': 1,
+            'activeStreams': 0, 'streamDelayMillisObserved': 15000}; rows.append(row)
+        receipts.append({key: row[key] for key in ('marker', 'scriptSha256', 'calls', 'streamFirstChunks', 'streamFinishes', 'activeStreams', 'streamDelayMillisObserved')})
+        persisted.append({**{key: actual[key] for key in ('marker', 'runId', 'sessionId', 'messageId')},
+            'ownerUserId': report['accounts']['supervisor']['userId'], 'modelId': value['modelId'], 'runStatus': 'COMPLETED',
+            'entryPoint': 'AGUI', 'assistantRowsForRun': 1, 'sessionAssistantRows': 1, 'markerAssistantRows': 1,
+            'markerOccurrences': 1, 'otherMarkerOccurrences': 0, 'contentSha256': hashlib.sha256(('synthetic-' + actual['marker']).encode()).hexdigest(),
+            'contentBytes': 128, 'executionEvidenceId': str(200 + index), 'executionEvidenceRows': 1,
+            'ownerAndSessionMatched': True, 'executionLinkMatched': True, 'executionEvidenceMatched': True})
+    state['markers'] = rows
+    isolation['modelStreamProbes'] = {'kind': 'doorhandle-owned-model-stream-probes', 'status': 'PASS', 'streams': receipts}
+    isolation['modelStreamPersistence'] = {'kind': 'doorhandle-owned-model-stream-persistence', 'status': 'PASS',
+        'ownerUserId': report['accounts']['supervisor']['userId'], 'actualAssistantRows': 2, 'streams': persisted}

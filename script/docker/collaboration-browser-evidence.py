@@ -2,6 +2,7 @@
 import ast
 from datetime import datetime
 import hashlib
+import importlib.util
 import json
 import math
 from pathlib import Path
@@ -55,8 +56,8 @@ def source_contract(source_root):
     tree = ast.parse((directory / SOURCE_NAMES[0]).read_text(encoding='utf8'))
     required = [ast.literal_eval(node.value) for node in tree.body if isinstance(node, ast.Assign)
                 and any(isinstance(target, ast.Name) and target.id == 'REQUIRED' for target in node.targets)]
-    require(len(required) == 1 and type(required[0]) is tuple and len(required[0]) == 18
-            and len(set(required[0])) == 18, 'Fixed browser source must declare all 18 required checks')
+    require(len(required) == 1 and type(required[0]) is tuple and len(required[0]) == 19
+            and len(set(required[0])) == 19, 'Fixed browser source must declare all 19 required checks')
     return hashes, set(required[0])
 
 
@@ -111,12 +112,12 @@ def validate_report(report, context, manifest, acceptance, source_root):
             'Browser report has no passing fixed-source execution binding')
     require(type(acceptance) is dict and acceptance.get('file') == REPORT
             and isinstance(acceptance.get('sha256'), str) and SHA.fullmatch(acceptance['sha256'])
-            and acceptance.get('allA01A28Verified') is False and acceptance.get('requiredBrowserChecksPassed') == 18,
+            and acceptance.get('allA01A28Verified') is False and acceptance.get('requiredBrowserChecksPassed') == 19,
             'Browser acceptance cannot claim full A01-A28 or omit the actual report')
     checks = report.get('checks')
     require(type(checks) is dict and set(checks) == required
             and all(type(row) is dict and row.get('status') == 'PASS' for row in checks.values())
-            and report.get('failures') == [] and report.get('pageErrors') == [], 'All 18 actual browser checks must pass')
+            and report.get('failures') == [] and report.get('pageErrors') == [], 'All 19 actual browser checks must pass')
     pins = decode(raw_file(Path(source_root) / 'script/docker/collaboration-browser-sources.json', MIB)[0])
     tool = report.get('tool', {})
     require(tool.get('playwright') == pins['playwright']['version']
@@ -147,6 +148,7 @@ def validate_report(report, context, manifest, acceptance, source_root):
                     and row['role'] == ('SUPERVISOR' if alias in ('supervisor', 'reviewer') else 'INSPECTOR')
                     for alias, row in accounts.items())
             and len({row['userId'] for row in accounts.values()}) == 20, 'Twenty distinct actual qualified browser accounts are required')
+    validate_model_stream_check(checks['model-stream-save-connection-budget'])
     load = checks['twenty-accounts-forty-tabs']
     require(load.get('accounts') == 20 and load.get('actualTabs') == 40 and load.get('allAccountsSampled') is True
             and load.get('backgroundFocusRecovery') is True and load.get('visibleWatcherAccountsPerRound') == 19
@@ -216,9 +218,96 @@ def validate_report(report, context, manifest, acceptance, source_root):
     require(boundary.get('passwordFieldsMasked') is True and boundary.get('exactSecretScan') is True
             and boundary.get('cookiesTokensStorageStateHarTraceVideoWritten') is False
             and boundary.get('actualSseLocatorsOnly') is True, 'Browser secret artifact boundary did not pass')
-    return {'status': 'VERIFIED', 'checks': 18, 'accounts': 20, 'tabs': 40, 'latencySamples': len(samples),
+    return {'status': 'VERIFIED', 'checks': 19, 'accounts': 20, 'tabs': 40, 'latencySamples': len(samples),
             'p95Ms': p95, 'productionCapacityVerified': False, 'allA01A28Verified': False,
             'browserContainerId': actual['browserContainerId'], 'browserImageId': actual['browserImageId']}
+
+
+def validate_model_stream_check(value):
+    require(value.get('status') == 'PASS' and isinstance(value.get('modelId'), str)
+            and re.fullmatch(r'[A-Za-z0-9_.:-]{1,160}', value['modelId'])
+            and value.get('nativeSharedSsePerAccount') == 1 and value.get('actualTabsInModelContext') == 2
+            and value.get('actualHttp1ModelContextConnectionsAtSave') == 4
+            and value.get('maximumProviderDelayMillis') == 15000 and value.get('saveLimitMs') == 2000
+            and value.get('providerFinalStateMustBeReReadByRuntime') is True
+            and value.get('publicHttp2Claimed') is False and value.get('responseGatesUsed') is False,
+            'Actual bounded model-stream connection budget is missing')
+    streams = value.get('actualAgentStreams')
+    require(type(streams) is list and len(streams) == 2, 'Two actual independent Agent streams are required')
+    for row in streams:
+        require(all(row.get(key) is True for key in ('firstContent', 'finishedEvent', 'done')) and row.get('error') is False
+                and isinstance(row.get('marker'), str) and re.fullmatch(r'a21-stream-[a-f0-9]{24}', row['marker'])
+                and isinstance(row.get('runId'), str) and re.fullmatch(r'[a-f0-9-]{36}', row['runId'])
+                and isinstance(row.get('sessionId'), str) and re.fullmatch(r'[A-Za-z0-9_.-]{1,128}', row['sessionId'])
+                and revision(row.get('messageId'), True)
+                and all(number(row.get(key)) and row[key] > 0 for key in ('firstContentAt', 'finishedEventAt', 'endedAt'))
+                and row['firstContentAt'] < row['finishedEventAt'] <= row['endedAt']
+                and type(row.get('frames')) is int and 1 <= row['frames'] <= 4096
+                and type(row.get('bytes')) is int and 1 <= row['bytes'] <= 2 * MIB,
+                'Actual complete Agent execution, identity or bounded stream frames are missing')
+    require(all(len({row[key] for row in streams}) == 2 for key in ('marker', 'runId', 'sessionId', 'messageId')),
+            'Two streams cannot reuse one execution, session, marker or reply')
+    models = value.get('actualModelConnections')
+    require(type(models) is list and len(models) == 2 and all(row.get('account') == 'supervisor' and row.get('tab') == 0
+            and row.get('protocol') == 'http/1.1' and row.get('status') == 200
+            and isinstance(row.get('connectionId'), str) and row['connectionId'] not in ('', 'None', '0') for row in models)
+            and len({row['connectionId'] for row in models}) == 2, 'Actual two distinct model HTTP/1.1 connections are missing')
+    saves = value.get('ordinarySaves')
+    require(type(saves) is list and len(saves) == 2 and [row.get('account') for row in saves] == ['supervisor', 'reviewer']
+            and [row.get('tab') for row in saves] == [1, 0], 'Both same-account tab and independent supervisor saves are required')
+    for row in saves:
+        require(row.get('httpStatus') == 200 and number(row.get('saveMs')) and 0 <= row['saveMs'] <= 2000
+                and revision(row.get('openedVersion')) and revision(row.get('version'), True)
+                and int(row['version']) == int(row['openedVersion']) + 1 and revision(row.get('auditId'), True)
+                and isinstance(row.get('eventId'), str) and re.fullmatch(r'[A-Za-z0-9_-]{1,160}', row['eventId'])
+                and isinstance(row.get('requestId'), str) and re.fullmatch(r'[A-Za-z0-9_-]{1,128}', row['requestId'])
+                and isinstance(row.get('actualConnectionId'), str) and row['actualConnectionId'] not in ('', 'None', '0')
+                and row.get('resourceReadBack') is True and row.get('successfulAuditCount') == 1
+                and row.get('modelStreamsUnfinishedAtSaveResponse') == 2 and number(row.get('saveResponseAt'))
+                and all(stream['firstContentAt'] < row['saveResponseAt'] < stream['finishedEventAt'] for stream in streams),
+                'Ordinary save lacks its actual timing, CAS, readback and unique audit receipt')
+    require(saves[1]['openedVersion'] == saves[0]['version']
+            and all(len({row[key] for row in saves}) == 2 for key in ('requestId', 'auditId', 'eventId'))
+            and isinstance(value.get('actualSharedSseConnectionId'), str)
+            and value['actualSharedSseConnectionId'] not in ('', 'None', '0')
+            and len({row['connectionId'] for row in models} | {value['actualSharedSseConnectionId'], saves[0].get('actualConnectionId')}) == 4,
+            'Model streams, shared SSE and same-context save did not use four distinct actual HTTP/1.1 connections')
+    return streams
+
+
+def validate_model_stream_completion(report, proof):
+    value = report['checks']['model-stream-save-connection-budget']
+    streams = validate_model_stream_check(value)
+    spec = {'schemaVersion': 1, 'kind': 'doorhandle-owned-model-stream-probes', 'modelId': value['modelId'],
+        'streamDelayMillis': 15000, 'saveMaxMillis': 2000, 'completionTimeoutMillis': 45000,
+        'markers': [row['marker'] for row in streams]}
+    source = Path(__file__).with_name('compact-collaboration-stream-probes.py')
+    module_spec = importlib.util.spec_from_file_location('browser_provider_completion', source)
+    provider = importlib.util.module_from_spec(module_spec); module_spec.loader.exec_module(provider)
+    isolation = proof.get('modelIsolation', {})
+    expected = provider.verify_model_stream_probes(spec, isolation.get('fixtureState'))
+    require(isolation.get('modelStreamProbes') == expected, 'Final provider stream state was not reread and verified')
+    persistence = isolation.get('modelStreamPersistence', {})
+    owner = report['accounts']['supervisor']['userId']
+    require(persistence.get('kind') == 'doorhandle-owned-model-stream-persistence' and persistence.get('status') == 'PASS'
+            and persistence.get('ownerUserId') == owner and persistence.get('actualAssistantRows') == 2
+            and type(persistence.get('streams')) is list and len(persistence['streams']) == 2,
+            'Real MySQL assistant persistence evidence is missing')
+    indexed = {row.get('marker'): row for row in persistence['streams']}
+    require(len(indexed) == 2 and set(indexed) == set(spec['markers']), 'Persisted replies reused or omitted a stream marker')
+    for actual in streams:
+        row = indexed[actual['marker']]
+        require(all(row.get(key) == actual[key] for key in ('runId', 'sessionId', 'messageId'))
+                and row.get('ownerUserId') == owner and row.get('modelId') == value['modelId']
+                and row.get('runStatus') == 'COMPLETED' and row.get('entryPoint') == 'AGUI'
+                and all(type(row.get(key)) is int and row[key] == 1 for key in
+                    ('assistantRowsForRun', 'sessionAssistantRows', 'markerAssistantRows', 'markerOccurrences', 'executionEvidenceRows'))
+                and type(row.get('otherMarkerOccurrences')) is int and row['otherMarkerOccurrences'] == 0
+                and isinstance(row.get('contentSha256'), str) and SHA.fullmatch(row['contentSha256'])
+                and type(row.get('contentBytes')) is int and 1 <= row['contentBytes'] <= 2 * MIB
+                and revision(row.get('executionEvidenceId'), True)
+                and all(row.get(key) is True for key in ('ownerAndSessionMatched', 'executionLinkMatched', 'executionEvidenceMatched')),
+                'Actual persisted assistant reply/run/session/execution evidence does not match its browser stream')
 
 
 def validate_files(directory, cleanup, proof=None, source_root=None):
@@ -260,4 +349,5 @@ def validate_files(directory, cleanup, proof=None, source_root=None):
     acceptance = proof.get('browserAcceptance')
     require(type(acceptance) is dict and acceptance.get('sha256') == report_sha, 'Runtime browser proof differs from the original report bytes')
     result = validate_report(report, context, manifest, acceptance, source_root or Path(__file__).resolve().parents[2])
+    validate_model_stream_completion(report, proof)
     return {**result, 'browserManifestSha256': reference['sha256'], 'browserReportSha256': report_sha}
