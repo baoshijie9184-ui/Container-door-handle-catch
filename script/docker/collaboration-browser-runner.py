@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Actual Vue/React collaboration acceptance, inside a runtime-owned ECS container.
 
-No mock routes, alternate business pages, model calls, host Docker access, or
+No mock routes, alternate business pages, external model calls, host Docker access, or
 credential artifacts. Runtime owns provisioning/cleanup and the full nine
 business scenarios; this component consumes that stack without replacing them.
 Exit: 0 required browser checks pass; 1 assertion/coverage missing; 2 admission.
@@ -34,7 +34,8 @@ REQUIRED = ('four-roles-real-ui', 'react-real-workbench', 'real-device-created',
             'notification-failure-recovery', 'same-account-device-logout',
             'late-account-switch', 'refresh-logout-race', 'twenty-accounts-forty-tabs',
             'http1-shared-connections', 'latency-p95', 'resource-samples',
-            'account-disable-revocation', 'artifact-secret-boundary')
+            'account-disable-revocation', 'artifact-secret-boundary',
+            'model-stream-save-connection-budget')
 CASE_CHECKS = {
     'A01': ('four-roles-real-ui',), 'A03': ('inspector-report-and-scope',),
     'A04': ('same-version-ui-conflict',), 'A06': ('request-replay',),
@@ -44,7 +45,7 @@ CASE_CHECKS = {
     'A14': ('notification-failure-recovery',),
     'A15': ('http1-shared-connections', 'late-account-switch'),
     'A17': ('artifact-secret-boundary',), 'A20': ('resource-samples',),
-    'A21': ('http1-shared-connections', 'latency-p95'),
+    'A21': ('http1-shared-connections', 'latency-p95', 'model-stream-save-connection-budget'),
     'A22': ('native-sse-reconnect', 'account-disable-revocation'),
     'A23': ('native-sse-reconnect',), 'A24': ('four-roles-real-ui',),
     'A25': ('same-account-device-logout',), 'A26': ('late-account-switch',),
@@ -66,7 +67,7 @@ LIMITS = {
     'A18': 'Browser component does not alter or replace migration, table-count, constraints or recovery gates.',
     'A19': 'Browser component has no service restart privilege; persistence/restart gate remains required.',
     'A20': 'Browser cgroup/connection samples only; bounded backend queues and slow-client isolation remain with runtime gates.',
-    'A21': 'Real HTTP/1.1 to Nginx through a streaming loopback transport; public HTTP/2 and concurrent model-stream saturation are not asserted.',
+    'A21': 'Two actual AGUI streams use the owned scripted provider while actual device forms save; public HTTP/2 and external model capacity are not asserted.',
     'A24': 'Independent Chromium browser contexts and cookie jars; no claim of distinct physical devices or browser engines.',
     'A26': 'Actual delayed logout/GET completion and old device draft; upload/hash and AGUI/MCP delayed intents remain in frontend/HTTP gates.',
     'A27': 'Actual concurrent browser refresh and delayed refresh headers after logout/B login; expiry, process restart and DB transaction interleavings remain with session gates.',
@@ -113,6 +114,24 @@ def unwrap(value):
         require(value['code'] == 200, 'business_response_rejected')
         return value.get('data')
     return value
+
+
+def stream_probe_spec(descriptor):
+    spec = descriptor.get('fixtures', {}).get('modelStreamProbes', {})
+    require(isinstance(spec, dict) and set(spec) == {'schemaVersion', 'kind', 'modelId', 'streamDelayMillis',
+            'saveMaxMillis', 'completionTimeoutMillis', 'markers'}, 'actual_model_stream_fixture_required')
+    require(spec.get('schemaVersion') == 1 and spec.get('kind') == 'doorhandle-owned-model-stream-probes'
+            and isinstance(spec.get('modelId'), str) and re.fullmatch(r'[A-Za-z0-9_.:-]{1,160}', spec['modelId']),
+            'owned_model_stream_descriptor_invalid')
+    require(all(type(spec.get(key)) is int and spec[key] == value for key, value in {
+        'streamDelayMillis': 15000, 'saveMaxMillis': 2000, 'completionTimeoutMillis': 45000}.items()),
+        'bounded_model_stream_timing_required')
+    markers = spec.get('markers')
+    require(isinstance(markers, list) and len(markers) == 2
+            and all(isinstance(value, str) and re.fullmatch(r'a21-stream-[a-f0-9]{24}', value)
+                    and descriptor['ownership']['token'] not in value for value in markers)
+            and len(set(markers)) == 2, 'two_safe_model_stream_markers_required')
+    return spec
 
 
 def read_cgroup():
@@ -194,6 +213,7 @@ def validate(descriptor, accounts, output):
         raise AdmissionError('browser_acceptance_budget_invalid')
     if not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', str(descriptor.get('fixtures', {}).get('reportTaskId', ''))):
         raise AdmissionError('actual_completed_task_fixture_required')
+    stream_probe_spec(descriptor)
     if output.resolve() != Path('/evidence') or output.is_symlink():
         raise AdmissionError('owned_evidence_mount_required')
     output.mkdir(parents=True, exist_ok=True)
@@ -268,6 +288,8 @@ class Runner:
         self.browser = None
         self.contexts, self.pages, self.auth = {}, {}, {}
         self.events, self.requests, self.active_sse = [], [], {}
+        self.model_requests = []
+        self.save_requests = []
         self.peak_sse = 0
         self.device = None
         self.command = None
@@ -296,14 +318,30 @@ class Runner:
         cdp = await page.context.new_cdp_session(page)
         await cdp.send('Network.enable')
         pending = set()
+        models, saves = {}, {}
         def request(event):
             value = event.get('request', {})
-            if urlsplit(value.get('url', '')).path != '/api/realtime/changes': return
+            path = urlsplit(value.get('url', '')).path
+            if path == '/agui/run' and value.get('method') == 'POST':
+                require(len(self.model_requests) < 8, 'model_stream_request_budget_exceeded')
+                entry = {'account': alias, 'tab': tab, 'id': event['requestId'], 'at': time.time() * 1000, 'finished': False}
+                models[event['requestId']] = entry
+                self.model_requests.append(entry)
+            if path.startswith('/api/devices/') and value.get('method') == 'PUT':
+                entry = {'account': alias, 'tab': tab, 'id': event['requestId'], 'at': time.time() * 1000, 'finished': False}
+                saves[event['requestId']] = entry
+                self.save_requests.append(entry)
+            if path != '/api/realtime/changes': return
             headers = {key.lower(): value for key, value in value.get('headers', {}).items()}
             self.requests.append({'account': alias, 'tab': tab, 'id': event['requestId'],
                 'at': time.time() * 1000, 'lastEventId': headers.get('last-event-id')})
             pending.add(event['requestId'])
         def response(event):
+            for tracked in (models, saves):
+                if event['requestId'] in tracked:
+                    value = event['response']
+                    tracked[event['requestId']].update(status=value['status'], protocol=value.get('protocol'),
+                        connectionId=str(value.get('connectionId')), responseAt=time.time() * 1000)
             if event['requestId'] not in pending: return
             value = event['response']
             if value['status'] == 200:
@@ -311,9 +349,12 @@ class Runner:
                 self.peak_sse = max(self.peak_sse, len(self.active_sse))
             for item in reversed(self.requests):
                 if item['id'] == event['requestId'] and item['account'] == alias and item['tab'] == tab:
-                    item.update(status=value['status'], protocol=value.get('protocol'))
+                    item.update(status=value['status'], protocol=value.get('protocol'), connectionId=str(value.get('connectionId')))
                     break
         def finish(event):
+            for tracked in (models, saves):
+                if event['requestId'] in tracked:
+                    tracked[event['requestId']].update(finished=True, failed='errorText' in event, finishedAt=time.time() * 1000)
             self.active_sse.pop(event['requestId'] + ':' + alias + ':' + str(tab), None)
         def message(event):
             if event['requestId'] not in pending: return
@@ -863,6 +904,189 @@ class Runner:
             backgroundVisibilityNotOverridden=True, publicHttp2Claimed=False)
         await self.screenshot(self.pages['inspector'][1], 'twenty-accounts-load-real-device')
 
+    async def model_stream_save(self):
+        spec = stream_probe_spec(self.descriptor)
+        alias = 'supervisor'
+        page, editor = self.pages[alias]
+        independent = self.pages['reviewer'][0]
+        await page.bring_to_front()
+        # Provision both real persistent sessions before starting either delay.
+        catalog = await self.api(page.context, 'GET', '/agui/catalog', auth_key=alias)
+        sessions = []
+        for marker in spec['markers']:
+            session = await self.api(page.context, 'POST', '/api/chat-assistant/sessions', auth_key=alias)
+            session_id = session['sessionId']
+            require(re.fullmatch(r'[A-Za-z0-9_.-]{1,128}', session_id), 'actual_agent_session_id_required')
+            path = '/api/agent/conversations/' + session_id + '/model-selection'
+            selection = await self.api(page.context, 'GET', path, auth_key=alias)
+            request_id = await page.evaluate('crypto.randomUUID()')
+            await self.api(page.context, 'POST', path, {'modelId': spec['modelId'],
+                'revision': selection['revision'], 'requestId': request_id}, auth_key=alias)
+            sessions.append({'sessionId': session_id, 'marker': marker})
+            self.evidence.data['ownedCreatedResources'].append({'resourceType': 'CHAT_SESSION', 'resourceId': session_id})
+        initial_version = await self.edit_device(editor, self.marker + '-stream-same-context')
+        before = self.proxy.snapshot()
+        started_at = time.time() * 1000
+        try:
+            await page.evaluate(r'''({sessions, agent, context}) => {
+                if (window.__ownedA21Streams) throw new Error('probe_already_started');
+                window.__ownedA21Streams = sessions.map(({sessionId,marker}) => {
+                    const controller = new AbortController();
+                    const state = {sessionId,marker,firstContent:false,finishedEvent:false,done:false,
+                        error:false,frames:0,bytes:0,runId:null,messageId:null,controller};
+                    (async () => {
+                        let reader;
+                        try {
+                            const response = await fetch('/agui/run', {method:'POST',credentials:'include',
+                                headers:{'Content-Type':'application/json','Accept':'text/event-stream',
+                                    'X-Agent-Id':agent,'X-Account-Context':context}, signal:controller.signal,
+                                body:JSON.stringify({threadId:sessionId,runId:crypto.randomUUID(),
+                                    messages:[{id:crypto.randomUUID(),role:'user',content:'查看本轮连通状态 '+marker}]})});
+                            if (response.status!==200 || !response.headers.get('content-type')?.startsWith('text/event-stream'))
+                                throw new Error('actual_stream_rejected');
+                            reader=response.body.getReader();
+                            const decoder=new TextDecoder(); let pending='',tail='';
+                            const frame = block => {
+                                const data=block.split(/\r?\n/).filter(line=>line.startsWith('data:'))
+                                    .map(line=>line.slice(5).trimStart()).join('\n');
+                                if (!data) return;
+                                if (++state.frames>4096) throw new Error('frame_budget');
+                                const value=JSON.parse(data);
+                                if (value.type==='RUN_ERROR') throw new Error('actual_run_error');
+                                if (value.type==='TEXT_MESSAGE_CONTENT' && typeof value.delta==='string') {
+                                    tail=(tail+value.delta).slice(-4096);
+                                    if (tail.includes(marker) && !state.firstContent) {
+                                        state.firstContent=true; state.firstContentAt=Date.now();
+                                    }
+                                }
+                                if (value.type==='CUSTOM' && value.name==='doorhandle.execution.v1') {
+                                    if (state.runId) throw new Error('ambiguous_execution');
+                                    state.runId=value.value?.runId;state.messageId=value.value?.messageId;
+                                }
+                                if (value.type==='RUN_FINISHED') {state.finishedEvent=true;state.finishedEventAt=Date.now();}
+                            };
+                            while (true) {
+                                const part=await reader.read();
+                                if (part.done) break;
+                                state.bytes+=part.value.length;
+                                if (state.bytes>2097152) throw new Error('byte_budget');
+                                pending+=decoder.decode(part.value,{stream:true});
+                                if (pending.length>65536) throw new Error('frame_size_budget');
+                                const blocks=pending.split(/\r?\n\r?\n/);pending=blocks.pop();blocks.forEach(frame);
+                            }
+                            pending+=decoder.decode();if (pending.trim()) frame(pending);
+                            if (!state.firstContent || !state.finishedEvent || !state.runId || !state.messageId)
+                                throw new Error('incomplete_actual_execution');
+                        } catch (_) { state.error=true; }
+                        finally { if (reader) reader.releaseLock(); state.done=true;state.endedAt=Date.now(); }
+                    })();
+                    return state;
+                });
+            }''', {'sessions': sessions, 'agent': catalog['mainAgent'], 'context': self.auth[alias]['accountContext']})
+
+            async def state():
+                return await page.evaluate('''() => window.__ownedA21Streams.map(({sessionId,marker,firstContent,
+                    firstContentAt,finishedEvent,finishedEventAt,done,error,frames,bytes,runId,messageId,endedAt}) =>
+                    ({sessionId,marker,firstContent,firstContentAt,finishedEvent,finishedEventAt,done,error,
+                        frames,bytes,runId,messageId,endedAt}))''')
+
+            async def live():
+                values = await state()
+                require(len(values) == 2 and all(value['firstContent'] and not value['done']
+                    and not value['finishedEvent'] and not value['error'] for value in values), 'two_actual_model_streams_must_still_be_live')
+                models = [value for value in self.model_requests if value['at'] >= started_at and value['account'] == alias]
+                require(len(models) == 2 and all(value.get('status') == 200 and value.get('protocol') == 'http/1.1'
+                    and not value['finished'] for value in models), 'actual_two_unfinished_http1_model_connections_required')
+                ids = {value.get('connectionId') for value in models}
+                require(len(ids) == 2 and ids.isdisjoint({None, 'None', '0'}), 'distinct_actual_model_connection_ids_required')
+                require(self.proxy.snapshot()['modelActive'] == 2, 'two_actual_upstream_model_streams_required')
+                current = [value for value in self.active_sse.values() if value[0] == alias]
+                require(len(current) == 1, 'shared_account_sse_must_remain_live_with_models')
+                sse = [value for value in self.requests if value['account'] == alias and value.get('status') == 200
+                    and value['id'] + ':' + alias + ':' + str(value['tab']) in self.active_sse]
+                require(len(sse) == 1 and sse[0].get('protocol') == 'http/1.1'
+                    and sse[0].get('connectionId') not in ids | {None, 'None', '0'},
+                    'shared_sse_needs_its_distinct_actual_http1_connection')
+                return values, models
+
+            await page.wait_for_function('''() => window.__ownedA21Streams?.length===2 &&
+                window.__ownedA21Streams.every(value=>value.firstContent || value.error || value.done)''', timeout=10000)
+            _values, models = await live()
+            receipts = []
+            opened = initial_version
+            for writer, target in ((alias, editor), ('reviewer', independent)):
+                if writer != alias:
+                    await target.bring_to_front()
+                    opened = await self.edit_device(target, self.marker + '-stream-other-device')
+                    require(opened == receipts[-1]['version'], 'second_device_must_open_current_committed_version')
+                await live()
+                start = time.monotonic()
+                response, _at = await self.save_device(target)
+                elapsed = (time.monotonic() - start) * 1000
+                require(response.status == 200 and elapsed <= spec['saveMaxMillis'], 'actual_save_with_models_must_complete_within_budget')
+                require(str(self.command['expectedVersion'] or self.command['body'].get('version')) == opened
+                    and int(self.last_receipt['version']) == int(opened) + 1, 'actual_stream_save_cas_version_required')
+                values, models = await live()
+                network = [value for value in self.save_requests if value['account'] == writer
+                    and value['at'] >= started_at and value.get('status') == 200]
+                require(network and network[-1].get('protocol') == 'http/1.1', 'actual_save_http1_response_required')
+                if writer == alias:
+                    occupied = {value['connectionId'] for value in models} | {value.get('connectionId')
+                        for value in self.requests if value['account'] == alias and value['id'] + ':' + alias + ':' + str(value['tab']) in self.active_sse}
+                    require(network[-1].get('connectionId') not in occupied
+                        and network[-1].get('connectionId') not in (None, 'None', '0'), 'ordinary_save_needs_an_available_actual_http1_connection')
+                current = await self.api(target.context, 'GET', '/api/devices/' + str(self.device['id']), auth_key=writer)
+                require(str(current['version']) == self.last_receipt['version']
+                    and current['modelName'] == self.command['body']['modelName'], 'stream_save_must_read_back_committed_resource')
+                audits = await self.api(target.context, 'GET', '/api/operations/audit/changes?' + urlencode({
+                    'resourceType': 'DEVICE', 'resourceId': self.device['id'], 'size': 100}), auth_key=writer)
+                matched = [item for item in audits['items'] if item.get('requestId') == self.command['requestId']]
+                require(len(matched) == 1 and str(matched[0]['id']) == self.last_receipt['auditId']
+                    and matched[0]['eventId'] == self.last_receipt['eventId']
+                    and str(matched[0]['afterVersion']) == self.last_receipt['version'], 'stream_save_needs_one_actual_audit_receipt')
+                await live()
+                receipts.append({'account': writer, 'tab': 1 if writer == alias else 0, 'httpStatus': response.status,
+                    'saveMs': elapsed, 'openedVersion': opened, **self.last_receipt, 'requestId': self.command['requestId'],
+                    'actualConnectionId': network[-1]['connectionId'], 'modelStreamsUnfinishedAtSaveResponse': 2,
+                    'saveResponseAt': _at, 'resourceReadBack': True, 'successfulAuditCount': len(matched)})
+            await page.wait_for_function('() => window.__ownedA21Streams.every(value=>value.done)',
+                timeout=spec['completionTimeoutMillis'])
+            final = await state()
+            require(all(value['firstContent'] and value['finishedEvent'] and value['done'] and not value['error']
+                and re.fullmatch(r'[a-f0-9-]{36}', str(value['runId'])) and value['messageId'] for value in final),
+                'both_actual_agent_streams_must_finish_successfully')
+            require(all(receipt['saveResponseAt'] < value['finishedEventAt'] <= value['endedAt']
+                for receipt in receipts for value in final), 'both_save_responses_must_precede_both_real_stream_finishes')
+            for value in final:
+                deadline = time.monotonic() + 20
+                while True:
+                    run = await self.api(page.context, 'GET', '/api/agent/runs/' + value['runId'], auth_key=alias)
+                    board = await self.api(page.context, 'GET', '/api/agent/conversations/' + value['sessionId'] + '/workbench', auth_key=alias)
+                    executions = [item for item in board['items'] if item['kind'] == 'EXECUTION'
+                        and item['data'].get('runId') == value['runId'] and item['status'] == 'COMPLETED']
+                    require(run['sessionId'] == value['sessionId'] and run['status'] not in ('ERROR', 'CANCELLED'),
+                        'actual_agent_journal_must_belong_to_the_session')
+                    if run['status'] == 'COMPLETED' and len(executions) == 1:
+                        break
+                    require(time.monotonic() < deadline, 'model_stream_must_have_real_persisted_completed_execution')
+                    await asyncio.sleep(.1)
+            await self.wait_until(lambda: self.proxy.snapshot()['modelActive'] == 0, timeout=5)
+            after = self.proxy.snapshot()
+            require(after['modelOpened'] - before['modelOpened'] == 2 and after['modelCompleted'] - before['modelCompleted'] == 2
+                and after['modelProtocols'] == ['HTTP/1.1'] and after['connectionAdmissionRejections'] == before['connectionAdmissionRejections'],
+                'actual_upstream_streams_must_finish_without_connection_budget_rejection')
+            self.evidence.passed('model-stream-save-connection-budget', modelId=spec['modelId'],
+                actualAgentStreams=final, actualModelConnections=[{key: value[key] for key in
+                    ('account', 'tab', 'connectionId', 'protocol', 'status')} for value in models],
+                nativeSharedSsePerAccount=1, actualTabsInModelContext=2, ordinarySaves=receipts,
+                actualHttp1ModelContextConnectionsAtSave=4,
+                maximumProviderDelayMillis=spec['streamDelayMillis'], saveLimitMs=spec['saveMaxMillis'],
+                providerFinalStateMustBeReReadByRuntime=True, publicHttp2Claimed=False,
+                responseGatesUsed=False, proxyModelPeak=after['modelPeak'], proxyConnectionsPeak=after['connectionsPeak'])
+        finally:
+            await page.evaluate('''() => {for (const value of window.__ownedA21Streams || [])
+                if (!value.done) value.controller.abort(); delete window.__ownedA21Streams;}''')
+
     async def revoke(self):
         target = 'load_16'
         page = self.pages['supervisor'][0]
@@ -916,6 +1140,7 @@ class Runner:
                 ('inspector-report-and-scope', self.inspector_report), ('native-sse-reconnect', self.reconnect),
                 ('notification-failure-recovery', self.notification_failure), ('same-account-device-logout', self.device_logout),
                 ('late-account-switch', self.late_switch), ('refresh-logout-race', self.refresh_race), ('twenty-accounts-forty-tabs', self.load),
+                ('model-stream-save-connection-budget', self.model_stream_save),
                 ('account-disable-revocation', self.revoke)]
             try:
                 for name, callback in stages:

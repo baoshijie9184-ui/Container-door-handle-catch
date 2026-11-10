@@ -19,6 +19,7 @@ import time
 
 
 MAX_BODY = 2 * 1024 * 1024
+MAX_STREAM_DELAY_MILLIS = 15000
 MARKER = re.compile(r'[A-Za-z0-9_.:-]{8,128}')
 TOOL = re.compile(r'[A-Za-z_][A-Za-z0-9_.-]{0,127}')
 
@@ -58,10 +59,13 @@ class Scripts:
                 'Invalid marker script')
         steps = []
         for item in body['steps']:
-            require(isinstance(item, dict) and set(item) <= {'tool', 'name', 'arguments', 'text'}, 'Invalid scripted step')
+            require(isinstance(item, dict) and set(item) <= {'tool', 'name', 'arguments', 'text', 'streamDelayMillis'}, 'Invalid scripted step')
+            delay = item.get('streamDelayMillis', 0)
+            require(type(delay) is int and 0 <= delay <= MAX_STREAM_DELAY_MILLIS, 'Invalid scripted stream delay')
             selector = item.get('tool')
             name = selector if isinstance(selector, str) else item.get('name') if selector is True else None
             if name:
+                require(delay == 0, 'Delayed tool steps are unsupported')
                 require(isinstance(name, str) and TOOL.fullmatch(name), 'Invalid scripted tool name')
                 arguments = item.get('arguments', {})
                 if isinstance(arguments, str):
@@ -71,6 +75,8 @@ class Scripts:
             else:
                 require(isinstance(item.get('text'), str) and len(item['text']) <= 65536, 'Scripted text is missing')
                 steps.append({'text': item['text']})
+            if 'streamDelayMillis' in item:
+                steps[-1]['streamDelayMillis'] = delay
         checksum = hashlib.sha256(encoded(steps)).hexdigest()
         with self.lock:
             marker = body['marker']
@@ -79,10 +85,15 @@ class Scripts:
             else:
                 require(len(self.queues) < 256, 'Fixture marker budget exceeded')
                 self.queues[marker] = {'steps': steps, 'cursor': 0, 'calls': 0, 'toolCalls': 0,
-                    'scriptSha256': checksum, 'promptTokens': 0, 'completionTokens': 0, 'totalTokens': 0}
+                    'scriptSha256': checksum, 'promptTokens': 0, 'completionTokens': 0, 'totalTokens': 0,
+                    'streamResponses': 0, 'streamFirstChunks': 0, 'streamFinishes': 0, 'activeStreams': 0,
+                    'streamDelayMillisObserved': 0}
         return {'armed': True, 'marker': marker, 'stepCount': len(steps), 'scriptSha256': checksum}
 
     def next(self, body):
+        return self.next_with_context(body)[0]
+
+    def next_with_context(self, body):
         message = '\n'.join(strings(body.get('messages', [])))
         require(len(message) <= MAX_BODY, 'Fixture messages exceed their bound')
         with self.lock:
@@ -118,8 +129,24 @@ class Scripts:
             try:
                 json.loads(item['text'])
             except ValueError:
-                item = {'text': encoded({'ok': True, 'marker': marker}).decode('utf8')}
-        return item
+                item = {**item, 'text': encoded({'ok': True, 'marker': marker}).decode('utf8')}
+        return item, marker
+
+    def stream_event(self, marker, event, delay=0):
+        if marker is None:
+            return
+        with self.lock:
+            queue = self.queues[marker]
+            if event == 'opened':
+                queue['streamResponses'] += 1
+                queue['activeStreams'] += 1
+            elif event == 'content':
+                queue['streamFirstChunks'] += 1
+            elif event == 'finished':
+                queue['streamFinishes'] += 1
+                queue['streamDelayMillisObserved'] += delay
+            elif event == 'closed':
+                queue['activeStreams'] -= 1
 
     def embeddings(self, body):
         value = body.get('input')
@@ -146,7 +173,8 @@ class Scripts:
                     'unmarkedModelRequests': self.unmarked_calls,
                     'markers': [{'marker': marker, 'armedSteps': len(value['steps']),
                         'remainingSteps': len(value['steps']) - value['cursor'],
-                        **{key: value[key] for key in ('calls', 'toolCalls', 'promptTokens', 'completionTokens', 'totalTokens', 'scriptSha256')}}
+                        **{key: value[key] for key in ('calls', 'toolCalls', 'promptTokens', 'completionTokens', 'totalTokens', 'scriptSha256',
+                            'streamResponses', 'streamFirstChunks', 'streamFinishes', 'activeStreams', 'streamDelayMillisObserved')}}
                         for marker, value in sorted(self.queues.items())]}
 
 
@@ -233,7 +261,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.json(200, self.scripts.embeddings(body)); return
             if not re.fullmatch(r'/(?:v1/|llm/[A-Za-z0-9_-]+/(?:v1/)?)?chat/completions', self.path):
                 self.json(404, {'error': {'message': 'fixture model route unavailable'}}); return
-            item = self.scripts.next(body)
+            item, marker = self.scripts.next_with_context(body)
             model = body.get('model', 'runtime-model'); identity = 'chatcmpl-fixture-' + secrets.token_hex(8)
             message = {'role': 'assistant'}
             if 'tool' in item:
@@ -256,16 +284,30 @@ class Handler(BaseHTTPRequestHandler):
                 if include_usage:
                     value['usage'] = usage
                 self.wfile.write(b'data: ' + encoded(value) + b'\n\n'); self.wfile.flush()
-            event({'role': 'assistant'})
-            if 'tool_calls' in message:
-                event({'tool_calls': [dict(message['tool_calls'][0], index=0)]})
-            else:
-                event({'content': message['content']})
-            separate = isinstance(body.get('stream_options'), dict) and body['stream_options'].get('include_usage') is True
-            event({}, reason, include_usage=not separate)
-            if separate:
-                event({}, include_usage=True, choices=False)
-            self.wfile.write(b'data: [DONE]\n\n'); self.wfile.flush()
+            self.scripts.stream_event(marker, 'opened')
+            try:
+                event({'role': 'assistant'})
+                if 'tool_calls' in message:
+                    event({'tool_calls': [dict(message['tool_calls'][0], index=0)]})
+                else:
+                    event({'content': message['content']})
+                    self.scripts.stream_event(marker, 'content')
+                # Only the privately armed queue can delay a real provider
+                # response. Its content has already been flushed to the SDK;
+                # no browser/proxy gate can manufacture a live model stream.
+                delay = item.get('streamDelayMillis', 0)
+                started = time.monotonic()
+                if delay:
+                    time.sleep(delay / 1000)
+                observed = int((time.monotonic() - started) * 1000)
+                separate = isinstance(body.get('stream_options'), dict) and body['stream_options'].get('include_usage') is True
+                event({}, reason, include_usage=not separate)
+                if separate:
+                    event({}, include_usage=True, choices=False)
+                self.wfile.write(b'data: [DONE]\n\n'); self.wfile.flush()
+                self.scripts.stream_event(marker, 'finished', observed)
+            finally:
+                self.scripts.stream_event(marker, 'closed')
         except (ValueError, TypeError, KeyError, json.JSONDecodeError):
             self.json(400, {'error': {'message': 'invalid owned fixture request', 'type': 'invalid_request_error'}})
         except (BrokenPipeError, ConnectionResetError):

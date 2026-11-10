@@ -29,6 +29,7 @@ class LoopbackProxy:
     def __init__(self):
         self.lock = threading.Lock()
         self.streams = set()
+        self.model_streams = set()
         self.gates = []
         self.block_until = 0.0
         self.stats = {'requests': 0, 'sseOpened': 0, 'sseActive': 0,
@@ -37,6 +38,9 @@ class LoopbackProxy:
                       'delayedRealResponsesBeforeHeaders': 0,
                       'transportErrors': 0, 'connectionAdmissionRejections': 0,
                       'maximumProxyConnections': 192,
+                      'modelOpened': 0, 'modelActive': 0, 'modelPeak': 0,
+                      'modelChunks': 0, 'modelCompleted': 0, 'modelProtocols': [],
+                      'connectionsActive': 0, 'connectionsPeak': 0,
                       'nginxProtocols': [], 'sseHeaders': []}
         owner = self
 
@@ -64,6 +68,7 @@ class LoopbackProxy:
                     self.send_error(400)
                     return
                 is_sse = parsed.path == '/api/realtime/changes'
+                is_model = self.command == 'POST' and parsed.path == '/agui/run'
                 with owner.lock:
                     owner.stats['requests'] += 1
                     if is_sse and time.monotonic() < owner.block_until:
@@ -90,11 +95,12 @@ class LoopbackProxy:
                 # The backend sees the same origin as a user's SSH loopback visit.
                 upstream = http.client.HTTPConnection('ui', 80, timeout=40)
                 registered = False
+                model_registered = False
                 try:
                     upstream.request(self.command, self.path, body=body, headers=headers)
                     response = upstream.getresponse()
                     with owner.lock:
-                        gate = next((value for value in owner.gates if not value.claimed
+                        gate = next((value for value in owner.gates if not is_model and not value.claimed
                                      and value.method == self.command and value.path == parsed.path), None)
                         if gate:
                             gate.claimed = True
@@ -134,6 +140,16 @@ class LoopbackProxy:
                                         if key.lower() in {'content-type', 'cache-control', 'content-encoding', 'x-accel-buffering'}}
                             if evidence not in owner.stats['sseHeaders']:
                                 owner.stats['sseHeaders'].append(evidence)
+                    if is_model and response.status == 200 and response.getheader('Content-Type', '').startswith('text/event-stream'):
+                        with owner.lock:
+                            model_registered = True
+                            owner.model_streams.add(self.connection)
+                            owner.stats['modelOpened'] += 1
+                            owner.stats['modelActive'] += 1
+                            owner.stats['modelPeak'] = max(owner.stats['modelPeak'], owner.stats['modelActive'])
+                            protocol = 'HTTP/1.1' if response.version == 11 else 'HTTP/1.0'
+                            if protocol not in owner.stats['modelProtocols']:
+                                owner.stats['modelProtocols'].append(protocol)
                     while True:
                         # read1 returns available bytes, not a 64KiB accumulation.
                         # Every Nginx SSE chunk is flushed immediately downstream.
@@ -148,8 +164,14 @@ class LoopbackProxy:
                             with owner.lock:
                                 owner.stats['sseChunks'] += 1
                                 owner.stats['sseBytes'] += len(chunk)
+                        if model_registered:
+                            with owner.lock:
+                                owner.stats['modelChunks'] += 1
                     self.wfile.write(b'0\r\n\r\n')
                     self.wfile.flush()
+                    if model_registered:
+                        with owner.lock:
+                            owner.stats['modelCompleted'] += 1
                 except (OSError, ValueError, http.client.HTTPException):
                     self.close_connection = True
                 finally:
@@ -158,6 +180,10 @@ class LoopbackProxy:
                         with owner.lock:
                             owner.streams.discard(self.connection)
                             owner.stats['sseActive'] -= 1
+                    if model_registered:
+                        with owner.lock:
+                            owner.model_streams.discard(self.connection)
+                            owner.stats['modelActive'] -= 1
 
         class BoundedServer(ThreadingHTTPServer):
             request_queue_size = 128
@@ -173,8 +199,13 @@ class LoopbackProxy:
                     self.shutdown_request(request)
                     return
                 try:
+                    with owner.lock:
+                        owner.stats['connectionsActive'] += 1
+                        owner.stats['connectionsPeak'] = max(owner.stats['connectionsPeak'], owner.stats['connectionsActive'])
                     super().process_request(request, address)
                 except BaseException:
+                    with owner.lock:
+                        owner.stats['connectionsActive'] -= 1
                     self.slots.release()
                     raise
 
@@ -182,6 +213,8 @@ class LoopbackProxy:
                 try:
                     super().process_request_thread(request, address)
                 finally:
+                    with owner.lock:
+                        owner.stats['connectionsActive'] -= 1
                     self.slots.release()
 
             def handle_error(self, _request, _address):
@@ -211,6 +244,8 @@ class LoopbackProxy:
                 pass
 
     def pause_next_response(self, method, path):
+        if path == '/agui/run':
+            raise ValueError('Model stream evidence cannot use a response gate')
         gate = ResponseGate(method, path)
         with self.lock:
             self.gates.append(gate)
@@ -219,12 +254,19 @@ class LoopbackProxy:
     def snapshot(self):
         with self.lock:
             return {**self.stats, 'sseHeaders': list(self.stats['sseHeaders']),
+                    'modelProtocols': list(self.stats['modelProtocols']),
                     'nginxProtocols': list(self.stats['nginxProtocols'])}
 
     def close(self):
         with self.lock:
             for gate in self.gates:
                 gate.release.set()
+            model_streams = tuple(self.model_streams)
+        for connection in model_streams:
+            try:
+                connection.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
         self.disconnect_sse()
         self.server.shutdown()
         self.server.server_close()
