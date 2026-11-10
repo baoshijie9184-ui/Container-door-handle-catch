@@ -99,11 +99,30 @@ class OrganizationBindingAuditMigrationMySqlTest {
             "ALTER TABLE organization_binding_audit MODIFY COLUMN created_at DATETIME(6) NOT NULL",
             "ALTER TABLE organization_binding_audit ADD UNIQUE KEY fixture_extra_unique(id,user_id)",
             "ALTER TABLE organization_binding_audit ADD CONSTRAINT fixture_extra_check CHECK(user_id>0)",
-            "ALTER TABLE organization_binding_audit ADD CONSTRAINT fixture_extra_fk FOREIGN KEY(id) REFERENCES organization_binding_audit(id)",
+            "ALTER TABLE organization_binding_audit ADD CONSTRAINT fixture_extra_fk FOREIGN KEY(before_employee_id) REFERENCES organization_binding_audit(id)",
             "CREATE TRIGGER fixture_source_trigger BEFORE INSERT ON organization_binding_audit FOR EACH ROW SET NEW.username=NEW.username"
     })
     void rejectsUnreviewedSourceMetadataBeforeCopy(String change) {
-        source.execute(change);assertRejectedAndUnchanged();
+        boolean foreignKey=change.contains("fixture_extra_fk");
+        if(foreignKey) {
+            // MySQL permits same-table references between different columns, not id -> itself.
+            // Keep the existing signed BIGINT primary key and make the two non-null child values valid.
+            assertThat(source.update("UPDATE organization_binding_audit SET before_employee_id="
+                    +"CASE before_employee_id WHEN 201 THEN 91 WHEN 202 THEN 92 END WHERE before_employee_id IS NOT NULL"))
+                    .isEqualTo(2);
+        }
+        source.execute(change);
+        if(foreignKey) {
+            assertThat(source.queryForObject("SELECT COUNT(*) FROM information_schema.key_column_usage "
+                    +"WHERE constraint_schema=DATABASE() AND table_name='organization_binding_audit' "
+                    +"AND constraint_name='fixture_extra_fk' AND column_name='before_employee_id' "
+                    +"AND referenced_table_schema=DATABASE() AND referenced_table_name='organization_binding_audit' "
+                    +"AND referenced_column_name='id'",Integer.class)).isEqualTo(1);
+            assertThat(source.queryForObject("SELECT unique_constraint_name FROM information_schema.referential_constraints "
+                    +"WHERE constraint_schema=DATABASE() AND table_name='organization_binding_audit' "
+                    +"AND constraint_name='fixture_extra_fk'",String.class)).isEqualTo("PRIMARY");
+            assertRejectedAndUnchanged("INSERT INTO compact_binding_guard","information_schema.table_constraints");
+        } else assertRejectedAndUnchanged();
     }
 
     @ParameterizedTest
@@ -158,9 +177,10 @@ class OrganizationBindingAuditMigrationMySqlTest {
         assertThatThrownBy(()->fixture.migrate("+99:00")).isInstanceOf(Exception.class);assertNoCopiedRows();
     }
 
-    private void assertRejectedAndUnchanged() {
+    private void assertRejectedAndUnchanged(String... expectedMessageFragments) {
         var before=snapshot();var sequence=sourceSequence();
-        assertThatThrownBy(()->fixture.migrate("+08:00")).isInstanceOf(Exception.class);
+        var rejection=assertThatThrownBy(()->fixture.migrate("+08:00")).isInstanceOf(Exception.class);
+        for(String fragment:expectedMessageFragments)rejection.hasMessageContaining(fragment);
         assertNoCopiedRows();assertThat(snapshot()).isEqualTo(before);assertThat(sourceSequence()).isEqualTo(sequence);
     }
 
