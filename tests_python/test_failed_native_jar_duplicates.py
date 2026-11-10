@@ -1005,12 +1005,170 @@ def test_recent_fixture_cli_order_failure_booleans_and_original_artifacts_are_wi
     script = (root / 'script/jenkins/retire-failed-native-jar-duplicates.ps1').read_text(encoding='utf8')
     branch = script.split("if($CanonicalBatch -ceq 'Recent') {", 1)[1].split('\n$builderPlanned=', 1)[0]
     phases = [branch.index("Invoke-NativeJarPhase '" + phase + "'") for phase in
-              ('plan-recent-fixtures', 'apply-recent-fixtures', 'plan-canonical', 'apply-canonical')]
+              ('plan-recent-builders', 'apply-recent-builders', 'plan-recent-fixtures',
+               'apply-recent-fixtures', 'plan-canonical', 'apply-canonical')]
     assert phases == sorted(phases)
     assert "$fixtureResult.status -cin @('REMOVED','NO_ACTION')" in branch
     assert "$fixtureResult.$flag -is [bool]" in branch and "$fixtureReceipt.$flag -is [bool]" in branch
+    assert "$builderResult.$flag -is [bool]" in branch and "$builderReceipt.$flag -is [bool]" in branch
+    assert "$builderReceipt.scope -ceq 'RECENT_201_BUILDER_ONLY'" in branch
     assert "finally {Copy-NativeJarEvidence (Invoke-NativeJarPhase 'inspect')}" in branch
     for name in ('plan.json', 'receipt.json', 'journal.jsonl'):
         assert 'native-jar-duplicate-fixture-object-' + name in script
     pipeline = (root / 'Jenkinsfile.ecs-monolith').read_text(encoding='utf8')
     assert 'artifacts/native-jar-duplicate-*.json' in pipeline and 'artifacts/native-jar-duplicate-*.jsonl' in pipeline
+
+
+@pytest.fixture
+def recent_builder_case(tmp_path, bundle, monkeypatch):
+    root = tmp_path / 'ci'; root.mkdir(mode=0o700)
+    tag, original = next(iter(retirer.RECENT_BUILDER_ONLY.items()))
+    context = {'release': tag, 'commit': original['commit'], 'sourceSha256': original['sourceSha256']}
+    current = {'release': 'ci-203-' + 'f' * 12, 'commit': 'f' * 40, 'sourceSha256': 'e' * 64}
+    for name in (tag, current['release']): (root / 'inbox' / name).mkdir(mode=0o700, parents=True)
+    directory = root / 'inbox' / tag / 'candidate-build-tools'; directory.mkdir(mode=0o700)
+    work = root / 'verification' / tag / 'checkout/work/compact-fixtures'
+    data = work / 'mysql-data'; data.mkdir(mode=0o700, parents=True)
+    page = data / 'preserved-page'; page.write_bytes(b'original owned database evidence')
+    jar = root / 'inbox' / tag / 'application.jar'; jar.write_bytes(b'canonical jar belongs to its later independent phase')
+    cid, fid, production = original['containerId'], 'd' * 64, 'e' * 64
+    token = '0123456789'
+    rows = {key: {'Id': key, 'Name': name, 'HostConfig': {'NetworkMode': 'bridge', 'PidMode': '', 'IpcMode': 'private'}}
+            for key, name in ((cid, '/doorhandle-builder-' + original['ownerToken']),
+                              (fid, '/doorhandle-compact-fixture-' + token), (production, '/production'))}
+    summary = {**context, 'status': 'PASS', 'ownerToken': original['ownerToken'],
+               'cleanup': {'builderContainerId': cid, 'builderExitCode': 1,
+                           'creatorStopped': True, 'builderStopped': True, 'daemonImportTerminated': True}}
+    bodies = {'summary': encoded(summary), 'measurement': encoded({'synthetic': 'measured tool identity'})}
+    bodies['tools'] = encoded({**context, 'status': 'PREPARED',
+        'resourceEvidence': {'file': str(directory / 'resource-summary.json'), 'sha256': sha(bodies['summary'])},
+        'imageMeasurementSha256': sha(bodies['measurement'])})
+    paths = {}
+    for role, filename in (('tools', 'tools.json'), ('summary', 'resource-summary.json'),
+                            ('measurement', 'official-layer-measurements.json')):
+        path = directory / filename; path.write_bytes(bodies[role]); path.chmod(0o600); paths[role] = path
+    registered = {**original, **{role + 'Sha256': sha(body) for role, body in bodies.items()}}
+    monkeypatch.setitem(retirer.RECENT_BUILDER_ONLY, tag, registered)
+    source = {'builderHelperSha256': {'compact-build-resources.py': 'a' * 64, 'compact-image-inputs.py': 'b' * 64}}
+    historical = {'context': context, 'evidence': {'ownerToken': token, 'work': str(work)}, 'sourceArchive': source,
+        'fixtureOwner': {'containerId': fid, 'dataDirectory': str(data), 'token': token}, 'fixtureCleanup': {'status': 'STOPPED'}}
+    def admitted(actual_root, request, row, **options):
+        assert actual_root == root and row['release'] == tag and request['identity'] == bundle.identity
+        assert options == {'builder_helpers': True, 'canonical_jar': True}
+        return copy.deepcopy(historical)
+    monkeypatch.setattr(retirer, 'admit_historical_controls', admitted)
+    commands, reference_checks = [], []
+    def docker(*args):
+        if args[0] == 'inspect': return encoded([rows[args[1]]])
+        assert len(args) == 2 and args[0] == 'rm' and args[1] in (cid, fid)
+        commands.append(args); del rows[args[1]]; return args[1].encode()
+    monkeypatch.setattr(retirer, 'builder_docker', docker)
+    monkeypatch.setattr(retirer, 'builder_container_ids', lambda: list(rows))
+    metadata = [1, data.stat().st_ino, stat.S_IFDIR | 0o700, 999, 1000]
+    monkeypatch.setattr(retirer, 'fixture_data_metadata', lambda *_args: list(metadata))
+    def descriptor(actual_root, actual_context, identity, tools, actual_summary, measurement, helpers, row):
+        assert actual_root == root and actual_context == context and identity == bundle.identity
+        assert (tools, actual_summary, measurement) == (bodies['tools'], bodies['summary'], bodies['measurement'])
+        assert helpers == source['builderHelperSha256'] and row['Id'] == cid
+        return {**context, 'containerId': cid, 'ownerToken': original['ownerToken'],
+                'inspectSha256': sha(encoded(row)), 'imagesPreserved': True, 'volumesPreserved': True}
+    def fixture_descriptor(actual_root, actual_context, identity, owner, cleanup, row, info, *, source_proof):
+        assert actual_root == root and actual_context == context and identity == bundle.identity
+        assert source_proof == source and info == metadata and row['Id'] == fid
+        return {**context, 'containerId': fid, 'ownerToken': token, 'inspectSha256': sha(encoded(row)),
+                'dataDirectory': str(data), 'dataMetadata': list(metadata)}
+    def quiescent(properties, actual_tag, remaining, **options):
+        assert actual_tag == tag and properties == {'checkout': work.parents[1], 'token': token}
+        assert options == {'include_inbox': True}
+        reference_checks.append([row[0] for row in remaining])
+        if any(row[0] != production for row in remaining): raise ValueError('unclassified old object remains')
+    def remove_fixture(selected, inspect_fn, remove_fn, list_fn, refs_fn, data_fn):
+        assert sha(inspect_fn(fid)) == selected['rawInspectSha256'] and data_fn() == metadata
+        refs_fn(fid); remove_fn(fid)
+        assert fid not in list_fn() and data_fn() == metadata
+        return {'status': 'REMOVED', 'containerId': fid, 'dataDirectoryPreserved': True}
+    def remove_builder(selected, inspect_fn, remove_fn, list_fn, refs_fn):
+        assert sha(encoded(inspect_fn(cid))) == selected['inspectSha256']
+        refs_fn(cid); remove_fn(cid); assert cid not in list_fn()
+        return {'status': 'REMOVED', 'containerId': cid, 'imagesPreserved': True, 'volumesPreserved': True}
+    builder = SimpleNamespace(historical_builder_inspect=lambda raw: json.loads(raw)[0], encoded=encoded,
+        historical_builder_descriptor=descriptor, historical_mysql_fixture_descriptor=fixture_descriptor,
+        historical_mysql_fixture_remove=remove_fixture, historical_builder_remove=remove_builder)
+    cleanup = SimpleNamespace(docker_snapshot=lambda: [(key,) for key in rows], quiescent=quiescent,
+                              failure_guard_code=lambda _error: 'OLD_BUILD_CONTAINER_STILL_PRESENT')
+    request = {'schemaVersion': 1, 'kind': retirer.KIND + '-request', 'current': current, 'identity': bundle.identity,
+               'protectedReleases': [current['release']], 'candidates': [{**context, 'controls': {}}]}
+    raw = encoded(request)
+    options = {'request_sha256': sha(raw), 'expected_current': current, 'identity': bundle.identity,
+               'modules': {'builder': builder, 'cleanup': cleanup}, 'recent': True}
+    return SimpleNamespace(root=root, context=context, request=request, raw=raw, options=options, paths=paths,
+        cid=cid, fid=fid, production=production, rows=rows, commands=commands, reference_checks=reference_checks,
+        page=page, page_bytes=page.read_bytes(), data_inode=data.stat().st_ino, jar=jar, jar_bytes=jar.read_bytes())
+
+
+@pytest.mark.parametrize('outcome', ['removed', 'unknown-object', 'late-control', 'late-inspection', 'already-absent'])
+def test_recent_201_joint_builder_and_fixture_removal_keeps_every_data_file(recent_builder_case, outcome):
+    state = recent_builder_case
+    if outcome == 'already-absent': del state.rows[state.cid]
+    if outcome == 'unknown-object':
+        state.rows['a' * 64] = {'Id': 'a' * 64, 'Name': '/unknown-old-object', 'HostConfig': {}}
+    prepared = retirer.plan_builders(state.root, state.raw, **state.options)
+    assert prepared['scope'] == 'RECENT_201_BUILDER_ONLY'
+    if outcome == 'unknown-object':
+        assert prepared['candidates'] == [] and prepared['absent'] == []
+        assert prepared['skipped'] == [{'release': state.context['release'],
+            'reason': 'HISTORICAL_OBJECTS_NOT_QUIESCENT_OLD_BUILD_CONTAINER_STILL_PRESENT'}]
+        with pytest.raises(retirer.RetirementError, match='COMPLETE_EXACT_RECENT_BUILDER_PLAN_REQUIRED'):
+            retirer.apply_builders(state.root, state.raw, prepared, plan_sha256=sha(encoded(prepared)), **state.options)
+    else:
+        assert prepared['skipped'] == [] and len(prepared['absent']) == (1 if outcome == 'already-absent' else 0)
+        if outcome == 'late-control':
+            changed_plan = copy.deepcopy(prepared); changed_plan['scope'] = 'UNREVIEWED_POLICY'
+            with pytest.raises(retirer.RetirementError, match='EXACT_HISTORICAL_BUILDER_PLAN_REQUIRED'):
+                retirer.apply_builders(state.root, state.raw, changed_plan, plan_sha256=sha(encoded(prepared)), **state.options)
+            assert state.commands == []
+            state.paths['tools'].write_bytes(state.paths['tools'].read_bytes() + b' ')
+        if outcome == 'late-inspection': state.rows[state.cid]['State'] = {'Running': True}
+        result = retirer.apply_builders(state.root, state.raw, prepared, plan_sha256=sha(encoded(prepared)), **state.options)
+        assert result['scope'] == 'RECENT_201_BUILDER_ONLY' and result['jarDeletionPerformed'] is False
+        assert result['imagesPreserved'] is result['volumesPreserved'] is result['directoriesPreserved'] is True
+        if outcome == 'removed':
+            assert result['status'] == 'REMOVED' and state.commands == [('rm', state.fid), ('rm', state.cid)]
+            assert len(result['removed']) == len(result['retiredMysqlObjects']) == 1 and result['alreadyAbsent'] == []
+            assert state.reference_checks and all(row == [state.production] for row in state.reference_checks)
+        elif outcome == 'already-absent':
+            assert result['status'] == 'NO_ACTION' and result['alreadyAbsent'] == [state.cid]
+            assert result['retiredMysqlObjects'] == [] and state.fid in state.rows
+        else:
+            assert result['status'] == 'FAILED_OR_UNKNOWN' and result['removed'] == result['retiredMysqlObjects'] == []
+    if outcome != 'removed': assert state.commands == []
+    assert state.page.read_bytes() == state.page_bytes and state.page.parent.stat().st_ino == state.data_inode
+    assert state.jar.read_bytes() == state.jar_bytes
+
+
+@pytest.mark.parametrize('role', ['tools', 'summary', 'measurement'])
+def test_recent_201_builder_original_control_drift_prevents_any_plan(recent_builder_case, role):
+    state = recent_builder_case; state.paths[role].write_bytes(state.paths[role].read_bytes() + b' ')
+    prepared = retirer.plan_builders(state.root, state.raw, **state.options)
+    assert prepared['candidates'] == prepared['absent'] == []
+    assert prepared['skipped'] == [{'release': state.context['release'], 'reason': 'RECENT_BUILDER_ORIGINAL_CONTROL_SHA_DRIFT'}]
+    assert state.commands == [] and state.page.read_bytes() == state.page_bytes and state.jar.read_bytes() == state.jar_bytes
+
+
+@pytest.mark.parametrize('changed', ['commit', 'sourceSha256', 'other-recent'])
+def test_recent_builder_permission_cannot_be_extended_by_the_input_document(bundle, changed):
+    tag, registered = next(iter(retirer.RECENT_BUILDER_ONLY.items()))
+    row = {'release': tag, 'commit': registered['commit'], 'sourceSha256': registered['sourceSha256'], 'controls': {}}
+    if changed == 'other-recent':
+        row.update(release='ci-198-7af0903ee840', commit=retirer.RECENT_CANONICAL_ONLY['ci-198-7af0903ee840'])
+    else: row[changed] = '0' * (40 if changed == 'commit' else 64)
+    with pytest.raises(retirer.RetirementError, match='ONLY_EXACT_REVIEWED_RECENT_BUILDER_ALLOWED'):
+        retirer.recent_builder_registration(row)
+
+
+def test_recent_builder_scope_does_not_expand_any_historical_permission():
+    assert set(retirer.RECENT_BUILDER_ONLY) == {'ci-201-803baf401b5f'}
+    assert set(retirer.RECENT_BUILDER_ONLY).isdisjoint(retirer.APPROVED_OLD)
+    assert set(retirer.RECENT_BUILDER_ONLY).isdisjoint(retirer.APPROVED_BUILDER_TOOLS)
+    assert set(retirer.RECENT_BUILDER_ONLY).isdisjoint(retirer.PUBLIC_LAYER_TAGS)
+    assert set(retirer.RECENT_BUILDER_ONLY).isdisjoint(retirer.PYTHON_CACHE_APPROVED)

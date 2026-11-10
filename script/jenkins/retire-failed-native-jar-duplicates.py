@@ -91,6 +91,20 @@ RECENT_CANONICAL_ONLY = {
     'ci-198-7af0903ee840': '7af0903ee84011dc51f4abac4f4a4d9679db7322',
     'ci-201-803baf401b5f': '803baf401b5f9566283a59cb6a885a794b9d7d85',
 }
+# This independent permission covers one reviewed stopped builder, not the
+# other Recent attempts, historical cache sets, or any state-volume contents.
+RECENT_BUILDER_ONLY = {
+    'ci-201-803baf401b5f': {
+        'commit': '803baf401b5f9566283a59cb6a885a794b9d7d85',
+        'sourceSha256': '5049079bdb37231b8ca2d59f7865269735ce0ce01cae56d0084a81924fa6767a',
+        'toolsSha256': '352792942c7228c241c34637707f67d964f92ebcab2d8f31577ba6ca2affffdc',
+        'summarySha256': '11daffe97e60aee157f300f6279667af1394ae705768bc842ed0b8d1f003ffe1',
+        'measurementSha256': '312d741c149a87a0bebabc6e3312d64fa408698ded300a4dc8cc7e9bdfaacd17',
+        'containerId': '6fc35fc387502b40ee8990b617bd5b566c66b5fbeee9c7ddb2888c489b21846f',
+        'ownerToken': 'ede5921fbf249493de57e778',
+    },
+}
+RECENT_BUILDER_SCOPE = 'RECENT_201_BUILDER_ONLY'
 # Reviewed historical publication predicates, authenticated against actual
 # retained archive members (not the current checkout or a synthesized report).
 # Each pair is Jenkinsfile.ecs-monolith, script/jenkins/pipeline.ps1. All these
@@ -1336,14 +1350,18 @@ def builder_container_ids():
     return ids
 
 
-def builder_references(root, historical, descriptor, cleanup, builder, fixture=None):
+def builder_references(root, historical, descriptor, cleanup, builder, fixture=None, *, include_inbox=False):
     """Exclude only the fully admitted objects about to retire, never JAR guards."""
     cid = descriptor['containerId']; tag = historical['context']['release']
     retiring = {cid: 'doorhandle-builder-' + descriptor['ownerToken']}
     if fixture is not None:
         need(fixture['containerId'] != cid, 'MYSQL_FIXTURE_AND_BUILDER_ID_COLLISION')
         retiring[fixture['containerId']] = 'doorhandle-compact-fixture-' + fixture['ownerToken']
-    return historical_object_references(root, historical, retiring, cleanup, builder)
+    if include_inbox:
+        need(historical['context']['release'] in RECENT_BUILDER_ONLY, 'ONLY_REVIEWED_RECENT_BUILDER_REFERENCES_ALLOWED')
+        canonical_publication_refs(root, tag)
+    return historical_object_references(root, historical, retiring, cleanup, builder,
+        **({'include_inbox': True} if include_inbox else {}))
 
 
 def historical_object_references(root, historical, retiring, cleanup, builder, *, include_inbox=False):
@@ -1393,14 +1411,15 @@ def fixture_data_metadata(root, path):
     finally: os.close(fd)
 
 
-def capture_fixture(root, request, historical, builder):
+def capture_fixture(root, request, historical, builder, *, source_proof=None):
     owner, cleanup = historical['fixtureOwner'], historical['fixtureCleanup']; cid = owner.get('containerId')
     if cid is None: return None
     need(type(cid) is str and SHA.fullmatch(cid), 'ORIGINAL_MYSQL_FIXTURE_ID_REQUIRED')
     if cid not in builder_container_ids(): return None
     raw = builder_docker('inspect', cid)
     descriptor = builder.historical_mysql_fixture_descriptor(root, historical['context'], request['identity'], owner, cleanup,
-        builder.historical_builder_inspect(raw), fixture_data_metadata(root, owner['dataDirectory']))
+        builder.historical_builder_inspect(raw), fixture_data_metadata(root, owner['dataDirectory']),
+        **({'source_proof': source_proof} if source_proof is not None else {}))
     descriptor['rawInspectSha256'] = digest_bytes(raw)
     return descriptor
 
@@ -1502,8 +1521,26 @@ def apply_recent_fixtures(root, raw_request, prepared, *, request_sha256, plan_s
         'journalSha256': digest_bytes(private_bytes(root, journal_path))}
 
 
-def capture_builder(root, request, row, builder):
-    historical = admit_historical_controls(root, request, row, builder_helpers=True)
+def recent_builder_registration(row):
+    registered = RECENT_BUILDER_ONLY.get(row.get('release'))
+    need(registered is not None and all(row.get(key) == registered[key] for key in ('commit', 'sourceSha256')),
+         'ONLY_EXACT_REVIEWED_RECENT_BUILDER_ALLOWED')
+    return registered
+
+
+def builder_request_rows(request, recent):
+    need(type(recent) is bool, 'EXACT_BUILDER_RETIREMENT_POLICY_REQUIRED')
+    if not recent: return request['candidates']
+    rows = [row for row in request['candidates'] if row['release'] in RECENT_BUILDER_ONLY]
+    need(len(rows) == 1, 'ONE_EXACT_RECENT_BUILDER_REQUIRED')
+    recent_builder_registration(rows[0])
+    return rows
+
+
+def capture_builder(root, request, row, builder, *, recent=False):
+    registered = recent_builder_registration(row) if recent else None
+    historical = admit_historical_controls(root, request, row, builder_helpers=True,
+        **({'canonical_jar': True} if recent else {}))
     directory = Path(root) / 'inbox' / row['release'] / 'candidate-build-tools'
     controls, raw = {}, {}
     for role, filename in (('tools', 'tools.json'), ('summary', 'resource-summary.json'),
@@ -1515,27 +1552,45 @@ def capture_builder(root, request, row, builder):
             raw[role] = content
             controls[role] = {'path': path.relative_to(root).as_posix(), 'bytes': len(content),
                               'sha256': digest_bytes(content), 'metadata': signature}
-    need(digest_bytes(raw['tools']) == APPROVED_BUILDER_TOOLS.get(row['release']),
-         'HISTORICAL_BUILDER_TOOLS_DIFFERS_FROM_ORIGINAL_JENKINS_REFERENCE')
+    if recent:
+        need(all(digest_bytes(raw[role]) == registered[role + 'Sha256'] for role in ('tools', 'summary', 'measurement')),
+             'RECENT_BUILDER_ORIGINAL_CONTROL_SHA_DRIFT')
+    else:
+        need(digest_bytes(raw['tools']) == APPROVED_BUILDER_TOOLS.get(row['release']),
+             'HISTORICAL_BUILDER_TOOLS_DIFFERS_FROM_ORIGINAL_JENKINS_REFERENCE')
     summary = decode(raw['summary']); cid = summary.get('cleanup', {}).get('builderContainerId')
     need(type(cid) is str and SHA.fullmatch(cid), 'ORIGINAL_BUILDER_CONTAINER_ID_REQUIRED')
+    if recent:
+        need(cid == registered['containerId'] and summary.get('ownerToken') == registered['ownerToken'],
+             'EXACT_ORIGINAL_RECENT_BUILDER_IDENTITY_REQUIRED')
+        canonical_publication_refs(root, row['release'])
+        # No object is removed in this branch. All three exact original control
+        # hashes and the original source/terminal must still authenticate first.
+        if cid not in builder_container_ids():
+            return {'historical': historical, 'builderControls': controls, 'descriptor': None,
+                    'fixture': None, 'absentContainerId': cid}, None
     inspected = builder_docker('inspect', cid); actual = builder.historical_builder_inspect(inspected)
     descriptor = builder.historical_builder_descriptor(root, historical['context'], request['identity'],
         raw['tools'], raw['summary'], raw['measurement'], historical['sourceArchive']['builderHelperSha256'], actual)
-    fixture = capture_fixture(root, request, historical, builder)
+    fixture = capture_fixture(root, request, historical, builder,
+        **({'source_proof': historical['sourceArchive']} if recent else {}))
     return {'historical': historical, 'builderControls': controls, 'descriptor': descriptor, 'fixture': fixture}, inspected
 
 
-def plan_builders(root, raw_request, *, request_sha256, expected_current, identity, modules):
-    request = approved_request(raw_request, request_sha256, expected_current, identity)
-    accepted, skipped = [], []; builder, cleanup = modules['builder'], modules['cleanup']
+def plan_builders(root, raw_request, *, request_sha256, expected_current, identity, modules, recent=False):
+    request = approved_request(raw_request, request_sha256, expected_current, identity, canonical_jar=recent)
+    rows = builder_request_rows(request, recent)
+    accepted, absent, skipped = [], [], []; builder, cleanup = modules['builder'], modules['cleanup']
     directory = Path(root) / 'inbox' / expected_current['release'] / 'native-builder-retirement-inspect'
-    with controller_lock(root):
-        for row in request['candidates']:
+    with controller_lock(root), (publication_lock(root) if recent else nullcontext()):
+        for row in rows:
             try:
                 with attempt_lock(root, row['release']):
-                    value, inspected = capture_builder(root, request, row, builder)
-                    builder_references(root, value['historical'], value['descriptor'], cleanup, builder, value['fixture'])
+                    value, inspected = capture_builder(root, request, row, builder, **({'recent': True} if recent else {}))
+                    if recent and value['descriptor'] is None:
+                        absent.append(value); continue
+                    builder_references(root, value['historical'], value['descriptor'], cleanup, builder, value['fixture'],
+                        **({'include_inbox': True} if recent else {}))
                     if not directory.exists(): directory.mkdir(mode=0o700)
                     owned_path(root, directory, directory=True)
                     path = directory / (row['release'] + '.json')
@@ -1548,33 +1603,52 @@ def plan_builders(root, raw_request, *, request_sha256, expected_current, identi
             except (OSError, ValueError, KeyError, TypeError, tarfile.TarError, EOFError) as error:
                 skipped.append({'release': row['release'], 'reason': str(error) if isinstance(error, RetirementError)
                                 or getattr(error, 'doorhandle_public_resource_error', False) else type(error).__name__})
-    return {'schemaVersion': 1, 'kind': 'doorhandle-historical-builder-retirement-plan', 'current': expected_current,
+    value = {'schemaVersion': 1, 'kind': 'doorhandle-historical-builder-retirement-plan', 'current': expected_current,
             'identity': identity, 'requestSha256': request_sha256, 'candidates': accepted, 'skipped': skipped,
             'deletionPerformed': False, 'imagesPreserved': True, 'volumesPreserved': True, 'directoriesPreserved': True}
+    if recent: value.update(scope=RECENT_BUILDER_SCOPE, absent=absent)
+    return value
 
 
-def apply_builders(root, raw_request, prepared, *, request_sha256, plan_sha256, expected_current, identity, modules):
-    request = approved_request(raw_request, request_sha256, expected_current, identity)
+def apply_builders(root, raw_request, prepared, *, request_sha256, plan_sha256, expected_current, identity, modules, recent=False):
+    request = approved_request(raw_request, request_sha256, expected_current, identity, canonical_jar=recent)
     need(digest_bytes(canonical(prepared)) == plan_sha256 and prepared.get('kind') == 'doorhandle-historical-builder-retirement-plan'
          and prepared.get('current') == expected_current and prepared.get('identity') == identity
          and prepared.get('requestSha256') == request_sha256 and prepared.get('deletionPerformed') is False,
          'EXACT_HISTORICAL_BUILDER_PLAN_REQUIRED')
-    selected = prepared.get('candidates'); rows = {row['release']: row for row in request['candidates']}
+    selected = prepared.get('candidates'); rows = {row['release']: row for row in builder_request_rows(request, recent)}
     need(type(selected) is list and len(selected) <= len(rows)
          and len({row['descriptor']['release'] for row in selected}) == len(selected)
          and all(row['descriptor']['release'] in rows for row in selected), 'BOUNDED_HISTORICAL_BUILDER_SELECTION_REQUIRED')
+    absent = prepared.get('absent', []) if recent else []
+    if recent:
+        need(prepared.get('scope') == RECENT_BUILDER_SCOPE and prepared.get('skipped') == []
+             and type(absent) is list and len(selected) + len(absent) == len(rows) == 1
+             and all(type(item) is dict and item.get('descriptor') is None for item in absent),
+             'COMPLETE_EXACT_RECENT_BUILDER_PLAN_REQUIRED')
+    else:
+        need('scope' not in prepared and 'absent' not in prepared, 'HISTORICAL_BUILDER_PLAN_POLICY_DRIFT')
     builder, cleanup = modules['builder'], modules['cleanup']; removed, retired_fixtures, failure = [], [], None
+    already_absent = []
     journal_path = Path(root) / 'inbox' / expected_current['release'] / 'native-builder-retirement-journal.jsonl'
-    with controller_lock(root), os.fdopen(os.open(journal_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600), 'wb') as journal:
+    with controller_lock(root), (publication_lock(root) if recent else nullcontext()), os.fdopen(os.open(journal_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600), 'wb') as journal:
         def record(value):
             journal.write(canonical(value) + b'\n'); journal.flush(); os.fsync(journal.fileno())
         record({'phase': 'STARTED', 'planSha256': plan_sha256, 'requestSha256': request_sha256})
         active = None
         try:
+            for candidate in absent:
+                active = candidate['historical']['context']['release']
+                need(active in rows, 'RECENT_ABSENT_BUILDER_OUTSIDE_EXACT_REQUEST')
+                with attempt_lock(root, active):
+                    observed, inspected = capture_builder(root, request, rows[active], builder, recent=True)
+                    need(observed == candidate and inspected is None, 'RECENT_ABSENT_BUILDER_OR_ORIGINALS_CHANGED_AFTER_PLAN')
+                    already_absent.append(candidate['absentContainerId'])
+                    record({'phase': 'BUILDER_ALREADY_ABSENT', 'release': active, 'containerId': candidate['absentContainerId']})
             for candidate in selected:
                 active = candidate['descriptor']['release']
                 with attempt_lock(root, active):
-                    current, _inspected = capture_builder(root, request, rows[active], builder)
+                    current, _inspected = capture_builder(root, request, rows[active], builder, **({'recent': True} if recent else {}))
                     need(current == {key: value for key, value in candidate.items() if key != 'inspection'},
                          'HISTORICAL_BUILDER_OR_CONTROLS_CHANGED_AFTER_PLAN')
                     reference = candidate['inspection']; path = Path(root) / reference['path']
@@ -1591,7 +1665,8 @@ def apply_builders(root, raw_request, prepared, *, request_sha256, plan_sha256, 
                                 'dataDirectory': fixture['dataDirectory'], 'dataMetadata': fixture['dataMetadata']})
                         retired = builder.historical_mysql_fixture_remove(fixture, lambda cid: builder_docker('inspect', cid),
                             lambda cid: builder_docker('rm', cid), builder_container_ids,
-                            lambda _cid: builder_references(root, current['historical'], current['descriptor'], cleanup, builder, fixture),
+                            lambda _cid: builder_references(root, current['historical'], current['descriptor'], cleanup, builder, fixture,
+                                **({'include_inbox': True} if recent else {})),
                             lambda: fixture_data_metadata(root, fixture['dataDirectory']))
                         retired_fixtures.append(retired); record({'phase': 'MYSQL_OBJECT_REMOVED', **retired})
                     record({'phase': 'REMOVE_STARTED', 'release': active, 'containerId': candidate['descriptor']['containerId'],
@@ -1599,19 +1674,22 @@ def apply_builders(root, raw_request, prepared, *, request_sha256, plan_sha256, 
                     value = builder.historical_builder_remove(candidate['descriptor'],
                         lambda cid: builder.historical_builder_inspect(builder_docker('inspect', cid)),
                         lambda cid: builder_docker('rm', cid), builder_container_ids,
-                        lambda _cid: builder_references(root, current['historical'], current['descriptor'], cleanup, builder))
+                        lambda _cid: builder_references(root, current['historical'], current['descriptor'], cleanup, builder,
+                            **({'include_inbox': True} if recent else {})))
                     removed.append(value); record({'phase': 'REMOVED', **value})
         except Exception as error:
             failure = {'release': active, 'reason': str(error) if isinstance(error, RetirementError)
                        or getattr(error, 'doorhandle_public_resource_error', False) else type(error).__name__}
             record({'phase': 'FAILED_OR_UNKNOWN', **failure})
         record({'phase': 'FINISHED', 'removedContainers': len(removed)})
-    return {'schemaVersion': 1, 'kind': 'doorhandle-historical-builder-retirement-receipt',
+    value = {'schemaVersion': 1, 'kind': 'doorhandle-historical-builder-retirement-receipt',
             'status': 'FAILED_OR_UNKNOWN' if failure else 'REMOVED' if removed else 'NO_ACTION',
             'current': expected_current, 'identity': identity, 'requestSha256': request_sha256, 'planSha256': plan_sha256,
             'removed': removed, 'retiredMysqlObjects': retired_fixtures, 'mysqlDataDirectoriesPreserved': True,
             'failure': failure, 'skipped': prepared['skipped'], 'imagesPreserved': True,
             'volumesPreserved': True, 'directoriesPreserved': True, 'jarDeletionPerformed': False}
+    if recent: value.update(scope=RECENT_BUILDER_SCOPE, alreadyAbsent=already_absent)
+    return value
 
 
 def capture_request(root, raw_local_spec, *, local_spec_sha256, expected_current, identity, canonical_jar=False):
@@ -2053,6 +2131,7 @@ def apply_python_build_cache(root, prepared, *, plan_sha256, expected_current, i
 def cli(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--phase', choices=('capture-request', 'capture-canonical-request', 'plan-builders', 'apply-builders', 'plan', 'apply',
+                                           'plan-recent-builders', 'apply-recent-builders',
                                            'plan-recent-fixtures', 'apply-recent-fixtures',
                                            'plan-canonical', 'apply-canonical',
                                            'plan-public-layers', 'apply-public-layers', 'plan-generated-image-archives',
@@ -2200,19 +2279,30 @@ def cli(argv=None):
                 value = apply_public_layers(root, raw, decode(plan_raw), plan_sha256=args.plan_sha256, **options)
                 result = {'status': value['status'], 'current': current, 'identity': identity,
                           'receipt': write_new(public_receipt_file, value)}
-        elif args.phase in ('plan-builders', 'apply-builders'):
-            raw = private_bytes(root, request_file); approved_request(raw, args.request_sha256, current, identity)
+        elif args.phase in ('plan-builders', 'apply-builders', 'plan-recent-builders', 'apply-recent-builders'):
+            recent = args.phase in ('plan-recent-builders', 'apply-recent-builders')
+            need(not recent or args.mode == 'Maintenance', 'RECENT_BUILDER_REQUIRES_MAINTENANCE')
+            raw = private_bytes(root, request_file); approved_request(raw, args.request_sha256, current, identity, canonical_jar=recent)
             options = {'request_sha256': args.request_sha256, 'expected_current': current, 'identity': identity, 'modules': modules}
-            if args.phase == 'plan-builders':
+            if recent: options['recent'] = True
+            if args.phase in ('plan-builders', 'plan-recent-builders'):
                 value = plan_builders(root, raw, **options)
                 result = {'status': 'PLANNED', 'current': current, 'identity': identity,
                           'plan': write_new(builder_plan_file, value), 'skipped': value['skipped']}
+                if recent:
+                    result.update(scope=value['scope'], builderCount=len(value['candidates']), alreadyAbsent=len(value['absent']))
             else:
                 plan_raw = private_bytes(root, builder_plan_file)
                 need(digest_bytes(plan_raw) == args.plan_sha256, 'ORIGINAL_BUILDER_PLAN_RAW_SHA_DRIFT')
                 value = apply_builders(root, raw, decode(plan_raw), plan_sha256=args.plan_sha256, **options)
                 result = {'status': value['status'], 'current': current, 'identity': identity,
                           'receipt': write_new(builder_receipt_file, value)}
+                if recent:
+                    result.update(scope=value['scope'], requestSha256=value['requestSha256'], planSha256=value['planSha256'],
+                        removedBuilders=len(value['removed']), alreadyAbsent=len(value['alreadyAbsent']),
+                        retiredMysqlObjects=len(value['retiredMysqlObjects']),
+                        **{key: value[key] for key in ('mysqlDataDirectoriesPreserved', 'imagesPreserved', 'volumesPreserved',
+                                                      'directoriesPreserved', 'jarDeletionPerformed')})
         else:
             raw = private_bytes(root, request_file); approved_request(raw, args.request_sha256, current, identity)
             options = {'request_sha256': args.request_sha256, 'expected_current': current, 'identity': identity, 'quiescence': quiescence}
