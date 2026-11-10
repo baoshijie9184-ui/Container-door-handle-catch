@@ -412,11 +412,11 @@ class CollaborationHttpMySqlTest {
     @Test @Order(5) void delayedOldRefreshCannotOverwriteAnotherAccountsLoginSelection()throws Exception{
         var browser=browser(1);String old=browser.context;var gate=delay("/api/auth/refresh");var refresh=browser.authAsync("refresh");entered(gate);assertThat(refresh.isDone()).isFalse();
         browser.login(2);identity(browser,2);gate.release.countDown();assertThat(refresh.get(10,TimeUnit.SECONDS).statusCode()).isEqualTo(200);identity(browser,2);
-        assertThat(browser.cookie(AuthCookieNames.SELECTOR).getValue()).isEqualTo(browser.context).isNotEqualTo(old);assertThat(browser.write("after-late-refresh","account-b",0,false,false).statusCode()).isEqualTo(200);
+        assertThat(browser.cookie(AuthCookieNames.SELECTOR).getValue()).isEqualTo(browser.context).isNotEqualTo(old);assertThat(browser.write("after-late-refresh","account-b-after-refresh",0,false,false).statusCode()).isEqualTo(200);
     }
     @Test @Order(6) void delayedOldLogoutCannotClearAnotherAccountsLoginCookies()throws Exception{
         var browser=browser(1);var gate=delay("/api/auth/logout");var logout=browser.authAsync("logout");entered(gate);assertThat(logout.isDone()).isFalse();browser.login(2);identity(browser,2);
-        gate.release.countDown();assertThat(logout.get(10,TimeUnit.SECONDS).statusCode()).isEqualTo(200);identity(browser,2);assertThat(browser.write("after-late-logout","account-b",0,false,false).statusCode()).isEqualTo(200);
+        gate.release.countDown();assertThat(logout.get(10,TimeUnit.SECONDS).statusCode()).isEqualTo(200);identity(browser,2);assertThat(browser.write("after-late-logout","account-b-after-logout",0,false,false).statusCode()).isEqualTo(200);
     }
     @Test @Order(7) void lateRefreshAfterLogoutCannotRestoreRevokedAuthentication()throws Exception{
         var browser=browser(1);var other=browser(1);var stream=stream(browser);var gate=delay("/api/auth/refresh");var refresh=browser.authAsync("refresh");entered(gate);
