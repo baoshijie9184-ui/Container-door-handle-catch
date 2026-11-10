@@ -29,7 +29,7 @@ public class DetectionTaskClaimService {
         this.tasks=tasks;this.views=views;this.policy=policy;this.users=users;this.inspectors=inspectors;this.jdbc=jdbc;this.identities=identities;
     }
     @Transactional(rollbackFor=Exception.class)
-    @BusinessMutation(domain="DETECTION",action="claimTask")
+    @BusinessMutation(domain="DETECTION",action="claimTask",request="arg1.requestId")
     public DetectionTaskProgressResponse claim(String taskId, Claim command) {
         var actor=users.authenticated();
         if(actor.supervisor())throw new BusinessException(403,"请由检测人员本人领取任务，主管可使用分派功能");

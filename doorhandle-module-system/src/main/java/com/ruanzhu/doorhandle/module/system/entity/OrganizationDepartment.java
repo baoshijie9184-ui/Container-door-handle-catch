@@ -6,7 +6,7 @@ import lombok.Data;
 @Data
 @TableName("organization_department")
 public class OrganizationDepartment {
-    private Long version;
+    @TableField(insertStrategy=FieldStrategy.NEVER,updateStrategy=FieldStrategy.NEVER) private Long version;
     @TableId(type = IdType.AUTO) private Long id;
     private String name;
 }

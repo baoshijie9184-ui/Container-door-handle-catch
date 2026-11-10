@@ -12,7 +12,7 @@ import java.time.LocalDateTime;
 @Data
 @TableName("detection_task")
 public class DetectionTask {
-    @TableField("version")
+    @TableField(value="version",insertStrategy=com.baomidou.mybatisplus.annotation.FieldStrategy.NEVER,updateStrategy=com.baomidou.mybatisplus.annotation.FieldStrategy.NEVER)
     private Long version;
 
     @TableId(value = "id", type = IdType.AUTO)

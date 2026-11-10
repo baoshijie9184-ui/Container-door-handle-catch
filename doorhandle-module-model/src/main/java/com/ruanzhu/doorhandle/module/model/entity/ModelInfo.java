@@ -18,7 +18,7 @@ import java.time.LocalDateTime;
 @TableName("model_management")
 public class ModelInfo {
     /** Optimistic edit revision; distinct from the human model version such as v1. */
-    @TableField("row_version")
+    @TableField(value="row_version",insertStrategy=com.baomidou.mybatisplus.annotation.FieldStrategy.NEVER,updateStrategy=com.baomidou.mybatisplus.annotation.FieldStrategy.NEVER)
     private Long rowVersion;
     
     /**

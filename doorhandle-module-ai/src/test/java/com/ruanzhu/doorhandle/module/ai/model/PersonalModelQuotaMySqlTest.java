@@ -140,6 +140,17 @@ class PersonalModelQuotaMySqlTest {
         }finally{pool.shutdownNow();}
         assertThat(account(3)).containsEntry("total_tokens",10L);assertThat(account(6)).containsEntry("total_tokens",20L);
     }
+    @Test void supervisorCannotApproveTheirOwnApplicationAndAnotherSupervisorCan() {
+        jdbc.update("INSERT INTO users(id,username,password,role) VALUES(7,'independent-boss','fixture','SUPERVISOR')");
+        as(3);var application=apply(90);var command=approval(key());
+        failure(()->service.decide(application.id(),command),403);
+        assertThat(jdbc.queryForObject("SELECT status FROM workflow_instance WHERE workflow_id=?",String.class,application.id())).isEqualTo("PENDING");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM llm_quota WHERE scope_type='USER'",Long.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM audit_event WHERE kind='LLM_QUOTA_APPLICATION' AND action='APPROVE'",Long.class)).isZero();
+        as(7);var approved=service.decide(application.id(),approval(key()));
+        assertThat(approved.status()).isEqualTo("APPROVED");assertThat(approved.deciderUserId()).isEqualTo(7);
+        assertThat(account(3)).containsEntry("total_tokens",90L);
+    }
     @Test void auditFailureRollsBackGrantLedgerAndDecisionTogether() {
         var application=apply(90);as(3);
         jdbc.execute("CREATE TRIGGER fixture_reject_quota_decision BEFORE INSERT ON audit_event FOR EACH ROW BEGIN IF NEW.kind='LLM_QUOTA_APPLICATION' AND NEW.action='APPROVE' THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='fixture approval audit failure'; END IF; END");

@@ -11,6 +11,7 @@ import java.time.LocalDateTime;
 @Data
 @TableName("device_alert")
 public class DeviceCaptureAlert {
+    @TableField(value="version",insertStrategy=com.baomidou.mybatisplus.annotation.FieldStrategy.NEVER,updateStrategy=com.baomidou.mybatisplus.annotation.FieldStrategy.NEVER)
     private Long version;
     @TableId(value = "id", type = IdType.AUTO)
     private Long id;

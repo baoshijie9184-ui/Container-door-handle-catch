@@ -19,7 +19,9 @@ public class DetectionMutationParticipant implements BusinessMutationParticipant
             "total_images", "processed_images", "successful_images", "failed_images", "defect_count", "primary_defect_type",
             "max_defect_severity", "review_status", "review_conclusion", "severity_level", "confirmed_defect_count",
             "false_positive_count", "review_remark", "reviewer", "disposition_status", "disposition_action", "disposition_remark",
-            "disposition_operator", "recheck_required", "rework_result", "rework_operator", "rework_remark");
+            "disposition_operator", "recheck_required", "rework_result", "rework_operator", "rework_remark",
+            "created_user_id", "assignee_user_id", "reviewer_user_id", "disposition_user_id", "rework_user_id",
+            "assigned_by_user_id", "assignment_identity_revision");
     private final JdbcTemplate jdbc;
     private final DetectionTaskAccessPolicy policy;
     public DetectionMutationParticipant(JdbcTemplate jdbc, DetectionTaskAccessPolicy policy) { this.jdbc = jdbc; this.policy = policy; }

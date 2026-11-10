@@ -5,6 +5,7 @@ import lombok.Data;
 
 @Data
 @Builder
+@lombok.extern.jackson.Jacksonized
 public class DetectionUploadUrlItem {
     private String fileName;
     private String objectKey;

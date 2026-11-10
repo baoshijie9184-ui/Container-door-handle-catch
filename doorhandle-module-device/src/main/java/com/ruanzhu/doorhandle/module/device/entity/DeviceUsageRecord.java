@@ -21,7 +21,7 @@ import java.time.LocalDateTime;
 @NoArgsConstructor
 @TableName("device_usage")
 public class DeviceUsageRecord {
-    @TableField("version")
+    @TableField(value="version",insertStrategy=com.baomidou.mybatisplus.annotation.FieldStrategy.NEVER,updateStrategy=com.baomidou.mybatisplus.annotation.FieldStrategy.NEVER)
     private Long version;
 
     /** 主键ID */

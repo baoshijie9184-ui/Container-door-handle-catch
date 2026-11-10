@@ -7,6 +7,7 @@ import java.util.List;
 
 @Data
 @Builder
+@lombok.extern.jackson.Jacksonized
 public class ResumeUploadResponse {
     private String taskId;
     private String version;
