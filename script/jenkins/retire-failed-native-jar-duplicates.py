@@ -84,12 +84,12 @@ APPROVED_OLD = {
     'ci-168-a40c779d03a4': 'a40c779d03a43b894ead5569b8eb26ee7dc22a2e',
     'ci-173-45465e873d92': '45465e873d92822abe446fd7be3f9f00b7816f70',
 }
-# These later verify/mysql attempts authorize only the separate canonical JAR
+# These three closed MySQL attempts authorize only the separate canonical JAR
 # API. They never enter the old builder, public-layer or generated-cache sets.
 RECENT_CANONICAL_ONLY = {
-    'ci-187-8e90ba50c691': '8e90ba50c691d561bd26b23f037fec1600e5e9de',
-    'ci-188-df1e1a54d48e': 'df1e1a54d48e5005185f53459068fbe9efffe333',
-    'ci-189-410506ad7c82': '410506ad7c82e302e623a2ac27b63dc345fcd131',
+    'ci-195-2c2e65a0daa9': '2c2e65a0daa94d96b327c59d720871ab70bff0a1',
+    'ci-198-7af0903ee840': '7af0903ee84011dc51f4abac4f4a4d9679db7322',
+    'ci-201-803baf401b5f': '803baf401b5f9566283a59cb6a885a794b9d7d85',
 }
 # Reviewed historical publication predicates, authenticated against actual
 # retained archive members (not the current checkout or a synthesized report).
@@ -113,9 +113,9 @@ APPROVED_CANONICAL_SOURCES = {
     'ci-166-a3c084e1cf56': ('aaae4dbdc779fe665efc0b02fc8123f8fa562280177c424f40c68c225376e64a', '83a937f54c651747b19c53b59053550ba0c1c8ed3c7b223e5f277ca7bd92590f'),
     'ci-168-a40c779d03a4': ('aaae4dbdc779fe665efc0b02fc8123f8fa562280177c424f40c68c225376e64a', '83a937f54c651747b19c53b59053550ba0c1c8ed3c7b223e5f277ca7bd92590f'),
     'ci-173-45465e873d92': ('aaae4dbdc779fe665efc0b02fc8123f8fa562280177c424f40c68c225376e64a', 'da877add8d55d160bb4a9f005f096879c5607167bc0b34f3c343d0f6309b3952'),
-    'ci-187-8e90ba50c691': ('07ed33326e5d9ca01cad1024986f73aee30ec8869050cdcf874bb220864dbd43', '9206e2a48ccf10435cd090b15d7d78540555ac9bd02c1aefdde04e049dca1f54'),
-    'ci-188-df1e1a54d48e': ('07ed33326e5d9ca01cad1024986f73aee30ec8869050cdcf874bb220864dbd43', '9206e2a48ccf10435cd090b15d7d78540555ac9bd02c1aefdde04e049dca1f54'),
-    'ci-189-410506ad7c82': ('07ed33326e5d9ca01cad1024986f73aee30ec8869050cdcf874bb220864dbd43', '8976f049e13d255c8377f3650f61d9668f1e3395d1219eafe0a979cb8d48fc25'),
+    'ci-195-2c2e65a0daa9': ('ef8373c5b28d6ce8394d05017cf08b8db12a27a7fff507bc4c3f10367d6480b0', '25d0f06947fa2fef23d2857aa2f2dc51358ca1981f6e425ec8150cc5b42e40f3'),
+    'ci-198-7af0903ee840': ('ef8373c5b28d6ce8394d05017cf08b8db12a27a7fff507bc4c3f10367d6480b0', '25d0f06947fa2fef23d2857aa2f2dc51358ca1981f6e425ec8150cc5b42e40f3'),
+    'ci-201-803baf401b5f': ('ef8373c5b28d6ce8394d05017cf08b8db12a27a7fff507bc4c3f10367d6480b0', 'c9ef58f60e0be6f9a198039da7a9cd7f03bd544a93294a254765cde2ba789d85'),
 }
 # Original tool bytes recorded by the retained Jenkins preparation receipts.
 # These values authenticate the owner chain; matching self-described fields
@@ -207,7 +207,9 @@ def terminal_xml(raw, context, *, canonical_jar=False):
         name, value = item.findtext('name'), item.findtext('value')
         need(name and name not in parameters, 'DUPLICATE_TERMINAL_PARAMETER')
         parameters[name] = value
+    # 195/198 were verify/mysql; only the exact registered 201 was verify-runtime.
     expected_action = ('verify' if canonical_jar and RECENT_CANONICAL_ONLY.get(context['release']) == context['commit']
+                       and context['release'] != 'ci-201-803baf401b5f'
                        else 'verify-runtime')
     need(all(parameters.get(key) == value for key, value in {'ACTION': expected_action, 'DOORHANDLE_CI_SCOPE': 'mysql',
         'TRUSTED_COMMIT': context['commit'], 'PRODUCTION_RELEASE_ENABLED': 'false'}.items()), 'FAILED_NATIVE_PARAMETERS_REQUIRED')

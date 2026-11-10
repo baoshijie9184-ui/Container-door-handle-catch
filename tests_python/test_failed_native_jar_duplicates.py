@@ -818,18 +818,21 @@ def with_action(raw, action):
     return ET.tostring(value)
 
 
-@pytest.mark.parametrize(('tag', 'commit'), [
-    ('ci-187-8e90ba50c691', '8e90ba50c691d561bd26b23f037fec1600e5e9de'),
-    ('ci-188-df1e1a54d48e', 'df1e1a54d48e5005185f53459068fbe9efffe333'),
-    ('ci-189-410506ad7c82', '410506ad7c82e302e623a2ac27b63dc345fcd131'),
+@pytest.mark.parametrize(('tag', 'commit', 'action'), [
+    ('ci-195-2c2e65a0daa9', '2c2e65a0daa94d96b327c59d720871ab70bff0a1', 'verify'),
+    ('ci-198-7af0903ee840', '7af0903ee84011dc51f4abac4f4a4d9679db7322', 'verify'),
+    ('ci-201-803baf401b5f', '803baf401b5f9566283a59cb6a885a794b9d7d85', 'verify-runtime'),
 ])
-def test_recent_verify_originals_only_authorize_the_closed_canonical_policy(bundle, tag, commit):
+def test_recent_originals_only_authorize_the_closed_canonical_policy(bundle, tag, commit, action):
     context = {'release': tag, 'commit': commit, 'sourceSha256': 'b' * 64}
-    xml = with_action(flow_xml(context), 'verify')
+    xml = with_action(flow_xml(context), action)
     assert retirer.terminal_xml(xml, context, canonical_jar=True) == 'FAILURE'
     with pytest.raises(retirer.RetirementError, match='FAILED_NATIVE_PARAMETERS_REQUIRED'):
-        retirer.terminal_xml(xml, context)
-    current = {'release': 'ci-200-' + 'f' * 12, 'commit': 'f' * 40, 'sourceSha256': 'e' * 64}
+        retirer.terminal_xml(with_action(xml, 'verify-runtime' if action == 'verify' else 'verify'), context, canonical_jar=True)
+    if action == 'verify':
+        with pytest.raises(retirer.RetirementError, match='FAILED_NATIVE_PARAMETERS_REQUIRED'):
+            retirer.terminal_xml(xml, context)
+    current = {'release': 'ci-202-' + 'f' * 12, 'commit': 'f' * 40, 'sourceSha256': 'e' * 64}
     request = {'schemaVersion': 1, 'kind': retirer.KIND + '-request', 'current': current,
         'identity': bundle.identity, 'protectedReleases': [current['release']], 'candidates': [{**context, 'controls': {}}]}
     raw = encoded(request)
@@ -873,10 +876,14 @@ def test_recent_controller_is_an_independent_three_row_canonical_only_batch():
         and any(isinstance(target, ast.Name) and target.id == 'approved' for target in node.targets))
     selected = next(node for node in syntax.body if isinstance(node, ast.If)
         and ast.dump(node.test) == ast.dump(ast.parse("batch=='Recent'", mode='eval').body))
-    recent = ast.literal_eval(selected.body[0].value)
+    recent = next(ast.literal_eval(node.value) for node in selected.body if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == 'approved' for target in node.targets))
     assert len(original) == len(retirer.APPROVED_OLD) == 16 and len(recent) == 3
     assert {'ci-' + str(number) + '-' + commit[:12]: commit for number, commit, _sha in recent} == retirer.RECENT_CANONICAL_ONLY
-    assert all(retirer.SHA.fullmatch(checksum) for _number, _commit, checksum in recent)
+    assert recent == [
+        (195, '2c2e65a0daa94d96b327c59d720871ab70bff0a1', 'f923d108fd9c867f052f722fc0cef57231d2420928a881ca7780d16408dc5a8a'),
+        (198, '7af0903ee84011dc51f4abac4f4a4d9679db7322', '054a2b4bdfda1c97a006c2b78d0877e06260b4cef6e0df4177f58eef8ddf8ffe'),
+        (201, '803baf401b5f9566283a59cb6a885a794b9d7d85', 'baaddc7acf7eb643f68e2e0c104decb35a90a394564dc94f601914e6710e731b')]
     assert all(number != 190 for number, _commit, _sha in recent)
     assert re.search(r"ValidateSet\('Historical','Recent'\)\]\[string\]\$CanonicalBatch = 'Historical'", controller)
     assert "$CanonicalBatch -cne 'Recent' -or $Mode -ceq 'Maintenance'" in controller
