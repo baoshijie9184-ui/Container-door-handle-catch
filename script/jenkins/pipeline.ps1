@@ -364,7 +364,7 @@ if ($Action -ceq 'ReclaimBuildOutputs' -and $env:ACTION -ceq 'reclaim-build-outp
     $commit = Require-Value 'GIT_COMMIT' '^[a-f0-9]{40}$'
     $sha = (Get-FileHash -LiteralPath artifacts/source.tar.gz -Algorithm SHA256).Hash.ToLowerInvariant()
     & ./script/jenkins/reclaim-build-outputs.ps1 -Mode Maintenance -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha
-    & ./script/jenkins/retire-failed-native-jar-duplicates.ps1 -Mode Maintenance -CanonicalBatch RetiredCopies -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha
+    & ./script/jenkins/retire-failed-native-jar-duplicates.ps1 -Mode Maintenance -CanonicalBatch ClosedRuntime -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha
     return
 }
 if ($Action -eq 'Preflight') {
