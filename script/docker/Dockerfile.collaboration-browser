@@ -1,0 +1,45 @@
+# syntax=docker/dockerfile:1
+# Runtime/tool admission must supply a verified Ubuntu 24.04 amd64 digest. No
+# floating default and no full Playwright image containing three browser engines.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+ARG BASE_IMAGE
+RUN case "$BASE_IMAGE" in ubuntu:24.04@sha256:*) ;; *) exit 2 ;; esac \
+    && test "$(dpkg --print-architecture)" = amd64 \
+    && . /etc/os-release && test "$ID" = ubuntu && test "$VERSION_ID" = 24.04
+ENV DEBIAN_FRONTEND=noninteractive \
+    PLAYWRIGHT_BROWSERS_PATH=/opt/chromium-only \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    HOME=/tmp/browser \
+    XDG_CACHE_HOME=/tmp/browser/.cache \
+    XDG_CONFIG_HOME=/tmp/browser/.config \
+    PATH=/opt/browser-venv/bin:$PATH
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3 python3-venv ca-certificates fonts-noto-cjk \
+    && python3 -m venv /opt/browser-venv
+COPY script/docker/collaboration-browser-requirements.txt /opt/doorhandle/requirements.txt
+RUN pip install --no-cache-dir --only-binary=:all: --require-hashes -r /opt/doorhandle/requirements.txt \
+    && python -m playwright install --with-deps --only-shell chromium \
+    && test -d /opt/chromium-only/chromium_headless_shell-1254 \
+    && test "$(find /opt/chromium-only -maxdepth 1 -type d -name 'firefox-*' | wc -l)" -eq 0 \
+    && test "$(find /opt/chromium-only -maxdepth 1 -type d -name 'webkit-*' | wc -l)" -eq 0 \
+    && test "$(find /opt/chromium-only -maxdepth 1 -type d -name 'chromium-[0-9]*' | wc -l)" -eq 0 \
+    && dpkg-query -W > /opt/doorhandle/installed-packages.txt \
+    && pip list --format=json > /opt/doorhandle/python-packages.json \
+    && find /opt/chromium-only -type f \( -name 'LICENSE*' -o -name '*NOTICE*' -o -name '*credits*' \) > /opt/doorhandle/browser-license-paths.txt \
+    && test -s /opt/doorhandle/browser-license-paths.txt \
+    && find /opt/chromium-only -type f -perm /111 -exec sha256sum {} + > /opt/doorhandle/browser-executable-sha256.txt \
+    && test -s /opt/doorhandle/browser-executable-sha256.txt \
+    && rm -rf /var/lib/apt/lists/*
+# Retain Chromium bundled LICENSE/third-party notices and Python dist-info
+# LICENSE files in their installed locations; do not strip them for image size.
+COPY script/docker/collaboration-browser-runner.py script/docker/collaboration-browser-proxy.py /opt/doorhandle/
+COPY script/docker/collaboration-browser-sources.json /opt/doorhandle/
+RUN python -c "import ast,pathlib; [ast.parse(p.read_text()) for p in pathlib.Path('/opt/doorhandle').glob('*.py')]" \
+    && groupadd --gid 10001 browser \
+    && useradd --uid 10001 --gid 10001 --no-create-home --home-dir /tmp/browser browser \
+    && mkdir /evidence && chown browser:browser /evidence
+USER 10001:10001
+WORKDIR /opt/doorhandle
+ENTRYPOINT ["python", "/opt/doorhandle/collaboration-browser-runner.py"]

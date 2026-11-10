@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "checkedAt": "2026-11-10",
+  "executionStatus": "NOT_BUILT_NOT_EXECUTED",
+  "platform": "linux/amd64",
+  "os": "Ubuntu 24.04 noble",
+  "baseImage": "Runtime must admit ubuntu:24.04@sha256:<verified digest>; no floating default",
+  "python": "Ubuntu 24.04 CPython 3.12",
+  "playwright": {
+    "version": "1.65.0",
+    "releasePublishedAt": "2026-11-09T21:04:44Z",
+    "license": "Apache-2.0",
+    "pythonRequires": ">=3.10",
+    "wheel": "playwright-1.65.0-py3-none-manylinux1_x86_64.whl",
+    "wheelBytes": 53470748,
+    "wheelSha256": "e8e4d4a177bef2c2f2a17019febadded1c84cd1499b80f7100bb30ff20df7bad",
+    "releaseSource": "https://api.github.com/repos/microsoft/playwright-python/releases/tags/v1.65.0",
+    "packageSource": "https://pypi.org/pypi/playwright/1.65.0/json",
+    "licenseSource": "https://github.com/microsoft/playwright-python/blob/v1.65.0/LICENSE",
+    "compatibilitySource": "https://playwright.dev/python/docs/intro"
+  },
+  "chromiumHeadlessShell": {
+    "version": "158.0.8127.18",
+    "revision": "1254",
+    "installCommand": "python -m playwright install --with-deps --only-shell chromium",
+    "enginesNotInstalled": ["firefox", "webkit", "full chromium"],
+    "license": "Chromium BSD-style and bundled third-party licenses; preserve installed notices",
+    "manifestSource": "https://raw.githubusercontent.com/microsoft/playwright/v1.65.0/packages/playwright-core/browsers.json",
+    "installSource": "https://playwright.dev/python/docs/browsers",
+    "licenseSource": "https://chromium.googlesource.com/chromium/src/+/refs/heads/main/LICENSE",
+    "archiveSha256": null,
+    "archiveDigestStatus": "Not downloaded in this task. Admitted image digest and measured installed executable hashes must be recorded by the tool-image build."
+  },
+  "greenlet": {
+    "version": "3.5.6",
+    "license": "MIT AND PSF-2.0",
+    "wheel": "greenlet-3.5.6-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl",
+    "wheelBytes": 621404,
+    "wheelSha256": "975736b002ed080d124cf81a79cb7e05cb26d6b3f5c7a7b651c0fcce70353aa1",
+    "source": "https://pypi.org/pypi/greenlet/3.5.6/json"
+  },
+  "containerGuidance": "https://playwright.dev/python/docs/docker",
+  "capacityPlanningOnly": {
+    "measuredImageSizeBytes": null,
+    "measuredFortyTabPeakMemoryBytes": null,
+    "estimatedSteadyAdditionalDiskGiB": [0.5, 1.0],
+    "estimatedBuildPeakAdditionalDiskGiB": [1.0, 1.5],
+    "estimatedEvidenceDiskGiB": [0.1, 0.3],
+    "minimumBrowserCgroupMemoryGiB": 2,
+    "note": "Estimates are not admission or measurement. Runtime must re-read disk/memory alongside all existing services, measure immutable tool image size, reserve /dev/shm/tmpfs, and fail if budgets do not fit."
+  }
+}
