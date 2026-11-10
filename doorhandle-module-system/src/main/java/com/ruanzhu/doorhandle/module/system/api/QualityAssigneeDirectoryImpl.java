@@ -24,8 +24,8 @@ public class QualityAssigneeDirectoryImpl implements QualityAssigneeDirectory {
         var result=new java.util.ArrayList<Option>();
         for(String name:names){
             var matches=grouped.get(name);if(matches==null||matches.size()!=1)continue;
-            try{var account=InspectorAccountSnapshot.describe(matches.get(0));result.add(new Option(account.username(),account.userId(),account.revision()));}
-            catch(IllegalArgumentException changed){/* A listed account may have been removed or changed role. */}
+            try{var account=accounts.inspector(name);result.add(new Option(account.username(),account.userId(),account.revision()));}
+            catch(IllegalArgumentException|SecurityException changed){/* Current account/personnel qualification may have changed after the search. */}
         }
         return List.copyOf(result);
     }
