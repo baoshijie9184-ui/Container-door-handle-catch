@@ -1404,7 +1404,10 @@ def closed_runtime_case(tmp_path, bundle, monkeypatch):
             'script/jenkins/pipeline.ps1': b'closed synthetic runtime return',
             'script/docker/compact-build-resources.py': b'original synthetic helper',
             'script/docker/compact-image-inputs.py': b'original synthetic inputs'}
-        source = source_archive(SimpleNamespace(keeper=keeper), comment=fixed['commit'], publication=publication)
+        # Reviewed v1 producer excerpt: containerId is explicit; the name and
+        # data directory are first assigned by start_mysql, after clone admission.
+        recipe = b"def prepare(self):\n self.journal = {'schemaVersion': 1, 'kind': 'doorhandle-compact-fixture-owner', 'release': self.args.tag, 'commit': self.args.commit, 'sourceSha256': self.args.source_sha256, 'identity': self.identity, 'token': token, 'work': str(self.work), 'phase': 'PREPARING', 'containerId': None, 'sourceContainerId': settings['sourceMysqlContainerId'], 'schemas': []}\n jar = canonical(self.inbox / 'application.jar')\n uploaded = self.work / 'candidate-app.jar'\n shutil.copyfile(jar, uploaded)\n"
+        source = source_archive(SimpleNamespace(keeper=keeper), comment=fixed['commit'], publication=publication, recipe=recipe)
         monkeypatch.setitem(retirer.APPROVED_CANONICAL_SOURCES, tag,
             (sha(publication['Jenkinsfile.ecs-monolith']), sha(publication['script/jenkins/pipeline.ps1'])))
         fixed.update(sourceSha256=sha(source.read_bytes()), jarSha256=sha(payload), jarBytes=len(payload))
@@ -1414,9 +1417,10 @@ def closed_runtime_case(tmp_path, bundle, monkeypatch):
         values['release'].update(applicationJarSha256=sha(payload))
         values['artifactPlan'].update(applicationJarSha256=sha(payload), applicationJarBytes=len(payload))
         cid = fixed['containerId']
-        values['fixtureOwner'].update(work=str(work), containerId=cid,
-            containerName='doorhandle-compact-fixture-0123456789' if cid else None,
-            dataDirectory=str(work / 'mysql-data') if cid else None)
+        token = '0123456789' if tag == 'ci-204-24f8eb4b02bf' else '9876543210'
+        values['fixtureOwner'].update(work=str(work), containerId=cid, token=token,
+            containerName='doorhandle-compact-fixture-' + token if cid else None,
+            dataDirectory=str(work / 'mysql-data') if cid else None, schemas=[])
         values['fixtureCleanup'].update(containerId=cid, dataDirectoryRetained=str(work / 'mysql-data') if cid else None)
         paths = retirer.expected_control_paths(current['release'], tag); controls = {}
         for role, raw in {'buildXml': flow_xml(context), **{key: encoded(value) for key, value in values.items()}}.items():
@@ -1432,6 +1436,14 @@ def closed_runtime_case(tmp_path, bundle, monkeypatch):
     request = {'schemaVersion': 1, 'kind': retirer.KIND + '-request', 'current': current, 'identity': bundle.identity,
         'protectedReleases': [current['release']], 'candidates': rows}
     raw = retirer.canonical(request); request_sha = sha(raw)
+    builder_plan = {'kind': 'doorhandle-historical-builder-retirement-plan', 'current': current, 'identity': bundle.identity,
+        'requestSha256': request_sha, 'closedJarBatch': retirer.CLOSED_RUNTIME_BATCH, 'skipped': [], 'deletionPerformed': False}
+    builder_receipt = {'kind': 'doorhandle-historical-builder-retirement-receipt', 'current': current, 'identity': bundle.identity,
+        'requestSha256': request_sha, 'closedJarBatch': retirer.CLOSED_RUNTIME_BATCH, 'scope': 'CLOSED_RUNTIME_BUILDERS',
+        'status': 'REMOVED', 'removed': [{'containerId': row['containerId']} for row in retirer.CLOSED_RUNTIME_BUILDERS.values()],
+        'alreadyAbsent': [], 'retiredMysqlObjects': [], 'failure': None, 'skipped': [], 'jarDeletionPerformed': False,
+        'mysqlDataDirectoriesPreserved': True, 'imagesPreserved': True, 'volumesPreserved': True, 'directoriesPreserved': True}
+    retain_closed_phase(root / 'inbox' / current['release'], 'native-builder-retirement', builder_plan, builder_receipt)
     fixture = {'kind': 'doorhandle-recent-mysql-fixture-object-receipt', 'current': current, 'identity': bundle.identity,
         'requestSha256': request_sha, 'closedJarBatch': retirer.CLOSED_RUNTIME_BATCH, 'status': 'REMOVED',
         'removed': [{'containerId': registered['ci-204-24f8eb4b02bf']['containerId']}], 'alreadyAbsent': [],
@@ -1440,11 +1452,13 @@ def closed_runtime_case(tmp_path, bundle, monkeypatch):
         'jarDeletionPerformed': False}
     receipt = root / 'inbox' / current['release'] / 'native-jar-duplicate-fixture-object-receipt.json'
     fixture_plan = {'kind': 'doorhandle-recent-mysql-fixture-object-plan', 'current': current, 'identity': bundle.identity, 'requestSha256': request_sha,
-                    'closedJarBatch': retirer.CLOSED_RUNTIME_BATCH, 'skipped': [], 'deletionPerformed': False}
+                    'closedJarBatch': retirer.CLOSED_RUNTIME_BATCH, 'skipped': [], 'deletionPerformed': False,
+                    'prerequisite': retirer.closed_runtime_previous(root, request, canonical_jar=False, builder=True)}
     retain_closed_phase(receipt.parent, 'native-jar-duplicate-fixture-object', fixture_plan, fixture)
     observations = []
     def quiescence(checkout, tag, token):
-        assert checkout == root / 'verification' / tag / 'checkout' and token == '0123456789'
+        assert checkout == root / 'verification' / tag / 'checkout'
+        assert token == ('0123456789' if tag == 'ci-204-24f8eb4b02bf' else '9876543210')
         # Every new command must keep the publication lock through capture.
         with pytest.raises(retirer.RetirementError):
             with retirer.publication_lock(root): pytest.fail('Publication lock was released during retirement')
@@ -1452,6 +1466,7 @@ def closed_runtime_case(tmp_path, bundle, monkeypatch):
         observations.append((tag, target.exists(), keeper.exists()))
     options = {'request_sha256': request_sha, 'expected_current': current, 'identity': bundle.identity,
                'quiescence': quiescence, 'closed_runtime': True}
+    monkeypatch.setattr(retirer, 'builder_container_ids', lambda: [])
     return SimpleNamespace(root=root, request=request, raw=raw, options=options, originals=originals,
         binaries=binaries, fixture=fixture, fixture_receipt=receipt, observations=observations)
 
@@ -1544,15 +1559,14 @@ def test_closed_runtime_apply_cannot_mutate_a_partial_or_changed_batch(closed_ru
 
 
 @pytest.mark.parametrize('damage', ['none', 'missing-null-key', 'container-name', 'data-directory'])
-def test_closed_207_requires_the_actual_explicit_null_owner_before_no_object(closed_runtime_case, monkeypatch, damage):
-    state = closed_runtime_case; row = state.request['candidates'][1]; ref = row['controls']['fixtureOwner']
+def test_closed_207_requires_the_actual_explicit_null_owner_before_no_object(closed_runtime_end_to_end, monkeypatch, damage):
+    state = closed_runtime_end_to_end.state; row = state.request['candidates'][1]; ref = row['controls']['fixtureOwner']
     file = state.root / ref['path']; owner = json.loads(file.read_bytes())
-    if damage == 'missing-null-key': del owner['containerName']
+    if damage == 'missing-null-key': del owner['containerId']
     elif damage == 'container-name': owner['containerName'] = 'unexpected-object'
     elif damage == 'data-directory': owner['dataDirectory'] = '/unexpected/data'
     raw = retirer.canonical(owner); file.write_bytes(raw); ref.update(bytes=len(raw), sha256=sha(raw))
-    builder = SimpleNamespace(recent_mysql_fixture_source=lambda *_a: pytest.fail('207 must never borrow the 204 object permission'),
-        historical_mysql_fixture_descriptor=lambda *_a, **_k: pytest.fail('A null container cannot become an object descriptor'))
+    builder = closed_runtime_end_to_end.modules['builder']
     request = state.request
     if damage == 'none':
         result = retirer.capture_recent_fixture(state.root, request, row, builder, closed_runtime=True)
@@ -1606,7 +1620,7 @@ def test_closed_runtime_controller_binds_capture_full_batches_and_all_original_r
     script = MODULE.with_suffix('.ps1').read_text(encoding='utf8')
     branch = script.split("if($CanonicalBatch -ceq 'ClosedRuntime') {", 1)[1].split("if($CanonicalBatch -ceq 'RetiredCopies') {", 1)[0]
     phases = [branch.index("Invoke-NativeJarPhase '" + phase + "'") for phase in
-        ('plan-recent-fixtures', 'apply-recent-fixtures', 'plan', 'apply', 'plan-canonical', 'apply-canonical')]
+        ('plan-closed-builders', 'apply-closed-builders', 'plan-recent-fixtures', 'apply-recent-fixtures', 'plan', 'apply', 'plan-canonical', 'apply-canonical')]
     assert phases == sorted(phases)
     assert "finally {Copy-NativeJarEvidence (Invoke-NativeJarPhase 'inspect')}" in branch
     for guard in ('candidateCount -eq 2', 'deletedFiles -eq 2', 'deletedFiles=4', '$proof.retainedQuarantinePaths',
@@ -1619,3 +1633,201 @@ def test_closed_runtime_controller_binds_capture_full_batches_and_all_original_r
     approved = ast.literal_eval(selected.body[0].value)
     assert [row[0] for row in approved] == [204, 207]
     assert {row[1] for row in approved} == {row['commit'] for row in retirer.CLOSED_RUNTIME_JARS.values()}
+
+
+@pytest.fixture
+def closed_runtime_end_to_end(closed_runtime_case, monkeypatch):
+    # Reuse the existing full resource-contract fixtures, then exercise the real
+    # parser, descriptor, reference audits, rm callbacks and all four CI stages.
+    from tests_python import test_historical_builder_retirement as builder_contract
+    from tests_python import test_historical_mysql_fixture_retirement as mysql_contract
+    state = closed_runtime_case; resources = builder_contract.resources
+    cleanup_spec = importlib.util.spec_from_file_location('closed_chain_cleanup', MODULE.with_name('cleanup-ecs-builds.py'))
+    cleanup = importlib.util.module_from_spec(cleanup_spec); cleanup_spec.loader.exec_module(cleanup)
+    objects, commands, snapshots = {}, [], []
+    registry = copy.deepcopy(retirer.CLOSED_RUNTIME_BUILDERS)
+    resource_registry = copy.deepcopy(resources.CLOSED_RUNTIME_BUILDER_CONTROLS)
+    fixture_row = mysql_contract.fixture.__wrapped__()
+    first = state.request['candidates'][0]; tag = first['release']; context = {k: first[k] for k in ('release','commit','sourceSha256')}
+    work = state.binaries[tag][0].parent; data = work / 'mysql-data'; data.mkdir(mode=0o700)
+    (data / 'original-page').write_bytes(b'private synthetic database page retained')
+    old_data = fixture_row.owner['dataDirectory']; new_data = str(data)
+    owner = json.loads((state.root / first['controls']['fixtureOwner']['path']).read_bytes())
+    fixture_row.owner.update(owner); fixture_row.owner.update(dataDirectory=new_data, image='sha256:'+'f'*64,
+        port=43127, binaryLoggingDisabled=True, rootPassword='synthetic-private-password')
+    fixture_row.cleanup.update(context)
+    fixture_row.cleanup.update(identity=state.request['identity'], containerId=owner['containerId'],
+        sourceContainerUntouched=owner['sourceContainerId'], dataDirectoryRetained=new_data)
+    fixture_row.row = json.loads(json.dumps(fixture_row.row).replace(old_data,new_data))
+    fixture_row.row.update(Id=owner['containerId'], Name='/'+owner['containerName'])
+    fixture_row.row['Config']['Labels'] = {'io.doorhandle.compact-fixtures':owner['token'],
+        'io.doorhandle.release':tag,'io.doorhandle.source':context['sourceSha256']}
+    fixture_row.row['Config']['Cmd'].insert(6,'--skip-log-bin')
+    for role,value in [('fixtureOwner',fixture_row.owner),('fixtureCleanup',fixture_row.cleanup)]:
+        ref=first['controls'][role]; body=encoded(value); (state.root/ref['path']).write_bytes(body)
+        ref.update(bytes=len(body),sha256=sha(body))
+    objects[owner['containerId']] = fixture_row.row
+    metadata=[data.stat().st_dev,data.stat().st_ino,stat.S_IFDIR|0o700,999,999]
+    monkeypatch.setattr(retirer,'fixture_data_metadata',lambda _root,path: list(metadata) if path==str(data) else pytest.fail('Unexpected database path'))
+    for index,row in enumerate(state.request['candidates']):
+        tag=row['release']; context={k:row[k] for k in ('release','commit','sourceSha256')}; fixed=registry[tag]
+        # Synthetic IDs prevent these unit callbacks from addressing a live ECS object.
+        fixed['containerId'] = ('a' if index==0 else 'b')*64
+        model=builder_contract.fixture_state((tag,context['commit'],fixed['containerId'],fixed['ownerToken']))
+        model.context.update(context); model.tools.update(context); model.summary.update(context)
+        directory=state.root/'inbox'/tag/'candidate-build-tools';directory.mkdir(mode=0o700)
+        proof=retirer.source_proof(state.root,tag,context['commit'],context['sourceSha256'],builder_helpers=True,canonical_jar=True)
+        model.helpers=proof['builderHelperSha256']; model.tools.update(helperSha256=model.helpers['compact-build-resources.py'],
+            imageInputsHelperSha256=model.helpers['compact-image-inputs.py'])
+        model.row['Config']['Labels']['io.doorhandle.source']=context['sourceSha256']
+        model.tools['resourceEvidence']['file']=str(directory/'resource-summary.json')
+        model.row['State']['ExitCode']=model.summary['cleanup']['builderExitCode']=1
+        model.row['Mounts']=model.row['Mounts'][:1];builder_contract.refresh_references(model)
+        for role,name in [('tools','tools.json'),('summary','resource-summary.json'),('measurement','official-layer-measurements.json')]:
+            body=builder_contract.raw(getattr(model,role));file=directory/name;file.write_bytes(body);file.chmod(0o600)
+            fixed[role+'Sha256']=sha(body)
+        for role,name in [('preparation','ecs-tool-preparation.json'),('transport','candidate-build-tools-transport.json')]:
+            value={**context,'identity':state.request['identity'],'status':'PREPARED' if role=='preparation' else 'AVAILABLE'}
+            if role=='preparation':value['candidateBuilderTools']={'file':str(directory/'tools.json'),'sha256':fixed['toolsSha256']}
+            else:value.update(admission={'identity':state.request['identity']},buildkitArchive={'sha256':retirer.PUBLIC_ARCHIVE_SHA})
+            body=encoded(value);file=state.root/'inbox'/state.request['current']['release']/'native-jar-duplicate-controls'/tag/name
+            file.write_bytes(body);file.chmod(0o600);fixed[role+'Sha256']=sha(body)
+        resource_registry[tag]={**{k:context[k] for k in ('commit','sourceSha256')},
+            **{k:fixed[k] for k in ('toolsSha256','summarySha256','measurementSha256','containerId','ownerToken')}}
+        objects[model.row['Id']]=model.row
+    monkeypatch.setattr(retirer,'CLOSED_RUNTIME_BUILDERS',registry)
+    monkeypatch.setattr(resources,'CLOSED_RUNTIME_BUILDER_CONTROLS',resource_registry)
+    monkeypatch.setattr(resources,'CLOSED_RUNTIME_BUILDER_HELPERS',dict(proof['builderHelperSha256']))
+    monkeypatch.setattr(resources,'CLOSED_RUNTIME_BUILDER_RECIPE_SHA256',proof['transportRecipeSha256'])
+    monkeypatch.setitem(resources.RECENT_MYSQL_FIXTURE_SOURCES,first['release'],(first['commit'],proof['transportRecipeSha256']))
+    monkeypatch.setitem(resources.RECENT_MYSQL_HELPERS,first['release'],dict(proof['builderHelperSha256']))
+    monkeypatch.setitem(resources.RECENT_MYSQL_FIXTURE_ARCHIVE_SHA256,first['release'],first['sourceSha256'])
+    second=state.request['candidates'][1]; ref=second['controls']['fixtureOwner']; file=state.root/ref['path']
+    legacy=json.loads(file.read_bytes());legacy.pop('containerName');legacy.pop('dataDirectory')
+    body=encoded(legacy);file.write_bytes(body);ref.update(bytes=len(body),sha256=sha(body))
+    codec=copy.deepcopy(retirer.CLOSED_207_CODEC);codec.update(ownerSha256=sha(body),
+        cleanupSha256=second['controls']['fixtureCleanup']['sha256'],producerSha256=proof['transportRecipeSha256'])
+    for role,value in [('plan',{'kind':'doorhandle-controlled-preparer-phase'}),('admission',{'status':'FAIL_CLOSED',
+        'phase':'fixture-clone','action':'STOP_OWNED_ATTEMPT','actualProbe':{'sourceCommit':second['commit']}})]:
+        body=encoded(value);file=state.binaries[second['release']][0].parent/('resource-phase-04-fixture-clone-'+role+'.json')
+        file.write_bytes(body);file.chmod(0o600);codec[role+'Sha256']=sha(body)
+    monkeypatch.setattr(retirer,'CLOSED_207_CODEC',codec)
+    def docker(*args):
+        if args[0]=='inspect':return encoded([objects[args[1]]])
+        assert args[0]=='rm' and len(args)==2 and args[1] in objects
+        commands.append(args);del objects[args[1]];return args[1].encode()
+    monkeypatch.setattr(retirer,'builder_container_ids',lambda:list(objects))
+    monkeypatch.setattr(retirer,'builder_docker',docker)
+    def snapshot():
+        result=[(cid,row['State']['Running'],row['State']['Restarting'],row['State']['Pid'],
+            row['Config']['Labels'].get('io.doorhandle.release'),None,row['Mounts']) for cid,row in objects.items()]
+        snapshots.append(result);return result
+    monkeypatch.setattr(cleanup,'docker_snapshot',snapshot)
+    monkeypatch.setattr(cleanup,'process_references',lambda checkout,**kwargs:None)
+    modules={'builder':resources,'cleanup':cleanup}
+    state.raw=retirer.canonical(state.request);state.options['request_sha256']=sha(state.raw)
+    # No pre-synthesized stage success survives this end-to-end attempt.
+    for stem in ('native-builder-retirement','native-jar-duplicate-fixture-object'):
+        for suffix in ('-plan.json','-receipt.json','-journal.jsonl'):(state.fixture_receipt.parent/(stem+suffix)).unlink()
+    def quiescence(checkout,tag,token):cleanup.quiescent({'checkout':checkout,'token':token},tag,snapshot(),include_inbox=True)
+    state.options['quiescence']=quiescence
+    return SimpleNamespace(state=state,modules=modules,objects=objects,commands=commands,snapshots=snapshots,
+        database=data,metadata=metadata,legacy=legacy)
+
+
+@pytest.mark.parametrize('mode',['complete','builders-retained','fixture-restarted'])
+def test_actual_v1_missing_fields_and_live_builder_inventory_cross_every_retirement_stage(closed_runtime_end_to_end,monkeypatch,mode):
+    case=closed_runtime_end_to_end;state=case.state;folder=state.fixture_receipt.parent
+    assert 'containerId' in case.legacy and case.legacy['containerId'] is None
+    assert 'containerName' not in case.legacy and 'dataDirectory' not in case.legacy and case.legacy['schemas']==[]
+    local=copy.deepcopy(state.request)
+    for row in local['candidates']:row['controls']={k:v for k,v in row['controls'].items() if k in retirer.UPLOADED_NAMES}
+    local_raw=retirer.canonical(local)
+    captured,skipped=retirer.capture_request(state.root,local_raw,local_spec_sha256=sha(local_raw),
+        expected_current=state.request['current'],identity=state.request['identity'],canonical_jar=True,closed_runtime=True)
+    assert skipped==[] and captured==state.request
+    options={k:v for k,v in state.options.items() if k!='quiescence'};options['modules']=case.modules
+    if mode=='fixture-restarted':
+        original=case.modules['cleanup'].docker_snapshot
+        def restarted_snapshot():
+            rows=original();cid=retirer.CLOSED_RUNTIME_JARS['ci-204-24f8eb4b02bf']['containerId']
+            return [(row[0],True,row[2],123,*row[4:]) if row[0]==cid else row for row in rows]
+        monkeypatch.setattr(case.modules['cleanup'],'docker_snapshot',restarted_snapshot)
+    plan=retirer.plan_builders(state.root,state.raw,**options)
+    if mode=='fixture-restarted':
+        assert plan['skipped'] and case.commands==[]
+        with pytest.raises(retirer.RetirementError):retirer.apply_builders(state.root,state.raw,plan,plan_sha256=sha(retirer.canonical(plan)),**options)
+        assert all(target.exists() and keeper.exists() for target,keeper,_ in state.binaries.values());return
+    assert len(plan['candidates'])==2 and plan['skipped']==[]
+    if mode=='builders-retained':
+        # A previous success receipt alone cannot waive a newly present builder.
+        fake={'kind':'doorhandle-historical-builder-retirement-receipt','current':state.request['current'],
+            'identity':state.request['identity'],'requestSha256':sha(state.raw),'closedJarBatch':retirer.CLOSED_RUNTIME_BATCH,
+            'scope':'CLOSED_RUNTIME_BUILDERS','status':'REMOVED','failure':None,'skipped':[],
+            'removed':[{'containerId':row['containerId']} for row in retirer.CLOSED_RUNTIME_BUILDERS.values()],
+            'alreadyAbsent':[],'retiredMysqlObjects':[],'jarDeletionPerformed':False,'mysqlDataDirectoriesPreserved':True,
+            'imagesPreserved':True,'volumesPreserved':True,'directoriesPreserved':True}
+        retain_closed_phase(folder,'native-builder-retirement',plan,fake)
+        fixture_plan=retirer.plan_recent_fixtures(state.root,state.raw,**options)
+        assert fixture_plan['skipped'] and case.commands==[]
+        with pytest.raises(retirer.RetirementError):retirer.apply_recent_fixtures(state.root,state.raw,fixture_plan,plan_sha256=sha(retirer.canonical(fixture_plan)),**options)
+        assert all(target.exists() and keeper.exists() for target,keeper,_ in state.binaries.values());return
+    result=retirer.apply_builders(state.root,state.raw,plan,plan_sha256=sha(retirer.canonical(plan)),**options)
+    assert result['status']=='REMOVED' and len(result['removed'])==2 and result['retiredMysqlObjects']==[]
+    retain_closed_phase(folder,'native-builder-retirement',plan,result)
+    fixture_plan=retirer.plan_recent_fixtures(state.root,state.raw,**options)
+    assert len(fixture_plan['candidates'])==1 and len(fixture_plan['absent'])==1 and fixture_plan['skipped']==[]
+    fixture=retirer.apply_recent_fixtures(state.root,state.raw,fixture_plan,plan_sha256=sha(retirer.canonical(fixture_plan)),**options)
+    assert fixture['status']=='REMOVED' and fixture['noObject']==['ci-207-eb286c623177']
+    retain_closed_phase(folder,'native-jar-duplicate-fixture-object',fixture_plan,fixture)
+    first=retirer.plan(state.root,state.raw,**state.options)
+    copies=retirer.apply(state.root,state.raw,first,plan_sha256=sha(retirer.canonical(first)),**state.options)
+    assert copies['status']=='REMOVED' and len(copies['deleted'])==2
+    retain_closed_phase(folder,'native-jar-duplicate',first,copies)
+    second=retirer.plan(state.root,state.raw,canonical_jar=True,**state.options)
+    final=retirer.apply(state.root,state.raw,second,plan_sha256=sha(retirer.canonical(second)),canonical_jar=True,**state.options)
+    assert final['status']=='REMOVED' and len(final['deleted'])==2 and len(case.commands)==3 and case.objects=={}
+    assert [args[1] for args in case.commands[:2]]==[row['containerId'] for row in retirer.CLOSED_RUNTIME_BUILDERS.values()]
+    assert case.database.is_dir() and (case.database/'original-page').read_bytes()==b'private synthetic database page retained'
+    assert all(not target.exists() and not keeper.exists() for target,keeper,_ in state.binaries.values())
+
+
+@pytest.mark.parametrize('damage',['plan-missing','receipt-missing','journal-missing','plan-sha-drift'])
+def test_fixture_stage_requires_every_original_builder_predecessor(closed_runtime_case,damage):
+    state=closed_runtime_case;folder=state.fixture_receipt.parent
+    suffix='-plan.json' if damage.startswith('plan') else '-receipt.json' if damage.startswith('receipt') else '-journal.jsonl'
+    file=folder/('native-builder-retirement'+suffix)
+    if damage.endswith('missing'):file.unlink()
+    else:file.write_bytes(file.read_bytes()+b' ')
+    options={k:v for k,v in state.options.items() if k!='quiescence'};options['modules']={}
+    with pytest.raises((retirer.RetirementError,OSError)):
+        retirer.plan_recent_fixtures(state.root,state.raw,**options)
+    assert all(target.exists() and keeper.exists() for target,keeper,_ in state.binaries.values())
+
+
+@pytest.mark.parametrize('damage',['owner-drift','cleanup-drift','producer-drift','clone-plan-missing',
+    'clone-admission-drift','same-tag-database','rewritten-explicit-nulls'])
+def test_207_legacy_compatibility_cannot_admit_unknown_originals_or_database_objects(closed_runtime_end_to_end,monkeypatch,damage):
+    case=closed_runtime_end_to_end;state=case.state;row=state.request['candidates'][1];work=state.binaries[row['release']][0].parent
+    if damage in ('owner-drift','cleanup-drift','rewritten-explicit-nulls'):
+        role='fixtureCleanup' if damage=='cleanup-drift' else 'fixtureOwner';ref=row['controls'][role];file=state.root/ref['path']
+        body=file.read_bytes()+b' '
+        if damage=='rewritten-explicit-nulls':
+            value=json.loads(body);value.update(containerName=None,dataDirectory=None);body=encoded(value)
+        file.write_bytes(body);ref.update(bytes=len(body),sha256=sha(body))
+    elif damage=='producer-drift':monkeypatch.setitem(retirer.CLOSED_207_CODEC,'producerSha256','0'*64)
+    elif damage=='clone-plan-missing':(work/'resource-phase-04-fixture-clone-plan.json').unlink()
+    elif damage=='clone-admission-drift':
+        file=work/'resource-phase-04-fixture-clone-admission.json';file.write_bytes(file.read_bytes()+b' ')
+    else:
+        cid='c'*64;case.objects[cid]={'Id':cid,'Name':'/unexpected-database','Config':{'Labels':{
+            'io.doorhandle.release':row['release'],'io.doorhandle.compact-fixtures':case.legacy['token']}}}
+    with pytest.raises((retirer.RetirementError,OSError)):
+        retirer.capture_recent_fixture(state.root,state.request,row,case.modules['builder'],closed_runtime=True)
+    assert case.commands==[] and all(target.exists() and keeper.exists() for target,keeper,_ in state.binaries.values())
+
+
+@pytest.mark.parametrize('phase',['plan-closed-builders','apply-closed-builders'])
+def test_closed_builder_cli_never_infers_the_explicit_batch_from_phase_name(phase):
+    with pytest.raises(retirer.RetirementError,match='CLOSED_RUNTIME_EXPLICIT_POLICY'):
+        retirer.closed_runtime_cli(SimpleNamespace(jar_batch=None,mode='Maintenance',phase=phase))

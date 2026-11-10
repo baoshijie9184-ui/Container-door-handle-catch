@@ -107,6 +107,31 @@ CLOSED_RUNTIME_JARS = {
         'jarSha256': '2accfa412ac67a244e5f0e47feba890141a68ed674ef746729c0402e62102ee1',
         'jarBytes': 380301926, 'containerId': None},
 }
+CLOSED_RUNTIME_BUILDERS = {
+    'ci-204-24f8eb4b02bf': {
+        'toolsSha256': 'c139a726db51c56f685854b8994289915c2646c487402356e0d0c3833dc2b11d',
+        'summarySha256': 'af1150421360df666a8f4209b1071e8638ea8b8ba674ade4a8b1e8e383446d5c',
+        'measurementSha256': '0d7641f6b3666f259f4d3c505129f3e78a5e22cf0dc006e528ca678e7352fcaa',
+        'containerId': '09646d9dcc4d135e804e40dcfb9718917d2b29c4296ef9fcf8fc9bf975461724',
+        'ownerToken': '1b46c38a10f755860acc98ad',
+        'preparationSha256': 'e544cfa0ba169186acafa3568e787c0136748e8efd043eaa78bcbdd32c7a7f18',
+        'transportSha256': '5f247ecfcda3d838628b2ddf57cae7ae024dbb1bf0f6539787b5b5c4cde7ca28'},
+    'ci-207-eb286c623177': {
+        'toolsSha256': '521676007cc727d3c08f6f76b10afd206f59c5c76cda06e82773140559910732',
+        'summarySha256': '9bb5bee53ee5276093d9d92a8341398b86e56f2a32a5ab46e84dc2e5fbdf5eec',
+        'measurementSha256': 'a12987a5f47809cd5ce49f45b9fe0b0621f95bdb32bcefbae9a26e06bed870c3',
+        'containerId': 'ee23bee6a53f673e013f0e92e0fd838c91514d0e30f845204ba9695dc7bce673',
+        'ownerToken': '86466c0e61f9492890688a77',
+        'preparationSha256': '7e6d27ef907b8dd5c93ace7607a8c28487c1103efcdae2420e55d2e1601354cc',
+        'transportSha256': '136ae21a4b0498e4983d8b5cfa2920a45678d51fa70df3e5070a276aa688513a'},
+}
+CLOSED_207_CODEC = {
+    'ownerSha256': 'e1ab7bcde2212cbccf665e6f693cdb10100061b44985f883e44280d6a0dbf7c2',
+    'cleanupSha256': '6ca95d58a4208393f477fb88ba1de369e159906d7e06804727e5a5ae9159b4f9',
+    'producerSha256': '259d40731626e366b9f974df221bf64ee2db7a2e13e41dc369c1e5bf47826104',
+    'planSha256': '877783ffa8c8a6b5752857890e7cc4439e0b1c929686b2744f1031dee3721067',
+    'admissionSha256': 'c51cfc8c819d1ab7c896eb260018f5b8c89b6584a2953721aa24c23bd481a07b',
+}
 # This independent permission covers one reviewed stopped builder, not the
 # other Recent attempts, historical cache sets, or any state-volume contents.
 RECENT_BUILDER_ONLY = {
@@ -702,9 +727,9 @@ def admit_closed_runtime_duplicate(root, request, row, quiescence):
         'target': describe_duplicate(root, tag, evidence['jarSha256'], evidence['jarBytes'])}
 
 
-def closed_runtime_previous(root, request, *, canonical_jar):
+def closed_runtime_previous(root, request, *, canonical_jar, builder=False):
     """Bind the prior original success; a partial batch cannot enter its next phase."""
-    name = 'native-jar-duplicate-receipt.json' if canonical_jar else 'native-jar-duplicate-fixture-object-receipt.json'
+    name = 'native-builder-retirement-receipt.json' if builder else 'native-jar-duplicate-receipt.json' if canonical_jar else 'native-jar-duplicate-fixture-object-receipt.json'
     path = Path(root) / 'inbox' / request['current']['release'] / name
     raw = private_bytes(root, path); value = decode(raw)
     need(value.get('current') == request['current'] and value.get('identity') == request['identity']
@@ -721,7 +746,17 @@ def closed_runtime_previous(root, request, *, canonical_jar):
          and previous_plan.get('requestSha256') == value['requestSha256'] and previous_plan.get('skipped') == []
          and previous_plan.get('closedJarBatch') == CLOSED_RUNTIME_BATCH
          and previous_plan.get('deletionPerformed') is False, 'CLOSED_RUNTIME_PRIOR_ORIGINALS_DIFFER')
-    if canonical_jar:
+    if builder:
+        removed, absent = value.get('removed'), value.get('alreadyAbsent')
+        need(value.get('kind') == 'doorhandle-historical-builder-retirement-receipt'
+             and value.get('scope') == 'CLOSED_RUNTIME_BUILDERS' and value.get('status') in ('REMOVED', 'NO_ACTION')
+             and type(removed) is list and type(absent) is list and len(removed) + len(absent) == 2
+             and {row.get('containerId') for row in removed} | set(absent)
+                 == {row['containerId'] for row in CLOSED_RUNTIME_BUILDERS.values()}
+             and value.get('retiredMysqlObjects') == [] and value.get('jarDeletionPerformed') is False
+             and all(value.get(key) is True for key in ('mysqlDataDirectoriesPreserved', 'imagesPreserved', 'volumesPreserved', 'directoriesPreserved')),
+             'CLOSED_RUNTIME_BUILDERS_NOT_COMPLETE')
+    elif canonical_jar:
         expected = {(f'verification/{tag}/checkout/work/compact-fixtures/candidate-app.jar', row['jarSha256'], row['jarBytes'])
                     for tag, row in CLOSED_RUNTIME_JARS.items()}
         deleted = value.get('deleted')
@@ -733,6 +768,8 @@ def closed_runtime_previous(root, request, *, canonical_jar):
              and value.get('sourceArchivesDataAndReportsHaveNoDeletionApi') is True,
              'CLOSED_RUNTIME_DUPLICATES_NOT_COMPLETE')
     else:
+        need(previous_plan.get('prerequisite') == closed_runtime_previous(root, request, canonical_jar=False, builder=True),
+             'CLOSED_RUNTIME_BUILDER_CHAIN_DIFFERS')
         cid = CLOSED_RUNTIME_JARS['ci-204-24f8eb4b02bf']['containerId']
         removed, absent = value.get('removed'), value.get('alreadyAbsent')
         need(value.get('kind') == 'doorhandle-recent-mysql-fixture-object-receipt'
@@ -1791,7 +1828,7 @@ def builder_container_ids():
     return ids
 
 
-def builder_references(root, historical, descriptor, cleanup, builder, fixture=None, *, include_inbox=False):
+def builder_references(root, historical, descriptor, cleanup, builder, fixture=None, *, include_inbox=False, closed_runtime=False):
     """Exclude only the fully admitted objects about to retire, never JAR guards."""
     cid = descriptor['containerId']; tag = historical['context']['release']
     retiring = {cid: 'doorhandle-builder-' + descriptor['ownerToken']}
@@ -1799,17 +1836,22 @@ def builder_references(root, historical, descriptor, cleanup, builder, fixture=N
         need(fixture['containerId'] != cid, 'MYSQL_FIXTURE_AND_BUILDER_ID_COLLISION')
         retiring[fixture['containerId']] = 'doorhandle-compact-fixture-' + fixture['ownerToken']
     if include_inbox:
-        need(historical['context']['release'] in RECENT_BUILDER_ONLY, 'ONLY_REVIEWED_RECENT_BUILDER_REFERENCES_ALLOWED')
+        tag = historical['context']['release']
+        need((tag in CLOSED_RUNTIME_BUILDERS and descriptor['containerId'] == CLOSED_RUNTIME_BUILDERS[tag]['containerId'])
+             if closed_runtime else tag in RECENT_BUILDER_ONLY, 'ONLY_REVIEWED_RECENT_BUILDER_REFERENCES_ALLOWED')
         canonical_publication_refs(root, tag)
     return historical_object_references(root, historical, retiring, cleanup, builder,
-        **({'include_inbox': True} if include_inbox else {}))
+        **({'include_inbox': True, 'stopped_retiring': True} if closed_runtime else {'include_inbox': True} if include_inbox else {}))
 
 
-def historical_object_references(root, historical, retiring, cleanup, builder, *, include_inbox=False):
+def historical_object_references(root, historical, retiring, cleanup, builder, *, include_inbox=False, stopped_retiring=False):
     """Filter only complete admitted CID/name pairs, retaining every other guard."""
     tag = historical['context']['release']
     containers = cleanup.docker_snapshot()
     need(all(sum(row[0] == selected for row in containers) == 1 for selected in retiring), 'EXACT_HISTORICAL_RETIRING_OBJECT_MISSING')
+    if stopped_retiring:
+        need(all(row[1] is False and row[2] is False and type(row[3]) is int and row[3] == 0
+                 for row in containers if row[0] in retiring), 'CLOSED_RUNTIME_RETIRING_OBJECT_BECAME_ACTIVE')
     try:
         cleanup.quiescent({'checkout': Path(root) / 'verification' / tag / 'checkout',
                            'token': historical['evidence']['ownerToken']}, tag,
@@ -1865,6 +1907,42 @@ def capture_fixture(root, request, historical, builder, *, source_proof=None):
     return descriptor
 
 
+def closed_207_no_object(root, historical, originals, builder):
+    owner, cleanup = originals['fixtureOwner'], originals['fixtureCleanup']
+    need('containerId' in owner and owner['containerId'] is None and owner.get('schemas') == []
+         and type(owner['schemas']) is list
+         and all(key in cleanup and cleanup[key] is None for key in ('containerId', 'dataDirectoryRetained')),
+         'CLOSED_RUNTIME_NEVER_CREATED_OBJECT_REQUIRED')
+    need('containerName' not in owner and 'dataDirectory' not in owner
+             and historical['controls']['fixtureOwner']['sha256'] == CLOSED_207_CODEC['ownerSha256']
+             and historical['controls']['fixtureCleanup']['sha256'] == CLOSED_207_CODEC['cleanupSha256']
+             and historical['sourceArchive'].get('transportRecipeSha256') == CLOSED_207_CODEC['producerSha256'],
+             'EXACT_207_LEGACY_CODEC_REQUIRED')
+    work = Path(historical['evidence']['work'])
+    for role in ('plan', 'admission'):
+        path = work / ('resource-phase-04-fixture-clone-' + role + '.json')
+        raw = private_bytes(root, path)
+        need(digest_bytes(raw) == CLOSED_207_CODEC[role + 'Sha256'], 'ORIGINAL_207_CLONE_FAILURE_REQUIRED')
+        if role == 'admission':
+            value = decode(raw)
+            need(value.get('status') == 'FAIL_CLOSED' and value.get('phase') == 'fixture-clone'
+                     and value.get('action') == 'STOP_OWNED_ATTEMPT'
+                     and value.get('actualProbe', {}).get('sourceCommit') == CLOSED_RUNTIME_JARS['ci-207-eb286c623177']['commit'],
+                     'ORIGINAL_207_CLONE_FAILURE_REQUIRED')
+    registered = CLOSED_RUNTIME_BUILDERS['ci-207-eb286c623177']
+    for cid in builder_container_ids():
+        inspected = builder.historical_builder_inspect(builder_docker('inspect', cid))
+        labels = (inspected.get('Config') or {}).get('Labels') or {}
+        need(labels.get('io.doorhandle.compact-fixtures') != owner['token']
+             and inspected.get('Name') != '/doorhandle-compact-fixture-' + owner['token'],
+             'CLOSED_207_DATABASE_OBJECT_EXISTS')
+        if labels.get('io.doorhandle.release') == 'ci-207-eb286c623177':
+            need(cid == inspected.get('Id') == registered['containerId']
+                 and inspected.get('Name') == '/doorhandle-builder-' + registered['ownerToken']
+                 and labels.get('io.doorhandle.candidate-builder') == registered['ownerToken'],
+                 'CLOSED_207_UNKNOWN_TAGGED_OBJECT_EXISTS')
+
+
 def capture_recent_fixture(root, request, row, builder, *, closed_runtime=False):
     registered = CLOSED_RUNTIME_JARS.get(row['release']) if closed_runtime else None
     need((registered is not None and registered['commit'] == row['commit']) if closed_runtime
@@ -1881,12 +1959,8 @@ def capture_recent_fixture(root, request, row, builder, *, closed_runtime=False)
                 need(len(original) == reference['bytes'] and digest_bytes(original) == reference['sha256'],
                      'CLOSED_RUNTIME_ORIGINAL_OWNER_CHANGED')
                 originals[role] = decode(original)
-            need(row['release'] == 'ci-207-eb286c623177'
-                 and all(key in originals['fixtureOwner'] and originals['fixtureOwner'][key] is None
-                         for key in ('containerId', 'containerName', 'dataDirectory'))
-                 and all(key in originals['fixtureCleanup'] and originals['fixtureCleanup'][key] is None
-                         for key in ('containerId', 'dataDirectoryRetained')),
-                 'CLOSED_RUNTIME_NEVER_CREATED_OBJECT_REQUIRED')
+            need(row['release'] == 'ci-207-eb286c623177', 'CLOSED_RUNTIME_NEVER_CREATED_OBJECT_REQUIRED')
+            closed_207_no_object(root, historical, originals, builder)
             return {'historical': historical, 'fixture': None, 'containerId': None,
                     'dataDirectory': None, 'dataMetadata': None, 'absenceKind': 'NO_OBJECT'}
     source = historical['sourceArchive']; builder.recent_mysql_fixture_source(historical['context'], source)
@@ -1916,6 +1990,7 @@ def plan_recent_fixtures(root, raw_request, *, request_sha256, expected_current,
                                **({'closed_runtime': True} if closed_runtime else {}))
     accepted, absent, skipped = [], [], []
     with controller_lock(root), publication_lock(root):
+        prerequisite = closed_runtime_previous(root, request, canonical_jar=False, builder=True) if closed_runtime else None
         for row in request['candidates']:
             try:
                 with attempt_lock(root, row['release']):
@@ -1931,7 +2006,7 @@ def plan_recent_fixtures(root, raw_request, *, request_sha256, expected_current,
     value = {'schemaVersion': 1, 'kind': 'doorhandle-recent-mysql-fixture-object-plan', 'current': expected_current,
         'identity': identity, 'requestSha256': request_sha256, 'candidates': accepted, 'absent': absent,
         'skipped': skipped, 'deletionPerformed': False, 'dataDirectoriesAndVolumesPreserved': True}
-    if closed_runtime: value['closedJarBatch'] = CLOSED_RUNTIME_BATCH
+    if closed_runtime: value.update(closedJarBatch=CLOSED_RUNTIME_BATCH, prerequisite=prerequisite)
     need(len(canonical(value)) <= MAX_CONTROL, 'BOUNDED_RECENT_MYSQL_PLAN_REQUIRED')
     return value
 
@@ -1959,6 +2034,9 @@ def apply_recent_fixtures(root, raw_request, prepared, *, request_sha256, plan_s
             journal.write(body); journal.flush(); os.fsync(journal.fileno())
         record({'phase': 'STARTED', 'requestSha256': request_sha256, 'planSha256': plan_sha256})
         try:
+            if closed_runtime:
+                need(prepared.get('prerequisite') == closed_runtime_previous(root, request, canonical_jar=False, builder=True),
+                     'CLOSED_RUNTIME_BUILDERS_CHANGED_AFTER_PLAN')
             for candidate in absent + selected:
                 active = candidate['historical']['context']['release']
                 with attempt_lock(root, active):
@@ -1999,8 +2077,12 @@ def recent_builder_registration(row):
     return registered
 
 
-def builder_request_rows(request, recent):
+def builder_request_rows(request, recent, *, closed_runtime=False):
     need(type(recent) is bool, 'EXACT_BUILDER_RETIREMENT_POLICY_REQUIRED')
+    need(type(closed_runtime) is bool and not (recent and closed_runtime), 'EXACT_CLOSED_BUILDER_POLICY_REQUIRED')
+    if closed_runtime:
+        need(set(row['release'] for row in request['candidates']) == set(CLOSED_RUNTIME_BUILDERS), 'COMPLETE_CLOSED_RUNTIME_BUILDERS_REQUIRED')
+        return request['candidates']
     if not recent: return request['candidates']
     rows = [row for row in request['candidates'] if row['release'] in RECENT_BUILDER_ONLY]
     need(len(rows) == 1, 'ONE_EXACT_RECENT_BUILDER_REQUIRED')
@@ -2008,10 +2090,15 @@ def builder_request_rows(request, recent):
     return rows
 
 
-def capture_builder(root, request, row, builder, *, recent=False):
-    registered = recent_builder_registration(row) if recent else None
+def capture_builder(root, request, row, builder, *, recent=False, closed_runtime=False):
+    need(type(closed_runtime) is bool and not (recent and closed_runtime), 'EXACT_CLOSED_BUILDER_POLICY_REQUIRED')
+    scoped = recent or closed_runtime
+    registered = CLOSED_RUNTIME_BUILDERS.get(row['release']) if closed_runtime else recent_builder_registration(row) if recent else None
+    if closed_runtime:
+        need(registered is not None and all(row[key] == CLOSED_RUNTIME_JARS[row['release']][key]
+             for key in ('commit', 'sourceSha256')), 'EXACT_CLOSED_RUNTIME_BUILDER_REQUIRED')
     historical = admit_historical_controls(root, request, row, builder_helpers=True,
-        **({'canonical_jar': True} if recent else {}))
+        **({'canonical_jar': True} if scoped else {}))
     directory = Path(root) / 'inbox' / row['release'] / 'candidate-build-tools'
     controls, raw = {}, {}
     for role, filename in (('tools', 'tools.json'), ('summary', 'resource-summary.json'),
@@ -2023,15 +2110,33 @@ def capture_builder(root, request, row, builder, *, recent=False):
             raw[role] = content
             controls[role] = {'path': path.relative_to(root).as_posix(), 'bytes': len(content),
                               'sha256': digest_bytes(content), 'metadata': signature}
-    if recent:
+    if scoped:
         need(all(digest_bytes(raw[role]) == registered[role + 'Sha256'] for role in ('tools', 'summary', 'measurement')),
              'RECENT_BUILDER_ORIGINAL_CONTROL_SHA_DRIFT')
     else:
         need(digest_bytes(raw['tools']) == APPROVED_BUILDER_TOOLS.get(row['release']),
              'HISTORICAL_BUILDER_TOOLS_DIFFERS_FROM_ORIGINAL_JENKINS_REFERENCE')
+    if closed_runtime:
+        for role, filename in (('preparation', 'ecs-tool-preparation.json'), ('transport', 'candidate-build-tools-transport.json')):
+            path = Path(root) / 'inbox' / request['current']['release'] / 'native-jar-duplicate-controls' / row['release'] / filename
+            with held_file(root, path, MAX_CONTROL) as (stream, signature):
+                body = stream.read(MAX_CONTROL + 1)
+                need(digest_bytes(body) == registered[role + 'Sha256'], 'CLOSED_BUILDER_JENKINS_ORIGINAL_DIFFERS')
+                value = decode(body); same_context(value, historical['context'])
+                if role == 'preparation':
+                    need(value.get('identity') == request['identity'] and value.get('status') == 'PREPARED'
+                         and value.get('candidateBuilderTools', {}).get('sha256') == registered['toolsSha256']
+                         and value['candidateBuilderTools'].get('file') == str(directory / 'tools.json'),
+                         'CLOSED_BUILDER_JENKINS_REFERENCE_DIFFERS')
+                else:
+                    need(value.get('status') == 'AVAILABLE' and value.get('admission', {}).get('identity') == request['identity']
+                         and value.get('buildkitArchive', {}).get('sha256') == PUBLIC_ARCHIVE_SHA,
+                         'CLOSED_BUILDER_TRANSPORT_REFERENCE_DIFFERS')
+                controls[role] = {'path': path.relative_to(root).as_posix(), 'bytes': len(body),
+                                  'sha256': digest_bytes(body), 'metadata': signature}
     summary = decode(raw['summary']); cid = summary.get('cleanup', {}).get('builderContainerId')
     need(type(cid) is str and SHA.fullmatch(cid), 'ORIGINAL_BUILDER_CONTAINER_ID_REQUIRED')
-    if recent:
+    if scoped:
         need(cid == registered['containerId'] and summary.get('ownerToken') == registered['ownerToken'],
              'EXACT_ORIGINAL_RECENT_BUILDER_IDENTITY_REQUIRED')
         canonical_publication_refs(root, row['release'])
@@ -2042,26 +2147,31 @@ def capture_builder(root, request, row, builder, *, recent=False):
                     'fixture': None, 'absentContainerId': cid}, None
     inspected = builder_docker('inspect', cid); actual = builder.historical_builder_inspect(inspected)
     descriptor = builder.historical_builder_descriptor(root, historical['context'], request['identity'],
-        raw['tools'], raw['summary'], raw['measurement'], historical['sourceArchive']['builderHelperSha256'], actual)
+        raw['tools'], raw['summary'], raw['measurement'], historical['sourceArchive']['builderHelperSha256'], actual,
+        **({'closed_runtime': True, 'source_proof': historical['sourceArchive']} if closed_runtime else {}))
     fixture = capture_fixture(root, request, historical, builder,
-        **({'source_proof': historical['sourceArchive']} if recent else {}))
+        **({'source_proof': historical['sourceArchive']} if scoped else {}))
     return {'historical': historical, 'builderControls': controls, 'descriptor': descriptor, 'fixture': fixture}, inspected
 
 
-def plan_builders(root, raw_request, *, request_sha256, expected_current, identity, modules, recent=False):
-    request = approved_request(raw_request, request_sha256, expected_current, identity, canonical_jar=recent)
-    rows = builder_request_rows(request, recent)
+def plan_builders(root, raw_request, *, request_sha256, expected_current, identity, modules, recent=False, closed_runtime=False):
+    need(type(closed_runtime) is bool and not (recent and closed_runtime), 'EXACT_CLOSED_BUILDER_POLICY_REQUIRED')
+    scoped = recent or closed_runtime
+    request = approved_request(raw_request, request_sha256, expected_current, identity, canonical_jar=scoped,
+                               **({'closed_runtime': True} if closed_runtime else {}))
+    rows = builder_request_rows(request, recent, **({'closed_runtime': True} if closed_runtime else {}))
     accepted, absent, skipped = [], [], []; builder, cleanup = modules['builder'], modules['cleanup']
     directory = Path(root) / 'inbox' / expected_current['release'] / 'native-builder-retirement-inspect'
-    with controller_lock(root), (publication_lock(root) if recent else nullcontext()):
+    with controller_lock(root), (publication_lock(root) if scoped else nullcontext()):
         for row in rows:
             try:
                 with attempt_lock(root, row['release']):
-                    value, inspected = capture_builder(root, request, row, builder, **({'recent': True} if recent else {}))
-                    if recent and value['descriptor'] is None:
+                    value, inspected = capture_builder(root, request, row, builder,
+                        **({'closed_runtime': True} if closed_runtime else {'recent': True} if recent else {}))
+                    if scoped and value['descriptor'] is None:
                         absent.append(value); continue
                     builder_references(root, value['historical'], value['descriptor'], cleanup, builder, value['fixture'],
-                        **({'include_inbox': True} if recent else {}))
+                        **({'include_inbox': True, 'closed_runtime': True} if closed_runtime else {'include_inbox': True} if recent else {}))
                     if not directory.exists(): directory.mkdir(mode=0o700)
                     owned_path(root, directory, directory=True)
                     path = directory / (row['release'] + '.json')
@@ -2078,23 +2188,30 @@ def plan_builders(root, raw_request, *, request_sha256, expected_current, identi
             'identity': identity, 'requestSha256': request_sha256, 'candidates': accepted, 'skipped': skipped,
             'deletionPerformed': False, 'imagesPreserved': True, 'volumesPreserved': True, 'directoriesPreserved': True}
     if recent: value.update(scope=RECENT_BUILDER_SCOPE, absent=absent)
+    if closed_runtime: value.update(scope='CLOSED_RUNTIME_BUILDERS', closedJarBatch=CLOSED_RUNTIME_BATCH, absent=absent)
     return value
 
 
-def apply_builders(root, raw_request, prepared, *, request_sha256, plan_sha256, expected_current, identity, modules, recent=False):
-    request = approved_request(raw_request, request_sha256, expected_current, identity, canonical_jar=recent)
+def apply_builders(root, raw_request, prepared, *, request_sha256, plan_sha256, expected_current, identity, modules, recent=False,
+                   closed_runtime=False):
+    need(type(closed_runtime) is bool and not (recent and closed_runtime), 'EXACT_CLOSED_BUILDER_POLICY_REQUIRED')
+    scoped = recent or closed_runtime
+    request = approved_request(raw_request, request_sha256, expected_current, identity, canonical_jar=scoped,
+                               **({'closed_runtime': True} if closed_runtime else {}))
     need(digest_bytes(canonical(prepared)) == plan_sha256 and prepared.get('kind') == 'doorhandle-historical-builder-retirement-plan'
          and prepared.get('current') == expected_current and prepared.get('identity') == identity
          and prepared.get('requestSha256') == request_sha256 and prepared.get('deletionPerformed') is False,
          'EXACT_HISTORICAL_BUILDER_PLAN_REQUIRED')
-    selected = prepared.get('candidates'); rows = {row['release']: row for row in builder_request_rows(request, recent)}
+    selected = prepared.get('candidates'); rows = {row['release']: row for row in builder_request_rows(request, recent,
+        **({'closed_runtime': True} if closed_runtime else {}))}
     need(type(selected) is list and len(selected) <= len(rows)
          and len({row['descriptor']['release'] for row in selected}) == len(selected)
          and all(row['descriptor']['release'] in rows for row in selected), 'BOUNDED_HISTORICAL_BUILDER_SELECTION_REQUIRED')
-    absent = prepared.get('absent', []) if recent else []
-    if recent:
-        need(prepared.get('scope') == RECENT_BUILDER_SCOPE and prepared.get('skipped') == []
-             and type(absent) is list and len(selected) + len(absent) == len(rows) == 1
+    absent = prepared.get('absent', []) if scoped else []
+    if scoped:
+        need(prepared.get('scope') == ('CLOSED_RUNTIME_BUILDERS' if closed_runtime else RECENT_BUILDER_SCOPE)
+             and (not closed_runtime or prepared.get('closedJarBatch') == CLOSED_RUNTIME_BATCH) and prepared.get('skipped') == []
+             and type(absent) is list and len(selected) + len(absent) == len(rows) == (2 if closed_runtime else 1)
              and all(type(item) is dict and item.get('descriptor') is None for item in absent),
              'COMPLETE_EXACT_RECENT_BUILDER_PLAN_REQUIRED')
     else:
@@ -2102,7 +2219,7 @@ def apply_builders(root, raw_request, prepared, *, request_sha256, plan_sha256, 
     builder, cleanup = modules['builder'], modules['cleanup']; removed, retired_fixtures, failure = [], [], None
     already_absent = []
     journal_path = Path(root) / 'inbox' / expected_current['release'] / 'native-builder-retirement-journal.jsonl'
-    with controller_lock(root), (publication_lock(root) if recent else nullcontext()), os.fdopen(os.open(journal_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600), 'wb') as journal:
+    with controller_lock(root), (publication_lock(root) if scoped else nullcontext()), os.fdopen(os.open(journal_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600), 'wb') as journal:
         def record(value):
             journal.write(canonical(value) + b'\n'); journal.flush(); os.fsync(journal.fileno())
         record({'phase': 'STARTED', 'planSha256': plan_sha256, 'requestSha256': request_sha256})
@@ -2112,14 +2229,16 @@ def apply_builders(root, raw_request, prepared, *, request_sha256, plan_sha256, 
                 active = candidate['historical']['context']['release']
                 need(active in rows, 'RECENT_ABSENT_BUILDER_OUTSIDE_EXACT_REQUEST')
                 with attempt_lock(root, active):
-                    observed, inspected = capture_builder(root, request, rows[active], builder, recent=True)
+                    observed, inspected = capture_builder(root, request, rows[active], builder,
+                        **({'closed_runtime': True} if closed_runtime else {'recent': True}))
                     need(observed == candidate and inspected is None, 'RECENT_ABSENT_BUILDER_OR_ORIGINALS_CHANGED_AFTER_PLAN')
                     already_absent.append(candidate['absentContainerId'])
                     record({'phase': 'BUILDER_ALREADY_ABSENT', 'release': active, 'containerId': candidate['absentContainerId']})
             for candidate in selected:
                 active = candidate['descriptor']['release']
                 with attempt_lock(root, active):
-                    current, _inspected = capture_builder(root, request, rows[active], builder, **({'recent': True} if recent else {}))
+                    current, _inspected = capture_builder(root, request, rows[active], builder,
+                        **({'closed_runtime': True} if closed_runtime else {'recent': True} if recent else {}))
                     need(current == {key: value for key, value in candidate.items() if key != 'inspection'},
                          'HISTORICAL_BUILDER_OR_CONTROLS_CHANGED_AFTER_PLAN')
                     reference = candidate['inspection']; path = Path(root) / reference['path']
@@ -2130,7 +2249,7 @@ def apply_builders(root, raw_request, prepared, *, request_sha256, plan_sha256, 
                              and digest_bytes(builder.encoded(builder.historical_builder_inspect(raw))) == candidate['descriptor']['inspectSha256'],
                              'FROZEN_HISTORICAL_BUILDER_INSPECTION_DRIFT')
                     fixture = current['fixture']
-                    if fixture is not None:
+                    if fixture is not None and not closed_runtime:
                         record({'phase': 'MYSQL_OBJECT_REMOVE_STARTED', 'release': active, 'containerId': fixture['containerId'],
                                 'inspectSha256': fixture['inspectSha256'], 'rawInspectSha256': fixture['rawInspectSha256'],
                                 'dataDirectory': fixture['dataDirectory'], 'dataMetadata': fixture['dataMetadata']})
@@ -2146,7 +2265,9 @@ def apply_builders(root, raw_request, prepared, *, request_sha256, plan_sha256, 
                         lambda cid: builder.historical_builder_inspect(builder_docker('inspect', cid)),
                         lambda cid: builder_docker('rm', cid), builder_container_ids,
                         lambda _cid: builder_references(root, current['historical'], current['descriptor'], cleanup, builder,
-                            **({'include_inbox': True} if recent else {})))
+                            **({'fixture': fixture, 'include_inbox': True, 'closed_runtime': True} if closed_runtime
+                               else {'include_inbox': True} if recent else {})),
+                        **({'closed_runtime': True} if closed_runtime else {}))
                     removed.append(value); record({'phase': 'REMOVED', **value})
         except Exception as error:
             failure = {'release': active, 'reason': str(error) if isinstance(error, RetirementError)
@@ -2160,6 +2281,8 @@ def apply_builders(root, raw_request, prepared, *, request_sha256, plan_sha256, 
             'failure': failure, 'skipped': prepared['skipped'], 'imagesPreserved': True,
             'volumesPreserved': True, 'directoriesPreserved': True, 'jarDeletionPerformed': False}
     if recent: value.update(scope=RECENT_BUILDER_SCOPE, alreadyAbsent=already_absent)
+    if closed_runtime: value.update(scope='CLOSED_RUNTIME_BUILDERS', closedJarBatch=CLOSED_RUNTIME_BATCH, alreadyAbsent=already_absent,
+                                    journalSha256=digest_bytes(private_bytes(root, journal_path)))
     return value
 
 
@@ -2601,10 +2724,12 @@ def apply_python_build_cache(root, prepared, *, plan_sha256, expected_current, i
 
 
 def closed_runtime_cli(args):
-    if args.jar_batch is None: return False
+    if args.jar_batch is None:
+        need(args.phase not in ('plan-closed-builders', 'apply-closed-builders'), 'CLOSED_RUNTIME_EXPLICIT_POLICY_REQUIRED')
+        return False
     need(args.jar_batch == CLOSED_RUNTIME_BATCH and args.mode == 'Maintenance'
          and args.phase in ('capture-canonical-request', 'plan-recent-fixtures', 'apply-recent-fixtures',
-                            'plan', 'apply', 'plan-canonical', 'apply-canonical', 'inspect'),
+                            'plan-closed-builders', 'apply-closed-builders', 'plan', 'apply', 'plan-canonical', 'apply-canonical', 'inspect'),
          'CLOSED_RUNTIME_MAINTENANCE_PHASE_REQUIRED')
     return True
 
@@ -2613,6 +2738,7 @@ def cli(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--phase', choices=('capture-request', 'capture-canonical-request', 'plan-builders', 'apply-builders', 'plan', 'apply',
                                            'plan-recent-builders', 'apply-recent-builders',
+                                           'plan-closed-builders', 'apply-closed-builders',
                                            'plan-retired-candidate-copies', 'apply-retired-candidate-copies',
                                            'plan-recent-fixtures', 'apply-recent-fixtures',
                                            'plan-canonical', 'apply-canonical',
@@ -2689,6 +2815,15 @@ def cli(argv=None):
                                       'bytes': len(raw), 'sha256': digest_bytes(raw)})
             result = {'status': 'INSPECTED', 'current': current, 'identity': identity, 'files': files,
                       'pythonCacheOriginals': originals}
+            if closed_runtime:
+                frozen = inbox / 'native-builder-retirement-inspect'; bindings = []
+                if frozen.exists():
+                    owned_path(root, frozen, directory=True)
+                    for path in sorted(frozen.iterdir()):
+                        need(path.name in {tag + '.json' for tag in CLOSED_RUNTIME_BUILDERS}, 'CLOSED_BUILDER_INSPECTION_NAME_DIFFERS')
+                        raw = private_bytes(root, path)
+                        bindings.append({'file': path.relative_to(inbox).as_posix(), 'bytes': len(raw), 'sha256': digest_bytes(raw)})
+                result['builderOriginals'] = bindings
         elif args.phase in ('plan-recent-fixtures', 'apply-recent-fixtures'):
             need(args.mode == 'Maintenance', 'RECENT_MYSQL_OBJECTS_REQUIRE_MAINTENANCE')
             raw = private_bytes(root, request_file)
@@ -2808,17 +2943,21 @@ def cli(argv=None):
                 value = apply_public_layers(root, raw, decode(plan_raw), plan_sha256=args.plan_sha256, **options)
                 result = {'status': value['status'], 'current': current, 'identity': identity,
                           'receipt': write_new(public_receipt_file, value)}
-        elif args.phase in ('plan-builders', 'apply-builders', 'plan-recent-builders', 'apply-recent-builders'):
+        elif args.phase in ('plan-builders', 'apply-builders', 'plan-recent-builders', 'apply-recent-builders',
+                             'plan-closed-builders', 'apply-closed-builders'):
             recent = args.phase in ('plan-recent-builders', 'apply-recent-builders')
             need(not recent or args.mode == 'Maintenance', 'RECENT_BUILDER_REQUIRES_MAINTENANCE')
-            raw = private_bytes(root, request_file); approved_request(raw, args.request_sha256, current, identity, canonical_jar=recent)
+            raw = private_bytes(root, request_file)
+            approved_request(raw, args.request_sha256, current, identity, canonical_jar=recent or closed_runtime,
+                             **({'closed_runtime': True} if closed_runtime else {}))
             options = {'request_sha256': args.request_sha256, 'expected_current': current, 'identity': identity, 'modules': modules}
             if recent: options['recent'] = True
-            if args.phase in ('plan-builders', 'plan-recent-builders'):
+            if closed_runtime: options['closed_runtime'] = True
+            if args.phase in ('plan-builders', 'plan-recent-builders', 'plan-closed-builders'):
                 value = plan_builders(root, raw, **options)
                 result = {'status': 'PLANNED', 'current': current, 'identity': identity,
                           'plan': write_new(builder_plan_file, value), 'skipped': value['skipped']}
-                if recent:
+                if recent or closed_runtime:
                     result.update(scope=value['scope'], builderCount=len(value['candidates']), alreadyAbsent=len(value['absent']))
             else:
                 plan_raw = private_bytes(root, builder_plan_file)
@@ -2826,7 +2965,7 @@ def cli(argv=None):
                 value = apply_builders(root, raw, decode(plan_raw), plan_sha256=args.plan_sha256, **options)
                 result = {'status': value['status'], 'current': current, 'identity': identity,
                           'receipt': write_new(builder_receipt_file, value)}
-                if recent:
+                if recent or closed_runtime:
                     result.update(scope=value['scope'], requestSha256=value['requestSha256'], planSha256=value['planSha256'],
                         removedBuilders=len(value['removed']), alreadyAbsent=len(value['alreadyAbsent']),
                         retiredMysqlObjects=len(value['retiredMysqlObjects']),
