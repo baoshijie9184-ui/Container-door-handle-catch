@@ -296,10 +296,9 @@ def admit(args):
 def verified_inputs(args, work):
     utility = common(); snapshot = utility.owner_path(work / SNAPSHOT, directory=True)
     need({p.name for p in snapshot.iterdir()} == {'custody.json', 'originals.tar.gz'}, 'Closed ECS transfer inputs required')
-    for name, prefix, limit in (('custody.json', 'manifest', MIB), ('originals.tar.gz', 'archive', MAX_BYTES)):
-        path = utility.owner_path(snapshot / name); size = getattr(args, prefix + '_bytes'); checksum = getattr(args, prefix + '_sha256')
-        need(type(size) is int and 0 < size <= limit and type(checksum) is str and SHA.fullmatch(checksum)
-            and path.stat().st_size == size and digest(path) == checksum, 'Explicit Jenkins byte input differs')
+    for name, binding in sealed_input_bindings(args).items():
+        path = utility.owner_path(snapshot / name)
+        need(path.stat().st_size == binding['bytes'] and digest(path) == binding['sha256'], 'Explicit Jenkins byte input differs')
     value = read(snapshot / 'custody.json'); rows = value.get('files', [])
     need(value.get('schemaVersion') == 2 and value.get('kind') == KIND and value.get('profile') == PROFILE
         and value.get('status') == 'PACKED_RESTORE_PENDING' and value.get('batchReceiptSha256') == args.batch_receipt_sha256
@@ -312,6 +311,31 @@ def verified_inputs(args, work):
         and all(value.get(key) is False for key in ('liveSourceRowHashesVerified', 'productionMerged', 'retirementAllowed')),
         'Closed actual three-schema custody manifest differs')
     return value
+
+
+def sealed_input_bindings(args):
+    result = {}
+    for name, prefix, limit in (('custody.json', 'manifest', MIB), ('originals.tar.gz', 'archive', MAX_BYTES)):
+        size = getattr(args, prefix + '_bytes'); checksum = getattr(args, prefix + '_sha256')
+        need(type(size) is int and 0 < size <= limit and type(checksum) is str and SHA.fullmatch(checksum),
+             'Explicit bounded Jenkins input SHA and byte size required')
+        result[name] = {'bytes': size, 'sha256': checksum}
+    return result
+
+
+def prepare_transfer(args):
+    work, context = admit(args); utility = common(); inputs = sealed_input_bindings(args)
+    path = utility.safe(work / SNAPSHOT, exists=False)
+    receipt_path = utility.safe(work / 'project-mysql-transfer.json', exists=False)
+    need(not path.exists() and not (work / RESTORE).exists() and not receipt_path.exists(), 'Fresh ECS packet transfer required')
+    utility.resource_guard(work, sum(row['bytes'] for row in inputs.values()))
+    result = {**context, 'status': 'TRANSFER_DIRECTORY_PREPARED', 'directory': str(path), 'inputs': inputs,
+        'sqlRecoveryStarted': False, 'productionMerged': False, 'retirementAllowed': False}
+    write(receipt_path, result); utility.private_directory(path)
+    for name in inputs:
+        descriptor = os.open(path / name, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+        os.close(descriptor)
+    return {**result, 'transferReceiptSha256': digest(receipt_path)}
 
 
 def restore_bytes(args):
@@ -351,10 +375,7 @@ def main():
     for name in ('manifest-bytes', 'archive-bytes'): parser.add_argument('--' + name, type=int)
     args = parser.parse_args()
     if args.action == 'pack': result = pack(args.batch_directory, args.batch_receipt_sha256, args.output)
-    elif args.action == 'prepare':
-        work, _context = admit(args); path = common().safe(work / SNAPSHOT, exists=False)
-        need(not path.exists() and not (work / RESTORE).exists(), 'Fresh ECS packet transfer required')
-        common().private_directory(path); result = {'status': 'TRANSFER_DIRECTORY_PREPARED', 'directory': str(path)}
+    elif args.action == 'prepare': result = prepare_transfer(args)
     else: result = restore_bytes(args)
     print(json.dumps(result))
 

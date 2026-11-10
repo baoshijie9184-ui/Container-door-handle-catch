@@ -1,11 +1,14 @@
 """Synthetic byte/restore contracts; execute only through Jenkins on ECS."""
+import ast
 import copy
 import gzip
 import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import re
 import shutil
+import sys
 from types import SimpleNamespace
 import tarfile
 
@@ -138,13 +141,22 @@ def test_actual_pack_refuses_changed_raw_sql_or_unapproved_batch(exported):
 def test_real_packet_extraction_closes_all_original_bytes_again_on_ecs(exported, tmp_path, monkeypatch):
     result = packet.pack(exported.batch_dir, exported.batch_sha, exported.output)
     work = tmp_path / 'ecs-owned-work'; work.mkdir(mode=0o700)
-    snapshot = work / packet.SNAPSHOT; snapshot.mkdir(mode=0o700)
-    for name in ('custody.json', 'originals.tar.gz'):
-        shutil.copyfile(exported.output / name, snapshot / name); (snapshot / name).chmod(0o600)
     context = {'release': 'ci-1-' + 'a' * 12, 'commit': 'a' * 40, 'sourceSha256': 'b' * 64}
     monkeypatch.setattr(packet, 'admit', lambda _args: (work, context))
     args = SimpleNamespace(batch_receipt_sha256=exported.batch_sha, manifest_sha256=result['manifestSha256'],
         manifest_bytes=result['manifestBytes'], archive_sha256=result['archiveSha256'], archive_bytes=result['archiveBytes'])
+    prepared = packet.prepare_transfer(args)
+    snapshot = work / packet.SNAPSHOT
+    assert prepared['status'] == 'TRANSFER_DIRECTORY_PREPARED' and prepared['sqlRecoveryStarted'] is False
+    assert prepared['inputs'] == packet.sealed_input_bindings(args)
+    assert prepared['transferReceiptSha256'] == packet.digest(work / 'project-mysql-transfer.json')
+    with pytest.raises(ValueError, match='Fresh ECS'): packet.prepare_transfer(args)
+    assert snapshot.stat().st_mode & 0o777 == 0o700
+    for name in ('custody.json', 'originals.tar.gz'):
+        assert (snapshot / name).stat().st_mode & 0o777 == 0o600 and (snapshot / name).stat().st_size == 0
+        # Ordinary scp writes the already private existing destination.
+        shutil.copyfile(exported.output / name, snapshot / name)
+        assert (snapshot / name).stat().st_mode & 0o777 == 0o600
     recovered = packet.restore_bytes(args)
     assert recovered['status'] == 'BYTES_RESTORED_VERIFIED' and recovered['sqlDoubleRestoreVerified'] is False
     assert recovered['databasesOpened'] == 0 and recovered['retirementAllowed'] is False
@@ -243,3 +255,113 @@ def test_three_schema_pair_cannot_pass_narrow_or_changed_recovery_evidence(mutat
     if mutation == 'changed-routine': schema['extraObjects']['routines'].append({'body': 'changed'})
     if mutation == 'unmatched-count': schema['observedCountsMatch'] = False
     with pytest.raises(ValueError): restore.compare_recoveries(first, second)
+
+
+@pytest.mark.parametrize('unowned_partial_directory', [False, True])
+def test_fresh_cleanup_before_sql_does_not_require_a_complete_transferred_packet(tmp_path, monkeypatch, unowned_partial_directory):
+    work = tmp_path / 'work'; work.mkdir(mode=0o700)
+    monkeypatch.setattr(restore.packet, 'admit', lambda _args: (work, {'release': 'ci-1-' + 'a' * 12}))
+    monkeypatch.setattr(restore.packet, 'verified_inputs', lambda *_args: pytest.fail('Partial transfer cannot admit SQL or inspect incomplete source bytes'))
+    monkeypatch.setattr(restore.shutil, 'which', lambda _name: str(Path(sys.executable).resolve()))
+    monkeypatch.setattr(restore.existing, 'load_runtime', lambda: SimpleNamespace())
+    if unowned_partial_directory: (work / 'project-mysql-recovery').mkdir(mode=0o700)
+    args = SimpleNamespace(action='cleanup', manifest_sha256='a' * 64, batch_receipt_sha256='b' * 64)
+    if unowned_partial_directory:
+        with pytest.raises(ValueError, match='unowned partial'): restore.Recovery(args)
+    else:
+        result = restore.Recovery(args).cleanup_locked()
+        assert result['status'] == 'NOT_CREATED' and result['containers'] == []
+        assert result['projectSqlSha256'] == {} and result['derivedVolumesRemoved'] == 0
+
+
+def embedded_reader(name):
+    script = ROOT / 'script/jenkins/preserve-project-mysql.ps1'
+    bodies = re.findall(r"(?ms)^[ \t]*\$" + name + r" = @'\r?\n(.*?)\r?\n'@$", script.read_text(encoding='utf8'))
+    assert len(bodies) == 1
+    return bodies[0], script
+
+
+def test_project_controller_archive_reader_resolves_all_actual_source_dependencies(tmp_path, monkeypatch, capsys):
+    body, script = embedded_reader('projectArchiveReader')
+    tree = ast.parse(body)
+    paths = []
+    # Read literal declarations without inventing a second dependency list.
+    declaration = next(node for node in tree.body if isinstance(node, ast.Assign)
+                       and any(getattr(target, 'id', '') == 'paths' for target in node.targets))
+    names = ast.literal_eval(declaration.value.generators[0].iter)
+    paths += ['script/jenkins/' + name for name in names]
+    for node in tree.body:
+        if isinstance(node, ast.AugAssign):
+            if isinstance(node.value, ast.ListComp):
+                paths += ['script/schema/' + name for name in ast.literal_eval(node.value.generators[0].iter)]
+            else: paths += ast.literal_eval(node.value)
+    archive_path = tmp_path / 'fixed-source.tar.gz'; hashes = {}
+    with tarfile.open(archive_path, 'x:gz', format=tarfile.PAX_FORMAT, pax_headers={'comment': 'a' * 40}) as archive:
+        for path in paths:
+            source = ROOT / path; hashes[path] = hashlib.sha256(source.read_bytes()).hexdigest()
+            archive.add(source, arcname=path, recursive=False)
+    with monkeypatch.context() as patch:
+        patch.setattr(sys, 'argv', ['fixed-reader', str(archive_path), 'a' * 40]); exec(compile(body, str(script), 'exec'), {})
+    assert json.loads(capsys.readouterr().out) == hashes and len(hashes) == 16
+    assert 'script/schema/compact_ddl_policy.py' in hashes and 'script/schema/build_compact_schema.py' in hashes
+    assert 'foreach($property in $hashes.PSObject.Properties)' in script.read_text(encoding='utf8')
+
+
+@pytest.mark.parametrize('wrong_explicit_digest', [False, True])
+def test_actual_controller_input_reader_pins_both_original_files_and_computes_byte_sizes(exported, monkeypatch, capsys, wrong_explicit_digest):
+    result = packet.pack(exported.batch_dir, exported.batch_sha, exported.output)
+    body, script = embedded_reader('projectInputReader')
+    arguments = ['input-reader', str(exported.output), 'b' * 64 if wrong_explicit_digest else result['manifestSha256'], result['archiveSha256']]
+    with monkeypatch.context() as patch:
+        patch.setattr(sys, 'argv', arguments)
+        if wrong_explicit_digest:
+            with pytest.raises(AssertionError): exec(compile(body, str(script), 'exec'), {})
+        else:
+            exec(compile(body, str(script), 'exec'), {})
+            actual = json.loads(capsys.readouterr().out)
+            assert actual == {'batchReceiptSha256': exported.batch_sha, 'inputs': {
+                'custody.json': {'sha256': result['manifestSha256'], 'bytes': result['manifestBytes']},
+                'originals.tar.gz': {'sha256': result['archiveSha256'], 'bytes': result['archiveBytes']}}}
+
+
+@pytest.mark.parametrize('operation', ['run', 'cleanup'])
+def test_controller_flags_are_accepted_by_the_real_receiver_cli(operation, monkeypatch, capsys):
+    flags = {'root': '/home/ecs-user/doorhandle-ci', 'tag': 'ci-1-' + 'a' * 12, 'commit': 'a' * 40,
+        'source-sha256': 'b' * 64, 'instance-id': 'i-synthetic', 'machine-id': 'c' * 32, 'batch-receipt-sha256': 'd' * 64,
+        'manifest-sha256': 'e' * 64, 'manifest-bytes': '100', 'archive-sha256': 'f' * 64, 'archive-bytes': '200',
+        'fixture-settings': '/home/ecs-user/private/fixtures.json'}
+    received = []
+    class Controller:
+        def __init__(self, args): received.append(args)
+        def run(self): return {'status': 'synthetic-run'}
+        def cleanup(self): return {'status': 'synthetic-cleanup'}
+    arguments = ['restore-project-mysql.py', operation]
+    for name, value in flags.items(): arguments += ['--' + name, value]
+    monkeypatch.setattr(sys, 'argv', arguments); monkeypatch.setattr(restore, 'Recovery', Controller)
+    monkeypatch.setattr(restore.signal, 'signal', lambda *_args: None)
+    assert restore.main() == 0 and json.loads(capsys.readouterr().out)['status'] == 'synthetic-' + operation
+    assert received[0].action == operation and received[0].manifest_bytes == 100 and received[0].archive_bytes == 200
+    assert received[0].fixture_settings == flags['fixture-settings'] and received[0].batch_receipt_sha256 == flags['batch-receipt-sha256']
+
+
+def test_standard_jenkins_entry_wires_explicit_inputs_and_fresh_post_cleanup_after_full_verification():
+    pipeline = (ROOT / 'Jenkinsfile.ecs-monolith').read_text(encoding='utf8')
+    configure = (ROOT / 'script/jenkins/configure-local.groovy').read_text(encoding='utf8')
+    controller = (ROOT / 'script/jenkins/pipeline.ps1').read_text(encoding='utf8')
+    helper = (ROOT / 'script/jenkins/preserve-project-mysql.ps1').read_text(encoding='utf8')
+    for name in ('PROJECT_MYSQL_SNAPSHOT', 'PROJECT_MYSQL_MANIFEST_SHA256', 'PROJECT_MYSQL_ARCHIVE_SHA256'):
+        assert len(re.findall(r"string\(name: '" + name + "'", pipeline)) == 1
+        assert len(re.findall(r"new StringParameterDefinition\('" + name + "'", configure)) == 1
+        assert '$env:' + name in controller
+    assert "projectSqlInputs.any { it } && !projectSqlInputs.every { it }" in pipeline
+    assert "params.ACTION in ['verify', 'verify-runtime']" in pipeline
+    assert 'def anySqlCustody = env.LOCAL_MYSQL_SNAPSHOT || env.LOCAL_MYSQL_ECS_SNAPSHOT || env.PROJECT_MYSQL_SNAPSHOT' in pipeline
+    assert pipeline.index("stage('Recover approved three-schema MySQL packet on ECS')") > pipeline.index('-Action VerifyEcs')
+    assert '-Action PreserveProjectMySql' in pipeline and '-Action CleanupProjectMySql' in pipeline
+    post = pipeline.split("if (env.CI_PROJECT_MYSQL_ATTEMPTED == 'true')", 1)[1]
+    assert post.index('-Action CleanupProjectMySql') < post.index('-Action CleanupFixtures') < post.index('-Action CleanupTools')
+    assert 'Collect-ProjectSqlCleanup' in helper.split('finally {', 1)[1]
+    assert "$env:CI_ECS_VERIFIED -ceq 'true'" in helper and "$accepted.scope -ceq 'mysql'" in helper
+    assert "--fixture-settings '$FixtureSettings'" in helper and 'verificationReceiptSha256' in helper
+    assert "Collect-ProjectSqlReceipt 'project-mysql-originals/restore-receipt.json'" in helper
+    assert 'project-mysql-inputs.json' in helper and '$descriptor.inputs' in helper

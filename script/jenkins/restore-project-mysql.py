@@ -97,8 +97,16 @@ class Recovery(existing.Recovery):
         self.owner_file = self.work / 'project-mysql-recovery-owner.json'
         self.docker = self.utility.safe(shutil.which('docker'))
         self.original = None; self.state = None; self.cancel = threading.Event(); self.pressure = None
-        self.manifest = packet.verified_inputs(args, self.work)
-        self.specifications = self.manifest['schemas']
+        if getattr(args, 'action', 'run') == 'cleanup' and not self.owner_file.exists():
+            # Transfer/byte recovery may fail before SQL is ever created. The
+            # same fixed build and ECS identity can still prove no SQL owner or
+            # recovery directory exists; partial original bytes stay retained.
+            self.utility.safe(self.owner_file, exists=False); self.utility.safe(self.directory, exists=False)
+            need(not self.directory.exists(), 'An unowned partial recovery directory requires investigation')
+            self.manifest, self.specifications = None, {}
+        else:
+            self.manifest = packet.verified_inputs(args, self.work)
+            self.specifications = self.manifest['schemas']
         self.runtime = existing.load_runtime()
 
     def cleanup_source_fields(self):

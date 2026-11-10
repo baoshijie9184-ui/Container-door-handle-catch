@@ -38,7 +38,10 @@ pipeline {
         string(name: 'COLD_HISTORY_ECS_SNAPSHOT', defaultValue: '', trim: true, description: '同次验证复用ECS上已核验的v2历史目录包；与对应本地输入互斥')
         string(name: 'LOCAL_MYSQL_SNAPSHOT', defaultValue: '', trim: true, description: '已授权本机45表只读导出包；源码验证后在ECS独立双恢复核验，不合入生产')
         string(name: 'LOCAL_MYSQL_ECS_SNAPSHOT', defaultValue: '', trim: true, description: '复用ECS已核验的45表导出封存目录；与本地输入互斥，在本轮重新独立双恢复')
-        string(name: 'LOCAL_MYSQL_FIXTURE_SETTINGS', defaultValue: '', trim: true, description: '45表恢复使用的现有ECS私有夹具JSON；仅读取已核对的MySQL镜像身份')
+        string(name: 'LOCAL_MYSQL_FIXTURE_SETTINGS', defaultValue: '', trim: true, description: '旧45表或新三库恢复共用的现有ECS私有夹具JSON；仅读取已核对的MySQL镜像身份')
+        string(name: 'PROJECT_MYSQL_SNAPSHOT', defaultValue: '', trim: true, description: '可选已批准三库v2封存包；只在完整MySQL验证后于ECS双恢复归档')
+        string(name: 'PROJECT_MYSQL_MANIFEST_SHA256', defaultValue: '', trim: true, description: '上述三库custody.json的明确固定SHA-256；三项同时填写或全空')
+        string(name: 'PROJECT_MYSQL_ARCHIVE_SHA256', defaultValue: '', trim: true, description: '上述三库originals.tar.gz的明确固定SHA-256；不合入生产或授权本地删除')
         string(name: 'REMAINING_SYSTEM_DATA_SNAPSHOT', defaultValue: '', trim: true, description: '补充86项本地系统数据的固定私有封存目录；完整验证后在ECS独立恢复，不自动合入业务')
         string(name: 'REMAINING_SYSTEM_DATA_ECS_SNAPSHOT', defaultValue: '', trim: true, description: '复用已核验的补充系统数据ECS封存目录；与本地输入互斥')
         booleanParam(name: 'RECLAIM_OLD_BUILD_OUTPUTS', defaultValue: true, description: '本构建完整验证通过后，按原始证据与精确计划清理旧构建可再生输出，保留业务数据和报告')
@@ -72,6 +75,7 @@ pipeline {
                     env.CI_LEGACY_CANDIDATE_ATTEMPTED = 'false'
                     env.CI_LEGACY_CANDIDATE_PREPARED = 'false'
                     env.CI_LOCAL_MYSQL_ATTEMPTED = 'false'
+                    env.CI_PROJECT_MYSQL_ATTEMPTED = 'false'
                     if (isUnix()) error('Control steps require the dedicated local Windows agent')
                     def expectedWorkspace = 'D:/AI/lunwen1/DoorHandleCatch/work/jenkins/ci-workspaces/monolith'
                     if (pwd().replace('\\', '/') != expectedWorkspace) error('Unexpected CI workspace')
@@ -124,6 +128,9 @@ pipeline {
                     env.LOCAL_MYSQL_SNAPSHOT = params.LOCAL_MYSQL_SNAPSHOT?.trim() ?: ''
                     env.LOCAL_MYSQL_ECS_SNAPSHOT = params.LOCAL_MYSQL_ECS_SNAPSHOT?.trim() ?: ''
                     env.LOCAL_MYSQL_FIXTURE_SETTINGS = params.LOCAL_MYSQL_FIXTURE_SETTINGS?.trim() ?: ''
+                    env.PROJECT_MYSQL_SNAPSHOT = params.PROJECT_MYSQL_SNAPSHOT?.trim() ?: ''
+                    env.PROJECT_MYSQL_MANIFEST_SHA256 = params.PROJECT_MYSQL_MANIFEST_SHA256?.trim() ?: ''
+                    env.PROJECT_MYSQL_ARCHIVE_SHA256 = params.PROJECT_MYSQL_ARCHIVE_SHA256?.trim() ?: ''
                     env.REMAINING_SYSTEM_DATA_SNAPSHOT = params.REMAINING_SYSTEM_DATA_SNAPSHOT?.trim() ?: ''
                     env.REMAINING_SYSTEM_DATA_ECS_SNAPSHOT = params.REMAINING_SYSTEM_DATA_ECS_SNAPSHOT?.trim() ?: ''
                     env.CANDIDATE_BUILD_TOOLS_ARCHIVE = params.CANDIDATE_BUILD_TOOLS_ARCHIVE?.trim() ?: ''
@@ -133,6 +140,7 @@ pipeline {
                             env.COLD_STORES_SNAPSHOT, env.COLD_STORES_ECS_SNAPSHOT,
                             env.COLD_HISTORY_SNAPSHOT, env.COLD_HISTORY_ECS_SNAPSHOT,
                             env.LOCAL_MYSQL_SNAPSHOT, env.LOCAL_MYSQL_ECS_SNAPSHOT, env.LOCAL_MYSQL_FIXTURE_SETTINGS,
+                            env.PROJECT_MYSQL_SNAPSHOT, env.PROJECT_MYSQL_MANIFEST_SHA256, env.PROJECT_MYSQL_ARCHIVE_SHA256,
                             env.REMAINING_SYSTEM_DATA_SNAPSHOT, env.REMAINING_SYSTEM_DATA_ECS_SNAPSHOT]
                         def releaseInputs = [params.COMPACT_CUTOVER_SETTINGS?.trim(), params.COMPATIBLE_BACKEND_IMAGE?.trim(),
                             params.COMPATIBLE_RUNNER_IMAGE?.trim(), params.REHEARSAL_MEMORY_EXTRACTION_MODEL?.trim()]
@@ -157,7 +165,12 @@ pipeline {
                     if (env.LOCAL_MYSQL_SNAPSHOT && env.LOCAL_MYSQL_ECS_SNAPSHOT) error('Choose exactly one local or ECS MySQL export snapshot input')
                     if (env.REMAINING_SYSTEM_DATA_SNAPSHOT && env.REMAINING_SYSTEM_DATA_ECS_SNAPSHOT) error('Choose exactly one local or ECS remaining system data snapshot input')
                     if (params.ACTION == 'verify-embedding' && (env.REMAINING_SYSTEM_DATA_SNAPSHOT || env.REMAINING_SYSTEM_DATA_ECS_SNAPSHOT)) error('Embedding verification cannot preserve remaining business data')
-                    if (((env.LOCAL_MYSQL_SNAPSHOT || env.LOCAL_MYSQL_ECS_SNAPSHOT) && !env.LOCAL_MYSQL_FIXTURE_SETTINGS) || (!(env.LOCAL_MYSQL_SNAPSHOT || env.LOCAL_MYSQL_ECS_SNAPSHOT) && env.LOCAL_MYSQL_FIXTURE_SETTINGS)) error('MySQL custody requires one sealed local or ECS export packet and reviewed private ECS image settings')
+                    def projectSqlInputs = [env.PROJECT_MYSQL_SNAPSHOT, env.PROJECT_MYSQL_MANIFEST_SHA256, env.PROJECT_MYSQL_ARCHIVE_SHA256]
+                    if (projectSqlInputs.any { it } && !projectSqlInputs.every { it }) error('Project MySQL custody requires all three explicit packet inputs or all blank')
+                    if (env.PROJECT_MYSQL_SNAPSHOT && (!(params.ACTION in ['verify', 'verify-runtime']) || params.DOORHANDLE_CI_SCOPE != 'mysql' || params.PRODUCTION_RELEASE_ENABLED)) error('Project MySQL custody only archives and recovers in complete MySQL verification; production and maintenance actions are forbidden')
+                    if (env.PROJECT_MYSQL_SNAPSHOT && (!(env.PROJECT_MYSQL_MANIFEST_SHA256 ==~ /[a-f0-9]{64}/) || !(env.PROJECT_MYSQL_ARCHIVE_SHA256 ==~ /[a-f0-9]{64}/))) error('Project MySQL custody requires explicit fixed manifest and archive SHA-256')
+                    def anySqlCustody = env.LOCAL_MYSQL_SNAPSHOT || env.LOCAL_MYSQL_ECS_SNAPSHOT || env.PROJECT_MYSQL_SNAPSHOT
+                    if ((anySqlCustody && !env.LOCAL_MYSQL_FIXTURE_SETTINGS) || (!anySqlCustody && env.LOCAL_MYSQL_FIXTURE_SETTINGS)) error('MySQL custody requires a sealed export packet and the shared reviewed private ECS image settings')
                     if (params.ACTION == 'verify-embedding' && (params.DOORHANDLE_CI_SCOPE != 'source' || params.DOORHANDLE_CI_AUTO_COMPACT_FIXTURES || env.LEGACY_SOURCE_SNAPSHOT || env.LEGACY_SOURCE_ECS_SNAPSHOT || env.LOCAL_ARTIFACTS_SNAPSHOT || env.LOCAL_ARTIFACTS_ECS_SNAPSHOT || env.LOCAL_ARTIFACTS_PROFILE != 'additional-local-artifacts-v1' || env.COLD_STORES_SNAPSHOT || env.COLD_STORES_ECS_SNAPSHOT || env.COLD_HISTORY_SNAPSHOT || env.COLD_HISTORY_ECS_SNAPSHOT || env.LOCAL_MYSQL_SNAPSHOT || env.LOCAL_MYSQL_ECS_SNAPSHOT || env.LOCAL_MYSQL_FIXTURE_SETTINGS || params.PRODUCTION_RELEASE_ENABLED)) error('Embedding verification is an independent source component check without legacy migration or production release')
                     if (params.DOORHANDLE_CI_SCOPE == 'source' && env.DOORHANDLE_CI_FIXTURE_MANIFEST) error('Source verification cannot accept a MySQL fixture manifest')
                     if (params.DOORHANDLE_CI_AUTO_COMPACT_FIXTURES) {
@@ -371,6 +384,18 @@ pipeline {
                 }
             }
         }
+        stage('Recover approved three-schema MySQL packet on ECS') {
+            when { expression { params.ACTION in ['verify', 'verify-runtime'] && env.PROJECT_MYSQL_SNAPSHOT } }
+            steps {
+                script { env.CI_PROJECT_MYSQL_ATTEMPTED = 'true' }
+                withCredentials([
+                    sshUserPrivateKey(credentialsId: 'doorhandle-ecs-ssh', keyFileVariable: 'DEPLOY_KEY', usernameVariable: 'DEPLOY_USER'),
+                    file(credentialsId: 'doorhandle-ecs-known-hosts', variable: 'DEPLOY_KNOWN_HOSTS')
+                ]) {
+                    pwsh '& ./script/jenkins/pipeline.ps1 -Action PreserveProjectMySql'
+                }
+            }
+        }
         stage('Prepare preserved legacy data candidate on ECS') {
             when { expression { params.ACTION in ['verify-runtime', 'compact-cutover'] } }
             steps {
@@ -460,6 +485,16 @@ pipeline {
                                 file(credentialsId: 'doorhandle-ecs-known-hosts', variable: 'DEPLOY_KNOWN_HOSTS')
                             ]) {
                                 pwsh '& ./script/jenkins/pipeline.ps1 -Action CleanupLegacyCandidate'
+                            }
+                        }
+                    }
+                    if (env.CI_PROJECT_MYSQL_ATTEMPTED == 'true') {
+                        catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
+                            withCredentials([
+                                sshUserPrivateKey(credentialsId: 'doorhandle-ecs-ssh', keyFileVariable: 'DEPLOY_KEY', usernameVariable: 'DEPLOY_USER'),
+                                file(credentialsId: 'doorhandle-ecs-known-hosts', variable: 'DEPLOY_KNOWN_HOSTS')
+                            ]) {
+                                pwsh '& ./script/jenkins/pipeline.ps1 -Action CleanupProjectMySql'
                             }
                         }
                     }

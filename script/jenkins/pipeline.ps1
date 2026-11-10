@@ -1,4 +1,4 @@
-param([Parameter(Mandatory = $true)][ValidateSet('Preflight', 'Package', 'PackageSourceOnly', 'PackageControls', 'PrepareTools', 'CleanupTools', 'PrepareFixtures', 'CleanupFixtures', 'VerifyEcs', 'VerifyEmbedding', 'RepairPriorEvidence', 'PreserveLegacy', 'PreserveLocalArtifacts', 'PreserveRemainingArtifacts', 'PreserveColdStores', 'PreserveLocalMySql', 'CleanupLocalMySql', 'ReclaimBuildOutputs', 'PrepareLegacyCandidate', 'CleanupLegacyCandidate', 'VerifyRuntime', 'CleanupRuntime', 'Publish', 'Rehearse', 'CompactCutover')][string]$Action)
+param([Parameter(Mandatory = $true)][ValidateSet('Preflight', 'Package', 'PackageSourceOnly', 'PackageControls', 'PrepareTools', 'CleanupTools', 'PrepareFixtures', 'CleanupFixtures', 'VerifyEcs', 'VerifyEmbedding', 'RepairPriorEvidence', 'PreserveLegacy', 'PreserveLocalArtifacts', 'PreserveRemainingArtifacts', 'PreserveColdStores', 'PreserveLocalMySql', 'CleanupLocalMySql', 'PreserveProjectMySql', 'CleanupProjectMySql', 'ReclaimBuildOutputs', 'PrepareLegacyCandidate', 'CleanupLegacyCandidate', 'VerifyRuntime', 'CleanupRuntime', 'Publish', 'Rehearse', 'CompactCutover')][string]$Action)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 Set-Location -LiteralPath (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
@@ -164,7 +164,7 @@ if ($env:ACTION -ceq 'reclaim-build-outputs') {
     if ($Action -cnotin @('PackageSourceOnly', 'ReclaimBuildOutputs') -or $env:CI_ECS_VERIFIED -cne 'false' -or $env:DOORHANDLE_CI_SCOPE -cne 'source') {
         throw 'Standalone build maintenance only packages pinned source and reclaims proven old outputs without a test PASS.'
     }
-    foreach ($name in @('LEGACY_SOURCE_SNAPSHOT', 'LEGACY_SOURCE_ECS_SNAPSHOT', 'LOCAL_ARTIFACTS_SNAPSHOT', 'LOCAL_ARTIFACTS_ECS_SNAPSHOT', 'COLD_STORES_SNAPSHOT', 'COLD_STORES_ECS_SNAPSHOT', 'COLD_HISTORY_SNAPSHOT', 'COLD_HISTORY_ECS_SNAPSHOT', 'LOCAL_MYSQL_SNAPSHOT', 'LOCAL_MYSQL_ECS_SNAPSHOT', 'LOCAL_MYSQL_FIXTURE_SETTINGS', 'REMAINING_SYSTEM_DATA_SNAPSHOT', 'REMAINING_SYSTEM_DATA_ECS_SNAPSHOT', 'DOORHANDLE_CI_FIXTURE_MANIFEST', 'DOORHANDLE_CI_FIXTURE_SETTINGS', 'CANDIDATE_BUILD_TOOLS_ARCHIVE', 'COMPACT_CUTOVER_SETTINGS', 'COMPATIBLE_BACKEND_IMAGE', 'COMPATIBLE_RUNNER_IMAGE', 'REHEARSAL_MEMORY_EXTRACTION_MODEL')) {
+    foreach ($name in @('LEGACY_SOURCE_SNAPSHOT', 'LEGACY_SOURCE_ECS_SNAPSHOT', 'LOCAL_ARTIFACTS_SNAPSHOT', 'LOCAL_ARTIFACTS_ECS_SNAPSHOT', 'COLD_STORES_SNAPSHOT', 'COLD_STORES_ECS_SNAPSHOT', 'COLD_HISTORY_SNAPSHOT', 'COLD_HISTORY_ECS_SNAPSHOT', 'LOCAL_MYSQL_SNAPSHOT', 'LOCAL_MYSQL_ECS_SNAPSHOT', 'LOCAL_MYSQL_FIXTURE_SETTINGS', 'PROJECT_MYSQL_SNAPSHOT', 'PROJECT_MYSQL_MANIFEST_SHA256', 'PROJECT_MYSQL_ARCHIVE_SHA256', 'REMAINING_SYSTEM_DATA_SNAPSHOT', 'REMAINING_SYSTEM_DATA_ECS_SNAPSHOT', 'DOORHANDLE_CI_FIXTURE_MANIFEST', 'DOORHANDLE_CI_FIXTURE_SETTINGS', 'CANDIDATE_BUILD_TOOLS_ARCHIVE', 'COMPACT_CUTOVER_SETTINGS', 'COMPATIBLE_BACKEND_IMAGE', 'COMPATIBLE_RUNNER_IMAGE', 'REHEARSAL_MEMORY_EXTRACTION_MODEL')) {
         if (-not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) { throw 'Standalone build maintenance cannot accept business, fixture, model or build-image inputs.' }
     }
     foreach ($name in @('DOORHANDLE_CI_AUTO_COMPACT_FIXTURES', 'PRODUCTION_RELEASE_ENABLED', 'DOORHANDLE_COMPACT_RELEASE_READY', 'DOORHANDLE_COMPACT_REHEARSAL_READY', 'REHEARSAL_KEEP')) {
@@ -173,7 +173,7 @@ if ($env:ACTION -ceq 'reclaim-build-outputs') {
 } elseif ($Action -ceq 'PackageSourceOnly') { throw 'Source-only maintenance packaging requires the explicit reclaim-build-outputs action.' }
 if ($env:ACTION -ceq 'verify-controls') {
     if ($Action -cnotin @('PackageControls','PrepareTools','Preflight','CleanupTools') -or $env:CI_ECS_VERIFIED -cne 'false' -or $env:DOORHANDLE_CI_SCOPE -cne 'source') { throw 'Control verification only packages fixed source, prepares tools, runs the control preflight and cleans its tools.' }
-    foreach ($name in @('LEGACY_SOURCE_SNAPSHOT','LEGACY_SOURCE_ECS_SNAPSHOT','LOCAL_ARTIFACTS_SNAPSHOT','LOCAL_ARTIFACTS_ECS_SNAPSHOT','COLD_STORES_SNAPSHOT','COLD_STORES_ECS_SNAPSHOT','COLD_HISTORY_SNAPSHOT','COLD_HISTORY_ECS_SNAPSHOT','LOCAL_MYSQL_SNAPSHOT','LOCAL_MYSQL_ECS_SNAPSHOT','LOCAL_MYSQL_FIXTURE_SETTINGS','REMAINING_SYSTEM_DATA_SNAPSHOT','REMAINING_SYSTEM_DATA_ECS_SNAPSHOT','DOORHANDLE_CI_FIXTURE_MANIFEST','DOORHANDLE_CI_FIXTURE_SETTINGS','CANDIDATE_BUILD_TOOLS_ARCHIVE','COMPACT_CUTOVER_SETTINGS','COMPATIBLE_BACKEND_IMAGE','COMPATIBLE_RUNNER_IMAGE','REHEARSAL_MEMORY_EXTRACTION_MODEL')) {
+    foreach ($name in @('LEGACY_SOURCE_SNAPSHOT','LEGACY_SOURCE_ECS_SNAPSHOT','LOCAL_ARTIFACTS_SNAPSHOT','LOCAL_ARTIFACTS_ECS_SNAPSHOT','COLD_STORES_SNAPSHOT','COLD_STORES_ECS_SNAPSHOT','COLD_HISTORY_SNAPSHOT','COLD_HISTORY_ECS_SNAPSHOT','LOCAL_MYSQL_SNAPSHOT','LOCAL_MYSQL_ECS_SNAPSHOT','LOCAL_MYSQL_FIXTURE_SETTINGS','PROJECT_MYSQL_SNAPSHOT','PROJECT_MYSQL_MANIFEST_SHA256','PROJECT_MYSQL_ARCHIVE_SHA256','REMAINING_SYSTEM_DATA_SNAPSHOT','REMAINING_SYSTEM_DATA_ECS_SNAPSHOT','DOORHANDLE_CI_FIXTURE_MANIFEST','DOORHANDLE_CI_FIXTURE_SETTINGS','CANDIDATE_BUILD_TOOLS_ARCHIVE','COMPACT_CUTOVER_SETTINGS','COMPATIBLE_BACKEND_IMAGE','COMPATIBLE_RUNNER_IMAGE','REHEARSAL_MEMORY_EXTRACTION_MODEL')) {
         if (-not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) { throw 'Control verification cannot accept business, fixture, model or release inputs.' }
     }
     foreach ($name in @('DOORHANDLE_CI_AUTO_COMPACT_FIXTURES','PRODUCTION_RELEASE_ENABLED','DOORHANDLE_COMPACT_RELEASE_READY','DOORHANDLE_COMPACT_REHEARSAL_READY','REHEARSAL_KEEP')) {
@@ -182,6 +182,16 @@ if ($env:ACTION -ceq 'verify-controls') {
 } elseif ($Action -ceq 'PackageControls') { throw 'Control-only source packaging requires the explicit verify-controls action.' }
 if ($env:CANDIDATE_BUILD_TOOLS_ARCHIVE -and ($env:ACTION -cnotin @('verify-runtime', 'compact-cutover') -or $env:DOORHANDLE_CI_SCOPE -cne 'mysql')) {
     throw 'Candidate build input is only accepted by runtime verification or compact cutover.'
+}
+$projectSqlInputs=@('PROJECT_MYSQL_SNAPSHOT','PROJECT_MYSQL_MANIFEST_SHA256','PROJECT_MYSQL_ARCHIVE_SHA256')
+$projectSqlSelected=@($projectSqlInputs | Where-Object { -not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_)) })
+if($projectSqlSelected.Count) {
+    if($projectSqlSelected.Count -ne 3 -or $env:ACTION -cnotin @('verify','verify-runtime') -or
+        $env:DOORHANDLE_CI_SCOPE -cne 'mysql' -or $env:PRODUCTION_RELEASE_ENABLED -ceq 'true' -or
+        [string]::IsNullOrWhiteSpace($env:LOCAL_MYSQL_FIXTURE_SETTINGS) -or
+        $env:PROJECT_MYSQL_MANIFEST_SHA256 -cnotmatch '^[a-f0-9]{64}$' -or $env:PROJECT_MYSQL_ARCHIVE_SHA256 -cnotmatch '^[a-f0-9]{64}$') {
+        throw 'Project SQL custody requires all three sealed inputs, shared ECS image settings and archive-only complete MySQL verification.'
+    }
 }
 if ($Action -eq 'Publish') {
     if ($env:PRODUCTION_RELEASE_ENABLED -ne 'true' -or $env:DOORHANDLE_COMPACT_RELEASE_READY -ne 'true') {
@@ -500,6 +510,14 @@ if ($Action -eq 'CleanupLocalMySql') {
     $commit = Require-Value 'GIT_COMMIT' '^[a-f0-9]{40}$'
     $sha = (Get-FileHash -LiteralPath artifacts/source.tar.gz -Algorithm SHA256).Hash.ToLowerInvariant()
     & ./script/jenkins/preserve-local-mysql.ps1 -Mode Cleanup -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha
+    return
+}
+if ($Action -in @('PreserveProjectMySql','CleanupProjectMySql')) {
+    if($env:CI_ECS_VERIFIED -cne 'true' -or $projectSqlSelected.Count -ne 3) { throw 'Project SQL recovery requires this fixed build complete ECS verification and sealed inputs.' }
+    $commit=Require-Value 'GIT_COMMIT' '^[a-f0-9]{40}$'
+    $sha=(Get-FileHash -LiteralPath artifacts/source.tar.gz -Algorithm SHA256).Hash.ToLowerInvariant()
+    $mode=if($Action -ceq 'CleanupProjectMySql'){'Cleanup'}else{'Preserve'}
+    & ./script/jenkins/preserve-project-mysql.ps1 -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha -SnapshotDirectory $env:PROJECT_MYSQL_SNAPSHOT -ManifestSha256 $env:PROJECT_MYSQL_MANIFEST_SHA256 -ArchiveSha256 $env:PROJECT_MYSQL_ARCHIVE_SHA256 -FixtureSettings $env:LOCAL_MYSQL_FIXTURE_SETTINGS -Mode $mode
     return
 }
 if ($Action -in @('PreserveLocalArtifacts', 'PreserveRemainingArtifacts', 'PreserveColdStores', 'PreserveLocalMySql', 'ReclaimBuildOutputs')) {
