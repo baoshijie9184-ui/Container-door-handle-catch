@@ -37,7 +37,7 @@
         "doorhandle.operations.mysql.config"
       ],
       "source": "doorhandle-module-system/src/test/java/com/ruanzhu/doorhandle/module/system/service/CollaborationHttpMySqlTest.java",
-      "minimumTests": 10,
+      "minimumTests": 11,
       "coverage": [
         "real HTTP cookies, independent users, transactional SSE and delayed authentication response isolation"
       ]
@@ -1142,6 +1142,16 @@
         "className": "com.ruanzhu.doorhandle.module.system.service.BusinessMutationAuditNestedTest",
         "minimumTests": 2,
         "source": "doorhandle-module-system/src/test/java/com/ruanzhu/doorhandle/module/system/service/BusinessMutationAuditNestedTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.system.controller.OrganizationControllerTest",
+        "minimumTests": 2,
+        "source": "doorhandle-module-system/src/test/java/com/ruanzhu/doorhandle/module/system/controller/OrganizationControllerTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.system.service.BusinessCommandStoreDepartmentReplayTest",
+        "minimumTests": 3,
+        "source": "doorhandle-module-system/src/test/java/com/ruanzhu/doorhandle/module/system/service/BusinessCommandStoreDepartmentReplayTest.java"
       }
     ]
   },
