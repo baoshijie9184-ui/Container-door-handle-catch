@@ -5,6 +5,7 @@ external providers. They verify fixture framing, not replace the actual browser
 AGUI/device-save acceptance or the full migration/runtime gates.
 """
 from contextlib import contextmanager
+import asyncio
 import copy
 import hashlib
 import http.client
@@ -14,6 +15,7 @@ import json
 from pathlib import Path
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -244,3 +246,117 @@ def test_proxy_cannot_gate_model_response_to_manufacture_concurrency():
         assert transport.snapshot()['modelCompleted'] == 0
     finally:
         transport.server.server_close()
+
+
+def persistence_report():
+    return {'status': 'PASS', 'accounts': {'supervisor': {'userId': '9007199254740993'}}, 'checks': {
+        'model-stream-save-connection-budget': {'status': 'PASS', 'modelId': spec()['modelId'], 'actualAgentStreams': [
+            {'marker': marker, 'runId': str(index) * 8 + '-aaaa-bbbb-cccc-' + str(index) * 12,
+             'sessionId': 'owned-stream-session-' + str(index), 'messageId': str(9007199254741000 + index),
+             'firstContent': True, 'finishedEvent': True, 'done': True, 'error': False}
+            for index, marker in enumerate(MARKERS, 1)]}}}
+
+
+class PersistenceDb:
+    def __init__(self):
+        owner, streams = persistence_report()['accounts']['supervisor']['userId'], persistence_report()['checks'][
+            'model-stream-save-connection-budget']['actualAgentStreams']
+        self.calls, self.rows = [], []
+        for index, stream in enumerate(streams, 1):
+            body = 'Owned stream content ' + stream['marker']
+            self.rows.append([{**{key: stream[key] for key in ('runId', 'sessionId', 'messageId')},
+                'ownerUserId': owner, 'runStatus': 'COMPLETED', 'entryPoint': 'AGUI', 'modelId': spec()['modelId'],
+                'runEnded': 1, 'sessionOwnerUserId': owner, 'messageSessionId': stream['sessionId'],
+                'messageRole': 'assistant', 'messageType': 'TEXT', 'executionRunId': stream['runId'],
+                'executionOwnerUserId': owner, 'executionEvidenceId': str(800 + index),
+                'assistantRowsForRun': 1, 'sessionAssistantRows': 1, 'markerAssistantRows': 1,
+                'markerOccurrences': 1, 'otherMarkerOccurrences': 0, 'contentSha256': hashlib.sha256(body.encode()).hexdigest(),
+                'contentBytes': len(body.encode()), 'executionEvidenceRows': 1, 'executionEvidenceMatched': 1}])
+
+    @staticmethod
+    def literal(value):
+        return "'" + value.replace("'", "''") + "'"
+
+    def query(self, sql):
+        # The production adapter exposes the same query() shape; this fixture
+        # does not execute SQL or claim to be actual database acceptance.
+        assert sql.startswith('SELECT JSON_OBJECT(') and sql.count(';') == 1 and sql.endswith(';')
+        self.calls.append(sql)
+        return copy.deepcopy(self.rows[len(self.calls) - 1])
+
+
+def persistence_owner():
+    return SimpleNamespace(token=TOKEN, accounts={'supervisor': {'userId': 9007199254740993}}, db=PersistenceDb())
+
+
+def test_persisted_model_streams_match_the_actual_assistant_ids_without_returning_plaintext():
+    owner = persistence_owner()
+    result = probes.verify_persisted_model_streams(owner, spec(), persistence_report())
+    assert result['kind'] == probes.PERSISTENCE_KIND and result['status'] == 'PASS'
+    assert result['ownerUserId'] == '9007199254740993' and result['actualAssistantRows'] == 2
+    assert len(owner.db.calls) == 2 and len(result['streams']) == 2
+    assert all(row['messageId'] == expected['messageId'] and row['markerOccurrences'] == 1
+        and row['executionEvidenceMatched'] is True for row, expected in zip(result['streams'],
+            persistence_report()['checks']['model-stream-save-connection-budget']['actualAgentStreams']))
+    assert 'Owned stream content ' not in json.dumps(result) and TOKEN not in json.dumps(result)
+    assert all('JOIN chat_message m ON m.id=' in sql and "e.kind='MESSAGE_EXECUTION'" in sql for sql in owner.db.calls)
+
+
+@pytest.mark.parametrize('key,value', [
+    ('runId', 'a' * 36), ('ownerUserId', '99'), ('runStatus', 'INTERRUPTED'), ('entryPoint', 'CHAT'),
+    ('modelId', 'other-model'), ('runEnded', 0), ('sessionOwnerUserId', '99'), ('messageId', '2'),
+    ('messageSessionId', 'other-session'), ('messageRole', 'user'), ('messageType', 'AGENT_CARDS'),
+    ('executionRunId', 'other-run'), ('executionOwnerUserId', '99'), ('assistantRowsForRun', 0),
+    ('assistantRowsForRun', 2), ('sessionAssistantRows', 2), ('markerAssistantRows', 0),
+    ('markerOccurrences', 2), ('markerOccurrences', True), ('otherMarkerOccurrences', 1),
+    ('executionEvidenceId', None), ('executionEvidenceRows', 0), ('executionEvidenceRows', 2),
+    ('executionEvidenceMatched', 0), ('contentSha256', None), ('contentBytes', 0), ('contentBytes', 2097153)])
+def test_persisted_model_streams_reject_wrong_identity_links_content_or_ambiguous_evidence(key, value):
+    owner = persistence_owner(); owner.db.rows[0][0][key] = value
+    with pytest.raises(ValueError):
+        probes.verify_persisted_model_streams(owner, spec(), persistence_report())
+
+
+@pytest.mark.parametrize('shape', ['missing', 'duplicate'])
+def test_completed_http_stream_cannot_replace_a_missing_or_ambiguous_actual_database_row(shape):
+    owner = persistence_owner(); owner.db.rows[0] = [] if shape == 'missing' else owner.db.rows[0] * 2
+    with pytest.raises(ValueError):
+        probes.verify_persisted_model_streams(owner, spec(), persistence_report())
+
+
+@pytest.mark.parametrize('damage', ['failed-check', 'other-owner', 'duplicate-session', 'duplicate-run',
+    'duplicate-message', 'unfinished', 'stream-error', 'input-message-uuid', 'lossy-number-id', 'other-marker'])
+def test_bad_browser_stream_identifiers_never_become_database_completion_evidence(damage):
+    owner, report = persistence_owner(), persistence_report()
+    check = report['checks']['model-stream-save-connection-budget']; first, second = check['actualAgentStreams']
+    if damage == 'failed-check': check['status'] = 'FAIL'
+    elif damage == 'other-owner': report['accounts']['supervisor']['userId'] = '99'
+    elif damage == 'duplicate-session': second['sessionId'] = first['sessionId']
+    elif damage == 'duplicate-run': second['runId'] = first['runId']
+    elif damage == 'duplicate-message': second['messageId'] = first['messageId']
+    elif damage == 'unfinished': first['done'] = False
+    elif damage == 'stream-error': first['error'] = True
+    elif damage == 'input-message-uuid': first['messageId'] = '11111111-aaaa-bbbb-cccc-111111111111'
+    elif damage == 'lossy-number-id': first['messageId'] = 9007199254741000
+    else: second['marker'] = first['marker']
+    with pytest.raises(ValueError):
+        probes.verify_persisted_model_streams(owner, spec(), report)
+
+
+def test_actual_browser_model_selection_adapter_preserves_guard_origin_context_and_body():
+    calls = []
+    class Response:
+        status = 200
+        async def json(self):
+            return {'code': 200, 'data': {'modelId': spec()['modelId'], 'revision': '3'}}
+    class Request:
+        async def fetch(self, url, **options):
+            calls.append((url, options)); return Response()
+    subject = SimpleNamespace(base='http://127.0.0.1:18080', auth={'supervisor': {'accountContext': 'A' * 43}})
+    body = {'modelId': spec()['modelId'], 'revision': '2', 'requestId': 'actual-command-id'}
+    result = asyncio.run(browser.Runner.api(subject, SimpleNamespace(request=Request()), 'POST',
+        '/api/agent/conversations/owned-stream-session/model-selection', body, auth_key='supervisor'))
+    assert result['revision'] == '3'
+    assert calls == [('http://127.0.0.1:18080/api/agent/conversations/owned-stream-session/model-selection', {
+        'method': 'POST', 'data': body, 'headers': {'Origin': subject.base,
+            'X-Account-Context': 'A' * 43, 'X-Agent-Action': 'workbench'}, 'timeout': 30000})]
