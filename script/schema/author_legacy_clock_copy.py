@@ -363,8 +363,15 @@ def compile_copy(text, filename, sources=None):
                     base, condition = domain_tail, ''
                 identity = 'clock_target.' + ('namespace' if table == 'runtime_state' else 'id')
                 verified = ['NOT(clock_target.legacy_clock_json<=>' + clock + ')']
+                temporal_columns = {name for name, metadata in table_catalog[table]['columns'].items()
+                                    if metadata['type'].upper().startswith(('DATETIME', 'TIMESTAMP'))}
                 for column, value in mapping.items():
-                    if column in clock_columns(table_catalog[table]) | RAW_TIME | {'legacy_utc_offset', 'mcp_source_utc_offset', 'payload_json', 'manifest_json'}:
+                    if column in temporal_columns:
+                        # DATETIME(0) and DATETIME(6) can hold the same instant
+                        # with different text. Compare all temporal precision
+                        # as typed values; raw text and JSON remain byte exact.
+                        verified.append('NOT(clock_target.`' + column + '`<=>' + value + ')')
+                    elif column in RAW_TIME | {'legacy_utc_offset', 'mcp_source_utc_offset', 'payload_json', 'manifest_json'}:
                         verified.append('NOT(BINARY clock_target.`' + column + '`<=>BINARY ' + value + ')')
                 final_guards.append('INSERT INTO ' + guard + ' SELECT IF(COUNT(*)=0,1,0) ' + base
                     + ' LEFT JOIN ' + table + ' clock_target ON ' + join + ' WHERE ' + condition + '(' + identity
