@@ -1,5 +1,11 @@
 # 单体 ECS 运行与测试
 
+2026-11-11 #214：继续在`java-cloud`单体分支。固定`04e36665`的Auth两项、组织四项、报告两项、设备七项已在ECS通过；Java实际1,284条目中712通过、1失败、571条件跳过，失败位于完整29表H2安装测试。原断言动态统计了238条命名CHECK，却漏算DDL中四条列级版本CHECK；实际242并非多装约束。测试修复保留全部命名约束、29表及35条外键，并逐表检查四条列约束的默认零、正常递增及拒绝负值。生产DDL、H2适配器和迁移门均不变；生产恢复链保存实际全量CHECK元数据，不存在同型238总数门。后续Java/Python/双前端及250项资料恢复尚未执行，不能据此称迁移完成。
+
+#214的198份原归档已核验，197份非应用JAR（32,130,269字节）与原build.xml另保全于`work/jenkins/data-residency-20261107/ci-214-raw-receipts`；应用JAR保留Jenkins原归档。工具实际STOPPED、remaining为空，实例已从流水线外实际回读`Stopped / StopCharging`。Jenkins控制器继续运行，源码修复期间任务禁自动触发；未执行80GiB扩容或新快照。
+
+约束测试经独立窄审补齐告警种子必填alert_id，四张表的必填、唯一键、外键前置及H2异常名称已核对；仍为原五个用例，source最低数不变。最终13模块离线`test-compile`跳过测试23.928秒成功，日志`work/jenkins/monolith-ci214-h2-final-test-compile-20261111.log`，本地未执行测试；修复须由新固定提交的完整source实际验证。
+
 2026-11-11 #213：单体固定`8c209247`的AuthController两项、OrganizationController四项已在ECS实际全通过。整轮source随后在设备模块以153通过、1错误、103跳过终态FAILURE；旧设备告警生命周期夹具仍依赖请求operator、未设置服务端认证上下文，250项资料尚未恢复。已集中修正：告警入口在查库/改状态前验证已认证且用户编号非空的BusinessPrincipal，只取其username；夹具以两个真实认证身份确认/解决并用不同payload姓名证明不能冒名，原五项保留且新增两项拒绝、零mapper调用约束。同型守卫/调用点窄查无第二处遗漏。修复全13模块主/测试源码离线test-compile32.411秒成功，无本地测试；原件63份归档均核SHA，62份非应用JAR及build.xml另存`ci-213-raw-receipts`。工具STOPPED、remaining为空，ECS已实际`Stopped / StopCharging`，Jenkins运行且源码收口期间任务禁自动触发；80GiB请求仍待明确答复，无收费扩容或快照操作。
 
 2026-11-11 #210/#211 已闭合：单体固定`b484ea12`控制1,853项全通过；维护真实SUCCESS，普通移除两退出BuildKit及一停止MySQL对象，明确#207无数据库对象，随后四JAR全部回收、无遗留隔离文件。数据库目录、状态卷、镜像、源码和报告保留。22份原归档三方SHA一致，原件在`work/jenkins/data-residency-20261107/ci-211-raw-receipts`；两JAR阶段原回执的可用字节净增观测合计1,521,205,248，另一次独立只读回读可用4,500,369,408字节。后者是在#212已开始后的观测，不把候选分配量等同实时空闲量。
