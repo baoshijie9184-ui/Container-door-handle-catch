@@ -14,12 +14,20 @@ public final class JdbcAuditStore {
     private final JdbcTemplate jdbc;
     private final ObjectMapper json;
     private final Map<String, Class<?>> payloadTypes;
+    private final Map<String, Map<Integer, Class<?>>> versionedPayloadTypes;
     public JdbcAuditStore(JdbcTemplate jdbc, ObjectMapper json) {
         this(jdbc,json,Map.of("CONVERSATION_INPUT",AuditPayloads.ConversationInputV1.class,
                 "KNOWLEDGE",AuditPayloads.KnowledgeV1.class));
     }
     public JdbcAuditStore(JdbcTemplate jdbc,ObjectMapper json,Map<String,Class<?>> payloadTypes) {
+        this(jdbc,json,payloadTypes,Map.of());
+    }
+    public JdbcAuditStore(JdbcTemplate jdbc,ObjectMapper json,Map<String,Class<?>> payloadTypes,
+            Map<String,Map<Integer,Class<?>>> versionedPayloadTypes) {
         this.jdbc=jdbc; this.json=json; this.payloadTypes=Map.copyOf(payloadTypes);
+        var versions=new java.util.HashMap<String,Map<Integer,Class<?>>>();
+        versionedPayloadTypes.forEach((kind,entries)->versions.put(kind,Map.copyOf(entries)));
+        this.versionedPayloadTypes=Map.copyOf(versions);
     }
     public void validateSchema() {
         jdbc.queryForList("SELECT event_id,kind,owner_user_id,actor_user_id,resource_id,action,revision,"
@@ -125,8 +133,9 @@ public final class JdbcAuditStore {
     }
     private String append(AuditEvent event,String policyVersion,String outcome,Long quantity,String unit,String requestScope,LocalDateTime observedAt,Integer detectionModelId) {
         JdbcTransactions.requireActive(jdbc);
-        Class<?> type=payloadTypes.get(event.kind());
-        if(type==null || !type.isRecord() || event.payloadVersion()!=1 || !type.isInstance(event.payload()))
+        Class<?> type=event.payloadVersion()==1?payloadTypes.get(event.kind()):null;
+        if(versionedPayloadTypes.containsKey(event.kind()))type=versionedPayloadTypes.get(event.kind()).get(event.payloadVersion());
+        if(type==null || !type.isRecord() || !type.isInstance(event.payload()))
             throw new IllegalArgumentException("Unregistered audit kind or payload version/type");
         WorkflowPayloads.text(event.action(),64,"audit action");
         if(event.contentSha256()!=null&&!event.contentSha256().matches("[a-f0-9]{64}"))

@@ -21,6 +21,8 @@ import java.time.LocalDateTime;
 @NoArgsConstructor
 @TableName("device_usage")
 public class DeviceUsageRecord {
+    @TableField("version")
+    private Long version;
 
     /** 主键ID */
     @TableId(type = IdType.AUTO)

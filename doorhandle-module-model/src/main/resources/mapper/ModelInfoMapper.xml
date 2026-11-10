@@ -4,6 +4,7 @@
 
     <resultMap id="BaseResultMap" type="com.ruanzhu.doorhandle.module.model.entity.ModelInfo">
         <id column="model_id" property="modelId"/>
+        <result column="row_version" property="rowVersion"/>
         <result column="model_name" property="modelName"/>
         <result column="version" property="version"/>
         <result column="model_path" property="modelPath"/>
@@ -52,7 +53,7 @@
     </insert>
 
     <select id="selectByModelId" parameterType="java.lang.Integer" resultMap="BaseResultMap">
-        SELECT model_id, model_name, version, model_path, upload_time, update_description,
+        SELECT model_id, row_version, model_name, version, model_path, upload_time, update_description,
                status, is_default, creator, published_at, last_used_at, usage_count, validation_status, validation_message,
                mlops_status, evaluation_dataset, precision_score, recall_score, map_score, training_image_count, training_completed_at, evaluation_image_count, no_detection_image_count, inference_fps, f1_score,
                avg_inference_ms, compatibility_note, deployment_strategy, canary_percent, ab_group, rollback_from_model_id
@@ -61,7 +62,7 @@
     </select>
 
     <select id="selectByModelNameAndVersion" resultMap="BaseResultMap">
-        SELECT model_id, model_name, version, model_path, upload_time, update_description,
+        SELECT model_id, row_version, model_name, version, model_path, upload_time, update_description,
                status, is_default, creator, published_at, last_used_at, usage_count, validation_status, validation_message,
                mlops_status, evaluation_dataset, precision_score, recall_score, map_score, training_image_count, training_completed_at, evaluation_image_count, no_detection_image_count, inference_fps, f1_score,
                avg_inference_ms, compatibility_note, deployment_strategy, canary_percent, ab_group, rollback_from_model_id
@@ -70,7 +71,7 @@
     </select>
 
     <select id="selectAll" resultMap="BaseResultMap">
-        SELECT model_id, model_name, version, model_path, upload_time, update_description,
+        SELECT model_id, row_version, model_name, version, model_path, upload_time, update_description,
                status, is_default, creator, published_at, last_used_at, usage_count, validation_status, validation_message,
                mlops_status, evaluation_dataset, precision_score, recall_score, map_score, training_image_count, training_completed_at, evaluation_image_count, no_detection_image_count, inference_fps, f1_score,
                avg_inference_ms, compatibility_note, deployment_strategy, canary_percent, ab_group, rollback_from_model_id

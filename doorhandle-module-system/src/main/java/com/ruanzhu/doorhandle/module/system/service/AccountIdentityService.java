@@ -22,10 +22,14 @@ public class AccountIdentityService {
     private final AccountEmployeeBindingMapper bindings;
     private final OrganizationBindingAuditStore audits;
     private final EmployeeDirectoryApi employees;
+    private com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory businessUsers;
+    private org.springframework.context.ApplicationEventPublisher events;
     public AccountIdentityService(UserMapper users, AccountEmployeeBindingMapper bindings,
             OrganizationBindingAuditStore audits, EmployeeDirectoryApi employees) {
         this.users = users; this.bindings = bindings; this.audits = audits; this.employees = employees;
     }
+    @org.springframework.beans.factory.annotation.Autowired
+    public void collaborationEligibility(com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory directory,org.springframework.context.ApplicationEventPublisher events){this.businessUsers=directory;this.events=events;}
     public AccountIdentity mine(TenantPrincipal principal) {
         var user = current(principal, false);
         return identities(List.of(user)).get(0);
@@ -61,7 +65,7 @@ public class AccountIdentityService {
             participants.put(id,locked);
         }
         var actor=participants.get(principal.userId());
-        if(!principal.username().equals(actor.getUsername())||!isSupervisor(actor.getRole()))throw new AccessDeniedException("当前账号没有组织管理权限");
+        if(!principal.username().equals(actor.getUsername())||!(businessUsers==null?isSupervisor(actor.getRole()):businessUsers.lockCurrent(principal.userId(),principal.username()).supervisor()))throw new AccessDeniedException("当前账号没有组织管理权限");
         var user=participants.get(userId);
         var binding = bindings.selectById(userId);
         if (binding == null || binding.getVersion() == null)
@@ -85,13 +89,15 @@ public class AccountIdentityService {
         audit.setBeforeEmployeeId(before); audit.setAfterEmployeeId(employeeId);
         audit.setBindingVersion(version + 1); audit.setAction(employeeId == null ? "UNBIND" : before == null ? "BIND" : "REBIND");
         audits.append(audit);
+        if(events!=null)events.publishEvent(new com.ruanzhu.doorhandle.contracts.security.LoginEligibilityChanged(userId));
         return identities(List.of(user)).get(0);
     }
     public void assertSupervisor(TenantPrincipal principal) { current(principal, true); }
     private User current(TenantPrincipal principal, boolean supervisor) {
         if (principal == null) throw new AccessDeniedException("未登录");
+        if(businessUsers!=null){var identity=businessUsers.current(principal.userId(),principal.username());if(supervisor&&!identity.supervisor())throw new AccessDeniedException("当前账号没有组织管理权限");}
         var user = users.selectById(principal.userId());
-        if (user == null || !principal.username().equals(user.getUsername()) || (supervisor && !isSupervisor(user.getRole())))
+        if (user == null || !principal.username().equals(user.getUsername()) || (businessUsers==null&&supervisor&&!isSupervisor(user.getRole())))
             throw new AccessDeniedException("当前账号没有组织管理权限");
         return user;
     }
@@ -110,5 +116,5 @@ public class AccountIdentityService {
                     isSupervisor(u.getRole()) ? "SINGLE_ENTERPRISE" : "OWNED_OR_ASSIGNED");
         }).toList();
     }
-    private static boolean isSupervisor(String role) { return "SUPERVISOR".equalsIgnoreCase(role) || "ADMIN".equalsIgnoreCase(role); }
+    private static boolean isSupervisor(String role) { return "SUPERVISOR".equalsIgnoreCase(role); }
 }

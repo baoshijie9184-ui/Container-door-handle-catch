@@ -126,6 +126,7 @@ public class DeviceServiceImpl implements DeviceService {
     @CacheEvict(cacheNames = {"device", "dashboard"}, allEntries = true)
     @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DEVICE",action="createDevice",resource="result.id",version="result.version",supervisorOnly=true)
     public Device createDevice(Device device) {
+        device.setVersion(0);
         // 检查设备编号是否已存在
         Device existingDevice = deviceMapper.findByDeviceCode(device.getDeviceCode());
         if (existingDevice != null) {
@@ -466,6 +467,9 @@ public class DeviceServiceImpl implements DeviceService {
     }
 
     private String resolveOperator(DeviceAlertActionRequest request) {
-        return request != null && StringUtils.hasText(request.getOperator()) ? request.getOperator() : "system";
+        var authentication=org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication();
+        if(authentication!=null&&authentication.getPrincipal() instanceof com.ruanzhu.doorhandle.contracts.security.BusinessPrincipal principal)
+            return principal.username();
+        throw new SecurityException("告警操作缺少受信账号");
     }
 }

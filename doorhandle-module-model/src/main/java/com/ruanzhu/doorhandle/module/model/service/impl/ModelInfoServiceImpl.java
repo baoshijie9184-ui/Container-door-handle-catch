@@ -72,6 +72,7 @@ public class ModelInfoServiceImpl extends ServiceImpl<ModelInfoMapper, ModelInfo
     @CacheEvict(cacheNames = {"model", "dashboard"}, allEntries = true)
     @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DETECTION_MODEL",action="saveModelInfo",supervisorOnly=true)
     public boolean saveModelInfo(ModelInfo modelInfo) {
+        modelInfo.setRowVersion(0L);
         log.info("保存模型信息: modelId={}", modelInfo.getModelId());
         validateModelFacts(modelInfo);
         uploadFiles.metadataPath(modelInfo.getModelPath(),null);

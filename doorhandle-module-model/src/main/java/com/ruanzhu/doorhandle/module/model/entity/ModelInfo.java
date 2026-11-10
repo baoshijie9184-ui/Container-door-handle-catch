@@ -17,6 +17,9 @@ import java.time.LocalDateTime;
 @Data
 @TableName("model_management")
 public class ModelInfo {
+    /** Optimistic edit revision; distinct from the human model version such as v1. */
+    @TableField("row_version")
+    private Long rowVersion;
     
     /**
      * 模型唯一标识ID（主键）

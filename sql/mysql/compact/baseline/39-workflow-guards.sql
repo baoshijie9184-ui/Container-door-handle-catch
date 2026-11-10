@@ -13,6 +13,14 @@ END$$
 CREATE TRIGGER compact_workflow_chat_reference_update
 BEFORE UPDATE ON workflow_instance FOR EACH ROW
 BEGIN
+    IF OLD.kind='BUSINESS_COMMAND' AND (OLD.status='SUCCEEDED'
+       OR NOT(BINARY NEW.kind<=>BINARY OLD.kind) OR NOT(BINARY NEW.workflow_id<=>BINARY OLD.workflow_id)
+       OR NOT(NEW.owner_user_id<=>OLD.owner_user_id) OR NOT(NEW.actor_user_id<=>OLD.actor_user_id)
+       OR NOT(BINARY NEW.idempotency_scope<=>BINARY OLD.idempotency_scope)
+       OR NOT(BINARY NEW.request_id<=>BINARY OLD.request_id) OR NOT(BINARY NEW.request_sha256<=>BINARY OLD.request_sha256)
+       OR NOT(BINARY NEW.payload_json<=>BINARY OLD.payload_json)) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Business command identity and completed receipt are immutable';
+    END IF;
     IF OLD.kind IN ('DETECTION_IDENTITY_COMMAND','DETECTION_IDENTITY_MAP_BATCH','DETECTION_IDENTITY_MAP_ITEM')
        OR (OLD.kind='DETECTION_IDENTITY_REPORT' AND OLD.status='COMPLETED') THEN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Completed detection identity receipts are immutable';
@@ -32,7 +40,7 @@ END$$
 CREATE TRIGGER compact_workflow_identity_receipt_delete
 BEFORE DELETE ON workflow_instance FOR EACH ROW
 BEGIN
-    IF OLD.kind IN ('DETECTION_IDENTITY_COMMAND','DETECTION_IDENTITY_MAP_BATCH',
+    IF OLD.kind IN ('BUSINESS_COMMAND','DETECTION_IDENTITY_COMMAND','DETECTION_IDENTITY_MAP_BATCH',
                     'DETECTION_IDENTITY_MAP_ITEM','DETECTION_IDENTITY_REPORT') THEN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Detection identity receipts must be retained';
     END IF;

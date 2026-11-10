@@ -36,6 +36,35 @@ final class AuditMetadata {
         if(attributes instanceof org.springframework.web.context.request.ServletRequestAttributes servlet){servlet.getRequest().setAttribute(CORRELATION,chosen);if(servlet.getResponse()!=null)servlet.getResponse().setHeader("X-Request-ID",chosen);}
         return chosen;
     }
+    static String requiredRequest(Object preferred) {
+        var attributes=org.springframework.web.context.request.RequestContextHolder.getRequestAttributes();
+        String header=attributes instanceof org.springframework.web.context.request.ServletRequestAttributes servlet?servlet.getRequest().getHeader("X-Request-ID"):null;
+        if(preferred==null&&header==null)throw new IllegalArgumentException("业务写请求必须提供 requestId 或 X-Request-ID");
+        return request(preferred);
+    }
+    static Long expectedVersion(Object[] arguments) {return expectedVersion(arguments,null);}
+    static Long expectedVersion(Object[] arguments,String[] parameterNames) {
+        Long chosen=null;
+        if(parameterNames!=null)for(int index=0;index<arguments.length;index++)if("expectedVersion".equals(parameterNames[index])&&arguments[index]!=null)chosen=exactRevision(arguments[index]);
+        for(Object argument:arguments){if(argument==null||argument instanceof Number||argument instanceof String)continue;
+            for(String name:List.of("expectedVersion","rowVersion","revision","version")) {
+                try {Method method=argument.getClass().isRecord()?argument.getClass().getMethod(name):argument.getClass().getMethod("get"+Character.toUpperCase(name.charAt(0))+name.substring(1));
+                    Object value=method.invoke(argument);if(value instanceof Number){long current=exactRevision(value);if(chosen!=null&&chosen!=current)throw new IllegalArgumentException("业务预期版本不一致");chosen=current;break;}
+                }catch(NoSuchMethodException absent){}catch(ReflectiveOperationException invalid){throw new IllegalArgumentException("业务预期版本不可读",invalid);}
+            }
+        }
+        var attributes=org.springframework.web.context.request.RequestContextHolder.getRequestAttributes();
+        if(attributes instanceof org.springframework.web.context.request.ServletRequestAttributes servlet)for(String name:List.of("X-Expected-Version","If-Match")){
+            String value=servlet.getRequest().getHeader(name);if(value==null)continue;if(value.matches("\"[0-9]+\""))value=value.substring(1,value.length()-1);
+            if(!value.matches("[0-9]{1,18}"))throw new IllegalArgumentException("业务预期版本格式无效");long version=Long.parseLong(value);
+            if(chosen!=null&&chosen!=version)throw new IllegalArgumentException("业务预期版本不一致");chosen=version;
+        }
+        return chosen;
+    }
+    private static long exactRevision(Object value){
+        if(!(value instanceof Number)||!value.toString().matches("[0-9]{1,19}"))throw new IllegalArgumentException("业务预期版本必须为非负整数");
+        try{return Long.parseLong(value.toString());}catch(NumberFormatException invalid){throw new IllegalArgumentException("业务预期版本超出范围",invalid);}
+    }
     private static Object identifier(Object value){
         if(value instanceof String||value instanceof Number)return value;if(value==null||value instanceof Boolean)return null;
         for(String property:List.of("taskId","modelId","reportId","id","userId")){Object id=property(value,property,false);if(id instanceof String||id instanceof Number)return id;}return null;

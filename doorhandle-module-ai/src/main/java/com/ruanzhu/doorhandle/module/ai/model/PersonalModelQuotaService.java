@@ -129,6 +129,7 @@ public class PersonalModelQuotaService {
         String reason=reason(request.reason());var actor=current();if(!actor.supervisor())throw forbidden();
         long owner=owner(id);actor=lockParticipants(actor,owner);if(!actor.supervisor())throw forbidden();
         var application=locked(id);if(application.owner()!=owner)throw inconsistent();
+        if(application.owner()==actor.userId())throw new BusinessException(403,"不能审批本人提交的额度申请，请由其他主管处理");
         return finish(application,actor,request.decision(),reason,request.expectedVersion(),request.requestId());
     }
 

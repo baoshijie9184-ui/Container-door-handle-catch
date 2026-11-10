@@ -7,6 +7,7 @@ SET NAMES utf8mb4;
 
 -- 独立部门目录。
 CREATE TABLE organization_department (
+    version BIGINT NOT NULL DEFAULT 0 CHECK(version>=0),
     id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
     name VARCHAR(100) COLLATE utf8mb4_unicode_ci NOT NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -99,6 +100,7 @@ CREATE TABLE device_management (
 
 -- 领用归还区间和历史设备/员工快照；旧ID与原删除语义保留。
 CREATE TABLE device_usage (
+    version BIGINT NOT NULL DEFAULT 0 CHECK(version>=0),
     `id` BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键ID',
     `device_id` BIGINT NOT NULL COMMENT '设备ID（外键 -> device_management.id）',
     `device_code` VARCHAR(50) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '设备编号（快照）',
@@ -129,6 +131,7 @@ CREATE TABLE device_usage (
 
 -- 独立采集告警与人工确认/解决。
 CREATE TABLE device_alert (
+    version BIGINT NOT NULL DEFAULT 0 CHECK(version>=0),
     `id` BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键ID',
     `alert_id` VARCHAR(64) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '告警编号',
     `device_id` BIGINT DEFAULT NULL COMMENT '设备ID',
@@ -159,6 +162,7 @@ CREATE TABLE device_alert (
 
 -- 检测模型版本、验证/发布及实测指标；不是LLM额度。
 CREATE TABLE model_management (
+    row_version BIGINT NOT NULL DEFAULT 0 CHECK(row_version>=0),
     `model_id` INT NOT NULL COMMENT '模型唯一标识ID（主键）',
     `model_name` VARCHAR(100) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '模型名称',
     `version` VARCHAR(20) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '版本号',

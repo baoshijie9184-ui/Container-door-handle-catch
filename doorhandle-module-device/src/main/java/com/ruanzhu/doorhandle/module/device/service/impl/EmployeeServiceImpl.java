@@ -29,6 +29,7 @@ public class EmployeeServiceImpl extends ServiceImpl<EmployeeMapper, Employee> i
     
     @Autowired
     private EmployeeMapper employeeMapper;
+    @Autowired private org.springframework.context.ApplicationEventPublisher collaborationEvents;
     
     @Autowired
     private DeviceMapper deviceMapper;
@@ -104,6 +105,7 @@ public class EmployeeServiceImpl extends ServiceImpl<EmployeeMapper, Employee> i
     @CacheEvict(cacheNames = {"employee", "device", "dashboard"}, allEntries = true)
     @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="EMPLOYEE",action="add",resource="arg0.id",version="arg0.version",supervisorOnly=true)
     public boolean add(Employee employee) {
+        employee.setVersion(0);
         normalizeDepartment(employee);
         // 设置创建时间和更新时间
         LocalDateTime now = LocalDateTime.now();
@@ -143,6 +145,9 @@ public class EmployeeServiceImpl extends ServiceImpl<EmployeeMapper, Employee> i
         if (!updateById(employee)) {
             throw new com.ruanzhu.doorhandle.common.BusinessException(409, "员工资料已被其他主管更新，请刷新后重试");
         }
+        if(collaborationEvents!=null&&((employee.getStatus()!=null&&!java.util.Objects.equals(existing.getStatus(),employee.getStatus()))
+                ||(employee.getEmployeeType()!=null&&!java.util.Objects.equals(existing.getEmployeeType(),employee.getEmployeeType()))))
+            collaborationEvents.publishEvent(new com.ruanzhu.doorhandle.contracts.security.EmployeeLoginEligibilityChanged(employee.getId()));
         return true;
     }
     
@@ -170,7 +175,7 @@ public class EmployeeServiceImpl extends ServiceImpl<EmployeeMapper, Employee> i
     @Override
     @Transactional(rollbackFor = Exception.class)
     @CacheEvict(cacheNames = {"employee", "device", "dashboard"}, allEntries = true)
-    @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="EMPLOYEE",action="assignDeviceToEmployee",supervisorOnly=true)
+    @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DEVICE",action="assignDeviceToEmployee",resource="arg1",supervisorOnly=true)
     public boolean assignDeviceToEmployee(Long employeeId, Long deviceId) {
         // 验证员工和设备是否存在
         Employee employee = getById(employeeId);

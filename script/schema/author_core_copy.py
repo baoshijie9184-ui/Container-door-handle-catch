@@ -197,9 +197,12 @@ for target in order:
         cols+=['employee_id','binding_version','binding_history_present'];exprs+=['b.employee_id','CASE WHEN b.user_id IS NULL THEN 0 ELSE b.version END','(b.user_id IS NOT NULL)']
         join=' LEFT JOIN `__SOURCE_SCHEMA__`.account_employee_binding b ON b.user_id=s.id'
     if target=='detection_input':cols+=['content_asset_id','content_version'];exprs+=['NULL','NULL']
-    # The historical task schemas did not contain a business mutation revision.
-    # Preserve their fields, initialize the new revision explicitly, and compare it in the same row guard.
-    if target=='detection_task':cols+=['version'];exprs+=['0']
+    # Collaboration revisions have no historical counterpart. Initialize and read
+    # back explicit zero values; do not rely on an implicit deployment default.
+    collaboration_revisions={'organization_department':'version','device_usage':'version',
+                             'device_alert':'version','model_management':'row_version','detection_task':'version'}
+    if target in collaboration_revisions:
+        cols+=[collaboration_revisions[target]];exprs+=['0']
     prefix=f"INSERT INTO `{target}`("+','.join('`'+c+'`' for c in cols)+') SELECT '
     suffix=f' FROM `__SOURCE_SCHEMA__`.`{name}` s'+join+f' ORDER BY s.`{pk}`'
     pieces=[prefix]+pieces_for_expressions(exprs,',')+[suffix]
