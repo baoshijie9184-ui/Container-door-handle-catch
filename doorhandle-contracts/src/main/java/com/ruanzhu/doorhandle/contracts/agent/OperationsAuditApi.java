@@ -12,4 +12,8 @@ public interface OperationsAuditApi {
     void append(Event event);
     default void appendChange(ChangeEvent event) { throw new IllegalStateException("Versioned change audit is unavailable"); }
     default ChangeReceipt appendChangeWithReceipt(ChangeEvent event) { throw new IllegalStateException("Versioned change audit receipt is unavailable"); }
+    /** Supplemental metadata only: callers first validate their own persisted business command/digest. */
+    default ChangeReceipt findChangeReceipt(AgentActor actor,String domain,String resourceType,String resourceId,String requestId) {
+        throw new IllegalStateException("Versioned change receipt lookup is unavailable");
+    }
 }

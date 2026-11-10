@@ -73,6 +73,20 @@ public class OperationsAuditService implements OperationsAuditApi, SystemChangeA
                 "ENTERPRISE",event.domain(),event.resourceType(),event.resourceId(),string(event.afterVersion()),
                 event.action(),event.requestId(),null,receipt.occurredAt()));
     }
+    @Override @Transactional(readOnly=true)
+    public ChangeReceipt findChangeReceipt(AgentActor requested,String domain,String type,String resource,String request){
+        var actor=current(requested);
+        OperationsAuditPersistence.token(domain,48);OperationsAuditPersistence.token(type,64);
+        OperationsAuditPersistence.token(resource,160);OperationsAuditPersistence.token(request,128);
+        // Exact actor-bound metadata cannot serve as a business lock or digest check.
+        var rows=jdbc.queryForList("SELECT id,event_id,payload_json FROM audit_event WHERE kind='OPERATIONS' AND payload_version=2 "
+                +"AND actor_user_id=? AND operation_domain=? AND operation_resource_type=? AND resource_id=? AND request_id=? "
+                +"AND operation_result='APPLIED' ORDER BY id DESC LIMIT 2 FOR SHARE",actor.userId(),domain,type,resource,request);
+        if(rows.isEmpty())return null;
+        if(rows.size()!=1)throw new IllegalStateException("同一业务命令存在多个修改回执，请保留编号核对");
+        var row=rows.get(0);var payload=records.decode(2,String.valueOf(row.get("payload_json")));
+        return new ChangeReceipt(String.valueOf(row.get("id")),String.valueOf(row.get("event_id")),string(payload.resourceVersion()));
+    }
     /** Server-only identity snapshot, called by the mutation aspect before the domain write. */
     public String actorDisplayName(AgentActor actor){
         String display=null;
