@@ -8,6 +8,8 @@ import org.apache.ibatis.annotations.Update;
 
 @Mapper
 public interface DetectionTaskMapper extends BaseMapper<DetectionTask> {
+    @Update("UPDATE detection_task SET claim_candidate_ids=NULL WHERE task_id=#{taskId}")
+    int clearClaimCandidates(@Param("taskId") String taskId);
 
     /** Explicit NULLs: updateById otherwise preserves the previous disposition and its operator. */
     @Update("UPDATE detection_task SET disposition_status=NULL,disposition_action=NULL,disposition_remark=NULL,disposition_operator=NULL,disposed_at=NULL WHERE task_id=#{taskId} AND flow_status IN ('RECHECK_REQUIRED','PENDING_REVIEW')")

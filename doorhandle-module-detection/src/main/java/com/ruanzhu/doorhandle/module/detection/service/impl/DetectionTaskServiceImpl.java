@@ -224,6 +224,7 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
     @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DETECTION",action="resumeUpload")
     public ResumeUploadResponse resumeUpload(String taskId, ResumeUploadRequest request) {
         DetectionTask task = getTask(taskId);
+        accessPolicy.assertCanMutate(task,SecurityContextHolder.getContext().getAuthentication());
         if (!"UPLOADING".equals(task.getStatus())) {
             throw new BusinessException("任务状态不支持续传，当前状态: " + task.getStatus());
         }
@@ -257,6 +258,7 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
     @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DETECTION",action="confirmUploaded")
     public DetectionTaskProgressResponse confirmUploaded(String taskId, DetectionTaskUploadedRequest request) {
         DetectionTask task = getTask(taskId);
+        accessPolicy.assertCanMutate(task,SecurityContextHolder.getContext().getAuthentication());
         if (!Set.of("UPLOADING", "FAILED").contains(task.getStatus())) {
             return buildProgressResponse(task, "任务已进入检测阶段");
         }
@@ -342,6 +344,7 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
                 .qualityActions(DetectionQualityWorkflow.actions(task))
                 .qualityStation(task.getQualityStation())
                 .assignee(task.getAssignee())
+                .claimCandidateUserIds(com.ruanzhu.doorhandle.module.detection.security.DetectionClaimCandidates.read(task.getClaimCandidateIds()))
                 .assignmentRemark(task.getAssignmentRemark())
                 .assignmentRevision(assignmentRevision(task))
                 .assignedAt(formatDateTime(task.getAssignedAt()))
@@ -429,6 +432,7 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
                 .flowStatus(task.getFlowStatus())
                 .qualityStation(task.getQualityStation())
                 .assignee(task.getAssignee())
+                .claimCandidateUserIds(com.ruanzhu.doorhandle.module.detection.security.DetectionClaimCandidates.read(task.getClaimCandidateIds()))
                 .assignmentRemark(task.getAssignmentRemark())
                 .assignmentRevision(assignmentRevision(task))
                 .assignedAt(formatDateTime(task.getAssignedAt()))
@@ -712,6 +716,7 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
         task.setFlowStatus(DetectionQualityWorkflow.assignedFlow(task));
         task.setUpdatedAt(now);
         detectionTaskMapper.updateById(task);
+        detectionTaskMapper.clearClaimCandidates(taskId);task.setClaimCandidateIds(null);
         if(identities!=null)identities.recordAssignment(task,recipient);
         saveIdentity(task);
         return buildProgressResponse(task, "质检任务已分派");
@@ -810,7 +815,7 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
     @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DETECTION",action="retryTask")
     public DetectionTaskProgressResponse retryTask(String taskId) {
         DetectionTask task = getTaskForSystemLocked(taskId);
-        accessPolicy.assertCanAccess(task,SecurityContextHolder.getContext().getAuthentication());
+        accessPolicy.assertCanMutate(task,SecurityContextHolder.getContext().getAuthentication());
         validateRetryable(task);
         return retryPreparedTask(task,null,null);
     }
@@ -824,6 +829,7 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
         accessPolicy.applyScope(query,actor);query.last("FOR UPDATE");
         var task=detectionTaskMapper.selectOne(query);
         if(task==null)throw new SecurityException("任务不存在或无访问权限");
+        accessPolicy.assertCanMutate(task,actor);
         validateRetryable(task);
         return retryPreparedTask(task,actor,requestId);
     }
@@ -1299,6 +1305,7 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
                 .qualityActions(DetectionQualityWorkflow.actions(task))
                 .qualityStation(task.getQualityStation())
                 .assignee(task.getAssignee())
+                .claimCandidateUserIds(com.ruanzhu.doorhandle.module.detection.security.DetectionClaimCandidates.read(task.getClaimCandidateIds()))
                 .assignmentRevision(identity==null?null:identity.revision())
                 .assignmentRemark(task.getAssignmentRemark())
                 .assignedAt(formatDateTime(task.getAssignedAt()))
@@ -1401,6 +1408,7 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
         query.last("FOR UPDATE");
         DetectionTask task = detectionTaskMapper.selectOne(query);
         if (task == null) throw new BusinessException(404, "任务不存在或无访问权限");
+        accessPolicy.assertCanMutate(task,SecurityContextHolder.getContext().getAuthentication());
         return task;
     }
 

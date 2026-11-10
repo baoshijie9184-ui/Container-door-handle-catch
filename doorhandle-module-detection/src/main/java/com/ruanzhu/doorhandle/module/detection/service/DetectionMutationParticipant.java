@@ -13,7 +13,7 @@ import java.util.*;
 @Component
 public class DetectionMutationParticipant implements BusinessMutationParticipant, BusinessResourceAccess {
     private static final Set<String> ACTIONS = Set.of("createTask", "resumeUpload", "confirmUploaded", "advanceTaskFlow",
-            "assignQualityTask", "reviewTask", "disposeTask", "submitReworkResult", "retryTask", "markUploaded", "claimTask");
+            "assignQualityTask", "reviewTask", "disposeTask", "submitReworkResult", "retryTask", "markUploaded", "claimTask", "authorizeClaimCandidates");
     private static final List<String> FIELDS = List.of("workflow_uuid", "batch_no", "work_order_no", "flow_status", "quality_station",
             "assignee", "assignment_remark", "due_at", "status", "stage", "model_id", "model_version", "threshold",
             "total_images", "processed_images", "successful_images", "failed_images", "defect_count", "primary_defect_type",
@@ -21,7 +21,7 @@ public class DetectionMutationParticipant implements BusinessMutationParticipant
             "false_positive_count", "review_remark", "reviewer", "disposition_status", "disposition_action", "disposition_remark",
             "disposition_operator", "recheck_required", "rework_result", "rework_operator", "rework_remark",
             "created_user_id", "assignee_user_id", "reviewer_user_id", "disposition_user_id", "rework_user_id",
-            "assigned_by_user_id", "assignment_identity_revision");
+            "assigned_by_user_id", "assignment_identity_revision", "claim_candidate_ids");
     private final JdbcTemplate jdbc;
     private final DetectionTaskAccessPolicy policy;
     public DetectionMutationParticipant(JdbcTemplate jdbc, DetectionTaskAccessPolicy policy) { this.jdbc = jdbc; this.policy = policy; }
@@ -41,6 +41,7 @@ public class DetectionMutationParticipant implements BusinessMutationParticipant
         var fields = new LinkedHashMap<String, Object>();
         for (String name : FIELDS) {
             Object value = row.get(name);
+            if("claim_candidate_ids".equals(name))value=com.ruanzhu.doorhandle.module.detection.security.DetectionClaimCandidates.encode(com.ruanzhu.doorhandle.module.detection.security.DetectionClaimCandidates.read((String)value));
             if (value instanceof java.sql.Timestamp time) value = time.toLocalDateTime().toString();
             else if (value instanceof java.sql.Date date) value = date.toLocalDate().toString();
             else if (value instanceof java.time.temporal.TemporalAccessor time) value = time.toString();
@@ -65,12 +66,13 @@ public class DetectionMutationParticipant implements BusinessMutationParticipant
     public boolean mayRead(AgentActor actor, String scope, String domain, String type, String id) {
         if (!"ENTERPRISE".equals(scope) || !"DETECTION".equals(domain) || !"DETECTION_TASK".equals(type)
                 || id == null || !id.matches("[A-Za-z0-9_-]{1,128}")) return false;
-        var rows = jdbc.queryForList("SELECT created_by,assignee FROM detection_task WHERE task_id=?", id);
+        var rows = jdbc.queryForList("SELECT created_by,assignee,status,flow_status,claim_candidate_ids FROM detection_task WHERE task_id=?", id);
         if (rows.isEmpty()) return false;
         try { requireAccess(actor, id, rows.get(0)); return true; } catch (SecurityException | org.springframework.security.access.AccessDeniedException denied) { return false; }
     }
     private void requireAccess(AgentActor actor, String id, Map<String, Object> row) {
         var task = new DetectionTask(); task.setTaskId(id); task.setCreatedBy((String) row.get("created_by")); task.setAssignee((String) row.get("assignee"));
+        task.setStatus((String)row.get("status"));task.setFlowStatus((String)row.get("flow_status"));task.setClaimCandidateIds((String)row.get("claim_candidate_ids"));
         if (!policy.canAccess(task, actor)) throw new SecurityException("任务不存在或无访问权限");
     }
     private static String sha(String text) {

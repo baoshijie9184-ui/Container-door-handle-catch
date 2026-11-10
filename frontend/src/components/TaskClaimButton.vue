@@ -1,5 +1,5 @@
 <template>
-  <el-button v-if="user.role==='INSPECTOR'" size="small" link type="primary" :loading="busy" :disabled="!pending&&!eligible" :title="eligible?'将当前可见任务领取到本人账号':'仅无人负责且待复核的已完成任务可以领取'" @click="claim">{{ pending?'重试原领取':'领取任务' }}</el-button>
+  <el-button v-if="user.role==='INSPECTOR'" size="small" link type="primary" :loading="busy" :disabled="!pending&&!eligible" :title="eligible?'领取主管显式授权给本人的任务':'仅当前领取候选可以领取无人负责的待复核任务'" @click="claim">{{ pending?'重试原领取':'领取任务' }}</el-button>
 </template>
 <script setup>
 import { computed, ref } from 'vue'
@@ -14,6 +14,7 @@ const user=useUserStore(),busy=ref(false),pending=ref(null)
 const scope=useAccountOperationScope(()=>{pending.value=null;busy.value=false})
 const pick=key=>props.task[key]??props.task.result?.[key]
 const eligible=computed(()=>user.isAuthenticated&&user.capabilities?.mutations===true&&!!user.accountContext&&resourceVersion(props.task)!==null
+  && Array.isArray(pick('claimCandidateUserIds'))&&pick('claimCandidateUserIds').some(id=>String(id)===String(user.userId))
   && !pick('assignee')&&!pick('assigneeUserId')&&['COMPLETED','PARTIAL_FAILED'].includes(pick('status'))&&pick('flowStatus')==='PENDING_REVIEW')
 async function claim(){
  if(busy.value||user.role!=='INSPECTOR'||!pending.value&&!eligible.value)return

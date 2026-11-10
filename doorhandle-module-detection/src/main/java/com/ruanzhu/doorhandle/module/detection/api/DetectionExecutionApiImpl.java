@@ -44,6 +44,7 @@ public class DetectionExecutionApiImpl implements DetectionExecutionApi {
     @Override public RetryPreview previewRetry(AgentActor actor,String taskId) {
         actor=current(actor);token(taskId);
         var task=load(actor,taskId,false);
+        access.assertCanMutate(task,actor);
         DetectionRetryPolicy.assertEligible(task,json);
         assertPreviousExecutionKnown(task);
         return new RetryPreview(taskId,version(task),task.getStatus(),task.getFlowStatus(),task.getDispatchId(),
@@ -58,6 +59,7 @@ public class DetectionExecutionApiImpl implements DetectionExecutionApi {
         token(approval.taskId());
         if(approval.resourceVersion()==null || !approval.resourceVersion().matches("[0-9a-f]{64}"))throw new IllegalArgumentException("检测批准版本无效");
         var task=load(actor,approval.taskId(),true);
+        access.assertCanMutate(task,actor);
         String fingerprint=hash(encoded(List.of("RETRY",proposalId,approval)));
         var prior=stored(actor,requestId);
         if(prior.isPresent()) {

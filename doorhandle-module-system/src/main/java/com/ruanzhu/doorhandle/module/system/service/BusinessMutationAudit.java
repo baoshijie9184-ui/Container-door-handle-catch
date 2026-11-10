@@ -39,9 +39,9 @@ public class BusinessMutationAudit {
     private Object versioned(ProceedingJoinPoint call,BusinessMutation operation,AgentActor actor,Object[] args,Object selected)throws Throwable {
         // The outer command owns every persisted before/after fact of a compound write.
         // Auditing nested service calls separately would report the same change twice.
-        if(activeRequest.get()!=null)return call.proceed();
         var matching=participants.stream().filter(item->item.supports(operation.domain(),operation.action())).toList();
         if(matching.size()!=1)throw new IllegalStateException("业务修改尚未登记唯一留痕策略: "+operation.domain()+"/"+operation.action());
+        if(activeRequest.get()!=null)return call.proceed();
         var participant=matching.get(0);boolean root=true;
         String request=AuditMetadata.requiredRequest(selected);
         Long expected=AuditMetadata.expectedVersion(args,((org.aspectj.lang.reflect.MethodSignature)call.getSignature()).getParameterNames());

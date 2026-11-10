@@ -19,12 +19,17 @@ import java.util.Map;
 public class DetectionTaskAccessPolicy {
     private com.ruanzhu.doorhandle.module.detection.service.DetectionIdentityService identities;
     private BusinessUserDirectory users;
+    @org.springframework.beans.factory.annotation.Value("${collaboration.mutations.enabled:false}") private boolean candidateReadsEnabled;
     @org.springframework.beans.factory.annotation.Autowired
     public void setUsers(BusinessUserDirectory value){users=value;}
     @org.springframework.beans.factory.annotation.Autowired(required=false)
     public void setIdentities(com.ruanzhu.doorhandle.module.detection.service.DetectionIdentityService value){identities=value;}
     public boolean stableIdentityActive(){return identities!=null&&identities.active();}
     public String actorPredicate(String alias,String parameter){if(!alias.matches("(?:[A-Za-z][A-Za-z0-9_]*\\.)?"))throw new IllegalArgumentException("非法别名");return stableIdentityActive()?identities.predicate(alias,parameter):"("+alias+"created_by="+parameter+" OR "+alias+"assignee="+parameter+")";}
+    public String actorPredicate(String alias,String parameter,String candidateParameter){
+        String owned=actorPredicate(alias,parameter);
+        return candidateReadsEnabled?"("+owned+" OR "+DetectionClaimCandidates.predicate(alias,candidateParameter)+")":owned;
+    }
 
     public boolean isAdmin(Authentication authentication) {
         if((users!=null||identities!=null)&&authenticated(authentication))return current(authentication).supervisor();
@@ -57,6 +62,12 @@ public class DetectionTaskAccessPolicy {
     }
 
     public boolean canAccess(DetectionTask task,Authentication authentication) {
+        if(canMutate(task,authentication))return true;
+        return candidateReadsEnabled && task!=null && (users!=null||identities!=null)
+                && DetectionClaimCandidates.includes(task,current(authentication).userId());
+    }
+    /** Candidate visibility never establishes permission to review, retry or edit a task. */
+    public boolean canMutate(DetectionTask task,Authentication authentication) {
         assertAuthenticated(authentication);
         if(task==null)return false;
         if(users!=null||identities!=null){
@@ -67,11 +78,21 @@ public class DetectionTaskAccessPolicy {
         return legacy(task,authentication.getName(),isAdmin(authentication));
     }
     public boolean canAccess(DetectionTask task,AgentActor actor) {
+        if(canMutate(task,actor))return true;
+        return candidateReadsEnabled && task!=null && DetectionClaimCandidates.includes(task,current(actor).userId());
+    }
+    public boolean canMutate(DetectionTask task,AgentActor actor) {
         if(actor==null)throw new SecurityException("缺少认证身份");
         if(task==null)return false;
         var fresh=current(actor);
         if(stableIdentityActive())return fresh.supervisor()||identities.canAccess(task.getTaskId(),fresh.userId());
         return legacy(task,fresh.username(),fresh.supervisor());
+    }
+    public void assertCanMutate(DetectionTask task,Authentication authentication) {
+        if(!canMutate(task,authentication))throw new AccessDeniedException("领取任务后才可修改任务");
+    }
+    public void assertCanMutate(DetectionTask task,AgentActor actor) {
+        if(!canMutate(task,actor))throw new SecurityException("领取任务后才可修改任务");
     }
     /** Legacy source signature; caller-supplied names and role flags no longer establish identity. */
     @Deprecated public boolean canAccess(DetectionTask task,String username,boolean supervisor) {
@@ -93,9 +114,9 @@ public class DetectionTaskAccessPolicy {
     public void applyScope(LambdaQueryWrapper<DetectionTask> query, Authentication authentication) {
         assertAuthenticated(authentication);
         if (!isAdmin(authentication)) {
-            if(stableIdentityActive()){query.apply(identities.predicate("","{0}"),current(authentication).userId());return;}
-            query.and(q -> q.eq(DetectionTask::getCreatedBy, authentication.getName())
-                    .or().eq(DetectionTask::getAssignee, authentication.getName()));
+            if(stableIdentityActive()){query.apply(actorPredicate("","{0}","{0}"),current(authentication).userId());return;}
+            query.and(q -> {q.eq(DetectionTask::getCreatedBy, authentication.getName()).or().eq(DetectionTask::getAssignee, authentication.getName());
+                if(candidateReadsEnabled&&(users!=null||identities!=null))q.or().apply(DetectionClaimCandidates.predicate("","{0}"),current(authentication).userId());});
         }
     }
 
@@ -103,8 +124,9 @@ public class DetectionTaskAccessPolicy {
         if (actor == null) throw new SecurityException("缺少认证身份");
         var fresh=current(actor);
         if (!fresh.supervisor()) {
-            if(stableIdentityActive()){query.apply(identities.predicate("","{0}"),fresh.userId());return;}
-            query.and(q -> q.eq("created_by", fresh.username()).or().eq("assignee", fresh.username()));
+            if(stableIdentityActive()){query.apply(actorPredicate("","{0}","{0}"),fresh.userId());return;}
+            query.and(q -> {q.eq("created_by", fresh.username()).or().eq("assignee", fresh.username());
+                if(candidateReadsEnabled)q.or().apply(DetectionClaimCandidates.predicate("","{0}"),fresh.userId());});
         }
     }
 
@@ -117,7 +139,8 @@ public class DetectionTaskAccessPolicy {
         }
         var fresh=users!=null||identities!=null?current(authentication):null;
         boolean supervisor=fresh!=null?fresh.supervisor():isAdmin(authentication);
-        if(!supervisor&&stableIdentityActive())return new SqlScope(identities.predicate(alias,":scopeUserId"),Map.of("scopeUserId",fresh.userId()));
+        if(!supervisor&&stableIdentityActive())return new SqlScope(actorPredicate(alias,":scopeUserId",":scopeUserId"),Map.of("scopeUserId",fresh.userId()));
+        if(!supervisor&&candidateReadsEnabled&&fresh!=null)return new SqlScope(actorPredicate(alias,":scopeUsername",":scopeUserId"),Map.of("scopeUsername",fresh.username(),"scopeUserId",fresh.userId()));
         return supervisor ? new SqlScope("1 = 1", Map.of())
                 : new SqlScope("(" + alias + "created_by = :scopeUsername OR " + alias
                 + "assignee = :scopeUsername)", Map.of("scopeUsername", authentication.getName()));

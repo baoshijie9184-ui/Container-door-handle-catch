@@ -12,6 +12,8 @@ import org.springframework.web.bind.annotation.*;
 public class DetectionTaskClaimController {
     private final DetectionTaskClaimService service;
     public DetectionTaskClaimController(DetectionTaskClaimService service){this.service=service;}
+    @PostMapping("/{taskId}/claim-candidates")
+    public Result<DetectionTaskProgressResponse> candidates(@PathVariable String taskId,@RequestBody DetectionTaskClaimService.Candidates command){return Result.success(service.authorize(taskId,command));}
     @PostMapping("/{taskId}/claim")
     public Result<DetectionTaskProgressResponse> claim(@PathVariable String taskId,@RequestBody DetectionTaskClaimService.Claim command){return Result.success(service.claim(taskId,command));}
 }

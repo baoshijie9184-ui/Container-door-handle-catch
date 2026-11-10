@@ -416,6 +416,7 @@
             <el-table-column label="操作" width="330" fixed="right">
               <template #default="{ row }">
                 <TaskClaimButton :task="row" @claimed="loadQualityQueue(qualityQueuePage)" />
+                <TaskClaimCandidatesButton :task="row" @authorized="loadQualityQueue(qualityQueuePage)" />
                 <el-button link size="small" type="primary" @click="openTraceDialog(row.taskId)">追溯</el-button>
                 <el-button link size="small" type="info" :disabled="reportDownloading" @click="downloadTaskQualityReport(row.taskId)">任务摘要</el-button>
                 <el-tooltip v-if="userStore.role === 'SUPERVISOR'" :content="canAssignQualityTask(row) ? '选择责任人并确认分派' : qualityActionReason(row,'ASSIGN')" placement="top"><span><el-button link size="small" type="info" :disabled="!canAssignQualityTask(row)" @click="openAssignmentDialog(row)"><AppIcon name="User" :size="14" />分派</el-button></span></el-tooltip>
@@ -776,6 +777,7 @@
 <script setup>
 import CollaborationRefreshNotice from '../components/CollaborationRefreshNotice.vue'
 import TaskClaimButton from '../components/TaskClaimButton.vue'
+import TaskClaimCandidatesButton from '../components/TaskClaimCandidatesButton.vue'
 import { useResourceChanges } from '../composables/useResourceChanges'
 import QualityAssigneePicker from '@/components/QualityAssigneePicker.vue'
 import QualityStageGuidance from '@/components/QualityStageGuidance.vue'

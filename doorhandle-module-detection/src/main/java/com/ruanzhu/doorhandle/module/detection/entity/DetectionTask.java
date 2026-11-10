@@ -15,6 +15,9 @@ public class DetectionTask {
     @TableField(value="version",insertStrategy=com.baomidou.mybatisplus.annotation.FieldStrategy.NEVER,updateStrategy=com.baomidou.mybatisplus.annotation.FieldStrategy.NEVER)
     private Long version;
 
+    @TableField(value="claim_candidate_ids",insertStrategy=com.baomidou.mybatisplus.annotation.FieldStrategy.NEVER,updateStrategy=com.baomidou.mybatisplus.annotation.FieldStrategy.NEVER)
+    private String claimCandidateIds;
+
     @TableId(value = "id", type = IdType.AUTO)
     private Long id;
 

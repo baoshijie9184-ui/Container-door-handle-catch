@@ -26,7 +26,8 @@ final class BusinessFieldChanges {
             Map.entry("no_detection_image_count","未检出图片数"),Map.entry("inference_fps","检测速度"),
             Map.entry("avg_inference_ms","平均推理时间"),Map.entry("compatibility_note","兼容性说明"),
             Map.entry("deployment_strategy","部署策略"),Map.entry("canary_percent","灰度比例"),Map.entry("ab_group","实验分组"),
-            Map.entry("rollback_from_model_id","回滚来源模型"),Map.entry("model_path","模型文件"));
+            Map.entry("rollback_from_model_id","回滚来源模型"),Map.entry("model_path","模型文件"),
+            Map.entry("claim_candidate_ids","领取候选账号 ID"));
     static List<Change> compare(Snapshot before,Snapshot after) {
         Map<String,Object> old=before==null?Map.of():before.fields(),next=after==null?Map.of():after.fields();
         var fields=new TreeSet<String>();fields.addAll(old.keySet());fields.addAll(next.keySet());

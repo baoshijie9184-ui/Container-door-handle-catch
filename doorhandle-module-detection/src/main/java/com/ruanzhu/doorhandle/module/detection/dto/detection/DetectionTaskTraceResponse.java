@@ -18,6 +18,7 @@ public class DetectionTaskTraceResponse {
     private String flowStatus;
     private String qualityStation;
     private String assignee;
+    private java.util.List<String> claimCandidateUserIds;
     private Long assignmentRevision;
     private String assignmentRemark;
     private String assignedAt;

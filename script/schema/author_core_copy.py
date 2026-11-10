@@ -197,6 +197,9 @@ for target in order:
         cols+=['employee_id','binding_version','binding_history_present'];exprs+=['b.employee_id','CASE WHEN b.user_id IS NULL THEN 0 ELSE b.version END','(b.user_id IS NOT NULL)']
         join=' LEFT JOIN `__SOURCE_SCHEMA__`.account_employee_binding b ON b.user_id=s.id'
     if target=='detection_input':cols+=['content_asset_id','content_version'];exprs+=['NULL','NULL']
+    # Historical tasks never implicitly grant a temporary claim/read capability.
+    # The matching readback guard must also prove the new target value is NULL.
+    if target=='detection_task':cols+=['claim_candidate_ids'];exprs+=['NULL']
     # Collaboration revisions have no historical counterpart. Initialize and read
     # back explicit zero values; do not rely on an implicit deployment default.
     collaboration_revisions={'organization_department':'version','device_usage':'version',

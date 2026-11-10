@@ -51,7 +51,7 @@ class DetectionCollaborationMySqlTest {
         @Bean PlatformTransactionManager transactions(DataSource data){return new DataSourceTransactionManager(data);}
         @Bean ObjectMapper json(){return new ObjectMapper().findAndRegisterModules();}
         @Bean BusinessUserDirectory users(JdbcTemplate jdbc){return new BusinessUserDirectory(){
-            public Identity current(long id,String username){var rows=jdbc.queryForList("SELECT username,role FROM users WHERE id=?",id);if(rows.size()!=1||!username.equals(rows.get(0).get("username")))throw new SecurityException("account missing");return new Identity(id,username,"SUPERVISOR".equals(rows.get(0).get("role")));}
+            public Identity current(long id,String username){var rows=jdbc.queryForList("SELECT username,role,enabled FROM users WHERE id=?",id);if(rows.size()!=1||!username.equals(rows.get(0).get("username"))||!Boolean.TRUE.equals(rows.get(0).get("enabled"))||!Set.of("INSPECTOR","SUPERVISOR").contains(rows.get(0).get("role")))throw new SecurityException("account missing or ineligible");return new Identity(id,username,"SUPERVISOR".equals(rows.get(0).get("role")));}
             public Identity lockCurrent(long id,String username){jdbc.queryForList("SELECT id FROM users WHERE id=? FOR UPDATE",id);return current(id,username);}
             public Identity authenticated(){var principal=(BusinessPrincipal)SecurityContextHolder.getContext().getAuthentication().getPrincipal();return current(principal.userId(),principal.username());}
         };}
@@ -62,7 +62,7 @@ class DetectionCollaborationMySqlTest {
         @Bean BusinessMutationAudit aspect(OperationsAuditApi audit,BusinessUserDirectory users,PlatformTransactionManager manager){return new BusinessMutationAudit(audit,users,manager);}
         @Bean DetectionTaskMapper tasks(JdbcTemplate jdbc){
             var mapper=mock(DetectionTaskMapper.class);
-            when(mapper.selectOne(any())).thenAnswer(call->{var query=(LambdaQueryWrapper<DetectionTask>)call.getArgument(0);var id=query.getParamNameValuePairs().values().iterator().next();
+            when(mapper.selectOne(any())).thenAnswer(call->{var query=(com.baomidou.mybatisplus.core.conditions.AbstractWrapper<?,?,?>)call.getArgument(0);query.getSqlSegment();var id=query.getParamNameValuePairs().get("MPGENVAL1");
                 var rows=jdbc.query("SELECT * FROM detection_task WHERE task_id=?"+(query.getSqlSegment().contains("FOR UPDATE")?" FOR UPDATE":""),BeanPropertyRowMapper.newInstance(DetectionTask.class),id);return rows.isEmpty()?null:rows.get(0);});return mapper;
         }
         @Bean DetectionTaskAccessPolicy policy(){
@@ -71,6 +71,7 @@ class DetectionCollaborationMySqlTest {
         }
         @Bean DetectionMutationParticipant participant(JdbcTemplate jdbc,DetectionTaskAccessPolicy policy){return new DetectionMutationParticipant(jdbc,policy);}
         @Bean AgentUserDirectory inspectors(){var directory=mock(AgentUserDirectory.class);when(directory.inspector("alice")).thenReturn(new AgentUserDirectory.Inspector(1,"alice","a".repeat(64)));when(directory.inspector("other")).thenReturn(new AgentUserDirectory.Inspector(2,"other","b".repeat(64)));when(directory.lockInspector(any())).thenAnswer(call->call.getArgument(0));return directory;}
+        @Bean BusinessAccountLookupApi accounts(JdbcTemplate jdbc){var lookup=mock(BusinessAccountLookupApi.class);when(lookup.username(anyLong())).thenAnswer(call->{var rows=jdbc.queryForList("SELECT username FROM users WHERE id=?",String.class,(long)call.getArgument(0));return rows.isEmpty()?null:rows.get(0);});return lookup;}
         @Bean DetectionIdentityReviewService identityReview(){return mock(DetectionIdentityReviewService.class);}
         @Bean DetectionIdentityService identity(JdbcTemplate jdbc,BusinessUserDirectory users,OperationsAuditApi audit,ObjectMapper json){return new DetectionIdentityService(jdbc,mock(BusinessAccountLookupApi.class),users,audit,json);}
         @Bean DetectionTaskService views(JdbcTemplate jdbc){var views=mock(DetectionTaskService.class);when(views.getTaskProgress(any())).thenAnswer(call->{var row=jdbc.queryForMap("SELECT task_id,status,version FROM detection_task WHERE task_id=?",(String)call.getArgument(0));return DetectionTaskProgressResponse.builder().taskId((String)row.get("task_id")).status((String)row.get("status")).version(row.get("version").toString()).build();});return views;}
@@ -87,7 +88,7 @@ class DetectionCollaborationMySqlTest {
                 "detection.identity.assignment-binding-enabled","true")));
         context.register(Config.class);context.refresh();jdbc=context.getBean(JdbcTemplate.class);claims=context.getBean(DetectionTaskClaimService.class);reports=context.getBean(QualityReportService.class);
         jdbc.update("INSERT INTO users(id,username,password,role) VALUES(1,'alice','fixture','INSPECTOR'),(2,'other','fixture','INSPECTOR'),(3,'boss','fixture','SUPERVISOR')");
-        jdbc.update("INSERT INTO detection_task(task_id,created_by,created_user_id,created_identity_name,status,flow_status,total_images,processed_images,successful_images,failed_images,defect_count,review_status,review_conclusion,recheck_required,source_oss_prefix) VALUES('claim-task','alice',1,'alice','COMPLETED','PENDING_REVIEW',12,12,12,0,2,'PENDING','PENDING',false,'private-source')");
+        jdbc.update("INSERT INTO detection_task(task_id,created_by,created_user_id,created_identity_name,claim_candidate_ids,status,flow_status,total_images,processed_images,successful_images,failed_images,defect_count,review_status,review_conclusion,recheck_required,source_oss_prefix) VALUES('claim-task','alice',1,'alice','[\"1\"]','COMPLETED','PENDING_REVIEW',12,12,12,0,2,'PENDING','PENDING',false,'private-source')");
         jdbc.update("INSERT INTO detection_task(task_id,created_by,assignee,status,flow_status,total_images,processed_images,successful_images,failed_images,defect_count,review_status,review_conclusion,recheck_required,source_oss_prefix) VALUES('report-task','alice','alice','COMPLETED','REVIEWED',12,12,12,0,2,'REVIEWED','DEFECT',false,'private-source')");
         request(1,"claim-initial");
     }
@@ -135,5 +136,47 @@ class DetectionCollaborationMySqlTest {
         assertThatThrownBy(()->reports.decide(boss,submitted.reportId(),decision)).hasMessage("audit unavailable");
         assertThat(reports.get(alice,submitted.reportId()).status()).isEqualTo("SUBMITTED");assertThat(count("REPORT_COMMAND")).isEqualTo(commands);assertThat(count("OPERATIONS")).isEqualTo(events);
         rejectAudit.set(false);assertThat(reports.decide(boss,submitted.reportId(),decision).status()).isEqualTo("APPROVED");
+    }
+    private void supervisorOwnedTask(){jdbc.update("UPDATE detection_task SET created_by='boss',created_user_id=3,created_identity_name='boss',claim_candidate_ids=NULL WHERE task_id='claim-task'");}
+    private void authorize(String request){request(3,request);claims.authorize("claim-task",new DetectionTaskClaimService.Candidates(List.of("2","1"),"0",request));}
+    private List<String> scopedIds(){var scope=context.getBean(DetectionTaskAccessPolicy.class).currentSqlScope("");return new org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate(jdbc).queryForList("SELECT task_id FROM detection_task WHERE "+scope.predicate(),scope.parameters(),String.class);}
+    @Test void supervisorExplicitlyAuthorizesBoundedCandidatesWithCasAuditAndOriginalReceipt() throws Exception {
+        supervisorOwnedTask();authorize("candidate-grant");
+        assertThat(jdbc.queryForObject("SELECT version FROM detection_task WHERE task_id='claim-task'",Long.class)).isEqualTo(1);
+        assertThat(com.ruanzhu.doorhandle.module.detection.security.DetectionClaimCandidates.read(jdbc.queryForObject("SELECT claim_candidate_ids FROM detection_task WHERE task_id='claim-task'",String.class))).containsExactly("1","2");
+        var payload=change("authorizeClaimCandidates","DETECTION");assertThat(payload.path("changes")).anySatisfy(field->{assertThat(field.path("field").asText()).isEqualTo("claim_candidate_ids");assertThat(field.path("before").isNull()).isTrue();assertThat(field.path("after").asText()).isEqualTo("[\"1\",\"2\"]");});
+        var replay=claims.authorize("claim-task",new DetectionTaskClaimService.Candidates(List.of("2","1"),"0","candidate-grant"));assertThat(replay.getVersion()).isEqualTo("1");assertThat(count("OPERATIONS")).isEqualTo(1);assertThat(count("BUSINESS_COMMAND")).isEqualTo(1);
+        request(3,"stale-candidate-grant");assertThatThrownBy(()->claims.authorize("claim-task",new DetectionTaskClaimService.Candidates(List.of("1"),"0","stale-candidate-grant"))).isInstanceOf(com.ruanzhu.doorhandle.common.BusinessException.class);
+    }
+    @Test void twoDifferentExplicitCandidatesRaceOneCommitsAndLoserImmediatelyLosesReadScope() throws Exception {
+        supervisorOwnedTask();authorize("race-grant");request(1,"candidate-read-a");assertThat(scopedIds()).contains("claim-task");request(2,"candidate-read-b");assertThat(scopedIds()).contains("claim-task");
+        var pool=Executors.newFixedThreadPool(2);var ready=new CountDownLatch(2);var start=new CountDownLatch(1);var winners=new CopyOnWriteArrayList<Long>();
+        try{
+            var futures=new ArrayList<Future<?>>();for(long id:List.of(1L,2L))futures.add(pool.submit(()->{request(id,"candidate-race-"+id);ready.countDown();try{if(!start.await(10,TimeUnit.SECONDS))throw new AssertionError("race barrier timeout");claims.claim("claim-task",new DetectionTaskClaimService.Claim("1","candidate-race-"+id));winners.add(id);}catch(com.ruanzhu.doorhandle.common.BusinessException|SecurityException|org.springframework.security.access.AccessDeniedException expected){}catch(InterruptedException interrupted){Thread.currentThread().interrupt();throw new AssertionError(interrupted);}finally{SecurityContextHolder.clearContext();RequestContextHolder.resetRequestAttributes();}}));
+            assertThat(ready.await(10,TimeUnit.SECONDS)).isTrue();start.countDown();for(var future:futures)future.get(30,TimeUnit.SECONDS);
+        }finally{start.countDown();pool.shutdownNow();}
+        assertThat(winners).hasSize(1);long winner=winners.get(0),loser=winner==1?2:1;
+        assertThat(jdbc.queryForObject("SELECT assignee_user_id FROM detection_task WHERE task_id='claim-task'",Long.class)).isEqualTo(winner);assertThat(jdbc.queryForObject("SELECT claim_candidate_ids FROM detection_task WHERE task_id='claim-task'",String.class)).isNull();assertThat(jdbc.queryForObject("SELECT version FROM detection_task WHERE task_id='claim-task'",Long.class)).isEqualTo(2);
+        request(loser,"loser-read");assertThat(scopedIds()).doesNotContain("claim-task");assertThat(context.getBean(DetectionMutationParticipant.class).mayRead(new AgentActor(loser,loser==1?"alice":"other",AgentActor.Role.INSPECTOR),"ENTERPRISE","DETECTION","DETECTION_TASK","claim-task")).isFalse();
+        request(winner,"winner-read");assertThat(scopedIds()).contains("claim-task");assertThat(count("OPERATIONS")).isEqualTo(2);assertThat(count("BUSINESS_COMMAND")).isEqualTo(2);
+    }
+    @Test void candidateReadDoesNotGrantDirectServiceReviewRetryReportOrAgentRetryAndRevocationIsFresh(){
+        supervisorOwnedTask();authorize("readonly-grant");request(2,"readonly-candidate");
+        var policy=context.getBean(DetectionTaskAccessPolicy.class);var task=jdbc.queryForObject("SELECT * FROM detection_task WHERE task_id='claim-task'",BeanPropertyRowMapper.newInstance(DetectionTask.class));var actor=new AgentActor(2,"other",AgentActor.Role.INSPECTOR);
+        assertThat(policy.canAccess(task,actor)).isTrue();assertThat(policy.canMutate(task,actor)).isFalse();
+        var direct=new com.ruanzhu.doorhandle.module.detection.service.impl.DetectionTaskServiceImpl(context.getBean(DetectionTaskMapper.class),null,null,null,null,null,null,context.getBean(ObjectMapper.class),policy);
+        assertThatThrownBy(()->direct.reviewTask("claim-task",null)).isInstanceOf(org.springframework.security.access.AccessDeniedException.class);
+        assertThatThrownBy(()->direct.retryTask("claim-task")).isInstanceOf(org.springframework.security.access.AccessDeniedException.class);
+        assertThatThrownBy(()->reports.create(new BusinessUserDirectory.Identity(2,"other",false),new Create("claim-task","No write","candidate narrative",key()))).isInstanceOf(SecurityException.class);
+        var execution=new com.ruanzhu.doorhandle.module.detection.api.DetectionExecutionApiImpl(context.getBean(DetectionTaskMapper.class),context.getBean(DetectionTaskService.class),policy,context.getBean(BusinessUserDirectory.class),context.getBean(OperationsAuditApi.class),jdbc,context.getBean(ObjectMapper.class));
+        assertThatThrownBy(()->execution.previewRetry(actor,"claim-task")).isInstanceOf(SecurityException.class);
+        jdbc.update("UPDATE users SET enabled=FALSE WHERE id=2");assertThatThrownBy(()->policy.canAccess(task,actor)).isInstanceOf(SecurityException.class);assertThatThrownBy(this::scopedIds).isInstanceOf(SecurityException.class);assertThat(jdbc.queryForObject("SELECT assignee FROM detection_task WHERE task_id='claim-task'",String.class)).isNull();assertThat(count("OPERATIONS")).isEqualTo(1);
+    }
+    @Test void candidateGrantRejectsUnqualifiedMalformedAndUnapprovedAccountsAndCanBeRevoked(){
+        supervisorOwnedTask();request(3,"invalid-candidates");
+        for(var ids:List.of(List.of("01"),List.of("9223372036854775808"),List.of("1","1"),List.of("3"),List.of("99"))){String id=key();request(3,id);assertThatThrownBy(()->claims.authorize("claim-task",new DetectionTaskClaimService.Candidates(ids,"0",id))).isInstanceOf(com.ruanzhu.doorhandle.common.BusinessException.class);}
+        jdbc.update("UPDATE users SET enabled=FALSE WHERE id=2");request(3,"disabled-grant");assertThatThrownBy(()->claims.authorize("claim-task",new DetectionTaskClaimService.Candidates(List.of("2"),"0","disabled-grant"))).isInstanceOf(SecurityException.class);jdbc.update("UPDATE users SET enabled=TRUE WHERE id=2");
+        assertThat(count("OPERATIONS")).isZero();authorize("revoke-grant");request(2,"unauthorized-grant");assertThatThrownBy(()->claims.authorize("claim-task",new DetectionTaskClaimService.Candidates(List.of("2"),"1","unauthorized-grant"))).isInstanceOf(SecurityException.class);
+        request(3,"revoke-candidates");claims.authorize("claim-task",new DetectionTaskClaimService.Candidates(List.of(),"1","revoke-candidates"));request(2,"revoked-read");assertThat(scopedIds()).doesNotContain("claim-task");assertThat(count("OPERATIONS")).isEqualTo(2);
     }
 }

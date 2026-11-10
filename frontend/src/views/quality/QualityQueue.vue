@@ -101,6 +101,7 @@
                   {{ qualityActionHint(row) }}
                 </el-tag>
                 <TaskClaimButton :task="row" @claimed="loadQualityQueue(qualityQueuePage)" />
+                <TaskClaimCandidatesButton :task="row" @authorized="loadQualityQueue(qualityQueuePage)" />
                 <el-button link size="small" type="primary" @click="openTraceDialog(row.taskId)">追溯</el-button>
                 <el-button
                   v-if="canExportQualityReport(row)"
@@ -455,6 +456,7 @@
 
 <script setup>
 import TaskClaimButton from '../../components/TaskClaimButton.vue'
+import TaskClaimCandidatesButton from '../../components/TaskClaimCandidatesButton.vue'
 import { useUserStore } from '../../stores/user'
 import CollaborationRefreshNotice from '../../components/CollaborationRefreshNotice.vue'
 import { useResourceChanges } from '../../composables/useResourceChanges'

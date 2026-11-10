@@ -51,7 +51,7 @@ public class QualityReportService {
         if(status!=null&&!status.isBlank()&&!Set.of("DRAFT","SUBMITTED","APPROVED","REJECTED","WITHDRAWN").contains(status))fail(400,"报告状态不正确");
         var params=new HashMap<String,Object>();params.put("owner",actor.userId());params.put("username",actor.username());
         String where="(r.owner_user_id=:owner"+(actor.supervisor()?" OR r.status<>'DRAFT'":"")+")";
-        if(!actor.supervisor())where+=" AND "+policy.actorPredicate("t.",policy.stableIdentityActive()?":owner":":username");
+        if(!actor.supervisor())where+=" AND "+policy.actorPredicate("t.",policy.stableIdentityActive()?":owner":":username",":owner");
         if(status!=null&&!status.isBlank()){where+=" AND r.status=:status";params.put("status",status);}
         if(keyword!=null&&!keyword.isBlank()){where+=" AND (r.task_id LIKE :keyword OR r.title LIKE :keyword)";params.put("keyword","%"+keyword.trim()+"%");}
         var rows=reports.list(where,params,page,size);
@@ -221,14 +221,15 @@ public class QualityReportService {
         if(id==null||!id.matches("qr-[a-f0-9-]{36}"))fail(404,"报告不存在或无访问权限");
         var row=reports.get(id,lock);
         if(row==null||(row.ownerUserId()!=actor.userId()&&(!actor.supervisor()||"DRAFT".equals(row.status()))))fail(404,"报告不存在或无访问权限");
-        task(actor,row.taskId(),false);return row;
+        task(actor,row.taskId(),lock);return row;
     }
     private DetectionTask task(Identity actor,String taskId,boolean lock) {
         if(taskId==null||!taskId.matches("[A-Za-z0-9_-]{1,128}"))fail(400,"任务编号不正确");
         var query=new LambdaQueryWrapper<DetectionTask>().eq(DetectionTask::getTaskId,taskId);if(lock)query.last("FOR UPDATE");
         var task=tasks.selectOne(query);
         var principal=new com.ruanzhu.doorhandle.contracts.agent.AgentActor(actor.userId(),actor.username(),actor.supervisor()?com.ruanzhu.doorhandle.contracts.agent.AgentActor.Role.SUPERVISOR:com.ruanzhu.doorhandle.contracts.agent.AgentActor.Role.INSPECTOR);
-        if(!policy.canAccess(task,principal))fail(404,"任务不存在或无访问权限");return task;
+        if(!policy.canAccess(task,principal))fail(404,"任务不存在或无访问权限");
+        if(lock)policy.assertCanMutate(task,principal);return task;
     }
     private Identity current(Identity actor){if(actor==null)throw new SecurityException("请先登录");return changeHistoryEnabled||collaborationMutationsEnabled?users.lockCurrent(actor.userId(),actor.username()):users.current(actor.userId(),actor.username());}
     private void owner(Identity actor,Row row){if(actor.userId()!=row.ownerUserId())throw new SecurityException("只有报告本人可以修改草稿或撤回");}
