@@ -1042,6 +1042,17 @@ HISTORICAL_BUILDERS = {
     'ci-173-45465e873d92': '45465e873d92822abe446fd7be3f9f00b7816f70',
 }
 
+# Separate from builder/cache permissions: only stopped MySQL fixture objects.
+RECENT_MYSQL_FIXTURE_SOURCES = {
+    'ci-187-8e90ba50c691': ('8e90ba50c691d561bd26b23f037fec1600e5e9de', 'dbbe53c5a72a3a624161245a20065e50336f37a722c5da9f91ec8b002430584d'),
+    'ci-188-df1e1a54d48e': ('df1e1a54d48e5005185f53459068fbe9efffe333', 'dbbe53c5a72a3a624161245a20065e50336f37a722c5da9f91ec8b002430584d'),
+    'ci-189-410506ad7c82': ('410506ad7c82e302e623a2ac27b63dc345fcd131', '259d40731626e366b9f974df221bf64ee2db7a2e13e41dc369c1e5bf47826104'),
+}
+RECENT_MYSQL_HELPERS = {
+    'compact-build-resources.py': '59ad415c609056be97afa270ba6731e7eebd27fc05c30e82e18bb32c9c98205e',
+    'compact-image-inputs.py': '1db18e3d1aba9b426f6bfb6b34f22af96cb403c6a97ffef914ea35c308ea795e',
+}
+
 
 def _historical_json(raw):
     require(type(raw) is bytes and 0 < len(raw) <= 2 * MIB, 'Bounded historical builder control required')
@@ -1191,9 +1202,22 @@ def historical_mysql_fixture_projection(row):
                    for mount in row.get('Mounts', [])]}
 
 
-def historical_mysql_fixture_descriptor(root, context, identity, owner, cleanup, row, data_metadata):
+def recent_mysql_fixture_source(context, proof):
+    registered = RECENT_MYSQL_FIXTURE_SOURCES.get(context.get('release'))
+    require(registered is not None and registered[0] == context.get('commit')
+            and type(context.get('sourceSha256')) is str and SHA.fullmatch(context['sourceSha256']),
+            'Reviewed recent MySQL source required')
+    expected = {'path': 'inbox/' + context['release'] + '/source.tar.gz', 'sha256': context['sourceSha256'],
+                'transportRecipeSha256': registered[1], 'builderHelperSha256': dict(RECENT_MYSQL_HELPERS)}
+    require(type(proof) is dict and all(proof.get(key) == value for key, value in expected.items()),
+            'Original recent MySQL schema tool source differs')
+    return expected
+
+
+def historical_mysql_fixture_descriptor(root, context, identity, owner, cleanup, row, data_metadata, *, source_proof=None):
     """Admit an already stopped fixture object; its bind directory has no deletion API."""
-    require(HISTORICAL_BUILDERS.get(context.get('release')) == context.get('commit'), 'Reviewed historical MySQL context required')
+    historical = context.get('release') in HISTORICAL_BUILDERS and HISTORICAL_BUILDERS[context['release']] == context.get('commit')
+    recent_source = None if historical else recent_mysql_fixture_source(context, source_proof)
     require(all(document.get(key) == value for document in (owner, cleanup)
                 for key, value in {**context, 'identity': identity}.items()), 'Historical MySQL source or host differs')
     work = str(Path(root) / 'verification' / context['release'] / 'checkout/work/compact-fixtures')
@@ -1245,18 +1269,23 @@ def historical_mysql_fixture_descriptor(root, context, identity, owner, cleanup,
         require(context['commit'] == '45465e873d92822abe446fd7be3f9f00b7816f70'
                 and owner.get('binaryLoggingDisabled') is True, 'Historical MySQL 173 binary logging proof differs')
         expected_cmd.insert(6, '--skip-log-bin')
+    elif recent_source is not None:
+        require(owner.get('binaryLoggingDisabled') is True, 'Recent MySQL binary logging proof differs')
+        expected_cmd.insert(6, '--skip-log-bin')
     else:
         require('binaryLoggingDisabled' not in owner, 'Historical MySQL legacy binary logging profile differs')
     require(projection['Config']['Cmd'] == expected_cmd, 'Historical MySQL actual datadir command differs')
     return {**context, 'identity': identity, 'containerId': cid, 'sourceContainerId': source, 'ownerToken': token,
             'dataDirectory': data, 'dataMetadata': data_metadata, 'inspectProjection': projection,
-            'inspectSha256': hashlib.sha256(encoded(projection)).hexdigest(), 'preservedData': True}
+            'inspectSha256': hashlib.sha256(encoded(projection)).hexdigest(), 'preservedData': True,
+            **({'fixtureSourceProof': recent_source} if recent_source is not None else {})}
 
 
 def historical_mysql_fixture_remove(descriptor, inspect_fn, remove_fn, list_fn, references_fn, data_fn):
     cid = descriptor['containerId']
-    require(HISTORICAL_BUILDERS.get(descriptor.get('release')) == descriptor.get('commit')
-            and SHA.fullmatch(cid) and cid != descriptor['sourceContainerId']
+    if descriptor.get('release') not in HISTORICAL_BUILDERS or HISTORICAL_BUILDERS[descriptor['release']] != descriptor.get('commit'):
+        recent_mysql_fixture_source(descriptor, descriptor.get('fixtureSourceProof'))
+    require(SHA.fullmatch(cid) and cid != descriptor['sourceContainerId']
             and SHA.fullmatch(descriptor.get('rawInspectSha256', '')), 'Reviewed MySQL retirement descriptor required')
     def unchanged():
         raw = inspect_fn(cid)

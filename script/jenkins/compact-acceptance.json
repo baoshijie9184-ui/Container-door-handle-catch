@@ -1151,7 +1151,7 @@
       },
       {
         "module": "tests_python.test_failed_native_jar_duplicates",
-        "minimumTests": 128,
+        "minimumTests": 133,
         "source": "tests_python/test_failed_native_jar_duplicates.py",
         "allowedSkippedTests": []
       },
@@ -1163,7 +1163,7 @@
       },
       {
         "module": "tests_python.test_historical_mysql_fixture_retirement",
-        "minimumTests": 44,
+        "minimumTests": 61,
         "source": "tests_python/test_historical_mysql_fixture_retirement.py",
         "allowedSkippedTests": []
       },

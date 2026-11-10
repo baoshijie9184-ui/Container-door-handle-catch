@@ -270,3 +270,121 @@ def test_missing_post_rm_container_list_does_not_claim_success(fixture):
     with pytest.raises((ValueError, OSError)):
         resources.historical_mysql_fixture_remove(descriptor, inspect, remove, unavailable, references, data)
     assert calls.removed == [fixture.owner['containerId']]
+
+
+RECENT_MYSQL_TAGS = ('ci-187-8e90ba50c691', 'ci-188-df1e1a54d48e', 'ci-189-410506ad7c82')
+
+
+def recent_mysql_fixture(fixture, tag=RECENT_MYSQL_TAGS[0]):
+    commit, recipe = resources.RECENT_MYSQL_FIXTURE_SOURCES[tag]
+    body = json.dumps(vars(fixture)).replace(fixture.context['release'], tag).replace(fixture.context['commit'], commit)
+    value = SimpleNamespace(**json.loads(body))
+    value.owner['binaryLoggingDisabled'] = True
+    value.row['Config']['Cmd'].insert(6, '--skip-log-bin')
+    proof = {'path': 'inbox/' + tag + '/source.tar.gz', 'sha256': value.context['sourceSha256'],
+             'transportRecipeSha256': recipe, 'builderHelperSha256': dict(resources.RECENT_MYSQL_HELPERS)}
+    return value, proof
+
+
+def describe_recent(value, proof):
+    return resources.historical_mysql_fixture_descriptor(ROOT, value.context, IDENTITY,
+        value.owner, value.cleanup, value.row, value.data_metadata, source_proof=proof)
+
+
+@pytest.mark.parametrize('tag', RECENT_MYSQL_TAGS)
+def test_recent_three_stopped_mysql_objects_require_their_explicit_source_and_hide_private_values(fixture, monkeypatch, tag):
+    value, proof = recent_mysql_fixture(fixture, tag)
+    def refuse(*_args, **_kwargs):
+        pytest.fail('Recent object admission cannot read retained database pages or execute Docker')
+    monkeypatch.setattr(Path, 'open', refuse); monkeypatch.setattr(Path, 'read_bytes', refuse)
+    monkeypatch.setattr(resources.subprocess, 'run', refuse)
+    proof['rootPassword'] = SECRET
+    value.row['Config']['UnreviewedPrivateField'] = SECRET
+    result = describe_recent(value, proof)
+    assert tag not in resources.HISTORICAL_BUILDERS
+    assert result['containerId'] == value.owner['containerId'] and result['preservedData'] is True
+    assert result['dataMetadata'] == value.data_metadata and result['dataDirectory'] == value.owner['dataDirectory']
+    assert result['fixtureSourceProof']['path'] == proof['path']
+    assert result['fixtureSourceProof']['sha256'] == value.context['sourceSha256']
+    assert result['fixtureSourceProof']['transportRecipeSha256'] == proof['transportRecipeSha256']
+    assert value.owner['binaryLoggingDisabled'] is True
+    assert result['inspectProjection']['Config']['Cmd'][6] == '--skip-log-bin'
+    assert result['inspectProjection']['Config']['Cmd'].count('--skip-log-bin') == 1
+    for document in (result, resources.historical_mysql_fixture_projection(value.row)):
+        evidence = raw(document)
+        assert SECRET.encode() not in evidence and b'MYSQL_ROOT_PASSWORD' not in evidence
+        assert b'"Env"' not in evidence and b'rootPassword' not in evidence and b'UnreviewedPrivateField' not in evidence
+
+
+@pytest.mark.parametrize('tag', RECENT_MYSQL_TAGS)
+def test_recent_three_do_not_expand_default_historical_mysql_permission_without_source_proof(fixture, tag):
+    value, _proof = recent_mysql_fixture(fixture, tag)
+    historical = dict(resources.HISTORICAL_BUILDERS)
+    with pytest.raises(ValueError): describe(value)
+    assert resources.HISTORICAL_BUILDERS == historical and tag not in historical
+
+
+@pytest.mark.parametrize('damage', ['transport-recipe', 'builder-helper', 'source-archive'])
+def test_recent_mysql_source_recipe_helper_or_archive_hash_drift_refuses_admission(fixture, damage):
+    value, proof = recent_mysql_fixture(fixture)
+    if damage == 'transport-recipe': proof['transportRecipeSha256'] = 'a' * 64
+    elif damage == 'builder-helper': proof['builderHelperSha256']['compact-build-resources.py'] = 'a' * 64
+    else: proof['sha256'] = 'a' * 64
+    with pytest.raises(ValueError): describe_recent(value, proof)
+
+
+@pytest.mark.parametrize('damage', ['truthy-owner-flag', 'missing-switch', 'changed-switch'])
+def test_recent_mysql_binlog_proof_requires_true_and_the_exact_skip_switch(fixture, damage):
+    value, proof = recent_mysql_fixture(fixture)
+    if damage == 'truthy-owner-flag': value.owner['binaryLoggingDisabled'] = 1
+    elif damage == 'missing-switch': value.row['Config']['Cmd'].remove('--skip-log-bin')
+    else: value.row['Config']['Cmd'][6] = '--skip-log-bin=ON'
+    with pytest.raises(ValueError): describe_recent(value, proof)
+
+
+def test_recent_source_helper_result_cannot_mutate_the_shared_permission_registry(fixture):
+    value, proof = recent_mysql_fixture(fixture)
+    original = dict(resources.RECENT_MYSQL_HELPERS)
+    admitted_source = resources.recent_mysql_fixture_source(value.context, proof)
+    assert admitted_source['builderHelperSha256'] is not resources.RECENT_MYSQL_HELPERS
+    assert admitted_source['builderHelperSha256'] is not proof['builderHelperSha256']
+    admitted_source['builderHelperSha256']['compact-build-resources.py'] = 'a' * 64
+    assert resources.RECENT_MYSQL_HELPERS == original and proof['builderHelperSha256'] == original
+    assert resources.recent_mysql_fixture_source(value.context, proof)['builderHelperSha256'] == original
+
+
+def test_recent_remove_uses_one_ordinary_object_callback_and_preserves_retained_data_identity(fixture):
+    value, proof = recent_mysql_fixture(fixture)
+    descriptor = describe_recent(value, proof); descriptor['rawInspectSha256'] = sha(raw([value.row]))
+    calls, inspect, remove, listing, references, data = callbacks(value)
+    preserved = copy.deepcopy(value.owner), copy.deepcopy(value.cleanup), list(value.data_metadata)
+    result = resources.historical_mysql_fixture_remove(descriptor, inspect, remove, listing, references, data)
+    assert result['status'] == 'REMOVED' and result['containerId'] == value.owner['containerId']
+    assert calls.inspected == [value.owner['containerId'], value.owner['containerId']]
+    assert calls.removed == calls.referenced == [value.owner['containerId']] and calls.data >= 2
+    assert result['dataDirectoryPreserved'] is True and result['imagesPreserved'] is True and result['volumesPreserved'] is True
+    assert (value.owner, value.cleanup, value.data_metadata) == preserved
+
+
+@pytest.mark.parametrize('when', ['before-rm', 'after-rm'])
+def test_recent_remove_refuses_a_changed_retained_data_inode_at_either_readback(fixture, when):
+    value, proof = recent_mysql_fixture(fixture)
+    descriptor = describe_recent(value, proof); descriptor['rawInspectSha256'] = sha(raw([value.row]))
+    calls, inspect, remove, listing, references, data = callbacks(value)
+    def changed_data():
+        metadata = data()
+        if when == 'before-rm' or calls.removed: metadata[1] += 1
+        return metadata
+    with pytest.raises(ValueError):
+        resources.historical_mysql_fixture_remove(descriptor, inspect, remove, listing, references, changed_data)
+    assert calls.removed == ([] if when == 'before-rm' else [value.owner['containerId']])
+
+
+def test_recent_remove_rechecks_source_proof_before_any_object_command(fixture):
+    value, proof = recent_mysql_fixture(fixture)
+    descriptor = describe_recent(value, proof); descriptor['rawInspectSha256'] = sha(raw([value.row]))
+    descriptor['fixtureSourceProof']['transportRecipeSha256'] = 'a' * 64
+    calls, inspect, remove, listing, references, data = callbacks(value)
+    with pytest.raises(ValueError):
+        resources.historical_mysql_fixture_remove(descriptor, inspect, remove, listing, references, data)
+    assert calls.inspected == calls.removed == calls.referenced == [] and calls.data == 0

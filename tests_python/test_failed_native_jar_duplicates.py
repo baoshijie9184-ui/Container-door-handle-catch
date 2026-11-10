@@ -888,3 +888,122 @@ def test_recent_controller_is_an_independent_three_row_canonical_only_batch():
         'apply-public-layers', 'plan-generated-image-archives', 'apply-generated-image-archives'))
     pipeline = (root / 'script/jenkins/pipeline.ps1').read_text(encoding='utf8')
     assert re.search(r"retire-failed-native-jar-duplicates\.ps1 -Mode Maintenance -CanonicalBatch Recent ", pipeline)
+
+
+def test_recent_fixture_capture_authenticates_both_original_source_modes_before_projection(canonical_case, monkeypatch):
+    state = canonical_case; tag = state.copies.tag; context = state.bundle.context
+    monkeypatch.setitem(retirer.RECENT_CANONICAL_ONLY, tag, context['commit'])
+    owner = state.bundle.values['fixtureOwner']; owner.update(dataDirectory=owner['work'] + '/mysql-data',
+        rootPassword='synthetic-private-owner-secret', binaryLoggingDisabled=True,
+        containerName='doorhandle-compact-fixture-' + owner['token'], image='sha256:' + 'f' * 64, port=43127)
+    state.bundle.values['fixtureCleanup']['dataDirectoryRetained'] = owner['dataDirectory']
+    xml = with_action(state.bundle.xml, 'verify')
+    for role, body in [('buildXml', xml), ('fixtureOwner', encoded(owner)), ('fixtureCleanup', encoded(state.bundle.values['fixtureCleanup']))]:
+        path = state.copies.root / state.paths[role]; path.write_bytes(body)
+        state.request['candidates'][0]['controls'][role].update(bytes=len(body), sha256=sha(body))
+    proof = {'path': 'inbox/' + tag + '/source.tar.gz', 'sha256': context['sourceSha256'],
+             'transportRecipeSha256': 'c' * 64, 'builderHelperSha256': {'tool': 'd' * 64}}
+    calls = []
+    def original_source(root, actual_tag, commit, source_sha, **options):
+        assert root == state.copies.root and actual_tag == tag
+        assert commit == context['commit'] and source_sha == context['sourceSha256']
+        calls.append(options); return proof
+    monkeypatch.setattr(retirer, 'source_proof', original_source)
+    monkeypatch.setattr(retirer, 'builder_container_ids', lambda: [owner['containerId']])
+    inspected = encoded([{'Id': owner['containerId'], 'Config': {'Env': ['MYSQL_ROOT_PASSWORD=private-inspect-secret']}}])
+    monkeypatch.setattr(retirer, 'builder_docker', lambda *args: inspected if args == ('inspect', owner['containerId']) else pytest.fail('Unexpected Docker operation'))
+    data = [1, 2, stat.S_IFDIR | 0o700, 999, 1000]
+    monkeypatch.setattr(retirer, 'fixture_data_metadata', lambda *_args: list(data))
+    def descriptor(root, actual, identity, projected, cleanup, row, metadata, *, source_proof):
+        assert root == state.copies.root and actual == context and identity == state.bundle.identity
+        assert projected.get('binaryLoggingDisabled') is True and 'rootPassword' not in projected
+        assert cleanup['dataDirectoryRetained'] == projected['dataDirectory']
+        assert source_proof == proof and metadata == data and row['Id'] == owner['containerId']
+        return {'containerId': row['Id'], 'inspectProjection': {'Id': row['Id']}, 'dataMetadata': metadata}
+    builder = SimpleNamespace(recent_mysql_fixture_source=lambda _context, actual: actual == proof or pytest.fail('Source proof lost'),
+        historical_builder_inspect=lambda raw: json.loads(raw)[0], historical_mysql_fixture_descriptor=descriptor)
+    result = retirer.capture_recent_fixture(state.copies.root,
+        {'current': state.current, 'identity': state.bundle.identity}, state.request['candidates'][0], builder)
+    assert calls == [{'builder_helpers': True, 'canonical_jar': True}]
+    assert result['fixture']['rawInspectSha256'] == sha(inspected)
+    assert b'private-owner-secret' not in encoded(result) and b'private-inspect-secret' not in encoded(result)
+
+
+@pytest.mark.parametrize('outcome', ['removed', 'reference-blocked', 'already-absent'])
+def test_recent_fixture_phases_preserve_data_and_stop_before_jar_retirement(tmp_path, bundle, monkeypatch, outcome):
+    root = tmp_path / 'ci'; root.mkdir(mode=0o700)
+    tag, commit = next(iter(retirer.RECENT_CANONICAL_ONLY.items()))
+    current = {'release': 'ci-200-' + 'f' * 12, 'commit': 'f' * 40, 'sourceSha256': 'e' * 64}
+    context = {'release': tag, 'commit': commit, 'sourceSha256': 'b' * 64}
+    for name in (tag, current['release']): (root / 'inbox' / name).mkdir(mode=0o700, parents=True)
+    data = root / 'verification' / tag / 'checkout/work/compact-fixtures/mysql-data'; data.mkdir(mode=0o700, parents=True)
+    page = data / 'original-private-page'; page.write_bytes(b'database evidence is never opened by maintenance')
+    jar = root / 'inbox' / tag / 'application.jar'; jar.write_bytes(b'canonical jar remains for the next independent phase')
+    inode = data.stat().st_ino; cid, production = 'd' * 64, 'e' * 64; token = '0123456789'
+    metadata = [1, inode, stat.S_IFDIR | 0o700, 999, 1000]
+    rows = {production: {'Id': production, 'HostConfig': {'NetworkMode': 'bridge', 'PidMode': '', 'IpcMode': 'private'}}}
+    if outcome != 'already-absent':
+        rows[cid] = {'Id': cid, 'Config': {'Env': ['MYSQL_ROOT_PASSWORD=private-inspect-secret']},
+                     'HostConfig': {'NetworkMode': 'bridge', 'PidMode': '', 'IpcMode': 'private'}}
+    descriptor = None if outcome == 'already-absent' else {'containerId': cid, 'ownerToken': token,
+        'rawInspectSha256': sha(encoded([rows[cid]])), 'dataDirectory': str(data), 'dataMetadata': metadata}
+    candidate = {'historical': {'context': context, 'evidence': {'ownerToken': token}}, 'fixture': descriptor,
+                 'containerId': cid, 'dataDirectory': str(data), 'dataMetadata': metadata}
+    monkeypatch.setattr(retirer, 'capture_recent_fixture', lambda *_args: copy.deepcopy(candidate))
+    commands, checks = [], []; deny = [False]
+    def docker(*args):
+        if args[0] == 'inspect': return encoded([rows[args[1]]])
+        assert args == ('rm', cid), 'Only ordinary exact-ID rm is allowed'
+        commands.append(args); del rows[cid]; return cid.encode()
+    monkeypatch.setattr(retirer, 'builder_docker', docker)
+    monkeypatch.setattr(retirer, 'builder_container_ids', lambda: list(rows))
+    monkeypatch.setattr(retirer, 'fixture_data_metadata', lambda *_args: list(metadata))
+    def quiescent(_properties, actual_tag, remaining, **options):
+        assert actual_tag == tag and options == {'include_inbox': True}
+        assert cid not in [row[0] for row in remaining] and production in [row[0] for row in remaining]
+        checks.append(actual_tag)
+        if deny[0]: raise ValueError('synthetic active reference')
+    cleanup = SimpleNamespace(docker_snapshot=lambda: [(key,) for key in rows], quiescent=quiescent)
+    def remove(selected, inspect_fn, remove_fn, list_fn, refs_fn, data_fn):
+        assert selected == descriptor and sha(inspect_fn(cid)) == selected['rawInspectSha256']
+        refs_fn(cid); assert data_fn() == metadata
+        remove_fn(cid); assert cid not in list_fn() and data_fn() == metadata
+        return {'status': 'REMOVED', 'containerId': cid, 'dataDirectoryPreserved': True}
+    builder = SimpleNamespace(historical_builder_inspect=lambda raw: json.loads(raw)[0],
+                              historical_mysql_fixture_remove=remove)
+    modules = {'cleanup': cleanup, 'builder': builder}
+    request = {'schemaVersion': 1, 'kind': retirer.KIND + '-request', 'current': current, 'identity': bundle.identity,
+        'protectedReleases': [current['release']], 'candidates': [{**context, 'controls': {}}]}
+    raw_request = encoded(request); options = {'request_sha256': sha(raw_request), 'expected_current': current,
+                                             'identity': bundle.identity, 'modules': modules}
+    prepared = retirer.plan_recent_fixtures(root, raw_request, **options)
+    assert prepared['skipped'] == [] and len(prepared['absent']) == (1 if outcome == 'already-absent' else 0)
+    deny[0] = outcome == 'reference-blocked'
+    result = retirer.apply_recent_fixtures(root, raw_request, prepared, plan_sha256=sha(encoded(prepared)), **options)
+    assert result['status'] == {'removed': 'REMOVED', 'reference-blocked': 'FAILED_OR_UNKNOWN', 'already-absent': 'NO_ACTION'}[outcome]
+    assert commands == ([('rm', cid)] if outcome == 'removed' else [])
+    assert result['jarDeletionPerformed'] is False and result['volumesPreserved'] is True
+    assert result['dataDirectoriesPreserved'] is (outcome != 'reference-blocked')
+    assert len(result['removed']) == (1 if outcome == 'removed' else 0)
+    assert result['alreadyAbsent'] == ([cid] if outcome == 'already-absent' else [])
+    assert jar.read_bytes() == b'canonical jar remains for the next independent phase'
+    assert page.read_bytes() == b'database evidence is never opened by maintenance' and data.stat().st_ino == inode
+    assert b'private-inspect-secret' not in encoded(prepared) + encoded(result)
+    if outcome == 'reference-blocked':
+        assert result['failure']['reason'] == 'HISTORICAL_OBJECTS_NOT_QUIESCENT_UNCLASSIFIED_VALUE_ERROR'
+
+
+def test_recent_fixture_cli_order_failure_booleans_and_original_artifacts_are_wired():
+    root = MODULE.parents[2]
+    script = (root / 'script/jenkins/retire-failed-native-jar-duplicates.ps1').read_text(encoding='utf8')
+    branch = script.split("if($CanonicalBatch -ceq 'Recent') {", 1)[1].split('\n$builderPlanned=', 1)[0]
+    phases = [branch.index("Invoke-NativeJarPhase '" + phase + "'") for phase in
+              ('plan-recent-fixtures', 'apply-recent-fixtures', 'plan-canonical', 'apply-canonical')]
+    assert phases == sorted(phases)
+    assert "$fixtureResult.status -cin @('REMOVED','NO_ACTION')" in branch
+    assert "$fixtureResult.$flag -is [bool]" in branch and "$fixtureReceipt.$flag -is [bool]" in branch
+    assert "finally {Copy-NativeJarEvidence (Invoke-NativeJarPhase 'inspect')}" in branch
+    for name in ('plan.json', 'receipt.json', 'journal.jsonl'):
+        assert 'native-jar-duplicate-fixture-object-' + name in script
+    pipeline = (root / 'Jenkinsfile.ecs-monolith').read_text(encoding='utf8')
+    assert 'artifacts/native-jar-duplicate-*.json' in pipeline and 'artifacts/native-jar-duplicate-*.jsonl' in pipeline

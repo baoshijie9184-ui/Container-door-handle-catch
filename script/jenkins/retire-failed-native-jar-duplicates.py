@@ -581,7 +581,8 @@ def admit_historical_controls(root, request, row, *, builder_helpers=False, cano
     evidence = validate_control_documents(raw_docs, context, request['identity'], canonical_jar=canonical_jar)
     need(evidence['work'] == str(Path(root) / 'verification' / tag / 'checkout/work/compact-fixtures'), 'FIXTURE_OWNER_OUTSIDE_EXACT_OLD_ATTEMPT')
     if canonical_jar:
-        original_source = source_proof(root, tag, context['commit'], context['sourceSha256'], canonical_jar=True)
+        original_source = source_proof(root, tag, context['commit'], context['sourceSha256'],
+                                       builder_helpers=builder_helpers, canonical_jar=True)
     else:
         original_source = (source_proof(root, tag, context['commit'], context['sourceSha256'], builder_helpers=True)
                            if builder_helpers else source_proof(root, tag, context['commit'], context['sourceSha256']))
@@ -1340,14 +1341,22 @@ def builder_references(root, historical, descriptor, cleanup, builder, fixture=N
     if fixture is not None:
         need(fixture['containerId'] != cid, 'MYSQL_FIXTURE_AND_BUILDER_ID_COLLISION')
         retiring[fixture['containerId']] = 'doorhandle-compact-fixture-' + fixture['ownerToken']
+    return historical_object_references(root, historical, retiring, cleanup, builder)
+
+
+def historical_object_references(root, historical, retiring, cleanup, builder, *, include_inbox=False):
+    """Filter only complete admitted CID/name pairs, retaining every other guard."""
+    tag = historical['context']['release']
     containers = cleanup.docker_snapshot()
     need(all(sum(row[0] == selected for row in containers) == 1 for selected in retiring), 'EXACT_HISTORICAL_RETIRING_OBJECT_MISSING')
     try:
         cleanup.quiescent({'checkout': Path(root) / 'verification' / tag / 'checkout',
                            'token': historical['evidence']['ownerToken']}, tag,
-                          [row for row in containers if row[0] not in retiring])
+                          [row for row in containers if row[0] not in retiring],
+                          **({'include_inbox': True} if include_inbox else {}))
     except ValueError as error:
-        raise RetirementError('HISTORICAL_OBJECTS_NOT_QUIESCENT_' + cleanup.failure_guard_code(error)) from None
+        code = cleanup.failure_guard_code(error) if callable(getattr(cleanup, 'failure_guard_code', None)) else 'UNCLASSIFIED_VALUE_ERROR'
+        raise RetirementError('HISTORICAL_OBJECTS_NOT_QUIESCENT_' + code) from None
     for other in builder_container_ids():
         row = builder.historical_builder_inspect(builder_docker('inspect', other)); host = row.get('HostConfig') or {}
         values = [host.get(key, '') for key in ('NetworkMode', 'PidMode', 'IpcMode')]
@@ -1392,6 +1401,103 @@ def capture_fixture(root, request, historical, builder):
         builder.historical_builder_inspect(raw), fixture_data_metadata(root, owner['dataDirectory']))
     descriptor['rawInspectSha256'] = digest_bytes(raw)
     return descriptor
+
+
+def capture_recent_fixture(root, request, row, builder):
+    need(RECENT_CANONICAL_ONLY.get(row['release']) == row['commit'], 'ONLY_REVIEWED_RECENT_FIXTURES_ALLOWED')
+    historical = admit_historical_controls(root, request, row, builder_helpers=True, canonical_jar=True)
+    source = historical['sourceArchive']; builder.recent_mysql_fixture_source(historical['context'], source)
+    owner = historical['fixtureOwner']; cid = owner.get('containerId')
+    need(type(cid) is str and SHA.fullmatch(cid) and cid != owner.get('sourceContainerId')
+         and owner.get('dataDirectory') == historical['evidence']['work'] + '/mysql-data', 'EXACT_RECENT_MYSQL_OBJECT_REQUIRED')
+    data = fixture_data_metadata(root, owner['dataDirectory'])
+    need(stat.S_IMODE(data[2]) == 0o700 and data[3] == 999, 'RECENT_MYSQL_DATA_ENTRY_DIFFERS')
+    fixture = None
+    if cid in builder_container_ids():
+        raw = builder_docker('inspect', cid)
+        fixture = builder.historical_mysql_fixture_descriptor(root, historical['context'], request['identity'], owner,
+            historical['fixtureCleanup'], builder.historical_builder_inspect(raw), data, source_proof=source)
+        fixture['rawInspectSha256'] = digest_bytes(raw)
+    return {'historical': historical, 'fixture': fixture, 'containerId': cid,
+            'dataDirectory': owner['dataDirectory'], 'dataMetadata': data}
+
+
+def recent_fixture_references(root, candidate, cleanup, builder):
+    fixture = candidate['fixture']; tag = candidate['historical']['context']['release']
+    canonical_publication_refs(root, tag)
+    return historical_object_references(root, candidate['historical'],
+        {fixture['containerId']: 'doorhandle-compact-fixture-' + fixture['ownerToken']}, cleanup, builder, include_inbox=True)
+
+
+def plan_recent_fixtures(root, raw_request, *, request_sha256, expected_current, identity, modules):
+    request = approved_request(raw_request, request_sha256, expected_current, identity, canonical_jar=True)
+    accepted, absent, skipped = [], [], []
+    with controller_lock(root), publication_lock(root):
+        for row in request['candidates']:
+            try:
+                with attempt_lock(root, row['release']):
+                    candidate = capture_recent_fixture(root, request, row, modules['builder'])
+                    if candidate['fixture'] is None: absent.append(candidate)
+                    else:
+                        recent_fixture_references(root, candidate, modules['cleanup'], modules['builder'])
+                        accepted.append(candidate)
+            except (OSError, ValueError, KeyError, TypeError, tarfile.TarError, EOFError) as error:
+                skipped.append({'release': row['release'], 'reason': str(error) if isinstance(error, RetirementError)
+                                or getattr(error, 'doorhandle_public_resource_error', False) else type(error).__name__})
+    value = {'schemaVersion': 1, 'kind': 'doorhandle-recent-mysql-fixture-object-plan', 'current': expected_current,
+        'identity': identity, 'requestSha256': request_sha256, 'candidates': accepted, 'absent': absent,
+        'skipped': skipped, 'deletionPerformed': False, 'dataDirectoriesAndVolumesPreserved': True}
+    need(len(canonical(value)) <= MAX_CONTROL, 'BOUNDED_RECENT_MYSQL_PLAN_REQUIRED')
+    return value
+
+
+def apply_recent_fixtures(root, raw_request, prepared, *, request_sha256, plan_sha256, expected_current, identity, modules):
+    request = approved_request(raw_request, request_sha256, expected_current, identity, canonical_jar=True)
+    need(digest_bytes(canonical(prepared)) == plan_sha256 and prepared.get('kind') == 'doorhandle-recent-mysql-fixture-object-plan'
+         and prepared.get('current') == expected_current and prepared.get('identity') == identity
+         and prepared.get('requestSha256') == request_sha256 and prepared.get('deletionPerformed') is False
+         and prepared.get('skipped') == [], 'EXACT_RECENT_MYSQL_PLAN_REQUIRED')
+    selected, absent = prepared.get('candidates'), prepared.get('absent'); rows = {row['release']: row for row in request['candidates']}
+    need(type(selected) is list and type(absent) is list and len(selected) + len(absent) == len(rows) <= 3
+         and all(type(item) is dict and type(item.get('historical')) is dict for item in selected + absent),
+         'BOUNDED_RECENT_MYSQL_OBJECTS_REQUIRED')
+    tags = [item['historical']['context']['release'] for item in selected + absent]
+    need(len(tags) == len(set(tags)) and set(tags) == set(rows), 'RECENT_MYSQL_PLAN_TAGS_DIFFER')
+    removed, failure, active = [], None, None
+    journal_path = Path(root) / 'inbox' / expected_current['release'] / 'native-jar-duplicate-fixture-object-journal.jsonl'
+    with controller_lock(root), publication_lock(root), os.fdopen(os.open(journal_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600), 'wb') as journal:
+        def record(value):
+            body = canonical(value) + b'\n'; need(len(body) <= MAX_CONTROL, 'BOUNDED_RECENT_MYSQL_JOURNAL_REQUIRED')
+            journal.write(body); journal.flush(); os.fsync(journal.fileno())
+        record({'phase': 'STARTED', 'requestSha256': request_sha256, 'planSha256': plan_sha256})
+        try:
+            for candidate in absent + selected:
+                active = candidate['historical']['context']['release']
+                with attempt_lock(root, active):
+                    observed = capture_recent_fixture(root, request, rows[active], modules['builder'])
+                    need(observed == candidate, 'RECENT_MYSQL_OBJECT_OR_ORIGINALS_CHANGED_AFTER_PLAN')
+                    if candidate['fixture'] is None: continue
+                    fixture = candidate['fixture']
+                    record({'phase': 'MYSQL_OBJECT_REMOVE_STARTED', 'release': active, 'containerId': fixture['containerId'],
+                            'rawInspectSha256': fixture['rawInspectSha256'], 'dataDirectory': fixture['dataDirectory'],
+                            'dataMetadata': fixture['dataMetadata']})
+                    value = modules['builder'].historical_mysql_fixture_remove(fixture,
+                        lambda cid: builder_docker('inspect', cid), lambda cid: builder_docker('rm', cid), builder_container_ids,
+                        lambda _cid: recent_fixture_references(root, observed, modules['cleanup'], modules['builder']),
+                        lambda: fixture_data_metadata(root, fixture['dataDirectory']))
+                    removed.append(value); record({'phase': 'MYSQL_OBJECT_REMOVED', **value})
+        except Exception as error:
+            failure = {'release': active, 'reason': str(error) if isinstance(error, RetirementError)
+                       or getattr(error, 'doorhandle_public_resource_error', False) else type(error).__name__}
+            record({'phase': 'FAILED_OR_UNKNOWN', **failure})
+        record({'phase': 'FINISHED', 'removedContainers': len(removed)})
+    return {'schemaVersion': 1, 'kind': 'doorhandle-recent-mysql-fixture-object-receipt', 'current': expected_current,
+        'identity': identity, 'requestSha256': request_sha256, 'planSha256': plan_sha256,
+        'status': 'FAILED_OR_UNKNOWN' if failure else 'REMOVED' if removed else 'NO_ACTION',
+        'removed': removed, 'alreadyAbsent': [item['containerId'] for item in absent], 'failure': failure,
+        'dataDirectoriesPreserved': failure is None, 'imagesPreserved': True, 'volumesPreserved': True,
+        'sourceArchivesAndReportsPreserved': True, 'jarDeletionPerformed': False, 'automaticResumeAllowed': False,
+        'journalSha256': digest_bytes(private_bytes(root, journal_path))}
 
 
 def capture_builder(root, request, row, builder):
@@ -1945,6 +2051,7 @@ def apply_python_build_cache(root, prepared, *, plan_sha256, expected_current, i
 def cli(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--phase', choices=('capture-request', 'capture-canonical-request', 'plan-builders', 'apply-builders', 'plan', 'apply',
+                                           'plan-recent-fixtures', 'apply-recent-fixtures',
                                            'plan-canonical', 'apply-canonical',
                                            'plan-public-layers', 'apply-public-layers', 'plan-generated-image-archives',
                                            'apply-generated-image-archives', 'plan-python-build-cache',
@@ -1966,6 +2073,8 @@ def cli(argv=None):
         python_cache_receipt_file = inbox / 'native-python-build-cache-receipt.json'
         canonical_plan_file = inbox / 'native-jar-duplicate-canonical-plan.json'
         canonical_receipt_file = inbox / 'native-jar-duplicate-canonical-receipt.json'
+        fixture_plan_file = inbox / 'native-jar-duplicate-fixture-object-plan.json'
+        fixture_receipt_file = inbox / 'native-jar-duplicate-fixture-object-receipt.json'
         if args.phase in ('capture-request', 'capture-canonical-request'):
             canonical_only = args.phase == 'capture-canonical-request'
             need(not canonical_only or args.mode == 'Maintenance', 'CANONICAL_RETIREMENT_REQUIRES_MAINTENANCE')
@@ -1987,6 +2096,8 @@ def cli(argv=None):
                                ('pythonCachePlan', python_cache_plan_file), ('pythonCacheReceipt', python_cache_receipt_file),
                                ('pythonCacheJournal', inbox / 'native-python-build-cache-journal.jsonl'),
                                ('canonicalPlan', canonical_plan_file), ('canonicalReceipt', canonical_receipt_file),
+                               ('recentFixturePlan', fixture_plan_file), ('recentFixtureReceipt', fixture_receipt_file),
+                               ('recentFixtureJournal', inbox / 'native-jar-duplicate-fixture-object-journal.jsonl'),
                                ('canonicalJournal', inbox / 'native-jar-duplicate-canonical-journal.jsonl')):
                 if path.exists():
                     raw = private_bytes(root, path); files[name] = {'file': path.name, 'bytes': len(raw), 'sha256': digest_bytes(raw)}
@@ -2003,6 +2114,26 @@ def cli(argv=None):
                                       'bytes': len(raw), 'sha256': digest_bytes(raw)})
             result = {'status': 'INSPECTED', 'current': current, 'identity': identity, 'files': files,
                       'pythonCacheOriginals': originals}
+        elif args.phase in ('plan-recent-fixtures', 'apply-recent-fixtures'):
+            need(args.mode == 'Maintenance', 'RECENT_MYSQL_OBJECTS_REQUIRE_MAINTENANCE')
+            raw = private_bytes(root, request_file)
+            options = {'request_sha256': args.request_sha256, 'expected_current': current, 'identity': identity, 'modules': modules}
+            if args.phase == 'plan-recent-fixtures':
+                value = plan_recent_fixtures(root, raw, **options)
+                result = {'status': 'PLANNED', 'current': current, 'identity': identity,
+                    'plan': write_new(fixture_plan_file, value), 'skipped': value['skipped'],
+                    'objectCount': len(value['candidates']), 'alreadyAbsent': len(value['absent'])}
+            else:
+                plan_raw = private_bytes(root, fixture_plan_file)
+                need(digest_bytes(plan_raw) == args.plan_sha256, 'ORIGINAL_RECENT_MYSQL_PLAN_RAW_SHA_DRIFT')
+                value = apply_recent_fixtures(root, raw, decode(plan_raw), plan_sha256=args.plan_sha256, **options)
+                result = {'status': value['status'], 'current': current, 'identity': identity,
+                    'requestSha256': value['requestSha256'], 'planSha256': value['planSha256'],
+                    'removedContainers': len(value['removed']), 'alreadyAbsent': len(value['alreadyAbsent']),
+                    'dataDirectoriesPreserved': value['dataDirectoriesPreserved'], 'jarDeletionPerformed': value['jarDeletionPerformed'],
+                    'imagesPreserved': value['imagesPreserved'], 'volumesPreserved': value['volumesPreserved'],
+                    'sourceArchivesAndReportsPreserved': value['sourceArchivesAndReportsPreserved'],
+                    'receipt': write_new(fixture_receipt_file, value)}
         elif args.phase in ('plan-canonical', 'apply-canonical'):
             need(args.mode == 'Maintenance', 'CANONICAL_RETIREMENT_REQUIRES_MAINTENANCE')
             raw = private_bytes(root, request_file); approved_request(raw, args.request_sha256, current, identity, canonical_jar=True)
