@@ -2,7 +2,8 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { useUserStore } from '../stores/user'
-import request from '../api/request'
+import { captureAccountRequest } from '../api/request'
+const request=captureAccountRequest()
 import { useAccountOperationScope } from '../composables/useAccountOperationScope'
 import { useResourceChanges } from '../composables/useResourceChanges'
 const user=useUserStore(),supervisor=computed(()=>user.role==='SUPERVISOR'),loading=ref(false)

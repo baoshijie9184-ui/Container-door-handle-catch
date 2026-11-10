@@ -11,7 +11,8 @@
 </template>
 <script setup>
 import { onBeforeUnmount, onMounted, reactive, ref } from 'vue'
-import request from '../api/request'
+import { captureAccountRequest } from '../api/request'
+const request=captureAccountRequest()
 import { useAccountOperationScope } from '../composables/useAccountOperationScope'
 import { operationData, operationError, utcDisplay, deliverFile } from '../utils/qualityOperations'
 import { beijingDateTime } from '../utils/beijingTime'

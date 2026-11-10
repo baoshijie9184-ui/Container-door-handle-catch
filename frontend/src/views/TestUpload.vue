@@ -34,7 +34,8 @@
 import { ref,reactive,computed,nextTick,watch,onBeforeUnmount } from 'vue'
 import { onBeforeRouteLeave } from 'vue-router'
 import { ElMessageBox } from 'element-plus'
-import request from '../api/request'
+import { captureAccountRequest } from '../api/request'
+const request=captureAccountRequest()
 import { useUserStore } from '../stores/user'
 import { validResourceId } from '../utils/agentCards'
 import { createUiRequestId } from '../utils/requestIdentity'

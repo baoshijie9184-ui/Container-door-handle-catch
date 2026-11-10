@@ -1,9 +1,12 @@
 import React, { useEffect, useState } from 'react';
 import { accountSession, onIdentitySignal } from '../../frontend/src/utils/accountContext';
 import { accountFetch } from '../../frontend/src/utils/accountFetch';
+import { createAccountTaskCache } from '../../frontend/src/utils/accountTaskCache';
 import { createRealtimeChanges } from '../../frontend/src/utils/realtimeChanges';
 
 globalThis.__doorhandleAccountFetch = accountFetch;
+const taskCache=createAccountTaskCache({session:accountSession,storage:()=>globalThis.localStorage});
+accountSession.onReset(previous=>taskCache.clear(previous.accountContext));
 export function AccountBoundary({ children, loginHref }) {
   const [account, setAccount] = useState(accountSession.state), [status, setStatus] = useState('connecting');
   useEffect(() => {

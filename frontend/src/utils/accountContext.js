@@ -10,9 +10,10 @@ export function createAccountContext() {
   const publish = () => listeners.forEach(fn => fn({ ...state }))
   const identityScope = user => JSON.stringify(['bindingVersion','employeeId','employeeStatus','employeeType','departmentId','dataScope'].map(key=>user?.identity?.[key] ?? null))
   function clear(reason = '') {
+    const previous = { ...state }
     controller.abort(); controller = new AbortController()
     state = { epoch: state.epoch + 1, accountContext: '', authenticated: false, blocked: true, reason, user: null }
-    resets.forEach(fn => fn()); publish()
+    resets.forEach(fn => fn(previous)); publish()
     return state.epoch
   }
   return {

@@ -138,6 +138,7 @@
 </template>
 
 <script setup>
+import { accountSession } from '../../utils/accountContext'
 import { computed, ref, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { ElDrawer } from 'element-plus'
 import { useRouter } from 'vue-router'
@@ -374,8 +375,10 @@ watch(() => chatStore.visible, (val) => {
 })
 
 const handleSend = async (content) => {
+  const account=accountSession.stamp()
   const currentSession=chatStore.sessionId
   await conversationControlsRef.value?.ready()
+  accountSession.assert(account)
   if(chatStore.sessionId!==currentSession)return
   returnToLatest()
   if(controlState.value.enabled){const session=chatStore.sessionId;try{await conversationControlsRef.value.submit(content)}catch{if(chatStore.sessionId===session)composerRef.value?.restoreDraft(content)}return}

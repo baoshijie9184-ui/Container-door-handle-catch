@@ -10,7 +10,8 @@
 </template>
 <script setup>
 import { computed, ref, watch, onBeforeUnmount } from 'vue'
-import request from '@/api/request'
+import { captureAccountRequest } from '@/api/request'
+const request=captureAccountRequest()
 import { businessImagePreview } from '@/utils/agentActions'
 import { useUserStore } from '@/stores/user'
 import ProposalImageGallery from './ProposalImageGallery.vue'

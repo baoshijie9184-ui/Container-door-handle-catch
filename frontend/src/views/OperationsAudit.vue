@@ -42,7 +42,8 @@
 <script setup>
 import ResourceChangeHistory from '../components/ResourceChangeHistory.vue'
 import { ref,computed,watch,onBeforeUnmount } from 'vue'
-import request from '@/api/request'
+import { captureAccountRequest } from '@/api/request'
+const request=captureAccountRequest()
 import { useUserStore } from '@/stores/user'
 import CollectionEmptyState from '@/components/CollectionEmptyState.vue'
 import { auditDomainOptions,auditDomainLabel,auditScopeLabel,auditTime,deliveryBytes } from '@/utils/auditPresentation'

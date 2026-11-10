@@ -38,7 +38,8 @@
 </template>
 <script setup>
 import { computed, ref, watch, onBeforeUnmount } from 'vue'
-import request from '@/api/request'
+import { captureAccountRequest } from '@/api/request'
+const request=captureAccountRequest()
 import { useUserStore } from '@/stores/user'
 import { validTransferReview, canCheckTransfer, transferDecision, transferCount, transferNextStep, transferDecisionSnapshot, transferDecisionMatches, transferPayload, transferCapability, transferReadIssue, transferFailureStatus, transferDisabledMessage } from '@/utils/detectionCreationReview'
 import { beijingDateTime } from '@/utils/beijingTime'

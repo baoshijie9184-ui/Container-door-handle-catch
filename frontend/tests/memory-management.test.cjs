@@ -1,5 +1,5 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path')
-const source=fs.readFileSync(path.join(__dirname,'../src/api/agentMemory.js'),'utf8')
+const source=fs.readFileSync(path.join(__dirname,'../src/api/agentMemory.js'),'utf8').replace("import { accountFetch as fetch } from '../utils/accountFetch'",'const fetch=(...args)=>globalThis.fetch(...args)')
 const apiPromise=import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`)
 test('lifecycle changes require the supplied confirmation and cleanup checks only query their original identity',async(t)=>{
  const original=global.fetch,calls=[];t.after(()=>{global.fetch=original});global.fetch=async(url,options)=>{calls.push({url,options});return {ok:true,status:200,json:async()=>({})}};

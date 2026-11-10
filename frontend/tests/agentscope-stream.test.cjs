@@ -5,6 +5,7 @@ const path = require('node:path')
 
 const source = fs.readFileSync(path.join(__dirname, '../src/api/chatAssistant.js'), 'utf8')
   .replace("import request from './request'", 'const request = {}')
+  .replace("import { accountFetch as fetch } from '../utils/accountFetch'", 'const fetch=Object.assign((...args)=>globalThis.fetch(...args),{capture:()=>Object.assign((...args)=>globalThis.fetch(...args),{assert(){}})})')
   .replaceAll('import.meta.env', '({})')
 const modulePromise = import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`)
 

@@ -12,7 +12,8 @@
 <script setup>
 import { ref,watch,onBeforeUnmount } from 'vue'
 import { User } from '@element-plus/icons-vue'
-import request from '@/api/request'
+import { captureAccountRequest } from '@/api/request'
+const request=captureAccountRequest()
 const props=defineProps({modelValue:String,userId:[String,Number],revision:String,disabled:Boolean})
 const emit=defineEmits(['update:modelValue','update:userId','update:revision'])
 const options=ref([]),loading=ref(false),error=ref('')

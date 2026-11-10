@@ -1,4 +1,6 @@
 import { accountSession } from '../utils/accountContext'
+import { createAccountTaskCache } from '../utils/accountTaskCache'
+import { decimalVersion } from '../utils/mutationVersion'
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import {beijingDateTime,businessDate} from '../utils/beijingTime'
@@ -33,6 +35,7 @@ export const CATEGORY_ALIASES = {
 export const useTaskStore = defineStore('task', () => {
   const taskList = ref([])
   const selectedTaskId = ref(null)
+  const cache=createAccountTaskCache({session:accountSession,storage:()=>globalThis.localStorage})
 
   // ==================== localStorage 持久化 ====================
 
@@ -40,7 +43,8 @@ export const useTaskStore = defineStore('task', () => {
   let saveTimer = null
   let pendingSave = false
 
-  const saveTaskList = () => {
+  const saveTaskList = (stamp=accountSession.stamp()) => {
+    if(!accountSession.current(stamp))return
     // 如果已有定时器等待，标记为待保存即可
     if (saveTimer) {
       pendingSave = true
@@ -48,19 +52,19 @@ export const useTaskStore = defineStore('task', () => {
     }
 
     // 立即执行第一次保存
-    doSave()
+    doSave(stamp)
 
     // 设置节流定时器，2秒内的后续调用会被合并
     saveTimer = setTimeout(() => {
       if (pendingSave) {
-        doSave()
+        doSave(stamp)
         pendingSave = false
       }
       saveTimer = null
     }, 2000)
   }
 
-  const doSave = () => {
+  const doSave = (stamp) => {
     if (!accountSession.state.authenticated || !accountSession.state.accountContext) return
     try {
       const savable = taskList.value.map(t => ({
@@ -88,43 +92,18 @@ export const useTaskStore = defineStore('task', () => {
         captureInfo: t.captureInfo,
         sourceOssPrefix: t.sourceOssPrefix || ''
       }))
-      localStorage.setItem('doorhandle:'+accountSession.state.accountContext+':taskList', JSON.stringify(savable))
+      cache.writeTasks(savable,stamp)
     } catch (e) {
       console.error('[saveTaskList] 保存失败:', e)
     }
   }
 
-  const loadTaskList = () => {
-    try {
-      const raw = accountSession.state.authenticated && accountSession.state.accountContext ? localStorage.getItem('doorhandle:'+accountSession.state.accountContext+':taskList') : null
-      return raw ? JSON.parse(raw) : []
-    } catch { return [] }
-  }
+  const loadTaskList = () => cache.readTasks()
+  const saveFileState = (taskId,state,stamp=accountSession.stamp()) => cache.writeFile(taskId,state,stamp)
+  const loadFileState = taskId => cache.readFile(taskId)
+  const removeFileState = (taskId,stamp=accountSession.stamp()) => cache.removeFile(taskId,stamp)
 
-  // -------- 文件级上传状态（task_<taskId>_files） --------
-
-  const FILE_STATE_PREFIX = 'task_files_'
-
-  const saveFileState = (taskId, state) => {
-    if(!accountSession.state.accountContext)return
-    try {
-      localStorage.setItem(`doorhandle:${accountSession.state.accountContext}:${FILE_STATE_PREFIX}${taskId}`, JSON.stringify(state))
-    } catch { /* localStorage 满了则忽略 */ }
-  }
-
-  const loadFileState = (taskId) => {
-    if(!accountSession.state.accountContext)return null
-    try {
-      const raw = localStorage.getItem(`doorhandle:${accountSession.state.accountContext}:${FILE_STATE_PREFIX}${taskId}`)
-      return raw ? JSON.parse(raw) : null
-    } catch { return null }
-  }
-
-  const removeFileState = (taskId) => {
-    localStorage.removeItem(`doorhandle:${accountSession.state.accountContext}:${FILE_STATE_PREFIX}${taskId}`)
-  }
-
-  accountSession.onReset(()=>{clearTimeout(saveTimer);saveTimer=null;pendingSave=false;taskList.value=[];selectedTaskId.value=null})
+  accountSession.onReset(previous=>{cache.clear(previous.accountContext);clearTimeout(saveTimer);saveTimer=null;pendingSave=false;taskList.value=[];selectedTaskId.value=null})
 
   // 获取所有需要恢复的任务信息
   const getResumeTaskList = () => {
@@ -185,6 +164,8 @@ export const useTaskStore = defineStore('task', () => {
   const updateTask = (taskId, updates) => {
     const idx = findTaskIndex(taskId)
     if (idx === -1) return
+    const current=decimalVersion(taskList.value[idx].version),incoming=decimalVersion(updates.version??updates.mutationVersion)
+    if(current!==null&&incoming!==null&&BigInt(incoming)<BigInt(current))return
     // 仅在 updates 未提供 updatedAt 时自动更新为当前时间
     if (!updates.updatedAt) {
       updates.updatedAt = beijingDateTime()

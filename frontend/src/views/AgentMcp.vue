@@ -80,7 +80,8 @@ import { beijingDateTime as renderBeijingTime } from '@/utils/beijingTime'
 import {knownCount} from '@/utils/countPresentation'
 import CollectionEmptyState from '@/components/CollectionEmptyState.vue'
 import { ElMessageBox } from 'element-plus'
-import request from '@/api/request'
+import { captureAccountRequest } from '@/api/request'
+const request=captureAccountRequest()
 const state=ref(null),loading=ref(false),busy=ref(false),error=ref(''),dialogError=ref(''),probeResult=ref(''),installOpen=ref(false),licenseAccepted=ref(false)
 const headers={'X-MCP-Action':'update'}
 const beijingDateTime=value=>value?renderBeijingTime(value)||'时间格式未知':'未记录'

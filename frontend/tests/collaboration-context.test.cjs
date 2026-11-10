@@ -6,6 +6,10 @@ const realtimeModule = import(moduleUrl(readFrontendFile('src','utils','realtime
 const versionModule = import(moduleUrl(readFrontendFile('src','utils','mutationVersion.js').replace(
   "'./requestIdentity'", JSON.stringify(moduleUrl(readFrontendFile('src','utils','requestIdentity.js'))))))
 const diffModule = import(moduleUrl(readFrontendFile('src','utils','changeHistory.js')))
+const cacheModule = import(moduleUrl(readFrontendFile('src','utils','accountTaskCache.js')))
+const fetchModule = import(moduleUrl(readFrontendFile('src','utils','accountFetch.js')
+  .replace("'./accountContext'",JSON.stringify(moduleUrl(readFrontendFile('src','utils','accountContext.js'))))
+  .replace("'./requestIdentity'",JSON.stringify(moduleUrl(readFrontendFile('src','utils','requestIdentity.js'))))))
 const user = (accountContext='context-a', overrides={}) => ({authenticated:true,userId:'21',username:'supervisor-a',role:'SUPERVISOR',
   accountContext,capabilities:{sessionTracking:true,realtime:true,changeHistory:true},...overrides})
 const flush = async () => { for(let i=0;i<12;i++)await Promise.resolve() }
@@ -65,12 +69,13 @@ test('request abort composes caller cancellation with the account lifetime',asyn
   const signal=accountSignal(a.signal,b.signal);b.abort();assert.equal(signal.aborted,true)
 })
 test('versions preserve bigint precision and model release names never become row versions',async()=>{
-  const {decimalVersion,resourceVersion,mutationHeaders}=await versionModule
+  const {decimalVersion,resourceVersion,mutationHeaders,responseResourceVersion}=await versionModule
   assert.equal(decimalVersion('9223372036854775807'),'9223372036854775807')
   assert.equal(decimalVersion(Number.MAX_SAFE_INTEGER+1),null)
   assert.equal(resourceVersion({version:'v1'},{model:true}),null)
   assert.equal(resourceVersion({version:'v1',rowVersion:'9'},{model:true}),'9')
   assert.equal(mutationHeaders('9','request-a')['If-Match'],'"9"')
+  assert.equal(responseResourceVersion({headers:{'x-resource-version':'10'},data:{data:{resource:{version:'8'}}}}),'10')
 })
 test('draft snapshots retain the version read on opening and repeat the same request identity',async()=>{
   const {captureTaskMutation,taskMutationPayload}=await versionModule
@@ -142,4 +147,44 @@ test('history values distinguish absence, null, empty, boolean and protected fie
   assert.equal(changeValue({before:''},'before'),'空字符串')
   assert.equal(changeValue({before:false},'before'),'否')
   assert.equal(changeValue({before:'secret',redacted:true},'before'),'内容已受保护')
+})
+function localCache(entries=[]) {
+  const values=new Map(entries)
+  return {get length(){return values.size},key:index=>[...values.keys()][index],getItem:key=>values.get(key)??null,
+    setItem:(key,value)=>values.set(key,value),removeItem:key=>values.delete(key),values}
+}
+test('account reset removes only that account task and file checkpoints',async()=>{
+  const {createAccountContext}=await accountModule,{createAccountTaskCache}=await cacheModule,session=createAccountContext()
+  const storage=localCache([['another-app','keep'],['doorhandle:context-b:taskList','keep'],['doorhandle:context-a:other-feature','keep']])
+  const cache=createAccountTaskCache({session,storage:()=>storage});session.onReset(previous=>cache.clear(previous.accountContext))
+  session.accept(user());cache.writeTasks([{taskId:'a'}],session.stamp());cache.writeFile('a',{completed:['a.png']},session.stamp())
+  session.accept(user('context-b',{userId:'22',username:'supervisor-b'}))
+  assert.equal(storage.values.has('doorhandle:context-a:taskList'),false)
+  assert.equal(storage.values.has('doorhandle:context-a:task_files_a'),false)
+  assert.equal(storage.getItem('doorhandle:context-b:taskList'),'keep');assert.equal(storage.getItem('another-app'),'keep')
+  assert.equal(storage.getItem('doorhandle:context-a:other-feature'),'keep')
+})
+test('a delayed upload rejection cannot write old checkpoints into the next account',async()=>{
+  const {createAccountContext}=await accountModule,{createAccountTaskCache}=await cacheModule,session=createAccountContext(),storage=localCache()
+  const cache=createAccountTaskCache({session,storage:()=>storage});session.onReset(previous=>cache.clear(previous.accountContext))
+  session.accept(user());const original=session.stamp();let reject
+  const upload=new Promise((_resolve,failure)=>{reject=failure}).catch(()=>{
+    assert.equal(cache.writeFile('old-task',{failed:['private.png']},original),false)
+    assert.equal(cache.writeTasks([{taskId:'old-task'}],original),false)
+    assert.equal(cache.removeFile('new-task',original),false)
+  })
+  session.accept(user('context-b',{userId:'22',username:'supervisor-b'}));cache.writeFile('new-task',{completed:['b.png']},session.stamp())
+  reject(Error('cancel arrived late'));await upload
+  assert.deepEqual(cache.readFile('new-task'),{completed:['b.png']});assert.equal(cache.readFile('old-task'),null)
+  assert.equal([...storage.values.keys()].some(key=>key.includes('context-a')),false)
+})
+test('an intent bound before an await cannot first send an unsafe AGUI request as another account',async()=>{
+  const {accountSession}=await accountModule,{accountFetch}=await fetchModule,originalFetch=globalThis.fetch;const requests=[]
+  globalThis.fetch=async(...args)=>{requests.push(args);return new Response('{}',{status:200})}
+  try{
+    accountSession.accept(user());const original=accountFetch.capture()
+    await Promise.resolve();accountSession.accept(user('context-b',{userId:'22',username:'supervisor-b'}))
+    await assert.rejects(original('/agui/run',{method:'POST',body:'{}'}),{code:'ACCOUNT_CONTEXT_CHANGED'})
+    assert.equal(requests.length,0)
+  }finally{globalThis.fetch=originalFetch;accountSession.clear()}
 })

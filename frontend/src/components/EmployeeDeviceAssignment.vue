@@ -34,7 +34,8 @@
 
 <script setup>
 import { computed, getCurrentInstance, nextTick, onBeforeUnmount, ref, watch } from 'vue'
-import request from '../api/request'
+import { captureAccountRequest } from '../api/request'
+const request=captureAccountRequest()
 import { resourceVersion, mutationHeaders } from '../utils/mutationVersion'
 import { createUiRequestId } from '../utils/requestIdentity'
 import { useUserStore } from '../stores/user'

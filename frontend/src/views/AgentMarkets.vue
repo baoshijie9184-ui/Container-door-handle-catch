@@ -60,7 +60,8 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import AgentSectionIcon from '@/components/chat/AgentSectionIcon.vue'
 import CollectionEmptyState from '@/components/CollectionEmptyState.vue'
-import request from '@/api/request'
+import { captureAccountRequest } from '@/api/request'
+const request=captureAccountRequest()
 import { useUserStore } from '@/stores/user'
 
 const catalog = ref(null), loading = ref(false), error = ref(''), selected = ref(null)

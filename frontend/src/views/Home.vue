@@ -450,7 +450,8 @@ import {
   User, Monitor, Search, Setting,
   DataAnalysis, Refresh, WarningFilled, UserFilled, ArrowRight
 } from '@element-plus/icons-vue'
-import request from '../api/request'
+import { captureAccountRequest } from '../api/request'
+const request=captureAccountRequest()
 import { getWorkUnitSummary, getDuplicateSummary } from '../api/dashboard'
 
 const router = useRouter()

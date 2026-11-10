@@ -85,7 +85,8 @@
 import { ref, computed, watch, nextTick, onBeforeUnmount, getCurrentInstance } from 'vue'
 import { ElMessage } from 'element-plus'
 import { transcribeChatVoice } from '@/api/chatAssistant'
-import request from '@/api/request'
+import { captureAccountRequest } from '@/api/request'
+const request=captureAccountRequest()
 import { useUserStore } from '@/stores/user'
 import { filterSkillCommands } from '@/utils/skillCommands'
 import {Plus,Document,Close,Lock} from '@element-plus/icons-vue'
@@ -146,7 +147,7 @@ let mediaRecorder = null
 let mediaStream = null
 let recordingTimer = null
 let voiceGeneration=0,composerDisposed=false
-const voiceScope=()=>JSON.stringify([props.sessionId,user.identity?.userId || user.username,user.role,user.isAuthenticated,props.active])
+const voiceScope=()=>JSON.stringify([props.sessionId,user.accountEpoch,user.accountContext,user.identity?.userId || user.username,user.role,user.isAuthenticated,props.active])
 const currentVoice=operation=>!composerDisposed && props.active && operation.generation===voiceGeneration && operation.scope===voiceScope()
 const voiceButtonLabel=computed(()=>voiceOpening.value?'正在等待麦克风授权':voiceStopping.value?'正在结束录音':voiceTranscribing.value?'正在识别语音':pendingVoice.value?'请先处理待插入的语音结果':recording.value?'停止录音并识别':'语音输入')
 const MAX_RECORDING_SECONDS = 60

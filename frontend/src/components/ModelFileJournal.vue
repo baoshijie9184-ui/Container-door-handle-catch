@@ -50,7 +50,8 @@
 <script setup>
 import { ref,computed,onBeforeUnmount,watch } from 'vue'
 import { FolderChecked,Search } from '@element-plus/icons-vue'
-import request from '@/api/request'
+import { captureAccountRequest } from '@/api/request'
+const request=captureAccountRequest()
 import { beijingDateTime } from '@/utils/beijingTime'
 import { knownCount } from '@/utils/countPresentation'
 import { useUserStore } from '@/stores/user'

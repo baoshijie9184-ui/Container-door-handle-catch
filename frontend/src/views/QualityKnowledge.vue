@@ -17,7 +17,8 @@
 import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessageBox } from 'element-plus'
-import request from '../api/request'
+import { captureAccountRequest } from '../api/request'
+const request=captureAccountRequest()
 import { useUserStore } from '../stores/user'
 import { useAccountOperationScope } from '../composables/useAccountOperationScope'
 import { operationData, operationError, deliverFile, utcDisplay } from '../utils/qualityOperations'

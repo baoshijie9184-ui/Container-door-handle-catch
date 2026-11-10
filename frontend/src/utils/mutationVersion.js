@@ -9,6 +9,11 @@ export function resourceVersion(resource, { model = false } = {}) {
   return decimalVersion(resource?.rowVersion ?? resource?.mutationVersion ?? (model ? undefined : resource?.version)
     ?? resource?.result?.rowVersion ?? resource?.result?.mutationVersion ?? (model ? undefined : resource?.result?.version))
 }
+export function responseResourceVersion(response, resource = response?.data?.data) {
+  const headers=response?.headers
+  return decimalVersion(headers?.get?.('X-Resource-Version') ?? headers?.['x-resource-version'] ?? headers?.['X-Resource-Version'])
+    ?? resourceVersion(resource)
+}
 export function mutationHeaders(version, requestId = createUiRequestId()) {
   const expected = decimalVersion(version)
   if (expected === null) throw Object.assign(new Error('尚未读取有效的资料版本 请重新读取后操作'),{notSent:true})

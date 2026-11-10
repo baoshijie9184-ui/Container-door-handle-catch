@@ -27,7 +27,8 @@
 import { ref,onMounted,onBeforeUnmount } from 'vue'
 import { Box,Refresh,DocumentChecked,CircleCheck,Delete,Search } from '@element-plus/icons-vue'
 import { ElMessageBox } from 'element-plus'
-import request from '@/api/request'
+import { captureAccountRequest } from '@/api/request'
+const request=captureAccountRequest()
 import { beijingDateTime } from '@/utils/beijingTime'
 const state=ref(null),loading=ref(false),busy=ref(false),error=ref(''),notice=ref('')
 let mounted=true,generation=0,promptOpen=false

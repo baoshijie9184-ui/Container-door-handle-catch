@@ -181,6 +181,7 @@ function App() {
     if(currentSession.current===sessionId)setItems(withExecution(sessionItems(session.messages,cardView)));
   }catch{if(currentSession.current===sessionId)setSessionError('会话消息暂不可读取，请刷新核对')}}
   async function loadSession(id) {
+    const operationFetch=fetch.capture();
     if(busy.current)return;
     const generation=++sessionGeneration.current;
     const metadataVersion=sessionMetadataVersion.current;
@@ -188,9 +189,9 @@ function App() {
     if (!refreshingCurrent) setSessionLoading(true);
     setSessionError('');
     try{
-      const list=await readSession(await fetch(SESSIONS,{credentials:'include',cache:'no-store'}));
+      const list=await readSession(await operationFetch(SESSIONS,{credentials:'include',cache:'no-store'}));
       let selected=id||list[0]?.sessionId;
-      const session=selected?await readSession(await fetch(SESSIONS+'/'+encodeURIComponent(selected),{credentials:'include',cache:'no-store'})):await readSession(await fetch(SESSIONS,{method:'POST',credentials:'include'}));
+      const session=selected?await readSession(await operationFetch(SESSIONS+'/'+encodeURIComponent(selected),{credentials:'include',cache:'no-store'})):await readSession(await operationFetch(SESSIONS,{method:'POST',credentials:'include'}));
       if(generation!==sessionGeneration.current)return;
       if(currentSession.current!==session.sessionId){setDraft('');setRunState(null);setStreamNotice('');executionCache.current.clear();followTranscript.current=true;setShowTranscriptReturn(false);}currentSession.current=session.sessionId;setThreadId(session.sessionId);
       const nextSessions=list.some(s=>s.sessionId===session.sessionId)?list:[session,...list];
@@ -201,9 +202,10 @@ function App() {
     finally{if(generation===sessionGeneration.current)setSessionLoading(false);}
   }
   async function newSession(){
+    const operationFetch=fetch.capture();
     if(busy.current||sessionLoading)return;
     setSessionLoading(true);
-    try{const session=await readSession(await fetch(SESSIONS,{method:'POST',credentials:'include'}));await loadSession(session.sessionId);}
+    try{const session=await readSession(await operationFetch(SESSIONS,{method:'POST',credentials:'include'}));await loadSession(session.sessionId);}
     catch(error){setSessionError(error.message);setSessionLoading(false);}
   }
   useEffect(() => {
@@ -218,10 +220,12 @@ function App() {
   }, []);
 
   async function submit(text) {
+    const operationFetch=fetch.capture();
     if(resourcesRef.current?.busy() || catalogAuthRequired || modelAuthRequired)return;
     const query = resourcesRef.current?.content(text)||text.trim();
     const selectedSession=currentSession.current
     const controlled=await controlsRef.current?.ready()
+    operationFetch.assert()
     if(selectedSession!==currentSession.current)return
     if(controlled){
       if(!query)return;returnToLatest();const sessionId=currentSession.current;setDraft('');
@@ -241,7 +245,7 @@ function App() {
     let completed=false;
     let displayPublisher;
     try {
-      const response = await fetch(API, { method: 'POST', credentials: 'include',signal:abort.signal, headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream', 'X-Agent-Id': catalog.mainAgent }, body: JSON.stringify({ threadId:requestSession, runId:requestId, messages: [{ id: crypto.randomUUID(), role: 'user', content: query }] }) });
+      const response = await operationFetch(API, { method: 'POST', credentials: 'include',signal:abort.signal, headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream', 'X-Agent-Id': catalog.mainAgent }, body: JSON.stringify({ threadId:requestSession, runId:requestId, messages: [{ id: crypto.randomUUID(), role: 'user', content: query }] }) });
       let references = [];
       let surfaces={};
       let committed={};

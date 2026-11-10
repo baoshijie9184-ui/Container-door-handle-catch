@@ -30,15 +30,17 @@ export function DynamicResults({references,sessionId,onFollowUp,initialSurfaces,
   useEffect(()=>{alive.current=true;generation.current++;setSurfaces(initialSurfaces||{});setLegacy(false);setError('');reading.current=false;if(!initialSurfaces||!Object.keys(initialSurfaces).length)refresh();return()=>{alive.current=false;generation.current++;controller.current?.abort();};},[key]);
   useEffect(()=>{if(initialSurfaces&&Object.keys(initialSurfaces).length)setSurfaces(initialSurfaces);},[initialSurfaces]);
   async function action(event) {
+    const operationFetch=fetch.capture();
     if(event.name==='REFRESH'){await refresh();return;}
     if(!onFollowUp)throw Error('请在可发送消息的会话中继续分析');
     const version=generation.current;
-    const response=await fetch('/agui/ui/actions',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json','X-Agent-Action':'a2ui'},body:JSON.stringify({sessionId,cards:references,action:event})});
+    const response=await operationFetch('/agui/ui/actions',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json','X-Agent-Action':'a2ui'},body:JSON.stringify({sessionId,cards:references,action:event})});
     if(!alive.current||version!==generation.current)return;
     if(!response.ok){if([401,403].includes(response.status))setSurfaces({});throw Error('交互未通过当前权限或参数校验，请刷新后核对');}
     const result=await response.json();
     if(!alive.current||version!==generation.current)return;
     if(typeof result.question!=='string'||!result.question.trim()||result.question.length>8000)throw Error('后续问题格式无效');
+    operationFetch.assert();
     await onFollowUp(result.question);
   }
   if(legacy)return <AgentResultCards references={references} businessBase={businessBase}/>;

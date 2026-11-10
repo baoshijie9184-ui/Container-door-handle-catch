@@ -1,7 +1,10 @@
 import { createApp, toRaw } from 'vue'
 import { accountSession } from './utils/accountContext'
 import { accountFetch } from './utils/accountFetch'
+import { createAccountTaskCache } from './utils/accountTaskCache'
 globalThis.__doorhandleAccountFetch = accountFetch
+const accountTaskCache=createAccountTaskCache({session:accountSession,storage:()=>globalThis.localStorage})
+accountSession.onReset(previous=>accountTaskCache.clear(previous.accountContext))
 import { createPinia } from 'pinia'
 import ElementPlus from 'element-plus'
 import 'element-plus/dist/index.css'

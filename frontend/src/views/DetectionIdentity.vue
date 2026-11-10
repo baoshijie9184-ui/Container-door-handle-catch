@@ -72,7 +72,8 @@ import { UserFilled, Refresh, Key, DocumentChecked, CircleCheck, Search } from '
 import IdentityAccountPicker from '@/components/IdentityAccountPicker.vue'
 import IdentityReconciliationPanel from '@/components/IdentityReconciliationPanel.vue'
 import CollectionEmptyState from '@/components/CollectionEmptyState.vue'
-import request from '@/api/request'
+import { captureAccountRequest } from '@/api/request'
+const request=captureAccountRequest()
 import { beijingDateTime } from '@/utils/beijingTime'
 const formatTime = value => value ? beijingDateTime(value) || '时间未记录' : '时间未记录'
 const route = useRoute(), router = useRouter()

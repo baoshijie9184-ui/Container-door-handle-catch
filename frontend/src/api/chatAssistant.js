@@ -35,8 +35,9 @@ export const transcribeChatVoice = (audioBlob, filename = 'voice.webm') => {
 }
 
 export const streamChatMessage = async (payload, handlers = {}) => {
+  const operationFetch=fetch.capture()
   const baseURL = import.meta.env.VITE_API_URL || ''
-  const response = await fetch(`${baseURL}/api/chat-assistant/messages/stream`, {
+  const response = await operationFetch(`${baseURL}/api/chat-assistant/messages/stream`, {
     method: 'POST',
     credentials: 'include',
     headers: {
@@ -55,6 +56,7 @@ export const streamChatMessage = async (payload, handlers = {}) => {
   let completed = false
 
   const dispatchBlock = (block) => {
+    operationFetch.assert()
     const lines = block.split(/\r?\n/)
     let event = 'message'
     const dataLines = []

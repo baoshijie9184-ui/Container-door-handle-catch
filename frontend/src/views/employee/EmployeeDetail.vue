@@ -168,7 +168,8 @@
 <script setup>
 import { ref, computed, watch, onBeforeUnmount } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import request from '../../api/request'
+import { captureAccountRequest } from '../../api/request'
+const request=captureAccountRequest()
 import { useResourceChanges } from '../../composables/useResourceChanges'
 import ResourceChangeHistory from '../../components/ResourceChangeHistory.vue'
 import { useUserStore } from '../../stores/user'

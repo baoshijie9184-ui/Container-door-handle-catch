@@ -79,7 +79,8 @@ import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import {beijingDateTime} from '@/utils/beijingTime'
 
-import request from '../../api/request'
+import { captureAccountRequest } from '../../api/request'
+const request=captureAccountRequest()
 import { resourceVersion, mutationHeaders } from '../../utils/mutationVersion'
 import { useUserStore } from '../../stores/user'
 import CollectionEmptyState from '../../components/CollectionEmptyState.vue'

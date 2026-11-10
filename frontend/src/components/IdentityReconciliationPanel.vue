@@ -65,7 +65,8 @@
 import { computed, getCurrentInstance, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { DocumentChecked, Refresh, Search } from '@element-plus/icons-vue'
-import request from '@/api/request'
+import { captureAccountRequest } from '@/api/request'
+const request=captureAccountRequest()
 import CollectionEmptyState from '@/components/CollectionEmptyState.vue'
 import { beijingDateTime } from '@/utils/beijingTime'
 const props = defineProps({ enabled: Boolean, disabled: Boolean, revision: Number, sourceProtection: Boolean })

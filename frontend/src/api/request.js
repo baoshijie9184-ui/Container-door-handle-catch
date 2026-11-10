@@ -46,4 +46,18 @@ axios.interceptors.response.use(response => {
   }
   return Promise.reject(error)
 })
-export default axios
+const dataMethods=new Set(['post','put','patch'])
+function bindRequest(stamp) {
+  const captured=config=>({...config,_accountStamp:config?._accountStamp || stamp || accountSession.stamp()})
+  const send=(url,config)=>typeof url==='string'?axios(url,captured(config)):axios(captured(url))
+  for(const method of ['get','head','options','delete','post','put','patch'])send[method]=(url,data,config)=>
+    dataMethods.has(method)?axios[method](url,data,captured(config)):axios[method](url,captured(data))
+  send.request=config=>axios.request(captured(config))
+  send.assert=()=>accountSession.assert(stamp || accountSession.stamp())
+  send.interceptors=axios.interceptors;send.defaults=axios.defaults
+  return send
+}
+// The default captures synchronously when called, before Axios schedules its interceptors.
+// A component with confirmations or other awaits can bind its complete lifetime explicitly.
+export const captureAccountRequest = () => bindRequest(accountSession.stamp())
+export default bindRequest()

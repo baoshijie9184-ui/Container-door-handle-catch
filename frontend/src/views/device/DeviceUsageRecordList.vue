@@ -125,7 +125,8 @@
 <script setup>
 import { ref, reactive, computed, onBeforeUnmount, nextTick, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import request from '../../api/request'
+import { captureAccountRequest } from '../../api/request'
+const request=captureAccountRequest()
 import { resourceVersion, mutationHeaders } from '../../utils/mutationVersion'
 import { createUiRequestId } from '../../utils/requestIdentity'
 import { useResourceChanges } from '../../composables/useResourceChanges'

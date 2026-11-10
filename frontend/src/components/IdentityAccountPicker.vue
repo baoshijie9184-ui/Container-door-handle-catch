@@ -17,7 +17,8 @@
 <script setup>
 import { computed, ref, onBeforeUnmount } from 'vue'
 import { User } from '@element-plus/icons-vue'
-import request from '@/api/request'
+import { captureAccountRequest } from '@/api/request'
+const request=captureAccountRequest()
 const props = defineProps({ modelValue: Object, disabled: Boolean, label: { type: String, default: '历史归属目标账号' } })
 const emit = defineEmits(['update:modelValue'])
 const roleNames = { ADMIN: '管理员', SUPERVISOR: '主管', INSPECTOR: '检测员', OPERATOR: '操作员' }

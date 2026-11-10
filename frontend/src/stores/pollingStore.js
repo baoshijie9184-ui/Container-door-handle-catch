@@ -1,5 +1,7 @@
 import { defineStore } from 'pinia'
-import request from '../api/request'
+import request, { captureAccountRequest } from '../api/request'
+import { accountSession } from '../utils/accountContext'
+import { resourceVersion, mutationHeaders, responseResourceVersion } from '../utils/mutationVersion'
 import { ElMessage } from 'element-plus'
 import { useTaskStore } from './taskStore'
 import { knownCount } from '../utils/countPresentation'
@@ -9,6 +11,7 @@ export const usePollingStore = defineStore('polling', () => {
 
   // 单个全局定时器，管理所有任务的轮询
   let globalPollingTimer = null
+  accountSession.onReset(()=>{if(globalPollingTimer)clearInterval(globalPollingTimer);globalPollingTimer=null})
   const POLLING_INTERVAL = 3000 // 3秒轮询一次
 
   // 启动全局轮询
@@ -61,12 +64,13 @@ export const usePollingStore = defineStore('polling', () => {
   // ==================== 单个任务轮询 ====================
 
   const pollTaskForId = async (taskId) => {
-    const taskStore = useTaskStore()
-    const progressResponse = await request.get(`/api/detection/tasks/${taskId}`)
+    const taskStore = useTaskStore(),lifetimeRequest=captureAccountRequest()
+    const progressResponse = await lifetimeRequest.get(`/api/detection/tasks/${taskId}`)
     if (!progressResponse.data || progressResponse.data.code !== 200) {
       throw new Error(progressResponse.data?.message || '查询任务进度失败')
     }
 
+    lifetimeRequest.assert()
     const progress = progressResponse.data.data
     const progressStatus = progress.status || ''
     const progressStage = progress.stage || ''
@@ -117,8 +121,9 @@ export const usePollingStore = defineStore('polling', () => {
     })
 
     if (progressStatus === 'COMPLETED' || progressStatus === 'PARTIAL_FAILED') {
-      const resultResponse = await request.get(`/api/detection/tasks/${taskId}/result`)
+      const resultResponse = await lifetimeRequest.get(`/api/detection/tasks/${taskId}/result`)
       if (resultResponse.data && resultResponse.data.code === 200) {
+        lifetimeRequest.assert()
         const result = resultResponse.data.data
         taskStore.updateTask(taskId, {
           result,
@@ -173,6 +178,7 @@ export const usePollingStore = defineStore('polling', () => {
   // ==================== 检测任务启动 ====================
 
   const startTaskDetection = async (task, modelId, threshold) => {
+    const account=accountSession.stamp(),lifetimeRequest=captureAccountRequest(),expectedVersion=resourceVersion(task)
     const taskStore = useTaskStore()
 
     if (!task.uploadedFiles || !task.uploadedFiles.length) {
@@ -186,21 +192,25 @@ export const usePollingStore = defineStore('polling', () => {
     taskStore.saveTaskList()
 
     try {
-      const response = await request.post(`/api/detection/tasks/${taskId}/uploaded`, {
+      const response = await lifetimeRequest.post(`/api/detection/tasks/${taskId}/uploaded`, {
         modelId: modelId || null,
         threshold: threshold,
         uploadedFiles: task.uploadedFiles
-      })
+      },{headers:mutationHeaders(expectedVersion)})
       if (!response.data || response.data.code !== 200) {
         throw new Error(response.data?.message || '提交检测任务失败')
       }
 
+      lifetimeRequest.assert()
+      const version=responseResourceVersion(response);if(version!==null)taskStore.updateTask(taskId,{version,mutationVersion:version})
       // 立即轮询一次
       await pollTaskForId(taskId)
 
+      lifetimeRequest.assert()
       // 启动全局轮询（如果还没启动）
       startGlobalPolling()
     } catch (error) {
+      if(!accountSession.current(account))return
       console.error('远程检测失败:', error)
       taskStore.updateTask(taskId, { stage: 'failed', message: '检测任务执行失败。', error: error.message || '未知错误' })
       taskStore.saveTaskList()

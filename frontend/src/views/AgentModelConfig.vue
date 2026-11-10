@@ -56,7 +56,8 @@ import AgentSectionIcon from "@/components/chat/AgentSectionIcon.vue"
 import {computed,onMounted,ref,onBeforeUnmount} from 'vue'
 import {onBeforeRouteLeave} from 'vue-router'
 import {ElMessageBox} from 'element-plus'
-import request from '@/api/request'
+import { captureAccountRequest } from '@/api/request'
+const request=captureAccountRequest()
 import {readModelConfiguration} from '@/utils/modelConfigResponse'
 import CollectionEmptyState from '@/components/CollectionEmptyState.vue'
 import ModelConfigDiff from '@/components/chat/ModelConfigDiff.vue'

@@ -1,4 +1,5 @@
-import request from '../api/request'
+import { captureAccountRequest } from '../api/request'
+import { mutationHeaders, responseResourceVersion } from '../utils/mutationVersion'
 import { beijingDateTime } from '../utils/beijingTime'
 import { readAccountPreference } from '../utils/accountPreferences'
 
@@ -46,6 +47,7 @@ const mapCompletedResult = (taskId, result, status) => {
 }
 
 export const detectSingleImageViaKafka = async ({ file, modelId, threshold, onStatus }) => {
+  const request=captureAccountRequest()
   const createResponse = await request.post('/api/detection/tasks', {
     taskType: 'SINGLE',
     modelId: modelId || null,
@@ -58,7 +60,9 @@ export const detectSingleImageViaKafka = async ({ file, modelId, threshold, onSt
       fileSize: file.size
     }]
   })
+  request.assert()
   const task = requireSuccess(createResponse, '创建单图 Kafka 任务失败')
+  const uploadVersion=responseResourceVersion(createResponse)
   if (typeof task?.taskId === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(task.taskId)) onStatus?.({taskId:task.taskId,stage:'CREATING',message:'任务已登记，正在核对上传资料'})
   const upload = task?.uploadUrls?.[0]
   if (!task?.taskId || !upload?.putUrl || !upload?.objectKey) {
@@ -71,17 +75,19 @@ export const detectSingleImageViaKafka = async ({ file, modelId, threshold, onSt
     timeout: 30000
   })
 
+  request.assert()
   onStatus?.({ taskId: task.taskId, stage: 'QUEUED', message: '原图已上传，正在提交检测' })
   const uploadedResponse = await request.post(`/api/detection/tasks/${task.taskId}/uploaded`, {
     modelId: modelId || null,
     threshold,
     uploadedFiles: [{ fileName: upload.fileName, objectKey: upload.objectKey }]
-  })
+  },{headers:mutationHeaders(uploadVersion)})
   requireSuccess(uploadedResponse, '提交 Kafka 检测任务失败')
 
   const deadline = Date.now() + POLL_TIMEOUT_MS
   while (Date.now() < deadline) {
     const progressResponse = await request.get(`/api/detection/tasks/${task.taskId}`)
+    request.assert()
     const progress = requireSuccess(progressResponse, '查询 Kafka 检测进度失败') || {}
     onStatus?.({
       taskId: task.taskId,
@@ -96,6 +102,7 @@ export const detectSingleImageViaKafka = async ({ file, modelId, threshold, onSt
     if (progress.status === 'COMPLETED' || progress.status === 'PARTIAL_FAILED') {
       const resultResponse = await request.get(`/api/detection/tasks/${task.taskId}/result`)
       const result = requireSuccess(resultResponse, '获取 Kafka 远程检测结果失败') || {}
+      request.assert()
       return mapCompletedResult(task.taskId, result, progress.status)
     }
     await wait(POLL_INTERVAL_MS)

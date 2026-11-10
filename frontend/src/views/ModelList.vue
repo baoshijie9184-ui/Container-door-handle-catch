@@ -276,7 +276,8 @@
 import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { validResourceId } from '@/utils/agentCards'
-import request from '../api/request'
+import { captureAccountRequest } from '../api/request'
+const request=captureAccountRequest()
 import { resourceVersion, mutationHeaders } from '../utils/mutationVersion'
 import { useResourceChanges } from '../composables/useResourceChanges'
 import ResourceChangeHistory from '../components/ResourceChangeHistory.vue'

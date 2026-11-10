@@ -35,7 +35,8 @@
 </template>
 <script setup>
 import { ref,computed,watch,onBeforeUnmount,nextTick } from 'vue'
-import request from '../../api/request'
+import { captureAccountRequest } from '../../api/request'
+const request=captureAccountRequest()
 import { beijingDateTime } from '../../utils/beijingTime'
 import { useManagedForm } from '../../composables/useManagedForm'
 import CollaborationRefreshNotice from '../../components/CollaborationRefreshNotice.vue'

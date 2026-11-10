@@ -32,7 +32,8 @@
 <script setup>
 import { ref, reactive, computed, watch, onBeforeUnmount } from 'vue'
 import { useRoute } from 'vue-router'
-import request from '../api/request'
+import { captureAccountRequest } from '../api/request'
+const request=captureAccountRequest()
 import { useUserStore } from '../stores/user'
 import { useResourceChanges } from '../composables/useResourceChanges'
 import { useAccountOperationScope } from '../composables/useAccountOperationScope'

@@ -4,7 +4,8 @@
 <script setup>
 import { computed, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import request from '../api/request'
+import { captureAccountRequest } from '../api/request'
+const request=captureAccountRequest()
 import { useUserStore } from '../stores/user'
 import { useAccountOperationScope } from '../composables/useAccountOperationScope'
 import { captureTaskMutation, taskMutationPayload, resourceVersion } from '../utils/mutationVersion'
@@ -12,7 +13,7 @@ const props=defineProps({task:{type:Object,required:true}}),emit=defineEmits(['c
 const user=useUserStore(),busy=ref(false),pending=ref(null)
 const scope=useAccountOperationScope(()=>{pending.value=null;busy.value=false})
 const pick=key=>props.task[key]??props.task.result?.[key]
-const eligible=computed(()=>user.isAuthenticated&&!!user.accountContext&&resourceVersion(props.task)!==null
+const eligible=computed(()=>user.isAuthenticated&&user.capabilities?.mutations===true&&!!user.accountContext&&resourceVersion(props.task)!==null
   && !pick('assignee')&&!pick('assigneeUserId')&&['COMPLETED','PARTIAL_FAILED'].includes(pick('status'))&&pick('flowStatus')==='PENDING_REVIEW')
 async function claim(){
  if(busy.value||user.role!=='INSPECTOR'||!pending.value&&!eligible.value)return

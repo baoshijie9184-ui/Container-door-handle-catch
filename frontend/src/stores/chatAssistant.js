@@ -1,4 +1,5 @@
 import { defineStore } from 'pinia'
+import { accountSession } from '../utils/accountContext'
 import { ref, watch, onScopeDispose } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
@@ -102,8 +103,10 @@ export const useChatAssistantStore = defineStore('chatAssistant', () => {
     }catch{if(sessionId.value===sid)ElMessage.warning('会话消息暂不可读取，请刷新核对')}
   }
   const bootstrap = async (force = false) => {
+    const account=accountSession.stamp()
     if (bootstrapped.value && !force) return
     await Promise.all([loadSessionList(), loadProjectList()])
+    accountSession.assert(account)
     if (sessions.value.length > 0) {
       await loadSession(sessions.value[0].sessionId, force)
     } else {
@@ -361,9 +364,11 @@ export const useChatAssistantStore = defineStore('chatAssistant', () => {
 
   /** 删除会话 */
   const deleteSession = async (sid) => {
+    const account=accountSession.stamp()
     try {
       await deleteSessionApi(sid)
       await loadSessionList()
+      accountSession.assert(account)
       if (sid === sessionId.value && sessions.value.length > 0) {
         await loadSession(sessions.value[0].sessionId, true)
       } else if (sessions.value.length === 0) {
@@ -371,6 +376,7 @@ export const useChatAssistantStore = defineStore('chatAssistant', () => {
       }
       ElMessage.success('对话已删除')
     } catch (err) {
+      if(!accountSession.current(account))return
       console.error('[chat] 删除会话失败:', err)
       const errMsg = err.response?.data?.message || err.message || '删除失败'
       ElMessage.error(errMsg)
@@ -449,6 +455,7 @@ export const useChatAssistantStore = defineStore('chatAssistant', () => {
   })
 
   const sendMessage = async (content) => {
+    const account=accountSession.stamp()
     const text = String(content || '').trim()
     if (!text) {
       ElMessage.warning('请输入聊天内容')
@@ -517,11 +524,13 @@ export const useChatAssistantStore = defineStore('chatAssistant', () => {
           }
         }
       )
+      accountSession.assert(account)
       // 重新加载当前会话消息
       await loadSession(sessionId.value, true)
       // 刷新会话列表（标题可能更新）
       await loadSessionList()
     } catch (error) {
+      if(!accountSession.current(account))return
       assistantMsg.streaming = false
       assistantMsg.statusText = ''
       assistantMsg.statusPlaceholder = false
@@ -533,7 +542,7 @@ export const useChatAssistantStore = defineStore('chatAssistant', () => {
       ElMessage.error(error.response?.data?.message || error.message || '发送消息失败')
       throw error
     } finally {
-      loading.value = false
+      if(accountSession.current(account))loading.value = false
     }
   }
 
@@ -596,6 +605,9 @@ export const useChatAssistantStore = defineStore('chatAssistant', () => {
   const closeProjectMenu = () => {
     projectMenuOpenId.value = null
   }
+
+  const resetAccount=accountSession.onReset(()=>{stopPolling();sessionListRequest++;resetDiagnostics();executionCache.clear();executionSession=''})
+  onScopeDispose(resetAccount)
 
   return {
     visible,

@@ -115,7 +115,8 @@ import SkillVersionRecord from '@/components/chat/SkillVersionRecord.vue'
 import {skillTime,skillMaintenance,skillRuleState,skillRuleLabel,readSkillView} from '@/utils/skillPresentation'
 import { knownCount } from '@/utils/countPresentation'
 import { computed, ref, onMounted, onBeforeUnmount, watch } from 'vue'
-import request from '@/api/request'
+import { captureAccountRequest } from '@/api/request'
+const request=captureAccountRequest()
 import { useRoute } from 'vue-router'
 import { ElMessageBox } from 'element-plus'
 const skills=ref([]), sources=ref([]), runs=ref([]), mine=ref(null), selected=ref(null), loading=ref(false), busy=ref(false), error=ref(''), dialogError=ref('')

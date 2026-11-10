@@ -9,7 +9,8 @@ test('tests\\auth-response-guard-contract.test.cjs', () => {
   assert.doesNotMatch(source, /\[401,\s*403\]\.includes/)
 
   const interceptor = source.match(/request\.interceptors\.response\.use\([\s\S]*?return Promise\.reject\(error\)[\s\S]*?\n\s*\)/)?.[0] || ''
-  assert.match(interceptor, /clearSession\(\)/)
+  assert.match(interceptor, /clearSession\(/)
+  assert.match(interceptor, /accountSession\.current\(/)
   assert.doesNotMatch(interceptor, /logout\(\)/)
 
   console.log('auth response guard contract assertions passed')
