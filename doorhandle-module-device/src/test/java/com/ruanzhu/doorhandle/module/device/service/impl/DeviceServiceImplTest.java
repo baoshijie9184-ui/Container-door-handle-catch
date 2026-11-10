@@ -1,17 +1,23 @@
 package com.ruanzhu.doorhandle.module.device.service.impl;
 
+import com.ruanzhu.doorhandle.contracts.security.BusinessPrincipal;
 import com.ruanzhu.doorhandle.module.device.entity.Device;
 import com.ruanzhu.doorhandle.module.device.entity.DeviceCaptureAlert;
 import com.ruanzhu.doorhandle.module.device.dto.device.DeviceAlertActionRequest;
 import com.ruanzhu.doorhandle.module.device.dto.device.DeviceHeartbeatRequest;
 import com.ruanzhu.doorhandle.module.device.mapper.DeviceCaptureAlertMapper;
 import com.ruanzhu.doorhandle.module.device.mapper.DeviceMapper;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.core.context.SecurityContextHolder;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -19,9 +25,12 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -35,6 +44,25 @@ class DeviceServiceImplTest {
 
     @InjectMocks
     private DeviceServiceImpl deviceService;
+
+    @BeforeEach
+    void startWithEmptySecurityContext() {
+        SecurityContextHolder.clearContext();
+    }
+
+    @AfterEach
+    void clearSecurityContext() {
+        SecurityContextHolder.clearContext();
+    }
+
+    private record AlertPrincipal(Long userId, String username) implements BusinessPrincipal {}
+
+    private void authenticate(Long userId, String username) {
+        var context = SecurityContextHolder.createEmptyContext();
+        context.setAuthentication(new UsernamePasswordAuthenticationToken(new AlertPrincipal(userId, username), null,
+                List.of(new SimpleGrantedAuthority("ROLE_SUPERVISOR"))));
+        SecurityContextHolder.setContext(context);
+    }
 
     @Test
     void heartbeatMarksDeviceOnlineAndRefreshesLastHeartbeatAt() {
@@ -133,27 +161,62 @@ class DeviceServiceImplTest {
         alert.setStatus("OPEN");
 
         DeviceAlertActionRequest ackRequest = new DeviceAlertActionRequest();
-        ackRequest.setOperator("qa-leader");
+        ackRequest.setOperator("payload-impostor-ack");
         ackRequest.setRemark("已通知现场人员");
 
         when(deviceCaptureAlertMapper.selectById(12L)).thenReturn(alert);
         when(deviceCaptureAlertMapper.updateById(alert)).thenReturn(1);
 
+        authenticate(101L, "qa-leader");
         DeviceCaptureAlert acknowledged = deviceService.acknowledgeAlert(12L, ackRequest);
 
         assertEquals("ACKNOWLEDGED", acknowledged.getStatus());
         assertEquals("qa-leader", acknowledged.getAckOperator());
+        assertEquals("已通知现场人员", acknowledged.getAckRemark());
         assertNotNull(acknowledged.getAcknowledgedAt());
+        assertNotNull(acknowledged.getUpdatedAt());
+        LocalDateTime acknowledgedAt = acknowledged.getAcknowledgedAt();
 
         DeviceAlertActionRequest resolveRequest = new DeviceAlertActionRequest();
-        resolveRequest.setOperator("maintainer");
+        resolveRequest.setOperator("payload-impostor-resolve");
         resolveRequest.setRemark("重启相机恢复");
 
+        authenticate(102L, "maintainer");
         DeviceCaptureAlert resolved = deviceService.resolveAlert(12L, resolveRequest);
 
         assertEquals("RESOLVED", resolved.getStatus());
         assertEquals("maintainer", resolved.getResolvedOperator());
+        assertEquals("重启相机恢复", resolved.getResolvedRemark());
         assertNotNull(resolved.getResolvedAt());
+        assertNotNull(resolved.getUpdatedAt());
+        assertEquals("qa-leader", resolved.getAckOperator());
+        assertEquals(acknowledgedAt, resolved.getAcknowledgedAt());
+        verify(deviceCaptureAlertMapper, times(2)).updateById(alert);
+    }
+
+    @Test
+    void unauthenticatedBusinessPrincipalCannotAcknowledgeOrResolveAlerts() {
+        SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(
+                new AlertPrincipal(101L, "qa-leader"), null));
+        DeviceAlertActionRequest request = new DeviceAlertActionRequest();
+        request.setOperator("payload-impostor");
+
+        assertThrows(SecurityException.class, () -> deviceService.acknowledgeAlert(12L, request));
+        assertThrows(SecurityException.class, () -> deviceService.resolveAlert(12L, request));
+
+        verifyNoInteractions(deviceCaptureAlertMapper, deviceMapper);
+    }
+
+    @Test
+    void authenticatedPrincipalWithoutUserIdCannotAcknowledgeOrResolveAlerts() {
+        authenticate(null, "qa-leader");
+        DeviceAlertActionRequest request = new DeviceAlertActionRequest();
+        request.setOperator("payload-impostor");
+
+        assertThrows(SecurityException.class, () -> deviceService.acknowledgeAlert(12L, request));
+        assertThrows(SecurityException.class, () -> deviceService.resolveAlert(12L, request));
+
+        verifyNoInteractions(deviceCaptureAlertMapper, deviceMapper);
     }
 
     @Test

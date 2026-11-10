@@ -7,6 +7,7 @@ import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.ruanzhu.doorhandle.contracts.security.BusinessPrincipal;
 import com.ruanzhu.doorhandle.module.device.dto.device.DeviceAlertActionRequest;
 import com.ruanzhu.doorhandle.module.device.dto.device.DeviceHeartbeatRequest;
 import com.ruanzhu.doorhandle.module.device.entity.Device;
@@ -16,6 +17,7 @@ import com.ruanzhu.doorhandle.module.device.mapper.DeviceMapper;
 import com.ruanzhu.doorhandle.module.device.service.DeviceService;
 import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.Cacheable;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 import org.springframework.transaction.annotation.Transactional;
@@ -342,9 +344,10 @@ public class DeviceServiceImpl implements DeviceService {
     @Transactional(rollbackFor=Exception.class)
     @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DEVICE_ALERT",action="ACKNOWLEDGE",supervisorOnly=true)
     public DeviceCaptureAlert acknowledgeAlert(Long alertId, DeviceAlertActionRequest request) {
+        String operator = resolveOperator();
         DeviceCaptureAlert alert = getAlert(alertId);
         alert.setStatus("ACKNOWLEDGED");
-        alert.setAckOperator(resolveOperator(request));
+        alert.setAckOperator(operator);
         alert.setAckRemark(request == null ? null : request.getRemark());
         alert.setAcknowledgedAt(LocalDateTime.now());
         alert.setUpdatedAt(LocalDateTime.now());
@@ -357,9 +360,10 @@ public class DeviceServiceImpl implements DeviceService {
     @Transactional(rollbackFor=Exception.class)
     @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="DEVICE_ALERT",action="RESOLVE",supervisorOnly=true)
     public DeviceCaptureAlert resolveAlert(Long alertId, DeviceAlertActionRequest request) {
+        String operator = resolveOperator();
         DeviceCaptureAlert alert = getAlert(alertId);
         alert.setStatus("RESOLVED");
-        alert.setResolvedOperator(resolveOperator(request));
+        alert.setResolvedOperator(operator);
         alert.setResolvedRemark(request == null ? null : request.getRemark());
         alert.setResolvedAt(LocalDateTime.now());
         alert.setUpdatedAt(LocalDateTime.now());
@@ -466,10 +470,12 @@ public class DeviceServiceImpl implements DeviceService {
         }
     }
 
-    private String resolveOperator(DeviceAlertActionRequest request) {
-        var authentication=org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication();
-        if(authentication!=null&&authentication.getPrincipal() instanceof com.ruanzhu.doorhandle.contracts.security.BusinessPrincipal principal)
+    private String resolveOperator() {
+        var authentication = SecurityContextHolder.getContext().getAuthentication();
+        if (authentication != null && authentication.isAuthenticated()
+                && authentication.getPrincipal() instanceof BusinessPrincipal principal && principal.userId() != null) {
             return principal.username();
+        }
         throw new SecurityException("告警操作缺少受信账号");
     }
 }
