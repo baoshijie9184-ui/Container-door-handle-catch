@@ -225,7 +225,8 @@ def run(ctx):
             'files': [{'fileName': 'fence.png', 'contentType': 'image/png', 'relativePath': 'fence.png', 'fileSize': len(image)}],
             'captureInfo': {'captureDate': time.strftime('%Y-%m-%d'), 'region': '隔离验收',
                 'collector': ctx.accounts['inspector']['username'], 'deviceName': 'runtime-fence-' + ctx.token,
-                'imageFolderName': 'runtime-fence-' + ctx.token}, 'modelId': model, 'threshold': 0.5})
+                'imageFolderName': 'runtime-fence-' + ctx.token}, 'modelId': model, 'threshold': 0.5},
+                headers={'X-Request-ID': 'runtime-fence-create-' + ctx.token})
         task = created['taskId']; upload = created['uploadUrls']
         require(re.fullmatch(r'[A-Za-z0-9_-]{1,128}', task) and task != ctx.report_task_id and len(upload) == 1,
                 'Actual unknown-result allocation is not a distinct one-image task')
@@ -262,8 +263,10 @@ with urllib.request.urlopen(r,timeout=60) as s:
             + ' BEFORE UPDATE ON workflow_instance FOR EACH ROW ' + action + '$$\nDELIMITER ;\n')
         installed = True
         owned['phase'] = 'FAULT_ARMED'; ctx.save()
+        allocated = ctx.request('inspector', 'GET', '/api/detection/tasks/' + task)
         ctx.request('inspector', 'POST', '/api/detection/tasks/' + task + '/uploaded', {'modelId': model, 'threshold': 0.5,
-            'uploadedFiles': [{'fileName': upload['fileName'], 'objectKey': upload['objectKey'], 'etag': uploaded['etag'], 'sha256': sha(image)}]})
+            'uploadedFiles': [{'fileName': upload['fileName'], 'objectKey': upload['objectKey'], 'etag': uploaded['etag'], 'sha256': sha(image)}]},
+            headers=ctx.http.command_headers(allocated, 'runtime-fence-uploaded-' + ctx.token))
         original = kafka_observe(ctx, task)['messages']
         require(len(original) == 1, 'The backend did not publish exactly one actual created event before processing')
         original = original[0]; payload = original['payload']

@@ -503,14 +503,14 @@ class Runtime:
             account = self.accounts[name]
             self.http.request(self.clients[name], 'POST', '/api/auth/login',
                               {'username': account['username'], 'password': account['password']})
+            checked = self.http.request(self.clients[name], 'GET', '/api/auth/check')
+            self.http.require_account(checked, account)
         return self.clients[name]
 
     def request(self, name, method, path, value=None, *, headers=None):
         client = self.client(name)
-        body = None if value is None else json.dumps(value, ensure_ascii=False).encode('utf8')
-        message = urllib.request.Request(client.base + path, data=body, method=method, headers={
-            'Content-Type': 'application/json', 'X-Agent-Action': 'workbench', 'X-Model-Action': 'update',
-            'X-Skill-Action': 'update', 'X-MCP-Action': 'update', 'Sec-Fetch-Site': 'same-origin', **(headers or {})})
+        message = client.prepare_request(method, path, value, headers={
+            'X-Model-Action': 'update', 'X-Skill-Action': 'update', 'X-MCP-Action': 'update', **(headers or {})})
         with client.opener.open(message, timeout=180) as response:
             raw = response.read(16 * 1024 * 1024 + 1)
             require(len(raw) <= 16 * 1024 * 1024, 'Runtime response exceeds its bounded evidence budget')
@@ -519,8 +519,8 @@ class Runtime:
             result = json.loads(raw)
             if isinstance(result, dict) and 'code' in result:
                 require(result['code'] == 200, 'Business operation did not succeed')
-                return result.get('data')
-            return result
+                result = result.get('data')
+            return client.observe_auth(path, result)
 
     def fixture(self, method, path, body=None):
         require(path in ('/__fixture/arm', '/__fixture/state'), 'Unsupported local model control')
@@ -542,6 +542,8 @@ with urllib.request.urlopen(r,timeout=10) as s: print(s.read().decode())
                         'Model-capable services must not reach the external network')
         worker = config['services']['detection-worker']['environment']
         backend = config['services']['backend']['environment']
+        require(all(backend.get(key) == 'true' for key in self.http.COLLABORATION_ENV),
+                'The full candidate runtime must enable sessions, history, mutations, realtime and base audit')
         require(backend['DB_URL'].startswith('jdbc:mysql://mysql:' + str(self.owner['mysqlPort']) + '/' + self.owner['targetSchema'] + '?')
                 and worker['DETECTION_RECEIPT_DB_HOST'] == 'mysql' and str(worker['DETECTION_RECEIPT_DB_PORT']) == str(self.owner['mysqlPort'])
                 and worker['DETECTION_RECEIPT_DB_DATABASE'] == self.owner['targetSchema'],
@@ -660,7 +662,7 @@ with urllib.request.urlopen(r,timeout=10) as s: print(s.read().decode())
         self.save()
         self.legacy_candidate, self.legacy_candidate_sha, self.legacy_work = self.native.admit_runtime(self)
         self.owner['legacyCandidateSha256'] = self.legacy_candidate_sha; self.save()
-        self.accounts = self.http.seed_owned_users(self.db, schema, self.token)
+        self.accounts = self.http.seed_owned_users(self.db, schema, self.token, candidate_load_user_count=20)
         self.common.write_json(self.directory / 'users.json', self.accounts)
         runtime_accounts = self.create_dml_accounts(schema)
         self.master_key, self.key_reference = self.prepare_key()
@@ -751,6 +753,7 @@ with urllib.request.urlopen(r,timeout=10) as s: print(s.read().decode())
                     DEEPSEEK_API_KEY='runtime-fixture', DASHSCOPE_API_KEY='runtime-fixture', OPENAI_API_KEY='runtime-fixture',
                     DEEPSEEK_BASE_URL='http://model-fixture:8099/v1', DASHSCOPE_BASE_URL='http://model-fixture:8099/v1',
                     AGENT_RESPONSES_BASE_URL='http://model-fixture:8099/v1', MODEL_CONFIG_MASTER_KEY_FILE='/run/secrets/model_config_master_key')
+                env.update(self.http.COLLABORATION_ENV)
                 env.update(ALIYUN_OSS_ENDPOINT='http://oss-proxy:9000', ALIYUN_OSS_BASEPREFIX='runtime-acceptance/' + self.token)
             if name == 'mem0':
                 env.update(DASHSCOPE_API_KEY='runtime-fixture', EMBEDDING_API_KEY='runtime-fixture',
@@ -1001,7 +1004,8 @@ prefix=json.load(__import__('sys').stdin)['prefix']; assert not list(oss2.Object
             'files': [{'fileName': 'runtime.png', 'contentType': 'image/png', 'relativePath': 'runtime.png', 'fileSize': len(image)}],
             'captureInfo': {'captureDate': time.strftime('%Y-%m-%d'), 'region': '隔离验收',
                 'collector': self.accounts['inspector']['username'], 'deviceName': 'runtime-' + self.token,
-                'imageFolderName': 'runtime-' + self.token}, 'modelId': model, 'threshold': 0.5})
+                'imageFolderName': 'runtime-' + self.token}, 'modelId': model, 'threshold': 0.5},
+                headers={'X-Request-ID': 'runtime-task-create-' + self.token})
         task = created['taskId']; urls = created['uploadUrls']
         require(re.fullmatch(r'[a-zA-Z0-9_-]{1,128}', task) and len(urls) == 1, 'Actual task allocation is incomplete')
         upload = urls[0]; prefix = 'runtime-acceptance/' + self.token + '/'
@@ -1022,9 +1026,11 @@ with urllib.request.urlopen(r,timeout=60) as s:
         uploaded = json.loads(self.ops.docker('exec', '-i', self.row('detection-worker')['Id'], 'python', '-B', '-c', script,
             data=json.dumps({'url': upload['putUrl'], 'image': base64.b64encode(image).decode()}).encode(), timeout=90))
         require(uploaded['etag'] and uploaded['requestId'], 'Real OSS PUT returned no verifiable receipt')
+        allocated = self.request('inspector', 'GET', '/api/detection/tasks/' + task)
         self.request('inspector', 'POST', '/api/detection/tasks/' + task + '/uploaded', {'modelId': model, 'threshold': 0.5,
             'uploadedFiles': [{'fileName': upload['fileName'], 'objectKey': upload['objectKey'], 'etag': uploaded['etag'],
-                               'sha256': hashlib.sha256(image).hexdigest()}]})
+                               'sha256': hashlib.sha256(image).hexdigest()}]},
+            headers=self.http.command_headers(allocated, 'runtime-task-uploaded-' + self.token))
         deadline = time.monotonic() + 420
         while time.monotonic() < deadline:
             progress = self.request('inspector', 'GET', '/api/detection/tasks/' + task)

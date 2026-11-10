@@ -21,6 +21,10 @@ PASSWORD = '123456'
 # Existing V18 fixture hash; never applied to an existing or production account.
 PASSWORD_HASH = '$2b$12$PdCGX2zMfKOqh9Ja35FndO9Q2GWLdOOj6sDUNb9yXYF8qOtFVD0qm'
 OWNED_SCHEMA = re.compile(r'doorhandle_compact_candidate_[a-f0-9]{10}')
+COLLABORATION_ENV = {
+    'OPERATIONS_AUDIT_ENABLED': 'true', 'COLLABORATION_SESSIONS_ENABLED': 'true',
+    'COLLABORATION_CHANGE_HISTORY_ENABLED': 'true', 'COLLABORATION_MUTATIONS_ENABLED': 'true',
+    'COLLABORATION_REALTIME_ENABLED': 'true'}
 
 
 def require(condition, message):
@@ -28,26 +32,95 @@ def require(condition, message):
         raise RuntimeError(message)
 
 
-def seed_owned_users(db, schema, token):
+def exact_integer(value, minimum=0):
+    # BIGINT API identifiers/revisions are strings; SQL and older DTOs use int.
+    require(type(value) is int or isinstance(value, str) and re.fullmatch(r'0|[1-9][0-9]{0,18}', value),
+            'Runtime identity/version must be an exact canonical integer')
+    result = int(value)
+    require(minimum <= result <= 9223372036854775807, 'Runtime identity/version is outside its valid range')
+    return result
+
+
+def same_user(actual, expected):
+    return exact_integer(actual, 1) == exact_integer(expected, 1)
+
+
+def command_headers(resource, request_id):
+    require(isinstance(resource, dict) and 'version' in resource
+            and isinstance(request_id, str) and re.fullmatch(r'[A-Za-z0-9_-]{1,128}', request_id),
+            'A protected command requires the actual resource revision and a stable request ID')
+    return {'X-Expected-Version': str(exact_integer(resource['version'])), 'X-Request-ID': request_id}
+
+
+def require_account(checked, account):
+    require(isinstance(checked, dict) and checked.get('authenticated') is True
+            and same_user(checked.get('userId'), account['userId'])
+            and checked.get('username') == account['username'] and checked.get('role') == account['role'],
+            'HTTP login/check did not establish the exact new role/account')
+    require(all(checked.get('capabilities', {}).get(name) is True
+                for name in ('sessionTracking', 'changeHistory', 'mutations', 'realtime')),
+            'The complete candidate did not enable every collaboration capability')
+    identity = checked.get('identity') or {}
+    require(same_user(identity.get('userId'), account['userId'])
+            and same_user(identity.get('employeeId'), account['employeeId'])
+            and same_user(identity.get('departmentId'), account['departmentId'])
+            and identity.get('employeeStatus') == 'ACTIVE' and identity.get('employeeType') == 'DETECTION'
+            and identity.get('bindingVersion') == 0,
+            'HTTP identity did not resolve its actual qualified initial employee binding')
+
+
+def seed_owned_users(db, schema, token, candidate_load_user_count=20):
     require(isinstance(token, str) and re.fullmatch(r'[a-f0-9]{10,32}', token)
             and OWNED_SCHEMA.fullmatch(schema) and db.schema == schema,
             'Accounts may only be seeded in the runner-verified owned compact target')
+    require(type(candidate_load_user_count) is int and 20 <= candidate_load_user_count <= 40,
+            'The bounded candidate needs 20 to 40 owned qualified accounts')
     actual = db.one("SELECT JSON_OBJECT('schema',DATABASE(),'fk',@@foreign_key_checks,'tables',"
         "(SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() AND table_type='BASE TABLE'));")
     require(actual['schema'] == schema and actual['fk'] == 1 and actual['tables'] == 29,
             'Account fixture requires the complete enforced compact target')
-    accounts = {}
-    for key, role in (('inspector', 'INSPECTOR'), ('peer', 'INSPECTOR'),
-                      ('supervisor', 'SUPERVISOR'), ('reviewer', 'SUPERVISOR')):
+    accounts = {}; department = 'runtime-' + token
+    require(db.one('SELECT JSON_OBJECT(\'n\',COUNT(*)) FROM organization_department WHERE name='
+                   + db.literal(department) + ';')['n'] == 0,
+            'Owned department already exists; never repurpose existing personnel')
+    statements = ['START TRANSACTION;', 'INSERT INTO organization_department(name,version) VALUES('
+                  + db.literal(department) + ',0);', 'SET @runtime_department=LAST_INSERT_ID();']
+    roles = [('inspector', 'INSPECTOR'), ('peer', 'INSPECTOR'),
+             ('supervisor', 'SUPERVISOR'), ('reviewer', 'SUPERVISOR')]
+    roles.extend(('load_' + format(index, '02d'), 'INSPECTOR')
+                 for index in range(1, candidate_load_user_count - 3))
+    for key, role in roles:
         username = 'cf_' + token[:16] + '_' + key
         require(db.one('SELECT JSON_OBJECT(\'n\',COUNT(*)) FROM users WHERE username=' + db.literal(username) + ';')['n'] == 0,
                 'Owned acceptance identity already exists; do not change its password or role')
-        db.execute('INSERT INTO users(username,password,email,role,created_at,updated_at) VALUES('
+        require(db.one('SELECT JSON_OBJECT(\'n\',COUNT(*)) FROM employee WHERE employee_number='
+                       + db.literal(username) + ';')['n'] == 0, 'Owned employee already exists; do not change its qualification')
+        statements.append('INSERT INTO employee(name,employee_number,contact,department,employee_type,gender,hire_date,status,version,department_id) VALUES('
+            + ','.join(db.literal(value) for value in (username, username, 'fixture-not-contactable', department,
+                                                       'DETECTION', 'UNKNOWN'))
+            + ',UTC_DATE(),\'ACTIVE\',0,@runtime_department);')
+        # Provisioning initial fixture facts is not an executed binding command.
+        # Keep version 0 and do not manufacture a business/audit receipt with SQL.
+        statements.append('INSERT INTO users(username,password,email,role,enabled,account_version,employee_id,binding_version,binding_history_present,created_at,updated_at) VALUES('
             + ','.join(db.literal(value) for value in (username, PASSWORD_HASH, username + '@fixture.invalid', role))
-            + ',UTC_TIMESTAMP(6),UTC_TIMESTAMP(6));')
-        identity = db.one("SELECT JSON_OBJECT('id',id,'role',role) FROM users WHERE BINARY username=BINARY " + db.literal(username) + ';')
-        require(identity['id'] > 0 and identity['role'] == role, 'New owned account was not persisted')
-        accounts[key] = {'username': username, 'password': PASSWORD, 'userId': identity['id'], 'role': role}
+            + ',TRUE,0,LAST_INSERT_ID(),0,TRUE,UTC_TIMESTAMP(6),UTC_TIMESTAMP(6));')
+        accounts[key] = {'username': username, 'password': PASSWORD, 'role': role}
+    statements.append('COMMIT;')
+    # One connection/transaction; a failed statement cannot commit a partial set.
+    db.execute('\n'.join(statements))
+    for account in accounts.values():
+        identity = db.one("SELECT JSON_OBJECT('id',u.id,'role',u.role,'enabled',u.enabled,'accountVersion',u.account_version,"
+            "'employeeId',e.id,'employeeType',e.employee_type,'employeeStatus',e.status,'departmentId',d.id,"
+            "'department',d.name,'bindingVersion',u.binding_version,'history',u.binding_history_present)"
+            " FROM users u JOIN employee e ON e.id=u.employee_id JOIN organization_department d ON d.id=e.department_id"
+            " WHERE BINARY u.username=BINARY " + db.literal(account['username']) + ';')
+        require(exact_integer(identity['id'], 1) > 0 and identity['role'] == account['role']
+                and identity['enabled'] == 1 and identity['accountVersion'] == 0 and identity['bindingVersion'] == 0
+                and identity['history'] == 1 and identity['employeeStatus'] == 'ACTIVE'
+                and identity['employeeType'] == 'DETECTION' and identity['department'] == department,
+                'New owned qualified account was not persisted with its initial binding')
+        account.update(userId=exact_integer(identity['id'], 1), employeeId=exact_integer(identity['employeeId'], 1),
+                       departmentId=exact_integer(identity['departmentId'], 1))
     return accounts
 
 
@@ -55,11 +128,8 @@ def request(client, method, path, value=None, *, denied=(), headers=None):
     """Reuse the rehearsal client's cookie session and enforce actual API outcomes."""
     require(re.fullmatch(r'http://127\.0\.0\.1:[1-9][0-9]*', client.base) and path.startswith(('/api/', '/agui/')),
             'Runtime HTTP must remain on the runner-owned loopback endpoint')
-    body = None if value is None else json.dumps(value, ensure_ascii=False).encode('utf8')
-    message = urllib.request.Request(client.base + path, data=body, method=method, headers={
-        'Content-Type': 'application/json', 'X-Agent-Action': 'workbench',
-        'X-Budget-Action': 'update', 'X-Report-Action': 'update', 'X-Skill-Action': 'update',
-        'Sec-Fetch-Site': 'same-origin', **(headers or {})})
+    message = client.prepare_request(method, path, value, headers={
+        'X-Budget-Action': 'update', 'X-Report-Action': 'update', 'X-Skill-Action': 'update', **(headers or {})})
     try:
         response = client.opener.open(message, timeout=30)
     except urllib.error.HTTPError as error:
@@ -81,18 +151,15 @@ def request(client, method, path, value=None, *, denied=(), headers=None):
                 return {'deniedStatus': result['code']}
             result = result.get('data')
         require(not denied, 'A forbidden operation unexpectedly succeeded')
-        return result
+        return client.observe_auth(path, result)
 
 
 def clients(ctx):
     result = {}
     for key in ('inspector', 'peer', 'supervisor', 'reviewer'):
         account = ctx.accounts[key]; client = ctx.client(key)
-        request(client, 'POST', '/api/auth/login', {'username': account['username'], 'password': account['password']})
         identity = request(client, 'GET', '/api/auth/check')
-        require(identity.get('authenticated') is True and identity.get('userId') == account['userId']
-                and identity.get('username') == account['username'] and identity.get('role') == account['role'],
-                'HTTP login/check did not establish the exact new role/account')
+        require_account(identity, account)
         result[key] = client
     return result
 
@@ -478,7 +545,8 @@ def run_http_scenarios(ctx):
         request(session[key], 'GET', '/api/agent/model-quotas/applications?scope=team', denied=(403,))
         request(session[key], 'GET', '/api/agent/model-budgets', denied=(403,))
     request(session['supervisor'], 'GET', '/api/agent/model-quotas/applications?scope=team')
-    evidence = [ctx.record('auth-role-isolation', {'distinctUsers': len(ctx.accounts),
+    evidence = [ctx.record('auth-role-isolation', {'distinctUsers': len(session),
+        'provisionedQualifiedUsers': len(ctx.accounts),
         'inspectorDeniedTeamQuota': True, 'inspectorDeniedEnterpriseBudget': True,
         'rolesVerified': ['INSPECTOR', 'SUPERVISOR'], 'privateSessionId': session_id,
         'crossUserReadsAndWritesDenied': True})]
@@ -497,7 +565,7 @@ def run_http_scenarios(ctx):
         'reason': '本轮隔离验收的模型额度申请', 'requestId': 'quota-apply-' + ctx.token}
     application = request(session['inspector'], 'POST', '/api/agent/model-quotas/applications', application_request)
     require(application['status'] == 'PENDING' and application['requestedTokens'] == amount
-            and application['applicantUserId'] == ctx.accounts['inspector']['userId'], 'Quota request was not durably pending')
+            and same_user(application['applicantUserId'], ctx.accounts['inspector']['userId']), 'Quota request was not durably pending')
     repeated = request(session['inspector'], 'POST', '/api/agent/model-quotas/applications', application_request)
     require(repeated['id'] == application['id'] and repeated['version'] == application['version'], 'Quota request replay created or changed an application')
     request(session['inspector'], 'POST', '/api/agent/model-quotas/applications',
@@ -511,7 +579,7 @@ def run_http_scenarios(ctx):
     request(session['peer'], 'POST', application_path + '/cancel',
             {'expectedVersion': application['version'], 'requestId': 'quota-peer-cancel-' + ctx.token}, denied=(403,))
     approved = request(session['supervisor'], 'POST', application_path + '/decision', decision)
-    require(approved['status'] == 'APPROVED' and approved['deciderUserId'] == ctx.accounts['supervisor']['userId'],
+    require(approved['status'] == 'APPROVED' and same_user(approved['deciderUserId'], ctx.accounts['supervisor']['userId']),
             'Independent supervisor did not approve the actual application')
     replayed = request(session['supervisor'], 'POST', application_path + '/decision', decision)
     require(replayed['version'] == approved['version'], 'Approval replay granted quota twice')
@@ -576,7 +644,8 @@ def run_report_scenario(ctx):
         count = task.get('defectCount') or 0
         task = request(session['supervisor'], 'POST', '/api/detection/tasks/' + task_id + '/review', {
             'reviewConclusion': 'CONFIRMED_DEFECT' if count else 'PASS', 'severityLevel': 'MEDIUM',
-            'confirmedDefectCount': count, 'falsePositiveCount': 0, 'reviewRemark': '本轮真实检测结果人工复核验收'})
+            'confirmedDefectCount': count, 'falsePositiveCount': 0, 'reviewRemark': '本轮真实检测结果人工复核验收'},
+            headers=command_headers(task, 'runtime-task-review-' + ctx.token))
     require(task.get('reviewStatus') == 'REVIEWED', 'Actual review mutation did not complete')
     draft = ctx.create_report_draft('inspector', task_id, '隔离运行报告 ' + ctx.token, '候选SDK保存真实检测任务的私人草稿')
     report_id = draft['reportId'] if isinstance(draft, dict) else draft
@@ -584,7 +653,7 @@ def run_report_scenario(ctx):
     base = '/api/detection/reports/' + report_id
     report = request(session['inspector'], 'GET', base)
     require(report['status'] == 'DRAFT' and report['taskId'] == task_id
-            and report['ownerUserId'] == ctx.accounts['inspector']['userId'], 'SDK draft has another owner or source')
+            and same_user(report['ownerUserId'], ctx.accounts['inspector']['userId']), 'SDK draft has another owner or source')
     origins = ctx.db.query("SELECT JSON_OBJECT('run_id',run_id,'payload_json',payload_json) FROM workflow_instance WHERE kind='REPORT_AGENT_ORIGIN' "
         "AND resource_type='QUALITY_REPORT' AND resource_id=" + ctx.db.literal(report_id) + ' AND actor_user_id='
         + str(ctx.accounts['inspector']['userId']) + ';')
@@ -603,7 +672,8 @@ def run_report_scenario(ctx):
     edit = {'expectedVersion': report['version'], 'title': '人工补充报告 ' + ctx.token,
             'narrative': '本人检查并补充候选SDK报告草稿，交由其他主管独立审批', 'requestId': 'report-edit-' + ctx.token}
     report = request(session['inspector'], 'PUT', base, edit)
-    require(report['status'] == 'DRAFT' and report['version'] == edit['expectedVersion'] + 1, 'Owner edit did not advance the exact draft version')
+    require(report['status'] == 'DRAFT' and exact_integer(report['version']) == exact_integer(edit['expectedVersion']) + 1,
+            'Owner edit did not advance the exact draft version')
     request(session['peer'], 'PUT', base, edit, denied=(403, 404))
     request(session['inspector'], 'POST', base + '/export?format=md', denied=(409,))
     submit = {'expectedVersion': report['version'], 'requestId': 'report-submit-' + ctx.token}

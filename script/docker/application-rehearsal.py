@@ -529,12 +529,43 @@ except Exception as error:
 class Client:
     def __init__(self, port):
         self.base = 'http://127.0.0.1:'+str(port)
-        self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+        self.cookies = http.cookiejar.CookieJar()
+        self.account_context = None
+        self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPCookieProcessor(self.cookies))
+
+    def prepare_request(self, method, path, value=None, data=None, content_type='application/json', headers=None):
+        """Use the browser's origin/cookie/context protocol without replaying failed writes."""
+        require(path.startswith('/') and not path.startswith('//'), 'Application request must be same-origin')
+        method = method.upper()
+        body = json.dumps(value, ensure_ascii=False).encode('utf8') if value is not None else data
+        metadata = {'Content-Type': content_type, 'X-Agent-Action': 'workbench',
+                    'Origin': self.base, 'Referer': self.base + '/', 'Sec-Fetch-Site': 'same-origin'}
+        if method not in ('GET', 'HEAD', 'OPTIONS'):
+            if path != '/api/auth/login' and self.account_context is not None:
+                metadata['X-Account-Context'] = self.account_context
+            # One ID per prepared command, retained if that Request is explicitly
+            # sent again. Scenario commands with receipts supply their stable ID.
+            request_id = value.get('requestId') if isinstance(value, dict) else None
+            metadata['X-Request-ID'] = request_id or uuid.uuid4().hex
+        metadata.update(headers or {})
+        return urllib.request.Request(self.base + path, data=body, method=method, headers=metadata)
+
+    def observe_auth(self, path, result):
+        if path == '/api/auth/login':
+            # A new login must be checked before a protected command is sent.
+            self.account_context = None
+        elif path == '/api/auth/check':
+            context = result.get('accountContext') if isinstance(result, dict) else None
+            require(isinstance(result, dict) and result.get('authenticated') is True
+                    and isinstance(context, str) and re.fullmatch(r'[A-Za-z0-9_-]{43}', context),
+                    'Application check did not return its authenticated account context')
+            self.account_context = context
+        elif path == '/api/auth/logout':
+            self.account_context = None
+        return result
 
     def request(self, method, path, value=None, data=None, content_type='application/json'):
-        body = json.dumps(value).encode() if value is not None else data
-        request = urllib.request.Request(self.base+path, data=body, method=method,
-                                         headers={'Content-Type': content_type, 'X-Agent-Action': 'workbench'})
+        request = self.prepare_request(method, path, value, data, content_type)
         with self.opener.open(request, timeout=25) as response:
             raw = response.read()
             if 'application/json' not in response.headers.get('Content-Type', ''):
@@ -542,11 +573,13 @@ class Client:
             result = json.loads(raw)
             if isinstance(result, dict) and 'code' in result:
                 require(result['code'] == 200, 'Application API returned an error')
-                return result.get('data')
-            return result
+                result = result.get('data')
+            return self.observe_auth(path, result)
 
     def login(self, account):
-        return self.request('POST', '/api/auth/login', {'username': account, 'password': os.environ.get('DOORHANDLE_DEMO_PASSWORD', '123456')})
+        result = self.request('POST', '/api/auth/login', {'username': account, 'password': os.environ.get('DOORHANDLE_DEMO_PASSWORD', '123456')})
+        self.request('GET', '/api/auth/check')
+        return result
 
 
 def verify_ui_entries(client):
