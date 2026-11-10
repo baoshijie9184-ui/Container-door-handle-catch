@@ -39,29 +39,41 @@ class OperationsAuditServiceTest {
         } finally {committed.countDown();pool.shutdownNow();}
         assertThat(service.list(alice,Long.MAX_VALUE,10,null)).hasSize(1);
     }
-    @Test void simultaneousDuplicateInsertReadersDoNotUpgradeSharedLocks() throws Exception {
+    @Test void duplicateReadersHoldingSharedLocksDoNotUpgradeToExclusiveLocks() throws Exception {
         var receipt=event(alice,"PRIVATE","same-receipt");append(receipt);
+        Long receiptId=jdbc.queryForObject("SELECT id FROM audit_event WHERE kind='OPERATIONS' AND resource_id=?",Long.class,receipt.resourceId());
         var duplicateBarrier=new java.util.concurrent.CyclicBarrier(2);
+        var sharedReaders=java.util.concurrent.ConcurrentHashMap.<Long>newKeySet();
+        var duplicateAttempts=new java.util.concurrent.atomic.AtomicInteger();
         var gated=new JdbcTemplate(fixture.dataSource()) {
             @Override public int update(String sql,Object... arguments) {
-                try {return super.update(sql,arguments);}
-                catch(org.springframework.dao.DuplicateKeyException duplicate) {
-                    if(sql.contains("INSERT INTO audit_event")) {
-                        try {duplicateBarrier.await(10,java.util.concurrent.TimeUnit.SECONDS);}
-                        catch(InterruptedException error){Thread.currentThread().interrupt();throw new IllegalStateException(error);}
-                        catch(java.util.concurrent.BrokenBarrierException|java.util.concurrent.TimeoutException error){throw new IllegalStateException(error);}
-                    }
-                    throw duplicate;
+                if(sql.contains("INSERT INTO audit_event")) {
+                    duplicateAttempts.incrementAndGet();
+                    throw new org.springframework.dao.DuplicateKeyException("Injected duplicate after both real shared row locks are held");
                 }
+                return super.update(sql,arguments);
             }
         };
         var competing=new OperationsAuditService(gated,users);var pool=java.util.concurrent.Executors.newFixedThreadPool(2);
         try {
-            Runnable replay=()->tx.executeWithoutResult(status->competing.append(receipt));
+            Runnable replay=()->tx.executeWithoutResult(status->{
+                // Establish the exact lock-upgrade precondition on two real connections.
+                // Real duplicate INSERTs are covered above; their additional index locks
+                // need not allow both statements to fail before either transaction ends.
+                assertThat(jdbc.queryForList("SELECT id FROM audit_event WHERE id=? FOR SHARE",receiptId)).hasSize(1);
+                sharedReaders.add(jdbc.queryForObject("SELECT CONNECTION_ID()",Long.class));
+                try {duplicateBarrier.await(10,java.util.concurrent.TimeUnit.SECONDS);}
+                catch(InterruptedException error){Thread.currentThread().interrupt();throw new IllegalStateException(error);}
+                catch(java.util.concurrent.BrokenBarrierException|java.util.concurrent.TimeoutException error){throw new IllegalStateException(error);}
+                competing.append(receipt);
+            });
             var first=pool.submit(replay);var second=pool.submit(replay);
             first.get(15,java.util.concurrent.TimeUnit.SECONDS);second.get(15,java.util.concurrent.TimeUnit.SECONDS);
         } finally {pool.shutdownNow();}
-        assertThat(service.list(alice,Long.MAX_VALUE,10,null)).hasSize(1);
+        assertThat(sharedReaders).hasSize(2);
+        assertThat(duplicateAttempts.get()).isEqualTo(2);
+        assertThat(service.list(alice,Long.MAX_VALUE,10,null)).singleElement()
+                .satisfies(row->{assertThat(row.get("id")).isEqualTo(receiptId);assertThat(row.get("scope")).isEqualTo("PRIVATE");assertThat(row.get("resource_version")).isEqualTo(1L);});
     }
     @Test void revokedIdentityAndFreeTextMetadataAreRejected(){when(users.current(alice.userId(),alice.username())).thenThrow(new SecurityException());assertThatThrownBy(()->service.append(event(alice,"PRIVATE","a"))).isInstanceOf(SecurityException.class);assertThatThrownBy(()->service.append(new OperationsAuditApi.Event(bob,"ENTERPRISE","DETECTION","WRITE","private prompt with spaces","r","DONE",null))).isInstanceOf(IllegalArgumentException.class);}
 }
