@@ -173,6 +173,7 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
 
         DetectionTask task = new DetectionTask();
         task.setTaskId(taskId);
+        task.setVersion(0L);
         task.setWorkflowUuid(workflowUuid);
         task.setTaskType(StringUtils.hasText(request.getTaskType()) ? request.getTaskType().toUpperCase(Locale.ROOT) : "BATCH");
         task.setBatchNo(buildBatchNo(captureInfo));
@@ -207,6 +208,7 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
 
         return CreateDetectionTaskResponse.builder()
                 .taskId(taskId)
+                .version("0")
                 .workflowUuid(workflowUuid)
                 .status(task.getStatus())
                 .batchNo(task.getBatchNo())
@@ -245,6 +247,7 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
 
         return ResumeUploadResponse.builder()
                 .taskId(taskId)
+                .version(task.getVersion() == null ? null : task.getVersion().toString())
                 .uploadUrls(uploadUrls)
                 .build();
     }
@@ -419,6 +422,7 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
 
         return DetectionTaskTraceResponse.builder()
                 .taskId(task.getTaskId())
+                .version(task.getVersion() == null ? null : task.getVersion().toString())
                 .workflowUuid(task.getWorkflowUuid())
                 .batchNo(task.getBatchNo())
                 .workOrderNo(task.getWorkOrderNo())
@@ -1285,6 +1289,7 @@ public class DetectionTaskServiceImpl implements DetectionTaskService {
         var identity=identities==null?null:identities.assignmentIdentity(task.getTaskId());
         return DetectionTaskProgressResponse.builder()
                 .taskId(task.getTaskId())
+                .version(task.getVersion() == null ? null : task.getVersion().toString())
                 .workflowUuid(task.getWorkflowUuid())
                 .status(task.getStatus())
                 .stage(task.getStage())

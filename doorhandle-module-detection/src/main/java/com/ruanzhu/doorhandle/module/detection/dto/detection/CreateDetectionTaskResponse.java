@@ -9,6 +9,7 @@ import java.util.List;
 @Builder
 public class CreateDetectionTaskResponse {
     private String taskId;
+    private String version;
     private String workflowUuid;
     private String status;
     private String batchNo;

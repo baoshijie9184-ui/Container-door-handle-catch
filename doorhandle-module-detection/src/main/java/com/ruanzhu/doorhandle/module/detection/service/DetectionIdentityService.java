@@ -138,6 +138,21 @@ public class DetectionIdentityService {
         if(evidence!=null)evidence.record(task.getTaskId(),"assignee",new AgentActor(actor.userId(),actor.username(),AgentActor.Role.SUPERVISOR),"QUALITY_ASSIGNMENT",request,null);
     }
     public record AssignmentIdentity(Long assignedByUserId,String assignedByName,Long assigneeUserId,String assigneeRevision,Long revision){}
+    /** A self-claim is a performed operation, not a supervisor assignment or a historical name inference. */
+    @Transactional(propagation=org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public void recordClaim(DetectionTask task,AgentUserDirectory.Inspector recipient){
+        var actor=users.authenticated();var row=locked(task);
+        if(actor.supervisor()||recipient==null||recipient.userId()!=actor.userId()||!Objects.equals(actor.username(),recipient.username())
+                ||!Objects.equals(row.get("assignee"),actor.username()))throw new SecurityException("领取人必须是当前合格检测账号");
+        String request=assignmentRequest();
+        jdbc.update("UPDATE detection_task SET assignee_user_id=?,assignee_identity_name=? WHERE task_id=?",actor.userId(),actor.username(),task.getTaskId());
+        if(assignmentBinding){
+            long revision=Math.incrementExact(((Number)row.get("assignment_identity_revision")).longValue());
+            jdbc.update("UPDATE detection_task SET assigned_by_user_id=?,assigned_by_identity_name=?,assigned_to_revision=?,assignment_identity_revision=? WHERE task_id=?",actor.userId(),actor.username(),recipient.revision(),revision,task.getTaskId());
+            storage.assignment(task.getTaskId(),revision,actor.userId(),actor.username(),recipient.userId(),recipient.username(),recipient.revision(),request);
+        }
+        if(evidence!=null)evidence.record(task.getTaskId(),"assignee",new AgentActor(actor.userId(),actor.username(),AgentActor.Role.INSPECTOR),"PERFORMED_OPERATION",request,null);
+    }
     public AssignmentIdentity assignmentIdentity(String task){
         if(!assignmentBinding)return null;
         var row=jdbc.queryForMap("SELECT assigned_by_user_id,assigned_by_identity_name,assigned_to_revision,assignment_identity_revision,assignee_user_id,assignee_identity_name,assignee FROM detection_task WHERE task_id=?",task);

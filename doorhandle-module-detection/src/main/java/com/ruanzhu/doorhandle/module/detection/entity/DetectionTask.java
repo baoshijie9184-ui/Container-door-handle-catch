@@ -12,6 +12,8 @@ import java.time.LocalDateTime;
 @Data
 @TableName("detection_task")
 public class DetectionTask {
+    @TableField("version")
+    private Long version;
 
     @TableId(value = "id", type = IdType.AUTO)
     private Long id;

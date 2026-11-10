@@ -443,3 +443,21 @@ operations:
   audit:
     enabled: ${OPERATIONS_AUDIT_ENABLED:false}
     file-delivery-enabled: ${OPERATIONS_FILE_DELIVERY_AUDIT_ENABLED:false}
+
+# Enable together only after compact-schema migration and the ECS collaboration acceptance pass.
+collaboration:
+  sessions:
+    enabled: ${COLLABORATION_SESSIONS_ENABLED:false}
+  change-history:
+    enabled: ${COLLABORATION_CHANGE_HISTORY_ENABLED:false}
+  mutations:
+    enabled: ${COLLABORATION_MUTATIONS_ENABLED:false}
+  realtime:
+    enabled: ${COLLABORATION_REALTIME_ENABLED:false}
+    max-connections: ${COLLABORATION_REALTIME_MAX_CONNECTIONS:128}
+    max-connections-per-user: ${COLLABORATION_REALTIME_MAX_PER_USER:6}
+    queue-capacity: ${COLLABORATION_REALTIME_QUEUE_CAPACITY:32}
+    heartbeat-millis: 25000
+    send-timeout-millis: 10000
+    connection-ttl-millis: 300000
+    event-budget: 1024

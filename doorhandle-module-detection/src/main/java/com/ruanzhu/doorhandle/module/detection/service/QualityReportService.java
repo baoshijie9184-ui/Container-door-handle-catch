@@ -35,6 +35,8 @@ public class QualityReportService {
     private final ReportWorkflowRepository workflow;
     @org.springframework.beans.factory.annotation.Autowired private org.springframework.beans.factory.ObjectProvider<com.ruanzhu.doorhandle.contracts.agent.OperationsAuditApi> operationsAudit;
     @org.springframework.beans.factory.annotation.Value("${operations.audit.enabled:false}") private boolean operationsAuditEnabled;
+    @org.springframework.beans.factory.annotation.Value("${collaboration.change-history.enabled:false}") private boolean changeHistoryEnabled;
+    @org.springframework.beans.factory.annotation.Value("${collaboration.mutations.enabled:false}") private boolean collaborationMutationsEnabled;
     @org.springframework.beans.factory.annotation.Autowired private ReportDocumentRenderer documentRenderer;
     public QualityReportService(QualityReportRepository reports,DetectionTaskMapper tasks,BusinessUserDirectory users,
             DetectionTaskAccessPolicy policy,ObjectMapper json) {
@@ -68,7 +70,7 @@ public class QualityReportService {
         if(!workflow.retry(id,eventId,request.expectedAttempts()))
             fail(409,"事件已变化或正在发送，请刷新后重试");
         writeAudit(actor,row,"EVENT_RETRY",row.status(),"人工确认重新投递报告事件");
-        businessAudit(actor,row,"EVENT_RETRY",request.requestId());
+        businessAudit(actor,row,row,"EVENT_RETRY",request.requestId());
         workflow.saveCommand(actor.userId(),request.requestId(),digest,row,encode(view(row)));
         return events(actor,id);
     }
@@ -93,7 +95,7 @@ public class QualityReportService {
         var task=task(actor,row.taskId(),true);eligible(task);
         reports.jdbc().update("UPDATE quality_report SET title=?,narrative=?,source_json=?,source_sha256=?,version=version+1,updated_at=? WHERE report_id=?",
                 request.title().trim(),request.narrative(),encode(facts(task)),sourceDigest(task),now(),id);
-        return finish(actor,id,request.requestId(),digest,"EDIT",row.status(),null,false);
+        return finish(actor,id,request.requestId(),digest,"EDIT",row,null,false);
     }
     public View submit(Identity actor,String id,Command request) {
         actor=current(actor);var row=authorized(actor,id,true);owner(actor,row);
@@ -102,14 +104,14 @@ public class QualityReportService {
         var task=task(actor,row.taskId(),true);eligible(task);sameSource(row,task);
         String snapshot=snapshotDigest(row);
         reports.jdbc().update("UPDATE quality_report SET status='SUBMITTED',snapshot_sha256=?,submitted_at=?,version=version+1,updated_at=? WHERE report_id=?",snapshot,now(),now(),id);
-        return finish(actor,id,request.requestId(),digest,"SUBMIT",row.status(),null,true);
+        return finish(actor,id,request.requestId(),digest,"SUBMIT",row,null,true);
     }
     public View withdraw(Identity actor,String id,Command request) {
         actor=current(actor);var row=authorized(actor,id,true);owner(actor,row);
         String digest=commandDigest("WITHDRAW",id,request);var repeated=repeat(actor,request.requestId(),digest);if(repeated!=null)return repeated;
         version(row,request.expectedVersion());state(row,"SUBMITTED");
         reports.jdbc().update("UPDATE quality_report SET status='WITHDRAWN',version=version+1,updated_at=? WHERE report_id=?",now(),id);
-        return finish(actor,id,request.requestId(),digest,"WITHDRAW",row.status(),null,true);
+        return finish(actor,id,request.requestId(),digest,"WITHDRAW",row,null,true);
     }
     public View revise(Identity actor,String id,Command request) {
         actor=current(actor);var row=authorized(actor,id,true);owner(actor,row);
@@ -138,7 +140,7 @@ public class QualityReportService {
         reports.jdbc().update("UPDATE quality_report SET status=?,decided_at=?,decider_user_id=?,decider_username=?,decision_reason=?,version=version+1,updated_at=? WHERE report_id=?",
                 target,now(),actor.userId(),actor.username(),request.reason().trim(),now(),id);
         workflow.consumeConfirmation(confirmation);
-        return finish(actor,id,request.requestId(),digest,request.decision(),row.status(),request.reason().trim(),true);
+        return finish(actor,id,request.requestId(),digest,request.decision(),row,request.reason().trim(),true);
     }
     public String export(Identity actor,String id) {
         return exportText(actor,id,null);
@@ -168,8 +170,8 @@ public class QualityReportService {
                 id,previous,actor.userId(),actor.username(),task.getTaskId(),title,narrative,encode(facts(task)),sourceDigest(task),now,now);
         return finish(actor,id,requestId,digest,previous==null?"CREATE":"REVISE",null,null,false);
     }
-    private View finish(Identity actor,String id,String requestId,String digest,String action,String before,String reason,boolean event) {
-        var row=reports.get(id,false);writeAudit(actor,row,action,before,reason);businessAudit(actor,row,action,requestId);var response=view(row);
+    private View finish(Identity actor,String id,String requestId,String digest,String action,Row before,String reason,boolean event) {
+        var row=reports.get(id,false);writeAudit(actor,row,action,before==null?null:before.status(),reason);businessAudit(actor,before,row,action,requestId);var response=view(row);
         workflow.saveCommand(actor.userId(),requestId,digest,row,encode(response));
         if(event) {
             String eventId=UUID.randomUUID().toString();
@@ -182,11 +184,31 @@ public class QualityReportService {
         workflow.audit(row,actor.userId(),actor.username(),action,before,reason);
     }
     /** Only new commands reach here; a duplicate command returns its immutable original response earlier. */
-    private void businessAudit(Identity actor,Row row,String action,String request){
+    private void businessAudit(Identity actor,Row before,Row row,String action,String request){
         if(!operationsAuditEnabled)return;
         var api=operationsAudit==null?null:operationsAudit.getIfAvailable();if(api==null)throw new IllegalStateException("必要业务审计服务不可用");
         String scope="DRAFT".equals(row.status())?"PRIVATE":"ENTERPRISE";
-        api.append(new com.ruanzhu.doorhandle.contracts.agent.OperationsAuditApi.Event(new com.ruanzhu.doorhandle.contracts.agent.AgentActor(actor.userId(),actor.username(),actor.supervisor()?com.ruanzhu.doorhandle.contracts.agent.AgentActor.Role.SUPERVISOR:com.ruanzhu.doorhandle.contracts.agent.AgentActor.Role.INSPECTOR),scope,"QUALITY_REPORT",action,row.reportId(),request,"APPLIED",(long)row.version()));
+        var metadata=new com.ruanzhu.doorhandle.contracts.agent.OperationsAuditApi.Event(new com.ruanzhu.doorhandle.contracts.agent.AgentActor(actor.userId(),actor.username(),actor.supervisor()?com.ruanzhu.doorhandle.contracts.agent.AgentActor.Role.SUPERVISOR:com.ruanzhu.doorhandle.contracts.agent.AgentActor.Role.INSPECTOR),scope,"QUALITY_REPORT",action,row.reportId(),request,"APPLIED",(long)row.version());
+        if(!changeHistoryEnabled&&!collaborationMutationsEnabled){api.append(metadata);return;}
+        var previous=before==null?Map.<String,Object>of():historyFields(before);var current=historyFields(row);
+        var changes=new ArrayList<com.ruanzhu.doorhandle.contracts.collaboration.ChangeHistory.Change>();
+        for(var entry:current.entrySet()){
+            String field=entry.getKey();Object old=previous.get(field),value=entry.getValue();
+            if(before!=null&&Objects.equals(old,value))continue;
+            changes.add(new com.ruanzhu.doorhandle.contracts.collaboration.ChangeHistory.Change(field,REPORT_FIELD_LABELS.get(field),before==null?"ADD":"REPLACE",old,value,"STRING",false));
+        }
+        api.appendChange(new com.ruanzhu.doorhandle.contracts.agent.OperationsAuditApi.ChangeEvent(metadata,"QUALITY_REPORT",null,before==null?null:(long)before.version(),changes));
+    }
+    private static final Map<String,String> REPORT_FIELD_LABELS=Map.ofEntries(
+            Map.entry("title","报告标题"),Map.entry("status","报告状态"),Map.entry("taskId","检测任务"),
+            Map.entry("previousReportId","原报告"),Map.entry("ownerUserId","编写账号"),Map.entry("narrativeSha256","编写意见内容摘要"),
+            Map.entry("sourceSha256","检测依据摘要"),Map.entry("snapshotSha256","提交快照摘要"),
+            Map.entry("deciderUsername","审批账号"),Map.entry("decisionReason","审批意见"));
+    private static Map<String,Object> historyFields(Row row){
+        var fields=new LinkedHashMap<String,Object>();fields.put("title",row.title());fields.put("status",row.status());
+        fields.put("taskId",row.taskId());fields.put("previousReportId",row.previousReportId());fields.put("ownerUserId",Long.toString(row.ownerUserId()));
+        fields.put("narrativeSha256",sha(row.narrative()));fields.put("sourceSha256",row.sourceSha256());fields.put("snapshotSha256",row.snapshotSha256());
+        fields.put("deciderUsername",row.deciderUsername());fields.put("decisionReason",row.decisionReason());return fields;
     }
     private View repeat(Identity actor,String requestId,String digest) {
         if(requestId==null||!requestId.matches("[A-Za-z0-9_-]{8,64}"))fail(400,"请求编号不正确");
@@ -208,7 +230,7 @@ public class QualityReportService {
         var principal=new com.ruanzhu.doorhandle.contracts.agent.AgentActor(actor.userId(),actor.username(),actor.supervisor()?com.ruanzhu.doorhandle.contracts.agent.AgentActor.Role.SUPERVISOR:com.ruanzhu.doorhandle.contracts.agent.AgentActor.Role.INSPECTOR);
         if(!policy.canAccess(task,principal))fail(404,"任务不存在或无访问权限");return task;
     }
-    private Identity current(Identity actor){if(actor==null)throw new SecurityException("请先登录");return users.current(actor.userId(),actor.username());}
+    private Identity current(Identity actor){if(actor==null)throw new SecurityException("请先登录");return changeHistoryEnabled||collaborationMutationsEnabled?users.lockCurrent(actor.userId(),actor.username()):users.current(actor.userId(),actor.username());}
     private void owner(Identity actor,Row row){if(actor.userId()!=row.ownerUserId())throw new SecurityException("只有报告本人可以修改草稿或撤回");}
     private void supervisor(Identity actor){if(!actor.supervisor())throw new SecurityException("只有主管可以审批报告");}
     private void independent(Identity actor,Row row){if(actor.userId()==row.ownerUserId())fail(403,"报告需要其他主管独立审批");}

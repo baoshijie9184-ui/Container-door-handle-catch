@@ -232,6 +232,7 @@ CREATE TABLE detection_work_unit (
 
 -- 只存当前检测任务，不承载历史统计。
 CREATE TABLE detection_task (
+    `version` BIGINT NOT NULL DEFAULT 0 COMMENT '任务业务修改版本，独立于分派身份与模型版本',
     `id` BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键ID',
     `task_id` VARCHAR(64) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '任务编号',
     `workflow_uuid` VARCHAR(36) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '工作流UUID，可在智能助手中引用',
@@ -339,7 +340,8 @@ CREATE TABLE detection_task (
     KEY ix_task_created_identity (created_user_id,task_id),
     KEY ix_task_assignee_identity (assignee_user_id,task_id),
     KEY ix_task_session (session_id),
-    CONSTRAINT ck_task_identity_revision CHECK(assignment_identity_revision>=0)
+    CONSTRAINT ck_task_identity_revision CHECK(assignment_identity_revision>=0),
+    CONSTRAINT ck_task_mutation_version CHECK(version>=0)
 ) ENGINE=InnoDB ROW_FORMAT=DYNAMIC DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 -- 图片在工作单元中的出现记录；不是全局唯一内容或上传回执。

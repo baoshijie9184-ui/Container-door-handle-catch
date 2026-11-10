@@ -9,5 +9,6 @@ import java.util.List;
 @Builder
 public class ResumeUploadResponse {
     private String taskId;
+    private String version;
     private List<DetectionUploadUrlItem> uploadUrls;
 }

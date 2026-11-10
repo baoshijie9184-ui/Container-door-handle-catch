@@ -11,6 +11,7 @@ import java.util.Map;
 @Builder
 public class DetectionTaskTraceResponse {
     private String taskId;
+    private String version;
     private String workflowUuid;
     private String batchNo;
     private String workOrderNo;

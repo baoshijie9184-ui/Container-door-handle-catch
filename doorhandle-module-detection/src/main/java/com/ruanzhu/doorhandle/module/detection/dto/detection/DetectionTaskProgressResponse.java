@@ -7,6 +7,7 @@ import lombok.Data;
 @Builder
 public class DetectionTaskProgressResponse {
     private String taskId;
+    private String version;
     private String workflowUuid;
     private String status;
     private String stage;
