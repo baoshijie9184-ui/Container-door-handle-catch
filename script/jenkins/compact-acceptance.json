@@ -1201,7 +1201,7 @@
       },
       {
         "module": "tests_python.test_compact_cutover",
-        "minimumTests": 11,
+        "minimumTests": 22,
         "source": "tests_python/test_compact_cutover.py",
         "allowedSkippedTests": []
       },
@@ -1609,7 +1609,7 @@
       },
       {
         "module": "tests_python.test_compact_runtime_resources",
-        "minimumTests": 24,
+        "minimumTests": 32,
         "source": "tests_python/test_compact_runtime_resources.py",
         "allowedSkippedTests": []
       },
@@ -1647,6 +1647,18 @@
         "module": "tests_python.test_collaboration_model_streams",
         "minimumTests": 40,
         "source": "tests_python/test_collaboration_model_streams.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_collaboration_browser_evidence",
+        "minimumTests": 94,
+        "source": "tests_python/test_collaboration_browser_evidence.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_collaboration_acceptance_evidence",
+        "minimumTests": 22,
+        "source": "tests_python/test_collaboration_acceptance_evidence.py",
         "allowedSkippedTests": []
       }
     ]

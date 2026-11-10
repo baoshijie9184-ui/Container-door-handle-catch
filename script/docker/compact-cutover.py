@@ -244,6 +244,10 @@ def admitted_runtime(root, tag, commit, source_sha, identity, guard, build, buil
     browser_result = browser.validate_files(canonical(directory / 'checkout/work/runtime-acceptance'), cleanup, proof,
                                             Path(__file__).resolve().parents[2])
     require(browser_result['browserImageId'] == browser_image, 'Executed browser differs from its measured immutable build')
+    collaboration = module('cutover_collaboration_evidence_bytes', Path(__file__).with_name('collaboration-acceptance-evidence.py'))
+    browser_report = browser.decode(browser.raw_file(canonical(directory / 'checkout/work/runtime-acceptance/browser-evidence/browser-evidence.json'), 32 * 1024 ** 2)[0])
+    collaboration.validate_files(canonical(directory / 'checkout/work/runtime-acceptance'), cleanup, proof,
+                                 browser_report, owned_runtime_directory=True)
     resources = module('compact_runtime_resource_bytes', Path(__file__).resolve().parents[1]
                        / 'jenkins/validate-runtime-resources.py')
     resource_directory = canonical(directory / 'checkout/work/runtime-acceptance')

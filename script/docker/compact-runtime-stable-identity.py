@@ -349,14 +349,32 @@ def prove_current_task(ctx, task_id):
         return _blocked(ctx, 'authorization', value, error)
 
 
-def require_receipts(ctx):
-    admitted = _read_receipt(ctx, 'admission', 'PASS')
-    authorization = _read_receipt(ctx, 'authorization', 'PASS')
+def validate_final_values(preflight, admitted, authorization, accounts, server_uuid):
+    """Pure final policy, shared with CI/cutover original-byte verification."""
+    before, after = admitted['databaseBefore'], admitted['databaseAfter']
+    historical, activated = admitted['historicalPreview'], admitted['activatedPreview']
+    need(preflight.get('status') == 'PREFLIGHT_ONLY' and admitted.get('status') == authorization.get('status') == 'PASS', 'FINAL_REQUIRED_STAGE_STATUS_INVALID')
+    need(preflight['database']['serverUuid'] == before['serverUuid'] == after['serverUuid'] == server_uuid
+         and integer(preflight['database']['tasks']) == integer(before['tasks']) == integer(after['tasks'])
+         == integer(historical['tasks']) == integer(activated['tasks'])
+         and integer(authorization['database']['tasks']) >= integer(after['tasks']) + 1, 'FINAL_PRESERVED_SOURCE_INVENTORY_NOT_PROVEN')
+    changed = before['bindingMode'] != 'ACTIVE' or before['sourceMode'] != 'ACTIVE'
+    expected = integer(before['bindingRevision']) + changed
+    need(before['bindingMode'] in ('PREVIEW', 'ACTIVE') and before['sourceMode'] in ('COLLECTING', 'ACTIVE')
+         and historical['bindingMode'] == before['bindingMode'] and historical['sourceMode'] == before['sourceMode']
+         and integer(historical['bindingRevision']) == integer(before['bindingRevision'])
+         and integer(admitted['activation']['openedRevision']) == integer(before['bindingRevision'])
+         and integer(after['bindingRevision']) == integer(activated['bindingRevision']) == expected
+         and activated['bindingMode'] == activated['sourceMode'] == 'ACTIVE'
+         and after['sourceActivationRevision'] is not None and 1 <= integer(after['sourceActivationRevision']) <= expected
+         and (not changed or integer(after['sourceActivationRevision']) == expected)
+         and str(integer(admitted['activation']['actualSupervisorUserId'], 1)) == str(integer(accounts['supervisor']['userId'], 1)),
+         'FINAL_ACTIVATION_CONTROL_REVISION_NOT_PROVEN')
     need(all(admitted.get('actualFlags', {}).get(key) is True and authorization.get('actualFlags', {}).get(key) is True for key in REQUIRED_ENV), 'FINAL_STABLE_FLAGS_NOT_PROVEN')
     need(admitted['databaseAfter']['bindingMode'] == admitted['databaseAfter']['sourceMode'] == 'ACTIVE'
          and authorization['database']['bindingMode'] == authorization['database']['sourceMode'] == 'ACTIVE'
          and len(authorization.get('httpPermissions', [])) == 4, 'FINAL_STABLE_AUTHORIZATION_NOT_PROVEN')
-    need(admitted['databaseAfter']['serverUuid'] == authorization['database']['serverUuid'] == ctx.owner['serverUuid']
+    need(admitted['databaseAfter']['serverUuid'] == authorization['database']['serverUuid'] == server_uuid
          and admitted.get('historicalPreview', {}).get('gapCount') == admitted.get('activatedPreview', {}).get('gapCount') == 0
          and admitted.get('activation', {}).get('httpStatus') == 200
          and admitted['activation'].get('sourceProtection') is True and admitted['activation'].get('postReadbackConfirmed') is True,
@@ -364,8 +382,8 @@ def require_receipts(ctx):
     permissions = {item.get('account'): item for item in authorization['httpPermissions']}
     need(set(permissions) == {'inspector', 'peer', 'supervisor', 'reviewer'}, 'FINAL_SCOPE_ACCOUNT_SET_INVALID')
     for alias, item in permissions.items():
-        need(str(integer(item.get('userId'), 1)) == str(integer(ctx.accounts[alias]['userId'], 1))
-             and item.get('role') == ctx.accounts[alias]['role'] and item.get('historyHttpStatus') == 200,
+        need(str(integer(item.get('userId'), 1)) == str(integer(accounts[alias]['userId'], 1))
+             and item.get('role') == accounts[alias]['role'] and item.get('historyHttpStatus') == 200,
              'FINAL_SCOPE_RECEIPT_IDENTITY_INVALID')
         if alias == 'peer':
             need(item.get('progressHttpStatus') in (403, 404) and item.get('traceHttpStatus') in (403, 404)
@@ -376,8 +394,16 @@ def require_receipts(ctx):
     binding = authorization.get('taskBinding', {})
     need(binding.get('sourceKind') == 'NEW_CREATION' and binding.get('sourceRecorded') is True
          and binding.get('dbAndHttpCreatorMatched') is True
-         and str(integer(binding.get('createdUserId'), 1)) == str(integer(ctx.accounts['inspector']['userId'], 1))
+         and str(integer(binding.get('createdUserId'), 1)) == str(integer(accounts['inspector']['userId'], 1))
          and integer(binding.get('version'), 1) >= 1, 'FINAL_ACTUAL_TASK_BINDING_NOT_PROVEN')
+    return True
+
+
+def require_receipts(ctx):
+    preflight = _read_receipt(ctx, 'preflight', 'PREFLIGHT_ONLY')
+    admitted = _read_receipt(ctx, 'admission', 'PASS')
+    authorization = _read_receipt(ctx, 'authorization', 'PASS')
+    validate_final_values(preflight, admitted, authorization, ctx.accounts, ctx.owner['serverUuid'])
     return {'status': 'PASS', 'admission': ctx.owner['stableIdentityAdmission'],
             'authorization': ctx.owner['stableIdentityAuthorization'], 'legacyModeAccepted': False}
 

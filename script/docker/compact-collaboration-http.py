@@ -18,7 +18,10 @@ def request(ctx, alias, method, path, body=None, *, headers=None, statuses=(200,
     client = ctx.client(alias)
     require(re.fullmatch(r'http://127\.0\.0\.1:[1-9][0-9]*', client.base)
             and path.startswith('/api/'), 'Collaboration HTTP escaped the owned application endpoint')
-    message = client.prepare_request(method, path, body, headers=headers or {})
+    metadata = dict(headers or {})
+    if urllib.parse.urlsplit(path).path != '/api/auth/check' and client.account_context:
+        metadata.setdefault('X-Account-Context', client.account_context)
+    message = client.prepare_request(method, path, body, headers=metadata)
     try:
         response = client.opener.open(message, timeout=30)
     except urllib.error.HTTPError as error:
@@ -67,12 +70,15 @@ def claim(ctx):
             'Claim competitors must be two independent accounts other than the creator')
     grant = {'candidateUserIds': candidates, 'expectedVersion': str(original['version']), 'requestId': uuid.uuid4().hex}
     authorized = request(ctx, 'supervisor', 'POST', base + '/claim-candidates', grant)['body']
+    candidate_reads, denied_writes = [], []
     for alias in aliases:
         visible = request(ctx, alias, 'GET', base)['body']
         require(visible.get('claimReadOnly') is True and set(visible['claimCandidateUserIds']) == set(candidates),
                 'Explicit candidates did not receive only the intended temporary read scope')
+        candidate_reads.append(200)
         denied = request(ctx, alias, 'POST', base + '/retry', headers=command(authorized['version']), statuses=(403,))
         require(denied['status'] == 403, 'Unclaimed candidate acquired an ordinary mutation permission')
+        denied_writes.append(denied['status'])
     gate = threading.Barrier(2)
     commands = {alias: {'expectedVersion': str(authorized['version']), 'requestId': uuid.uuid4().hex} for alias in aliases}
     def send(alias):
@@ -89,8 +95,10 @@ def claim(ctx):
     replay = request(ctx, winner, 'POST', base + '/claim', commands[winner])
     require(replay['body'] == first['body'] and replay['receipt'] == first['receipt'],
             'Exact claim retry did not return its original result and receipt')
+    loser_reads = []
     for path in (base, base + '/trace', base + '/result'):
-        require(request(ctx, loser, 'GET', path, statuses=(403, 404))['status'] in (403, 404),
+        denial = request(ctx, loser, 'GET', path, statuses=(403, 404))['status']; loser_reads.append(denial)
+        require(denial in (403, 404),
                 'Losing candidate retained the temporary task scope')
     q = ctx.db.literal
     actual = ctx.db.one("SELECT JSON_OBJECT('assignee',assignee_user_id,'version',version,'vacant',claim_candidate_ids IS NULL) FROM detection_task WHERE task_id=" + q(task) + ';')
@@ -101,6 +109,8 @@ def claim(ctx):
     require(str(actual['assignee']) == str(ctx.accounts[winner]['userId']) and actual['vacant'] == 1
             and int(actual['version']) == int(authorized['version']) + 1 and len(audits) == 1
             and audits[0]['id'] == first['receipt']['X-Audit-ID']
+            and audits[0]['request'] == commands[winner]['requestId']
+            and str(first['body']['version']) == first['receipt']['X-Resource-Version'] == str(actual['version'])
             and audits[0]['actor'] == str(ctx.accounts[winner]['userId']) and receipts['n'] == 1,
             'Claim HTTP result, stable assignee, revision, audit and command receipt do not agree')
     # Continue the existing report/SDK scenarios through a real supervisor assignment,
@@ -117,10 +127,31 @@ def claim(ctx):
         headers=command(current['version']))['body']
     require(restored['assignee'] == ctx.accounts['inspector']['username'] and not restored.get('claimCandidateUserIds'),
             'Real reassignment did not restore the original scenario scope')
+    require(int(restored['version']) == int(actual['version']) + 1, 'Reassignment did not advance the same task revision')
     return save(ctx, 'claim', {'taskId': task, 'competingUserIds': candidates, 'winnerUserId': str(ctx.accounts[winner]['userId']),
         'loserStatus': outcomes[loser]['status'], 'committedVersion': str(actual['version']),
         'auditId': audits[0]['id'], 'exactResponseAndReceiptReplay': True, 'temporaryScopeRevoked': True,
-        'candidateOtherWritesDenied': True, 'continuedThroughRealSupervisorAssignment': True})
+        'candidateOtherWritesDenied': True, 'continuedThroughRealSupervisorAssignment': True,
+        'candidateReadHttpStatuses': candidate_reads, 'candidateWriteHttpStatuses': denied_writes,
+        'loserReadHttpStatuses': loser_reads, 'committedAuditCount': len(audits), 'committedCommandCount': receipts['n'],
+        'auditActorUserId': audits[0]['actor'], 'stableAssigneeUserId': str(actual['assignee']),
+        'receiptResourceVersion': first['receipt']['X-Resource-Version'], 'receiptAuditId': first['receipt']['X-Audit-ID'],
+        'receiptEventId': first['receipt']['X-Change-Event-ID'], 'requestId': commands[winner]['requestId'],
+        'auditRequestIdMatched': True, 'candidateIdsCleared': True, 'restoredAssignmentVersion': str(restored['version'])})
+
+
+def denied_login(ctx, account):
+    """A fresh independent login must be rejected by HTTP, never a 200 error envelope."""
+    fresh = ctx.rehearsal.Client(ctx.owner['port'])
+    message = fresh.prepare_request('POST', '/api/auth/login', {'username': account['username'], 'password': account['password']})
+    try:
+        response = fresh.opener.open(message, timeout=30)
+    except urllib.error.HTTPError as error:
+        status = error.code; error.close()
+        require(status in (401, 403), 'Unqualified fresh login had an unexpected HTTP rejection')
+        return status
+    response.close()
+    raise ValueError('A successful HTTP envelope cannot prove unqualified login rejection')
 
 
 def personnel(ctx):
@@ -143,16 +174,15 @@ def personnel(ctx):
         linked = request(ctx, 'supervisor', 'PUT', route, {'employeeId': staff['id'], 'version': own['bindingVersion']},
                          headers={**command(own['bindingVersion']), 'X-Organization-Action': 'update'})['body']
         require(str(linked['employeeId']) == str(staff['id']), 'Actual supervisor association did not persist')
-        require(request(ctx, alias, 'GET', '/api/organization/me', statuses=(401, 403))['status'] in (401, 403),
+        withdrawn_status = request(ctx, alias, 'GET', '/api/organization/me', statuses=(401, 403))['status']
+        require(withdrawn_status in (401, 403),
                 'An old JWT retained access after its current personnel qualification was withdrawn')
-        login = ctx.rehearsal.Client(ctx.owner['port'])
-        result = ctx.http.request(login, 'POST', '/api/auth/login',
-                                  {'username': account['username'], 'password': account['password']}, denied=(401, 403))
-        require(result['deniedStatus'] in (401, 403), 'A collector/maintenance profile acquired login permission')
+        login_status = denied_login(ctx, account)
         reverted = request(ctx, 'supervisor', 'PUT', route, {'employeeId': account['employeeId'], 'version': linked['bindingVersion']},
                            headers={**command(linked['bindingVersion']), 'X-Organization-Action': 'update'})['body']
         require(str(reverted['employeeId']) == str(account['employeeId']), 'Owned qualified binding was not restored for later scenarios')
-        require(request(ctx, alias, 'GET', '/api/organization/me', statuses=(401, 403))['status'] in (401, 403),
+        restored_old_status = request(ctx, alias, 'GET', '/api/organization/me', statuses=(401, 403))['status']
+        require(restored_old_status in (401, 403),
                 'Restoring qualification resurrected the already revoked login session')
         require(ctx.clients[alias] is old_client, 'Old-session rejection was replaced by another login')
         account['bindingVersion'] = int(reverted['bindingVersion'])
@@ -161,14 +191,69 @@ def personnel(ctx):
         fresh = request(ctx, alias, 'GET', '/api/organization/me')['body']
         require(str(fresh['employeeId']) == str(account['employeeId']), 'New qualified session could not recover its own identity')
         observations.append({'position': role, 'staffId': str(staff['id']), 'userId': user,
-            'createdAndAssociatedThroughActualHttp': True, 'loginRejected': result['deniedStatus'],
-            'oldSessionRevokedAndNotResurrected': True, 'qualifiedNewSessionVerified': True})
+            'createdAndAssociatedThroughActualHttp': True, 'loginRejected': login_status,
+            'oldSessionRevokedAndNotResurrected': True, 'qualifiedNewSessionVerified': True,
+            'beforeBindingVersion': str(own['bindingVersion']), 'withdrawnBindingVersion': str(linked['bindingVersion']),
+            'restoredBindingVersion': str(reverted['bindingVersion']), 'oldSessionHttpStatuses': [withdrawn_status, restored_old_status],
+            'freshQualifiedHttpStatus': 200, 'freshQualifiedEmployeeId': str(fresh['employeeId']),
+            'originalEmployeeId': str(account['employeeId'])})
     return save(ctx, 'personnel', {'positions': observations, 'oldBusinessDataModified': False})
+
+
+def exact(value, minimum=0):
+    require(type(value) is int or isinstance(value, str) and re.fullmatch(r'0|[1-9][0-9]{0,18}', value), 'HTTP evidence requires an exact integer')
+    value = int(value); require(minimum <= value <= 9223372036854775807, 'HTTP evidence integer is outside its range')
+    return value
+
+
+def validate_observations(claim_value, personnel_value, accounts):
+    claim, personnel = claim_value.get('observations', {}), personnel_value.get('observations', {})
+    competitors = [str(exact(accounts[alias]['userId'], 1)) for alias in ('peer', 'load_01')]
+    winner = str(exact(claim.get('winnerUserId'), 1))
+    require(claim.get('competingUserIds') == competitors and len(set(competitors)) == 2
+            and str(exact(accounts['inspector']['userId'], 1)) not in competitors and winner in competitors
+            and claim.get('loserStatus') in (403, 409) and isinstance(claim.get('taskId'), str)
+            and re.fullmatch(r'[A-Za-z0-9_-]{1,128}', claim['taskId']), 'Actual independent candidate claim identities are missing')
+    require(claim.get('candidateReadHttpStatuses') == [200, 200] and claim.get('candidateWriteHttpStatuses') == [403, 403]
+            and type(claim.get('loserReadHttpStatuses')) is list and len(claim['loserReadHttpStatuses']) == 3
+            and all(status in (403, 404) for status in claim['loserReadHttpStatuses'])
+            and type(claim.get('committedAuditCount')) is int and claim['committedAuditCount'] == 1
+            and type(claim.get('committedCommandCount')) is int and claim['committedCommandCount'] == 1,
+            'Actual candidate permission, winner audit and command counts are missing')
+    version = exact(claim.get('committedVersion'), 1)
+    audit = exact(claim.get('auditId'), 1)
+    require(str(exact(claim.get('auditActorUserId'), 1)) == str(exact(claim.get('stableAssigneeUserId'), 1)) == winner
+            and exact(claim.get('receiptResourceVersion'), 1) == version and exact(claim.get('receiptAuditId'), 1) == audit
+            and exact(claim.get('restoredAssignmentVersion'), 1) == version + 1
+            and isinstance(claim.get('receiptEventId'), str) and re.fullmatch(r'[A-Za-z0-9_-]{1,160}', claim['receiptEventId'])
+            and isinstance(claim.get('requestId'), str) and re.fullmatch(r'[A-Za-z0-9_-]{1,128}', claim['requestId'])
+            and all(claim.get(key) is True for key in ('exactResponseAndReceiptReplay', 'temporaryScopeRevoked',
+                'candidateOtherWritesDenied', 'continuedThroughRealSupervisorAssignment', 'auditRequestIdMatched', 'candidateIdsCleared')),
+            'Actual claim revision, original receipt or continuing supervisor assignment is missing')
+    positions = personnel.get('positions')
+    require(type(positions) is list and len(positions) == 2 and personnel.get('oldBusinessDataModified') is False
+            and {row.get('position') for row in positions} == {'COLLECTION', 'MAINTENANCE'}, 'Actual two non-login personnel positions are required')
+    staff = set()
+    for row in positions:
+        alias = 'load_14' if row['position'] == 'COLLECTION' else 'load_15'
+        require(str(exact(row.get('userId'), 1)) == str(exact(accounts[alias]['userId'], 1))
+                and all(row.get(key) is True for key in ('createdAndAssociatedThroughActualHttp', 'oldSessionRevokedAndNotResurrected', 'qualifiedNewSessionVerified'))
+                and row.get('loginRejected') in (401, 403) and row.get('freshQualifiedHttpStatus') == 200
+                and type(row.get('oldSessionHttpStatuses')) is list and len(row['oldSessionHttpStatuses']) == 2
+                and all(status in (401, 403) for status in row['oldSessionHttpStatuses']), 'Actual personnel login/session HTTP denial is missing')
+        before = exact(row.get('beforeBindingVersion')); withdrawn = exact(row.get('withdrawnBindingVersion')); restored = exact(row.get('restoredBindingVersion'))
+        require(withdrawn == before + 1 and restored == withdrawn + 1
+                and exact(row.get('freshQualifiedEmployeeId'), 1) == exact(row.get('originalEmployeeId'), 1)
+                and exact(row.get('staffId'), 1) != exact(row.get('originalEmployeeId'), 1), 'Actual personnel binding CAS and new qualified identity are missing')
+        staff.add(exact(row['staffId'], 1))
+    require(len(staff) == 2, 'The two personnel creations reused one employee')
+    return {'winnerUserId': winner, 'taskId': claim['taskId'], 'personnelAccounts': 2}
 
 
 def require_receipts(ctx):
     references = ctx.owner.get('collaborationHttpEvidence', {})
     require(set(references) == {'claim', 'personnel'}, 'Actual HTTP claim and personnel evidence are required')
+    values = {}
     for name, reference in references.items():
         path = ctx.directory / ('collaboration-http-' + name + '.json')
         require(reference['file'] == path.relative_to(ctx.attempt).as_posix()
@@ -177,4 +262,6 @@ def require_receipts(ctx):
         require(all(value.get(key) == expected for key, expected in ctx.context().items())
                 and value.get('status') == 'PASS' and value.get('project') == ctx.project,
                 'Collaboration HTTP evidence belongs to another source/runtime')
+        values[name] = value
+    validate_observations(values['claim'], values['personnel'], ctx.accounts)
     return references

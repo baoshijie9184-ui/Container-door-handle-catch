@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import xml.etree.ElementTree as ET
 import pytest
 from tests_python.browser_evidence_fixture import install as install_browser, CID as BROWSER_CID, IMAGE as BROWSER_IMAGE
+from tests_python.collaboration_evidence_fixture import install as install_collaboration
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -182,6 +183,10 @@ def runtime_verification(tmp_path):
         'sourceBeforeSha256': 'a' * 64, 'sourceAfterSha256': 'a' * 64}), 'status': 'STOPPED'}
     write(directory / 'checkout/work/ci-evidence/migration.json', {'migrationReceiptSha256': 'f' * 64, 'targetSnapshotSha256': '1' * 64})
     attach_runtime_resources(directory, context, project, proof, images, fixture_images)
+    cleanup_file = directory / 'checkout/work/runtime-acceptance/cleanup.json'
+    cleanup = json.loads(cleanup_file.read_bytes())
+    install_collaboration(directory / 'checkout/work/runtime-acceptance', context, project, proof, cleanup)
+    write(cleanup_file, cleanup); proof['cleanup']['sha256'] = cutover.sha_file(cleanup_file)
     path = directory / 'runtime-acceptance.json'; write(path, proof)
     def admit():
         return cutover.admitted_runtime(tmp_path, tag, 'a' * 40, 'c' * 64, identity, schema, {'images': images}, 'd' * 64)

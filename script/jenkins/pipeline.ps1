@@ -938,6 +938,42 @@ if ($Action -in @('CompactCutover', 'VerifyRuntime', 'CleanupRuntime')) {
         if (($file.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -or $file.Length -ne $length -or
                 (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant() -cne $Digest) { throw 'Original browser bytes changed during collection.' }
     }
+    function Receive-RuntimeCollaboration($CleanupEvidence, [string]$CleanupFile, [string]$ProofFile = '') {
+        $references = [ordered]@{}
+        foreach ($entry in @($CleanupEvidence.stableIdentityEvidence.PSObject.Properties)) {
+            if ($entry.Name -cnotin @('preflight','admission','authorization') -or $entry.Value.status -cnotin @('PREFLIGHT_ONLY','PASS','BLOCKED')) { throw 'Unexpected stable identity public receipt.' }
+            $references["stable-identity-$($entry.Name).json"] = $entry.Value
+        }
+        foreach ($entry in @($CleanupEvidence.collaborationHttpEvidence.PSObject.Properties)) {
+            if ($entry.Name -cnotin @('claim','personnel')) { throw 'Unexpected collaboration HTTP public receipt.' }
+            $references["collaboration-http-$($entry.Name).json"] = $entry.Value
+        }
+        if ($references.Count -gt 5) { throw 'Collaboration public receipt count exceeded five.' }
+        $directory = Join-Path (Get-Location) ('work/runtime-collaboration-transfer-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $directory | Out-Null
+        foreach ($name in $references.Keys) {
+            $reference = $references[$name]
+            if ($reference.file -cne "checkout/work/runtime-acceptance/$name" -or $reference.sha256 -cnotmatch '^[a-f0-9]{64}$') { throw 'Collaboration evidence escaped its fixed public path.' }
+            Receive-RuntimeBrowserFile "$remoteRoot/verification/$tag/$($reference.file)" "$directory/$name" $reference.sha256 262144
+        }
+        $python = $env:LOCAL_PYTHON_EXE
+        if ([string]::IsNullOrWhiteSpace($python)) { $python = $env:PYTHON_EXE }
+        if (-not $python -or -not (Test-Path -LiteralPath $python -PathType Leaf)) { throw 'Existing local Python is required for receipt byte validation.' }
+        $arguments = @('-I','-B','script/jenkins/validate-runtime-collaboration.py','--directory',(Resolve-Path $directory).Path,'--cleanup',(Resolve-Path $CleanupFile).Path)
+        $output = Invoke-Checked $python $arguments
+        $verdict = ($output | Select-Object -Last 1) | ConvertFrom-Json
+        if ($verdict.status -cne 'PRESERVED' -or $verdict.files -ne $references.Count) { throw 'Original public collaboration bytes were not preserved.' }
+        $archive = 'artifacts/runtime-collaboration'
+        New-Item -ItemType Directory -Force -Path $archive | Out-Null
+        foreach ($name in $references.Keys) { Move-Item -LiteralPath "$directory/$name" -Destination "$archive/$name" -Force }
+        if ($ProofFile) {
+            $arguments = @('-I','-B','script/jenkins/validate-runtime-collaboration.py','--directory',(Resolve-Path $archive).Path,'--cleanup',(Resolve-Path $CleanupFile).Path,
+                '--proof',(Resolve-Path $ProofFile).Path,'--browser-report',(Resolve-Path 'artifacts/runtime-browser/browser-evidence/browser-evidence.json').Path)
+            $output = Invoke-Checked $python $arguments
+            $verdict = ($output | Select-Object -Last 1) | ConvertFrom-Json
+            if ($verdict.status -cne 'VERIFIED' -or $verdict.files -ne 5) { throw 'Actual stable identity and HTTP collaboration evidence is incomplete.' }
+        }
+    }
     function Receive-RuntimeBrowser($CleanupEvidence, [string]$CleanupFile, [string]$ProofFile = '') {
         $reference = $CleanupEvidence.browserEvidence
         if (-not $reference -or $reference.file -cne 'checkout/work/runtime-acceptance/browser-manifest.json' -or $reference.sha256 -cnotmatch '^[a-f0-9]{64}$') { throw 'Runtime cleanup lacks its fixed original browser manifest.' }
@@ -1027,6 +1063,7 @@ if ($Action -in @('CompactCutover', 'VerifyRuntime', 'CleanupRuntime')) {
         if ($cleanupDigest -and $cleanupDigest.Value) {
             $cleanupEvidence = Receive-RuntimeJson "$remoteRoot/verification/$tag/checkout/work/runtime-acceptance/cleanup.json" 'artifacts/runtime-cleanup-evidence.json' $cleanupDigest.Value
         }
+        if ($cleanupEvidence) { Receive-RuntimeCollaboration $cleanupEvidence 'artifacts/runtime-cleanup-evidence.json' }
         if ($cleanupEvidence -and $cleanupEvidence.browserEvidence) { Receive-RuntimeBrowser $cleanupEvidence 'artifacts/runtime-cleanup-evidence.json' }
         if ($cleanupEvidence -and $cleanupEvidence.resourceEvidence) {
             $reference = $cleanupEvidence.resourceEvidence
@@ -1257,6 +1294,7 @@ print(json.dumps({'status':'REUSED_VERIFIED','release':expected['release'],'comm
     if ($cleanupFile.Length -le 0 -or $cleanupFile.Length -gt 262144 -or (Get-FileHash -LiteralPath $cleanupFile.FullName -Algorithm SHA256).Hash.ToLowerInvariant() -ne $cleanupReference.sha256) { throw 'Runtime cleanup evidence is missing, oversized or changed during collection.' }
     $cleanupEvidence = Get-Content -LiteralPath $cleanupFile.FullName -Raw | ConvertFrom-Json
     Receive-RuntimeBrowser $cleanupEvidence $cleanupFile.FullName 'artifacts/runtime-acceptance.json'
+    Receive-RuntimeCollaboration $cleanupEvidence $cleanupFile.FullName 'artifacts/runtime-acceptance.json'
     if ($cleanupEvidence.status -ne 'STOPPED' -or $cleanupEvidence.unresolved.Count -ne 0 -or $cleanupEvidence.stoppedContainers.Count -eq 0 -or $cleanupEvidence.sourceResourcesChanged -ne $false -or $cleanupEvidence.commit -ne $commit -or $cleanupEvidence.release -ne $tag -or $cleanupEvidence.sourceSha256 -ne $sha -or $cleanupEvidence.candidateBuildSha256 -ne $candidateSha -or $cleanupEvidence.project -ne $runtimeProof.project) { throw 'Runtime cleanup did not prove this build owned resources were stopped.' }
     $resourceReference = $runtimeProof.resourceEvidence
     if ($resourceReference.file -ne 'checkout/work/runtime-acceptance/resource-summary.json' -or $resourceReference.sha256 -notmatch '^[a-f0-9]{64}$' -or $cleanupEvidence.resourceEvidence.file -ne $resourceReference.file -or $cleanupEvidence.resourceEvidence.sha256 -ne $resourceReference.sha256) { throw 'Runtime resources and cleanup lack a common bound evidence reference.' }
