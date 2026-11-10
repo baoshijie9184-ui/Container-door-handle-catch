@@ -107,7 +107,7 @@ class CollaborationHttpMySqlTest {
         @Bean JdbcTemplate jdbc(DataSource source){return new JdbcTemplate(source);}
         @Bean PlatformTransactionManager transactions(DataSource source){return new DataSourceTransactionManager(source);}
         @Bean ObjectMapper mapper(){return new ObjectMapper().findAndRegisterModules();}
-        @Bean SqlSessionFactory sqlSessionFactory(DataSource source)throws Exception{var config=new MybatisConfiguration();config.setMapUnderscoreToCamelCase(true);config.addMapper(UserMapper.class);config.addMapper(AccountEmployeeBindingMapper.class);var factory=new MybatisSqlSessionFactoryBean();factory.setDataSource(source);factory.setConfiguration(config);return factory.getObject();}
+        @Bean SqlSessionFactory sqlSessionFactory(DataSource source)throws Exception{var config=new MybatisConfiguration();config.setMapUnderscoreToCamelCase(true);config.addMapper(UserMapper.class);config.addMapper(AccountEmployeeBindingMapper.class);config.addMapper(OrganizationDepartmentMapper.class);var factory=new MybatisSqlSessionFactoryBean();factory.setDataSource(source);factory.setConfiguration(config);return factory.getObject();}
         @Bean SqlSessionTemplate sqlSession(SqlSessionFactory factory){return new SqlSessionTemplate(factory);}
         @Bean UserMapper users(SqlSessionTemplate session){return session.getMapper(UserMapper.class);}
         @Bean AccountEmployeeBindingMapper bindings(SqlSessionTemplate session){return session.getMapper(AccountEmployeeBindingMapper.class);}
@@ -432,5 +432,19 @@ class CollaborationHttpMySqlTest {
         assertThat(boss.send("POST","/api/accounts/2/access",command,true).statusCode()).isEqualTo(200);assertThat(target.check().statusCode()).isEqualTo(401);assertThat(targetStream.ended.await(5,TimeUnit.SECONDS)).isTrue();
         new TransactionTemplate(app.getBean(PlatformTransactionManager.class)).executeWithoutResult(status->{jdbc.update("UPDATE employee SET employee_type='COLLECTION' WHERE id=103");app.publishEvent(new EmployeeLoginEligibilityChanged(103));});
         assertThat(inspector.check().statusCode()).isEqualTo(401);assertThat(inspectorStream.ended.await(5,TimeUnit.SECONDS)).isTrue();identity(boss,1);
+    }
+    @Test @Order(10) void departmentDirectoryReadsPersistedRevisionForCreateListAndLookup(){
+        // Reuse the fixture's actual MyBatis mapper and owned MySQL. This case
+        // checks directory projection, not the separate HTTP/audit command path.
+        var mapper=app.getBean(SqlSessionTemplate.class).getMapper(OrganizationDepartmentMapper.class);
+        var directory=new OrganizationDepartmentService(mapper,app.getBean(AccountEmployeeBindingMapper.class));
+        var created=directory.create("HTTP directory "+UUID.randomUUID());
+        Long inserted=jdbc.queryForObject("SELECT version FROM organization_department WHERE id=?",Long.class,created.id());
+        assertThat(created.version()).isNotNull().isEqualTo(inserted);
+        jdbc.update("UPDATE organization_department SET version=? WHERE id=?",Long.MAX_VALUE,created.id());
+        assertThat(directory.list()).filteredOn(row->row.id().equals(created.id())).singleElement()
+                .satisfies(row->assertThat(row.version()).isEqualTo(Long.MAX_VALUE));
+        assertThat(directory.requireDepartment(created.id(),null).version()).isEqualTo(Long.MAX_VALUE);
+        assertThat(directory.requireDepartment(null,created.name()).version()).isEqualTo(Long.MAX_VALUE);
     }
 }

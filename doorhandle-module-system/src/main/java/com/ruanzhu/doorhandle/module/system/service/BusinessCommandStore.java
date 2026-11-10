@@ -16,6 +16,7 @@ final class BusinessCommandStore {
     record Claim(String id,boolean repeated,String result) { }
     record Receipt(String resourceVersion,String auditId,String eventId) { }
     record ResultV1(JsonNode result,Receipt receipt) { }
+    private record DepartmentResultV0(Long id,String name) { }
     private final JdbcTemplate jdbc;
     private final ObjectMapper json=new ObjectMapper().findAndRegisterModules()
             .enable(MapperFeature.SORT_PROPERTIES_ALPHABETICALLY).enable(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS)
@@ -50,6 +51,14 @@ final class BusinessCommandStore {
     }
     Object replay(Claim claim,Type type){try{
         var stored=json.readValue(claim.result(),ResultV1.class);headers(stored.receipt());
+        // Department directory replies formerly contained exactly id/name.
+        // Retain their unknown DTO revision without weakening other creators
+        // or substituting today's state for this immutable command result.
+        if(type==com.ruanzhu.doorhandle.contracts.organization.OrganizationDirectoryApi.DepartmentIdentity.class
+                &&stored.result().isObject()&&stored.result().size()==2&&stored.result().has("id")&&stored.result().has("name")){
+            var original=json.readValue(stored.result().toString(),DepartmentResultV0.class);
+            return new com.ruanzhu.doorhandle.contracts.organization.OrganizationDirectoryApi.DepartmentIdentity(original.id(),original.name());
+        }
         return type==Void.TYPE?null:json.readValue(stored.result().toString(),json.getTypeFactory().constructType(type));
     }catch(com.fasterxml.jackson.core.JsonProcessingException invalid){throw new IllegalStateException("命令回执解码失败",invalid);}}
     Receipt receipt(long actor,String request,String resourceType,String resourceId,Long version){

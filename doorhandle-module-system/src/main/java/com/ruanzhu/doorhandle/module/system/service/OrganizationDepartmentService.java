@@ -18,7 +18,7 @@ public class OrganizationDepartmentService implements OrganizationDirectoryApi {
     }
     public List<DepartmentIdentity> list() {
         return departments.selectList(new LambdaQueryWrapper<OrganizationDepartment>().orderByAsc(OrganizationDepartment::getId))
-                .stream().map(d -> new DepartmentIdentity(d.getId(), d.getName())).toList();
+                .stream().map(OrganizationDepartmentService::identity).toList();
     }
     @Transactional
     @com.ruanzhu.doorhandle.contracts.agent.BusinessMutation(domain="ORGANIZATION",action="CREATE_DEPARTMENT",resource="result.id",supervisorOnly=true)
@@ -29,14 +29,20 @@ public class OrganizationDepartmentService implements OrganizationDirectoryApi {
             throw new BusinessException(409, "部门名称已存在");
         var department = new OrganizationDepartment(); department.setName(normalized);
         departments.insert(department);
-        return new DepartmentIdentity(department.getId(), department.getName());
+        // The persisted revision is database-owned and omitted by the INSERT mapping.
+        var saved=department.getId()==null?null:departments.selectById(department.getId());
+        if(saved==null)throw new IllegalStateException("部门创建结果未确认");
+        return identity(saved);
     }
     public DepartmentIdentity requireDepartment(Long id, String legacyName) {
         OrganizationDepartment department = id == null ?
                 (legacyName == null || legacyName.isBlank() ? null : departments.selectOne(
                         new LambdaQueryWrapper<OrganizationDepartment>().eq(OrganizationDepartment::getName, legacyName.trim()))) : departments.selectById(id);
         if (department == null) throw new BusinessException(400, "请选择已有部门；新部门请先在账号与组织中创建");
-        return new DepartmentIdentity(department.getId(), department.getName());
+        return identity(department);
+    }
+    private static DepartmentIdentity identity(OrganizationDepartment department) {
+        return new DepartmentIdentity(department.getId(),department.getName(),department.getVersion());
     }
     public void assertEmployeeUnbound(Long employeeId) {
         if (bindings.countByEmployeeId(employeeId) > 0)
