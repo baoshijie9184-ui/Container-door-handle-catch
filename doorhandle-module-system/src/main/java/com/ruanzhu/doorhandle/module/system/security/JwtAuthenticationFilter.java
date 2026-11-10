@@ -103,12 +103,12 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                         if(accessExpiresAt==null||!accessExpiresAt.isAfter(java.time.Instant.now())){handleTokenInvalid(response);return;}
                         request.setAttribute("doorhandle.auth.accessExpiresAt",accessExpiresAt);
                         userDetails=new TenantPrincipal(userId,username,userDetails.getPassword(),List.of(new SimpleGrantedAuthority("ROLE_"+active.role())),active.sessionDigest(),active.accountContext());
-                        if(!List.of("GET","HEAD","OPTIONS").contains(request.getMethod()))
+                        if(!List.of("GET","HEAD","OPTIONS").contains(request.getMethod())||request.getHeader("X-Account-Context")!=null)
                             LoginSessionService.context(active.accountContext(),request.getHeader("X-Account-Context"));
                     }else if(userDetails instanceof TenantPrincipal legacy){
                         String context=LoginSessionService.legacyAccountContext(legacy.userId(),legacy.username());
                         userDetails=new TenantPrincipal(legacy.userId(),legacy.username(),legacy.password(),legacy.authorities(),null,context,legacy.enabled());
-                        if(!List.of("GET","HEAD","OPTIONS").contains(request.getMethod())&&request.getHeader("X-Account-Context")!=null)
+                        if(request.getHeader("X-Account-Context")!=null)
                             LoginSessionService.context(context,request.getHeader("X-Account-Context"));
                     }
                     log.debug("令牌有效，建立认证上下文");

@@ -228,6 +228,8 @@ class CollaborationHttpMySqlTest {
         assertThat(Set.of(a.context,b.context,c.context,d.context)).hasSize(4);
         assertThat(a.cookie(AuthCookieNames.SELECTOR).isHttpOnly()).isTrue();assertThat(a.cookie(AuthCookieNames.access(a.context)).getPath()).isEqualTo("/");assertThat(a.cookie(AuthCookieNames.refresh(a.context)).getPath()).isEqualTo("/api/auth");
         String old=a.context;a.context=b.context;var stale=a.write("stale-page","stale",0,false,false);a.context=old;assertThat(stale.statusCode()).isEqualTo(409);assertThat(json.readTree(stale.body()).path("code").asText()).isEqualTo("ACCOUNT_CONTEXT_CHANGED");
+        var staleRead=a.client.send(HttpRequest.newBuilder(base.resolve("/api/auth/check")).header("X-Account-Context",b.context).GET().build(),HttpResponse.BodyHandlers.ofString());
+        assertThat(staleRead.statusCode()).isEqualTo(409);assertThat(json.readTree(staleRead.body()).path("code").asText()).isEqualTo("ACCOUNT_CONTEXT_CHANGED");identity(a,1);
         assertThat(a.client.send(a.writeRequest("missing-page","missing",0,false,false,false),HttpResponse.BodyHandlers.ofString()).statusCode()).isEqualTo(409);
         assertThat(c.write("inspector-denied","denied",0,false,false).statusCode()).isEqualTo(403);assertThat(jdbc.queryForObject("SELECT version FROM organization_department WHERE id=?",Long.class,department)).isZero();
     }

@@ -373,17 +373,17 @@ def provisioned_profile():
     return requirements, provisioned
 
 
-def test_actual_profile_batches_all_61_classes_and_original_paths_without_property_collisions(monkeypatch):
+def test_actual_profile_batches_all_62_classes_and_original_paths_without_property_collisions(monkeypatch):
     preparer = mysql_control_module('prepare-compact-fixtures.py', monkeypatch)
     requirements, provisioned = provisioned_profile()
     before = json.dumps(provisioned, sort_keys=True)
     groups = preparer.group_provisioned_suites(provisioned, requirements)
-    assert len(requirements) == 61 and sum(item['minimumTests'] for item in requirements) == 621
-    assert len(groups) == 12 and groups[0] == provisioned[0]
+    assert len(requirements) == 62 and sum(item['minimumTests'] for item in requirements) == 630
+    assert len(groups) == 13 and groups[0] == provisioned[0]
     assert groups[0]['javaTests'] == [requirements[0]['className']]
     original = {item['javaTests'][0]: item['fixtureProperties'] for item in provisioned}
     selected = [name for group in groups for name in group['javaTests']]
-    assert len(selected) == len(set(selected)) == 61 and set(selected) == set(original)
+    assert len(selected) == len(set(selected)) == 62 and set(selected) == set(original)
     for group in groups:
         assert 1 <= len(group['javaTests']) <= 6
         keys = [key for name in group['javaTests'] for key in original[name]]
@@ -408,7 +408,7 @@ def test_provisioning_keeps_every_original_account_and_migration_grant_before_gr
     controller.runtime = types.SimpleNamespace(quoted=lambda value: '`' + value + '`')
     controller.mysql = types.SimpleNamespace(script=lambda sql, **kwargs: grants.append((sql, kwargs)))
     groups = controller.provision_suites(requirements)
-    assert len(groups) == 12 and len(created) == len(written) == sum(len(item['fixtureProperties']) for item in requirements)
+    assert len(groups) == 13 and len(created) == len(written) == sum(len(item['fixtureProperties']) for item in requirements)
     assert len({item['database'] for item in created}) == len(created)
     expected_grants = sum(source in item['fixtureProperties'] or strict and target in item['fixtureProperties']
                           for item in requirements for source, target, strict in controller.registry['MIGRATION_PAIRS'])

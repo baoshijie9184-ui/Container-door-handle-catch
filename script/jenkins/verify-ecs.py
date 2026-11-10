@@ -144,7 +144,7 @@ for property_name, classes in (
     ('doorhandle.digest.mysql.config', ('QualityDigestMySqlTest',)),
     ('doorhandle.operations.mysql.config', ('AccountIdentityServiceTest', 'FileDeliveryAuditMySqlTest',
         'BusinessMutationAuditTest', 'OperationsAuditServiceTest', 'LoginSessionMySqlTest',
-        'BusinessMutationCollaborationTest', 'OperationsChangeHistoryTest')),
+        'BusinessMutationCollaborationTest', 'OperationsChangeHistoryTest', 'CollaborationHttpMySqlTest')),
     ('doorhandle.report.mysql.config', ('DetectionCollaborationMySqlTest',)),
 ):
     for class_name in classes:

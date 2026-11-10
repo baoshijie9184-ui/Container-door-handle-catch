@@ -31,6 +31,18 @@
       ]
     },
     {
+      "id": "CollaborationHttpMySqlTest",
+      "className": "com.ruanzhu.doorhandle.module.system.service.CollaborationHttpMySqlTest",
+      "fixtureProperties": [
+        "doorhandle.operations.mysql.config"
+      ],
+      "source": "doorhandle-module-system/src/test/java/com/ruanzhu/doorhandle/module/system/service/CollaborationHttpMySqlTest.java",
+      "minimumTests": 9,
+      "coverage": [
+        "real HTTP cookies, independent users, transactional SSE and delayed authentication response isolation"
+      ]
+    },
+    {
       "id": "DetectionCollaborationMySqlTest",
       "className": "com.ruanzhu.doorhandle.module.detection.service.DetectionCollaborationMySqlTest",
       "fixtureProperties": [
@@ -777,6 +789,11 @@
     "mode": "ALL_WITHOUT_FIXTURE_OR_LIVE_FLAGS",
     "allowInfrastructureOptInSkips": true,
     "requiredClasses": [
+      {
+        "className": "com.ruanzhu.doorhandle.module.system.security.AuthScopedCookieTest",
+        "minimumTests": 4,
+        "source": "doorhandle-module-system/src/test/java/com/ruanzhu/doorhandle/module/system/security/AuthScopedCookieTest.java"
+      },
       {
         "className": "com.ruanzhu.doorhandle.module.system.controller.ResultHttpStatusAdviceTest",
         "minimumTests": 2,
@@ -1601,7 +1618,7 @@
         "tests/tool-execution.test.cjs",
         "tests/trace-references.test.cjs"
       ],
-      "minimumTests": 40,
+      "minimumTests": 46,
       "requiredCommands": [
         "frontend-install",
         "frontend-test",
