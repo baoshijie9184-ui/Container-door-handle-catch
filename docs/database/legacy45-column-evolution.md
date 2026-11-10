@@ -19,4 +19,4 @@ PowerShell 通过固定认证 SSH 另行取得投影回执原字节摘要，并�
 
 43 张结构一致的表继续使用原完整行索引比较。没有投影、未经审定的任何列属性或主键变化均阻止切库；旧键缺失或真实旧列值冲突仍返回 `NEEDS_REVIEW`。全表结构分类依旧如实显示两张表的完整列差异，逐键比较另行说明使用了经审定的完整旧列投影。
 
-新增代码仅做静态检查，尚须在已提交的固定源码上由本地 Jenkins 调度 ECS 验证。`tests_python.test_local_mysql_source_classification` 的合成契约从 112 项增加至 129 项；CI 最低计数需在合并时同步更新。整库迁移、前后端及运行验收门保持不变。
+新增代码仅做静态检查，尚须在已提交的固定源码上由本地 Jenkins 调度 ECS 验证。`tests_python.test_local_mysql_source_classification` 的合成契约从 112 项增加至 130 项；新增的源码归档契约直接执行 PowerShell 内嵌读取器，并核对采集器全部依赖的真实路径，防止模拟 runtime 掩盖 `script/schema` 与 `scripts` 的接线错误。CI 最低计数需在合并时同步更新。整库迁移、前后端及运行验收门保持不变。

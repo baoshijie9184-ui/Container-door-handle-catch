@@ -3,8 +3,12 @@ import copy
 from contextlib import contextmanager
 import hashlib
 import importlib.util
+import io
 import json
 from pathlib import Path
+import re
+import sys
+import tarfile
 from types import SimpleNamespace
 
 import pytest
@@ -17,6 +21,42 @@ classifier = importlib.util.module_from_spec(SPEC); SPEC.loader.exec_module(clas
 COLLECTOR_SPEC = importlib.util.spec_from_file_location('fixed_legacy_column_projection_collector',
     ROOT / 'script/jenkins/collect-local-mysql-legacy-projection.py')
 collector = importlib.util.module_from_spec(COLLECTOR_SPEC); COLLECTOR_SPEC.loader.exec_module(collector)
+
+
+def test_projection_source_archive_reader_and_remote_guards_bind_real_dependency_paths(tmp_path, monkeypatch, capsys):
+    """Exercise the actual PS reader: a nonexistent builder path must not pass mocks."""
+    controller = ROOT / 'script/jenkins/preserve-local-mysql.ps1'
+    program = controller.read_text(encoding='utf-8')
+    readers = re.findall(r"(?ms)^\$archiveReader = @'\r?\n(.*?)\r?\n'@$", program)
+    assert len(readers) == 1
+    members = {name: 'script/jenkins/' + name for name in ('preserve-local-mysql.py',
+        'restore-local-mysql.py', 'classify-local-mysql-source.py', 'collect-local-mysql-legacy-projection.py')}
+    members.update({'compact-schema-contract.json': 'docs/database/compact-schema-contract.json',
+        'compact_ddl_policy.py': 'script/schema/compact_ddl_policy.py',
+        'compact_migration_runtime.py': 'script/schema/compact_migration_runtime.py',
+        'compact_clock_policy.py': 'script/schema/compact_clock_policy.py',
+        'build_compact_schema.py': 'script/schema/build_compact_schema.py',
+        'ecs_execution.py': 'scripts/ecs_execution.py'})
+    commit = 'a' * 40
+    archive_path = tmp_path / 'fixed-source.tar.gz'
+    hashes = {}
+    with tarfile.open(archive_path, 'x:gz', format=tarfile.PAX_FORMAT, pax_headers={'comment': commit}) as archive:
+        for name, path in members.items():
+            body = (ROOT / path).read_bytes()
+            member = tarfile.TarInfo(path); member.size = len(body)
+            archive.addfile(member, io.BytesIO(body))
+            hashes[name] = hashlib.sha256(body).hexdigest()
+    with monkeypatch.context() as patch:
+        patch.setattr(sys, 'argv', ['archive-reader', str(archive_path), commit])
+        exec(compile(readers[0], str(controller) + ':archiveReader', 'exec'), {})
+    assert json.loads(capsys.readouterr().out) == hashes
+    guards = program.split('foreach ($entry in ', 1)[1].split('$projectionLines = ', 1)[0]
+    dependencies = re.findall(r"@\('([^']+)','([^']+)'\)", guards)
+    assert len(dependencies) == 4 and {name for name, _directory in dependencies} == {
+        'compact_migration_runtime.py', 'compact_clock_policy.py', 'build_compact_schema.py', 'ecs_execution.py'}
+    assert all(members[name] == directory + '/' + name for name, directory in dependencies)
+    assert '$RemoteRoot/verification/$Tag/checkout/$($entry[1])/$($entry[0])' in guards
+    assert '$boundSha = $sourceHashes.($entry[0])' in guards
 
 
 def raw(value):

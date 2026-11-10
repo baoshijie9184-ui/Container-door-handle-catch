@@ -60,10 +60,9 @@ with tarfile.open(sys.argv[1],'r:gz') as archive:
     members={name:'script/jenkins/'+name for name in ('preserve-local-mysql.py','restore-local-mysql.py','classify-local-mysql-source.py','collect-local-mysql-legacy-projection.py')}
     members['compact-schema-contract.json']='docs/database/compact-schema-contract.json'
     members['compact_ddl_policy.py']='script/schema/compact_ddl_policy.py'
-    for name in ('compact_migration_runtime.py','compact_clock_policy.py'):
+    for name in ('compact_migration_runtime.py','compact_clock_policy.py','build_compact_schema.py'):
         members[name]='script/schema/'+name
-    for name in ('build_compact_schema.py','ecs_execution.py'):
-        members[name]='scripts/'+name
+    members['ecs_execution.py']='scripts/ecs_execution.py'
     for name,path in members.items():
         entry=archive.getmember(path)
         assert entry.isfile() and 0<entry.size<=1048576
@@ -252,7 +251,7 @@ print(json.dumps(result))
     $collectorSha = $sourceHashes.'collect-local-mysql-legacy-projection.py'
     $collectorGuard = $classifierGuard + "test `"`$(sha256sum '$collector' | cut -d ' ' -f 1)`" = '$collectorSha' && "
     foreach ($entry in @(@('compact_migration_runtime.py','script/schema'),@('compact_clock_policy.py','script/schema'),
-        @('build_compact_schema.py','scripts'),@('ecs_execution.py','scripts'))) {
+        @('build_compact_schema.py','script/schema'),@('ecs_execution.py','scripts'))) {
         $boundHelper = "$RemoteRoot/verification/$Tag/checkout/$($entry[1])/$($entry[0])"
         $boundSha = $sourceHashes.($entry[0])
         Require-SqlCustody ($boundSha -cmatch '^[a-f0-9]{64}$') 'Projection dependencies must come from the immutable source archive.'
