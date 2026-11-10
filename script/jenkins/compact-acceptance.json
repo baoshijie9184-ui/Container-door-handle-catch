@@ -1642,6 +1642,12 @@
         "minimumTests": 42,
         "source": "tests_python/test_collaboration_runtime_transport.py",
         "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_collaboration_model_streams",
+        "minimumTests": 40,
+        "source": "tests_python/test_collaboration_model_streams.py",
+        "allowedSkippedTests": []
       }
     ]
   },
