@@ -2,6 +2,7 @@ package com.ruanzhu.doorhandle.module.model.service;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
 import com.ruanzhu.doorhandle.contracts.agent.AgentActor;
 import com.ruanzhu.doorhandle.contracts.agent.OperationsAuditApi;
 import com.ruanzhu.doorhandle.module.model.entity.ModelInfo;
@@ -37,6 +38,8 @@ class ModelFileGovernanceMySqlTest {
     private static final String RESERVED="00000000-0000-0000-0000-000000000001",READY="00000000-0000-0000-0000-000000000002",
             REGISTERED="00000000-0000-0000-0000-000000000003",RETAINED="00000000-0000-0000-0000-000000000004",
             RECEIPT="10000000-0000-0000-0000-000000000001",SECOND="10000000-0000-0000-0000-000000000002",LEGACY="10000000-0000-0000-0000-000000000003";
+    private final ObjectMapper json=new ObjectMapper().findAndRegisterModules().disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
+            .setSerializationInclusion(JsonInclude.Include.NON_NULL);
     private ModelFileMigrationFixture fixture;
     private JdbcTemplate source,target;
     private ModelFilePersistence files;
@@ -48,7 +51,7 @@ class ModelFileGovernanceMySqlTest {
     @BeforeEach void setup() throws Exception {
         fixture=new ModelFileMigrationFixture();source=fixture.source();target=fixture.target();
         var manager=new DataSourceTransactionManager(fixture.targetDataSource());tx=new TransactionTemplate(manager);
-        files=new ModelFilePersistence(target,new ObjectMapper().setSerializationInclusion(JsonInclude.Include.NON_NULL));
+        files=new ModelFilePersistence(target,json);
         identity=mock(ModelMutationIdentity.class);operations=mock(OperationsAuditApi.class);
         when(identity.supervisor()).thenReturn(actor(77));when(identity.requestId()).thenReturn("runtime-request");
         journal=new ModelFileJournal(files,manager,operations,identity);journal.requireSchema();
@@ -99,7 +102,8 @@ class ModelFileGovernanceMySqlTest {
         assertThat(target.queryForObject("SELECT COUNT(*) FROM content_revision",Long.class)).isZero();
         assertThat(target.queryForList("SELECT occurred_at FROM audit_event",LocalDateTime.class)).containsOnly(CREATED.minusHours(8));
         assertThat(target.queryForObject("SELECT JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.legacyUpdatedAt')) FROM audit_event WHERE event_id=?",String.class,"model-retain:"+LEGACY)).isEqualTo("2026-10-14T15:30:01.123456");
-        assertThat(new ObjectMapper().writeValueAsString(view)).doesNotContain("/srv/","/old/","storagePath");
+        assertThat(json.writeValueAsString(view)).contains("\"updatedAt\":\"2026-10-14T15:30:01.123456\"")
+                .doesNotContain("/srv/","/old/","storagePath");
     }
 
     @Test void realUploadRegistersAndRetainsBytesWhenAnotherSupervisorDeletesTheModel() throws Exception {
