@@ -19,6 +19,19 @@
   },
   "javaSuites": [
     {
+      "id": "ConfirmationMigrationMySqlTest",
+      "className": "com.ruanzhu.doorhandle.module.ai.action.ConfirmationMigrationMySqlTest",
+      "fixtureProperties": [
+        "doorhandle.action.source.config",
+        "doorhandle.action.mysql.config"
+      ],
+      "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/action/ConfirmationMigrationMySqlTest.java",
+      "minimumTests": 9,
+      "coverage": [
+        "confirmation policy and scripted SDK contract evaluation"
+      ]
+    },
+    {
       "id": "CompactChatMigrationMySqlTest",
       "className": "com.ruanzhu.doorhandle.module.app.service.impl.CompactChatMigrationMySqlTest",
       "fixtureProperties": [
@@ -101,19 +114,6 @@
       "minimumTests": 5,
       "coverage": [
         "single-enterprise account identity and operation audit"
-      ]
-    },
-    {
-      "id": "ConfirmationMigrationMySqlTest",
-      "className": "com.ruanzhu.doorhandle.module.ai.action.ConfirmationMigrationMySqlTest",
-      "fixtureProperties": [
-        "doorhandle.action.source.config",
-        "doorhandle.action.mysql.config"
-      ],
-      "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/action/ConfirmationMigrationMySqlTest.java",
-      "minimumTests": 9,
-      "coverage": [
-        "confirmation policy and scripted SDK contract evaluation"
       ]
     },
     {

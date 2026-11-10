@@ -775,8 +775,9 @@ def group_provisioned_suites(provisioned, requirements):
     """Batch invocations after creating every original independent schema/account.
 
     JVM property keys cannot point to two per-class files in one invocation.
-    Keep Chat fail-fast and cap other batches so the existing command deadline
-    still applies to a small number of fresh, serial test-class JVMs.
+    Keep the versioned profile's first class independent. Cap other batches so
+    the existing command deadline still applies to a small number of fresh,
+    serial test-class JVMs.
     """
     require(isinstance(provisioned, list) and isinstance(requirements, list)
             and len(provisioned) == len(requirements) > 0,
@@ -797,9 +798,6 @@ def group_provisioned_suites(provisioned, requirements):
                 'Grouping requires every original independent private fixture input')
         seen_classes.add(expected['className']); seen_files.update(files)
         weights[expected['className']] = expected['minimumTests']
-    require(requirements[0]['id'] == 'CompactChatMigrationMySqlTest'
-            and requirements[0]['className'] == 'com.ruanzhu.doorhandle.module.app.service.impl.CompactChatMigrationMySqlTest',
-            'The audited Chat migration must remain the first independent invocation')
     first = provisioned[0]
     result = [{'javaTests': list(first['javaTests']), 'fixtureProperties': dict(first['fixtureProperties'])}]
     remainder = provisioned[1:]

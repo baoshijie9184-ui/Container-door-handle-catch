@@ -379,7 +379,8 @@ def test_actual_profile_batches_all_56_classes_and_original_paths_without_proper
     before = json.dumps(provisioned, sort_keys=True)
     groups = preparer.group_provisioned_suites(provisioned, requirements)
     assert len(requirements) == 56 and sum(item['minimumTests'] for item in requirements) == 584
-    assert len(groups) == 11 and groups[0] == provisioned[0]
+    assert len(groups) == 12 and groups[0] == provisioned[0]
+    assert groups[0]['javaTests'] == [requirements[0]['className']]
     original = {item['javaTests'][0]: item['fixtureProperties'] for item in provisioned}
     selected = [name for group in groups for name in group['javaTests']]
     assert len(selected) == len(set(selected)) == 56 and set(selected) == set(original)
@@ -407,7 +408,7 @@ def test_provisioning_keeps_every_original_account_and_migration_grant_before_gr
     controller.runtime = types.SimpleNamespace(quoted=lambda value: '`' + value + '`')
     controller.mysql = types.SimpleNamespace(script=lambda sql, **kwargs: grants.append((sql, kwargs)))
     groups = controller.provision_suites(requirements)
-    assert len(groups) == 11 and len(created) == len(written) == sum(len(item['fixtureProperties']) for item in requirements)
+    assert len(groups) == 12 and len(created) == len(written) == sum(len(item['fixtureProperties']) for item in requirements)
     assert len({item['database'] for item in created}) == len(created)
     expected_grants = sum(source in item['fixtureProperties'] or strict and target in item['fixtureProperties']
                           for item in requirements for source, target, strict in controller.registry['MIGRATION_PAIRS'])
@@ -426,7 +427,7 @@ def test_grouping_refuses_to_change_original_class_or_private_input_coverage(mon
         key = next(iter(provisioned[-1]['fixtureProperties']))
         provisioned[-1]['fixtureProperties'][key] = next(iter(provisioned[0]['fixtureProperties'].values()))
     elif mutation == 'extra-property': provisioned[-1]['fixtureProperties']['unreviewed.config'] = '/owned/private/extra.json'
-    else: requirements[0]['id'] = 'OtherFirstClass'
+    else: provisioned[0], provisioned[1] = provisioned[1], provisioned[0]
     with pytest.raises(ValueError):
         preparer.group_provisioned_suites(provisioned, requirements)
 

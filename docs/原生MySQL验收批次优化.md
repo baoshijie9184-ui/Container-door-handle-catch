@@ -2,7 +2,7 @@
 
 原验收以 56 个独立 Maven 调用执行 56 个 MySQL 测试类，重复启动受控工具容器、Maven reactor 和报告检查。新实现保留全部测试类及逐类最低 **584 项**，先按原方式为每个类创建独立私有配置、schema、账号和原有迁移读取授权，再将没有重复 JVM property 名称的类合并到较少 Maven 调用。
 
-`CompactChatMigrationMySqlTest` 保持第一个独立调用。其余类在兼容组中优先选择类数较少、最低测试数较少的组，每组最多 6 类；当前固定 profile 的源码分析结果为 **11 次调用**，其余 10 组各 5–6 类。原类、配置路径和 schema 不合并，组内及跨组的私有输入路径与数据库身份均必须唯一。碰撞时增加调用数，不覆盖 property 或舍弃测试。
+固定版本 profile 的第一项保持第一个独立调用，由 profile 决定先验收的类，不在分组器中固定业务类名。当前把 `ConfirmationMigrationMySqlTest` 完整条目移至首项，其他 55 类的相对顺序及全部对象字段保持；Chat 仍在完整矩阵内。其余类在兼容组中优先选择类数较少、最低测试数较少的组，每组最多 6 类；当前源码分析结果为 **12 次调用**，其余 11 组各 4–6 类。调用数随 profile 排序和 property 冲突动态确定。原类、配置路径和 schema 不合并，组内及跨组的私有输入路径与数据库身份均必须唯一。碰撞时增加调用数，不覆盖 property 或舍弃测试。
 
 仅原生 MySQL 多类调用添加 `-DforkCount=1 -DreuseForks=false -Djunit.jupiter.execution.parallel.enabled=false`。现有 [Surefire 3.1.2](https://maven.apache.org/surefire-archives/surefire-3.1.2/maven-surefire-plugin/test-mojo.html#reuseForks) 支持每个类启动独立 JVM；不使用 Maven 并行 reactor，普通源码回归的原命令保持。只减少外层 Maven 调用，类自身的 JVM、测试内容和权限边界保留。
 
