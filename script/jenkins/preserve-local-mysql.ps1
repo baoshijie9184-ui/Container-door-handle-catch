@@ -57,9 +57,13 @@ import hashlib,json,sys,tarfile
 result={}
 with tarfile.open(sys.argv[1],'r:gz') as archive:
     assert archive.pax_headers.get('comment')==sys.argv[2]
-    members={name:'script/jenkins/'+name for name in ('preserve-local-mysql.py','restore-local-mysql.py','classify-local-mysql-source.py')}
+    members={name:'script/jenkins/'+name for name in ('preserve-local-mysql.py','restore-local-mysql.py','classify-local-mysql-source.py','collect-local-mysql-legacy-projection.py')}
     members['compact-schema-contract.json']='docs/database/compact-schema-contract.json'
     members['compact_ddl_policy.py']='script/schema/compact_ddl_policy.py'
+    for name in ('compact_migration_runtime.py','compact_clock_policy.py'):
+        members[name]='script/schema/'+name
+    for name in ('build_compact_schema.py','ecs_execution.py'):
+        members[name]='scripts/'+name
     for name,path in members.items():
         entry=archive.getmember(path)
         assert entry.isfile() and 0<entry.size<=1048576
@@ -206,10 +210,11 @@ def need(value):
     if not value: raise ValueError('Classification control digest admission failed')
 root=Path(sys.argv[1]); tag=sys.argv[2]; mode=sys.argv[3]
 need(root.is_absolute() and '..' not in root.parts and root.resolve(strict=True)==root)
-need(re.fullmatch(r'ci-[1-9][0-9]*-[a-f0-9]{12}',tag) and mode in ('anchors','report'))
+need(re.fullmatch(r'ci-[1-9][0-9]*-[a-f0-9]{12}',tag) and mode in ('anchors','report','projection'))
 work=root/'verification'/tag/'checkout/work'
 paths=({'localOwner':work/'local-mysql-recovery-owner.json','fixtureOwner':work/'compact-fixtures-owner.json'}
-       if mode=='anchors' else {'report':work/'local-mysql-source-classification.json'})
+       if mode=='anchors' else {'projection':work/'compact-fixtures/source-legacy-projection/receipt.json'}
+       if mode=='projection' else {'report':work/'local-mysql-source-classification.json'})
 maximum=16*1024**2 if mode=='anchors' else 1024**2
 result={}
 for name,path in paths.items():
@@ -225,7 +230,7 @@ for name,path in paths.items():
     result[name]={'bytes':len(raw),'sha256':hashlib.sha256(raw).hexdigest()}
 print(json.dumps(result))
 '@
-    function Read-ClassificationDigests([ValidateSet('anchors','report')][string]$ReadMode) {
+    function Read-ClassificationDigests([ValidateSet('anchors','report','projection')][string]$ReadMode) {
         $sshArguments = $classificationSshOptions + @('-p',$PortText,$Destination,"python3 -I -B - '$RemoteRoot' '$Tag' '$ReadMode'")
         $lines = @($digestReader | & $ssh @sshArguments)
         Require-SqlCustody ($LASTEXITCODE -eq 0 -and $lines.Count -eq 1) 'Authenticated stable classification-control digests were not obtained.'
@@ -242,7 +247,34 @@ print(json.dumps(result))
     $classifierSha = $sourceHashes.'classify-local-mysql-source.py'; $contractSha = $sourceHashes.'compact-schema-contract.json'
     Require-SqlCustody ($classifierSha -cmatch '^[a-f0-9]{64}$' -and $contractSha -cmatch '^[a-f0-9]{64}$') 'Classification code and contract must be bound to the immutable source archive.'
     $classifierGuard = $ddlPolicyGuard + "test `"`$(sha256sum '$classifier' | cut -d ' ' -f 1)`" = '$classifierSha' && "
-    $flags = "--verification-receipt-sha256 '$verificationSha' --local-owner-sha256 '$($anchors.localOwner.sha256)' --fixture-owner-sha256 '$($anchors.fixtureOwner.sha256)' --contract-sha256 '$contractSha' --output '$remoteReport'"
+    $anchorFlags = "--verification-receipt-sha256 '$verificationSha' --local-owner-sha256 '$($anchors.localOwner.sha256)' --fixture-owner-sha256 '$($anchors.fixtureOwner.sha256)' --contract-sha256 '$contractSha'"
+    $collector = "$RemoteRoot/verification/$Tag/checkout/script/jenkins/collect-local-mysql-legacy-projection.py"
+    $collectorSha = $sourceHashes.'collect-local-mysql-legacy-projection.py'
+    $collectorGuard = $classifierGuard + "test `"`$(sha256sum '$collector' | cut -d ' ' -f 1)`" = '$collectorSha' && "
+    foreach ($entry in @(@('compact_migration_runtime.py','script/schema'),@('compact_clock_policy.py','script/schema'),
+        @('build_compact_schema.py','scripts'),@('ecs_execution.py','scripts'))) {
+        $boundHelper = "$RemoteRoot/verification/$Tag/checkout/$($entry[1])/$($entry[0])"
+        $boundSha = $sourceHashes.($entry[0])
+        Require-SqlCustody ($boundSha -cmatch '^[a-f0-9]{64}$') 'Projection dependencies must come from the immutable source archive.'
+        $collectorGuard += "test `"`$(sha256sum '$boundHelper' | cut -d ' ' -f 1)`" = '$boundSha' && "
+    }
+    $projectionLines = @(Invoke-SqlCustody $ssh ($classificationSshOptions + @('-p',$PortText,$Destination,"${collectorGuard}python3 -I -B '$collector' $context $anchorFlags")))
+    Require-SqlCustody ($projectionLines.Count -eq 1) 'Legacy projection must return one bounded summary.'
+    $projected = $projectionLines[0] | ConvertFrom-Json
+    $projectionBinding = (Read-ClassificationDigests 'projection').projection
+    Require-SqlCustody ($projected.status -ceq 'LEGACY_PROJECTION_VERIFIED' -and
+        $projected.receiptSha256 -cmatch '^[a-f0-9]{64}$' -and $projectionBinding.sha256 -ceq $projected.receiptSha256 -and
+        $projectionBinding.bytes -gt 0 -and $projectionBinding.bytes -le 1MB -and
+        (@($projected.tables | Sort-Object) -join ',') -ceq 'detection_task,model_management' -and
+        $projected.productionMerged -eq $false -and $projected.retirementAllowed -eq $false) 'The authenticated complete legacy-column projection was not captured.'
+    $projectionArtifact = Join-Path $workspace 'artifacts/local-mysql-legacy-projection.json'
+    Require-SqlCustody (-not (Test-Path -LiteralPath $projectionArtifact)) 'Use a fresh legacy-projection receipt destination.'
+    $remoteProjection = "$RemoteRoot/verification/$Tag/checkout/work/compact-fixtures/source-legacy-projection/receipt.json"
+    Invoke-SqlCustody $scp ($classificationSshOptions + @('-P',$PortText,"${Destination}:$remoteProjection",$projectionArtifact)) | Out-Null
+    Assert-UnlinkedSqlInput $projectionArtifact
+    Require-SqlCustody ((Get-Item -LiteralPath $projectionArtifact).Length -eq $projectionBinding.bytes -and
+        (Get-FileHash -LiteralPath $projectionArtifact -Algorithm SHA256).Hash.ToLowerInvariant() -ceq $projectionBinding.sha256) 'The original projection receipt changed during collection.'
+    $flags = "$anchorFlags --legacy-projection-sha256 '$($projectionBinding.sha256)' --output '$remoteReport'"
     $classificationLines = @(Invoke-SqlCustody $ssh ($classificationSshOptions + @('-p',$PortText,$Destination,"${classifierGuard}python3 -I -B '$classifier' $context $flags")))
     Require-SqlCustody ($classificationLines.Count -eq 1) 'Classification must return one bounded summary.'
     $classified = $classificationLines[0] | ConvertFrom-Json
@@ -275,6 +307,12 @@ print(json.dumps(result))
         Require-SqlCustody ($report.$field -is [bool] -and -not $report.$field) 'A classification report attempted an unproved coverage, data or retirement claim.'
     }
     $perKey = $report.perKeyReconciliation
+    $projection = $perKey.legacyColumnProjection
+    Require-SqlCustody ($projection.status -ceq 'VERIFIED' -and $projection.receiptSha256 -ceq $projectionBinding.sha256 -and
+        $projection.ruleEvidenceSha256 -ceq '5fedf7fd1e1d95a0533d5ee201aad2e2a7489f5950d56519137e4494ffb94e0f' -and
+        $projection.scope -ceq 'AUDITED_19_APPENDED_COLUMNS_ONLY' -and $projection.fullSourceColumnsAndRowsRetained -eq $true -and
+        $projection.sourceScope -ceq 'SAME_BUILD_FULL_131_FROZEN_SOURCE_CLONE' -and
+        (@($projection.tables | Sort-Object) -join ',') -ceq 'detection_task,model_management') 'The audit did not bind both approved projections while retaining full source vectors.'
     Require-SqlCustody ($perKey.scope -ceq 'EXACT_TYPED_PRIMARY_KEYS_V1' -and
         $perKey.gateScope -ceq 'PER_KEY_SOURCE_INCLUSION_ONLY' -and
         $perKey.wholeMigrationAndRuntimeAcceptanceStillRequired -eq $true -and
@@ -285,7 +323,8 @@ print(json.dumps(result))
          ($perKey.status -cin @('NOT_COLLECTED','NEEDS_REVIEW') -and $perKey.cutoverBlocked -and -not $perKey.legacyRowsPresentInSource))) 'Per-key audit does not establish its exact limited source-inclusion boundary.'
     $wiring = [ordered]@{schemaVersion=1;kind='doorhandle-local-mysql-source-classification-ci';status='CLASSIFIED';
         release=$Tag;commit=$Commit;sourceSha256=$SourceSha256;identity=$report.context.identity;
-        classifierSha256=$classifierSha;contractSha256=$contractSha;
+        classifierSha256=$classifierSha;contractSha256=$contractSha;projectionCollectorSha256=$collectorSha;
+        projectionReceiptSha256=$projectionBinding.sha256;projectionReceiptBytes=$projectionBinding.bytes;
         anchors=[ordered]@{verification=$verificationSha;localOwner=$anchors.localOwner.sha256;fixtureOwner=$anchors.fixtureOwner.sha256;contract=$contractSha};
         recoveryReceiptSha256=$result.recoveryReceiptSha256;cleanupReceiptSha256=$cleanup.cleanupReceiptSha256;
         reportSha256=$classified.reportSha256;reportBytes=$remoteBinding.bytes;counts=$report.counts;

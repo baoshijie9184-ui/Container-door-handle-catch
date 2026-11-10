@@ -45,6 +45,18 @@ KEYED_LINE = re.compile(rb'\{"keySha256":"([a-f0-9]{64})","rowSha256":"([a-f0-9]
 MAX_KEYED_ROWS = 50_000
 MAX_KEYED_TOTAL_ROWS = 250_000
 MAX_KEYED_BUNDLE_BYTES = 64 * 1024 ** 2
+# Audited old45/#107 and source131/#188 complete ordered vectors. These pins
+# include every COLUMN_FIELDS attribute (including defaults), not a name-only
+# intersection. The source change is exactly 14 + 5 appended columns.
+LEGACY_EVOLUTION_EVIDENCE_SHA256 = '5fedf7fd1e1d95a0533d5ee201aad2e2a7489f5950d56519137e4494ffb94e0f'
+LEGACY_EVOLUTION = {
+    'detection_task': {'oldCount': 63, 'sourceCount': 77,
+        'oldSha256': '736e20cae98ab7265393a078b4e1ed6cd4466c1a2077b2827a4797dd9e3968fa',
+        'sourceSha256': '47a0409adb23f08b02ac051e197b36ee14578037e9781e5f5e27f86c5f352ec1'},
+    'model_management': {'oldCount': 27, 'sourceCount': 32,
+        'oldSha256': '13eb82f86a3439e627d7fe0c6fe9bf6c6b8ee28ab25401c980a92c2cefef49da',
+        'sourceSha256': 'e0de60e1e803d8d990f75dcdf176ad7f1540166a8b3776d3edd4e3083332e02a'}}
+PROJECTION_PROOFS = ('cloneComparison', 'runtimeInput', 'wholeReceipt', 'wholeReadback', 'wholeSummary', 'verifier')
 
 
 class ClassificationError(ValueError):
@@ -383,7 +395,114 @@ def validate_keyed_rows(raw, descriptor):
     return rows
 
 
-def reconcile_keyed_documents(raw_documents, *, expected_context, anchors, keyed_documents):
+def approved_legacy_projection(name, local, source):
+    rule = LEGACY_EVOLUTION.get(name)
+    return bool(rule and len(local['columns']) == rule['oldCount']
+        and len(source['columns']) == rule['sourceCount']
+        and sha_json(local['columns']) == rule['oldSha256']
+        and sha_json(source['columns']) == rule['sourceSha256']
+        and source['columns'][:rule['oldCount']] == local['columns']
+        and primary_columns(local) == primary_columns(source) == ['id'])
+
+
+def validate_projection_proofs(proofs, docs, context, contract_sha256):
+    """Pure checks of real same-build clone/migration/readback provenance."""
+    need(type(proofs) is dict and set(proofs) == set(PROJECTION_PROOFS), 'COMPLETE_PROJECTION_PROOF_CHAIN_REQUIRED')
+    values = {name: decode(value) for name, value in proofs.items()}
+    owner, source = docs['fixtureOwner'], docs['sourceManifest']
+    clone, supplied, receipt, readback, summary, verifier = (values[name] for name in PROJECTION_PROOFS)
+    same_context(clone, context)
+    need(clone.get('kind') == 'doorhandle-source-clone-comparison' and clone.get('schemaVersion') == 1
+         and clone.get('sourceSnapshotSha256') == clone.get('cloneSnapshotSha256') == source['snapshotSha256']
+         and owner.get('sourceCloneSnapshotSha256') == source['snapshotSha256']
+         and clone.get('sourceMetadataSha256') == clone.get('cloneMetadataSha256') == source['metadataSha256']
+         and clone.get('ddlHashPolicy') == source.get('ddlHashPolicy')
+         and clone.get('snapshotFieldsDifferent') == {} and clone.get('businessRowValuesIncluded') is False,
+         'FULL_SOURCE_CLONE_PROVENANCE_DRIFT')
+    catalog = docs['verification'].get('reportFiles')
+    need(type(catalog) is list, 'AUTHENTICATED_WHOLE_REPORT_CATALOG_REQUIRED')
+    for role, path in (('verifier', 'reports/receipt.json'), ('wholeSummary', 'reports/migration.json')):
+        entries = [item for item in catalog if item.get('path') == path]
+        need(len(entries) == 1 and entries[0].get('sha256') == digest(proofs[role])
+             and entries[0].get('bytes') == len(proofs[role]), 'WHOLE_REPORT_RAW_DIGEST_DRIFT')
+    need(verifier.get('status') == 'PASS' and verifier.get('identity') == context['identity']
+         and verifier.get('scopeKind') == 'mysql' and verifier.get('wholeMigrationRequested') is True
+         and verifier.get('wholeMigrationSummarySha256') == digest(proofs['wholeSummary'])
+         and type(verifier.get('wholeMigrationTests')) is dict
+         and type(verifier['wholeMigrationTests'].get('passed')) is int and verifier['wholeMigrationTests']['passed'] > 0
+         and verifier['wholeMigrationTests'].get('failed') == verifier['wholeMigrationTests'].get('skipped') == 0,
+         'ACTUAL_WHOLE_MIGRATION_PASS_REQUIRED')
+    need(summary.get('kind') == 'doorhandle-compact-migration-acceptance' and summary.get('status') == 'VERIFIED'
+         and summary.get('sourceTableCount') == 131 and summary.get('targetTableCount') == 29
+         and summary.get('migrationReceiptSha256') == digest(proofs['wholeReceipt'])
+         and summary.get('sourceSnapshotSha256') == source['snapshotSha256'], 'WHOLE_SOURCE_ANCHOR_DRIFT')
+    need(supplied.get('kind') == 'doorhandle-runtime-migration-input' and supplied.get('version') == 1
+         and supplied.get('ecs') == context['identity'] and supplied.get('serverUuid') == owner.get('serverUuid')
+         and supplied.get('migrationReceiptSha256') == digest(proofs['wholeReceipt']), 'RUNTIME_MIGRATION_INPUT_DRIFT')
+    need(receipt.get('kind') == 'doorhandle-compact-migration' and receipt.get('schemaVersion') == 1
+         and receipt.get('status') == 'VERIFIED' and receipt.get('scope') == 'ecs-disposable-migration'
+         and receipt.get('ecs') == context['identity'] and receipt.get('serverUuid') == owner.get('serverUuid')
+         and receipt.get('sourceSchema') == owner.get('sourceClone')
+         and receipt.get('sourceTableCount') == 131 and receipt.get('targetTableCount') == 29
+         and receipt.get('sourceSnapshotSha256') == source['snapshotSha256']
+         and receipt.get('sourceMetadataSha256') == source['metadataSha256']
+         and receipt.get('sourceSnapshot', {}).get('tables') == source['tables']
+         and receipt.get('contractSha256') == contract_sha256
+         and receipt.get('foreignKeysValidated') is True, 'WHOLE_MIGRATION_SOURCE_PROVENANCE_DRIFT')
+    need(readback.get('kind') == 'doorhandle-compact-cutover-readback' and readback.get('status') == 'VERIFIED'
+         and readback.get('migrationReceiptSha256') == digest(proofs['wholeReceipt'])
+         and all(readback.get(key) == receipt.get(key) for key in ('ecs', 'serverUuid', 'sourceSchema', 'targetSchema',
+             'attempt', 'sourceSnapshotSha256', 'targetSnapshotSha256', 'targetMetadataSha256', 'freezeEvidenceSha256')),
+         'WHOLE_MIGRATION_FINAL_READBACK_DRIFT')
+    return values
+
+
+def validate_projection_packet(packet, *, documents, docs, context, source_index, anchor):
+    need(type(packet) is dict and set(packet) == {'receipt', 'tables', 'proofs'} and hash_field(anchor)
+         and digest(packet['receipt']) == anchor, 'EXTERNAL_PROJECTION_RECEIPT_ANCHOR_REQUIRED')
+    receipt = decode(packet['receipt']); same_context(receipt, context)
+    validate_projection_proofs(packet['proofs'], docs, context, digest(documents['contract']))
+    source, local, owner = docs['sourceManifest'], docs['localA']['snapshot'], docs['fixtureOwner']
+    need(receipt.get('kind') == 'doorhandle-source-legacy-projection' and receipt.get('schemaVersion') == 1
+         and receipt.get('status') == 'VERIFIED' and receipt.get('ruleEvidenceSha256') == LEGACY_EVOLUTION_EVIDENCE_SHA256
+         and receipt.get('inputRawSha256') == {name: digest(value) for name, value in documents.items()}
+         and receipt.get('proofRawSha256') == {name: digest(value) for name, value in packet['proofs'].items()}
+         and receipt.get('fullSourceIndexSha256') == docs['fixtureOwner']['sourceKeyedRowsIndex']['sha256']
+         and receipt.get('sourceServerUuid') == source['serverUuid']
+         and receipt.get('cloneServerUuid') == owner.get('serverUuid')
+         and receipt.get('cloneContainerId') == owner.get('containerId')
+         and receipt.get('sourceContainerId') == owner.get('sourceContainerId')
+         and receipt.get('sourceClone') == owner.get('sourceClone')
+         and receipt.get('sourceScope') == 'SAME_BUILD_FULL_131_FROZEN_SOURCE_CLONE'
+         and receipt.get('productionMerged') is False and receipt.get('retirementAllowed') is False
+         and receipt.get('sourceReadLock', {}).get('kind') == 'MYSQL_LOCK_TABLES_READ'
+         and receipt['sourceReadLock'].get('sourceTableCount') == 131,
+         'PROJECTION_SOURCE_BINDING_DRIFT')
+    need(receipt.get('beforeSnapshotSha256') == receipt.get('afterSnapshotSha256') == source['snapshotSha256']
+         and receipt.get('beforeMetadataSha256') == receipt.get('afterMetadataSha256') == source['metadataSha256'],
+         'PROJECTION_COMPLETE_SOURCE_CHANGED')
+    names = {name for name in LEGACY_EVOLUTION if name in local['tables'] and name in source['tables']
+             and local['tables'][name]['columns'] != source['tables'][name]['columns']}
+    need(names and set(receipt.get('tables', {})) == set(packet['tables']) == names, 'CLOSED_LEGACY_PROJECTION_TABLES_REQUIRED')
+    maps = {}
+    for name in sorted(names):
+        old, full, descriptor = local['tables'][name], source['tables'][name], receipt['tables'][name]
+        need(approved_legacy_projection(name, old, full), 'UNAPPROVED_LEGACY_COLUMN_EVOLUTION')
+        need(type(descriptor) is dict and set(descriptor) == KEYED_FIELDS | {'sourceColumnsSha256', 'fullSourceDescriptorSha256'}
+             and descriptor['status'] == 'KEYED' and descriptor['rows'] == descriptor['entries'] == full['rows']
+             and type(descriptor['rows']) is int and type(descriptor['entries']) is int and descriptor['rows'] <= MAX_KEYED_ROWS
+             and descriptor['columnsSha256'] == sha_json(old['columns']) and descriptor['primary'] == primary_columns(old)
+             and descriptor['sourceColumnsSha256'] == sha_json(full['columns'])
+             and descriptor['fullSourceDescriptorSha256'] == sha_json(source_index['tables'][name])
+             and descriptor['file'] == name + '.jsonl' and hash_field(descriptor['fileSha256'])
+             and type(descriptor['bytes']) is int and 0 <= descriptor['bytes'] <= MAX_JSON,
+             'PROJECTION_COMPLETE_TYPED_DESCRIPTOR_DRIFT')
+        maps[name] = validate_keyed_rows(packet['tables'][name], descriptor)
+    return maps
+
+
+def reconcile_keyed_documents(raw_documents, *, expected_context, anchors, keyed_documents,
+                              projection_documents=None, projection_anchor=None):
     """Audit captured full typed rows; hashes only, no DB access or merge authority.
 
     The existing complete evidence chain authenticates both recovered local
@@ -410,6 +529,14 @@ def reconcile_keyed_documents(raw_documents, *, expected_context, anchors, keyed
         total_bytes += len(packet['index']) + sum(len(raw) for raw in packet['tables'].values())
         need(total_bytes <= MAX_KEYED_BUNDLE_BYTES, 'KEYED_BUNDLE_BYTE_LIMIT_EXCEEDED')
     need(indexes['localA'] == indexes['localB'], 'INDEPENDENT_KEYED_RECOVERY_INDEXES_DIFFER')
+    projected = (validate_projection_packet(projection_documents, documents=raw_documents, docs=docs,
+        context=expected_context, source_index=indexes['source'], anchor=projection_anchor)
+        if projection_documents is not None else {})
+    need(projection_documents is not None or projection_anchor is None, 'PROJECTION_ANCHOR_WITHOUT_PACKET')
+    if projection_documents is not None:
+        need(total_bytes + len(projection_documents['receipt'])
+             + sum(len(raw) for raw in projection_documents['tables'].values()) <= MAX_KEYED_BUNDLE_BYTES,
+             'KEYED_BUNDLE_BYTE_LIMIT_EXCEEDED')
     counts = {'MATCH': 0, 'LOCAL_ONLY': 0, 'SOURCE_ONLY': 0, 'ROW_CONFLICT': 0}
     comparisons, differences, blockers = [], [], []
     local_tables, source_tables = snapshots['localA']['tables'], snapshots['source']['tables']
@@ -426,15 +553,19 @@ def reconcile_keyed_documents(raw_documents, *, expected_context, anchors, keyed
             # New cloud-only tables have no legacy rows requiring inclusion.
             comparisons.append({'table': name, 'status': 'SOURCE_TABLE_ONLY', 'sourceRows': cloud['rows']})
             continue
+        approved = cloud is not None and approved_legacy_projection(name, local, cloud)
         reason = ('LOCAL_TABLE_MISSING_FROM_SOURCE' if cloud is None else
-                  'FULL_TYPED_COLUMNS_OR_PRIMARY_ORDER_DIFFER' if local['columns'] != cloud['columns']
-                  or primary_columns(local) != primary_columns(cloud) else
+                  'TRUSTED_LEGACY_PROJECTION_NOT_COLLECTED' if approved and name not in projected else
+                  'FULL_TYPED_COLUMNS_OR_PRIMARY_ORDER_DIFFER' if (local['columns'] != cloud['columns']
+                  and not approved) or primary_columns(local) != primary_columns(cloud) else
                   'NO_PRIMARY_KEY' if not primary_columns(local) else None)
         if reason is not None:
             comparisons.append({'table': name, 'status': 'NOT_COMPARABLE', 'reasonCode': reason,
                                 'localRows': local['rows'], 'sourceRows': cloud['rows'] if cloud else None})
             blockers.append({'table': name, 'reasonCode': reason}); continue
-        local_rows, cloud_rows = maps['localA'], maps['source']
+        local_rows, cloud_rows = maps['localA'], projected.get(name, maps['source'])
+        if name in projected:
+            need(set(cloud_rows) == set(maps['source']), 'PROJECTION_FULL_SOURCE_PRIMARY_KEYS_DIFFER')
         table_counts = {key: 0 for key in counts}
         for key in sorted(set(local_rows) | set(cloud_rows)):
             before, after = local_rows.get(key), cloud_rows.get(key)
@@ -445,7 +576,8 @@ def reconcile_keyed_documents(raw_documents, *, expected_context, anchors, keyed
         if table_counts['LOCAL_ONLY'] or table_counts['ROW_CONFLICT']:
             blockers.append({'table': name, 'reasonCode': 'LEGACY_ROWS_MISSING_OR_CONFLICTING'})
         comparisons.append({'table': name, 'status': 'COMPARED', 'counts': table_counts,
-                            'localRows': local['rows'], 'sourceRows': cloud['rows']})
+                            'localRows': local['rows'], 'sourceRows': cloud['rows'],
+                            **({'comparisonColumns': 'APPROVED_COMPLETE_LEGACY_VECTOR'} if name in projected else {})})
     summary = {'status': 'RECONCILED' if not blockers else 'NEEDS_REVIEW', 'scope': 'EXACT_TYPED_PRIMARY_KEYS_V1',
         'gateScope': 'PER_KEY_SOURCE_INCLUSION_ONLY', 'wholeMigrationAndRuntimeAcceptanceStillRequired': True,
         'requiredBeforeCutover': True, 'cutoverBlocked': bool(blockers), 'legacyRowsPresentInSource': not blockers,
@@ -458,6 +590,11 @@ def reconcile_keyed_documents(raw_documents, *, expected_context, anchors, keyed
         'coverageVerified': False, 'targetDataCompared': False, 'productionMerged': False, 'retirementAllowed': False,
         'excludedComparisons': ['TARGET29_DATA', 'SCHEMA_WIDE_METADATA', 'TRIGGERS', 'ROUTINES', 'EVENTS'],
         'clockPolicy': 'EXACT_ORIGINAL_BYTES_NO_TIMEZONE_INFERENCE'}
+    if projected:
+        summary['legacyColumnProjection'] = {'status': 'VERIFIED', 'tables': sorted(projected),
+            'receiptSha256': projection_anchor, 'ruleEvidenceSha256': LEGACY_EVOLUTION_EVIDENCE_SHA256,
+            'fullSourceColumnsAndRowsRetained': True, 'scope': 'AUDITED_19_APPENDED_COLUMNS_ONLY',
+            'sourceScope': 'SAME_BUILD_FULL_131_FROZEN_SOURCE_CLONE'}
     return {'summary': summary, 'differences': differences}
 
 
@@ -511,6 +648,52 @@ def load_keyed_documents(work, docs):
     return result
 
 
+def load_projection_proofs(work):
+    directory = work / 'compact-fixtures'
+    runtime_raw = read_control(directory / 'runtime-migration.json'); supplied = decode(runtime_raw)
+    path = Path(supplied.get('migrationReceiptFile', ''))
+    need(path.is_absolute() and path.is_relative_to(directory)
+         and len(path.relative_to(directory).parts) == 3
+         and re.fullmatch(r'whole-migration-acceptance-[a-f0-9]{10}', path.parent.parent.name)
+         and path.parent.name == 'migrate' and path.name == 'migration-receipt.json',
+         'EXACT_WHOLE_MIGRATION_RECEIPT_PATH_REQUIRED')
+    return {'runtimeInput': runtime_raw,
+        'cloneComparison': read_control(directory / 'source-clone-comparison-private.json'),
+        'wholeReceipt': read_control(path),
+        'wholeReadback': read_control(path.parent.parent / 'readback/cutover-readback.json'),
+        'wholeSummary': read_control(work / 'ci-evidence/migration.json'),
+        'verifier': read_control(work / 'ci-evidence/receipt.json')}
+
+
+def load_projection_documents(work):
+    directory = work / 'compact-fixtures/source-legacy-projection'
+    need(directory.resolve(strict=True) == directory and not directory.is_symlink(), 'CANONICAL_PROJECTION_DIRECTORY_REQUIRED')
+    info = directory.stat()
+    need(stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid() and stat.S_IMODE(info.st_mode) == 0o700,
+         'PRIVATE_PROJECTION_DIRECTORY_REQUIRED')
+    private = directory / 'private'; private_info = private.lstat()
+    need(not private.is_symlink() and stat.S_ISDIR(private_info.st_mode) and private_info.st_uid == os.getuid()
+         and stat.S_IMODE(private_info.st_mode) == 0o700, 'PRIVATE_PROJECTION_SCRATCH_REQUIRED')
+    receipt = read_control(directory / 'receipt.json'); value = decode(receipt)
+    names = set(value.get('tables', {}))
+    need(names and names <= set(LEGACY_EVOLUTION)
+         and {entry.name for entry in directory.iterdir()} == {'receipt.json', 'private'} | {name + '.jsonl' for name in names},
+         'CLOSED_PROJECTION_DIRECTORY_MEMBERSHIP_REQUIRED')
+    return {'receipt': receipt, 'tables': {name: read_keyed_member(directory / (name + '.jsonl')) for name in sorted(names)},
+            'proofs': load_projection_proofs(work)}
+
+
+def classification_paths(checkout):
+    work = checkout / 'work'
+    return {'verification': checkout.parent / 'verification-receipt.json',
+        'localOwner': work / 'local-mysql-recovery-owner.json', 'localPublic': work / 'local-mysql-recovery/public-recovery.json',
+        'localA': work / 'local-mysql-recovery/a/full-recovery-private.json',
+        'localB': work / 'local-mysql-recovery/b/full-recovery-private.json',
+        'fixtureOwner': work / 'compact-fixtures-owner.json',
+        'sourceManifest': work / 'compact-fixtures/source-backup/manifest.json',
+        'contract': checkout / 'docs/database/compact-schema-contract.json'}
+
+
 def write_private_differences(path, context, differences):
     need(not path.exists() and not path.is_symlink() and path.parent.resolve(strict=True) == path.parent,
          'NEW_PRIVATE_DIFFERENCE_REPORT_REQUIRED')
@@ -532,6 +715,7 @@ def main(argv=None):
         parser.add_argument('--' + flag, required=True)
     for flag in ('verification-receipt', 'local-owner', 'fixture-owner', 'contract'):
         parser.add_argument('--' + flag + '-sha256', required=True)
+    parser.add_argument('--legacy-projection-sha256')
     args = parser.parse_args(argv)
     try:
         need(sys.platform == 'linux', 'ECS_LINUX_CONTROL_ONLY')
@@ -541,13 +725,7 @@ def main(argv=None):
         context = {'release': args.tag, 'commit': args.commit, 'sourceSha256': args.source_sha256,
             'identity': {'instanceId': args.instance_id, 'machineId': args.machine_id, 'executionLocation': 'ECS'}}
         validate_context(context)
-        paths = {'verification': checkout.parent / 'verification-receipt.json',
-            'localOwner': work / 'local-mysql-recovery-owner.json', 'localPublic': work / 'local-mysql-recovery/public-recovery.json',
-            'localA': work / 'local-mysql-recovery/a/full-recovery-private.json',
-            'localB': work / 'local-mysql-recovery/b/full-recovery-private.json',
-            'fixtureOwner': work / 'compact-fixtures-owner.json',
-            'sourceManifest': work / 'compact-fixtures/source-backup/manifest.json',
-            'contract': checkout / 'docs/database/compact-schema-contract.json'}
+        paths = classification_paths(checkout)
         # Tracked contract permissions follow the fixed checkout, not private
         # runtime-file permissions. All other input files must be owner-only.
         contract_path = paths.pop('contract')
@@ -563,7 +741,9 @@ def main(argv=None):
         need(all(value is None or type(value) is dict for value in references.values()), 'MALFORMED_KEYED_INDEX_REFERENCE')
         if all(value is not None for value in references.values()):
             compared = reconcile_keyed_documents(raw, expected_context=context, anchors=anchors,
-                keyed_documents=load_keyed_documents(work, docs))
+                keyed_documents=load_keyed_documents(work, docs),
+                projection_documents=load_projection_documents(work) if args.legacy_projection_sha256 else None,
+                projection_anchor=args.legacy_projection_sha256)
             detail = write_private_differences(work / 'local-mysql-keyed-reconciliation-private.jsonl', context, compared['differences'])
             report['perKeyReconciliation'] = {**compared['summary'], 'privateDifferences': detail}
         else:

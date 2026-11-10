@@ -1,5 +1,6 @@
 """ECS-only synthetic JSON contracts; no database, SQL execution or live service."""
 import copy
+from contextlib import contextmanager
 import hashlib
 import importlib.util
 import json
@@ -13,6 +14,9 @@ ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location('fixed_local_source_json_classification',
     ROOT / 'script/jenkins/classify-local-mysql-source.py')
 classifier = importlib.util.module_from_spec(SPEC); SPEC.loader.exec_module(classifier)
+COLLECTOR_SPEC = importlib.util.spec_from_file_location('fixed_legacy_column_projection_collector',
+    ROOT / 'script/jenkins/collect-local-mysql-legacy-projection.py')
+collector = importlib.util.module_from_spec(COLLECTOR_SPEC); COLLECTOR_SPEC.loader.exec_module(collector)
 
 
 def raw(value):
@@ -234,6 +238,263 @@ def test_keyed_bundle_limits_are_enforced_without_partial_success(keyed_bundle, 
     monkeypatch.setattr(classifier, 'MAX_KEYED_BUNDLE_BYTES', 1)
     with pytest.raises(classifier.ClassificationError, match='KEYED_.*BUDGET_EXCEEDED|KEYED_BUNDLE_BYTE_LIMIT_EXCEEDED'):
         reconcile(keyed_bundle)
+
+
+@pytest.fixture
+def evolution_bundle(keyed_bundle, monkeypatch):
+    value = keyed_bundle; rules = copy.deepcopy(classifier.LEGACY_EVOLUTION)
+    for previous, name in (('table_000', 'detection_task'), ('table_001', 'model_management')):
+        for role in classifier.KEYED_ROLES:
+            snap = value.values['sourceManifest'] if role == 'source' else value.values[role]['snapshot']
+            table = snap['tables'].pop(previous); snap['tables'][name] = table
+            snap['createTables'][name] = snap['createTables'].pop(previous).replace(previous, name)
+            table['ddlSha256'] = sha(snap['createTables'][name].encode())
+            table['columns'] += [column('legacy_' + str(i), i, 'int', 'YES')
+                                 for i in range(3, rules[name]['oldCount'] + 1)]
+            if role == 'source':
+                table['columns'] += [column('appended_' + str(i), i, 'int', 'YES')
+                                    for i in range(rules[name]['oldCount'] + 1, rules[name]['sourceCount'] + 1)]
+            value.keyed_rows[role][name] = value.keyed_rows[role].pop(previous)
+            if role == 'source':
+                key, _ = value.keyed_rows[role][name][0]
+                value.keyed_rows[role][name] = [(key, sha((name + '/full-new-vector').encode()))]
+        model = value.values['contract']
+        model['sourceTables'] = [name if item == previous else item for item in model['sourceTables']]
+        for mapping in model['mapping']:
+            mapping['sources'] = [name if item == previous else item for item in mapping['sources']]
+        rules[name]['oldSha256'] = sha(raw(value.values['localA']['snapshot']['tables'][name]['columns']))
+        rules[name]['sourceSha256'] = sha(raw(value.values['sourceManifest']['tables'][name]['columns']))
+    # Synthetic vectors replace only the cryptographic pins. Production's real
+    # #107/#188 vectors are never accepted by a general name/column intersection.
+    monkeypatch.setattr(classifier, 'LEGACY_EVOLUTION', rules)
+    monkeypatch.setattr(collector, 'audit', classifier)
+    refresh_keyed(value)
+    owner = value.values['fixtureOwner']; source = value.values['sourceManifest']
+    owner.update(serverUuid='44444444-4444-4444-4444-444444444444', containerId='4' * 64,
+        sourceClone='doorhandle_legacy_verify_0123456789', sourceCloneSnapshotSha256=source['snapshotSha256'])
+    clone = {'schemaVersion': 1, 'kind': 'doorhandle-source-clone-comparison', **value.context,
+        'sourceSnapshotSha256': source['snapshotSha256'], 'cloneSnapshotSha256': source['snapshotSha256'],
+        'sourceMetadataSha256': source['metadataSha256'], 'cloneMetadataSha256': source['metadataSha256'],
+        'snapshotFieldsDifferent': {}, 'businessRowValuesIncluded': False}
+    whole = {'schemaVersion': 1, 'kind': 'doorhandle-compact-migration', 'status': 'VERIFIED',
+        'scope': 'ecs-disposable-migration', 'ecs': value.context['identity'], 'serverUuid': owner['serverUuid'],
+        'sourceSchema': owner['sourceClone'], 'targetSchema': 'doorhandle_compact_candidate_0123456789',
+        'sourceTableCount': 131, 'targetTableCount': 29, 'sourceSnapshotSha256': source['snapshotSha256'],
+        'sourceMetadataSha256': source['metadataSha256'], 'sourceSnapshot': {'tables': source['tables']},
+        'contractSha256': sha(raw(value.values['contract'])), 'foreignKeysValidated': True,
+        'attempt': 'a' * 32, 'targetSnapshotSha256': 'c' * 64, 'targetMetadataSha256': 'd' * 64,
+        'freezeEvidenceSha256': None}
+    readback = {'kind': 'doorhandle-compact-cutover-readback', 'status': 'VERIFIED',
+        **{key: whole[key] for key in ('ecs', 'serverUuid', 'sourceSchema', 'targetSchema', 'attempt',
+            'sourceSnapshotSha256', 'targetSnapshotSha256', 'targetMetadataSha256', 'freezeEvidenceSha256')},
+        'migrationReceiptSha256': sha(raw(whole))}
+    supplied = {'version': 1, 'kind': 'doorhandle-runtime-migration-input', 'ecs': value.context['identity'],
+        'serverUuid': owner['serverUuid'], 'migrationReceiptSha256': sha(raw(whole))}
+    summary = {'kind': 'doorhandle-compact-migration-acceptance', 'status': 'VERIFIED', 'sourceTableCount': 131,
+        'targetTableCount': 29, 'migrationReceiptSha256': sha(raw(whole)), 'sourceSnapshotSha256': source['snapshotSha256']}
+    verifier = {'status': 'PASS', 'identity': value.context['identity'], 'scopeKind': 'mysql',
+        'wholeMigrationRequested': True, 'wholeMigrationSummarySha256': sha(raw(summary)),
+        'wholeMigrationTests': {'passed': 1, 'failed': 0, 'skipped': 0}}
+    proofs = dict(zip(classifier.PROJECTION_PROOFS, map(raw, (clone, supplied, whole, readback, summary, verifier))))
+    value.values['verification']['reportFiles'] = [
+        {'path': path, 'bytes': len(proofs[role]), 'sha256': sha(proofs[role])}
+        for role, path in (('verifier', 'reports/receipt.json'), ('wholeSummary', 'reports/migration.json'))]
+    for role in ('localOwner', 'localPublic'):
+        value.values[role]['verificationReceiptSha256'] = sha(raw(value.values['verification']))
+    documents, anchors = bind(value)
+    source_index = json.loads(value.keyed_documents['source']['index']); members = {}; descriptors = {}
+    for name in rules:
+        rows = value.keyed_rows['localA'][name]
+        body = b''.join(raw({'keySha256': key, 'rowSha256': digest}) + b'\n' for key, digest in rows)
+        members[name] = body
+        descriptors[name] = {'status': 'KEYED', 'rows': len(rows), 'rowsSha256': row_chain(rows),
+            'columnsSha256': rules[name]['oldSha256'], 'primary': ['id'], 'file': name + '.jsonl',
+            'fileSha256': sha(body), 'bytes': len(body), 'entries': len(rows),
+            'sourceColumnsSha256': rules[name]['sourceSha256'],
+            'fullSourceDescriptorSha256': sha(raw(source_index['tables'][name]))}
+    receipt = {'schemaVersion': 1, 'kind': 'doorhandle-source-legacy-projection', 'status': 'VERIFIED', **value.context,
+        'ruleEvidenceSha256': classifier.LEGACY_EVOLUTION_EVIDENCE_SHA256,
+        'inputRawSha256': {key: sha(body) for key, body in documents.items()},
+        'proofRawSha256': {key: sha(body) for key, body in proofs.items()},
+        'fullSourceIndexSha256': owner['sourceKeyedRowsIndex']['sha256'], 'sourceServerUuid': source['serverUuid'],
+        'cloneServerUuid': owner['serverUuid'], 'cloneContainerId': owner['containerId'],
+        'sourceContainerId': owner['sourceContainerId'], 'sourceClone': owner['sourceClone'],
+        'beforeSnapshotSha256': source['snapshotSha256'], 'afterSnapshotSha256': source['snapshotSha256'],
+        'beforeMetadataSha256': source['metadataSha256'], 'afterMetadataSha256': source['metadataSha256'], 'tables': descriptors,
+        'sourceScope': 'SAME_BUILD_FULL_131_FROZEN_SOURCE_CLONE', 'productionMerged': False, 'retirementAllowed': False,
+        'sourceReadLock': {'kind': 'MYSQL_LOCK_TABLES_READ', 'sourceTableCount': 131}}
+    value.projection_packet = {'receipt': raw(receipt), 'proofs': proofs, 'tables': members}
+    value.projection_receipt = receipt; value.documents = documents; value.anchors = anchors
+    return value
+
+
+def projected_reconcile(value):
+    return classifier.reconcile_keyed_documents(value.documents, expected_context=value.context, anchors=value.anchors,
+        keyed_documents=value.keyed_documents, projection_documents=value.projection_packet,
+        projection_anchor=sha(value.projection_packet['receipt']))
+
+
+def test_approved_old_vectors_compare_without_discarding_the_full_source_index(evolution_bundle):
+    result = projected_reconcile(evolution_bundle)['summary']
+    assert result['status'] == 'RECONCILED' and result['counts']['MATCH'] == 45
+    assert result['legacyColumnProjection']['tables'] == ['detection_task', 'model_management']
+    assert result['legacyColumnProjection']['fullSourceColumnsAndRowsRetained'] is True
+    assert result['indexSha256']['source'] == sha(evolution_bundle.keyed_documents['source']['index'])
+    assert all(result[key] is False for key in ('coverageVerified', 'targetDataCompared', 'productionMerged', 'retirementAllowed'))
+
+
+def test_audited_evolution_without_projection_still_blocks_cutover(evolution_bundle):
+    value = evolution_bundle
+    summary = classifier.reconcile_keyed_documents(value.documents, expected_context=value.context,
+        anchors=value.anchors, keyed_documents=value.keyed_documents)['summary']
+    assert summary['status'] == 'NEEDS_REVIEW' and summary['cutoverBlocked'] is True
+    assert summary['legacyRowsPresentInSource'] is False
+    assert {row['table'] for row in summary['blockingTables']} == set(classifier.LEGACY_EVOLUTION)
+
+
+@pytest.mark.parametrize('damage', ['old-type', 'appended-default', 'primary-order'])
+def test_closed_evolution_rule_rejects_any_further_column_or_primary_change(evolution_bundle, damage):
+    local = copy.deepcopy(evolution_bundle.values['localA']['snapshot']['tables']['detection_task'])
+    source = copy.deepcopy(evolution_bundle.values['sourceManifest']['tables']['detection_task'])
+    if damage == 'old-type': source['columns'][0]['type'] = 'bigint unsigned'
+    elif damage == 'appended-default': source['columns'][-1]['default'] = '42'
+    else: source['indexes'][0]['column'] = 'body'
+    assert classifier.approved_legacy_projection('detection_task', local, source) is False
+
+
+@pytest.mark.parametrize('damage', ['missing-table', 'wrong-columns', 'wrong-original-index', 'source-changed', 'wrong-machine'])
+def test_projection_evidence_cannot_expand_or_rebind_its_scope(evolution_bundle, damage):
+    value = evolution_bundle; receipt = value.projection_receipt
+    if damage == 'missing-table': receipt['tables'].pop('detection_task')
+    elif damage == 'wrong-columns': receipt['tables']['detection_task']['columnsSha256'] = 'f' * 64
+    elif damage == 'wrong-original-index': receipt['tables']['detection_task']['fullSourceDescriptorSha256'] = 'f' * 64
+    elif damage == 'source-changed': receipt['afterSnapshotSha256'] = 'f' * 64
+    else: receipt['identity'] = {**receipt['identity'], 'machineId': '0' * 32}
+    value.projection_packet['receipt'] = raw(receipt)
+    with pytest.raises(classifier.ClassificationError): projected_reconcile(value)
+
+
+def test_projection_rows_are_rehashed_and_not_accepted_from_a_header(evolution_bundle):
+    evolution_bundle.projection_packet['tables']['detection_task'] = b''
+    with pytest.raises(classifier.ClassificationError, match='KEYED_ROWS_FILE_DIGEST_DRIFT'):
+        projected_reconcile(evolution_bundle)
+
+
+def test_projection_with_a_different_source_key_set_is_rejected(evolution_bundle):
+    value = evolution_bundle; name = 'detection_task'; rows = [('e' * 64, 'f' * 64)]
+    body = raw({'keySha256': rows[0][0], 'rowSha256': rows[0][1]}) + b'\n'
+    value.projection_packet['tables'][name] = body
+    value.projection_receipt['tables'][name].update(fileSha256=sha(body), bytes=len(body), rowsSha256=row_chain(rows))
+    value.projection_packet['receipt'] = raw(value.projection_receipt)
+    with pytest.raises(classifier.ClassificationError, match='PROJECTION_FULL_SOURCE_PRIMARY_KEYS_DIFFER'):
+        projected_reconcile(value)
+
+
+def test_real_projected_value_conflict_remains_reviewable_and_blocks_cutover(evolution_bundle):
+    value = evolution_bundle; name = 'detection_task'
+    key, _ = value.keyed_rows['localA'][name][0]; rows = [(key, 'f' * 64)]
+    body = raw({'keySha256': key, 'rowSha256': 'f' * 64}) + b'\n'
+    value.projection_packet['tables'][name] = body
+    value.projection_receipt['tables'][name].update(fileSha256=sha(body), bytes=len(body), rowsSha256=row_chain(rows))
+    value.projection_packet['receipt'] = raw(value.projection_receipt)
+    summary = projected_reconcile(value)['summary']
+    assert summary['status'] == 'NEEDS_REVIEW' and summary['counts']['ROW_CONFLICT'] == 1
+    assert summary['cutoverBlocked'] is True and summary['legacyRowsPresentInSource'] is False
+
+
+def test_projection_cannot_replace_authenticated_whole_migration_proofs(evolution_bundle):
+    value = evolution_bundle
+    changed = json.loads(value.projection_packet['proofs']['wholeSummary']); changed['sourceSnapshotSha256'] = 'f' * 64
+    value.projection_packet['proofs']['wholeSummary'] = raw(changed)
+    value.projection_receipt['proofRawSha256']['wholeSummary'] = sha(raw(changed))
+    value.projection_packet['receipt'] = raw(value.projection_receipt)
+    with pytest.raises(classifier.ClassificationError, match='WHOLE_REPORT_RAW_DIGEST_DRIFT'):
+        projected_reconcile(value)
+
+
+@pytest.mark.parametrize('change_source', [False, True])
+def test_real_collector_uses_locked_complete_old_vectors_and_checks_full_source_twice(evolution_bundle, tmp_path, change_source):
+    value = evolution_bundle; source = value.values['sourceManifest']; calls = []; source_calls = []
+    output = tmp_path / 'projection'; output.mkdir(mode=0o700)
+    class Mysql:
+        locked = False
+        def admitted_server(self): return {'uuid': value.values['fixtureOwner']['serverUuid']}
+        def assert_source_lock(self): assert self.locked
+        @contextmanager
+        def source_lock(self, schema, tables):
+            assert len(tables) == 131; self.locked = True
+            try: yield {'kind': 'MYSQL_LOCK_TABLES_READ', 'sourceTableCount': 131}
+            finally: self.locked = False
+        def row_hashes(self, schema, table, columns, primary, *, keyed_rows_path):
+            self.assert_source_lock(); calls.append((table, columns, primary))
+            keyed_rows_path.write_bytes(value.projection_packet['tables'][table]); keyed_rows_path.chmod(0o600)
+            descriptor = value.projection_receipt['tables'][table]
+            return descriptor['rows'], descriptor['rowsSha256']
+    mysql = Mysql()
+    def snapshot(actual, schema, tables, *, ddl_hash_policy):
+        actual.assert_source_lock(); source_calls.append(schema)
+        result = {'snapshotSha256': source['snapshotSha256'], 'tables': copy.deepcopy(source['tables'])}
+        if change_source and len(source_calls) == 2: result['tables']['table_002']['rows'] += 1
+        return result
+    runtime = SimpleNamespace(schema_snapshot=snapshot,
+        metadata_snapshot=lambda *_: ({}, source['metadataSha256']))
+    invoke = lambda: collector.capture(runtime, mysql, {'sourceSchema': value.values['fixtureOwner']['sourceClone']},
+        output, value.values, value.context, value.documents, value.projection_packet['proofs'],
+        json.loads(value.keyed_documents['source']['index']))
+    if change_source:
+        with pytest.raises(classifier.ClassificationError, match='FULL_131_SOURCE_CHANGED'): invoke()
+    else:
+        result = invoke(); assert result['beforeSnapshotSha256'] == result['afterSnapshotSha256']
+    assert len(source_calls) == 2 and len(calls) == 2 and not mysql.locked
+    for name, columns, primary in calls:
+        assert columns == [row['name'] for row in value.values['localA']['snapshot']['tables'][name]['columns']]
+        assert len(columns) == classifier.LEGACY_EVOLUTION[name]['oldCount'] and primary == ['id']
+
+
+def test_collector_reuses_the_exact_existing_whole_migration_connection(evolution_bundle, tmp_path, monkeypatch):
+    value = evolution_bundle; work = tmp_path / 'work'; directory = work / 'compact-fixtures'
+    directory.mkdir(parents=True, mode=0o700)
+    contract_path = tmp_path / 'docs/database/compact-schema-contract.json'
+    contract_path.parent.mkdir(parents=True); contract_path.write_bytes(raw(value.values['contract']))
+    monkeypatch.setattr(collector, 'ROOT', tmp_path)
+    owner = value.values['fixtureOwner']; owner.update(dataDirectory=str(directory / 'mysql-data'), port=33307)
+    config = {'version': 1, 'scope': 'ecs-disposable-migration', 'serverUuid': owner['serverUuid'],
+        'sourceSchema': owner['sourceClone'], 'targetSchema': 'doorhandle_compact_candidate_0123456789',
+        'dataDirectory': owner['dataDirectory'],
+        'client': {'kind': 'docker', 'containerId': owner['containerId'], 'executable': '/usr/bin/docker'},
+        'connection': {'host': '127.0.0.1', 'port': owner['port'], 'username': 'mig_synthetic', 'password': 'synthetic-only'}}
+    def save(path, body):
+        path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(body); path.chmod(0o600)
+    config_path = directory / 'whole-migration.json'; save(config_path, raw(config))
+    parent = directory / 'whole-migration-acceptance-0123456789'
+    observed = parent / 'observe/source-observation.json'
+    save(observed, raw({'kind': 'doorhandle-compact-source-observation', 'status': 'FROZEN_SOURCE_OBSERVED',
+        'ecs': value.context['identity'], 'serverUuid': owner['serverUuid'], 'sourceSchema': owner['sourceClone'],
+        'sourceTableCount': 131, 'sourceSnapshotSha256': value.values['sourceManifest']['snapshotSha256'],
+        'sourceMetadataSha256': value.values['sourceManifest']['metadataSha256'],
+        'contractSha256': sha(raw(value.values['contract']))}))
+    reviewed = {**config, 'reviewedSourceSnapshot': str(observed), 'reviewedSourceSnapshotSha256': sha(observed.read_bytes())}
+    reviewed_path = directory / 'reviewed-whole-migration-0123456789.json'; save(reviewed_path, raw(reviewed))
+    proofs = dict(value.projection_packet['proofs']); whole = json.loads(proofs['wholeReceipt'])
+    whole.update(configSha256=sha(raw(reviewed)), reviewedSourceObservationSha256=sha(observed.read_bytes()))
+    receipt_path = parent / 'migrate/migration-receipt.json'; save(receipt_path, raw(whole)); proofs['wholeReceipt'] = raw(whole)
+    supplied = json.loads(proofs['runtimeInput']); supplied.update(migrationReceiptFile=str(receipt_path),
+        migrationReceiptSha256=sha(raw(whole)), reviewedConfigFile=str(reviewed_path),
+        reviewedConfigSha256=sha(raw(reviewed)), targetSchema=config['targetSchema'])
+    proofs['runtimeInput'] = raw(supplied)
+    readback = json.loads(proofs['wholeReadback']); readback['migrationReceiptSha256'] = sha(raw(whole)); proofs['wholeReadback'] = raw(readback)
+    summary = json.loads(proofs['wholeSummary']); summary['migrationReceiptSha256'] = sha(raw(whole)); proofs['wholeSummary'] = raw(summary)
+    verifier = json.loads(proofs['verifier']); verifier['wholeMigrationSummarySha256'] = sha(raw(summary)); proofs['verifier'] = raw(verifier)
+    value.values['verification']['reportFiles'] = [
+        {'path': path, 'bytes': len(proofs[role]), 'sha256': sha(proofs[role])}
+        for role, path in (('verifier', 'reports/receipt.json'), ('wholeSummary', 'reports/migration.json'))]
+    runtime = SimpleNamespace(load_config=lambda path: (json.loads(path.read_bytes()), value.context['identity'], sha(path.read_bytes())),
+        validate_migration_receipt=lambda path, expected: json.loads(path.read_bytes()))
+    admitted, bindings = collector.admitted_clone(runtime, work, value.values, proofs, value.context)
+    assert admitted == config and set(bindings) == {config_path, reviewed_path, observed}
+    config['connection']['username'] = 'mig_different'; save(config_path, raw(config))
+    with pytest.raises(classifier.ClassificationError, match='WHOLE_ACCEPTANCE_CHANGED_SOURCE_CONNECTION'):
+        collector.admitted_clone(runtime, work, value.values, proofs, value.context)
 
 
 @pytest.fixture
