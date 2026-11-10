@@ -15,6 +15,10 @@ public interface AccountEmployeeBindingMapper {
     })
     AccountEmployeeBinding selectById(@Param("userId") Long userId);
 
+    @Select("SELECT id,employee_id,binding_version FROM users WHERE id=#{userId} FOR SHARE")
+    @ResultMap("association")
+    AccountEmployeeBinding selectLockedById(@Param("userId") Long userId);
+
     @Select({"<script>", "SELECT id,employee_id,binding_version FROM users WHERE",
             "<choose><when test='userIds != null and !userIds.isEmpty()'>",
             "id IN <foreach item='userId' collection='userIds' open='(' separator=',' close=')'>#{userId}</foreach>",

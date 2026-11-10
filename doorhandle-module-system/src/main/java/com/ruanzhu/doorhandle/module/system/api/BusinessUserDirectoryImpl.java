@@ -7,7 +7,18 @@ import org.springframework.stereotype.Service;
 @Service
 public class BusinessUserDirectoryImpl implements BusinessUserDirectory,com.ruanzhu.doorhandle.contracts.security.BusinessAccountLookupApi {
     private final UserMapper users;
+    private com.ruanzhu.doorhandle.module.system.service.LoginEligibilityService eligibility;
+    private com.ruanzhu.doorhandle.module.system.security.LoginSessionProperties sessions;
     public BusinessUserDirectoryImpl(UserMapper users) { this.users = users; }
+    @org.springframework.beans.factory.annotation.Autowired
+    public void eligibility(com.ruanzhu.doorhandle.module.system.service.LoginEligibilityService value,
+            com.ruanzhu.doorhandle.module.system.security.LoginSessionProperties properties){eligibility=value;sessions=properties;}
+    private Identity eligible(long userId,String username,boolean lock){
+        try{
+            var current=lock?eligibility.lockCurrent(userId,username):eligibility.requireCurrent(userId,username);
+            return new Identity(current.user().getId(),current.user().getUsername(),"SUPERVISOR".equals(current.role()));
+        }catch(org.springframework.security.core.AuthenticationException denied){throw new SecurityException("当前账号不具备业务操作资格",denied);}
+    }
     @Override public Identity authenticated() {
         var authentication=org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication();
         if(authentication==null || !authentication.isAuthenticated()
@@ -53,9 +64,11 @@ public class BusinessUserDirectoryImpl implements BusinessUserDirectory,com.ruan
     @Override
     @org.springframework.transaction.annotation.Transactional(propagation=org.springframework.transaction.annotation.Propagation.MANDATORY)
     public Identity lockCurrent(long userId,String username) {
+        if(sessions!=null&&sessions.isEnabled())return eligible(userId,username,true);
         return identity(users.selectOne(publicFields().eq("id",userId).last("FOR SHARE")),userId,username);
     }
     public Identity current(long userId, String username) {
+        if(sessions!=null&&sessions.isEnabled())return eligible(userId,username,false);
         var user = users.selectOne(publicFields().eq("id",userId));
         return identity(user,userId,username);
     }

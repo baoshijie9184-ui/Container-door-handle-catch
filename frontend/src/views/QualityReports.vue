@@ -21,6 +21,7 @@
         <el-table-column label="依据任务" min-width="205"><template #default="{ row }"><router-link v-if="row.taskId" class="report-task-link" :to="{ path:'/inspection/history', query:{ keyword:row.taskId } }">{{ row.taskId }}</router-link><span v-else>未记录</span></template></el-table-column>
         <el-table-column label="状态与版本" min-width="145"><template #default="{ row }"><div class="report-list-status"><StatusBadge domain="report" :code="row.status" :label="states[row.status]" /><small>版本 {{ knownCount(row.version) ?? '未记录' }}</small></div></template></el-table-column>
         <el-table-column label="最近更新 · UTC+8" min-width="175"><template #default="{ row }"><span class="report-list-time">{{ reportTime(row.updatedAt) }}</span></template></el-table-column>
+        <el-table-column v-if="userStore.capabilities?.changeHistory" label="最近修改 · UTC+8" min-width="205"><template #default="{row}"><ResourceMutationSummary :latest="latestChanges[String(row.reportId)]" :revision="row.version" resource-type="QUALITY_REPORT" :resource-id="row.reportId" domain="QUALITY_REPORT" /></template></el-table-column>
         <el-table-column label="操作" width="100"><template #default="{ row }"><el-button size="small" :disabled="busy" @click="openDetail(row.reportId)"><AppIcon name="Search" :size="16" />查看</el-button></template></el-table-column>
       </el-table>
       <div v-if="error && records.length" class="report-list-retry"><el-button size="small" :loading="loading" @click="retryList"><AppIcon name="Refresh" :size="15" />重试上次读取</el-button></div>
@@ -123,6 +124,8 @@
 
 <script setup>
 import ResourceChangeHistory from '../components/ResourceChangeHistory.vue'
+import ResourceMutationSummary from '../components/ResourceMutationSummary.vue'
+import { useLatestChanges } from '../composables/useLatestChanges'
 import { resourceHistoryLink } from '../utils/changeHistory'
 import { useResourceChanges } from '../composables/useResourceChanges'
 import { ref, reactive, computed, onBeforeUnmount, onMounted } from 'vue'
@@ -144,6 +147,7 @@ const states = { DRAFT: '个人草稿', SUBMITTED: '待审批', APPROVED: '审�
 const auditLabels = { CREATE: '创建草稿', EDIT: '保存草稿', SUBMIT: '提交审批', WITHDRAW: '撤回', REVISE: '创建修订', APPROVE: '审批通过', REJECT: '驳回', EXPORT: '导出', EVENT_RETRY: '重新发送状态' }
 const auditIcons = { APPROVE:'CircleCheck', REJECT:'CircleClose', EXPORT:'Download', EDIT:'Edit', SUBMIT:'DocumentChecked', WITHDRAW:'RefreshLeft', REVISE:'DocumentCopy', EVENT_RETRY:'Refresh' }
 const records = ref([]), status = ref(''), keyword = ref(''), page = ref(1), total = ref(null), loading = ref(false), error = ref('')
+const { latest:latestChanges } = useLatestChanges(records,'QUALITY_REPORT','QUALITY_REPORT','reportId')
 const appliedQuery = reactive({ keyword:'', status:'' })
 const requestedQuery = reactive({ keyword:'', status:'', page:1 })
 const listLoaded = ref(false), appliedPage = ref(1)

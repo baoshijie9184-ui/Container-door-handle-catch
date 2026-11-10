@@ -34,7 +34,7 @@ class LoginSessionMySqlTest {
         var properties=new LoginSessionProperties();properties.setEnabled(true);
         EmployeeDirectoryApi staff=new EmployeeDirectoryApi(){
             public List<EmployeeIdentity> findAll(Collection<Long> ids){var result=new ArrayList<EmployeeIdentity>();for(long id:ids)result.addAll(jdbc.query("SELECT id,employee_number,name,status,employee_type,department_id,department FROM employee WHERE id=?",(r,n)->new EmployeeIdentity(r.getLong(1),r.getString(2),r.getString(3),r.getString(4),r.getString(5),r.getObject(6,Long.class),r.getString(7)),id));return result;}
-            public EmployeeIdentity lock(Long id){throw new UnsupportedOperationException("Not used by login eligibility");}
+            public EmployeeIdentity lock(Long id){return jdbc.query("SELECT id,employee_number,name,status,employee_type,department_id,department FROM employee WHERE id=? FOR UPDATE",(r,n)->new EmployeeIdentity(r.getLong(1),r.getString(2),r.getString(3),r.getString(4),r.getString(5),r.getObject(6,Long.class),r.getString(7)),id).stream().findFirst().orElseThrow();}
         };
         eligibility=new LoginEligibilityService(sql.getMapper(UserMapper.class),sql.getMapper(AccountEmployeeBindingMapper.class),staff,properties);
         jwt=new JwtUtil();ReflectionTestUtils.setField(jwt,"secret","01234567890123456789012345678901");ReflectionTestUtils.setField(jwt,"expiration",3600L);ReflectionTestUtils.setField(jwt,"refreshExpiration",86400L);

@@ -172,7 +172,14 @@ class CollaborationHttpMySqlTest {
     @BeforeAll void start()throws Exception{
         fixture=new OperationsMySqlFixture(false);jdbc=fixture.target();
         try{
-            tomcatFiles=Files.createTempDirectory(Path.of("target").toAbsolutePath().normalize(),"http-fixture-tomcat-");
+            String verificationRoot=System.getProperty("doorhandle.verification-root");
+            if(verificationRoot==null)throw new SecurityException("HTTP fixture requires the owned ECS verification build directory");
+            Path buildRoot=Path.of(verificationRoot).toAbsolutePath().normalize().toRealPath();
+            Path temporaryRoot=Path.of(System.getProperty("java.io.tmpdir")).toAbsolutePath().normalize();
+            if(!temporaryRoot.startsWith(buildRoot))throw new SecurityException("HTTP fixture temporary files must stay inside the owned verification build");
+            Files.createDirectories(temporaryRoot);
+            if(!temporaryRoot.toRealPath().equals(temporaryRoot))throw new SecurityException("HTTP fixture temporary root must not traverse symbolic links");
+            tomcatFiles=Files.createTempDirectory(temporaryRoot,"http-fixture-tomcat-");
             jdbc.update("INSERT INTO organization_department(id,name) VALUES(20,'HTTP roster')");String password=new BCryptPasswordEncoder().encode(PASSWORD);
             for(int id=1;id<=4;id++){
                 jdbc.update("INSERT INTO employee(id,employee_number,name,contact,department,employee_type,gender,hire_date,status,department_id) VALUES(?,?,?,'fixture','HTTP roster','DETECTION','UNKNOWN','2020-01-01','ACTIVE',20)",100+id,"HTTP-E"+id,"HTTP person "+id);

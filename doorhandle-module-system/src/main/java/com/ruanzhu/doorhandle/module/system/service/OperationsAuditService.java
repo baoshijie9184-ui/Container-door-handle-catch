@@ -78,6 +78,32 @@ public class OperationsAuditService implements OperationsAuditApi {
     }
     public record Filter(String domain,String resourceType,String resourceId,String actorUserId,String actorRole,
                          String action,java.time.Instant occurredFrom,java.time.Instant occurredTo) { }
+    public List<ChangeHistory.Latest> latest(AgentActor requested,List<ChangeHistory.ResourceKey> resources){
+        if(!changeHistoryEnabled)throw new com.ruanzhu.doorhandle.common.BusinessException(404,"修改记录尚未启用");
+        var actor=current(requested);
+        if(resources==null||resources.size()>100)throw new IllegalArgumentException("每次最多核对100项资源");
+        var permitted=new LinkedHashSet<ChangeHistory.ResourceKey>();
+        for(var key:resources){
+            if(key==null)throw new IllegalArgumentException("资源编号无效");
+            OperationsAuditPersistence.token(key.domain(),48);OperationsAuditPersistence.token(key.resourceType(),64);OperationsAuditPersistence.token(key.resourceId(),160);
+            if(resourceAccess.stream().anyMatch(access->access.mayRead(actor,"ENTERPRISE",key.domain(),key.resourceType(),key.resourceId())
+                    ||access.mayRead(actor,"PRIVATE",key.domain(),key.resourceType(),key.resourceId())))permitted.add(key);
+        }
+        if(permitted.isEmpty())return List.of();
+        // One bounded audit query for a page; row_number avoids fetching every historical edit.
+        var terms=new ArrayList<String>();var args=new ArrayList<Object>();args.add(actor.userId());
+        for(var key:permitted){terms.add("(operation_domain=? AND operation_resource_type=? AND resource_id=?)");args.add(key.domain());args.add(key.resourceType());args.add(key.resourceId());}
+        String sql="SELECT * FROM (SELECT e.*,ROW_NUMBER() OVER (PARTITION BY operation_domain,operation_resource_type,resource_id ORDER BY id DESC) AS latest_rank "
+                +"FROM audit_event e WHERE kind='OPERATIONS' AND payload_version=2 AND (operation_scope='ENTERPRISE' OR actor_user_id=?) AND ("
+                +String.join(" OR ",terms)+")) ranked WHERE latest_rank=1";
+        var found=new HashMap<ChangeHistory.ResourceKey,ChangeHistory.Item>();
+        for(var row:jdbc.queryForList(sql,args.toArray())){
+            var payload=decode(row);
+            if(!allowed(actor,row,payload))continue;
+            found.put(new ChangeHistory.ResourceKey(payload.domain(),payload.detail().resourceType(),String.valueOf(row.get("resource_id"))),item(row,payload,true));
+        }
+        return permitted.stream().map(key->new ChangeHistory.Latest(key,found.get(key))).toList();
+    }
     public ChangeHistory.Page changes(AgentActor requested,long before,int size,Filter filter) {
         if(!changeHistoryEnabled)throw new com.ruanzhu.doorhandle.common.BusinessException(404,"修改记录尚未启用");
         var actor=current(requested);if(before<1||size<1||size>100)throw new IllegalArgumentException("分页参数无效");

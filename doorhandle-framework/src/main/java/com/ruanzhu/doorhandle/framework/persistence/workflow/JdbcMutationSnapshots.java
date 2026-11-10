@@ -27,7 +27,27 @@ public final class JdbcMutationSnapshots {
             if(value instanceof String text&&text.length()>512)value="sha256:"+sha(text);
             values.put(field,value);
         }
+        // Freeze the public relationship labels in the same business transaction.
+        // History readers must never resolve these IDs against today's personnel records.
+        relationship(values,"employee_id","SELECT name,employee_number FROM employee WHERE id=?",Map.of("name","employee_name","employee_number","employee_number"));
+        relationship(values,"department_id","SELECT name FROM organization_department WHERE id=?",Map.of("name","department_name"));
+        relationship(values,"device_id","SELECT device_code,model_name FROM device_management WHERE id=?",Map.of("device_code","device_code","model_name","device_model_name"));
         return new Snapshot(mapping.type(),id,((Number)row.get(mapping.revision())).longValue(),values,mapping.masked(),mapping.secret());
+    }
+    private void relationship(Map<String,Object> fields,String key,String sql,Map<String,String> labels){
+        if(!fields.containsKey(key))return;
+        Object id=fields.get(key);Map<String,Object> row=Map.of();
+        if(id!=null){
+            String value=id.toString();if(!value.matches("[1-9][0-9]{0,18}"))throw new IllegalStateException("Invalid persisted relationship identity");
+            var rows=jdbc.queryForList(sql,Long.parseLong(value));
+            if(rows.size()>1)throw new IllegalStateException("Relationship identity is not unique");
+            if(!rows.isEmpty())row=rows.get(0);
+        }
+        for(var label:labels.entrySet()){
+            Object value=row.get(label.getKey());
+            if(value!=null&&(!(value instanceof String)||((String)value).length()>512))throw new IllegalStateException("Invalid persisted relationship label");
+            fields.put(label.getValue(),value);
+        }
     }
     public Snapshot advance(Mapping mapping,Snapshot before,Snapshot after) {
         if(before==null||after==null||!Objects.equals(before.version(),after.version()))return after;

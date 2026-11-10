@@ -118,4 +118,58 @@ class OperationsChangeHistoryTest {
         String hidden=jdbc.queryForObject("SELECT id FROM audit_event WHERE kind='OPERATIONS' AND request_id='other-private'",String.class);
         assertThatThrownBy(()->service.change(reader,hidden)).isInstanceOf(SecurityException.class);
     }
+    @Test void latestBatchReturnsLatestAuthorizedFactOnceAndLeavesUnrecordedResourcesUnknown(){
+        append();appendFor(actor,"ENTERPRISE","41","newest");
+        var one=new ChangeHistory.ResourceKey("DEVICE","DEVICE","41");
+        var absent=new ChangeHistory.ResourceKey("DEVICE","DEVICE","42");
+        var result=service.latest(reader,List.of(one,one,absent));
+        assertThat(result).hasSize(2);
+        assertThat(result.get(0).latest().requestId()).isEqualTo("newest");
+        assertThat(result.get(0).latest().actor().displayName()).isEqualTo("Captured Name");
+        assertThat(result.get(1).latest()).isNull();
+    }
+    @Test void latestBatchCannotRevealOtherPrivateEditsOrRevokedResources(){
+        append();appendFor(actor,"PRIVATE","41","private-later");inspectorReader();
+        var key=new ChangeHistory.ResourceKey("DEVICE","DEVICE","41");
+        assertThat(service.latest(reader,List.of(key))).singleElement().satisfies(item->assertThat(item.latest().requestId()).isEqualTo("change-one"));
+        mayRead.set(false);assertThat(service.latest(reader,List.of(key))).isEmpty();
+    }
+    @Test void latestBatchRequiresExplicitActivationAndBoundedValidatedKeys(){
+        var key=new ChangeHistory.ResourceKey("DEVICE","DEVICE","41");
+        assertThatThrownBy(()->service.latest(reader,Collections.nCopies(101,key))).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(()->service.latest(reader,List.of(new ChangeHistory.ResourceKey("DEVICE","DEVICE","41' OR 1=1")))).isInstanceOf(IllegalArgumentException.class);
+        ReflectionTestUtils.setField(service,"changeHistoryEnabled",false);
+        assertThatThrownBy(()->service.latest(reader,List.of(key))).isInstanceOf(com.ruanzhu.doorhandle.common.BusinessException.class);
+    }
+    @Test void relationSnapshotsKeepIdsAndNamesFromTheOperationAfterPeopleAreRenamed(){
+        jdbc.update("INSERT INTO employee(id,name,employee_number,contact,department,employee_type,gender,hire_date,status) VALUES(11,'Before Name','E11','private contact','dept','DETECTION','X','2020-01-01','ACTIVE'),(12,'After Name','E12','private contact','dept','DETECTION','X','2020-01-01','ACTIVE')");
+        jdbc.update("INSERT INTO device_management(id,device_code,device_type,model_name,serial_number,status,employee_id) VALUES(41,'D41','DETECTION','model','S41','IN_USE',11)");
+        var snapshots=new com.ruanzhu.doorhandle.framework.persistence.workflow.JdbcMutationSnapshots(jdbc);
+        var mapping=new com.ruanzhu.doorhandle.framework.persistence.workflow.JdbcMutationSnapshots.Mapping("DEVICE","device_management","id","version",List.of("employee_id"),Set.of(),Set.of());
+        tx.executeWithoutResult(status->{
+            var before=snapshots.capture(mapping,"41",true);
+            jdbc.update("UPDATE device_management SET employee_id=12 WHERE id=41");
+            var after=snapshots.advance(mapping,before,snapshots.capture(mapping,"41",false));
+            var changes=BusinessFieldChanges.compare(before,after);
+            assertThat(changes).extracting(ChangeHistory.Change::field).containsExactlyInAnyOrder("employee_id","employee_name","employee_number");
+            service.appendChange(new OperationsAuditApi.ChangeEvent(new OperationsAuditApi.Event(actor,"ENTERPRISE","DEVICE","UPDATE","41","reassign-name","APPLIED",after.version()),"DEVICE","Captured Name",before.version(),changes));
+        });
+        jdbc.update("UPDATE employee SET name='Renamed Later' WHERE id IN (11,12)");
+        var latest=service.latest(reader,List.of(new ChangeHistory.ResourceKey("DEVICE","DEVICE","41"))).get(0).latest();
+        assertThat(service.change(reader,latest.id()).changes()).filteredOn(change->change.field().equals("employee_name")).singleElement().satisfies(change->{
+            assertThat(change.before()).isEqualTo("Before Name");assertThat(change.after()).isEqualTo("After Name");
+        });
+        assertThat(service.change(reader,latest.id()).changes()).filteredOn(change->change.field().equals("employee_id")).singleElement().satisfies(change->{assertThat(change.before()).isEqualTo("11");assertThat(change.after()).isEqualTo("12");});
+    }
+    @Test void relationSnapshotsKeepDepartmentNamesAndNeverPullContactOrCredentialFields(){
+        jdbc.update("INSERT INTO organization_department(id,name) VALUES(21,'Original Department'),(22,'Next Department')");
+        jdbc.update("INSERT INTO employee(id,name,employee_number,contact,department,employee_type,gender,hire_date,status,department_id) VALUES(11,'Staff','E11','private contact','dept','DETECTION','X','2020-01-01','ACTIVE',21)");
+        var snapshots=new com.ruanzhu.doorhandle.framework.persistence.workflow.JdbcMutationSnapshots(jdbc);
+        var mapping=new com.ruanzhu.doorhandle.framework.persistence.workflow.JdbcMutationSnapshots.Mapping("EMPLOYEE","employee","id","version",List.of("department_id"),Set.of(),Set.of());
+        var before=snapshots.capture(mapping,"11",false);
+        jdbc.update("UPDATE employee SET department_id=22 WHERE id=11");var after=snapshots.capture(mapping,"11",false);
+        jdbc.update("UPDATE organization_department SET name='Renamed Department' WHERE id=21");
+        assertThat(before.fields()).containsEntry("department_id","21").containsEntry("department_name","Original Department").hasSize(2);
+        assertThat(after.fields()).containsEntry("department_id","22").containsEntry("department_name","Next Department").hasSize(2);
+    }
 }

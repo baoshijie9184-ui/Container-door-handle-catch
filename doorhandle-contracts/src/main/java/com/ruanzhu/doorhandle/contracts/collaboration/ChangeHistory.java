@@ -7,6 +7,9 @@ import java.util.List;
 public final class ChangeHistory {
     private ChangeHistory() { }
     public record Actor(String userId, String username, String displayName, String role) { }
+    public record ResourceKey(String domain, String resourceType, String resourceId) { }
+    /** Null latest means no authorized fact is available, never an inferred modifier. */
+    public record Latest(ResourceKey resource, Item latest) { }
     /** Original requester is not the executor and may no longer exist or be eligible. */
     public record Initiator(String userId, String username) { }
     public record Source(String type, String component, String eventId, Initiator initiator) {

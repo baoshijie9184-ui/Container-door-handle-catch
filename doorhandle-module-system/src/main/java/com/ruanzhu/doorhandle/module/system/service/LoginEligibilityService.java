@@ -31,16 +31,25 @@ public class LoginEligibilityService {
         var user=lock?users.selectOne(new LambdaQueryWrapper<User>().eq(User::getId,id).last("FOR UPDATE")):users.selectById(id);
         if(user==null||!Objects.equals(username,user.getUsername())||!Boolean.TRUE.equals(user.getEnabled()))denied();
         String role=role(user);
-        requirePersonnel(id,role);
+        requirePersonnel(id,role,lock);
         return new Eligible(user,role);
     }
     public void requirePersonnel(long id,String role){
-        var binding=bindings.selectById(id);
+        requirePersonnel(id,role,false);
+    }
+    private void requirePersonnel(long id,String role,boolean lock){
+        var binding=lock?bindings.selectLockedById(id):bindings.selectById(id);
         if(binding==null||binding.getEmployeeId()==null){
             if(!"SUPERVISOR".equals(role))denied();
         }else{
-            var found=employees.findAll(List.of(binding.getEmployeeId()));
-            var employee=found.stream().filter(e->Objects.equals(e.id(),binding.getEmployeeId())).findFirst().orElse(null);
+            EmployeeDirectoryApi.EmployeeIdentity employee;
+            if(lock){
+                try{employee=employees.lock(binding.getEmployeeId());}
+                catch(com.ruanzhu.doorhandle.common.BusinessException unavailable){if(unavailable.getCode()!=404)throw unavailable;denied();return;}
+            }else{
+                var found=employees.findAll(List.of(binding.getEmployeeId()));
+                employee=found.stream().filter(e->Objects.equals(e.id(),binding.getEmployeeId())).findFirst().orElse(null);
+            }
             if(employee==null||!"ACTIVE".equals(employee.status())||
                     (!"DETECTION".equals(employee.employeeType())&& !"SUPERVISOR".equals(employee.employeeType())))denied();
             if("INSPECTOR".equals(role)&&!"DETECTION".equals(employee.employeeType()))denied();

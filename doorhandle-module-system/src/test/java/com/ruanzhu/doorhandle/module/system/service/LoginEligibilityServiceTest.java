@@ -27,4 +27,17 @@ class LoginEligibilityServiceTest {
     @Test void disabledOrResignedAccountsAreRejectedFromCurrentFacts(){var user=account("INSPECTOR");staff("DETECTION","ACTIVE");user.setEnabled(false);assertThatThrownBy(()->service.requireCurrent(7,"member")).isInstanceOf(DisabledException.class);user.setEnabled(true);staff("DETECTION","RESIGNED");assertThatThrownBy(()->service.requireCurrent(7,"member")).isInstanceOf(DisabledException.class);}
     @Test void legacyAliasesRequireAnExplicitPerAccountRoleDecision(){account("ADMIN");assertThatThrownBy(()->service.requireCurrent(7,"member")).isInstanceOf(DisabledException.class);properties.setLegacyRoleAccounts(Map.of("member","SUPERVISOR"));assertThat(service.requireCurrent(7,"member").role()).isEqualTo("SUPERVISOR");}
     @Test void unknownRoleAndIdentityMismatchFailClosed(){account("unexpected");assertThatThrownBy(()->service.requireCurrent(7,"member")).isInstanceOf(DisabledException.class);assertThatThrownBy(()->service.requireCurrent(7,"someone-else")).isInstanceOf(DisabledException.class);}
+    @Test void lockedEligibilityUsesCurrentBindingAndLocksActualPersonnelInsteadOfAnOldSnapshot(){
+        var user=account("INSPECTOR");when(users.selectOne(any(com.baomidou.mybatisplus.core.conditions.Wrapper.class))).thenReturn(user);
+        var binding=new AccountEmployeeBinding();binding.setUserId(7L);binding.setEmployeeId(12L);when(bindings.selectLockedById(7L)).thenReturn(binding);
+        when(employees.lock(12L)).thenReturn(new EmployeeDirectoryApi.EmployeeIdentity(12L,"E12","Current Staff","ACTIVE","DETECTION",1L,"Team"));
+        assertThat(service.lockCurrent(7,"member").role()).isEqualTo("INSPECTOR");
+        verify(bindings,never()).selectById(any());verify(employees,never()).findAll(any());verify(employees).lock(12L);
+    }
+    @Test void mutationLockRejectsPersonnelThatBecameInactiveBeforeTheLockWasObtained(){
+        var user=account("INSPECTOR");when(users.selectOne(any(com.baomidou.mybatisplus.core.conditions.Wrapper.class))).thenReturn(user);
+        var binding=new AccountEmployeeBinding();binding.setUserId(7L);binding.setEmployeeId(12L);when(bindings.selectLockedById(7L)).thenReturn(binding);
+        when(employees.lock(12L)).thenReturn(new EmployeeDirectoryApi.EmployeeIdentity(12L,"E12","Former Staff","RESIGNED","DETECTION",1L,"Team"));
+        assertThatThrownBy(()->service.lockCurrent(7,"member")).isInstanceOf(DisabledException.class);
+    }
 }

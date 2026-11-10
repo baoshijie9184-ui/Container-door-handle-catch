@@ -69,6 +69,7 @@
         <el-table-column label="岗位与部门" min-width="195"><template #default="{row}"><div class="management-row-identity"><strong>{{ getEmployeeTypeName(row.employeeType) }}</strong><span>{{ row.department || '部门 / 班组未记录' }}</span></div></template></el-table-column>
         <el-table-column label="在岗状态与入职日期" min-width="170"><template #default="{row}"><div class="management-row-status"><StatusBadge domain="employee" :code="row.status" :label="getStatusName(row.status)" /><span>入职 {{ row.hireDate || '日期未记录' }}</span></div></template></el-table-column>
         <el-table-column label="联系方式" min-width="155"><template #default="{row}"><span class="management-row-contact">{{ row.contact || '未记录' }}</span></template></el-table-column>
+        <el-table-column v-if="userStore.capabilities?.changeHistory" label="最近修改 · UTC+8" min-width="205"><template #default="{row}"><ResourceMutationSummary :latest="latestChanges[String(row.id)]" :revision="resourceVersion(row)" resource-type="EMPLOYEE" :resource-id="row.id" domain="EMPLOYEE" /></template></el-table-column>
         <el-table-column label="操作" min-width="235"><template #default="{row}"><div class="management-row-actions"><el-button size="small" @click="viewEmployee(row.id)"><AppIcon name="Search" :size="14" />详情</el-button><el-button v-if="isSupervisor" size="small" :disabled="writeBusy" @click="assignDevices(row.id)"><AppIcon name="Monitor" :size="14" />分配设备</el-button><details v-if="isSupervisor" class="management-more"><summary>更多<AppIcon name="ArrowDown" :size="13" /></summary><div><el-button size="small" :disabled="writeBusy" @click="editEmployee(row.id)"><AppIcon name="Edit" :size="14" />编辑人员</el-button><el-popconfirm :title="`确认删除人员 ${row.name || row.employeeNumber || row.id}？`" @confirm="deleteEmployee(row.id)" @cancel="deleteSnapshots.delete(String(row.id))"><template #reference><el-button size="small" type="danger" plain :disabled="writeBusy || unconfirmedDeletes.has(String(row.id))" @click="deleteSnapshots.set(String(row.id), Object.freeze({...row}))"><AppIcon name="Delete" :size="14" />删除人员</el-button></template></el-popconfirm></div></details><StatusBadge v-if="unconfirmedDeletes.has(String(row.id))" domain="apiReceipt" code="UNKNOWN" label="删除待核对" /></div></template></el-table-column>
       </el-table>
       <div v-if="total!==null" class="page-footer"><el-pagination :current-page="pagination.current" :page-size="pagination.size" :page-sizes="[10,20,30,50]" :pager-count="7" layout="total, sizes, prev, pager, next, jumper" :total="total" :disabled="loading || !!listError" @size-change="handleSizeChange" @current-change="handleCurrentChange" /></div>
@@ -90,11 +91,14 @@ import CollectionEmptyState from '../../components/CollectionEmptyState.vue'
 import EmployeeDeviceAssignment from '../../components/EmployeeDeviceAssignment.vue'
 import { knownCount } from '../../utils/countPresentation'
 import { useManagedList } from '../../composables/useManagedList'
+import { useLatestChanges } from '../../composables/useLatestChanges'
+import ResourceMutationSummary from '../../components/ResourceMutationSummary.vue'
 
 const router = useRouter()
 const userStore = useUserStore()
 const isSupervisor = computed(() => userStore.role === 'SUPERVISOR')
 const { records:employees, total, loading, error:listError, loaded:listLoaded, filters, pagination, hasFilters, filtersDirty, appliedFilters, search:searchEmployees, reset:resetFilters, refresh:fetchEmployees, retry:retryEmployees, changePage:handleCurrentChange, changeSize:handleSizeChange } = useManagedList('/api/employees',['name','employeeNumber','contact','department','employeeType','status'])
+const { latest:latestChanges } = useLatestChanges(employees,'EMPLOYEE')
 const filterLabels = {name:'姓名',employeeNumber:'员工编号',contact:'联系方式',department:'部门 / 班组',employeeType:'人员类型',status:'状态'}
 const appliedDescription = computed(() => Object.entries(appliedFilters.value).map(([key,value]) => `${filterLabels[key]}：${key==='status'?getStatusName(value):key==='employeeType'?getEmployeeTypeName(value):value}`).join(' · ') || '全部条件')
 const writeBusy = ref(false), mutationNotice = ref(''), mutationUncertain = ref(false), mutationFailed = ref(false), unconfirmedDeletes = ref(new Set())

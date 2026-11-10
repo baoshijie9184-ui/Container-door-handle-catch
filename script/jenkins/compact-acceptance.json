@@ -86,7 +86,7 @@
         "doorhandle.operations.mysql.config"
       ],
       "source": "doorhandle-module-system/src/test/java/com/ruanzhu/doorhandle/module/system/service/OperationsChangeHistoryTest.java",
-      "minimumTests": 5,
+      "minimumTests": 15,
       "coverage": [
         "V1 and V2 history, operation-time actor snapshots and current resource authorization"
       ]
@@ -836,12 +836,12 @@
       },
       {
         "className": "com.ruanzhu.doorhandle.module.system.service.BusinessFieldChangesTest",
-        "minimumTests": 5,
+        "minimumTests": 8,
         "source": "doorhandle-module-system/src/test/java/com/ruanzhu/doorhandle/module/system/service/BusinessFieldChangesTest.java"
       },
       {
         "className": "com.ruanzhu.doorhandle.module.system.service.LoginEligibilityServiceTest",
-        "minimumTests": 6,
+        "minimumTests": 10,
         "source": "doorhandle-module-system/src/test/java/com/ruanzhu/doorhandle/module/system/service/LoginEligibilityServiceTest.java"
       },
       {
@@ -891,7 +891,7 @@
       },
       {
         "className": "com.ruanzhu.doorhandle.module.system.api.BusinessUserDirectoryImplTest",
-        "minimumTests": 5,
+        "minimumTests": 7,
         "source": "doorhandle-module-system/src/test/java/com/ruanzhu/doorhandle/module/system/api/BusinessUserDirectoryImplTest.java"
       },
       {
@@ -1098,6 +1098,16 @@
         "className": "com.ruanzhu.doorhandle.module.ai.testsupport.CompactH2FixtureInstallationTest",
         "minimumTests": 5,
         "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/testsupport/CompactH2FixtureInstallationTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.system.api.AgentUserDirectoryImplTest",
+        "minimumTests": 4,
+        "source": "doorhandle-module-system/src/test/java/com/ruanzhu/doorhandle/module/system/api/AgentUserDirectoryImplTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.device.service.DeviceMutationParticipantReadTest",
+        "minimumTests": 4,
+        "source": "doorhandle-module-device/src/test/java/com/ruanzhu/doorhandle/module/device/service/DeviceMutationParticipantReadTest.java"
       }
     ]
   },
@@ -1585,6 +1595,12 @@
         "module": "tests_python.test_legacy_candidate_preparation",
         "minimumTests": 25,
         "source": "tests_python/test_legacy_candidate_preparation.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_collaboration_runtime_transport",
+        "minimumTests": 42,
+        "source": "tests_python/test_collaboration_runtime_transport.py",
         "allowedSkippedTests": []
       }
     ]

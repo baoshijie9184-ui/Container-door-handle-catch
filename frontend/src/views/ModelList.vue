@@ -90,6 +90,7 @@
           <CollectionEmptyState :loading="loading" :error="listError" :filtered="listLoaded ? Object.keys(appliedFilters).length>0 : !!hasSearch" empty-title="暂无检测模型" :empty-description="isSupervisor?'可使用上方上传入口登记模型，发布后供检测任务选择。':'当前账号可查看已登记模型，需要新增时请联系主管。'" @retry="retryModelList" @reset="resetSearch" />
         </template>
         <el-table-column label="模型与版本" min-width="230"><template #default="{row}"><div class="model-record-cell"><strong>{{ row.modelName||'模型名称未记录' }}</strong><small>版本 {{ row.version||'未记录' }} · ID {{ row.modelId }}</small><span v-if="modelDefault(row.isDefault)==='是'" class="model-default-marker"><AppIcon name="CircleCheck" :size="13" />默认模型</span></div></template></el-table-column>
+        <el-table-column v-if="userStore.capabilities?.changeHistory" label="最近修改 · UTC+8" min-width="205"><template #default="{row}"><ResourceMutationSummary :latest="latestChanges[String(row.modelId)]" :revision="resourceVersion(row,{model:true})" resource-type="DETECTION_MODEL" :resource-id="row.modelId" domain="DETECTION_MODEL" /></template></el-table-column>
         <el-table-column label="训练资料" min-width="210"><template #default="{row}"><div class="model-record-cell"><strong>{{ modelTrainingImages(row.trainingImageCount) }}</strong><small>完成 {{ modelTime(row.trainingCompletedAt) }} · UTC+8</small></div></template></el-table-column>
         <el-table-column label="漏检率 / 速度" min-width="180"><template #default="{row}"><div class="model-record-cell"><strong>整图未检出 {{ modelNoDetection(row).value }}</strong><small>{{ modelNoDetection(row).description }}</small><small>实测 {{ modelFps(row.inferenceFps) }}</small></div></template></el-table-column>
         <el-table-column label="状态" width="120">
@@ -281,6 +282,8 @@ const request=captureAccountRequest()
 import { resourceVersion, mutationHeaders } from '../utils/mutationVersion'
 import { useResourceChanges } from '../composables/useResourceChanges'
 import ResourceChangeHistory from '../components/ResourceChangeHistory.vue'
+import ResourceMutationSummary from '../components/ResourceMutationSummary.vue'
+import { useLatestChanges } from '../composables/useLatestChanges'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import ModelFileJournal from '@/components/ModelFileJournal.vue'
 import CollectionEmptyState from '@/components/CollectionEmptyState.vue'
@@ -298,6 +301,7 @@ const {records:modelList,total,loading,error:listError,loaded:listLoaded,filterE
   validateFilters:filters=>filters.modelId && !validResourceId(String(filters.modelId),'MODELS') ? '请填写有效的正整数模型 ID；尚未执行这组筛选。' : ''
 })
 let pageActive=true,accountGeneration=0
+const { latest:latestChanges } = useLatestChanges(modelList,'DETECTION_MODEL','DETECTION_MODEL','modelId')
 const currentAccount=scope=>pageActive && accountGeneration===scope
 const uncertainModelIds=ref(new Set())
 const modelCommandUncertain=ref(false)
