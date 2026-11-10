@@ -143,6 +143,87 @@ def describe(state):
         raw(state.tools), raw(state.summary), raw(state.measurement), state.helpers, state.row)
 
 
+def test_recent_builder_permission_is_separate_and_pins_the_original_201_source_and_tools():
+    assert resources.RECENT_BUILDER_SOURCES == {
+        'ci-201-803baf401b5f': {
+            'commit': '803baf401b5f9566283a59cb6a885a794b9d7d85',
+            'sourceSha256': '5049079bdb37231b8ca2d59f7865269735ce0ce01cae56d0084a81924fa6767a',
+            'toolsSha256': '352792942c7228c241c34637707f67d964f92ebcab2d8f31577ba6ca2affffdc',
+        },
+    }
+    assert not set(resources.RECENT_BUILDER_SOURCES).intersection(resources.HISTORICAL_BUILDERS)
+    assert len(resources.HISTORICAL_BUILDERS) == 16
+
+
+@pytest.fixture
+def recent_builder(monkeypatch):
+    tag = 'ci-201-803baf401b5f'
+    state = fixture_state((tag, '803baf401b5f9566283a59cb6a885a794b9d7d85',
+                           '6fc35fc387502b40ee8990b617bd5b566c66b5fbeee9c7ddb2888c489b21846f',
+                           'ede5921fbf249493de57e778'))
+    state.context['sourceSha256'] = '5049079bdb37231b8ca2d59f7865269735ce0ce01cae56d0084a81924fa6767a'
+    state.tools.update(state.context); state.summary.update(state.context)
+    state.helpers = dict(resources.RECENT_MYSQL_HELPERS[tag])
+    state.tools['helperSha256'] = state.helpers['compact-build-resources.py']
+    state.tools['imageInputsHelperSha256'] = state.helpers['compact-image-inputs.py']
+    state.row['Config']['Labels']['io.doorhandle.source'] = state.context['sourceSha256']
+    state.row['State']['ExitCode'] = state.summary['cleanup']['builderExitCode'] = 1
+    refresh_references(state)
+    # Pure unit controls have synthetic engine/layer bytes. Replace only their
+    # tools digest in this test scope; production pins remain fixed above.
+    registry = copy.deepcopy(resources.RECENT_BUILDER_SOURCES)
+    registry[tag]['toolsSha256'] = sha(raw(state.tools))
+    monkeypatch.setattr(resources, 'RECENT_BUILDER_SOURCES', registry)
+    return state
+
+
+def test_recent_builder_requires_the_same_complete_original_controls_and_preserves_state(recent_builder):
+    result = describe(recent_builder)
+    assert result['release'] == 'ci-201-803baf401b5f' and result['exitCode'] == 1
+    assert result['controlSha256']['tools'] == sha(raw(recent_builder.tools))
+    assert result['containerId'] == recent_builder.row['Id'] and result['preservedVolume'] == recent_builder.volume
+    assert result['imagesPreserved'] is result['volumesPreserved'] is result['directoriesPreserved'] is True
+
+
+@pytest.mark.parametrize('damage', ['commit', 'source', 'tools', 'helper', 'unreviewed-release'])
+def test_recent_builder_cannot_borrow_a_commit_source_tools_or_helper_revision(recent_builder, damage):
+    if damage == 'commit': recent_builder.context['commit'] = 'f' * 40
+    elif damage == 'source': recent_builder.context['sourceSha256'] = 'f' * 64
+    elif damage == 'tools': recent_builder.tools['unreviewedField'] = True
+    elif damage == 'helper': recent_builder.helpers['compact-build-resources.py'] = 'f' * 64
+    else: recent_builder.context['release'] = 'ci-198-7af0903ee840'
+    with pytest.raises(ValueError): describe(recent_builder)
+
+
+@pytest.mark.parametrize('damage', ['live-pid', 'business-bind'])
+def test_recent_builder_registration_does_not_bypass_live_process_or_business_mount_guards(recent_builder, damage):
+    if damage == 'live-pid': recent_builder.row['State']['Pid'] = 1234
+    else: recent_builder.row['Mounts'].append({'Type': 'bind', 'Source': '/srv/business', 'Destination': '/data', 'RW': True})
+    with pytest.raises(ValueError): describe(recent_builder)
+
+
+def test_recent_builder_removal_uses_only_one_exact_container_and_preserves_the_original_state_volume(recent_builder):
+    descriptor = describe(recent_builder)
+    calls, inspect, remove, listing, references = callbacks(recent_builder)
+    result = resources.historical_builder_remove(descriptor, inspect, remove, listing, references)
+    assert calls.inspected == [recent_builder.row['Id'], recent_builder.row['Id']]
+    assert calls.removed == calls.referenced == [recent_builder.row['Id']] and calls.listed == 1
+    assert result['preservedVolume'] == recent_builder.volume and result['volumesPreserved'] is True
+
+
+@pytest.mark.parametrize('damage', ['commit', 'source', 'tools', 'unregistered-null-commit'])
+def test_recent_builder_remove_rechecks_original_source_and_tools_before_any_callback(recent_builder, damage):
+    descriptor = describe(recent_builder)
+    if damage == 'commit': descriptor['commit'] = 'f' * 40
+    elif damage == 'source': descriptor['sourceSha256'] = 'f' * 64
+    elif damage == 'tools': descriptor['controlSha256']['tools'] = 'f' * 64
+    else: descriptor.update(release='ci-999-' + 'f' * 12, commit=None)
+    calls, inspect, remove, listing, references = callbacks(recent_builder)
+    with pytest.raises(ValueError):
+        resources.historical_builder_remove(descriptor, inspect, remove, listing, references)
+    assert calls.inspected == calls.referenced == calls.removed == [] and calls.listed == 0
+
+
 def change(value, path, replacement):
     keys = path.split('.')
     for key in keys[:-1]:

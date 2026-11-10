@@ -1063,6 +1063,23 @@ RECENT_MYSQL_HELPERS = {
         'compact-image-inputs.py': '1db18e3d1aba9b426f6bfb6b34f22af96cb403c6a97ffef914ea35c308ea795e',
     },
 }
+# Separate from the original sixteen builder/cache permissions. This exact
+# tools digest is anchored by #201's archived ecs-tool-preparation.json.
+RECENT_BUILDER_SOURCES = {
+    'ci-201-803baf401b5f': {
+        'commit': '803baf401b5f9566283a59cb6a885a794b9d7d85',
+        'sourceSha256': '5049079bdb37231b8ca2d59f7865269735ce0ce01cae56d0084a81924fa6767a',
+        'toolsSha256': '352792942c7228c241c34637707f67d964f92ebcab2d8f31577ba6ca2affffdc',
+    },
+}
+
+
+def recent_builder_source(context, tools_sha256):
+    registered = RECENT_BUILDER_SOURCES.get(context.get('release')) if type(context) is dict else None
+    require(registered is not None and set(context) == {'release', 'commit', 'sourceSha256'}
+            and all(context.get(key) == registered[key] for key in ('commit', 'sourceSha256'))
+            and tools_sha256 == registered['toolsSha256'],
+            'Exact recent builder source and original prepared tools required')
 
 
 def _historical_json(raw):
@@ -1095,9 +1112,10 @@ def historical_builder_descriptor(root, context, identity, tools_raw, summary_ra
     deliberately retained; this API never deletes images, volumes or directories.
     """
     require(type(context) is dict and set(context) == {'release', 'commit', 'sourceSha256'}
-            and HISTORICAL_BUILDERS.get(context.get('release')) == context.get('commit')
             and type(context.get('sourceSha256')) is str and SHA.fullmatch(context['sourceSha256']),
             'Only the reviewed historical builders are eligible')
+    if context['release'] not in HISTORICAL_BUILDERS or HISTORICAL_BUILDERS[context['release']] != context['commit']:
+        recent_builder_source(context, hashlib.sha256(tools_raw).hexdigest() if type(tools_raw) is bytes else None)
     require(type(identity) is dict and identity.get('executionLocation') == 'ECS'
             and set(identity) == {'instanceId', 'machineId', 'executionLocation'}, 'Exact historical ECS identity required')
     require(type(old_helper_shas) is dict and set(old_helper_shas) == {'compact-build-resources.py', 'compact-image-inputs.py'}
@@ -1177,8 +1195,12 @@ def historical_builder_remove(descriptor, inspect_fn, remove_fn, list_fn, refere
     Docker refuses an ordinary rm if another actor starts this container after
     the last inspection. Failure or missing readback is never reported as success.
     """
-    require(type(descriptor) is dict and HISTORICAL_BUILDERS.get(descriptor.get('release')) == descriptor.get('commit')
-            and type(descriptor.get('containerId')) is str and SHA.fullmatch(descriptor['containerId'])
+    require(type(descriptor) is dict, 'Reviewed fixed builder descriptor required')
+    if descriptor.get('release') not in HISTORICAL_BUILDERS or HISTORICAL_BUILDERS[descriptor['release']] != descriptor.get('commit'):
+        controls = descriptor.get('controlSha256')
+        recent_builder_source({key: descriptor.get(key) for key in ('release', 'commit', 'sourceSha256')},
+                              controls.get('tools') if type(controls) is dict else None)
+    require(type(descriptor.get('containerId')) is str and SHA.fullmatch(descriptor['containerId'])
             and type(descriptor.get('inspectSha256')) is str and SHA.fullmatch(descriptor['inspectSha256']),
             'Reviewed fixed builder descriptor required')
     cid = descriptor['containerId']
