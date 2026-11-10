@@ -129,8 +129,8 @@ class CompactH2FixtureInstallationTest {
                 + "employee_id,employee_name,employee_number,contact,start_time) "
                 + "VALUES(201,201,'inline-version-device','IMAGE_CAPTURE','fixture','inline-version-serial',"
                 + "101,'fixture','fixture-employee','fixture',TIMESTAMP '2026-01-01 00:00:00')");
-        jdbc.update("INSERT INTO device_alert(id,device_id,device_code,alert_type,alert_message) "
-                + "VALUES(201,201,'inline-version-device','CAPTURE_EXCEPTION','fixture')");
+        jdbc.update("INSERT INTO device_alert(id,alert_id,device_id,device_code,alert_type,alert_message) "
+                + "VALUES(201,'inline-version-alert',201,'inline-version-device','CAPTURE_EXCEPTION','fixture')");
         jdbc.update("INSERT INTO model_management(model_id,model_name,version,model_path) "
                 + "VALUES(201,'inline-version-model','v1','fixture')");
         for (var check : INLINE_VERSION_CHECKS.entrySet()) {
