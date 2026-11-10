@@ -440,8 +440,8 @@ class VerificationCommandFailure(RuntimeError):
         self.label, self.exit_code = label, exit_code
 
 
-def require_complete_assertion_reports(output, entry, profile):
-    """An incomplete/lifecycle/error report never permits another native group."""
+def require_complete_assertion_reports(output, entry, profile, *, require_failure=True):
+    """Complete native XML; the failure path additionally requires assertions."""
     selected = entry['javaSelection']; catalog = entry['reportFiles']
     if not selected or len(set(selected)) != len(selected) or not catalog:
         raise ValueError('Assertion continuation requires every selected original Java report')
@@ -473,7 +473,8 @@ def require_complete_assertion_reports(output, entry, profile):
             result = 'failed' if failure else 'passed'
             for target in (counts, classes[matches[0]]):
                 target['found'] += 1; target[result] += 1
-    if not counts['failed'] or counts != entry['javaTests'] or classes != entry['selectedJavaClasses']:
+    if (not counts['failed'] if require_failure else bool(counts['failed'])) \
+            or counts != entry['javaTests'] or classes != entry['selectedJavaClasses']:
         raise ValueError('Assertion continuation original Java counts differ')
     for name, tally in classes.items():
         required = [row for row in profile['javaSuites'] if row['className'] == name]
@@ -528,7 +529,7 @@ def assertion_command_log(output, label):
 def continue_native_assertions(suite, entry, profile, output, build_root, source_inputs, compiled_outputs,
                                command, error, cleanup_command):
     if type(error) is not VerificationCommandFailure or type(error.exit_code) is not int or error.exit_code != 1 \
-            or error.label != 'java-' + suite['id'] or not suite['fixtureProperties'] \
+            or error.label != suite.get('commandLabel', 'java-' + suite['id']) or not suite['fixtureProperties'] \
             or compiled_outputs is None or source_inputs is None or not callable(cleanup_command):
         raise error
     require_complete_assertion_reports(output, entry, profile)
@@ -779,7 +780,93 @@ def java_maven_arguments(suite, tools, build_root, *, initial, source_regression
         arguments += ['-Dtest=' + ','.join(suite['javaSelection']), '-Dsurefire.failIfNoSpecifiedTests=false']
         if suite['fixtureProperties'] and len(suite['javaSelection']) > 1:
             arguments += ['-DforkCount=1', '-DreuseForks=false', '-Djunit.jupiter.execution.parallel.enabled=false']
-    return arguments + suite['fixtureOptions']
+    arguments += suite['fixtureOptions']
+    module = suite.get('mavenModule')
+    if module is not None:
+        if initial or source_regression or not suite['fixtureProperties'] or not isinstance(module, str) \
+                or not re.fullmatch(r'[A-Za-z0-9_.-]+', module) or module in ('.', '..'):
+            raise ValueError('Only a warm native command may select one explicit reactor module')
+        arguments += ['-pl', module, '-am']
+    return arguments
+
+
+def native_module_parts(suite, profile, build_root, output):
+    """Map each reviewed FQCN to one fixed source and its existing compiled file."""
+    pom = ROOT / 'pom.xml'
+    if pom.is_symlink() or pom.resolve(strict=True) != pom or not pom.is_file():
+        raise ValueError('Native module commands require the unchanged canonical reactor POM')
+    modules = [node.text for node in ET.parse(pom).findall('./{*}modules/{*}module')]
+    if not modules or len(set(modules)) != len(modules) or any(not isinstance(name, str)
+            or not re.fullmatch(r'[A-Za-z0-9_.-]+', name) or name in ('.', '..') for name in modules):
+        raise ValueError('Native module commands require the explicit fixed reactor')
+    artifacts = {}
+    for name in modules:
+        directory = owned_directory(ROOT / name, ROOT)
+        pom = directory / 'pom.xml'
+        if pom.is_symlink() or pom.resolve(strict=True) != pom or not pom.is_file():
+            raise ValueError('Native module command POM is redirected')
+        artifact = ET.parse(pom).findtext('./{*}artifactId')
+        if not artifact or not re.fullmatch(r'[A-Za-z0-9_.-]+', artifact) or artifact in ('.', '..') \
+                or artifact in artifacts.values():
+            raise ValueError('Native module command has an ambiguous compiled artifact directory')
+        artifacts[name] = artifact
+    grouped = {name: [] for name in modules}
+    names = java_classes(suite['javaSelection'])
+    for name in names:
+        if '.' not in name:
+            raise ValueError('Native module commands require reviewed fully qualified class names')
+        relative = Path(*name.split('.'))
+        sources = [ROOT / module / 'src/test/java' / relative.with_suffix('.java') for module in modules]
+        found = [path for path in sources if path.exists() or path.is_symlink()]
+        requirements = [row for row in profile['javaSuites'] if row['className'] == name]
+        if len(found) != 1 or len(requirements) != 1:
+            raise ValueError('Native class does not map uniquely to the fixed test source')
+        source = found[0]; module = source.relative_to(ROOT).parts[0]
+        compiled = build_root / artifacts[module] / 'test-classes' / relative.with_suffix('.class')
+        if requirements[0].get('source') != source.relative_to(ROOT).as_posix():
+            raise ValueError('Native module source differs from the reviewed class profile')
+        bindings = {'className': name}
+        for role, file, parent, maximum in (('source', source, ROOT, 2 * 1024 * 1024),
+                                          ('compiled', compiled, output, 32 * 1024 * 1024)):
+            owned_directory(file.parent, parent)
+            if not file.is_file() or file.is_symlink() or file.resolve(strict=True) != file \
+                    or file.stat().st_uid != os.getuid() or file.stat().st_nlink != 1 \
+                    or file.stat().st_mode & 0o022 or not 0 < file.stat().st_size <= maximum:
+                raise ValueError('Native module source or original compiled class is missing or redirected')
+            raw = file.read_bytes()
+            if role == 'compiled' and (len(raw) < 10 or raw[:4] != b'\xca\xfe\xba\xbe'):
+                raise ValueError('Native module selection requires an actual existing compiled Java class')
+            bindings[role] = {'path': file.relative_to(parent).as_posix(), 'bytes': len(raw),
+                              'sha256': hashlib.sha256(raw).hexdigest()}
+        grouped[module].append(bindings)
+    return [{'module': name, 'javaSelection': [row['className'] for row in grouped[name]],
+             'classBindings': grouped[name]} for name in modules if grouped[name]]
+
+
+def run_native_module_parts(suite, entry, parts, output, run_part, refresh_receipt):
+    """Keep original outer-suite coverage while every module gets its own exit."""
+    entry['moduleCommands'] = []; failed = False
+    selected = [name for part in parts for name in part['javaSelection']]
+    if len(selected) != len(set(selected)) or set(selected) != set(suite['javaSelection']) \
+            or len({part['module'] for part in parts}) != len(parts):
+        raise ValueError('Native module commands must preserve every original selected class exactly once')
+    for part in parts:
+        child = {**suite, 'javaSelection': part['javaSelection'], 'mavenModule': part['module']}
+        observed = {key: child[key] for key in ('id', 'javaSelection', 'fixtureProperties', 'mavenModule')}
+        observed.update(status='FAILED', javaTests=empty_counts(), selectedJavaClasses={}, reportFiles=[],
+                        classBindings=part['classBindings'], compilationMode='SAME_ATTEMPT_COMPILED_BYTES')
+        entry['moduleCommands'].append(observed)
+        try:
+            outcome = run_part(child, observed)
+        finally:
+            entry['reportFiles'].extend(observed['reportFiles'])
+            entry['javaTests'], entry['selectedJavaClasses'] = java_report_counts(output, entry['reportFiles'], suite['javaSelection'])
+            refresh_receipt()
+        if type(outcome) is not bool:
+            raise ValueError('A native module command has no explicit verified outcome')
+        failed = failed or not outcome
+    entry['status'] = 'FAILED' if failed else 'PASS'
+    return not failed
 
 
 def cleanup_source_pytest_temporary(output, receipt, *, ordinary_source, python_succeeded, stop_tools=None):
@@ -943,29 +1030,24 @@ def main():
         if process.returncode:
             raise VerificationCommandFailure(label, process.returncode)
     try:
-        shared_build_root = None; compiled_outputs = None; source_inputs = None
-        def run_java(suite, *, source_regression=False):
-            nonlocal shared_build_root, compiled_outputs, source_inputs
-            label = 'java-source-regression' if source_regression else 'java-' + suite['id']
-            destination = output / ('source-regression/java' if source_regression else 'java')
-            initial = shared_build_root is None
-            if initial:
-                build_root = output / ('java-suites/' + suite['id'])
-                if build_root.exists() or build_root.is_symlink():
-                    raise ValueError('The shared Java compilation requires a fresh owned build output')
-                build_root.mkdir(mode=0o700, parents=True); shared_build_root = build_root
-                source_inputs = java_source_inventory(ROOT)
-            else:
-                build_root = shared_build_root
+        shared_build_root = None; compiled_outputs = None; source_inputs = None; java_command_number = 0
+        def refresh_java_receipt():
+            receipt['javaTests'], receipt['selectedJavaClasses'], receipt['javaReportFiles'] = aggregate_java_suites(receipt['javaSuites'])
+        def run_java_command(suite, entry, *, initial=False, source_regression=False):
+            nonlocal compiled_outputs, java_command_number
+            build_root = shared_build_root
+            if not initial:
                 require_java_reuse(build_root, output, source_inputs, compiled_outputs)
-            entry = {key: suite[key] for key in ('id', 'javaSelection', 'fixtureProperties')}
-            entry.update(status='FAILED', javaTests=empty_counts(), selectedJavaClasses={}, reportFiles=[],
-                         compilationMode='FRESH_REACTOR' if initial else 'SAME_ATTEMPT_COMPILED_BYTES',
-                         compiledBuildRoot=build_root.relative_to(output).as_posix())
             if source_regression:
-                receipt['sourceRegression'] = entry
+                label = 'java-source-regression'
             else:
-                receipt['javaSuites'].append(entry)
+                java_command_number += 1
+                if java_command_number > 999:
+                    raise ValueError('Native Java command logs exceeded their bounded numeric namespace')
+                label = 'java-suite-' + str(java_command_number).zfill(3)
+            suite = {**suite, 'commandLabel': label}; entry['commandLabel'] = label
+            entry['compiledBuildRoot'] = build_root.relative_to(output).as_posix()
+            destination = output / ('source-regression/java' if source_regression else 'java')
             arguments = java_maven_arguments(suite, tools, build_root, initial=initial, source_regression=source_regression)
             command_failure = None
             try:
@@ -977,13 +1059,15 @@ def main():
             finally:
                 entry['reportFiles'] = archive_java_reports(build_root, destination, output)
                 entry['javaTests'], entry['selectedJavaClasses'] = java_report_counts(output, entry['reportFiles'], suite['javaSelection'])
-                receipt['javaTests'], receipt['selectedJavaClasses'], receipt['javaReportFiles'] = aggregate_java_suites(receipt['javaSuites'])
+                refresh_java_receipt()
             if command_failure is not None:
                 if initial or source_regression:
                     raise command_failure
                 return continue_native_assertions(suite, entry, profile, output, build_root, source_inputs, compiled_outputs,
                     arguments, command_failure, tools.get('_assertion_failure_cleanup'))
             require_java_pass(entry['javaTests'], entry['selectedJavaClasses'], fixture=bool(suite['fixtureProperties']))
+            if suite.get('mavenModule') is not None:
+                require_complete_assertion_reports(output, entry, profile, require_failure=False)
             if java_source_inventory(ROOT) != source_inputs:
                 raise ValueError('Fixed Java source changed during verification')
             observed_compiled = java_compiled_inventory(build_root, output)
@@ -1002,6 +1086,33 @@ def main():
             entry['status'] = 'PASS'
             entry['reportOutputCleanup'] = clear_java_reports(build_root, output)
             return True
+        def run_java(suite, *, source_regression=False):
+            nonlocal shared_build_root, source_inputs
+            initial = shared_build_root is None
+            if initial:
+                build_root = output / ('java-suites/' + suite['id'])
+                if build_root.exists() or build_root.is_symlink():
+                    raise ValueError('The shared Java compilation requires a fresh owned build output')
+                build_root.mkdir(mode=0o700, parents=True); shared_build_root = build_root
+                source_inputs = java_source_inventory(ROOT)
+            else:
+                build_root = shared_build_root
+                require_java_reuse(build_root, output, source_inputs, compiled_outputs)
+            entry = {key: suite[key] for key in ('id', 'javaSelection', 'fixtureProperties')}
+            entry.update(status='FAILED', javaTests=empty_counts(), selectedJavaClasses={}, reportFiles=[],
+                         compilationMode='FRESH_REACTOR' if initial else 'SAME_ATTEMPT_COMPILED_BYTES',
+                         compiledBuildRoot=build_root.relative_to(output).as_posix())
+            if source_regression:
+                receipt['sourceRegression'] = entry
+            else:
+                receipt['javaSuites'].append(entry)
+            if not initial and not source_regression and suite['fixtureProperties']:
+                parts = native_module_parts(suite, profile, build_root, output)
+                outcome = run_native_module_parts(suite, entry, parts, output, run_java_command, refresh_java_receipt)
+                entry['compiledBytesSha256'] = hashlib.sha256(json.dumps(compiled_outputs, sort_keys=True).encode()).hexdigest()
+                entry['sourceInputsSha256'] = hashlib.sha256(json.dumps(source_inputs, sort_keys=True).encode()).hexdigest()
+                return outcome
+            return run_java_command(suite, entry, initial=initial, source_regression=source_regression)
         run_native_java_groups(args.java_suites, run_java, receipt)
         if args.source_regression:
             required = java_classes([item['className'] for item in profile['sourceRegression']['requiredClasses']])

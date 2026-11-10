@@ -305,6 +305,159 @@ def test_independent_native_groups_collect_only_safe_assertions_and_block_all_la
         assert receipt.get('nativeAssertionFailures') == (['two'] if mode == 'assertions' else None)
 
 
+@pytest.fixture
+def native_module_workspace(java_workspace):
+    state = java_workspace
+    modules = ['module', 'doorhandle-system', 'doorhandle-ai', 'doorhandle-app']
+    (state.root / 'pom.xml').write_text('<project><modules>' + ''.join('<module>' + name + '</module>' for name in modules)
+                                      + '</modules></project>')
+    for module in modules:
+        directory = state.root / module; directory.mkdir(exist_ok=True)
+        (directory / 'pom.xml').write_text('<project><artifactId>' + module + '-artifact</artifactId></project>')
+    classes = [('org.example.SystemOneTest', 'doorhandle-system'), ('org.example.AgentTest', 'doorhandle-ai'),
+               ('org.example.SystemTwoTest', 'doorhandle-system'), ('org.example.AppTest', 'doorhandle-app')]
+    profile = {'javaSuites': []}
+    for name, module in classes:
+        relative = Path(*name.split('.'))
+        source = state.root / module / 'src/test/java' / relative.with_suffix('.java')
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text('package org.example; class ' + name.rsplit('.', 1)[-1] + ' {}')
+        compiled = state.build / (module + '-artifact') / 'test-classes' / relative.with_suffix('.class')
+        compiled.parent.mkdir(parents=True, exist_ok=True)
+        # This protocol fixture binds existing files, never executes synthetic bytecode.
+        compiled.write_bytes(b'\xca\xfe\xba\xbe\x00\x00\x00\x3d\x00\x01fixed-compiled-fixture')
+        profile['javaSuites'].append({'className': name, 'source': source.relative_to(state.root).as_posix(), 'minimumTests': 1})
+    state.sources = inner.java_source_inventory(state.root); state.compiled = inner.java_compiled_inventory(state.build, state.output)
+    suite = {'id': 'suite-002', 'javaSelection': [name for name, _ in classes], 'fixtureProperties': ['audited.fixture'],
+             'fixtureOptions': ['-Daudited.fixture=/private/original.json'], 'privateInputs': {}}
+    return state, suite, profile
+
+
+@pytest.mark.parametrize('assertion_failure', [False, True])
+def test_cross_module_native_group_executes_every_original_class_once_after_first_module_asserts(native_module_workspace,
+                                                                                               assertion_failure):
+    state, suite, profile = native_module_workspace
+    parts = inner.native_module_parts(suite, profile, state.build, state.output)
+    assert [(part['module'], part['javaSelection']) for part in parts] == [
+        ('doorhandle-system', ['org.example.SystemOneTest', 'org.example.SystemTwoTest']),
+        ('doorhandle-ai', ['org.example.AgentTest']), ('doorhandle-app', ['org.example.AppTest'])]
+    entry = {**{key: suite[key] for key in ('id', 'javaSelection', 'fixtureProperties')}, 'status': 'FAILED',
+             'javaTests': inner.empty_counts(), 'selectedJavaClasses': {}, 'reportFiles': []}
+    visited, commands, originals, receipt = [], [], {}, {'javaSuites': [entry]}
+    def refresh():
+        receipt['javaTests'], receipt['selectedJavaClasses'], receipt['javaReportFiles'] = inner.aggregate_java_suites([entry])
+    def run_part(child, observed):
+        label = 'java-suite-' + str(len(commands) + 2).zfill(3)
+        child['commandLabel'] = label; observed['commandLabel'] = label
+        args = inner.java_maven_arguments(child, {'MAVEN_CMD': '/owned/tools/mvn'}, state.build, initial=False)
+        commands.append(args)
+        assert args[-3:] == ['-pl', child['mavenModule'], '-am']
+        assert suite['fixtureOptions'][0] in args and child['privateInputs'] is suite['privateInputs']
+        assert args[args.index('-Dtest=' + ','.join(child['javaSelection']))].startswith('-Dtest=')
+        directory = state.build / (child['mavenModule'] + '-artifact') / 'surefire-reports'; directory.mkdir()
+        for name in child['javaSelection']:
+            visited.append(name)
+            failure = assertion_failure and name == 'org.example.SystemOneTest'
+            raw = ('<testsuite><testcase classname="' + name + '" name="actual">' +
+                ('<failure type="org.opentest4j.AssertionFailedError">expected 200, observed 500</failure>' if failure else '')
+                + '</testcase></testsuite>').encode()
+            (directory / ('TEST-' + name + '.xml')).write_bytes(raw)
+        observed['reportFiles'] = inner.archive_java_reports(state.build, state.output / 'java', state.output)
+        observed['javaTests'], observed['selectedJavaClasses'] = inner.java_report_counts(
+            state.output, observed['reportFiles'], child['javaSelection'])
+        for ref in observed['reportFiles']: originals[ref['path']] = (state.output / ref['path']).read_bytes()
+        (state.output / (label + '.log')).write_bytes(b'Original independent Maven command output')
+        if observed['javaTests']['failed']:
+            return inner.continue_native_assertions(child, observed, profile, state.output, state.build, state.sources,
+                state.compiled, args, inner.VerificationCommandFailure(label, 1),
+                lambda command: {'cleanup': {'status': 'STOPPED', 'remaining': []}})
+        inner.require_java_pass(observed['javaTests'], observed['selectedJavaClasses'], fixture=True)
+        observed['status'] = 'PASS'; inner.clear_java_reports(state.build, state.output)
+        return True
+    def run(_suite): return inner.run_native_module_parts(suite, entry, parts, state.output, run_part, refresh)
+    if assertion_failure:
+        with pytest.raises(RuntimeError, match='all later verification remains blocked'):
+            inner.run_native_java_groups([suite], run, receipt)
+        assert entry['status'] == 'FAILED' and receipt['nativeAssertionFailures'] == ['suite-002']
+    else:
+        inner.run_native_java_groups([suite], run, receipt)
+        assert entry['status'] == 'PASS'
+        # The original outer suite still has the same standard evidence shape.
+        entry['id'] = 'suite-001'; remote.validate_java_suites(receipt, state.output, mysql=True)
+    assert len(visited) == len(set(visited)) == 4 and set(visited) == set(suite['javaSelection'])
+    assert len(commands) == len(entry['moduleCommands']) == 3
+    assert receipt['javaTests'] == {'found': 4, 'passed': 3 if assertion_failure else 4,
+                                   'failed': 1 if assertion_failure else 0, 'skipped': 0}
+    assert originals == {ref['path']: (state.output / ref['path']).read_bytes() for ref in entry['reportFiles']}
+    assert all(remote.allowed_evidence('reports/' + observed['commandLabel'] + '.log') for observed in entry['moduleCommands'])
+
+
+@pytest.mark.parametrize('damage', ['duplicate-source', 'profile-source-drift', 'missing-class', 'class-link',
+    'source-link', 'bad-class-header', 'duplicate-artifact', 'simple-class-name'])
+def test_native_module_mapping_requires_unique_reviewed_source_and_original_compiled_class(native_module_workspace, damage):
+    state, suite, profile = native_module_workspace
+    source = state.root / 'doorhandle-system/src/test/java/org/example/SystemOneTest.java'
+    compiled = state.build / 'doorhandle-system-artifact/test-classes/org/example/SystemOneTest.class'
+    if damage == 'duplicate-source':
+        duplicate = state.root / 'doorhandle-ai/src/test/java/org/example/SystemOneTest.java'
+        duplicate.parent.mkdir(parents=True, exist_ok=True); duplicate.write_bytes(source.read_bytes())
+    elif damage == 'profile-source-drift': profile['javaSuites'][0]['source'] = 'another/module/Test.java'
+    elif damage == 'missing-class': compiled.unlink()
+    elif damage in ('class-link', 'source-link'):
+        target = compiled if damage == 'class-link' else source
+        original = state.root / 'unrelated-file'; original.write_bytes(target.read_bytes()); target.unlink(); target.symlink_to(original)
+    elif damage == 'bad-class-header': compiled.write_bytes(b'not original Java bytecode')
+    elif damage == 'duplicate-artifact':
+        (state.root / 'doorhandle-ai/pom.xml').write_text('<project><artifactId>doorhandle-system-artifact</artifactId></project>')
+    elif damage == 'simple-class-name': suite['javaSelection'][0] = 'SystemOneTest'
+    with pytest.raises(ValueError): inner.native_module_parts(suite, profile, state.build, state.output)
+
+
+def test_successful_module_exit_still_requires_every_reviewed_class_minimum(java_workspace):
+    state = java_workspace; _, entry, profile = assertion_group(state)
+    reference = entry['reportFiles'][0]; path = state.output / reference['path']
+    raw = re.sub(b'<failure[^>]*>.*?</failure>', b'', path.read_bytes())
+    path.write_bytes(raw); reference.update(bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest())
+    entry['javaTests'], entry['selectedJavaClasses'] = inner.java_report_counts(state.output, entry['reportFiles'], entry['javaSelection'])
+    inner.require_complete_assertion_reports(state.output, entry, profile, require_failure=False)
+    profile['javaSuites'][0]['minimumTests'] = 3
+    with pytest.raises(ValueError, match='omitted a selected'):
+        inner.require_complete_assertion_reports(state.output, entry, profile, require_failure=False)
+
+
+@pytest.mark.parametrize('damage', ['omitted-class', 'repeated-class'])
+def test_module_partition_cannot_reduce_or_replay_the_original_native_selection(native_module_workspace, damage):
+    state, suite, profile = native_module_workspace
+    parts = inner.native_module_parts(suite, profile, state.build, state.output)
+    if damage == 'omitted-class': parts.pop()
+    else: parts.append(dict(parts[0]))
+    entry = {'reportFiles': []}; calls = []
+    with pytest.raises(ValueError, match='every original selected class exactly once'):
+        inner.run_native_module_parts(suite, entry, parts, state.output, lambda *args: calls.append(args), lambda: None)
+    assert calls == []
+
+
+def test_unknown_module_command_failure_stops_before_the_other_original_modules(native_module_workspace):
+    state, suite, profile = native_module_workspace
+    parts = inner.native_module_parts(suite, profile, state.build, state.output)
+    entry = {'status': 'FAILED', 'reportFiles': []}; calls = []
+    def unsafe(child, observed):
+        calls.append(child['mavenModule'])
+        raise ValueError('Unknown executor or fixture safety state')
+    with pytest.raises(ValueError, match='Unknown executor'):
+        inner.run_native_module_parts(suite, entry, parts, state.output, unsafe, lambda: None)
+    assert calls == ['doorhandle-system'] and entry['status'] == 'FAILED'
+
+
+@pytest.mark.parametrize('mode', ['initial', 'source-regression', 'no-fixture'])
+def test_only_warm_native_java_commands_may_select_a_reactor_module(tmp_path, mode):
+    suite = {'javaSelection': ['org.example.Test'], 'fixtureProperties': [] if mode == 'no-fixture' else ['fixture'],
+             'fixtureOptions': [], 'mavenModule': 'doorhandle-system'}
+    with pytest.raises(ValueError, match='Only a warm native command'):
+        inner.java_maven_arguments(suite, {'MAVEN_CMD': '/fixed/mvn'}, tmp_path,
+                                  initial=mode == 'initial', source_regression=mode == 'source-regression')
+
+
 def preparation_transport_source():
     source = (ROOT / 'script/jenkins/pipeline.ps1').read_text(encoding='utf8')
     begin = source.index('        $prepareCommand = ')
