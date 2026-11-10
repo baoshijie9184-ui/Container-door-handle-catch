@@ -31,14 +31,21 @@ public class ModelFilePersistence {
         jdbc.queryForList("SELECT event_id,resource_id,request_id,content_sha256,quantity,unit,outcome,revision,occurred_at,payload_json FROM audit_event WHERE 1=0");
     }
     public WorkflowRecord reserve(long actor,String fileId,String request,String path) {
-        JdbcTransactions.requireActive(jdbc);
-        var body=new ModelFileProtocol.UploadV1(path,ModelFileProtocol.sha(path),null,null,null,null,null);
-        // A retry with a newly generated file ID is a different upload and fails before writing bytes.
-        var row=workflows.create(new WorkflowDraft(ModelFileProtocol.UPLOAD_PREFIX+fileId,WorkflowKind.MODEL_FILE_UPLOAD,
-                JdbcWorkflowStore.ownerScope(actor),request,ModelFileProtocol.requestDigest(actor,fileId,request,body.pathSha256()),
-                actor,actor,null,"DETECTION_MODEL_FILE",fileId,null,null,null,"RESERVED",null,1,body));
+        var row=claim(actor,fileId,request,path,ModelFileProtocol.requestDigest(actor,fileId,request,ModelFileProtocol.sha(path)));
         if(!"RESERVED".equals(row.status()))throw new WorkflowConflictException("模型文件请求已推进，不能重新写入文件");
         return row;
+    }
+    public Optional<WorkflowRecord> byRequest(long actor,String request){
+        ModelFileProtocol.request(request);
+        return workflows.findByRequest(WorkflowKind.MODEL_FILE_UPLOAD,JdbcWorkflowStore.ownerScope(actor),request);
+    }
+    public WorkflowRecord claim(long actor,String fileId,String request,String path,String intentDigest) {
+        JdbcTransactions.requireActive(jdbc);
+        if(intentDigest==null||!intentDigest.matches("[a-f0-9]{64}"))throw new IllegalArgumentException("模型上传请求摘要无效");
+        var body=new ModelFileProtocol.UploadV1(path,ModelFileProtocol.sha(path),null,null,null,null,null);
+        return workflows.create(new WorkflowDraft(ModelFileProtocol.UPLOAD_PREFIX+fileId,WorkflowKind.MODEL_FILE_UPLOAD,
+                JdbcWorkflowStore.ownerScope(actor),request,intentDigest,
+                actor,actor,null,"DETECTION_MODEL_FILE",fileId,null,null,null,"RESERVED",null,1,body));
     }
     public WorkflowRecord ready(long actor,ModelUploadFiles.Prepared file) {
         var before=owned(actor,file,"RESERVED");var body=payload(before);

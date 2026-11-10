@@ -18,9 +18,11 @@ import java.util.UUID;
 /** Private immutable managed uploads. Failed or uncertain registration never deletes their bytes. */
 @Service
 public class ModelUploadFiles {
-    public record Prepared(String fileId,String requestId,long actorUserId,Path path,String sha256,long size) {
+    public record Prepared(String fileId,String requestId,long actorUserId,Path path,String sha256,long size,Integer registeredModelId) {
+        public Prepared(String fileId,String requestId,long actorUserId,Path path,String sha256,long size){this(fileId,requestId,actorUserId,path,sha256,size,null);}
         @Override public String toString() { return "PreparedModelFile["+fileId+"]"; }
     }
+    private record Intent(long actor,String request,String sha256,long size,String digest){}
     private final ObjectProvider<ModelFileJournal> journals;
     private final ModelMutationIdentity identity;
     private final Path root;
@@ -31,10 +33,17 @@ public class ModelUploadFiles {
         this.journals=journals;this.identity=identity;this.root=Path.of(root).toAbsolutePath().normalize();this.maxBytes=maxBytes;
         if(maxBytes<1) throw new IllegalArgumentException("模型上传限制无效");
     }
-    public Prepared write(MultipartFile upload) {
+    public java.util.Optional<Prepared> reusable(MultipartFile upload,String name,String version,String description){
+        if(TransactionSynchronizationManager.isActualTransactionActive())throw new IllegalStateException("模型上传不能在数据库事务中执行");
+        var journal=journals.getIfAvailable();if(journal==null)return java.util.Optional.empty();
+        var intent=intent(upload,name,version,description);
+        return journal.reusable(intent.actor(),intent.request(),intent.digest()).map(file->{matching(file,intent);verify(file);return file;});
+    }
+    public Prepared write(MultipartFile upload){return write(upload,null,null,null);}
+    public Prepared write(MultipartFile upload,String name,String version,String description) {
         if(TransactionSynchronizationManager.isActualTransactionActive()) throw new IllegalStateException("模型上传不能在数据库事务中执行");
-        var actor=identity.supervisor();
-        String request=identity.requestId(),fileId=UUID.randomUUID().toString();
+        var intent=intent(upload,name,version,description);
+        String request=intent.request(),fileId=UUID.randomUUID().toString();
         Path target=root.resolve(fileId+".onnx");
         if(target.toString().length()>255) throw new BusinessException("模型存储目录过长，未开始写入");
         var journal=journals.getIfAvailable();
@@ -42,7 +51,10 @@ public class ModelUploadFiles {
             checkParents(root);
             Files.createDirectories(root);
             checkParents(root);
-            if(journal!=null) journal.reserve(fileId,request,target.toString());
+            if(journal!=null){
+                var reused=journal.claim(intent.actor(),fileId,request,target.toString(),intent.digest());
+                if(reused!=null){matching(reused,intent);verify(reused);return reused;}
+            }
             var digest=MessageDigest.getInstance("SHA-256");long count=0;
             java.util.Set<OpenOption> options=java.util.Set.of(StandardOpenOption.CREATE_NEW,StandardOpenOption.WRITE,LinkOption.NOFOLLOW_LINKS);
             java.nio.file.attribute.FileAttribute<?>[] attributes=Files.getFileAttributeView(root,java.nio.file.attribute.PosixFileAttributeView.class)==null
@@ -61,13 +73,30 @@ public class ModelUploadFiles {
                 if(count<1 || count!=upload.getSize()) throw new BusinessException("模型文件长度不一致，保留上传记录待核对");
                 output.force(true);
             }
-            var result=new Prepared(fileId,request,actor.userId(),target,HexFormat.of().formatHex(digest.digest()),count);
+            String actualHash=HexFormat.of().formatHex(digest.digest());
+            if(count!=intent.size()||!actualHash.equals(intent.sha256()))throw new BusinessException(409,"模型上传内容在读取时变化，保留文件待核对");
+            var result=new Prepared(fileId,request,intent.actor(),target,actualHash,count);
             if(journal!=null) journal.ready(result);
             return result;
         } catch(IOException failure) {
             // Even an error returned from commit can mean SQL committed. Never delete on uncertainty.
             throw new BusinessException("保存模型文件未完成，请使用请求编号核对，不要自动重试");
         } catch(java.security.NoSuchAlgorithmException failure) { throw new IllegalStateException(failure); }
+    }
+    private Intent intent(MultipartFile upload,String name,String version,String description){
+        var actor=identity.supervisor();String request=identity.requestId();
+        try(InputStream input=upload.getInputStream()){
+            var hash=MessageDigest.getInstance("SHA-256");long count=0;int read;byte[] buffer=new byte[65536];
+            while((read=input.read(buffer))!=-1){if(read<1)continue;if(read>maxBytes-count)throw new BusinessException(400,"模型文件超过上传大小限制");hash.update(buffer,0,read);count+=read;}
+            if(count<1||count!=upload.getSize())throw new BusinessException(400,"模型文件长度不一致，未开始写入");
+            String digest=HexFormat.of().formatHex(hash.digest());
+            return new Intent(actor.userId(),request,digest,count,ModelFileProtocol.uploadIntentDigest(actor.userId(),request,digest,count,name,version,description));
+        }catch(IOException failure){throw new BusinessException(500,"模型上传内容无法核对，未开始写入");}
+        catch(java.security.NoSuchAlgorithmException impossible){throw new IllegalStateException(impossible);}
+    }
+    private static void matching(Prepared file,Intent intent){
+        if(file.actorUserId()!=intent.actor()||!file.requestId().equals(intent.request())||file.size()!=intent.size()||!file.sha256().equals(intent.sha256()))
+            throw new BusinessException(409,"同一请求编号的模型文件证据与上传内容不同");
     }
     public void verify(Prepared file) {
         var actor=identity.supervisor();
@@ -86,7 +115,7 @@ public class ModelUploadFiles {
                 }
             }
             if(count!=file.size() || !file.sha256().equals(HexFormat.of().formatHex(digest.digest()))) throw new IOException("changed");
-        } catch(IOException failure) { throw new BusinessException("模型文件已变化，未登记，保留文件待核对"); }
+        } catch(IOException failure) { throw new BusinessException(409,"模型文件已变化，未登记，保留文件待核对"); }
         catch(java.security.NoSuchAlgorithmException failure) { throw new IllegalStateException(failure); }
     }
     /** Old metadata forms cannot claim another managed upload or detach its registered evidence. */

@@ -33,7 +33,9 @@ public class ModelRegistrationService {
                               ModelValidationService.ValidationResult validation) {
         var actor=identity.supervisor();
         if(actor.userId()!=file.actorUserId()) throw new SecurityException("模型上传账号已变化");
-        if(models.selectByModelNameAndVersion(name,version)!=null) throw new BusinessException("模型名称和版本已存在");
+        // REGISTERED can be returned only by the shared command receipt before this method is invoked.
+        if(file.registeredModelId()!=null)throw new BusinessException(409,"模型上传已登记但业务回执不可重放，请按请求编号核对");
+        if(models.selectByModelNameAndVersion(name,version)!=null) throw new BusinessException(409,"模型名称和版本已存在");
         var model=new ModelInfo();
         model.setModelId(models.selectNextModelId());model.setModelName(name);model.setVersion(version);
         model.setModelPath(file.path().toString());model.setUploadTime(LocalDateTime.now());

@@ -55,12 +55,20 @@ public class ModelController {
             ModelInfo modelInfo = modelService.uploadModel(file, modelName, version, updateDescription);
             log.info("模型上传成功: ID={}", modelInfo.getModelId());
             return Result.success(modelInfo);
+        } catch (com.ruanzhu.doorhandle.common.BusinessException conflict) {
+            throw conflict;
         } catch (SecurityException forbidden) {
             throw forbidden;
         } catch (Exception e) {
             log.warn("模型上传未确认，需按请求编号核对: {}",e.getClass().getSimpleName());
-            return Result.error(500, "模型上传未确认，请按请求编号核对文件记录和模型列表，不要自动重试");
+            throw new com.ruanzhu.doorhandle.common.BusinessException(500,"模型上传未确认，请按请求编号核对文件记录和模型列表，不要自动重试");
         }
+    }
+    @ExceptionHandler(com.ruanzhu.doorhandle.common.BusinessException.class)
+    public org.springframework.http.ResponseEntity<Result<Void>> uploadFailure(com.ruanzhu.doorhandle.common.BusinessException failure){
+        int code=failure.getCode();
+        return org.springframework.http.ResponseEntity.status(code>=400&&code<600?code:400)
+                .header("Cache-Control","no-store").body(Result.error(code,failure.getMessage()));
     }
 
     /**

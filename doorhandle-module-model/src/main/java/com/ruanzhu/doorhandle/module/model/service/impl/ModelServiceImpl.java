@@ -51,13 +51,19 @@ public class ModelServiceImpl implements ModelService {
         if(modelName==null || modelName.isBlank() || modelName.length()>100 || version==null || version.isBlank() || version.length()>20
                 || (updateDescription!=null && updateDescription.length()>500)) throw new BusinessException("模型名称、版本或说明长度无效");
 
-        ModelInfo existingModel = modelInfoMapper.selectByModelNameAndVersion(modelName, version);
-        if (existingModel != null) {
-            throw new BusinessException("模型名称和版本已存在");
+        var reusable=uploadFiles.reusable(file,modelName,version,updateDescription);
+        if (reusable.isEmpty()&&modelInfoMapper.selectByModelNameAndVersion(modelName,version)!=null) {
+            throw new BusinessException(409,"模型名称和版本已存在");
         }
 
-        var prepared=uploadFiles.write(file);
-        var validation=modelValidationService.validate(prepared.path());
+        var prepared=reusable.orElseGet(()->uploadFiles.write(file,modelName,version,updateDescription));
+        ModelValidationService.ValidationResult validation;
+        if(prepared.registeredModelId()!=null){
+            var registered=modelInfoMapper.selectByModelId(prepared.registeredModelId());
+            if(registered==null||!prepared.path().toString().equals(registered.getModelPath()))throw new BusinessException(409,"模型登记回执与当前文件引用不一致，请核对后处理");
+            // Only the registration aspect may return the original BUSINESS_COMMAND receipt.
+            validation=new ModelValidationService.ValidationResult(registered.getValidationStatus(),registered.getValidationMessage());
+        }else validation=modelValidationService.validate(prepared.path());
         uploadFiles.verify(prepared);
         // Registration is a separate proxied SQL transaction; uncertainty must not trigger byte deletion.
         for(int attempt=0;attempt<3;attempt++) {

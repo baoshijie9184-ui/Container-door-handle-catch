@@ -38,6 +38,13 @@ final class ModelFileProtocol {
         if(actor<=0)throw new IllegalArgumentException("模型文件操作人无效");identity(fileId);request(request);digest(pathHash);
         return sha(actor+"\n"+fileId+"\n"+request+"\n"+pathHash);
     }
+    /** New HTTP uploads bind the request to client intent before any file bytes are created. Legacy hashes remain read-only. */
+    static String uploadIntentDigest(long actor,String request,String contentHash,long bytes,String name,String version,String description) {
+        if(actor<=0||bytes<1)throw new IllegalArgumentException("模型上传事实无效");request(request);digest(contentHash);
+        if(contentHash==null)throw new IllegalArgumentException("模型上传摘要缺失");
+        return sha("doorhandle-model-upload-intent-v1\n"+actor+"\n"+part(request)+part(contentHash)+bytes+"\n"+part(name)+part(version)+part(description));
+    }
+    private static String part(String value){return value==null?"-1:":value.length()+":"+value;}
     static void identity(String value){if(value==null||!value.matches("[A-Za-z0-9_-]{1,36}"))throw new IllegalArgumentException("模型文件标识无效");}
     static void request(String value){if(value==null||!value.matches("[A-Za-z0-9_-]{1,128}"))throw new IllegalArgumentException("模型文件请求编号无效");}
     static void path(String value,String hash) {

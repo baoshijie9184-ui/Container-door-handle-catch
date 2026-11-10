@@ -11,6 +11,11 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 import java.util.UUID;
 import java.util.List;
 import java.time.LocalDateTime;
+import java.util.Optional;
+import java.util.Objects;
+import com.ruanzhu.doorhandle.common.BusinessException;
+import com.ruanzhu.doorhandle.framework.persistence.workflow.WorkflowRecord;
+import com.ruanzhu.doorhandle.framework.persistence.workflow.WorkflowConflictException;
 
 /** Model-owned file intentions. No filesystem mutation is performed inside a SQL transaction. */
 @Service
@@ -46,6 +51,33 @@ public class ModelFileJournal {
             var row=files.reserve(actor.userId(),fileId,requestId,path);
             append(actor,"FILE_RESERVED",fileId,requestId,row.revision());
         });
+    }
+    /** Read-only retry admission; an uncertain reservation never authorizes another filesystem write. */
+    public Optional<ModelUploadFiles.Prepared> reusable(long expectedActor,String request,String intentDigest){
+        outsideTransaction();var actor=identity.supervisor();
+        if(actor.userId()!=expectedActor)throw new SecurityException("模型上传账号已变化");
+        return files.byRequest(actor.userId(),request).map(row->reusable(row,actor.userId(),request,intentDigest));
+    }
+    /** Returns null only when this exact new file identity owns the committed reservation. */
+    public ModelUploadFiles.Prepared claim(long expectedActor,String fileId,String request,String path,String intentDigest){
+        outsideTransaction();var actor=identity.supervisor();
+        if(actor.userId()!=expectedActor)throw new SecurityException("模型上传账号已变化");
+        try{return tx.execute(status->{
+            var row=files.claim(actor.userId(),fileId,request,path,intentDigest);
+            if(fileId.equals(row.resourceId())&&"RESERVED".equals(row.status())){
+                append(actor,"FILE_RESERVED",fileId,request,row.revision());return null;
+            }
+            return reusable(row,actor.userId(),request,intentDigest);
+        });}catch(WorkflowConflictException different){throw new BusinessException(409,"同一请求编号的模型上传内容不同或状态待核对");}
+    }
+    private ModelUploadFiles.Prepared reusable(WorkflowRecord row,long actor,String request,String intentDigest){
+        if(row.ownerUserId()!=actor||!Objects.equals(row.actorUserId(),actor)||!Objects.equals(row.requestId(),request)
+                ||!Objects.equals(row.requestSha256(),intentDigest))throw new BusinessException(409,"同一请求编号的模型上传内容不同，或旧上传证据不支持重放");
+        if(!"FILE_READY".equals(row.status())&&!"REGISTERED".equals(row.status()))throw new BusinessException(409,"模型上传结果待核对或文件已保留，不能重新写入");
+        var body=files.payload(row);
+        if(body.contentSha256()==null||body.byteSize()==null||body.byteSize()<1||body.legacyCreatedAt()!=null||("REGISTERED".equals(row.status())&&body.modelId()==null))
+            throw new BusinessException(409,"模型上传证据不完整，不能重放");
+        return new ModelUploadFiles.Prepared(row.resourceId(),request,actor,java.nio.file.Path.of(body.storagePath()),body.contentSha256(),body.byteSize(),"REGISTERED".equals(row.status())?body.modelId():null);
     }
     public void ready(ModelUploadFiles.Prepared file) {
         outsideTransaction();
