@@ -130,7 +130,7 @@ public class AuthController {
                 .map(value -> value.substring("ROLE_".length()))
                 .findFirst().orElse("INSPECTOR"));
         if (authentication.getPrincipal() instanceof TenantPrincipal principal) {
-            response.put("userId", principal.userId());
+            response.put("userId", principal.userId()==null?null:principal.userId().toString());
             response.put("identity", accountIdentities.mine(principal));
             response.put("accountContext",principal.accountContext()!=null?principal.accountContext():com.ruanzhu.doorhandle.module.system.service.LoginSessionService.legacyAccountContext(principal.userId(),principal.username()));
         }

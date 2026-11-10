@@ -96,7 +96,7 @@ public class OperationsAuditService implements OperationsAuditApi {
         args.add(Math.min(1000,size*10));var rows=jdbc.queryForList(sql+" ORDER BY id DESC LIMIT ?",args.toArray());
         var items=new ArrayList<ChangeHistory.Item>();String cursor=null;
         for(var row:rows){cursor=String.valueOf(row.get("id"));var payload=decode(row);boolean allowed=allowed(actor,row,payload);
-            if(allowed||((Number)row.get("actor_user_id")).longValue()==actor.userId())items.add(item(row,payload,allowed));
+            if(allowed||((Number)row.get("actor_user_id")).longValue()==actor.userId()||legacySummary(actor,payload))items.add(item(row,payload,allowed));
             if(items.size()==size)break;}
         return new ChangeHistory.Page(items,rows.isEmpty()?null:cursor);
     }
@@ -105,8 +105,10 @@ public class OperationsAuditService implements OperationsAuditApi {
         var actor=current(requested);if(id==null||!id.matches("[1-9][0-9]{0,18}"))throw new IllegalArgumentException("记录编号无效");
         var rows=jdbc.queryForList("SELECT * FROM audit_event WHERE kind='OPERATIONS' AND id=?",Long.parseLong(id));
         if(rows.size()!=1)throw new SecurityException("记录不存在或无权查看");
-        var row=rows.get(0);var payload=decode(row);if(!allowed(actor,row,payload))throw new SecurityException("当前无权读取资源历史");
-        var item=item(row,payload,true);return new ChangeHistory.Detail(item.id(),item.eventId(),item.actor(),item.domain(),item.resourceType(),
+        var row=rows.get(0);var payload=decode(row);boolean allowed=allowed(actor,row,payload);
+        boolean ownLegacy=payload.detail()==null&&((Number)row.get("actor_user_id")).longValue()==actor.userId();
+        if(!allowed&&!ownLegacy&&!legacySummary(actor,payload))throw new SecurityException("当前无权读取资源历史");
+        var item=item(row,payload,allowed);return new ChangeHistory.Detail(item.id(),item.eventId(),item.actor(),item.domain(),item.resourceType(),
                 item.resourceId(),item.action(),item.result(),item.beforeVersion(),item.afterVersion(),item.requestId(),item.occurredAt(),item.scope(),
                 item.diffAvailable(),payload.detail()==null?List.of():payload.detail().changes());
     }
@@ -115,9 +117,14 @@ public class OperationsAuditService implements OperationsAuditApi {
         if(payload.detail()==null)return false;
         return resourceAccess.stream().anyMatch(access->access.mayRead(actor,payload.scope(),payload.domain(),payload.detail().resourceType(),String.valueOf(row.get("resource_id"))));
     }
+    private static boolean legacySummary(AgentActor actor,OperationsAuditPersistence.Decoded payload){
+        // V1 has no trustworthy resource type/field snapshot. Preserve the existing enterprise metadata view,
+        // while returning no inferred resource identity, actor role, revisions or field differences.
+        return payload.detail()==null&&actor.supervisor()&&"ENTERPRISE".equals(payload.scope());
+    }
     private OperationsAuditPersistence.Decoded decode(Map<String,Object> row){return records.decode(((Number)row.get("payload_version")).intValue(),String.valueOf(row.get("payload_json")));}
     private ChangeHistory.Item item(Map<String,Object> row,OperationsAuditPersistence.Decoded payload,boolean allowed) {
-        var detail=payload.detail();var identity=new ChangeHistory.Actor(String.valueOf(row.get("actor_user_id")),
+        var detail=payload.detail();allowed=allowed&&detail!=null;var identity=new ChangeHistory.Actor(String.valueOf(row.get("actor_user_id")),
                 detail==null?null:detail.actorUsername(),detail==null?null:detail.actorDisplayName(),detail==null?null:detail.actorRole());
         Object time=row.get("occurred_at");java.time.Instant instant=time instanceof LocalDateTime date?date.toInstant(java.time.ZoneOffset.UTC):((java.sql.Timestamp)time).toInstant();
         return new ChangeHistory.Item(String.valueOf(row.get("id")),String.valueOf(row.get("event_id")),identity,payload.domain(),

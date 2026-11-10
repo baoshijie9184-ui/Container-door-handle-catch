@@ -20,7 +20,10 @@ import java.util.*;
 public class AccountAccessService {
     public record Change(@NotNull Boolean enabled,@NotBlank @Pattern(regexp="SUPERVISOR|INSPECTOR") String role,
                          @NotNull @Min(0) Long expectedVersion,@NotBlank @Pattern(regexp="[A-Za-z0-9_-]{8,100}") String requestId) {}
-    public record View(long userId,String username,boolean enabled,String role,long accountVersion) {}
+    public record View(
+            @com.fasterxml.jackson.databind.annotation.JsonSerialize(using=com.fasterxml.jackson.databind.ser.std.ToStringSerializer.class) long userId,
+            String username,boolean enabled,String role,
+            @com.fasterxml.jackson.databind.annotation.JsonSerialize(using=com.fasterxml.jackson.databind.ser.std.ToStringSerializer.class) long accountVersion) {}
     private final UserMapper users;
     private final JdbcTemplate jdbc;
     private final LoginEligibilityService eligibility;

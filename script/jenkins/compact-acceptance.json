@@ -31,6 +31,67 @@
       ]
     },
     {
+      "id": "DetectionCollaborationMySqlTest",
+      "className": "com.ruanzhu.doorhandle.module.detection.service.DetectionCollaborationMySqlTest",
+      "fixtureProperties": [
+        "doorhandle.report.mysql.config"
+      ],
+      "source": "doorhandle-module-detection/src/test/java/com/ruanzhu/doorhandle/module/detection/service/DetectionCollaborationMySqlTest.java",
+      "minimumTests": 5,
+      "coverage": [
+        "enabled task claims and stable identity diffs, exact replay and report audit rollback"
+      ]
+    },
+    {
+      "id": "ModelUploadIdempotencyMySqlTest",
+      "className": "com.ruanzhu.doorhandle.module.model.service.ModelUploadIdempotencyMySqlTest",
+      "fixtureProperties": [
+        "model.file.copy.source-config",
+        "model.file.copy.target-config"
+      ],
+      "source": "doorhandle-module-model/src/test/java/com/ruanzhu/doorhandle/module/model/service/ModelUploadIdempotencyMySqlTest.java",
+      "minimumTests": 9,
+      "coverage": [
+        "verified file and command replay, mismatched content, unknown outcomes and HTTP conflicts"
+      ]
+    },
+    {
+      "id": "BusinessMutationCollaborationTest",
+      "className": "com.ruanzhu.doorhandle.module.system.service.BusinessMutationCollaborationTest",
+      "fixtureProperties": [
+        "doorhandle.operations.mysql.config"
+      ],
+      "source": "doorhandle-module-system/src/test/java/com/ruanzhu/doorhandle/module/system/service/BusinessMutationCollaborationTest.java",
+      "minimumTests": 5,
+      "coverage": [
+        "enabled mutation concurrency, immutable command replay and mandatory audit rollback"
+      ]
+    },
+    {
+      "id": "OperationsChangeHistoryTest",
+      "className": "com.ruanzhu.doorhandle.module.system.service.OperationsChangeHistoryTest",
+      "fixtureProperties": [
+        "doorhandle.operations.mysql.config"
+      ],
+      "source": "doorhandle-module-system/src/test/java/com/ruanzhu/doorhandle/module/system/service/OperationsChangeHistoryTest.java",
+      "minimumTests": 5,
+      "coverage": [
+        "V1 and V2 history, operation-time actor snapshots and current resource authorization"
+      ]
+    },
+    {
+      "id": "LoginSessionMySqlTest",
+      "className": "com.ruanzhu.doorhandle.module.system.service.LoginSessionMySqlTest",
+      "fixtureProperties": [
+        "doorhandle.operations.mysql.config"
+      ],
+      "source": "doorhandle-module-system/src/test/java/com/ruanzhu/doorhandle/module/system/service/LoginSessionMySqlTest.java",
+      "minimumTests": 12,
+      "coverage": [
+        "durable independent login sessions, revocation, current account eligibility and versioned account access"
+      ]
+    },
+    {
       "id": "ConfirmationMigrationMySqlTest",
       "className": "com.ruanzhu.doorhandle.module.ai.action.ConfirmationMigrationMySqlTest",
       "fixtureProperties": [
@@ -556,7 +617,7 @@
         "doorhandle.feature.mysql.config"
       ],
       "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/model/PersonalModelQuotaMySqlTest.java",
-      "minimumTests": 12,
+      "minimumTests": 13,
       "coverage": [
         "model configuration, quota and token accounts"
       ]
@@ -716,6 +777,66 @@
     "mode": "ALL_WITHOUT_FIXTURE_OR_LIVE_FLAGS",
     "allowInfrastructureOptInSkips": true,
     "requiredClasses": [
+      {
+        "className": "com.ruanzhu.doorhandle.module.system.controller.ResultHttpStatusAdviceTest",
+        "minimumTests": 2,
+        "source": "doorhandle-module-system/src/test/java/com/ruanzhu/doorhandle/module/system/controller/ResultHttpStatusAdviceTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.device.controller.DeviceControllerHttpStatusTest",
+        "minimumTests": 6,
+        "source": "doorhandle-module-device/src/test/java/com/ruanzhu/doorhandle/module/device/controller/DeviceControllerHttpStatusTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.model.controller.ModelControllerHttpStatusTest",
+        "minimumTests": 6,
+        "source": "doorhandle-module-model/src/test/java/com/ruanzhu/doorhandle/module/model/controller/ModelControllerHttpStatusTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.system.config.CollaborationJsonConfigurationTest",
+        "minimumTests": 3,
+        "source": "doorhandle-module-system/src/test/java/com/ruanzhu/doorhandle/module/system/config/CollaborationJsonConfigurationTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.system.service.AuditMetadataTest",
+        "minimumTests": 4,
+        "source": "doorhandle-module-system/src/test/java/com/ruanzhu/doorhandle/module/system/service/AuditMetadataTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.system.controller.CollaborationConcurrencyExceptionHandlerTest",
+        "minimumTests": 6,
+        "source": "doorhandle-module-system/src/test/java/com/ruanzhu/doorhandle/module/system/controller/CollaborationConcurrencyExceptionHandlerTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.system.realtime.BusinessRealtimeServiceTest",
+        "minimumTests": 11,
+        "source": "doorhandle-module-system/src/test/java/com/ruanzhu/doorhandle/module/system/realtime/BusinessRealtimeServiceTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.system.controller.BusinessRealtimeControllerTest",
+        "minimumTests": 11,
+        "source": "doorhandle-module-system/src/test/java/com/ruanzhu/doorhandle/module/system/controller/BusinessRealtimeControllerTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.system.service.BusinessFieldChangesTest",
+        "minimumTests": 5,
+        "source": "doorhandle-module-system/src/test/java/com/ruanzhu/doorhandle/module/system/service/BusinessFieldChangesTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.system.service.LoginEligibilityServiceTest",
+        "minimumTests": 6,
+        "source": "doorhandle-module-system/src/test/java/com/ruanzhu/doorhandle/module/system/service/LoginEligibilityServiceTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.system.service.LegacyAuthContextTest",
+        "minimumTests": 5,
+        "source": "doorhandle-module-system/src/test/java/com/ruanzhu/doorhandle/module/system/service/LegacyAuthContextTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.system.security.LoginSessionFilterTest",
+        "minimumTests": 7,
+        "source": "doorhandle-module-system/src/test/java/com/ruanzhu/doorhandle/module/system/security/LoginSessionFilterTest.java"
+      },
       {
         "className": "com.ruanzhu.doorhandle.module.ai.workbench.WorkbenchMigrationStatisticsSessionTest",
         "minimumTests": 7,
@@ -1463,6 +1584,7 @@
         "tests/assistant-contracts.test.cjs",
         "tests/beijing-time.test.cjs",
         "tests/chat-file-references.test.cjs",
+        "tests/collaboration-context.test.cjs",
         "tests/composer-resources.test.cjs",
         "tests/conversation-control.test.cjs",
         "tests/deployment-contracts.test.cjs",
@@ -1479,7 +1601,7 @@
         "tests/tool-execution.test.cjs",
         "tests/trace-references.test.cjs"
       ],
-      "minimumTests": 23,
+      "minimumTests": 40,
       "requiredCommands": [
         "frontend-install",
         "frontend-test",

@@ -143,7 +143,9 @@ for property_name, classes in (
         'IdentityPersistenceMySqlTest')),
     ('doorhandle.digest.mysql.config', ('QualityDigestMySqlTest',)),
     ('doorhandle.operations.mysql.config', ('AccountIdentityServiceTest', 'FileDeliveryAuditMySqlTest',
-        'BusinessMutationAuditTest', 'OperationsAuditServiceTest')),
+        'BusinessMutationAuditTest', 'OperationsAuditServiceTest', 'LoginSessionMySqlTest',
+        'BusinessMutationCollaborationTest', 'OperationsChangeHistoryTest')),
+    ('doorhandle.report.mysql.config', ('DetectionCollaborationMySqlTest',)),
 ):
     for class_name in classes:
         FIXTURE_CLASSES[class_name] = (property_name,)
@@ -166,6 +168,7 @@ for class_name, source, target in (
     ('ResearchExportMigrationMySqlTest', 'agent.research.copy.source-config', 'agent.research.copy.target-config'),
     ('MemoryGovernanceMigrationMySqlTest', 'agent.memory.copy.source-config', 'agent.memory.copy.target-config'),
     ('ModelFileGovernanceMySqlTest', 'model.file.copy.source-config', 'model.file.copy.target-config'),
+    ('ModelUploadIdempotencyMySqlTest', 'model.file.copy.source-config', 'model.file.copy.target-config'),
     ('ModelOperationAuditMySqlTest', 'model.log.copy.source-config', 'model.log.copy.target-config'),
     ('InfraOperationAuditMySqlTest', 'infra.log.copy.source-config', 'infra.log.copy.target-config'),
 ):

@@ -4,6 +4,7 @@ import lombok.Data;
 
 @Data
 public class LoginResponse {
+    @com.fasterxml.jackson.databind.annotation.JsonSerialize(using=com.fasterxml.jackson.databind.ser.std.ToStringSerializer.class)
     private Long userId;
     private String token;
     private String refreshToken;

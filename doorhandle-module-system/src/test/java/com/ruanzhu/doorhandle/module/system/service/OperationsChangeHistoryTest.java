@@ -32,6 +32,13 @@ class OperationsChangeHistoryTest {
     private void append(){tx.executeWithoutResult(status->service.appendChange(new OperationsAuditApi.ChangeEvent(
             new OperationsAuditApi.Event(actor,"ENTERPRISE","DEVICE","UPDATE","41","change-one","APPLIED",6L),"DEVICE","Original Name",5L,
             List.of(new ChangeHistory.Change("status","状态","REPLACE","IDLE","IN_USE","SCALAR",false)))));}
+    @Test void supervisorCanReadOtherActorsLegacyEnterpriseMetadataWithoutInventingDiffs(){
+        tx.executeWithoutResult(status->service.append(new OperationsAuditApi.Event(actor,"ENTERPRISE","DEVICE","OLD_WRITE","41","legacy-other","APPLIED",-7L)));
+        var page=service.changes(reader,Long.MAX_VALUE,50,noFilter);assertThat(page.items()).hasSize(1);
+        var item=page.items().get(0);assertThat(item.actor().role()).isNull();assertThat(item.resourceType()).isNull();assertThat(item.diffAvailable()).isFalse();
+        var detail=service.change(reader,item.id());assertThat(detail.diffAvailable()).isFalse();assertThat(detail.changes()).isEmpty();
+        assertThat(detail.beforeVersion()).isNull();assertThat(detail.afterVersion()).isNull();
+    }
     @Test void actorSnapshotSurvivesLaterDemotionAndAccountDisappearance(){
         append();when(users.current(actor.userId(),actor.username())).thenThrow(new SecurityException("old actor no longer exists"));
         var item=service.changes(reader,Long.MAX_VALUE,50,noFilter).items().get(0);

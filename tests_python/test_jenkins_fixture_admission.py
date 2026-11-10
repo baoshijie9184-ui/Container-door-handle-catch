@@ -373,17 +373,17 @@ def provisioned_profile():
     return requirements, provisioned
 
 
-def test_actual_profile_batches_all_56_classes_and_original_paths_without_property_collisions(monkeypatch):
+def test_actual_profile_batches_all_61_classes_and_original_paths_without_property_collisions(monkeypatch):
     preparer = mysql_control_module('prepare-compact-fixtures.py', monkeypatch)
     requirements, provisioned = provisioned_profile()
     before = json.dumps(provisioned, sort_keys=True)
     groups = preparer.group_provisioned_suites(provisioned, requirements)
-    assert len(requirements) == 56 and sum(item['minimumTests'] for item in requirements) == 584
+    assert len(requirements) == 61 and sum(item['minimumTests'] for item in requirements) == 621
     assert len(groups) == 12 and groups[0] == provisioned[0]
     assert groups[0]['javaTests'] == [requirements[0]['className']]
     original = {item['javaTests'][0]: item['fixtureProperties'] for item in provisioned}
     selected = [name for group in groups for name in group['javaTests']]
-    assert len(selected) == len(set(selected)) == 56 and set(selected) == set(original)
+    assert len(selected) == len(set(selected)) == 61 and set(selected) == set(original)
     for group in groups:
         assert 1 <= len(group['javaTests']) <= 6
         keys = [key for name in group['javaTests'] for key in original[name]]
