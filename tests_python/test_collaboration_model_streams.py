@@ -44,8 +44,11 @@ def test_browser_preserves_existing_numeric_and_exact_string_execution_reply_ids
 
 @pytest.mark.parametrize('value', [None, True, 7.0, 0, -1, 9007199254740992, '', '0', '01', '1.0', '-1', '9223372036854775808'])
 def test_browser_rejects_missing_noncanonical_and_rounded_execution_reply_ids(value):
-    with pytest.raises(ValueError):
+    code = ('model_reply_identity_outside_signed_range' if value == '9223372036854775808'
+            else 'model_reply_identity_must_be_lossless')
+    with pytest.raises(browser.CheckError) as rejected:
         browser.model_reply_id(value)
+    assert rejected.value.args == (code,)
 TOKEN = 'owned-private-runtime-token'
 
 
