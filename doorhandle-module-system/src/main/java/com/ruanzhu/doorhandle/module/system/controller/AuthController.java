@@ -177,7 +177,13 @@ public class AuthController {
                 .sameSite("Lax")
                 .build();
     }
-    private Long cookieLifetime(java.time.Instant expiresAt,Long fallback){return expiresAt==null?fallback:Math.max(0L,java.time.Duration.between(java.time.Instant.now(),expiresAt).getSeconds());}
+    private Long cookieLifetime(java.time.Instant expiresAt, Long fallback) {
+        // 保留可空配置值，交由 cookie() 统一按零秒处理。
+        if (expiresAt == null) {
+            return fallback;
+        }
+        return Math.max(0L, java.time.Duration.between(java.time.Instant.now(), expiresAt).getSeconds());
+    }
 
     private ResponseCookie buildRefreshCookie(String token, Long maxAgeSeconds) {
         return buildRefreshCookie(null,token,maxAgeSeconds);
