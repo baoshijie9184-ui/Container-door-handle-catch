@@ -46,6 +46,14 @@ class LoginSessionFilterTest {
         var principal=(TenantPrincipal)SecurityContextHolder.getContext().getAuthentication().getPrincipal();
         assertThat(principal.sessionDigest()).isEqualTo(LoginSessionService.digest(sid));assertThat(principal.accountContext()).isEqualTo(context);
         assertThat(request.getAttribute("doorhandle.auth.accessExpiresAt")).isEqualTo(accessExpiry);
+        for(String role:List.of("SUPERVISOR","INSPECTOR")){
+            String alias=role.equals("SUPERVISOR")?"ADMIN":"OPERATOR";
+            when(sessions.requireActive(42L,"alice",LoginSessionService.digest(sid))).thenReturn(
+                    new LoginSessionAccess.Session(42,"alice",role,LoginSessionService.digest(sid),context,Instant.now().plusSeconds(86400)));
+            when(users.loadUserByUsername("alice")).thenReturn(new TenantPrincipal(42L,"alice","hash",List.of(new SimpleGrantedAuthority("ROLE_"+role),new SimpleGrantedAuthority("ROLE_"+alias))));
+            assertThat(call(request("GET")).getStatus()).isEqualTo(200);
+            assertThat(SecurityContextHolder.getContext().getAuthentication().getAuthorities()).extracting("authority").containsExactly("ROLE_"+role);
+        }
     }
     @Test void missingOrStalePageContextCannotWriteThroughANewCookie()throws Exception{
         authenticated(true);for(String supplied:List.of("","old-page")){
@@ -67,6 +75,30 @@ class LoginSessionFilterTest {
     @Test void disabledCurrentAccountReachesSessionRevocationBeforeUserDetailsLoading()throws Exception{
         authenticated(true);when(sessions.requireActive(42L,"alice",LoginSessionService.digest(sid))).thenThrow(new org.springframework.security.authentication.DisabledException("disabled"));
         assertThat(call(request("GET")).getStatus()).isEqualTo(401);verifyNoInteractions(users);
+    }
+    @Test void aRoleChangeBetweenSessionAndCurrentUserReadsCannotReinstallTheEarlierAuthority()throws Exception{
+        for(String oldRole:List.of("SUPERVISOR","INSPECTOR")){
+            authenticated(true);String currentRole=oldRole.equals("SUPERVISOR")?"INSPECTOR":"SUPERVISOR";
+            when(sessions.requireActive(42L,"alice",LoginSessionService.digest(sid))).thenReturn(
+                    new LoginSessionAccess.Session(42,"alice",oldRole,LoginSessionService.digest(sid),context,Instant.now().plusSeconds(86400)));
+            when(users.loadUserByUsername("alice")).thenReturn(new TenantPrincipal(42L,"alice","hash",List.of(new SimpleGrantedAuthority("ROLE_"+currentRole))));
+            SecurityContextHolder.getContext().setAuthentication(new org.springframework.security.authentication.UsernamePasswordAuthenticationToken(
+                    new TenantPrincipal(42L,"alice","hash",List.of(new SimpleGrantedAuthority("ROLE_"+oldRole))),null,List.of(new SimpleGrantedAuthority("ROLE_"+oldRole))));
+            var downstream=new MockFilterChain();var response=new MockHttpServletResponse();filter.doFilter(request("GET"),response,downstream);
+            assertThat(response.getStatus()).isEqualTo(401);assertThat(downstream.getRequest()).isNull();
+            assertThat(SecurityContextHolder.getContext().getAuthentication()).isNull();
+        }
+        when(users.loadUserByUsername("alice")).thenReturn(new TenantPrincipal(42L,"alice","hash",List.of(
+                new SimpleGrantedAuthority("ROLE_INSPECTOR"),new SimpleGrantedAuthority("ROLE_SUPERVISOR"))));
+        assertThat(call(request("GET")).getStatus()).isEqualTo(401);
+        assertThat(SecurityContextHolder.getContext().getAuthentication()).isNull();
+    }
+    @Test void aRenameBetweenSessionAndCurrentUserReadsCannotAuthenticateThePreviousAccountName()throws Exception{
+        authenticated(true);when(users.loadUserByUsername("alice")).thenReturn(
+                new TenantPrincipal(42L,"renamed-alice","hash",List.of(new SimpleGrantedAuthority("ROLE_INSPECTOR"))));
+        var downstream=new MockFilterChain();var response=new MockHttpServletResponse();filter.doFilter(request("GET"),response,downstream);
+        assertThat(response.getStatus()).isEqualTo(401);assertThat(downstream.getRequest()).isNull();
+        assertThat(SecurityContextHolder.getContext().getAuthentication()).isNull();
     }
     @Test void refreshCredentialCannotAuthenticateABusinessRead()throws Exception{
         authenticated(true);when(jwt.isAccessToken("access")).thenReturn(false);when(jwt.isRefreshToken("access")).thenReturn(true);

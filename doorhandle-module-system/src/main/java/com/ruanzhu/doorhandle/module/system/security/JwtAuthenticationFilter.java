@@ -95,9 +95,13 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                 log.debug("加载用户详情成功: {}", username);
 
                 boolean tenantMatches = userDetails instanceof TenantPrincipal principal
-                        && userId.equals(principal.userId());
+                        && userId.equals(principal.userId()) && username.equals(principal.getUsername());
+                // Account/personnel facts can change after requireActive and before
+                // this second current-account read. Do not re-install the earlier
+                // session role over a newer role (or a renamed current account).
+                boolean currentRoleMatches = active == null || currentRoleMatches(userDetails,active.role());
                 // 兼容历史 JWT（无 type claim），但明确拒绝 refresh token 访问业务接口。
-                if (jwtUtil.validateToken(jwt) && !jwtUtil.isRefreshToken(jwt) && tenantMatches && userDetails.isEnabled()) {
+                if (jwtUtil.validateToken(jwt) && !jwtUtil.isRefreshToken(jwt) && tenantMatches && currentRoleMatches && userDetails.isEnabled()) {
                     if(sessions!=null&&sessions.enabled()){
                         java.time.Instant accessExpiresAt=jwtUtil.getExpiresAt(jwt);
                         if(accessExpiresAt==null||!accessExpiresAt.isAfter(java.time.Instant.now())){handleTokenInvalid(response);return;}
@@ -144,6 +148,13 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     private boolean isWhitelisted(String requestPath) {
         return whiteList.stream().anyMatch(path->path.endsWith("/")?requestPath.startsWith(path):requestPath.equals(path));
     }
+    private static boolean currentRoleMatches(UserDetails details,String role){
+        // requireActive has already applied the explicit per-account legacy-role
+        // decision. Compatible aliases describe one role, never two independent roles.
+        var allowed="SUPERVISOR".equals(role)?java.util.Set.of("ROLE_SUPERVISOR","ROLE_ADMIN"):
+                "INSPECTOR".equals(role)?java.util.Set.of("ROLE_INSPECTOR","ROLE_OPERATOR"):java.util.Set.<String>of();
+        return !details.getAuthorities().isEmpty()&&details.getAuthorities().stream().allMatch(authority->allowed.contains(authority.getAuthority()));
+    }
     /** Browser cookie writes require an exact same-origin source; proxy Host must retain the public host. */
     private boolean trustedOrigin(HttpServletRequest request){
         String supplied=request.getHeader("Origin");
@@ -189,6 +200,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     }
 
     private void handleTokenInvalid(HttpServletResponse response) throws IOException {
+        SecurityContextHolder.clearContext();
         response.setStatus(HttpStatus.UNAUTHORIZED.value());
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
 
