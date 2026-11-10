@@ -1343,7 +1343,7 @@
       },
       {
         "module": "tests_python.test_failed_native_jar_duplicates",
-        "minimumTests": 145,
+        "minimumTests": 169,
         "source": "tests_python/test_failed_native_jar_duplicates.py",
         "allowedSkippedTests": []
       },
@@ -1427,7 +1427,7 @@
       },
       {
         "module": "tests_python.test_jenkins_suite_evidence",
-        "minimumTests": 63,
+        "minimumTests": 131,
         "source": "tests_python/test_jenkins_suite_evidence.py",
         "allowedSkippedTests": []
       },
@@ -1637,7 +1637,7 @@
       },
       {
         "module": "tests_python.test_jenkins_maven_dependency_cache",
-        "minimumTests": 61,
+        "minimumTests": 88,
         "source": "tests_python/test_jenkins_maven_dependency_cache.py",
         "allowedSkippedTests": []
       },
