@@ -39,6 +39,9 @@ public class OperationsAuditService implements OperationsAuditApi {
         records.append(actor.userId(),event.scope(),event.domain(),event.action(),event.resourceId(),event.requestId(),event.result(),event.resourceVersion());
     }
     @Override @Transactional public void appendChange(ChangeEvent change) {
+        appendChangeWithReceipt(change);
+    }
+    @Override @Transactional public ChangeReceipt appendChangeWithReceipt(ChangeEvent change) {
         // This internal port receives the actor authorized and locked before the mutation.
         // Re-deriving a role after a self-demotion would rewrite the operation-time fact.
         var event=change.metadata();var actor=event.actor();
@@ -49,6 +52,7 @@ public class OperationsAuditService implements OperationsAuditApi {
         if(receipt.created()&&publisher!=null)publisher.publishEvent(new BusinessResourceChanged(receipt.eventId(),receipt.auditId(),
                 event.scope(),event.domain(),change.resourceType(),event.resourceId(),string(event.resourceVersion()),
                 event.action(),event.requestId(),actor.userId(),receipt.occurredAt()));
+        return new ChangeReceipt(receipt.auditId(),receipt.eventId(),string(event.resourceVersion()));
     }
     /** Server-only identity snapshot, called by the mutation aspect before the domain write. */
     public String actorDisplayName(AgentActor actor){

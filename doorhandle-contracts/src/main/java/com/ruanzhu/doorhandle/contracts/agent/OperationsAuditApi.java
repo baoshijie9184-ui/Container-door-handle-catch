@@ -8,6 +8,8 @@ public interface OperationsAuditApi {
             java.util.List<com.ruanzhu.doorhandle.contracts.collaboration.ChangeHistory.Change> changes) {
         public ChangeEvent { changes = java.util.List.copyOf(changes); }
     }
+    record ChangeReceipt(String auditId, String eventId, String resourceVersion) { }
     void append(Event event);
     default void appendChange(ChangeEvent event) { throw new IllegalStateException("Versioned change audit is unavailable"); }
+    default ChangeReceipt appendChangeWithReceipt(ChangeEvent event) { throw new IllegalStateException("Versioned change audit receipt is unavailable"); }
 }
