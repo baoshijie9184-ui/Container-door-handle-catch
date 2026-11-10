@@ -196,9 +196,10 @@ def test_browser_and_controller_reject_invalid_probe_protocol(key, value):
 
 
 @contextmanager
-def actual_provider():
+def actual_provider(scripts=None):
+    owned_scripts = fixture.Scripts() if scripts is None else scripts
     class Handler(fixture.Handler):
-        scripts = fixture.Scripts()
+        scripts = owned_scripts
         token = '1' * 64
     server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
     server.daemon_threads = True
@@ -212,43 +213,95 @@ def actual_provider():
         thread.join(timeout=2)
 
 
-def open_stream(port, marker):
-    client = http.client.HTTPConnection('127.0.0.1', port, timeout=5)
-    client.request('POST', '/v1/chat/completions', fixture.encoded({'model': 'runtime-scripted', 'stream': True,
-        'messages': [{'role': 'user', 'content': marker}], 'stream_options': {'include_usage': True}}),
-        {'Content-Type': 'application/json', 'Authorization': 'Bearer runtime-fixture'})
-    response = client.getresponse()
-    assert response.status == 200 and response.getheader('Content-Type') == 'text/event-stream'
-    while True:
-        line = response.readline()
-        assert line
-        if line.startswith(b'data:') and b'"content"' in line:
-            assert marker.encode() in line
-            return client, response
+def open_stream(port, marker, *, timeout=5):
+    client = http.client.HTTPConnection('127.0.0.1', port, timeout=timeout)
+    try:
+        client.request('POST', '/v1/chat/completions', fixture.encoded({'model': 'runtime-scripted', 'stream': True,
+            'messages': [{'role': 'user', 'content': marker}], 'stream_options': {'include_usage': True}}),
+            {'Content-Type': 'application/json', 'Authorization': 'Bearer runtime-fixture'})
+        response = client.getresponse()
+        assert response.status == 200 and response.getheader('Content-Type') == 'text/event-stream'
+        while True:
+            line = response.readline()
+            assert line
+            if line.startswith(b'data:') and b'"content"' in line:
+                assert marker.encode() in line
+                return client, response
+    except BaseException:
+        client.close()
+        raise
 
 
-def test_actual_provider_flushes_two_contents_before_finish_without_holding_queue_lock():
-    with actual_provider() as (port, scripts):
+def test_actual_provider_flushes_two_contents_before_finish_without_holding_queue_lock(monkeypatch):
+    class ObservedScripts(fixture.Scripts):
+        def __init__(self):
+            super().__init__()
+            self.stream_thread = threading.local()
+            self.opened = {marker: threading.Event() for marker in MARKERS}
+            self.at_delay = {marker: threading.Event() for marker in MARKERS}
+            self.closed = {marker: threading.Event() for marker in MARKERS}
+
+        def stream_event(self, marker, event, delay=0):
+            super().stream_event(marker, event, delay)
+            if marker in self.opened:
+                if event == 'opened': self.opened[marker].set()
+                elif event == 'content': self.stream_thread.marker = marker
+                elif event == 'closed':
+                    self.stream_thread.marker = None
+                    self.closed[marker].set()
+
+        def observations(self):
+            return {marker: {'opened': self.opened[marker].is_set(), 'atDelay': self.at_delay[marker].is_set(),
+                             'closed': self.closed[marker].is_set()} for marker in MARKERS}
+
+    scripts, release_delay, clock = ObservedScripts(), threading.Event(), fixture.time
+    deadline = clock.monotonic() + 5
+
+    def observed_sleep(seconds):
+        marker = getattr(scripts.stream_thread, 'marker', None)
+        if seconds != 1.5 or marker not in scripts.at_delay:
+            return clock.sleep(seconds)
+        # Observe the real Handler delay call, after actual content flush and
+        # accounting. This unit-only rendezvous never gates the deployed fixture.
+        scripts.at_delay[marker].set()
+        assert release_delay.wait(max(0, deadline - clock.monotonic())), scripts.observations()
+        return clock.sleep(seconds)
+
+    monkeypatch.setattr(fixture, 'time', SimpleNamespace(time=clock.time, monotonic=clock.monotonic, sleep=observed_sleep))
+    with actual_provider(scripts) as (port, scripts):
         for marker in MARKERS:
             arm(scripts, marker, delay=1500)
         clients = []
         try:
             for marker in MARKERS:
-                clients.append(open_stream(port, marker))
+                remaining = deadline - clock.monotonic()
+                assert remaining > 0, scripts.observations()
+                clients.append(open_stream(port, marker, timeout=remaining))
+            for arrived in scripts.at_delay.values():
+                assert arrived.wait(max(0, deadline - clock.monotonic())), scripts.observations()
+            acquired = scripts.lock.acquire(timeout=max(0, deadline - clock.monotonic()))
+            try:
+                assert acquired, scripts.observations()
+            finally:
+                if acquired: scripts.lock.release()
             active = scripts.state()['markers']
             assert all(row['activeStreams'] == 1 and row['streamFirstChunks'] == 1
-                and row['streamFinishes'] == 0 and row['remainingSteps'] == 0 for row in active)
+                and row['streamFinishes'] == 0 and row['remainingSteps'] == 0 for row in active), active
+            release_delay.set()
             for _client, response in clients:
                 tail = response.read()
                 assert b'"finish_reason":"stop"' in tail and b'"usage"' in tail and tail.endswith(b'data: [DONE]\n\n')
-            deadline = time.monotonic() + 2
-            while any(row['activeStreams'] for row in scripts.state()['markers']) and time.monotonic() < deadline:
-                time.sleep(.01)
-            assert all(row['activeStreams'] == 0 and row['streamFinishes'] == 1
-                and row['streamDelayMillisObserved'] >= 1500 for row in scripts.state()['markers'])
         finally:
+            release_delay.set()
             for client, _response in clients:
                 client.close()
+            closed_deadline = clock.monotonic() + 2
+            for marker, closed in scripts.closed.items():
+                if scripts.opened[marker].is_set():
+                    assert closed.wait(max(0, closed_deadline - clock.monotonic())), scripts.observations()
+        completed = scripts.state()['markers']
+        assert all(row['activeStreams'] == 0 and row['streamFinishes'] == 1
+            and row['streamDelayMillisObserved'] >= 1500 for row in completed), completed
 
 
 def test_proxy_cannot_gate_model_response_to_manufacture_concurrency():
