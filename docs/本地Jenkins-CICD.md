@@ -1,5 +1,7 @@
 # 本地 Jenkins CI/CD 约定
 
+2026-11-11 #213续验：Auth两项/组织四项真实ECS通过，source在设备告警旧身份夹具以153通过/1错误/103跳过后失败，未进入后续Java/Python/前端/250恢复。已修源头认证门和夹具，13模块离线test-compile32.411秒通过，仍无本地测试。下一轮只重跑完整`verify/source`＋同一250输入，不重跑已成功的精确维护；所有源代码先提交推送、固定最终提交，再由Jenkins clean package及ECS验收。63份原归档核验、工具STOPPED及流水线外实际节省停机已完成；当前80GiB尚无同意，不在流水线中改变机器容量或启停。
+
 2026-11-11 最新实测：`b484ea12`的#210控制1,853项全通过，#211维护SUCCESS并保全22份三方SHA原件；两构建器、一停止MySQL对象及四JAR已按原件链处理，数据/卷/镜像/源码/报告保留。#212源码验证在Java阶段119通过/3错误/94条件跳过后FAILURE，250项资料尚未恢复。Cookie空值生产分支及组织/报告standalone认证测试已集中修复，13模块离线跳测试package53.016秒成功；组织测试2→4，profile最低数同步4，不增加控制模块或重跑已闭合维护。下一轮对最终已推送提交直接执行同一完整`verify/source`＋250输入；原完整`verify-runtime/mysql`仍待容量审定及全部实测。#212原件及清理已保全，ECS实际节省停机，Jenkins运行，修复期间任务禁自动触发。
 
 2026-11-11 源码补齐后验证顺序：同一最终提交先`verify-controls`（20模块最低1,853项），成功后执行原维护ACTION的`ClosedRuntime`，依次精确普通移除两退出BuildKit、一个停止MySQL对象并证明#207无对象，再回收四JAR；收齐原plan/receipt/journal/inspect并回读实际空间。其后补独立`verify/source`＋`remaining-business-records-v1`＋本地已封存snapshot的250项原资料恢复，不带MySQL/旧45表/runtime输入；完整source成功是保全前提，不能用controls-only替代。原完整`verify-runtime/mysql`及其全部验收门继续保留，启动前仍须审定足够容量，不因控制或维护成功而放行生产。新增源码尚待ECS实测，本地不运行测试。
