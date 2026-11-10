@@ -1,3 +1,5 @@
+import { AccountBoundary } from './AccountBoundary';
+import { accountFetch as fetch } from '../../frontend/src/utils/accountFetch';
 import {SYSTEM_NAME,SYSTEM_SHORT_NAME,SYSTEM_TAGLINE,AGENT_WORKSPACE_NAME} from '../../frontend/src/utils/systemBrand';
 import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -349,4 +351,4 @@ function App() {
 
 }
 
-createRoot(document.getElementById('root')).render(<AgentErrorBoundary businessHref={BUSINESS} traceHref={TRACE}><App /></AgentErrorBoundary>);
+createRoot(document.getElementById('root')).render(<AgentErrorBoundary businessHref={BUSINESS} traceHref={TRACE}><AccountBoundary loginHref={LOGIN}><App /></AccountBoundary></AgentErrorBoundary>);

@@ -1,9 +1,12 @@
 import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import request from '../api/request'
 import { knownCount } from '../utils/countPresentation'
+import { useUserStore } from '../stores/user'
+import { useResourceChanges } from './useResourceChanges'
 
 // Read-only state for existing operational collection endpoints.
 export function useManagedList(endpoint, filterKeys, options={}) {
+  const user = useUserStore()
   const filters = reactive(Object.fromEntries(filterKeys.map(key => [key,''])))
   const pagination = reactive({current:1,size:10})
   const records = ref([]), total = ref(null), loading = ref(false), error = ref(''), loaded = ref(false), filterError=ref('')
@@ -62,10 +65,12 @@ export function useManagedList(endpoint, filterKeys, options={}) {
   const retry=()=>read(requested.value || {page:pagination.current,size:pagination.size,filters:snapshot()})
   const changePage=page=>Number.isSafeInteger(Number(page))&&Number(page)>0?read({page:Number(page),size:pagination.size,filters:applied.value?.filters || snapshot()}):Promise.resolve(false)
   const changeSize=size=>Number.isSafeInteger(Number(size))&&Number(size)>0?read({page:1,size:Number(size),filters:applied.value?.filters || snapshot()}):Promise.resolve(false)
-  if(options.scope)watch(options.scope,()=>{
+  watch(options.scope || (()=>JSON.stringify([user.accountEpoch,user.accountContext,user.role,user.isAuthenticated])),()=>{
     generation++;pendingKey='';loading.value=false;error.value='';filterError.value='';clear();applied.value=null;requested.value=null;pagination.current=1
     for(const key of filterKeys)filters[key]=''
     if(!disposed && (!options.canRead || options.canRead()))search()
   },{flush:'sync'})
+  const resource = ({'/api/employees':'EMPLOYEE','/api/devices':'DEVICE','/api/model-info':'DETECTION_MODEL'})[endpoint]
+  if(resource)useResourceChanges({resourceType:resource,isEditing:()=>!!options.isEditing?.(),refresh})
   return {records,total,loading,error,loaded,filterError,filters,pagination,hasFilters,filtersDirty,appliedFilters,search,reset,refresh,retry,changePage,changeSize}
 }

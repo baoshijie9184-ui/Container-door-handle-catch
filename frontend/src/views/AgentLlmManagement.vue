@@ -7,6 +7,7 @@
       </template>
     </PageHero>
 
+    <el-alert v-if="quotaChanged" title="额度或申请资料可能已更新 当前未提交内容已保留" type="warning" :closable="false"><el-button text @click="refreshQuotaLatest">核对最新记录</el-button></el-alert>
     <section v-if="supervisor" class="operation-toolbar llm-admin" aria-label="主管管理入口">
       <span><AppIcon name="Operation" :size="16" />主管管理</span>
       <router-link to="/agent/model-budgets">企业额度与供应商核对<AppIcon name="ArrowRight" :size="14" /></router-link>
@@ -90,16 +91,21 @@
           <p v-if="dialogMode === 'cancel'" class="operation-muted">确认取消这条尚未审批的申请？取消后如需额度，可重新提交新申请。</p>
           <p v-else class="operation-muted">{{ draft.decision === 'APPROVE' ? '批准后追加该成员的个人额度，已有消耗与预留保持不变。' : '拒绝后保留申请与审批记录，成员可重新申请。' }}</p>
         </template>
-        <label v-if="dialogMode !== 'cancel'">{{ dialogMode === 'apply' ? '申请说明' : '审批说明' }}<el-input v-model="draft.reason" type="textarea" :rows="4" maxlength="500" show-word-limit :disabled="locked" :placeholder="dialogMode === 'apply' ? '说明使用场景和预计用量' : '填写本次审批依据'" /></label>
+        <label v-if="dialogMode !== 'cancel' && dialogMode !== 'view'">{{ dialogMode === 'apply' ? '申请说明' : '审批说明' }}<el-input v-model="draft.reason" type="textarea" :rows="4" maxlength="500" show-word-limit :disabled="locked" :placeholder="dialogMode === 'apply' ? '说明使用场景和预计用量' : '填写本次审批依据'" /></label>
         <el-alert v-if="formError" :title="formError" type="error" :closable="false" />
+        <p v-if="selectedApplication"><router-link :to="resourceHistoryLink('LLM_QUOTA_APPLICATION',selectedApplication.id,'LLM_QUOTA_APPLICATION')">核对本申请修改记录</router-link></p>
+        <el-alert v-if="quotaConflict" title="申请版本已变化 未提交说明已保留 需要明确核对新版本后再次确认" type="warning" :closable="false"><el-button text @click="reloadQuotaApplication">重新核对当前申请</el-button></el-alert>
         <p v-if="command" class="operation-muted">本次请求编号 {{ command.requestId }}。结果未确认时重试沿用该编号与原内容，避免重复追加额度。</p>
-        <div class="operation-actions"><el-button :disabled="busy" @click="dialogVisible = false">{{ command ? '稍后处理' : '返回' }}</el-button><el-button type="primary" native-type="submit" :loading="busy" :disabled="!canSubmit">{{ command ? '重试原操作' : dialogMode === 'apply' ? '提交申请' : dialogMode === 'cancel' ? '确认取消' : draft.decision === 'APPROVE' ? '确认批准' : '确认拒绝' }}</el-button></div>
+        <div class="operation-actions"><el-button :disabled="busy" @click="dialogVisible = false">{{ command ? '稍后处理' : '返回' }}</el-button><el-button v-if="dialogMode!=='view'" type="primary" native-type="submit" :loading="busy" :disabled="!canSubmit">{{ command ? '重试原操作' : dialogMode === 'apply' ? '提交申请' : dialogMode === 'cancel' ? '确认取消' : draft.decision === 'APPROVE' ? '确认批准' : '确认拒绝' }}</el-button></div>
       </form>
     </el-dialog>
   </div>
 </template>
 
 <script setup>
+import { useRoute } from 'vue-router'
+import { useResourceChanges } from '../composables/useResourceChanges'
+import { resourceHistoryLink } from '../utils/changeHistory'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import request from '../api/request'
 import { useUserStore } from '../stores/user'
@@ -115,7 +121,8 @@ const user = useUserStore()
 const supervisor = computed(() => ['SUPERVISOR', 'ADMIN'].includes(user.role))
 const base = '/api/agent/model-quotas', headers = { 'X-Budget-Action': 'update' }
 const models = ref([]), modelsLoading = ref(false), modelsError = ref(''), showUnconfigured = ref(false)
-const listScope = ref('mine'), busy = ref(false), notice = ref('')
+const route=useRoute(),quotaConflict=ref(false)
+const listScope = ref(supervisor.value&&route.query.scope==='team'?'team':'mine'), busy = ref(false), notice = ref('')
 const emptyList = (status = '') => ({ items: [], nextCursor: null, loading: false, error: '', loaded: false, status })
 const lists = reactive({ mine: emptyList(), team: emptyList('PENDING') })
 const dialogVisible = ref(false), dialogMode = ref('apply'), selectedApplication = ref(null), formError = ref(''), command = ref(null)
@@ -134,6 +141,7 @@ const refreshing = computed(() => modelsLoading.value || activeList.value.loadin
 const locked = computed(() => busy.value || !!command.value)
 const dialogTitle = computed(() => dialogMode.value === 'apply' ? '申请个人模型额度' : dialogMode.value === 'cancel' ? '取消额度申请' : draft.decision === 'APPROVE' ? '批准额度申请' : '拒绝额度申请')
 const canSubmit = computed(() => {
+  if(quotaConflict.value || dialogMode.value==='view')return false
   if (busy.value) return false
   if (command.value) return true
   if (dialogMode.value === 'cancel') return selectedApplication.value?.status === 'PENDING'
@@ -176,15 +184,17 @@ function openApply(model) {
   if (!canApplyForQuota(selected)) return
   dialogMode.value = 'apply'; selectedApplication.value = null
   Object.assign(draft, { modelId: selected.modelId, requestedTokens: undefined, reason: '', decision: 'APPROVE' })
-  formError.value = ''; dialogVisible.value = true
+  quotaConflict.value=false;formError.value = ''; dialogVisible.value = true
 }
 function openDecision(application, decision) {
   if (busy.value || !supervisor.value || reopenPending()) return
+  quotaConflict.value=false
   dialogMode.value = 'decision'; selectedApplication.value = { ...application }; draft.reason = ''; draft.decision = decision
   formError.value = ''; dialogVisible.value = true
 }
 function openCancel(application) {
   if (busy.value || reopenPending()) return
+  quotaConflict.value=false
   dialogMode.value = 'cancel'; selectedApplication.value = { ...application }; formError.value = ''; dialogVisible.value = true
 }
 function closeDialog(done) { if (!busy.value) done() }
@@ -215,6 +225,7 @@ async function submitCommand() {
     if (!scope.current(token)) return
     const status = error.response?.status || error.httpStatus
     formError.value = operationError(error)
+    if(status===409 && error.response?.data?.code!=='REQUEST_CONTENT_CONFLICT'){command.value=null;quotaConflict.value=true;return}
     if ([400, 403, 404, 409, 422].includes(status)) {
       command.value = null
       if (dialogMode.value !== 'apply' || status === 403) {
@@ -227,7 +238,16 @@ async function submitCommand() {
   } finally { if (scope.current(token)) busy.value = false }
 }
 
-onMounted(refresh)
+const {changed:quotaChanged}=useResourceChanges({domains:['LLM_QUOTA_APPLICATION','MODEL_BUDGET'],isEditing:()=>dialogVisible.value||busy.value||!!command.value,refresh})
+async function refreshQuotaLatest(){if(dialogVisible.value||command.value){notice.value='未提交内容已保留 请在当前申请中明确核对新版本';return}await refresh();quotaChanged.value=false}
+async function reloadQuotaApplication(){
+ await refresh()
+ const row=[...lists.mine.items,...lists.team.items].find(item=>item.id===selectedApplication.value?.id)
+ if(!row){formError.value='当前列表已无此申请 请退出编辑并重新查询权限与状态';return}
+ selectedApplication.value={...row};command.value=null;quotaConflict.value=false;quotaChanged.value=false
+ if(row.status!=='PENDING'){quotaConflict.value=true;formError.value='申请已处理，不能再提交本次决定'}else formError.value='已读取新版本 请核对原说明后重新确认 将生成新的请求编号'
+}
+onMounted(async()=>{await refresh();if(route.query.applicationId){const row=lists[listScope.value].items.find(item=>item.id===route.query.applicationId);if(row){dialogMode.value='view';selectedApplication.value={...row};formError.value='';dialogVisible.value=true}}})
 watch(() => JSON.stringify([user.username, user.role, user.identity?.userId, user.isAuthenticated]), () => { if (user.isAuthenticated) refresh() })
 </script>
 

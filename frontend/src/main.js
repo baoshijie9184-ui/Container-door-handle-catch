@@ -1,4 +1,7 @@
-import { createApp } from 'vue'
+import { createApp, toRaw } from 'vue'
+import { accountSession } from './utils/accountContext'
+import { accountFetch } from './utils/accountFetch'
+globalThis.__doorhandleAccountFetch = accountFetch
 import { createPinia } from 'pinia'
 import ElementPlus from 'element-plus'
 import 'element-plus/dist/index.css'
@@ -34,6 +37,22 @@ app.config.errorHandler = (err, vm, info) => {
 
 // 创建并使用插件
 const pinia = createPinia()
+// Clear private store caches when the browser cookie switches account.
+const copyState = value => {
+  value = toRaw(value)
+  if (Array.isArray(value)) return value.map(copyState)
+  if (value instanceof Map) return new Map([...value].map(([key,item])=>[key,copyState(item)]))
+  if (value instanceof Set) return new Set([...value].map(copyState))
+  if (value && Object.getPrototypeOf(value)===Object.prototype) return Object.fromEntries(Object.entries(value).map(([key,item])=>[key,copyState(item)]))
+  return value
+}
+pinia.use(({store})=>{
+  if(store.$id==='user')return
+  const initial=copyState(store.$state)
+  const off=accountSession.onReset(()=>store.$patch(copyState(initial)))
+  const dispose=store.$dispose.bind(store)
+  store.$dispose=()=>{off();dispose()}
+})
 app.use(pinia)
 app.use(router)
 app.use(ElementPlus, {

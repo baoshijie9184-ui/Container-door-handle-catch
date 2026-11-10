@@ -1,5 +1,6 @@
 <template>
   <section class="page-shell operations-page"><PageHero icon="DocumentChecked" title="操作审计" description="核对业务变更与文件交付，按当前账号范围查看记录。时间统一使用 UTC+8。"><template #actions><el-button :loading="loading" @click="refresh"><AppIcon name="Refresh" />刷新已查业务范围</el-button></template></PageHero>
+    <ResourceChangeHistory />
     <section class="toolbar-panel app-panel audit-filters" aria-label="筛选业务操作"><form class="audit-filter-form" @submit.prevent="search"><label for="audit-domain">业务域<el-select id="audit-domain" v-model="domain" filterable allow-create default-first-option clearable placeholder="选择业务域，留空查询全部"><el-option v-for="item in auditDomainOptions" :key="item.value" :label="item.label" :value="item.value" /></el-select></label><div class="management-filter-actions"><el-button type="primary" native-type="submit" :loading="loading"><AppIcon name="Search" :size="16" />查询</el-button><el-button @click="resetDomain"><AppIcon name="Refresh" :size="16" />重置</el-button></div></form><el-alert v-if="filterError" :title="filterError" type="warning" show-icon :closable="false" /></section>
     <p v-if="filtersDirty" class="audit-query-note" role="status">查询条件已修改，下方业务记录仍为“{{ appliedDomain ? auditDomainLabel(appliedDomain) : '全部业务域' }}”；点击查询后更新。</p>
     <el-alert v-if="error && rows.length" :title="error + '；下方保留先前读取的记录，请重新查询核对。'" type="error" :closable="false" role="alert" />
@@ -39,6 +40,7 @@
   </section>
 </template>
 <script setup>
+import ResourceChangeHistory from '../components/ResourceChangeHistory.vue'
 import { ref,computed,watch,onBeforeUnmount } from 'vue'
 import request from '@/api/request'
 import { useUserStore } from '@/stores/user'
@@ -47,7 +49,7 @@ import { auditDomainOptions,auditDomainLabel,auditScopeLabel,auditTime,deliveryB
 import AuditRecordDetails from '@/components/AuditRecordDetails.vue'
 import { DocumentChecked } from '@element-plus/icons-vue'
 const userStore=useUserStore()
-const actor=computed(()=>JSON.stringify([userStore.identity?.userId || userStore.username || '',userStore.role,userStore.isAuthenticated]))
+const actor=computed(()=>JSON.stringify([userStore.accountContext || userStore.identity?.userId || userStore.username || '',userStore.role,userStore.isAuthenticated]))
 const rows=ref([]),domain=ref(''),error=ref(''),loading=ref(false),more=ref(false),filterError=ref(''),appliedDomain=ref(''),loaded=ref(false)
 const deliveries=ref([]),deliveryLoading=ref(false),deliveryError=ref(''),deliveryMore=ref(false),deliveryLoaded=ref(false)
 const detailOpen=ref(false),selectedRecord=ref(null),detailDelivery=ref(false)

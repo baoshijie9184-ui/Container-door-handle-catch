@@ -3,6 +3,7 @@
     <PageHero :title="isEdit ? '编辑人员' : '新增人员'" description="维护业务人员登记、部门与岗位。登录账号及权限在账号与组织页面单独管理。" icon="User">
       <template #actions><el-button @click="goBack"><AppIcon name="ArrowLeft" :size="16" />返回列表</el-button></template>
     </PageHero>
+    <CollaborationRefreshNotice :changed="externalChanged" :editing="loading" :history-to="{path:'/operations/audit',query:{resourceType:'EMPLOYEE',resourceId:employeeId}}" @refresh="reload" />
     <section class="managed-form-surface app-panel">
       <ManagedFormFeedback :phase="phase" :dirty="dirty" :loaded="loaded" :is-edit="isEdit" :resource-id="employeeId" :version="employeeForm.version" :receipt="receipt" :permission-error="permissionError" :load-error="loadError" :save-error="saveError" :validation-error="validationError" :lookup-notice="lookupNotice" :can-reload="supervisor && isEdit && !!employeeId" @reload="reload" />
       <div class="managed-department-state"><el-alert v-if="departmentError" :title="departmentError" type="error" show-icon :closable="false" /><el-button v-if="departmentError" size="small" :loading="departmentLoading" :disabled="loading || !supervisor" @click="loadDepartments"><AppIcon name="Refresh" :size="14" />重新读取部门</el-button></div>
@@ -37,9 +38,10 @@ import { ref,computed,watch,onBeforeUnmount,nextTick } from 'vue'
 import request from '../../api/request'
 import { beijingDateTime } from '../../utils/beijingTime'
 import { useManagedForm } from '../../composables/useManagedForm'
+import CollaborationRefreshNotice from '../../components/CollaborationRefreshNotice.vue'
 import ManagedFormFeedback from '../../components/ManagedFormFeedback.vue'
 const formRef=ref(null)
-const {form:employeeForm,id:employeeId,isEdit,actor,supervisor,phase,loading,loaded,permissionError,loadError,saveError,validationError,lookupNotice,receipt,uncertain,saved,dirty,disabled,canSubmit,reload,reset,submit,goBack,uniqueValidator}=useManagedForm({
+const {form:employeeForm,id:employeeId,isEdit,actor,supervisor,phase,loading,loaded,permissionError,loadError,saveError,validationError,lookupNotice,receipt,uncertain,saved,dirty,disabled,canSubmit,externalChanged,reload,reset,submit,goBack,uniqueValidator}=useManagedForm({
   endpoint:'/api/employees',listRoute:'employees',label:'人员',formRef,
   defaults:()=>({version:null,name:'',employeeNumber:'',contact:'',gender:'男',department:'',departmentId:null,employeeType:'',hireDate:beijingDateTime().slice(0,10),status:'ACTIVE',remark:''})
 })

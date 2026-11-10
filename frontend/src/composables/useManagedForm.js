@@ -3,9 +3,11 @@ import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, useRouter } from 'vu
 import { ElMessageBox } from 'element-plus'
 import request from '../api/request'
 import { useUserStore } from '../stores/user'
+import { decimalVersion, mutationHeaders } from '../utils/mutationVersion'
+import { useResourceChanges } from './useResourceChanges'
 
 const resourceId=value=>typeof value==='number' && Number.isSafeInteger(value) && value>0 ? String(value) : typeof value==='string' && /^[1-9]\d*$/.test(value) ? value : ''
-const versionKnown=value=>typeof value==='number' && Number.isSafeInteger(value) && value>=0
+const versionKnown=value=>decimalVersion(value)!==null
 
 // UI state for the existing versioned employee/device forms, not a command-receipt store.
 export function useManagedForm({endpoint,defaults,formRef,listRoute,label}) {
@@ -14,7 +16,7 @@ export function useManagedForm({endpoint,defaults,formRef,listRoute,label}) {
   const blankEdit=()=>{const initial=defaults();return Object.fromEntries(keys.map(key=>[key,typeof initial[key]==='string'?'':null]))}
   const id=computed(()=>resourceId(route.params.id))
   const isEdit=computed(()=>route.params.id!=null && route.params.id!=='')
-  const actor=computed(()=>JSON.stringify([userStore.identity?.userId || userStore.username || '',userStore.role,userStore.isAuthenticated]))
+  const actor=computed(()=>JSON.stringify([userStore.accountEpoch,userStore.accountContext,userStore.identity?.userId || userStore.username || '',userStore.role,userStore.isAuthenticated]))
   const context=computed(()=>JSON.stringify([route.name,route.params.id,actor.value]))
   const supervisor=computed(()=>userStore.isAuthenticated && userStore.role==='SUPERVISOR')
   const permissionError=computed(()=>userStore.hasCheckedAuth && !supervisor.value ? '仅已登录的主管可以维护这份资料，业务岗位不代表账号权限。' : '')
@@ -89,7 +91,7 @@ export function useManagedForm({endpoint,defaults,formRef,listRoute,label}) {
       if(!supervisor.value || editing && (!target || !versionKnown(form.version)))throw new Error('账号、资料编号或版本未核对完成，请重新读取')
       const payload=Object.freeze(snapshot())
       phase.value='SAVING';sent=true
-      const response=editing?await request.put(`${endpoint}/${target}`,payload):await request.post(endpoint,payload)
+      const response=editing?await request.put(`${endpoint}/${target}`,payload,{headers:mutationHeaders(payload.version)}):await request.post(endpoint,payload)
       if(!current(stamp,version))return
       const data=dataOf(response),returnedId=resourceId(data?.id)
       if(!returnedId || editing && returnedId!==target){const error=new Error('未收到可核对的资料编号');error.unknown=true;throw error}
@@ -145,5 +147,8 @@ export function useManagedForm({endpoint,defaults,formRef,listRoute,label}) {
     else {loaded.value=true;baseline.value=JSON.stringify(snapshot())}
   },{immediate:true,flush:'sync'})
   onBeforeUnmount(()=>{disposed=true;generation++;uniqueVersions.clear()})
-  return {form,id,isEdit,actor,supervisor,phase,loading,loaded,permissionError,loadError,saveError,validationError,lookupNotice,receipt,conflict,uncertain,saved,dirty,disabled,canSubmit,read,reload,reset,submit,goBack,uniqueValidator}
+  const {changed:externalChanged}=useResourceChanges({resourceType:endpoint==='/api/devices'?'DEVICE':'EMPLOYEE',resourceId:id,
+    isEditing:()=>dirty.value||loading.value||uncertain.value,
+    refresh:async()=>{if(isEdit.value && loaded.value && !saved.value)await read()}})
+  return {form,id,isEdit,actor,supervisor,phase,loading,loaded,permissionError,loadError,saveError,validationError,lookupNotice,receipt,conflict,uncertain,saved,dirty,disabled,canSubmit,externalChanged,read,reload,reset,submit,goBack,uniqueValidator}
 }

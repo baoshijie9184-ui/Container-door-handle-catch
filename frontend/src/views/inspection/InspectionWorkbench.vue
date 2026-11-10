@@ -1,5 +1,6 @@
 <template>
   <div class="page-shell image-detection-container inspection-workbench-page">
+    <CollaborationRefreshNotice :changed="collaborationChanged" :editing="collaborationEditing" @refresh="refreshCollaborationView" />
     <section class="page-hero detection-hero command-panel">
       <div>
         <span class="industrial-kicker">Detection Workspace</span>
@@ -449,7 +450,7 @@
           <el-input v-model="assignmentForm.qualityStation" placeholder="例如：质检站-1 / 产线A复核位" />
         </el-form-item>
         <el-form-item label="责任人">
-          <el-input v-model="assignmentForm.assignee" placeholder="请输入质检责任人" />
+          <QualityAssigneePicker v-model="assignmentForm.assignee" v-model:user-id="assignmentForm.assigneeUserId" v-model:revision="assignmentForm.assigneeRevision" :disabled="assignmentSubmitting||assignmentTask?.mutationConflicted" />
         </el-form-item>
         <el-form-item label="截止时间">
           <el-date-picker
@@ -668,6 +669,11 @@
 </template>
 
 <script setup>
+import QualityAssigneePicker from '../../components/QualityAssigneePicker.vue'
+import { useUserStore } from '../../stores/user'
+import CollaborationRefreshNotice from '../../components/CollaborationRefreshNotice.vue'
+import { useResourceChanges } from '../../composables/useResourceChanges'
+import { captureTaskMutation, taskMutationPayload } from '../../utils/mutationVersion'
 import {EXPORT_SOURCE} from '@/utils/systemBrand'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -777,6 +783,7 @@ const reviewForm = reactive({
 const assignmentForm = reactive({
   qualityStation: '质检站-1',
   assignee: '',
+  assigneeUserId:null,assigneeRevision:null,expectedAssignmentRevision:null,
   dueAt: '',
   assignmentRemark: ''
 })
@@ -971,7 +978,8 @@ const historyTotal = ref(0)
 const historyRecords = ref([])
 const historyLoading = ref(false)
 
-const fetchHistoryWithFilters = async (page, size) => {
+let collaborationHistoryQuery
+const fetchHistoryWithFilters = async (page, size, savedFilters) => {
   historyLoading.value = true
   try {
     const p = page || historyPage.value
@@ -981,7 +989,9 @@ const fetchHistoryWithFilters = async (page, size) => {
     if (historyFilterCollector.value.trim()) filters.collector = historyFilterCollector.value.trim()
     if (historyFilterDevice.value.trim()) filters.deviceName = historyFilterDevice.value.trim()
     if (historyFilterRegion.value.trim()) filters.region = historyFilterRegion.value.trim()
-    const result = await fetchTaskList(p, s, '', '', filters)
+    const applied = savedFilters || filters
+    collaborationHistoryQuery={page:p,size:s,filters:{...applied}}
+    const result = await fetchTaskList(p, s, '', '', applied)
     if (result) {
       historyRecords.value = (result.records || []).map(bt => {
         const localTask = taskStore.taskList.find(t => t.taskId === bt.taskId)
@@ -1144,11 +1154,14 @@ const buildDefectGalleryParams = (page = defectGalleryPage.value) => {
   return params
 }
 
-const loadDefectGallery = async (page = defectGalleryPage.value) => {
+let collaborationGalleryQuery
+const loadDefectGallery = async (page = defectGalleryPage.value, savedFilters) => {
   const targetPage = resolvePageNumber(page, defectGalleryPage.value)
   defectGalleryLoading.value = true
   try {
-    const response = await fetchDefectGallery(buildDefectGalleryParams(targetPage))
+    const applied=savedFilters || buildDefectGalleryParams(targetPage)
+    collaborationGalleryQuery={...applied}
+    const response = await fetchDefectGallery(applied)
     if (response.data?.code === 200) {
       const data = response.data.data || {}
       defectGalleryRecords.value = data.records || []
@@ -1395,6 +1408,7 @@ const canReleaseDisposition = (task) => {
 }
 
 const canAssignQualityTask = (task) => {
+  if(collaborationUser.role!=='SUPERVISOR')return false
   const status = task.status || task.result?.status
   const stage = task.stage
   const flowStatus = task.flowStatus || task.result?.flowStatus
@@ -1414,7 +1428,9 @@ const canDisposeTask = (task) => {
 
 const applyTaskProgressUpdate = async (taskId, data, fallbackMessage) => {
   taskStore.updateTask(taskId, {
-    flowStatus: data.flowStatus,
+    version: data.version,
+      mutationVersion: data.mutationVersion ?? data.version,
+      flowStatus: data.flowStatus,
     qualityStation: data.qualityStation,
     assignee: data.assignee,
     assignmentRemark: data.assignmentRemark,
@@ -1444,7 +1460,7 @@ const applyTaskProgressUpdate = async (taskId, data, fallbackMessage) => {
 }
 
 const openReviewDialog = (task) => {
-  reviewTask.value = task
+  reviewTask.value = captureTaskMutation(task)
   reviewForm.reviewConclusion = task.reviewConclusion || 'CONFIRMED_DEFECT'
   reviewForm.severityLevel = task.severityLevel || 'MAJOR'
   reviewForm.confirmedDefectCount = task.confirmedDefectCount ?? 0
@@ -1454,6 +1470,7 @@ const openReviewDialog = (task) => {
 }
 
 const submitTaskReview = async () => {
+  if (reviewSubmitting.value) return
   if (!reviewTask.value?.taskId) {
     ElMessage.error('请选择需要复核的任务')
     return
@@ -1461,13 +1478,13 @@ const submitTaskReview = async () => {
 
   reviewSubmitting.value = true
   try {
-    const response = await reviewDetectionTask(reviewTask.value.taskId, {
+    const response = await reviewDetectionTask(reviewTask.value.taskId, taskMutationPayload(reviewTask.value, {
       reviewConclusion: reviewForm.reviewConclusion,
       severityLevel: reviewForm.severityLevel,
       confirmedDefectCount: reviewForm.confirmedDefectCount,
       falsePositiveCount: reviewForm.falsePositiveCount,
       reviewRemark: reviewForm.reviewRemark
-    })
+    }))
     if (response.data?.code === 200) {
       const data = response.data.data
       await applyTaskProgressUpdate(reviewTask.value.taskId, data, '人工复核已完成')
@@ -1479,6 +1496,7 @@ const submitTaskReview = async () => {
       ElMessage.error(response.data?.message || '人工复核提交失败')
     }
   } catch (error) {
+    if(error.response?.status===409 && reviewTask.value)reviewTask.value.mutationConflicted=true
     console.error('人工复核提交失败:', error)
     ElMessage.error(error.response?.data?.message || '人工复核提交失败')
   } finally {
@@ -1487,15 +1505,18 @@ const submitTaskReview = async () => {
 }
 
 const openAssignmentDialog = (task) => {
-  assignmentTask.value = task
+  assignmentTask.value = captureTaskMutation(task)
   assignmentForm.qualityStation = task.qualityStation || task.result?.qualityStation || '质检站-1'
   assignmentForm.assignee = task.assignee || task.result?.assignee || ''
+  assignmentForm.assigneeUserId=null;assignmentForm.assigneeRevision=null
+  assignmentForm.expectedAssignmentRevision=task.assignmentRevision??task.result?.assignmentRevision??null
   assignmentForm.dueAt = task.dueAt || task.result?.dueAt || ''
   assignmentForm.assignmentRemark = task.assignmentRemark || task.result?.assignmentRemark || ''
   assignmentDialogVisible.value = true
 }
 
 const submitQualityAssignment = async () => {
+  if (assignmentSubmitting.value) return
   if (!assignmentTask.value?.taskId) {
     ElMessage.error('请选择需要分派的任务')
     return
@@ -1505,14 +1526,16 @@ const submitQualityAssignment = async () => {
     return
   }
 
+  if(!assignmentForm.assigneeUserId||!assignmentForm.assigneeRevision){ElMessage.warning('请从账号列表重新选择责任人');return}
   assignmentSubmitting.value = true
   try {
-    const response = await assignDetectionQualityTask(assignmentTask.value.taskId, {
+    const response = await assignDetectionQualityTask(assignmentTask.value.taskId, taskMutationPayload(assignmentTask.value, {
       qualityStation: assignmentForm.qualityStation,
       assignee: assignmentForm.assignee,
+      assigneeUserId:assignmentForm.assigneeUserId,assigneeRevision:assignmentForm.assigneeRevision,expectedAssignmentRevision:assignmentForm.expectedAssignmentRevision,
       dueAt: assignmentForm.dueAt,
       assignmentRemark: assignmentForm.assignmentRemark
-    })
+    }))
     if (response.data?.code === 200) {
       await applyTaskProgressUpdate(assignmentTask.value.taskId, response.data.data, '质检任务已分派')
       await refreshQualityQueueIfVisible()
@@ -1522,6 +1545,7 @@ const submitQualityAssignment = async () => {
       ElMessage.error(response.data?.message || '质检分派失败')
     }
   } catch (error) {
+    if(error.response?.status===409 && assignmentTask.value)assignmentTask.value.mutationConflicted=true
     console.error('质检分派失败:', error)
     ElMessage.error(error.response?.data?.message || '质检分派失败')
   } finally {
@@ -1530,7 +1554,7 @@ const submitQualityAssignment = async () => {
 }
 
 const openDispositionDialog = (task) => {
-  dispositionTask.value = task
+  dispositionTask.value = captureTaskMutation(task)
   dispositionForm.dispositionAction = canReleaseDisposition(task) ? 'RELEASE' : 'REWORK'
   dispositionForm.recheckRequired = task.reviewConclusion === 'NEEDS_RECHECK'
   dispositionForm.dispositionRemark = task.dispositionRemark || ''
@@ -1538,6 +1562,7 @@ const openDispositionDialog = (task) => {
 }
 
 const submitTaskDisposition = async () => {
+  if (dispositionSubmitting.value) return
   if (!dispositionTask.value?.taskId) {
     ElMessage.error('请选择需要处置的任务')
     return
@@ -1549,11 +1574,11 @@ const submitTaskDisposition = async () => {
 
   dispositionSubmitting.value = true
   try {
-    const response = await disposeDetectionTask(dispositionTask.value.taskId, {
+    const response = await disposeDetectionTask(dispositionTask.value.taskId, taskMutationPayload(dispositionTask.value, {
       dispositionAction: dispositionForm.dispositionAction,
       recheckRequired: dispositionForm.recheckRequired,
       dispositionRemark: dispositionForm.dispositionRemark
-    })
+    }))
     if (response.data?.code === 200) {
       await applyTaskProgressUpdate(dispositionTask.value.taskId, response.data.data, '质检处置已完成')
       await refreshQualityQueueIfVisible()
@@ -1563,6 +1588,7 @@ const submitTaskDisposition = async () => {
       ElMessage.error(response.data?.message || '质检处置提交失败')
     }
   } catch (error) {
+    if(error.response?.status===409&&dispositionTask.value)dispositionTask.value.mutationConflicted=true
     console.error('质检处置提交失败:', error)
     ElMessage.error(error.response?.data?.message || '质检处置提交失败')
   } finally {
@@ -1571,7 +1597,7 @@ const submitTaskDisposition = async () => {
 }
 
 const openReworkDialog = (task) => {
-  reworkTask.value = task
+  reworkTask.value = captureTaskMutation(task)
   reworkForm.reworkResult = task.reworkResult || ''
   reworkForm.reworkOperator = task.reworkOperator || ''
   reworkForm.recheckRequired = task.recheckRequired !== false
@@ -1580,6 +1606,7 @@ const openReworkDialog = (task) => {
 }
 
 const submitTaskRework = async () => {
+  if (reworkSubmitting.value) return
   if (!reworkTask.value?.taskId) {
     ElMessage.error('请选择需要回填返工结果的任务')
     return
@@ -1591,12 +1618,12 @@ const submitTaskRework = async () => {
 
   reworkSubmitting.value = true
   try {
-    const response = await submitDetectionReworkResult(reworkTask.value.taskId, {
+    const response = await submitDetectionReworkResult(reworkTask.value.taskId, taskMutationPayload(reworkTask.value, {
       reworkResult: reworkForm.reworkResult,
       reworkOperator: reworkForm.reworkOperator,
       reworkRemark: reworkForm.reworkRemark,
       recheckRequired: reworkForm.recheckRequired
-    })
+    }))
     if (response.data?.code === 200) {
       await applyTaskProgressUpdate(reworkTask.value.taskId, response.data.data, '返工结果已提交')
       await refreshQualityQueueIfVisible()
@@ -1606,6 +1633,7 @@ const submitTaskRework = async () => {
       ElMessage.error(response.data?.message || '返工结果提交失败')
     }
   } catch (error) {
+    if(error.response?.status===409 && reworkTask.value)reworkTask.value.mutationConflicted=true
     console.error('返工结果提交失败:', error)
     ElMessage.error(error.response?.data?.message || '返工结果提交失败')
   } finally {
@@ -1747,6 +1775,26 @@ onBeforeUnmount(() => {
   // 只保存当前状态
   saveTaskList()
 })
+const collaborationEditing=computed(()=>reviewDialogVisible.value||assignmentDialogVisible.value||dispositionDialogVisible.value||reworkDialogVisible.value||reviewSubmitting.value||assignmentSubmitting.value||dispositionSubmitting.value||reworkSubmitting.value)
+async function refreshCollaborationView(){if(collaborationEditing.value)return;if(activeTab.value==='quality')await loadQualityQueue(qualityQueuePage.value);else if(activeTab.value==='gallery')await loadDefectGallery(defectGalleryPage.value,collaborationGalleryQuery);else if(collaborationHistoryQuery)await fetchHistoryWithFilters(collaborationHistoryQuery.page,collaborationHistoryQuery.size,collaborationHistoryQuery.filters);else await fetchTaskResults(taskStore.taskList.map(t=>t.taskId));collaborationChanged.value=false}
+const {changed:collaborationChanged}=useResourceChanges({resourceType:'DETECTION_TASK',isEditing:()=>collaborationEditing.value,refresh:refreshCollaborationView,revalidate:validateCollaborationAccess})
+const collaborationUser=useUserStore()
+async function validateCollaborationAccess(){
+ const groups=new Map()
+ const add=(id,entry)=>{if(!id)return;if(!groups.has(id))groups.set(id,[]);groups.get(id).push(entry)}
+ for(const [task,visible,form] of [[reviewTask,reviewDialogVisible,reviewForm],[assignmentTask,assignmentDialogVisible,assignmentForm],[dispositionTask,dispositionDialogVisible,dispositionForm],[reworkTask,reworkDialogVisible,reworkForm]]){
+  if(visible.value&&task.value?.taskId)add(task.value.taskId,{task,visible,form})
+ }
+ if(traceDialogVisible.value&&traceDetail.value?.taskId)add(traceDetail.value.taskId,{trace:true})
+ await Promise.allSettled([...groups].map(async([id,entries])=>{
+  try{const response=await fetchDetectionTaskTrace(id);if(response.data?.code!==200)throw Object.assign(new Error('当前任务无权读取'),{httpStatus:response.data?.code})
+   for(const entry of entries)if(entry.trace&&traceDetail.value?.taskId===id&&!collaborationEditing.value)traceDetail.value=response.data.data
+  }catch(error){if(![401,403,404].includes(error.response?.status||error.httpStatus))return
+   for(const entry of entries){if(entry.trace){if(traceDetail.value?.taskId===id){traceDetail.value=null;traceDialogVisible.value=false}}else if(entry.task.value?.taskId===id){entry.visible.value=false;entry.task.value=null;for(const key of Object.keys(entry.form))entry.form[key]=typeof entry.form[key]==='string'?'':null}}
+   taskStore.removeTask(id)
+  }
+ }))
+}
 </script>
 
 <style scoped>

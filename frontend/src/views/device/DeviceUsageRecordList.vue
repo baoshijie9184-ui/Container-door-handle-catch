@@ -126,6 +126,9 @@
 import { ref, reactive, computed, onBeforeUnmount, nextTick, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import request from '../../api/request'
+import { resourceVersion, mutationHeaders } from '../../utils/mutationVersion'
+import { createUiRequestId } from '../../utils/requestIdentity'
+import { useResourceChanges } from '../../composables/useResourceChanges'
 import { beijingDateTime } from '@/utils/beijingTime'
 import { useUserStore } from '@/stores/user'
 import CollectionEmptyState from '@/components/CollectionEmptyState.vue'
@@ -253,7 +256,7 @@ async function readCreateContext(payload){
   const device=readData(deviceRead),employee=readData(employeeRead),owner=readData(ownerRead)
   if(resourceId(device?.id)!==payload.deviceId || resourceId(employee?.id)!==payload.employeeId || owner!==null && !resourceId(owner?.id))throw new Error('目标设备、人员或当前使用人资料未完整读取')
   const signature=JSON.stringify([resourceId(device.id),device.version ?? null,device.deviceCode ?? null,device.modelName ?? null,device.deviceType ?? null,device.status ?? null,owner===null?null:[resourceId(owner.id),owner.name ?? null],resourceId(employee.id),employee.version ?? null,employee.name ?? null,employee.employeeNumber ?? null,employee.employeeType ?? null,employee.status ?? null])
-  return {signature,deviceLabel:`${device.deviceCode || '编号未记录'} · ${device.modelName || '型号未记录'}`,employeeLabel:`${employee.name || '姓名未记录'}（${employee.employeeNumber || '编号未记录'}）`,ownerLabel:owner===null?'未分配':`${owner.name || '姓名未记录'}（ID ${resourceId(owner.id)}）`,deviceStatus:device.status,reassign:owner!==null && resourceId(owner.id)!==payload.employeeId}
+  return {expectedVersion:resourceVersion(device),signature,deviceLabel:`${device.deviceCode || '编号未记录'} · ${device.modelName || '型号未记录'}`,employeeLabel:`${employee.name || '姓名未记录'}（${employee.employeeNumber || '编号未记录'}）`,ownerLabel:owner===null?'未分配':`${owner.name || '姓名未记录'}（ID ${resourceId(owner.id)}）`,deviceStatus:device.status,reassign:owner!==null && resourceId(owner.id)!==payload.employeeId}
 }
 async function prepareCreate(){
   if(disposed || !dialogVisible.value || !isSupervisor.value || createLoading.value || !optionsLoaded.value || optionsError.value || !createFormRef.value || createProposal.value)return
@@ -268,7 +271,7 @@ async function prepareCreate(){
     createPhase.value='VERIFYING'
     const details=await readCreateContext(payload)
     if(!currentCreate(generation,context))return
-    createProposal.value=Object.freeze({...details,payload,generation,context})
+    createProposal.value=Object.freeze({...details,requestId:createUiRequestId(),payload,generation,context})
     await nextTick()
     if(currentCreate(generation,context))proposalRef.value?.focus()
   }catch(error){
@@ -290,7 +293,7 @@ async function handleCreate(){
     if(!currentCreate(proposal.generation,proposal.context))return
     if(details.signature!==proposal.signature){createProposal.value=null;throw new Error('设备关系、状态或人员资料已变化，请重新核对登记')}
     createPhase.value='SENDING';sent=true
-    const response=await request.post('/api/device-usage-records',proposal.payload)
+    const response=await request.post('/api/device-usage-records',proposal.payload,{headers:mutationHeaders(proposal.expectedVersion,proposal.requestId)})
     if(!currentCreate(proposal.generation,proposal.context))return
     // This existing endpoint acknowledges a void command with code 200; it does not return a record ID or Boolean.
     if(response.data?.code===200){
@@ -323,6 +326,7 @@ watch(contextKey,(context,previous)=>{
   if(userStore.isAuthenticated)searchRecords()
 },{immediate:true,flush:'sync'})
 onBeforeUnmount(()=>{disposed=true;listGeneration++;optionsGeneration++;createGeneration++})
+useResourceChanges({domains:['DEVICE_USAGE','DEVICE'],isEditing:()=>dialogVisible.value||createLoading.value,refresh:()=>{const q=appliedQuery.value;if(q)return fetchRecords(q)}})
 </script>
 
 <style scoped>

@@ -15,6 +15,6 @@
   </div>
 </template>
 <script setup>
-defineProps({phase:String,dirty:Boolean,loaded:Boolean,isEdit:Boolean,resourceId:String,version:Number,receipt:Object,permissionError:String,loadError:String,saveError:String,validationError:String,lookupNotice:String,canReload:Boolean})
+defineProps({phase:String,dirty:Boolean,loaded:Boolean,isEdit:Boolean,resourceId:String,version:[Number,String],receipt:Object,permissionError:String,loadError:String,saveError:String,validationError:String,lookupNotice:String,canReload:Boolean})
 defineEmits(['reload'])
 </script>

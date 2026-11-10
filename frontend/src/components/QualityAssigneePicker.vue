@@ -13,7 +13,7 @@
 import { ref,watch,onBeforeUnmount } from 'vue'
 import { User } from '@element-plus/icons-vue'
 import request from '@/api/request'
-const props=defineProps({modelValue:String,userId:Number,revision:String,disabled:Boolean})
+const props=defineProps({modelValue:String,userId:[String,Number],revision:String,disabled:Boolean})
 const emit=defineEmits(['update:modelValue','update:userId','update:revision'])
 const options=ref([]),loading=ref(false),error=ref('')
 let generation=0
@@ -26,7 +26,7 @@ async function search(keyword=''){
     const response=await request.get('/api/detection/quality-assignees',{params:{keyword:String(keyword).slice(0,50)},headers:{'Cache-Control':'no-cache'}})
     if(id!==generation)return
     if(response.data?.code!==200 || !Array.isArray(response.data.data))throw Error()
-    options.value=response.data.data.filter(row=>typeof row.username==='string'&&Number.isSafeInteger(row.userId)&&row.userId>0&&/^[a-f0-9]{64}$/.test(row.revision))
+    options.value=response.data.data.filter(row=>typeof row.username==='string'&&(typeof row.userId==='string'?/^[1-9]\d*$/.test(row.userId):Number.isSafeInteger(row.userId)&&row.userId>0)&&/^[a-f0-9]{64}$/.test(row.revision))
     if(response.data.data.length && !options.value.length)error.value='当前服务未返回可核对的账号 ID 与快照，请核对前后端版本'
   }catch{if(id===generation){options.value=[];error.value='无法核对员工账号，请重新查询'}}
   finally{if(id===generation)loading.value=false}

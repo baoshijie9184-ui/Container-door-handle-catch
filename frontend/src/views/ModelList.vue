@@ -8,6 +8,7 @@
       </template>
     </PageHero>
 
+    <el-alert v-if="modelChanged" title="模型资料可能已更新 当前编辑草稿与读取版本已保留" type="warning" :closable="false"><el-button text type="primary" @click="rereadModelChanges">核对最新模型</el-button></el-alert>
     <p class="management-scope-note"><AppIcon name="Tickets" :size="16" /><span>这里维护图片检测模型，基础校验、评估资料、发布和默认选择分别记录。对话 LLM 使用独立配置。</span></p>
     <section class="toolbar-panel app-panel">
       <form class="management-filter-form model-filter-form" @submit.prevent="handleSearch">
@@ -178,6 +179,7 @@
     <el-drawer v-model="detailDrawerVisible" title="检测模型详情" size="min(740px,96vw)">
       <CollectionEmptyState v-if="!detailModel" :loading="detailLoading" :error="detailError" empty-title="模型详情尚未读取" empty-description="可重新读取相同模型，或关闭后从列表重新选择。" @retry="fetchModelDetail(selectedModelId)" />
       <template v-if="detailModel">
+        <ResourceChangeHistory resource-type="DETECTION_MODEL" :resource-id="detailModel.modelId" domain="DETECTION_MODEL" compact />
         <DetectionModelDetails :key="String(detailModel.modelId)+':'+String(detailModel.version ?? '')" :model="detailModel" />
 
         <div class="detail-section">
@@ -275,6 +277,9 @@ import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { validResourceId } from '@/utils/agentCards'
 import request from '../api/request'
+import { resourceVersion, mutationHeaders } from '../utils/mutationVersion'
+import { useResourceChanges } from '../composables/useResourceChanges'
+import ResourceChangeHistory from '../components/ResourceChangeHistory.vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import ModelFileJournal from '@/components/ModelFileJournal.vue'
 import CollectionEmptyState from '@/components/CollectionEmptyState.vue'
@@ -329,6 +334,7 @@ const statusLabelMap = {
 
 const dialogVisible = ref(false)
 const modelForm = reactive({
+  rowVersion: null,
   modelId: null,
   modelName: '',
   version: '',
@@ -382,7 +388,7 @@ const handleUpload = () => {
 
 const handleEdit = (row) => {
   if(!isSupervisor.value||mutationBusy.value||modelUncertain(row.modelId))return
-  Object.assign(modelForm,{modelId:row.modelId,modelName:row.modelName||'',version:row.version||'',modelPath:row.modelPath||'',updateDescription:row.updateDescription||''})
+  Object.assign(modelForm,{rowVersion:resourceVersion(row,{model:true}),modelId:row.modelId,modelName:row.modelName||'',version:row.version||'',modelPath:row.modelPath||'',updateDescription:row.updateDescription||''})
   editError.value='';editUncertain.value=false
   dialogVisible.value = true
 }
@@ -454,12 +460,12 @@ const fetchModelDetail = (modelId) => {
     .finally(() => { if (generation === detailGeneration && requestVersion===detailReadVersion) detailLoading.value = false })
 }
 
-const handleDelete=async(modelId)=>{
+const handleDelete=async(modelId,expectedVersion)=>{
   if(!isSupervisor.value || mutationBusy.value || modelUncertain(modelId))return
   const scope=accountGeneration
   lifecyclePending.value=true;modelCommandError.value='';modelCommandUncertain.value=false
   try{
-    const response=await request.delete(`/api/models/${modelId}`)
+    const response=await request.delete(`/api/models/${modelId}`,{headers:mutationHeaders(expectedVersion)})
     if(!currentAccount(scope))return
     requireModelReceipt(response)
     ElMessage.success('已收到模型登记删除回执，文件保留待回收')
@@ -506,7 +512,7 @@ async function handleRowCommand(row,command){
   if(command==='edit')return handleEdit(row)
   if(command==='rollout')return openRolloutDialog(row)
   modelCommandUncertain.value=false
-  const scope=accountGeneration,modelId=row.modelId
+  const scope=accountGeneration,modelId=row.modelId,expectedVersion=resourceVersion(row,{model:true})
   const snapshot=JSON.stringify([row.modelName,row.version,row.status,row.isDefault,row.usageCount])
   const title=`${row.modelName || '未命名模型'} · 版本 ${row.version || '未记录'}（ID ${modelId}）`
   if(command==='delete' && (knownCount(row.usageCount)!==0 || modelDefault(row.isDefault)!=='否'))return
@@ -517,21 +523,21 @@ async function handleRowCommand(row,command){
     const latest=modelList.value.find(item=>String(item.modelId)===String(modelId))
     if(!latest || JSON.stringify([latest.modelName,latest.version,latest.status,latest.isDefault,latest.usageCount])!==snapshot){modelCommandError.value='本页模型资料已变化，尚未发送操作，请重新读取后核对。';return}
   }
-  if(command==='delete')return handleDelete(modelId)
-  if(Object.hasOwn(lifecycleActionMap,command))return handleLifecycleAction(modelId,command)
+  if(command==='delete')return handleDelete(modelId,expectedVersion)
+  if(Object.hasOwn(lifecycleActionMap,command))return handleLifecycleAction(modelId,command,expectedVersion)
 }
 function refreshAfterCommand(modelId){
   fetchModelList()
   if(detailDrawerVisible.value && String(selectedModelId.value)===String(modelId)){fetchModelDetail(selectedModelId.value);fetchOperationLogs(selectedModelId.value)}
 }
-const handleLifecycleAction=async(modelId,action)=>{
+const handleLifecycleAction=async(modelId,action,expectedVersion)=>{
   if(!isSupervisor.value || mutationBusy.value || modelUncertain(modelId))return
   const config=lifecycleActionMap[action]
   if(!config)return
   const scope=accountGeneration
   lifecyclePending.value=true;modelCommandError.value='';modelCommandUncertain.value=false
   try{
-    const response=await request.post(`/api/models/${modelId}/${config.url}`)
+    const response=await request.post(`/api/models/${modelId}/${config.url}`,null,{headers:mutationHeaders(expectedVersion)})
     if(!currentAccount(scope))return
     requireModelReceipt(response,modelId)
     const data=response.data.data,expected={publish:'PUBLISHED',disable:'DISABLED',archive:'ARCHIVED'}[action]
@@ -574,7 +580,7 @@ async function saveModelAssessment(kind){
   }
   mlopsSubmitting.value=true;mlopsError.value=''
   try{
-    const response=await request.post(`/api/model-info/${modelId}/${kind}`,payload)
+    const response=await request.post(`/api/model-info/${modelId}/${kind}`,payload,{headers:mutationHeaders(resourceVersion(activeMlopsSnapshot.value,{model:true}))})
     if(!currentAccount(scope))return
     requireModelReceipt(response)
     if(kind==='evaluation')evaluationDialogVisible.value=false;else rolloutDialogVisible.value=false
@@ -592,7 +598,7 @@ const submitForm=async()=>{
   try{
     const valid=await modelFormRef.value.validate().catch(()=>false)
     if(!currentAccount(scope) || !isSupervisor.value || !valid)return
-    const response=await request.put(`/api/model-info/${modelId}`,payload)
+    const response=await request.put(`/api/model-info/${modelId}`,payload,{headers:mutationHeaders(modelForm.rowVersion)})
     if(!currentAccount(scope))return
     requireModelReceipt(response)
     dialogVisible.value=false;ElMessage.success('模型版本资料已保存');refreshAfterCommand(modelId)
@@ -631,6 +637,11 @@ onBeforeUnmount(() => { pageActive=false;detailGeneration++;accountGeneration++ 
 onMounted(() => {
   fetchModelList()
 })
+const {changed:modelChanged}=useResourceChanges({resourceType:'DETECTION_MODEL',isEditing:()=>dialogVisible.value||evaluationDialogVisible.value||rolloutDialogVisible.value||mutationBusy.value,refresh:async()=>{await fetchModelList();if(detailDrawerVisible.value&&selectedModelId.value)fetchModelDetail(selectedModelId.value)}})
+async function rereadModelChanges(){
+ if(dialogVisible.value||evaluationDialogVisible.value||rolloutDialogVisible.value){ElMessage.info('当前草稿已保留 请关闭表单后核对最新模型版本');return}
+ await fetchModelList();if(detailDrawerVisible.value&&selectedModelId.value)fetchModelDetail(selectedModelId.value);modelChanged.value=false
+}
 </script>
 
 <style scoped>

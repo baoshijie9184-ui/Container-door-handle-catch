@@ -161,6 +161,7 @@
     </el-card>
 
     <EmployeeDeviceAssignment :context-key="employeeId" ref="assignmentPanel" @changed="fetchAssignedDevices" />
+    <ResourceChangeHistory v-if="employee?.id" resource-type="EMPLOYEE" :resource-id="employee.id" domain="EMPLOYEE" compact />
   </div>
 </template>
 
@@ -168,6 +169,8 @@
 import { ref, computed, watch, onBeforeUnmount } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import request from '../../api/request'
+import { useResourceChanges } from '../../composables/useResourceChanges'
+import ResourceChangeHistory from '../../components/ResourceChangeHistory.vue'
 import { useUserStore } from '../../stores/user'
 import { beijingDateTime } from '../../utils/beijingTime'
 import CollectionEmptyState from '../../components/CollectionEmptyState.vue'
@@ -301,6 +304,7 @@ watch([employeeId,actor],async()=>{
   if(!userStore.isAuthenticated)return
   await refreshEmployee()
 },{immediate:true,flush:'sync'})
+useResourceChanges({resourceType:'EMPLOYEE',resourceId:employeeId,refresh:async()=>{await fetchEmployeeDetail();await fetchAssignedDevices()}})
 </script>
 
 <style scoped>

@@ -23,7 +23,7 @@ export function normalizeControl(value,sessionId){
 }
 // Reads may be repeated. Mutations are never retried automatically; an uncertain submit retains its request ID.
 export class ConversationControlClient{
- constructor({base='/api/agent/conversations',entryPoint='CHAT',fetcher=(...args)=>globalThis.fetch(...args),onState=()=>{},onRefresh=()=>{}}={}){Object.assign(this,{base,entryPoint,fetcher,onState,onRefresh});this.generation=0;this.enabled=false;this.timer=null;this.session='';this.uncertain=new Map();this.writing=false}
+ constructor({base='/api/agent/conversations',entryPoint='CHAT',fetcher=(...args)=>(globalThis.__doorhandleAccountFetch || globalThis.fetch)(...args),onState=()=>{},onRefresh=()=>{}}={}){Object.assign(this,{base,entryPoint,fetcher,onState,onRefresh});this.generation=0;this.enabled=false;this.timer=null;this.session='';this.uncertain=new Map();this.writing=false}
  async request(path,body){
   const response=await this.fetcher(this.base+path,{credentials:'include',cache:'no-store',...(body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json','X-Agent-Action':'conversation-control'},body:JSON.stringify(body)})})
   if(!response.ok)throw Error(response.status===409?'状态已变化，请刷新核对；不会自动重试。':response.status===429?'待处理消息或本轮补充要求已达上限，请等待或撤回。':'操作结果未确认，请刷新核对；不会自动重试。')

@@ -3,6 +3,7 @@
     <PageHero :title="isEdit ? '编辑设备' : '新增设备'" description="维护设备登记与业务状态。设备分配、实时心跳和检测任务分别管理。" icon="Monitor">
       <template #actions><el-button @click="goBack"><AppIcon name="ArrowLeft" :size="16" />返回列表</el-button></template>
     </PageHero>
+    <CollaborationRefreshNotice :changed="externalChanged" :editing="loading" :history-to="{path:'/operations/audit',query:{resourceType:'DEVICE',resourceId:deviceId}}" @refresh="reload" />
     <section class="managed-form-surface app-panel">
       <ManagedFormFeedback :phase="phase" :dirty="dirty" :loaded="loaded" :is-edit="isEdit" :resource-id="deviceId" :version="form.version" :receipt="receipt" :permission-error="permissionError" :load-error="loadError" :save-error="saveError" :validation-error="validationError" :lookup-notice="lookupNotice" :can-reload="supervisor && isEdit && !!deviceId" @reload="reload" />
       <el-form id="device-maintenance-form" ref="formRef" :model="form" :rules="rules" label-position="top" scroll-to-error :disabled="disabled" @submit.prevent="submit">
@@ -34,9 +35,10 @@
 <script setup>
 import { ref } from 'vue'
 import { useManagedForm } from '../../composables/useManagedForm'
+import CollaborationRefreshNotice from '../../components/CollaborationRefreshNotice.vue'
 import ManagedFormFeedback from '../../components/ManagedFormFeedback.vue'
 const formRef=ref(null)
-const {form,id:deviceId,isEdit,supervisor,phase,loading,loaded,permissionError,loadError,saveError,validationError,lookupNotice,receipt,uncertain,saved,dirty,disabled,canSubmit,reload,reset,submit,goBack,uniqueValidator}=useManagedForm({
+const {form,id:deviceId,isEdit,supervisor,phase,loading,loaded,permissionError,loadError,saveError,validationError,lookupNotice,receipt,uncertain,saved,dirty,disabled,canSubmit,externalChanged,reload,reset,submit,goBack,uniqueValidator}=useManagedForm({
   endpoint:'/api/devices',listRoute:'devices',label:'设备',formRef,
   defaults:()=>({version:null,deviceCode:'',deviceType:'',modelName:'',serialNumber:'',status:'',lastMaintenanceDate:null})
 })

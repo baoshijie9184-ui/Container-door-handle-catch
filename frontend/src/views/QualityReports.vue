@@ -1,6 +1,7 @@
 <template>
   <div class="page-shell reports-page">
     <PageHero title="报告与审批" description="编写个人报告，提交固定版本给主管独立审批，编写人不能审批本人报告。"><template #actions><el-button :loading="loading" :disabled="busy" @click="load()"><AppIcon name="Refresh" :size="16" />刷新已查范围</el-button><el-button type="primary" :disabled="busy" @click="openCreate"><AppIcon name="Plus" :size="16" />新建报告草稿</el-button></template></PageHero>
+    <el-alert v-if="reportChanged" title="相关资料可能已更新 正在编辑的草稿已保留 请核对修改记录或明确加载最新版本" type="warning" :closable="false"><router-link :to="reportHistory">查看修改记录</router-link><el-button text @click="readLatestReport">核对最新资料</el-button></el-alert>
     <p class="report-scope-note"><AppIcon name="Lock" :size="15" />{{ reportScope }}</p>
     <form class="toolbar-panel report-toolbar" @submit.prevent="search">
       <div class="report-filter-field"><label for="report-keyword">报告标题或任务编号</label><el-input id="report-keyword" v-model="keyword" aria-label="查询任务编号或报告标题" placeholder="输入标题或任务编号" maxlength="128" clearable /></div>
@@ -28,6 +29,7 @@
 
     <el-dialog v-model="editorVisible" class="report-scroll-dialog report-editor-dialog" :title="editingId ? '编辑个人草稿' : '新建报告草稿'" width="min(650px, 94vw)" append-to-body :close-on-click-modal="!busy" :close-on-press-escape="!busy" :show-close="!busy">
       <p class="report-dialog-note"><AppIcon name="Document" :size="16" />保存草稿时更新任务依据，提交审批后本版本冻结；报告审批与任务放行分别处理。</p>
+      <el-alert v-if="reportConflict" title="报告版本已变化 草稿已保留 不会覆盖他人修改" type="warning" :closable="false"><el-button text @click="reloadDraft">确认加载新版本并重新编辑</el-button></el-alert>
       <p v-if="editingId" class="report-editor-version">正在编辑草稿版本 {{ knownCount(editingVersion) ?? '未记录' }} · 保存后请重新核对本版依据。</p>
       <el-form id="quality-report-editor-form" label-position="top" @submit.prevent="saveDraft">
         <section class="report-editor-section" aria-labelledby="report-editor-source-heading"><h3 id="report-editor-source-heading"><AppIcon name="Tickets" :size="18" />报告依据</h3>
@@ -75,6 +77,7 @@
             <template v-if="isSupervisor && !own && detail.status === 'SUBMITTED'"><el-button type="primary" :disabled="busy" @click="openDecision('APPROVE')">审批通过</el-button><el-button type="danger" plain :disabled="busy" @click="openDecision('REJECT')">驳回报告</el-button></template>
             <template v-if="detail.status === 'APPROVED'"><el-select v-model="exportFormat" :disabled="busy" aria-label="报告导出格式" style="width:130px"><el-option label="Word" value="docx" /><el-option label="PDF" value="pdf" /><el-option label="Excel" value="xlsx" /><el-option label="Markdown" value="md" /></el-select><el-button :loading="busy" @click="download"><AppIcon name="Download" :size="15" />导出已审批报告</el-button></template>
           </div>
+          <ResourceChangeHistory resource-type="QUALITY_REPORT" :resource-id="detail.reportId" domain="QUALITY_REPORT" compact />
           <h3><AppIcon name="DocumentCopy" :size="18" />操作记录<span class="report-section-count">本次读取 {{ audits.length }} 条</span></h3>
           <el-table class="report-audit-table" :scrollbar-tabindex="0" role="region" aria-label="报告操作记录" :data="audits" max-height="260"><el-table-column prop="actorUsername" label="操作账号" min-width="140" /><el-table-column label="操作" min-width="90"><template #default="{ row }">{{ auditLabels[row.action] || row.action }}</template></el-table-column><el-table-column prop="reportVersion" label="版本" width="65" /><el-table-column label="来源" min-width="150"><template #default="{ row }"><router-link v-if="row.runId" :to="{ path: '/agent/trace', query: { runId: row.runId } }">助手运行轨迹</router-link><span v-else>业务页面</span></template></el-table-column><el-table-column prop="reason" label="意见" min-width="160" /><el-table-column label="时间（UTC+8）" min-width="190"><template #default="{ row }">{{ row.clockStatus==='UNRESOLVED' && !row.createdAt ? '历史时区未确认' : reportTime(row.createdAt) }}</template></el-table-column></el-table>
           <div class="report-audit-mobile" role="region" aria-label="报告操作记录，可聚焦后使用方向键滚动" tabindex="0">
@@ -119,6 +122,9 @@
 </template>
 
 <script setup>
+import ResourceChangeHistory from '../components/ResourceChangeHistory.vue'
+import { resourceHistoryLink } from '../utils/changeHistory'
+import { useResourceChanges } from '../composables/useResourceChanges'
 import { ref, reactive, computed, onBeforeUnmount, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -145,6 +151,7 @@ const busy = ref(false), detail = ref(null), detailVisible = ref(false), detailL
 const events=ref([]),eventsError=ref(''),eventsLoading=ref(false)
 const detailRequestedId=ref(''),transitionError=ref('')
 const eventLabel=value=>({submitted:'提交审批',withdrawn:'撤回申请',approved:'审批通过',rejected:'驳回报告'}[value?.split('.')[2]]||'报告状态更新')
+const reportConflict=ref(false)
 const editorVisible = ref(false), editingId = ref(''), editingVersion = ref(null), editorError = ref('')
 const form = reactive({ taskId: '', title: '', narrative: '' })
 const transitionVisible = ref(false), transition = ref('submit')
@@ -188,17 +195,17 @@ function search() { load({ keyword:keyword.value.trim(), status:status.value || 
 function loadAppliedPage(nextPage) { load({ ...appliedQuery, page:nextPage }) }
 function retryList() { load({ ...requestedQuery }) }
 function resetSearch() { keyword.value = ''; status.value = ''; search() }
-function openCreate() { keys.clear(); editingId.value = ''; editingVersion.value = null; form.taskId = String(route.query.taskId || ''); form.title = ''; form.narrative = ''; editorError.value = ''; editorVisible.value = true }
-function openEdit() { keys.clear(); editingId.value = detail.value.reportId; editingVersion.value = detail.value.version; Object.assign(form, { taskId: detail.value.taskId, title: detail.value.title, narrative: detail.value.narrative }); editorError.value = ''; editorVisible.value = true }
+function openCreate() { reportConflict.value=false; keys.clear(); editingId.value = ''; editingVersion.value = null; form.taskId = String(route.query.taskId || ''); form.title = ''; form.narrative = ''; editorError.value = ''; editorVisible.value = true }
+function openEdit() { reportConflict.value=false; keys.clear(); editingId.value = detail.value.reportId; editingVersion.value = detail.value.version; Object.assign(form, { taskId: detail.value.taskId, title: detail.value.title, narrative: detail.value.narrative }); editorError.value = ''; editorVisible.value = true }
 async function saveDraft() {
-  if (busy.value) return
+  if (busy.value || reportConflict.value) return
   if (!form.taskId.trim() || !form.title.trim() || !form.narrative.trim()) return ElMessage.warning('请填写任务、标题和意见')
   busy.value = true; editorError.value = ''
   try {
     const payload = editingId.value ? withId(`edit:${editingId.value}`, { expectedVersion: editingVersion.value, title: form.title.trim(), narrative: form.narrative }) : withId('create', { taskId: form.taskId.trim(), title: form.title.trim(), narrative: form.narrative })
     const saved = unwrap(editingId.value ? await request.put(`/api/detection/reports/${editingId.value}`, payload, { headers }) : await request.post('/api/detection/reports', payload, { headers }))
     editorVisible.value = false; ElMessage.success('报告草稿已保存'); await load(); await openDetail(saved.reportId)
-  } catch (e) { editorError.value = message(e) }
+  } catch (e) { editorError.value = message(e); if(e.response?.status===409 && e.response?.data?.code!=='REQUEST_CONTENT_CONFLICT')reportConflict.value=true }
   finally { busy.value = false }
 }
 async function openDetail(id) {
@@ -270,6 +277,16 @@ async function download() {
     await openDetail(detail.value.reportId)
   } catch (e) { detailError.value = message(e) }
   finally { busy.value = false }
+}
+const {changed:reportChanged}=useResourceChanges({domains:['QUALITY_REPORT','DETECTION'],isEditing:()=>busy.value||editorVisible.value||decisionVisible.value||transitionVisible.value||detailVisible.value,refresh:()=>load()})
+const reportHistory=computed(()=>resourceHistoryLink('QUALITY_REPORT',editingId.value||detail.value?.reportId,'QUALITY_REPORT'))
+async function readLatestReport(){
+ if(editorVisible.value||decisionVisible.value||transitionVisible.value){ElMessage.info('未提交内容已保留 请先完成或关闭编辑，再核对最新资料');return}
+ await load();if(detailVisible.value&&detail.value?.reportId)await openDetail(detail.value.reportId);reportChanged.value=false
+}
+async function reloadDraft(){
+ try{await ElMessageBox.confirm('加载新版本会替换当前未保存标题与意见。需要保留时请先复制草稿。','重新加载报告',{type:'warning',confirmButtonText:'加载最新版本',cancelButtonText:'保留草稿'})}catch{return}
+ const id=editingId.value;await openDetail(id);if(detail.value?.reportId===id&&detail.value.status==='DRAFT'){openEdit();reportChanged.value=false}
 }
 onMounted(async () => { if (!userStore.identity) await userStore.checkAuth(); await load(); if (route.query.reportId) await openDetail(String(route.query.reportId)); else if (route.query.taskId) openCreate() })
 onBeforeUnmount(()=>{detailGeneration++;loadGeneration++;events.value=[];eventsError.value='';keys.clear()})

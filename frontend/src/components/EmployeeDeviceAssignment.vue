@@ -35,6 +35,8 @@
 <script setup>
 import { computed, getCurrentInstance, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import request from '../api/request'
+import { resourceVersion, mutationHeaders } from '../utils/mutationVersion'
+import { createUiRequestId } from '../utils/requestIdentity'
 import { useUserStore } from '../stores/user'
 import CollectionEmptyState from './CollectionEmptyState.vue'
 const emit=defineEmits(['changed'])
@@ -91,7 +93,7 @@ function prepare(action,device){
   if(!canPrepare(action) || locked.value || proposal.value || !id(device?.id) || uncertainDevices.value.has(id(device.id)))return
   const list=action==='ASSIGN'?deviceOptions.value:assignedDevices.value
   if(!list.some(item=>id(item.id)===id(device.id)) || action==='ASSIGN'&&assignmentReason(device))return
-  proposal.value=Object.freeze({action,employeeId:employeeId.value,employeeName:person.value.name || '姓名未记录',employeeNumber:person.value.employeeNumber || '未记录',employeeType:person.value.employeeType,employeeStatus:person.value.status,deviceId:id(device.id),deviceCode:device.deviceCode || '编号未记录',modelName:device.modelName || '型号未记录',deviceStatus:device.status,deviceType:device.deviceType,version:generation,actor:actor.value})
+  proposal.value=Object.freeze({expectedVersion:resourceVersion(device),requestId:createUiRequestId(),action,employeeId:employeeId.value,employeeName:person.value.name || '姓名未记录',employeeNumber:person.value.employeeNumber || '未记录',employeeType:person.value.employeeType,employeeStatus:person.value.status,deviceId:id(device.id),deviceCode:device.deviceCode || '编号未记录',modelName:device.modelName || '型号未记录',deviceStatus:device.status,deviceType:device.deviceType,version:generation,actor:actor.value})
   nextTick(()=>{if(proposal.value)proposalRef.value?.focus()})
 }
 async function confirm(){
@@ -108,7 +110,7 @@ async function confirm(){
     if(target.action==='UNASSIGN' && id(owner?.id)!==target.employeeId)throw new Error('当前设备使用人已变化，请重新读取后核对')
     if(id(device?.id)!==target.deviceId || device.deviceType!==target.deviceType || device.status!==target.deviceStatus)throw new Error('设备类型或业务状态已变化，请重新读取后核对')
     phase.value='SENDING';sent=true
-    const response=target.action==='ASSIGN'?await request.post(`/api/employees/${target.employeeId}/assign-device/${target.deviceId}`):await request.delete(`/api/devices/${target.deviceId}/employee`)
+    const response=target.action==='ASSIGN'?await request.post(`/api/employees/${target.employeeId}/assign-device/${target.deviceId}`,null,{headers:mutationHeaders(target.expectedVersion,target.requestId)}):await request.delete(`/api/devices/${target.deviceId}/employee`,{headers:mutationHeaders(target.expectedVersion,target.requestId)})
     if(!current(target.version,target.employeeId,target.actor))return
     const body=response.data
     proposal.value=null;selectedDeviceId.value=null;needsRead.value=true

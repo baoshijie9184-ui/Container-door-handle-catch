@@ -45,6 +45,7 @@
           <el-button plain @click="router.push('/agent/chat')">向 AI 助手提问 <el-icon style="margin-left:4px"><ArrowRight /></el-icon></el-button>
       </template>
     </PageHero>
+    <CollaborationTodos />
     <div role="status" class="dashboard-refresh-note">
       <span>{{ refreshing ? '正在刷新…' : '每 30 秒自动刷新（后台页面暂停）' }}</span>
       <span v-if="lastUpdated"> · 最近全部更新成功：{{ lastUpdated }} UTC+8</span>
@@ -434,6 +435,8 @@
 </template>
 
 <script setup>
+import CollaborationTodos from '../components/CollaborationTodos.vue'
+import { useResourceChanges } from '../composables/useResourceChanges'
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useUserStore } from '../stores/user'
@@ -1028,6 +1031,7 @@ function getModelUsagePercent(taskCount) {
   if (counts.some(value => value === null)) return null
   return ratio(taskCount, Math.max(...counts))
 }
+useResourceChanges({refresh:()=>refreshAll()})
 </script>
 
 <style scoped>

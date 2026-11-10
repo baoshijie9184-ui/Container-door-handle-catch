@@ -1,4 +1,6 @@
 import { reactive, ref, watch } from 'vue'
+import { useUserStore } from '../stores/user'
+import { captureTaskMutation, taskMutationPayload } from '../utils/mutationVersion'
 import { ElMessage } from 'element-plus'
 import {
   assignDetectionQualityTask,
@@ -83,7 +85,9 @@ export function useQualityTaskActions({
     if (['RELEASE', 'SCRAP'].includes(action)) dispositionForm.recheckRequired = false
   }, { flush: 'sync' })
 
+  const user=useUserStore()
   const allowed = (task, action, predicate) => {
+    if(action==='ASSIGN'&&user.role!=='SUPERVISOR'){ElMessage.warning('仅主管可以分派任务');return false}
     if (predicate(task)) return true
     ElMessage.warning(qualityActionReason(task, action))
     return false
@@ -91,6 +95,8 @@ export function useQualityTaskActions({
 
   const applyTaskProgressUpdate = async (taskId, data, fallbackMessage) => {
     taskStore.updateTask(taskId, {
+      version: data.version,
+      mutationVersion: data.mutationVersion ?? data.version,
       flowStatus: data.flowStatus,
       qualityActions: data.qualityActions,
       qualityStation: data.qualityStation,
@@ -126,7 +132,7 @@ export function useQualityTaskActions({
   const openReviewDialog = (task) => {
     if (!allowed(task, 'REVIEW', canReviewTask)) return
     resetFeedback('review')
-    reviewTask.value = task
+    reviewTask.value = captureTaskMutation(task)
     reviewForm.reviewConclusion = task.reviewConclusion || 'CONFIRMED_DEFECT'
     reviewForm.severityLevel = task.severityLevel || 'MAJOR'
     reviewForm.confirmedDefectCount = task.confirmedDefectCount ?? 0
@@ -146,13 +152,13 @@ export function useQualityTaskActions({
     reviewSubmitting.value = true
     qualityActionErrors.review=''
     try {
-      const response = await reviewDetectionTask(reviewTask.value.taskId, {
+      const response = await reviewDetectionTask(reviewTask.value.taskId, taskMutationPayload(reviewTask.value, {
         reviewConclusion: reviewForm.reviewConclusion,
         severityLevel: reviewForm.severityLevel,
         confirmedDefectCount: reviewForm.confirmedDefectCount,
         falsePositiveCount: reviewForm.falsePositiveCount,
         reviewRemark: reviewForm.reviewRemark
-      })
+      }))
       if (response.data?.code === 200) {
         qualityActionAcknowledged.review=true
         const data = response.data.data
@@ -165,7 +171,8 @@ export function useQualityTaskActions({
         actionFailure('review',response.data?.message || '人工复核未返回成功回执')
       }
     } catch (error) {
-      actionFailure('review',error.response?.data?.message)
+      if(error.response?.status===409 && reviewTask.value)reviewTask.value.mutationConflicted=true
+      actionFailure('review',error.response?.data?.message || error.message)
     } finally {
       reviewSubmitting.value = false
     }
@@ -174,7 +181,7 @@ export function useQualityTaskActions({
   const openAssignmentDialog = (task) => {
     if (!allowed(task, 'ASSIGN', canAssignQualityTask)) return
     resetFeedback('assignment')
-    assignmentTask.value = task
+    assignmentTask.value = captureTaskMutation(task)
     assignmentForm.qualityStation = task.qualityStation || task.result?.qualityStation || '质检站-1'
     assignmentForm.assignee = task.assignee || task.result?.assignee || ''
     assignmentForm.assigneeUserId = null
@@ -201,7 +208,7 @@ export function useQualityTaskActions({
     assignmentSubmitting.value = true
     qualityActionErrors.assignment=''
     try {
-      const response = await assignDetectionQualityTask(assignmentTask.value.taskId, {
+      const response = await assignDetectionQualityTask(assignmentTask.value.taskId, taskMutationPayload(assignmentTask.value, {
         qualityStation: assignmentForm.qualityStation,
         assignee: assignmentForm.assignee,
         assigneeUserId: assignmentForm.assigneeUserId,
@@ -209,7 +216,7 @@ export function useQualityTaskActions({
         expectedAssignmentRevision: assignmentForm.expectedAssignmentRevision,
         dueAt: assignmentForm.dueAt,
         assignmentRemark: assignmentForm.assignmentRemark
-      })
+      }))
       if (response.data?.code === 200) {
         qualityActionAcknowledged.assignment=true
         await applyTaskProgressUpdate(assignmentTask.value.taskId, response.data.data, '质检任务已分派')
@@ -220,7 +227,8 @@ export function useQualityTaskActions({
         actionFailure('assignment',response.data?.message || '质检分派未返回成功回执')
       }
     } catch (error) {
-      actionFailure('assignment',error.response?.data?.message)
+      if(error.response?.status===409 && assignmentTask.value)assignmentTask.value.mutationConflicted=true
+      actionFailure('assignment',error.response?.data?.message || error.message)
     } finally {
       assignmentSubmitting.value = false
     }
@@ -229,7 +237,7 @@ export function useQualityTaskActions({
   const openDispositionDialog = (task) => {
     if (!allowed(task, 'DISPOSE', canDisposeTask)) return
     resetFeedback('disposition')
-    dispositionTask.value = task
+    dispositionTask.value = captureTaskMutation(task)
     dispositionForm.dispositionAction = canReleaseDisposition(task) ? 'RELEASE' : 'REWORK'
     dispositionForm.recheckRequired = shouldDefaultRecheck(task)
     dispositionForm.dispositionRemark = task.dispositionRemark || ''
@@ -259,11 +267,11 @@ export function useQualityTaskActions({
     dispositionSubmitting.value = true
     qualityActionErrors.disposition=''
     try {
-      const response = await disposeDetectionTask(dispositionTask.value.taskId, {
+      const response = await disposeDetectionTask(dispositionTask.value.taskId, taskMutationPayload(dispositionTask.value, {
         dispositionAction: dispositionForm.dispositionAction,
         recheckRequired: dispositionForm.recheckRequired,
         dispositionRemark: dispositionForm.dispositionRemark
-      })
+      }))
       if (response.data?.code === 200) {
         qualityActionAcknowledged.disposition=true
         await applyTaskProgressUpdate(dispositionTask.value.taskId, response.data.data, '质检处置已完成')
@@ -274,7 +282,8 @@ export function useQualityTaskActions({
         actionFailure('disposition',response.data?.message || '质检处置未返回成功回执')
       }
     } catch (error) {
-      actionFailure('disposition',error.response?.data?.message)
+      if(error.response?.status===409 && dispositionTask.value)dispositionTask.value.mutationConflicted=true
+      actionFailure('disposition',error.response?.data?.message || error.message)
     } finally {
       dispositionSubmitting.value = false
     }
@@ -283,7 +292,7 @@ export function useQualityTaskActions({
   const openReworkDialog = (task) => {
     if (!allowed(task, 'SUBMIT_REWORK', canSubmitReworkResult)) return
     resetFeedback('rework')
-    reworkTask.value = task
+    reworkTask.value = captureTaskMutation(task)
     reworkForm.reworkResult = task.reworkResult || ''
     reworkForm.reworkOperator = task.reworkOperator || ''
     reworkForm.recheckRequired = (task.recheckRequired ?? task.result?.recheckRequired) !== false
@@ -310,11 +319,11 @@ export function useQualityTaskActions({
     reworkSubmitting.value = true
     qualityActionErrors.rework=''
     try {
-      const response = await submitDetectionReworkResult(reworkTask.value.taskId, {
+      const response = await submitDetectionReworkResult(reworkTask.value.taskId, taskMutationPayload(reworkTask.value, {
         reworkResult: reworkForm.reworkResult,
         reworkRemark: reworkForm.reworkRemark,
         recheckRequired: reworkForm.recheckRequired
-      })
+      }))
       if (response.data?.code === 200) {
         qualityActionAcknowledged.rework=true
         await applyTaskProgressUpdate(reworkTask.value.taskId, response.data.data, '返工结果已提交')
@@ -325,7 +334,8 @@ export function useQualityTaskActions({
         actionFailure('rework',response.data?.message || '返工结果未返回成功回执')
       }
     } catch (error) {
-      actionFailure('rework',error.response?.data?.message)
+      if(error.response?.status===409 && reworkTask.value)reworkTask.value.mutationConflicted=true
+      actionFailure('rework',error.response?.data?.message || error.message)
     } finally {
       reworkSubmitting.value = false
     }

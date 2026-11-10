@@ -1,3 +1,4 @@
+import { accountFetch as fetch } from '../utils/accountFetch'
 const BASE='/api/agent/memories'
 async function invoke(path='',options={}) {
   const response=await fetch(BASE+path,{credentials:'include',cache:'no-store',...options,headers:{'Content-Type':'application/json',...options.headers}})

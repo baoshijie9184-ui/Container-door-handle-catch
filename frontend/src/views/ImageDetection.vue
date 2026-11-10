@@ -1,5 +1,6 @@
 <template>
   <div class="page-shell image-detection-container">
+    <CollaborationRefreshNotice :changed="collaborationChanged" :editing="collaborationEditing" @refresh="refreshCollaborationView" />
     <PageHero class="page-hero detection-hero command-panel">
       <div>
         <span class="industrial-kicker">Detection Workspace</span>
@@ -414,6 +415,7 @@
             <el-table-column label="下一步" min-width="235"><template #default="{ row }"><QualityStageGuidance :task="row" /></template></el-table-column>
             <el-table-column label="操作" width="330" fixed="right">
               <template #default="{ row }">
+                <TaskClaimButton :task="row" @claimed="loadQualityQueue(qualityQueuePage)" />
                 <el-button link size="small" type="primary" @click="openTraceDialog(row.taskId)">追溯</el-button>
                 <el-button link size="small" type="info" :disabled="reportDownloading" @click="downloadTaskQualityReport(row.taskId)">任务摘要</el-button>
                 <el-tooltip v-if="userStore.role === 'SUPERVISOR'" :content="canAssignQualityTask(row) ? '选择责任人并确认分派' : qualityActionReason(row,'ASSIGN')" placement="top"><span><el-button link size="small" type="info" :disabled="!canAssignQualityTask(row)" @click="openAssignmentDialog(row)"><AppIcon name="User" :size="14" />分派</el-button></span></el-tooltip>
@@ -610,7 +612,7 @@
       <div class="quality-review-layout" :class="{ 'has-evidence': reviewEvidence.originals.length || reviewEvidence.annotations.length }">
       <EvidenceComparison v-if="reviewEvidence.originals.length || reviewEvidence.annotations.length" :task-id="reviewTask?.taskId" :originals="reviewEvidence.originals" :annotations="reviewEvidence.annotations" />
       <p v-else class="quality-feedback-note"><AppIcon name="Picture" :size="16" />当前未读取到可对照图片，请先查看任务追溯并核对原始资料。</p>
-      <el-form :model="reviewForm" label-position="top" :disabled="reviewSubmitting||qualityActionAcknowledged.review">
+      <el-form :model="reviewForm" label-position="top" :disabled="reviewSubmitting||qualityActionAcknowledged.review||reviewTask?.mutationConflicted">
         <el-form-item label="复核结论">
           <el-select v-model="reviewForm.reviewConclusion" style="width: 100%">
             <el-option label="确认缺陷" value="CONFIRMED_DEFECT" />
@@ -647,20 +649,20 @@
       <el-alert v-if="qualityActionErrors.review" :title="qualityActionErrors.review" type="warning" show-icon :closable="false" />
       <p v-if="!canReviewTask(reviewTask)" class="quality-feedback-note">{{ qualityActionReason(reviewTask,'REVIEW') }}</p>
       <template #footer>
-        <el-button :disabled="reviewSubmitting" @click="reviewDialogVisible = false"><AppIcon name="Close" :size="16" />取消</el-button>
+        <el-button :disabled="reviewSubmitting||reviewTask?.mutationConflicted" @click="reviewDialogVisible = false"><AppIcon name="Close" :size="16" />取消</el-button>
         <el-button :disabled="reviewSubmitting||!reviewTask?.taskId" @click="openTraceDialog(reviewTask.taskId)"><AppIcon name="Search" :size="15" />核对任务依据</el-button>
-        <el-button type="primary" :loading="reviewSubmitting" :disabled="qualityActionAcknowledged.review||!canReviewTask(reviewTask)" @click="submitTaskReview"><AppIcon name="DocumentChecked" :size="15" />提交复核</el-button>
+        <el-button type="primary" :loading="reviewSubmitting" :disabled="qualityActionAcknowledged.review||reviewTask?.mutationConflicted||!canReviewTask(reviewTask)" @click="submitTaskReview"><AppIcon name="DocumentChecked" :size="15" />提交复核</el-button>
       </template>
     </el-dialog>
 
     <el-dialog v-model="assignmentDialogVisible" class="quality-operation-dialog" title="分派质检任务" width="min(640px, 96vw)" :close-on-click-modal="!assignmentSubmitting" :close-on-press-escape="!assignmentSubmitting" :show-close="!assignmentSubmitting">
       <QualityTaskContext :task="assignmentTask" operation="assignment" />
-      <el-form :model="assignmentForm" label-position="top" :disabled="assignmentSubmitting||qualityActionAcknowledged.assignment">
+      <el-form :model="assignmentForm" label-position="top" :disabled="assignmentSubmitting||qualityActionAcknowledged.assignment||assignmentTask?.mutationConflicted">
         <el-form-item label="质检站点">
           <el-input v-model="assignmentForm.qualityStation" aria-label="例如：质检站-1 / 产线A复核位" placeholder="例如：质检站-1 / 产线A复核位" />
         </el-form-item>
         <el-form-item label="责任人">
-          <QualityAssigneePicker v-model="assignmentForm.assignee" v-model:user-id="assignmentForm.assigneeUserId" v-model:revision="assignmentForm.assigneeRevision" :disabled="assignmentSubmitting||qualityActionAcknowledged.assignment" />
+          <QualityAssigneePicker v-model="assignmentForm.assignee" v-model:user-id="assignmentForm.assigneeUserId" v-model:revision="assignmentForm.assigneeRevision" :disabled="assignmentSubmitting||qualityActionAcknowledged.assignment||assignmentTask?.mutationConflicted" />
         </el-form-item>
         <el-form-item label="截止时间 · UTC+8">
           <el-date-picker
@@ -686,15 +688,15 @@
       <el-alert v-if="qualityActionErrors.assignment" :title="qualityActionErrors.assignment" type="warning" show-icon :closable="false" />
       <p v-if="!canAssignQualityTask(assignmentTask)" class="quality-feedback-note">{{ qualityActionReason(assignmentTask,'ASSIGN') }}</p>
       <template #footer>
-        <el-button :disabled="assignmentSubmitting" @click="assignmentDialogVisible = false"><AppIcon name="Close" :size="16" />取消</el-button>
-        <el-button v-if="qualityActionErrors.assignment" :disabled="assignmentSubmitting" @click="openTraceDialog(assignmentTask.taskId)"><AppIcon name="Search" :size="15" />核对任务状态</el-button>
-        <el-button type="primary" :loading="assignmentSubmitting" :disabled="qualityActionAcknowledged.assignment||!canAssignQualityTask(assignmentTask)" @click="submitQualityAssignment"><AppIcon name="User" :size="15" />确认分派</el-button>
+        <el-button :disabled="assignmentSubmitting||assignmentTask?.mutationConflicted" @click="assignmentDialogVisible = false"><AppIcon name="Close" :size="16" />取消</el-button>
+        <el-button v-if="qualityActionErrors.assignment" :disabled="assignmentSubmitting||assignmentTask?.mutationConflicted" @click="openTraceDialog(assignmentTask.taskId)"><AppIcon name="Search" :size="15" />核对任务状态</el-button>
+        <el-button type="primary" :loading="assignmentSubmitting" :disabled="qualityActionAcknowledged.assignment||assignmentTask?.mutationConflicted||!canAssignQualityTask(assignmentTask)" @click="submitQualityAssignment"><AppIcon name="User" :size="15" />确认分派</el-button>
       </template>
     </el-dialog>
 
     <el-dialog v-model="dispositionDialogVisible" class="quality-operation-dialog" title="质检处置" width="min(640px, 96vw)" :close-on-click-modal="!dispositionSubmitting" :close-on-press-escape="!dispositionSubmitting" :show-close="!dispositionSubmitting">
       <QualityTaskContext :task="dispositionTask" operation="disposition" />
-      <el-form :model="dispositionForm" label-position="top" :disabled="dispositionSubmitting||qualityActionAcknowledged.disposition">
+      <el-form :model="dispositionForm" label-position="top" :disabled="dispositionSubmitting||qualityActionAcknowledged.disposition||dispositionTask?.mutationConflicted">
         <el-form-item label="处置动作">
           <el-select v-model="dispositionForm.dispositionAction" style="width: 100%">
             <el-option label="正常放行" value="RELEASE" :disabled="!canReleaseDisposition(dispositionTask)" />
@@ -723,15 +725,15 @@
       <el-alert v-if="qualityActionErrors.disposition" :title="qualityActionErrors.disposition" type="warning" show-icon :closable="false" />
       <p v-if="!canDisposeTask(dispositionTask)" class="quality-feedback-note">{{ qualityActionReason(dispositionTask,'DISPOSE') }}</p>
       <template #footer>
-        <el-button :disabled="dispositionSubmitting" @click="dispositionDialogVisible = false"><AppIcon name="Close" :size="16" />取消</el-button>
-        <el-button v-if="qualityActionErrors.disposition" :disabled="dispositionSubmitting" @click="openTraceDialog(dispositionTask.taskId)"><AppIcon name="Search" :size="15" />核对任务状态</el-button>
-        <el-button :type="dispositionForm.dispositionAction==='SCRAP'?'danger':'primary'" :loading="dispositionSubmitting" :disabled="qualityActionAcknowledged.disposition||!canDisposeTask(dispositionTask)" @click="submitTaskDisposition"><AppIcon name="DocumentChecked" :size="15" />{{ dispositionForm.dispositionAction==='SCRAP'?'确认报废隔离':dispositionForm.dispositionAction==='RELEASE'?'确认正常放行':'提交处置' }}</el-button>
+        <el-button :disabled="dispositionSubmitting||dispositionTask?.mutationConflicted" @click="dispositionDialogVisible = false"><AppIcon name="Close" :size="16" />取消</el-button>
+        <el-button v-if="qualityActionErrors.disposition" :disabled="dispositionSubmitting||dispositionTask?.mutationConflicted" @click="openTraceDialog(dispositionTask.taskId)"><AppIcon name="Search" :size="15" />核对任务状态</el-button>
+        <el-button :type="dispositionForm.dispositionAction==='SCRAP'?'danger':'primary'" :loading="dispositionSubmitting" :disabled="qualityActionAcknowledged.disposition||dispositionTask?.mutationConflicted||!canDisposeTask(dispositionTask)" @click="submitTaskDisposition"><AppIcon name="DocumentChecked" :size="15" />{{ dispositionForm.dispositionAction==='SCRAP'?'确认报废隔离':dispositionForm.dispositionAction==='RELEASE'?'确认正常放行':'提交处置' }}</el-button>
       </template>
     </el-dialog>
 
     <el-dialog v-model="reworkDialogVisible" class="quality-operation-dialog" title="返工结果回填" width="min(640px, 96vw)" :close-on-click-modal="!reworkSubmitting" :close-on-press-escape="!reworkSubmitting" :show-close="!reworkSubmitting">
       <QualityTaskContext :task="reworkTask" operation="rework" />
-      <el-form :model="reworkForm" label-position="top" :disabled="reworkSubmitting||qualityActionAcknowledged.rework">
+      <el-form :model="reworkForm" label-position="top" :disabled="reworkSubmitting||qualityActionAcknowledged.rework||reworkTask?.mutationConflicted">
         <el-form-item label="返工结果">
           <el-input
             v-model="reworkForm.reworkResult"
@@ -758,9 +760,9 @@
       <el-alert v-if="qualityActionErrors.rework" :title="qualityActionErrors.rework" type="warning" show-icon :closable="false" />
       <p v-if="!canSubmitReworkResult(reworkTask)" class="quality-feedback-note">{{ qualityActionReason(reworkTask,'SUBMIT_REWORK') }}</p>
       <template #footer>
-        <el-button :disabled="reworkSubmitting" @click="reworkDialogVisible = false"><AppIcon name="Close" :size="16" />取消</el-button>
-        <el-button v-if="qualityActionErrors.rework" :disabled="reworkSubmitting" @click="openTraceDialog(reworkTask.taskId)"><AppIcon name="Search" :size="15" />核对任务状态</el-button>
-        <el-button type="primary" :loading="reworkSubmitting" :disabled="qualityActionAcknowledged.rework||!canSubmitReworkResult(reworkTask)" @click="submitTaskRework"><AppIcon name="DocumentChecked" :size="15" />提交返工结果</el-button>
+        <el-button :disabled="reworkSubmitting||reworkTask?.mutationConflicted" @click="reworkDialogVisible = false"><AppIcon name="Close" :size="16" />取消</el-button>
+        <el-button v-if="qualityActionErrors.rework" :disabled="reworkSubmitting||reworkTask?.mutationConflicted" @click="openTraceDialog(reworkTask.taskId)"><AppIcon name="Search" :size="15" />核对任务状态</el-button>
+        <el-button type="primary" :loading="reworkSubmitting" :disabled="qualityActionAcknowledged.rework||reworkTask?.mutationConflicted||!canSubmitReworkResult(reworkTask)" @click="submitTaskRework"><AppIcon name="DocumentChecked" :size="15" />提交返工结果</el-button>
       </template>
     </el-dialog>
 
@@ -772,6 +774,9 @@
 </template>
 
 <script setup>
+import CollaborationRefreshNotice from '../components/CollaborationRefreshNotice.vue'
+import TaskClaimButton from '../components/TaskClaimButton.vue'
+import { useResourceChanges } from '../composables/useResourceChanges'
 import QualityAssigneePicker from '@/components/QualityAssigneePicker.vue'
 import QualityStageGuidance from '@/components/QualityStageGuidance.vue'
 import QualityTaskContext from '@/components/QualityTaskContext.vue'
@@ -796,7 +801,7 @@ import { detectSingleImageViaKafka } from '../services/singleImageKafkaDetection
 import { useTaskStore, useUploadStore, usePollingStore, CATEGORY_LABELS, CATEGORY_COLORS, CATEGORY_ALIASES } from '../stores/detectionTask'
 import { useSingleImageUploadPreview } from '../composables/useSingleImageUploadPreview'
 import {
-  canAssignQualityTask,
+  canAssignQualityTask as stateCanAssignQualityTask,
   canDisposeTask,
   canReleaseDisposition,
   canReviewTask,
@@ -1399,6 +1404,26 @@ onBeforeUnmount(() => {
   // 只保存当前状态
   saveTaskList()
 })
+const collaborationEditing=computed(()=>reviewDialogVisible.value||assignmentDialogVisible.value||dispositionDialogVisible.value||reworkDialogVisible.value||reviewSubmitting.value||assignmentSubmitting.value||dispositionSubmitting.value||reworkSubmitting.value)
+async function refreshCollaborationView(){if(collaborationEditing.value)return;await readWorkbenchTasks();collaborationChanged.value=false}
+const {changed:collaborationChanged}=useResourceChanges({resourceType:'DETECTION_TASK',isEditing:()=>collaborationEditing.value,refresh:refreshCollaborationView,revalidate:validateCollaborationAccess})
+const canAssignQualityTask=task=>userStore.role==='SUPERVISOR'&&stateCanAssignQualityTask(task)
+async function validateCollaborationAccess(){
+ const groups=new Map()
+ const add=(id,entry)=>{if(!id)return;if(!groups.has(id))groups.set(id,[]);groups.get(id).push(entry)}
+ for(const [task,visible,form] of [[reviewTask,reviewDialogVisible,reviewForm],[assignmentTask,assignmentDialogVisible,assignmentForm],[dispositionTask,dispositionDialogVisible,dispositionForm],[reworkTask,reworkDialogVisible,reworkForm]]){
+  if(visible.value&&task.value?.taskId)add(task.value.taskId,{task,visible,form})
+ }
+ if(traceDialogVisible.value&&traceDetail.value?.taskId)add(traceDetail.value.taskId,{trace:true})
+ await Promise.allSettled([...groups].map(async([id,entries])=>{
+  try{const response=await fetchDetectionTaskTrace(id);if(response.data?.code!==200)throw Object.assign(new Error('当前任务无权读取'),{httpStatus:response.data?.code})
+   for(const entry of entries)if(entry.trace&&traceDetail.value?.taskId===id&&!collaborationEditing.value)traceDetail.value=response.data.data
+  }catch(error){if(![401,403,404].includes(error.response?.status||error.httpStatus))return
+   for(const entry of entries){if(entry.trace){if(traceDetail.value?.taskId===id){traceDetail.value=null;traceDialogVisible.value=false}}else if(entry.task.value?.taskId===id){entry.visible.value=false;entry.task.value=null;for(const key of Object.keys(entry.form))entry.form[key]=typeof entry.form[key]==='string'?'':null}}
+   taskStore.removeTask(id)
+  }
+ }))
+}
 </script>
 
 <style scoped>

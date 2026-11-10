@@ -51,6 +51,7 @@
           <el-table-column label="员工状态" min-width="110"><template #default="{ row }"><StatusBadge v-if="row.employeeStatus" domain="employee" :code="row.employeeStatus" :label="statusLabel(row.employeeStatus)" /><span v-else class="muted">{{ row.employeeId==null?'未关联':'状态未记录' }}</span></template></el-table-column>
           <el-table-column label="操作" min-width="220"><template #default="{ row }">
             <el-button size="small" type="primary" :disabled="loading||saving||!!error||!!accountError" @click="openBinding(row)"><AppIcon name="Connection" :size="15" />{{ row.employeeId==null?'关联员工':'调整关联' }}</el-button>
+            <AccountAccessEditor :account="row" @updated="refresh" />
             <el-button size="small" :disabled="saving" @click="openAudit(row)"><AppIcon name="Document" :size="15" />变更记录</el-button>
           </template></el-table-column>
         </el-table>
@@ -58,6 +59,7 @@
       </section>
     </template>
 
+    <CollaborationRefreshNotice :changed="organizationChanged" :editing="organizationEditing" :history-to="{path:'/operations/audit',query:{domain:'ORGANIZATION'}}" @refresh="refreshOrganizationLatest" />
     <el-dialog class="organization-dialog" append-to-body v-model="bindingDialog" title="关联员工" width="min(540px, 94vw)" :close-on-click-modal="!saving" :close-on-press-escape="!saving" :show-close="!saving">
       <el-form v-if="selectedAccount" label-position="top" @submit.prevent="saveBinding">
         <div class="organization-binding-target"><AppIcon name="Key" :size="23" /><div><strong>{{ selectedAccount.username || '账号名称未记录' }}</strong><small>{{ roleLabel(selectedAccount.role) }} · 账号 ID {{ selectedAccount.userId }} · 版本 {{ selectedAccount.bindingVersion??'待核对' }}</small></div></div>
@@ -92,11 +94,17 @@
         <el-table-column label="版本" min-width="85"><template #default="{row}">{{ row.bindingVersion??'未记录' }}</template></el-table-column>
         <el-table-column label="时间（UTC+8）" min-width="190"><template #default="{row}">{{ formatTime(row.createdAt) }}</template></el-table-column>
       </el-table>
+      <ResourceChangeHistory v-if="auditUserId" resource-type="ACCOUNT_BINDING" :resource-id="auditUserId" domain="ORGANIZATION" compact />
     </el-dialog>
   </div>
 </template>
 
 <script setup>
+import AccountAccessEditor from '../components/AccountAccessEditor.vue'
+import ResourceChangeHistory from '../components/ResourceChangeHistory.vue'
+import CollaborationRefreshNotice from '../components/CollaborationRefreshNotice.vue'
+import { useResourceChanges } from '../composables/useResourceChanges'
+import { decimalVersion } from '../utils/mutationVersion'
 import { ref, computed, nextTick, onBeforeUnmount, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import request from '../api/request'
@@ -150,7 +158,7 @@ const formatTime = value => value ? beijingDateTime(value) || '时间格式未�
 function employeeLabel(identity){return identity?.employeeId==null?'未关联员工':`${identity.employeeName||'已关联员工，姓名未记录'} / ${identity.employeeNumber||'编号未记录'}`}
 function departmentLabel(identity){return identity?.departmentName||(identity?.departmentId==null?'尚未关联部门':'部门名称未记录')}
 const bindingChanged=computed(()=>!!selectedAccount.value&&String(selectedEmployee.value??'')!==String(selectedAccount.value.employeeId??''))
-const bindingRevisionKnown=computed(()=>Number.isSafeInteger(selectedAccount.value?.bindingVersion)&&selectedAccount.value.bindingVersion>=0)
+const bindingRevisionKnown=computed(()=>decimalVersion(selectedAccount.value?.bindingVersion)!==null)
 function unwrap(response) {
   if (response.data?.code !== 200) {const cause=new Error(response.data?.message || '请求未成功');const code=Number(response.data?.code);cause.confirmedRejection=code>=400&&code<500&&code!==408;throw cause}
   return response.data.data
@@ -266,6 +274,9 @@ watch(actor,()=>{
 watch(bindingDialog,open=>{if(!open){employeeGeneration++;employeeLoading.value=false}},{flush:'sync'})
 watch(auditDialog,open=>{if(!open){auditGeneration++;auditLoading.value=false}},{flush:'sync'})
 onBeforeUnmount(()=>{active=false;generation++;employeeGeneration++;auditGeneration++})
+const organizationEditing=computed(()=>saving.value||bindingDialog.value||departmentDialog.value)
+async function refreshOrganizationLatest(){if(organizationEditing.value)return;await refresh();organizationChanged.value=false}
+const {changed:organizationChanged}=useResourceChanges({domains:['ORGANIZATION'],isEditing:()=>organizationEditing.value,refresh:refreshOrganizationLatest})
 </script>
 
 <style scoped>

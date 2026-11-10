@@ -5,8 +5,8 @@
         <el-button :loading="loading" :disabled="deleteBusy" @click="refreshDevice"><AppIcon name="Refresh" :size="16" />刷新资料</el-button>
         <el-button :disabled="loading || !device" @click="viewUsageRecords"><AppIcon name="Clock" :size="16" />使用记录</el-button>
         <el-button v-if="isSupervisor" type="primary" :disabled="loading || !!loadError || deleteBusy || deleteReceipt?.state==='UNKNOWN' || !device" @click="editDevice"><AppIcon name="Edit" :size="16" />编辑设备</el-button>
-        <el-popconfirm v-if="isSupervisor && device" :title="`确认删除设备 ${device.deviceCode || deviceId}？`" @confirm="deleteDevice">
-          <template #reference><el-button type="danger" plain :loading="deleteBusy" :disabled="loading || !!loadError || deleteReceipt?.state==='UNKNOWN'"><AppIcon name="Delete" :size="16" />删除设备</el-button></template>
+        <el-popconfirm v-if="isSupervisor && device" :title="`确认删除设备 ${device.deviceCode || deviceId}？`" @confirm="deleteDevice" @cancel="deleteSnapshot=null">
+          <template #reference><el-button @click="deleteSnapshot=Object.freeze({...device})" type="danger" plain :loading="deleteBusy" :disabled="loading || !!loadError || deleteReceipt?.state==='UNKNOWN'"><AppIcon name="Delete" :size="16" />删除设备</el-button></template>
         </el-popconfirm>
         <el-button @click="goBack"><AppIcon name="ArrowLeft" :size="16" />返回列表</el-button>
       </template>
@@ -130,6 +130,7 @@
       </div>
     </el-card>
     <EmployeeDeviceAssignment :context-key="deviceId" ref="assignmentPanel" @changed="refreshDevice" />
+    <ResourceChangeHistory v-if="device?.id" resource-type="DEVICE" :resource-id="device.id" domain="DEVICE" compact />
   </div>
 </template>
 
@@ -139,6 +140,9 @@ import { useRouter, useRoute } from 'vue-router'
 import {beijingDateTime} from '@/utils/beijingTime'
 import { ElMessage } from 'element-plus'
 import request from '../../api/request'
+import { resourceVersion, mutationHeaders } from '../../utils/mutationVersion'
+import { useResourceChanges } from '../../composables/useResourceChanges'
+import ResourceChangeHistory from '../../components/ResourceChangeHistory.vue'
 import { useUserStore } from '../../stores/user'
 import CollectionEmptyState from '../../components/CollectionEmptyState.vue'
 import CollectionTaskRecords from '../../components/CollectionTaskRecords.vue'
@@ -162,7 +166,7 @@ function readData(response){
   return response.data.data
 }
 const accessDenied=error=>[401,403].includes(error.response?.status || error.httpStatus)
-const deleteBusy=ref(false), deleteReceipt=ref(null)
+const deleteBusy=ref(false), deleteReceipt=ref(null), deleteSnapshot=ref(null)
 const assignmentPanel = ref(null)
 const device = ref(null)
 const loading = ref(false)
@@ -245,7 +249,7 @@ const deleteDevice = async () => {
   const current=()=>pageActive && readContext()===context
   deleteBusy.value=true;deleteReceipt.value=null
   try {
-    const response=await request.delete(`/api/devices/${target}`)
+    const response=await request.delete(`/api/devices/${target}`,{headers:mutationHeaders(resourceVersion(deleteSnapshot.value))})
     if(!current())return
     const body=response.data
     if(body?.code===200 && body.data===true){ElMessage.success('已收到设备删除成功回执');goBack();return}
@@ -294,6 +298,7 @@ watch([deviceId,actor],async()=>{
   if(!userStore.isAuthenticated)return
   await refreshDevice()
 },{immediate:true,flush:'sync'})
+useResourceChanges({resourceType:'DEVICE',resourceId:deviceId,isEditing:()=>deleteBusy.value||!!deleteSnapshot.value,refresh:fetchDevice})
 </script>
 
 <style scoped>

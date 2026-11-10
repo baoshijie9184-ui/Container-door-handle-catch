@@ -1,3 +1,4 @@
+import { accountSession } from '../utils/accountContext'
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import {beijingDateTime,businessDate} from '../utils/beijingTime'
@@ -60,9 +61,11 @@ export const useTaskStore = defineStore('task', () => {
   }
 
   const doSave = () => {
+    if (!accountSession.state.authenticated || !accountSession.state.accountContext) return
     try {
       const savable = taskList.value.map(t => ({
         taskId: t.taskId,
+        version: t.version,
         batchNo: t.batchNo,
         workOrderNo: t.workOrderNo,
         flowStatus: t.flowStatus,
@@ -85,7 +88,7 @@ export const useTaskStore = defineStore('task', () => {
         captureInfo: t.captureInfo,
         sourceOssPrefix: t.sourceOssPrefix || ''
       }))
-      localStorage.setItem('taskList', JSON.stringify(savable))
+      localStorage.setItem('doorhandle:'+accountSession.state.accountContext+':taskList', JSON.stringify(savable))
     } catch (e) {
       console.error('[saveTaskList] 保存失败:', e)
     }
@@ -93,7 +96,7 @@ export const useTaskStore = defineStore('task', () => {
 
   const loadTaskList = () => {
     try {
-      const raw = localStorage.getItem('taskList')
+      const raw = accountSession.state.authenticated && accountSession.state.accountContext ? localStorage.getItem('doorhandle:'+accountSession.state.accountContext+':taskList') : null
       return raw ? JSON.parse(raw) : []
     } catch { return [] }
   }
@@ -103,21 +106,25 @@ export const useTaskStore = defineStore('task', () => {
   const FILE_STATE_PREFIX = 'task_files_'
 
   const saveFileState = (taskId, state) => {
+    if(!accountSession.state.accountContext)return
     try {
-      localStorage.setItem(`${FILE_STATE_PREFIX}${taskId}`, JSON.stringify(state))
+      localStorage.setItem(`doorhandle:${accountSession.state.accountContext}:${FILE_STATE_PREFIX}${taskId}`, JSON.stringify(state))
     } catch { /* localStorage 满了则忽略 */ }
   }
 
   const loadFileState = (taskId) => {
+    if(!accountSession.state.accountContext)return null
     try {
-      const raw = localStorage.getItem(`${FILE_STATE_PREFIX}${taskId}`)
+      const raw = localStorage.getItem(`doorhandle:${accountSession.state.accountContext}:${FILE_STATE_PREFIX}${taskId}`)
       return raw ? JSON.parse(raw) : null
     } catch { return null }
   }
 
   const removeFileState = (taskId) => {
-    localStorage.removeItem(`${FILE_STATE_PREFIX}${taskId}`)
+    localStorage.removeItem(`doorhandle:${accountSession.state.accountContext}:${FILE_STATE_PREFIX}${taskId}`)
   }
+
+  accountSession.onReset(()=>{clearTimeout(saveTimer);saveTimer=null;pendingSave=false;taskList.value=[];selectedTaskId.value=null})
 
   // 获取所有需要恢复的任务信息
   const getResumeTaskList = () => {

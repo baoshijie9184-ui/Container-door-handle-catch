@@ -1,11 +1,12 @@
 <template>
   <div class="page-shell image-detection-container quality-queue-page">
+    <CollaborationRefreshNotice :changed="collaborationChanged" :editing="collaborationEditing" @refresh="refreshCollaborationView" />
     <section class="page-hero detection-hero command-panel">
       <div>
         <span class="industrial-kicker">Detection Workspace</span>
         <h1 class="page-hero-title">质检队列</h1>
         <p class="page-hero-text">
-          这一版已经切到“OSS 直传原图 + Java 编排任务 + 远程 FastAPI 检测 + OSS 回传结果”的新链路。
+          按当前授权范围核对待复核、返工和处置任务 领取与分派分别记录实际操作人
         </p>
         <div class="detection-flow-chips">
           <span class="metric-chip">OSS 原图直传</span>
@@ -15,7 +16,7 @@
       </div>
       <div class="hero-side-note">
         <strong>操作建议</strong>
-        <span>单图检测走本地直传接口；批量检测先上传到 OSS，再触发远程检测任务。</span>
+        <span>检测人员可领取当前可见且无人负责的待复核任务 主管统一分派和调整负责人</span>
       </div>
     </section>
 
@@ -99,6 +100,7 @@
                 >
                   {{ qualityActionHint(row) }}
                 </el-tag>
+                <TaskClaimButton :task="row" @claimed="loadQualityQueue(qualityQueuePage)" />
                 <el-button link size="small" type="primary" @click="openTraceDialog(row.taskId)">追溯</el-button>
                 <el-button
                   v-if="canExportQualityReport(row)"
@@ -452,6 +454,10 @@
 </template>
 
 <script setup>
+import TaskClaimButton from '../../components/TaskClaimButton.vue'
+import { useUserStore } from '../../stores/user'
+import CollaborationRefreshNotice from '../../components/CollaborationRefreshNotice.vue'
+import { useResourceChanges } from '../../composables/useResourceChanges'
 import {EXPORT_SOURCE} from '@/utils/systemBrand'
 import QualityAssigneePicker from '@/components/QualityAssigneePicker.vue'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
@@ -713,7 +719,8 @@ const historyTotal = ref(0)
 const historyRecords = ref([])
 const historyLoading = ref(false)
 
-const fetchHistoryWithFilters = async (page, size) => {
+let collaborationHistoryQuery
+const fetchHistoryWithFilters = async (page, size, savedFilters) => {
   historyLoading.value = true
   try {
     const p = page || historyPage.value
@@ -723,7 +730,9 @@ const fetchHistoryWithFilters = async (page, size) => {
     if (historyFilterCollector.value.trim()) filters.collector = historyFilterCollector.value.trim()
     if (historyFilterDevice.value.trim()) filters.deviceName = historyFilterDevice.value.trim()
     if (historyFilterRegion.value.trim()) filters.region = historyFilterRegion.value.trim()
-    const result = await fetchTaskList(p, s, '', '', filters)
+    const applied = savedFilters || filters
+    collaborationHistoryQuery={page:p,size:s,filters:{...applied}}
+    const result = await fetchTaskList(p, s, '', '', applied)
     if (result) {
       historyRecords.value = (result.records || []).map(bt => {
         const localTask = taskStore.taskList.find(t => t.taskId === bt.taskId)
@@ -918,11 +927,14 @@ const buildDefectGalleryParams = (page = defectGalleryPage.value) => {
   return params
 }
 
-const loadDefectGallery = async (page = defectGalleryPage.value) => {
+let collaborationGalleryQuery
+const loadDefectGallery = async (page = defectGalleryPage.value, savedFilters) => {
   const targetPage = resolvePageNumber(page, defectGalleryPage.value)
   defectGalleryLoading.value = true
   try {
-    const response = await fetchDefectGallery(buildDefectGalleryParams(targetPage))
+    const applied=savedFilters || buildDefectGalleryParams(targetPage)
+    collaborationGalleryQuery={...applied}
+    const response = await fetchDefectGallery(applied)
     if (response.data?.code === 200) {
       const data = response.data.data || {}
       defectGalleryRecords.value = data.records || []
@@ -1206,6 +1218,7 @@ const isClosedQualityTask = (task) => {
 }
 
 const canAssignQualityTask = (task) => {
+  if(collaborationUser.role!=='SUPERVISOR')return false
   const flowStatus = getTaskFlowStatus(task)
   const reviewStatus = getTaskReviewStatus(task)
   return isDetectTaskFinished(task) &&
@@ -1216,6 +1229,7 @@ const canAssignQualityTask = (task) => {
 }
 
 const canReassignQualityTask = (task) => {
+  if(collaborationUser.role!=='SUPERVISOR')return false
   const flowStatus = getTaskFlowStatus(task)
   const reviewStatus = getTaskReviewStatus(task)
   return isDetectTaskFinished(task) &&
@@ -1413,6 +1427,26 @@ onBeforeUnmount(() => {
   // 只保存当前状态
   saveTaskList()
 })
+const collaborationEditing=computed(()=>reviewDialogVisible.value||assignmentDialogVisible.value||dispositionDialogVisible.value||reworkDialogVisible.value||reviewSubmitting.value||assignmentSubmitting.value||dispositionSubmitting.value||reworkSubmitting.value)
+async function refreshCollaborationView(){if(collaborationEditing.value)return;await loadQualityQueue(qualityQueuePage.value);collaborationChanged.value=false}
+const {changed:collaborationChanged}=useResourceChanges({resourceType:'DETECTION_TASK',isEditing:()=>collaborationEditing.value,refresh:refreshCollaborationView,revalidate:validateCollaborationAccess})
+const collaborationUser=useUserStore()
+async function validateCollaborationAccess(){
+ const groups=new Map()
+ const add=(id,entry)=>{if(!id)return;if(!groups.has(id))groups.set(id,[]);groups.get(id).push(entry)}
+ for(const [task,visible,form] of [[reviewTask,reviewDialogVisible,reviewForm],[assignmentTask,assignmentDialogVisible,assignmentForm],[dispositionTask,dispositionDialogVisible,dispositionForm],[reworkTask,reworkDialogVisible,reworkForm]]){
+  if(visible.value&&task.value?.taskId)add(task.value.taskId,{task,visible,form})
+ }
+ if(traceDialogVisible.value&&traceDetail.value?.taskId)add(traceDetail.value.taskId,{trace:true})
+ await Promise.allSettled([...groups].map(async([id,entries])=>{
+  try{const response=await fetchDetectionTaskTrace(id);if(response.data?.code!==200)throw Object.assign(new Error('当前任务无权读取'),{httpStatus:response.data?.code})
+   for(const entry of entries)if(entry.trace&&traceDetail.value?.taskId===id&&!collaborationEditing.value)traceDetail.value=response.data.data
+  }catch(error){if(![401,403,404].includes(error.response?.status||error.httpStatus))return
+   for(const entry of entries){if(entry.trace){if(traceDetail.value?.taskId===id){traceDetail.value=null;traceDialogVisible.value=false}}else if(entry.task.value?.taskId===id){entry.visible.value=false;entry.task.value=null;for(const key of Object.keys(entry.form))entry.form[key]=typeof entry.form[key]==='string'?'':null}}
+   taskStore.removeTask(id)
+  }
+ }))
+}
 </script>
 
 <style scoped>

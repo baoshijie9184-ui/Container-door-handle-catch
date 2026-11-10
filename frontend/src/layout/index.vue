@@ -69,6 +69,7 @@
         </div>
 
         <div class="header-actions">
+          <RealtimeStatus />
           <span class="workspace-scope"><AppIcon name="User" :size="14" />{{ accountPresentation.scope }}</span>
           <router-link to="/manual" class="manual-entry-link">
             <el-icon aria-hidden="true"><Files /></el-icon>使用手册
@@ -100,6 +101,7 @@
 </template>
 
 <script setup>
+import RealtimeStatus from '../components/RealtimeStatus.vue'
 import {SYSTEM_NAME,SYSTEM_SHORT_NAME,SYSTEM_TAGLINE} from '@/utils/systemBrand'
 import { computed, ref, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useUserStore } from '@/stores/user'

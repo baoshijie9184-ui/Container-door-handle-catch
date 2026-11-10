@@ -4,7 +4,7 @@ import { useUserStore } from '../stores/user'
 // Read requests may be cancelled. Writes keep their request IDs and are never replayed here.
 export function useAccountOperationScope(reset) {
   const user = useUserStore(), controllers = new Set()
-  const owner = () => JSON.stringify([user.username, user.role, user.identity?.userId, user.isAuthenticated])
+  const owner = () => JSON.stringify([user.accountContext, user.accountEpoch, user.username, user.role, user.identity?.userId, user.isAuthenticated])
   let epoch = 0, disposed = false
   const stamp = () => ({ epoch, owner: owner() })
   const current = value => !disposed && value.epoch === epoch && value.owner === owner()

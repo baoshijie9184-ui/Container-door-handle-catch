@@ -1,3 +1,4 @@
+import { accountFetch as fetch } from '../../frontend/src/utils/accountFetch';
 import React,{useEffect,useRef,useState} from 'react';
 import {Alert,Button,Skeleton} from '@agentscope-ai/design';
 import {Layers,RefreshCw} from 'lucide-react';

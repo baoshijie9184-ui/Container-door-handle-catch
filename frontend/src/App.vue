@@ -12,9 +12,11 @@
       </div>
     </Transition>
     </div>
-    <router-view v-slot="{ Component, route }">
+    <div v-if="account.accountNotice" class="account-context-notice" role="status">{{ account.accountNotice }}</div>
+    <section v-if="currentRoute.path!=='/login' && !account.isAuthenticated" class="account-context-gate app-panel"><h1>请先确认当前登录身份</h1><p>旧账号页面已暂停，未提交内容不会自动上传。</p><router-link to="/login">重新登录</router-link></section>
+    <router-view v-if="currentRoute.path==='/login' || account.isAuthenticated" v-slot="{ Component, route }">
       <transition :name="route.meta.transition || 'page-fade'" mode="out-in">
-        <component :is="Component" :key="route.matched[0]?.path || route.path" />
+        <component :is="Component" :key="String(account.accountEpoch)+':'+(route.matched[0]?.path || route.path)" />
       </transition>
     </router-view>
   </div>
@@ -24,6 +26,8 @@
 import { ref, watch, onErrorCaptured } from 'vue'
 import { useRoute } from 'vue-router'
 import NavigationFailureNotice from './components/NavigationFailureNotice.vue'
+import { useUserStore } from './stores/user'
+const account = useUserStore()
 
 const error = ref('')
 const currentRoute = useRoute()
@@ -41,6 +45,7 @@ onErrorCaptured((err, instance, info) => {
   min-height: 100vh;
 }
 
+.account-context-notice{padding:8px 20px;background:var(--app-primary-light);color:var(--app-text-secondary);font-size:12px;line-height:1.8}.account-context-gate{max-width:600px;margin:10vh auto;padding:28px}.account-context-gate h1{font-size:20px}.account-context-gate a{color:var(--app-primary)}
 /* NProgress 风格进度条 */
 .nprogress-bar {
   position: fixed;

@@ -1,3 +1,4 @@
+import { accountFetch as fetch } from '../utils/accountFetch'
 import request from './request'
 
 export const fetchChatSession = () => request.get('/api/chat-assistant/session')

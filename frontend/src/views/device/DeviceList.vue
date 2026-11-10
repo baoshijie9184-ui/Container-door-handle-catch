@@ -67,7 +67,7 @@
         <el-table-column label="设备与型号" min-width="235"><template #default="{row}"><div class="management-row-identity"><button type="button" @click="viewDevice(row.id)">{{ row.deviceCode || '设备编号未记录' }}</button><span>{{ row.modelName || '型号未记录' }}</span><small>{{ getDeviceTypeName(row.deviceType) }}</small><details><summary>序列号</summary><code>{{ row.serialNumber || '未记录' }}</code></details></div></template></el-table-column>
         <el-table-column label="业务状态与登记使用人" min-width="205"><template #default="{row}"><div class="management-row-status"><StatusBadge domain="device" :code="row.status" :label="getStatusName(row.status)" /><router-link v-if="row.employee?.id" :to="{name:'employeeDetail',params:{id:row.employee.id}}">{{ row.employee.name || row.employee.employeeNumber || '查看登记使用人' }}</router-link><span v-else-if="row.employee">{{ row.employee.name || row.employee.employeeNumber || '使用人资料不完整' }}</span><span v-else>使用人未提供</span><small v-if="row.employee?.employeeNumber">员工编号 {{ row.employee.employeeNumber }}</small></div></template></el-table-column>
         <el-table-column label="最近维护 · UTC+8" min-width="180"><template #default="{row}"><span class="management-row-time">{{ formatDate(row.lastMaintenanceDate) }}</span></template></el-table-column>
-        <el-table-column label="操作" min-width="235"><template #default="{row}"><div class="management-row-actions"><el-button size="small" @click="viewDevice(row.id)"><AppIcon name="Search" :size="14" />详情</el-button><el-button size="small" @click="viewDeviceUsageRecords(row)"><AppIcon name="Clock" :size="14" />使用记录</el-button><details v-if="isSupervisor" class="management-more"><summary>更多<AppIcon name="ArrowDown" :size="13" /></summary><div><el-button size="small" :disabled="writeBusy" @click="editDevice(row.id)"><AppIcon name="Edit" :size="14" />编辑设备</el-button><el-popconfirm :title="`确认删除设备 ${row.deviceCode || row.id}？`" @confirm="deleteDevice(row.id)"><template #reference><el-button size="small" type="danger" plain :disabled="writeBusy || unconfirmedDeletes.has(String(row.id))"><AppIcon name="Delete" :size="14" />删除设备</el-button></template></el-popconfirm></div></details><StatusBadge v-if="unconfirmedDeletes.has(String(row.id))" domain="apiReceipt" code="UNKNOWN" label="删除待核对" /></div></template></el-table-column>
+        <el-table-column label="操作" min-width="235"><template #default="{row}"><div class="management-row-actions"><el-button size="small" @click="viewDevice(row.id)"><AppIcon name="Search" :size="14" />详情</el-button><el-button size="small" @click="viewDeviceUsageRecords(row)"><AppIcon name="Clock" :size="14" />使用记录</el-button><details v-if="isSupervisor" class="management-more"><summary>更多<AppIcon name="ArrowDown" :size="13" /></summary><div><el-button size="small" :disabled="writeBusy" @click="editDevice(row.id)"><AppIcon name="Edit" :size="14" />编辑设备</el-button><el-popconfirm :title="`确认删除设备 ${row.deviceCode || row.id}？`" @confirm="deleteDevice(row.id)" @cancel="deleteSnapshots.delete(String(row.id))"><template #reference><el-button size="small" type="danger" plain :disabled="writeBusy || unconfirmedDeletes.has(String(row.id))" @click="deleteSnapshots.set(String(row.id), Object.freeze({...row}))"><AppIcon name="Delete" :size="14" />删除设备</el-button></template></el-popconfirm></div></details><StatusBadge v-if="unconfirmedDeletes.has(String(row.id))" domain="apiReceipt" code="UNKNOWN" label="删除待核对" /></div></template></el-table-column>
       </el-table>
       <div v-if="total!==null" class="page-footer"><el-pagination :current-page="pagination.current" :page-size="pagination.size" :page-sizes="[10,20,30,50]" :pager-count="7" layout="total, sizes, prev, pager, next, jumper" :total="total" :disabled="loading || !!listError" @size-change="handleSizeChange" @current-change="handleCurrentChange" /></div>
     </section>
@@ -80,6 +80,7 @@ import { useRouter } from 'vue-router'
 import {beijingDateTime} from '@/utils/beijingTime'
 
 import request from '../../api/request'
+import { resourceVersion, mutationHeaders } from '../../utils/mutationVersion'
 import { useUserStore } from '../../stores/user'
 import CollectionEmptyState from '../../components/CollectionEmptyState.vue'
 import { knownCount } from '../../utils/countPresentation'
@@ -92,6 +93,7 @@ const { records:devices, total, loading, error:listError, loaded:listLoaded, fil
 const filterLabels = {deviceCode:'设备编号',deviceType:'设备类型',modelName:'设备型号',serialNumber:'序列号',status:'设备状态'}
 const appliedDescription = computed(() => Object.entries(appliedFilters.value).map(([key,value]) => `${filterLabels[key]}：${key==='status'?getStatusName(value):key==='deviceType'?getDeviceTypeName(value):value}`).join(' · ') || '全部条件')
 const writeBusy = ref(false), mutationNotice = ref(''), mutationUncertain = ref(false), mutationFailed = ref(false), unconfirmedDeletes = ref(new Set())
+const deleteSnapshots = new Map()
 let pageActive = true, statsVersion = 0
 onBeforeUnmount(() => { pageActive=false;statsVersion++ })
 
@@ -188,7 +190,7 @@ const deleteDevice = async (id) => {
   if (!isSupervisor.value || writeBusy.value || unconfirmedDeletes.value.has(String(id))) return
   writeBusy.value=true;mutationNotice.value='';mutationUncertain.value=false;mutationFailed.value=false
   try {
-    const response=await request.delete(`/api/devices/${id}`)
+    const response=await request.delete(`/api/devices/${id}`, {headers:mutationHeaders(resourceVersion(deleteSnapshots.get(String(id))))})
     if (!pageActive) return
     if(response.data?.code===200 && response.data.data===true){
       mutationNotice.value='已收到设备删除成功回执，请核对刷新后的列表与登记统计。'
