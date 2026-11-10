@@ -90,7 +90,8 @@ class ModelUploadIdempotencyMySqlTest {
             var result=actual.uploadModel(call.getArgument(0),call.getArgument(1),call.getArgument(2),call.getArgument(3));
             if(loseResponse.getAndSet(false))throw new org.springframework.dao.DataAccessResourceFailureException("response lost after commit");return result;
         });
-        http=MockMvcBuilders.standaloneSetup(new ModelController(entry,context.getBeanProvider(ModelFileJournal.class))).build();authenticate();
+        var controller=new ModelController(entry,context.getBeanProvider(ModelFileJournal.class));ReflectionTestUtils.setField(controller,"mutationProtectionEnabled",true);
+        http=MockMvcBuilders.standaloneSetup(controller).setControllerAdvice(new com.ruanzhu.doorhandle.common.GlobalExceptionHandler(),new com.ruanzhu.doorhandle.module.system.controller.ResultHttpStatusAdvice()).build();authenticate();
     }
     @AfterEach void cleanup()throws Exception{SecurityContextHolder.clearContext();if(context!=null)context.close();if(fixture!=null)fixture.close();}
     static void authenticate(){var principal=new TenantPrincipal(77L,"supervisor-77","",List.of());SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(principal,null,List.of()));}

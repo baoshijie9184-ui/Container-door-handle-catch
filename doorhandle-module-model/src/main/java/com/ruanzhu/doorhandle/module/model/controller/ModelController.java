@@ -23,6 +23,8 @@ public class ModelController {
 
     private final ModelService modelService;
     private final org.springframework.beans.factory.ObjectProvider<com.ruanzhu.doorhandle.module.model.service.ModelFileJournal> fileJournals;
+    @org.springframework.beans.factory.annotation.Value("${collaboration.mutations.enabled:false}")
+    private boolean mutationProtectionEnabled;
 
     @GetMapping("/file-operations")
     @PreAuthorize("hasRole('SUPERVISOR')")
@@ -56,18 +58,20 @@ public class ModelController {
             log.info("模型上传成功: ID={}", modelInfo.getModelId());
             return Result.success(modelInfo);
         } catch (com.ruanzhu.doorhandle.common.BusinessException conflict) {
-            throw conflict;
+            if(mutationProtectionEnabled)throw conflict;
+            return Result.error(500,"模型上传未确认，请按请求编号核对文件记录和模型列表，不要自动重试");
         } catch (SecurityException forbidden) {
             throw forbidden;
         } catch (Exception e) {
+            if(mutationProtectionEnabled)throw originalFailure(e);
             log.warn("模型上传未确认，需按请求编号核对: {}",e.getClass().getSimpleName());
-            throw new com.ruanzhu.doorhandle.common.BusinessException(500,"模型上传未确认，请按请求编号核对文件记录和模型列表，不要自动重试");
+            return Result.error(500,"模型上传未确认，请按请求编号核对文件记录和模型列表，不要自动重试");
         }
     }
     @ExceptionHandler(com.ruanzhu.doorhandle.common.BusinessException.class)
     public org.springframework.http.ResponseEntity<Result<Void>> uploadFailure(com.ruanzhu.doorhandle.common.BusinessException failure){
         int code=failure.getCode();
-        return org.springframework.http.ResponseEntity.status(code>=400&&code<600?code:400)
+        return org.springframework.http.ResponseEntity.status(mutationProtectionEnabled?(code>=400&&code<600?code:400):200)
                 .header("Cache-Control","no-store").body(Result.error(code,failure.getMessage()));
     }
 
@@ -88,6 +92,7 @@ public class ModelController {
             log.info("模型信息更新成功: ID={}", updatedModel.getModelId());
             return Result.success(updatedModel);
         } catch (Exception e) {
+            if(mutationProtectionEnabled)throw originalFailure(e);
             log.error("模型信息更新异常: {}", e.getMessage(), e);
             return Result.error(500, "模型信息更新失败: " + e.getMessage());
         }
@@ -99,6 +104,7 @@ public class ModelController {
         try {
             return Result.success(modelService.publishModel(modelId));
         } catch (Exception e) {
+            if(mutationProtectionEnabled)throw originalFailure(e);
             log.error("模型发布异常: {}", e.getMessage(), e);
             return Result.error(500, "模型发布失败: " + e.getMessage());
         }
@@ -110,6 +116,7 @@ public class ModelController {
         try {
             return Result.success(modelService.setDefaultModel(modelId));
         } catch (Exception e) {
+            if(mutationProtectionEnabled)throw originalFailure(e);
             log.error("设置默认模型异常: {}", e.getMessage(), e);
             return Result.error(500, "设置默认模型失败: " + e.getMessage());
         }
@@ -121,6 +128,7 @@ public class ModelController {
         try {
             return Result.success(modelService.disableModel(modelId));
         } catch (Exception e) {
+            if(mutationProtectionEnabled)throw originalFailure(e);
             log.error("停用模型异常: {}", e.getMessage(), e);
             return Result.error(500, "停用模型失败: " + e.getMessage());
         }
@@ -132,6 +140,7 @@ public class ModelController {
         try {
             return Result.success(modelService.archiveModel(modelId));
         } catch (Exception e) {
+            if(mutationProtectionEnabled)throw originalFailure(e);
             log.error("归档模型异常: {}", e.getMessage(), e);
             return Result.error(500, "归档模型失败: " + e.getMessage());
         }
@@ -143,6 +152,7 @@ public class ModelController {
         try {
             return Result.success(modelService.validateModel(modelId));
         } catch (Exception e) {
+            if(mutationProtectionEnabled)throw originalFailure(e);
             log.error("模型重新校验异常: {}", e.getMessage(), e);
             return Result.error(500, "模型重新校验失败: " + e.getMessage());
         }
@@ -166,6 +176,7 @@ public class ModelController {
         } catch (SecurityException forbidden) {
             throw forbidden;
         } catch (Exception e) {
+            if(mutationProtectionEnabled)throw originalFailure(e);
             log.warn("模型删除未确认: ID={}, failure={}",modelId,e.getClass().getSimpleName());
             return Result.error(500, "模型删除未确认，请核对模型列表和文件记录；不要自动重试");
         }
@@ -189,6 +200,7 @@ public class ModelController {
             }
             return Result.success(models);
         } catch (Exception e) {
+            if(mutationProtectionEnabled)throw originalFailure(e);
             log.error("获取模型列表失败: {}", e.getMessage(), e);
             return Result.error(500, "获取模型列表失败: " + e.getMessage());
         }
@@ -199,8 +211,10 @@ public class ModelController {
         try {
             return Result.success(modelService.getOperationLogs(modelId));
         } catch (Exception e) {
+            if(mutationProtectionEnabled)throw originalFailure(e);
             log.error("获取模型操作日志失败: {}", e.getMessage(), e);
             return Result.error(500, "获取模型操作日志失败: " + e.getMessage());
         }
     }
+    private static RuntimeException originalFailure(Exception failure){return failure instanceof RuntimeException runtime?runtime:new IllegalStateException("业务请求未完成",failure);}
 } 

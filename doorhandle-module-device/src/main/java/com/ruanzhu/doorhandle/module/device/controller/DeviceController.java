@@ -32,6 +32,8 @@ import java.util.Map;
 public class DeviceController {
 
     private final DeviceService deviceService;
+    @org.springframework.beans.factory.annotation.Value("${collaboration.mutations.enabled:false}")
+    private boolean mutationProtectionEnabled;
 
     @GetMapping("/devices")
     @Operation(summary = "分页查询设备")
@@ -81,6 +83,7 @@ public class DeviceController {
         try {
             return Result.success(deviceService.createDevice(device));
         } catch (Exception e) {
+            if(mutationProtectionEnabled)throw originalFailure(e);
             return Result.error("创建设备失败: " + e.getMessage());
         }
     }
@@ -92,6 +95,7 @@ public class DeviceController {
         try {
             return Result.success(deviceService.updateDevice(id, device));
         } catch (RuntimeException e) {
+            if(mutationProtectionEnabled)throw e;
             return Result.error("更新设备失败: " + e.getMessage());
         }
     }
@@ -103,6 +107,7 @@ public class DeviceController {
         try {
             return Result.success(deviceService.deleteDevice(id));
         } catch (RuntimeException e) {
+            if(mutationProtectionEnabled)throw e;
             return Result.error("删除设备失败: " + e.getMessage());
         }
     }
@@ -117,6 +122,7 @@ public class DeviceController {
             }
             return Result.success(device.getEmployee());
         } catch (Exception e) {
+            if(mutationProtectionEnabled)throw originalFailure(e);
             return Result.error("获取设备使用员工失败: " + e.getMessage());
         }
     }
@@ -128,6 +134,7 @@ public class DeviceController {
         try {
             return Result.success(deviceService.removeEmployeeFromDevice(id));
         } catch (Exception e) {
+            if(mutationProtectionEnabled)throw originalFailure(e);
             return Result.error("解除设备分配失败: " + e.getMessage());
         }
     }
@@ -138,6 +145,7 @@ public class DeviceController {
         try {
             return Result.success(deviceService.getDeviceStats());
         } catch (Exception e) {
+            if(mutationProtectionEnabled)throw originalFailure(e);
             return Result.error("获取设备统计失败: " + e.getMessage());
         }
     }
@@ -148,6 +156,7 @@ public class DeviceController {
         try {
             return Result.success(deviceService.heartbeat(deviceCode, request));
         } catch (Exception e) {
+            if(mutationProtectionEnabled)throw originalFailure(e);
             return Result.error("设备心跳失败: " + e.getMessage());
         }
     }
@@ -180,4 +189,5 @@ public class DeviceController {
             @RequestBody(required = false) DeviceAlertActionRequest request) {
         return Result.success(deviceService.resolveAlert(alertId, request));
     }
+    private static RuntimeException originalFailure(Exception failure){return failure instanceof RuntimeException runtime?runtime:new IllegalStateException("业务请求未完成",failure);}
 }
