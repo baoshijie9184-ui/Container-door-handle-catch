@@ -69,7 +69,15 @@ public class DeviceMutationParticipant implements BusinessMutationParticipant,Bu
     }
     public boolean mayRead(AgentActor actor,String scope,String domain,String type,String id){
         if(!"ENTERPRISE".equals(scope)||!Objects.equals(domain,type)||!Set.of("EMPLOYEE","DEVICE","DEVICE_USAGE","DEVICE_ALERT").contains(type))return false;
-        try{return users.current(actor.userId(),actor.username()).supervisor();}catch(SecurityException unavailable){return false;}
+        try{
+            var current=users.current(actor.userId(),actor.username());
+            if(!"DEVICE".equals(type))return current.supervisor();
+            if(id==null||!id.matches("[1-9][0-9]{0,18}"))return false;
+            long device=Long.parseLong(id);
+            // GET /api/devices/{id} is available to every qualified account.
+            // A removed device has no inspector-readable detail; supervisors retain its deletion history.
+            return current.supervisor()||Boolean.TRUE.equals(jdbc.queryForObject("SELECT COUNT(*)>0 FROM device_management WHERE id=?",Boolean.class,device));
+        }catch(SecurityException|NumberFormatException unavailable){return false;}
     }
     private void requireSupervisor(AgentActor actor){if(!users.current(actor.userId(),actor.username()).supervisor())throw new SecurityException("当前无人员设备管理权限");}
     public List<Snapshot> related(AgentActor actor,String domain,String action,String id,Object[] arguments,List<Snapshot> previous,boolean lock){

@@ -85,7 +85,9 @@ public class OperationsAuditService implements OperationsAuditApi {
         if(filter.occurredFrom()!=null&&filter.occurredTo()!=null&&!filter.occurredFrom().isBefore(filter.occurredTo()))throw new IllegalArgumentException("时间范围无效");
         var args=new ArrayList<Object>();args.add(before);
         String sql="SELECT * FROM audit_event WHERE kind='OPERATIONS' AND id<?";
-        sql+=" AND (operation_scope='ENTERPRISE' OR actor_user_id=?)";args.add(actor.userId());
+        // The general inspector history is personal. A shared resource history
+        // must be explicitly selected and still pass its current resource policy.
+        sql+=!actor.supervisor()&&filter.resourceType()==null?" AND actor_user_id=?":" AND (operation_scope='ENTERPRISE' OR actor_user_id=?)";args.add(actor.userId());
         if(filter.domain()!=null){sql+=" AND operation_domain=?";args.add(OperationsAuditPersistence.token(filter.domain(),48));}
         if(filter.resourceType()!=null){sql+=" AND payload_version=2 AND operation_resource_type=? AND resource_id=?";args.add(OperationsAuditPersistence.token(filter.resourceType(),64));args.add(OperationsAuditPersistence.token(filter.resourceId(),160));}
         if(filter.actorUserId()!=null){if(!filter.actorUserId().matches("[1-9][0-9]{0,18}"))throw new IllegalArgumentException("账号无效");sql+=" AND actor_user_id=?";args.add(Long.parseLong(filter.actorUserId()));}

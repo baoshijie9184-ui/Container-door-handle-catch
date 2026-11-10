@@ -86,4 +86,36 @@ class OperationsChangeHistoryTest {
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM audit_event WHERE kind='OPERATIONS'",Long.class)).isEqualTo(1);
         assertThat(service.changes(reader,Long.MAX_VALUE,50,noFilter).items()).singleElement().satisfies(again->assertThat(again.eventId()).isEqualTo(item.eventId()));
     }
+    private void inspectorReader(){when(users.current(reader.userId(),reader.username())).thenReturn(new BusinessUserDirectory.Identity(reader.userId(),reader.username(),false));}
+    private OperationsAuditService.Filter deviceHistory(){return new OperationsAuditService.Filter("DEVICE","DEVICE","41",null,null,null,null,null);}
+    private void appendFor(AgentActor who,String scope,String resource,String request){
+        tx.executeWithoutResult(status->service.appendChange(new OperationsAuditApi.ChangeEvent(
+                new OperationsAuditApi.Event(who,scope,"DEVICE","UPDATE",resource,request,"APPLIED",1L),"DEVICE","Captured Name",0L,
+                List.of(new ChangeHistory.Change("status","状态","REPLACE","IDLE","IN_USE","SCALAR",false)))));
+    }
+    @Test void inspectorGeneralHistoryIsPersonalEvenWhenOtherEnterpriseResourcesAreReadable(){
+        append();inspectorReader();appendFor(new AgentActor(2,"reader",AgentActor.Role.INSPECTOR),"ENTERPRISE","42","my-change");
+        assertThat(service.changes(reader,Long.MAX_VALUE,50,noFilter).items()).singleElement().satisfies(item->assertThat(item.actor().userId()).isEqualTo("2"));
+        var forgedOther=new OperationsAuditService.Filter("DEVICE",null,null,"1",null,null,null,null);
+        assertThat(service.changes(reader,Long.MAX_VALUE,50,forgedOther).items()).isEmpty();
+    }
+    @Test void inspectorExplicitResourceHistoryCanIncludeAnotherActorAfterCurrentAuthorization(){
+        append();inspectorReader();
+        assertThat(service.changes(reader,Long.MAX_VALUE,50,deviceHistory()).items()).singleElement().satisfies(item->{
+            assertThat(item.actor().userId()).isEqualTo("1");assertThat(item.resourceId()).isEqualTo("41");assertThat(item.diffAvailable()).isTrue();
+        });
+        assertThatThrownBy(()->service.changes(reader,Long.MAX_VALUE,50,new OperationsAuditService.Filter("DEVICE","DEVICE",null,null,null,null,null,null))).isInstanceOf(IllegalArgumentException.class);
+    }
+    @Test void inspectorResourcePermissionRevocationRemovesOthersHistoryAndDeniesItsDetail(){
+        append();inspectorReader();String id=service.changes(reader,Long.MAX_VALUE,50,deviceHistory()).items().get(0).id();mayRead.set(false);
+        assertThat(service.changes(reader,Long.MAX_VALUE,50,deviceHistory()).items()).isEmpty();
+        assertThatThrownBy(()->service.change(reader,id)).isInstanceOf(SecurityException.class);
+    }
+    @Test void explicitResourceFilterNeverExposesAnotherActorsPrivateHistory(){
+        append();appendFor(actor,"PRIVATE","41","other-private");inspectorReader();appendFor(new AgentActor(2,"reader",AgentActor.Role.INSPECTOR),"PRIVATE","41","my-private");
+        assertThat(service.changes(reader,Long.MAX_VALUE,50,deviceHistory()).items()).extracting(ChangeHistory.Item::requestId).containsExactlyInAnyOrder("change-one","my-private");
+        assertThat(service.changes(reader,Long.MAX_VALUE,50,noFilter).items()).extracting(ChangeHistory.Item::requestId).containsExactly("my-private");
+        String hidden=jdbc.queryForObject("SELECT id FROM audit_event WHERE kind='OPERATIONS' AND request_id='other-private'",String.class);
+        assertThatThrownBy(()->service.change(reader,hidden)).isInstanceOf(SecurityException.class);
+    }
 }
