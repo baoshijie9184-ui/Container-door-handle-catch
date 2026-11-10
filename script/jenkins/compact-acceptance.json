@@ -1223,13 +1223,13 @@
       },
       {
         "module": "tests_python.test_jenkins_fixture_admission",
-        "minimumTests": 30,
+        "minimumTests": 40,
         "source": "tests_python/test_jenkins_fixture_admission.py",
         "allowedSkippedTests": []
       },
       {
         "module": "tests_python.test_jenkins_suite_evidence",
-        "minimumTests": 43,
+        "minimumTests": 63,
         "source": "tests_python/test_jenkins_suite_evidence.py",
         "allowedSkippedTests": []
       },

@@ -363,3 +363,96 @@ def test_whole_migration_cannot_use_a_fixture_without_actual_binlog_readback(mon
     controller = object.__new__(preparer.Preparation); controller.journal = {}
     with pytest.raises(ValueError, match='recovery schemas require the checked binlog-disabled fixture'):
         controller.whole_config({}, '/unused/java', '/unused/app.jar')
+
+
+def provisioned_profile():
+    requirements = json.loads((SOURCE.parent / 'compact-acceptance.json').read_bytes())['javaSuites']
+    provisioned = [{'javaTests': [item['className']], 'fixtureProperties': {
+        key: '/owned/private/' + item['id'] + '-' + str(number) + '.json'
+        for number, key in enumerate(item['fixtureProperties'])}} for item in requirements]
+    return requirements, provisioned
+
+
+def test_actual_profile_batches_all_56_classes_and_original_paths_without_property_collisions(monkeypatch):
+    preparer = mysql_control_module('prepare-compact-fixtures.py', monkeypatch)
+    requirements, provisioned = provisioned_profile()
+    before = json.dumps(provisioned, sort_keys=True)
+    groups = preparer.group_provisioned_suites(provisioned, requirements)
+    assert len(requirements) == 56 and sum(item['minimumTests'] for item in requirements) == 584
+    assert len(groups) == 11 and groups[0] == provisioned[0]
+    original = {item['javaTests'][0]: item['fixtureProperties'] for item in provisioned}
+    selected = [name for group in groups for name in group['javaTests']]
+    assert len(selected) == len(set(selected)) == 56 and set(selected) == set(original)
+    for group in groups:
+        assert 1 <= len(group['javaTests']) <= 6
+        keys = [key for name in group['javaTests'] for key in original[name]]
+        assert len(keys) == len(set(keys)) == len(group['fixtureProperties'])
+        assert group['fixtureProperties'] == {key: path for name in group['javaTests'] for key, path in original[name].items()}
+    assert json.dumps(provisioned, sort_keys=True) == before
+
+
+def test_provisioning_keeps_every_original_account_and_migration_grant_before_grouping(monkeypatch):
+    preparer = mysql_control_module('prepare-compact-fixtures.py', monkeypatch)
+    requirements, _ = provisioned_profile()
+    controller = object.__new__(preparer.Preparation)
+    controller.registry = preparer.registry(SOURCE.parents[2])
+    created, written, grants = [], {}, []
+    controller.fixture_config = lambda prefix, account, description: {
+        'database': prefix + str(len(created)), 'username': account + str(len(created))}
+    controller.create_account = lambda config: created.append(dict(config))
+    def write_config(name, config):
+        written[name] = dict(config)
+        return Path('/owned/private') / (name + '.json')
+    controller.write_config = write_config
+    controller.runtime = types.SimpleNamespace(quoted=lambda value: '`' + value + '`')
+    controller.mysql = types.SimpleNamespace(script=lambda sql, **kwargs: grants.append((sql, kwargs)))
+    groups = controller.provision_suites(requirements)
+    assert len(groups) == 11 and len(created) == len(written) == sum(len(item['fixtureProperties']) for item in requirements)
+    assert len({item['database'] for item in created}) == len(created)
+    expected_grants = sum(source in item['fixtureProperties'] or strict and target in item['fixtureProperties']
+                          for item in requirements for source, target, strict in controller.registry['MIGRATION_PAIRS'])
+    assert len(grants) == expected_grants and all(item[1] == {'label': 'fixture-source-read'} for item in grants)
+    assert {path for group in groups for path in group['fixtureProperties'].values()} == {
+        str(Path('/owned/private') / (name + '.json')) for name in written}
+
+
+@pytest.mark.parametrize('mutation', ['missing-class', 'duplicate-class', 'duplicate-private-file', 'extra-property', 'wrong-first-class'])
+def test_grouping_refuses_to_change_original_class_or_private_input_coverage(monkeypatch, mutation):
+    preparer = mysql_control_module('prepare-compact-fixtures.py', monkeypatch)
+    requirements, provisioned = provisioned_profile()
+    if mutation == 'missing-class': provisioned.pop()
+    elif mutation == 'duplicate-class': provisioned[-1]['javaTests'] = list(provisioned[0]['javaTests'])
+    elif mutation == 'duplicate-private-file':
+        key = next(iter(provisioned[-1]['fixtureProperties']))
+        provisioned[-1]['fixtureProperties'][key] = next(iter(provisioned[0]['fixtureProperties'].values()))
+    elif mutation == 'extra-property': provisioned[-1]['fixtureProperties']['unreviewed.config'] = '/owned/private/extra.json'
+    else: requirements[0]['id'] = 'OtherFirstClass'
+    with pytest.raises(ValueError):
+        preparer.group_provisioned_suites(provisioned, requirements)
+
+
+def test_v2_grouped_classes_keep_all_original_private_inputs_and_migration_pairs(tmp_path, monkeypatch):
+    args, manifest, file = version_two(tmp_path, monkeypatch)
+    migration_loader(monkeypatch)
+    first, second = manifest['javaSuites']
+    manifest['javaSuites'] = [{'javaTests': first['javaTests'] + second['javaTests'],
+                             'fixtureProperties': {**first['fixtureProperties'], **second['fixtureProperties']}}]
+    file.write_text(json.dumps(manifest), encoding='utf8')
+    arguments, selected, _ = verifier.fixture_arguments(args, IDENTITY)
+    assert selected == first['javaTests'] + second['javaTests'] and len(args.java_suites) == 1
+    assert len(args.java_suites[0]['privateInputs']) == len(arguments) == 4
+    assert args.java_suites[0]['fixtureProperties'] == sorted(first['fixtureProperties'] | second['fixtureProperties'])
+
+
+@pytest.mark.parametrize('shared', ['input-file', 'database'])
+def test_grouped_invocation_still_refuses_shared_inputs_or_schemas(tmp_path, monkeypatch, shared):
+    args, original, file = plan(tmp_path, monkeypatch)
+    first = Path(original['fixtureProperties']['detection.identity.mysql.config'])
+    second = first.with_name('same-schema-other-path.json')
+    second.write_bytes(first.read_bytes())
+    manifest = {'version': 2, 'javaSuites': [{'javaTests': ['AccountIdentityServiceTest', 'QualityDigestMySqlTest'],
+        'fixtureProperties': {'doorhandle.operations.mysql.config': str(first),
+                              'doorhandle.digest.mysql.config': str(first if shared == 'input-file' else second)}}]}
+    file.write_text(json.dumps(manifest), encoding='utf8')
+    with pytest.raises(ValueError, match='distinct private inputs and disposable schemas'):
+        verifier.fixture_arguments(args, IDENTITY)

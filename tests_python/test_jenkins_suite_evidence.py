@@ -416,3 +416,78 @@ def test_collector_keeps_the_closed_member_set_and_receipt_bound(tmp_path, monke
     args, _, _, _, _ = collector_archive(tmp_path, mutation=mutation)
     monkeypatch.chdir(tmp_path)
     with pytest.raises(remote.VerificationError, match=message): remote.collect(args)
+
+
+@pytest.mark.parametrize('kind', ['native-single', 'native-multi', 'source-regression'])
+def test_only_grouped_native_commands_fork_a_fresh_serial_jvm_for_each_class(tmp_path, kind):
+    source = kind == 'source-regression'
+    selected = ['org.example.OneTest', 'org.example.TwoTest'] if kind != 'native-single' else ['org.example.OneTest']
+    suite = {'javaSelection': selected, 'fixtureProperties': [] if source else ['one.fixture'],
+             'fixtureOptions': [] if source else ['-Done.fixture=/owned/one.json']}
+    arguments = inner.java_maven_arguments(suite, {'MAVEN_CMD': '/fixed/mvn'}, tmp_path,
+                                           initial=False, source_regression=source)
+    isolation = ['-DforkCount=1', '-DreuseForks=false', '-Djunit.jupiter.execution.parallel.enabled=false']
+    assert all((argument in arguments) is (kind == 'native-multi') for argument in isolation)
+    assert 'clean' not in arguments and ('verify' in arguments) is source and ('test' in arguments) is not source
+    assert not any('skipTests' in argument or argument == '-T' for argument in arguments)
+    if not source: assert '-Dtest=' + ','.join(selected) in arguments
+
+
+def grouped_mysql_evidence(root):
+    names = ['org.example.OneTest', 'org.example.TwoTest', 'org.example.ThreeTest']
+    references = [report(root, name) for name in names]
+    count = lambda number: dict(found=number, passed=number, failed=0, skipped=0)
+    requirements = [{'className': name, 'minimumTests': 1, 'fixtureProperties': ['fixture.' + str(index)]}
+                    for index, name in enumerate(names)]
+    suites = []
+    for ordinal, indexes in enumerate(((0, 1), (2,)), 1):
+        suites.append({'id': 'suite-' + str(ordinal).zfill(3), 'status': 'PASS',
+            'javaSelection': [names[index] for index in indexes],
+            'fixtureProperties': [requirements[index]['fixtureProperties'][0] for index in indexes],
+            'javaTests': count(len(indexes)), 'selectedJavaClasses': {names[index]: count(1) for index in indexes},
+            'reportFiles': [references[index] for index in indexes]})
+    result = {'javaSuites': suites, 'javaTests': count(3), 'javaReportFiles': references,
+              'selectedJavaClasses': {name: count(1) for name in names}}
+    return result, {'javaSuites': requirements}, {'reports/' + item['path']: item for item in references}
+
+
+def test_grouped_mysql_coverage_still_counts_each_profile_class_from_its_original_xml(tmp_path):
+    coverage = module('grouped_native_profile_coverage', 'compact-acceptance.py')
+    result, profile, catalog = grouped_mysql_evidence(tmp_path)
+    original = {item['path']: (tmp_path / item['path']).read_bytes() for item in result['javaReportFiles']}
+    assert coverage.validate_mysql_suites(result, profile, tmp_path, catalog) == 3
+    remote.validate_java_suites(result, tmp_path, mysql=True)
+    assert original == {item['path']: (tmp_path / item['path']).read_bytes() for item in result['javaReportFiles']}
+
+
+@pytest.mark.parametrize('mutation', ['omitted-class', 'repeated-class', 'unknown-class', 'missing-property',
+    'extra-property', 'repeated-property', 'profile-property-collision', 'under-minimum', 'skipped', 'failed',
+    'extra-xml-class', 'reused-report', 'wrong-class-tally', 'wrong-total', 'top-repeated-report', 'top-class-tally'])
+def test_grouping_cannot_weaken_profile_counts_scope_or_original_xml_checks(tmp_path, mutation):
+    coverage = module('grouped_native_profile_refusals', 'compact-acceptance.py')
+    result, profile, catalog = grouped_mysql_evidence(tmp_path)
+    first, second = result['javaSuites']
+    if mutation == 'omitted-class': result['javaSuites'].pop()
+    elif mutation == 'repeated-class': second['javaSelection'] = first['javaSelection'][:1]
+    elif mutation == 'unknown-class': first['javaSelection'].append('org.example.UnreviewedTest')
+    elif mutation == 'missing-property': first['fixtureProperties'].pop()
+    elif mutation == 'extra-property': first['fixtureProperties'].append('unreviewed.fixture')
+    elif mutation == 'repeated-property': first['fixtureProperties'].append(first['fixtureProperties'][0])
+    elif mutation == 'profile-property-collision': profile['javaSuites'][1]['fixtureProperties'] = profile['javaSuites'][0]['fixtureProperties'][:]
+    elif mutation == 'under-minimum': profile['javaSuites'][0]['minimumTests'] = 2
+    elif mutation == 'reused-report': second['reportFiles'].append(first['reportFiles'][0])
+    elif mutation == 'wrong-class-tally': first['selectedJavaClasses'][first['javaSelection'][0]].update(found=2, passed=2)
+    elif mutation == 'wrong-total': result['javaTests'].update(found=4, passed=4)
+    elif mutation == 'top-repeated-report': result['javaReportFiles'].append(result['javaReportFiles'][0])
+    elif mutation == 'top-class-tally': result['selectedJavaClasses'][first['javaSelection'][0]].update(found=2, passed=2)
+    else:
+        reference = first['reportFiles'][0]; path = tmp_path / reference['path']
+        raw = path.read_bytes()
+        if mutation == 'extra-xml-class':
+            raw = raw.replace(b'</testsuite>', b'<testcase classname="org.example.UnselectedTest" name="extra"/></testsuite>')
+            first['javaTests'].update(found=3, passed=3); result['javaTests'].update(found=4, passed=4)
+        else:
+            raw = raw.replace(b'name="actual">', b'name="actual"><' + (b'skipped' if mutation == 'skipped' else b'failure') + b'/>')
+        path.write_bytes(raw)
+        reference.update(bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest())
+    with pytest.raises(ValueError): coverage.validate_mysql_suites(result, profile, tmp_path, catalog)

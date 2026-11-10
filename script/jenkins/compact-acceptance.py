@@ -79,41 +79,64 @@ def reports(output, descriptors, catalog, prefix):
     return cases, seen
 
 
-def validate_run(result, value, profile_sha, output, catalog):
-    """Require each selected class and cross-language test gate, never only totals."""
-    require(result.get('status') == 'PASS' and result.get('acceptanceProfileSha256') == profile_sha
-            and result.get('javaOnly') is False, 'Acceptance receipt does not bind the complete fixed-source profile')
+def validate_mysql_suites(result, value, output, catalog):
+    """Require all audited classes once, independently of invocation batching."""
     expected = {item['className']: item for item in value['javaSuites']}
     require(len(expected) == len(value['javaSuites']) and expected, 'Repeated or empty required Java coverage')
     suites = result.get('javaSuites')
-    require(isinstance(suites, list) and len(suites) == len(expected), 'The complete required MySQL suite matrix did not execute')
-    seen_classes, seen_reports = set(), set()
+    require(isinstance(suites, list) and 1 <= len(suites) <= len(expected),
+            'The complete required MySQL suite matrix did not execute')
+    seen_classes, seen_reports, selected_actual = set(), set(), {}
     total = dict.fromkeys(FIELDS, 0)
     for suite in suites:
         selection = suite.get('javaSelection')
-        require(isinstance(selection, list) and len(selection) == 1 and selection[0] in expected
-                and selection[0] not in seen_classes and suite.get('status') == 'PASS',
-                'Each audited MySQL class must execute once in its own admitted suite')
-        name = selection[0]; requirement = expected[name]; seen_classes.add(name)
+        require(isinstance(selection, list) and selection
+                and all(isinstance(name, str) and name in expected for name in selection)
+                and len(selection) == len(set(selection)) and not set(selection) & seen_classes
+                and suite.get('status') == 'PASS',
+                'Each audited MySQL class must execute once in an admitted invocation')
+        properties = [key for name in selection for key in expected[name]['fixtureProperties']]
         require(isinstance(suite.get('fixtureProperties'), list)
-                and sorted(suite['fixtureProperties']) == sorted(requirement['fixtureProperties']),
+                and len(properties) == len(set(properties))
+                and sorted(suite['fixtureProperties']) == sorted(properties),
                 'A MySQL suite did not use its exact audited fixture properties')
         cases, names = reports(output, suite.get('reportFiles'), catalog, 'java/')
         require(not names.intersection(seen_reports), 'A MySQL report was reused for another suite')
         seen_reports.update(names)
-        aggregate, actual = tally(cases), class_counts(cases, name)
-        require(passed(aggregate) and passed(actual, requirement['minimumTests'])
-                and counts_match(suite.get('javaTests'), aggregate)
-                and counts_match(suite.get('selectedJavaClasses', {}).get(name), actual),
+        aggregate = tally(cases)
+        observed = suite.get('selectedJavaClasses')
+        require(isinstance(observed, dict) and set(observed) == set(selection)
+                and passed(aggregate) and counts_match(suite.get('javaTests'), aggregate),
                 'A required MySQL class was omitted, failed, skipped or misreported')
+        covered = 0
+        for name in selection:
+            actual = class_counts(cases, name); covered += actual['found']
+            require(passed(actual, expected[name]['minimumTests']) and counts_match(observed[name], actual),
+                    'A required MySQL class was omitted, failed, skipped or misreported')
+            selected_actual[name] = actual
+        require(covered == aggregate['found'], 'A MySQL invocation contains unselected Java test evidence')
+        seen_classes.update(selection)
         for field in FIELDS:
             total[field] += aggregate[field]
-    require(seen_classes == set(expected) and counts_match(result.get('javaTests'), total),
-            'Required MySQL class coverage or aggregate counts differ')
+    require(seen_classes == set(expected), 'The complete required MySQL suite matrix did not execute')
+    require(counts_match(result.get('javaTests'), total), 'Required MySQL aggregate counts differ')
+    selected = result.get('selectedJavaClasses')
+    require(isinstance(selected, dict) and set(selected) == set(selected_actual)
+            and all(counts_match(selected[name], actual) for name, actual in selected_actual.items()),
+            'The top-level MySQL class counts differ from original XML')
     top_reports = result.get('javaReportFiles')
-    require(isinstance(top_reports, list) and {item['path'] for item in top_reports} == seen_reports
+    require(isinstance(top_reports, list) and len(top_reports) == len(seen_reports)
+            and {item['path'] for item in top_reports} == seen_reports
             and all(catalog.get('reports/' + item['path']) == item for item in top_reports),
             'The top-level MySQL report catalog differs from executed suite evidence')
+    return len(expected)
+
+
+def validate_run(result, value, profile_sha, output, catalog):
+    """Require each selected class and cross-language test gate, never only totals."""
+    require(result.get('status') == 'PASS' and result.get('acceptanceProfileSha256') == profile_sha
+            and result.get('javaOnly') is False, 'Acceptance receipt does not bind the complete fixed-source profile')
+    java_classes = validate_mysql_suites(result, value, output, catalog)
 
     source = result.get('sourceRegression', {})
     require(source.get('status') == 'PASS' and value['sourceRegression']['required'] is True,
@@ -177,6 +200,6 @@ def validate_run(result, value, profile_sha, output, catalog):
         require(passed(actual, frontend['minimumTests']) and summaries['cancelled'] == summaries['todo'] == 0
                 and counts_match(observed.get('tests'), actual),
                 'Frontend test cases were absent, failed, skipped or misreported')
-    return {'acceptanceProfileSha256': profile_sha, 'javaClasses': len(expected),
+    return {'acceptanceProfileSha256': profile_sha, 'javaClasses': java_classes,
             'sourceClasses': len(value['sourceRegression']['requiredClasses']),
             'pythonSuites': len(value['python']['requiredSuites']), 'frontends': len(value['frontends'])}

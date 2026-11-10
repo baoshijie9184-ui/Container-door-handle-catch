@@ -318,6 +318,7 @@ def verification(tmp_path):
               'javaSelection': ','.join(item['className'] for item in profile['javaSuites']),
               'acceptanceProfileSha256': profile_sha, 'javaTests': count(sum(item['javaTests']['passed'] for item in java_suites)),
               'javaSuites': java_suites, 'javaReportFiles': [item['reportFiles'][0] for item in java_suites],
+              'selectedJavaClasses': {name: tally for item in java_suites for name, tally in item['selectedJavaClasses'].items()},
               'sourceRegression': {'status': 'PASS', 'javaTests': count(sum(number for _, number in source_classes)),
                  'selectedJavaClasses': {name: count(number) for name, number in source_classes}, 'reportFiles': [source_report]},
               'pythonTests': count(sum(number for _, number in python_classes)),

@@ -771,6 +771,60 @@ def require(condition, message):
         raise ValueError(message)
 
 
+def group_provisioned_suites(provisioned, requirements):
+    """Batch invocations after creating every original independent schema/account.
+
+    JVM property keys cannot point to two per-class files in one invocation.
+    Keep Chat fail-fast and cap other batches so the existing command deadline
+    still applies to a small number of fresh, serial test-class JVMs.
+    """
+    require(isinstance(provisioned, list) and isinstance(requirements, list)
+            and len(provisioned) == len(requirements) > 0,
+            'Complete original fixture provisioning is required before grouping')
+    seen_classes, seen_files, weights = set(), set(), {}
+    for actual, expected in zip(provisioned, requirements):
+        require(isinstance(actual, dict) and isinstance(expected, dict)
+                and set(actual) == {'javaTests', 'fixtureProperties'}
+                and actual['javaTests'] == [expected['className']]
+                and expected['className'] not in seen_classes
+                and isinstance(actual['fixtureProperties'], dict) and actual['fixtureProperties']
+                and set(actual['fixtureProperties']) == set(expected['fixtureProperties'])
+                and type(expected.get('minimumTests')) is int and expected['minimumTests'] > 0,
+                'Grouping must preserve each original audited class and fixture scope')
+        files = list(actual['fixtureProperties'].values())
+        require(all(isinstance(file, str) and file for file in files)
+                and len(set(files)) == len(files) and not set(files) & seen_files,
+                'Grouping requires every original independent private fixture input')
+        seen_classes.add(expected['className']); seen_files.update(files)
+        weights[expected['className']] = expected['minimumTests']
+    require(requirements[0]['id'] == 'CompactChatMigrationMySqlTest'
+            and requirements[0]['className'] == 'com.ruanzhu.doorhandle.module.app.service.impl.CompactChatMigrationMySqlTest',
+            'The audited Chat migration must remain the first independent invocation')
+    first = provisioned[0]
+    result = [{'javaTests': list(first['javaTests']), 'fixtureProperties': dict(first['fixtureProperties'])}]
+    remainder = provisioned[1:]
+    if not remainder:
+        return result
+    occurrences = {}
+    for suite in remainder:
+        for key in suite['fixtureProperties']:
+            occurrences[key] = occurrences.get(key, 0) + 1
+    count = max(max(occurrences.values()), (len(remainder) + 5) // 6)
+    groups = [{'javaTests': [], 'fixtureProperties': {}} for _ in range(count)]
+    for suite in remainder:
+        eligible = [index for index, group in enumerate(groups)
+                    if len(group['javaTests']) < 6
+                    and not set(group['fixtureProperties']) & set(suite['fixtureProperties'])]
+        if not eligible:
+            groups.append({'javaTests': [], 'fixtureProperties': {}})
+            eligible = [len(groups) - 1]
+        index = min(eligible, key=lambda value: (len(groups[value]['javaTests']),
+                    sum(weights[name] for name in groups[value]['javaTests']), value))
+        groups[index]['javaTests'].extend(suite['javaTests'])
+        groups[index]['fixtureProperties'].update(suite['fixtureProperties'])
+    return result + [group for group in groups if group['javaTests']]
+
+
 def failure_details(error):
     # Exception messages and external frames may contain SQL, credentials or
     # business data. Only this versioned controller's code locations are public.
@@ -1434,7 +1488,7 @@ class Preparation:
                     require(source in configs and target in configs, 'Versioned migration suite lacks one side')
                     self.mysql.script('GRANT SELECT,TRIGGER ON ' + self.runtime.quoted(configs[source]['database']) + ".* TO '" + configs[target]['username'] + "'@'%';", label='fixture-source-read')
             result.append({'javaTests': [suite['className']], 'fixtureProperties': properties})
-        return result
+        return group_provisioned_suites(result, suites)
 
     def whole_config(self, settings, java, jar):
         require(self.journal.get('binaryLoggingDisabled') is True,

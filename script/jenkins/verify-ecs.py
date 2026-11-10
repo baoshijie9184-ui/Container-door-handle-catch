@@ -344,7 +344,8 @@ def fixture_arguments(args, identity):
         else:
             options, configs, inputs = [], {}, {}
         schemas = {(config['serverUuid'], config['database']) for config in configs.values()}
-        if set(inputs) & seen_inputs or schemas & seen_schemas:
+        if len(inputs) != len(configs) or len(schemas) != len(configs) \
+                or set(inputs) & seen_inputs or schemas & seen_schemas:
             raise ValueError('Different Java suites must use distinct private inputs and disposable schemas')
         seen_classes.update(aliases); seen_inputs.update(inputs); seen_schemas.update(schemas)
         all_configs.extend(configs.values()); arguments.extend(options); selected.extend(classes)
@@ -637,6 +638,8 @@ def java_maven_arguments(suite, tools, build_root, *, initial, source_regression
     arguments.append('test' if suite['fixtureProperties'] else 'verify')
     if suite['javaSelection'] and not source_regression:
         arguments += ['-Dtest=' + ','.join(suite['javaSelection']), '-Dsurefire.failIfNoSpecifiedTests=false']
+        if suite['fixtureProperties'] and len(suite['javaSelection']) > 1:
+            arguments += ['-DforkCount=1', '-DreuseForks=false', '-Djunit.jupiter.execution.parallel.enabled=false']
     return arguments + suite['fixtureOptions']
 
 
