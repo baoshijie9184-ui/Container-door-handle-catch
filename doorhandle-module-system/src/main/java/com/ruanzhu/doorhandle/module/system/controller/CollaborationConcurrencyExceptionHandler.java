@@ -5,6 +5,7 @@ import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
 import org.springframework.dao.ConcurrencyFailureException;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import java.util.Map;
@@ -19,5 +20,10 @@ public class CollaborationConcurrencyExceptionHandler {
         return ResponseEntity.status(409).header("Cache-Control","no-store").body(Map.of(
                 "code","CONCURRENT_WRITE",
                 "message","并发修改未完成，请保留草稿并核对最新资料后重试"));
+    }
+    @ExceptionHandler({SecurityException.class,AccessDeniedException.class})
+    public ResponseEntity<Map<String,Object>> forbidden(){
+        return ResponseEntity.status(403).header("Cache-Control","no-store").body(Map.of(
+                "code",403,"message","当前账号没有此操作权限"));
     }
 }

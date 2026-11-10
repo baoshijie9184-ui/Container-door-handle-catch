@@ -20,6 +20,8 @@ class CollaborationConcurrencyExceptionHandlerTest {
         @GetMapping("/lock") String locked(){attempts.incrementAndGet();throw new CannotAcquireLockException("private-table sql and connection details");}
         @GetMapping("/optimistic") String optimistic(){throw new OptimisticLockingFailureException("private row revision");}
         @GetMapping("/constraint") String constraint(){throw new DataIntegrityViolationException("private constraint");}
+        @GetMapping("/resource-denied") String resourceDenied(){throw new SecurityException("private resource existence and field policy");}
+        @GetMapping("/spring-denied") String springDenied(){throw new org.springframework.security.access.AccessDeniedException("private authorization rule");}
         @GetMapping("/context") String context(){throw new AccountSwitch();}
         @ExceptionHandler(AccountSwitch.class) ResponseEntity<?> contextChanged(){return ResponseEntity.status(409).body(Map.of("code","ACCOUNT_CONTEXT_CHANGED","message","账号已变化"));}
     }
@@ -42,6 +44,20 @@ class CollaborationConcurrencyExceptionHandlerTest {
         var http=MockMvcBuilders.standaloneSetup(new Conflicts())
                 .setControllerAdvice(new GlobalExceptionHandler(),new CollaborationConcurrencyExceptionHandler()).build();
         http.perform(get("/constraint")).andExpect(status().isOk()).andExpect(jsonPath("$.code").value(500));
+    }
+    @Test void resourceSecurityDenialIsARealForbiddenResponseWithoutResourceDetails() throws Exception {
+        var http=MockMvcBuilders.standaloneSetup(new Conflicts())
+                .setControllerAdvice(new GlobalExceptionHandler(),new CollaborationConcurrencyExceptionHandler()).build();
+        var response=http.perform(get("/resource-denied")).andExpect(status().isForbidden())
+                .andExpect(header().string("Cache-Control","no-store")).andExpect(jsonPath("$.code").value(403))
+                .andExpect(jsonPath("$.message").value("当前账号没有此操作权限")).andReturn();
+        assertThat(response.getResponse().getContentAsString()).doesNotContain("private resource","field policy","SecurityException");
+    }
+    @Test void springAccessDenialKeepsTheGenericForbiddenContract() throws Exception {
+        var http=MockMvcBuilders.standaloneSetup(new Conflicts())
+                .setControllerAdvice(new GlobalExceptionHandler(),new CollaborationConcurrencyExceptionHandler()).build();
+        var response=http.perform(get("/spring-denied")).andExpect(status().isForbidden()).andExpect(jsonPath("$.code").value(403)).andReturn();
+        assertThat(response.getResponse().getContentAsString()).doesNotContain("private authorization","AccessDeniedException");
     }
     @Test void handlerIsOnlyRegisteredWhenMutationProtectionIsEnabled(){
         var context=new ApplicationContextRunner().withUserConfiguration(CollaborationConcurrencyExceptionHandler.class);
