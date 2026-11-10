@@ -1,5 +1,13 @@
 # 本地 Jenkins CI/CD 约定
 
+2026-11-10 #190 的失败发生在本地 Jenkins 取得固定 `6bed743a` 的 Jenkinsfile 后、CPS 字节码生成时：`WorkflowScript.___cps___45` 超出 JVM 单方法大小限制。尚未出现 Pipeline start 或执行 Trusted checkout，没有本轮应用构建、SSH、ECS测试或数据迁移。此前 Declarative 语法接口 HTTP200 不包含这一步；#189 的数据库验收未完成状态保持，正式库仍131表，未切库。
+
+修复仅将 Configuration gate 的完整90行原文移入同一 `WorkflowScript` 的顶层 CPS 方法 `configureVerificationInputs()`，原stage调用它；保留所有参数、门禁、stage和post，不使用 `@NonCPS`、不启用全局脚本拆分。反向还原该挪动后可与原文件逐字节相等。`___cps___` 数字是编译器全局计数，不能据45推断“第45个闭包”。
+
+新增 [仅编译检查](../script/jenkins/inspect-local-pipeline-cps.ps1)：使用现有本地 Jenkins、实际安装的 `CpsGroovyShellFactory(null).withSandbox(true)` 及其 `classLoader.parseClass` 生成字节码，不实例化或运行脚本、不触发构建、不改任务及插件配置。使用 `-Commit <完整提交>` 时直接读取该提交的原始 Git blob，避免把 Windows CRLF 工作副本代替 SCM 字节；`-PipelineFile` 指向项目内现有 Jenkinsfile，`-EvidenceFile` 必须为D盘 `work/jenkins` 已有目录内的新JSON路径。返回 `CPS_COMPILATION_PASS` 才表示这个范围通过，不能替代ECS项目验收。
+
+同版本实际编译已复现原文件的 MethodTooLarge，结构修复后的文件成功生成 `WorkflowScript`；前后 Jenkins 均停留在终态#190、无排队，`SCRIPT_SPLITTING_TRANSFORMATION` 实读为false且未改变。原/新编译控制保存在 `work/jenkins/cps-compile-20261110`；ECS保持流水线外实际回读的 `Stopped / StopCharging`。提交后的固定 Git blob 编译回执继续写入该目录；后续须推送固定提交再由原流水线验证，不把仅编译成功记作数据库迁移通过。
+
 2026-11-10 #189 已终态FAILURE：固定 `410506ad` 的控制1,564项及Confirmation35项全部通过，后续审计并发测试5通过/1错误，完整迁移及资料保全阶段未执行。25份控制原件、7份原报告、工具/夹具停止回执已保全，ECS在流水线外实际回读Stopped / StopCharging。正在明确建立两个真实共享锁持有者的测试前提，保留真实重复插入与旧快照回归；新的三库接收器尚未真实执行。正式库131表未切换。
 
 2026-11-10 开发补充：已将旧45表分类契约加入 ECS 提前预检，版本化最低数为19模块1,564项；控制器声明、执行器和自检集合一致。时间类型修复、56类完整MySQL测试的12次调用分组及两表旧列投影待统一固定提交验证。现有本地控制器和 `doorhandle-local-ci` 均已恢复在线；本轮尚未开机、测试或发布，不能把静态复核视为迁移通过。
