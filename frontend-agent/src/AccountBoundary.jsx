@@ -23,7 +23,7 @@ export function AccountBoundary({ children, loginHref }) {
     };
     const hub=createRealtimeChanges({session:accountSession,checkAuth:check});
     const off=accountSession.subscribe(value=>{if(alive)setAccount(value)}),statusOff=hub.subscribeStatus(value=>{if(alive)setStatus(value)});
-    const signalOff=onIdentitySignal(()=>{accountSession.clear('浏览器登录账号已变化，正在核对身份');check()});
+    const signalOff=onIdentitySignal(check);
     globalThis.addEventListener('doorhandle-account-recheck',check);
     globalThis.addEventListener('focus',check);
     check().then(()=>hub.start());

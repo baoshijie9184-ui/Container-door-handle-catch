@@ -10,6 +10,7 @@ export async function accountFetch(input, options = {}, operationStamp) {
   if (!auth) accountSession.assert(stamp)
   const headers = new Headers(options.headers || (typeof input !== 'string' ? input.headers : undefined))
   const method = (options.method || (typeof input !== 'string' ? input.method : 'GET') || 'GET').toUpperCase()
+  if(!auth&&stamp.accountContext)headers.set('X-Account-Context',stamp.accountContext)
   if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) {
     if (!auth && !stamp.accountContext) throw contextError('当前服务器尚未提供安全账号上下文，请更新登录身份后再修改')
     if (stamp.accountContext) headers.set('X-Account-Context', stamp.accountContext)
@@ -26,7 +27,12 @@ export async function accountFetch(input, options = {}, operationStamp) {
   }
   if (!auth && response.status === 409) {
     const data = await response.clone().json().catch(() => null)
-    if (data?.code === 'ACCOUNT_CONTEXT_CHANGED') { accountSession.clear('登录账号已变化，请重新确认身份'); throw contextError() }
+    accountSession.assert(stamp)
+    if (data?.code === 'ACCOUNT_CONTEXT_CHANGED') {
+      accountSession.clear('登录账号已变化，请重新确认身份')
+      globalThis.dispatchEvent?.(new Event('doorhandle-account-recheck'))
+      throw contextError()
+    }
   }
   return response
 }

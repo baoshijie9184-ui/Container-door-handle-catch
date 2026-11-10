@@ -40,8 +40,7 @@ export const useUserStore = defineStore('user', () => {
     }).finally(() => { if (pendingCheck === task) pendingCheck = undefined })
     pendingCheck = task; return task
   }
-  const recheck = () => { clearSession('浏览器登录状态已变化，正在重新确认身份'); checkAuth() }
-  onIdentitySignal(recheck)
+  onIdentitySignal(checkAuth)
   globalThis.addEventListener?.('doorhandle-account-recheck', checkAuth)
   globalThis.addEventListener?.('focus', checkAuth)
   globalThis.document?.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkAuth() })
@@ -50,20 +49,27 @@ export const useUserStore = defineStore('user', () => {
     return Promise.reject(error)
   })
   const login = async form => {
-    clearSession('正在确认登录账号'); identityChanged()
+    clearSession('正在确认登录账号')
+    const started=accountSession.stamp()
+    identityChanged()
     try {
       const response = await request.post('/api/auth/login', form)
+      accountSession.assert(started)
       if (response.data?.code !== 200) throw new Error(response.data?.message || '登录失败')
+      const expectedContext=response.data?.data?.accountContext
       if (!await checkAuth()) throw new Error('登录身份未确认，请重试')
+      if(accountSession.state.epoch!==started.epoch||expectedContext&&accountSession.state.accountContext!==expectedContext)throw new Error('登录流程已变化，请核对当前身份')
       identityChanged(); return { username: username.value }
     } catch (error) { throw new Error(loginErrorMessage(error)) }
   }
   const logout = async () => {
     const context = accountSession.state.accountContext
-    clearSession('已退出本页面，正在撤销服务器会话'); identityChanged()
-    try { await request.post('/api/auth/logout', null, { headers: { 'X-Account-Context': context } }); accountNotice.value = '当前登录会话已退出' }
-    catch { accountNotice.value = '本页面已退出；服务器撤销尚未确认，请重新登录后核对' }
-    finally { identityChanged() }
+    clearSession('已退出本页面，正在撤销服务器会话')
+    const started=accountSession.stamp(),current=()=>accountSession.current(started)&&!accountSession.state.authenticated
+    identityChanged()
+    try { await request.post('/api/auth/logout', null, { headers: { 'X-Account-Context': context } }); if(current())accountNotice.value = '当前登录会话已退出' }
+    catch { if(current())accountNotice.value = '本页面已退出；服务器撤销尚未确认，请重新登录后核对' }
+    finally { if(current())identityChanged() }
   }
   return { username, role, identity, userId, accountContext, accountEpoch, accountNotice, capabilities, displayCacheAvailable,
     isAuthenticated, hasCheckedAuth, login, logout, checkAuth, clearSession,

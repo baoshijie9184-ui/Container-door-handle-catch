@@ -188,3 +188,113 @@ test('an intent bound before an await cannot first send an unsafe AGUI request a
     assert.equal(requests.length,0)
   }finally{globalThis.fetch=originalFetch;accountSession.clear()}
 })
+
+const deferred = () => {let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no});return {promise,resolve,reject}}
+let userFixtureSequence=0
+async function userStoreFixture() {
+  const owned=['window','localStorage','BroadcastChannel'],previous=new Map(owned.map(key=>[key,Object.getOwnPropertyDescriptor(globalThis,key)]))
+  const storage=localCache(),writes=[],listeners=new Set();const set=storage.setItem
+  storage.setItem=(key,value)=>{writes.push({key,value});set(key,value)}
+  Object.defineProperty(globalThis,'window',{configurable:true,writable:true,value:{localStorage:storage,addEventListener:(type,listener)=>{if(type==='storage')listeners.add(listener)}}})
+  Object.defineProperty(globalThis,'localStorage',{configurable:true,writable:true,value:storage})
+  Object.defineProperty(globalThis,'BroadcastChannel',{configurable:true,writable:true,value:undefined})
+  const key='__collaborationUserFixture'+(++userFixtureSequence),restore=()=>{delete globalThis[key];for(const [name,descriptor]of previous){if(descriptor)Object.defineProperty(globalThis,name,descriptor);else delete globalThis[name]}}
+  const request={reads:0,get:async(...args)=>{request.reads++;return request.read(...args)},post:(...args)=>request.write(...args),interceptors:{response:{use(){}}}}
+  globalThis[key]=request
+  try{
+    const contextUrl=moduleUrl(readFrontendFile('src','utils','accountContext.js')+'\n// isolated user fixture '+userFixtureSequence)
+    const source=readFrontendFile('src','stores','user.js')
+      .replace("import { defineStore } from 'pinia'",'const defineStore=(_id,setup)=>setup')
+      .replace("import { ref } from 'vue'",'const ref=value=>({value})')
+      .replace("import request from '../api/request'",'const request=globalThis['+JSON.stringify(key)+']')
+      .replace("'../utils/accountContext'",JSON.stringify(contextUrl))
+      .replace("'../utils/loginError'",JSON.stringify(moduleUrl(readFrontendFile('src','utils','loginError.js'))))
+      .replace("'../utils/accountPreferences'",JSON.stringify(moduleUrl(readFrontendFile('src','utils','accountPreferences.js'))))
+    const context=await import(contextUrl),actual=await import(moduleUrl(source)),store=actual.useUserStore()
+    delete globalThis[key]
+    return {session:context.accountSession,store,request,close:restore,
+      signals:()=>writes.filter(item=>item.key==='doorhandle-identity-signal').length,
+      signal:()=>{for(const listener of listeners)listener({key:'doorhandle-identity-signal'})}}
+  }catch(error){restore();throw error}
+}
+
+test('actual logout completion only updates and broadcasts its original unauthenticated flow',async()=>{
+  for(const takeover of [false,true])for(const fails of [false,true]){
+    const fixture=await userStoreFixture(),reply=deferred()
+    try{
+      fixture.session.accept(user());fixture.request.write=()=>reply.promise
+      const logout=fixture.store.logout();assert.equal(fixture.signals(),1)
+      if(takeover){fixture.session.clear('new login');fixture.session.accept(user('context-b',{userId:'22',username:'supervisor-b'}))}
+      const notice=fixture.store.accountNotice.value
+      if(fails)reply.reject(Error('late failure'));else reply.resolve({data:{code:200}})
+      await logout
+      if(takeover){assert.equal(fixture.session.state.accountContext,'context-b');assert.equal(fixture.store.accountNotice.value,notice);assert.equal(fixture.signals(),1)}
+      else{assert.equal(fixture.session.state.authenticated,false);assert.match(fixture.store.accountNotice.value,fails?/撤销尚未确认/:/当前登录会话已退出/);assert.equal(fixture.signals(),2)}
+    }finally{fixture.close()}
+  }
+})
+test('actual login ignores a late older response before checking or broadcasting the newer account',async()=>{
+  for(const takeover of [false,true]){
+    const fixture=await userStoreFixture(),reply=deferred()
+    try{
+      fixture.request.write=()=>reply.promise;fixture.request.read=async()=>({data:{data:user()}})
+      const login=fixture.store.login({username:'supervisor-a',password:'fixture-only'});assert.equal(fixture.signals(),1)
+      if(takeover){fixture.session.clear('new login');fixture.session.accept(user('context-b',{userId:'22',username:'supervisor-b'}))}
+      reply.resolve({data:{code:200,data:{accountContext:'context-a'}}})
+      if(takeover){await assert.rejects(login);assert.equal(fixture.request.reads,0);assert.equal(fixture.signals(),1);assert.equal(fixture.session.state.accountContext,'context-b')}
+      else{assert.equal((await login).username,'supervisor-a');assert.equal(fixture.request.reads,1);assert.equal(fixture.signals(),2)}
+    }finally{fixture.close()}
+  }
+})
+test('actual cross-tab identity binding rechecks without clearing a confirmed account or its draft lifetime',async()=>{
+  const fixture=await userStoreFixture()
+  try{
+    fixture.session.accept(user('context-b',{userId:'22',username:'supervisor-b'}));const stamp=fixture.session.stamp();let resets=0
+    fixture.session.onReset(()=>resets++);fixture.request.read=async()=>({data:{data:user('context-b',{userId:'22',username:'supervisor-b'})}})
+    fixture.signal();await flush();assert.equal(fixture.session.current(stamp),true);assert.equal(resets,0)
+    fixture.request.read=async()=>{throw Error('temporary network failure')};fixture.signal();await flush()
+    assert.equal(fixture.session.current(stamp),true);assert.equal(resets,0)
+    fixture.request.read=async()=>{throw Object.assign(Error('expired'),{response:{status:401}})};fixture.signal();await flush()
+    assert.equal(fixture.session.state.authenticated,false);assert.equal(resets,1)
+  }finally{fixture.close()}
+})
+test('a delayed 409 body cannot invalidate a newer account after the response header was accepted',async()=>{
+  const {accountSession}=await accountModule,{accountFetch}=await fetchModule,body=deferred(),originalFetch=globalThis.fetch,originalDispatch=globalThis.dispatchEvent
+  let parsing=false,checks=0
+  globalThis.fetch=async()=>({status:409,clone:()=>({json:()=>{parsing=true;return body.promise}})})
+  globalThis.dispatchEvent=()=>{checks++;return true}
+  try{
+    accountSession.accept(user());const request=accountFetch('/api/protected')
+    await flush();assert.equal(parsing,true)
+    accountSession.clear('new login');accountSession.accept(user('context-b',{userId:'22',username:'supervisor-b'}))
+    body.resolve({code:'ACCOUNT_CONTEXT_CHANGED'});await assert.rejects(request,{code:'ACCOUNT_CONTEXT_CHANGED'})
+    assert.equal(accountSession.state.accountContext,'context-b');assert.equal(accountSession.state.authenticated,true);assert.equal(checks,0)
+  }finally{globalThis.fetch=originalFetch;if(originalDispatch===undefined)delete globalThis.dispatchEvent;else globalThis.dispatchEvent=originalDispatch;accountSession.clear()}
+})
+test('a current-account context conflict clears once and requests a non-destructive identity check',async()=>{
+  const {accountSession}=await accountModule,{accountFetch}=await fetchModule,originalFetch=globalThis.fetch,originalDispatch=globalThis.dispatchEvent,checks=[]
+  globalThis.fetch=async()=>({status:409,clone:()=>({json:async()=>({code:'ACCOUNT_CONTEXT_CHANGED'})})})
+  globalThis.dispatchEvent=event=>{checks.push(event.type);return true}
+  try{
+    accountSession.accept(user());await assert.rejects(accountFetch('/api/protected'),{code:'ACCOUNT_CONTEXT_CHANGED'})
+    assert.equal(accountSession.state.authenticated,false);assert.deepEqual(checks,['doorhandle-account-recheck'])
+  }finally{globalThis.fetch=originalFetch;if(originalDispatch===undefined)delete globalThis.dispatchEvent;else globalThis.dispatchEvent=originalDispatch;accountSession.clear()}
+})
+test('actual Axios and fetch protected GET/HEAD carry the captured context while auth checks omit it',async()=>{
+  const {accountSession}=await accountModule,{accountFetch}=await fetchModule,originalFetch=globalThis.fetch,fetchCalls=[],axiosCalls=[]
+  const key='__collaborationAxiosFixture',axios=require('axios').create({adapter:async config=>{axiosCalls.push(config);return {config,status:200,statusText:'OK',headers:{},data:{code:200}}}})
+  globalThis[key]=axios
+  const identityUrl=moduleUrl(readFrontendFile('src','utils','requestIdentity.js'))
+  const versionUrl=moduleUrl(readFrontendFile('src','utils','mutationVersion.js').replace("'./requestIdentity'",JSON.stringify(identityUrl)))
+  const source=readFrontendFile('src','api','request.js').replace("import axios from 'axios'",'const axios=globalThis['+JSON.stringify(key)+']')
+    .replace("'../utils/accountContext'",JSON.stringify(moduleUrl(readFrontendFile('src','utils','accountContext.js'))))
+    .replace("'../utils/requestIdentity'",JSON.stringify(identityUrl)).replace("'../utils/mutationVersion'",JSON.stringify(versionUrl)).replaceAll('import.meta.env','({})')
+  globalThis.fetch=async(input,options)=>{fetchCalls.push({input,options});return new Response('{}',{status:200})}
+  try{
+    accountSession.accept(user());const {default:request}=await import(moduleUrl(source))
+    await request.get('/api/protected');await request.head('/api/protected');await request.get('/api/auth/check')
+    await accountFetch('/api/protected');await accountFetch('/api/protected',{method:'HEAD'});await accountFetch('/api/auth/check')
+    assert.deepEqual(axiosCalls.map(config=>config.headers.get('X-Account-Context')),['context-a','context-a',undefined])
+    assert.deepEqual(fetchCalls.map(call=>call.options.headers.get('X-Account-Context')),['context-a','context-a',null])
+  }finally{delete globalThis[key];globalThis.fetch=originalFetch;accountSession.clear()}
+})

@@ -16,6 +16,7 @@ axios.interceptors.request.use(config => {
     if (config._accountStamp) accountSession.assert(config._accountStamp)
     else config._accountStamp = accountSession.stamp()
     config.signal = accountSignal(config.signal, config._accountStamp.signal)
+    if(config._accountStamp.accountContext){config.headers=config.headers||{};config.headers['X-Account-Context']??=config._accountStamp.accountContext}
   }
   if (config.method && !['get', 'head', 'options'].includes(config.method.toLowerCase())) {
     if (!config._accountAuth && !config._accountStamp?.accountContext) throw contextError('当前服务器尚未提供安全账号上下文，请更新登录身份后再修改')
