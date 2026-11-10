@@ -1,5 +1,7 @@
 # 本地 Jenkins CI/CD 约定
 
+2026-11-10 最新开发顺序：按用户要求，全部源码开发完成后再测试。#199为SCM自动触发，仅在本地编译阶段运行，已终态ABORTED，无ECS测试；ECS已在流水线外实际回读`Stopped / StopCharging`。现通过原版本化配置入口和私有`activate=false`将`doorhandle-java`暂置`disabled=true`，Jenkins控制器及专用本地节点保持在线。开发目标仍继续，源码收尾与跳过测试构建完成后再启用任务及完整ECS验证。配置回执位于Git忽略的`work/jenkins/configuration-receipt.json`；`[skip ci]`只过滤符合条件的提交，不能把它当作整批多提交推送绝不触发构建的保证。
+
 2026-11-10 #190 的失败发生在本地 Jenkins 取得固定 `6bed743a` 的 Jenkinsfile 后、CPS 字节码生成时：`WorkflowScript.___cps___45` 超出 JVM 单方法大小限制。尚未出现 Pipeline start 或执行 Trusted checkout，没有本轮应用构建、SSH、ECS测试或数据迁移。此前 Declarative 语法接口 HTTP200 不包含这一步；#189 的数据库验收未完成状态保持，正式库仍131表，未切库。
 
 修复仅将 Configuration gate 的完整90行原文移入同一 `WorkflowScript` 的顶层 CPS 方法 `configureVerificationInputs()`，原stage调用它；保留所有参数、门禁、stage和post，不使用 `@NonCPS`、不启用全局脚本拆分。反向还原该挪动后可与原文件逐字节相等。`___cps___` 数字是编译器全局计数，不能据45推断“第45个闭包”。

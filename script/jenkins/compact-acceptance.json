@@ -49,7 +49,7 @@
         "doorhandle.report.mysql.config"
       ],
       "source": "doorhandle-module-detection/src/test/java/com/ruanzhu/doorhandle/module/detection/service/DetectionCollaborationMySqlTest.java",
-      "minimumTests": 11,
+      "minimumTests": 13,
       "coverage": [
         "enabled task claims and stable identity diffs, exact replay and report audit rollback"
       ]
@@ -840,7 +840,7 @@
       },
       {
         "className": "com.ruanzhu.doorhandle.module.system.service.AuditMetadataTest",
-        "minimumTests": 4,
+        "minimumTests": 5,
         "source": "doorhandle-module-system/src/test/java/com/ruanzhu/doorhandle/module/system/service/AuditMetadataTest.java"
       },
       {
@@ -875,7 +875,7 @@
       },
       {
         "className": "com.ruanzhu.doorhandle.module.system.security.LoginSessionFilterTest",
-        "minimumTests": 7,
+        "minimumTests": 9,
         "source": "doorhandle-module-system/src/test/java/com/ruanzhu/doorhandle/module/system/security/LoginSessionFilterTest.java"
       },
       {
