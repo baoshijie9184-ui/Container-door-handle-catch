@@ -132,6 +132,24 @@ def test_runtime_establishes_and_checks_a_session_once_then_reuses_its_cookie_ja
     assert subject.account_context == CONTEXT
 
 
+@pytest.mark.parametrize('context,tracking', [(CONTEXT, True), ('a1' * 32, False)])
+def test_shared_client_accepts_scoped_and_legacy_account_contexts(context, tracking):
+    subject, _ = client(); identity = checked(context)
+    identity['capabilities']['sessionTracking'] = tracking
+    subject.observe_auth('/api/auth/check', identity)
+    assert subject.prepare_request('POST', '/api/owned-command').get_header('X-account-context') == context
+    if not tracking:
+        with pytest.raises(RuntimeError, match='every collaboration capability'):
+            scenarios.require_account(identity, account())
+
+
+@pytest.mark.parametrize('context', ['g' * 64, 'a' * 44])
+def test_shared_client_still_rejects_malformed_account_contexts(context):
+    subject, _ = client()
+    with pytest.raises(RuntimeError, match='authenticated account context'):
+        subject.observe_auth('/api/auth/check', checked(context))
+
+
 @pytest.mark.parametrize('status', [401, 409, 500])
 def test_failed_writes_are_never_automatically_refreshed_or_retried(status):
     subject, transport = client(failure=status); subject.login('owned-inspector')

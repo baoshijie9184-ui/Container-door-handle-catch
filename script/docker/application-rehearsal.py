@@ -557,7 +557,7 @@ class Client:
         elif path == '/api/auth/check':
             context = result.get('accountContext') if isinstance(result, dict) else None
             require(isinstance(result, dict) and result.get('authenticated') is True
-                    and isinstance(context, str) and re.fullmatch(r'[A-Za-z0-9_-]{43}', context),
+                    and isinstance(context, str) and re.fullmatch(r'(?:[A-Za-z0-9_-]{43}|[a-f0-9]{64})', context),
                     'Application check did not return its authenticated account context')
             self.account_context = context
         elif path == '/api/auth/logout':
