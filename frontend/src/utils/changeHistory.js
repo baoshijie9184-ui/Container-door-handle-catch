@@ -9,6 +9,15 @@ export function historyInitiator(item) {
   const origin=item.source.initiator
   return origin?.username || (origin?.userId ? '账号 '+origin.userId : '未记录')
 }
+// A notice for an open editor needs evidence newer than that editor's snapshot.
+// An event about another row must not blame this row's previous operator.
+export function newerResourceChange(item, openedVersion) {
+  const revision = value => typeof value === 'number' ? Number.isSafeInteger(value) && value >= 0 ? String(value) : null
+    : typeof value === 'string' && /^(0|[1-9]\d{0,18})$/.test(value) ? value : null
+  const before = revision(openedVersion), after = revision(item?.afterVersion)
+  if (before === null || after === null || BigInt(before) > 9223372036854775807n || BigInt(after) > 9223372036854775807n) return null
+  return BigInt(after) > BigInt(before) ? item : null
+}
 export function changeValue(change, side) {
   if (change.redacted) return '内容已受保护'
   if (side === 'before' && change.operation === 'ADD' || side === 'after' && change.operation === 'REMOVE') return '字段不存在'

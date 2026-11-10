@@ -1,7 +1,8 @@
-import { onBeforeUnmount, ref, unref } from 'vue'
+import { nextTick, onBeforeUnmount, ref, unref } from 'vue'
 import { accountSession } from '../utils/accountContext'
 import { createRealtimeChanges } from '../utils/realtimeChanges'
 import { useUserStore } from '../stores/user'
+import { preserveBrowseState } from '../utils/preserveBrowseState'
 let hub
 export function realtimeHub() {
   if (!hub) hub = createRealtimeChanges({ session: accountSession, checkAuth: () => useUserStore().checkAuth() })
@@ -17,10 +18,13 @@ export function useResourceChanges({ resourceType, resourceId, domains, isEditin
     if (refreshing) { queued = true; return }
     refreshing = true
     try {
-      await revalidate?.()
-      if(disposed)return
-      if (isEditing() || !refresh) { changed.value = true; return }
-      await refresh(); if (!disposed) changed.value = false
+      const owner = accountSession.stamp()
+      const updated = await preserveBrowseState(async () => {
+        await revalidate?.()
+        if (disposed || isEditing() || !refresh) return false
+        return refresh()
+      }, { afterRender: nextTick, isCurrent: () => !disposed && accountSession.current(owner) })
+      if (!disposed) changed.value = updated === false
     } catch { if (!disposed) changed.value = true }
     finally { refreshing = false; if (queued && !disposed) { queued = false; timer = setTimeout(reread, 250) } }
   }

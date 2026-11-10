@@ -3,7 +3,7 @@
     <PageHero :title="isEdit ? '编辑人员' : '新增人员'" description="维护业务人员登记、部门与岗位。登录账号及权限在账号与组织页面单独管理。" icon="User">
       <template #actions><el-button @click="goBack"><AppIcon name="ArrowLeft" :size="16" />返回列表</el-button></template>
     </PageHero>
-    <CollaborationRefreshNotice :changed="externalChanged" :editing="loading" :history-to="{path:'/operations/audit',query:{resourceType:'EMPLOYEE',resourceId:employeeId}}" @refresh="reload" />
+    <CollaborationRefreshNotice :changed="externalChanged" :editing="loading" :opened-version="employeeForm.version" :history-to="{path:'/operations/audit',query:{resourceType:'EMPLOYEE',resourceId:employeeId}}" @refresh="reload" />
     <section class="managed-form-surface app-panel">
       <ManagedFormFeedback :phase="phase" :dirty="dirty" :loaded="loaded" :is-edit="isEdit" :resource-id="employeeId" :version="employeeForm.version" :receipt="receipt" :permission-error="permissionError" :load-error="loadError" :save-error="saveError" :validation-error="validationError" :lookup-notice="lookupNotice" :can-reload="supervisor && isEdit && !!employeeId" @reload="reload" />
       <div class="managed-department-state"><el-alert v-if="departmentError" :title="departmentError" type="error" show-icon :closable="false" /><el-button v-if="departmentError" size="small" :loading="departmentLoading" :disabled="loading || !supervisor" @click="loadDepartments"><AppIcon name="Refresh" :size="14" />重新读取部门</el-button></div>

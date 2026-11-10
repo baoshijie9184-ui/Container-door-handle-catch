@@ -27,7 +27,7 @@
         <template v-if="departments.length">
           <label v-if="departments.length>6 || departmentQuery" class="department-local-query"><span><AppIcon name="Search" :size="14" />查找已读取部门</span><el-input ref="departmentSearchRef" v-model="departmentQuery" maxlength="200" clearable aria-label="按名称或编号查找本次已读取的部门" aria-describedby="organization-department-scope" placeholder="部门名称或 ID" /></label>
           <p id="organization-department-scope" class="department-query-scope" :role="departmentQuery.trim() ? 'status' : undefined">{{ departmentQuery.trim() ? '匹配 '+departmentMatches.length+' / 已读取 '+departments.length+' 个部门。' : '这里只显示当前已读取的部门登记。' }}查找不重新读取或修改部门，也不改变人员关联。</p>
-          <div v-if="departmentMatches.length" class="department-read-region" :class="{'is-scrollable':departmentMatches.length>8}" :tabindex="departmentMatches.length>8 ? 0 : undefined" :role="departmentMatches.length>8 ? 'region' : undefined" :aria-label="departmentMatches.length>8 ? '本次已读取部门清单，可使用方向键滚动' : undefined"><ul class="department-tags" role="list"><li v-for="d in departmentMatches" :key="d.id" class="organization-department"><AppIcon name="Collection" :size="16" /><span>{{ d.name||'部门名称未记录' }}</span><small>部门 ID {{ d.id }}</small></li></ul></div>
+          <div v-if="departmentMatches.length" class="department-read-region" :class="{'is-scrollable':departmentMatches.length>8}" :tabindex="departmentMatches.length>8 ? 0 : undefined" :role="departmentMatches.length>8 ? 'region' : undefined" :aria-label="departmentMatches.length>8 ? '本次已读取部门清单，可使用方向键滚动' : undefined"><ul class="department-tags" role="list"><li v-for="d in departmentMatches" :key="d.id" class="organization-department"><AppIcon name="Collection" :size="16" /><span>{{ d.name||'部门名称未记录' }}</span><small>部门 ID {{ d.id }}</small><ResourceMutationSummary v-if="userStore.capabilities?.changeHistory" :latest="departmentChanges[String(d.id)]" :revision="d.version" resource-type="DEPARTMENT" :resource-id="d.id" domain="ORGANIZATION" /></li></ul></div>
           <CollectionEmptyState v-else filtered filtered-title="本次已读部门中没有匹配项" filtered-description="可按完整名称、部分名称或部门编号查找；不会自动新增部门。" @reset="clearDepartmentQuery" />
         </template>
         <CollectionEmptyState v-else :loading="loading" :error="departmentReadError||error" empty-title="尚未登记部门" empty-description="新增部门后，可在员工资料中选择关联；创建部门不会自动分配人员。" @retry="retryLoad" />
@@ -47,6 +47,7 @@
           <template #empty><CollectionEmptyState :loading="loading" :error="accountError||error" :filtered="!!appliedKeyword" empty-title="暂无可查看账号" empty-description="这里只显示当前账号有权限查看的关联记录。" @retry="retryLoad" @reset="resetSearch" /></template>
           <el-table-column label="登录账号" min-width="175"><template #default="{row}"><div class="organization-account-cell"><strong>{{ row.username||'账号名称未记录' }}</strong><small>{{ roleLabel(row.role) }} · ID {{ row.userId }}</small></div></template></el-table-column>
           <el-table-column label="员工关联" min-width="200"><template #default="{ row }"><div class="organization-account-cell"><strong>{{ employeeLabel(row) }}</strong><small>关联版本 {{ row.bindingVersion??'未记录' }}</small></div></template></el-table-column>
+          <el-table-column v-if="userStore.capabilities?.changeHistory" label="关联最近修改 · UTC+8" min-width="205"><template #default="{row}"><ResourceMutationSummary :latest="bindingChanges[String(row.userId)]" :revision="row.bindingVersion" resource-type="ACCOUNT_BINDING" :resource-id="row.userId" domain="ORGANIZATION" /></template></el-table-column>
           <el-table-column label="部门" min-width="140"><template #default="{ row }">{{ departmentLabel(row) }}</template></el-table-column>
           <el-table-column label="员工状态" min-width="110"><template #default="{ row }"><StatusBadge v-if="row.employeeStatus" domain="employee" :code="row.employeeStatus" :label="statusLabel(row.employeeStatus)" /><span v-else class="muted">{{ row.employeeId==null?'未关联':'状态未记录' }}</span></template></el-table-column>
           <el-table-column label="操作" min-width="220"><template #default="{ row }">
@@ -102,6 +103,8 @@
 <script setup>
 import AccountAccessEditor from '../components/AccountAccessEditor.vue'
 import ResourceChangeHistory from '../components/ResourceChangeHistory.vue'
+import ResourceMutationSummary from '../components/ResourceMutationSummary.vue'
+import { useLatestChanges } from '../composables/useLatestChanges'
 import CollaborationRefreshNotice from '../components/CollaborationRefreshNotice.vue'
 import { useResourceChanges } from '../composables/useResourceChanges'
 import { decimalVersion } from '../utils/mutationVersion'
@@ -116,6 +119,7 @@ import { knownCount } from '../utils/countPresentation'
 
 const userStore = useUserStore()
 const mine = ref(null), accounts = ref([]), departments = ref([]), total = ref(null), page = ref(1), keyword = ref('')
+const { latest:bindingChanges }=useLatestChanges(accounts,'ACCOUNT_BINDING','ORGANIZATION','userId')
 const loading = ref(false), error = ref(''), saving = ref(false)
 const accountError=ref(''),departmentReadError=ref(''),accountsLoaded=ref(false),departmentsLoaded=ref(false),appliedKeyword=ref('')
 const departmentQuery=ref(''),departmentSearchRef=ref(null),departmentHeadingRef=ref(null)
@@ -136,6 +140,7 @@ const departmentMatches=computed(()=>{
   const query=departmentKey(departmentQuery.value)
   return query ? departments.value.filter(department=>departmentKey((typeof department.name==='string' ? department.name : '')+' '+department.id).includes(query)) : departments.value
 })
+const { latest:departmentChanges }=useLatestChanges(departmentMatches,'DEPARTMENT','ORGANIZATION')
 async function clearDepartmentQuery(){
   const scope=actor.value
   departmentQuery.value=''
@@ -311,4 +316,8 @@ h2 { margin: 0 0 16px; font-size: 18px; color: #0f172a; }
 .organization-dialog .el-dialog__footer { display:flex; justify-content:flex-end; gap:8px; flex-wrap:wrap; }
 .organization-dialog .el-dialog__footer .el-button + .el-button { margin-left:0; }
 @media(prefers-reduced-motion:reduce) { .organization-dialog,.el-overlay:has(.organization-dialog) { animation:none!important;transition:none!important; } }
+</style>
+
+<style scoped>
+.organization-department > .resource-mutation-summary { grid-column:2; margin-top:5px; }
 </style>

@@ -1675,6 +1675,7 @@
         "tests/assistant-contracts.test.cjs",
         "tests/beijing-time.test.cjs",
         "tests/chat-file-references.test.cjs",
+        "tests/collaboration-browse-state.test.cjs",
         "tests/collaboration-context.test.cjs",
         "tests/composer-resources.test.cjs",
         "tests/conversation-control.test.cjs",
@@ -1692,7 +1693,7 @@
         "tests/tool-execution.test.cjs",
         "tests/trace-references.test.cjs"
       ],
-      "minimumTests": 49,
+      "minimumTests": 61,
       "requiredCommands": [
         "frontend-install",
         "frontend-test",

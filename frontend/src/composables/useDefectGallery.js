@@ -57,12 +57,12 @@ export function useDefectGallery() {
     return params
   }
 
-  const loadDefectGallery = async (page = defectGalleryPage.value) => {
-    if (disposed) return
+  const loadDefectGallery = async (page = defectGalleryPage.value, query) => {
+    if (disposed) return false
     const targetPage = resolvePageNumber(page, defectGalleryPage.value)
-    const params = buildDefectGalleryParams(targetPage)
+    const params = { ...(query || appliedParams.value || buildDefectGalleryParams(targetPage)), page:targetPage, size:defectGalleryPageSize.value }
     const key = JSON.stringify(params)
-    if (defectGalleryLoading.value && pendingKey === key) return
+    if (defectGalleryLoading.value && pendingKey === key) return false
     const generation = ++loadGeneration
     pendingKey = key
     if (JSON.stringify(params) !== JSON.stringify(appliedParams.value)) { defectGalleryRecords.value = []; defectGalleryTotal.value = null }
@@ -70,30 +70,32 @@ export function useDefectGallery() {
     defectGalleryError.value = ''
     try {
       const response = await fetchDefectGallery(params)
-      if (disposed || generation !== loadGeneration) return
+      if (disposed || generation !== loadGeneration) return false
       if (response.data?.code === 200) {
         const data = readGalleryPage(response.data.data)
         defectGalleryRecords.value = data.records
         defectGalleryTotal.value = knownCount(data.total)
         appliedParams.value = params
         defectGalleryPage.value = targetPage
+        return true
       } else {
         defectGalleryError.value = response.data?.message || '获取缺陷证据库失败'
         ElMessage.error(defectGalleryError.value)
       }
     } catch (error) {
-      if (disposed || generation !== loadGeneration) return
+      if (disposed || generation !== loadGeneration) return false
       if ([401,403].includes(error.response?.status)) { defectGalleryRecords.value = []; defectGalleryTotal.value = null; appliedParams.value = null }
       defectGalleryError.value = error.response?.data?.message || error.message || '获取缺陷证据库失败'
       ElMessage.error(defectGalleryError.value)
     } finally {
       if (!disposed && generation === loadGeneration) defectGalleryLoading.value = false
     }
+    return false
   }
 
   const searchDefectGallery = () => {
     defectGalleryPage.value = 1
-    loadDefectGallery(1)
+    return loadDefectGallery(1,buildDefectGalleryParams(1))
   }
 
   const resetDefectGalleryFilters = () => {

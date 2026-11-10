@@ -5,6 +5,7 @@
     <dl class="history-image-counts"><div><dt>图片总数</dt><dd>{{ count(task.totalImages ?? task.imageCount) }}<small>张</small></dd></div><div><dt>检测成功图片</dt><dd>{{ count(task.successfulImages) }}<small>张</small></dd></div><div :data-attention="knownCount(task.failedImages)>0"><dt>检测失败图片</dt><dd>{{ count(task.failedImages) }}<small>张</small></dd></div></dl>
     <NoDetectionSummary v-if="task.result" :result="task.result" />
     <p class="history-card-time"><AppIcon name="Clock" :size="14" />{{ task.finishedAt ? '检测结束' : '任务创建' }} {{ time(task.finishedAt || task.createdAt) }} · UTC+8</p>
+    <ResourceMutationSummary v-if="showHistory" :latest="latestChange" :revision="task.version" resource-type="DETECTION_TASK" :resource-id="task.taskId" domain="DETECTION" />
     <dl class="history-capture-fields"><div><dt>工单 / 批次</dt><dd><router-link v-if="task.workOrderNo" :to="{path:'/quality/work-order-trace',query:{workOrderNo:task.workOrderNo}}">{{ task.workOrderNo }}</router-link><span v-else>工单未记录</span><router-link v-if="task.batchNo" :to="{path:'/quality/batch-trace',query:{batchNo:task.batchNo}}">{{ task.batchNo }}</router-link><span v-else>批次未记录</span></dd></div><div><dt>采集人员 / 区域</dt><dd>{{ task.captureInfo?.collector || '人员未记录' }}<span>{{ task.captureInfo?.region || '区域未记录' }}</span></dd></div><div><dt>采集设备</dt><dd>{{ task.captureInfo?.deviceName || '未记录' }}</dd></div><div><dt>采集日期</dt><dd>{{ task.captureInfo?.captureDate || '未记录' }}</dd></div></dl>
     <p v-if="task.errorMessage" class="history-task-error" :data-failed="statusCode==='FAILED'"><AppIcon name="Warning" :size="15" /><span>任务记录的异常说明：{{ task.errorMessage }}</span></p>
     <div v-if="task.resultReadError" class="history-result-read-error" role="status"><AppIcon name="Warning" :size="16" /><div><strong>结果详情读取未完成</strong><p>{{ task.resultReadError }}；上方保留本次列表已返回的统计与检测状态。</p><el-button size="small" :disabled="refreshing" @click="$emit('refresh')"><AppIcon name="Refresh" :size="14" />重新读取列表与结果</el-button></div></div>
@@ -20,11 +21,12 @@
 
 <script setup>
 import NoDetectionSummary from './NoDetectionSummary.vue'
+import ResourceMutationSummary from './ResourceMutationSummary.vue'
 import { computed } from 'vue'
 import { knownCount } from '@/utils/countPresentation'
 import { beijingDateTime } from '@/utils/beijingTime'
 import { CATEGORY_LABELS } from '@/stores/taskStore'
-const props = defineProps({ task:{type:Object,required:true}, cached:Boolean, refreshing:Boolean, cacheBusy:Boolean })
+const props = defineProps({ task:{type:Object,required:true}, cached:Boolean, refreshing:Boolean, cacheBusy:Boolean, showHistory:Boolean, latestChange:Object })
 defineEmits(['trace','refresh','remove-cache'])
 const statusCode = computed(() => props.task.status ? String(props.task.status).toUpperCase() : ({uploading:'UPLOADING',uploaded:'UPLOADED',queued:'QUEUED',detecting:'DETECTING',failed:'FAILED',completed:'COMPLETED'}[props.task.stage] || 'UNKNOWN'))
 const count = value => knownCount(value)?.toLocaleString('zh-CN') ?? '—'

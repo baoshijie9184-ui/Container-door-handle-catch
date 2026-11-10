@@ -50,6 +50,7 @@
         </template>
         <el-table-column label="设备资料" min-width="185"><template #default="{row}"><div class="usage-cell"><strong>{{ row.deviceCode||'设备编号未记录' }}</strong><small>{{ getDeviceTypeName(row.deviceType)||'类型未记录' }} · {{ row.modelName||'型号未记录' }}</small></div></template></el-table-column>
         <el-table-column label="使用人" min-width="140"><template #default="{row}"><div class="usage-cell"><strong>{{ row.employeeName||'姓名未记录' }}</strong><small>{{ row.employeeNumber||'员工编号未记录' }}</small></div></template></el-table-column>
+        <el-table-column v-if="userStore.capabilities?.changeHistory" label="最近修改 · UTC+8" min-width="205"><template #default="{row}"><ResourceMutationSummary :latest="usageChanges[String(row.id)]" :revision="row.version" resource-type="DEVICE_USAGE" :resource-id="row.id" domain="DEVICE_USAGE" /></template></el-table-column>
         <el-table-column label="使用时间 · UTC+8" min-width="235"><template #default="{row}"><div class="usage-cell"><strong>开始 {{ formatDateTime(row.startTime) }}</strong><small>结束 {{ row.endTime ? formatDateTime(row.endTime) : ['IN_USE','使用中'].includes(row.status) ? '使用中，尚无结束时间' : '未记录' }}</small></div></template></el-table-column>
         <el-table-column label="使用状态" width="110">
           <template #default="{ row }">
@@ -116,6 +117,7 @@
     <el-dialog class="usage-detail-dialog" append-to-body v-model="detailVisible" title="设备使用记录详情" width="min(720px,94vw)">
       <template v-if="selectedRecord"><div class="usage-detail-heading"><AppIcon name="Monitor" :size="25" /><div><strong>{{ selectedRecord.deviceCode||'设备编号未记录' }}</strong><p>使用记录 {{ selectedRecord.id??'未记录' }}</p></div><StatusBadge domain="usage" :code="selectedRecord.status" :label="getStatusLabel(selectedRecord.status)" /></div><p class="usage-form-note">设备和员工资料为记录创建时的历史快照，可能与当前资料不同。</p>
        <dl class="usage-detail-facts"><template v-for="field in detailFacts" :key="field.label"><dt>{{ field.label }}</dt><dd>{{ field.value }}</dd></template></dl>
+       <ResourceChangeHistory v-if="userStore.capabilities?.changeHistory" resource-type="DEVICE_USAGE" :resource-id="selectedRecord.id" domain="DEVICE_USAGE" compact />
       </template>
       <template #footer><el-button v-if="resourceId(selectedRecord?.deviceId)" @click="router.push({name:'deviceDetail',params:{id:resourceId(selectedRecord.deviceId)}})"><AppIcon name="Monitor" :size="15" />当前设备资料</el-button><el-button v-if="resourceId(selectedRecord?.employeeId)" @click="router.push({name:'employeeDetail',params:{id:resourceId(selectedRecord.employeeId)}})"><AppIcon name="User" :size="15" />当前人员资料</el-button><el-button @click="detailVisible=false">关闭详情</el-button></template>
     </el-dialog>
@@ -130,6 +132,9 @@ const request=captureAccountRequest()
 import { resourceVersion, mutationHeaders } from '../../utils/mutationVersion'
 import { createUiRequestId } from '../../utils/requestIdentity'
 import { useResourceChanges } from '../../composables/useResourceChanges'
+import { useLatestChanges } from '../../composables/useLatestChanges'
+import ResourceMutationSummary from '../../components/ResourceMutationSummary.vue'
+import ResourceChangeHistory from '../../components/ResourceChangeHistory.vue'
 import { beijingDateTime } from '@/utils/beijingTime'
 import { useUserStore } from '@/stores/user'
 import CollectionEmptyState from '@/components/CollectionEmptyState.vue'
@@ -144,6 +149,7 @@ const actor=computed(()=>JSON.stringify([userStore.identity?.userId || userStore
 const contextKey=computed(()=>JSON.stringify([route.query.deviceId,route.query.deviceCode,actor.value]))
 const isSupervisor=computed(()=>userStore.isAuthenticated && userStore.role==='SUPERVISOR')
 const records=ref([]), loading=ref(false), total=ref(null), listError=ref(''), filterError=ref('')
+const { latest:usageChanges }=useLatestChanges(records,'DEVICE_USAGE','DEVICE_USAGE')
 const appliedQuery=ref(null), requestedQuery=ref(null)
 const pagination=reactive({current:1,size:10})
 const filters=reactive({deviceCode:deviceCodeFromRoute.value,employeeName:'',employeeNumber:'',status:'',startTimeRange:[]})

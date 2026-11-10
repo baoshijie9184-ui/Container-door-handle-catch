@@ -1,6 +1,6 @@
 <template>
   <div class="page-shell image-detection-container">
-    <CollaborationRefreshNotice :changed="collaborationChanged" :editing="collaborationEditing" @refresh="refreshCollaborationView" />
+    <CollaborationRefreshNotice :changed="collaborationChanged" :editing="collaborationEditing" :opened-version="collaborationOpenedTask?.version" :history-to="collaborationHistoryLink" @refresh="refreshCollaborationView" />
     <PageHero class="page-hero detection-hero command-panel">
       <div>
         <span class="industrial-kicker">Detection Workspace</span>
@@ -227,6 +227,7 @@
                     <span v-if="task.captureInfo.deviceName">{{ task.captureInfo.deviceName }}</span>
                   </div>
                   <TaskExecutionProgress :task="task" />
+                  <ResourceMutationSummary v-if="userStore.capabilities?.changeHistory" :latest="taskChanges[task.taskId]" :revision="task.version" resource-type="DETECTION_TASK" :resource-id="task.taskId" domain="DETECTION" />
                   <QualityStageGuidance v-if="selectedTaskId === task.taskId" :task="task" />
                 </div>
 
@@ -345,7 +346,7 @@
           <el-alert v-if="historyError && historyRecords.length" :title="historyError+'；下方保留已读取资料，请重新核对。'" type="error" show-icon :closable="false" />
           <div v-if="historyError && historyRecords.length" class="history-retry"><el-button size="small" :loading="historyLoading" @click="retryHistoryRead"><AppIcon name="Refresh" :size="14" />重读上次查询</el-button></div>
           <CollectionEmptyState v-if="!historyRecords.length" :loading="historyLoading" :error="historyError" :filtered="historyLoaded ? Object.keys(historyAppliedFilters).length>0 : hasHistoryFilters" empty-title="暂无检测记录" empty-description="可从图片上传创建任务，或核对关键词与当前账号范围后重新查询。" @retry="retryHistoryRead" @reset="onHistoryReset" />
-          <div v-else class="history-records-grid"><DetectionHistoryCard v-for="task in historyRecords" :key="task.taskId" :task="task" :cached="Array.isArray(taskStore.taskList) && taskStore.taskList.some(cached=>cached.taskId===task.taskId)" :cache-busy="historyCacheBusy" :refreshing="historyLoading" @trace="openTraceDialog" @refresh="refreshHistory" @remove-cache="clearHistoryTaskCache" /></div>
+          <div v-else class="history-records-grid"><DetectionHistoryCard v-for="task in historyRecords" :key="task.taskId" :task="task" :latest-change="taskChanges[task.taskId]" :show-history="userStore.capabilities?.changeHistory" :cached="Array.isArray(taskStore.taskList) && taskStore.taskList.some(cached=>cached.taskId===task.taskId)" :cache-busy="historyCacheBusy" :refreshing="historyLoading" @trace="openTraceDialog" @refresh="refreshHistory" @remove-cache="clearHistoryTaskCache" /></div>
           <div v-if="historyTotal!==null" class="history-pagination"><el-pagination :current-page="historyPage" :page-size="historyPageSize" :total="historyTotal" :page-sizes="[10,20,50]" :disabled="historyLoading || !!historyError" layout="total, sizes, prev, pager, next, jumper" @current-change="onHistoryPageChange" @size-change="onHistorySizeChange" /></div>
         </el-card>
       </el-tab-pane>
@@ -390,6 +391,7 @@
             <template #empty>
               <CollectionEmptyState :loading="qualityQueueLoading || (!qualityQueueLoaded && !qualityQueueError)" :error="qualityQueueError" :filtered="activeQualityQueue !== 'ALL_ACTIONABLE'" empty-title="当前队列暂无待处理任务" empty-description="检测完成后可在待复核阶段查看；放行与报告审批分别处理。" @retry="loadQualityQueue()" @reset="switchQualityQueue('ALL_ACTIONABLE')" />
             </template>
+            <el-table-column v-if="userStore.capabilities?.changeHistory" label="最近修改 · UTC+8" min-width="205"><template #default="{row}"><ResourceMutationSummary :latest="taskChanges[row.taskId]" :revision="row.version" resource-type="DETECTION_TASK" :resource-id="row.taskId" domain="DETECTION" /></template></el-table-column>
             <el-table-column label="任务与来源" min-width="215"><template #default="{ row }"><div class="quality-queue-task"><button type="button" @click="openTraceDialog(row.taskId)">{{ row.taskId }}</button><span>工单 {{ row.workOrderNo || '未记录' }}</span><span>批次 {{ row.batchNo || '未记录' }}</span><small>设备 {{ row.deviceName || '未记录' }}</small></div></template></el-table-column>
             <el-table-column label="流转" min-width="130">
               <template #default="{ row }"><StatusBadge domain="flow" :code="row.flowStatus" :label="flowStatusText(row.flowStatus)" /></template>
@@ -496,7 +498,7 @@
             </el-button>
             <el-button @click="resetDefectGalleryFilters"><AppIcon name="Refresh" :size="16" />重置</el-button></div>
           </form>
-          <p v-if="defectFiltersDirty && defectGalleryRecords.length" class="defect-gallery-filter-note" role="status">筛选条件已修改，当前仍为上次读取的结果。点击查询或刷新后更新，再进行翻页。</p>
+          <p v-if="defectFiltersDirty && defectGalleryRecords.length" class="defect-gallery-filter-note" role="status">筛选条件已修改，当前仍为上次读取的结果。点击查询更新，翻页和刷新沿用已读取条件。</p>
 
           <el-alert v-if="defectGalleryError && defectGalleryRecords.length" :title="defectGalleryError + '；下方保留先前读取的记录，请刷新核对。'" type="error" show-icon :closable="false" />
           <CollectionEmptyState v-if="!defectGalleryRecords.length" :loading="defectGalleryLoading" :error="defectGalleryError" :filtered="hasDefectFilters" empty-title="暂无缺陷证据" empty-description="检测后，可在这里查找缺陷任务，并通过追溯详情对照图片与人工结论。" @retry="loadDefectGallery()" @reset="resetDefectGalleryFilters" />
@@ -509,6 +511,7 @@
               </div>
               <div class="defect-card-body">
                 <header class="defect-card-identity"><span>缺陷任务</span><button type="button" :aria-label="'查看缺陷任务 '+task.taskId" @click="openTraceDialog(task.taskId)">{{ task.taskId }}</button><StatusBadge domain="detection" :code="task.status" /></header>
+                <ResourceMutationSummary v-if="userStore.capabilities?.changeHistory" :latest="taskChanges[task.taskId]" :revision="task.version" resource-type="DETECTION_TASK" :resource-id="task.taskId" domain="DETECTION" />
                 <section class="defect-card-section" aria-label="检测记录">
                   <h4><AppIcon name="Picture" :size="15" />检测记录</h4>
                   <dl class="defect-card-facts"><div><dt>主要缺陷</dt><dd>{{ task.primaryDefectType ? getCategoryText(task.primaryDefectType) : '未记录' }}<small v-if="task.primaryDefectType && getCategoryText(task.primaryDefectType)!==task.primaryDefectType">{{ task.primaryDefectType }}</small></dd></div><div><dt>检测证据条目</dt><dd>{{ traceCount(task.defectCount) }} 条</dd></div><div class="defect-fact-wide"><dt>检测记录最高等级</dt><dd><StatusBadge domain="severity" :code="task.maxDefectSeverity" :label="task.maxDefectSeverity ? severityText(task.maxDefectSeverity) : '等级未记录'" /></dd></div></dl>
@@ -779,6 +782,9 @@ import CollaborationRefreshNotice from '../components/CollaborationRefreshNotice
 import TaskClaimButton from '../components/TaskClaimButton.vue'
 import TaskClaimCandidatesButton from '../components/TaskClaimCandidatesButton.vue'
 import { useResourceChanges } from '../composables/useResourceChanges'
+import { useLatestChanges } from '../composables/useLatestChanges'
+import ResourceMutationSummary from '../components/ResourceMutationSummary.vue'
+import { resourceHistoryLink } from '../utils/changeHistory'
 import QualityAssigneePicker from '@/components/QualityAssigneePicker.vue'
 import QualityStageGuidance from '@/components/QualityStageGuidance.vue'
 import QualityTaskContext from '@/components/QualityTaskContext.vue'
@@ -1407,7 +1413,29 @@ onBeforeUnmount(() => {
   saveTaskList()
 })
 const collaborationEditing=computed(()=>reviewDialogVisible.value||assignmentDialogVisible.value||dispositionDialogVisible.value||reworkDialogVisible.value||reviewSubmitting.value||assignmentSubmitting.value||dispositionSubmitting.value||reworkSubmitting.value)
-async function refreshCollaborationView(){if(collaborationEditing.value)return;await readWorkbenchTasks();collaborationChanged.value=false}
+async function refreshCollaborationView(){
+  if(collaborationEditing.value)return false
+  let updated=true
+  if(activeTab.value==='history'){await refreshHistory();updated=!historyError.value}
+  else if(activeTab.value==='quality'){await loadQualityQueue(qualityQueuePage.value);updated=!qualityQueueError.value}
+  else if(activeTab.value==='defect-gallery')updated=await loadDefectGallery(defectGalleryPage.value)
+  else if(activeTab.value==='work-order-trace'&&workOrderTraceReport.value)await refreshWorkOrderTraceReport()
+  else if(activeTab.value==='batch-trace'&&batchTraceReport.value)await refreshBatchTraceReport()
+  else updated=await readWorkbenchTasks()
+  collaborationChanged.value=updated===false
+  return updated
+}
+const { latest:taskChanges } = useLatestChanges(computed(() => {
+  const rows=activeTab.value==='history'?historyRecords.value:activeTab.value==='quality'?qualityQueueRecords.value
+    :activeTab.value==='defect-gallery'?defectGalleryRecords.value:filteredTaskList.value
+  return rows.map(task=>({taskId:task.taskId,version:task.version}))
+}), 'DETECTION_TASK', 'DETECTION', 'taskId')
+const collaborationOpenedTask = computed(() => {
+  const opened = [[reviewTask,reviewDialogVisible],[assignmentTask,assignmentDialogVisible],
+    [dispositionTask,dispositionDialogVisible],[reworkTask,reworkDialogVisible]].find(([task,visible]) => visible.value && task.value?.taskId)
+  return opened?.[0].value || (traceDialogVisible.value ? traceDetail.value : null)
+})
+const collaborationHistoryLink = computed(() => resourceHistoryLink('DETECTION_TASK', collaborationOpenedTask.value?.taskId, 'DETECTION'))
 const {changed:collaborationChanged}=useResourceChanges({resourceType:'DETECTION_TASK',isEditing:()=>collaborationEditing.value,refresh:refreshCollaborationView,revalidate:validateCollaborationAccess})
 const canAssignQualityTask=task=>userStore.role==='SUPERVISOR'&&stateCanAssignQualityTask(task)
 async function validateCollaborationAccess(){
