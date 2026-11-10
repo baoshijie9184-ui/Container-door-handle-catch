@@ -1355,7 +1355,7 @@
       },
       {
         "module": "tests_python.test_historical_mysql_fixture_retirement",
-        "minimumTests": 61,
+        "minimumTests": 71,
         "source": "tests_python/test_historical_mysql_fixture_retirement.py",
         "allowedSkippedTests": []
       },
