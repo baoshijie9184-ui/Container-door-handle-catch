@@ -1145,7 +1145,7 @@
       },
       {
         "className": "com.ruanzhu.doorhandle.module.system.controller.OrganizationControllerTest",
-        "minimumTests": 2,
+        "minimumTests": 4,
         "source": "doorhandle-module-system/src/test/java/com/ruanzhu/doorhandle/module/system/controller/OrganizationControllerTest.java"
       },
       {
