@@ -154,6 +154,7 @@ def validate_resource_evidence(summary, raw, context, project):
                     plan['memoryAdmissionBytes'], plan['measuredInputs']) and plan['status'] == 'MEASUREMENT_ADMITTED',
                 'Runtime phase was not derived from its measured reserve')
     last, minimum_disk, minimum_memory, containers = None, None, None, {}
+    observed_phases, browser_phase_peak, last_phase = set(), False, -1
     for event in samples:
         require(set(event) == {'probe', 'containers', 'stopReasons'} and event['stopReasons'] == []
                 and isinstance(event['containers'], list), 'A failed/partial resource observation cannot pass')
@@ -163,6 +164,9 @@ def validate_resource_evidence(summary, raw, context, project):
         last = stamp
         plan = plans.get(probe.get('phase'))
         require(plan is not None, 'Probe belongs to an unknown runtime phase')
+        phase_index = expected_phases.index(probe['phase'])
+        require(phase_index >= last_phase, 'Actual runtime resource phases moved backwards')
+        last_phase = phase_index; observed_phases.add(probe['phase'])
         loss = max(0, plan['baselineProbe']['diskAvailableBytes'] - probe['diskAvailableBytes'])
         require(probe.get('diskLossOwnershipProof') is False and probe.get('hostDiskLossUpperBoundBytes') == loss
                 and loss <= plan['growthEnvelopeBytes'], 'An exhausted runtime growth envelope was hidden')
@@ -173,6 +177,9 @@ def validate_resource_evidence(summary, raw, context, project):
         minimum_memory = min(minimum_memory or probe['memoryAvailableBytes'], probe['memoryAvailableBytes'])
         for row in event['containers']:
             cid, service = row['containerId'], row['service']
+            if service == 'collaboration-browser':
+                require(probe['phase'] == 'runtime-browser', 'Browser cgroup appeared outside its admitted fourth phase')
+                browser_phase_peak = browser_phase_peak or row['peakBytes'] > 0
             require(re.fullmatch(r'[a-f0-9]{64}', cid) and re.fullmatch(r'sha256:[a-f0-9]{64}', row['image'])
                     and service in {*SERVICE_MEMORY_MIB, 'mcp-child', 'owned-helper', 'bge-verifier', 'collaboration-browser'}
                     and all(type(row[key]) is int and row[key] >= 0 for key in ('currentBytes', 'peakBytes', 'oom', 'oomKills', 'memoryLimitBytes'))
@@ -188,6 +195,7 @@ def validate_resource_evidence(summary, raw, context, project):
             and summary.get('minimumDiskAvailableBytes') == minimum_disk
             and summary.get('minimumMemoryAvailableBytes') == minimum_memory
             and summary.get('latestProbeAtUnix') == last, 'Resource summary disagrees with its actual raw samples')
+    require(observed_phases == set(expected_phases), 'An admitted runtime phase has no actual raw observation')
     observed = {row['service'] for row in containers.values() if row['peakBytes'] > 0}
     required = set(summary.get('requiredDaemonServices', []))
     require(required == set(SERVICE_MEMORY_MIB) - {'kafka-init', 'kafka-storage-init', 'higress-seed', 'higress-config'}
@@ -195,6 +203,7 @@ def validate_resource_evidence(summary, raw, context, project):
     transient = summary.get('requiredTransientServices', [])
     require(transient in ([], ['bge-verifier'], ['bge-verifier', 'collaboration-browser']) and set(transient) <= observed,
             'A required free BGE verifier resource peak was not observed')
+    require('collaboration-browser' not in transient or browser_phase_peak, 'Fourth-phase actual browser peak is absent')
     require([row.get('phase') for row in summary.get('phases', [])] == expected_phases
             and all(set(row) == {'phase', 'file', 'sha256'} and re.fullmatch(r'[a-f0-9]{64}', row['sha256'])
                     and row['file'] == 'checkout/work/runtime-acceptance/resource-phase-' + str(index) + '-' + row['phase'] + '.json'

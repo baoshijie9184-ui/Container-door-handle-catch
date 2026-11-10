@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from tests_python.browser_evidence_fixture import install as install_browser, CID as BROWSER_CID, IMAGE as BROWSER_IMAGE
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -22,7 +23,7 @@ runtime = load('bounded_runtime_resource_contract', 'script/docker/compact-runti
 candidate = load('bounded_worker_dependency_contract', 'script/docker/compact-candidate-build.py')
 
 
-def evidence():
+def evidence(include_browser=False):
     context = {'schemaVersion': 1, 'kind': 'doorhandle-compact-runtime-acceptance', 'release': 'ci-58-' + 'a' * 12,
         'commit': 'a' * 40, 'sourceSha256': 'b' * 64, 'identity': {'instanceId': 'i-test', 'machineId': 'c' * 32},
         'acceptanceProfileSha256': 'd' * 64, 'candidateBuildSha256': 'e' * 64}
@@ -31,23 +32,32 @@ def evidence():
     metrics = [{'containerId': format(index + 1, '064x'), 'service': name, 'image': 'sha256:' + '1' * 64,
         'memoryLimitBytes': runtime.SERVICE_MEMORY_MIB[name] * runtime.MIB, 'currentBytes': 128,
         'peakBytes': 256, 'oom': 0, 'oomKills': 0, 'running': True, 'exitCode': 0} for index, name in enumerate(daemons)]
+    if include_browser:
+        metrics.extend([{'containerId': 'f' * 64, 'service': 'bge-verifier', 'image': 'sha256:' + '2' * 64,
+            'memoryLimitBytes': runtime.BGE_VERIFIER_MEMORY, 'currentBytes': 0, 'peakBytes': 1024,
+            'oom': 0, 'oomKills': 0, 'running': False, 'exitCode': 0},
+            {'containerId': BROWSER_CID, 'service': 'collaboration-browser', 'image': BROWSER_IMAGE,
+             'memoryLimitBytes': runtime.BROWSER_MEMORY, 'currentBytes': 0, 'peakBytes': 1024,
+             'oom': 0, 'oomKills': 0, 'running': False, 'exitCode': 0}])
     plans, phases, samples = {}, [], []
-    for index, phase in enumerate(('runtime-start', 'runtime-backup', 'runtime-restore'), 1):
+    phase_names = ('runtime-start', 'runtime-backup', 'runtime-restore', 'runtime-browser') if include_browser else ('runtime-start', 'runtime-backup', 'runtime-restore')
+    for index, phase in enumerate(phase_names, 1):
         baseline = {'capturedAtUnix': 100 + index, 'diskTotalBytes': 40 * runtime.GIB,
             'diskAvailableBytes': 8 * runtime.GIB, 'memoryAvailableBytes': 12 * runtime.GIB}
         plans[phase] = runtime.phase_admission(phase, baseline, runtime.GIB, 0, {'actualBytes': 100})
         phases.append({'phase': phase, 'file': 'checkout/work/runtime-acceptance/resource-phase-' + str(index) + '-' + phase + '.json',
                        'sha256': str(index) * 64})
         samples.append({'probe': {**baseline, 'phase': phase, 'hostDiskLossUpperBoundBytes': 0,
-                                  'diskLossOwnershipProof': False}, 'containers': metrics, 'stopReasons': []})
+                                  'diskLossOwnershipProof': False}, 'containers': [row for row in metrics if phase=='runtime-browser' or row['service']!='collaboration-browser'], 'stopReasons': []})
     raw = b''.join((json.dumps(row) + '\n').encode() for row in samples)
     summary = {**context, 'kind': 'doorhandle-bounded-runtime-resources', 'project': project,
         'profile': runtime.RUNTIME_PROFILE, 'capacityVerdict': 'CONTROLLED_MEASUREMENT', 'productionCapacityVerified': False,
         'status': 'MEASURED_FOR_BOUNDED_SCENARIOS', 'pollIntervalSeconds': 2, 'diskFloorBytes': runtime.DISK_FLOOR,
         'memoryFloorBytes': runtime.MEMORY_FLOOR, 'rawProbeFile': 'checkout/work/runtime-acceptance/resource-probes.jsonl',
-        'rawProbeSha256': hashlib.sha256(raw).hexdigest(), 'samples': 3, 'containers': {v['containerId']: v for v in metrics},
+        'rawProbeSha256': hashlib.sha256(raw).hexdigest(), 'samples': len(phase_names), 'containers': {v['containerId']: v for v in metrics},
         'requiredDaemonServices': daemons, 'minimumDiskAvailableBytes': 8 * runtime.GIB,
-        'minimumMemoryAvailableBytes': 12 * runtime.GIB, 'latestProbeAtUnix': 103, 'phases': phases, 'phasePlans': plans}
+        'minimumMemoryAvailableBytes': 12 * runtime.GIB, 'latestProbeAtUnix': 100+len(phase_names), 'phases': phases, 'phasePlans': plans}
+    if include_browser: summary['requiredTransientServices'] = ['bge-verifier', 'collaboration-browser']
     return summary, samples, context, project
 
 
@@ -81,6 +91,23 @@ def test_resource_evidence_is_recomputed_from_all_raw_samples():
     summary, samples, context, project = evidence()
     raw = b''.join((json.dumps(v) + '\n').encode() for v in samples)
     assert runtime.validate_resource_evidence(summary, raw, context, project)['sampleCount'] == 3
+
+
+@pytest.mark.parametrize('damage', ['missing-phase', 'omitted-browser', 'wrong-limit', 'zero-peak', 'phase-reserve', 'missing-samples', 'backwards', 'premature-browser'])
+def test_browser_requires_its_fourth_admitted_phase_and_actual_external_peak(damage):
+    summary,samples,context,project=evidence(include_browser=True)
+    if damage=='missing-phase':summary['phasePlans'].pop('runtime-browser')
+    if damage=='omitted-browser':
+        for sample in samples:sample['containers']=[row for row in sample['containers'] if row['service']!='collaboration-browser']
+        summary['containers'].pop(BROWSER_CID)
+    if damage=='wrong-limit':summary['containers'][BROWSER_CID]['memoryLimitBytes']=3*runtime.GIB
+    if damage=='zero-peak':summary['containers'][BROWSER_CID]['peakBytes']=0
+    if damage=='phase-reserve':summary['phasePlans']['runtime-browser']['baselineProbe']['diskAvailableBytes']=runtime.DISK_FLOOR
+    if damage=='missing-samples':samples[-1]['probe']['phase']='runtime-restore';samples[-1]['containers']=[row for row in samples[-1]['containers'] if row['service']!='collaboration-browser']
+    if damage=='backwards':samples[2]['probe']['phase']='runtime-start'
+    if damage=='premature-browser':samples[0]['containers'].append(summary['containers'][BROWSER_CID])
+    raw=b''.join((json.dumps(row)+'\n').encode() for row in samples);summary['rawProbeSha256']=hashlib.sha256(raw).hexdigest()
+    with pytest.raises(ValueError):runtime.validate_resource_evidence(summary,raw,context,project)
 
 
 @pytest.mark.parametrize('damage', ['none', 'missing', 'wrong-limit', 'oom'])
@@ -170,7 +197,7 @@ def test_worker_rejects_unpinned_or_duplicate_requirements():
 @pytest.mark.parametrize('tamper', [False, True])
 def test_file_evidence_binds_runtime_cleanup_raw_and_original_phase_plans(tmp_path, tamper):
     validator = load('bounded_runtime_file_contract', 'script/jenkins/validate-runtime-resources.py')
-    summary, samples, context, project = evidence()
+    summary, samples, context, project = evidence(include_browser=True)
     def write(name, value):
         path = tmp_path / name
         path.write_bytes((json.dumps(value, indent=2) + '\n').encode())
@@ -186,14 +213,18 @@ def test_file_evidence_binds_runtime_cleanup_raw_and_original_phase_plans(tmp_pa
              'loadScope': {'profile': runtime.RUNTIME_PROFILE, 'productionPerformanceVerified': False,
                            'productionCapacityVerified': False, 'allMandatoryScenariosRequired': True}}
     cleanup = {**context, 'project': project, 'status': 'STOPPED', 'resourceEvidence': resource_reference}
+    install_browser(tmp_path, context, project, proof, cleanup)
+    from tests_python.test_compact_cutover import fixture_build_resources
+    proof['fixtureBuildResources'] = {'browser': fixture_build_resources(tmp_path, context, 'browser')[0]}
+    build_directory = tmp_path / 'checkout/work/runtime-acceptance/controlled-build-browser'
     proof_file, cleanup_file = write('runtime-acceptance.json', proof), write('cleanup.json', cleanup)
     if tamper:
         file = tmp_path / Path(summary['phases'][1]['file']).name
         value = json.loads(file.read_text()); value['growthEnvelopeBytes'] += 1; write(file.name, value)
         with pytest.raises(ValueError, match='Original runtime phase'):
-            validator.validate_files(proof_file, cleanup_file, summary_file, probes, tmp_path)
+            validator.validate_files(proof_file, cleanup_file, summary_file, probes, tmp_path, fixture_directory=build_directory)
     else:
-        assert validator.validate_files(proof_file, cleanup_file, summary_file, probes, tmp_path)['status'] == 'VERIFIED'
+        assert validator.validate_files(proof_file, cleanup_file, summary_file, probes, tmp_path, fixture_directory=build_directory)['status'] == 'VERIFIED'
 
 
 def web_fixture(tmp_path):

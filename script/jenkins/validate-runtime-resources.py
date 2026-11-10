@@ -45,7 +45,7 @@ def json_file(path):
     return value, digest
 
 
-def validate_files(proof_file, cleanup_file, summary_file, probes_file, phase_directory):
+def validate_files(proof_file, cleanup_file, summary_file, probes_file, phase_directory, browser_directory=None, fixture_directory=None):
     proof, _ = json_file(proof_file)
     scope = {'profile': 'bounded-single-ecs-v1', 'productionPerformanceVerified': False,
              'productionCapacityVerified': False, 'allMandatoryScenariosRequired': True}
@@ -73,22 +73,44 @@ def validate_files(proof_file, cleanup_file, summary_file, probes_file, phase_di
     runtime = importlib.util.module_from_spec(spec); spec.loader.exec_module(runtime)
     result = runtime.validate_resource_evidence(summary, raw, context, proof['project'])
     phases = summary['phases']
-    require(len(phases) == (4 if proof.get('browserAcceptance') else 3), 'All measured runtime phases must be retained')
+    require(len(phases) == 4 and summary.get('requiredTransientServices') == ['bge-verifier', 'collaboration-browser'],
+            'All four runtime phases and actual browser resource observations must be retained')
     for index, reference in enumerate(phases, 1):
         name = 'resource-phase-' + str(index) + '-' + reference['phase'] + '.json'
         require(reference['file'] == PREFIX + name, 'Runtime phase escaped its fixed evidence location')
         value, digest = json_file(Path(phase_directory) / name)
         require(digest == reference['sha256'] and value == summary['phasePlans'][reference['phase']],
                 'Original runtime phase evidence differs from its bound measured plan')
-    return {**result, 'resourceSummarySha256': summary_sha, 'rawProbeSha256': raw_sha}
+    browser_file = Path(__file__).resolve().parents[1] / 'docker/collaboration-browser-evidence.py'
+    spec = importlib.util.spec_from_file_location('runtime_browser_byte_contract', browser_file)
+    browser = importlib.util.module_from_spec(spec); spec.loader.exec_module(browser)
+    verified_browser = browser.validate_files(browser_directory or Path(phase_directory), cleanup, proof)
+    build_directory = Path(fixture_directory or Path(phase_directory) / 'controlled-build-browser')
+    build_raw, build_sha = browser.raw_file(build_directory / 'resource-summary.json', 2 * MIB)
+    build_reference = proof.get('fixtureBuildResources', {}).get('browser')
+    require(build_reference == {'file': PREFIX + 'controlled-build-browser/resource-summary.json', 'sha256': build_sha},
+            'Executed browser lacks its original measured image build reference')
+    spec = importlib.util.spec_from_file_location('browser_build_byte_contract', Path(__file__).resolve().parents[1] / 'docker/compact-build-resources.py')
+    builds = importlib.util.module_from_spec(spec); spec.loader.exec_module(builds)
+    builds.validate_files(build_directory, {key: context[key] for key in ('release', 'commit', 'sourceSha256', 'identity')}, require_services=False)
+    image_build = browser.decode(build_raw).get('build', {}).get('images', {})
+    require(set(image_build) == {'browser'} and image_build['browser'].get('imageId') == verified_browser['browserImageId'],
+            'Executed browser differs from the actually measured immutable image')
+    observed = summary['containers'].get(verified_browser['browserContainerId'], {})
+    require(observed.get('service') == 'collaboration-browser' and observed.get('image') == verified_browser['browserImageId']
+            and observed.get('memoryLimitBytes') == browser.MEMORY and observed.get('peakBytes', 0) > 0,
+            'Browser report has no matching actual externally observed cgroup peak')
+    return {**result, 'resourceSummarySha256': summary_sha, 'rawProbeSha256': raw_sha, 'browser': verified_browser}
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('proof', 'cleanup', 'summary', 'probes', 'phase-directory'):
         parser.add_argument('--' + name, required=True, type=Path)
+    parser.add_argument('--browser-directory', required=True, type=Path)
+    parser.add_argument('--browser-build-directory', required=True, type=Path)
     args = parser.parse_args()
-    result = validate_files(args.proof, args.cleanup, args.summary, args.probes, args.phase_directory)
+    result = validate_files(args.proof, args.cleanup, args.summary, args.probes, args.phase_directory, args.browser_directory, args.browser_build_directory)
     print(json.dumps(result, sort_keys=True))
 
 

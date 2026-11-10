@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 import xml.etree.ElementTree as ET
 import pytest
+from tests_python.browser_evidence_fixture import install as install_browser, CID as BROWSER_CID, IMAGE as BROWSER_IMAGE
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -91,27 +92,30 @@ def attach_runtime_resources(directory, context, project, proof, images, fixture
     metrics.append({'containerId': 'f' * 64, 'service': 'bge-verifier', 'image': images['mem0'],
         'memoryLimitBytes': runtime.BGE_VERIFIER_MEMORY, 'currentBytes': 0, 'peakBytes': 4 * runtime.MIB,
         'oom': 0, 'oomKills': 0, 'running': False, 'exitCode': 0})
+    metrics.append({'containerId': BROWSER_CID, 'service': 'collaboration-browser', 'image': BROWSER_IMAGE,
+        'memoryLimitBytes': runtime.BROWSER_MEMORY, 'currentBytes': 0, 'peakBytes': 2 * runtime.MIB,
+        'oom': 0, 'oomKills': 0, 'running': False, 'exitCode': 0})
     phases, plans, samples = [], {}, []
     declared_memory = sum(runtime.SERVICE_MEMORY_MIB.values()) * runtime.MIB + 512 * runtime.MIB + runtime.BGE_VERIFIER_MEMORY
-    for index, phase in enumerate(('runtime-start', 'runtime-backup', 'runtime-restore'), 1):
+    for index, phase in enumerate(('runtime-start', 'runtime-backup', 'runtime-restore', 'runtime-browser'), 1):
         baseline = {'capturedAtUnix': 100 + index, 'diskTotalBytes': 40 * runtime.GIB,
             'diskAvailableBytes': 8 * runtime.GIB, 'memoryAvailableBytes': 12 * runtime.GIB}
-        plans[phase] = runtime.phase_admission(phase, baseline, runtime.GIB, declared_memory,
+        plans[phase] = runtime.phase_admission(phase, baseline, runtime.GIB, runtime.BROWSER_MEMORY if phase == 'runtime-browser' else declared_memory,
             {'retainedFixtureBytes': 1024, 'actualDeclaredMemoryLimitBytes': declared_memory})
         file = resource / ('resource-phase-' + str(index) + '-' + phase + '.json'); write(file, plans[phase])
         phases.append({'phase': phase, 'file': file.relative_to(directory).as_posix(), 'sha256': cutover.sha_file(file)})
         samples.append({'probe': {**baseline, 'phase': phase, 'hostDiskLossUpperBoundBytes': 0,
-                                 'diskLossOwnershipProof': False}, 'containers': metrics, 'stopReasons': []})
+                                 'diskLossOwnershipProof': False}, 'containers': [row for row in metrics if phase=='runtime-browser' or row['service']!='collaboration-browser'], 'stopReasons': []})
     raw = b''.join((json.dumps(sample) + '\n').encode() for sample in samples)
     probes = resource / 'resource-probes.jsonl'; probes.write_bytes(raw); probes.chmod(0o600)
     summary = {**context, 'kind': 'doorhandle-bounded-runtime-resources', 'project': project,
         'profile': runtime.RUNTIME_PROFILE, 'capacityVerdict': 'CONTROLLED_MEASUREMENT', 'productionCapacityVerified': False,
         'status': 'MEASURED_FOR_BOUNDED_SCENARIOS', 'pollIntervalSeconds': 2, 'diskFloorBytes': runtime.DISK_FLOOR,
         'memoryFloorBytes': runtime.MEMORY_FLOOR, 'rawProbeFile': 'checkout/work/runtime-acceptance/resource-probes.jsonl',
-        'rawProbeSha256': hashlib.sha256(raw).hexdigest(), 'samples': 3,
+        'rawProbeSha256': hashlib.sha256(raw).hexdigest(), 'samples': 4,
         'containers': {row['containerId']: row for row in metrics}, 'requiredDaemonServices': daemons,
-        'requiredTransientServices': ['bge-verifier'], 'minimumDiskAvailableBytes': 8 * runtime.GIB,
-        'minimumMemoryAvailableBytes': 12 * runtime.GIB, 'latestProbeAtUnix': 103, 'phases': phases, 'phasePlans': plans}
+        'requiredTransientServices': ['bge-verifier', 'collaboration-browser'], 'minimumDiskAvailableBytes': 8 * runtime.GIB,
+        'minimumMemoryAvailableBytes': 12 * runtime.GIB, 'latestProbeAtUnix': 104, 'phases': phases, 'phasePlans': plans}
     file = resource / 'resource-summary.json'; write(file, summary)
     reference = {'file': file.relative_to(directory).as_posix(), 'sha256': cutover.sha_file(file)}
     proof['resourceEvidence'] = reference
@@ -119,7 +123,9 @@ def attach_runtime_resources(directory, context, project, proof, images, fixture
                           'productionCapacityVerified': False, 'allMandatoryScenariosRequired': True}
     cleanup_file = directory / proof['cleanup']['file']
     cleanup = json.loads(cleanup_file.read_text()); cleanup['resourceEvidence'] = reference
-    cleanup['fixtureBuildResources'] = proof['fixtureBuildResources']; write(cleanup_file, cleanup)
+    cleanup['fixtureBuildResources'] = proof['fixtureBuildResources']
+    install_browser(resource, context, project, proof, cleanup)
+    write(cleanup_file, cleanup)
     proof['cleanup']['sha256'] = cutover.sha_file(cleanup_file)
 
 
@@ -144,7 +150,7 @@ def runtime_verification(tmp_path):
             'observedInternalNetworks': [{'service': key, 'networkId': '7' * 64, 'internal': True}
                 for key in ('backend', 'mem0', 'model-fixture')]}}
     proof['fixtureBuildResources'] = {}; fixture_images = {}
-    for name in ('model', 'mcp'):
+    for name in ('model', 'mcp', 'browser'):
         proof['fixtureBuildResources'][name], fixture_images[name] = fixture_build_resources(directory, context, name)
     def evidence(name, value):
         path = directory / 'checkout/work/runtime-acceptance' / (name + '.json')
@@ -189,6 +195,29 @@ def test_runtime_gate_requires_all_nine_scenario_artifacts_from_the_exact_candid
     write(actual.path, actual.proof)
     with pytest.raises(ValueError, match='Every mandatory runtime'):
         actual.admit()
+
+
+@pytest.mark.parametrize('damage',['absent-proof','absent-report','different-measured-image'])
+def test_runtime_cutover_requires_original_browser_execution_and_the_same_measured_image(tmp_path,damage):
+    actual=runtime_verification(tmp_path)
+    resource=actual.directory/'checkout/work/runtime-acceptance'
+    if damage=='absent-proof':actual.proof.pop('browserAcceptance')
+    if damage=='absent-report':(resource/'browser-evidence/browser-evidence.json').unlink()
+    if damage=='different-measured-image':
+        report_file=resource/'browser-evidence/browser-evidence.json';report=json.loads(report_file.read_bytes())
+        report['runtime']['browserImageId']='sha256:'+'0'*64;write(report_file,report)
+        manifest_file=resource/'browser-manifest.json';manifest=json.loads(manifest_file.read_bytes())
+        manifest['browserImageId']=report['runtime']['browserImageId']
+        for when in ('before','after'):manifest['externalContainerObservation'][when]['imageId']=manifest['browserImageId']
+        row=next(row for row in manifest['files'] if row['path'].endswith('/browser-evidence.json'))
+        row.update(bytes=report_file.stat().st_size,sha256=cutover.sha_file(report_file))
+        manifest['externalContainerObservation']['files']=manifest['files'];write(manifest_file,manifest)
+        actual.proof['browserAcceptance'].update(sha256=cutover.sha_file(report_file),externalContainerObservation=manifest['externalContainerObservation'])
+        cleanup_file=resource/'cleanup.json';cleanup=json.loads(cleanup_file.read_bytes())
+        cleanup['browserEvidence']['sha256']=cutover.sha_file(manifest_file);write(cleanup_file,cleanup)
+        actual.proof['cleanup']['sha256']=cutover.sha_file(cleanup_file)
+    write(actual.path,actual.proof)
+    with pytest.raises((ValueError,OSError)):actual.admit()
 
 
 def test_runtime_gate_rejects_modified_child_or_foreign_migration_even_when_summary_says_pass(tmp_path):

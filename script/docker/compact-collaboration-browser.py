@@ -1,5 +1,6 @@
 """Runtime-owned browser image and real UI acceptance; no host installation."""
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -19,6 +20,12 @@ def require(value, message):
 
 def sha(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def evidence_contract():
+    spec = importlib.util.spec_from_file_location('owned_browser_evidence_bytes', Path(__file__).with_name('collaboration-browser-evidence.py'))
+    value = importlib.util.module_from_spec(spec); spec.loader.exec_module(value)
+    return value
 
 
 def prepare_image(ctx):
@@ -145,6 +152,9 @@ def run(ctx):
     proof = {'file': public.relative_to(ctx.attempt).as_posix(), 'sha256': sha(public),
              'externalContainerObservation': ctx.owner['browserExternalObservation'],
              'allA01A28Verified': False, 'requiredBrowserChecksPassed': len(result['checks'])}
+    evidence_contract().validate_report(result, ctx.context(),
+        {'browserImageId': image, 'browserContainerId': cid, 'files': catalog,
+         'externalContainerObservation': ctx.owner['browserExternalObservation']}, proof, ctx.source)
     ctx.owner['browserAcceptance'] = proof; ctx.save()
     return proof
 
@@ -156,23 +166,29 @@ def preserve(ctx):
     require(evidence.is_dir() and not evidence.is_symlink() and evidence.resolve() == evidence,
             'Browser evidence directory escaped its owned runtime')
     public = evidence / 'browser-evidence.json'
-    catalog = []
+    catalog, rejected, total = [], 0, 0
     for path in sorted(evidence.rglob('*')):
-        require(not path.is_symlink(), 'Browser evidence cannot contain links')
+        if path.is_symlink(): rejected += 1; continue
         if path.is_dir():
+            if path != evidence / 'screenshots': rejected += 1; continue
             os.chmod(path, 0o700); continue
         stat = path.stat()
-        require(path.is_file() and stat.st_nlink == 1 and stat.st_uid == 1000
-                and stat.st_size <= 32 * MIB, 'Browser evidence file exceeded its owner/type/size bound')
-        require(path == public or path.suffix == '.png' and path.parent == evidence / 'screenshots',
-                'Unexpected browser raw evidence type')
+        if not (path.is_file() and stat.st_nlink == 1 and stat.st_uid == 1000 and 0 < stat.st_size <= 32 * MIB
+                and evidence_contract().public_path(path.relative_to(ctx.attempt).as_posix())):
+            rejected += 1; continue
+        if len(catalog) == 128 or total + stat.st_size > 128 * MIB:
+            rejected += 1; continue
         os.chmod(path, 0o600)
+        total += stat.st_size
         catalog.append({'path': path.relative_to(ctx.attempt).as_posix(), 'bytes': stat.st_size, 'sha256': sha(path)})
     require(len(catalog) <= 128 and sum(row['bytes'] for row in catalog) <= 128 * MIB,
             'Browser evidence collection exceeded its retained bound')
     result = {**ctx.context(), 'project': ctx.project, 'status': 'EVIDENCE_PRESERVED', 'files': catalog,
+              'rejectedArtifactCount': rejected,
               'browserContainerId': ctx.owner.get('browserContainerId'), 'browserImageId': ctx.owner.get('browserImage'),
               'externalContainerObservation': ctx.owner.get('browserExternalObservation')}
+    evidence_contract().validate_manifest(result, ctx.context(), ctx.project)
     path = ctx.directory / 'browser-manifest.json'; ctx.common.write_json(path, result)
     ctx.owner['browserEvidence'] = {'file': path.relative_to(ctx.attempt).as_posix(), 'sha256': sha(path)}; ctx.save()
+    require(rejected == 0, 'Unapproved browser artifacts remain private; approved original evidence was preserved')
     return result

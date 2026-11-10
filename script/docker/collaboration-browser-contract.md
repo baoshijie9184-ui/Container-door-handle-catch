@@ -53,7 +53,7 @@ python /opt/doorhandle/collaboration-browser-runner.py --descriptor /run/doorhan
 
 ## 工具构建与资源准入
 
-`Dockerfile.collaboration-browser` 要求明确的 `BASE_IMAGE=ubuntu:24.04@sha256:<admitted digest>`，没有浮动默认；只支持当前 ECS 的 linux/amd64、CPython 3.12。锁定 Playwright 1.65.0、greenlet 3.5.6 的二进制 wheel SHA，浏览器使用官方安装器的 `--only-shell chromium`，固定 headless shell 158.0.8127.18/r1254，不安装 Firefox、WebKit 或完整 Chromium。
+`Dockerfile.collaboration-browser` 的 `FROM` 在源码中固定为 `ubuntu:24.04@sha256:78d4744ead1f5b19b04d0df558ab182a5300903900755e515b2ca4d10eb2044d`；该 linux/amd64 manifest/config/layer 元数据已核对，本轮没有下载镜像层或构建镜像。受控构建器按该不可变引用测量和加载基础镜像，只支持当前 ECS 的 linux/amd64、CPython 3.12。锁定 Playwright 1.65.0、greenlet 3.5.6 的二进制 wheel SHA，浏览器使用官方安装器的 `--only-shell chromium`，固定 headless shell 158.0.8127.18/r1254，不安装 Firefox、WebKit 或完整 Chromium。
 
 版本、许可证和兼容性来源记录于 `collaboration-browser-sources.json`。来源为 [Playwright 官方发布](https://github.com/microsoft/playwright-python/releases/tag/v1.65.0)、[固定浏览器清单](https://raw.githubusercontent.com/microsoft/playwright/v1.65.0/packages/playwright-core/browsers.json)、[官方 headless shell 安装说明](https://playwright.dev/python/docs/browsers)、[Ubuntu/Python 支持说明](https://playwright.dev/python/docs/intro) 和 [官方容器说明](https://playwright.dev/python/docs/docker)。Playwright 为 Apache-2.0；Chromium 为 BSD-style 并包含其他第三方许可证；greenlet 为 MIT AND PSF-2.0。镜像保留安装包的 LICENSE/NOTICE/credits 文件，不为压缩大小而删除。
 
@@ -62,11 +62,12 @@ python /opt/doorhandle/collaboration-browser-runner.py --descriptor /run/doorhan
 以下是 runtime 的准入要求，不是已执行命令或资源已够用的结论：
 
 - 为 browser 单独创建 owned 容器、cgroup、PID/IPC namespace；加入已经拥有的 network，仅通过 `ui:80` alias 访问实际 Nginx。禁止 host network、host PID/IPC、privileged、额外 capabilities、Docker socket、宿主业务目录或浏览器缓存挂载。
-- 建议 Docker `--init --read-only --cap-drop ALL --security-opt no-new-privileges --cpus 2 --memory 2g --memory-swap 2g --pids-limit 512 --shm-size 256m`；只读私有输入、可写 `/evidence`，另给受限 `/tmp` tmpfs。运行 UID/GID 10001，runtime 预设 evidence 目录权限。`/dev/shm`、`/tmp`、页面和代理线程均计入本轮浏览器内存资源。
+- runtime 强制 Docker `--init --read-only --cap-drop ALL --security-opt no-new-privileges --cpus 2 --memory 2g --memory-swap 2g --pids-limit 512 --shm-size 256m`；只读私有输入、可写 `/evidence`，另给受限 `/tmp` tmpfs。实际创建参数为 `--user 1000:1000`，复用已准入 ECS 执行账号拥有的 0700 目录及 0600 私有文件，以非 root 身份读取既有输入和写入证据，不放宽私有权限。镜像的默认用户 10001 被该显式参数覆盖；公开 runner/proxy/source-pin 文件通过 `COPY --chmod=0644` 供实际 UID 读取。`/dev/shm`、`/tmp`、页面和代理线程均计入本轮浏览器内存资源。
 - Chromium 仅访问本轮 owned UI，以 `chromium_sandbox=False` 运行，明确记录此事实；容器资源、权限和网络边界由外层约束。没有 `SYS_ADMIN`、`--ipc=host` 或把非安全源伪装安全的启动标志。
 - runner 复核 Docker marker、默认 hostname、无 Docker socket、可读 cgroup v2 有限 memory/CPU/pids 与描述符一致；namespace 内的 cgroup path 可以合法为 `/`。runtime 仍须外部 inspect 实际容器 ID/镜像/labels/network/mounts/资源限制/非 privileged 及非 host namespace，并单列后台 JVM 等资源样本。runner 内部自述不代替这个外部证据。
 - 40 个实际 Vue 标签的峰值内存尚未实测。2 GiB 是 runner 的最低准入线，实际不足必须失败并按总 ECS 预算重新评估，不能通过移除 cgroup 限制来“通过”。
-- 额外磁盘暂估：镜像稳态 0.5–1.0 GiB，构建峰值 1.0–1.5 GiB，证据 0.1–0.3 GiB，全部为规划区间。先读回可用空间、原服务/制品保留量、镜像实际 shared layers 和峰值，再做准入；不将估算当测量，不影响运行中的 #198。
+- 额外磁盘暂估：镜像稳态 0.5–1.0 GiB，构建峰值 1.0–1.5 GiB，证据 0.1–0.3 GiB，全部为规划区间。先读回可用空间、原服务/制品保留量、镜像实际 shared layers 和峰值，再做准入；不将估算当测量。
+- 浏览器是第四个独立资源阶段 `runtime-browser`；成功准入保留原启动、备份、恢复三个阶段，并要求外部原始采样实际包含同一 browser container/image 的有限 cgroup peak。browser 自述不替代受控镜像构建和原资源采样。
 
 ## 真实拓扑、页面与测量口径
 
@@ -83,5 +84,9 @@ python /opt/doorhandle/collaboration-browser-runner.py --descriptor /run/doorhan
 ## 证据边界与不足
 
 固定 JSON 中账号仅保留 alias、decimal userId 与 role。ownership project/network 只记 SHA，token 不输出。截图遮盖密码、用户名字段以及本轮账号名/ownership token 所在文本；不启用 HAR、trace、video、storage-state 或原始 HTTP/SSE正文归档。仅存字段白名单的事件定位、版本、请求号、时间和受控错误类型；异常原文可能含凭据，故不打印。精确秘密扫描只是附加防线，不替代上述最小化设计。
+
+cleanup 的 `browserEvidence` 固定引用 `checkout/work/runtime-acceptance/browser-manifest.json` 及原始 SHA。Jenkins 成功和失败路径均按该 manifest 收取原始 `browser-evidence.json` 与单层安全文件名的 `screenshots/*.png`：最多 128 个文件、总计 128 MiB、每个最多 32 MiB；先核对远端规范路径、UID/GID 1000、单链接和长度，再传输并复核原 SHA。私有 users/descriptor、inputs、stdout/stderr、HAR/trace 不在收集路径中。失败原件保全不代表通过。
+
+`collaboration-browser-evidence.py` 仅检查原始字节，不启动浏览器或测试。成功准入核对本固定源码三份哈希、原报告与 runtime proof 的相同 SHA、已测量不可变镜像和容器、18 个完整 PASS、20 个不同账号及实际 DOM/event 样本，并独立重算 nearest-rank P95≤2000ms。cutover 与本地字节校验均强制此门；缺少实际 report/PNG、第四阶段或后台资源证据时不能发布。
 
 JSON 对 A01–A28 逐项列 `BROWSER_PORTION_PASS`、`FAIL` 或 `NOT_COVERED` 及具体限制。required 检查一项未执行会导致总 FAIL，绝不默认 skip 当通过。A02、A05、A08、A16、A18、A19 没有本组件可独立完成的夹具/控制面，明确未覆盖；A27 通过真实浏览器 fetch 验证双标签并发 refresh、logout/B 登录后迟到 refresh headers 不改变 B、旧 A context 再刷新被拒绝，并不替代过期/重启/事务夹具。其他项也只证明浏览器部分。`fullA01A28AcceptanceClaimed` 永远为 false，必须与保留的 HTTP、MySQL、会话、真实模型/工具、迁移/恢复及外部资源证据共同评估。

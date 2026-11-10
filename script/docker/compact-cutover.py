@@ -159,6 +159,10 @@ def admitted_runtime(root, tag, commit, source_sha, identity, guard, build, buil
         resource_directory = canonical(directory / Path(expected).parent)
         build_resources.validate_files(resource_directory, build_context, require_services=False)
         require(sha_file(resource_directory / 'resource-summary.json') == reference['sha256'], 'Runtime fixture build bytes changed')
+        if name == 'browser':
+            browser_build = guard.read_private(resource_directory / 'resource-summary.json')[0]
+            require(set(browser_build['build']['images']) == {'browser'}, 'Browser build image set differs')
+            browser_image = browser_build['build']['images']['browser']['imageId']
     require(re.fullmatch(r'doorhandle-rehearsal-[a-f0-9]{12}', proof.get('project', ''))
             and SHA.fullmatch(proof.get('migrationReceiptSha256', ''))
             and SHA.fullmatch(proof.get('initialTargetSnapshotSha256', ''))
@@ -236,6 +240,10 @@ def admitted_runtime(root, tag, commit, source_sha, identity, guard, build, buil
             and cleanup.get('sourceResourcesChanged') is False
             and SHA.fullmatch(cleanup.get('sourceBeforeSha256', ''))
             and cleanup.get('sourceBeforeSha256') == cleanup.get('sourceAfterSha256'), 'Actual owned cleanup has not been confirmed')
+    browser = module('cutover_browser_evidence_bytes', Path(__file__).with_name('collaboration-browser-evidence.py'))
+    browser_result = browser.validate_files(canonical(directory / 'checkout/work/runtime-acceptance'), cleanup, proof,
+                                            Path(__file__).resolve().parents[2])
+    require(browser_result['browserImageId'] == browser_image, 'Executed browser differs from its measured immutable build')
     resources = module('compact_runtime_resource_bytes', Path(__file__).resolve().parents[1]
                        / 'jenkins/validate-runtime-resources.py')
     resource_directory = canonical(directory / 'checkout/work/runtime-acceptance')

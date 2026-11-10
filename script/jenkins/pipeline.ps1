@@ -924,6 +924,82 @@ if ($Action -in @('CompactCutover', 'VerifyRuntime', 'CleanupRuntime')) {
         if ($Name -eq 'resource-probes.jsonl') { return }
         return Get-Content -LiteralPath $localFile -Raw | ConvertFrom-Json
     }
+    function Receive-RuntimeBrowserFile([string]$RemoteFile, [string]$LocalFile, [string]$Digest, [long]$Maximum, [long]$ExpectedBytes = 0) {
+        if ($Digest -cnotmatch '^[a-f0-9]{64}$') { throw 'Browser artifact lacks its original digest.' }
+        $probe = Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination,
+            "test -f '$RemoteFile' && test ! -L '$RemoteFile' && test `"`$(readlink -f -- '$RemoteFile')`" = '$RemoteFile' && stat -c '%s %h %u %g' -- '$RemoteFile'"))
+        $metadata = [string](@($probe) | Select-Object -Last 1)
+        if ($metadata -cnotmatch '^([1-9][0-9]*) 1 1000 1000$') { throw 'Browser artifact is linked, absent or not owned by UID/GID 1000.' }
+        $length = [long]$Matches[1]
+        if ($length -gt $Maximum -or ($ExpectedBytes -gt 0 -and $length -ne $ExpectedBytes)) { throw 'Browser artifact exceeds its cataloged size bound.' }
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $LocalFile) | Out-Null
+        Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, "${destination}:$RemoteFile", $LocalFile))
+        $file = Get-Item -LiteralPath $LocalFile
+        if (($file.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -or $file.Length -ne $length -or
+                (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant() -cne $Digest) { throw 'Original browser bytes changed during collection.' }
+    }
+    function Receive-RuntimeBrowser($CleanupEvidence, [string]$CleanupFile, [string]$ProofFile = '') {
+        $reference = $CleanupEvidence.browserEvidence
+        if (-not $reference -or $reference.file -cne 'checkout/work/runtime-acceptance/browser-manifest.json' -or $reference.sha256 -cnotmatch '^[a-f0-9]{64}$') { throw 'Runtime cleanup lacks its fixed original browser manifest.' }
+        # No unvalidated transfer bytes enter the archived artifacts tree.
+        $directory = Join-Path (Get-Location) ('work/runtime-browser-transfer-' + [guid]::NewGuid().ToString('N'))
+        $stagedFiles = [System.Collections.Generic.List[string]]::new()
+        $manifestFile = "$directory/browser-manifest.json"
+        $stagedFiles.Add($manifestFile)
+        try {
+        Receive-RuntimeBrowserFile "$remoteRoot/verification/$tag/$($reference.file)" $manifestFile $reference.sha256 262144
+        $manifest = Get-Content -LiteralPath $manifestFile -Raw | ConvertFrom-Json
+        if ($manifest.status -cne 'EVIDENCE_PRESERVED' -or $manifest.kind -cne 'doorhandle-compact-runtime-acceptance' -or
+                $manifest.release -cne $tag -or $manifest.commit -cne $commit -or $manifest.sourceSha256 -cne $sha -or
+                $manifest.identity.instanceId -cne $instance -or $manifest.identity.machineId -cne $machine -or
+                $manifest.project -cne $CleanupEvidence.project -or $manifest.candidateBuildSha256 -cne $CleanupEvidence.candidateBuildSha256 -or
+                $manifest.acceptanceProfileSha256 -cne $CleanupEvidence.acceptanceProfileSha256) { throw 'Browser manifest belongs to another fixed runtime.' }
+        $files = @($manifest.files); $seen = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+        if ($files.Count -gt 128) { throw 'Browser artifact count exceeds 128.' }
+        [long]$total = 0
+        foreach ($entry in $files) {
+            if ($entry.path -cnotmatch '^checkout/work/runtime-acceptance/browser-evidence/(browser-evidence\.json|screenshots/[A-Za-z0-9][A-Za-z0-9_-]{0,95}\.png)$' -or
+                    -not $seen.Add([string]$entry.path) -or $entry.sha256 -cnotmatch '^[a-f0-9]{64}$' -or
+                    $entry.bytes -isnot [ValueType] -or $entry.bytes -is [bool] -or [long]$entry.bytes -ne $entry.bytes -or
+                    $entry.bytes -le 0 -or $entry.bytes -gt 33554432) { throw 'Browser catalog contains an unsafe, duplicate or oversized public artifact.' }
+            $total += [long]$entry.bytes
+        }
+        if ($total -gt 134217728) { throw 'Browser originals exceed 128 MiB.' }
+        foreach ($entry in $files) {
+            $relative = $entry.path.Substring('checkout/work/runtime-acceptance/'.Length)
+            $stagedFiles.Add("$directory/$relative")
+            Receive-RuntimeBrowserFile "$remoteRoot/verification/$tag/$($entry.path)" "$directory/$relative" $entry.sha256 33554432 ([long]$entry.bytes)
+        }
+        New-Item -ItemType Directory -Force -Path "$directory/browser-evidence" | Out-Null
+        $python = $env:LOCAL_PYTHON_EXE
+        if ([string]::IsNullOrWhiteSpace($python)) { $python = $env:PYTHON_EXE }
+        if (-not $python -or -not (Test-Path -LiteralPath $python -PathType Leaf)) { throw 'Configure existing local Python for byte-only browser evidence validation.' }
+        $arguments = @('-I', '-B', 'script/jenkins/validate-runtime-browser.py', '--directory', (Resolve-Path $directory).Path,
+            '--cleanup', (Resolve-Path $CleanupFile).Path)
+        $output = Invoke-Checked $python $arguments
+        $verdict = ($output | Select-Object -Last 1) | ConvertFrom-Json
+        if ($verdict.status -cne 'PRESERVED' -or $verdict.browserManifestSha256 -cne $reference.sha256) { throw 'Original browser public artifact validation did not pass.' }
+        $archive = 'artifacts/runtime-browser'
+        New-Item -ItemType Directory -Force -Path "$archive/browser-evidence" | Out-Null
+        foreach ($staged in $stagedFiles) {
+            $relative = $staged.Substring($directory.Length + 1)
+            $target = "$archive/$relative"
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
+            Move-Item -LiteralPath $staged -Destination $target -Force
+        }
+        # Keep valid FAIL originals; semantic PASS validation happens only after
+        # public type/owner/hash validation has promoted the original bytes.
+        $arguments = @('-I', '-B', 'script/jenkins/validate-runtime-browser.py', '--directory', (Resolve-Path $archive).Path,
+            '--cleanup', (Resolve-Path $CleanupFile).Path)
+        if ($ProofFile) { $arguments += @('--proof', (Resolve-Path $ProofFile).Path) }
+        $output = Invoke-Checked $python $arguments
+        $verdict = ($output | Select-Object -Last 1) | ConvertFrom-Json
+        if ($verdict.status -cne $(if ($ProofFile) { 'VERIFIED' } else { 'PRESERVED' }) -or $verdict.browserManifestSha256 -cne $reference.sha256) { throw 'Original browser execution byte validation did not pass.' }
+        $verdict | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath "$archive/validated.json" -Encoding utf8
+        } finally {
+            foreach ($staged in $stagedFiles) { if (Test-Path -LiteralPath $staged -PathType Leaf) { Remove-Item -LiteralPath $staged -Force } }
+        }
+    }
     if ($Action -eq 'CleanupRuntime') {
         foreach ($name in @('model', 'mcp', 'browser')) {
             $null = Receive-OwnedBuildResources "$remoteRoot/verification/$tag/checkout/work/runtime-acceptance/controlled-build-$name" "artifacts/fixture-build-resources/$name"
@@ -951,6 +1027,7 @@ if ($Action -in @('CompactCutover', 'VerifyRuntime', 'CleanupRuntime')) {
         if ($cleanupDigest -and $cleanupDigest.Value) {
             $cleanupEvidence = Receive-RuntimeJson "$remoteRoot/verification/$tag/checkout/work/runtime-acceptance/cleanup.json" 'artifacts/runtime-cleanup-evidence.json' $cleanupDigest.Value
         }
+        if ($cleanupEvidence -and $cleanupEvidence.browserEvidence) { Receive-RuntimeBrowser $cleanupEvidence 'artifacts/runtime-cleanup-evidence.json' }
         if ($cleanupEvidence -and $cleanupEvidence.resourceEvidence) {
             $reference = $cleanupEvidence.resourceEvidence
             if ($reference.file -ne 'checkout/work/runtime-acceptance/resource-summary.json') { throw 'Unexpected failed runtime resource evidence location.' }
@@ -1179,6 +1256,7 @@ print(json.dumps({'status':'REUSED_VERIFIED','release':expected['release'],'comm
     $cleanupFile = Get-Item -LiteralPath artifacts/runtime-cleanup-evidence.json
     if ($cleanupFile.Length -le 0 -or $cleanupFile.Length -gt 262144 -or (Get-FileHash -LiteralPath $cleanupFile.FullName -Algorithm SHA256).Hash.ToLowerInvariant() -ne $cleanupReference.sha256) { throw 'Runtime cleanup evidence is missing, oversized or changed during collection.' }
     $cleanupEvidence = Get-Content -LiteralPath $cleanupFile.FullName -Raw | ConvertFrom-Json
+    Receive-RuntimeBrowser $cleanupEvidence $cleanupFile.FullName 'artifacts/runtime-acceptance.json'
     if ($cleanupEvidence.status -ne 'STOPPED' -or $cleanupEvidence.unresolved.Count -ne 0 -or $cleanupEvidence.stoppedContainers.Count -eq 0 -or $cleanupEvidence.sourceResourcesChanged -ne $false -or $cleanupEvidence.commit -ne $commit -or $cleanupEvidence.release -ne $tag -or $cleanupEvidence.sourceSha256 -ne $sha -or $cleanupEvidence.candidateBuildSha256 -ne $candidateSha -or $cleanupEvidence.project -ne $runtimeProof.project) { throw 'Runtime cleanup did not prove this build owned resources were stopped.' }
     $resourceReference = $runtimeProof.resourceEvidence
     if ($resourceReference.file -ne 'checkout/work/runtime-acceptance/resource-summary.json' -or $resourceReference.sha256 -notmatch '^[a-f0-9]{64}$' -or $cleanupEvidence.resourceEvidence.file -ne $resourceReference.file -or $cleanupEvidence.resourceEvidence.sha256 -ne $resourceReference.sha256) { throw 'Runtime resources and cleanup lack a common bound evidence reference.' }
@@ -1199,7 +1277,9 @@ print(json.dumps({'status':'REUSED_VERIFIED','release':expected['release'],'comm
         '--cleanup', (Resolve-Path artifacts/runtime-cleanup-evidence.json).Path,
         '--summary', (Resolve-Path artifacts/runtime-resources/resource-summary.json).Path,
         '--probes', (Resolve-Path artifacts/runtime-resources/resource-probes.jsonl).Path,
-        '--phase-directory', (Resolve-Path artifacts/runtime-resources).Path)
+        '--phase-directory', (Resolve-Path artifacts/runtime-resources).Path,
+        '--browser-directory', (Resolve-Path artifacts/runtime-browser).Path,
+        '--browser-build-directory', (Resolve-Path artifacts/fixture-build-resources/browser).Path)
     $resourceVerdict = ($validatedResources | Select-Object -Last 1) | ConvertFrom-Json
     if ($resourceVerdict.status -ne 'VERIFIED' -or $resourceVerdict.productionCapacityVerified -ne $false -or $resourceVerdict.resourceSummarySha256 -ne $resourceReference.sha256) { throw 'Bounded runtime resources did not pass independent byte-level validation.' }
     $resourceVerdict | ConvertTo-Json | Set-Content -LiteralPath artifacts/runtime-resources/validated.json -Encoding utf8
