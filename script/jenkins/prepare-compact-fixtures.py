@@ -1215,6 +1215,7 @@ class Preparation:
         self.journal = {'schemaVersion': 1, 'kind': 'doorhandle-compact-fixture-owner', 'release': self.args.tag,
             'commit': self.args.commit, 'sourceSha256': self.args.source_sha256, 'identity': self.identity,
             'token': token, 'work': str(self.work), 'phase': 'PREPARING', 'containerId': None,
+            'containerName': None, 'dataDirectory': None,
             'sourceContainerId': settings['sourceMysqlContainerId'], 'schemas': []}
         self.journal['javaToolRuntime'] = settings['java'] == 'ecs-tool-runtime'
         self.save('PREPARING')

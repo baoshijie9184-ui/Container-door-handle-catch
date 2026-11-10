@@ -1,5 +1,13 @@
 # 单体 ECS 运行与测试
 
+2026-11-11 维护源码收口：已给`ClosedRuntime`补入两份退出BuildKit的先行精确普通移除，独立绑定原六份工具控制、两个完整inspect、旧源码及Jenkins准备/传输原件；状态卷、镜像、目录保留。builder→fixture→两candidate→两inbox逐阶段原plan/receipt/journal及摘要闭合，过滤保留的#204 MySQL前重新核对其静止。#207只能按原owner/cleanup/旧producer/克隆失败双原件和无数据库对象证明接受真实旧格式，补写双null同样拒绝；新producer初始化显式null，仅供以后新构建。新增22项构建器、16项完整链约束，仍原20预检模块、最低1,853项，新增源码尚待固定提交ECS执行。
+
+输入核对另发现250项/11,537,819字节业务资料此前未填snapshot而跳过；现有协议允许用同一固定提交的`verify/source`、`remaining-business-records-v1`及已封存本地snapshot，在完整source实际PASS后上传、独立恢复及核原字节，无须为这批文件重复原生MySQL。该子任务不代替原完整`verify-runtime/mysql`的131→29、旧45表、5,599文件、九场景与浏览器19项；三个任务的证据范围分别记录，不能据资料保全宣称业务合入或生产切库。
+
+2026-11-11 #208/#209 最新：单体固定 `321ed09a` 的#208控制预检1,815项全部通过，零失败/错误/跳过；15份原归档及build.xml已核验保全。#209维护FAILURE，通用回收NO_ACTION，后续fixture计划未产生删除候选：#204被仍存在的同构建BuildKit对象拦住，#207旧owner在未创建数据库时省略containerName/dataDirectory，不符合新增的显式空字段校验。没有执行JAR或MySQL对象删除；8份原件三方SHA一致，保存于 `work/jenkins/data-residency-20261107/ci-209-raw-receipts`。
+
+已实际核对并保全#204/#207各三份BuildKit公开原控制及完整容器检查原件，分别绑定退出对象 `09646d9dcc4d135e804e40dcfb9718917d2b29c4296ef9fcf8fc9bf975461724`、`ee23bee6a53f673e013f0e92e0fd838c91514d0e30f845204ba9695dc7bce673`，未删除。接下来在原维护流程内先按精确权限普通移除这两对象、保留state卷/镜像/目录，再执行原fixture和四JAR阶段；#207兼容必须绑定原始owner/cleanup/旧producer/失败准入及无实际数据库对象证据，不补写旧原件。新producer已在源码初始化两个空字段，旧原件不变，修改尚待验证。实例已在流水线外实际 `Stopped / StopCharging`，Jenkins保持运行且任务修复期间暂禁自动触发。完整业务/迁移/运行未进入，容量门保持，70→80GiB仍未授权或执行。
+
 2026-11-11 #207 最新：固定单体 `eb286c62` 的13模块跳测试打包成功，20模块控制预检1,779项全部通过、零失败/错误/跳过。完整131表源库只读导出及前后快照一致性检查已完成；进入 `fixture-clone` 准入时，实余 `3,036,168,192` 字节，低于保留2GiB、768MiB增长包络及256MiB超调的 `3,221,225,472` 字节要求，差 `185,057,280` 字节，整轮FAILURE。未创建本轮隔离MySQL，未进入原生、完整迁移或运行验收，正式131表未切换。
 
 21份归档与工作副本SHA一致，20份非应用JAR原件另保全于 `work/jenkins/data-residency-20261107/ci-207-raw-receipts`；15份ECS原始资源/失败/清理控制另存 `ci-207-fixture-public-originals` 并逐件核对远端SHA。夹具和工具实际STOPPED，ECS已在流水线外实际回读 `Stopped / StopCharging`，Jenkins运行，项目任务修复期间暂禁自动触发。只读核对#204/#207四份未发布JAR完整SHA及元数据，分配量合计 `1,521,262,592` 字节，尚未删除；#206未上传JAR，两个候选路径均不存在，不计可回收量。后续维护复用原退役原语，先处理#204精确停止对象、确认#207无对象，再先副本后inbox；保留数据/目录/卷/镜像/源码/报告和原空间门，不重建已退役keeper或宣称运行峰值已足够。
