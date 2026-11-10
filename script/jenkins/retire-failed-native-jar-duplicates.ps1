@@ -1,5 +1,6 @@
 param(
     [ValidateSet('Verified','Maintenance')][string]$Mode = 'Verified',
+    [ValidateSet('Historical','Recent')][string]$CanonicalBatch = 'Historical',
     [Parameter(Mandatory=$true)][string[]]$SshOptions,
     [Parameter(Mandatory=$true)][string]$Destination,
     [Parameter(Mandatory=$true)][string]$PortText,
@@ -26,6 +27,7 @@ function Invoke-NativeJar([string]$Executable,[string[]]$Arguments,[string]$Inpu
 }
 Require-NativeJar ($Mode -ceq 'Maintenance' -or ($env:CI_ECS_VERIFIED -ceq 'true' -and $env:DOORHANDLE_CI_SCOPE -ceq 'source')) 'Verified retirement follows this build actual source PASS only.'
 Require-NativeJar ($Mode -cne 'Maintenance' -or ($env:ACTION -ceq 'reclaim-build-outputs' -and $env:CI_ECS_VERIFIED -ceq 'false' -and $env:DOORHANDLE_CI_SCOPE -ceq 'source')) 'Maintenance must be the explicit source-only Jenkins action.'
+Require-NativeJar ($CanonicalBatch -cne 'Recent' -or $Mode -ceq 'Maintenance') 'The recent batch only retires the three closed failed canonical binaries in explicit maintenance.'
 Require-NativeJar ($Destination -cmatch '^[a-z_][a-z0-9_-]{0,31}@[A-Za-z0-9][A-Za-z0-9.-]{0,252}$' -and $PortText -match '^[0-9]{1,5}$' -and [int]$PortText -ge 1 -and [int]$PortText -le 65535) 'Invalid fixed SSH endpoint.'
 Require-NativeJar ($RemoteRoot -cmatch '^/(home|srv|opt)/[A-Za-z0-9_./-]+$' -and $RemoteRoot -notmatch '(^|/)\.\.(/|$)|//' -and -not $RemoteRoot.EndsWith('/')) 'Invalid explicit ECS CI root.'
 Require-NativeJar ($Tag -cmatch '^ci-[1-9][0-9]*-[a-f0-9]{12}$' -and $Commit -cmatch '^[a-f0-9]{40}$' -and $Tag.EndsWith('-'+$Commit.Substring(0,12)) -and $SourceSha256 -cmatch '^[a-f0-9]{64}$') 'Invalid fixed source context.'
@@ -48,7 +50,7 @@ Require-NativeJar ([IO.Path]::IsPathFullyQualified($RetainedControlRoot) -and [I
 
 # Stdlib byte/metadata inspection only. No project module, DB, application or
 # test is imported or run on the workstation. D evidence is pinned to original
-# preservation manifests reviewed for these sixteen exact historical attempts.
+# preservation manifests reviewed for each selected closed batch.
 $reader=@'
 import gzip,hashlib,json,os,stat,sys,tarfile
 from pathlib import Path
@@ -67,7 +69,8 @@ def unique(pairs):
  result={}
  for k,v in pairs:need(k not in result);result[k]=v
  return result
-archive,commit,retained,jhome,remote,current=sys.argv[1:]
+archive,commit,retained,jhome,remote,current,batch=sys.argv[1:]
+need(batch in ('Historical','Recent'))
 approved=[(117,'8c898996cc28ce30fd6531710511f833cccb4864','e1eec611a0dcbb93158d8e5a68fc5d16e6f96d65dcb82e6930f54abdd84d2e2c'),
  (118,'6481f7fa6021eb36592a081d04f385886c03412a','e73474da34762eedf1438c835dbc741091f02c69fb5c3664dbba6cca30395f8a'),
  (130,'9a588271dadb135ec4284392ef7b9c9c55ea511d','f53a73fa4ce45e44b666cbf963145b353f6e478c7cc594ca849b59bfe0b924d2'),
@@ -84,6 +87,10 @@ approved=[(117,'8c898996cc28ce30fd6531710511f833cccb4864','e1eec611a0dcbb93158d8
  (166,'a3c084e1cf568206baca89908542537ad825fef8','1cf175ceb8f1dee1e6164a112e400f3427d9bffd55d1632ef7398a58cbd44553'),
  (168,'a40c779d03a43b894ead5569b8eb26ee7dc22a2e','cc986ad9ae3483d8663e811b73e0e2d53d7bdc1e886c4904071b5f996aa993ce'),
  (173,'45465e873d92822abe446fd7be3f9f00b7816f70','135267928288ee0c86c3c550815bf17b251d74ff61111d55eab2e3aadfe4789c')]
+if batch=='Recent':
+ approved=[(187,'8e90ba50c691d561bd26b23f037fec1600e5e9de','0088e4fa32d9285a35b6a487b223326ee288b24bba955a16f113c344d4cca539'),
+  (188,'df1e1a54d48e5005185f53459068fbe9efffe333','f687aa2938ca14a88a761405ea5dab0536d72de30d1411733bef0668477404ef'),
+  (189,'410506ad7c82e302e623a2ac27b63dc345fcd131','97631dd8eb691dab20856639fb440ccbf13c35214d0b8212b301bdc4f881d356')]
 helpers={};wanted={'script/jenkins/retire-failed-native-jar-duplicates.py','script/jenkins/cleanup-ecs-builds.py','script/jenkins/verify-remote.py','script/docker/compact-build-resources.py'}
 class Bounded:
  def __init__(self,s):self.s,self.n=s,0
@@ -125,7 +132,7 @@ for number,oldcommit,preservation_sha in approved:
  except Exception as error:skipped.append({'release':tag,'reason':str(error) if type(error) is ValueError and str(error).replace('_','').isalnum() else type(error).__name__})
 print(json.dumps({'helpers':helpers,'rows':rows,'skipped':skipped,'custody':custody}))
 '@
-$local=(Invoke-NativeJar $python @('-I','-B','-c',$reader,$archive,$Commit,$RetainedControlRoot,$jenkinsHome,$RemoteRoot,$Tag) | Select-Object -Last 1) | ConvertFrom-Json -AsHashtable
+$local=(Invoke-NativeJar $python @('-I','-B','-c',$reader,$archive,$Commit,$RetainedControlRoot,$jenkinsHome,$RemoteRoot,$Tag,$CanonicalBatch) | Select-Object -Last 1) | ConvertFrom-Json -AsHashtable
 $spec=[ordered]@{schemaVersion=1;kind='doorhandle-failed-native-jar-duplicate-request';current=@{release=$Tag;commit=$Commit;sourceSha256=$SourceSha256};identity=@{instanceId=$instance;machineId=$machine;executionLocation='ECS'};protectedReleases=@($Tag);candidates=@()}
 $uploads=@()
 foreach ($row in $local.rows) {
@@ -234,11 +241,10 @@ function Invoke-NativeJarPhase([string]$Phase,[string]$Flags='') {
     $guard="test `"`$(sha256sum '$helper' | cut -d ' ' -f 1)`" = '$helperSha' && "
     return (Invoke-NativeJar $ssh ($SshOptions+@('-p',$PortText,$Destination,"${guard}python3 -I -B '$helper' --phase '$Phase' $common $Flags")) | Select-Object -Last 1) | ConvertFrom-Json
 }
-$captured=Invoke-NativeJarPhase 'capture-request' "--local-spec-sha256 '$specSha'"
+$capturePhase=if($CanonicalBatch -ceq 'Recent'){'capture-canonical-request'}else{'capture-request'}
+$captured=Invoke-NativeJarPhase $capturePhase "--local-spec-sha256 '$specSha'"
 Require-NativeJar ($captured.status -ceq 'CAPTURED' -and $captured.request.sha256 -cmatch '^[a-f0-9]{64}$') 'The actual ECS control snapshot was not captured.'
 $requestSha=$captured.request.sha256
-$builderPlanned=Invoke-NativeJarPhase 'plan-builders' "--request-sha256 '$requestSha'"
-Require-NativeJar ($builderPlanned.status -ceq 'PLANNED' -and $builderPlanned.plan.sha256 -cmatch '^[a-f0-9]{64}$') 'No exact historical builder retirement plan was produced.'
 function Copy-NativeJarEvidence($Observed) {
     foreach ($entry in @(@('capture','native-jar-duplicate-capture.json'),@('request','native-jar-duplicate-request.json'),@('plan','native-jar-duplicate-plan.json'),@('receipt','native-jar-duplicate-receipt.json'),@('journal','native-jar-duplicate-journal.jsonl'),@('builderPlan','native-builder-retirement-plan.json'),@('builderReceipt','native-builder-retirement-receipt.json'),@('builderJournal','native-builder-retirement-journal.jsonl'),@('publicLayerPlan','native-public-layer-duplicate-plan.json'),@('publicLayerReceipt','native-public-layer-duplicate-receipt.json'),@('publicLayerJournal','native-public-layer-duplicate-journal.jsonl'),@('generatedArchivePlan','native-generated-public-image-archive-plan.json'),@('generatedArchiveReceipt','native-generated-public-image-archive-receipt.json'),@('generatedArchiveJournal','native-generated-public-image-archive-journal.jsonl'),@('pythonCachePlan','native-python-build-cache-plan.json'),@('pythonCacheReceipt','native-python-build-cache-receipt.json'),@('pythonCacheJournal','native-python-build-cache-journal.jsonl'),@('canonicalPlan','native-jar-duplicate-canonical-plan.json'),@('canonicalReceipt','native-jar-duplicate-canonical-receipt.json'),@('canonicalJournal','native-jar-duplicate-canonical-journal.jsonl'))) {
         $property=$Observed.files.PSObject.Properties[$entry[0]]
@@ -265,6 +271,25 @@ function Copy-NativeJarEvidence($Observed) {
         }
     }
 }
+if($CanonicalBatch -ceq 'Recent') {
+    $canonicalPlanned=$null;$canonicalFailed=$false
+    try {
+        $canonicalPlanned=Invoke-NativeJarPhase 'plan-canonical' "--request-sha256 '$requestSha'"
+        Require-NativeJar ($canonicalPlanned.status -ceq 'PLANNED' -and $canonicalPlanned.plan.sha256 -cmatch '^[a-f0-9]{64}$') 'No exact recent canonical JAR retirement plan was produced.'
+        $canonicalResult=Invoke-NativeJarPhase 'apply-canonical' "--request-sha256 '$requestSha' --plan-sha256 '$($canonicalPlanned.plan.sha256)'"
+    } catch {$canonicalFailed=$true}
+    finally {Copy-NativeJarEvidence (Invoke-NativeJarPhase 'inspect')}
+    $canonicalReceiptFile=Join-Path $workspace 'artifacts/native-jar-duplicate-canonical-receipt.json'
+    Require-NativeJar (-not $canonicalFailed -and $null -ne $canonicalPlanned -and (Test-Path -LiteralPath $canonicalReceiptFile -PathType Leaf)) 'Recent failed canonical JAR retirement failed or is unknown; original controls were collected.'
+    $canonicalReceipt=Get-Content -LiteralPath $canonicalReceiptFile -Raw -Encoding utf8 | ConvertFrom-Json -Depth 24
+    Require-NativeJar ($canonicalReceipt.kind -ceq 'doorhandle-failed-native-canonical-jar-retirement-receipt' -and $canonicalReceipt.status -cin @('REMOVED','NO_ACTION') -and $canonicalReceipt.current.release -ceq $Tag -and $canonicalReceipt.current.commit -ceq $Commit -and $canonicalReceipt.current.sourceSha256 -ceq $SourceSha256 -and $canonicalReceipt.identity.instanceId -ceq $instance -and $canonicalReceipt.identity.machineId -ceq $machine -and $canonicalReceipt.requestSha256 -ceq $requestSha -and $canonicalReceipt.planSha256 -ceq $canonicalPlanned.plan.sha256 -and $canonicalReceipt.sourceArchivesDataAndReportsHaveNoDeletionApi -is [bool] -and $canonicalReceipt.sourceArchivesDataAndReportsHaveNoDeletionApi -and $canonicalReceipt.binaryRebuildByteIdentityClaimed -is [bool] -and -not $canonicalReceipt.binaryRebuildByteIdentityClaimed -and $canonicalReceipt.testsRunByRetirement -is [bool] -and -not $canonicalReceipt.testsRunByRetirement -and (($canonicalReceipt.status -ceq 'REMOVED' -and $canonicalReceipt.binaryDisposition -ceq 'RETIRED') -or ($canonicalReceipt.status -ceq 'NO_ACTION' -and $canonicalReceipt.binaryDisposition -ceq 'UNCHANGED'))) 'Recent canonical JAR retirement lacks matching source, host, plan or explicit binary disposition.'
+    $summary=[ordered]@{schemaVersion=1;kind='doorhandle-failed-native-canonical-jar-ci';scope='RECENT_CANONICAL_ONLY';current=$spec.current;identity=$spec.identity;status=$canonicalReceipt.status;requestSha256=$requestSha;planSha256=$canonicalPlanned.plan.sha256;deletedFiles=@($canonicalReceipt.deleted).Count;candidateAllocatedBytes=$canonicalPlanned.candidateAllocatedBytes;localControlCustody=$local.custody;localSkipped=$local.skipped;captureSkipped=$captured.skipped;planSkipped=$canonicalPlanned.skipped;binaryDisposition=$canonicalReceipt.binaryDisposition;binaryRebuildByteIdentityClaimed=$false;sourceArchivesDataAndReportsHaveNoDeletionApi=$true;imagesPreserved=$true;volumesPreserved=$true;testsRunByRetirement=$false}
+    $summary|ConvertTo-Json -Depth 20|Set-Content -LiteralPath (Join-Path $workspace 'artifacts/native-jar-duplicate-ci.json') -Encoding utf8
+    Write-Output ($summary|ConvertTo-Json -Depth 8 -Compress)
+    return
+}
+$builderPlanned=Invoke-NativeJarPhase 'plan-builders' "--request-sha256 '$requestSha'"
+Require-NativeJar ($builderPlanned.status -ceq 'PLANNED' -and $builderPlanned.plan.sha256 -cmatch '^[a-f0-9]{64}$') 'No exact historical builder retirement plan was produced.'
 $builderFailed=$false
 try {$builderResult=Invoke-NativeJarPhase 'apply-builders' "--request-sha256 '$requestSha' --plan-sha256 '$($builderPlanned.plan.sha256)'"} catch {$builderFailed=$true}
 if ($builderFailed) {

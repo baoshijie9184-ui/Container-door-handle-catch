@@ -1151,7 +1151,7 @@
       },
       {
         "module": "tests_python.test_failed_native_jar_duplicates",
-        "minimumTests": 122,
+        "minimumTests": 128,
         "source": "tests_python/test_failed_native_jar_duplicates.py",
         "allowedSkippedTests": []
       },

@@ -4,6 +4,7 @@ All files and control documents here are synthetic. Tests run only through
 Jenkins on ECS; local AST parsing does not execute the retirement helper.
 """
 import copy
+import ast
 from contextlib import contextmanager
 import hashlib
 import io
@@ -13,6 +14,7 @@ import os
 from pathlib import Path
 import stat
 import sys
+import re
 import tarfile
 from types import SimpleNamespace
 import xml.etree.ElementTree as ET
@@ -807,3 +809,82 @@ def test_canonical_quarantine_can_only_be_inside_the_same_old_inbox(canonical_ca
     with pytest.raises(retirer.RetirementError, match='CANONICAL_QUARANTINE_MUST_STAY_IN_OLD_INBOX'):
         retirer.remove_canonical_jar(state.copies.root, descriptor, wrong, quiescence=lambda: None)
     assert state.copies.keeper.exists()
+
+
+def with_action(raw, action):
+    value = ET.fromstring(raw)
+    parameters = value.findall('.//hudson.model.ParametersAction/parameters/*')
+    next(item for item in parameters if item.findtext('name') == 'ACTION').find('value').text = action
+    return ET.tostring(value)
+
+
+@pytest.mark.parametrize(('tag', 'commit'), [
+    ('ci-187-8e90ba50c691', '8e90ba50c691d561bd26b23f037fec1600e5e9de'),
+    ('ci-188-df1e1a54d48e', 'df1e1a54d48e5005185f53459068fbe9efffe333'),
+    ('ci-189-410506ad7c82', '410506ad7c82e302e623a2ac27b63dc345fcd131'),
+])
+def test_recent_verify_originals_only_authorize_the_closed_canonical_policy(bundle, tag, commit):
+    context = {'release': tag, 'commit': commit, 'sourceSha256': 'b' * 64}
+    xml = with_action(flow_xml(context), 'verify')
+    assert retirer.terminal_xml(xml, context, canonical_jar=True) == 'FAILURE'
+    with pytest.raises(retirer.RetirementError, match='FAILED_NATIVE_PARAMETERS_REQUIRED'):
+        retirer.terminal_xml(xml, context)
+    current = {'release': 'ci-200-' + 'f' * 12, 'commit': 'f' * 40, 'sourceSha256': 'e' * 64}
+    request = {'schemaVersion': 1, 'kind': retirer.KIND + '-request', 'current': current,
+        'identity': bundle.identity, 'protectedReleases': [current['release']], 'candidates': [{**context, 'controls': {}}]}
+    raw = encoded(request)
+    assert retirer.approved_request(raw, sha(raw), current, bundle.identity, canonical_jar=True) == request
+    with pytest.raises(retirer.RetirementError, match='ONLY_REVIEWED_OLD_ATTEMPTS_ALLOWED'):
+        retirer.approved_request(raw, sha(raw), current, bundle.identity)
+    assert tag not in retirer.APPROVED_OLD and tag not in retirer.PUBLIC_LAYER_TAGS
+    assert tag not in retirer.APPROVED_BUILDER_TOOLS
+
+
+def test_unreviewed_verify_attempt_still_cannot_enter_the_canonical_api(bundle):
+    with pytest.raises(retirer.RetirementError, match='FAILED_NATIVE_PARAMETERS_REQUIRED'):
+        retirer.terminal_xml(with_action(bundle.xml, 'verify'), bundle.context, canonical_jar=True)
+
+
+def test_recent_verify_canonical_uses_full_originals_and_the_same_single_file_api(canonical_case, monkeypatch):
+    state = canonical_case
+    monkeypatch.delitem(retirer.APPROVED_OLD, state.copies.tag)
+    monkeypatch.setitem(retirer.RECENT_CANONICAL_ONLY, state.copies.tag, state.bundle.context['commit'])
+    path = state.copies.root / state.paths['buildXml']
+    xml = with_action(path.read_bytes(), 'verify'); path.write_bytes(xml)
+    state.request['candidates'][0]['controls']['buildXml'].update(bytes=len(xml), sha256=sha(xml))
+    protected_originals = {path: path.read_bytes() for path in state.originals}
+    raw, options = canonical_options(state)
+    prepared = retirer.plan(state.copies.root, raw, **options)
+    assert len(prepared['candidates']) == 1 and prepared['skipped'] == []
+    assert prepared['candidates'][0]['jenkinsResult'] == 'FAILURE'
+    receipt = retirer.apply(state.copies.root, raw, prepared, plan_sha256=sha(encoded(prepared)), **options)
+    assert receipt['status'] == 'REMOVED' and len(receipt['deleted']) == 1
+    assert receipt['binaryDisposition'] == 'RETIRED' and receipt['binaryRebuildByteIdentityClaimed'] is False
+    assert not state.copies.keeper.exists()
+    assert all(path.read_bytes() == body for path, body in protected_originals.items())
+
+
+def test_recent_controller_is_an_independent_three_row_canonical_only_batch():
+    root = MODULE.parents[2]
+    controller = (root / 'script/jenkins/retire-failed-native-jar-duplicates.ps1').read_text(encoding='utf8')
+    reader = controller.split("$reader=@'\n", 1)[1].split("\n'@", 1)[0]
+    syntax = ast.parse(reader)
+    original = next(ast.literal_eval(node.value) for node in syntax.body if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == 'approved' for target in node.targets))
+    selected = next(node for node in syntax.body if isinstance(node, ast.If)
+        and ast.dump(node.test) == ast.dump(ast.parse("batch=='Recent'", mode='eval').body))
+    recent = ast.literal_eval(selected.body[0].value)
+    assert len(original) == len(retirer.APPROVED_OLD) == 16 and len(recent) == 3
+    assert {'ci-' + str(number) + '-' + commit[:12]: commit for number, commit, _sha in recent} == retirer.RECENT_CANONICAL_ONLY
+    assert all(retirer.SHA.fullmatch(checksum) for _number, _commit, checksum in recent)
+    assert all(number != 190 for number, _commit, _sha in recent)
+    assert re.search(r"ValidateSet\('Historical','Recent'\)\]\[string\]\$CanonicalBatch = 'Historical'", controller)
+    assert "$CanonicalBatch -cne 'Recent' -or $Mode -ceq 'Maintenance'" in controller
+    assert "{'capture-canonical-request'}else{'capture-request'}" in controller
+    branch = controller.split("if($CanonicalBatch -ceq 'Recent') {", 1)[1].split('\n$builderPlanned=', 1)[0]
+    assert "Invoke-NativeJarPhase 'plan-canonical'" in branch and "Invoke-NativeJarPhase 'apply-canonical'" in branch
+    assert "finally {Copy-NativeJarEvidence (Invoke-NativeJarPhase 'inspect')}" in branch and '\n    return\n}' in branch
+    assert all(phase not in branch for phase in ('plan-builders', 'apply-builders', 'plan-public-layers',
+        'apply-public-layers', 'plan-generated-image-archives', 'apply-generated-image-archives'))
+    pipeline = (root / 'script/jenkins/pipeline.ps1').read_text(encoding='utf8')
+    assert re.search(r"retire-failed-native-jar-duplicates\.ps1 -Mode Maintenance -CanonicalBatch Recent ", pipeline)

@@ -84,6 +84,13 @@ APPROVED_OLD = {
     'ci-168-a40c779d03a4': 'a40c779d03a43b894ead5569b8eb26ee7dc22a2e',
     'ci-173-45465e873d92': '45465e873d92822abe446fd7be3f9f00b7816f70',
 }
+# These later verify/mysql attempts authorize only the separate canonical JAR
+# API. They never enter the old builder, public-layer or generated-cache sets.
+RECENT_CANONICAL_ONLY = {
+    'ci-187-8e90ba50c691': '8e90ba50c691d561bd26b23f037fec1600e5e9de',
+    'ci-188-df1e1a54d48e': 'df1e1a54d48e5005185f53459068fbe9efffe333',
+    'ci-189-410506ad7c82': '410506ad7c82e302e623a2ac27b63dc345fcd131',
+}
 # Reviewed historical publication predicates, authenticated against actual
 # retained archive members (not the current checkout or a synthesized report).
 # Each pair is Jenkinsfile.ecs-monolith, script/jenkins/pipeline.ps1. All these
@@ -106,6 +113,9 @@ APPROVED_CANONICAL_SOURCES = {
     'ci-166-a3c084e1cf56': ('aaae4dbdc779fe665efc0b02fc8123f8fa562280177c424f40c68c225376e64a', '83a937f54c651747b19c53b59053550ba0c1c8ed3c7b223e5f277ca7bd92590f'),
     'ci-168-a40c779d03a4': ('aaae4dbdc779fe665efc0b02fc8123f8fa562280177c424f40c68c225376e64a', '83a937f54c651747b19c53b59053550ba0c1c8ed3c7b223e5f277ca7bd92590f'),
     'ci-173-45465e873d92': ('aaae4dbdc779fe665efc0b02fc8123f8fa562280177c424f40c68c225376e64a', 'da877add8d55d160bb4a9f005f096879c5607167bc0b34f3c343d0f6309b3952'),
+    'ci-187-8e90ba50c691': ('07ed33326e5d9ca01cad1024986f73aee30ec8869050cdcf874bb220864dbd43', '9206e2a48ccf10435cd090b15d7d78540555ac9bd02c1aefdde04e049dca1f54'),
+    'ci-188-df1e1a54d48e': ('07ed33326e5d9ca01cad1024986f73aee30ec8869050cdcf874bb220864dbd43', '9206e2a48ccf10435cd090b15d7d78540555ac9bd02c1aefdde04e049dca1f54'),
+    'ci-189-410506ad7c82': ('07ed33326e5d9ca01cad1024986f73aee30ec8869050cdcf874bb220864dbd43', '8976f049e13d255c8377f3650f61d9668f1e3395d1219eafe0a979cb8d48fc25'),
 }
 # Original tool bytes recorded by the retained Jenkins preparation receipts.
 # These values authenticate the owner chain; matching self-described fields
@@ -178,7 +188,12 @@ def same_context(value, context):
     need(all(value.get(key) == expected for key, expected in context.items()), 'CROSS_BUILD_CONTROL')
 
 
-def terminal_xml(raw, context):
+def canonical_commit(tag):
+    return APPROVED_OLD.get(tag) or RECENT_CANONICAL_ONLY.get(tag)
+
+
+def terminal_xml(raw, context, *, canonical_jar=False):
+    need(type(canonical_jar) is bool, 'EXACT_RETIREMENT_POLICY_REQUIRED')
     need(type(raw) is bytes and 0 < len(raw) <= MAX_CONTROL
          and b'<!DOCTYPE' not in raw.upper() and b'<!ENTITY' not in raw.upper(), 'BOUNDED_ENTITY_FREE_TERMINAL_XML_REQUIRED')
     try: root = ET.fromstring(raw)
@@ -192,12 +207,14 @@ def terminal_xml(raw, context):
         name, value = item.findtext('name'), item.findtext('value')
         need(name and name not in parameters, 'DUPLICATE_TERMINAL_PARAMETER')
         parameters[name] = value
-    need(all(parameters.get(key) == value for key, value in {'ACTION': 'verify-runtime', 'DOORHANDLE_CI_SCOPE': 'mysql',
+    expected_action = ('verify' if canonical_jar and RECENT_CANONICAL_ONLY.get(context['release']) == context['commit']
+                       else 'verify-runtime')
+    need(all(parameters.get(key) == value for key, value in {'ACTION': expected_action, 'DOORHANDLE_CI_SCOPE': 'mysql',
         'TRUSTED_COMMIT': context['commit'], 'PRODUCTION_RELEASE_ENABLED': 'false'}.items()), 'FAILED_NATIVE_PARAMETERS_REQUIRED')
     return root.findtext('result')
 
 
-def validate_control_documents(raw_docs, context, identity):
+def validate_control_documents(raw_docs, context, identity, *, canonical_jar=False):
     """Pure validation of actual raw controls already authenticated by Jenkins."""
     validate_context(context)
     need(type(identity) is dict and set(identity) == {'instanceId', 'machineId', 'executionLocation'}
@@ -206,7 +223,7 @@ def validate_control_documents(raw_docs, context, identity):
          and re.fullmatch(r'[a-f0-9]{32}', identity['machineId']), 'EXACT_ECS_IDENTITY_REQUIRED')
     need(type(raw_docs) is dict and REQUIRED_CONTROLS <= set(raw_docs) <= REQUIRED_CONTROLS | OPTIONAL_CONTROLS,
          'COMPLETE_ACTUAL_CONTROL_BUNDLE_REQUIRED')
-    result = terminal_xml(raw_docs['buildXml'], context)
+    result = terminal_xml(raw_docs['buildXml'], context, canonical_jar=canonical_jar)
     docs = {name: decode(raw) for name, raw in raw_docs.items() if name != 'buildXml'}
     release, plan, owner, cleanup = (docs[name] for name in ('release', 'artifactPlan', 'fixtureOwner', 'fixtureCleanup'))
     for value in (release, plan, owner, cleanup): same_context(value, context)
@@ -495,7 +512,7 @@ def source_proof(root, tag, commit, source_sha, *, builder_helpers=False, canoni
             need(set(builder_shas) == {Path(name).name for name in builder_names}, 'ORIGINAL_BUILDER_HELPER_CLOSURE_MISSING')
             proof['builderHelperSha256'] = builder_shas
         if canonical_jar:
-            need(APPROVED_OLD.get(tag) == commit and set(publication_shas) == set(publication_names)
+            need(canonical_commit(tag) == commit and set(publication_shas) == set(publication_names)
                  and tuple(publication_shas[name] for name in publication_names) == APPROVED_CANONICAL_SOURCES.get(tag),
                  'CLOSED_REVIEWED_UNPUBLISHED_SOURCE_REQUIRED')
             proof['unpublishedPipelineSourceSha256'] = publication_shas
@@ -561,7 +578,7 @@ def admit_historical_controls(root, request, row, *, builder_helpers=False, cano
             raw = stream.read(MAX_CONTROL + 1)
             need(len(raw) == reference['bytes'] and digest_bytes(raw) == reference['sha256'], 'RAW_CONTROL_BYTES_DRIFT')
             raw_docs[role] = raw; bindings[role] = {**reference, 'metadata': signature}
-    evidence = validate_control_documents(raw_docs, context, request['identity'])
+    evidence = validate_control_documents(raw_docs, context, request['identity'], canonical_jar=canonical_jar)
     need(evidence['work'] == str(Path(root) / 'verification' / tag / 'checkout/work/compact-fixtures'), 'FIXTURE_OWNER_OUTSIDE_EXACT_OLD_ATTEMPT')
     if canonical_jar:
         original_source = source_proof(root, tag, context['commit'], context['sourceSha256'], canonical_jar=True)
@@ -641,7 +658,7 @@ def canonical_publication_refs(root, tag):
 
 
 def describe_canonical_jar(root, tag, jar_sha, jar_bytes):
-    need(tag in APPROVED_OLD and type(jar_sha) is str and SHA.fullmatch(jar_sha)
+    need(canonical_commit(tag) is not None and type(jar_sha) is str and SHA.fullmatch(jar_sha)
          and type(jar_bytes) is int and 0 < jar_bytes <= MAX_JAR, 'EXACT_CLOSED_CANONICAL_JAR_REQUIRED')
     path = Path(root) / 'inbox' / tag / 'application.jar'
     with held_file(root, path, MAX_JAR) as (stream, signature):
@@ -651,7 +668,7 @@ def describe_canonical_jar(root, tag, jar_sha, jar_bytes):
 
 
 def admit_canonical_candidate(root, request, row, quiescence):
-    need(APPROVED_OLD.get(row['release']) == row['commit'], 'ONLY_REVIEWED_OLD_ATTEMPTS_ALLOWED')
+    need(canonical_commit(row['release']) == row['commit'], 'ONLY_REVIEWED_OLD_ATTEMPTS_ALLOWED')
     admitted = admit_historical_controls(root, request, row, canonical_jar=True)
     evidence = admitted['evidence']; tag = row['release']
     references = canonical_publication_refs(root, tag)
@@ -1294,9 +1311,11 @@ def admitted_current(args):
     return root, current, identity, quiescence, modules
 
 
-def approved_request(raw, checksum, current, identity):
+def approved_request(raw, checksum, current, identity, *, canonical_jar=False):
     request = validate_request(raw, checksum, current, identity)
-    need(all(APPROVED_OLD.get(row['release']) == row['commit'] for row in request['candidates']), 'ONLY_REVIEWED_OLD_ATTEMPTS_ALLOWED')
+    need(type(canonical_jar) is bool, 'EXACT_RETIREMENT_POLICY_REQUIRED')
+    approved = canonical_commit if canonical_jar else APPROVED_OLD.get
+    need(all(approved(row['release']) == row['commit'] for row in request['candidates']), 'ONLY_REVIEWED_OLD_ATTEMPTS_ALLOWED')
     return request
 
 
@@ -1487,8 +1506,8 @@ def apply_builders(root, raw_request, prepared, *, request_sha256, plan_sha256, 
             'volumesPreserved': True, 'directoriesPreserved': True, 'jarDeletionPerformed': False}
 
 
-def capture_request(root, raw_local_spec, *, local_spec_sha256, expected_current, identity):
-    spec = approved_request(raw_local_spec, local_spec_sha256, expected_current, identity)
+def capture_request(root, raw_local_spec, *, local_spec_sha256, expected_current, identity, canonical_jar=False):
+    spec = approved_request(raw_local_spec, local_spec_sha256, expected_current, identity, canonical_jar=canonical_jar)
     accepted, skipped = [], []
     for row in spec['candidates']:
         try:
@@ -1925,7 +1944,7 @@ def apply_python_build_cache(root, prepared, *, plan_sha256, expected_current, i
 
 def cli(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--phase', choices=('capture-request', 'plan-builders', 'apply-builders', 'plan', 'apply',
+    parser.add_argument('--phase', choices=('capture-request', 'capture-canonical-request', 'plan-builders', 'apply-builders', 'plan', 'apply',
                                            'plan-canonical', 'apply-canonical',
                                            'plan-public-layers', 'apply-public-layers', 'plan-generated-image-archives',
                                            'apply-generated-image-archives', 'plan-python-build-cache',
@@ -1947,9 +1966,12 @@ def cli(argv=None):
         python_cache_receipt_file = inbox / 'native-python-build-cache-receipt.json'
         canonical_plan_file = inbox / 'native-jar-duplicate-canonical-plan.json'
         canonical_receipt_file = inbox / 'native-jar-duplicate-canonical-receipt.json'
-        if args.phase == 'capture-request':
+        if args.phase in ('capture-request', 'capture-canonical-request'):
+            canonical_only = args.phase == 'capture-canonical-request'
+            need(not canonical_only or args.mode == 'Maintenance', 'CANONICAL_RETIREMENT_REQUIRES_MAINTENANCE')
             raw = private_bytes(root, inbox / 'native-jar-duplicate-local-spec.json')
-            request, skipped = capture_request(root, raw, local_spec_sha256=args.local_spec_sha256, expected_current=current, identity=identity)
+            request, skipped = capture_request(root, raw, local_spec_sha256=args.local_spec_sha256, expected_current=current,
+                                              identity=identity, canonical_jar=canonical_only)
             result = {'status': 'CAPTURED', 'current': current, 'identity': identity,
                       'request': write_new(request_file, request), 'skipped': skipped}
             result['capture'] = write_new(capture_file, result)
@@ -1983,9 +2005,9 @@ def cli(argv=None):
                       'pythonCacheOriginals': originals}
         elif args.phase in ('plan-canonical', 'apply-canonical'):
             need(args.mode == 'Maintenance', 'CANONICAL_RETIREMENT_REQUIRES_MAINTENANCE')
-            raw = private_bytes(root, request_file); approved_request(raw, args.request_sha256, current, identity)
+            raw = private_bytes(root, request_file); approved_request(raw, args.request_sha256, current, identity, canonical_jar=True)
             def canonical_quiescence(checkout, tag, token):
-                need(checkout == root / 'verification' / tag / 'checkout' and tag in APPROVED_OLD,
+                need(checkout == root / 'verification' / tag / 'checkout' and canonical_commit(tag) is not None,
                      'EXACT_CANONICAL_REFERENCE_ROOTS_REQUIRED')
                 modules['cleanup'].quiescent({'checkout': checkout, 'token': token}, tag,
                                              modules['cleanup'].docker_snapshot(), include_inbox=True)
