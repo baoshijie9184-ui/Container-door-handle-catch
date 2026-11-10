@@ -17,7 +17,7 @@ final class ModelConfigurationWorkflow {
         return WorkflowProtocols.defaults()
                 .with(new WorkflowProtocol<>(WorkflowKind.MODEL_CONFIG_COMMAND, 1, CommandV1.class,
                         Set.of("COMPLETED"), Set.of("COMPLETED"), Map.of(), value -> {
-                            if (value.action() == null || !Set.of("VALIDATE", "PUBLISH", "REVOKE_KEY").contains(value.action()))
+                            if (value.action() == null || !Set.of("DRAFT", "VALIDATE", "PUBLISH", "REVOKE_KEY").contains(value.action()))
                                 throw new IllegalArgumentException("Unknown model configuration action");
                             text(value.target(), 192);
                         }))

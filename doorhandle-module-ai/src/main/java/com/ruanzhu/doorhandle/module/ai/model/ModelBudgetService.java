@@ -27,7 +27,9 @@ import org.springframework.transaction.support.TransactionTemplate;
 public class ModelBudgetService {
     public static class Exhausted extends RuntimeException { public Exhausted(String message){super(message);} }
     public record Ticket(long rootId,long attemptId,long owner,String modelId,String workflowId) { }
-    public record Policy(String modelId,Long totalTokens,int warningPercent,OffsetDateTime expiresAt,long expectedVersion) { }
+    public record Policy(String modelId,Long totalTokens,int warningPercent,OffsetDateTime expiresAt,long expectedVersion,String requestId) {
+        public Policy(String modelId,Long totalTokens,int warningPercent,OffsetDateTime expiresAt,long expectedVersion){this(modelId,totalTokens,warningPercent,expiresAt,expectedVersion,null);}
+    }
     public record Observation(String modelId,Long remainingTokens,OffsetDateTime observedAt,String sourceNote,String requestId) { }
 
     private final JdbcTemplate jdbc;
@@ -37,6 +39,12 @@ public class ModelBudgetService {
     private final JdbcAuditStore audits;
     private final QuotaAccountStore accounts;
     private final TransactionTemplate completion;
+    private AiCollaborationHistory collaborationHistory;
+    @org.springframework.beans.factory.annotation.Value("${collaboration.change-history.enabled:false}") private boolean requireHistory;
+    @org.springframework.beans.factory.annotation.Value("${collaboration.mutations.enabled:false}") private boolean requireCommands;
+    @org.springframework.beans.factory.annotation.Autowired(required=false) public void collaborationHistory(AiCollaborationHistory history){this.collaborationHistory=history;}
+    @jakarta.annotation.PostConstruct public void validateCollaboration(){if((requireHistory||requireCommands)&&collaborationHistory==null)throw new IllegalStateException("AI collaboration history component required");}
+    private boolean protectedCommands(){return collaborationHistory!=null&&collaborationHistory.protectsCommands();}
 
     public ModelBudgetService(JdbcTemplate jdbc,BusinessUserDirectory users,ObjectMapper json) {
         this.jdbc=jdbc;this.users=users;this.json=json;
@@ -107,13 +115,26 @@ public class ModelBudgetService {
             throw new BusinessException(400,"额度参数不正确");
         LocalDateTime expiry=request.expiresAt()==null?null:request.expiresAt().withOffsetSameInstant(ZoneOffset.UTC).toLocalDateTime();
         var payload=new ModelBudgetWorkflow.ChangeV1(request.totalTokens(),request.warningPercent(),expiry);
-        String command=UUID.randomUUID().toString(),digest=sha(write(request));
-        var receipt=workflows.create(new WorkflowDraft(command,WorkflowKind.LLM_QUOTA_CHANGE,
-                JdbcWorkflowStore.ownerScope(actor.userId()),command,digest,actor.userId(),actor.userId(),null,
-                "LLM_MODEL",request.modelId(),null,null,null,"COMPLETED",null,1,payload));
+        String command=UUID.randomUUID().toString(),requestId=request.requestId();
+        if(requestId==null){if(protectedCommands())throw new BusinessException(400,"额度修改必须提供稳定requestId");requestId=command;}
+        if(!requestId.matches("[A-Za-z0-9_-]{8,128}"))throw new BusinessException(400,"额度修改请求编号无效");
+        String digest=sha(write(Arrays.asList("POLICY",request.modelId(),request.totalTokens(),request.warningPercent(),expiry,request.expectedVersion())));
+        if(repeatedPolicy(actor.userId(),requestId,digest))return;
         var before=accounts.lockModel(request.modelId());
+        // A concurrent same-model request may have committed while this account lock waited.
+        if(repeatedPolicy(actor.userId(),requestId,digest))return;
+        var beforeFields=policyFacts(before.id());
         if(request.expectedVersion()!=before.version()&&!(request.expectedVersion()==0&&before.version()==1))
             throw new BusinessException(409,"额度配置已更新，请重新读取");
+        com.ruanzhu.doorhandle.framework.persistence.workflow.WorkflowRecord receipt;
+        try{receipt=workflows.create(new WorkflowDraft(command,WorkflowKind.LLM_QUOTA_CHANGE,
+                JdbcWorkflowStore.ownerScope(actor.userId()),requestId,digest,actor.userId(),actor.userId(),null,
+                "LLM_MODEL",request.modelId(),null,null,null,"COMPLETED",null,1,payload));}
+        catch(com.ruanzhu.doorhandle.framework.persistence.workflow.WorkflowConflictException conflict){throw new BusinessException(409,"请求编号已用于不同额度内容");}
+        var afterFields=new LinkedHashMap<>(beforeFields);afterFields.put("totalTokens",request.totalTokens());afterFields.put("warningPercent",request.warningPercent());afterFields.put("expiresAt",expiry==null?null:expiry.toString()+"Z");afterFields.put("freeOnly",true);
+        if(beforeFields.equals(afterFields)){
+            policyOutcome(receipt.id(),before.version(),null);return;
+        }
         long version=Math.addExact(before.version(),1);
         if(jdbc.update("""
                 UPDATE llm_quota SET total_tokens=?,warning_percent=?,expires_at=?,free_only=TRUE,
@@ -126,6 +147,8 @@ public class ModelBudgetService {
                     reserved_delta,spent_delta,limit_before,limit_after,request_sha256,actor_user_id,created_at)
                 VALUES(?,?,?,'POLICY','LIMIT_CHANGE',0,0,?,?,?,?,UTC_TIMESTAMP(6))
                 """,before.id(),receipt.id(),receipt.id(),before.limit(),request.totalTokens(),digest,actor.userId());
+        var changeReceipt=collaborationHistory==null?null:collaborationHistory.record(agent(actor),"MODEL_BUDGET","LLM_MODEL",request.modelId(),"POLICY",requestId,"APPLIED",before.version(),version,beforeFields,afterFields,Set.of());
+        policyOutcome(receipt.id(),version,changeReceipt);
     }
 
     public void observe(Observation request) {
@@ -136,16 +159,22 @@ public class ModelBudgetService {
                 ||request.requestId()==null||!request.requestId().matches("[A-Za-z0-9_-]{8,64}"))
             throw new BusinessException(400,"供应商核对记录不正确");
         accounts.lockModel(request.modelId());String digest=sha(write(request));
-        if(repeatedObservation(actor.userId(),request.requestId(),digest))return;
+        if(repeatedObservation(actor.userId(),request.requestId(),digest)){replayObservation(actor,request.requestId());return;}
         try {
             audits.appendObservation(new AuditEvent("MODEL_QUOTA_OBSERVATION",actor.userId(),actor.userId(),
                     "LLM_MODEL",request.modelId(),null,null,null,request.requestId(),"OBSERVATION",null,digest,null,
                     1,new ModelBudgetWorkflow.ObservationV1(request.sourceNote().strip())),request.remainingTokens(),
                     request.observedAt().withOffsetSameInstant(ZoneOffset.UTC).toLocalDateTime());
+            if(collaborationHistory!=null){
+                String event=jdbc.queryForObject("SELECT event_id FROM audit_event WHERE kind='MODEL_QUOTA_OBSERVATION' AND request_scope=? AND observation_request_id=?",String.class,JdbcWorkflowStore.ownerScope(actor.userId()),request.requestId());
+                collaborationHistory.record(agent(actor),"MODEL_BUDGET","MODEL_QUOTA_OBSERVATION",event,"OBSERVATION",request.requestId(),"APPLIED",null,0L,Map.of(),
+                        Map.of("modelId",request.modelId(),"remainingTokens",request.remainingTokens(),"observedAt",request.observedAt().toInstant().toString(),"sourceNoteDigest",sha(request.sourceNote().strip())),Set.of());
+            }
         } catch(DuplicateKeyException duplicate) {
             // The identity spans models; locking only this MODEL account cannot serialize its competing writer.
             // Resolve the intended immutable receipt only. Other unique-key errors remain storage failures.
             if(!repeatedObservation(actor.userId(),request.requestId(),digest))throw duplicate;
+            replayObservation(actor,request.requestId());
         }
     }
 
@@ -158,6 +187,11 @@ public class ModelBudgetService {
         if(previous.size()!=1||!digest.equals(previous.get(0).get("content_sha256")))
             throw new BusinessException(409,"请求编号已用于其他核对记录");
         return true;
+    }
+    private void replayObservation(BusinessUserDirectory.Identity actor,String request){
+        if(collaborationHistory==null||!collaborationHistory.protectsCommands())return;
+        String event=jdbc.queryForObject("SELECT event_id FROM audit_event WHERE kind='MODEL_QUOTA_OBSERVATION' AND request_scope=? AND observation_request_id=?",String.class,JdbcWorkflowStore.ownerScope(actor.userId()),request);
+        collaborationHistory.replayReceipt(agent(actor),"MODEL_BUDGET","MODEL_QUOTA_OBSERVATION",event,request);
     }
 
     public List<Map<String,Object>> observations(String id) {
@@ -247,11 +281,36 @@ public class ModelBudgetService {
     }
 
     private List<Map<String,Object>> observationRows(String model,int limit,boolean includeId) {
-        return rows("SELECT "+(includeId?"id,":"")+"quantity AS remaining_tokens,observed_at,"
+        return rows("SELECT "+(includeId?"id,":"")+"event_id AS observationId,quantity AS remaining_tokens,observed_at,"
                 +"JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.sourceNote')) AS source_note,actor_user_id,occurred_at AS created_at "
                 +"FROM audit_event WHERE kind='MODEL_QUOTA_OBSERVATION' AND observation_model_id=? "
                 +"ORDER BY observed_at DESC,id DESC LIMIT ?",model,limit);
     }
+    private Map<String,Object> policyFacts(long id){
+        var row=row("SELECT total_tokens,warning_percent,expires_at,free_only FROM llm_quota WHERE id=?",id);var result=new LinkedHashMap<String,Object>();
+        result.put("totalTokens",number(row.get("total_tokens")));result.put("warningPercent",((Number)row.get("warning_percent")).intValue());
+        var expires=date(row.get("expires_at"));result.put("expiresAt",expires==null?null:expires.toString()+"Z");result.put("freeOnly",Boolean.TRUE.equals(row.get("free_only"))||row.get("free_only") instanceof Number value&&value.intValue()==1);return result;
+    }
+    private boolean repeatedPolicy(long actor,String request,String digest){
+        var previous=jdbc.queryForList("SELECT request_sha256,status,result_version,result_json,result_sha256 FROM workflow_instance WHERE kind='LLM_QUOTA_CHANGE' AND idempotency_scope=? AND request_id=? FOR UPDATE",JdbcWorkflowStore.ownerScope(actor),request);
+        if(previous.isEmpty())return false;
+        if(previous.size()!=1||!digest.equals(previous.get(0).get("request_sha256")))throw new BusinessException(409,"请求编号已用于不同额度内容");
+        var stored=previous.get(0);String result=(String)stored.get("result_json");
+        if(!"COMPLETED".equals(stored.get("status"))||!(stored.get("result_version") instanceof Number version)||version.intValue()!=1||result==null||!sha(result).equals(stored.get("result_sha256")))
+            throw new BusinessException(409,"额度命令原始结果未确认，请保留编号核对");
+        try{var outcome=json.readValue(result,PolicyOutcome.class);if(outcome==null||outcome.receipt()==null)throw new BusinessException(409,"额度命令原始回执未确认");AiCollaborationHistory.headers(outcome.receipt());}
+        catch(com.fasterxml.jackson.core.JsonProcessingException invalid){throw new IllegalStateException("额度命令原始回执不可读取",invalid);}
+        return true;
+    }
+    record PolicyOutcome(com.ruanzhu.doorhandle.contracts.agent.OperationsAuditApi.ChangeReceipt receipt) { }
+    private void policyOutcome(long id,long version,com.ruanzhu.doorhandle.contracts.agent.OperationsAuditApi.ChangeReceipt receipt){
+        if(receipt==null)receipt=new com.ruanzhu.doorhandle.contracts.agent.OperationsAuditApi.ChangeReceipt(null,null,Long.toString(version));
+        String body=write(new PolicyOutcome(receipt));
+        if(jdbc.update("UPDATE workflow_instance SET resource_revision=?,result_version=1,result_json=?,result_sha256=? WHERE id=? AND kind='LLM_QUOTA_CHANGE' AND result_json IS NULL",version,body,sha(body),id)!=1)
+            throw new IllegalStateException("额度原始命令回执保存失败");
+        AiCollaborationHistory.headers(receipt);
+    }
+    private static com.ruanzhu.doorhandle.contracts.agent.AgentActor agent(BusinessUserDirectory.Identity actor){return new com.ruanzhu.doorhandle.contracts.agent.AgentActor(actor.userId(),actor.username(),actor.supervisor()?com.ruanzhu.doorhandle.contracts.agent.AgentActor.Role.SUPERVISOR:com.ruanzhu.doorhandle.contracts.agent.AgentActor.Role.INSPECTOR);}
     private BusinessUserDirectory.Identity supervisor() {
         var actor=users.authenticated();actor=users.current(actor.userId(),actor.username());
         if(!actor.supervisor())throw new BusinessException(403,"仅主管可管理模型额度");return actor;

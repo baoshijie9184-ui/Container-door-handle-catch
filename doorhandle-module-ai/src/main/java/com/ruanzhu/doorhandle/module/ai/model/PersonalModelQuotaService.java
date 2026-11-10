@@ -37,7 +37,9 @@ public class PersonalModelQuotaService {
     }
     public record MineModel(String modelId,String provider,String model,boolean configured,boolean hasPersonalQuota,
             Long totalTokens,long reservedTokens,long spentTokens,Long availableTokens,OffsetDateTime expiresAt,Long version,
-            String enterpriseBlockedReason) { }
+            String enterpriseBlockedReason,String quotaId) {
+        public MineModel(String modelId,String provider,String model,boolean configured,boolean hasPersonalQuota,Long totalTokens,long reservedTokens,long spentTokens,Long availableTokens,OffsetDateTime expiresAt,Long version,String enterpriseBlockedReason){this(modelId,provider,model,configured,hasPersonalQuota,totalTokens,reservedTokens,spentTokens,availableTokens,expiresAt,version,enterpriseBlockedReason,null);}
+    }
     public record Application(String id,long cursor,String modelId,long applicantUserId,long requestedTokens,String reason,
             String status,long version,OffsetDateTime createdAt,OffsetDateTime updatedAt,OffsetDateTime finishedAt,
             Long deciderUserId,String decisionReason) { }
@@ -53,6 +55,11 @@ public class PersonalModelQuotaService {
     private final ObjectMapper json;
     private final JdbcAuditStore audits;
     private final QuotaAccountStore accounts;
+    private AiCollaborationHistory collaborationHistory;
+    @org.springframework.beans.factory.annotation.Value("${collaboration.change-history.enabled:false}") private boolean requireHistory;
+    @org.springframework.beans.factory.annotation.Value("${collaboration.mutations.enabled:false}") private boolean requireCommands;
+    @org.springframework.beans.factory.annotation.Autowired(required=false) public void collaborationHistory(AiCollaborationHistory history){this.collaborationHistory=history;}
+    @jakarta.annotation.PostConstruct public void validateCollaboration(){if((requireHistory||requireCommands)&&collaborationHistory==null)throw new IllegalStateException("AI collaboration history component required");}
     private final WorkflowProtocol<PersonalModelQuotaWorkflow.ApplicationV1> protocol=PersonalModelQuotaWorkflow.protocol();
 
     public PersonalModelQuotaService(JdbcTemplate jdbc,BusinessUserDirectory users,AgentModelService models,ObjectMapper json) {
@@ -70,7 +77,7 @@ public class PersonalModelQuotaService {
             result.add(new MineModel(model.id(),model.provider(),model.model(),model.configured(),personal!=null,
                     personal==null?null:personal.total(),personal==null?0:personal.reserved(),personal==null?0:personal.spent(),
                     personal==null||personal.total()==null?null:Math.subtractExact(Math.subtractExact(personal.total(),personal.spent()),personal.reserved()),
-                    personal==null?null:utc(personal.expires()),personal==null?null:personal.version(),enterpriseBlockedReason(model.id())));
+                    personal==null?null:utc(personal.expires()),personal==null?null:personal.version(),enterpriseBlockedReason(model.id()),personal==null?null:Long.toString(personal.id())));
         }
         return List.copyOf(result);
     }
@@ -105,7 +112,8 @@ public class PersonalModelQuotaService {
             var existing=previous.get(0);
             if(!existing.requestHash().equals(hash))throw conflict();
             if(!receipt(actor.userId(),request.requestId(),existing.id(),"APPLY",hash))throw inconsistent();
-            return view(existing);
+            if(collaborationHistory!=null)collaborationHistory.replayReceipt(agent(actor),"LLM_QUOTA_APPLICATION","LLM_QUOTA_APPLICATION",existing.id(),request.requestId());
+            return collaborationHistory!=null&&collaborationHistory.protectsCommands()?originalApplication(existing):view(existing);
         }
         String id=UUID.randomUUID().toString();
         if(receipt(actor.userId(),request.requestId(),id,"APPLY",hash))throw inconsistent();
@@ -120,6 +128,7 @@ public class PersonalModelQuotaService {
         var account=personal(actor.userId(),request.modelId(),true);
         if(account!=null&&account.total()==null)throw new BusinessException(409,"已有个人无限额配置，无需重复申请");
         audit(application,actor.userId(),request.requestId(),"APPLY","PENDING",hash,reason,0);
+        if(collaborationHistory!=null)collaborationHistory.record(agent(actor),"LLM_QUOTA_APPLICATION","LLM_QUOTA_APPLICATION",application.id(),"APPLY",request.requestId(),"APPLIED",null,0L,Map.of(),applicationFacts(application,actor.username()),Set.of());
         return view(application);
     }
 
@@ -147,16 +156,18 @@ public class PersonalModelQuotaService {
         if(!"PENDING".equals(application.status())) {
             var result=decision(application);
             if(!repeated||result.actorUserId()!=actor.userId()||!requestId.equals(result.requestId())||!hash.equals(result.requestSha256()))throw conflict();
+            if(collaborationHistory!=null)collaborationHistory.replayReceipt(agent(actor),"LLM_QUOTA_APPLICATION","LLM_QUOTA_APPLICATION",application.id(),requestId);
             return view(application);
         }
         if(repeated)throw inconsistent();
         if(application.version()!=expectedVersion)throw conflict();
         String next=switch(action){case "APPROVE"->"APPROVED";case "REJECT"->"REJECTED";case "CANCEL"->"CANCELLED";default->throw bad("审批结果不正确");};
         protocol.requireTransition(application.status(),next);
-        Long before=null,after=null;
+        Long before=null,after=null;Personal previousQuota=null;
         if("APPROVE".equals(action)) {
             requireConfigured(application.model());accounts.lockModel(application.model());
             var personal=personal(application.owner(),application.model(),true);
+            previousQuota=personal;
             if(personal!=null&&personal.total()==null)throw new BusinessException(409,"该成员已有个人无限额配置");
             before=personal==null?null:personal.total();
             try{after=Math.addExact(personal==null?0:personal.total(),application.requestedTokens());}
@@ -185,7 +196,20 @@ public class PersonalModelQuotaService {
                 WHERE id=? AND kind='LLM_QUOTA_APPLICATION' AND status='PENDING' AND revision=? AND result_json IS NULL
                 """,next,actor.userId(),revision,body,sha(body),application.cursor(),expectedVersion)!=1)throw conflict();
         audit(application,actor.userId(),requestId,action,next,hash,reason,revision);
-        return view(locked(application.id()));
+        var saved=locked(application.id());
+        if(collaborationHistory!=null){
+            String applicant=collaborationHistory.username(application.owner());
+            var oldFields=applicationFacts(application,applicant);var newFields=applicationFacts(saved,applicant);
+            newFields.put("deciderUsername",actor.username());
+            var primaryReceipt=collaborationHistory.record(agent(actor),"LLM_QUOTA_APPLICATION","LLM_QUOTA_APPLICATION",application.id(),action,requestId,"APPLIED",application.version(),revision,oldFields,newFields,Set.of());
+            if("APPROVE".equals(action)){
+                var granted=personal(application.owner(),application.model(),true);
+                collaborationHistory.record(agent(actor),"MODEL_BUDGET","LLM_PERSONAL_QUOTA",Long.toString(granted.id()),"GRANT",requestId,"APPLIED",previousQuota==null?null:previousQuota.version(),granted.version(),
+                        previousQuota==null?Map.of():quotaFacts(application,previousQuota,applicant),quotaFacts(application,granted,applicant),Set.of());
+            }
+            AiCollaborationHistory.headers(primaryReceipt);
+        }
+        return view(saved);
     }
 
     /** Every writer takes actual user rows in ascending ID order before any workflow/account lock. */
@@ -261,6 +285,26 @@ public class PersonalModelQuotaService {
         return new Application(row.id(),row.cursor(),row.model(),row.owner(),row.requestedTokens(),payload.reason(),row.status(),row.version(),
                 utc(row.created()),utc(row.updated()),utc(row.finished()),row.decider(),result==null?null:result.reason());
     }
+    private Application originalApplication(Stored row){
+        // Immutable original request/payload/creation facts fully determine the initial response.
+        // Do not replay a later approval/cancellation as if it was the original APPLY result.
+        if(jdbc.queryForObject("SELECT COUNT(*) FROM workflow_instance WHERE kind='LLM_QUOTA_APPLICATION' AND id=? AND legacy_source IS NULL AND legacy_key IS NULL",Long.class,row.cursor())!=1)
+            throw new BusinessException(409,"旧申请原始响应未确认，请保留编号核对");
+        var payload=read(row.payload(),PersonalModelQuotaWorkflow.ApplicationV1.class);protocol.validatePayload(payload,1);
+        return new Application(row.id(),row.cursor(),row.model(),row.owner(),row.requestedTokens(),payload.reason(),"PENDING",0,
+                utc(row.created()),utc(row.created()),null,null,null);
+    }
+    private LinkedHashMap<String,Object> applicationFacts(Stored row,String ownerName){
+        var fields=new LinkedHashMap<String,Object>();var response=view(row);
+        fields.put("modelId",row.model());fields.put("ownerUserId",Long.toString(row.owner()));fields.put("ownerUsername",ownerName);
+        fields.put("requestedTokens",row.requestedTokens());fields.put("reasonDigest",sha(response.reason()));fields.put("status",row.status());
+        fields.put("deciderUserId",row.decider()==null?null:row.decider().toString());fields.put("decisionReasonDigest",response.decisionReason()==null?null:sha(response.decisionReason()));return fields;
+    }
+    private static Map<String,Object> quotaFacts(Stored application,Personal quota,String ownerName){
+        var fields=new LinkedHashMap<String,Object>();fields.put("modelId",application.model());fields.put("ownerUserId",Long.toString(application.owner()));
+        fields.put("ownerUsername",ownerName);fields.put("totalTokens",quota.total());return fields;
+    }
+    private static com.ruanzhu.doorhandle.contracts.agent.AgentActor agent(BusinessUserDirectory.Identity actor){return new com.ruanzhu.doorhandle.contracts.agent.AgentActor(actor.userId(),actor.username(),actor.supervisor()?com.ruanzhu.doorhandle.contracts.agent.AgentActor.Role.SUPERVISOR:com.ruanzhu.doorhandle.contracts.agent.AgentActor.Role.INSPECTOR);}
     private PersonalModelQuotaWorkflow.DecisionV1 decision(Stored row) {
         if(row.result()==null||!Objects.equals(row.resultVersion(),1)||!sha(row.result()).equals(row.resultHash()))throw inconsistent();
         var result=read(row.result(),PersonalModelQuotaWorkflow.DecisionV1.class);

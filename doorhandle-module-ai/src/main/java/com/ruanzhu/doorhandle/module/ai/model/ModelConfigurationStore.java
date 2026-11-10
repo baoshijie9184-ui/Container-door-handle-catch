@@ -157,6 +157,50 @@ final class ModelConfigurationStore {
                 new ModelConfigurationWorkflow.CommandV1(action, target)));
     }
 
+    record Replay<T>(boolean found,T response) { }
+    record OriginalResult(com.fasterxml.jackson.databind.JsonNode response,com.ruanzhu.doorhandle.contracts.agent.OperationsAuditApi.ChangeReceipt receipt) { }
+    <T> Replay<T> replay(long actor,String request,String action,String target,String digest,Class<T> responseType){
+        JdbcTransactions.requireActive(jdbc);
+        var rows=jdbc.queryForList("SELECT request_sha256,status,payload_json,result_version,result_json,result_sha256 FROM workflow_instance "
+                +"WHERE kind='MODEL_CONFIG_COMMAND' AND idempotency_scope=? AND request_id=? FOR UPDATE",JdbcWorkflowStore.ownerScope(actor),request);
+        if(rows.isEmpty())return new Replay<>(false,null);
+        if(rows.size()!=1)throw new IllegalStateException("Ambiguous model configuration receipt");var row=rows.get(0);
+        try{
+            var payload=json.readValue((String)row.get("payload_json"),ModelConfigurationWorkflow.CommandV1.class);
+            if(!payload.equals(new ModelConfigurationWorkflow.CommandV1(action,target))||!digest.equals(row.get("request_sha256")))
+                throw ModelConfigurationService.fail(409,"请求编号已用于不同模型操作或内容");
+            String body=(String)row.get("result_json");
+            if(!"COMPLETED".equals(row.get("status"))||!(row.get("result_version") instanceof Number version)||version.intValue()!=1
+                    ||body==null||!sha(body).equals(row.get("result_sha256")))
+                throw ModelConfigurationService.fail(409,"旧命令原始响应未确认，请保留编号核对，禁止重复执行");
+            var original=json.readValue(body,OriginalResult.class);
+            if(original==null||original.response()==null||original.receipt()==null)throw ModelConfigurationService.fail(409,"模型命令原始回执未确认，请保留编号核对");
+            AiCollaborationHistory.headers(original.receipt());
+            return new Replay<>(true,json.treeToValue(original.response(),responseType));
+        }catch(JsonProcessingException invalid){throw new IllegalStateException("Invalid original model command response",invalid);}
+    }
+    void complete(long actor,String request,String action,String target,String digest,long revision,Object response,com.ruanzhu.doorhandle.contracts.agent.OperationsAuditApi.ChangeReceipt receipt){
+        JdbcTransactions.requireActive(jdbc);
+        var stored=workflows.create(new WorkflowDraft(UUID.randomUUID().toString(),WorkflowKind.MODEL_CONFIG_COMMAND,
+                JdbcWorkflowStore.ownerScope(actor),request,digest,actor,actor,null,"LLM_CONFIGURATION",Long.toString(revision),revision,
+                null,null,"COMPLETED",null,1,new ModelConfigurationWorkflow.CommandV1(action,target)));
+        try{
+            if(receipt==null)receipt=new com.ruanzhu.doorhandle.contracts.agent.OperationsAuditApi.ChangeReceipt(null,null,Long.toString(changeVersion()));
+            String body=json.writeValueAsString(new OriginalResult(json.valueToTree(response),receipt));if(body.getBytes(StandardCharsets.UTF_8).length>1048576)throw new IllegalArgumentException("Model command response too large");
+            if(jdbc.update("UPDATE workflow_instance SET result_version=1,result_json=?,result_sha256=? WHERE id=? AND kind='MODEL_CONFIG_COMMAND' AND status='COMPLETED' AND result_json IS NULL",body,sha(body),stored.id())!=1)
+                throw new IllegalStateException("Original model command response was already assigned");
+            AiCollaborationHistory.headers(receipt);
+        }catch(JsonProcessingException invalid){throw new IllegalStateException("Model command response cannot be encoded",invalid);}
+    }
+    long changeVersion(){return jdbc.queryForObject("SELECT revision FROM runtime_state WHERE namespace='MODEL_CONFIG_CONTROL' AND owner_id=0 AND scope_key='GLOBAL'",Long.class);}
+    long advanceChangeVersion(){
+        JdbcTransactions.requireActive(jdbc);
+        if(jdbc.update("UPDATE runtime_state SET revision=revision+1,updated_at=UTC_TIMESTAMP(6) WHERE namespace='MODEL_CONFIG_CONTROL' AND owner_id=0 AND scope_key='GLOBAL' AND revision<9223372036854775807")!=1)
+            throw new IllegalStateException("Model configuration change revision unavailable");
+        return changeVersion();
+    }
+    private static String sha(String value){try{return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8)));}catch(NoSuchAlgorithmException impossible){throw new IllegalStateException(impossible);}}
+
     Optional<WorkflowRecord> probe(long revision, String request) {
         return workflows.findByRequest(WorkflowKind.MODEL_JSON_PROBE, probeScope(revision), request);
     }
@@ -180,6 +224,26 @@ final class ModelConfigurationStore {
         var previous = probe(revision, request).orElseThrow();
         workflows.transition(previous, passed ? "PASSED" : "FAILED",
                 workflows.payload(previous, ModelConfigurationWorkflow.ProbeV1.class), null, null, null);
+    }
+
+    record ProbeOutcome(ModelConfigurationService.ProbeResult response,com.ruanzhu.doorhandle.contracts.agent.OperationsAuditApi.ChangeReceipt receipt) { }
+    void probeOutcome(long revision,String request,ModelConfigurationService.ProbeResult response,com.ruanzhu.doorhandle.contracts.agent.OperationsAuditApi.ChangeReceipt receipt){
+        JdbcTransactions.requireActive(jdbc);if(receipt==null)throw new IllegalStateException("Required probe audit receipt missing");
+        try{String body=json.writeValueAsString(new ProbeOutcome(response,receipt));
+            if(jdbc.update("UPDATE workflow_instance SET result_version=1,result_json=?,result_sha256=? WHERE kind='MODEL_JSON_PROBE' AND idempotency_scope=? AND request_id=? AND status=?",body,sha(body),probeScope(revision),request,response.status())!=1)
+                throw new IllegalStateException("Probe outcome receipt unavailable");
+        }catch(JsonProcessingException invalid){throw new IllegalStateException("Probe outcome cannot be encoded",invalid);}
+    }
+    ModelConfigurationService.ProbeResult probeOutcome(long revision,String request){
+        var rows=jdbc.queryForList("SELECT status,result_version,result_json,result_sha256 FROM workflow_instance WHERE kind='MODEL_JSON_PROBE' AND idempotency_scope=? AND request_id=?",probeScope(revision),request);
+        if(rows.size()!=1)throw ModelConfigurationService.fail(409,"检查结果未确认，请保留编号核对");var row=rows.get(0);String body=(String)row.get("result_json");
+        if(!(row.get("result_version") instanceof Number version)||version.intValue()!=1||body==null||!sha(body).equals(row.get("result_sha256")))
+            throw ModelConfigurationService.fail(409,"旧检查原始回执未确认，禁止重新调用模型");
+        try{var result=json.readValue(body,ProbeOutcome.class);
+            if(result==null||result.response()==null||result.receipt()==null||result.response().revision()!=revision||!request.equals(result.response().requestId())||!Objects.equals(row.get("status"),result.response().status()))
+                throw ModelConfigurationService.fail(409,"检查原始回执不一致");
+            AiCollaborationHistory.headers(result.receipt());return result.response();
+        }catch(JsonProcessingException invalid){throw new IllegalStateException("Invalid probe original response",invalid);}
     }
 
     boolean hasPassedProbe(long revision, String model) {
