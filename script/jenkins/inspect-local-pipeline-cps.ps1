@@ -31,12 +31,13 @@ if($Commit) {
     if($Commit -cnotmatch '^[a-f0-9]{40}$'){throw 'A complete fixed Git commit is required for SCM byte compilation.'}
     $resolved=& git.exe -C $project rev-parse --verify "$Commit^{commit}"
     if($LASTEXITCODE -ne 0 -or $resolved -cne $Commit){throw 'The fixed source is not the exact local Git commit.'}
-    $start=[Diagnostics.ProcessStartInfo]::new();$start.FileName=(Get-Command git.exe -CommandType Application).Source
+    $start=[Diagnostics.ProcessStartInfo]::new();$start.FileName=(Get-Command git.exe -CommandType Application | Select-Object -First 1).Source
     $start.UseShellExecute=$false;$start.CreateNoWindow=$true;$start.RedirectStandardOutput=$true;$start.RedirectStandardError=$true
     foreach($argument in @('-C',$project,'cat-file','blob',($Commit+':Jenkinsfile.ecs-monolith'))){$start.ArgumentList.Add($argument)}
-    $process=[Diagnostics.Process]::new();$process.StartInfo=$start;$bytes=[IO.MemoryStream]::new()
+    $process=[Diagnostics.Process]::new();$process.StartInfo=$start;$bytes=[IO.MemoryStream]::new();$started=$false
     try {
         if(-not $process.Start()){throw 'Cannot read the exact SCM Jenkinsfile blob.'}
+        $started=$true
         $errors=$process.StandardError.ReadToEndAsync();$buffer=[byte[]]::new(65536)
         while(($count=$process.StandardOutput.BaseStream.Read($buffer,0,$buffer.Length)) -gt 0) {
             if($bytes.Length+$count -gt 1MB){throw 'The SCM Jenkinsfile exceeds its compile bound.'}
@@ -45,7 +46,7 @@ if($Commit) {
         $process.WaitForExit();$null=$errors.GetAwaiter().GetResult()
         if($process.ExitCode -ne 0){throw 'The fixed SCM Jenkinsfile blob is unavailable.'}
         $raw=$bytes.ToArray();$sourceKind='GIT_BLOB'
-    } finally {if($process.Id -and -not $process.HasExited){$process.Kill()};$process.Dispose();$bytes.Dispose()}
+    } finally {if($started -and -not $process.HasExited){$process.Kill()};$process.Dispose();$bytes.Dispose()}
 } else {$raw=[IO.File]::ReadAllBytes($source)}
 if($raw.Length -le 0 -or $raw.Length -gt 1MB){throw 'Use the bounded existing Jenkinsfile.'}
 $encodedSource=[Convert]::ToBase64String($raw)
