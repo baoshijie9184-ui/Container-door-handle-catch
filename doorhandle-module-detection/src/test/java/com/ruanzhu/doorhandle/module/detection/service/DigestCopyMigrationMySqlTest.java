@@ -17,6 +17,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.core.io.ByteArrayResource;
 import org.springframework.core.io.support.EncodedResource;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -118,6 +120,34 @@ class DigestCopyMigrationMySqlTest {
         assertThat(service.runs("plan-a")).hasSize(2);
         assertThat(new String(service.download("RUN-cafe","md").bytes(),StandardCharsets.UTF_8)).contains("2026-02-03","测试快照",snapshotSha);
         assertThat(source.queryForObject("SELECT COUNT(*) FROM quality_digest_audit",Integer.class)).isEqualTo(1);
+    }
+
+    @ParameterizedTest
+    @CsvSource({"RESTRICT,RESTRICT", "RESTRICT,NO ACTION", "NO ACTION,RESTRICT", "NO ACTION,NO ACTION"})
+    void equivalentInnoDbRestrictActionsPreserveTheSourceAndAllowCopy(String deleteRule,String updateRule) throws Exception {
+        replaceSourceForeignKey(deleteRule,updateRule);
+        assertThat(source.queryForObject("SELECT CONCAT(delete_rule,',',update_rule) FROM information_schema.referential_constraints WHERE constraint_schema=DATABASE() AND constraint_name='fk_digest_run_schedule'",String.class))
+                .isEqualTo(deleteRule+","+updateRule);
+        copy();
+        assertThat(target.queryForObject("SELECT COUNT(*) FROM workflow_instance WHERE kind='DIGEST_RUN'",Integer.class)).isEqualTo(2);
+        assertThat(source.queryForObject("SELECT COUNT(*) FROM quality_digest_run",Integer.class)).isEqualTo(2);
+    }
+
+    @ParameterizedTest
+    @CsvSource({"CASCADE,RESTRICT", "RESTRICT,CASCADE", "SET NULL,RESTRICT", "RESTRICT,SET NULL"})
+    void rewritingSourceForeignKeyActionsAreRejectedBeforeAnyCopy(String deleteRule,String updateRule) {
+        replaceSourceForeignKey(deleteRule,updateRule);
+        assertThat(source.queryForObject("SELECT CONCAT(delete_rule,',',update_rule) FROM information_schema.referential_constraints WHERE constraint_schema=DATABASE() AND constraint_name='fk_digest_run_schedule'",String.class))
+                .isEqualTo(deleteRule+","+updateRule);
+        assertThatThrownBy(this::copy).isInstanceOf(Exception.class);
+        assertThat(target.queryForObject("SELECT COUNT(*) FROM scheduled_plan",Integer.class)).isZero();
+        assertThat(target.queryForObject("SELECT COUNT(*) FROM workflow_instance",Integer.class)).isZero();
+        assertThat(source.queryForObject("SELECT COUNT(*) FROM quality_digest_run",Integer.class)).isEqualTo(2);
+    }
+
+    private void replaceSourceForeignKey(String deleteRule,String updateRule) {
+        String nullable="SET NULL".equals(deleteRule)||"SET NULL".equals(updateRule)?"MODIFY schedule_id VARCHAR(64) NULL, ":"";
+        source.execute("ALTER TABLE quality_digest_run DROP FOREIGN KEY fk_digest_run_schedule, "+nullable+"ADD CONSTRAINT fk_digest_run_schedule FOREIGN KEY(schedule_id) REFERENCES quality_digest_schedule(schedule_id) ON DELETE "+deleteRule+" ON UPDATE "+updateRule);
     }
 
     @Test void unknownSourceColumnStopsBeforeCopyingAnyDigestRows() {

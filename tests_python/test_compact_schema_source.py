@@ -3,6 +3,8 @@ from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 import json
 import shutil
+import subprocess
+import sys
 
 import pytest
 
@@ -226,3 +228,25 @@ def test_source_compiler_refuses_rewriting_fk_action_on_check_column(tmp_path, m
     path.write_text(sql.replace(before, before.replace('ON UPDATE RESTRICT', 'ON UPDATE CASCADE')), encoding='utf8')
     with pytest.raises(ValueError, match='CHECK column participates in a rewriting foreign-key action'):
         builder.compile_schema()
+
+
+def test_digest_author_reproduces_innodb_restrict_equivalent_actions_and_exact_fk_shape(tmp_path):
+    for relative in ('script/schema/author_digest_copy.py', 'script/schema/build_compact_schema.py',
+                     'sql/mysql/migration-V65-quality-digests.sql', 'sql/mysql/compact/baseline/30-operations.sql'):
+        destination = tmp_path / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / relative, destination)
+    (tmp_path / 'sql/mysql/compact/copy').mkdir()
+    subprocess.run([sys.executable, '-B', str(tmp_path / 'script/schema/author_digest_copy.py')],
+                   check=True, capture_output=True, text=True)
+    generated = (tmp_path / 'sql/mysql/compact/copy/49-digests.sql').read_text(encoding='utf8')
+    assert generated == (ROOT / 'sql/mysql/compact/copy/49-digests.sql').read_text(encoding='utf8')
+    guard = next(line for line in generated.splitlines() if "r.constraint_name=BINARY 'fk_digest_run_schedule'" in line)
+    assert "r.delete_rule IN ('RESTRICT','NO ACTION') AND r.update_rule IN ('RESTRICT','NO ACTION')" in guard
+    assert "k.column_name='schedule_id' AND k.ordinal_position=1 AND k.position_in_unique_constraint=1" in guard
+    assert "BINARY k.referenced_table_schema=BINARY '__SOURCE_SCHEMA__'" in guard
+    assert "k.referenced_table_name='quality_digest_schedule' AND k.referenced_column_name='schedule_id'" in guard
+    assert "table_type='BASE TABLE' AND engine='InnoDB'" in generated
+    assert 'CASCADE' not in guard and 'SET NULL' not in guard
+    control = next(line for line in generated.splitlines() if 'quality_digest_control s LEFT JOIN runtime_state' in line)
+    assert 'NOT(BINARY t.`payload_version`<=>BINARY 1)' in control

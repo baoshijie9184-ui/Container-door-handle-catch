@@ -114,7 +114,9 @@ for table, details in tables.items():
         guard("SELECT IF(COUNT(*)=1,1,0) FROM information_schema.referential_constraints r JOIN information_schema.key_column_usage k "
               "ON r.constraint_schema=k.constraint_schema AND r.constraint_name=k.constraint_name AND r.table_name=k.table_name "
               "WHERE BINARY r.constraint_schema=BINARY '__SOURCE_SCHEMA__' AND BINARY r.table_name=BINARY 'quality_digest_run' "
-              "AND BINARY r.constraint_name=BINARY 'fk_digest_run_schedule' AND r.delete_rule='RESTRICT' AND r.update_rule='RESTRICT' "
+              # V65 omits both actions: InnoDB reports NO ACTION, the same
+              # immediate rejection as explicit RESTRICT (MySQL 8.0 manual).
+              "AND BINARY r.constraint_name=BINARY 'fk_digest_run_schedule' AND r.delete_rule IN ('RESTRICT','NO ACTION') AND r.update_rule IN ('RESTRICT','NO ACTION') "
               "AND k.column_name='schedule_id' AND k.ordinal_position=1 AND k.position_in_unique_constraint=1 "
               "AND BINARY k.referenced_table_schema=BINARY '__SOURCE_SCHEMA__' AND k.referenced_table_name='quality_digest_schedule' AND k.referenced_column_name='schedule_id'")
     checks = {'quality_digest_control': 'control_id=1',
@@ -211,7 +213,7 @@ for target, source, values, join in [
             conditions.append('NOT(BINARY t.`'+column+'`<=>BINARY '+expected+')')
     guard('SELECT IF(COUNT(*)=0,1,0) FROM `__SOURCE_SCHEMA__`.'+source+' s LEFT JOIN '+target+' t ON '+join+' WHERE t.id IS NULL OR '+' OR '.join(conditions))
 guard("SELECT IF((SELECT COUNT(*) FROM runtime_state WHERE namespace='DIGEST_CONTROL')=(SELECT COUNT(*) FROM `__SOURCE_SCHEMA__`.quality_digest_control),1,0)")
-control_expected = {'namespace':q('DIGEST_CONTROL'),'owner_id':'0','scope_key':'CAST(s.control_id AS CHAR)','revision':'0',
+control_expected = {'namespace':q('DIGEST_CONTROL'),'owner_id':'0','scope_key':'CAST(s.control_id AS CHAR)','revision':'0','payload_version':'1',
                     'created_at':'NULL'}
 control_conditions = []
 for column, definition in targets['runtime_state']['columns'].items():

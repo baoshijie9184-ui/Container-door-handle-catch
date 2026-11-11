@@ -4,15 +4,17 @@
 
 当前为 `java-cloud` 单体。此前固定候选 `7067d66585cd181f4ef8d5cf2345eb4e7851ff17` 的 #232 控制预检20模块、2,006项全部通过；#233 维护已实际退役4个旧Builder、4个停止的测试MySQL对象并回收8份JAR，数据目录、卷和镜像保留；#234 完整源码验证8条命令全部exit0：Java 926、Python 3,885、主前端203、Agent前端20项通过，两套生产构建完成，Java/Python原条件跳过713/24。四份历史传输原件已在ECS `RESTORED_VERIFIED`，原始逻辑字节155,793,058；这一步验证原件保全，不替代业务合入。
 
-#235 完整 `verify-runtime/mysql` 终态 **FAILURE**：原生MySQL实际12类、174项，0失败、2错误。`LegacyChatActionStoreMySqlTest` 的未决时钟夹具触发 `ck_legacy_clock_binding_workflow_instance`，最小夹具修复已完成并通过跳测试编译，待统一复测；整库迁移、旧45表/5599文件及新三库恢复合入、9项运行场景和19项浏览器检查仍未完成验收。正式业务库仍为131表，29表是目标结构，生产发布和旧库演练门禁保持关闭。
+#235 的未决时钟夹具错误已修复，`LegacyChatActionStoreMySqlTest` 14项在#238全部通过。整库迁移、旧45表/5599文件及新三库恢复合入、9项运行场景和19项浏览器检查仍未完成验收。正式业务库仍为131表，29表是目标结构，生产发布和旧库演练门禁保持关闭。
 
 夹具修复已随 `2cd30eaf5369d5be56a85cabc2cf58d908b16ee1` 提交推送并通过跳测试构建。#236 维护实际处理新失败的#235：退役1个Builder、1个测试MySQL对象，回收两份JAR，保留数据、卷和镜像。#237 随后在控制预检发生SSH 255；流水线提前收取尚未生成的回执而失败，业务测试和夹具尚未开始。原预检于35秒后完成，原报告2,006项通过、清理确认；晚到原件已单独保全，不能据此把#237改记成功。
 
-已补齐控制预检的同执行观察及post清理等待，新增40项边界回归，20模块最低2,046项，静态检查通过，待固定提交统一ECS验证。预检容器和临时源码已清理、工具 `STOPPED` 且remaining为空；2026-11-11 21:00:27（北京时间）流水线外实际回读 `Stopped / StopCharging`。Jenkins保持运行，任务暂禁以完成修复；不重跑已消费的维护批次，不以部分通过替代完整验收。
+#238 固定候选 `73ce5aeff86201d9b2776159903acd5907c8420a` 已通过控制预检20模块2,046项、零失败零跳过，含新增40项断线边界。整轮终态 **FAILURE**：原生MySQL15类201项、0失败4错误，集中在日报租约夹具及Digest复制。现已补正fence、接受InnoDB等价的NO ACTION/RESTRICT、修正控制行payload_version期望，并同步生成器与完整时钟旁证保护；跳测试编译与静态检查通过。新增8项原生及1项控制回归，下一轮最低为64类694项及控制2,047项，仍待统一ECS验证。其余61类直接SQL夹具的同型核查未见确定错配。
+
+本轮夹具及工具清理均为 `STOPPED`，工具remaining为空；2026-11-11 21:57:52（北京时间）流水线外实际回读 `Stopped / StopCharging`。Jenkins保持运行，任务暂禁以完成整合；不重跑已消费的维护批次，不以部分通过替代完整验收。
 
 业务验收固定4账号（2检测人员、2主管）、每账号2个功能标签，共8个标签；核对隔离、更新、撤销、恢复、领取及双流正确性。正式并发/容量压测在全部开发完成后通过压测工具另行进行，本轮记录 `loadTestStatus=DEFERRED_BY_USER`、`performanceSloVerified=false`，不作负载容量或性能SLO结论；原资源安全门保持。
 
-原始回执保存在 `work/jenkins/data-residency-20261107/ci-232-raw-receipts` 至 `ci-237-raw-receipts`，#237晚到预检原件为 `ci-237-control-terminal-supplement/output`；本轮节省停机回读为 `ci-237-external-stop-readback.json`。
+原始回执保存在 `work/jenkins/data-residency-20261107/ci-232-raw-receipts` 至 `ci-238-raw-receipts`，#237晚到预检原件为 `ci-237-control-terminal-supplement/output`；本轮节省停机回读为 `ci-238-external-stop-readback.json`。
 
 ## 此前执行记录（历史）
 
