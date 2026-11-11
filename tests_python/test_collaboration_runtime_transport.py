@@ -233,18 +233,18 @@ class OwnedDatabase:
                 'bindingVersion': 0, 'history': 1}
 
 
-def test_seed_owns_twenty_distinct_qualified_people_in_one_transaction_without_fabricated_audit():
+def test_seed_owns_four_distinct_qualified_people_in_one_transaction_without_fabricated_audit():
     database = OwnedDatabase()
-    accounts = scenarios.seed_owned_users(database, SCHEMA, TOKEN, candidate_load_user_count=20)
-    assert len(accounts) == 20 and len({v['employeeId'] for v in accounts.values()}) == 20
+    accounts = scenarios.seed_owned_users(database, SCHEMA, TOKEN, candidate_load_user_count=4)
+    assert len(accounts) == 4 and len({v['employeeId'] for v in accounts.values()}) == 4
     assert sum(v['role'] == 'SUPERVISOR' for v in accounts.values()) == 2
-    assert {'inspector', 'peer', 'supervisor', 'reviewer', 'load_01', 'load_16'} <= accounts.keys()
+    assert set(accounts) == {'inspector', 'peer', 'supervisor', 'reviewer'}
     assert len(database.writes) == 1
     sql = database.writes[0]
     assert sql.startswith('START TRANSACTION;') and sql.endswith('COMMIT;')
     assert sql.count('INSERT INTO organization_department') == 1
-    assert sql.count('INSERT INTO employee(') == sql.count('INSERT INTO users(') == 20
-    assert sql.count(',TRUE,0,LAST_INSERT_ID(),0,TRUE,') == 20
+    assert sql.count('INSERT INTO employee(') == sql.count('INSERT INTO users(') == 4
+    assert sql.count(',TRUE,0,LAST_INSERT_ID(),0,TRUE,') == 4
     assert "'ACTIVE',0,@runtime_department" in sql and "'DETECTION','UNKNOWN'" in sql
     assert not any(forbidden in sql.upper() for forbidden in ('FOREIGN_KEY_CHECKS', 'UPDATE ', 'AUDIT_EVENT', 'WORKFLOW_INSTANCE'))
     assert all(set(value) == {'username', 'password', 'role', 'userId', 'employeeId', 'departmentId'}
@@ -269,9 +269,9 @@ def test_fixture_collisions_do_not_overwrite_existing_users_employees_or_departm
     assert database.writes == []
 
 
-@pytest.mark.parametrize('count', [True, 19, 41, 20.0])
+@pytest.mark.parametrize('count', [True, 3, 5, 4.0])
 def test_fixture_account_count_is_bounded_before_database_access(count):
     database = OwnedDatabase()
-    with pytest.raises(RuntimeError, match='bounded candidate'):
+    with pytest.raises(RuntimeError, match='functional candidate'):
         scenarios.seed_owned_users(database, SCHEMA, TOKEN, candidate_load_user_count=count)
     assert database.writes == []

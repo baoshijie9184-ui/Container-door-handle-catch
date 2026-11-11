@@ -308,14 +308,18 @@ def prove_current_task(ctx, task_id):
             "'createdBy',created_by,'assigneeUserId',assignee_user_id,'assigneeIdentityName',assignee_identity_name,"
             "'assignee',assignee,'status',status,'version',version) FROM detection_task WHERE task_id=" + ctx.db.literal(task_id) + ';')
         need(row.get('taskId') == task_id and row.get('status') in ('COMPLETED', 'PARTIAL_FAILED'), 'ACTUAL_COMPLETED_TASK_ROW_REQUIRED')
-        owner = ctx.accounts['inspector']
+        owner = ctx.accounts['supervisor']
         need(integer(row.get('createdUserId'), 1) == integer(owner['userId'], 1)
              and row.get('createdIdentityName') == row.get('createdBy') == owner['username'], 'ACTUAL_TASK_CREATOR_BINDING_MISMATCH')
+        need(integer(row.get('assigneeUserId'), 1) == integer(ctx.accounts['inspector']['userId'], 1),
+             'ACTUAL_TASK_ASSIGNEE_BINDING_MISMATCH')
         _, preview = _http(ctx, 'supervisor', 'GET', '/api/detection/identity/preview?' + urllib.parse.urlencode({'taskId': task_id, 'includeAligned': 'true', 'size': 1}))
         records = preview.get('records', [])
         created = [item for item in records if item.get('role') == 'created' and item.get('taskId') == task_id]
         need(preview.get('mode') == preview.get('sourceMode') == 'ACTIVE' and len(created) == 1
-             and _healthy_critical(created[0]) and (created[0].get('source') or {}).get('source_kind') == 'NEW_CREATION', 'ACTUAL_NEW_CREATION_SOURCE_CERTIFICATE_REQUIRED')
+             and _healthy_critical(created[0]) and integer(created[0].get('existingUserId'), 1) == integer(row['createdUserId'], 1)
+             and created[0].get('expectedName') == row['createdIdentityName']
+             and (created[0].get('source') or {}).get('source_kind') == 'NEW_CREATION', 'ACTUAL_NEW_CREATION_SOURCE_CERTIFICATE_REQUIRED')
         route = '/api/detection/tasks/' + urllib.parse.quote(task_id, safe='')
         receipts = []
         for alias in ('inspector', 'supervisor', 'reviewer', 'peer'):
@@ -394,7 +398,8 @@ def validate_final_values(preflight, admitted, authorization, accounts, server_u
     binding = authorization.get('taskBinding', {})
     need(binding.get('sourceKind') == 'NEW_CREATION' and binding.get('sourceRecorded') is True
          and binding.get('dbAndHttpCreatorMatched') is True
-         and str(integer(binding.get('createdUserId'), 1)) == str(integer(accounts['inspector']['userId'], 1))
+         and str(integer(binding.get('createdUserId'), 1)) == str(integer(accounts['supervisor']['userId'], 1))
+         and str(integer(binding.get('assigneeUserId'), 1)) == str(integer(accounts['inspector']['userId'], 1))
          and integer(binding.get('version'), 1) >= 1, 'FINAL_ACTUAL_TASK_BINDING_NOT_PROVEN')
     return True
 

@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.extension.spring.MybatisSqlSessionFactoryBean;
 import com.fasterxml.jackson.databind.*;
 import com.ruanzhu.doorhandle.contracts.agent.*;
+import com.ruanzhu.doorhandle.contracts.organization.EmployeeDirectoryApi;
 import com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory;
 import com.ruanzhu.doorhandle.module.ai.agent.*;
 import com.ruanzhu.doorhandle.module.ai.config.*;
@@ -15,8 +16,14 @@ import com.ruanzhu.doorhandle.module.detection.mapper.DetectionTaskMapper;
 import com.ruanzhu.doorhandle.module.detection.repository.QualityReportRepository;
 import com.ruanzhu.doorhandle.module.detection.security.DetectionTaskAccessPolicy;
 import com.ruanzhu.doorhandle.module.detection.service.QualityReportService;
+import com.ruanzhu.doorhandle.module.detection.service.ReportDocumentRenderer;
+import com.ruanzhu.doorhandle.module.device.api.EmployeeDirectoryApiImpl;
+import com.ruanzhu.doorhandle.module.device.mapper.EmployeeMapper;
 import com.ruanzhu.doorhandle.module.system.api.BusinessUserDirectoryImpl;
+import com.ruanzhu.doorhandle.module.system.mapper.AccountEmployeeBindingMapper;
 import com.ruanzhu.doorhandle.module.system.mapper.UserMapper;
+import com.ruanzhu.doorhandle.module.system.security.LoginSessionProperties;
+import com.ruanzhu.doorhandle.module.system.service.LoginEligibilityService;
 import io.agentscope.core.message.*;
 import io.agentscope.core.model.*;
 import io.agentscope.core.tool.*;
@@ -131,11 +138,15 @@ class AgentReportLocalMysqlTest {
         @Bean JdbcTemplate jdbc(DataSource source){return new JdbcTemplate(source);}
         @Bean DataSourceTransactionManager transaction(DataSource source){return new DataSourceTransactionManager(source);}
         @Bean ObjectMapper json(){return new ObjectMapper().findAndRegisterModules().disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS).setSerializationInclusion(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL);}
-        @Bean SqlSessionTemplate sql(DataSource source)throws Exception{var config=new MybatisConfiguration();config.setMapUnderscoreToCamelCase(true);config.addMapper(DetectionTaskMapper.class);config.addMapper(UserMapper.class);var factory=new MybatisSqlSessionFactoryBean();factory.setDataSource(source);factory.setConfiguration(config);return new SqlSessionTemplate(factory.getObject());}
+        @Bean SqlSessionTemplate sql(DataSource source)throws Exception{var config=new MybatisConfiguration();config.setMapUnderscoreToCamelCase(true);for(var mapper:List.of(DetectionTaskMapper.class,UserMapper.class,AccountEmployeeBindingMapper.class,EmployeeMapper.class))config.addMapper(mapper);var factory=new MybatisSqlSessionFactoryBean();factory.setDataSource(source);factory.setConfiguration(config);return new SqlSessionTemplate(factory.getObject());}
         @Bean DetectionTaskMapper tasks(SqlSessionTemplate sql){return sql.getMapper(DetectionTaskMapper.class);}
         @Bean UserMapper users(SqlSessionTemplate sql){return sql.getMapper(UserMapper.class);}
+        @Bean LoginSessionProperties sessionProperties(){return new LoginSessionProperties();}
+        @Bean EmployeeDirectoryApi personnel(SqlSessionTemplate sql){return new EmployeeDirectoryApiImpl(sql.getMapper(EmployeeMapper.class));}
+        @Bean LoginEligibilityService eligibility(UserMapper users,SqlSessionTemplate sql,EmployeeDirectoryApi employees,LoginSessionProperties properties){return new LoginEligibilityService(users,sql.getMapper(AccountEmployeeBindingMapper.class),employees,properties);}
         @Bean BusinessUserDirectory directory(UserMapper users){return new BusinessUserDirectoryImpl(users);}
         @Bean QualityReportRepository repository(JdbcTemplate jdbc){return new QualityReportRepository(jdbc);}
+        @Bean ReportDocumentRenderer documentRenderer(){return new ReportDocumentRenderer();}
         @Bean QualityReportService reports(QualityReportRepository repository,DetectionTaskMapper tasks,BusinessUserDirectory directory,ObjectMapper json){return new QualityReportService(repository,tasks,directory,new DetectionTaskAccessPolicy(),json);}
         @Bean QualityReportAgentApi api(QualityReportService service,JdbcTemplate jdbc){return new QualityReportAgentApiImpl(service,jdbc);}
         @Bean JdbcAgentJournal journal(JdbcTemplate jdbc,DataSourceTransactionManager transaction,ObjectMapper json){var settings=new AgentJournalProperties();settings.setEnabled(true);return new JdbcAgentJournal(jdbc,transaction,json,settings);}

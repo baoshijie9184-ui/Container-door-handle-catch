@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.extension.spring.MybatisSqlSessionFactoryBean;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ruanzhu.doorhandle.contracts.organization.EmployeeDirectoryApi;
+import com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory;
 import com.ruanzhu.doorhandle.module.system.mapper.*;
 import com.ruanzhu.doorhandle.module.system.security.TenantPrincipal;
 import org.junit.jupiter.api.*;
@@ -174,6 +175,7 @@ class AccountIdentityServiceTest {
                 .when(gatedUsers).selectById(1L);
         var gated=new AccountIdentityService(gatedUsers,sql.getMapper(AccountEmployeeBindingMapper.class),
                 new OrganizationBindingAuditStore(jdbc),org.mockito.Mockito.mock(EmployeeDirectoryApi.class));
+        gated.collaborationEligibility(context.getBean(BusinessUserDirectory.class),context);
         try {
             var change=pool.submit(()->tx.executeWithoutResult(status->{
                 jdbc.queryForObject("SELECT id FROM users WHERE id=1 FOR UPDATE",Long.class);locked.countDown();
@@ -197,6 +199,23 @@ class AccountIdentityServiceTest {
     static class Config {
         @Bean JdbcTemplate jdbc(DataSource source) { return new JdbcTemplate(source); }
         @Bean DataSourceTransactionManager transactions(DataSource source) { return new DataSourceTransactionManager(source); }
+        /** Keep the account-binding boundary independent of login sessions, using current persisted identity facts. */
+        @Bean BusinessUserDirectory businessUsers(JdbcTemplate jdbc) {
+            return new BusinessUserDirectory() {
+                public Identity current(long id, String username) { return read(id, username, false); }
+                public Identity lockCurrent(long id, String username) {
+                    assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isTrue();
+                    return read(id, username, true);
+                }
+                private Identity read(long id, String username, boolean lock) {
+                    var rows=jdbc.queryForList("SELECT username,role FROM users WHERE id=?"+(lock?" FOR UPDATE":""),id);
+                    if(rows.size()!=1 || !Objects.equals(username,rows.get(0).get("username"))
+                            || !Set.of("SUPERVISOR","INSPECTOR").contains(rows.get(0).get("role")))
+                        throw new AccessDeniedException("当前账号没有组织管理权限");
+                    return new Identity(id,username,"SUPERVISOR".equals(rows.get(0).get("role")));
+                }
+            };
+        }
         @Bean SqlSessionTemplate sql(DataSource source) throws Exception {
             var config = new MybatisConfiguration(); config.setMapUnderscoreToCamelCase(true);
             config.addMapper(UserMapper.class); config.addMapper(AccountEmployeeBindingMapper.class);

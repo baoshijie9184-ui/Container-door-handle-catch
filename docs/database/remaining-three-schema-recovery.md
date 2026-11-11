@@ -1,6 +1,6 @@
 # 剩余本机三库的 ECS 保全和独立双恢复
 
-此入口接收 `export-remaining-local-mysql.ps1 -NonAdministratorReadOnlyExport -IncludeLegacyBusinessSource` 的实际成功 v2 批次。新的一次性只读导出仍待用户批准，尚未执行；没有实际 batch receipt SHA、三个源 SQL SHA、大小或 ECS 恢复结果。原 `local-mysql-export45-v1` 的保全入口、固定原件及默认恢复行为保持。
+此入口接收 `export-remaining-local-mysql.ps1 -NonAdministratorReadOnlyExport -IncludeLegacyBusinessSource` 的实际成功 v2 批次。用户已于2026-11-11批准本次普通用户三库只读导出；首批在连接SQL前失败，完成0库，原件保留于`work/jenkins/remaining-local-mysql-export-20261111T060722Z-fb043f27`。实际拒绝源于Python3.9不能解析.NET七位秒分数，另发现PowerShell内部任务结果混入输出；兼容和安全失败链修复后，同一授权范围的导出已实际完成。成功批次为`work/jenkins/remaining-local-mysql-export-20261111T080623Z-667aeed1`：业务库45表/4,208行，两个历史测试库分别2表/139行、5表/6行，前后计数一致。60份原件已封存至`work/data-migration-20261107/project-mysql-custody-20261111T0810`，压缩3,813,327字节，状态`PACKED_RESTORE_PENDING`；尚无ECS双恢复结果。不提权、不启停服务、不删除源数据、不自动循环重试；真实身份或权限不符必须停止。原 `local-mysql-export45-v1` 的保全入口、固定原件及默认恢复行为保持。
 
 新入口包含可执行的 `project-mysql-custody.py`、`restore-project-mysql.py` 和标准流水线控制器 `preserve-project-mysql.ps1`。Jenkinsfile、`configure-local.groovy` 和 `pipeline.ps1` 已完成源码接线，三个可选参数已在本地任务实际登记回读；固定提交 `6ce6ca5f` 的 #191 已在 ECS 执行本模块32项控制用例并全部通过。真实三库导出和恢复尚未执行，不能用示例 SHA、空包或手改参数把它启用。所有 ECS 动作继承现有固定源码、真实同构建项目 PASS、实例/执行身份、私有文件及源归档检查。仅控制预检成功不能授权它运行。
 

@@ -108,10 +108,14 @@ def process(value):
          and type(value['name']) is str and value['name'].casefold() == 'mysqld.exe',
          'NONADMIN_FIXED_PROCESS_IDENTITY_REQUIRED')
     stamp = value['createdAtUtc']
-    need(type(stamp) is str and re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,7})?(?:Z|\+00:00)', stamp),
-         'NONADMIN_PROCESS_CREATION_REQUIRED')
+    match = re.fullmatch(r'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,7}))?(?:Z|\+00:00)', stamp) if type(stamp) is str else None
+    need(match is not None, 'NONADMIN_PROCESS_CREATION_REQUIRED')
     try:
-        parsed = dt.datetime.fromisoformat(stamp.replace('Z', '+00:00'))
+        # Python 3.9 rejects .NET's seven-digit round-trip fraction. Parse the
+        # whole UTC second portably and retain all 100ns ticks for ordering;
+        # rounding to microseconds could admit a child older than its parent.
+        parsed = dt.datetime.fromisoformat(match[1] + '+00:00')
+        ticks = int((match[2] or '').ljust(7, '0'))
     except ValueError:
         raise PolicyError('NONADMIN_PROCESS_CREATION_REQUIRED') from None
     for key in ('executablePath', 'commandLine'):
@@ -121,7 +125,7 @@ def process(value):
         need(value['executablePath'].casefold() == EXECUTABLE.casefold(), 'NONADMIN_PROCESS_EXECUTABLE_CHANGED')
     if value['commandLine']:
         command(value['commandLine'])
-    return parsed
+    return parsed, ticks
 
 
 def validate_source(record, historical):

@@ -54,7 +54,7 @@ TOKEN = 'owned-private-runtime-token'
 
 def spec():
     return {'schemaVersion': 1, 'kind': probes.KIND, 'modelId': 'deepseek:runtime-scripted',
-        'streamDelayMillis': 15000, 'saveMaxMillis': 2000, 'completionTimeoutMillis': 45000,
+        'streamDelayMillis': 15000, 'saveWhileStreamsActive': True, 'completionTimeoutMillis': 45000,
         'markers': list(MARKERS)}
 
 
@@ -184,7 +184,7 @@ def test_final_state_rejects_missing_or_ambiguous_marker(mutation):
 
 
 @pytest.mark.parametrize('key,value', [('streamDelayMillis', 15001), ('streamDelayMillis', True),
-    ('saveMaxMillis', 3000), ('completionTimeoutMillis', 0), ('markers', MARKERS[:1]),
+    ('saveWhileStreamsActive', False), ('completionTimeoutMillis', 0), ('markers', MARKERS[:1]),
     ('markers', [MARKERS[0], MARKERS[0]]), ('modelId', 'https://paid.invalid/model')])
 def test_browser_and_controller_reject_invalid_probe_protocol(key, value):
     descriptor = spec()

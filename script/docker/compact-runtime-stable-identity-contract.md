@@ -60,7 +60,7 @@ browser = self.browser.run(self)
 
 ## 真实运行证明
 
-`prove_current_task` 使用原九场景中由真实 worker 完成的 report_task_id，不新建简化或合成成功任务。必须仍在同一迁移 target/server/build、保留原任务计数并新增至少一条真实任务；实际 DB 创建者 ID/身份原名与 inspector 对应，原预览返回 NEW_CREATION 来源证书，当前模式 ACTIVE/ACTIVE。
+`prove_current_task` 使用原九场景中由真实 worker 完成的 report_task_id，不新建简化或合成成功任务。本轮四账号功能验收由 supervisor 通过真实 HTTP 创建主任务，使 inspector、peer 均可作为非创建者竞争领取；主管随后真实分派给 inspector，继续报告和 SDK 场景。必须仍在同一迁移 target/server/build、保留原任务计数并新增至少一条真实任务；实际 DB 创建者 ID/身份原名与 supervisor 对应，当前稳定受派人为 inspector，原预览返回 NEW_CREATION 来源证书，当前模式 ACTIVE/ACTIVE。
 
 四个原有账号分别实际读回 auth ID/role、任务 progress、trace、资源历史：inspector、两主管为 HTTP 200 且任务版本相同，peer 对 progress/trace 为真实 HTTP 403/404，历史过滤列表为空。HTTP 500、业务错误包装、页面未执行或 legacy off 不能充当拒绝。报告只保留账号 alias、稳定 ID、role、状态码、版本和任务 ID 哈希；trace 中的地址、正文和签名 URL 均不归档。
 

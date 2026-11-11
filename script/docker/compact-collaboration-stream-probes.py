@@ -22,12 +22,12 @@ def require(condition, message):
 
 def validate_spec(spec, ownership_token=''):
     require(isinstance(spec, dict) and set(spec) == {'schemaVersion', 'kind', 'modelId',
-        'streamDelayMillis', 'saveMaxMillis', 'completionTimeoutMillis', 'markers'}, 'Invalid model stream descriptor')
+        'streamDelayMillis', 'saveWhileStreamsActive', 'completionTimeoutMillis', 'markers'}, 'Invalid model stream descriptor')
     require(spec['schemaVersion'] == 1 and spec['kind'] == KIND, 'Invalid model stream descriptor version')
     require(isinstance(spec['modelId'], str) and re.fullmatch(r'[A-Za-z0-9_.:-]{1,160}', spec['modelId']), 'Invalid owned model identifier')
     require(type(spec['streamDelayMillis']) is int and spec['streamDelayMillis'] == 15000,
             'Model stream evidence needs the fixed bounded delay')
-    require(type(spec['saveMaxMillis']) is int and spec['saveMaxMillis'] == 2000
+    require(spec['saveWhileStreamsActive'] is True
             and type(spec['completionTimeoutMillis']) is int and spec['completionTimeoutMillis'] == 45000,
             'Invalid model stream evidence timing budget')
     require(isinstance(spec['markers'], list) and len(spec['markers']) == 2
@@ -50,7 +50,7 @@ def arm_model_stream_probes(ctx):
         if ctx.token not in value and value not in markers:
             markers.append(value)
     spec = validate_spec({'schemaVersion': 1, 'kind': KIND, 'modelId': ctx.model_id,
-        'streamDelayMillis': 15000, 'saveMaxMillis': 2000, 'completionTimeoutMillis': 45000, 'markers': markers}, ctx.token)
+        'streamDelayMillis': 15000, 'saveWhileStreamsActive': True, 'completionTimeoutMillis': 45000, 'markers': markers}, ctx.token)
     ctx.owner['modelStreamProbes'] = {'phase': 'ARMING', 'descriptor': spec, 'armed': []}
     ctx.save()
     for marker in markers:

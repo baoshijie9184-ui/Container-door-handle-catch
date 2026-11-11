@@ -113,8 +113,8 @@ def validate_files(directory, cleanup, proof=None, browser_report=None, *, owned
             and browser_report.get('commit') == context['commit'] and browser_report.get('sourceSha256') == context['sourceSha256'],
             'Actual browser account evidence is required for collaboration identities')
     accounts = browser_report.get('accounts', {})
-    require(set(accounts) == browser.ACCOUNTS and len({row['userId'] for row in accounts.values()}) == 20,
-            'Twenty actual independent browser identities are required')
+    require(set(accounts) == browser.ACCOUNTS and len({row['userId'] for row in accounts.values()}) == 4,
+            'Four actual independent browser identities are required')
     preflight, admitted, authorization = (values['stable-identity-' + stage + '.json'] for stage in STAGES)
     for value in (preflight, admitted, authorization):
         require(value.get('migrationReceiptSha256') == proof.get('migrationReceiptSha256')

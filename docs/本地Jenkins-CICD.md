@@ -1,5 +1,11 @@
 # 本地 Jenkins CI/CD 约定
 
+2026-11-11 当前轮次遵循“全部约定开发和整合→构建→统一测试与验收”。业务验收账号固定为2个检测人员、2个主管；各2个标签仅验证账号及页面隔离、更新、撤销和恢复。正式并发/容量压测及性能SLO延期到后续压测工具，本轮不以用户规模或P95≤2000ms判定通过。19项浏览器功能检查及9项运行场景保留，报告如实记录延迟观察值，并固定`loadTestStatus=DEFERRED_BY_USER`、`performanceSloVerified=false`。磁盘、内存、进程归属、清理等资源安全门保持。
+
+#223固定`fc724a42`已真实完成13模块跳测试打包和1,853项控制预检；原生MySQL的检测接口12项通过，随后账号身份测试15项因同一必需目录Bean缺失在装配阶段报错，后续整库及运行阶段未执行。Windows14:13重启中断控制器，恢复后按用户暂停要求正常停止原构建，最终ABORTED。23份Jenkins原归档中22份非应用JAR共17,936,368字节及原build.xml已保全；服务器原生报告未在中断前完整回传，下次开机先只读补收，不将本地控制报告视作原生报告。夹具、工具STOPPED且remaining为空，流水线外实际`Stopped / StopCharging`已回读。
+
+本轮集中修复包含：账号身份测试的实际SQL目录与锁定边界、审计测试的旧模式参与者集合、共享报告测试的真实资格依赖和渲染器，以及覆盖配置的Mapper；原Java用例及权限断言保持。三库导出修复保留完整100ns进程时间排序和全部身份门，兼容Python3.9的时间解析、消除PowerShell内部任务返回值，并保留闭集安全失败码。新增14项导出控制使20模块最低数为1,867；四账号验收另补15项相关用例，原64类原生最低686项保持。Java17全13模块跳测试编译、Python/PowerShell静态检查已通过，尚待整合固定提交在ECS统一实测。不得因编译、元数据核查或旧构建通过而放行生产。
+
 2026-11-11 本机恢复：Windows最近启动时间为北京时间13:27，随后8080无监听、Jenkins和本地agent进程均不在运行。已复用本节原启动脚本、WAR、Java和Jenkins Home恢复，控制器13:35:58就绪，节点13:36:00重新连接；实际任务仍为#222终态FAILURE、disabled=true、无排队。没有恢复旧备份或启动ECS，原控制器日志保留在`work/jenkins/data-residency-20261107/controller-restart-20261111T1336`。
 
 2026-11-11 #222实际结果：固定`936bdb3e91e23cbc7daf717333f326b61d43170f`的20模块1,853项预检、四阶段夹具准备通过；原生MySQL实际3类27项，15通过、12错误、零跳过。`SupportCopyMigrationMySqlTest`9项全部通过，确认图片迁移写入顺序及指针损坏回滚修复；`DetectionExecutionApiImplTest`12项均在@BeforeEach实际任务插入时触发`fk_detection_task_model`，因为固定模型12未建父记录，正文尚未执行。34份原归档中33份非应用JAR共18,464,512字节及原build.xml已保全于`work/jenkins/data-residency-20261107/ci-222-raw-receipts`；夹具、工具STOPPED且工具remaining为空，流水线外实际`Stopped / StopCharging`已回读。Jenkins控制器运行，修复期间任务禁自动触发且无排队。

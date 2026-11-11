@@ -1313,7 +1313,7 @@
       },
       {
         "module": "tests_python.test_local_mysql_custody",
-        "minimumTests": 125,
+        "minimumTests": 139,
         "source": "tests_python/test_local_mysql_custody.py",
         "allowedSkippedTests": []
       },
@@ -1613,7 +1613,7 @@
       },
       {
         "module": "tests_python.test_compact_runtime_stable_identity",
-        "minimumTests": 22,
+        "minimumTests": 24,
         "source": "tests_python/test_compact_runtime_stable_identity.py",
         "allowedSkippedTests": []
       },
@@ -1661,13 +1661,13 @@
       },
       {
         "module": "tests_python.test_collaboration_browser_evidence",
-        "minimumTests": 118,
+        "minimumTests": 129,
         "source": "tests_python/test_collaboration_browser_evidence.py",
         "allowedSkippedTests": []
       },
       {
         "module": "tests_python.test_collaboration_acceptance_evidence",
-        "minimumTests": 22,
+        "minimumTests": 24,
         "source": "tests_python/test_collaboration_acceptance_evidence.py",
         "allowedSkippedTests": []
       }
@@ -1738,12 +1738,21 @@
   },
   "runtimeAcceptance": {
     "requiredBeforeProduction": true,
+    "businessActors": {
+      "accounts": 4,
+      "roleCounts": { "INSPECTOR": 2, "SUPERVISOR": 2 },
+      "tabsPerAccount": 2
+    },
+    "loadTest": {
+      "status": "DEFERRED_BY_USER",
+      "performanceSloRequired": false
+    },
     "receiptFile": "runtime-acceptance.json",
     "requiresCandidateBuildBinding": true,
     "scenarios": [
       {
         "id": "auth-role-isolation",
-        "requirement": "Login with separate inspector/supervisor accounts; verify user, business-owner and role boundaries through the running application.",
+        "requirement": "Reuse exactly four business accounts (two inspectors and two supervisors) for functional collaboration, permissions and multi-tab isolation; formal load testing and performance SLO acceptance are deferred.",
         "relatedLegacySuites": [
           "EcsMysqlFixtureTest",
           "AgentSessionLocalMysqlTest",

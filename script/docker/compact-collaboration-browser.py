@@ -105,8 +105,7 @@ def run(ctx):
         'runtime': {'browserImageId': image, 'browserContainerId': '', 'cpuLimit': 2,
                     'memoryLimitBytes': MEMORY, 'pidsLimit': 512},
         'fixtures': {'reportTaskId': ctx.report_task_id, 'modelStreamProbes': probes['descriptor']},
-        'budgets': {'accounts': 20, 'tabsPerAccount': 2, 'p95MaxMs': 2000,
-                    'minimumLatencySamples': 20, 'timeoutSeconds': 600}}
+        'budgets': {'functionalAccounts': 4, 'tabsPerAccount': 2, 'timeoutSeconds': 600}}
     # Build layers are retained in the measured baseline, not credited as free space.
     ctx.resources.admit('runtime-browser', 512 * MIB, {'browserImageId': image,
         'measuredRetainedImageBytes': ctx.owner['browserImageBytes'], 'evidenceBoundBytes': 128 * MIB,

@@ -33,6 +33,68 @@ function Write-BatchJson([string]$Path, $Value) {
     Require-Batch (-not (Test-Path -LiteralPath $Path)) 'Batch evidence cannot be overwritten.'
     [IO.File]::WriteAllText($Path, ($Value | ConvertTo-Json -Depth 12), [Text.UTF8Encoding]::new($false))
 }
+function Get-BatchWorkerFailure([Exception]$Failure, [bool]$NonAdmin) {
+    # Only the worker's explicit public envelope is admitted. Never serialize
+    # ErrorRecord, Message, StackTrace, Data as a whole, or captured stdout.
+    $codes = @(
+        'ADDITIONAL_FIXTURE_AUTHORIZATION_REQUIRED', 'ADMINISTRATOR_TOKEN_REQUIRED',
+        'EXPORT_FAILED', 'EXPORT_GUARD_REJECTED', 'FIXED_SOURCE_SCHEMA_REQUIRED',
+        'INSUFFICIENT_PROCESS_METADATA', 'NO_REVIEWED_TCP_ENDPOINT',
+        'USER_AUTHORIZATION_REQUIRED', 'NONADMIN_BATCH_HELPER_BINDING_REQUIRED',
+        'NONADMIN_SOURCE_HELPER_CHANGED', 'NONADMIN_SQL_HOST_OR_ACCOUNT_MISMATCH', 'NONADMIN_TOKEN_REQUIRED',
+        'NONADMIN_CREDENTIAL_BYTES_REQUIRED', 'NONADMIN_CREDENTIAL_CHANGED',
+        'NONADMIN_CREDENTIAL_ENDPOINT_REQUIRED', 'NONADMIN_CREDENTIAL_IDENTITY_REQUIRED',
+        'NONADMIN_CREDENTIAL_SHA_REQUIRED', 'NONADMIN_CREDENTIAL_SHAPE_REQUIRED',
+        'NONADMIN_ENDPOINT_OWNER_REQUIRED', 'NONADMIN_INTERPRETER_CHANGED', 'NONADMIN_METADATA_BOUND',
+        'NONADMIN_METADATA_REFUSED', 'NONADMIN_POLICY_ACTION_REQUIRED', 'NONADMIN_POLICY_CHANGED',
+        'NONADMIN_POLICY_START_FAILED', 'NONADMIN_POLICY_TIMEOUT', 'NONADMIN_PROCESS_METADATA_REQUIRED',
+        'NONADMIN_SERVICE_REQUIRED', 'NONADMIN_TCP_STATE_REQUIRED'
+    )
+    $phases = @('AUTHORIZATION_REQUIRED', 'NONADMINISTRATOR_METADATA_GATE', 'ADMINISTRATOR_METADATA_GATE',
+        'LOCAL_SOURCE_METADATA_GATE', 'PRIVATE_INPUT_PREPARATION', 'RESTRICTED_SOURCE_OBSERVATION',
+        'SINGLE_TRANSACTION_LOGICAL_EXPORT', 'RESTRICTED_AFTER_OBSERVATION', 'BYTE_ONLY_COMPRESSION', 'PRIVATE_CREDENTIAL_CLEANUP')
+    $types = @('InvalidOperationException', 'RuntimeException', 'IOException', 'UnauthorizedAccessException',
+        'FileNotFoundException', 'DirectoryNotFoundException', 'ArgumentException', 'ArgumentNullException',
+        'ArgumentOutOfRangeException', 'InvalidDataException', 'FormatException', 'OverflowException',
+        'Win32Exception', 'CimException', 'PSInvalidCastException', 'CommandNotFoundException',
+        'ParameterBindingException', 'MethodInvocationException', 'PropertyNotFoundException',
+        'PrivateCredentialCleanupFailed', 'CredentialSourceIdentityChanged')
+    for ($depth = 0; $null -ne $Failure -and $depth -lt 8; $depth++) {
+        $candidate = $Failure; $Failure = $Failure.InnerException
+        if (-not $candidate.Data.Contains('ExportFailurePublicJson')) { continue }
+        $raw = $candidate.Data['ExportFailurePublicJson']
+        if ($raw -isnot [string] -or [Text.Encoding]::UTF8.GetByteCount($raw) -gt 4096) { return $null }
+        try { $value = ConvertFrom-Json -InputObject $raw -AsHashtable -Depth 8 } catch { return $null }
+        $keys = @('schemaVersion', 'kind', 'status', 'phase', 'errorType', 'reasonCode', 'sourceDeleted',
+            'servicesChanged', 'testsExecuted', 'cloudUploaded', 'sourceSeenState', 'actualClientIdentityVerified',
+            'backupRestoreVerified', 'retirementAllowed')
+        if ($NonAdmin) { $keys += 'sourceMode' }
+        if ($value -isnot [Collections.IDictionary] -or
+            (($value.Keys | Sort-Object) -join ',') -cne (($keys | Sort-Object) -join ',')) { return $null }
+        if (($value.schemaVersion -isnot [int] -and $value.schemaVersion -isnot [long]) -or
+            $value.schemaVersion -ne $(if ($NonAdmin) { 2 } else { 1 }) -or
+            $value.kind -isnot [string] -or $value.status -isnot [string] -or $value.phase -isnot [string] -or
+            $value.kind -cne $(if ($NonAdmin) { 'doorhandle-nonadmin-local-mysql-export' } else { 'doorhandle-local-mysql-export' }) -or
+            ($NonAdmin -and ($value.sourceMode -isnot [string] -or $value.sourceMode -cne 'PINNED_HISTORY_FRESH_SERVICE_TCP')) -or
+            $value.status -cne 'FAILED' -or $value.phase -cnotin $phases -or
+            $value.reasonCode -isnot [string] -or $value.actualClientIdentityVerified -isnot [bool]) { return $null }
+        $knownReason = $value.reasonCode -cin $codes
+        if (-not $knownReason -and $NonAdmin) {
+            $envelope = '{"errorCode": "' + $value.reasonCode + '", "status": "REFUSED"}' + "`n"
+            $knownReason = (Get-NonAdminPolicyRefusalCode $envelope) -ceq $value.reasonCode
+        }
+        if (-not $knownReason) { return $null }
+        foreach ($name in @('sourceDeleted','servicesChanged','testsExecuted','cloudUploaded','backupRestoreVerified','retirementAllowed')) {
+            if ($value[$name] -isnot [bool] -or $value[$name]) { return $null }
+        }
+        if ($value.sourceSeenState -isnot [array] -or $value.sourceSeenState.Count -gt 2 -or
+            @($value.sourceSeenState | Where-Object { ($_ -isnot [int] -and $_ -isnot [long]) -or $_ -notin @(0,2) }).Count -gt 0 -or
+            @($value.sourceSeenState | Select-Object -Unique).Count -ne $value.sourceSeenState.Count) { return $null }
+        if ($value.errorType -cnotin $types) { $value.errorType = 'UnclassifiedExportFailure' }
+        return $value
+    }
+    return $null
+}
 
 Require-Batch ($IsWindows -and $AcknowledgeRemainingSchemasReadOnlyExport -and
     $UserAuthorizationReference -cmatch '^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,180}$') 'New explicit user approval for this one fixed-schema read-only batch is required.'
@@ -60,6 +122,7 @@ if ($NonAdministratorReadOnlyExport) {
         Assert-BatchUnlinked $nonAdminDependencies[$name]
         $nonAdminDependencySha[$name] = (Get-FileHash -LiteralPath $nonAdminDependencies[$name] -Algorithm SHA256).Hash.ToLowerInvariant()
     }
+    . $nonAdminDependencies.sourceHelper
 }
 $schemas = @('doorhandle_agent_verify_ef8d5844c1', 'doorhandle_model_verify_22e4bc5566')
 if ($IncludeLegacyBusinessSource) { $schemas += 'doorhandledb' }
@@ -91,7 +154,7 @@ if ($NonAdministratorReadOnlyExport) {
 Write-BatchJson (Join-Path $directory 'authorization-private.json') $authorization
 
 $results = [Collections.Generic.List[object]]::new()
-$activeSchema = $null; $failureType = $null
+$activeSchema = $null; $failureType = $null; $workerFailure = $null
 try {
     foreach ($schema in $schemas) {
         $activeSchema = $schema
@@ -153,7 +216,10 @@ try {
         })
         Write-BatchJson (Join-Path $directory ($schema + '-result.json')) $results[$results.Count - 1]
     }
-} catch { $failureType = $_.Exception.GetType().Name }
+} catch {
+    $failureType = $_.Exception.GetType().Name
+    $workerFailure = Get-BatchWorkerFailure $_.Exception ([bool]$NonAdministratorReadOnlyExport)
+}
 $receipt = [ordered]@{
     kind = 'doorhandle-remaining-local-mysql-export'; schemaVersion = 1;
     status = if ($failureType) { 'PARTIAL_OR_FAILED' } else { 'LOCAL_EXPORTS_COMPLETE_ECS_RESTORE_PENDING' };
@@ -168,6 +234,10 @@ if ($NonAdministratorReadOnlyExport) {
     $receipt.kind = 'doorhandle-nonadmin-remaining-local-mysql-export'; $receipt.schemaVersion = 2
     $receipt['sourceMode'] = 'PINNED_HISTORY_FRESH_SERVICE_TCP'; $receipt['restorePending'] = $true
     $receipt['dependencySha256'] = $nonAdminDependencySha
+}
+if ($failureType) {
+    $receipt['workerFailureDetailsStatus'] = if ($workerFailure) { 'CONTROLLED_WORKER_FAILURE_CAPTURED' } else { 'NO_ADMISSIBLE_WORKER_FAILURE_DETAILS' }
+    $receipt['workerFailure'] = $workerFailure
 }
 Write-BatchJson (Join-Path $directory 'batch-result-private.json') $receipt
 Write-Output ([ordered]@{ status = $receipt.status; completedSchemas = $receipt.completedSchemas;

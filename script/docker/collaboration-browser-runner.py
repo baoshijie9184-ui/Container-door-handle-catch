@@ -32,20 +32,20 @@ REQUIRED = ('four-roles-real-ui', 'react-real-workbench', 'real-device-created',
             'same-version-ui-conflict', 'real-history-diff', 'request-replay',
             'inspector-report-and-scope', 'native-sse-reconnect',
             'notification-failure-recovery', 'same-account-device-logout',
-            'late-account-switch', 'refresh-logout-race', 'twenty-accounts-forty-tabs',
-            'http1-shared-connections', 'latency-p95', 'resource-samples',
+            'late-account-switch', 'refresh-logout-race', 'four-accounts-multi-tab',
+            'http1-shared-connections', 'latency-observation', 'resource-samples',
             'account-disable-revocation', 'artifact-secret-boundary',
             'model-stream-save-connection-budget')
 CASE_CHECKS = {
     'A01': ('four-roles-real-ui',), 'A03': ('inspector-report-and-scope',),
     'A04': ('same-version-ui-conflict',), 'A06': ('request-replay',),
-    'A07': ('request-replay',), 'A09': ('twenty-accounts-forty-tabs',),
+    'A07': ('request-replay',), 'A09': ('four-accounts-multi-tab',),
     'A10': ('same-version-ui-conflict',), 'A11': ('inspector-report-and-scope',),
     'A12': ('account-disable-revocation',), 'A13': ('native-sse-reconnect',),
     'A14': ('notification-failure-recovery',),
     'A15': ('http1-shared-connections', 'late-account-switch'),
     'A17': ('artifact-secret-boundary',), 'A20': ('resource-samples',),
-    'A21': ('http1-shared-connections', 'latency-p95', 'model-stream-save-connection-budget'),
+    'A21': ('http1-shared-connections', 'latency-observation', 'model-stream-save-connection-budget'),
     'A22': ('native-sse-reconnect', 'account-disable-revocation'),
     'A23': ('native-sse-reconnect',), 'A24': ('four-roles-real-ui',),
     'A25': ('same-account-device-logout',), 'A26': ('late-account-switch',),
@@ -119,13 +119,14 @@ def unwrap(value):
 def stream_probe_spec(descriptor):
     spec = descriptor.get('fixtures', {}).get('modelStreamProbes', {})
     require(isinstance(spec, dict) and set(spec) == {'schemaVersion', 'kind', 'modelId', 'streamDelayMillis',
-            'saveMaxMillis', 'completionTimeoutMillis', 'markers'}, 'actual_model_stream_fixture_required')
+            'saveWhileStreamsActive', 'completionTimeoutMillis', 'markers'}, 'actual_model_stream_fixture_required')
     require(spec.get('schemaVersion') == 1 and spec.get('kind') == 'doorhandle-owned-model-stream-probes'
             and isinstance(spec.get('modelId'), str) and re.fullmatch(r'[A-Za-z0-9_.:-]{1,160}', spec['modelId']),
             'owned_model_stream_descriptor_invalid')
     require(all(type(spec.get(key)) is int and spec[key] == value for key, value in {
-        'streamDelayMillis': 15000, 'saveMaxMillis': 2000, 'completionTimeoutMillis': 45000}.items()),
+        'streamDelayMillis': 15000, 'completionTimeoutMillis': 45000}.items()),
         'bounded_model_stream_timing_required')
+    require(spec.get('saveWhileStreamsActive') is True, 'ordinary_save_during_live_streams_required')
     markers = spec.get('markers')
     require(isinstance(markers, list) and len(markers) == 2
             and all(isinstance(value, str) and re.fullmatch(r'a21-stream-[a-f0-9]{24}', value)
@@ -209,9 +210,9 @@ def validate(descriptor, accounts, output):
         raise AdmissionError('browser_cpu_budget_mismatch')
     if importlib.metadata.version('playwright') != PLAYWRIGHT_VERSION:
         raise AdmissionError('pinned_playwright_required')
-    expected = {'inspector', 'peer', 'supervisor', 'reviewer'} | {f'load_{index:02}' for index in range(1, 17)}
-    if set(accounts) != expected or len({str(item.get('userId')) for item in accounts.values()}) != 20:
-        raise AdmissionError('twenty_distinct_owned_accounts_required')
+    expected = {'inspector', 'peer', 'supervisor', 'reviewer'}
+    if set(accounts) != expected or len({str(item.get('userId')) for item in accounts.values()}) != 4:
+        raise AdmissionError('four_distinct_owned_accounts_required')
     for alias, item in accounts.items():
         if item.get('role') not in ('SUPERVISOR', 'INSPECTOR') or not isinstance(item.get('username'), str) or not item.get('password') or not re.fullmatch(r'[1-9]\d*', str(item.get('userId', ''))):
             raise AdmissionError('account_contract_invalid')
@@ -220,7 +221,7 @@ def validate(descriptor, accounts, output):
         if alias in ('inspector', 'peer') and item['role'] != 'INSPECTOR':
             raise AdmissionError('two_inspectors_required')
     budgets = descriptor.get('budgets', {})
-    if budgets.get('accounts') != 20 or budgets.get('tabsPerAccount') != 2 or not 20 <= budgets.get('minimumLatencySamples', 0) <= 2000 or not 1 <= budgets.get('p95MaxMs', 0) <= 2000 or not 300 <= budgets.get('timeoutSeconds', 0) <= 1800:
+    if set(budgets) != {'functionalAccounts', 'tabsPerAccount', 'timeoutSeconds'} or budgets.get('functionalAccounts') != 4 or budgets.get('tabsPerAccount') != 2 or not 300 <= budgets.get('timeoutSeconds', 0) <= 1800:
         raise AdmissionError('browser_acceptance_budget_invalid')
     if not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', str(descriptor.get('fixtures', {}).get('reportTaskId', ''))):
         raise AdmissionError('actual_completed_task_fixture_required')
@@ -243,7 +244,8 @@ class Evidence:
         self.data = {'schemaVersion': 1, 'startedAt': now(), 'status': 'FAIL',
             'commit': descriptor['commit'], 'sourceSha256': descriptor['sourceSha256'],
             'ownership': {key + 'Sha256': sha(descriptor['ownership'][key]) for key in ('project', 'network')},
-            'runtime': descriptor['runtime'], 'accounts': {key: {'userId': str(value['userId']), 'role': value['role']} for key, value in accounts.items()},
+            'runtime': descriptor['runtime'], 'functionalAccounts': 4, 'loadTestStatus': 'DEFERRED_BY_USER',
+            'performanceSloVerified': False, 'accounts': {key: {'userId': str(value['userId']), 'role': value['role']} for key, value in accounts.items()},
             'tool': {'playwright': PLAYWRIGHT_VERSION, 'expectedChromium': CHROMIUM_VERSION},
             'topology': {'browserOrigin': 'container-loopback-ephemeral-port', 'upstream': 'http://ui:80',
                 'transport': 'transparent-streaming-http1.1', 'secureContextReason': 'standard localhost trust; no insecure-origin flags',
@@ -498,8 +500,11 @@ class Runner:
             expected = 1 if self.accounts[alias]['role'] == 'SUPERVISOR' else 0
             require(await page.get_by_placeholder('查找登录账号').count() == expected, 'actual_role_menu_mismatch')
             await self.screenshot(page, 'identity-' + alias)
-        self.evidence.passed('four-roles-real-ui', simultaneousContexts=4,
-            identitiesReadFromServer=True, roleSpecificOrganizationControls=True)
+        require(len({id(value) for value in self.contexts.values()}) == 4
+                and len({value['accountContext'] for value in self.auth.values()}) == 4,
+                'four_independent_browser_cookie_contexts_required')
+        self.evidence.passed('four-roles-real-ui', simultaneousContexts=4, independentCookieContexts=True,
+            distinctServerAccountContexts=True, identitiesReadFromServer=True, roleSpecificOrganizationControls=True)
 
     async def react(self):
         page = await self.contexts['inspector'].new_page()
@@ -843,7 +848,7 @@ class Runner:
                   'visibility': before['visibility'], 'filterPageScrollFocusPreserved': True}
         self.evidence.data['latencySamples'].append(sample)
 
-    async def load(self):
+    async def multi_tab(self):
         semaphore = asyncio.Semaphore(3)
         async def prepare(alias):
             async with semaphore:
@@ -857,11 +862,11 @@ class Runner:
                 await sibling.bring_to_front()
                 await sibling.locator('#device-code-query').focus()
         await asyncio.gather(*(prepare(alias) for alias in self.accounts))
-        require(len(self.contexts) == 20 and sum(len(value) for value in self.pages.values()) == 40, 'twenty_accounts_forty_actual_tabs_required')
-        await self.wait_until(lambda: len({item['account'] for item in self.events if item.get('type') == 'heartbeat' and item['account'] in self.accounts}) == 20, timeout=40)
-        load_start = time.time() * 1000
+        require(len(self.contexts) == 4 and sum(len(value) for value in self.pages.values()) == 8, 'four_accounts_two_tabs_for_functional_coordination_required')
+        await self.wait_until(lambda: len({item['account'] for item in self.events if item.get('type') == 'heartbeat' and item['account'] in self.accounts}) == 4, timeout=40)
+        coordination_start = time.time() * 1000
         self.peak_sse = len(self.active_sse)
-        rounds = max(2, math.ceil(self.descriptor['budgets']['minimumLatencySamples'] / 19))
+        rounds = 2  # Each supervisor writes once; every account observes the other writer.
         covered = set()
         for index in range(rounds):
             writer = 'supervisor' if index % 2 == 0 else 'reviewer'
@@ -874,10 +879,10 @@ class Runner:
                 if alias == writer: continue
                 page = pages[1]
                 before = await self.arm_dom(page, marker)
-                require(before['visibility'] == 'visible', 'load_watcher_must_be_actually_visible')
+                require(before['visibility'] == 'visible', 'coordination_watcher_must_be_actually_visible')
                 watchers.append((alias, page, before))
             response, response_at = await self.save_device(actor)
-            require(response.status == 200 and str(self.command['expectedVersion'] or self.command['body'].get('version')) == opened, 'load_write_must_use_opened_version')
+            require(response.status == 200 and str(self.command['expectedVersion'] or self.command['body'].get('version')) == opened, 'coordination_write_must_use_opened_version')
             request_id = self.command['requestId']
             committed_version = self.last_receipt['version']
             await asyncio.gather(*(self.collect_dom(page, before, marker, response_at, request_id, committed_version, alias, 1) for alias, page, before in watchers))
@@ -890,30 +895,30 @@ class Runner:
                 await background.locator('[aria-label="设备记录"] .el-table__body tr').filter(has_text=marker).wait_for(timeout=12000)
                 await self.pages[alias][1].bring_to_front()
             await self.pages[writer][1].bring_to_front()
-        require(covered == set(self.accounts), 'all_twenty_accounts_must_have_real_dom_samples')
+        require(covered == set(self.accounts), 'all_four_accounts_must_have_real_dom_observations')
         samples = self.evidence.data['latencySamples']
-        require(len(samples) >= self.descriptor['budgets']['minimumLatencySamples'], 'latency_sample_minimum_not_met')
         values = sorted(item['eventOccurredToDomMs'] for item in samples)
         p95 = values[math.ceil(.95 * len(values)) - 1]
         self.evidence.data['latency'] = {'definition': 'actual matched server SSE occurredAt to visible DOM marker; same ECS host wall clock',
             'serverTimestampIsPreCommitAuditTime': True, 'quantile': 'nearest-rank', 'samples': len(samples),
-            'accountsWithSamples': len(covered), 'p95Ms': p95, 'limitMs': self.descriptor['budgets']['p95MaxMs'],
+            'accountsWithSamples': len(covered), 'p95Ms': p95, 'performanceSloVerified': False,
+            'loadTestStatus': 'DEFERRED_BY_USER',
             'clockTopology': 'browser and backend containers share ECS kernel clock; negative or absent timestamps fail',
             'backgroundTabsIncludedInP95': False, 'backgroundFocusRecoveryAsserted': True}
-        self.evidence.passed('twenty-accounts-forty-tabs', accounts=20, actualTabs=40, backgroundFocusRecovery=True,
-            visibleWatcherAccountsPerRound=19, actualMutationRounds=rounds, allAccountsSampled=True)
-        require(p95 <= self.descriptor['budgets']['p95MaxMs'], 'actual_p95_exceeds_two_seconds')
-        self.evidence.passed('latency-p95', samples=len(samples), accounts=20, p95Ms=p95, limitMs=2000)
+        self.evidence.passed('four-accounts-multi-tab', functionalAccounts=4, actualTabs=8, backgroundFocusRecovery=True,
+            visibleWatcherAccountsPerRound=3, actualMutationRounds=rounds, allAccountsSampled=True)
+        self.evidence.passed('latency-observation', samples=len(samples), functionalAccounts=4, p95Ms=p95,
+            performanceSloVerified=False, loadTestStatus='DEFERRED_BY_USER')
         current = [value for value in self.active_sse.values() if value[0] in self.accounts]
         counts = {alias: sum(value[0] == alias for value in current) for alias in self.accounts}
-        require(all(value == 1 for value in counts.values()) and self.peak_sse <= 20, 'one_native_sse_per_same_account_tabs_required')
-        requests = [item for item in self.requests if item['at'] >= load_start and item.get('status') == 200]
+        require(all(value == 1 for value in counts.values()) and self.peak_sse <= 4, 'one_native_sse_per_same_account_tabs_required')
+        requests = [item for item in self.requests if item['at'] >= coordination_start and item.get('status') == 200]
         protocols = {item.get('protocol') for item in self.requests if item.get('status') == 200}
         require(protocols == {'http/1.1'} and self.proxy.snapshot()['nginxProtocols'] == ['HTTP/1.1'], 'actual_http1_protocol_evidence_required')
         self.evidence.passed('http1-shared-connections', browserProtocols=sorted(protocols), nginxProtocols=['HTTP/1.1'],
-            actualSsePerAccount=counts, loadPeakSse=self.peak_sse, newConnectionsDuringMeasuredLoad=len(requests), sameAccountTabs=2,
+            actualSsePerAccount=counts, coordinationPeakSse=self.peak_sse, newConnectionsDuringCoordination=len(requests), sameAccountTabs=2,
             backgroundVisibilityNotOverridden=True, publicHttp2Claimed=False)
-        await self.screenshot(self.pages['inspector'][1], 'twenty-accounts-load-real-device')
+        await self.screenshot(self.pages['inspector'][1], 'four-accounts-multi-tab-real-device')
 
     async def model_stream_save(self):
         spec = stream_probe_spec(self.descriptor)
@@ -1036,7 +1041,7 @@ class Runner:
                 start = time.monotonic()
                 response, _at = await self.save_device(target)
                 elapsed = (time.monotonic() - start) * 1000
-                require(response.status == 200 and elapsed <= spec['saveMaxMillis'], 'actual_save_with_models_must_complete_within_budget')
+                require(response.status == 200, 'actual_save_with_live_models_must_succeed')
                 require(str(self.command['expectedVersion'] or self.command['body'].get('version')) == opened
                     and int(self.last_receipt['version']) == int(opened) + 1, 'actual_stream_save_cas_version_required')
                 values, models = await live()
@@ -1096,7 +1101,8 @@ class Runner:
                 nativeSharedSsePerAccount=1, actualTabsInModelContext=2, ordinarySaves=receipts,
                 actualSharedSseConnectionId=shared_sse_connection[0],
                 actualHttp1ModelContextConnectionsAtSave=4,
-                maximumProviderDelayMillis=spec['streamDelayMillis'], saveLimitMs=spec['saveMaxMillis'],
+                maximumProviderDelayMillis=spec['streamDelayMillis'], saveWhileStreamsActive=True,
+                performanceSloVerified=False, loadTestStatus='DEFERRED_BY_USER',
                 providerFinalStateMustBeReReadByRuntime=True, publicHttp2Claimed=False,
                 responseGatesUsed=False, proxyModelPeak=after['modelPeak'], proxyConnectionsPeak=after['connectionsPeak'])
         finally:
@@ -1104,33 +1110,62 @@ class Runner:
                 if (!value.done) value.controller.abort(); delete window.__ownedA21Streams;}''')
 
     async def revoke(self):
-        target = 'load_16'
+        target = 'peer'
         page = self.pages['supervisor'][0]
-        await self.goto(page, '/organization')
-        await page.get_by_placeholder('查找登录账号').fill(self.accounts[target]['username'])
-        await page.get_by_role('button', name='查询', exact=True).click()
-        row = page.locator('.el-table__body tr').filter(has_text=self.accounts[target]['username'])
-        await row.get_by_role('button', name='登录权限', exact=True).click()
-        dialog = page.get_by_role('dialog', name='账号登录权限', exact=True)
-        await dialog.locator('.access-form').wait_for()
-        await dialog.get_by_role('switch').click()
-        async with page.expect_response(lambda response: response.request.method == 'POST' and '/access' in urlsplit(response.url).path) as pending:
-            await dialog.get_by_role('button', name='确认保存权限', exact=True).click()
-        response = await pending.value
-        require(response.status == 200, 'actual_account_disable_ui_required')
+        async def access(enabled):
+            await self.goto(page, '/organization')
+            await page.get_by_placeholder('查找登录账号').fill(self.accounts[target]['username'])
+            await page.get_by_role('button', name='查询', exact=True).click()
+            row = page.locator('.el-table__body tr').filter(has_text=self.accounts[target]['username'])
+            await row.get_by_role('button', name='登录权限', exact=True).click()
+            dialog = page.get_by_role('dialog', name='账号登录权限', exact=True)
+            await dialog.locator('.access-form').wait_for()
+            switch = dialog.get_by_role('switch')
+            require(await switch.get_attribute('aria-checked') == str(not enabled).lower(), 'actual_account_access_transition_required')
+            await switch.click()
+            async with page.expect_response(lambda response: response.request.method == 'POST' and '/access' in urlsplit(response.url).path) as pending:
+                await dialog.get_by_role('button', name='确认保存权限', exact=True).click()
+            response = await pending.value
+            require(response.status == 200, 'actual_account_access_ui_required')
+            result = unwrap(await response.json())
+            require(result.get('enabled') is enabled, 'actual_account_access_readback_required')
+            await dialog.wait_for(state='hidden')
+
         context = self.contexts[target]
-        # Preserve old selected credentials in this real browser context. Check
-        # before page focus can trigger a new identity check/cleanup.
-        result = await context.request.get(self.base + '/api/auth/check', headers={'Origin': self.base})
-        require(result.status == 401, 'disabled_existing_session_must_be_unauthorized')
+        cookies = await context.cookies(self.base + '/api/auth/check')
+        require(any(row['name'] == 'DOOR_HANDLE_CONTEXT' and row['value'] == self.auth[target]['accountContext'] for row in cookies)
+                and any(row['name'].startswith('DOOR_HANDLE_TOKEN_') for row in cookies), 'actual_old_session_cookies_required')
+        old_headers = {'Cookie': '; '.join(row['name'] + '=' + row['value'] for row in cookies), 'Origin': self.base}
+        self.evidence.secrets.update(row['value'] for row in cookies)
+        old_probe = await self.request_factory.new_context()
+        try:
+            await access(False)
+            try:
+                # Replay the exact in-memory old Cookie header independently of
+                # UI cleanup and any 401 Set-Cookie deletion, before and after restore.
+                result = await old_probe.get(self.base + '/api/auth/check', headers=old_headers)
+                require(result.status == 401, 'disabled_existing_session_must_be_unauthorized')
+                for tab in self.pages[target]:
+                    await tab.bring_to_front()
+                    await tab.get_by_role('heading', name='登录工作空间', exact=True).wait_for(timeout=35000)
+                    require(await tab.locator('[aria-label="设备记录"]').count() == 0, 'revoked_page_business_data_must_be_cleared')
+                await self.wait_until(lambda: all(value[0] != target for value in self.active_sse.values()), timeout=40)
+                await self.screenshot(self.pages[target][1], 'disabled-account-cleared')
+            finally:
+                # Reuse the four functional identities; no disposable fifth account.
+                await access(True)
+            old = await old_probe.get(self.base + '/api/auth/check', headers=old_headers)
+            require(old.status == 401, 'restoring_access_must_not_resurrect_revoked_session')
+        finally:
+            await old_probe.dispose()
+        await self.login(self.pages[target][0], target)
         for tab in self.pages[target]:
             await tab.bring_to_front()
-            await tab.get_by_role('heading', name='登录工作空间', exact=True).wait_for(timeout=35000)
-            require(await tab.locator('[aria-label="设备记录"]').count() == 0, 'revoked_page_business_data_must_be_cleared')
-        await self.wait_until(lambda: all(value[0] != target for value in self.active_sse.values()), timeout=40)
-        await self.screenshot(self.pages[target][1], 'disabled-account-cleared')
+            await self.device_list(tab)
         self.evidence.passed('account-disable-revocation', userId=str(self.accounts[target]['userId']),
-            actualUiDisable=True, existingCookieHttpStatus=401, bothTabsBusinessDataCleared=True, nativeSseClosed=True)
+            actualUiDisable=True, existingCookieHttpStatus=401, bothTabsBusinessDataCleared=True, nativeSseClosed=True,
+            actualUiRestore=True, restoredOldCookieHttpStatus=401, exactOldCookieReplay=True,
+            qualifiedNewSessionVerified=True, bothTabsRestored=True)
 
     async def run_check(self, name, callback):
         try:
@@ -1143,6 +1178,7 @@ class Runner:
     async def run(self):
         from playwright.async_api import async_playwright
         async with async_playwright() as playwright:
+            self.request_factory = playwright.request
             # No --ignore-certificate-errors, --unsafely-treat-insecure-origin-*
             # or visibility overrides. Owned UI only; container isolation is the
             # sandbox boundary, recorded explicitly instead of claiming otherwise.
@@ -1155,7 +1191,7 @@ class Runner:
                 ('real-history-diff', self.history), ('request-replay', self.replay),
                 ('inspector-report-and-scope', self.inspector_report), ('native-sse-reconnect', self.reconnect),
                 ('notification-failure-recovery', self.notification_failure), ('same-account-device-logout', self.device_logout),
-                ('late-account-switch', self.late_switch), ('refresh-logout-race', self.refresh_race), ('twenty-accounts-forty-tabs', self.load),
+                ('late-account-switch', self.late_switch), ('refresh-logout-race', self.refresh_race), ('four-accounts-multi-tab', self.multi_tab),
                 ('model-stream-save-connection-budget', self.model_stream_save),
                 ('account-disable-revocation', self.revoke)]
             try:

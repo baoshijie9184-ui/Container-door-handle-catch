@@ -1084,3 +1084,105 @@ def test_nonadmin_privilege_scope_roles_and_missing_global_select_cannot_authori
             value['grants'][0]['privileges'].append('SELECT')
         with pytest.raises(nonadmin_policy.PolicyError):
             nonadmin_policy.validate_privileges(value)
+
+
+def test_nonadmin_dotnet_creation_times_work_with_the_existing_pre311_interpreter(nonadmin_source, monkeypatch):
+    real_datetime = nonadmin_policy.dt.datetime
+    parsed = []
+
+    class LegacyDateTime:
+        @staticmethod
+        def fromisoformat(value):
+            # Python 3.9, used by the Windows producer, rejects .NET's seven
+            # fractional digits. The ECS interpreter alone cannot expose it.
+            parsed.append(value)
+            if '.' in value:
+                raise ValueError('Legacy parser refuses seven-digit fractions')
+            return real_datetime.fromisoformat(value)
+
+    monkeypatch.setattr(nonadmin_policy, 'dt', SimpleNamespace(datetime=LegacyDateTime))
+    result = nonadmin_policy.validate_source(nonadmin_source.record, nonadmin_source.historical)
+    assert result['serviceCreatedAtUtc'] == nonadmin_source.record['serviceProcess']['createdAtUtc']
+    assert result['worker']['createdAtUtc'] == nonadmin_source.record['worker']['createdAtUtc']
+    assert parsed == ['2026-11-10T01:00:00+00:00', '2026-11-10T01:00:01+00:00']
+
+
+@pytest.mark.parametrize('parent,worker,admitted', [
+    ('00.1234567Z', '00.1234566+00:00', False),
+    ('00.1234567Z', '00.1234567+00:00', True),
+    ('00.1234567Z', '00.1234568+00:00', True),
+    ('00.1Z', '00.1000000+00:00', True),
+    ('00Z', '00.0000000+00:00', True),
+    ('01Z', '00.9999999Z', False),
+    ('00.9999999Z', '01Z', True),
+])
+def test_nonadmin_process_ordering_preserves_all_100ns_ticks(nonadmin_source, parent, worker, admitted):
+    value = copy.deepcopy(nonadmin_source.record)
+    value['serviceProcess']['createdAtUtc'] = '2026-11-10T01:00:' + parent
+    value['worker']['createdAtUtc'] = '2026-11-10T01:00:' + worker
+    if admitted:
+        result = nonadmin_policy.validate_source(value, nonadmin_source.historical)
+        assert result['worker']['createdAtUtc'] == value['worker']['createdAtUtc']
+    else:
+        with pytest.raises(nonadmin_policy.PolicyError, match='NONADMIN_LISTENER_PARENT_BINDING_DIFFERS'):
+            nonadmin_policy.validate_source(value, nonadmin_source.historical)
+
+
+@pytest.mark.parametrize('stamp', [
+    '2026-02-29T01:00:00.1234567Z', '2026-11-10T01:00:60.1234567Z',
+    '2026-11-10T01:00:00.12345678Z', '2026-11-10T01:00:00.1234567+08:00',
+])
+def test_nonadmin_portable_creation_parser_keeps_the_original_calendar_utc_and_precision_limits(nonadmin_source, stamp):
+    value = copy.deepcopy(nonadmin_source.record['worker']); value['createdAtUtc'] = stamp
+    with pytest.raises(nonadmin_policy.PolicyError, match='NONADMIN_PROCESS_CREATION_REQUIRED'):
+        nonadmin_policy.process(value)
+
+
+def test_nonadmin_powershell_refusal_codes_are_exactly_the_policy_value_free_literals():
+    import ast
+    import re
+
+    source = (ROOT / 'script/jenkins/nonadmin-local-mysql-policy.py').read_text(encoding='utf-8-sig')
+    tree = ast.parse(source)
+    codes = {node.value for node in ast.walk(tree) if isinstance(node, ast.Constant)
+             and isinstance(node.value, str) and re.fullmatch('NONADMIN_[A-Z0-9_]+', node.value)}
+    adapter = (ROOT / 'script/jenkins/nonadmin-local-mysql-source.ps1').read_text(encoding='utf-8-sig')
+    refusal = adapter.split('function Get-NonAdminPolicyRefusalCode', 1)[1].split('function Invoke-NonAdminMetadataPolicy', 1)[0]
+    admitted = set(re.findall("'(NONADMIN_[A-Z0-9_]+)'", refusal)) - {'NONADMIN_METADATA_REFUSED'}
+    assert admitted == codes
+    assert '\\A' in refusal and '\\z' in refusal and '$Matches[1] -cin $codes' in refusal
+    invoke = adapter.split('function Invoke-NonAdminMetadataPolicy', 1)[1].split('function Convert-NonAdminProcess', 1)[0]
+    assert "$process.ExitCode -eq 1" in invoke and 'Get-NonAdminPolicyRefusalCode $answer' in invoke
+    assert "Require-Export $false 'Source metadata policy refused the observation.' $refusal" in invoke
+    assert '[void]$write.GetAwaiter().GetResult(); $process.StandardInput.Close()' in invoke
+    assert invoke.index("'NONADMIN_POLICY_CHANGED'", invoke.index('$answer =')) < invoke.index('Get-NonAdminPolicyRefusalCode $answer')
+    assert 'Write-Output $answer' not in invoke and 'Write-Output $diagnostic' not in invoke
+
+
+def test_worker_failure_survives_terminating_pipeline_without_widening_success_custody_protocol():
+    import re
+
+    worker = (ROOT / 'script/jenkins/export-legacy-local-mysql.ps1').read_text(encoding='utf-8-sig')
+    batch = (ROOT / 'script/jenkins/export-remaining-local-mysql.ps1').read_text(encoding='utf-8-sig')
+    adapter = (ROOT / 'script/jenkins/nonadmin-local-mysql-source.ps1').read_text(encoding='utf-8-sig')
+    capture = batch.split('function Get-BatchWorkerFailure', 1)[1].split('Require-Batch ($IsWindows', 1)[0]
+    codes = set(re.findall("'(NONADMIN_[A-Z0-9_]+|EXPORT_[A-Z0-9_]+|[A-Z_]*AUTHORIZATION_REQUIRED|"
+                           "FIXED_SOURCE_SCHEMA_REQUIRED|INSUFFICIENT_PROCESS_METADATA|NO_REVIEWED_TCP_ENDPOINT|ADMINISTRATOR_TOKEN_REQUIRED)'", worker + adapter))
+    # AUTHORIZATION_REQUIRED is a phase, not a reason emitted by a guard.
+    codes -= {'AUTHORIZATION_REQUIRED'}
+    delegated = adapter.split('function Get-NonAdminPolicyRefusalCode', 1)[1].split('function Invoke-NonAdminMetadataPolicy', 1)[0]
+    batch_codes = set(re.findall("'([A-Z][A-Z0-9_]+)'", capture))
+    assert codes <= batch_codes | set(re.findall("'(NONADMIN_[A-Z0-9_]+)'", delegated))
+    assert "$workerFailure.Data['ExportFailurePublicJson'] = $publicFailureJson" in worker
+    assert worker.index("$workerFailure.Data['ExportFailurePublicJson']") < worker.index('throw $workerFailure')
+    assert '$depth -lt 8' in capture and 'GetByteCount($raw) -gt 4096' in capture
+    assert 'ConvertFrom-Json -InputObject $raw -AsHashtable -Depth 8' in capture
+    assert '($value.Keys | Sort-Object)' in capture and '$value.phase -cnotin $phases' in capture
+    assert all('$value.' + name + ' -isnot [string]' in capture for name in ('kind', 'status', 'phase', 'sourceMode', 'reasonCode'))
+    assert "$knownReason = $value.reasonCode -cin $codes" in capture
+    assert "Get-NonAdminPolicyRefusalCode $envelope" in capture
+    assert "if ($value.errorType -cnotin $types) { $value.errorType = 'UnclassifiedExportFailure' }" in capture
+    assert '$Failure.Message' not in capture and '$candidate.Message' not in capture and '$_.Exception | ConvertTo-Json' not in batch
+    assert 'Get-BatchWorkerFailure $_.Exception ([bool]$NonAdministratorReadOnlyExport)' in batch
+    assert "if ($failureType) {\n    $receipt['workerFailureDetailsStatus']" in batch
+    assert "automaticRetryAllowed = $false" in batch

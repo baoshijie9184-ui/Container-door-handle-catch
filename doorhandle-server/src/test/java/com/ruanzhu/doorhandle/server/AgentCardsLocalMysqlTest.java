@@ -105,7 +105,9 @@ class AgentCardsLocalMysqlTest {
         }
         @Override @Bean SqlSessionTemplate sql(DataSource source)throws Exception {
             var configuration=new MybatisConfiguration();configuration.setMapUnderscoreToCamelCase(true);
-            for(var mapper:List.of(DetectionTaskMapper.class,UserMapper.class,ChatSessionMapper.class,ChatMessageMapper.class))configuration.addMapper(mapper);
+            for(var mapper:List.of(DetectionTaskMapper.class,UserMapper.class,ChatSessionMapper.class,ChatMessageMapper.class,
+                    com.ruanzhu.doorhandle.module.system.mapper.AccountEmployeeBindingMapper.class,
+                    com.ruanzhu.doorhandle.module.device.mapper.EmployeeMapper.class))configuration.addMapper(mapper);
             var factory=new MybatisSqlSessionFactoryBean();factory.setDataSource(source);factory.setConfiguration(configuration);return new SqlSessionTemplate(factory.getObject());
         }
     }

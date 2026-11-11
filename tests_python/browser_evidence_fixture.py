@@ -22,11 +22,13 @@ def report_value(context):
     accounts = {alias: {'userId': str(index), 'role': 'SUPERVISOR' if alias in ('supervisor', 'reviewer') else 'INSPECTOR'}
                 for index, alias in enumerate(sorted(browser.ACCOUNTS), 1)}
     checks = {name: {'status': 'PASS'} for name in required}
-    checks['twenty-accounts-forty-tabs'].update(accounts=20, actualTabs=40, allAccountsSampled=True,
-        backgroundFocusRecovery=True, visibleWatcherAccountsPerRound=19, actualMutationRounds=2)
-    checks['latency-p95'].update(samples=20, accounts=20, p95Ms=100, limitMs=2000)
+    checks['four-roles-real-ui'].update(simultaneousContexts=4, independentCookieContexts=True,
+        distinctServerAccountContexts=True, identitiesReadFromServer=True, roleSpecificOrganizationControls=True)
+    checks['four-accounts-multi-tab'].update(functionalAccounts=4, actualTabs=8, allAccountsSampled=True,
+        backgroundFocusRecovery=True, visibleWatcherAccountsPerRound=3, actualMutationRounds=2)
+    checks['latency-observation'].update(samples=4, functionalAccounts=4, p95Ms=100, performanceSloVerified=False, loadTestStatus='DEFERRED_BY_USER')
     checks['http1-shared-connections'].update(actualSsePerAccount={alias: 1 for alias in accounts}, sameAccountTabs=2,
-        loadPeakSse=20, browserProtocols=['http/1.1'], nginxProtocols=['HTTP/1.1'], publicHttp2Claimed=False)
+        coordinationPeakSse=4, browserProtocols=['http/1.1'], nginxProtocols=['HTTP/1.1'], publicHttp2Claimed=False)
     checks['resource-samples'].update(samples=1, memoryOomDelta=0, pidsMaxEventsDelta=0)
     checks['artifact-secret-boundary'].update(passwordFieldsMasked=True, exactSecretScan=True,
         cookiesTokensStorageStateHarTraceVideoWritten=False, actualSseLocatorsOnly=True)
@@ -37,13 +39,17 @@ def report_value(context):
     checks['model-stream-save-connection-budget'].update(modelId='deepseek:runtime-scripted', actualAgentStreams=streams,
         actualModelConnections=[{'account': 'supervisor', 'tab': 0, 'connectionId': str(index), 'protocol': 'http/1.1', 'status': 200} for index in (1, 2)],
         nativeSharedSsePerAccount=1, actualTabsInModelContext=2, actualSharedSseConnectionId='3',
-        actualHttp1ModelContextConnectionsAtSave=4, maximumProviderDelayMillis=15000, saveLimitMs=2000,
+        actualHttp1ModelContextConnectionsAtSave=4, maximumProviderDelayMillis=15000, saveWhileStreamsActive=True,
+        performanceSloVerified=False, loadTestStatus='DEFERRED_BY_USER',
         providerFinalStateMustBeReReadByRuntime=True, publicHttp2Claimed=False, responseGatesUsed=False,
         ordinarySaves=[{'account': alias, 'tab': 1 if index == 1 else 0, 'httpStatus': 200, 'saveMs': 100,
             'openedVersion': str(index), 'version': str(index + 1), 'auditId': str(80 + index), 'eventId': 'stream-event-' + str(index),
             'requestId': 'stream-request-' + str(index), 'actualConnectionId': str(3 + index),
             'modelStreamsUnfinishedAtSaveResponse': 2, 'saveResponseAt': 1794268800000 + 100 * index,
             'resourceReadBack': True, 'successfulAuditCount': 1} for index, alias in enumerate(('supervisor', 'reviewer'), 1)])
+    checks['account-disable-revocation'].update(userId=accounts['peer']['userId'], actualUiDisable=True,
+        existingCookieHttpStatus=401, bothTabsBusinessDataCleared=True, nativeSseClosed=True, actualUiRestore=True,
+        restoredOldCookieHttpStatus=401, exactOldCookieReplay=True, qualifiedNewSessionVerified=True, bothTabsRestored=True)
     sample = {'memory.max': str(browser.MEMORY), 'pids.max': '512', 'cpu.max': '200000 100000',
         'memory.current': '1048576', 'memory.peak': '2097152', 'pids.current': '10',
         'memory.events': 'oom 0\noom_kill 0\n', 'pids.events': 'max 0\n'}
@@ -51,12 +57,14 @@ def report_value(context):
         'fullA01A28AcceptanceClaimed': False, 'runnerSourceSha256': hashes, 'checks': checks,
         'runtime': {'browserImageId': IMAGE, 'browserContainerId': CID, 'cpuLimit': 2, 'memoryLimitBytes': browser.MEMORY, 'pidsLimit': 512},
         'tool': {'playwright': '1.65.0', 'actualChromium': '158.0.8127.18', 'expectedChromium': '158.0.8127.18', 'chromiumSandbox': False},
-        'accounts': accounts, 'failures': [], 'pageErrors': [],
+        'accounts': accounts, 'functionalAccounts': 4, 'loadTestStatus': 'DEFERRED_BY_USER',
+        'performanceSloVerified': False, 'failures': [], 'pageErrors': [],
         'latencySamples': [{'account': alias, 'tab': 1, 'requestId': 'request-'+alias, 'resourceVersion': '1',
             'eventId': 'event-'+alias, 'eventOccurredAt': '2026-11-10T00:00:00Z', 'domAtEpochMs': 1794268800100,
             'eventOccurredToDomMs': 100, 'responseToDomMs': 80, 'visibility': 'visible',
             'filterPageScrollFocusPreserved': True} for alias in accounts],
-        'latency': {'samples': 20, 'accountsWithSamples': 20, 'quantile': 'nearest-rank', 'limitMs': 2000,
+        'latency': {'samples': 4, 'accountsWithSamples': 4, 'quantile': 'nearest-rank',
+            'performanceSloVerified': False, 'loadTestStatus': 'DEFERRED_BY_USER',
             'p95Ms': 100, 'serverTimestampIsPreCommitAuditTime': True, 'backgroundTabsIncludedInP95': False, 'backgroundFocusRecoveryAsserted': True},
         'sse': {'allFramesLocatorOnly': True, 'stableAccountContextMismatchFrames': 0},
         'cgroupAdmission': dict(sample), 'resourceSamples': [sample]}

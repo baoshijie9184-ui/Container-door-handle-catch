@@ -14,7 +14,7 @@ PREFIX = 'checkout/work/runtime-acceptance/'
 MANIFEST = PREFIX + 'browser-manifest.json'
 REPORT = PREFIX + 'browser-evidence/browser-evidence.json'
 SOURCE_NAMES = ('collaboration-browser-runner.py', 'collaboration-browser-proxy.py', 'collaboration-browser-sources.json')
-ACCOUNTS = {'inspector', 'peer', 'supervisor', 'reviewer'} | {f'load_{index:02}' for index in range(1, 17)}
+ACCOUNTS = {'inspector', 'peer', 'supervisor', 'reviewer'}
 MEMORY = 2 * 1024 ** 3
 SHA = re.compile(r'[a-f0-9]{64}')
 
@@ -143,19 +143,25 @@ def validate_report(report, context, manifest, acceptance, source_root):
                 'External browser namespace, owner, cgroup or process result differs')
     require(observed['before']['networkId'] == observed['after']['networkId'], 'Browser changed its owned network')
     accounts = report.get('accounts')
+    require(report.get('functionalAccounts') == 4 and report.get('loadTestStatus') == 'DEFERRED_BY_USER'
+            and report.get('performanceSloVerified') is False, 'Functional acceptance cannot claim deferred load or performance acceptance')
     require(type(accounts) is dict and set(accounts) == ACCOUNTS
             and all(type(row) is dict and set(row) == {'userId', 'role'} and revision(row['userId'], True)
                     and row['role'] == ('SUPERVISOR' if alias in ('supervisor', 'reviewer') else 'INSPECTOR')
                     for alias, row in accounts.items())
-            and len({row['userId'] for row in accounts.values()}) == 20, 'Twenty distinct actual qualified browser accounts are required')
+            and len({row['userId'] for row in accounts.values()}) == 4, 'Four distinct actual qualified browser accounts are required')
     validate_model_stream_check(checks['model-stream-save-connection-budget'])
-    load = checks['twenty-accounts-forty-tabs']
-    require(load.get('accounts') == 20 and load.get('actualTabs') == 40 and load.get('allAccountsSampled') is True
-            and load.get('backgroundFocusRecovery') is True and load.get('visibleWatcherAccountsPerRound') == 19
-            and type(load.get('actualMutationRounds')) is int and load['actualMutationRounds'] >= 2,
-            'Actual forty-tab controlled UI load evidence is missing')
+    identities = checks['four-roles-real-ui']
+    require(identities.get('simultaneousContexts') == 4 and all(identities.get(key) is True for key in
+            ('independentCookieContexts', 'distinctServerAccountContexts', 'identitiesReadFromServer',
+             'roleSpecificOrganizationControls')), 'Four authenticated independent browser cookie contexts are required')
+    multi_tab = checks['four-accounts-multi-tab']
+    require(multi_tab.get('functionalAccounts') == 4 and multi_tab.get('actualTabs') == 8 and multi_tab.get('allAccountsSampled') is True
+            and multi_tab.get('backgroundFocusRecovery') is True and multi_tab.get('visibleWatcherAccountsPerRound') == 3
+            and type(multi_tab.get('actualMutationRounds')) is int and multi_tab['actualMutationRounds'] == 2,
+            'Actual four-account multi-tab functional coordination evidence is missing')
     samples = report.get('latencySamples')
-    require(type(samples) is list and 20 <= len(samples) <= 2000, 'Actual latency sample count is insufficient or oversized')
+    require(type(samples) is list and 1 <= len(samples) <= 2000, 'Actual DOM observation evidence is absent or oversized')
     covered, values, seen = set(), [], set()
     for sample in samples:
         require(type(sample) is dict and sample.get('account') in accounts and sample.get('tab') == 1
@@ -176,18 +182,22 @@ def validate_report(report, context, manifest, acceptance, source_root):
         values.append(sample['eventOccurredToDomMs']); covered.add(sample['account'])
     p95 = sorted(values)[math.ceil(.95 * len(values)) - 1]
     latency = report.get('latency', {})
-    require(covered == ACCOUNTS and latency.get('samples') == len(samples) and latency.get('accountsWithSamples') == 20
-            and latency.get('quantile') == 'nearest-rank' and latency.get('limitMs') == 2000
-            and latency.get('p95Ms') == p95 and 0 <= p95 <= 2000
+    require(covered == ACCOUNTS and latency.get('samples') == len(samples) and latency.get('accountsWithSamples') == 4
+            and latency.get('quantile') == 'nearest-rank' and 'limitMs' not in latency
+            and latency.get('p95Ms') == p95 and latency.get('performanceSloVerified') is False
+            and latency.get('loadTestStatus') == 'DEFERRED_BY_USER'
             and latency.get('serverTimestampIsPreCommitAuditTime') is True
             and latency.get('backgroundTabsIncludedInP95') is False and latency.get('backgroundFocusRecoveryAsserted') is True
-            and checks['latency-p95'].get('samples') == len(samples) and checks['latency-p95'].get('accounts') == 20
-            and checks['latency-p95'].get('p95Ms') == p95 and checks['latency-p95'].get('limitMs') == 2000,
-            'Actual twenty-account nearest-rank P95 does not meet its two-second bound')
+            and checks['latency-observation'].get('samples') == len(samples) and checks['latency-observation'].get('functionalAccounts') == 4
+            and checks['latency-observation'].get('p95Ms') == p95
+            and checks['latency-observation'].get('performanceSloVerified') is False
+            and checks['latency-observation'].get('loadTestStatus') == 'DEFERRED_BY_USER'
+            and 'limitMs' not in checks['latency-observation'],
+            'Actual latency observation must be truthful and cannot claim a deferred performance SLO')
     connections = checks['http1-shared-connections']
     require(connections.get('actualSsePerAccount') == {alias: 1 for alias in ACCOUNTS}
-            and connections.get('sameAccountTabs') == 2 and type(connections.get('loadPeakSse')) is int
-            and connections['loadPeakSse'] <= 20 and connections.get('browserProtocols') == ['http/1.1']
+            and connections.get('sameAccountTabs') == 2 and type(connections.get('coordinationPeakSse')) is int
+            and 1 <= connections['coordinationPeakSse'] <= 4 and connections.get('browserProtocols') == ['http/1.1']
             and connections.get('nginxProtocols') == ['HTTP/1.1'] and connections.get('publicHttp2Claimed') is False
             and report.get('sse', {}).get('allFramesLocatorOnly') is True
             and report.get('sse', {}).get('stableAccountContextMismatchFrames') == 0,
@@ -218,7 +228,14 @@ def validate_report(report, context, manifest, acceptance, source_root):
     require(boundary.get('passwordFieldsMasked') is True and boundary.get('exactSecretScan') is True
             and boundary.get('cookiesTokensStorageStateHarTraceVideoWritten') is False
             and boundary.get('actualSseLocatorsOnly') is True, 'Browser secret artifact boundary did not pass')
-    return {'status': 'VERIFIED', 'checks': 19, 'accounts': 20, 'tabs': 40, 'latencySamples': len(samples),
+    revocation = checks['account-disable-revocation']
+    require(revocation.get('userId') == accounts['peer']['userId']
+            and all(revocation.get(key) is True for key in ('actualUiDisable', 'bothTabsBusinessDataCleared',
+                'nativeSseClosed', 'actualUiRestore', 'exactOldCookieReplay', 'qualifiedNewSessionVerified', 'bothTabsRestored'))
+            and revocation.get('existingCookieHttpStatus') == revocation.get('restoredOldCookieHttpStatus') == 401,
+            'Reused functional account must be restored without reviving its revoked session')
+    return {'status': 'VERIFIED', 'checks': 19, 'functionalAccounts': 4, 'tabs': 8, 'latencySamples': len(samples),
+            'loadTestStatus': 'DEFERRED_BY_USER', 'performanceSloVerified': False,
             'p95Ms': p95, 'productionCapacityVerified': False, 'allA01A28Verified': False,
             'browserContainerId': actual['browserContainerId'], 'browserImageId': actual['browserImageId']}
 
@@ -228,7 +245,9 @@ def validate_model_stream_check(value):
             and re.fullmatch(r'[A-Za-z0-9_.:-]{1,160}', value['modelId'])
             and value.get('nativeSharedSsePerAccount') == 1 and value.get('actualTabsInModelContext') == 2
             and value.get('actualHttp1ModelContextConnectionsAtSave') == 4
-            and value.get('maximumProviderDelayMillis') == 15000 and value.get('saveLimitMs') == 2000
+            and value.get('maximumProviderDelayMillis') == 15000 and value.get('saveWhileStreamsActive') is True
+            and value.get('performanceSloVerified') is False and value.get('loadTestStatus') == 'DEFERRED_BY_USER'
+            and 'saveLimitMs' not in value
             and value.get('providerFinalStateMustBeReReadByRuntime') is True
             and value.get('publicHttp2Claimed') is False and value.get('responseGatesUsed') is False,
             'Actual bounded model-stream connection budget is missing')
@@ -256,7 +275,7 @@ def validate_model_stream_check(value):
     require(type(saves) is list and len(saves) == 2 and [row.get('account') for row in saves] == ['supervisor', 'reviewer']
             and [row.get('tab') for row in saves] == [1, 0], 'Both same-account tab and independent supervisor saves are required')
     for row in saves:
-        require(row.get('httpStatus') == 200 and number(row.get('saveMs')) and 0 <= row['saveMs'] <= 2000
+        require(row.get('httpStatus') == 200 and number(row.get('saveMs')) and row['saveMs'] >= 0
                 and revision(row.get('openedVersion')) and revision(row.get('version'), True)
                 and int(row['version']) == int(row['openedVersion']) + 1 and revision(row.get('auditId'), True)
                 and isinstance(row.get('eventId'), str) and re.fullmatch(r'[A-Za-z0-9_-]{1,160}', row['eventId'])
@@ -279,7 +298,7 @@ def validate_model_stream_completion(report, proof):
     value = report['checks']['model-stream-save-connection-budget']
     streams = validate_model_stream_check(value)
     spec = {'schemaVersion': 1, 'kind': 'doorhandle-owned-model-stream-probes', 'modelId': value['modelId'],
-        'streamDelayMillis': 15000, 'saveMaxMillis': 2000, 'completionTimeoutMillis': 45000,
+        'streamDelayMillis': 15000, 'saveWhileStreamsActive': True, 'completionTimeoutMillis': 45000,
         'markers': [row['marker'] for row in streams]}
     source = Path(__file__).with_name('compact-collaboration-stream-probes.py')
     module_spec = importlib.util.spec_from_file_location('browser_provider_completion', source)

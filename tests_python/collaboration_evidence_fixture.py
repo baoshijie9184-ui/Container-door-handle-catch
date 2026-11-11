@@ -33,12 +33,13 @@ def install(directory, context, project, proof, cleanup, accounts=None):
     task = 'owned-worker-task'
     authorization = {**common, 'stage': 'authorization', 'status': 'PASS', 'database': {**after, 'tasks': 4}, 'actualFlags': flags,
         'taskBinding': {'taskIdSha256': sha(task), 'sourceKind': 'NEW_CREATION', 'sourceRecorded': True,
-            'dbAndHttpCreatorMatched': True, 'createdUserId': accounts['inspector']['userId'], 'version': '4'},
+            'dbAndHttpCreatorMatched': True, 'createdUserId': accounts['supervisor']['userId'], 'assigneeUserId': accounts['inspector']['userId'], 'version': '4'},
         'httpPermissions': [{'account': alias, 'userId': accounts[alias]['userId'], 'role': accounts[alias]['role'],
             'progressHttpStatus': 403 if alias == 'peer' else 200, 'traceHttpStatus': 404 if alias == 'peer' else 200,
             'historyHttpStatus': 200, 'historyVisibleItems': 0 if alias == 'peer' else 2}
             for alias in ('inspector', 'peer', 'supervisor', 'reviewer')]}
-    claim = {'taskId': task, 'competingUserIds': [accounts[alias]['userId'] for alias in ('peer', 'load_01')],
+    claim = {'taskId': task, 'createdUserId': accounts['supervisor']['userId'],
+        'competingUserIds': [accounts[alias]['userId'] for alias in ('inspector', 'peer')],
         'winnerUserId': accounts['peer']['userId'], 'loserStatus': 409, 'committedVersion': '3', 'auditId': '81',
         'candidateReadHttpStatuses': [200, 200], 'candidateWriteHttpStatuses': [403, 403], 'loserReadHttpStatuses': [403, 404, 403],
         'committedAuditCount': 1, 'committedCommandCount': 1, 'auditActorUserId': accounts['peer']['userId'],
@@ -47,9 +48,10 @@ def install(directory, context, project, proof, cleanup, accounts=None):
     claim.update({key: True for key in ('exactResponseAndReceiptReplay', 'temporaryScopeRevoked', 'candidateOtherWritesDenied',
         'continuedThroughRealSupervisorAssignment', 'auditRequestIdMatched', 'candidateIdsCleared')})
     personnel = {'oldBusinessDataModified': False, 'positions': []}
-    for index, (position, alias) in enumerate((('COLLECTION', 'load_14'), ('MAINTENANCE', 'load_15')), 1):
+    for index, (position, alias) in enumerate((('COLLECTION', 'inspector'), ('MAINTENANCE', 'peer')), 1):
         personnel['positions'].append({'position': position, 'userId': accounts[alias]['userId'], 'staffId': str(500 + index),
-            'createdAndAssociatedThroughActualHttp': True, 'oldSessionRevokedAndNotResurrected': True, 'qualifiedNewSessionVerified': True,
+            'createdAndAssociatedThroughActualHttp': True, 'oldSessionRevokedAndNotResurrected': True,
+            'exactOldCookieReplay': True, 'qualifiedNewSessionVerified': True,
             'loginRejected': 403, 'freshQualifiedHttpStatus': 200, 'oldSessionHttpStatuses': [401, 401],
             'beforeBindingVersion': '0', 'withdrawnBindingVersion': '1', 'restoredBindingVersion': '2',
             'freshQualifiedEmployeeId': str(600 + index), 'originalEmployeeId': str(600 + index)})

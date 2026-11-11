@@ -1,6 +1,7 @@
 package com.ruanzhu.doorhandle.module.system.service;
 
 import com.ruanzhu.doorhandle.contracts.agent.*;
+import com.ruanzhu.doorhandle.contracts.collaboration.BusinessMutationParticipant;
 import com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory;
 import com.ruanzhu.doorhandle.module.system.security.TenantPrincipal;
 import com.ruanzhu.doorhandle.module.system.support.OperationsMySqlFixture;
@@ -35,6 +36,7 @@ class BusinessMutationAuditTest {
     static class Config {
         @Bean JdbcTemplate jdbc(){return fixture.target();}
         @Bean PlatformTransactionManager transactions(JdbcTemplate jdbc){return new DataSourceTransactionManager(jdbc.getDataSource());}
+        @Bean List<BusinessMutationParticipant> participants(){return List.of();}
         @Bean OperationsAuditApi audit(JdbcTemplate jdbc) throws Exception {
             fixture.install("CREATE TABLE business_record(id BIGINT PRIMARY KEY,changed INT NOT NULL);",";");jdbc.update("INSERT INTO business_record VALUES(1,0)");
             var delegate=new OperationsAuditService(jdbc,users);

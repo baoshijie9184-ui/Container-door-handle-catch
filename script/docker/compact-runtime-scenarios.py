@@ -69,12 +69,12 @@ def require_account(checked, account):
             'HTTP identity did not resolve its actual qualified employee binding and observed revision')
 
 
-def seed_owned_users(db, schema, token, candidate_load_user_count=20):
+def seed_owned_users(db, schema, token, candidate_load_user_count=4):
     require(isinstance(token, str) and re.fullmatch(r'[a-f0-9]{10,32}', token)
             and OWNED_SCHEMA.fullmatch(schema) and db.schema == schema,
             'Accounts may only be seeded in the runner-verified owned compact target')
-    require(type(candidate_load_user_count) is int and 20 <= candidate_load_user_count <= 40,
-            'The bounded candidate needs 20 to 40 owned qualified accounts')
+    require(type(candidate_load_user_count) is int and candidate_load_user_count == 4,
+            'The functional candidate needs exactly four owned qualified accounts')
     actual = db.one("SELECT JSON_OBJECT('schema',DATABASE(),'fk',@@foreign_key_checks,'tables',"
         "(SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() AND table_type='BASE TABLE'));")
     require(actual['schema'] == schema and actual['fk'] == 1 and actual['tables'] == 29,
@@ -87,8 +87,6 @@ def seed_owned_users(db, schema, token, candidate_load_user_count=20):
                   + db.literal(department) + ',0);', 'SET @runtime_department=LAST_INSERT_ID();']
     roles = [('inspector', 'INSPECTOR'), ('peer', 'INSPECTOR'),
              ('supervisor', 'SUPERVISOR'), ('reviewer', 'SUPERVISOR')]
-    roles.extend(('load_' + format(index, '02d'), 'INSPECTOR')
-                 for index in range(1, candidate_load_user_count - 3))
     for key, role in roles:
         username = 'cf_' + token[:16] + '_' + key
         require(db.one('SELECT JSON_OBJECT(\'n\',COUNT(*)) FROM users WHERE username=' + db.literal(username) + ';')['n'] == 0,

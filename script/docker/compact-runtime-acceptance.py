@@ -707,7 +707,12 @@ with urllib.request.urlopen(r,timeout=10) as s: print(s.read().decode())
         self.save()
         self.legacy_candidate, self.legacy_candidate_sha, self.legacy_work = self.native.admit_runtime(self)
         self.owner['legacyCandidateSha256'] = self.legacy_candidate_sha; self.save()
-        self.accounts = self.http.seed_owned_users(self.db, schema, self.token, candidate_load_user_count=20)
+        require(self.profile['runtimeAcceptance'].get('businessActors') == {
+            'accounts': 4, 'roleCounts': {'INSPECTOR': 2, 'SUPERVISOR': 2}, 'tabsPerAccount': 2}
+            and self.profile['runtimeAcceptance'].get('loadTest') == {
+                'status': 'DEFERRED_BY_USER', 'performanceSloRequired': False},
+            'Current acceptance profile must use four functional accounts and defer formal load testing')
+        self.accounts = self.http.seed_owned_users(self.db, schema, self.token, candidate_load_user_count=4)
         self.common.write_json(self.directory / 'users.json', self.accounts)
         runtime_accounts = self.create_dml_accounts(schema)
         self.master_key, self.key_reference = self.prepare_key()
@@ -1050,10 +1055,10 @@ prefix=json.load(__import__('sys').stdin)['prefix']; assert not list(oss2.Object
         self.worker_image_bytes = image
         model = int(self.config['services']['detection-worker']['environment']['DETECTION_MODEL_ID'])
         require(model > 0, 'The owned worker lacks its actual deployed PTH model id')
-        created = self.request('inspector', 'POST', '/api/detection/tasks', {'taskType': 'BATCH',
+        created = self.request('supervisor', 'POST', '/api/detection/tasks', {'taskType': 'BATCH',
             'files': [{'fileName': 'runtime.png', 'contentType': 'image/png', 'relativePath': 'runtime.png', 'fileSize': len(image)}],
             'captureInfo': {'captureDate': time.strftime('%Y-%m-%d'), 'region': '隔离验收',
-                'collector': self.accounts['inspector']['username'], 'deviceName': 'runtime-' + self.token,
+                'collector': self.accounts['supervisor']['username'], 'deviceName': 'runtime-' + self.token,
                 'imageFolderName': 'runtime-' + self.token}, 'modelId': model, 'threshold': 0.5},
                 headers={'X-Request-ID': 'runtime-task-create-' + self.token})
         task = created['taskId']; urls = created['uploadUrls']
@@ -1076,21 +1081,21 @@ with urllib.request.urlopen(r,timeout=60) as s:
         uploaded = json.loads(self.ops.docker('exec', '-i', self.row('detection-worker')['Id'], 'python', '-B', '-c', script,
             data=json.dumps({'url': upload['putUrl'], 'image': base64.b64encode(image).decode()}).encode(), timeout=90))
         require(uploaded['etag'] and uploaded['requestId'], 'Real OSS PUT returned no verifiable receipt')
-        allocated = self.request('inspector', 'GET', '/api/detection/tasks/' + task)
-        self.request('inspector', 'POST', '/api/detection/tasks/' + task + '/uploaded', {'modelId': model, 'threshold': 0.5,
+        allocated = self.request('supervisor', 'GET', '/api/detection/tasks/' + task)
+        self.request('supervisor', 'POST', '/api/detection/tasks/' + task + '/uploaded', {'modelId': model, 'threshold': 0.5,
             'uploadedFiles': [{'fileName': upload['fileName'], 'objectKey': upload['objectKey'], 'etag': uploaded['etag'],
                                'sha256': hashlib.sha256(image).hexdigest()}]},
             headers=self.http.command_headers(allocated, 'runtime-task-uploaded-' + self.token))
         deadline = time.monotonic() + 420
         while time.monotonic() < deadline:
-            progress = self.request('inspector', 'GET', '/api/detection/tasks/' + task)
+            progress = self.request('supervisor', 'GET', '/api/detection/tasks/' + task)
             require(progress['status'] not in ('FAILED', 'PARTIAL_FAILED', 'CANCELLED'), 'Actual PTH/Kafka detection failed')
             if progress['status'] == 'COMPLETED':
                 break
             time.sleep(2)
         require(progress['status'] == 'COMPLETED' and progress['successfulImages'] == 1
                 and progress['failedImages'] == 0 and progress['processedImages'] == 1, 'Actual PTH processing did not finish')
-        result = self.request('inspector', 'GET', '/api/detection/tasks/' + task + '/result')
+        result = self.request('supervisor', 'GET', '/api/detection/tasks/' + task + '/result')
         require(result['resultOssPrefix'].startswith(prefix) and result['successfulImages'] == 1, 'Actual PTH result is missing')
         self.owner['detectionResultPrefix'] = result['resultOssPrefix']; self.save()
         receipt_sql = "SELECT JSON_OBJECT('id',workflow_id,'dispatch',run_id,'status',status,'sha256',result_sha256,'body',result_json,'revision',revision) FROM workflow_instance WHERE kind='DETECTION_WORKER' AND resource_id=" + self.db.literal(task) + ';'
@@ -1139,7 +1144,7 @@ print(json.dumps(acknowledged[0]))
             time.sleep(2)
         require(rows and all(len(row) >= 6 and row[5] == '0' for row in rows), 'The actual replay was not consumed')
         after = self.db.query(receipt_sql)
-        require(after == receipts and self.request('inspector', 'GET', '/api/detection/tasks/' + task)['status'] == 'COMPLETED',
+        require(after == receipts and self.request('supervisor', 'GET', '/api/detection/tasks/' + task)['status'] == 'COMPLETED',
                 'A duplicate event changed the completed receipt or reran its durable transition')
         self.report_task_id = task
         self.worker_observations = {'taskId': task, 'modelId': model, 'engine': 'pth',

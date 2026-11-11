@@ -39,12 +39,12 @@ def verify(value, success=True):
 def test_actual_original_report_pngs_and_external_identity_pass_byte_validation(tmp_path):
     value = fixture(tmp_path)
     result = verify(value)
-    assert result['status'] == 'VERIFIED' and result['checks'] == 19 and result['accounts'] == 20 and result['p95Ms'] == 100
+    assert result['status'] == 'VERIFIED' and result['checks'] == 19 and result['functionalAccounts'] == 4 and result['tabs'] == 8 and result['p95Ms'] == 100
     assert verify(value, False)['status'] == 'PRESERVED'
 
 
 @pytest.mark.parametrize('damage', ['missing-stream', 'same-run', 'same-session', 'same-reply', 'no-content', 'finished-before-save',
-    'slow-save', 'same-connection', 'sse-reused', 'bad-cas', 'two-audits', 'gated-response', 'provider-unconsumed',
+    'negative-save-duration', 'same-connection', 'sse-reused', 'bad-cas', 'two-audits', 'gated-response', 'provider-unconsumed',
     'provider-unfinished', 'provider-delay', 'persisted-owner', 'persisted-run', 'persisted-session', 'persisted-message',
     'persisted-model', 'duplicate-marker', 'assistant-count', 'execution-link', 'content-hash'])
 def test_nineteenth_check_requires_live_stream_saves_final_provider_and_real_message_persistence(tmp_path, damage):
@@ -56,7 +56,7 @@ def test_nineteenth_check_requires_live_stream_saves_final_provider_and_real_mes
         actual['actualAgentStreams'][1][key] = actual['actualAgentStreams'][0][key]
     elif damage == 'no-content': actual['actualAgentStreams'][0]['firstContent'] = False
     elif damage == 'finished-before-save': actual['actualAgentStreams'][0]['finishedEventAt'] = actual['ordinarySaves'][0]['saveResponseAt']
-    elif damage == 'slow-save': actual['ordinarySaves'][0]['saveMs'] = 2001
+    elif damage == 'negative-save-duration': actual['ordinarySaves'][0]['saveMs'] = -1
     elif damage == 'same-connection': actual['ordinarySaves'][0]['actualConnectionId'] = actual['actualModelConnections'][0]['connectionId']
     elif damage == 'sse-reused': actual['actualSharedSseConnectionId'] = actual['actualModelConnections'][1]['connectionId']
     elif damage == 'bad-cas': actual['ordinarySaves'][1]['version'] = '7'
@@ -80,7 +80,9 @@ def test_nineteenth_check_requires_live_stream_saves_final_provider_and_real_mes
 @pytest.mark.parametrize('damage', ['missing-check', 'failed-check', 'source-hash', 'commit', 'source', 'full-claim',
     'reused-id', 'missing-account', 'image', 'container', 'external-uid', 'external-network', 'external-running',
     'external-privileged', 'external-limit', 'p95-summary', 'raw-time', 'one-account', 'hidden-dom', 'duplicate-sample',
-    'version', 'tool-version', 'no-resources', 'oom', 'pid-pressure', 'secret-artifacts'])
+    'version', 'tool-version', 'no-resources', 'oom', 'pid-pressure', 'secret-artifacts',
+    'wrong-role', 'extra-account', 'load-claimed', 'slo-claimed', 'missing-tab', 'missing-watcher',
+    'missing-mutation-round', 'restore-missing', 'old-cookie-revived', 'shared-cookie-context'])
 def test_passing_envelope_cannot_replace_independently_valid_actual_browser_facts(tmp_path, damage):
     value = fixture(tmp_path); report = value.report
     if damage == 'missing-check': report['checks'].pop('real-history-diff')
@@ -90,7 +92,17 @@ def test_passing_envelope_cannot_replace_independently_valid_actual_browser_fact
     if damage == 'source': report['sourceSha256'] = '0'*64
     if damage == 'full-claim': report['fullA01A28AcceptanceClaimed'] = True
     if damage == 'reused-id': report['accounts']['peer']['userId'] = report['accounts']['inspector']['userId']
-    if damage == 'missing-account': report['accounts'].pop('load_01')
+    if damage == 'missing-account': report['accounts'].pop('reviewer')
+    if damage == 'wrong-role': report['accounts']['inspector']['role'] = 'SUPERVISOR'
+    if damage == 'extra-account': report['accounts']['load_01'] = {'userId': '999', 'role': 'INSPECTOR'}
+    if damage == 'load-claimed': report['loadTestStatus'] = 'PASS'
+    if damage == 'slo-claimed': report['performanceSloVerified'] = True
+    if damage == 'missing-tab': report['checks']['four-accounts-multi-tab']['actualTabs'] = 7
+    if damage == 'missing-watcher': report['checks']['four-accounts-multi-tab']['visibleWatcherAccountsPerRound'] = 2
+    if damage == 'missing-mutation-round': report['checks']['four-accounts-multi-tab']['actualMutationRounds'] = 1
+    if damage == 'restore-missing': report['checks']['account-disable-revocation']['actualUiRestore'] = False
+    if damage == 'old-cookie-revived': report['checks']['account-disable-revocation']['restoredOldCookieHttpStatus'] = 200
+    if damage == 'shared-cookie-context': report['checks']['four-roles-real-ui']['independentCookieContexts'] = False
     if damage == 'image': report['runtime']['browserImageId'] = 'sha256:'+'0'*64
     if damage == 'container': report['runtime']['browserContainerId'] = '0'*64
     if damage.startswith('external-'):
@@ -114,13 +126,24 @@ def test_passing_envelope_cannot_replace_independently_valid_actual_browser_fact
     with pytest.raises(ValueError): verify(value)
 
 
-def test_real_p95_is_recomputed_and_cannot_be_underreported(tmp_path):
+def test_slow_truthful_observation_does_not_claim_or_gate_deferred_performance_slo(tmp_path):
     value = fixture(tmp_path)
     for sample in value.report['latencySamples']:
         sample['domAtEpochMs'] += 2001; sample['eventOccurredToDomMs'] += 2001
-    value.report['latency']['p95Ms'] = value.report['checks']['latency-p95']['p95Ms'] = 2101
+    value.report['latency']['p95Ms'] = value.report['checks']['latency-observation']['p95Ms'] = 2101
     resign(value)
-    with pytest.raises(ValueError, match='P95'): verify(value)
+    result = verify(value)
+    assert result['p95Ms'] == 2101 and result['performanceSloVerified'] is False
+    assert result['loadTestStatus'] == 'DEFERRED_BY_USER'
+
+
+def test_actual_save_during_both_live_streams_is_not_subject_to_deferred_two_second_slo(tmp_path):
+    value = fixture(tmp_path)
+    for row in value.report['checks']['model-stream-save-connection-budget']['ordinarySaves']:
+        row['saveMs'] = 3000
+        row['saveResponseAt'] += 3000
+    resign(value)
+    assert verify(value)['performanceSloVerified'] is False
 
 
 @pytest.mark.parametrize('path', ['../users.json', browser.PREFIX+'browser-inputs/users.json',

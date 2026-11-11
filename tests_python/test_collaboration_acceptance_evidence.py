@@ -42,7 +42,8 @@ def test_original_five_receipts_require_actual_cross_account_and_stable_identity
 
 @pytest.mark.parametrize('damage', ['missing', 'unlisted', 'bytes', 'escape', 'foreign-source', 'fake-active', 'missing-source',
     'flags-off', 'wrong-supervisor', 'peer-history', 'same-competitor', 'two-audits', 'two-commands', 'wrong-assignee',
-    'bad-version', 'loser-500', 'candidate-write-200', 'restored-old-login', 'fresh-login-200', 'binding-not-advanced', 'other-task'])
+    'bad-version', 'loser-500', 'candidate-write-200', 'restored-old-login', 'fresh-login-200', 'binding-not-advanced', 'other-task',
+    'inspector-creator', 'missing-creator'])
 def test_pass_labels_and_rehashed_receipts_cannot_hide_incomplete_actual_semantics(tmp_path, damage):
     proof, cleanup, browser = fixture(tmp_path)
     if damage == 'missing': (tmp_path / 'stable-identity-authorization.json').unlink()
@@ -77,6 +78,8 @@ def test_pass_labels_and_rehashed_receipts_cannot_hide_incomplete_actual_semanti
             elif damage == 'bad-version': row['receiptResourceVersion'] = '2'
             elif damage == 'loser-500': row['loserStatus'] = 500
             elif damage == 'candidate-write-200': row['candidateWriteHttpStatuses'][0] = 200
+            elif damage == 'inspector-creator': row['createdUserId'] = browser['accounts']['inspector']['userId']
+            elif damage == 'missing-creator': row.pop('createdUserId')
             else: row['taskId'] = 'a-different-task'
         change(tmp_path, cleanup, 'collaboration-http-claim.json', mutate)
     stable_rejections = {

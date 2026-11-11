@@ -1,5 +1,38 @@
 # Dot-sourced only by the explicit nonadministrator migration mode. No client,
 # service, credential or filesystem action occurs merely by loading functions.
+function Get-NonAdminPolicyRefusalCode([string]$Answer) {
+    # Do not turn arbitrary interpreter output (or even an uppercase value)
+    # into a public diagnostic. This is the policy's complete value-free set.
+    $codes = @(
+        'NONADMIN_BOUNDED_JSON_REQUIRED', 'NONADMIN_BOUNDED_SINGLE_HISTORY_FILE_REQUIRED',
+        'NONADMIN_CLOSED_SCHEMA_OWNERSHIP_REQUIRED', 'NONADMIN_COMPLETE_ENDPOINT_REQUIRED',
+        'NONADMIN_COMPLETE_PROCESS_REQUIRED', 'NONADMIN_COMPLETE_SOURCE_RECORD_REQUIRED',
+        'NONADMIN_DIRECT_GRANTS_REQUIRED', 'NONADMIN_DIRECT_PRIVILEGE_NAMES_REQUIRED',
+        'NONADMIN_DUPLICATE_ENDPOINT_REFUSED', 'NONADMIN_DUPLICATE_JSON_KEY',
+        'NONADMIN_ENDPOINT_OWNER_OR_BINDING_DIFFERS', 'NONADMIN_FIXED_ENDPOINT_REQUIRED',
+        'NONADMIN_FIXED_HISTORY_BUNDLE_REQUIRED', 'NONADMIN_FIXED_HISTORY_PATH_REQUIRED',
+        'NONADMIN_FIXED_OWNERSHIP_MEMBER_REQUIRED', 'NONADMIN_FIXED_POLICY_ACTION_REQUIRED',
+        'NONADMIN_FIXED_PRIVILEGE_SCOPE_REQUIRED', 'NONADMIN_FIXED_PROCESS_IDENTITY_REQUIRED',
+        'NONADMIN_FIXED_SERVER_COMMAND_REQUIRED', 'NONADMIN_HISTORICAL_CONFIGURATION_REQUIRED',
+        'NONADMIN_HISTORICAL_SOURCE_PIN_INVALID', 'NONADMIN_HISTORY_CHANGED_DURING_READ',
+        'NONADMIN_HISTORY_CONTENT_PIN_MISMATCH', 'NONADMIN_HISTORY_IDENTITY_CHANGED',
+        'NONADMIN_HISTORY_LINK_REFUSED', 'NONADMIN_HISTORY_PIN_MISMATCH',
+        'NONADMIN_HOST_NAME_REQUIRED', 'NONADMIN_LISTENER_PARENT_BINDING_DIFFERS',
+        'NONADMIN_NONFINITE_JSON_REFUSED', 'NONADMIN_OWNERSHIP_EVIDENCE_REQUIRED',
+        'NONADMIN_POLICY_INPUT_INVALID', 'NONADMIN_PROCESS_CREATION_REQUIRED',
+        'NONADMIN_PROCESS_EXECUTABLE_CHANGED', 'NONADMIN_REQUIRED_SCHEMA_READ_PRIVILEGES_MISSING',
+        'NONADMIN_ROUTINE_GLOBAL_SELECT_REQUIRED', 'NONADMIN_RUNNING_FIXED_SERVICE_REQUIRED',
+        'NONADMIN_SERVER_OVERRIDE_REFUSED', 'NONADMIN_SERVER_QUOTING_REFUSED',
+        'NONADMIN_SERVICE_PROCESS_BINDING_DIFFERS', 'NONADMIN_UNREVIEWED_GRANT_SCOPE_REFUSED',
+        'NONADMIN_VISIBLE_PROCESS_METADATA_INVALID'
+    )
+    # Match the exact producer envelope, excluding duplicate/extra properties,
+    # trailing output and noncanonical JSON before looking up the closed code.
+    if ($Answer -cmatch '\A\{"errorCode": "([A-Z][A-Z0-9_]{1,100})", "status": "REFUSED"\}\r?\n\z' -and $Matches[1] -cin $codes) {
+        return $Matches[1]
+    }
+    return 'NONADMIN_METADATA_REFUSED'
+}
 function Invoke-NonAdminMetadataPolicy([string]$Action, $Record) {
     Require-Export ($Action -cin @('source', 'privileges')) 'Unknown metadata policy action.' 'NONADMIN_POLICY_ACTION_REQUIRED'
     Assert-Unlinked $script:nonAdminPolicy
@@ -26,12 +59,16 @@ function Invoke-NonAdminMetadataPolicy([string]$Action, $Record) {
         $stdout = $process.StandardOutput.ReadToEndAsync(); $stderr = $process.StandardError.ReadToEndAsync()
         $write = $process.StandardInput.WriteAsync($body)
         Require-Export ($write.Wait(10000)) 'Metadata input transfer timed out.' 'NONADMIN_POLICY_TIMEOUT'
-        $write.GetAwaiter().GetResult(); $process.StandardInput.Close()
+        [void]$write.GetAwaiter().GetResult(); $process.StandardInput.Close()
         Require-Export ($process.WaitForExit(30000)) 'Metadata policy timed out.' 'NONADMIN_POLICY_TIMEOUT'
         $answer = $stdout.GetAwaiter().GetResult(); $diagnostic = $stderr.GetAwaiter().GetResult()
-        Require-Export ($process.ExitCode -eq 0 -and $answer.Length -le 16384 -and $diagnostic.Length -eq 0) 'Source metadata policy refused the observation.' 'NONADMIN_METADATA_REFUSED'
+        Require-Export ($answer.Length -le 16384 -and $diagnostic.Length -eq 0) 'Source metadata policy returned an invalid envelope.' 'NONADMIN_METADATA_REFUSED'
         Require-Export ((File-Sha $script:nonAdminPolicy) -ceq $script:nonAdminPolicySha -and
             (File-Sha $script:policyPython) -ceq $script:policyPythonSha) 'Metadata policy inputs changed.' 'NONADMIN_POLICY_CHANGED'
+        if ($process.ExitCode -ne 0) {
+            $refusal = if ($process.ExitCode -eq 1) { Get-NonAdminPolicyRefusalCode $answer } else { 'NONADMIN_METADATA_REFUSED' }
+            Require-Export $false 'Source metadata policy refused the observation.' $refusal
+        }
         return $answer | ConvertFrom-Json
     } finally {
         if ($started -and -not $process.HasExited) { $process.Kill($true); [void]$process.WaitForExit(10000) }

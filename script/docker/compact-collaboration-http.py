@@ -64,9 +64,12 @@ def claim(ctx):
     original = request(ctx, 'supervisor', 'GET', base)['body']
     require(original['status'] == 'COMPLETED' and original['flowStatus'] == 'PENDING_REVIEW'
             and not original.get('assignee'), 'Real completed task is not available for candidate authorization')
-    aliases = ('peer', 'load_01')
+    creator = ctx.db.one("SELECT JSON_OBJECT('userId',created_user_id) FROM detection_task WHERE task_id=" + ctx.db.literal(task) + ';')
+    require(str(creator['userId']) == str(ctx.accounts['supervisor']['userId']),
+            'Both inspector candidates must be independent from the actual supervisor task creator')
+    aliases = ('inspector', 'peer')
     candidates = [str(ctx.accounts[alias]['userId']) for alias in aliases]
-    require(len(set(candidates)) == 2 and all(value != str(ctx.accounts['inspector']['userId']) for value in candidates),
+    require(len(set(candidates)) == 2 and all(value != str(ctx.accounts['supervisor']['userId']) for value in candidates),
             'Claim competitors must be two independent accounts other than the creator')
     grant = {'candidateUserIds': candidates, 'expectedVersion': str(original['version']), 'requestId': uuid.uuid4().hex}
     authorized = request(ctx, 'supervisor', 'POST', base + '/claim-candidates', grant)['body']
@@ -118,7 +121,7 @@ def claim(ctx):
     options = request(ctx, 'supervisor', 'GET', '/api/detection/quality-assignees?keyword='
                       + urllib.parse.quote(ctx.accounts['inspector']['username'], safe=''))['body']
     recipient = [row for row in options if str(row['userId']) == str(ctx.accounts['inspector']['userId'])]
-    require(len(recipient) == 1, 'Original inspector is not a current qualified assignment target')
+    require(len(recipient) == 1, 'Continuing inspector is not a current qualified assignment target')
     current = request(ctx, 'supervisor', 'GET', base)['body']
     restored = request(ctx, 'supervisor', 'POST', base + '/assignment', {
         'qualityStation': 'owned-collaboration', 'assignee': recipient[0]['username'],
@@ -128,7 +131,8 @@ def claim(ctx):
     require(restored['assignee'] == ctx.accounts['inspector']['username'] and not restored.get('claimCandidateUserIds'),
             'Real reassignment did not restore the original scenario scope')
     require(int(restored['version']) == int(actual['version']) + 1, 'Reassignment did not advance the same task revision')
-    return save(ctx, 'claim', {'taskId': task, 'competingUserIds': candidates, 'winnerUserId': str(ctx.accounts[winner]['userId']),
+    return save(ctx, 'claim', {'taskId': task, 'createdUserId': str(creator['userId']),
+        'competingUserIds': candidates, 'winnerUserId': str(ctx.accounts[winner]['userId']),
         'loserStatus': outcomes[loser]['status'], 'committedVersion': str(actual['version']),
         'auditId': audits[0]['id'], 'exactResponseAndReceiptReplay': True, 'temporaryScopeRevoked': True,
         'candidateOtherWritesDenied': True, 'continuedThroughRealSupervisorAssignment': True,
@@ -156,10 +160,15 @@ def denied_login(ctx, account):
 
 def personnel(ctx):
     observations = []
-    for alias, role in (('load_14', 'COLLECTION'), ('load_15', 'MAINTENANCE')):
+    for alias, role in (('inspector', 'COLLECTION'), ('peer', 'MAINTENANCE')):
         account = ctx.accounts[alias]; user = str(account['userId'])
         # Establish a real previous session before changing a live personnel binding.
         old_client = ctx.client(alias)
+        old_request = old_client.prepare_request('GET', '/api/organization/me')
+        old_client.cookies.add_cookie_header(old_request)
+        old_cookie = old_request.get_header('Cookie')
+        require(isinstance(old_cookie, str) and 'DOOR_HANDLE_CONTEXT=' in old_cookie
+                and 'DOOR_HANDLE_TOKEN_' in old_cookie, 'Actual original personnel-session cookies are required')
         name = 'owned-' + role.lower() + '-' + uuid.uuid4().hex[:12]
         staff = request(ctx, 'supervisor', 'POST', '/api/employees', {
             'name': name, 'employeeNumber': name, 'contact': 'fixture-not-contactable',
@@ -173,26 +182,30 @@ def personnel(ctx):
         require(str(own['employeeId']) == str(account['employeeId']), 'Owned identity changed before personnel acceptance')
         linked = request(ctx, 'supervisor', 'PUT', route, {'employeeId': staff['id'], 'version': own['bindingVersion']},
                          headers={**command(own['bindingVersion']), 'X-Organization-Action': 'update'})['body']
-        require(str(linked['employeeId']) == str(staff['id']), 'Actual supervisor association did not persist')
-        withdrawn_status = request(ctx, alias, 'GET', '/api/organization/me', statuses=(401, 403))['status']
-        require(withdrawn_status in (401, 403),
-                'An old JWT retained access after its current personnel qualification was withdrawn')
-        login_status = denied_login(ctx, account)
-        reverted = request(ctx, 'supervisor', 'PUT', route, {'employeeId': account['employeeId'], 'version': linked['bindingVersion']},
-                           headers={**command(linked['bindingVersion']), 'X-Organization-Action': 'update'})['body']
-        require(str(reverted['employeeId']) == str(account['employeeId']), 'Owned qualified binding was not restored for later scenarios')
-        restored_old_status = request(ctx, alias, 'GET', '/api/organization/me', statuses=(401, 403))['status']
+        try:
+            require(str(linked['employeeId']) == str(staff['id']), 'Actual supervisor association did not persist')
+            withdrawn_status = request(ctx, alias, 'GET', '/api/organization/me',
+                                       headers={'Cookie': old_cookie}, statuses=(401, 403))['status']
+            require(withdrawn_status in (401, 403),
+                    'An old JWT retained access after its current personnel qualification was withdrawn')
+            login_status = denied_login(ctx, account)
+        finally:
+            reverted = request(ctx, 'supervisor', 'PUT', route, {'employeeId': account['employeeId'], 'version': linked['bindingVersion']},
+                               headers={**command(linked['bindingVersion']), 'X-Organization-Action': 'update'})['body']
+            require(str(reverted['employeeId']) == str(account['employeeId']), 'Owned qualified binding was not restored for later scenarios')
+            account['bindingVersion'] = int(reverted['bindingVersion'])
+            ctx.common.write_json(ctx.directory / 'users.json', ctx.accounts)
+        restored_old_status = request(ctx, alias, 'GET', '/api/organization/me',
+                                      headers={'Cookie': old_cookie}, statuses=(401, 403))['status']
         require(restored_old_status in (401, 403),
                 'Restoring qualification resurrected the already revoked login session')
         require(ctx.clients[alias] is old_client, 'Old-session rejection was replaced by another login')
-        account['bindingVersion'] = int(reverted['bindingVersion'])
-        ctx.common.write_json(ctx.directory / 'users.json', ctx.accounts)
         ctx.clients.pop(alias)
         fresh = request(ctx, alias, 'GET', '/api/organization/me')['body']
         require(str(fresh['employeeId']) == str(account['employeeId']), 'New qualified session could not recover its own identity')
         observations.append({'position': role, 'staffId': str(staff['id']), 'userId': user,
             'createdAndAssociatedThroughActualHttp': True, 'loginRejected': login_status,
-            'oldSessionRevokedAndNotResurrected': True, 'qualifiedNewSessionVerified': True,
+            'oldSessionRevokedAndNotResurrected': True, 'exactOldCookieReplay': True, 'qualifiedNewSessionVerified': True,
             'beforeBindingVersion': str(own['bindingVersion']), 'withdrawnBindingVersion': str(linked['bindingVersion']),
             'restoredBindingVersion': str(reverted['bindingVersion']), 'oldSessionHttpStatuses': [withdrawn_status, restored_old_status],
             'freshQualifiedHttpStatus': 200, 'freshQualifiedEmployeeId': str(fresh['employeeId']),
@@ -208,10 +221,11 @@ def exact(value, minimum=0):
 
 def validate_observations(claim_value, personnel_value, accounts):
     claim, personnel = claim_value.get('observations', {}), personnel_value.get('observations', {})
-    competitors = [str(exact(accounts[alias]['userId'], 1)) for alias in ('peer', 'load_01')]
+    competitors = [str(exact(accounts[alias]['userId'], 1)) for alias in ('inspector', 'peer')]
     winner = str(exact(claim.get('winnerUserId'), 1))
     require(claim.get('competingUserIds') == competitors and len(set(competitors)) == 2
-            and str(exact(accounts['inspector']['userId'], 1)) not in competitors and winner in competitors
+            and str(exact(claim.get('createdUserId'), 1)) == str(exact(accounts['supervisor']['userId'], 1))
+            and str(exact(accounts['supervisor']['userId'], 1)) not in competitors and winner in competitors
             and claim.get('loserStatus') in (403, 409) and isinstance(claim.get('taskId'), str)
             and re.fullmatch(r'[A-Za-z0-9_-]{1,128}', claim['taskId']), 'Actual independent candidate claim identities are missing')
     require(claim.get('candidateReadHttpStatuses') == [200, 200] and claim.get('candidateWriteHttpStatuses') == [403, 403]
@@ -235,9 +249,10 @@ def validate_observations(claim_value, personnel_value, accounts):
             and {row.get('position') for row in positions} == {'COLLECTION', 'MAINTENANCE'}, 'Actual two non-login personnel positions are required')
     staff = set()
     for row in positions:
-        alias = 'load_14' if row['position'] == 'COLLECTION' else 'load_15'
+        alias = 'inspector' if row['position'] == 'COLLECTION' else 'peer'
         require(str(exact(row.get('userId'), 1)) == str(exact(accounts[alias]['userId'], 1))
-                and all(row.get(key) is True for key in ('createdAndAssociatedThroughActualHttp', 'oldSessionRevokedAndNotResurrected', 'qualifiedNewSessionVerified'))
+                and all(row.get(key) is True for key in ('createdAndAssociatedThroughActualHttp', 'oldSessionRevokedAndNotResurrected',
+                    'exactOldCookieReplay', 'qualifiedNewSessionVerified'))
                 and row.get('loginRejected') in (401, 403) and row.get('freshQualifiedHttpStatus') == 200
                 and type(row.get('oldSessionHttpStatuses')) is list and len(row['oldSessionHttpStatuses']) == 2
                 and all(status in (401, 403) for status in row['oldSessionHttpStatuses']), 'Actual personnel login/session HTTP denial is missing')

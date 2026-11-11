@@ -445,7 +445,10 @@ try {
     }
     $rawComplete = Join-Path $output 'database.sql'; Move-Item -LiteralPath $raw -Destination $rawComplete
     $stage = 'PRIVATE_CREDENTIAL_CLEANUP'
-} catch { $failure = $_.Exception.GetType().Name; $reason = $_.Exception.Data['ExportReason'] }
+} catch {
+    $failure = $_.Exception.GetType().Name; $reason = $_.Exception.Data['ExportReason']
+    if ($reason -isnot [string] -or -not $reason) { $reason = 'EXPORT_FAILED' }
+}
 finally {
     try {
     foreach ($file in @($optionFile, $loginFile)) {
@@ -476,7 +479,14 @@ if ($failure) {
         $report['sourceMode'] = 'PINNED_HISTORY_FRESH_SERVICE_TCP'
     }
     if ($output -and (Test-Path -LiteralPath $output -PathType Container)) { Write-PrivateJson (Join-Path $output 'public-failure.json') $report }
-    Write-Output ($report | ConvertTo-Json -Compress); throw 'Local export did not complete. Preserve partial business artifacts; no source deletion is authorized.'
+    $publicFailureJson = $report | ConvertTo-Json -Compress
+    Write-Output $publicFailureJson
+    # A terminating worker error discards assignment-pipeline output in the
+    # batch caller. Carry the same bounded public report on the exception too,
+    # including failures before a per-schema output directory was created.
+    $workerFailure = [InvalidOperationException]::new('Local export did not complete. Preserve partial business artifacts; no source deletion is authorized.')
+    $workerFailure.Data['ExportFailurePublicJson'] = $publicFailureJson
+    throw $workerFailure
 }
 $files = @{}
 foreach ($file in Get-ChildItem -LiteralPath $output -File) { $files[$file.Name] = [ordered]@{ bytes = $file.Length; sha256 = File-Sha $file.FullName } }

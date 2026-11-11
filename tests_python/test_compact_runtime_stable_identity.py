@@ -29,8 +29,8 @@ class Database:
             return {'schema': self.ctx.owner['targetSchema'], 'serverUuid': self.ctx.server, 'tableCount': self.ctx.tables}
         if 'createdIdMissing' in sql:
             return {'tasks': self.ctx.tasks, 'createdIdMissing': 0, 'assigneeIdMissing': 0}
-        return {'taskId': 'actual-task', 'createdUserId': 1, 'createdIdentityName': self.ctx.accounts['inspector']['username'],
-            'createdBy': self.ctx.accounts['inspector']['username'], 'assigneeUserId': None, 'status': 'COMPLETED', 'version': 1}
+        return {'taskId': 'actual-task', 'createdUserId': self.ctx.accounts['supervisor']['userId'], 'createdIdentityName': self.ctx.accounts['supervisor']['username'],
+            'createdBy': self.ctx.accounts['supervisor']['username'], 'assigneeUserId': self.ctx.accounts['inspector']['userId'], 'status': 'COMPLETED', 'version': 1}
     def query(self, sql):
         self.queries.append(sql)
         return [{'namespace': name, 'mode': self.ctx.mode if index == 0 else self.ctx.source,
@@ -41,9 +41,11 @@ class Database:
 
 
 def record(task='historical-task', state='ALREADY_ALIGNED', source='SOURCE_RECORDED', role='created'):
-    return {'taskId': task, 'role': role, 'state': state, 'existingUserId': 1,
-        'expectedName': 'private-historical-name', 'suggestedUserId': 99,
-        'source': {'state': source, 'bound_user_id': 1, 'bound_identity_name': 'private-historical-name',
+    user = 3 if task == 'actual-task' else 1
+    name = 'private-account-supervisor' if task == 'actual-task' else 'private-historical-name'
+    return {'taskId': task, 'role': role, 'state': state, 'existingUserId': user,
+        'expectedName': name, 'suggestedUserId': 99,
+        'source': {'state': source, 'bound_user_id': user, 'bound_identity_name': name,
                    'source_kind': 'NEW_CREATION' if task == 'actual-task' else 'SUPERVISOR_MAPPING'}}
 
 
@@ -155,7 +157,8 @@ def test_owned_server_identity_mismatch_blocks_before_start(ctx):
 def test_new_task_real_permission_receipts_are_required_in_same_build(ctx):
     assert complete(ctx)['status'] == 'PASS'
     value = report(ctx, 'authorization')
-    assert value['taskBinding']['createdUserId'] == '1'
+    assert value['taskBinding']['createdUserId'] == '3'
+    assert value['taskBinding']['assigneeUserId'] == '1'
     assert value['taskBinding']['sourceKind'] == 'NEW_CREATION'
     assert [item['progressHttpStatus'] for item in value['httpPermissions']] == [200, 200, 200, 403]
     assert 'never-public-password' not in json.dumps(value)
@@ -166,6 +169,28 @@ def test_peer_success_is_not_an_authorization_denial(ctx):
     # Fixture intentionally violates _http's contract; scope assertion still rejects it.
     with pytest.raises(stable.StableIdentityBlocked, match='PEER_HTTP_SCOPE_MUST_BE_DENIED'): stable.prove_current_task(ctx, 'actual-task')
     assert report(ctx, 'authorization')['status'] == 'BLOCKED'
+
+
+def test_current_inspector_access_cannot_replace_the_actual_supervisor_creator_or_assignee_binding(ctx):
+    complete(ctx)
+    authorization = report(ctx, 'authorization')
+    authorization['taskBinding']['assigneeUserId'] = str(ctx.accounts['peer']['userId'])
+    with pytest.raises(stable.StableIdentityBlocked, match='FINAL_ACTUAL_TASK_BINDING_NOT_PROVEN'):
+        stable.validate_final_values(report(ctx, 'preflight'), report(ctx, 'admission'), authorization, ctx.accounts, ctx.server)
+
+
+def test_new_creation_source_must_match_the_actual_supervisor_creator_not_an_aligned_other_identity(ctx, monkeypatch):
+    admission(ctx); ctx.tasks = 2
+    original = stable._http
+    def mismatched_source(*args, **kwargs):
+        status, value = original(*args, **kwargs)
+        if 'taskId=actual-task' in args[3]:
+            value['records'][0]['existingUserId'] = 1
+            value['records'][0]['source']['bound_user_id'] = 1
+        return status, value
+    monkeypatch.setattr(stable, '_http', mismatched_source)
+    with pytest.raises(stable.StableIdentityBlocked, match='ACTUAL_NEW_CREATION_SOURCE_CERTIFICATE_REQUIRED'):
+        stable.prove_current_task(ctx, 'actual-task')
 
 
 def test_mutated_evidence_cannot_pass_just_because_owner_status_is_pass(ctx):
