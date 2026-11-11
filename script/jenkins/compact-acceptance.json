@@ -19,6 +19,18 @@
   },
   "javaSuites": [
     {
+      "id": "DetectionExecutionApiImplTest",
+      "className": "com.ruanzhu.doorhandle.module.detection.api.DetectionExecutionApiImplTest",
+      "fixtureProperties": [
+        "detection.command.mysql-file"
+      ],
+      "source": "doorhandle-module-detection/src/test/java/com/ruanzhu/doorhandle/module/detection/api/DetectionExecutionApiImplTest.java",
+      "minimumTests": 12,
+      "coverage": [
+        "detection workflow, reports, identity and authorization"
+      ]
+    },
+    {
       "id": "SupportCopyMigrationMySqlTest",
       "className": "com.ruanzhu.doorhandle.module.app.service.impl.SupportCopyMigrationMySqlTest",
       "fixtureProperties": [
@@ -325,25 +337,13 @@
       ]
     },
     {
-      "id": "DetectionExecutionApiImplTest",
-      "className": "com.ruanzhu.doorhandle.module.detection.api.DetectionExecutionApiImplTest",
-      "fixtureProperties": [
-        "detection.command.mysql-file"
-      ],
-      "source": "doorhandle-module-detection/src/test/java/com/ruanzhu/doorhandle/module/detection/api/DetectionExecutionApiImplTest.java",
-      "minimumTests": 12,
-      "coverage": [
-        "detection workflow, reports, identity and authorization"
-      ]
-    },
-    {
       "id": "DetectionFingerprintProjectionMySqlTest",
       "className": "com.ruanzhu.doorhandle.module.detection.service.DetectionFingerprintProjectionMySqlTest",
       "fixtureProperties": [
         "doorhandle.fingerprint.mysql.config"
       ],
       "source": "doorhandle-module-detection/src/test/java/com/ruanzhu/doorhandle/module/detection/service/DetectionFingerprintProjectionMySqlTest.java",
-      "minimumTests": 5,
+      "minimumTests": 6,
       "coverage": [
         "detection workflow, reports, identity and authorization"
       ]

@@ -1,5 +1,7 @@
 # 单体 ECS 运行与测试
 
+2026-11-11 #222：图片迁移修复已由真实MySQL的9项测试全部通过，新增指针损坏回滚用例通过。后续检测执行接口12项均在准备任务时因缺模型12父记录而出错，本轮FAILURE；报告已保全，夹具和工具已停止，流水线外实际回读`Stopped / StopCharging`，Jenkins保持运行。正在补齐测试父记录并将图片指纹投影测试接入完整29表及真实外键；完整迁移和运行验收继续由修复后的固定提交执行，进展见[本地Jenkins回执](本地Jenkins-CICD.md)。
+
 2026-11-11 #220/#221最新实际结果：同一固定提交`8c30776fcd95ed6347494ce5904e5ad7de1867ab`的#220源码验证整轮SUCCESS：Java926通过、712条件跳过，Python3,694通过、24条件跳过，主前端203及Agent前端20项全部通过，两套生产构建完成；250项资料11,537,819字节在ECS实际恢复并核验。265份原归档中264份非应用JAR共39,286,740字节已另存`ci-220-raw-receipts`并核SHA；资料保全不等于业务合入。
 
 #221继续同提交完整`verify-runtime/mysql`，20模块1,853项控制预检通过，四阶段自动夹具准备完成。实际原生MySQL执行7类105项：102通过、3错误、零跳过。三个错误均在`SupportCopyMigrationMySqlTest`，检测图片资产先填`current_version=1`、版本记录后插入，违反`fk_content_current_revision`；不能用已通过的源码测试替代此次失败。40份原归档中39份非应用JAR共18,702,852字节及原build.xml已保全于`ci-221-raw-receipts`；夹具与工具实际STOPPED、工具remaining为空。流水线外StopInstance后已回读`Stopped / StopCharging`，Jenkins保持运行，修复期间任务禁自动触发且无排队。完整整库迁移、旧45/5599、运行与浏览器验收尚未执行，正式131表未切换。

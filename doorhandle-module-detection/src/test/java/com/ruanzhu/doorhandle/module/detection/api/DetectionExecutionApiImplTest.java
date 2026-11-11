@@ -61,6 +61,7 @@ class DetectionExecutionApiImplTest {
         var service=new DetectionTaskServiceImpl(tasks,mock(ModelInfoMapper.class),mock(ModelService.class),storage,new OssProperties(),mock(DetectionTaskDispatchService.class),mock(DetectionNotificationPort.class),json,access);
         service.setOutbox(outbox);
         api=new DetectionExecutionApiImpl(tasks,service,access,users,audit,jdbc,json);api.verifySchema();
+        jdbc.update("INSERT INTO model_management(model_id,model_name,version,model_path,status,validation_status) VALUES(12,'retry-fixture-model','v1','models/retry-fixture.onnx','READY','PASSED')");
         var task=new DetectionTask();task.setTaskId("task-1");task.setCreatedBy("alice");task.setModelId(12);task.setThreshold(new BigDecimal("0.5"));
         task.setStatus("FAILED");task.setFlowStatus("FAILED");task.setStage("FAILED");task.setOriginalImageKeysJson("[\"private/originals/one.jpg\"]");task.setSourceOssPrefix("private/originals/");
         task.setTotalImages(1);task.setDispatchId("dispatch-old");task.setLastFinishedEventId("finished-old");task.setFinishedAt(LocalDateTime.of(2026,10,21,15,0));
