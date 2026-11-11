@@ -77,7 +77,7 @@ class LegacyChatActionStoreMySqlTest {
                   created_at,updated_at,confirmation_recorded_at,finished_at,legacy_source,legacy_key)
                 VALUES(?,'LEGACY_CHAT_ACTION','LEGACY_CHAT_ACTION',?,?,1,'CHAT_ACTION',?,?,'pending',0,1,?,
                   NULL,NULL,NULL,NULL,'chat_pending_action','98')
-                """,UUID.randomUUID().toString(),action,digest(json.writeValueAsString(List.of(payload.actionType(),payload.actionPayload()))),
+                ""","legacy-chat-action:"+payload.legacyId(),action,digest(json.writeValueAsString(List.of(payload.actionType(),payload.actionPayload()))),
                 action,SESSION,json.writeValueAsString(payload));
     }
 
@@ -108,9 +108,12 @@ class LegacyChatActionStoreMySqlTest {
                   created_at,updated_at,confirmation_recorded_at,finished_at,legacy_source,legacy_key,legacy_clock_json)
                 VALUES(?,'LEGACY_CHAT_ACTION','LEGACY_CHAT_ACTION',?,?,1,'CHAT_ACTION',?,?,'pending',0,1,?,
                   NULL,NULL,NULL,NULL,'chat_pending_action','98',?)
-                """,UUID.randomUUID().toString(),action,digest(json.writeValueAsString(List.of(payload.actionType(),payload.actionPayload()))),
+                ""","legacy-chat-action:"+payload.legacyId(),action,digest(json.writeValueAsString(List.of(payload.actionType(),payload.actionPayload()))),
                 action,SESSION,json.writeValueAsString(payload),evidence);
-        return evidence;
+        String storedEvidence=jdbc.queryForObject("SELECT legacy_clock_json FROM workflow_instance WHERE workflow_id=?",String.class,
+                "legacy-chat-action:"+payload.legacyId());
+        assertThat(json.readTree(storedEvidence)).isEqualTo(json.readTree(evidence));
+        return storedEvidence;
     }
     @Test void unresolvedClockRetainsOriginalStatusRawPayloadAndNullTimesButBlocksApplication()throws Exception{
         String evidence=importUnresolvedClockAction("unknown-clock-action");

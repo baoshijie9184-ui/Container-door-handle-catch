@@ -1,5 +1,19 @@
 # 本地 Jenkins CI/CD 约定
 
+## 当前结果（2026-11-11）
+
+当前为 `java-cloud` 单体，固定候选 `7067d66585cd181f4ef8d5cf2345eb4e7851ff17`。同一候选的 #232 控制预检20模块、2,006项全部通过；#233 维护已实际退役4个旧Builder、4个停止的测试MySQL对象并回收8份JAR，数据目录、卷和镜像保留；#234 完整源码验证8条命令全部exit0：Java 926、Python 3,885、主前端203、Agent前端20项通过，两套生产构建完成，Java/Python原条件跳过713/24。四份历史传输原件已在ECS `RESTORED_VERIFIED`，原始逻辑字节155,793,058；这一步验证原件保全，不替代业务合入。
+
+#235 完整 `verify-runtime/mysql` 终态 **FAILURE**：原生MySQL实际12类、174项，0失败、2错误。`LegacyChatActionStoreMySqlTest` 的未决时钟夹具触发 `ck_legacy_clock_binding_workflow_instance`，最小夹具修复已完成并通过跳测试编译，待统一复测；整库迁移、旧45表/5599文件及新三库恢复合入、9项运行场景和19项浏览器检查仍未完成验收。正式业务库仍为131表，29表是目标结构，生产发布和旧库演练门禁保持关闭。
+
+本轮夹具和工具清理均为 `STOPPED`，工具remaining为空。2026-11-11 20:30:41（北京时间）已在流水线外实际回读 `Stopped / StopCharging`；Jenkins保持运行，任务暂禁以完成修复。修复代码全部整合、构建、提交推送后，再由原流水线对固定提交统一验证；不重跑已消费的维护批次，也不以既有部分通过替代完整验收。
+
+业务验收固定4账号（2检测人员、2主管）、每账号2个功能标签，共8个标签；核对隔离、更新、撤销、恢复、领取及双流正确性。正式并发/容量压测在全部开发完成后通过压测工具另行进行，本轮记录 `loadTestStatus=DEFERRED_BY_USER`、`performanceSloVerified=false`，不作负载容量或性能SLO结论；原资源安全门保持。
+
+原始回执分别保存在 `work/jenkins/data-residency-20261107/ci-232-raw-receipts`、`ci-233-raw-receipts`、`ci-234-raw-receipts`；本轮节省停机回读为 `ci-235-external-stop-readback.json`。
+
+## 此前执行记录（历史）
+
 当前：#230的20控制模块1,970项已在ECS全部通过、零跳过；同提交#231维护被四个额外退出Builder正确阻断，尚未删除MySQL/JAR。现已把现有Builder→MySQL→JAR顺序接入FailedNative：分别独立核定两停止目标，fresh snapshot只排除这两个完整身份；先普通退役Builder保state卷，再独立退役MySQL保数据，删除前重新核原件、整对与引用。新增36项完整入口边界回归，控制最低2,006项；待新固定提交经既有controls→维护→完整source/四原件→fullruntime验证。ECS已实际Stopped/StopCharging，Jenkins保持运行，正式压测仍延后。
 
 
