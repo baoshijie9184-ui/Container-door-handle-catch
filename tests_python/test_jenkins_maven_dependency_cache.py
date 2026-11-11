@@ -419,3 +419,9 @@ def test_recovery_original_reader_rejects_metadata_changes_on_the_same_descripto
     monkeypatch.setattr(tools.os, 'fstat', changed)
     with pytest.raises(ValueError, match='changed while reading'):
         tools.read_maven_recovery_json(failed_cache.source, 16 * 1024 ** 2)
+
+
+def test_ci224_interrupted_cache_uses_only_its_preserved_ready_receipt_and_original_catalog():
+    assert tools.MAVEN_CACHE_RECOVERY_PINS['f13cd293e255d7189142b63cd6f195ef14217810cb755aa017c924ddfd16ada5'] == {
+        '1d00eac2f5129848a756860b373190a1d928960822e01a884dc169e70acf63d5':
+        'd3d549812de43946e8e5a48357c15cd4a6f121c1c16f4f14a179572f39f32d6a'}

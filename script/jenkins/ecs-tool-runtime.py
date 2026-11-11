@@ -50,7 +50,13 @@ CACHE_PROTOCOL = 'doorhandle-maven-release-cache-v1'
 MAVEN_CACHE_RECOVERY_PINS = {
     '7c42577d50d6697a5ad00e8ba980adae839cb8c3540184b7d0c5c9221d435484': {
         '30babb7b2a92c095720ed9e0562a01a9790cb9c6d14de85ee1589c8f43fce80c':
-            '0f72406c98e3b050ab82229a03d71daeae9a196430da04e6d62c89f423a90306'}}
+            '0f72406c98e3b050ab82229a03d71daeae9a196430da04e6d62c89f423a90306'},
+    # Build #224's first Maven command completed with no cache growth before
+    # SSH loss caused post-cleanup to cancel its second command. The original
+    # READY receipt is preserved in ci-224-failure-diagnosis on D, not rewritten.
+    'f13cd293e255d7189142b63cd6f195ef14217810cb755aa017c924ddfd16ada5': {
+        '1d00eac2f5129848a756860b373190a1d928960822e01a884dc169e70acf63d5':
+            'd3d549812de43946e8e5a48357c15cd4a6f121c1c16f4f14a179572f39f32d6a'}}
 
 
 def require(value, message):

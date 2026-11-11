@@ -12,6 +12,36 @@ function Require-Value([string]$Name, [string]$Pattern) {
     if ([string]::IsNullOrWhiteSpace($value) -or $value -notmatch $Pattern) { throw "Invalid or missing $Name" }
     return $value
 }
+function Wait-ExistingVerification {
+    # Read back the same remote attempt after an SSH transport loss. Never run
+    # verification again, and never clean its tools while its supervisor is live.
+    $request=Get-Content -LiteralPath artifacts/ecs-verification-request.json -Raw | ConvertFrom-Json
+    $package=Get-Content -LiteralPath artifacts/release.json -Raw | ConvertFrom-Json
+    if ($request.release -cne $tag -or $request.commit -cne $package.commit -or
+        $request.sourceSha256 -cne $package.sourceSha256 -or $request.attempt -cnotmatch '^[a-f0-9]{32}$' -or
+        $request.helperSha256 -cnotmatch '^[a-f0-9]{64}$' -or $request.scope -cnotin @('source','mysql') -or
+        $request.instanceId -cne $env:DOORHANDLE_ECS_INSTANCE_ID -or $request.machineId -cne $env:DOORHANDLE_ECS_MACHINE_ID) {
+        throw 'The verification observation request differs from this fixed build.'
+    }
+    $binding="--root '$remoteRoot' --tag '$tag' --source-sha256 '$($request.sourceSha256)' --commit '$($request.commit)' --instance-id '$($request.instanceId)' --machine-id '$($request.machineId)' --scope '$($request.scope)' --attempt '$($request.attempt)'"
+    $observe="test `"`$(sha256sum '$remoteInbox/verify-remote.py' | cut -d ' ' -f 1)`" = '$($request.helperSha256)' && python3 -B '$remoteInbox/verify-remote.py' observe $binding"
+    for ($readback=1; $readback -le 3; $readback++) {
+        $lines=@(& ssh.exe @sshOptions -p $portText $destination $observe)
+        $exit=$LASTEXITCODE
+        $lines | Add-Content -LiteralPath artifacts/ecs-verification-observe.stdout.log -Encoding utf8
+        if ($exit -eq 255) { if ($readback -lt 3) { Start-Sleep -Seconds 2 }; continue }
+        if ($exit -notin @(0,1) -or $lines.Count -eq 0) { throw 'Original verification observation failed; retain its owned resources.' }
+        $state=$lines[-1] | ConvertFrom-Json
+        if ($state.release -cne $tag -or $state.attempt -cne $request.attempt -or $state.scope -cne $request.scope -or
+            $state.terminal -ne $true -or $state.status -cnotin @('PASS','FAILED') -or
+            $state.evidenceReady -isnot [bool] -or ($exit -eq 0 -and ($state.status -cne 'PASS' -or -not $state.evidenceReady))) {
+            throw 'Original verification has no matching terminal result; retain its owned resources.'
+        }
+        $state | ConvertTo-Json | Set-Content -LiteralPath artifacts/ecs-verification-observation.json -Encoding utf8
+        return $state
+    }
+    throw 'Cannot reconnect to the original verification; retain its owned resources and inspect that same attempt.'
+}
 function Assert-ControlPreflight([string]$Commit,[string]$SourceSha) {
     if ($env:ACTION -cne 'verify-runtime' -and -not ($env:ACTION -ceq 'verify' -and $env:DOORHANDLE_CI_SCOPE -ceq 'mysql')) { return }
     if ($env:CI_CONTROL_PREFLIGHT_PASS -cne 'true') { throw 'Native verification requires the ECS control-script preflight first.' }
@@ -741,6 +771,7 @@ if ($Action -in @('PrepareTools', 'CleanupTools')) {
         if ($registered.status -ne 'PREPARED' -or $registered.release -ne $tag -or $registered.manifest -ne "$remoteInbox/tool-runtime/manifest.json" -or $registered.manifestSha256 -notmatch '^[a-f0-9]{64}$') { throw 'ECS tool registration differs from the fixed build inbox.' }
         $registered | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath artifacts/ecs-tool-runtime.json -Encoding utf8
     } else {
+        if (Test-Path -LiteralPath artifacts/ecs-verification-request.json) { $null=Wait-ExistingVerification }
         $result = Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "python3 -B '$executor' cleanup --manifest '$remoteInbox/tool-runtime/manifest.json'"))
         $stopped = ($result | Select-Object -Last 1) | ConvertFrom-Json
         if ($stopped.status -ne 'STOPPED' -or $stopped.release -ne $tag -or @($stopped.remaining).Count -ne 0) { throw 'Owned tool containers did not stop.' }
@@ -851,6 +882,9 @@ print(json.dumps({'status':'SEALED','file':'verify-remote.py','sha256':expected,
     if ($sealedVerifier.status -ne 'SEALED' -or $sealedVerifier.sha256 -ne $verifyHelperSha -or $sealedVerifier.mode -ne '0600') { throw 'The admitted verification helper differs from the pinned source.' }
     $sealedVerifier | ConvertTo-Json | Set-Content -LiteralPath artifacts/ecs-verifier-admission.json -Encoding utf8
     $manifestFlag = if ($scope -eq 'mysql') { " --fixture-manifest '$fixture'" } else { '' }
+    @{ release=$tag;commit=$commit;sourceSha256=$sha;attempt=$attempt;scope=$scope;
+       instanceId=$instance;machineId=$machine;helperSha256=$verifyHelperSha } |
+        ConvertTo-Json | Set-Content -LiteralPath artifacts/ecs-verification-request.json -Encoding utf8
     $remoteCommand = "python3 -B '$remoteInbox/verify-remote.py' --root '$remoteRoot' --tag '$tag' --source-sha256 '$sha' --commit '$commit' --instance-id '$instance' --machine-id '$machine' --scope '$scope' --attempt '$attempt'$manifestFlag"
     $verifyExit = 1
     try {
@@ -859,6 +893,10 @@ print(json.dumps({'status':'SEALED','file':'verify-remote.py','sha256':expected,
         $verifyExit = $LASTEXITCODE
     } catch {
         if ($LASTEXITCODE) { $verifyExit = $LASTEXITCODE }
+    }
+    if ($verifyExit -eq 255) {
+        $observed=Wait-ExistingVerification
+        $verifyExit=if ($observed.status -ceq 'PASS' -and $observed.evidenceReady) { 0 } else { 1 }
     }
     $collected = $false
     try {

@@ -1427,7 +1427,7 @@
       },
       {
         "module": "tests_python.test_jenkins_suite_evidence",
-        "minimumTests": 131,
+        "minimumTests": 153,
         "source": "tests_python/test_jenkins_suite_evidence.py",
         "allowedSkippedTests": []
       },
@@ -1637,7 +1637,7 @@
       },
       {
         "module": "tests_python.test_jenkins_maven_dependency_cache",
-        "minimumTests": 88,
+        "minimumTests": 89,
         "source": "tests_python/test_jenkins_maven_dependency_cache.py",
         "allowedSkippedTests": []
       },

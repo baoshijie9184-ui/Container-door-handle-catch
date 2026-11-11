@@ -21,6 +21,7 @@ import stat
 import subprocess
 import sys
 import tarfile
+import time
 import uuid
 import xml.etree.ElementTree as ET
 from urllib.request import ProxyHandler, Request, build_opener
@@ -227,7 +228,10 @@ def make_evidence(inbox, checkout, evidence, driver, record):
     record["reportFiles"] = [{"path": name, "bytes": size, "sha256": sha}
                              for name, _path, size, sha in files]
     receipt = checkout.parent / "verification-receipt.json"
-    write_json(receipt, record)
+    pending_receipt = checkout.parent / ('verification-receipt-' + record['attempt'] + '.pending.json')
+    write_json(pending_receipt, record)
+    require(not receipt.exists() and not receipt.is_symlink(), 'Original verification receipt already exists')
+    pending_receipt.rename(receipt)
     regular_file(receipt, MAX_RECEIPT_BYTES)
     archive = inbox / "verification-evidence.tar.gz"
     require(not archive.exists(), "Verification evidence for this release already exists")
@@ -431,14 +435,19 @@ def validate_java_suites(result, evidence, *, mysql):
                 'Ordinary Java regression omitted or skipped an audited pure-logic class')
 
 
-def run_verification(args):
-    validate_request(args)
-    # No directory creation, archive extraction or test process precedes identity admission.
-    identity = ecs_identity(args.instance_id, args.machine_id)
+def admitted_root(args):
     root = Path(args.root)
     require(root.is_absolute() and len(root.parts) > 2 and root.parts[1] in ("home", "srv", "opt")
             and ".." not in root.parts and root.resolve(strict=True) == root and root.is_dir(),
             "Expected an existing admitted release root without links")
+    return root
+
+
+def run_verification(args):
+    validate_request(args)
+    # No directory creation, archive extraction or test process precedes identity admission.
+    identity = ecs_identity(args.instance_id, args.machine_id)
+    root = admitted_root(args)
     inbox = root / "inbox" / args.tag
     require(inbox.is_dir() and inbox.resolve() == inbox, "Expected the existing attempt inbox")
     archive = inbox / "source.tar.gz"
@@ -446,6 +455,9 @@ def run_verification(args):
     require(digest(archive) == args.source_sha256, "Source archive checksum differs")
     require(not (inbox / "verification-evidence.tar.gz").exists(), "Release already has verification evidence")
     attempt_dir, checkout = prepare_checkout(root, args, identity)
+    write_json(attempt_dir / '.verification-claimed' / 'supervisor.json', {
+        'pid': os.getpid(), 'startTicks': supervisor_start(os.getpid()),
+        'bootId': Path('/proc/sys/kernel/random/boot_id').read_text().strip()})
     evidence = checkout / "work" / "ci-evidence"
     driver = checkout / "driver.log"
     record = {"schema": 1, "kind": "doorhandle-ecs-ci", "release": args.tag,
@@ -496,7 +508,7 @@ def run_verification(args):
             process = subprocess.Popen(command, cwd=checkout, env=environment,
                                        stdin=subprocess.DEVNULL, stdout=output,
                                        stderr=subprocess.STDOUT, start_new_session=True)
-            process.wait(timeout=VERIFY_TIMEOUT_SECONDS)
+            wait_for_verifier(process, args)
         record["verificationExitCode"] = process.returncode
         result_file = evidence / "receipt.json"
         regular_file(result_file, MAX_RECEIPT_BYTES)
@@ -567,8 +579,104 @@ def run_verification(args):
                 pass
         if record["status"] != "PASS":
             exit_code = 1
-        print(json.dumps({key: record[key] for key in ("release", "attempt", "status", "scope")}), flush=True)
+        progress({key: record[key] for key in ("release", "attempt", "status", "scope")})
     return exit_code
+
+
+def progress(value):
+    # A disconnected SSH stdout must not turn completed tests into a new run.
+    try:
+        print(json.dumps(value), flush=True)
+    except BrokenPipeError:
+        # Prevent Python's final stdout flush from failing again at interpreter exit.
+        sink = os.open(os.devnull, os.O_WRONLY)
+        try:
+            os.dup2(sink, 1)
+        finally:
+            os.close(sink)
+
+
+def supervisor_start(pid):
+    require(type(pid) is int and pid > 1, 'Invalid verification supervisor PID')
+    process = Path('/proc') / str(pid)
+    require(process.stat().st_uid == os.getuid(), 'Verification supervisor owner differs')
+    return process.joinpath('stat').read_text().split(') ', 1)[1].split()[19]
+
+
+def wait_for_verifier(process, args):
+    deadline = time.monotonic() + VERIFY_TIMEOUT_SECONDS
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired('owned verification', VERIFY_TIMEOUT_SECONDS)
+        try:
+            return process.wait(timeout=min(30, remaining))
+        except subprocess.TimeoutExpired:
+            progress({'release': args.tag, 'attempt': args.attempt, 'status': 'RUNNING',
+                      'scope': args.scope})
+
+
+def observation_json(path):
+    regular_file(path, MAX_RECEIPT_BYTES)
+    info = path.stat()
+    require(info.st_uid == os.getuid() and info.st_nlink == 1
+            and stat.S_IMODE(info.st_mode) == 0o600, 'Private owned verification observation required')
+    return json.loads(path.read_text(encoding='utf-8-sig'))
+
+
+def observe_verification(args):
+    """Wait for this existing attempt only; never launch, cancel or repair it."""
+    validate_request(args)
+    identity = ecs_identity(args.instance_id, args.machine_id)
+    root = admitted_root(args)
+    attempt = root / 'verification' / args.tag
+    owned_directory(attempt)
+    claim = attempt / '.verification-claimed'
+    owned_directory(claim)
+    expected = {'schema': 1, 'kind': 'doorhandle-ci-claim', 'release': args.tag,
+                'attempt': args.attempt, 'commit': args.commit, 'sourceSha256': args.source_sha256,
+                'identity': identity, 'scope': args.scope}
+    require(observation_json(claim / 'claim.json') == expected,
+            'Existing verification claim belongs to another request')
+    supervisor = observation_json(claim / 'supervisor.json')
+    require(set(supervisor) == {'pid', 'startTicks', 'bootId'}
+            and type(supervisor['pid']) is int and type(supervisor['startTicks']) is str
+            and supervisor['startTicks'].isdigit()
+            and supervisor['bootId'] == Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
+            'Existing verification supervisor identity differs')
+    deadline = time.monotonic() + VERIFY_TIMEOUT_SECONDS + 120
+    receipt = attempt / 'verification-receipt.json'
+    archive = root / 'inbox' / args.tag / 'verification-evidence.tar.gz'
+    while True:
+        value = None
+        if receipt.exists():
+            value = observation_json(receipt)
+            require(all(value.get(key) == expected[key] for key in
+                ('release', 'attempt', 'commit', 'sourceSha256', 'identity', 'scope'))
+                and value.get('kind') == 'doorhandle-ecs-ci' and value.get('schema') == 1
+                and value.get('status') in ('PASS', 'FAILED'),
+                'Existing verification terminal receipt differs')
+            if archive.is_file():
+                regular_file(archive, MAX_EVIDENCE_ARCHIVE)
+                progress({'release': args.tag, 'attempt': args.attempt, 'status': value['status'],
+                          'scope': args.scope, 'terminal': True, 'evidenceReady': True})
+                return 0 if value['status'] == 'PASS' else 1
+        try:
+            alive = supervisor_start(supervisor['pid']) == supervisor['startTicks']
+        except (FileNotFoundError, ProcessLookupError):
+            alive = False
+        if not alive and receipt.exists():
+            if value is None or archive.is_file():
+                continue  # Receipt/archive may have been published as the supervisor exited.
+            progress({'release': args.tag, 'attempt': args.attempt, 'status': value['status'],
+                      'scope': args.scope, 'terminal': True, 'evidenceReady': False})
+            return 1  # Terminal cleanup is allowed; missing evidence can never pass verification.
+        require(alive, 'Original verification stopped without complete terminal evidence; retain owned resources')
+        require(time.monotonic() < deadline,
+                'Original verification observation timed out; retain owned resources')
+        progress({'release': args.tag, 'attempt': args.attempt, 'status': 'RUNNING',
+                  'scope': args.scope, 'terminal': False, 'evidenceReady': False})
+        time.sleep(5)
 
 
 def validate_envelope(record, args):
@@ -666,7 +774,7 @@ def collect(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", nargs="?", choices=("run", "collect"), default="run")
+    parser.add_argument("mode", nargs="?", choices=("run", "collect", "observe"), default="run")
     parser.add_argument("--root")
     parser.add_argument("--tag", required=True)
     parser.add_argument("--source-sha256", required=True)
@@ -687,12 +795,15 @@ def main():
         for number in (signal.SIGTERM, signal.SIGINT):
             signal.signal(number, interrupted)
         if hasattr(signal, "SIGHUP"):
-            signal.signal(signal.SIGHUP, interrupted)
+            # SSH hangup is a transport event. Explicit TERM/INT still cancel.
+            signal.signal(signal.SIGHUP, signal.SIG_IGN)
     try:
         if args.mode == "collect":
             require(args.archive and args.output, "Collect requires archive and output")
             return collect(args)
         require(args.root, "Run requires an existing release root")
+        if args.mode == 'observe':
+            return observe_verification(args)
         return run_verification(args)
     except BaseException as error:
         # Never print arbitrary exception content, subprocess output, secrets or private manifests.

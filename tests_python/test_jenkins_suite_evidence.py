@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import inspect
 import os
 from pathlib import Path
 import re
@@ -824,3 +825,169 @@ def test_grouping_cannot_weaken_profile_counts_scope_or_original_xml_checks(tmp_
         path.write_bytes(raw)
         reference.update(bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest())
     with pytest.raises(ValueError): coverage.validate_mysql_suites(result, profile, tmp_path, catalog)
+
+
+@pytest.fixture
+def existing_observation(tmp_path, monkeypatch):
+    args = SimpleNamespace(root=str(tmp_path), tag='ci-224-' + 'a' * 12,
+        commit='a' * 40, source_sha256='b' * 64, instance_id='i-existing',
+        machine_id='c' * 32, attempt='d' * 32, scope='mysql')
+    identity = dict(instanceId=args.instance_id, machineId=args.machine_id, executionLocation='ECS')
+    parent = tmp_path / 'verification' / args.tag
+    claim = parent / '.verification-claimed'; claim.mkdir(parents=True)
+    parent.chmod(0o700); claim.chmod(0o700)
+    inbox = tmp_path / 'inbox' / args.tag; inbox.mkdir(parents=True)
+    binding = dict(schema=1, kind='doorhandle-ci-claim', release=args.tag, attempt=args.attempt,
+        commit=args.commit, sourceSha256=args.source_sha256, identity=identity, scope=args.scope)
+    remote.write_json(claim / 'claim.json', binding)
+    remote.write_json(claim / 'supervisor.json', dict(pid=1234, startTicks='5678',
+        bootId=Path('/proc/sys/kernel/random/boot_id').read_text().strip()))
+    monkeypatch.setattr(remote, 'admitted_root', lambda _: tmp_path)
+    monkeypatch.setattr(remote, 'ecs_identity', lambda *_: identity)
+    monkeypatch.setattr(remote, 'supervisor_start', lambda _: '5678')
+    monkeypatch.setattr(remote, 'run_verification', lambda *_: pytest.fail('observe must not run tests again'))
+    def terminal(status='PASS', archive=True):
+        value = {**binding, 'kind': 'doorhandle-ecs-ci', 'status': status}
+        remote.write_json(parent / 'verification-receipt.json', value)
+        if archive: (inbox / 'verification-evidence.tar.gz').write_bytes(b'completed original; full collect still required')
+    return SimpleNamespace(args=args, parent=parent, claim=claim, inbox=inbox, terminal=terminal)
+
+
+@pytest.mark.parametrize('status', ['PASS', 'FAILED'])
+def test_reconnected_observer_retains_the_original_terminal_verdict_without_starting_work(existing_observation, status, capsys):
+    state = existing_observation; state.terminal(status)
+    before = {str(p): p.read_bytes() for p in state.parent.rglob('*') if p.is_file()}
+    assert remote.observe_verification(state.args) == (0 if status == 'PASS' else 1)
+    result = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert result['status'] == status and result['terminal'] is True and result['evidenceReady'] is True
+    assert before == {str(p): p.read_bytes() for p in state.parent.rglob('*') if p.is_file()}
+
+
+@pytest.mark.parametrize('field', ['release', 'attempt', 'commit', 'sourceSha256', 'identity', 'scope'])
+def test_reconnected_observer_refuses_a_different_original_claim(existing_observation, field):
+    state = existing_observation; path = state.claim / 'claim.json'
+    value = json.loads(path.read_text()); value[field] = 'different-request'; path.write_text(json.dumps(value))
+    with pytest.raises(remote.VerificationError, match='another request'):
+        remote.observe_verification(state.args)
+
+
+@pytest.mark.parametrize('mutation', ['boot', 'pid-reuse'])
+def test_reconnected_observer_never_follows_a_reused_supervisor_identity(existing_observation, monkeypatch, mutation):
+    state = existing_observation
+    if mutation == 'boot':
+        path = state.claim / 'supervisor.json'; value = json.loads(path.read_text())
+        value['bootId'] = 'different-boot'; path.write_text(json.dumps(value))
+    else: monkeypatch.setattr(remote, 'supervisor_start', lambda _: '9999')
+    with pytest.raises(remote.VerificationError): remote.observe_verification(state.args)
+
+
+def test_reconnected_observer_waits_for_the_existing_live_supervisor_and_its_original_archive(existing_observation, monkeypatch, capsys):
+    state = existing_observation; sleeps = []
+    def complete(seconds):
+        sleeps.append(seconds); state.terminal()
+    monkeypatch.setattr(remote.time, 'sleep', complete)
+    assert remote.observe_verification(state.args) == 0 and sleeps == [5]
+    observations = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert observations[0]['status'] == 'RUNNING' and observations[0]['terminal'] is False
+    assert all(item['attempt'] == state.args.attempt for item in observations)
+
+
+@pytest.mark.parametrize('status', ['PASS', 'FAILED'])
+def test_dead_supervisor_receipt_without_archive_allows_cleanup_but_never_verification_pass(existing_observation, monkeypatch, capsys, status):
+    state = existing_observation; state.terminal(status, archive=False)
+    def absent(_): raise FileNotFoundError('original process has exited')
+    monkeypatch.setattr(remote, 'supervisor_start', absent)
+    assert remote.observe_verification(state.args) == 1
+    result = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert result['terminal'] is True and result['evidenceReady'] is False
+
+
+def test_dead_supervisor_without_terminal_evidence_is_unknown_and_retains_its_claim(existing_observation, monkeypatch):
+    state = existing_observation
+    def absent(_): raise FileNotFoundError('original process has exited')
+    monkeypatch.setattr(remote, 'supervisor_start', absent)
+    with pytest.raises(remote.VerificationError, match='retain owned resources'):
+        remote.observe_verification(state.args)
+    assert (state.claim / 'claim.json').exists() and not (state.parent / 'verification-receipt.json').exists()
+
+
+def test_existing_supervisor_observation_has_a_bounded_wait_without_restarting_it(existing_observation, monkeypatch):
+    ticks = iter([0, remote.VERIFY_TIMEOUT_SECONDS + 121])
+    monkeypatch.setattr(remote.time, 'monotonic', lambda: next(ticks))
+    with pytest.raises(remote.VerificationError, match='timed out'):
+        remote.observe_verification(existing_observation.args)
+
+
+def test_remote_supervisor_heartbeat_keeps_one_original_process_and_one_deadline(monkeypatch, capsys):
+    waits = []
+    class Existing:
+        def wait(self, timeout):
+            waits.append(timeout)
+            if len(waits) == 1: raise subprocess.TimeoutExpired('same process', timeout)
+            return 0
+    ticks = iter([0, 1, 31])
+    monkeypatch.setattr(remote.time, 'monotonic', lambda: next(ticks))
+    assert remote.wait_for_verifier(Existing(), SimpleNamespace(tag='one', attempt='same', scope='mysql')) == 0
+    assert waits == [30, 30] and json.loads(capsys.readouterr().out)['status'] == 'RUNNING'
+
+
+def test_broken_ssh_stdout_does_not_abort_the_existing_remote_supervisor(monkeypatch):
+    redirected = []
+    def disconnected(*_, **__): raise BrokenPipeError('closed SSH transport')
+    monkeypatch.setattr('builtins.print', disconnected)
+    monkeypatch.setattr(remote.os, 'dup2', lambda source, target: redirected.append((source, target)))
+    remote.progress({'status': 'RUNNING'})
+    assert len(redirected) == 1 and redirected[0][1] == 1
+
+
+def test_ssh_hangup_is_not_cancellation_but_explicit_term_and_int_still_are():
+    source = inspect.getsource(remote.main)
+    assert 'signal.signal(signal.SIGHUP, signal.SIG_IGN)' in source
+    assert '(signal.SIGTERM, signal.SIGINT)' in source and 'signal.signal(number, interrupted)' in source
+
+
+def test_controller_recovers_same_attempt_and_gates_post_tool_cleanup_on_its_terminal_state():
+    source = (ROOT / 'script/jenkins/pipeline.ps1').read_text()
+    function = source.split('function Wait-ExistingVerification {', 1)[1].split('function Assert-ControlPreflight', 1)[0]
+    assert 'verify-remote.py\' observe $binding' in function and "'run'" not in function
+    assert '$request.attempt' in function and '$request.helperSha256' in function and '$state.terminal' in function
+    verify = source.split("if ($Action -eq 'VerifyEcs')", 1)[1]
+    assert '$verifyExit -eq 255' in verify and '$observed=Wait-ExistingVerification' in verify
+    assert verify.index('$observed=Wait-ExistingVerification') < verify.index('$collected = $false')
+    cleanup = source.split("if ($Action -in @('PrepareTools', 'CleanupTools'))", 1)[1].split("if ($Action -in @('PrepareFixtures'", 1)[0]
+    assert cleanup.index('$null=Wait-ExistingVerification') < cleanup.index("'$executor' cleanup")
+
+
+@pytest.mark.parametrize('published', ['receipt', 'archive'])
+def test_terminal_receipt_published_as_supervisor_exits_is_re_read_before_cleanup(existing_observation, monkeypatch, capsys, published):
+    state = existing_observation; exits = []
+    if published == 'archive': state.terminal('PASS', archive=False)
+    def exiting(_):
+        if not exits:
+            if published == 'receipt': state.terminal('FAILED', archive=False)
+            else: (state.inbox / 'verification-evidence.tar.gz').write_bytes(b'completed original evidence')
+        exits.append(True)
+        raise FileNotFoundError('the original supervisor exited after publishing its receipt')
+    monkeypatch.setattr(remote, 'supervisor_start', exiting)
+    assert remote.observe_verification(state.args) == (1 if published == 'receipt' else 0)
+    assert len(exits) == (2 if published == 'receipt' else 1)
+    result = json.loads(capsys.readouterr().out)
+    assert result['terminal'] is True and result['evidenceReady'] is (published == 'archive')
+
+
+def test_original_terminal_json_is_published_atomically_before_bounded_evidence_packaging(tmp_path, monkeypatch):
+    inbox = tmp_path / 'inbox'; inbox.mkdir()
+    checkout = tmp_path / 'attempt/checkout'; checkout.mkdir(parents=True)
+    evidence = checkout / 'work/ci-evidence'; evidence.mkdir(parents=True)
+    driver = checkout / 'driver.log'; driver.write_bytes(b'original execution log')
+    record = {'attempt': 'a' * 32, 'status': 'FAILED'}
+    original = remote.write_json; seen = []
+    def writing(path, value):
+        assert path.name.endswith('.pending.json') and not (checkout.parent / 'verification-receipt.json').exists()
+        original(path, value); seen.append(path)
+    monkeypatch.setattr(remote, 'write_json', writing)
+    archive = remote.make_evidence(inbox, checkout, evidence, driver, record)
+    assert len(seen) == 1 and not seen[0].exists()
+    assert json.loads((checkout.parent / 'verification-receipt.json').read_text()) == record
+    with tarfile.open(archive) as package:
+        assert json.loads(package.extractfile('verification-receipt.json').read()) == record
