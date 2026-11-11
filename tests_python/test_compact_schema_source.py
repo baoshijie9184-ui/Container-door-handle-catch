@@ -287,3 +287,57 @@ def test_model_budget_author_reproduces_exact_check_spellings_and_all_enforced_g
     for table, count in (('agent_model_budget', 2), ('agent_model_budget_attempt', 3),
                          ('agent_model_budget_observation', 1), ('agent_model_budget_audit', 0)):
         assert "IF(COUNT(*)=" + str(count) + ",1,0) FROM information_schema.table_constraints WHERE table_schema='__SOURCE_SCHEMA__' AND table_name='" + table + "' AND constraint_type='CHECK'" in generated
+
+
+def test_workbench_author_pairs_both_payload_versions_with_clock_provenance_without_losing_identity(tmp_path):
+    relative_java = 'doorhandle-module-ai/src/main/java/com/ruanzhu/doorhandle/module/ai/workbench/WorkbenchProtocol.java'
+    paths = ['sql/mysql/compact/' + mode + '/30-operations.sql' for mode in ('baseline', 'baseline-fixed-clock')]
+    for relative in ('script/schema/author_workbench_constraints.py', relative_java, *paths):
+        destination = tmp_path / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / relative, destination)
+    author = tmp_path / 'script/schema/author_workbench_constraints.py'
+    paired = ("AND ((legacy_clock_json IS NULL AND JSON_EXTRACT(payload_json,'$.schemaVersion')=1)"
+              " OR (legacy_clock_json IS NOT NULL AND JSON_EXTRACT(payload_json,'$.schemaVersion')=2)) AND JSON_TYPE")
+    old = "AND JSON_EXTRACT(payload_json,'$.schemaVersion')=1 AND JSON_TYPE"
+    originals = {relative: (ROOT / relative).read_text('utf8') for relative in paths}
+    for relative in paths:
+        target = tmp_path / relative
+        item = next(line for line in originals[relative].splitlines() if line.startswith(' CONSTRAINT ck_workflow_workbench_item CHECK '))
+        assert paired in item
+        for invariant in ("resource_type='WORKBENCH_ITEM'", 'resource_id IS NOT NULL', 'CHAR_LENGTH(resource_id)<=64',
+                          "idempotency_scope='WORKBENCH_ITEM'", 'BINARY request_id=BINARY resource_id',
+                          'session_id IS NOT NULL', 'payload_version=1',
+                          "JSON_CONTAINS_PATH(payload_json,'all','$.schemaVersion','$.data')=1",
+                          "JSON_TYPE(JSON_EXTRACT(payload_json,'$.data'))='OBJECT'"):
+            assert invariant in item
+        target.write_text(originals[relative].replace(paired, old), encoding='utf8')
+    for _ in range(2):
+        subprocess.run([sys.executable, '-B', str(author)], check=True, capture_output=True, text=True)
+        assert all((tmp_path / relative).read_text('utf8') == original for relative, original in originals.items())
+    target = tmp_path / paths[0]
+    target.write_text(originals[paths[0]].replace(paired, paired.replace("'$.schemaVersion')=2", "'$.schemaVersion')=3")), encoding='utf8')
+    refused = subprocess.run([sys.executable, '-B', str(author)], capture_output=True, text=True)
+    assert refused.returncode != 0 and 'Unreviewed workbench item clock/version contract' in refused.stderr
+
+
+def test_mcp_installation_reservations_keep_a_separate_closed_execution_field_branch():
+    mcp = ("(kind='MCP_INSTALLATION' AND execution_state IS NULL AND reserved_bytes IS NOT NULL"
+           " AND reserved_bytes>=0 AND exit_verified IS NULL AND execution_deadline IS NULL)")
+    for mode in ('baseline', 'baseline-fixed-clock'):
+        sql = (ROOT / 'sql/mysql/compact' / mode / '30-operations.sql').read_text('utf8')
+        execution = next(line.strip() for line in sql.splitlines() if line.lstrip().startswith('CONSTRAINT ck_workflow_execution CHECK '))
+        deadline = 'execution_deadline IS NOT NULL' if mode == 'baseline-fixed-clock' else '(execution_deadline IS NOT NULL OR legacy_clock_json IS NOT NULL)'
+        skill = ("(kind='SKILL_DOWNLOAD' AND execution_state IS NOT NULL AND execution_state IN ('RESERVED','RUNNING','SEALED','RELEASED','NEEDS_REVIEW')"
+                 " AND reserved_bytes IS NOT NULL AND reserved_bytes>=0 AND exit_verified IS NOT NULL AND " + deadline
+                 + " AND ((execution_state IN ('SEALED','RELEASED') AND exit_verified=TRUE AND reserved_bytes=0)"
+                 " OR (execution_state IN ('RESERVED','RUNNING','NEEDS_REVIEW') AND exit_verified=FALSE)))")
+        nulls = '(execution_state IS NULL AND reserved_bytes IS NULL AND exit_verified IS NULL AND execution_deadline IS NULL)'
+        assert execution == 'CONSTRAINT ck_workflow_execution CHECK (' + nulls + ' OR ' + skill + ' OR ' + mcp + '),'
+        installation = next(line for line in sql.splitlines() if line.lstrip().startswith('CONSTRAINT ck_workflow_mcp_installation CHECK '))
+        assert 'reserved_bytes IS NOT NULL AND reserved_bytes>=0' in installation
+    copy = (ROOT / 'sql/mysql/compact/copy/48-mcp.sql').read_text('utf8')
+    installation = next(line for line in copy.splitlines() if line.startswith('INSERT INTO workflow_instance(')
+                        and "'MCP_INSTALLATION'" in line)
+    assert 'reserved_bytes' in installation.split(' SELECT ', 1)[0]
+    assert 's.reserved_bytes' in installation.split(' SELECT ', 1)[1]

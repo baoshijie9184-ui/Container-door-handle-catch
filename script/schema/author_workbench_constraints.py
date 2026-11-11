@@ -104,6 +104,16 @@ def main():
     section = start + '\n' + '\n'.join(checks) + '\n' + end + '\n'
     for path in (BASELINE, ROOT / 'sql/mysql/compact/baseline-fixed-clock/30-operations.sql'):
         sql = path.read_text(encoding='utf8')
+        item = re.findall(r'(?m)^ CONSTRAINT ck_workflow_workbench_item CHECK .*$', sql)
+        if len(item) != 1:
+            raise ValueError('Expected one workbench item identity constraint')
+        old_version = "AND JSON_EXTRACT(payload_json,'$.schemaVersion')=1 AND JSON_TYPE"
+        clock_version = ("AND ((legacy_clock_json IS NULL AND JSON_EXTRACT(payload_json,'$.schemaVersion')=1)"
+                         " OR (legacy_clock_json IS NOT NULL AND JSON_EXTRACT(payload_json,'$.schemaVersion')=2)) AND JSON_TYPE")
+        if old_version in item[0]:
+            sql = sql.replace(item[0], item[0].replace(old_version, clock_version))
+        elif clock_version not in item[0]:
+            raise ValueError('Unreviewed workbench item clock/version contract')
         if start in sql:
             sql = re.sub(re.escape(start) + r'.*?' + re.escape(end) + r'\n', lambda _: section, sql, flags=re.S)
         else:

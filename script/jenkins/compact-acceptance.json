@@ -19,6 +19,32 @@
   },
   "javaSuites": [
     {
+      "id": "WorkbenchMigrationMySqlTest",
+      "className": "com.ruanzhu.doorhandle.module.ai.workbench.WorkbenchMigrationMySqlTest",
+      "fixtureProperties": [
+        "workbench.migration.source",
+        "workbench.migration.target"
+      ],
+      "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/workbench/WorkbenchMigrationMySqlTest.java",
+      "minimumTests": 8,
+      "coverage": [
+        "workbench execution, checkpoint and migration"
+      ]
+    },
+    {
+      "id": "McpMigrationMySqlTest",
+      "className": "com.ruanzhu.doorhandle.module.ai.mcp.McpMigrationMySqlTest",
+      "fixtureProperties": [
+        "doorhandle.mcp.source.config",
+        "doorhandle.mcp.mysql.config"
+      ],
+      "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/mcp/McpMigrationMySqlTest.java",
+      "minimumTests": 17,
+      "coverage": [
+        "MCP durable install, execution and unknown-result protocol"
+      ]
+    },
+    {
       "id": "DetectionExecutionApiImplTest",
       "className": "com.ruanzhu.doorhandle.module.detection.api.DetectionExecutionApiImplTest",
       "fixtureProperties": [
@@ -497,19 +523,6 @@
       ]
     },
     {
-      "id": "McpMigrationMySqlTest",
-      "className": "com.ruanzhu.doorhandle.module.ai.mcp.McpMigrationMySqlTest",
-      "fixtureProperties": [
-        "doorhandle.mcp.source.config",
-        "doorhandle.mcp.mysql.config"
-      ],
-      "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/mcp/McpMigrationMySqlTest.java",
-      "minimumTests": 16,
-      "coverage": [
-        "MCP durable install, execution and unknown-result protocol"
-      ]
-    },
-    {
       "id": "MemoryGovernanceMigrationMySqlTest",
       "className": "com.ruanzhu.doorhandle.module.app.service.MemoryGovernanceMigrationMySqlTest",
       "fixtureProperties": [
@@ -779,19 +792,6 @@
       "minimumTests": 5,
       "coverage": [
         "skill revisions, lease fencing and migration"
-      ]
-    },
-    {
-      "id": "WorkbenchMigrationMySqlTest",
-      "className": "com.ruanzhu.doorhandle.module.ai.workbench.WorkbenchMigrationMySqlTest",
-      "fixtureProperties": [
-        "workbench.migration.source",
-        "workbench.migration.target"
-      ],
-      "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/workbench/WorkbenchMigrationMySqlTest.java",
-      "minimumTests": 7,
-      "coverage": [
-        "workbench execution, checkpoint and migration"
       ]
     },
     {
@@ -1229,7 +1229,7 @@
       },
       {
         "module": "tests_python.test_compact_schema_source",
-        "minimumTests": 29,
+        "minimumTests": 31,
         "source": "tests_python/test_compact_schema_source.py",
         "allowedSkippedTests": []
       },

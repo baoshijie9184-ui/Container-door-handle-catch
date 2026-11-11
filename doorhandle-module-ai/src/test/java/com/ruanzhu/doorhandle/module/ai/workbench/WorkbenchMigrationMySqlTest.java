@@ -102,6 +102,25 @@ class WorkbenchMigrationMySqlTest {
         assertThat(store.require(7,"deleted-session","legacy-ready").legacyClockEvidence().sourceSnapshotSha256()).isEqualTo(snapshot);
         assertThat(com.ruanzhu.doorhandle.module.ai.testsupport.FixtureSourceSnapshot.capture(source,SOURCE_TABLES)).isEqualTo(snapshot);
     }
+    @Test void clockProvenanceAndPayloadVersionCannotBeMismatched()throws Exception{
+        seed();
+        String snapshot=com.ruanzhu.doorhandle.module.ai.testsupport.FixtureSourceSnapshot.capture(source,SOURCE_TABLES);
+        var unknown=new WorkbenchLegacyMigration.Admission(admission.instanceId(),admission.machineId(),admission.sourceSchema(),admission.targetSchema(),admission.serverUuid(),null,admission.sourceCollations(),snapshot,Set.of("workbench"));
+        var receipt=migration.copy(unknown);
+        String original=jdbc.queryForObject("SELECT payload_json FROM workflow_instance WHERE kind='WORKBENCH_CHILD'",String.class);
+        assertThat(json.readTree(original).path("schemaVersion").intValue()).isEqualTo(2);
+        for(int version:List.of(1,3))assertThatThrownBy(()->jdbc.update("UPDATE workflow_instance SET payload_json=JSON_SET(payload_json,'$.schemaVersion',?) WHERE kind='WORKBENCH_CHILD'",version))
+            .rootCause().isInstanceOfSatisfying(java.sql.SQLException.class,error->assertThat(error.getErrorCode()).isEqualTo(3819));
+        assertThat(jdbc.queryForObject("SELECT payload_json FROM workflow_instance WHERE kind='WORKBENCH_CHILD'",String.class)).isEqualTo(original);
+        assertThat(migration.verifyCommitted(unknown,receipt).matches()).isTrue();
+        var store=new WorkbenchStore(jdbc,new DataSourceTransactionManager(target.dataSource()),json);
+        var current=store.create(7,"deleted-session","current-ready","EXECUTION","READY",Map.of("username","fixture-user","role","INSPECTOR","logicalTaskId","current-task","continuation","current continuation"));
+        assertThatThrownBy(()->jdbc.update("UPDATE workflow_instance SET payload_json=JSON_SET(payload_json,'$.schemaVersion',2) WHERE resource_type='WORKBENCH_ITEM' AND resource_id=?",current.id()))
+            .rootCause().isInstanceOfSatisfying(java.sql.SQLException.class,error->assertThat(error.getErrorCode()).isEqualTo(3819));
+        assertThat(store.require(7,"deleted-session",current.id()).legacyClockEvidence()).isNull();
+        assertThat(store.dispatch(0)).extracting(WorkbenchStore.Row::id).containsExactly(current.id());
+        assertThat(com.ruanzhu.doorhandle.module.ai.testsupport.FixtureSourceSnapshot.capture(source,SOURCE_TABLES)).isEqualTo(snapshot);
+    }
     @Test void rejectsUnregisteredPayloadFieldsBeforeTargetMutation(){
         seed();source.update("UPDATE agent_workbench_item SET payload=JSON_SET(payload,'$.arbitrary_unregistered_field','must not disappear')");
         assertThatThrownBy(()->migration.copy(admission)).isInstanceOf(IllegalArgumentException.class);

@@ -87,6 +87,7 @@ class McpMigrationMySqlTest {
             assertThat(target.queryForList("SELECT idempotency_scope FROM workflow_instance WHERE kind=?",String.class,kind)).containsExactlyInAnyOrder(kind+":OWNER:901",kind+":OWNER:902");
         }
         assertThat(target.queryForObject("SELECT mcp_worker_token FROM workflow_instance WHERE kind='MCP_INSTALL_JOB'",String.class)).isEqualTo("original-token");
+        assertThat(target.queryForList("SELECT reserved_bytes FROM workflow_instance WHERE kind='MCP_INSTALLATION' ORDER BY owner_user_id",Long.class)).containsExactly(2097152L,2097152L);
         assertThat(target.queryForObject("SELECT COUNT(*) FROM workflow_instance WHERE kind='MCP_INSTALL_WORKER' AND mcp_container_id IS NULL AND mcp_transport='STDIO' AND mcp_controller_started='2025-01-02T03:04:05Z'",Integer.class)).isEqualTo(2);
         assertThat(target.queryForObject("SELECT COUNT(*) FROM content_asset WHERE asset_kind='CONNECTOR_IMAGE' AND created_at IS NULL AND lifecycle='NEEDS_REVIEW'",Integer.class)).isEqualTo(1);
         assertThat(target.queryForObject("SELECT COUNT(*) FROM content_link WHERE link_kind='CONNECTOR_RETENTION' AND created_at IS NULL",Integer.class)).isEqualTo(2);
@@ -96,6 +97,21 @@ class McpMigrationMySqlTest {
         assertThat(clocks).hasSize(13);for(String clock:clocks){var row=json.readTree(clock);assertThat(row.size()).isEqualTo(4);assertThat(row.path("sourceUtcOffset").asText()).isEqualTo("+08:00");assertThat(row.path("sourceSnapshotSha256").asText()).matches("[a-f0-9]{64}");}
         assertThat(snapshot()).isEqualTo(before);assertThat(sequences()).isEqualTo(seq);
         assertThat(target.queryForObject("SELECT AUTO_INCREMENT FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name='agent_connector'",Long.class)).isEqualTo(((Number)seq.stream().filter(x->x.get("table_name").equals("agent_local_mcp")).findFirst().orElseThrow().get("auto_increment")).longValue());
+    }
+
+    @Test void installationReservationsStaySeparateFromSkillExecutionFields()throws Exception{
+        var before=snapshot();fixture.migrate("+08:00");
+        var installation=target.queryForMap("SELECT * FROM workflow_instance WHERE kind='MCP_INSTALLATION' AND owner_user_id=901");
+        assertThat(installation.get("reserved_bytes")).isEqualTo(2097152L);
+        for(String column:List.of("execution_state","exit_verified","execution_deadline"))assertThat(installation.get(column)).isNull();
+        for(String assignment:List.of("execution_state='RUNNING'","exit_verified=FALSE","execution_deadline=UTC_TIMESTAMP(6)","reserved_bytes=NULL"))
+            assertThatThrownBy(()->target.update("UPDATE workflow_instance SET "+assignment+" WHERE kind='MCP_INSTALLATION' AND owner_user_id=901"))
+                .rootCause().isInstanceOfSatisfying(java.sql.SQLException.class,error->assertThat(error.getErrorCode()).isEqualTo(3819));
+        assertThatThrownBy(()->target.update("UPDATE workflow_instance SET reserved_bytes=2097152 WHERE kind='MCP_INSTALL_JOB'"))
+            .rootCause().isInstanceOfSatisfying(java.sql.SQLException.class,error->assertThat(error.getErrorCode()).isEqualTo(3819));
+        assertThat(target.queryForMap("SELECT * FROM workflow_instance WHERE kind='MCP_INSTALLATION' AND owner_user_id=901")).isEqualTo(installation);
+        assertThat(target.queryForObject("SELECT reserved_bytes FROM workflow_instance WHERE kind='MCP_INSTALL_JOB'",Long.class)).isNull();
+        assertThat(snapshot()).isEqualTo(before);
     }
 
     @ParameterizedTest @ValueSource(strings={

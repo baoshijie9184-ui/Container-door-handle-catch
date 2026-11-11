@@ -2,21 +2,19 @@
 
 ## 当前结果（2026-11-12）
 
-当前为 `java-cloud` 单体，正式业务库仍为131表，目标29表尚未切库，生产发布和旧库演练门禁关闭。固定提交 `6444cbc36a653a5e068d95c3138d67ab0b9ca01c` 的#248控制预检20模块 **2,243项全部通过，零失败、错误和跳过**。
+当前为 `java-cloud` 单体，正式业务库仍为 **131表**，目标 **29表**尚未切库，生产发布和旧库演练门禁关闭。正式并发/容量压测在开发完成后用压测工具单独进行，`loadTestStatus=DEFERRED_BY_USER`、`performanceSloVerified=false`；本轮功能验收仍为2个检测人员、2个主管，每账号2个功能标签，保留权限隔离、领取、撤销和双流正确性检查。
 
-#249通过既有维护入口精确处理#247：实际退役1个已停止测试MySQL对象和两份可再生JAR；未请求Builder，记录为 `NO_ACTION / BUILDER_NOT_REQUESTED`。数据目录、卷、镜像、源码和报告保留，没有隔离遗留。原件在 `work/jenkins/data-residency-20261107/ci-249-raw-receipts`；下一数据库任务前独立回读可用8,177,139,712字节。此前#243/#244/#246已消费的JAR和公共缓存不重复计入回收量。
+固定提交 `e441933dc75bde0f1fb09cf8e6de4c15130eddfb` 的 **#251完整source验证SUCCESS**：Java926通过、722条件跳过；Python4,174通过、24条件跳过；主前端203、Agent前端20项通过，两套生产构建完成。Mem0依赖复用、worker单COPY/精确双闭包等运行资源专项95项全部通过；不代表完整native或实际运行容量通过。原件保全于 `work/jenkins/data-residency-20261107/ci-251-raw-receipts`。
 
-#250以同一固定提交执行现有 `ACTION=verify / scope=mysql`，本地跳测试构建、2,243项控制及隔离夹具均通过；原生14类185项中178通过、7错误，零失败和跳过，整轮FAILURE。7项均在DigestCopy写入：生成的workflow_id为81字符，超过目标VARCHAR(64)；此前CHECK元数据及同名FK阻点已通过。本轮尚未进入完整source、131→29整库及旧45/5599/三库恢复。现已改为领域分离的完整64位SHA256，插入及后置核对一致，不扩字段、不截断；新增完整copy/真实服务重放回归，copy目录38处同型写入无第二处确定超长命中。
+**#252维护SUCCESS**：精确移除#250停止的测试MySQL对象，保留其数据目录；两份可再生JAR实际退役，普通维护清理#251的168,001,536字节NPM缓存。Builder未请求，记录 `NO_ACTION / BUILDER_NOT_REQUESTED`，没有隔离遗留。原始SQL、源码、报告、卷及镜像保留。后续独立回读可用 **7,567,929,344字节**，原件 `pre-database253-execution-readiness.json`；不能把已消费缓存再次计入回收量。
 
-本轮前置静态审阅还发现Inbox原生测试的旧环境变量/Workbench前缀与现有feature夹具不一致，已改用统一属性和现有schema/account契约，31个用例及全部业务断言保留；11模块跳测试编译成功。该类旧最低数1补齐为31，下一提交64类最低749项（含本轮新增Digest完整复制/重放回归）；当前#250仍使用原718项最低数。#247的Digest元数据及同名FK问题已在当前固定源修复，完整原生结果仍须以真实报告为准。
+**#253独立verify/mysql终态FAILURE**：本地跳测试打包、20模块2,243项控制及完整夹具通过；真实MySQL235项中233通过、2错误、零断言失败和跳过。日报完整复制及真实服务重放已通过，工作台两条未定历史时钟迁移在 `ck_workflow_workbench_item` 处被拒绝。尚未进入完整source回归、131→29整库/双恢复及旧45/5,599/三库恢复，不能记为迁移完成。
 
-Mem0构建改为复用经核验的现有不可变依赖镜像，并用一次COPY覆盖当前6个Python文件、requirements和LICENSE；保留当前用户、配置、标签、健康检查和启动声明。真实只读核查确认8个固定依赖匹配、`pip check`通过、app及数据目录UID/GID10001，旧镜像缺少的embedding模块由当前源码补入。Mem0新增29项，连同worker单COPY和双闭包回归，该专项最低43→95；运行预算仍按实际基座层和单COPY native快照计算，不以镜像Size推算。worker同样改为一次rootfs COPY，完整保留当前源码、上游树、许可证及运行声明，模型硬链接不改权限或写穿原件。既有legacy闭包及切换后的精确current闭包均可复用，只有legacy确实缺PyMySQL时沿用原固定版本补装。native副本由6/7次降为1/2次，仍按实际基座测量；通用容量门不变。两文件经独立只读窄审未发现实质缺陷；这些变更、Digest及Inbox修复全部待下一固定提交统一ECS验证。
+本轮已同步Workbench通用约束与既有历史时钟v1/v2载荷的精确配对；独立只读审计发现MCP安装必须保留容量、通用执行约束却禁止该容量的冲突，同轮加入精确MCP分支，其他Skill执行字段仍为空。新增正负例后，64类最低751项、源码专项31项、20控制模块最低2,245项；6模块跳测试编译及29表静态生成通过，尚待新固定提交ECS统一验证。仅将Workbench/MCP置前，完整64类和全部业务/恢复检查不变。
 
-最近完整source通过仍为#234（`7067d665`）：Java926、Python3,885、主前端203、Agent前端20项通过，两套生产构建完成；Java/Python条件跳过713/24。四份历史传输原件在ECS `RESTORED_VERIFIED`，原始逻辑字节155,793,058。旧数据业务合入、9项运行场景和19项浏览器功能检查仍须验收，不能用资料保全代替。
+Mem0/worker应用基座的真实层分配A/Z/E尚未取得；Image.Size不能代替预算，未盲跑fullruntime。独立数据库原动态门全部保留，成功也不能替代9项运行场景、19项浏览器功能检查、旧数据业务合入和正式切库。
 
-业务功能验收固定4账号（2检测人员、2主管）、每账号2个功能标签。正式并发/容量压测在开发完成后用压测工具另行执行，`loadTestStatus=DEFERRED_BY_USER`、`performanceSloVerified=false`；功能隔离、撤销、领取和双流正确性继续保留。
-
-#250的57份原归档中56份非JAR及原build.xml已保全，工具和夹具实际STOPPED、remaining为空。2026-11-12 **03:23:43（北京时间）**从流水线外实际回读 `Stopped / StopCharging`，Jenkins保持运行、项目任务修复期间禁自动触发。原件在 `ci-250-raw-receipts`，停机原件为 `ci-250-external-stop-readback.json`。80 GiB原盘及原有7天快照保持，不新增云资源。
+#253原归档61份中60份非JAR及原build.xml已保全于 `ci-253-raw-receipts`，工具与夹具实际STOPPED、remaining为空。2026-11-12 **04:57:21（北京时间）**从流水线外实际回读 `Stopped / StopCharging`，原件为 `ci-253-external-stop-readback.json`。Jenkins保持运行，修复期间项目任务禁自动触发、无排队；80 GiB原盘及既有7天快照保持。
 
 ## 此前执行记录（历史）
 
