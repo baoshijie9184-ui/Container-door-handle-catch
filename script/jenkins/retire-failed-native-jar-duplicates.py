@@ -64,6 +64,68 @@ PUBLIC_LAYERS = {
 }
 PUBLIC_ARCHIVE_SHA = 'f706cb2289c61a04311882a3abbba15d56928a91d3fe9e13b96e1a8d44f378c8'
 PUBLIC_ARCHIVE_BYTES = 119889920
+PUBLIC_CACHE_BATCH = 'failed-native-public-221-224-235'
+# Public-only permission: no JAR, database, volume or image deletion.
+PUBLIC_CACHE_TARGETS = {'ci-221-8c30776fcd95': {'commit': '8c30776fcd95ed6347494ce5904e5ad7de1867ab',
+                         'sourceSha256': '65cb77e678a017123e5020caaefe27d93f10b623b00765538d27ae87dba0775d',
+                         'controls': {'tools': (3017,
+                                                '66d6349ab4ee7f60cae13d49265dffde75a940158daa4d8f8b1fde38872b32c7'),
+                                      'summary': (2917,
+                                                  '1e05d7445339d10fbb3ce52810da4675a2ef941a581fdc0f47cec17cd7b259c3'),
+                                      'measurement': (2628,
+                                                      'a149c8a9517a4f7d79521077f4cb1ce1d93c771fb8bcbfa502b2c152d195a885')},
+                         'builderHelperSha256': {'compact-build-resources.py': '9e2d3de31e00eb4ac2e8c0f826c1457acc43160a7934f852e3da2b5465a2a7e0',
+                                                 'compact-image-inputs.py': '1db18e3d1aba9b426f6bfb6b34f22af96cb403c6a97ffef914ea35c308ea795e'},
+                         'tarSha256': 'cbbfad40285d10aa36f5f48c6ee6511babd7c54acf71a4d5b8ac8d4d1a93b858',
+                         'tarBytes': 119900160},
+ 'ci-222-936bdb3e91e2': {'commit': '936bdb3e91e23cbc7daf717333f326b61d43170f',
+                         'sourceSha256': 'ac4755d913d699df58024287bc86badc16c336d675701d9a61ae8d0574bccd1d',
+                         'controls': {'tools': (3017,
+                                                'a9a5e8a50787a2338facf774005899d54583752f5e65de6796f52c1b4c3b4b21'),
+                                      'summary': (2914,
+                                                  'cdb048fc6dacba9a9ac3f0938d5bd8cdcc681f6352c1cc40731a21b4fd753729'),
+                                      'measurement': (2628,
+                                                      '613035e3e866874c8c38fef2d383f274adca23217f89774d9bacdd569d7a5cc3')},
+                         'builderHelperSha256': {'compact-build-resources.py': '9e2d3de31e00eb4ac2e8c0f826c1457acc43160a7934f852e3da2b5465a2a7e0',
+                                                 'compact-image-inputs.py': '1db18e3d1aba9b426f6bfb6b34f22af96cb403c6a97ffef914ea35c308ea795e'},
+                         'tarSha256': '32dd98eedf3a909a36f5223732d05203b1a967ecf796b99df253784810a46ab9',
+                         'tarBytes': 119900160},
+ 'ci-223-fc724a42d8f9': {'commit': 'fc724a42d8f9e625d547cf23fe176463d10531b9',
+                         'sourceSha256': '6a3b4908121d6370234baf3ad45f73cad95b071c275bf827574541b037c087f4',
+                         'controls': {'tools': (3017,
+                                                '77865f2ec80c919bc5e65b025109bd05a76c5758e0c7270720d3760926ea55cc'),
+                                      'summary': (2913,
+                                                  '1cedc9ae23666d5ae57b2195494a5120b59057b98d069634a1e175d2b96f173d'),
+                                      'measurement': (2628,
+                                                      'c43a48c2c017153c0daaa4b0a1e9be871ee30a4046b8448382d9c6bbc497e254')},
+                         'builderHelperSha256': {'compact-build-resources.py': '9e2d3de31e00eb4ac2e8c0f826c1457acc43160a7934f852e3da2b5465a2a7e0',
+                                                 'compact-image-inputs.py': '1db18e3d1aba9b426f6bfb6b34f22af96cb403c6a97ffef914ea35c308ea795e'},
+                         'tarSha256': '9cc4aeec3be1c89cf0d25e77947cb2a0b4246ace8183c6faba54e81ec50c2bde',
+                         'tarBytes': 119900160},
+ 'ci-224-e2b445effb49': {'commit': 'e2b445effb49edaf2acd624b60da48a3d1e7f4f3',
+                         'sourceSha256': '0cb990150e230ac743c5261fba320de650d94398a8899cef280078a3a6892db4',
+                         'controls': {'tools': (3017,
+                                                'b6d76e9b6e6344c777747c6dd607d7e50d86e272556d3978aa22afe49ab2d36e'),
+                                      'summary': (2912,
+                                                  '71c4d2b9ca27f1fae3bf082b25ab3026c5c5a08f92e3e7428e99c204b0e4ffa4'),
+                                      'measurement': (2628,
+                                                      '894bc58d1fe770ac0ac3fe256300dcea2b0ddc202f724b6d0ae7590e24a52197')},
+                         'builderHelperSha256': {'compact-build-resources.py': '9e2d3de31e00eb4ac2e8c0f826c1457acc43160a7934f852e3da2b5465a2a7e0',
+                                                 'compact-image-inputs.py': '1db18e3d1aba9b426f6bfb6b34f22af96cb403c6a97ffef914ea35c308ea795e'},
+                         'tarSha256': '51568fbeb0292a9b8c8ce1c789ab9b72b18e8bba9d9d5b7bb1597089cccd4ea8',
+                         'tarBytes': 119900160},
+ 'ci-235-7067d66585cd': {'commit': '7067d66585cd181f4ef8d5cf2345eb4e7851ff17',
+                         'sourceSha256': '5db8130bfd8bf351ec2f51cffccc9d90b915d08bc3d5a3a365690451ee24f207',
+                         'controls': {'tools': (3017,
+                                                '823b5896faf37b368447e417c174409119b315efefd47d42b978748a5d41ec49'),
+                                      'summary': (2915,
+                                                  '5c855a0f8d643ac45db80015e8fb06544183ec9e01df695d4311a9eacf51c841'),
+                                      'measurement': (2628,
+                                                      '422d378ecbb277cc13a001f3d8b2020c88d5fcd885e57c2229a064e6c8ffe39e')},
+                         'builderHelperSha256': {'compact-build-resources.py': '6559ff8ec4849477f0977097fe803b36fde041f8f9bba80160b63249ba553bba',
+                                                 'compact-image-inputs.py': '1db18e3d1aba9b426f6bfb6b34f22af96cb403c6a97ffef914ea35c308ea795e'},
+                         'tarSha256': '1ad19c3d2d4a9652984a9d678f83468fc6a378ae08076c256b5f641ba910b774',
+                         'tarBytes': 119900160}}
 PUBLIC_KIND = 'doorhandle-failed-native-public-layer-duplicate'
 GENERATED_CACHE_KIND = 'GENERATED_PUBLIC_IMAGE_ARCHIVE_CACHE'
 GENERATED_KIND = 'doorhandle-generated-public-image-archive-cache'
@@ -105,6 +167,8 @@ FAILED_NATIVE_PUBLICATION_RECIPES = frozenset({
      '83bc9554f928e15143e3b5fb87d52b5e5ea825b652766ead95a7262268dee05e'),
     ('97690cb956375cb1e98f1f1f98a7b3a3ec0e8d73d99a8ee0f28b0f5634fde180',
      'f51f972cdd790fd68d8de549270d7e8088e8492206d9a097d0ba0de5792eecf4'),
+    ('7b6c1792393615eff3f0049868573c2d5bf247e0ad9dc150b79dfe9ca62741ca',
+     'e7424e38932b7dde12a90590e284490fdc60742efe6b2b162cb96f1667e2867f'),
 })
 CLOSED_RUNTIME_JARS = {
     'ci-204-24f8eb4b02bf': {
@@ -188,6 +252,46 @@ RETIRED_COPY_AUTHORITY = {
         'journal': ('native-jar-duplicate-canonical-journal.jsonl', 2592, '2da56d51b56359cd349842bfc5cca11fd08d935adbeef5d0c9b6f2c51ab49d83'),
     },
 }
+RETIRED_COPY_BATCH_194 = 'retired-187-188-189'
+RETIRED_COPY_194_TARGETS = {
+    'ci-187-8e90ba50c691': {'commit': '8e90ba50c691d561bd26b23f037fec1600e5e9de',
+        'sourceSha256': '00665174617881e678fba2243094fb4f9023d05aea8e55897df05b7b816125b3',
+        'jarSha256': '33f55297f7c18c8a39f3ca8032f067ba265f467ff0a4b07dcb2c61b794856c20', 'jarBytes': 380063222},
+    'ci-188-df1e1a54d48e': {'commit': 'df1e1a54d48e5005185f53459068fbe9efffe333',
+        'sourceSha256': 'f6fdd55e153ed86dacfc0558fde4c43a897e90383f24831acba25c2f8b0b44a1',
+        'jarSha256': 'ddbea1df9baa59f5a8eec964b3db0d6f0814231fa7179ac764d71450fa87b19e', 'jarBytes': 380063222},
+    'ci-189-410506ad7c82': {'commit': '410506ad7c82e302e623a2ac27b63dc345fcd131',
+        'sourceSha256': '2dccb79e757df0d9300fe4395c342945c48c19bcf272a7be2c702f4c6b67a50a',
+        'jarSha256': '01a48ad37b60521309785f34720895dc5d8298d09b3447a763f8d60ffd7dc9be', 'jarBytes': 380063222},
+}
+RETIRED_COPY_194_PUBLICATION = {
+    'ci-187-8e90ba50c691': ('07ed33326e5d9ca01cad1024986f73aee30ec8869050cdcf874bb220864dbd43', '9206e2a48ccf10435cd090b15d7d78540555ac9bd02c1aefdde04e049dca1f54'),
+    'ci-188-df1e1a54d48e': ('07ed33326e5d9ca01cad1024986f73aee30ec8869050cdcf874bb220864dbd43', '9206e2a48ccf10435cd090b15d7d78540555ac9bd02c1aefdde04e049dca1f54'),
+    'ci-189-410506ad7c82': ('07ed33326e5d9ca01cad1024986f73aee30ec8869050cdcf874bb220864dbd43', '8976f049e13d255c8377f3650f61d9668f1e3395d1219eafe0a979cb8d48fc25'),
+}
+# The successful #194 maintenance used cleanup-source.tar.gz. Its actual bytes
+# were separately recovered from ECS, not synthesized into the old D manifest.
+RETIRED_COPY_194_AUTHORITY = {
+    'release': 'ci-194-2c2e65a0daa9', 'commit': '2c2e65a0daa94d96b327c59d720871ab70bff0a1',
+    'sourceSha256': 'c137fec1a5b8536d9b2a350104d6a5206cc1d1f2e8fb8eba2a240119258e87e9',
+    'helperSha256': '08aadae03037dd103c9706b07370b852f758f6ef05a2ae3a1d3aca7ea6453142',
+    'files': {
+        'buildXml': ('build.xml', 298107, '6204715e7ef4a31526e04f817d7665bce6109690c1dd2f2988fdd0be757045e3'),
+        'release': ('release.json', 393, '51ceeadd9ca4bf8aac771929826b572df94fdb1d33f77b5729352a53eeeda247'),
+        'source': ('source.tar.gz', 100300, 'c137fec1a5b8536d9b2a350104d6a5206cc1d1f2e8fb8eba2a240119258e87e9'),
+        'request': ('native-jar-duplicate-request.json', 5101, '707e24d38f5977c673683552380ec66d4ee7d2fc02affee8abebfef87299c687'),
+        'plan': ('native-jar-duplicate-canonical-plan.json', 12244, '4d1692268f78932ee35780db4b0db403b48e4df34d76ae4a7427e5daee23d4ab'),
+        'receipt': ('native-jar-duplicate-canonical-receipt.json', 2311, 'ec4e68bf6d9ebe2d87489966dce7b5ef6251a26f8f16eefeab813b47f268062a'),
+        'journal': ('native-jar-duplicate-canonical-journal.jsonl', 2592, '3c2656012afcaf2f09e3dff5a951d6f7cb2bacb59dee50e9220e35a5cdd43b2d'),
+    },
+}
+
+
+def retired_copy_policy(batch=None):
+    need(batch in (None, RETIRED_COPY_BATCH_194), 'EXACT_RETIRED_COPY_BATCH_REQUIRED')
+    return ((RETIRED_COPY_194_TARGETS, RETIRED_COPY_194_AUTHORITY) if batch == RETIRED_COPY_BATCH_194
+            else (RETIRED_COPY_TARGETS, RETIRED_COPY_AUTHORITY))
+
 # Reviewed historical publication predicates, authenticated against actual
 # retained archive members (not the current checkout or a synthesized report).
 # Each pair is Jenkinsfile.ecs-monolith, script/jenkins/pipeline.ps1. All these
@@ -291,7 +395,7 @@ def canonical_commit(tag):
     return APPROVED_OLD.get(tag) or RECENT_CANONICAL_ONLY.get(tag) or CLOSED_RUNTIME_JARS.get(tag, {}).get('commit')
 
 
-def terminal_xml(raw, context, *, canonical_jar=False):
+def terminal_xml(raw, context, *, canonical_jar=False, retired_copy_batch=None):
     need(type(canonical_jar) is bool, 'EXACT_RETIREMENT_POLICY_REQUIRED')
     need(type(raw) is bytes and 0 < len(raw) <= MAX_CONTROL
          and b'<!DOCTYPE' not in raw.upper() and b'<!ENTITY' not in raw.upper(), 'BOUNDED_ENTITY_FREE_TERMINAL_XML_REQUIRED')
@@ -310,12 +414,17 @@ def terminal_xml(raw, context, *, canonical_jar=False):
     expected_action = ('verify' if canonical_jar and RECENT_CANONICAL_ONLY.get(context['release']) == context['commit']
                        and context['release'] != 'ci-201-803baf401b5f'
                        else 'verify-runtime')
+    if retired_copy_batch is not None:
+        targets, _ = retired_copy_policy(retired_copy_batch)
+        need(canonical_jar and targets.get(context['release'], {}).get('commit') == context['commit'],
+             'EXACT_RETIRED_COPY_TERMINAL_SOURCE_REQUIRED')
+        expected_action = 'verify'
     need(all(parameters.get(key) == value for key, value in {'ACTION': expected_action, 'DOORHANDLE_CI_SCOPE': 'mysql',
         'TRUSTED_COMMIT': context['commit'], 'PRODUCTION_RELEASE_ENABLED': 'false'}.items()), 'FAILED_NATIVE_PARAMETERS_REQUIRED')
     return root.findtext('result')
 
 
-def validate_control_documents(raw_docs, context, identity, *, canonical_jar=False):
+def validate_control_documents(raw_docs, context, identity, *, canonical_jar=False, retired_copy_batch=None):
     """Pure validation of actual raw controls already authenticated by Jenkins."""
     validate_context(context)
     need(type(identity) is dict and set(identity) == {'instanceId', 'machineId', 'executionLocation'}
@@ -324,7 +433,8 @@ def validate_control_documents(raw_docs, context, identity, *, canonical_jar=Fal
          and re.fullmatch(r'[a-f0-9]{32}', identity['machineId']), 'EXACT_ECS_IDENTITY_REQUIRED')
     need(type(raw_docs) is dict and REQUIRED_CONTROLS <= set(raw_docs) <= REQUIRED_CONTROLS | OPTIONAL_CONTROLS,
          'COMPLETE_ACTUAL_CONTROL_BUNDLE_REQUIRED')
-    result = terminal_xml(raw_docs['buildXml'], context, canonical_jar=canonical_jar)
+    result = terminal_xml(raw_docs['buildXml'], context, canonical_jar=canonical_jar,
+                          **({'retired_copy_batch': retired_copy_batch} if retired_copy_batch is not None else {}))
     docs = {name: decode(raw) for name, raw in raw_docs.items() if name != 'buildXml'}
     release, plan, owner, cleanup = (docs[name] for name in ('release', 'artifactPlan', 'fixtureOwner', 'fixtureCleanup'))
     for value in (release, plan, owner, cleanup): same_context(value, context)
@@ -401,11 +511,14 @@ def hash_stream(stream, maximum=MAX_JAR):
     return checksum.hexdigest()
 
 
-def duplicate_paths(root, tag, *, kind=JAR_COPY_KIND, blob_sha=None):
+def duplicate_paths(root, tag, *, kind=JAR_COPY_KIND, blob_sha=None, public_cache_batch=None):
     need(type(tag) is str and TAG.fullmatch(tag), 'EXACT_OLD_TAG_REQUIRED')
     root = Path(root)
+    need(public_cache_batch is None or (public_cache_batch == PUBLIC_CACHE_BATCH and kind == PUBLIC_LAYER_KIND),
+         'PUBLIC_CACHE_POLICY_HAS_NO_JAR_API')
     if kind == PUBLIC_LAYER_KIND:
-        need(tag in PUBLIC_LAYER_TAGS and tag != PUBLIC_LAYER_KEEPER and blob_sha in PUBLIC_LAYERS,
+        allowed = PUBLIC_CACHE_TARGETS if public_cache_batch is not None else PUBLIC_LAYER_TAGS
+        need(tag in allowed and tag != PUBLIC_LAYER_KEEPER and blob_sha in PUBLIC_LAYERS,
              'ONLY_FIXED_PUBLIC_LAYER_COPIES_HAVE_A_DELETION_API')
         suffix = Path('candidate-build-tools/official-oci/blobs/sha256') / blob_sha
         return root / 'inbox' / tag / suffix, root / 'inbox' / PUBLIC_LAYER_KEEPER / suffix
@@ -414,12 +527,12 @@ def duplicate_paths(root, tag, *, kind=JAR_COPY_KIND, blob_sha=None):
             root / 'inbox' / tag / 'application.jar')
 
 
-def describe_duplicate(root, tag, jar_sha, jar_bytes, *, kind=JAR_COPY_KIND):
+def describe_duplicate(root, tag, jar_sha, jar_bytes, *, kind=JAR_COPY_KIND, public_cache_batch=None):
     need(type(jar_sha) is str and SHA.fullmatch(jar_sha) and type(jar_bytes) is int and 0 < jar_bytes <= MAX_JAR,
          'EXACT_DECLARED_JAR_REQUIRED')
     need(kind != PUBLIC_LAYER_KIND or PUBLIC_LAYERS.get(jar_sha) == jar_bytes, 'EXACT_FIXED_PUBLIC_LAYER_REQUIRED')
     root = Path(root); target, keeper = duplicate_paths(root, tag, kind=kind,
-        blob_sha=jar_sha if kind == PUBLIC_LAYER_KIND else None)
+        blob_sha=jar_sha if kind == PUBLIC_LAYER_KIND else None, public_cache_batch=public_cache_batch)
     need(target.exists() or target.is_symlink(), 'EXACT_CANDIDATE_COPY_MISSING')
     need(keeper.exists() or keeper.is_symlink(), 'EXACT_ECS_KEEPER_MISSING')
     with held_file(root, target, MAX_JAR) as (target_stream, target_info), held_file(root, keeper, MAX_JAR) as (keeper_stream, keeper_info):
@@ -475,7 +588,7 @@ def _renamed_copy_matches(before, after):
             and type(after[8]) is int and after[8]>=before[8])
 
 
-def remove_duplicate(root, descriptor, quarantine=None, *, quiescence=None):
+def remove_duplicate(root, descriptor, quarantine=None, *, quiescence=None, public_cache_batch=None):
     """Capture the old path privately, prove its inode, then unlink only that copy.
 
     A race replacing the old path can only move an unexpected file into this
@@ -485,13 +598,14 @@ def remove_duplicate(root, descriptor, quarantine=None, *, quiescence=None):
     need(type(descriptor) is dict and set(descriptor) == {'kind', 'release', 'path', 'metadata', 'sha256', 'bytes', 'allocatedBytes', 'keeper'}
          and descriptor['kind'] in (JAR_COPY_KIND, PUBLIC_LAYER_KIND), 'EXACT_SINGLE_FILE_DESCRIPTOR_REQUIRED')
     kind = descriptor['kind']
+    need(public_cache_batch is None or callable(quiescence), 'PUBLIC_CACHE_CAPTURE_QUIESCENCE_REQUIRED')
     root = Path(root); target, keeper = duplicate_paths(root, descriptor['release'], kind=kind,
-        blob_sha=descriptor['sha256'] if kind == PUBLIC_LAYER_KIND else None)
+        blob_sha=descriptor['sha256'] if kind == PUBLIC_LAYER_KIND else None, public_cache_batch=public_cache_batch)
     need(descriptor['path'] == target.relative_to(root).as_posix() and type(descriptor['keeper']) is dict
          and set(descriptor['keeper']) == {'path', 'metadata', 'sha256', 'bytes'}
          and descriptor['keeper']['path'] == keeper.relative_to(root).as_posix(), 'INBOX_KEEPER_HAS_NO_DELETION_API')
     need(describe_duplicate(root, descriptor['release'], descriptor['sha256'], descriptor['bytes'], **(
-        {'kind': kind} if kind != JAR_COPY_KIND else {})) == descriptor,
+        {'kind': kind} if kind != JAR_COPY_KIND else {}), public_cache_batch=public_cache_batch) == descriptor,
          'DUPLICATE_CHANGED_AFTER_PLAN')
     quarantine=reserve_quarantine(root) if quarantine is None else quarantine
     need(type(quarantine) is dict and set(quarantine)=={'directory','path','directoryIdentity'}, 'EXACT_PRIVATE_QUARANTINE_REQUIRED')
@@ -560,7 +674,8 @@ def remove_duplicate(root, descriptor, quarantine=None, *, quiescence=None):
                 'quarantinePath':quarantine['path'],'capturedInodeVerified':True}
 
 
-def source_proof(root, tag, commit, source_sha, *, builder_helpers=False, canonical_jar=False, failed_native=False):
+def source_proof(root, tag, commit, source_sha, *, builder_helpers=False, canonical_jar=False, failed_native=False,
+                 retired_copy_batch=None):
     """Read and authenticate the retained archive; never extract or run it."""
     path = Path(root) / 'inbox' / tag / 'source.tar.gz'
     need(path.exists() or path.is_symlink(), 'OLD_SOURCE_ARCHIVE_MISSING')
@@ -620,6 +735,10 @@ def source_proof(root, tag, commit, source_sha, *, builder_helpers=False, canoni
             pair = tuple(publication_shas.get(name) for name in publication_names)
             approved = (pair in FAILED_NATIVE_PUBLICATION_RECIPES if failed_native else
                         canonical_commit(tag) == commit and pair == APPROVED_CANONICAL_SOURCES.get(tag))
+            if retired_copy_batch is not None:
+                targets, _ = retired_copy_policy(retired_copy_batch)
+                approved = (not failed_native and targets.get(tag, {}).get('commit') == commit
+                            and pair == RETIRED_COPY_194_PUBLICATION.get(tag))
             need(set(publication_shas) == set(publication_names) and approved,
                  'CLOSED_REVIEWED_UNPUBLISHED_SOURCE_REQUIRED')
             proof['unpublishedPipelineSourceSha256'] = publication_shas
@@ -679,7 +798,8 @@ def fixture_owner_projection(owner):
     return projected
 
 
-def admit_historical_controls(root, request, row, *, builder_helpers=False, canonical_jar=False, failed_native=False):
+def admit_historical_controls(root, request, row, *, builder_helpers=False, canonical_jar=False, failed_native=False,
+                              retired_copy_batch=None):
     context = {key: row[key] for key in ('release', 'commit', 'sourceSha256')}; tag = row['release']
     controls = row['controls']; names = expected_control_paths(request['current']['release'], tag)
     need(type(controls) is dict and REQUIRED_CONTROLS <= set(controls) <= REQUIRED_CONTROLS | OPTIONAL_CONTROLS,
@@ -695,12 +815,14 @@ def admit_historical_controls(root, request, row, *, builder_helpers=False, cano
             raw = stream.read(MAX_CONTROL + 1)
             need(len(raw) == reference['bytes'] and digest_bytes(raw) == reference['sha256'], 'RAW_CONTROL_BYTES_DRIFT')
             raw_docs[role] = raw; bindings[role] = {**reference, 'metadata': signature}
-    evidence = validate_control_documents(raw_docs, context, request['identity'], canonical_jar=canonical_jar)
+    evidence = validate_control_documents(raw_docs, context, request['identity'], canonical_jar=canonical_jar,
+        **({'retired_copy_batch': retired_copy_batch} if retired_copy_batch is not None else {}))
     need(evidence['work'] == str(Path(root) / 'verification' / tag / 'checkout/work/compact-fixtures'), 'FIXTURE_OWNER_OUTSIDE_EXACT_OLD_ATTEMPT')
     if canonical_jar:
         original_source = source_proof(root, tag, context['commit'], context['sourceSha256'],
                                        builder_helpers=builder_helpers, canonical_jar=True,
-                                       **({'failed_native': True} if failed_native else {}))
+                                       **({'failed_native': True} if failed_native else {}),
+                                       **({'retired_copy_batch': retired_copy_batch} if retired_copy_batch is not None else {}))
     else:
         original_source = (source_proof(root, tag, context['commit'], context['sourceSha256'], builder_helpers=True)
                            if builder_helpers else source_proof(root, tag, context['commit'], context['sourceSha256']))
@@ -1149,14 +1271,15 @@ def retired_copy_terminal(raw, context):
         'EXACT_SOURCE_ONLY_RETIREMENT_TERMINAL_REQUIRED')
 
 
-def admit_retired_copy_authority(root, current, identity):
-    """Authenticate the actual successful 203 retirement, never execute its code."""
-    expected = {key: RETIRED_COPY_AUTHORITY[key] for key in ('release', 'commit', 'sourceSha256')}
+def admit_retired_copy_authority(root, current, identity, *, retired_copy_batch=None):
+    """Authenticate the selected actual successful retirement, never execute it."""
+    targets, registered_authority = retired_copy_policy(retired_copy_batch)
+    expected = {key: registered_authority[key] for key in ('release', 'commit', 'sourceSha256')}
     need(int(TAG.fullmatch(current['release'])[1]) > int(TAG.fullmatch(expected['release'])[1]),
          'RETIREMENT_AUTHORITY_MUST_PRECEDE_CURRENT_BUILD')
     directory = Path(root) / 'inbox' / current['release'] / 'native-retired-candidate-controls' / expected['release']
     raw, bindings = {}, {}
-    for role, (filename, length, checksum) in RETIRED_COPY_AUTHORITY['files'].items():
+    for role, (filename, length, checksum) in registered_authority['files'].items():
         path = directory / filename
         with held_file(root, path, MAX_SOURCE_ARCHIVE if role == 'source' else MAX_CONTROL) as (stream, signature):
             content = stream.read(length + 1)
@@ -1166,7 +1289,8 @@ def admit_retired_copy_authority(root, current, identity):
                 'bytes': length, 'sha256': checksum, 'metadata': signature}
     retired_copy_terminal(raw['buildXml'], expected)
     release, request, plan, receipt = (decode(raw[role]) for role in ('release', 'request', 'plan', 'receipt'))
-    approved_request(raw['request'], digest_bytes(raw['request']), expected, identity, canonical_jar=True)
+    approved_request(raw['request'], digest_bytes(raw['request']), expected, identity, canonical_jar=True,
+                     **({'retired_copy_batch': retired_copy_batch} if retired_copy_batch is not None else {}))
     need(all(release.get(key) == content for key, content in expected.items())
          and type(release.get('schema')) is int and release['schema'] == 1 and release.get('kind') == 'doorhandle-maintenance-source'
          and release.get('action') == 'reclaim-build-outputs' and release.get('maintenanceOnly') is True
@@ -1194,14 +1318,14 @@ def admit_retired_copy_authority(root, current, identity):
     candidates, deleted, original_rows = plan.get('candidates'), receipt.get('deleted'), request.get('candidates')
     need(all(type(items) is list and len(items) == 3 for items in (candidates, deleted, original_rows)),
          'EXACT_THREE_ORIGINAL_RETIREMENTS_REQUIRED')
-    need({item.get('context', {}).get('release') for item in candidates} == set(RETIRED_COPY_TARGETS)
-         and {item.get('release') for item in original_rows} == set(RETIRED_COPY_TARGETS),
+    need({item.get('context', {}).get('release') for item in candidates} == set(targets)
+         and {item.get('release') for item in original_rows} == set(targets),
          'ORIGINAL_RETIREMENT_TARGET_SET_DRIFT')
     entries = {}
     finished = [item for item in journal if item.get('phase') == 'DELETE_FINISHED']
     need(len(finished) == 3, 'THREE_ORIGINAL_DELETE_FINISHED_RECORDS_REQUIRED')
     for candidate in candidates:
-        context = candidate['context']; tag = context['release']; registered = RETIRED_COPY_TARGETS[tag]
+        context = candidate['context']; tag = context['release']; registered = targets[tag]
         need(context == {key: value for key, value in {'release': tag, **registered}.items()
                          if key in ('release', 'commit', 'sourceSha256')}, 'ORIGINAL_COPY_SOURCE_CONTEXT_DRIFT')
         path = 'inbox/' + tag + '/application.jar'; target = candidate.get('target', {})
@@ -1231,27 +1355,31 @@ def admit_retired_copy_authority(root, current, identity):
             helper = archive.extractfile(member).read(1024 ** 2 + 1)
             need(len(helper) == member.size, 'ORIGINAL_RETIREMENT_HELPER_TRUNCATED')
         need(archive.pax_headers.get('comment') == expected['commit'] and helper is not None
-             and digest_bytes(helper) == RETIRED_COPY_AUTHORITY['helperSha256'], 'ORIGINAL_RETIREMENT_POLICY_SOURCE_DRIFT')
+             and digest_bytes(helper) == registered_authority['helperSha256'], 'ORIGINAL_RETIREMENT_POLICY_SOURCE_DRIFT')
     return {'context': expected, 'identity': identity, 'controls': bindings,
-            'helperSha256': RETIRED_COPY_AUTHORITY['helperSha256'], 'retiredTargets': entries}
+            'helperSha256': registered_authority['helperSha256'], 'retiredTargets': entries}
 
 
-def retired_copy_path(root, tag):
-    need(tag in RETIRED_COPY_TARGETS, 'ONLY_THREE_RETIRED_CANDIDATE_PATHS_ALLOWED')
+def retired_copy_path(root, tag, *, retired_copy_batch=None):
+    targets, _ = retired_copy_policy(retired_copy_batch)
+    need(tag in targets, 'ONLY_THREE_RETIRED_CANDIDATE_PATHS_ALLOWED')
     return Path(root) / 'verification' / tag / 'checkout/work/compact-fixtures/candidate-app.jar'
 
 
-def retired_keeper_absent(root, tag):
-    need(tag in RETIRED_COPY_TARGETS, 'ONLY_THREE_RETIRED_CANDIDATE_PATHS_ALLOWED')
+def retired_keeper_absent(root, tag, *, retired_copy_batch=None):
+    targets, _ = retired_copy_policy(retired_copy_batch)
+    need(tag in targets, 'ONLY_THREE_RETIRED_CANDIDATE_PATHS_ALLOWED')
     path = Path(root) / 'inbox' / tag / 'application.jar'
     need(not path.exists() and not path.is_symlink(), 'RETIRED_INBOX_JAR_REAPPEARED')
 
 
-def describe_retired_candidate_copy(root, tag, checksum, length):
-    registered = RETIRED_COPY_TARGETS.get(tag)
+def describe_retired_candidate_copy(root, tag, checksum, length, *, retired_copy_batch=None):
+    targets, _ = retired_copy_policy(retired_copy_batch)
+    registered = targets.get(tag)
     need(registered is not None and checksum == registered['jarSha256'] and length == registered['jarBytes'],
          'EXACT_ORIGINAL_RETIRED_COPY_BYTES_REQUIRED')
-    path = retired_copy_path(root, tag); retired_keeper_absent(root, tag)
+    path = retired_copy_path(root, tag, retired_copy_batch=retired_copy_batch)
+    retired_keeper_absent(root, tag, retired_copy_batch=retired_copy_batch)
     with held_file(root, path, MAX_JAR) as (stream, signature):
         need(stat.S_IMODE(signature[2]) == 0o600 and signature[3] == signature[4] == 1000,
              'EXACT_PRIVATE_RETIRED_COPY_REQUIRED')
@@ -1260,11 +1388,13 @@ def describe_retired_candidate_copy(root, tag, checksum, length):
                 'metadata': signature, 'sha256': checksum, 'bytes': length, 'allocatedBytes': signature[9]}
 
 
-def admit_retired_candidate_copy(root, request, row, authority, quiescence):
-    tag = row['release']; registered = RETIRED_COPY_TARGETS.get(tag)
+def admit_retired_candidate_copy(root, request, row, authority, quiescence, *, retired_copy_batch=None):
+    targets, _ = retired_copy_policy(retired_copy_batch)
+    tag = row['release']; registered = targets.get(tag)
     need(registered is not None and all(row.get(key) == registered[key] for key in ('commit', 'sourceSha256')),
          'ONLY_EXACT_RETIRED_COPY_SOURCES_ALLOWED')
-    original = admit_historical_controls(root, request, row, canonical_jar=True)
+    original = admit_historical_controls(root, request, row, canonical_jar=True,
+        **({'retired_copy_batch': retired_copy_batch} if retired_copy_batch is not None else {}))
     old = authority['retiredTargets'][tag]; evidence = original['evidence']; source = original['sourceArchive']
     need(evidence['jarSha256'] == old['jarSha256'] == registered['jarSha256']
          and evidence['jarBytes'] == old['jarBytes'] == registered['jarBytes']
@@ -1276,15 +1406,17 @@ def admit_retired_candidate_copy(root, request, row, authority, quiescence):
          'ACTUAL_DUAL_ROOT_QUIESCENCE_REQUIRED')
     return {'context': original['context'], 'original': original, 'publicationReferences': references,
             'ownerToken': evidence['ownerToken'],
-            'target': describe_retired_candidate_copy(root, tag, evidence['jarSha256'], evidence['jarBytes'])}
+            'target': describe_retired_candidate_copy(root, tag, evidence['jarSha256'], evidence['jarBytes'],
+                                                     retired_copy_batch=retired_copy_batch)}
 
 
-def remove_retired_candidate_copy(root, descriptor, quarantine, *, quiescence):
+def remove_retired_candidate_copy(root, descriptor, quarantine, *, quiescence, retired_copy_batch=None):
     """Capture only a separately authorized old copy; no keeper fallback exists."""
     need(type(descriptor) is dict and set(descriptor) == {'kind', 'release', 'path', 'metadata', 'sha256', 'bytes', 'allocatedBytes'}
          and descriptor['kind'] == RETIRED_COPY_KIND, 'EXACT_RETIRED_COPY_DESCRIPTOR_REQUIRED')
-    root = Path(root); tag = descriptor['release']; target = retired_copy_path(root, tag)
-    need(describe_retired_candidate_copy(root, tag, descriptor['sha256'], descriptor['bytes']) == descriptor,
+    root = Path(root); tag = descriptor['release']; target = retired_copy_path(root, tag, retired_copy_batch=retired_copy_batch)
+    need(describe_retired_candidate_copy(root, tag, descriptor['sha256'], descriptor['bytes'],
+                                         retired_copy_batch=retired_copy_batch) == descriptor,
          'RETIRED_COPY_CHANGED_AFTER_PLAN')
     need(type(quarantine) is dict and set(quarantine) == {'directory', 'path', 'directoryIdentity'}, 'EXACT_PRIVATE_QUARANTINE_REQUIRED')
     relative = Path(quarantine['directory']); parts = relative.parts
@@ -1317,7 +1449,7 @@ def remove_retired_candidate_copy(root, descriptor, quarantine, *, quiescence):
             need(captured == metadata(os.fstat(copy.fileno())) and _renamed_copy_matches(before, captured)
                  and hash_stream(copy) == descriptor['sha256'], 'UNEXPECTED_CAPTURED_INODE_RETAINED')
             need(callable(quiescence) and quiescence() is None, 'ACTUAL_DUAL_ROOT_QUIESCENCE_REQUIRED')
-            retired_keeper_absent(root, tag)
+            retired_keeper_absent(root, tag, retired_copy_batch=retired_copy_batch)
             need(not target.exists() and not target.is_symlink(), 'ORIGINAL_TARGET_REAPPEARED_RETAIN_QUARANTINE')
             private_identity()
             need(os.listdir(private_fd) == ['candidate-app.jar']
@@ -1325,7 +1457,7 @@ def remove_retired_candidate_copy(root, descriptor, quarantine, *, quiescence):
                  == metadata(os.fstat(copy.fileno())), 'CAPTURE_CHANGED_RETAIN_QUARANTINE')
             os.unlink('candidate-app.jar', dir_fd=private_fd); os.fsync(private_fd)
             need(not os.listdir(private_fd) and not target.exists() and not target.is_symlink(), 'RETIRED_COPY_REMOVAL_NOT_CONFIRMED')
-            retired_keeper_absent(root, tag)
+            retired_keeper_absent(root, tag, retired_copy_batch=retired_copy_batch)
         finally:
             if private_fd is not None: os.close(private_fd)
             for fd in reversed(stack): os.close(fd)
@@ -1334,22 +1466,25 @@ def remove_retired_candidate_copy(root, descriptor, quarantine, *, quiescence):
             'quarantinePath': quarantine['path'], 'capturedInodeVerified': True, 'binaryDisposition': 'RETIRED'}
 
 
-def retired_copy_request(root, raw, checksum, current, identity):
-    request = approved_request(raw, checksum, current, identity, canonical_jar=True)
-    need(len(request['candidates']) == 3 and {row['release'] for row in request['candidates']} == set(RETIRED_COPY_TARGETS),
+def retired_copy_request(root, raw, checksum, current, identity, *, retired_copy_batch=None):
+    targets, _ = retired_copy_policy(retired_copy_batch)
+    request = approved_request(raw, checksum, current, identity, canonical_jar=True,
+                               **({'retired_copy_batch': retired_copy_batch} if retired_copy_batch is not None else {}))
+    need(len(request['candidates']) == 3 and {row['release'] for row in request['candidates']} == set(targets),
          'EXACT_THREE_RETIRED_COPY_REQUEST_REQUIRED')
     return request
 
 
-def plan_retired_candidate_copies(root, raw_request, *, request_sha256, expected_current, identity, quiescence):
-    request = retired_copy_request(root, raw_request, request_sha256, expected_current, identity)
+def plan_retired_candidate_copies(root, raw_request, *, request_sha256, expected_current, identity, quiescence, retired_copy_batch=None):
+    request = retired_copy_request(root, raw_request, request_sha256, expected_current, identity, retired_copy_batch=retired_copy_batch)
     accepted, skipped = [], []
     with controller_lock(root), publication_lock(root):
-        authority = admit_retired_copy_authority(root, expected_current, identity)
+        authority = admit_retired_copy_authority(root, expected_current, identity, retired_copy_batch=retired_copy_batch)
         for row in request['candidates']:
             try:
                 with attempt_lock(root, row['release']):
-                    accepted.append(admit_retired_candidate_copy(root, request, row, authority, quiescence))
+                    accepted.append(admit_retired_candidate_copy(root, request, row, authority, quiescence,
+                                                                 retired_copy_batch=retired_copy_batch))
             except (RetirementError, OSError, ValueError, KeyError, TypeError, tarfile.TarError, EOFError) as error:
                 skipped.append({'release': row['release'], 'reason': str(error) if isinstance(error, RetirementError) else type(error).__name__})
     result = {'schemaVersion': 1, 'kind': RETIRED_COPY_POLICY + '-plan', 'current': expected_current, 'identity': identity,
@@ -1361,8 +1496,10 @@ def plan_retired_candidate_copies(root, raw_request, *, request_sha256, expected
     return result
 
 
-def apply_retired_candidate_copies(root, raw_request, prepared, *, request_sha256, plan_sha256, expected_current, identity, quiescence):
-    request = retired_copy_request(root, raw_request, request_sha256, expected_current, identity)
+def apply_retired_candidate_copies(root, raw_request, prepared, *, request_sha256, plan_sha256, expected_current, identity, quiescence,
+                                  retired_copy_batch=None):
+    targets, _ = retired_copy_policy(retired_copy_batch)
+    request = retired_copy_request(root, raw_request, request_sha256, expected_current, identity, retired_copy_batch=retired_copy_batch)
     need(type(prepared) is dict and digest_bytes(canonical(prepared)) == plan_sha256
          and prepared.get('kind') == RETIRED_COPY_POLICY + '-plan' and prepared.get('current') == expected_current
          and prepared.get('identity') == identity and prepared.get('requestSha256') == request_sha256
@@ -1372,7 +1509,7 @@ def apply_retired_candidate_copies(root, raw_request, prepared, *, request_sha25
          'COMPLETE_EXACT_RETIRED_COPY_PLAN_REQUIRED')
     selected = prepared.get('candidates')
     need(type(selected) is list and len(selected) == 3
-         and {row.get('context', {}).get('release') for row in selected} == set(RETIRED_COPY_TARGETS),
+         and {row.get('context', {}).get('release') for row in selected} == set(targets),
          'EXACT_THREE_RETIRED_COPY_TARGETS_REQUIRED')
     path = Path(root) / 'inbox' / expected_current['release'] / 'native-retired-candidate-copy-journal.jsonl'
     deleted, quarantines, failure, active = [], [], None, None
@@ -1388,23 +1525,27 @@ def apply_retired_candidate_copies(root, raw_request, prepared, *, request_sha25
             for candidate in selected:
                 active = candidate['context']['release']; row = next(row for row in request['candidates'] if row['release'] == active)
                 with attempt_lock(root, active):
-                    authority = admit_retired_copy_authority(root, expected_current, identity)
+                    authority = admit_retired_copy_authority(root, expected_current, identity, retired_copy_batch=retired_copy_batch)
                     need(authority == prepared['authority'], 'RETIREMENT_AUTHORITY_CHANGED_AFTER_PLAN')
-                    need(admit_retired_candidate_copy(root, request, row, authority, quiescence) == candidate,
+                    need(admit_retired_candidate_copy(root, request, row, authority, quiescence,
+                                                       retired_copy_batch=retired_copy_batch) == candidate,
                          'RETIRED_COPY_OR_ORIGINALS_CHANGED_AFTER_PLAN')
                     quarantine = reserve_quarantine(root, active); quarantines.append(quarantine)
                     record({'phase': 'DELETE_STARTED', 'release': active, 'path': candidate['target']['path'],
                             'sha256': candidate['target']['sha256'], 'quarantinePath': quarantine['path']})
                     def captured_quiescence():
-                        need(admit_retired_copy_authority(root, expected_current, identity) == prepared['authority'],
+                        need(admit_retired_copy_authority(root, expected_current, identity,
+                                                          retired_copy_batch=retired_copy_batch) == prepared['authority'],
                              'RETIREMENT_AUTHORITY_CHANGED_RETAIN_QUARANTINE')
-                        need(admit_historical_controls(root, request, row, canonical_jar=True) == candidate['original'],
+                        need(admit_historical_controls(root, request, row, canonical_jar=True,
+                             **({'retired_copy_batch': retired_copy_batch} if retired_copy_batch is not None else {})) == candidate['original'],
                              'COPY_ORIGINALS_CHANGED_RETAIN_QUARANTINE')
                         need(canonical_publication_refs(root, active) == candidate['publicationReferences'],
                              'PUBLICATION_REFERENCE_CHANGED_RETAIN_QUARANTINE')
-                        retired_keeper_absent(root, active)
+                        retired_keeper_absent(root, active, retired_copy_batch=retired_copy_batch)
                         return quiescence(Path(root) / 'verification' / active / 'checkout', active, candidate['ownerToken'])
-                    value = remove_retired_candidate_copy(root, candidate['target'], quarantine, quiescence=captured_quiescence)
+                    value = remove_retired_candidate_copy(root, candidate['target'], quarantine, quiescence=captured_quiescence,
+                                                          retired_copy_batch=retired_copy_batch)
                     deleted.append(value); record({'phase': 'DELETE_FINISHED', **value})
             record({'phase': 'FINISHED', 'deletedFiles': len(deleted)})
         except (RetirementError, OSError, ValueError, KeyError, TypeError, tarfile.TarError, EOFError) as error:
@@ -1464,8 +1605,60 @@ def public_layer_archive(root):
         return proof
 
 
-def admit_public_layer_attempt(root, request, row, quiescence):
+def public_cache_request(raw, checksum, current, identity, batch):
+    need(batch == PUBLIC_CACHE_BATCH, 'EXACT_PUBLIC_CACHE_BATCH_REQUIRED')
+    request = validate_request(raw, checksum, current, identity)
+    rows = {row['release']: row for row in request['candidates']}
+    need(set(rows) == set(PUBLIC_CACHE_TARGETS) | {PUBLIC_LAYER_KEEPER}
+         and rows[PUBLIC_LAYER_KEEPER]['commit'] == APPROVED_OLD[PUBLIC_LAYER_KEEPER]
+         and all(all(rows[tag][key] == registered[key] for key in ('commit', 'sourceSha256'))
+                 for tag, registered in PUBLIC_CACHE_TARGETS.items()), 'EXACT_SIX_PUBLIC_CACHE_SOURCES_REQUIRED')
+    return request
+
+
+def public_cache_options(batch):
+    need(batch in (None, PUBLIC_CACHE_BATCH), 'EXACT_PUBLIC_CACHE_BATCH_REQUIRED')
+    return {} if batch is None else {'public_cache_batch': batch}
+
+
+def admit_public_cache_attempt(root, request, row, quiescence):
+    tag = row['release']; registered = PUBLIC_CACHE_TARGETS.get(tag)
+    need(registered is not None and all(row[key] == registered[key] for key in ('commit', 'sourceSha256')),
+         'EXACT_PUBLIC_CACHE_ATTEMPT_REQUIRED')
+    admitted = admit_historical_controls(root, request, row, builder_helpers=True, canonical_jar=True, failed_native=True)
+    source = admitted['sourceArchive']; context = admitted['context']; evidence = admitted['evidence']
+    need(source['builderHelperSha256'] == registered['builderHelperSha256'], 'PUBLIC_CACHE_FIXED_PRODUCER_SOURCE_DIFFERS')
+    directory = Path(root) / 'inbox' / tag / 'candidate-build-tools'; documents, controls = {}, {}
+    for role, name in (('tools', 'tools.json'), ('summary', 'resource-summary.json'), ('measurement', 'official-layer-measurements.json')):
+        length, checksum = registered['controls'][role]; path = directory / name
+        with held_file(root, path, MAX_CONTROL) as (stream, signature):
+            raw = stream.read(MAX_CONTROL + 1)
+            need(len(raw) == length and digest_bytes(raw) == checksum, 'PUBLIC_CACHE_ORIGINAL_PREPARED_CONTROL_DIFFERS')
+            documents[role] = decode(raw); controls[role] = {'path': path.relative_to(root).as_posix(),
+                'bytes': length, 'sha256': checksum, 'metadata': signature}
+    tools, summary, measurement = (documents[key] for key in ('tools', 'summary', 'measurement'))
+    for value in (tools, summary):
+        same_context(value, context)
+        need(value.get('identity') == request['identity'], 'PUBLIC_CACHE_PREPARED_CONTROL_HOST_DIFFERS')
+    need(tools.get('kind') == 'doorhandle-candidate-build-tools' and tools.get('status') == 'PREPARED'
+         and tools.get('helperSha256') == source['builderHelperSha256']['compact-build-resources.py']
+         and tools.get('imageInputsHelperSha256') == source['builderHelperSha256']['compact-image-inputs.py']
+         and tools.get('imageMeasurementSha256') == controls['measurement']['sha256']
+         and tools.get('resourceEvidence') == {'file': str(directory / 'resource-summary.json'), 'sha256': controls['summary']['sha256']}
+         and summary.get('status') == 'PASS' and tools.get('engineIdentity') == summary.get('engineIdentity')
+         and tools.get('imageId') == measurement.get('imageId'), 'PUBLIC_CACHE_FIXED_PRODUCER_REFERENCES_DIFFER')
+    need(callable(quiescence) and quiescence(Path(root) / 'verification' / tag / 'checkout', tag, evidence['ownerToken']) is None,
+         'STRICT_PUBLIC_CACHE_DUAL_ROOT_QUIESCENCE_REQUIRED')
+    return {'context': context, 'jenkinsResult': evidence['jenkinsResult'], 'controls': admitted['controls'],
+            'sourceArchive': source, 'ownerToken': evidence['ownerToken'], 'tools': controls['tools'],
+            'preparedControls': controls, 'publicationReferences': canonical_publication_refs(root, tag)}
+
+
+def admit_public_layer_attempt(root, request, row, quiescence, *, public_cache_batch=None):
     tag = row['release']
+    if public_cache_batch is not None and tag != PUBLIC_LAYER_KEEPER:
+        public_cache_options(public_cache_batch)
+        return admit_public_cache_attempt(root, request, row, quiescence)
     need(tag in PUBLIC_LAYER_TAGS and APPROVED_OLD.get(tag) == row['commit'], 'FIXED_PUBLIC_LAYER_ATTEMPT_REQUIRED')
     admitted = admit_historical_controls(root, request, row)
     need(callable(quiescence) and quiescence(Path(root) / 'verification' / tag / 'checkout', tag,
@@ -1495,15 +1688,18 @@ def public_layer_quiescence(root, cleanup, original):
     return check
 
 
-def plan_public_layers(root, raw_request, *, request_sha256, expected_current, identity, quiescence):
-    request = approved_request(raw_request, request_sha256, expected_current, identity)
+def plan_public_layers(root, raw_request, *, request_sha256, expected_current, identity, quiescence, public_cache_batch=None):
+    options = public_cache_options(public_cache_batch)
+    request = (public_cache_request(raw_request, request_sha256, expected_current, identity, public_cache_batch)
+               if public_cache_batch is not None else approved_request(raw_request, request_sha256, expected_current, identity))
     accepted, skipped, archive_proof, keeper = [], [], None, None
-    rows = {row['release']: row for row in request['candidates'] if row['release'] in PUBLIC_LAYER_TAGS}
+    allowed = set(PUBLIC_CACHE_TARGETS) | {PUBLIC_LAYER_KEEPER} if options else PUBLIC_LAYER_TAGS
+    rows = {row['release']: row for row in request['candidates'] if row['release'] in allowed}
     with controller_lock(root):
         try:
             need(PUBLIC_LAYER_KEEPER in rows, 'AUTHENTICATED_PUBLIC_LAYER_KEEPER_ATTEMPT_REQUIRED')
             with attempt_lock(root, PUBLIC_LAYER_KEEPER), held_public_layer_archive(root) as archive:
-                keeper = admit_public_layer_attempt(root, request, rows[PUBLIC_LAYER_KEEPER], quiescence)
+                keeper = admit_public_layer_attempt(root, request, rows[PUBLIC_LAYER_KEEPER], quiescence, **options)
                 # All four real ECS keepers must exist and match upstream first.
                 for sha, size in PUBLIC_LAYERS.items():
                     path = Path(root) / 'inbox' / PUBLIC_LAYER_KEEPER / 'candidate-build-tools/official-oci/blobs/sha256' / sha
@@ -1514,8 +1710,8 @@ def plan_public_layers(root, raw_request, *, request_sha256, expected_current, i
                     if tag == PUBLIC_LAYER_KEEPER: continue
                     try:
                         with attempt_lock(root, tag):
-                            attempt = admit_public_layer_attempt(root, request, row, quiescence)
-                            targets = [describe_duplicate(root, tag, sha, size, kind=PUBLIC_LAYER_KIND)
+                            attempt = admit_public_layer_attempt(root, request, row, quiescence, **options)
+                            targets = [describe_duplicate(root, tag, sha, size, kind=PUBLIC_LAYER_KIND, **options)
                                        for sha, size in PUBLIC_LAYERS.items()]
                             accepted.append({**attempt, 'targets': targets})
                     except (OSError, ValueError, KeyError, TypeError, tarfile.TarError, EOFError) as error:
@@ -1530,26 +1726,33 @@ def plan_public_layers(root, raw_request, *, request_sha256, expected_current, i
               'candidateBytes': sum(target['bytes'] for row in accepted for target in row['targets']),
               'candidateAllocatedBytes': sum(target['allocatedBytes'] for row in accepted for target in row['targets']),
               'upstreamTarAndKeeper117Preserved': True, 'directoriesImagesAndBusinessDataPreserved': True}
+    if options: result['publicCacheBatch'] = public_cache_batch
     need(len(canonical(result)) <= MAX_CONTROL, 'BOUNDED_PUBLIC_LAYER_PLAN_REQUIRED')
     return result
 
 
-def apply_public_layers(root, raw_request, prepared, *, request_sha256, plan_sha256, expected_current, identity, quiescence):
-    request = approved_request(raw_request, request_sha256, expected_current, identity)
+def apply_public_layers(root, raw_request, prepared, *, request_sha256, plan_sha256, expected_current, identity, quiescence, public_cache_batch=None):
+    options = public_cache_options(public_cache_batch)
+    request = (public_cache_request(raw_request, request_sha256, expected_current, identity, public_cache_batch)
+               if options else approved_request(raw_request, request_sha256, expected_current, identity))
     need(type(prepared) is dict and digest_bytes(canonical(prepared)) == plan_sha256
          and prepared.get('kind') == PUBLIC_KIND + '-plan' and prepared.get('current') == expected_current
          and prepared.get('identity') == identity and prepared.get('requestSha256') == request_sha256
          and prepared.get('deletionPerformed') is False and prepared.get('upstreamTarAndKeeper117Preserved') is True,
          'EXACT_PUBLIC_LAYER_PLAN_REQUIRED')
     selected = prepared.get('candidates'); rows = {row['release']: row for row in request['candidates']}
-    need(type(selected) is list and len(selected) <= len(PUBLIC_LAYER_TAGS) - 1
+    allowed = set(PUBLIC_CACHE_TARGETS) if options else set(PUBLIC_LAYER_TAGS) - {PUBLIC_LAYER_KEEPER}
+    need(type(selected) is list and len(selected) <= len(allowed)
          and all(type(row) is dict and type(row.get('context')) is dict for row in selected), 'BOUNDED_PUBLIC_LAYER_SELECTION_REQUIRED')
     tags = [row['context']['release'] for row in selected]
-    need(len(tags) == len(set(tags)) and set(tags) <= (set(rows) & PUBLIC_LAYER_TAGS) - {PUBLIC_LAYER_KEEPER}
+    need(len(tags) == len(set(tags)) and set(tags) <= set(rows) & allowed
          and all(type(row.get('targets')) is list and len(row['targets']) == len(PUBLIC_LAYERS)
                  and {target.get('sha256') for target in row['targets']} == set(PUBLIC_LAYERS)
                  and all(target.get('kind') == PUBLIC_LAYER_KIND for target in row['targets']) for row in selected),
          'ONLY_FOUR_FIXED_PUBLIC_LAYERS_PER_ATTEMPT')
+    if options:
+        need(set(tags) == set(PUBLIC_CACHE_TARGETS) and prepared.get('skipped') == []
+             and prepared.get('publicCacheBatch') == public_cache_batch, 'COMPLETE_TWENTY_PUBLIC_LAYER_PLAN_REQUIRED')
     journal_path = Path(root) / 'inbox' / expected_current['release'] / 'native-public-layer-duplicate-journal.jsonl'
     owned_path(root, journal_path.parent, directory=True)
     deleted, quarantines, failure, active, active_quarantine, mutation_attempted = [], [], None, None, None, False
@@ -1567,26 +1770,32 @@ def apply_public_layers(root, raw_request, prepared, *, request_sha256, plan_sha
                 need(PUBLIC_LAYER_KEEPER in rows, 'AUTHENTICATED_PUBLIC_LAYER_KEEPER_ATTEMPT_REQUIRED')
                 with attempt_lock(root, PUBLIC_LAYER_KEEPER), held_public_layer_archive(root) as archive:
                     need(archive == prepared['archive'] and admit_public_layer_attempt(root, request,
-                         rows[PUBLIC_LAYER_KEEPER], quiescence) == prepared['keeper'], 'PUBLIC_LAYER_KEEPER_OR_ARCHIVE_CHANGED_AFTER_PLAN')
+                         rows[PUBLIC_LAYER_KEEPER], quiescence, **options) == prepared['keeper'], 'PUBLIC_LAYER_KEEPER_OR_ARCHIVE_CHANGED_AFTER_PLAN')
                     for candidate in selected:
                         active, active_quarantine = candidate['context']['release'], None
                         with attempt_lock(root, active):
-                            need(admit_public_layer_attempt(root, request, rows[active], quiescence)
+                            need(admit_public_layer_attempt(root, request, rows[active], quiescence, **options)
                                  == {key: value for key, value in candidate.items() if key != 'targets'}, 'PUBLIC_LAYER_ATTEMPT_CHANGED_AFTER_PLAN')
-                            need([describe_duplicate(root, active, target['sha256'], target['bytes'], kind=PUBLIC_LAYER_KIND)
+                            need([describe_duplicate(root, active, target['sha256'], target['bytes'], kind=PUBLIC_LAYER_KIND, **options)
                                   for target in candidate['targets']] == candidate['targets'], 'ALL_FOUR_PUBLIC_LAYER_COPIES_CHANGED_AFTER_PLAN')
                             for target in candidate['targets']:
                                 active_quarantine = None
                                 need(quiescence(Path(root) / 'verification' / active / 'checkout', active, candidate['ownerToken']) is None
                                      and quiescence(Path(root) / 'verification' / PUBLIC_LAYER_KEEPER / 'checkout',
                                          PUBLIC_LAYER_KEEPER, prepared['keeper']['ownerToken']) is None, 'STRICT_PUBLIC_LAYER_QUIESCENCE_REQUIRED')
-                                need(describe_duplicate(root, active, target['sha256'], target['bytes'], kind=PUBLIC_LAYER_KIND) == target,
+                                need(describe_duplicate(root, active, target['sha256'], target['bytes'], kind=PUBLIC_LAYER_KIND, **options) == target,
                                      'PUBLIC_LAYER_BYTES_CHANGED_AFTER_PLAN')
                                 active_quarantine = reserve_quarantine(root, expected_current['release']); quarantines.append(active_quarantine)
                                 record({'phase': 'DELETE_STARTED', 'release': active, 'path': target['path'],
                                         'keeperPath': target['keeper']['path'], 'sha256': target['sha256'], 'quarantinePath': active_quarantine['path']})
                                 mutation_attempted = True
-                                result = remove_duplicate(root, target, quarantine=active_quarantine); deleted.append(result)
+                                def captured_public_quiescence():
+                                    need(admit_public_layer_attempt(root, request, rows[active], quiescence, **options)
+                                         == {key: value for key, value in candidate.items() if key != 'targets'}, 'PUBLIC_CACHE_ORIGINALS_CHANGED_RETAIN_QUARANTINE')
+                                    need(admit_public_layer_attempt(root, request, rows[PUBLIC_LAYER_KEEPER], quiescence, **options)
+                                         == prepared['keeper'], 'PUBLIC_CACHE_KEEPER_CHANGED_RETAIN_QUARANTINE')
+                                result = remove_duplicate(root, target, quarantine=active_quarantine,
+                                    **({'quiescence': captured_public_quiescence, **options} if options else {})); deleted.append(result)
                                 record({'phase': 'DELETE_FINISHED', **result})
             record({'phase': 'FINISHED', 'deletedFiles': len(deleted)})
         except Exception as error:
@@ -1604,29 +1813,38 @@ def apply_public_layers(root, raw_request, prepared, *, request_sha256, plan_sha
             'journalSha256': digest_bytes(journal_path.read_bytes()), 'skipped': prepared['skipped'],
             'availableBytesBefore': before.f_bavail * before.f_frsize, 'availableBytesAfter': after.f_bavail * after.f_frsize,
             'upstreamTarAndKeeper117Preserved': failure is None, 'directoriesImagesAndBusinessDataPreserved': True,
-            'testsRunByRetirement': False}
+            'testsRunByRetirement': False, **({'publicCacheBatch': public_cache_batch} if options else {})}
 
 
-def generated_image_archive_path(root, tag):
-    need(type(tag) is str and tag in APPROVED_OLD, 'ONLY_REVIEWED_GENERATED_PUBLIC_ARCHIVE_PATHS_ALLOWED')
+def generated_image_archive_path(root, tag, *, public_cache_batch=None):
+    public_cache_options(public_cache_batch)
+    allowed = PUBLIC_CACHE_TARGETS if public_cache_batch is not None else APPROVED_OLD
+    need(type(tag) is str and tag in allowed, 'ONLY_REVIEWED_GENERATED_PUBLIC_ARCHIVE_PATHS_ALLOWED')
     return Path(root) / 'inbox' / tag / 'candidate-build-tools/official-image.tar'
 
 
-def describe_generated_image_archive_cache(root, tag):
-    path = generated_image_archive_path(root, tag)
+def describe_generated_image_archive_cache(root, tag, *, public_cache_batch=None):
+    path = generated_image_archive_path(root, tag, public_cache_batch=public_cache_batch)
     with held_file(root, path, MAX_SOURCE_ARCHIVE) as (stream, signature):
         need(0 < signature[6] <= MAX_SOURCE_ARCHIVE, 'BOUNDED_GENERATED_PUBLIC_ARCHIVE_REQUIRED')
+        checksum = hash_stream(stream, MAX_SOURCE_ARCHIVE)
+        if public_cache_batch is not None:
+            registered = PUBLIC_CACHE_TARGETS[tag]
+            need(signature[6] == registered['tarBytes'] and checksum == registered['tarSha256'],
+                 'EXACT_OBSERVED_GENERATED_PUBLIC_TAR_REQUIRED')
         return {'kind': GENERATED_CACHE_KIND, 'release': tag, 'path': path.relative_to(root).as_posix(),
-                'metadata': signature, 'sha256': hash_stream(stream, MAX_SOURCE_ARCHIVE),
+                'metadata': signature, 'sha256': checksum,
                 'bytes': signature[6], 'allocatedBytes': signature[9]}
 
 
-def remove_generated_image_archive_cache(root, descriptor, seed, quarantine=None):
+def remove_generated_image_archive_cache(root, descriptor, seed, quarantine=None, *, public_cache_batch=None, quiescence=None):
     """Retire a rebuildable import cache, NOT a byte-identical seed copy."""
     need(type(descriptor) is dict and set(descriptor) == {'kind', 'release', 'path', 'metadata', 'sha256', 'bytes', 'allocatedBytes'}
          and descriptor['kind'] == GENERATED_CACHE_KIND, 'EXACT_GENERATED_CACHE_DESCRIPTOR_REQUIRED')
-    root = Path(root); target = generated_image_archive_path(root, descriptor['release'])
-    need(describe_generated_image_archive_cache(root, descriptor['release']) == descriptor, 'GENERATED_CACHE_CHANGED_AFTER_PLAN')
+    need(public_cache_batch is None or callable(quiescence), 'PUBLIC_CACHE_CAPTURE_QUIESCENCE_REQUIRED')
+    root = Path(root); target = generated_image_archive_path(root, descriptor['release'], public_cache_batch=public_cache_batch)
+    need(describe_generated_image_archive_cache(root, descriptor['release'], public_cache_batch=public_cache_batch) == descriptor,
+         'GENERATED_CACHE_CHANGED_AFTER_PLAN')
     quarantine = reserve_quarantine(root) if quarantine is None else quarantine
     need(type(quarantine) is dict and set(quarantine) == {'directory', 'path', 'directoryIdentity'}, 'EXACT_PRIVATE_QUARANTINE_REQUIRED')
     relative = Path(quarantine['directory']); parts = relative.parts
@@ -1656,12 +1874,14 @@ def remove_generated_image_archive_cache(root, descriptor, seed, quarantine=None
                 need(info.st_uid == os.getuid() and info.st_dev == device and not info.st_mode & 0o022, 'DELETION_ANCESTOR_CHANGED')
             need(metadata(os.stat(target.name, dir_fd=stack[-1], follow_symlinks=False)) == copy_info
                  == metadata(os.fstat(copy.fileno())), 'GENERATED_CACHE_MOVED_BEFORE_CAPTURE')
+            if quiescence is not None: need(quiescence() is None, 'PUBLIC_CACHE_CAPTURE_QUIESCENCE_REQUIRED')
             _capture_no_replace(stack[-1], target.name, qfd, 'candidate-app.jar'); os.fsync(stack[-1]); os.fsync(qfd)
             captured = metadata(os.stat('candidate-app.jar', dir_fd=qfd, follow_symlinks=False))
             need(captured == metadata(os.fstat(copy.fileno())) and captured[:2] == copy_info[:2]
                  and captured[:2] != seed['metadata'][:2] and _renamed_copy_matches(copy_info, captured), 'UNEXPECTED_CAPTURED_INODE_RETAINED')
             need(hash_stream(copy, MAX_SOURCE_ARCHIVE) == descriptor['sha256']
                  and metadata((root / seed['path']).lstat()) == seed['metadata'], 'PUBLIC_SEED_OR_CAPTURE_CHANGED_RETAIN_QUARANTINE')
+            if quiescence is not None: need(quiescence() is None, 'PUBLIC_CACHE_CAPTURE_QUIESCENCE_REQUIRED')
             need(not target.exists() and not target.is_symlink(), 'ORIGINAL_TARGET_REAPPEARED_RETAIN_QUARANTINE')
             private_identity()
             need(os.listdir(qfd) == ['candidate-app.jar'] and metadata(os.stat('candidate-app.jar', dir_fd=qfd, follow_symlinks=False))
@@ -1676,7 +1896,16 @@ def remove_generated_image_archive_cache(root, descriptor, seed, quarantine=None
             'publicSeedVerifiedAfter': True, 'sameBytesAsSeedClaimed': False}
 
 
-def admit_generated_image_archive_attempt(root, request, row, quiescence):
+def admit_generated_image_archive_attempt(root, request, row, quiescence, *, public_cache_batch=None):
+    if public_cache_batch is not None:
+        public_cache_options(public_cache_batch)
+        origin = admit_public_cache_attempt(root, request, row, quiescence)
+        helpers = origin['sourceArchive']['builderHelperSha256']
+        return {**origin, 'rebuildBasis': {'protocol': 'FIXED_SOURCE_PUBLIC_OCI_IMPORT_CACHE_V1',
+            'producer': 'script/docker/compact-build-resources.py:monitored_tar_file',
+            'producerSha256': helpers['compact-build-resources.py'], 'inputHelperSha256': helpers['compact-image-inputs.py'],
+            'publicInputSha256': PUBLIC_ARCHIVE_SHA, 'publicInputBytes': PUBLIC_ARCHIVE_BYTES, 'sameBytesAsSeedClaimed': False},
+            'target': describe_generated_image_archive_cache(root, row['release'], public_cache_batch=public_cache_batch)}
     admitted = admit_historical_controls(root, request, row, builder_helpers=True)
     context, evidence = admitted['context'], admitted['evidence']; tag = context['release']
     need(APPROVED_OLD.get(tag) == context['commit'] and callable(quiescence)
@@ -1702,17 +1931,34 @@ def admit_generated_image_archive_attempt(root, request, row, quiescence):
             'target': describe_generated_image_archive_cache(root, tag)}
 
 
-def plan_generated_image_archives(root, raw_request, *, request_sha256, expected_current, identity, quiescence):
-    request = approved_request(raw_request, request_sha256, expected_current, identity)
+def public_cache_keeper(root, request, quiescence):
+    row = next(item for item in request['candidates'] if item['release'] == PUBLIC_LAYER_KEEPER)
+    attempt = admit_public_layer_attempt(root, request, row, quiescence, public_cache_batch=PUBLIC_CACHE_BATCH)
+    keepers = []
+    for checksum, length in PUBLIC_LAYERS.items():
+        path = Path(root) / 'inbox' / PUBLIC_LAYER_KEEPER / 'candidate-build-tools/official-oci/blobs/sha256' / checksum
+        with held_file(root, path, MAX_JAR) as (stream, signature):
+            need(signature[6] == length and hash_stream(stream) == checksum, 'ALL_FOUR_REAL_ECS_LAYER_KEEPERS_REQUIRED')
+            keepers.append({'path': path.relative_to(root).as_posix(), 'metadata': signature, 'sha256': checksum, 'bytes': length})
+    return {'attempt': attempt, 'layers': keepers}
+
+
+def plan_generated_image_archives(root, raw_request, *, request_sha256, expected_current, identity, quiescence, public_cache_batch=None):
+    options = public_cache_options(public_cache_batch)
+    request = (public_cache_request(raw_request, request_sha256, expected_current, identity, public_cache_batch)
+               if options else approved_request(raw_request, request_sha256, expected_current, identity))
     accepted, skipped, seed = [], [], None
+    keeper = None
     with controller_lock(root):
         try:
             with held_public_layer_archive(root) as actual_seed:
                 seed = actual_seed
+                if options: keeper = public_cache_keeper(root, request, quiescence)
                 for row in request['candidates']:
+                    if options and row['release'] == PUBLIC_LAYER_KEEPER: continue
                     try:
                         with attempt_lock(root, row['release']):
-                            accepted.append(admit_generated_image_archive_attempt(root, request, row, quiescence))
+                            accepted.append(admit_generated_image_archive_attempt(root, request, row, quiescence, **options))
                     except (OSError, ValueError, KeyError, TypeError, tarfile.TarError, EOFError) as error:
                         skipped.append({'release': row['release'], 'reason': str(error) if isinstance(error, RetirementError) else type(error).__name__})
         except (OSError, ValueError, KeyError, TypeError, tarfile.TarError, EOFError) as error:
@@ -1723,12 +1969,16 @@ def plan_generated_image_archives(root, raw_request, *, request_sha256, expected
               'candidateBytes': sum(row['target']['bytes'] for row in accepted),
               'candidateAllocatedBytes': sum(row['target']['allocatedBytes'] for row in accepted),
               'deletionPerformed': False, 'publicInputsDirectoriesImagesAndBusinessDataPreserved': True, 'sameBytesAsSeedClaimed': False}
+    if options: result.update(publicCacheBatch=public_cache_batch, keeper=keeper)
     need(len(canonical(result)) <= MAX_CONTROL, 'BOUNDED_GENERATED_PUBLIC_CACHE_PLAN_REQUIRED')
     return result
 
 
-def apply_generated_image_archives(root, raw_request, prepared, *, request_sha256, plan_sha256, expected_current, identity, quiescence):
-    request = approved_request(raw_request, request_sha256, expected_current, identity)
+def apply_generated_image_archives(root, raw_request, prepared, *, request_sha256, plan_sha256, expected_current, identity, quiescence,
+                                    public_cache_batch=None):
+    options = public_cache_options(public_cache_batch)
+    request = (public_cache_request(raw_request, request_sha256, expected_current, identity, public_cache_batch)
+               if options else approved_request(raw_request, request_sha256, expected_current, identity))
     need(type(prepared) is dict and digest_bytes(canonical(prepared)) == plan_sha256
          and prepared.get('kind') == GENERATED_KIND + '-plan' and prepared.get('current') == expected_current
          and prepared.get('identity') == identity and prepared.get('requestSha256') == request_sha256
@@ -1739,6 +1989,10 @@ def apply_generated_image_archives(root, raw_request, prepared, *, request_sha25
          and all(type(row) is dict and type(row.get('context')) is dict for row in selected), 'BOUNDED_GENERATED_CACHE_SELECTION_REQUIRED')
     tags = [row['context']['release'] for row in selected]
     need(len(tags) == len(set(tags)) and set(tags) <= set(rows), 'GENERATED_CACHE_SELECTED_TAG_DRIFT')
+    if options:
+        need(set(tags) == set(PUBLIC_CACHE_TARGETS) and prepared.get('skipped') == []
+             and prepared.get('publicCacheBatch') == public_cache_batch and prepared.get('keeper') is not None,
+             'COMPLETE_FIVE_GENERATED_PUBLIC_ARCHIVES_REQUIRED')
     journal_path = Path(root) / 'inbox' / expected_current['release'] / 'native-generated-public-image-archive-journal.jsonl'
     owned_path(root, journal_path.parent, directory=True)
     deleted, quarantines, failure, active, current_q, mutation_attempted = [], [], None, None, None, False
@@ -1751,16 +2005,24 @@ def apply_generated_image_archives(root, raw_request, prepared, *, request_sha25
         before = os.statvfs(root)
         record({'phase': 'STARTED', 'planSha256': plan_sha256, 'requestSha256': request_sha256})
         try:
+            if options:
+                need(public_cache_keeper(root, request, quiescence) == prepared['keeper'], 'PUBLIC_CACHE_KEEPER_CHANGED_AFTER_PLAN')
             for candidate in selected:
                 active, current_q = candidate['context']['release'], None
                 with attempt_lock(root, active):
-                    need(admit_generated_image_archive_attempt(root, request, rows[active], quiescence) == candidate,
+                    need(admit_generated_image_archive_attempt(root, request, rows[active], quiescence, **options) == candidate,
                          'GENERATED_PUBLIC_CACHE_CHANGED_AFTER_PLAN')
                     current_q = reserve_quarantine(root, expected_current['release']); quarantines.append(current_q)
                     record({'phase': 'DELETE_STARTED', 'release': active, 'path': candidate['target']['path'],
                             'sha256': candidate['target']['sha256'], 'quarantinePath': current_q['path']})
                     mutation_attempted = True
-                    value = remove_generated_image_archive_cache(root, candidate['target'], prepared['seed'], quarantine=current_q)
+                    def captured_public_quiescence():
+                        need(admit_public_cache_attempt(root, request, rows[active], quiescence)
+                             == {key: value for key, value in candidate.items() if key not in ('target', 'rebuildBasis')},
+                             'PUBLIC_CACHE_ORIGINALS_CHANGED_RETAIN_QUARANTINE')
+                        need(public_cache_keeper(root, request, quiescence) == prepared['keeper'], 'PUBLIC_CACHE_KEEPER_CHANGED_RETAIN_QUARANTINE')
+                    value = remove_generated_image_archive_cache(root, candidate['target'], prepared['seed'], quarantine=current_q,
+                        **({'quiescence': captured_public_quiescence, **options} if options else {}))
                     deleted.append(value); record({'phase': 'DELETE_FINISHED', **value})
             record({'phase': 'FINISHED', 'deletedFiles': len(deleted)})
         except Exception as error:
@@ -1776,7 +2038,7 @@ def apply_generated_image_archives(root, raw_request, prepared, *, request_sha25
             'journalSha256': digest_bytes(journal_path.read_bytes()), 'skipped': prepared['skipped'],
             'availableBytesBefore': before.f_bavail * before.f_frsize, 'availableBytesAfter': after.f_bavail * after.f_frsize,
             'publicInputsDirectoriesImagesAndBusinessDataPreserved': failure is None, 'sameBytesAsSeedClaimed': False,
-            'testsRunByRetirement': False}
+            'testsRunByRetirement': False, **({'publicCacheBatch': public_cache_batch} if options else {})}
 
 
 def private_bytes(root, path, maximum=MAX_CONTROL):
@@ -1871,10 +2133,22 @@ def admitted_current(args):
     return root, current, identity, quiescence, modules
 
 
-def approved_request(raw, checksum, current, identity, *, canonical_jar=False, closed_runtime=False, failed_native=False):
+def approved_request(raw, checksum, current, identity, *, canonical_jar=False, closed_runtime=False, failed_native=False,
+                     retired_copy_batch=None, public_cache_batch=None):
     request = validate_request(raw, checksum, current, identity)
     need(type(canonical_jar) is bool, 'EXACT_RETIREMENT_POLICY_REQUIRED')
     need(type(closed_runtime) is bool, 'EXACT_CLOSED_RUNTIME_POLICY_REQUIRED')
+    if public_cache_batch is not None:
+        need(not canonical_jar and not closed_runtime and not failed_native and retired_copy_batch is None,
+             'PUBLIC_CACHE_POLICY_HAS_NO_JAR_API')
+        return public_cache_request(raw, checksum, current, identity, public_cache_batch)
+    if retired_copy_batch is not None:
+        targets, _ = retired_copy_policy(retired_copy_batch)
+        need(canonical_jar and not closed_runtime and not failed_native
+             and {row['release'] for row in request['candidates']} == set(targets)
+             and all(all(row[key] == targets[row['release']][key] for key in ('commit', 'sourceSha256'))
+                     for row in request['candidates']), 'EXACT_RETIRED_COPY_BATCH_SOURCES_REQUIRED')
+        return request
     if closed_runtime: return closed_runtime_request(raw, checksum, current, identity)
     if failed_native:
         need(canonical_jar is True, 'FAILED_NATIVE_CANONICAL_PROOF_REQUIRED')
@@ -2393,10 +2667,13 @@ def apply_builders(root, raw_request, prepared, *, request_sha256, plan_sha256, 
     return value
 
 
-def capture_request(root, raw_local_spec, *, local_spec_sha256, expected_current, identity, canonical_jar=False, closed_runtime=False, failed_native=False):
+def capture_request(root, raw_local_spec, *, local_spec_sha256, expected_current, identity, canonical_jar=False, closed_runtime=False,
+                    failed_native=False, retired_copy_batch=None, public_cache_batch=None):
     spec = approved_request(raw_local_spec, local_spec_sha256, expected_current, identity, canonical_jar=canonical_jar,
                             **({'closed_runtime': True} if closed_runtime else {}),
-                        **({'failed_native': True} if failed_native else {}))
+                        **({'failed_native': True} if failed_native else {}),
+                        **({'retired_copy_batch': retired_copy_batch} if retired_copy_batch is not None else {}),
+                        **({'public_cache_batch': public_cache_batch} if public_cache_batch is not None else {}))
     accepted, skipped = [], []
     for row in spec['candidates']:
         try:
@@ -2413,6 +2690,11 @@ def capture_request(root, raw_local_spec, *, local_spec_sha256, expected_current
                 raw = private_bytes(root, path)
                 merged[role] = {'path': names[role], 'bytes': len(raw), 'sha256': digest_bytes(raw)}
             selected = {**row, 'controls': merged}
+            if public_cache_batch is not None:
+                if row['release'] == PUBLIC_LAYER_KEEPER:
+                    admit_historical_controls(root, spec, selected)
+                else:
+                    admit_historical_controls(root, spec, selected, builder_helpers=True, canonical_jar=True, failed_native=True)
             if failed_native:
                 admit_historical_controls(root, spec, selected, canonical_jar=True, failed_native=True)
                 keeper = Path(root) / 'inbox' / row['release'] / 'application.jar'
@@ -2863,7 +3145,7 @@ def failed_native_cli(args):
 
 def cli(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--phase', choices=('capture-request', 'capture-canonical-request', 'plan-builders', 'apply-builders', 'plan', 'apply',
+    parser.add_argument('--phase', choices=('capture-request', 'capture-canonical-request', 'capture-public-cache-request', 'plan-builders', 'apply-builders', 'plan', 'apply',
                                            'plan-recent-builders', 'apply-recent-builders',
                                            'plan-closed-builders', 'apply-closed-builders',
                                            'plan-failed-native-builders', 'apply-failed-native-builders',
@@ -2875,11 +3157,23 @@ def cli(argv=None):
                                            'apply-python-build-cache', 'inspect'), required=True)
     parser.add_argument('--mode', choices=('Verified', 'Maintenance'), required=True)
     parser.add_argument('--jar-batch', choices=(CLOSED_RUNTIME_BATCH, FAILED_NATIVE_BATCH))
+    parser.add_argument('--retired-copy-batch', choices=(RETIRED_COPY_BATCH_194,))
+    parser.add_argument('--public-cache-batch', choices=(PUBLIC_CACHE_BATCH,))
     for name in ('root', 'tag', 'commit', 'source-sha256', 'instance-id', 'machine-id', 'current-receipt-sha256'):
         parser.add_argument('--' + name, required=True)
     parser.add_argument('--local-spec-sha256'); parser.add_argument('--request-sha256'); parser.add_argument('--plan-sha256')
     args = parser.parse_args(argv)
     try:
+        need(args.public_cache_batch is None or (args.mode == 'Maintenance' and args.jar_batch is None
+             and args.retired_copy_batch is None and args.phase in ('capture-public-cache-request', 'plan-public-layers',
+                 'apply-public-layers', 'plan-generated-image-archives', 'apply-generated-image-archives', 'inspect')),
+             'PUBLIC_CACHE_BATCH_MAINTENANCE_PHASE_REQUIRED')
+        need(args.phase != 'capture-public-cache-request' or args.public_cache_batch == PUBLIC_CACHE_BATCH,
+             'PUBLIC_CACHE_CAPTURE_REQUIRES_EXPLICIT_BATCH')
+        need(args.retired_copy_batch is None or (args.mode == 'Maintenance' and args.jar_batch is None
+             and args.phase in ('capture-canonical-request', 'plan-retired-candidate-copies',
+                                'apply-retired-candidate-copies', 'inspect')),
+             'RETIRED_COPY_BATCH_MAINTENANCE_PHASE_REQUIRED')
         closed_runtime = closed_runtime_cli(args)
         failed_native = failed_native_cli(args)
         root, current, identity, quiescence, modules = admitted_current(args); inbox = root / 'inbox' / args.tag
@@ -2893,6 +3187,12 @@ def cli(argv=None):
             def quiescence(checkout, tag, token):
                 need(TAG.fullmatch(tag) and int(TAG.fullmatch(tag)[1]) >= FAILED_NATIVE_FIRST_BUILD
                      and checkout == root / 'verification' / tag / 'checkout', 'EXACT_FAILED_NATIVE_REFERENCE_ROOTS_REQUIRED')
+                modules['cleanup'].quiescent({'checkout': checkout, 'token': token}, tag,
+                                             modules['cleanup'].docker_snapshot(), include_inbox=True)
+        if args.public_cache_batch is not None:
+            def quiescence(checkout, tag, token):
+                need(tag in set(PUBLIC_CACHE_TARGETS) | {PUBLIC_LAYER_KEEPER}
+                     and checkout == root / 'verification' / tag / 'checkout', 'EXACT_PUBLIC_CACHE_REFERENCE_ROOTS_REQUIRED')
                 modules['cleanup'].quiescent({'checkout': checkout, 'token': token}, tag,
                                              modules['cleanup'].docker_snapshot(), include_inbox=True)
         request_file = inbox / 'native-jar-duplicate-request.json'; plan_file = inbox / 'native-jar-duplicate-plan.json'
@@ -2909,15 +3209,18 @@ def cli(argv=None):
         fixture_receipt_file = inbox / 'native-jar-duplicate-fixture-object-receipt.json'
         retired_copy_plan_file = inbox / 'native-retired-candidate-copy-plan.json'
         retired_copy_receipt_file = inbox / 'native-retired-candidate-copy-receipt.json'
-        if args.phase in ('capture-request', 'capture-canonical-request'):
+        if args.phase in ('capture-request', 'capture-canonical-request', 'capture-public-cache-request'):
             canonical_only = args.phase == 'capture-canonical-request'
             need(not canonical_only or args.mode == 'Maintenance', 'CANONICAL_RETIREMENT_REQUIRES_MAINTENANCE')
             raw = private_bytes(root, inbox / 'native-jar-duplicate-local-spec.json')
             request, skipped = capture_request(root, raw, local_spec_sha256=args.local_spec_sha256, expected_current=current,
                 identity=identity, canonical_jar=canonical_only, **({'closed_runtime': True} if closed_runtime else {}),
-                **({'failed_native': True} if failed_native else {}))
+                **({'failed_native': True} if failed_native else {}),
+                **({'retired_copy_batch': args.retired_copy_batch} if args.retired_copy_batch is not None else {}),
+                **({'public_cache_batch': args.public_cache_batch} if args.public_cache_batch is not None else {}))
             result = {'status': 'CAPTURED', 'current': current, 'identity': identity,
                       'request': write_new(request_file, request), 'skipped': skipped}
+            if args.public_cache_batch is not None: result['publicCacheBatch'] = args.public_cache_batch
             result['capture'] = write_new(capture_file, result)
         elif args.phase == 'inspect':
             files = {}
@@ -2989,13 +3292,15 @@ def cli(argv=None):
         elif args.phase in ('plan-retired-candidate-copies', 'apply-retired-candidate-copies'):
             need(args.mode == 'Maintenance', 'RETIRED_COPIES_REQUIRE_MAINTENANCE')
             raw = private_bytes(root, request_file)
+            retired_targets, _ = retired_copy_policy(args.retired_copy_batch)
             def retired_copy_quiescence(checkout, tag, token):
-                need(tag in RETIRED_COPY_TARGETS and checkout == root / 'verification' / tag / 'checkout',
+                need(tag in retired_targets and checkout == root / 'verification' / tag / 'checkout',
                      'EXACT_RETIRED_COPY_REFERENCE_ROOTS_REQUIRED')
                 modules['cleanup'].quiescent({'checkout': checkout, 'token': token}, tag,
                                              modules['cleanup'].docker_snapshot(), include_inbox=True)
             options = {'request_sha256': args.request_sha256, 'expected_current': current, 'identity': identity,
                        'quiescence': retired_copy_quiescence}
+            if args.retired_copy_batch is not None: options['retired_copy_batch'] = args.retired_copy_batch
             if args.phase == 'plan-retired-candidate-copies':
                 value = plan_retired_candidate_copies(root, raw, **options)
                 result = {'status': 'PLANNED', 'current': current, 'identity': identity,
@@ -3054,9 +3359,10 @@ def cli(argv=None):
                 result = {'status': value['status'], 'current': current, 'identity': identity,
                           'receipt': write_new(python_cache_receipt_file, value)}
         elif args.phase in ('plan-generated-image-archives', 'apply-generated-image-archives'):
-            raw = private_bytes(root, request_file); approved_request(raw, args.request_sha256, current, identity)
+            raw = private_bytes(root, request_file)
+            approved_request(raw, args.request_sha256, current, identity, **public_cache_options(args.public_cache_batch))
             options = {'request_sha256': args.request_sha256, 'expected_current': current, 'identity': identity,
-                       'quiescence': public_layer_quiescence(root, modules['cleanup'], quiescence)}
+                       'quiescence': public_layer_quiescence(root, modules['cleanup'], quiescence), **public_cache_options(args.public_cache_batch)}
             if args.phase == 'plan-generated-image-archives':
                 value = plan_generated_image_archives(root, raw, **options)
                 result = {'status': 'PLANNED', 'current': current, 'identity': identity, 'plan': write_new(generated_plan_file, value),
@@ -3067,10 +3373,19 @@ def cli(argv=None):
                 value = apply_generated_image_archives(root, raw, decode(plan_raw), plan_sha256=args.plan_sha256, **options)
                 result = {'status': value['status'], 'current': current, 'identity': identity,
                           'receipt': write_new(generated_receipt_file, value)}
+            if args.public_cache_batch is not None:
+                result.update(publicCacheBatch=args.public_cache_batch)
+                if args.phase == 'plan-generated-image-archives':
+                    result.update(candidateAttemptCount=len(value['candidates']), candidateTargetCount=len(value['candidates']), candidateBytes=value['candidateBytes'])
+                else:
+                    result.update(deletedFiles=len(value['deleted']), requestSha256=value['requestSha256'], planSha256=value['planSha256'], skipped=value['skipped'], failure=value['failure'],
+                                  publicInputsDirectoriesImagesAndBusinessDataPreserved=value['publicInputsDirectoriesImagesAndBusinessDataPreserved'],
+                                  sameBytesAsSeedClaimed=value['sameBytesAsSeedClaimed'], testsRunByRetirement=value['testsRunByRetirement'])
         elif args.phase in ('plan-public-layers', 'apply-public-layers'):
-            raw = private_bytes(root, request_file); approved_request(raw, args.request_sha256, current, identity)
+            raw = private_bytes(root, request_file)
+            approved_request(raw, args.request_sha256, current, identity, **public_cache_options(args.public_cache_batch))
             options = {'request_sha256': args.request_sha256, 'expected_current': current, 'identity': identity,
-                       'quiescence': public_layer_quiescence(root, modules['cleanup'], quiescence)}
+                       'quiescence': public_layer_quiescence(root, modules['cleanup'], quiescence), **public_cache_options(args.public_cache_batch)}
             if args.phase == 'plan-public-layers':
                 value = plan_public_layers(root, raw, **options)
                 result = {'status': 'PLANNED', 'current': current, 'identity': identity,
@@ -3082,6 +3397,14 @@ def cli(argv=None):
                 value = apply_public_layers(root, raw, decode(plan_raw), plan_sha256=args.plan_sha256, **options)
                 result = {'status': value['status'], 'current': current, 'identity': identity,
                           'receipt': write_new(public_receipt_file, value)}
+            if args.public_cache_batch is not None:
+                result.update(publicCacheBatch=args.public_cache_batch)
+                if args.phase == 'plan-public-layers':
+                    result.update(candidateAttemptCount=len(value['candidates']), candidateTargetCount=sum(len(row['targets']) for row in value['candidates']))
+                else:
+                    result.update(deletedFiles=len(value['deleted']), requestSha256=value['requestSha256'], planSha256=value['planSha256'], skipped=value['skipped'], failure=value['failure'],
+                                  upstreamTarAndKeeper117Preserved=value['upstreamTarAndKeeper117Preserved'],
+                                  directoriesImagesAndBusinessDataPreserved=value['directoriesImagesAndBusinessDataPreserved'], testsRunByRetirement=value['testsRunByRetirement'])
         elif args.phase in ('plan-builders', 'apply-builders', 'plan-recent-builders', 'apply-recent-builders',
                              'plan-closed-builders', 'apply-closed-builders',
                              'plan-failed-native-builders', 'apply-failed-native-builders'):

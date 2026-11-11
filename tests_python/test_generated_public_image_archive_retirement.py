@@ -223,3 +223,109 @@ def test_quarantine_failure_receipt_retains_actual_captured_file(planning, monke
     assert (planning.cache.root / receipt['lastQuarantinePath']).read_bytes() == planning.cache.generated_raw
 
 
+# Share one synthetic six-source fixture, not private developer/production data.
+RECENT_SPEC = importlib.util.spec_from_file_location('generated_recent_public_fixture',
+    Path(__file__).with_name('test_public_buildkit_layer_retirement.py'))
+RECENT_FIXTURES = importlib.util.module_from_spec(RECENT_SPEC)
+RECENT_SPEC.loader.exec_module(RECENT_FIXTURES)
+recent_public_case = RECENT_FIXTURES.recent_public_case
+
+
+def recent_plan(s):
+    return s.retirer.plan_generated_image_archives(s.root, s.raw, **s.options)
+
+
+def recent_apply(s, value):
+    return s.retirer.apply_generated_image_archives(s.root, s.raw, value,
+        plan_sha256=sha(s.retirer.canonical(value)), **s.options)
+
+
+def test_recent_generated_cache_binds_real_tar_sha_not_unlinked_measurement_archive(recent_public_case):
+    s = recent_public_case; value = recent_plan(s)
+    assert value['skipped'] == [] and len(value['candidates']) == 5
+    for candidate in value['candidates']:
+        target = candidate['target']; tag = candidate['context']['release']
+        measurement = json.loads((s.root / 'inbox' / tag / 'candidate-build-tools/official-layer-measurements.json').read_bytes())
+        assert target['sha256'] == sha((s.root / target['path']).read_bytes()) != measurement['archiveSha256']
+        assert candidate['rebuildBasis']['sameBytesAsSeedClaimed'] is False
+    result = recent_apply(s, value)
+    assert result['status'] == 'REMOVED' and len(result['deleted']) == 5
+    assert result['sameBytesAsSeedClaimed'] is False and all(path.exists() for path in s.layers)
+    assert all(path.read_bytes() == body for path, body in s.originals.items())
+
+
+@pytest.mark.parametrize('damage', ['tar', 'source', 'prepared-control', 'seed', 'keeper'])
+def test_recent_generated_plan_cannot_apply_a_partial_or_unproven_five_file_set(recent_public_case, damage):
+    s = recent_public_case; r = s.retirer; tag = next(iter(r.PUBLIC_CACHE_TARGETS))
+    path = {'tar': s.tars[0], 'source': s.root / 'inbox' / tag / 'source.tar.gz',
+        'prepared-control': s.root / 'inbox' / tag / 'candidate-build-tools/tools.json', 'seed': s.seed,
+        'keeper': next(path for path in s.originals if 'official-oci' in str(path))}[damage]
+    path.write_bytes(b'changed original before planning')
+    value = recent_plan(s)
+    assert value['skipped'] and len(value['candidates']) < 5
+    with pytest.raises(r.RetirementError, match='COMPLETE_FIVE_GENERATED_PUBLIC_ARCHIVES_REQUIRED'):
+        recent_apply(s, value)
+    assert all(path.exists() for path in s.tars)
+
+
+@pytest.mark.parametrize('changed', ['tar', 'source', 'prepared-control', 'keeper', 'container', 'publication'])
+def test_recent_generated_apply_rechecks_targets_sources_and_references_before_any_delete(recent_public_case, changed):
+    s = recent_public_case; r = s.retirer; value = recent_plan(s); tag = next(iter(r.PUBLIC_CACHE_TARGETS))
+    if changed == 'tar': s.tars[0].write_bytes(b'changed generated tar after approval')
+    elif changed == 'source': (s.root / 'inbox' / tag / 'source.tar.gz').write_bytes(b'changed source after approval')
+    elif changed == 'prepared-control': (s.root / 'inbox' / tag / 'candidate-build-tools/tools.json').write_bytes(b'changed prepared control')
+    elif changed == 'keeper': next(path for path in s.originals if 'official-oci' in str(path)).write_bytes(b'changed keeper')
+    elif changed == 'publication': (s.root / 'releases' / tag).mkdir(parents=True, mode=0o700)
+    else: s.containers.append(['a' * 64, False, False, 0, tag, None, []])
+    result = recent_apply(s, value)
+    assert result['status'] == 'FAILED_OR_UNKNOWN' and result['deleted'] == []
+    assert all(path.exists() for path in s.tars)
+
+
+@pytest.mark.parametrize('changed', ['source', 'prepared-control', 'keeper', 'seed', 'container', 'publication'])
+def test_recent_generated_after_capture_requires_same_sources_keeper_and_dual_root_quiescence(recent_public_case, monkeypatch, changed):
+    s = recent_public_case; r = s.retirer; value = recent_plan(s); tag = next(iter(r.PUBLIC_CACHE_TARGETS)); capture = r._capture_no_replace
+    def mutate(*args):
+        capture(*args)
+        if changed == 'source': (s.root / 'inbox' / tag / 'source.tar.gz').write_bytes(b'changed source after capture')
+        elif changed == 'prepared-control': (s.root / 'inbox' / tag / 'candidate-build-tools/tools.json').write_bytes(b'changed prepared control')
+        elif changed == 'keeper': next(path for path in s.originals if 'official-oci' in str(path)).write_bytes(b'changed keeper')
+        elif changed == 'seed': s.seed.write_bytes(b'changed master archive')
+        elif changed == 'publication': (s.root / 'releases' / tag).mkdir(parents=True, mode=0o700)
+        else: s.containers.append(['a' * 64, False, False, 0, tag, None, []])
+    monkeypatch.setattr(r, '_capture_no_replace', mutate)
+    result = recent_apply(s, value)
+    assert result['status'] == 'FAILED_OR_UNKNOWN' and result['deleted'] == [] and len(result['retainedQuarantinePaths']) == 1
+    assert (s.root / result['retainedQuarantinePaths'][0]).exists()
+
+
+@pytest.mark.parametrize('reference', ['cwd', 'argv', 'fd', 'mmap'])
+def test_recent_generated_real_process_scanner_rejects_old_inbox_references(recent_public_case, reference):
+    s = recent_public_case; r = s.retirer; tag = next(iter(r.PUBLIC_CACHE_TARGETS)); inbox = s.root / 'inbox' / tag
+    pid = s.proc / str(os.getpid() + 100000); (pid / 'fd').mkdir(parents=True)
+    (pid / 'cwd').symlink_to(inbox if reference == 'cwd' else s.root, target_is_directory=True)
+    (pid / 'cmdline').write_bytes(b'process\0' + (os.fsencode(inbox / 'candidate-build-tools/official-image.tar') if reference == 'argv' else b'-I') + b'\0')
+    if reference == 'fd': (pid / 'fd/9').symlink_to(inbox / 'candidate-build-tools/official-image.tar')
+    (pid / 'maps').write_bytes(b'0-1 r--p 0 00:00 1 ' + os.fsencode(inbox / 'candidate-build-tools/official-image.tar') + b'\n' if reference == 'mmap' else b'')
+    value = recent_plan(s)
+    assert value['skipped'] and len(value['candidates']) < 5
+    with pytest.raises(r.RetirementError, match='COMPLETE_FIVE_GENERATED_PUBLIC_ARCHIVES_REQUIRED'): recent_apply(s, value)
+    assert all(path.exists() for path in s.tars)
+
+
+@pytest.mark.parametrize(('mode', 'phase', 'jar_batch'), [
+    ('Verified', 'capture-public-cache-request', None), ('Maintenance', 'capture-canonical-request', None),
+    ('Maintenance', 'plan-canonical', None), ('Maintenance', 'apply', None),
+    ('Maintenance', 'apply-recent-fixtures', None), ('Maintenance', 'inspect', retirer.FAILED_NATIVE_BATCH)])
+def test_public_batch_cli_does_not_authorize_verified_or_other_resource_phases(monkeypatch, capsys, mode, phase, jar_batch):
+    def forbidden(args): raise AssertionError('Invalid public policy reached actual ECS context')
+    monkeypatch.setattr(retirer, 'admitted_current', forbidden)
+    args = ['--phase', phase, '--mode', mode, '--public-cache-batch', retirer.PUBLIC_CACHE_BATCH,
+        '--root', '/home/ecs-user/doorhandle-ci', '--tag', 'ci-999-' + 'a' * 12, '--commit', 'a' * 40,
+        '--source-sha256', 'b' * 64, '--instance-id', 'i-fixture123', '--machine-id', 'c' * 32,
+        '--current-receipt-sha256', 'd' * 64]
+    if jar_batch is not None: args += ['--jar-batch', jar_batch]
+    assert retirer.cli(args) == 2
+    assert json.loads(capsys.readouterr().out)['reason'] == 'PUBLIC_CACHE_BATCH_MAINTENANCE_PHASE_REQUIRED'
+
+

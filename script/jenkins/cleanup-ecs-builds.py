@@ -1148,13 +1148,30 @@ def admit_control_growth(root, plan, *, include_plan):
 def apply_plan(root, request, plan, verifier):
     root = owned(root, directory=True)
     require(sys.platform == 'linux', 'APPLY_REQUIRES_ADMITTED_LINUX_ECS')
+    candidates = plan.get('candidates')
+    require(type(candidates) is list and all(type(row) is dict and type(row.get('targets')) is list
+            for row in candidates), 'PLAN_TARGET_ACTION_SET_INVALID')
+    has_targets = any(row['targets'] for row in candidates)
+    if not has_targets:
+        require(all(type(plan.get(key)) is int and plan[key] == 0
+                    for key in ('candidateBytes', 'candidateAllocatedBytes')), 'EMPTY_PLAN_COUNTERS_INVALID')
+        # No deletion is approved. Bind the original plan's fixed headers without
+        # turning unrelated /proc churn into a request for a different plan.
+        expected = {'schema': 1, 'kind': 'doorhandle-old-build-cleanup-plan', 'root': str(root),
+            'currentRelease': request['currentRelease'], 'identity': request['identity'],
+            'requestSha256': sha(canonical(request)), 'request': request,
+            'executorSha256': digest(Path(__file__).resolve()), 'verifierSha256': digest(Path(verifier.__file__).resolve())}
+        require(all(plan.get(key) == value for key, value in expected.items())
+                and request.get('schema') == 1 and request.get('kind') == 'doorhandle-old-build-cleanup-request',
+                'EMPTY_PLAN_FIXED_BINDING_INVALID')
     control_budget = admit_control_growth(root, plan, include_plan=False)
     with cleanup_lock(root), ExitStack() as locks:
         tags = [candidate['release'] for candidate in plan['candidates']]
         require(len(tags) == len(set(tags)) and all(TAG.fullmatch(tag) for tag in tags), 'PLAN_CANDIDATES_INVALID')
-        for tag in sorted(tags): locks.enter_context(attempt_lock(root, tag))
-        fresh = build_plan(root, request, verifier, docker_snapshot(), held_releases=tags)
-        require(fresh == plan, 'PLAN_OR_ORIGINAL_EVIDENCE_CHANGED_NO_DELETION')
+        if has_targets:
+            for tag in sorted(tags): locks.enter_context(attempt_lock(root, tag))
+            fresh = build_plan(root, request, verifier, docker_snapshot(), held_releases=tags)
+            require(fresh == plan, 'PLAN_OR_ORIGINAL_EVIDENCE_CHANGED_NO_DELETION')
         control_budget = admit_control_growth(root, plan, include_plan=False)
         before = os.statvfs(root); deleted = []; failure = None
         journal_file = root / 'inbox' / plan['currentRelease'] / 'build-cleanup-journal.jsonl'
@@ -1180,7 +1197,7 @@ def apply_plan(root, request, plan, verifier):
         stage, active_release = 'START_JOURNAL', None
         try:
             journal({'phase': 'STARTED', 'planSha256': sha(canonical(plan)), 'identity': plan['identity']})
-            for candidate in plan['candidates']:
+            for candidate in plan['candidates'] if has_targets else ():
                 active_release = candidate['release']; stage = 'EVIDENCE_BINDING'
                 custody = next(item for item in request['candidates'] if item['release'] == candidate['release'])
                 binding = evidence_binding(root, custody, request['identity'], verifier)

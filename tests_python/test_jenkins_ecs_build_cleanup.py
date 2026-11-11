@@ -743,6 +743,118 @@ def test_apply_refuses_approval_drift_before_any_target_is_removed(state, change
     assert state.classes.exists()
 
 
+@pytest.mark.parametrize('selection', ['no-candidates', 'accepted-empty-targets', 'transient-skipped'])
+def test_admitted_empty_action_plan_returns_no_action_without_replanning_unrelated_processes(state, monkeypatch, selection):
+    if selection == 'no-candidates':
+        state.request['candidates'] = []
+    elif selection == 'accepted-empty-targets':
+        for target in plan(state)['candidates'][0]['targets']:
+            shutil.rmtree(state.root / target['path'])
+    else:
+        def transient(*args, **kwargs): raise ValueError('LIVE_PROCESS_METADATA_DISAPPEARED')
+        monkeypatch.setattr(cleanup, 'quiescent', transient)
+    value = plan(state)
+    assert all(row['targets'] == [] for row in value['candidates'])
+    assert value['candidateBytes'] == value['candidateAllocatedBytes'] == 0
+    if selection == 'transient-skipped':
+        assert value['skipped'] == [{'release': OLD, 'reason': 'LIVE_PROCESS_METADATA_DISAPPEARED'}]
+    file = put_json(state.root / 'inbox' / CURRENT / 'build-cleanup-plan.json', value)
+    admitted, request = cleanup.admitted_plan(file, file, cleanup.digest(file), CURRENT, IDENTITY)
+    before = preserved_bytes(state)
+    def forbidden(*args, **kwargs): raise AssertionError('An empty action set must not inspect or delete old releases')
+    for name in ('build_plan', 'docker_snapshot', 'attempt_lock', 'evidence_binding', 'quiescent', 'remove_target'):
+        monkeypatch.setattr(cleanup, name, forbidden)
+    result = cleanup.apply_plan(state.root, request, admitted, remote)
+    assert result['status'] == 'NO_ACTION' and result['deleted'] == []
+    assert result['planSha256'] == cleanup.sha(cleanup.canonical(value)) and result['skipped'] == value['skipped']
+    journal = state.root / 'inbox' / CURRENT / 'build-cleanup-journal.jsonl'
+    assert [json.loads(line)['phase'] for line in journal.read_text().splitlines()] == ['STARTED', 'FINISHED']
+    assert json.loads(journal.read_text().splitlines()[-1])['deletedTargets'] == 0
+    assert result['journalSha256'] == cleanup.digest(journal) and preserved_bytes(state) == before
+    assert state.classes.exists() is (selection != 'accepted-empty-targets')
+
+
+@pytest.mark.parametrize('field', ['root', 'schema', 'kind', 'currentRelease', 'identity', 'request',
+                                  'requestSha256', 'executorSha256', 'verifierSha256'])
+def test_empty_action_path_still_binds_the_fixed_plan_headers_request_and_recipes(state, field):
+    state.request['candidates'] = []
+    value = plan(state); value[field] = 'changed-bound-header'
+    with pytest.raises(ValueError, match='EMPTY_PLAN_FIXED_BINDING_INVALID'):
+        cleanup.apply_plan(state.root, state.request, value, remote)
+    assert not (state.root / 'inbox' / CURRENT / 'build-cleanup-journal.jsonl').exists()
+    assert state.classes.is_dir()
+
+
+@pytest.mark.parametrize('field', ['candidateBytes', 'candidateAllocatedBytes'])
+@pytest.mark.parametrize('counter', [False, -1, 1])
+def test_empty_action_path_requires_both_exact_integer_zero_counters(state, field, counter):
+    state.request['candidates'] = []
+    value = plan(state); value[field] = counter
+    with pytest.raises(ValueError, match='EMPTY_PLAN_COUNTERS_INVALID'):
+        cleanup.apply_plan(state.root, state.request, value, remote)
+    assert not (state.root / 'inbox' / CURRENT / 'build-cleanup-journal.jsonl').exists()
+    assert state.classes.is_dir()
+
+
+@pytest.mark.parametrize('damage', ['candidate-not-list', 'candidate-not-object', 'missing-targets', 'null-targets', 'object-targets'])
+def test_empty_action_path_never_defaults_a_malformed_action_set_to_empty(state, damage):
+    state.request['candidates'] = []
+    value = plan(state)
+    value['candidates'] = {'candidate-not-list': {}, 'candidate-not-object': [None],
+        'missing-targets': [{'release': OLD}], 'null-targets': [{'release': OLD, 'targets': None}],
+        'object-targets': [{'release': OLD, 'targets': {}}]}[damage]
+    with pytest.raises(ValueError, match='PLAN_TARGET_ACTION_SET_INVALID'):
+        cleanup.apply_plan(state.root, state.request, value, remote)
+    assert not (state.root / 'inbox' / CURRENT / 'build-cleanup-journal.jsonl').exists()
+    assert state.classes.is_dir()
+
+
+@pytest.mark.parametrize('tags', [['not-a-release'], [OLD, OLD]])
+def test_empty_action_path_preserves_exact_candidate_tag_uniqueness(state, tags):
+    state.request['candidates'] = []
+    value = plan(state); value['candidates'] = [{'release': tag, 'targets': []} for tag in tags]
+    with pytest.raises(ValueError, match='PLAN_CANDIDATES_INVALID'):
+        cleanup.apply_plan(state.root, state.request, value, remote)
+    assert not (state.root / 'inbox' / CURRENT / 'build-cleanup-journal.jsonl').exists()
+    assert state.classes.is_dir()
+
+
+@pytest.mark.parametrize('kind', ['zero-byte-files', 'empty-directories'])
+def test_zero_byte_targets_are_real_actions_and_still_require_fresh_original_evidence(state, kind):
+    for target in plan(state)['candidates'][0]['targets']:
+        for file in (state.root / target['path']).iterdir():
+            if kind == 'empty-directories': file.unlink()
+            else: file.write_bytes(b'')
+    value = plan(state)
+    assert value['candidateBytes'] == 0 and value['candidates'][0]['targets']
+    state.keep[2].write_bytes(b'changed original report after approval')
+    with pytest.raises(ValueError, match='PLAN_OR_ORIGINAL_EVIDENCE_CHANGED_NO_DELETION'):
+        cleanup.apply_plan(state.root, state.request, value, remote)
+    assert state.classes.is_dir() and not (state.root / 'inbox' / CURRENT / 'build-cleanup-journal.jsonl').exists()
+
+
+@pytest.mark.parametrize('guard', ['disk-reserve', 'cleanup-lock', 'existing-journal'])
+def test_empty_action_receipt_keeps_resource_exclusive_lock_and_original_journal_guards(state, monkeypatch, guard):
+    state.request['candidates'] = []
+    value = plan(state); before = preserved_bytes(state)
+    journal = state.root / 'inbox' / CURRENT / 'build-cleanup-journal.jsonl'
+    if guard == 'disk-reserve':
+        budget = cleanup.control_growth_budget(value, include_plan=False)
+        monkeypatch.setattr(cleanup.os, 'statvfs', lambda path: SimpleNamespace(f_bavail=budget['requiredBytes'] - 1, f_frsize=1))
+        with pytest.raises(ValueError, match='CONTROL_GROWTH_WOULD_EXHAUST_DISK_RESERVE'):
+            cleanup.apply_plan(state.root, state.request, value, remote)
+        assert not journal.exists()
+    elif guard == 'cleanup-lock':
+        with cleanup.cleanup_lock(state.root):
+            with pytest.raises(BlockingIOError): cleanup.apply_plan(state.root, state.request, value, remote)
+        assert not journal.exists()
+    else:
+        put(journal, b'original journal that must not be overwritten\n')
+        with pytest.raises(FileExistsError): cleanup.apply_plan(state.root, state.request, value, remote)
+        assert journal.read_bytes() == b'original journal that must not be overwritten\n'
+    assert preserved_bytes(state) == before and state.classes.is_dir()
+
+
 def test_apply_stops_on_late_file_drift_and_retains_failure_journal_and_all_original_evidence(state, monkeypatch):
     value = plan(state); before = preserved_bytes(state)
     original = cleanup.remove_target

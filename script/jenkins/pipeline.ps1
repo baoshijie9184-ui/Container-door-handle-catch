@@ -270,6 +270,10 @@ function Send-CandidateBuildToolsArchive {
     }
 }
 
+$nativeRetentionPolicy=$env:NATIVE_RETENTION_POLICY
+if ([string]::IsNullOrWhiteSpace($nativeRetentionPolicy)) {$nativeRetentionPolicy='FailedNative'}
+if ($nativeRetentionPolicy -cnotin @('FailedNative','RetiredCopies194','RetiredCopies203','PublicCaches221224235')) { throw 'Unsupported native retention policy.' }
+if ($nativeRetentionPolicy -cne 'FailedNative' -and $env:ACTION -cne 'reclaim-build-outputs') { throw 'An explicit retired-copy policy requires source-only build maintenance.' }
 $tag = Require-Value 'RELEASE_TAG' '^ci-[0-9]+-[a-f0-9]{12}$'
 if ($env:ACTION -ceq 'reclaim-build-outputs') {
     if ($Action -cnotin @('PackageSourceOnly', 'ReclaimBuildOutputs') -or $env:CI_ECS_VERIFIED -cne 'false' -or $env:DOORHANDLE_CI_SCOPE -cne 'source') {
@@ -475,7 +479,15 @@ if ($Action -ceq 'ReclaimBuildOutputs' -and $env:ACTION -ceq 'reclaim-build-outp
     $commit = Require-Value 'GIT_COMMIT' '^[a-f0-9]{40}$'
     $sha = (Get-FileHash -LiteralPath artifacts/source.tar.gz -Algorithm SHA256).Hash.ToLowerInvariant()
     & ./script/jenkins/reclaim-build-outputs.ps1 -Mode Maintenance -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha
-    & ./script/jenkins/retire-failed-native-jar-duplicates.ps1 -Mode Maintenance -CanonicalBatch FailedNative -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha
+    if ($nativeRetentionPolicy -ceq 'PublicCaches221224235') {
+        & ./script/jenkins/retire-failed-native-jar-duplicates.ps1 -Mode Maintenance -CanonicalBatch PublicCaches -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha
+    } elseif ($nativeRetentionPolicy -ceq 'RetiredCopies194') {
+        & ./script/jenkins/retire-failed-native-jar-duplicates.ps1 -Mode Maintenance -CanonicalBatch RetiredCopies -RetiredCopyBatch retired-187-188-189 -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha
+    } elseif ($nativeRetentionPolicy -ceq 'RetiredCopies203') {
+        & ./script/jenkins/retire-failed-native-jar-duplicates.ps1 -Mode Maintenance -CanonicalBatch RetiredCopies -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha
+    } else {
+        & ./script/jenkins/retire-failed-native-jar-duplicates.ps1 -Mode Maintenance -CanonicalBatch FailedNative -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha
+    }
     return
 }
 if ($Action -eq 'Preflight') {

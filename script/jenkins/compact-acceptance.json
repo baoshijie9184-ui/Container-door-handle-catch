@@ -1265,7 +1265,7 @@
       },
       {
         "module": "tests_python.test_jenkins_ecs_build_cleanup",
-        "minimumTests": 195,
+        "minimumTests": 225,
         "source": "tests_python/test_jenkins_ecs_build_cleanup.py",
         "allowedSkippedTests": []
       },
@@ -1343,7 +1343,7 @@
       },
       {
         "module": "tests_python.test_failed_native_jar_duplicates",
-        "minimumTests": 267,
+        "minimumTests": 328,
         "source": "tests_python/test_failed_native_jar_duplicates.py",
         "allowedSkippedTests": []
       },
@@ -1361,13 +1361,13 @@
       },
       {
         "module": "tests_python.test_public_buildkit_layer_retirement",
-        "minimumTests": 34,
+        "minimumTests": 50,
         "source": "tests_python/test_public_buildkit_layer_retirement.py",
         "allowedSkippedTests": []
       },
       {
         "module": "tests_python.test_generated_public_image_archive_retirement",
-        "minimumTests": 22,
+        "minimumTests": 50,
         "source": "tests_python/test_generated_public_image_archive_retirement.py",
         "allowedSkippedTests": []
       },

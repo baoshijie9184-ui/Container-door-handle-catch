@@ -885,7 +885,7 @@ def test_recent_controller_is_an_independent_three_row_canonical_only_batch():
         (198, '7af0903ee84011dc51f4abac4f4a4d9679db7322', '054a2b4bdfda1c97a006c2b78d0877e06260b4cef6e0df4177f58eef8ddf8ffe'),
         (201, '803baf401b5f9566283a59cb6a885a794b9d7d85', 'baaddc7acf7eb643f68e2e0c104decb35a90a394564dc94f601914e6710e731b')]
     assert all(number != 190 for number, _commit, _sha in recent)
-    assert re.search(r"ValidateSet\('Historical','Recent','RetiredCopies','ClosedRuntime','FailedNative'\)\]\[string\]\$CanonicalBatch = 'Historical'", controller)
+    assert re.search(r"ValidateSet\('Historical','Recent','RetiredCopies','ClosedRuntime','FailedNative','PublicCaches'\)\]\[string\]\$CanonicalBatch = 'Historical'", controller)
     assert "$CanonicalBatch -cne 'Recent' -or $Mode -ceq 'Maintenance'" in controller
     assert "{'capture-canonical-request'}else{'capture-request'}" in controller
     branch = controller.split("if($CanonicalBatch -ceq 'Recent') {", 1)[1].split('\n$builderPlanned=', 1)[0]
@@ -1360,7 +1360,7 @@ def test_retired_copy_controller_archive_and_authority_contract_are_fully_wired(
     controller = (root / 'script/jenkins/retire-failed-native-jar-duplicates.ps1').read_text(encoding='utf8')
     reader = controller.split("$reader=@'\n", 1)[1].split("\n'@", 1)[0]; syntax = ast.parse(reader)
     branch = next(node for node in syntax.body if isinstance(node, ast.If)
-                  and ast.dump(node.test) == ast.dump(ast.parse("batch=='RetiredCopies'", mode='eval').body))
+                  and ast.dump(node.test) == ast.dump(ast.parse("batch=='RetiredCopies' and retired_batch=='retired-195-198-201'", mode='eval').body))
     originals = next(ast.literal_eval(node.value) for node in branch.body if isinstance(node, ast.Assign)
                      and any(isinstance(target, ast.Name) and target.id == 'originals' for target in node.targets))
     assert originals == {name: (length, checksum) for name, length, checksum in retirer.RETIRED_COPY_AUTHORITY['files'].values()}
@@ -2212,3 +2212,640 @@ def test_failed_native_plan_fresh_snapshot_cannot_ignore_an_admitted_pair_member
     assert changed==[True] and prepared['candidates']==[] and prepared['absent']==[]
     assert prepared['skipped']==[{'release':s.tag,'reason':'CLOSED_RUNTIME_RETIRING_OBJECT_BECAME_ACTIVE'}]
     assert s.commands==[] and s.bcid in s.rows and s.fid in s.rows and s.page.read_bytes()==s.page_bytes
+
+
+@pytest.fixture
+def legacy_retired_copy_entry(tmp_path, bundle, monkeypatch):
+    """Exercise real capture/source/authority/reference/file APIs, not admit mocks."""
+    root = tmp_path / 'legacy-ci'; root.mkdir(mode=0o700)
+    current = {'release': 'ci-300-' + 'f' * 12, 'commit': 'f' * 40, 'sourceSha256': 'e' * 64}
+    current_inbox = root / 'inbox' / current['release']; current_inbox.mkdir(parents=True, mode=0o700)
+    publication = {'Jenkinsfile.ecs-monolith': b'reviewed synthetic nonpublishing workflow',
+                   'script/jenkins/pipeline.ps1': b'reviewed synthetic source-only pipeline'}
+    recipe = (b"def prepare(self):\n jar = canonical(self.inbox / 'application.jar')\n"
+              b" uploaded = self.work / 'candidate-app.jar'\n shutil.copyfile(jar, uploaded)\n")
+    targets, originals, controls, files, retained = {}, {}, {}, {}, {}
+    def store(path, body):
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        path.write_bytes(body); path.chmod(0o600); return path
+    for ordinal, (tag, registered) in enumerate(retirer.RETIRED_COPY_194_TARGETS.items(), 1):
+        work = root / 'verification' / tag / 'checkout/work/compact-fixtures'
+        work.mkdir(parents=True, mode=0o700)
+        inbox = root / 'inbox' / tag; inbox.mkdir(parents=True, mode=0o700)
+        archive = source_archive(SimpleNamespace(keeper=inbox / 'application.jar'),
+                                 comment=registered['commit'], recipe=recipe, publication=publication)
+        context = {'release': tag, 'commit': registered['commit'], 'sourceSha256': sha(archive.read_bytes())}
+        jar = ('synthetic regenerated legacy copy ' + tag).encode()
+        targets[tag] = {**context, 'jarSha256': sha(jar), 'jarBytes': len(jar)}
+        files[tag] = store(work / 'candidate-app.jar', jar)
+        owner = {'schemaVersion': 1, 'kind': 'doorhandle-compact-fixture-owner', **context,
+            'identity': bundle.identity, 'phase': 'OWNED_SERVER_STOPPED', 'token': format(ordinal, '010x'),
+            'work': str(work), 'sourceContainerId': 'd' * 64, 'containerId': format(ordinal, '064x')}
+        cleanup = {'schemaVersion': 1, 'kind': 'doorhandle-compact-fixture-cleanup', **context,
+            'identity': bundle.identity, 'status': 'STOPPED', 'errors': [], 'containerId': owner['containerId'],
+            'sourceContainerUntouched': owner['sourceContainerId'], 'dataDirectoryRetained': str(work / 'mysql-data'),
+            'sourceDumpAndEvidenceRetained': True}
+        local = {'schemaVersion': 1, **context, 'status': 'PASS', 'exitCode': 0, 'skipTests': True,
+            'testsExecuted': False, 'applicationJarSha256': sha(jar), 'applicationJarBytes': len(jar)}
+        bodies = {'buildXml': with_action(flow_xml(context), 'verify'), 'localBuild': encoded(local),
+            'release': encoded({**context, 'applicationJarSha256': sha(jar), 'localBuildReceiptSha256': sha(encoded(local))}),
+            'artifactPlan': encoded({'schema': 1, 'kind': 'doorhandle-compact-fixture-artifacts', **context,
+                                    'applicationJarSha256': sha(jar), 'applicationJarBytes': len(jar)}),
+            'fixtureOwner': encoded(owner), 'fixtureCleanup': encoded(cleanup),
+            'fixtureCleanupPublic': encoded({'status': 'STOPPED', 'release': tag, 'commit': context['commit'],
+                'cleanupReceipt': str(work / 'cleanup-receipt.json'), 'cleanupReceiptSha256': sha(encoded(cleanup))})}
+        paths = retirer.expected_control_paths(current['release'], tag)
+        refs = {role: {'path': paths[role], 'bytes': len(body), 'sha256': sha(body)} for role, body in bodies.items()}
+        for role, body in bodies.items(): store(root / paths[role], body)
+        controls[tag] = refs
+        originals[tag] = {'context': context, 'bodies': bodies, 'source': archive,
+                          'controlSha256': {role: sha(body) for role, body in bodies.items()}}
+        for path in (archive, store(work / 'source.sql', b'original retained SQL'),
+                     store(work / 'mysql-data/original-page', b'original retained database page'),
+                     store(work / 'original-report.xml', b'original retained test report')):
+            retained[path] = path.read_bytes()
+    monkeypatch.setattr(retirer, 'RETIRED_COPY_194_TARGETS', targets)
+    monkeypatch.setattr(retirer, 'RETIRED_COPY_194_PUBLICATION',
+                        {tag: tuple(sha(raw) for raw in publication.values()) for tag in targets})
+    authority = copy.deepcopy(retirer.RETIRED_COPY_194_AUTHORITY)
+    helper = b'# authenticated original retirement helper; never executed\n'
+    source = io.BytesIO()
+    with tarfile.open(fileobj=source, mode='w:gz', format=tarfile.PAX_FORMAT,
+                      pax_headers={'comment': authority['commit']}) as package:
+        member = tarfile.TarInfo('script/jenkins/retire-failed-native-jar-duplicates.py'); member.size = len(helper)
+        package.addfile(member, io.BytesIO(helper))
+    authority.update(sourceSha256=sha(source.getvalue()), helperSha256=sha(helper))
+    context = {key: authority[key] for key in ('release', 'commit', 'sourceSha256')}
+    old_request = {'schemaVersion': 1, 'kind': retirer.KIND + '-request', 'current': context,
+        'identity': bundle.identity, 'protectedReleases': [context['release']],
+        'candidates': [{**value['context'], 'controls': controls[tag]} for tag, value in originals.items()]}
+    old_request_raw = encoded(old_request); old_candidates, deleted = [], []
+    for tag, original in originals.items():
+        target = {'kind': retirer.CANONICAL_JAR_KIND, 'path': 'inbox/' + tag + '/application.jar',
+                  'sha256': targets[tag]['jarSha256'], 'bytes': targets[tag]['jarBytes']}
+        old_candidates.append({'context': original['context'], 'target': target,
+            'controls': {role: {'sha256': checksum} for role, checksum in original['controlSha256'].items()},
+            'sourceArchive': {'sha256': original['context']['sourceSha256'], 'transportRecipeSha256': sha(recipe)}})
+        deleted.append({**target, 'capturedInodeVerified': True, 'binaryDisposition': 'RETIRED'})
+    old_plan = {'kind': retirer.CANONICAL_KIND + '-plan', 'current': context, 'identity': bundle.identity,
+        'requestSha256': sha(old_request_raw), 'candidates': old_candidates, 'deletionPerformed': False, 'skipped': []}
+    old_plan_raw = encoded(old_plan)
+    journal = [{'phase': 'STARTED', 'identity': bundle.identity,
+                'requestSha256': sha(old_request_raw), 'planSha256': sha(old_plan_raw)}]
+    for row in deleted: journal += [{'phase': 'DELETE_STARTED', **row}, {'phase': 'DELETE_FINISHED', **row}]
+    journal.append({'phase': 'FINISHED', 'deletedFiles': 3})
+    journal_raw = b''.join(encoded(row) + b'\n' for row in journal)
+    receipt = {'kind': retirer.CANONICAL_KIND + '-receipt', 'current': context, 'identity': bundle.identity,
+        'status': 'REMOVED', 'failure': None, 'skipped': [], 'retainedQuarantinePaths': [], 'binaryDisposition': 'RETIRED',
+        'binaryRebuildByteIdentityClaimed': False, 'testsRunByRetirement': False,
+        'sourceArchivesDataAndReportsHaveNoDeletionApi': True, 'planSha256': sha(old_plan_raw),
+        'requestSha256': sha(old_request_raw), 'journalSha256': sha(journal_raw), 'deleted': deleted}
+    terminal = ET.fromstring(flow_xml(context, result='SUCCESS'))
+    for item in terminal.findall('.//hudson.model.ParametersAction/parameters/*'):
+        if item.findtext('name') == 'ACTION': item.find('value').text = 'reclaim-build-outputs'
+        if item.findtext('name') == 'DOORHANDLE_CI_SCOPE': item.find('value').text = 'source'
+    bodies = {'buildXml': ET.tostring(terminal), 'source': source.getvalue(), 'request': old_request_raw,
+        'plan': old_plan_raw, 'receipt': encoded(receipt), 'journal': journal_raw,
+        'release': encoded({**context, 'schema': 1, 'kind': 'doorhandle-maintenance-source',
+            'action': 'reclaim-build-outputs', 'maintenanceOnly': True, 'testsExecuted': False, 'applicationBuilt': False})}
+    authority_files = {}; registered_files = {}
+    for role, (name, _, _) in authority['files'].items():
+        body = bodies[role]; path = current_inbox / 'native-retired-candidate-controls' / context['release'] / name
+        authority_files[role] = store(path, body); registered_files[role] = (name, len(body), sha(body))
+    authority['files'] = registered_files
+    monkeypatch.setattr(retirer, 'RETIRED_COPY_194_AUTHORITY', authority)
+    request = {**old_request, 'current': current, 'protectedReleases': [current['release']]}
+    local_spec = copy.deepcopy(request)
+    for row in local_spec['candidates']:
+        row['controls'] = {role: ref for role, ref in row['controls'].items() if role in retirer.UPLOADED_NAMES}
+    local_raw = encoded(local_spec)
+    store(current_inbox / 'native-jar-duplicate-local-spec.json', local_raw)
+    spec = importlib.util.spec_from_file_location('legacy_retired_actual_cleanup', MODULE.parent / 'cleanup-ecs-builds.py')
+    cleanup = importlib.util.module_from_spec(spec); spec.loader.exec_module(cleanup)
+    containers, snapshots = [], []
+    def docker(command, **kwargs):
+        assert command[0] == '/usr/bin/docker'
+        if command[1:] == ['ps', '-aq', '--no-trunc']: output = '\n'.join(row[0] for row in containers)
+        else:
+            assert command[1:3] == ['inspect', '--format'] and command[4:] == [row[0] for row in containers]
+            snapshots.append(copy.deepcopy(containers)); output = '\n'.join(json.dumps(row) for row in containers)
+        return SimpleNamespace(returncode=0, stdout=output.encode(), stderr=b'')
+    monkeypatch.setattr(cleanup, 'subprocess', SimpleNamespace(run=docker))
+    proc = tmp_path / 'isolated-proc'; proc.mkdir(mode=0o700)
+    scan = cleanup.process_references
+    monkeypatch.setattr(cleanup, 'process_references', lambda checkout, **kwargs: scan(checkout, proc=proc, **kwargs))
+    def quiet(checkout, tag, token):
+        cleanup.quiescent({'checkout': checkout, 'token': token}, tag, cleanup.docker_snapshot(), include_inbox=True)
+    options = {'request_sha256': sha(encoded(request)), 'expected_current': current, 'identity': bundle.identity,
+               'quiescence': quiet, 'retired_copy_batch': retirer.RETIRED_COPY_BATCH_194}
+    return SimpleNamespace(root=root, current=current, identity=bundle.identity, request=request, raw=encoded(request),
+        local_raw=local_raw, files=files, originals=originals, controls=controls, retained=retained, authority=authority,
+        authority_files=authority_files, options=options, cleanup=cleanup, quiet=quiet, containers=containers,
+        snapshots=snapshots, proc=proc, store=store)
+
+
+def test_legacy_retired_copy_actual_cli_capture_plan_apply_and_inspect_preserves_data(legacy_retired_copy_entry, monkeypatch, capsys):
+    s = legacy_retired_copy_entry
+    monkeypatch.setattr(retirer, 'admitted_current', lambda args: (s.root, s.current, s.identity, s.quiet, {'cleanup': s.cleanup}))
+    common = ['--mode', 'Maintenance', '--retired-copy-batch', retirer.RETIRED_COPY_BATCH_194,
+        '--root', str(s.root), '--tag', s.current['release'], '--commit', s.current['commit'],
+        '--source-sha256', s.current['sourceSha256'], '--instance-id', s.identity['instanceId'],
+        '--machine-id', s.identity['machineId'], '--current-receipt-sha256', 'a' * 64]
+    def invoke(phase, *flags):
+        assert retirer.cli(['--phase', phase, *common, *flags]) == 0
+        return json.loads(capsys.readouterr().out)
+    captured = invoke('capture-canonical-request', '--local-spec-sha256', sha(s.local_raw))
+    assert captured['skipped'] == []
+    planned = invoke('plan-retired-candidate-copies', '--request-sha256', captured['request']['sha256'])
+    assert planned['skipped'] == [] and planned['candidateTargetCount'] == 3
+    result = invoke('apply-retired-candidate-copies', '--request-sha256', captured['request']['sha256'],
+                    '--plan-sha256', planned['plan']['sha256'])
+    assert result['status'] == 'REMOVED' and result['deletedFiles'] == 3
+    assert result['directoriesPreserved'] and result['volumesPreserved'] and result['imagesPreserved']
+    inspected = invoke('inspect')
+    assert {'retiredCandidatePlan', 'retiredCandidateReceipt', 'retiredCandidateJournal'} <= set(inspected['files'])
+    assert all(not path.exists() for path in s.files.values())
+    assert all(path.read_bytes() == raw for path, raw in s.retained.items())
+
+
+@pytest.mark.parametrize('reference', ['same-tag-stopped', 'same-tag-running', 'checkout-bind', 'inbox-bind', 'ancestor-bind'])
+def test_legacy_retired_actual_plan_enumerates_and_rejects_every_other_old_container(legacy_retired_copy_entry, reference):
+    s = legacy_retired_copy_entry; tag = next(iter(s.files)); checkout = s.files[tag].parents[2]
+    mounts = []; release = 'unrelated'; running = reference == 'same-tag-running'
+    if reference.startswith('same-tag'): release = tag
+    else:
+        source = {'checkout-bind': checkout, 'inbox-bind': s.root / 'inbox' / tag,
+                  'ancestor-bind': s.root}[reference]
+        mounts = [{'Type': 'bind', 'Source': str(source)}]
+    s.containers.append(['a' * 64, running, False, 9901 if running else 0, release, None, mounts])
+    prepared = retirer.plan_retired_candidate_copies(s.root, s.raw, **s.options)
+    assert prepared['skipped'] and prepared['candidateTargetCount'] < 3 and s.snapshots
+    with pytest.raises(retirer.RetirementError, match='COMPLETE_EXACT_RETIRED_COPY_PLAN_REQUIRED'):
+        retirer.apply_retired_candidate_copies(s.root, s.raw, prepared, plan_sha256=sha(retirer.canonical(prepared)), **s.options)
+    assert all(path.exists() for path in s.files.values())
+
+
+@pytest.mark.parametrize('role', ['buildXml', 'release', 'source', 'request', 'plan', 'receipt', 'journal'])
+def test_legacy_retired_real_authority_requires_all_seven_originals(legacy_retired_copy_entry, role):
+    s = legacy_retired_copy_entry; path = s.authority_files[role]; path.write_bytes(path.read_bytes() + b' ')
+    with pytest.raises(retirer.RetirementError, match='ORIGINAL_RETIREMENT_AUTHORITY_SHA_DRIFT'):
+        retirer.plan_retired_candidate_copies(s.root, s.raw, **s.options)
+    assert all(path.exists() for path in s.files.values())
+
+
+@pytest.mark.parametrize('changed', ['candidate', 'source', 'authority', 'publication', 'container'])
+def test_legacy_retired_real_apply_rechecks_every_source_reference_and_container_before_capture(legacy_retired_copy_entry, changed):
+    s = legacy_retired_copy_entry; tag = next(iter(s.files))
+    prepared = retirer.plan_retired_candidate_copies(s.root, s.raw, **s.options)
+    if changed == 'candidate': s.files[tag].write_bytes(b'changed candidate')
+    elif changed == 'source': s.originals[tag]['source'].write_bytes(b'changed old source archive')
+    elif changed == 'authority': s.authority_files['receipt'].write_bytes(b'changed original authority')
+    elif changed == 'publication': (s.root / 'releases' / tag).mkdir(parents=True, mode=0o700)
+    else: s.containers.append(['a' * 64, False, False, 0, tag, None, []])
+    result = retirer.apply_retired_candidate_copies(s.root, s.raw, prepared, plan_sha256=sha(retirer.canonical(prepared)), **s.options)
+    assert result['status'] == 'FAILED_OR_UNKNOWN' and result['deleted'] == []
+    assert all(path.exists() for path in s.files.values())
+
+
+@pytest.mark.parametrize('changed', ['authority', 'source', 'publication', 'container', 'keeper'])
+def test_legacy_retired_after_capture_rechecks_same_batch_and_retains_changed_quarantine(legacy_retired_copy_entry, monkeypatch, changed):
+    s = legacy_retired_copy_entry; tag = next(iter(s.files)); capture = retirer._capture_no_replace
+    prepared = retirer.plan_retired_candidate_copies(s.root, s.raw, **s.options)
+    def changed_capture(*args):
+        capture(*args)
+        if changed == 'authority': s.authority_files['receipt'].write_bytes(b'changed authority after capture')
+        elif changed == 'source': s.originals[tag]['source'].write_bytes(b'changed source after capture')
+        elif changed == 'publication': (s.root / 'releases' / tag).mkdir(parents=True, mode=0o700)
+        elif changed == 'container': s.containers.append(['a' * 64, False, False, 0, tag, None, []])
+        else: s.store(s.root / 'inbox' / tag / 'application.jar', b'reappeared keeper')
+    monkeypatch.setattr(retirer, '_capture_no_replace', changed_capture)
+    result = retirer.apply_retired_candidate_copies(s.root, s.raw, prepared, plan_sha256=sha(retirer.canonical(prepared)), **s.options)
+    assert result['status'] == 'FAILED_OR_UNKNOWN' and result['deleted'] == []
+    assert len(result['retainedQuarantinePaths']) == 1 and result['automaticResumeAllowed'] is False
+    assert (s.root / result['retainedQuarantinePaths'][0]).exists()
+
+
+def test_legacy_retired_candidate_permission_never_changes_default_canonical_or_other_copy_batches(legacy_retired_copy_entry):
+    s = legacy_retired_copy_entry; tag = next(iter(s.files)); original = s.originals[tag]
+    with pytest.raises(retirer.RetirementError, match='ONLY_REVIEWED_OLD_ATTEMPTS_ALLOWED'):
+        retirer.approved_request(s.raw, sha(s.raw), s.current, s.identity, canonical_jar=True)
+    with pytest.raises(retirer.RetirementError, match='EXACT_ORIGINAL_RETIRED_COPY_BYTES_REQUIRED'):
+        retirer.describe_retired_candidate_copy(s.root, tag, sha(s.files[tag].read_bytes()), s.files[tag].stat().st_size)
+    with pytest.raises(retirer.RetirementError, match='CLOSED_REVIEWED_UNPUBLISHED_SOURCE_REQUIRED'):
+        retirer.source_proof(s.root, tag, original['context']['commit'], original['context']['sourceSha256'], canonical_jar=True)
+    with pytest.raises(retirer.RetirementError, match='FAILED_NATIVE_PARAMETERS_REQUIRED'):
+        retirer.terminal_xml(original['bodies']['buildXml'], original['context'], canonical_jar=True)
+
+
+@pytest.mark.parametrize(('mode', 'phase', 'jar_batch'), [
+    ('Verified', 'capture-canonical-request', None), ('Maintenance', 'plan-canonical', None),
+    ('Maintenance', 'apply-canonical', None), ('Maintenance', 'plan-public-layers', None),
+    ('Maintenance', 'apply-recent-fixtures', None), ('Maintenance', 'inspect', retirer.FAILED_NATIVE_BATCH)])
+def test_legacy_copy_cli_policy_cannot_authorize_other_phases_or_combine_permissions(monkeypatch, capsys, mode, phase, jar_batch):
+    def forbidden(args): raise AssertionError('Invalid policy must be refused before any ECS identity or source inspection')
+    monkeypatch.setattr(retirer, 'admitted_current', forbidden)
+    arguments = ['--phase', phase, '--mode', mode, '--retired-copy-batch', retirer.RETIRED_COPY_BATCH_194,
+        '--root', CI_ROOT, '--tag', 'ci-300-' + 'f' * 12, '--commit', 'f' * 40,
+        '--source-sha256', 'e' * 64, '--instance-id', 'i-fixture', '--machine-id', 'd' * 32,
+        '--current-receipt-sha256', 'a' * 64]
+    if jar_batch is not None: arguments += ['--jar-batch', jar_batch]
+    assert retirer.cli(arguments) == 2
+    assert json.loads(capsys.readouterr().out)['reason'] == 'RETIRED_COPY_BATCH_MAINTENANCE_PHASE_REQUIRED'
+
+
+@pytest.mark.parametrize('batch', ['retired-204-207', 'retired-221-224'])
+def test_retired_copy_registry_rejects_other_epochs_instead_of_inheriting_their_permissions(batch):
+    with pytest.raises(retirer.RetirementError, match='EXACT_RETIRED_COPY_BATCH_REQUIRED'):
+        retirer.retired_copy_policy(batch)
+
+
+def test_legacy_retired_fixed_registration_has_exact_original_sources_and_no_default_api_expansion():
+    assert set(retirer.RETIRED_COPY_194_TARGETS) == {'ci-187-8e90ba50c691', 'ci-188-df1e1a54d48e', 'ci-189-410506ad7c82'}
+    assert retirer.RETIRED_COPY_194_AUTHORITY['release'] == 'ci-194-2c2e65a0daa9'
+    assert retirer.RETIRED_COPY_194_AUTHORITY['files']['source'][1:] == (
+        100300, 'c137fec1a5b8536d9b2a350104d6a5206cc1d1f2e8fb8eba2a240119258e87e9')
+    assert all(retirer.canonical_commit(tag) is None and tag not in retirer.PUBLIC_LAYER_TAGS
+               for tag in retirer.RETIRED_COPY_194_TARGETS)
+    assert set(retirer.retired_copy_policy()[0]) == set(retirer.RETIRED_COPY_TARGETS)
+
+
+@pytest.mark.parametrize('changed', ['copy-recipe', 'publication', 'archive-commit'])
+def test_legacy_copy_selection_still_authenticates_actual_old_recipe_and_publication_members(legacy_retired_copy_entry, changed):
+    s = legacy_retired_copy_entry; tag = next(iter(s.files)); original = s.originals[tag]
+    with tarfile.open(original['source'], 'r:gz') as package:
+        members = {member.name: package.extractfile(member).read() for member in package}
+    publication = {name: members[name] for name in ('Jenkinsfile.ecs-monolith', 'script/jenkins/pipeline.ps1')}
+    recipe = members['script/jenkins/prepare-compact-fixtures.py']
+    if changed == 'copy-recipe': recipe = b'def prepare(self):\n pass\n'
+    if changed == 'publication': publication['script/jenkins/pipeline.ps1'] += b'\nunknown side effect\n'
+    archive = source_archive(SimpleNamespace(keeper=s.root / 'inbox' / tag / 'application.jar'), recipe=recipe,
+        publication=publication, comment='f' * 40 if changed == 'archive-commit' else original['context']['commit'])
+    guard = {'copy-recipe': 'EXACT_REVIEWED_JAR_COPY_RECIPE_REQUIRED', 'publication': 'CLOSED_REVIEWED_UNPUBLISHED_SOURCE_REQUIRED',
+             'archive-commit': 'FIXED_OLD_SOURCE_COMMIT_REQUIRED'}[changed]
+    with pytest.raises(retirer.RetirementError, match=guard):
+        retirer.source_proof(s.root, tag, original['context']['commit'], sha(archive.read_bytes()),
+                             canonical_jar=True, retired_copy_batch=retirer.RETIRED_COPY_BATCH_194)
+    assert all(path.exists() for path in s.files.values())
+
+
+@pytest.mark.parametrize('changed', ['missing-one', 'foreign-source', 'mixed-203'])
+def test_legacy_copy_capture_requires_one_complete_exact_batch_not_a_union_of_old_permissions(legacy_retired_copy_entry, changed):
+    s = legacy_retired_copy_entry; request = json.loads(s.local_raw)
+    if changed == 'missing-one': request['candidates'].pop()
+    elif changed == 'foreign-source': request['candidates'][0]['sourceSha256'] = '0' * 64
+    else:
+        tag, registered = next(iter(retirer.RETIRED_COPY_TARGETS.items()))
+        request['candidates'][0] = {'release': tag, 'commit': registered['commit'],
+                                  'sourceSha256': registered['sourceSha256'], 'controls': {}}
+    raw = encoded(request)
+    with pytest.raises(retirer.RetirementError, match='EXACT_RETIRED_COPY_BATCH_SOURCES_REQUIRED'):
+        retirer.capture_request(s.root, raw, local_spec_sha256=sha(raw), expected_current=s.current,
+            identity=s.identity, canonical_jar=True, retired_copy_batch=retirer.RETIRED_COPY_BATCH_194)
+    assert all(path.exists() for path in s.files.values())
+
+@pytest.fixture
+def legacy_retired_controller_reader(tmp_path):
+    """Run the actual PS reader with only its fixed evidence literals rebound."""
+    controller = (MODULE.parent / 'retire-failed-native-jar-duplicates.ps1').read_text(encoding='utf8')
+    reader = controller.split("$reader=@'\n", 1)[1].split("\n'@", 1)[0]
+    syntax = ast.parse(reader)
+    registrations = [node for node in ast.walk(syntax) if isinstance(node, ast.Assign)]
+    approved = next(ast.literal_eval(node.value) for node in registrations
+        if any(isinstance(name, ast.Name) and name.id == 'approved' for name in node.targets)
+        and isinstance(node.value, ast.List) and len(node.value.elts) == 3
+        and ast.literal_eval(node.value.elts[0])[0] == 187)
+    originals = next(ast.literal_eval(node.value) for node in registrations
+        if any(isinstance(name, ast.Name) and name.id == 'originals' for name in node.targets)
+        and isinstance(node.value, ast.Dict) and ast.literal_eval(node.value)['build.xml'][0] == 298107)
+    retained = tmp_path / 'retained'; retained.mkdir()
+    jhome = tmp_path / 'jhome'; jhome.mkdir()
+    commit = 'f' * 40; current = 'ci-300-' + commit[:12]
+    authority = {'release': 'ci-194-2c2e65a0daa9', 'commit': '2c2e65a0daa94d96b327c59d720871ab70bff0a1'}
+    replacements = {}; files = {}; old_rows = []
+    def store(path, raw):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(raw); return path
+    def archive_bytes(members, fixed_commit):
+        output = io.BytesIO()
+        with tarfile.open(fileobj=output, mode='w:gz', format=tarfile.PAX_FORMAT,
+                          pax_headers={'comment': fixed_commit}) as package:
+            for name, body in members.items():
+                member = tarfile.TarInfo(name); member.size = len(body)
+                package.addfile(member, io.BytesIO(body))
+        return output.getvalue()
+    helpers = {name: b'# opaque fixed helper; never imported by metadata reader\n' for name in (
+        'script/jenkins/retire-failed-native-jar-duplicates.py', 'script/jenkins/cleanup-ecs-builds.py',
+        'script/jenkins/verify-remote.py', 'script/docker/compact-build-resources.py')}
+    archive = store(tmp_path / 'source.tar.gz', archive_bytes(helpers, commit))
+    for number, old_commit, preservation_sha in approved:
+        tag = 'ci-' + str(number) + '-' + old_commit[:12]
+        folder = retained / ('ci-' + str(number) + '-raw-receipts')
+        context = {'release': tag, 'commit': old_commit, 'sourceSha256': sha(('source ' + tag).encode())}
+        bodies = {'build.xml': with_action(flow_xml(context), 'verify'),
+            'release.json': encoded(context), 'local-build.json': encoded({'status': 'PASS'}),
+            'fixture-cleanup.json': encoded({'status': 'STOPPED'})}
+        entries = []
+        for name, body in bodies.items():
+            store(folder / name, body)
+            original = '/synthetic-jenkins/jobs/doorhandle-java/builds/' + str(number) + (
+                '/build.xml' if name == 'build.xml' else '/archive/artifacts/' + name)
+            entries.append({'path': name, 'bytes': len(body), 'sha256': sha(body), 'original': original})
+        proof = encoded({'build': number, 'files': entries,
+            'summarySha256': sha(b'synthetic summary'), 'allOriginalCopiesByteEqual': True})
+        store(folder / 'preservation.json', proof); replacements[preservation_sha] = sha(proof)
+        old_rows.append(context)
+    helper = b'# authenticated historical retirement helper; opaque metadata input\n'
+    source_raw = archive_bytes({'script/jenkins/retire-failed-native-jar-duplicates.py': helper}, authority['commit'])
+    authority['sourceSha256'] = sha(source_raw)
+    folder = retained / 'ci-194-raw-receipts'
+    identity = {'executionLocation': 'ECS', 'instanceId': 'i-synthetic',
+                'machineId': '1ebe8f77e3104ab6a49a9386e38abd20'}
+    request = encoded({'schemaVersion': 1, 'kind': 'doorhandle-failed-native-jar-duplicate-request',
+        'current': authority, 'identity': identity, 'protectedReleases': [authority['release']], 'candidates': old_rows})
+    plan = encoded({'schemaVersion': 1, 'kind': 'doorhandle-failed-native-canonical-jar-retirement-plan',
+        'current': authority, 'identity': identity, 'requestSha256': sha(request),
+        'candidates': [{'context': row} for row in old_rows], 'skipped': [], 'deletionPerformed': False})
+    events = [{'phase': 'STARTED', 'identity': identity, 'planSha256': sha(plan), 'requestSha256': sha(request)}]
+    for row in old_rows:
+        path = 'inbox/' + row['release'] + '/application.jar'
+        events += [{'phase': 'DELETE_STARTED', 'path': path}, {'phase': 'DELETE_FINISHED', 'path': path}]
+    events.append({'phase': 'FINISHED', 'deletedFiles': 3})
+    journal = b''.join(encoded(row) + b'\n' for row in events)
+    receipt = encoded({'schemaVersion': 1, 'kind': 'doorhandle-failed-native-canonical-jar-retirement-receipt',
+        'current': authority, 'identity': identity, 'status': 'REMOVED', 'failure': None, 'skipped': [],
+        'planSha256': sha(plan), 'requestSha256': sha(request), 'journalSha256': sha(journal)})
+    authority_xml = ET.fromstring(flow_xml(authority, result='SUCCESS'))
+    params = authority_xml.findall('.//hudson.model.ParametersAction/parameters/*')
+    next(item for item in params if item.findtext('name') == 'ACTION').find('value').text = 'reclaim-build-outputs'
+    next(item for item in params if item.findtext('name') == 'DOORHANDLE_CI_SCOPE').find('value').text = 'source'
+    bodies = {'build.xml': ET.tostring(authority_xml), 'release.json': encoded({'schema': 1,
+        'kind': 'doorhandle-maintenance-source', 'action': 'reclaim-build-outputs', **authority,
+        'maintenanceOnly': True, 'testsExecuted': False, 'applicationBuilt': False}),
+        'source.tar.gz': source_raw, 'native-jar-duplicate-request.json': request,
+        'native-jar-duplicate-canonical-plan.json': plan,
+        'native-jar-duplicate-canonical-receipt.json': receipt,
+        'native-jar-duplicate-canonical-journal.jsonl': journal}
+    source_folder = retained / 'ci-194-remote-source-supplement'
+    for name, body in bodies.items():
+        files[name] = store((source_folder if name == 'source.tar.gz' else folder) / name, body)
+        size, checksum = originals[name]
+        replacements[size] = len(body); replacements[checksum] = sha(body)
+    proof_entries = []
+    for name, body in bodies.items():
+        if name in ('source.tar.gz', 'native-jar-duplicate-canonical-journal.jsonl'): continue
+        suffix = '/build.xml' if name == 'build.xml' else '/archive/artifacts/' + name
+        proof_entries.append({'path': name, 'bytes': len(body), 'sha256': sha(body),
+            'original': '/synthetic-jenkins/jobs/doorhandle-java/builds/194' + suffix})
+    preservation = {'build': 194, 'files': proof_entries,
+        'summarySha256': sha(b'synthetic authority summary'), 'allOriginalCopiesByteEqual': True}
+    supplemental = {'build': 194, 'commit': authority['commit'], 'status': 'SUCCESS',
+        'originalCMatchesD': True, 'testsExecuted': False, 'applicationBuilt': False,
+        'inputs': [{'file': name, 'bytes': len(body), 'sha256': sha(body)} for name, body in bodies.items()
+                   if name not in ('build.xml', 'source.tar.gz')]}
+    provenance = {'kind': 'actual-ecs-retained-maintenance-source',
+        'path': CI_ROOT + '/inbox/' + authority['release'] + '/cleanup-source.tar.gz',
+        'bytes': len(source_raw), 'sha256': sha(source_raw), 'commit': authority['commit'],
+        'machineId': identity['machineId'], 'uid': 1000, 'gid': 1000,
+        'testsExecuted': False, 'deletionPerformed': False,
+        'helper': {'path': 'script/jenkins/retire-failed-native-jar-duplicates.py', 'bytes': len(helper), 'sha256': sha(helper)}}
+    pins = {
+        'preservation': 'b0d395361bc5075267d64e558f793d154604558693866cd11113770bbc9b53ab',
+        'supplement': 'c38bd7540d891b9c60c843c60b4e275206eb418c3e958bd6e22eab9a3eaed81b',
+        'provenance': '2a1f8d7bee5a770f11ff7b02a1bde97101c67b217582cb99794c7019f6fb1ba7'}
+    proofs = {'preservation': (folder / 'preservation.json', preservation),
+              'supplement': (folder / 'maintenance-originals-verification.json', supplemental),
+              'provenance': (source_folder / 'source-provenance.json', provenance)}
+    for key, (path, document) in proofs.items():
+        raw = encoded(document); store(path, raw); replacements[pins[key]] = sha(raw)
+    replacements[165473] = len(helper)
+    replacements['08aadae03037dd103c9706b07370b852f758f6ef05a2ae3a1d3aca7ea6453142'] = sha(helper)
+    return SimpleNamespace(root=tmp_path, reader=reader, replacements=replacements, proofs=proofs, pins=pins,
+        retained=retained, jhome=jhome, archive=archive, commit=commit, current=current,
+        files=files, rows=old_rows, authority=authority)
+
+
+def run_legacy_retired_controller_reader(value, monkeypatch, *, batch='RetiredCopies', selected='retired-187-188-189'):
+    class FixedEvidenceLiterals(ast.NodeTransformer):
+        def visit_Constant(self, node):
+            if type(node.value) in (str, int) and node.value in value.replacements:
+                return ast.copy_location(ast.Constant(value.replacements[node.value]), node)
+            return node
+    syntax = FixedEvidenceLiterals().visit(ast.parse(value.reader))
+    ast.fix_missing_locations(syntax)
+    arguments = ['actual-retired-copy-reader', str(value.archive), value.commit, str(value.retained),
+                 str(value.jhome), CI_ROOT, value.current, batch]
+    if selected is not None: arguments.append(selected)
+    monkeypatch.setattr(sys, 'argv', arguments)
+    # Only registration SHA/size literals differ. Conditions, branches, source
+    # selection and returned records execute directly from the versioned reader.
+    exec(compile(syntax, 'actual-retired-copy-reader', 'exec'), {})
+
+
+def retired_reader_files(value):
+    return {path.relative_to(value.root).as_posix(): path.read_bytes()
+            for path in value.root.rglob('*') if path.is_file()}
+
+
+def test_retired_194_actual_eighth_argument_reads_old_schema_and_reports_real_ecs_source_origin(legacy_retired_controller_reader, monkeypatch, capsys):
+    value = legacy_retired_controller_reader; before = retired_reader_files(value)
+    run_legacy_retired_controller_reader(value, monkeypatch)
+    result = json.loads(capsys.readouterr().out)
+    assert result['skipped'] == [] and [row['release'] for row in result['rows']] == [row['release'] for row in value.rows]
+    assert len(result['authorityFiles']) == len(result['authorityCustody']) == 7
+    assert {row['file'] for row in result['authorityFiles']} == set(value.files)
+    source = next(row for row in result['authorityCustody'] if row['file'] == 'source.tar.gz')
+    assert source == {'file': 'source.tar.gz', 'origin': 'ACTUAL_ECS_RETAINED_MAINTENANCE_SOURCE',
+        'bytes': value.files['source.tar.gz'].stat().st_size, 'sha256': sha(value.files['source.tar.gz'].read_bytes()),
+        'provenanceSha256': sha(value.proofs['provenance'][0].read_bytes()),
+        'originalEcsPath': CI_ROOT + '/inbox/ci-194-2c2e65a0daa9/cleanup-source.tar.gz'}
+    assert all(row['origin'] == 'PINNED_PRESERVED_JENKINS_ORIGINAL'
+               for row in result['authorityCustody'] if row['file'] != 'source.tar.gz')
+    assert all(entry['origin'] == 'PINNED_PRESERVED_JENKINS_ORIGINAL'
+               for row in result['custody'] for entry in row['controls'].values())
+    assert {row['file']: row['source'] for row in result['authorityFiles']} == {name: str(path) for name, path in value.files.items()}
+    assert 'source.tar.gz' not in {row['path'] for row in value.proofs['preservation'][1]['files']}
+    assert retired_reader_files(value) == before
+
+
+def test_retired_controller_old_seven_argument_historical_entry_remains_usable(legacy_retired_controller_reader, monkeypatch, capsys):
+    value = legacy_retired_controller_reader
+    run_legacy_retired_controller_reader(value, monkeypatch, batch='Historical', selected=None)
+    result = json.loads(capsys.readouterr().out)
+    assert result['rows'] == [] and len(result['skipped']) == 16
+    assert result['authorityFiles'] == result['authorityCustody'] == []
+    assert len(result['helpers']) == 4
+
+
+@pytest.mark.parametrize('selected', ['retired-187-188-189', 'retired-unknown'])
+def test_retired_reader_rejects_wrong_policy_before_reading_any_original(legacy_retired_controller_reader, monkeypatch, capsys, selected):
+    value = legacy_retired_controller_reader; value.archive.unlink()
+    expected = 'RETIRED_COPY_BATCH_REQUIRES_RETIRED_COPIES' if selected == 'retired-187-188-189' else 'EXACT_RETIRED_COPY_BATCH_REQUIRED'
+    with pytest.raises(ValueError, match=expected):
+        run_legacy_retired_controller_reader(value, monkeypatch, batch='Historical', selected=selected)
+    assert capsys.readouterr().out == ''
+
+
+@pytest.mark.parametrize('missing', ['source', 'provenance', 'journal'])
+def test_retired_194_reader_requires_the_separate_source_provenance_and_original_journal(legacy_retired_controller_reader, monkeypatch, capsys, missing):
+    value = legacy_retired_controller_reader
+    path = (value.files['source.tar.gz'] if missing == 'source' else value.proofs['provenance'][0]
+            if missing == 'provenance' else value.files['native-jar-duplicate-canonical-journal.jsonl'])
+    path.unlink(); before = retired_reader_files(value)
+    with pytest.raises(FileNotFoundError): run_legacy_retired_controller_reader(value, monkeypatch)
+    assert capsys.readouterr().out == '' and retired_reader_files(value) == before
+
+
+@pytest.mark.parametrize(('changed', 'guard'), [
+    ('source.tar.gz', 'RETIRED_AUTHORITY_ORIGINAL_BYTES_DRIFT'),
+    ('native-jar-duplicate-canonical-journal.jsonl', 'RETIRED_AUTHORITY_ORIGINAL_BYTES_DRIFT'),
+    ('provenance', 'RETIRED_AUTHORITY_SOURCE_PROVENANCE_SHA_DRIFT')])
+def test_retired_194_reader_rechecks_actual_bytes_not_only_manifest_claims(legacy_retired_controller_reader, monkeypatch, capsys, changed, guard):
+    value = legacy_retired_controller_reader
+    path = value.proofs['provenance'][0] if changed == 'provenance' else value.files[changed]
+    path.write_bytes(path.read_bytes() + b' '); before = retired_reader_files(value)
+    with pytest.raises(ValueError, match=guard): run_legacy_retired_controller_reader(value, monkeypatch)
+    assert capsys.readouterr().out == '' and retired_reader_files(value) == before
+
+
+@pytest.mark.parametrize(('changed', 'guard'), [
+    ('old-proof-schema', 'RETIRED_AUTHORITY_CUSTODY_CONTEXT_DRIFT'),
+    ('old-original-path', 'RETIRED_AUTHORITY_CUSTODY_MEMBER_DRIFT'),
+    ('journal-supplement', 'RETIRED_AUTHORITY_SUPPLEMENT_MEMBER_DRIFT'),
+    ('source-origin', 'RETIRED_AUTHORITY_SOURCE_PROVENANCE_CONTEXT_DRIFT'),
+    ('source-path', 'RETIRED_AUTHORITY_SOURCE_PROVENANCE_CONTEXT_DRIFT'),
+    ('source-helper', 'RETIRED_AUTHORITY_SOURCE_PROVENANCE_CONTEXT_DRIFT')])
+def test_retired_194_reader_validates_real_custody_structure_after_fixed_proof_binding(legacy_retired_controller_reader, monkeypatch, capsys, changed, guard):
+    value = legacy_retired_controller_reader
+    key = 'preservation' if changed.startswith('old-') else 'supplement' if changed == 'journal-supplement' else 'provenance'
+    path, document = value.proofs[key]
+    if changed == 'old-proof-schema': document['allOriginalCopiesByteEqual'] = False
+    elif changed == 'old-original-path': document['files'][0]['original'] = '/another-build/build.xml'
+    elif changed == 'journal-supplement':
+        next(row for row in document['inputs'] if row['file'].endswith('journal.jsonl'))['sha256'] = '0' * 64
+    elif changed == 'source-origin': document['kind'] = 'preserved-jenkins-archive'
+    elif changed == 'source-path': document['path'] = document['path'].replace('/cleanup-source.tar.gz', '/source.tar.gz')
+    else: document['helper']['sha256'] = '0' * 64
+    raw = encoded(document); path.write_bytes(raw); value.replacements[value.pins[key]] = sha(raw)
+    before = retired_reader_files(value)
+    with pytest.raises(ValueError, match=guard): run_legacy_retired_controller_reader(value, monkeypatch)
+    assert capsys.readouterr().out == '' and retired_reader_files(value) == before
+
+
+def test_native_retention_jenkins_and_seed_choices_have_the_same_safe_default_and_action_guard():
+    root = MODULE.parents[2]
+    workflow = (root / 'Jenkinsfile.ecs-monolith').read_text(encoding='utf8')
+    seed = (root / 'script/jenkins/configure-local.groovy').read_text(encoding='utf8')
+    pipeline = (root / 'script/jenkins/pipeline.ps1').read_text(encoding='utf8')
+    workflow_choices = re.search(r"choice\(name: 'NATIVE_RETENTION_POLICY', choices: (\[[^\]]+\])", workflow)
+    seed_choices = re.search(r"ChoiceParameterDefinition\('NATIVE_RETENTION_POLICY', (\[[^\]]+\]) as String\[\]", seed)
+    assert workflow_choices and seed_choices
+    assert ast.literal_eval(workflow_choices[1]) == ast.literal_eval(seed_choices[1]) == ['FailedNative', 'RetiredCopies194', 'RetiredCopies203', 'PublicCaches221224235']
+    assert "env.NATIVE_RETENTION_POLICY = params.NATIVE_RETENTION_POLICY ?: 'FailedNative'" in workflow
+    assert "env.NATIVE_RETENTION_POLICY != 'FailedNative' && params.ACTION != 'reclaim-build-outputs'" in workflow
+    assert "$nativeRetentionPolicy -cne 'FailedNative' -and $env:ACTION -cne 'reclaim-build-outputs'" in pipeline
+    assert "if ([string]::IsNullOrWhiteSpace($nativeRetentionPolicy)) {$nativeRetentionPolicy='FailedNative'}" in pipeline
+
+
+def test_native_retention_pipeline_selects_one_batch_after_ordinary_cleanup_and_preserves_203_default():
+    root = MODULE.parents[2]
+    pipeline = (root / 'script/jenkins/pipeline.ps1').read_text(encoding='utf8')
+    branch = pipeline.split("if ($Action -ceq 'ReclaimBuildOutputs' -and $env:ACTION -ceq 'reclaim-build-outputs') {", 1)[1].split("if ($Action -eq 'Preflight')", 1)[0]
+    assert branch.index('reclaim-build-outputs.ps1 -Mode Maintenance') < branch.index("if ($nativeRetentionPolicy -ceq 'PublicCaches221224235')")
+    selector = branch.split("if ($nativeRetentionPolicy -ceq 'PublicCaches221224235')", 1)[1]
+    public, selector = selector.split("} elseif ($nativeRetentionPolicy -ceq 'RetiredCopies194')", 1)
+    assert '-CanonicalBatch PublicCaches -SshOptions' in public and '-RetiredCopyBatch' not in public
+    older, remainder = selector.split("} elseif ($nativeRetentionPolicy -ceq 'RetiredCopies203')", 1)
+    recent, default = remainder.split('} else {', 1)
+    calls = re.findall(r'& ./script/jenkins/retire-failed-native-jar-duplicates\.ps1[^\n]+', public + selector)
+    assert len(calls) == 4
+    assert '-CanonicalBatch RetiredCopies -RetiredCopyBatch retired-187-188-189' in older
+    assert '-CanonicalBatch RetiredCopies -SshOptions' in recent and '-RetiredCopyBatch' not in recent
+    assert '-CanonicalBatch FailedNative -SshOptions' in default and '-RetiredCopyBatch' not in default
+    controller = (MODULE.parent / 'retire-failed-native-jar-duplicates.ps1').read_text(encoding='utf8')
+    assert "[string]$CanonicalBatch = 'Historical'" in controller
+    assert "[ValidateSet('retired-195-198-201','retired-187-188-189')][string]$RetiredCopyBatch = 'retired-195-198-201'" in controller
+    assert "$RetiredCopyBatch -ceq 'retired-195-198-201' -or $CanonicalBatch -ceq 'RetiredCopies'" in controller
+    assert "$Tag,$CanonicalBatch,$RetiredCopyBatch)" in controller
+    assert "if($CanonicalBatch -ceq 'RetiredCopies' -and $RetiredCopyBatch -ceq 'retired-187-188-189') {$common+=\" --retired-copy-batch retired-187-188-189\"}" in controller
+    assert '$retiredAuthorityTag=if ($RetiredCopyBatch' in controller
+    assert 'native-retired-candidate-controls/$retiredAuthorityTag/$($binding.file)' in controller
+
+@pytest.fixture
+def public_cache_controller_reader(legacy_retired_controller_reader):
+    value = legacy_retired_controller_reader
+    approved = next(ast.literal_eval(node.value) for node in ast.walk(ast.parse(value.reader))
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.List) and len(node.value.elts) == 6
+        and any(isinstance(name, ast.Name) and name.id == 'approved' for name in node.targets))
+    public_rows = []; proof_paths = {}
+    for number, commit, preservation_sha in approved:
+        tag = 'ci-' + str(number) + '-' + commit[:12]; folder = value.retained / ('ci-' + str(number) + '-raw-receipts')
+        folder.mkdir(exist_ok=True)
+        context = {'release': tag, 'commit': commit, 'sourceSha256': sha(('public source ' + tag).encode())}
+        result = 'ABORTED' if number == 223 else 'FAILURE'
+        bodies = {'build.xml': flow_xml(context, result=result), 'release.json': encoded(context),
+                  'local-build.json': encoded({'status': 'PASS'}), 'fixture-cleanup.json': encoded({'status': 'STOPPED'})}
+        entries = []
+        for name, raw in bodies.items():
+            (folder / name).write_bytes(raw)
+            if name == 'build.xml' and number != 117: continue
+            suffix = '/build.xml' if name == 'build.xml' else '/archive/artifacts/' + name
+            entries.append({'path': name, 'bytes': len(raw), 'sha256': sha(raw),
+                'original': '/synthetic-jenkins/jobs/doorhandle-java/builds/' + str(number) + suffix})
+        proof = {'build': number, 'files': entries}
+        if number == 117: proof.update(allOriginalCopiesByteEqual=True, summarySha256=sha(b'keeper summary'))
+        else: proof.update(commit=commit, result=result, buildXmlSha256=sha(bodies['build.xml']), binaryRetention='synthetic')
+        raw = encoded(proof); path = folder / 'preservation.json'; path.write_bytes(raw)
+        value.replacements[preservation_sha] = sha(raw); proof_paths[number] = (path, proof, preservation_sha)
+        public_rows.append(context)
+    value.public_rows = public_rows; value.public_proofs = proof_paths
+    return value
+
+
+def test_public_cache_actual_reader_uses_117_and_five_modern_d_fallbacks_without_reading_any_jar(public_cache_controller_reader, monkeypatch, capsys):
+    value = public_cache_controller_reader; original_open = Path.open
+    def no_jar(path, *args, **kwargs):
+        assert path.name not in ('application.jar', 'candidate-app.jar'), 'Public-only capture may not depend on a retired JAR'
+        return original_open(path, *args, **kwargs)
+    monkeypatch.setattr(Path, 'open', no_jar)
+    before = retired_reader_files(value)
+    run_legacy_retired_controller_reader(value, monkeypatch, batch='PublicCaches', selected=None)
+    result = json.loads(capsys.readouterr().out)
+    assert result['skipped'] == [] and [row['release'] for row in result['rows']] == [row['release'] for row in value.public_rows]
+    assert len(result['rows']) == 6 and result['builderFiles'] == [] and result['authorityFiles'] == []
+    assert all(control['origin'] == 'PINNED_PRESERVED_JENKINS_ORIGINAL'
+               for row in result['custody'] for control in row['controls'].values())
+    assert all('build.xml' not in {row['path'] for row in proof['files']}
+               for number, (path, proof, pin) in value.public_proofs.items() if number != 117)
+    assert retired_reader_files(value) == before
+
+
+@pytest.mark.parametrize('changed', ['terminal-top-level-digest', 'missing-release'])
+def test_public_cache_reader_does_not_accept_partial_or_unbound_modern_d_originals(public_cache_controller_reader, monkeypatch, capsys, changed):
+    value = public_cache_controller_reader; path, proof, pin = value.public_proofs[221]
+    if changed == 'terminal-top-level-digest':
+        proof['buildXmlSha256'] = '0' * 64; raw = encoded(proof); path.write_bytes(raw); value.replacements[pin] = sha(raw)
+    else: (path.parent / 'release.json').unlink()
+    run_legacy_retired_controller_reader(value, monkeypatch, batch='PublicCaches', selected=None)
+    result = json.loads(capsys.readouterr().out)
+    assert len(result['rows']) == 5 and len(result['skipped']) == 1
+    assert result['skipped'][0]['release'] == 'ci-221-8c30776fcd95'
+    if changed == 'terminal-top-level-digest':
+        assert result['skipped'][0]['reason'] == 'PRESERVED_PUBLIC_TERMINAL_CONTROL_DRIFT'
+    assert result['authorityFiles'] == []
+
+
+def test_public_cache_controller_has_an_independent_capture_complete_counts_and_no_jar_or_builder_phase():
+    controller = (MODULE.parent / 'retire-failed-native-jar-duplicates.ps1').read_text(encoding='utf8')
+    assert "if($CanonicalBatch -ceq 'PublicCaches'){'capture-public-cache-request'}" in controller
+    assert "if($CanonicalBatch -ceq 'PublicCaches') {$common+=\" --public-cache-batch failed-native-public-221-224-235\"}" in controller
+    assert "@($local.rows).Count -eq 6 -and @($local.skipped).Count -eq 0" in controller
+    branch = controller.split("if($CanonicalBatch -ceq 'PublicCaches') {\n    $publicCacheBatch=", 1)[1].split("if($CanonicalBatch -ceq 'FailedNative') {", 1)[0]
+    for phase in ('plan-public-layers', 'apply-public-layers', 'plan-generated-image-archives', 'apply-generated-image-archives'):
+        assert phase in branch
+    assert "count=20" in branch and "count=5" in branch and '$plannedPublic.candidateAttemptCount -eq 5' in branch
+    assert "$plannedPublic.candidateTargetCount -eq $step.count" in branch and '@($plannedPublic.skipped).Count -eq 0' in branch
+    assert "finally {Copy-NativeJarEvidence (Invoke-NativeJarPhase 'inspect')}" in branch
+    assert 'journalSha256' in branch and 'df -B1 --output=avail' in branch and 'sameBytesAsSeedClaimed' in branch
+    assert 'deletedFiles=25' in branch and branch.rstrip().endswith('}') and '    return\n}' in branch
+    for forbidden in ('plan-builders', 'apply-builders', 'plan-canonical', 'apply-canonical', 'plan-python-build-cache', 'apply-python-build-cache'):
+        assert forbidden not in branch

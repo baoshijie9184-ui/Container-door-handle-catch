@@ -11,6 +11,7 @@ import stat
 import sys
 import tarfile
 from types import SimpleNamespace
+import xml.etree.ElementTree as ET
 
 import pytest
 
@@ -288,3 +289,201 @@ def test_public_quiescence_rejects_any_tag_bind_to_old_inbox_tools(copies, sourc
     check = retirer.public_layer_quiescence(copies.root, cleanup, lambda *args: original_calls.append(args))
     with pytest.raises(retirer.RetirementError): check(copies.root / 'verification' / TARGET / 'checkout', TARGET, 'token')
     assert len(original_calls) == 1
+
+
+@pytest.fixture
+def recent_public_case(tmp_path, monkeypatch):
+    """Six authenticated sources, no JARs, real capture and public deletion APIs."""
+    root = tmp_path / 'recent-public'; root.mkdir(mode=0o700)
+    current = {'release': 'ci-999-' + 'a' * 12, 'commit': 'a' * 40, 'sourceSha256': 'b' * 64}
+    identity = {'executionLocation': 'ECS', 'instanceId': 'i-fixture123', 'machineId': 'c' * 32}
+    private_file(root, 'inbox/' + current['release'] + '/original-current-control', b'retained current source')
+    payloads = [b'immutable synthetic public layer ' + bytes([i]) for i in range(4)]
+    layers = {sha(body): len(body) for body in payloads}
+    def tar_bytes(mtime):
+        output = io.BytesIO()
+        with tarfile.open(fileobj=output, mode='w:') as archive:
+            for body in payloads:
+                member = tarfile.TarInfo('blobs/sha256/' + sha(body)); member.size = len(body); member.mtime = mtime
+                archive.addfile(member, io.BytesIO(body))
+        return output.getvalue()
+    seed_raw = tar_bytes(0)
+    monkeypatch.setattr(retirer, 'PUBLIC_LAYERS', layers)
+    monkeypatch.setattr(retirer, 'PUBLIC_ARCHIVE_SHA', sha(seed_raw)); monkeypatch.setattr(retirer, 'PUBLIC_ARCHIVE_BYTES', len(seed_raw))
+    seed = private_file(root, 'build-inputs/buildkit-v0.34.2/' + sha(seed_raw) + '.tar', seed_raw)
+    publication = {'Jenkinsfile.ecs-monolith': b'reviewed synthetic unpublished workflow',
+                   'script/jenkins/pipeline.ps1': b'reviewed synthetic source-only pipeline'}
+    helpers = {'compact-build-resources.py': b'reviewed prepare_tools/archive_layout/monitored_tar_file producer',
+               'compact-image-inputs.py': b'reviewed fixed public OCI inputs'}
+    recipe = (b"def prepare(self):\n jar = canonical(self.inbox / 'application.jar')\n"
+              b" uploaded = self.work / 'candidate-app.jar'\n shutil.copyfile(jar, uploaded)\n"
+              b"def start_mysql(self, image):\n return image\n")
+    monkeypatch.setattr(retirer, 'FAILED_NATIVE_PUBLICATION_RECIPES', frozenset({tuple(sha(v) for v in publication.values())}))
+    registry, rows, layer_paths, tar_paths, original_paths = {}, [], [], [], {}
+    commits = {KEEPER: retirer.APPROVED_OLD[KEEPER], **{tag: row['commit'] for tag, row in retirer.PUBLIC_CACHE_TARGETS.items()}}
+    for number, (tag, commit) in enumerate(commits.items()):
+        work = root / 'verification' / tag / 'checkout/work/compact-fixtures'
+        private_file(root, work.relative_to(root).as_posix() + '/source.sql', b'retained original SQL')
+        original_paths[work / 'source.sql'] = b'retained original SQL'
+        source = io.BytesIO()
+        with tarfile.open(fileobj=source, mode='w:gz', format=tarfile.PAX_FORMAT, pax_headers={'comment': commit}) as archive:
+            for name, body in {'script/jenkins/prepare-compact-fixtures.py': recipe, **publication,
+                               **{'script/docker/' + name: body for name, body in helpers.items()}}.items():
+                member = tarfile.TarInfo(name); member.size = len(body); archive.addfile(member, io.BytesIO(body))
+        source_raw = source.getvalue(); context = {'release': tag, 'commit': commit, 'sourceSha256': sha(source_raw)}
+        path = private_file(root, 'inbox/' + tag + '/source.tar.gz', source_raw); original_paths[path] = source_raw
+        terminal = ET.Element('flow-build'); params = ET.SubElement(ET.SubElement(ET.SubElement(terminal, 'actions'),
+            'hudson.model.ParametersAction'), 'parameters')
+        for name, value in {'ACTION': 'verify-runtime', 'DOORHANDLE_CI_SCOPE': 'mysql',
+                            'TRUSTED_COMMIT': commit, 'PRODUCTION_RELEASE_ENABLED': 'false'}.items():
+            member = ET.SubElement(params, 'parameter'); ET.SubElement(member, 'name').text = name; ET.SubElement(member, 'value').text = value
+        ET.SubElement(terminal, 'result').text = 'ABORTED' if 'ci-223-' in tag else 'FAILURE'
+        ET.SubElement(terminal, 'completed').text = 'true'; ET.SubElement(ET.SubElement(terminal, 'execution'), 'done').text = 'true'
+        owner = {'schemaVersion': 1, 'kind': 'doorhandle-compact-fixture-owner', **context, 'identity': identity,
+            'phase': 'OWNED_SERVER_STOPPED', 'token': format(number + 1, '010x'), 'work': str(work),
+            'sourceContainerId': 'd' * 64, 'containerId': format(number + 1, '064x')}
+        cleanup = {'schemaVersion': 1, 'kind': 'doorhandle-compact-fixture-cleanup', **context, 'identity': identity,
+            'status': 'STOPPED', 'errors': [], 'containerId': owner['containerId'], 'sourceContainerUntouched': owner['sourceContainerId'],
+            'sourceDumpAndEvidenceRetained': True}
+        documents = {'buildXml': ET.tostring(terminal), 'release': retirer.canonical({**context, 'applicationJarSha256': '1' * 64}),
+            'artifactPlan': retirer.canonical({'schema': 1, 'kind': 'doorhandle-compact-fixture-artifacts', **context,
+                'applicationJarSha256': '1' * 64, 'applicationJarBytes': 123}),
+            'fixtureOwner': retirer.canonical(owner), 'fixtureCleanup': retirer.canonical(cleanup)}
+        paths = retirer.expected_control_paths(current['release'], tag); controls = {}
+        for role, body in documents.items():
+            path = private_file(root, paths[role], body); original_paths[path] = body
+            controls[role] = {'path': paths[role], 'bytes': len(body), 'sha256': sha(body)}
+        rows.append({**context, 'controls': controls})
+        directory = root / 'inbox' / tag / 'candidate-build-tools'
+        engine = {'engineImageId': 'sha256:' + '2' * 64}
+        measurement_raw = retirer.canonical({'imageId': 'sha256:' + '3' * 64,
+            'archiveSha256': '4' * 64, 'archiveBytes': 10240})  # Deliberately NOT official-image.tar.
+        summary_raw = retirer.canonical({**context, 'identity': identity, 'status': 'PASS', 'engineIdentity': engine})
+        tools_raw = retirer.canonical({**context, 'identity': identity, 'kind': 'doorhandle-candidate-build-tools', 'status': 'PREPARED',
+            'helperSha256': sha(helpers['compact-build-resources.py']), 'imageInputsHelperSha256': sha(helpers['compact-image-inputs.py']),
+            'imageMeasurementSha256': sha(measurement_raw), 'resourceEvidence': {'file': str(directory / 'resource-summary.json'), 'sha256': sha(summary_raw)},
+            'imageId': 'sha256:' + '3' * 64, 'engineIdentity': engine})
+        prepared = {'tools': ('tools.json', tools_raw), 'summary': ('resource-summary.json', summary_raw),
+                    'measurement': ('official-layer-measurements.json', measurement_raw)}
+        for name, body in prepared.values():
+            path = private_file(root, (directory / name).relative_to(root).as_posix(), body); original_paths[path] = body
+        for body in payloads:
+            path = private_file(root, (directory / 'official-oci/blobs/sha256' / sha(body)).relative_to(root).as_posix(), body)
+            if tag == KEEPER: original_paths[path] = body
+            else: layer_paths.append(path)
+        if tag == KEEPER:
+            monkeypatch.setitem(retirer.APPROVED_BUILDER_TOOLS, tag, sha(tools_raw))
+        else:
+            generated = tar_bytes(number * 100)
+            path = private_file(root, (directory / 'official-image.tar').relative_to(root).as_posix(), generated); tar_paths.append(path)
+            registry[tag] = {**context, 'controls': {role: (len(body), sha(body)) for role, (_, body) in prepared.items()},
+                'builderHelperSha256': {name: sha(body) for name, body in helpers.items()}, 'tarSha256': sha(generated), 'tarBytes': len(generated)}
+    monkeypatch.setattr(retirer, 'PUBLIC_CACHE_TARGETS', registry)
+    request = {'schemaVersion': 1, 'kind': retirer.KIND + '-request', 'current': current, 'identity': identity,
+               'protectedReleases': [current['release']], 'candidates': rows}
+    local_spec = copy.deepcopy(request)
+    for row in local_spec['candidates']: row['controls'] = {k: v for k, v in row['controls'].items() if k in retirer.UPLOADED_NAMES}
+    local_raw = retirer.canonical(local_spec)
+    private_file(root, 'inbox/' + current['release'] + '/native-jar-duplicate-local-spec.json', local_raw)
+    spec = importlib.util.spec_from_file_location('recent_public_actual_cleanup', MODULE.parent / 'cleanup-ecs-builds.py')
+    cleanup = importlib.util.module_from_spec(spec); spec.loader.exec_module(cleanup)
+    containers = []
+    def docker(command, **kwargs):
+        assert command[0] == '/usr/bin/docker'
+        if command[1:] == ['ps', '-aq', '--no-trunc']: output = '\n'.join(row[0] for row in containers)
+        else:
+            assert command[1:3] == ['inspect', '--format'] and command[4:] == [row[0] for row in containers]
+            output = '\n'.join(json.dumps(row) for row in containers)
+        return SimpleNamespace(returncode=0, stdout=output.encode(), stderr=b'')
+    monkeypatch.setattr(cleanup, 'subprocess', SimpleNamespace(run=docker))
+    proc = tmp_path / 'synthetic-proc'; proc.mkdir(mode=0o700)
+    scanner = cleanup.process_references
+    monkeypatch.setattr(cleanup, 'process_references', lambda checkout, **kwargs: scanner(checkout, proc=proc, **kwargs))
+    def quiet(checkout, tag, token):
+        cleanup.quiescent({'checkout': checkout, 'token': token}, tag, cleanup.docker_snapshot(), include_inbox=True)
+    options = {'request_sha256': sha(retirer.canonical(request)), 'expected_current': current, 'identity': identity,
+        'quiescence': quiet, 'public_cache_batch': retirer.PUBLIC_CACHE_BATCH}
+    original_paths[seed] = seed_raw
+    return SimpleNamespace(retirer=retirer, root=root, current=current, identity=identity, request=request, raw=retirer.canonical(request),
+        local_raw=local_raw, options=options, cleanup=cleanup, quiet=quiet, containers=containers, proc=proc,
+        layers=layer_paths, tars=tar_paths, originals=original_paths, seed=seed)
+
+
+def test_public_only_actual_cli_capture_twenty_layers_then_five_generated_tars_without_any_jar(recent_public_case, monkeypatch, capsys):
+    s = recent_public_case
+    monkeypatch.setattr(retirer, 'admitted_current', lambda args: (s.root, s.current, s.identity, s.quiet, {'cleanup': s.cleanup}))
+    common = ['--mode', 'Maintenance', '--public-cache-batch', retirer.PUBLIC_CACHE_BATCH,
+        '--root', str(s.root), '--tag', s.current['release'], '--commit', s.current['commit'],
+        '--source-sha256', s.current['sourceSha256'], '--instance-id', s.identity['instanceId'],
+        '--machine-id', s.identity['machineId'], '--current-receipt-sha256', 'a' * 64]
+    def invoke(phase, *flags):
+        assert retirer.cli(['--phase', phase, *common, *flags]) == 0
+        return json.loads(capsys.readouterr().out)
+    captured = invoke('capture-public-cache-request', '--local-spec-sha256', sha(s.local_raw))
+    assert captured['skipped'] == [] and captured['publicCacheBatch'] == retirer.PUBLIC_CACHE_BATCH
+    for phase, count in [('public-layers', 20), ('generated-image-archives', 5)]:
+        planned = invoke('plan-' + phase, '--request-sha256', captured['request']['sha256'])
+        assert planned['candidateAttemptCount'] == 5 and planned['candidateTargetCount'] == count and planned['skipped'] == []
+        result = invoke('apply-' + phase, '--request-sha256', captured['request']['sha256'], '--plan-sha256', planned['plan']['sha256'])
+        assert result['status'] == 'REMOVED' and result['deletedFiles'] == count
+        assert result['testsRunByRetirement'] is False
+    inspected = invoke('inspect')
+    assert {'publicLayerPlan', 'publicLayerReceipt', 'publicLayerJournal', 'generatedArchivePlan', 'generatedArchiveReceipt', 'generatedArchiveJournal'} <= set(inspected['files'])
+    assert all(not path.exists() for path in s.layers + s.tars)
+    assert all(path.read_bytes() == body for path, body in s.originals.items())
+    assert not list(s.root.glob('inbox/*/application.jar')) and not list(s.root.glob('verification/*/checkout/work/compact-fixtures/candidate-app.jar'))
+
+
+@pytest.mark.parametrize('reference', ['same-tag-stopped', 'same-tag-running', 'checkout-bind', 'inbox-bind', 'ancestor-bind'])
+def test_public_only_real_docker_enumeration_refuses_every_old_container_reference(recent_public_case, reference):
+    s = recent_public_case; tag = next(iter(retirer.PUBLIC_CACHE_TARGETS)); release = 'unrelated'; mounts = []
+    if reference.startswith('same-tag'): release = tag
+    else:
+        path = {'checkout-bind': s.root / 'verification' / tag / 'checkout', 'inbox-bind': s.root / 'inbox' / tag,
+                'ancestor-bind': s.root}[reference]
+        mounts = [{'Type': 'bind', 'Source': str(path)}]
+    s.containers.append(['a' * 64, reference == 'same-tag-running', False, 1234 if reference == 'same-tag-running' else 0, release, None, mounts])
+    value = retirer.plan_public_layers(s.root, s.raw, **s.options)
+    assert value['skipped'] and len(value['candidates']) < 5
+    with pytest.raises(retirer.RetirementError, match='COMPLETE_TWENTY_PUBLIC_LAYER_PLAN_REQUIRED'):
+        retirer.apply_public_layers(s.root, s.raw, value, plan_sha256=sha(retirer.canonical(value)), **s.options)
+    assert all(path.exists() for path in s.layers + s.tars)
+
+
+@pytest.mark.parametrize('damage', ['missing-row', 'foreign-source', 'jar-policy', 'other-batch'])
+def test_public_only_capture_never_inherits_jar_or_other_epoch_authority(recent_public_case, damage):
+    s = recent_public_case; request = json.loads(s.local_raw); options = {'public_cache_batch': retirer.PUBLIC_CACHE_BATCH}
+    if damage == 'missing-row': request['candidates'].pop()
+    elif damage == 'foreign-source': request['candidates'][-1]['sourceSha256'] = '0' * 64
+    elif damage == 'jar-policy': options['canonical_jar'] = True
+    else: options['public_cache_batch'] = 'other-public-batch'
+    raw = retirer.canonical(request)
+    with pytest.raises(retirer.RetirementError):
+        retirer.capture_request(s.root, raw, local_spec_sha256=sha(raw), expected_current=s.current, identity=s.identity, **options)
+    assert all(path.exists() for path in s.layers + s.tars)
+
+
+@pytest.mark.parametrize('changed', ['prepared-control', 'source', 'keeper', 'container', 'publication'])
+def test_public_layer_capture_rechecks_real_originals_and_quiescence_before_unlink(recent_public_case, monkeypatch, changed):
+    s = recent_public_case; tag = next(iter(retirer.PUBLIC_CACHE_TARGETS)); capture = retirer._capture_no_replace
+    value = retirer.plan_public_layers(s.root, s.raw, **s.options)
+    def mutate(*args):
+        capture(*args)
+        if changed == 'prepared-control': (s.root / 'inbox' / tag / 'candidate-build-tools/tools.json').write_bytes(b'changed prepared control')
+        elif changed == 'source': (s.root / 'inbox' / tag / 'source.tar.gz').write_bytes(b'changed old source')
+        elif changed == 'keeper': next(path for path in s.originals if 'official-oci' in str(path)).write_bytes(b'changed keeper')
+        elif changed == 'publication': (s.root / 'releases' / tag).mkdir(parents=True, mode=0o700)
+        else: s.containers.append(['a' * 64, False, False, 0, tag, None, []])
+    monkeypatch.setattr(retirer, '_capture_no_replace', mutate)
+    result = retirer.apply_public_layers(s.root, s.raw, value, plan_sha256=sha(retirer.canonical(value)), **s.options)
+    assert result['status'] == 'FAILED_OR_UNKNOWN' and result['deleted'] == [] and len(result['retainedQuarantinePaths']) == 1
+    assert (s.root / result['retainedQuarantinePaths'][0]).exists() and all(path.exists() for path in s.tars)
+
+
+def test_public_new_targets_do_not_enter_default_paths_or_jar_permissions(recent_public_case):
+    s = recent_public_case; tag = next(iter(retirer.PUBLIC_CACHE_TARGETS)); checksum, length = next(iter(retirer.PUBLIC_LAYERS.items()))
+    with pytest.raises(retirer.RetirementError): retirer.duplicate_paths(s.root, tag, kind=retirer.PUBLIC_LAYER_KIND, blob_sha=checksum)
+    with pytest.raises(retirer.RetirementError): retirer.generated_image_archive_path(s.root, tag)
+    with pytest.raises(retirer.RetirementError, match='PUBLIC_CACHE_POLICY_HAS_NO_JAR_API'):
+        retirer.duplicate_paths(s.root, tag, public_cache_batch=retirer.PUBLIC_CACHE_BATCH)
+    assert all(tag not in retirer.APPROVED_OLD for tag in retirer.PUBLIC_CACHE_TARGETS)
