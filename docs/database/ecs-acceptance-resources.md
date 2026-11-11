@@ -1,5 +1,7 @@
 # ECS 隔离验收的资源预算
 
+2026-11-11 扩容后实测进展：80GiB上#220源码完整验证及250项资料恢复整轮SUCCESS；同提交#221控制预检与四阶段夹具准备均通过，准备结束可用10,975,289,344字节、MemAvailable12,093,227,008字节，OOM为0。#221随后因检测图片迁移的当前版本外键顺序错误失败（105项中102通过、3错误），不是本轮容量门失败。后续旧45双恢复、Mem0构建和完整运行阶段尚未达到，不能据此宣称80GiB全程峰值已经验收。原始报告保全及本轮测试资源停止后，已从流水线外实际回读Stopped/StopCharging；Jenkins保持运行，原所有阶段容量门保持。
+
 2026-11-11 已授权并实际扩至80GiB：对原盘`d-2zeieuov2aum486inund`创建一份7天标准预扩容快照`s-2ze4lto0m4wr1qq04vc7`，确认原70GiB来源、RetentionDays=7及accomplished/100%/Available=true后，执行offline ResizeDisk至80。原实例开机后先只读核IMDS与块设备，再预览并扩原vda3/ext4；两条扩展命令均exit0，分区起点、前两分区及UUID不变。云盘与实际块设备均80GiB，文件系统84,151,820,288字节；独立实余12,708,839,424字节（11.836GiB）。原API、预览、执行、前后基线及摘要共41份保存在`work/jenkins/data-residency-20261107/resize-80gib-approved-20261111/preservation.json`。
 
 此前70GiB容量阻断已通过本次扩容处理，可以重新按真实余量准入验证；尚未证明80GiB覆盖全程峰值。2GiB保留＋256MiB停止余量、1GiB主机内存余量、旧45双恢复及Mem0基座/context/native等原阶段预算继续生效；必要阶段仍逐一采样，任何不足均失败并保全证据。下一轮完整source和runtime使用同一最终固定提交，测试结束从流水线外实际回读Stopped/StopCharging，Jenkins保持运行。

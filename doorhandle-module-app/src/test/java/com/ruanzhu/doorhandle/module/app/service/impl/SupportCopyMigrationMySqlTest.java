@@ -47,13 +47,14 @@ class SupportCopyMigrationMySqlTest {
         String sourceObject=jsonObject("detection_image_fingerprint","s");
         var originals=source.queryForList("SELECT id,CAST("+sourceObject+" AS CHAR CHARACTER SET utf8mb4) row_json,SHA2(CAST("+sourceObject+" AS CHAR CHARACTER SET utf8mb4),256) row_sha256 FROM detection_image_fingerprint s ORDER BY id");
         for(var row:originals) {
-            var stored=target.queryForMap("SELECT a.owner_user_id,a.legacy_owner_reference,a.identity_key,a.title,a.filename,a.revision,a.created_at,a.updated_at,r.manifest_json,r.manifest_sha256,r.content_sha256,r.object_key FROM content_asset a JOIN content_revision r ON r.asset_id=a.asset_id AND r.asset_kind=a.asset_kind AND r.version=1 WHERE a.legacy_source='detection_image_fingerprint' AND a.legacy_id=?",row.get("id"));
+            var stored=target.queryForMap("SELECT a.owner_user_id,a.legacy_owner_reference,a.identity_key,a.title,a.filename,a.current_version,a.lifecycle,a.revision,a.created_at,a.updated_at,r.version AS revision_version,r.manifest_json,r.manifest_sha256,r.content_sha256,r.object_key FROM content_asset a JOIN content_revision r ON r.asset_id=a.asset_id AND r.asset_kind=a.asset_kind AND r.version=a.current_version WHERE a.legacy_source='detection_image_fingerprint' AND a.legacy_id=?",row.get("id"));
             var raw=source.queryForMap("SELECT * FROM detection_image_fingerprint WHERE id=?",row.get("id"));
             assertThat(stored).containsEntry("owner_user_id",null).containsEntry("legacy_owner_reference",raw.get("owner_user_id"))
                     .containsEntry("manifest_json",row.get("row_json")).containsEntry("manifest_sha256",row.get("row_sha256"))
                     .containsEntry("created_at",raw.get("created_at")).containsEntry("updated_at",raw.get("updated_at"))
                     .containsEntry("title",raw.get("file_name")).containsEntry("filename",raw.get("file_name"))
-                    .containsEntry("object_key",raw.get("object_key"));
+                    .containsEntry("object_key",raw.get("object_key"))
+                    .containsEntry("current_version",1).containsEntry("revision_version",1).containsEntry("lifecycle","ACTIVE");
             assertThat(stored.get("identity_key")).isEqualTo(raw.get("sha256").toString().toLowerCase(java.util.Locale.ROOT));
             assertThat(stored.get("content_sha256")).isEqualTo(stored.get("identity_key"));
             var state=target.queryForMap("SELECT * FROM runtime_state WHERE namespace='DETECTION_FINGERPRINT' AND scope_key=?",stored.get("identity_key"));
@@ -111,15 +112,18 @@ class SupportCopyMigrationMySqlTest {
         assertThat(targetSnapshot()).isEqualTo(imported);assertThat(snapshot()).isEqualTo(original);
     }
 
-    @ParameterizedTest @ValueSource(strings={"unknown_column","invalid_sha","damaged_projection"})
+    @ParameterizedTest @ValueSource(strings={"unknown_column","invalid_sha","damaged_projection","damaged_current_pointer"})
     void invalidSourceOrChangedProjectionRollsBackChatAndFingerprintTogether(String mutation) {
         switch(mutation) {
             case "unknown_column"->source.execute("ALTER TABLE detection_image_fingerprint ADD unreviewed_column VARCHAR(12) NULL");
             case "invalid_sha"->source.update("UPDATE detection_image_fingerprint SET sha256=REPEAT('X',64),updated_at=? WHERE id=61",WALL);
             case "damaged_projection"->target.execute("CREATE TRIGGER corrupt_support BEFORE INSERT ON runtime_state FOR EACH ROW SET NEW.current_ref=IF(NEW.namespace='DETECTION_FINGERPRINT','wrong-task',NEW.current_ref)");
+            case "damaged_current_pointer"->target.execute("CREATE TRIGGER corrupt_current_pointer BEFORE UPDATE ON content_asset FOR EACH ROW SET NEW.current_version=IF(NEW.asset_kind='DETECTION_IMAGE',NULL,NEW.current_version)");
             default->throw new AssertionError(mutation);
         }
-        var original=snapshot();assertThatThrownBy(fixture::copyChatAndFingerprints).isInstanceOf(Exception.class);
+        var original=snapshot();
+        var rejected=assertThatThrownBy(fixture::copyChatAndFingerprints).isInstanceOf(Exception.class);
+        if(mutation.equals("damaged_current_pointer"))rejected.hasStackTraceContaining("compact_support_guard");
         assertThat(target.queryForObject("SELECT COUNT(*) FROM chat_project",Integer.class)).isZero();
         assertThat(target.queryForObject("SELECT COUNT(*) FROM chat_message",Integer.class)).isZero();
         assertThat(target.queryForObject("SELECT COUNT(*) FROM content_asset",Integer.class)).isZero();

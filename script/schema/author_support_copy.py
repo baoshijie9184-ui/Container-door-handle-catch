@@ -137,7 +137,13 @@ def main():
             'created_at': 's.created_at', 'updated_at': 's.updated_at'},
     }
     for target, values in projections.items():
-        lines.append('INSERT INTO ' + target + '(' + ','.join(values) + ') SELECT ' + ','.join(values.values()) + ' FROM ' + source + ';')
+        inserted = {**values, 'lifecycle': "'PREPARING'", 'current_version': 'NULL'} if target == 'content_asset' else values
+        lines.append('INSERT INTO ' + target + '(' + ','.join(inserted) + ') SELECT ' + ','.join(inserted.values()) + ' FROM ' + source + ';')
+    # Both content foreign keys remain enabled: establish the asset, then its
+    # revision, before pointing the asset at that revision in this transaction.
+    lines.append('UPDATE content_asset a JOIN ' + source + ' ON BINARY a.asset_id=BINARY ' + asset
+                 + " AND a.asset_kind='DETECTION_IMAGE' AND BINARY a.legacy_source=BINARY 'detection_image_fingerprint' AND a.legacy_id=s.id"
+                 + " SET a.current_version=1,a.lifecycle='ACTIVE';")
     textual = {'asset_id', 'asset_kind', 'legacy_owner_reference', 'identity_key', 'title', 'filename',
                'visibility', 'lifecycle', 'legacy_source', 'object_key', 'content_sha256', 'manifest_json',
                'manifest_sha256', 'namespace', 'scope_key', 'state_code', 'current_ref', 'payload_json'}

@@ -1,5 +1,9 @@
 # 单体 ECS 运行与测试
 
+2026-11-11 #220/#221最新实际结果：同一固定提交`8c30776fcd95ed6347494ce5904e5ad7de1867ab`的#220源码验证整轮SUCCESS：Java926通过、712条件跳过，Python3,694通过、24条件跳过，主前端203及Agent前端20项全部通过，两套生产构建完成；250项资料11,537,819字节在ECS实际恢复并核验。265份原归档中264份非应用JAR共39,286,740字节已另存`ci-220-raw-receipts`并核SHA；资料保全不等于业务合入。
+
+#221继续同提交完整`verify-runtime/mysql`，20模块1,853项控制预检通过，四阶段自动夹具准备完成。实际原生MySQL执行7类105项：102通过、3错误、零跳过。三个错误均在`SupportCopyMigrationMySqlTest`，检测图片资产先填`current_version=1`、版本记录后插入，违反`fk_content_current_revision`；不能用已通过的源码测试替代此次失败。40份原归档中39份非应用JAR共18,702,852字节及原build.xml已保全于`ci-221-raw-receipts`；夹具与工具实际STOPPED、工具remaining为空。流水线外StopInstance后已回读`Stopped / StopCharging`，Jenkins保持运行，修复期间任务禁自动触发且无排队。完整整库迁移、旧45/5599、运行与浏览器验收尚未执行，正式131表未切换。
+
 2026-11-11 原盘80GiB扩容已执行：用户明确批准原系统盘70→80GiB及一份保留7天的标准扩容前快照。单体实例/原盘身份、Jenkins终态且禁自动触发、实际Stopped/StopCharging核对后，创建快照`s-2ze4lto0m4wr1qq04vc7`；实际accomplished/100%/Available=true、原盘70GiB及RetentionDays=7全部回读通过后，才对同盘`d-2zeieuov2aum486inund`离线扩至80GiB。开机重新核IMDS、machineId、UID、磁盘序列号及实际85,899,345,920字节，再先预览、后执行原`/dev/vda3`的growpart和resize2fs，均exit0。根分区起点413696、PARTUUID、ext4 UUID及前两分区保持原值。
 
 独立回读文件系统84,151,820,288字节、可用12,708,839,424字节（约11.836GiB）；完整41份操作原件及摘要位于`work/jenkins/data-residency-20261107/resize-80gib-approved-20261111/preservation.json`。目前原实例已启动供后续验证，Jenkins继续运行；扩容不构成源码、迁移或运行验收通过。先固定提交完成source＋250项资料恢复，再保持同一提交执行原完整native/整库/旧45/5599/九场景/19浏览器验收，各阶段原资源门保留，测试结束仍从流水线外实际节省停机。正式131表尚未切换。
