@@ -513,7 +513,7 @@ def failed_native_mysql(fixture):
     value=SimpleNamespace(**json.loads(body))
     proof={'path':'inbox/'+tag+'/source.tar.gz','sha256':value.context['sourceSha256'],
            'failedNativePolicy':'failed-native-retention-v1',
-           'mysqlFixtureStartAstSha256':'9262b5d7744d34fc34cf89ee23047f2f6a852201288cbd6505f0ad2c44b43a85'}
+           'mysqlFixtureStartSourceSha256':'79658b1e2982b14614d4c458c58e9b73af59349cf8f4edf874d3f76d83f91795'}
     return value,proof
 
 
@@ -538,7 +538,7 @@ def test_failed_native_mysql_proof_does_not_expand_default_historical_object_api
             value.row,value.data_metadata,source_proof=proof)
 
 
-@pytest.mark.parametrize('field',['path','sha256','failedNativePolicy','mysqlFixtureStartAstSha256'])
+@pytest.mark.parametrize('field',['path','sha256','failedNativePolicy','mysqlFixtureStartSourceSha256'])
 def test_failed_native_mysql_object_producer_or_source_drift_is_rejected_before_commands(failed_native_mysql,field):
     value,proof=failed_native_mysql;proof[field]='unreviewed'
     with pytest.raises(ValueError,match='producer differs'):
@@ -550,7 +550,7 @@ def test_failed_native_mysql_remove_rechecks_explicit_producer_before_any_object
     value,proof=failed_native_mysql
     descriptor=resources.historical_mysql_fixture_descriptor(ROOT,value.context,IDENTITY,value.owner,value.cleanup,
         value.row,value.data_metadata,source_proof=proof,failed_native=True)
-    descriptor['rawInspectSha256']=sha(raw([value.row]));descriptor['fixtureSourceProof']['mysqlFixtureStartAstSha256']='0'*64
+    descriptor['rawInspectSha256']=sha(raw([value.row]));descriptor['fixtureSourceProof']['mysqlFixtureStartSourceSha256']='0'*64
     calls,inspect,remove,listing,references,data=callbacks(value)
     with pytest.raises(ValueError,match='producer differs'):
         resources.historical_mysql_fixture_remove(descriptor,inspect,remove,listing,references,data)

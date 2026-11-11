@@ -2002,3 +2002,59 @@ def test_actual_controller_reader_admits_failed_native_argument_and_preserves_gu
         assert Path(row['files']['fixtureCleanupPublic']['source']).parent==retained
         assert not (artifacts/'fixture-cleanup.json').exists()
         assert (artifacts/'application.jar').read_bytes()==jar
+
+@pytest.fixture
+def real_failed_mysql_producer(tmp_path, monkeypatch):
+    """Read the retained producer's real code, never import or execute it."""
+    root=tmp_path/'root';folder=root/'inbox'/('ci-221-'+'a'*12);folder.mkdir(parents=True)
+    recipe=(MODULE.parent/'prepare-compact-fixtures.py').read_bytes()
+    publication={'Jenkinsfile.ecs-monolith':b'fixed synthetic nonpublishing workflow',
+                 'script/jenkins/pipeline.ps1':b'fixed synthetic publication guard'}
+    monkeypatch.setattr(retirer,'FAILED_NATIVE_PUBLICATION_RECIPES',
+        frozenset({tuple(sha(raw) for raw in publication.values())}))
+    artifact=SimpleNamespace(keeper=folder/'application.jar')
+    context={'release':folder.name,'commit':'a'*40,'sourceSha256':None}
+    spec=importlib.util.spec_from_file_location('failed_native_actual_producer_resource_tests',
+        MODULE.parents[1]/'docker/compact-build-resources.py')
+    resources=importlib.util.module_from_spec(spec);spec.loader.exec_module(resources)
+    def prove(body):
+        archive=source_archive(artifact,recipe=body,publication=publication)
+        context['sourceSha256']=sha(archive.read_bytes())
+        return retirer.source_proof(root,context['release'],context['commit'],context['sourceSha256'],
+                                    canonical_jar=True,failed_native=True)
+    return SimpleNamespace(recipe=recipe,context=context,prove=prove,resources=resources)
+
+
+@pytest.mark.parametrize('parser_layout',['python39','python312'])
+def test_real_failed_mysql_producer_source_binding_survives_python_function_ast_layout(real_failed_mysql_producer,monkeypatch,parser_layout):
+    state=real_failed_mysql_producer
+    fields=tuple(field for field in ast.FunctionDef._fields if field!='type_params')
+    monkeypatch.setattr(ast.FunctionDef,'_fields',fields+(('type_params',) if parser_layout=='python312' else ()))
+    original_parse=ast.parse
+    def parsed(*args,**kwargs):
+        tree=original_parse(*args,**kwargs)
+        for node in ast.walk(tree):
+            if isinstance(node,ast.FunctionDef):node.type_params=[]
+        return tree
+    monkeypatch.setattr(ast,'parse',parsed)
+    proof=state.prove(state.recipe)
+    assert proof['mysqlFixtureStartSourceSha256']=='79658b1e2982b14614d4c458c58e9b73af59349cf8f4edf874d3f76d83f91795'
+    assert 'mysqlFixtureStartAstSha256' not in proof
+    admitted=state.resources.recent_mysql_fixture_source(state.context,proof,failed_native=True)
+    assert admitted['mysqlFixtureStartSourceSha256']==proof['mysqlFixtureStartSourceSha256']
+
+
+@pytest.mark.parametrize('damage',['missing-producer','duplicate-producer','changed-command'])
+def test_real_failed_mysql_producer_binding_rejects_missing_duplicate_or_changed_original_code(real_failed_mysql_producer,damage):
+    state=real_failed_mysql_producer;recipe=state.recipe
+    if damage=='missing-producer':recipe=recipe.replace(b'def start_mysql(self, image):',b'def different_mysql(self, image):')
+    elif damage=='duplicate-producer':recipe+=b'\ndef start_mysql(self, image):\n    pass\n'
+    else:recipe=recipe.replace(b"'--skip-log-bin'",b"'--log-bin'",1)
+    assert recipe!=state.recipe
+    if damage=='changed-command':
+        proof=state.prove(recipe)
+        with pytest.raises(ValueError,match='producer differs'):
+            state.resources.recent_mysql_fixture_source(state.context,proof,failed_native=True)
+    else:
+        with pytest.raises(retirer.RetirementError,match='EXACT_FAILED_NATIVE_MYSQL_PRODUCER_REQUIRED'):
+            state.prove(recipe)

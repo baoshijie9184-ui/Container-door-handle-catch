@@ -31,6 +31,9 @@ FILE_COUNT = 36
 ORIGINAL_BYTES = 465240718
 MAX_BYTES = 512 * 1024 ** 2
 MAX_MANIFEST = 2 * 1024 ** 2
+# verify-remote.py publishes CI receipts with its own MAX_RECEIPT_BYTES bound.
+# A data profile's smaller manifest budget must not narrow that CI contract.
+MAX_VERIFICATION_RECEIPT = 256 * 1024
 DISK_FLOOR = (2 * 1024 + 256) * 1024 ** 2
 MEMORY_FLOOR = 1024 ** 3
 SNAPSHOT = "additional-local-artifacts-snapshot"
@@ -429,7 +432,7 @@ def admit(args):
              and hashlib.sha256(tar.extractfile(helper).read(1024 ** 2 + 1)).hexdigest() == digest(safe(Path(__file__).absolute())),
              "Custody helper differs from this committed source archive")
     receipt_file = safe(checkout.parent / "verification-receipt.json")
-    accepted = read_json(receipt_file, private=True)
+    accepted = read_json(receipt_file, maximum=MAX_VERIFICATION_RECEIPT, private=True)
     need(all(accepted.get(key) == value for key, value in {"status": "PASS", "verificationExitCode": 0,
          "release": args.tag, "commit": args.commit, "sourceSha256": args.source_sha256, "identity": observed}.items()),
          "Opaque custody requires this build actual passing ECS verification")
@@ -479,7 +482,8 @@ def original_snapshot(args):
          and public.get("bytes") == ORIGINAL_BYTES and public.get("identity") == context["identity"]
          and public.get("release") == relative.parts[0] and re.fullmatch(r"[a-f0-9]{40}", public.get("commit", ""))
          and public["release"].endswith("-" + public["commit"][:12]), "Old custody receipt does not prove same-ECS success")
-    old_verification = read_json(owner_path(old_work.parent.parent / "verification-receipt.json"), private=True)
+    old_verification = read_json(owner_path(old_work.parent.parent / "verification-receipt.json"),
+                                 maximum=MAX_VERIFICATION_RECEIPT, private=True)
     need(all(old_verification.get(k) == public[k] for k in ("release", "commit", "sourceSha256", "identity"))
          and old_verification.get("status") == "PASS" and old_verification.get("verificationExitCode") == 0
          and digest(old_work.parent.parent / "verification-receipt.json") == public["verificationReceiptSha256"],

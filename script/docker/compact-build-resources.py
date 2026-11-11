@@ -1317,7 +1317,7 @@ def recent_mysql_fixture_source(context, proof, *, failed_native=False):
                 'Failed native MySQL source context differs')
         expected = {'path': 'inbox/' + context['release'] + '/source.tar.gz', 'sha256': context['sourceSha256'],
                     'failedNativePolicy': 'failed-native-retention-v1',
-                    'mysqlFixtureStartAstSha256': '9262b5d7744d34fc34cf89ee23047f2f6a852201288cbd6505f0ad2c44b43a85'}
+                    'mysqlFixtureStartSourceSha256': '79658b1e2982b14614d4c458c58e9b73af59349cf8f4edf874d3f76d83f91795'}
         require(type(proof) is dict and all(proof.get(key) == value for key, value in expected.items()),
                 'Reviewed failed native MySQL producer differs')
         return expected

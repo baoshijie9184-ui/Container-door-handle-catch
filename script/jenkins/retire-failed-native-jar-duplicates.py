@@ -626,8 +626,13 @@ def source_proof(root, tag, commit, source_sha, *, builder_helpers=False, canoni
         if failed_native:
             producers = [node for node in ast.walk(syntax) if isinstance(node, ast.FunctionDef) and node.name == 'start_mysql']
             need(len(producers) == 1, 'EXACT_FAILED_NATIVE_MYSQL_PRODUCER_REQUIRED')
+            # AST dump fields differ between host Python versions (for example
+            # Python 3.12 adds FunctionDef.type_params). Bind the actual source
+            # segment from this authenticated archive instead of a parser's repr.
+            producer_source = ast.get_source_segment(recipe.decode('utf8-sig'), producers[0])
+            need(type(producer_source) is str and producer_source, 'EXACT_FAILED_NATIVE_MYSQL_PRODUCER_SOURCE_REQUIRED')
             proof['failedNativePolicy'] = FAILED_NATIVE_BATCH
-            proof['mysqlFixtureStartAstSha256'] = digest_bytes(ast.dump(producers[0], include_attributes=False).encode())
+            proof['mysqlFixtureStartSourceSha256'] = digest_bytes(producer_source.encode('utf8'))
         return proof
 
 

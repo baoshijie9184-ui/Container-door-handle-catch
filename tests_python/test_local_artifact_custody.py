@@ -309,16 +309,63 @@ def test_business_receipt_scope_exception_is_exact_and_does_not_admit_other_jenk
     with pytest.raises(custody.CustodyError): custody.pack(fixture.catalog, fixture.parent / 'rejected')
 
 
+def expand_verification_receipt(work, size, mutation=None):
+    path = work.parent.parent / 'verification-receipt.json'
+    value = json.loads(path.read_bytes())
+    if mutation == 'failed': value['status'] = 'FAILED'
+    elif mutation == 'identity': value['identity']['machineId'] = 'c' * 32
+    raw = custody.encoded(value)
+    assert len(raw) < size
+    path.write_bytes(raw + b'\n' + b' ' * (size - len(raw) - 1))
+    if mutation == 'permissions': path.chmod(0o644)
+    assert path.stat().st_size == size
+    return path
+
+
+@pytest.mark.parametrize('size', [66731, 256 * 1024])
+def test_partial_transport_admits_ci_receipts_above_its_manifest_bound(partial_transport_originals, tmp_path, monkeypatch, size):
+    fixture = partial_transport_originals; package = fixture.parent / 'partial-transports'
+    custody.pack(fixture.catalog, package)
+    args, work = create_attempt(tmp_path, monkeypatch, package)
+    receipt = expand_verification_receipt(work, size)
+    admitted_work, context = custody.admit(args)
+    assert admitted_work == work and context['verificationReceiptSha256'] == custody.digest(receipt)
+    assert custody.MAX_VERIFICATION_RECEIPT == 256 * 1024 and custody.MAX_MANIFEST == 64 * 1024
+    assert not (work / custody.OWNER).exists() and not (work / custody.SNAPSHOT).exists()
+
+
+def test_partial_transport_still_refuses_ci_receipts_above_verifier_bound(partial_transport_originals, tmp_path, monkeypatch):
+    fixture = partial_transport_originals; package = fixture.parent / 'partial-transports'
+    custody.pack(fixture.catalog, package)
+    args, work = create_attempt(tmp_path, monkeypatch, package)
+    expand_verification_receipt(work, 256 * 1024 + 1)
+    with pytest.raises(custody.CustodyError, match='bounded'): custody.prepare(args)
+    assert not (work / custody.OWNER).exists() and not (work / custody.SNAPSHOT).exists()
+    assert custody.MAX_MANIFEST == 64 * 1024
+
+
+@pytest.mark.parametrize('mutation', ['failed', 'identity', 'permissions'])
+def test_large_ci_receipt_still_requires_actual_pass_private_same_ecs_proof(partial_transport_originals, tmp_path, monkeypatch, mutation):
+    fixture = partial_transport_originals; package = fixture.parent / 'partial-transports'
+    custody.pack(fixture.catalog, package)
+    args, work = create_attempt(tmp_path, monkeypatch, package)
+    expand_verification_receipt(work, 66731, mutation)
+    with pytest.raises(custody.CustodyError): custody.prepare(args)
+    assert not (work / custody.OWNER).exists() and not (work / custody.SNAPSHOT).exists()
+
+
 def test_partial_transport_profile_keeps_four_opaque_inputs_in_an_independent_restore_and_reuse(partial_transport_originals, tmp_path, monkeypatch):
     fixture = partial_transport_originals; package = fixture.parent / 'partial-transports'
     before = {name: (fixture.source / name).read_bytes() for name, _, _ in fixture.names}
     custody.pack(fixture.catalog, package)
     args, work = create_attempt(tmp_path, monkeypatch, package)
+    expand_verification_receipt(work, 66731)
     custody.prepare(args); upload(package, work); first = custody.verify_restore(args)
     assert first['profile'] == 'legacy-partial-transports-v1' and first['files'] == 4
     assert first['databasesOpened'] == first['modelsExecuted'] == first['originalFilesDeleted'] == 0
     assert custody.MAX_BYTES == 256 * 1024 ** 2 and custody.MAX_MANIFEST == 64 * 1024
     args, newer = create_attempt(tmp_path, monkeypatch, package, number=72)
+    expand_verification_receipt(newer, 66731)
     args.source_snapshot_directory = str(work / custody.SNAPSHOT)
     description = custody.describe(args); args.source_receipt_sha256 = description['sourceCustodyReceiptSha256']
     assert custody.reuse(args)['status'] == 'RESTORED_VERIFIED'
