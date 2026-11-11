@@ -275,6 +275,14 @@ if ([string]::IsNullOrWhiteSpace($nativeRetentionPolicy)) {$nativeRetentionPolic
 if ($nativeRetentionPolicy -cnotin @('FailedNative','RetiredCopies194','RetiredCopies203','PublicCaches221224235')) { throw 'Unsupported native retention policy.' }
 if ($nativeRetentionPolicy -cne 'FailedNative' -and $env:ACTION -cne 'reclaim-build-outputs') { throw 'An explicit retired-copy policy requires source-only build maintenance.' }
 $tag = Require-Value 'RELEASE_TAG' '^ci-[0-9]+-[a-f0-9]{12}$'
+$failedNativeBuildNumber=[string]$env:FAILED_NATIVE_BUILD_NUMBER
+if ($failedNativeBuildNumber -cne '') {
+    if ($failedNativeBuildNumber -cnotmatch '\A[1-9][0-9]{0,8}\z') { throw 'Failed native build number must be a canonical ASCII positive integer with at most nine digits.' }
+    if ($env:ACTION -cne 'reclaim-build-outputs' -or $nativeRetentionPolicy -cne 'FailedNative') { throw 'A failed native build selection requires the explicit FailedNative maintenance policy.' }
+    $currentBuildNumber=Require-Value 'BUILD_NUMBER' '\A[1-9][0-9]*\z'
+    if ($tag -cnotmatch '\Aci-[1-9][0-9]*-[a-f0-9]{12}\z') { throw 'Failed native build selection requires a canonical current release number.' }
+    if ([long]$failedNativeBuildNumber -lt 221 -or [long]$failedNativeBuildNumber -ge [long]$currentBuildNumber -or [long]$failedNativeBuildNumber -ge [long]($tag.Split('-')[1])) { throw 'Select one failed native build from 221 up to, but excluding, the current build.' }
+}
 if ($env:ACTION -ceq 'reclaim-build-outputs') {
     if ($Action -cnotin @('PackageSourceOnly', 'ReclaimBuildOutputs') -or $env:CI_ECS_VERIFIED -cne 'false' -or $env:DOORHANDLE_CI_SCOPE -cne 'source') {
         throw 'Standalone build maintenance only packages pinned source and reclaims proven old outputs without a test PASS.'
@@ -486,7 +494,7 @@ if ($Action -ceq 'ReclaimBuildOutputs' -and $env:ACTION -ceq 'reclaim-build-outp
     } elseif ($nativeRetentionPolicy -ceq 'RetiredCopies203') {
         & ./script/jenkins/retire-failed-native-jar-duplicates.ps1 -Mode Maintenance -CanonicalBatch RetiredCopies -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha
     } else {
-        & ./script/jenkins/retire-failed-native-jar-duplicates.ps1 -Mode Maintenance -CanonicalBatch FailedNative -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha
+        & ./script/jenkins/retire-failed-native-jar-duplicates.ps1 -Mode Maintenance -CanonicalBatch FailedNative -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha -FailedNativeBuildNumber $failedNativeBuildNumber
     }
     return
 }

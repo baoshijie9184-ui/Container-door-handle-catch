@@ -167,8 +167,13 @@ FAILED_NATIVE_PUBLICATION_RECIPES = frozenset({
      '83bc9554f928e15143e3b5fb87d52b5e5ea825b652766ead95a7262268dee05e'),
     ('97690cb956375cb1e98f1f1f98a7b3a3ec0e8d73d99a8ee0f28b0f5634fde180',
      'f51f972cdd790fd68d8de549270d7e8088e8492206d9a097d0ba0de5792eecf4'),
+    # #238's retained 73ce5aef control-observer recipe uses these original LF bytes.
+    ('97690cb956375cb1e98f1f1f98a7b3a3ec0e8d73d99a8ee0f28b0f5634fde180',
+     'ee04de044bf6c0516fdad24f1f960a29ddf9dbfe613321fd3f8c4f21c4177b05'),
     ('7b6c1792393615eff3f0049868573c2d5bf247e0ad9dc150b79dfe9ca62741ca',
      'e7424e38932b7dde12a90590e284490fdc60742efe6b2b162cb96f1667e2867f'),
+    ('f8e83ca9a148deea6f606308de2cc6b92f2e3405e167a9386eb1a7dc9ba96bf3',
+     '1ad3e3f048f6df9cfb64efc3d43b2963a3bddb8109ffd13a225f8a8b27324eb0'),
 })
 CLOSED_RUNTIME_JARS = {
     'ci-204-24f8eb4b02bf': {

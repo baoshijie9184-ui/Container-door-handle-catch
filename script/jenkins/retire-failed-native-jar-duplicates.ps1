@@ -9,7 +9,8 @@ param(
     [Parameter(Mandatory=$true)][string]$Commit,
     [Parameter(Mandatory=$true)][string]$SourceSha256,
     [string]$RetainedControlRoot = 'D:/AI/lunwen1/DoorHandleCatch/work/jenkins/data-residency-20261107',
-    [ValidateSet('retired-195-198-201','retired-187-188-189')][string]$RetiredCopyBatch = 'retired-195-198-201'
+    [ValidateSet('retired-195-198-201','retired-187-188-189')][string]$RetiredCopyBatch = 'retired-195-198-201',
+    [string]$FailedNativeBuildNumber = ''
 )
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
@@ -38,6 +39,7 @@ Require-NativeJar ($Tag -cmatch '^ci-[1-9][0-9]*-[a-f0-9]{12}$' -and $Commit -cm
 Require-NativeJar ($SshOptions -ccontains 'StrictHostKeyChecking=yes' -and $SshOptions -ccontains 'HostKeyAlias=doorhandle-bj') 'Pinned ECS host authentication is required.'
 Require-NativeJar ($CanonicalBatch -cne 'FailedNative' -or $Mode -ceq 'Maintenance') 'Failed native retention requires source-only maintenance.'
 Require-NativeJar ($CanonicalBatch -cne 'PublicCaches' -or $Mode -ceq 'Maintenance') 'Public cache retention requires explicit source-only maintenance.'
+Require-NativeJar ($FailedNativeBuildNumber -ceq '' -or ($Mode -ceq 'Maintenance' -and $CanonicalBatch -ceq 'FailedNative' -and $FailedNativeBuildNumber -cmatch '\A[1-9][0-9]{0,8}\z' -and [long]$FailedNativeBuildNumber -ge 221 -and [long]$FailedNativeBuildNumber -lt [long]($Tag.Split('-')[1]))) 'An explicit failed native selection must be one earlier native-epoch Jenkins build in source-only FailedNative maintenance.'
 $instance=$env:DOORHANDLE_ECS_INSTANCE_ID; $machine=$env:DOORHANDLE_ECS_MACHINE_ID
 Require-NativeJar ($instance -cmatch '^i-[a-z0-9]+$' -and $machine -cmatch '^[a-f0-9]{32}$') 'Explicit expected ECS identity required.'
 $ssh=(Get-Command ssh.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
@@ -58,7 +60,7 @@ Require-NativeJar ([IO.Path]::IsPathFullyQualified($RetainedControlRoot) -and [I
 # test is imported or run on the workstation. D evidence is pinned to original
 # preservation manifests reviewed for each selected closed batch.
 $reader=@'
-import gzip,hashlib,json,os,stat,sys,tarfile
+import gzip,hashlib,json,os,re,stat,sys,tarfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
 def need(v,code='LOCAL_CONTROL_ADMISSION_REJECTED'):
@@ -76,12 +78,14 @@ def unique(pairs):
  result={}
  for k,v in pairs:need(k not in result);result[k]=v
  return result
-need(len(sys.argv) in (8,9),'EXACT_LOCAL_CONTROL_ARGUMENTS_REQUIRED')
+need(len(sys.argv) in (8,9,10),'EXACT_LOCAL_CONTROL_ARGUMENTS_REQUIRED')
 archive,commit,retained,jhome,remote,current,batch=sys.argv[1:8]
-retired_batch=sys.argv[8] if len(sys.argv)==9 else 'retired-195-198-201'
+retired_batch=sys.argv[8] if len(sys.argv)>=9 else 'retired-195-198-201'
+selected_build=sys.argv[9] if len(sys.argv)==10 else ''
 need(batch in ('Historical','Recent','RetiredCopies','ClosedRuntime','FailedNative','PublicCaches'))
 need(retired_batch in ('retired-195-198-201','retired-187-188-189'),'EXACT_RETIRED_COPY_BATCH_REQUIRED')
 need(retired_batch=='retired-195-198-201' or batch=='RetiredCopies','RETIRED_COPY_BATCH_REQUIRES_RETIRED_COPIES')
+need(selected_build=='' or batch=='FailedNative' and re.fullmatch(r'[1-9][0-9]{0,8}',selected_build) and 221<=int(selected_build)<int(current.split('-')[1]),'EXACT_FAILED_NATIVE_SELECTION_REQUIRED')
 approved=[(117,'8c898996cc28ce30fd6531710511f833cccb4864','e1eec611a0dcbb93158d8e5a68fc5d16e6f96d65dcb82e6930f54abdd84d2e2c'),
  (118,'6481f7fa6021eb36592a081d04f385886c03412a','e73474da34762eedf1438c835dbc741091f02c69fb5c3664dbba6cca30395f8a'),
  (130,'9a588271dadb135ec4284392ef7b9c9c55ea511d','f53a73fa4ce45e44b666cbf963145b353f6e478c7cc594ca849b59bfe0b924d2'),
@@ -150,6 +154,7 @@ if batch=='ClosedRuntime':
 if batch=='FailedNative':
  approved=[];current_number=int(current.split('-')[1]);builds=Path(jhome)/'jobs/doorhandle-java/builds'
  for directory in sorted((p for p in builds.iterdir() if p.name.isdigit() and 221<=int(p.name)<current_number),key=lambda p:int(p.name),reverse=True):
+  if selected_build and directory.name!=selected_build:continue
   raw=stable(directory/'build.xml');need(b'<!DOCTYPE' not in raw.upper() and b'<!ENTITY' not in raw.upper())
   node=ET.fromstring(raw)
   if node.findtext('result') not in ('FAILURE','ABORTED') or node.findtext('completed')!='true' or node.findtext('execution/done')!='true':continue
@@ -170,6 +175,7 @@ if batch=='FailedNative':
    after=os.fstat(stream.fileno());need((after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns,after.st_ctime_ns,after.st_nlink)==(meta.st_dev,meta.st_ino,meta.st_size,meta.st_mtime_ns,meta.st_ctime_ns,meta.st_nlink) and digest.hexdigest()==release.get('applicationJarSha256'),'RETAINED_JENKINS_BINARY_DIFFERS')
   approved.append((int(directory.name),oldcommit,None))
   if len(approved)==16:break
+ need(not selected_build or len(approved)==1,'EXACT_SELECTED_FAILED_NATIVE_BUILD_REQUIRED')
 helpers={};wanted={'script/jenkins/retire-failed-native-jar-duplicates.py','script/jenkins/cleanup-ecs-builds.py','script/jenkins/verify-remote.py','script/docker/compact-build-resources.py'}
 class Bounded:
  def __init__(self,s):self.s,self.n=s,0
@@ -313,9 +319,10 @@ elif batch=='RetiredCopies':
   authority_custody.append(record)
  rel=json.loads(authority_raw['release.json'],object_pairs_hook=unique)
  need(rel.get('kind')=='doorhandle-maintenance-source' and rel.get('action')=='reclaim-build-outputs' and rel.get('release')==authority_tag and rel.get('commit')==authority_commit and rel.get('sourceSha256')==originals['source.tar.gz'][1] and rel.get('maintenanceOnly') is True and rel.get('testsExecuted') is False and rel.get('applicationBuilt') is False,'RETIRED_AUTHORITY_RELEASE_CONTEXT_DRIFT')
-print(json.dumps({'helpers':helpers,'rows':rows,'skipped':skipped,'custody':custody,'builderFiles':builder_files,'authorityFiles':authority_files,'authorityCustody':authority_custody}))
+print(json.dumps({'helpers':helpers,'rows':rows,'skipped':skipped,'custody':custody,'builderFiles':builder_files,'authorityFiles':authority_files,'authorityCustody':authority_custody,'selectedFailedNativeBuild':selected_build}))
 '@
-$local=(Invoke-NativeJar $python @('-I','-B','-c',$reader,$archive,$Commit,$RetainedControlRoot,$jenkinsHome,$RemoteRoot,$Tag,$CanonicalBatch,$RetiredCopyBatch) | Select-Object -Last 1) | ConvertFrom-Json -AsHashtable
+$local=(Invoke-NativeJar $python @('-I','-B','-c',$reader,$archive,$Commit,$RetainedControlRoot,$jenkinsHome,$RemoteRoot,$Tag,$CanonicalBatch,$RetiredCopyBatch,$FailedNativeBuildNumber) | Select-Object -Last 1) | ConvertFrom-Json -AsHashtable
+Require-NativeJar ($local.selectedFailedNativeBuild -ceq $FailedNativeBuildNumber -and ($FailedNativeBuildNumber -ceq '' -or (@($local.rows).Count -eq 1 -and $local.rows[0].release.Split('-')[1] -ceq $FailedNativeBuildNumber))) 'The explicit failed native selection must retain exactly its original Jenkins build.'
 if ($CanonicalBatch -ceq 'PublicCaches') {Require-NativeJar (@($local.rows).Count -eq 6 -and @($local.skipped).Count -eq 0) 'Public caches require the retained 117 keeper and all five closed failed-build control bundles.'}
 $spec=[ordered]@{schemaVersion=1;kind='doorhandle-failed-native-jar-duplicate-request';current=@{release=$Tag;commit=$Commit;sourceSha256=$SourceSha256};identity=@{instanceId=$instance;machineId=$machine;executionLocation='ECS'};protectedReleases=@($Tag);candidates=@()}
 $uploads=@()

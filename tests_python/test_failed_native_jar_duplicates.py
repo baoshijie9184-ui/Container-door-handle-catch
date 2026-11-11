@@ -1954,6 +1954,40 @@ def test_failed_native_retention_only_accepts_reviewed_publication_behavior(fail
                              canonical_jar=True,failed_native=True)
 
 
+@pytest.mark.parametrize('changed', [None, 'jenkins', 'pipeline', 'mixed-reviewed', 'default-api'])
+def test_failed_native_238_control_observer_recipe_requires_its_exact_reviewed_pair(tmp_path, monkeypatch, changed):
+    # Isolate the reviewed-hash lookup with synthetic publication payloads; the
+    # archive, fixed commit, copy recipe and producer are still read normally.
+    # The two hashes were bound to #238's retained archive and fixed 73ce5aef bytes.
+    commit = '73ce5aeff86201d9b2776159903acd5907c8420a'; tag = 'ci-238-' + commit[:12]
+    root = tmp_path / 'ci'; folder = root / 'inbox' / tag; folder.mkdir(parents=True)
+    publication = {'Jenkinsfile.ecs-monolith': b'synthetic retained 238 Jenkinsfile',
+                   'script/jenkins/pipeline.ps1': b'synthetic retained 238 control-observer pipeline'}
+    expected = dict(zip(publication, (
+        '97690cb956375cb1e98f1f1f98a7b3a3ec0e8d73d99a8ee0f28b0f5634fde180',
+        'ee04de044bf6c0516fdad24f1f960a29ddf9dbfe613321fd3f8c4f21c4177b05')))
+    bound_hashes = {body: expected[name] for name, body in publication.items()}
+    if changed == 'mixed-reviewed':
+        bound_hashes[publication['Jenkinsfile.ecs-monolith']] = '7b6c1792393615eff3f0049868573c2d5bf247e0ad9dc150b79dfe9ca62741ca'
+    if changed in ('jenkins', 'pipeline'):
+        name = 'Jenkinsfile.ecs-monolith' if changed == 'jenkins' else 'script/jenkins/pipeline.ps1'
+        publication[name] += b' unknown publication behavior'
+    original_digest = retirer.digest_bytes
+    monkeypatch.setattr(retirer, 'digest_bytes', lambda raw: bound_hashes.get(raw, original_digest(raw)))
+    archive = source_archive(SimpleNamespace(keeper=folder / 'application.jar'), comment=commit,
+                             recipe=(MODULE.parent / 'prepare-compact-fixtures.py').read_bytes(), publication=publication)
+    options = dict(canonical_jar=True, failed_native=changed != 'default-api')
+    if changed is not None:
+        with pytest.raises(retirer.RetirementError, match='CLOSED_REVIEWED_UNPUBLISHED_SOURCE_REQUIRED'):
+            retirer.source_proof(root, tag, commit, sha(archive.read_bytes()), **options)
+    else:
+        proof = retirer.source_proof(root, tag, commit, sha(archive.read_bytes()), **options)
+        assert proof['unpublishedPipelineSourceSha256'] == expected
+        assert proof['failedNativePolicy'] == 'failed-native-retention-v1'
+        assert proof['mysqlFixtureStartSourceSha256'] == '79658b1e2982b14614d4c458c58e9b73af59349cf8f4edf874d3f76d83f91795'
+    assert archive.is_file() and tag not in retirer.APPROVED_OLD and tag not in retirer.PUBLIC_LAYER_TAGS
+
+
 def test_failed_native_controller_uses_original_jenkins_terminal_and_honest_guarded_recovery_custody():
     script = (MODULE.parent / 'retire-failed-native-jar-duplicates.ps1').read_text()
     reader = script.split("$reader=@'",1)[1].split("\n'@",1)[0]; ast.parse(reader)
@@ -2007,6 +2041,134 @@ def test_actual_controller_reader_admits_failed_native_argument_and_preserves_gu
         assert Path(row['files']['fixtureCleanupPublic']['source']).parent==retained
         assert not (artifacts/'fixture-cleanup.json').exists()
         assert (artifacts/'application.jar').read_bytes()==jar
+
+
+@pytest.fixture
+def exact_failed_native_controller_reader(tmp_path, bundle, monkeypatch):
+    controller = (MODULE.parent / 'retire-failed-native-jar-duplicates.ps1').read_text(encoding='utf8')
+    reader = controller.split("$reader=@'\n", 1)[1].split("\n'@", 1)[0]
+    root = tmp_path / 'ci'; root.mkdir(); jhome = tmp_path / 'jhome'
+    retained = tmp_path / 'retained'; retained.mkdir()
+    current = {'release': 'ci-300-' + 'f' * 12, 'commit': 'f' * 40, 'sourceSha256': 'e' * 64}
+    contexts = {}; originals = {}; jars = {}; source = tmp_path / 'source.tar.gz'
+    def store(path, raw):
+        path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(raw); path.chmod(0o600)
+        return path
+    with tarfile.open(source, 'w:gz', format=tarfile.PAX_FORMAT, pax_headers={'comment': current['commit']}) as archive:
+        for name in ('script/jenkins/retire-failed-native-jar-duplicates.py', 'script/jenkins/cleanup-ecs-builds.py',
+                     'script/jenkins/verify-remote.py', 'script/docker/compact-build-resources.py'):
+            member = tarfile.TarInfo(name); member.size = 1; archive.addfile(member, io.BytesIO(b'x'))
+    publication = {'Jenkinsfile.ecs-monolith': b'synthetic reviewed no-publish recipe',
+                   'script/jenkins/pipeline.ps1': b'synthetic reviewed native verifier return'}
+    monkeypatch.setattr(retirer, 'FAILED_NATIVE_PUBLICATION_RECIPES', frozenset({tuple(sha(raw) for raw in publication.values())}))
+    for number in (237, 238):
+        context = {'release': 'ci-' + str(number) + '-' + 'a' * 12, 'commit': 'a' * 40, 'sourceSha256': 'b' * 64}
+        inbox = root / 'inbox' / context['release']; inbox.mkdir(parents=True)
+        keeper = store(inbox / 'application.jar', bundle.jar); jars[number] = keeper
+        if number == 238:
+            archive = source_archive(SimpleNamespace(keeper=keeper), publication=publication,
+                recipe=b"def prepare(self):\n jar = canonical(self.inbox / 'application.jar')\n uploaded = self.work / 'candidate-app.jar'\n shutil.copyfile(jar, uploaded)\ndef start_mysql(self, image):\n return image\n")
+            context['sourceSha256'] = sha(archive.read_bytes())
+        values = copy.deepcopy(bundle.values)
+        for value in values.values(): value.update(context)
+        work = root / 'verification' / context['release'] / 'checkout/work/compact-fixtures'
+        values['fixtureOwner']['work'] = str(work)
+        values['fixtureCleanup']['dataDirectoryRetained'] = str(work / 'data')
+        original = jhome / 'jobs/doorhandle-java/builds' / str(number)
+        originals[number] = original; contexts[number] = context
+        store(original / 'build.xml', flow_xml(context))
+        store(original / 'archive/artifacts/release.json', encoded(values['release']))
+        store(original / 'archive/artifacts/application.jar', bundle.jar)
+        for name in ('ecs-tool-preparation.json', 'candidate-build-tools-transport.json'):
+            store(original / 'archive/artifacts' / name, encoded(context))
+        if number == 238:
+            paths = retirer.expected_control_paths(current['release'], context['release'])
+            for role in ('artifactPlan', 'fixtureOwner', 'fixtureCleanup'):
+                store(root / paths[role], encoded(values[role]))
+    return SimpleNamespace(reader=reader, root=root, jhome=jhome, retained=retained, source=source,
+                           current=current, contexts=contexts, originals=originals, jars=jars, identity=bundle.identity, store=store)
+
+
+def run_exact_failed_native_reader(value, monkeypatch, capsys, selected='', batch='FailedNative'):
+    monkeypatch.setattr(sys, 'argv', ['reader', str(value.source), value.current['commit'], str(value.retained),
+        str(value.jhome), str(value.root), value.current['release'], batch, 'retired-195-198-201', selected])
+    exec(compile(value.reader, 'actual-exact-failed-native-reader', 'exec'), {})
+    return json.loads(capsys.readouterr().out)
+
+
+def capture_exact_failed_native_reader(value, result):
+    rows = []
+    for row in result['rows']:
+        paths = retirer.expected_control_paths(value.current['release'], row['release']); controls = {}
+        for role, original in row['files'].items():
+            raw = Path(original['source']).read_bytes(); value.store(value.root / paths[role], raw)
+            controls[role] = {'path': paths[role], 'bytes': len(raw), 'sha256': sha(raw)}
+        rows.append({key: row[key] for key in ('release', 'commit', 'sourceSha256')} | {'controls': controls})
+    request = {'schemaVersion': 1, 'kind': retirer.KIND + '-request', 'current': value.current,
+               'identity': value.identity, 'protectedReleases': [value.current['release']], 'candidates': rows}
+    raw = encoded(request)
+    return retirer.capture_request(value.root, raw, local_spec_sha256=sha(raw), expected_current=value.current,
+                                  identity=value.identity, canonical_jar=True, failed_native=True)
+
+
+@pytest.mark.parametrize('selected', ['', '238'])
+def test_exact_failed_native_selection_reaches_capture_without_waiving_incomplete_other_attempts(exact_failed_native_controller_reader, monkeypatch, capsys, selected):
+    value = exact_failed_native_controller_reader
+    result = run_exact_failed_native_reader(value, monkeypatch, capsys, selected)
+    assert result['selectedFailedNativeBuild'] == selected and result['skipped'] == []
+    assert [row['release'] for row in result['rows']] == [value.contexts[n]['release'] for n in ((238,) if selected else (238, 237))]
+    request, skipped = capture_exact_failed_native_reader(value, result)
+    assert [row['release'] for row in request['candidates']] == [value.contexts[238]['release']]
+    assert skipped == ([] if selected else [{'release': value.contexts[237]['release'], 'reason': 'REQUIRED_ECS_CONTROL_MISSING_ARTIFACTPLAN'}])
+    assert all(path.read_bytes() == b'synthetic reviewed candidate jar\x00\xff\n' for path in value.jars.values())
+
+
+@pytest.mark.parametrize('selected,batch', [('0238','FailedNative'), ('238\n','FailedNative'), ('２３８','FailedNative'),
+    ('220','FailedNative'), ('300','FailedNative'), ('301','FailedNative'), ('1000000000','FailedNative'), ('238','PublicCaches')])
+def test_exact_failed_native_reader_rejects_noncanonical_wrong_epoch_current_or_other_policy(exact_failed_native_controller_reader, monkeypatch, capsys, selected, batch):
+    with pytest.raises(ValueError, match='EXACT_FAILED_NATIVE_SELECTION_REQUIRED'):
+        run_exact_failed_native_reader(exact_failed_native_controller_reader, monkeypatch, capsys, selected, batch)
+    assert capsys.readouterr().out == ''
+
+
+@pytest.mark.parametrize('changed', ['absent', 'successful', 'wrong-action', 'jar-drift'])
+def test_exact_failed_native_selection_still_requires_the_selected_original_terminal_and_jar(exact_failed_native_controller_reader, monkeypatch, capsys, changed):
+    value = exact_failed_native_controller_reader; original = value.originals[238]
+    if changed == 'absent': selected = '239'
+    else:
+        selected = '238'
+        if changed == 'successful': (original / 'build.xml').write_bytes(flow_xml(value.contexts[238], result='SUCCESS'))
+        elif changed == 'wrong-action': (original / 'build.xml').write_bytes(with_action(flow_xml(value.contexts[238]), 'verify-controls'))
+        else: (original / 'archive/artifacts/application.jar').write_bytes(b'changed retained original')
+    guard = 'RETAINED_JENKINS_BINARY_DIFFERS' if changed == 'jar-drift' else 'EXACT_SELECTED_FAILED_NATIVE_BUILD_REQUIRED'
+    with pytest.raises(ValueError, match=guard): run_exact_failed_native_reader(value, monkeypatch, capsys, selected)
+    assert capsys.readouterr().out == '' and all(path.exists() for path in value.jars.values())
+
+
+def test_exact_failed_native_selection_does_not_read_or_reclassify_an_unselected_original(exact_failed_native_controller_reader, monkeypatch, capsys):
+    value = exact_failed_native_controller_reader
+    unselected = value.originals[237] / 'build.xml'; unselected.write_bytes(b'incomplete unrelated original; retained unchanged')
+    result = run_exact_failed_native_reader(value, monkeypatch, capsys, '238')
+    assert result['skipped'] == [] and [row['release'] for row in result['rows']] == [value.contexts[238]['release']]
+    with pytest.raises(ET.ParseError): run_exact_failed_native_reader(value, monkeypatch, capsys)
+    assert unselected.read_bytes() == b'incomplete unrelated original; retained unchanged'
+
+
+@pytest.mark.parametrize('blocked', ['publication', 'process'])
+def test_exact_failed_native_capture_never_waives_later_publication_or_quiescence_guards(exact_failed_native_controller_reader, monkeypatch, capsys, blocked):
+    value = exact_failed_native_controller_reader
+    result = run_exact_failed_native_reader(value, monkeypatch, capsys, '238')
+    request, skipped = capture_exact_failed_native_reader(value, result); assert skipped == []
+    tag = value.contexts[238]['release']; raw = encoded(request); calls = []
+    if blocked == 'publication': (value.root / 'releases' / tag).mkdir(parents=True)
+    def quiet(checkout, actual_tag, token):
+        calls.append((checkout, actual_tag, token))
+        raise retirer.RetirementError('ACTIVE_FILE_DESCRIPTOR_REFERENCES_OLD_CHECKOUT')
+    prepared = retirer.plan(value.root, raw, request_sha256=sha(raw), expected_current=value.current,
+        identity=value.identity, quiescence=quiet, canonical_jar=True, failed_native=True)
+    assert prepared['candidates'] == [] and len(prepared['skipped']) == 1
+    assert bool(calls) is (blocked == 'process')
+    assert all(path.exists() for path in value.jars.values())
 
 @pytest.fixture
 def real_failed_mysql_producer(tmp_path, monkeypatch):
@@ -2747,6 +2909,32 @@ def test_native_retention_jenkins_and_seed_choices_have_the_same_safe_default_an
     assert "if ([string]::IsNullOrWhiteSpace($nativeRetentionPolicy)) {$nativeRetentionPolicy='FailedNative'}" in pipeline
 
 
+def test_exact_failed_native_selector_is_optional_scoped_and_bound_through_every_controller_entry():
+    root = MODULE.parents[2]
+    workflow = (root / 'Jenkinsfile.ecs-monolith').read_text(encoding='utf8')
+    seed = (root / 'script/jenkins/configure-local.groovy').read_text(encoding='utf8')
+    pipeline = (root / 'script/jenkins/pipeline.ps1').read_text(encoding='utf8')
+    controller = (MODULE.parent / 'retire-failed-native-jar-duplicates.ps1').read_text(encoding='utf8')
+    assert "string(name: 'FAILED_NATIVE_BUILD_NUMBER', defaultValue: '', trim: true" in workflow
+    assert "new StringParameterDefinition('FAILED_NATIVE_BUILD_NUMBER', ''," in seed
+    assert "').with { setTrim(true); it }" in next(line for line in seed.splitlines() if "StringParameterDefinition('FAILED_NATIVE_BUILD_NUMBER'" in line)
+    assert "env.FAILED_NATIVE_BUILD_NUMBER = params.FAILED_NATIVE_BUILD_NUMBER?.trim() ?: ''" in workflow
+    assert "params.ACTION != 'reclaim-build-outputs' || env.NATIVE_RETENTION_POLICY != 'FailedNative'" in workflow
+    assert "selectedBuild < 221 || selectedBuild >= env.BUILD_NUMBER.toLong() || selectedBuild >= env.RELEASE_TAG.tokenize('-')[1].toLong()" in workflow
+    assert "$failedNativeBuildNumber=[string]$env:FAILED_NATIVE_BUILD_NUMBER" in pipeline
+    assert "$env:ACTION -cne 'reclaim-build-outputs' -or $nativeRetentionPolicy -cne 'FailedNative'" in pipeline
+    assert "[long]$failedNativeBuildNumber -lt 221" in pipeline and "[long]$failedNativeBuildNumber -ge [long]$currentBuildNumber" in pipeline
+    assert pipeline.index('if ($failedNativeBuildNumber -cne') < pipeline.index("if ($env:ACTION -ceq 'reclaim-build-outputs') {")
+    call = next(line for line in pipeline.splitlines() if '-CanonicalBatch FailedNative -SshOptions' in line)
+    assert call.endswith('-FailedNativeBuildNumber $failedNativeBuildNumber')
+    assert "[string]$FailedNativeBuildNumber = ''" in controller
+    assert "$Mode -ceq 'Maintenance' -and $CanonicalBatch -ceq 'FailedNative'" in controller
+    assert "'\\A[1-9][0-9]{0,8}\\z'" in controller
+    assert '$local.selectedFailedNativeBuild -ceq $FailedNativeBuildNumber' in controller
+    assert "@($captured.skipped | Where-Object {$_.reason -cne 'FAILED_NATIVE_BINARIES_NOT_PRESENT'}).Count -eq 0" in controller
+    assert 'include_inbox=True' in MODULE.read_text(encoding='utf8')
+
+
 def test_native_retention_pipeline_selects_one_batch_after_ordinary_cleanup_and_preserves_203_default():
     root = MODULE.parents[2]
     pipeline = (root / 'script/jenkins/pipeline.ps1').read_text(encoding='utf8')
@@ -2766,7 +2954,7 @@ def test_native_retention_pipeline_selects_one_batch_after_ordinary_cleanup_and_
     assert "[string]$CanonicalBatch = 'Historical'" in controller
     assert "[ValidateSet('retired-195-198-201','retired-187-188-189')][string]$RetiredCopyBatch = 'retired-195-198-201'" in controller
     assert "$RetiredCopyBatch -ceq 'retired-195-198-201' -or $CanonicalBatch -ceq 'RetiredCopies'" in controller
-    assert "$Tag,$CanonicalBatch,$RetiredCopyBatch)" in controller
+    assert "$Tag,$CanonicalBatch,$RetiredCopyBatch,$FailedNativeBuildNumber)" in controller
     assert "if($CanonicalBatch -ceq 'RetiredCopies' -and $RetiredCopyBatch -ceq 'retired-187-188-189') {$common+=\" --retired-copy-batch retired-187-188-189\"}" in controller
     assert '$retiredAuthorityTag=if ($RetiredCopyBatch' in controller
     assert 'native-retired-candidate-controls/$retiredAuthorityTag/$($binding.file)' in controller

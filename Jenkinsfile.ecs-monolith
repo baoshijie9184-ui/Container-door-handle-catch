@@ -5,6 +5,14 @@ def configureVerificationInputs() {
     env.NATIVE_RETENTION_POLICY = params.NATIVE_RETENTION_POLICY ?: 'FailedNative'
     if (!(env.NATIVE_RETENTION_POLICY in ['FailedNative', 'RetiredCopies194', 'RetiredCopies203', 'PublicCaches221224235'])) error('Unsupported native retention policy')
     if (env.NATIVE_RETENTION_POLICY != 'FailedNative' && params.ACTION != 'reclaim-build-outputs') error('An explicit retired-copy policy requires source-only build maintenance')
+    env.FAILED_NATIVE_BUILD_NUMBER = params.FAILED_NATIVE_BUILD_NUMBER?.trim() ?: ''
+    if (env.FAILED_NATIVE_BUILD_NUMBER) {
+        if (!(env.FAILED_NATIVE_BUILD_NUMBER ==~ /[1-9][0-9]{0,8}/)) error('Failed native build number must be a canonical ASCII positive integer with at most nine digits')
+        if (params.ACTION != 'reclaim-build-outputs' || env.NATIVE_RETENTION_POLICY != 'FailedNative') error('A failed native build selection requires the explicit FailedNative maintenance policy')
+        if (!(env.BUILD_NUMBER ==~ /[1-9][0-9]*/) || !(env.RELEASE_TAG ==~ /ci-[1-9][0-9]*-[a-f0-9]{12}/)) error('Failed native build selection requires the current Jenkins build and release identity')
+        def selectedBuild = env.FAILED_NATIVE_BUILD_NUMBER.toLong()
+        if (selectedBuild < 221 || selectedBuild >= env.BUILD_NUMBER.toLong() || selectedBuild >= env.RELEASE_TAG.tokenize('-')[1].toLong()) error('Select one failed native build from 221 up to, but excluding, the current build')
+    }
     if (env.DOORHANDLE_ECS_INSTANCE_ID != 'i-2zeieuov2aum486jm1ek' || !(env.DOORHANDLE_ECS_MACHINE_ID ==~ /[a-f0-9]{32}/)) error('Configure the admitted ECS instance and machine identity on the control node')
     env.DEPLOY_HOST = params.DEPLOY_HOST?.trim() ?: ''
     if (!env.DEPLOY_HOST) {
@@ -115,6 +123,7 @@ pipeline {
     parameters {
         choice(name: 'ACTION', choices: ['verify', 'verify-controls', 'verify-embedding', 'verify-runtime', 'verify-deploy', 'rehearse', 'rollback', 'compact-cutover', 'reclaim-build-outputs'], description: 'verify-controls仅运行ECS控制脚本预检；verify-embedding独立验证免费向量模型；verify-runtime验收隔离应用；reclaim-build-outputs仅维护旧构建输出；切库仍须完整证据')
         choice(name: 'NATIVE_RETENTION_POLICY', choices: ['FailedNative', 'RetiredCopies194', 'RetiredCopies203', 'PublicCaches221224235'], description: 'Maintenance only: choose one native retention policy; default FailedNative follows failed runtime builds')
+        string(name: 'FAILED_NATIVE_BUILD_NUMBER', defaultValue: '', trim: true, description: 'FailedNative maintenance only: optional exact old build number; blank keeps the strict complete failed-native batch')
         string(name: 'TRUSTED_COMMIT', defaultValue: '', trim: true, description: '可选 java-cloud 完整提交；留空时固定本次 SCM 检出的提交')
         choice(name: 'DOORHANDLE_CI_SCOPE', choices: ['source', 'mysql'], description: 'source 记录可选套件跳过；mysql 要求显式隔离夹具及所有选择用例实际执行')
         string(name: 'DOORHANDLE_CI_FIXTURE_MANIFEST', defaultValue: '', trim: true, description: '仅 mysql：本次远端 checkout/work 内预先准备的绝对私有清单路径；source 必须留空')
