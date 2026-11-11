@@ -201,6 +201,12 @@ for number,oldcommit,preservation_sha in approved:
    for name in ('ecs-tool-preparation.json','candidate-build-tools-transport.json'):
     source,raw,origin=closed_original(number,name)
     builder_files.append({'release':tag,'file':name,'source':str(source),'bytes':len(raw),'sha256':sha(raw),'origin':origin})
+  if batch=='FailedNative':
+   for name in ('ecs-tool-preparation.json','candidate-build-tools-transport.json'):
+    original=Path(jhome)/'jobs/doorhandle-java/builds'/str(number)/'archive/artifacts'/name
+    body=stable(original);value=json.loads(body,object_pairs_hook=unique)
+    need(all(value.get(key)==rel.get(key) for key in ('release','commit','sourceSha256')),'FAILED_BUILDER_JENKINS_REFERENCE_CONTEXT_DIFFERS')
+    builder_files.append({'release':tag,'file':name,'source':str(original),'bytes':len(body),'sha256':sha(body),'origin':'ACTUAL_JENKINS_ORIGINAL'})
   rows.append({'release':tag,'commit':oldcommit,'sourceSha256':rel['sourceSha256'],'files':files})
   custody.append({'release':tag,'controls':origins,'preservationSha256':preservation_sha if preservation else None})
  except Exception as error:skipped.append({'release':tag,'reason':str(error) if type(error) is ValueError and str(error).replace('_','').isalnum() else type(error).__name__})
@@ -264,6 +270,13 @@ if ($CanonicalBatch -ceq 'ClosedRuntime') {
     Require-NativeJar (@($local.builderFiles).Count -eq 4) 'Both closed builder original Jenkins references are required.'
     foreach($binding in $local.builderFiles) {
         Require-NativeJar ($binding.release -cin @('ci-204-24f8eb4b02bf','ci-207-eb286c623177') -and $binding.file -cin @('ecs-tool-preparation.json','candidate-build-tools-transport.json')) 'Unknown closed builder original reference.'
+        $uploads+=@{relative="inbox/$Tag/native-jar-duplicate-controls/$($binding.release)/$($binding.file)";source=$binding.source;bytes=$binding.bytes;sha256=$binding.sha256}
+    }
+}
+if ($CanonicalBatch -ceq 'FailedNative') {
+    Require-NativeJar (@($local.builderFiles).Count -eq 2*$spec.candidates.Count) 'Each failed native builder requires its actual Jenkins preparation and transport references.'
+    foreach($binding in $local.builderFiles) {
+        Require-NativeJar ($binding.release -cin @($spec.candidates.release) -and $binding.file -cin @('ecs-tool-preparation.json','candidate-build-tools-transport.json')) 'Unknown failed native builder original reference.'
         $uploads+=@{relative="inbox/$Tag/native-jar-duplicate-controls/$($binding.release)/$($binding.file)";source=$binding.source;bytes=$binding.bytes;sha256=$binding.sha256}
     }
 }
@@ -411,7 +424,7 @@ if($CanonicalBatch -ceq 'FailedNative') {
     $failedPlans=@{};$failedResults=@{};$failedError=$false;$failedStage='admission'
     try {
         Require-NativeJar (@($local.skipped).Count -eq 0 -and @($captured.skipped | Where-Object {$_.reason -cne 'FAILED_NATIVE_BINARIES_NOT_PRESENT'}).Count -eq 0) 'Failed native retention lacks complete terminal originals or has unknown binary state.'
-        foreach($step in @(@('fixtures','plan-recent-fixtures','apply-recent-fixtures'),@('copies','plan','apply'),@('canonical','plan-canonical','apply-canonical'))) {
+        foreach($step in @(@('builders','plan-failed-native-builders','apply-failed-native-builders'),@('fixtures','plan-recent-fixtures','apply-recent-fixtures'),@('copies','plan','apply'),@('canonical','plan-canonical','apply-canonical'))) {
             $key=$step[0];$failedStage=$key+'-plan'
             $planned=Invoke-NativeJarPhase $step[1] "--request-sha256 '$requestSha'"
             Require-NativeJar ($planned.status -ceq 'PLANNED' -and $planned.failedNativePolicy -ceq 'failed-native-retention-v1' -and $planned.plan.sha256 -cmatch '^[a-f0-9]{64}$') 'Failed native retention did not produce its exact plan.'
@@ -423,15 +436,15 @@ if($CanonicalBatch -ceq 'FailedNative') {
         }
     } catch {$failedError=$true}
     finally {Copy-NativeJarEvidence (Invoke-NativeJarPhase 'inspect')}
-    Require-NativeJar (-not $failedError -and $failedResults.Count -eq 3) ('Failed native retention failed or is unknown at '+$failedStage+'; original controls are retained.')
+    Require-NativeJar (-not $failedError -and $failedResults.Count -eq 4) ('Failed native retention failed or is unknown at '+$failedStage+'; original controls are retained.')
     $receipts=@{}
-    foreach($step in @(@('fixtures','native-jar-duplicate-fixture-object-receipt.json'),@('copies','native-jar-duplicate-receipt.json'),@('canonical','native-jar-duplicate-canonical-receipt.json'))) {
+    foreach($step in @(@('builders','native-builder-retirement-receipt.json'),@('fixtures','native-jar-duplicate-fixture-object-receipt.json'),@('copies','native-jar-duplicate-receipt.json'),@('canonical','native-jar-duplicate-canonical-receipt.json'))) {
         $receipt=Get-Content -LiteralPath (Join-Path $workspace ('artifacts/'+$step[1])) -Raw -Encoding utf8 | ConvertFrom-Json -Depth 24
         Require-NativeJar ($receipt.status -cin @('REMOVED','NO_ACTION') -and $receipt.failedNativePolicy -ceq 'failed-native-retention-v1' -and $receipt.current.release -ceq $Tag -and $receipt.current.commit -ceq $Commit -and $receipt.current.sourceSha256 -ceq $SourceSha256 -and $receipt.identity.instanceId -ceq $instance -and $receipt.identity.machineId -ceq $machine -and $receipt.requestSha256 -ceq $requestSha -and $receipt.planSha256 -ceq $failedPlans[$step[0]].plan.sha256 -and $null -eq $receipt.failure) 'Collected failed native receipt differs from its exact successful operation.'
         $receipts[$step[0]]=$receipt
     }
-    Require-NativeJar ($receipts.fixtures.dataDirectoriesPreserved -eq $true -and $receipts.fixtures.imagesPreserved -eq $true -and $receipts.fixtures.volumesPreserved -eq $true -and $receipts.fixtures.jarDeletionPerformed -eq $false -and $receipts.copies.inboxKeepersPreserved -eq $true -and $receipts.canonical.sourceArchivesDataAndReportsHaveNoDeletionApi -eq $true -and $receipts.canonical.testsRunByRetirement -eq $false) 'Failed native retention lacks required preservation proof.'
-    [ordered]@{schemaVersion=1;kind='doorhandle-failed-native-retention-ci';policy='failed-native-retention-v1';current=$spec.current;identity=$spec.identity;status='COMPLETE';selectedFailures=$spec.candidates.Count;alreadyAbsent=@($captured.skipped);deletedJarFiles=(@($receipts.copies.deleted).Count+@($receipts.canonical.deleted).Count);candidateAllocatedBytes=($failedPlans.copies.candidateAllocatedBytes+$failedPlans.canonical.candidateAllocatedBytes);retiredMysqlObjects=@($receipts.fixtures.removed).Count;localControlCustody=$local.custody;sourceArchivesDataAndReportsHaveNoDeletionApi=$true;imagesPreserved=$true;volumesPreserved=$true;testsRunByRetirement=$false;binaryRebuildByteIdentityClaimed=$false} | ConvertTo-Json -Depth 16 | Set-Content -LiteralPath (Join-Path $workspace 'artifacts/native-jar-duplicate-ci.json') -Encoding utf8
+    Require-NativeJar ($receipts.builders.jarDeletionPerformed -eq $false -and $receipts.builders.retiredMysqlObjects.Count -eq 0 -and $receipts.builders.volumesPreserved -eq $true -and $receipts.builders.imagesPreserved -eq $true -and $receipts.fixtures.dataDirectoriesPreserved -eq $true -and $receipts.fixtures.imagesPreserved -eq $true -and $receipts.fixtures.volumesPreserved -eq $true -and $receipts.fixtures.jarDeletionPerformed -eq $false -and $receipts.copies.inboxKeepersPreserved -eq $true -and $receipts.canonical.sourceArchivesDataAndReportsHaveNoDeletionApi -eq $true -and $receipts.canonical.testsRunByRetirement -eq $false) 'Failed native retention lacks required preservation proof.'
+    [ordered]@{schemaVersion=1;kind='doorhandle-failed-native-retention-ci';policy='failed-native-retention-v1';current=$spec.current;identity=$spec.identity;status='COMPLETE';selectedFailures=$spec.candidates.Count;alreadyAbsent=@($captured.skipped);deletedJarFiles=(@($receipts.copies.deleted).Count+@($receipts.canonical.deleted).Count);candidateAllocatedBytes=($failedPlans.copies.candidateAllocatedBytes+$failedPlans.canonical.candidateAllocatedBytes);retiredMysqlObjects=@($receipts.fixtures.removed).Count;retiredBuilders=@($receipts.builders.removed).Count;localControlCustody=$local.custody;sourceArchivesDataAndReportsHaveNoDeletionApi=$true;imagesPreserved=$true;volumesPreserved=$true;testsRunByRetirement=$false;binaryRebuildByteIdentityClaimed=$false} | ConvertTo-Json -Depth 16 | Set-Content -LiteralPath (Join-Path $workspace 'artifacts/native-jar-duplicate-ci.json') -Encoding utf8
     return
 }
 if($CanonicalBatch -ceq 'ClosedRuntime') {

@@ -1,5 +1,8 @@
 # 本地 Jenkins CI/CD 约定
 
+当前：#230的20控制模块1,970项已在ECS全部通过、零跳过；同提交#231维护被四个额外退出Builder正确阻断，尚未删除MySQL/JAR。现已把现有Builder→MySQL→JAR顺序接入FailedNative：分别独立核定两停止目标，fresh snapshot只排除这两个完整身份；先普通退役Builder保state卷，再独立退役MySQL保数据，删除前重新核原件、整对与引用。新增36项完整入口边界回归，控制最低2,006项；待新固定提交经既有controls→维护→完整source/四原件→fullruntime验证。ECS已实际Stopped/StopCharging，Jenkins保持运行，正式压测仍延后。
+
+
 #229的Python运行定位到新增producer源码解码的编码名拼写错误，现改为标准utf-8-sig。后续先由既有verify-controls在ECS验证变更的20模块1,970项；通过后同提交维护并回读空间，再完整source/四原件及fullruntime。复用#226原提交的有效源码证据定位影响范围，不把它冒称新提交或数据恢复已通过。
 
 
@@ -7,7 +10,7 @@
 
 2026-11-11 #225完整源码验证终态FAILURE：Java926通过、713条件跳过；Python3,827通过、24条件跳过、11失败，双前端与四份原件恢复尚未进入。10项新增运行传输测试在容器内把当前PID当作宿主监督PID，未满足原PID>1身份契约；另1项旧制品回收测试把结构化custody对象误断言为字符串。正在集中纠正测试夹具和完整元数据断言，不放宽生产身份或清理门。260份归档中259份非JAR原件已在D盘保全，工具实际STOPPED且remaining为空，ECS已实际Stopped/StopCharging。下一轮仍由新固定提交完整source验收，未通过前不进入维护或fullruntime。正式压测继续延后，四账号及原功能验收范围不变。
 
-构建制品保留现沿用维护ACTION `reclaim-build-outputs`，内部选择`FailedNative`，不再固定重跑已成功消费的#204/#207批次。选择器读取保留的实际Jenkins失败/终止原生构建（`verify-runtime/mysql`且生产发布为false）、保留的原JAR及已审核发布配方；旧`Historical`、`Recent`、`RetiredCopies`、`ClosedRuntime`入口和默认保留inbox keeper的用法保持。新路径先按原归属移除停止的隔离MySQL对象但保目录/卷，再删除再生成副本，最后退役未发布inbox JAR，逐阶段归档原plan/receipt/journal。源归档、业务数据、报告、镜像及当前/回滚发布制品不在删除范围。若原post失败而稍后guarded收尾成功，使用D盘真实恢复公共回执并核服务器最终SHA，不把原C盘归档改成成功。缺原件、实际仍运行或有发布引用时保留并失败；已经不存在的二进制只记录无操作，不计新增回收量。
+构建制品保留现沿用维护ACTION `reclaim-build-outputs`，内部选择`FailedNative`，不再固定重跑已成功消费的#204/#207批次。选择器读取保留的实际Jenkins失败/终止原生构建（`verify-runtime/mysql`且生产发布为false）、保留的原JAR及已审核发布配方；旧`Historical`、`Recent`、`RetiredCopies`、`ClosedRuntime`入口和默认保留inbox keeper的用法保持。新路径先逐一核定停止的Builder与MySQL同伴，退役Builder并保state卷，再移除停止的隔离MySQL对象但保目录/卷，再删除再生成副本，最后退役未发布inbox JAR，逐阶段归档原plan/receipt/journal。源归档、业务数据、报告、镜像及当前/回滚发布制品不在删除范围。若原post失败而稍后guarded收尾成功，使用D盘真实恢复公共回执并核服务器最终SHA，不把原C盘归档改成成功。缺原件、实际仍运行或有发布引用时保留并失败；已经不存在的二进制只记录无操作，不计新增回收量。
 
 当前同一固定提交按完整`verify/source`＋四份历史传输原件保全 → 原维护ACTION `FailedNative`及实际空间回读 → 完整`verify-runtime/mysql`执行。完整源码回归已经包含20控制模块及新增Runtime/SQL恢复用例，不额外建立仅controls构建；fullruntime原内置预检和全部业务/迁移/资源门继续执行。未完成真实回收前，不把约3.04GB候选当作可用量。
 

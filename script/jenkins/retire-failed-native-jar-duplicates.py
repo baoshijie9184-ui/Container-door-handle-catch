@@ -1898,7 +1898,7 @@ def builder_container_ids():
     return ids
 
 
-def builder_references(root, historical, descriptor, cleanup, builder, fixture=None, *, include_inbox=False, closed_runtime=False):
+def builder_references(root, historical, descriptor, cleanup, builder, fixture=None, *, include_inbox=False, closed_runtime=False, failed_native=False):
     """Exclude only the fully admitted objects about to retire, never JAR guards."""
     cid = descriptor['containerId']; tag = historical['context']['release']
     retiring = {cid: 'doorhandle-builder-' + descriptor['ownerToken']}
@@ -1908,10 +1908,10 @@ def builder_references(root, historical, descriptor, cleanup, builder, fixture=N
     if include_inbox:
         tag = historical['context']['release']
         need((tag in CLOSED_RUNTIME_BUILDERS and descriptor['containerId'] == CLOSED_RUNTIME_BUILDERS[tag]['containerId'])
-             if closed_runtime else tag in RECENT_BUILDER_ONLY, 'ONLY_REVIEWED_RECENT_BUILDER_REFERENCES_ALLOWED')
+             if closed_runtime else (TAG.fullmatch(tag) and int(TAG.fullmatch(tag)[1]) >= FAILED_NATIVE_FIRST_BUILD) if failed_native else tag in RECENT_BUILDER_ONLY, 'ONLY_REVIEWED_RECENT_BUILDER_REFERENCES_ALLOWED')
         canonical_publication_refs(root, tag)
     return historical_object_references(root, historical, retiring, cleanup, builder,
-        **({'include_inbox': True, 'stopped_retiring': True} if closed_runtime else {'include_inbox': True} if include_inbox else {}))
+        **({'include_inbox': True, 'stopped_retiring': True} if closed_runtime or failed_native else {'include_inbox': True} if include_inbox else {}))
 
 
 def historical_object_references(root, historical, retiring, cleanup, builder, *, include_inbox=False, stopped_retiring=False):
@@ -1964,7 +1964,7 @@ def fixture_data_metadata(root, path):
     finally: os.close(fd)
 
 
-def capture_fixture(root, request, historical, builder, *, source_proof=None):
+def capture_fixture(root, request, historical, builder, *, source_proof=None, failed_native=False):
     owner, cleanup = historical['fixtureOwner'], historical['fixtureCleanup']; cid = owner.get('containerId')
     if cid is None: return None
     need(type(cid) is str and SHA.fullmatch(cid), 'ORIGINAL_MYSQL_FIXTURE_ID_REQUIRED')
@@ -1972,7 +1972,8 @@ def capture_fixture(root, request, historical, builder, *, source_proof=None):
     raw = builder_docker('inspect', cid)
     descriptor = builder.historical_mysql_fixture_descriptor(root, historical['context'], request['identity'], owner, cleanup,
         builder.historical_builder_inspect(raw), fixture_data_metadata(root, owner['dataDirectory']),
-        **({'source_proof': source_proof} if source_proof is not None else {}))
+        **({'source_proof': source_proof} if source_proof is not None else {}),
+        **({'failed_native': True} if failed_native else {}))
     descriptor['rawInspectSha256'] = digest_bytes(raw)
     return descriptor
 
@@ -2157,11 +2158,14 @@ def recent_builder_registration(row):
     return registered
 
 
-def builder_request_rows(request, recent, *, closed_runtime=False):
+def builder_request_rows(request, recent, *, closed_runtime=False, failed_native=False):
     need(type(recent) is bool, 'EXACT_BUILDER_RETIREMENT_POLICY_REQUIRED')
     need(type(closed_runtime) is bool and not (recent and closed_runtime), 'EXACT_CLOSED_BUILDER_POLICY_REQUIRED')
     if closed_runtime:
         need(set(row['release'] for row in request['candidates']) == set(CLOSED_RUNTIME_BUILDERS), 'COMPLETE_CLOSED_RUNTIME_BUILDERS_REQUIRED')
+        return request['candidates']
+    if failed_native:
+        need(not recent and not closed_runtime, 'EXACT_FAILED_NATIVE_BUILDER_POLICY_REQUIRED')
         return request['candidates']
     if not recent: return request['candidates']
     rows = [row for row in request['candidates'] if row['release'] in RECENT_BUILDER_ONLY]
@@ -2170,15 +2174,15 @@ def builder_request_rows(request, recent, *, closed_runtime=False):
     return rows
 
 
-def capture_builder(root, request, row, builder, *, recent=False, closed_runtime=False):
+def capture_builder(root, request, row, builder, *, recent=False, closed_runtime=False, failed_native=False):
     need(type(closed_runtime) is bool and not (recent and closed_runtime), 'EXACT_CLOSED_BUILDER_POLICY_REQUIRED')
-    scoped = recent or closed_runtime
+    scoped = recent or closed_runtime or failed_native
     registered = CLOSED_RUNTIME_BUILDERS.get(row['release']) if closed_runtime else recent_builder_registration(row) if recent else None
     if closed_runtime:
         need(registered is not None and all(row[key] == CLOSED_RUNTIME_JARS[row['release']][key]
              for key in ('commit', 'sourceSha256')), 'EXACT_CLOSED_RUNTIME_BUILDER_REQUIRED')
     historical = admit_historical_controls(root, request, row, builder_helpers=True,
-        **({'canonical_jar': True} if scoped else {}))
+        **({'canonical_jar': True} if scoped else {}), **({'failed_native': True} if failed_native else {}))
     directory = Path(root) / 'inbox' / row['release'] / 'candidate-build-tools'
     controls, raw = {}, {}
     for role, filename in (('tools', 'tools.json'), ('summary', 'resource-summary.json'),
@@ -2190,22 +2194,24 @@ def capture_builder(root, request, row, builder, *, recent=False, closed_runtime
             raw[role] = content
             controls[role] = {'path': path.relative_to(root).as_posix(), 'bytes': len(content),
                               'sha256': digest_bytes(content), 'metadata': signature}
-    if scoped:
+    # FailedNative authenticates these bytes against retained Jenkins preparation below.
+    if scoped and not failed_native:
         need(all(digest_bytes(raw[role]) == registered[role + 'Sha256'] for role in ('tools', 'summary', 'measurement')),
              'RECENT_BUILDER_ORIGINAL_CONTROL_SHA_DRIFT')
-    else:
+    elif not failed_native:
         need(digest_bytes(raw['tools']) == APPROVED_BUILDER_TOOLS.get(row['release']),
              'HISTORICAL_BUILDER_TOOLS_DIFFERS_FROM_ORIGINAL_JENKINS_REFERENCE')
-    if closed_runtime:
+    if closed_runtime or failed_native:
         for role, filename in (('preparation', 'ecs-tool-preparation.json'), ('transport', 'candidate-build-tools-transport.json')):
             path = Path(root) / 'inbox' / request['current']['release'] / 'native-jar-duplicate-controls' / row['release'] / filename
             with held_file(root, path, MAX_CONTROL) as (stream, signature):
                 body = stream.read(MAX_CONTROL + 1)
-                need(digest_bytes(body) == registered[role + 'Sha256'], 'CLOSED_BUILDER_JENKINS_ORIGINAL_DIFFERS')
+                if closed_runtime:
+                    need(digest_bytes(body) == registered[role + 'Sha256'], 'CLOSED_BUILDER_JENKINS_ORIGINAL_DIFFERS')
                 value = decode(body); same_context(value, historical['context'])
                 if role == 'preparation':
                     need(value.get('identity') == request['identity'] and value.get('status') == 'PREPARED'
-                         and value.get('candidateBuilderTools', {}).get('sha256') == registered['toolsSha256']
+                         and value.get('candidateBuilderTools', {}).get('sha256') == digest_bytes(raw['tools'])
                          and value['candidateBuilderTools'].get('file') == str(directory / 'tools.json'),
                          'CLOSED_BUILDER_JENKINS_REFERENCE_DIFFERS')
                 else:
@@ -2214,11 +2220,17 @@ def capture_builder(root, request, row, builder, *, recent=False, closed_runtime
                          'CLOSED_BUILDER_TRANSPORT_REFERENCE_DIFFERS')
                 controls[role] = {'path': path.relative_to(root).as_posix(), 'bytes': len(body),
                                   'sha256': digest_bytes(body), 'metadata': signature}
+    source_proof = dict(historical['sourceArchive'])
+    if failed_native: source_proof['preparedToolsSha256'] = digest_bytes(raw['tools'])
     summary = decode(raw['summary']); cid = summary.get('cleanup', {}).get('builderContainerId')
     need(type(cid) is str and SHA.fullmatch(cid), 'ORIGINAL_BUILDER_CONTAINER_ID_REQUIRED')
     if scoped:
-        need(cid == registered['containerId'] and summary.get('ownerToken') == registered['ownerToken'],
-             'EXACT_ORIGINAL_RECENT_BUILDER_IDENTITY_REQUIRED')
+        if not failed_native:
+            need(cid == registered['containerId'] and summary.get('ownerToken') == registered['ownerToken'],
+                 'EXACT_ORIGINAL_RECENT_BUILDER_IDENTITY_REQUIRED')
+        else:
+            builder.failed_native_builder_source(historical['context'],
+                {role: digest_bytes(body) for role, body in raw.items()}, source_proof)
         canonical_publication_refs(root, row['release'])
         # No object is removed in this branch. All three exact original control
         # hashes and the original source/terminal must still authenticate first.
@@ -2228,18 +2240,22 @@ def capture_builder(root, request, row, builder, *, recent=False, closed_runtime
     inspected = builder_docker('inspect', cid); actual = builder.historical_builder_inspect(inspected)
     descriptor = builder.historical_builder_descriptor(root, historical['context'], request['identity'],
         raw['tools'], raw['summary'], raw['measurement'], historical['sourceArchive']['builderHelperSha256'], actual,
-        **({'closed_runtime': True, 'source_proof': historical['sourceArchive']} if closed_runtime else {}))
+        **({'closed_runtime': True, 'source_proof': historical['sourceArchive']} if closed_runtime else
+           {'failed_native': True, 'source_proof': source_proof} if failed_native else {}))
     fixture = capture_fixture(root, request, historical, builder,
-        **({'source_proof': historical['sourceArchive']} if scoped else {}))
+        **({'source_proof': historical['sourceArchive']} if scoped else {}),
+        **({'failed_native': True} if failed_native else {}))
     return {'historical': historical, 'builderControls': controls, 'descriptor': descriptor, 'fixture': fixture}, inspected
 
 
-def plan_builders(root, raw_request, *, request_sha256, expected_current, identity, modules, recent=False, closed_runtime=False):
+def plan_builders(root, raw_request, *, request_sha256, expected_current, identity, modules, recent=False, closed_runtime=False, failed_native=False):
     need(type(closed_runtime) is bool and not (recent and closed_runtime), 'EXACT_CLOSED_BUILDER_POLICY_REQUIRED')
-    scoped = recent or closed_runtime
+    scoped = recent or closed_runtime or failed_native
     request = approved_request(raw_request, request_sha256, expected_current, identity, canonical_jar=scoped,
-                               **({'closed_runtime': True} if closed_runtime else {}))
-    rows = builder_request_rows(request, recent, **({'closed_runtime': True} if closed_runtime else {}))
+                               **({'closed_runtime': True} if closed_runtime else {}),
+                               **({'failed_native': True} if failed_native else {}))
+    rows = builder_request_rows(request, recent, **({'closed_runtime': True} if closed_runtime else {}),
+                               **({'failed_native': True} if failed_native else {}))
     accepted, absent, skipped = [], [], []; builder, cleanup = modules['builder'], modules['cleanup']
     directory = Path(root) / 'inbox' / expected_current['release'] / 'native-builder-retirement-inspect'
     with controller_lock(root), (publication_lock(root) if scoped else nullcontext()):
@@ -2247,11 +2263,13 @@ def plan_builders(root, raw_request, *, request_sha256, expected_current, identi
             try:
                 with attempt_lock(root, row['release']):
                     value, inspected = capture_builder(root, request, row, builder,
-                        **({'closed_runtime': True} if closed_runtime else {'recent': True} if recent else {}))
+                        **({'closed_runtime': True} if closed_runtime else {'recent': True} if recent else
+                           {'failed_native': True} if failed_native else {}))
                     if scoped and value['descriptor'] is None:
                         absent.append(value); continue
                     builder_references(root, value['historical'], value['descriptor'], cleanup, builder, value['fixture'],
-                        **({'include_inbox': True, 'closed_runtime': True} if closed_runtime else {'include_inbox': True} if recent else {}))
+                        **({'include_inbox': True, 'closed_runtime': True} if closed_runtime else
+                           {'include_inbox': True, 'failed_native': True} if failed_native else {'include_inbox': True} if recent else {}))
                     if not directory.exists(): directory.mkdir(mode=0o700)
                     owned_path(root, directory, directory=True)
                     path = directory / (row['release'] + '.json')
@@ -2269,29 +2287,33 @@ def plan_builders(root, raw_request, *, request_sha256, expected_current, identi
             'deletionPerformed': False, 'imagesPreserved': True, 'volumesPreserved': True, 'directoriesPreserved': True}
     if recent: value.update(scope=RECENT_BUILDER_SCOPE, absent=absent)
     if closed_runtime: value.update(scope='CLOSED_RUNTIME_BUILDERS', closedJarBatch=CLOSED_RUNTIME_BATCH, absent=absent)
+    if failed_native: value.update(scope='FAILED_NATIVE_BUILDERS', failedNativePolicy=FAILED_NATIVE_BATCH, absent=absent)
     return value
 
 
 def apply_builders(root, raw_request, prepared, *, request_sha256, plan_sha256, expected_current, identity, modules, recent=False,
-                   closed_runtime=False):
+                   closed_runtime=False, failed_native=False):
     need(type(closed_runtime) is bool and not (recent and closed_runtime), 'EXACT_CLOSED_BUILDER_POLICY_REQUIRED')
-    scoped = recent or closed_runtime
+    scoped = recent or closed_runtime or failed_native
     request = approved_request(raw_request, request_sha256, expected_current, identity, canonical_jar=scoped,
-                               **({'closed_runtime': True} if closed_runtime else {}))
+                               **({'closed_runtime': True} if closed_runtime else {}),
+                               **({'failed_native': True} if failed_native else {}))
     need(digest_bytes(canonical(prepared)) == plan_sha256 and prepared.get('kind') == 'doorhandle-historical-builder-retirement-plan'
          and prepared.get('current') == expected_current and prepared.get('identity') == identity
          and prepared.get('requestSha256') == request_sha256 and prepared.get('deletionPerformed') is False,
          'EXACT_HISTORICAL_BUILDER_PLAN_REQUIRED')
     selected = prepared.get('candidates'); rows = {row['release']: row for row in builder_request_rows(request, recent,
-        **({'closed_runtime': True} if closed_runtime else {}))}
+        **({'closed_runtime': True} if closed_runtime else {}),
+                               **({'failed_native': True} if failed_native else {}))}
     need(type(selected) is list and len(selected) <= len(rows)
          and len({row['descriptor']['release'] for row in selected}) == len(selected)
          and all(row['descriptor']['release'] in rows for row in selected), 'BOUNDED_HISTORICAL_BUILDER_SELECTION_REQUIRED')
     absent = prepared.get('absent', []) if scoped else []
     if scoped:
-        need(prepared.get('scope') == ('CLOSED_RUNTIME_BUILDERS' if closed_runtime else RECENT_BUILDER_SCOPE)
-             and (not closed_runtime or prepared.get('closedJarBatch') == CLOSED_RUNTIME_BATCH) and prepared.get('skipped') == []
-             and type(absent) is list and len(selected) + len(absent) == len(rows) == (2 if closed_runtime else 1)
+        need(prepared.get('scope') == ('CLOSED_RUNTIME_BUILDERS' if closed_runtime else 'FAILED_NATIVE_BUILDERS' if failed_native else RECENT_BUILDER_SCOPE)
+             and (not closed_runtime or prepared.get('closedJarBatch') == CLOSED_RUNTIME_BATCH)
+             and (not failed_native or prepared.get('failedNativePolicy') == FAILED_NATIVE_BATCH) and prepared.get('skipped') == []
+             and type(absent) is list and len(selected) + len(absent) == len(rows) and (len(rows) <= 16 if failed_native else len(rows) == (2 if closed_runtime else 1))
              and all(type(item) is dict and item.get('descriptor') is None for item in absent),
              'COMPLETE_EXACT_RECENT_BUILDER_PLAN_REQUIRED')
     else:
@@ -2310,7 +2332,7 @@ def apply_builders(root, raw_request, prepared, *, request_sha256, plan_sha256, 
                 need(active in rows, 'RECENT_ABSENT_BUILDER_OUTSIDE_EXACT_REQUEST')
                 with attempt_lock(root, active):
                     observed, inspected = capture_builder(root, request, rows[active], builder,
-                        **({'closed_runtime': True} if closed_runtime else {'recent': True}))
+                        **({'closed_runtime': True} if closed_runtime else {'failed_native': True} if failed_native else {'recent': True}))
                     need(observed == candidate and inspected is None, 'RECENT_ABSENT_BUILDER_OR_ORIGINALS_CHANGED_AFTER_PLAN')
                     already_absent.append(candidate['absentContainerId'])
                     record({'phase': 'BUILDER_ALREADY_ABSENT', 'release': active, 'containerId': candidate['absentContainerId']})
@@ -2318,7 +2340,8 @@ def apply_builders(root, raw_request, prepared, *, request_sha256, plan_sha256, 
                 active = candidate['descriptor']['release']
                 with attempt_lock(root, active):
                     current, _inspected = capture_builder(root, request, rows[active], builder,
-                        **({'closed_runtime': True} if closed_runtime else {'recent': True} if recent else {}))
+                        **({'closed_runtime': True} if closed_runtime else {'recent': True} if recent else
+                           {'failed_native': True} if failed_native else {}))
                     need(current == {key: value for key, value in candidate.items() if key != 'inspection'},
                          'HISTORICAL_BUILDER_OR_CONTROLS_CHANGED_AFTER_PLAN')
                     reference = candidate['inspection']; path = Path(root) / reference['path']
@@ -2329,7 +2352,7 @@ def apply_builders(root, raw_request, prepared, *, request_sha256, plan_sha256, 
                              and digest_bytes(builder.encoded(builder.historical_builder_inspect(raw))) == candidate['descriptor']['inspectSha256'],
                              'FROZEN_HISTORICAL_BUILDER_INSPECTION_DRIFT')
                     fixture = current['fixture']
-                    if fixture is not None and not closed_runtime:
+                    if fixture is not None and not (closed_runtime or failed_native):
                         record({'phase': 'MYSQL_OBJECT_REMOVE_STARTED', 'release': active, 'containerId': fixture['containerId'],
                                 'inspectSha256': fixture['inspectSha256'], 'rawInspectSha256': fixture['rawInspectSha256'],
                                 'dataDirectory': fixture['dataDirectory'], 'dataMetadata': fixture['dataMetadata']})
@@ -2345,9 +2368,11 @@ def apply_builders(root, raw_request, prepared, *, request_sha256, plan_sha256, 
                         lambda cid: builder.historical_builder_inspect(builder_docker('inspect', cid)),
                         lambda cid: builder_docker('rm', cid), builder_container_ids,
                         lambda _cid: builder_references(root, current['historical'], current['descriptor'], cleanup, builder,
-                            **({'fixture': fixture, 'include_inbox': True, 'closed_runtime': True} if closed_runtime
-                               else {'include_inbox': True} if recent else {})),
-                        **({'closed_runtime': True} if closed_runtime else {}))
+                            **({'fixture': fixture, 'include_inbox': True, 'closed_runtime': True} if closed_runtime else
+                               {'fixture': fixture, 'include_inbox': True, 'failed_native': True} if failed_native else
+                               {'include_inbox': True} if recent else {})),
+                        **({'closed_runtime': True} if closed_runtime else {}),
+                               **({'failed_native': True} if failed_native else {}))
                     removed.append(value); record({'phase': 'REMOVED', **value})
         except Exception as error:
             failure = {'release': active, 'reason': str(error) if isinstance(error, RetirementError)
@@ -2363,6 +2388,8 @@ def apply_builders(root, raw_request, prepared, *, request_sha256, plan_sha256, 
     if recent: value.update(scope=RECENT_BUILDER_SCOPE, alreadyAbsent=already_absent)
     if closed_runtime: value.update(scope='CLOSED_RUNTIME_BUILDERS', closedJarBatch=CLOSED_RUNTIME_BATCH, alreadyAbsent=already_absent,
                                     journalSha256=digest_bytes(private_bytes(root, journal_path)))
+    if failed_native: value.update(scope='FAILED_NATIVE_BUILDERS', failedNativePolicy=FAILED_NATIVE_BATCH, alreadyAbsent=already_absent,
+                                   journalSha256=digest_bytes(private_bytes(root, journal_path)))
     return value
 
 
@@ -2828,7 +2855,8 @@ def closed_runtime_cli(args):
 def failed_native_cli(args):
     if args.jar_batch != FAILED_NATIVE_BATCH: return False
     need(args.mode == 'Maintenance' and args.phase in ('capture-canonical-request', 'plan-recent-fixtures',
-         'apply-recent-fixtures', 'plan', 'apply', 'plan-canonical', 'apply-canonical', 'inspect'),
+         'apply-recent-fixtures', 'plan-failed-native-builders', 'apply-failed-native-builders',
+         'plan', 'apply', 'plan-canonical', 'apply-canonical', 'inspect'),
          'FAILED_NATIVE_RETENTION_MAINTENANCE_ONLY')
     return True
 
@@ -2838,6 +2866,7 @@ def cli(argv=None):
     parser.add_argument('--phase', choices=('capture-request', 'capture-canonical-request', 'plan-builders', 'apply-builders', 'plan', 'apply',
                                            'plan-recent-builders', 'apply-recent-builders',
                                            'plan-closed-builders', 'apply-closed-builders',
+                                           'plan-failed-native-builders', 'apply-failed-native-builders',
                                            'plan-retired-candidate-copies', 'apply-retired-candidate-copies',
                                            'plan-recent-fixtures', 'apply-recent-fixtures',
                                            'plan-canonical', 'apply-canonical',
@@ -3054,22 +3083,23 @@ def cli(argv=None):
                 result = {'status': value['status'], 'current': current, 'identity': identity,
                           'receipt': write_new(public_receipt_file, value)}
         elif args.phase in ('plan-builders', 'apply-builders', 'plan-recent-builders', 'apply-recent-builders',
-                             'plan-closed-builders', 'apply-closed-builders'):
+                             'plan-closed-builders', 'apply-closed-builders',
+                             'plan-failed-native-builders', 'apply-failed-native-builders'):
             recent = args.phase in ('plan-recent-builders', 'apply-recent-builders')
             need(not recent or args.mode == 'Maintenance', 'RECENT_BUILDER_REQUIRES_MAINTENANCE')
             raw = private_bytes(root, request_file)
-            approved_request(raw, args.request_sha256, current, identity, canonical_jar=recent or closed_runtime,
+            approved_request(raw, args.request_sha256, current, identity, canonical_jar=recent or closed_runtime or failed_native,
                              **({'closed_runtime': True} if closed_runtime else {}),
                 **({'failed_native': True} if failed_native else {}))
             options = {'request_sha256': args.request_sha256, 'expected_current': current, 'identity': identity, 'modules': modules}
             if recent: options['recent'] = True
             if closed_runtime: options['closed_runtime'] = True
             if failed_native: options['failed_native'] = True
-            if args.phase in ('plan-builders', 'plan-recent-builders', 'plan-closed-builders'):
+            if args.phase in ('plan-builders', 'plan-recent-builders', 'plan-closed-builders', 'plan-failed-native-builders'):
                 value = plan_builders(root, raw, **options)
                 result = {'status': 'PLANNED', 'current': current, 'identity': identity,
                           'plan': write_new(builder_plan_file, value), 'skipped': value['skipped']}
-                if recent or closed_runtime:
+                if recent or closed_runtime or failed_native:
                     result.update(scope=value['scope'], builderCount=len(value['candidates']), alreadyAbsent=len(value['absent']))
             else:
                 plan_raw = private_bytes(root, builder_plan_file)
@@ -3077,7 +3107,7 @@ def cli(argv=None):
                 value = apply_builders(root, raw, decode(plan_raw), plan_sha256=args.plan_sha256, **options)
                 result = {'status': value['status'], 'current': current, 'identity': identity,
                           'receipt': write_new(builder_receipt_file, value)}
-                if recent or closed_runtime:
+                if recent or closed_runtime or failed_native:
                     result.update(scope=value['scope'], requestSha256=value['requestSha256'], planSha256=value['planSha256'],
                         removedBuilders=len(value['removed']), alreadyAbsent=len(value['alreadyAbsent']),
                         retiredMysqlObjects=len(value['retiredMysqlObjects']),

@@ -1852,6 +1852,7 @@ def failed_native_case(canonical_case, monkeypatch):
 
 
 @pytest.mark.parametrize('phase', ['capture-canonical-request', 'plan-recent-fixtures', 'apply-recent-fixtures',
+                                  'plan-failed-native-builders', 'apply-failed-native-builders',
                                   'plan', 'apply', 'plan-canonical', 'apply-canonical', 'inspect'])
 def test_failed_native_cli_is_one_reusable_maintenance_selection_not_a_numbered_batch(phase):
     args = SimpleNamespace(jar_batch=retirer.FAILED_NATIVE_BATCH, mode='Maintenance', phase=phase)
@@ -1985,6 +1986,8 @@ def test_actual_controller_reader_admits_failed_native_argument_and_preserves_gu
         jar=b'retained original Jenkins application';(artifacts/'application.jar').write_bytes(jar)
         (artifacts/'release.json').write_bytes(encoded({**context,'applicationJarSha256':sha(jar)}))
         (artifacts/'local-build.json').write_bytes(encoded({'kind':'synthetic-local-build'}))
+        for name in ('ecs-tool-preparation.json','candidate-build-tools-transport.json'):
+            (artifacts/name).write_bytes(encoded({**context,'kind':'synthetic-original-builder-reference'}))
         public={'status':'STOPPED','commit':context['commit'],'release':context['release'],
                 'cleanupReceipt':CI_ROOT+'/verification/'+context['release']+'/checkout/work/compact-fixtures/cleanup-receipt.json',
                 'cleanupReceiptSha256':'c'*64}
@@ -1996,6 +1999,7 @@ def test_actual_controller_reader_admits_failed_native_argument_and_preserves_gu
     if guarded:
         row=result['rows'][0]
         assert row['release']==context['release'] and row['commit']==context['commit']
+        assert {value['file'] for value in result['builderFiles']}=={'ecs-tool-preparation.json','candidate-build-tools-transport.json'}
         assert result['custody'][0]['controls']['fixtureCleanupPublic']=={
             'origin':'ACTUAL_GUARDED_RECOVERY_PUBLIC_RECEIPT',
             'bytes':len(encoded(public)), 'sha256':sha(encoded(public))}
@@ -2058,3 +2062,153 @@ def test_real_failed_mysql_producer_binding_rejects_missing_duplicate_or_changed
     else:
         with pytest.raises(retirer.RetirementError,match='EXACT_FAILED_NATIVE_MYSQL_PRODUCER_REQUIRED'):
             state.prove(recipe)
+
+@pytest.fixture
+def failed_native_pair_plan(tmp_path,bundle,monkeypatch):
+    """Real plan/admission/removal code; replace only OS Docker/process/UID probes."""
+    from tests_python import test_historical_builder_retirement as builder_cases
+    from tests_python import test_historical_mysql_fixture_retirement as mysql_cases
+    root=tmp_path/'ci';tag='ci-221-'+'a'*12;context={'release':tag,'commit':'a'*40,'sourceSha256':'b'*64}
+    current={'release':'ci-300-'+'f'*12,'commit':'f'*40,'sourceSha256':'e'*64}
+    for value in (tag,current['release']):(root/'inbox'/value).mkdir(parents=True,mode=0o700)
+    work=root/'verification'/tag/'checkout/work/compact-fixtures';data=work/'mysql-data';data.mkdir(parents=True,mode=0o700)
+    page=data/'retained-original-page';page.write_bytes(b'private database bytes are retained')
+    bcid='1'*64;fid='d'*64;production='e'*64;builder_token='c'*24
+    bs=builder_cases.fixture_state((tag,context['commit'],bcid,builder_token))
+    bs=SimpleNamespace(**json.loads(json.dumps(vars(bs),default=str).replace(str(builder_cases.CI_ROOT),str(root))))
+    ms=mysql_cases.fixture.__wrapped__();old_context=dict(ms.context)
+    ms=SimpleNamespace(**json.loads(json.dumps(vars(ms),default=str).replace(str(mysql_cases.ROOT),str(root))
+        .replace(old_context['release'],tag).replace(old_context['commit'],context['commit'])))
+    ms.owner['binaryLoggingDisabled']=True;ms.row['Config']['Cmd'].insert(6,'--skip-log-bin')
+    pub={'Jenkinsfile.ecs-monolith':b'synthetic fixed no-publish pipeline',
+         'script/jenkins/pipeline.ps1':b'synthetic publication guard',
+         'script/docker/compact-build-resources.py':(MODULE.parents[1]/'docker/compact-build-resources.py').read_bytes(),
+         'script/docker/compact-image-inputs.py':(MODULE.parents[1]/'docker/compact-image-inputs.py').read_bytes()}
+    monkeypatch.setattr(retirer,'FAILED_NATIVE_PUBLICATION_RECIPES',frozenset({tuple(sha(pub[k]) for k in ('Jenkinsfile.ecs-monolith','script/jenkins/pipeline.ps1'))}))
+    archive=source_archive(SimpleNamespace(keeper=root/'inbox'/tag/'application.jar'),
+        recipe=(MODULE.parent/'prepare-compact-fixtures.py').read_bytes(),publication=pub)
+    context['sourceSha256']=sha(archive.read_bytes())
+    for value in (bs.context,bs.tools,bs.summary,ms.context,ms.owner,ms.cleanup):value.update(context)
+    for row in (bs.row,ms.row):row['Config']['Labels']['io.doorhandle.source']=context['sourceSha256']
+    bs.helpers={Path(name).name:sha(body) for name,body in pub.items() if name.startswith('script/docker/')}
+    bs.tools['helperSha256']=bs.helpers['compact-build-resources.py'];bs.tools['imageInputsHelperSha256']=bs.helpers['compact-image-inputs.py']
+    builder_cases.refresh_references(bs)
+    directory=root/'inbox'/tag/'candidate-build-tools';directory.mkdir()
+    raw_controls={}
+    for role,name in (('tools','tools.json'),('summary','resource-summary.json'),('measurement','official-layer-measurements.json')):
+        raw_controls[role]=builder_cases.raw(getattr(bs,role));path=directory/name;path.write_bytes(raw_controls[role]);path.chmod(0o600)
+    jar=b'regeneratable failed native application';keeper=root/'inbox'/tag/'application.jar';copy_path=work/'candidate-app.jar'
+    for p in (keeper,copy_path):p.write_bytes(jar);p.chmod(0o600)
+    originals={'buildXml':flow_xml(context),'release':encoded({**context,'applicationJarSha256':sha(jar)}),
+        'artifactPlan':encoded({'schema':1,'kind':'doorhandle-compact-fixture-artifacts',**context,'applicationJarSha256':sha(jar),'applicationJarBytes':len(jar)}),
+        'fixtureOwner':encoded(ms.owner),'fixtureCleanup':encoded(ms.cleanup)}
+    paths=retirer.expected_control_paths(current['release'],tag);refs={}
+    for role,body in originals.items():
+        p=root/paths[role];p.parent.mkdir(parents=True,exist_ok=True);p.write_bytes(body);p.chmod(0o600)
+        refs[role]={'path':paths[role],'bytes':len(body),'sha256':sha(body)}
+    preparation={**context,'identity':bundle.identity,'status':'PREPARED',
+        'candidateBuilderTools':{'file':str(directory/'tools.json'),'sha256':sha(raw_controls['tools'])}}
+    transport={**context,'status':'AVAILABLE','admission':{'identity':bundle.identity},'buildkitArchive':{'sha256':retirer.PUBLIC_ARCHIVE_SHA}}
+    prep_path=root/'inbox'/current['release']/'native-jar-duplicate-controls'/tag/'ecs-tool-preparation.json'
+    for p,value in ((prep_path,preparation),(prep_path.with_name('candidate-build-tools-transport.json'),transport)):
+        p.write_bytes(encoded(value));p.chmod(0o600)
+    request={'schemaVersion':1,'kind':retirer.KIND+'-request','current':current,'identity':bundle.identity,
+        'protectedReleases':[current['release']],'candidates':[{**context,'controls':refs}]};raw=encoded(request)
+    rows={bcid:bs.row,fid:ms.row,production:{'Id':production,'Name':'/unrelated-production','Config':{'Labels':{'io.doorhandle.release':'ci-43-production'}},
+        'State':{'Running':True,'Restarting':False,'Pid':4567},'HostConfig':{'NetworkMode':'bridge','PidMode':'','IpcMode':'private'},'Mounts':[]}}
+    commands=[];snapshots=[]
+    def docker(*args):
+        if args[0]=='inspect':return encoded([rows[args[1]]])
+        assert args[0]=='rm' and len(args)==2 and args[1] in (bcid,fid)
+        commands.append(args);del rows[args[1]];return b'removed'
+    monkeypatch.setattr(retirer,'builder_docker',docker);monkeypatch.setattr(retirer,'builder_container_ids',lambda:list(rows))
+    info=data.stat();metadata=[info.st_dev,info.st_ino,info.st_mode,999,999]
+    def data_metadata(actual_root,path):
+        assert Path(actual_root)==root and Path(path)==data
+        return list(metadata)
+    monkeypatch.setattr(retirer,'fixture_data_metadata',data_metadata)
+    spec=importlib.util.spec_from_file_location('failed_native_real_snapshot_cleanup',MODULE.parent/'cleanup-ecs-builds.py')
+    cleanup=importlib.util.module_from_spec(spec);spec.loader.exec_module(cleanup)
+    def snapshot_command(command,**_options):
+        assert command[0]=='/usr/bin/docker'
+        if command[1:]==['ps','-aq','--no-trunc']:out='\n'.join(rows)+'\n'
+        else:
+            assert command[1:3]==['inspect','--format'] and set(command[4:])==set(rows)
+            values=[]
+            for cid in command[4:]:
+                row=rows[cid];state=row['State'];labels=row['Config']['Labels']
+                values.append([cid,state['Running'],state.get('Restarting',False),state['Pid'],labels.get('io.doorhandle.release'),labels.get('io.doorhandle.ci-tool-runtime'),row.get('Mounts',[])])
+            snapshots.append(copy.deepcopy(values));out='\n'.join(json.dumps(v) for v in values)+'\n'
+        return SimpleNamespace(returncode=0,stdout=out.encode(),stderr=b'')
+    monkeypatch.setattr(cleanup,'subprocess',SimpleNamespace(run=snapshot_command))
+    monkeypatch.setattr(cleanup,'process_references',lambda *_a,**_k:None)
+    options={'request_sha256':sha(raw),'expected_current':current,'identity':bundle.identity,
+             'modules':{'builder':builder_cases.resources,'cleanup':cleanup},'failed_native':True}
+    return SimpleNamespace(root=root,tag=tag,current=current,context=context,raw=raw,request=request,options=options,
+        rows=rows,commands=commands,snapshots=snapshots,bcid=bcid,fid=fid,production=production,page=page,page_bytes=page.read_bytes(),
+        keeper=keeper,copy_path=copy_path,jar=jar,prep_path=prep_path,cleanup=cleanup,data=data,data_inode=data.stat().st_ino)
+
+
+def test_failed_native_real_plan_pairs_stop_proof_then_builder_fixture_and_exact_jars(failed_native_pair_plan):
+    s=failed_native_pair_plan
+    prepared=retirer.plan_builders(s.root,s.raw,**s.options)
+    assert prepared['skipped']==[] and prepared['scope']=='FAILED_NATIVE_BUILDERS' and len(prepared['candidates'])==1
+    result=retirer.apply_builders(s.root,s.raw,prepared,plan_sha256=sha(encoded(prepared)),**s.options)
+    assert result['status']=='REMOVED' and result['retiredMysqlObjects']==[]
+    assert s.commands==[('rm',s.bcid)] and s.fid in s.rows and s.production in s.rows
+    assert s.page.read_bytes()==s.page_bytes and s.keeper.read_bytes()==s.copy_path.read_bytes()==s.jar
+    prepared=retirer.plan_recent_fixtures(s.root,s.raw,**s.options)
+    assert prepared['skipped']==[] and len(prepared['candidates'])==1
+    result=retirer.apply_recent_fixtures(s.root,s.raw,prepared,plan_sha256=sha(encoded(prepared)),**s.options)
+    assert result['status']=='REMOVED' and s.commands==[('rm',s.bcid),('rm',s.fid)]
+    def quiet(checkout,tag,token):s.cleanup.quiescent({'checkout':checkout,'token':token},tag,s.cleanup.docker_snapshot(),include_inbox=True)
+    options={key:value for key,value in s.options.items() if key!='modules'};options['quiescence']=quiet
+    for canonical in (False,True):
+        prepared=retirer.plan(s.root,s.raw,canonical_jar=canonical,**options)
+        assert prepared['skipped']==[] and len(prepared['candidates'])==1
+        result=retirer.apply(s.root,s.raw,prepared,plan_sha256=sha(encoded(prepared)),canonical_jar=canonical,**options)
+        assert result['status']=='REMOVED'
+    assert not s.keeper.exists() and not s.copy_path.exists() and s.production in s.rows
+    assert s.page.read_bytes()==s.page_bytes and s.data.stat().st_ino==s.data_inode
+    assert any({s.bcid,s.fid}<={row[0] for row in snap} for snap in s.snapshots)
+
+
+@pytest.mark.parametrize('conflict',['unknown-same-release','foreign-bind','namespace-reference','active-builder','active-peer'])
+def test_failed_native_real_plan_keeps_unknown_active_and_occupying_containers_blocked(failed_native_pair_plan,conflict):
+    s=failed_native_pair_plan
+    if conflict=='unknown-same-release':
+        s.rows['2'*64]={'Id':'2'*64,'Name':'/unknown-old-object','Config':{'Labels':{'io.doorhandle.release':s.tag}},
+            'State':{'Running':False,'Restarting':False,'Pid':0},'HostConfig':{},'Mounts':[]}
+    elif conflict=='foreign-bind':s.rows[s.production]['Mounts']=[{'Type':'bind','Source':str(s.keeper.parent),'Destination':'/foreign','RW':False}]
+    elif conflict=='namespace-reference':s.rows[s.production]['HostConfig']['NetworkMode']='container:'+s.bcid
+    else:s.rows[s.bcid if conflict=='active-builder' else s.fid]['State'].update(Status='running',Running=True,Pid=8901)
+    prepared=retirer.plan_builders(s.root,s.raw,**s.options)
+    assert prepared['candidates']==[] and prepared['absent']==[] and len(prepared['skipped'])==1
+    assert s.commands==[] and s.page.read_bytes()==s.page_bytes and s.keeper.read_bytes()==s.copy_path.read_bytes()==s.jar
+
+
+@pytest.mark.parametrize('changed',['builder-start','peer-start','new-foreign-bind','preparation-drift'])
+def test_failed_native_real_apply_rechecks_the_pair_and_complete_original_chain_before_removing(failed_native_pair_plan,changed):
+    s=failed_native_pair_plan;prepared=retirer.plan_builders(s.root,s.raw,**s.options)
+    assert prepared['skipped']==[] and len(prepared['candidates'])==1
+    if changed.endswith('-start'):s.rows[s.bcid if changed=='builder-start' else s.fid]['State'].update(Status='running',Running=True,Pid=8901)
+    elif changed=='new-foreign-bind':s.rows[s.production]['Mounts']=[{'Type':'bind','Source':str(s.data),'Destination':'/occupied','RW':True}]
+    else:
+        value=json.loads(s.prep_path.read_bytes());value['candidateBuilderTools']['sha256']='0'*64;s.prep_path.write_bytes(encoded(value))
+    result=retirer.apply_builders(s.root,s.raw,prepared,plan_sha256=sha(encoded(prepared)),**s.options)
+    assert result['status']=='FAILED_OR_UNKNOWN' and result['removed']==[] and s.commands==[]
+    assert s.bcid in s.rows and s.fid in s.rows and s.page.read_bytes()==s.page_bytes
+
+@pytest.mark.parametrize('started',['builder','peer'])
+def test_failed_native_plan_fresh_snapshot_cannot_ignore_an_admitted_pair_member_that_just_started(failed_native_pair_plan,monkeypatch,started):
+    s=failed_native_pair_plan;original=s.cleanup.subprocess.run;changed=[]
+    def observed(command,**options):
+        if command[1:3]==['inspect','--format'] and not changed:
+            s.rows[s.bcid if started=='builder' else s.fid]['State'].update(Status='running',Running=True,Pid=9901)
+            changed.append(True)
+        return original(command,**options)
+    monkeypatch.setattr(s.cleanup.subprocess,'run',observed)
+    prepared=retirer.plan_builders(s.root,s.raw,**s.options)
+    assert changed==[True] and prepared['candidates']==[] and prepared['absent']==[]
+    assert prepared['skipped']==[{'release':s.tag,'reason':'CLOSED_RUNTIME_RETIRING_OBJECT_BECAME_ACTIVE'}]
+    assert s.commands==[] and s.bcid in s.rows and s.fid in s.rows and s.page.read_bytes()==s.page_bytes

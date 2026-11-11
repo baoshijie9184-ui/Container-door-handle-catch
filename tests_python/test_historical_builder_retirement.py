@@ -626,3 +626,101 @@ def test_closed_runtime_flag_does_not_admit_any_original_historical_or_201_build
             'transportRecipeSha256': resources.CLOSED_RUNTIME_BUILDER_RECIPE_SHA256,
             'builderHelperSha256': dict(resources.CLOSED_RUNTIME_BUILDER_HELPERS)}
         with pytest.raises(ValueError): describe_closed(state)
+
+@pytest.fixture
+def failed_native_builder():
+    state=fixture_state(('ci-221-'+'a'*12,'a'*40,'d'*64,'b'*24))
+    state.proof={'path':'inbox/'+state.context['release']+'/source.tar.gz',
+        'sha256':state.context['sourceSha256'],'failedNativePolicy':'failed-native-retention-v1',
+        'mysqlFixtureStartSourceSha256':'79658b1e2982b14614d4c458c58e9b73af59349cf8f4edf874d3f76d83f91795',
+        'builderHelperSha256':dict(state.helpers),'preparedToolsSha256':sha(raw(state.tools))}
+    return state
+
+
+def describe_failed_native(state):
+    return resources.historical_builder_descriptor(state.root,state.context,state.identity,
+        raw(state.tools),raw(state.summary),raw(state.measurement),state.helpers,state.row,
+        failed_native=True,source_proof=state.proof)
+
+
+def test_failed_native_builder_binds_original_controls_and_preserves_the_exact_state_volume(failed_native_builder):
+    state=failed_native_builder;before=copy.deepcopy(state.proof)
+    descriptor=describe_failed_native(state)
+    assert descriptor['release']==state.context['release'] and descriptor['containerId']==state.row['Id']
+    assert descriptor['preservedVolume']==state.volume and descriptor['ownerToken']==state.summary['ownerToken']
+    expected={name:sha(raw(getattr(state,name))) for name in ('tools','summary','measurement')}
+    assert descriptor['controlSha256']==expected==descriptor['failedNativeSource']['builderControlSha256']
+    assert descriptor['failedNativeSource']['preparedToolsSha256']==expected['tools']
+    assert descriptor['imagesPreserved'] is descriptor['volumesPreserved'] is descriptor['directoriesPreserved'] is True
+    assert state.proof==before
+
+
+def test_failed_native_builder_flag_does_not_expand_the_default_historical_api(failed_native_builder):
+    state=failed_native_builder
+    with pytest.raises(ValueError):
+        resources.historical_builder_descriptor(state.root,state.context,state.identity,
+            raw(state.tools),raw(state.summary),raw(state.measurement),state.helpers,state.row,source_proof=state.proof)
+    descriptor=describe_failed_native(state);calls,inspect,remove,listing,references=callbacks(state)
+    with pytest.raises(ValueError):
+        resources.historical_builder_remove(descriptor,inspect,remove,listing,references)
+    assert calls.inspected==calls.removed==calls.referenced==[] and calls.listed==0
+
+
+@pytest.mark.parametrize('damage',['source','commit','tools','summary','measurement','helper','producer'])
+def test_failed_native_builder_descriptor_rejects_source_or_prepared_control_drift(failed_native_builder,damage):
+    state=failed_native_builder
+    if damage=='source':state.context['sourceSha256']='f'*64
+    elif damage=='commit':state.context['commit']='f'*40
+    elif damage in ('tools','summary','measurement'):getattr(state,damage)['unreviewedMutation']=True
+    elif damage=='helper':state.helpers['compact-build-resources.py']='f'*64
+    else:state.proof['mysqlFixtureStartSourceSha256']='f'*64
+    with pytest.raises(ValueError):describe_failed_native(state)
+
+
+@pytest.mark.parametrize('damage',['running','live-pid','oom','business-bind'])
+def test_failed_native_source_permission_never_bypasses_terminal_or_mount_guards(failed_native_builder,damage):
+    state=failed_native_builder
+    if damage=='running':state.row['State'].update(Status='running',Running=True,Pid=1234)
+    elif damage=='live-pid':state.row['State']['Pid']=1234
+    elif damage=='oom':state.row['State']['OOMKilled']=True
+    else:state.row['Mounts'].append({'Type':'bind','Source':'/srv/business','Destination':'/private','RW':True})
+    with pytest.raises(ValueError):describe_failed_native(state)
+
+
+def test_failed_native_builder_removal_uses_one_exact_id_and_never_deletes_state_volume(failed_native_builder):
+    state=failed_native_builder;descriptor=describe_failed_native(state)
+    calls,inspect,remove,listing,references=callbacks(state)
+    result=resources.historical_builder_remove(descriptor,inspect,remove,listing,references,failed_native=True)
+    assert calls.inspected==[state.row['Id'],state.row['Id']]
+    assert calls.removed==calls.referenced==[state.row['Id']] and calls.listed==1
+    assert result['preservedVolume']==state.volume
+    assert result['imagesPreserved'] is result['volumesPreserved'] is result['directoriesPreserved'] is True
+
+
+@pytest.mark.parametrize('damage',['tools','summary','measurement','prepared-tools','producer','missing-proof'])
+def test_failed_native_builder_remove_rechecks_original_source_and_controls_before_callbacks(failed_native_builder,damage):
+    state=failed_native_builder;descriptor=describe_failed_native(state)
+    if damage in ('tools','summary','measurement'):descriptor['controlSha256'][damage]='f'*64
+    elif damage=='prepared-tools':descriptor['failedNativeSource']['preparedToolsSha256']='f'*64
+    elif damage=='producer':descriptor['failedNativeSource']['mysqlFixtureStartSourceSha256']='f'*64
+    else:descriptor.pop('failedNativeSource')
+    calls,inspect,remove,listing,references=callbacks(state)
+    with pytest.raises(ValueError):
+        resources.historical_builder_remove(descriptor,inspect,remove,listing,references,failed_native=True)
+    assert calls.inspected==calls.referenced==calls.removed==[] and calls.listed==0
+
+
+@pytest.mark.parametrize('stage',['references','second-inspect'])
+def test_failed_native_builder_late_occupant_or_start_prevents_any_remove(failed_native_builder,stage):
+    state=failed_native_builder;descriptor=describe_failed_native(state)
+    calls,inspect,remove,listing,references=callbacks(state)
+    def current(cid):
+        row=inspect(cid)
+        if stage=='second-inspect' and len(calls.inspected)==2:row['State'].update(Status='running',Running=True,Pid=1234)
+        return row
+    def unoccupied(cid):
+        references(cid)
+        if stage=='references':raise ValueError('an unadmitted container still occupies the old attempt')
+    with pytest.raises(ValueError):
+        resources.historical_builder_remove(descriptor,current,remove,listing,unoccupied,failed_native=True)
+    assert calls.removed==[] and calls.listed==0

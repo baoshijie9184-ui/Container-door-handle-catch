@@ -1343,13 +1343,13 @@
       },
       {
         "module": "tests_python.test_failed_native_jar_duplicates",
-        "minimumTests": 253,
+        "minimumTests": 267,
         "source": "tests_python/test_failed_native_jar_duplicates.py",
         "allowedSkippedTests": []
       },
       {
         "module": "tests_python.test_historical_builder_retirement",
-        "minimumTests": 124,
+        "minimumTests": 146,
         "source": "tests_python/test_historical_builder_retirement.py",
         "allowedSkippedTests": []
       },
