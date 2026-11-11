@@ -5,7 +5,7 @@ import com.ruanzhu.doorhandle.framework.persistence.workflow.WorkflowPayloads;
 import com.ruanzhu.doorhandle.module.app.testsupport.CompactMySqlFixture;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
-import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.springframework.jdbc.core.JdbcTemplate;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -15,7 +15,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /** Explicit native SQL/locking verification on a random, restricted test database. */
 @Timeout(90)
-@EnabledIfEnvironmentVariable(named="DOORHANDLE_INBOX_MYSQL_CONFIG",matches=".+")
+@EnabledIfSystemProperty(named="doorhandle.feature.mysql.config",matches=".+")
 class ConversationInboxMySqlTest extends ConversationInboxServiceTest {
     private CompactMySqlFixture fixture;
     @Override java.time.Duration executionWait(){return java.time.Duration.ofSeconds(15);}
@@ -24,10 +24,10 @@ class ConversationInboxMySqlTest extends ConversationInboxServiceTest {
     @Override javax.sql.DataSource source(){
         try{
             var project=Path.of("..").toAbsolutePath().normalize();
-            var file=Path.of(System.getenv("DOORHANDLE_INBOX_MYSQL_CONFIG")).normalize();
+            var file=Path.of(System.getProperty("doorhandle.feature.mysql.config")).normalize();
             assertThat(file.startsWith(project.resolve("work"))).isTrue();
             var pool=com.ruanzhu.doorhandle.module.app.EcsIsolatedMysql.pool(
-                    file.toString(), "doorhandle_wb_verify_", "wb_verify_", 6);
+                    file.toString(), "doorhandle_feature_", "ecsit_", 6);
             pool.setJdbcUrl(pool.getJdbcUrl()+"&rewriteBatchedStatements=true");
             pool.setConnectionTimeout(10000);
             try{

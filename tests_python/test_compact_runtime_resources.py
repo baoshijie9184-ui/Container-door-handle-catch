@@ -246,6 +246,137 @@ def test_worker_rejects_unpinned_or_duplicate_requirements():
         with pytest.raises(ValueError): candidate.dependency_versions(value)
 
 
+def mem0_dependency_fixture(tmp_path):
+    source = tmp_path / 'source'; work = source / 'work'; work.mkdir(parents=True)
+    for name in (*candidate.MEM0_SOURCE_FILES, 'deploy/mem0/Dockerfile'):
+        destination = source / name; destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes((ROOT / name).read_bytes())
+    # The dependency image may contain old application code; all runtime source
+    # must come from the current fixed checkout instead.
+    with (source / 'memory_service/main.py').open('a', encoding='utf8') as stream:
+        stream.write('\n# current fixed-source fixture\n')
+    requirements = (source / candidate.MEM0_SOURCE_FILES[0]).read_text(encoding='utf8')
+    versions = candidate.dependency_versions(requirements)
+    actual = {'requirements': requirements, 'requirementsSha256': hashlib.sha256(requirements.encode()).hexdigest(),
+        'versions': versions.copy(), 'pipCheckReturnCode': 0, 'pythonVersion': [3, 12],
+        'sourceFiles': [Path(name).name for name in candidate.MEM0_SOURCE_FILES[1:-1] if Path(name).name != 'embedding_config.py'],
+        'sourceLinks': False, 'sourceDirectories': [],
+        'appFiles': [Path(name).name for name in candidate.MEM0_SOURCE_FILES if Path(name).name != 'embedding_config.py'],
+        **{name: 10001 for name in ('uid', 'gid', 'dataUid', 'dataGid', 'appUid', 'appGid')}}
+    image = 'sha256:' + 'f' * 64; row = {'Id': image, 'Config': {}, 'Size': 123}
+    calls = []
+    def docker(*args, **kwargs):
+        calls.append((args, kwargs))
+        if args[:2] == ('image', 'inspect'):
+            assert args == ('image', 'inspect', image)
+            return json.dumps([row]).encode()
+        assert args[0] == 'run'
+        return json.dumps(actual).encode()
+    common = SimpleNamespace(PROJECT='original', container=lambda project, service:
+        {'Image': image} if (project, service) == ('original', 'mem0') else None,
+        require=runtime.require, write_json=lambda path, value: path.write_text(json.dumps(value)))
+    cutover = SimpleNamespace(canonical=lambda path: Path(path).resolve(strict=True), sha_file=runtime.sha_file)
+    return source, work, SimpleNamespace(tag='ci-58-' + 'a' * 12), SimpleNamespace(docker=docker), common, cutover, actual, row, calls
+
+
+def test_mem0_reuses_exact_dependencies_and_replaces_all_current_source_with_one_copy(tmp_path):
+    source, work, args, ops, common, cutover, actual, row, calls = mem0_dependency_fixture(tmp_path)
+    context = candidate.stage_mem0(source, work, args, ops, common, cutover)
+    body = (context / 'Dockerfile').read_text()
+    assert 'FROM ' + row['Id'] + '\n' in body
+    assert sum(line.startswith('COPY ') for line in body.splitlines()) == 1
+    assert not any(line.startswith(('RUN ', 'ARG ', 'ADD ', 'ONBUILD ')) for line in body.splitlines())
+    original = (source / 'deploy/mem0/Dockerfile').read_text()
+    for declaration in ('LABEL io.doorhandle.memory-protocol="2"',
+        'LABEL io.doorhandle.memory-embedding-profile="siliconflow-bge-m3-v1"',
+        'LABEL io.doorhandle.model-config-format="1"', 'WORKDIR /app', 'USER app', 'EXPOSE 8081'):
+        assert declaration in original and declaration in body
+    assert original[original.index('ENV '):original.index('COPY ')] in body
+    assert original[original.index('HEALTHCHECK '):] in body
+    receipt = json.loads((work / 'mem0-build-source.json').read_text())
+    assert receipt['sourceDockerfileSha256'] == runtime.sha_file(source / 'deploy/mem0/Dockerfile')
+    assert receipt['runtimeDockerfileSha256'] == runtime.sha_file(context / 'Dockerfile')
+    assert set(receipt['files']) == set(candidate.MEM0_SOURCE_FILES)
+    assert set(path.name for path in context.iterdir()) == {'Dockerfile', *(Path(name).name for name in candidate.MEM0_SOURCE_FILES)}
+    for name in candidate.MEM0_SOURCE_FILES:
+        assert (context / Path(name).name).read_bytes() == (source / name).read_bytes()
+        assert receipt['files'][name] == runtime.sha_file(source / name)
+    dependency = receipt['dependencyReuse']
+    assert dependency['mode'] == 'IMMUTABLE_DEPENDENCY_BASE_WITH_FIXED_SOURCE'
+    assert dependency['baseImage'] == row['Id']
+    assert dependency['requiredVersions'] == dependency['verifiedExistingVersions'] == actual['versions']
+    assert dependency['addedDependencies'] == [] and dependency['pipCheckReturnCode'] == 0
+    assert dependency['sourceCopyInstructions'] == 1
+    assert dependency['replacedBaseSourceFiles'] == actual['sourceFiles'] and 'embedding_config.py' not in actual['sourceFiles']
+    assert (context / 'embedding_config.py').is_file()
+    probe, options = calls[1]
+    for token in ('--rm', '--read-only', 'none', '--pull', 'never', '--cap-drop', 'ALL', 'no-new-privileges:true', '-I', '-B'):
+        assert token in probe
+    assert probe[probe.index('--memory') + 1] == probe[probe.index('--memory-swap') + 1] == '256m'
+    assert probe[probe.index('--pids-limit') + 1] == '32' and options['timeout'] == 45
+    assert 'pip' in probe[-1] and "'check'" in probe[-1] and 'pip install' not in probe[-1]
+    assert 'os.environ' not in probe[-1]
+
+
+@pytest.mark.parametrize('damage', ['missing-package', 'wrong-version', 'different-requirements', 'extra-requirement',
+    'bad-requirements-digest', 'failed-pip-check', 'bool-pip-check', 'wrong-python', 'root-user', 'wrong-data-owner',
+    'missing-app-user', 'extra-old-module', 'linked-old-module', 'old-module-directory', 'extra-old-file'])
+def test_mem0_reuse_refuses_unproven_dependencies_or_runtime_identity(tmp_path, damage):
+    source, work, args, ops, common, cutover, actual, _row, _calls = mem0_dependency_fixture(tmp_path)
+    if damage == 'missing-package': actual['versions'].pop('mem0ai')
+    elif damage == 'wrong-version': actual['versions']['mem0ai'] = '0.0.0'
+    elif damage == 'different-requirements': actual['requirements'] = actual['requirements'].replace('mem0ai==2.0.19', 'mem0ai==0.0.0')
+    elif damage == 'extra-requirement': actual['requirements'] += '\nother==1.0\n'
+    elif damage == 'bad-requirements-digest': actual['requirementsSha256'] = '0' * 64
+    elif damage == 'failed-pip-check': actual['pipCheckReturnCode'] = 1
+    elif damage == 'bool-pip-check': actual['pipCheckReturnCode'] = False
+    elif damage == 'wrong-python': actual['pythonVersion'] = [3, 11]
+    elif damage == 'root-user': actual['uid'] = 0
+    elif damage == 'wrong-data-owner': actual['dataUid'] = 0
+    elif damage == 'missing-app-user': actual['appUid'] = 0
+    elif damage == 'extra-old-module': actual['sourceFiles'].append('openai.py')
+    elif damage == 'linked-old-module': actual['sourceLinks'] = True
+    elif damage == 'old-module-directory': actual['sourceDirectories'].append('openai')
+    elif damage == 'extra-old-file': actual['appFiles'].append('old-config.json')
+    with pytest.raises(ValueError): candidate.stage_mem0(source, work, args, ops, common, cutover)
+    assert not (work / 'compact-mem0-build').exists() and not (work / 'mem0-build-source.json').exists()
+
+
+@pytest.mark.parametrize('damage', ['image-id', 'volume', 'entrypoint', 'onbuild'])
+def test_mem0_reuse_refuses_changed_image_identity_or_inherited_hooks(tmp_path, damage):
+    source, work, args, ops, common, cutover, _actual, row, calls = mem0_dependency_fixture(tmp_path)
+    if damage == 'image-id': row['Id'] = 'sha256:' + '0' * 64
+    elif damage == 'volume': row['Config']['Volumes'] = {'/data': {}}
+    elif damage == 'entrypoint': row['Config']['Entrypoint'] = ['old-entrypoint']
+    elif damage == 'onbuild': row['Config']['OnBuild'] = ['RUN another-install']
+    with pytest.raises(ValueError): candidate.stage_mem0(source, work, args, ops, common, cutover)
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize('damage', ['extra-source', 'extra-run', 'lowercase-run', 'extra-add', 'onbuild', 'changed-install', 'root-user', 'other-workdir'])
+def test_mem0_reuse_requires_the_reviewed_complete_source_only_dockerfile(damage):
+    body = (ROOT / 'deploy/mem0/Dockerfile').read_text()
+    if damage == 'extra-source': body = body.replace('memory_service/main.py ', 'memory_service/extra.py memory_service/main.py ')
+    elif damage == 'extra-run': body += '\nRUN pip install extra\n'
+    elif damage == 'lowercase-run': body += '\n  run pip install extra\n'
+    elif damage == 'extra-add': body += '\nADD unknown /app/\n'
+    elif damage == 'onbuild': body += '\nONBUILD COPY unknown /app/\n'
+    elif damage == 'changed-install': body = body.replace('--retries 5', '--retries 6')
+    elif damage == 'root-user': body = body.replace('USER app', 'USER root')
+    elif damage == 'other-workdir': body = body.replace('WORKDIR /app', 'WORKDIR /other')
+    with pytest.raises(ValueError): candidate.mem0_runtime_dockerfile(body, 'sha256:' + 'f' * 64)
+
+
+def test_mem0_source_only_build_has_no_dependency_write_envelope_or_pip_build_arguments():
+    import ast
+    tree = ast.parse(Path(candidate.__file__).read_text())
+    specifications = [node for node in ast.walk(tree) if isinstance(node, ast.Dict)
+        and any(isinstance(key, ast.Constant) and key.value == 'service'
+            and isinstance(value, ast.Constant) and value.value == 'mem0' for key, value in zip(node.keys, node.values))]
+    assert len(specifications) == 1
+    assert {key.value for key in specifications[0].keys} == {'service', 'context', 'tag'}
+
+
 @pytest.mark.parametrize('tamper', [False, True])
 def test_file_evidence_binds_runtime_cleanup_raw_and_original_phase_plans(tmp_path, tamper):
     validator = load('bounded_runtime_file_contract', 'script/jenkins/validate-runtime-resources.py')

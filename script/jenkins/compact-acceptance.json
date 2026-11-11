@@ -282,7 +282,7 @@
         "doorhandle.feature.mysql.config"
       ],
       "source": "doorhandle-module-app/src/test/java/com/ruanzhu/doorhandle/module/app/service/impl/ConversationInboxMySqlTest.java",
-      "minimumTests": 1,
+      "minimumTests": 31,
       "coverage": [
         "workspace, chat, inbox, knowledge and memory persistence"
       ]
@@ -1619,7 +1619,7 @@
       },
       {
         "module": "tests_python.test_compact_runtime_resources",
-        "minimumTests": 43,
+        "minimumTests": 72,
         "source": "tests_python/test_compact_runtime_resources.py",
         "allowedSkippedTests": []
       },

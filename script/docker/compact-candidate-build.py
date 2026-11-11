@@ -215,22 +215,101 @@ print(json.dumps({'versions':versions,'requirements':Path('/app/requirements.txt
         'runtimeDockerfileSha256': cutover.sha_file(context / 'Dockerfile')}
 
 
-def stage_mem0(source, work, common, cutover):
+MEM0_SOURCE_FILES = ('deploy/mem0/requirements.txt', 'memory_service/main.py',
+    'memory_service/write_receipts.py', 'memory_service/lifecycle.py', 'memory_service/duplicate_review.py',
+    'memory_service/model_config.py', 'memory_service/embedding_config.py', 'LICENSE')
+
+
+def mem0_runtime_dockerfile(body, image):
+    """Keep current runtime declarations, replacing only the proven installation."""
+    base = re.findall(r'^FROM python:3\.12-slim@sha256:[a-f0-9]{64}\s*$', body, re.M)
+    install = ('RUN --mount=type=cache,target=/root/.cache/pip \\\n'
+        '    pip install --disable-pip-version-check --progress-bar off --timeout 120 --retries 5 \\\n'
+        '      --index-url "$PIP_INDEX_URL" -r requirements.txt \\\n'
+        '    && groupadd --gid 10001 app && useradd --uid 10001 --gid app --create-home app \\\n'
+        '    && mkdir /data && chown app:app /data\n')
+    replacements = {
+        'ARG PIP_INDEX_URL=https://pypi.org/simple\n': '',
+        'COPY deploy/mem0/requirements.txt ./requirements.txt\n':
+            'COPY --chmod=0644 ' + ' '.join(Path(name).name for name in MEM0_SOURCE_FILES) + ' /app/\n',
+        install: '',
+        'COPY --chmod=0644 ' + ' '.join(MEM0_SOURCE_FILES[1:-1]) + ' /app/\n': '',
+        'COPY --chmod=0644 LICENSE /app/LICENSE\n': ''}
+    if len(base) != 1 or not re.fullmatch(r'sha256:[a-f0-9]{64}', image):
+        raise ValueError('Mem0 requires its reviewed Python runtime and an immutable dependency base')
+    body = body.replace(base[0], 'FROM ' + image, 1)
+    for before, after in replacements.items():
+        if body.count(before) != 1:
+            raise ValueError('Mem0 installation or fixed source closure changed')
+        body = body.replace(before, after, 1)
+    statements = [line.strip().split(None, 1) for line in re.sub(r'\\\n[ \t]*', ' ', body).splitlines()
+                  if line.strip() and not line.lstrip().startswith('#')]
+    instructions = [line[0].upper() for line in statements]
+    if (set(instructions) - {'FROM', 'LABEL', 'WORKDIR', 'ENV', 'COPY', 'USER', 'EXPOSE', 'HEALTHCHECK', 'CMD'}
+            or instructions.count('COPY') != 1 or instructions.count('FROM') != 1
+            or [line[1] for line in statements if line[0].upper() == 'USER'] != ['app']
+            or [line[1] for line in statements if line[0].upper() == 'WORKDIR'] != ['/app']):
+        raise ValueError('Mem0 reuse must be source-only with the current app runtime')
+    return body
+
+
+def stage_mem0(source, work, args, ops, common, cutover):
+    previous = common.container(common.PROJECT, 'mem0'); image = previous['Image']
+    common.require(re.fullmatch(r'sha256:[a-f0-9]{64}', image), 'Mem0 base must be an immutable existing image')
+    row = json.loads(ops.docker('image', 'inspect', image))[0]
+    common.require(row['Id'] == image and not any(row['Config'].get(name) for name in ('Volumes', 'Entrypoint', 'OnBuild')),
+                   'Unexpected Mem0 dependency base storage or startup hooks')
+    code = """import importlib.metadata,json,hashlib,os,pwd,subprocess,sys
+from pathlib import Path
+requirements=Path('/app/requirements.txt').read_bytes()
+versions={x.metadata['Name'].lower().replace('_','-'):x.version for x in importlib.metadata.distributions()}
+check=subprocess.run([sys.executable,'-B','-m','pip','check'],capture_output=True,timeout=30)
+data=Path('/data').stat(); app=pwd.getpwnam('app'); entries=list(Path('/app').iterdir())
+print(json.dumps({'versions':versions,'requirements':requirements.decode('utf8'),
+ 'requirementsSha256':hashlib.sha256(requirements).hexdigest(),'pipCheckReturnCode':check.returncode,
+ 'pythonVersion':list(sys.version_info[:2]),'uid':os.getuid(),'gid':os.getgid(),
+ 'dataUid':data.st_uid,'dataGid':data.st_gid,'appUid':app.pw_uid,'appGid':app.pw_gid,
+ 'sourceFiles':sorted(path.name for path in entries if path.suffix=='.py'),
+ 'appFiles':sorted(path.name for path in entries if path.is_file()),
+ 'sourceDirectories':sorted(path.name for path in entries if path.is_dir()),
+ 'sourceLinks':any(path.is_symlink() for path in entries)}))
+"""
+    actual = json.loads(ops.docker('run', '--rm', '--network', 'none', '--read-only', '--pull', 'never',
+        '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true', '--pids-limit', '32',
+        '--memory', '256m', '--memory-swap', '256m', '--label', 'io.doorhandle.candidate-build=' + args.tag,
+        '--entrypoint', 'python', image, '-I', '-B', '-c', code, timeout=45))
+    requirements = cutover.canonical(source / MEM0_SOURCE_FILES[0])
+    required = dependency_versions(requirements.read_text(encoding='utf8'))
+    former = dependency_versions(actual['requirements'])
+    common.require(set(required) == {'mem0ai', 'chromadb', 'fastapi', 'uvicorn', 'python-dotenv', 'openai', 'pydantic', 'cryptography'}
+                   and required == former and all(actual['versions'].get(name) == version for name, version in required.items())
+                   and actual['requirementsSha256'] == hashlib.sha256(actual['requirements'].encode('utf8')).hexdigest(),
+                   'Existing Mem0 dependencies cannot be safely reused for this candidate')
+    common.require(type(actual['pipCheckReturnCode']) is int and actual['pipCheckReturnCode'] == 0
+                   and actual['pythonVersion'] == [3, 12]
+                   and all(actual[name] == 10001 for name in ('uid', 'gid', 'dataUid', 'dataGid', 'appUid', 'appGid')),
+                   'Existing Mem0 dependencies or app identity are incompatible')
+    common.require(not actual['sourceLinks'] and not actual['sourceDirectories']
+                   and set(actual['appFiles']) <= {Path(name).name for name in MEM0_SOURCE_FILES}
+                   and set(actual['sourceFiles']) <= {Path(name).name for name in MEM0_SOURCE_FILES[1:-1]},
+                   'Existing Mem0 base contains runtime Python outside the fixed replacement closure')
+    original = source / 'deploy/mem0/Dockerfile'
+    body = mem0_runtime_dockerfile(original.read_text(encoding='utf8'), image)
     context = work / 'compact-mem0-build'; context.mkdir(mode=0o700)
-    body = (source / 'deploy/mem0/Dockerfile').read_text(encoding='utf8')
     files = {}
-    for line in body.splitlines():
-        if not line.startswith('COPY '): continue
-        values = [item for item in shlex.split(line)[1:] if not item.startswith('--')]
-        common.require(len(values) >= 2, 'Unsupported Mem0 COPY closure')
-        for name in values[:-1]:
-            common.require(re.fullmatch(r'[A-Za-z0-9_./-]+', name) and '..' not in Path(name).parts and not Path(name).is_absolute(),
-                           'Mem0 build input is not a fixed source file')
-            original = cutover.canonical(source / name); common.require(original.is_file(), 'Missing Mem0 source input')
-            target = context / name; target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-            shutil.copyfile(original, target); os.chmod(target, 0o644); files[name] = cutover.sha_file(target)
-    (context / 'Dockerfile').write_text(body, encoding='utf8'); os.chmod(context / 'Dockerfile', 0o600)
-    common.write_json(work / 'mem0-build-source.json', {'sourceDockerfileSha256': cutover.sha_file(source / 'deploy/mem0/Dockerfile'), 'files': files})
+    for name in MEM0_SOURCE_FILES:
+        original_file = cutover.canonical(source / name)
+        common.require(original_file.is_file(), 'Missing Mem0 fixed source input')
+        target = context / Path(name).name
+        shutil.copyfile(original_file, target); os.chmod(target, 0o644); files[name] = cutover.sha_file(target)
+    dockerfile = context / 'Dockerfile'; dockerfile.write_text(body, encoding='utf8'); os.chmod(dockerfile, 0o600)
+    common.write_json(work / 'mem0-build-source.json', {'sourceDockerfileSha256': cutover.sha_file(original),
+        'runtimeDockerfileSha256': cutover.sha_file(dockerfile), 'files': files,
+        'dependencyReuse': {'mode': 'IMMUTABLE_DEPENDENCY_BASE_WITH_FIXED_SOURCE', 'baseImage': image,
+            'baseImageBytes': row['Size'], 'originalRequirementsSha256': actual['requirementsSha256'],
+            'requiredVersions': required, 'verifiedExistingVersions': {name: actual['versions'][name] for name in required},
+            'pipCheckReturnCode': 0, 'addedDependencies': [], 'replacedBaseSourceFiles': actual['sourceFiles'],
+            'sourceCopyInstructions': 1}})
     return context
 
 
@@ -335,7 +414,7 @@ def main(argv=None, actor=None, controlled_build=None):
             provenance = cutover.canonical(old_context / 'BUILD_PROVENANCE.json')
             shutil.copyfile(provenance, context / 'BUILD_PROVENANCE.json')
             dependencies = stage_worker_dependencies(source, context, old_context, args, ops, common, cutover)
-            mem0_context = stage_mem0(source, work, common, cutover)
+            mem0_context = stage_mem0(source, work, args, ops, common, cutover)
             common.write_json(work / 'worker-build-source.json', {'commit': args.commit,
                 'sourceSha256': args.source_sha256, 'settingsSha256': settings_sha,
                 'upstreamProvenanceSha256': cutover.sha_file(provenance),
@@ -356,8 +435,7 @@ def main(argv=None, actor=None, controlled_build=None):
                 specifications = [
                     {'service': 'backend', 'context': backend_context, 'tag': 'doorhandlecatch/backend:' + args.tag, 'runWriteEnvelopeBytes': 512 * resources.MIB},
                     {'service': 'nginx', 'context': web_context, 'tag': 'doorhandlecatch/web:' + args.tag},
-                    {'service': 'mem0', 'context': mem0_context, 'tag': 'doorhandlecatch/mem0:' + args.tag, 'runWriteEnvelopeBytes': resources.GIB,
-                     'buildArgs': {'PIP_INDEX_URL': 'https://mirrors.aliyun.com/pypi/simple'}},
+                    {'service': 'mem0', 'context': mem0_context, 'tag': 'doorhandlecatch/mem0:' + args.tag},
                     {'service': 'detection-worker', 'context': context, 'tag': 'doorhandlecatch/detection-worker:' + args.tag, 'runWriteEnvelopeBytes': 64 * resources.MIB}]
                 controlled_build = resources.build_images(actor, Path(args.root), source, specifications)
                 actor.stop_owned()
