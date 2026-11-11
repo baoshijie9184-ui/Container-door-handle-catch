@@ -54,7 +54,13 @@ public final class ModelBudgetMigrationFixture implements AutoCloseable {
         try(Connection connection=target.getConnection()) {
             connection.setAutoCommit(false);
             try {execute(connection,sql,";");}
-            catch(Exception error) {try {connection.rollback();}catch(Exception rollback){error.addSuppressed(rollback);}throw error;}
+            catch(Exception error) {
+                try {connection.rollback();}catch(Exception rollback){error.addSuppressed(rollback);}
+                try {error.addSuppressed(new IllegalStateException("Model budget source CHECK metadata: "+source().queryForList(
+                        "SELECT t.table_name,t.constraint_name,t.enforced,c.check_clause,HEX(c.check_clause) check_hex FROM information_schema.table_constraints t JOIN information_schema.check_constraints c ON t.constraint_schema=c.constraint_schema AND t.constraint_name=c.constraint_name WHERE t.constraint_schema=DATABASE() AND t.table_name IN ('agent_model_budget','agent_model_budget_attempt','agent_model_budget_observation','agent_model_budget_audit') AND t.constraint_type='CHECK' ORDER BY t.table_name,t.constraint_name")));}
+                catch(Exception metadataError) {error.addSuppressed(metadataError);}
+                throw error;
+            }
         }
     }
     public void targetSql(String sql,String separator) throws Exception {

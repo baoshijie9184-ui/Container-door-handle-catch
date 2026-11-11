@@ -81,7 +81,13 @@ class DigestCopyMigrationMySqlTest {
         }
         try(Connection frozen=source.getDataSource().getConnection();var lock=frozen.createStatement()) {
             lock.execute("LOCK TABLES "+String.join(",",SOURCES.stream().sorted().map(table->"`"+table+"` READ").toList()));
-            try {fixture.executeTarget(sql);}finally {lock.execute("UNLOCK TABLES");}
+            try {fixture.executeTarget(sql);}
+            catch(Exception error) {
+                try {error.addSuppressed(new IllegalStateException("Digest source CHECK metadata: "+source.queryForList(
+                        "SELECT t.table_name,t.constraint_name,t.enforced,c.check_clause,HEX(c.check_clause) check_hex FROM information_schema.table_constraints t JOIN information_schema.check_constraints c ON t.constraint_schema=c.constraint_schema AND t.constraint_name=c.constraint_name WHERE t.constraint_schema=DATABASE() AND t.table_name IN ('quality_digest_control','quality_digest_run') AND t.constraint_type='CHECK' ORDER BY t.table_name,t.constraint_name")));}
+                catch(Exception metadataError) {error.addSuppressed(metadataError);}
+                throw error;
+            } finally {lock.execute("UNLOCK TABLES");}
         }
     }
 
@@ -147,7 +153,50 @@ class DigestCopyMigrationMySqlTest {
 
     private void replaceSourceForeignKey(String deleteRule,String updateRule) {
         String nullable="SET NULL".equals(deleteRule)||"SET NULL".equals(updateRule)?"MODIFY schedule_id VARCHAR(64) NULL, ":"";
-        source.execute("ALTER TABLE quality_digest_run DROP FOREIGN KEY fk_digest_run_schedule, "+nullable+"ADD CONSTRAINT fk_digest_run_schedule FOREIGN KEY(schedule_id) REFERENCES quality_digest_schedule(schedule_id) ON DELETE "+deleteRule+" ON UPDATE "+updateRule);
+        source.execute("ALTER TABLE quality_digest_run DROP FOREIGN KEY fk_digest_run_schedule");
+        source.execute("ALTER TABLE quality_digest_run "+nullable+"ADD CONSTRAINT fk_digest_run_schedule FOREIGN KEY(schedule_id) REFERENCES quality_digest_schedule(schedule_id) ON DELETE "+deleteRule+" ON UPDATE "+updateRule);
+    }
+
+    @ParameterizedTest
+    @CsvSource({"plain,true", "escaped,true", "backslash-in-value,false", "extended,false", "or-expression,false"})
+    void statusCheckMetadataAllowsOnlyTheTwoExactReviewedSpellings(String representation,boolean accepted) throws Exception {
+        String clause="(`status` in (_utf8mb4'PENDING',_utf8mb4'RUNNING',_utf8mb4'COMPLETED',_utf8mb4'FAILED',_utf8mb4'BLOCKED'))";
+        clause=switch(representation) {
+            case "plain" -> clause;
+            case "escaped" -> clause.replace("'","\\'");
+            case "backslash-in-value" -> clause.replace("PENDING","PEND\\ING");
+            case "extended" -> clause.replace("'BLOCKED'","'BLOCKED',_utf8mb4'UNKNOWN'");
+            case "or-expression" -> clause+" OR 1=1";
+            default -> throw new IllegalArgumentException("Unreviewed CHECK metadata fixture");
+        };
+        String guard=Files.readAllLines(Path.of("../sql/mysql/compact/copy/49-digests.sql")).stream()
+                .filter(line->line.contains("BINARY t.table_name=BINARY 'quality_digest_run'")&&line.contains("c.check_clause"))
+                .findFirst().orElseThrow();
+        String predicate=guard.substring(guard.indexOf("BINARY LOWER("),guard.length()-1).replace("c.check_clause","?");
+        assertThat(target.queryForObject("SELECT "+predicate,Boolean.class,clause)).isEqualTo(accepted);
+    }
+
+    @Test void expandedSourceStatusCheckIsRejectedBeforeAnyCopy() {
+        source.execute("ALTER TABLE quality_digest_run DROP CHECK `"+sourceStatusCheck()+"`");
+        source.execute("ALTER TABLE quality_digest_run ADD CONSTRAINT fixture_status_domain CHECK(status IN ('PENDING','RUNNING','COMPLETED','FAILED','BLOCKED','UNKNOWN'))");
+        assertThatThrownBy(this::copy).isInstanceOf(Exception.class);
+        assertThat(target.queryForObject("SELECT COUNT(*) FROM scheduled_plan",Integer.class)).isZero();
+        assertThat(target.queryForObject("SELECT COUNT(*) FROM workflow_instance",Integer.class)).isZero();
+        assertThat(source.queryForObject("SELECT COUNT(*) FROM quality_digest_run",Integer.class)).isEqualTo(2);
+    }
+
+    @Test void notEnforcedSourceStatusCheckIsRejectedBeforeAnyCopy() {
+        source.execute("ALTER TABLE quality_digest_run ALTER CHECK `"+sourceStatusCheck()+"` NOT ENFORCED");
+        assertThatThrownBy(this::copy).isInstanceOf(Exception.class);
+        assertThat(target.queryForObject("SELECT COUNT(*) FROM scheduled_plan",Integer.class)).isZero();
+        assertThat(target.queryForObject("SELECT COUNT(*) FROM workflow_instance",Integer.class)).isZero();
+        assertThat(source.queryForObject("SELECT COUNT(*) FROM quality_digest_run",Integer.class)).isEqualTo(2);
+    }
+
+    private String sourceStatusCheck() {
+        String name=source.queryForObject("SELECT constraint_name FROM information_schema.table_constraints WHERE constraint_schema=DATABASE() AND table_name='quality_digest_run' AND constraint_type='CHECK'",String.class);
+        assertThat(name).matches("[A-Za-z0-9_]{1,64}");
+        return name;
     }
 
     @Test void unknownSourceColumnStopsBeforeCopyingAnyDigestRows() {

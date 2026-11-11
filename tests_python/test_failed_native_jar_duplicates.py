@@ -2106,6 +2106,11 @@ def capture_exact_failed_native_reader(value, result):
         rows.append({key: row[key] for key in ('release', 'commit', 'sourceSha256')} | {'controls': controls})
     request = {'schemaVersion': 1, 'kind': retirer.KIND + '-request', 'current': value.current,
                'identity': value.identity, 'protectedReleases': [value.current['release']], 'candidates': rows}
+    if result['selectedFailedNativeBuild']:
+        request['selectedFailedNativeBuild'] = result['selectedFailedNativeBuild']
+    for original in result['builderFiles']:
+        path = value.root / 'inbox' / value.current['release'] / 'native-jar-duplicate-controls' / original['release'] / original['file']
+        value.store(path, Path(original['source']).read_bytes())
     raw = encoded(request)
     return retirer.capture_request(value.root, raw, local_spec_sha256=sha(raw), expected_current=value.current,
                                   identity=value.identity, canonical_jar=True, failed_native=True)
@@ -2121,6 +2126,36 @@ def test_exact_failed_native_selection_reaches_capture_without_waiving_incomplet
     assert [row['release'] for row in request['candidates']] == [value.contexts[238]['release']]
     assert skipped == ([] if selected else [{'release': value.contexts[237]['release'], 'reason': 'REQUIRED_ECS_CONTROL_MISSING_ARTIFACTPLAN'}])
     assert all(path.read_bytes() == b'synthetic reviewed candidate jar\x00\xff\n' for path in value.jars.values())
+
+
+@pytest.mark.parametrize('selected', ['', '238'])
+def test_actual_reader_database_verification_is_eligible_only_with_explicit_selection(exact_failed_native_controller_reader, monkeypatch, capsys, selected):
+    value = exact_failed_native_controller_reader; original = value.originals[238]; context = value.contexts[238]
+    (original / 'build.xml').write_bytes(with_action(flow_xml(context), 'verify'))
+    folder = original / 'archive/artifacts'
+    (folder / 'ecs-tool-preparation.json').write_bytes(encoded({**context, 'status': 'PREPARED'}))
+    (folder / 'candidate-build-tools-transport.json').unlink()
+    (folder / 'ecs-tool-preparation-transport.json').write_bytes(encoded({**context,
+        'status': 'PREPARED', 'prepareCandidateBuilder': False, 'finalExitCode': 0}))
+    result = run_exact_failed_native_reader(value, monkeypatch, capsys, selected)
+    assert result['skipped'] == []
+    assert [row['release'] for row in result['rows']] == [value.contexts[238 if selected else 237]['release']]
+    assert {row['file'] for row in result['builderFiles']} == (
+        {'ecs-tool-preparation.json', 'ecs-tool-preparation-transport.json'} if selected
+        else {'ecs-tool-preparation.json', 'candidate-build-tools-transport.json'})
+
+
+@pytest.mark.parametrize('flag', [True, 0, None])
+def test_actual_reader_does_not_infer_no_builder_from_missing_or_nonboolean_transport_flag(exact_failed_native_controller_reader, monkeypatch, capsys, flag):
+    value = exact_failed_native_controller_reader; original = value.originals[238]; context = value.contexts[238]
+    (original / 'build.xml').write_bytes(with_action(flow_xml(context), 'verify'))
+    folder = original / 'archive/artifacts'
+    (folder / 'ecs-tool-preparation.json').write_bytes(encoded({**context, 'status': 'PREPARED'}))
+    (folder / 'ecs-tool-preparation-transport.json').write_bytes(encoded({**context,
+        'status': 'PREPARED', 'prepareCandidateBuilder': flag, 'finalExitCode': 0}))
+    result = run_exact_failed_native_reader(value, monkeypatch, capsys, '238')
+    assert result['rows'] == [] and result['skipped'] == [{'release': context['release'], 'reason': 'DATABASE_BUILDER_ORIGINAL_PREPARATION_REQUIRED'}]
+    assert (folder / 'application.jar').is_file()
 
 
 @pytest.mark.parametrize('selected,batch', [('0238','FailedNative'), ('238\n','FailedNative'), ('２３８','FailedNative'),
@@ -2334,6 +2369,225 @@ def test_failed_native_real_plan_pairs_stop_proof_then_builder_fixture_and_exact
     assert not s.keeper.exists() and not s.copy_path.exists() and s.production in s.rows
     assert s.page.read_bytes()==s.page_bytes and s.data.stat().st_ino==s.data_inode
     assert any({s.bcid,s.fid}<={row[0] for row in snap} for snap in s.snapshots)
+
+
+@pytest.fixture
+def database_only_failed_native_pair(failed_native_pair_plan, monkeypatch):
+    s = failed_native_pair_plan; old_sha = s.context['sourceSha256']
+    archive = s.keeper.parent / 'source.tar.gz'
+    with tarfile.open(archive, 'r:gz') as source:
+        members = {member.name: source.extractfile(member).read() for member in source}
+    recipe = members.pop('script/jenkins/prepare-compact-fixtures.py')
+    preparation_source = (MODULE.parent / 'prepare-ecs-tools.py').read_bytes()
+    members['script/jenkins/prepare-ecs-tools.py'] = preparation_source
+    source_archive(SimpleNamespace(keeper=s.keeper), recipe=recipe, publication=members)
+    s.context['sourceSha256'] = sha(archive.read_bytes())
+    publication = tuple(sha(members[name]) for name in ('Jenkinsfile.ecs-monolith', 'script/jenkins/pipeline.ps1'))
+    monkeypatch.setattr(retirer, 'DATABASE_VERIFY_PUBLICATION_RECIPES', frozenset({publication}))
+    row = s.request['candidates'][0]; row.update(s.context)
+    s.request['selectedFailedNativeBuild'] = s.tag.split('-')[1]
+    for role, reference in row['controls'].items():
+        path = s.root / reference['path']
+        if role == 'buildXml': raw = with_action(flow_xml(s.context), 'verify')
+        else: raw = path.read_bytes().replace(old_sha.encode(), s.context['sourceSha256'].encode())
+        path.write_bytes(raw); reference.update(bytes=len(raw), sha256=sha(raw))
+    s.rows.pop(s.bcid)
+    s.rows[s.fid] = json.loads(json.dumps(s.rows[s.fid]).replace(old_sha, s.context['sourceSha256']))
+    directory = s.keeper.parent / 'candidate-build-tools'
+    for path in directory.iterdir(): path.unlink()
+    directory.rmdir()
+    preparation = {**s.context, 'identity': s.request['identity'], 'kind': 'doorhandle-ecs-tool-preparation',
+        'status': 'PREPARED', 'sourceFiles': {'script/jenkins/prepare-ecs-tools.py': sha(preparation_source)}}
+    transport = {**s.context, 'schema': 1, 'kind': 'doorhandle-ecs-tool-preparation-transport',
+        'instanceId': s.request['identity']['instanceId'], 'machineId': s.request['identity']['machineId'],
+        'status': 'PREPARED', 'prepareCandidateBuilder': False, 'originalExitCode': 0, 'finalExitCode': 0}
+    s.prep_path.write_bytes(encoded(preparation))
+    s.prep_path.with_name('candidate-build-tools-transport.json').unlink()
+    s.transport_path = s.prep_path.with_name('ecs-tool-preparation-transport.json')
+    s.transport_path.write_bytes(encoded(transport)); s.transport_path.chmod(0o600)
+    s.raw = encoded(s.request); s.options['request_sha256'] = sha(s.raw)
+    s.original_archive = archive.read_bytes(); s.database_directory = directory
+    return s
+
+
+def test_explicit_database_only_native_entry_retires_no_builder_then_exact_mysql_and_two_jars(database_only_failed_native_pair):
+    s = database_only_failed_native_pair
+    local = copy.deepcopy(s.request)
+    for row in local['candidates']: row['controls'] = {key: ref for key, ref in row['controls'].items() if key in retirer.UPLOADED_NAMES}
+    local_raw = encoded(local)
+    request, skipped = retirer.capture_request(s.root, local_raw, local_spec_sha256=sha(local_raw),
+        expected_current=s.current, identity=s.request['identity'], canonical_jar=True, failed_native=True)
+    assert skipped == [] and request == s.request
+    prepared = retirer.plan_builders(s.root, s.raw, **s.options)
+    assert prepared['skipped'] == [] and prepared['candidates'] == [] and len(prepared['absent']) == 1
+    assert prepared['absent'][0]['absenceKind'] == 'NOT_REQUESTED_BY_DATABASE_VERIFICATION'
+    receipt = retirer.apply_builders(s.root, s.raw, prepared, plan_sha256=sha(encoded(prepared)), **s.options)
+    assert receipt['status'] == 'NO_ACTION' and receipt['removed'] == receipt['alreadyAbsent'] == []
+    assert receipt['buildersNotRequested'] == [s.tag] and s.commands == []
+    journal = s.root / 'inbox' / s.current['release'] / 'native-builder-retirement-journal.jsonl'
+    assert [json.loads(line)['phase'] for line in journal.read_bytes().splitlines()] == ['STARTED', 'BUILDER_NOT_REQUESTED', 'FINISHED']
+    prepared = retirer.plan_recent_fixtures(s.root, s.raw, **s.options)
+    assert prepared['skipped'] == [] and len(prepared['candidates']) == 1
+    receipt = retirer.apply_recent_fixtures(s.root, s.raw, prepared, plan_sha256=sha(encoded(prepared)), **s.options)
+    assert receipt['status'] == 'REMOVED' and s.commands == [('rm', s.fid)]
+    def quiet(checkout, tag, token): s.cleanup.quiescent({'checkout': checkout, 'token': token}, tag, s.cleanup.docker_snapshot(), include_inbox=True)
+    options = {key: value for key, value in s.options.items() if key != 'modules'}; options['quiescence'] = quiet
+    for canonical in (False, True):
+        prepared = retirer.plan(s.root, s.raw, canonical_jar=canonical, **options)
+        assert prepared['skipped'] == [] and len(prepared['candidates']) == 1
+        receipt = retirer.apply(s.root, s.raw, prepared, plan_sha256=sha(encoded(prepared)), canonical_jar=canonical, **options)
+        assert receipt['status'] == 'REMOVED'
+    assert not s.keeper.exists() and not s.copy_path.exists() and s.production in s.rows
+    assert s.page.read_bytes() == s.page_bytes and s.data.stat().st_ino == s.data_inode
+    assert (s.keeper.parent / 'source.tar.gz').read_bytes() == s.original_archive
+
+
+def test_explicit_database_only_cli_keeps_request_selection_and_all_four_original_phases(database_only_failed_native_pair, monkeypatch, capsys):
+    s = database_only_failed_native_pair
+    def quiet(checkout, tag, token): s.cleanup.quiescent({'checkout': checkout, 'token': token}, tag, s.cleanup.docker_snapshot(), include_inbox=True)
+    monkeypatch.setattr(retirer, 'admitted_current', lambda args: (s.root, s.current, s.request['identity'], quiet, s.options['modules']))
+    local = copy.deepcopy(s.request)
+    for row in local['candidates']: row['controls'] = {key: ref for key, ref in row['controls'].items() if key in retirer.UPLOADED_NAMES}
+    raw = encoded(local); inbox = s.root / 'inbox' / s.current['release']
+    path = inbox / 'native-jar-duplicate-local-spec.json'; path.write_bytes(raw); path.chmod(0o600)
+    common = ['--mode', 'Maintenance', '--jar-batch', retirer.FAILED_NATIVE_BATCH,
+        '--failed-native-build-number', s.tag.split('-')[1], '--root', str(s.root), '--tag', s.current['release'],
+        '--commit', s.current['commit'], '--source-sha256', s.current['sourceSha256'],
+        '--instance-id', s.request['identity']['instanceId'], '--machine-id', s.request['identity']['machineId'],
+        '--current-receipt-sha256', '0' * 64]
+    def phase(name, *flags):
+        assert retirer.cli(['--phase', name, *common, *flags]) == 0
+        return json.loads(capsys.readouterr().out)
+    captured = phase('capture-canonical-request', '--local-spec-sha256', sha(raw))
+    request_sha = captured['request']['sha256']; assert captured['skipped'] == []
+    for plan, apply in (('plan-failed-native-builders', 'apply-failed-native-builders'),
+                        ('plan-recent-fixtures', 'apply-recent-fixtures'), ('plan', 'apply'), ('plan-canonical', 'apply-canonical')):
+        prepared = phase(plan, '--request-sha256', request_sha)
+        assert prepared['skipped'] == []
+        receipt = phase(apply, '--request-sha256', request_sha, '--plan-sha256', prepared['plan']['sha256'])
+        assert receipt['status'] == ('NO_ACTION' if apply == 'apply-failed-native-builders' else 'REMOVED')
+    result = phase('inspect')
+    assert {'builderPlan', 'builderReceipt', 'builderJournal', 'recentFixturePlan', 'recentFixtureReceipt',
+            'recentFixtureJournal', 'plan', 'receipt', 'journal', 'canonicalPlan', 'canonicalReceipt', 'canonicalJournal'} <= set(result['files'])
+    assert s.commands == [('rm', s.fid)] and not s.keeper.exists() and not s.copy_path.exists()
+    assert s.page.read_bytes() == s.page_bytes and s.production in s.rows
+
+
+@pytest.mark.parametrize('changed', ['default', 'other-build', 'multiple-builds', 'wrong-sha', 'other-api'])
+def test_database_only_native_permission_requires_exact_explicit_request_not_default_or_other_apis(database_only_failed_native_pair, changed):
+    s = database_only_failed_native_pair; request = copy.deepcopy(s.request)
+    if changed == 'default': request.pop('selectedFailedNativeBuild')
+    elif changed == 'other-build': request['selectedFailedNativeBuild'] = '247'
+    elif changed == 'multiple-builds': request['candidates'].append(copy.deepcopy(request['candidates'][0]))
+    raw = encoded(request)
+    if changed == 'default':
+        prepared = retirer.plan_builders(s.root, raw, **{**s.options, 'request_sha256': sha(raw)})
+        assert prepared['candidates'] == prepared['absent'] == [] and prepared['skipped']
+    else:
+        with pytest.raises(retirer.RetirementError):
+            retirer.approved_request(raw, '0' * 64 if changed == 'wrong-sha' else sha(raw), s.current,
+                s.request['identity'], canonical_jar=True, failed_native=changed != 'other-api')
+    assert s.commands == [] and s.keeper.exists() and s.copy_path.exists()
+
+
+@pytest.mark.parametrize('changed', ['transport-true', 'transport-integer', 'transport-unknown', 'wrong-identity',
+    'wrong-source', 'preparation-builder', 'helper-drift', 'unreviewed-recipe', 'unreviewed-helper', 'builder-files', 'missing-transport'])
+def test_database_only_no_builder_plan_requires_actual_originals_and_reviewed_source(database_only_failed_native_pair, monkeypatch, changed):
+    s = database_only_failed_native_pair
+    if changed == 'unreviewed-recipe': monkeypatch.setattr(retirer, 'DATABASE_VERIFY_PUBLICATION_RECIPES', frozenset())
+    elif changed == 'unreviewed-helper': monkeypatch.setattr(retirer, 'DATABASE_VERIFY_TOOL_PREPARATION_SOURCE', '0' * 64)
+    elif changed == 'builder-files': s.database_directory.mkdir()
+    elif changed == 'missing-transport': s.transport_path.unlink()
+    else:
+        path = s.prep_path if changed in ('preparation-builder', 'helper-drift') else s.transport_path
+        value = json.loads(path.read_bytes())
+        if changed == 'preparation-builder': value['candidateBuilderTools'] = {}
+        elif changed == 'helper-drift': value['sourceFiles']['script/jenkins/prepare-ecs-tools.py'] = '0' * 64
+        elif changed == 'transport-true': value['prepareCandidateBuilder'] = True
+        elif changed == 'transport-integer': value['prepareCandidateBuilder'] = 0
+        elif changed == 'transport-unknown': value['status'] = 'FAILED_OR_UNKNOWN'
+        elif changed == 'wrong-identity': value['machineId'] = '0' * 32
+        else: value['sourceSha256'] = '0' * 64
+        path.write_bytes(encoded(value))
+    prepared = retirer.plan_builders(s.root, s.raw, **s.options)
+    assert prepared['candidates'] == prepared['absent'] == [] and len(prepared['skipped']) == 1
+    assert s.commands == [] and s.keeper.exists() and s.copy_path.exists() and s.page.read_bytes() == s.page_bytes
+
+
+@pytest.mark.parametrize('changed', ['unknown-builder', 'foreign-bind', 'active-mysql', 'namespace-reference'])
+def test_database_no_builder_plan_preserves_global_inventory_and_exact_stopped_mysql_guards(database_only_failed_native_pair, changed):
+    s = database_only_failed_native_pair
+    if changed == 'unknown-builder':
+        s.rows['2' * 64] = {'Id': '2' * 64, 'Name': '/unknown-builder', 'Config': {'Labels': {'io.doorhandle.release': s.tag}},
+            'State': {'Running': False, 'Restarting': False, 'Pid': 0}, 'HostConfig': {}, 'Mounts': []}
+    elif changed == 'foreign-bind': s.rows[s.production]['Mounts'] = [{'Type': 'bind', 'Source': str(s.keeper.parent), 'Destination': '/foreign', 'RW': False}]
+    elif changed == 'active-mysql': s.rows[s.fid]['State'].update(Status='running', Running=True, Pid=8901)
+    else: s.rows[s.production]['HostConfig']['NetworkMode'] = 'container:' + s.fid
+    prepared = retirer.plan_builders(s.root, s.raw, **s.options)
+    assert prepared['candidates'] == prepared['absent'] == [] and len(prepared['skipped']) == 1
+    assert s.commands == [] and s.page.read_bytes() == s.page_bytes and s.keeper.exists()
+
+
+@pytest.mark.parametrize('changed', ['transport-drift', 'new-builder', 'mysql-start'])
+def test_database_no_builder_apply_rechecks_originals_and_global_objects(database_only_failed_native_pair, changed):
+    s = database_only_failed_native_pair; prepared = retirer.plan_builders(s.root, s.raw, **s.options)
+    assert prepared['skipped'] == [] and len(prepared['absent']) == 1
+    if changed == 'transport-drift': s.transport_path.write_bytes(s.transport_path.read_bytes() + b' ')
+    elif changed == 'mysql-start': s.rows[s.fid]['State'].update(Status='running', Running=True, Pid=8901)
+    else:
+        s.rows['2' * 64] = {'Id': '2' * 64, 'Name': '/late-builder', 'Config': {'Labels': {'io.doorhandle.release': s.tag}},
+            'State': {'Running': False, 'Restarting': False, 'Pid': 0}, 'HostConfig': {}, 'Mounts': []}
+    receipt = retirer.apply_builders(s.root, s.raw, prepared, plan_sha256=sha(encoded(prepared)), **s.options)
+    assert receipt['status'] == 'FAILED_OR_UNKNOWN' and receipt['removed'] == [] and s.commands == []
+    assert s.fid in s.rows and s.keeper.exists() and s.copy_path.exists()
+
+
+@pytest.mark.parametrize('selected', [None, '221'])
+def test_cli_selection_is_bound_to_the_original_request_and_never_inferred(database_only_failed_native_pair, selected):
+    s = database_only_failed_native_pair
+    if selected is None:
+        with pytest.raises(retirer.RetirementError, match='FAILED_NATIVE_CLI_SELECTION_DIFFERS'):
+            retirer.bind_failed_native_cli_selection(s.raw, selected)
+    else: retirer.bind_failed_native_cli_selection(s.raw, selected)
+
+
+@pytest.mark.parametrize('stage', ['mysql', 'copy', 'canonical'])
+def test_database_original_transport_drift_is_rejected_by_each_later_mutating_phase(database_only_failed_native_pair, stage):
+    s = database_only_failed_native_pair
+    if stage == 'mysql':
+        prepared = retirer.plan_recent_fixtures(s.root, s.raw, **s.options)
+        assert prepared['skipped'] == []
+        s.transport_path.write_bytes(s.transport_path.read_bytes() + b' ')
+        receipt = retirer.apply_recent_fixtures(s.root, s.raw, prepared, plan_sha256=sha(encoded(prepared)), **s.options)
+    else:
+        s.rows.pop(s.fid)
+        def quiet(checkout, tag, token): s.cleanup.quiescent({'checkout': checkout, 'token': token}, tag, s.cleanup.docker_snapshot(), include_inbox=True)
+        options = {key: value for key, value in s.options.items() if key != 'modules'}; options['quiescence'] = quiet
+        canonical = stage == 'canonical'
+        prepared = retirer.plan(s.root, s.raw, canonical_jar=canonical, **options)
+        assert prepared['skipped'] == []
+        s.transport_path.write_bytes(s.transport_path.read_bytes() + b' ')
+        receipt = retirer.apply(s.root, s.raw, prepared, plan_sha256=sha(encoded(prepared)), canonical_jar=canonical, **options)
+    assert receipt['status'] == 'FAILED_OR_UNKNOWN'
+    assert s.commands == [] and s.keeper.exists() and s.copy_path.exists() and s.page.read_bytes() == s.page_bytes
+
+
+@pytest.mark.parametrize('canonical', [False, True])
+def test_database_transport_drift_after_jar_capture_retains_quarantine(database_only_failed_native_pair, monkeypatch, canonical):
+    s = database_only_failed_native_pair; s.rows.pop(s.fid)
+    def quiet(checkout, tag, token): s.cleanup.quiescent({'checkout': checkout, 'token': token}, tag, s.cleanup.docker_snapshot(), include_inbox=True)
+    options = {key: value for key, value in s.options.items() if key != 'modules'}; options['quiescence'] = quiet
+    prepared = retirer.plan(s.root, s.raw, canonical_jar=canonical, **options)
+    assert prepared['skipped'] == []
+    capture = retirer._capture_no_replace
+    def drift(*args, **kwargs):
+        capture(*args, **kwargs); s.transport_path.write_bytes(s.transport_path.read_bytes() + b' ')
+    monkeypatch.setattr(retirer, '_capture_no_replace', drift)
+    receipt = retirer.apply(s.root, s.raw, prepared, plan_sha256=sha(encoded(prepared)), canonical_jar=canonical, **options)
+    assert receipt['status'] == 'FAILED_OR_UNKNOWN' and receipt['deleted'] == []
+    assert len(receipt['retainedQuarantinePaths']) == 1
+    assert (s.root / receipt['retainedQuarantinePaths'][0]).read_bytes() == s.jar
+    assert (s.copy_path if canonical else s.keeper).read_bytes() == s.jar and s.commands == []
 
 
 @pytest.mark.parametrize('conflict',['unknown-same-release','foreign-bind','namespace-reference','active-builder','active-peer'])
@@ -2931,6 +3185,8 @@ def test_exact_failed_native_selector_is_optional_scoped_and_bound_through_every
     assert "$Mode -ceq 'Maintenance' -and $CanonicalBatch -ceq 'FailedNative'" in controller
     assert "'\\A[1-9][0-9]{0,8}\\z'" in controller
     assert '$local.selectedFailedNativeBuild -ceq $FailedNativeBuildNumber' in controller
+    assert "$spec.Add('selectedFailedNativeBuild',$FailedNativeBuildNumber)" in controller
+    assert "--failed-native-build-number '$FailedNativeBuildNumber'" in controller
     assert "@($captured.skipped | Where-Object {$_.reason -cne 'FAILED_NATIVE_BINARIES_NOT_PRESENT'}).Count -eq 0" in controller
     assert 'include_inbox=True' in MODULE.read_text(encoding='utf8')
 

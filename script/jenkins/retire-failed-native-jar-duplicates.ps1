@@ -151,6 +151,7 @@ def closed_original(number,name):
 if batch=='ClosedRuntime':
  approved=[(204,'24f8eb4b02bf290c6dd4e186eb78c5f3c80f3b88',None),
   (207,'eb286c623177b9d1bc23fe88223d81862c00bc71','3c5c15b15c57544e7e7195059607d33b0c807989c2fb672d36d4c4db2eefe01a')]
+database_builds=set()
 if batch=='FailedNative':
  approved=[];current_number=int(current.split('-')[1]);builds=Path(jhome)/'jobs/doorhandle-java/builds'
  for directory in sorted((p for p in builds.iterdir() if p.name.isdigit() and 221<=int(p.name)<current_number),key=lambda p:int(p.name),reverse=True):
@@ -161,7 +162,9 @@ if batch=='FailedNative':
   params={}
   for item in node.findall('.//hudson.model.ParametersAction/parameters/*'):
    key=item.findtext('name');need(key and key not in params);params[key]=item.findtext('value')
-  if any(params.get(k)!=v for k,v in {'ACTION':'verify-runtime','DOORHANDLE_CI_SCOPE':'mysql','PRODUCTION_RELEASE_ENABLED':'false'}.items()):continue
+  expected={'ACTION':'verify-runtime','DOORHANDLE_CI_SCOPE':'mysql','PRODUCTION_RELEASE_ENABLED':'false'}
+  if selected_build and params.get('ACTION')=='verify':expected['ACTION']='verify'
+  if any(params.get(k)!=v for k,v in expected.items()):continue
   source=directory/'archive/artifacts/release.json'
   if not source.is_file():continue
   release=json.loads(stable(source),object_pairs_hook=unique);oldcommit=params.get('TRUSTED_COMMIT')
@@ -174,6 +177,7 @@ if batch=='FailedNative':
    for block in iter(lambda:stream.read(1048576),b''):digest.update(block)
    after=os.fstat(stream.fileno());need((after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns,after.st_ctime_ns,after.st_nlink)==(meta.st_dev,meta.st_ino,meta.st_size,meta.st_mtime_ns,meta.st_ctime_ns,meta.st_nlink) and digest.hexdigest()==release.get('applicationJarSha256'),'RETAINED_JENKINS_BINARY_DIFFERS')
   approved.append((int(directory.name),oldcommit,None))
+  if params['ACTION']=='verify':database_builds.add(int(directory.name))
   if len(approved)==16:break
  need(not selected_build or len(approved)==1,'EXACT_SELECTED_FAILED_NATIVE_BUILD_REQUIRED')
 helpers={};wanted={'script/jenkins/retire-failed-native-jar-duplicates.py','script/jenkins/cleanup-ecs-builds.py','script/jenkins/verify-remote.py','script/docker/compact-build-resources.py'}
@@ -230,10 +234,15 @@ for number,oldcommit,preservation_sha in approved:
     source,raw,origin=closed_original(number,name)
     builder_files.append({'release':tag,'file':name,'source':str(source),'bytes':len(raw),'sha256':sha(raw),'origin':origin})
   if batch=='FailedNative':
-   for name in ('ecs-tool-preparation.json','candidate-build-tools-transport.json'):
+   names=('ecs-tool-preparation.json','ecs-tool-preparation-transport.json') if number in database_builds else ('ecs-tool-preparation.json','candidate-build-tools-transport.json')
+   for name in names:
     original=Path(jhome)/'jobs/doorhandle-java/builds'/str(number)/'archive/artifacts'/name
     body=stable(original);value=json.loads(body,object_pairs_hook=unique)
     need(all(value.get(key)==rel.get(key) for key in ('release','commit','sourceSha256')),'FAILED_BUILDER_JENKINS_REFERENCE_CONTEXT_DIFFERS')
+    if number in database_builds:
+     need(value.get('status')=='PREPARED','DATABASE_BUILDER_ORIGINAL_PREPARATION_REQUIRED')
+     if name=='ecs-tool-preparation.json':need('candidateBuilderTools' not in value,'DATABASE_BUILDER_ORIGINAL_PREPARATION_REQUIRED')
+     else:need(value.get('prepareCandidateBuilder') is False and type(value.get('finalExitCode')) is int and value['finalExitCode']==0 and 'buildkitArchive' not in value,'DATABASE_BUILDER_ORIGINAL_PREPARATION_REQUIRED')
     builder_files.append({'release':tag,'file':name,'source':str(original),'bytes':len(body),'sha256':sha(body),'origin':'ACTUAL_JENKINS_ORIGINAL'})
   rows.append({'release':tag,'commit':oldcommit,'sourceSha256':rel['sourceSha256'],'files':files})
   custody.append({'release':tag,'controls':origins,'preservationSha256':preservation_sha if preservation else None})
@@ -325,6 +334,7 @@ $local=(Invoke-NativeJar $python @('-I','-B','-c',$reader,$archive,$Commit,$Reta
 Require-NativeJar ($local.selectedFailedNativeBuild -ceq $FailedNativeBuildNumber -and ($FailedNativeBuildNumber -ceq '' -or (@($local.rows).Count -eq 1 -and $local.rows[0].release.Split('-')[1] -ceq $FailedNativeBuildNumber))) 'The explicit failed native selection must retain exactly its original Jenkins build.'
 if ($CanonicalBatch -ceq 'PublicCaches') {Require-NativeJar (@($local.rows).Count -eq 6 -and @($local.skipped).Count -eq 0) 'Public caches require the retained 117 keeper and all five closed failed-build control bundles.'}
 $spec=[ordered]@{schemaVersion=1;kind='doorhandle-failed-native-jar-duplicate-request';current=@{release=$Tag;commit=$Commit;sourceSha256=$SourceSha256};identity=@{instanceId=$instance;machineId=$machine;executionLocation='ECS'};protectedReleases=@($Tag);candidates=@()}
+if ($FailedNativeBuildNumber -cne '') {$spec.Add('selectedFailedNativeBuild',$FailedNativeBuildNumber)}
 $uploads=@()
 foreach ($row in $local.rows) {
     $controls=@{}
@@ -354,7 +364,9 @@ if ($CanonicalBatch -ceq 'ClosedRuntime') {
 if ($CanonicalBatch -ceq 'FailedNative') {
     Require-NativeJar (@($local.builderFiles).Count -eq 2*$spec.candidates.Count) 'Each failed native builder requires its actual Jenkins preparation and transport references.'
     foreach($binding in $local.builderFiles) {
-        Require-NativeJar ($binding.release -cin @($spec.candidates.release) -and $binding.file -cin @('ecs-tool-preparation.json','candidate-build-tools-transport.json')) 'Unknown failed native builder original reference.'
+        $allowedFiles=@('ecs-tool-preparation.json','candidate-build-tools-transport.json')
+        if ($FailedNativeBuildNumber -cne '') {$allowedFiles+='ecs-tool-preparation-transport.json'}
+        Require-NativeJar ($binding.release -cin @($spec.candidates.release) -and $binding.file -cin $allowedFiles) 'Unknown failed native builder original reference.'
         $uploads+=@{relative="inbox/$Tag/native-jar-duplicate-controls/$($binding.release)/$($binding.file)";source=$binding.source;bytes=$binding.bytes;sha256=$binding.sha256}
     }
 }
@@ -452,6 +464,7 @@ $helperSha=$local.helpers.'script/jenkins/retire-failed-native-jar-duplicates.py
 $common="--root '$RemoteRoot' --tag '$Tag' --commit '$Commit' --source-sha256 '$SourceSha256' --mode '$Mode' --instance-id '$instance' --machine-id '$machine' --current-receipt-sha256 '$currentReceiptSha'"
 if($CanonicalBatch -ceq 'ClosedRuntime') {$common+=" --jar-batch failed-204-207"}
 if($CanonicalBatch -ceq 'FailedNative') {$common+=" --jar-batch failed-native-retention-v1"}
+if($FailedNativeBuildNumber -cne '') {$common+=" --failed-native-build-number '$FailedNativeBuildNumber'"}
 if($CanonicalBatch -ceq 'RetiredCopies' -and $RetiredCopyBatch -ceq 'retired-187-188-189') {$common+=" --retired-copy-batch retired-187-188-189"}
 if($CanonicalBatch -ceq 'PublicCaches') {$common+=" --public-cache-batch failed-native-public-221-224-235"}
 function Invoke-NativeJarPhase([string]$Phase,[string]$Flags='') {

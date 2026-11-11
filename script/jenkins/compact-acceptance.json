@@ -381,7 +381,7 @@
         "doorhandle.digest.copy.mysql.config"
       ],
       "source": "doorhandle-module-detection/src/test/java/com/ruanzhu/doorhandle/module/detection/service/DigestCopyMigrationMySqlTest.java",
-      "minimumTests": 13,
+      "minimumTests": 20,
       "coverage": [
         "detection workflow, reports, identity and authorization"
       ]
@@ -542,7 +542,7 @@
         "doorhandle.feature.mysql.config"
       ],
       "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/model/ModelBudgetMigrationMySqlTest.java",
-      "minimumTests": 9,
+      "minimumTests": 26,
       "coverage": [
         "model configuration, quota and token accounts"
       ]
@@ -1229,7 +1229,7 @@
       },
       {
         "module": "tests_python.test_compact_schema_source",
-        "minimumTests": 28,
+        "minimumTests": 29,
         "source": "tests_python/test_compact_schema_source.py",
         "allowedSkippedTests": []
       },
@@ -1343,7 +1343,7 @@
       },
       {
         "module": "tests_python.test_failed_native_jar_duplicates",
-        "minimumTests": 351,
+        "minimumTests": 388,
         "source": "tests_python/test_failed_native_jar_duplicates.py",
         "allowedSkippedTests": []
       },

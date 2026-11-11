@@ -250,3 +250,36 @@ def test_digest_author_reproduces_innodb_restrict_equivalent_actions_and_exact_f
     assert 'CASCADE' not in guard and 'SET NULL' not in guard
     control = next(line for line in generated.splitlines() if 'quality_digest_control s LEFT JOIN runtime_state' in line)
     assert 'NOT(BINARY t.`payload_version`<=>BINARY 1)' in control
+    status = next(line for line in generated.splitlines()
+                  if "BINARY t.table_name=BINARY 'quality_digest_run'" in line and 'c.check_clause' in line)
+    expected = "'statusin''pending'',''running'',''completed'',''failed'',''blocked'''"
+    assert "t.constraint_type='CHECK' AND t.enforced='YES'" in status
+    assert ' IN (BINARY ' + expected + ',BINARY REPLACE(' + expected + ',CHAR(39),CONCAT(CHAR(92),CHAR(39))))' in status
+    assert "REPLACE(c.check_clause,'_utf8mb4','')" in status
+    assert 'REPLACE(c.check_clause,CHAR(92)' not in status
+
+
+def test_model_budget_author_reproduces_exact_check_spellings_and_all_enforced_groups(tmp_path):
+    for relative in ('script/schema/author_model_budget_copy.py', 'script/schema/build_compact_schema.py',
+                     'sql/mysql/migration-V64-model-budget.sql'):
+        destination = tmp_path / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / relative, destination)
+    (tmp_path / 'sql/mysql/compact/copy').mkdir(parents=True)
+    subprocess.run([sys.executable, '-B', str(tmp_path / 'script/schema/author_model_budget_copy.py')],
+                   check=True, capture_output=True, text=True)
+    generated = (tmp_path / 'sql/mysql/compact/copy/38-model-budget.sql').read_text(encoding='utf8')
+    assert generated == (ROOT / 'sql/mysql/compact/copy/38-model-budget.sql').read_text(encoding='utf8')
+    guards = [line for line in generated.splitlines() if 'c.check_clause' in line]
+    assert len(guards) == 7
+    assert all(' IN (BINARY e.clause_text,BINARY REPLACE(e.clause_text,CHAR(39),CONCAT(CHAR(92),CHAR(39))))' in line
+               for line in guards)
+    unknown = next(line for line in guards if 'LEFT JOIN compact_budget_checks e' in line)
+    assert 'IF(COUNT(*)=0,1,0)' in unknown
+    assert "(e.table_name IS NULL OR t.enforced<>'YES')" in unknown
+    for group in ('total', 'warning', 'status', 'input', 'output', 'remaining'):
+        guard = next(line for line in guards if "e.semantic_group='" + group + "'" in line)
+        assert 'IF(COUNT(*)=1,1,0)' in guard and "t.enforced='YES'" in guard
+    for table, count in (('agent_model_budget', 2), ('agent_model_budget_attempt', 3),
+                         ('agent_model_budget_observation', 1), ('agent_model_budget_audit', 0)):
+        assert "IF(COUNT(*)=" + str(count) + ",1,0) FROM information_schema.table_constraints WHERE table_schema='__SOURCE_SCHEMA__' AND table_name='" + table + "' AND constraint_type='CHECK'" in generated

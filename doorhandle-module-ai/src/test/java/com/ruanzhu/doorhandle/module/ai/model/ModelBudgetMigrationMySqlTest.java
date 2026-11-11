@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory;
 import com.ruanzhu.doorhandle.module.ai.testsupport.ModelBudgetMigrationFixture;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
@@ -13,6 +15,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -139,6 +142,43 @@ class ModelBudgetMigrationMySqlTest {
         source.execute("ALTER TABLE agent_model_budget DROP CHECK `"+constraint+"`");
         source.execute("ALTER TABLE agent_model_budget ADD CONSTRAINT duplicate_total CHECK(total_tokens IS NULL OR total_tokens>=0)");
         rejectedWithoutSourceMutation();
+    }
+
+    @ParameterizedTest
+    @CsvSource({"plain,true","escaped,true","backslash-in-value,false","extended,false","or-expression,false"})
+    void statusCheckMetadataAllowsOnlyTheTwoExactReviewedSpellings(String representation,boolean accepted) throws Exception {
+        String clause="(`status` in (_utf8mb4'STARTED',_utf8mb4'COMPLETED',_utf8mb4'FAILED',_utf8mb4'CANCELLED'))";
+        clause=switch(representation) {
+            case "plain" -> clause;
+            case "escaped" -> clause.replace("'","\\'");
+            case "backslash-in-value" -> clause.replace("STARTED","STAR\\TED");
+            case "extended" -> clause.replace("'CANCELLED'","'CANCELLED',_utf8mb4'UNKNOWN'");
+            case "or-expression" -> clause+" OR 1=1";
+            default -> throw new IllegalArgumentException("Unreviewed CHECK metadata fixture");
+        };
+        String guard=Files.readAllLines(Path.of("../sql/mysql/compact/copy/38-model-budget.sql")).stream()
+                .filter(line->line.contains("LEFT JOIN compact_budget_checks e")&&line.contains("c.check_clause"))
+                .findFirst().orElseThrow();
+        String predicate=guard.substring(guard.indexOf("BINARY LOWER("),guard.indexOf(" WHERE t.table_schema="))
+                .replace("c.check_clause","?").replace("e.clause_text","?");
+        String expected="(statusin('started','completed','failed','cancelled'))";
+        assertThat(target.queryForObject("SELECT "+predicate,Boolean.class,clause,expected,expected)).isEqualTo(accepted);
+    }
+
+    @Test void expandedSourceStatusCheckIsRejectedBeforeAnyImport() {
+        seed();source.execute("ALTER TABLE agent_model_budget_attempt DROP CHECK `"+sourceStatusCheck()+"`");
+        source.execute("ALTER TABLE agent_model_budget_attempt ADD CONSTRAINT fixture_status_domain CHECK(status IN ('STARTED','COMPLETED','FAILED','CANCELLED','UNKNOWN'))");
+        rejectedWithoutSourceMutation();
+    }
+
+    @Test void notEnforcedSourceStatusCheckIsRejectedBeforeAnyImport() {
+        seed();source.execute("ALTER TABLE agent_model_budget_attempt ALTER CHECK `"+sourceStatusCheck()+"` NOT ENFORCED");
+        rejectedWithoutSourceMutation();
+    }
+
+    private String sourceStatusCheck() {
+        String name=source.queryForObject("SELECT t.constraint_name FROM information_schema.table_constraints t JOIN information_schema.check_constraints c ON t.constraint_schema=c.constraint_schema AND t.constraint_name=c.constraint_name WHERE t.table_schema=DATABASE() AND t.table_name='agent_model_budget_attempt' AND t.constraint_type='CHECK' AND c.check_clause LIKE '%status%'",String.class);
+        assertThat(name).matches("[A-Za-z0-9_]{1,64}");return name;
     }
 
     @ParameterizedTest @ValueSource(strings={"column","collation","type","trigger"})

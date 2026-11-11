@@ -175,6 +175,13 @@ FAILED_NATIVE_PUBLICATION_RECIPES = frozenset({
     ('f8e83ca9a148deea6f606308de2cc6b92f2e3405e167a9386eb1a7dc9ba96bf3',
      '1ad3e3f048f6df9cfb64efc3d43b2963a3bddb8109ffd13a225f8a8b27324eb0'),
 })
+# These exact recipes request a candidate builder only for runtime/cutover,
+# never for an explicitly selected verify/mysql attempt.
+DATABASE_VERIFY_PUBLICATION_RECIPES = frozenset({
+    ('f8e83ca9a148deea6f606308de2cc6b92f2e3405e167a9386eb1a7dc9ba96bf3',
+     '1ad3e3f048f6df9cfb64efc3d43b2963a3bddb8109ffd13a225f8a8b27324eb0'),
+})
+DATABASE_VERIFY_TOOL_PREPARATION_SOURCE = 'cd025c3250feb3acb03bb583c7d5ca94894b100cdf89921223607968b2c85d4d'
 CLOSED_RUNTIME_JARS = {
     'ci-204-24f8eb4b02bf': {
         'commit': '24f8eb4b02bf290c6dd4e186eb78c5f3c80f3b88',
@@ -400,8 +407,9 @@ def canonical_commit(tag):
     return APPROVED_OLD.get(tag) or RECENT_CANONICAL_ONLY.get(tag) or CLOSED_RUNTIME_JARS.get(tag, {}).get('commit')
 
 
-def terminal_xml(raw, context, *, canonical_jar=False, retired_copy_batch=None):
+def terminal_xml(raw, context, *, canonical_jar=False, retired_copy_batch=None, database_verification=False):
     need(type(canonical_jar) is bool, 'EXACT_RETIREMENT_POLICY_REQUIRED')
+    need(type(database_verification) is bool, 'EXACT_DATABASE_VERIFICATION_POLICY_REQUIRED')
     need(type(raw) is bytes and 0 < len(raw) <= MAX_CONTROL
          and b'<!DOCTYPE' not in raw.upper() and b'<!ENTITY' not in raw.upper(), 'BOUNDED_ENTITY_FREE_TERMINAL_XML_REQUIRED')
     try: root = ET.fromstring(raw)
@@ -424,12 +432,15 @@ def terminal_xml(raw, context, *, canonical_jar=False, retired_copy_batch=None):
         need(canonical_jar and targets.get(context['release'], {}).get('commit') == context['commit'],
              'EXACT_RETIRED_COPY_TERMINAL_SOURCE_REQUIRED')
         expected_action = 'verify'
+    if database_verification:
+        need(canonical_jar and retired_copy_batch is None, 'EXPLICIT_DATABASE_VERIFICATION_POLICY_REQUIRED')
+        expected_action = 'verify'
     need(all(parameters.get(key) == value for key, value in {'ACTION': expected_action, 'DOORHANDLE_CI_SCOPE': 'mysql',
         'TRUSTED_COMMIT': context['commit'], 'PRODUCTION_RELEASE_ENABLED': 'false'}.items()), 'FAILED_NATIVE_PARAMETERS_REQUIRED')
     return root.findtext('result')
 
 
-def validate_control_documents(raw_docs, context, identity, *, canonical_jar=False, retired_copy_batch=None):
+def validate_control_documents(raw_docs, context, identity, *, canonical_jar=False, retired_copy_batch=None, database_verification=False):
     """Pure validation of actual raw controls already authenticated by Jenkins."""
     validate_context(context)
     need(type(identity) is dict and set(identity) == {'instanceId', 'machineId', 'executionLocation'}
@@ -439,7 +450,8 @@ def validate_control_documents(raw_docs, context, identity, *, canonical_jar=Fal
     need(type(raw_docs) is dict and REQUIRED_CONTROLS <= set(raw_docs) <= REQUIRED_CONTROLS | OPTIONAL_CONTROLS,
          'COMPLETE_ACTUAL_CONTROL_BUNDLE_REQUIRED')
     result = terminal_xml(raw_docs['buildXml'], context, canonical_jar=canonical_jar,
-                          **({'retired_copy_batch': retired_copy_batch} if retired_copy_batch is not None else {}))
+                          **({'retired_copy_batch': retired_copy_batch} if retired_copy_batch is not None else {}),
+                          **({'database_verification': True} if database_verification else {}))
     docs = {name: decode(raw) for name, raw in raw_docs.items() if name != 'buildXml'}
     release, plan, owner, cleanup = (docs[name] for name in ('release', 'artifactPlan', 'fixtureOwner', 'fixtureCleanup'))
     for value in (release, plan, owner, cleanup): same_context(value, context)
@@ -680,13 +692,14 @@ def remove_duplicate(root, descriptor, quarantine=None, *, quiescence=None, publ
 
 
 def source_proof(root, tag, commit, source_sha, *, builder_helpers=False, canonical_jar=False, failed_native=False,
-                 retired_copy_batch=None):
+                 retired_copy_batch=None, database_verification=False):
     """Read and authenticate the retained archive; never extract or run it."""
+    need(type(database_verification) is bool, 'EXACT_DATABASE_VERIFICATION_POLICY_REQUIRED')
     path = Path(root) / 'inbox' / tag / 'source.tar.gz'
     need(path.exists() or path.is_symlink(), 'OLD_SOURCE_ARCHIVE_MISSING')
     with held_file(root, path, MAX_SOURCE_ARCHIVE) as (stream, signature):
         need(hash_stream(stream, MAX_SOURCE_ARCHIVE) == source_sha, 'OLD_SOURCE_ARCHIVE_SHA_DRIFT')
-        stream.seek(0); recipe = None; builder_shas = {}; publication_shas = {}
+        stream.seek(0); recipe = None; builder_shas = {}; publication_shas = {}; preparation_sha = None
         publication_names = ('Jenkinsfile.ecs-monolith', 'script/jenkins/pipeline.ps1')
         builder_names = {'script/docker/compact-build-resources.py', 'script/docker/compact-image-inputs.py'}
         class Bounded:
@@ -706,6 +719,12 @@ def source_proof(root, tag, commit, source_sha, *, builder_helpers=False, canoni
                     raw = archive.extractfile(member).read(1024 ** 2 + 1)
                     need(len(raw) == member.size, 'OLD_PUBLICATION_SOURCE_TRUNCATED')
                     publication_shas[member.name] = digest_bytes(raw)
+                if database_verification and member.name == 'script/jenkins/prepare-ecs-tools.py':
+                    need(preparation_sha is None and member.isfile() and 0 < member.size <= 1024 ** 2,
+                         'UNIQUE_DATABASE_TOOL_PREPARATION_SOURCE_REQUIRED')
+                    raw = archive.extractfile(member).read(1024 ** 2 + 1)
+                    need(len(raw) == member.size, 'DATABASE_TOOL_PREPARATION_SOURCE_TRUNCATED')
+                    preparation_sha = digest_bytes(raw)
                 if builder_helpers and member.name in builder_names:
                     key = Path(member.name).name
                     need(key not in builder_shas and member.isfile() and 0 < member.size <= 1024 ** 2,
@@ -747,6 +766,12 @@ def source_proof(root, tag, commit, source_sha, *, builder_helpers=False, canoni
             need(set(publication_shas) == set(publication_names) and approved,
                  'CLOSED_REVIEWED_UNPUBLISHED_SOURCE_REQUIRED')
             proof['unpublishedPipelineSourceSha256'] = publication_shas
+        if database_verification:
+            need(canonical_jar and failed_native and retired_copy_batch is None
+                 and preparation_sha == DATABASE_VERIFY_TOOL_PREPARATION_SOURCE
+                 and tuple(publication_shas.get(name) for name in publication_names) in DATABASE_VERIFY_PUBLICATION_RECIPES,
+                 'REVIEWED_DATABASE_NO_BUILDER_SOURCE_REQUIRED')
+            proof.update(candidateBuilderRequested=False, toolPreparationHelperSha256=preparation_sha)
         if failed_native:
             producers = [node for node in ast.walk(syntax) if isinstance(node, ast.FunctionDef) and node.name == 'start_mysql']
             need(len(producers) == 1, 'EXACT_FAILED_NATIVE_MYSQL_PRODUCER_REQUIRED')
@@ -820,18 +845,31 @@ def admit_historical_controls(root, request, row, *, builder_helpers=False, cano
             raw = stream.read(MAX_CONTROL + 1)
             need(len(raw) == reference['bytes'] and digest_bytes(raw) == reference['sha256'], 'RAW_CONTROL_BYTES_DRIFT')
             raw_docs[role] = raw; bindings[role] = {**reference, 'metadata': signature}
+    database_verification = False
+    if failed_native and request.get('selectedFailedNativeBuild') == TAG.fullmatch(tag)[1]:
+        try:
+            terminal_xml(raw_docs['buildXml'], context, canonical_jar=canonical_jar)
+        except RetirementError as error:
+            if str(error) != 'FAILED_NATIVE_PARAMETERS_REQUIRED': raise
+            terminal_xml(raw_docs['buildXml'], context, canonical_jar=canonical_jar, database_verification=True)
+            database_verification = True
     evidence = validate_control_documents(raw_docs, context, request['identity'], canonical_jar=canonical_jar,
-        **({'retired_copy_batch': retired_copy_batch} if retired_copy_batch is not None else {}))
+        **({'retired_copy_batch': retired_copy_batch} if retired_copy_batch is not None else {}),
+        **({'database_verification': True} if database_verification else {}))
     need(evidence['work'] == str(Path(root) / 'verification' / tag / 'checkout/work/compact-fixtures'), 'FIXTURE_OWNER_OUTSIDE_EXACT_OLD_ATTEMPT')
     if canonical_jar:
         original_source = source_proof(root, tag, context['commit'], context['sourceSha256'],
                                        builder_helpers=builder_helpers, canonical_jar=True,
                                        **({'failed_native': True} if failed_native else {}),
-                                       **({'retired_copy_batch': retired_copy_batch} if retired_copy_batch is not None else {}))
+                                       **({'retired_copy_batch': retired_copy_batch} if retired_copy_batch is not None else {}),
+                                       **({'database_verification': True} if database_verification else {}))
     else:
         original_source = (source_proof(root, tag, context['commit'], context['sourceSha256'], builder_helpers=True)
                            if builder_helpers else source_proof(root, tag, context['commit'], context['sourceSha256']))
     result = {'context': context, 'evidence': evidence, 'controls': bindings, 'sourceArchive': original_source}
+    if database_verification:
+        result['databaseVerificationOnly'] = True
+        result['candidateBuilderAbsence'] = database_builder_absence_controls(root, request, result)
     if builder_helpers:
         # Original owner contains a root password. Only these nonsecret control
         # fields may enter a plan or receipt; original bytes remain private.
@@ -841,6 +879,50 @@ def admit_historical_controls(root, request, row, *, builder_helpers=False, cano
             'sourceSha256', 'identity', 'status', 'errors', 'containerId', 'sourceContainerUntouched',
             'dataDirectoryRetained', 'sourceDumpAndEvidenceRetained')}
     return result
+
+
+def database_builder_absence_controls(root, request, historical):
+    """Authenticate an explicit database-only producer, never infer from missing files."""
+    context = historical['context']; proof = historical['sourceArchive']; tag = context['release']
+    need(request.get('selectedFailedNativeBuild') == TAG.fullmatch(tag)[1]
+         and proof.get('candidateBuilderRequested') is False
+         and tuple(proof.get('unpublishedPipelineSourceSha256', {}).get(name)
+                   for name in ('Jenkinsfile.ecs-monolith', 'script/jenkins/pipeline.ps1')) in DATABASE_VERIFY_PUBLICATION_RECIPES,
+         'EXPLICIT_REVIEWED_DATABASE_BUILDER_ABSENCE_REQUIRED')
+    values, bindings = {}, {}
+    for role, name in (('preparation', 'ecs-tool-preparation.json'), ('transport', 'ecs-tool-preparation-transport.json')):
+        path = Path(root) / 'inbox' / request['current']['release'] / 'native-jar-duplicate-controls' / tag / name
+        with held_file(root, path, MAX_CONTROL) as (stream, signature):
+            raw = stream.read(MAX_CONTROL + 1); value = decode(raw); same_context(value, context)
+            values[role] = value
+            bindings[role] = {'path': path.relative_to(root).as_posix(), 'bytes': len(raw),
+                              'sha256': digest_bytes(raw), 'metadata': signature}
+    preparation, transport = values['preparation'], values['transport']
+    need(preparation.get('kind') == 'doorhandle-ecs-tool-preparation' and preparation.get('status') == 'PREPARED'
+         and preparation.get('identity') == request['identity'] and 'candidateBuilderTools' not in preparation
+         and preparation.get('sourceFiles', {}).get('script/jenkins/prepare-ecs-tools.py') == proof.get('toolPreparationHelperSha256')
+         and type(transport.get('schema')) is int and transport['schema'] == 1
+         and transport.get('kind') == 'doorhandle-ecs-tool-preparation-transport'
+         and transport.get('status') == 'PREPARED' and transport.get('prepareCandidateBuilder') is False
+         and transport.get('instanceId') == request['identity']['instanceId']
+         and transport.get('machineId') == request['identity']['machineId']
+         and type(transport.get('finalExitCode')) is int and transport['finalExitCode'] == 0
+         and 'buildkitArchive' not in transport, 'DATABASE_BUILDER_ABSENCE_ORIGINALS_DIFFER')
+    directory = Path(root) / 'inbox' / tag / 'candidate-build-tools'
+    need(not directory.exists() and not directory.is_symlink(), 'DATABASE_VERIFICATION_HAS_UNEXPECTED_BUILDER_FILES')
+    return {'kind': 'EXPLICIT_DATABASE_VERIFICATION_BUILDER_NOT_REQUESTED', 'controls': bindings,
+            'candidateBuilderRequested': False, 'builderDirectory': directory.relative_to(root).as_posix()}
+
+
+def recheck_database_builder_controls(root, historical):
+    proof = historical['candidateBuilderAbsence']
+    for reference in proof['controls'].values():
+        with held_file(root, Path(root) / reference['path'], MAX_CONTROL) as (stream, signature):
+            raw = stream.read(MAX_CONTROL + 1)
+            need(signature == reference['metadata'] and len(raw) == reference['bytes']
+                 and digest_bytes(raw) == reference['sha256'], 'DATABASE_BUILDER_ORIGINALS_CHANGED_BEFORE_REMOVE')
+    directory = Path(root) / proof['builderDirectory']
+    need(not directory.exists() and not directory.is_symlink(), 'DATABASE_VERIFICATION_HAS_UNEXPECTED_BUILDER_FILES')
 
 
 def admit_candidate(root, request, row, quiescence):
@@ -1008,7 +1090,8 @@ def admit_canonical_candidate(root, request, row, quiescence, *, closed_runtime=
         **({'failed_native': True} if failed_native else {}))
     return {'context': admitted['context'], 'jenkinsResult': evidence['jenkinsResult'], 'controls': admitted['controls'],
             'sourceArchive': admitted['sourceArchive'], 'publicationReferences': references,
-            'ownerToken': evidence['ownerToken'], 'target': target}
+            'ownerToken': evidence['ownerToken'], 'target': target,
+            **({'candidateBuilderAbsence': admitted['candidateBuilderAbsence']} if admitted.get('databaseVerificationOnly') else {})}
 
 
 def remove_canonical_jar(root, descriptor, quarantine, *, quiescence, failed_native=False):
@@ -1093,7 +1176,21 @@ def controller_lock(root):
 
 
 def failed_native_request(raw, checksum, current, identity):
-    request = validate_request(raw, checksum, current, identity)
+    need(type(raw) is bytes and digest_bytes(raw) == checksum, 'AUTHENTICATED_REQUEST_SHA_REQUIRED')
+    value = decode(raw); need(type(value) is dict, 'EXACT_CURRENT_REQUEST_REQUIRED')
+    validate_context(current); selected = value.get('selectedFailedNativeBuild')
+    if selected is not None:
+        need(type(selected) is str and re.fullmatch(r'[1-9][0-9]{0,8}', selected)
+             and FAILED_NATIVE_FIRST_BUILD <= int(selected) < int(TAG.fullmatch(current['release'])[1]),
+             'EXACT_FAILED_NATIVE_SELECTION_REQUIRED')
+        base = {key: item for key, item in value.items() if key != 'selectedFailedNativeBuild'}
+        base_raw = canonical(base)
+        request = validate_request(base_raw, digest_bytes(base_raw), current, identity)
+        need(len(request['candidates']) <= 1 and all(TAG.fullmatch(row['release'])[1] == selected
+             for row in request['candidates']), 'EXACT_SELECTED_FAILED_NATIVE_REQUEST_REQUIRED')
+        request['selectedFailedNativeBuild'] = selected
+    else:
+        request = validate_request(raw, checksum, current, identity)
     need(all(int(TAG.fullmatch(row['release'])[1]) >= FAILED_NATIVE_FIRST_BUILD
              for row in request['candidates']), 'FAILED_NATIVE_RETENTION_EPOCH_REQUIRED')
     return request
@@ -1110,7 +1207,8 @@ def admit_failed_native_duplicate(root, request, row, quiescence):
     target = describe_duplicate(root, tag, evidence['jarSha256'], evidence['jarBytes'])
     return {'context': admitted['context'], 'jenkinsResult': evidence['jenkinsResult'], 'controls': admitted['controls'],
             'sourceArchive': admitted['sourceArchive'], 'publicationReferences': references,
-            'ownerToken': evidence['ownerToken'], 'target': target}
+            'ownerToken': evidence['ownerToken'], 'target': target,
+            **({'candidateBuilderAbsence': admitted['candidateBuilderAbsence']} if admitted.get('databaseVerificationOnly') else {})}
 
 
 def native_admitter(canonical_jar, closed_runtime, failed_native):
@@ -1124,11 +1222,11 @@ def native_admitter(canonical_jar, closed_runtime, failed_native):
 def plan(root, raw_request, *, request_sha256, expected_current, identity, quiescence, canonical_jar=False, closed_runtime=False,
          failed_native=False):
     """Discover admitted single files; the default remains keeper-preserving."""
-    request = validate_request(raw_request, request_sha256, expected_current, identity)
+    request = (failed_native_request(raw_request, request_sha256, expected_current, identity) if failed_native
+               else validate_request(raw_request, request_sha256, expected_current, identity))
     need(type(canonical_jar) is bool, 'EXACT_RETIREMENT_POLICY_REQUIRED')
     need(type(closed_runtime) is bool, 'EXACT_CLOSED_RUNTIME_POLICY_REQUIRED')
     if closed_runtime: request = closed_runtime_request(raw_request, request_sha256, expected_current, identity)
-    if failed_native: request = failed_native_request(raw_request, request_sha256, expected_current, identity)
     admit = native_admitter(canonical_jar, closed_runtime, failed_native)
     kind = CANONICAL_KIND if canonical_jar else KIND
     accepted, skipped = [], []
@@ -1157,11 +1255,11 @@ def apply(root, raw_request, prepared_plan, *, request_sha256, plan_sha256, expe
     An interrupted/partial result must be reviewed; retry requires a newly
     prepared plan. A prior success is never synthesized for a missing file.
     """
-    request = validate_request(raw_request, request_sha256, expected_current, identity)
+    request = (failed_native_request(raw_request, request_sha256, expected_current, identity) if failed_native
+               else validate_request(raw_request, request_sha256, expected_current, identity))
     need(type(canonical_jar) is bool, 'EXACT_RETIREMENT_POLICY_REQUIRED')
     need(type(closed_runtime) is bool, 'EXACT_CLOSED_RUNTIME_POLICY_REQUIRED')
     if closed_runtime: request = closed_runtime_request(raw_request, request_sha256, expected_current, identity)
-    if failed_native: request = failed_native_request(raw_request, request_sha256, expected_current, identity)
     admit = native_admitter(canonical_jar, closed_runtime, failed_native)
     kind = CANONICAL_KIND if canonical_jar else KIND
     need(type(prepared_plan) is dict and type(plan_sha256) is str and SHA.fullmatch(plan_sha256)
@@ -1216,8 +1314,14 @@ def apply(root, raw_request, prepared_plan, *, request_sha256, plan_sha256, expe
                             'sha256': candidate['target']['sha256'],
                             'quarantinePath':active_quarantine['path']})
                     mutation_attempted = True
+                    def database_originals_unchanged():
+                        if 'candidateBuilderAbsence' in candidate:
+                            original = admit_historical_controls(root, request, row, canonical_jar=True, failed_native=True)
+                            need(original.get('candidateBuilderAbsence') == candidate['candidateBuilderAbsence'],
+                                 'DATABASE_BUILDER_ORIGINALS_CHANGED_RETAIN_QUARANTINE')
                     if canonical_jar:
                         def captured_quiescence():
+                            database_originals_unchanged()
                             need(canonical_publication_refs(root, active) == candidate['publicationReferences'],
                                  'PUBLICATION_REFERENCE_CHANGED_RETAIN_QUARANTINE')
                             return quiescence(Path(root) / 'verification' / active / 'checkout', active, candidate['ownerToken'])
@@ -1225,6 +1329,7 @@ def apply(root, raw_request, prepared_plan, *, request_sha256, plan_sha256, expe
                             **({'failed_native': True} if failed_native else {}))
                     else:
                         def captured_duplicate_quiescence():
+                            database_originals_unchanged()
                             need(canonical_publication_refs(root, active) == candidate['publicationReferences'],
                                  'PUBLICATION_REFERENCE_CHANGED_RETAIN_QUARANTINE')
                             return quiescence(Path(root) / 'verification' / active / 'checkout', active, candidate['ownerToken'])
@@ -2140,7 +2245,8 @@ def admitted_current(args):
 
 def approved_request(raw, checksum, current, identity, *, canonical_jar=False, closed_runtime=False, failed_native=False,
                      retired_copy_batch=None, public_cache_batch=None):
-    request = validate_request(raw, checksum, current, identity)
+    request = (failed_native_request(raw, checksum, current, identity) if failed_native
+               else validate_request(raw, checksum, current, identity))
     need(type(canonical_jar) is bool, 'EXACT_RETIREMENT_POLICY_REQUIRED')
     need(type(closed_runtime) is bool, 'EXACT_CLOSED_RUNTIME_POLICY_REQUIRED')
     if public_cache_batch is not None:
@@ -2157,7 +2263,7 @@ def approved_request(raw, checksum, current, identity, *, canonical_jar=False, c
     if closed_runtime: return closed_runtime_request(raw, checksum, current, identity)
     if failed_native:
         need(canonical_jar is True, 'FAILED_NATIVE_CANONICAL_PROOF_REQUIRED')
-        return failed_native_request(raw, checksum, current, identity)
+        return request
     approved = (lambda tag: APPROVED_OLD.get(tag) or RECENT_CANONICAL_ONLY.get(tag)) if canonical_jar else APPROVED_OLD.get
     need(all(approved(row['release']) == row['commit'] for row in request['candidates']), 'ONLY_REVIEWED_OLD_ATTEMPTS_ALLOWED')
     return request
@@ -2334,6 +2440,8 @@ def capture_recent_fixture(root, request, row, builder, *, closed_runtime=False,
 def recent_fixture_references(root, candidate, cleanup, builder):
     fixture = candidate['fixture']; tag = candidate['historical']['context']['release']
     canonical_publication_refs(root, tag)
+    if candidate['historical'].get('databaseVerificationOnly'):
+        recheck_database_builder_controls(root, candidate['historical'])
     return historical_object_references(root, candidate['historical'],
         {fixture['containerId']: 'doorhandle-compact-fixture-' + fixture['ownerToken']}, cleanup, builder, include_inbox=True)
 
@@ -2462,6 +2570,11 @@ def capture_builder(root, request, row, builder, *, recent=False, closed_runtime
              for key in ('commit', 'sourceSha256')), 'EXACT_CLOSED_RUNTIME_BUILDER_REQUIRED')
     historical = admit_historical_controls(root, request, row, builder_helpers=True,
         **({'canonical_jar': True} if scoped else {}), **({'failed_native': True} if failed_native else {}))
+    if failed_native and historical.get('databaseVerificationOnly') is True:
+        fixture = capture_recent_fixture(root, request, row, builder, failed_native=True)['fixture']
+        return {'historical': historical, 'builderControls': historical['candidateBuilderAbsence']['controls'],
+                'descriptor': None, 'fixture': fixture, 'absentContainerId': None,
+                'absenceKind': 'NOT_REQUESTED_BY_DATABASE_VERIFICATION'}, None
     directory = Path(root) / 'inbox' / row['release'] / 'candidate-build-tools'
     controls, raw = {}, {}
     for role, filename in (('tools', 'tools.json'), ('summary', 'resource-summary.json'),
@@ -2527,6 +2640,20 @@ def capture_builder(root, request, row, builder, *, recent=False, closed_runtime
     return {'historical': historical, 'builderControls': controls, 'descriptor': descriptor, 'fixture': fixture}, inspected
 
 
+def database_builder_references(root, candidate, cleanup, builder):
+    need(candidate.get('absenceKind') == 'NOT_REQUESTED_BY_DATABASE_VERIFICATION'
+         and candidate['historical'].get('databaseVerificationOnly') is True
+         and candidate.get('descriptor') is None and candidate.get('absentContainerId') is None,
+         'EXACT_DATABASE_NO_BUILDER_PROOF_REQUIRED')
+    recheck_database_builder_controls(root, candidate['historical'])
+    fixture = candidate['fixture']
+    retiring = {} if fixture is None else {
+        fixture['containerId']: 'doorhandle-compact-fixture-' + fixture['ownerToken']}
+    canonical_publication_refs(root, candidate['historical']['context']['release'])
+    return historical_object_references(root, candidate['historical'], retiring, cleanup, builder,
+                                        include_inbox=True, stopped_retiring=True)
+
+
 def plan_builders(root, raw_request, *, request_sha256, expected_current, identity, modules, recent=False, closed_runtime=False, failed_native=False):
     need(type(closed_runtime) is bool and not (recent and closed_runtime), 'EXACT_CLOSED_BUILDER_POLICY_REQUIRED')
     scoped = recent or closed_runtime or failed_native
@@ -2545,6 +2672,8 @@ def plan_builders(root, raw_request, *, request_sha256, expected_current, identi
                         **({'closed_runtime': True} if closed_runtime else {'recent': True} if recent else
                            {'failed_native': True} if failed_native else {}))
                     if scoped and value['descriptor'] is None:
+                        if value.get('absenceKind') == 'NOT_REQUESTED_BY_DATABASE_VERIFICATION':
+                            database_builder_references(root, value, cleanup, builder)
                         absent.append(value); continue
                     builder_references(root, value['historical'], value['descriptor'], cleanup, builder, value['fixture'],
                         **({'include_inbox': True, 'closed_runtime': True} if closed_runtime else
@@ -2598,7 +2727,7 @@ def apply_builders(root, raw_request, prepared, *, request_sha256, plan_sha256, 
     else:
         need('scope' not in prepared and 'absent' not in prepared, 'HISTORICAL_BUILDER_PLAN_POLICY_DRIFT')
     builder, cleanup = modules['builder'], modules['cleanup']; removed, retired_fixtures, failure = [], [], None
-    already_absent = []
+    already_absent = []; not_requested = []
     journal_path = Path(root) / 'inbox' / expected_current['release'] / 'native-builder-retirement-journal.jsonl'
     with controller_lock(root), (publication_lock(root) if scoped else nullcontext()), os.fdopen(os.open(journal_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600), 'wb') as journal:
         def record(value):
@@ -2613,8 +2742,14 @@ def apply_builders(root, raw_request, prepared, *, request_sha256, plan_sha256, 
                     observed, inspected = capture_builder(root, request, rows[active], builder,
                         **({'closed_runtime': True} if closed_runtime else {'failed_native': True} if failed_native else {'recent': True}))
                     need(observed == candidate and inspected is None, 'RECENT_ABSENT_BUILDER_OR_ORIGINALS_CHANGED_AFTER_PLAN')
-                    already_absent.append(candidate['absentContainerId'])
-                    record({'phase': 'BUILDER_ALREADY_ABSENT', 'release': active, 'containerId': candidate['absentContainerId']})
+                    if candidate.get('absenceKind') == 'NOT_REQUESTED_BY_DATABASE_VERIFICATION':
+                        database_builder_references(root, observed, cleanup, builder)
+                        not_requested.append(active)
+                        record({'phase': 'BUILDER_NOT_REQUESTED', 'release': active,
+                                'proof': candidate['historical']['candidateBuilderAbsence']})
+                    else:
+                        already_absent.append(candidate['absentContainerId'])
+                        record({'phase': 'BUILDER_ALREADY_ABSENT', 'release': active, 'containerId': candidate['absentContainerId']})
             for candidate in selected:
                 active = candidate['descriptor']['release']
                 with attempt_lock(root, active):
@@ -2669,6 +2804,7 @@ def apply_builders(root, raw_request, prepared, *, request_sha256, plan_sha256, 
                                     journalSha256=digest_bytes(private_bytes(root, journal_path)))
     if failed_native: value.update(scope='FAILED_NATIVE_BUILDERS', failedNativePolicy=FAILED_NATIVE_BATCH, alreadyAbsent=already_absent,
                                    journalSha256=digest_bytes(private_bytes(root, journal_path)))
+    if not_requested: value['buildersNotRequested'] = not_requested
     return value
 
 
@@ -3148,6 +3284,12 @@ def failed_native_cli(args):
     return True
 
 
+def bind_failed_native_cli_selection(raw, selected):
+    value = decode(raw)
+    need(type(value) is dict and value.get('selectedFailedNativeBuild') == selected,
+         'FAILED_NATIVE_CLI_SELECTION_DIFFERS_FROM_ORIGINAL_REQUEST')
+
+
 def cli(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--phase', choices=('capture-request', 'capture-canonical-request', 'capture-public-cache-request', 'plan-builders', 'apply-builders', 'plan', 'apply',
@@ -3162,6 +3304,7 @@ def cli(argv=None):
                                            'apply-python-build-cache', 'inspect'), required=True)
     parser.add_argument('--mode', choices=('Verified', 'Maintenance'), required=True)
     parser.add_argument('--jar-batch', choices=(CLOSED_RUNTIME_BATCH, FAILED_NATIVE_BATCH))
+    parser.add_argument('--failed-native-build-number')
     parser.add_argument('--retired-copy-batch', choices=(RETIRED_COPY_BATCH_194,))
     parser.add_argument('--public-cache-batch', choices=(PUBLIC_CACHE_BATCH,))
     for name in ('root', 'tag', 'commit', 'source-sha256', 'instance-id', 'machine-id', 'current-receipt-sha256'):
@@ -3181,6 +3324,11 @@ def cli(argv=None):
              'RETIRED_COPY_BATCH_MAINTENANCE_PHASE_REQUIRED')
         closed_runtime = closed_runtime_cli(args)
         failed_native = failed_native_cli(args)
+        selected = args.failed_native_build_number
+        need(selected is None or (failed_native and re.fullmatch(r'[1-9][0-9]{0,8}', selected)
+             and TAG.fullmatch(args.tag) is not None
+             and FAILED_NATIVE_FIRST_BUILD <= int(selected) < int(TAG.fullmatch(args.tag)[1])),
+             'EXPLICIT_FAILED_NATIVE_CLI_SELECTION_REQUIRED')
         root, current, identity, quiescence, modules = admitted_current(args); inbox = root / 'inbox' / args.tag
         if closed_runtime:
             def quiescence(checkout, tag, token):
@@ -3214,6 +3362,10 @@ def cli(argv=None):
         fixture_receipt_file = inbox / 'native-jar-duplicate-fixture-object-receipt.json'
         retired_copy_plan_file = inbox / 'native-retired-candidate-copy-plan.json'
         retired_copy_receipt_file = inbox / 'native-retired-candidate-copy-receipt.json'
+        if failed_native and args.phase != 'inspect':
+            selected_request = (inbox / 'native-jar-duplicate-local-spec.json'
+                if args.phase == 'capture-canonical-request' else request_file)
+            bind_failed_native_cli_selection(private_bytes(root, selected_request), selected)
         if args.phase in ('capture-request', 'capture-canonical-request', 'capture-public-cache-request'):
             canonical_only = args.phase == 'capture-canonical-request'
             need(not canonical_only or args.mode == 'Maintenance', 'CANONICAL_RETIREMENT_REQUIRES_MAINTENANCE')
@@ -3428,7 +3580,10 @@ def cli(argv=None):
                 result = {'status': 'PLANNED', 'current': current, 'identity': identity,
                           'plan': write_new(builder_plan_file, value), 'skipped': value['skipped']}
                 if recent or closed_runtime or failed_native:
-                    result.update(scope=value['scope'], builderCount=len(value['candidates']), alreadyAbsent=len(value['absent']))
+                    result.update(scope=value['scope'], builderCount=len(value['candidates']),
+                        alreadyAbsent=sum(item.get('absentContainerId') is not None for item in value['absent']))
+                    if any(item.get('absenceKind') == 'NOT_REQUESTED_BY_DATABASE_VERIFICATION' for item in value['absent']):
+                        result['buildersNotRequested'] = sum(item.get('absenceKind') == 'NOT_REQUESTED_BY_DATABASE_VERIFICATION' for item in value['absent'])
             else:
                 plan_raw = private_bytes(root, builder_plan_file)
                 need(digest_bytes(plan_raw) == args.plan_sha256, 'ORIGINAL_BUILDER_PLAN_RAW_SHA_DRIFT')
@@ -3441,6 +3596,8 @@ def cli(argv=None):
                         retiredMysqlObjects=len(value['retiredMysqlObjects']),
                         **{key: value[key] for key in ('mysqlDataDirectoriesPreserved', 'imagesPreserved', 'volumesPreserved',
                                                       'directoriesPreserved', 'jarDeletionPerformed')})
+                    if 'buildersNotRequested' in value:
+                        result['buildersNotRequested'] = len(value['buildersNotRequested'])
         else:
             raw = private_bytes(root, request_file)
             approved_request(raw, args.request_sha256, current, identity, canonical_jar=failed_native, **({'closed_runtime': True} if closed_runtime else {}),

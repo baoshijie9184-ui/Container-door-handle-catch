@@ -124,10 +124,19 @@ for table, details in tables.items():
     guard('SELECT IF(COUNT(*)=' + ('1' if table in checks else '0')
           + ",1,0) FROM information_schema.table_constraints WHERE constraint_schema='__SOURCE_SCHEMA__' AND table_name=" + q(table) + " AND constraint_type='CHECK'")
     if table in checks:
+        normalized_check = "BINARY LOWER(REGEXP_REPLACE(REPLACE(c.check_clause,'_utf8mb4',''),'[`()[:space:]]',''))"
+        expected_check = q(checks[table])
+        check_match = normalized_check + '=BINARY ' + expected_check
+        if table == 'quality_digest_run':
+            # MySQL 8.4 CHECK_CLAUSE metadata escapes literal quote delimiters.
+            # Admit only these two complete spellings of the reviewed expression;
+            # never remove arbitrary backslashes from the actual source clause.
+            check_match = normalized_check + ' IN (BINARY ' + expected_check + ',BINARY REPLACE(' + expected_check \
+                + ',CHAR(39),CONCAT(CHAR(92),CHAR(39))))'
         guard("SELECT IF(COUNT(*)=1,1,0) FROM information_schema.table_constraints t JOIN information_schema.check_constraints c "
               "ON t.constraint_schema=c.constraint_schema AND t.constraint_name=c.constraint_name "
               "WHERE BINARY t.constraint_schema=BINARY '__SOURCE_SCHEMA__' AND BINARY t.table_name=BINARY " + q(table)
-              + " AND t.constraint_type='CHECK' AND t.enforced='YES' AND BINARY LOWER(REGEXP_REPLACE(REPLACE(c.check_clause,'_utf8mb4',''),'[`()[:space:]]',''))=BINARY " + q(checks[table]))
+              + " AND t.constraint_type='CHECK' AND t.enforced='YES' AND " + check_match)
     emit('INSERT INTO compact_digest_sequences SELECT ' + q(table) + ',AUTO_INCREMENT FROM information_schema.tables WHERE ' + condition + ';')
     guard('SELECT IF(COUNT(*)<=50000,1,0) FROM `__SOURCE_SCHEMA__`.' + table)
     emit('INSERT INTO compact_digest_source_rows SELECT ' + q(table) + ',' + source_key(table) + ',' + row_hash(table)

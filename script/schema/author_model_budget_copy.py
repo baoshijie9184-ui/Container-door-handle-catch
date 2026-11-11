@@ -62,10 +62,13 @@ checks={
  'agent_model_budget_observation':{'remaining':["(remaining_tokens>=0)"]}}
 emit('INSERT INTO compact_budget_checks VALUES '+','.join('('+q(name)+','+q(group)+','+q(clause)+')' for name,groups in checks.items() for group,values in groups.items() for clause in values)+';')
 normalized="LOWER(REPLACE(REPLACE(REPLACE(c.check_clause,'`',''),' ',''),'_utf8mb4',''))"
-guard("SELECT IF(COUNT(*)=0,1,0) FROM information_schema.table_constraints t JOIN information_schema.check_constraints c ON c.constraint_schema=t.constraint_schema AND c.constraint_name=t.constraint_name LEFT JOIN compact_budget_checks e ON e.table_name=t.table_name AND BINARY e.clause_text=BINARY "+normalized+" WHERE t.table_schema='__SOURCE_SCHEMA__' AND t.table_name IN "+names+" AND t.constraint_type='CHECK' AND (e.table_name IS NULL OR t.enforced<>'YES')")
+# MySQL 8.4 CHECK_CLAUSE metadata escapes quote delimiters. Accept only
+# complete reviewed renderings, never strip backslashes from source expressions.
+check_match="BINARY "+normalized+" IN (BINARY e.clause_text,BINARY REPLACE(e.clause_text,CHAR(39),CONCAT(CHAR(92),CHAR(39))))"
+guard("SELECT IF(COUNT(*)=0,1,0) FROM information_schema.table_constraints t JOIN information_schema.check_constraints c ON c.constraint_schema=t.constraint_schema AND c.constraint_name=t.constraint_name LEFT JOIN compact_budget_checks e ON e.table_name=t.table_name AND "+check_match+" WHERE t.table_schema='__SOURCE_SCHEMA__' AND t.table_name IN "+names+" AND t.constraint_type='CHECK' AND (e.table_name IS NULL OR t.enforced<>'YES')")
 for name,groups in checks.items():
     for group in groups:
-        guard("SELECT IF(COUNT(*)=1,1,0) FROM information_schema.table_constraints t JOIN information_schema.check_constraints c ON c.constraint_schema=t.constraint_schema AND c.constraint_name=t.constraint_name JOIN compact_budget_checks e ON e.table_name=t.table_name AND BINARY e.clause_text=BINARY "+normalized+f" WHERE t.table_schema='__SOURCE_SCHEMA__' AND t.table_name='{name}' AND t.constraint_type='CHECK' AND e.semantic_group='{group}' AND t.enforced='YES'")
+        guard("SELECT IF(COUNT(*)=1,1,0) FROM information_schema.table_constraints t JOIN information_schema.check_constraints c ON c.constraint_schema=t.constraint_schema AND c.constraint_name=t.constraint_name JOIN compact_budget_checks e ON e.table_name=t.table_name AND "+check_match+f" WHERE t.table_schema='__SOURCE_SCHEMA__' AND t.table_name='{name}' AND t.constraint_type='CHECK' AND e.semantic_group='{group}' AND t.enforced='YES'")
 for name,count in [('agent_model_budget',2),('agent_model_budget_attempt',3),('agent_model_budget_observation',1),('agent_model_budget_audit',0)]:
     guard(f"SELECT IF(COUNT(*)={count},1,0) FROM information_schema.table_constraints WHERE table_schema='__SOURCE_SCHEMA__' AND table_name='{name}' AND constraint_type='CHECK'")
 guard("SELECT IF(COUNT(*)=0,1,0) FROM llm_quota WHERE scope_type='MODEL'")
