@@ -1,5 +1,9 @@
 # 单体 ECS 运行与测试
 
+2026-11-11 原盘80GiB扩容已执行：用户明确批准原系统盘70→80GiB及一份保留7天的标准扩容前快照。单体实例/原盘身份、Jenkins终态且禁自动触发、实际Stopped/StopCharging核对后，创建快照`s-2ze4lto0m4wr1qq04vc7`；实际accomplished/100%/Available=true、原盘70GiB及RetentionDays=7全部回读通过后，才对同盘`d-2zeieuov2aum486inund`离线扩至80GiB。开机重新核IMDS、machineId、UID、磁盘序列号及实际85,899,345,920字节，再先预览、后执行原`/dev/vda3`的growpart和resize2fs，均exit0。根分区起点413696、PARTUUID、ext4 UUID及前两分区保持原值。
+
+独立回读文件系统84,151,820,288字节、可用12,708,839,424字节（约11.836GiB）；完整41份操作原件及摘要位于`work/jenkins/data-residency-20261107/resize-80gib-approved-20261111/preservation.json`。目前原实例已启动供后续验证，Jenkins继续运行；扩容不构成源码、迁移或运行验收通过。先固定提交完成source＋250项资料恢复，再保持同一提交执行原完整native/整库/旧45/5599/九场景/19浏览器验收，各阶段原资源门保留，测试结束仍从流水线外实际节省停机。正式131表尚未切换。
+
 2026-11-11 #218/#219与容量阻断：仍在`java-cloud`单体。`f2854978`已提交推送，双流单元测试同步及两项前端夹具修复均已完成静态编译/独立复核，尚未通过完整ECS回归。#218在Trusted checkout遇GitHub TLS错误，未完成检出、未构建/测试；原log及build.xml两文件349,919字节已核SHA保全于`ci-218-checkout-failure-originals`，只证明请求的提交、不当作制品提交证明。网络在项目与CI工作区只读探测恢复后，以同一源码启动#219。
 
 #219完整Java926通过、零失败/错误（712条件跳过），Maven容器实际exit0；随后工具包装器磁盘保护门触发，最低实余2,264,920,064字节，低于2,415,919,104底线150,999,040字节，包装exit2、整轮FAILURE。内存最低10,450,587,648字节；共享Maven依赖缓存READY且零增长，不能归为依赖下载失败。Python、两套前端、250恢复均未开始；测试报告通过不等于阶段或整轮成功。
