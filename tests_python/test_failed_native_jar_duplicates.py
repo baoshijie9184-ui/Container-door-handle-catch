@@ -1961,7 +1961,8 @@ def test_failed_native_controller_uses_original_jenkins_terminal_and_honest_guar
     assert "'PRODUCTION_RELEASE_ENABLED':'false'" in reader and "'ACTION':'verify-runtime'" in reader
     assert "ACTUAL_GUARDED_RECOVERY_PUBLIC_RECEIPT" in reader
     assert "GUARDED_RECOVERY_PUBLIC_RECEIPT_DIFFERS" in reader and "RETAINED_JENKINS_BINARY_DIFFERS" in reader
-    branch = script.split("if($CanonicalBatch -ceq 'FailedNative') {",1)[1].split("if($CanonicalBatch -ceq 'ClosedRuntime') {",1)[0]
+    # Match the complete top-level dispatch line, not the earlier inline flag setup.
+    branch = script.split("\nif($CanonicalBatch -ceq 'FailedNative') {\n",1)[1].split("\n}\nif($CanonicalBatch -ceq 'ClosedRuntime') {",1)[0]
     assert "@('fixtures','plan-recent-fixtures','apply-recent-fixtures')" in branch
     assert "@('copies','plan','apply')" in branch and "@('canonical','plan-canonical','apply-canonical')" in branch
     assert "plan-closed-builders" not in branch and "plan-public-layers" not in branch

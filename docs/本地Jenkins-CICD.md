@@ -12,13 +12,13 @@
 
 #239 维护在普通清理的空动作计划复核处失败，未进入JAR退役、未删除文件。原计划两个计数均零；fresh对比原件未保存，无法认定具体变化字段。现已完成空动作独立绑定修复；非空目标仍走原完整复核。新增显式维护策略 `RetiredCopies194` 仅处理#187—#189三份已退役inbox对应的候选JAR；`PublicCaches221224235` 仅处理20个公共layer副本及5份可再生公开镜像归档。默认仍为 `FailedNative`，已消费的203批次不重跑。三项改动新增135项控制回归，20模块最低 **2,182项**；静态检查和独立只读复核已完成，尚未执行这些新用例或新维护。
 
-下一步固定提交推送，先统一验证控制脚本，通过后再逐策略维护并读取实际空间，达到预算才进入完整运行验收。#238两份JAR、194三份候选副本和25个公共缓存仅为候选，不计作已释放；数据、卷、镜像、源码及报告均不在新删除范围。#238 Jenkins原制品暂时保留，实际退役并收证后恢复原保留状态。
+#240 已对固定提交 `367175db` 统一执行2,182项控制检查：2,180通过、2失败、零跳过，整轮FAILURE，未执行维护。两个失败是测试契约未同步：原生最低数仍写686而实际已增至694；FailedNative源码分支的旧字符串边界误包含新增public分支。集中修复测试接线后再统一复验，生产策略不变。通过后逐策略维护并读取实际空间，达到预算才进入完整运行验收。#238 Jenkins原制品暂时保留，实际退役并收证后恢复原保留状态。
 
-2026-11-11 22:32:59（北京时间）只读核查结束后，流水线外实际回读 `Stopped / StopCharging`。Jenkins保持运行，任务暂禁以完成整合；不以部分通过替代完整验收。
+2026-11-12 00:05:50（北京时间）#240工具已STOPPED、remaining为空，流水线外实际回读 `Stopped / StopCharging`。Jenkins保持运行，任务暂禁以完成整合；不以部分通过替代完整验收。
 
 业务验收固定4账号（2检测人员、2主管）、每账号2个功能标签，共8个标签；核对隔离、更新、撤销、恢复、领取及双流正确性。正式并发/容量压测在全部开发完成后通过压测工具另行进行，本轮记录 `loadTestStatus=DEFERRED_BY_USER`、`performanceSloVerified=false`，不作负载容量或性能SLO结论；原资源安全门保持。
 
-原始回执保存在 `work/jenkins/data-residency-20261107/ci-232-raw-receipts` 至 `ci-239-raw-receipts`，#237晚到预检原件为 `ci-237-control-terminal-supplement/output`；本轮节省停机回读为 `after-194-source-readonly-stop.json`。
+原始回执保存在 `work/jenkins/data-residency-20261107/ci-232-raw-receipts` 至 `ci-240-raw-receipts`，#237晚到预检原件为 `ci-237-control-terminal-supplement/output`；本轮节省停机回读为 `ci-240-external-stop-readback.json`。
 
 ## 此前执行记录（历史）
 
