@@ -178,3 +178,212 @@ def test_container_owner_sandbox_resources_and_mount_changes_are_rejected(contai
         else: row['Mounts'].append({'Type': 'bind', 'Source': '/extra', 'Destination': '/extra', 'RW': False})
         container.current[0] = row
         with pytest.raises(ValueError): admitted(container)
+
+
+@pytest.fixture
+def execution(tmp_path, monkeypatch):
+    args = SimpleNamespace(root=str(tmp_path), tag='ci-999-' + 'a' * 12, commit='a' * 40,
+                           source_sha256='b' * 64, tool_manifest_sha256='c' * 64,
+                           instance_id='i-fixture', machine_id='d' * 32)
+    identity = {'instanceId': args.instance_id, 'machineId': args.machine_id, 'executionLocation': 'ECS'}
+    base = tmp_path / 'inbox' / args.tag / 'control-preflight'
+    base.mkdir(mode=0o700, parents=True); output = base / 'output'; output.mkdir(mode=0o700)
+    claim = {**preflight.execution_context(args, identity),
+             'supervisor': {'pid': 4321, 'startTicks': '1234', 'bootId': 'fixture-boot'}}
+    receipt = {'schemaVersion': 1, 'kind': 'doorhandle-control-preflight',
+               **{key: value for key, value in preflight.execution_context(args, identity).items()
+                  if key not in ('schemaVersion', 'kind')},
+               'status': 'CONTROL_PREFLIGHT_PASS', 'fullProjectVerified': False,
+               'businessRuntimeStarted': False, 'containerCleanupConfirmed': True,
+               'sourceScratchCleanupConfirmed': True, 'reports': {}}
+    claim_path, receipt_path = base / 'execution.json', output / 'receipt.json'
+    preflight.write(claim_path, claim); preflight.write(receipt_path, receipt)
+    clock, live, sleeps = [0], [False], []
+    def start(pid):
+        assert pid == 4321
+        if not live[0]: raise FileNotFoundError('original process ended')
+        return '1234'
+    def sleep(seconds):
+        sleeps.append(seconds); clock[0] += 240
+    verifier = SimpleNamespace(supervisor_start=start)
+    monkeypatch.setattr(preflight, 'admit_context', lambda requested:
+                        (tmp_path, tmp_path / 'source.tar.gz', 0, {'verifier': verifier}, identity))
+    monkeypatch.setattr(preflight, 'boot_id', lambda: 'fixture-boot')
+    monkeypatch.setattr(preflight, 'time', SimpleNamespace(monotonic=lambda: clock[0], sleep=sleep))
+    producer = preflight.run
+    monkeypatch.setattr(preflight, 'run', lambda _args: pytest.fail('An observer must never restart the tests'))
+    return SimpleNamespace(args=args, identity=identity, base=base, claim=claim, receipt=receipt,
+                           claim_path=claim_path, receipt_path=receipt_path,
+                           live=live, clock=clock, sleeps=sleeps, verifier=verifier, producer=producer)
+
+
+def test_observer_returns_the_same_completed_original_and_exact_receipt(execution):
+    result = preflight.observe(execution.args)
+    assert result['status'] == 'CONTROL_PREFLIGHT_PASS' and result['terminal'] is True
+    assert result['cleanupConfirmed'] is True and result['receipt'] == str(execution.receipt_path)
+    assert result['receiptSha256'] == preflight.digest(execution.receipt_path)
+    assert execution.sleeps == []
+
+
+def test_run_registers_the_original_supervisor_before_starting_any_test(execution, monkeypatch):
+    root = execution.base.parents[2] / 'producer'
+    inbox = root / 'inbox' / execution.args.tag; inbox.mkdir(parents=True, mode=0o700)
+    real_os = preflight.os
+    facade = {name: getattr(real_os, name) for name in dir(real_os) if not name.startswith('__')}
+    facade.update(getpid=lambda: 4321,
+                  statvfs=lambda _path: SimpleNamespace(f_bavail=8 * 1024 ** 3, f_frsize=1))
+    monkeypatch.setattr(preflight, 'os', SimpleNamespace(**facade))
+    original_signal = preflight.signal
+    monkeypatch.setattr(preflight, 'signal', SimpleNamespace(SIGTERM=original_signal.SIGTERM,
+        SIGHUP=original_signal.SIGHUP, SIGINT=original_signal.SIGINT, SIG_IGN=original_signal.SIG_IGN,
+        signal=lambda *_args: None))
+    def admitted_source(_archive, _checkout, _commit):
+        claim = json.loads((inbox / 'control-preflight/execution.json').read_bytes())
+        assert preflight.execution_supervisor(claim, execution.args, execution.identity) == execution.claim['supervisor']
+        raise ValueError('CONTROL_SOURCE_SHA_DIFFERS')
+    verifier = SimpleNamespace(supervisor_start=lambda _pid: '1234', unpack_source=admitted_source)
+    monkeypatch.setattr(preflight, 'admit_context', lambda _args:
+                        (root, root / 'source.tar.gz', 0, {'verifier': verifier}, execution.identity))
+    monkeypatch.setattr(preflight, 'docker', lambda *_args, **_kwargs: pytest.fail('No tests may precede the claim'))
+    receipt, path = execution.producer(execution.args)
+    assert receipt['status'] == 'FAILED_OR_UNKNOWN' and receipt['failure']['code'] == 'CONTROL_SOURCE_SHA_DIFFERS'
+    assert receipt['containerCleanupConfirmed'] is True and receipt['sourceScratchCleanupConfirmed'] is True
+    assert path.is_file() and (inbox / 'control-preflight/execution.json').is_file()
+
+
+def test_receipt_appearance_does_not_end_observation_while_original_process_is_live(execution, monkeypatch):
+    execution.live[0] = True
+    def ended(seconds):
+        assert execution.receipt_path.exists()
+        execution.sleeps.append(seconds); execution.clock[0] += 1; execution.live[0] = False
+    monkeypatch.setattr(preflight.time, 'sleep', ended)
+    assert preflight.observe(execution.args)['terminal'] is True
+    assert execution.sleeps == [1]
+
+
+@pytest.mark.parametrize('publication', ['missing', 'partial'])
+def test_dispatch_without_a_complete_claim_waits_for_the_same_original(execution, monkeypatch, publication):
+    if publication == 'missing': execution.claim_path.unlink()
+    else: execution.claim_path.write_bytes(b'{')
+    def published(seconds):
+        execution.sleeps.append(seconds); execution.clock[0] += 1
+        execution.claim_path.write_bytes(preflight.encoded(execution.claim))
+    monkeypatch.setattr(preflight.time, 'sleep', published)
+    assert preflight.observe(execution.args)['status'] == 'CONTROL_PREFLIGHT_PASS'
+    assert execution.sleeps == [1]
+
+
+def test_dispatch_without_a_claim_cannot_authorize_cleanup(execution):
+    execution.claim_path.unlink()
+    with pytest.raises(ValueError, match='CONTROL_EXECUTION_OBSERVATION_TIMEOUT'):
+        preflight.observe(execution.args)
+    assert execution.receipt_path.exists() and execution.sleeps
+
+
+def test_live_original_times_out_without_stopping_or_restarting_it(execution):
+    execution.live[0] = True
+    with pytest.raises(ValueError, match='CONTROL_EXECUTION_OBSERVATION_TIMEOUT'):
+        preflight.observe(execution.args)
+    assert execution.live[0] is True and execution.receipt_path.exists()
+
+
+@pytest.mark.parametrize('state', ['gone', 'reused'])
+def test_stopped_or_reused_pid_without_terminal_receipt_retains_tools(execution, state):
+    execution.receipt_path.unlink()
+    if state == 'reused': execution.verifier.supervisor_start = lambda _pid: '5678'
+    with pytest.raises(ValueError, match='CONTROL_EXECUTION_STOPPED_WITHOUT_RECEIPT'):
+        preflight.observe(execution.args)
+
+
+@pytest.mark.parametrize('mutation', ['release', 'commit', 'source', 'tool', 'identity', 'boot',
+                                    'pid_bool', 'pid_one', 'pid_text', 'ticks_number', 'ticks_text', 'schema_bool'])
+def test_foreign_or_invalid_original_claim_never_authorizes_cleanup(execution, mutation):
+    claim = copy.deepcopy(execution.claim)
+    fields = {'release': 'release', 'commit': 'commit', 'source': 'sourceSha256', 'tool': 'toolManifestSha256'}
+    if mutation in fields: claim[fields[mutation]] = 'foreign'
+    elif mutation == 'identity': claim['identity']['machineId'] = 'e' * 32
+    elif mutation == 'boot': claim['supervisor']['bootId'] = 'previous-boot'
+    elif mutation == 'pid_bool': claim['supervisor']['pid'] = True
+    elif mutation == 'pid_one': claim['supervisor']['pid'] = 1
+    elif mutation == 'pid_text': claim['supervisor']['pid'] = '4321'
+    elif mutation == 'ticks_number': claim['supervisor']['startTicks'] = 1234
+    elif mutation == 'ticks_text': claim['supervisor']['startTicks'] = 'unknown'
+    else: claim['schemaVersion'] = True
+    execution.claim_path.write_bytes(preflight.encoded(claim))
+    with pytest.raises(ValueError, match='CONTROL_EXECUTION_CLAIM_DIFFERS'):
+        preflight.observe(execution.args)
+
+
+@pytest.mark.parametrize('mutation', ['kind', 'schemaVersion', 'release', 'commit', 'sourceSha256',
+                                    'toolManifestSha256', 'identity', 'status',
+                                    'fullProjectVerified', 'businessRuntimeStarted'])
+def test_terminal_receipt_must_belong_to_this_control_execution(execution, mutation):
+    receipt = copy.deepcopy(execution.receipt)
+    receipt[mutation] = True if mutation in ('schemaVersion', 'fullProjectVerified', 'businessRuntimeStarted') else 'foreign'
+    execution.receipt_path.write_bytes(preflight.encoded(receipt))
+    with pytest.raises(ValueError, match='CONTROL_TERMINAL_RECEIPT_DIFFERS'):
+        preflight.observe(execution.args)
+
+
+@pytest.mark.parametrize('filename', ['execution.json', 'output/receipt.json'])
+@pytest.mark.parametrize('shape', ['symlink', 'hardlink'])
+def test_observation_refuses_redirected_originals(execution, filename, shape):
+    path = execution.base / filename; retained = execution.base / ('retained-' + path.name)
+    path.rename(retained)
+    if shape == 'symlink': path.symlink_to(retained)
+    else: preflight.os.link(retained, path)
+    with pytest.raises(ValueError): preflight.observe(execution.args)
+    assert retained.exists()
+
+
+@pytest.mark.parametrize('field', ['containerCleanupConfirmed', 'sourceScratchCleanupConfirmed'])
+def test_failed_original_with_unresolved_cleanup_is_terminal_but_cannot_release_tools(execution, field):
+    receipt = copy.deepcopy(execution.receipt); receipt['status'] = 'FAILED_OR_UNKNOWN'; receipt[field] = False
+    execution.receipt_path.write_bytes(preflight.encoded(receipt))
+    result = preflight.observe(execution.args)
+    assert result['status'] == 'FAILED_OR_UNKNOWN' and result['terminal'] is True
+    assert result['cleanupConfirmed'] is False
+
+
+def test_control_main_ignores_transport_hangup_but_keeps_explicit_cancellation(execution, monkeypatch):
+    handlers, results = {}, []
+    real_signal = preflight.signal
+    monkeypatch.setattr(preflight, 'signal', SimpleNamespace(SIGTERM=real_signal.SIGTERM,
+        SIGHUP=real_signal.SIGHUP, SIGINT=real_signal.SIGINT, SIG_IGN=real_signal.SIG_IGN,
+        signal=lambda number, handler: handlers.__setitem__(number, handler)))
+    argv = ['control-preflight.py']
+    for name in ('root', 'tag', 'commit', 'source_sha256', 'instance_id', 'machine_id', 'tool_manifest_sha256'):
+        argv += ['--' + name.replace('_', '-'), getattr(execution.args, name)]
+    monkeypatch.setattr(preflight.sys, 'argv', argv)
+    monkeypatch.setattr(preflight, 'run', lambda _args: (execution.receipt, execution.receipt_path))
+    monkeypatch.setattr(preflight, 'progress', results.append)
+    assert preflight.main() == 0 and results[-1]['terminal'] is True
+    assert handlers[real_signal.SIGHUP] == real_signal.SIG_IGN
+    for number in (real_signal.SIGTERM, real_signal.SIGINT):
+        with pytest.raises(RuntimeError, match='CONTROL_PREFLIGHT_INTERRUPTED'): handlers[number](number, None)
+
+
+def test_broken_stdout_does_not_cancel_the_completed_original(monkeypatch):
+    calls = []
+    def disconnected(*_args, **_kwargs): raise BrokenPipeError('SSH disconnected')
+    monkeypatch.setattr('builtins.print', disconnected)
+    monkeypatch.setattr(preflight, 'os', SimpleNamespace(devnull='/dev/null', O_WRONLY=1,
+        open=lambda path, flags: 9, dup2=lambda source, target: calls.append((source, target)),
+        close=lambda fd: calls.append(('close', fd))))
+    preflight.progress({'status': 'CONTROL_PREFLIGHT_PASS'})
+    assert calls == [(9, 1), ('close', 9)]
+
+
+def test_controller_observes_original_before_scp_and_dependency_cleanup():
+    source = (ROOT / 'script/jenkins/pipeline.ps1').read_text(encoding='utf8')
+    run = source.split("if ($Action -eq 'Preflight') {", 1)[1].split('$remoteInbox =', 1)[0]
+    assert run.index('execution-request.json') < run.index('$lines=@(& ssh.exe')
+    assert '$controlExit -eq 255' in run
+    assert run.index('$remoteResult=Wait-ExistingControlPreflight') < run.index('"${destination}:$remoteOutput/receipt.json"')
+    assert 'originalExitCode=$originalControlExit' in run and 'transportRecovered=' in run
+    observer = source.split('function Wait-ExistingControlPreflight {', 1)[1].split('function Wait-ExistingVerification', 1)[0]
+    assert ' --observe"' in observer and 'Assert-ControlExecutionState $state $request' in observer
+    assert 'if (-not $state.cleanupConfirmed)' in observer
+    assert 'python3 -I -B' in observer and '$request.helperSha256' in observer
+    cleanup = source.split("if ($Action -in @('PrepareTools', 'CleanupTools')) {", 1)[1].split("if ($Action -in @('PrepareFixtures'", 1)[0]
+    assert cleanup.index('$null=Wait-ExistingControlPreflight') < cleanup.index("'$executor' cleanup")

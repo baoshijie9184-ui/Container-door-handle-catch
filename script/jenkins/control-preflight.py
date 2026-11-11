@@ -56,6 +56,8 @@ REFUSAL_CODES = frozenset({
     'CONTROL_FORMAL_VERIFICATION_PATH_OCCUPIED',
     'CONTROL_TESTS_FAILED_SKIPPED_OR_INCOMPLETE', 'CONTROL_TEST_DISK_RESERVE_EXHAUSTED',
     'CONTROL_TEST_EXIT_UNKNOWN', 'CONTROL_TEST_TIMEOUT', 'CONTROL_TOOL_MANIFEST_SHA_DIFFERS',
+    'CONTROL_EXECUTION_CLAIM_DIFFERS', 'CONTROL_EXECUTION_OBSERVATION_TIMEOUT',
+    'CONTROL_EXECUTION_STOPPED_WITHOUT_RECEIPT', 'CONTROL_TERMINAL_RECEIPT_DIFFERS',
     'CONTROL_XML_UNEXPECTED_MODULE', 'EXACT_CONTROL_CONTAINER_REQUIRED',
     'FIXED_CONTROL_EXECUTOR_REQUIRED', 'FRESH_CONTROL_ATTEMPT_REQUIRED',
 })
@@ -196,7 +198,7 @@ def remove_owned_tree(path, expected):
     need(not path.exists() and not path.is_symlink(), 'CONTROL_SCRATCH_CLEANUP_UNKNOWN')
 
 
-def run(args):
+def admit_context(args):
     need(sys.platform == 'linux' and os.getuid() == os.geteuid() == os.getgid() == 1000, 'CONTROL_ECS_UID_1000_REQUIRED')
     need(TAG.fullmatch(args.tag) and re.fullmatch(r'[a-f0-9]{40}', args.commit)
          and args.tag.endswith('-' + args.commit[:12]) and SHA.fullmatch(args.source_sha256)
@@ -204,13 +206,96 @@ def run(args):
     root = owned(Path(args.root), directory=True)
     source_archive, allocation, modules = fixed_modules(root, args)
     identity = modules['verifier'].ecs_identity(args.instance_id, args.machine_id)
+    return root, source_archive, allocation, modules, identity
+
+
+def execution_context(args, identity):
+    return {'schemaVersion': 1, 'kind': 'doorhandle-control-execution', 'release': args.tag,
+            'commit': args.commit, 'sourceSha256': args.source_sha256,
+            'toolManifestSha256': args.tool_manifest_sha256, 'identity': identity}
+
+
+def boot_id():
+    return Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+
+
+def execution_supervisor(claim, args, identity):
+    expected = execution_context(args, identity)
+    need(type(claim) is dict and type(claim.get('schemaVersion')) is int
+         and set(claim) == set(expected) | {'supervisor'}
+         and all(claim.get(key) == value for key, value in expected.items()), 'CONTROL_EXECUTION_CLAIM_DIFFERS')
+    supervisor = claim['supervisor']
+    need(type(supervisor) is dict and set(supervisor) == {'pid', 'startTicks', 'bootId'}
+         and type(supervisor['pid']) is int and supervisor['pid'] > 1
+         and type(supervisor['startTicks']) is str and supervisor['startTicks'].isdigit()
+         and supervisor['bootId'] == boot_id(), 'CONTROL_EXECUTION_CLAIM_DIFFERS')
+    return supervisor
+
+
+def terminal_result(receipt, path, args, identity):
+    expected = execution_context(args, identity)
+    need(type(receipt) is dict and type(receipt.get('schemaVersion')) is int and receipt['schemaVersion'] == 1
+         and receipt.get('kind') == 'doorhandle-control-preflight'
+         and all(receipt.get(key) == expected[key] for key in
+                 ('release', 'commit', 'sourceSha256', 'toolManifestSha256', 'identity'))
+         and receipt.get('status') in ('CONTROL_PREFLIGHT_PASS', 'FAILED_OR_UNKNOWN')
+         and receipt.get('fullProjectVerified') is False
+         and receipt.get('businessRuntimeStarted') is False, 'CONTROL_TERMINAL_RECEIPT_DIFFERS')
+    return {**expected, 'status': receipt['status'], 'terminal': True,
+            'cleanupConfirmed': receipt.get('containerCleanupConfirmed') is True
+                and receipt.get('sourceScratchCleanupConfirmed') is True,
+            'receipt': str(path), 'receiptSha256': digest(path),
+            'reports': receipt['reports'], 'fullProjectVerified': False}
+
+
+def progress(value):
+    # A broken SSH stdout is not cancellation of this original execution.
+    try:
+        print(json.dumps(value), flush=True)
+    except BrokenPipeError:
+        sink = os.open(os.devnull, os.O_WRONLY)
+        try: os.dup2(sink, 1)
+        finally: os.close(sink)
+
+
+def observe(args):
+    """Read only this release's original process and final receipt; never rerun it."""
+    root, _source, _allocation, modules, identity = admit_context(args)
+    base = root / 'inbox' / args.tag / 'control-preflight'
+    claim_path = base / 'execution.json'; path = base / 'output/receipt.json'
+    deadline = time.monotonic() + TIMEOUT + 120
+    while True:
+        need(time.monotonic() < deadline, 'CONTROL_EXECUTION_OBSERVATION_TIMEOUT')
+        # Dispatch may precede the claim. Its absence cannot authorize cleanup.
+        if base.exists() or base.is_symlink(): owned(base, directory=True)
+        if not claim_path.exists() and not claim_path.is_symlink():
+            time.sleep(1); continue
+        try: claim = json.loads(owned(claim_path, maximum=64 * 1024).read_bytes())
+        except json.JSONDecodeError:
+            time.sleep(1); continue  # The original exclusive writer may still be publishing it.
+        supervisor = execution_supervisor(claim, args, identity)
+        try: alive = modules['verifier'].supervisor_start(supervisor['pid']) == supervisor['startTicks']
+        except (FileNotFoundError, ProcessLookupError): alive = False
+        if not alive:
+            need(path.exists() or path.is_symlink(), 'CONTROL_EXECUTION_STOPPED_WITHOUT_RECEIPT')
+            receipt = json.loads(owned(path, maximum=2 * MIB).read_bytes())
+            return terminal_result(receipt, path, args, identity)
+        # Wait until the original process ends, not merely until a filename appears.
+        time.sleep(1)
+
+
+def run(args):
+    root, source_archive, allocation, modules, identity = admit_context(args)
     context = {'release': args.tag, 'commit': args.commit, 'sourceSha256': args.source_sha256}
     inbox = owned(root / 'inbox' / args.tag, directory=True)
     require_fresh_verification_paths(inbox)
     base = inbox / 'control-preflight'; need(not base.exists() and not base.is_symlink(), 'FRESH_CONTROL_ATTEMPT_REQUIRED')
     disk = os.statvfs(root)
     need(disk.f_bavail * disk.f_frsize >= 2 * 1024 ** 3 + allocation + 144 * MIB, 'CONTROL_SOURCE_AND_SCRATCH_RESERVE_REQUIRED')
-    base.mkdir(mode=0o700); source = base / 'control-checkout'; source.mkdir(mode=0o700)
+    base.mkdir(mode=0o700)
+    write(base / 'execution.json', {**execution_context(args, identity), 'supervisor': {
+        'pid': os.getpid(), 'startTicks': modules['verifier'].supervisor_start(os.getpid()), 'bootId': boot_id()}})
+    source = base / 'control-checkout'; source.mkdir(mode=0o700)
     output = base / 'output'; output.mkdir(mode=0o700)
     scratches = [source, output / 'scratch', output / 'home']
     for path in scratches[1:]: path.mkdir(mode=0o700)
@@ -318,17 +403,24 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('root', 'tag', 'commit', 'source-sha256', 'instance-id', 'machine-id', 'tool-manifest-sha256'):
         parser.add_argument('--' + name, required=True)
+    parser.add_argument('--observe', action='store_true')
     args = parser.parse_args()
     def interrupted(_signal, _frame): raise RuntimeError('CONTROL_PREFLIGHT_INTERRUPTED')
-    for event in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT): signal.signal(event, interrupted)
+    for event in (signal.SIGTERM, signal.SIGINT): signal.signal(event, interrupted)
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
     try:
-        receipt, path = run(args)
-        print(json.dumps({'status': receipt['status'], 'release': args.tag, 'commit': args.commit,
-            'sourceSha256': args.source_sha256, 'receipt': str(path), 'receiptSha256': digest(path),
-            'reports': receipt['reports'], 'fullProjectVerified': False}))
-        return 0 if receipt['status'] == 'CONTROL_PREFLIGHT_PASS' else 2
+        if args.observe: result = observe(args)
+        else:
+            receipt, path = run(args)
+            result = terminal_result(receipt, path, args, receipt['identity'])
+        progress(result)
+        return 0 if result['status'] == 'CONTROL_PREFLIGHT_PASS' else 2
     except Exception as error:
-        print(json.dumps({'status': 'CONTROL_PREFLIGHT_REJECTED', **safe_failure(error)}))
+        progress({'status': 'CONTROL_PREFLIGHT_REJECTED', 'terminal': not args.observe,
+            'release': args.tag, 'commit': args.commit, 'sourceSha256': args.source_sha256,
+            'toolManifestSha256': args.tool_manifest_sha256,
+            'identity': {'instanceId': args.instance_id, 'machineId': args.machine_id, 'executionLocation': 'ECS'},
+            'cleanupConfirmed': False, 'receipt': None, 'receiptSha256': None, **safe_failure(error)})
         return 2
 
 

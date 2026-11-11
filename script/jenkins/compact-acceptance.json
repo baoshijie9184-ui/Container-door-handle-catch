@@ -1385,7 +1385,7 @@
       },
       {
         "module": "tests_python.test_control_preflight",
-        "minimumTests": 17,
+          "minimumTests": 57,
         "source": "tests_python/test_control_preflight.py",
         "allowedSkippedTests": []
       },

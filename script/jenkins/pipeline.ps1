@@ -12,6 +12,54 @@ function Require-Value([string]$Name, [string]$Pattern) {
     if ([string]::IsNullOrWhiteSpace($value) -or $value -notmatch $Pattern) { throw "Invalid or missing $Name" }
     return $value
 }
+function Assert-ControlExecutionState($State,$Request) {
+    if ($State.release -cne $Request.release -or $State.commit -cne $Request.commit -or
+        $State.sourceSha256 -cne $Request.sourceSha256 -or $State.toolManifestSha256 -cne $Request.toolManifestSha256 -or
+        $State.identity.instanceId -cne $Request.instanceId -or $State.identity.machineId -cne $Request.machineId -or
+        $State.identity.executionLocation -cne 'ECS' -or $State.terminal -ne $true -or
+        $State.cleanupConfirmed -isnot [bool] -or $State.status -cnotin @('CONTROL_PREFLIGHT_PASS','FAILED_OR_UNKNOWN','CONTROL_PREFLIGHT_REJECTED')) {
+        throw 'The control preflight has no matching original terminal observation; retain its tools.'
+    }
+    if ($State.status -cne 'CONTROL_PREFLIGHT_REJECTED' -and
+        ($State.receipt -cne "$remoteInbox/control-preflight/output/receipt.json" -or $State.receiptSha256 -cnotmatch '^[a-f0-9]{64}$')) {
+        throw 'The original control preflight terminal receipt identity is incomplete.'
+    }
+}
+function Wait-ExistingControlPreflight {
+    $PSNativeCommandUseErrorActionPreference=$false
+    $request=Get-Content -LiteralPath artifacts/control-preflight/execution-request.json -Raw | ConvertFrom-Json
+    $package=Get-Content -LiteralPath artifacts/release.json -Raw | ConvertFrom-Json
+    $tools=Get-Content -LiteralPath artifacts/ecs-tool-runtime.json -Raw | ConvertFrom-Json
+    if ($request.release -cne $tag -or $request.commit -cne $package.commit -or $request.sourceSha256 -cne $package.sourceSha256 -or
+        $request.helperSha256 -cnotmatch '^[a-f0-9]{64}$' -or $request.toolManifestSha256 -cne $tools.manifestSha256 -or
+        $request.instanceId -cne $env:DOORHANDLE_ECS_INSTANCE_ID -or $request.machineId -cne $env:DOORHANDLE_ECS_MACHINE_ID) {
+        throw 'Control preflight observation request differs from this fixed source or ECS.'
+    }
+    $saved='artifacts/control-preflight/execution-observation.json'
+    if (Test-Path -LiteralPath $saved) {
+        $state=Get-Content -LiteralPath $saved -Raw | ConvertFrom-Json
+        Assert-ControlExecutionState $state $request
+        if (-not $state.cleanupConfirmed) { throw 'Original control preflight cleanup is unresolved; retain its tools.' }
+        return $state
+    }
+    $helper="$remoteInbox/control-preflight.py"
+    $binding="--root '$remoteRoot' --tag '$tag' --commit '$($request.commit)' --source-sha256 '$($request.sourceSha256)' --instance-id '$($request.instanceId)' --machine-id '$($request.machineId)' --tool-manifest-sha256 '$($request.toolManifestSha256)'"
+    $command="test `"`$(sha256sum '$helper' | cut -d ' ' -f 1)`" = '$($request.helperSha256)' && python3 -I -B '$helper' $binding --observe"
+    for ($readback=1; $readback -le 3; $readback++) {
+        $lines=@(& ssh.exe @sshOptions -p $portText $destination $command 2>> artifacts/control-preflight/observe.stderr.log)
+        $exit=$LASTEXITCODE
+        $lines | Add-Content -LiteralPath artifacts/control-preflight/observe.stdout.log -Encoding utf8
+        if ($exit -eq 255) { if ($readback -lt 3) { Start-Sleep -Seconds 2 }; continue }
+        if ($exit -notin @(0,2) -or $lines.Count -eq 0) { throw 'Original control preflight observation failed; retain its tools.' }
+        $state=$lines[-1] | ConvertFrom-Json
+        Assert-ControlExecutionState $state $request
+        if (($exit -eq 0) -ne ($state.status -ceq 'CONTROL_PREFLIGHT_PASS')) { throw 'Control preflight observation exit and terminal status differ.' }
+        $state | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $saved -Encoding utf8
+        if (-not $state.cleanupConfirmed) { throw 'Original control preflight cleanup is unresolved; retain its tools.' }
+        return $state
+    }
+    throw 'Cannot reconnect to the original control preflight; do not restart it or clean its tools.'
+}
 function Wait-ExistingVerification {
     # Read back the same remote attempt after an SSH transport loss. Never run
     # verification again, and never clean its tools while its supervisor is live.
@@ -455,14 +503,27 @@ if ($Action -eq 'Preflight') {
         $fixedHelper=Get-PinnedSourceFile 'script/jenkins/control-preflight.py'
         $helperSha=(Get-FileHash -LiteralPath $fixedHelper -Algorithm SHA256).Hash.ToLowerInvariant()
         $command="test `"`$(sha256sum '$helper' | cut -d ' ' -f 1)`" = '$helperSha' && python3 -I -B '$helper' --root '$remoteRoot' --tag '$tag' --commit '$commit' --source-sha256 '$sha' --instance-id '$instance' --machine-id '$machine' --tool-manifest-sha256 '$($tools.manifestSha256)'"
-        $lines=@(& ssh.exe @sshOptions -p $portText $destination $command 2> artifacts/control-preflight/transport.stderr.log)
-        $controlExit=$LASTEXITCODE
-        $lines | Set-Content -LiteralPath artifacts/control-preflight/transport.stdout.log -Encoding utf8
-        $remoteResult=$null
-        try { $remoteResult=($lines|Select-Object -Last 1)|ConvertFrom-Json } catch { $remoteResult=$null }
-        $remoteOutput="$remoteInbox/control-preflight/output"
-        $collected=$false
+        $controlRequest=@{release=$tag;commit=$commit;sourceSha256=$sha;helperSha256=$helperSha;toolManifestSha256=$tools.manifestSha256;instanceId=$instance;machineId=$machine}
+        $controlRequest | ConvertTo-Json | Set-Content -LiteralPath artifacts/control-preflight/execution-request.json -Encoding utf8
+        $PSNativeCommandUseErrorActionPreference=$false
+        $controlExit=$null; $originalControlExit=$null; $collected=$false
         try {
+            $lines=@(& ssh.exe @sshOptions -p $portText $destination $command 2> artifacts/control-preflight/transport.stderr.log)
+            $controlExit=$LASTEXITCODE
+            $originalControlExit=$controlExit
+            $lines | Set-Content -LiteralPath artifacts/control-preflight/transport.stdout.log -Encoding utf8
+            $remoteResult=$null
+            try { $remoteResult=($lines|Select-Object -Last 1)|ConvertFrom-Json } catch { $remoteResult=$null }
+            if ($controlExit -eq 255) {
+                Write-Host 'Control preflight SSH disconnected; observing the same original execution before collection or cleanup.'
+                $remoteResult=Wait-ExistingControlPreflight
+                $controlExit=if ($remoteResult.status -ceq 'CONTROL_PREFLIGHT_PASS') {0} else {2}
+            } elseif ($controlExit -in @(0,2) -and $null -ne $remoteResult) {
+                Assert-ControlExecutionState $remoteResult $controlRequest
+                $remoteResult | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath artifacts/control-preflight/execution-observation.json -Encoding utf8
+            } else { throw 'Control preflight has no authenticated terminal result; retain its tools.' }
+            if ($remoteResult.status -ceq 'CONTROL_PREFLIGHT_REJECTED') { throw 'Control preflight rejected before complete evidence; native preparation is blocked.' }
+            $remoteOutput="$remoteInbox/control-preflight/output"
             Invoke-Checked 'scp.exe' ($sshOptions+@('-P',$portText,"${destination}:$remoteOutput/receipt.json",'artifacts/control-preflight/receipt.json'))
             $file=Get-Item -LiteralPath artifacts/control-preflight/receipt.json
             if ($file.Length -le 0 -or $file.Length -gt 2MB -or ($file.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Control receipt is missing, oversized or redirected.' }
@@ -479,7 +540,7 @@ if ($Action -eq 'Preflight') {
             }
             $collected=$true
         } finally {
-            @{status=$(if($collected -and $controlExit -eq 0){'COLLECTED'}else{'FAILED_OR_UNKNOWN'});release=$tag;commit=$commit;sourceSha256=$sha;exitCode=$controlExit;receiptCollected=$collected;fullProjectVerified=$false} | ConvertTo-Json | Set-Content -LiteralPath artifacts/control-preflight/transport.json -Encoding utf8
+            @{status=$(if($collected -and $controlExit -eq 0){'COLLECTED'}else{'FAILED_OR_UNKNOWN'});release=$tag;commit=$commit;sourceSha256=$sha;originalExitCode=$originalControlExit;exitCode=$controlExit;transportRecovered=($originalControlExit -eq 255 -and $collected);receiptCollected=$collected;fullProjectVerified=$false} | ConvertTo-Json | Set-Content -LiteralPath artifacts/control-preflight/transport.json -Encoding utf8
         }
         $expected=@('test_jenkins_resource_budget','test_jenkins_fixture_admission','test_jenkins_ecs_build_cleanup','test_failed_native_jar_duplicates','test_historical_builder_retirement','test_historical_mysql_fixture_retirement','test_public_buildkit_layer_retirement','test_generated_public_image_archive_retirement','test_historical_python_build_cache_retirement','test_local_artifact_custody','test_compose_container_selection','test_local_fixed_originals_retirement','test_fixed_originals_attestation','test_local_mysql_custody','test_local_mysql_source_classification','test_project_mysql_custody','test_jenkins_suite_evidence','test_jenkins_maven_dependency_cache','test_compact_schema_source','test_control_preflight')
         if ($controlExit -ne 0 -or $null -eq $remoteResult -or $remoteResult.status -cne 'CONTROL_PREFLIGHT_PASS' -or $remoteResult.receipt -cne "$remoteOutput/receipt.json" -or $remoteResult.receiptSha256 -cnotmatch '^[a-f0-9]{64}$' -or $receipt.status -cne 'CONTROL_PREFLIGHT_PASS' -or $receipt.fullProjectVerified -ne $false -or $receipt.businessRuntimeStarted -ne $false -or $receipt.containerCleanupConfirmed -ne $true -or $receipt.sourceScratchCleanupConfirmed -ne $true -or (@($receipt.selectedModules|Sort-Object)-join ',') -cne (@($expected|Sort-Object)-join ',') -or (@($receipt.modules.PSObject.Properties.Name|Sort-Object)-join ',') -cne (@($expected|Sort-Object)-join ',') -or -not (Test-Path -LiteralPath artifacts/control-preflight/python.xml) -or -not (Test-Path -LiteralPath artifacts/control-preflight/pytest.log)) { throw 'ECS control-script preflight did not pass with complete reports and owned cleanup; native preparation is blocked.' }
@@ -804,6 +865,7 @@ if ($Action -in @('PrepareTools', 'CleanupTools')) {
         if ($registered.status -ne 'PREPARED' -or $registered.release -ne $tag -or $registered.manifest -ne "$remoteInbox/tool-runtime/manifest.json" -or $registered.manifestSha256 -notmatch '^[a-f0-9]{64}$') { throw 'ECS tool registration differs from the fixed build inbox.' }
         $registered | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath artifacts/ecs-tool-runtime.json -Encoding utf8
     } else {
+        if (Test-Path -LiteralPath artifacts/control-preflight/execution-request.json) { $null=Wait-ExistingControlPreflight }
         if (Test-Path -LiteralPath artifacts/runtime-execution-request.json) { $null=Wait-ExistingRuntime }
         if (Test-Path -LiteralPath artifacts/ecs-verification-request.json) { $null=Wait-ExistingVerification }
         $result = Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "python3 -B '$executor' cleanup --manifest '$remoteInbox/tool-runtime/manifest.json'"))
