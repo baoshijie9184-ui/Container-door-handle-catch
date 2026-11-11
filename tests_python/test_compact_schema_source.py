@@ -257,6 +257,10 @@ def test_digest_author_reproduces_innodb_restrict_equivalent_actions_and_exact_f
     assert ' IN (BINARY ' + expected + ',BINARY REPLACE(' + expected + ',CHAR(39),CONCAT(CHAR(92),CHAR(39))))' in status
     assert "REPLACE(c.check_clause,'_utf8mb4','')" in status
     assert 'REPLACE(c.check_clause,CHAR(92)' not in status
+    command = next(line for line in generated.splitlines()
+                   if line.startswith('INSERT INTO workflow_instance(') and "'DIGEST_COMMAND'" in line)
+    assert "SELECT SHA2(CONCAT('DIGEST_COMMAND:',CAST(JSON_ARRAY(s.`actor_user_id`,s.`request_id`) AS CHAR CHARACTER SET utf8mb4)),256)" in command
+    assert 'legacy-digest-cmd-' not in generated
 
 
 def test_model_budget_author_reproduces_exact_check_spellings_and_all_enforced_groups(tmp_path):

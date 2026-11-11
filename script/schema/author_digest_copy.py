@@ -179,7 +179,7 @@ run = {'workflow_id':'s.run_id','kind':q('DIGEST_RUN'),'idempotency_scope':"CONC
  'result_version':'IF(s.snapshot_json IS NULL,NULL,1)','result_json':'CAST(s.snapshot_json AS CHAR CHARACTER SET utf8mb4)',
  'result_sha256':'s.snapshot_sha256','created_at':'s.created_at','updated_at':'NULL','finished_at':'s.finished_at',
  'legacy_source':q('quality_digest_run'),'legacy_key':'CAST(s.id AS CHAR)','digest_legacy_row_json':row_json('quality_digest_run')}
-command = {'workflow_id':"CONCAT('legacy-digest-cmd-',SHA2(CAST(JSON_ARRAY(s.actor_user_id,s.request_id) AS CHAR CHARACTER SET utf8mb4),256))",
+command = {'workflow_id':"SHA2(CONCAT('DIGEST_COMMAND:',"+source_key('quality_digest_command')+"),256)",
  'kind':q('DIGEST_COMMAND'),'idempotency_scope':"CONCAT('OWNER:',s.actor_user_id)",'request_id':'s.request_id',
  'request_sha256':'s.request_sha256','owner_user_id':'s.actor_user_id','actor_user_id':'s.actor_user_id','resource_type':q('SCHEDULE'),
  'resource_id':'s.schedule_id','status':q('COMPLETED'),'payload_version':'1','payload_json':"JSON_OBJECT('scheduleId',s.schedule_id)",

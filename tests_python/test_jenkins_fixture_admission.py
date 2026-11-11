@@ -378,7 +378,7 @@ def test_actual_profile_batches_all_62_classes_and_original_paths_without_proper
     requirements, provisioned = provisioned_profile()
     before = json.dumps(provisioned, sort_keys=True)
     groups = preparer.group_provisioned_suites(provisioned, requirements)
-    assert len(requirements) == 64 and sum(item['minimumTests'] for item in requirements) == 748
+    assert len(requirements) == 64 and sum(item['minimumTests'] for item in requirements) == 749
     assert len(groups) == 13 and groups[0] == provisioned[0]
     assert groups[0]['javaTests'] == [requirements[0]['className']]
     original = {item['javaTests'][0]: item['fixtureProperties'] for item in provisioned}

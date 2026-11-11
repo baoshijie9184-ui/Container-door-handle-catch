@@ -212,8 +212,11 @@ def test_pressure_records_raw_probe_before_any_container_operation(tmp_path, mon
     assert json.loads(monitor.raw.read_text())['stopReasons'] == ['DISK_FLOOR']
 
 
-def test_worker_reuses_verified_torch_and_adds_only_missing_pymysql(tmp_path):
-    source = ROOT; old = tmp_path / 'old'; old.mkdir(); context = tmp_path / 'candidate'; context.mkdir()
+def worker_dependency_fixture(tmp_path, *, installed_pymysql=False, current_requirements=False):
+    source = tmp_path / 'source'; old = tmp_path / 'old'; old.mkdir(); context = tmp_path / 'candidate'; context.mkdir()
+    for original in candidate.worker_source_files(ROOT).values():
+        destination = source / original.relative_to(ROOT); destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(original.read_bytes())
     required = candidate.dependency_versions((ROOT / 'deploy/worker/requirements.txt').read_text())
     former = {name: version for name, version in required.items() if name != 'pymysql'}
     requirements = ''.join(name + '==' + version + '\n' for name, version in former.items())
@@ -228,17 +231,153 @@ def test_worker_reuses_verified_torch_and_adds_only_missing_pymysql(tmp_path):
     result = {'versions': {name.replace('_', '-'): version for name, version in former.items()},
         'requirements': requirements, 'requirementsSha256': digest(old / 'requirements.txt'),
         'provenanceSha256': digest(old / 'BUILD_PROVENANCE.json')}
+    if installed_pymysql: result['versions']['pymysql'] = '1.1.2'
+    if current_requirements:
+        result.update(requirements=(source / 'deploy/worker/requirements.txt').read_text(encoding='utf8'),
+            requirementsSha256=digest(source / 'deploy/worker/requirements.txt'),
+            versions={name.replace('_', '-'): version for name, version in required.items()})
+    model = old / 'model-source'; model.mkdir(); (model / 'engine').mkdir()
+    for directory in (model, model / 'engine'): directory.chmod(0o755)
+    for name, body, mode in (('engine/code.py', b'verified original source', 0o755), ('config.yml', b'original config', 0o644),
+        ('MANIFEST_SHA256.json', b'original manifest', 0o644), ('CHECKPOINT_METADATA.json', b'original metadata', 0o644),
+        ('DINOv3-LICENSE.md', b'original retained license keeper', 0o444),
+        ('BUILD_PROVENANCE.json', b'original retained provenance keeper', 0o444)):
+        path = model / name; path.write_bytes(body); path.chmod(mode)
     image = 'sha256:' + 'f' * 64
     common = SimpleNamespace(PROJECT='original', container=lambda *_: {'Image': image}, require=runtime.require)
     ops = SimpleNamespace(docker=lambda *args, **_: json.dumps([{'Id': image, 'Config': {}, 'Size': 123}]
         if args[:2] == ('image', 'inspect') else result).encode())
     cutover = SimpleNamespace(canonical=lambda p: Path(p).resolve(strict=True), sha_file=digest)
-    receipt = candidate.stage_worker_dependencies(source, context, old, SimpleNamespace(tag='ci-58-' + 'a' * 12), ops, common, cutover)
+    return source, context, old, SimpleNamespace(tag='ci-58-' + 'a' * 12), ops, common, cutover, result
+
+
+@pytest.mark.parametrize('installed_pymysql', [False, True])
+def test_worker_reuses_verified_torch_and_adds_only_missing_pymysql(tmp_path, installed_pymysql):
+    source, context, old, args, ops, common, cutover, _result = worker_dependency_fixture(tmp_path, installed_pymysql=installed_pymysql)
+    model = old / 'model-source'
+    keepers = {name: ((model / name).read_bytes(), (model / name).stat().st_ino, (model / name).stat().st_mode & 0o777)
+               for name in ('DINOv3-LICENSE.md', 'BUILD_PROVENANCE.json')}
+    receipt = candidate.stage_worker_dependencies(source, context, old, args, ops, common, cutover)
     dockerfile = (context / 'Dockerfile').read_text()
-    assert dockerfile.startswith('FROM ' + image + '\n')
-    assert 'pip install --no-cache-dir --no-deps' in dockerfile and 'PyMySQL==1.1.2' in dockerfile
-    assert 'pip install --find-links' not in dockerfile and 'COPY kafka_detection_worker.py' in dockerfile
-    assert receipt['addedNoDeps'] == ['PyMySQL==1.1.2']
+    assert 'FROM ' + receipt['baseImage'] + '\n' in dockerfile
+    assert ('pip install --no-cache-dir --no-deps' in dockerfile) == (not installed_pymysql)
+    assert 'pip install --find-links' not in dockerfile and dockerfile.count('COPY rootfs/ /\n') == 1
+    assert receipt['addedNoDeps'] == ([] if installed_pymysql else ['PyMySQL==1.1.2'])
+    assert receipt['requirementsClosure'] == {'mode': 'LEGACY_UPSTREAM_WITH_OPTIONAL_PYMYSQL',
+        'baseRequirementsSha256': cutover.sha_file(old / 'requirements.txt'),
+        'legacyRequirementsSha256': cutover.sha_file(old / 'requirements.txt'),
+        'fixedSourceRequirementsSha256': cutover.sha_file(source / 'deploy/worker/requirements.txt')}
+    # The shared native resource algorithm counts actual RUN/COPY instructions.
+    import re
+    assert len(re.findall(r'^\s*(?:RUN|COPY)\b', dockerfile, re.M | re.I)) == (1 if installed_pymysql else 2)
+    assert receipt['sourceCopyInstructions'] == 1
+    original = (source / 'deploy/worker/Dockerfile').read_text()
+    assert original[original.index('ENV '):original.index('COPY ')] in dockerfile
+    assert original[original.index('USER app'): ] in dockerfile
+    rootfs = context / 'rootfs'
+    assert set(path.name for path in context.iterdir()) == {'Dockerfile', 'rootfs'}
+    for directory in (rootfs, rootfs / 'app', rootfs / 'app/licenses', rootfs / 'opt'):
+        assert directory.stat().st_mode & 0o777 == 0o755
+    inputs = candidate.worker_source_files(source); inputs.pop('Dockerfile')
+    inputs['BUILD_PROVENANCE.json'] = old / 'BUILD_PROVENANCE.json'
+    assert set(receipt['runtimeSourceLayout']) == set(inputs)
+    for name, original_file in inputs.items():
+        target = rootfs / receipt['runtimeSourceLayout'][name]
+        assert target.read_bytes() == original_file.read_bytes()
+        assert target.stat().st_mode & 0o777 == 0o644
+    assert {path.name for path in (rootfs / 'app').glob('*.py')} == set(candidate.WORKER_PYTHON_FILES)
+    for path in model.rglob('*'):
+        relative = path.relative_to(model); target = rootfs / 'opt/model-source' / relative
+        if relative.as_posix() in keepers: continue
+        assert target.stat().st_mode & 0o777 == path.stat().st_mode & 0o777
+        if path.is_file():
+            assert target.read_bytes() == path.read_bytes() and target.stat().st_ino == path.stat().st_ino
+    for name, (body, inode, mode) in keepers.items():
+        keeper = model / name; replacement = rootfs / 'opt/model-source' / name
+        assert (keeper.read_bytes(), keeper.stat().st_ino, keeper.stat().st_mode & 0o777) == (body, inode, mode)
+        assert replacement.stat().st_ino != inode
+    assert receipt['modelSourceModePreservation'] == 'COMPLETE_HARDLINKED_TREE'
+
+
+def test_worker_can_reuse_exact_current_requirements_after_compact_cutover_without_installing(tmp_path):
+    source, context, old, args, ops, common, cutover, actual = worker_dependency_fixture(tmp_path, current_requirements=True)
+    receipt = candidate.stage_worker_dependencies(source, context, old, args, ops, common, cutover)
+    body = (context / 'Dockerfile').read_text()
+    assert receipt['requirementsClosure'] == {'mode': 'EXACT_FIXED_SOURCE_REQUIREMENTS',
+        'baseRequirementsSha256': cutover.sha_file(source / 'deploy/worker/requirements.txt'),
+        'legacyRequirementsSha256': cutover.sha_file(old / 'requirements.txt'),
+        'fixedSourceRequirementsSha256': cutover.sha_file(source / 'deploy/worker/requirements.txt')}
+    assert receipt['originalProvenanceSha256'] == cutover.sha_file(old / 'BUILD_PROVENANCE.json')
+    assert receipt['addedNoDeps'] == [] and 'RUN ' not in body and 'pip install' not in body
+    assert body.count('COPY rootfs/ /\n') == 1
+    assert receipt['verifiedExistingVersions'] == actual['versions'] == receipt['requiredVersions']
+    assert (context / 'rootfs/app/requirements.txt').read_bytes() == (source / 'deploy/worker/requirements.txt').read_bytes()
+
+
+@pytest.mark.parametrize('damage', ['legacy-digest', 'unknown-digest', 'missing-pymysql', 'wrong-pymysql',
+    'extra-requirement', 'different-requirement', 'wrong-upstream-provenance', 'changed-fixed-bytes'])
+def test_worker_current_requirements_closure_refuses_approximate_or_incomplete_matches(tmp_path, damage):
+    source, context, old, args, ops, common, cutover, actual = worker_dependency_fixture(tmp_path, current_requirements=True)
+    if damage == 'legacy-digest': actual['requirementsSha256'] = cutover.sha_file(old / 'requirements.txt')
+    elif damage == 'unknown-digest': actual['requirementsSha256'] = '0' * 64
+    elif damage == 'missing-pymysql': actual['versions'].pop('pymysql')
+    elif damage == 'wrong-pymysql': actual['versions']['pymysql'] = '1.1.1'
+    elif damage == 'extra-requirement': actual['requirements'] += '\nother==1.0\n'
+    elif damage == 'different-requirement': actual['requirements'] = actual['requirements'].replace('torch==2.5.1+cpu', 'torch==2.5.0+cpu')
+    elif damage == 'wrong-upstream-provenance': actual['provenanceSha256'] = '0' * 64
+    elif damage == 'changed-fixed-bytes':
+        with (source / 'deploy/worker/requirements.txt').open('a', encoding='utf8') as stream:
+            stream.write('\n# source bytes changed after the dependency image\n')
+    with pytest.raises(ValueError): candidate.stage_worker_dependencies(source, context, old, args, ops, common, cutover)
+    assert not (context / 'rootfs').exists() and not (context / 'Dockerfile').exists()
+
+
+@pytest.mark.parametrize('damage', ['extra-copy', 'extra-run', 'lowercase-run', 'changed-install', 'root-user', 'wrong-schema'])
+def test_worker_single_overlay_refuses_unreviewed_source_or_runtime_changes(damage):
+    body = (ROOT / 'deploy/worker/Dockerfile').read_text()
+    if damage == 'extra-copy': body += '\nCOPY unknown /app/\n'
+    elif damage == 'extra-run': body += '\nRUN pip install another\n'
+    elif damage == 'lowercase-run': body += '\n  run pip install another\n'
+    elif damage == 'changed-install': body = body.replace('pip check', 'pip check && touch /tmp/unknown')
+    elif damage == 'root-user': body = body.replace('USER app', 'USER root')
+    elif damage == 'wrong-schema': body = body.replace('compact29-v1', 'other-schema')
+    with pytest.raises(ValueError): candidate.worker_runtime_dockerfile(body, 'sha256:' + 'f' * 64, add_pymysql=False)
+
+
+@pytest.mark.parametrize('damage', ['link', 'private-file', 'private-directory'])
+def test_worker_overlay_rejects_unclosed_or_unreadable_model_sources_without_changing_keepers(tmp_path, damage):
+    source, context, old, args, ops, common, cutover, _result = worker_dependency_fixture(tmp_path)
+    keeper = old / 'model-source/engine/code.py'; before = keeper.read_bytes()
+    if damage == 'link': (old / 'model-source/link.py').symlink_to(keeper)
+    elif damage == 'private-file': keeper.chmod(0o600)
+    elif damage == 'private-directory': (old / 'model-source/engine').chmod(0o700)
+    with pytest.raises(ValueError): candidate.stage_worker_dependencies(source, context, old, args, ops, common, cutover)
+    assert keeper.read_bytes() == before and not (context / 'Dockerfile').exists()
+
+
+@pytest.mark.parametrize('damage', ['package', 'requirements', 'provenance'])
+def test_worker_overlay_retains_original_dependency_and_provenance_rejection(tmp_path, damage):
+    source, context, old, args, ops, common, cutover, actual = worker_dependency_fixture(tmp_path)
+    if damage == 'package': actual['versions']['torch'] = 'other'
+    elif damage == 'requirements': actual['requirementsSha256'] = '0' * 64
+    elif damage == 'provenance': actual['provenanceSha256'] = '0' * 64
+    with pytest.raises(ValueError): candidate.stage_worker_dependencies(source, context, old, args, ops, common, cutover)
+    assert not (context / 'rootfs').exists() and not (context / 'Dockerfile').exists()
+
+
+def test_worker_run_write_envelope_is_only_reserved_for_the_verified_missing_dependency():
+    import ast
+    tree = ast.parse(Path(candidate.__file__).read_text())
+    specifications = [node for node in ast.walk(tree) if isinstance(node, ast.Dict)
+        and any(isinstance(key, ast.Constant) and key.value == 'service'
+            and isinstance(value, ast.Constant) and value.value == 'detection-worker' for key, value in zip(node.keys, node.values))]
+    assert len(specifications) == 1
+    envelope = next(value for key, value in zip(specifications[0].keys, specifications[0].values)
+                    if isinstance(key, ast.Constant) and key.value == 'runWriteEnvelopeBytes')
+    assert isinstance(envelope, ast.IfExp)
+    assert ast.dump(envelope.test) == ast.dump(ast.parse("dependencies['addedNoDeps']", mode='eval').body)
+    assert ast.dump(envelope.body) == ast.dump(ast.parse('64 * resources.MIB', mode='eval').body)
+    assert isinstance(envelope.orelse, ast.Constant) and envelope.orelse.value == 0
 
 
 def test_worker_rejects_unpinned_or_duplicate_requirements():

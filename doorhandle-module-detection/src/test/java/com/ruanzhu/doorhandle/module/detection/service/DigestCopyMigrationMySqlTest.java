@@ -128,6 +128,49 @@ class DigestCopyMigrationMySqlTest {
         assertThat(source.queryForObject("SELECT COUNT(*) FROM quality_digest_audit",Integer.class)).isEqualTo(1);
     }
 
+    @Test void importedCommandIdsFitTheWorkflowContractAndReplayFullCompositeKeys() throws Exception {
+        String first="r".repeat(63)+"A",second="r".repeat(63)+"B";
+        var firstRequest=new QualityDigestService.Save("质量日报","0 0 8 * * *",false,0,first);
+        var secondRequest=new QualityDigestService.Save("质量日报","0 0 8 * * *",false,0,second);
+        String firstDigest=sha("\n"+json.writeValueAsString(firstRequest));
+        source.update("INSERT INTO quality_digest_schedule VALUES(42,'Plan-B',4,'主管2','质量日报','0 0 8 * * *',FALSE,7,NULL,'2026-02-03 04:05:06.123456','2026-02-04 05:06:07.654321')");
+        source.update("INSERT INTO quality_digest_command VALUES(3,?,?,'Plan-A','2026-02-03 04:05:06.123456')",first,firstDigest);
+        source.update("INSERT INTO quality_digest_command VALUES(4,?,?,'Plan-B','2026-02-03 04:05:06.123456')",first,firstDigest);
+        source.update("INSERT INTO quality_digest_command VALUES(3,?,?,'Plan-A','2026-02-03 04:05:06.123456')",second,sha("\n"+json.writeValueAsString(secondRequest)));
+        source.update("INSERT INTO quality_digest_command VALUES(3,?,?,'Plan-A','2026-02-03 04:05:06.123456')","项".repeat(64),"f".repeat(64));
+        String sourceRows="SELECT actor_user_id,request_id,request_sha256,schedule_id,CAST(created_at AS CHAR) created_text,CAST(JSON_ARRAY(actor_user_id,request_id) AS CHAR CHARACTER SET utf8mb4) source_key FROM quality_digest_command ORDER BY actor_user_id,request_id";
+        var before=source.queryForList(sourceRows);
+        copy();
+        var identifiers=new HashSet<String>();
+        for(var original:before) {
+            var command=target.queryForMap("SELECT workflow_id,request_id,request_sha256,legacy_key,digest_legacy_row_json,CAST(created_at AS CHAR) created_text,updated_at,finished_at FROM workflow_instance WHERE kind='DIGEST_COMMAND' AND BINARY legacy_key=BINARY ?",original.get("source_key"));
+            String id=command.get("workflow_id").toString();
+            assertThat(id).matches("[a-f0-9]{64}").isEqualTo(sha("DIGEST_COMMAND:"+original.get("source_key")));
+            assertThat(identifiers.add(id)).isTrue();
+            assertThat(command.get("request_id")).isEqualTo(original.get("request_id"));
+            assertThat(command.get("request_sha256")).isEqualTo(original.get("request_sha256"));
+            assertThat(command.get("created_text")).isEqualTo(original.get("created_text"));
+            assertThat(command.get("updated_at")).isNull();assertThat(command.get("finished_at")).isNull();
+            var raw=json.readTree(command.get("digest_legacy_row_json").toString());
+            assertThat(raw.path("actor_user_id").asLong()).isEqualTo(((Number)original.get("actor_user_id")).longValue());
+            assertThat(raw.path("request_id").asText()).isEqualTo(original.get("request_id"));
+        }
+        assertThat(identifiers).hasSize(5);
+        var actor=new java.util.concurrent.atomic.AtomicLong(3);
+        BusinessUserDirectory users=new BusinessUserDirectory(){
+            public Identity authenticated(){return current(actor.get(),"主管");}
+            public Identity current(long id,String username){return new Identity(id,id==3?"主管":"主管2",true);}
+            public Identity lockCurrent(long id,String username){return current(id,username);}
+        };
+        var service=new QualityDigestService(target,users,json,new DataSourceTransactionManager(fixture.targetDataSource()),new ReportDocumentRenderer(),"UTC");
+        assertThat(service.save(null,firstRequest).get("schedule_id")).isEqualTo("Plan-A");
+        actor.set(4);assertThat(service.save(null,firstRequest).get("schedule_id")).isEqualTo("Plan-B");
+        actor.set(3);assertThat(service.save(null,secondRequest).get("schedule_id")).isEqualTo("Plan-A");
+        assertThat(target.queryForObject("SELECT COUNT(*) FROM workflow_instance WHERE kind='DIGEST_COMMAND'",Integer.class)).isEqualTo(5);
+        assertThat(target.queryForObject("SELECT COUNT(*) FROM scheduled_plan WHERE kind='DIGEST_SCHEDULE'",Integer.class)).isEqualTo(2);
+        assertThat(source.queryForList(sourceRows)).isEqualTo(before);
+    }
+
     @ParameterizedTest
     @CsvSource({"RESTRICT,RESTRICT", "RESTRICT,NO ACTION", "NO ACTION,RESTRICT", "NO ACTION,NO ACTION"})
     void equivalentInnoDbRestrictActionsPreserveTheSourceAndAllowCopy(String deleteRule,String updateRule) throws Exception {

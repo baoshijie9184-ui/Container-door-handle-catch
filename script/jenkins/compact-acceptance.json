@@ -381,7 +381,7 @@
         "doorhandle.digest.copy.mysql.config"
       ],
       "source": "doorhandle-module-detection/src/test/java/com/ruanzhu/doorhandle/module/detection/service/DigestCopyMigrationMySqlTest.java",
-      "minimumTests": 20,
+      "minimumTests": 21,
       "coverage": [
         "detection workflow, reports, identity and authorization"
       ]
@@ -1619,7 +1619,7 @@
       },
       {
         "module": "tests_python.test_compact_runtime_resources",
-        "minimumTests": 72,
+        "minimumTests": 95,
         "source": "tests_python/test_compact_runtime_resources.py",
         "allowedSkippedTests": []
       },

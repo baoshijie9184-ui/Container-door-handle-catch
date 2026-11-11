@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 import shutil
 import shlex
+import stat
 import sys
 import tarfile
 import uuid
@@ -158,6 +159,93 @@ def stage_web(source, work, verification_file, verification_sha, common, cutover
     return context
 
 
+WORKER_PYTHON_FILES = ('kafka_detection_worker.py', 'kafka_event_models.py', 'kafka_settings.py',
+    'detection_worker_receipts.py', 'oss_result_uploader.py', 'pth_detection_engine.py',
+    'detection_image.py', 'worker_health.py', 'tenant_detection_authority.py', 'tenant_execution_security.py')
+
+
+def worker_source_files(source):
+    return {'Dockerfile': source / 'deploy/worker/Dockerfile',
+        'requirements.txt': source / 'deploy/worker/requirements.txt',
+        'DINOv3-LICENSE.md': source / 'deploy/worker/licenses/DINOv3-LICENSE.md',
+        'PyMySQL-LICENSE.txt': source / 'deploy/worker/licenses/PyMySQL-LICENSE.txt',
+        'LICENSE': source / 'LICENSE', **{name: source / name for name in WORKER_PYTHON_FILES}}
+
+
+def worker_runtime_dockerfile(body, image, *, add_pymysql):
+    """One source overlay preserves the current runtime and optional no-deps fix."""
+    supplement = ('RUN pip install --no-cache-dir --no-deps --index-url https://pypi.org/simple PyMySQL==1.1.2 && pip check\n'
+                  if add_pymysql else '')
+    install = ('RUN --mount=type=cache,target=/root/.cache/pip \\\n'
+        '    --mount=type=bind,source=cpu-wheels,target=/wheels,ro \\\n'
+        '    pip install --find-links /wheels --index-url "$PIP_INDEX_URL" -r requirements.txt && pip check \\\n'
+        '    && groupadd --gid 10001 app && useradd --uid 10001 --gid app --create-home app\n')
+    replacements = {'ARG PYTHON_BASE_IMAGE=python:3.12-slim\n': '',
+        'FROM ${PYTHON_BASE_IMAGE}\n': 'FROM ' + image + '\nUSER root\n',
+        'ARG PIP_INDEX_URL=https://pypi.org/simple\n': '',
+        'COPY requirements.txt /app/requirements.txt\n': supplement + 'COPY rootfs/ /\n', install: '',
+        'COPY ' + ' '.join(WORKER_PYTHON_FILES[:8]) + ' LICENSE /app/\n': '',
+        'COPY ' + ' '.join(WORKER_PYTHON_FILES[8:]) + ' /app/\n': '',
+        'COPY model-source/ /opt/model-source/\n': '',
+        'COPY DINOv3-LICENSE.md BUILD_PROVENANCE.json /opt/model-source/\n': '',
+        'COPY PyMySQL-LICENSE.txt /app/licenses/PyMySQL-LICENSE.txt\n': ''}
+    if not re.fullmatch(r'sha256:[a-f0-9]{64}', image) or type(add_pymysql) is not bool:
+        raise ValueError('Worker reuse requires an immutable image and an explicit dependency decision')
+    for before, after in replacements.items():
+        if body.count(before) != 1:
+            raise ValueError('Worker installation or complete fixed source closure changed')
+        body = body.replace(before, after, 1)
+    statements = [line.strip().split(None, 1) for line in re.sub(r'\\\n[ \t]*', ' ', body).splitlines()
+                  if line.strip() and not line.lstrip().startswith('#')]
+    instructions = [line[0].upper() for line in statements]
+    if (set(instructions) - {'FROM', 'LABEL', 'WORKDIR', 'ENV', 'RUN', 'COPY', 'USER', 'HEALTHCHECK', 'CMD'}
+            or instructions.count('COPY') != 1 or instructions.count('RUN') != int(add_pymysql)
+            or instructions.count('FROM') != 1
+            or [line[1] for line in statements if line[0].upper() == 'USER'] != ['root', 'app']
+            or [line[1] for line in statements if line[0].upper() == 'WORKDIR'] != ['/app']
+            or len(re.findall(r'^LABEL io\.doorhandle\.business-schema=(?:"compact29-v1"|compact29-v1)\s*$', body, re.M)) != 1):
+        raise ValueError('Worker reuse must retain the current compact app runtime with one source COPY')
+    return body
+
+
+def stage_worker_rootfs(source, context, old_context, common, cutover):
+    rootfs = context / 'rootfs'
+    for directory in (rootfs, rootfs / 'app', rootfs / 'app/licenses', rootfs / 'opt'):
+        directory.mkdir(mode=0o755); os.chmod(directory, 0o755)
+    model = cutover.canonical(old_context / 'model-source')
+    common.require(model.is_dir(), 'Existing validated worker model sources are missing')
+    model_entries = 0
+    for current, directories, files in os.walk(model, followlinks=False):
+        for path in (Path(current), *(Path(current) / name for name in directories + files)):
+            info = path.lstat()
+            common.require(not path.is_symlink() and (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)),
+                           'Worker model source contains a link or special file')
+            common.require(info.st_mode & (0o005 if stat.S_ISDIR(info.st_mode) else 0o004)
+                           == (0o005 if stat.S_ISDIR(info.st_mode) else 0o004),
+                           'Preserved worker model sources must remain readable by the image app user')
+        model_entries += len(directories) + len(files)
+    # Only the new directory entries are copied. Never chmod the linked model
+    # files: their inodes still belong to the original retained source tree.
+    shutil.copytree(model, rootfs / 'opt/model-source', copy_function=os.link)
+    destinations = {name: 'app/' + name for name in (*WORKER_PYTHON_FILES, 'requirements.txt', 'LICENSE')}
+    destinations.update({'DINOv3-LICENSE.md': 'opt/model-source/DINOv3-LICENSE.md',
+        'BUILD_PROVENANCE.json': 'opt/model-source/BUILD_PROVENANCE.json',
+        'PyMySQL-LICENSE.txt': 'app/licenses/PyMySQL-LICENSE.txt'})
+    inputs = worker_source_files(source)
+    inputs['BUILD_PROVENANCE.json'] = cutover.canonical(old_context / 'BUILD_PROVENANCE.json')
+    for name, relative in destinations.items():
+        original = cutover.canonical(inputs[name]); common.require(original.is_file(), 'Missing worker fixed source input')
+        destination = rootfs / relative
+        common.require(not destination.exists() or destination.is_file(), 'Worker overlay destination is not a regular file')
+        temporary = destination.with_name('.' + destination.name + '-' + uuid.uuid4().hex)
+        shutil.copyfile(original, temporary); os.chmod(temporary, 0o644)
+        # A license/provenance file may already be linked from model-source.
+        # Replace that owned directory entry, never write through the keeper.
+        os.replace(temporary, destination)
+    return {'sourceCopyInstructions': 1, 'runtimeSourceLayout': destinations,
+        'modelSourceEntries': model_entries, 'modelSourceModePreservation': 'COMPLETE_HARDLINKED_TREE'}
+
+
 def stage_worker_dependencies(source, context, old_context, args, ops, common, cutover):
     """Reuse proven immutable dependencies while replacing every runtime source."""
     previous = common.container(common.PROJECT, 'detection-worker')
@@ -178,9 +266,9 @@ print(json.dumps({'versions':versions,'requirements':Path('/app/requirements.txt
         '-I', '-B', '-c', code, timeout=45))
     original = cutover.canonical(old_context / 'requirements.txt')
     provenance = cutover.canonical(old_context / 'BUILD_PROVENANCE.json')
-    common.require(actual['requirementsSha256'] == cutover.sha_file(original)
-                   and actual['provenanceSha256'] == cutover.sha_file(provenance),
-                   'Immutable worker dependencies/provenance differ from retained original build inputs')
+    legacy_requirements_sha = cutover.sha_file(original)
+    common.require(actual['provenanceSha256'] == cutover.sha_file(provenance),
+                   'Immutable worker provenance differs from retained original build inputs')
     provenance_value = json.loads(provenance.read_text())
     common.require(set(provenance_value) == {'sourceZipSha256', 'verifiedSourceFiles', 'wheelSha256'}
                    and re.fullmatch(r'[a-f0-9]{64}', provenance_value['sourceZipSha256'])
@@ -190,29 +278,34 @@ print(json.dumps({'versions':versions,'requirements':Path('/app/requirements.txt
         common.require(Path(name).name == name and name.endswith('.whl')
                        and cutover.sha_file(cutover.canonical(old_context / 'cpu-wheels' / name)) == expected,
                        'Retained CPU dependency wheel differs from its immutable upstream provenance')
-    required = dependency_versions((source / 'deploy/worker/requirements.txt').read_text())
+    requirements = cutover.canonical(source / 'deploy/worker/requirements.txt')
+    fixed_requirements_sha = cutover.sha_file(requirements)
+    required = dependency_versions(requirements.read_text(encoding='utf8'))
     former = dependency_versions(actual['requirements'])
     normalize = lambda name: re.sub(r'[-_.]+', '-', name).lower()
-    common.require(all(actual['versions'].get(normalize(name)) == version for name, version in former.items())
-                   and {name: version for name, version in required.items() if name != 'pymysql'} == former,
-                   'Existing worker dependencies cannot be safely reused for this candidate')
     common.require(required.get('pymysql') == '1.1.2' and actual['versions'].get('pymysql') in (None, '1.1.2'),
                    'Only the reviewed no-deps PyMySQL supplement is permitted')
-    original_dockerfile = (source / 'deploy/worker/Dockerfile').read_text()
-    body = original_dockerfile[original_dockerfile.index('COPY kafka_detection_worker.py'):]
-    common.require(len(re.findall(r'^LABEL io\.doorhandle\.business-schema=(?:"compact29-v1"|compact29-v1)\s*$', body, re.M)) == 1
-                   and 'RUN ' not in body and 'FROM ' not in body, 'Worker source-only runtime tail changed')
-    prefix = 'FROM ' + image + '\nUSER root\nWORKDIR /app\n'
-    if actual['versions'].get('pymysql') is None:
-        prefix += ('RUN pip install --no-cache-dir --no-deps --index-url https://pypi.org/simple PyMySQL==1.1.2 && pip check\n')
-    prefix += 'COPY --chmod=0644 requirements.txt /app/requirements.txt\n'
-    (context / 'Dockerfile').write_text(prefix + body, encoding='utf8')
+    legacy = actual['requirementsSha256'] == legacy_requirements_sha \
+        and former == {name: version for name, version in required.items() if name != 'pymysql'}
+    current = actual['requirementsSha256'] == fixed_requirements_sha and former == required \
+        and actual['versions'].get('pymysql') == '1.1.2'
+    common.require((legacy or current)
+                   and all(actual['versions'].get(normalize(name)) == version for name, version in former.items()),
+                   'Existing worker dependencies cannot be safely reused for this candidate')
+    closure_mode = 'LEGACY_UPSTREAM_WITH_OPTIONAL_PYMYSQL' if legacy else 'EXACT_FIXED_SOURCE_REQUIREMENTS'
+    add_pymysql = legacy and actual['versions'].get('pymysql') is None
+    body = worker_runtime_dockerfile((source / 'deploy/worker/Dockerfile').read_text(encoding='utf8'), image,
+                                    add_pymysql=add_pymysql)
+    overlay = stage_worker_rootfs(source, context, old_context, common, cutover)
+    dockerfile = context / 'Dockerfile'; dockerfile.write_text(body, encoding='utf8'); os.chmod(dockerfile, 0o600)
     return {'mode': 'IMMUTABLE_DEPENDENCY_BASE_WITH_FIXED_SOURCE', 'baseImage': image,
         'baseImageBytes': row['Size'], 'originalRequirementsSha256': actual['requirementsSha256'],
         'originalProvenanceSha256': actual['provenanceSha256'], 'requiredVersions': required,
         'verifiedExistingVersions': {name: actual['versions'].get(normalize(name)) for name in required},
-        'addedNoDeps': ['PyMySQL==1.1.2'] if actual['versions'].get('pymysql') is None else [],
-        'runtimeDockerfileSha256': cutover.sha_file(context / 'Dockerfile')}
+        'requirementsClosure': {'mode': closure_mode, 'baseRequirementsSha256': actual['requirementsSha256'],
+            'legacyRequirementsSha256': legacy_requirements_sha, 'fixedSourceRequirementsSha256': fixed_requirements_sha},
+        'addedNoDeps': ['PyMySQL==1.1.2'] if add_pymysql else [],
+        'runtimeDockerfileSha256': cutover.sha_file(dockerfile), **overlay}
 
 
 MEM0_SOURCE_FILES = ('deploy/mem0/requirements.txt', 'memory_service/main.py',
@@ -390,29 +483,8 @@ def main(argv=None, actor=None, controlled_build=None):
             context = work / 'compact-worker-build'
             context.mkdir(mode=0o700)
             old_context = cutover.canonical(Path(args.runtime) / 'work/cloud/pth-worker-build')
-            # Large downloaded wheels/model sources stay on ECS. Hardlinks are
-            # immutable inputs to Docker; the existing runtime files are untouched.
-            for name in ('model-source',):
-                original = cutover.canonical(old_context / name)
-                require(original.is_dir(), 'Existing validated worker build inputs are missing')
-                for current, folders, files in os.walk(original, followlinks=False):
-                    require(not any((Path(current) / item).is_symlink() for item in folders + files),
-                            'Worker dependency input contains an unpinned link')
-                shutil.copytree(original, context / name, copy_function=os.link)
-            copies = {'Dockerfile': source / 'deploy/worker/Dockerfile',
-                      'requirements.txt': source / 'deploy/worker/requirements.txt',
-                      'DINOv3-LICENSE.md': source / 'deploy/worker/licenses/DINOv3-LICENSE.md',
-                      'PyMySQL-LICENSE.txt': source / 'deploy/worker/licenses/PyMySQL-LICENSE.txt',
-                      'LICENSE': source / 'LICENSE'}
-            for name in ('kafka_detection_worker.py', 'kafka_event_models.py', 'kafka_settings.py',
-                         'detection_worker_receipts.py', 'oss_result_uploader.py', 'pth_detection_engine.py',
-                         'detection_image.py', 'worker_health.py', 'tenant_detection_authority.py',
-                         'tenant_execution_security.py'):
-                copies[name] = source / name
-            for name, original in copies.items():
-                shutil.copyfile(original, context / name)
+            copies = worker_source_files(source)
             provenance = cutover.canonical(old_context / 'BUILD_PROVENANCE.json')
-            shutil.copyfile(provenance, context / 'BUILD_PROVENANCE.json')
             dependencies = stage_worker_dependencies(source, context, old_context, args, ops, common, cutover)
             mem0_context = stage_mem0(source, work, args, ops, common, cutover)
             common.write_json(work / 'worker-build-source.json', {'commit': args.commit,
@@ -436,7 +508,8 @@ def main(argv=None, actor=None, controlled_build=None):
                     {'service': 'backend', 'context': backend_context, 'tag': 'doorhandlecatch/backend:' + args.tag, 'runWriteEnvelopeBytes': 512 * resources.MIB},
                     {'service': 'nginx', 'context': web_context, 'tag': 'doorhandlecatch/web:' + args.tag},
                     {'service': 'mem0', 'context': mem0_context, 'tag': 'doorhandlecatch/mem0:' + args.tag},
-                    {'service': 'detection-worker', 'context': context, 'tag': 'doorhandlecatch/detection-worker:' + args.tag, 'runWriteEnvelopeBytes': 64 * resources.MIB}]
+                    {'service': 'detection-worker', 'context': context, 'tag': 'doorhandlecatch/detection-worker:' + args.tag,
+                     'runWriteEnvelopeBytes': 64 * resources.MIB if dependencies['addedNoDeps'] else 0}]
                 controlled_build = resources.build_images(actor, Path(args.root), source, specifications)
                 actor.stop_owned()
                 actor.begin('candidate-jar-readback', artifact['applicationJarBytes'] + 16 * resources.MIB,
