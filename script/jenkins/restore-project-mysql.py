@@ -97,12 +97,13 @@ class Recovery(existing.Recovery):
         self.owner_file = self.work / 'project-mysql-recovery-owner.json'
         self.docker = self.utility.safe(shutil.which('docker'))
         self.original = None; self.state = None; self.cancel = threading.Event(); self.pressure = None
-        if getattr(args, 'action', 'run') == 'cleanup' and not self.owner_file.exists():
+        if getattr(args, 'action', 'run') in ('cleanup', 'observe') and not self.owner_file.exists():
             # Transfer/byte recovery may fail before SQL is ever created. The
             # same fixed build and ECS identity can still prove no SQL owner or
             # recovery directory exists; partial original bytes stay retained.
             self.utility.safe(self.owner_file, exists=False); self.utility.safe(self.directory, exists=False)
-            need(not self.directory.exists(), 'An unowned partial recovery directory requires investigation')
+            if args.action == 'cleanup':
+                need(not self.directory.exists(), 'An unowned partial recovery directory requires investigation')
             self.manifest, self.specifications = None, {}
         else:
             self.manifest = packet.verified_inputs(args, self.work)
@@ -311,22 +312,25 @@ class Recovery(existing.Recovery):
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__); parser.add_argument('action', choices=('run', 'cleanup'))
+    parser = argparse.ArgumentParser(description=__doc__); parser.add_argument('action', choices=('run', 'cleanup', 'observe'))
     for name in ('root', 'tag', 'commit', 'source-sha256', 'instance-id', 'machine-id', 'batch-receipt-sha256',
                  'manifest-sha256', 'archive-sha256', 'fixture-settings'): parser.add_argument('--' + name, required=True)
     for name in ('manifest-bytes', 'archive-bytes'): parser.add_argument('--' + name, type=int, required=True)
+    parser.add_argument('--run-requested', action='store_true')
     args = parser.parse_args(); controller = None
-    for event in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+    for event in (signal.SIGINT, signal.SIGTERM):
         signal.signal(event, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
+    signal.signal(signal.SIGHUP, signal.SIG_IGN if args.action == 'run' else
+                  lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
     try:
         controller = Recovery(args)
-        result = controller.run() if args.action == 'run' else controller.cleanup()
-        print(json.dumps(result)); return 0
+        result = controller.run_supervised() if args.action == 'run' else controller.observe() if args.action == 'observe' else controller.cleanup()
+        existing.emit(result); return 0
     except BaseException as error:
-        if controller and controller.state:
+        if args.action == 'cleanup' and controller and controller.state:
             with contextlib.suppress(Exception): controller.cleanup()
-        print(json.dumps({'kind': 'doorhandle-project-mysql-recovery', 'status': 'FAILED_OR_UNKNOWN',
-            'errorType': type(error).__name__, 'productionMerged': False, 'retirementAllowed': False})); return 2
+        existing.emit({'kind': 'doorhandle-project-mysql-recovery', 'status': 'FAILED_OR_UNKNOWN',
+            'errorType': type(error).__name__, 'productionMerged': False, 'retirementAllowed': False}); return 2
 
 
 if __name__ == '__main__': raise SystemExit(main())

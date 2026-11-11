@@ -1313,7 +1313,7 @@
       },
       {
         "module": "tests_python.test_local_mysql_custody",
-        "minimumTests": 139,
+        "minimumTests": 162,
         "source": "tests_python/test_local_mysql_custody.py",
         "allowedSkippedTests": []
       },
@@ -1325,7 +1325,7 @@
       },
       {
         "module": "tests_python.test_project_mysql_custody",
-        "minimumTests": 32,
+        "minimumTests": 38,
         "source": "tests_python/test_project_mysql_custody.py",
         "allowedSkippedTests": []
       },
@@ -1343,7 +1343,7 @@
       },
       {
         "module": "tests_python.test_failed_native_jar_duplicates",
-        "minimumTests": 215,
+        "minimumTests": 248,
         "source": "tests_python/test_failed_native_jar_duplicates.py",
         "allowedSkippedTests": []
       },
@@ -1355,7 +1355,7 @@
       },
       {
         "module": "tests_python.test_historical_mysql_fixture_retirement",
-        "minimumTests": 77,
+        "minimumTests": 84,
         "source": "tests_python/test_historical_mysql_fixture_retirement.py",
         "allowedSkippedTests": []
       },
@@ -1649,7 +1649,7 @@
       },
       {
         "module": "tests_python.test_collaboration_runtime_transport",
-        "minimumTests": 42,
+        "minimumTests": 65,
         "source": "tests_python/test_collaboration_runtime_transport.py",
         "allowedSkippedTests": []
       },

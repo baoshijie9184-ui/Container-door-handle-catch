@@ -1186,3 +1186,177 @@ def test_worker_failure_survives_terminating_pipeline_without_widening_success_c
     assert 'Get-BatchWorkerFailure $_.Exception ([bool]$NonAdministratorReadOnlyExport)' in batch
     assert "if ($failureType) {\n    $receipt['workerFailureDetailsStatus']" in batch
     assert "automaticRetryAllowed = $false" in batch
+
+
+@pytest.fixture
+def supervised_sql(tmp_path, monkeypatch):
+    controller = object.__new__(recovery.Recovery)
+    controller.work = tmp_path; controller.directory = tmp_path / 'local-mysql-recovery'
+    controller.owner_file = tmp_path / 'local-mysql-recovery-owner.json'
+    controller.context = {'version': 1, 'kind': 'synthetic-custody', 'profile': 'local-mysql-export45-v1',
+        'release': 'ci-1-' + 'a' * 12, 'commit': 'a' * 40, 'sourceSha256': 'b' * 64,
+        'identity': {'instanceId': 'i-synthetic', 'machineId': 'c' * 32, 'executionLocation': 'ECS'},
+        'verificationReceiptSha256': 'd' * 64}
+    controller.bytes = custody; controller.utility = SimpleNamespace(owner_path=lambda p: p)
+    controller.state = None; calls = []
+    controller.run = lambda: calls.append('run') or {'status': 'SQL_DOUBLE_RESTORED_VERIFIED'}
+    controller.cleanup = lambda: calls.append('cleanup') or {'status': 'STOPPED'}
+    monkeypatch.setattr(recovery, 'process_start', lambda _: '5678')
+    def claim(status=None):
+        supervisor_file, terminal_file = controller.supervision_paths()
+        supervisor = {**controller.context, 'supervisionKind': 'doorhandle-sql-recovery-supervisor',
+            'executionId': 'e' * 32, 'pid': 4321, 'startTicks': '5678',
+            'bootId': Path('/proc/sys/kernel/random/boot_id').read_text().strip(), 'startedAtUnix': int(recovery.time.time())}
+        custody.write(supervisor_file, supervisor)
+        if status:
+            controller.publish_terminal(terminal_file, {**controller.context,
+                'supervisionKind': 'doorhandle-sql-recovery-terminal', 'executionId': 'e' * 32,
+                'status': status, 'result': {'status': 'SQL_DOUBLE_RESTORED_VERIFIED'} if status == 'PASS' else None,
+                'errorType': None if status == 'PASS' else 'ValueError'})
+        return supervisor_file, terminal_file
+    return SimpleNamespace(controller=controller, calls=calls, claim=claim)
+
+
+def test_sql_run_registers_one_original_supervisor_and_publishes_original_success(supervised_sql):
+    value = supervised_sql; result = value.controller.run_supervised()
+    supervisor, terminal = value.controller.supervision_paths()
+    assert value.calls == ['run'] and custody.read(terminal)['result'] == result
+    assert custody.read(terminal)['executionId'] == custody.read(supervisor)['executionId']
+    before = {p.name: p.read_bytes() for p in value.controller.work.iterdir()}
+    with pytest.raises(ValueError, match='already started'): value.controller.run_supervised()
+    assert value.calls == ['run'] and before == {p.name: p.read_bytes() for p in value.controller.work.iterdir()}
+
+
+@pytest.mark.parametrize('failure', [ValueError, KeyboardInterrupt])
+def test_sql_real_failure_or_explicit_signal_cleans_before_publishing_failed_terminal(supervised_sql, failure):
+    value = supervised_sql; value.controller.state = {'owned': True}
+    def fail(): raise failure('synthetic owned failure')
+    def cleanup():
+        assert not value.controller.supervision_paths()[1].exists()
+        value.calls.append('cleanup')
+    value.controller.run = fail; value.controller.cleanup = cleanup
+    with pytest.raises(failure): value.controller.run_supervised()
+    terminal = custody.read(value.controller.supervision_paths()[1])
+    assert value.calls == ['cleanup'] and terminal['status'] == 'FAILED' and terminal['result'] is None
+    assert terminal['errorType'] == failure.__name__
+
+
+@pytest.mark.parametrize('status', ['PASS', 'FAILED'])
+def test_sql_observe_preserves_original_terminal_outcome_and_never_runs_or_cleans(supervised_sql, status):
+    value = supervised_sql; value.claim(status)
+    before = {p.name: p.read_bytes() for p in value.controller.work.iterdir()}
+    result = value.controller.observe()
+    assert result['status'] == status and result['terminal'] is True and result['executionId'] == 'e' * 32
+    assert value.calls == [] and before == {p.name: p.read_bytes() for p in value.controller.work.iterdir()}
+
+
+@pytest.mark.parametrize('field', ['release','sourceSha256','identity','bootId'])
+def test_sql_observe_refuses_a_foreign_original_supervisor(supervised_sql, field):
+    value = supervised_sql; supervisor, _ = value.claim()
+    record = custody.read(supervisor); record[field] = 'different-execution'
+    supervisor.write_bytes(custody.encoded(record))
+    with pytest.raises(ValueError, match='another execution'): value.controller.observe()
+    assert value.calls == []
+
+
+def test_sql_observe_refuses_terminal_from_another_execution_id(supervised_sql):
+    value = supervised_sql; _, terminal = value.claim('PASS')
+    record = custody.read(terminal); record['executionId'] = 'f' * 32; terminal.write_bytes(custody.encoded(record))
+    with pytest.raises(ValueError, match='terminal evidence'): value.controller.observe()
+    assert value.calls == []
+
+
+@pytest.mark.parametrize('state', ['reused-pid','dead-pid'])
+def test_sql_observe_does_not_follow_reused_or_dead_processes_without_terminal(supervised_sql, monkeypatch, state):
+    value = supervised_sql; value.claim()
+    def changed(_):
+        if state == 'dead-pid': raise FileNotFoundError('original supervisor exited')
+        return '9999'
+    monkeypatch.setattr(recovery, 'process_start', changed)
+    with pytest.raises(ValueError, match='without terminal evidence'): value.controller.observe()
+    assert value.calls == [] and not (value.controller.work / value.controller.cancel_name).exists()
+
+
+def test_sql_observe_waits_only_for_its_original_live_run(supervised_sql, monkeypatch, capsys):
+    value = supervised_sql; _, terminal = value.claim(); sleeps = []
+    def finish(seconds):
+        sleeps.append(seconds); value.controller.publish_terminal(terminal, {**value.controller.context,
+            'supervisionKind': 'doorhandle-sql-recovery-terminal', 'executionId': 'e' * 32,
+            'status': 'PASS', 'result': {'status': 'SQL_DOUBLE_RESTORED_VERIFIED'}, 'errorType': None})
+    monkeypatch.setattr(recovery.time, 'sleep', finish)
+    assert value.controller.observe()['status'] == 'PASS' and sleeps == [5] and value.calls == []
+    assert json.loads(capsys.readouterr().out)['status'] == 'RUNNING'
+
+
+@pytest.mark.parametrize('run_requested', [False, True])
+def test_sql_observe_proves_not_started_only_before_a_run_request_was_issued(supervised_sql, run_requested):
+    value = supervised_sql; value.controller.args=SimpleNamespace(run_requested=run_requested)
+    result = value.controller.observe()
+    assert result['status'] == ('PENDING' if run_requested else 'NOT_STARTED')
+    assert result['terminal'] is (not run_requested) and result['executionId'] is None
+    assert not list(value.controller.work.iterdir()) and value.calls == []
+
+
+@pytest.mark.parametrize('partial', ['owner','directory'])
+def test_sql_observe_retains_unsupervised_partial_recovery(supervised_sql, partial):
+    value = supervised_sql
+    if partial == 'owner': value.controller.owner_file.write_bytes(b'preserved original ownership')
+    else: value.controller.directory.mkdir()
+    with pytest.raises(ValueError, match='no supervisor proof'): value.controller.observe()
+    assert value.calls == []
+
+
+def test_sql_observation_deadline_does_not_cancel_or_restart_the_original_run(supervised_sql, monkeypatch):
+    value = supervised_sql; value.claim(); ticks = iter([0, recovery.OBSERVATION_TIMEOUT + 1])
+    monkeypatch.setattr(recovery.time, 'monotonic', lambda: next(ticks))
+    with pytest.raises(ValueError, match='observation timed out'): value.controller.observe()
+    assert value.calls == []
+
+
+def test_sql_broken_ssh_stdout_is_not_a_recovery_failure(monkeypatch):
+    redirected = []
+    def broken(*_, **__): raise BrokenPipeError('closed transport')
+    monkeypatch.setattr('builtins.print', broken)
+    monkeypatch.setattr(recovery.os, 'dup2', lambda source, target: redirected.append(target))
+    recovery.emit({'status':'PASS'})
+    assert redirected == [1]
+
+
+def test_sql_controller_observes_original_run_before_automatic_cleanup_and_never_retries_run():
+    script = (ROOT / 'script/jenkins/preserve-local-mysql.ps1').read_text()
+    observer = script.split('function Observe-SqlRecovery {',1)[1].split('function Collect-SqlCleanup',1)[0]
+    assert "'$recovery' observe $context" in observer and "'$recovery' run" not in observer
+    cleanup = script.split('function Collect-SqlCleanup {',1)[1].split("if ($Mode -eq 'Cleanup')",1)[0]
+    assert cleanup.index('$null=Observe-SqlRecovery') < cleanup.index("'$recovery' cleanup")
+    assert '$failed -and $LASTEXITCODE -eq 255' in script and '$result=$observed.result; $failed=$null' in script
+    assert 'artifacts/local-mysql-run-request.json' in script and '$requested=Test-SqlRunRequested' in observer
+    assert '--run-requested' in observer and "$value.status -ceq 'PENDING'" in observer
+    assert "(-not $requested -or $value.status -cne 'NOT_STARTED')" in observer
+    assert script.index('Set-Content -LiteralPath $sqlRunRequest') < script.index("'$recovery' run")
+    request = script.split('function Test-SqlRunRequested {',1)[1].split('function Observe-SqlRecovery',1)[0]
+    assert all('$request.'+name in request for name in ('release','commit','sourceSha256','verificationReceiptSha256','identity','runAttempted'))
+
+
+@pytest.mark.parametrize('operation', ['run','observe'])
+def test_sql_outer_cli_does_not_cancel_work_when_registration_or_observation_is_unknown(monkeypatch, capsys, operation):
+    calls = []
+    class Controller:
+        state = {'owned': True}
+        def __init__(self, _): pass
+        def run_supervised(self): raise ValueError('original execution is already registered')
+        def observe(self): raise ValueError('original outcome is not yet known')
+        def cleanup(self): calls.append('wrong implicit cancellation')
+    argv = ['restore-local-mysql.py', operation]
+    for name, value in {'root':'/home/ecs-user/ci','tag':'ci-1-'+'a'*12,'commit':'a'*40,
+        'source-sha256':'b'*64,'instance-id':'i-synthetic','machine-id':'c'*32}.items(): argv += ['--'+name,value]
+    monkeypatch.setattr(sys, 'argv', argv); monkeypatch.setattr(recovery, 'Recovery', Controller)
+    monkeypatch.setattr(recovery.signal, 'signal', lambda *_: None)
+    assert recovery.main() == 2 and calls == []
+    assert json.loads(capsys.readouterr().out)['status'] == 'FAILED'
+
+
+def test_sql_observe_does_not_treat_a_pending_supervisor_publication_as_not_started(supervised_sql):
+    value = supervised_sql; supervisor, _ = value.controller.supervision_paths()
+    supervisor.with_name(supervisor.name + '.pending').write_bytes(b'original supervisor still publishing')
+    with pytest.raises(ValueError, match='publication is incomplete'): value.controller.observe()
+    assert value.calls == []

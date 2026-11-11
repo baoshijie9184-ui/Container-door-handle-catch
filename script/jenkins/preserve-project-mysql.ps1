@@ -115,6 +115,7 @@ $helper="$RemoteRoot/verification/$Tag/checkout/script/jenkins/project-mysql-cus
 $recovery="$RemoteRoot/verification/$Tag/checkout/script/jenkins/restore-project-mysql.py"
 $context="--root '$RemoteRoot' --tag '$Tag' --commit '$Commit' --source-sha256 '$SourceSha256' --instance-id '$instance' --machine-id '$machine'"
 $inputArtifact=Join-Path $workspace 'artifacts/project-mysql-inputs.json'
+$projectRunRequest=Join-Path $workspace 'artifacts/project-mysql-run-request.json'
 $script:projectRemoteFailure=$null
 function Assert-ProjectSqlContext($Value) {
     Require-ProjectSql ($Value.release -ceq $Tag -and $Value.commit -ceq $Commit -and $Value.sourceSha256 -ceq $SourceSha256 -and
@@ -124,9 +125,59 @@ function Assert-ProjectSqlContext($Value) {
 }
 function Invoke-ProjectSqlRemote([string]$Program,[string]$Operation,[string]$Extra='') {
     $script:projectRemoteStarted=$true
-    $lines=@(Invoke-ProjectSql $ssh ($options+@('-p',$PortText,$Destination,"umask 077; ${guard}python3 -I -B '$Program' $Operation $context $inputFlags $Extra")))
+    if($Operation -ceq 'run') {
+        Require-ProjectSql (-not (Test-Path -LiteralPath $projectRunRequest)) 'Use a fresh project SQL run request; observe the original issued run.'
+        @{kind='doorhandle-project-mysql-run-request';release=$Tag;commit=$Commit;sourceSha256=$SourceSha256;
+            verificationReceiptSha256=$verificationSha;identity=$accepted.identity;batchReceiptSha256=$binding.batchReceiptSha256;
+            manifestSha256=$ManifestSha256;archiveSha256=$ArchiveSha256;runAttempted=$true} |
+            ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $projectRunRequest -Encoding utf8
+    }
+    try {
+        $lines=@(Invoke-ProjectSql $ssh ($options+@('-p',$PortText,$Destination,"umask 077; ${guard}python3 -I -B '$Program' $Operation $context $inputFlags $Extra")))
+    } catch {
+        if($Operation -cne 'run' -or $LASTEXITCODE -ne 255) { throw }
+        $observed=Observe-ProjectSqlRecovery
+        Require-ProjectSql ($observed.status -ceq 'PASS') 'The original three-schema recovery did not pass; retain its failure and original bytes.'
+        return $observed.result
+    }
     Require-ProjectSql ($lines.Count -eq 1) 'A single bounded project SQL summary is required.'
     return $lines[0] | ConvertFrom-Json
+}
+function Observe-ProjectSqlRecovery {
+    $requested=Test-ProjectSqlRunRequested
+    $requestFlag=if($requested){'--run-requested'}else{''}
+    for($readback=1;$readback -le 3;$readback++) {
+        $observerArguments=$options+@('-p',$PortText,$Destination,"umask 077; ${guard}python3 -I -B '$recovery' observe $context $inputFlags --fixture-settings '$FixtureSettings' $requestFlag")
+        $lines=@(& $ssh @observerArguments)
+        $exit=$LASTEXITCODE
+        $lines | Add-Content -LiteralPath (Join-Path $workspace 'artifacts/project-mysql-observe.stdout.log') -Encoding utf8
+        if($exit -eq 255) { if($readback -lt 3){Start-Sleep -Seconds 2}; continue }
+        Require-ProjectSql ($exit -eq 0 -and $lines.Count -gt 0) 'The original three-schema recovery has no readable terminal state; retain its resources.'
+        $value=$lines[-1] | ConvertFrom-Json; Assert-ProjectSqlContext $value
+        if($requested -and $value.status -ceq 'PENDING' -and $value.terminal -is [bool] -and -not $value.terminal -and $null -eq $value.executionId) {
+            if($readback -lt 3){Start-Sleep -Seconds 2}; continue
+        }
+        Require-ProjectSql ($value.terminal -eq $true -and $value.status -cin @('PASS','FAILED','NOT_STARTED') -and
+            (-not $requested -or $value.status -cne 'NOT_STARTED') -and
+            (($value.status -ceq 'NOT_STARTED' -and $null -eq $value.executionId) -or
+             ($value.status -cin @('PASS','FAILED') -and $value.executionId -cmatch '^[a-f0-9]{32}$'))) 'The observed three-schema terminal belongs to another operation.'
+        $value | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $workspace 'artifacts/project-mysql-observation.json') -Encoding utf8
+        return $value
+    }
+    throw 'Cannot reconnect to the original three-schema recovery; do not restart it or cancel unknown work.'
+}
+function Test-ProjectSqlRunRequested {
+    if(-not (Test-Path -LiteralPath $projectRunRequest)){return $false}
+    Assert-ProjectSqlUnlinked $projectRunRequest
+    Require-ProjectSql ((Get-Item -LiteralPath $projectRunRequest).Length -le 4096) 'Project SQL run request exceeds its metadata bound.'
+    $request=Get-Content -LiteralPath $projectRunRequest -Raw -Encoding utf8 | ConvertFrom-Json
+    Require-ProjectSql ($request.kind -ceq 'doorhandle-project-mysql-run-request' -and $request.release -ceq $Tag -and
+        $request.commit -ceq $Commit -and $request.sourceSha256 -ceq $SourceSha256 -and
+        $request.verificationReceiptSha256 -ceq $verificationSha -and $request.identity.instanceId -ceq $instance -and
+        $request.identity.machineId -ceq $machine -and $request.batchReceiptSha256 -ceq $binding.batchReceiptSha256 -and
+        $request.manifestSha256 -ceq $ManifestSha256 -and $request.archiveSha256 -ceq $ArchiveSha256 -and
+        $request.runAttempted -is [bool] -and $request.runAttempted) 'Project SQL run request belongs to another fixed build.'
+    return $true
 }
 function Collect-ProjectSqlReceipt([string]$RemoteRelative,[string]$ArtifactName,[string]$ExpectedSha) {
     Require-ProjectSql ($RemoteRelative -cmatch '^project-mysql[-a-z/]+\.json$' -and $ExpectedSha -cmatch '^[a-f0-9]{64}$') 'A fixed public metadata receipt is required.'
@@ -137,6 +188,7 @@ function Collect-ProjectSqlReceipt([string]$RemoteRelative,[string]$ArtifactName
         (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLowerInvariant() -ceq $ExpectedSha) 'The original public project SQL receipt changed in collection.'
 }
 function Collect-ProjectSqlCleanup {
+    $null=Observe-ProjectSqlRecovery
     $value=Invoke-ProjectSqlRemote $recovery 'cleanup' "--fixture-settings '$FixtureSettings'"
     Assert-ProjectSqlContext $value
     Require-ProjectSql ($value.status -cin @('NOT_CREATED','STOPPED') -and $value.originalsChanged -eq $false -and

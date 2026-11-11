@@ -7,6 +7,7 @@ from email.message import Message
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import re
 from types import SimpleNamespace
@@ -275,3 +276,154 @@ def test_fixture_account_count_is_bounded_before_database_access(count):
     with pytest.raises(RuntimeError, match='functional candidate'):
         scenarios.seed_owned_users(database, SCHEMA, TOKEN, candidate_load_user_count=count)
     assert database.writes == []
+
+
+@pytest.fixture
+def original_runtime(tmp_path):
+    attempt = tmp_path / 'original'; attempt.mkdir()
+    context = dict(schemaVersion=1, kind='doorhandle-compact-runtime-acceptance', release='ci-224-' + 'a' * 12,
+        commit='a' * 40, sourceSha256='b' * 64, identity={'instanceId': 'i-runtime', 'machineId': 'c' * 32},
+        acceptanceProfileSha256='d' * 64, candidateBuildSha256='e' * 64)
+    progress = []
+    def write(path, value):
+        path.write_text(json.dumps(value), encoding='utf8'); path.chmod(0o600)
+    def read(path): return json.loads(path.read_text()), runtime.sha_file(path)
+    instance = SimpleNamespace(attempt=attempt, runtime=tmp_path / 'deployed', args=SimpleNamespace(tag=context['release']),
+        build={'settingsSha256': 'f' * 64}, public_file=attempt / 'runtime-acceptance.json', context=lambda: context,
+        common=SimpleNamespace(write_json=write), guard=SimpleNamespace(read_private=read),
+        transport=SimpleNamespace(supervisor_start=lambda _: '1234', progress=progress.append))
+    def complete(initial, status='PASS'):
+        if status == 'PASS':
+            write(instance.public_file, {**context, 'status': 'PASS'})
+            result = dict(status='PASS', release=instance.args.tag, runtimeScenarios=9, ownedCleanup='STOPPED',
+                          runtimeReceiptSha256=runtime.sha_file(instance.public_file))
+        else: result = dict(status='FAILED_OR_UNKNOWN', release=instance.args.tag, errorType='KeyboardInterrupt')
+        runtime.finish_runtime_execution(instance, initial, status, result)
+    return SimpleNamespace(instance=instance, write=write, complete=complete, progress=progress)
+
+
+def test_runtime_supervision_records_current_identity_and_never_replays_an_existing_operation(original_runtime):
+    ctx = original_runtime; value = runtime.begin_runtime_execution(ctx.instance)
+    assert value['supervisor']['pid'] == os.getpid() and value['supervisor']['startTicks'] == '1234'
+    assert value['operation'] == 'runtime-acceptance' and value['status'] == 'RUNNING'
+    with pytest.raises(ValueError, match='do not replay'): runtime.begin_runtime_execution(ctx.instance)
+
+
+@pytest.mark.parametrize('status', ['PASS', 'FAILED'])
+def test_runtime_reconnection_reads_original_result_without_starting_or_cleaning_anything(original_runtime, monkeypatch, status):
+    ctx = original_runtime; initial = runtime.begin_runtime_execution(ctx.instance); ctx.complete(initial, status)
+    before = {str(p): p.read_bytes() for p in ctx.instance.attempt.iterdir()}
+    monkeypatch.setattr(runtime.Runtime, 'run', lambda *_: pytest.fail('observation restarted runtime'))
+    monkeypatch.setattr(runtime.Runtime, 'cleanup', lambda *_: pytest.fail('observation cancelled runtime'))
+    result = runtime.observe_runtime_execution(ctx.instance)
+    assert result['status'] == ('PASS' if status == 'PASS' else 'FAILED_OR_UNKNOWN') and result['terminal'] is True
+    assert result['executionId'] == initial['executionId']
+    assert before == {str(p): p.read_bytes() for p in ctx.instance.attempt.iterdir()}
+
+
+@pytest.mark.parametrize('field', ['commit', 'sourceSha256', 'identity', 'candidateBuildSha256', 'runtime',
+    'settingsSha256', 'operation', 'executionId', 'boot'])
+def test_runtime_observation_refuses_another_execution_identity(original_runtime, field):
+    ctx = original_runtime; value = runtime.begin_runtime_execution(ctx.instance)
+    if field == 'boot': value['supervisor']['bootId'] = 'other-boot'
+    else: value[field] = 'other-execution'
+    ctx.write(runtime.runtime_execution_file(ctx.instance), value)
+    with pytest.raises(ValueError): runtime.observe_runtime_execution(ctx.instance)
+    assert not ctx.instance.public_file.exists()
+
+
+def test_runtime_observation_refuses_a_reused_supervisor_pid_without_cleanup(original_runtime):
+    ctx = original_runtime; runtime.begin_runtime_execution(ctx.instance)
+    ctx.instance.transport.supervisor_start = lambda _: 'other-start'
+    with pytest.raises(ValueError, match='without terminal evidence'): runtime.observe_runtime_execution(ctx.instance)
+
+
+def test_runtime_dead_supervisor_without_terminal_receipt_stays_unknown(original_runtime):
+    ctx = original_runtime; runtime.begin_runtime_execution(ctx.instance)
+    def absent(_): raise FileNotFoundError('original process exited')
+    ctx.instance.transport.supervisor_start = absent
+    with pytest.raises(ValueError, match='retain owned resources'): runtime.observe_runtime_execution(ctx.instance)
+    assert runtime.runtime_execution(ctx.instance)['status'] == 'RUNNING'
+
+
+def test_runtime_observer_follows_the_same_live_operation_until_its_terminal_receipt(original_runtime, monkeypatch):
+    ctx = original_runtime; initial = runtime.begin_runtime_execution(ctx.instance); sleeps = []
+    def finish(seconds): sleeps.append(seconds); ctx.complete(initial)
+    monkeypatch.setattr(runtime.time, 'sleep', finish)
+    result = runtime.observe_runtime_execution(ctx.instance)
+    assert sleeps == [5] and result['executionId'] == initial['executionId'] and result['status'] == 'PASS'
+    assert ctx.progress[0]['status'] == 'RUNNING' and ctx.progress[0]['terminal'] is False
+
+
+def test_runtime_observer_rechecks_terminal_publication_when_supervisor_exits(original_runtime):
+    ctx = original_runtime; initial = runtime.begin_runtime_execution(ctx.instance)
+    def finish(_):
+        ctx.complete(initial, 'FAILED')
+        raise FileNotFoundError('original process just exited')
+    ctx.instance.transport.supervisor_start = finish
+    assert runtime.observe_runtime_execution(ctx.instance)['status'] == 'FAILED_OR_UNKNOWN'
+
+
+@pytest.mark.parametrize('damage', ['missing', 'changed', 'different-source'])
+def test_runtime_observation_cannot_accept_pass_without_original_complete_public_proof(original_runtime, damage):
+    ctx = original_runtime; initial = runtime.begin_runtime_execution(ctx.instance); ctx.complete(initial)
+    if damage == 'missing': ctx.instance.public_file.unlink()
+    elif damage == 'changed': ctx.instance.public_file.write_bytes(b'changed original')
+    else:
+        proof = {**ctx.instance.context(), 'status': 'PASS', 'commit': '9' * 40}; ctx.write(ctx.instance.public_file, proof)
+        path = runtime.runtime_execution_file(ctx.instance); value = runtime.runtime_execution(ctx.instance)
+        value['result']['runtimeReceiptSha256'] = runtime.sha_file(ctx.instance.public_file); ctx.write(path, value)
+    with pytest.raises((ValueError, FileNotFoundError)): runtime.observe_runtime_execution(ctx.instance)
+
+
+def test_runtime_observation_timeout_neither_cancels_nor_forges_a_terminal_state(original_runtime, monkeypatch):
+    ctx = original_runtime; value = runtime.begin_runtime_execution(ctx.instance)
+    value['startedAtUnix'] = runtime.time.time() - (240 * 60 + 121)
+    ctx.write(runtime.runtime_execution_file(ctx.instance), value)
+    monkeypatch.setattr(runtime.time, 'monotonic', lambda: 0)
+    with pytest.raises(ValueError, match='timed out'): runtime.observe_runtime_execution(ctx.instance)
+    assert runtime.runtime_execution(ctx.instance)['status'] == 'RUNNING'
+
+
+def runtime_arguments(phase):
+    return ['runtime', phase, '--root', '/home/ci', '--runtime', '/home/runtime', '--tag', 'ci-224-' + 'a' * 12,
+        '--commit', 'a' * 40, '--source-sha256', 'b' * 64, '--instance-id', 'i-runtime',
+        '--machine-id', 'c' * 32, '--settings', '/home/private/settings.json']
+
+
+def test_runtime_observation_error_cannot_fall_through_main_destructive_failure_cleanup(monkeypatch, capsys):
+    def forbidden(*_): pytest.fail('read-only observation attempted cleanup/write')
+    instance = SimpleNamespace(owner={'phase': 'RUNNING'}, cleanup=forbidden, save=forbidden, failure=forbidden)
+    monkeypatch.setattr(runtime, 'Runtime', lambda _: instance)
+    monkeypatch.setattr(runtime, 'observe_runtime_execution', lambda _: (_ for _ in ()).throw(ValueError('unresolved original')))
+    monkeypatch.setattr(runtime.sys, 'argv', runtime_arguments('observe'))
+    monkeypatch.setattr(runtime.signal, 'signal', lambda *_: None)
+    assert runtime.main() == 2 and json.loads(capsys.readouterr().out)['status'] == 'UNKNOWN'
+
+
+def test_explicit_runtime_interrupt_keeps_owned_cleanup_before_failed_terminal_publication(monkeypatch):
+    events = []
+    def interrupted(): events.append('run'); raise KeyboardInterrupt()
+    instance = SimpleNamespace(owner={'phase': 'RUNNING'}, run=interrupted, save=lambda _: events.append('save'),
+        cleanup=lambda: events.append('cleanup'), failure=lambda *_: events.append('failure') or 'a' * 64,
+        transport=SimpleNamespace(progress=lambda _: None))
+    monkeypatch.setattr(runtime, 'Runtime', lambda _: instance)
+    monkeypatch.setattr(runtime, 'begin_runtime_execution', lambda _: {'executionId': 'a' * 32})
+    monkeypatch.setattr(runtime, 'finish_runtime_execution', lambda *a: events.append(a[2]))
+    monkeypatch.setattr(runtime.sys, 'argv', runtime_arguments('run'))
+    monkeypatch.setattr(runtime.signal, 'signal', lambda *_: None)
+    assert runtime.main() == 2 and events == ['run', 'save', 'cleanup', 'failure', 'FAILED']
+
+
+def test_runtime_post_guards_cover_the_database_and_tool_dependencies_not_just_runtime_services():
+    source = (ROOT / 'script/jenkins/pipeline.ps1').read_text(encoding='utf8')
+    tools = source.split("if ($Action -in @('PrepareTools', 'CleanupTools'))", 1)[1].split("if ($Action -in @('PrepareFixtures'", 1)[0]
+    fixtures = source.split("if ($Action -in @('PrepareFixtures', 'CleanupFixtures'))", 1)[1].split("if ($Action -eq 'VerifyEcs')", 1)[0]
+    cleanup = source.split("if ($Action -eq 'CleanupRuntime')", 1)[1].split('$verified = Get-Content', 1)[0]
+    assert tools.index('$null=Wait-ExistingRuntime') < tools.index("'$executor' cleanup")
+    assert fixtures.index('$null=Wait-ExistingRuntime') < fixtures.index("'$helper' cleanup")
+    assert cleanup.index('$null=Wait-ExistingRuntime') < cleanup.index('$cleanupArguments')
+    run = source.split('$fixtureResources = @{}', 1)[1].split('$runtimeResult =', 1)[0]
+    assert '$runtimeExit -eq 255' in run and '$observed=Wait-ExistingRuntime' in run
+    observer = source.split('function Wait-ExistingRuntime {', 1)[1].split('function Assert-ControlPreflight', 1)[0]
+    assert "' observe $binding" in observer and "' run $binding" not in observer

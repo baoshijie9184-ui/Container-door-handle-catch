@@ -885,7 +885,7 @@ def test_recent_controller_is_an_independent_three_row_canonical_only_batch():
         (198, '7af0903ee84011dc51f4abac4f4a4d9679db7322', '054a2b4bdfda1c97a006c2b78d0877e06260b4cef6e0df4177f58eef8ddf8ffe'),
         (201, '803baf401b5f9566283a59cb6a885a794b9d7d85', 'baaddc7acf7eb643f68e2e0c104decb35a90a394564dc94f601914e6710e731b')]
     assert all(number != 190 for number, _commit, _sha in recent)
-    assert re.search(r"ValidateSet\('Historical','Recent','RetiredCopies','ClosedRuntime'\)\]\[string\]\$CanonicalBatch = 'Historical'", controller)
+    assert re.search(r"ValidateSet\('Historical','Recent','RetiredCopies','ClosedRuntime','FailedNative'\)\]\[string\]\$CanonicalBatch = 'Historical'", controller)
     assert "$CanonicalBatch -cne 'Recent' -or $Mode -ceq 'Maintenance'" in controller
     assert "{'capture-canonical-request'}else{'capture-request'}" in controller
     branch = controller.split("if($CanonicalBatch -ceq 'Recent') {", 1)[1].split('\n$builderPlanned=', 1)[0]
@@ -894,7 +894,7 @@ def test_recent_controller_is_an_independent_three_row_canonical_only_batch():
     assert all(phase not in branch for phase in ('plan-builders', 'apply-builders', 'plan-public-layers',
         'apply-public-layers', 'plan-generated-image-archives', 'apply-generated-image-archives'))
     pipeline = (root / 'script/jenkins/pipeline.ps1').read_text(encoding='utf8')
-    assert re.search(r"retire-failed-native-jar-duplicates\.ps1 -Mode Maintenance -CanonicalBatch ClosedRuntime ", pipeline)
+    assert re.search(r"retire-failed-native-jar-duplicates\.ps1 -Mode Maintenance -CanonicalBatch FailedNative ", pipeline)
     assert not re.search(r"retire-failed-native-jar-duplicates\.ps1 -Mode Maintenance -CanonicalBatch Recent ", pipeline)
 
 
@@ -1370,7 +1370,7 @@ def test_retired_copy_controller_archive_and_authority_contract_are_fully_wired(
     assert "candidateTargetCount -eq 3" in selected and "$copyResult.$flag -is [bool]" in selected
     assert "retiredCandidatePlan" in controller and "retiredCandidateReceipt" in controller and "retiredCandidateJournal" in controller
     pipeline = (root / 'script/jenkins/pipeline.ps1').read_text(encoding='utf8')
-    assert '-Mode Maintenance -CanonicalBatch ClosedRuntime ' in pipeline
+    assert '-Mode Maintenance -CanonicalBatch FailedNative ' in pipeline
     jenkinsfile = (root / 'Jenkinsfile.ecs-monolith').read_text(encoding='utf8')
     assert 'artifacts/native-retired-candidate-copy-*.json' in jenkinsfile
     assert 'artifacts/native-retired-candidate-copy-*.jsonl' in jenkinsfile
@@ -1831,3 +1831,172 @@ def test_207_legacy_compatibility_cannot_admit_unknown_originals_or_database_obj
 def test_closed_builder_cli_never_infers_the_explicit_batch_from_phase_name(phase):
     with pytest.raises(retirer.RetirementError,match='CLOSED_RUNTIME_EXPLICIT_POLICY'):
         retirer.closed_runtime_cli(SimpleNamespace(jar_batch=None,mode='Maintenance',phase=phase))
+
+@pytest.fixture
+def failed_native_case(canonical_case, monkeypatch):
+    state = canonical_case
+    monkeypatch.setattr(retirer, 'FAILED_NATIVE_FIRST_BUILD', 1)
+    monkeypatch.delitem(retirer.APPROVED_OLD, state.copies.tag)
+    monkeypatch.delitem(retirer.APPROVED_CANONICAL_SOURCES, state.copies.tag)
+    monkeypatch.setattr(retirer, 'FAILED_NATIVE_PUBLICATION_RECIPES',
+        frozenset({tuple(sha(raw) for raw in state.publication.values())}))
+    recipe = b"def prepare(self):\n jar = canonical(self.inbox / 'application.jar')\n uploaded = self.work / 'candidate-app.jar'\n shutil.copyfile(jar, uploaded)\ndef start_mysql(self, image):\n return image\n"
+    archive = source_archive(state.copies, recipe=recipe, publication=state.publication)
+    state.bundle.context['sourceSha256'] = sha(archive.read_bytes())
+    state.request['candidates'][0]['sourceSha256'] = state.bundle.context['sourceSha256']
+    for value in state.bundle.values.values(): value.update(state.bundle.context)
+    for role, raw in documents(state.bundle).items():
+        path = state.copies.root / state.paths[role]; path.write_bytes(raw)
+        state.request['candidates'][0]['controls'][role].update(bytes=len(raw), sha256=sha(raw))
+    return state
+
+
+@pytest.mark.parametrize('phase', ['capture-canonical-request', 'plan-recent-fixtures', 'apply-recent-fixtures',
+                                  'plan', 'apply', 'plan-canonical', 'apply-canonical', 'inspect'])
+def test_failed_native_cli_is_one_reusable_maintenance_selection_not_a_numbered_batch(phase):
+    args = SimpleNamespace(jar_batch=retirer.FAILED_NATIVE_BATCH, mode='Maintenance', phase=phase)
+    assert retirer.failed_native_cli(args) is True and retirer.closed_runtime_cli(args) is False
+
+
+@pytest.mark.parametrize('phase', ['capture-request', 'plan-builders', 'plan-closed-builders',
+                                  'apply-public-layers', 'apply-generated-image-archives', 'apply-python-build-cache'])
+def test_failed_native_selection_cannot_authorize_unrelated_old_resource_permissions(phase):
+    with pytest.raises(retirer.RetirementError, match='MAINTENANCE_ONLY'):
+        retirer.failed_native_cli(SimpleNamespace(jar_batch=retirer.FAILED_NATIVE_BATCH, mode='Maintenance', phase=phase))
+
+
+def test_failed_native_selection_never_runs_as_a_verified_source_cleanup():
+    with pytest.raises(retirer.RetirementError, match='MAINTENANCE_ONLY'):
+        retirer.failed_native_cli(SimpleNamespace(jar_batch=retirer.FAILED_NATIVE_BATCH, mode='Verified', phase='plan'))
+
+
+@pytest.mark.parametrize('epoch_build', [1, 204, 207, 220])
+def test_failed_native_selection_never_reconsumes_retired_historical_epochs(canonical_case, epoch_build):
+    state = canonical_case; request = copy.deepcopy(state.request)
+    current = {**state.current, 'release': 'ci-300-' + 'f' * 12}
+    request.update(current=current, protectedReleases=[current['release']])
+    request['candidates'][0]['release'] = 'ci-' + str(epoch_build) + '-' + 'a' * 12
+    raw = encoded(request)
+    with pytest.raises(retirer.RetirementError, match='EPOCH_REQUIRED'):
+        retirer.failed_native_request(raw, sha(raw), current, state.bundle.identity)
+
+
+@pytest.mark.parametrize('canonical_first', [False, True])
+def test_failed_native_policy_is_explicit_and_never_widens_default_historical_apis(failed_native_case, canonical_first):
+    state = failed_native_case; raw, options = canonical_options(state)
+    options['canonical_jar'] = canonical_first
+    with pytest.raises(retirer.RetirementError, match='ONLY_REVIEWED'):
+        retirer.approved_request(raw, sha(raw), state.current, state.bundle.identity, canonical_jar=canonical_first)
+    assert state.copies.target.exists() and state.copies.keeper.exists()
+
+
+@pytest.mark.parametrize('terminal', ['FAILURE', 'ABORTED'])
+def test_failed_native_retention_deletes_copy_then_canonical_with_real_original_admission(failed_native_case, terminal):
+    state = failed_native_case; path = state.copies.root / state.paths['buildXml']
+    raw_terminal = flow_xml(state.bundle.context, result=terminal); path.write_bytes(raw_terminal)
+    state.request['candidates'][0]['controls']['buildXml'].update(bytes=len(raw_terminal), sha256=sha(raw_terminal))
+    raw, options = canonical_options(state); options.update(canonical_jar=False, failed_native=True)
+    before_source = (state.copies.keeper.parent / 'source.tar.gz').read_bytes()
+    prepared = retirer.plan(state.copies.root, raw, **options)
+    assert prepared['failedNativePolicy'] == retirer.FAILED_NATIVE_BATCH and prepared['skipped'] == []
+    result = retirer.apply(state.copies.root, raw, prepared, plan_sha256=sha(retirer.canonical(prepared)), **options)
+    assert result['status'] == 'REMOVED' and result['inboxKeepersPreserved'] is True
+    assert not state.copies.target.exists() and state.copies.keeper.read_bytes() == state.copies.payload
+    options['canonical_jar'] = True
+    prepared = retirer.plan(state.copies.root, raw, **options)
+    assert prepared['skipped'] == []
+    result = retirer.apply(state.copies.root, raw, prepared, plan_sha256=sha(retirer.canonical(prepared)), **options)
+    assert result['status'] == 'REMOVED' and result['binaryDisposition'] == 'RETIRED'
+    assert result['failedNativePolicy'] == retirer.FAILED_NATIVE_BATCH and not state.copies.keeper.exists()
+    assert (state.copies.keeper.parent / 'source.tar.gz').read_bytes() == before_source
+    assert result['sourceArchivesDataAndReportsHaveNoDeletionApi'] is True
+    assert result['testsRunByRetirement'] is False and result['binaryRebuildByteIdentityClaimed'] is False
+
+
+@pytest.mark.parametrize('role,field,value', [('fixtureOwner','phase','PREPARED'),
+    ('fixtureCleanup','status','FAILED_OR_UNKNOWN'),('fixtureCleanup','sourceDumpAndEvidenceRetained',False)])
+def test_failed_native_retention_requires_actual_final_cleanup_not_a_passing_post_claim(failed_native_case, role, field, value):
+    state = failed_native_case; path = state.copies.root / state.paths[role]
+    data = json.loads(path.read_bytes()); data[field] = value; raw_control = encoded(data); path.write_bytes(raw_control)
+    state.request['candidates'][0]['controls'][role].update(bytes=len(raw_control), sha256=sha(raw_control))
+    raw, options = canonical_options(state); options['failed_native'] = True
+    prepared = retirer.plan(state.copies.root, raw, **options)
+    assert prepared['candidates'] == [] and len(prepared['skipped']) == 1
+    assert state.copies.target.exists() and state.copies.keeper.exists()
+
+
+def test_failed_native_incomplete_plan_cannot_turn_rejected_ownership_into_success(failed_native_case):
+    state = failed_native_case; raw, options = canonical_options(state); options['failed_native'] = True
+    prepared = retirer.plan(state.copies.root, raw, **options)
+    prepared['candidates'] = []
+    with pytest.raises(retirer.RetirementError, match='COMPLETE_FAILED_NATIVE_PLAN'):
+        retirer.apply(state.copies.root, raw, prepared, plan_sha256=sha(retirer.canonical(prepared)), **options)
+    assert state.copies.target.exists() and state.copies.keeper.exists()
+
+
+def test_failed_native_already_absent_copy_is_observed_not_counted_as_a_new_deletion(failed_native_case):
+    state = failed_native_case; state.copies.target.unlink()
+    raw, options = canonical_options(state); options.update(canonical_jar=False, failed_native=True)
+    prepared = retirer.plan(state.copies.root, raw, **options)
+    assert prepared['candidates'] == [] and prepared['candidateAllocatedBytes'] == 0
+    assert prepared['skipped'] == [{'release':state.copies.tag,'reason':'FAILED_NATIVE_COPY_NOT_PRESENT'}]
+    result = retirer.apply(state.copies.root, raw, prepared, plan_sha256=sha(retirer.canonical(prepared)), **options)
+    assert result['status'] == 'NO_ACTION' and result['deleted'] == [] and state.copies.keeper.exists()
+
+
+@pytest.mark.parametrize('source', ['Jenkinsfile.ecs-monolith','script/jenkins/pipeline.ps1'])
+def test_failed_native_retention_only_accepts_reviewed_publication_behavior(failed_native_case, source):
+    state = failed_native_case; publication = dict(state.publication); publication[source] += b'unknown side effect\n'
+    archive = source_archive(state.copies, publication=publication)
+    with pytest.raises(retirer.RetirementError, match='UNPUBLISHED_SOURCE'):
+        retirer.source_proof(state.copies.root,state.copies.tag,state.bundle.context['commit'],sha(archive.read_bytes()),
+                             canonical_jar=True,failed_native=True)
+
+
+def test_failed_native_controller_uses_original_jenkins_terminal_and_honest_guarded_recovery_custody():
+    script = (MODULE.parent / 'retire-failed-native-jar-duplicates.ps1').read_text()
+    reader = script.split("$reader=@'",1)[1].split("\n'@",1)[0]; ast.parse(reader)
+    assert "221<=int(p.name)<current_number" in reader and "('FAILURE','ABORTED')" in reader
+    assert "'PRODUCTION_RELEASE_ENABLED':'false'" in reader and "'ACTION':'verify-runtime'" in reader
+    assert "ACTUAL_GUARDED_RECOVERY_PUBLIC_RECEIPT" in reader
+    assert "GUARDED_RECOVERY_PUBLIC_RECEIPT_DIFFERS" in reader and "RETAINED_JENKINS_BINARY_DIFFERS" in reader
+    branch = script.split("if($CanonicalBatch -ceq 'FailedNative') {",1)[1].split("if($CanonicalBatch -ceq 'ClosedRuntime') {",1)[0]
+    assert "@('fixtures','plan-recent-fixtures','apply-recent-fixtures')" in branch
+    assert "@('copies','plan','apply')" in branch and "@('canonical','plan-canonical','apply-canonical')" in branch
+    assert "plan-closed-builders" not in branch and "plan-public-layers" not in branch
+    assert "finally {Copy-NativeJarEvidence (Invoke-NativeJarPhase 'inspect')}" in branch
+    assert "$failedPlans[$step[0]].plan.sha256" in branch
+
+@pytest.mark.parametrize('guarded', [False, True])
+def test_actual_controller_reader_admits_failed_native_argument_and_preserves_guarded_receipt_origin(tmp_path, monkeypatch, capsys, guarded):
+    source = (MODULE.parent / 'retire-failed-native-jar-duplicates.ps1').read_text()
+    reader = source.split("$reader=@'\n",1)[1].split("\n'@",1)[0]
+    jhome=tmp_path/'jhome'; builds=jhome/'jobs/doorhandle-java/builds'; builds.mkdir(parents=True)
+    retained=tmp_path/'retained';retained.mkdir()
+    commit='f'*40;current='ci-300-'+commit[:12];archive=tmp_path/'source.tar.gz'
+    with tarfile.open(archive,'w:gz',format=tarfile.PAX_FORMAT,pax_headers={'comment':commit}) as out:
+        for name in ('script/jenkins/retire-failed-native-jar-duplicates.py','script/jenkins/cleanup-ecs-builds.py',
+                     'script/jenkins/verify-remote.py','script/docker/compact-build-resources.py'):
+            item=tarfile.TarInfo(name);item.size=1;out.addfile(item,io.BytesIO(b'x'))
+    if guarded:
+        context={'release':'ci-224-'+'a'*12,'commit':'a'*40,'sourceSha256':'b'*64}
+        build=builds/'224';artifacts=build/'archive/artifacts';artifacts.mkdir(parents=True)
+        (build/'build.xml').write_bytes(flow_xml(context))
+        jar=b'retained original Jenkins application';(artifacts/'application.jar').write_bytes(jar)
+        (artifacts/'release.json').write_bytes(encoded({**context,'applicationJarSha256':sha(jar)}))
+        (artifacts/'local-build.json').write_bytes(encoded({'kind':'synthetic-local-build'}))
+        public={'status':'STOPPED','commit':context['commit'],'release':context['release'],
+                'cleanupReceipt':CI_ROOT+'/verification/'+context['release']+'/checkout/work/compact-fixtures/cleanup-receipt.json',
+                'cleanupReceiptSha256':'c'*64}
+        (retained/'ci-224-recovery-cleanup-unit.json').write_bytes(encoded(public))
+    monkeypatch.setattr(sys,'argv',['reader',str(archive),commit,str(retained),str(jhome),CI_ROOT,current,'FailedNative'])
+    exec(compile(reader,'actual-controller-reader','exec'),{})
+    result=json.loads(capsys.readouterr().out)
+    assert result['skipped']==[] and len(result['rows'])==(1 if guarded else 0)
+    if guarded:
+        row=result['rows'][0]
+        assert row['release']==context['release'] and row['commit']==context['commit']
+        assert result['custody'][0]['controls']['fixtureCleanupPublic']=='ACTUAL_GUARDED_RECOVERY_PUBLIC_RECEIPT'
+        assert Path(row['files']['fixtureCleanupPublic']['source']).parent==retained
+        assert not (artifacts/'fixture-cleanup.json').exists()
+        assert (artifacts/'application.jar').read_bytes()==jar

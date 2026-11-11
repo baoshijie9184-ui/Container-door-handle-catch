@@ -82,7 +82,47 @@ $ddlPolicyGuard = "test `"`$(sha256sum '$ddlPolicy' | cut -d ' ' -f 1)`" = '$($s
 $helperGuard = "test `"`$(sha256sum '$helper' | cut -d ' ' -f 1)`" = '$($sourceHashes.'preserve-local-mysql.py')' && "
 $recoveryGuard = $ddlPolicyGuard + "test `"`$(sha256sum '$recovery' | cut -d ' ' -f 1)`" = '$($sourceHashes.'restore-local-mysql.py')' && "
 $context = "--root '$RemoteRoot' --tag '$Tag' --commit '$Commit' --source-sha256 '$SourceSha256' --instance-id '$instance' --machine-id '$machine'"
+$sqlRunRequest=Join-Path $workspace 'artifacts/local-mysql-run-request.json'
+function Test-SqlRunRequested {
+    if(-not (Test-Path -LiteralPath $sqlRunRequest)){return $false}
+    Assert-UnlinkedSqlInput $sqlRunRequest
+    Require-SqlCustody ((Get-Item -LiteralPath $sqlRunRequest).Length -le 4096) 'SQL run request exceeds its fixed metadata bound.'
+    $request=Get-Content -LiteralPath $sqlRunRequest -Raw -Encoding utf8 | ConvertFrom-Json
+    Require-SqlCustody ($request.kind -ceq 'doorhandle-local-mysql-run-request' -and $request.release -ceq $Tag -and
+        $request.commit -ceq $Commit -and $request.sourceSha256 -ceq $SourceSha256 -and
+        $request.verificationReceiptSha256 -ceq $verificationSha -and $request.identity.instanceId -ceq $instance -and
+        $request.identity.machineId -ceq $machine -and $request.runAttempted -is [bool] -and $request.runAttempted) 'SQL run request belongs to another fixed build.'
+    return $true
+}
+function Observe-SqlRecovery {
+    $requested=Test-SqlRunRequested
+    $requestFlag=if($requested){'--run-requested'}else{''}
+    for ($readback=1; $readback -le 3; $readback++) {
+        $observerArguments=$SshOptions + @('-p',$PortText,$Destination,"${recoveryGuard}python3 -I -B '$recovery' observe $context $requestFlag")
+        $lines=@(& $ssh @observerArguments)
+        $exit=$LASTEXITCODE
+        $lines | Add-Content -LiteralPath (Join-Path $workspace 'artifacts/local-mysql-observe.stdout.log') -Encoding utf8
+        if ($exit -eq 255) { if($readback -lt 3){Start-Sleep -Seconds 2}; continue }
+        Require-SqlCustody ($exit -eq 0 -and $lines.Count -gt 0) 'The original SQL recovery has no readable terminal state; retain its resources.'
+        $value=$lines[-1] | ConvertFrom-Json
+        Require-SqlCustody ($value.release -ceq $Tag -and $value.commit -ceq $Commit -and $value.sourceSha256 -ceq $SourceSha256 -and
+            $value.identity.instanceId -ceq $instance -and $value.identity.machineId -ceq $machine -and
+            $value.verificationReceiptSha256 -ceq $verificationSha) 'The observed SQL state belongs to another operation.'
+        if($requested -and $value.status -ceq 'PENDING' -and $value.terminal -is [bool] -and -not $value.terminal -and $null -eq $value.executionId) {
+            if($readback -lt 3){Start-Sleep -Seconds 2}; continue
+        }
+        Require-SqlCustody ($value.terminal -eq $true -and
+            $value.status -cin @('PASS','FAILED','NOT_STARTED') -and
+            (-not $requested -or $value.status -cne 'NOT_STARTED') -and
+            (($value.status -ceq 'NOT_STARTED' -and $null -eq $value.executionId) -or
+             ($value.status -cin @('PASS','FAILED') -and $value.executionId -cmatch '^[a-f0-9]{32}$'))) 'The observed SQL terminal belongs to another operation.'
+        $value | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $workspace 'artifacts/local-mysql-observation.json') -Encoding utf8
+        return $value
+    }
+    throw 'Cannot reconnect to the original SQL recovery; do not restart it or cancel unknown work.'
+}
 function Collect-SqlCleanup {
+    $null=Observe-SqlRecovery
     $text = Invoke-SqlCustody $ssh ($SshOptions + @('-p',$PortText,$Destination,"${recoveryGuard}python3 -I -B '$recovery' cleanup $context"))
     $receipt = ($text | Select-Object -Last 1) | ConvertFrom-Json
     Require-SqlCustody ($receipt.status -cin @('NOT_CREATED','STOPPED') -and $receipt.originalsChanged -eq $false -and
@@ -171,10 +211,18 @@ Require-SqlCustody (-not (Test-Path -LiteralPath $byteArtifact) -and $bytes.publ
 Invoke-SqlCustody $scp ($SshOptions + @('-P',$PortText,"${Destination}:$RemoteRoot/verification/$Tag/checkout/work/local-mysql-export-public.json",$byteArtifact)) | Out-Null
 Require-SqlCustody ((Get-Item -LiteralPath $byteArtifact).Length -le 32768 -and (Get-FileHash -LiteralPath $byteArtifact -Algorithm SHA256).Hash.ToLowerInvariant() -ceq $bytes.publicReceiptSha256) 'The actual SQL byte custody receipt changed in collection.'
 $failed = $null; $result = $null
+Require-SqlCustody (-not (Test-Path -LiteralPath $sqlRunRequest)) 'Use a fresh SQL run request; an issued original run must only be observed.'
+@{kind='doorhandle-local-mysql-run-request';release=$Tag;commit=$Commit;sourceSha256=$SourceSha256;
+    verificationReceiptSha256=$verificationSha;identity=$accepted.identity;runAttempted=$true} |
+    ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $sqlRunRequest -Encoding utf8
 try {
     $text = Invoke-SqlCustody $ssh ($SshOptions + @('-p',$PortText,$Destination,"${recoveryGuard}python3 -I -B '$recovery' run $context --fixture-settings '$FixtureSettings'"))
     $result = ($text | Select-Object -Last 1) | ConvertFrom-Json
 } catch { $failed = $_ }
+if ($failed -and $LASTEXITCODE -eq 255) {
+    $observed=Observe-SqlRecovery
+    if ($observed.status -ceq 'PASS') { $result=$observed.result; $failed=$null }
+}
 $cleanup = $null; $cleanupFailure = $null
 try { $cleanup = Collect-SqlCleanup } catch { $cleanupFailure = $_ }
 if ($failed) { throw $failed }

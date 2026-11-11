@@ -94,6 +94,18 @@ RECENT_CANONICAL_ONLY = {
 }
 # Independent closed batch: no builder/cache permission and no #206 binary.
 CLOSED_RUNTIME_BATCH = 'failed-204-207'
+FAILED_NATIVE_BATCH = 'failed-native-retention-v1'
+FAILED_NATIVE_FIRST_BUILD = 221
+# Review publication behavior once per immutable CI recipe, not per failed build.
+# The default historical APIs below retain their original closed target lists.
+FAILED_NATIVE_PUBLICATION_RECIPES = frozenset({
+    ('97690cb956375cb1e98f1f1f98a7b3a3ec0e8d73d99a8ee0f28b0f5634fde180',
+     '0f07c3907fe103ebc0eb4d5e4512797abf91ff50631a2b6bff6a5f8238968e2e'),
+    ('97690cb956375cb1e98f1f1f98a7b3a3ec0e8d73d99a8ee0f28b0f5634fde180',
+     '83bc9554f928e15143e3b5fb87d52b5e5ea825b652766ead95a7262268dee05e'),
+    ('97690cb956375cb1e98f1f1f98a7b3a3ec0e8d73d99a8ee0f28b0f5634fde180',
+     'f51f972cdd790fd68d8de549270d7e8088e8492206d9a097d0ba0de5792eecf4'),
+})
 CLOSED_RUNTIME_JARS = {
     'ci-204-24f8eb4b02bf': {
         'commit': '24f8eb4b02bf290c6dd4e186eb78c5f3c80f3b88',
@@ -548,7 +560,7 @@ def remove_duplicate(root, descriptor, quarantine=None, *, quiescence=None):
                 'quarantinePath':quarantine['path'],'capturedInodeVerified':True}
 
 
-def source_proof(root, tag, commit, source_sha, *, builder_helpers=False, canonical_jar=False):
+def source_proof(root, tag, commit, source_sha, *, builder_helpers=False, canonical_jar=False, failed_native=False):
     """Read and authenticate the retained archive; never extract or run it."""
     path = Path(root) / 'inbox' / tag / 'source.tar.gz'
     need(path.exists() or path.is_symlink(), 'OLD_SOURCE_ARCHIVE_MISSING')
@@ -605,10 +617,17 @@ def source_proof(root, tag, commit, source_sha, *, builder_helpers=False, canoni
             need(set(builder_shas) == {Path(name).name for name in builder_names}, 'ORIGINAL_BUILDER_HELPER_CLOSURE_MISSING')
             proof['builderHelperSha256'] = builder_shas
         if canonical_jar:
-            need(canonical_commit(tag) == commit and set(publication_shas) == set(publication_names)
-                 and tuple(publication_shas[name] for name in publication_names) == APPROVED_CANONICAL_SOURCES.get(tag),
+            pair = tuple(publication_shas.get(name) for name in publication_names)
+            approved = (pair in FAILED_NATIVE_PUBLICATION_RECIPES if failed_native else
+                        canonical_commit(tag) == commit and pair == APPROVED_CANONICAL_SOURCES.get(tag))
+            need(set(publication_shas) == set(publication_names) and approved,
                  'CLOSED_REVIEWED_UNPUBLISHED_SOURCE_REQUIRED')
             proof['unpublishedPipelineSourceSha256'] = publication_shas
+        if failed_native:
+            producers = [node for node in ast.walk(syntax) if isinstance(node, ast.FunctionDef) and node.name == 'start_mysql']
+            need(len(producers) == 1, 'EXACT_FAILED_NATIVE_MYSQL_PRODUCER_REQUIRED')
+            proof['failedNativePolicy'] = FAILED_NATIVE_BATCH
+            proof['mysqlFixtureStartAstSha256'] = digest_bytes(ast.dump(producers[0], include_attributes=False).encode())
         return proof
 
 
@@ -655,7 +674,7 @@ def fixture_owner_projection(owner):
     return projected
 
 
-def admit_historical_controls(root, request, row, *, builder_helpers=False, canonical_jar=False):
+def admit_historical_controls(root, request, row, *, builder_helpers=False, canonical_jar=False, failed_native=False):
     context = {key: row[key] for key in ('release', 'commit', 'sourceSha256')}; tag = row['release']
     controls = row['controls']; names = expected_control_paths(request['current']['release'], tag)
     need(type(controls) is dict and REQUIRED_CONTROLS <= set(controls) <= REQUIRED_CONTROLS | OPTIONAL_CONTROLS,
@@ -675,7 +694,8 @@ def admit_historical_controls(root, request, row, *, builder_helpers=False, cano
     need(evidence['work'] == str(Path(root) / 'verification' / tag / 'checkout/work/compact-fixtures'), 'FIXTURE_OWNER_OUTSIDE_EXACT_OLD_ATTEMPT')
     if canonical_jar:
         original_source = source_proof(root, tag, context['commit'], context['sourceSha256'],
-                                       builder_helpers=builder_helpers, canonical_jar=True)
+                                       builder_helpers=builder_helpers, canonical_jar=True,
+                                       **({'failed_native': True} if failed_native else {}))
     else:
         original_source = (source_proof(root, tag, context['commit'], context['sourceSha256'], builder_helpers=True)
                            if builder_helpers else source_proof(root, tag, context['commit'], context['sourceSha256']))
@@ -829,8 +849,8 @@ def canonical_publication_refs(root, tag):
     return references
 
 
-def describe_canonical_jar(root, tag, jar_sha, jar_bytes):
-    need(canonical_commit(tag) is not None and type(jar_sha) is str and SHA.fullmatch(jar_sha)
+def describe_canonical_jar(root, tag, jar_sha, jar_bytes, *, failed_native=False):
+    need((failed_native or canonical_commit(tag) is not None) and type(jar_sha) is str and SHA.fullmatch(jar_sha)
          and type(jar_bytes) is int and 0 < jar_bytes <= MAX_JAR, 'EXACT_CLOSED_CANONICAL_JAR_REQUIRED')
     path = Path(root) / 'inbox' / tag / 'application.jar'
     with held_file(root, path, MAX_JAR) as (stream, signature):
@@ -839,10 +859,11 @@ def describe_canonical_jar(root, tag, jar_sha, jar_bytes):
                 'metadata': signature, 'sha256': jar_sha, 'bytes': jar_bytes, 'allocatedBytes': signature[9]}
 
 
-def admit_canonical_candidate(root, request, row, quiescence, *, closed_runtime=False):
-    need(canonical_commit(row['release']) == row['commit']
+def admit_canonical_candidate(root, request, row, quiescence, *, closed_runtime=False, failed_native=False):
+    need((failed_native or canonical_commit(row['release']) == row['commit'])
          and (closed_runtime is True or row['release'] not in CLOSED_RUNTIME_JARS), 'ONLY_REVIEWED_OLD_ATTEMPTS_ALLOWED')
-    admitted = admit_historical_controls(root, request, row, canonical_jar=True)
+    admitted = admit_historical_controls(root, request, row, canonical_jar=True,
+        **({'failed_native': True} if failed_native else {}))
     evidence = admitted['evidence']; tag = row['release']
     if tag in CLOSED_RUNTIME_JARS:
         registered = CLOSED_RUNTIME_JARS[tag]
@@ -851,18 +872,20 @@ def admit_canonical_candidate(root, request, row, quiescence, *, closed_runtime=
     references = canonical_publication_refs(root, tag)
     need(callable(quiescence) and quiescence(Path(root) / 'verification' / tag / 'checkout', tag, evidence['ownerToken']) is None,
          'ACTUAL_DUAL_ROOT_QUIESCENCE_REQUIRED')
-    target = describe_canonical_jar(root, tag, evidence['jarSha256'], evidence['jarBytes'])
+    target = describe_canonical_jar(root, tag, evidence['jarSha256'], evidence['jarBytes'],
+        **({'failed_native': True} if failed_native else {}))
     return {'context': admitted['context'], 'jenkinsResult': evidence['jenkinsResult'], 'controls': admitted['controls'],
             'sourceArchive': admitted['sourceArchive'], 'publicationReferences': references,
             'ownerToken': evidence['ownerToken'], 'target': target}
 
 
-def remove_canonical_jar(root, descriptor, quarantine, *, quiescence):
+def remove_canonical_jar(root, descriptor, quarantine, *, quiescence, failed_native=False):
     """A separate closed single-file API; the duplicate keeper API stays closed."""
     need(type(descriptor) is dict and set(descriptor) == {'kind', 'release', 'path', 'metadata', 'sha256', 'bytes', 'allocatedBytes'}
          and descriptor['kind'] == CANONICAL_JAR_KIND, 'EXACT_CANONICAL_SINGLE_FILE_DESCRIPTOR_REQUIRED')
     root = Path(root); tag = descriptor['release']; target = root / 'inbox' / tag / 'application.jar'
-    need(describe_canonical_jar(root, tag, descriptor['sha256'], descriptor['bytes']) == descriptor,
+    need(describe_canonical_jar(root, tag, descriptor['sha256'], descriptor['bytes'],
+         **({'failed_native': True} if failed_native else {})) == descriptor,
          'CANONICAL_JAR_CHANGED_AFTER_PLAN')
     need(type(quarantine) is dict and set(quarantine) == {'directory', 'path', 'directoryIdentity'}, 'EXACT_PRIVATE_QUARANTINE_REQUIRED')
     relative = Path(quarantine['directory']); parts = relative.parts
@@ -937,17 +960,47 @@ def controller_lock(root):
         yield
 
 
-def plan(root, raw_request, *, request_sha256, expected_current, identity, quiescence, canonical_jar=False, closed_runtime=False):
+def failed_native_request(raw, checksum, current, identity):
+    request = validate_request(raw, checksum, current, identity)
+    need(all(int(TAG.fullmatch(row['release'])[1]) >= FAILED_NATIVE_FIRST_BUILD
+             for row in request['candidates']), 'FAILED_NATIVE_RETENTION_EPOCH_REQUIRED')
+    return request
+
+
+def admit_failed_native_duplicate(root, request, row, quiescence):
+    admitted = admit_historical_controls(root, request, row, canonical_jar=True, failed_native=True)
+    tag = row['release']; evidence = admitted['evidence']
+    references = canonical_publication_refs(root, tag)
+    need(callable(quiescence) and quiescence(Path(root) / 'verification' / tag / 'checkout', tag,
+         evidence['ownerToken']) is None, 'ACTUAL_DUAL_ROOT_QUIESCENCE_REQUIRED')
+    copy = Path(evidence['work']) / 'candidate-app.jar'
+    need(copy.exists() or copy.is_symlink(), 'FAILED_NATIVE_COPY_NOT_PRESENT')
+    target = describe_duplicate(root, tag, evidence['jarSha256'], evidence['jarBytes'])
+    return {'context': admitted['context'], 'jenkinsResult': evidence['jenkinsResult'], 'controls': admitted['controls'],
+            'sourceArchive': admitted['sourceArchive'], 'publicationReferences': references,
+            'ownerToken': evidence['ownerToken'], 'target': target}
+
+
+def native_admitter(canonical_jar, closed_runtime, failed_native):
+    need(type(failed_native) is bool and not (closed_runtime and failed_native), 'EXACT_FAILED_NATIVE_POLICY_REQUIRED')
+    if failed_native:
+        return (lambda *args: admit_canonical_candidate(*args, failed_native=True)) if canonical_jar else admit_failed_native_duplicate
+    return (lambda *args: admit_canonical_candidate(*args, closed_runtime=True)) if canonical_jar and closed_runtime \
+        else admit_canonical_candidate if canonical_jar else admit_closed_runtime_duplicate if closed_runtime else admit_candidate
+
+
+def plan(root, raw_request, *, request_sha256, expected_current, identity, quiescence, canonical_jar=False, closed_runtime=False,
+         failed_native=False):
     """Discover admitted single files; the default remains keeper-preserving."""
     request = validate_request(raw_request, request_sha256, expected_current, identity)
     need(type(canonical_jar) is bool, 'EXACT_RETIREMENT_POLICY_REQUIRED')
     need(type(closed_runtime) is bool, 'EXACT_CLOSED_RUNTIME_POLICY_REQUIRED')
     if closed_runtime: request = closed_runtime_request(raw_request, request_sha256, expected_current, identity)
-    admit = (lambda *args: admit_canonical_candidate(*args, closed_runtime=True)) if canonical_jar and closed_runtime \
-        else admit_canonical_candidate if canonical_jar else admit_closed_runtime_duplicate if closed_runtime else admit_candidate
+    if failed_native: request = failed_native_request(raw_request, request_sha256, expected_current, identity)
+    admit = native_admitter(canonical_jar, closed_runtime, failed_native)
     kind = CANONICAL_KIND if canonical_jar else KIND
     accepted, skipped = [], []
-    with controller_lock(root), publication_lock(root) if canonical_jar or closed_runtime else nullcontext():
+    with controller_lock(root), publication_lock(root) if canonical_jar or closed_runtime or failed_native else nullcontext():
         previous = closed_runtime_previous(root, request, canonical_jar=canonical_jar) if closed_runtime else None
         for row in request['candidates']:
             try:
@@ -960,12 +1013,13 @@ def plan(root, raw_request, *, request_sha256, expected_current, identity, quies
               'candidateAllocatedBytes': sum(row['target']['allocatedBytes'] for row in accepted),
               'inboxKeepersPreserved': True, 'deletionPerformed': False}
     if closed_runtime: result.update(closedJarBatch=CLOSED_RUNTIME_BATCH, prerequisite=previous)
+    if failed_native: result['failedNativePolicy'] = FAILED_NATIVE_BATCH
     need(len(canonical(result)) <= MAX_CONTROL, 'BOUNDED_RETIREMENT_PLAN_REQUIRED')
     return result
 
 
 def apply(root, raw_request, prepared_plan, *, request_sha256, plan_sha256, expected_current, identity, quiescence, canonical_jar=False,
-          closed_runtime=False):
+          closed_runtime=False, failed_native=False):
     """Re-admit every selected input before exact single-file mutation.
 
     An interrupted/partial result must be reviewed; retry requires a newly
@@ -975,8 +1029,8 @@ def apply(root, raw_request, prepared_plan, *, request_sha256, plan_sha256, expe
     need(type(canonical_jar) is bool, 'EXACT_RETIREMENT_POLICY_REQUIRED')
     need(type(closed_runtime) is bool, 'EXACT_CLOSED_RUNTIME_POLICY_REQUIRED')
     if closed_runtime: request = closed_runtime_request(raw_request, request_sha256, expected_current, identity)
-    admit = (lambda *args: admit_canonical_candidate(*args, closed_runtime=True)) if canonical_jar and closed_runtime \
-        else admit_canonical_candidate if canonical_jar else admit_closed_runtime_duplicate if closed_runtime else admit_candidate
+    if failed_native: request = failed_native_request(raw_request, request_sha256, expected_current, identity)
+    admit = native_admitter(canonical_jar, closed_runtime, failed_native)
     kind = CANONICAL_KIND if canonical_jar else KIND
     need(type(prepared_plan) is dict and type(plan_sha256) is str and SHA.fullmatch(plan_sha256)
          and digest_bytes(canonical(prepared_plan)) == plan_sha256
@@ -992,12 +1046,18 @@ def apply(root, raw_request, prepared_plan, *, request_sha256, plan_sha256, expe
     if closed_runtime:
         need(set(tags) == set(CLOSED_RUNTIME_JARS) and prepared_plan.get('skipped') == []
              and prepared_plan.get('closedJarBatch') == CLOSED_RUNTIME_BATCH, 'COMPLETE_CLOSED_RUNTIME_PLAN_REQUIRED')
+    if failed_native:
+        skipped = prepared_plan.get('skipped')
+        need(prepared_plan.get('failedNativePolicy') == FAILED_NATIVE_BATCH and type(skipped) is list
+             and all(not canonical_jar and row.get('reason') == 'FAILED_NATIVE_COPY_NOT_PRESENT' for row in skipped)
+             and set(tags) | {row['release'] for row in skipped} == {row['release'] for row in request['candidates']},
+             'COMPLETE_FAILED_NATIVE_PLAN_REQUIRED')
     journal_path = Path(root) / 'inbox' / expected_current['release'] / (
         'native-jar-duplicate-canonical-journal.jsonl' if canonical_jar else 'native-jar-duplicate-journal.jsonl')
     owned_path(root, journal_path.parent, directory=True)
     deleted, failure, active, mutation_attempted = [], None, None, False
     active_quarantine=None;quarantines=[]
-    with controller_lock(root), publication_lock(root) if canonical_jar or closed_runtime else nullcontext(), os.fdopen(os.open(journal_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600), 'wb') as journal:
+    with controller_lock(root), publication_lock(root) if canonical_jar or closed_runtime or failed_native else nullcontext(), os.fdopen(os.open(journal_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600), 'wb') as journal:
         total = 0
         def record(value):
             nonlocal total
@@ -1029,14 +1089,15 @@ def apply(root, raw_request, prepared_plan, *, request_sha256, plan_sha256, expe
                             need(canonical_publication_refs(root, active) == candidate['publicationReferences'],
                                  'PUBLICATION_REFERENCE_CHANGED_RETAIN_QUARANTINE')
                             return quiescence(Path(root) / 'verification' / active / 'checkout', active, candidate['ownerToken'])
-                        result = remove_canonical_jar(root, candidate['target'], active_quarantine, quiescence=captured_quiescence)
+                        result = remove_canonical_jar(root, candidate['target'], active_quarantine, quiescence=captured_quiescence,
+                            **({'failed_native': True} if failed_native else {}))
                     else:
                         def captured_duplicate_quiescence():
                             need(canonical_publication_refs(root, active) == candidate['publicationReferences'],
                                  'PUBLICATION_REFERENCE_CHANGED_RETAIN_QUARANTINE')
                             return quiescence(Path(root) / 'verification' / active / 'checkout', active, candidate['ownerToken'])
                         result = remove_duplicate(root, candidate['target'], quarantine=active_quarantine,
-                            **({'quiescence': captured_duplicate_quiescence} if closed_runtime else {}))
+                            **({'quiescence': captured_duplicate_quiescence} if closed_runtime or failed_native else {}))
                     deleted.append(result)
                     record({'phase': 'DELETE_FINISHED', **result})
             record({'phase': 'FINISHED', 'deletedFiles': len(deleted)})
@@ -1060,6 +1121,7 @@ def apply(root, raw_request, prepared_plan, *, request_sha256, plan_sha256, expe
                 'binaryRebuildByteIdentityClaimed': False, 'skipped': prepared_plan['skipped'],
                 'testsRunByRetirement': False} if canonical_jar else {}),
             **({'closedJarBatch': CLOSED_RUNTIME_BATCH, 'skipped': prepared_plan['skipped']} if closed_runtime else {}),
+            **({'failedNativePolicy': FAILED_NATIVE_BATCH, 'skipped': prepared_plan['skipped']} if failed_native else {}),
             'sourceArchivesDataAndReportsHaveNoDeletionApi': True}
 
 
@@ -1804,11 +1866,14 @@ def admitted_current(args):
     return root, current, identity, quiescence, modules
 
 
-def approved_request(raw, checksum, current, identity, *, canonical_jar=False, closed_runtime=False):
+def approved_request(raw, checksum, current, identity, *, canonical_jar=False, closed_runtime=False, failed_native=False):
     request = validate_request(raw, checksum, current, identity)
     need(type(canonical_jar) is bool, 'EXACT_RETIREMENT_POLICY_REQUIRED')
     need(type(closed_runtime) is bool, 'EXACT_CLOSED_RUNTIME_POLICY_REQUIRED')
     if closed_runtime: return closed_runtime_request(raw, checksum, current, identity)
+    if failed_native:
+        need(canonical_jar is True, 'FAILED_NATIVE_CANONICAL_PROOF_REQUIRED')
+        return failed_native_request(raw, checksum, current, identity)
     approved = (lambda tag: APPROVED_OLD.get(tag) or RECENT_CANONICAL_ONLY.get(tag)) if canonical_jar else APPROVED_OLD.get
     need(all(approved(row['release']) == row['commit'] for row in request['candidates']), 'ONLY_REVIEWED_OLD_ATTEMPTS_ALLOWED')
     return request
@@ -1943,11 +2008,12 @@ def closed_207_no_object(root, historical, originals, builder):
                  'CLOSED_207_UNKNOWN_TAGGED_OBJECT_EXISTS')
 
 
-def capture_recent_fixture(root, request, row, builder, *, closed_runtime=False):
+def capture_recent_fixture(root, request, row, builder, *, closed_runtime=False, failed_native=False):
     registered = CLOSED_RUNTIME_JARS.get(row['release']) if closed_runtime else None
     need((registered is not None and registered['commit'] == row['commit']) if closed_runtime
-         else RECENT_CANONICAL_ONLY.get(row['release']) == row['commit'], 'ONLY_REVIEWED_RECENT_FIXTURES_ALLOWED')
-    historical = admit_historical_controls(root, request, row, builder_helpers=True, canonical_jar=True)
+         else failed_native or RECENT_CANONICAL_ONLY.get(row['release']) == row['commit'], 'ONLY_REVIEWED_RECENT_FIXTURES_ALLOWED')
+    historical = admit_historical_controls(root, request, row, builder_helpers=True, canonical_jar=True,
+        **({'failed_native': True} if failed_native else {}))
     owner = historical['fixtureOwner']; cid = owner.get('containerId')
     if closed_runtime:
         need(cid == registered['containerId'], 'EXACT_CLOSED_RUNTIME_FIXTURE_ID_REQUIRED')
@@ -1963,7 +2029,8 @@ def capture_recent_fixture(root, request, row, builder, *, closed_runtime=False)
             closed_207_no_object(root, historical, originals, builder)
             return {'historical': historical, 'fixture': None, 'containerId': None,
                     'dataDirectory': None, 'dataMetadata': None, 'absenceKind': 'NO_OBJECT'}
-    source = historical['sourceArchive']; builder.recent_mysql_fixture_source(historical['context'], source)
+    source = historical['sourceArchive']; builder.recent_mysql_fixture_source(historical['context'], source,
+        **({'failed_native': True} if failed_native else {}))
     need(type(cid) is str and SHA.fullmatch(cid) and cid != owner.get('sourceContainerId')
          and owner.get('dataDirectory') == historical['evidence']['work'] + '/mysql-data', 'EXACT_RECENT_MYSQL_OBJECT_REQUIRED')
     data = fixture_data_metadata(root, owner['dataDirectory'])
@@ -1972,7 +2039,8 @@ def capture_recent_fixture(root, request, row, builder, *, closed_runtime=False)
     if cid in builder_container_ids():
         raw = builder_docker('inspect', cid)
         fixture = builder.historical_mysql_fixture_descriptor(root, historical['context'], request['identity'], owner,
-            historical['fixtureCleanup'], builder.historical_builder_inspect(raw), data, source_proof=source)
+            historical['fixtureCleanup'], builder.historical_builder_inspect(raw), data, source_proof=source,
+            **({'failed_native': True} if failed_native else {}))
         fixture['rawInspectSha256'] = digest_bytes(raw)
     return {'historical': historical, 'fixture': fixture, 'containerId': cid,
             'dataDirectory': owner['dataDirectory'], 'dataMetadata': data}
@@ -1985,9 +2053,10 @@ def recent_fixture_references(root, candidate, cleanup, builder):
         {fixture['containerId']: 'doorhandle-compact-fixture-' + fixture['ownerToken']}, cleanup, builder, include_inbox=True)
 
 
-def plan_recent_fixtures(root, raw_request, *, request_sha256, expected_current, identity, modules, closed_runtime=False):
+def plan_recent_fixtures(root, raw_request, *, request_sha256, expected_current, identity, modules, closed_runtime=False, failed_native=False):
     request = approved_request(raw_request, request_sha256, expected_current, identity, canonical_jar=True,
-                               **({'closed_runtime': True} if closed_runtime else {}))
+                               **({'closed_runtime': True} if closed_runtime else {}),
+                        **({'failed_native': True} if failed_native else {}))
     accepted, absent, skipped = [], [], []
     with controller_lock(root), publication_lock(root):
         prerequisite = closed_runtime_previous(root, request, canonical_jar=False, builder=True) if closed_runtime else None
@@ -1995,7 +2064,8 @@ def plan_recent_fixtures(root, raw_request, *, request_sha256, expected_current,
             try:
                 with attempt_lock(root, row['release']):
                     candidate = capture_recent_fixture(root, request, row, modules['builder'],
-                        **({'closed_runtime': True} if closed_runtime else {}))
+                        **({'closed_runtime': True} if closed_runtime else {}),
+                        **({'failed_native': True} if failed_native else {}))
                     if candidate['fixture'] is None: absent.append(candidate)
                     else:
                         recent_fixture_references(root, candidate, modules['cleanup'], modules['builder'])
@@ -2007,21 +2077,24 @@ def plan_recent_fixtures(root, raw_request, *, request_sha256, expected_current,
         'identity': identity, 'requestSha256': request_sha256, 'candidates': accepted, 'absent': absent,
         'skipped': skipped, 'deletionPerformed': False, 'dataDirectoriesAndVolumesPreserved': True}
     if closed_runtime: value.update(closedJarBatch=CLOSED_RUNTIME_BATCH, prerequisite=prerequisite)
+    if failed_native: value['failedNativePolicy'] = FAILED_NATIVE_BATCH
     need(len(canonical(value)) <= MAX_CONTROL, 'BOUNDED_RECENT_MYSQL_PLAN_REQUIRED')
     return value
 
 
 def apply_recent_fixtures(root, raw_request, prepared, *, request_sha256, plan_sha256, expected_current, identity, modules,
-                          closed_runtime=False):
+                          closed_runtime=False, failed_native=False):
     request = approved_request(raw_request, request_sha256, expected_current, identity, canonical_jar=True,
-                               **({'closed_runtime': True} if closed_runtime else {}))
+                               **({'closed_runtime': True} if closed_runtime else {}),
+                        **({'failed_native': True} if failed_native else {}))
     if closed_runtime: need(prepared.get('closedJarBatch') == CLOSED_RUNTIME_BATCH, 'EXACT_CLOSED_RUNTIME_PLAN_REQUIRED')
+    if failed_native: need(prepared.get('failedNativePolicy') == FAILED_NATIVE_BATCH, 'EXACT_FAILED_NATIVE_FIXTURE_PLAN_REQUIRED')
     need(digest_bytes(canonical(prepared)) == plan_sha256 and prepared.get('kind') == 'doorhandle-recent-mysql-fixture-object-plan'
          and prepared.get('current') == expected_current and prepared.get('identity') == identity
          and prepared.get('requestSha256') == request_sha256 and prepared.get('deletionPerformed') is False
          and prepared.get('skipped') == [], 'EXACT_RECENT_MYSQL_PLAN_REQUIRED')
     selected, absent = prepared.get('candidates'), prepared.get('absent'); rows = {row['release']: row for row in request['candidates']}
-    need(type(selected) is list and type(absent) is list and len(selected) + len(absent) == len(rows) <= 3
+    need(type(selected) is list and type(absent) is list and len(selected) + len(absent) == len(rows) <= (16 if failed_native else 3)
          and all(type(item) is dict and type(item.get('historical')) is dict for item in selected + absent),
          'BOUNDED_RECENT_MYSQL_OBJECTS_REQUIRED')
     tags = [item['historical']['context']['release'] for item in selected + absent]
@@ -2041,7 +2114,8 @@ def apply_recent_fixtures(root, raw_request, prepared, *, request_sha256, plan_s
                 active = candidate['historical']['context']['release']
                 with attempt_lock(root, active):
                     observed = capture_recent_fixture(root, request, rows[active], modules['builder'],
-                        **({'closed_runtime': True} if closed_runtime else {}))
+                        **({'closed_runtime': True} if closed_runtime else {}),
+                        **({'failed_native': True} if failed_native else {}))
                     need(observed == candidate, 'RECENT_MYSQL_OBJECT_OR_ORIGINALS_CHANGED_AFTER_PLAN')
                     if candidate['fixture'] is None: continue
                     fixture = candidate['fixture']
@@ -2064,7 +2138,8 @@ def apply_recent_fixtures(root, raw_request, prepared, *, request_sha256, plan_s
         'removed': removed, 'alreadyAbsent': [item['containerId'] for item in absent if not closed_runtime or item['containerId'] is not None],
         **({'closedJarBatch': CLOSED_RUNTIME_BATCH, 'skipped': prepared['skipped'],
             'noObject': [item['historical']['context']['release'] for item in absent if item.get('absenceKind') == 'NO_OBJECT']}
-           if closed_runtime else {}), 'failure': failure,
+           if closed_runtime else {}),
+        **({'failedNativePolicy': FAILED_NATIVE_BATCH} if failed_native else {}), 'failure': failure,
         'dataDirectoriesPreserved': failure is None, 'imagesPreserved': True, 'volumesPreserved': True,
         'sourceArchivesAndReportsPreserved': True, 'jarDeletionPerformed': False, 'automaticResumeAllowed': False,
         'journalSha256': digest_bytes(private_bytes(root, journal_path))}
@@ -2286,9 +2361,10 @@ def apply_builders(root, raw_request, prepared, *, request_sha256, plan_sha256, 
     return value
 
 
-def capture_request(root, raw_local_spec, *, local_spec_sha256, expected_current, identity, canonical_jar=False, closed_runtime=False):
+def capture_request(root, raw_local_spec, *, local_spec_sha256, expected_current, identity, canonical_jar=False, closed_runtime=False, failed_native=False):
     spec = approved_request(raw_local_spec, local_spec_sha256, expected_current, identity, canonical_jar=canonical_jar,
-                            **({'closed_runtime': True} if closed_runtime else {}))
+                            **({'closed_runtime': True} if closed_runtime else {}),
+                        **({'failed_native': True} if failed_native else {}))
     accepted, skipped = [], []
     for row in spec['candidates']:
         try:
@@ -2304,7 +2380,16 @@ def capture_request(root, raw_local_spec, *, local_spec_sha256, expected_current
                 need(path.exists() or path.is_symlink(), 'REQUIRED_ECS_CONTROL_MISSING_' + role.upper())
                 raw = private_bytes(root, path)
                 merged[role] = {'path': names[role], 'bytes': len(raw), 'sha256': digest_bytes(raw)}
-            accepted.append({**row, 'controls': merged})
+            selected = {**row, 'controls': merged}
+            if failed_native:
+                admit_historical_controls(root, spec, selected, canonical_jar=True, failed_native=True)
+                keeper = Path(root) / 'inbox' / row['release'] / 'application.jar'
+                duplicate = Path(root) / 'verification' / row['release'] / 'checkout/work/compact-fixtures/candidate-app.jar'
+                if not keeper.exists() and not keeper.is_symlink():
+                    need(not duplicate.exists() and not duplicate.is_symlink(), 'FAILED_NATIVE_COPY_WITHOUT_KEEPER')
+                    skipped.append({'release': row['release'], 'reason': 'FAILED_NATIVE_BINARIES_NOT_PRESENT'})
+                    continue
+            accepted.append(selected)
         except (RetirementError, OSError, ValueError, KeyError, TypeError) as error:
             skipped.append({'release': row['release'], 'reason': str(error) if isinstance(error, RetirementError) else type(error).__name__})
     request = {**spec, 'candidates': accepted}
@@ -2724,6 +2809,7 @@ def apply_python_build_cache(root, prepared, *, plan_sha256, expected_current, i
 
 
 def closed_runtime_cli(args):
+    if args.jar_batch == FAILED_NATIVE_BATCH: return False
     if args.jar_batch is None:
         need(args.phase not in ('plan-closed-builders', 'apply-closed-builders'), 'CLOSED_RUNTIME_EXPLICIT_POLICY_REQUIRED')
         return False
@@ -2731,6 +2817,14 @@ def closed_runtime_cli(args):
          and args.phase in ('capture-canonical-request', 'plan-recent-fixtures', 'apply-recent-fixtures',
                             'plan-closed-builders', 'apply-closed-builders', 'plan', 'apply', 'plan-canonical', 'apply-canonical', 'inspect'),
          'CLOSED_RUNTIME_MAINTENANCE_PHASE_REQUIRED')
+    return True
+
+
+def failed_native_cli(args):
+    if args.jar_batch != FAILED_NATIVE_BATCH: return False
+    need(args.mode == 'Maintenance' and args.phase in ('capture-canonical-request', 'plan-recent-fixtures',
+         'apply-recent-fixtures', 'plan', 'apply', 'plan-canonical', 'apply-canonical', 'inspect'),
+         'FAILED_NATIVE_RETENTION_MAINTENANCE_ONLY')
     return True
 
 
@@ -2746,18 +2840,25 @@ def cli(argv=None):
                                            'apply-generated-image-archives', 'plan-python-build-cache',
                                            'apply-python-build-cache', 'inspect'), required=True)
     parser.add_argument('--mode', choices=('Verified', 'Maintenance'), required=True)
-    parser.add_argument('--jar-batch', choices=(CLOSED_RUNTIME_BATCH,))
+    parser.add_argument('--jar-batch', choices=(CLOSED_RUNTIME_BATCH, FAILED_NATIVE_BATCH))
     for name in ('root', 'tag', 'commit', 'source-sha256', 'instance-id', 'machine-id', 'current-receipt-sha256'):
         parser.add_argument('--' + name, required=True)
     parser.add_argument('--local-spec-sha256'); parser.add_argument('--request-sha256'); parser.add_argument('--plan-sha256')
     args = parser.parse_args(argv)
     try:
         closed_runtime = closed_runtime_cli(args)
+        failed_native = failed_native_cli(args)
         root, current, identity, quiescence, modules = admitted_current(args); inbox = root / 'inbox' / args.tag
         if closed_runtime:
             def quiescence(checkout, tag, token):
                 need(tag in CLOSED_RUNTIME_JARS and checkout == root / 'verification' / tag / 'checkout',
                      'EXACT_CLOSED_RUNTIME_REFERENCE_ROOTS_REQUIRED')
+                modules['cleanup'].quiescent({'checkout': checkout, 'token': token}, tag,
+                                             modules['cleanup'].docker_snapshot(), include_inbox=True)
+        if failed_native:
+            def quiescence(checkout, tag, token):
+                need(TAG.fullmatch(tag) and int(TAG.fullmatch(tag)[1]) >= FAILED_NATIVE_FIRST_BUILD
+                     and checkout == root / 'verification' / tag / 'checkout', 'EXACT_FAILED_NATIVE_REFERENCE_ROOTS_REQUIRED')
                 modules['cleanup'].quiescent({'checkout': checkout, 'token': token}, tag,
                                              modules['cleanup'].docker_snapshot(), include_inbox=True)
         request_file = inbox / 'native-jar-duplicate-request.json'; plan_file = inbox / 'native-jar-duplicate-plan.json'
@@ -2779,7 +2880,8 @@ def cli(argv=None):
             need(not canonical_only or args.mode == 'Maintenance', 'CANONICAL_RETIREMENT_REQUIRES_MAINTENANCE')
             raw = private_bytes(root, inbox / 'native-jar-duplicate-local-spec.json')
             request, skipped = capture_request(root, raw, local_spec_sha256=args.local_spec_sha256, expected_current=current,
-                identity=identity, canonical_jar=canonical_only, **({'closed_runtime': True} if closed_runtime else {}))
+                identity=identity, canonical_jar=canonical_only, **({'closed_runtime': True} if closed_runtime else {}),
+                **({'failed_native': True} if failed_native else {}))
             result = {'status': 'CAPTURED', 'current': current, 'identity': identity,
                       'request': write_new(request_file, request), 'skipped': skipped}
             result['capture'] = write_new(capture_file, result)
@@ -2829,6 +2931,7 @@ def cli(argv=None):
             raw = private_bytes(root, request_file)
             options = {'request_sha256': args.request_sha256, 'expected_current': current, 'identity': identity, 'modules': modules}
             if closed_runtime: options['closed_runtime'] = True
+            if failed_native: options['failed_native'] = True
             if args.phase == 'plan-recent-fixtures':
                 value = plan_recent_fixtures(root, raw, **options)
                 result = {'status': 'PLANNED', 'current': current, 'identity': identity,
@@ -2880,15 +2983,17 @@ def cli(argv=None):
             need(args.mode == 'Maintenance', 'CANONICAL_RETIREMENT_REQUIRES_MAINTENANCE')
             raw = private_bytes(root, request_file)
             approved_request(raw, args.request_sha256, current, identity, canonical_jar=True,
-                             **({'closed_runtime': True} if closed_runtime else {}))
+                             **({'closed_runtime': True} if closed_runtime else {}),
+                **({'failed_native': True} if failed_native else {}))
             def canonical_quiescence(checkout, tag, token):
-                need(checkout == root / 'verification' / tag / 'checkout' and canonical_commit(tag) is not None,
+                need(checkout == root / 'verification' / tag / 'checkout' and (failed_native or canonical_commit(tag) is not None),
                      'EXACT_CANONICAL_REFERENCE_ROOTS_REQUIRED')
                 modules['cleanup'].quiescent({'checkout': checkout, 'token': token}, tag,
                                              modules['cleanup'].docker_snapshot(), include_inbox=True)
             options = {'request_sha256': args.request_sha256, 'expected_current': current, 'identity': identity,
                        'quiescence': canonical_quiescence, 'canonical_jar': True}
             if closed_runtime: options['closed_runtime'] = True
+            if failed_native: options['failed_native'] = True
             if args.phase == 'plan-canonical':
                 value = plan(root, raw, **options)
                 result = {'status': 'PLANNED', 'current': current, 'identity': identity,
@@ -2949,10 +3054,12 @@ def cli(argv=None):
             need(not recent or args.mode == 'Maintenance', 'RECENT_BUILDER_REQUIRES_MAINTENANCE')
             raw = private_bytes(root, request_file)
             approved_request(raw, args.request_sha256, current, identity, canonical_jar=recent or closed_runtime,
-                             **({'closed_runtime': True} if closed_runtime else {}))
+                             **({'closed_runtime': True} if closed_runtime else {}),
+                **({'failed_native': True} if failed_native else {}))
             options = {'request_sha256': args.request_sha256, 'expected_current': current, 'identity': identity, 'modules': modules}
             if recent: options['recent'] = True
             if closed_runtime: options['closed_runtime'] = True
+            if failed_native: options['failed_native'] = True
             if args.phase in ('plan-builders', 'plan-recent-builders', 'plan-closed-builders'):
                 value = plan_builders(root, raw, **options)
                 result = {'status': 'PLANNED', 'current': current, 'identity': identity,
@@ -2973,9 +3080,11 @@ def cli(argv=None):
                                                       'directoriesPreserved', 'jarDeletionPerformed')})
         else:
             raw = private_bytes(root, request_file)
-            approved_request(raw, args.request_sha256, current, identity, **({'closed_runtime': True} if closed_runtime else {}))
+            approved_request(raw, args.request_sha256, current, identity, canonical_jar=failed_native, **({'closed_runtime': True} if closed_runtime else {}),
+                **({'failed_native': True} if failed_native else {}))
             options = {'request_sha256': args.request_sha256, 'expected_current': current, 'identity': identity, 'quiescence': quiescence}
             if closed_runtime: options['closed_runtime'] = True
+            if failed_native: options['failed_native'] = True
             if args.phase == 'plan':
                 value = plan(root, raw, **options)
                 result = {'status': 'PLANNED', 'current': current, 'identity': identity, 'plan': write_new(plan_file, value),
@@ -2989,6 +3098,7 @@ def cli(argv=None):
             result['closedJarBatch'] = CLOSED_RUNTIME_BATCH
             result['candidateCount' if args.phase.startswith('plan') else 'deletedFiles'] = len(
                 value['candidates' if args.phase.startswith('plan') else 'deleted'])
+        if failed_native: result['failedNativePolicy'] = FAILED_NATIVE_BATCH
         print(json.dumps(result, sort_keys=True))
         return 0 if result['status'] != 'FAILED_OR_UNKNOWN' else 2
     except Exception as error:

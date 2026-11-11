@@ -30,6 +30,7 @@ LABEL = 'io.doorhandle.local-mysql-custody'
 CID = re.compile(r'[a-f0-9]{64}')
 IMAGE = re.compile(r'sha256:[a-f0-9]{64}')
 SCHEMA = 'doorhandledb'
+OBSERVATION_TIMEOUT = 4 * 60 * 60
 
 
 class CleanupNotQuiescent(Exception):
@@ -38,6 +39,22 @@ class CleanupNotQuiescent(Exception):
 
 def need(value, message):
     if not value: raise ValueError(message)
+
+
+def emit(value):
+    try:
+        print(json.dumps(value), flush=True)
+    except BrokenPipeError:
+        sink = os.open(os.devnull, os.O_WRONLY)
+        try: os.dup2(sink, 1)
+        finally: os.close(sink)
+
+
+def process_start(pid):
+    need(type(pid) is int and pid > 1, 'Invalid SQL recovery supervisor PID')
+    directory = Path('/proc') / str(pid)
+    need(directory.stat().st_uid == os.getuid(), 'SQL recovery supervisor owner differs')
+    return directory.joinpath('stat').read_text().split(') ', 1)[1].split()[19]
 
 
 def module(name, path):
@@ -112,6 +129,85 @@ class Recovery:
     not_created_name = 'local-mysql-recovery-not-created.json'
 
     def cleanup_source_fields(self): return {'rawSqlSha256': self.bytes.RAW_SHA}
+
+    def supervision_paths(self):
+        name = self.directory.name
+        return self.work / (name + '-supervisor.json'), self.work / (name + '-terminal.json')
+
+    def run_supervised(self):
+        supervisor_file, terminal_file = self.supervision_paths()
+        need(not supervisor_file.exists() and not terminal_file.exists(), 'SQL recovery was already started; observe its original attempt')
+        supervisor = {**self.context, 'supervisionKind': 'doorhandle-sql-recovery-supervisor',
+            'executionId': secrets.token_hex(16), 'pid': os.getpid(), 'startTicks': process_start(os.getpid()),
+            'bootId': Path('/proc/sys/kernel/random/boot_id').read_text().strip(), 'startedAtUnix': int(time.time())}
+        pending = supervisor_file.with_name(supervisor_file.name + '.pending')
+        self.bytes.write(pending, supervisor)
+        need(not supervisor_file.exists(), 'Original SQL recovery supervisor already exists')
+        os.replace(pending, supervisor_file)
+        try:
+            result = self.run()
+        except BaseException as error:
+            if self.state:
+                with contextlib.suppress(BaseException): self.cleanup()
+            terminal = {**self.context, 'supervisionKind': 'doorhandle-sql-recovery-terminal',
+                'executionId': supervisor['executionId'], 'status': 'FAILED', 'result': None,
+                'errorType': type(error).__name__}
+            self.publish_terminal(terminal_file, terminal)
+            raise
+        terminal = {**self.context, 'supervisionKind': 'doorhandle-sql-recovery-terminal',
+            'executionId': supervisor['executionId'], 'status': 'PASS', 'result': result, 'errorType': None}
+        self.publish_terminal(terminal_file, terminal)
+        return result
+
+    def publish_terminal(self, path, value):
+        pending = path.with_name(path.name + '.pending')
+        need(not path.exists(), 'SQL recovery terminal evidence already exists')
+        self.bytes.write(pending, value)
+        os.replace(pending, path)
+
+    def observe(self):
+        """Read only this original run; cleanup remains an explicit cancellation command."""
+        supervisor_file, terminal_file = self.supervision_paths()
+        if not supervisor_file.exists():
+            if getattr(getattr(self, 'args', None), 'run_requested', False):
+                return {**self.context, 'status': 'PENDING', 'terminal': False, 'executionId': None, 'result': None}
+            need(not supervisor_file.with_name(supervisor_file.name + '.pending').exists(),
+                 'SQL recovery supervisor publication is incomplete; retain its owned resources')
+            need(not self.owner_file.exists() and not self.directory.exists(),
+                 'SQL recovery has no supervisor proof; retain its owned resources')
+            return {**self.context, 'status': 'NOT_STARTED', 'terminal': True, 'executionId': None, 'result': None}
+        supervisor = self.bytes.read(self.utility.owner_path(supervisor_file))
+        fields = {'supervisionKind', 'executionId', 'pid', 'startTicks', 'bootId', 'startedAtUnix'}
+        need(set(supervisor) == set(self.context) | fields
+            and all(supervisor[key] == value for key, value in self.context.items())
+            and supervisor['supervisionKind'] == 'doorhandle-sql-recovery-supervisor'
+            and re.fullmatch(r'[a-f0-9]{32}', supervisor['executionId'])
+            and type(supervisor['pid']) is int and supervisor['pid'] > 1
+            and type(supervisor['startTicks']) is str and supervisor['startTicks'].isdigit()
+            and type(supervisor['startedAtUnix']) is int and supervisor['startedAtUnix'] > 0
+            and supervisor['bootId'] == Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
+            'SQL recovery supervisor belongs to another execution')
+        deadline = time.monotonic() + max(0, supervisor['startedAtUnix'] + OBSERVATION_TIMEOUT - time.time())
+        while True:
+            if terminal_file.exists():
+                value = self.bytes.read(self.utility.owner_path(terminal_file))
+                need(set(value) == set(self.context) | {'supervisionKind','executionId','status','result','errorType'}
+                    and all(value[key] == expected for key, expected in self.context.items())
+                    and value['supervisionKind'] == 'doorhandle-sql-recovery-terminal'
+                    and value['executionId'] == supervisor['executionId'] and value['status'] in ('PASS','FAILED')
+                    and ((value['status'] == 'PASS' and type(value['result']) is dict and value['errorType'] is None)
+                         or (value['status'] == 'FAILED' and value['result'] is None and type(value['errorType']) is str)),
+                    'SQL recovery terminal evidence belongs to another execution')
+                return {**self.context, 'status': value['status'], 'terminal': True,
+                    'executionId': supervisor['executionId'], 'result': value['result']}
+            try: alive = process_start(supervisor['pid']) == supervisor['startTicks']
+            except (FileNotFoundError, ProcessLookupError): alive = False
+            if not alive and terminal_file.exists(): continue
+            need(alive, 'Original SQL recovery stopped without terminal evidence; retain owned resources')
+            need(time.monotonic() < deadline, 'Original SQL recovery observation timed out; retain owned resources')
+            emit({**self.context, 'status': 'RUNNING', 'terminal': False,
+                'executionId': supervisor['executionId'], 'result': None})
+            time.sleep(5)
 
     def __init__(self, args):
         self.args, self.bytes = args, source()
@@ -549,20 +645,24 @@ class Recovery:
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__); parser.add_argument('action', choices=('run', 'cleanup'))
+    parser = argparse.ArgumentParser(description=__doc__); parser.add_argument('action', choices=('run', 'cleanup', 'observe'))
     for key in ('root', 'tag', 'commit', 'source-sha256', 'instance-id', 'machine-id'): parser.add_argument('--' + key, required=True)
-    parser.add_argument('--fixture-settings'); args = parser.parse_args(); controller = None
-    for event in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+    parser.add_argument('--fixture-settings')
+    parser.add_argument('--run-requested', action='store_true')
+    args = parser.parse_args(); controller = None
+    for event in (signal.SIGINT, signal.SIGTERM):
         signal.signal(event, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
+    signal.signal(signal.SIGHUP, signal.SIG_IGN if args.action == 'run' else
+                  lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
     try:
         controller = Recovery(args)
-        result = controller.run() if args.action == 'run' else controller.cleanup()
-        print(json.dumps(result)); return 0
+        result = controller.run_supervised() if args.action == 'run' else controller.observe() if args.action == 'observe' else controller.cleanup()
+        emit(result); return 0
     except BaseException as error:
-        if controller and controller.state:
+        if args.action == 'cleanup' and controller and controller.state:
             with contextlib.suppress(Exception): controller.cleanup()
-        print(json.dumps({'kind': 'doorhandle-local-mysql-recovery', 'status': 'UNKNOWN' if isinstance(error,CleanupNotQuiescent) else 'FAILED', 'errorType': type(error).__name__,
-                          'productionMerged': False, 'retirementAllowed': False})); return 2
+        emit({'kind': 'doorhandle-local-mysql-recovery', 'status': 'UNKNOWN' if isinstance(error,CleanupNotQuiescent) else 'FAILED', 'errorType': type(error).__name__,
+              'productionMerged': False, 'retirementAllowed': False}); return 2
 
 
 if __name__ == '__main__': raise SystemExit(main())

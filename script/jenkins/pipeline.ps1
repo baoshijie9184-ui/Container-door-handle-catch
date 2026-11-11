@@ -42,6 +42,39 @@ function Wait-ExistingVerification {
     }
     throw 'Cannot reconnect to the original verification; retain its owned resources and inspect that same attempt.'
 }
+function Wait-ExistingRuntime {
+    $PSNativeCommandUseErrorActionPreference=$false
+    $request=Get-Content -LiteralPath artifacts/runtime-execution-request.json -Raw | ConvertFrom-Json
+    $package=Get-Content -LiteralPath artifacts/release.json -Raw | ConvertFrom-Json
+    if ($request.release -cne $tag -or $request.commit -cne $package.commit -or $request.sourceSha256 -cne $package.sourceSha256 -or
+        $request.runtime -cne $runtime -or $request.settings -cnotmatch '^/(home|srv|opt)/[A-Za-z0-9_./-]+\.json$' -or
+        $request.settings -cmatch '(^|/)\.\.(/|$)' -or $request.helperSha256 -cnotmatch '^[a-f0-9]{64}$' -or
+        $request.candidateBuildSha256 -cnotmatch '^[a-f0-9]{64}$' -or
+        $request.instanceId -cne $env:DOORHANDLE_ECS_INSTANCE_ID -or $request.machineId -cne $env:DOORHANDLE_ECS_MACHINE_ID) {
+        throw 'Runtime observation request differs from this fixed candidate.'
+    }
+    $helper="$remoteRoot/releases/$tag/script/docker/compact-runtime-acceptance.py"
+    $binding="--root '$remoteRoot' --runtime '$runtime' --tag '$tag' --commit '$($request.commit)' --source-sha256 '$($request.sourceSha256)' --instance-id '$($request.instanceId)' --machine-id '$($request.machineId)' --settings '$($request.settings)'"
+    $command="test `"`$(sha256sum '$helper' | cut -d ' ' -f 1)`" = '$($request.helperSha256)' && python3 -B '$helper' observe $binding"
+    for ($readback=1; $readback -le 3; $readback++) {
+        $lines=@(& ssh.exe @sshOptions -p $portText $destination $command); $exit=$LASTEXITCODE
+        $lines | Add-Content -LiteralPath artifacts/runtime-execution-observe.stdout.log -Encoding utf8
+        if ($exit -eq 255) { if ($readback -lt 3) { Start-Sleep -Seconds 2 }; continue }
+        if ($exit -notin @(0,1) -or $lines.Count -eq 0) { throw 'Original runtime is unresolved; retain its owned resources.' }
+        $state=$lines[-1] | ConvertFrom-Json
+        if ($state.operation -cne 'runtime-acceptance' -or $state.terminal -ne $true -or
+            $state.executionId -cnotmatch '^[a-f0-9]{32}$' -or $state.release -cne $tag -or
+            $state.commit -cne $request.commit -or $state.sourceSha256 -cne $request.sourceSha256 -or
+            $state.candidateBuildSha256 -cne $request.candidateBuildSha256 -or
+            $state.identity.instanceId -cne $request.instanceId -or $state.identity.machineId -cne $request.machineId -or
+            $state.status -cnotin @('PASS','FAILED_OR_UNKNOWN') -or ($exit -eq 0 -and $state.status -cne 'PASS')) {
+            throw 'Original runtime has no matching terminal result; retain its owned resources.'
+        }
+        $state | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath artifacts/runtime-execution-observation.json -Encoding utf8
+        return $state
+    }
+    throw 'Cannot reconnect to the same runtime execution; do not cancel it through post cleanup.'
+}
 function Assert-ControlPreflight([string]$Commit,[string]$SourceSha) {
     if ($env:ACTION -cne 'verify-runtime' -and -not ($env:ACTION -ceq 'verify' -and $env:DOORHANDLE_CI_SCOPE -ceq 'mysql')) { return }
     if ($env:CI_CONTROL_PREFLIGHT_PASS -cne 'true') { throw 'Native verification requires the ECS control-script preflight first.' }
@@ -394,7 +427,7 @@ if ($Action -ceq 'ReclaimBuildOutputs' -and $env:ACTION -ceq 'reclaim-build-outp
     $commit = Require-Value 'GIT_COMMIT' '^[a-f0-9]{40}$'
     $sha = (Get-FileHash -LiteralPath artifacts/source.tar.gz -Algorithm SHA256).Hash.ToLowerInvariant()
     & ./script/jenkins/reclaim-build-outputs.ps1 -Mode Maintenance -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha
-    & ./script/jenkins/retire-failed-native-jar-duplicates.ps1 -Mode Maintenance -CanonicalBatch ClosedRuntime -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha
+    & ./script/jenkins/retire-failed-native-jar-duplicates.ps1 -Mode Maintenance -CanonicalBatch FailedNative -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha
     return
 }
 if ($Action -eq 'Preflight') {
@@ -771,6 +804,7 @@ if ($Action -in @('PrepareTools', 'CleanupTools')) {
         if ($registered.status -ne 'PREPARED' -or $registered.release -ne $tag -or $registered.manifest -ne "$remoteInbox/tool-runtime/manifest.json" -or $registered.manifestSha256 -notmatch '^[a-f0-9]{64}$') { throw 'ECS tool registration differs from the fixed build inbox.' }
         $registered | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath artifacts/ecs-tool-runtime.json -Encoding utf8
     } else {
+        if (Test-Path -LiteralPath artifacts/runtime-execution-request.json) { $null=Wait-ExistingRuntime }
         if (Test-Path -LiteralPath artifacts/ecs-verification-request.json) { $null=Wait-ExistingVerification }
         $result = Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "python3 -B '$executor' cleanup --manifest '$remoteInbox/tool-runtime/manifest.json'"))
         $stopped = ($result | Select-Object -Last 1) | ConvertFrom-Json
@@ -813,6 +847,7 @@ if ($Action -in @('PrepareFixtures', 'CleanupFixtures')) {
         if ($safe.status -ne 'PREPARED' -or $safe.commit -ne $commit -or $safe.release -ne $tag -or $safe.manifest -ne $manifest) { throw 'Fixture preparation receipt differs from this pinned source and staging directory.' }
         $safe | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath artifacts/fixture-preparation.json -Encoding utf8
     } else {
+        if (Test-Path -LiteralPath artifacts/runtime-execution-request.json) { $null=Wait-ExistingRuntime }
         $result = Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "python3 -B '$helper' cleanup $arguments"))
         $safe = ($result | Select-Object -Last 1) | ConvertFrom-Json
         if ($safe.status -ne 'STOPPED' -or $safe.commit -ne $commit -or $safe.release -ne $tag) { throw 'Owned test resources did not stop with a matching cleanup receipt.' }
@@ -1075,6 +1110,7 @@ if ($Action -in @('CompactCutover', 'VerifyRuntime', 'CleanupRuntime')) {
         }
     }
     if ($Action -eq 'CleanupRuntime') {
+        if (Test-Path -LiteralPath artifacts/runtime-execution-request.json) { $null=Wait-ExistingRuntime }
         foreach ($name in @('model', 'mcp', 'browser')) {
             $null = Receive-OwnedBuildResources "$remoteRoot/verification/$tag/checkout/work/runtime-acceptance/controlled-build-$name" "artifacts/fixture-build-resources/$name"
         }
@@ -1250,8 +1286,22 @@ print(json.dumps({'status':'REUSED_VERIFIED','release':expected['release'],'comm
         if ($candidateResources.build.images.$service.imageId -ne $buildReceipt.images.$service) { throw 'Candidate measured image differs from the admitted build receipt.' }
     }
     $fixtureResources = @{}
+    $runtimeSource=Get-PinnedSourceFile 'script/docker/compact-runtime-acceptance.py'
+    @{release=$tag;commit=$commit;sourceSha256=$sha;runtime=$runtime;settings=$settings;
+        instanceId=$instance;machineId=$machine;
+        helperSha256=(Get-FileHash -LiteralPath $runtimeSource -Algorithm SHA256).Hash.ToLowerInvariant();
+        candidateBuildSha256=(Get-FileHash -LiteralPath artifacts/compact-candidate-build.json -Algorithm SHA256).Hash.ToLowerInvariant()} |
+        ConvertTo-Json | Set-Content -LiteralPath artifacts/runtime-execution-request.json -Encoding utf8
     try {
-        $result = Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "python3 -B '$runtimeHelper' run $runtimeArguments"))
+        $PSNativeCommandUseErrorActionPreference=$false
+        $result=@(& ssh.exe @sshOptions -p $portText $destination "python3 -B '$runtimeHelper' run $runtimeArguments")
+        $runtimeExit=$LASTEXITCODE
+        if ($runtimeExit -eq 255) {
+            $observed=Wait-ExistingRuntime
+            $result=@($observed | ConvertTo-Json -Depth 8 -Compress)
+            $runtimeExit=if ($observed.status -ceq 'PASS') {0} else {1}
+        }
+        if ($runtimeExit -ne 0) { throw 'The original runtime did not pass; preserve its actual terminal evidence.' }
     } finally {
         foreach ($name in @('model', 'mcp', 'browser')) {
             $fixtureResources[$name] = Receive-OwnedBuildResources "$remoteRoot/verification/$tag/checkout/work/runtime-acceptance/controlled-build-$name" "artifacts/fixture-build-resources/$name"

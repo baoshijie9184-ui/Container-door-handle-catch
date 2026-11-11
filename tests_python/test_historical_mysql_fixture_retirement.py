@@ -504,3 +504,54 @@ def test_closed_204_remove_rejects_new_references_and_changed_data_identity(clos
         with pytest.raises(ValueError):
             resources.historical_mysql_fixture_remove(descriptor, inspect, remove, listing, checked_references, changed_data)
         assert calls.removed == ([state.owner['containerId']] if damage == 'inode-after' else [])
+
+@pytest.fixture
+def failed_native_mysql(fixture):
+    recent, _proof = recent_mysql_fixture(fixture)
+    tag='ci-221-'+'a'*12;commit='a'*40
+    body=json.dumps(vars(recent)).replace(recent.context['release'],tag).replace(recent.context['commit'],commit)
+    value=SimpleNamespace(**json.loads(body))
+    proof={'path':'inbox/'+tag+'/source.tar.gz','sha256':value.context['sourceSha256'],
+           'failedNativePolicy':'failed-native-retention-v1',
+           'mysqlFixtureStartAstSha256':'9262b5d7744d34fc34cf89ee23047f2f6a852201288cbd6505f0ad2c44b43a85'}
+    return value,proof
+
+
+def test_failed_native_mysql_object_uses_explicit_producer_proof_and_preserves_data(failed_native_mysql):
+    value,proof=failed_native_mysql
+    descriptor=resources.historical_mysql_fixture_descriptor(ROOT,value.context,IDENTITY,value.owner,value.cleanup,
+        value.row,value.data_metadata,source_proof=proof,failed_native=True)
+    descriptor['rawInspectSha256']=sha(raw([value.row]))
+    calls,inspect,remove,listing,references,data=callbacks(value)
+    original=copy.deepcopy(value.owner),copy.deepcopy(value.cleanup),list(value.data_metadata)
+    result=resources.historical_mysql_fixture_remove(descriptor,inspect,remove,listing,references,data)
+    assert result['status']=='REMOVED' and calls.removed==[value.owner['containerId']]
+    assert result['dataDirectoryPreserved'] is True and result['imagesPreserved'] is True and result['volumesPreserved'] is True
+    assert (value.owner,value.cleanup,value.data_metadata)==original
+    assert SECRET not in json.dumps(descriptor)
+
+
+def test_failed_native_mysql_proof_does_not_expand_default_historical_object_api(failed_native_mysql):
+    value,proof=failed_native_mysql
+    with pytest.raises(ValueError,match='Reviewed recent MySQL source'):
+        resources.historical_mysql_fixture_descriptor(ROOT,value.context,IDENTITY,value.owner,value.cleanup,
+            value.row,value.data_metadata,source_proof=proof)
+
+
+@pytest.mark.parametrize('field',['path','sha256','failedNativePolicy','mysqlFixtureStartAstSha256'])
+def test_failed_native_mysql_object_producer_or_source_drift_is_rejected_before_commands(failed_native_mysql,field):
+    value,proof=failed_native_mysql;proof[field]='unreviewed'
+    with pytest.raises(ValueError,match='producer differs'):
+        resources.historical_mysql_fixture_descriptor(ROOT,value.context,IDENTITY,value.owner,value.cleanup,
+            value.row,value.data_metadata,source_proof=proof,failed_native=True)
+
+
+def test_failed_native_mysql_remove_rechecks_explicit_producer_before_any_object_command(failed_native_mysql):
+    value,proof=failed_native_mysql
+    descriptor=resources.historical_mysql_fixture_descriptor(ROOT,value.context,IDENTITY,value.owner,value.cleanup,
+        value.row,value.data_metadata,source_proof=proof,failed_native=True)
+    descriptor['rawInspectSha256']=sha(raw([value.row]));descriptor['fixtureSourceProof']['mysqlFixtureStartAstSha256']='0'*64
+    calls,inspect,remove,listing,references,data=callbacks(value)
+    with pytest.raises(ValueError,match='producer differs'):
+        resources.historical_mysql_fixture_remove(descriptor,inspect,remove,listing,references,data)
+    assert calls.inspected==calls.removed==[] and calls.data==0

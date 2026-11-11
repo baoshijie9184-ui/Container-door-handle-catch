@@ -324,7 +324,7 @@ def test_actual_controller_input_reader_pins_both_original_files_and_computes_by
                 'originals.tar.gz': {'sha256': result['archiveSha256'], 'bytes': result['archiveBytes']}}}
 
 
-@pytest.mark.parametrize('operation', ['run', 'cleanup'])
+@pytest.mark.parametrize('operation', ['run', 'cleanup', 'observe'])
 def test_controller_flags_are_accepted_by_the_real_receiver_cli(operation, monkeypatch, capsys):
     flags = {'root': '/home/ecs-user/doorhandle-ci', 'tag': 'ci-1-' + 'a' * 12, 'commit': 'a' * 40,
         'source-sha256': 'b' * 64, 'instance-id': 'i-synthetic', 'machine-id': 'c' * 32, 'batch-receipt-sha256': 'd' * 64,
@@ -333,14 +333,17 @@ def test_controller_flags_are_accepted_by_the_real_receiver_cli(operation, monke
     received = []
     class Controller:
         def __init__(self, args): received.append(args)
-        def run(self): return {'status': 'synthetic-run'}
+        def run_supervised(self): return {'status': 'synthetic-run'}
         def cleanup(self): return {'status': 'synthetic-cleanup'}
+        def observe(self): return {'status': 'synthetic-observe'}
     arguments = ['restore-project-mysql.py', operation]
     for name, value in flags.items(): arguments += ['--' + name, value]
+    if operation == 'observe': arguments += ['--run-requested']
     monkeypatch.setattr(sys, 'argv', arguments); monkeypatch.setattr(restore, 'Recovery', Controller)
     monkeypatch.setattr(restore.signal, 'signal', lambda *_args: None)
     assert restore.main() == 0 and json.loads(capsys.readouterr().out)['status'] == 'synthetic-' + operation
     assert received[0].action == operation and received[0].manifest_bytes == 100 and received[0].archive_bytes == 200
+    assert received[0].run_requested is (operation == 'observe')
     assert received[0].fixture_settings == flags['fixture-settings'] and received[0].batch_receipt_sha256 == flags['batch-receipt-sha256']
 
 
@@ -365,3 +368,65 @@ def test_standard_jenkins_entry_wires_explicit_inputs_and_fresh_post_cleanup_aft
     assert "--fixture-settings '$FixtureSettings'" in helper and 'verificationReceiptSha256' in helper
     assert "Collect-ProjectSqlReceipt 'project-mysql-originals/restore-receipt.json'" in helper
     assert 'project-mysql-inputs.json' in helper and '$descriptor.inputs' in helper
+
+
+def test_three_schema_recovery_reuses_the_exact_base_supervision_and_read_only_observer():
+    for name in ('run_supervised', 'observe', 'publish_terminal', 'supervision_paths'):
+        assert getattr(restore.Recovery, name) is getattr(restore.existing.Recovery, name)
+    source = (ROOT / 'script/jenkins/restore-project-mysql.py').read_text()
+    assert "in ('cleanup', 'observe') and not self.owner_file.exists()" in source
+    assert "if args.action == 'cleanup' and controller and controller.state" in source
+    assert "signal.SIG_IGN if args.action == 'run'" in source
+
+
+def test_three_schema_controller_observes_same_run_before_finally_and_post_cleanup():
+    source = (ROOT / 'script/jenkins/preserve-project-mysql.ps1').read_text()
+    observer = source.split('function Observe-ProjectSqlRecovery {', 1)[1].split('function Collect-ProjectSqlReceipt',1)[0]
+    assert "'$recovery' observe $context $inputFlags" in observer and "'$recovery' run" not in observer
+    assert 'Assert-ProjectSqlContext $value' in observer and '$value.executionId' in observer and '$value.terminal' in observer
+    cleanup = source.split('function Collect-ProjectSqlCleanup {',1)[1].split("if($Mode -ceq 'Preserve')",1)[0]
+    assert cleanup.index('$null=Observe-ProjectSqlRecovery') < cleanup.index("$recovery 'cleanup'")
+    assert "$Operation -cne 'run' -or $LASTEXITCODE -ne 255" in source
+    assert '$observed=Observe-ProjectSqlRecovery' in source and 'return $observed.result' in source
+    assert 'artifacts/project-mysql-run-request.json' in source and '$requested=Test-ProjectSqlRunRequested' in observer
+    assert '--run-requested' in observer and "$value.status -ceq 'PENDING'" in observer
+    assert "(-not $requested -or $value.status -cne 'NOT_STARTED')" in observer
+    invoke=source.split('function Invoke-ProjectSqlRemote',1)[1].split('function Observe-ProjectSqlRecovery',1)[0]
+    assert invoke.index('Set-Content -LiteralPath $projectRunRequest') < invoke.index('$lines=@(Invoke-ProjectSql $ssh')
+    request=source.split('function Test-ProjectSqlRunRequested {',1)[1].split('function Collect-ProjectSqlReceipt',1)[0]
+    assert all('$request.'+name in request for name in ('release','commit','sourceSha256','verificationReceiptSha256','identity','batchReceiptSha256','manifestSha256','archiveSha256','runAttempted'))
+
+
+@pytest.mark.parametrize('run_requested',[False, True])
+def test_three_schema_observer_can_wait_for_a_supervised_creator_before_owner_publication(tmp_path, monkeypatch, run_requested):
+    work = tmp_path / 'work'; work.mkdir(); (work / 'project-mysql-recovery').mkdir()
+    monkeypatch.setattr(restore.packet, 'admit', lambda _: (work, {'release':'ci-1-'+'a'*12}))
+    monkeypatch.setattr(restore.packet, 'verified_inputs', lambda *_: pytest.fail('observer must not start SQL admission'))
+    monkeypatch.setattr(restore.shutil, 'which', lambda _: str(Path(sys.executable).resolve()))
+    monkeypatch.setattr(restore.existing, 'load_runtime', lambda: SimpleNamespace())
+    controller = restore.Recovery(SimpleNamespace(action='observe',run_requested=run_requested))
+    assert controller.state is None and controller.manifest is None and controller.specifications == {}
+    if run_requested:
+        result=controller.observe()
+        assert result['status']=='PENDING' and result['terminal'] is False
+    else:
+        with pytest.raises(ValueError, match='no supervisor proof'): controller.observe()
+
+
+def test_three_schema_observation_failure_does_not_implicitly_cancel_original_sql(monkeypatch, capsys):
+    calls = []
+    class Controller:
+        state = {'owned':True}
+        def __init__(self, _): pass
+        def observe(self): raise ValueError('unknown original operation')
+        def cleanup(self): calls.append('wrong cancellation')
+    argv=['restore-project-mysql.py','observe']
+    values={'root':'/home/ecs-user/ci','tag':'ci-1-'+'a'*12,'commit':'a'*40,'source-sha256':'b'*64,
+        'instance-id':'i-synthetic','machine-id':'c'*32,'batch-receipt-sha256':'d'*64,
+        'manifest-sha256':'e'*64,'archive-sha256':'f'*64,'manifest-bytes':'100','archive-bytes':'200',
+        'fixture-settings':'/home/ecs-user/private/fixtures.json'}
+    for name,value in values.items():argv+=['--'+name,value]
+    monkeypatch.setattr(sys,'argv',argv);monkeypatch.setattr(restore,'Recovery',Controller)
+    monkeypatch.setattr(restore.signal,'signal',lambda *_:None)
+    assert restore.main()==2 and calls==[]
+    assert json.loads(capsys.readouterr().out)['status']=='FAILED_OR_UNKNOWN'

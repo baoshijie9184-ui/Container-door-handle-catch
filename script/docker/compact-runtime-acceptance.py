@@ -454,6 +454,7 @@ class Runtime:
         self.stream_probes = module('runtime_collaboration_stream_probes', source / 'script/docker/compact-collaboration-stream-probes.py')
         self.common = module('runtime_schema_queries', source / 'script/docker/assignment-compat.py')
         self.acceptance = module('runtime_profile_contract', source / 'script/jenkins/compact-acceptance.py')
+        self.transport = module('runtime_transport_identity', source / 'script/jenkins/verify-remote.py')
         self.profile, self.profile_sha = self.acceptance.profile(source)
         self.identity = self.guard.ecs_identity({'instanceId': args.instance_id, 'machineId': args.machine_id})
         self.root, self.runtime = self.cutover.canonical(args.root), self.cutover.canonical(args.runtime)
@@ -1813,24 +1814,121 @@ print(json.dumps({'deleted':len(keys),'keysSha256':hashlib.sha256(json.dumps(sor
         self.owner['modelRevision'] = revision; self.owner['modelId'] = self.model_id; self.save()
 
 
+def runtime_execution_file(instance):
+    return instance.attempt / 'runtime-execution.json'
+
+
+def begin_runtime_execution(instance):
+    path = runtime_execution_file(instance)
+    require(not path.exists() and not path.is_symlink(), 'This runtime execution already exists; do not replay it')
+    value = {**instance.context(), 'operation': 'runtime-acceptance', 'executionId': uuid.uuid4().hex,
+        'runtime': str(instance.runtime), 'settingsSha256': instance.build['settingsSha256'],
+        'supervisor': {'pid': os.getpid(), 'startTicks': instance.transport.supervisor_start(os.getpid()),
+            'bootId': Path('/proc/sys/kernel/random/boot_id').read_text().strip()},
+        'status': 'RUNNING', 'startedAtUnix': time.time()}
+    instance.common.write_json(path, value)
+    return value
+
+
+def runtime_execution(instance):
+    value, _ = instance.guard.read_private(runtime_execution_file(instance))
+    require(all(value.get(key) == expected for key, expected in instance.context().items())
+        and value.get('operation') == 'runtime-acceptance' and value.get('runtime') == str(instance.runtime)
+        and value.get('settingsSha256') == instance.build['settingsSha256']
+        and type(value.get('executionId')) is str and re.fullmatch('[a-f0-9]{32}', value['executionId'])
+        and type(value.get('startedAtUnix')) in (int, float) and 0 < value['startedAtUnix'] <= time.time() + 5
+        and value.get('status') in ('RUNNING', 'PASS', 'FAILED'),
+        'Runtime execution belongs to another original operation')
+    supervisor = value.get('supervisor')
+    require(type(supervisor) is dict and set(supervisor) == {'pid', 'startTicks', 'bootId'}
+        and type(supervisor['pid']) is int and supervisor['pid'] > 1
+        and type(supervisor['startTicks']) is str and supervisor['startTicks'].isdigit()
+        and supervisor['bootId'] == Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
+        'Runtime supervisor identity differs')
+    return value
+
+
+def finish_runtime_execution(instance, initial, status, result):
+    value = runtime_execution(instance)
+    require(value == initial and status in ('PASS', 'FAILED'), 'Runtime execution changed before its terminal result')
+    instance.common.write_json(runtime_execution_file(instance),
+        {**value, 'status': status, 'result': result, 'finishedAtUnix': time.time()})
+
+
+def observe_runtime_execution(instance):
+    """Read the original runtime only; no prepare, cancellation or cleanup occurs."""
+    original = runtime_execution(instance)
+    # Reconnection observes the original execution window; it does not renew it.
+    remaining = 240 * 60 + 120 - max(0, time.time() - original['startedAtUnix'])
+    deadline = time.monotonic() + max(0, remaining)
+    while True:
+        value = runtime_execution(instance)
+        require(value['executionId'] == original['executionId'] and value['supervisor'] == original['supervisor'],
+                'Original runtime execution identity changed during observation')
+        if value['status'] in ('PASS', 'FAILED'):
+            result = value.get('result')
+            require(type(result) is dict and result.get('release') == instance.args.tag
+                and ((value['status'] == 'PASS' and result.get('status') == 'PASS')
+                     or (value['status'] == 'FAILED' and result.get('status') == 'FAILED_OR_UNKNOWN')),
+                'Original runtime terminal result is incomplete')
+            if value['status'] == 'PASS':
+                proof, checksum = instance.guard.read_private(instance.public_file)
+                require(checksum == result.get('runtimeReceiptSha256') and proof.get('status') == 'PASS'
+                    and all(proof.get(key) == expected for key, expected in instance.context().items()),
+                    'Original runtime PASS lacks its complete unchanged public receipt')
+            return {**instance.context(), **result, 'executionId': value['executionId'],
+                    'operation': 'runtime-acceptance', 'terminal': True}
+        supervisor = value['supervisor']
+        try:
+            alive = instance.transport.supervisor_start(supervisor['pid']) == supervisor['startTicks']
+        except (FileNotFoundError, ProcessLookupError):
+            alive = False
+        if not alive:
+            # Terminal publication can win the race with /proc disappearance.
+            if runtime_execution(instance)['status'] in ('PASS', 'FAILED'): continue
+            raise ValueError('Original runtime exited without terminal evidence; retain owned resources')
+        require(time.monotonic() < deadline, 'Original runtime observation timed out; retain owned resources')
+        instance.transport.progress({'release': instance.args.tag, 'operation': 'runtime-acceptance',
+            'executionId': value['executionId'], 'status': 'RUNNING', 'terminal': False})
+        time.sleep(5)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('phase', choices=('run', 'cleanup', 'status'))
+    parser.add_argument('phase', choices=('run', 'cleanup', 'status', 'observe'))
     for name in ('root', 'runtime', 'tag', 'commit', 'source-sha256', 'instance-id', 'machine-id', 'settings'):
         parser.add_argument('--' + name, required=True)
-    args = parser.parse_args(); instance = None
-    for event in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+    args = parser.parse_args(); instance = None; execution = None; heartbeat = None; done = threading.Event()
+    for event in (signal.SIGTERM, signal.SIGINT):
         signal.signal(event, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
+    signal.signal(signal.SIGHUP, signal.SIG_IGN if args.phase == 'run'
+                  else lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
     try:
         instance = Runtime(args)
         if args.phase == 'run':
+            execution = begin_runtime_execution(instance)
+            def keep_transport_active():
+                while not done.wait(30):
+                    instance.transport.progress({'release': args.tag, 'operation': 'runtime-acceptance',
+                        'executionId': execution['executionId'], 'status': 'RUNNING', 'terminal': False})
+            heartbeat = threading.Thread(target=keep_transport_active, daemon=True); heartbeat.start()
             result = instance.run()
+            finish_runtime_execution(instance, execution, 'PASS', result)
+        elif args.phase == 'observe':
+            result = observe_runtime_execution(instance)
+            instance.transport.progress(result)
+            return 0 if result['status'] == 'PASS' else 1
         elif args.phase == 'cleanup':
             require(instance.owner, 'No runtime attempt was prepared'); result = instance.cleanup()
         else:
             result = {'status': instance.owner['phase'] if instance.owner else 'NOT_PREPARED', 'release': args.tag}
-        print(json.dumps(result)); return 0
+        instance.transport.progress(result); return 0
     except BaseException as error:
+        if args.phase == 'observe':
+            # Observation failure is not authority to cancel the still-live original.
+            print(json.dumps({'status': 'UNKNOWN', 'release': args.tag, 'terminal': False,
+                              'errorType': type(error).__name__}))
+            return 2
         failure_sha = None
         if instance:
             phase = instance.owner.get('phase', 'UNKNOWN') if instance.owner else 'NOT_PREPARED'
@@ -1843,6 +1941,13 @@ def main():
                 failure_sha = instance.failure(error, phase)
             except BaseException:
                 pass
+        if instance and execution:
+            try:
+                finish_runtime_execution(instance, execution, 'FAILED', {
+                    'status': 'FAILED_OR_UNKNOWN', 'release': args.tag,
+                    'errorType': type(error).__name__, 'failureReceiptSha256': failure_sha})
+            except BaseException:
+                pass  # Unknown terminal state remains a failure and blocks automatic cleanup.
         if args.phase == 'cleanup':
             cleanup_sha = None
             if instance and instance.owner:
@@ -1857,6 +1962,9 @@ def main():
                 'cleanupReceiptSha256': cleanup_sha, 'failureReceiptSha256': failure_sha}))
         print('Runtime acceptance did not pass. Keep production gates closed and preserve private ECS evidence.', file=sys.stderr)
         return 2
+    finally:
+        done.set()
+        if heartbeat: heartbeat.join(timeout=5)
 
 
 if __name__ == '__main__':

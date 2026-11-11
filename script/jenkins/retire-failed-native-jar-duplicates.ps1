@@ -1,6 +1,6 @@
 param(
     [ValidateSet('Verified','Maintenance')][string]$Mode = 'Verified',
-    [ValidateSet('Historical','Recent','RetiredCopies','ClosedRuntime')][string]$CanonicalBatch = 'Historical',
+    [ValidateSet('Historical','Recent','RetiredCopies','ClosedRuntime','FailedNative')][string]$CanonicalBatch = 'Historical',
     [Parameter(Mandatory=$true)][string[]]$SshOptions,
     [Parameter(Mandatory=$true)][string]$Destination,
     [Parameter(Mandatory=$true)][string]$PortText,
@@ -34,6 +34,7 @@ Require-NativeJar ($Destination -cmatch '^[a-z_][a-z0-9_-]{0,31}@[A-Za-z0-9][A-Z
 Require-NativeJar ($RemoteRoot -cmatch '^/(home|srv|opt)/[A-Za-z0-9_./-]+$' -and $RemoteRoot -notmatch '(^|/)\.\.(/|$)|//' -and -not $RemoteRoot.EndsWith('/')) 'Invalid explicit ECS CI root.'
 Require-NativeJar ($Tag -cmatch '^ci-[1-9][0-9]*-[a-f0-9]{12}$' -and $Commit -cmatch '^[a-f0-9]{40}$' -and $Tag.EndsWith('-'+$Commit.Substring(0,12)) -and $SourceSha256 -cmatch '^[a-f0-9]{64}$') 'Invalid fixed source context.'
 Require-NativeJar ($SshOptions -ccontains 'StrictHostKeyChecking=yes' -and $SshOptions -ccontains 'HostKeyAlias=doorhandle-bj') 'Pinned ECS host authentication is required.'
+Require-NativeJar ($CanonicalBatch -cne 'FailedNative' -or $Mode -ceq 'Maintenance') 'Failed native retention requires source-only maintenance.'
 $instance=$env:DOORHANDLE_ECS_INSTANCE_ID; $machine=$env:DOORHANDLE_ECS_MACHINE_ID
 Require-NativeJar ($instance -cmatch '^i-[a-z0-9]+$' -and $machine -cmatch '^[a-f0-9]{32}$') 'Explicit expected ECS identity required.'
 $ssh=(Get-Command ssh.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
@@ -55,6 +56,7 @@ Require-NativeJar ([IO.Path]::IsPathFullyQualified($RetainedControlRoot) -and [I
 # preservation manifests reviewed for each selected closed batch.
 $reader=@'
 import gzip,hashlib,json,os,stat,sys,tarfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 def need(v,code='LOCAL_CONTROL_ADMISSION_REJECTED'):
  if not v:raise ValueError(code)
@@ -72,7 +74,7 @@ def unique(pairs):
  for k,v in pairs:need(k not in result);result[k]=v
  return result
 archive,commit,retained,jhome,remote,current,batch=sys.argv[1:]
-need(batch in ('Historical','Recent','RetiredCopies','ClosedRuntime'))
+need(batch in ('Historical','Recent','RetiredCopies','ClosedRuntime','FailedNative'))
 approved=[(117,'8c898996cc28ce30fd6531710511f833cccb4864','e1eec611a0dcbb93158d8e5a68fc5d16e6f96d65dcb82e6930f54abdd84d2e2c'),
  (118,'6481f7fa6021eb36592a081d04f385886c03412a','e73474da34762eedf1438c835dbc741091f02c69fb5c3664dbba6cca30395f8a'),
  (130,'9a588271dadb135ec4284392ef7b9c9c55ea511d','f53a73fa4ce45e44b666cbf963145b353f6e478c7cc594ca849b59bfe0b924d2'),
@@ -127,6 +129,29 @@ def closed_original(number,name):
 if batch=='ClosedRuntime':
  approved=[(204,'24f8eb4b02bf290c6dd4e186eb78c5f3c80f3b88',None),
   (207,'eb286c623177b9d1bc23fe88223d81862c00bc71','3c5c15b15c57544e7e7195059607d33b0c807989c2fb672d36d4c4db2eefe01a')]
+if batch=='FailedNative':
+ approved=[];current_number=int(current.split('-')[1]);builds=Path(jhome)/'jobs/doorhandle-java/builds'
+ for directory in sorted((p for p in builds.iterdir() if p.name.isdigit() and 221<=int(p.name)<current_number),key=lambda p:int(p.name),reverse=True):
+  raw=stable(directory/'build.xml');need(b'<!DOCTYPE' not in raw.upper() and b'<!ENTITY' not in raw.upper())
+  node=ET.fromstring(raw)
+  if node.findtext('result') not in ('FAILURE','ABORTED') or node.findtext('completed')!='true' or node.findtext('execution/done')!='true':continue
+  params={}
+  for item in node.findall('.//hudson.model.ParametersAction/parameters/*'):
+   key=item.findtext('name');need(key and key not in params);params[key]=item.findtext('value')
+  if any(params.get(k)!=v for k,v in {'ACTION':'verify-runtime','DOORHANDLE_CI_SCOPE':'mysql','PRODUCTION_RELEASE_ENABLED':'false'}.items()):continue
+  source=directory/'archive/artifacts/release.json'
+  if not source.is_file():continue
+  release=json.loads(stable(source),object_pairs_hook=unique);oldcommit=params.get('TRUSTED_COMMIT')
+  if not isinstance(oldcommit,str) or len(oldcommit)!=40 or release.get('commit')!=oldcommit or release.get('release')!='ci-'+directory.name+'-'+oldcommit[:12]:continue
+  jar=directory/'archive/artifacts/application.jar'
+  if not jar.is_file():continue
+  with jar.open('rb') as stream:
+   meta=os.fstat(stream.fileno());need(stat.S_ISREG(meta.st_mode) and meta.st_nlink==1 and 0<meta.st_size<=536870912)
+   digest=hashlib.sha256()
+   for block in iter(lambda:stream.read(1048576),b''):digest.update(block)
+   after=os.fstat(stream.fileno());need((after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns,after.st_ctime_ns,after.st_nlink)==(meta.st_dev,meta.st_ino,meta.st_size,meta.st_mtime_ns,meta.st_ctime_ns,meta.st_nlink) and digest.hexdigest()==release.get('applicationJarSha256'),'RETAINED_JENKINS_BINARY_DIFFERS')
+  approved.append((int(directory.name),oldcommit,None))
+  if len(approved)==16:break
 helpers={};wanted={'script/jenkins/retire-failed-native-jar-duplicates.py','script/jenkins/cleanup-ecs-builds.py','script/jenkins/verify-remote.py','script/docker/compact-build-resources.py'}
 class Bounded:
  def __init__(self,s):self.s,self.n=s,0
@@ -148,6 +173,13 @@ for number,oldcommit,preservation_sha in approved:
   for role,name in [('buildXml','build.xml'),('release','release.json'),('localBuild','local-build.json'),('fixtureCleanupPublic','fixture-cleanup.json')]:
    source=Path(jhome)/'jobs/doorhandle-java/builds'/str(number)/('build.xml' if role=='buildXml' else 'archive/artifacts/'+name)
    if batch=='ClosedRuntime':source,raw,origin=closed_original(number,name)
+   elif batch=='FailedNative' and role=='fixtureCleanupPublic' and not source.is_file():
+    recoveries=list(Path(retained).glob('ci-'+str(number)+'-recovery-cleanup-*.json'))
+    need(len(recoveries)<=1,'AMBIGUOUS_GUARDED_RECOVERY_PUBLIC_RECEIPT')
+    if not recoveries:continue
+    source=recoveries[0];raw=stable(source);proof=json.loads(raw,object_pairs_hook=unique)
+    need(set(proof)=={'status','commit','release','cleanupReceipt','cleanupReceiptSha256'} and proof['status']=='STOPPED' and proof['commit']==oldcommit and proof['release']==tag and proof['cleanupReceipt']==remote+'/verification/'+tag+'/checkout/work/compact-fixtures/cleanup-receipt.json','GUARDED_RECOVERY_PUBLIC_RECEIPT_DIFFERS')
+    origin='ACTUAL_GUARDED_RECOVERY_PUBLIC_RECEIPT'
    elif source.is_file():
     raw=stable(source);origin='ACTUAL_JENKINS_ORIGINAL'
    elif (folder/name).is_file():
@@ -328,11 +360,12 @@ $helper="$RemoteRoot/inbox/$Tag/retire-failed-native-jar-duplicates.py"
 $helperSha=$local.helpers.'script/jenkins/retire-failed-native-jar-duplicates.py'.sha256
 $common="--root '$RemoteRoot' --tag '$Tag' --commit '$Commit' --source-sha256 '$SourceSha256' --mode '$Mode' --instance-id '$instance' --machine-id '$machine' --current-receipt-sha256 '$currentReceiptSha'"
 if($CanonicalBatch -ceq 'ClosedRuntime') {$common+=" --jar-batch failed-204-207"}
+if($CanonicalBatch -ceq 'FailedNative') {$common+=" --jar-batch failed-native-retention-v1"}
 function Invoke-NativeJarPhase([string]$Phase,[string]$Flags='') {
     $guard="test `"`$(sha256sum '$helper' | cut -d ' ' -f 1)`" = '$helperSha' && "
     return (Invoke-NativeJar $ssh ($SshOptions+@('-p',$PortText,$Destination,"${guard}python3 -I -B '$helper' --phase '$Phase' $common $Flags")) | Select-Object -Last 1) | ConvertFrom-Json
 }
-$capturePhase=if($CanonicalBatch -cin @('Recent','RetiredCopies','ClosedRuntime')){'capture-canonical-request'}else{'capture-request'}
+$capturePhase=if($CanonicalBatch -cin @('Recent','RetiredCopies','ClosedRuntime','FailedNative')){'capture-canonical-request'}else{'capture-request'}
 $captured=Invoke-NativeJarPhase $capturePhase "--local-spec-sha256 '$specSha'"
 Require-NativeJar ($captured.status -ceq 'CAPTURED' -and $captured.request.sha256 -cmatch '^[a-f0-9]{64}$') 'The actual ECS control snapshot was not captured.'
 $requestSha=$captured.request.sha256
@@ -373,6 +406,33 @@ function Copy-NativeJarEvidence($Observed) {
             Require-NativeJar ((Get-Item -LiteralPath $file).Length -eq $binding.bytes -and (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant() -ceq $binding.sha256) 'A frozen builder inspection changed during collection.'
         }
     }
+}
+if($CanonicalBatch -ceq 'FailedNative') {
+    $failedPlans=@{};$failedResults=@{};$failedError=$false;$failedStage='admission'
+    try {
+        Require-NativeJar (@($local.skipped).Count -eq 0 -and @($captured.skipped | Where-Object {$_.reason -cne 'FAILED_NATIVE_BINARIES_NOT_PRESENT'}).Count -eq 0) 'Failed native retention lacks complete terminal originals or has unknown binary state.'
+        foreach($step in @(@('fixtures','plan-recent-fixtures','apply-recent-fixtures'),@('copies','plan','apply'),@('canonical','plan-canonical','apply-canonical'))) {
+            $key=$step[0];$failedStage=$key+'-plan'
+            $planned=Invoke-NativeJarPhase $step[1] "--request-sha256 '$requestSha'"
+            Require-NativeJar ($planned.status -ceq 'PLANNED' -and $planned.failedNativePolicy -ceq 'failed-native-retention-v1' -and $planned.plan.sha256 -cmatch '^[a-f0-9]{64}$') 'Failed native retention did not produce its exact plan.'
+            Require-NativeJar (@($planned.skipped | Where-Object {$key -cne 'copies' -or $_.reason -cne 'FAILED_NATIVE_COPY_NOT_PRESENT'}).Count -eq 0) 'An eligible old binary or fixture could not be admitted; retain the batch.'
+            $failedPlans[$key]=$planned;$failedStage=$key+'-apply'
+            $applied=Invoke-NativeJarPhase $step[2] "--request-sha256 '$requestSha' --plan-sha256 '$($planned.plan.sha256)'"
+            Require-NativeJar ($applied.status -cin @('REMOVED','NO_ACTION') -and $applied.failedNativePolicy -ceq 'failed-native-retention-v1' -and $applied.receipt.sha256 -cmatch '^[a-f0-9]{64}$') 'Failed native retention did not complete; preserve its original partial evidence.'
+            $failedResults[$key]=$applied
+        }
+    } catch {$failedError=$true}
+    finally {Copy-NativeJarEvidence (Invoke-NativeJarPhase 'inspect')}
+    Require-NativeJar (-not $failedError -and $failedResults.Count -eq 3) ('Failed native retention failed or is unknown at '+$failedStage+'; original controls are retained.')
+    $receipts=@{}
+    foreach($step in @(@('fixtures','native-jar-duplicate-fixture-object-receipt.json'),@('copies','native-jar-duplicate-receipt.json'),@('canonical','native-jar-duplicate-canonical-receipt.json'))) {
+        $receipt=Get-Content -LiteralPath (Join-Path $workspace ('artifacts/'+$step[1])) -Raw -Encoding utf8 | ConvertFrom-Json -Depth 24
+        Require-NativeJar ($receipt.status -cin @('REMOVED','NO_ACTION') -and $receipt.failedNativePolicy -ceq 'failed-native-retention-v1' -and $receipt.current.release -ceq $Tag -and $receipt.current.commit -ceq $Commit -and $receipt.current.sourceSha256 -ceq $SourceSha256 -and $receipt.identity.instanceId -ceq $instance -and $receipt.identity.machineId -ceq $machine -and $receipt.requestSha256 -ceq $requestSha -and $receipt.planSha256 -ceq $failedPlans[$step[0]].plan.sha256 -and $null -eq $receipt.failure) 'Collected failed native receipt differs from its exact successful operation.'
+        $receipts[$step[0]]=$receipt
+    }
+    Require-NativeJar ($receipts.fixtures.dataDirectoriesPreserved -eq $true -and $receipts.fixtures.imagesPreserved -eq $true -and $receipts.fixtures.volumesPreserved -eq $true -and $receipts.fixtures.jarDeletionPerformed -eq $false -and $receipts.copies.inboxKeepersPreserved -eq $true -and $receipts.canonical.sourceArchivesDataAndReportsHaveNoDeletionApi -eq $true -and $receipts.canonical.testsRunByRetirement -eq $false) 'Failed native retention lacks required preservation proof.'
+    [ordered]@{schemaVersion=1;kind='doorhandle-failed-native-retention-ci';policy='failed-native-retention-v1';current=$spec.current;identity=$spec.identity;status='COMPLETE';selectedFailures=$spec.candidates.Count;alreadyAbsent=@($captured.skipped);deletedJarFiles=(@($receipts.copies.deleted).Count+@($receipts.canonical.deleted).Count);candidateAllocatedBytes=($failedPlans.copies.candidateAllocatedBytes+$failedPlans.canonical.candidateAllocatedBytes);retiredMysqlObjects=@($receipts.fixtures.removed).Count;localControlCustody=$local.custody;sourceArchivesDataAndReportsHaveNoDeletionApi=$true;imagesPreserved=$true;volumesPreserved=$true;testsRunByRetirement=$false;binaryRebuildByteIdentityClaimed=$false} | ConvertTo-Json -Depth 16 | Set-Content -LiteralPath (Join-Path $workspace 'artifacts/native-jar-duplicate-ci.json') -Encoding utf8
+    return
 }
 if($CanonicalBatch -ceq 'ClosedRuntime') {
     $closedPlans=@{};$closedResults=@{};$closedFailed=$false;$closedStage='builder-plan'

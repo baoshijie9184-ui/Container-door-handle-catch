@@ -1308,7 +1308,19 @@ def historical_mysql_fixture_projection(row):
                    for mount in row.get('Mounts', [])]}
 
 
-def recent_mysql_fixture_source(context, proof):
+def recent_mysql_fixture_source(context, proof, *, failed_native=False):
+    if failed_native:
+        tag = re.fullmatch(r'ci-([1-9][0-9]*)-([a-f0-9]{12})', context.get('release', ''))
+        require(tag is not None and int(tag[1]) >= 221 and type(context.get('commit')) is str
+                and re.fullmatch(r'[a-f0-9]{40}', context['commit']) and context['commit'].startswith(tag[2])
+                and type(context.get('sourceSha256')) is str and SHA.fullmatch(context['sourceSha256']),
+                'Failed native MySQL source context differs')
+        expected = {'path': 'inbox/' + context['release'] + '/source.tar.gz', 'sha256': context['sourceSha256'],
+                    'failedNativePolicy': 'failed-native-retention-v1',
+                    'mysqlFixtureStartAstSha256': '9262b5d7744d34fc34cf89ee23047f2f6a852201288cbd6505f0ad2c44b43a85'}
+        require(type(proof) is dict and all(proof.get(key) == value for key, value in expected.items()),
+                'Reviewed failed native MySQL producer differs')
+        return expected
     registered = RECENT_MYSQL_FIXTURE_SOURCES.get(context.get('release'))
     require(registered is not None and registered[0] == context.get('commit')
             and type(context.get('sourceSha256')) is str and SHA.fullmatch(context['sourceSha256']),
@@ -1324,10 +1336,12 @@ def recent_mysql_fixture_source(context, proof):
     return expected
 
 
-def historical_mysql_fixture_descriptor(root, context, identity, owner, cleanup, row, data_metadata, *, source_proof=None):
+def historical_mysql_fixture_descriptor(root, context, identity, owner, cleanup, row, data_metadata, *, source_proof=None,
+                                       failed_native=False):
     """Admit an already stopped fixture object; its bind directory has no deletion API."""
     historical = context.get('release') in HISTORICAL_BUILDERS and HISTORICAL_BUILDERS[context['release']] == context.get('commit')
-    recent_source = None if historical else recent_mysql_fixture_source(context, source_proof)
+    recent_source = None if historical else recent_mysql_fixture_source(context, source_proof,
+        **({'failed_native': True} if failed_native else {}))
     require(all(document.get(key) == value for document in (owner, cleanup)
                 for key, value in {**context, 'identity': identity}.items()), 'Historical MySQL source or host differs')
     work = str(Path(root) / 'verification' / context['release'] / 'checkout/work/compact-fixtures')
@@ -1388,13 +1402,15 @@ def historical_mysql_fixture_descriptor(root, context, identity, owner, cleanup,
     return {**context, 'identity': identity, 'containerId': cid, 'sourceContainerId': source, 'ownerToken': token,
             'dataDirectory': data, 'dataMetadata': data_metadata, 'inspectProjection': projection,
             'inspectSha256': hashlib.sha256(encoded(projection)).hexdigest(), 'preservedData': True,
-            **({'fixtureSourceProof': recent_source} if recent_source is not None else {})}
+            **({'fixtureSourceProof': recent_source} if recent_source is not None else {}),
+            **({'failedNativePolicy': 'failed-native-retention-v1'} if failed_native else {})}
 
 
 def historical_mysql_fixture_remove(descriptor, inspect_fn, remove_fn, list_fn, references_fn, data_fn):
     cid = descriptor['containerId']
     if descriptor.get('release') not in HISTORICAL_BUILDERS or HISTORICAL_BUILDERS[descriptor['release']] != descriptor.get('commit'):
-        recent_mysql_fixture_source(descriptor, descriptor.get('fixtureSourceProof'))
+        recent_mysql_fixture_source(descriptor, descriptor.get('fixtureSourceProof'),
+            **({'failed_native': True} if descriptor.get('failedNativePolicy') == 'failed-native-retention-v1' else {}))
     require(SHA.fullmatch(cid) and cid != descriptor['sourceContainerId']
             and SHA.fullmatch(descriptor.get('rawInspectSha256', '')), 'Reviewed MySQL retirement descriptor required')
     def unchanged():
