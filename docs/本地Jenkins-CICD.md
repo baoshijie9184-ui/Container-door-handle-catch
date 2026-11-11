@@ -1,4 +1,5 @@
 # 本地 Jenkins CI/CD 约定
+2026-11-11 #225完整源码验证终态FAILURE：Java926通过、713条件跳过；Python3,827通过、24条件跳过、11失败，双前端与四份原件恢复尚未进入。10项新增运行传输测试在容器内把当前PID当作宿主监督PID，未满足原PID>1身份契约；另1项旧制品回收测试把结构化custody对象误断言为字符串。正在集中纠正测试夹具和完整元数据断言，不放宽生产身份或清理门。260份归档中259份非JAR原件已在D盘保全，工具实际STOPPED且remaining为空，ECS已实际Stopped/StopCharging。下一轮仍由新固定提交完整source验收，未通过前不进入维护或fullruntime。正式压测继续延后，四账号及原功能验收范围不变。
 
 构建制品保留现沿用维护ACTION `reclaim-build-outputs`，内部选择`FailedNative`，不再固定重跑已成功消费的#204/#207批次。选择器读取保留的实际Jenkins失败/终止原生构建（`verify-runtime/mysql`且生产发布为false）、保留的原JAR及已审核发布配方；旧`Historical`、`Recent`、`RetiredCopies`、`ClosedRuntime`入口和默认保留inbox keeper的用法保持。新路径先按原归属移除停止的隔离MySQL对象但保目录/卷，再删除再生成副本，最后退役未发布inbox JAR，逐阶段归档原plan/receipt/journal。源归档、业务数据、报告、镜像及当前/回滚发布制品不在删除范围。若原post失败而稍后guarded收尾成功，使用D盘真实恢复公共回执并核服务器最终SHA，不把原C盘归档改成成功。缺原件、实际仍运行或有发布引用时保留并失败；已经不存在的二进制只记录无操作，不计新增回收量。
 

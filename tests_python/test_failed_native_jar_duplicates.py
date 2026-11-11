@@ -1996,7 +1996,9 @@ def test_actual_controller_reader_admits_failed_native_argument_and_preserves_gu
     if guarded:
         row=result['rows'][0]
         assert row['release']==context['release'] and row['commit']==context['commit']
-        assert result['custody'][0]['controls']['fixtureCleanupPublic']=='ACTUAL_GUARDED_RECOVERY_PUBLIC_RECEIPT'
+        assert result['custody'][0]['controls']['fixtureCleanupPublic']=={
+            'origin':'ACTUAL_GUARDED_RECOVERY_PUBLIC_RECEIPT',
+            'bytes':len(encoded(public)), 'sha256':sha(encoded(public))}
         assert Path(row['files']['fixtureCleanupPublic']['source']).parent==retained
         assert not (artifacts/'fixture-cleanup.json').exists()
         assert (artifacts/'application.jar').read_bytes()==jar

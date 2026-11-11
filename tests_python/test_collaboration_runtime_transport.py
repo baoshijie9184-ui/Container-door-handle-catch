@@ -279,7 +279,11 @@ def test_fixture_account_count_is_bounded_before_database_access(count):
 
 
 @pytest.fixture
-def original_runtime(tmp_path):
+def original_runtime(tmp_path, monkeypatch):
+    # The test runner can be PID 1 in its disposable container. Runtime's real
+    # supervisor runs on the ECS host and must have a non-init kernel identity.
+    supervisor_pid = 4321
+    monkeypatch.setattr(runtime, 'os', SimpleNamespace(**{**vars(os), 'getpid': lambda: supervisor_pid}))
     attempt = tmp_path / 'original'; attempt.mkdir()
     context = dict(schemaVersion=1, kind='doorhandle-compact-runtime-acceptance', release='ci-224-' + 'a' * 12,
         commit='a' * 40, sourceSha256='b' * 64, identity={'instanceId': 'i-runtime', 'machineId': 'c' * 32},
@@ -299,12 +303,14 @@ def original_runtime(tmp_path):
                           runtimeReceiptSha256=runtime.sha_file(instance.public_file))
         else: result = dict(status='FAILED_OR_UNKNOWN', release=instance.args.tag, errorType='KeyboardInterrupt')
         runtime.finish_runtime_execution(instance, initial, status, result)
-    return SimpleNamespace(instance=instance, write=write, complete=complete, progress=progress)
+    return SimpleNamespace(instance=instance, write=write, complete=complete, progress=progress,
+                           supervisor_pid=supervisor_pid)
 
 
 def test_runtime_supervision_records_current_identity_and_never_replays_an_existing_operation(original_runtime):
     ctx = original_runtime; value = runtime.begin_runtime_execution(ctx.instance)
-    assert value['supervisor']['pid'] == os.getpid() and value['supervisor']['startTicks'] == '1234'
+    assert value['supervisor']['pid'] == ctx.supervisor_pid > 1 and value['supervisor']['startTicks'] == '1234'
+    assert runtime.runtime_execution(ctx.instance) == value
     assert value['operation'] == 'runtime-acceptance' and value['status'] == 'RUNNING'
     with pytest.raises(ValueError, match='do not replay'): runtime.begin_runtime_execution(ctx.instance)
 
@@ -334,7 +340,7 @@ def test_runtime_observation_refuses_another_execution_identity(original_runtime
 
 def test_runtime_observation_refuses_a_reused_supervisor_pid_without_cleanup(original_runtime):
     ctx = original_runtime; runtime.begin_runtime_execution(ctx.instance)
-    ctx.instance.transport.supervisor_start = lambda _: 'other-start'
+    ctx.instance.transport.supervisor_start = lambda _: '5678'
     with pytest.raises(ValueError, match='without terminal evidence'): runtime.observe_runtime_execution(ctx.instance)
 
 
