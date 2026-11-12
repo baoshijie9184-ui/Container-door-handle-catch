@@ -20,6 +20,7 @@ import subprocess
 import sys
 import time
 
+LOADED_SOURCE = None if __name__ == '_approved_worker' else Path(__file__).read_bytes()
 BATCH = 'derived-mysql-221-222-235-238-247-v1'
 ROOT = Path('/home/ecs-user/doorhandle-ci')
 INSTANCE = 'i-2zeieuov2aum486jm1ek'
@@ -172,22 +173,98 @@ def remove_tree(item):
         os.close(parent)
 
 
+def process_references(inventories, proc=Path('/proc')):
+    """Administrator metadata check for every user, including root and MySQL.
+
+    Paths and inode identities cover chroot/mount aliases. Never return argv,
+    map contents, descriptor names, or unrelated process paths to the controller.
+    ``proc`` is an internal synthetic-test injection, not a CLI/root request.
+    """
+    need(os.getuid() == 0, 'ROOT_REFERENCE_PROBE_REQUIRED')
+    roots = [Path(item['path']) for item in inventories]
+    inode_keys = set()
+    for item in inventories:
+        for meta in (item['rootMetadata'], *(row['metadata'] for row in item['entries'])):
+            inode_keys.add((meta[0], meta[1]))
+    map_keys = {(os.major(dev), os.minor(dev), inode) for dev, inode in inode_keys}
+    def refers(value):
+        text = os.fsdecode(value).removesuffix(' (deleted)')
+        if '=' in text and not text.startswith('/'): text = text.split('=', 1)[1]
+        path = Path(text)
+        return path.is_absolute() and any(path == root or path.is_relative_to(root) for root in roots)
+    def inode_ref(path):
+        info = os.stat(path)
+        return (info.st_dev, info.st_ino) in inode_keys
+    def bounded(path, maximum):
+        with path.open('rb') as stream: raw = stream.read(maximum + 1)
+        need(len(raw) <= maximum, 'PROCESS_METADATA_BOUND_EXCEEDED')
+        return raw
+    def process_state(entry):
+        raw = bounded(entry / 'stat', 4096)
+        fields = raw.rsplit(b')', 1)[1].split()
+        need(raw.split(b' ', 1)[0] == entry.name.encode('ascii') and len(fields) >= 20, 'PROCESS_STAT_INVALID')
+        return fields[0].decode('ascii'), int(fields[6]), fields[19].decode('ascii')
+    entries = list(proc.iterdir()); need(len(entries) <= 65536, 'PROCESS_COUNT_BOUND_EXCEEDED')
+    checked = 0; users = set()
+    for entry in entries:
+        if not entry.name.isdecimal() or int(entry.name) == os.getpid(): continue
+        try:
+            before = entry.stat(); state, flags, ticks = process_state(entry)
+            if state in ('Z', 'X') or flags & 0x00200000: continue  # No userspace references.
+            for name in ('cwd', 'root'):
+                pointer = entry / name
+                need(not refers(os.readlink(pointer)) and not inode_ref(pointer), 'ACTIVE_PROCESS_DIRECTORY_REFERENCE')
+            argv = bounded(entry / 'cmdline', MIB)
+            need(not any(refers(arg) for arg in argv.split(b'\0') if arg), 'ACTIVE_PROCESS_ARGUMENT_REFERENCE')
+            descriptors = list((entry / 'fd').iterdir())
+            need(len(descriptors) <= 8192, 'PROCESS_DESCRIPTOR_BOUND_EXCEEDED')
+            for descriptor in descriptors:
+                try:
+                    need(not refers(os.readlink(descriptor)) and not inode_ref(descriptor), 'ACTIVE_PROCESS_FILE_REFERENCE')
+                except (FileNotFoundError, ProcessLookupError):
+                    try: descriptor.lstat()
+                    except (FileNotFoundError, ProcessLookupError): continue
+                    raise ValueError('PROCESS_DESCRIPTOR_CHANGED_DURING_PROBE')
+            maps = bounded(entry / 'maps', 16 * MIB)
+            for line in maps.splitlines():
+                fields = line.split(None, 5)
+                need(len(fields) >= 5, 'PROCESS_MAP_METADATA_INVALID')
+                major, minor = (int(value, 16) for value in fields[3].split(b':'))
+                need((major, minor, int(fields[4])) not in map_keys
+                     and not (len(fields) == 6 and refers(fields[5])), 'ACTIVE_PROCESS_MAP_REFERENCE')
+            after = entry.stat(); _, _, after_ticks = process_state(entry)
+            need((before.st_dev, before.st_ino, before.st_uid) == (after.st_dev, after.st_ino, after.st_uid)
+                 and ticks == after_ticks, 'PROCESS_IDENTITY_CHANGED_DURING_PROBE')
+            checked += 1; users.add(before.st_uid)
+        except (FileNotFoundError, ProcessLookupError):
+            if not entry.exists(): continue
+            state, flags, _ = process_state(entry)
+            need(state in ('Z', 'X') or flags & 0x00200000, 'LIVE_PROCESS_METADATA_UNAVAILABLE')
+    return {'status': 'QUIESCENT', 'scope': 'ALL_UIDS_CLOSED_DATA_DIRECTORIES',
+            'processesChecked': checked, 'uidsChecked': sorted(users)}
+
+
 def root_worker(request):
     need(os.getuid() == 0 and request.get('batch') == BATCH
          and Path('/etc/machine-id').read_text().strip() == MACHINE, 'APPROVED_ROOT_BATCH_REQUIRED')
     phase = request.get('phase'); need(phase in ('inventory', 'remove'), 'ROOT_OPERATION_REFUSED')
     if phase == 'inventory':
         need(set(request) == {'phase', 'batch'}, 'ARBITRARY_ROOT_ARGUMENT_REFUSED')
-        return [tree(release) for release in TARGETS]
+        targets = [tree(release) for release in TARGETS]
+        return {'targets': targets, 'processProbe': process_references(targets)}
     need(set(request) == {'phase', 'batch', 'target'}, 'ARBITRARY_ROOT_ARGUMENT_REFUSED')
     item = request['target']; need(item.get('release') in TARGETS, 'CLOSED_BATCH_TARGET_REQUIRED')
+    need(tree(item['release']) == item, 'DERIVED_TREE_CHANGED_AFTER_PLAN')
+    probe = process_references([item])
     remove_tree(item)
-    return {'release': item['release'], 'status': 'REMOVED', 'allocatedBytesBefore': item['allocatedBytes']}
+    return {'release': item['release'], 'status': 'REMOVED', 'allocatedBytesBefore': item['allocatedBytes'],
+            'processProbe': probe}
 
 
 def privileged(request):
-    source = read(Path(__file__).absolute(), MIB)
-    payload = source + b'\nprint(json.dumps(root_worker(json.loads(' + repr(encoded(request).decode()).encode() + b'))))\n'
+    need(os.getuid() == 1000 and type(LOADED_SOURCE) is bytes
+         and read(Path(__file__).absolute(), MIB) == LOADED_SOURCE, 'ADMITTED_PRIVILEGED_SOURCE_CHANGED')
+    payload = LOADED_SOURCE + b'\nprint(json.dumps(root_worker(json.loads(' + repr(encoded(request).decode()).encode() + b'))))\n'
     # The timeout itself has administrator identity, so it can stop its own
     # privileged child before the unprivileged transport deadline expires.
     command = ['sudo', '-n', 'timeout', '--signal=TERM', '--kill-after=2s', '90s', sys.executable, '-I', '-B', '-c',
@@ -257,7 +334,8 @@ def keeper_binding(release):
 
 def fixed_helpers(args):
     import tarfile
-    source = read(ROOT / 'inbox' / args.tag / 'source.tar.gz', 128 * MIB)
+    # Maintenance deliberately uses a separate source transport from runtime CI.
+    source = read(ROOT / 'inbox' / args.tag / 'cleanup-source.tar.gz', 128 * MIB)
     need(digest(source) == args.source_sha256, 'FIXED_SOURCE_CHANGED')
     import io
     names = ('retire-derived-mysql-data.py', 'cleanup-ecs-builds.py', 'verify-remote.py')
@@ -276,7 +354,7 @@ def fixed_helpers(args):
         path = ROOT / 'inbox' / args.tag / name
         need(read(path, MIB) == bodies[name], 'FIXED_HELPER_BYTES_DIFFER')
         if name == names[0]:
-            need(Path(__file__).absolute() == path, 'FIXED_EXECUTOR_REQUIRED')
+            need(Path(__file__).absolute() == path and bodies[name] == LOADED_SOURCE, 'FIXED_EXECUTOR_REQUIRED')
             continue
         spec = importlib.util.spec_from_file_location('derived_' + name.replace('-', '_'), path)
         module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module); modules[name] = module
@@ -327,15 +405,18 @@ def run(args):
             attempts.enter_context(attempt_lock(release))
         if args.phase == 'plan':
             need(not output.exists(), 'FRESH_DERIVED_RETIREMENT_REQUIRED'); output.mkdir(mode=0o700)
-            keepers = admitted(); inventory = privileged({'phase': 'inventory', 'batch': BATCH})
+            keepers = admitted(); measurement = privileged({'phase': 'inventory', 'batch': BATCH})
+            inventory = measurement['targets']
+            need(measurement['processProbe']['status'] == 'QUIESCENT', 'ALL_UID_REFERENCE_PROOF_REQUIRED')
             need([item['release'] for item in inventory] == list(TARGETS), 'COMPLETE_CLOSED_INVENTORY_REQUIRED')
             plan = {'batch': BATCH, 'release': args.tag, 'commit': args.commit, 'sourceSha256': args.source_sha256,
-                    'identity': identity, 'keepers': keepers, 'targets': inventory}
+                    'identity': identity, 'keepers': keepers, 'targets': inventory,
+                    'processProbe': measurement['processProbe']}
             write(plan_file, plan)
             public = {key: plan[key] for key in ('batch', 'release', 'commit', 'sourceSha256', 'identity')}
             public.update(planSha256=digest(encoded(plan)), targets=[{key: item[key] for key in
                 ('release', 'path', 'allocatedBytes', 'files', 'inventorySha256')} for item in inventory],
-                sourceSqlAndReportsRetained=True)
+                sourceSqlAndReportsRetained=True, processProbe=measurement['processProbe'])
             write(public_file, public)
             return {'status': 'PLANNED', 'file': str(public_file), 'privatePlanSha256': digest(encoded(plan))}
         raw = read(plan_file, 8 * MIB); plan = json.loads(raw)
@@ -353,7 +434,10 @@ def run(args):
                    'planSha256': args.plan_sha256, 'removed': [], 'sourceSqlAndReportsRetained': True,
                    'availableBytesBefore': os.statvfs(ROOT).f_bavail * os.statvfs(ROOT).f_frsize}
         try:
-            need(privileged({'phase': 'inventory', 'batch': BATCH}) == plan['targets'], 'TARGETS_CHANGED_AFTER_PLAN')
+            measurement = privileged({'phase': 'inventory', 'batch': BATCH})
+            need(measurement['processProbe']['status'] == 'QUIESCENT'
+                 and measurement['targets'] == plan['targets'], 'TARGETS_CHANGED_AFTER_PLAN')
+            receipt['processProbe'] = measurement['processProbe']
             for item in plan['targets']:
                 admitted()
                 receipt['removed'].append(privileged({'phase': 'remove', 'batch': BATCH, 'target': item}))

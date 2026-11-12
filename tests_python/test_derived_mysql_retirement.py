@@ -1,9 +1,12 @@
 """Closed, owned test-replica retirement. Executed by Jenkins on ECS only."""
 import importlib.util
+from contextlib import nullcontext
+import io
 import json
 import os
 from pathlib import Path
 import stat
+import tarfile
 from types import SimpleNamespace
 
 import pytest
@@ -37,14 +40,14 @@ def test_privileged_worker_rejects_every_other_release(root_identity, release):
         retirement.root_worker({'phase': 'remove', 'batch': retirement.BATCH, 'target': {'release': release}})
 
 
-@pytest.mark.parametrize('request', [
+@pytest.mark.parametrize('payload', [
     {'phase': 'inventory', 'batch': retirement.BATCH, 'path': '/var/lib/mysql'},
     {'phase': 'delete-anything', 'batch': retirement.BATCH},
     {'phase': 'inventory', 'batch': 'all-databases'},
 ])
-def test_privileged_worker_refuses_extra_arguments_or_another_operation(root_identity, request):
+def test_privileged_worker_refuses_extra_arguments_or_another_operation(root_identity, payload):
     with pytest.raises(ValueError):
-        retirement.root_worker(request)
+        retirement.root_worker(payload)
 
 
 @pytest.fixture
@@ -205,3 +208,143 @@ def test_observation_rejects_another_source_terminal(observation_attempt):
         {**attempt.binding, 'status': 'COMPLETE', 'sourceSha256': '0' * 64}))
     with pytest.raises(ValueError, match='TERMINAL_BINDING_DIFFERS'):
         retirement.run(attempt.args)
+
+
+@pytest.fixture
+def fixed_maintenance_source(tmp_path, monkeypatch):
+    args = SimpleNamespace(tag='ci-273-' + 'a' * 12, commit='a' * 40)
+    inbox = tmp_path / 'inbox' / args.tag; inbox.mkdir(parents=True)
+    bodies = {'retire-derived-mysql-data.py': b'# approved closed worker\n',
+              'cleanup-ecs-builds.py': b'SENTINEL = "cleanup"\n', 'verify-remote.py': b'SENTINEL = "verifier"\n'}
+    data = io.BytesIO()
+    with tarfile.open(fileobj=data, mode='w:gz', pax_headers={'comment': args.commit}) as archive:
+        for name, body in bodies.items():
+            entry = tarfile.TarInfo('script/jenkins/' + name); entry.size = len(body)
+            archive.addfile(entry, io.BytesIO(body)); (inbox / name).write_bytes(body)
+    raw = data.getvalue(); (inbox / 'cleanup-source.tar.gz').write_bytes(raw)
+    args.source_sha256 = retirement.digest(raw)
+    monkeypatch.setattr(retirement, 'ROOT', tmp_path)
+    monkeypatch.setattr(retirement, '__file__', str(inbox / 'retire-derived-mysql-data.py'))
+    monkeypatch.setattr(retirement, 'LOADED_SOURCE', bodies['retire-derived-mysql-data.py'])
+    return SimpleNamespace(args=args, inbox=inbox)
+
+
+def test_fixed_helper_admission_uses_the_actual_maintenance_transport(fixed_maintenance_source):
+    state = fixed_maintenance_source
+    assert not (state.inbox / 'source.tar.gz').exists()
+    helpers = retirement.fixed_helpers(state.args)
+    assert helpers['cleanup-ecs-builds.py'].SENTINEL == 'cleanup'
+    assert helpers['verify-remote.py'].SENTINEL == 'verifier'
+
+
+@pytest.mark.parametrize('damage', ['commit', 'helper', 'loaded-source'])
+def test_fixed_helper_rejects_changed_archive_context_or_execution_bytes(fixed_maintenance_source, monkeypatch, damage):
+    state = fixed_maintenance_source
+    if damage == 'commit': state.args.commit = 'b' * 40
+    elif damage == 'helper': (state.inbox / 'cleanup-ecs-builds.py').write_bytes(b'# replaced')
+    else: monkeypatch.setattr(retirement, 'LOADED_SOURCE', b'# another loaded revision')
+    with pytest.raises(ValueError): retirement.fixed_helpers(state.args)
+
+
+def test_privileged_payload_uses_only_the_admitted_loaded_bytes(monkeypatch):
+    approved = b'# admitted fixed worker\n'; captured = []
+    monkeypatch.setattr(retirement, 'LOADED_SOURCE', approved)
+    monkeypatch.setattr(retirement, 'read', lambda *_: approved)
+    def executed(command, **options):
+        captured.append((command, options['input']))
+        return SimpleNamespace(returncode=0, stdout=b'{"status":"synthetic"}')
+    monkeypatch.setattr(retirement.subprocess, 'run', executed)
+    result = retirement.privileged({'phase': 'inventory', 'batch': retirement.BATCH})
+    assert result['status'] == 'synthetic' and len(captured) == 1
+    assert captured[0][1].startswith(approved)
+    assert captured[0][0][:6] == ['sudo', '-n', 'timeout', '--signal=TERM', '--kill-after=2s', '90s']
+
+
+def test_changed_helper_never_becomes_a_new_privileged_payload(monkeypatch):
+    monkeypatch.setattr(retirement, 'LOADED_SOURCE', b'# admitted')
+    monkeypatch.setattr(retirement, 'read', lambda *_: b'# unapproved replacement')
+    monkeypatch.setattr(retirement.subprocess, 'run', lambda *_args, **_kw: pytest.fail('No privilege escalation after drift'))
+    with pytest.raises(ValueError, match='ADMITTED_PRIVILEGED_SOURCE_CHANGED'):
+        retirement.privileged({'phase': 'inventory', 'batch': retirement.BATCH})
+
+
+@pytest.fixture
+def synthetic_proc(tmp_path, owned_tree, monkeypatch):
+    proc = tmp_path / 'proc'; proc.mkdir()
+    entry = proc / '98765'; entry.mkdir(); (entry / 'fd').mkdir()
+    outside = tmp_path / 'outside-cwd'; outside.mkdir()
+    (entry / 'cwd').symlink_to(outside); (entry / 'root').symlink_to(outside)
+    fields = ['0'] * 20; fields[0] = 'S'; fields[19] = '12345'
+    (entry / 'stat').write_text('98765 (synthetic) ' + ' '.join(fields))
+    (entry / 'cmdline').write_bytes(b'synthetic-holder\0'); (entry / 'maps').write_bytes(b'')
+    monkeypatch.setattr(retirement.os, 'getuid', lambda: 0)
+    original = Path.stat
+    uid = [999]
+    def stat_with_uid(path, *args, **kwargs):
+        info = original(path, *args, **kwargs)
+        if path == entry:
+            values = list(info); values[4] = uid[0]
+            return os.stat_result(values)
+        return info
+    monkeypatch.setattr(Path, 'stat', stat_with_uid)
+    return SimpleNamespace(proc=proc, entry=entry, uid=uid, tree=owned_tree)
+
+
+@pytest.mark.parametrize('uid', [0, 999, 1000])
+def test_root_process_probe_checks_every_uid_instead_of_filtering_1000(synthetic_proc, uid):
+    state = synthetic_proc; state.uid[0] = uid
+    result = retirement.process_references([state.tree.item], state.proc)
+    assert result['status'] == 'QUIESCENT' and result['processesChecked'] == 1 and result['uidsChecked'] == [uid]
+
+
+@pytest.mark.parametrize('uid', [0, 999, 1000])
+def test_root_or_mysql_file_holders_block_retirement(synthetic_proc, uid):
+    state = synthetic_proc; state.uid[0] = uid
+    (state.entry / 'fd/3').symlink_to(state.tree.path / 'table.ibd')
+    with pytest.raises(ValueError, match='ACTIVE_PROCESS_FILE_REFERENCE'):
+        retirement.process_references([state.tree.item], state.proc)
+    assert state.tree.path.exists() and state.tree.keeper.exists()
+
+
+@pytest.mark.parametrize('reference', ['cwd', 'argv', 'mapped-inode-alias'])
+def test_process_directories_arguments_and_namespace_inode_aliases_are_fenced(synthetic_proc, reference):
+    state = synthetic_proc
+    if reference == 'cwd':
+        (state.entry / 'cwd').unlink(); (state.entry / 'cwd').symlink_to(state.tree.path)
+    elif reference == 'argv':
+        (state.entry / 'cmdline').write_bytes(b'holder\0--datadir=' + os.fsencode(state.tree.path) + b'\0')
+    else:
+        info = (state.tree.path / 'table.ibd').stat()
+        (state.entry / 'maps').write_text(f'1000-2000 r--p 00000000 {os.major(info.st_dev):x}:{os.minor(info.st_dev):x} {info.st_ino} /namespace-alias/file\n')
+    with pytest.raises(ValueError): retirement.process_references([state.tree.item], state.proc)
+    assert state.tree.path.exists() and state.tree.keeper.exists()
+
+
+def test_real_plan_apply_flow_removes_only_the_owned_synthetic_replica(tmp_path, owned_tree, monkeypatch):
+    state = owned_tree; args = SimpleNamespace(phase='plan', batch=retirement.BATCH,
+        tag='ci-273-' + 'a' * 12, commit='a' * 40, source_sha256='b' * 64, plan_sha256=None)
+    root = tmp_path / 'ci'; (root / 'inbox' / args.tag).mkdir(parents=True)
+    identity = {'instanceId': retirement.INSTANCE, 'machineId': retirement.MACHINE, 'executionLocation': 'ECS'}
+    calls = []; keeper = {'release': RELEASE, 'token': 'a' * 10, 'sourceSqlSha256': 'c' * 64}
+    monkeypatch.setattr(retirement, 'ROOT', root)
+    monkeypatch.setattr(retirement, 'TARGETS', {RELEASE: retirement.TARGETS[RELEASE]})
+    monkeypatch.setattr(retirement, 'fixed_helpers', lambda _: {'verify-remote.py':
+        SimpleNamespace(ecs_identity=lambda *_: identity), 'cleanup-ecs-builds.py':
+        SimpleNamespace(docker_snapshot=lambda: [], quiescent=lambda *_args, **_kw: calls.append('quiescent'))})
+    monkeypatch.setattr(retirement, 'keeper_binding', lambda _: dict(keeper))
+    monkeypatch.setattr(retirement, 'lock', lambda _: nullcontext())
+    monkeypatch.setattr(retirement, 'attempt_lock', lambda _: nullcontext())
+    def privileged(payload):
+        calls.append(payload['phase'])
+        proof = {'status': 'QUIESCENT', 'scope': 'ALL_UIDS_CLOSED_DATA_DIRECTORIES', 'processesChecked': 1, 'uidsChecked': [999]}
+        if payload['phase'] == 'inventory': return {'targets': [state.item], 'processProbe': proof}
+        retirement.remove_tree(payload['target'])
+        return {'release': RELEASE, 'status': 'REMOVED', 'allocatedBytesBefore': 4096, 'processProbe': proof}
+    monkeypatch.setattr(retirement, 'privileged', privileged)
+    planned = retirement.run(args); args.phase = 'apply'; args.plan_sha256 = planned['privatePlanSha256']
+    result = retirement.run(args)
+    assert result['status'] == 'COMPLETE' and result['removedDirectories'] == 1
+    assert not state.path.exists() and state.keeper.read_bytes() == b'original SQL remains'
+    receipt = json.loads(Path(result['file']).read_bytes())
+    assert receipt['sourceSqlAndReportsRetained'] is True and len(receipt['removed']) == 1
+    assert [value for value in calls if value != 'quiescent'] == ['inventory', 'inventory', 'remove']

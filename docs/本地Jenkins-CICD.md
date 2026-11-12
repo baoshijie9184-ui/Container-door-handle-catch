@@ -22,7 +22,7 @@
 
 用户随后明确允许回收这五份停止的派生测试副本，条件是通过Jenkins逐项核对归属、完整源SQL备份及无引用，保留正式业务库、SQL、源码和全部验收报告，不动#266。新代码在现有维护ACTION内增加显式闭集策略 `DerivedMysql221222235238247`；不自动发现其他mysql-data，不改写旧回执当时的`dataDirectoryRetained`。原目录/inode/文件数/分配量和备份manifest精确绑定，删除使用不跟随链接的目录FD，前后保全SQL；SSH断线只观察原执行，不重放。
 
-该新增维护代码与调用已整合，Python静态编译和PowerShell解析通过，新增27项回归，尚未运行测试或删除。控制名单已同步为22模块、最低2,405项；固定提交推送及实际Jenkins CPS仅编译检查后，先统一ECS控制验证，再执行获批闭集维护和新鲜容量读回。候选1.26GiB不计为已释放，也不保证后续完整运行空间足够。
+该维护代码的#272控制预检在收集阶段因pytest保留参数名request失败，没有执行测试或删除，原件在ci-272-raw-receipts。已改为payload，并在独立窄审后集中闭合三处边界：维护归档使用cleanup-source.tar.gz、root执行固定已核准源码字节、全UID进程引用检查覆盖root/MySQL及inode别名。新增回归已补至43项，包含实际维护transport和合成plan→apply路径；静态编译通过，修复版仍待ECS验证。控制名单为22模块、最低2,421项；Jenkinsfile沿用已实际通过的56804c41 Git原文CPS编译证据，修复未修改该文件。新固定提交推送后先验证控制，再执行获批闭集维护和新鲜容量读回。候选1.26GiB不计为已释放，也不保证后续完整运行空间足够。
 
 统计结束后，2026-11-12 **18:07:26（北京时间）**已实际回读 `Stopped / StopCharging`，原件 `five-derived-mysql-admin-metadata-external-stop.json`。Jenkins及本地节点在线，项目任务disabled、无队列；原80GiB盘和既有快照保留，不新增扩容或快照。
 
