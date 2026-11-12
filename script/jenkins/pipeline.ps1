@@ -1059,9 +1059,25 @@ if ($Action -in @('CompactCutover', 'VerifyRuntime', 'CleanupRuntime')) {
         $catalog = @(@{ file='resource-probes.jsonl'; sha256=$summary.probeSha256 }) + @($summary.phases)
         foreach ($entry in $catalog) {
             if ($entry.file -notmatch '^(resource-probes\.jsonl|phase-[0-9]{2,3}\.json)$' -or $entry.sha256 -notmatch '^[a-f0-9]{64}$') { throw 'Owned image resource file escaped its directory.' }
+        }
+        $measurementCatalog = @()
+        if ($summary.PSObject.Properties['inputMeasurements']) { $measurementCatalog = @($summary.inputMeasurements) }
+        if ($measurementCatalog.Count -gt 4) { throw 'Owned image input measurement catalogue exceeds its bound.' }
+        $measurementNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+        foreach ($entry in $measurementCatalog) {
+            if (@($entry.PSObject.Properties).Count -ne 3 -or $entry.file -cnotmatch '^base[0-3]-measurement\.json$' -or $entry.sha256 -cnotmatch '^[a-f0-9]{64}$' -or -not ($entry.bytes -is [int] -or $entry.bytes -is [long]) -or $entry.bytes -le 0 -or $entry.bytes -gt 1048576 -or -not $measurementNames.Add($entry.file)) { throw 'Owned image input measurement escaped its exact byte/name catalogue.' }
+            $catalog += $entry
+        }
+        foreach ($entry in $catalog) {
+            if ($entry.file -notmatch '^(resource-probes\.jsonl|phase-[0-9]{2,3}\.json|base[0-3]-measurement\.json)$' -or $entry.sha256 -notmatch '^[a-f0-9]{64}$') { throw 'Owned image resource file escaped its directory.' }
             $localFile = "$LocalDirectory/$($entry.file)"
             Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, "${destination}:$RemoteDirectory/$($entry.file)", $localFile))
             if ((Get-Item -LiteralPath $localFile).Length -gt 67108864 -or (Get-FileHash -LiteralPath $localFile -Algorithm SHA256).Hash.ToLowerInvariant() -ne $entry.sha256) { throw 'Owned image raw evidence changed during collection.' }
+            if ($measurementNames.Contains($entry.file)) {
+                if ((Get-Item -LiteralPath $localFile).Length -ne $entry.bytes) { throw 'Owned image input measurement length changed during collection.' }
+                $measurement = Get-Content -LiteralPath $localFile -Raw | ConvertFrom-Json
+                if ($measurement.version -ne 1 -or $measurement.kind -cne 'doorhandle-complete-image-input-measurement' -or $measurement.release -cne $tag -or $measurement.commit -cne $commit -or $measurement.sourceSha256 -cne $sha -or $measurement.ownerToken -cne $summary.ownerToken -or $measurement.identity.instanceId -cne $instance -or $measurement.identity.machineId -cne $machine -or $measurement.identity.executionLocation -cne 'ECS') { throw 'Owned image input measurement belongs to another build or execution owner.' }
+            }
         }
         return $summary
     }

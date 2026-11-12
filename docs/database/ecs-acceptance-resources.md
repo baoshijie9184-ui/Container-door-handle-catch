@@ -8,6 +8,8 @@
 
 Mem0复用原不可变镜像的8个精确依赖，以一次COPY更新完整当前源码、requirements和LICENSE；worker保留精确legacy/current依赖闭包、模型树和许可证，完整rootfs单COPY使native副本6/7→1/2。当前仍缺应用基座真实层分配A/Z/E及新context C；Image.Size、理论COPY节省量或旧冷安装8,768,095,027字节下限均不能代替新路径的完整预算。独立数据库成功不等于运行或正式切库完成。
 
+本轮待验证的补齐沿原`build-candidate`执行，不增加独立ACTION，也不绕过同轮mysqlPASS。四服务基座都须有真实闭包：本地不可变镜像先完整流式读取config、manifest、DiffID及逐层内容，验证后仅封存`baseN-measurement.json`小proof；再以实际流字节和当前余量准入原OCI落盘，第二次读取须与原证明一致。预算拒绝时保留测量证据，不创建大层目标。Registry基座仍保留实际下载及解压的双Z持有门，不宣称该分支零落盘；测量和构建各自的完整预算都须满足。
+
 五个旧失败夹具#221/#222/#235/#238/#247已普通用户只读确认归属、停止回执和无当前Docker引用；mysql-data为UID999/0700，实际分配量未计量。限定管理员只读统计授权待答，未改变属主/ACL、封存或删除数据，也未计可回收量；原件 `derived-native-mysql-metadata-readonly-20261112T034805.json`。
 
 当前构建结果、实际资源清理、最新ECS启停状态统一见[本地Jenkins当前回执](../本地Jenkins-CICD.md)。生产/演练门保持关闭；正式压测等开发完成后使用压测工具，4账号8标签仅用于功能验收，`loadTestStatus=DEFERRED_BY_USER`、`performanceSloVerified=false`。

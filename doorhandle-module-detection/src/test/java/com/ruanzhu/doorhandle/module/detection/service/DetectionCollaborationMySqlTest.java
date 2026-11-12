@@ -26,6 +26,7 @@ import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.mock.web.*;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.EnableTransactionManagement;
 import org.springframework.web.context.request.*;
@@ -156,8 +157,13 @@ class DetectionCollaborationMySqlTest {
     }
     @Test void originalReportCommandWithoutItsAuditCannotInventAReplacementReceipt(){
         String command=key();var create=new Create("report-task","Original title","private narrative",command);
-        request(1,command);var draft=reports.create(alice,create);
-        jdbc.update("DELETE FROM audit_event WHERE kind='OPERATIONS' AND resource_id=?",draft.reportId());
+        var originalHeaders=request(1,command);View draft;
+        // A command from before audit activation is valid old data; existing evidence stays append-only.
+        ReflectionTestUtils.setField(reports,"operationsAuditEnabled",false);
+        try {draft=reports.create(alice,create);}
+        finally {ReflectionTestUtils.setField(reports,"operationsAuditEnabled",true);}
+        assertThat(count("REPORT_COMMAND")).isEqualTo(1);assertThat(count("OPERATIONS")).isZero();
+        assertThat(originalHeaders.getHeader("X-Audit-ID")).isNull();assertThat(originalHeaders.getHeader("X-Change-Event-ID")).isNull();
         var replayHeaders=request(1,command);
         assertThatThrownBy(()->reports.create(alice,create)).isInstanceOf(com.ruanzhu.doorhandle.common.BusinessException.class)
                 .satisfies(error->assertThat(((com.ruanzhu.doorhandle.common.BusinessException)error).getCode()).isEqualTo(409));

@@ -1343,7 +1343,7 @@
       },
       {
         "module": "tests_python.test_failed_native_jar_duplicates",
-        "minimumTests": 413,
+        "minimumTests": 426,
         "source": "tests_python/test_failed_native_jar_duplicates.py",
         "allowedSkippedTests": []
       },
@@ -1403,13 +1403,13 @@
       },
       {
         "module": "tests_python.test_compact_build_resources",
-        "minimumTests": 30,
+        "minimumTests": 34,
         "source": "tests_python/test_compact_build_resources.py",
         "allowedSkippedTests": []
       },
       {
         "module": "tests_python.test_compact_image_inputs_identity",
-        "minimumTests": 34,
+        "minimumTests": 36,
         "source": "tests_python/test_compact_image_inputs_identity.py",
         "allowedSkippedTests": []
       },

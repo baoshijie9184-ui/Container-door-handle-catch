@@ -116,7 +116,8 @@ def cache_archive(root, raw):
 
 def archive_actor(directory):
     directory.mkdir(mode=0o700)
-    actor = SimpleNamespace(directory=directory, phases=[], checks=0, calls=[], builder=None, finishes=[])
+    actor = SimpleNamespace(directory=directory, phases=[], checks=0, calls=[], builder=None, finishes=[],
+                            context={**CONTEXT, 'ownerToken': 'e' * 24}, input_measurements=[])
     actor.begin = lambda name, growth, measured, memory: actor.phases.append((name, growth, measured, memory))
     actor.check = lambda: setattr(actor, 'checks', actor.checks + 1)
     actor.finish = lambda status: actor.finishes.append(status) or {'status': status}
@@ -376,13 +377,98 @@ class CompactBuildResourceTests(unittest.TestCase):
                'Os': 'linux', 'Architecture': 'amd64', 'Config': {'Env': []}, 'RootFS': {'Layers': [diff]}, 'Size': 1}
         with tempfile.TemporaryDirectory() as temporary:
             actor = archive_actor(Path(temporary) / 'attempt'); actor.docker = lambda *_: json.dumps([row]).encode()
-            process = SimpleNamespace(stdout=io.BytesIO(tar_bytes(list(members.items()))), wait=lambda **_: 0, poll=lambda: 0)
-            with mock.patch.object(RES.subprocess, 'Popen', return_value=process), \
+            def process(*_args, **_kwargs):
+                return SimpleNamespace(stdout=io.BytesIO(tar_bytes(list(members.items()))), wait=lambda **_: 0, poll=lambda: 0)
+            with mock.patch.object(RES.subprocess, 'Popen', side_effect=process) as save, \
                     mock.patch.object(OCI, 'export_stream_to_oci', wraps=OCI.export_stream_to_oci) as export:
-                proof = RES.local_layout(actor, row['Id'], actor.directory / 'layout', OCI)
+                proof = RES.local_layout(actor, row['Id'], actor.directory / 'base0', OCI)
             self.assertIsNone(export.call_args.args[2]); self.assertEqual(descriptor, export.call_args.kwargs['expected_engine_descriptor'])
             self.assertEqual(config, proof['imageId']); self.assertEqual(config, proof['configDigest'])
             self.assertEqual(descriptor, proof['loadDescriptor']); self.assertIsNone(actor.process)
+            self.assertEqual(2, save.call_count)
+            self.assertEqual(1, len(actor.input_measurements))
+            record = json.loads((actor.directory / 'base0-measurement.json').read_bytes())
+            self.assertEqual(proof['layers'], record['measurement']['layers'])
+            self.assertEqual(actor.context['ownerToken'], record['ownerToken'])
+            summary = {'ownerToken': actor.context['ownerToken'], 'inputMeasurements': actor.input_measurements}
+            RES.validate_input_measurements(actor.directory, summary, CONTEXT)
+            # The controller's established --directory artifacts/... is relative.
+            with mock.patch.object(RES.os, 'getcwd', return_value=str(actor.directory.parent)):
+                RES.validate_input_measurements(Path(actor.directory.name), summary, CONTEXT)
+
+    def test_complete_local_measurement_survives_budget_refusal_without_materializing_layers(self):
+        raw, image, diff = image_bytes()
+        row = {'Id': image, 'Os': 'linux', 'Architecture': 'amd64', 'Config': {'Env': []},
+               'RootFS': {'Layers': [diff]}, 'Size': 1}
+        with tempfile.TemporaryDirectory() as temporary:
+            actor = archive_actor(Path(temporary) / 'attempt'); actor.docker = lambda *_: json.dumps([row]).encode()
+            begin = actor.begin
+            def admission(name, growth, measured, memory):
+                begin(name, growth, measured, memory)
+                if name.startswith('export-'): raise RES.BuildResourceError('Synthetic real disk admission refusal')
+            actor.begin = admission
+            process = SimpleNamespace(stdout=io.BytesIO(raw), wait=lambda **_: 0, poll=lambda: 0)
+            with mock.patch.object(RES.subprocess, 'Popen', return_value=process) as save:
+                with self.assertRaisesRegex(ValueError, 'real disk admission refusal'):
+                    RES.local_layout(actor, image, actor.directory / 'base0', OCI)
+            self.assertEqual(1, save.call_count); self.assertFalse((actor.directory / 'base0').exists())
+            self.assertTrue((actor.directory / 'base0-measurement.json').is_file())
+            self.assertEqual(len(raw) + 8 * RES.MIB, actor.phases[-1][1])
+            self.assertIsNone(actor.process)
+
+    def test_local_materialization_cannot_replace_the_measured_blob_catalogue(self):
+        raw, image, diff = image_bytes()
+        row = {'Id': image, 'Os': 'linux', 'Architecture': 'amd64', 'Config': {'Env': []},
+               'RootFS': {'Layers': [diff]}, 'Size': 1}
+        with tempfile.TemporaryDirectory() as temporary:
+            actor = archive_actor(Path(temporary) / 'attempt'); actor.docker = lambda *_: json.dumps([row]).encode()
+            def process(*_args, **_kwargs):
+                return SimpleNamespace(stdout=io.BytesIO(raw), wait=lambda **_: 0, poll=lambda: 0)
+            original = OCI.export_stream_to_oci
+            def changed(origin, destination, *args, **kwargs):
+                proof = original(origin, destination, *args, **kwargs)
+                if destination is not None: proof['layers'][0]['blobDigest'] = 'sha256:' + 'f' * 64
+                return proof
+            with mock.patch.object(RES.subprocess, 'Popen', side_effect=process), \
+                    mock.patch.object(OCI, 'export_stream_to_oci', side_effect=changed):
+                with self.assertRaisesRegex(ValueError, 'differs from its complete byte measurement'):
+                    RES.local_layout(actor, image, actor.directory / 'base0', OCI)
+            self.assertTrue((actor.directory / 'base0-measurement.json').is_file()); self.assertIsNone(actor.process)
+
+    def test_measurement_collection_stays_in_the_existing_success_and_failure_receiver(self):
+        pipeline = (ROOT / 'script/jenkins/pipeline.ps1').read_text(encoding='utf8')
+        receiver = pipeline[pipeline.index('function Receive-OwnedBuildResources'):pipeline.index('function Receive-RuntimeResource')]
+        for required in ('inputMeasurements', '$measurementCatalog = @()',
+                         '$measurementCatalog = @($summary.inputMeasurements)', '^base[0-3]-measurement\\.json$', '1048576',
+                         '$measurement.ownerToken -cne $summary.ownerToken', '$measurement.identity.executionLocation',
+                         "'doorhandle-complete-image-input-measurement'"):
+            self.assertIn(required, receiver)
+        self.assertIn('finally { $candidateResources = Receive-CandidateResources }', pipeline)
+        self.assertIn("'artifacts/candidate-build-resources'", pipeline)
+
+    def test_measurement_reference_requires_exact_owner_name_bytes_and_complete_layer_identity(self):
+        raw, image, diff = image_bytes()
+        measured = OCI.inspect_docker_stream(io.BytesIO(raw), image, [diff], RES.MIB, lambda: None)
+        row = {'Id': image, 'Os': 'linux', 'Architecture': 'amd64', 'RootFS': {'Layers': [diff]}}
+        original = {'version': 1, 'kind': 'doorhandle-complete-image-input-measurement', **CONTEXT, 'ownerToken': 'e' * 24,
+                    'engineIdentity': RES.engine_identity(row, measured, measured['loadDescriptor']), 'measurement': measured}
+        for damage in ('name', 'bytes', 'sha', 'owner', 'commit', 'blob', 'layer-bytes', 'bool-bytes', 'duplicate', 'link'):
+            with self.subTest(damage=damage), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary); path = directory / 'base0-measurement.json'; value = copy.deepcopy(original)
+                if damage == 'owner': value['ownerToken'] = 'f' * 24
+                if damage == 'commit': value['commit'] = 'f' * 40
+                if damage == 'blob': value['measurement']['layers'][0]['blobDigest'] = 'invalid'
+                if damage == 'layer-bytes': value['measurement']['compressedBytes'] += 1
+                path.write_bytes(RES.encoded(value))
+                reference = {'file': path.name, 'sha256': RES.digest(path), 'bytes': path.stat().st_size}
+                if damage == 'name': reference['file'] = '../base0-measurement.json'
+                if damage == 'bytes': reference['bytes'] += 1
+                if damage == 'sha': reference['sha256'] = 'f' * 64
+                if damage == 'bool-bytes': reference['bytes'] = True
+                if damage == 'link': os.link(path, directory / 'foreign-alias')
+                references = [reference, reference] if damage == 'duplicate' else [reference]
+                with self.assertRaises(ValueError):
+                    RES.validate_input_measurements(directory, {'ownerToken': 'e' * 24, 'inputMeasurements': references}, CONTEXT)
 
     def test_rehashed_tool_measurements_still_require_the_pinned_config_and_ordered_diffids(self):
         _row, measurement, engine = identity_fixture(native=True)

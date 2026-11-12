@@ -174,12 +174,17 @@ FAILED_NATIVE_PUBLICATION_RECIPES = frozenset({
      'e7424e38932b7dde12a90590e284490fdc60742efe6b2b162cb96f1667e2867f'),
     ('f8e83ca9a148deea6f606308de2cc6b92f2e3405e167a9386eb1a7dc9ba96bf3',
      '1ad3e3f048f6df9cfb64efc3d43b2963a3bddb8109ffd13a225f8a8b27324eb0'),
+    # #268 adds only the 21st controls module; publication behavior is unchanged.
+    ('f8e83ca9a148deea6f606308de2cc6b92f2e3405e167a9386eb1a7dc9ba96bf3',
+     'abc6c9e4f0e4b7f72d5240b70278e71ace68dbfe4906724da70da72dea784b44'),
 })
 # These exact recipes request a candidate builder only for runtime/cutover,
 # never for an explicitly selected verify/mysql attempt.
 DATABASE_VERIFY_PUBLICATION_RECIPES = frozenset({
     ('f8e83ca9a148deea6f606308de2cc6b92f2e3405e167a9386eb1a7dc9ba96bf3',
      '1ad3e3f048f6df9cfb64efc3d43b2963a3bddb8109ffd13a225f8a8b27324eb0'),
+    ('f8e83ca9a148deea6f606308de2cc6b92f2e3405e167a9386eb1a7dc9ba96bf3',
+     'abc6c9e4f0e4b7f72d5240b70278e71ace68dbfe4906724da70da72dea784b44'),
 })
 DATABASE_VERIFY_TOOL_PREPARATION_SOURCE = 'cd025c3250feb3acb03bb583c7d5ca94894b100cdf89921223607968b2c85d4d'
 CLOSED_RUNTIME_JARS = {

@@ -60,7 +60,7 @@ Require-NativeJar ([IO.Path]::IsPathFullyQualified($RetainedControlRoot) -and [I
 # test is imported or run on the workstation. D evidence is pinned to original
 # preservation manifests reviewed for each selected closed batch.
 $reader=@'
-import gzip,hashlib,json,os,re,stat,sys,tarfile
+import gzip,hashlib,io,json,os,re,stat,sys,tarfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
 def need(v,code='LOCAL_CONTROL_ADMISSION_REJECTED'):
@@ -152,6 +152,59 @@ if batch=='ClosedRuntime':
  approved=[(204,'24f8eb4b02bf290c6dd4e186eb78c5f3c80f3b88',None),
   (207,'eb286c623177b9d1bc23fe88223d81862c00bc71','3c5c15b15c57544e7e7195059607d33b0c807989c2fb672d36d4c4db2eefe01a')]
 database_builds=set()
+# One recovered workspace bundle, not a fallback for arbitrary failed builds.
+# #268's post/archive was unavailable; these bytes never came from C archive.
+recovered_workspace_268=None
+def recovered_268_bundle():
+ global recovered_workspace_268
+ need(batch=='FailedNative' and selected_build=='268','EXPLICIT_RECOVERED_268_SELECTION_REQUIRED')
+ if recovered_workspace_268 is not None:return recovered_workspace_268
+ oldcommit='b3f23013513b11af5041c67569a8f029651aa8db';tag='ci-268-b3f23013513b'
+ source_sha='1cd184620be096d4d27be70f730da4d424b3cb07c5266a038d3025078dc6ea7d'
+ jar_sha='257fc4cd9881e6b2047e9bf3905c11e8f4d7123cf2e78b2b75c165891a6937d0';jar_bytes=380301975
+ terminal=(529456,'cf1fabb11fc7e9fb39db7437a9e6c90ae0d9abd24e7cd724e7236659d2021ae9')
+ folder=Path(retained)/'ci-268-recovered-originals/workspace-originals'
+ proof=stable(folder/'preservation.json')
+ need(sha(proof)=='7c1287080970cccbee271b03919cd635ac5e6d6c802f4993ba1878133898b3f4','RECOVERED_268_CUSTODY_SHA_DRIFT')
+ preservation=json.loads(proof,object_pairs_hook=unique)
+ need(set(preservation)=={'originalPipelineArchive','commit','buildXmlSha256','preservedAtUtc','recovery','jenkinsResult','files','build'}
+  and preservation['build']==268 and preservation['commit']==oldcommit and preservation['jenkinsResult']=='FAILURE'
+  and preservation['originalPipelineArchive']=='Unavailable: AgentOfflineException during post/archive'
+  and preservation['recovery']=='Workspace originals plus exact ECS bounded archive; no Jenkins build rewrite'
+  and preservation['buildXmlSha256']==terminal[1] and type(preservation['files']) is list,'RECOVERED_268_CUSTODY_CONTEXT_DIFFERS')
+ original=Path(jhome)/'jobs/doorhandle-java/builds/268/build.xml';c_raw=stable(original);d_raw=stable(folder/'build.xml')
+ need((len(c_raw),sha(c_raw))==terminal and d_raw==c_raw,'RECOVERED_268_TERMINAL_ORIGINAL_DRIFT')
+ entries={}
+ for row in preservation['files']:
+  need(type(row) is dict and set(row)=={'path','source','bytes','sha256'} and type(row['path']) is str and row['path'] not in entries,'RECOVERED_268_CUSTODY_MEMBER_DIFFERS')
+  entries[row['path']]=row
+ names=('release.json','local-build.json','fixture-cleanup.json','ecs-tool-preparation.json','ecs-tool-preparation-transport.json','source.tar.gz','application.jar')
+ raw_files={};bindings={};prefix='D:/AI/lunwen1/DoorHandleCatch/work/jenkins/ci-workspaces/monolith/artifacts/'
+ for name in names:
+  need(name in entries,'RECOVERED_268_CUSTODY_MEMBER_MISSING');row=entries[name];path=folder/name
+  need(str(row['source']).replace(chr(92),'/')==prefix+name,'RECOVERED_268_WORKSPACE_ORIGIN_DIFFERS')
+  if name=='application.jar':
+   need(path.resolve(strict=True)==path and all(not p.is_symlink() for p in (path,*path.parents)),'RECOVERED_268_BINARY_PATH_DIFFERS')
+   with path.open('rb') as stream:
+    before=os.fstat(stream.fileno());need(stat.S_ISREG(before.st_mode) and before.st_nlink==1 and before.st_size==jar_bytes,'RECOVERED_268_BINARY_SIZE_DIFFERS')
+    digest=hashlib.sha256()
+    for block in iter(lambda:stream.read(1048576),b''):digest.update(block)
+    sig=lambda s:(s.st_dev,s.st_ino,s.st_size,s.st_mtime_ns,s.st_ctime_ns,s.st_nlink)
+    need(sig(before)==sig(os.fstat(stream.fileno()))==sig(path.stat()) and digest.hexdigest()==jar_sha,'RECOVERED_268_BINARY_DRIFT')
+   size,checksum=jar_bytes,jar_sha
+  else:
+   raw=stable(path,134217728 if name=='source.tar.gz' else 2097152);size,checksum=len(raw),sha(raw);raw_files[name]=raw
+  need(row['bytes']==size and row['sha256']==checksum,'RECOVERED_268_CUSTODY_MEMBER_DRIFT')
+  bindings[name]={'source':str(path),'bytes':size,'sha256':checksum}
+ release=json.loads(raw_files['release.json'],object_pairs_hook=unique);local=json.loads(raw_files['local-build.json'],object_pairs_hook=unique)
+ need(all(release.get(k)==v for k,v in {'release':tag,'commit':oldcommit,'sourceSha256':source_sha,'applicationJarSha256':jar_sha,'localBuildReceiptSha256':sha(raw_files['local-build.json'])}.items())
+  and all(local.get(k)==v for k,v in {'release':tag,'commit':oldcommit,'status':'PASS','applicationJar':'artifacts/application.jar','applicationJarSha256':jar_sha,'applicationJarBytes':jar_bytes}.items())
+  and local.get('testsExecuted') is False and local.get('skipTests') is True and type(local.get('exitCode')) is int and local['exitCode']==0
+  and bindings['source.tar.gz']['sha256']==source_sha,'RECOVERED_268_SOURCE_BINARY_BINDING_DIFFERS')
+ with tarfile.open(fileobj=io.BytesIO(raw_files['source.tar.gz']),mode='r:gz') as archive:
+  need(archive.pax_headers.get('comment')==oldcommit,'RECOVERED_268_SOURCE_COMMIT_DIFFERS')
+ recovered_workspace_268={'folder':folder,'files':raw_files,'buildXml':c_raw,'bindings':bindings,'custody':{'origin':'PINNED_PRESERVED_WORKSPACE_ORIGINAL','preservationSha256':sha(proof),'buildXml':{'source':str(original),'bytes':terminal[0],'sha256':terminal[1]},'sourceArchive':bindings['source.tar.gz'],'applicationJar':bindings['application.jar']}}
+ return recovered_workspace_268
 if batch=='FailedNative':
  approved=[];current_number=int(current.split('-')[1]);builds=Path(jhome)/'jobs/doorhandle-java/builds'
  for directory in sorted((p for p in builds.iterdir() if p.name.isdigit() and 221<=int(p.name)<current_number),key=lambda p:int(p.name),reverse=True):
@@ -165,17 +218,19 @@ if batch=='FailedNative':
   expected={'ACTION':'verify-runtime','DOORHANDLE_CI_SCOPE':'mysql','PRODUCTION_RELEASE_ENABLED':'false'}
   if selected_build and params.get('ACTION')=='verify':expected['ACTION']='verify'
   if any(params.get(k)!=v for k,v in expected.items()):continue
-  source=directory/'archive/artifacts/release.json'
+  recovered=recovered_268_bundle() if selected_build=='268' and directory.name=='268' else None
+  source=(recovered['folder'] if recovered else directory/'archive/artifacts')/'release.json'
   if not source.is_file():continue
   release=json.loads(stable(source),object_pairs_hook=unique);oldcommit=params.get('TRUSTED_COMMIT')
   if not isinstance(oldcommit,str) or len(oldcommit)!=40 or release.get('commit')!=oldcommit or release.get('release')!='ci-'+directory.name+'-'+oldcommit[:12]:continue
-  jar=directory/'archive/artifacts/application.jar'
+  jar=(recovered['folder'] if recovered else directory/'archive/artifacts')/'application.jar'
   if not jar.is_file():continue
-  with jar.open('rb') as stream:
-   meta=os.fstat(stream.fileno());need(stat.S_ISREG(meta.st_mode) and meta.st_nlink==1 and 0<meta.st_size<=536870912)
-   digest=hashlib.sha256()
-   for block in iter(lambda:stream.read(1048576),b''):digest.update(block)
-   after=os.fstat(stream.fileno());need((after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns,after.st_ctime_ns,after.st_nlink)==(meta.st_dev,meta.st_ino,meta.st_size,meta.st_mtime_ns,meta.st_ctime_ns,meta.st_nlink) and digest.hexdigest()==release.get('applicationJarSha256'),'RETAINED_JENKINS_BINARY_DIFFERS')
+  if not recovered:
+   with jar.open('rb') as stream:
+    meta=os.fstat(stream.fileno());need(stat.S_ISREG(meta.st_mode) and meta.st_nlink==1 and 0<meta.st_size<=536870912)
+    digest=hashlib.sha256()
+    for block in iter(lambda:stream.read(1048576),b''):digest.update(block)
+    after=os.fstat(stream.fileno());need((after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns,after.st_ctime_ns,after.st_nlink)==(meta.st_dev,meta.st_ino,meta.st_size,meta.st_mtime_ns,meta.st_ctime_ns,meta.st_nlink) and digest.hexdigest()==release.get('applicationJarSha256'),'RETAINED_JENKINS_BINARY_DIFFERS')
   approved.append((int(directory.name),oldcommit,None))
   if params['ACTION']=='verify':database_builds.add(int(directory.name))
   if len(approved)==16:break
@@ -201,6 +256,10 @@ for number,oldcommit,preservation_sha in approved:
   for role,name in [('buildXml','build.xml'),('release','release.json'),('localBuild','local-build.json'),('fixtureCleanupPublic','fixture-cleanup.json')]:
    source=Path(jhome)/'jobs/doorhandle-java/builds'/str(number)/('build.xml' if role=='buildXml' else 'archive/artifacts/'+name)
    if batch=='ClosedRuntime':source,raw,origin=closed_original(number,name)
+   elif batch=='FailedNative' and selected_build=='268' and number==268:
+    recovered=recovered_268_bundle()
+    if role=='buildXml':raw=recovered['buildXml'];origin='ACTUAL_JENKINS_ORIGINAL'
+    else:source=recovered['folder']/name;raw=recovered['files'][name];origin='PINNED_PRESERVED_WORKSPACE_ORIGINAL'
    elif role=='fixtureCleanupPublic' and not source.is_file() and (batch=='FailedNative' or batch=='PublicCaches' and not (folder/name).is_file()):
     recoveries=list(Path(retained).glob('ci-'+str(number)+'-recovery-cleanup-*.json'))
     need(len(recoveries)<=1,'AMBIGUOUS_GUARDED_RECOVERY_PUBLIC_RECEIPT')
@@ -236,16 +295,18 @@ for number,oldcommit,preservation_sha in approved:
   if batch=='FailedNative':
    names=('ecs-tool-preparation.json','ecs-tool-preparation-transport.json') if number in database_builds else ('ecs-tool-preparation.json','candidate-build-tools-transport.json')
    for name in names:
-    original=Path(jhome)/'jobs/doorhandle-java/builds'/str(number)/'archive/artifacts'/name
-    body=stable(original);value=json.loads(body,object_pairs_hook=unique)
+    recovered=recovered_268_bundle() if selected_build=='268' and number==268 else None
+    original=(recovered['folder'] if recovered else Path(jhome)/'jobs/doorhandle-java/builds'/str(number)/'archive/artifacts')/name
+    body=recovered['files'][name] if recovered else stable(original);value=json.loads(body,object_pairs_hook=unique)
     need(all(value.get(key)==rel.get(key) for key in ('release','commit','sourceSha256')),'FAILED_BUILDER_JENKINS_REFERENCE_CONTEXT_DIFFERS')
     if number in database_builds:
      need(value.get('status')=='PREPARED','DATABASE_BUILDER_ORIGINAL_PREPARATION_REQUIRED')
      if name=='ecs-tool-preparation.json':need('candidateBuilderTools' not in value,'DATABASE_BUILDER_ORIGINAL_PREPARATION_REQUIRED')
      else:need(value.get('prepareCandidateBuilder') is False and type(value.get('finalExitCode')) is int and value['finalExitCode']==0 and 'buildkitArchive' not in value,'DATABASE_BUILDER_ORIGINAL_PREPARATION_REQUIRED')
-    builder_files.append({'release':tag,'file':name,'source':str(original),'bytes':len(body),'sha256':sha(body),'origin':'ACTUAL_JENKINS_ORIGINAL'})
+    builder_files.append({'release':tag,'file':name,'source':str(original),'bytes':len(body),'sha256':sha(body),'origin':'PINNED_PRESERVED_WORKSPACE_ORIGINAL' if recovered else 'ACTUAL_JENKINS_ORIGINAL'})
   rows.append({'release':tag,'commit':oldcommit,'sourceSha256':rel['sourceSha256'],'files':files})
   custody.append({'release':tag,'controls':origins,'preservationSha256':preservation_sha if preservation else None})
+  if batch=='FailedNative' and selected_build=='268' and number==268:custody[-1]['recoveredWorkspace']=recovered_268_bundle()['custody']
  except Exception as error:skipped.append({'release':tag,'reason':str(error) if type(error) is ValueError and str(error).replace('_','').isalnum() else type(error).__name__})
 authority_files=[];authority_custody=[]
 if batch=='RetiredCopies' and retired_batch=='retired-195-198-201':

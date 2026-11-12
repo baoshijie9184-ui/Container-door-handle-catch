@@ -7,6 +7,7 @@ import io
 import json
 from pathlib import Path
 import tarfile
+from unittest import mock
 
 import pytest
 
@@ -95,7 +96,8 @@ def stream(tmp_path, raw, image, diff, descriptor=None):
 def test_classic_config_protocol_is_preserved_without_an_oci_load_descriptor(tmp_path):
     raw, image, diff, _ = image_fixture('classic')
     checked = inspect(tmp_path, raw, image, diff); exported = stream(tmp_path, raw, image, diff)
-    for result in (checked, exported):
+    measured = OCI.inspect_docker_stream(io.BytesIO(raw), image, [diff], OCI.MIB, lambda: None)
+    for result in (checked, exported, measured):
         assert result['imageId'] == result['configDigest'] == image
         assert result['loadDescriptor'] is None
         assert result['layers'][0]['diffId'] == diff
@@ -108,8 +110,10 @@ def test_config_and_original_load_identity_remain_distinct_through_stream_normal
     raw, image, diff, original = image_fixture(kind)
     checked = inspect(tmp_path, raw)  # Existing inspection default derives config identity.
     result = stream(tmp_path, raw, None if engine_mode else image, diff, original if engine_mode else None)
+    measured = OCI.inspect_docker_stream(io.BytesIO(raw), None if engine_mode else image, [diff], OCI.MIB,
+                                         lambda: None, expected_engine_descriptor=original if engine_mode else None)
     assert original['digest'] != image
-    for observed in (checked, result):
+    for observed in (checked, result, measured):
         assert observed['imageId'] == observed['configDigest'] == image
         assert observed['loadDescriptor'] == original
         assert set(observed['loadDescriptor']) == {'mediaType', 'digest', 'size'}
@@ -118,6 +122,7 @@ def test_config_and_original_load_identity_remain_distinct_through_stream_normal
     normalized = json.loads((tmp_path / 'output/index.json').read_bytes())['manifests'][0]
     assert normalized['digest'] == result['manifestDigest']
     assert result['dockerSaveStreamSha256'] == hashlib.sha256(raw).hexdigest()
+    assert measured == result
 
 
 @pytest.mark.parametrize('damage', ['layer-size', 'layer-media', 'config-size', 'config-media', 'extra-leaf',
@@ -129,6 +134,8 @@ def test_complete_source_graph_cannot_be_replaced_by_a_matching_config_or_partia
         inspect(tmp_path, raw, image, diff)
     with pytest.raises((ValueError, gzip.BadGzipFile, EOFError, OSError)):
         stream(tmp_path, raw, None, diff, original)
+    with pytest.raises((ValueError, gzip.BadGzipFile, EOFError, OSError, tarfile.ReadError)):
+        OCI.inspect_docker_stream(io.BytesIO(raw), None, [diff], OCI.MIB, lambda: None, expected_engine_descriptor=original)
 
 
 @pytest.mark.parametrize('damage', ['missing', 'bool-size', 'extra', 'digest', 'size', 'media', 'config-id'])
@@ -142,6 +149,8 @@ def test_engine_only_mode_requires_the_typed_exact_original_descriptor(tmp_path,
     if damage == 'media': expected['mediaType'] = MANIFEST
     if damage == 'config-id': expected['digest'] = image
     with pytest.raises(ValueError): stream(tmp_path, raw, None, diff, expected)
+    with pytest.raises(ValueError):
+        OCI.inspect_docker_stream(io.BytesIO(raw), None, [diff], OCI.MIB, lambda: None, expected_engine_descriptor=expected)
 
 
 def test_pinned_config_and_diffids_are_still_required_in_the_original_protocol(tmp_path):
@@ -152,3 +161,61 @@ def test_pinned_config_and_diffids_are_still_required_in_the_original_protocol(t
                                  lambda *_: None, lambda: None)
     classic, _image, _diff, _ = image_fixture('classic')
     with pytest.raises(ValueError): stream(tmp_path / 'classic', classic, None, diff, descriptor)
+
+
+def test_metadata_measurement_has_no_filesystem_writes_and_streams_large_raw_layers_in_bounded_reads():
+    layer = tar_bytes({'app/large.bin': b'x' * (5 * OCI.MIB)})
+    diff = digest(layer)
+    config = OCI.encoded({'os': 'linux', 'architecture': 'amd64', 'rootfs': {'type': 'layers', 'diff_ids': [diff]}})
+    image = digest(config)
+    raw = tar_bytes({'manifest.json': OCI.encoded([{'Config': image[7:] + '.json', 'Layers': ['saved/layer.tar']}]),
+                     image[7:] + '.json': config, 'saved/layer.tar': layer})
+    class BoundedSource(io.BytesIO):
+        def read(self, size=-1):
+            assert 0 <= size <= OCI.MIB
+            return super().read(size)
+    with mock.patch.object(OCI, 'Path', side_effect=AssertionError('Measurement must not create files')), \
+            mock.patch.object(OCI.os, 'open', side_effect=AssertionError('Measurement must not open output files')):
+        result = OCI.inspect_docker_stream(BoundedSource(raw), image, [diff], 8 * OCI.MIB, lambda: None)
+    assert result['layers'][0]['bytes'] == result['layers'][0]['uncompressedBytes'] == len(layer)
+    assert result['layers'][0]['allocationUpperBoundBytes'] > 5 * OCI.MIB
+    assert result['dockerSaveStreamBytes'] == len(raw)
+
+
+def test_complete_measurement_rejects_truncation_duplicate_members_and_expansion_before_returning_proof():
+    raw, image, diff, _ = image_fixture('classic')
+    with tarfile.open(fileobj=io.BytesIO(raw), mode='r:') as package:
+        members = [(entry.name, package.extractfile(entry).read()) for entry in package]
+        end = package.offset
+    duplicate = io.BytesIO()
+    with tarfile.open(fileobj=duplicate, mode='w') as package:
+        for name, value in [*members, members[0]]:
+            entry = tarfile.TarInfo(name); entry.size = len(value); package.addfile(entry, io.BytesIO(value))
+    for changed, bound in ((raw[:end], OCI.MIB), (raw[:end - 1], OCI.MIB), (duplicate.getvalue(), OCI.MIB),
+                           (raw + b'nonzero-tail', OCI.MIB), (raw, 100)):
+        with pytest.raises((ValueError, EOFError, OSError, tarfile.ReadError)):
+            OCI.inspect_docker_stream(io.BytesIO(changed), image, [diff], bound, lambda: None)
+    with pytest.raises(ValueError):
+        OCI.inspect_docker_stream(io.BytesIO(raw), 'sha256:' + 'f' * 64, [diff], OCI.MIB, lambda: None)
+    with pytest.raises(ValueError):
+        OCI.inspect_docker_stream(io.BytesIO(raw), image, ['sha256:' + 'f' * 64], OCI.MIB, lambda: None)
+    for kind in (tarfile.XHDTYPE, tarfile.XGLTYPE, tarfile.SOLARIS_XHDTYPE,
+                 tarfile.GNUTYPE_LONGNAME, tarfile.GNUTYPE_LONGLINK):
+        header = tarfile.TarInfo('oversized-metadata'); header.type = kind; header.size = 5 * OCI.MIB
+        with mock.patch.object(tarfile.TarInfo, '_proc_pax', side_effect=AssertionError('PAX must not allocate')):
+            with pytest.raises(ValueError, match='extended metadata'):
+                OCI.inspect_docker_stream(io.BytesIO(header.tobuf(format=tarfile.USTAR_FORMAT)), image, [diff],
+                                         8 * OCI.MIB, lambda: None)
+    guarded = OCI.bounded_tar_info(8 * OCI.MIB)
+    with mock.patch.object(tarfile.TarInfo, '_proc_member', return_value=None):
+        for _ in range(8):
+            header = guarded('bounded-metadata'); header.type = tarfile.XHDTYPE; header.size = 4 * OCI.MIB
+            header._proc_member(None)
+        with pytest.raises(ValueError, match='extended metadata'): header._proc_member(None)
+    guarded = OCI.bounded_tar_info(OCI.MIB)
+    def nested(_header, _archive):
+        child = guarded('recursive-metadata'); child.type = tarfile.GNUTYPE_LONGNAME
+        return child._proc_member(None)
+    with mock.patch.object(tarfile.TarInfo, '_proc_member', new=nested):
+        header = guarded('recursive-metadata'); header.type = tarfile.GNUTYPE_LONGNAME
+        with pytest.raises(ValueError, match='extended metadata'): header._proc_member(None)

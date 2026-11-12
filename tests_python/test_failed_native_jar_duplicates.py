@@ -2206,6 +2206,155 @@ def test_exact_failed_native_capture_never_waives_later_publication_or_quiescenc
     assert bool(calls) is (blocked == 'process')
     assert all(path.exists() for path in value.jars.values())
 
+
+@pytest.fixture
+def recovered_268_controller_reader(tmp_path):
+    """Synthetic bytes exercise the actual reader's one reviewed recovery closure."""
+    reader = (MODULE.parent / 'retire-failed-native-jar-duplicates.ps1').read_text(encoding='utf8').split(
+        "$reader=@'\n", 1)[1].split("\n'@", 1)[0]
+    retained = tmp_path / 'retained'; folder = retained / 'ci-268-recovered-originals/workspace-originals'
+    jhome = tmp_path / 'jhome'; original = jhome / 'jobs/doorhandle-java/builds/268'
+    commit = 'b3f23013513b11af5041c67569a8f029651aa8db'; tag = 'ci-268-' + commit[:12]
+    current_commit = 'f' * 40; current = 'ci-300-' + current_commit[:12]
+    def store(path, raw):
+        path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(raw); return path
+    def archive_bytes(fixed_commit, members):
+        output = io.BytesIO()
+        with tarfile.open(fileobj=output, mode='w:gz', format=tarfile.PAX_FORMAT,
+                          pax_headers={'comment': fixed_commit}) as package:
+            for name, raw in members.items():
+                member = tarfile.TarInfo(name); member.size = len(raw)
+                package.addfile(member, io.BytesIO(raw))
+        return output.getvalue()
+    source_raw = archive_bytes(commit, {'opaque-source.txt': b'authenticated source; never executed\n'})
+    jar = b'synthetic retained unpublished #268 application jar\x00\xff\n'
+    context = {'release': tag, 'commit': commit, 'sourceSha256': sha(source_raw)}
+    terminal = with_action(flow_xml(context), 'verify')
+    local = encoded({'schemaVersion': 1, 'release': tag, 'commit': commit, 'status': 'PASS', 'exitCode': 0,
+        'testsExecuted': False, 'skipTests': True, 'applicationJar': 'artifacts/application.jar',
+        'applicationJarSha256': sha(jar), 'applicationJarBytes': len(jar)})
+    bodies = {'application.jar': jar, 'source.tar.gz': source_raw, 'local-build.json': local,
+        'release.json': encoded({**context, 'applicationJarSha256': sha(jar), 'localBuildReceiptSha256': sha(local)}),
+        'fixture-cleanup.json': encoded({'status': 'STOPPED', 'commit': commit, 'release': tag,
+            'cleanupReceipt': CI_ROOT + '/verification/' + tag + '/checkout/work/compact-fixtures/cleanup-receipt.json',
+            'cleanupReceiptSha256': 'c' * 64}),
+        'ecs-tool-preparation.json': encoded({**context, 'status': 'PREPARED'}),
+        'ecs-tool-preparation-transport.json': encoded({**context, 'status': 'PREPARED',
+            'prepareCandidateBuilder': False, 'finalExitCode': 0})}
+    prefix = 'D:/AI/lunwen1/DoorHandleCatch/work/jenkins/ci-workspaces/monolith/artifacts/'
+    preservation = {'originalPipelineArchive': 'Unavailable: AgentOfflineException during post/archive',
+        'commit': commit, 'buildXmlSha256': sha(terminal), 'preservedAtUtc': '2026-11-12T09:03:26.1868479Z',
+        'recovery': 'Workspace originals plus exact ECS bounded archive; no Jenkins build rewrite',
+        'jenkinsResult': 'FAILURE', 'build': 268, 'files': [
+            {'path': name, 'source': prefix + name, 'bytes': len(raw), 'sha256': sha(raw)}
+            for name, raw in bodies.items()]}
+    for name, raw in bodies.items(): store(folder / name, raw)
+    store(folder / 'build.xml', terminal); store(original / 'build.xml', terminal)
+    proof = encoded(preservation); store(folder / 'preservation.json', proof)
+    archive = store(tmp_path / 'current-source.tar.gz', archive_bytes(current_commit, {
+        name: b'# fixed current helper; never imported\n' for name in (
+            'script/jenkins/retire-failed-native-jar-duplicates.py', 'script/jenkins/cleanup-ecs-builds.py',
+            'script/jenkins/verify-remote.py', 'script/docker/compact-build-resources.py')}))
+    replacements = {'1cd184620be096d4d27be70f730da4d424b3cb07c5266a038d3025078dc6ea7d': sha(source_raw),
+        '257fc4cd9881e6b2047e9bf3905c11e8f4d7123cf2e78b2b75c165891a6937d0': sha(jar),
+        380301975: len(jar), 529456: len(terminal),
+        'cf1fabb11fc7e9fb39db7437a9e6c90ae0d9abd24e7cd724e7236659d2021ae9': sha(terminal),
+        '7c1287080970cccbee271b03919cd635ac5e6d6c802f4993ba1878133898b3f4': sha(proof)}
+    return SimpleNamespace(reader=reader, root=tmp_path, retained=retained, folder=folder, jhome=jhome,
+        original=original, current=current, current_commit=current_commit, archive=archive, context=context,
+        replacements=replacements, preservation=preservation, bodies=bodies, store=store)
+
+
+def run_recovered_268_reader(value, monkeypatch, capsys, *, selected='268'):
+    class FixedEvidenceLiterals(ast.NodeTransformer):
+        def visit_Constant(self, node):
+            if type(node.value) in (str, int) and node.value in value.replacements:
+                return ast.copy_location(ast.Constant(value.replacements[node.value]), node)
+            return node
+    syntax = ast.fix_missing_locations(FixedEvidenceLiterals().visit(ast.parse(value.reader)))
+    monkeypatch.setattr(sys, 'argv', ['actual-recovered-268-reader', str(value.archive), value.current_commit,
+        str(value.retained), str(value.jhome), CI_ROOT, value.current, 'FailedNative', 'retired-195-198-201', selected])
+    exec(compile(syntax, 'actual-recovered-268-reader', 'exec'), {})
+    return json.loads(capsys.readouterr().out)
+
+
+def test_recovered_268_actual_reader_uses_workspace_custody_without_inventing_jenkins_archive(recovered_268_controller_reader, monkeypatch, capsys):
+    value = recovered_268_controller_reader
+    before = retired_reader_files(value)
+    result = run_recovered_268_reader(value, monkeypatch, capsys)
+    assert result['selectedFailedNativeBuild'] == '268' and result['skipped'] == []
+    assert len(result['rows']) == 1 and result['rows'][0]['release'] == value.context['release']
+    controls = result['custody'][0]['controls']
+    assert controls['buildXml']['origin'] == 'ACTUAL_JENKINS_ORIGINAL'
+    assert all(controls[role]['origin'] == 'PINNED_PRESERVED_WORKSPACE_ORIGINAL'
+               for role in ('release', 'localBuild', 'fixtureCleanupPublic'))
+    assert {row['file'] for row in result['builderFiles']} == {
+        'ecs-tool-preparation.json', 'ecs-tool-preparation-transport.json'}
+    assert all(row['origin'] == 'PINNED_PRESERVED_WORKSPACE_ORIGINAL' for row in result['builderFiles'])
+    proof = result['custody'][0]['recoveredWorkspace']
+    assert proof['sourceArchive']['sha256'] == value.context['sourceSha256']
+    assert proof['applicationJar']['sha256'] == sha(value.bodies['application.jar'])
+    assert proof['buildXml']['source'] == str(value.original / 'build.xml')
+    assert not (value.original / 'archive').exists() and retired_reader_files(value) == before
+
+
+def test_recovered_268_is_not_discovered_by_automatic_failed_native_scan(recovered_268_controller_reader, monkeypatch, capsys):
+    value = recovered_268_controller_reader
+    result = run_recovered_268_reader(value, monkeypatch, capsys, selected='')
+    assert result['rows'] == [] and result['custody'] == [] and result['builderFiles'] == []
+    assert not (value.original / 'archive').exists()
+
+
+@pytest.mark.parametrize('changed', ['preservation', 'c-terminal', 'd-terminal', 'jar', 'source', 'release',
+    'local-build', 'workspace-origin', 'missing-preparation', 'nonboolean-no-builder'])
+def test_recovered_268_actual_reader_keeps_each_custody_source_binary_and_transport_guard(recovered_268_controller_reader, monkeypatch, capsys, changed):
+    value = recovered_268_controller_reader; proof_path = value.folder / 'preservation.json'
+    if changed == 'preservation': proof_path.write_bytes(proof_path.read_bytes() + b'\n')
+    elif changed in ('c-terminal', 'd-terminal'):
+        path = (value.original if changed == 'c-terminal' else value.folder) / 'build.xml'
+        path.write_bytes(path.read_bytes() + b'\n')
+    elif changed == 'missing-preparation': (value.folder / 'ecs-tool-preparation.json').unlink()
+    else:
+        if changed == 'workspace-origin': value.preservation['files'][0]['source'] = 'C:/invented/archive/application.jar'
+        else:
+            name = {'jar': 'application.jar', 'source': 'source.tar.gz', 'release': 'release.json',
+                    'local-build': 'local-build.json', 'nonboolean-no-builder': 'ecs-tool-preparation-transport.json'}[changed]
+            raw = value.bodies[name]
+            if changed in ('jar', 'source'): raw += b'\n'
+            else:
+                document = json.loads(raw)
+                if changed == 'release': document['applicationJarSha256'] = '0' * 64
+                elif changed == 'local-build': document['testsExecuted'] = True
+                else: document['prepareCandidateBuilder'] = 0
+                raw = encoded(document)
+            (value.folder / name).write_bytes(raw)
+            row = next(row for row in value.preservation['files'] if row['path'] == name)
+            row.update(bytes=len(raw), sha256=sha(raw))
+        # Rebind the synthetic preservation literal only: independent source,
+        # binary and terminal pins and all real admission branches stay intact.
+        proof = encoded(value.preservation); proof_path.write_bytes(proof)
+        value.replacements['7c1287080970cccbee271b03919cd635ac5e6d6c802f4993ba1878133898b3f4'] = sha(proof)
+    before = retired_reader_files(value)
+    if changed == 'nonboolean-no-builder':
+        result = run_recovered_268_reader(value, monkeypatch, capsys)
+        assert result['rows'] == [] and result['skipped'] == [{
+            'release': value.context['release'], 'reason': 'DATABASE_BUILDER_ORIGINAL_PREPARATION_REQUIRED'}]
+    else:
+        with pytest.raises((ValueError, FileNotFoundError)):
+            run_recovered_268_reader(value, monkeypatch, capsys)
+        assert capsys.readouterr().out == ''
+    assert not (value.original / 'archive').exists() and retired_reader_files(value) == before
+
+
+def test_268_controls_only_recipe_keeps_both_reviewed_publication_allowlists_closed():
+    pair = ('f8e83ca9a148deea6f606308de2cc6b92f2e3405e167a9386eb1a7dc9ba96bf3',
+            'abc6c9e4f0e4b7f72d5240b70278e71ace68dbfe4906724da70da72dea784b44')
+    assert pair in retirer.FAILED_NATIVE_PUBLICATION_RECIPES
+    assert pair in retirer.DATABASE_VERIFY_PUBLICATION_RECIPES
+    assert (pair[0], '0' * 64) not in retirer.FAILED_NATIVE_PUBLICATION_RECIPES
+    assert retirer.DATABASE_VERIFY_TOOL_PREPARATION_SOURCE == 'cd025c3250feb3acb03bb583c7d5ca94894b100cdf89921223607968b2c85d4d'
+
+
 @pytest.fixture
 def real_failed_mysql_producer(tmp_path, monkeypatch):
     """Read the retained producer's real code, never import or execute it."""

@@ -6,6 +6,7 @@ the isolated BuildKit daemon cannot access the host daemon's image store.
 """
 import gzip
 import hashlib
+import io
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -27,6 +28,25 @@ LAYER_TYPES = {'application/vnd.oci.image.layer.v1.tar': 'application/vnd.oci.im
 def require(value, message):
     if not value:
         raise ValueError(message)
+
+
+def bounded_tar_info(maximum):
+    metadata_bytes = 0; metadata_depth = 0
+    class BoundedTarInfo(tarfile.TarInfo):
+        def _proc_member(self, archive):
+            nonlocal metadata_bytes, metadata_depth
+            require(0 <= self.size <= maximum and self.type != tarfile.GNUTYPE_SPARSE,
+                    'Image tar header exceeds its byte/type bound')
+            extended = self.type in (tarfile.XHDTYPE, tarfile.XGLTYPE, tarfile.SOLARIS_XHDTYPE,
+                                     tarfile.GNUTYPE_LONGNAME, tarfile.GNUTYPE_LONGLINK)
+            if extended:
+                metadata_bytes += self.size; metadata_depth += 1
+                require(self.size <= 4 * MIB and metadata_bytes <= 32 * MIB and metadata_depth <= 16,
+                        'Image extended metadata exceeds its memory bound')
+            try: return super()._proc_member(archive)
+            finally:
+                if extended: metadata_depth -= 1
+    return BoundedTarInfo
 
 
 def encoded(value):
@@ -231,34 +251,15 @@ def inspect_docker_archive(archive, expected_image_id=None, expected_diff_ids=No
                         if target is not None: target.write(chunk)
                         if check is not None: check()
                 if target is not None: target.flush(); os.fsync(target.fileno()); target.close(); target = None
-                digest = 'sha256:' + blob.hexdigest(); expanded = hashlib.sha256(); unpacked = 0
+                digest = 'sha256:' + blob.hexdigest()
                 if name.startswith('blobs/sha256/'):
                     require(name.split('/')[-1] == digest[7:], 'Content-addressed layer bytes differ')
                 with package.extractfile(catalog[name]) as raw:
-                    stream = gzip.GzipFile(fileobj=raw) if compression else raw
-                    for chunk in iter(lambda: stream.read(MIB), b''):
-                        unpacked += len(chunk)
-                        require(expanded_total + unpacked <= maximum_uncompressed_bytes, 'Image layer expansion exceeds its enforced bound')
-                        expanded.update(chunk)
-                        if check is not None: check()
-                    if compression: stream.close()
-                require('sha256:' + expanded.hexdigest() == diff_id and length == catalog[name].size,
+                    measured = measure_layer(raw, maximum_uncompressed_bytes - expanded_total, check or (lambda: None))
+                require(measured['diffId'] == diff_id and measured['blobDigest'] == digest
+                        and measured['bytes'] == length == catalog[name].size,
                         'Original image layer bytes/DiffID differ')
-                expanded_total += unpacked
-                # Measure allocation from actual layer headers without applying
-                # any path/link. One extra block per entry bounds directory and
-                # inode bookkeeping; shared/overwritten entries are not credited.
-                allocated, entries = 4096, 0
-                with package.extractfile(catalog[name]) as raw:
-                    stream = gzip.GzipFile(fileobj=raw) if compression else raw
-                    with tarfile.open(fileobj=stream, mode='r|') as layer:
-                        for entry in layer:
-                            entries += 1
-                            require(entries <= 200000 and entry.size >= 0 and not entry.issparse(),
-                                    'Layer filesystem metadata exceeds its bound')
-                            allocated += ((entry.size + 4095) // 4096) * 4096 + 4096
-                            if check is not None: check()
-                    if compression: stream.close()
+                expanded_total += measured['uncompressedBytes']
                 if temporary is not None:
                     final = destination / 'blobs/sha256' / digest[7:]
                     if final.exists():
@@ -266,9 +267,7 @@ def inspect_docker_archive(archive, expected_image_id=None, expected_diff_ids=No
                     else: temporary.rename(final)
                 media = 'application/vnd.oci.image.layer.v1.tar' + ('+gzip' if compression else '')
                 descriptors.append({'mediaType': media, 'digest': digest, 'size': length})
-                layers.append({'blobDigest': digest, 'diffId': diff_id, 'bytes': length,
-                               'uncompressedBytes': unpacked, 'allocationUpperBoundBytes': allocated,
-                               'filesystemEntries': entries, 'mediaType': media})
+                layers.append(measured)
             finally:
                 if target is not None: target.close()
         load_descriptor = source_closure(catalog, small, source, config_id,
@@ -293,6 +292,56 @@ def export_to_oci(archive, destination, expected_image_id, expected_diff_ids, ma
                                   maximum_uncompressed_bytes, destination, check)
 
 
+def measure_layer(origin, maximum_uncompressed_bytes, check):
+    """Hash and count one layer in bounded memory, without applying its files."""
+    class Observed:
+        def __init__(self, source, maximum):
+            self.source, self.maximum = source, maximum
+            self.bytes = 0; self.sha = hashlib.sha256()
+        def read(self, size):
+            require(0 <= size <= MIB, 'Unbounded image layer read')
+            block = self.source.read(size); self.bytes += len(block); self.sha.update(block)
+            require(self.bytes <= self.maximum, 'Dependency expansion exceeds its bound'); check()
+            return block
+    raw = Observed(origin, maximum_uncompressed_bytes + 16 * MIB)
+    prefix = raw.read(2)
+    class Prefixed:
+        def read(self, size):
+            nonlocal prefix
+            require(0 <= size <= MIB, 'Unbounded image prefix read')
+            block, prefix = prefix[:size], prefix[size:]
+            return block + raw.read(size - len(block))
+    compressed = prefix == b'\x1f\x8b'
+    source = gzip.GzipFile(fileobj=Prefixed()) if compressed else Prefixed()
+    expanded = Observed(source, maximum_uncompressed_bytes)
+    # Same allocation envelope as archive inspection: rounded file payload plus
+    # one bookkeeping block per entry, without credit for shared/overwritten files.
+    allocated, entries, end = 4096, 0, 0
+    try:
+        with tarfile.open(fileobj=expanded, mode='r|', tarinfo=bounded_tar_info(maximum_uncompressed_bytes)) as contents:
+            for entry in contents:
+                entries += 1
+                require(entries <= 200000 and entry.size >= 0 and not entry.issparse()
+                        and not any('sparse' in key.lower() for key in entry.pax_headers),
+                        'Dependency filesystem metadata bound exceeded')
+                allocated += ((entry.size + 4095) // 4096) * 4096 + 4096
+                end = max(end, entry.offset_data + ((entry.size + 511) // 512) * 512); check()
+        for _block in iter(lambda: expanded.read(MIB), b''): pass
+        require(expanded.bytes >= end + 1024, 'Dependency layer tar terminator is missing')
+    finally:
+        if compressed: source.close()
+    return {'blobDigest': 'sha256:' + raw.sha.hexdigest(), 'diffId': 'sha256:' + expanded.sha.hexdigest(),
+            'bytes': raw.bytes, 'uncompressedBytes': expanded.bytes, 'allocationUpperBoundBytes': allocated,
+            'filesystemEntries': entries, 'mediaType': 'application/vnd.oci.image.layer.v1.tar' + ('+gzip' if compressed else '')}
+
+
+def inspect_docker_stream(origin, expected_image_id, expected_diff_ids, maximum_uncompressed_bytes, check,
+                          *, expected_engine_descriptor=None):
+    """Complete byte/graph measurement; retain only bounded metadata, no blobs."""
+    return export_stream_to_oci(origin, None, expected_image_id, expected_diff_ids, maximum_uncompressed_bytes,
+                                lambda *_: check(), check, expected_engine_descriptor=expected_engine_descriptor)
+
+
 def export_stream_to_oci(origin, destination, expected_image_id, expected_diff_ids,
                          maximum_uncompressed_bytes, before_member, check, *, expected_engine_descriptor=None):
     """Save directly into OCI blobs: no second full Torch TAR on this disk.
@@ -310,17 +359,20 @@ def export_stream_to_oci(origin, destination, expected_image_id, expected_diff_i
             and all(type(value) is str and SHA.fullmatch(value) for value in expected_diff_ids)
             and type(maximum_uncompressed_bytes) is int and maximum_uncompressed_bytes > 0,
             'Typed image DiffIDs and expansion bound are required')
-    destination = Path(destination); require(not destination.exists(), 'Fresh OCI stream destination required')
-    (destination / 'blobs/sha256').mkdir(mode=0o700, parents=True)
+    if destination is not None:
+        destination = Path(destination); require(not destination.exists(), 'Fresh OCI stream destination required')
+        (destination / 'blobs/sha256').mkdir(mode=0o700, parents=True)
     members = {}; total = 0; stream_sha = hashlib.sha256(); stream_bytes = 0
+    metadata_bytes = 0; measured_expansion = 0; end = 0
     class Observed:
         def read(self, size=-1):
             nonlocal stream_bytes
+            require(0 <= size <= MIB, 'Unbounded image source read')
             block = origin.read(size); stream_sha.update(block); stream_bytes += len(block)
             require(stream_bytes <= maximum_uncompressed_bytes + 16 * MIB, 'Image source stream exceeds its bound')
             return block
     observed = Observed()
-    with tarfile.open(fileobj=observed, mode='r|') as package:
+    with tarfile.open(fileobj=observed, mode='r|', tarinfo=bounded_tar_info(maximum_uncompressed_bytes)) as package:
         for entry in package:
             name = PurePosixPath(entry.name)
             require(name.parts and not name.is_absolute() and '..' not in name.parts and '\\' not in entry.name
@@ -329,7 +381,31 @@ def export_stream_to_oci(origin, destination, expected_image_id, expected_diff_i
             require(len(members) < 16384 and total + entry.size <= maximum_uncompressed_bytes,
                     'Image source member/byte bound exceeded')
             before_member(entry.name, entry.size); total += entry.size
+            end = max(end, entry.offset_data + ((entry.size + 511) // 512) * 512)
             if entry.isdir(): members[entry.name] = None; continue
+            if destination is None:
+                with package.extractfile(entry) as source:
+                    raw = source.read(entry.size) if entry.size <= 4 * MIB else None
+                    if raw is not None:
+                        require(len(raw) == entry.size, 'Truncated image source member')
+                        # Graph/config and legacy metadata are small JSON/text.
+                        # Small layers are measured immediately, never retained.
+                        metadata = entry.name in ('oci-layout', 'index.json', 'manifest.json', 'repositories') \
+                            or entry.name.endswith(('/VERSION', '/json'))
+                        if not metadata:
+                            try: metadata = isinstance(decoded(raw), (dict, list))
+                            except (ValueError, UnicodeError): pass
+                        if metadata:
+                            metadata_bytes += len(raw)
+                            require(metadata_bytes <= 32 * MIB, 'Image source metadata exceeds its memory bound')
+                            members[entry.name] = {'raw': raw, 'size': len(raw), 'digest': 'sha256:' + hashlib.sha256(raw).hexdigest()}
+                            continue
+                    measured = measure_layer(io.BytesIO(raw) if raw is not None else source,
+                                             maximum_uncompressed_bytes - measured_expansion, check)
+                    require(measured['bytes'] == entry.size, 'Truncated image source layer')
+                    measured_expansion += measured['uncompressedBytes']
+                    members[entry.name] = {'measurement': measured, 'size': entry.size, 'digest': measured['blobDigest']}
+                continue
             temporary = destination / ('member-%05d.partial' % len(members)); h = hashlib.sha256(); copied = 0
             with package.extractfile(entry) as source, temporary.open('xb') as output:
                 os.chmod(temporary, 0o600)
@@ -345,10 +421,12 @@ def export_stream_to_oci(origin, destination, expected_image_id, expected_diff_i
             require(not block.strip(b'\0'), 'Nonzero bytes follow the image source archive end'); check()
     for block in iter(lambda: observed.read(MIB), b''):
         require(not block.strip(b'\0'), 'Nonzero bytes follow the image source stream'); check()
+    require(stream_bytes >= end + 1024, 'Image source tar terminator is missing')
     def small(name):
         item = members.get(name)
-        require(item is not None and item['size'] <= 4 * MIB, 'Bounded Docker export metadata missing')
-        return item['path'].read_bytes()
+        require(item is not None and item['size'] <= 4 * MIB and ('raw' in item or 'path' in item),
+                'Bounded Docker export metadata missing')
+        return item['raw'] if 'raw' in item else item['path'].read_bytes()
     if 'manifest.json' in members:
         manifest = decoded(small('manifest.json'))
         require(isinstance(manifest, list) and len(manifest) == 1 and type(manifest[0]) is dict,
@@ -383,43 +461,33 @@ def export_stream_to_oci(origin, destination, expected_image_id, expected_diff_i
         item = members.get(name); require(item is not None, 'Exported dependency layer missing')
         if name.startswith('blobs/sha256/'):
             require(name == 'blobs/sha256/' + item['digest'][7:], 'Content-addressed layer bytes differ')
-        path = item['path']; keep.add(item['digest'][7:])
-        with path.open('rb') as raw: compressed = raw.read(2) == b'\x1f\x8b'
-        h = hashlib.sha256(); unpacked = 0
-        with path.open('rb') as raw:
-            source = gzip.GzipFile(fileobj=raw) if compressed else raw
-            for block in iter(lambda: source.read(MIB), b''):
-                unpacked += len(block); require(unpacked_total + unpacked <= maximum_uncompressed_bytes, 'Dependency expansion exceeds its bound')
-                h.update(block); check()
-            if compressed: source.close()
-        require('sha256:' + h.hexdigest() == expected, 'Dependency DiffID changed')
-        allocated, entries = 4096, 0
-        with path.open('rb') as raw:
-            source = gzip.GzipFile(fileobj=raw) if compressed else raw
-            with tarfile.open(fileobj=source, mode='r|') as contents:
-                for entry in contents:
-                    entries += 1; require(entries <= 200000 and not entry.issparse(), 'Dependency filesystem metadata bound exceeded')
-                    allocated += ((entry.size + 4095) // 4096) * 4096 + 4096; check()
-            if compressed: source.close()
-        unpacked_total += unpacked
-        media = 'application/vnd.oci.image.layer.v1.tar' + ('+gzip' if compressed else '')
+        keep.add(item['digest'][7:])
+        measured = item.get('measurement')
+        if measured is None:
+            require('path' in item, 'Image layer is not a measured tar member')
+            with item['path'].open('rb') as raw:
+                measured = measure_layer(raw, maximum_uncompressed_bytes - unpacked_total, check)
+        require(measured['diffId'] == expected and measured['blobDigest'] == item['digest']
+                and measured['bytes'] == item['size'], 'Dependency DiffID or blob changed')
+        unpacked_total += measured['uncompressedBytes']
+        require(unpacked_total <= maximum_uncompressed_bytes, 'Dependency expansion exceeds its bound')
+        media = measured['mediaType']
         descriptors.append({'mediaType': media, 'digest': item['digest'], 'size': item['size']})
-        layers.append({'blobDigest': item['digest'], 'diffId': expected, 'bytes': item['size'],
-                       'uncompressedBytes': unpacked, 'allocationUpperBoundBytes': allocated,
-                       'filesystemEntries': entries, 'mediaType': media})
+        layers.append(measured)
     load_descriptor = source_closure(members, small, row, config_id,
                                      [item['blobDigest'] for item in layers], [item['mediaType'] for item in layers])
     value = {'schemaVersion': 2, 'mediaType': 'application/vnd.oci.image.manifest.v1+json',
              'config': {'mediaType': 'application/vnd.oci.image.config.v1+json', 'digest': config_id, 'size': len(config_raw)},
              'layers': descriptors}
     raw = encoded(value); manifest_digest = 'sha256:' + hashlib.sha256(raw).hexdigest(); keep.add(manifest_digest[7:])
-    target = destination / 'blobs/sha256' / manifest_digest[7:]
-    if not target.exists(): target.write_bytes(raw); os.chmod(target, 0o600)
-    for target in (destination / 'blobs/sha256').iterdir():
-        if target.name not in keep: target.unlink()  # only redundant source metadata we just created
-    for name, content in [('oci-layout', {'imageLayoutVersion': '1.0.0'}), ('index.json', {'schemaVersion': 2,
-            'manifests': [{'mediaType': value['mediaType'], 'digest': manifest_digest, 'size': len(raw)}]})]:
-        with os.fdopen(os.open(destination / name, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600), 'wb') as output: output.write(encoded(content))
+    if destination is not None:
+        target = destination / 'blobs/sha256' / manifest_digest[7:]
+        if not target.exists(): target.write_bytes(raw); os.chmod(target, 0o600)
+        for target in (destination / 'blobs/sha256').iterdir():
+            if target.name not in keep: target.unlink()  # only redundant source metadata we just created
+        for name, content in [('oci-layout', {'imageLayoutVersion': '1.0.0'}), ('index.json', {'schemaVersion': 2,
+                'manifests': [{'mediaType': value['mediaType'], 'digest': manifest_digest, 'size': len(raw)}]})]:
+            with os.fdopen(os.open(destination / name, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600), 'wb') as output: output.write(encoded(content))
     return {'imageId': config_id, 'manifestDigest': manifest_digest, 'configDigest': config_id, 'loadDescriptor': load_descriptor,
             'dockerSaveStreamSha256': stream_sha.hexdigest(), 'dockerSaveStreamBytes': stream_bytes,
             'compressedBytes': sum(item['bytes'] for item in layers), 'uncompressedLayerBytes': unpacked_total,

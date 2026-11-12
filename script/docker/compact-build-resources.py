@@ -324,6 +324,7 @@ class Supervisor:
         self.directory = Path(directory); require(not self.directory.exists(), 'Fresh candidate resource attempt required')
         self.directory.mkdir(mode=0o700); self.context = dict(context); self.token = secrets.token_hex(12)
         self.context['ownerToken'] = self.token; self.phases = []; self.current = None; self.builder = None
+        self.input_measurements = []
         self.initial = probe(self.directory); self.last = self.initial; self.process = None; self.failed = None
         self.process_deadline = None
         self.builder_stopping = False
@@ -536,6 +537,7 @@ class Supervisor:
                   'monitorFailure': self.failed, 'cleanup': cleanup, 'originalDataChanged': False, **extra}
         if self.engine_identity is not None: result['engineIdentity'] = self.engine_identity
         if self.rootless_profile is not None: result['rootlessProfile'] = self.rootless_profile
+        if self.input_measurements: result['inputMeasurements'] = self.input_measurements
         write(self.directory / 'resource-summary.json', result)
         require(requested != 'PASS' or status == 'PASS', 'Candidate resource finalization failed; raw evidence retained')
         return {'file': str(self.directory / 'resource-summary.json'), 'sha256': digest(self.directory / 'resource-summary.json')}
@@ -955,33 +957,51 @@ def local_layout(actor, image, destination, inputs):
     item = unique_image_inputs([row])[image]; require(item['diffIds'], 'Immutable dependency has no layers')
     descriptor = engine_descriptor(row['Descriptor'], metadata=True) if row.get('Descriptor') is not None else None
     native = descriptor is not None and row['Id'] == descriptor['digest']
-    # Stream Docker's byte export directly into OCI blobs. Declared tar member
-    # sizes are admitted before writing; no second full Torch archive is made.
-    actor.begin('export-' + destination.name, 16 * MIB, {'imageId': image, 'diffIds': item['diffIds'], 'measurement': 'STREAM_HEADERS'}, 256 * MIB)
-    process = subprocess.Popen(['docker', 'image', 'save', image], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL, start_new_session=True, env={k: v for k, v in os.environ.items() if k in ('PATH', 'LANG', 'LC_ALL')})
-    actor.process = process; deadline = time.monotonic() + 900
-    actor.process_deadline = deadline
-    def check():
-        actor.check(); require(time.monotonic() <= deadline, 'Dependency byte export timed out')
-    def before(name, size):
-        check()
-        if size > MIB:
-            actor.begin('export-member-' + destination.name, size + 8 * MIB,
-                {'imageId': image, 'memberBytes': size, 'memberNameSha256': hashlib.sha256(name.encode()).hexdigest()}, 256 * MIB)
-    try:
-        result = inputs.export_stream_to_oci(process.stdout, destination, None if native else image, item['diffIds'], 8 * GIB,
-                                             before, check, expected_engine_descriptor=descriptor if native else None)
-        require(process.wait(timeout=10) == 0, 'Dependency byte export failed')
-        engine_identity(row, result, result['loadDescriptor'])
-        return result
-    finally:
-        process.stdout.close()
-        if process.poll() is None:
-            require(os.getpgid(process.pid) == process.pid, 'Dependency export process identity changed')
-            os.killpg(process.pid, signal.SIGKILL); process.wait(timeout=10)
-        actor.process = None
-        actor.process_deadline = None
+    def exported(target):
+        process = subprocess.Popen(['docker', 'image', 'save', image], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, start_new_session=True, env={k: v for k, v in os.environ.items() if k in ('PATH', 'LANG', 'LC_ALL')})
+        actor.process = process; deadline = time.monotonic() + 900
+        actor.process_deadline = deadline
+        def check():
+            actor.check(); require(time.monotonic() <= deadline, 'Dependency byte export timed out')
+        try:
+            arguments = (process.stdout, None if native else image, item['diffIds'], 8 * GIB)
+            if target is None:
+                result = inputs.inspect_docker_stream(*arguments, check, expected_engine_descriptor=descriptor if native else None)
+            else:
+                result = inputs.export_stream_to_oci(arguments[0], target, *arguments[1:],
+                    lambda *_: check(), check, expected_engine_descriptor=descriptor if native else None)
+            require(process.wait(timeout=10) == 0, 'Dependency byte export failed')
+            engine_identity(row, result, result['loadDescriptor'])
+            return result
+        finally:
+            process.stdout.close()
+            if process.poll() is None:
+                require(os.getpgid(process.pid) == process.pid, 'Dependency export process identity changed')
+                os.killpg(process.pid, signal.SIGKILL); process.wait(timeout=10)
+            actor.process = None
+            actor.process_deadline = None
+    # The first complete export only hashes/decodes layer bytes and keeps small
+    # graph metadata. An insufficient disk can therefore retain real A/Z/E
+    # evidence without first storing the full immutable Torch input again.
+    actor.begin('measure-' + destination.name, 16 * MIB,
+                {'imageId': image, 'diffIds': item['diffIds'], 'measurement': 'COMPLETE_STREAM_NO_LAYER_WRITES'}, 256 * MIB)
+    measurement = exported(None)
+    measurement_file = actor.directory / (destination.name + '-measurement.json')
+    write(measurement_file, {'version': 1, 'kind': 'doorhandle-complete-image-input-measurement', **actor.context,
+                            'engineIdentity': engine_identity(row, measurement, measurement['loadDescriptor']), 'measurement': measurement})
+    actor.input_measurements.append({'file': measurement_file.name, 'sha256': digest(measurement_file),
+                                     'bytes': measurement_file.stat().st_size})
+    # The observed whole transport bounds every source member retained during
+    # materialization, including metadata later removed by OCI normalization.
+    actor.begin('export-' + destination.name, measurement['dockerSaveStreamBytes'] + 8 * MIB,
+                {'imageId': image, 'completeStreamMeasurementSha256': digest(measurement_file),
+                 'sourceStreamBytes': measurement['dockerSaveStreamBytes'], 'compressedInputBytes': measurement['compressedBytes']}, 256 * MIB)
+    result = exported(destination)
+    fields = ('imageId', 'configDigest', 'manifestDigest', 'loadDescriptor', 'layers', 'layerCount',
+              'compressedBytes', 'uncompressedLayerBytes')
+    require(all(result[key] == measurement[key] for key in fields), 'Materialized dependency differs from its complete byte measurement')
+    return result
 
 
 def admit_tools(root, context, module_directory):
@@ -1693,6 +1713,48 @@ def fixture_build_evidence(runtime, require_pass=False):
     return result
 
 
+def validate_input_measurements(directory, summary, context):
+    references = summary.get('inputMeasurements', [])
+    require(type(references) is list and len(references) <= 4, 'Image input measurement catalogue exceeds its bound')
+    names = set()
+    for reference in references:
+        require(type(reference) is dict and set(reference) == {'file', 'sha256', 'bytes'}
+                and type(reference['file']) is str and re.fullmatch(r'base[0-3]-measurement\.json', reference['file'])
+                and reference['file'] not in names and type(reference['sha256']) is str and SHA.fullmatch(reference['sha256'])
+                and type(reference['bytes']) is int and 0 < reference['bytes'] <= MIB,
+                'Image input measurement reference escaped its owned byte/name bound')
+        names.add(reference['file']); path = safe((Path(directory) / reference['file']).absolute()); info = path.stat()
+        require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and info.st_size == reference['bytes'],
+                'Image input measurement is not a bounded single regular file')
+        raw = path.read_bytes()
+        require(len(raw) == reference['bytes'] and hashlib.sha256(raw).hexdigest() == reference['sha256'],
+                'Image input measurement bytes changed')
+        value = json.loads(raw)
+        require(value.get('version') == 1 and value.get('kind') == 'doorhandle-complete-image-input-measurement'
+                and all(value.get(key) == expected for key, expected in {**context, 'ownerToken': summary['ownerToken']}.items()),
+                'Image input measurement belongs to another attempt')
+        binding = value.get('engineIdentity'); measured = value.get('measurement')
+        require(type(binding) is dict and type(measured) is dict, 'Complete image input identity is missing')
+        synthetic = {'Id': binding.get('engineImageId'), 'Descriptor': binding.get('loadDescriptor'), 'Os': binding.get('os'),
+                     'Architecture': binding.get('architecture'), 'RootFS': {'Layers': binding.get('diffIds')}}
+        require(engine_identity(synthetic, measured, measured.get('loadDescriptor')) == binding,
+                'Image input measurement engine/content identity differs')
+        layers = measured['layers']
+        require(measured.get('layerCount') == len(layers)
+                and type(measured.get('manifestDigest')) is str and IMAGE.fullmatch(measured['manifestDigest'])
+                and type(measured.get('dockerSaveStreamBytes')) is int and 0 < measured['dockerSaveStreamBytes'] <= 8 * GIB + 16 * MIB
+                and type(measured.get('dockerSaveStreamSha256')) is str and SHA.fullmatch(measured['dockerSaveStreamSha256'])
+                and measured.get('compressedBytes') == sum(row['bytes'] for row in layers)
+                and measured.get('uncompressedLayerBytes') == sum(row['uncompressedBytes'] for row in layers)
+                and all(type(row.get(key)) is int and row[key] > 0 for row in layers
+                        for key in ('bytes', 'uncompressedBytes', 'allocationUpperBoundBytes'))
+                and all(type(row.get('blobDigest')) is str and IMAGE.fullmatch(row['blobDigest'])
+                        and row.get('mediaType') in ('application/vnd.oci.image.layer.v1.tar', 'application/vnd.oci.image.layer.v1.tar+gzip')
+                        and type(row.get('filesystemEntries')) is int and 0 <= row['filesystemEntries'] <= 200000 for row in layers),
+                'Complete image input layer byte evidence is missing')
+    return references
+
+
 def validate_files(directory, context, require_services=True):
     """Read-only shared validator used on ECS and on downloaded CI evidence."""
     directory = Path(directory); raw = (directory / 'resource-summary.json').read_bytes()
@@ -1705,6 +1767,7 @@ def validate_files(directory, context, require_services=True):
             and summary.get('monitorFailure') is None and summary.get('originalDataChanged') is False
             and all(summary.get('cleanup', {}).get(key) is True for key in ('creatorStopped', 'builderStopped', 'daemonImportTerminated')),
             'Candidate resource identity, monitor or owned cleanup did not pass')
+    validate_input_measurements(directory, summary, context)
     engine = stored_builder_identity(summary.get('engineIdentity'))
     profile = rootless_profile_proof()
     require(summary.get('rootlessProfile') == profile and summary['rootlessProfile'].get('localOverrideRulesAbsent') is True,
