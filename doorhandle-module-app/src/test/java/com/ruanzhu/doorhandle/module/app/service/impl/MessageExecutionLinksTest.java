@@ -143,9 +143,19 @@ class MessageExecutionLinksTest {
         jdbc.update("UPDATE chat_session SET user_id=2 WHERE session_id='s1'");links.hydrate(alice,"s1",List.of(wrong));assertThat(wrong.getRunId()).isNull();
     }
     @Test void missingMigrationKeepsTheMessageUsableAndDoesNotThrow(){
+        // This private legacy-shape fixture cannot retain guards that require the missing projection column.
+        jdbc.execute("ALTER TABLE chat_message DROP CHECK ck_chat_message_execution");
+        jdbc.execute("DROP TRIGGER compact_legacy_chat_projection_insert");
+        jdbc.execute("DROP TRIGGER compact_legacy_chat_projection_update");
         jdbc.execute("ALTER TABLE chat_message RENAME COLUMN execution_run_id TO unavailable_execution_run_id");var m=message(11,"s1");
+        var messagesBefore=jdbc.queryForList("SELECT * FROM chat_message ORDER BY id");
+        var auditBefore=jdbc.queryForList("SELECT * FROM audit_event ORDER BY id");
         assertThatCode(()->{links.hydrate(alice,"s1",List.of(m));links.bind(alice,"s1",11L,"run-1");}).doesNotThrowAnyException();
         assertThat(m.getContent()).isEqualTo("正文保持原样");assertThat(m.getRunId()).isNull();
+        assertThat(jdbc.queryForList("SELECT * FROM chat_message ORDER BY id")).isEqualTo(messagesBefore);
+        assertThat(jdbc.queryForList("SELECT * FROM audit_event ORDER BY id")).isEqualTo(auditBefore);
+        assertThat(jdbc.update("UPDATE chat_message SET content='未升级迁移仍可保存正文' WHERE id=11")).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT content FROM chat_message WHERE id=11",String.class)).isEqualTo("未升级迁移仍可保存正文");
     }
     @Test void batchesVisibleMessageIdsInsteadOfQueryingEveryBubble(){
         links.bind(alice,"s1",11L,"run-1");var spy=org.mockito.Mockito.spy(jdbc);var reader=new MessageExecutionLinks(spy);

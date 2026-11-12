@@ -2,24 +2,25 @@
 
 ## 当前结果（2026-11-12）
 
-当前为 `java-cloud` 单体，正式业务库仍为 **131表**，目标 **29表**尚未切库，生产发布及旧库演练门关闭。功能验收固定2个检测人员、2个主管，每账号2个功能标签；正式并发/容量压测等开发完成后用压测工具单独开展，`loadTestStatus=DEFERRED_BY_USER`、`performanceSloVerified=false`。
+当前为 `java-cloud` 单体。正式业务库仍 **131表**，设计目标 **29表**尚未正式切换；生产发布与旧库演练门关闭。功能验收固定2个检测人员、2个主管，每账号2个功能标签；正式并发/容量压测等开发完成后用压测工具单独开展，`loadTestStatus=DEFERRED_BY_USER`、`performanceSloVerified=false`。
 
-最近完整source通过为 `e441933d` 的#251：Java926、Python4,174、双前端203/20及两套构建完成，条件跳过722/24，运行资源专项95项通过。固定 `516614e0754249d062103ed64f3d5337fdbee29e` 的 **#257控制预检SUCCESS**，20模块2,245项全通过；**#258精确维护SUCCESS**，退役#256停止的测试MySQL对象及两份可再生JAR，mysql-data保留。普通输出及Builder均NO_ACTION，无隔离遗留；实际JAR分配共760,619,008字节，下一任务前实余 **6,559,977,472字节**，原件 `pre-database259-execution-readiness.json`。
+最近完整source通过为 `e441933d` 的#251：Java926、Python4,174、双前端203/20及两套构建完成，条件跳过722/24，运行资源专项95项通过。固定 `2ff9edc00291f558d6a267f617757911d128ad3e` 的 **#262控制预检SUCCESS**：20模块2,246项全部通过，零失败/错误/跳过；当前64类最低755项按既有动态算法分为14组，所有独立配置、账号及逐类XML检查保留。
 
-**#259独立verify/mysql终态FAILURE**：本地跳测试打包、2,245项控制及完整夹具通过；真实MySQL52项中45通过、7错误，零断言失败/跳过。Workbench8项、身份核对7项、OperationsCopy16项全部通过；MCP17项中14通过、3项在审计后置对账时报错；ContextStore4项因测试provider装配不支持无参getObject全部报错。MessageExecutionLinks及后续整库/恢复未达到，不能记为迁移完成。
+**#263精确维护SUCCESS**：退役#259停止的测试MySQL对象及两份可再生JAR，mysql-data保留，普通源码输出和Builder均NO_ACTION；原SQL、源码、报告、卷及镜像保留。JAR实际分配共760,619,008字节，下一数据库任务前独立实余 **6,023,311,360字节**，原件 `pre-database264-execution-readiness.json`。
 
-本轮集中修复两类问题：MCP把旧DATETIME(0)与目标DATETIME(6)按BINARY文本核对，零小数文本差异误报；改为按真实时间类型精确比较，其他字段/JSON仍逐字节检查，13条迁移时钟sidecar绑定保留。Context测试改用现有DefaultListableBeanFactory装配，并明确核两个provider返回原注册对象，生产读取及原4项业务断言不变。新增MCP时间篡改回归后，64类最低755项、20控制模块最低2,246项、源码专项32项；两项修复及6模块跳测试编译均已完成，固定提交后再统一ECS验证。
+**#264独立verify/mysql终态FAILURE**：本地跳测试打包、2,246项控制及完整夹具通过；真实MySQL69项中68通过、1错误，零断言失败/跳过。Workbench8、MCP20（含微秒篡改回滚）、Core12Persistence7、FileDeliveryAudit5、QualityDigest11全部通过；MessageExecutionLinks18项中17通过，唯一错误在模拟缺迁移字段时，完整表CHECK阻止列改名，尚未进入该例业务断言。后续Context、完整source回归、整库及恢复尚未达到。
 
-完整native、source回归、131→29整库/源目标双恢复、旧45/5,599/三库恢复、9项运行场景、19项浏览器功能检查、旧数据业务合入和切库仍未验收。fullruntime还缺Mem0/worker基座真实层量预算，不拿Image.Size代替放行证据。
+本轮仅修此私有旧版本夹具：移除引用缺失执行投影列的一个CHECK和两条投影触发器，再保留原列改名及兼容性断言；其余17项仍使用完整29表。新增正文可写读、失败关联不改消息/审计的断言，生产schema与服务不变，仍18项、总最低755项。11模块离线跳测试编译成功，日志 `work/jenkins/native264-message-legacy-fixture-test-compile.log`；同族DDL只读审计未发现第二处确定前置错误，尚待新固定提交ECS验证。
 
-#259原归档41份中40份非JAR及原build.xml已保全于 `work/jenkins/data-residency-20261107/ci-259-raw-receipts`，工具和夹具实际STOPPED、remaining为空。2026-11-12 **11:42:15（北京时间）**从流水线外实际回读 `Stopped / StopCharging`，原件 `ci-259-external-stop-readback.json`。本地Jenkins及专用节点保持在线，修复期间项目任务disabled、无排队；80 GiB原盘及既有7天快照保持。
+此轮没有修改CI、清理、控制脚本或profile，沿用已通过的对应证据，不再额外启动独立controls任务。固定提交后先由现有维护入口精确退役#264未发布JAR及停止对象、保留数据；随后完整verify/mysql仍强制执行同提交的2,246项内置控制预检，通过后才准备数据库并执行全部原生、源码、整库和恢复验收。没有省略完整流程中的测试或资源门。
 
-**#260仅执行控制预检，终态FAILURE**：2,243通过、3失败，没有原生、应用或整库测试。两项是旧13组快照断言：新增MCP回归改变既有动态权重后实际为14组；本轮按原动态分组设计同步快照，不改算法、64类覆盖、每组上限、私有输入/账号/授权或XML检查。另1项是新源码检查未识别unknown时钟编译器的平衡括号，现按完整SQL比较结构严格核对。仅修控制测试，生产SQL和微秒原生负例不变，最低数仍755/2,246，静态编译通过、待固定提交ECS验证。全部16份原件已保全，工具STOPPED、remaining为空；2026-11-12 **12:02:09（北京时间）**实际回读 `Stopped / StopCharging`，原件 `ci-260-external-stop-readback.json`。
+#264原归档43份中42份非JAR及原build.xml已保全于 `work/jenkins/data-residency-20261107/ci-264-raw-receipts`，工具和夹具STOPPED、remaining为空。2026-11-12 **12:59:54（北京时间）**从流水线外实际回读 `Stopped / StopCharging`，原件 `ci-264-external-stop-readback.json`。Jenkins及本地专用节点在线，修复期间项目任务disabled、无排队；原80 GiB盘及既有7天快照保持。
 
-**最新#261仍仅执行控制预检，终态FAILURE**：2,245通过、1失败，动态14组两项检查已通过；新增MCP源码检查的BINARY偏移字段同样存在完整括号包装，已把typed时间、BINARY标量、BINARY CAST JSON及已知/未知offset统一按完整平衡结构核验；静态盘点两份SQL各14组730个比较均属于这三类，保留全列和13条sidecar检查。生产SQL、原生用例和最低数未变，修复已静态编译，待固定提交ECS验证，没有运行原生或整库。16份原件及工具STOPPED已保全，2026-11-12 **12:15:41（北京时间）**在流水线外实际回读 `Stopped / StopCharging`，原件 `ci-261-external-stop-readback.json`。后续按本节和原始回执判断实际终态，其他运行/资源文档不再复制每个构建状态。
-
+完整native/source、131→29整库迁移与源/目标双恢复、旧45/5,599/三库恢复、9项运行场景、19项浏览器功能检查、Mem0/RAG正式生效和旧数据业务合入/切库仍未验收。fullruntime还缺应用基座真实层量预算，不拿Image.Size代替放行证据。
 
 ## 此前执行记录（历史）
+
+2026-11-12 控制检查收敛：#260为2,243通过/3失败，#261为2,245通过/1失败，未执行原生或业务测试；修正动态14组快照和按完整平衡结构核三类SQL比较后，#262的2,246项全部通过。两份MCP SQL各14组730个比较、13条时钟sidecar及微秒native负例保留；原件分别在 `ci-260-raw-receipts`、`ci-261-raw-receipts`、`ci-262-raw-receipts`。
 
 当前：#230的20控制模块1,970项已在ECS全部通过、零跳过；同提交#231维护被四个额外退出Builder正确阻断，尚未删除MySQL/JAR。现已把现有Builder→MySQL→JAR顺序接入FailedNative：分别独立核定两停止目标，fresh snapshot只排除这两个完整身份；先普通退役Builder保state卷，再独立退役MySQL保数据，删除前重新核原件、整对与引用。新增36项完整入口边界回归，控制最低2,006项；待新固定提交经既有controls→维护→完整source/四原件→fullruntime验证。ECS已实际Stopped/StopCharging，Jenkins保持运行，正式压测仍延后。
 
