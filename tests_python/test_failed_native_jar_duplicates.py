@@ -2379,9 +2379,88 @@ def test_watched_process_readback_never_stops_a_live_or_reused_process(tmp_path,
         original_boot = '00000000-1234-1234-1234-123456789abc' if state == 'old-boot' else boot
         assert retirer.stopped_fixture_watch_process(process, original_boot) == boot
 
+# Actual start_mysql source segment retained from f6e062ed, before the watched
+# 3 GiB producer. These legacy controls must not follow the current producer.
+# It is archived and inspected as bytes only; no test imports this old code.
+LEGACY_MYSQL_FIXTURE_RECIPE = b"""def prepare(self):
+    jar = canonical(self.inbox / 'application.jar')
+    uploaded = self.work / 'candidate-app.jar'
+    shutil.copyfile(jar, uploaded)
+
+def start_mysql(self, image):
+        require(re.fullmatch(r'sha256:[a-f0-9]{64}', image), 'Reuse an existing immutable MySQL image')
+        require(json.loads(self.docker_call('image', 'inspect', image))[0]['Id'] == image, 'Existing MySQL image is unavailable')
+        with socket.socket() as available:
+            available.bind(('127.0.0.1', 0)); port = available.getsockname()[1]
+        require(1024 < port <= 65535 and port != 3306, 'Owned non-default loopback port required')
+        data = self.work / 'mysql-data'; data.mkdir(mode=0o700)
+        password = secrets.token_hex(32)
+        env = self.work / 'mysql.env'; env.write_text('MYSQL_ROOT_PASSWORD=' + password + '\\n', encoding='utf8'); os.chmod(env, 0o600)
+        name = 'doorhandle-compact-fixture-' + self.journal['token']
+        self.journal.update(containerName=name, image=image, port=port, dataDirectory=str(data), rootPassword=password)
+        self.save('STARTING_MYSQL')
+        container = self.docker_call('run', '-d', '--pull=never', '--restart=no', '--name', name,
+            '--label', LABEL + '=' + self.journal['token'], '--label', 'io.doorhandle.release=' + self.args.tag,
+            '--label', 'io.doorhandle.source=' + self.args.source_sha256, '--env-file', str(env),
+            '--publish', '127.0.0.1:' + str(port) + ':' + str(port), '--memory', str(1536 * 1024 ** 2),
+            '--memory-swap', str(1536 * 1024 ** 2), '--cpus', '1', '--pids-limit', '256',
+            '--mount', 'type=bind,source=' + str(data) + ',target=' + str(data),
+            '--tmpfs', '/var/lib/mysql', image, '--datadir=' + str(data), '--port=' + str(port),
+            '--bind-address=0.0.0.0', '--mysqlx=OFF', '--event-scheduler=OFF', '--local-infile=OFF', '--skip-log-bin',
+            '--innodb-buffer-pool-size=268435456', '--max-connections=120', timeout=120).decode().strip()
+        require(CID.fullmatch(container), 'Owned MySQL container identity unavailable')
+        self.journal['containerId'] = container; self.save('MYSQL_STARTED')
+        deadline = time.monotonic() + 240
+        while True:
+            try:
+                row = self.admin_query("SELECT JSON_OBJECT('uuid',@@server_uuid,'version',@@version,'port',@@port,'data',@@datadir,'fk',@@foreign_key_checks,'logBin',@@GLOBAL.log_bin);")
+            except Exception:
+                require(time.monotonic() < deadline and json.loads(self.docker_call('inspect', container))[0]['State']['Running'],
+                        'Owned MySQL failed readiness; no other server or image will be substituted')
+                time.sleep(2)
+                continue
+            # This owned server serves the Java suites and both whole-migration
+            # recovery schemas. No replication or binary-log recovery is used.
+            require(row['version'].startswith('8.4.') and row['port'] == port and row['fk'] == 1
+                    and row['data'].rstrip('/') == str(data), 'Owned MySQL actual storage/port/version differs')
+            require(type(row.get('logBin')) is int and row['logBin'] == 0,
+                    'Owned disposable MySQL binary logging must be disabled at startup')
+            self.journal['serverUuid'] = row['uuid']; self.journal['binaryLoggingDisabled'] = True
+            break
+        self.save('MYSQL_READY'); self.inspect_owned()
+        output = self.work / 'mysql-client'; output.mkdir(mode=0o700); (output / 'private').mkdir(mode=0o700)
+        self.mysql = self.runtime.Mysql({'scope': 'ecs-disposable-migration', 'serverUuid': self.journal['serverUuid'],
+            'dataDirectory': str(data), 'connection': {'host': '127.0.0.1', 'port': port, 'username': 'root', 'password': password},
+            'client': {'kind': 'docker', 'executable': str(self.docker), 'containerId': container}}, output)
+        self.mysql.admitted_server()
+"""
+
+
+def native_pair_watch_documents(context, identity, owner, work):
+    """Produce matching private/public originals for the watched integration case."""
+    boot = '12345678-1234-1234-1234-123456789abc'
+    process = {'pid': 10001, 'startTicks': 20001, 'group': 10001, 'session': 10001}
+    kernel = {'pid': 30001, 'startTicks': 40001, 'relative': '/docker/' + owner['containerId'], 'directory': [29, 101]}
+    config = {'tableOpenCacheInstances': 1, 'bufferPoolBytes': 268435456, 'maxConnections': 120}
+    owner.update(mysqlRuntimeConfiguration=config,
+                 fixtureWatch={'file': str(work / 'fixture-watch-owner.json'), 'ownerToken': 'e' * 32, 'groupToken': 'f' * 32})
+    common = {**context, 'identity': identity, 'containerId': owner['containerId'], 'memoryLimitBytes': 3 * 1024 ** 3,
+              'swapLimitBytes': 0, 'mysqlConfiguration': config, 'process': process, 'bootId': boot}
+    descriptor = {**common, 'version': 1, 'kind': 'doorhandle-fixture-watch-owner', 'kernelIdentity': kernel,
+                  'ownerToken': 'e' * 32, 'groupToken': 'f' * 32}
+    probe = {'pid': kernel['pid'], 'startTicks': kernel['startTicks'], 'cgroup': kernel['relative'],
+             'memoryLimitBytes': 3 * 1024 ** 3, 'swapLimitBytes': 0}
+    status = {**common, 'version': 1, 'kind': 'doorhandle-fixture-runtime', 'ownerToken': 'e' * 32,
+              'status': 'STOPPED', 'watchStopped': True, 'probeCount': 10,
+              'firstProbe': probe, 'lastProbe': dict(probe), 'capturedMonotonic': 10.0}
+    return {'owner': descriptor, 'status': status,
+            'runtime': {key: value for key, value in status.items() if key not in ('ownerToken', 'capturedMonotonic')}}
+
+
 @pytest.fixture
-def failed_native_pair_plan(tmp_path,bundle,monkeypatch):
+def failed_native_pair_plan(tmp_path,bundle,monkeypatch,request):
     """Real plan/admission/removal code; replace only OS Docker/process/UID probes."""
+    watched = getattr(request, 'param', 'legacy') == 'watched'
     from tests_python import test_historical_builder_retirement as builder_cases
     from tests_python import test_historical_mysql_fixture_retirement as mysql_cases
     root=tmp_path/'ci';tag='ci-221-'+'a'*12;context={'release':tag,'commit':'a'*40,'sourceSha256':'b'*64}
@@ -2396,16 +2475,29 @@ def failed_native_pair_plan(tmp_path,bundle,monkeypatch):
     ms=SimpleNamespace(**json.loads(json.dumps(vars(ms),default=str).replace(str(mysql_cases.ROOT),str(root))
         .replace(old_context['release'],tag).replace(old_context['commit'],context['commit'])))
     ms.owner['binaryLoggingDisabled']=True;ms.row['Config']['Cmd'].insert(6,'--skip-log-bin')
+    if watched:
+        ms.row['HostConfig'].update(Memory=3 * 1024 ** 3, MemorySwap=3 * 1024 ** 3)
+        ms.row['Config']['Cmd'].append('--table-open-cache-instances=1')
     pub={'Jenkinsfile.ecs-monolith':b'synthetic fixed no-publish pipeline',
          'script/jenkins/pipeline.ps1':b'synthetic publication guard',
          'script/docker/compact-build-resources.py':(MODULE.parents[1]/'docker/compact-build-resources.py').read_bytes(),
          'script/docker/compact-image-inputs.py':(MODULE.parents[1]/'docker/compact-image-inputs.py').read_bytes()}
     monkeypatch.setattr(retirer,'FAILED_NATIVE_PUBLICATION_RECIPES',frozenset({tuple(sha(pub[k]) for k in ('Jenkinsfile.ecs-monolith','script/jenkins/pipeline.ps1'))}))
     archive=source_archive(SimpleNamespace(keeper=root/'inbox'/tag/'application.jar'),
-        recipe=(MODULE.parent/'prepare-compact-fixtures.py').read_bytes(),publication=pub)
+        recipe=(MODULE.parent/'prepare-compact-fixtures.py').read_bytes() if watched else LEGACY_MYSQL_FIXTURE_RECIPE,
+        publication=pub)
     context['sourceSha256']=sha(archive.read_bytes())
     for value in (bs.context,bs.tools,bs.summary,ms.context,ms.owner,ms.cleanup):value.update(context)
     for row in (bs.row,ms.row):row['Config']['Labels']['io.doorhandle.source']=context['sourceSha256']
+    watch_files = {}
+    if watched:
+        documents = native_pair_watch_documents(context, bundle.identity, ms.owner, work)
+        watch_files = {'owner': work / 'fixture-watch-owner.json', 'status': work / 'fixture-watch-status.json',
+                       'runtime': work.parent / 'ci-evidence/fixture-runtime.json'}
+        for role, path in watch_files.items():
+            path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            path.write_bytes(encoded(documents[role])); path.chmod(0o600)
+        monkeypatch.setattr(retirer, 'stopped_fixture_watch_process', lambda *_: documents['owner']['bootId'])
     bs.helpers={Path(name).name:sha(body) for name,body in pub.items() if name.startswith('script/docker/')}
     bs.tools['helperSha256']=bs.helpers['compact-build-resources.py'];bs.tools['imageInputsHelperSha256']=bs.helpers['compact-image-inputs.py']
     builder_cases.refresh_references(bs)
@@ -2462,11 +2554,11 @@ def failed_native_pair_plan(tmp_path,bundle,monkeypatch):
              'modules':{'builder':builder_cases.resources,'cleanup':cleanup},'failed_native':True}
     return SimpleNamespace(root=root,tag=tag,current=current,context=context,raw=raw,request=request,options=options,
         rows=rows,commands=commands,snapshots=snapshots,bcid=bcid,fid=fid,production=production,page=page,page_bytes=page.read_bytes(),
-        keeper=keeper,copy_path=copy_path,jar=jar,prep_path=prep_path,cleanup=cleanup,data=data,data_inode=data.stat().st_ino)
+        keeper=keeper,copy_path=copy_path,jar=jar,prep_path=prep_path,cleanup=cleanup,data=data,data_inode=data.stat().st_ino,
+        watched=watched,watch_files=watch_files)
 
 
-def test_failed_native_real_plan_pairs_stop_proof_then_builder_fixture_and_exact_jars(failed_native_pair_plan):
-    s=failed_native_pair_plan
+def retire_native_pair(s):
     prepared=retirer.plan_builders(s.root,s.raw,**s.options)
     assert prepared['skipped']==[] and prepared['scope']=='FAILED_NATIVE_BUILDERS' and len(prepared['candidates'])==1
     result=retirer.apply_builders(s.root,s.raw,prepared,plan_sha256=sha(encoded(prepared)),**s.options)
@@ -2489,6 +2581,53 @@ def test_failed_native_real_plan_pairs_stop_proof_then_builder_fixture_and_exact
     assert any({s.bcid,s.fid}<={row[0] for row in snap} for snap in s.snapshots)
 
 
+def test_failed_native_real_plan_pairs_stop_proof_then_builder_fixture_and_exact_jars(failed_native_pair_plan):
+    retire_native_pair(failed_native_pair_plan)
+
+
+@pytest.mark.parametrize('failed_native_pair_plan', ['legacy', 'watched'], indirect=True)
+def test_real_pair_archive_producer_matches_its_original_memory_and_watch_contract(failed_native_pair_plan):
+    s = failed_native_pair_plan; builder = s.options['modules']['builder']
+    proof = retirer.source_proof(s.root, s.tag, s.context['commit'], s.context['sourceSha256'],
+        builder_helpers=True, canonical_jar=True, failed_native=True)
+    expected = builder.WATCHED_MYSQL_START_SOURCE if s.watched else builder.LEGACY_MYSQL_START_SOURCE
+    assert proof['mysqlFixtureStartSourceSha256'] == expected
+    assert ('mysqlFixtureMemoryLimitBytes' in proof) is s.watched
+    row = s.rows[s.fid]; memory = (3 * 1024 ** 3) if s.watched else (1536 * 1024 ** 2)
+    assert row['HostConfig']['Memory'] == row['HostConfig']['MemorySwap'] == memory
+    assert ('--table-open-cache-instances=1' in row['Config']['Cmd']) is s.watched
+    reference = s.request['candidates'][0]['controls']['fixtureOwner']
+    owner = json.loads((s.root / reference['path']).read_bytes())
+    assert ('fixtureWatch' in owner) is s.watched
+    builder.recent_mysql_fixture_source(s.context, proof, failed_native=True)
+
+
+@pytest.mark.parametrize('failed_native_pair_plan', ['watched'], indirect=True)
+def test_watched_producer_real_plan_apply_retires_only_exact_objects_and_jars(failed_native_pair_plan):
+    s = failed_native_pair_plan
+    originals = {role: path.read_bytes() for role, path in s.watch_files.items()}
+    retire_native_pair(s)
+    assert originals == {role: path.read_bytes() for role, path in s.watch_files.items()}
+
+
+@pytest.mark.parametrize('failed_native_pair_plan', ['watched'], indirect=True)
+@pytest.mark.parametrize('damage', ['missing-watch', 'legacy-memory'])
+def test_watched_producer_real_plan_never_downgrades_to_legacy_controls(failed_native_pair_plan, damage):
+    s = failed_native_pair_plan
+    if damage == 'missing-watch':
+        reference = s.request['candidates'][0]['controls']['fixtureOwner']; path = s.root / reference['path']
+        owner = json.loads(path.read_bytes()); del owner['fixtureWatch']; body = encoded(owner)
+        path.write_bytes(body); reference.update(bytes=len(body), sha256=sha(body))
+        s.raw = encoded(s.request); s.options['request_sha256'] = sha(s.raw)
+    else:
+        s.rows[s.fid]['HostConfig'].update(Memory=1536 * 1024 ** 2, MemorySwap=1536 * 1024 ** 2)
+    planned = retirer.plan_builders(s.root, s.raw, **s.options)
+    assert planned['candidates'] == planned['absent'] == [] and len(planned['skipped']) == 1
+    if damage == 'missing-watch': assert planned['skipped'][0]['reason'] == 'ORIGINAL_FIXTURE_WATCH_REFERENCE_REQUIRED'
+    assert s.commands == [] and s.fid in s.rows and s.bcid in s.rows
+    assert s.page.read_bytes() == s.page_bytes and s.keeper.read_bytes() == s.copy_path.read_bytes() == s.jar
+
+
 @pytest.fixture
 def database_only_failed_native_pair(failed_native_pair_plan, monkeypatch):
     s = failed_native_pair_plan; old_sha = s.context['sourceSha256']
@@ -2509,6 +2648,8 @@ def database_only_failed_native_pair(failed_native_pair_plan, monkeypatch):
         if role == 'buildXml': raw = with_action(flow_xml(s.context), 'verify')
         else: raw = path.read_bytes().replace(old_sha.encode(), s.context['sourceSha256'].encode())
         path.write_bytes(raw); reference.update(bytes=len(raw), sha256=sha(raw))
+    for path in s.watch_files.values():
+        path.write_bytes(path.read_bytes().replace(old_sha.encode(), s.context['sourceSha256'].encode()))
     s.rows.pop(s.bcid)
     s.rows[s.fid] = json.loads(json.dumps(s.rows[s.fid]).replace(old_sha, s.context['sourceSha256']))
     directory = s.keeper.parent / 'candidate-build-tools'
@@ -2528,8 +2669,7 @@ def database_only_failed_native_pair(failed_native_pair_plan, monkeypatch):
     return s
 
 
-def test_explicit_database_only_native_entry_retires_no_builder_then_exact_mysql_and_two_jars(database_only_failed_native_pair):
-    s = database_only_failed_native_pair
+def retire_database_only_native_pair(s):
     local = copy.deepcopy(s.request)
     for row in local['candidates']: row['controls'] = {key: ref for key, ref in row['controls'].items() if key in retirer.UPLOADED_NAMES}
     local_raw = encoded(local)
@@ -2558,6 +2698,19 @@ def test_explicit_database_only_native_entry_retires_no_builder_then_exact_mysql
     assert not s.keeper.exists() and not s.copy_path.exists() and s.production in s.rows
     assert s.page.read_bytes() == s.page_bytes and s.data.stat().st_ino == s.data_inode
     assert (s.keeper.parent / 'source.tar.gz').read_bytes() == s.original_archive
+
+
+def test_explicit_database_only_native_entry_retires_no_builder_then_exact_mysql_and_two_jars(database_only_failed_native_pair):
+    retire_database_only_native_pair(database_only_failed_native_pair)
+
+
+@pytest.mark.parametrize('failed_native_pair_plan', ['watched'], indirect=True)
+def test_watched_database_only_real_plan_apply_keeps_watch_and_data_originals(database_only_failed_native_pair, failed_native_pair_plan):
+    s = database_only_failed_native_pair
+    assert s is failed_native_pair_plan and s.watched
+    originals = {role: path.read_bytes() for role, path in s.watch_files.items()}
+    retire_database_only_native_pair(s)
+    assert originals == {role: path.read_bytes() for role, path in s.watch_files.items()}
 
 
 def test_explicit_database_only_cli_keeps_request_selection_and_all_four_original_phases(database_only_failed_native_pair, monkeypatch, capsys):

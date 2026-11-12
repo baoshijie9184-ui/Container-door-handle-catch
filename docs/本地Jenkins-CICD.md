@@ -16,7 +16,9 @@
 
 #266原归档51份中50份非JAR及原build.xml已保全于 `work/jenkins/data-residency-20261107/ci-266-raw-receipts`，工具和夹具STOPPED、remaining为空。诊断结束后，2026-11-12 **14:13:48（北京时间）**从流水线外实际回读 `Stopped / StopCharging`，原件 `diag266-external-stop-readback.json`。Jenkins及本地专用节点在线，修复期间项目任务disabled、无排队；原80 GiB盘及既有7天快照保持。
 
-本轮资源/监测/退役源码已集中完成并整合，15个Python文件静态编译、PowerShell静态解析通过，未运行测试。控制预检清单增加既有cgroup探针模块，当前21模块、最低2,359项，尚待实测；固定提交推送后，先经既有verify-controls在ECS统一验证，再按新鲜空间实测决定完整verify/mysql的准入。完整流程中的原生、源码、整库与恢复门不省略；正式压测继续延期。
+资源修复固定提交 `4358bb0296ad972960bf667c6582c6e76ad71576` 已提交推送，**#267控制预检FAILURE**：21模块共2,359项，2,346通过、13失败、零跳过；未启动业务测试或数据库准备。43项cgroup、173项suite evidence、109项MySQL退役、151项Builder退役全部通过。13项同源失败来自真实plan/apply测试夹具：其模拟1.5 GiB旧容器，却把当前3 GiB producer源码放入“历史”归档，正确触发新watch证据门。现已冻结真实旧producer字节，并增加6项新旧身份/完整plan/apply回归；生产脚本未改，控制预检最低数为21模块2,365项，尚待ECS验证。
+
+#267工具已停止、16份原件及build.xml已保全，2026-11-12 **15:15:17（北京时间）**实际回读 `Stopped / StopCharging`，原件 `ci-267-external-stop-readback.json`。Jenkins在线、项目任务disabled且无排队。修复完成、静态编译及固定推送后，如仅测试夹具变化，直接执行完整verify/mysql的同提交内置控制门，通过后才允许JAR/DB准备，不额外重复独立controls任务。按新鲜空间实测准入，完整流程中的原生、源码、整库与恢复门不省略；正式压测继续延期。
 
 完整native/source、131→29整库迁移与源/目标双恢复、旧45/5,599/三库恢复、9项运行场景、19项浏览器功能检查、Mem0/RAG正式生效和旧数据业务合入/切库仍未验收。fullruntime还缺应用基座真实层量预算，不拿Image.Size代替放行证据。
 
