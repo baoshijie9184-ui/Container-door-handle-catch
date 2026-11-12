@@ -662,7 +662,7 @@ def test_source_regression_has_a_separate_original_xml_namespace(tmp_path):
         remote.validate_java_suites(result, tmp_path, mysql=True)
 
 
-@pytest.mark.parametrize('name', ['reports/java-suite-001.log', 'reports/java-source-regression.log',
+@pytest.mark.parametrize('name', ['reports/java-suite-001.log', 'reports/java-source-regression.log', 'reports/fixture-runtime.json',
     'reports/source-regression/java/module/surefire-reports/TEST-org.example.OneTest.xml'])
 def test_only_fixed_suite_logs_and_original_xml_are_collectable(name):
     assert remote.allowed_evidence(name)
@@ -938,6 +938,149 @@ def test_broken_ssh_stdout_does_not_abort_the_existing_remote_supervisor(monkeyp
     monkeypatch.setattr(remote.os, 'dup2', lambda source, target: redirected.append((source, target)))
     remote.progress({'status': 'RUNNING'})
     assert len(redirected) == 1 and redirected[0][1] == 1
+
+
+@pytest.mark.parametrize('failure_point', ['before-command', 'during-command', 'successful-exit'])
+def test_fixture_failure_cannot_start_or_accept_a_verification_command(monkeypatch, failure_point):
+    checks, waits = [], []
+    class Watch:
+        def check(self):
+            checks.append(True)
+            if len(checks) == {'before-command': 1, 'during-command': 2, 'successful-exit': 2}[failure_point]:
+                raise ValueError('owned fixture stopped')
+    class Process:
+        def wait(self, timeout):
+            waits.append(timeout)
+            if failure_point == 'during-command':
+                raise subprocess.TimeoutExpired('owned command', timeout)
+            return 0
+    with pytest.raises(ValueError, match='owned fixture stopped'):
+        remote.wait_for_verifier(Process(), SimpleNamespace(tag='one', attempt='same', scope='mysql'), fixture_watch=Watch())
+    assert waits == ([] if failure_point == 'before-command' else [0.5])
+
+
+@pytest.mark.parametrize('cleanup_failure', [False, True])
+def test_owned_tool_cleanup_happens_before_wait_and_never_skips_reaping(monkeypatch, cleanup_failure):
+    order = []
+    class Process:
+        pid = 12345
+        def poll(self): return None
+        def wait(self, timeout): order.append('reaped'); return 0
+    monkeypatch.setattr(remote.os, 'killpg', lambda *_: order.append('driver-signalled'))
+    def cancel_tools():
+        order.append('owned-oci-cleanup')
+        if cleanup_failure: raise RuntimeError('owned cleanup unknown')
+    if cleanup_failure:
+        with pytest.raises(RuntimeError, match='cleanup unknown'):
+            remote.stop_owned_process(Process(), before_wait=cancel_tools)
+    else:
+        remote.stop_owned_process(Process(), before_wait=cancel_tools)
+    assert order == ['driver-signalled', 'owned-oci-cleanup', 'reaped']
+
+
+def test_fixture_cancellation_stops_oci_execution_but_leaves_wrapper_receipt_and_cache_cleanup_ownership(monkeypatch):
+    tools = module('fixture_cancel_tools', 'ecs-tool-runtime.py')
+    cid = 'a' * 64; operations = []
+    value = {'identity': {}, 'docker': '/owned/docker', 'token': 'b' * 24, 'release': 'ci-999-' + 'c' * 12}
+    container = {'Id': cid, 'Image': 'sha256:' + 'd' * 64,
+        'State': {'Running': True, 'Paused': False, 'Restarting': False, 'Pid': 1234, 'ExitCode': 0}}
+    monkeypatch.setattr(tools, 'identity_guard', lambda *_: None)
+    monkeypatch.setattr(tools, 'canonical', Path)
+    def docker(program, *arguments, **kwargs):
+        operations.append(arguments)
+        if arguments[0] == 'ps': return (cid + '\n').encode()
+        if arguments[0] == 'stop': container['State'].update(Running=False, Pid=0, ExitCode=143)
+        if arguments[0] == 'rm': container.clear()
+        return b''
+    monkeypatch.setattr(tools, 'docker', docker)
+    monkeypatch.setattr(tools, 'owned_row', lambda *_: copy.deepcopy(container) if container else pytest.fail('wrapper lost its owned CID'))
+    stopped = tools.stop_execution(value)
+    assert stopped['status'] == 'EXECUTION_STOPPED'
+    assert stopped['containers'][0]['removed'] is False
+    assert not any(operation[0] == 'rm' for operation in operations)
+    # This is the same finalizer contract used before Maven cache persistence.
+    wrapper_cleanup = tools.stop_container(Path('/owned/docker'), value, cid)
+    assert wrapper_cleanup['removed'] is True and wrapper_cleanup['exitCode'] == 143
+    assert operations[-1] == ('rm', '--volumes', cid)
+
+
+def test_owned_cancellation_preserves_failure_and_still_attempts_other_owned_tools(monkeypatch):
+    tools = module('fixture_cancel_other_tools', 'ecs-tool-runtime.py')
+    ids = ['a' * 64, 'b' * 64]; attempted = []
+    monkeypatch.setattr(tools, 'identity_guard', lambda *_: None)
+    monkeypatch.setattr(tools, 'canonical', Path)
+    monkeypatch.setattr(tools, 'docker', lambda *_: ('\n'.join(ids)).encode())
+    def stop(program, value, cid, *, remove):
+        attempted.append((cid, remove))
+        if cid == ids[0]: raise ValueError('owned identity changed')
+        return {'containerId': cid, 'removed': remove}
+    monkeypatch.setattr(tools, 'stop_container', stop)
+    with pytest.raises(ValueError, match='cancellation was not confirmed'):
+        tools.stop_execution({'identity': {}, 'docker': '/owned/docker', 'token': 'c' * 24, 'release': 'ci-owned'})
+    assert attempted == [(ids[0], False), (ids[1], False)]
+
+
+@pytest.mark.parametrize('watch_value', ['absent', 'valid', None, '', '/other/watch.json'])
+def test_automatic_watch_readiness_is_explicit_without_changing_legacy_markers(tmp_path, watch_value):
+    attempt = tmp_path / 'attempt'; checkout = attempt / 'checkout'; (checkout / 'work').mkdir(parents=True, mode=0o700)
+    for path in (attempt, checkout, checkout / 'work'): path.chmod(0o700)
+    args = SimpleNamespace(tag='ci-90-' + 'a' * 12, commit='a' * 40, instance_id='i-fixture', machine_id='b' * 32,
+        source_sha256='c' * 64)
+    marker = {'schema': 1, 'kind': 'doorhandle-ci-fixtures', 'release': args.tag,
+        'commit': args.commit, 'instanceId': args.instance_id, 'machineId': args.machine_id}
+    expected = str(checkout / 'work/compact-fixtures/fixture-watch-owner.json')
+    if watch_value != 'absent': marker['fixtureWatch'] = expected if watch_value == 'valid' else watch_value
+    remote.write_json(attempt / '.fixtures-ready.json', marker)
+    if watch_value not in ('absent', 'valid'):
+        with pytest.raises(remote.VerificationError, match='exact owned watcher'):
+            remote.fixture_readiness(attempt, checkout, args)
+    else:
+        assert remote.fixture_readiness(attempt, checkout, args) == (expected if watch_value == 'valid' else None)
+
+
+@pytest.mark.parametrize('new_watch_key', ['fixtureWatch', 'fixtureWatchRequired'])
+def test_new_automatic_owner_cannot_drop_the_watch_field_and_downgrade_to_a_legacy_marker(tmp_path, new_watch_key):
+    attempt = tmp_path / 'attempt'; checkout = attempt / 'checkout'; (checkout / 'work').mkdir(parents=True, mode=0o700)
+    for path in (attempt, checkout, checkout / 'work'): path.chmod(0o700)
+    args = SimpleNamespace(tag='ci-90-' + 'a' * 12, commit='a' * 40, instance_id='i-fixture',
+        machine_id='b' * 32, source_sha256='c' * 64)
+    marker = {'schema': 1, 'kind': 'doorhandle-ci-fixtures', 'release': args.tag, 'commit': args.commit,
+        'instanceId': args.instance_id, 'machineId': args.machine_id}
+    remote.write_json(attempt / '.fixtures-ready.json', marker)
+    owner = {'kind': 'doorhandle-compact-fixture-owner', 'release': args.tag, 'commit': args.commit,
+        'sourceSha256': args.source_sha256,
+        'identity': {'instanceId': args.instance_id, 'machineId': args.machine_id, 'executionLocation': 'ECS'},
+        new_watch_key: True if new_watch_key == 'fixtureWatchRequired' else
+            {'file': str(checkout / 'work/compact-fixtures/fixture-watch-owner.json')}}
+    remote.write_json(checkout / 'work/compact-fixtures-owner.json', owner)
+    with pytest.raises(remote.VerificationError, match='cannot downgrade'):
+        remote.fixture_readiness(attempt, checkout, args)
+
+
+def test_fixture_runtime_original_is_collected_but_private_owner_and_capabilities_are_not(tmp_path):
+    checkout = tmp_path / 'checkout'; output = checkout / 'work/ci-evidence'; output.mkdir(parents=True)
+    public = output / 'fixture-runtime.json'; public.write_bytes(b'{"watchStopped":true}')
+    (output / 'fixture-watch-owner.json').write_bytes(b'{"ownerToken":"private"}')
+    files, omissions = remote.evidence_files(checkout, output, checkout / 'driver.log')
+    assert omissions == [] and [item[0] for item in files] == ['reports/fixture-runtime.json']
+    assert not remote.allowed_evidence('reports/fixture-watch-owner.json')
+    assert not remote.allowed_evidence('reports/fixture-watch-status.json')
+
+
+@pytest.mark.parametrize('mutation', [None, 'not-stopped', 'missing-original', 'changed-binding'])
+def test_passing_envelope_requires_original_stopped_fixture_monitor_evidence(tmp_path, mutation):
+    args, record, _, _, _ = collector_archive(tmp_path)
+    record['fixtureRuntime'] = {'required': True, 'containerId': 'e' * 64, 'status': 'STOPPED',
+        'watchStopped': True, 'evidenceSha256': 'f' * 64}
+    record['reportFiles'].append({'path': 'reports/fixture-runtime.json', 'bytes': 2, 'sha256': 'f' * 64})
+    if mutation == 'not-stopped': record['fixtureRuntime']['watchStopped'] = False
+    if mutation == 'missing-original': record['reportFiles'].pop()
+    if mutation == 'changed-binding': record['fixtureRuntime']['evidenceSha256'] = '0' * 64
+    if mutation is None:
+        assert 'reports/fixture-runtime.json' in remote.validate_envelope(record, args)
+    else:
+        with pytest.raises(remote.VerificationError, match='stopped watcher'):
+            remote.validate_envelope(record, args)
 
 
 def test_ssh_hangup_is_not_cancellation_but_explicit_term_and_int_still_are():

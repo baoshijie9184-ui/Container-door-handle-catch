@@ -377,7 +377,7 @@ def plan_phase(spec):
     if phase in ('source-export', 'fixture-clone') and not _integer(inputs.get('sourceAllocatedBytes')):
         missing.append('measuredInputs.sourceAllocatedBytes')
     if phase == 'fixture-clone':
-        if enforcement.get('mysqlCgroupLimitBytes') != 1536 * 1024 ** 2:
+        if enforcement.get('mysqlCgroupLimitBytes') != 3 * 1024 ** 3:
             missing.append('enforcement.mysqlCgroupLimitBytes')
         if not _integer(inputs.get('dumpBytes')) or inputs.get('dumpBytes') == 0:
             missing.append('measuredInputs.dumpBytes')

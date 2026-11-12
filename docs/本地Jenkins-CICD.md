@@ -6,15 +6,17 @@
 
 最近完整source通过为 `e441933d` 的#251：Java926、Python4,174、双前端203/20及两套构建完成，条件跳过722/24，运行资源专项95项通过。固定 `2ff9edc00291f558d6a267f617757911d128ad3e` 的 **#262控制预检SUCCESS**：20模块2,246项全部通过，零失败/错误/跳过；当前64类最低755项按既有动态算法分为14组，所有独立配置、账号及逐类XML检查保留。
 
-**#263精确维护SUCCESS**：退役#259停止的测试MySQL对象及两份可再生JAR，mysql-data保留，普通源码输出和Builder均NO_ACTION；原SQL、源码、报告、卷及镜像保留。JAR实际分配共760,619,008字节，下一数据库任务前独立实余 **6,023,311,360字节**，原件 `pre-database264-execution-readiness.json`。
+**#265精确维护SUCCESS**：退役#264停止的测试MySQL对象及两份可再生JAR，mysql-data、原SQL、源码、报告、卷及镜像保留。下一数据库任务前独立实余 **5,526,839,296字节**，原件 `pre-database266-execution-readiness.json`。
 
-**#264独立verify/mysql终态FAILURE**：本地跳测试打包、2,246项控制及完整夹具通过；真实MySQL69项中68通过、1错误，零断言失败/跳过。Workbench8、MCP20（含微秒篡改回滚）、Core12Persistence7、FileDeliveryAudit5、QualityDigest11全部通过；MessageExecutionLinks18项中17通过，唯一错误在模拟缺迁移字段时，完整表CHECK阻止列改名，尚未进入该例业务断言。后续Context、完整source回归、整库及恢复尚未达到。
+固定 `f6e062edc7b6589678c5dadad5a931718d4e47d5` 的 **#266独立verify/mysql终态FAILURE**：13模块本地跳测试打包、20模块2,246项控制及完整夹具通过；真实MySQL143项中130通过、13错误，零断言失败/跳过。Workbench8、MCP20、Core12Persistence7、FileDeliveryAudit5、MessageExecutionLinks18、QualityDigest11、DetectionExecutionAPI12、IdentityEvidence4、ModelConfiguration17、QualityReport25均通过；Workspace先通过3项，随后数据库连接中断产生13项错误。Context、完整source回归、整库及恢复尚未达到。
 
-本轮仅修此私有旧版本夹具：移除引用缺失执行投影列的一个CHECK和两条投影触发器，再保留原列改名及兼容性断言；其余17项仍使用完整29表。新增正文可写读、失败关联不改消息/审计的断言，生产schema与服务不变，仍18项、总最低755项。11模块离线跳测试编译成功，日志 `work/jenkins/native264-message-legacy-fixture-test-compile.log`；同族DDL只读审计未发现第二处确定前置错误，尚待新固定提交ECS验证。
+故障已由原实例只读诊断确认：该轮独占测试MySQL的Docker状态为 **OOMKilled=true / ExitCode=137**，实际memory与memory-swap均为1.5 GiB。主机当时最低可用内存约9.62 GiB、磁盘约3.94 GiB；主机余量充足不代表容器cgroup未超限。原件 `diag266-exact-mysql-health-readonly.json`，没有重启容器或读取原始MySQL数据文件。
 
-此轮没有修改CI、清理、控制脚本或profile，沿用已通过的对应证据，不再额外启动独立controls任务。固定提交后先由现有维护入口精确退役#264未发布JAR及停止对象、保留数据；随后完整verify/mysql仍强制执行同提交的2,246项内置控制预检，通过后才准备数据库并执行全部原生、源码、整库和恢复验收。没有省略完整流程中的测试或资源门。
+本轮集中修复资源配置和监测：独占测试MySQL改为3 GiB有界配置、零额外swap，表缓存分区设为1；保留完整schema、性能监测及所有用例。3 GiB是待实测的分配方案，不是测得峰值。新自动夹具从PREPARED发布前持续监督到验证终态，记录MySQL cgroup峰值、OOM和退出，失败时先停止本轮工作并保全证据；旧显式manifest/CLI调用保持原约。旧#266因OOM状态不满足既有退役门，仍保留，不能预记其空间回收。
 
-#264原归档43份中42份非JAR及原build.xml已保全于 `work/jenkins/data-residency-20261107/ci-264-raw-receipts`，工具和夹具STOPPED、remaining为空。2026-11-12 **12:59:54（北京时间）**从流水线外实际回读 `Stopped / StopCharging`，原件 `ci-264-external-stop-readback.json`。Jenkins及本地专用节点在线，修复期间项目任务disabled、无排队；原80 GiB盘及既有7天快照保持。
+#266原归档51份中50份非JAR及原build.xml已保全于 `work/jenkins/data-residency-20261107/ci-266-raw-receipts`，工具和夹具STOPPED、remaining为空。诊断结束后，2026-11-12 **14:13:48（北京时间）**从流水线外实际回读 `Stopped / StopCharging`，原件 `diag266-external-stop-readback.json`。Jenkins及本地专用节点在线，修复期间项目任务disabled、无排队；原80 GiB盘及既有7天快照保持。
+
+本轮资源/监测/退役源码已集中完成并整合，15个Python文件静态编译、PowerShell静态解析通过，未运行测试。控制预检清单增加既有cgroup探针模块，当前21模块、最低2,359项，尚待实测；固定提交推送后，先经既有verify-controls在ECS统一验证，再按新鲜空间实测决定完整verify/mysql的准入。完整流程中的原生、源码、整库与恢复门不省略；正式压测继续延期。
 
 完整native/source、131→29整库迁移与源/目标双恢复、旧45/5,599/三库恢复、9项运行场景、19项浏览器功能检查、Mem0/RAG正式生效和旧数据业务合入/切库仍未验收。fullruntime还缺应用基座真实层量预算，不拿Image.Size代替放行证据。
 

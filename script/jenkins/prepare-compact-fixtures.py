@@ -42,7 +42,9 @@ DISK_RESERVE = 2 * GIB
 DISK_OVERSHOOT = 256 * MIB
 CONTROLLER_AS = 3 * GIB
 CONTROLLER_RSS = 2 * GIB
-MYSQL_MEMORY = 1536 * MIB
+MYSQL_MEMORY = 3 * GIB
+WATCH_MEMORY = 256 * MIB
+WATCH_TIMEOUT = 255 * 60
 SOURCE_CLIENT_AS_KIB = 512 * 1024
 OWNER_ENV = 'DOORHANDLE_PREPARE_OWNER'
 GROUP_ENV = 'DOORHANDLE_PREPARE_GROUP'
@@ -68,7 +70,7 @@ def proc_identity(pid):
     try:
         text = Path('/proc/' + str(pid) + '/stat').read_text()
         fields = text[text.rindex(') ') + 2:].split()
-        return {'pid': pid, 'parent': int(fields[1]), 'group': int(fields[2]),
+        return {'pid': pid, 'state': fields[0], 'parent': int(fields[1]), 'group': int(fields[2]),
                 'session': int(fields[3]), 'startTicks': int(fields[19]),
                 'rssBytes': int(fields[21]) * os.sysconf('SC_PAGE_SIZE')}
     except (FileNotFoundError, ProcessLookupError):
@@ -428,12 +430,21 @@ class PreparationMonitor:
                 'Owned fixture kernel memory limits differ')
         memory = read_control('memory.current')
         events = dict(line.split() for line in read_control('memory.events').splitlines())
-        require(memory.isdecimal() and 'oom_kill' in events and events['oom_kill'].isdecimal(),
+        try:
+            peak = read_control('memory.peak')
+        except FileNotFoundError:
+            peak = None  # Older cgroup-v2 kernels do not expose this counter.
+        require(memory.isdecimal() and 'oom_kill' in events and all(value.isdecimal() for value in events.values())
+                and (peak is None or peak.isdecimal() and int(peak) >= int(memory)),
                 'Owned fixture cgroup measurement differs')
         require(read_control('memory.max') == str(MYSQL_MEMORY) and read_control('memory.swap.max') == '0',
                 'Owned fixture kernel memory limits changed')
         current_identity()
         self._fixture_cgroup = cached
+        self.fixture_observation = {'memoryCurrentBytes': int(memory), 'memoryPeakBytes': int(peak) if peak is not None else None,
+            'memoryLimitBytes': MYSQL_MEMORY, 'swapLimitBytes': 0,
+            'events': {key: int(value) for key, value in events.items()},
+            'pid': cached['pid'], 'startTicks': cached['startTicks'], 'cgroup': cached['relative']}
         return int(memory), max(int(events['oom_kill']), cached['bootstrapOom'])
 
     @staticmethod
@@ -900,9 +911,33 @@ def ecs_identity(args):
     return {'instanceId': args.instance_id, 'machineId': args.machine_id, 'executionLocation': 'ECS'}
 
 
-def run(arguments, *, data=None, timeout=60, diagnostics=None):
-    result = subprocess.run(arguments, input=data, capture_output=True, timeout=timeout,
-                            env={name: value for name, value in os.environ.items() if name in ('PATH', 'LANG', 'LC_ALL')})
+def run(arguments, *, data=None, timeout=60, diagnostics=None, memory_probe=None):
+    environment = {name: value for name, value in os.environ.items() if name in ('PATH', 'LANG', 'LC_ALL')}
+    if memory_probe is None:
+        result = subprocess.run(arguments, input=data, capture_output=True, timeout=timeout, env=environment)
+    else:
+        require(data is None, 'Fixture watcher only admits bounded metadata commands')
+        process = subprocess.Popen(arguments, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, env=environment)
+        deadline = time.monotonic() + timeout
+        try:
+            while True:
+                memory_probe()
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired('owned fixture metadata', timeout)
+                try:
+                    stdout, stderr = process.communicate(timeout=min(0.05, remaining))
+                    memory_probe()
+                    result = subprocess.CompletedProcess(arguments, process.returncode, stdout, stderr)
+                    break
+                except subprocess.TimeoutExpired:
+                    if time.monotonic() >= deadline:
+                        raise
+        finally:
+            if process.poll() is None:
+                process.kill()
+            process.communicate(timeout=2)
     if result.returncode and diagnostics is not None:
         with diagnostics.open('xb') as stream:
             os.chmod(diagnostics, 0o600)
@@ -1012,6 +1047,8 @@ class Preparation:
         if self.journal is not None:
             kwargs['diagnostics'] = self.work / 'private' / ('docker-' + secrets.token_hex(6) + '.stderr')
         if self.resources is None:
+            if getattr(self, 'command_memory_probe', None) is not None:
+                kwargs['memory_probe'] = self.command_memory_probe
             return run([str(self.docker), *arguments], **kwargs)
         diagnostics = kwargs.pop('diagnostics', None)
         data = kwargs.pop('data', None)
@@ -1175,10 +1212,12 @@ class Preparation:
         self.journal['resourceProbeSha256'] = digest(self.resources.file)
         self.journal['lastResourcePhaseReceiptSha256'] = self.resources.previous
         self.journal['fullAcceptanceResourcesMeasured'] = False
+        self.start_fixture_watch()
         self.save('PREPARED')
         write_json(self.attempt / '.fixtures-ready.json', {'schema': 1, 'kind': 'doorhandle-ci-fixtures',
             'release': self.args.tag, 'commit': self.args.commit,
-            'instanceId': self.args.instance_id, 'machineId': self.args.machine_id})
+            'instanceId': self.args.instance_id, 'machineId': self.args.machine_id,
+            'fixtureWatch': self.journal['fixtureWatch']['file']})
         return result
 
     def prepare_controlled(self):
@@ -1214,7 +1253,7 @@ class Preparation:
         self.work.mkdir(mode=0o700); (self.work / 'private').mkdir(mode=0o700)
         self.journal = {'schemaVersion': 1, 'kind': 'doorhandle-compact-fixture-owner', 'release': self.args.tag,
             'commit': self.args.commit, 'sourceSha256': self.args.source_sha256, 'identity': self.identity,
-            'token': token, 'work': str(self.work), 'phase': 'PREPARING', 'containerId': None,
+            'token': token, 'work': str(self.work), 'phase': 'PREPARING', 'containerId': None, 'fixtureWatchRequired': True,
             'containerName': None, 'dataDirectory': None,
             'sourceContainerId': settings['sourceMysqlContainerId'], 'schemas': []}
         self.journal['javaToolRuntime'] = settings['java'] == 'ecs-tool-runtime'
@@ -1375,18 +1414,18 @@ class Preparation:
         container = self.docker_call('run', '-d', '--pull=never', '--restart=no', '--name', name,
             '--label', LABEL + '=' + self.journal['token'], '--label', 'io.doorhandle.release=' + self.args.tag,
             '--label', 'io.doorhandle.source=' + self.args.source_sha256, '--env-file', str(env),
-            '--publish', '127.0.0.1:' + str(port) + ':' + str(port), '--memory', str(1536 * 1024 ** 2),
-            '--memory-swap', str(1536 * 1024 ** 2), '--cpus', '1', '--pids-limit', '256',
+            '--publish', '127.0.0.1:' + str(port) + ':' + str(port), '--memory', str(MYSQL_MEMORY),
+            '--memory-swap', str(MYSQL_MEMORY), '--cpus', '1', '--pids-limit', '256',
             '--mount', 'type=bind,source=' + str(data) + ',target=' + str(data),
             '--tmpfs', '/var/lib/mysql', image, '--datadir=' + str(data), '--port=' + str(port),
             '--bind-address=0.0.0.0', '--mysqlx=OFF', '--event-scheduler=OFF', '--local-infile=OFF', '--skip-log-bin',
-            '--innodb-buffer-pool-size=268435456', '--max-connections=120', timeout=120).decode().strip()
+            '--innodb-buffer-pool-size=268435456', '--max-connections=120', '--table-open-cache-instances=1', timeout=120).decode().strip()
         require(CID.fullmatch(container), 'Owned MySQL container identity unavailable')
         self.journal['containerId'] = container; self.save('MYSQL_STARTED')
         deadline = time.monotonic() + 240
         while True:
             try:
-                row = self.admin_query("SELECT JSON_OBJECT('uuid',@@server_uuid,'version',@@version,'port',@@port,'data',@@datadir,'fk',@@foreign_key_checks,'logBin',@@GLOBAL.log_bin);")
+                row = self.admin_query("SELECT JSON_OBJECT('uuid',@@server_uuid,'version',@@version,'port',@@port,'data',@@datadir,'fk',@@foreign_key_checks,'logBin',@@GLOBAL.log_bin,'tableOpenCacheInstances',@@GLOBAL.table_open_cache_instances,'bufferPoolBytes',@@GLOBAL.innodb_buffer_pool_size,'maxConnections',@@GLOBAL.max_connections);")
             except Exception:
                 require(time.monotonic() < deadline and json.loads(self.docker_call('inspect', container))[0]['State']['Running'],
                         'Owned MySQL failed readiness; no other server or image will be substituted')
@@ -1398,6 +1437,10 @@ class Preparation:
                     and row['data'].rstrip('/') == str(data), 'Owned MySQL actual storage/port/version differs')
             require(type(row.get('logBin')) is int and row['logBin'] == 0,
                     'Owned disposable MySQL binary logging must be disabled at startup')
+            require(row.get('tableOpenCacheInstances') == 1 and row.get('bufferPoolBytes') == 256 * MIB
+                    and row.get('maxConnections') == 120, 'Owned fixture effective MySQL memory configuration differs')
+            self.journal['mysqlRuntimeConfiguration'] = {key: row[key] for key in
+                ('tableOpenCacheInstances', 'bufferPoolBytes', 'maxConnections')}
             self.journal['serverUuid'] = row['uuid']; self.journal['binaryLoggingDisabled'] = True
             break
         self.save('MYSQL_READY'); self.inspect_owned()
@@ -1509,8 +1552,8 @@ class Preparation:
             result['legacyClockPolicy'] = settings['legacyClockPolicy']
         return result
 
-    def inspect_owned(self):
-        row = json.loads(self.docker_call('inspect', self.journal['containerId']))[0]
+    def inspect_owned(self, *, timeout=60):
+        row = json.loads(self.docker_call('inspect', self.journal['containerId'], timeout=timeout))[0]
         require(row['Id'] != self.journal['sourceContainerId'] and row['Id'] == self.journal['containerId']
                 and row['Image'] == self.journal['image'] and row['Config']['Labels'].get(LABEL) == self.journal['token']
                 and row['Config']['Labels'].get('io.doorhandle.release') == self.args.tag
@@ -1537,6 +1580,63 @@ class Preparation:
         self.work = canonical(self.journal['work'])
         require(self.work.is_relative_to(canonical(self.checkout / 'work')), 'Fixture state escaped this checkout/work')
 
+    def start_fixture_watch(self):
+        # The watcher owns a separate exact session because preparation and
+        # verification run in different SSH commands. It never starts/stops ECS.
+        self.resources.fixture_memory()
+        kernel = self.resources._fixture_cgroup
+        file = self.work / 'fixture-watch-owner.json'
+        owner, group = secrets.token_hex(16), secrets.token_hex(16)
+        self.journal['fixtureWatch'] = {'file': str(file), 'ownerToken': owner, 'groupToken': group}
+        self.save('FIXTURE_WATCH_STARTING')
+        descriptor = {'version': 1, 'kind': 'doorhandle-fixture-watch-owner',
+            'release': self.args.tag, 'commit': self.args.commit, 'sourceSha256': self.args.source_sha256,
+            'identity': self.identity, 'containerId': self.journal['containerId'],
+            'ownerToken': owner, 'groupToken': group,
+            'kernelIdentity': {key: kernel[key] for key in ('pid', 'startTicks', 'relative', 'directory')},
+            'memoryLimitBytes': MYSQL_MEMORY, 'swapLimitBytes': 0,
+            'mysqlConfiguration': self.journal['mysqlRuntimeConfiguration']}
+        environment = {key: value for key, value in os.environ.items() if key in ('PATH', 'LANG', 'LC_ALL')}
+        environment.update({OWNER_ENV: owner, GROUP_ENV: group})
+        command = [sys.executable, '-I', '-B', str(Path(__file__).resolve()), 'watch']
+        for name in ('root', 'tag', 'commit', 'source_sha256', 'instance_id', 'machine_id'):
+            command += ['--' + name.replace('_', '-'), str(getattr(self.args, name))]
+        process, identity = None, None
+        try:
+            write_json(file, descriptor)
+            with (self.work / 'private' / 'fixture-watch.log').open('xb') as log:
+                os.chmod(log.name, 0o600)
+                process = subprocess.Popen(command, env=environment, stdin=subprocess.DEVNULL,
+                    stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+            identity = proc_identity(process.pid)
+            require(identity is not None and identity['group'] == identity['session'] == process.pid,
+                    'Fixture watcher did not establish its owned session')
+            descriptor['process'] = {key: identity[key] for key in ('pid', 'startTicks', 'group', 'session')}
+            descriptor['bootId'] = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+            write_json(file, descriptor, replace=True)
+            watch = FixtureWatch(self)
+            deadline = time.monotonic() + 10
+            while not watch.status_file.exists():
+                require(process.poll() is None and time.monotonic() < deadline,
+                        'Fixture watcher failed before its first complete probe')
+                time.sleep(0.05)
+            self.journal['fixtureWatchAdmission'] = watch.admit(0)
+        except BaseException:
+            if process is not None:
+                stop_owned_group(process.pid, owner, group)
+                process.wait(timeout=5)  # Reap this exact Popen child, not a rediscovered PID.
+            self.journal['fixtureWatchStartFailure'] = {
+                'kind': 'doorhandle-fixture-watch-start-failure',
+                'status': 'NOT_STARTED' if process is None else 'STOPPED_BEFORE_READY', 'watchStopped': True,
+                'processCreated': process is not None, 'pid': process.pid if process is not None else None,
+                'startTicks': identity['startTicks'] if identity is not None else None,
+                'exitCode': process.returncode if process is not None else None,
+                'groupCancellationConfirmed': process is not None,
+                'bootId': Path('/proc/sys/kernel/random/boot_id').read_text().strip()}
+            self.journal.pop('fixtureWatch')
+            self.save('FIXTURE_WATCH_START_FAILED_STOP_CONFIRMED')
+            raise
+
     def cleanup(self):
         self.load()
         if (self.attempt / '.verification-claimed').exists():
@@ -1545,7 +1645,25 @@ class Preparation:
                 for key, value in {'release': self.args.tag, 'commit': self.args.commit,
                     'sourceSha256': self.args.source_sha256, 'identity': self.identity}.items()),
                     'Verification has not returned with matching private evidence; do not stop a running fixture')
-        errors = []
+        errors = []; watch_receipt = self.journal.get('fixtureWatchStartFailure')
+        if watch_receipt is not None:
+            require(watch_receipt.get('kind') == 'doorhandle-fixture-watch-start-failure'
+                    and watch_receipt.get('watchStopped') is True
+                    and not (self.attempt / '.fixtures-ready.json').exists()
+                    and not (self.attempt / '.verification-claimed').exists()
+                    and ((watch_receipt.get('status') == 'NOT_STARTED' and watch_receipt.get('processCreated') is False
+                          and watch_receipt.get('pid') is None and watch_receipt.get('exitCode') is None)
+                         or (watch_receipt.get('status') == 'STOPPED_BEFORE_READY'
+                             and watch_receipt.get('processCreated') is True
+                             and watch_receipt.get('groupCancellationConfirmed') is True
+                             and type(watch_receipt.get('pid')) is int and watch_receipt['pid'] > 1
+                             and type(watch_receipt.get('exitCode')) is int)),
+                    'Fixture watcher startup cancellation proof differs')
+        if self.journal.get('fixtureWatch'):
+            try:
+                watch_receipt = FixtureWatch(self).stop()
+            except BaseException as error:
+                errors.append(failure_details(error))
         for operation in (self.cancel_owned_groups, self.cancel_source_exports):
             try:
                 operation()
@@ -1568,6 +1686,8 @@ class Preparation:
             'release': self.args.tag, 'commit': self.args.commit, 'sourceSha256': self.args.source_sha256, 'identity': self.identity,
             'containerId': self.journal.get('containerId'), 'sourceContainerUntouched': self.journal['sourceContainerId'],
             'dataDirectoryRetained': self.journal.get('dataDirectory'), 'sourceDumpAndEvidenceRetained': True}
+        if self.journal.get('fixtureWatch') or watch_receipt is not None:
+            receipt['fixtureWatch'] = watch_receipt
         path = self.work / 'cleanup-receipt.json'; write_json(path, receipt, replace=True)
         self.save('FAILED_CLEANUP_EVIDENCE_RETAINED' if errors else 'OWNED_SERVER_STOPPED')
         require(not errors, 'Owned resource cleanup was not completely confirmed; retain all evidence')
@@ -1593,6 +1713,190 @@ class Preparation:
             row = self.inspect_owned()
             require(not row['State']['Running'] and not row['State']['Restarting'] and row['State']['Pid'] == 0,
                     'Owned MySQL stop was not confirmed')
+
+
+class FixtureWatch:
+    """One bounded continuation of the preparer's pinned MySQL kernel probe."""
+
+    def __init__(self, preparation):
+        self.preparation = preparation
+        self.file = preparation.work / 'fixture-watch-owner.json'
+        self.status_file = preparation.work / 'fixture-watch-status.json'
+        self.stop_file = preparation.work / 'fixture-watch-stop.json'
+        self.descriptor = private_json(self.file)
+        value = self.descriptor; journal = preparation.journal
+        require(journal.get('fixtureWatch') == {'file': str(self.file),
+                    'ownerToken': value.get('ownerToken'), 'groupToken': value.get('groupToken')}
+                and value.get('version') == 1 and value.get('kind') == 'doorhandle-fixture-watch-owner'
+                and all(value.get(key) == expected for key, expected in {
+                    'release': preparation.args.tag, 'commit': preparation.args.commit,
+                    'sourceSha256': preparation.args.source_sha256, 'identity': preparation.identity,
+                    'containerId': journal['containerId'], 'memoryLimitBytes': MYSQL_MEMORY,
+                    'swapLimitBytes': 0, 'mysqlConfiguration': journal.get('mysqlRuntimeConfiguration')}.items())
+                and all(re.fullmatch(r'[a-f0-9]{32}', value.get(key, '')) for key in ('ownerToken', 'groupToken')),
+                'Fixture watcher ownership or resource contract differs')
+        process = value.get('process', {})
+        require(set(process) == {'pid', 'startTicks', 'group', 'session'}
+                and all(type(item) is int and item > 1 for item in process.values())
+                and process['pid'] == process['group'] == process['session']
+                and value.get('bootId') == Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
+                'Fixture watcher exact process/boot identity differs')
+        kernel = value.get('kernelIdentity', {})
+        require(set(kernel) == {'pid', 'startTicks', 'relative', 'directory'}
+                and type(kernel['pid']) is int and kernel['pid'] > 0
+                and type(kernel['startTicks']) is int and kernel['startTicks'] > 0
+                and isinstance(kernel['relative'], str) and kernel['relative'].startswith('/')
+                and kernel['relative'] != '/' and '..' not in Path(kernel['relative']).parts
+                and isinstance(kernel['directory'], list) and len(kernel['directory']) == 2
+                and all(type(item) is int and item >= 0 for item in kernel['directory']),
+                'Fixture watcher pinned kernel identity differs')
+        self.probe = PreparationMonitor.__new__(PreparationMonitor)
+        self.probe.preparation = preparation
+        keys = ('containerId', 'sourceContainerId', 'image', 'token', 'containerName', 'work', 'dataDirectory', 'port')
+        self.probe._fixture_cgroup = {'ownership': tuple(journal.get(key) for key in keys),
+            **{key: kernel[key] for key in ('pid', 'startTicks', 'relative')},
+            'directory': tuple(kernel['directory']), 'path': Path('/sys/fs/cgroup') / kernel['relative'].lstrip('/'),
+            'bootstrapOom': 0}
+
+    def process_alive(self):
+        original = self.descriptor['process']; current = proc_identity(original['pid'])
+        if current is None or current.get('state') in ('Z', 'X'):
+            return False
+        require(all(current[key] == value for key, value in original.items()), 'Fixture watcher process was reused')
+        members = group_members(original['pid'], self.descriptor['ownerToken'], self.descriptor['groupToken'])
+        require(any(row['pid'] == original['pid'] and row['startTicks'] == original['startTicks'] for row in members),
+                'Fixture watcher process ownership differs')
+        return True
+
+    def read_status(self):
+        require(private_json(self.file) == self.descriptor, 'Fixture watcher descriptor changed')
+        value = private_json(self.status_file)
+        require(value.get('ownerToken') == self.descriptor['ownerToken']
+                and value.get('process') == self.descriptor['process']
+                and value.get('containerId') == self.descriptor['containerId']
+                and all(value.get(key) == self.descriptor[key] for key in
+                    ('release', 'commit', 'sourceSha256', 'identity', 'bootId',
+                     'mysqlConfiguration', 'memoryLimitBytes', 'swapLimitBytes'))
+                and value.get('status') in ('RUNNING', 'STOPPED', 'FAILED'), 'Fixture watcher status identity differs')
+        return value
+
+    def check(self):
+        value = self.read_status()
+        require(self.process_alive() and value['status'] == 'RUNNING', 'Owned fixture watcher or MySQL failed')
+        captured = value.get('capturedMonotonic')
+        require(type(captured) in (int, float) and 0 <= time.monotonic() - captured <= 2,
+                'Owned fixture watcher measurement is stale')
+        return value
+
+    def admit(self, tool_memory_bytes):
+        value = self.check()
+        require(type(tool_memory_bytes) is int and tool_memory_bytes >= 0, 'Explicit tool memory bound required')
+        available = next(int(line.split()[1]) * 1024 for line in Path('/proc/meminfo').read_text().splitlines()
+                         if line.startswith('MemAvailable:'))
+        remaining = max(0, MYSQL_MEMORY - value['lastProbe']['memoryCurrentBytes'])
+        required = GIB + remaining + WATCH_MEMORY + tool_memory_bytes
+        require(available >= required, 'Actual host cannot admit fixture, watcher and active tool memory bounds')
+        return {'hostMemoryAvailableBytes': available, 'requiredAvailableMemoryBytes': required,
+            'remainingFixtureMemoryBytes': remaining, 'watchAddressSpaceLimitBytes': CONTROLLER_AS,
+            'watchRssLimitBytes': WATCH_MEMORY,
+            'toolMemoryBoundBytes': tool_memory_bytes, 'hostMemoryReserveBytes': GIB,
+            'fullAcceptanceResourcesMeasured': False}
+
+    def sample(self):
+        # Inspect State as well as the pinned kernel process. A dead/restarted
+        # original is never silently replaced by a new PID or cgroup.
+        row = self.preparation.inspect_owned(timeout=1)
+        state = row['State']; self.last_state = {key: state.get(key) for key in
+            ('Status', 'Running', 'Restarting', 'Paused', 'Dead', 'OOMKilled', 'ExitCode', 'Pid', 'StartedAt', 'FinishedAt')}
+        require(state.get('Running') is True and state.get('Restarting') is False
+                and state.get('Paused') is False and state.get('Dead') is False
+                and state.get('OOMKilled') is False and state.get('Pid') == self.descriptor['kernelIdentity']['pid'],
+                'Owned fixture MySQL is not its healthy running original process')
+        memory, oom = self.probe.fixture_memory()
+        require(oom == 0 and self.probe.fixture_observation['events'].get('oom', 0) == 0
+                and memory <= MYSQL_MEMORY, 'Owned fixture MySQL exceeded its memory boundary')
+        available = next(int(line.split()[1]) * 1024 for line in Path('/proc/meminfo').read_text().splitlines()
+                         if line.startswith('MemAvailable:'))
+        require(available >= GIB, 'Actual host memory reserve was consumed')
+        return {**self.probe.fixture_observation, 'state': self.last_state,
+                'hostMemoryAvailableBytes': available, 'capturedAtUtc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}
+
+    def command_memory(self):
+        observed = owned_tree_memory_snapshot(os.getpid(), self.descriptor['process']['startTicks'])['rssBytes']
+        self.peak_rss = max(getattr(self, 'peak_rss', 0), observed)
+        require(observed <= WATCH_MEMORY, 'Fixture watcher and metadata client exceeded their owned RSS boundary')
+
+    def run(self):
+        import resource
+        # Go's Docker CLI reserves virtual address ranges larger than its RSS.
+        # Keep the already-used controller AS limit and measure the complete
+        # watcher/client process tree against its separate 256 MiB RSS budget.
+        resource.setrlimit(resource.RLIMIT_AS, (CONTROLLER_AS, CONTROLLER_AS))
+        require(os.environ.get(OWNER_ENV) == self.descriptor['ownerToken']
+                and os.environ.get(GROUP_ENV) == self.descriptor['groupToken']
+                and os.getpid() == self.descriptor['process']['pid'] and self.process_alive(),
+                'Fixture watcher invocation is not its registered owner')
+        value = {'version': 1, 'kind': 'doorhandle-fixture-runtime', 'status': 'RUNNING',
+            'ownerToken': self.descriptor['ownerToken'], 'process': self.descriptor['process'],
+            'containerId': self.descriptor['containerId'], 'mysqlConfiguration': self.descriptor['mysqlConfiguration'],
+            'memoryLimitBytes': MYSQL_MEMORY, 'swapLimitBytes': 0,
+            'watchAddressSpaceLimitBytes': CONTROLLER_AS, 'watchRssLimitBytes': WATCH_MEMORY,
+            'startedAtUtc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), 'probeCount': 0,
+            'sampledPeakMemoryBytes': 0, 'kernelPeakMemoryBytes': None,
+            'stopScope': 'OWNED_ATTEMPT_ONLY', 'fullAcceptanceResourcesMeasured': False, 'watchStopped': False,
+            **{key: self.descriptor[key] for key in ('release', 'commit', 'sourceSha256', 'identity', 'bootId')}}
+        deadline = time.monotonic() + WATCH_TIMEOUT
+        self.preparation.command_memory_probe = self.command_memory
+        try:
+            while True:
+                require(time.monotonic() < deadline, 'Owned fixture watcher exceeded its bounded verification lifetime')
+                require(private_json(self.file) == self.descriptor, 'Fixture watcher descriptor changed')
+                probe = self.sample()
+                value.update(lastProbe=probe, capturedMonotonic=time.monotonic(), probeCount=value['probeCount'] + 1)
+                value['sampledWatchPeakRssBytes'] = getattr(self, 'peak_rss', 0)
+                value.setdefault('firstProbe', probe)
+                value['sampledPeakMemoryBytes'] = max(value['sampledPeakMemoryBytes'], probe['memoryCurrentBytes'])
+                if probe['memoryPeakBytes'] is not None:
+                    value['kernelPeakMemoryBytes'] = max(value['kernelPeakMemoryBytes'] or 0, probe['memoryPeakBytes'])
+                write_json(self.status_file, value, replace=self.status_file.exists())
+                if self.stop_file.exists():
+                    require(private_json(self.stop_file) == {'ownerToken': self.descriptor['ownerToken']},
+                            'Fixture watcher stop request differs')
+                    value['status'] = 'STOPPED'
+                    break
+                time.sleep(0.5)
+        except BaseException as error:
+            value.update(status='FAILED', failure=failure_details(error))
+            value['sampledWatchPeakRssBytes'] = getattr(self, 'peak_rss', 0)
+            if hasattr(self.probe, 'fixture_observation'):
+                value['lastKernelObservation'] = self.probe.fixture_observation
+            if hasattr(self, 'last_state'):
+                value['failureState'] = self.last_state
+        finally:
+            value['finishedAtUtc'] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+            write_json(self.status_file, value, replace=self.status_file.exists())
+        return 0 if value['status'] == 'STOPPED' else 2
+
+    def stop(self):
+        if self.process_alive():
+            if not self.stop_file.exists():
+                write_json(self.stop_file, {'ownerToken': self.descriptor['ownerToken']})
+            deadline = time.monotonic() + 4
+            while self.process_alive() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            if self.process_alive():
+                stop_owned_group(self.descriptor['process']['pid'], self.descriptor['ownerToken'], self.descriptor['groupToken'])
+                raise ValueError('Fixture watcher required owned-session cancellation; retain its failure evidence')
+        value = self.read_status()
+        require(value['status'] in ('STOPPED', 'FAILED'), 'Fixture watcher exited without terminal evidence')
+        value['watchStopped'] = True
+        write_json(self.status_file, value, replace=True)
+        return self.evidence(value)
+
+    def evidence(self, value=None):
+        value = self.read_status() if value is None else value
+        return {key: item for key, item in value.items() if key not in ('ownerToken', 'capturedMonotonic')} | {
+            'watchStopped': not self.process_alive(), 'bootId': self.descriptor['bootId']}
 
 
 def readonly_source(runtime, docker, container, output, export_token=None):
@@ -1630,7 +1934,7 @@ def readonly_source(runtime, docker, container, output, export_token=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('phase', choices=('prepare', 'cleanup', 'status'))
+    parser.add_argument('phase', choices=('prepare', 'cleanup', 'status', 'watch'))
     for name in ('root', 'tag', 'commit', 'source-sha256', 'instance-id', 'machine-id'):
         parser.add_argument('--' + name, required=True)
     parser.add_argument('--settings')
@@ -1642,10 +1946,20 @@ def main():
         instance = Preparation(args)
         if args.phase == 'prepare':
             require(args.settings, 'Explicit private preparation settings required'); result = instance.prepare()
+        elif args.phase == 'watch':
+            instance.load()
+            deadline = time.monotonic() + 5
+            while 'process' not in private_json(instance.work / 'fixture-watch-owner.json'):
+                require(time.monotonic() < deadline, 'Fixture watcher process registration was not completed')
+                time.sleep(0.01)
+            return FixtureWatch(instance).run()
         elif args.phase == 'cleanup':
             result = instance.cleanup()
         else:
-            instance.load(); result = {'status': instance.journal['phase'], 'release': args.tag,
+            instance.load()
+            if instance.journal.get('phase') == 'PREPARED' and instance.journal.get('fixtureWatch'):
+                FixtureWatch(instance).check()
+            result = {'status': instance.journal['phase'], 'release': args.tag,
                                        'containerId': instance.journal.get('containerId')}
         print(json.dumps(result)); return 0
     except BaseException as error:
@@ -1654,6 +1968,11 @@ def main():
         if instance and instance.journal:
             if args.phase == 'prepare':
                 details = instance.retain_failure(error)
+                if instance.journal.get('fixtureWatch'):
+                    try:
+                        FixtureWatch(instance).stop()
+                    except BaseException:
+                        pass  # Original failure and private watcher evidence remain authoritative.
             try:
                 instance.save('FAILED_OR_UNKNOWN_RETAINED')
             except BaseException:

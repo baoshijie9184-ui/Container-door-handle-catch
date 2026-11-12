@@ -782,6 +782,22 @@ def source_proof(root, tag, commit, source_sha, *, builder_helpers=False, canoni
             need(type(producer_source) is str and producer_source, 'EXACT_FAILED_NATIVE_MYSQL_PRODUCER_SOURCE_REQUIRED')
             proof['failedNativePolicy'] = FAILED_NATIVE_BATCH
             proof['mysqlFixtureStartSourceSha256'] = digest_bytes(producer_source.encode('utf8'))
+            # The watched producer uses MYSQL_MEMORY rather than a literal in
+            # start_mysql. Bind its exact module constant without executing the
+            # authenticated historical script or weakening the legacy recipe.
+            assignments = {name: [node for node in syntax.body if isinstance(node, ast.Assign)
+                and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name) and node.targets[0].id == name]
+                for name in ('MYSQL_MEMORY', 'GIB')}
+            expected_memory = ast.dump(ast.parse('3 * GIB', mode='eval').body, include_attributes=False)
+            if (len(assignments['MYSQL_MEMORY']) == 1
+                    and ast.dump(assignments['MYSQL_MEMORY'][0].value, include_attributes=False) == expected_memory):
+                need(len(assignments['GIB']) == 1
+                     and ast.dump(assignments['GIB'][0].value, include_attributes=False)
+                         == ast.dump(ast.parse('1024 ** 3', mode='eval').body, include_attributes=False)
+                     and all(sum(isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, ast.Store)
+                                 for node in ast.walk(syntax)) == 1 for name in assignments),
+                     'EXACT_WATCHED_MYSQL_MEMORY_CONSTANT_REQUIRED')
+                proof['mysqlFixtureMemoryLimitBytes'] = 3 * 1024 ** 3
         return proof
 
 
@@ -825,6 +841,12 @@ def fixture_owner_projection(owner):
         'dataDirectory', 'containerName', 'image', 'port')}
     if 'binaryLoggingDisabled' in owner:
         projected['binaryLoggingDisabled'] = owner['binaryLoggingDisabled']
+    if 'fixtureWatch' in owner:
+        watch = owner['fixtureWatch']
+        need(type(watch) is dict and type(watch.get('file')) is str, 'EXACT_FIXTURE_WATCH_REFERENCE_REQUIRED')
+        projected['fixtureWatch'] = {'file': watch['file']}
+    if 'mysqlRuntimeConfiguration' in owner:
+        projected['mysqlRuntimeConfiguration'] = owner['mysqlRuntimeConfiguration']
     return projected
 
 
@@ -2289,6 +2311,9 @@ def builder_references(root, historical, descriptor, cleanup, builder, fixture=N
     retiring = {cid: 'doorhandle-builder-' + descriptor['ownerToken']}
     if fixture is not None:
         need(fixture['containerId'] != cid, 'MYSQL_FIXTURE_AND_BUILDER_ID_COLLISION')
+        if 'fixtureWatchProof' in fixture:
+            need(fixture_watch_controls(root, historical, builder) == fixture['fixtureWatchProof'],
+                 'FIXTURE_WATCH_CHANGED_BEFORE_OBJECT_REMOVAL')
         retiring[fixture['containerId']] = 'doorhandle-compact-fixture-' + fixture['ownerToken']
     if include_inbox:
         tag = historical['context']['release']
@@ -2349,15 +2374,102 @@ def fixture_data_metadata(root, path):
     finally: os.close(fd)
 
 
+def stopped_fixture_watch_process(process, boot_id):
+    """Read only exact kernel identity; never signal a retained watch session."""
+    current_boot = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+    need(re.fullmatch(r'[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}', current_boot),
+         'EXACT_FIXTURE_WATCH_CURRENT_BOOT_REQUIRED')
+    if current_boot == boot_id:
+        try:
+            raw = (Path('/proc') / str(process['pid']) / 'stat').read_bytes()
+        except (FileNotFoundError, ProcessLookupError):
+            raw = None
+        if raw is not None:
+            need(0 < len(raw) <= 4096 and b') ' in raw, 'BOUNDED_FIXTURE_WATCH_PROCESS_REQUIRED')
+            fields = raw.rsplit(b') ', 1)[1].split()
+            need(len(fields) > 19 and fields[19].isdigit(), 'EXACT_FIXTURE_WATCH_PROCESS_REQUIRED')
+            need(int(fields[19]) != process['startTicks'], 'FIXTURE_WATCH_PROCESS_STILL_PRESENT')
+    # A different boot or PID start time proves that the original cannot run;
+    # neither authorizes stopping the unrelated current process.
+    return current_boot
+
+
+def fixture_watch_controls(root, historical, builder):
+    """Bind stopped watch originals to one authenticated new producer/fixture."""
+    source = historical['sourceArchive']
+    if 'mysqlFixtureMemoryLimitBytes' not in source:
+        return None
+    context, owner = historical['context'], historical['fixtureOwner']
+    identity = historical['evidence']['identity']; work = Path(owner['work'])
+    original_ref = historical['controls']['fixtureOwner']
+    with held_file(root, Path(root) / original_ref['path'], MAX_CONTROL) as (stream, signature):
+        raw = stream.read(MAX_CONTROL + 1)
+        need(len(raw) == original_ref['bytes'] and digest_bytes(raw) == original_ref['sha256']
+             and signature == original_ref['metadata'], 'ORIGINAL_FIXTURE_WATCH_OWNER_CHANGED')
+        original = decode(raw)
+    watch = original.get('fixtureWatch')
+    need(type(watch) is dict and set(watch) == {'file', 'ownerToken', 'groupToken'}
+         and watch['file'] == str(work / 'fixture-watch-owner.json')
+         and all(type(watch[key]) is str and re.fullmatch(r'[a-f0-9]{32}', watch[key])
+                 for key in ('ownerToken', 'groupToken')), 'ORIGINAL_FIXTURE_WATCH_REFERENCE_REQUIRED')
+    paths = {'owner': work / 'fixture-watch-owner.json', 'status': work / 'fixture-watch-status.json',
+             'runtime': work.parent / 'ci-evidence/fixture-runtime.json'}
+    documents, bindings = {}, {}
+    for role, path in paths.items():
+        with held_file(root, path, MAX_CONTROL) as (stream, signature):
+            raw = stream.read(MAX_CONTROL + 1); documents[role] = decode(raw)
+            bindings[role] = {'path': path.relative_to(root).as_posix(), 'bytes': len(raw),
+                              'sha256': digest_bytes(raw), 'metadata': signature}
+    descriptor, status, runtime = (documents[role] for role in ('owner', 'status', 'runtime'))
+    configuration = {'tableOpenCacheInstances': 1, 'bufferPoolBytes': 268435456, 'maxConnections': 120}
+    expected = {**context, 'identity': identity, 'containerId': owner['containerId'],
+                'memoryLimitBytes': 3 * 1024 ** 3, 'swapLimitBytes': 0, 'mysqlConfiguration': configuration}
+    need(descriptor.get('version') == 1 and descriptor.get('kind') == 'doorhandle-fixture-watch-owner'
+         and all(descriptor.get(key) == value for key, value in expected.items())
+         and all(descriptor.get(key) == watch[key] for key in ('ownerToken', 'groupToken')),
+         'ORIGINAL_FIXTURE_WATCH_DESCRIPTOR_DIFFERS')
+    process, boot_id = descriptor.get('process'), descriptor.get('bootId')
+    need(type(process) is dict and set(process) == {'pid', 'startTicks', 'group', 'session'}
+         and all(type(item) is int and item > 1 for item in process.values())
+         and process['pid'] == process['group'] == process['session']
+         and type(boot_id) is str and re.fullmatch(r'[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}', boot_id),
+         'ORIGINAL_FIXTURE_WATCH_PROCESS_IDENTITY_DIFFERS')
+    need(status.get('version') == 1 and status.get('kind') == 'doorhandle-fixture-runtime'
+         and all(status.get(key) == value for key, value in expected.items())
+         and status.get('ownerToken') == watch['ownerToken'] and status.get('process') == process
+         and status.get('bootId') == boot_id and status.get('status') in ('STOPPED', 'FAILED')
+         and status.get('watchStopped') is True and type(status.get('probeCount')) is int and status['probeCount'] > 0,
+         'ORIGINAL_FIXTURE_WATCH_TERMINAL_DIFFERS')
+    kernel = descriptor.get('kernelIdentity')
+    need(type(kernel) is dict and set(kernel) == {'pid', 'startTicks', 'relative', 'directory'},
+         'ORIGINAL_FIXTURE_WATCH_KERNEL_IDENTITY_DIFFERS')
+    for name in ('firstProbe', 'lastProbe'):
+        probe = status.get(name)
+        need(type(probe) is dict and all(probe.get(key) == value for key, value in {
+            'pid': kernel['pid'], 'startTicks': kernel['startTicks'], 'cgroup': kernel['relative'],
+            'memoryLimitBytes': 3 * 1024 ** 3, 'swapLimitBytes': 0}.items()),
+            'ORIGINAL_FIXTURE_WATCH_PROBE_IDENTITY_DIFFERS')
+    public = {key: value for key, value in status.items() if key not in ('ownerToken', 'capturedMonotonic')}
+    need(runtime == public and runtime.get('watchStopped') is True, 'ORIGINAL_FIXTURE_WATCH_PUBLIC_REPORT_DIFFERS')
+    observed_boot = stopped_fixture_watch_process(process, boot_id)
+    proof = {**expected, 'process': process, 'bootId': boot_id, 'observedBootId': observed_boot, 'kernelIdentity': kernel,
+             'status': status['status'], 'watchStopped': True, 'processAbsent': True, 'files': bindings}
+    return builder.historical_fixture_watch_proof(root, context, identity, owner, proof)
+
+
 def capture_fixture(root, request, historical, builder, *, source_proof=None, failed_native=False):
     owner, cleanup = historical['fixtureOwner'], historical['fixtureCleanup']; cid = owner.get('containerId')
     if cid is None: return None
     need(type(cid) is str and SHA.fullmatch(cid), 'ORIGINAL_MYSQL_FIXTURE_ID_REQUIRED')
+    watch = fixture_watch_controls(root, historical, builder) if failed_native else None
+    if watch is not None:
+        historical['fixtureWatchProof'] = watch
     if cid not in builder_container_ids(): return None
     raw = builder_docker('inspect', cid)
     descriptor = builder.historical_mysql_fixture_descriptor(root, historical['context'], request['identity'], owner, cleanup,
         builder.historical_builder_inspect(raw), fixture_data_metadata(root, owner['dataDirectory']),
         **({'source_proof': source_proof} if source_proof is not None else {}),
+        **({'fixture_watch': watch} if watch is not None else {}),
         **({'failed_native': True} if failed_native else {}))
     descriptor['rawInspectSha256'] = digest_bytes(raw)
     return descriptor
@@ -2422,6 +2534,9 @@ def capture_recent_fixture(root, request, row, builder, *, closed_runtime=False,
                     'dataDirectory': None, 'dataMetadata': None, 'absenceKind': 'NO_OBJECT'}
     source = historical['sourceArchive']; builder.recent_mysql_fixture_source(historical['context'], source,
         **({'failed_native': True} if failed_native else {}))
+    watch = fixture_watch_controls(root, historical, builder) if failed_native else None
+    if watch is not None:
+        historical['fixtureWatchProof'] = watch
     need(type(cid) is str and SHA.fullmatch(cid) and cid != owner.get('sourceContainerId')
          and owner.get('dataDirectory') == historical['evidence']['work'] + '/mysql-data', 'EXACT_RECENT_MYSQL_OBJECT_REQUIRED')
     data = fixture_data_metadata(root, owner['dataDirectory'])
@@ -2431,6 +2546,7 @@ def capture_recent_fixture(root, request, row, builder, *, closed_runtime=False,
         raw = builder_docker('inspect', cid)
         fixture = builder.historical_mysql_fixture_descriptor(root, historical['context'], request['identity'], owner,
             historical['fixtureCleanup'], builder.historical_builder_inspect(raw), data, source_proof=source,
+            **({'fixture_watch': watch} if watch is not None else {}),
             **({'failed_native': True} if failed_native else {}))
         fixture['rawInspectSha256'] = digest_bytes(raw)
     return {'historical': historical, 'fixture': fixture, 'containerId': cid,
@@ -2439,6 +2555,9 @@ def capture_recent_fixture(root, request, row, builder, *, closed_runtime=False,
 
 def recent_fixture_references(root, candidate, cleanup, builder):
     fixture = candidate['fixture']; tag = candidate['historical']['context']['release']
+    if 'fixtureWatchProof' in fixture:
+        need(fixture_watch_controls(root, candidate['historical'], builder) == fixture['fixtureWatchProof'],
+             'FIXTURE_WATCH_CHANGED_BEFORE_OBJECT_REMOVAL')
     canonical_publication_refs(root, tag)
     if candidate['historical'].get('databaseVerificationOnly'):
         recheck_database_builder_controls(root, candidate['historical'])
@@ -2647,6 +2766,9 @@ def database_builder_references(root, candidate, cleanup, builder):
          'EXACT_DATABASE_NO_BUILDER_PROOF_REQUIRED')
     recheck_database_builder_controls(root, candidate['historical'])
     fixture = candidate['fixture']
+    if fixture is not None and 'fixtureWatchProof' in fixture:
+        need(fixture_watch_controls(root, candidate['historical'], builder) == fixture['fixtureWatchProof'],
+             'FIXTURE_WATCH_CHANGED_BEFORE_OBJECT_REMOVAL')
     retiring = {} if fixture is None else {
         fixture['containerId']: 'doorhandle-compact-fixture-' + fixture['ownerToken']}
     canonical_publication_refs(root, candidate['historical']['context']['release'])

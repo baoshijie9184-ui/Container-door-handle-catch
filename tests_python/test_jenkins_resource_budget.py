@@ -205,12 +205,23 @@ def phase_spec(phase='extraction', **changes):
              'enforcement': {'independentMonitor': True, 'ownedPhysicalDiskMeasured': True,
                  'registeredProcessGroups': True, 'controllerAddressSpaceLimited': True,
                  'maxProbeIntervalSeconds': 2, 'diskOvershootBytes': 256 * MIB,
-                 'sourceExportCancellation': True, 'mysqlCgroupLimitBytes': 1536 * MIB}}
+                 'sourceExportCancellation': True, 'mysqlCgroupLimitBytes': 3 * GIB}}
     value.update(changes)
     return value
 
 
 class ControlledPreparationBudgetTests(unittest.TestCase):
+    def test_three_gib_clone_keeps_controller_and_host_reserve_in_the_admission(self):
+        value = phase_spec('fixture-clone', memoryAdmissionBytes=6 * GIB, ownedMemoryLimitBytes=5 * GIB)
+        planned = budget.plan_phase(value)
+        admitted = budget.check_phase(planned, probe(memoryAvailableBytes=7 * GIB))
+        self.assertEqual('MEASUREMENT_ADMITTED', admitted['status'])
+        self.assertEqual(GIB, planned['memoryReserveBytes'])
+        self.assertEqual(7 * GIB, admitted['requiredAvailableMemoryBytes'])
+        self.assertEqual('FAIL_CLOSED', budget.check_phase(planned, probe(memoryAvailableBytes=7 * GIB - 1))['status'])
+        value['enforcement']['mysqlCgroupLimitBytes'] = 1536 * MIB
+        self.assertEqual('NOT_MEASURED', budget.plan_phase(value)['status'])
+
     def test_seven_gib_can_admit_measured_current_phase_without_claiming_full_fit(self):
         planned = budget.plan_phase(phase_spec())
         result = budget.check_phase(planned, probe())

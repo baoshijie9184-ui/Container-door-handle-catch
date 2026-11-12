@@ -1336,6 +1336,13 @@ def historical_mysql_fixture_projection(row):
                    for mount in row.get('Mounts', [])]}
 
 
+LEGACY_MYSQL_START_SOURCE = '79658b1e2982b14614d4c458c58e9b73af59349cf8f4edf874d3f76d83f91795'
+# The second source segment is the reviewed 3 GiB, cache-instances=1 producer;
+# its external memory constant and completed watcher need independent proof.
+WATCHED_MYSQL_START_SOURCE = 'f4d667ed1532911ac835dd0e70b1d5ff41ca02ffdc012f9762b46220cd7123a4'
+WATCHED_MYSQL_CONFIGURATION = {'tableOpenCacheInstances': 1, 'bufferPoolBytes': 268435456, 'maxConnections': 120}
+
+
 def recent_mysql_fixture_source(context, proof, *, failed_native=False):
     if failed_native:
         tag = re.fullmatch(r'ci-([1-9][0-9]*)-([a-f0-9]{12})', context.get('release', ''))
@@ -1343,9 +1350,16 @@ def recent_mysql_fixture_source(context, proof, *, failed_native=False):
                 and re.fullmatch(r'[a-f0-9]{40}', context['commit']) and context['commit'].startswith(tag[2])
                 and type(context.get('sourceSha256')) is str and SHA.fullmatch(context['sourceSha256']),
                 'Failed native MySQL source context differs')
+        producer = proof.get('mysqlFixtureStartSourceSha256') if type(proof) is dict else None
+        watched = (type(WATCHED_MYSQL_START_SOURCE) is str and SHA.fullmatch(WATCHED_MYSQL_START_SOURCE)
+                   and producer == WATCHED_MYSQL_START_SOURCE)
+        require(producer == LEGACY_MYSQL_START_SOURCE or watched, 'Reviewed failed native MySQL producer differs')
         expected = {'path': 'inbox/' + context['release'] + '/source.tar.gz', 'sha256': context['sourceSha256'],
-                    'failedNativePolicy': 'failed-native-retention-v1',
-                    'mysqlFixtureStartSourceSha256': '79658b1e2982b14614d4c458c58e9b73af59349cf8f4edf874d3f76d83f91795'}
+                    'failedNativePolicy': 'failed-native-retention-v1', 'mysqlFixtureStartSourceSha256': producer}
+        if watched:
+            require(type(proof.get('mysqlFixtureMemoryLimitBytes')) is int,
+                    'Reviewed failed native MySQL producer memory differs')
+            expected['mysqlFixtureMemoryLimitBytes'] = 3 * GIB
         require(type(proof) is dict and all(proof.get(key) == value for key, value in expected.items()),
                 'Reviewed failed native MySQL producer differs')
         return expected
@@ -1364,12 +1378,60 @@ def recent_mysql_fixture_source(context, proof, *, failed_native=False):
     return expected
 
 
+def historical_fixture_watch_proof(root, context, identity, owner, proof):
+    """Validate the caller's authenticated, stopped watcher controls without I/O."""
+    work = str(Path(root) / 'verification' / context['release'] / 'checkout/work/compact-fixtures')
+    require(type(proof) is dict and all(proof.get(key) == value for key, value in {
+        **context, 'identity': identity, 'containerId': owner['containerId'], 'watchStopped': True,
+        'processAbsent': True, 'memoryLimitBytes': 3 * GIB, 'swapLimitBytes': 0,
+        'mysqlConfiguration': WATCHED_MYSQL_CONFIGURATION}.items()), 'Stopped fixture watcher proof differs')
+    require(proof.get('watchStopped') is True and proof.get('processAbsent') is True
+            and type(proof.get('memoryLimitBytes')) is int and type(proof.get('swapLimitBytes')) is int
+            and type(proof.get('mysqlConfiguration')) is dict
+            and all(type(item) is int for item in proof['mysqlConfiguration'].values()),
+            'Stopped fixture watcher typed resource proof differs')
+    process = proof.get('process')
+    require(type(process) is dict and set(process) == {'pid', 'startTicks', 'group', 'session'}
+            and all(type(item) is int and item > 1 for item in process.values())
+            and process['pid'] == process['group'] == process['session'], 'Stopped fixture watcher process differs')
+    require(type(proof.get('bootId')) is str and re.fullmatch(r'[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}', proof['bootId'])
+            and type(proof.get('observedBootId')) is str
+            and re.fullmatch(r'[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}', proof['observedBootId'])
+            and proof.get('status') in ('STOPPED', 'FAILED'), 'Stopped fixture watcher terminal identity differs')
+    kernel = proof.get('kernelIdentity')
+    require(type(kernel) is dict and set(kernel) == {'pid', 'startTicks', 'relative', 'directory'}
+            and type(kernel['pid']) is int and kernel['pid'] > 0
+            and type(kernel['startTicks']) is int and kernel['startTicks'] > 0
+            and type(kernel['relative']) is str and kernel['relative'].startswith('/') and kernel['relative'] != '/'
+            and '..' not in Path(kernel['relative']).parts and type(kernel['directory']) is list
+            and len(kernel['directory']) == 2 and all(type(item) is int and item >= 0 for item in kernel['directory']),
+            'Stopped fixture watcher kernel identity differs')
+    require(owner.get('fixtureWatch') == {'file': work + '/fixture-watch-owner.json'}
+            and owner.get('mysqlRuntimeConfiguration') == WATCHED_MYSQL_CONFIGURATION,
+            'Watched fixture owner contract differs')
+    files = proof.get('files'); expected = {
+        'owner': work + '/fixture-watch-owner.json', 'status': work + '/fixture-watch-status.json',
+        'runtime': str(Path(work).parent / 'ci-evidence/fixture-runtime.json')}
+    require(type(files) is dict and set(files) == set(expected), 'Complete fixture watcher originals required')
+    for role, path in expected.items():
+        reference = files[role]
+        require(type(reference) is dict and set(reference) == {'path', 'bytes', 'sha256', 'metadata'}
+                and reference['path'] == str(Path(path).relative_to(root))
+                and type(reference['bytes']) is int and 0 < reference['bytes'] <= 2 * MIB
+                and type(reference['sha256']) is str and SHA.fullmatch(reference['sha256'])
+                and type(reference['metadata']) is list and len(reference['metadata']) == 10
+                and all(type(item) is int for item in reference['metadata']),
+                'Fixture watcher original file binding differs')
+    return json.loads(json.dumps(proof))
+
+
 def historical_mysql_fixture_descriptor(root, context, identity, owner, cleanup, row, data_metadata, *, source_proof=None,
-                                       failed_native=False):
+                                       failed_native=False, fixture_watch=None):
     """Admit an already stopped fixture object; its bind directory has no deletion API."""
     historical = context.get('release') in HISTORICAL_BUILDERS and HISTORICAL_BUILDERS[context['release']] == context.get('commit')
     recent_source = None if historical else recent_mysql_fixture_source(context, source_proof,
         **({'failed_native': True} if failed_native else {}))
+    watched = recent_source is not None and 'mysqlFixtureMemoryLimitBytes' in recent_source
     require(all(document.get(key) == value for document in (owner, cleanup)
                 for key, value in {**context, 'identity': identity}.items()), 'Historical MySQL source or host differs')
     work = str(Path(root) / 'verification' / context['release'] / 'checkout/work/compact-fixtures')
@@ -1400,7 +1462,7 @@ def historical_mysql_fixture_descriptor(root, context, identity, owner, cleanup,
             'Historical MySQL object is not a stopped terminal container')
     port = owner['port']
     require(host['RestartPolicy'] == {'Name': 'no', 'MaximumRetryCount': 0} and host['AutoRemove'] is False
-            and host['Privileged'] is False and host['Memory'] == host['MemorySwap'] == 1536 * MIB
+            and host['Privileged'] is False and host['Memory'] == host['MemorySwap'] == (3 * GIB if watched else 1536 * MIB)
             and host['NanoCpus'] == 10 ** 9 and host['PidsLimit'] == 256 and host['NetworkMode'] in ('default', 'bridge')
             and host['PidMode'] in ('', None) and host['IpcMode'] in ('private', '') and host['UTSMode'] in ('', None)
             and host['UsernsMode'] in ('', None) and not host['Links'] and not host['VolumesFrom']
@@ -1426,19 +1488,29 @@ def historical_mysql_fixture_descriptor(root, context, identity, owner, cleanup,
         expected_cmd.insert(6, '--skip-log-bin')
     else:
         require('binaryLoggingDisabled' not in owner, 'Historical MySQL legacy binary logging profile differs')
+    if watched:
+        expected_cmd.append('--table-open-cache-instances=1')
     require(projection['Config']['Cmd'] == expected_cmd, 'Historical MySQL actual datadir command differs')
+    watch = historical_fixture_watch_proof(root, context, identity, owner, fixture_watch) if watched else None
     return {**context, 'identity': identity, 'containerId': cid, 'sourceContainerId': source, 'ownerToken': token,
             'dataDirectory': data, 'dataMetadata': data_metadata, 'inspectProjection': projection,
             'inspectSha256': hashlib.sha256(encoded(projection)).hexdigest(), 'preservedData': True,
             **({'fixtureSourceProof': recent_source} if recent_source is not None else {}),
+            **({'fixtureWatchProof': watch} if watch is not None else {}),
             **({'failedNativePolicy': 'failed-native-retention-v1'} if failed_native else {})}
 
 
 def historical_mysql_fixture_remove(descriptor, inspect_fn, remove_fn, list_fn, references_fn, data_fn):
     cid = descriptor['containerId']
     if descriptor.get('release') not in HISTORICAL_BUILDERS or HISTORICAL_BUILDERS[descriptor['release']] != descriptor.get('commit'):
-        recent_mysql_fixture_source(descriptor, descriptor.get('fixtureSourceProof'),
+        source = recent_mysql_fixture_source(descriptor, descriptor.get('fixtureSourceProof'),
             **({'failed_native': True} if descriptor.get('failedNativePolicy') == 'failed-native-retention-v1' else {}))
+        if 'mysqlFixtureMemoryLimitBytes' in source:
+            root = Path(descriptor['dataDirectory']).parents[5]
+            historical_fixture_watch_proof(root, {key: descriptor[key] for key in ('release', 'commit', 'sourceSha256')},
+                descriptor['identity'], {'containerId': cid,
+                    'fixtureWatch': {'file': str(Path(descriptor['dataDirectory']).parent / 'fixture-watch-owner.json')},
+                    'mysqlRuntimeConfiguration': WATCHED_MYSQL_CONFIGURATION}, descriptor.get('fixtureWatchProof'))
     require(SHA.fullmatch(cid) and cid != descriptor['sourceContainerId']
             and SHA.fullmatch(descriptor.get('rawInspectSha256', '')), 'Reviewed MySQL retirement descriptor required')
     def unchanged():

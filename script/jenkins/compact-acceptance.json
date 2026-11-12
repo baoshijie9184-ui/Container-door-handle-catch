@@ -1343,19 +1343,19 @@
       },
       {
         "module": "tests_python.test_failed_native_jar_duplicates",
-        "minimumTests": 388,
+        "minimumTests": 407,
         "source": "tests_python/test_failed_native_jar_duplicates.py",
         "allowedSkippedTests": []
       },
       {
         "module": "tests_python.test_historical_builder_retirement",
-        "minimumTests": 146,
+        "minimumTests": 151,
         "source": "tests_python/test_historical_builder_retirement.py",
         "allowedSkippedTests": []
       },
       {
         "module": "tests_python.test_historical_mysql_fixture_retirement",
-        "minimumTests": 84,
+        "minimumTests": 109,
         "source": "tests_python/test_historical_mysql_fixture_retirement.py",
         "allowedSkippedTests": []
       },
@@ -1427,7 +1427,7 @@
       },
       {
         "module": "tests_python.test_jenkins_suite_evidence",
-        "minimumTests": 153,
+        "minimumTests": 173,
         "source": "tests_python/test_jenkins_suite_evidence.py",
         "allowedSkippedTests": []
       },
@@ -1439,7 +1439,7 @@
       },
       {
         "module": "tests_python.test_jenkins_resource_budget",
-        "minimumTests": 66,
+        "minimumTests": 67,
         "source": "tests_python/test_jenkins_resource_budget.py",
         "allowedSkippedTests": []
       },
@@ -1451,7 +1451,7 @@
       },
       {
         "module": "tests_python.test_jenkins_fixture_cgroup_probe",
-        "minimumTests": 24,
+        "minimumTests": 43,
         "source": "tests_python/test_jenkins_fixture_cgroup_probe.py",
         "allowedSkippedTests": []
       },

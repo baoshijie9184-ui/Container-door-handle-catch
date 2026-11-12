@@ -734,6 +734,22 @@ def stop_container(program, value, container, *, remove=True):
             'exitCode': final['State']['ExitCode'], 'removed': remove}
 
 
+def stop_execution(value):
+    """Cancel owned execution without racing the wrapper's receipt/cache cleanup."""
+    identity_guard(value['identity'])
+    program = canonical(value['docker'])
+    containers = docker(program, 'ps', '-aq', '--no-trunc', '--filter', 'label=' + LABEL + '=' + value['token']).decode().split()
+    stopped, errors = [], []
+    for container in containers:
+        try:
+            stopped.append(stop_container(program, value, container, remove=False))
+        except BaseException as error:
+            errors.append({'containerId': container, 'errorType': type(error).__name__})
+    require(not errors, 'Owned tool execution cancellation was not confirmed')
+    return {'status': 'EXECUTION_STOPPED', 'release': value['release'], 'containers': stopped,
+            'containerRemovalDeferredToWrapper': True}
+
+
 def cleanup(value):
     identity_guard(value['identity'])
     program = canonical(value['docker'])

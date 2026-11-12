@@ -643,6 +643,31 @@ def describe_failed_native(state):
         failed_native=True,source_proof=state.proof)
 
 
+def test_new_mysql_producer_preserves_the_failed_builder_original_control_contract(failed_native_builder):
+    state = failed_native_builder
+    state.proof.update(mysqlFixtureStartSourceSha256=resources.WATCHED_MYSQL_START_SOURCE,
+                       mysqlFixtureMemoryLimitBytes=3 * resources.GIB)
+    descriptor = describe_failed_native(state)
+    assert descriptor['failedNativeSource']['mysqlFixtureMemoryLimitBytes'] == 3 * resources.GIB
+    assert descriptor['failedNativeSource']['builderHelperSha256'] == state.helpers
+    calls, inspect, remove, listing, references = callbacks(state)
+    result = resources.historical_builder_remove(descriptor, inspect, remove, listing, references, failed_native=True)
+    assert result['status'] == 'REMOVED' and calls.removed == [state.row['Id']]
+    assert result['volumesPreserved'] is True
+
+
+@pytest.mark.parametrize('damage', ['missing-memory', 'wrong-memory', 'helper', 'tools'])
+def test_new_mysql_producer_never_relaxes_failed_builder_control_binding(failed_native_builder, damage):
+    state = failed_native_builder
+    state.proof.update(mysqlFixtureStartSourceSha256=resources.WATCHED_MYSQL_START_SOURCE,
+                       mysqlFixtureMemoryLimitBytes=3 * resources.GIB)
+    if damage == 'missing-memory': del state.proof['mysqlFixtureMemoryLimitBytes']
+    elif damage == 'wrong-memory': state.proof['mysqlFixtureMemoryLimitBytes'] = 1536 * resources.MIB
+    elif damage == 'helper': state.helpers['compact-build-resources.py'] = 'f' * 64
+    else: state.proof['preparedToolsSha256'] = 'f' * 64
+    with pytest.raises(ValueError): describe_failed_native(state)
+
+
 def test_failed_native_builder_binds_original_controls_and_preserves_the_exact_state_volume(failed_native_builder):
     state=failed_native_builder;before=copy.deepcopy(state.proof)
     descriptor=describe_failed_native(state)

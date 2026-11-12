@@ -555,3 +555,99 @@ def test_failed_native_mysql_remove_rechecks_explicit_producer_before_any_object
     with pytest.raises(ValueError,match='producer differs'):
         resources.historical_mysql_fixture_remove(descriptor,inspect,remove,listing,references,data)
     assert calls.inspected==calls.removed==[] and calls.data==0
+
+
+@pytest.fixture
+def watched_native_mysql(failed_native_mysql):
+    value, proof = failed_native_mysql
+    proof.update(mysqlFixtureStartSourceSha256=resources.WATCHED_MYSQL_START_SOURCE,
+                 mysqlFixtureMemoryLimitBytes=3 * resources.GIB)
+    work = value.owner['work']
+    value.owner.update(fixtureWatch={'file': work + '/fixture-watch-owner.json'},
+                       mysqlRuntimeConfiguration=dict(resources.WATCHED_MYSQL_CONFIGURATION))
+    value.row['HostConfig'].update(Memory=3 * resources.GIB, MemorySwap=3 * resources.GIB)
+    value.row['Config']['Cmd'].append('--table-open-cache-instances=1')
+    boot = '12345678-1234-1234-1234-123456789abc'
+    watch = {**value.context, 'identity': copy.deepcopy(IDENTITY), 'containerId': value.owner['containerId'],
+        'memoryLimitBytes': 3 * resources.GIB, 'swapLimitBytes': 0,
+        'mysqlConfiguration': dict(resources.WATCHED_MYSQL_CONFIGURATION), 'status': 'STOPPED',
+        'process': {'pid': 12345, 'startTicks': 90001, 'group': 12345, 'session': 12345},
+        'kernelIdentity': {'pid': 20001, 'startTicks': 80001, 'relative': '/docker/' + value.owner['containerId'],
+                           'directory': [29, 101]},
+        'bootId': boot, 'observedBootId': boot, 'watchStopped': True, 'processAbsent': True,
+        'files': {role: {'path': str(Path(path).relative_to(ROOT)), 'bytes': 64, 'sha256': 'a' * 64,
+                       'metadata': [1, 2, stat.S_IFREG | 0o600, 1000, 1000, 1, 64, 1, 1, 512]}
+                  for role, path in {'owner': work + '/fixture-watch-owner.json',
+                      'status': work + '/fixture-watch-status.json',
+                      'runtime': str(Path(work).parent / 'ci-evidence/fixture-runtime.json')}.items()}}
+    return value, proof, watch
+
+
+def describe_watched(state):
+    value, proof, watch = state
+    return resources.historical_mysql_fixture_descriptor(ROOT, value.context, IDENTITY,
+        value.owner, value.cleanup, value.row, value.data_metadata, source_proof=proof,
+        failed_native=True, fixture_watch=watch)
+
+
+@pytest.mark.parametrize('status', ['STOPPED', 'FAILED'])
+def test_watched_producer_requires_exact_resources_configuration_and_completed_watch(watched_native_mysql, status):
+    value, proof, watch = watched_native_mysql; watch['status'] = status
+    descriptor = describe_watched(watched_native_mysql)
+    descriptor['rawInspectSha256'] = sha(raw([value.row]))
+    calls, inspect, remove, listing, references, data = callbacks(value)
+    result = resources.historical_mysql_fixture_remove(descriptor, inspect, remove, listing, references, data)
+    assert result['status'] == 'REMOVED' and calls.removed == [value.owner['containerId']]
+    assert descriptor['fixtureWatchProof'] == watch
+    assert SECRET not in json.dumps(descriptor)
+    assert not any(key in json.dumps(descriptor['fixtureWatchProof']) for key in ('ownerToken', 'groupToken', 'rootPassword'))
+
+
+@pytest.mark.parametrize('field,value', [('mysqlFixtureMemoryLimitBytes', 1536 * resources.MIB),
+    ('mysqlFixtureMemoryLimitBytes', None), ('mysqlFixtureStartSourceSha256', '0' * 64)])
+def test_new_producer_does_not_accept_an_unbound_external_memory_constant(watched_native_mysql, field, value):
+    watched_native_mysql[1][field] = value
+    with pytest.raises(ValueError): describe_watched(watched_native_mysql)
+
+
+@pytest.mark.parametrize('path,value', [('HostConfig.Memory', 1536 * resources.MIB),
+    ('HostConfig.MemorySwap', -1), ('State.OOMKilled', True), ('State.Running', True)])
+def test_new_profile_preserves_exact_memory_zero_swap_and_terminal_object_guards(watched_native_mysql, path, value):
+    change(watched_native_mysql[0].row, path, value)
+    with pytest.raises(ValueError): describe_watched(watched_native_mysql)
+
+
+@pytest.mark.parametrize('damage', ['missing', 'extra', 'wrong'])
+def test_new_profile_does_not_accept_another_cache_configuration(watched_native_mysql, damage):
+    command = watched_native_mysql[0].row['Config']['Cmd']
+    if damage == 'missing': command.pop()
+    elif damage == 'extra': command.append('--table-open-cache=100')
+    else: command[-1] = '--table-open-cache-instances=2'
+    with pytest.raises(ValueError, match='datadir command'): describe_watched(watched_native_mysql)
+
+
+@pytest.mark.parametrize('path,value', [('watchStopped', False), ('watchStopped', 1), ('processAbsent', False),
+    ('status', 'RUNNING'), ('containerId', '0' * 64), ('process.startTicks', True),
+    ('process.group', 999), ('bootId', 'unknown'), ('files.owner.sha256', 'unknown'),
+    ('files.status.path', 'work/unrelated.json'), ('files.runtime.bytes', 0)])
+def test_watched_retirement_requires_all_exact_terminal_originals(watched_native_mysql, path, value):
+    change(watched_native_mysql[2], path, value)
+    with pytest.raises(ValueError): describe_watched(watched_native_mysql)
+
+
+def test_legacy_producer_cannot_borrow_the_new_memory_cap(failed_native_mysql):
+    value, proof = failed_native_mysql
+    value.row['HostConfig'].update(Memory=3 * resources.GIB, MemorySwap=3 * resources.GIB)
+    with pytest.raises(ValueError, match='resource or namespace'):
+        resources.historical_mysql_fixture_descriptor(ROOT, value.context, IDENTITY, value.owner,
+            value.cleanup, value.row, value.data_metadata, source_proof=proof, failed_native=True)
+
+
+def test_new_remove_refuses_missing_watch_proof_before_any_object_callback(watched_native_mysql):
+    value, _proof, _watch = watched_native_mysql
+    descriptor = describe_watched(watched_native_mysql)
+    descriptor['rawInspectSha256'] = sha(raw([value.row])); del descriptor['fixtureWatchProof']
+    calls, inspect, remove, listing, references, data = callbacks(value)
+    with pytest.raises(ValueError):
+        resources.historical_mysql_fixture_remove(descriptor, inspect, remove, listing, references, data)
+    assert calls.inspected == calls.removed == [] and calls.data == 0

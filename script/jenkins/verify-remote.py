@@ -182,7 +182,7 @@ def unpack_source(archive, destination, commit):
 
 
 def allowed_evidence(name):
-    if name in ("driver.log", "reports/receipt.json", "reports/python.xml", "reports/migration.json", "reports/tool-runtime.json"):
+    if name in ("driver.log", "reports/receipt.json", "reports/python.xml", "reports/migration.json", "reports/tool-runtime.json", "reports/fixture-runtime.json"):
         return True
     if name.startswith("reports/") and name[len("reports/"):] in LOG_NAMES:
         return True
@@ -194,7 +194,7 @@ def allowed_evidence(name):
 def evidence_files(checkout, evidence, driver):
     candidates = [("driver.log", driver)]
     candidates += [("reports/" + name, evidence / name)
-                   for name in ("receipt.json", "python.xml", "migration.json", "tool-runtime.json", *sorted(LOG_NAMES))]
+                   for name in ("receipt.json", "python.xml", "migration.json", "tool-runtime.json", "fixture-runtime.json", *sorted(LOG_NAMES))]
     candidates += [("reports/" + path.name, path) for path in sorted(evidence.glob("java-*.log"))
                    if allowed_evidence("reports/" + path.name)]
     candidates += [("reports/java/" + path.relative_to(evidence / "java").as_posix(), path)
@@ -250,7 +250,7 @@ def make_evidence(inbox, checkout, evidence, driver, record):
     return archive
 
 
-def stop_owned_process(process):
+def stop_owned_process(process, before_wait=None):
     if process is None or process.poll() is not None:
         return
     try:
@@ -258,13 +258,17 @@ def stop_owned_process(process):
     except ProcessLookupError:
         return
     try:
-        process.wait(timeout=25)
-    except subprocess.TimeoutExpired:
+        if before_wait is not None:
+            before_wait()  # OCI tools are not children of the attached Docker CLI.
+    finally:
         try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        process.wait(timeout=10)
+            process.wait(timeout=25)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait(timeout=10)
 
 
 def owned_directory(path):
@@ -314,9 +318,24 @@ def fixture_readiness(attempt_dir, checkout, args):
     ready = json.loads(marker.read_text(encoding="utf-8-sig"), object_pairs_hook=unique_fields)
     expected = {"schema": 1, "kind": "doorhandle-ci-fixtures", "release": args.tag,
                 "commit": args.commit, "instanceId": args.instance_id, "machineId": args.machine_id}
-    require(isinstance(ready, dict) and set(ready) == set(expected)
-            and type(ready.get("schema")) is int and ready == expected,
+    require(isinstance(ready, dict) and set(expected) <= set(ready) <= set(expected) | {'fixtureWatch'}
+            and type(ready.get("schema")) is int and all(ready.get(key) == value for key, value in expected.items()),
             "Fixture readiness marker differs from this release, commit or admitted ECS")
+    if 'fixtureWatch' in ready:
+        require(ready['fixtureWatch'] == str(checkout / 'work/compact-fixtures/fixture-watch-owner.json'),
+                'Automatic fixture readiness requires its exact owned watcher')
+    owner_file = work / 'compact-fixtures-owner.json'
+    if owner_file.exists() or owner_file.is_symlink():
+        owner = observation_json(owner_file, permissions=(0o400, 0o600))
+        if 'fixtureWatch' in owner or owner.get('fixtureWatchRequired') is True:
+            require(all(owner.get(key) == expected for key, expected in {
+                        'kind': 'doorhandle-compact-fixture-owner', 'release': args.tag,
+                        'commit': args.commit, 'sourceSha256': args.source_sha256,
+                        'identity': {'instanceId': args.instance_id, 'machineId': args.machine_id, 'executionLocation': 'ECS'}}.items())
+                    and ready.get('fixtureWatch') == (owner.get('fixtureWatch') or {}).get('file')
+                    and 'fixtureWatch' in ready,
+                    'Automatic fixture owner cannot downgrade its required watcher to legacy readiness')
+    return ready.get('fixtureWatch')
 
 
 def prepare_checkout(root, args, identity):
@@ -337,7 +356,7 @@ def prepare_checkout(root, args, identity):
     if args.scope == "mysql":
         require(attempt_dir.exists(),
                 "MySQL verification requires an explicitly pre-staged readiness marker and private fixtures")
-        fixture_readiness(attempt_dir, checkout, args)
+        args.fixture_watch = fixture_readiness(attempt_dir, checkout, args)
     else:
         require(not attempt_dir.exists() and not attempt_dir.is_symlink(),
                 "Release already has a verification directory; use a new build")
@@ -468,9 +487,24 @@ def run_verification(args):
               "fixtureReadinessValidated": args.scope == "mysql"}
     process = None
     tool_runtime, tool_value = None, None
+    fixture_watch = None
     exit_code = 1
     try:
         unpack_source(archive, checkout, args.commit)
+        if getattr(args, 'fixture_watch', None) is not None:
+            helper_file = checkout / 'script/jenkins/prepare-compact-fixtures.py'
+            regular_file(helper_file, MAX_FILE_BYTES)
+            spec = importlib.util.spec_from_file_location('admitted_fixture_watch', helper_file)
+            helper = importlib.util.module_from_spec(spec); spec.loader.exec_module(helper)
+            preparation = helper.Preparation(args); preparation.load()
+            require(preparation.journal.get('phase') == 'PREPARED'
+                    and preparation.journal.get('manifest') == args.fixture_manifest
+                    and preparation.journal.get('manifestSha256') == digest(Path(args.fixture_manifest)),
+                    'Automatic fixture watcher is not bound to this prepared manifest')
+            fixture_watch = helper.FixtureWatch(preparation)
+            require(str(fixture_watch.file) == args.fixture_watch, 'Automatic fixture watcher path differs')
+            record['fixtureRuntime'] = {'required': True, 'containerId': fixture_watch.descriptor['containerId']}
+            fixture_watch.check()
         script = checkout / "script" / "jenkins" / "verify-ecs.py"
         regular_file(script, MAX_FILE_BYTES)
         command = [sys.executable, "-B", str(script), "--output", str(evidence)]
@@ -503,12 +537,18 @@ def run_verification(args):
         environment.update(DOORHANDLE_ECS_INSTANCE_ID=args.instance_id,
                            DOORHANDLE_ECS_MACHINE_ID=args.machine_id,
                            PYTHON_EXE=sys.executable, PYTHONDONTWRITEBYTECODE="1")
+        if fixture_watch is not None:
+            # Python whole-migration orchestration can synchronously launch one
+            # separate Java tool. Other top-level tools execute serially.
+            tool_bound = ((max(tool_runtime.MEMORY.values()) + tool_runtime.MEMORY['java']) * 1024 ** 3
+                          if tool_value is not None else 0)
+            record['fixtureRuntime']['memoryAdmission'] = fixture_watch.admit(tool_bound)
         with driver.open("xb") as output:
             os.chmod(driver, 0o600)
             process = subprocess.Popen(command, cwd=checkout, env=environment,
                                        stdin=subprocess.DEVNULL, stdout=output,
                                        stderr=subprocess.STDOUT, start_new_session=True)
-            wait_for_verifier(process, args)
+            wait_for_verifier(process, args, fixture_watch=fixture_watch)
         record["verificationExitCode"] = process.returncode
         result_file = evidence / "receipt.json"
         regular_file(result_file, MAX_RECEIPT_BYTES)
@@ -548,7 +588,14 @@ def run_verification(args):
             # All VerificationError messages above are fixed operator guidance, never private JSON.
             record["error"] = str(error)
     finally:
-        stop_owned_process(process)
+        def cancel_fixture_tools():
+            if fixture_watch is not None and tool_value is not None and record['status'] != 'PASS':
+                record['fixtureRuntimeToolCancellation'] = tool_runtime.stop_execution(tool_value)
+        try:
+            stop_owned_process(process, before_wait=cancel_fixture_tools)
+        except BaseException as error:
+            record.update(status='FAILED', cancellationErrorType=type(error).__name__)
+            exit_code = 1
         if tool_value is not None:
             try:
                 stopped = tool_runtime.cleanup(tool_value)
@@ -560,6 +607,25 @@ def run_verification(args):
             except BaseException as error:
                 record.update(status='FAILED', toolCleanupErrorType=type(error).__name__)
                 exit_code = 1
+        if fixture_watch is not None:
+            evidence.mkdir(mode=0o700, parents=True, exist_ok=True)
+            try:
+                watch_result = fixture_watch.stop()
+                file = evidence / 'fixture-runtime.json'; write_json(file, watch_result)
+                record['fixtureRuntime'].update(watchStopped=watch_result['watchStopped'],
+                    status=watch_result['status'], evidenceSha256=digest(file))
+                require(watch_result['watchStopped'] is True and watch_result['status'] == 'STOPPED',
+                        'Automatic fixture watcher did not finish healthy with confirmed process exit')
+            except BaseException as error:
+                record.update(status='FAILED', fixtureWatchErrorType=type(error).__name__)
+                exit_code = 1
+                # A failed stop still exports the last complete sample and failure State.
+                try:
+                    file = evidence / 'fixture-runtime.json'
+                    if not file.exists():
+                        write_json(file, fixture_watch.evidence())
+                except BaseException:
+                    pass
         if process is not None:
             record["verificationExitCode"] = process.returncode
         record["finishedAt"] = now()
@@ -603,24 +669,29 @@ def supervisor_start(pid):
     return process.joinpath('stat').read_text().split(') ', 1)[1].split()[19]
 
 
-def wait_for_verifier(process, args):
+def wait_for_verifier(process, args, fixture_watch=None):
     deadline = time.monotonic() + VERIFY_TIMEOUT_SECONDS
     while True:
+        if fixture_watch is not None:
+            fixture_watch.check()
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise subprocess.TimeoutExpired('owned verification', VERIFY_TIMEOUT_SECONDS)
         try:
-            return process.wait(timeout=min(30, remaining))
+            result = process.wait(timeout=min(0.5 if fixture_watch is not None else 30, remaining))
+            if fixture_watch is not None:
+                fixture_watch.check()  # Close the successful-exit/OOM race before accepting PASS.
+            return result
         except subprocess.TimeoutExpired:
             progress({'release': args.tag, 'attempt': args.attempt, 'status': 'RUNNING',
                       'scope': args.scope})
 
 
-def observation_json(path):
+def observation_json(path, *, permissions=(0o600,)):
     regular_file(path, MAX_RECEIPT_BYTES)
     info = path.stat()
     require(info.st_uid == os.getuid() and info.st_nlink == 1
-            and stat.S_IMODE(info.st_mode) == 0o600, 'Private owned verification observation required')
+            and stat.S_IMODE(info.st_mode) in permissions, 'Private owned verification observation required')
     return json.loads(path.read_text(encoding='utf-8-sig'))
 
 
@@ -714,6 +785,15 @@ def validate_envelope(record, args):
             require(tools.get('cleanupStatus') == 'STOPPED' and 'reports/tool-runtime.json' in catalog
                     and tools.get('evidenceSha256') == catalog['reports/tool-runtime.json']['sha256'],
                     'Passing tool evidence requires actual cleanup and its original report')
+    if record.get('fixtureRuntime') is not None:
+        fixture = record['fixtureRuntime']
+        require(isinstance(fixture, dict) and fixture.get('required') is True
+                and SHA.fullmatch(fixture.get('containerId', '')), 'Fixture runtime admission evidence is incomplete')
+        if record['status'] == 'PASS':
+            require(fixture.get('status') == 'STOPPED' and fixture.get('watchStopped') is True
+                    and 'reports/fixture-runtime.json' in catalog
+                    and fixture.get('evidenceSha256') == catalog['reports/fixture-runtime.json']['sha256'],
+                    'Passing fixture evidence requires the stopped watcher and original runtime report')
     return catalog
 
 

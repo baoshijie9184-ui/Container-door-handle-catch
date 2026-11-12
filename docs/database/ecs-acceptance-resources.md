@@ -371,7 +371,11 @@ python3 -B script/jenkins/ecs-resource-budget.py check --input resource-plan.jso
 
 上界是可停止的测量预算；发生超界就失败并保留已有数据，不能扩大上界掩盖超界，也不能声称在给定磁盘中完整测试必然成功。真实 SQL 若超过量测界限，应根据失败证据另行设计下一轮，不跳过数据或测试。未来 Maven 冷缓存、双恢复和完整运行栈仍需独立准入和实测。
 
-准备器在 Linux 自身及其后代应用 3 GiB `RLIMIT_AS`，不修改原业务进程限额。Docker Go CLI 继承这一地址空间边界；另对本轮控制进程树 RSS 监测 2 GiB 上限。只读源客户端在原 MySQL 容器内部使用单独 512 MiB `ulimit -v`；原 mysqld 不被改动。夹具 MySQL 的 memory 与 memory-swap 都为 1.5 GiB，不允许交换突破该 cgroup。准入计入当前阶段控制器、源客户端或 Java 工具与夹具的并存限额，另保留 1 GiB 主机 MemAvailable。
+准备器在 Linux 自身及其后代应用 3 GiB `RLIMIT_AS`，不修改原业务进程限额。Docker Go CLI 继承这一地址空间边界；另对本轮控制进程树 RSS 监测 2 GiB 上限。只读源客户端在原 MySQL 容器内部使用单独 512 MiB `ulimit -v`；原 mysqld 不被改动。
+
+#266只读诊断确认独占测试MySQL在原1.5 GiB cgroup下OOM退出。待验证配置将该测试容器的memory与memory-swap同时设为 **3 GiB**（零额外swap），保留1 CPU、pids256、256 MiB buffer pool、120连接及完整schema/Performance Schema。`table_open_cache_instances=1`减少单核测试实例的表缓存分区；MySQL官方说明，多触发器场景可用较小分区数限制表缓存内存，8或16分区主要面向16核以上服务器。该调整有官方依据，但具体内存构成尚未实测。[MySQL 8.4表缓存分区说明](https://dev.mysql.com/doc/refman/8.4/en/server-system-variables.html#sysvar_table_open_cache_instances)
+
+3 GiB是本轮有界分配方案，不是已测峰值；新鲜资源探针仍决定是否准入。夹具克隆阶段计入3 GiB控制器、3 GiB MySQL及1 GiB主机保留，共7 GiB。其他阶段按控制器、源客户端或Java工具的实际并存限额计算，不用宿主空闲量替代容器cgroup检查。独立旧库/三库恢复器的1.5 GiB限额不随本次测试夹具调整。
 
 两个独立线程负责物理分配与快速压力检查。分配线程使用经核验的 `sudo -n timeout --kill-after=0.2s 1.2s du -B1 -x -s -- <本轮attempt>`，只遍历本轮隔离目录；root du 子进程由原生 timeout 约束。物理分配量不由主机空闲差推算，其他任务释放空间不能掩盖本轮超界。另一线程每 0.5 秒读取真实磁盘空闲和 MemAvailable；任一线程延迟超过 2 秒、采样失败、OOM、超界或主机真实剩余低于 2 GiB+256 MiB，均立即向自身主线程发送 SIGUSR1 使操作失败。256 MiB 是独立停止余量，不能借用真实 2 GiB 保底。主机可用量下降只记录为 `HOST_DISK_LOSS_UPPER_BOUND`，不冒充资源归属证据。
 
@@ -391,6 +395,10 @@ python3 -B script/jenkins/ecs-resource-budget.py check --input resource-plan.jso
 | `source-export-cleanup-*.json`、`cleanup-receipt.json` | 本轮源客户端、夹具/进程退出的确认；源数据与失败证据全部保留 |
 | `resource-failure.json` | 监督失败；缺失终止确认时不能发布 PREPARED |
 
-只有所有阶段完成、独立监测线程结束、探针与进程回执 fsync 成功后，才写 `.fixtures-ready.json`。失败清理逐项尝试本轮宿主进程、本轮源客户端、Java 探针和本轮 MySQL；一项失败不会跳过其他项，但任一退出状态未知都保留 `FAILED_OR_UNKNOWN`，阻止后续使用。整个过程不删除 dump、源数据、MySQL 目录或证据，不调用全局 Docker 清理。
+只有所有准备阶段完成、准备阶段监测线程结束、探针与进程回执fsync成功，且持续MySQL监督进程已启动并产生合格首探针后，才写 `.fixtures-ready.json`。持续监督从发布PREPARED之前覆盖到验证终态，避免准备器退出后不再检查MySQL自身cgroup；不因SSH返回而重启测试或替换容器。监督进程复用同源码的`fixture-watch`模式，绑定原container ID、boot ID、PID/startTicks/session及私有归属；每0.5秒记录memory.current、可用时的memory.peak、memory.events和容器State。OOM、容器退出/重启、身份漂移、监测故障或过期均阻止继续验证。
+
+监督进程及Docker元数据客户端共享3 GiB地址空间边界，另按完整进程树实际RSS约束为256 MiB，不把256 MiB RSS预算错误地当作Go CLI虚拟地址上限。验证开始前，实际MemAvailable须覆盖MySQL限额尚未使用部分、256 MiB监督预算、本阶段工具并存限额及1 GiB主机保留。公开终态证据归档为 `reports/fixture-runtime.json`，包含采样/内核峰值、末次探针、失败State、固定容器/进程身份及`watchStopped`；不归档私有owner capability。旧显式manifest/CLI与真正旧ready marker保持原约，新自动夹具不能删除marker字段降级绕过监督。
+
+正常、验证失败及准备失败均需停止本轮监督并保留终态。失败清理逐项尝试本轮宿主进程、本轮源客户端、Java探针和本轮MySQL；一项失败不会跳过其他项，但任一退出状态未知都保留`FAILED_OR_UNKNOWN`，阻止后续使用。活动工具先停止执行、等待原wrapper收尾，再移除已停止对象，避免取消动作破坏缓存终态。整个过程不删除dump、源数据、MySQL目录或证据，不调用全局Docker清理。历史1.5 GiB producer退役契约保留；新3 GiB producer额外要求完整监督终态原件，#266的既有OOM拒绝条件不放宽。
 
 新增的 ECS 测试源码包含实际 Linux 进程组与 watchdog 信号验证：非本轮 session 保持存活、leader 退出后的子进程仍可清理、仅有启动前 claim 时仍可找到本轮命令、监测迟采真实通知自身并留下失败回执。这些测试必须通过 Jenkins 在 ECS 执行；本次源码检查不能替代其实际结果。

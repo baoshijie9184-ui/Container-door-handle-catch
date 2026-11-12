@@ -1984,7 +1984,8 @@ def test_failed_native_238_control_observer_recipe_requires_its_exact_reviewed_p
         proof = retirer.source_proof(root, tag, commit, sha(archive.read_bytes()), **options)
         assert proof['unpublishedPipelineSourceSha256'] == expected
         assert proof['failedNativePolicy'] == 'failed-native-retention-v1'
-        assert proof['mysqlFixtureStartSourceSha256'] == '79658b1e2982b14614d4c458c58e9b73af59349cf8f4edf874d3f76d83f91795'
+        assert proof['mysqlFixtureStartSourceSha256'] == 'f4d667ed1532911ac835dd0e70b1d5ff41ca02ffdc012f9762b46220cd7123a4'
+        assert proof['mysqlFixtureMemoryLimitBytes'] == 3 * 1024 ** 3
     assert archive.is_file() and tag not in retirer.APPROVED_OLD and tag not in retirer.PUBLIC_LAYER_TAGS
 
 
@@ -2240,7 +2241,8 @@ def test_real_failed_mysql_producer_source_binding_survives_python_function_ast_
         return tree
     monkeypatch.setattr(ast,'parse',parsed)
     proof=state.prove(state.recipe)
-    assert proof['mysqlFixtureStartSourceSha256']=='79658b1e2982b14614d4c458c58e9b73af59349cf8f4edf874d3f76d83f91795'
+    assert proof['mysqlFixtureStartSourceSha256']==state.resources.WATCHED_MYSQL_START_SOURCE
+    assert proof['mysqlFixtureMemoryLimitBytes']==3 * 1024 ** 3
     assert 'mysqlFixtureStartAstSha256' not in proof
     admitted=state.resources.recent_mysql_fixture_source(state.context,proof,failed_native=True)
     assert admitted['mysqlFixtureStartSourceSha256']==proof['mysqlFixtureStartSourceSha256']
@@ -2260,6 +2262,122 @@ def test_real_failed_mysql_producer_binding_rejects_missing_duplicate_or_changed
     else:
         with pytest.raises(retirer.RetirementError,match='EXACT_FAILED_NATIVE_MYSQL_PRODUCER_REQUIRED'):
             state.prove(recipe)
+
+
+@pytest.mark.parametrize('declaration', [b'MYSQL_MEMORY = 4 * GIB', b'MYSQL_MEMORY = 1536 * MIB'])
+def test_watched_producer_external_memory_changes_cannot_borrow_its_registered_method(real_failed_mysql_producer, declaration):
+    state = real_failed_mysql_producer
+    changed = state.recipe.replace(b'MYSQL_MEMORY = 3 * GIB', declaration)
+    assert changed != state.recipe
+    proof = state.prove(changed)
+    assert proof['mysqlFixtureStartSourceSha256'] == state.resources.WATCHED_MYSQL_START_SOURCE
+    with pytest.raises(ValueError):
+        state.resources.recent_mysql_fixture_source(state.context, proof, failed_native=True)
+
+
+@pytest.fixture
+def watched_retirement_controls(tmp_path, monkeypatch):
+    root = tmp_path / 'ci'; root.mkdir(mode=0o700)
+    context = {'release': 'ci-267-' + 'a' * 12, 'commit': 'a' * 40, 'sourceSha256': 'b' * 64}
+    identity = {'instanceId': 'i-fixture', 'machineId': 'c' * 32, 'executionLocation': 'ECS'}
+    work = root / 'verification' / context['release'] / 'checkout/work/compact-fixtures'
+    work.mkdir(parents=True, mode=0o700); (work.parent / 'ci-evidence').mkdir(mode=0o700)
+    for parent in work.parents:
+        if parent == root: break
+        parent.chmod(0o700)
+    boot = '12345678-1234-1234-1234-123456789abc'
+    process = {'pid': 10001, 'startTicks': 20001, 'group': 10001, 'session': 10001}
+    kernel = {'pid': 30001, 'startTicks': 40001, 'relative': '/docker/' + 'd' * 64, 'directory': [29, 101]}
+    config = {'tableOpenCacheInstances': 1, 'bufferPoolBytes': 268435456, 'maxConnections': 120}
+    common = {**context, 'identity': identity, 'containerId': 'd' * 64, 'memoryLimitBytes': 3 * 1024 ** 3,
+              'swapLimitBytes': 0, 'mysqlConfiguration': config}
+    descriptor = {**common, 'version': 1, 'kind': 'doorhandle-fixture-watch-owner', 'process': process,
+                  'kernelIdentity': kernel, 'bootId': boot, 'ownerToken': 'e' * 32, 'groupToken': 'f' * 32}
+    probe = {'pid': kernel['pid'], 'startTicks': kernel['startTicks'], 'cgroup': kernel['relative'],
+             'memoryLimitBytes': 3 * 1024 ** 3, 'swapLimitBytes': 0}
+    status = {**common, 'version': 1, 'kind': 'doorhandle-fixture-runtime', 'process': process,
+              'bootId': boot, 'ownerToken': 'e' * 32, 'status': 'STOPPED', 'watchStopped': True,
+              'probeCount': 10, 'firstProbe': probe, 'lastProbe': dict(probe), 'capturedMonotonic': 10.0}
+    owner = {**context, 'identity': identity, 'work': str(work), 'containerId': 'd' * 64,
+             'rootPassword': 'private-password-must-not-project', 'mysqlRuntimeConfiguration': config,
+             'fixtureWatch': {'file': str(work / 'fixture-watch-owner.json'), 'ownerToken': 'e' * 32, 'groupToken': 'f' * 32}}
+    paths = {'original': work.parent / 'compact-fixtures-owner.json', 'owner': work / 'fixture-watch-owner.json',
+             'status': work / 'fixture-watch-status.json', 'runtime': work.parent / 'ci-evidence/fixture-runtime.json'}
+    values = {'original': owner, 'owner': descriptor, 'status': status,
+              'runtime': {key: value for key, value in status.items() if key not in ('ownerToken', 'capturedMonotonic')}}
+    for role, path in paths.items(): path.write_bytes(encoded(values[role])); path.chmod(0o600)
+    spec = importlib.util.spec_from_file_location('watched_retirement_resource_contract', MODULE.parents[1] / 'docker/compact-build-resources.py')
+    builder = importlib.util.module_from_spec(spec); spec.loader.exec_module(builder)
+    historical = {'context': context, 'fixtureOwner': retirer.fixture_owner_projection(owner),
+        'sourceArchive': {'mysqlFixtureMemoryLimitBytes': 3 * 1024 ** 3}, 'evidence': {'identity': identity},
+        'controls': {'fixtureOwner': {'path': paths['original'].relative_to(root).as_posix(),
+            'bytes': len(paths['original'].read_bytes()), 'sha256': sha(paths['original'].read_bytes()),
+            'metadata': retirer.metadata(paths['original'].stat())}}}
+    observed = []
+    monkeypatch.setattr(retirer, 'stopped_fixture_watch_process', lambda p, b: observed.append((p, b)) or boot)
+    return SimpleNamespace(root=root, context=context, identity=identity, work=work, descriptor=descriptor,
+        status=status, owner=owner, values=values, paths=paths, historical=historical, builder=builder, observed=observed)
+
+
+def test_watched_custody_projects_only_three_bound_terminal_originals(watched_retirement_controls):
+    state = watched_retirement_controls
+    proof = retirer.fixture_watch_controls(state.root, state.historical, state.builder)
+    assert proof['watchStopped'] is True and proof['processAbsent'] is True
+    assert set(proof['files']) == {'owner', 'status', 'runtime'}
+    assert state.observed == [(state.descriptor['process'], state.descriptor['bootId'])]
+    assert all(proof['files'][role]['metadata'] == retirer.metadata(state.paths[role].stat()) for role in proof['files'])
+    projected = encoded(proof)
+    assert b'private-password' not in projected and b'ownerToken' not in projected and b'groupToken' not in projected
+
+
+@pytest.mark.parametrize('role', ['owner', 'status', 'runtime'])
+def test_watched_custody_never_substitutes_a_missing_original(watched_retirement_controls, role):
+    state = watched_retirement_controls; state.paths[role].unlink()
+    with pytest.raises((OSError, retirer.RetirementError)):
+        retirer.fixture_watch_controls(state.root, state.historical, state.builder)
+    assert state.observed == []
+
+
+@pytest.mark.parametrize('role,field,value', [('owner', 'containerId', '0' * 64),
+    ('owner', 'ownerToken', '0' * 32), ('status', 'status', 'RUNNING'), ('status', 'watchStopped', False),
+    ('status', 'bootId', '00000000-1234-1234-1234-123456789abc'), ('status', 'probeCount', 0),
+    ('runtime', 'watchStopped', False), ('runtime', 'ownerToken', 'secret-must-not-be-public')])
+def test_watched_custody_refuses_cross_identity_or_unstopped_originals(watched_retirement_controls, role, field, value):
+    state = watched_retirement_controls; state.values[role][field] = value
+    state.paths[role].write_bytes(encoded(state.values[role]))
+    with pytest.raises(ValueError): retirer.fixture_watch_controls(state.root, state.historical, state.builder)
+    assert state.observed == []
+
+
+def test_watched_custody_does_not_accept_a_live_original_session(watched_retirement_controls, monkeypatch):
+    state = watched_retirement_controls
+    def active(*_args): raise retirer.RetirementError('FIXTURE_WATCH_PROCESS_STILL_PRESENT')
+    monkeypatch.setattr(retirer, 'stopped_fixture_watch_process', active)
+    with pytest.raises(retirer.RetirementError, match='STILL_PRESENT'):
+        retirer.fixture_watch_controls(state.root, state.historical, state.builder)
+
+
+@pytest.mark.parametrize('state', ['same-process', 'reused-pid', 'old-boot', 'absent'])
+def test_watched_process_readback_never_stops_a_live_or_reused_process(tmp_path, monkeypatch, state):
+    boot = '12345678-1234-1234-1234-123456789abc'; current = tmp_path / 'boot'; current.write_text(boot)
+    process = {'pid': 10001, 'startTicks': 20001, 'group': 10001, 'session': 10001}
+    fields = [b'S', b'1', b'10001', b'10001'] + [b'0'] * 15 + [b'20001' if state == 'same-process' else b'30001']
+    stat_file = tmp_path / 'stat'
+    if state != 'absent': stat_file.write_bytes(b'10001 (watcher) ' + b' '.join(fields))
+    original_path = Path
+    def mapped(path):
+        if str(path) == '/proc/sys/kernel/random/boot_id': return current
+        if str(path) == '/proc': return tmp_path / 'proc'
+        return original_path(path)
+    process_folder = tmp_path / 'proc/10001'; process_folder.mkdir(parents=True)
+    if stat_file.exists(): stat_file.replace(process_folder / 'stat')
+    monkeypatch.setattr(retirer, 'Path', mapped)
+    if state == 'same-process':
+        with pytest.raises(retirer.RetirementError, match='STILL_PRESENT'):
+            retirer.stopped_fixture_watch_process(process, boot)
+    else:
+        original_boot = '00000000-1234-1234-1234-123456789abc' if state == 'old-boot' else boot
+        assert retirer.stopped_fixture_watch_process(process, original_boot) == boot
 
 @pytest.fixture
 def failed_native_pair_plan(tmp_path,bundle,monkeypatch):

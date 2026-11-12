@@ -307,7 +307,8 @@ def test_disposable_start_disables_binlog_before_suites_and_whole_migration(tmp_
     def query(sql):
         assert "'logBin',@@GLOBAL.log_bin" in sql
         return {'uuid': SERVER, 'version': '8.4.6', 'port': 15444, 'fk': 1,
-                'data': str(controller.work / 'mysql-data') + '/', 'logBin': log_bin}
+                'data': str(controller.work / 'mysql-data') + '/', 'logBin': log_bin,
+                'tableOpenCacheInstances': 1, 'bufferPoolBytes': 256 * preparer.MIB, 'maxConnections': 120}
     controller.admin_query = query
     def mysql(config, output):
         configs.append(config)
@@ -330,6 +331,10 @@ def test_disposable_start_disables_binlog_before_suites_and_whole_migration(tmp_
         assert not any('SUPER' in sql for sql in statements)
     launched = next(row for row in calls if row[0] == 'run')
     assert launched.count('--skip-log-bin') == 1
+    assert launched[launched.index('--memory') + 1] == str(3 * preparer.GIB)
+    assert launched[launched.index('--memory-swap') + 1] == str(3 * preparer.GIB)
+    assert '--table-open-cache-instances=1' in launched
+    assert '--innodb-buffer-pool-size=268435456' in launched and '--max-connections=120' in launched
     assert not any('log-bin-trust-function-creators' in item for item in launched)
 
 
