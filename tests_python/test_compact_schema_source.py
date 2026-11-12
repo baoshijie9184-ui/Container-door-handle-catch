@@ -348,16 +348,23 @@ def test_mcp_tail_checks_compare_temporal_types_at_microsecond_precision_and_kee
     monkeypatch.syspath_prepend(str(ROOT / 'script/schema'))
     clocks = module('author_legacy_clock_copy')
 
-    def temporal_rhs(guard, actual):
-        matches = list(re.finditer(r'\bNOT\(\(*' + re.escape(actual) + r'<=>', guard))
-        assert len(matches) == 1
-        opening = guard.index('(', matches[0].start())
-        comparison = guard[opening + 1:clocks.paren(guard, opening)]
-        if comparison.startswith('('):
-            assert clocks.paren(comparison, 0) == len(comparison) - 1
-            comparison = comparison[1:-1]
-        assert comparison.startswith(actual + '<=>')
-        return comparison[len(actual + '<=>'):]
+    def comparisons(guard):
+        result = {}
+        for match in re.finditer(r'\bNOT\(', guard):
+            opening = match.end() - 1
+            comparison = guard[opening + 1:clocks.paren(guard, opening)]
+            while comparison.startswith('('):
+                assert clocks.paren(comparison, 0) == len(comparison) - 1
+                comparison = comparison[1:-1]
+            pair = re.fullmatch(r'(BINARY CAST\([ta]\.[a-z_][a-z0-9_]* AS CHAR\)|BINARY [ta]\.[a-z_][a-z0-9_]*|[ta]\.[a-z_][a-z0-9_]*)<=>(.+)', comparison)
+            assert pair is not None
+            left, right = pair.groups()
+            actual = re.search(r'[ta]\.[a-z_][a-z0-9_]*', left).group()
+            assert actual not in result
+            assert list(builder.split_top_level(right, ',')) == [right]
+            assert clocks.keyword(right, 'OR') == clocks.keyword(right, 'AND') == -1
+            result[actual] = left, right
+        return result
 
     def converted_time(expression, mode):
         assert expression.startswith('CONVERT_TZ(')
@@ -381,14 +388,17 @@ def test_mcp_tail_checks_compare_temporal_types_at_microsecond_precision_and_kee
                 continue
             table, alias = target.groups()
             checked.append((mode, table, alias))
-            for column, definition in catalog['tables'][table]['columns'].items():
-                if definition['generatedVirtual'] or (column == 'id' and table != 'agent_connector'):
-                    continue
-                if column == 'legacy_clock_json' and alias == 't':
-                    continue
+            values = comparisons(guard)
+            fields = {column: definition for column, definition in catalog['tables'][table]['columns'].items()
+                      if not definition['generatedVirtual'] and not (column == 'id' and table != 'agent_connector')
+                      and not (column == 'legacy_clock_json' and alias == 't')}
+            assert set(values) == {alias + '.' + column for column in fields}
+            for column, definition in fields.items():
                 actual = alias + '.' + column
+                left, right = values[actual]
                 if definition['type'].upper().startswith(('DATETIME', 'TIMESTAMP')):
-                    expected = temporal_rhs(guard, actual)
+                    assert left == actual
+                    expected = right
                     if expected.startswith('IF('):
                         assert mode == 'copy' and clocks.paren(expected, 2) == len(expected) - 1
                         branches = list(builder.split_top_level(expected[3:-1], ','))
@@ -402,21 +412,31 @@ def test_mcp_tail_checks_compare_temporal_types_at_microsecond_precision_and_kee
                     elif expected != 'NULL':
                         assert column in ('mcp_source_created_at', 'mcp_source_updated_at')
                         assert expected == 's.' + column.removeprefix('mcp_source_')
-                    assert 'BINARY ' + actual + '<=>' not in guard
                     temporal += 1
                 elif definition['type'].upper() == 'JSON':
-                    assert 'NOT(BINARY CAST(' + actual + ' AS CHAR)<=>BINARY CAST(' in guard
+                    assert left == 'BINARY CAST(' + actual + ' AS CHAR)'
+                    assert right.startswith('BINARY CAST(')
+                    cast = right[len('BINARY '):]
+                    assert clocks.paren(cast, len('CAST')) == len(cast) - 1
+                    assert cast.endswith(' AS CHAR)')
+                    assert re.fullmatch(r'NULL|s\.[a-z_]+', cast[len('CAST('):-len(' AS CHAR)')])
                 else:
-                    assert 'NOT(BINARY ' + actual + '<=>BINARY ' in guard
+                    assert left == 'BINARY ' + actual and right.startswith('BINARY ')
+                    assert right[len('BINARY '):]
+                    if column == 'mcp_source_utc_offset':
+                        offset = ("'__SOURCE_MCP_OFFSET__'" if mode == 'copy-fixed-clock' else
+                                  'IF(@compact_source_clock_unresolved,NULL,@compact_validation_wall_offset)')
+                        assert right == 'BINARY ' + offset
         assert sum(item[0] == mode for item in checked) == 14
         assert temporal
         audit = next(line for line in guards if '.agent_local_mcp_audit s LEFT JOIN audit_event t ' in line)
+        audit_values = comparisons(audit)
         if mode == 'copy':
-            assert 'NOT((t.occurred_at<=>IF(@compact_source_clock_unresolved,NULL,CONVERT_TZ(' in audit
+            assert audit_values['t.occurred_at'] == ('t.occurred_at', "IF(@compact_source_clock_unresolved,NULL,CONVERT_TZ(s.created_at,@compact_validation_wall_offset,'+00:00'))")
             assert len([line for line in sql.splitlines() if 'NOT(clock_target.legacy_clock_json<=>' in line]) == 13
         else:
-            assert 'NOT(t.occurred_at<=>CONVERT_TZ(' in audit
-        assert 'NOT(BINARY t.payload_json<=>BINARY JSON_OBJECT(' in audit
-        assert 'NOT(BINARY t.legacy_key<=>BINARY CAST(s.id AS CHAR))' in audit
+            assert audit_values['t.occurred_at'] == ('t.occurred_at', "CONVERT_TZ(s.created_at,'__SOURCE_MCP_OFFSET__','+00:00')")
+        assert audit_values['t.payload_json'] == ('BINARY t.payload_json', "BINARY JSON_OBJECT('schemaVersion',1,'detailJson',CAST(s.detail_json AS CHAR))")
+        assert audit_values['t.legacy_key'] == ('BINARY t.legacy_key', 'BINARY CAST(s.id AS CHAR)')
         clock = next(line for line in guards if 'compact_mcp_snapshots s LEFT JOIN audit_event a ' in line)
-        assert 'NOT(a.occurred_at<=>CAST(@compact_mcp_imported_at AS DATETIME(6)))' in clock
+        assert comparisons(clock)['a.occurred_at'] == ('a.occurred_at', 'CAST(@compact_mcp_imported_at AS DATETIME(6))')
