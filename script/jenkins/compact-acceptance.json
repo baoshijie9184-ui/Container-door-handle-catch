@@ -39,7 +39,7 @@
         "doorhandle.mcp.mysql.config"
       ],
       "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/mcp/McpMigrationMySqlTest.java",
-      "minimumTests": 17,
+      "minimumTests": 20,
       "coverage": [
         "MCP durable install, execution and unknown-result protocol"
       ]
@@ -1229,7 +1229,7 @@
       },
       {
         "module": "tests_python.test_compact_schema_source",
-        "minimumTests": 31,
+        "minimumTests": 32,
         "source": "tests_python/test_compact_schema_source.py",
         "allowedSkippedTests": []
       },

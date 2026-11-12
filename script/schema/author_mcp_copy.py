@@ -54,6 +54,19 @@ def emit(value):sql.append(value)
 def guard(condition):emit('INSERT INTO compact_mcp_guard SELECT IF(COALESCE(('+condition+'),FALSE),1,0);')
 def query_guard(query):emit('INSERT INTO compact_mcp_guard '+query+';')
 
+def target_mismatch(alias,column,definition,expected):
+    actual=alias+'.'+column
+    if definition['type'].upper().startswith(('DATETIME','TIMESTAMP')):
+        # A DATETIME(0) source and DATETIME(6) target can represent the same
+        # value with different text. CONVERT_TZ remains visible to the existing
+        # unresolved-clock compiler; the migration user variable needs its
+        # temporal type restored explicitly instead of comparing VARCHAR text.
+        if expected=='@compact_mcp_imported_at':expected='CAST('+expected+' AS DATETIME(6))'
+        return 'NOT('+actual+'<=>'+expected+')'
+    if definition['type'].upper()=='JSON':
+        return 'NOT(BINARY CAST('+actual+' AS CHAR)<=>BINARY CAST('+expected+' AS CHAR))'
+    return 'NOT(BINARY '+actual+'<=>BINARY '+expected+')'
+
 emit('''-- Thirteen MCP sources: AUTHORED_NOT_EXECUTED. No source DML or compatibility views.
 -- Original DDL and ALTER declarations are the metadata authority; original IDs stay legacy evidence.
 -- One admitted ECS connection; both schemas frozen. @compact_mcp_source_frozen/target_frozen=1
@@ -175,12 +188,15 @@ for name,target,mapping,predicate,join in copies:
     conditions=[]
     for column,definition in target_tables[target]['columns'].items():
         if definition['generatedVirtual'] or (column=='id' and target!='agent_connector'):continue
+        # The legacy-clock compiler adds and checks the complete sidecar for
+        # each original source row; a fixed-template NULL would reject its
+        # unresolved branch before those exact provenance guards can run.
+        if column=='legacy_clock_json':continue
         expected=mapping.get(column)
         if expected is None:
             match=re.search(r'\bDEFAULT\s+([^\s,]+)',definition['declaration'],re.I)
             expected=match.group(1) if match else 'NULL'
-        if definition['type'].upper()=='JSON':conditions.append('NOT(BINARY CAST(t.'+column+' AS CHAR)<=>BINARY CAST('+expected+' AS CHAR))')
-        else:conditions.append('NOT(BINARY t.'+column+'<=>BINARY '+expected+')')
+        conditions.append(target_mismatch('t',column,definition,expected))
     guard('(SELECT COUNT(*) FROM '+target+' t WHERE '+predicate+')=(SELECT COUNT(*) FROM '+src(name)+')')
     guard('NOT EXISTS(SELECT 1 FROM '+src(name)+' s LEFT JOIN '+target+' t ON '+join+' WHERE t.'+('namespace' if target=='runtime_state' else 'id')+' IS NULL OR '+' OR '.join(conditions)+')')
 for name,expression in snapshot_queries.items():
@@ -193,7 +209,7 @@ for column,definition in target_tables['audit_event']['columns'].items():
     if column=='id' or definition['generatedVirtual']:continue
     match=re.search(r'\bDEFAULT\s+([^\s,]+)',definition['declaration'],re.I)
     expected=clock_mapping.get(column,match.group(1) if match else 'NULL')
-    clock_checks.append('NOT(BINARY a.'+column+'<=>BINARY '+expected+')')
+    clock_checks.append(target_mismatch('a',column,definition,expected))
 guard("NOT EXISTS(SELECT 1 FROM compact_mcp_snapshots s LEFT JOIN audit_event a ON a.kind='MCP_MIGRATION_CLOCK' AND a.resource_id=s.source_table WHERE a.id IS NULL OR "+' OR '.join(clock_checks)+')')
 for query in metadata:query_guard(query)
 guard("NOT EXISTS(SELECT 1 FROM compact_mcp_sequences e LEFT JOIN information_schema.tables t ON t.table_schema='__SOURCE_SCHEMA__' AND t.table_name=e.table_name WHERE t.table_name IS NULL OR NOT(t.auto_increment<=>e.auto_increment))")

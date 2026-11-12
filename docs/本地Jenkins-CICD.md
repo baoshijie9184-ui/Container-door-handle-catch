@@ -2,19 +2,17 @@
 
 ## 当前结果（2026-11-12）
 
-当前为 `java-cloud` 单体，正式业务库仍为 **131表**，目标 **29表**尚未切库，生产发布及旧库演练门关闭。业务功能验收为2个检测人员、2个主管，每账号2个功能标签；正式并发/容量压测在开发完成后用压测工具单独开展，`loadTestStatus=DEFERRED_BY_USER`、`performanceSloVerified=false`。
+当前为 `java-cloud` 单体，正式业务库仍为 **131表**，目标 **29表**尚未切库，生产发布及旧库演练门关闭。功能验收固定2个检测人员、2个主管，每账号2个功能标签；正式并发/容量压测等开发完成后用压测工具单独开展，`loadTestStatus=DEFERRED_BY_USER`、`performanceSloVerified=false`。
 
-最近完整source通过为固定 `e441933d` 的 **#251**：Java926通过、722条件跳过；Python4,174通过、24条件跳过；双前端203/20项通过，两套生产构建完成，运行资源专项95项全部通过。该源码结果不代替后续提交的完整原生、整库和运行验收。
+最近完整source通过为 `e441933d` 的#251：Java926、Python4,174、双前端203/20及两套构建完成，条件跳过722/24，运行资源专项95项通过。固定 `516614e0754249d062103ed64f3d5337fdbee29e` 的 **#257控制预检SUCCESS**，20模块2,245项全通过；**#258精确维护SUCCESS**，退役#256停止的测试MySQL对象及两份可再生JAR，mysql-data保留。普通输出及Builder均NO_ACTION，无隔离遗留；实际JAR分配共760,619,008字节，下一任务前实余 **6,559,977,472字节**，原件 `pre-database259-execution-readiness.json`。
 
-固定 `9f90b92833678240188a0ea68a2ec8ca3d137605` 的 **#254控制预检SUCCESS**：20模块2,245项全通过，零失败/错误/跳过。**#255精确维护SUCCESS**：退役#253停止的测试MySQL对象及两份可再生JAR，保留mysql-data；普通源码输出和Builder均为NO_ACTION，没有隔离遗留。原SQL、卷、镜像、源码和报告保留。下一数据库任务前独立实余 **7,057,641,472字节**，原件 `pre-database256-execution-readiness.json`。
+**#259独立verify/mysql终态FAILURE**：本地跳测试打包、2,245项控制及完整夹具通过；真实MySQL52项中45通过、7错误，零断言失败/跳过。Workbench8项、身份核对7项、OperationsCopy16项全部通过；MCP17项中14通过、3项在审计后置对账时报错；ContextStore4项因测试provider装配不支持无参getObject全部报错。MessageExecutionLinks及后续整库/恢复未达到，不能记为迁移完成。
 
-**#256独立verify/mysql终态FAILURE**：本地跳测试打包、2,245项控制及完整夹具通过；真实MySQL30项中25通过、5错误、零断言失败/跳过。Workbench历史迁移8项全通过，OperationsCopy16项全通过；DetectionIdentityServiceTest为1通过、5项在生成身份摘要时报错。MCP迁移尚未执行，不能将未执行记为失败或通过；后续完整source回归、131→29整库/双恢复及旧45/5,599/三库恢复未达到。
+本轮集中修复两类问题：MCP把旧DATETIME(0)与目标DATETIME(6)按BINARY文本核对，零小数文本差异误报；改为按真实时间类型精确比较，其他字段/JSON仍逐字节检查，13条迁移时钟sidecar绑定保留。Context测试改用现有DefaultListableBeanFactory装配，并明确核两个provider返回原注册对象，生产读取及原4项业务断言不变。新增MCP时间篡改回归后，64类最低755项、20控制模块最低2,246项、源码专项32项；两项修复及6模块跳测试编译均已完成，固定提交后再统一ECS验证。
 
-已定位两项身份测试手工创建的ObjectMapper缺少Java时间模块，无法序列化真实JDBC时间；本轮仅修测试装配，不改生产摘要、schema、时间策略和权限/事务断言。新增实际DATETIME秒精度的稳定预览、只改时间即拒绝旧映射、零身份/批次/审计副作用回归；9模块离线跳测试编译成功。完整64类最低752项、20控制模块最低2,245项、源码专项31项，尚待新固定提交ECS统一验证。其余原生夹具的独立只读检查未找到另一个确定接线错误。
+完整native、source回归、131→29整库/源目标双恢复、旧45/5,599/三库恢复、9项运行场景、19项浏览器功能检查、旧数据业务合入和切库仍未验收。fullruntime还缺Mem0/worker基座真实层量预算，不拿Image.Size代替放行证据。
 
-Mem0/worker应用基座真实层分配A/Z/E尚缺，Image.Size不能代替预算，不盲跑fullruntime。独立数据库动态门全部保留；9项运行场景、19项浏览器功能检查、旧数据业务合入和正式切库仍未验收。
-
-#256原归档38份中37份非JAR及原build.xml已保全于 `work/jenkins/data-residency-20261107/ci-256-raw-receipts`，工具和夹具STOPPED、remaining为空。2026-11-12 **05:43:49（北京时间）**从流水线外实际回读 `Stopped / StopCharging`，本轮恢复控制器时再经API确认。现有本地Jenkins及 `doorhandle-local-ci` 已恢复在线，修复期间项目任务disabled、无排队；80 GiB原盘及既有7天快照保持。
+#259原归档41份中40份非JAR及原build.xml已保全于 `work/jenkins/data-residency-20261107/ci-259-raw-receipts`，工具和夹具实际STOPPED、remaining为空。2026-11-12 **11:42:15（北京时间）**从流水线外实际回读 `Stopped / StopCharging`，原件 `ci-259-external-stop-readback.json`。本地Jenkins及专用节点保持在线，修复期间项目任务disabled、无排队；80 GiB原盘及既有7天快照保持。
 
 ## 此前执行记录（历史）
 

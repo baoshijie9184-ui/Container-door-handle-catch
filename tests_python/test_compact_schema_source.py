@@ -2,6 +2,7 @@
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -341,3 +342,45 @@ def test_mcp_installation_reservations_keep_a_separate_closed_execution_field_br
                         and "'MCP_INSTALLATION'" in line)
     assert 'reserved_bytes' in installation.split(' SELECT ', 1)[0]
     assert 's.reserved_bytes' in installation.split(' SELECT ', 1)[1]
+
+
+def test_mcp_tail_checks_compare_temporal_types_at_microsecond_precision_and_keep_other_bytes_exact():
+    _, catalog = builder.compile_schema()
+    checked = []
+    for mode in ('copy', 'copy-fixed-clock'):
+        sql = (ROOT / 'sql/mysql/compact' / mode / '48-mcp.sql').read_text('utf8')
+        guards = [line for line in sql.splitlines() if line.startswith('INSERT INTO compact_mcp_guard ')
+                  and ' LEFT JOIN ' in line and ' WHERE ' in line]
+        temporal = 0
+        for guard in guards:
+            target = re.search(r'LEFT JOIN ([a-z_]+) ([ta]) ON ', guard)
+            if target is None:
+                continue
+            table, alias = target.groups()
+            checked.append((mode, table, alias))
+            for column, definition in catalog['tables'][table]['columns'].items():
+                if definition['generatedVirtual'] or (column == 'id' and table != 'agent_connector'):
+                    continue
+                if column == 'legacy_clock_json' and alias == 't':
+                    continue
+                actual = alias + '.' + column
+                if definition['type'].upper().startswith(('DATETIME', 'TIMESTAMP')):
+                    assert 'NOT(' + actual + '<=>' in guard
+                    assert 'BINARY ' + actual + '<=>' not in guard
+                    temporal += 1
+                elif definition['type'].upper() == 'JSON':
+                    assert 'NOT(BINARY CAST(' + actual + ' AS CHAR)<=>BINARY CAST(' in guard
+                else:
+                    assert 'NOT(BINARY ' + actual + '<=>BINARY ' in guard
+        assert sum(item[0] == mode for item in checked) == 14
+        assert temporal
+        audit = next(line for line in guards if '.agent_local_mcp_audit s LEFT JOIN audit_event t ' in line)
+        if mode == 'copy':
+            assert 'NOT((t.occurred_at<=>IF(@compact_source_clock_unresolved,NULL,CONVERT_TZ(' in audit
+            assert len([line for line in sql.splitlines() if 'NOT(clock_target.legacy_clock_json<=>' in line]) == 13
+        else:
+            assert 'NOT(t.occurred_at<=>CONVERT_TZ(' in audit
+        assert 'NOT(BINARY t.payload_json<=>BINARY JSON_OBJECT(' in audit
+        assert 'NOT(BINARY t.legacy_key<=>BINARY CAST(s.id AS CHAR))' in audit
+        clock = next(line for line in guards if 'compact_mcp_snapshots s LEFT JOIN audit_event a ' in line)
+        assert 'NOT(a.occurred_at<=>CAST(@compact_mcp_imported_at AS DATETIME(6)))' in clock

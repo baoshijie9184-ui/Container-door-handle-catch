@@ -9,7 +9,7 @@ import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
-import org.springframework.beans.factory.support.StaticListableBeanFactory;
+import org.springframework.beans.factory.support.DefaultListableBeanFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.test.util.ReflectionTestUtils;
@@ -40,9 +40,13 @@ class ContextStoreMySqlTest {
         }).when(data).authorize(any(),anyString(),anyList());
         when(data.pin(any(),anyString(),anyList())).thenAnswer(inv->{data.authorize(inv.getArgument(0),inv.getArgument(1),inv.getArgument(2));return List.copyOf(inv.<List<AgentContextDataApi.Source>>getArgument(2));});
         when(data.history(any(),anyString(),anyLong(),anyLong(),anyInt())).thenReturn(new AgentContextDataApi.History(0,List.of(),false));
-        var beans=new StaticListableBeanFactory();beans.addBean("data",data);beans.addBean("children",children);
-        store=new DurableContextStore(jdbc,new DataSourceTransactionManager(fixture.dataSource()),new ObjectMapper(),beans.getBeanProvider(AgentContextDataApi.class));
-        store.childReaders(beans.getBeanProvider(ChildProvenanceReader.class));
+        var beans=new DefaultListableBeanFactory();beans.registerSingleton("data",data);beans.registerSingleton("children",children);
+        var dataProvider=beans.getBeanProvider(AgentContextDataApi.class);
+        var childProvider=beans.getBeanProvider(ChildProvenanceReader.class);
+        assertThat(dataProvider.getObject()).isSameAs(data);
+        assertThat(childProvider.getObject()).isSameAs(children);
+        store=new DurableContextStore(jdbc,new DataSourceTransactionManager(fixture.dataSource()),new ObjectMapper(),dataProvider);
+        store.childReaders(childProvider);
         for(String property:List.of("workbenchEnabled","recoveryEnabled","filesEnabled","childrenEnabled","compactionEnabled","offloadEnabled"))ReflectionTestUtils.setField(store,property,true);
         store.validate();
     }

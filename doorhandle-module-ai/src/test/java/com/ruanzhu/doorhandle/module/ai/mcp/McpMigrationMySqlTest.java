@@ -133,7 +133,10 @@ class McpMigrationMySqlTest {
         "CREATE TRIGGER corrupt_mcp BEFORE INSERT ON workflow_instance FOR EACH ROW SET NEW.mcp_native_pool_id=REPEAT('e',32)",
         "CREATE TRIGGER corrupt_mcp BEFORE INSERT ON audit_event FOR EACH ROW SET NEW.quantity=3,NEW.unit='BYTES'",
         "CREATE TRIGGER corrupt_mcp BEFORE INSERT ON audit_event FOR EACH ROW UPDATE agent_connector SET enabled=TRUE",
-        "CREATE TRIGGER corrupt_mcp BEFORE INSERT ON audit_event FOR EACH ROW SET NEW.payload_json=IF(NEW.kind='MCP_MIGRATION_CLOCK',JSON_SET(NEW.payload_json,'$.sourceUtcOffset','+00:00'),NEW.payload_json)"})
+        "CREATE TRIGGER corrupt_mcp BEFORE INSERT ON audit_event FOR EACH ROW SET NEW.payload_json=IF(NEW.kind='MCP_MIGRATION_CLOCK',JSON_SET(NEW.payload_json,'$.sourceUtcOffset','+00:00'),NEW.payload_json)",
+        "CREATE TRIGGER corrupt_mcp BEFORE INSERT ON audit_event FOR EACH ROW SET NEW.occurred_at=IF(NEW.kind='MCP',DATE_ADD(NEW.occurred_at,INTERVAL 1 MICROSECOND),NEW.occurred_at)",
+        "CREATE TRIGGER corrupt_mcp BEFORE INSERT ON workflow_instance FOR EACH ROW SET NEW.mcp_source_created_at=DATE_ADD(NEW.mcp_source_created_at,INTERVAL 1 MICROSECOND)",
+        "CREATE TRIGGER corrupt_mcp BEFORE INSERT ON audit_event FOR EACH ROW SET NEW.occurred_at=IF(NEW.kind='MCP_MIGRATION_CLOCK',DATE_ADD(NEW.occurred_at,INTERVAL 1 MICROSECOND),NEW.occurred_at)"})
     void fullTailComparisonRollsBackEarlierInsertionsAndClockEvidence(String trigger)throws Exception{fixture.installTarget(trigger+";");reject();}
 
     @Test void refusesSecondCopyAndKeepsFirstCommittedCandidate()throws Exception{
