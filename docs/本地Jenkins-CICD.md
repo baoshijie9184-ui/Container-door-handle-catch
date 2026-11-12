@@ -14,6 +14,9 @@
 
 #259原归档41份中40份非JAR及原build.xml已保全于 `work/jenkins/data-residency-20261107/ci-259-raw-receipts`，工具和夹具实际STOPPED、remaining为空。2026-11-12 **11:42:15（北京时间）**从流水线外实际回读 `Stopped / StopCharging`，原件 `ci-259-external-stop-readback.json`。本地Jenkins及专用节点保持在线，修复期间项目任务disabled、无排队；80 GiB原盘及既有7天快照保持。
 
+**最新#260仅执行控制预检，终态FAILURE**：2,243通过、3失败，没有原生、应用或整库测试。两项是旧13组快照断言：新增MCP回归改变既有动态权重后实际为14组；本轮按原动态分组设计同步快照，不改算法、64类覆盖、每组上限、私有输入/账号/授权或XML检查。另1项是新源码检查未识别unknown时钟编译器的平衡括号，现按完整SQL比较结构严格核对。仅修控制测试，生产SQL和微秒原生负例不变，最低数仍755/2,246，静态编译通过、待固定提交ECS验证。全部16份原件已保全，工具STOPPED、remaining为空；2026-11-12 **12:02:09（北京时间）**实际回读 `Stopped / StopCharging`，原件 `ci-260-external-stop-readback.json`。
+
+
 ## 此前执行记录（历史）
 
 当前：#230的20控制模块1,970项已在ECS全部通过、零跳过；同提交#231维护被四个额外退出Builder正确阻断，尚未删除MySQL/JAR。现已把现有Builder→MySQL→JAR顺序接入FailedNative：分别独立核定两停止目标，fresh snapshot只排除这两个完整身份；先普通退役Builder保state卷，再独立退役MySQL保数据，删除前重新核原件、整对与引用。新增36项完整入口边界回归，控制最低2,006项；待新固定提交经既有controls→维护→完整source/四原件→fullruntime验证。ECS已实际Stopped/StopCharging，Jenkins保持运行，正式压测仍延后。

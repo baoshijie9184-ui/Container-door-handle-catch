@@ -4,6 +4,8 @@
 
 #259工具与夹具STOPPED已确认，2026-11-12 11:42:15（北京时间）从流水线外实际回读 `Stopped / StopCharging`。本地Jenkins及专用节点保持在线，修复期间任务disabled、无排队；80 GiB原盘及既有7天快照保持。当前结果和原件见[本地Jenkins回执](本地Jenkins-CICD.md)。
 
+#260随后仅执行控制预检：2,243通过、3个控制测试失败，未进入原生或整库。动态14组快照及完整时间比较括号检查已修复，生产SQL/native不变，待固定提交ECS验证。16份控制原件及工具STOPPED已保全，最新2026-11-12 12:02:09（北京时间）实际回读 `Stopped / StopCharging`。
+
 2026-11-11 本轮整合：按用户最新决定，业务功能验收只使用4个账号（2个检测人员、2个主管）；同账号双标签用于功能隔离，正式并发/容量压测及性能SLO留待开发完成后通过压测工具执行。原9项运行场景和19项浏览器功能检查继续保留，报告明确`loadTestStatus=DEFERRED_BY_USER`、`performanceSloVerified=false`，延迟只记录观察值。
 
 #223原生MySQL实际12项通过、15项装配错误、零跳过：检测接口父模型修复已通过，账号身份测试缺`BusinessUserDirectory`。Windows14:13重启后，按暂停要求终止原构建，Jenkins最终ABORTED；23份Jenkins归档已保全，服务器原生XML已在后续只读窗口补收保全。夹具与工具实际STOPPED，随后已回读`Stopped / StopCharging`。当前集中补齐账号、审计和共用报告测试配置，并修复三库只读导出的旧Python时间解析及PowerShell输出兼容；先完成整合和构建，再由固定提交统一验收，不启用生产发布或旧库演练。正式库仍131表，29表迁移尚未验收。

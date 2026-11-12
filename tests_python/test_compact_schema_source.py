@@ -344,7 +344,30 @@ def test_mcp_installation_reservations_keep_a_separate_closed_execution_field_br
     assert 's.reserved_bytes' in installation.split(' SELECT ', 1)[1]
 
 
-def test_mcp_tail_checks_compare_temporal_types_at_microsecond_precision_and_keep_other_bytes_exact():
+def test_mcp_tail_checks_compare_temporal_types_at_microsecond_precision_and_keep_other_bytes_exact(monkeypatch):
+    monkeypatch.syspath_prepend(str(ROOT / 'script/schema'))
+    clocks = module('author_legacy_clock_copy')
+
+    def temporal_rhs(guard, actual):
+        matches = list(re.finditer(r'\bNOT\(\(*' + re.escape(actual) + r'<=>', guard))
+        assert len(matches) == 1
+        opening = guard.index('(', matches[0].start())
+        comparison = guard[opening + 1:clocks.paren(guard, opening)]
+        if comparison.startswith('('):
+            assert clocks.paren(comparison, 0) == len(comparison) - 1
+            comparison = comparison[1:-1]
+        assert comparison.startswith(actual + '<=>')
+        return comparison[len(actual + '<=>'):]
+
+    def converted_time(expression, mode):
+        assert expression.startswith('CONVERT_TZ(')
+        opening = len('CONVERT_TZ')
+        assert clocks.paren(expression, opening) == len(expression) - 1
+        arguments = list(builder.split_top_level(expression[opening + 1:-1], ','))
+        assert len(arguments) == 3 and re.fullmatch(r's\.[a-z_]+', arguments[0])
+        offset = "'__SOURCE_MCP_OFFSET__'" if mode == 'copy-fixed-clock' else '@compact_validation_wall_offset'
+        assert arguments[1:] == [offset, "'+00:00'"]
+
     _, catalog = builder.compile_schema()
     checked = []
     for mode in ('copy', 'copy-fixed-clock'):
@@ -365,7 +388,20 @@ def test_mcp_tail_checks_compare_temporal_types_at_microsecond_precision_and_kee
                     continue
                 actual = alias + '.' + column
                 if definition['type'].upper().startswith(('DATETIME', 'TIMESTAMP')):
-                    assert 'NOT(' + actual + '<=>' in guard
+                    expected = temporal_rhs(guard, actual)
+                    if expected.startswith('IF('):
+                        assert mode == 'copy' and clocks.paren(expected, 2) == len(expected) - 1
+                        branches = list(builder.split_top_level(expected[3:-1], ','))
+                        assert len(branches) == 3 and branches[:2] == ['@compact_source_clock_unresolved', 'NULL']
+                        converted_time(branches[2], mode)
+                    elif expected.startswith('CONVERT_TZ('):
+                        assert mode == 'copy-fixed-clock'
+                        converted_time(expected, mode)
+                    elif expected == 'CAST(@compact_mcp_imported_at AS DATETIME(6))':
+                        assert alias == 'a' and column == 'occurred_at'
+                    elif expected != 'NULL':
+                        assert column in ('mcp_source_created_at', 'mcp_source_updated_at')
+                        assert expected == 's.' + column.removeprefix('mcp_source_')
                     assert 'BINARY ' + actual + '<=>' not in guard
                     temporal += 1
                 elif definition['type'].upper() == 'JSON':
