@@ -52,7 +52,7 @@ class IdentityEvidenceMySqlTest {
         when(accounts.findExactUserId("alice")).thenReturn(2L);
         when(accounts.describe(2L)).thenReturn(new BusinessAccountLookupApi.Account(2,"alice","INSPECTOR",REVISION));
         when(accounts.lock(any())).thenAnswer(call->call.getArgument(0));
-        var json=new ObjectMapper();
+        var json=new ObjectMapper().findAndRegisterModules();
         evidence=new DetectionIdentityEvidenceService(jdbc,accounts,users,audit,json);
         ReflectionTestUtils.setField(evidence,"identityEnabled",true);
         ReflectionTestUtils.setField(evidence,"reviewEnabled",true);

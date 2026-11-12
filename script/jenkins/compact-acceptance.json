@@ -381,7 +381,7 @@
         "detection.identity.mysql.config"
       ],
       "source": "doorhandle-module-detection/src/test/java/com/ruanzhu/doorhandle/module/detection/service/DetectionIdentityServiceTest.java",
-      "minimumTests": 6,
+      "minimumTests": 7,
       "coverage": [
         "detection workflow, reports, identity and authorization"
       ]
