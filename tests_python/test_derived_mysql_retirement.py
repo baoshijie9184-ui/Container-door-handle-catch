@@ -243,8 +243,13 @@ def test_fixed_helper_admission_uses_the_actual_maintenance_transport(fixed_main
 def test_real_maintenance_package_selection_supplies_the_closed_batch_consumer(fixed_maintenance_source, policy):
     state = fixed_maintenance_source
     text = (FILE.parent / 'pipeline.ps1').read_text(encoding='utf-8-sig')
-    block = text.split("if ($Action -ceq 'PackageSourceOnly') {", 1)[1].split("if ($Action -ceq 'PackageControls')", 1)[0]
-    declaration = re.search(r'\$maintenancePaths = @\(([^\r\n]+)\)', block)
+    # Earlier elseif guards mention these actions but do not package source.
+    package = re.search(r"^if \(\$Action -ceq 'PackageSourceOnly'\) \{(.*?)"
+                        r"^if \(\$Action -ceq 'PackageControls'\)", text, re.MULTILINE | re.DOTALL)
+    assert package is not None, 'The top-level maintenance packaging block must exist.'
+    block = package[1]
+    declaration = re.search(r'\$maintenancePaths\s*=\s*@\(([^)]*)\)', block)
+    assert declaration is not None, 'Maintenance packaging must declare its helper paths.'
     paths = list(ast.literal_eval('(' + declaration[1] + ',)'))
     assert paths == ['script/jenkins/cleanup-ecs-builds.py', 'script/jenkins/verify-remote.py',
                      'script/jenkins/retire-failed-native-jar-duplicates.py', 'script/docker/compact-build-resources.py']
