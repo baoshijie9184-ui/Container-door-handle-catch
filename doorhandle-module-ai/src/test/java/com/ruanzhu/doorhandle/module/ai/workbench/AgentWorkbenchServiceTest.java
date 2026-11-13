@@ -15,6 +15,7 @@ import io.agentscope.core.state.*;
 import io.agentscope.core.tool.*;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
+import org.junit.jupiter.api.io.TempDir;
 import com.ruanzhu.doorhandle.module.ai.testsupport.CompactActionMySqlFixture;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -255,9 +256,9 @@ class AgentWorkbenchServiceTest {
         var nextTools=new Toolkit();resumed.install(nextTools);var next=ReActAgent.builder().name("employee-main").model(model).toolkit(nextTools).middlewares(List.of(resumed)).stateStore(resumed.stateStore()).defaultSessionId(resumed.sdkSession()).enableMetaTool(false).enableTaskList(false).build();
         try{assertThat(next.call(resumed.messages(List.of(new UserMessage("用户回答 batch-A"))),RuntimeContext.builder().userId("1").sessionId(resumed.sdkSession()).build()).block(Duration.ofSeconds(30)).getTextContent()).isEqualTo("最终回答");}finally{next.close();resumed.release();}
     }
-    @Test void actualHarnessFacadeYieldsForPlanAndContinuesTheSameLogicalTask()throws Exception{
+    @Test void actualHarnessFacadeYieldsForPlanAndContinuesTheSameLogicalTask(@TempDir Path workspace)throws Exception{
         var model=mock(Model.class);when(model.getModelName()).thenReturn("scripted");var calls=new AtomicInteger();when(model.stream(anyList(),anyList(),any())).thenAnswer(inv->calls.getAndIncrement()==0?Flux.just(ChatResponse.builder().content(List.of(new ToolUseBlock("plan-tool","submit_plan",Map.of("title","检测分析计划","text","查询任务再整理报告")))).finishReason("tool_calls").build()):Flux.just(ChatResponse.builder().content(List.of(TextBlock.builder().text("已按计划完成分析").build())).finishReason("stop").build()));
-        var runtimeProperties=new AgentScopeProperties();runtimeProperties.setWorkspace(Files.createTempDirectory(Path.of("target"),"workbench-harness-").toString());var toolkits=mock(BusinessToolkitFactory.class);var roles=new RoleAgentFactory(runtimeProperties,toolkits,id->model);
+        var runtimeProperties=new AgentScopeProperties();runtimeProperties.setWorkspace(workspace.toString());var toolkits=mock(BusinessToolkitFactory.class);var roles=new RoleAgentFactory(runtimeProperties,toolkits,id->model);
         var journal=mock(AgentJournal.class);when(journal.enabled()).thenReturn(true);when(journal.begin(any(),anyString(),anyString(),anyString(),anyString(),anyString())).thenAnswer(inv->{var run=mock(AgentJournal.Run.class);when(run.id()).thenReturn(UUID.randomUUID().toString());return run;});
         var facade=new com.ruanzhu.doorhandle.module.ai.service.AgentScopeConversationService(roles,new AgentRunRegistry(),runtimeProperties,journal);facade.setWorkbench(service);
         var first=facade.start(alice,"s1",List.of(new AgentConversationApi.Message("user","分析检测情况并生成报告")),"",event->{});
