@@ -1,5 +1,6 @@
 """Original XML must prove native Qdrant cases; execution is ECS-only."""
 import importlib.util
+import json
 from pathlib import Path
 import xml.etree.ElementTree as ET
 from types import SimpleNamespace
@@ -135,3 +136,19 @@ def test_metric_acceptance_failure_is_not_an_owned_cleanup_failure(status, metri
     assert record['status'] == expected
     assert 'observabilityCleanupErrorType' not in record
     assert ('observabilityAcceptanceErrorType' in record) is (status == 'PASS' and metrics != 'PASS')
+
+
+@pytest.mark.parametrize('inside', [True, False])
+def test_failure_location_exports_only_checkout_script_path_and_line(tmp_path, inside):
+    checkout = tmp_path / 'checkout'
+    file = checkout / 'script/jenkins/component.py' if inside else tmp_path / 'private/customer-name.py'
+    try:
+        exec(compile("raise ValueError('private-token-and-user-content')", str(file), 'exec'), {})
+    except ValueError as error:
+        location = remote.failure_location(error, checkout)
+    assert location == ({'source': 'script/jenkins/component.py', 'line': 1} if inside else None)
+    assert 'private-token' not in json.dumps(location) and str(tmp_path) not in json.dumps(location)
+
+
+def test_failure_without_traceback_has_no_invented_source_location(tmp_path):
+    assert remote.failure_location(ValueError('private'), tmp_path) is None

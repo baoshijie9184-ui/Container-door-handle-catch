@@ -146,6 +146,51 @@ class ObservabilityFixtureTests(unittest.TestCase):
                 value.prepare()
             resources.prepare_observability_image.assert_not_called()
             self.assertEqual(9*fixture.GIB+128*fixture.MIB,fixture.RUNTIME_RESERVE)
+            observation=json.loads((value.folder/'capacity-before-images.json').read_text())
+            self.assertEqual('FAIL_CLOSED',observation['capacityVerdict'])
+            self.assertEqual('MEMORY_RESERVE_BEFORE_IMAGES',observation['failureCode'])
+            self.assertEqual(3*fixture.GIB,observation['requiredDiskBytes'])
+
+    def test_post_image_capacity_rejection_preserves_original_bytes_and_stops_without_starting_runtime(self):
+        with tempfile.TemporaryDirectory() as directory:
+            value=self.build(Path(directory).resolve());value.docker=mock.Mock(side_effect=AssertionError('Rejected capacity must not create a container'))
+            # This disclosed post-cleanup number is a synthetic boundary fixture,
+            # not a substitute for the missing historical failure-time probe.
+            available=3054800896
+            resources=SimpleNamespace(prepare_observability_image=mock.Mock(return_value={'engineIdentity':{'engineImageId':'sha256:'+'a'*64}}),
+                component_input=mock.Mock(return_value={'file':'/owned/public.tar','sha256':'b'*64,'bytes':10240}),
+                probe=mock.Mock(side_effect=[{'memoryAvailableBytes':10*fixture.GIB,'diskAvailableBytes':4*fixture.GIB},
+                    {'memoryAvailableBytes':10*fixture.GIB,'diskAvailableBytes':available}]))
+            spec=SimpleNamespace(loader=SimpleNamespace(exec_module=lambda module:None))
+            with mock.patch.object(fixture.importlib.util,'spec_from_file_location',return_value=spec), \
+                    mock.patch.object(fixture.importlib.util,'module_from_spec',return_value=resources), \
+                    self.assertRaisesRegex(ValueError,'runtime reserve'):
+                value.prepare()
+            self.assertEqual(2,resources.prepare_observability_image.call_count);self.assertFalse(value.started)
+            before=(value.folder/'capacity-before-images.json').read_bytes()
+            after=(value.folder/'capacity-after-images.json').read_bytes()
+            observation=json.loads(after)
+            self.assertEqual('after-images',observation['phase']);self.assertEqual(available,observation['diskAvailableBytes'])
+            self.assertEqual(166424576,observation['diskShortfallBytes']);self.assertEqual(0,observation['memoryShortfallBytes'])
+            self.assertEqual('DISK_RESERVE_AFTER_IMAGES',observation['failureCode'])
+            self.assertEqual(CONTEXT['release'],observation['release']);self.assertEqual(value.token,observation['ownerToken'])
+            result=value.stop()
+            self.assertEqual('STOPPED',result['status']);self.assertTrue(result['cleanupConfirmed'])
+            self.assertEqual('NOT_RUN',result['metricsAcceptance']);self.assertEqual([],result['containers'])
+            self.assertEqual('DISK_RESERVE_AFTER_IMAGES',result['preparationFailureCode'])
+            self.assertEqual([row['capacityVerdict'] for row in result['capacityAdmissions']],['ADMITTED','FAIL_CLOSED'])
+            self.assertEqual(before,(value.folder/'capacity-before-images.json').read_bytes())
+            self.assertEqual(after,(value.folder/'capacity-after-images.json').read_bytes())
+            value.docker.assert_not_called()
+
+    def test_invalid_capacity_values_are_not_reinterpreted_as_valid_bytes_or_exported(self):
+        with tempfile.TemporaryDirectory() as directory:
+            value=self.build(Path(directory).resolve())
+            resources=SimpleNamespace(probe=lambda _: {'memoryAvailableBytes':True,'diskAvailableBytes':4*fixture.GIB})
+            with self.assertRaisesRegex(ValueError,'capacity probe is invalid'):value.admit_runtime(resources,'before-images')
+            self.assertEqual('CAPACITY_PROBE_INVALID',value.preparation_failure_code)
+            self.assertEqual([],value.capacity_admissions)
+            self.assertFalse((value.folder/'capacity-before-images.json').exists())
 
     def test_damaged_acceptance_original_never_prevents_stopping_owned_containers(self):
         with tempfile.TemporaryDirectory() as directory:

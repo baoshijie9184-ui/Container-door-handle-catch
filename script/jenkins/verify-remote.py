@@ -22,6 +22,7 @@ import subprocess
 import sys
 import tarfile
 import time
+import traceback
 import uuid
 import xml.etree.ElementTree as ET
 from urllib.request import ProxyHandler, Request, build_opener
@@ -64,6 +65,18 @@ def now():
 def record_observability_acceptance(record, stopped):
     if record['status'] == 'PASS' and stopped['metricsAcceptance'] != 'PASS':
         record.update(status='FAILED', observabilityAcceptanceErrorType='VerificationError')
+
+
+def failure_location(error, checkout):
+    for frame in reversed(traceback.extract_tb(error.__traceback__)):
+        try:
+            relative = Path(frame.filename).relative_to(checkout)
+        except ValueError:
+            continue
+        if (relative.parts and relative.parts[0] == 'script' and '..' not in relative.parts
+                and relative.suffix == '.py'):
+            return {'source': relative.as_posix(), 'line': frame.lineno}
+    return None
 
 
 def digest(path):
@@ -647,6 +660,9 @@ def run_verification(args):
         exit_code = 0
     except BaseException as error:
         record["errorType"] = type(error).__name__
+        location = failure_location(error, checkout)
+        if location is not None:
+            record['failureLocation'] = location
         if isinstance(error, VerificationError):
             # All VerificationError messages above are fixed operator guidance, never private JSON.
             record["error"] = str(error)

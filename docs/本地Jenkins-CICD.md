@@ -4,9 +4,15 @@
 
 当前为 `java-cloud` 单体，正式业务库仍 **131表**，目标 **29表**未切换，生产发布与旧库演练门关闭。功能验收固定2个检测人员、2个主管，各2个功能标签；正式并发/容量压测后置，`loadTestStatus=DEFERRED_BY_USER`、`performanceSloVerified=false`。
 
-### 当前：镜像中转已消费，恢复依赖制品读取的原兼容契约
+### 当前：依赖复用及组件准备已消费，先审定实际磁盘余量
 
 本轮按用户确定的范围调整单体通用中间件：Qdrant/BGE-M3适配、模型调用故障隔离、OpenTelemetry、Prometheus与Alertmanager实际抓取验收。完整自建Langfuse只保留部署配置，待资源审定后再启用；不启动微服务专属组件。方案与验收边界见[单体中间件调整](middleware/monolith-alignment.md)。
+
+固定`8acf8ca306199c1580df20b2eeb47eeba63f9456`的 **#300实际FAILURE**，项目测试尚未启动。22项依赖制品已真实复用：`pipExecutedThisAttempt=false`，原始producer完整证明通过，新metadata容器从未启动且已删除；Qdrant固定OCI完整量测、Docker导入及真实服务ready通过，合成MySQL8.4服务ready与安全清理通过。Prometheus/Alertmanager两个镜像均已量测导入，但观测fixture在创建容器前出现ValueError，指标抓取、SQL业务用例和完整回归均未执行。
+
+原回执没有保留该ValueError的源位置，不能把它直接写成某一业务断言失败；已补仅含源码相对路径/行号的诊断，以及镜像前后实际容量、原门值与固定错误码。清理后实余3,054,800,896字节（约2.845GiB），已低于观测启动3GiB门，后续还有源码构建占用，不能盲重试或降低安全门。现有成熟SOURCE规则覆盖的42轮旧编译目录和npm缓存均已有实际清理证明，可再回收量为0；正在对18个旧Python负例残留根做限定只读物理量测，不把稀疏文件逻辑大小当可回收量，不删除业务或恢复数据。
+
+#300的24份原归档中23份非应用JAR、17,984,489字节及原`build.xml`位于`ci-300-raw-receipts`；全部本轮工具与三类fixture安全收尾，**03:14:54（北京时间）**实际回读`Stopped / StopCharging`（`ci-300-external-stop-readback.json`）。当前保持停机，Jenkins继续运行；取得真实容量处置依据后再开测试窗口，不为仅重现容量门重复整轮构建。
 
 固定`e9b0977f97e64b7504922d0502901cdcbc465d87`的 **#299实际FAILURE**：13模块跳测试打包成功，三个固定OCI包全部从已发布共享缓存复用；新增严格解析误拒原#297已合法保全的Docker长提示，工具准备仍未进入容器创建或测试。已恢复原commit/create/cleanup读取契约，严格列表校验只用于新增候选发现；原completion、源码、依赖和层校验保留，直接回归源码67项。11份原归档中10份非应用JAR、17,967,234字节及失败前无容器证据已保全；**03:02:29（北京时间）**实际回读`Stopped / StopCharging`（`ci-299-external-stop-readback.json`），待下一固定提交统一验证。
 

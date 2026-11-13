@@ -27,6 +27,7 @@ ENVIRONMENT = frozenset({'DOORHANDLE_TEST_PROMETHEUS_URL','DOORHANDLE_TEST_ALERT
 # Serial nested tools6GiB + Qdrant512MiB + MySQL1GiB + Prom512MiB
 # + Alert128MiB + host1GiB. MySQL is the existing single source fixture.
 RUNTIME_RESERVE = 9 * GIB + 128 * MIB
+STARTUP_DISK_RESERVE = 3 * GIB
 
 def require(value, message):
     if not value: raise ValueError(message)
@@ -54,6 +55,7 @@ class Fixture:
                 and context['identity']['executionLocation']=='ECS','Owned ECS source checkout required')
         self.context=dict(context);self.folder=self.checkout/'work/observability-fixture';self.folder.mkdir(mode=0o700)
         self.token=secrets.token_hex(16);self.rows={};self.images={};self.image_attempts=set();self.ports={};self.started=set();self.cleaned=False
+        self.capacity_admissions=[];self.preparation_failure_code=None
         self.opener=build_opener(ProxyHandler({}));self.environment={}
         preserve(self.folder/'owner.json',json.dumps({**context,'ownerToken':self.token,'kind':'doorhandle-observability-fixture','sourceData':'SYNTHETIC_ONLY'},sort_keys=True))
 
@@ -92,21 +94,42 @@ class Fixture:
             require(mount['Type']=='bind' and key in expected and mount['RW'] is expected.pop(key),'Observability bind changed')
         require(not expected,'Observability bind is missing');return row
 
+    def admit_runtime(self,resources,phase):
+        """Retain the actual gate observation before it can reject preparation."""
+        require(phase in ('before-images','after-images'),'Invalid observability admission phase')
+        capacity=resources.probe(self.folder)
+        if not all(type(capacity.get(key)) is int and capacity[key]>=0 for key in ('memoryAvailableBytes','diskAvailableBytes')):
+            self.preparation_failure_code='CAPACITY_PROBE_INVALID'
+            raise ValueError('Observability capacity probe is invalid')
+        memory_shortfall=max(0,RUNTIME_RESERVE-capacity['memoryAvailableBytes'])
+        disk_shortfall=max(0,STARTUP_DISK_RESERVE-capacity['diskAvailableBytes'])
+        reason=('MEMORY_AND_DISK_RESERVE' if memory_shortfall and disk_shortfall else
+                'MEMORY_RESERVE' if memory_shortfall else 'DISK_RESERVE' if disk_shortfall else None)
+        code=reason+'_'+phase.upper().replace('-','_') if reason else None
+        value={'schemaVersion':1,'kind':'doorhandle-observability-capacity',**self.context,'ownerToken':self.token,
+            'phase':phase,'memoryAvailableBytes':capacity['memoryAvailableBytes'],
+            'diskAvailableBytes':capacity['diskAvailableBytes'],'requiredMemoryBytes':RUNTIME_RESERVE,
+            'requiredDiskBytes':STARTUP_DISK_RESERVE,'memoryShortfallBytes':memory_shortfall,
+            'diskShortfallBytes':disk_shortfall,'capacityVerdict':'FAIL_CLOSED' if reason else 'ADMITTED',
+            'failureCode':code}
+        path=self.folder/('capacity-'+phase+'.json')
+        preserve(path,json.dumps(value,sort_keys=True))
+        self.capacity_admissions.append({**value,'file':str(path)})
+        if reason:
+            self.preparation_failure_code=code
+            raise ValueError('Observability plus serial source tools lacks its runtime reserve')
+
     def prepare(self):
         helper=self.checkout/'script/docker/compact-build-resources.py'
         spec=importlib.util.spec_from_file_location('owned_observability_images',helper)
         resources=importlib.util.module_from_spec(spec);spec.loader.exec_module(resources)
-        capacity=resources.probe(self.folder)
-        require(capacity['memoryAvailableBytes']>=RUNTIME_RESERVE and capacity['diskAvailableBytes']>=3*GIB,
-                'Observability plus serial source tools lacks its runtime reserve')
+        self.admit_runtime(resources,'before-images')
         for component in ('alertmanager','prometheus'):
             self.image_attempts.add(component)
             proof=resources.prepare_observability_image(self.folder/(component+'-image'),self.context,helper.parent,component,
                 archive=resources.component_input(self.checkout,self.context,component))
             self.images[component]=proof['engineIdentity']['engineImageId']
-        capacity=resources.probe(self.folder)
-        require(capacity['memoryAvailableBytes']>=RUNTIME_RESERVE and capacity['diskAvailableBytes']>=3*GIB,
-                'Observability plus serial source tools lacks its runtime reserve')
+        self.admit_runtime(resources,'after-images')
         for name in ('targets','secrets','evidence','prometheus-data','alertmanager-data'):(self.folder/name).mkdir(mode=0o700)
         preserve(self.folder/'secrets/metrics-token',secrets.token_hex(32))
         self.ports={component:free_port() for component in ('prometheus','alertmanager')}
@@ -217,6 +240,7 @@ receivers:
                 'Observability image import remains unknown; retain resources')
         public={'schemaVersion':1,'kind':'doorhandle-observability-fixture','ownerToken':self.token,**self.context,
             'sourceData':'SYNTHETIC_ONLY','providerCalls':0,'langfuseStarted':False,'externalNotifications':False,
+            'capacityAdmissions':self.capacity_admissions,'preparationFailureCode':self.preparation_failure_code,
             'metricsAcceptance':'NOT_RUN','evidence':[]}
         acceptance_file=self.folder/'metrics-acceptance.json'
         prior=None;preservation_errors=[]

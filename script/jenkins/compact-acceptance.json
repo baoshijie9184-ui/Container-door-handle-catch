@@ -1742,7 +1742,7 @@
       },
       {
         "module": "tests_python.test_middleware_evidence",
-        "minimumTests": 24,
+        "minimumTests": 27,
         "source": "tests_python/test_middleware_evidence.py",
         "allowedSkippedTests": []
       },
@@ -1754,7 +1754,7 @@
       },
       {
         "module": "tests_python.test_observability_fixture",
-        "minimumTests": 10,
+        "minimumTests": 12,
         "source": "tests_python/test_observability_fixture.py",
         "allowedSkippedTests": []
       },
