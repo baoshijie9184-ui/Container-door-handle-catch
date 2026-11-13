@@ -320,6 +320,9 @@ def require_native_release(runtime_proof):
     """A preserved archive/test namespace is never a semantic production import."""
     legacy = runtime_proof.get('legacyData', {})
     require(legacy.get('localMem0SemanticStatus') == 'VERIFIED_AND_ACTIVATED'
+            and legacy.get('verificationSubject') == 'INDEPENDENT_REAL_BGE_CANDIDATE'
+            and legacy.get('appRuntimeValidationMode') == 'ISOLATED_MOCK_QDRANT_RUNTIME'
+            and legacy.get('vectorBackend') == 'qdrant' and legacy.get('storageGeneration') == 'qdrant-bge-m3-v1'
             and legacy.get('candidateSemanticVerified') is True and legacy.get('productionDataMaterialized') is False
             and legacy.get('activatedLocalMem0Records') == 30 and legacy.get('productionPromotionAllowed') is False
             and isinstance(legacy.get('semanticActivation'), dict),
@@ -547,7 +550,8 @@ class Cutover:
         secret = module('cutover_model_secrets', self.source / 'script/docker/model-secrets.py')
         setting = secret.load_settings(self.root, self.runtime)
         environment = dict(os.environ, DOORHANDLE_ENV_FILE=str(self.envfile),
-                           DETECTION_BUILD_CONTEXT=str(self.runtime / 'work/cloud/pth-worker-build'))
+                           DETECTION_BUILD_CONTEXT=str(self.runtime / 'work/cloud/pth-worker-build'),
+                           QDRANT_IMAGE=self.images['qdrant'])
         if setting:
             environment['MODEL_CONFIG_MASTER_KEY_SOURCE'] = setting['masterKeyFile']
             command += ['-f', str(self.source / 'compose.model-config.yml')]
@@ -765,12 +769,13 @@ class Cutover:
         require(sha_file(native_receipt) == self.journal['nativeProductionInstall']['sha256'], 'Native production install receipt changed')
         action = memory.prepare(self.state, effective, native_transition=native_receipt)
         overlays.append(self.state / 'memory-activation-images.yml')
+        # The new remote vector store must be healthy before the bridge starts.
+        self.compose('up', '-d', '--no-deps', '--no-build', '--pull', 'never', '--wait', '--wait-timeout', '120',
+                     'qdrant', overlays=overlays)
         if action == 'replace':
             self.compose('up', '-d', '--no-deps', '--no-build', '--pull', 'never', '--wait', '--wait-timeout', '240',
                          'mem0', overlays=overlays)
         memory.verify(self.state)
-        self.compose('up', '-d', '--no-deps', '--no-build', '--pull', 'never', '--wait', '--wait-timeout', '120',
-                     'chroma', overlays=overlays)
         if 'higress' in effective['services']:
             self.compose('up', '-d', '--no-deps', '--no-build', '--pull', 'never', '--wait', '--wait-timeout', '120',
                          'higress', overlays=overlays)

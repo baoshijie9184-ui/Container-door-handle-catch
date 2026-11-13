@@ -34,7 +34,8 @@ final class RagPreservationManifest {
         this.collectionId = collectionId; this.dimension = dimension; this.records = Map.copyOf(records);
     }
 
-    static RagPreservationManifest load(ChatAssistantProperties properties, ObjectMapper mapper) throws Exception {
+    /** Shared pinned/private file reader for old-source and new-target proof protocols. */
+    static byte[] privateBytes(ChatAssistantProperties properties, int maximum) throws Exception {
         require(properties.getRagPreservationManifestSha256() != null
                 && properties.getRagPreservationManifestSha256().matches("[a-f0-9]{64}"), "Pinned import manifest digest required");
         require(properties.getRagPreservationCommit() != null && properties.getRagPreservationCommit().matches("[a-f0-9]{40}"),
@@ -43,7 +44,7 @@ final class RagPreservationManifest {
         require(path.isAbsolute() && path.normalize().equals(path) && path.toRealPath().equals(path), "Canonical private import manifest required");
         for (Path part = path; part != null; part = part.getParent())
             require(!Files.isSymbolicLink(part), "Linked import manifest paths are not admitted");
-        require(Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS) && Files.size(path) > 0 && Files.size(path) <= MAX_BYTES
+        require(Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS) && Files.size(path) > 0 && Files.size(path) <= maximum
                 && ((Number) Files.getAttribute(path, "unix:nlink", LinkOption.NOFOLLOW_LINKS)).longValue() == 1,
                 "Bounded private import manifest required");
         Set<PosixFilePermission> permissions = Files.getPosixFilePermissions(path, LinkOption.NOFOLLOW_LINKS);
@@ -51,8 +52,13 @@ final class RagPreservationManifest {
                 && Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE).containsAll(permissions),
                 "Import manifest must have private owner-only permissions");
         byte[] raw;
-        try (var stream = Files.newInputStream(path, LinkOption.NOFOLLOW_LINKS)) { raw = stream.readNBytes(MAX_BYTES + 1); }
-        require(raw.length <= MAX_BYTES && sha(raw).equals(properties.getRagPreservationManifestSha256()), "Import manifest bytes differ from pinned evidence");
+        try (var stream = Files.newInputStream(path, LinkOption.NOFOLLOW_LINKS)) { raw = stream.readNBytes(maximum + 1); }
+        require(raw.length <= maximum && sha(raw).equals(properties.getRagPreservationManifestSha256()), "Import manifest bytes differ from pinned evidence");
+        return raw;
+    }
+
+    static RagPreservationManifest load(ChatAssistantProperties properties, ObjectMapper mapper) throws Exception {
+        byte[] raw = privateBytes(properties, MAX_BYTES);
         ObjectMapper strict = mapper.copy().enable(JsonParser.Feature.STRICT_DUPLICATE_DETECTION);
         JsonNode root = strict.readTree(raw);
         fields(root, FIELDS);

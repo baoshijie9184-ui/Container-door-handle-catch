@@ -27,6 +27,8 @@ import java.util.regex.Pattern;
 @Service
 @RequiredArgsConstructor
 public class RagKnowledgeService {
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    private QdrantRagStoreService semanticRag;
     @org.springframework.beans.factory.annotation.Autowired
     private org.springframework.beans.factory.ObjectProvider<com.ruanzhu.doorhandle.module.app.service.knowledge.QualityKnowledgeService> managedKnowledge;
 
@@ -52,7 +54,8 @@ public class RagKnowledgeService {
         if (properties.getRagStartupMode() == null) throw new IllegalStateException("Explicit RAG startup mode required");
         if (properties.getRagStartupMode() == ChatAssistantProperties.RagStartupMode.PRESERVE_EXISTING) {
             chunks.clear(); contextCache.clear();
-            chromaRagStoreService.attachPreservedCollection();
+            if(semanticRag!=null&&semanticRag.enabled())semanticRag.attachPreservedCollection();
+            else chromaRagStoreService.attachPreservedCollection();
             log.info("智能助手 RAG 已连接经过导入凭证校验的既有集合");
             return;
         }
@@ -65,9 +68,12 @@ public class RagKnowledgeService {
         for (String source : properties.getRagSources()) {
             loadSource(source);
         }
-        boolean chromaIndexed = chromaRagStoreService.indexDocuments(toRagDocuments());
+        boolean chromaIndexed = semanticRag!=null&&semanticRag.enabled()
+                ?semanticRag.indexDocuments(toRagDocuments()):chromaRagStoreService.indexDocuments(toRagDocuments());
         log.info("智能助手 RAG 知识库加载完成: {} 个片段", chunks.size());
-        if (Boolean.TRUE.equals(properties.getChromaEnabled())) {
+        if (semanticRag!=null&&semanticRag.enabled()) {
+            log.info("Qdrant RAG 状态: {}",chromaIndexed?"READY":"UNAVAILABLE_KEYWORD_ONLY");
+        } else if (Boolean.TRUE.equals(properties.getChromaEnabled())) {
             log.info("Chroma RAG 状态: {}", chromaIndexed ? "已启用" : "不可用，已回退本地检索");
         }
     }
@@ -125,26 +131,27 @@ public class RagKnowledgeService {
         }
         String rewritten = ragModelService.rewriteRagQuery(query);
         if (StringUtils.hasText(rewritten) && !rewritten.equals(query)) {
-            log.debug("RAG 查询重写: {} -> {}", query, rewritten);
+            log.debug("RAG query rewrite applied");
             return rewritten;
         }
         return query;
     }
 
     private String retrieveFromChroma(String originalQuery, String retrievalQuery) {
-        if (!Boolean.TRUE.equals(properties.getChromaEnabled())) {
+        if (!(semanticRag!=null&&semanticRag.enabled())&&!Boolean.TRUE.equals(properties.getChromaEnabled())) {
             return "";
         }
         int topK = Math.max(1, properties.getRagTopK() == null ? 4 : properties.getRagTopK());
         int candidateK = candidateK(topK);
         int maxChars = Math.max(600, properties.getRagMaxContextChars() == null ? 2600 : properties.getRagMaxContextChars());
-        List<RagDocument> documents = chromaRagStoreService.query(retrievalQuery, candidateK);
+        List<RagDocument> documents = semanticRag!=null&&semanticRag.enabled()
+                ?semanticRag.query(retrievalQuery,candidateK):chromaRagStoreService.query(retrievalQuery, candidateK);
         if (documents.isEmpty()) {
             return "";
         }
         documents = rerankDocuments(originalQuery, retrievalQuery, documents, topK);
         StringBuilder sb = new StringBuilder();
-        sb.append("[系统知识库检索结果: Chroma + QueryRewrite + Rerank]\n");
+        sb.append(semanticRag!=null&&semanticRag.enabled()?"[系统知识库检索结果: Qdrant / BGE-M3 + QueryRewrite + Rerank]\n":"[旧系统知识库检索结果: Chroma + QueryRewrite + Rerank]\n");
         if (!retrievalQuery.equals(originalQuery)) {
             sb.append("检索重写：").append(retrievalQuery).append("\n");
         }
@@ -191,7 +198,7 @@ public class RagKnowledgeService {
                 .toList(), topK);
 
         StringBuilder sb = new StringBuilder();
-        sb.append("[系统知识库检索结果: Local + QueryRewrite + Rerank]\n");
+        sb.append("[系统知识库检索结果: Keyword 降级检索 + QueryRewrite + Rerank]\n");
         if (!retrievalQuery.equals(originalQuery)) {
             sb.append("检索重写：").append(retrievalQuery).append("\n");
         }

@@ -58,6 +58,7 @@ final class ModelFailureClassifier {
         for (Throwable cause = error; cause != null && seen.add(cause); cause = cause.getCause()) {
             if (cause instanceof TimeoutException) return "TIMEOUT";
             if (cause instanceof java.util.concurrent.RejectedExecutionException) return "CAPACITY";
+            if (cause instanceof io.github.resilience4j.bulkhead.BulkheadFullException) return "CAPACITY";
             if (cause instanceof EmptyResponseException) return "EMPTY_RESPONSE";
         }
         return failure.name();

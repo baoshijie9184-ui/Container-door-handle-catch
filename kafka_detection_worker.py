@@ -13,6 +13,7 @@ from kafka_event_models import DetectionTaskCreatedEvent, DetectionTaskFinishedE
 from kafka_settings import KafkaWorkerSettings
 from oss_result_uploader import OssResultUploader
 from detection_worker_receipts import MysqlDetectionReceipts, ReceiptPending, execute_once
+from runtime_telemetry import RuntimeTelemetry
 
 DetectionFunction = Callable[[bytes, float], Tuple[Any, List[Dict[str, Any]]]]
 BUSINESS_TIMEZONE = timezone(timedelta(hours=8))
@@ -320,6 +321,7 @@ def publish_finished_and_commit(
     key: bytes,
     payload: bytes,
     timeout_seconds: float,
+    telemetry: Optional[RuntimeTelemetry] = None,
 ) -> None:
     delivery = {"completed": False, "error": None}
 
@@ -327,7 +329,12 @@ def publish_finished_and_commit(
         delivery["completed"] = True
         delivery["error"] = error
 
-    producer.produce(topic, key=key, value=payload, callback=on_delivery)
+    # Correlation travels in Kafka headers, never in the durable event payload
+    # or receipt hash. With telemetry disabled the original producer API stays
+    # byte-for-byte compatible with callers and golden fixtures.
+    headers = telemetry.inject_headers() if telemetry is not None else []
+    trace_options = {"headers": headers} if headers else {}
+    producer.produce(topic, key=key, value=payload, callback=on_delivery, **trace_options)
     remaining = producer.flush(timeout_seconds)
     if remaining != 0 or not delivery["completed"] or delivery["error"] is not None:
         reason = delivery["error"] if delivery["error"] is not None else remaining
@@ -369,6 +376,7 @@ def run_worker() -> None:
     producer = Producer({"bootstrap.servers": settings.kafka_bootstrap_servers})
 
     stopped = threading.Event()
+    telemetry = None
     assigned = False
     pending = {}
     next_receipt_check = 0.0
@@ -378,6 +386,8 @@ def run_worker() -> None:
         client.assign(partitions)
         assigned = bool(partitions)
         write_health(assigned, expected_model_id)
+        if telemetry is not None:
+            telemetry.set_ready(assigned)
 
     def on_revoke(client, partitions):
         nonlocal assigned
@@ -385,28 +395,51 @@ def run_worker() -> None:
         for partition in partitions:
             pending.pop((partition.topic, partition.partition), None)
         write_health(False, expected_model_id)
+        if telemetry is not None:
+            telemetry.set_ready(False)
 
     def heartbeat():
         write_health(assigned, expected_model_id)
+        if telemetry is not None:
+            telemetry.set_ready(assigned)
 
     if threading.current_thread() is threading.main_thread():
         signal.signal(signal.SIGTERM, lambda *_: stopped.set())
         signal.signal(signal.SIGINT, lambda *_: stopped.set())
     consumer.subscribe([settings.task_created_topic], on_assign=on_assign, on_revoke=on_revoke)
+    telemetry = RuntimeTelemetry.from_env("doorhandle-detection-worker", default_metrics_port=9464)
+    telemetry.set_ready(assigned)
 
     def handle_message(message, waiting=False):
         task = parse_created_event(message.value().decode('utf-8'))
-        def operation():
-            return serialize_finished_event(
-                process_created_event(task, bucket, default_detector, expected_model_id, heartbeat))
-        if waiting:
-            finished_payload = receipts.completed(task)
-        else:
-            finished_payload = execute_once(task, receipts, operation) if receipts is not None else operation()
-        publish_finished_and_commit(
-            producer, consumer, source_message=message, topic=settings.task_finished_topic,
-            key=message.key() or task.task_id.encode('utf-8'), payload=finished_payload.encode('utf-8'),
-            timeout_seconds=settings.delivery_timeout_seconds)
+        attributes = {"task.id": task.task_id, "dispatch.id": task.dispatch_id,
+                      "event.id": task.event_id, "model.id": task.model_id,
+                      "image.count": len(task.original_keys)}
+        # Kafka is an asynchronous trust boundary: link the validated source
+        # trace ID, but do not merge arbitrary supplied headers into our trace.
+        source_headers = message.headers() if callable(getattr(message, "headers", None)) else []
+        with telemetry.span("worker.consume", attributes, headers=source_headers) as consume_span:
+            def operation():
+                with telemetry.span("worker.infer", attributes) as inference_span:
+                    result = process_created_event(task, bucket, default_detector, expected_model_id, heartbeat)
+                    # Only counts/status leave the process; business error text,
+                    # image keys, capture metadata and detections remain private.
+                    if hasattr(result, "successful_images"):
+                        inference_span.set_attributes({"image.success_count": result.successful_images,
+                                                       "image.failure_count": result.failed_images})
+                        inference_span.set_outcome({"COMPLETED": "success", "PARTIAL_FAILED": "partial"}
+                                                   .get(result.status, "error"))
+                    return serialize_finished_event(result)
+            if waiting:
+                finished_payload = receipts.completed(task)
+                consume_span.set_outcome("replayed")
+            else:
+                finished_payload = execute_once(task, receipts, operation) if receipts is not None else operation()
+            with telemetry.span("worker.publish", attributes):
+                publish_finished_and_commit(
+                    producer, consumer, source_message=message, topic=settings.task_finished_topic,
+                    key=message.key() or task.task_id.encode('utf-8'), payload=finished_payload.encode('utf-8'),
+                    timeout_seconds=settings.delivery_timeout_seconds, telemetry=telemetry)
 
     try:
         while not stopped.is_set():
@@ -437,8 +470,12 @@ def run_worker() -> None:
                 consumer.pause([TopicPartition(*key)])
                 logging.warning('Detection partition paused for receipt reconciliation')
     finally:
-        write_health(False, expected_model_id)
-        consumer.close()
+        try:
+            write_health(False, expected_model_id)
+            consumer.close()
+        finally:
+            telemetry.set_ready(False)
+            telemetry.close()
 
 
 if __name__ == "__main__":

@@ -35,6 +35,8 @@ def native_usage_fixture(tmp_path):
     value = {**context, 'kind': 'doorhandle-native-semantic-activation', 'project': 'doorhandle-rehearsal-' + 'f' * 12,
         'candidateSha256': '1' * 64, 'status': 'VERIFIED_AND_ACTIVATED', 'candidateSemanticVerified': True,
         'productionDataMaterialized': False, 'productionPromotionAllowed': False, 'llmCalls': 0, 'paidModelCalls': 0,
+        'verificationSubject': 'INDEPENDENT_REAL_BGE_CANDIDATE', 'appRuntimeValidationMode': 'ISOLATED_MOCK_QDRANT_RUNTIME',
+        'vectorBackend': 'qdrant', 'storageGeneration': 'qdrant-bge-m3-v1',
         'verifications': {phase: {'readback': reference, 'semantic': {'file': 'unused-by-projection'}}
                           for phase, reference in references.items()}}
     file = directory / 'native-semantic-activation.json'
@@ -80,12 +82,15 @@ def evidence(include_browser=False):
         'commit': 'a' * 40, 'sourceSha256': 'b' * 64, 'identity': {'instanceId': 'i-test', 'machineId': 'c' * 32},
         'acceptanceProfileSha256': 'd' * 64, 'candidateBuildSha256': 'e' * 64}
     project = 'doorhandle-rehearsal-' + 'f' * 12
-    daemons = sorted(set(runtime.SERVICE_MEMORY_MIB) - {'kafka-init', 'kafka-storage-init', 'higress-seed', 'higress-config'})
+    daemons = sorted(runtime.CORE_DAEMON_SERVICES)
     metrics = [{'containerId': format(index + 1, '064x'), 'service': name, 'image': 'sha256:' + '1' * 64,
         'memoryLimitBytes': runtime.SERVICE_MEMORY_MIB[name] * runtime.MIB, 'currentBytes': 128,
         'peakBytes': 256, 'oom': 0, 'oomKills': 0, 'running': True, 'exitCode': 0} for index, name in enumerate(daemons)]
     if include_browser:
-        metrics.extend([{'containerId': 'f' * 64, 'service': 'bge-verifier', 'image': 'sha256:' + '2' * 64,
+        metrics.extend([{'containerId': 'e' * 64, 'service': 'bge-qdrant', 'image': 'sha256:' + '3' * 64,
+            'memoryLimitBytes': 512 * runtime.MIB, 'currentBytes': 0, 'peakBytes': 1024,
+            'oom': 0, 'oomKills': 0, 'running': False, 'exitCode': 0},
+            {'containerId': 'f' * 64, 'service': 'bge-verifier', 'image': 'sha256:' + '2' * 64,
             'memoryLimitBytes': runtime.BGE_VERIFIER_MEMORY, 'currentBytes': 0, 'peakBytes': 1024,
             'oom': 0, 'oomKills': 0, 'running': False, 'exitCode': 0},
             {'containerId': BROWSER_CID, 'service': 'collaboration-browser', 'image': BROWSER_IMAGE,
@@ -109,16 +114,18 @@ def evidence(include_browser=False):
         'rawProbeSha256': hashlib.sha256(raw).hexdigest(), 'samples': len(phase_names), 'containers': {v['containerId']: v for v in metrics},
         'requiredDaemonServices': daemons, 'minimumDiskAvailableBytes': 8 * runtime.GIB,
         'minimumMemoryAvailableBytes': 12 * runtime.GIB, 'latestProbeAtUnix': 100+len(phase_names), 'phases': phases, 'phasePlans': plans}
-    if include_browser: summary['requiredTransientServices'] = ['bge-verifier', 'collaboration-browser']
+    if include_browser: summary['requiredTransientServices'] = ['bge-qdrant', 'bge-verifier', 'collaboration-browser']
     return summary, samples, context, project
 
 
 def test_bounded_profile_changes_real_cgroups_jvm_heaps_and_keeps_source_unchanged():
     original = {'services': {name: {'environment': {}, 'mem_limit': 10 * runtime.GIB}
-                             for name in runtime.SERVICE_MEMORY_MIB}}
+                             for name in set(runtime.SERVICE_MEMORY_MIB) - set(runtime.TRANSIENT_SERVICE_MEMORY_MIB)}}
     bounded = runtime.bounded_config(original)
     assert original['services']['backend']['mem_limit'] == 10 * runtime.GIB
-    assert sum(v['mem_limit'] for v in bounded['services'].values()) == 8448 * runtime.MIB
+    assert sum(v['mem_limit'] for v in bounded['services'].values()) == (8448 + runtime.SERVICE_MEMORY_MIB['qdrant-storage-init']) * runtime.MIB
+    assert 'chroma' not in bounded['services'] and 'bge-qdrant' not in bounded['services']
+    assert bounded['services']['qdrant']['mem_limit'] == 512 * runtime.MIB
     assert all(v['mem_limit'] == v['memswap_limit'] for v in bounded['services'].values())
     assert '-Xmx1024m' in bounded['services']['backend']['environment']['JAVA_OPTS']
     assert '-Xmx512m' in bounded['services']['kafka']['environment']['KAFKA_HEAP_OPTS']
@@ -248,7 +255,7 @@ def worker_dependency_fixture(tmp_path, *, installed_pymysql=False, current_requ
     ops = SimpleNamespace(docker=lambda *args, **_: json.dumps([{'Id': image, 'Config': {}, 'Size': 123}]
         if args[:2] == ('image', 'inspect') else result).encode())
     cutover = SimpleNamespace(canonical=lambda p: Path(p).resolve(strict=True), sha_file=digest)
-    return source, context, old, SimpleNamespace(tag='ci-58-' + 'a' * 12), ops, common, cutover, result
+    return source, context, old, SimpleNamespace(tag='ci-58-' + 'a' * 12, mem0_dependency_image=image), ops, common, cutover, result
 
 
 @pytest.mark.parametrize('installed_pymysql', [False, True])
@@ -312,6 +319,25 @@ def test_worker_can_reuse_exact_current_requirements_after_compact_cutover_witho
     assert body.count('COPY rootfs/ /\n') == 1
     assert receipt['verifiedExistingVersions'] == actual['versions'] == receipt['requiredVersions']
     assert (context / 'rootfs/app/requirements.txt').read_bytes() == (source / 'deploy/worker/requirements.txt').read_bytes()
+
+
+def test_worker_adds_fixed_telemetry_without_reinstalling_or_unpinning_torch(tmp_path):
+    source, context, old, args, ops, common, cutover, actual = worker_dependency_fixture(tmp_path)
+    telemetry = {'opentelemetry-api', 'opentelemetry-sdk', 'opentelemetry-exporter-otlp-proto-http', 'prometheus-client'}
+    legacy = {name: version for name, version in candidate.dependency_versions(actual['requirements']).items() if name not in telemetry}
+    original = ''.join(name + '==' + version + '\n' for name, version in legacy.items())
+    (old / 'requirements.txt').write_text(original)
+    actual.update(requirements=original, requirementsSha256=cutover.sha_file(old / 'requirements.txt'))
+    for name in telemetry: actual['versions'].pop(name, None)
+    receipt = candidate.stage_worker_dependencies(source, context, old, args, ops, common, cutover)
+    body = (context / 'Dockerfile').read_text()
+    assert len(receipt['telemetrySupplementPins']) == 4
+    assert 'pip install --find-links' not in body and 'pip install -r' not in body
+    assert '--constraint /app/runtime-base-constraints.txt' in body and '--report /app/worker-telemetry-install.json' in body
+    assert 'pip check && python -c' in body and '--retries 0' in body
+    assert 'torch==2.5.1+cpu' in (context / 'rootfs/app/runtime-base-constraints.txt').read_text()
+    assert body.index('COPY rootfs/ /') < body.index('RUN pip install')
+    assert receipt['runtimeDependencyVerification'] == 'CONTROLLED_BUILD_PIP_CHECK_AND_ALL_DIRECT_PIN_READBACK'
 
 
 @pytest.mark.parametrize('damage', ['legacy-digest', 'unknown-digest', 'missing-pymysql', 'wrong-pymysql',
@@ -415,7 +441,7 @@ def mem0_dependency_fixture(tmp_path):
         {'Image': image} if (project, service) == ('original', 'mem0') else None,
         require=runtime.require, write_json=lambda path, value: path.write_text(json.dumps(value)))
     cutover = SimpleNamespace(canonical=lambda path: Path(path).resolve(strict=True), sha_file=runtime.sha_file)
-    return source, work, SimpleNamespace(tag='ci-58-' + 'a' * 12), SimpleNamespace(docker=docker), common, cutover, actual, row, calls
+    return source, work, SimpleNamespace(tag='ci-58-' + 'a' * 12, mem0_dependency_image=image), SimpleNamespace(docker=docker), common, cutover, actual, row, calls
 
 
 def test_mem0_reuses_exact_dependencies_and_replaces_all_current_source_with_one_copy(tmp_path):
@@ -455,6 +481,27 @@ def test_mem0_reuses_exact_dependencies_and_replaces_all_current_source_with_one
     assert probe[probe.index('--pids-limit') + 1] == '32' and options['timeout'] == 45
     assert 'pip' in probe[-1] and "'check'" in probe[-1] and 'pip install' not in probe[-1]
     assert 'os.environ' not in probe[-1]
+
+
+def test_mem0_adapts_only_the_admitted_tool_dependency_base_without_pip(tmp_path, monkeypatch):
+    source, work, args, ops, common, cutover, actual, row, calls = mem0_dependency_fixture(tmp_path)
+    args.mem0_dependency_image = None
+    args.root = str(tmp_path); args.commit = 'a' * 40; args.source_sha256 = 'b' * 64
+    args.instance_id = 'i-test'; args.machine_id = 'c' * 32
+    actual.update(requirements='', requirementsSha256=hashlib.sha256(b'').hexdigest(),
+                  sourceFiles=[], appFiles=[], uid=1000, gid=1000, dataUid=None, dataGid=None, appUid=None, appGid=None)
+    row['Config']['Entrypoint'] = ['/usr/local/bin/python']
+    monkeypatch.setattr(candidate, 'module', lambda name, path: SimpleNamespace(admit=lambda *args, **kwargs:
+        ({'images': {'python': row['Id']}}, 'e' * 64)))
+    context = candidate.stage_mem0(source, work, args, ops, common, cutover)
+    body = (context / 'Dockerfile').read_text()
+    assert 'ENTRYPOINT []' in body and 'USER root' in body and 'USER app' in body
+    assert body.count('RUN ') == 1 and 'pip install' not in body
+    assert 'groupadd --gid 10001 app' in body and 'mkdir -p /data' in body
+    receipt = json.loads((work / 'mem0-build-source.json').read_text())['dependencyReuse']
+    assert receipt['appIdentityRunInstructions'] == 1 and receipt['toolManifestSha256'] == 'e' * 64
+    assert receipt['mode'] == 'IMMUTABLE_TOOL_DEPENDENCY_BASE_WITH_APP_IDENTITY_AND_FIXED_SOURCE'
+    assert receipt['addedDependencies'] == []
 
 
 @pytest.mark.parametrize('damage', ['missing-package', 'wrong-version', 'different-requirements', 'extra-requirement',

@@ -33,6 +33,10 @@
         <spring-boot.version>3.2.4</spring-boot.version>
         <!-- 第三方平台版本统一在父 POM 管理；升级 AgentScope 只需修改此处。 -->
         <agentscope.version>2.0.4</agentscope.version>
+        <opentelemetry.version>1.61.0</opentelemetry.version>
+        <opentelemetry-reactor.version>2.27.0-alpha</opentelemetry-reactor.version>
+        <qdrant.version>1.20.0</qdrant.version>
+        <resilience4j.version>2.4.0</resilience4j.version>
         <pdfbox.version>3.0.8</pdfbox.version>
         <poi.version>6.0.0</poi.version>
         <twelvemonkeys.version>3.13.1</twelvemonkeys.version>
@@ -52,6 +56,18 @@
             <dependency><groupId>org.apache.xmlbeans</groupId><artifactId>xmlbeans</artifactId><version>5.4.1</version></dependency>
             <dependency><groupId>org.apache.pdfbox</groupId><artifactId>pdfbox</artifactId><version>${pdfbox.version}</version></dependency>
             <dependency><groupId>com.twelvemonkeys.imageio</groupId><artifactId>imageio-webp</artifactId><version>${twelvemonkeys.version}</version></dependency>
+            <!-- Match AgentScope's tracing API without importing its Boot 4 / Spring 7 BOM. -->
+            <dependency>
+                <groupId>io.opentelemetry</groupId>
+                <artifactId>opentelemetry-bom</artifactId>
+                <version>${opentelemetry.version}</version>
+                <type>pom</type><scope>import</scope>
+            </dependency>
+            <dependency><groupId>io.opentelemetry.instrumentation</groupId><artifactId>opentelemetry-reactor-3.1</artifactId><version>${opentelemetry-reactor.version}</version></dependency>
+            <dependency><groupId>io.qdrant</groupId><artifactId>client</artifactId><version>${qdrant.version}</version></dependency>
+            <dependency><groupId>io.github.resilience4j</groupId><artifactId>resilience4j-circuitbreaker</artifactId><version>${resilience4j.version}</version></dependency>
+            <dependency><groupId>io.github.resilience4j</groupId><artifactId>resilience4j-bulkhead</artifactId><version>${resilience4j.version}</version></dependency>
+            <dependency><groupId>io.github.resilience4j</groupId><artifactId>resilience4j-reactor</artifactId><version>${resilience4j.version}</version></dependency>
             <dependency>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-dependencies</artifactId>

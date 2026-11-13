@@ -21,6 +21,18 @@ services:
     volumes:
       - doorhandle-uploads:/app/uploads
       - doorhandle-agent-workspace:/app/.agentscope/workspace
+      - type: bind
+        source: ${QDRANT_PRIVATE_DIR:?Set ECS private Qdrant config directory}
+        target: /run/doorhandle-vector
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${OBSERVABILITY_SECRETS_DIR:?Set ECS private observability directory (may be empty when disabled)}
+        target: /run/observability-secrets
+        read_only: true
+        bind:
+          create_host_path: false
     init: true
     stop_grace_period: 45s
     mem_limit: 3g

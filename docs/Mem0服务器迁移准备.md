@@ -1,46 +1,39 @@
-# Mem0 服务器迁移准备
+# Mem0 的 ECS 运行与迁移准备
 
-更新日期：2026-10-14。当前为配置和设计准备，尚未部署服务器或迁移数据。
+当前单体通过 `Mem0Client` 访问本项目带专属认证、账号范围、摘要和写入回执的 Python 桥接；浏览器只访问 Java。运行和测试都在 ECS，由本地 Jenkins 调度，本地只编辑和构建。
 
-## 服务边界
+向量统一方案见 [单体的统一向量存储](middleware/semantic-vector-storage.md)。源码默认接入 native Mem0 Qdrant provider，嵌入为独立凭据的 SiliconFlow `BAAI/bge-m3` / 1024；Mem0 提炼 LLM 仍由原有模型配置治理独立管理。不能用向量模型或 Java 主 Agent 模型覆盖 Mem0 LLM。
 
-Java 单体通过 `Mem0Client` 的 HTTP 请求访问本项目 `memory_service/main.py`，浏览器只访问 Java。Mem0 后续可以独立放到服务器，无须拆分当前 Java 单体。两个聊天入口继续复用同一账号范围、记忆开关和审计规则。
+## 持久化边界
 
-这里的服务是本项目带认证、所属权校验和版本摘要的 Python 桥接，不能直接替换成其他项目的 Mem0 REST 服务。私有协议需要 `/memories/add`、`/memories/search`、`/memories/owned/*` 及对应健康能力。当前管理分页适配 Chroma。
+- Qdrant 保存派生的用户记忆向量和原 payload，和系统 RAG、用户知识、经验集合分开。
+- `MEM0_DATA_DIR` 必须为 ECS 的绝对持久目录，保存 `history.db`、桥接回执、生命周期、重复复核和加密模型配置。
+- OS 文件锁、单进程与 `--workers 1` 保持单写者；Qdrant 不替代 SQLite 历史，也不使历史自动具备集群高可用。
+- `/data/vector-space.json` 绑定后端、集合和完整模型/存储身份。旧目录存在 history 或 Chroma 而没有新下限时，运行启动拒绝直接绑定空 Qdrant，必须先完成候选迁移证明。
+- 不自动加载本机 `.env`，没有本机 Chroma/历史目录兜底。私有真实配置和凭据不能提交或归档。
 
-## 配置
+## 必需配置由现有部署入口注入
 
-| 配置 | 所在端 | 用途 |
-| --- | --- | --- |
-| `MEM0_SERVICE_URL` | Java | 本项目 Python 桥接地址，默认 `http://localhost:8081` |
-| `MEM0_BRIDGE_TOKEN` | Java、Python | 两端一致的内部认证，使用环境变量或各自私有配置提供 |
-| `MEM0_DATA_DIR` | Python | 可选持久卷根目录，设置后使用其中 `chroma/` 和 `history.db` |
-| `MEM0_SOURCE_PATH` | Python | 经过兼容验证的 Mem0 源码目录；当前本机使用现有 2.0.19 源码及既有修改 |
-| `DASHSCOPE_API_KEY`、`EMBEDDING_API_KEY` 等 | Python | 沿用本项目模型和向量配置，通过私有环境提供 |
-| `MEM0_CONNECT_TIMEOUT_MS`、`MEM0_READ_TIMEOUT_MS` | Java | 网络及读超时；超时的写入结果必须核对，不能自动重放 |
+| 配置 | 作用 |
+| --- | --- |
+| Java `mem0.service-url` / `MEM0_SERVICE_URL` | 现有 Python 私网桥接地址，运行使用 Compose 服务名/内网端点 |
+| `MEM0_BRIDGE_TOKEN` | Java 与 Python 专属内部认证；不是浏览器公共 token |
+| `MEM0_DATA_DIR` | ECS 历史、回执、配置持久目录，必填 |
+| `MEM0_VECTOR_BACKEND=qdrant` | 固定新运行后端，旧 Chroma 只作为只读迁移输入 |
+| `QDRANT_HOST/PORT/TLS/API_KEY_FILE` | 远程 Qdrant；密钥通过只读私有文件挂载，不使用嵌入式本机模式 |
+| `MEM0_QDRANT_COLLECTION` | 已准入的记忆集合，默认 `doorhandle_memories_bge_m3_v1` |
+| `MEM0_STORAGE_GENERATION` | 实际 profile 对应的存储代际，生产 BGE 为 `qdrant-bge-m3-v1` |
+| `EMBEDDING_PROFILE/API_KEY_FILE/MODEL` | embedding 的独立身份、凭据与模型；不回退 LLM Key |
+| `DASHSCOPE_API_KEY` / `MEM0_LLM_MODEL` | Mem0 LLM 的启动配置，后续沿用已有加密配置/撤销协议 |
 
-`MEM0_BASE_URL` 属于另一组 SDK 配置，不是主站 `Mem0Client` 的服务地址。迁移本项目桥接时修改 `MEM0_SERVICE_URL`。
+受保护的 `POST /internal/embeddings` 与 Mem0 共用一个客户端和请求预算，供 Java 三类语义检索复用。内部凭据不能替代资料权限；Java 和 Mem0 查询都有当前账号/版本/生命周期复核。
 
-`MEM0_DATA_DIR` 为空时保留已有本地 Chroma 路径及 Mem0 默认历史库位置。设置一个新目录不会复制旧数据，应先完成停写、备份和恢复，再切换路径。根目录 `.env` 会由现有 dotenv 入口加载，部署时确认其私有值与运行环境一致，不把本机真实密钥提交或打入公共镜像。
+## 候选迁移和放行
 
-例如，服务器可将私有持久目录设为 `/srv/doorhandle/mem0`，以普通服务账号拥有。Python 单进程启动命令为：
+保留旧 32 条记忆及原生历史/消息、旧向量和 Chroma 原件。业务合入为 30 条记忆、30 条历史、25 条消息；2 条测试记忆、3 条历史、1 条消息归档。不能删除原件后再证明恢复。
 
-```bash
-python -m uvicorn main:app --host 127.0.0.1 --port 8081 --workers 1
-```
+迁移沿用仓库的来源封存、候选合入、独立恢复和真实桥接核验路径。目标先做模型空间准入，再做真实 BGE 原始/归一化向量证明、完整内容目录、SQLite 历史和回执恢复验证；既有记忆公有 ID、所有者、来源会话和历史 ID 不变。
 
-命令在服务器的桥接代码目录及隔离 Python 环境中运行。现有配置默认回环监听；Java 与 Mem0 同机时保持回环通信，异机时通过私网或 SSH 隧道访问，按网络方案配置地址及传输保护。内部令牌不是传输加密，不将 8081 作为浏览器公共接口开放。
+隔离 app 验收使用 `explicit-openai-compatible` / `qdrant-explicit-test-v1` 和独立测试集合，不访问提供方；真实 BGE 数据另行验收。通过健康接口不能替代真实 30/25 历史核对和业务合入，生产门槛没有齐全时不启用切库或发布。
 
-## 后续迁移与验收
-
-1. 确定服务器、隔离环境和服务管理方式，保留当前 Mem0 许可证及所需源码差异，验证依赖兼容性。
-2. 暂停新的记忆提炼和人工修改，等待在途请求结束，备份当前 Chroma 目录及 Mem0 原生历史库；MySQL 的 V26 设置和审计仍由 Java 持有。
-3. 恢复到持久卷目录，配置 `MEM0_DATA_DIR`、模型访问及桥接令牌。首次先用隔离样本验证，避免对真实用户记忆直接进行写入验收。
-4. 验证健康接口具备 `governance`、`owned_edit`、`owned_pagination` 和认证配置状态，再配置 Java 的桥接地址。健康状态不等于真实向量写入已验收。
-5. 验证本人及其他账号的读取边界、分页、旧摘要拒绝、编辑向量一致性、删除、未知结果核对和 MySQL 审计。演练服务重启及备份恢复，再恢复自动保存。
-
-Chroma 与历史库必须持久化，停止服务不会主动删除这些文件；主机或磁盘释放后的保留取决于实际存储和备份。Mem0 原生历史可能含修改前后正文，备份与日志均需按私人数据管理。桥接已对原生记忆主模块日志过滤，保留日志级别并移除正文及异常详情。
-
-当前进程锁只保证单个桥接进程内的写入串行化，不能通过增加 `--workers` 或多个副本直接获得高可用。多实例需额外设计共享存储、写入协调、恢复和故障切换，完成后再扩容。
-
-当前一键启动脚本仍面向本机完整组合。异机部署时分别管理 Java 与 Mem0 服务，后续部署阶段再补远程模式的启动编排；不将本次配置准备视为已完成服务器部署。
+回滚必须同时满足桥接协议、模型配置格式和向量存储代际，见 [跨版本兼容保护](Mem0跨版本回滚兼容保护.md)。测试完成后保全报告、清理本轮拥有的隔离资源，再从 Jenkins 流水线外将 ECS 停到 `Stopped / StopCharging`；Jenkins 控制器保持运行，云盘存储仍计费。

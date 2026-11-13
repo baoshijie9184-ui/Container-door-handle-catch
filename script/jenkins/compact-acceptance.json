@@ -703,7 +703,7 @@
         "doorhandle.feature.mysql.config"
       ],
       "source": "doorhandle-module-app/src/test/java/com/ruanzhu/doorhandle/module/app/service/knowledge/QualityKnowledgeMySqlTest.java",
-      "minimumTests": 9,
+      "minimumTests": 15,
       "coverage": [
         "workspace, chat, inbox, knowledge and memory persistence"
       ]
@@ -1152,6 +1152,51 @@
         "className": "com.ruanzhu.doorhandle.module.system.service.BusinessCommandStoreDepartmentReplayTest",
         "minimumTests": 3,
         "source": "doorhandle-module-system/src/test/java/com/ruanzhu/doorhandle/module/system/service/BusinessCommandStoreDepartmentReplayTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.framework.observability.BoundedTelemetryProcessorTest",
+        "minimumTests": 1,
+        "source": "doorhandle-framework/src/test/java/com/ruanzhu/doorhandle/framework/observability/BoundedTelemetryProcessorTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.framework.observability.OtlpHttpContractTest",
+        "minimumTests": 1,
+        "source": "doorhandle-framework/src/test/java/com/ruanzhu/doorhandle/framework/observability/OtlpHttpContractTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.framework.observability.RedactingSpanExporterTest",
+        "minimumTests": 3,
+        "source": "doorhandle-framework/src/test/java/com/ruanzhu/doorhandle/framework/observability/RedactingSpanExporterTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.app.config.PrometheusSecurityConfigurationTest",
+        "minimumTests": 2,
+        "source": "doorhandle-module-app/src/test/java/com/ruanzhu/doorhandle/module/app/config/PrometheusSecurityConfigurationTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.ai.model.ProviderAttemptTelemetryTest",
+        "minimumTests": 1,
+        "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/model/ProviderAttemptTelemetryTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.framework.semantic.MemoryBridgeEmbeddingClientTest",
+        "minimumTests": 3,
+        "source": "doorhandle-framework/src/test/java/com/ruanzhu/doorhandle/framework/semantic/MemoryBridgeEmbeddingClientTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.framework.semantic.SemanticDocumentsTest",
+        "minimumTests": 2,
+        "source": "doorhandle-framework/src/test/java/com/ruanzhu/doorhandle/framework/semantic/SemanticDocumentsTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.app.service.QdrantRagStoreServiceTest",
+        "minimumTests": 3,
+        "source": "doorhandle-module-app/src/test/java/com/ruanzhu/doorhandle/module/app/service/QdrantRagStoreServiceTest.java"
+      },
+      {
+        "className": "com.ruanzhu.doorhandle.module.ai.agent.AgentTelemetryMiddlewareTest",
+        "minimumTests": 1,
+        "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/agent/AgentTelemetryMiddlewareTest.java"
       }
     ]
   },
@@ -1469,7 +1514,7 @@
       },
       {
         "module": "tests_python.test_jenkins_tool_preparation",
-        "minimumTests": 35,
+        "minimumTests": 41,
         "source": "tests_python/test_jenkins_tool_preparation.py",
         "allowedSkippedTests": []
       },
@@ -1676,6 +1721,42 @@
         "minimumTests": 24,
         "source": "tests_python/test_collaboration_acceptance_evidence.py",
         "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_middleware_fixture",
+        "minimumTests": 10,
+        "source": "tests_python/test_middleware_fixture.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_runtime_telemetry",
+        "minimumTests": 15,
+        "source": "tests_python/test_runtime_telemetry.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_observability_resource_preflight",
+        "minimumTests": 5,
+        "source": "tests_python/test_observability_resource_preflight.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_middleware_evidence",
+        "minimumTests": 19,
+        "source": "tests_python/test_middleware_evidence.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_observability_fixture",
+        "minimumTests": 10,
+        "source": "tests_python/test_observability_fixture.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_semantic_mysql_fixture",
+        "minimumTests": 27,
+        "source": "tests_python/test_semantic_mysql_fixture.py",
+        "allowedSkippedTests": []
       }
     ]
   },
@@ -1746,7 +1827,10 @@
     "requiredBeforeProduction": true,
     "businessActors": {
       "accounts": 4,
-      "roleCounts": { "INSPECTOR": 2, "SUPERVISOR": 2 },
+      "roleCounts": {
+        "INSPECTOR": 2,
+        "SUPERVISOR": 2
+      },
       "tabsPerAccount": 2
     },
     "loadTest": {

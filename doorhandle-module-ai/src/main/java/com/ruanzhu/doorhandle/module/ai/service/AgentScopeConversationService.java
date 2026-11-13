@@ -147,11 +147,11 @@ public class AgentScopeConversationService implements AgentConversationApi {
             }
             if(command!=null){messages.set(messages.size()-1,new UserMessage(command.question()));if(work!=null)work.bindContextInput(messages,history.size()-1);
                 var middleware=journal.enabled()?new AgentJournalMiddleware(audit,actor,factory.confirmationEnabled(),factory.reportsEnabled(),factory.reportDraftsEnabled()):null;
-                agent=factory.create(actor,main,middleware,cards,command.skill(),control,work,answerEvidence);
+                agent=factory.create(actor,main,middleware,cards,command.skill(),control,work,answerEvidence,command.question());
             }else {
                 if(work!=null)work.bindContextInput(messages,history.size()-1);
                 var middleware=journal.enabled()?new AgentJournalMiddleware(audit, actor, factory.confirmationEnabled(),factory.reportsEnabled(),factory.reportDraftsEnabled()):null;
-                agent=factory.create(actor,main,middleware,cards,null,control,work,answerEvidence);
+                agent=factory.create(actor,main,middleware,cards,null,control,work,answerEvidence,last);
             }
         }
         catch (RuntimeException error) {

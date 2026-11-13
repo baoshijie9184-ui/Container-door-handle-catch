@@ -3,7 +3,8 @@
 
 Never loads a workstation Mem0 process or overwrites a live cloud volume. Original
 vectors, text and history stay in private exports and byte-identical snapshots.
-Mem0 uses the verified target provider; RAG reuses the actual Java hashing source.
+Mem0 and RAG use the fixed verified BGE-M3 provider and remote Qdrant targets.
+Old hashing vectors and Chroma files are preserved only as import evidence.
 Adapted from this repository's prepared migrate_legacy_mem0.py (2026-11-05).
 """
 from __future__ import annotations
@@ -12,6 +13,7 @@ import argparse
 import base64
 import contextlib
 import datetime as dt
+from functools import wraps
 import hashlib
 import ipaddress
 import json
@@ -25,10 +27,14 @@ import struct
 import subprocess
 import sys
 import tarfile
+from types import SimpleNamespace
 import urllib.request
 import urllib.error
 import urllib.parse
 import uuid
+
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path: sys.path.insert(0, str(ROOT))
 
 FORMAT = 1
 COLLECTION = "doorhandle_memories"
@@ -314,6 +320,80 @@ def prepared_records(bundle, mapping, embeddings):
     return projected
 
 
+def rag_bge_reembed(bundle, policy, config, output):
+    """Re-embed source text, never reinterpret 256/old1024 vectors as BGE."""
+    from memory_service.embedding_config import FreeBgeEmbedder
+    from openai import OpenAI
+    from types import SimpleNamespace
+    require(policy.get('sourceBundleSha256') == sha(canonical(bundle))
+            and policy.get('projectScopeVerified') is True and policy.get('verifiedTargetRuntime') is True
+            and policy.get('collection') == 'doorhandle_rag_bge_m3_v1'
+            and policy.get('targetEmbeddingName') == 'BAAI/bge-m3' and policy.get('targetDimension') == 1024
+            and re.fullmatch(r'[a-f0-9]{40}', policy.get('applicationCommit', '')),
+            'RAG BGE policy lacks a verified source, project and target identity')
+    require(config.get('embeddingProfile') == 'siliconflow-bge-m3-v1' and config.get('model') == 'BAAI/bge-m3'
+            and config.get('baseUrl') == 'https://api.siliconflow.cn/v1' and config.get('dimensions') is None
+            and config.get('verifiedTargetRuntime') is True and bool(config.get('apiKey')),
+            'RAG requires the fixed free BGE transport without dimension override')
+    rows = bundle['records']
+    require(0 < len(rows) <= 1000 and len(rows) == policy.get('expectedSourceRecords')
+            and set(policy.get('dispositions', {})) == {row['id'] for row in rows}
+            and all(value == 'import' for value in policy['dispositions'].values())
+            and policy.get('targetIds') == {row['id']: row['id'] for row in rows},
+            'Every RAG document needs an explicit stable-ID project disposition')
+    for row in rows:
+        require(sha(row['document'].encode()) == row['textSha256']
+                and sha(vector_bytes(row['embedding'])) == row['originalVectorSha256']
+                and 'user_id' not in row['metadata'] and row['metadata'].get('agent_id') in (None, 'doorhandlecatch'),
+                'RAG source provenance or ownership differs')
+    state = {'schemaVersion': 2, 'kind': 'rag-bge-prepared-embeddings', 'status': 'PREPARED',
+             'sourceBundleSha256': sha(canonical(bundle)), 'policySha256': sha(canonical(policy)),
+             'profile': 'siliconflow-bge-m3-v1', 'model': 'BAAI/bge-m3', 'dimensions': 1024,
+             'preprocessing': 'utf8-newline-space-v1', 'paidModelCalls': 0, 'llmCalls': 0,
+             'requests': [], 'records': []}
+    path = safe_path(output, exists=False); require(not path.exists(), 'RAG BGE output already exists; no provider replay')
+    private_json(path, state)
+    client = OpenAI(api_key=config['apiKey'], base_url=config['baseUrl'], timeout=60, max_retries=0)
+    embedder = FreeBgeEmbedder(SimpleNamespace(client=client, config=SimpleNamespace(model='BAAI/bge-m3')),
+                               settings={'EMBEDDING_PROFILE': 'siliconflow-bge-m3-v1'})
+    for offset in range(0, len(rows), 8):
+        batch = rows[offset:offset + 8]
+        state['status'] = 'REQUEST_IN_FLIGHT'; state['requests'].append({'offset': offset, 'records': len(batch), 'status': 'IN_FLIGHT'})
+        private_json(path, state, replace=True)
+        vectors = embedder.embed_batch([row['document'] for row in batch])
+        for row, vector in zip(batch, vectors):
+            raw = vector_bytes(vector)
+            state['records'].append({'id': row['id'], 'textSha256': row['textSha256'],
+                'originalVectorSha256': row['originalVectorSha256'], 'embedding': list(struct.unpack('<1024f', raw)),
+                'rawVectorSha256': sha(raw)})
+        state['requests'][-1]['status'] = 'SUCCEEDED'; state['status'] = 'PARTIAL'
+        private_json(path, state, replace=True)
+    state['status'] = 'COMPLETE'; private_json(path, state, replace=True)
+    return {'status': 'COMPLETE', 'reembeddedRecords': len(rows), 'requests': len(state['requests']),
+            'model': state['model'], 'dimensions': 1024, 'paidModelCalls': 0, 'llmCalls': 0}
+
+
+def prepared_bge_rag_records(bundle, policy, embeddings):
+    require(embeddings.get('status') == 'COMPLETE' and embeddings.get('kind') == 'rag-bge-prepared-embeddings'
+            and embeddings.get('sourceBundleSha256') == sha(canonical(bundle))
+            and embeddings.get('policySha256') == sha(canonical(policy))
+            and embeddings.get('profile') == 'siliconflow-bge-m3-v1' and embeddings.get('model') == 'BAAI/bge-m3'
+            and embeddings.get('dimensions') == 1024 and embeddings.get('preprocessing') == 'utf8-newline-space-v1'
+            and all(row['status'] == 'SUCCEEDED' for row in embeddings.get('requests', [])),
+            'Prepared BGE RAG output is incomplete or belongs to another source/model')
+    vectors = {row['id']: row for row in embeddings['records']}
+    require(len(vectors) == len(embeddings['records']) == len(bundle['records'])
+            and set(vectors) == {row['id'] for row in bundle['records']}, 'BGE RAG vector IDs do not exactly cover the source')
+    result = []
+    for source in bundle['records']:
+        row = vectors[source['id']]
+        require(row['textSha256'] == source['textSha256'] and row['originalVectorSha256'] == source['originalVectorSha256']
+                and len(row['embedding']) == 1024 and sha(vector_bytes(row['embedding'])) == row['rawVectorSha256'],
+                'Prepared RAG vector/source provenance differs')
+        result.append({**source, 'embedding': row['embedding']})
+    return result
+
+
 def read_collection(collection):
     result = {}
     count = collection.count()
@@ -335,117 +415,67 @@ def history_snapshot(db):
             for name in ("history", "messages")}
 
 
+def target_connection(admission, root):
+    filename = safe_path(admission.get('qdrantConfigFile', ''))
+    require(filename.is_file() and root not in filename.parents and filename.stat().st_mode & 0o077 == 0,
+            'Qdrant connection stays in a private file outside the preserved payload')
+    config = read_json(filename)
+    require(set(config) == {'backend', 'baseUrl', 'apiKeyFile'} and config['backend'] == 'qdrant',
+            'An explicit remote Qdrant target is required')
+    key = safe_path(config['apiKeyFile'])
+    require(root not in key.parents, 'The Qdrant credential must remain outside the candidate data payload')
+    from script.memory.qdrant_migration import Remote
+    return Remote(config['baseUrl'], config['apiKeyFile'])
+
+
+def migration_target_operation(function):
+    """Keep the public migration error contract without leaking remote payloads."""
+    @wraps(function)
+    def guarded(*args, **kwargs):
+        try:
+            return function(*args, **kwargs)
+        except ValueError:
+            raise MigrationError('Qdrant target validation failed; production remains gated') from None
+    return guarded
+
+
+@migration_target_operation
 def merge_candidate(bundle, mapping, embeddings, candidate, receipt_path, identity):
     root = safe_path(candidate)
-    admit_candidate(root, "mem0-offline-candidate", bundle, identity)
-    require(safe_path(receipt_path, exists=False).parent == root, "Receipt must be inside the owned candidate")
+    admission = admit_candidate(root, 'mem0-offline-candidate', bundle, identity)
+    output = safe_path(receipt_path, exists=False)
+    require(not output.exists(), 'A prior target write receipt requires review; do not replay an unknown migration')
+    require(embeddings.get('targetModel') == 'BAAI/bge-m3' and embeddings.get('targetCollection') == 'doorhandle_memories_bge_m3_v1'
+            and embeddings.get('embeddingProfile') == 'siliconflow-bge-m3-v1' and embeddings.get('dimensions') == 1024,
+            'Memory migration only writes the explicitly bound BGE/Qdrant target')
+    from script.memory.qdrant_migration import COLLECTIONS, merge_history, admit_lifecycle_import, admit_history_import
+    from memory_service.qdrant_store import persist_storage_floor, vector_identity
     projected = prepared_records(bundle, mapping, embeddings)
-    target_dim = embeddings["dimensions"]
-    target_collection = embeddings.get("targetCollection", COLLECTION)
-    bge = target_collection == "doorhandle_memories_bge_m3_v1"
-    require(target_collection == COLLECTION or bge and embeddings.get("embeddingProfile") == "siliconflow-bge-m3-v1"
-            and embeddings.get("targetModel") == "BAAI/bge-m3" and target_dim == 1024,
-            "Target memory collection is not bound to its embedding model")
-    require(embeddings.get("embeddingProfile") != "siliconflow-bge-m3-v1" or bge,
-            "Free BGE vectors must use their independent collection")
-    require(all(len(r["embedding"]) == target_dim for r in projected["records"]), "Prepared embedding dimension mismatch")
-    import fcntl
-    fence = root / "bridge_receipts" / "writer.lock"
-    safe_path(fence, exists=False).parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    with fence.open("a+b") as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        from chromadb import PersistentClient
-        from chromadb.config import Settings
-        os.environ["ANONYMIZED_TELEMETRY"] = "false"
-        client = PersistentClient(path=str(root / "chroma"), settings=Settings(anonymized_telemetry=False))
-        collection = client.get_or_create_collection(target_collection, embedding_function=None)
-        if bge:
-            from memory_service.embedding_config import bind_collection
-            bind_collection(collection)
-        before = read_collection(collection)
-        missing = []
-        for row in projected["records"]:
-            wanted = {"metadata": row["metadata"], "vectorSha256": sha(vector_bytes(row["embedding"])), "document": None}
-            if row["id"] in before:
-                require(before[row["id"]] == wanted, "An existing target memory conflicts; no overwrite is allowed")
-            else:
-                missing.append(row)
-        journal = root / "bridge_receipts" / "write-receipts.sqlite3"
-        if journal.exists():
-            with contextlib.closing(open_ro(journal)) as lifecycle:
-                tables = {r[0] for r in lifecycle.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-                if "memory_lifecycle" in tables:
-                    governed = {r[0] for r in lifecycle.execute("SELECT DISTINCT memory_id FROM memory_lifecycle")}
-                    require(not governed.intersection(r["id"] for r in missing), "Source memory has target lifecycle history; explicit reconciliation is required")
-        history_path = safe_path(root / "history.db", exists=False)
-        db = sqlite3.connect(history_path)
-        db.row_factory = sqlite3.Row
-        try:
-            baseline = history_snapshot(db)
-            required = {"history": HISTORY_COLUMNS, "messages": MESSAGE_COLUMNS}
-            for name, columns in required.items():
-                existing_columns = {r[1] for r in db.execute('PRAGMA table_info("' + name + '")')}
-                require(not existing_columns or existing_columns == set(columns), "Target native history schema is incompatible")
-                for row in projected[name]:
-                    require(set(row) == set(columns), "Source native history schema is incompatible")
-                    if row["id"] in baseline[name]:
-                        require(baseline[name][row["id"]] == row, "Target native history ID conflicts; no overwrite is allowed")
-            receipt = {"format": FORMAT, "status": "PREPARED", "identity": identity,
-                "sourceBundleSha256": sha(canonical(bundle)), "ownerMappingSha256": sha(canonical(mapping)),
-                "embeddingOutputSha256": sha(canonical(embeddings)), "before": {k: sha(canonical(v)) for k, v in before.items()},
-                "beforeHistory": {name: {ident: sha(canonical(row)) for ident, row in rows.items()} for name, rows in baseline.items()},
-                "newMemoryIds": [r["id"] for r in missing], "activeMemoryIds": [r["id"] for r in projected["records"]],
-                "archivedMemoryIds": projected["archivedMemoryIds"], "archivedHistoryRows": projected["archivedHistoryRows"],
-                "archivedMessageRows": projected["archivedMessageRows"]}
-            receipt_file = Path(receipt_path)
-            if receipt_file.exists():
-                prior = read_json(receipt_file)
-                require(prior.get("sourceBundleSha256") == receipt["sourceBundleSha256"] and prior.get("ownerMappingSha256") == receipt["ownerMappingSha256"]
-                        and prior.get("embeddingOutputSha256") == receipt["embeddingOutputSha256"] and prior.get("identity") == identity, "Prior candidate receipt belongs to another migration")
-                # Keep the original before-state so an interrupted operation cannot redefine success.
-                receipt["before"] = prior["before"]
-                receipt["beforeHistory"] = prior["beforeHistory"]
-                receipt["newMemoryIds"] = prior["newMemoryIds"]
-            private_json(receipt_file, receipt, replace=receipt_file.exists())
-            for offset in range(0, len(missing), 100):
-                batch = missing[offset:offset + 100]
-                collection.add(ids=[r["id"] for r in batch], embeddings=[r["embedding"] for r in batch], metadatas=[r["metadata"] for r in batch])
-            db.execute("BEGIN IMMEDIATE")
-            db.execute("CREATE TABLE IF NOT EXISTS history (id TEXT PRIMARY KEY,memory_id TEXT,old_memory TEXT,new_memory TEXT,event TEXT,created_at DATETIME,updated_at DATETIME,is_deleted INTEGER,actor_id TEXT,role TEXT)")
-            db.execute("CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY,session_scope TEXT,role TEXT,content TEXT,name TEXT,created_at DATETIME)")
-            for name, columns in required.items():
-                for row in projected[name]:
-                    if row["id"] not in baseline[name]:
-                        db.execute('INSERT INTO "' + name + '" (' + ','.join(columns) + ') VALUES (' + ','.join('?' for _ in columns) + ')', tuple(row[k] for k in columns))
-            db.commit()
-            after = read_collection(collection)
-            for ident, digest in receipt["before"].items():
-                require(ident in after and sha(canonical(after[ident])) == digest, "Existing target memory changed")
-            require(set(after) == set(receipt["before"]) | {r["id"] for r in projected["records"]}, "Candidate gained unexpected memory IDs")
-            for row in projected["records"]:
-                require(after[row["id"]] == {"metadata": row["metadata"], "vectorSha256": sha(vector_bytes(row["embedding"])), "document": None}, "Imported memory readback mismatch")
-                owner = row["metadata"]["user_id"]
-                owner_count = sum(1 for value in after.values() if value["metadata"].get("user_id") == owner and value["metadata"].get("agent_id") == "doorhandlecatch")
-                lookup = collection.query(query_embeddings=[row["embedding"]],
-                    where={"$and": [{"user_id": {"$eq": owner}}, {"agent_id": {"$eq": "doorhandlecatch"}}]},
-                    n_results=owner_count, include=["distances", "metadatas"])
-                require(row["id"] in lookup["ids"][0], "Imported vector cannot retrieve its own memory")
-                require(abs(lookup["distances"][0][lookup["ids"][0].index(row["id"])]) <= 0.00001, "Imported vector self-distance differs")
-                require(all(meta.get("user_id") == owner and meta.get("agent_id") == "doorhandlecatch" for meta in lookup["metadatas"][0]), "Vector search crossed an owner boundary")
-            after_history = history_snapshot(db)
-            for name, rows in receipt["beforeHistory"].items():
-                require(all(ident in after_history[name] and sha(canonical(after_history[name][ident])) == digest for ident, digest in rows.items()), "Existing target history changed")
-            for name in required:
-                require(all(after_history[name].get(row["id"]) == row for row in projected[name]), "Imported native history readback mismatch")
-                require(set(after_history[name]) == set(receipt["beforeHistory"][name]) | {r["id"] for r in projected[name]}, "Candidate gained unexpected history IDs")
-            receipt.update(status="MERGED_VERIFIED", activeRecords=len(projected["records"]), importedHistoryRows=len(projected["history"]),
-                importedMessageRows=len(projected["messages"]), targetTotalRecords=len(after), preservedTargetRecords=len(receipt["before"]),
-                targetModel=embeddings["targetModel"], targetCollection=target_collection, vectorSelfLookupCount=len(projected["records"]),
-                vectorOwnerIsolationQueries=len(projected["records"]), completedAtUtc=dt.datetime.now(dt.timezone.utc).isoformat())
-            private_json(receipt_file, receipt, replace=True)
-            return {k: receipt[k] for k in ("status", "activeRecords", "importedHistoryRows", "importedMessageRows", "targetTotalRecords", "preservedTargetRecords", "archivedHistoryRows", "archivedMessageRows")}
-        finally:
-            db.close()
+    admit_lifecycle_import(root, [row['id'] for row in projected['records']],
+                           SimpleNamespace(open_ro=open_ro))
+    history_adapter = SimpleNamespace(HISTORY_COLUMNS=HISTORY_COLUMNS, MESSAGE_COLUMNS=MESSAGE_COLUMNS,
+                                      history_snapshot=history_snapshot, open_ro=open_ro)
+    admit_history_import(projected, root, history_adapter)
+    remote = target_connection(admission, root)
+    remote.admit(COLLECTIONS['mem0'], create=True)
+    before = remote.catalog(COLLECTIONS['mem0'])
+    private_json(output, {'status': 'PREPARED', 'identity': identity, 'sourceBundleSha256': sha(canonical(bundle)),
+                         'before': before, 'vectorBackend': 'qdrant'})
+    imported = remote.import_records(COLLECTIONS['mem0'], projected['records'])
+    history = merge_history(projected, root, history_adapter)
+    persist_storage_floor(root, COLLECTIONS['mem0'], vector_identity({'EMBEDDING_PROFILE': 'siliconflow-bge-m3-v1'}))
+    receipt = {'format': FORMAT, 'status': 'MERGED_PENDING_INDEPENDENT_RECOVERY', 'identity': identity,
+        'sourceBundleSha256': sha(canonical(bundle)), 'ownerMappingSha256': sha(canonical(mapping)),
+        'embeddingOutputSha256': sha(canonical(embeddings)), 'targetBackend': 'qdrant',
+        'targetModel': 'BAAI/bge-m3', 'targetCollection': COLLECTIONS['mem0'],
+        'before': before, 'storedVectors': imported['provenance'], 'after': imported['records'],
+        'activeRecords': len(projected['records']), 'importedHistoryRows': len(projected['history']),
+        'importedMessageRows': len(projected['messages']), 'archivedMemoryIds': projected['archivedMemoryIds'],
+        'archivedHistoryRows': projected['archivedHistoryRows'], 'archivedMessageRows': projected['archivedMessageRows'],
+        'historyMode': history['historyMode'], 'productionPromotionAllowed': False}
+    private_json(output, receipt, replace=True)
+    return {key: receipt[key] for key in ('status', 'activeRecords', 'importedHistoryRows', 'importedMessageRows',
+                                         'archivedHistoryRows', 'archivedMessageRows', 'productionPromotionAllowed')}
 
 
 def verify_bridge(bundle, mapping, bridge_config, receipt_path, identity):
@@ -933,10 +963,12 @@ def project_rag(bundle, policy):
     require(bundle.get("format") == FORMAT and bundle.get("kind") == "legacy-rag-private-export"
             and bundle.get("collection") == RAG_COLLECTION, "Unsupported RAG export")
     require(policy.get("sourceBundleSha256") == sha(canonical(bundle)), "RAG policy is not bound to this export")
-    require(policy.get("collection") == RAG_COLLECTION and policy.get("projectScopeVerified") is True
+    bge = policy.get("collection") == "doorhandle_rag_bge_m3_v1"
+    require(policy.get("collection") in (RAG_COLLECTION, "doorhandle_rag_bge_m3_v1") and policy.get("projectScopeVerified") is True
             and isinstance(policy.get("scopeEvidence"), str) and policy["scopeEvidence"], "RAG project scope requires explicit evidence")
     require(policy.get("verifiedTargetRuntime") is True
-            and policy.get("targetEmbeddingName") == "local-hashing-" + str(policy.get("targetDimension"))
+            and (policy.get("targetEmbeddingName") == "BAAI/bge-m3" and policy.get("targetDimension") == 1024 if bge
+                 else policy.get("targetEmbeddingName") == "local-hashing-" + str(policy.get("targetDimension")))
             and re.fullmatch(r"[a-f0-9]{40}", policy.get("applicationCommit", "")), "RAG target hashing configuration and commit need runtime verification")
     rows = bundle["records"]
     require(len(rows) == policy.get("expectedSourceRecords") and 0 < len(rows) <= 1000, "RAG source count differs from policy")
@@ -1058,87 +1090,48 @@ def prepared_rag_records(bundle, policy, embeddings):
     return projected
 
 
+@migration_target_operation
 def rag_candidate_merge(bundle, policy, embeddings, candidate, receipt_path, identity):
     root = safe_path(candidate)
-    admit_candidate(root, "rag-offline-candidate", bundle, identity)
-    require(safe_path(receipt_path, exists=False).parent == root, "RAG receipt must be inside the owned candidate")
-    projected = prepared_rag_records(bundle, policy, embeddings)
-    import fcntl
-    with (root / "migration-writer.lock").open("a+b") as fence:
-        fcntl.flock(fence.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        from chromadb import PersistentClient
-        from chromadb.config import Settings
-        client = PersistentClient(path=str(root / "chroma"), settings=Settings(anonymized_telemetry=False))
-        collection = client.get_or_create_collection(RAG_COLLECTION, embedding_function=None,
-            metadata={"embedding": "local-hashing-" + str(embeddings["dimensions"]), "description": "DoorHandleCatch assistant RAG knowledge base"})
-        before = read_collection(collection)
-        existing = collection.get(limit=max(1, collection.count()), include=["embeddings"])
-        vectors = existing["embeddings"] if existing["embeddings"] is not None else []
-        require(all(len(vector) == embeddings["dimensions"] for vector in vectors), "Target RAG vectors have a different dimension; rebuild a separate index")
-        wanted = {row["id"]: {"metadata": row["metadata"], "document": row["document"], "vectorSha256": sha(vector_bytes(row["embedding"]))} for row in projected["records"]}
-        require(all(before[ident] == value for ident, value in wanted.items() if ident in before), "RAG target ID conflicts; use an explicitly reviewed old-ID mapping")
-        receipt = {"format": FORMAT, "status": "PREPARED", "identity": identity, "sourceBundleSha256": sha(canonical(bundle)),
-                   "policySha256": sha(canonical(policy)), "embeddingOutputSha256": sha(canonical(embeddings)),
-                   "before": {ident: sha(canonical(value)) for ident, value in before.items()},
-                   "oldIdMapping": {row["oldId"]: row["id"] for row in projected["records"]}, "archivedIds": projected["archivedIds"]}
-        path = Path(receipt_path)
-        if path.exists():
-            prior = read_json(path)
-            require(all(prior.get(key) == receipt[key] for key in ("identity", "sourceBundleSha256", "policySha256", "embeddingOutputSha256", "oldIdMapping", "archivedIds")), "RAG prior receipt belongs to another migration")
-            receipt["before"] = prior["before"]
-        private_json(path, receipt, replace=path.exists())
-        missing = [row for row in projected["records"] if row["id"] not in before]
-        for offset in range(0, len(missing), 100):
-            batch = missing[offset:offset + 100]
-            collection.add(ids=[row["id"] for row in batch], embeddings=[row["embedding"] for row in batch],
-                           metadatas=[row["metadata"] for row in batch], documents=[row["document"] for row in batch])
-        after = read_collection(collection)
-        require(all(ident in after and sha(canonical(after[ident])) == digest for ident, digest in receipt["before"].items()), "Existing target RAG document changed")
-        require(set(after) == set(receipt["before"]) | set(wanted) and all(after.get(ident) == value for ident, value in wanted.items()), "RAG candidate readback mismatch")
-        for row in projected["records"]:
-            result = collection.query(query_embeddings=[row["embedding"]], n_results=len(after), include=["distances"])
-            require(row["id"] in result["ids"][0] and abs(result["distances"][0][result["ids"][0].index(row["id"])]) <= 0.0001, "Imported RAG vector cannot retrieve its exact document")
-        receipt.update(status="MERGED_VERIFIED", activeRecords=len(wanted), preservedTargetRecords=len(receipt["before"]), vectorSelfLookupCount=len(wanted))
-        private_json(path, receipt, replace=True)
-        return {key: receipt[key] for key in ("status", "activeRecords", "preservedTargetRecords", "vectorSelfLookupCount")}
+    admission = admit_candidate(root, 'rag-offline-candidate', bundle, identity)
+    rows = prepared_bge_rag_records(bundle, policy, embeddings)
+    remote = target_connection(admission, root)
+    from script.memory.qdrant_migration import COLLECTIONS, rag_manifest
+    generation = 'legacy-' + sha(canonical(bundle))[:24]
+    require(not safe_path(receipt_path, exists=False).exists(), 'Prior RAG target receipt requires review, not replay')
+    private_json(receipt_path, {'status': 'PREPARED', 'identity': identity, 'sourceBundleSha256': sha(canonical(bundle))})
+    result = remote.import_records(COLLECTIONS['rag'], rows, kind='SYSTEM_RAG', generation=generation)
+    manifest = rag_manifest(policy['applicationCommit'], generation, rows, result)
+    private_json(root / 'rag-preservation-manifest.json', manifest)
+    receipt = {'status': 'MERGED_PENDING_INDEPENDENT_RECOVERY', 'identity': identity, 'targetBackend': 'qdrant',
+        'sourceBundleSha256': sha(canonical(bundle)), 'policySha256': sha(canonical(policy)),
+        'embeddingOutputSha256': sha(canonical(embeddings)), 'targetRecords': len(rows),
+        'storedVectors': result['provenance'], 'productionPromotionAllowed': False}
+    private_json(receipt_path, receipt, replace=True)
+    return {'status': receipt['status'], 'targetRecords': len(rows), 'productionPromotionAllowed': False}
 
 
+@migration_target_operation
 def rag_verify_http(bundle, policy, embeddings, config, receipt_path, identity):
-    """Read-only Chroma v2 checks; run after app startup has finished re-indexing."""
-    rows = prepared_rag_records(bundle, policy, embeddings)["records"]
-    base = config.get("baseUrl", "").rstrip("/")
-    parsed = urllib.parse.urlsplit(base)
-    require(parsed.scheme in ("http", "https") and parsed.hostname and not parsed.username and not parsed.password
-            and not parsed.path and not parsed.query and not parsed.fragment, "Invalid Chroma base URL")
-    require(parsed.hostname == "localhost" or ipaddress.ip_address(parsed.hostname).is_private, "Chroma verification must use an ECS private interface")
-    require(config.get("applicationReindexComplete") is True and config.get("applicationCommit") == policy["applicationCommit"], "RAG verification must follow fixed-commit application startup")
-    tenant, database = config.get("tenant", "default_tenant"), config.get("database", "default_database")
-    route = base + "/api/v2/tenants/" + urllib.parse.quote(tenant, safe="") + "/databases/" + urllib.parse.quote(database, safe="") + "/collections/"
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
-
-    def request(url, body=None):
-        headers = {"Content-Type": "application/json", **config.get("headers", {})}
-        req = urllib.request.Request(url, data=canonical(body) if body is not None else None, headers=headers, method="POST" if body is not None else "GET")
-        with opener.open(req, timeout=20) as response:
-            return json.loads(response.read())
-
-    collection = request(route + urllib.parse.quote(RAG_COLLECTION, safe=""))
-    require(collection.get("name") == RAG_COLLECTION and isinstance(collection.get("id"), str), "Wrong RAG HTTP collection")
-    endpoint = route + urllib.parse.quote(collection["id"], safe="")
-    verified = []
+    from script.memory.qdrant_migration import Remote, COLLECTIONS, normalized_agreement
+    require(set(config) == {'backend', 'baseUrl', 'apiKeyFile', 'storedCatalogueFile'} and config['backend'] == 'qdrant',
+            'RAG verification requires explicit Qdrant transport and its first stored catalogue')
+    remote = Remote(config['baseUrl'], config['apiKeyFile'])
+    rows = prepared_bge_rag_records(bundle, policy, embeddings)
+    actual = remote.records(COLLECTIONS['rag'])
+    baseline = read_json(config['storedCatalogueFile'])
+    require(remote.catalog(COLLECTIONS['rag']) == baseline, 'Stored Qdrant fingerprints changed since first normalization proof')
     for row in rows:
-        result = request(endpoint + "/get", {"ids": [row["id"]], "include": ["documents", "metadatas", "embeddings"]})
-        require(result.get("ids") == [row["id"]] and result["documents"] == [row["document"]]
-                and result["metadatas"] == [row["metadata"]] and sha(vector_bytes(result["embeddings"][0])) == sha(vector_bytes(row["embedding"])), "Post-startup RAG HTTP readback mismatch")
-        query = request(endpoint + "/query", {"query_embeddings": [row["embedding"]], "n_results": len(rows), "include": ["distances"]})
-        require(row["id"] in query["ids"][0] and abs(query["distances"][0][query["ids"][0].index(row["id"])]) <= 0.0001, "Post-startup RAG retrieval lost an imported document")
-        verified.append({"oldId": row["oldId"], "id": row["id"], "textSha256": row["textSha256"]})
-    receipt = {"status": "RAG_HTTP_VERIFIED", "identity": identity, "sourceBundleSha256": sha(canonical(bundle)),
-               "policySha256": sha(canonical(policy)), "embeddingOutputSha256": sha(canonical(embeddings)),
-               "applicationCommit": config["applicationCommit"], "postApplicationStartup": True, "documents": verified,
-               "modelCallsPerformed": False, "writesPerformed": False}
+        stored = actual.get(row['id'])
+        require(stored is not None and stored['payload'].get('text') == row['document']
+                and all(stored['payload'].get(key) == value for key, value in row['metadata'].items()),
+                'Qdrant RAG readback lost source text or metadata')
+        normalized_agreement(row['embedding'], stored['vector'])
+    receipt = {'status': 'QDRANT_HTTP_READBACK_VERIFIED', 'identity': identity, 'verifiedDocuments': len(rows),
+        'firstStoredFloat32FingerprintsVerified': True, 'sourceBundleSha256': sha(canonical(bundle)),
+        'paidModelCalls': 0, 'llmCalls': 0, 'writesPerformed': False, 'productionPromotionAllowed': False}
     private_json(receipt_path, receipt)
-    return {"status": receipt["status"], "verifiedDocuments": len(verified), "modelCallsPerformed": False, "writesPerformed": False}
+    return receipt
 
 
 def main():
@@ -1173,9 +1166,7 @@ def main():
             p.add_argument("--expected-instance-id", required=True)
             p.add_argument("--expected-machine-id", required=True)
         if name == "rag-reembed":
-            p.add_argument("--java-source", required=True)
-            p.add_argument("--java", required=True)
-            p.add_argument("--workdir", required=True)
+            p.add_argument("--provider-config", required=True)
             p.add_argument("--output", required=True)
         if name in ("rag-merge", "rag-verify-http"):
             p.add_argument("--embeddings", required=True)
@@ -1183,7 +1174,7 @@ def main():
         if name == "rag-merge":
             p.add_argument("--candidate", required=True)
         if name == "rag-verify-http":
-            p.add_argument("--chroma-config", required=True)
+            p.add_argument("--qdrant-config", required=True)
     for name in ("plan", "reembed", "merge", "verify-bridge"):
         p = sub.add_parser(name)
         p.add_argument("--bundle", required=True)
@@ -1228,11 +1219,11 @@ def main():
         else:
             identity = ecs_identity(args.expected_instance_id, args.expected_machine_id)
             if args.action == "rag-reembed":
-                report = rag_reembed(bundle, policy, args.java_source, args.java, args.workdir, args.output)
+                report = rag_bge_reembed(bundle, policy, read_json(args.provider_config), args.output)
             elif args.action == "rag-merge":
                 report = rag_candidate_merge(bundle, policy, read_json(args.embeddings), args.candidate, args.receipt, identity)
             else:
-                report = rag_verify_http(bundle, policy, read_json(args.embeddings), read_json(args.chroma_config), args.receipt, identity)
+                report = rag_verify_http(bundle, policy, read_json(args.embeddings), read_json(args.qdrant_config), args.receipt, identity)
     else:
         bundle, mapping = read_json(args.bundle), read_json(args.mapping)
         projected = project(bundle, mapping)

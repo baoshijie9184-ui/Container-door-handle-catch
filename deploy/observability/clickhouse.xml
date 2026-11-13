@@ -1,0 +1,8 @@
+<clickhouse>
+  <logger><level>warning</level><size>10M</size><count>3</count></logger>
+  <max_server_memory_usage_to_ram_ratio>0.8</max_server_memory_usage_to_ram_ratio>
+  <max_concurrent_queries>20</max_concurrent_queries>
+  <query_log remove="1"/>
+  <query_thread_log remove="1"/>
+  <text_log remove="1"/>
+</clickhouse>

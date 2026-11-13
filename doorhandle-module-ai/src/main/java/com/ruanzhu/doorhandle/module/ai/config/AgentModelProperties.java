@@ -11,6 +11,10 @@ import java.util.List;
 @Validated
 @ConfigurationProperties(prefix = "agentscope.models")
 public class AgentModelProperties {
+    @Min(1) @Max(1024)
+    private int maxConcurrentCalls=32;
+    public int getMaxConcurrentCalls(){return maxConcurrentCalls;}
+    public void setMaxConcurrentCalls(int value){maxConcurrentCalls=value;}
     private Duration timeout = Duration.ofSeconds(60);
     @Min(0) @Max(3) private int maxRetries = 2;
     @Min(16) private int maxOutputTokens = 2048;

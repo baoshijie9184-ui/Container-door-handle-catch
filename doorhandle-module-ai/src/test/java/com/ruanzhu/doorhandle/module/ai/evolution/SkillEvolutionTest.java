@@ -7,6 +7,7 @@ import com.ruanzhu.doorhandle.module.ai.agent.*;
 import com.ruanzhu.doorhandle.module.ai.config.AgentScopeProperties;
 import com.ruanzhu.doorhandle.module.ai.journal.*;
 import com.ruanzhu.doorhandle.module.ai.tool.BusinessToolkitFactory;
+import com.ruanzhu.doorhandle.framework.semantic.*;
 import io.agentscope.core.message.*;
 import io.agentscope.core.model.*;
 import org.junit.jupiter.api.*;
@@ -40,6 +41,25 @@ class SkillEvolutionTest {
     SkillDtos.Draft draft(String request){return new SkillDtos.Draft("task-progress","INSPECTOR","用户查询检测任务进度时使用","先确认用户提供的任务编号 再调用已授权任务查询工具 核对处理图片数量和复核状态 无数据依据时明确说明 不将查询结果视为审批或放行",List.of("get_task_detail"),"source-1",request);}
     SkillDtos.View create(){service.capture(alice,"source-1");return service.create(alice,draft("request-one"));}
     SkillDtos.View publish(){var v=create();v=service.evaluate(alice,v.skillId(),v.revision());v=service.submit(alice,v.skillId(),v.revision());return service.decide(boss,v.skillId(),new SkillDtos.Decision(v.revision(),"APPROVE","已核对通用步骤及脱敏",true,true));}
+    @Test void semanticExperienceRecallRevalidatesPublishedRoleVersionAndDoesNotCountAsUse(){
+        var published=publish();var properties=new SemanticProperties();var vectors=mock(SemanticVectorStore.class);var states=new JdbcSemanticIndexState(jdbc,json,properties);
+        service.semanticIndex(vectors,properties,states);when(vectors.contains(anyString(),anyList())).thenReturn(true);service.reconcileExperienceIndex();
+        var hash=published.versions().get(0).sha256();
+        var valid=new SemanticVectorStore.Hit(published.skillId()+"@v1:0",.9,"FORGED_REMOTE_INSTRUCTIONS",Map.of("source_id",published.skillId(),"version","1","source_sha256",hash));
+        when(vectors.search(anyString(),anyString(),any(),anyInt(),any())).thenReturn(List.of(valid));
+        var recall=service.recallPublished(alice,"语义问题",5);assertThat(recall.mode()).isEqualTo("SEMANTIC");assertThat(recall.skills()).hasSize(1);assertThat(recall.skills().get(0).getSkillContent()).contains(draft("unused-request").instructions()).doesNotContain("FORGED_REMOTE_INSTRUCTIONS");
+        assertThat(service.recallPublished(boss,"语义问题",5).skills()).isEmpty();
+        assertThat(service.get(alice,published.skillId()).useCount()).isZero();
+        service.archive(boss,published.skillId(),new SkillDtos.Command(published.revision(),"暂停此发布版本"));assertThat(service.repository(alice,"语义问题").getAllSkills()).isEmpty();
+        assertThat(service.availableSkills(alice)).isEmpty();
+    }
+    @Test void unavailableSemanticExperienceUsesHonestKeywordModeWithoutChangingExplicitCatalog(){
+        publish();var properties=new SemanticProperties();var vectors=mock(SemanticVectorStore.class);
+        service.semanticIndex(vectors,properties,new JdbcSemanticIndexState(jdbc,json,properties));
+        when(vectors.search(anyString(),anyString(),any(),anyInt(),any())).thenThrow(new SemanticUnavailableException("VECTOR_OPERATION_FAILED"));
+        var recall=service.recallPublished(alice,"检测任务进度",5);assertThat(recall.mode()).isEqualTo("KEYWORD_DEGRADED");assertThat(recall.skills()).hasSize(1);
+        assertThat(service.repository(alice).getAllSkills()).hasSize(1);assertThat(service.availableSkills(alice)).hasSize(1);
+    }
     @Test void sourceConsentIsRequiredPrivateDraftCannotBeReadByBossOrOtherUserAndRequestDeduplicates(){
         assertThatThrownBy(()->service.create(alice,draft("request-one"))).hasMessageContaining("授权");assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM content_asset WHERE asset_kind='SKILL'",Long.class)).isZero();
         var v=create();assertThat(service.create(alice,draft("request-one")).skillId()).isEqualTo(v.skillId());

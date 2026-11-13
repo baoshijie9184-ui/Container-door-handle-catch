@@ -22,9 +22,15 @@ CID = re.compile(r'[a-f0-9]{64}')
 ZONE = dt.timezone(dt.timedelta(hours=8))
 NATIVE_LABEL = 'io.doorhandle.memory-embedding-profile'
 RAG_LABEL = 'io.doorhandle.rag-preservation-protocol'
+RAG_PROTOCOL = '2'
 NATIVE_PROFILE = 'siliconflow-bge-m3-v1'
 NATIVE_COLLECTION = 'doorhandle_memories_bge_m3_v1'
 NATIVE_MODEL = 'BAAI/bge-m3'
+VECTOR_BACKEND_LABEL = 'io.doorhandle.memory-vector-backend'
+VECTOR_GENERATION_LABEL = 'io.doorhandle.memory-storage-generation'
+VECTOR_ID_LABEL = 'io.doorhandle.memory-id-protocol'
+VECTOR_GENERATION = 'qdrant-bge-m3-v1'
+VECTOR_ID_PROTOCOL = 'doorhandle-vector-sha256-v8-v1'
 NATIVE_VOLUME_LABEL = 'io.doorhandle.native-cutover'
 SHA = re.compile(r'[a-f0-9]{64}')
 NATIVE_KEYS = set(('schemaVersion kind status release commit sourceSha256 identity owner installReceiptFile '
@@ -93,6 +99,14 @@ try:
     if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='collections'").fetchone():
      native=bool(db.execute("SELECT 1 FROM collections WHERE name='doorhandle_memories_bge_m3_v1' LIMIT 1").fetchone())
  result={'requiredProtocol':floor}
+ marker=root/'vector-space.json'
+ if marker.exists() or marker.is_symlink():
+  info=marker.lstat()
+  if not stat.S_ISREG(info.st_mode) or info.st_nlink!=1 or info.st_size>8192 or info.st_mode&0o077:raise ValueError()
+  space=json.loads(marker.read_text());identity=space.get('identity',{})
+  expected={'doorhandle_profile':'siliconflow-bge-m3-v1','doorhandle_model':'BAAI/bge-m3','doorhandle_dimensions':1024,'doorhandle_preprocessing':'utf8-newline-space-v1','doorhandle_storage_generation':'qdrant-bge-m3-v1','doorhandle_metric':'Cosine','doorhandle_id_protocol':'doorhandle-vector-sha256-v8-v1'}
+  if set(space)!={'schemaVersion','backend','collection','identity','historyMode'} or space.get('schemaVersion')!=1 or space.get('backend')!='qdrant' or space.get('collection')!='doorhandle_memories_bge_m3_v1' or space.get('historyMode')!='single-writer-sqlite' or identity!=expected:raise ValueError()
+  result['vectorSpace']=space
  if native:result['nativeEmbeddingProfile']='siliconflow-bge-m3-v1'
  print(json.dumps(result))
 except Exception:
@@ -123,6 +137,15 @@ try:
    dirs.sort()
   result.update(filesSha256=hashlib.sha256(json.dumps(files,sort_keys=True,separators=(',',':'),ensure_ascii=False).encode()).hexdigest(),files=len(files))
  if os.environ.get('NATIVE_SPACE_REQUIRED','1')=='0':
+  print(json.dumps(result));raise SystemExit(0)
+ marker=root/'vector-space.json'
+ if marker.exists() or marker.is_symlink():
+  info=marker.lstat()
+  if not stat.S_ISREG(info.st_mode) or info.st_nlink!=1 or info.st_size>8192 or info.st_mode&0o077:fail()
+  space=json.loads(marker.read_text());identity=space.get('identity',{})
+  expected={'doorhandle_profile':'siliconflow-bge-m3-v1','doorhandle_model':'BAAI/bge-m3','doorhandle_dimensions':1024,'doorhandle_preprocessing':'utf8-newline-space-v1','doorhandle_storage_generation':'qdrant-bge-m3-v1','doorhandle_metric':'Cosine','doorhandle_id_protocol':'doorhandle-vector-sha256-v8-v1'}
+  if set(space)!={'schemaVersion','backend','collection','identity','historyMode'} or space.get('schemaVersion')!=1 or space.get('backend')!='qdrant' or space.get('collection')!='doorhandle_memories_bge_m3_v1' or space.get('historyMode')!='single-writer-sqlite' or identity!=expected:fail()
+  result.update(collectionId='qdrant:doorhandle_memories_bge_m3_v1:qdrant-bge-m3-v1:doorhandle-vector-sha256-v8-v1',embeddingProfile='siliconflow-bge-m3-v1',collection='doorhandle_memories_bge_m3_v1',dimensions=1024,vectorSpace=space,vectorBackend='qdrant',storageGeneration='qdrant-bge-m3-v1')
   print(json.dumps(result));raise SystemExit(0)
  vector=root/'chroma'/'chroma.sqlite3'
  if not vector.is_file() or any(p.is_symlink() for p in (vector,*vector.parents)):fail()
@@ -240,14 +263,16 @@ def native_host_identity(expected):
 
 def native_capable(reference):
     rows=json.loads(docker('image','inspect',reference))
+    labels=(rows[0].get('Config',{}).get('Labels') or {}) if len(rows)==1 else {}
     return (len(rows)==1 and rows[0].get('Id')==reference
-            and (rows[0].get('Config',{}).get('Labels') or {}).get(NATIVE_LABEL)==NATIVE_PROFILE)
+            and labels.get(NATIVE_LABEL)==NATIVE_PROFILE and labels.get(VECTOR_BACKEND_LABEL)=='qdrant'
+            and labels.get(VECTOR_GENERATION_LABEL)==VECTOR_GENERATION and labels.get(VECTOR_ID_LABEL)==VECTOR_ID_PROTOCOL)
 
 
 def native_volumes(binding,receipt,config):
     expected=receipt['volumes'];services=config.get('services',{});definitions=config.get('volumes',{})
     overlay,_=native_read(binding['overlayFile'],Path(binding['overlayFile']).parent)
-    for service,key in (('mem0','doorhandle-mem0'),('chroma','doorhandle-chroma'),('backend','native-rag-preservation')):
+    for service,key in (('mem0','doorhandle-mem0-qdrant'),('qdrant','doorhandle-qdrant'),('backend','native-rag-preservation')):
         spec=services.get(service,{})
         target='/run/doorhandle-rag' if service=='backend' else '/data'
         mounts=[mount for mount in spec.get('volumes',[]) if mount.get('target')==target]
@@ -269,7 +294,9 @@ def native_volumes(binding,receipt,config):
         raise GuardError('An acceptance namespace cannot replace production native data')
     backend_id,_=image(services.get('backend',{}).get('image',''))
     rows=json.loads(docker('image','inspect',backend_id))
-    if (rows[0].get('Config',{}).get('Labels') or {}).get(RAG_LABEL)!='1':
+    labels=rows[0].get('Config',{}).get('Labels') or {}
+    if labels.get(RAG_LABEL)!=RAG_PROTOCOL or labels.get('io.doorhandle.semantic-vector-backend')!='qdrant' \
+            or labels.get('io.doorhandle.semantic-storage-generation')!=VECTOR_GENERATION:
         raise GuardError('The backend cannot preserve the admitted RAG collection')
 
 
@@ -314,7 +341,7 @@ def validate_native_state(state,config=None,allow_pending=False):
             or any(receipt.get(key)!=value for key,value in {'activeRecords':30,'importedHistoryRows':30,'importedMessageRows':25,
                 'archivedRecords':2,'archivedHistoryRows':3,'archivedMessageRows':1,'paidModelCalls':0,'llmCalls':0}.items()):
         raise GuardError('Candidate semantics alone cannot authorize production native materialization')
-    keys={'doorhandle-mem0','doorhandle-chroma','native-rag-preservation'}
+    keys={'doorhandle-mem0-qdrant','doorhandle-qdrant','native-rag-preservation'}
     if set(receipt.get('volumes',{}))!=keys or set(receipt.get('volumeLabels',{}))!=keys \
             or set(receipt.get('originalVolumes',{}))!={'mem0','chroma'}:
         raise GuardError('Native volume identity catalog is incomplete')
@@ -323,27 +350,30 @@ def validate_native_state(state,config=None,allow_pending=False):
         name=receipt['volumes'][key].get('name','');names.append(name)
         labels={NATIVE_VOLUME_LABEL:binding['owner'],'io.doorhandle.release':binding['release'],
             'io.doorhandle.source':binding['sourceSha256'],'com.docker.compose.project':PROJECT,'com.docker.compose.volume':key}
-        suffix={'doorhandle-mem0':'mem0','doorhandle-chroma':'chroma','native-rag-preservation':'manifest'}[key]
+        suffix={'doorhandle-mem0-qdrant':'mem0','doorhandle-qdrant':'qdrant','native-rag-preservation':'manifest'}[key]
         if name!='doorhandlecatch-monolith_native-'+binding['release']+'-'+binding['owner']+'-'+suffix \
                 or name in receipt['originalVolumes'].values() or receipt['volumeLabels'][key]!=labels:
             raise GuardError('A pristine native volume has an unexpected owner or aliases its original')
     if len(set(names))!=3 or set(overlay)!={'services','volumes'} or set(overlay['services'])!={'mem0','backend'} \
             or set(overlay['volumes'])!=keys or any(overlay['volumes'][key]!={'name':receipt['volumes'][key]['name'],'external':True} for key in keys):
         raise GuardError('Native overlay escaped the admitted services and volumes')
-    if overlay['services']['mem0']!={'environment':{'EMBEDDING_PROFILE':NATIVE_PROFILE,'EMBEDDING_MODEL':NATIVE_MODEL,
-            'EMBEDDING_BASE_URL':'https://api.siliconflow.cn/v1'}}:
+    expected_mem0={'EMBEDDING_PROFILE':NATIVE_PROFILE,'EMBEDDING_MODEL':NATIVE_MODEL,
+        'EMBEDDING_BASE_URL':'https://api.siliconflow.cn/v1','MEM0_VECTOR_BACKEND':'qdrant',
+        'MEM0_STORAGE_GENERATION':VECTOR_GENERATION,'MEM0_QDRANT_COLLECTION':NATIVE_COLLECTION}
+    if overlay['services']['mem0']!={'environment':expected_mem0}:
         raise GuardError('Native overlay attempted to change a memory field outside its vector-space protocol')
     backend=overlay['services']['backend'];env=backend.get('environment',{})
-    rag_keys={'CHAT_ASSISTANT_RAG_STARTUP_MODE','CHAT_ASSISTANT_RAG_PRESERVATION_MANIFEST','CHAT_ASSISTANT_RAG_PRESERVATION_MANIFEST_SHA256',
-        'CHAT_ASSISTANT_RAG_PRESERVATION_COMMIT','CHAT_ASSISTANT_CHROMA_EMBEDDING_DIMENSION','CHAT_ASSISTANT_CHROMA_COLLECTION',
-        'CHAT_ASSISTANT_CHROMA_TENANT','CHAT_ASSISTANT_CHROMA_DATABASE'}
-    if set(backend)!={'environment','volumes'} or set(env)!=rag_keys \
-            or env['CHAT_ASSISTANT_RAG_STARTUP_MODE']!='PRESERVE_EXISTING' \
-            or env['CHAT_ASSISTANT_RAG_PRESERVATION_MANIFEST']!='/run/doorhandle-rag/preservation.json' \
-            or env['CHAT_ASSISTANT_RAG_PRESERVATION_MANIFEST_SHA256']!=receipt.get('ragManifestSha256') \
-            or env['CHAT_ASSISTANT_RAG_PRESERVATION_COMMIT']!=binding['commit'] \
-            or backend['volumes']!=[{'type':'volume','source':'native-rag-preservation','target':'/run/doorhandle-rag','read_only':True}]:
-        raise GuardError('Native overlay attempted to bypass preserved RAG initialization')
+    expected_env={'CHAT_ASSISTANT_RAG_STARTUP_MODE':'PRESERVE_EXISTING',
+        'CHAT_ASSISTANT_RAG_PRESERVATION_MANIFEST':'/run/doorhandle-rag/preservation.json',
+        'CHAT_ASSISTANT_RAG_PRESERVATION_MANIFEST_SHA256':receipt.get('ragManifestSha256'),
+        'CHAT_ASSISTANT_RAG_PRESERVATION_COMMIT':binding['commit'],
+        'EMBEDDING_PROFILE':NATIVE_PROFILE,'EMBEDDING_MODEL':NATIVE_MODEL,'SEMANTIC_STORAGE_GENERATION':VECTOR_GENERATION,
+        'SEMANTIC_RAG_COLLECTION':'doorhandle_rag_bge_m3_v1','SEMANTIC_KNOWLEDGE_COLLECTION':'doorhandle_knowledge_bge_m3_v1',
+        'SEMANTIC_EXPERIENCE_COLLECTION':'doorhandle_experience_bge_m3_v1'}
+    if set(backend)!={'environment','volumes'} or env!=expected_env \
+            or backend['volumes']!=[{'type':'volume','source':'native-rag-preservation','target':'/run/doorhandle-rag','read_only':True}] \
+            or receipt.get('vectorBackend')!='qdrant' or receipt.get('storageGeneration')!=VECTOR_GENERATION:
+        raise GuardError('Native overlay attempted to bypass preserved Qdrant RAG initialization')
     binding={**binding,'nativeBindingSha256':native_hash({key:value for key,value in binding.items() if key!='status'}),'receipt':receipt}
     if config is not None:native_volumes(binding,receipt,config)
     return binding
@@ -427,7 +457,7 @@ def verify_native_install(binding,state):
                     or record.get('nativeReadOnlyVerified') is not True or record.get('ownedRestoredCopy') is not True
                     or record.get('independentProcess') is not True):
                 raise GuardError('Native semantic phase lacks actual owner, read-only and independent restore evidence')
-    if set(receipt.get('freshSnapshots',{}))!={'mem0','chroma'} or set(receipt.get('pristinePayloads',{}))!={'doorhandle-mem0','doorhandle-chroma'}:
+    if set(receipt.get('freshSnapshots',{}))!={'mem0','chroma'} or set(receipt.get('pristinePayloads',{}))!={'doorhandle-mem0-qdrant','doorhandle-qdrant'}:
         raise GuardError('Native fresh snapshots or pristine payload sources are incomplete')
     for service,reference in receipt['freshSnapshots'].items():
         expected=output/('fresh-'+service)/'snapshot-receipt.json'
@@ -482,10 +512,10 @@ def verify_native_install(binding,state):
                 seen.add(entry.name)
         if seen!=set(proof['sourceBefore']):raise GuardError('Native original archive omitted a restored source file')
     for key,reference in receipt['pristinePayloads'].items():
-        service='mem0' if key=='doorhandle-mem0' else 'rag'
+        service='mem0' if key=='doorhandle-mem0-qdrant' else 'rag'
         expected=work/(service+'-payload-files.json')
         catalog=native_reference(reference.get('catalogFile',''),expected,reference.get('catalogSha256'),state)
-        directory=work/('mem0/data' if service=='mem0' else 'rag/chroma')
+        directory=work/('mem0/data' if service=='mem0' else 'qdrant-candidate')
         if Path(reference.get('directory',''))!=directory or native_tree(directory,state)!=catalog \
                 or native_hash(catalog)!=reference.get('filesSha256') or receipt['volumes'][key].get('filesSha256')!=reference['filesSha256'] \
                 or receipt['volumes'][key].get('payloadFilesSha256')!=reference['catalogSha256'] \
@@ -500,6 +530,7 @@ def probe_native_volume(image_id,mount,data='/data',*,full=False,space=True):
         '--env','MEM0_DATA_DIR='+data,'--env','NATIVE_FULL_INVENTORY='+('1' if full else '0'),
         '--env','NATIVE_SPACE_REQUIRED='+('1' if space else '0'),'--entrypoint','python',image_id,'-I','-B','-c',NATIVE_PROBE,timeout=60))
     if space and (result.get('embeddingProfile')!=NATIVE_PROFILE or result.get('collection')!=NATIVE_COLLECTION
+            or result.get('vectorBackend')!='qdrant' or result.get('storageGeneration')!=VECTOR_GENERATION
             or result.get('dimensions')!=1024 or not isinstance(result.get('collectionId'),str) or not result['collectionId']):
         raise GuardError('The actual native volume has no verified BGE vector-space marker')
     return result
@@ -565,7 +596,7 @@ def prepare(state, config, native_transition=None):
         verify_native_install(native,state)
         if target_id!=native['receipt'].get('images',{}).get('mem0') \
                 or image(config['services'].get('backend',{}).get('image',''))[0]!=native['receipt']['images'].get('backend') \
-                or image(config['services'].get('chroma',{}).get('image',''))[0]!=native['receipt']['images'].get('chroma'):
+                or image(config['services'].get('qdrant',{}).get('image',''))[0]!=native['receipt']['images'].get('qdrant'):
             raise GuardError('The native install target images differ from their fixed production receipt')
         if mount['name']!=native['receipt']['originalVolumes']['mem0'] or data!='/data' or mount['destination']!='/data':
             raise GuardError('The native transition no longer names its original memory volume')
@@ -601,6 +632,13 @@ def prepare(state, config, native_transition=None):
         if type(floor) is not int or floor<0:
             raise GuardError('Memory protocol result is invalid')
         floor=max(floor,minimum['requiredProtocol'])
+        vector_floor=result.get('vectorSpace')
+        if minimum.get('vectorSpace') is not None and minimum['vectorSpace']!=vector_floor:
+            raise GuardError('The independent Qdrant generation floor disappeared or changed')
+        if vector_floor is not None and native is None:
+            raise GuardError('An existing Qdrant space requires its persistent verified install binding')
+        if vector_floor is not None and native is None and not native_capable(target_id):
+            raise GuardError('Qdrant storage cannot be downgraded to a Chroma-only memory reader')
         if native is None:
             write_json(minimum_path,{'requiredProtocol':floor,'dataMount':mount,'updatedAt':dt.datetime.now(ZONE).isoformat()})
         if result.get('nativeEmbeddingProfile') is not None and native is None:
@@ -611,7 +649,7 @@ def prepare(state, config, native_transition=None):
             target_capable=native_capable(target_id)
             if initial and (not target_capable or target_protocol<floor):
                 raise GuardError('The pristine native target requires a compatible BGE image')
-            selected_mount={'name':native['receipt']['volumes']['doorhandle-mem0']['name'],'destination':'/data'}
+            selected_mount={'name':native['receipt']['volumes']['doorhandle-mem0-qdrant']['name'],'destination':'/data'}
             if not initial and selected_mount!=mount:raise GuardError('The active native memory volume changed')
         else:target_capable=True
         keep=target_protocol<floor or not target_capable
@@ -622,10 +660,10 @@ def prepare(state, config, native_transition=None):
             if not native_capable(selected_id):raise GuardError('No selected memory reader supports the persistent BGE floor')
             observed=probe_native_volume(selected_id,selected_mount,full=initial)
             if initial:
-                installed=native['receipt']['volumes']['doorhandle-mem0']
+                installed=native['receipt']['volumes']['doorhandle-mem0-qdrant']
                 if observed.get('filesSha256')!=installed['filesSha256'] or observed.get('files')!=installed['files']:
                     raise GuardError('The pristine memory volume differs from its full copied payload')
-                rag=native['receipt']['volumes']['doorhandle-chroma']
+                rag=native['receipt']['volumes']['doorhandle-qdrant']
                 rag_probe=probe_native_volume(selected_id,{'name':rag['name'],'destination':'/data'},full=True,space=False)
                 if rag_probe.get('filesSha256')!=rag['filesSha256'] or rag_probe.get('files')!=rag['files']:
                     raise GuardError('The pristine RAG volume differs from its full copied payload')
@@ -637,6 +675,11 @@ def prepare(state, config, native_transition=None):
             record.update(nativeBindingSha256=native['nativeBindingSha256'],nativeInitialTransition=initial,
                 originalDataMount=mount,dataMount=selected_mount,nativeCollectionId=observed['collectionId'])
         minimum_value={'requiredProtocol':floor,'dataMount':selected_mount,'updatedAt':dt.datetime.now(ZONE).isoformat()}
+        if native is not None:
+            vector_floor=observed.get('vectorSpace')
+        if vector_floor is not None:
+            minimum_value['vectorSpace']=vector_floor
+            record['vectorSpace']=vector_floor
         if native is not None:minimum_value['native']=native_floor
         if native is not None:write_json(minimum_path,minimum_value)
         pin=state/'memory-activation-images.yml'
@@ -682,7 +725,9 @@ def verify(state, *, timeout=240):
                 or minimum.get('native',{}).get('bindingSha256')!=native['nativeBindingSha256'] \
                 or minimum.get('dataMount')!=record['dataMount'] or not native_capable(memory['Image']) \
                 or health.get('embedding_profile')!=NATIVE_PROFILE or health.get('embedding_collection')!=NATIVE_COLLECTION \
-                or health.get('embedding_dimensions')!=1024:
+                or health.get('embedding_dimensions')!=1024 or health.get('vector_backend')!='qdrant' \
+                or health.get('storage_generation')!=VECTOR_GENERATION or health.get('vector_id_protocol')!=VECTOR_ID_PROTOCOL \
+                or health.get('history_mode')!='single-writer-sqlite':
             docker('stop','--time','30',memory['Id'],timeout=45)
             raise GuardError('The activated memory reader does not preserve the persistent native space')
         try:observed=probe_native_volume(memory['Image'],record['dataMount'])

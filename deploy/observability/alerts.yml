@@ -1,0 +1,33 @@
+groups:
+  - name: doorhandle-runtime
+    rules:
+      - alert: DoorhandleMonolithUnavailable
+        expr: up{job="monolith"} == 0
+        for: 2m
+        labels: {severity: critical}
+        annotations: {summary: "单体管理指标连续不可达，核对应用和机器采集凭据"}
+      - alert: DoorhandleTelemetryDropped
+        expr: sum(increase(doorhandle_telemetry_spans_dropped_total[5m])) > 0
+        for: 1m
+        labels: {severity: warning}
+        annotations: {summary: "追踪缓冲区已丢弃遥测，业务未被阻塞"}
+      - alert: DoorhandleTelemetryExportFailed
+        expr: sum(increase(doorhandle_telemetry_export_failures_total[5m])) > 0 or sum(increase(doorhandle_telemetry_failures_total{reason=~"export.*"}[5m])) > 0
+        for: 2m
+        labels: {severity: warning}
+        annotations: {summary: "遥测导出失败，请核对 Langfuse、网络和私有凭据"}
+      - alert: DoorhandleWorkerNotReady
+        expr: doorhandle_runtime_ready{job="detection-worker"} == 0
+        for: 2m
+        labels: {severity: warning}
+        annotations: {summary: "检测 worker 尚未就绪，核对 Kafka 分配和模型加载"}
+      - alert: DoorhandleJvmMemoryPressure
+        expr: sum(jvm_memory_used_bytes{job="monolith",area="heap"}) / sum(jvm_memory_max_bytes{job="monolith",area="heap"}) > 0.9
+        for: 5m
+        labels: {severity: warning}
+        annotations: {summary: "单体 JVM 堆使用率持续高于 90%"}
+      - alert: DoorhandleFilesystemLow
+        expr: disk_free_bytes{job="monolith"} < 5368709120 or disk_free_bytes{job="monolith"} / disk_total_bytes{job="monolith"} < 0.15
+        for: 2m
+        labels: {severity: critical}
+        annotations: {summary: "应用所在文件系统余量不足，暂停新增遥测存储并审定容量"}

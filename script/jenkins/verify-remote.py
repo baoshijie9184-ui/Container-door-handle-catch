@@ -182,7 +182,7 @@ def unpack_source(archive, destination, commit):
 
 
 def allowed_evidence(name):
-    if name in ("driver.log", "reports/receipt.json", "reports/python.xml", "reports/migration.json", "reports/tool-runtime.json", "reports/fixture-runtime.json"):
+    if name in ("driver.log", "reports/receipt.json", "reports/python.xml", "reports/migration.json", "reports/tool-runtime.json", "reports/fixture-runtime.json", "reports/middleware-fixture.json", "reports/observability-fixture.json", "reports/semantic-mysql-fixture.json"):
         return True
     if name.startswith("reports/") and name[len("reports/"):] in LOG_NAMES:
         return True
@@ -194,7 +194,7 @@ def allowed_evidence(name):
 def evidence_files(checkout, evidence, driver):
     candidates = [("driver.log", driver)]
     candidates += [("reports/" + name, evidence / name)
-                   for name in ("receipt.json", "python.xml", "migration.json", "tool-runtime.json", "fixture-runtime.json", *sorted(LOG_NAMES))]
+                   for name in ("receipt.json", "python.xml", "migration.json", "tool-runtime.json", "fixture-runtime.json", "middleware-fixture.json", "observability-fixture.json", "semantic-mysql-fixture.json", *sorted(LOG_NAMES))]
     candidates += [("reports/" + path.name, path) for path in sorted(evidence.glob("java-*.log"))
                    if allowed_evidence("reports/" + path.name)]
     candidates += [("reports/java/" + path.relative_to(evidence / "java").as_posix(), path)
@@ -488,6 +488,9 @@ def run_verification(args):
     process = None
     tool_runtime, tool_value = None, None
     fixture_watch = None
+    middleware_fixture = None
+    observability_fixture = None
+    semantic_mysql_fixture = None
     exit_code = 1
     try:
         unpack_source(archive, checkout, args.commit)
@@ -519,6 +522,33 @@ def run_verification(args):
                 commit=args.commit, source_sha=args.source_sha256, identity=identity, source=checkout)
             record['toolRuntime'] = {'manifestSha256': tool_sha, 'images': tool_value['images']}
             command += ['--tool-manifest', str(tool_manifest), '--tool-manifest-sha256', tool_sha]
+            # This fixed source adds real Qdrant protocol coverage to the
+            # existing source verifier, independently of SQL migration gates.
+            fixture_file = checkout / 'script/jenkins/middleware-fixture.py'
+            regular_file(fixture_file, MAX_FILE_BYTES)
+            spec = importlib.util.spec_from_file_location('admitted_middleware_fixture', fixture_file)
+            middleware = importlib.util.module_from_spec(spec); spec.loader.exec_module(middleware)
+            middleware_fixture = middleware.Fixture(checkout, {'release': args.tag,
+                'commit': args.commit, 'sourceSha256': args.source_sha256, 'identity': identity})
+            middleware_fixture.prepare()
+            record['middlewareFixture'] = {'required': True, 'containerId': middleware_fixture.container}
+            if args.scope == 'source':
+                file = checkout / 'script/jenkins/semantic-mysql-fixture.py'
+                regular_file(file, MAX_FILE_BYTES)
+                spec = importlib.util.spec_from_file_location('admitted_semantic_mysql_fixture', file)
+                helper = importlib.util.module_from_spec(spec); spec.loader.exec_module(helper)
+                semantic_mysql_fixture = helper.Fixture(checkout, {'release': args.tag,
+                    'commit': args.commit, 'sourceSha256': args.source_sha256, 'identity': identity})
+                semantic_mysql_fixture.prepare()
+                record['semanticMysqlFixture'] = {'required': True}
+            file = checkout / 'script/jenkins/observability-fixture.py'
+            regular_file(file, MAX_FILE_BYTES)
+            spec = importlib.util.spec_from_file_location('admitted_observability_fixture', file)
+            helper = importlib.util.module_from_spec(spec); spec.loader.exec_module(helper)
+            observability_fixture = helper.Fixture(checkout, {'release': args.tag,
+                'commit': args.commit, 'sourceSha256': args.source_sha256, 'identity': identity})
+            observability_fixture.prepare()
+            record['observabilityFixture'] = {'required': True}
         if args.scope == "mysql":
             require(bool(args.fixture_manifest), "MySQL verification requires an explicit private manifest")
             manifest = Path(args.fixture_manifest)
@@ -537,18 +567,27 @@ def run_verification(args):
         environment.update(DOORHANDLE_ECS_INSTANCE_ID=args.instance_id,
                            DOORHANDLE_ECS_MACHINE_ID=args.machine_id,
                            PYTHON_EXE=sys.executable, PYTHONDONTWRITEBYTECODE="1")
+        if middleware_fixture is not None:
+            environment.update(middleware_fixture.environment)
+        if semantic_mysql_fixture is not None:
+            environment.update(semantic_mysql_fixture.environment)
+        if observability_fixture is not None:
+            environment.update(observability_fixture.environment)
         if fixture_watch is not None:
             # Python whole-migration orchestration can synchronously launch one
             # separate Java tool. Other top-level tools execute serially.
             tool_bound = ((max(tool_runtime.MEMORY.values()) + tool_runtime.MEMORY['java']) * 1024 ** 3
                           if tool_value is not None else 0)
+            if middleware_fixture is not None: tool_bound += 512 * 1024 ** 2
+            if observability_fixture is not None: tool_bound += 640 * 1024 ** 2
             record['fixtureRuntime']['memoryAdmission'] = fixture_watch.admit(tool_bound)
         with driver.open("xb") as output:
             os.chmod(driver, 0o600)
             process = subprocess.Popen(command, cwd=checkout, env=environment,
                                        stdin=subprocess.DEVNULL, stdout=output,
                                        stderr=subprocess.STDOUT, start_new_session=True)
-            wait_for_verifier(process, args, fixture_watch=fixture_watch)
+            wait_for_verifier(process, args, fixture_watch=fixture_watch, middleware_fixture=middleware_fixture,
+                              observability_fixture=observability_fixture, semantic_mysql_fixture=semantic_mysql_fixture)
         record["verificationExitCode"] = process.returncode
         result_file = evidence / "receipt.json"
         regular_file(result_file, MAX_RECEIPT_BYTES)
@@ -562,6 +601,25 @@ def run_verification(args):
         require(type(counts.get("passed")) is int and counts["passed"] > 0 and counts.get("failed") == 0,
                 "Verifier did not record actual passing Java tests")
         validate_java_suites(result, evidence, mysql=args.scope == 'mysql')
+        if middleware_fixture is not None:
+            protocol = result.get('middlewareProtocol', {})
+            require(protocol.get('status') == 'PASS' and protocol.get('javaNativeCases', 0) > 0
+                    and protocol.get('pythonNativeCases', 0) > 0 and protocol.get('providerCalls') == 0
+                    and protocol.get('productionActivationVerified') is False,
+                    'Actual middleware protocol cases did not pass with isolated provider policy')
+            record['middlewareProtocol'] = protocol
+        if observability_fixture is not None:
+            protocol = result.get('observabilityProtocol', {})
+            require(protocol.get('status') == 'PASS' and protocol.get('javaNativeCases', 0) > 0
+                    and protocol.get('pythonNativeCases', 0) > 0,
+                    'Actual Prometheus Java/Python scrape cases did not pass')
+            record['observabilityProtocol'] = protocol
+        if semantic_mysql_fixture is not None:
+            protocol = result.get('semanticMysqlProtocol', {})
+            require(protocol.get('status') == 'PASS' and protocol.get('nativeCases', 0) >= 15
+                    and result.get('sourceRegression', {}).get('status') == 'PASS',
+                    'Current-source fencing lacks its actual native MySQL cases')
+            record['semanticMysqlProtocol'] = protocol
         profile = checkout / 'script/jenkins/compact-acceptance.json'
         regular_file(profile, 1024 * 1024)
         require(result.get('acceptanceProfileSha256') == digest(profile), 'Verifier acceptance profile differs from the fixed source archive')
@@ -626,6 +684,44 @@ def run_verification(args):
                         write_json(file, fixture_watch.evidence())
                 except BaseException:
                     pass
+        if observability_fixture is not None:
+            evidence.mkdir(mode=0o700, parents=True, exist_ok=True)
+            try:
+                stopped = observability_fixture.stop()
+                file = evidence / 'observability-fixture.json'; write_json(file, stopped)
+                record.setdefault('observabilityFixture', {'required': True}).update(
+                    status=stopped['status'], cleanupConfirmed=stopped['cleanupConfirmed'],
+                    metricsAcceptance=stopped['metricsAcceptance'], evidenceSha256=digest(file))
+                require(stopped['cleanupConfirmed'] is True and stopped['status'] == 'STOPPED',
+                        'Observability fixture cleanup is unresolved')
+                if record['status'] == 'PASS':
+                    require(stopped['metricsAcceptance'] == 'PASS', 'Independent metric/alert readback did not pass')
+            except BaseException as error:
+                record.update(status='FAILED', observabilityCleanupErrorType=type(error).__name__)
+                exit_code = 1
+        if semantic_mysql_fixture is not None:
+            evidence.mkdir(mode=0o700, parents=True, exist_ok=True)
+            try:
+                stopped = semantic_mysql_fixture.stop()
+                file = evidence / 'semantic-mysql-fixture.json'; write_json(file, stopped)
+                record.setdefault('semanticMysqlFixture', {'required': True}).update(
+                    status=stopped['status'], cleanupConfirmed=stopped['cleanupConfirmed'], evidenceSha256=digest(file))
+                require(stopped['cleanupConfirmed'] is True and stopped['status'] == 'STOPPED',
+                        'Semantic MySQL fixture cleanup is unresolved')
+            except BaseException as error:
+                record.update(status='FAILED', semanticMysqlCleanupErrorType=type(error).__name__)
+                exit_code = 1
+        if middleware_fixture is not None:
+            evidence.mkdir(mode=0o700, parents=True, exist_ok=True)
+            try:
+                stopped = middleware_fixture.stop()
+                file = evidence / 'middleware-fixture.json'; write_json(file, stopped)
+                record.setdefault('middlewareFixture', {'required': True,
+                    'containerId': middleware_fixture.container}).update(
+                    status=stopped['status'], cleanupConfirmed=stopped['cleanupConfirmed'], evidenceSha256=digest(file))
+            except BaseException as error:
+                record.update(status='FAILED', middlewareCleanupErrorType=type(error).__name__)
+                exit_code = 1
         if process is not None:
             record["verificationExitCode"] = process.returncode
         record["finishedAt"] = now()
@@ -669,18 +765,29 @@ def supervisor_start(pid):
     return process.joinpath('stat').read_text().split(') ', 1)[1].split()[19]
 
 
-def wait_for_verifier(process, args, fixture_watch=None):
+def wait_for_verifier(process, args, fixture_watch=None, middleware_fixture=None,
+                      observability_fixture=None, semantic_mysql_fixture=None):
     deadline = time.monotonic() + VERIFY_TIMEOUT_SECONDS
     while True:
         if fixture_watch is not None:
             fixture_watch.check()
+        if middleware_fixture is not None:
+            middleware_fixture.check()
+        if observability_fixture is not None: observability_fixture.check()
+        if semantic_mysql_fixture is not None: semantic_mysql_fixture.check()
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise subprocess.TimeoutExpired('owned verification', VERIFY_TIMEOUT_SECONDS)
         try:
-            result = process.wait(timeout=min(0.5 if fixture_watch is not None else 30, remaining))
+            observed = any(item is not None for item in
+                           (fixture_watch, middleware_fixture, observability_fixture, semantic_mysql_fixture))
+            result = process.wait(timeout=min(0.5 if observed else 30, remaining))
             if fixture_watch is not None:
                 fixture_watch.check()  # Close the successful-exit/OOM race before accepting PASS.
+            if middleware_fixture is not None:
+                middleware_fixture.check()
+            if observability_fixture is not None: observability_fixture.check()
+            if semantic_mysql_fixture is not None: semantic_mysql_fixture.check()
             return result
         except subprocess.TimeoutExpired:
             progress({'release': args.tag, 'attempt': args.attempt, 'status': 'RUNNING',
@@ -794,6 +901,26 @@ def validate_envelope(record, args):
                     and 'reports/fixture-runtime.json' in catalog
                     and fixture.get('evidenceSha256') == catalog['reports/fixture-runtime.json']['sha256'],
                     'Passing fixture evidence requires the stopped watcher and original runtime report')
+    if record.get('middlewareFixture') is not None and record['status'] == 'PASS':
+        fixture = record['middlewareFixture']
+        require(fixture.get('required') is True and SHA.fullmatch(fixture.get('containerId', ''))
+                and fixture.get('status') == 'STOPPED' and fixture.get('cleanupConfirmed') is True
+                and 'reports/middleware-fixture.json' in catalog
+                and fixture.get('evidenceSha256') == catalog['reports/middleware-fixture.json']['sha256']
+                and record.get('middlewareProtocol', {}).get('status') == 'PASS',
+                'Passing middleware evidence requires actual SDK cases and confirmed owned cleanup')
+    for field, report, protocol in (
+            ('observabilityFixture', 'reports/observability-fixture.json', 'observabilityProtocol'),
+            ('semanticMysqlFixture', 'reports/semantic-mysql-fixture.json', 'semanticMysqlProtocol')):
+        if record.get(field) is not None and record['status'] == 'PASS':
+            fixture = record[field]
+            require(fixture.get('required') is True and fixture.get('status') == 'STOPPED'
+                    and fixture.get('cleanupConfirmed') is True and report in catalog
+                    and fixture.get('evidenceSha256') == catalog[report]['sha256']
+                    and record.get(protocol, {}).get('status') == 'PASS',
+                    'Passing component evidence requires its original report, native cases and confirmed cleanup')
+            if field == 'observabilityFixture':
+                require(fixture.get('metricsAcceptance') == 'PASS', 'Actual Prometheus/alert readback is incomplete')
     return catalog
 
 

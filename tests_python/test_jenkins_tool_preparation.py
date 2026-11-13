@@ -124,10 +124,12 @@ class ToolPreparationTests(unittest.TestCase):
             with self.subTest(output=bad), self.assertRaises(ValueError):
                 tools.commit_image_id(bad)
 
-    def package(self, root, *, commit=COMMIT, recipe=b'reviewed source', extra=None):
+    def package(self, root, *, commit=COMMIT, recipe=b'reviewed source', extra=None, runtime=None):
         path = root / 'source.tar.gz'
         with tarfile.open(path, 'w:gz', format=tarfile.PAX_FORMAT, pax_headers={'comment': commit}) as archive:
             values = {tools.RECIPE: recipe, tools.REQUIREMENTS: b'pytest==8.4.2\n', 'README.md': b'not extracted'}
+            if runtime is not None:
+                values[tools.MEM0_REQUIREMENTS] = runtime
             for name, content in values.items():
                 member = tarfile.TarInfo(name); member.size = len(content)
                 archive.addfile(member, io.BytesIO(content))
@@ -144,6 +146,45 @@ class ToolPreparationTests(unittest.TestCase):
             self.assertEqual({tools.RECIPE, tools.REQUIREMENTS}, set(result))
             self.assertEqual({'prepare-ecs-tools.py', 'python-test-requirements.txt'}, {p.name for p in output.iterdir()})
             self.assertEqual(hashlib.sha256(b'reviewed source').hexdigest(), result[tools.RECIPE])
+
+    def test_current_runtime_source_is_a_bound_third_input_without_changing_legacy_extraction_contract(self):
+        runtime=(FILE.parents[2] / tools.MEM0_REQUIREMENTS).read_bytes()
+        with tempfile.TemporaryDirectory() as directory:
+            archive, own, output=self.package(Path(directory),runtime=runtime)
+            result=tools.archive_inputs(archive,output,COMMIT,tools.digest(archive),own,include_mem0_runtime=True)
+            self.assertEqual({tools.RECIPE,tools.REQUIREMENTS,tools.MEM0_REQUIREMENTS},set(result))
+            self.assertEqual(runtime,(output / 'requirements.txt').read_bytes())
+        with tempfile.TemporaryDirectory() as directory:
+            archive, own, output=self.package(Path(directory))
+            with self.assertRaisesRegex(ValueError,'missing'):
+                tools.archive_inputs(archive,output,COMMIT,tools.digest(archive),own,include_mem0_runtime=True)
+            self.assertEqual([],list(output.iterdir()))
+
+    def test_current_tool_pins_include_exact_runtime_closure_and_never_reuse_old_nine_pin_proof(self):
+        current=tools.requirements(FILE.parent / 'python-test-requirements.txt')
+        runtime=tools.requirements(FILE.parents[2] / tools.MEM0_REQUIREMENTS)
+        self.assertEqual(22,len(current));self.assertEqual(13,len(runtime))
+        self.assertEqual(runtime,tools.validate_mem0_requirements(current,runtime))
+        for missing in runtime:
+            changed=dict(current);changed.pop(missing)
+            with self.subTest(missing=missing),self.assertRaises(ValueError):
+                tools.validate_mem0_requirements(changed,runtime)
+        for package in runtime:
+            changed=dict(current);changed[package]='0.0.0'
+            with self.subTest(drift=package),self.assertRaises(ValueError):
+                tools.validate_mem0_requirements(changed,runtime)
+        value=tools.Preparation.__new__(tools.Preparation)
+        value.call=mock.Mock(side_effect=AssertionError('new requirements must not inspect historical image'))
+        self.assertIsNone(value.inspect_pinned_dependencies(current))
+        self.assertIsNone(value.reuse_pinned_dependencies({tools.MEM0_REQUIREMENTS:'c'*64},current,{}))
+        value.call.assert_not_called()
+
+    def test_runtime_closure_does_not_allow_missing_or_unreviewed_runtime_package(self):
+        current=tools.requirements(FILE.parent / 'python-test-requirements.txt')
+        runtime=tools.requirements(FILE.parents[2] / tools.MEM0_REQUIREMENTS)
+        for changed in (dict(runtime,unreviewed='1.0'),{key:value for key,value in runtime.items() if key!='qdrant-client'}):
+            with self.assertRaisesRegex(ValueError,'13 admitted'):
+                tools.validate_mem0_requirements(current,changed)
 
     def test_wrong_commit_source_digest_or_uploaded_recipe_cannot_prepare(self):
         for mode in ('commit', 'archive', 'recipe'):
@@ -363,7 +404,7 @@ class ToolPreparationTests(unittest.TestCase):
             value.stop_owned()
 
 
-    def completed_readback(self, root, *, include_scipy=True):
+    def completed_readback(self, root, *, include_scipy=True, include_runtime=False):
         value = object.__new__(tools.PreparedReadback)
         value.root = root; value.inbox = root / 'inbox' / ('ci-1-' + COMMIT[:12])
         value.inbox.mkdir(parents=True)
@@ -375,6 +416,8 @@ class ToolPreparationTests(unittest.TestCase):
             pins_raw = b'\n'.join(line for line in pins_raw.splitlines() if not line.startswith(b'scipy==')) + b'\n'
         recipe = Path(tools.__file__).read_bytes()
         value.found = {tools.RECIPE: recipe, tools.REQUIREMENTS: pins_raw}
+        if include_runtime:
+            value.found[tools.MEM0_REQUIREMENTS]=(FILE.parents[2] / tools.MEM0_REQUIREMENTS).read_bytes()
         with tarfile.open(value.archive, 'w:gz', pax_headers={'comment': COMMIT}) as archive:
             for name, raw in value.found.items():
                 entry = tarfile.TarInfo(name); entry.size = len(raw); archive.addfile(entry, io.BytesIO(raw))
@@ -576,6 +619,28 @@ class ToolPreparationTests(unittest.TestCase):
             self.assertEqual([], calls)
             tools.write_json(value.folder / 'completion-failure.json', {'status': 'FAILED_OR_UNKNOWN'})
             with self.assertRaisesRegex(ValueError, 'terminal failure'): value.read_prepared()
+
+    def test_completed_current_runtime_readback_binds_all_22_versions_and_third_source_original(self):
+        with tempfile.TemporaryDirectory() as directory:
+            value,_,_,_=self.completed_readback(Path(directory),include_runtime=True)
+            result=value.read_prepared()
+            self.assertTrue(result['readbackValidated'])
+            self.assertIn(tools.MEM0_REQUIREMENTS,result['sourceFiles'])
+            complete=json.loads((value.folder / 'completion.json').read_text())
+            self.assertIn('requirements.txt',complete['proofs'])
+            installed=json.loads((value.reports / 'installed-versions.json').read_text())
+            self.assertEqual(22,len(installed))
+            self.assertEqual('1.20.0',installed['qdrant-client'])
+            self.assertEqual('1.45.2',installed['opentelemetry-exporter-otlp-proto-http'])
+            self.assertFalse(result['testsExecuted'])
+
+    def test_current_runtime_original_cannot_be_changed_after_preparation_completion(self):
+        with tempfile.TemporaryDirectory() as directory:
+            value,_,_,_=self.completed_readback(Path(directory),include_runtime=True)
+            original=value.folder / 'requirements.txt'
+            original.write_text(original.read_text().replace('qdrant-client==1.20.0','qdrant-client==1.19.0'))
+            with self.assertRaisesRegex(ValueError,'requirements differ'):
+                value.read_prepared()
 
     def complete_with_builder_input(self, value):
         request = self.builder_input_args(value.root)

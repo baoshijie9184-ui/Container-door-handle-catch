@@ -43,6 +43,7 @@ class ChromaRagPreservationTest {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/", this::handle); server.start();
         properties = new ChatAssistantProperties();
+        properties.setChromaEnabled(true); // Explicit legacy-source regression, never a runtime fallback.
         properties.setRagStartupMode(ChatAssistantProperties.RagStartupMode.PRESERVE_EXISTING);
         properties.setChromaBaseUrl("http://127.0.0.1:" + server.getAddress().getPort());
         properties.setChromaEmbeddingDimension(32);

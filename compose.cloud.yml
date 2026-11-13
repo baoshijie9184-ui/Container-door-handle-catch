@@ -1,5 +1,5 @@
 # 与 compose.monolith.yml 合并；数据库、缓存、队列和记忆服务均只开放到容器私网。
-# 常驻中间件：mysql、redis、kafka、mem0、chroma。
+# 常驻中间件：mysql、redis、kafka、mem0、qdrant。旧 Chroma 卷只作恢复来源，不挂到新运行时。
 # kafka-storage-init、kafka-init 是一次性初始化容器，成功后退出属于正常状态。
 # Dockerfile 构建镜像，Compose 创建并连接容器；说明见 docs/docker-monolith-deployment.md。
 services:
@@ -17,7 +17,7 @@ services:
         condition: service_completed_successfully
       mem0:
         condition: service_healthy
-      chroma:
+      qdrant:
         condition: service_healthy
 
   nginx:
@@ -118,22 +118,52 @@ services:
     networks: [doorhandle-network]
     restart: "no"
 
-  chroma:
-    # 复用固定 Chroma 1.5.9 的 Python 运行镜像，保持客户端与服务端版本一致。
-    image: doorhandlecatch/mem0:${APP_IMAGE_TAG:-local}
-    command: ["chroma", "run", "--host", "0.0.0.0", "--port", "8000", "--path", "/data"]
-    environment:
-      IS_PERSISTENT: "TRUE"
-      ANONYMIZED_TELEMETRY: "FALSE"
+  qdrant-storage-init:
+    image: ${QDRANT_IMAGE:?Set immutable Qdrant engine image ID from the admitted pipeline receipt}
+    pull_policy: never
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-ec"]
+    command: ["chown 10001:10001 /data"]
     volumes:
-      - doorhandle-chroma:/data
+      - doorhandle-qdrant:/data
+    network_mode: none
+    restart: "no"
+
+  qdrant:
+    # 固定 Linux/amd64 v1.20.0；与 Java/Python SDK 1.20.0 一起验证。
+    image: ${QDRANT_IMAGE:?Set immutable Qdrant engine image ID from the admitted pipeline receipt}
+    pull_policy: never
+    user: "10001:10001"
+    command: ["./entrypoint.sh", "--config-path", "/run/doorhandle-vector/server.json"]
+    environment:
+      QDRANT__TELEMETRY_DISABLED: "true"
+      QDRANT_INIT_FILE_PATH: /data/storage/.qdrant-initialized
+    volumes:
+      - doorhandle-qdrant:/data
+      - type: bind
+        source: ${QDRANT_PRIVATE_DIR:?Set ECS private Qdrant config directory}
+        target: /run/doorhandle-vector
+        read_only: true
+        bind:
+          create_host_path: false
+    depends_on:
+      qdrant-storage-init:
+        condition: service_completed_successfully
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v2/heartbeat',timeout=4)"]
+      # 官方镜像无 curl/wget；只探测无需密钥的就绪端点。
+      test: ["CMD", "bash", "-ec", "exec 3<>/dev/tcp/127.0.0.1/6333; printf 'GET /readyz HTTP/1.0\r\nHost: localhost\r\n\r\n' >&3; IFS= read -r response <&3; [[ $$response == HTTP/*' 200 '* ]]"]
       interval: 15s
       timeout: 5s
       start_period: 30s
       retries: 10
     mem_limit: 1g
+    read_only: true
+    tmpfs: [/tmp:size=64m]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
     networks: [doorhandle-network]
     restart: unless-stopped
 
@@ -167,8 +197,42 @@ services:
       MEM0_CLEANUP_INTERVAL_SECONDS: ${MEM0_CLEANUP_INTERVAL_SECONDS:-60}
       MEM0_DUPLICATE_REVIEW_ENABLED: ${MEM0_DUPLICATE_REVIEW_ENABLED:-true}
       MEM0_DUPLICATE_REVIEW_TIMEOUT_SECONDS: ${MEM0_DUPLICATE_REVIEW_TIMEOUT_SECONDS:-30}
+      MEM0_VECTOR_BACKEND: qdrant
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: "6333"
+      QDRANT_API_KEY_FILE: /run/doorhandle-vector/api-key
+      MEM0_QDRANT_COLLECTION: ${MEM0_QDRANT_COLLECTION:-doorhandle_memories_bge_m3_v1}
+      MEM0_STORAGE_GENERATION: ${MEM0_STORAGE_GENERATION:-qdrant-bge-m3-v1}
+      OTEL_ENABLED: ${OTEL_ENABLED:-false}
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:-http://langfuse-web:3000/api/public/otel/v1/traces}
+      LANGFUSE_PUBLIC_KEY_FILE: /run/observability-secrets/langfuse-public-key
+      LANGFUSE_SECRET_KEY_FILE: /run/observability-secrets/langfuse-secret-key
+      TELEMETRY_ID_HMAC_KEY_FILE: /run/observability-secrets/identity-hmac-key
+      TELEMETRY_TRACE_SAMPLE_RATIO: ${TELEMETRY_TRACE_SAMPLE_RATIO:-0.1}
+      TELEMETRY_METRICS_ENABLED: ${TELEMETRY_METRICS_ENABLED:-false}
+      TELEMETRY_METRICS_HOST: 0.0.0.0
+      TELEMETRY_METRICS_PORT: "9465"
+      TELEMETRY_METRICS_TOKEN_FILE: /run/observability-secrets/metrics-token
     volumes:
-      - doorhandle-mem0:/data
+      - doorhandle-mem0-qdrant:/data
+      - type: bind
+        source: ${QDRANT_PRIVATE_DIR:?Set ECS private Qdrant config directory}
+        target: /run/doorhandle-vector
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${OBSERVABILITY_SECRETS_DIR:?Set ECS private observability directory (may be empty when disabled)}
+        target: /run/observability-secrets
+        read_only: true
+        bind:
+          create_host_path: false
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
     mem_limit: 2g
     networks: [doorhandle-network]
     restart: unless-stopped
@@ -177,5 +241,8 @@ volumes:
   doorhandle-mysql:
   doorhandle-redis:
   doorhandle-kafka:
+  # 保留旧卷声明，不挂载、不删除、不转换。
   doorhandle-chroma:
+  doorhandle-qdrant:
   doorhandle-mem0:
+  doorhandle-mem0-qdrant:

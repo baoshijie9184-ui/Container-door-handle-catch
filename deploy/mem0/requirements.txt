@@ -1,4 +1,4 @@
-# 与本机桥接兼容的固定版本；服务使用 OpenAI 协议和本地 Chroma。
+# Native Mem0/Qdrant runtime; Chroma is retained solely for read-only legacy input tooling.
 mem0ai==2.0.19
 chromadb==1.5.9
 fastapi==0.135.2
@@ -7,3 +7,8 @@ python-dotenv==1.0.1
 openai==1.109.1
 pydantic==2.12.5
 cryptography==46.0.5
+qdrant-client==1.20.0
+opentelemetry-api==1.45.2
+opentelemetry-sdk==1.45.2
+opentelemetry-exporter-otlp-proto-http==1.45.2
+prometheus-client==0.26.0

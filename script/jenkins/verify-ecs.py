@@ -790,6 +790,63 @@ def java_maven_arguments(suite, tools, build_root, *, initial, source_regression
     return arguments
 
 
+def middleware_protocol_reports(output):
+    """Require the actual remote SDK/server cases, not adjacent mock tests."""
+    java_name = 'com.ruanzhu.doorhandle.framework.semantic.QdrantSemanticIntegrationTest'
+    java_cases = [case for file in sorted(Path(output).glob('**/surefire-reports/TEST-*.xml'))
+                  for case in ET.parse(file).getroot().iter('testcase')
+                  if case.get('classname') == java_name]
+    python_cases = [case for case in ET.parse(Path(output) / 'python.xml').getroot().iter('testcase')
+                    if case.get('classname') == 'tests_python.test_memory_qdrant'
+                    and case.get('name') == 'test_real_native_qdrant_keeps_public_id_vector_direction_and_account_filters']
+    for cases in (java_cases, python_cases):
+        if not cases or any(case.find(tag) is not None for case in cases for tag in ('failure', 'error', 'skipped')):
+            raise RuntimeError('Actual Qdrant Java/Python SDK protocol acceptance is missing, failed or skipped')
+    return {'status': 'PASS', 'javaNativeCases': len(java_cases), 'pythonNativeCases': len(python_cases),
+            'embeddingProfile': 'EXPLICIT_TEST_ONLY', 'providerCalls': 0, 'productionActivationVerified': False}
+
+
+def observability_protocol_reports(output):
+    java_name = 'com.ruanzhu.doorhandle.module.app.config.PrometheusScrapeIntegrationTest'
+    java_cases = [case for file in sorted(Path(output).glob('**/surefire-reports/TEST-*.xml'))
+                  for case in ET.parse(file).getroot().iter('testcase')
+                  if case.get('classname') == java_name]
+    python_cases = [case for case in ET.parse(Path(output) / 'python.xml').getroot().iter('testcase')
+                    if case.get('classname') == 'tests_python.test_observability_scrape']
+    for cases in (java_cases, python_cases):
+        if not cases or any(case.find(tag) is not None for case in cases for tag in ('failure', 'error', 'skipped')):
+            raise RuntimeError('Actual Prometheus Java/Python scrape cases are missing, failed or skipped')
+    return {'status': 'PASS', 'javaNativeCases': len(java_cases), 'pythonNativeCases': len(python_cases),
+            'langfuseRuntime': 'DEFERRED_BY_USER', 'providerCalls': 0}
+
+
+def semantic_mysql_protocol_reports(output):
+    name = 'com.ruanzhu.doorhandle.module.app.service.knowledge.QualityKnowledgeMySqlTest'
+    # Native reports only: the ordinary source regression intentionally has no
+    # SQL flags and cannot replace this explicit disposable-database suite.
+    cases = [case for file in sorted((Path(output) / 'java').glob('*/surefire-reports/TEST-*.xml'))
+             for case in ET.parse(file).getroot().iter('testcase') if case.get('classname') == name]
+    if len(cases) < 15 or any(case.find(tag) is not None for case in cases for tag in ('failure', 'error', 'skipped')):
+        raise RuntimeError('Semantic source fencing requires all 15 actual isolated MySQL cases')
+    return {'status': 'PASS', 'nativeCases': len(cases), 'sourceData': 'SYNTHETIC_ONLY',
+            'wholeDatabaseMigrationVerified': False}
+
+
+def semantic_mysql_source_suite(args, identity):
+    """Reuse native-suite + ordinary regression orchestration, without cloning old data."""
+    if os.environ.get('DOORHANDLE_REQUIRE_SEMANTIC_MYSQL_TESTS') != 'true':
+        return None
+    if args.fixture_manifest or args.java_tests or args.java_only or args.fixture_property:
+        raise ValueError('The source semantic MySQL component cannot override another explicit fixture scope')
+    name = 'com.ruanzhu.doorhandle.module.app.service.knowledge.QualityKnowledgeMySqlTest'
+    properties = {'doorhandle.feature.mysql.config': os.environ.get('DOORHANDLE_TEST_SEMANTIC_MYSQL_CONFIG', '')}
+    options, _configs, inputs = admit_fixture_suite([name], properties, identity)
+    args.java_suites = [{'id': 'suite-001', 'javaSelection': [name], 'fixtureProperties': sorted(properties),
+                        'fixtureOptions': options, 'privateInputs': inputs}]
+    args.source_regression = True
+    return name
+
+
 def native_module_parts(suite, profile, build_root, output):
     """Map each reviewed FQCN to one fixed source and its existing compiled file."""
     pom = ROOT / 'pom.xml'
@@ -951,6 +1008,9 @@ def main():
             or ROOT.is_relative_to(Path('/home/ecs-user/doorhandle-ci/releases')):
         raise RuntimeError('Verification requires a separate checkout, never the existing deployment runtime')
     fixture_options, selected_classes, manifest_receipt = fixture_arguments(args, identity)
+    semantic_mysql_class = semantic_mysql_source_suite(args, identity)
+    if semantic_mysql_class is not None:
+        selected_classes = [semantic_mysql_class]
     profile, profile_sha = acceptance_profile()
     output = args.output or ROOT / 'work' / ('ecs-ci-' + uuid.uuid4().hex)
     if not output.is_absolute() or output.resolve() != output or not output.is_relative_to(ROOT / 'work'):
@@ -976,7 +1036,13 @@ def main():
         tools[key] = value
     # No production database/model environment or implicit user profile enters verification.
     env = {name: value for name, value in os.environ.items()
-           if name in ('PATH', 'JAVA_HOME', 'LANG', 'LC_ALL', 'DOORHANDLE_ECS_INSTANCE_ID', 'DOORHANDLE_ECS_MACHINE_ID')}
+           if name in ('PATH', 'JAVA_HOME', 'LANG', 'LC_ALL', 'DOORHANDLE_ECS_INSTANCE_ID', 'DOORHANDLE_ECS_MACHINE_ID',
+               'DOORHANDLE_TEST_QDRANT_HOST', 'DOORHANDLE_TEST_QDRANT_PORT', 'DOORHANDLE_TEST_QDRANT_GRPC_PORT',
+               'DOORHANDLE_TEST_QDRANT_KEY_FILE', 'DOORHANDLE_TEST_QDRANT_TLS', 'DOORHANDLE_REQUIRE_QDRANT_TESTS',
+               'DOORHANDLE_TEST_PROMETHEUS_URL', 'DOORHANDLE_TEST_ALERTMANAGER_URL',
+               'DOORHANDLE_TEST_OBSERVABILITY_TARGETS', 'DOORHANDLE_TEST_OBSERVABILITY_TOKEN_FILE',
+               'DOORHANDLE_REQUIRE_OBSERVABILITY_TESTS', 'DOORHANDLE_TEST_SEMANTIC_MYSQL_CONFIG',
+               'DOORHANDLE_REQUIRE_SEMANTIC_MYSQL_TESTS')}
     env.update(HOME=str(output / 'profile'), TMPDIR=str(output / 'tmp'),
                JAVA_TOOL_OPTIONS='-Xmx1536m -XX:MaxMetaspaceSize=512m -XX:+ExitOnOutOfMemoryError',
                PYTHONDONTWRITEBYTECODE='1', PYTHONNOUSERSITE='1', PYTHON_DOTENV_DISABLED='1',
@@ -998,6 +1064,7 @@ def main():
                'wholeMigrationRequested': bool(args.compact_migration_config),
                'workerMysqlRequested': bool(args.worker_mysql_config), 'workerMysqlConfigSha256': args.worker_mysql_config_sha256,
                'scopeKind': 'mysql' if fixture_options else 'source',
+               'semanticMysqlComponentRequested': semantic_mysql_class is not None,
                'scope': 'explicit disposable MySQL Java scope' if fixture_options else
                         'ordinary source tests; infrastructure suites remain opt-in and skipped suites are not migration acceptance',
                'ecsLifecycle': {'managedBy': 'external-to-jenkins', 'cloudOperationsPerformed': False,
@@ -1128,6 +1195,12 @@ def main():
             execute('python', [tools['PYTHON_EXE'], '-B', '-m', 'pytest', 'tests_python', '-q',
                               '--basetemp=' + str(output / 'tmp' / 'pytest'), '--junitxml=' + str(output / 'python.xml')], ROOT, environment=python_env)
             receipt['pythonTests'], receipt['selectedPythonSuites'] = python_report_counts(output / 'python.xml')
+            if env.get('DOORHANDLE_REQUIRE_QDRANT_TESTS') == 'true':
+                receipt['middlewareProtocol'] = middleware_protocol_reports(output)
+            if env.get('DOORHANDLE_REQUIRE_OBSERVABILITY_TESTS') == 'true':
+                receipt['observabilityProtocol'] = observability_protocol_reports(output)
+            if semantic_mysql_class is not None:
+                receipt['semanticMysqlProtocol'] = semantic_mysql_protocol_reports(output)
             cleanup_source_pytest_temporary(output, receipt, ordinary_source=ordinary_source, python_succeeded=True,
                                             stop_tools=tools.get('_cleanup_owned_tools'))
             if args.worker_mysql_config:

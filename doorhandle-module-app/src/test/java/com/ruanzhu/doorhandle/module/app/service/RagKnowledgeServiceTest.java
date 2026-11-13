@@ -62,7 +62,7 @@ class RagKnowledgeServiceTest {
 
         assertThat(context).contains("业务预置数据");
         assertThat(context).contains("APP_BUSINESS_SEED_ENABLED");
-        assertThat(context).contains("mvnw.cmd spring-boot:run");
+        assertThat(context).contains("Jenkins/ECS");
     }
 
     @Test
@@ -87,7 +87,7 @@ class RagKnowledgeServiceTest {
         properties.setRagMaxContextChars(1600);
 
         RagModelService ragModelService = mock(RagModelService.class);
-        when(ragModelService.rewriteRagQuery("助手文档怎么向量化")).thenReturn("智能助手 RAG Chroma 向量文档 查询重写 rerank");
+        when(ragModelService.rewriteRagQuery("助手文档怎么向量化")).thenReturn("智能助手 RAG Qdrant 向量检索 查询重写 rerank");
         when(ragModelService.rerankRagCandidates(any(), any(), anyInt())).thenReturn(List.of(0));
 
         RagKnowledgeService service = new RagKnowledgeService(properties, new DefaultResourceLoader(), mock(ChromaRagStoreService.class), ragModelService);
@@ -95,9 +95,9 @@ class RagKnowledgeServiceTest {
 
         String context = service.retrieveContext("助手文档怎么向量化");
 
-        assertThat(context).contains("检索重写：智能助手 RAG Chroma 向量文档 查询重写 rerank");
+        assertThat(context).contains("检索重写：智能助手 RAG Qdrant 向量检索 查询重写 rerank");
         assertThat(context).contains("Rerank");
-        assertThat(context).contains("向量文档");
+        assertThat(context).contains("向量检索");
     }
 
     @Test

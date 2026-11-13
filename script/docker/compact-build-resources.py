@@ -45,6 +45,21 @@ LICENSE_URL = 'https://raw.githubusercontent.com/moby/buildkit/v0.34.2/LICENSE'
 LICENSE_SHA = 'c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4'
 RECIPES = ('script/docker/compact-build-resources.py', 'script/docker/compact-image-inputs.py')
 SERVICES = ('backend', 'nginx', 'mem0', 'detection-worker')
+QDRANT_REFERENCE = 'docker.io/qdrant/qdrant@sha256:2d1b0bfd0a961275481ea09400fc98008216ae54e1b52ed7d24520d63050c644'
+QDRANT_CONFIG = 'sha256:8a80c5500151ab2b08eb5874698b81b6b8addbc53ef4fb0c47f516680cf413d2'
+QDRANT_COMPRESSED_BYTES = 72584785
+OBSERVABILITY_IMAGES = {
+    'prometheus': {
+        'reference': 'docker.io/prom/prometheus@sha256:89c1a644817e9ad70fa2af76c84898e327c1de7063735f962e8313b1e28672c3',
+        'config': 'sha256:9bd9cbec4bd4f33bb6ccedf8c25a5132f8e7b2fb158c9a223a54485e4332e962',
+        'compressedBytes': 116078268, 'version': '3.16.0',
+        'source': 'https://github.com/prometheus/prometheus/tree/v3.16.0'},
+    'alertmanager': {
+        'reference': 'docker.io/prom/alertmanager@sha256:0f6727a39ff00b6cf95e8a5ebaf7442c55af855b79c689fb9a060e2bada1ecbf',
+        'config': 'sha256:0f7fe4e2351f9f07c89ddc48be52c7bfd24577c5df6fccc0a59bcb2178a75a01',
+        'compressedBytes': 44225164, 'version': '0.35.0',
+        'source': 'https://github.com/prometheus/alertmanager/tree/v0.35.0'},
+}
 SENSITIVE = re.compile(r'PASSWORD|PASSWD|SECRET|TOKEN|API_KEY|ACCESS_KEY|PRIVATE_KEY', re.I)
 SHA = re.compile(r'[a-f0-9]{64}')
 IMAGE = re.compile(r'sha256:[a-f0-9]{64}')
@@ -857,6 +872,88 @@ def host_diff_ids(actor):
     return layers
 
 
+def prepare_qdrant_image(directory, context, module_directory):
+    return _prepare_component_image(directory, context, module_directory, 'qdrant', {
+        'reference': QDRANT_REFERENCE, 'config': QDRANT_CONFIG,
+        'compressedBytes': QDRANT_COMPRESSED_BYTES, 'version': '1.20.0',
+        'source': 'https://github.com/qdrant/qdrant/tree/v1.20.0'})
+
+
+def prepare_observability_image(directory, context, module_directory, component):
+    require(component in OBSERVABILITY_IMAGES, 'Only reviewed Prometheus/Alertmanager images are admitted')
+    return _prepare_component_image(directory, context, module_directory, component, OBSERVABILITY_IMAGES[component])
+
+
+def _prepare_component_image(directory, context, module_directory, component, pin):
+    """Use the existing measured OCI route, never a detached daemon pull.
+
+    The returned engine ID may differ from its config ID on containerd. Both
+    are bound to the verified upstream platform manifest and ordered DiffIDs.
+    Original inputs and bounded resource receipts remain on ECS.
+    """
+    require(sys.platform == 'linux' and os.getuid() == 1000,
+            'Component preparation requires the admitted ECS owner')
+    actor = Supervisor(directory, context)
+    inputs = load_module(component + '_image_inputs', Path(module_directory) / 'compact-image-inputs.py')
+    try:
+        actor.begin(component + '-metadata', 4 * MIB, {'imageReference': pin['reference']}, 128 * MIB)
+        proof = registry_layout(actor, pin['reference'], actor.directory / (component + '-oci'), inputs)
+        require(proof['configDigest'] == pin['config']
+                and proof['compressedBytes'] == pin['compressedBytes'],
+                'Pinned component platform bytes differ')
+        write(actor.directory / (component + '-layer-measurements.json'), proof)
+        engine_id = engine_lookup_id(actor, proof, proof['loadDescriptor'])
+        existing = subprocess.run(['docker', 'image', 'inspect', engine_id],
+                                  capture_output=True, timeout=15)
+        if existing.returncode:
+            actor.begin(component + '-image-archive', proof['compressedBytes'] + 8 * MIB,
+                        {'imageReference': pin['reference']}, 128 * MIB)
+            archive = actor.directory / (component + '-image.tar')
+            with tarfile.open(archive, 'x', format=tarfile.PAX_FORMAT) as package:
+                os.chmod(archive, 0o600)
+                for path in sorted((actor.directory / (component + '-oci')).rglob('*')):
+                    if path.is_file():
+                        monitored_tar_file(package, path,
+                            path.relative_to(actor.directory / (component + '-oci')).as_posix(), actor.check)
+            present = host_diff_ids(actor)
+            growth = sum(row['allocationUpperBoundBytes'] for row in proof['layers']
+                         if row['diffId'] not in present) + 2 * proof['compressedBytes'] + 64 * MIB
+            actor.begin(component + '-image-load', growth, {'measuredLoadGrowthUpperBoundBytes': growth,
+                'compressedIngestCopiesUpperBound': 2}, 256 * MIB)
+            actor.daemon_import_unknown = True
+            actor.run(['docker', 'load', '--input', str(archive)], component + '-image-load', timeout=300)
+            actor.daemon_import_unknown = False
+        row = json.loads(actor.docker('image', 'inspect', engine_id))[0]
+        binding = engine_identity(row, proof, proof['loadDescriptor'])
+        unique_image_inputs([row])
+        resources = actor.finish('PASS')
+        value = {'version': 1, 'kind': 'doorhandle-' + component + '-image', 'status': 'PREPARED', **context,
+                 'reference': pin['reference'], 'versionString': pin['version'],
+                 'engineIdentity': binding, 'reusedImage': existing.returncode == 0,
+                 'resourceEvidence': resources, 'source': pin['source'],
+                 'license': 'Apache-2.0'}
+        write(actor.directory / 'image.json', value)
+        # Keep the image, original metadata and resource receipts. These exact
+        # per-attempt compressed layer copies are reproducible public inputs,
+        # not source business data or recovery volumes.
+        disposable = [actor.directory / (component + '-image.tar')]
+        disposable += [actor.directory / (component + '-oci/blobs/sha256') / row['blobDigest'][7:]
+                       for row in proof['layers']]
+        for path in disposable:
+            if path.exists():
+                safe(path)
+                require(path.is_file() and path.stat().st_uid == os.getuid()
+                        and path.is_relative_to(actor.directory), 'Component disposable input ownership changed')
+                path.unlink()
+        write(actor.directory / 'public-input-cleanup.json', {'status': 'REMOVED_REPRODUCIBLE_LAYER_COPIES',
+            'imagePreserved': True, 'metadataPreserved': True, 'paths': [str(path.relative_to(actor.directory)) for path in disposable]})
+        return value
+    except BaseException:
+        if not (actor.directory / 'resource-summary.json').exists():
+            with contextlib.suppress(BaseException): actor.finish('FAILED')
+        raise
+
+
 def context_inventory(path):
     path = safe(path); rows = []; allocated = 0
     for current, directories, files in os.walk(path, followlinks=False):
@@ -871,6 +968,32 @@ def context_inventory(path):
                 allocated += ((info.st_size + 4095) // 4096) * 4096 + 4096
     return {'files': len(rows), 'bytes': sum(row[1] for row in rows), 'allocationUpperBoundBytes': allocated,
             'sha256': hashlib.sha256(encoded(rows)).hexdigest()}
+
+
+def admit_qdrant_image(source, context):
+    """Consume this build's completed source-fixture image, without a pull."""
+    folder = safe(Path(source) / 'work/middleware-fixture/image-preparation')
+    value = read(folder / 'image.json')
+    require(all(value.get(key) == context[key] for key in ('release', 'commit', 'sourceSha256', 'identity'))
+            and value.get('status') == 'PREPARED' and value.get('kind') == 'doorhandle-qdrant-image'
+            and value.get('reference') == QDRANT_REFERENCE
+            and value.get('engineIdentity', {}).get('configDigest') == QDRANT_CONFIG,
+            'Qdrant image evidence belongs to another fixed build or upstream')
+    resource = value.get('resourceEvidence', {})
+    require(resource.get('file') == str(folder / 'resource-summary.json')
+            and resource.get('sha256') == digest(folder / 'resource-summary.json'),
+            'Qdrant image resource receipt changed')
+    summary = read(folder / 'resource-summary.json')
+    require(summary.get('status') == 'PASS'
+            and all(summary.get(key) == context[key] for key in ('release', 'commit', 'sourceSha256', 'identity'))
+            and all(summary.get('cleanup', {}).get(key) is True for key in
+                    ('creatorStopped', 'builderStopped', 'daemonImportTerminated')),
+            'Qdrant image preparation has no successful terminal resource proof')
+    result = subprocess.run(['docker', 'image', 'inspect', value['engineIdentity']['engineImageId']],
+        capture_output=True, timeout=15)
+    require(result.returncode == 0 and len(result.stdout) <= MIB, 'Admitted Qdrant image is unavailable')
+    validate_engine_identity(json.loads(result.stdout)[0], value['engineIdentity'])
+    return value
 
 
 def registry_layout(actor, reference, destination, inputs):
@@ -917,6 +1040,11 @@ def registry_layout(actor, reference, destination, inputs):
                 h.update(block); output.write(block); actor.check()
         require(count == row['size'] and 'sha256:' + h.hexdigest() == row['digest'], 'Dependency blob hash differs')
     manifest_sha = hashlib.sha256(raw).hexdigest()
+    # The normalized load graph may have a different manifest digest. Retain
+    # the original registry metadata outside that graph for review.
+    original = actor.directory / (destination.name + '-source-manifest.json')
+    with original.open('xb') as stream:
+        os.chmod(original, 0o600); stream.write(raw)
     (destination / 'blobs/sha256' / manifest_sha).write_bytes(raw)
     write(destination / 'oci-layout', {'imageLayoutVersion': '1.0.0'})
     write(destination / 'index.json', {'schemaVersion': 2, 'manifests': [{'mediaType': value.get('mediaType', 'application/vnd.oci.image.manifest.v1+json'),

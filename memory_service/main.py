@@ -1,5 +1,5 @@
 """
-mem0 记忆服务 - 基于 FastAPI + mem0 + Chroma
+mem0 记忆服务 - FastAPI + native Mem0 Qdrant + BGE-M3
 为智能助手提供用户长期记忆能力
 """
 
@@ -11,6 +11,7 @@ import json
 import re
 import threading
 import asyncio
+from functools import wraps
 from pathlib import Path
 from typing import Any, Optional, Literal
 from contextlib import asynccontextmanager, contextmanager
@@ -24,11 +25,14 @@ try:
     from .lifecycle import GovernedVectorStore, memory_digest
     from .embedding_config import (embedder_config, configure_runtime as configure_embedding_runtime,
                                    profile as embedding_profile, FREE_PROFILE, COLLECTION as BGE_COLLECTION)
+    from .qdrant_store import qdrant_config, admit_collection, persist_storage_floor, vector_identity, GENERATION, PREPROCESSING
 except ImportError:  # Docker / start_server.py load main as a top-level module.
     from write_receipts import MemoryWriter, ReceiptError, BRIDGE_PROTOCOL
     from lifecycle import GovernedVectorStore, memory_digest
     from embedding_config import (embedder_config, configure_runtime as configure_embedding_runtime,
                                   profile as embedding_profile, FREE_PROFILE, COLLECTION as BGE_COLLECTION)
+    from qdrant_store import qdrant_config, admit_collection, persist_storage_floor, vector_identity, GENERATION, PREPROCESSING
+from runtime_telemetry import RuntimeTelemetry
 
 # Runtime settings are injected by the ECS deployment. Never load a workstation .env.
 
@@ -61,6 +65,7 @@ memory_instance = None
 memory_write_lock = threading.Lock()
 memory_writer = None
 model_configuration = None
+telemetry = None
 
 
 @contextmanager
@@ -72,6 +77,29 @@ def memory_write_slot():
         yield
     finally:
         memory_write_lock.release()
+
+
+def trace_memory(operation):
+    """Trace capability boundaries without recording memory/prompt/provider payloads."""
+    def decorate(function):
+        @wraps(function)
+        def traced(*args, **kwargs):
+            if telemetry is None:
+                return function(*args, **kwargs)
+            request = args[0] if args else kwargs.get("request")
+            attributes = {"owner.id": getattr(request, "user_id", None), "session.id": getattr(request, "run_id", None)}
+            with telemetry.span(operation, attributes=attributes) as span:
+                try:
+                    result = function(*args, **kwargs)
+                    data = result.get("data") if isinstance(result, dict) else getattr(result, "data", None)
+                    outcome = "pending" if isinstance(data, dict) and data.get("status") in ("PENDING", "RUNNING", "NEEDS_REVIEW") else "success"
+                    span.set_outcome(outcome)
+                    return result
+                except Exception:
+                    span.set_outcome("error")
+                    raise
+        return traced
+    return decorate
 
 
 def required_env(name: str) -> str:
@@ -106,7 +134,10 @@ def memory_collection_name(settings=None):
     settings = os.environ if settings is None else settings
     keys = ("DOORHANDLE_RUNTIME_ACCEPTANCE", "DOORHANDLE_RUNTIME_PROJECT", "MEM0_RUNTIME_TEST_COLLECTION")
     if not any(key in settings for key in keys):
-        return BGE_COLLECTION if embedding_profile(settings) == FREE_PROFILE else "doorhandle_memories"
+        collection = settings.get("MEM0_QDRANT_COLLECTION") or (BGE_COLLECTION if embedding_profile(settings) == FREE_PROFILE else "doorhandle_memories_explicit_test")
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", collection):
+            raise ValueError("Invalid memory Qdrant collection")
+        return collection
     switch, project, collection = (settings.get(key) for key in keys)
     match = re.fullmatch(r"doorhandle-rehearsal-([a-f0-9]{12})", project) if isinstance(project, str) else None
     if switch != "true" or match is None or collection != "doorhandle_runtime_test_" + match[1]:
@@ -121,6 +152,7 @@ def get_memory_config():
     llm_base_url = os.getenv("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
     llm_model = os.getenv("MEM0_LLM_MODEL") or os.getenv("DASHSCOPE_MODEL", "kimi-k3")
     embedding = embedder_config()
+    vector = qdrant_config(collection)
 
     config = {
         "llm": {
@@ -136,11 +168,8 @@ def get_memory_config():
             "config": embedding
         },
         "vector_store": {
-            "provider": "chroma",
-            "config": {
-                "collection_name": collection,
-                "path": os.path.join(os.path.dirname(__file__), "chroma_db")
-            }
+            "provider": "qdrant",
+            "config": vector
         }
     }
     # Let the SDK classify the selected model. Forcing every provider model
@@ -149,13 +178,9 @@ def get_memory_config():
         # Pinned PyPI uses the general-model parameter path for Kimi. Its
         # default temperature=0.1 is rejected by these thinking-only models.
         config["llm"]["config"].update(temperature=1.0, top_p=0.95)
-    # 服务器可将整个目录挂载为持久卷；未配置时保留本机既有路径。
-    data_dir = os.getenv("MEM0_DATA_DIR")
-    if data_dir:
-        storage = Path(data_dir).expanduser().resolve()
-        storage.mkdir(parents=True, exist_ok=True)
-        config["vector_store"]["config"]["path"] = str(storage / "chroma")
-        config["history_db_path"] = str(storage / "history.db")
+    # History/receipts/configuration still require one persistent single-writer SQLite volume.
+    storage = Path(os.getenv("MEM0_DATA_DIR", "/data"))
+    config["history_db_path"] = str(storage / "history.db")
     return config
 
 
@@ -194,16 +219,27 @@ def configure_provider_timeouts(memory):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
-    global memory_instance, memory_writer, model_configuration
+    global memory_instance, memory_writer, model_configuration, telemetry
+    telemetry = RuntimeTelemetry.from_env("doorhandle-mem0", default_metrics_port=9465)
     logger.info("正在初始化 mem0 记忆服务...")
     writer = None
     try:
-        directory = Path(os.getenv("MEM0_DATA_DIR") or Path(__file__).parent / "bridge_state") / "bridge_receipts"
+        data_dir = os.getenv("MEM0_DATA_DIR", "")
+        if not data_dir or not Path(data_dir).is_absolute():
+            raise ValueError("Persistent absolute ECS MEM0_DATA_DIR is required")
+        directory = Path(data_dir) / "bridge_receipts"
         writer = MemoryWriter(directory, lambda: memory_instance, memory_write_lock,
                                      response_wait=bounded_setting("MEM0_WRITE_RESPONSE_SECONDS", 3, 0.01, 4),
                                      operation_seconds=bounded_setting("MEM0_WRITE_REVIEW_SECONDS", 120, 1, 1800))
         from mem0 import Memory
         config = get_memory_config()
+        if not os.getenv("MEM0_DATA_DIR") or not Path(os.environ["MEM0_DATA_DIR"]).is_absolute():
+            raise ValueError("Persistent absolute ECS MEM0_DATA_DIR is required")
+        storage = Path(os.environ["MEM0_DATA_DIR"])
+        if not (storage / "vector-space.json").exists() and ((storage / "history.db").exists() or (storage / "chroma" / "chroma.sqlite3").exists()):
+            raise ValueError("Legacy memory volume requires verified Qdrant migration before runtime activation")
+        admit_collection(config["vector_store"]["config"])
+        persist_storage_floor(storage, memory_collection_name(), vector_identity())
         memory_instance = Memory.from_config(config)
         configure_provider_timeouts(memory_instance)
         configure_embedding_runtime(memory_instance)
@@ -222,10 +258,13 @@ async def lifespan(app: FastAPI):
             model_configuration.guard_environment(required_env("DASHSCOPE_API_KEY"))
             model_configuration.restore()
         memory_writer = writer
+        telemetry.set_ready(True)
         logger.info("mem0 记忆服务初始化完成")
     except Exception as e:
         if writer is not None:
             writer.close(wait=False)
+        telemetry.close(timeout_seconds=3)
+        telemetry = None
         logger.error("mem0 初始化失败: %s", type(e).__name__)
         raise
 
@@ -248,6 +287,10 @@ async def lifespan(app: FastAPI):
         if memory_writer is writer:
             memory_writer = None
         model_configuration = None
+        if telemetry is not None:
+            telemetry.set_ready(False)
+            telemetry.close(timeout_seconds=3)
+            telemetry = None
         logger.info("mem0 记忆服务关闭")
 
 
@@ -261,13 +304,53 @@ app = FastAPI(
 
 @app.middleware("http")
 async def authenticate_memory_bridge(request: Request, call_next):
-    if request.url.path.startswith(("/memories", "/internal/model-config")):
+    if request.url.path.startswith(("/memories", "/internal/model-config", "/internal/embeddings")):
         token = os.getenv("MEM0_BRIDGE_TOKEN", "")
         if not token:
             return JSONResponse(status_code=503, content={"detail": "Memory bridge authentication is not configured"})
         if not hmac.compare_digest(request.headers.get("x-doorhandle-memory-token", "").encode("utf-8"), token.encode("utf-8")):
             return JSONResponse(status_code=401, content={"detail": "Memory bridge authentication required"})
     return await call_next(request)
+
+
+class InternalEmbeddingRequest(BaseModel):
+    app_id: Literal["doorhandlecatch"]
+    purpose: Literal["SYSTEM_RAG", "KNOWLEDGE", "EXPERIENCE"]
+    user_id: str = Field(..., pattern=r"^doorhandlecatch:(?:system|user:[1-9][0-9]*)$")
+    request_id: str = Field(..., pattern=r"^[A-Za-z0-9_-]{8,128}$")
+    texts: list[str] = Field(..., min_length=1, max_length=64, repr=False)
+
+    @field_validator("texts")
+    @classmethod
+    def validate_texts(cls, texts):
+        if any(not text.strip() or len(text.encode("utf-8")) > 8000 for text in texts):
+            raise ValueError("Embedding input exceeds its UTF-8 bound")
+        return texts
+
+
+@app.post("/internal/embeddings")
+def internal_embeddings(request: InternalEmbeddingRequest, http_request: Request):
+    if memory_instance is None or (request.user_id == "doorhandlecatch:system" and request.purpose != "SYSTEM_RAG"):
+        raise HTTPException(503, "Embedding capability is unavailable")
+    try:
+        # Same model object/client/rate slot as Mem0; there is no second provider key or fallback.
+        with telemetry.span("embedding.request", attributes={"owner.id": request.user_id}, headers=http_request.headers, trusted_parent=True) as span:
+            texts = [text.replace("\n", " ") for text in request.texts]
+            embedder = memory_instance.embedding_model
+            vectors = embedder.embed_batch(texts) if hasattr(embedder, "embed_batch") else [embedder.embed(text) for text in texts]
+            identity = vector_identity()
+            dimensions = identity["doorhandle_dimensions"]
+            import math
+            if len(vectors) != len(texts) or any(len(v) != dimensions or not any(v) or
+                    any(type(x) not in (float, int) or not math.isfinite(x) for x in v) for v in vectors):
+                raise ValueError("Embedding vector identity mismatch")
+            span.set_outcome("success")
+            return {"schemaVersion": 1, "request_id": request.request_id, "profile": embedding_profile(),
+                    "provider": "siliconflow" if embedding_profile() == FREE_PROFILE else "explicit-openai-compatible",
+                    "model": identity["doorhandle_model"], "dimensions": dimensions,
+                    "preprocessing": PREPROCESSING, "input_count": len(texts), "vectors": vectors}
+    except Exception:
+        raise HTTPException(503, "Embedding capability is temporarily unavailable") from None
 
 
 def create_configured_llm(data):
@@ -503,6 +586,7 @@ def verify_memory_cleanup(request: OwnedMemoryGetRequest):
 
 
 @app.post("/memories/owned/get")
+@trace_memory("mem0.search")
 def get_owned_memory(request: OwnedMemoryGetRequest, protocol: Literal["0","1","2"] = Header("0", alias="X-Doorhandle-Memory-Protocol")):
     try:
         current = get_owned_record(request)
@@ -515,23 +599,19 @@ def get_owned_memory(request: OwnedMemoryGetRequest, protocol: Literal["0","1","
 
 
 @app.post("/memories/owned/list")
+@trace_memory("mem0.search")
 def list_owned_memories(request: OwnedMemoryListRequest, protocol: Literal["0","1","2"] = Header("0", alias="X-Doorhandle-Memory-Protocol")):
     try:
-        # Mem0 2.0.19 get_all 只有 top_k。使用当前 Chroma 的原生分页，避免每页全量扫描。
-        collection = memory_instance.vector_store.collection
-        result = collection.get(where={"$and": [{"user_id": {"$eq": request.user_id}}, {"agent_id": {"$eq": request.app_id}}]},
-                                limit=request.limit + 1, offset=request.offset, include=["metadatas"])
-        ids, metadata = result.get("ids", []), result.get("metadatas", [])
-        if len(ids) != len(metadata):
-            raise ValueError("Invalid memory page")
+        rows = memory_instance.vector_store.owned_page(request.user_id, request.app_id, request.limit + 1, request.offset)
         items = []
-        for id, payload in zip(ids[:request.limit], metadata[:request.limit]):
+        for record in rows[:request.limit]:
+            id, payload = record.id, record.payload
             # 再次校验范围，正文始终使用白名单转换，不泄露原始 metadata。
             if payload and payload.get("user_id") == request.user_id and payload.get("agent_id") == request.app_id:
                 row = {key: payload.get(key) for key in ("user_id", "agent_id", "run_id", "created_at", "updated_at")}
                 row.update(id=id, memory=payload.get("data", ""))
                 items.append(public_memory_item(row, protocol))
-        has_more = len(ids) > request.limit
+        has_more = len(rows) > request.limit
         return {"code": 200, "data": {"items": items, "hasMore": has_more, "nextOffset": request.offset + request.limit if has_more else None}}
     except Exception:
         logger.warning("Owned memory listing failed")
@@ -539,6 +619,7 @@ def list_owned_memories(request: OwnedMemoryListRequest, protocol: Literal["0","
 
 
 @app.post("/memories/owned/delete")
+@trace_memory("mem0.delete")
 def delete_owned_memory(request: OwnedMemoryDeleteRequest):
     try:
         with memory_write_slot():
@@ -567,6 +648,7 @@ def check_owned_version(request: OwnedMemoryDeleteRequest) -> dict:
 
 
 @app.post("/memories/owned/update")
+@trace_memory("mem0.update")
 def update_owned_memory(request: OwnedMemoryUpdateRequest):
     try:
         with memory_write_slot():
@@ -637,10 +719,14 @@ async def health_check():
     selected = embedding_profile()
     return {"status": "ok", "service": "memory", "memory_protocol": BRIDGE_PROTOCOL, "memory_scopes": ["SESSION", "ACCOUNT"], "governance": True, "owned_edit": True, "owned_pagination": True, "write_receipts": memory_writer is not None, "lifecycle": memory_writer is not None, "bridge_auth_configured": bool(os.getenv("MEM0_BRIDGE_TOKEN")),
             "embedding_profile": selected, "embedding_collection": memory_collection_name(),
-            "embedding_dimensions": 1024 if selected == FREE_PROFILE else None}
+            "embedding_dimensions": vector_identity()["doorhandle_dimensions"],
+            "embedding_model": vector_identity()["doorhandle_model"], "embedding_preprocessing": PREPROCESSING,
+            "vector_backend": "qdrant", "storage_generation": vector_identity()["doorhandle_storage_generation"],
+            "vector_id_protocol": "doorhandle-vector-sha256-v8-v1", "history_mode": "single-writer-sqlite"}
 
 
 @app.post("/memories/add", response_model=ApiResponse)
+@trace_memory("mem0.add")
 def add_memory(request: AddMemoryRequest):
     """添加记忆"""
     try:
@@ -685,6 +771,7 @@ def memory_operation(request: MemoryOperationRequest):
 
 
 @app.post("/memories/search", response_model=ApiResponse)
+@trace_memory("mem0.search")
 def search_memories(request: SearchMemoryRequest):
     """搜索记忆"""
     try:

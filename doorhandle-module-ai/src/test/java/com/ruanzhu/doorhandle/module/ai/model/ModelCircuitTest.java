@@ -7,6 +7,7 @@ import static com.ruanzhu.doorhandle.module.ai.model.ModelFailureClassifier.Fail
 import static org.assertj.core.api.Assertions.*;
 
 class ModelCircuitTest {
+    @Test void localFacadeUsesMatureCircuitEngine(){assertThat(circuit().engine()).isEqualTo("resilience4j");}
     private final AtomicLong time = new AtomicLong();
     private ModelCircuit circuit() { return new ModelCircuit(2, Duration.ofSeconds(60), Duration.ofMinutes(5), time::get); }
 

@@ -7,6 +7,7 @@ import com.ruanzhu.doorhandle.contracts.agent.*;
 import com.ruanzhu.doorhandle.contracts.security.BusinessUserDirectory;
 import com.ruanzhu.doorhandle.module.ai.agent.RoleAgentCatalog;
 import com.ruanzhu.doorhandle.module.ai.journal.AgentJournal;
+import com.ruanzhu.doorhandle.framework.semantic.*;
 import io.agentscope.core.skill.AgentSkill;
 import jakarta.annotation.PostConstruct;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -30,6 +31,12 @@ public class SkillEvolutionService {
     private final BusinessUserDirectory users; private final AgentJournal journal;
     private final SkillContentStore store;
     private SkillLinkStorage linkStorage;
+    private SemanticVectorStore semanticVectors;
+    private SemanticProperties semanticProperties;
+    private JdbcSemanticIndexState semanticStates;
+    private final java.util.concurrent.atomic.AtomicBoolean semanticIndexing=new java.util.concurrent.atomic.AtomicBoolean();
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    public void semanticIndex(SemanticVectorStore vectors,SemanticProperties properties,JdbcSemanticIndexState states){this.semanticVectors=vectors;this.semanticProperties=properties;this.semanticStates=states;}
     @org.springframework.beans.factory.annotation.Autowired(required=false) public void linkStorage(SkillLinkStorage storage){this.linkStorage=storage;}
     public SkillEvolutionService(JdbcTemplate jdbc,PlatformTransactionManager manager,ObjectMapper json,BusinessUserDirectory users,AgentJournal journal){
         this.jdbc=jdbc;this.tx=new TransactionTemplate(manager);tx.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);tx.setTimeout(15);
@@ -136,7 +143,7 @@ public class SkillEvolutionService {
         var current=fresh(actor);return tx.execute(status->{var skill=lock(current,id,command.expectedRevision(),true);
             var candidate=version(id,num(skill,"latest_version"));if(!"LINK".equals(candidate.get("source_type")))throw fail(400,"仅适用于本人链接安装的技能");reason(command.reason());
             store.withdraw(id);
-            store.archive(id);
+            store.archive(id);invalidateSemantic(id);
             audit(id,num(skill,"latest_version"),current.userId(),"UNINSTALL_LINK",command.expectedRevision()+1,(String)candidate.get("content_sha256"),command.reason(),null,null);return get(current,id);
         });
     }
@@ -200,14 +207,14 @@ public class SkillEvolutionService {
         boolean approve="APPROVE".equals(decision.decision());
         if(approve&&(!evaluated(id,v,(String)candidate.get("content_sha256"))||!(boolean)evaluation(skill,candidate).get("passed")))throw fail(409,"规则评测已失效 请重新修订");
         store.review(id,v,approve,current.userId(),decision.reason());
-        if(approve)store.publish(id,v);else bump(id);
+        if(approve){store.publish(id,v);invalidateSemantic(id);}else bump(id);
         audit(id,v,current.userId(),approve?"PUBLISH":"REJECT",decision.expectedRevision()+1,(String)candidate.get("content_sha256"),decision.reason(),null,null);return get(current,id);});}
     public SkillDtos.View rollback(AgentActor actor,String id,SkillDtos.Rollback command){var current=fresh(actor);boss(current);return tx.execute(status->{var skill=lock(current,id,command.expectedRevision(),false);var candidate=version(id,command.targetVersion());verifyDigest(skill,candidate);reason(command.reason());
         if(!"APPROVED".equals(candidate.get("status"))||!evaluated(id,command.targetVersion(),(String)candidate.get("content_sha256"))||!(boolean)evaluation(skill,candidate).get("passed"))throw fail(409,"只能回退到已审核且规则有效的版本");
-        store.publish(id,command.targetVersion());
+        store.publish(id,command.targetVersion());invalidateSemantic(id);
         audit(id,command.targetVersion(),current.userId(),"ROLLBACK",command.expectedRevision()+1,(String)candidate.get("content_sha256"),command.reason(),null,null);return get(current,id);});}
     public SkillDtos.View archive(AgentActor actor,String id,SkillDtos.Command command){var current=fresh(actor);boss(current);return tx.execute(status->{var skill=lock(current,id,command.expectedRevision(),false);reason(command.reason());
-        store.archive(id);
+        store.archive(id);invalidateSemantic(id);
         var candidate=version(id,num(skill,"latest_version"));audit(id,num(skill,"latest_version"),current.userId(),"ARCHIVE",command.expectedRevision()+1,(String)candidate.get("content_sha256"),command.reason(),null,null);return get(current,id);});}
     public List<SkillDtos.View> list(AgentActor actor){var current=fresh(actor);return store.visible(current.userId(),current.supervisor(),current.role().name()).stream().map(row->get(current,(String)row.get("skill_id"))).toList();}
     public SkillDtos.View get(AgentActor actor,String id){var current=fresh(actor);var skill=accessible(current,id,false);boolean owner=number(skill,"owner_user_id")==current.userId();
@@ -226,6 +233,72 @@ public class SkillEvolutionService {
             if("APPROVED".equals(candidate.get("status"))&&evaluated((String)skill.get("skill_id"),num(skill,"active_version"),(String)candidate.get("content_sha256"))&&(boolean)evaluation(skill,candidate).get("passed"))skills.add(nativeSkill(skill,candidate));
         }
         return new SkillSnapshotRepository(skills);
+    }
+    /** Normal task recall is semantic; explicit /skills and /skill keep the complete published catalog. */
+    public SkillSnapshotRepository repository(AgentActor actor,String taskQuery){return new SkillSnapshotRepository(recallPublished(actor,taskQuery,5).skills());}
+    public record Recall(String mode,List<AgentSkill> skills){public Recall{skills=List.copyOf(skills);}}
+    private String semanticGeneration(){return semanticProperties.getStorageGeneration()+"/"+semanticProperties.getProfile()+"/"+semanticProperties.getModel()+"/"+semanticProperties.getDimensions()+"/"+semanticProperties.getPreprocessing();}
+    private String semanticScope(Map<String,Object> skill,Map<String,Object> candidate){return skill.get("target_role")+":"+candidate.get("source_type");}
+    private JdbcSemanticIndexState.Source semanticSource(Map<String,Object> skill,Map<String,Object> candidate){return new JdbcSemanticIndexState.Source("EXPERIENCE",number(skill,"owner_user_id"),(String)skill.get("skill_id"),num(candidate,"version_no"),(String)candidate.get("content_sha256"),semanticScope(skill,candidate));}
+    private void invalidateSemantic(String id){if(semanticStates!=null){var rows=store.identities(id,false);if(rows.size()==1)semanticStates.invalidate("EXPERIENCE",number(rows.get(0),"owner_user_id"),id);}}
+    private boolean currentSemanticSource(JdbcSemanticIndexState.Source expected){
+        if(!"EXPERIENCE".equals(expected.kind()))return false;
+        var identities=store.identities(expected.id(),true);if(identities.size()!=1)return false;var skill=identities.get(0);
+        if(skill.get("active_version")==null||num(skill,"active_version")!=expected.version()||number(skill,"owner_user_id")!=expected.owner()||!Set.of("ACTIVE","STALE").contains(skill.get("lifecycle")))return false;
+        var candidate=version(expected.id(),expected.version());
+        return expected.contentSha256().equals(candidate.get("content_sha256"))&&expected.scope().equals(semanticScope(skill,candidate))&&usablePublication(skill,candidate);
+    }
+    private boolean usablePublication(Map<String,Object> skill,Map<String,Object> candidate){
+        if(!supportedSource(candidate)||!"APPROVED".equals(candidate.get("status")))return false;
+        verifyDigest(skill,candidate);
+        return evaluated((String)skill.get("skill_id"),num(candidate,"version_no"),(String)candidate.get("content_sha256"))&&(boolean)evaluation(skill,candidate).get("passed");
+    }
+    /** Network/embedding work is outside the publication transaction; CAS prevents stale completion. */
+    @org.springframework.scheduling.annotation.Scheduled(fixedDelayString="${app.semantic.reconcile-delay-ms:30000}",initialDelayString="${app.semantic.reconcile-initial-delay-ms:30000}")
+    public void reconcileExperienceIndex(){
+        if(semanticVectors==null||!semanticProperties.isEnabled()||!semanticIndexing.compareAndSet(false,true))return;
+        try{
+            var pending=jdbc.queryForList("SELECT s.asset_id AS skill_id FROM content_asset s JOIN content_revision r ON r.asset_id=s.asset_id AND r.asset_kind='SKILL' AND r.version=s.published_version LEFT JOIN runtime_state x ON x.namespace='SEMANTIC_INDEX' AND x.owner_id=s.owner_user_id AND x.scope_key=CONCAT('EXPERIENCE:',s.asset_id) WHERE s.asset_kind='SKILL' AND s.published_version IS NOT NULL AND s.lifecycle IN ('ACTIVE','STALE') AND r.approval_status='APPROVED' AND (r.source_type='RUN' AND r.source_import_id IS NULL OR ? AND r.source_type='LINK' AND r.source_import_id IS NOT NULL) AND EXISTS(SELECT 1 FROM audit_event e WHERE e.kind='SKILL_EVALUATION' AND e.resource_type='SKILL' AND e.resource_id=s.asset_id AND e.revision=r.version AND e.content_sha256=r.content_sha256 AND e.policy_version=? AND e.outcome='PASSED') ORDER BY COALESCE(x.updated_at,s.updated_at),s.id LIMIT 4",linkStorage!=null,SUITE);
+            for(var entry:pending){try{String id=(String)entry.get("skill_id");var identities=store.identities(id,false);if(identities.size()!=1)continue;
+                var skill=identities.get(0);if(skill.get("active_version")==null||!Set.of("ACTIVE","STALE").contains(skill.get("lifecycle")))continue;
+                var candidate=version(id,num(skill,"active_version"));
+                var source=semanticSource(skill,candidate);var ticket=semanticStates.claim(source,semanticProperties.getExperienceCollection(),this::currentSemanticSource);
+                var parts=SemanticDocuments.split(candidate.get("description_text")+"\n"+candidate.get("instructions_text"));var documents=new ArrayList<SemanticVectorStore.Document>();
+                for(int part=0;part<parts.size();part++)documents.add(new SemanticVectorStore.Document(id+"@v"+source.version()+":"+part,parts.get(part),Map.of("kind","EXPERIENCE","source_id",id,"version",String.valueOf(source.version()),"source_sha256",source.contentSha256(),"owner",String.valueOf(source.owner()),"role",skill.get("target_role").toString(),"visibility",runSource(candidate)?"ENTERPRISE":"PRIVATE","lifecycle","PUBLISHED","generation",semanticGeneration())));
+                boolean success=false;
+                try{
+                    boolean current=false;try{current=semanticVectors.contains(semanticProperties.getExperienceCollection(),documents);}catch(SemanticUnavailableException unavailable){/* Not a valid readiness proof. */}
+                    if(ticket.ready()&&!current)ticket=semanticStates.reopen(ticket,this::currentSemanticSource);
+                    if(!current)semanticVectors.upsert(semanticProperties.getExperienceCollection(),documents,new EmbeddingClient.RequestContext("EXPERIENCE","doorhandlecatch:user:"+source.owner()));
+                    success=true;
+                }catch(SemanticUnavailableException unavailable){/* Persist FAILED without changing the approved source. */}
+                semanticStates.finish(ticket,success,this::currentSemanticSource);
+            }catch(SemanticUnavailableException|ResponseStatusException changed){/* No completion from a stale or no-longer-approved publication. */}}
+        }finally{semanticIndexing.set(false);}
+    }
+    public Recall recallPublished(AgentActor actor,String query,int limit){
+        var current=fresh(actor);if(limit<1||limit>10)throw new IllegalArgumentException("Invalid experience recall limit");
+        if(query==null||query.isBlank())return new Recall("CATALOG",repository(current).getAllSkills());
+        if(semanticVectors!=null&&semanticProperties.isEnabled())try{
+            var filter=new SemanticVectorStore.Filter(Map.of("kind","EXPERIENCE","role",current.role().name(),"lifecycle","PUBLISHED","generation",semanticGeneration()),List.of(Map.of("owner",String.valueOf(current.userId())),Map.of("visibility","ENTERPRISE")));
+            var hits=semanticVectors.search(semanticProperties.getExperienceCollection(),query,filter,Math.min(100,limit*6),new EmbeddingClient.RequestContext("EXPERIENCE","doorhandlecatch:user:"+current.userId()));
+            var selected=new ArrayList<AgentSkill>();var seen=new HashSet<String>();
+            for(var hit:hits){String id=hit.metadata().get("source_id");if(id==null||!seen.add(id))continue;
+                // Current role, lifecycle, publication pointer, owner visibility, source/evaluation are all checked after recall.
+                var publications=store.published(current.role().name(),current.userId(),id);if(publications.size()!=1)continue;var skill=publications.get(0);
+                var candidate=version(id,num(skill,"active_version"));if(!String.valueOf(num(candidate,"version_no")).equals(hit.metadata().get("version"))||!Objects.equals(candidate.get("content_sha256"),hit.metadata().get("source_sha256"))||!usablePublication(skill,candidate))continue;
+                if(!"READY".equals(semanticStates.state(semanticSource(skill,candidate),semanticProperties.getExperienceCollection(),this::currentSemanticSource)))continue;
+                selected.add(nativeSkill(skill,candidate));if(selected.size()==limit)break;
+            }
+            return new Recall("SEMANTIC",selected);
+        }catch(SemanticUnavailableException|IllegalArgumentException unavailable){/* Explicit read-only keyword degradation, never an index PASS. */}
+        var terms=Arrays.stream(query.toLowerCase(Locale.ROOT).split("[^\\p{L}\\p{N}]+" )).filter(term->term.length()>=2).limit(24).toList();
+        var matches=new ArrayList<Map.Entry<Integer,AgentSkill>>();
+        for(var skill:publishedSkills(current)){var candidate=version((String)skill.get("skill_id"),num(skill,"active_version"));if(!usablePublication(skill,candidate))continue;
+            String text=(skill.get("name")+" "+candidate.get("description_text")+" "+candidate.get("instructions_text")).toLowerCase(Locale.ROOT);int score=(int)terms.stream().filter(text::contains).count();
+            if(score>0)matches.add(Map.entry(score,nativeSkill(skill,candidate)));
+        }
+        return new Recall("KEYWORD_DEGRADED",matches.stream().sorted(Map.Entry.<Integer,AgentSkill>comparingByKey().reversed()).limit(limit).map(Map.Entry::getValue).toList());
     }
     /** 命令目录只公开当前角色可读取的发布版本，不返回来源账号、私有运行或草稿。 */
     public List<SkillDtos.AvailableSkill> availableSkills(AgentActor actor){var current=fresh(actor);var result=new ArrayList<SkillDtos.AvailableSkill>();
@@ -281,7 +354,7 @@ public class SkillEvolutionService {
                 var storedTime=skill.get("last_used_at")!=null?skill.get("last_used_at"):skill.get("activated_at");
                 var timestamp=storedTime instanceof java.time.LocalDateTime value?value:((java.sql.Timestamp)storedTime).toLocalDateTime();
                 boolean archive=timestamp.isBefore(now.minusDays(90));if(!archive&&"STALE".equals(skill.get("lifecycle")))continue;
-                if(archive)store.archive(id);else store.markStale(id);
+                if(archive){store.archive(id);invalidateSemantic(id);}else store.markStale(id);
                 audit(id,v,0,archive?"AUTO_ARCHIVE":"MARK_STALE",num(skill,"revision")+1,(String)candidate.get("content_sha256"),archive?"90 天未读取 自动停用 保留审核版本":"30 天未读取 标记待维护 不停止读取",null,null);
             }
         });

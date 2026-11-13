@@ -85,6 +85,7 @@ public class AgentModelService implements AutoCloseable {
         // Never mutate the decrypted snapshot or inherit another deployment's API keys.
         copy.setGatewayBaseUrl(deployment.getGatewayBaseUrl());
         copy.setProxyUrl(deployment.getProxyUrl());
+        copy.setMaxConcurrentCalls(deployment.getMaxConcurrentCalls());
         return copy;
     }
     private synchronized VersionClient lease(long revision){versionClient(revision);var holder=versions.get(revision);holder.activeStreams++;return holder;}

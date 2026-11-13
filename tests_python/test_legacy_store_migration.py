@@ -1,4 +1,4 @@
-"""Migration integrity checks. Execute on ECS; Chroma is a required dependency."""
+"""Read-only legacy preservation/source checks; new target is Qdrant. Execute on ECS."""
 from pathlib import Path
 import importlib.util
 import io
@@ -162,7 +162,7 @@ class LegacyMem0MigrationTests(unittest.TestCase):
         self.assertEqual(migration.read_json(path)["dimensions"], 4)
         self.assertEqual(self.bundle["records"][0]["metadata"]["data"], "first\nsecond")
 
-    def test_real_chroma_merge_preserves_target_and_is_idempotent(self):
+    def test_legacy_chroma_target_is_readonly_and_cannot_activate_as_qdrant(self):
         path = candidate(self.root / "candidate", self.bundle)
         collection = collection_at(path)
         collection.add(ids=["existing-cloud-memory"], embeddings=[[0.8, 0.2, 0.1]], metadatas=[{"data": "current cloud content", "user_id": "doorhandlecatch:user:1", "agent_id": "doorhandlecatch"}])
@@ -170,20 +170,15 @@ class LegacyMem0MigrationTests(unittest.TestCase):
         with sqlite3.connect(path / "history.db") as db:
             db.execute("CREATE TABLE messages (id TEXT PRIMARY KEY,session_scope TEXT,role TEXT,content TEXT,name TEXT,created_at DATETIME)")
             db.execute("INSERT INTO messages VALUES ('existing-cloud-message','user_id=doorhandlecatch:user:1','user','existing cloud message',NULL,'2026-10-29T00:00:00+00:00')")
-        args = (self.bundle, self.mapping, embedding_output(self.bundle, self.mapping), path, path / "receipt.json", {"instanceId": "fixture-instance", "machineId": "fixture-machine"})
-        first = migration.merge_candidate(*args)
-        second = migration.merge_candidate(*args)
-        self.assertEqual(first["activeRecords"], 2)
-        self.assertEqual(second["targetTotalRecords"], 3)
-        self.assertEqual(second["preservedTargetRecords"], 1)
-        self.assertEqual(migration.read_collection(collection)["existing-cloud-memory"], original["existing-cloud-memory"])
-        self.assertNotIn("legacy-memory-2", migration.read_collection(collection))
+        with self.assertRaises(migration.MigrationError):
+            migration.merge_candidate(self.bundle, self.mapping, embedding_output(self.bundle, self.mapping), path, path / "receipt.json", {"instanceId": "fixture-instance", "machineId": "fixture-machine"})
+        self.assertEqual(migration.read_collection(collection), original)
+        self.assertFalse((path / "receipt.json").exists())
         with sqlite3.connect(path / "history.db") as db:
-            self.assertEqual(db.execute("SELECT COUNT(*) FROM history").fetchone()[0], 2)
-            self.assertEqual(db.execute("SELECT COUNT(*) FROM messages").fetchone()[0], 3)
             self.assertEqual(db.execute("SELECT content FROM messages WHERE id='existing-cloud-message'").fetchone()[0], "existing cloud message")
+            self.assertIsNone(db.execute("SELECT name FROM sqlite_master WHERE name='history'").fetchone())
 
-    def test_conflicting_memory_does_not_change_target_or_history(self):
+    def test_legacy_dimension_or_logical_conflict_never_writes_the_chroma_source(self):
         path = candidate(self.root / "conflict", self.bundle)
         collection = collection_at(path)
         collection.add(ids=["legacy-memory-0"], embeddings=[[0.8, 0.2, 0.1]], metadatas=[{"data": "different current content", "user_id": "doorhandlecatch:user:1", "agent_id": "doorhandlecatch"}])
@@ -194,14 +189,19 @@ class LegacyMem0MigrationTests(unittest.TestCase):
         self.assertFalse((path / "history.db").exists())
 
     def test_lifecycle_tombstone_is_not_resurrected(self):
+        from tests_python.test_legacy_bge_migration import prepared, FakeRemote
         path = candidate(self.root / "governed", self.bundle)
         (path / "bridge_receipts").mkdir()
         with sqlite3.connect(path / "bridge_receipts/write-receipts.sqlite3") as db:
             db.execute("CREATE TABLE memory_lifecycle (memory_id TEXT,state TEXT)")
             db.execute("INSERT INTO memory_lifecycle VALUES ('legacy-memory-0','EXCLUDED')")
-        with self.assertRaises(migration.MigrationError):
-            migration.merge_candidate(self.bundle, self.mapping, embedding_output(self.bundle, self.mapping), path, path / "receipt.json", {"instanceId": "fixture-instance", "machineId": "fixture-machine"})
-        self.assertEqual(collection_at(path).count(), 0)
+        target = FakeRemote()
+        with patch.object(migration, 'target_connection', return_value=target):
+            with self.assertRaises(migration.MigrationError):
+                migration.merge_candidate(self.bundle, self.mapping, prepared(self.bundle, self.mapping), path, path / "receipt.json", {"instanceId": "fixture-instance", "machineId": "fixture-machine"})
+        self.assertEqual(target.import_calls, 0)
+        self.assertFalse((path / "history.db").exists())
+        self.assertFalse((path / "vector-space.json").exists())
 
 
 def inventory_for(root, names):
@@ -402,7 +402,7 @@ class LegacyStorePreservationTests(unittest.TestCase):
         with self.assertRaises(migration.MigrationError):
             migration.rag_reembed(bundle, policy, ROOT / migration.JAVA_EMBEDDER, java, self.root / "java-work2", path)
 
-    def test_rag_merge_preserves_current_docs_and_refuses_unreviewed_conflicts(self):
+    def test_legacy_hashing_rag_target_is_denied_without_changing_source(self):
         from chromadb import PersistentClient
         from chromadb.config import Settings
         bundle, policy = rag_bundle(), rag_policy(rag_bundle())
@@ -414,15 +414,11 @@ class LegacyStorePreservationTests(unittest.TestCase):
         collection = client.get_or_create_collection(migration.RAG_COLLECTION, embedding_function=None)
         collection.add(ids=["current-cloud"], embeddings=[[0.3] * 32], documents=["cloud knowledge"], metadatas=[{"source": "current", "title": "current"}])
         original = migration.read_collection(collection)
-        embeddings = rag_embeddings(bundle, policy)
-        arguments = (bundle, policy, embeddings, path, path / "rag-receipt.json", self.identity)
-        self.assertEqual(migration.rag_candidate_merge(*arguments)["activeRecords"], 3)
-        self.assertEqual(migration.rag_candidate_merge(*arguments)["preservedTargetRecords"], 1)
-        self.assertEqual(migration.read_collection(collection)["current-cloud"], original["current-cloud"])
-        policy["targetIds"]["old-rag-0"] = "current-cloud"
         with self.assertRaises(migration.MigrationError):
-            migration.rag_candidate_merge(bundle, policy, rag_embeddings(bundle, policy), path, path / "conflict-receipt.json", self.identity)
-        self.assertEqual(migration.read_collection(collection)["current-cloud"], original["current-cloud"])
+            migration.rag_candidate_merge(bundle, policy, rag_embeddings(bundle, policy), path, path / "rag-receipt.json", self.identity)
+        self.assertEqual(migration.read_collection(collection), original)
+        self.assertFalse((path / "rag-receipt.json").exists())
+        self.assertFalse((path / "rag-preservation-manifest.json").exists())
 
     def test_candidate_guard_rejects_wrong_machine_and_unrestorable_backup(self):
         bundle = rag_bundle()

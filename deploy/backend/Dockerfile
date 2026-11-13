@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# 仅构建 Java 后端镜像；MySQL/Redis/Kafka/Mem0/Chroma 在 compose.cloud.yml 定义。
+# 仅构建 Java 后端镜像；MySQL/Redis/Kafka/Mem0/Qdrant 在 compose.cloud.yml 定义。
 # 应用入口见 compose.monolith.yml；CPU PTH worker 见 compose.detection.yml。
 # 容器关系与编排顺序见 docs/docker-monolith-deployment.md。
 FROM maven:3.9.9-eclipse-temurin-17@sha256:f58d59b6273e785ac0a4477f6e9b5ba1d7731c75b906c0f7b34076f1851318cc AS build
@@ -45,7 +45,9 @@ LABEL io.doorhandle.identity-evidence="2"
 LABEL io.doorhandle.context-provenance="2"
 LABEL io.doorhandle.mcp-native-protocol="4"
 LABEL io.doorhandle.business-schema="compact29-v1"
-LABEL io.doorhandle.rag-preservation-protocol="1"
+LABEL io.doorhandle.rag-preservation-protocol="2"
+LABEL io.doorhandle.semantic-vector-backend="qdrant"
+LABEL io.doorhandle.semantic-storage-generation="qdrant-bge-m3-v1"
 ARG UBUNTU_MIRROR=""
 # ONNX/OpenCV 使用 glibc；Python 仅供已受控的 Skill 下载和本地 Stdio MCP 安装器。
 RUN if [ -n "$UBUNTU_MIRROR" ]; then \

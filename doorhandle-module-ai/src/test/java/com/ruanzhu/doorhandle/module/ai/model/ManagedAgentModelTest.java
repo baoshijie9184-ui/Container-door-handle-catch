@@ -18,6 +18,21 @@ import static org.assertj.core.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
 class ManagedAgentModelTest {
+    @Test void bulkheadRejectsBeforeProviderAndCancellationReleasesItsSlotWithoutRetry(){
+        var settings=new AgentModelProperties();settings.setMaxConcurrentCalls(1);
+        var primary=model();var fallback=model();
+        when(primary.stream(anyList(),anyList(),any())).thenReturn(Flux.never());
+        var managed=route(settings,primary,fallback);
+        var first=managed.stream(List.of(),List.of(),null).subscribe();
+        try {
+            assertThatThrownBy(()->managed.stream(List.of(),List.of(),null).blockLast(Duration.ofSeconds(1)))
+                    .isInstanceOf(IllegalStateException.class).hasMessageNotContaining("Bulkhead");
+            verify(primary,times(1)).stream(anyList(),anyList(),any());verifyNoInteractions(fallback);
+        }finally{first.dispose();}
+        when(primary.stream(anyList(),anyList(),any())).thenReturn(Flux.just(answer("restored")));
+        assertThat(managed.stream(List.of(),List.of(),null).blockLast()).isNotNull();
+        verify(primary,times(2)).stream(anyList(),anyList(),any());verifyNoInteractions(fallback);
+    }
     @Test void boundedIoCapacityCanFallbackWithoutLeakingExecutorDetails() {
         var primary=model();var fallback=model();
         when(primary.stream(anyList(),anyList(),any())).thenReturn(Flux.error(new java.util.concurrent.RejectedExecutionException("private executor details")));

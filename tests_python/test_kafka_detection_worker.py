@@ -104,6 +104,48 @@ def test_flush_timeout_does_not_commit():
     assert consumer.committed == []
 
 
+def test_trace_context_uses_headers_without_changing_payload_or_commit_order():
+    calls = []
+    source = object()
+    original = b'{"taskId":"task-1","dispatchId":"dispatch-1","status":"COMPLETED"}'
+    header = ("traceparent", "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01")
+    class Telemetry:
+        def inject_headers(self):
+            return [header]
+    class Producer:
+        def produce(self, topic, key, value, callback, headers):
+            assert value is original
+            assert headers == [header]
+            calls.append("produce")
+            callback(None, object())
+        def flush(self, timeout):
+            calls.append("acknowledged")
+            return 0
+    class Consumer:
+        def commit(self, message, asynchronous):
+            assert message is source and asynchronous is False
+            calls.append("commit")
+    publish_finished_and_commit(Producer(), Consumer(), source, "finished", b"task-1", original, 2,
+                                telemetry=Telemetry())
+    assert calls == ["produce", "acknowledged", "commit"]
+
+
+def test_trace_headers_do_not_change_unacknowledged_result_semantics():
+    class Telemetry:
+        def inject_headers(self):
+            return [("traceparent", "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01")]
+    class Producer:
+        def produce(self, *args, **kwargs):
+            kwargs["callback"](RuntimeError("delivery unknown"), object())
+        def flush(self, timeout):
+            return 0
+    consumer = FakeConsumer()
+    with pytest.raises(RuntimeError, match="delivery failed"):
+        publish_finished_and_commit(Producer(), consumer, "source", "finished", b"task-1", b"{}", 2,
+                                    telemetry=Telemetry())
+    assert consumer.committed == []
+
+
 def test_undeployed_model_fails_without_reading_or_mislabeling_images():
     task=DetectionTaskCreatedEvent(event_id='e',event_type='DETECTION_TASK_CREATED',event_time='',
         task_id='task',dispatch_id='dispatch',bucket_name='private',source_prefix='originals/',

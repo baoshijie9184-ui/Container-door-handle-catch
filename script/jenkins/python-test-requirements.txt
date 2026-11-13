@@ -1,5 +1,7 @@
-# Added to the admitted Mem0 image, which already provides the runtime Python
-# dependencies. These are CI tools only; no torch/Whisper/model download.
+# Fixed source CI tools plus the complete native Mem0/Qdrant runtime dependency
+# set. The historical admitted base alone does NOT prove these current versions.
+# Keep runtime pins identical to deploy/mem0/requirements.txt; preparation checks
+# both fixed-source files before dependency installation. No model download.
 pytest==8.4.2
 PyMySQL==1.1.2
 Pillow==11.3.0
@@ -9,3 +11,17 @@ oss2==2.19.1
 confluent-kafka==2.10.1
 mcp==1.29.0
 scipy==1.15.3
+# Runtime pins (13); also used by the tiny managed Mem0 runtime adaptation layer.
+mem0ai==2.0.19
+chromadb==1.5.9
+fastapi==0.135.2
+uvicorn==0.41.0
+python-dotenv==1.0.1
+openai==1.109.1
+pydantic==2.12.5
+cryptography==46.0.5
+qdrant-client==1.20.0
+opentelemetry-api==1.45.2
+opentelemetry-sdk==1.45.2
+opentelemetry-exporter-otlp-proto-http==1.45.2
+prometheus-client==0.26.0

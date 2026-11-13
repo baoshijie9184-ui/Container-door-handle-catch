@@ -45,6 +45,8 @@ def test_free_default_uses_exact_provider_and_model_with_an_independent_vector_s
     config = main.get_memory_config()
     assert config["embedder"]["config"] == {"model": embedding.MODEL, "openai_base_url": embedding.BASE_URL,
         "api_key": "fixture-embedding", "embedding_dims": 1024}
+    assert config["vector_store"]["provider"] == "qdrant"
+    assert config["vector_store"]["config"]["embedding_model_dims"] == 1024
     assert config["vector_store"]["config"]["collection_name"] == embedding.COLLECTION
     assert config["llm"]["config"]["api_key"] == "fixture-llm"
 
@@ -63,8 +65,8 @@ def test_custom_fixture_transport_requires_an_explicit_profile():
     values = settings(EMBEDDING_PROFILE=embedding.CUSTOM_PROFILE, EMBEDDING_MODEL="fixture-model",
                       EMBEDDING_BASE_URL="http://owned-fixture:8099/v1")
     assert embedding.embedder_config(values) == {"model": "fixture-model", "api_key": "fixture-not-real",
-                                                "openai_base_url": "http://owned-fixture:8099/v1"}
-    assert main.memory_collection_name(values) == "doorhandle_memories"
+                                                "openai_base_url": "http://owned-fixture:8099/v1", "embedding_dims": 1024}
+    assert main.memory_collection_name(values) == "doorhandle_memories_explicit_test"
 
 
 def test_native_sdk_sends_fixed_model_float_input_and_no_unsupported_dimension_parameter():

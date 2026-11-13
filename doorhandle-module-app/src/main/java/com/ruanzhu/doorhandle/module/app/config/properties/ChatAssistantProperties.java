@@ -35,8 +35,9 @@ public class ChatAssistantProperties {
     private Integer ragMaxContextChars = 2600;
     private Integer ragContextCacheTtlSeconds = 120;
     private Integer ragContextCacheMaxEntries = 128;
-    private Boolean chromaEnabled = true;
-    private String chromaBaseUrl = "http://localhost:8000";
+    /** Legacy import/source reader only; the admitted runtime vector backend is Qdrant. */
+    private Boolean chromaEnabled = false;
+    private String chromaBaseUrl = "";
     private String chromaTenant = "default_tenant";
     private String chromaDatabase = "default_database";
     private String chromaCollection = "door_handle_assistant_knowledge";

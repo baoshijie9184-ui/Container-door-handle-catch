@@ -77,7 +77,7 @@ class AgentScopeConversationServiceTest {
         if(failure==CleanupFailure.CONTROL_CLOSE)doThrow(new IllegalStateException("PRIVATE_CONTROL_ERROR")).when(control).close();
         else doThrow(new IllegalStateException("PRIVATE_WORK_ERROR")).when(work).release();
         when(factory.resolveMainId(actor,null)).thenReturn("employee-main");
-        when(factory.create(eq(actor),eq("employee-main"),any(),any(),any(),any(),any(),any())).thenReturn(agent);
+        when(factory.create(eq(actor),eq("employee-main"),any(),any(),any(),any(),any(),any(),anyString())).thenReturn(agent);
         var service=new AgentScopeConversationService(factory,registry,new AgentScopeProperties(),journal,null,controls);service.setWorkbench(workbench);
         var events=new CopyOnWriteArrayList<AgentConversationApi.Event>();
         var run=service.start(actor,"cleanup-failure",List.of(new AgentConversationApi.Message("user","查询任务")),"",events::add);
@@ -109,7 +109,7 @@ class AgentScopeConversationServiceTest {
         var journal=mock(com.ruanzhu.doorhandle.module.ai.journal.AgentJournal.class);
         when(journal.begin(any(),anyString(),anyString(),anyString(),anyString(),anyString())).thenReturn(audit);
         when(factory.resolveMainId(actor,null)).thenReturn("employee-main");
-        when(factory.create(eq(actor),eq("employee-main"),any(),any(),any(),any(),any(),any())).thenReturn(agent);
+        when(factory.create(eq(actor),eq("employee-main"),any(),any(),any(),any(),any(),any(),anyString())).thenReturn(agent);
         var service=new AgentScopeConversationService(factory,registry,new AgentScopeProperties(),journal) {
             @Override public int maxRunSeconds(){return path==CompletionPath.TIMEOUT?1:180;}
         };
@@ -211,7 +211,7 @@ class AgentScopeConversationServiceTest {
             verify(audit).finish("COMPLETED");verify(work).release();
             assertThat(events).extracting(AgentConversationApi.Event::type).containsExactly("RUN_STARTED","TEXT_CHUNK","RUN_FINISHED");
             assertThat(registry.acquire("1:employee-main:slash-gate")).isTrue();registry.release("1:employee-main:slash-gate");
-            verify(factory,never()).create(any(),any(),any(),any(),any(),any(),any(),any());
+            verify(factory,never()).create(any(),any(),any(),any(),any(),any(),any(),any(),anyString());
         }finally{release.countDown();}
     }
 
@@ -235,7 +235,7 @@ class AgentScopeConversationServiceTest {
         verify(work).finish("NEEDS_REVIEW","");verify(work).release();verify(control).close();verify(audit).finish("ERROR");
         assertThat(registry.acquire("1:employee-main:slash-error")).isTrue();registry.release("1:employee-main:slash-error");
         assertThat(events).extracting(AgentConversationApi.Event::type).doesNotContain("RUN_FINISHED");
-        verify(factory,never()).create(any(),any(),any(),any(),any(),any(),any(),any());
+        verify(factory,never()).create(any(),any(),any(),any(),any(),any(),any(),any(),anyString());
     }
 
     @Test void accountingIdentityReachesTheModelWhenJournalIsDisabled() throws Exception {
@@ -260,7 +260,7 @@ class AgentScopeConversationServiceTest {
     private final AgentRunRegistry registry = new AgentRunRegistry();
     private AgentScopeConversationService service(Agent agent) {
         when(factory.resolveMainId(actor, null)).thenReturn("employee-main");
-        when(factory.create(eq(actor), eq("employee-main"), isNull(), any(), isNull(), isNull(), isNull(), any(AgentAnswerEvidence.class))).thenReturn(agent);
+        when(factory.create(eq(actor), eq("employee-main"), isNull(), any(), isNull(), isNull(), isNull(), any(AgentAnswerEvidence.class),anyString())).thenReturn(agent);
         return new AgentScopeConversationService(factory, registry, new AgentScopeProperties());
     }
     private ReActAgent react(Model model, Toolkit tools) {
@@ -339,14 +339,14 @@ class AgentScopeConversationServiceTest {
         var service = service(mock(Agent.class));
         assertThatThrownBy(() -> service.start(actor, "s4", List.of(new AgentConversationApi.Message("user", "query")), "", event -> {}))
                 .isInstanceOf(IllegalStateException.class).hasMessageContaining("上一轮");
-        verify(factory, never()).create(any(), any(), any(), any(), any(), any(), any(), any());
+        verify(factory, never()).create(any(), any(), any(), any(), any(), any(), any(), any(), anyString());
     }
     @Test void listCommandCompletesWithTextAndTraceWithoutCreatingAgent()throws Exception {
         when(factory.resolveMainId(actor,null)).thenReturn("employee-main");when(factory.slashCommands()).thenReturn(new com.ruanzhu.doorhandle.module.ai.command.AgentSlashCommands(null));
         var events=new CopyOnWriteArrayList<AgentConversationApi.Event>();
         var run=new AgentScopeConversationService(factory,registry,new AgentScopeProperties()).start(actor,"command-session",List.of(new AgentConversationApi.Message("user","/skills")),"",events::add);
         assertThat(run.result().get()).contains("尚未启用");assertThat(events).extracting(AgentConversationApi.Event::type).containsExactly("RUN_STARTED","TEXT_CHUNK","RUN_FINISHED");
-        verify(factory,never()).create(any(),any(),any(),any(),any(),any(),any(),any());assertThat(registry.acquire("1:employee-main:command-session")).isTrue();registry.release("1:employee-main:command-session");
+        verify(factory,never()).create(any(),any(),any(),any(),any(),any(),any(),any(),anyString());assertThat(registry.acquire("1:employee-main:command-session")).isTrue();registry.release("1:employee-main:command-session");
     }
     @Test void unsupportedDelegationClaimFailsWithoutRetryAndReleasesSession()throws Exception {
         var model=mock(Model.class);when(model.getModelName()).thenReturn("fixture");

@@ -6,25 +6,28 @@ import pytest
 from fastapi.testclient import TestClient
 from memory_service import main
 from memory_service.lifecycle import GovernedVectorStore
+from memory_service.qdrant_store import LogicalQdrantStore
+from tests_python.qdrant_fixture import ecs_memory_qdrant
 
 USER,APP='doorhandlecatch:user:42','doorhandlecatch'
 
 
 @pytest.fixture
-def native(tmp_path,monkeypatch,isolate_memory_receipts):
+def native(tmp_path,monkeypatch,isolate_memory_receipts,ecs_memory_qdrant):
     monkeypatch.setenv('MEM0_TELEMETRY','false');monkeypatch.setenv('ANONYMIZED_TELEMETRY','false');monkeypatch.setenv('MEM0_BRIDGE_TOKEN','fixture');monkeypatch.setenv('MEM0_DUPLICATE_REVIEW_ENABLED','true')
     from mem0 import Memory
     import mem0.memory.main as sdk
     monkeypatch.setattr(sdk,'capture_event',lambda *args,**kwargs:None)
     monkeypatch.setattr(sdk,'lemmatize_for_bm25',lambda text:text)
     monkeypatch.setattr(sdk,'extract_entities_batch',lambda texts:[[] for _ in texts])
+    vector_config, qdrant_client = ecs_memory_qdrant
     memory=Memory.from_config({
         'llm':{'provider':'openai','config':{'api_key':'fixture','model':'fixture','openai_base_url':'http://127.0.0.1:1/v1'}},
-        'embedder':{'provider':'openai','config':{'api_key':'fixture','model':'fixture','embedding_dims':4,'openai_base_url':'http://127.0.0.1:1/v1'}},
-        'vector_store':{'provider':'chroma','config':{'path':str(tmp_path/'chroma'),'collection_name':'review_test'}},'history_db_path':str(tmp_path/'history.sqlite3')})
-    memory.embedding_model.embed=lambda *args,**kwargs:[.1,.2,.3,.4]
-    memory.embedding_model.embed_batch=lambda texts,*args,**kwargs:[[.1,.2,.3,.4] for _ in texts]
-    memory.vector_store=GovernedVectorStore(memory.vector_store,isolate_memory_receipts.lifecycle)
+        'embedder':{'provider':'openai','config':{'api_key':'fixture','model':'fixture','embedding_dims':32,'openai_base_url':'http://127.0.0.1:1/v1'}},
+        'vector_store':{'provider':'qdrant','config':vector_config},'history_db_path':str(tmp_path/'history.sqlite3')})
+    memory.embedding_model.embed=lambda *args,**kwargs:[.1,.2,.3,.4]+[0.]*28
+    memory.embedding_model.embed_batch=lambda texts,*args,**kwargs:[[.1,.2,.3,.4]+[0.]*28 for _ in texts]
+    memory.vector_store=GovernedVectorStore(LogicalQdrantStore(memory.vector_store),isolate_memory_receipts.lifecycle)
     monkeypatch.setattr(main,'memory_instance',memory)
     def add(text,session,user=USER):return memory.add(text,user_id=user,agent_id=APP,run_id=session,infer=False)['results'][0]['id']
     source=add('报告默认采用 PDF 格式','s1');candidate=add('用户喜欢把报告保存成 PDF 文件','s2')
@@ -87,15 +90,15 @@ def test_owned_edit_uses_native_sdk_update_once_and_keeps_the_original_session(n
     assert not n.calls
 
 
-def test_missing_vector_adapter_checks_absence_without_masking_corrupt_or_unavailable_storage(native):
-    def fail(**kwargs):raise IndexError('fixture SDK result index')
-    delegate=SimpleNamespace(get=fail,collection=SimpleNamespace(get=lambda **kwargs:{'ids':[]}))
+def test_missing_vector_adapter_keeps_absence_and_never_masks_backend_failure(native):
+    delegate=SimpleNamespace(get=lambda **kwargs:None)
     store=GovernedVectorStore(delegate,native.writer.lifecycle)
     assert store.get('absent') is None
-    delegate.collection.get=lambda **kwargs:{'ids':['exists']}
+    def corrupt(**kwargs):raise IndexError('fixture invalid backend result')
+    delegate.get=corrupt
     with pytest.raises(IndexError):store.get('exists')
     def unavailable(**kwargs):raise OSError('fixture store unavailable')
-    delegate.collection.get=unavailable
+    delegate.get=unavailable
     with pytest.raises(OSError):store.get('unknown')
 
 
@@ -116,11 +119,11 @@ def test_semantic_candidates_span_sessions_without_mutating_and_results_survive_
 
 @pytest.mark.parametrize('choice',['KEEP_SOURCE','KEEP_CANDIDATE','KEEP_BOTH'])
 def test_confirmed_resolutions_are_atomic_idempotent_and_preserve_original_text(native,choice):
-    n=native;review=start(n);before=n.memory.vector_store.collection.count()
+    n=native;review=start(n);before=n.memory.vector_store.col_info().points_count
     result=resolve(n,review,choice)
     assert result.status_code==200 and result.json()['data']['revision']==2
     assert resolve(n,review,choice).status_code==200  # Same receipt, not a second lifecycle change.
-    assert n.memory.vector_store.collection.count()==before
+    assert n.memory.vector_store.col_info().points_count==before
     assert n.writer.lifecycle.allowed(USER,APP,n.source)==(choice!='KEEP_CANDIDATE')
     assert n.writer.lifecycle.allowed(USER,APP,n.candidate)==(choice!='KEEP_SOURCE')
     assert n.memory.get(n.source)['memory']=='报告默认采用 PDF 格式'

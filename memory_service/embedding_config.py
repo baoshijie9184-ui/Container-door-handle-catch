@@ -65,6 +65,8 @@ def embedder_config(settings=None):
     result = {"model": model, "api_key": api_key(settings), "openai_base_url": base}
     if selected == FREE_PROFILE:
         result["embedding_dims"] = DIMENSIONS
+    else:
+        result["embedding_dims"] = integer_setting(settings, "EMBEDDING_DIMENSIONS", DIMENSIONS, 32, 8192)
     return result
 
 
@@ -158,4 +160,8 @@ class FreeBgeEmbedder:
 def configure_runtime(memory, *, settings=None):
     if profile(settings) == FREE_PROFILE:
         memory.embedding_model = FreeBgeEmbedder(memory.embedding_model, settings=settings)
-        bind_collection(memory.vector_store.collection)
+    try:
+        from .qdrant_store import LogicalQdrantStore
+    except ImportError:
+        from qdrant_store import LogicalQdrantStore
+    memory.vector_store = LogicalQdrantStore(memory.vector_store)

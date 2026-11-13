@@ -3,6 +3,9 @@ FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0
 LABEL io.doorhandle.memory-protocol="2"
 LABEL io.doorhandle.memory-embedding-profile="siliconflow-bge-m3-v1"
 LABEL io.doorhandle.model-config-format="1"
+LABEL io.doorhandle.memory-vector-backend="qdrant"
+LABEL io.doorhandle.memory-storage-generation="qdrant-bge-m3-v1"
+LABEL io.doorhandle.memory-id-protocol="doorhandle-vector-sha256-v8-v1"
 WORKDIR /app
 ARG PIP_INDEX_URL=https://pypi.org/simple
 ENV PYTHONUNBUFFERED=1 PYTHONNOUSERSITE=1 MEM0_DATA_DIR=/data \
@@ -13,7 +16,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
       --index-url "$PIP_INDEX_URL" -r requirements.txt \
     && groupadd --gid 10001 app && useradd --uid 10001 --gid app --create-home app \
     && mkdir /data && chown app:app /data
-COPY --chmod=0644 memory_service/main.py memory_service/write_receipts.py memory_service/lifecycle.py memory_service/duplicate_review.py memory_service/model_config.py memory_service/embedding_config.py /app/
+COPY --chmod=0644 memory_service/main.py memory_service/write_receipts.py memory_service/lifecycle.py memory_service/duplicate_review.py memory_service/model_config.py memory_service/embedding_config.py memory_service/qdrant_store.py runtime_telemetry.py /app/
 COPY --chmod=0644 LICENSE /app/LICENSE
 USER app
 EXPOSE 8081

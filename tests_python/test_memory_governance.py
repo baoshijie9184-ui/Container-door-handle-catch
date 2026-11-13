@@ -12,13 +12,17 @@ class FakeMemory:
             'other-app':{'id':'other-app','user_id':'doorhandlecatch:user:42','agent_id':'another-app','memory':'OTHER_APP_PRIVATE_MEMORY'},
         }
         self.filters=None;self.deleted=[];self.updated=[]
-        self.vector_store=SimpleNamespace(collection=self)
+        self.vector_store=SimpleNamespace(owned_page=self.owned_page)
     def get(self,id=None,**kwargs):
         if not kwargs:return copy.deepcopy(self.rows.get(id))
         self.filters={key:condition['$eq'] for clause in kwargs['where']['$and'] for key,condition in clause.items()}
         rows=[r for r in self.rows.values() if all(r.get(k)==v for k,v in self.filters.items())]
         rows=rows[kwargs['offset']:kwargs['offset']+kwargs['limit']]
         return {'ids':[r['id'] for r in rows],'metadatas':[{**r,'data':r['memory']} for r in rows]}
+    def owned_page(self,user,app,limit,offset):
+        self.filters={'user_id':user,'agent_id':app}
+        rows=[r for r in self.rows.values() if r.get('user_id')==user and r.get('agent_id')==app]
+        return [SimpleNamespace(id=row['id'],payload={**row,'data':row['memory']}) for row in rows[offset:offset+limit]]
     def get_all(self,**kwargs):
         self.filters=kwargs['filters'];return {'results':list(self.rows.values())}
     def delete(self,id):self.deleted.append(id);self.rows.pop(id)

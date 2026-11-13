@@ -133,7 +133,7 @@ def isolated_config(config, project, port, images, database, model_secret_source
         'DB_URL': f'jdbc:mysql://mysql:3306/{database}?useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useUnicode=true&characterEncoding=UTF-8',
         'REDIS_HOST': 'redis', 'REDIS_PASSWORD': passwords['redis'], 'JWT_SECRET': passwords['jwt'],
         'MEM0_BRIDGE_TOKEN': passwords['mem0'], 'MEM0_SERVICE_URL': 'http://mem0:8081',
-        'MEM0_BASE_URL': 'http://mem0:8081', 'CHAT_ASSISTANT_CHROMA_BASE_URL': 'http://chroma:8000',
+        'MEM0_BASE_URL': 'http://mem0:8081', 'QDRANT_HOST': 'qdrant', 'QDRANT_PORT': '6333', 'QDRANT_GRPC_PORT': '6334',
         'APP_KAFKA_BOOTSTRAP_SERVERS': 'kafka:9092', 'KAFKA_BOOTSTRAP_SERVERS': 'kafka:9092',
         'AGENT_MCP_GATEWAY_SECRET': passwords['mcp'], 'MCP_RUNNER_SECRET': passwords['mcp'],
         'AGENT_MCP_GATEWAY_KEY': passwords['gateway'],
@@ -163,7 +163,7 @@ def isolated_config(config, project, port, images, database, model_secret_source
             environment['APP_BUSINESS_SEED_ENABLED']='false'
             environment.update({key: replacements[key] for key in (
                 'DB_URL', 'DB_USERNAME', 'DB_PASSWORD', 'REDIS_HOST', 'REDIS_PASSWORD', 'JWT_SECRET',
-                'MEM0_SERVICE_URL', 'MEM0_BASE_URL', 'MEM0_BRIDGE_TOKEN', 'CHAT_ASSISTANT_CHROMA_BASE_URL',
+                'MEM0_SERVICE_URL', 'MEM0_BASE_URL', 'MEM0_BRIDGE_TOKEN', 'QDRANT_HOST', 'QDRANT_PORT', 'QDRANT_GRPC_PORT',
                 'APP_KAFKA_BOOTSTRAP_SERVERS', 'APP_COOKIE_SECURE', 'APP_CORS_ALLOWED_ORIGINS')})
         if name == 'mysql':
             environment.update({key: replacements[key] for key in ('MYSQL_ROOT_PASSWORD', 'MYSQL_PASSWORD', 'MYSQL_DATABASE', 'MYSQL_USER')})

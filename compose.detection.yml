@@ -40,12 +40,28 @@ services:
       ALIYUN_OSS_BUCKET: ${ALIYUN_OSS_BUCKET:?Set OSS bucket}
       ALIYUN_OSS_ACCESS_KEY_ID: ${ALIYUN_OSS_ACCESS_KEY_ID:?Set OSS access key}
       ALIYUN_OSS_ACCESS_KEY_SECRET: ${ALIYUN_OSS_ACCESS_KEY_SECRET:?Set OSS secret}
+      OTEL_ENABLED: ${OTEL_ENABLED:-false}
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:-http://langfuse-web:3000/api/public/otel/v1/traces}
+      LANGFUSE_PUBLIC_KEY_FILE: /run/observability-secrets/langfuse-public-key
+      LANGFUSE_SECRET_KEY_FILE: /run/observability-secrets/langfuse-secret-key
+      TELEMETRY_ID_HMAC_KEY_FILE: /run/observability-secrets/identity-hmac-key
+      TELEMETRY_TRACE_SAMPLE_RATIO: ${TELEMETRY_TRACE_SAMPLE_RATIO:-0.1}
+      TELEMETRY_METRICS_ENABLED: ${TELEMETRY_METRICS_ENABLED:-false}
+      TELEMETRY_METRICS_HOST: 0.0.0.0
+      TELEMETRY_METRICS_PORT: "9464"
+      TELEMETRY_METRICS_TOKEN_FILE: /run/observability-secrets/metrics-token
     group_add:
       - "${DETECTION_MODEL_GID:-1000}"
     volumes:
       - type: bind
         source: ${DETECTION_MODELS_DIR:?Set validated inference model directory}
         target: /models
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${OBSERVABILITY_SECRETS_DIR:?Set ECS private observability directory (may be empty when disabled)}
+        target: /run/observability-secrets
         read_only: true
         bind:
           create_host_path: false

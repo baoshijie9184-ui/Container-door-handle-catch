@@ -64,6 +64,10 @@ def native_activation_usage(ctx, reference):
             and activated.get('status') == 'VERIFIED_AND_ACTIVATED' and activated.get('candidateSemanticVerified') is True
             and activated.get('productionDataMaterialized') is False and activated.get('productionPromotionAllowed') is False,
             'Native usage activation bytes or source identity changed')
+    require(activated.get('verificationSubject') == 'INDEPENDENT_REAL_BGE_CANDIDATE'
+            and activated.get('appRuntimeValidationMode') == 'ISOLATED_MOCK_QDRANT_RUNTIME'
+            and activated.get('vectorBackend') == 'qdrant' and activated.get('storageGeneration') == 'qdrant-bge-m3-v1',
+            'Mock application use cannot be counted as real-BGE candidate activation')
     phases = ('after-start', 'after-restart', 'after-volume-restore')
     observed = activated.get('verifications', {})
     require(set(ctx.owner.get('nativeVerifications', {})) == set(phases) and set(observed) == set(phases)
@@ -80,19 +84,22 @@ RUNTIME_PROFILE = 'bounded-single-ecs-v1'
 DISK_FLOOR = 2 * GIB + 256 * MIB
 MEMORY_FLOOR = GIB
 # Includes short initialization jobs; admission conservatively counts them all.
-SERVICE_MEMORY_MIB = {'backend': 1792, 'kafka': 1280, 'mem0': 768, 'chroma': 512,
+SERVICE_MEMORY_MIB = {'backend': 1792, 'kafka': 1280, 'mem0': 768, 'qdrant': 512, 'bge-qdrant': 512,
     'detection-worker': 2048, 'higress': 512, 'redis': 256, 'nginx': 64, 'mcp-runner': 256,
     'mcp-egress': 128, 'model-fixture': 128, 'oss-proxy': 128, 'kafka-init': 256,
-    'kafka-storage-init': 64, 'higress-seed': 128, 'higress-config': 128}
+    'kafka-storage-init': 64, 'higress-seed': 128, 'higress-config': 128, 'qdrant-storage-init': 64}
 MCP_CHILD_MEMORY = 2 * 256 * MIB
 BGE_VERIFIER_MEMORY = 768 * MIB
 BROWSER_MEMORY = 2 * GIB
+TRANSIENT_SERVICE_MEMORY_MIB = {'bge-qdrant': 512, 'bge-verifier': 768, 'collaboration-browser': 2048}
+INIT_SERVICES = {'kafka-init', 'kafka-storage-init', 'higress-seed', 'higress-config', 'qdrant-storage-init'}
+CORE_DAEMON_SERVICES = frozenset(set(SERVICE_MEMORY_MIB) - INIT_SERVICES - set(TRANSIENT_SERVICE_MEMORY_MIB))
 
 
 def bounded_config(config):
     """Change only this isolated acceptance stack, including actual JVM heaps."""
     value = copy.deepcopy(config)
-    require(set(value['services']) <= set(SERVICE_MEMORY_MIB), 'An unbudgeted runtime service was added')
+    require(set(value['services']) <= set(SERVICE_MEMORY_MIB) - set(TRANSIENT_SERVICE_MEMORY_MIB), 'An unbudgeted runtime service was added')
     for name, service in value['services'].items():
         limit = SERVICE_MEMORY_MIB[name] * MIB
         service.update(mem_limit=limit, memswap_limit=limit)
@@ -223,10 +230,11 @@ def validate_resource_evidence(summary, raw, context, project):
     require(observed_phases == set(expected_phases), 'An admitted runtime phase has no actual raw observation')
     observed = {row['service'] for row in containers.values() if row['peakBytes'] > 0}
     required = set(summary.get('requiredDaemonServices', []))
-    require(required == set(SERVICE_MEMORY_MIB) - {'kafka-init', 'kafka-storage-init', 'higress-seed', 'higress-config'}
+    require(required == CORE_DAEMON_SERVICES
             and required <= observed, 'Some required runtime service peaks were never observed')
     transient = summary.get('requiredTransientServices', [])
-    require(transient in ([], ['bge-verifier'], ['bge-verifier', 'collaboration-browser']) and set(transient) <= observed,
+    require(transient in ([], ['bge-verifier'], ['bge-qdrant', 'bge-verifier'],
+                          ['bge-qdrant', 'bge-verifier', 'collaboration-browser']) and set(transient) <= observed,
             'A required free BGE verifier resource peak was not observed')
     require('collaboration-browser' not in transient or browser_phase_peak, 'Fourth-phase actual browser peak is absent')
     require([row.get('phase') for row in summary.get('phases', [])] == expected_phases
@@ -252,8 +260,8 @@ class RuntimeResources:
             'capacityVerdict': 'CONTROLLED_MEASUREMENT', 'productionCapacityVerified': False,
             'pollIntervalSeconds': 2, 'diskFloorBytes': DISK_FLOOR, 'memoryFloorBytes': MEMORY_FLOOR,
             'containers': {}, 'phases': [], 'phasePlans': {}, 'samples': 0,
-            'requiredDaemonServices': sorted(set(SERVICE_MEMORY_MIB) - {'kafka-init', 'kafka-storage-init', 'higress-seed', 'higress-config'}),
-            'requiredTransientServices': ['bge-verifier', 'collaboration-browser'],
+            'requiredDaemonServices': sorted(CORE_DAEMON_SERVICES),
+            'requiredTransientServices': sorted(TRANSIENT_SERVICE_MEMORY_MIB),
             'rawProbeFile': 'checkout/work/runtime-acceptance/resource-probes.jsonl'}
         self.raw = runtime.directory / 'resource-probes.jsonl'
 
@@ -461,8 +469,9 @@ class Runtime:
         self.cutover.fixed_source(self.root / 'inbox' / args.tag / 'source.tar.gz', source, args.source_sha256, args.commit)
         self.settings, settings_sha = self.guard.read_private(self.cutover.canonical(args.settings))
         settings_fields = {'version', 'sourceMysqlContainerId', 'sourceSchema', 'sourceOffsets', 'java'}
-        require(settings_fields <= set(self.settings) <= settings_fields | {'legacyClockPolicy'}
+        require(settings_fields <= set(self.settings) <= settings_fields | {'legacyClockPolicy', 'mem0DependencyImage', 'qdrantImage'}
                 and self.settings.get('version') == 1, 'Reuse this build\'s exact private fixture settings')
+        self.qdrant_image = self.native.admit_target_image(args.root, args.tag, args.commit, args.source_sha256, self.identity, self.settings)
         clocks = module('runtime_clock_policy', source / 'script/schema/compact_clock_policy.py')
         clocks.validate(self.settings['sourceOffsets'], self.settings.get('legacyClockPolicy'))
         self.attempt = self.cutover.canonical(self.root / 'verification' / args.tag)
@@ -745,8 +754,15 @@ with urllib.request.urlopen(r,timeout=10) as s: print(s.read().decode())
         return raw, reference
 
     def build_config(self, schema, credentials):
+        # Interpolate only this attempt's private placeholders; the effective
+        # isolated config below replaces these binds with its own key volume.
+        private = self.directory / 'compose-private'; private.mkdir(mode=0o700)
+        vector_private, observability_private = private / 'qdrant', private / 'observability'
+        vector_private.mkdir(mode=0o700); observability_private.mkdir(mode=0o700)
         environment = dict(os.environ, APP_IMAGE_TAG=self.args.tag, DOORHANDLE_ENV_FILE=str(self.runtime / 'deploy/cloud.env'),
-                           DETECTION_BUILD_CONTEXT=str(self.source / 'work/compact-worker-build'))
+                           DETECTION_BUILD_CONTEXT=str(self.source / 'work/compact-worker-build'),
+                           QDRANT_IMAGE=self.qdrant_image, QDRANT_PRIVATE_DIR=str(vector_private),
+                           OBSERVABILITY_SECRETS_DIR=str(observability_private), OTEL_ENABLED='false', TELEMETRY_METRICS_ENABLED='false')
         command = ['compose', '--project-name', 'doorhandlecatch-monolith', '--env-file', str(self.runtime / 'deploy/cloud.env')]
         for name in ('compose.monolith.yml', 'compose.cloud.yml', 'compose.detection.yml', 'compose.ai-gateway.yml'):
             command += ['-f', str(self.source / name)]
@@ -756,6 +772,9 @@ with urllib.request.urlopen(r,timeout=10) as s: print(s.read().decode())
         config.pop('secrets', None)
         for spec in config['services'].values():
             spec.pop('secrets', None)
+            # A rehearsal never receives the production vector key directory.
+            spec['volumes'] = [mount for mount in spec.get('volumes', [])
+                               if mount.get('target') not in ('/run/doorhandle-vector', '/run/observability-secrets')]
         config = self.rehearsal.isolated_config(config, self.project, self.owner['port'], self.images, schema)
         require(all(name in config['services'] for name in ('mcp-runner', 'higress-config', 'higress', 'mcp-egress')),
                 'The fixed-source gateway overlay is required for actual private MCP acceptance')
@@ -781,6 +800,7 @@ with urllib.request.urlopen(r,timeout=10) as s: print(s.read().decode())
         app, worker = credentials['app'], credentials['worker']
         for name, spec in config['services'].items():
             env = spec.setdefault('environment', {})
+            env.update(OTEL_ENABLED='false', TELEMETRY_METRICS_ENABLED='false')
             for key in ('OPENAI_API_KEY', 'DEEPSEEK_API_KEY', 'DASHSCOPE_API_KEY', 'EMBEDDING_API_KEY'):
                 if key in env:
                     env[key] = 'runtime-fixture'
@@ -806,10 +826,23 @@ with urllib.request.urlopen(r,timeout=10) as s: print(s.read().decode())
                     DEEPSEEK_BASE_URL='http://model-fixture:8099/v1', DASHSCOPE_BASE_URL='http://model-fixture:8099/v1',
                     AGENT_RESPONSES_BASE_URL='http://model-fixture:8099/v1', MODEL_CONFIG_MASTER_KEY_FILE='/run/secrets/model_config_master_key')
                 env.update(self.http.COLLABORATION_ENV)
+                env.update(APP_SEMANTIC_ENABLED='true', QDRANT_HOST='qdrant', QDRANT_GRPC_PORT='6334', QDRANT_TLS='false',
+                    APP_SEMANTIC_QDRANT_API_KEY_FILE='/run/doorhandle-vector/api-key',
+                    SEMANTIC_RAG_COLLECTION='doorhandle_runtime_rag_' + self.token,
+                    SEMANTIC_KNOWLEDGE_COLLECTION='doorhandle_runtime_knowledge_' + self.token,
+                    SEMANTIC_EXPERIENCE_COLLECTION='doorhandle_runtime_experience_' + self.token,
+                    SEMANTIC_STORAGE_GENERATION='qdrant-explicit-test-v1',
+                    EMBEDDING_PROFILE='explicit-openai-compatible', EMBEDDING_MODEL='runtime-embedding',
+                    CHAT_ASSISTANT_RAG_STARTUP_MODE='REINDEX')
+                for key in list(env):
+                    if key.startswith('CHAT_ASSISTANT_CHROMA_') or key.startswith('CHAT_ASSISTANT_RAG_PRESERVATION_'):
+                        env.pop(key)
                 env.update(ALIYUN_OSS_ENDPOINT='http://oss-proxy:9000', ALIYUN_OSS_BASEPREFIX='runtime-acceptance/' + self.token)
             if name == 'mem0':
                 env.update(DASHSCOPE_API_KEY='runtime-fixture', EMBEDDING_API_KEY='runtime-fixture',
-                    EMBEDDING_PROFILE='explicit-openai-compatible',
+                    EMBEDDING_PROFILE='explicit-openai-compatible', EMBEDDING_MODEL='runtime-embedding', EMBEDDING_DIMENSIONS='1024',
+                    MEM0_VECTOR_BACKEND='qdrant', MEM0_STORAGE_GENERATION='qdrant-explicit-test-v1',
+                    QDRANT_HOST='qdrant', QDRANT_PORT='6333', QDRANT_TLS='false', QDRANT_API_KEY_FILE='/run/doorhandle-vector/api-key',
                     DASHSCOPE_BASE_URL='http://model-fixture:8099/v1', EMBEDDING_BASE_URL='http://model-fixture:8099/v1',
                     MEM0_LLM_MODEL='runtime-scripted', MODEL_CONFIG_ENABLED='true',
                     MODEL_CONFIG_MASTER_KEY_FILE='/run/secrets/model_config_master_key', MEM0_LIFECYCLE_CLEANUP_ENABLED='false',
@@ -833,19 +866,14 @@ with urllib.request.urlopen(r,timeout=10) as s: print(s.read().decode())
         for name in ('backend', 'mem0'):
             config['services'][name].setdefault('volumes', []).append({'type': 'volume', 'source': 'runtime-model-key',
                                                                       'target': '/run/secrets', 'read_only': True})
-        rag_manifest = self.native.read(self.legacy_work / 'rag-preservation-manifest.json')
-        config['volumes']['runtime-rag-preservation'] = {'name': self.project + '_runtime-rag-preservation',
+        config['volumes']['runtime-qdrant-private'] = {'name': self.project + '_runtime-qdrant-private',
             'labels': {'io.doorhandle.rehearsal': self.project}}
-        config['services']['backend']['volumes'].append({'type': 'volume', 'source': 'runtime-rag-preservation',
-                                                       'target': '/run/doorhandle-rag', 'read_only': True})
-        config['services']['backend']['environment'].update(
-            CHAT_ASSISTANT_RAG_STARTUP_MODE='PRESERVE_EXISTING',
-            CHAT_ASSISTANT_RAG_PRESERVATION_MANIFEST='/run/doorhandle-rag/preservation.json',
-            CHAT_ASSISTANT_RAG_PRESERVATION_MANIFEST_SHA256=self.legacy_candidate['ragManifestSha256'],
-            CHAT_ASSISTANT_RAG_PRESERVATION_COMMIT=self.args.commit,
-            CHAT_ASSISTANT_CHROMA_EMBEDDING_DIMENSION=str(rag_manifest['embeddingDimension']),
-            CHAT_ASSISTANT_CHROMA_COLLECTION=rag_manifest['collection'],
-            CHAT_ASSISTANT_CHROMA_TENANT=rag_manifest['tenant'], CHAT_ASSISTANT_CHROMA_DATABASE=rag_manifest['database'])
+        require('qdrant' in config['services'] and 'chroma' not in config['services'], 'The isolated target must use Qdrant, never Chroma fallback')
+        for name in ('backend', 'mem0', 'qdrant'):
+            config['services'][name].setdefault('volumes', []).append({'type': 'volume', 'source': 'runtime-qdrant-private',
+                'target': '/run/doorhandle-vector', 'read_only': True})
+        config['services']['qdrant'].update(user='10001:10001', command=['./qdrant', '--config-path', '/run/doorhandle-vector/server.json'])
+        require(config['services']['qdrant']['image'] == self.qdrant_image, 'Qdrant runtime image differs from the prepared immutable input')
         model_image = self.build_model_image()
         config['services']['model-fixture'] = {'image': model_image, 'restart': 'no', 'read_only': True,
             'environment': {'RUNTIME_FIXTURE_TOKEN': secrets.token_hex(32)}, 'networks': {'doorhandle-network': {}},
@@ -969,7 +997,8 @@ print(json.dumps({p:data['properties'][p]['baseUrl'] for p in ('deepseek','dashs
         payload_bytes = sum(row['bytes'] for service in ('rag', 'mem0')
                             for row in self.native.read(self.legacy_work / (service + '-payload-files.json')).values())
         mem0_bytes = sum(row['bytes'] for row in self.native.read(self.legacy_work / 'mem0-payload-files.json').values())
-        bge_growth = 3 * (5 * mem0_bytes + 64 * MIB)
+        qdrant_bytes = sum(row['bytes'] for row in self.native.read(self.legacy_work / 'rag-payload-files.json').values())
+        bge_growth = 3 * (5 * mem0_bytes + 2 * qdrant_bytes + 64 * MIB)
         growth = physical + payload_bytes + logs + 8 * 64 * MIB + 256 * MIB + bge_growth
         self.resources.admit('runtime-start', growth, {
             'candidateSchemaAllocatedBytes': physical, 'retainedFixturesAllocatedBytes': retained,
@@ -979,7 +1008,8 @@ print(json.dumps({p:data['properties'][p]['baseUrl'] for p in ('deepseek','dashs
             'originalDeploymentInventorySha256': self.migration.sha_json(self.owner['sourceBefore']),
             'logLimitBytes': logs, 'kafkaPartitionRetentionEnvelopeBytes': 8 * 64 * MIB,
             'newWritableMeasurementEnvelopeBytes': 256 * MIB,
-            'existingDataAndBackups': 'RETAINED_IN_BASELINE_FILESYSTEM'}, declared + MCP_CHILD_MEMORY + BGE_VERIFIER_MEMORY)
+            'existingDataAndBackups': 'RETAINED_IN_BASELINE_FILESYSTEM'},
+            declared + MCP_CHILD_MEMORY + BGE_VERIFIER_MEMORY + SERVICE_MEMORY_MIB['qdrant'] * MIB)
         self.resources.start()
         self.owner['nativeMaterialization'] = self.native.materialize_runtime(self); self.save()
         self.install_key(self.master_key)
@@ -1191,7 +1221,8 @@ print(json.dumps(acknowledged[0]))
         self.resources.admit('runtime-backup', bound + 64 * MIB + native_bound, {
             'sourceSnapshotSha256': snapshot['snapshotSha256'], 'tables': tables,
             'rows': row_count, 'dumpUpperBoundBytes': bound, 'retainedPriorData': True,
-            'nativeVolumeMeasurements': native, 'nativeSnapshotGrowthEnvelopeBytes': native_bound}, BGE_VERIFIER_MEMORY)
+            'nativeVolumeMeasurements': native, 'nativeSnapshotGrowthEnvelopeBytes': native_bound},
+            BGE_VERIFIER_MEMORY + SERVICE_MEMORY_MIB['qdrant'] * MIB)
 
     def admit_restore_phase(self, backup):
         file, manifest, checksum = self.migration.private_json(backup)
@@ -1214,7 +1245,8 @@ print(json.dumps(acknowledged[0]))
             'retainedSourceSchemaAllocatedBytes': physical, 'cloneAllocationMeasurementEnvelopeBytes': 2 * physical,
             'restoreOverheadEnvelopeBytes': 128 * MIB, 'nativeVolumeMeasurements': native,
             'newNativeVolumePayloadBytes': native_bytes, 'freeBgeRestoreEnvelopeBytes': bge_bound,
-            'existingDataAndBackups': 'RETAINED_IN_BASELINE_FILESYSTEM'}, BGE_VERIFIER_MEMORY)
+            'existingDataAndBackups': 'RETAINED_IN_BASELINE_FILESYSTEM'},
+            BGE_VERIFIER_MEMORY + TRANSIENT_SERVICE_MEMORY_MIB['bge-qdrant'] * MIB)
 
     def memory_scenario(self):
         session = self.request('inspector', 'POST', '/api/chat-assistant/sessions')['sessionId']
@@ -1754,6 +1786,9 @@ print(json.dumps({'deleted':len(keys),'keysSha256':hashlib.sha256(json.dumps(sor
             'stableIdentity': stable_identity,
             'collaborationHttpAcceptance': collaboration_http,
             'legacyData': {'candidateSha256': self.legacy_candidate_sha, 'ragManifestSha256': self.legacy_candidate['ragManifestSha256'],
+                'verificationSubject': 'INDEPENDENT_REAL_BGE_CANDIDATE',
+                'appRuntimeValidationMode': 'ISOLATED_MOCK_QDRANT_RUNTIME', 'vectorBackend': 'qdrant',
+                'storageGeneration': 'qdrant-bge-m3-v1',
                 **native_usage,
                 'legacyKafkaFiles': self.legacy_candidate['legacyKafkaFiles'], 'legacyKafkaBytes': self.legacy_candidate['legacyKafkaBytes'],
                 'legacyKafkaReplay': self.legacy_candidate['legacyKafkaReplay'],

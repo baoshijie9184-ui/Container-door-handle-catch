@@ -1,98 +1,19 @@
-# 智能助手 Chroma RAG 配置说明
+# 旧 Chroma RAG 的来源保全
 
-系统智能助手已支持 ChromaDB 作为 RAG 向量检索库。启动后端时，系统会加载内置知识库和项目文档，生成本地文本向量，并尝试写入 Chroma collection。
+当前单体的向量运行方案为 [Qdrant + BGE-M3](middleware/semantic-vector-storage.md)。本页保留旧数据的识别与迁移要求；Chroma 不再是默认运行库，也不是 Qdrant 故障时的自动兜底。
 
-当前链路已包含：
+旧系统集合通常为 `door_handle_assistant_knowledge`，tenant/database 为 `default_tenant` / `default_database`；使用 `doorhandle-local-hashing-v1`、256 维本地确定性向量。旧知识记录、原始文本、元数据、历史和向量都要保留在只读来源/归档中。
 
-- 助手文档向量化：用户使用手册、智能助手 RAG 说明、Chroma 配置说明和 README 都会作为知识源。
-- LLM 查询重写：用户原始问题会被改写成更适合检索的查询。
-- Chroma 向量检索：优先使用 Chroma 查询候选片段。
-- LLM rerank：对候选片段进行相关性重排。
-- 自动回退：Chroma 或 LLM 不可用时回退本地关键词检索和原始顺序。
+`LocalTextEmbeddingService`、`ChromaRagStoreService` 和旧 `RagPreservationManifest` 保留用于明确的旧来源核验及回归测试，不能把其通过结果当成 BGE-M3 的运行验收。默认 `chat-assistant.chroma-enabled=false`，不提供本机地址或自动探测本机库。
 
-## 默认行为
+## 旧 83 条知识如何进入新目标
 
-默认配置：
+1. 通过既有迁移脚本在 ECS 读取已封存来源，核对完整原始目录、文本、元数据及原向量证据。
+2. 按明确的系统公共知识归属策略生成目标文本；真实 BGE 重嵌入遵循已有免费调用授权和封闭资源边界。
+3. 写入独立 Qdrant 目标，不改旧来源；保留原始 embedding 和第一次实际存储的归一化向量两份证明。
+4. 对完整目录、ID、文本、元数据、权限范围和自检索逐条验证；独立空节点恢复后对照第一次存储指纹。
+5. 生成新协议的私有、固定提交/SHA 绑定目标凭证，Java `PRESERVE_EXISTING` 只连接该经过核对的目标。
 
-```yaml
-chat-assistant:
-  rag-enabled: true
-  rag-query-rewrite-enabled: true
-  rag-rerank-enabled: true
-  chroma-enabled: true
-  chroma-base-url: http://localhost:8000
-  chroma-tenant: default_tenant
-  chroma-database: default_database
-  chroma-collection: door_handle_assistant_knowledge
-```
+新目标凭证是 `schemaVersion=2`、`kind=QDRANT_RAG_TARGET`，不是修改旧 Chroma 凭证的模型名。不同维度不能拼接，不同模型的 1024 维向量也不能直接混用。
 
-如果 Chroma 服务可用，智能助手会优先使用 Chroma 检索知识片段。
-
-如果 Chroma 服务不可用，系统不会启动失败，会自动回退到本地关键词检索。
-
-## 启动 ChromaDB
-
-可使用 Docker 启动本地 Chroma：
-
-```powershell
-docker run -p 8000:8000 -v ${PWD}\chroma-data:/data chromadb/chroma
-```
-
-启动后，后端默认连接：
-
-```text
-http://localhost:8000
-```
-
-## 关键环境变量
-
-```text
-CHAT_ASSISTANT_CHROMA_ENABLED=true
-CHAT_ASSISTANT_RAG_QUERY_REWRITE_ENABLED=true
-CHAT_ASSISTANT_RAG_RERANK_ENABLED=true
-CHAT_ASSISTANT_RAG_CANDIDATE_MULTIPLIER=3
-CHAT_ASSISTANT_CHROMA_BASE_URL=http://localhost:8000
-CHAT_ASSISTANT_CHROMA_TENANT=default_tenant
-CHAT_ASSISTANT_CHROMA_DATABASE=default_database
-CHAT_ASSISTANT_CHROMA_COLLECTION=door_handle_assistant_knowledge
-CHAT_ASSISTANT_CHROMA_TOKEN=
-CHAT_ASSISTANT_CHROMA_EMBEDDING_DIMENSION=256
-```
-
-## 知识来源
-
-当前默认知识源：
-
-```yaml
-rag-sources:
-  - classpath:rag/system-user-guide.md
-  - classpath:rag/assistant-rag-guide.md
-  - file:docs/system-user-guide.md
-  - file:docs/chroma-rag-setup.md
-  - file:README.md
-```
-
-如果要增加新的系统知识，可以新增 Markdown 文档，并加入 `rag-sources`。
-
-## 检索链路
-
-1. 后端启动时加载知识源。
-2. 文档按标题和长度切分成知识片段。
-3. 使用本地确定性文本 embedding 生成固定维度向量。
-4. 将知识片段 upsert 到 Chroma collection。
-5. 用户提问时，AgentScope 当前模型先将原始问题改写为检索查询。
-6. 系统使用重写后的查询生成向量，并从 Chroma 查询更多候选片段。
-7. AgentScope 当前模型对候选片段进行 rerank，选出最相关 TopK。
-8. 将 rerank 后的片段注入智能助手 Agent 上下文。
-9. Chroma 或 LLM 不可用时回退本地关键词检索和默认排序。
-
-## 注意事项
-
-- 当前 embedding 是轻量本地哈希向量，优点是无需外部 embedding API、部署简单、速度快。
-- 查询重写和 rerank 依赖 DeepSeek；如果未配置 `DEEPSEEK_API_KEY`，系统会自动使用原始查询和默认排序。
-- 如果后续需要更强语义召回，可以把 `LocalTextEmbeddingService` 替换为专用 embedding 模型服务。
-- Chroma 只存放系统知识片段，不存放用户 SSH key、数据库密码或 Token。
-- 智能助手已有敏感信息脱敏、请求限流和路径扫描白名单。
-- 智能助手已加入防幻觉规则：没有系统数据或知识库依据时，应明确说明缺少依据，不得编造任务、工单、批次、模型、设备、人员或检测结论。
-
-查询重写与 rerank 通过 `AgentTextApi` 使用统一模型管理和备用策略，不再创建独立 DeepSeek HTTP 客户端。AI 未启用或生成失败时继续使用原问题与本地排序。此检索支持目前在主站会话适配层使用，独立 AG-UI 入口未接入相同的 RAG/Mem0 上下文。
+所有服务与测试在 ECS，由本地 Jenkins 编排；本地只编辑、编译、打包。生产启用仍须真实候选、恢复、业务与发布门槛全部满足。隔离 mock 集合只验证接入和授权行为，不构成 83 条真实数据已完成迁移的证据。

@@ -199,21 +199,24 @@ class ReviewStore:
         if memory_digest(source)!=request['expected_digest'] or self.lifecycle.public(user,app,source['id'])['revision']!=request['expected_revision'] or not self.lifecycle.allowed(user,app,source['id']):
             raise ValueError('Review source changed')
         if not isinstance(source.get('memory'),str) or not 1<=len(source['memory'])<=4000:raise ValueError('Review source exceeds its input budget')
-        collection=memory.vector_store.collection
-        stored=collection.get(ids=[source['id']],include=['embeddings','metadatas'])
-        if stored.get('ids')!=[source['id']] or stored.get('embeddings') is None:raise ValueError('Source vector unavailable')
-        embedding=vector(stored['embeddings'][0]);payload=stored['metadatas'][0]
+        try:
+            from .qdrant_store import dense_vector
+        except ImportError:
+            from qdrant_store import dense_vector
+        stored=memory.vector_store.get_with_vector(source['id'])
+        if stored is None or stored.id!=source['id']:raise ValueError('Source vector unavailable')
+        embedding=vector(dense_vector(stored));payload=stored.payload
         if payload.get('user_id')!=user or payload.get('agent_id')!=app or payload.get('data')!=source['memory']:raise ValueError('Source vector version changed')
-        found=collection.query(query_embeddings=[embedding],n_results=20,
-                               where={'$and':[{'user_id':{'$eq':user}},{'agent_id':{'$eq':app}}]},include=['embeddings','metadatas'])
+        found=memory.vector_store.search_with_vectors(embedding,user,app,20)
         candidates=[]
-        for position,candidate_id in enumerate(found['ids'][0]):
+        for record in found:
+            candidate_id=record.id
             if candidate_id==source['id'] or not re.fullmatch(r'[A-Za-z0-9_-]{1,64}',candidate_id):continue
             other=self.owned(memory,user,app,candidate_id)
-            meta=found['metadatas'][0][position]
+            meta=record.payload
             if meta.get('data')!=other.get('memory') or meta.get('user_id')!=user or meta.get('agent_id')!=app:continue
             if not self.lifecycle.allowed(user,app,candidate_id):continue
-            similarity=cosine(embedding,vector(found['embeddings'][0][position]))
+            similarity=cosine(embedding,vector(dense_vector(record)))
             if similarity<.65 or not isinstance(other.get('memory'),str) or not 1<=len(other['memory'])<=4000:continue
             snapshot=self.snapshot(other,user,app)
             with closing(self.receipts.connect()) as db:

@@ -1,5 +1,19 @@
 # Mem0 跨版本回滚兼容保护
 
+## 2026-11-13：Qdrant 存储代际单独防回退
+
+本轮新增守卫及测试源码尚未完成统一 ECS 验收。后面的 2026-10-18 Chroma 演练回执保留为历史证据，不代表新 Qdrant 路径已通过。
+
+`/data/vector-space.json` 绑定后端、集合、模型/profile、维度、预处理、存储代际与物理 ID 协议，并明确 `historyMode=single-writer-sqlite`。桥接协议 2 不能替代存储要求；同维度也不能混用模型。新镜像必须声明 Qdrant、`qdrant-bge-m3-v1` 与 `doorhandle-vector-sha256-v8-v1`，实际健康接口须与持久标记一致。
+
+迁移后，`state/memory-minimum.json` 同时保留协议 floor 与 vectorSpace。请求回滚到只支持 Chroma 的旧镜像时，保留原兼容 Qdrant Mem0 容器及其实际卷；没有兼容读者或缺少已核实的正式安装绑定时停止切换。不得挂空集合、删除标记或读回旧 Chroma 来伪装恢复。
+
+新正式目标卷为 `doorhandle-mem0-qdrant`、`doorhandle-qdrant` 与只读 RAG manifest。Qdrant 使用完整 `/data/{storage,snapshots}` payload；原 Mem0/Chroma 卷、原 SQL 和恢复资料仍属来源。正式 key/config 来自独立 ECS 私有只读目录，不复制测试密钥。新的后端 RAG 保全协议标签为 2；旧协议 1 不能读取 schemaVersion=2 的 Qdrant manifest。
+
+SQLite history、messages、写入回执、生命周期与模型配置仍按单写者一起保全。Qdrant 副本不提供这份 SQLite 的多节点历史一致性；后续微服务化需独立完成共享历史适配器。
+
+## 历史实现与验收记录（2026-10-18）
+
 2026-10-18，UTC+8；`java-cloud` 单体。真实 ECS 上的隔离 Docker 保护演练 21 项通过，已修复实际容器 ID 与只读 WAL 探测问题；生产版本激活、完整 Jenkins 发布/回滚与最终统一发布仍待完成。
 
 ## 保留的约束

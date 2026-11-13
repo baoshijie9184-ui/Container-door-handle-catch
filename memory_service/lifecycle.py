@@ -145,14 +145,7 @@ class GovernedVectorStore:
         return getattr(self.delegate, name)
 
     def get(self, vector_id):
-        try:
-            return self.delegate.get(vector_id=vector_id)
-        except IndexError:
-            # Pinned PyPI Chroma adapter indexes [0] for an absent ID. Independently
-            # verify absence; other store failures must remain failures, not "missing".
-            result=self.delegate.collection.get(ids=[vector_id],include=['metadatas'])
-            if result.get('ids')==[]:return None
-            raise
+        return self.delegate.get(vector_id=vector_id)
 
     def search(self, *args, **kwargs):
         scope=getattr(self.scope,'account',None)
@@ -160,4 +153,19 @@ class GovernedVectorStore:
         if scope and isinstance(filters,dict) and (filters.get('user_id'),filters.get('agent_id'))==scope:
             kwargs={**kwargs,'filters':{key:value for key,value in filters.items() if key!='run_id'}}
         rows = self.delegate.search(*args, **kwargs)
-        return [row for row in rows if row.payload and self.lifecycle.allowed(row.payload.get("user_id"), row.payload.get("agent_id"), row.id)]
+        return self._allowed(rows, kwargs.get('filters'))
+
+    def _allowed(self, rows, filters):
+        # Native payload filters are a prefilter, not the final account/lifecycle authority.
+        account = {key: value for key, value in (filters or {}).items()
+                   if key in ('user_id', 'agent_id', 'run_id') and isinstance(value, str)}
+        return [row for row in rows if row.payload and all(row.payload.get(key) == value for key, value in account.items())
+                and self.lifecycle.allowed(row.payload.get('user_id'), row.payload.get('agent_id'), row.id)]
+
+    def search_batch(self, *args, **kwargs):
+        scope=getattr(self.scope,'account',None)
+        filters=kwargs.get('filters')
+        if scope and isinstance(filters,dict) and (filters.get('user_id'),filters.get('agent_id'))==scope:
+            kwargs={**kwargs,'filters':{key:value for key,value in filters.items() if key!='run_id'}}
+        rows = self.delegate.search_batch(*args, **kwargs)
+        return [self._allowed(batch, kwargs.get('filters')) for batch in rows]

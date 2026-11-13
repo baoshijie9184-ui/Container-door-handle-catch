@@ -156,9 +156,9 @@ class Scripts:
                 'Embedding input must contain text or token arrays')
         result = []
         for index, item in enumerate(values):
-            data = hashlib.shake_256(hashlib.sha256(encoded(item)).digest()).digest(1024)
+            data = hashlib.shake_256(hashlib.sha256(encoded(item)).digest()).digest(4096)
             vector = [int.from_bytes(data[offset:offset + 4], 'big') / 2147483647.5 - 1
-                      for offset in range(0, 1024, 4)]
+                      for offset in range(0, 4096, 4)]
             norm = math.sqrt(sum(value * value for value in vector)) or 1.0
             result.append({'object': 'embedding', 'index': index, 'embedding': [value / norm for value in vector]})
         with self.lock:

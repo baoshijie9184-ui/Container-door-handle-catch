@@ -28,6 +28,7 @@ final class ManagedAgentModel implements Model {
     private final Duration timeout;
     private final boolean circuitEnabled;
     private final int maxOutputTokens;
+    private final io.github.resilience4j.bulkhead.Bulkhead bulkhead;
     private ModelBudgetService budget;
     ManagedAgentModel budget(ModelBudgetService value){this.budget=value;return this;}
     ManagedAgentModel(String id, Model primary, Model fallback) {
@@ -41,6 +42,8 @@ final class ManagedAgentModel implements Model {
         this.firstTokenTimeout = settings.getFirstTokenTimeout(); this.timeout = settings.getTimeout();
         this.circuitEnabled = circuitEnabled;
         this.maxOutputTokens = settings.getMaxOutputTokens();
+        this.bulkhead=io.github.resilience4j.bulkhead.Bulkhead.of("model-route",io.github.resilience4j.bulkhead.BulkheadConfig.custom()
+                .maxConcurrentCalls(settings.getMaxConcurrentCalls()).maxWaitDuration(Duration.ZERO).build());
     }
     private static List<Candidate> legacyCandidates(String id, Model primary, Model fallback) {
         var result = new ArrayList<Candidate>();
@@ -58,6 +61,7 @@ final class ManagedAgentModel implements Model {
                             context.getOrDefault(ModelUsageTrace.CONTEXT_KEY,ModelUsageTrace.NONE),identity,
                             java.util.UUID.randomUUID().toString());
                 })
+                .transformDeferred(io.github.resilience4j.reactor.bulkhead.operator.BulkheadOperator.of(bulkhead))
                 .onErrorMap(error -> {
                     if(error instanceof RedisModelCircuit.Unavailable||error instanceof ModelBudgetService.Exhausted)return error;
                     log.warn("模型路由失败：model={}, reason={}, status={}", candidates.get(0).id(),
@@ -81,6 +85,7 @@ final class ManagedAgentModel implements Model {
             var firstContentMs = new AtomicLong(-1);
             String usageId=java.util.UUID.randomUUID().toString();
             var reportedUsage=new java.util.concurrent.atomic.AtomicReference<ChatUsage>();
+            var telemetry=new java.util.concurrent.atomic.AtomicReference<ProviderAttemptTelemetry>();
             var ticket=new java.util.concurrent.atomic.AtomicReference<ModelBudgetService.Ticket>();
             long started = System.nanoTime();
             // STARTED 写入失败时仍释放恢复探测 permit，不发出供应商请求。
@@ -100,6 +105,7 @@ final class ManagedAgentModel implements Model {
                                 return Flux.empty();
                             }
                         }
+                        telemetry.set(ProviderAttemptTelemetry.start(candidate.id(),candidate.provider(),candidate.model()));
                         return candidate.model().stream(messages, tools, attemptOptions).doOnNext(chunk->{if(chunk.getUsage()!=null)reportedUsage.set(chunk.getUsage());});
                     })
                     // 空元数据不算首字；思考内容或工具参数也算输出，禁止中途跨模型拼接。
@@ -113,6 +119,7 @@ final class ManagedAgentModel implements Model {
                     })
                     .switchIfEmpty(Flux.error(new ModelFailureClassifier.EmptyResponseException()))
                     .doOnComplete(() -> {
+                        if(telemetry.get()!=null)telemetry.get().complete(reportedUsage.get());
                         terminal.set(true);
                         recordUsage(ticket.get(),usageTrace,usageId,usageFields(candidate,index,started,firstContentMs.get(),reportedUsage.get(),"COMPLETED"));
                         trace.event("MODEL_ATTEMPT_COMPLETED", completedFields(candidate, index, started, firstContentMs.get()));
@@ -121,6 +128,7 @@ final class ManagedAgentModel implements Model {
                         if (permit.probe()) log.info("模型恢复验证成功：model={}", candidate.id());
                     })
                     .onErrorResume(error -> {
+                        if(telemetry.get()!=null)telemetry.get().failed();
                         if (terminal.get()||error instanceof ModelAttemptTrace.RecordingException) return Flux.error(error);
                         var reason = ModelFailureClassifier.classify(error);
                         terminal.set(true);
@@ -141,6 +149,7 @@ final class ManagedAgentModel implements Model {
                         return attempt(index + 1, messages, tools, options, trace,usageTrace,identity,requestId);
                     })
                     .doFinally(signal -> {
+                        if(signal==SignalType.CANCEL&&telemetry.get()!=null)telemetry.get().cancelled();
                         try {
                             if (signal == SignalType.CANCEL && terminal.compareAndSet(false, true)) {
                                 recordUsage(ticket.get(),usageTrace,usageId,usageFields(candidate,index,started,firstContentMs.get(),reportedUsage.get(),"CANCELLED"));

@@ -1,0 +1,35 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels: {deployment: monolith}
+rule_files: [/etc/prometheus/alerts.yml]
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: [alertmanager:9093]
+scrape_configs:
+  - job_name: monolith
+    metrics_path: /actuator/prometheus
+    authorization: {type: Bearer, credentials_file: /run/observability-secrets/metrics-token}
+    static_configs:
+      - targets: [backend:8080]
+    sample_limit: 10000
+    label_limit: 16
+    label_name_length_limit: 100
+    label_value_length_limit: 128
+  - job_name: detection-worker
+    metrics_path: /metrics
+    authorization: {type: Bearer, credentials_file: /run/observability-secrets/metrics-token}
+    static_configs:
+      - targets: [detection-worker:9464]
+    sample_limit: 2000
+    label_limit: 12
+    label_value_length_limit: 128
+  - job_name: mem0
+    metrics_path: /metrics
+    authorization: {type: Bearer, credentials_file: /run/observability-secrets/metrics-token}
+    static_configs:
+      - targets: [mem0:9465]
+    sample_limit: 2000
+    label_limit: 12
+    label_value_length_limit: 128

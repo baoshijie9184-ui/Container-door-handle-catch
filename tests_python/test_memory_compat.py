@@ -17,12 +17,27 @@ import pytest
 from fastapi.testclient import TestClient
 from memory_service import main
 from memory_service.write_receipts import MemoryWriter
+from memory_service.qdrant_store import vector_identity
 from tests_python.test_memory_governance import FakeMemory
 
 SPEC=importlib.util.spec_from_file_location('memory_compat',Path(__file__).resolve().parents[1]/'script/docker/memory-compat.py')
 guard=importlib.util.module_from_spec(SPEC);SPEC.loader.exec_module(guard)
+PRODUCTION_SPEC=importlib.util.spec_from_file_location('memory_compat_production',Path(__file__).resolve().parents[1]/'script/jenkins/prepare-legacy-candidate.py')
+production=importlib.util.module_from_spec(PRODUCTION_SPEC);PRODUCTION_SPEC.loader.exec_module(production)
 OLD='sha256:'+'a'*64;NEW='sha256:'+'b'*64
 BACKEND='c'*64;MEMORY='d'*64;REPLACED='e'*64
+
+
+def native_space():
+    return {'schemaVersion':1,'backend':'qdrant','collection':guard.NATIVE_COLLECTION,
+            'identity':vector_identity({'EMBEDDING_PROFILE':guard.NATIVE_PROFILE}),
+            'historyMode':'single-writer-sqlite'}
+
+
+def native_probe_identity():
+    return {'collectionId':'qdrant:'+guard.NATIVE_COLLECTION+':'+guard.VECTOR_GENERATION+':'+guard.VECTOR_ID_PROTOCOL,
+            'embeddingProfile':guard.NATIVE_PROFILE,'collection':guard.NATIVE_COLLECTION,'dimensions':1024,
+            'vectorBackend':'qdrant','storageGeneration':guard.VECTOR_GENERATION,'vectorSpace':native_space()}
 
 
 def probe(path):
@@ -105,6 +120,7 @@ class Docker:
         self.protocols={OLD:target,NEW:current}
         self.rows={BACKEND:self.row(BACKEND,'backend',OLD),MEMORY:self.row(MEMORY,'mem0',NEW)}
         self.health_protocol=current;self.probe_failed=False
+        self.vector_space=None;self.qdrant_capable=set()
     def row(self,id,service,image):
         return {'Id':id,'Image':image,'State':{'Running':True,'Health':{'Status':'healthy'}},'Config':{'Env':['MEM0_DATA_DIR=/data','PRIVATE_TOKEN=must-not-be-copied'],
                 'Labels':{'com.docker.compose.project':guard.PROJECT,'com.docker.compose.service':service}},
@@ -117,7 +133,11 @@ class Docker:
             return ('\n'.join(ids if '--no-trunc' in args else [value[:12] for value in ids])).encode()
         if args[0]=='inspect':return json.dumps([self.rows[args[1]]]).encode()
         if args[:2]==('image','inspect'):
-            return json.dumps([{'Id':args[2],'Config':{'Labels':{guard.LABEL:str(self.protocols[args[2]])}}}]).encode()
+            labels={guard.LABEL:str(self.protocols[args[2]])}
+            if args[2] in self.qdrant_capable:labels.update({guard.NATIVE_LABEL:guard.NATIVE_PROFILE,
+                guard.VECTOR_BACKEND_LABEL:'qdrant',guard.VECTOR_GENERATION_LABEL:guard.VECTOR_GENERATION,
+                guard.VECTOR_ID_LABEL:guard.VECTOR_ID_PROTOCOL})
+            return json.dumps([{'Id':args[2],'Config':{'Labels':labels}}]).encode()
         if args[0]=='stop':self.rows[args[-1]]['State']['Running']=False;return b''
         if args[0]=='start':self.rows[args[1]]['State']['Running']=True;return b''
         if args[0]=='run':
@@ -128,7 +148,7 @@ class Docker:
             assert args[args.index('--mount')+1]=='type=volume,src=project-memory,dst=/data,readonly'
             assert not any('PRIVATE_TOKEN' in str(arg) for arg in args)
             if self.probe_failed:raise guard.GuardError('probe failed')
-            return json.dumps({'requiredProtocol':self.floor}).encode()
+            return json.dumps({'requiredProtocol':self.floor,**({'vectorSpace':copy.deepcopy(self.vector_space)} if self.vector_space is not None else {})}).encode()
         if args[0]=='exec':return json.dumps({'status':'ok','memory_protocol':self.health_protocol,'write_receipts':True,'lifecycle':True,'bridge_auth_configured':True}).encode()
         raise AssertionError(args)
 
@@ -230,16 +250,20 @@ class NativeDocker(Docker):
     def __call__(self,*args,**kwargs):
         if args[:2]==('image','inspect'):
             labels={guard.LABEL:'2'}
-            if args[2] in self.capable:labels[guard.NATIVE_LABEL]=guard.NATIVE_PROFILE
-            if args[2] in self.rag_capable:labels[guard.RAG_LABEL]='1'
+            if args[2] in self.capable:labels.update({guard.NATIVE_LABEL:guard.NATIVE_PROFILE,
+                guard.VECTOR_BACKEND_LABEL:'qdrant',guard.VECTOR_GENERATION_LABEL:guard.VECTOR_GENERATION,
+                guard.VECTOR_ID_LABEL:guard.VECTOR_ID_PROTOCOL})
+            if args[2] in self.rag_capable:labels.update({guard.RAG_LABEL:guard.RAG_PROTOCOL,
+                'io.doorhandle.semantic-vector-backend':'qdrant',
+                'io.doorhandle.semantic-storage-generation':guard.VECTOR_GENERATION})
             return json.dumps([{'Id':args[2],'Config':{'Labels':labels}}]).encode()
         if args[:2]==('volume','inspect'):return json.dumps([self.volumes[args[2]]]).encode()
         if args[0]=='run' and args[-1]==guard.NATIVE_PROBE:
             self.calls.append(args)
             mount=args[args.index('--mount')+1];name=mount.split('src=')[1].split(',')[0]
             value=next(row for row in self.receipt['volumes'].values() if row['name']==name)
-            result={'files':value['files'],'filesSha256':value['filesSha256'],'collectionId':'11111111-2222-3333-4444-555555555555',
-                    'embeddingProfile':guard.NATIVE_PROFILE,'collection':guard.NATIVE_COLLECTION,'dimensions':1024}
+            result={'files':value['files'],'filesSha256':value['filesSha256']}
+            if 'NATIVE_SPACE_REQUIRED=0' not in args:result.update(native_probe_identity())
             if self.bad_probe:result.update(self.bad_probe)
             return json.dumps(result).encode()
         if args[0]=='run' and 'preservation.json' in args[-1]:
@@ -248,17 +272,19 @@ class NativeDocker(Docker):
             # The ordinary journal floor probe still reads the stopped original
             # container; no source volume is ever mounted writable.
             assert not self.rows[BACKEND]['State']['Running'] and not self.rows[next(key for key in self.rows if key!=BACKEND)]['State']['Running']
-            self.calls.append(args);return json.dumps({'requiredProtocol':2}).encode()
+            self.calls.append(args);return json.dumps({'requiredProtocol':2,**({'vectorSpace':copy.deepcopy(self.vector_space)} if self.vector_space is not None else {})}).encode()
         if args[0]=='exec':
             self.calls.append(args)
             return json.dumps({'status':'ok','memory_protocol':2,'write_receipts':True,'lifecycle':True,'bridge_auth_configured':True,
-                'embedding_profile':guard.NATIVE_PROFILE,'embedding_collection':guard.NATIVE_COLLECTION,'embedding_dimensions':1024}).encode()
+                'embedding_profile':guard.NATIVE_PROFILE,'embedding_collection':guard.NATIVE_COLLECTION,'embedding_dimensions':1024,
+                'vector_backend':'qdrant','storage_generation':guard.VECTOR_GENERATION,'vector_id_protocol':guard.VECTOR_ID_PROTOCOL,
+                'history_mode':'single-writer-sqlite'}).encode()
         return super().__call__(*args,**kwargs)
     def activate(self):
         self.rows.pop(MEMORY,None)
-        row=self.row(REPLACED,'mem0',OLD);row['Mounts'][0].update(Name=self.receipt['volumes']['doorhandle-mem0']['name'],RW=True)
-        row['Config']['Env'] += ['EMBEDDING_PROFILE='+guard.NATIVE_PROFILE,'EMBEDDING_MODEL='+guard.NATIVE_MODEL,
-                                 'EMBEDDING_BASE_URL=https://api.siliconflow.cn/v1']
+        row=self.row(REPLACED,'mem0',OLD);row['Mounts'][0].update(Name=self.receipt['volumes']['doorhandle-mem0-qdrant']['name'],RW=True)
+        row['Config']['Env'] += [key+'='+value for key,value in self.config['services']['mem0']['environment'].items()]
+        self.vector_space=native_space()
         self.rows[REPLACED]=row
 
 
@@ -292,7 +318,7 @@ def native_install(tmp_path,monkeypatch):
     activation['identity']={**identity,'executionLocation':'ECS'}
     activation_file=phase_dir/'native-semantic-activation.json';activation_sha=native_write(activation_file,activation)
     snapshots={};pristine={};volumes={};labels={}
-    for service,key in (('mem0','doorhandle-mem0'),('chroma','doorhandle-chroma')):
+    for service,key in (('mem0','doorhandle-mem0-qdrant'),('chroma','doorhandle-qdrant')):
         folder=output/('fresh-'+service);body=b'original full '+service.encode()
         catalog={'source.db':native_bytes(folder/'data/source.db',body)}
         native_bytes(folder/'restored-originals/source.db',body)
@@ -307,8 +333,8 @@ def native_install(tmp_path,monkeypatch):
         snapshots[service]={'file':str(file),'sha256':checksum,'archiveSha256':archive_sha,
             'sourceVolume':candidate['originalVolumes'][service],'normalizedFilesSha256':guard.native_hash(catalog),
             'sourceBeforeSha256':guard.native_hash(catalog)}
-        name='doorhandlecatch-monolith_native-'+tag+'-'+owner+'-'+('mem0' if service=='mem0' else 'chroma')
-        directory=work/('mem0/data' if service=='mem0' else 'rag/chroma')
+        name='doorhandlecatch-monolith_native-'+tag+'-'+owner+'-'+('mem0' if service=='mem0' else 'qdrant')
+        directory=work/('mem0/data' if service=='mem0' else 'qdrant-candidate')
         payload={'pristine.bin':native_bytes(directory/'pristine.bin',b'pristine '+service.encode())}
         catalog_file=work/(('mem0' if service=='mem0' else 'rag')+'-payload-files.json')
         catalog_sha=native_write(catalog_file,payload)
@@ -318,14 +344,8 @@ def native_install(tmp_path,monkeypatch):
     for key in volumes:
         labels[key]={guard.NATIVE_VOLUME_LABEL:owner,'io.doorhandle.release':tag,'io.doorhandle.source':source,
                      'com.docker.compose.project':guard.PROJECT,'com.docker.compose.volume':key}
-    rag_env={'CHAT_ASSISTANT_RAG_STARTUP_MODE':'PRESERVE_EXISTING','CHAT_ASSISTANT_RAG_PRESERVATION_MANIFEST':'/run/doorhandle-rag/preservation.json',
-        'CHAT_ASSISTANT_RAG_PRESERVATION_MANIFEST_SHA256':'e'*64,'CHAT_ASSISTANT_RAG_PRESERVATION_COMMIT':commit,
-        'CHAT_ASSISTANT_CHROMA_EMBEDDING_DIMENSION':'256','CHAT_ASSISTANT_CHROMA_COLLECTION':'project-rag',
-        'CHAT_ASSISTANT_CHROMA_TENANT':'default_tenant','CHAT_ASSISTANT_CHROMA_DATABASE':'default_database'}
-    overlay={'services':{'mem0':{'environment':{'EMBEDDING_PROFILE':guard.NATIVE_PROFILE,'EMBEDDING_MODEL':guard.NATIVE_MODEL,
-        'EMBEDDING_BASE_URL':'https://api.siliconflow.cn/v1'}},'backend':{'environment':rag_env,'volumes':[
-        {'type':'volume','source':'native-rag-preservation','target':'/run/doorhandle-rag','read_only':True}]}},
-        'volumes':{key:{'name':value['name'],'external':True} for key,value in volumes.items()}}
+    overlay=production.production_overlay({key:value['name'] for key,value in volumes.items()},
+        {'schemaVersion':2,'kind':'QDRANT_RAG_TARGET','identity':{'backend':'qdrant','collection':'doorhandle_rag_bge_m3_v1'}},commit,'e'*64)
     overlay_sha=native_write(output/'native-data.override.json',overlay);native_write(state/'native-data.override.json',overlay)
     receipt={'schemaVersion':1,'kind':'doorhandle-pristine-native-install','status':'MATERIALIZED_AND_VERIFIED',
         **{key:candidate[key] for key in ('release','commit','sourceSha256','identity')},'owner':owner,'candidateSha256':candidate_sha,
@@ -334,11 +354,12 @@ def native_install(tmp_path,monkeypatch):
         'semanticActivation':{'file':activation_file.relative_to(work.parents[2]).as_posix(),'sha256':activation_sha},
         'freshSnapshots':snapshots,'pristinePayloads':pristine,'volumes':volumes,'volumeLabels':labels,
         'overlayFile':str(output/'native-data.override.json'),'overlaySha256':overlay_sha,
-        'images':{'mem0':OLD,'backend':OLD,'chroma':NEW},'originalVolumes':candidate['originalVolumes'],
+        'images':{'mem0':OLD,'backend':OLD,'qdrant':NEW},'originalVolumes':candidate['originalVolumes'],
         'candidateSemanticVerified':True,'productionDataMaterialized':True,'runtimeTestVolumesPublished':False,
         'originalVolumesMountedReadOnly':True,'freshIndependentRestoreVerified':True,'sourceDriftDetected':False,
         'privateCredentialFileCopiedIntoPayload':False,'credentialSource':'EXISTING_PRIVATE_ECS_ENV',
         'embeddingProfile':guard.NATIVE_PROFILE,'embeddingCollection':guard.NATIVE_COLLECTION,'embeddingDimensions':1024,
+        'vectorBackend':'qdrant','storageGeneration':guard.VECTOR_GENERATION,
         'ragManifestSha256':'e'*64,'activeRecords':30,'importedHistoryRows':30,'importedMessageRows':25,
         'archivedRecords':2,'archivedHistoryRows':3,'archivedMessageRows':1,'paidModelCalls':0,'llmCalls':0}
     receipt_file=output/'native-production-install.json';receipt_sha=native_write(receipt_file,receipt)
@@ -348,8 +369,8 @@ def native_install(tmp_path,monkeypatch):
         'overlayFile':str(state/'native-data.override.json'),'overlaySha256':overlay_sha}
     native_write(state/'native-data.json',binding)
     config={'services':{'mem0':{'image':OLD,'environment':overlay['services']['mem0']['environment'],
-            'volumes':[{'type':'volume','source':'doorhandle-mem0','target':'/data'}]},
-        'chroma':{'image':NEW,'volumes':[{'type':'volume','source':'doorhandle-chroma','target':'/data'}]},
+            'volumes':[{'type':'volume','source':'doorhandle-mem0-qdrant','target':'/data'}]},
+        'qdrant':{'image':NEW,'volumes':[{'type':'volume','source':'doorhandle-qdrant','target':'/data'}]},
         'backend':{'image':OLD,**overlay['services']['backend']}},'volumes':overlay['volumes']}
     docker=NativeDocker(state,receipt,config);monkeypatch.setattr(guard,'docker',docker)
     monkeypatch.setattr(guard,'native_host_identity',lambda value:None)
@@ -361,8 +382,9 @@ def test_explicit_pristine_transition_switches_only_after_full_proofs_and_persis
     with pytest.raises(guard.GuardError):guard.prepare(value.state,value.config)
     assert guard.prepare(value.state,value.config,native_transition=value.receipt_file)=='replace'
     floor=guard.read_json(value.state/'memory-minimum.json')
-    assert floor['dataMount']['name']==value.receipt['volumes']['doorhandle-mem0']['name']
+    assert floor['dataMount']['name']==value.receipt['volumes']['doorhandle-mem0-qdrant']['name']
     assert floor['native']['collection']==guard.NATIVE_COLLECTION and floor['native']['dimensions']==1024
+    assert floor['vectorSpace']==native_space()
     value.docker.activate();guard.verify(value.state)
     assert guard.read_json(value.state/'memory-transition.json')['phase']=='VERIFIED'
 
@@ -414,7 +436,7 @@ def test_unsupported_rollback_preserves_the_exact_current_bge_reader_and_volume(
     value.config['services']['mem0']['image']=NEW
     assert guard.prepare(value.state,value.config)=='preserve'
     record=guard.read_json(value.state/'memory-transition.json')
-    assert record['selectedImage']==OLD and record['dataMount']['name']==value.receipt['volumes']['doorhandle-mem0']['name']
+    assert record['selectedImage']==OLD and record['dataMount']['name']==value.receipt['volumes']['doorhandle-mem0-qdrant']['name']
 
 
 @pytest.mark.parametrize('damage',['candidate-only','receipt','overlay','identity','volume-owner','wrong-mount','test-namespace','wrong-data-directory','rag-reader'])
@@ -427,8 +449,8 @@ def test_native_state_rejects_unmaterialized_or_drifted_bindings(native_install,
     elif damage=='overlay':(value.state/'native-data.override.json').write_bytes(b'{}')
     elif damage=='identity':
         value.binding['identity']={**value.binding['identity'],'machineId':'f'*32};native_write(value.state/'native-data.json',value.binding)
-    elif damage=='volume-owner':value.docker.volumes[value.receipt['volumes']['doorhandle-mem0']['name']]['Labels']={}
-    elif damage=='wrong-mount':value.config['volumes']['doorhandle-mem0']['name']='foreign-volume'
+    elif damage=='volume-owner':value.docker.volumes[value.receipt['volumes']['doorhandle-mem0-qdrant']['name']]['Labels']={}
+    elif damage=='wrong-mount':value.config['volumes']['doorhandle-mem0-qdrant']['name']='foreign-volume'
     elif damage=='test-namespace':value.config['services']['mem0']['environment']['MEM0_RUNTIME_TEST_COLLECTION']='test'
     elif damage=='wrong-data-directory':value.config['services']['mem0']['environment']['MEM0_DATA_DIR']='/tmp/empty-space'
     else:value.docker.rag_capable.clear()
@@ -440,7 +462,7 @@ def test_initial_switch_rejects_missing_real_freeze_restore_payload_or_semantic_
     value=native_install
     if damage=='freeze':Path(value.receipt['sourceFreezeFile']).write_bytes(b'{}')
     elif damage=='restore-bytes':(value.output/'fresh-mem0/restored-originals/source.db').write_bytes(b'changed')
-    elif damage=='pristine-bytes':Path(value.receipt['pristinePayloads']['doorhandle-mem0']['directory'],'pristine.bin').write_bytes(b'changed')
+    elif damage=='pristine-bytes':Path(value.receipt['pristinePayloads']['doorhandle-mem0-qdrant']['directory'],'pristine.bin').write_bytes(b'changed')
     elif damage=='phase':Path(value.receipt['semanticActivationFile']).with_name('bge-semantic-after-restart.json').unlink()
     elif damage=='target-reader':value.docker.capable.clear()
     elif damage=='target-payload':value.docker.bad_probe={'filesSha256':'0'*64}
@@ -504,7 +526,7 @@ def test_native_state_cli_accepts_stdin_effective_config_without_printing_or_wri
     assert {path.name:path.read_bytes() for path in value.state.iterdir()}==before
 
 
-def test_real_readonly_sqlite_probe_requires_the_bge_dimension_and_persistent_model_marker(tmp_path):
+def test_legacy_chroma_1024_probe_is_readonly_source_not_qdrant_runtime_proof(tmp_path):
     directory=tmp_path/'native-volume';vector=directory/'chroma/chroma.sqlite3';vector.parent.mkdir(parents=True)
     with sqlite3.connect(vector) as db:
         db.execute('CREATE TABLE collections(id TEXT PRIMARY KEY,name TEXT,dimension INTEGER)')
@@ -521,9 +543,53 @@ def test_real_readonly_sqlite_probe_requires_the_bge_dimension_and_persistent_mo
     assert result.returncode==0
     observed=json.loads(result.stdout)
     assert observed['embeddingProfile']==guard.NATIVE_PROFILE and observed['dimensions']==1024 and observed['files']==1
+    assert 'vectorBackend' not in observed and 'vectorSpace' not in observed
     assert hashlib.sha256(vector.read_bytes()).hexdigest()==before
     assert json.loads(probe(directory).stdout)['nativeEmbeddingProfile']==guard.NATIVE_PROFILE
     with sqlite3.connect(vector) as db:db.execute("UPDATE collection_metadata SET str_value='wrong-model' WHERE key='doorhandle_embedding_model'")
     db.close()
     result=subprocess.run([sys.executable,'-I','-B','-c',guard.NATIVE_PROBE],env=environment,capture_output=True,text=True,timeout=8)
     assert result.returncode!=0 and 'Native vector space cannot be verified' in result.stderr
+
+
+def test_real_readonly_qdrant_marker_probe_requires_the_independent_generation_and_uuidv8_floor(tmp_path):
+    directory=tmp_path/'qdrant-volume';directory.mkdir()
+    marker=directory/'vector-space.json';native_write(marker,native_space());original=marker.read_bytes()
+    environment={**os.environ,'MEM0_DATA_DIR':str(directory),'NATIVE_FULL_INVENTORY':'1','NATIVE_SPACE_REQUIRED':'1'}
+    result=subprocess.run([sys.executable,'-I','-B','-c',guard.NATIVE_PROBE],env=environment,capture_output=True,text=True,timeout=8)
+    assert result.returncode==0
+    observed=json.loads(result.stdout)
+    assert observed['vectorSpace']==native_space() and observed['vectorBackend']=='qdrant'
+    assert observed['storageGeneration']==guard.VECTOR_GENERATION and observed['collectionId']==native_probe_identity()['collectionId']
+    assert observed['files']==1 and marker.read_bytes()==original
+    assert json.loads(probe(directory).stdout)['vectorSpace']==native_space()
+
+
+@pytest.mark.parametrize('field,value',[('doorhandle_dimensions',256),('doorhandle_storage_generation','legacy-chroma'),
+    ('doorhandle_id_protocol','uuid4'),('doorhandle_model','different-1024-model')])
+def test_marker_with_same_dimension_but_foreign_space_cannot_lower_the_rollback_floor(tmp_path,field,value):
+    directory=tmp_path/'qdrant-volume';directory.mkdir();space=native_space();space['identity'][field]=value
+    marker=directory/'vector-space.json';native_write(marker,space);original=marker.read_bytes()
+    environment={**os.environ,'MEM0_DATA_DIR':str(directory),'NATIVE_FULL_INVENTORY':'1','NATIVE_SPACE_REQUIRED':'1'}
+    result=subprocess.run([sys.executable,'-I','-B','-c',guard.NATIVE_PROBE],env=environment,capture_output=True,text=True,timeout=8)
+    assert result.returncode!=0 and marker.read_bytes()==original
+    assert probe(directory).returncode!=0
+
+
+def test_unbound_qdrant_marker_never_authorizes_activation_or_chroma_rollback(tmp_path,monkeypatch):
+    docker=Docker(tmp_path,current=2,target=2);docker.vector_space=native_space();docker.qdrant_capable={OLD,NEW}
+    monkeypatch.setattr(guard,'docker',docker)
+    with pytest.raises(guard.GuardError,match='persistent.*binding'):
+        guard.prepare(tmp_path,{'services':{'mem0':{'image':OLD}}})
+    assert not docker.rows[BACKEND]['State']['Running'] and not docker.rows[MEMORY]['State']['Running']
+    assert guard.read_json(tmp_path/'memory-transition.json')['phase']=='FAILED'
+
+
+def test_bound_generation_floor_cannot_disappear_even_with_compatible_journal_protocol(native_install):
+    value=native_install;guard.prepare(value.state,value.config,native_transition=value.receipt_file)
+    value.docker.activate();guard.verify(value.state);value.binding['status']='ACTIVE';native_write(value.state/'native-data.json',value.binding)
+    assert guard.read_json(value.state/'memory-minimum.json')['vectorSpace']==native_space()
+    value.docker.vector_space=None
+    with pytest.raises(guard.GuardError,match='generation floor disappeared'):
+        guard.prepare(value.state,value.config)
+    assert not value.docker.rows[BACKEND]['State']['Running'] and not value.docker.rows[REPLACED]['State']['Running']

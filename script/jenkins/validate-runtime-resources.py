@@ -73,7 +73,7 @@ def validate_files(proof_file, cleanup_file, summary_file, probes_file, phase_di
     runtime = importlib.util.module_from_spec(spec); spec.loader.exec_module(runtime)
     result = runtime.validate_resource_evidence(summary, raw, context, proof['project'])
     phases = summary['phases']
-    require(len(phases) == 4 and summary.get('requiredTransientServices') == ['bge-verifier', 'collaboration-browser'],
+    require(len(phases) == 4 and summary.get('requiredTransientServices') == ['bge-qdrant', 'bge-verifier', 'collaboration-browser'],
             'All four runtime phases and actual browser resource observations must be retained')
     for index, reference in enumerate(phases, 1):
         name = 'resource-phase-' + str(index) + '-' + reference['phase'] + '.json'

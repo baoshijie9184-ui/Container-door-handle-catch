@@ -63,6 +63,10 @@ PYTHON = '/usr/local/bin/python'
 CONFIG_GROWTH_BOUND = 2 * MIB
 RECIPE = 'script/jenkins/prepare-ecs-tools.py'
 REQUIREMENTS = 'script/jenkins/python-test-requirements.txt'
+MEM0_REQUIREMENTS = 'deploy/mem0/requirements.txt'
+MEM0_PACKAGES = frozenset(('mem0ai', 'chromadb', 'fastapi', 'uvicorn', 'python-dotenv', 'openai',
+    'pydantic', 'cryptography', 'qdrant-client', 'opentelemetry-api', 'opentelemetry-sdk',
+    'opentelemetry-exporter-otlp-proto-http', 'prometheus-client'))
 BUILDER_RECIPES = {'script/docker/compact-build-resources.py', 'script/docker/compact-image-inputs.py', 'deploy/buildkit/LICENSE'}
 SHA = re.compile(r'[a-f0-9]{64}')
 IMAGE = re.compile(r'sha256:[a-f0-9]{64}')
@@ -140,10 +144,11 @@ def identity(args):
     return {'instanceId': args.instance_id, 'machineId': args.machine_id, 'executionLocation': 'ECS'}
 
 
-def scan_archive_inputs(archive, commit, expected_sha, own_recipe, include_builder=False):
+def scan_archive_inputs(archive, commit, expected_sha, own_recipe, include_builder=False, include_mem0_runtime=False):
     require(digest(archive) == expected_sha, 'Fixed source archive digest differs')
     found, seen, total = {}, set(), 0
-    expected = {RECIPE, REQUIREMENTS} | (BUILDER_RECIPES if include_builder else set())
+    expected = ({RECIPE, REQUIREMENTS} | (BUILDER_RECIPES if include_builder else set())
+                | ({MEM0_REQUIREMENTS} if include_mem0_runtime else set()))
     with tarfile.open(archive, 'r:gz') as package:
         for member in package:
             name = member.name
@@ -168,8 +173,8 @@ def scan_archive_inputs(archive, commit, expected_sha, own_recipe, include_build
     return found
 
 
-def archive_inputs(archive, destination, commit, expected_sha, own_recipe, include_builder=False):
-    found = scan_archive_inputs(archive, commit, expected_sha, own_recipe, include_builder)
+def archive_inputs(archive, destination, commit, expected_sha, own_recipe, include_builder=False, include_mem0_runtime=False):
+    found = scan_archive_inputs(archive, commit, expected_sha, own_recipe, include_builder, include_mem0_runtime)
     for source_name, content in found.items():
         target = destination / Path(source_name).name
         with target.open('xb') as output:
@@ -190,6 +195,15 @@ def requirements(path):
         result[key] = match[2]
     require(result and len(result) <= 64, 'Bounded explicit Python tool requirements required')
     return result
+
+
+def validate_mem0_requirements(pinned, runtime):
+    """Current source is explicit: no inherited old-base SDK or cached 9-pin claim."""
+    require(set(runtime) == MEM0_PACKAGES,
+            'Current native Mem0 runtime requires exactly its 13 admitted pinned packages')
+    require(all(pinned.get(name) == version for name, version in runtime.items()),
+            'Python tools must include every exact current Mem0 runtime version')
+    return runtime
 
 
 def commit_image_id(output):
@@ -589,6 +603,8 @@ class Preparation:
 
     def inspect_pinned_dependencies(self, pinned):
         """Inspect the historical immutable producer without changing it."""
+        if pinned != CACHED_PINS:
+            return None
         images = self.call('image', 'ls', '-q', '--no-trunc', '--filter', 'label=io.doorhandle.ci-tools=python-v1').decode().split()
         if CACHED_PYTHON not in images:
             return None
@@ -596,8 +612,6 @@ class Preparation:
         # Producer evidence keeps its original bytes and pinned provenance.
         # Original evidence still matches its exact hashes;
         # compatibility additionally requires precisely the same version pins.
-        if pinned != CACHED_PINS:
-            return None
         # The finished image is passive; only its original producer ran pip.
         require(labels.get('io.doorhandle.ci-tools-requirements-sha256') == CACHED_REQUIREMENTS
                 and labels.get('io.doorhandle.ci-tools-recipe-sha256') == CACHED_RECIPE
@@ -653,6 +667,10 @@ class Preparation:
 
     def reuse_pinned_dependencies(self, sources, pinned, owner):
         """Reuse only the reviewed immutable dependency artifact, never a tag."""
+        if MEM0_REQUIREMENTS in sources:
+            # This source requests the new runtime closure. The old image has
+            # only its original 9-pin producer proof and cannot satisfy it.
+            return None
         proof = self.inspect_pinned_dependencies(pinned)
         if proof is None:
             return None
@@ -686,9 +704,10 @@ class Preparation:
 
     def prepare(self):
         sources = archive_inputs(self.archive, self.folder, self.args.commit, self.args.source_sha256, Path(__file__).resolve(),
-                                 include_builder=getattr(self.args, 'prepare_candidate_builder', False))
+                                 include_builder=getattr(self.args, 'prepare_candidate_builder', False), include_mem0_runtime=True)
         os.chmod(self.folder / 'python-test-requirements.txt', 0o444)
         pinned = requirements(self.folder / 'python-test-requirements.txt')
+        validate_mem0_requirements(pinned, requirements(self.folder / 'requirements.txt'))
         for image in (BASE, MAVEN, NODE):
             self.image_row(image)
         owner = {'release': self.args.tag, 'commit': self.args.commit, 'sourceSha256': self.args.source_sha256,
@@ -862,7 +881,7 @@ class PreparedReadback(Preparation):
         self.archive = canonical(self.inbox / 'source.tar.gz')
         control_bytes(self.archive, maximum=512 * MIB)
         self.found = scan_archive_inputs(self.archive, args.commit, args.source_sha256, Path(__file__).resolve(),
-                                         args.prepare_candidate_builder)
+                                         args.prepare_candidate_builder, include_mem0_runtime=True)
         self.docker = canonical(shutil.which('docker')); self.folder = self.inbox / 'python-tools'
         require(not self.folder.is_symlink(), 'Preparation directory cannot be a link')
         if not self.folder.exists():
@@ -1022,6 +1041,11 @@ class PreparedReadback(Preparation):
         proofs = {name: hashlib.sha256(control_bytes(self.folder / name, empty=name.endswith('.stderr'))).hexdigest() for name in names}
         require(complete.get('proofs') == proofs, 'Completed preparation original control bytes changed')
         pinned = requirements(self.folder / 'python-test-requirements.txt')
+        if MEM0_REQUIREMENTS in found:
+            validate_mem0_requirements(pinned, requirements(self.folder / 'requirements.txt'))
+            require(receipt['dependencyPreparation'] == 'INSTALLED_CURRENT_SOURCE'
+                    and receipt['pipExecutedThisAttempt'] is True,
+                    'Current Mem0 runtime closure cannot use the historical 9-pin dependency proof')
         require(json.loads(control_bytes(self.reports / 'installed-versions.json')) == pinned
                 and receipt['installedVersionsSha256'] == proofs['reports/installed-versions.json']
                 and receipt['pipReportSha256'] == receipt['reportSha'] == proofs['reports/pip-install.json']

@@ -31,9 +31,11 @@ def test_isolated_data_worker_imports_only_the_fixed_checkout_package(tmp_path):
     package = checkout / 'memory_service'; package.mkdir()
     (package / '__init__.py').write_text('')
     shutil.copyfile(ROOT / 'memory_service/embedding_config.py', package / 'embedding_config.py')
+    shutil.copyfile(ROOT / 'memory_service/qdrant_store.py', package / 'qdrant_store.py')
     migration_file = checkout / 'script/memory/migrate_legacy_stores.py'; migration_file.parent.mkdir()
+    shutil.copyfile(ROOT / 'script/memory/qdrant_migration.py', migration_file.parent / 'qdrant_migration.py')
     migration_file.write_text("def ecs_identity(*args):\n from memory_service import embedding_config\n from pathlib import Path\n assert Path(embedding_config.__file__).resolve().parents[1] == Path(__file__).resolve().parents[2]\n print(embedding_config.MODEL)\n raise SystemExit(0)\n")
-    context = checkout / 'context.json'; candidate.write(context, {'identity': {'instanceId': 'fixture', 'machineId': 'fixture'}})
+    context = checkout / 'context.json'; candidate.write(context, {'vectorBackend': 'qdrant', 'identity': {'instanceId': 'fixture', 'machineId': 'fixture'}})
     launcher = "import importlib.util,sys;s=importlib.util.spec_from_file_location('fixed_worker',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m);m.data_worker(sys.argv[2])"
     result = subprocess.run([sys.executable, '-I', '-B', '-c', launcher, str(helper), str(context)],
                             cwd=tmp_path, capture_output=True, text=True, timeout=15)
@@ -123,25 +125,23 @@ def test_nonempty_cloud_union_preserves_bound_vectors_and_rejects_unproven_scope
 
 
 def test_native_production_overlay_contains_only_admitted_persistent_volumes_and_public_protocol():
-    names = {'doorhandle-mem0': 'native-mem0', 'doorhandle-chroma': 'native-chroma', 'native-rag-preservation': 'native-manifest'}
-    result = candidate.production_overlay(names, {'embeddingDimension': 256, 'collection': 'knowledge',
-        'tenant': 'default_tenant', 'database': 'default_database'}, 'a' * 40, 'b' * 64)
+    names = {'doorhandle-mem0-qdrant': 'native-mem0', 'doorhandle-qdrant': 'native-qdrant', 'native-rag-preservation': 'native-manifest'}
+    manifest = {'schemaVersion': 2, 'kind': 'QDRANT_RAG_TARGET',
+                'identity': {'backend': 'qdrant', 'collection': 'doorhandle_rag_bge_m3_v1'}}
+    result = candidate.production_overlay(names, manifest, 'a' * 40, 'b' * 64)
     assert set(result['services']) == {'mem0', 'backend'}
     assert all(value == {'external': True, 'name': names[key]} for key, value in result['volumes'].items())
-    assert result['services']['mem0']['environment']['EMBEDDING_PROFILE'] == 'siliconflow-bge-m3-v1'
+    assert result['services']['mem0']['environment']['MEM0_VECTOR_BACKEND'] == 'qdrant'
+    assert result['services']['backend']['environment']['SEMANTIC_STORAGE_GENERATION'] == 'qdrant-bge-m3-v1'
     raw = json.dumps(result)
-    assert all(value not in raw for value in ('DB_PASSWORD', 'API_KEY', 'checkout', 'runtime_test_', 'model-fixture'))
+    assert all(value not in raw for value in ('DB_PASSWORD', 'API_KEY', 'checkout', 'runtime_test_', 'model-fixture', 'CHROMA'))
     assert result['services']['backend']['volumes'][0]['read_only'] is True
+    with pytest.raises(ValueError): candidate.production_overlay(names, {'embeddingDimension': 256}, 'a' * 40, 'b' * 64)
 
 
-@pytest.mark.parametrize('cloud_mode', ['empty', 'unbound', 'bound-idempotent'])
-def test_real_chroma_merge_covers_all_30_history_messages_and_existing_cloud_records(tmp_path, monkeypatch, cloud_mode):
-    from chromadb import PersistentClient
-    from chromadb.config import Settings
-    from memory_service.embedding_config import SPACE_METADATA
-    work = tmp_path / 'candidate'; data = work / 'mem0/data'; data.mkdir(parents=True, mode=0o700)
-    client = PersistentClient(path=str(data / 'chroma'), settings=Settings(anonymized_telemetry=False))
-    original = client.create_collection('doorhandle_memories', embedding_function=None)
+def test_qdrant_history_merge_preserves_30_business_rows_25_messages_and_original_native_data(tmp_path):
+    from script.memory.qdrant_migration import merge_history
+    data = tmp_path / 'data'; data.mkdir(mode=0o700)
     source = legacy.legacy_bundle(); template = source['records'][0]
     source['records'] = []
     for index in range(32):
@@ -159,53 +159,20 @@ def test_real_chroma_merge_covers_all_30_history_messages_and_existing_cloud_rec
         db.execute('CREATE TABLE history (id TEXT PRIMARY KEY,memory_id TEXT,old_memory TEXT,new_memory TEXT,event TEXT,created_at DATETIME,updated_at DATETIME,is_deleted INTEGER,actor_id TEXT,role TEXT)')
         db.execute('CREATE TABLE messages (id TEXT PRIMARY KEY,session_scope TEXT,role TEXT,content TEXT,name TEXT,created_at DATETIME)')
         db.execute("INSERT INTO messages VALUES ('original-cloud-message','agent_id=doorhandlecatch&user_id=doorhandlecatch:user:1','user','preserve original cloud input',NULL,NULL)")
-    existing_vector = [0.125] + [0.0] * 1023
-    if cloud_mode == 'bound-idempotent':
-        bound = client.create_collection(candidate.BGE_COLLECTION, metadata=SPACE_METADATA, embedding_function=None)
-        projected = migration.project(source, mapping)['records'][0]
-        bound.add(ids=[projected['id']], metadatas=[projected['metadata']], embeddings=[existing_vector])
-    if cloud_mode == 'unbound':
-        original.add(ids=['cloud-extra'], metadatas=[{'user_id': 'admin', 'data':
-            'Current cloud preference: preserve all inspection evidence and include reviewer explanations in the final approved report.'}], embeddings=[[1.0, 0.0]])
-    before = {'collections': candidate.complete_chroma(data / 'chroma', migration),
-              'history': candidate.native_history(data), 'sqlite': candidate.native_sql_state(data)}
-    candidate.write(work / 'mem0-before.json', before)
-    snapshot = work / 'cloud-mem0'; snapshot.mkdir(); (snapshot / 'originals.tar').write_bytes(b'unit-fixture-original-byte-archive')
-    identity = {'instanceId': 'fixture-instance', 'machineId': 'fixture-machine'}
-    candidate.write(snapshot / 'snapshot-receipt.json', {'status': 'RESTORED_VERIFIED', 'fullVolume': True,
-        'identity': identity, 'archiveSha256': candidate.digest(snapshot / 'originals.tar')})
-    provider = work / 'provider-private.json'; candidate.write(provider, {'embeddingProfile': candidate.BGE_PROFILE,
-        'model': candidate.BGE_MODEL, 'baseUrl': candidate.BGE_BASE, 'dimensions': None,
-        'verifiedTargetRuntime': True, 'apiKey': 'fixture-not-a-real-key'})
-    calls = []
-    class FakeOpenAI:
-        def __init__(self, **settings):
-            assert settings['max_retries'] == 0 and settings['base_url'] == candidate.BGE_BASE
-            self.embeddings = self
-        def create(self, **request):
-            calls.append(request)
-            assert request['model'] == candidate.BGE_MODEL and 'dimensions' not in request
-            return SimpleNamespace(data=[SimpleNamespace(index=i, embedding=[0.5] + [0.0] * 1023)
-                for i in range(len(request['input']))], model=candidate.BGE_MODEL, usage=None)
-    monkeypatch.setitem(sys.modules, 'openai', SimpleNamespace(OpenAI=FakeOpenAI))
-    monkeypatch.setenv('EMBEDDING_PROFILE', candidate.BGE_PROFILE)
-    try:
-        result = candidate.merge_legacy_mem0(work, data, source, mapping, {'identity': identity,
-            'release': 'ci-71-' + 'a' * 12, 'commit': 'a' * 40, 'sourceSha256': 'b' * 64,
-            'bgeProviderFile': str(provider)}, migration)
-        assert result['mergedRecords'] == 30 and result['mergedHistoryRows'] == 30 and result['mergedMessageRows'] == 25
-        assert result['targetRecords'] == (31 if cloud_mode == 'unbound' else 30)
-        assert result['currentCloudRecords'] == (0 if cloud_mode == 'empty' else 1)
-        assert result['currentCloudReembeddedRecords'] == (1 if cloud_mode == 'unbound' else 0)
-        assert [len(call['input']) for call in calls][:4] == [8, 8, 8, 6]
-        after = candidate.read(work / 'mem0-after.json', 64 * candidate.MIB)
-        old_key = next(k for k, v in before['collections'].items() if v['name'] == 'doorhandle_memories')
-        assert after['collections'][old_key] == before['collections'][old_key]
-        assert all(after['history']['messages'].get(k) == v for k, v in before['history']['messages'].items())
-        if cloud_mode == 'bound-idempotent':
-            row = client.get_collection(candidate.BGE_COLLECTION, embedding_function=None).get(ids=['preserved-0'], include=['embeddings'])
-            assert list(row['embeddings'][0]) == existing_vector
-    finally: client._system.stop()
+    projected = migration.project(source, mapping)
+    assert len(projected['records']) == 30 and len(projected['archivedMemoryIds']) == 2
+    assert len(projected['history']) == 30 and len(projected['messages']) == 25
+    result = merge_history(projected, data, migration)
+    assert result['historyMode'] == 'single-writer-sqlite'
+    assert len(result['after']['history']) == 30 and len(result['after']['messages']) == 26
+    assert result['after']['messages']['original-cloud-message']['content'] == 'preserve original cloud input'
+    repeated = merge_history(projected, data, migration)
+    assert repeated['before'] == repeated['after'] == result['after']
+    changed = copy.deepcopy(projected); changed['history'][0]['new_memory'] = 'conflicting source'
+    with pytest.raises(ValueError): merge_history(changed, data, migration)
+    with sqlite3.connect(data / 'history.db') as db:
+        db.row_factory = sqlite3.Row
+        assert migration.history_snapshot(db) == result['after']
 
 
 @pytest.mark.parametrize('damage', ['none', 'test-volume', 'wrong-model', 'native-row-loss', 'rag-record-loss'])
@@ -214,16 +181,15 @@ def test_production_materialized_flag_requires_actual_pristine_mount_and_all_nat
     source = tmp_path / 'pristine'; source.mkdir()
     native = {'collections': {'owned': {'name': candidate.BGE_COLLECTION, 'records': 30}}, 'history': {'messages': {}, 'history': {}}}
     rag = {'knowledge': {'records': {'fixture-document': {'vectorSha256': 'a' * 64}}}}
-    for name, value in [('mem0-after.json', {'sqlite': native}), ('rag-after.json', rag),
-                        ('rag-preservation-manifest.json', {'collection': 'knowledge', 'tenant': 'default_tenant',
-                           'database': 'default_database', 'recordCount': 83}), ('catalog.json', {})]:
+    for name, value in [('mem0-after.json', {'sqlite': native}), ('rag-after.json', {'backend': 'qdrant', 'catalog': rag}),
+                        ('rag-preservation-manifest.json', {'schemaVersion': 2, 'kind': 'QDRANT_RAG_TARGET', 'identity': {'backend': 'qdrant', 'collection': 'doorhandle_rag_bge_m3_v1'}, 'records': []}), ('catalog.json', {})]:
         candidate.write(source / name, value)
-    record = {'images': {'mem0': 'sha256:' + '1' * 64, 'chroma': 'sha256:' + '2' * 64},
-        'volumes': {'doorhandle-mem0': {'name': 'pristine-memory'}, 'doorhandle-chroma': {'name': 'pristine-rag'},
+    record = {'images': {'mem0': 'sha256:' + '1' * 64, 'qdrant': 'sha256:' + '2' * 64},
+        'volumes': {'doorhandle-mem0-qdrant': {'name': 'pristine-memory'}, 'doorhandle-qdrant': {'name': 'pristine-rag'},
                     'native-rag-preservation': {'name': 'pristine-manifest'}},
         'logicalBaselines': {key: {'file': str(source / name), 'sha256': candidate.digest(source / name)}
                             for key, name in [('mem0', 'mem0-after.json'), ('rag', 'rag-after.json')]},
-        'pristinePayloads': {'doorhandle-chroma': {'catalogFile': str(source / 'catalog.json')}},
+        'pristinePayloads': {'doorhandle-qdrant': {'catalogFile': str(source / 'catalog.json')}},
         'ragManifestSha256': candidate.digest(source / 'rag-preservation-manifest.json')}
     receipt = work / 'native-production-install.json'; candidate.write(receipt, record)
     binding = {'status': 'MATERIALIZED_PENDING_SERVICE_READBACK', 'release': 'ci-71-' + 'a' * 12,
@@ -231,7 +197,7 @@ def test_production_materialized_flag_requires_actual_pristine_mount_and_all_nat
         'owner': 'f' * 24, 'installReceiptFile': str(receipt), 'installReceiptSha256': candidate.digest(receipt)}
     candidate.write(state / 'native-data.json', binding)
     nodes = {}
-    for service, volume in [('mem0', 'pristine-memory'), ('chroma', 'pristine-rag')]:
+    for service, volume in [('mem0', 'pristine-memory'), ('qdrant', 'pristine-rag')]:
         nodes[service] = {'Id': service, 'Image': record['images'][service], 'State': {'Running': True},
             'Mounts': [{'Destination': '/data', 'Type': 'volume', 'Name': volume}]}
     nodes['backend'] = {'Id': 'backend', 'Mounts': [{'Destination': '/run/doorhandle-rag', 'Name': 'pristine-manifest', 'RW': False}],
@@ -239,15 +205,17 @@ def test_production_materialized_flag_requires_actual_pristine_mount_and_all_nat
                         'CHAT_ASSISTANT_RAG_PRESERVATION_MANIFEST_SHA256': record['ragManifestSha256']}}
     if damage == 'test-volume': nodes['mem0']['Mounts'][0]['Name'] = 'runtime-test-memory'
     health = {'embedding_profile': candidate.BGE_PROFILE, 'embedding_collection': candidate.BGE_COLLECTION,
-              'embedding_dimensions': 1024, 'bridge_auth_configured': True}
+              'embedding_dimensions': 1024, 'bridge_auth_configured': True, 'vector_backend': 'qdrant',
+              'storage_generation': 'qdrant-bge-m3-v1', 'history_mode': 'single-writer-sqlite'}
     if damage == 'wrong-model': health['embedding_profile'] = 'explicit-openai-compatible'
     def docker(*args, **kwargs):
+        if args[:3] == ('exec', '-i', 'mem0'):
+            return candidate.encoded({} if damage == 'rag-record-loss' else rag)
         if args[1] == 'mem0':
             if args[-1] == '/data': return candidate.encoded({**native, 'collections': {}} if damage == 'native-row-loss' else native)
             return candidate.encoded(health)
         if args[1] == 'backend': return (record['ragManifestSha256'] + '  preservation.json').encode()
-        assert args[:3] == ('exec', '-i', 'chroma')
-        return candidate.encoded({'collections': {} if damage == 'rag-record-loss' else rag, 'retrievalQueries': 83})
+        raise AssertionError('Unexpected production verification operation')
     def update(path, value): path.write_bytes(candidate.encoded(value))
     controller = SimpleNamespace(state=state, work=work, journal={}, persist=lambda: None,
         common=SimpleNamespace(container=lambda project, service: nodes[service], environment=lambda row: row['environment'], write_json=update),
@@ -278,7 +246,7 @@ def test_post_start_full_mem0_readback_rejects_same_count_content_replacement(tm
     if damage == 'document': actual['collections']['collection']['records']['memory-id']['document'] = 'replacement document'
     identity = {'instanceId': 'fixture', 'machineId': 'c' * 32}; memory = {'Id': 'm' * 64, 'State': {'Running': True}}
     record = {'owner': 'd' * 24, 'identity': identity, 'images': {'mem0': 'sha256:' + 'e' * 64},
-              'volumes': {'doorhandle-mem0': {'name': 'pristine-memory'}}}
+              'volumes': {'doorhandle-mem0-qdrant': {'name': 'pristine-memory'}}}
     calls = []
     def helper_operation(controller, name, image, arguments, mounts, token, **kwargs):
         calls.append((arguments, mounts))

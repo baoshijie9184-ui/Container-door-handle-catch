@@ -87,7 +87,7 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info,metrics
+        include: health,info,metrics,prometheus
   endpoint:
     health:
       probes:
@@ -149,6 +149,22 @@ file:
       images: ${DETECTION_UPLOAD_DIR:${user.dir}/uploads/images}
 
 app:
+  semantic:
+    enabled: ${APP_SEMANTIC_ENABLED:true}
+    qdrant-host: ${QDRANT_HOST:qdrant}
+    qdrant-grpc-port: ${QDRANT_GRPC_PORT:6334}
+    qdrant-tls: ${QDRANT_TLS:false}
+    qdrant-api-key-file: ${APP_SEMANTIC_QDRANT_API_KEY_FILE:${QDRANT_API_KEY_FILE:}}
+    timeout-seconds: ${SEMANTIC_TIMEOUT_SECONDS:10}
+    embedding-timeout-seconds: ${SEMANTIC_EMBEDDING_TIMEOUT_SECONDS:20}
+    rag-collection: ${SEMANTIC_RAG_COLLECTION:doorhandle_rag_bge_m3_v1}
+    knowledge-collection: ${SEMANTIC_KNOWLEDGE_COLLECTION:doorhandle_knowledge_bge_m3_v1}
+    experience-collection: ${SEMANTIC_EXPERIENCE_COLLECTION:doorhandle_experience_bge_m3_v1}
+    profile: ${EMBEDDING_PROFILE:siliconflow-bge-m3-v1}
+    model: ${EMBEDDING_MODEL:BAAI/bge-m3}
+    dimensions: 1024
+    preprocessing: utf8-newline-space-v1
+    storage-generation: ${SEMANTIC_STORAGE_GENERATION:qdrant-bge-m3-v1}
   knowledge:
     enabled: ${APP_KNOWLEDGE_ENABLED:false}
   model-budget:
@@ -190,7 +206,7 @@ app:
     model: ${DEFAULT_MODEL_FILE:2f051822-fa0e-4803-9561-ede47fe3b362.onnx}
   kafka:
     enabled: ${APP_KAFKA_ENABLED:true}
-    bootstrap-servers: ${APP_KAFKA_BOOTSTRAP_SERVERS:10.20.144.118:9092}
+    bootstrap-servers: ${APP_KAFKA_BOOTSTRAP_SERVERS:kafka:9092}
     send-timeout-ms: ${APP_KAFKA_SEND_TIMEOUT_MS:10000}
     consumer-group: ${APP_KAFKA_CONSUMER_GROUP:doorhandlecatch-detection}
     topics:
@@ -243,8 +259,9 @@ chat-assistant:
   rag-candidate-multiplier: ${CHAT_ASSISTANT_RAG_CANDIDATE_MULTIPLIER:3}
   rag-chunk-size: ${CHAT_ASSISTANT_RAG_CHUNK_SIZE:900}
   rag-max-context-chars: ${CHAT_ASSISTANT_RAG_MAX_CONTEXT_CHARS:2600}
-  chroma-enabled: ${CHAT_ASSISTANT_CHROMA_ENABLED:true}
-  chroma-base-url: ${CHAT_ASSISTANT_CHROMA_BASE_URL:http://localhost:8000}
+  # Legacy-source readers only; new runtime retrieval uses app.semantic.
+  chroma-enabled: ${CHAT_ASSISTANT_CHROMA_ENABLED:false}
+  chroma-base-url: ${CHAT_ASSISTANT_CHROMA_BASE_URL:}
   chroma-tenant: ${CHAT_ASSISTANT_CHROMA_TENANT:default_tenant}
   chroma-database: ${CHAT_ASSISTANT_CHROMA_DATABASE:default_database}
   chroma-collection: ${CHAT_ASSISTANT_CHROMA_COLLECTION:door_handle_assistant_knowledge}
@@ -274,25 +291,25 @@ agent-platform:
     mem0-enabled: ${AGENT_MEMORY_MEM0_ENABLED:false}
     mem0-base-url: ${MEM0_BASE_URL:http://localhost:8888}
     mem0-api-key: ${MEM0_API_KEY:}
-  vector-store:
-    provider: ${AGENT_VECTOR_PROVIDER:milvus}
-    enabled: ${AGENT_VECTOR_ENABLED:false}
-    uri: ${VECTOR_STORE_URI:http://localhost:19530}
-    token: ${VECTOR_STORE_TOKEN:}
-    collection: ${VECTOR_STORE_COLLECTION:doorhandle_knowledge}
   workspace:
     root: ${AGENT_WORKSPACE_ROOT:${user.dir}/.agentscope/workspace}
     sandbox: ${AGENT_WORKSPACE_SANDBOX:local}
+
+doorhandle:
   observability:
-    otel-enabled: ${OTEL_ENABLED:false}
-    otel-endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:4317}
-    langfuse-enabled: ${LANGFUSE_ENABLED:false}
-    langfuse-public-key: ${LANGFUSE_PUBLIC_KEY:}
-    langfuse-secret-key: ${LANGFUSE_SECRET_KEY:}
-    langfuse-host: ${LANGFUSE_HOST:http://localhost:3000}
+    tracing-enabled: ${DOORHANDLE_OBSERVABILITY_TRACING_ENABLED:false}
+    endpoint: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:}
+    public-key-file: ${LANGFUSE_PUBLIC_KEY_FILE:}
+    secret-key-file: ${LANGFUSE_SECRET_KEY_FILE:}
+    metrics-token-file: ${DOORHANDLE_OBSERVABILITY_METRICS_TOKEN_FILE:}
+    service-name: ${OTEL_SERVICE_NAME:doorhandle-monolith}
+    sample-ratio: ${OTEL_TRACE_SAMPLE_RATIO:0.1}
+    queue-size: ${OTEL_BSP_MAX_QUEUE_SIZE:1024}
+    batch-size: ${OTEL_BSP_MAX_EXPORT_BATCH_SIZE:128}
+    timeout-millis: ${OTEL_EXPORTER_OTLP_TIMEOUT:3000}
 
 mem0:
-  service-url: ${MEM0_SERVICE_URL:http://localhost:8081}
+  service-url: ${MEM0_SERVICE_URL:http://mem0:8081}
   bridge-token: ${MEM0_BRIDGE_TOKEN:}
   enabled: ${MEM0_ENABLED:true}
   connect-timeout-ms: ${MEM0_CONNECT_TIMEOUT_MS:2000}
@@ -386,6 +403,7 @@ agentscope:
     emit-token-usage: ${AGENTSCOPE_AI_EMIT_TOKEN_USAGE:false}
   models:
     proxy-url: ${AGENT_MODEL_PROXY_URL:}
+    max-concurrent-calls: ${AGENT_MODEL_MAX_CONCURRENT_CALLS:32}
     gateway-base-url: ${AGENT_MODEL_GATEWAY_BASE_URL:}
     timeout: ${AGENT_MODEL_TIMEOUT:60s}
     first-token-timeout: ${AGENT_MODEL_FIRST_TOKEN_TIMEOUT:15s}
@@ -433,6 +451,8 @@ logging:
     org.springframework.security: ${LOG_LEVEL_SECURITY:INFO}
     org.springframework.web: ${LOG_LEVEL_WEB:INFO}
     org.springframework.jdbc: ${LOG_LEVEL_JDBC:INFO}
+    io.opentelemetry.exporter: "OFF"
+    io.opentelemetry.sdk.trace.export: "OFF"
   charset:
     console: UTF-8
   pattern:

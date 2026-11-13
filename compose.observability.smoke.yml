@@ -1,0 +1,20 @@
+# 只可叠加到隔离、无真实业务流量的功能 smoke；不是生产资源建议。
+services:
+  langfuse-resource-gate:
+    environment: {LANGFUSE_RESOURCE_MODE: isolated-smoke}
+  langfuse-web:
+    mem_limit: 1g
+    cpus: 1
+  langfuse-worker:
+    mem_limit: 1g
+    cpus: 1
+  langfuse-postgres:
+    mem_limit: 512m
+    cpus: 0.5
+  langfuse-clickhouse:
+    mem_limit: 2g
+    cpus: 1
+  langfuse-redis:
+    mem_limit: 512m
+    cpus: 0.25
+    command: ["sh", "-c", "exec redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy noeviction --requirepass \"$$REDIS_AUTH\""]

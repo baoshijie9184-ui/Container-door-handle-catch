@@ -1,0 +1,10 @@
+# 默认只在本机 Alertmanager UI 汇总，不伪称已有外部通知。
+# 配置实际通知渠道时，用忽略目录的私有文件替换 ALERTMANAGER_CONFIG_FILE 并执行通知验收。
+route:
+  receiver: local-console
+  group_by: [alertname, job]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+receivers:
+  - name: local-console

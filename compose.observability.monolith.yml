@@ -1,0 +1,227 @@
+# 可选可观测叠加层；不是默认启动清单。版本来源见 docs/observability/monolith.md。
+# 任意拉取/启动前先由 Jenkins 执行资源预检；不可把 profile 当作资源批准。
+x-obs-logging: &obs-logging
+  driver: json-file
+  options: {max-size: "10m", max-file: "3"}
+x-langfuse-env: &langfuse-env
+  DATABASE_URL: ${LF_DATABASE_URL:-}
+  SALT: ${LF_SALT:-}
+  ENCRYPTION_KEY: ${LF_ENCRYPTION_KEY:-}
+  NEXTAUTH_URL: ${LF_NEXTAUTH_URL:-http://127.0.0.1:13000}
+  NEXTAUTH_SECRET: ${LF_NEXTAUTH_SECRET:-}
+  CLICKHOUSE_MIGRATION_URL: clickhouse://langfuse-clickhouse:9000
+  CLICKHOUSE_URL: http://langfuse-clickhouse:8123
+  CLICKHOUSE_USER: langfuse
+  CLICKHOUSE_PASSWORD: ${LF_CLICKHOUSE_PASSWORD:-}
+  CLICKHOUSE_CLUSTER_ENABLED: "false"
+  REDIS_HOST: langfuse-redis
+  REDIS_PORT: "6379"
+  REDIS_AUTH: ${LF_REDIS_PASSWORD:-}
+  TELEMETRY_ENABLED: "false"
+  LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: "false"
+  LANGFUSE_AI_GATEWAY_ENABLED: "false"
+  LANGFUSE_IN_APP_AGENT_ENABLED: "false"
+  LANGFUSE_S3_EVENT_UPLOAD_BUCKET: ${LF_S3_BUCKET:-}
+  LANGFUSE_S3_EVENT_UPLOAD_REGION: ${LF_S3_REGION:-}
+  LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: ${LF_S3_ENDPOINT:-}
+  LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: ${LF_S3_ACCESS_KEY_ID:-}
+  LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${LF_S3_SECRET_ACCESS_KEY:-}
+  LANGFUSE_S3_EVENT_UPLOAD_PREFIX: langfuse/events/
+  LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: ${LF_S3_FORCE_PATH_STYLE:-false}
+  LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: ${LF_S3_BUCKET:-}
+  LANGFUSE_S3_MEDIA_UPLOAD_REGION: ${LF_S3_REGION:-}
+  LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: ${LF_S3_ENDPOINT:-}
+  LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: ${LF_S3_ACCESS_KEY_ID:-}
+  LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: ${LF_S3_SECRET_ACCESS_KEY:-}
+  LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: langfuse/media/
+  LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: ${LF_S3_FORCE_PATH_STYLE:-false}
+  LANGFUSE_S3_BATCH_EXPORT_ENABLED: "false"
+services:
+  prometheus:
+    profiles: [observability]
+    image: ${PROMETHEUS_IMAGE:-prom/prometheus:v3.16.0}
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.path=/prometheus", "--storage.tsdb.retention.time=7d", "--storage.tsdb.retention.size=512MB", "--web.listen-address=0.0.0.0:9090"]
+    volumes:
+      - ./deploy/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/observability/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - ${OBSERVABILITY_SECRETS_DIR:-./work/observability/secrets}:/run/observability-secrets:ro
+      - doorhandle-prometheus:/prometheus
+    ports: ["127.0.0.1:19090:9090"]
+    mem_limit: 512m
+    group_add: ["${OBSERVABILITY_SECRET_GID:-10001}"]
+    cpus: 0.5
+    read_only: true
+    tmpfs: [/tmp:size=16m]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    logging: *obs-logging
+    networks: [doorhandle-network]
+    restart: unless-stopped
+  alertmanager:
+    profiles: [observability]
+    image: ${ALERTMANAGER_IMAGE:-prom/alertmanager:v0.35.0}
+    command: ["--config.file=/etc/alertmanager/alertmanager.yml", "--storage.path=/alertmanager", "--data.retention=72h", "--web.listen-address=0.0.0.0:9093"]
+    volumes:
+      - ${ALERTMANAGER_CONFIG_FILE:-./deploy/observability/alertmanager.yml}:/etc/alertmanager/alertmanager.yml:ro
+      - doorhandle-alertmanager:/alertmanager
+    ports: ["127.0.0.1:19093:9093"]
+    mem_limit: 128m
+    cpus: 0.25
+    read_only: true
+    tmpfs: [/tmp:size=16m]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    logging: *obs-logging
+    networks: [doorhandle-network]
+    restart: unless-stopped
+  langfuse-resource-gate:
+    profiles: [langfuse]
+    image: ${OBSERVABILITY_PREFLIGHT_IMAGE:-busybox:1.37.0}
+    environment:
+      LANGFUSE_RESOURCE_MODE: ${LANGFUSE_RESOURCE_MODE:-production}
+      LANGFUSE_RESOURCE_APPROVED: ${LANGFUSE_RESOURCE_APPROVED:-}
+      LF_DATABASE_URL: ${LF_DATABASE_URL:-}
+      LF_POSTGRES_PASSWORD: ${LF_POSTGRES_PASSWORD:-}
+      LF_CLICKHOUSE_PASSWORD: ${LF_CLICKHOUSE_PASSWORD:-}
+      LF_REDIS_PASSWORD: ${LF_REDIS_PASSWORD:-}
+      LF_SALT: ${LF_SALT:-}
+      LF_ENCRYPTION_KEY: ${LF_ENCRYPTION_KEY:-}
+      LF_NEXTAUTH_SECRET: ${LF_NEXTAUTH_SECRET:-}
+      LF_S3_BUCKET: ${LF_S3_BUCKET:-}
+      LF_S3_ENDPOINT: ${LF_S3_ENDPOINT:-}
+      LF_S3_REGION: ${LF_S3_REGION:-}
+      LF_S3_ACCESS_KEY_ID: ${LF_S3_ACCESS_KEY_ID:-}
+      LF_S3_SECRET_ACCESS_KEY: ${LF_S3_SECRET_ACCESS_KEY:-}
+      LF_INIT_ORG_ID: ${LF_INIT_ORG_ID:-}
+      LF_INIT_PROJECT_ID: ${LF_INIT_PROJECT_ID:-}
+      LF_INIT_PROJECT_PUBLIC_KEY: ${LF_INIT_PROJECT_PUBLIC_KEY:-}
+      LF_INIT_PROJECT_SECRET_KEY: ${LF_INIT_PROJECT_SECRET_KEY:-}
+      LF_INIT_USER_EMAIL: ${LF_INIT_USER_EMAIL:-}
+      LF_INIT_USER_PASSWORD: ${LF_INIT_USER_PASSWORD:-}
+    command: ["sh", "/config/langfuse-gate.sh"]
+    volumes:
+      - ./deploy/observability/langfuse-gate.sh:/config/langfuse-gate.sh:ro
+      - doorhandle-langfuse-gate:/data
+    mem_limit: 32m
+    read_only: true
+    cap_drop: [ALL]
+    logging: *obs-logging
+    network_mode: none
+    restart: "no"
+  langfuse-postgres:
+    profiles: [langfuse]
+    image: ${LANGFUSE_POSTGRES_IMAGE:-postgres:17.12-alpine3.24}
+    environment:
+      POSTGRES_USER: langfuse
+      POSTGRES_DB: langfuse
+      POSTGRES_PASSWORD: ${LF_POSTGRES_PASSWORD:-}
+      TZ: UTC
+    volumes: [doorhandle-langfuse-postgres:/var/lib/postgresql/data]
+    depends_on: {langfuse-resource-gate: {condition: service_completed_successfully}}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U langfuse -d langfuse"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    mem_limit: 4g
+    cpus: 2
+    logging: *obs-logging
+    networks: [doorhandle-network]
+    restart: unless-stopped
+  langfuse-clickhouse:
+    profiles: [langfuse]
+    image: ${LANGFUSE_CLICKHOUSE_IMAGE:-clickhouse/clickhouse-server:26.3.62.3}
+    user: "101:101"
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: langfuse
+      CLICKHOUSE_PASSWORD: ${LF_CLICKHOUSE_PASSWORD:-}
+    volumes:
+      - doorhandle-langfuse-clickhouse:/var/lib/clickhouse
+      - doorhandle-langfuse-clickhouse-logs:/var/log/clickhouse-server
+      - ./deploy/observability/clickhouse.xml:/etc/clickhouse-server/config.d/doorhandle.xml:ro
+    depends_on: {langfuse-resource-gate: {condition: service_completed_successfully}}
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    ulimits: {nofile: {soft: 262144, hard: 262144}}
+    mem_limit: 8g
+    cpus: 2
+    logging: *obs-logging
+    networks: [doorhandle-network]
+    restart: unless-stopped
+  langfuse-redis:
+    profiles: [langfuse]
+    image: ${LANGFUSE_REDIS_IMAGE:-redis:7.4.12-alpine3.22}
+    environment: {REDIS_AUTH: "${LF_REDIS_PASSWORD:-}"}
+    command: ["sh", "-c", "exec redis-server --appendonly yes --maxmemory 1gb --maxmemory-policy noeviction --requirepass \"$$REDIS_AUTH\""]
+    volumes: [doorhandle-langfuse-redis:/data]
+    depends_on: {langfuse-resource-gate: {condition: service_completed_successfully}}
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$REDIS_AUTH\" redis-cli ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    mem_limit: 1536m
+    cpus: 1
+    logging: *obs-logging
+    networks: [doorhandle-network]
+    restart: unless-stopped
+  langfuse-worker:
+    profiles: [langfuse]
+    image: ${LANGFUSE_WORKER_IMAGE:-docker.langfuse.com/langfuse/langfuse-worker:4.79.0}
+    environment: *langfuse-env
+    depends_on: &langfuse-dependencies
+      langfuse-resource-gate: {condition: service_completed_successfully}
+      langfuse-postgres: {condition: service_healthy}
+      langfuse-clickhouse: {condition: service_healthy}
+      langfuse-redis: {condition: service_healthy}
+    mem_limit: 4g
+    cpus: 2
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3030/api/health"]
+      interval: 15s
+      timeout: 5s
+      start_period: 90s
+      retries: 20
+    logging: *obs-logging
+    networks: [doorhandle-network]
+    restart: unless-stopped
+  langfuse-web:
+    profiles: [langfuse]
+    image: ${LANGFUSE_WEB_IMAGE:-docker.langfuse.com/langfuse/langfuse:4.79.0}
+    environment:
+      <<: *langfuse-env
+      AUTH_DISABLE_SIGNUP: "true"
+      LANGFUSE_INIT_ORG_ID: ${LF_INIT_ORG_ID:-}
+      LANGFUSE_INIT_ORG_NAME: ${LF_INIT_ORG_NAME:-}
+      LANGFUSE_INIT_PROJECT_ID: ${LF_INIT_PROJECT_ID:-}
+      LANGFUSE_INIT_PROJECT_NAME: ${LF_INIT_PROJECT_NAME:-}
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: ${LF_INIT_PROJECT_PUBLIC_KEY:-}
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: ${LF_INIT_PROJECT_SECRET_KEY:-}
+      LANGFUSE_INIT_USER_EMAIL: ${LF_INIT_USER_EMAIL:-}
+      LANGFUSE_INIT_USER_NAME: ${LF_INIT_USER_NAME:-}
+      LANGFUSE_INIT_USER_PASSWORD: ${LF_INIT_USER_PASSWORD:-}
+    depends_on: *langfuse-dependencies
+    ports: ["127.0.0.1:13000:3000"]
+    mem_limit: 4g
+    cpus: 2
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3000/api/public/health"]
+      interval: 15s
+      timeout: 5s
+      start_period: 90s
+      retries: 20
+    logging: *obs-logging
+    networks: [doorhandle-network]
+    restart: unless-stopped
+volumes:
+  doorhandle-prometheus:
+  doorhandle-alertmanager:
+  doorhandle-langfuse-gate:
+  doorhandle-langfuse-postgres:
+  doorhandle-langfuse-clickhouse:
+  doorhandle-langfuse-clickhouse-logs:
+  doorhandle-langfuse-redis:
