@@ -332,6 +332,30 @@ pipeline {
                 }
             }
         }
+        stage('Recover approved local MySQL export on ECS') {
+            when { expression { !(params.ACTION in ['rollback', 'reclaim-build-outputs', 'verify-controls']) && (env.LOCAL_MYSQL_SNAPSHOT || env.LOCAL_MYSQL_ECS_SNAPSHOT) } }
+            steps {
+                script { env.CI_LOCAL_MYSQL_ATTEMPTED = 'true' }
+                withCredentials([
+                    sshUserPrivateKey(credentialsId: 'doorhandle-ecs-ssh', keyFileVariable: 'DEPLOY_KEY', usernameVariable: 'DEPLOY_USER'),
+                    file(credentialsId: 'doorhandle-ecs-known-hosts', variable: 'DEPLOY_KNOWN_HOSTS')
+                ]) {
+                    pwsh '& ./script/jenkins/pipeline.ps1 -Action PreserveLocalMySql'
+                }
+            }
+        }
+        stage('Recover approved three-schema MySQL packet on ECS') {
+            when { expression { params.ACTION in ['verify', 'verify-runtime'] && env.PROJECT_MYSQL_SNAPSHOT } }
+            steps {
+                script { env.CI_PROJECT_MYSQL_ATTEMPTED = 'true' }
+                withCredentials([
+                    sshUserPrivateKey(credentialsId: 'doorhandle-ecs-ssh', keyFileVariable: 'DEPLOY_KEY', usernameVariable: 'DEPLOY_USER'),
+                    file(credentialsId: 'doorhandle-ecs-known-hosts', variable: 'DEPLOY_KNOWN_HOSTS')
+                ]) {
+                    pwsh '& ./script/jenkins/pipeline.ps1 -Action PreserveProjectMySql'
+                }
+            }
+        }
         stage('Preserve legacy source bytes on ECS') {
             when { expression { !(params.ACTION in ['rollback', 'reclaim-build-outputs', 'verify-controls']) && (env.LEGACY_SOURCE_SNAPSHOT || env.LEGACY_SOURCE_ECS_SNAPSHOT) } }
             steps {
@@ -378,18 +402,6 @@ pipeline {
                 }
             }
         }
-        stage('Recover approved local MySQL export on ECS') {
-            when { expression { !(params.ACTION in ['rollback', 'reclaim-build-outputs', 'verify-controls']) && (env.LOCAL_MYSQL_SNAPSHOT || env.LOCAL_MYSQL_ECS_SNAPSHOT) } }
-            steps {
-                script { env.CI_LOCAL_MYSQL_ATTEMPTED = 'true' }
-                withCredentials([
-                    sshUserPrivateKey(credentialsId: 'doorhandle-ecs-ssh', keyFileVariable: 'DEPLOY_KEY', usernameVariable: 'DEPLOY_USER'),
-                    file(credentialsId: 'doorhandle-ecs-known-hosts', variable: 'DEPLOY_KNOWN_HOSTS')
-                ]) {
-                    pwsh '& ./script/jenkins/pipeline.ps1 -Action PreserveLocalMySql'
-                }
-            }
-        }
         stage('Preserve remaining system data on ECS') {
             when { expression { !(params.ACTION in ['rollback', 'reclaim-build-outputs', 'verify-controls', 'verify-embedding']) && (env.REMAINING_SYSTEM_DATA_SNAPSHOT || env.REMAINING_SYSTEM_DATA_ECS_SNAPSHOT) } }
             steps {
@@ -398,18 +410,6 @@ pipeline {
                     file(credentialsId: 'doorhandle-ecs-known-hosts', variable: 'DEPLOY_KNOWN_HOSTS')
                 ]) {
                     pwsh '& ./script/jenkins/pipeline.ps1 -Action PreserveRemainingArtifacts'
-                }
-            }
-        }
-        stage('Recover approved three-schema MySQL packet on ECS') {
-            when { expression { params.ACTION in ['verify', 'verify-runtime'] && env.PROJECT_MYSQL_SNAPSHOT } }
-            steps {
-                script { env.CI_PROJECT_MYSQL_ATTEMPTED = 'true' }
-                withCredentials([
-                    sshUserPrivateKey(credentialsId: 'doorhandle-ecs-ssh', keyFileVariable: 'DEPLOY_KEY', usernameVariable: 'DEPLOY_USER'),
-                    file(credentialsId: 'doorhandle-ecs-known-hosts', variable: 'DEPLOY_KNOWN_HOSTS')
-                ]) {
-                    pwsh '& ./script/jenkins/pipeline.ps1 -Action PreserveProjectMySql'
                 }
             }
         }

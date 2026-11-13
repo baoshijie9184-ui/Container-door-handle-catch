@@ -1325,7 +1325,7 @@
       },
       {
         "module": "tests_python.test_project_mysql_custody",
-        "minimumTests": 38,
+        "minimumTests": 39,
         "source": "tests_python/test_project_mysql_custody.py",
         "allowedSkippedTests": []
       },

@@ -370,6 +370,47 @@ def test_standard_jenkins_entry_wires_explicit_inputs_and_fresh_post_cleanup_aft
     assert 'project-mysql-inputs.json' in helper and '$descriptor.inputs' in helper
 
 
+def test_complete_top_level_stage_order_restores_sql_before_expanding_legacy_bytes():
+    pipeline = (ROOT / 'Jenkinsfile.ecs-monolith').read_text(encoding='utf8')
+    # Match complete direct stages, not an action mention inside an earlier guard.
+    matches = re.findall(r"(?ms)^        stage\('([^'\n]+)'\) \{\n(.*?)^        \}\n", pipeline)
+    names = [name for name, _body in matches]
+    assert names == [
+        'Trusted checkout', 'Configuration gate', 'Build locally without tests', 'Package pinned source',
+        'Maintain proven old build outputs', 'Prepare temporary ECS tools', 'Preflight control scripts on ECS',
+        'Prepare isolated ECS fixtures', 'Verify free embedding component on ECS', 'Verify on ECS over SSH',
+        'Repair registered prior CI evidence permissions', 'Reclaim proven old build outputs',
+        'Recover approved local MySQL export on ECS', 'Recover approved three-schema MySQL packet on ECS',
+        'Preserve legacy source bytes on ECS', 'Preserve additional business artifacts on ECS',
+        'Preserve historical cold stores on ECS', 'Preserve additional historical test stores on ECS',
+        'Preserve remaining system data on ECS', 'Prepare preserved legacy data candidate on ECS',
+        'Rehearse application', 'Accept candidate application on ECS', 'Deploy or rollback',
+        'First compact migration and cutover',
+    ]
+    stages = dict(matches)
+    assert len(stages) == len(names)
+    verified = stages['Verify on ECS over SSH']
+    assert verified.index('-Action VerifyEcs') < verified.index("env.CI_ECS_VERIFIED = 'true'")
+    recoveries = [
+        ('Recover approved local MySQL export on ECS', 'CI_LOCAL_MYSQL_ATTEMPTED', 'PreserveLocalMySql',
+         "!(params.ACTION in ['rollback', 'reclaim-build-outputs', 'verify-controls']) && (env.LOCAL_MYSQL_SNAPSHOT || env.LOCAL_MYSQL_ECS_SNAPSHOT)"),
+        ('Recover approved three-schema MySQL packet on ECS', 'CI_PROJECT_MYSQL_ATTEMPTED', 'PreserveProjectMySql',
+         "params.ACTION in ['verify', 'verify-runtime'] && env.PROJECT_MYSQL_SNAPSHOT"),
+    ]
+    for name, attempted, operation, condition in recoveries:
+        stage = stages[name]
+        assert 'when { expression { ' + condition + ' } }' in stage
+        assert stage.count("env." + attempted + " = 'true'") == 1
+        assert re.findall(r"(?m)^ +pwsh '& ./script/jenkins/pipeline.ps1 -Action ([A-Za-z]+)'$", stage) == [operation]
+        assert stage.index("env." + attempted) < stage.index('-Action ' + operation)
+        assert "sshUserPrivateKey(credentialsId: 'doorhandle-ecs-ssh'" in stage
+        assert "file(credentialsId: 'doorhandle-ecs-known-hosts'" in stage
+    assert '-Action PreserveLegacy' in stages['Preserve legacy source bytes on ECS']
+    candidate = stages['Prepare preserved legacy data candidate on ECS']
+    assert "when { expression { params.ACTION in ['verify-runtime', 'compact-cutover'] } }" in candidate
+    assert '-Action PrepareLegacyCandidate' in candidate and "env.CI_LEGACY_CANDIDATE_PREPARED = 'true'" in candidate
+
+
 def test_three_schema_recovery_reuses_the_exact_base_supervision_and_read_only_observer():
     for name in ('run_supervised', 'observe', 'publish_terminal', 'supervision_paths'):
         assert getattr(restore.Recovery, name) is getattr(restore.existing.Recovery, name)
