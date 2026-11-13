@@ -19,18 +19,6 @@
   },
   "javaSuites": [
     {
-      "id": "AgentWorkbenchServiceTest",
-      "className": "com.ruanzhu.doorhandle.module.ai.workbench.AgentWorkbenchServiceTest",
-      "fixtureProperties": [
-        "workbench.mysql.config"
-      ],
-      "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/workbench/AgentWorkbenchServiceTest.java",
-      "minimumTests": 40,
-      "coverage": [
-        "workbench execution, checkpoint and migration"
-      ]
-    },
-    {
       "id": "JdbcOwnerLockMySqlTest",
       "className": "com.ruanzhu.doorhandle.module.ai.persistence.JdbcOwnerLockMySqlTest",
       "fixtureProperties": [
@@ -274,6 +262,18 @@
       "minimumTests": 1,
       "coverage": [
         "confirmation policy and scripted SDK contract evaluation"
+      ]
+    },
+    {
+      "id": "AgentWorkbenchServiceTest",
+      "className": "com.ruanzhu.doorhandle.module.ai.workbench.AgentWorkbenchServiceTest",
+      "fixtureProperties": [
+        "workbench.mysql.config"
+      ],
+      "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/workbench/AgentWorkbenchServiceTest.java",
+      "minimumTests": 40,
+      "coverage": [
+        "workbench execution, checkpoint and migration"
       ]
     },
     {
