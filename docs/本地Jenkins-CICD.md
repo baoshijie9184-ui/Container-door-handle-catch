@@ -12,9 +12,11 @@
 
 ### 数据库验收仍待完成
 
-最近原生执行为#268：30类412项中411通过、1错误、零跳过，Workspace16项已全通过，Context尚未达到。唯一错误为DetectionCollaboration负例在准备旧数据时DELETE审计，被追加写触发器正确拒绝（SQLState45000/1644）。已改为使用真实服务和既有关闭审计配置创建合法旧命令，再恢复配置验证重放拒绝；原13项保留，生产代码/DDL未改，13模块跳测试编译通过，实际MySQL复测待空间准入。
+最新完整数据库任务 **#281 FAILURE**，固定 `81244ba1761dcd96a1bdfb7e00154c950e778f3e`：13模块本地跳测试打包成功，同轮ECS控制 **2,453项全部通过**；原生实际运行 **33类、466项：465通过、1错误、零跳过**。#268的DetectionCollaboration旧审计夹具修复已由原13项全通过验证，Workspace16项仍全通过，Context尚未达到。
 
-#266原1.5GiB夹具曾OOMKilled/137退出；#268已使用3GiB上限、零额外swap和表缓存分区1，持续监督4,564次，内核峰值1,193,320,448字节、无OOM，终态`STOPPED/watchStopped=true`。该峰值只覆盖已执行范围，#266旧OOM对象不在新回收授权内。#268的本地节点掉线另导致post无法归档，已观察原attempt并有界收回ECS原件；89份真实workspace原件、应用JAR及原build.xml保存在 `ci-268-recovered-originals`，没有重跑测试或改写C盘归档。
+唯一错误为`InfraOperationAuditMySqlTest`未知结构负例在准备`CHECK(id>0)`时，被MySQL 8.4以3818拒绝：CHECK不能引用自增列。尚未达到该负例原本要验证的迁移拒绝断言。已将该夹具改为合法非自增字段`CHECK(CHAR_LENGTH(operator)>0)`；相邻检查又修正ModelOperationAudit未知CHECK引用CASCADE外键列的问题，改用非外键字段`CHAR_LENGTH(operation_type)<=32`。两类原27/33项保持，13模块离线test-compile59.847秒成功，未运行本地测试；生产DDL、迁移检查及原断言不变。完整source、整库131→29、SQL双恢复及旧文件恢复在本轮尚未达到，不能据465项通过宣称迁移完成。
+
+#281原始90份归档已核对，89份非应用JAR、21,662,649字节及原build.xml已保全在 `ci-281-raw-receipts`；应用JAR仍在Jenkins原归档。夹具监督5,098次，内核峰值1,201,307,648字节，无OOM，`STOPPED/watchStopped=true`；该峰值只覆盖实际完成部分。工具与夹具均已STOPPED，**13:42:18（北京时间）**从流水线外实际回读 `Stopped / StopCharging`，原件 `ci-281-external-stop-readback.json`。Jenkins保持运行，修复期间任务禁自动触发、无队列。
 
 ### 十一份旧测试副本已按两次授权回收
 
@@ -25,9 +27,9 @@
 
 两批合计分配3,003,764,736字节（约2.80GiB），均已消费，不重跑或重复计入其他旧缓存批次。#280后新鲜实余 **6,387,630,080字节（约5.95GiB）**，原件 `post-maintenance280-execution-readiness.json`。容量变化仍以各阶段实际读回为准。
 
-后续完整数据库验证保留64原生类、最低755项、完整source、131→29及源/目标双恢复、旧45表、5,599文件和三库输入。为避免SQL临时恢复卷与5,599文件新展开同时占盘，已核对依赖：旧45及三库仅依赖本轮完整VerifyEcs PASS、原clone和各自原件；两阶段成功返回前均清理其两个派生恢复卷。已将两SQL阶段原样移到旧文件恢复之前，保留全部when、ATTEMPTED、逐项校验和失败清理。新增完整顶层stage顺序回归，三库模块最低38→39、控制总2,453项，Python/Groovy静态编译通过；提交推送后直接由完整`verify/mysql`自带预检统一验证，不另起控制或重复维护任务。
+后续完整数据库验证保留64原生类、最低755项、完整source、131→29及源/目标双恢复、旧45表、5,599文件和三库输入。为避免SQL临时恢复卷与5,599文件新展开同时占盘，已核对依赖：旧45及三库仅依赖本轮完整VerifyEcs PASS、原clone和各自原件；两阶段成功返回前均清理其两个派生恢复卷。已将两SQL阶段原样移到旧文件恢复之前，保留全部when、ATTEMPTED、逐项校验和失败清理。完整顶层stage顺序回归已随#281控制模块39项实际全通过；后续仍由完整`verify/mysql`自带预检及全部恢复统一验证，不重复已消费维护批次。
 
-2026-11-13 **12:33:06（北京时间）**已实际回读 `Stopped / StopCharging`，原件 `ci-280-external-stop-readback.json`。Jenkins及本地节点在线；代码收口期间任务disabled、无队列。
+为继续下一轮，在既有FailedNative准入中仅登记#281原归档的真实已审发布配方。其`verify/mysql`、生产false及未请求builder均由原件核定；原算法和目录范围不变，若现场容量需要则只回收#281可再生JAR及停止对象，保留其mysql-data、SQL、源码和报告，不重跑五/六闭集。
 
 完整native、131→29整库及双恢复、旧45/5,599/三库恢复、9项运行场景、19项浏览器功能检查、Mem0/RAG正式生效与旧数据业务合入/切库仍未验收。正式压测继续后置。
 

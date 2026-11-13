@@ -2347,11 +2347,18 @@ def test_recovered_268_actual_reader_keeps_each_custody_source_binary_and_transp
 
 
 def test_268_controls_only_recipe_keeps_both_reviewed_publication_allowlists_closed():
-    pair = ('f8e83ca9a148deea6f606308de2cc6b92f2e3405e167a9386eb1a7dc9ba96bf3',
-            'abc6c9e4f0e4b7f72d5240b70278e71ace68dbfe4906724da70da72dea784b44')
-    assert pair in retirer.FAILED_NATIVE_PUBLICATION_RECIPES
-    assert pair in retirer.DATABASE_VERIFY_PUBLICATION_RECIPES
-    assert (pair[0], '0' * 64) not in retirer.FAILED_NATIVE_PUBLICATION_RECIPES
+    pairs = [
+        ('f8e83ca9a148deea6f606308de2cc6b92f2e3405e167a9386eb1a7dc9ba96bf3',
+         'abc6c9e4f0e4b7f72d5240b70278e71ace68dbfe4906724da70da72dea784b44'),
+        # #281 original archive / 81244ba1761d, not the mutable checkout's digest.
+        ('6a00b13b405aef353290079c3d12fdfad5b5ea4094d8a32f7d38c7d40b4a9615',
+         'fad5d9772fed128c066370c814ec3682bd975c79959323269ee7bb34d520a71c'),
+    ]
+    for pair in pairs:
+        assert pair in retirer.FAILED_NATIVE_PUBLICATION_RECIPES
+        assert pair in retirer.DATABASE_VERIFY_PUBLICATION_RECIPES
+        assert (pair[0], '0' * 64) not in retirer.FAILED_NATIVE_PUBLICATION_RECIPES
+        assert (pair[0], '0' * 64) not in retirer.DATABASE_VERIFY_PUBLICATION_RECIPES
     assert retirer.DATABASE_VERIFY_TOOL_PREPARATION_SOURCE == 'cd025c3250feb3acb03bb583c7d5ca94894b100cdf89921223607968b2c85d4d'
 
 

@@ -109,7 +109,8 @@ class InfraOperationAuditMySqlTest {
             case "collation"->source.execute("ALTER TABLE operation_audit_log MODIFY operator VARCHAR(64) COLLATE utf8mb4_bin NOT NULL");
             case "default"->source.execute("ALTER TABLE operation_audit_log MODIFY operator VARCHAR(64) NOT NULL DEFAULT 'unknown'");
             case "index"->source.execute("ALTER TABLE operation_audit_log DROP INDEX idx_audit_resource_time");
-            case "check"->source.execute("ALTER TABLE operation_audit_log ADD CONSTRAINT unseen_check CHECK(id>0)");
+            // MySQL CHECK expressions cannot reference the AUTO_INCREMENT id.
+            case "check"->source.execute("ALTER TABLE operation_audit_log ADD CONSTRAINT unseen_check CHECK(CHAR_LENGTH(operator)>0)");
             case "trigger"->source.execute("CREATE TRIGGER unseen_trigger BEFORE INSERT ON operation_audit_log FOR EACH ROW SET NEW.result=NEW.result");
             default->throw new IllegalArgumentException(change);
         }

@@ -112,7 +112,8 @@ class ModelOperationAuditMySqlTest {
             case "index"->source.execute("ALTER TABLE model_operation_log DROP INDEX idx_model_operation_log_model_time");
             case "foreign-key"->source.execute("ALTER TABLE model_operation_log DROP FOREIGN KEY fk_model_operation_log_model");
             case "cascade"->{source.execute("ALTER TABLE model_operation_log DROP FOREIGN KEY fk_model_operation_log_model");source.execute("ALTER TABLE model_operation_log ADD CONSTRAINT fk_model_operation_log_model FOREIGN KEY(model_id) REFERENCES model_management(model_id) ON DELETE RESTRICT ON UPDATE CASCADE");}
-            case "check"->source.execute("ALTER TABLE model_operation_log ADD CONSTRAINT extra_source_check CHECK(model_id>0)");
+            // A CHECK cannot use model_id while its foreign key has CASCADE actions.
+            case "check"->source.execute("ALTER TABLE model_operation_log ADD CONSTRAINT extra_source_check CHECK(CHAR_LENGTH(operation_type)<=32)");
             case "trigger"->source.execute("CREATE TRIGGER extra_source_trigger BEFORE INSERT ON model_operation_log FOR EACH ROW SET NEW.remark=NEW.remark");
             default->throw new IllegalArgumentException(change);
         }
