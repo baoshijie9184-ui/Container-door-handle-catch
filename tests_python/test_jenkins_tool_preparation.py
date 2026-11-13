@@ -411,7 +411,8 @@ class ToolPreparationTests(unittest.TestCase):
         value.folder = value.inbox / 'python-tools'; value.folder.mkdir(mode=0o700)
         value.reports = value.folder / 'reports'; value.reports.mkdir(mode=0o700)
         value.archive = value.inbox / 'source.tar.gz'
-        pins_raw = (FILE.parent / 'python-test-requirements.txt').read_bytes()
+        pins_raw = ((FILE.parent / 'python-test-requirements.txt').read_bytes() if include_runtime else
+                    ''.join(name + '==' + version + '\n' for name, version in tools.CACHED_PINS.items()).encode())
         if not include_scipy:
             pins_raw = b'\n'.join(line for line in pins_raw.splitlines() if not line.startswith(b'scipy==')) + b'\n'
         recipe = Path(tools.__file__).read_bytes()
@@ -564,6 +565,9 @@ class ToolPreparationTests(unittest.TestCase):
                 result = value.read_prepared()
                 self.assertTrue(result['readbackValidated'])
                 self.assertEqual('PREPARED', result['status'])
+                installed = json.loads((value.reports / 'installed-versions.json').read_text())
+                self.assertEqual(9 if scipy else 8, len(installed))
+                self.assertNotIn(tools.MEM0_REQUIREMENTS, result['sourceFiles'])
                 self.assertEqual(before, {str(p.relative_to(value.root)): p.read_bytes() for p in value.root.rglob('*') if p.is_file()})
                 self.assertTrue(all(args[0] in ('inspect', 'image') for args in calls))
 
@@ -866,7 +870,8 @@ class CompletedRuntimeDependencyReuseTests(unittest.TestCase):
         pinned = tools.requirements(source.folder / 'python-test-requirements.txt')
         def call(*args, **kwargs):
             calls.append(args)
-            if args[:2] == ('image', 'ls'): return (image['Id'] + '\n').encode()
+            if args[:2] == ('image', 'ls'):
+                return b'' if 'label=io.doorhandle.ci-tool-preparation-role=metadata-only' in args else (image['Id'] + '\n').encode()
             if args[:2] == ('image', 'inspect'):
                 return json.dumps([image if args[2] == image['Id'] else {'Id': args[2], 'Os': 'linux',
                     'Config': {'Volumes': None, 'Env': []}, 'RootFS': {'Layers': ['base']}}]).encode()
@@ -931,15 +936,112 @@ class CompletedRuntimeDependencyReuseTests(unittest.TestCase):
         for ids in (['mysql:8.4'], ['sha256:' + format(index, '064x') for index in range(129)]):
             with self.subTest(inventory=len(ids)):
                 value = object.__new__(tools.Preparation)
-                value.call = mock.Mock(return_value=('\n'.join(ids) + '\n').encode())
+                value.call = mock.Mock(side_effect=[('\n'.join(ids) + '\n').encode(), b''])
                 value._completed_producer = mock.Mock()
                 with self.assertRaises(ValueError): value.inspect_completed_dependencies({tools.MEM0_REQUIREMENTS: 'a' * 64}, {})
-                value._completed_producer.assert_not_called(); self.assertEqual(1, value.call.call_count)
+                value._completed_producer.assert_not_called()
         value = object.__new__(tools.Preparation); image = 'sha256:' + 'e' * 64
-        value.call = mock.Mock(return_value=(image + '\n' + image + '\n').encode())
+        value.call = mock.Mock(side_effect=[(image + '\n' + image + '\n').encode(), b''])
         value._completed_producer = mock.Mock(return_value=None)
         self.assertIsNone(value.inspect_completed_dependencies({tools.MEM0_REQUIREMENTS: 'a' * 64}, {}))
         value._completed_producer.assert_called_once()
+
+    def dependency_discovery(self, images, metadata):
+        value = object.__new__(tools.Preparation)
+        scope = ('image', 'ls', '-q', '--no-trunc', '--filter', 'label=io.doorhandle.ci-tools=python-v1',
+                 '--filter', 'label=io.doorhandle.ci-tools-requirements-sha256')
+        metadata_scope = scope + ('--filter', 'label=io.doorhandle.ci-tool-preparation-role=metadata-only')
+        def inspect(*arguments, **_kwargs):
+            if arguments == scope: return images
+            if arguments == metadata_scope: return metadata
+            raise AssertionError('Discovery must use the same exact bounded tool/requirements label scope')
+        value.call = mock.Mock(side_effect=inspect)
+        value._completed_producer = mock.Mock(return_value=None)
+        return value, {tools.MEM0_REQUIREMENTS: 'a' * 64}, {}, scope, metadata_scope
+
+    def test_metadata_history_does_not_consume_the_128_completed_installer_candidate_limit(self):
+        images = ['sha256:' + format(index, '064x') for index in range(1, 158)]
+        raw = lambda ids: ('\n'.join(ids) + '\n').encode()
+        value, sources, pinned, scope, metadata_scope = self.dependency_discovery(raw(images), raw(images[:155]))
+        admitted = ('only-a-real-completed-installer-can-return-this-proof',)
+        value._completed_producer.side_effect = [None, admitted]
+        self.assertIs(admitted, value.inspect_completed_dependencies(sources, pinned))
+        self.assertEqual([mock.call(*scope), mock.call(*metadata_scope)], value.call.call_args_list)
+        self.assertEqual([mock.call(image, sources, pinned) for image in images[155:]], value._completed_producer.call_args_list)
+
+    def test_129_actual_installers_still_fail_even_with_more_metadata_history_excluded(self):
+        images = ['sha256:' + format(index, '064x') for index in range(1, 285)]
+        raw = lambda ids: ('\n'.join(ids) + '\n').encode()
+        value, sources, pinned, _, _ = self.dependency_discovery(raw(images), raw(images[:155]))
+        with self.assertRaisesRegex(ValueError, 'bounded scope'): value.inspect_completed_dependencies(sources, pinned)
+        value._completed_producer.assert_not_called(); self.assertEqual(2, value.call.call_count)
+
+    def test_metadata_exclusion_requires_a_subset_of_the_same_strict_immutable_inventory(self):
+        image = 'sha256:' + 'a' * 64; foreign = 'sha256:' + 'b' * 64
+        for metadata in ((foreign + '\n').encode(), b'mysql:8.4\n', b'unknown Docker output\n',
+                         (image + ' ' + foreign + '\n').encode()):
+            with self.subTest(metadata=metadata):
+                value, sources, pinned, _, _ = self.dependency_discovery((image + '\n').encode(), metadata)
+                with self.assertRaises(ValueError): value.inspect_completed_dependencies(sources, pinned)
+                value._completed_producer.assert_not_called()
+
+    def test_metadata_duplicates_and_empty_filtered_inventory_never_trigger_producer_inspection(self):
+        image = 'sha256:' + 'a' * 64
+        for all_images, metadata in ((b'', b''), ((image + '\n' + image + '\n').encode(), (image + '\n' + image + '\n').encode())):
+            with self.subTest(inventory=all_images):
+                value, sources, pinned, _, _ = self.dependency_discovery(all_images, metadata)
+                self.assertIsNone(value.inspect_completed_dependencies(sources, pinned)); value._completed_producer.assert_not_called()
+
+    def test_docker_id_parser_keeps_only_complete_per_line_ids_and_the_exact_evidenced_notice(self):
+        notice = 'Flag --pause has been deprecated, and enabled by default.'
+        for kind, identifiers in (('image', ['sha256:' + 'a' * 64, 'sha256:' + 'b' * 64]),
+                                  ('container', ['a' * 64, 'b' * 64])):
+            text = '\n' + identifiers[0] + '\n' + notice + '\n\n' + identifiers[1] + '\n'
+            for output in (text, text.encode()):
+                with self.subTest(kind=kind, output_type=type(output).__name__):
+                    self.assertEqual(identifiers, tools.docker_ids(output, kind))
+            self.assertEqual([], tools.docker_ids(notice + '\n\n', kind))
+            self.assertEqual([identifiers[0], identifiers[0]], tools.docker_ids((identifiers[0] + '\n') * 2, kind))
+
+    def test_docker_id_parser_rejects_unknown_notices_garbage_and_mixed_id_kinds(self):
+        notice = 'Flag --pause has been deprecated, and enabled by default.'
+        for kind, actual, other in (('image', 'sha256:' + 'a' * 64, 'b' * 64),
+                                    ('container', 'a' * 64, 'sha256:' + 'b' * 64)):
+            for bad in ('WARNING: ignore this output\n', notice.replace('default.', 'default!') + '\n',
+                        notice + ' extra\n', actual + ' garbage\n', actual + ' ' + actual + '\n',
+                        other + '\n', actual.upper() + '\n', actual[:-1] + '\n'):
+                with self.subTest(kind=kind, bad=bad), self.assertRaises(ValueError):
+                    tools.docker_ids(notice + '\n' + actual + '\n' + bad, kind)
+        for output, kind in ((b'\xff\xfe', 'image'), (None, 'image'), (['sha256:' + 'a' * 64], 'image'), ('', 'volume')):
+            with self.subTest(output=output, kind=kind), self.assertRaises(ValueError): tools.docker_ids(output, kind)
+
+    def test_single_image_and_container_receipts_reject_duplicates_unknown_lines_and_empty_notice(self):
+        notice = 'Flag --pause has been deprecated, and enabled by default.'
+        for parser, actual in ((tools.commit_image_id, 'sha256:' + 'a' * 64), (tools.single_container_id, 'b' * 64)):
+            for output in (notice + '\n' + actual + '\n', (actual + '\n' + notice + '\n').encode()):
+                self.assertEqual(actual, parser(output))
+            for bad in ('', notice, actual + '\n' + actual, notice + '\nshort', actual + '\nunknown warning'):
+                with self.subTest(parser=parser.__name__, bad=bad), self.assertRaises(ValueError): parser(bad)
+
+    def test_exact_docker_notice_is_not_counted_or_inspected_in_either_discovery_inventory(self):
+        notice = b'Flag --pause has been deprecated, and enabled by default.\n'
+        image = 'sha256:' + 'a' * 64; metadata = 'sha256:' + 'b' * 64
+        value, sources, pinned, _, _ = self.dependency_discovery(
+            notice + (image + '\n' + metadata + '\n').encode(), (metadata + '\n').encode() + notice)
+        self.assertIsNone(value.inspect_completed_dependencies(sources, pinned))
+        value._completed_producer.assert_called_once_with(image, sources, pinned)
+
+    def test_unknown_output_in_either_inventory_cannot_be_hidden_by_metadata_exclusion(self):
+        notice = b'Flag --pause has been deprecated, and enabled by default.\n'
+        image = ('sha256:' + 'a' * 64 + '\n').encode()
+        for bad in (b'WARNING: Docker maybe succeeded\n', image.rstrip() + b' trailing bytes\n',
+                    b'Flag --pause has been deprecated, and enabled by default!\n', b'sha256:bad\n'):
+            for metadata_bad in (False, True):
+                with self.subTest(bad=bad, metadata=metadata_bad):
+                    value, sources, pinned, _, _ = self.dependency_discovery(
+                        notice + image + (b'' if metadata_bad else bad), notice + (bad if metadata_bad else b''))
+                    with self.assertRaises(ValueError): value.inspect_completed_dependencies(sources, pinned)
+                    value._completed_producer.assert_not_called()
 
     def test_explicit_dependency_id_still_requires_the_full_valid_producer(self):
         with tempfile.TemporaryDirectory() as directory:

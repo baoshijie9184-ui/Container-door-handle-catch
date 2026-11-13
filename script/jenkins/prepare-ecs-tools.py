@@ -207,10 +207,32 @@ def validate_mem0_requirements(pinned, runtime):
     return runtime
 
 
+def docker_ids(output, kind):
+    """Separate one evidenced Docker 29 notice; never ignore unknown output."""
+    require(kind in ('image', 'container'), 'Unknown Docker ID inventory kind')
+    if isinstance(output, bytes):
+        try: output = output.decode('utf8')
+        except UnicodeDecodeError: raise PreparationError('Docker ID output is not UTF-8') from None
+    require(isinstance(output, str), 'Docker ID output must be text')
+    pattern = IMAGE if kind == 'image' else SHA
+    result = []
+    for raw in output.splitlines():
+        line = raw.strip()
+        if not line or line == 'Flag --pause has been deprecated, and enabled by default.': continue
+        require(pattern.fullmatch(line), 'Docker ID output contains an unknown line or incomplete ID')
+        result.append(line)
+    return result
+
+
 def commit_image_id(output):
-    """Docker may prepend an authored CLI warning on stdout; bind one full ID."""
-    matches = [line.strip() for line in output.splitlines() if IMAGE.fullmatch(line.strip())]
+    matches = docker_ids(output, 'image')
     require(len(matches) == 1, 'Tool image commit did not return one immutable image ID')
+    return matches[0]
+
+
+def single_container_id(output):
+    matches = docker_ids(output, 'container')
+    require(len(matches) == 1, 'Tool create did not return one complete owned container ID')
     return matches[0]
 
 
@@ -527,7 +549,7 @@ class Preparation:
         self.metadata_container = row['Id']
         require(not self.call('diff', self.metadata_container).strip(), 'Metadata repair unexpectedly changed filesystem content')
         self.call('rm', self.metadata_container)
-        remaining = self.call('ps', '-aq', '--no-trunc', '--filter', 'id=' + self.metadata_container).decode().split()
+        remaining = docker_ids(self.call('ps', '-aq', '--no-trunc', '--filter', 'id=' + self.metadata_container), 'container')
         require(not remaining, 'The owned metadata container was not removed')
         return {'status': 'STOPPED', 'containersCreated': [self.metadata_container],
                 'containers': [{'containerId': self.metadata_container, 'sourceImageId': getattr(self, 'dependency_image', CACHED_PYTHON),
@@ -572,9 +594,8 @@ class Preparation:
         self.sample_stream = self.snapshot.open('x', encoding='utf8'); os.chmod(self.snapshot, 0o600)
         cleanup = None
         try:
-            self.metadata_container = self.call(*metadata_arguments(self.metadata_name, self.token,
-                self.args.tag, self.args.source_sha256, uid=os.getuid(), gid=os.getgid(), image=self.dependency_image)).decode().strip()
-            require(SHA.fullmatch(self.metadata_container), 'Metadata create did not return a complete owned ID')
+            self.metadata_container = single_container_id(self.call(*metadata_arguments(self.metadata_name, self.token,
+                self.args.tag, self.args.source_sha256, uid=os.getuid(), gid=os.getgid(), image=self.dependency_image)))
             self.metadata_owned()
             require(not self.call('diff', self.metadata_container).strip(), 'Metadata container must have no filesystem changes')
             self.watcher = threading.Thread(target=self.watchdog, name='owned-python-tools-config-disk', daemon=True)
@@ -609,7 +630,7 @@ class Preparation:
         """Inspect the historical immutable producer without changing it."""
         if pinned != CACHED_PINS:
             return None
-        images = self.call('image', 'ls', '-q', '--no-trunc', '--filter', 'label=io.doorhandle.ci-tools=python-v1').decode().split()
+        images = docker_ids(self.call('image', 'ls', '-q', '--no-trunc', '--filter', 'label=io.doorhandle.ci-tools=python-v1'), 'image')
         if CACHED_PYTHON not in images:
             return None
         image = self.image_row(CACHED_PYTHON); cfg = image['Config']; labels = cfg.get('Labels') or {}
@@ -800,11 +821,17 @@ class Preparation:
             proof = self._completed_producer(image_id, sources, pinned)
             require(proof is not None, 'Completed dependency producer is no longer available')
             return proof
-        images = self.call('image', 'ls', '-q', '--no-trunc', '--filter',
+        arguments = ('image', 'ls', '-q', '--no-trunc', '--filter',
             'label=io.doorhandle.ci-tools=python-v1', '--filter',
-            'label=io.doorhandle.ci-tools-requirements-sha256').decode().split()
-        images = sorted(set(images))
-        require(len(images) <= 128 and all(IMAGE.fullmatch(item) for item in images),
+            'label=io.doorhandle.ci-tools-requirements-sha256')
+        images = set(docker_ids(self.call(*arguments), 'image'))
+        metadata = set(docker_ids(self.call(*arguments, '--filter',
+            'label=io.doorhandle.ci-tool-preparation-role=metadata-only'), 'image'))
+        require(metadata <= images, 'Dependency image discovery changed between its two scoped inventories')
+        # Metadata-only images are never original installers. Their accumulation
+        # must not consume the unchanged 128 eligible-producer bound (#298).
+        images = sorted(images - metadata)
+        require(len(images) <= 128,
                 'Dependency image inventory exceeds its immutable bounded scope')
         for candidate in images:
             proof = self._completed_producer(candidate, sources, pinned)
@@ -873,9 +900,8 @@ class Preparation:
             'reserveBytes': RESERVE, 'overshootBytes': OVERSHOOT})
         self.sample_stream = self.snapshot.open('x', encoding='utf8'); os.chmod(self.snapshot, 0o600)
         try:
-            self.container = self.call(*create_arguments(self.name, self.token, self.args.tag, self.args.source_sha256,
-                self.folder / 'python-test-requirements.txt', self.reports, pinned)).decode().strip()
-            require(SHA.fullmatch(self.container), 'Owned pip container did not return a complete ID')
+            self.container = single_container_id(self.call(*create_arguments(self.name, self.token, self.args.tag, self.args.source_sha256,
+                self.folder / 'python-test-requirements.txt', self.reports, pinned)))
             self.watcher = threading.Thread(target=self.watchdog, name='owned-python-tools-disk', daemon=True)
             self.watcher.start()
             self.owned(); self.call('start', self.container)
@@ -1257,7 +1283,7 @@ class PreparedReadback(Preparation):
                     and cleanup['containers'][0] == {'containerId': cleanup['containersCreated'][0], 'sourceImageId': dependency_id,
                         'started': False, 'pid': 0, 'removed': True}, 'Config-only cleanup evidence differs')
             cid = cleanup['containersCreated'][0]; require(SHA.fullmatch(cid), 'Metadata container ID is invalid')
-            require(not self.call('ps', '-aq', '--no-trunc', '--filter', 'id=' + cid).strip(), 'Metadata container still exists')
+            require(not docker_ids(self.call('ps', '-aq', '--no-trunc', '--filter', 'id=' + cid), 'container'), 'Metadata container still exists')
         for fixed in (MAVEN, NODE): self.image_row(fixed)
         result = {**receipt, 'preparation': str(self.folder / 'preparation.json'),
                   'preparationSha256': digest(self.folder / 'preparation.json')}

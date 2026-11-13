@@ -4,13 +4,17 @@
 
 当前为 `java-cloud` 单体，正式业务库仍 **131表**，目标 **29表**未切换，生产发布与旧库演练门关闭。功能验收固定2个检测人员、2个主管，各2个功能标签；正式并发/容量压测后置，`loadTestStatus=DEFERRED_BY_USER`、`performanceSloVerified=false`。
 
-### 当前：单体必要中间件已构建，#297在镜像网络准备期阻断
+### 当前：镜像中转已消费，#298在依赖制品候选筛选期阻断
 
 本轮按用户确定的范围调整单体通用中间件：Qdrant/BGE-M3适配、模型调用故障隔离、OpenTelemetry、Prometheus与Alertmanager实际抓取验收。完整自建Langfuse只保留部署配置，待资源审定后再启用；不启动微服务专属组件。方案与验收边界见[单体中间件调整](middleware/monolith-alignment.md)。
 
+固定`a95e24d07aa69283c45a03e557323620281c0858`的 **#298实际FAILURE**：13模块跳测试打包成功，Qdrant、Prometheus、Alertmanager三个固定官方OCI包共232,960,000字节，已由本地Jenkins真实传到ECS并完成共享缓存发布，三份传输回执均AVAILABLE、暂存清理NO_STAGE。随后依赖制品发现把157个历史工具metadata镜像一并计入128个候选上限，准备阶段拒绝，尚未创建本轮工具/组件容器或执行测试。已改为先排除永不作为原producer的metadata-only镜像，再对原始依赖producer执行原128上限，并统一严格Docker ID解析；64项直接测试源码完成，静态检查通过，仍待ECS运行验证。后续复用已发布的三个包，不重复安装22项依赖。
+
+#298的11份原归档中10份非应用JAR、17,967,696字节及原`build.xml`已保全于`ci-298-raw-receipts`，云端准备失败原件另存`ci-298-tool-preparation-failure-originals`。原件和实际容器清单确认本轮尚未创建工具，三份输入暂存均已收尾；**02:46:00（北京时间）**从流水线外实际回读`Stopped / StopCharging`。Jenkins保持运行，任务禁自动触发且无排队。
+
 固定`bb38f0fc9b334832a9146156f3cc0a064e9874d2`已提交推送；本地13模块跳测试打包、两套前端生产构建完成，没有运行本地测试。**#297实际FAILURE**：其固定提交的13模块流水线打包成功，ECS按当前源码完成22项固定Python依赖准备，`pip check`通过；随后首个Qdrant镜像准备访问Docker Hub时网络不可达，尚未创建组件容器、未启动Java/Python/前端测试。此结果不证明中间件或数据库验收通过。
 
-#297的19份原归档中18份非应用JAR、17,953,746字节及原`build.xml`已保全于`work/jenkins/data-residency-20261107/ci-297-raw-receipts`。原工具和Qdrant准备资源均确认STOPPED；**02:07:13（北京时间）**从流水线外实际回读`Stopped / StopCharging`，原件`ci-297-external-stop-readback.json`。Jenkins控制器继续运行，任务禁自动触发且无排队，避免只修改README的后续提交重复开测。下一步修复镜像输入路径后再执行固定提交的统一ECS验收。
+#297的19份原归档中18份非应用JAR、17,953,746字节及原`build.xml`已保全于`work/jenkins/data-residency-20261107/ci-297-raw-receipts`。原工具和Qdrant准备资源均确认STOPPED；**02:07:13（北京时间）**从流水线外实际回读`Stopped / StopCharging`，原件`ci-297-external-stop-readback.json`。随后镜像输入改为本地Jenkins中继，已由#298实际消费；没有重放#297。
 
 此前 **#296维护SUCCESS**：按既有规则退役#295停止对象、两份可再生JAR及其失败派生MySQL数据；JAR实际分配760,619,008字节，MySQL数据300,179,456字节。24份原件346,252字节位于`ci-296-raw-receipts`；该批已消费，不重跑或重复计算。正式库、完整SQL、源码、报告和#266保留。维护后实余4,944,211,968字节，已用于#297，不作为后续轮次的当前空间承诺。
 
