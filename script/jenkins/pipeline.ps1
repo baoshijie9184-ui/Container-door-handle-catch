@@ -276,6 +276,14 @@ if ($nativeRetentionPolicy -cnotin @('FailedNative','RetiredCopies194','RetiredC
 if ($nativeRetentionPolicy -cne 'FailedNative' -and $env:ACTION -cne 'reclaim-build-outputs') { throw 'An explicit retired-copy policy requires source-only build maintenance.' }
 $tag = Require-Value 'RELEASE_TAG' '^ci-[0-9]+-[a-f0-9]{12}$'
 $failedNativeBuildNumber=[string]$env:FAILED_NATIVE_BUILD_NUMBER
+$failedMysqlDataBuilds=[string]$env:FAILED_MYSQL_DATA_BUILDS
+if ($failedMysqlDataBuilds -cne '') {
+    if ($env:ACTION -cne 'reclaim-build-outputs' -or $nativeRetentionPolicy -cne 'FailedNative' -or
+        $env:DOORHANDLE_FAILED_MYSQL_DATA_TASK_ID -cne '01a1a46b-d37a-7fb2-8638-afe345c73531' -or
+        $failedMysqlDataBuilds -cnotmatch '\A[1-9][0-9]{0,8}(,[1-9][0-9]{0,8}){0,15}\z') { throw 'Failed MySQL data retirement requires the current task authorization and explicit maintenance selection.' }
+    $dataNumbers=@($failedMysqlDataBuilds.Split(','))
+    if (@($dataNumbers | Select-Object -Unique).Count -ne $dataNumbers.Count -or @($dataNumbers | Where-Object {[long]$_ -lt 287 -or [long]$_ -ge [long]$env:BUILD_NUMBER}).Count) { throw 'Only distinct earlier failed verification builds from this task are eligible.' }
+}
 if ($failedNativeBuildNumber -cne '') {
     if ($failedNativeBuildNumber -cnotmatch '\A[1-9][0-9]{0,8}\z') { throw 'Failed native build number must be a canonical ASCII positive integer with at most nine digits.' }
     if ($env:ACTION -cne 'reclaim-build-outputs' -or $nativeRetentionPolicy -cne 'FailedNative') { throw 'A failed native build selection requires the explicit FailedNative maintenance policy.' }
@@ -394,6 +402,8 @@ if ($Action -ceq 'PackageSourceOnly') {
     $maintenancePaths = @('script/jenkins/cleanup-ecs-builds.py', 'script/jenkins/verify-remote.py', 'script/jenkins/retire-failed-native-jar-duplicates.py', 'script/docker/compact-build-resources.py')
     if ($nativeRetentionPolicy -cin @('DerivedMysql221222235238247','DerivedMysql250253256259264268','DerivedMysql281283')) {
         $maintenancePaths += 'script/jenkins/retire-derived-mysql-data.py'
+    } elseif ($failedMysqlDataBuilds -cne '') {
+        $maintenancePaths += 'script/jenkins/retire-derived-mysql-data.py'
     }
     $archiveArguments = @('-c', 'core.autocrlf=false', 'archive', '--format=tar.gz', '--output=artifacts/source.tar.gz', $commit) + $maintenancePaths
     Invoke-Checked 'git.exe' $archiveArguments
@@ -502,7 +512,13 @@ if ($Action -ceq 'ReclaimBuildOutputs' -and $env:ACTION -ceq 'reclaim-build-outp
     } elseif ($nativeRetentionPolicy -ceq 'RetiredCopies203') {
         & ./script/jenkins/retire-failed-native-jar-duplicates.ps1 -Mode Maintenance -CanonicalBatch RetiredCopies -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha
     } else {
-        & ./script/jenkins/retire-failed-native-jar-duplicates.ps1 -Mode Maintenance -CanonicalBatch FailedNative -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha -FailedNativeBuildNumber $failedNativeBuildNumber
+        if ($failedMysqlDataBuilds -ceq '' -or $failedNativeBuildNumber -cne '') {
+            & ./script/jenkins/retire-failed-native-jar-duplicates.ps1 -Mode Maintenance -CanonicalBatch FailedNative -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha -FailedNativeBuildNumber $failedNativeBuildNumber
+        }
+        if ($failedMysqlDataBuilds -cne '') {
+            $derivedHelper = Get-PinnedSourceFile 'script/jenkins/retire-derived-mysql-data.py'
+            & ./script/jenkins/retire-derived-mysql-data.ps1 -SshOptions $sshOptions -Destination $destination -PortText $portText -RemoteRoot $remoteRoot -Tag $tag -Commit $commit -SourceSha256 $sha -PinnedHelper $derivedHelper -FailedBuildNumbers $failedMysqlDataBuilds
+        }
     }
     return
 }

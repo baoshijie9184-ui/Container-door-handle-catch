@@ -10,7 +10,8 @@ param(
     [Parameter(Mandatory=$true)][string]$SourceSha256,
     [string]$RetainedControlRoot = 'D:/AI/lunwen1/DoorHandleCatch/work/jenkins/data-residency-20261107',
     [ValidateSet('retired-195-198-201','retired-187-188-189')][string]$RetiredCopyBatch = 'retired-195-198-201',
-    [string]$FailedNativeBuildNumber = ''
+    [string]$FailedNativeBuildNumber = '',
+    [switch]$CollectDataControls
 )
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
@@ -40,6 +41,9 @@ Require-NativeJar ($SshOptions -ccontains 'StrictHostKeyChecking=yes' -and $SshO
 Require-NativeJar ($CanonicalBatch -cne 'FailedNative' -or $Mode -ceq 'Maintenance') 'Failed native retention requires source-only maintenance.'
 Require-NativeJar ($CanonicalBatch -cne 'PublicCaches' -or $Mode -ceq 'Maintenance') 'Public cache retention requires explicit source-only maintenance.'
 Require-NativeJar ($FailedNativeBuildNumber -ceq '' -or ($Mode -ceq 'Maintenance' -and $CanonicalBatch -ceq 'FailedNative' -and $FailedNativeBuildNumber -cmatch '\A[1-9][0-9]{0,8}\z' -and [long]$FailedNativeBuildNumber -ge 221 -and [long]$FailedNativeBuildNumber -lt [long]($Tag.Split('-')[1]))) 'An explicit failed native selection must be one earlier native-epoch Jenkins build in source-only FailedNative maintenance.'
+if ($CollectDataControls) {
+    Require-NativeJar ($Mode -ceq 'Maintenance' -and $CanonicalBatch -ceq 'FailedNative' -and $FailedNativeBuildNumber -cmatch '\A[1-9][0-9]{0,8}\z' -and [long]$FailedNativeBuildNumber -ge 287 -and $env:DOORHANDLE_FAILED_MYSQL_DATA_TASK_ID -ceq '01a1a46b-d37a-7fb2-8638-afe345c73531') 'Data-control collection requires one explicitly authorized current-task failed build.'
+}
 $instance=$env:DOORHANDLE_ECS_INSTANCE_ID; $machine=$env:DOORHANDLE_ECS_MACHINE_ID
 Require-NativeJar ($instance -cmatch '^i-[a-z0-9]+$' -and $machine -cmatch '^[a-f0-9]{32}$') 'Explicit expected ECS identity required.'
 $ssh=(Get-Command ssh.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
@@ -78,10 +82,12 @@ def unique(pairs):
  result={}
  for k,v in pairs:need(k not in result);result[k]=v
  return result
-need(len(sys.argv) in (8,9,10),'EXACT_LOCAL_CONTROL_ARGUMENTS_REQUIRED')
+need(len(sys.argv) in (8,9,10,11),'EXACT_LOCAL_CONTROL_ARGUMENTS_REQUIRED')
 archive,commit,retained,jhome,remote,current,batch=sys.argv[1:8]
 retired_batch=sys.argv[8] if len(sys.argv)>=9 else 'retired-195-198-201'
-selected_build=sys.argv[9] if len(sys.argv)==10 else ''
+selected_build=sys.argv[9] if len(sys.argv)>=10 else ''
+data_controls_only=len(sys.argv)==11 and sys.argv[10]=='data-controls-only'
+need(len(sys.argv)!=11 or data_controls_only and batch=='FailedNative' and selected_build and int(selected_build)>=287,'EXPLICIT_TASK_DATA_CONTROL_ENTRY_REQUIRED')
 need(batch in ('Historical','Recent','RetiredCopies','ClosedRuntime','FailedNative','PublicCaches'))
 need(retired_batch in ('retired-195-198-201','retired-187-188-189'),'EXACT_RETIRED_COPY_BATCH_REQUIRED')
 need(retired_batch=='retired-195-198-201' or batch=='RetiredCopies','RETIRED_COPY_BATCH_REQUIRES_RETIRED_COPIES')
@@ -207,7 +213,9 @@ def recovered_268_bundle():
  return recovered_workspace_268
 if batch=='FailedNative':
  approved=[];current_number=int(current.split('-')[1]);builds=Path(jhome)/'jobs/doorhandle-java/builds'
- for directory in sorted((p for p in builds.iterdir() if p.name.isdigit() and 221<=int(p.name)<current_number),key=lambda p:int(p.name),reverse=True):
+ directories=([builds/selected_build] if selected_build and (builds/selected_build).is_dir() else [] if selected_build else
+  [p for p in builds.iterdir() if p.name.isdigit() and 221<=int(p.name)<current_number])
+ for directory in sorted(directories,key=lambda p:int(p.name),reverse=True):
   if selected_build and directory.name!=selected_build:continue
   raw=stable(directory/'build.xml');need(b'<!DOCTYPE' not in raw.upper() and b'<!ENTITY' not in raw.upper())
   node=ET.fromstring(raw)
@@ -224,8 +232,8 @@ if batch=='FailedNative':
   release=json.loads(stable(source),object_pairs_hook=unique);oldcommit=params.get('TRUSTED_COMMIT')
   if not isinstance(oldcommit,str) or len(oldcommit)!=40 or release.get('commit')!=oldcommit or release.get('release')!='ci-'+directory.name+'-'+oldcommit[:12]:continue
   jar=(recovered['folder'] if recovered else directory/'archive/artifacts')/'application.jar'
-  if not jar.is_file():continue
-  if not recovered:
+  if not data_controls_only and not jar.is_file():continue
+  if not recovered and not data_controls_only:
    with jar.open('rb') as stream:
     meta=os.fstat(stream.fileno());need(stat.S_ISREG(meta.st_mode) and meta.st_nlink==1 and 0<meta.st_size<=536870912)
     digest=hashlib.sha256()
@@ -391,7 +399,17 @@ elif batch=='RetiredCopies':
  need(rel.get('kind')=='doorhandle-maintenance-source' and rel.get('action')=='reclaim-build-outputs' and rel.get('release')==authority_tag and rel.get('commit')==authority_commit and rel.get('sourceSha256')==originals['source.tar.gz'][1] and rel.get('maintenanceOnly') is True and rel.get('testsExecuted') is False and rel.get('applicationBuilt') is False,'RETIRED_AUTHORITY_RELEASE_CONTEXT_DRIFT')
 print(json.dumps({'helpers':helpers,'rows':rows,'skipped':skipped,'custody':custody,'builderFiles':builder_files,'authorityFiles':authority_files,'authorityCustody':authority_custody,'selectedFailedNativeBuild':selected_build}))
 '@
-$local=(Invoke-NativeJar $python @('-I','-B','-c',$reader,$archive,$Commit,$RetainedControlRoot,$jenkinsHome,$RemoteRoot,$Tag,$CanonicalBatch,$RetiredCopyBatch,$FailedNativeBuildNumber) | Select-Object -Last 1) | ConvertFrom-Json -AsHashtable
+if ($CollectDataControls) {
+    $local=(Invoke-NativeJar $python @('-I','-B','-c',$reader,$archive,$Commit,$RetainedControlRoot,$jenkinsHome,$RemoteRoot,$Tag,$CanonicalBatch,$RetiredCopyBatch,$FailedNativeBuildNumber,'data-controls-only') | Select-Object -Last 1) | ConvertFrom-Json -AsHashtable
+} else {
+    $local=(Invoke-NativeJar $python @('-I','-B','-c',$reader,$archive,$Commit,$RetainedControlRoot,$jenkinsHome,$RemoteRoot,$Tag,$CanonicalBatch,$RetiredCopyBatch,$FailedNativeBuildNumber) | Select-Object -Last 1) | ConvertFrom-Json -AsHashtable
+}
+if ($CollectDataControls) {
+    Require-NativeJar ($Mode -ceq 'Maintenance' -and $CanonicalBatch -ceq 'FailedNative' -and $FailedNativeBuildNumber -cmatch '\A[1-9][0-9]{0,8}\z' -and [long]$FailedNativeBuildNumber -ge 287 -and $env:DOORHANDLE_FAILED_MYSQL_DATA_TASK_ID -ceq '01a1a46b-d37a-7fb2-8638-afe345c73531') 'Data-control collection requires the explicitly authorized task and one earlier failed verification build.'
+    Require-NativeJar (@($local.rows).Count -eq 1 -and @($local.skipped).Count -eq 0 -and $local.rows[0].release.Split('-')[1] -ceq $FailedNativeBuildNumber) 'Complete exact original data controls are required.'
+    $local | ConvertTo-Json -Depth 24 -Compress
+    return
+}
 Require-NativeJar ($local.selectedFailedNativeBuild -ceq $FailedNativeBuildNumber -and ($FailedNativeBuildNumber -ceq '' -or (@($local.rows).Count -eq 1 -and $local.rows[0].release.Split('-')[1] -ceq $FailedNativeBuildNumber))) 'The explicit failed native selection must retain exactly its original Jenkins build.'
 if ($CanonicalBatch -ceq 'PublicCaches') {Require-NativeJar (@($local.rows).Count -eq 6 -and @($local.skipped).Count -eq 0) 'Public caches require the retained 117 keeper and all five closed failed-build control bundles.'}
 $spec=[ordered]@{schemaVersion=1;kind='doorhandle-failed-native-jar-duplicate-request';current=@{release=$Tag;commit=$Commit;sourceSha256=$SourceSha256};identity=@{instanceId=$instance;machineId=$machine;executionLocation='ECS'};protectedReleases=@($Tag);candidates=@()}

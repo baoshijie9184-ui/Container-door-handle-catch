@@ -6,10 +6,15 @@ param(
     [Parameter(Mandatory=$true)][string]$Tag,
     [Parameter(Mandatory=$true)][string]$Commit,
     [Parameter(Mandatory=$true)][string]$SourceSha256,
-    [Parameter(Mandatory=$true)][string]$PinnedHelper
+    [Parameter(Mandatory=$true)][string]$PinnedHelper,
+    [string]$FailedBuildNumbers = ''
 )
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
+if ($FailedBuildNumbers -cne '') {
+    & (Join-Path $PSScriptRoot 'retire-task-failed-mysql-data.ps1') -SshOptions $SshOptions -Destination $Destination -PortText $PortText -RemoteRoot $RemoteRoot -Tag $Tag -Commit $Commit -SourceSha256 $SourceSha256 -PinnedHelper $PinnedHelper -FailedBuildNumbers $FailedBuildNumbers
+    return
+}
 $batches=@{
     DerivedMysql221222235238247=@{batch='derived-mysql-221-222-235-238-247-v1';count=5}
     DerivedMysql250253256259264268=@{batch='derived-mysql-250-253-256-259-264-268-v1';count=6}

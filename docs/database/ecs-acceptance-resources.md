@@ -4,7 +4,7 @@
 
 原单体系统盘按授权保留 **80 GiB**，既有7天预扩容快照保持，不追加扩容或快照。原#258精确维护退役#256停止的测试MySQL对象和两份可再生JAR，mysql-data保留；普通源码输出和Builder均NO_ACTION。JAR实际分配共760,619,008字节，独立新鲜实余为 **6,559,977,472字节**（#259执行前，原件 `pre-database259-execution-readiness.json`），这是带时间和阶段的历史快照，不作为下一次开机的可用量。
 
-测试前重新核实例/机器/执行身份和磁盘实余，按既有动态门逐阶段准入；完整native/整库的全程峰值尚未通过。131→29源目标双恢复使用同一隔离MySQL的两个schema，不另叠加两套1.5GiB卷。旧45和三库按实际raw大小准入，成功后清理各自派生双恢复卷；失败native的mysql-data仍保留，不把候选或已消费缓存重复计为释放。
+测试前重新核实例/机器/执行身份和磁盘实余，按既有动态门逐阶段准入；完整native/整库的全程峰值尚未通过。131→29源目标双恢复使用同一隔离MySQL的两个schema，不另叠加两套1.5GiB卷。旧45和三库按实际raw大小准入，成功后清理各自派生双恢复卷；失败native的mysql-data默认保留，本任务新增的显式授权回收见下一节，不把候选或已消费缓存重复计为释放。
 
 Mem0复用原不可变镜像的8个精确依赖，以一次COPY更新完整当前源码、requirements和LICENSE；worker保留精确legacy/current依赖闭包、模型树和许可证，完整rootfs单COPY使native副本6/7→1/2。当前仍缺应用基座真实层分配A/Z/E及新context C；Image.Size、理论COPY节省量或旧冷安装8,768,095,027字节下限均不能代替新路径的完整预算。独立数据库成功不等于运行或正式切库完成。
 
@@ -15,6 +15,31 @@ Mem0复用原不可变镜像的8个精确依赖，以一次COPY更新完整当�
 旧45及三库的SQL双恢复只依赖同轮完整MySQL验证、源clone及各自封存输入，不依赖5,599旧文件恢复。两SQL阶段成功时均清理其两个派生卷；本轮补齐的阶段顺序将其放在旧文件新展开之前，保留同轮全部输入、双恢复、对账、门槛和失败保护，减少两类临时数据并存。代码整合后由完整verify/mysql统一验证；顺序调整不是已完成全程峰值的证明。
 
 当前构建结果、实际资源清理、最新ECS启停状态统一见[本地Jenkins当前回执](../本地Jenkins-CICD.md)。生产/演练门保持关闭；正式压测等开发完成后使用压测工具，4账号8标签仅用于功能验收，`loadTestStatus=DEFERRED_BY_USER`、`performanceSloVerified=false`。
+
+## 本任务失败测试库按条件回收（2026-11-13）
+
+用户已批准本任务当前#287/#289及后续失败或终止的`verify/mysql`派生库按条件回收。仍使用本地Jenkins的`reclaim-build-outputs`与`FailedNative`，新增参数`FAILED_MYSQL_DATA_BUILDS`默认空值，不改变原三批闭集、原标准维护或默认保留数据的行为。
+
+本次固定提交通过新增控制回归后，参数如下：
+
+```text
+ACTION=reclaim-build-outputs
+NATIVE_RETENTION_POLICY=FailedNative
+FAILED_NATIVE_BUILD_NUMBER=289
+FAILED_MYSQL_DATA_BUILDS=287,289
+DOORHANDLE_CI_SCOPE=source
+PRODUCTION_RELEASE_ENABLED=false
+```
+
+标准阶段只退役#289的停止对象和可再生JAR；#287已消费的标准维护不重跑。随后数据阶段分别从原Jenkins失败记录确定两个精确tag，认证原控制、已审verify-only源码、完整131表源SQL与备份清单，以及实际已生成报告的归档。若原验证尚未开始，必须明确没有claim、helper或验证归档；未知或半上传状态保留。不接受调用者路径、不扫描其他库，不准入`verify-runtime`、成功构建、正式库、待上线候选或#266。
+
+数据阶段先以管理员身份只读统计UID999目录的文件数、分配字节和逐项身份，不读取MySQL数据文件内容；随后plan/apply分别核原SQL/源码/报告不变、容器无引用及所有UID进程无引用。删除直接复用既有FD相对、no-follow、inode/owner/device和文件身份检查。传输失联只观察同一操作的status，不重放apply；不确定或部分失败保留原回执并阻止成功。
+
+`FAILED_NATIVE_BUILD_NUMBER`留空但数据列表非空时，只执行明确选择的数据阶段，适用于对象/JAR已经退役的旧副本；两个参数都空时仍是原默认标准维护。每个数据目标成功后另留终态标记，不能借同一旧tag删除后来放入的新目录。标准保数据回执与后续`derived-mysql-{request,plan,receipt,controller}.json`删除回执分别保留，实际回收量只取真实removed项及新鲜磁盘读回。
+
+启用需要固定私有授权记录`work/jenkins/data-residency-20261107/failed-test-fixture-retention-authorization-20261113.json`和配置注入的本任务ID门；页面参数不能单独开启。任务完成或用户撤回时，由任务负责人把记录的`completed`或`revoked`设为`true`，再运行已提交配置使节点门关闭，保留授权原件。原SQL、源码和报告始终不删除，不因此扩盘。
+
+新增82项边界回归纳入原derived模块（最低179项），原22模块控制最低合计2,558项；64原生类和最低755项不变。当前仅完成源码与静态检查；首次apply前须由同一固定提交在ECS实际通过控制回归，再执行精确维护，之后按实余进入完整数据库验收。
 
 ## 此前容量与维护记录（历史）
 2026-11-11 #228实际维护：普通源码输出回收已完成，磁盘可用从5,643,894,784升到6,071,431,168字节；FailedNative在计划阶段因Python3.9/3.12的AST指纹差异拒绝全部四轮旧producer，尚未删除其MySQL对象或八份JAR。真实旧函数源码已只读核定，正在改为版本稳定的原源码段绑定，原停止状态/发布引用/逐文件守卫不变。约3.04GB仍是候选而非已回收量，不能据此启动完整验收；ECS已实际Stopped/StopCharging。

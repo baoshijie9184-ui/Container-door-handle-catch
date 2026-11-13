@@ -26,6 +26,18 @@ assert settings.version == 1
 assert settings.instanceId == 'i-2zeieuov2aum486jm1ek'
 assert settings.machineId ==~ /[a-f0-9]{32}/
 assert settings.activate instanceof Boolean
+def dataAuthorizationFile = new File(project, 'work/jenkins/data-residency-20261107/failed-test-fixture-retention-authorization-20261113.json')
+def dataTaskId = ''
+if (dataAuthorizationFile.isFile()) {
+    def authorization = new JsonSlurper().parse(dataAuthorizationFile)
+    assert authorization.kind == 'doorhandle-current-task-failed-verify-mysql-data-retirement-authorization'
+    assert authorization.taskThreadId == '01a1a46b-d37a-7fb2-8638-afe345c73531'
+    assert authorization.job == 'doorhandle-java' && authorization.branch == 'java-cloud' && authorization.instanceId == settings.instanceId
+    assert authorization.acceptedActions == ['verify'] && authorization.scope == 'mysql'
+    assert authorization.followUpFailedVerifyMysqlBuildsInThisTask == true && authorization.authorizationEndsWhenThisTaskCompletes == true
+    assert authorization.allowArbitraryPath == false && authorization.allowDiskExpansion == false
+    if (authorization.completed != true && authorization.revoked != true) dataTaskId = authorization.taskThreadId
+}
 def ci = Jenkins.get()
 def job = ci.getItem('doorhandle-java')
 assert job instanceof WorkflowJob
@@ -62,6 +74,7 @@ def variables = [
     'DOORHANDLE_ECS_MACHINE_ID': settings.machineId,
     'DOORHANDLE_COMPACT_RELEASE_READY': 'false',
     'DOORHANDLE_COMPACT_REHEARSAL_READY': 'false',
+    'DOORHANDLE_FAILED_MYSQL_DATA_TASK_ID': dataTaskId,
     'CANDIDATE_BUILD_INPUT_CACHE_ROOT': new File(project, 'work/jenkins/build-deps').path,
     'PATH+DOORHANDLE': settings.extraPath
 ]
@@ -74,6 +87,7 @@ def parameters = [
     new ChoiceParameterDefinition('ACTION', ['verify', 'verify-controls', 'verify-embedding', 'verify-runtime', 'verify-deploy', 'rehearse', 'rollback', 'compact-cutover', 'reclaim-build-outputs'] as String[], 'verify-controls runs only ECS control checks without building Java or preparing databases. Compact cutover requires complete source, database and runtime evidence.'),
     new ChoiceParameterDefinition('NATIVE_RETENTION_POLICY', ['FailedNative', 'RetiredCopies194', 'RetiredCopies203', 'PublicCaches221224235', 'DerivedMysql221222235238247', 'DerivedMysql250253256259264268', 'DerivedMysql281283'] as String[], 'Maintenance only: select one native retention policy; default follows failed runtime builds.'),
     new StringParameterDefinition('FAILED_NATIVE_BUILD_NUMBER', '', 'FailedNative maintenance only: optional exact old build number; blank keeps the strict complete batch.').with { setTrim(true); it },
+    new StringParameterDefinition('FAILED_MYSQL_DATA_BUILDS', '', 'Authorized current-task failed verify/mysql data only; comma-separated exact builds, blank preserves all data.').with { setTrim(true); it },
     new StringParameterDefinition('TRUSTED_COMMIT', '', 'Optional expected complete java-cloud commit; blank pins this SCM checkout.'),
     new ChoiceParameterDefinition('DOORHANDLE_CI_SCOPE', ['source', 'mysql'] as String[], 'source is ordinary verification; mysql requires explicit ECS fixtures.'),
     new StringParameterDefinition('DOORHANDLE_CI_FIXTURE_MANIFEST', '', 'mysql only: absolute private manifest inside the current ECS checkout/work.'),

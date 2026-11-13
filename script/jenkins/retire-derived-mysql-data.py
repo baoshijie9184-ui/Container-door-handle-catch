@@ -10,6 +10,7 @@ from contextlib import contextmanager, ExitStack
 import fcntl
 import hashlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -18,7 +19,9 @@ import signal
 import stat
 import subprocess
 import sys
+import tarfile
 import time
+from types import SimpleNamespace
 
 LOADED_SOURCE = None if __name__ == '_approved_worker' else Path(__file__).read_bytes()
 BATCH = 'derived-mysql-221-222-235-238-247-v1'
@@ -87,6 +90,15 @@ FOLLOWUP_APPROVED_METADATA = {
 }
 SHA = re.compile(r'[a-f0-9]{64}')
 MIB = 1024 ** 2
+TASK_BATCH = 'current-task-failed-verify-mysql-v1'
+TASK_ID = '01a1a46b-d37a-7fb2-8638-afe345c73531'
+
+
+class TaskBatch:
+    """Internal, authenticated target set; never a caller-supplied filesystem path."""
+    def __init__(self, targets, manifests):
+        self.targets, self.manifests = targets, manifests
+        self.metadata = {release: None for release in targets}
 
 
 def need(value, code):
@@ -96,6 +108,8 @@ def need(value, code):
 
 def batch_configuration(batch=BATCH):
     # Preserve the original default and select exactly one closed set, never a union.
+    if isinstance(batch, TaskBatch):
+        return batch.targets, batch.manifests, batch.metadata
     if batch == BATCH:
         return TARGETS, BACKUP_MANIFESTS, APPROVED_METADATA
     if batch == RECENT_BATCH:
@@ -185,7 +199,8 @@ def tree(release, batch=BATCH):
     need(signature(path.stat()) == signature(before), 'ROOT_CHANGED')
     files = sum(stat.S_ISREG(row['metadata'][2]) for row in rows)
     allocated = before.st_blocks * 512 + sum(row['metadata'][9] * 512 for row in rows)
-    need((files, allocated) == metadata[release], 'APPROVED_METADATA_INVENTORY_CHANGED')
+    if metadata[release] is not None:
+        need((files, allocated) == metadata[release], 'APPROVED_METADATA_INVENTORY_CHANGED')
     return {'release': release, 'path': str(path), 'rootMetadata': signature(before), 'entries': rows,
             'allocatedBytes': allocated, 'files': files,
             'inventorySha256': digest(encoded(rows))}
@@ -300,6 +315,8 @@ def process_references(inventories, proc=Path('/proc')):
 
 
 def root_worker(request):
+    if request.get('phase') in ('task-inventory', 'task-remove'):
+        return task_root_worker(request)
     need(os.getuid() == 0 and request.get('batch') in (BATCH, RECENT_BATCH, FOLLOWUP_BATCH)
          and Path('/etc/machine-id').read_text().strip() == MACHINE, 'APPROVED_ROOT_BATCH_REQUIRED')
     batch = request['batch']; selected, _, _ = batch_configuration(batch)
@@ -419,6 +436,8 @@ def fixed_helpers(args):
 
 
 def run(args):
+    if getattr(args, 'failed_builds', None) is not None:
+        return task_run(args)
     need(os.getuid() == 1000 and args.batch in (BATCH, RECENT_BATCH, FOLLOWUP_BATCH) and re.fullmatch(r'ci-[0-9]+-[a-f0-9]{12}', args.tag)
          and re.fullmatch(r'[a-f0-9]{40}', args.commit) and args.tag.endswith(args.commit[:12])
          and int(args.tag.split('-')[1]) > (271 if args.batch == BATCH else 278 if args.batch == RECENT_BATCH else 283)
@@ -511,12 +530,374 @@ def run(args):
         return {'status': receipt['status'], 'file': str(receipt_file), 'removedDirectories': len(receipt['removed'])}
 
 
+def task_numbers(text, current):
+    need(type(text) is str and re.fullmatch(r'[1-9][0-9]{0,8}(,[1-9][0-9]{0,8}){0,15}', text or ''),
+         'EXPLICIT_BOUNDED_TASK_BUILDS_REQUIRED')
+    numbers = text.split(',')
+    need(len(numbers) == len(set(numbers)) and all(287 <= int(value) < current for value in numbers),
+         'ONLY_EARLIER_TASK_FAILED_BUILDS_ALLOWED')
+    return numbers
+
+
+def task_helpers(binding):
+    """Load only the current committed maintenance source, including pure validators."""
+    need(set(binding) == {'tag', 'commit', 'sourceSha256', 'requestSha256', 'failedBuilds'},
+         'EXACT_TASK_SOURCE_BINDING_REQUIRED')
+    tag, commit = binding['tag'], binding['commit']
+    need(re.fullmatch(r'ci-[1-9][0-9]*-[a-f0-9]{12}', tag or '') and
+         re.fullmatch(r'[a-f0-9]{40}', commit or '') and tag.endswith('-' + commit[:12]) and
+         SHA.fullmatch(binding.get('sourceSha256', '')) and SHA.fullmatch(binding.get('requestSha256', '')),
+         'FIXED_TASK_SOURCE_REQUIRED')
+    task_numbers(binding['failedBuilds'], int(tag.split('-')[1]))
+    raw = read(ROOT / 'inbox' / tag / 'cleanup-source.tar.gz', 128 * MIB)
+    need(digest(raw) == binding['sourceSha256'], 'FIXED_TASK_SOURCE_CHANGED')
+    wanted = {'retire-derived-mysql-data.py', 'retire-failed-native-jar-duplicates.py',
+              'cleanup-ecs-builds.py', 'verify-remote.py'}
+    bodies = {}
+    with tarfile.open(fileobj=io.BytesIO(raw), mode='r:gz') as archive:
+        need(archive.pax_headers.get('comment') == commit, 'TASK_SOURCE_COMMIT_DIFFERS')
+        for member in archive:
+            name = member.name.removeprefix('script/jenkins/')
+            if member.name != 'script/jenkins/' + name or name not in wanted:
+                continue
+            need(name not in bodies and member.isfile() and 0 < member.size <= MIB,
+                 'TASK_HELPER_CLOSURE_DIFFERS')
+            bodies[name] = archive.extractfile(member).read(MIB + 1)
+    need(set(bodies) == wanted, 'TASK_HELPER_CLOSURE_MISSING')
+    own = read(ROOT / 'inbox' / tag / 'retire-derived-mysql-data.py', MIB)
+    need(own == bodies['retire-derived-mysql-data.py'] and
+         (os.getuid() == 0 or own == LOADED_SOURCE), 'FIXED_TASK_EXECUTOR_DIFFERS')
+    result = {}
+    for name in wanted - {'retire-derived-mysql-data.py'}:
+        # Compile the already authenticated bytes; never reopen a module after checking it.
+        module = SimpleNamespace(__name__='_task_' + name.replace('-', '_'),
+                                 __file__=str(ROOT / 'inbox' / tag / name))
+        exec(compile(bodies[name], module.__file__, 'exec'), module.__dict__)
+        # Some real helpers snapshot their on-disk file during module import.
+        # Root fallbacks must use authenticated archive bytes, not that later read.
+        module.LOADED_SOURCE = bodies[name]
+        result[name] = module
+    return result
+
+
+def task_request(binding):
+    raw = read(ROOT / 'inbox' / binding['tag'] / 'derived-failed-mysql-retirement/request.json')
+    need(digest(raw) == binding['requestSha256'], 'AUTHENTICATED_TASK_REQUEST_CHANGED')
+    def unique(pairs):
+        result = {}
+        for key, item in pairs:
+            need(key not in result, 'DUPLICATE_TASK_REQUEST_FIELD')
+            result[key] = item
+        return result
+    value = json.loads(raw, object_pairs_hook=unique,
+                       parse_constant=lambda _value: need(False, 'NONFINITE_TASK_REQUEST'))
+    identity = {'instanceId': INSTANCE, 'machineId': MACHINE, 'executionLocation': 'ECS'}
+    expected = {'release': binding['tag'], 'commit': binding['commit'], 'sourceSha256': binding['sourceSha256']}
+    need(set(value) == {'schemaVersion', 'kind', 'current', 'identity', 'authorization', 'builds', 'candidates'}
+         and type(value['schemaVersion']) is int and value['schemaVersion'] == 1 and value['kind'] == 'doorhandle-authorized-failed-mysql-data-request'
+         and value['current'] == expected and value['identity'] == identity,
+         'TASK_REQUEST_CONTEXT_DIFFERS')
+    authorization = value['authorization']
+    need(set(authorization) == {'taskThreadId', 'sourceSha256', 'endsWithTask', 'allowArbitraryPath'}
+         and authorization['taskThreadId'] == TASK_ID and SHA.fullmatch(authorization.get('sourceSha256', ''))
+         and authorization['endsWithTask'] is True and authorization['allowArbitraryPath'] is False,
+         'CURRENT_TASK_AUTHORIZATION_REQUIRED')
+    numbers = task_numbers(binding['failedBuilds'], int(binding['tag'].split('-')[1]))
+    need(value['builds'] == numbers and type(value['candidates']) is list and
+         len(value['candidates']) == len(numbers), 'COMPLETE_EXPLICIT_TASK_TARGETS_REQUIRED')
+    for number, row in zip(numbers, value['candidates']):
+        need(set(row) == {'release', 'commit', 'sourceSha256', 'controls'} and
+             re.fullmatch(r'[a-f0-9]{40}', row.get('commit', '')) and
+             row['release'] == 'ci-' + number + '-' + row['commit'][:12] and
+             SHA.fullmatch(row.get('sourceSha256', '')), 'CANONICAL_FAILED_TASK_TAG_REQUIRED')
+        need(set(row['controls']) == {'buildXml', 'release', 'localBuild', 'fixtureCleanupPublic',
+                                      'preparation', 'transport'}, 'COMPLETE_ORIGINAL_TASK_CONTROLS_REQUIRED')
+        for reference in row['controls'].values():
+            need(set(reference) == {'bytes', 'sha256'} and type(reference['bytes']) is int and
+                 0 < reference['bytes'] <= 2 * MIB and SHA.fullmatch(reference.get('sha256', '')),
+                 'EXACT_ORIGINAL_TASK_CONTROL_REQUIRED')
+    return value
+
+
+def task_source_recipe(native, row):
+    raw = read(ROOT / 'inbox' / row['release'] / 'source.tar.gz', 128 * MIB)
+    need(digest(raw) == row['sourceSha256'], 'RETAINED_TASK_SOURCE_CHANGED')
+    names = ('Jenkinsfile.ecs-monolith', 'script/jenkins/pipeline.ps1', 'script/jenkins/prepare-ecs-tools.py')
+    bodies = {}
+    class Bounded:
+        def __init__(self, source): self.source, self.total = source, 0
+        def read(self, size=-1):
+            remaining = 512 * MIB - self.total
+            block = self.source.read(remaining + 1 if size < 0 else min(size, remaining + 1))
+            self.total += len(block)
+            need(self.total <= 512 * MIB, 'RETAINED_TASK_SOURCE_EXPANSION_BOUND')
+            return block
+    import gzip
+    with gzip.GzipFile(fileobj=io.BytesIO(raw), mode='rb') as expanded, tarfile.open(fileobj=Bounded(expanded), mode='r|') as archive:
+        need(archive.pax_headers.get('comment') == row['commit'], 'RETAINED_TASK_COMMIT_DIFFERS')
+        for index, member in enumerate(archive, 1):
+            need(index <= 50000 and 0 <= member.size <= 32 * MIB, 'RETAINED_TASK_SOURCE_MEMBER_BOUND')
+            if member.name in names:
+                need(member.name not in bodies and member.isfile() and 0 < member.size <= MIB,
+                     'ORIGINAL_TASK_RECIPE_INVALID')
+                bodies[member.name] = archive.extractfile(member).read(MIB + 1)
+    need(set(bodies) == set(names) and tuple(digest(bodies[name]) for name in names[:2])
+         in native.DATABASE_VERIFY_PUBLICATION_RECIPES and
+         digest(bodies[names[2]]) == native.DATABASE_VERIFY_TOOL_PREPARATION_SOURCE,
+         'REVIEWED_VERIFY_ONLY_TASK_SOURCE_REQUIRED')
+    return {'sourceSha256': digest(raw), 'publicationRecipe': [digest(bodies[name]) for name in names[:2]]}
+
+
+def task_reports(row, verifier, *, metadata_only=False):
+    receipt_path = ROOT / 'verification' / row['release'] / 'verification-receipt.json'
+    if not receipt_path.exists() and not receipt_path.is_symlink():
+        # A preparation failure can have a complete source backup without ever
+        # starting verification. Unknown/partially uploaded attempts are retained.
+        need(not (receipt_path.parent / '.verification-claimed').exists() and
+             not (ROOT / 'inbox' / row['release'] / 'verify-remote.py').exists() and
+             not (ROOT / 'inbox' / row['release'] / 'verification-evidence.tar.gz').exists(),
+             'UNKNOWN_OR_PARTIAL_VERIFICATION_REPORT_STATE')
+        return {'status': 'NOT_STARTED', 'originalJenkinsControlsRetained': True}
+    raw = read(receipt_path)
+    need(len(raw) <= verifier.MAX_RECEIPT_BYTES, 'ORIGINAL_REPORT_RECEIPT_BOUND')
+    receipt = json.loads(raw)
+    args = SimpleNamespace(tag=row['release'], commit=row['commit'], source_sha256=row['sourceSha256'],
+                           attempt=receipt.get('attempt'), scope='mysql', instance_id=INSTANCE, machine_id=MACHINE)
+    need(re.fullmatch(r'[a-f0-9]{32}', args.attempt or '') and receipt.get('status') in ('PASS', 'FAILED')
+         and type(receipt.get('verificationExitCode')) is int
+         and ((receipt['status'] == 'PASS' and receipt['verificationExitCode'] == 0)
+              or (receipt['status'] == 'FAILED' and receipt['verificationExitCode'] != 0))
+         and not receipt.get('evidenceOmissions'),
+         'ORIGINAL_FAILED_VERIFICATION_REPORTS_REQUIRED')
+    claim = json.loads(read(receipt_path.parent / '.verification-claimed/claim.json'))
+    need(claim == {'schema': 1, 'kind': 'doorhandle-ci-claim', 'release': row['release'],
+        'attempt': args.attempt, 'commit': row['commit'], 'sourceSha256': row['sourceSha256'],
+        'identity': {'instanceId': INSTANCE, 'machineId': MACHINE, 'executionLocation': 'ECS'}, 'scope': 'mysql'},
+        'ORIGINAL_VERIFICATION_CLAIM_DIFFERS')
+    catalog = verifier.validate_envelope(receipt, args)
+    need(bool(catalog), 'ORIGINAL_VERIFICATION_REPORTS_REQUIRED')
+    archive_path = safe(ROOT / 'inbox' / row['release'] / 'verification-evidence.tar.gz')
+    before = archive_path.stat()
+    need(stat.S_ISREG(before.st_mode) and before.st_uid == 1000 and before.st_nlink == 1
+         and not before.st_mode & 0o022 and 0 < before.st_size <= verifier.MAX_EVIDENCE_ARCHIVE,
+         'ORIGINAL_REPORT_ARCHIVE_REQUIRED')
+    if not metadata_only:
+        seen = set()
+        with verifier.bounded_tar(archive_path, verifier.MAX_EVIDENCE_BYTES + 16 * MIB) as archive:
+            for index, member in enumerate(archive, 1):
+                name = verifier.member_path(member.name).as_posix()
+                need(index <= verifier.MAX_EVIDENCE_FILES and member.isfile() and name not in seen,
+                     'ORIGINAL_REPORT_ARCHIVE_INVALID')
+                seen.add(name)
+                if index == 1:
+                    need(name == 'verification-receipt.json' and member.size == len(raw) and
+                         archive.extractfile(member).read(len(raw) + 1) == raw, 'ORIGINAL_REPORT_RECEIPT_CHANGED')
+                    continue
+                need(name in catalog and member.size == catalog[name]['bytes'], 'ORIGINAL_REPORT_CATALOG_DIFFERS')
+                check = hashlib.sha256()
+                with archive.extractfile(member) as stream:
+                    for block in iter(lambda: stream.read(MIB), b''):
+                        check.update(block)
+                need(check.hexdigest() == catalog[name]['sha256'], 'ORIGINAL_REPORT_BYTES_CHANGED')
+        need(seen == {'verification-receipt.json', *catalog}, 'ORIGINAL_REPORT_ARCHIVE_INCOMPLETE')
+    need(signature(before) == signature(archive_path.stat()), 'ORIGINAL_REPORT_ARCHIVE_CHANGED')
+    return {'verificationStatus': receipt['status'], 'receiptSha256': digest(raw),
+            'archiveMetadata': signature(before), 'reportFiles': len(catalog)}
+
+
+def task_admitted(binding, value, helpers, *, metadata_only=False):
+    native, verifier = helpers['retire-failed-native-jar-duplicates.py'], helpers['verify-remote.py']
+    local_names = {**native.UPLOADED_NAMES, 'preparation': 'ecs-tool-preparation.json',
+                   'transport': 'ecs-tool-preparation-transport.json'}
+    keepers = []
+    for row in value['candidates']:
+        tag = row['release']; work = ROOT / 'verification' / tag / 'checkout/work/compact-fixtures'
+        context = {key: row[key] for key in ('release', 'commit', 'sourceSha256')}
+        raw_docs, local = {}, {}
+        for role, name in local_names.items():
+            raw = read(ROOT / 'inbox' / binding['tag'] / 'failed-mysql-data-controls' / tag / name)
+            need(len(raw) == row['controls'][role]['bytes'] and digest(raw) == row['controls'][role]['sha256'],
+                 'AUTHENTICATED_JENKINS_TASK_CONTROL_CHANGED')
+            if role in native.UPLOADED_NAMES:
+                raw_docs[role] = raw
+            else:
+                local[role] = json.loads(raw)
+        for role, path in (('artifactPlan', ROOT / 'inbox' / tag / 'build-artifacts.json'),
+                           ('fixtureOwner', work.parent / 'compact-fixtures-owner.json'),
+                           ('fixtureCleanup', work / 'cleanup-receipt.json')):
+            raw_docs[role] = read(path)
+        evidence = native.validate_control_documents(raw_docs, context, value['identity'],
+                                                     canonical_jar=True, database_verification=True)
+        owner, cleanup = json.loads(raw_docs['fixtureOwner']), json.loads(raw_docs['fixtureCleanup'])
+        need(owner.get('dataDirectory') == str(work / 'mysql-data') and owner.get('sourceTableCount') == 131
+             and owner.get('sourceClone') == 'doorhandle_migration_verify_' + evidence['ownerToken']
+             and owner.get('containerId') != owner.get('sourceContainerId')
+             and cleanup.get('dataDirectoryRetained') == str(work / 'mysql-data'), 'EXACT_DERIVED_TASK_OWNER_REQUIRED')
+        preparation, transport = local['preparation'], local['transport']
+        need(all(document.get(key) == expected for document in (preparation, transport)
+                 for key, expected in context.items()) and preparation.get('status') == 'PREPARED'
+             and preparation.get('kind') == 'doorhandle-ecs-tool-preparation'
+             and preparation.get('identity') == value['identity'] and 'candidateBuilderTools' not in preparation
+             and preparation.get('sourceFiles', {}).get('script/jenkins/prepare-ecs-tools.py') == native.DATABASE_VERIFY_TOOL_PREPARATION_SOURCE
+             and transport.get('prepareCandidateBuilder') is False and transport.get('status') == 'PREPARED'
+             and transport.get('kind') == 'doorhandle-ecs-tool-preparation-transport'
+             and type(transport.get('schema')) is int and transport['schema'] == 1
+             and transport.get('instanceId') == INSTANCE and transport.get('machineId') == MACHINE
+             and type(transport.get('finalExitCode')) is int and transport['finalExitCode'] == 0 and 'buildkitArchive' not in transport,
+             'VERIFY_ONLY_TASK_WITHOUT_CANDIDATE_BUILDER_REQUIRED')
+        need(not (ROOT / 'inbox' / tag / 'candidate-build-tools').exists()
+             and not (work / 'derived-mysql-retired-task.json').exists()
+             and not (ROOT / 'releases' / tag).exists(), 'PUBLISHED_CANDIDATE_OR_RETIRED_TASK_REFUSED')
+        recipe = task_source_recipe(native, row)
+        publication = None if metadata_only else native.canonical_publication_refs(ROOT, tag)
+        manifest_raw = read(work / 'source-backup/manifest.json'); manifest = json.loads(manifest_raw)
+        need(digest(manifest_raw) == owner.get('sourceBackupSha256') and
+             manifest.get('snapshotSha256') == owner.get('sourceSnapshotSha256') == owner.get('sourceCloneSnapshotSha256')
+             and SHA.fullmatch(owner.get('sourceSnapshotSha256', '')) and len(manifest.get('tables', {})) == 131
+             and manifest.get('data', {}).get('file') == 'data.sql', 'COMPLETE_TASK_SOURCE_BACKUP_REQUIRED')
+        sql_sha, sql_bytes = manifest['data'].get('sha256'), manifest['data'].get('bytes')
+        need(SHA.fullmatch(sql_sha or '') and type(sql_bytes) is int and 0 < sql_bytes <= 128 * MIB,
+             'COMPLETE_TASK_SQL_METADATA_REQUIRED')
+        if not metadata_only:
+            sql = read(work / 'source-backup/data.sql', 128 * MIB)
+            need(len(sql) == sql_bytes and digest(sql) == sql_sha, 'TASK_SOURCE_SQL_INTEGRITY_FAILED')
+        keepers.append({**context, 'jenkinsResult': evidence['jenkinsResult'], 'token': evidence['ownerToken'],
+            'ownerSha256': digest(raw_docs['fixtureOwner']),
+            'cleanupSha256': digest(raw_docs['fixtureCleanup']), 'backupManifestSha256': digest(manifest_raw),
+            'sourceSqlSha256': sql_sha, 'sourceSqlBytes': sql_bytes, 'sourceSnapshotSha256': owner['sourceSnapshotSha256'],
+            'sourceRecipe': recipe, 'publicationReferences': publication,
+            'reports': task_reports(row, verifier, metadata_only=metadata_only)})
+    return keepers
+
+
+def task_configuration(value, keepers, roots):
+    tags = [row['release'] for row in value['candidates']]
+    need(set(roots) == set(tags) and [row['release'] for row in keepers] == tags,
+         'EXACT_TASK_ROOT_IDENTITIES_REQUIRED')
+    targets = {}
+    for row in value['candidates']:
+        meta = roots[row['release']]
+        need(type(meta) is list and len(meta) == 5 and all(type(part) is int for part in meta)
+             and meta[0] == 64771 and stat.S_ISDIR(meta[2]) and meta[3:] == [999, 1000]
+             and stat.S_IMODE(meta[2]) == 0o700, 'TASK_METADATA_DIRECTORY_IDENTITY_REQUIRED')
+        targets[row['release']] = (meta[1], row['commit'])
+    return TaskBatch(targets, {row['release']: row['backupManifestSha256'] for row in keepers})
+
+
+def task_root_worker(request):
+    need(os.getuid() == 0 and Path('/etc/machine-id').read_text().strip() == MACHINE,
+         'APPROVED_TASK_ROOT_IDENTITY_REQUIRED')
+    phase = request.get('phase')
+    expected = {'phase', 'binding', 'roots'} | ({'target'} if phase == 'task-remove' else set())
+    need(set(request) == expected and phase in ('task-inventory', 'task-remove'), 'ARBITRARY_TASK_ROOT_ARGUMENT_REFUSED')
+    helpers = task_helpers(request['binding']); value = task_request(request['binding'])
+    keepers = task_admitted(request['binding'], value, helpers, metadata_only=True)
+    configuration = task_configuration(value, keepers, request['roots'])
+    if phase == 'task-inventory':
+        targets = [tree(tag, configuration) for tag in configuration.targets]
+        return {'targets': targets, 'processProbe': process_references(targets)}
+    item = request['target']
+    need(item.get('release') in configuration.targets and tree(item['release'], configuration) == item,
+         'TASK_TREE_CHANGED_AFTER_PLAN')
+    probe = process_references([item]); remove_tree(item, configuration)
+    return {'release': item['release'], 'status': 'REMOVED', 'allocatedBytesBefore': item['allocatedBytes'],
+            'processProbe': probe}
+
+
+def task_run(args):
+    need(os.getuid() == 1000 and args.batch == TASK_BATCH, 'EXPLICIT_TASK_MAINTENANCE_REQUIRED')
+    binding = {'tag': args.tag, 'commit': args.commit, 'sourceSha256': args.source_sha256,
+               'requestSha256': args.request_sha256, 'failedBuilds': args.failed_builds}
+    helpers = task_helpers(binding); value = task_request(binding)
+    identity = helpers['verify-remote.py'].ecs_identity(INSTANCE, MACHINE)
+    output = ROOT / 'inbox' / args.tag / 'derived-failed-mysql-retirement'
+    plan_file, receipt_file, execution_file = (output / name for name in ('plan-private.json', 'receipt.json', 'execution.json'))
+    public_binding = {'batch': TASK_BATCH, 'release': args.tag, 'commit': args.commit,
+        'sourceSha256': args.source_sha256, 'identity': identity, 'requestSha256': args.request_sha256,
+        'taskThreadId': TASK_ID}
+    if args.phase == 'status':
+        if receipt_file.exists():
+            receipt = json.loads(read(receipt_file))
+            need(all(receipt.get(key) == expected for key, expected in public_binding.items()), 'TASK_TERMINAL_BINDING_DIFFERS')
+            return {**public_binding, 'terminal': True, 'status': receipt['status']}
+        if execution_file.exists():
+            execution = json.loads(read(execution_file))
+            need(execution.get('binding') == public_binding and execution.get('bootId') == Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
+                 'TASK_EXECUTION_BINDING_DIFFERS')
+            try:
+                fields = (Path('/proc') / str(execution['pid']) / 'stat').read_text().rsplit(')', 1)[1].split()
+                alive = fields[19] == execution['startTicks'] and fields[0] not in ('Z', 'X')
+            except FileNotFoundError:
+                alive = False
+            need(alive, 'TASK_EXECUTION_STOPPED_WITHOUT_TERMINAL')
+            return {**public_binding, 'terminal': False, 'status': 'RUNNING'}
+        return {**public_binding, 'terminal': False, 'status': 'UNKNOWN'}
+    cleanup = helpers['cleanup-ecs-builds.py']
+    def admitted():
+        keepers = task_admitted(binding, value, helpers)
+        containers = cleanup.docker_snapshot()
+        for keeper in keepers:
+            cleanup.quiescent({'checkout': ROOT / 'verification' / keeper['release'] / 'checkout', 'token': keeper['token']},
+                              keeper['release'], containers, include_inbox=True)
+        return keepers
+    with lock(ROOT / 'state/deploy.lock'), ExitStack() as attempts:
+        for row in value['candidates']:
+            attempts.enter_context(attempt_lock(row['release']))
+        if args.phase == 'plan':
+            need(not plan_file.exists() and not receipt_file.exists() and not execution_file.exists(), 'FRESH_TASK_PLAN_REQUIRED')
+            keepers = admitted()
+            roots = {row['release']: signature(safe(ROOT / 'verification' / row['release'] /
+                     'checkout/work/compact-fixtures/mysql-data').stat())[:5] for row in value['candidates']}
+            measured = privileged({'phase': 'task-inventory', 'binding': binding, 'roots': roots})
+            need(measured['processProbe']['status'] == 'QUIESCENT', 'ALL_UID_TASK_QUIESCENCE_REQUIRED')
+            plan = {**public_binding, 'keepers': keepers, 'roots': roots, 'targets': measured['targets'],
+                    'processProbe': measured['processProbe']}
+            write(plan_file, plan)
+            public = {**public_binding, 'planSha256': digest(encoded(plan)), 'sourceSqlAndReportsRetained': True,
+                'targets': [{key: target[key] for key in ('release', 'path', 'allocatedBytes', 'files', 'inventorySha256')}
+                            for target in measured['targets']], 'processProbe': measured['processProbe']}
+            write(output / 'plan.json', public)
+            return {'status': 'PLANNED', **public_binding, 'planSha256': public['planSha256']}
+        raw = read(plan_file, 8 * MIB); plan = json.loads(raw)
+        need(SHA.fullmatch(args.plan_sha256 or '') and digest(raw) == args.plan_sha256 and
+             all(plan.get(key) == expected for key, expected in public_binding.items()) and plan['keepers'] == admitted()
+             and not receipt_file.exists() and not execution_file.exists(), 'TASK_PLAN_OR_KEEPERS_CHANGED')
+        write(execution_file, {'binding': public_binding, 'pid': os.getpid(),
+            'startTicks': Path('/proc/self/stat').read_text().rsplit(')', 1)[1].split()[19],
+            'bootId': Path('/proc/sys/kernel/random/boot_id').read_text().strip()})
+        receipt = {**public_binding, 'status': 'FAILED_OR_UNKNOWN', 'planSha256': args.plan_sha256,
+                   'removed': [], 'sourceSqlAndReportsRetained': True,
+                   'availableBytesBefore': os.statvfs(ROOT).f_bavail * os.statvfs(ROOT).f_frsize}
+        try:
+            measurement = privileged({'phase': 'task-inventory', 'binding': binding, 'roots': plan['roots']})
+            need(measurement['targets'] == plan['targets'] and measurement['processProbe']['status'] == 'QUIESCENT',
+                 'TASK_TARGETS_CHANGED_AFTER_PLAN')
+            for target in plan['targets']:
+                need(plan['keepers'] == admitted(), 'TASK_KEEPERS_CHANGED_BEFORE_REMOVE')
+                receipt['removed'].append(privileged({'phase': 'task-remove', 'binding': binding,
+                    'roots': plan['roots'], 'target': target}))
+            need(plan['keepers'] == admitted(), 'TASK_SQL_SOURCE_OR_REPORTS_CHANGED_AFTER_REMOVE')
+            for target in plan['targets']:
+                write(ROOT / 'verification' / target['release'] / 'checkout/work/compact-fixtures/derived-mysql-retired-task.json',
+                      {**public_binding, 'targetRelease': target['release'], 'status': 'REMOVED', 'planSha256': args.plan_sha256})
+            receipt['status'] = 'COMPLETE'
+        except BaseException as error:
+            receipt['errorType'] = type(error).__name__
+            raise
+        finally:
+            receipt['availableBytesAfter'] = os.statvfs(ROOT).f_bavail * os.statvfs(ROOT).f_frsize
+            write(receipt_file, receipt)
+        return {'status': receipt['status'], **public_binding, 'removedDirectories': len(receipt['removed'])}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('phase', choices=('plan', 'apply', 'status'))
     for name in ('batch', 'tag', 'commit', 'source-sha256'):
         parser.add_argument('--' + name, required=True)
     parser.add_argument('--plan-sha256')
+    parser.add_argument('--failed-builds')
+    parser.add_argument('--request-sha256')
     args = parser.parse_args()
     # Transport loss observes this same operation; it must never replay deletion.
     signal.signal(signal.SIGHUP, signal.SIG_IGN)

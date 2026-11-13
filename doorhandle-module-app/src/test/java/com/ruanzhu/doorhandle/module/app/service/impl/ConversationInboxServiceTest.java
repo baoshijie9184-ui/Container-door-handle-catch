@@ -221,33 +221,72 @@ class ConversationInboxServiceTest {
             assertThat(status(input.id())).isEqualTo("COMPLETED");assertThat(interrupted).isFalse();
         }finally{release.countDown();closer.shutdownNow();}
     }
+    private String unresolvedInput(long legacyId,String mode,String runId,String content,String evidence)throws Exception{
+        var json=new com.fasterxml.jackson.databind.ObjectMapper();String id=UUID.randomUUID().toString();
+        String contentDigest=inputDigest(content),requestDigest=inputDigest(alice.userId()+"|2:s1|"+mode+"|CHAT|"+contentDigest);
+        String payload=json.writeValueAsString(new com.ruanzhu.doorhandle.framework.persistence.workflow.WorkflowPayloads.ConversationInputV1(
+                alice.username(),mode,mode,"CHAT",content,contentDigest));
+        String auditPayload=json.writeValueAsString(new com.ruanzhu.doorhandle.framework.persistence.workflow.AuditPayloads.ConversationInputV1("QUEUED"));
+        String auditEvidence=json.writeValueAsString(Map.of("protocol","doorhandle-legacy-clock-v1","status","UNRESOLVED",
+                "sourceTable","agent_conversation_input_audit","sourceKey",Map.of("id",legacyId),"sourceSnapshotSha256","a".repeat(64),
+                "sourceRowSha256","b".repeat(64),"sourceWallTimes",Map.of("created_at","2026-10-17 11:45:27.244980")));
+        // Mirror 31-conversation-inbox.sql: provenance belongs to the initial imported INSERT, never an UPDATE of a live input.
+        new org.springframework.transaction.support.TransactionTemplate(new DataSourceTransactionManager(jdbc.getDataSource())).executeWithoutResult(tx->{
+            jdbc.update("""
+                    INSERT INTO workflow_instance(workflow_id,kind,idempotency_scope,request_id,request_sha256,owner_user_id,
+                      actor_user_id,resource_type,resource_id,session_id,run_id,status,revision,fence,payload_version,payload_json,
+                      created_at,updated_at,expires_at,finished_at,legacy_source,legacy_key,legacy_clock_json)
+                    VALUES(?,'CONVERSATION_INPUT','GLOBAL',?,?,1,1,'SESSION','s1','s1',?,'QUEUED',0,0,1,?,
+                      NULL,NULL,NULL,NULL,'agent_conversation_input',?,?)
+                    """,id,id,requestDigest,runId,payload,Long.toString(legacyId),evidence);
+            jdbc.update("""
+                    INSERT INTO audit_event(event_id,kind,owner_user_id,actor_user_id,resource_type,resource_id,session_id,
+                      request_id,action,revision,content_sha256,occurred_at,payload_version,payload_json,legacy_source,legacy_key,legacy_clock_json)
+                    VALUES(?,'CONVERSATION_INPUT',1,1,'CONVERSATION_INPUT',?,'s1',?,'ENQUEUED',0,?,NULL,1,?,
+                      'agent_conversation_input_audit',?,?)
+                    ""","legacy-inbox-"+legacyId,id,id,contentDigest,auditPayload,Long.toString(legacyId),auditEvidence);
+        });
+        return id;
+    }
+    private static String inputDigest(String value)throws java.security.NoSuchAlgorithmException{
+        return HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(value.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+    }
     @Test void unresolvedHistoricalInputIsReadableButNeverExpiredSteeredConsumedOrReplayed()throws Exception{
-        active();var queued=inbox.enqueue(alice,"s1",UUID.randomUUID().toString(),"NEXT_STEP","RETAIN-PRIVATE-HISTORICAL-INPUT");
+        active();
         var times=new LinkedHashMap<String,Object>();times.put("created_at","2026-10-17 11:45:27.244980");
         times.put("updated_at","2026-10-17 11:45:46.000000");times.put("expires_at","2026-10-17 12:15:38.238041");
         String evidence=new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(Map.of(
                 "protocol","doorhandle-legacy-clock-v1","status","UNRESOLVED","sourceTable","agent_conversation_input",
                 "sourceKey",Map.of("id",91),"sourceSnapshotSha256","a".repeat(64),"sourceRowSha256","b".repeat(64),"sourceWallTimes",times));
-        jdbc.update("UPDATE workflow_instance SET created_at=NULL,updated_at=NULL,expires_at=NULL,legacy_source='agent_conversation_input',legacy_key='91',legacy_clock_json=? WHERE workflow_id=?",evidence,queued.id());
+        String id=unresolvedInput(91,"NEXT_STEP","run-1","RETAIN-PRIVATE-HISTORICAL-INPUT",evidence);
+        var original=jdbc.queryForMap("SELECT * FROM workflow_instance WHERE workflow_id=?",id);
+        var originalAudit=jdbc.queryForList("SELECT * FROM audit_event WHERE resource_id=? ORDER BY id",id);
+        String storedEvidence=jdbc.queryForObject("SELECT legacy_clock_json FROM workflow_instance WHERE workflow_id=?",String.class,id);
+        assertThat(new com.fasterxml.jackson.databind.ObjectMapper().readTree(storedEvidence)).isEqualTo(new com.fasterxml.jackson.databind.ObjectMapper().readTree(evidence));
         assertThat(inbox.list(alice,"s1")).singleElement().satisfies(item->{assertThat(item.status()).isEqualTo("QUEUED");assertThat(item.clockStatus()).isEqualTo("UNRESOLVED");assertThat(item.sourceWallTimes()).containsEntry("expires_at","2026-10-17 12:15:38.238041");assertThat(item.content()).isEqualTo("RETAIN-PRIVATE-HISTORICAL-INPUT");});
-        assertThatThrownBy(()->inbox.change(alice,"s1",queued.id(),0,null)).hasMessageContaining("历史时区未确认");
-        active();assertThatThrownBy(()->inbox.steer(alice,"s1",queued.id(),0,"run-1")).hasMessageContaining("历史时区未确认");
+        assertThatThrownBy(()->inbox.change(alice,"s1",id,0,null)).hasMessageContaining("历史时区未确认");
+        active();assertThatThrownBy(()->inbox.steer(alice,"s1",id,0,"run-1")).hasMessageContaining("历史时区未确认");
         assertThat(inbox.take(alice,"s1","run-1")).isEmpty();inbox.expire();inbox.dispatch();
-        assertThatThrownBy(()->inbox.enqueue(alice,"s1",queued.id(),"NEXT_STEP","RETAIN-PRIVATE-HISTORICAL-INPUT")).hasMessageContaining("历史时区未确认");
+        assertThatThrownBy(()->inbox.enqueue(alice,"s1",id,"NEXT_STEP","RETAIN-PRIVATE-HISTORICAL-INPUT")).hasMessageContaining("历史时区未确认");
         assertThatThrownBy(()->inbox.list(bob,"s1")).hasMessageContaining("404");
-        assertThat(status(queued.id())).isEqualTo("QUEUED");verifyNoInteractions(chat);
+        assertThat(status(id)).isEqualTo("QUEUED");verifyNoInteractions(chat);
         verify(sessions,never()).appendUserMessage(any(),anyString(),eq("RETAIN-PRIVATE-HISTORICAL-INPUT"));
-        assertThat(jdbc.queryForObject("SELECT legacy_clock_json FROM workflow_instance WHERE workflow_id=?",String.class,queued.id())).isEqualTo(evidence);
+        assertThat(jdbc.queryForObject("SELECT legacy_clock_json FROM workflow_instance WHERE workflow_id=?",String.class,id)).isEqualTo(storedEvidence);
+        assertThat(jdbc.queryForMap("SELECT * FROM workflow_instance WHERE workflow_id=?",id)).usingRecursiveComparison().isEqualTo(original);
+        assertThat(jdbc.queryForList("SELECT * FROM audit_event WHERE resource_id=? ORDER BY id",id)).usingRecursiveComparison().isEqualTo(originalAudit);
     }
     @Test void newInputStillRunsWhileUnknownHistoricalInputRetainsItsOriginalState()throws Exception{
-        var old=enqueue("OLD-DO-NOT-RUN");
         String evidence=new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(Map.of("protocol","doorhandle-legacy-clock-v1","status","UNRESOLVED",
                 "sourceTable","agent_conversation_input","sourceKey",Map.of("id",92),"sourceSnapshotSha256","a".repeat(64),"sourceRowSha256","b".repeat(64),
                 "sourceWallTimes",Map.of("created_at","2026-10-17 11:45:27.244980","updated_at","2026-10-17 11:45:46.000000","expires_at","2026-10-17 12:15:38.238041")));
-        jdbc.update("UPDATE workflow_instance SET created_at=NULL,updated_at=NULL,expires_at=NULL,legacy_source='agent_conversation_input',legacy_key='92',legacy_clock_json=? WHERE workflow_id=?",evidence,old.id());
+        String id=unresolvedInput(92,"NEXT_TURN",null,"OLD-DO-NOT-RUN",evidence);
+        var original=jdbc.queryForMap("SELECT * FROM workflow_instance WHERE workflow_id=?",id);
+        var originalAudit=jdbc.queryForList("SELECT * FROM audit_event WHERE resource_id=? ORDER BY id",id);
         var current=enqueue("NEW-INPUT");inbox.dispatch();completed(current.id());
-        assertThat(status(old.id())).isEqualTo("QUEUED");assertThat(inbox.list(alice,"s1")).filteredOn(item->item.id().equals(old.id())).singleElement().satisfies(item->assertThat(item.clockStatus()).isEqualTo("UNRESOLVED"));
+        assertThat(status(id)).isEqualTo("QUEUED");assertThat(inbox.list(alice,"s1")).filteredOn(item->item.id().equals(id)).singleElement().satisfies(item->assertThat(item.clockStatus()).isEqualTo("UNRESOLVED"));
         verify(chat).handleUserMessage(eq("alice"),argThat(request->"NEW-INPUT".equals(request.getContent())));
         verify(chat,never()).handleUserMessage(eq("alice"),argThat(request->"OLD-DO-NOT-RUN".equals(request.getContent())));
+        assertThat(jdbc.queryForMap("SELECT * FROM workflow_instance WHERE workflow_id=?",id)).usingRecursiveComparison().isEqualTo(original);
+        assertThat(jdbc.queryForList("SELECT * FROM audit_event WHERE resource_id=? ORDER BY id",id)).usingRecursiveComparison().isEqualTo(originalAudit);
     }
 }
