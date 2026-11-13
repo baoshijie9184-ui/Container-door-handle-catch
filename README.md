@@ -74,7 +74,7 @@ Agent 对话支持安全切点暂停/继续、本人持久消息排队与逐条�
 
 应用、中间件、记忆服务和 CPU PTH 检测 worker 均运行在北京 ECS。部署使用 `compose.monolith.yml`、`compose.cloud.yml` 和 `compose.detection.yml`，本分支已移除本地一键启动与停止脚本。
 
-后端 Dockerfile 只负责 Java 镜像；MySQL、Redis、Kafka、Mem0、Chroma 在 `compose.cloud.yml`。各 Compose 文件、初始化容器和网关之间的关系见 [容器与配置入口](docs/docker-monolith-deployment.md#容器与配置入口2026-10-22-整理)。
+后端 Dockerfile 只负责 Java 镜像；当前源码的 MySQL、Redis、Kafka、Mem0、Qdrant 在 `compose.cloud.yml`，旧 Chroma 卷仅保留为迁移来源。各 Compose 文件、初始化容器和网关之间的关系见 [容器与配置入口](docs/docker-monolith-deployment.md#容器与配置入口2026-10-22-整理)。
 
 在项目根目录建立访问隧道并保持终端运行：
 
@@ -191,7 +191,7 @@ Jenkins 任务使用 `Jenkinsfile.ecs-monolith`。真实 MySQL 场景需要控�
 docs/system-user-guide.md
 ```
 
-智能助手 Chroma RAG 配置说明请查看：
+智能助手的统一 Qdrant/RAG/Mem0 配置见 [向量存储说明](docs/middleware/semantic-vector-storage.md)。旧 Chroma 的只读恢复说明保留在：
 
 ```text
 docs/chroma-rag-setup.md
@@ -199,9 +199,9 @@ docs/chroma-rag-setup.md
 
 ### Java 单体 Docker 部署
 
-当前使用三个 Compose 文件部署 Java 后端、托管双前端的 Nginx、MySQL、Redis、Kafka、Mem0、Chroma 和 CPU PTH 检测 worker。`deploy/cloud.env.example` 提供服务器配置模板，现有私有配置继续保留在服务器原运行目录，不能用本机 `.env` 覆盖。
+当前源码以三个 Compose 文件编排 Java 后端、托管双前端的 Nginx、MySQL、Redis、Kafka、Mem0、Qdrant 和 CPU PTH 检测 worker。中间件调整与验收范围见 [单体中间件](docs/middleware/monolith-alignment.md)，正式切换仍受迁移验收门约束。`deploy/cloud.env.example` 提供服务器配置模板，现有私有配置继续保留在服务器原运行目录，不能用本机 `.env` 覆盖。
 
-镜像设计见 [Docker 部署说明](docs/docker-monolith-deployment.md)，已部署服务的日常使用见 [服务器运行说明](docs/服务器运行说明.md)。应用更新从 Jenkins 发布并复用原持久卷，首次部署与已部署实例恢复应分别按对应文档操作。
+镜像设计见 [Docker 部署说明](docs/docker-monolith-deployment.md)，已部署服务的日常使用见 [服务器运行说明](docs/服务器运行说明.md)。应用更新从 Jenkins 发布；同一数据代际沿用原持久卷，Chroma→Qdrant 必须使用候选迁移与独立恢复流程，不能把旧 Mem0 卷直接挂到新运行时。首次部署与已部署实例恢复应分别按对应文档操作。
 
 原 `compose.nginx.yml` 与 [双实例部署说明](docs/nginx-compose-deployment.md) 保留为实验入口，不作为当前单体默认方案。
 
