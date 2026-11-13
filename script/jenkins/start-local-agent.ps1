@@ -79,9 +79,8 @@ if ($DownloadAgent -or -not (Test-Path -LiteralPath $agentJar -PathType Leaf)) {
     Invoke-WebRequest -Uri 'http://127.0.0.1:8080/jnlpJars/agent.jar' -OutFile $agentJar -TimeoutSec 15 | Out-Null
 }
 $arguments = '-jar "{0}" -url http://127.0.0.1:8080/ -name doorhandle-local-ci -secret "@{1}" -webSocket -workDir "{2}"' -f $agentJar, $secretFile, $agentRoot
-$process = Start-Process -FilePath $JavaExe -ArgumentList $arguments -WindowStyle Hidden -PassThru `
-    -WorkingDirectory $agentRoot `
-    -RedirectStandardOutput (Join-Path $agentRoot 'agent.out.log') `
-    -RedirectStandardError (Join-Path $agentRoot 'agent.err.log')
-$process.Id | Set-Content -LiteralPath $pidFile
+. (Join-Path $PSScriptRoot 'start-detached-java.ps1')
+$process = Start-DetachedJenkinsJava -JavaExe (Resolve-Path -LiteralPath $JavaExe).Path -Arguments $arguments `
+    -WorkingDirectory $agentRoot -StandardOutput (Join-Path $agentRoot 'agent.out.log') `
+    -StandardError (Join-Path $agentRoot 'agent.err.log') -PidFile $pidFile
 Write-Output "Local Jenkins agent started: PID $($process.Id). No ECS or project tests were started."

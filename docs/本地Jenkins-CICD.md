@@ -12,29 +12,33 @@
 
 ### 数据库验收仍待完成
 
-最新完整数据库任务 **#283 FAILURE**，固定 `30f03c1b15354b9585aee1e4594d53f9f57e802c`：13模块本地跳测试打包、同轮ECS控制 **2,453项全部通过**；原生实际覆盖 **46类、681项：677通过、3断言失败、1错误，零跳过**。此前Infra未知CHECK已由27项全通过验证，ContextStore4项、Workbench40项和DetectionCollaboration13项均全通过；其余原生类及后续source/整库/恢复尚未完成。
+固定 `102a7fc9d45279dfc1354a3d0cc4d8434bcba438` 的 **#287 正在原 ECS 执行**：本地13模块跳测试打包、同轮22模块控制2,476项已通过；截至16:51（北京时间），原生37类、541项全通过，零失败、错误或跳过。完整64类、source、131→29整库及恢复仍以终态原件为准。
+
+16:43核查发现本地控制器和agent均已退出，8080无监听；16:48使用同一Home/WAR/Java恢复，原#287 CPS已恢复，远端原attempt `965d4794b41a4cec9c7bea8ef339f54e`持续运行，未重放测试。但本地原VerifyEcs durable进程已丢失，不能把CPS恢复当作该步骤完成。先只读等原attempt终态并补收原件，再由原post清理；不写durable结果文件、不手动置绿，也不在原验证仍运行时停止夹具。启动日志与原恢复记录在 `work/jenkins/recover287-detached-20261113-164716/`。启动脚本已补独立隐藏launcher，待空闲窗口实际回读；原退出原因尚未定论。
+
+上一轮完整数据库任务 **#283 FAILURE**，固定 `30f03c1b15354b9585aee1e4594d53f9f57e802c`：13模块本地跳测试打包、同轮ECS控制 **2,453项全部通过**；原生实际覆盖 **46类、681项：677通过、3断言失败、1错误，零跳过**。此前Infra未知CHECK已由27项全通过验证，ContextStore4项、Workbench40项和DetectionCollaboration13项均全通过；其余原生类及后续source/整库/恢复尚未完成。
 
 本轮已集中修正四文件，原11/12/33/9项数量保持，不改生产DDL、translator、helper或业务代码：
 - SystemHistory及未达到的LoginSession负例改用既有严格3819/HY000和精确CHECK名；SystemHistory的V2先构造合法USER载荷，再只验证NULL执行人；每次拒绝后比较完整原行。
 - ModelOperationAudit原offset→UTC结果正确，错误在测试把API固定+08展示误当原wall time。源2026-10-14 16:30在+00、−05:30下分别为UTC16:30、22:00，API应为次日00:30、06:00；修正展示期望并保留UTC及原wall/payload不变断言。
 - ModelUpload缺旧命令回执负例不能DELETE受保护历史。现使用已有非命令模式完成一次真实REGISTERED上传，恢复保护后验证409、仅验证一次、无新命令或回执头，模型/文件登记/审计原行均不变。
 
-13模块离线跳测试编译 **23.113秒BUILD SUCCESS**，原件 `work/jenkins/native283-model-fixtures-final-test-compile.log`；修复尚待新固定提交ECS统一验证。#283的111份原归档已核对，110份非应用JAR、23,135,018字节及原build.xml保全在 `ci-283-raw-receipts`；应用JAR仍在Jenkins原归档。夹具监督6,876次、内核峰值1,166,548,992字节、无OOM，工具及夹具均STOPPED，**15:15:54（北京时间）**从流水线外实际回读 `Stopped / StopCharging`，原件 `ci-283-external-stop-readback.json`。该峰值只覆盖已完成部分。
+13模块离线跳测试编译 **23.113秒BUILD SUCCESS**，原件 `work/jenkins/native283-model-fixtures-final-test-compile.log`；修复已进入#287统一验证。#283的111份原归档已核对，110份非应用JAR、23,135,018字节及原build.xml保全在 `ci-283-raw-receipts`；应用JAR仍在Jenkins原归档。夹具监督6,876次、内核峰值1,166,548,992字节、无OOM，工具及夹具均STOPPED，**15:15:54（北京时间）**从流水线外实际回读 `Stopped / StopCharging`，原件 `ci-283-external-stop-readback.json`。该峰值只覆盖已完成部分。
 
-### 十一份旧测试副本已按两次授权回收
+### 十三份旧测试副本已按三次授权回收
 
 **#279控制验证SUCCESS**：固定 `dc306fc6d2cfc62c253f40421045d8f8d3aedf3b` 的22模块、**2,452项全部通过，零失败/跳过**；两闭集的74项回收回归全部通过。实际plan/apply按5份或6份精确选择，未合并扫描范围，#266不准入。
 
 - **#278维护SUCCESS**：回收原授权#221/#222/#235/#238/#247，1,561个文件、分配1,350,406,144字节（约1.26GiB）。该轮三个新增公共控制未进C归档，已由真实workspace/ECS原件补充保全4,398字节，原件在 `ci-278-derived-workspace-originals`；原C归档未改写。
 - **#280维护SUCCESS、原远端终态COMPLETE**：回收新增授权#250/#253/#256/#259/#264/#268，1,921个文件、分配 **1,653,358,592字节（约1.54GiB）**。删除前后完整131表/5,755行源SQL备份、归属及全部UID进程无引用检查闭合；SQL、源码、报告、正式业务库和#266保留。8份原归档包含全部3份derived公共控制，已保全在 `work/jenkins/data-residency-20261107/ci-280-raw-receipts`，归档修复已被实际消费。
 
-两批合计分配3,003,764,736字节（约2.80GiB），均已消费，不重跑或重复计入其他旧缓存批次。#280后新鲜实余 **6,387,630,080字节（约5.95GiB）**，原件 `post-maintenance280-execution-readiness.json`。容量变化仍以各阶段实际读回为准。
+上述两批合计分配3,003,764,736字节（约2.80GiB），均已消费，不重跑或重复计入其他旧缓存批次。#280后新鲜实余 **6,387,630,080字节（约5.95GiB）**，原件 `post-maintenance280-execution-readiness.json`。容量变化仍以各阶段实际读回为准。
 
 后续完整数据库验证保留64原生类、最低755项、完整source、131→29及源/目标双恢复、旧45表、5,599文件和三库输入。为避免SQL临时恢复卷与5,599文件新展开同时占盘，已核对依赖：旧45及三库仅依赖本轮完整VerifyEcs PASS、原clone和各自原件；两阶段成功返回前均清理其两个派生恢复卷。已将两SQL阶段原样移到旧文件恢复之前，保留全部when、ATTEMPTED、逐项校验和失败清理。完整顶层stage顺序回归已随#281控制模块39项实际全通过；后续仍由完整`verify/mysql`自带预检及全部恢复统一验证，不重复已消费维护批次。
 
 为继续下一轮，在既有FailedNative准入中仅登记#281原归档的真实已审发布配方。其`verify/mysql`、生产false及未请求builder均由原件核定；原算法和目录范围不变，若现场容量需要则只回收#281可再生JAR及停止对象，保留其mysql-data、SQL、源码和报告，不重跑五/六闭集。
 
-用户已另行批准#281/#283两份新增派生库按同样条件回收。一次管理员只读统计已完成：743个文件、619,864,064分配字节，无链接/硬链或异项；各自131表/5,755行完整源SQL和备份manifest已核验，原件 `two-derived-mysql-admin-metadata-once.json`、`two-derived-mysql-original-backup-facts.json`。两份仍未删除。复用原维护入口增加第三个精确闭集`DerivedMysql281283`，原五/六范围和默认保持，不合并扫描；97项回收回归、控制总2,476项已完成静态编译，提交后统一控制验证，再先标准FailedNative283清停止对象/JAR并保数据，最后执行获批两目录回收。
+新增两份#281/#283已完成原授权的一次管理员只读统计和条件回收。**#284控制SUCCESS**：22模块2,476项、其中97项回收回归全部通过。**#285标准维护SUCCESS**：移除#283停止对象及两份可再生JAR，先保其数据。随后 **#286维护SUCCESS**：第三个精确闭集`DerivedMysql281283`实际移除两目录的743个文件、619,864,064分配字节（约0.58GiB），完整源SQL、源码、报告、正式库及#266保留，未合并扫描范围。8份原归档包含3份derived公共控制，原件在 `ci-286-raw-receipts`。三批均已消费，不再执行；#286后实余5,893,890,048字节，随即用于#287。
 
 完整native、131→29整库及双恢复、旧45/5,599/三库恢复、9项运行场景、19项浏览器功能检查、Mem0/RAG正式生效与旧数据业务合入/切库仍未验收。正式压测继续后置。
 
@@ -463,6 +467,8 @@ MySQL 验证可明确选择 `DOORHANDLE_CI_AUTO_COMPACT_FIXTURES=true`，并提�
 ```
 
 脚本在隐藏后台窗口启动，绑定 `127.0.0.1`；端口占用时停止，不覆盖其他进程。它不安装 Jenkins、不重置账号，也不启动 ECS 或运行项目测试。
+
+两个启动入口共用 `start-detached-java.ps1`：由本机CIM创建独立隐藏launcher，launcher直接持有既有Java并持续追加原日志，避免依赖短生命周期命令窗口转发输出。每次启动原件位于相应`*.pid.starts/<id>/`，包括startup、自然退出码或失败记录；PID文件仍记录Java。创建失败或结果未知时先读该次原件，不换路线自动重试；不安装服务或计划任务，不禁用Jenkins进程清理。
 
 ### 本地独立 agent 的启动与重启
 
