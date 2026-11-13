@@ -1,4 +1,4 @@
-"""Retire the five explicitly approved, stopped test replicas; retain their SQL.
+"""Retire one explicitly approved, stopped test-replica batch; retain its SQL.
 
 This closed batch is separate from container retirement's data-retention contract.
 The privileged worker accepts no arbitrary directory and opens no MySQL contents.
@@ -22,6 +22,7 @@ import time
 
 LOADED_SOURCE = None if __name__ == '_approved_worker' else Path(__file__).read_bytes()
 BATCH = 'derived-mysql-221-222-235-238-247-v1'
+RECENT_BATCH = 'derived-mysql-250-253-256-259-264-268-v1'
 ROOT = Path('/home/ecs-user/doorhandle-ci')
 INSTANCE = 'i-2zeieuov2aum486jm1ek'
 MACHINE = '1ebe8f77e3104ab6a49a9386e38abd20'
@@ -47,6 +48,30 @@ APPROVED_METADATA = {
     'ci-238-73ce5aeff862': (328, 289935360),
     'ci-247-abb4a9f35efc': (311, 266706944),
 }
+RECENT_TARGETS = {
+    'ci-250-6444cbc36a65': (1525007, '6444cbc36a653a5e068d95c3138d67ab0b9ca01c'),
+    'ci-253-e441933dc75b': (2310434, 'e441933dc75bde0f1fb09cf8e6de4c15130eddfb'),
+    'ci-256-9f90b9283367': (1918346, '9f90b92833678240188a0ea68a2ec8ca3d137605'),
+    'ci-259-516614e07542': (2965403, '516614e0754249d062103ed64f3d5337fdbee29e'),
+    'ci-264-2ff9edc00291': (2050112, '2ff9edc00291f558d6a267f617757911d128ad3e'),
+    'ci-268-b3f23013513b': (3610894, 'b3f23013513b11af5041c67569a8f029651aa8db'),
+}
+RECENT_BACKUP_MANIFESTS = {
+    'ci-250-6444cbc36a65': '091403eed082fd4b37c897090417124402979f823814777c61bb06e27d7e5078',
+    'ci-253-e441933dc75b': '4b8150d34f16df5cccdb024047cf11537fea3f656baf725e2042cf514479471b',
+    'ci-256-9f90b9283367': 'b6f2e2ef20156fef963057fbf504a7940c3ca03e30d564f59dcb3de34034a5a4',
+    'ci-259-516614e07542': 'b60c394e2ef33ab948dd95fa4d90ff2983ec14ad1a1e0fcb358e9ac0ee1704e5',
+    'ci-264-2ff9edc00291': '9bc30ad8b14a3ceabc74b2e681698c9cb3e714b6e3ca498a3fd114ce671d3c68',
+    'ci-268-b3f23013513b': '70eeb86a4e386d8bfba4b93141bbf4d2c57d9cf06db04ed2fa8c82f61248820b',
+}
+RECENT_APPROVED_METADATA = {
+    'ci-250-6444cbc36a65': (311, 266702848),
+    'ci-253-e441933dc75b': (311, 265072640),
+    'ci-256-9f90b9283367': (300, 262090752),
+    'ci-259-516614e07542': (300, 262103040),
+    'ci-264-2ff9edc00291': (330, 288403456),
+    'ci-268-b3f23013513b': (369, 308985856),
+}
 SHA = re.compile(r'[a-f0-9]{64}')
 MIB = 1024 ** 2
 
@@ -54,6 +79,16 @@ MIB = 1024 ** 2
 def need(value, code):
     if not value:
         raise ValueError(code)
+
+
+def batch_configuration(batch=BATCH):
+    # Preserve the original default and select exactly one closed set, never a union.
+    if batch == BATCH:
+        return TARGETS, BACKUP_MANIFESTS, APPROVED_METADATA
+    need(batch == RECENT_BATCH, 'CLOSED_BATCH_REQUIRED')
+    need(set(RECENT_TARGETS) == set(RECENT_BACKUP_MANIFESTS) == set(RECENT_APPROVED_METADATA),
+         'COMPLETE_APPROVED_BATCH_REQUIRED')
+    return RECENT_TARGETS, RECENT_BACKUP_MANIFESTS, RECENT_APPROVED_METADATA
 
 
 def encoded(value):
@@ -94,13 +129,15 @@ def write(path, value):
         output.write(raw); output.flush(); os.fsync(output.fileno())
 
 
-def data_path(release):
-    need(release in TARGETS, 'CLOSED_BATCH_TARGET_REQUIRED')
+def data_path(release, batch=BATCH):
+    targets, _, _ = batch_configuration(batch)
+    need(release in targets, 'CLOSED_BATCH_TARGET_REQUIRED')
     return ROOT / 'verification' / release / 'checkout/work/compact-fixtures/mysql-data'
 
 
-def tree(release):
-    path = safe(data_path(release)); before = path.stat(); expected = TARGETS[release][0]
+def tree(release, batch=BATCH):
+    targets, _, metadata = batch_configuration(batch)
+    path = safe(data_path(release, batch)); before = path.stat(); expected = targets[release][0]
     need(stat.S_ISDIR(before.st_mode) and before.st_dev == 64771 and before.st_ino == expected
          and before.st_uid == 999 and before.st_gid == 1000 and stat.S_IMODE(before.st_mode) == 0o700,
          'ORIGINAL_DERIVED_DIRECTORY_REQUIRED')
@@ -130,15 +167,15 @@ def tree(release):
     need(signature(path.stat()) == signature(before), 'ROOT_CHANGED')
     files = sum(stat.S_ISREG(row['metadata'][2]) for row in rows)
     allocated = before.st_blocks * 512 + sum(row['metadata'][9] * 512 for row in rows)
-    need((files, allocated) == APPROVED_METADATA[release], 'APPROVED_METADATA_INVENTORY_CHANGED')
+    need((files, allocated) == metadata[release], 'APPROVED_METADATA_INVENTORY_CHANGED')
     return {'release': release, 'path': str(path), 'rootMetadata': signature(before), 'entries': rows,
             'allocatedBytes': allocated, 'files': files,
             'inventorySha256': digest(encoded(rows))}
 
 
-def remove_tree(item):
-    release = item['release']; path = data_path(release)
-    need(tree(release) == item, 'DERIVED_TREE_CHANGED_AFTER_PLAN')
+def remove_tree(item, batch=BATCH):
+    release = item['release']; path = data_path(release, batch)
+    need(tree(release, batch) == item, 'DERIVED_TREE_CHANGED_AFTER_PLAN')
     entries = {row['path']: row['metadata'] for row in item['entries']}
     def remove(fd, prefix=''):
         for name in sorted(os.listdir(fd)):
@@ -245,18 +282,19 @@ def process_references(inventories, proc=Path('/proc')):
 
 
 def root_worker(request):
-    need(os.getuid() == 0 and request.get('batch') == BATCH
+    need(os.getuid() == 0 and request.get('batch') in (BATCH, RECENT_BATCH)
          and Path('/etc/machine-id').read_text().strip() == MACHINE, 'APPROVED_ROOT_BATCH_REQUIRED')
+    batch = request['batch']; selected, _, _ = batch_configuration(batch)
     phase = request.get('phase'); need(phase in ('inventory', 'remove'), 'ROOT_OPERATION_REFUSED')
     if phase == 'inventory':
         need(set(request) == {'phase', 'batch'}, 'ARBITRARY_ROOT_ARGUMENT_REFUSED')
-        targets = [tree(release) for release in TARGETS]
+        targets = [tree(release, batch) for release in selected]
         return {'targets': targets, 'processProbe': process_references(targets)}
     need(set(request) == {'phase', 'batch', 'target'}, 'ARBITRARY_ROOT_ARGUMENT_REFUSED')
-    item = request['target']; need(item.get('release') in TARGETS, 'CLOSED_BATCH_TARGET_REQUIRED')
-    need(tree(item['release']) == item, 'DERIVED_TREE_CHANGED_AFTER_PLAN')
+    item = request['target']; need(item.get('release') in selected, 'CLOSED_BATCH_TARGET_REQUIRED')
+    need(tree(item['release'], batch) == item, 'DERIVED_TREE_CHANGED_AFTER_PLAN')
     probe = process_references([item])
-    remove_tree(item)
+    remove_tree(item, batch)
     return {'release': item['release'], 'status': 'REMOVED', 'allocatedBytesBefore': item['allocatedBytes'],
             'processProbe': probe}
 
@@ -303,12 +341,13 @@ def attempt_lock(release):
         os.close(fd)
 
 
-def keeper_binding(release):
-    work = data_path(release).parent
+def keeper_binding(release, batch=BATCH):
+    targets, manifests, _ = batch_configuration(batch)
+    work = data_path(release, batch).parent
     owner_raw = read(work.parent / 'compact-fixtures-owner.json')
     owner = json.loads(owner_raw); cleanup_raw = read(work / 'cleanup-receipt.json'); cleanup = json.loads(cleanup_raw)
-    need(owner.get('release') == release and owner.get('commit') == TARGETS[release][1]
-         and owner.get('phase') == 'OWNED_SERVER_STOPPED' and owner.get('dataDirectory') == str(data_path(release))
+    need(owner.get('release') == release and owner.get('commit') == targets[release][1]
+         and owner.get('phase') == 'OWNED_SERVER_STOPPED' and owner.get('dataDirectory') == str(data_path(release, batch))
          and owner.get('sourceTableCount') == 131 and SHA.fullmatch(owner.get('sourceSha256', ''))
          and owner.get('sourceClone') == 'doorhandle_migration_verify_' + owner.get('token', '')
          and re.fullmatch(r'[a-f0-9]{10,64}', owner.get('token', ''))
@@ -316,10 +355,10 @@ def keeper_binding(release):
          'OLD_TEST_OWNERSHIP_NOT_PROVEN')
     need(cleanup.get('status') == 'STOPPED' and cleanup.get('errors') == []
          and cleanup.get('containerId') == owner.get('containerId')
-         and cleanup.get('dataDirectoryRetained') == str(data_path(release))
+         and cleanup.get('dataDirectoryRetained') == str(data_path(release, batch))
          and cleanup.get('sourceDumpAndEvidenceRetained') is True, 'OLD_TEST_STOP_NOT_PROVEN')
     manifest_raw = read(work / 'source-backup/manifest.json'); manifest = json.loads(manifest_raw)
-    need(digest(manifest_raw) == owner.get('sourceBackupSha256') == BACKUP_MANIFESTS[release]
+    need(digest(manifest_raw) == owner.get('sourceBackupSha256') == manifests[release]
          and manifest.get('snapshotSha256') == owner.get('sourceSnapshotSha256')
          == owner.get('sourceCloneSnapshotSha256') == SOURCE_SNAPSHOT and len(manifest.get('tables', {})) == 131
          and manifest.get('data', {}).get('file') == 'data.sql', 'COMPLETE_SOURCE_BACKUP_REQUIRED')
@@ -362,16 +401,17 @@ def fixed_helpers(args):
 
 
 def run(args):
-    need(os.getuid() == 1000 and args.batch == BATCH and re.fullmatch(r'ci-[0-9]+-[a-f0-9]{12}', args.tag)
+    need(os.getuid() == 1000 and args.batch in (BATCH, RECENT_BATCH) and re.fullmatch(r'ci-[0-9]+-[a-f0-9]{12}', args.tag)
          and re.fullmatch(r'[a-f0-9]{40}', args.commit) and args.tag.endswith(args.commit[:12])
-         and int(args.tag.split('-')[1]) > 271 and SHA.fullmatch(args.source_sha256), 'EXPLICIT_FIXED_MAINTENANCE_REQUIRED')
+         and int(args.tag.split('-')[1]) > (271 if args.batch == BATCH else 278) and SHA.fullmatch(args.source_sha256), 'EXPLICIT_FIXED_MAINTENANCE_REQUIRED')
+    batch = args.batch; targets, _, _ = batch_configuration(batch)
     modules = fixed_helpers(args); verifier = modules['verify-remote.py']; cleanup = modules['cleanup-ecs-builds.py']
     identity = verifier.ecs_identity(INSTANCE, MACHINE)
     output = ROOT / 'inbox' / args.tag / 'derived-mysql-retirement'
     plan_file = output / 'plan-private.json'; public_file = output / 'plan.json'; receipt_file = output / 'receipt.json'
     execution_file = output / 'execution.json'
     if args.phase == 'status':
-        binding = {'batch': BATCH, 'release': args.tag, 'commit': args.commit,
+        binding = {'batch': batch, 'release': args.tag, 'commit': args.commit,
                    'sourceSha256': args.source_sha256, 'identity': identity}
         if receipt_file.exists():
             value = json.loads(read(receipt_file))
@@ -393,23 +433,23 @@ def run(args):
         return {'status': 'UNKNOWN', 'terminal': False, **binding}
     def admitted():
         containers = cleanup.docker_snapshot(); result = []
-        for release in TARGETS:
+        for release in targets:
             need(not (ROOT / 'releases' / release).exists(), 'RETAINED_PUBLISHED_RELEASE_REFUSED')
-            value = keeper_binding(release)
-            cleanup.quiescent({'checkout': data_path(release).parents[2], 'token': value['token']},
+            value = keeper_binding(release, batch)
+            cleanup.quiescent({'checkout': data_path(release, batch).parents[2], 'token': value['token']},
                               release, containers, include_inbox=True)
             result.append(value)
         return result
     with lock(ROOT / 'state/deploy.lock'), ExitStack() as attempts:
-        for release in TARGETS:
+        for release in targets:
             attempts.enter_context(attempt_lock(release))
         if args.phase == 'plan':
             need(not output.exists(), 'FRESH_DERIVED_RETIREMENT_REQUIRED'); output.mkdir(mode=0o700)
-            keepers = admitted(); measurement = privileged({'phase': 'inventory', 'batch': BATCH})
+            keepers = admitted(); measurement = privileged({'phase': 'inventory', 'batch': batch})
             inventory = measurement['targets']
             need(measurement['processProbe']['status'] == 'QUIESCENT', 'ALL_UID_REFERENCE_PROOF_REQUIRED')
-            need([item['release'] for item in inventory] == list(TARGETS), 'COMPLETE_CLOSED_INVENTORY_REQUIRED')
-            plan = {'batch': BATCH, 'release': args.tag, 'commit': args.commit, 'sourceSha256': args.source_sha256,
+            need([item['release'] for item in inventory] == list(targets), 'COMPLETE_CLOSED_INVENTORY_REQUIRED')
+            plan = {'batch': batch, 'release': args.tag, 'commit': args.commit, 'sourceSha256': args.source_sha256,
                     'identity': identity, 'keepers': keepers, 'targets': inventory,
                     'processProbe': measurement['processProbe']}
             write(plan_file, plan)
@@ -421,26 +461,26 @@ def run(args):
             return {'status': 'PLANNED', 'file': str(public_file), 'privatePlanSha256': digest(encoded(plan))}
         raw = read(plan_file, 8 * MIB); plan = json.loads(raw)
         need(SHA.fullmatch(args.plan_sha256 or '') and digest(raw) == args.plan_sha256
-             and all(plan.get(key) == expected for key, expected in {'batch': BATCH, 'release': args.tag,
+             and all(plan.get(key) == expected for key, expected in {'batch': batch, 'release': args.tag,
                  'commit': args.commit, 'sourceSha256': args.source_sha256, 'identity': identity}.items())
              and plan['keepers'] == admitted(), 'PLAN_OR_KEEPERS_CHANGED')
         need(not receipt_file.exists(), 'RETIREMENT_ALREADY_ATTEMPTED')
-        write(execution_file, {'batch': BATCH, 'release': args.tag, 'commit': args.commit,
+        write(execution_file, {'batch': batch, 'release': args.tag, 'commit': args.commit,
               'sourceSha256': args.source_sha256, 'identity': identity, 'pid': os.getpid(),
               'startTicks': Path('/proc/self/stat').read_text().rsplit(')', 1)[1].split()[19],
               'bootId': Path('/proc/sys/kernel/random/boot_id').read_text().strip()})
-        receipt = {'status': 'FAILED_OR_UNKNOWN', 'batch': BATCH, 'release': args.tag,
+        receipt = {'status': 'FAILED_OR_UNKNOWN', 'batch': batch, 'release': args.tag,
                    'commit': args.commit, 'sourceSha256': args.source_sha256, 'identity': identity,
                    'planSha256': args.plan_sha256, 'removed': [], 'sourceSqlAndReportsRetained': True,
                    'availableBytesBefore': os.statvfs(ROOT).f_bavail * os.statvfs(ROOT).f_frsize}
         try:
-            measurement = privileged({'phase': 'inventory', 'batch': BATCH})
+            measurement = privileged({'phase': 'inventory', 'batch': batch})
             need(measurement['processProbe']['status'] == 'QUIESCENT'
                  and measurement['targets'] == plan['targets'], 'TARGETS_CHANGED_AFTER_PLAN')
             receipt['processProbe'] = measurement['processProbe']
             for item in plan['targets']:
                 admitted()
-                receipt['removed'].append(privileged({'phase': 'remove', 'batch': BATCH, 'target': item}))
+                receipt['removed'].append(privileged({'phase': 'remove', 'batch': batch, 'target': item}))
             need(plan['keepers'] == admitted(), 'KEEPERS_CHANGED_AFTER_RETIREMENT')
             receipt['status'] = 'COMPLETE'
         except BaseException as error:

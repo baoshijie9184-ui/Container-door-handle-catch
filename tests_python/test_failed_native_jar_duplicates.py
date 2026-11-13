@@ -3576,7 +3576,7 @@ def test_native_retention_jenkins_and_seed_choices_have_the_same_safe_default_an
     workflow_choices = re.search(r"choice\(name: 'NATIVE_RETENTION_POLICY', choices: (\[[^\]]+\])", workflow)
     seed_choices = re.search(r"ChoiceParameterDefinition\('NATIVE_RETENTION_POLICY', (\[[^\]]+\]) as String\[\]", seed)
     assert workflow_choices and seed_choices
-    assert ast.literal_eval(workflow_choices[1]) == ast.literal_eval(seed_choices[1]) == ['FailedNative', 'RetiredCopies194', 'RetiredCopies203', 'PublicCaches221224235', 'DerivedMysql221222235238247']
+    assert ast.literal_eval(workflow_choices[1]) == ast.literal_eval(seed_choices[1]) == ['FailedNative', 'RetiredCopies194', 'RetiredCopies203', 'PublicCaches221224235', 'DerivedMysql221222235238247', 'DerivedMysql250253256259264268']
     assert "env.NATIVE_RETENTION_POLICY = params.NATIVE_RETENTION_POLICY ?: 'FailedNative'" in workflow
     assert "env.NATIVE_RETENTION_POLICY != 'FailedNative' && params.ACTION != 'reclaim-build-outputs'" in workflow
     assert "$nativeRetentionPolicy -cne 'FailedNative' -and $env:ACTION -cne 'reclaim-build-outputs'" in pipeline

@@ -2,6 +2,7 @@
 import importlib.util
 import ast
 from contextlib import nullcontext
+from fnmatch import fnmatchcase
 import io
 import json
 import os
@@ -18,6 +19,9 @@ spec = importlib.util.spec_from_file_location('derived_mysql_retirement', FILE)
 retirement = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(retirement)
 RELEASE = 'ci-221-8c30776fcd95'
+RECENT_RELEASE = 'ci-250-6444cbc36a65'
+BATCHES = (retirement.BATCH, retirement.RECENT_BATCH)
+POLICIES = ('DerivedMysql221222235238247', 'DerivedMysql250253256259264268')
 
 
 def test_batch_has_only_the_five_explicitly_approved_replicas():
@@ -28,6 +32,21 @@ def test_batch_has_only_the_five_explicitly_approved_replicas():
         retirement.data_path('ci-266-f6e062edc7b6')
 
 
+@pytest.mark.parametrize('batch,numbers', [(BATCHES[0], {221, 222, 235, 238, 247}),
+                                         (BATCHES[1], {250, 253, 256, 259, 264, 268})])
+def test_closed_batches_never_union_targets_or_admit_the_oom_replica(batch, numbers):
+    targets, manifests, metadata = retirement.batch_configuration(batch)
+    assert {int(key.split('-')[1]) for key in targets} == numbers
+    assert set(targets) == set(manifests) == set(metadata)
+    for release in targets:
+        assert retirement.data_path(release, batch).parts[-1] == 'mysql-data'
+        assert len(targets[release][1]) == 40 and len(manifests[release]) == 64
+    other = retirement.RECENT_TARGETS if batch == retirement.BATCH else retirement.TARGETS
+    for release in (*other, 'ci-266-f6e062edc7b6'):
+        with pytest.raises(ValueError, match='CLOSED_BATCH_TARGET_REQUIRED'):
+            retirement.data_path(release, batch)
+
+
 @pytest.fixture
 def root_identity(monkeypatch):
     original = Path
@@ -36,10 +55,27 @@ def root_identity(monkeypatch):
                         if str(value) == '/etc/machine-id' else original(value))
 
 
+@pytest.mark.parametrize('batch', BATCHES)
 @pytest.mark.parametrize('release', ['ci-266-f6e062edc7b6', '../mysql', 'production'])
-def test_privileged_worker_rejects_every_other_release(root_identity, release):
+def test_privileged_worker_rejects_every_other_release(root_identity, release, batch):
     with pytest.raises(ValueError, match='CLOSED_BATCH_TARGET_REQUIRED'):
-        retirement.root_worker({'phase': 'remove', 'batch': retirement.BATCH, 'target': {'release': release}})
+        retirement.root_worker({'phase': 'remove', 'batch': batch, 'target': {'release': release}})
+
+
+@pytest.mark.parametrize('batch', BATCHES)
+def test_root_inventory_selects_the_exact_batch_and_rejects_cross_batch_removal(root_identity, monkeypatch, batch):
+    selected = retirement.batch_configuration(batch)[0]
+    calls = []
+    def measured(release, actual_batch):
+        calls.append((release, actual_batch)); return {'release': release}
+    monkeypatch.setattr(retirement, 'tree', measured)
+    monkeypatch.setattr(retirement, 'process_references', lambda rows: {'status': 'QUIESCENT'})
+    result = retirement.root_worker({'phase': 'inventory', 'batch': batch})
+    assert [row['release'] for row in result['targets']] == list(selected)
+    assert calls == [(release, batch) for release in selected]
+    other = RECENT_RELEASE if batch == retirement.BATCH else RELEASE
+    with pytest.raises(ValueError, match='CLOSED_BATCH_TARGET_REQUIRED'):
+        retirement.root_worker({'phase': 'remove', 'batch': batch, 'target': {'release': other}})
 
 
 @pytest.mark.parametrize('payload', [
@@ -69,8 +105,8 @@ def owned_tree(tmp_path, monkeypatch):
     item = {'release': RELEASE, 'path': str(path), 'rootMetadata': retirement.signature(path.stat()),
             'entries': rows, 'inventorySha256': retirement.digest(retirement.encoded(rows)),
             'allocatedBytes': 4096, 'files': 2}
-    monkeypatch.setattr(retirement, 'data_path', lambda _release: path)
-    monkeypatch.setattr(retirement, 'tree', lambda _release: item)
+    monkeypatch.setattr(retirement, 'data_path', lambda _release, _batch=retirement.BATCH: path)
+    monkeypatch.setattr(retirement, 'tree', lambda _release, _batch=retirement.BATCH: item)
     return SimpleNamespace(path=path, parent=parent, keeper=keeper, item=item)
 
 
@@ -102,8 +138,8 @@ def test_symlink_entry_is_never_followed_or_unlinked_as_a_database_file(tmp_path
     link = path / 'linked'; link.symlink_to(outside)
     item = {'release': RELEASE, 'rootMetadata': retirement.signature(path.stat()),
             'entries': [{'path': 'linked', 'metadata': retirement.signature(link.lstat())}]}
-    monkeypatch.setattr(retirement, 'data_path', lambda _: path)
-    monkeypatch.setattr(retirement, 'tree', lambda _: item)
+    monkeypatch.setattr(retirement, 'data_path', lambda _, _batch=retirement.BATCH: path)
+    monkeypatch.setattr(retirement, 'tree', lambda _, _batch=retirement.BATCH: item)
     with pytest.raises(ValueError, match='LINKED_DELETION_REFUSED'):
         retirement.remove_tree(item)
     assert link.is_symlink() and outside.read_bytes() == b'keep'
@@ -116,15 +152,18 @@ def test_worker_cannot_replace_the_closed_target_path_inside_a_valid_release(own
     assert owned_tree.path.exists() and owned_tree.keeper.exists()
 
 
-@pytest.fixture
-def keeper_documents(monkeypatch):
+@pytest.fixture(params=BATCHES)
+def keeper_documents(monkeypatch, request):
+    batch = request.param
+    targets, manifests, _ = retirement.batch_configuration(batch)
+    release = next(iter(targets))
     sql = b'complete original source SQL'
     manifest = {'snapshotSha256': retirement.SOURCE_SNAPSHOT,
                 'tables': {str(index): {} for index in range(131)},
                 'data': {'file': 'data.sql', 'bytes': len(sql), 'sha256': retirement.digest(sql)}}
     token = '123456789a'
-    owner = {'release': RELEASE, 'commit': retirement.TARGETS[RELEASE][1], 'phase': 'OWNED_SERVER_STOPPED',
-             'dataDirectory': str(retirement.data_path(RELEASE)), 'sourceTableCount': 131,
+    owner = {'release': release, 'commit': targets[release][1], 'phase': 'OWNED_SERVER_STOPPED',
+             'dataDirectory': str(retirement.data_path(release, batch)), 'sourceTableCount': 131,
              'sourceSha256': 'a' * 64, 'sourceClone': 'doorhandle_migration_verify_' + token, 'token': token,
              'containerId': 'b' * 64, 'sourceContainerId': 'c' * 64,
              'sourceSnapshotSha256': retirement.SOURCE_SNAPSHOT, 'sourceCloneSnapshotSha256': retirement.SOURCE_SNAPSHOT,
@@ -133,7 +172,7 @@ def keeper_documents(monkeypatch):
                'dataDirectoryRetained': owner['dataDirectory'], 'sourceDumpAndEvidenceRetained': True}
     def refresh():
         owner['sourceBackupSha256'] = retirement.digest(retirement.encoded(manifest))
-        monkeypatch.setitem(retirement.BACKUP_MANIFESTS, RELEASE, owner['sourceBackupSha256'])
+        monkeypatch.setitem(manifests, release, owner['sourceBackupSha256'])
     refresh()
     def read(path, maximum=0):
         if path.name == 'compact-fixtures-owner.json': return retirement.encoded(owner)
@@ -141,13 +180,17 @@ def keeper_documents(monkeypatch):
         if path.name == 'manifest.json': return retirement.encoded(manifest)
         assert path.name == 'data.sql'; return sql
     monkeypatch.setattr(retirement, 'read', read)
-    return SimpleNamespace(owner=owner, cleanup=cleanup, manifest=manifest, refresh=refresh)
+    return SimpleNamespace(owner=owner, cleanup=cleanup, manifest=manifest, refresh=refresh, batch=batch, release=release)
 
 
 def test_complete_original_sql_binding_omits_private_password(keeper_documents):
-    result = retirement.keeper_binding(RELEASE)
+    state = keeper_documents
+    result = retirement.keeper_binding(state.release, state.batch)
     assert result['sourceSqlBytes'] == len(b'complete original source SQL')
     assert 'never-output-this-secret' not in json.dumps(result)
+    other = retirement.RECENT_BATCH if state.batch == retirement.BATCH else retirement.BATCH
+    with pytest.raises(ValueError, match='CLOSED_BATCH_TARGET_REQUIRED'):
+        retirement.keeper_binding(state.release, other)
 
 
 @pytest.mark.parametrize('damage', ['phase', 'source-container', 'clone', 'path', 'tables', 'sql-hash', 'snapshot', 'cleanup'])
@@ -161,17 +204,22 @@ def test_missing_or_drifted_original_keeper_never_authorizes_retirement(keeper_d
     elif damage == 'sql-hash': state.manifest['data']['sha256'] = '0' * 64; state.refresh()
     elif damage == 'snapshot': state.owner['sourceSnapshotSha256'] = '0' * 64
     else: state.cleanup['sourceDumpAndEvidenceRetained'] = False
-    with pytest.raises(ValueError): retirement.keeper_binding(RELEASE)
+    with pytest.raises(ValueError): retirement.keeper_binding(state.release, state.batch)
 
 
 def test_pipeline_requires_the_explicit_closed_batch_and_keeps_old_defaults():
-    root = FILE.parents[2]; name = 'DerivedMysql221222235238247'
+    root = FILE.parents[2]
     for relative in ('Jenkinsfile.ecs-monolith', 'script/jenkins/pipeline.ps1', 'script/jenkins/configure-local.groovy'):
         text = (root / relative).read_text(encoding='utf-8-sig')
-        assert name in text and 'FailedNative' in text
+        assert all(name in text for name in POLICIES) and 'FailedNative' in text
     wrapper = (root / 'script/jenkins/retire-derived-mysql-data.ps1').read_text(encoding='utf-8-sig')
-    assert name in wrapper and 'reclaim-build-outputs' in wrapper
+    for policy, batch, count in zip(POLICIES, BATCHES, (5, 6)):
+        assert f"{policy}=@{{batch='{batch}';count={count}}}" in wrapper
+    assert 'reclaim-build-outputs' in wrapper
     assert 'Remove-Item' not in wrapper and 'plan-sha256' in wrapper
+    assert '$value.batch -cne $batch' in wrapper and '$observed.batch -cne $batch' in wrapper
+    assert '@($plan.targets).Count -ne $targetCount' in wrapper and '@($receipt.removed).Count -eq $targetCount' in wrapper
+    assert 'batch=$batch;targetCount=$targetCount' in wrapper
     pipeline = (root / 'Jenkinsfile.ecs-monolith').read_text(encoding='utf-8-sig')
     post = pipeline.split('\n    post {\n', 1)[1]
     maintenance = re.search(r"^                if \(params.ACTION == 'reclaim-build-outputs'\) \{(.*?)"
@@ -179,12 +227,18 @@ def test_pipeline_requires_the_explicit_closed_batch_and_keeps_old_defaults():
     assert maintenance is not None, 'The dedicated maintenance post branch must exist.'
     archive = re.search(r"archiveArtifacts artifacts: '([^']+)'", maintenance[1])
     assert archive is not None, 'Maintenance must archive its own evidence.'
-    assert 'artifacts/derived-mysql-*.json' in archive[1].split(',')
+    patterns = archive[1].split(',')
+    assert 'artifacts/derived-mysql-*.json' in patterns
+    producer = re.search(r"foreach\(\$name in @\(([^)]+)\)\)", wrapper)
+    assert producer is not None
+    outputs = ast.literal_eval('(' + producer[1] + ',)')
+    assert outputs == ('derived-mysql-plan.json', 'derived-mysql-receipt.json', 'derived-mysql-controller.json')
+    assert all(any(fnmatchcase('artifacts/' + output, pattern) for pattern in patterns) for output in outputs)
 
 
-@pytest.fixture
-def observation_attempt(tmp_path, monkeypatch):
-    args = SimpleNamespace(phase='status', batch=retirement.BATCH, tag='ci-273-' + 'a' * 12,
+@pytest.fixture(params=BATCHES)
+def observation_attempt(tmp_path, monkeypatch, request):
+    args = SimpleNamespace(phase='status', batch=request.param, tag='ci-280-' + 'a' * 12,
                            commit='a' * 40, source_sha256='b' * 64, plan_sha256=None)
     identity = {'instanceId': retirement.INSTANCE, 'machineId': retirement.MACHINE, 'executionLocation': 'ECS'}
     monkeypatch.setattr(retirement, 'ROOT', tmp_path)
@@ -212,10 +266,13 @@ def test_observation_reports_only_the_existing_execution_without_replay(observat
     assert not (attempt.output / 'plan-private.json').exists()
 
 
-def test_observation_rejects_another_source_terminal(observation_attempt):
+@pytest.mark.parametrize('damage', ['source', 'batch'])
+def test_observation_rejects_another_source_terminal(observation_attempt, damage):
     attempt = observation_attempt
+    changed = {'sourceSha256': '0' * 64} if damage == 'source' else {
+        'batch': retirement.RECENT_BATCH if attempt.args.batch == retirement.BATCH else retirement.BATCH}
     (attempt.output / 'receipt.json').write_bytes(retirement.encoded(
-        {**attempt.binding, 'status': 'COMPLETE', 'sourceSha256': '0' * 64}))
+        {**attempt.binding, 'status': 'COMPLETE', **changed}))
     with pytest.raises(ValueError, match='TERMINAL_BINDING_DIFFERS'):
         retirement.run(attempt.args)
 
@@ -247,7 +304,7 @@ def test_fixed_helper_admission_uses_the_actual_maintenance_transport(fixed_main
     assert helpers['verify-remote.py'].SENTINEL == 'verifier'
 
 
-@pytest.mark.parametrize('policy', ['FailedNative', 'RetiredCopies194', 'RetiredCopies203', 'PublicCaches221224235', 'DerivedMysql221222235238247'])
+@pytest.mark.parametrize('policy', ['FailedNative', 'RetiredCopies194', 'RetiredCopies203', 'PublicCaches221224235', *POLICIES])
 def test_real_maintenance_package_selection_supplies_the_closed_batch_consumer(fixed_maintenance_source, policy):
     state = fixed_maintenance_source
     text = (FILE.parent / 'pipeline.ps1').read_text(encoding='utf-8-sig')
@@ -261,10 +318,15 @@ def test_real_maintenance_package_selection_supplies_the_closed_batch_consumer(f
     paths = list(ast.literal_eval('(' + declaration[1] + ',)'))
     assert paths == ['script/jenkins/cleanup-ecs-builds.py', 'script/jenkins/verify-remote.py',
                      'script/jenkins/retire-failed-native-jar-duplicates.py', 'script/docker/compact-build-resources.py']
-    guarded = re.search(r"if \(\$nativeRetentionPolicy -ceq 'DerivedMysql221222235238247'\) \{\s*\$maintenancePaths \+= '([^']+)'\s*\}", block)
-    assert guarded and guarded[1] == 'script/jenkins/retire-derived-mysql-data.py'
+    guarded = re.search(r"if \(\$nativeRetentionPolicy -cin @\(([^)]+)\)\) \{\s*\$maintenancePaths \+= '([^']+)'\s*\}", block)
+    assert guarded and guarded[2] == 'script/jenkins/retire-derived-mysql-data.py'
+    selected_policies = ast.literal_eval('(' + guarded[1] + ',)')
+    assert selected_policies == POLICIES
     assert ") + $maintenancePaths" in block and "Invoke-Checked 'git.exe' $archiveArguments" in block
-    if policy == 'DerivedMysql221222235238247': paths.append(guarded[1])
+    call = re.search(r"^if \(\$Action -ceq 'ReclaimBuildOutputs'.*?\n\}", text, re.MULTILINE | re.DOTALL)
+    assert call is not None and "Get-PinnedSourceFile 'script/jenkins/retire-derived-mysql-data.py'" in call[0]
+    assert guarded[0].split(' {', 1)[0] in call[0] and '& ./script/jenkins/retire-derived-mysql-data.ps1' in call[0]
+    if policy in selected_policies: paths.append(guarded[2])
     data = io.BytesIO()
     with tarfile.open(fileobj=data, mode='w:gz', pax_headers={'comment': state.args.commit}) as archive:
         for path in paths:
@@ -273,7 +335,7 @@ def test_real_maintenance_package_selection_supplies_the_closed_batch_consumer(f
             entry = tarfile.TarInfo(path); entry.size = len(body); archive.addfile(entry, io.BytesIO(body))
     raw = data.getvalue(); (state.inbox / 'cleanup-source.tar.gz').write_bytes(raw)
     state.args.source_sha256 = retirement.digest(raw)
-    if policy == 'DerivedMysql221222235238247':
+    if policy in selected_policies:
         assert retirement.fixed_helpers(state.args)['cleanup-ecs-builds.py'].SENTINEL == 'cleanup'
     else:
         with pytest.raises(ValueError, match='FIXED_HELPER_CLOSURE_MISSING'):
@@ -289,7 +351,8 @@ def test_fixed_helper_rejects_changed_archive_context_or_execution_bytes(fixed_m
     with pytest.raises(ValueError): retirement.fixed_helpers(state.args)
 
 
-def test_privileged_payload_uses_only_the_admitted_loaded_bytes(monkeypatch):
+@pytest.mark.parametrize('batch', BATCHES)
+def test_privileged_payload_uses_only_the_admitted_loaded_bytes(monkeypatch, batch):
     approved = b'# admitted fixed worker\n'; captured = []
     monkeypatch.setattr(retirement, 'LOADED_SOURCE', approved)
     monkeypatch.setattr(retirement, 'read', lambda *_: approved)
@@ -297,9 +360,11 @@ def test_privileged_payload_uses_only_the_admitted_loaded_bytes(monkeypatch):
         captured.append((command, options['input']))
         return SimpleNamespace(returncode=0, stdout=b'{"status":"synthetic"}')
     monkeypatch.setattr(retirement.subprocess, 'run', executed)
-    result = retirement.privileged({'phase': 'inventory', 'batch': retirement.BATCH})
+    payload = {'phase': 'inventory', 'batch': batch}
+    result = retirement.privileged(payload)
     assert result['status'] == 'synthetic' and len(captured) == 1
     assert captured[0][1].startswith(approved)
+    assert retirement.encoded(payload).decode() in captured[0][1].decode()
     assert captured[0][0][:6] == ['sudo', '-n', 'timeout', '--signal=TERM', '--kill-after=2s', '90s']
 
 
@@ -363,31 +428,65 @@ def test_process_directories_arguments_and_namespace_inode_aliases_are_fenced(sy
     assert state.tree.path.exists() and state.tree.keeper.exists()
 
 
-def test_real_plan_apply_flow_removes_only_the_owned_synthetic_replica(tmp_path, owned_tree, monkeypatch):
-    state = owned_tree; args = SimpleNamespace(phase='plan', batch=retirement.BATCH,
-        tag='ci-273-' + 'a' * 12, commit='a' * 40, source_sha256='b' * 64, plan_sha256=None)
+@pytest.mark.parametrize('batch', BATCHES)
+def test_real_plan_apply_flow_removes_only_the_owned_synthetic_replica(tmp_path, monkeypatch, batch):
+    args = SimpleNamespace(phase='plan', batch=batch,
+        tag='ci-280-' + 'a' * 12, commit='a' * 40, source_sha256='b' * 64, plan_sha256=None)
     root = tmp_path / 'ci'; (root / 'inbox' / args.tag).mkdir(parents=True)
     identity = {'instanceId': retirement.INSTANCE, 'machineId': retirement.MACHINE, 'executionLocation': 'ECS'}
-    calls = []; keeper = {'release': RELEASE, 'token': 'a' * 10, 'sourceSqlSha256': 'c' * 64}
+    selected = retirement.batch_configuration(batch)[0]
+    all_releases = [*retirement.TARGETS, *retirement.RECENT_TARGETS, 'ci-266-f6e062edc7b6']
+    states = {}
+    for release in all_releases:
+        parent = root / 'verification' / release / 'checkout/work/compact-fixtures'; parent.mkdir(parents=True)
+        path = parent / 'mysql-data'; path.mkdir(); (path / 'table.ibd').write_bytes(b'synthetic replica')
+        sql = parent / 'source-backup.sql'; sql.write_bytes(b'original SQL remains')
+        rows = [{'path': 'table.ibd', 'metadata': retirement.signature((path / 'table.ibd').stat())}]
+        item = {'release': release, 'path': str(path), 'rootMetadata': retirement.signature(path.stat()),
+                'entries': rows, 'inventorySha256': retirement.digest(retirement.encoded(rows)),
+                'allocatedBytes': 4096, 'files': 1}
+        states[release] = SimpleNamespace(path=path, sql=sql, item=item)
+    calls = []
     monkeypatch.setattr(retirement, 'ROOT', root)
-    monkeypatch.setattr(retirement, 'TARGETS', {RELEASE: retirement.TARGETS[RELEASE]})
     monkeypatch.setattr(retirement, 'fixed_helpers', lambda _: {'verify-remote.py':
         SimpleNamespace(ecs_identity=lambda *_: identity), 'cleanup-ecs-builds.py':
         SimpleNamespace(docker_snapshot=lambda: [], quiescent=lambda *_args, **_kw: calls.append('quiescent'))})
-    monkeypatch.setattr(retirement, 'keeper_binding', lambda _: dict(keeper))
+    def keeper(release, selected_batch):
+        assert selected_batch == batch and release in selected
+        return {'release': release, 'token': 'a' * 10, 'sourceSqlSha256': 'c' * 64}
+    def measured(release, selected_batch):
+        assert selected_batch == batch and release in selected
+        return states[release].item
+    monkeypatch.setattr(retirement, 'keeper_binding', keeper)
+    monkeypatch.setattr(retirement, 'tree', measured)
     monkeypatch.setattr(retirement, 'lock', lambda _: nullcontext())
     monkeypatch.setattr(retirement, 'attempt_lock', lambda _: nullcontext())
     def privileged(payload):
+        assert payload['batch'] == batch
         calls.append(payload['phase'])
         proof = {'status': 'QUIESCENT', 'scope': 'ALL_UIDS_CLOSED_DATA_DIRECTORIES', 'processesChecked': 1, 'uidsChecked': [999]}
-        if payload['phase'] == 'inventory': return {'targets': [state.item], 'processProbe': proof}
-        retirement.remove_tree(payload['target'])
-        return {'release': RELEASE, 'status': 'REMOVED', 'allocatedBytesBefore': 4096, 'processProbe': proof}
+        with monkeypatch.context() as root_context:
+            root_context.setattr(retirement.os, 'getuid', lambda: 0)
+            root_context.setattr(retirement, 'Path', lambda value: SimpleNamespace(read_text=lambda: retirement.MACHINE)
+                                 if str(value) == '/etc/machine-id' else Path(value))
+            root_context.setattr(retirement, 'process_references', lambda _: proof)
+            return retirement.root_worker(payload)
     monkeypatch.setattr(retirement, 'privileged', privileged)
     planned = retirement.run(args); args.phase = 'apply'; args.plan_sha256 = planned['privatePlanSha256']
+    public_plan = json.loads(Path(planned['file']).read_bytes())
+    assert public_plan['batch'] == batch and [row['release'] for row in public_plan['targets']] == list(selected)
+    # A validly hashed plan from the other closed batch cannot authorize this apply.
+    private = Path(planned['file']).with_name('plan-private.json'); original = private.read_bytes()
+    wrong = json.loads(original); wrong['batch'] = retirement.RECENT_BATCH if batch == retirement.BATCH else retirement.BATCH
+    private.write_bytes(retirement.encoded(wrong)); args.plan_sha256 = retirement.digest(private.read_bytes())
+    with pytest.raises(ValueError, match='PLAN_OR_KEEPERS_CHANGED'): retirement.run(args)
+    assert all(state.path.exists() for state in states.values())
+    private.write_bytes(original); args.plan_sha256 = planned['privatePlanSha256']
     result = retirement.run(args)
-    assert result['status'] == 'COMPLETE' and result['removedDirectories'] == 1
-    assert not state.path.exists() and state.keeper.read_bytes() == b'original SQL remains'
+    assert result['status'] == 'COMPLETE' and result['removedDirectories'] == len(selected)
+    assert all(state.path.exists() == (release not in selected) for release, state in states.items())
+    assert all(state.sql.read_bytes() == b'original SQL remains' for state in states.values())
     receipt = json.loads(Path(result['file']).read_bytes())
-    assert receipt['sourceSqlAndReportsRetained'] is True and len(receipt['removed']) == 1
-    assert [value for value in calls if value != 'quiescent'] == ['inventory', 'inventory', 'remove']
+    assert receipt['batch'] == batch and receipt['sourceSqlAndReportsRetained'] is True
+    assert [row['release'] for row in receipt['removed']] == list(selected)
+    assert [value for value in calls if value != 'quiescent'] == ['inventory', 'inventory', *['remove'] * len(selected)]
