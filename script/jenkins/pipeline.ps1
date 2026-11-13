@@ -200,57 +200,64 @@ function Get-BuildRegistryAssignment {
 }
 
 function Send-CandidateBuildToolsArchive {
-    if ($env:ACTION -cnotin @('verify-runtime', 'compact-cutover') -or $env:DOORHANDLE_CI_SCOPE -cne 'mysql') { throw 'This action must not prepare candidate build inputs.' }
+    param([ValidateSet('buildkit','qdrant','prometheus','alertmanager')][string]$Component='buildkit')
+    if ($Component -ceq 'buildkit') {
+        if ($env:ACTION -cnotin @('verify-runtime', 'compact-cutover') -or $env:DOORHANDLE_CI_SCOPE -cne 'mysql') { throw 'This action must not prepare candidate build inputs.' }
+    } elseif ($env:ACTION -cnotin @('verify','verify-runtime','compact-cutover') -or $env:DOORHANDLE_CI_SCOPE -cnotin @('source','mysql')) { throw 'This action must not prepare middleware image inputs.' }
+    $archiveField=if($Component -ceq 'buildkit'){'buildkitArchive'}else{'componentArchive'}
+    $cacheFolder=if($Component -ceq 'buildkit'){'buildkit-v0.34.2'}else{$Component}
+    $localFolder=if($Component -ceq 'buildkit'){$cacheFolder}else{'middleware/'+$Component}
     $python = $env:LOCAL_PYTHON_EXE
     if ([string]::IsNullOrWhiteSpace($python)) { $python = $env:PYTHON_EXE }
     if (-not $python -or -not [IO.Path]::IsPathFullyQualified($python) -or -not (Test-Path -LiteralPath $python -PathType Leaf)) { throw 'Configure the existing local Python for public build-input custody.' }
     $cacheRoot = $env:CANDIDATE_BUILD_INPUT_CACHE_ROOT
     if (-not $cacheRoot -or -not [IO.Path]::IsPathFullyQualified($cacheRoot) -or [IO.Path]::GetFullPath($cacheRoot).TrimEnd('\', '/') -ne [IO.Path]::GetFullPath('D:/AI/lunwen1/DoorHandleCatch/work/jenkins/build-deps')) { throw 'Candidate build inputs require the configured global D project cache.' }
     $record = [ordered]@{ schema=1; kind='doorhandle-public-build-input-transport'; release=$tag; commit=$commit; sourceSha256=$sha; status='FAILED'; rawArchiveArchived=$false }
+    if($Component -cne 'buildkit'){$record.component=$Component}
     $attempt = [guid]::NewGuid().ToString('N'); $uploadAttempted = $false; $failed = $true
     $helper = Get-PinnedSourceFile 'script/jenkins/transfer-candidate-build-tools.py'
     $helperSha = (Get-FileHash -LiteralPath $helper -Algorithm SHA256).Hash.ToLowerInvariant()
     $remoteHelper = "$remoteInbox/transfer-candidate-build-tools.py"
     $transferArguments = $null
     try {
-        $archive = $env:CANDIDATE_BUILD_TOOLS_ARCHIVE
+        $archive = if($Component -ceq 'buildkit'){$env:CANDIDATE_BUILD_TOOLS_ARCHIVE}else{$null}
         if ([string]::IsNullOrWhiteSpace($archive)) {
             $fetch = Get-PinnedSourceFile 'script/jenkins/fetch-buildkit-build-input.py'
             $resources = Get-PinnedSourceFile 'script/docker/compact-build-resources.py'
-            $fetchOutput = Invoke-Checked $python @('-I', '-B', $fetch, '--resources-source', $resources, '--output-dir', (Join-Path $cacheRoot 'buildkit-v0.34.2'))
+            $fetchOutput = Invoke-Checked $python @('-I', '-B', $fetch, '--component', $Component, '--resources-source', $resources, '--output-dir', (Join-Path $cacheRoot $localFolder))
             $fetched = ($fetchOutput | Select-Object -Last 1) | ConvertFrom-Json
             if ($fetched.status -cne 'PINNED_OCI_BUILD_INPUT_READY' -or -not [IO.Path]::IsPathFullyQualified($fetched.file)) { throw 'Pinned public OCI dependency download did not return its verified cache file.' }
             $archive = $fetched.file; $record.fetch = $fetched
         }
-        $localOutput = Invoke-Checked $python @('-I', '-B', $helper, 'local', '--archive', $archive, '--local-root', $cacheRoot)
+        $localOutput = Invoke-Checked $python @('-I', '-B', $helper, 'local', '--component', $Component, '--archive', $archive, '--local-root', $cacheRoot)
         $local = ($localOutput | Select-Object -Last 1) | ConvertFrom-Json
         if ($local.sha256 -cnotmatch '^[a-f0-9]{64}$' -or $local.fingerprintSha256 -cnotmatch '^[a-f0-9]{64}$' -or $local.bytes -le 0 -or $local.bytes -gt 134217728) { throw 'Local public build input lacks its bounded same-file custody.' }
         if ($record.Contains('fetch') -and ($record.fetch.sha256 -cne $local.sha256 -or $record.fetch.bytes -ne $local.bytes)) { throw 'Fetched public OCI archive changed before transfer admission.' }
-        $expected = [ordered]@{ file="$remoteRoot/build-inputs/buildkit-v0.34.2/$($local.sha256).tar"; sha256=$local.sha256; bytes=[long]$local.bytes }
-        $record.local = $local; $record.buildkitArchive = $expected; $record.helperSha256 = $helperSha
+        $expected = [ordered]@{ file="$remoteRoot/build-inputs/$cacheFolder/$($local.sha256).tar"; sha256=$local.sha256; bytes=[long]$local.bytes }
+        $record.local = $local; $record[$archiveField] = $expected; $record.helperSha256 = $helperSha
         Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, $helper, "${destination}:$remoteHelper"))
         Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "test `"`$(sha256sum '$remoteHelper' | cut -d ' ' -f 1)`" = '$helperSha' && chmod 600 '$remoteHelper'"))
-        $transferArguments = "--root '$remoteRoot' --tag '$tag' --commit '$commit' --source-sha256 '$sha' --instance-id '$instance' --machine-id '$machine' --archive-sha256 '$($local.sha256)' --archive-bytes '$($local.bytes)' --attempt '$attempt'"
+        $transferArguments = "--component '$Component' --root '$remoteRoot' --tag '$tag' --commit '$commit' --source-sha256 '$sha' --instance-id '$instance' --machine-id '$machine' --archive-sha256 '$($local.sha256)' --archive-bytes '$($local.bytes)' --attempt '$attempt'"
         $guard = "test `"`$(sha256sum '$remoteHelper' | cut -d ' ' -f 1)`" = '$helperSha' && python3 -I -B '$remoteHelper'"
         $uploadAttempted = $true
         $probeOutput = Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "$guard probe $transferArguments"))
         $admitted = ($probeOutput | Select-Object -Last 1) | ConvertFrom-Json
-        foreach ($field in @('file', 'sha256', 'bytes')) { if ($admitted.buildkitArchive.$field -cne $expected.$field) { throw 'Public build-input cache response differs from the declared bytes.' } }
-        if (@($admitted.buildkitArchive.PSObject.Properties).Count -ne 3 -or $admitted.release -cne $tag -or $admitted.commit -cne $commit -or $admitted.sourceSha256 -cne $sha -or $admitted.identity.instanceId -cne $instance -or $admitted.identity.machineId -cne $machine -or $admitted.identity.executionLocation -cne 'ECS') { throw 'Public build-input cache belongs to another source or ECS.' }
+        foreach ($field in @('file', 'sha256', 'bytes')) { if ($admitted.$archiveField.$field -cne $expected.$field) { throw 'Public build-input cache response differs from the declared bytes.' } }
+        if (@($admitted.$archiveField.PSObject.Properties).Count -ne 3 -or $admitted.release -cne $tag -or $admitted.commit -cne $commit -or $admitted.sourceSha256 -cne $sha -or $admitted.identity.instanceId -cne $instance -or $admitted.identity.machineId -cne $machine -or $admitted.identity.executionLocation -cne 'ECS') { throw 'Public build-input cache belongs to another source or ECS.' }
         $record.admission = $admitted
         if ($admitted.status -ceq 'UPLOAD_REQUIRED') {
-            if ($admitted.stagingFile -cne "$remoteInbox/.buildkit-upload-$attempt/archive.tar") { throw 'Public build input upload escaped its unique inbox staging file.' }
-            $beforeOutput = Invoke-Checked $python @('-I', '-B', $helper, 'local', '--archive', $archive, '--local-root', $cacheRoot)
+            if ($admitted.stagingFile -cne "$remoteInbox/.$Component-upload-$attempt/archive.tar") { throw 'Public build input upload escaped its unique inbox staging file.' }
+            $beforeOutput = Invoke-Checked $python @('-I', '-B', $helper, 'local', '--component', $Component, '--archive', $archive, '--local-root', $cacheRoot)
             $before = ($beforeOutput | Select-Object -Last 1) | ConvertFrom-Json
             if ($before.sha256 -cne $local.sha256 -or $before.bytes -ne $local.bytes -or $before.fingerprintSha256 -cne $local.fingerprintSha256) { throw 'Local public build input changed before SCP.' }
             Invoke-Checked 'scp.exe' ($sshOptions + @('-P', $portText, $local.file, "${destination}:$($admitted.stagingFile)"))
-            $afterOutput = Invoke-Checked $python @('-I', '-B', $helper, 'local', '--archive', $archive, '--local-root', $cacheRoot)
+            $afterOutput = Invoke-Checked $python @('-I', '-B', $helper, 'local', '--component', $Component, '--archive', $archive, '--local-root', $cacheRoot)
             $after = ($afterOutput | Select-Object -Last 1) | ConvertFrom-Json
             if ($after.sha256 -cne $local.sha256 -or $after.bytes -ne $local.bytes -or $after.fingerprintSha256 -cne $local.fingerprintSha256) { throw 'Local public build input changed during SCP.' }
             $publishedOutput = Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "$guard publish $transferArguments"))
             $published = ($publishedOutput | Select-Object -Last 1) | ConvertFrom-Json
             if ($published.status -cne 'AVAILABLE' -or $published.release -cne $tag -or $published.commit -cne $commit -or $published.sourceSha256 -cne $sha) { throw 'Public build input publication did not complete for this source.' }
-            foreach ($field in @('file', 'sha256', 'bytes')) { if ($published.buildkitArchive.$field -cne $expected.$field) { throw 'Published public build-input binding changed.' } }
+            foreach ($field in @('file', 'sha256', 'bytes')) { if ($published.$archiveField.$field -cne $expected.$field) { throw 'Published public build-input binding changed.' } }
             $record.publication = $published
         } elseif ($admitted.status -cne 'REUSED') { throw 'Public build-input cache admission did not return a known state.' }
         $record.status = 'AVAILABLE'; $failed = $false
@@ -265,7 +272,8 @@ function Send-CandidateBuildToolsArchive {
                 $record.cleanup = $cleanup
             } catch { $cleanupFailed = $true; $record.status = 'FAILED'; $record.cleanupStatus = 'FAILED_OR_UNKNOWN' }
         }
-        $record | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath artifacts/candidate-build-tools-transport.json -Encoding utf8
+        $transportFile=if($Component -ceq 'buildkit'){'artifacts/candidate-build-tools-transport.json'}else{'artifacts/'+$Component+'-image-input-transport.json'}
+        $record | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $transportFile -Encoding utf8
         if ($cleanupFailed -and -not $failed) { throw 'Owned public build-input staging cleanup failed; shared cache and unknown files were retained.' }
     }
 }
@@ -784,6 +792,11 @@ if ($Action -in @('PrepareTools', 'CleanupTools')) {
         Invoke-Checked 'ssh.exe' ($sshOptions + @('-p', $portText, $destination, "chmod 600 '$remoteInbox/source.tar.gz' '$remoteInbox/prepare-ecs-tools.py' '$executor'"))
         $arguments = "--root '$remoteRoot' --tag '$tag' --commit '$commit' --source-sha256 '$sha' --instance-id '$instance' --machine-id '$machine'"
         $prepareArguments = $arguments
+        if ($env:ACTION -cin @('verify','verify-runtime','compact-cutover') -and $env:DOORHANDLE_CI_SCOPE -cin @('source','mysql')) {
+            foreach($component in @('qdrant','prometheus','alertmanager')) {
+                $null=Send-CandidateBuildToolsArchive -Component $component
+            }
+        }
         $buildkitBinding = $null
         if ($env:ACTION -in @('verify-runtime', 'compact-cutover')) {
             $buildkitBinding = Send-CandidateBuildToolsArchive

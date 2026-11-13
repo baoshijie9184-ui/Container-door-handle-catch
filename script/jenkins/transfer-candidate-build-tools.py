@@ -16,6 +16,12 @@ FLOOR = 2 * 1024 ** 3 + 256 * 1024 ** 2
 LOCAL_BASE = Path('D:/AI/lunwen1/DoorHandleCatch/work/jenkins/build-deps')
 RECIPE = 'script/jenkins/transfer-candidate-build-tools.py'
 SHA = re.compile(r'[a-f0-9]{64}')
+COMPONENTS = ('buildkit', 'qdrant', 'prometheus', 'alertmanager')
+
+
+def archive_field(component):
+    need(component in COMPONENTS, 'REVIEWED_COMPONENT_REQUIRED')
+    return 'buildkitArchive' if component == 'buildkit' else 'componentArchive'
 
 
 def need(value, code):
@@ -107,10 +113,12 @@ def private_directory(path, *, create=False, root=None):
     return path
 
 
-def binding(root, checksum, size):
+def binding(root, checksum, size, component='buildkit'):
+    archive_field(component)
     need(SHA.fullmatch(checksum or '') and type(size) is int and 0 < size <= MAX_BYTES,
          'BUILD_INPUT_BINDING_INVALID')
-    return {'file': str(Path(root) / 'build-inputs/buildkit-v0.34.2' / (checksum + '.tar')),
+    folder = 'buildkit-v0.34.2' if component == 'buildkit' else component
+    return {'file': str(Path(root) / 'build-inputs' / folder / (checksum + '.tar')),
             'sha256': checksum, 'bytes': size}
 
 
@@ -124,14 +132,15 @@ def checked_cache(value):
     return value
 
 
-def stage_path(inbox, attempt):
+def stage_path(inbox, attempt, component='buildkit'):
+    archive_field(component)
     need(re.fullmatch(r'[a-f0-9]{32}', attempt or ''), 'BUILD_INPUT_ATTEMPT_INVALID')
-    return Path(inbox) / ('.buildkit-upload-' + attempt)
+    return Path(inbox) / ('.' + component + '-upload-' + attempt)
 
 
-def owner_record(context, value, attempt):
+def owner_record(context, value, attempt, component='buildkit'):
     return {'kind': 'doorhandle-public-build-input-upload', **context,
-            'buildkitArchive': value, 'attempt': attempt}
+            archive_field(component): value, 'attempt': attempt}
 
 
 def write_exclusive(path, value):
@@ -140,7 +149,22 @@ def write_exclusive(path, value):
         output.write(json.dumps(value, sort_keys=True).encode() + b'\n'); output.flush(); os.fsync(output.fileno())
 
 
-def probe(root, inbox, context, value, attempt):
+def component_reference(inbox, context, value, component):
+    """Publish only a small current-source pointer; immutable archives stay shared."""
+    if component == 'buildkit':
+        return
+    path = Path(inbox) / (component + '-image-input.json')
+    record = {'schema': 1, 'kind': 'doorhandle-component-image-input', 'component': component,
+              **context, 'componentArchive': value}
+    if path.exists() or path.is_symlink():
+        with held(path, uid=1000, private=True, maximum=16384) as (fd, before):
+            need(json.loads(os.read(fd, 16385)) == record, 'COMPONENT_INPUT_POINTER_DIFFERS')
+            stable(fd, path, before)
+    else:
+        write_exclusive(path, record)
+
+
+def probe(root, inbox, context, value, attempt, component='buildkit'):
     cache = Path(value['file']); parent = Path(root) / 'build-inputs'
     private_directory(inbox, root=root)
     if parent.exists():
@@ -148,33 +172,34 @@ def probe(root, inbox, context, value, attempt):
         if cache.parent.exists():
             private_directory(cache.parent, root=root)
             if cache.exists() or cache.is_symlink():
-                return {'status': 'REUSED', 'buildkitArchive': checked_cache(value), **context}
+                checked_cache(value); component_reference(inbox, context, value, component)
+                return {'status': 'REUSED', archive_field(component): value, **context}
     disk = os.statvfs(root); available = disk.f_bavail * disk.f_frsize
     required = FLOOR + value['bytes'] + 64 * 1024
     need(available >= required, 'BUILD_INPUT_UPLOAD_DISK_RESERVE')
     private_directory(parent, create=True, root=root); private_directory(cache.parent, create=True, root=root)
-    stage = stage_path(inbox, attempt); stage.mkdir(mode=0o700); private_directory(stage)
-    write_exclusive(stage / 'owner.json', owner_record(context, value, attempt))
+    stage = stage_path(inbox, attempt, component); stage.mkdir(mode=0o700); private_directory(stage)
+    write_exclusive(stage / 'owner.json', owner_record(context, value, attempt, component))
     fd = os.open(stage / 'archive.tar', os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600); os.close(fd)
-    return {'status': 'UPLOAD_REQUIRED', 'buildkitArchive': value, **context,
+    return {'status': 'UPLOAD_REQUIRED', archive_field(component): value, **context,
             'stagingFile': str(stage / 'archive.tar'), 'availableBytes': available,
             'requiredAvailableBytes': required, 'diskReserveBytes': FLOOR}
 
 
-def admitted_stage(inbox, context, value, attempt):
-    stage = private_directory(stage_path(inbox, attempt), root=Path(inbox).parents[1])
+def admitted_stage(inbox, context, value, attempt, component='buildkit'):
+    stage = private_directory(stage_path(inbox, attempt, component), root=Path(inbox).parents[1])
     need({p.name for p in stage.iterdir()} <= {'owner.json', 'archive.tar'}, 'UNKNOWN_BUILD_INPUT_STAGING_ENTRY')
     with held(stage / 'owner.json', uid=1000, private=True, maximum=16384) as (fd, before):
         raw = os.read(fd, 16385); stable(fd, stage / 'owner.json', before)
-    need(json.loads(raw) == owner_record(context, value, attempt), 'BUILD_INPUT_STAGING_OWNER_DIFFERS')
+    need(json.loads(raw) == owner_record(context, value, attempt, component), 'BUILD_INPUT_STAGING_OWNER_DIFFERS')
     return stage
 
 
-def cleanup(inbox, context, value, attempt):
-    stage = stage_path(inbox, attempt)
+def cleanup(inbox, context, value, attempt, component='buildkit'):
+    stage = stage_path(inbox, attempt, component)
     if not stage.exists() and not stage.is_symlink():
         return {'status': 'NO_STAGE', **context}
-    stage = admitted_stage(inbox, context, value, attempt)
+    stage = admitted_stage(inbox, context, value, attempt, component)
     directory = os.open(stage, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
         file = stage / 'archive.tar'
@@ -200,7 +225,7 @@ def cleanup(inbox, context, value, attempt):
                     stable(fd, file, before); os.unlink('archive.tar', dir_fd=directory)
                 os.fsync(directory)
         with held(stage / 'owner.json', uid=1000, private=True, maximum=16384) as (fd, before):
-            need(json.loads(os.read(fd, 16385)) == owner_record(context, value, attempt),
+            need(json.loads(os.read(fd, 16385)) == owner_record(context, value, attempt, component),
                  'BUILD_INPUT_STAGING_OWNER_DIFFERS')
             stable(fd, stage / 'owner.json', before); os.unlink('owner.json', dir_fd=directory)
         need(not list(stage.iterdir()), 'BUILD_INPUT_STAGING_NOT_EMPTY')
@@ -210,8 +235,8 @@ def cleanup(inbox, context, value, attempt):
     return {'status': 'REMOVED_OWNED_STAGING', **context}
 
 
-def publish(root, inbox, context, value, attempt):
-    stage = admitted_stage(inbox, context, value, attempt); cache = Path(value['file'])
+def publish(root, inbox, context, value, attempt, component='buildkit'):
+    stage = admitted_stage(inbox, context, value, attempt, component); cache = Path(value['file'])
     private_directory(cache.parent.parent, root=root); private_directory(cache.parent, root=root)
     disk = os.statvfs(root); need(disk.f_bavail * disk.f_frsize >= FLOOR, 'BUILD_INPUT_PUBLICATION_DISK_RESERVE')
     with held(stage / 'archive.tar', uid=1000, private=True) as (fd, before):
@@ -233,8 +258,9 @@ def publish(root, inbox, context, value, attempt):
                 checked_cache(value)
         finally:
             os.close(directory)
-    checked_cache(value); cleanup(inbox, context, value, attempt)
-    return {'status': 'AVAILABLE', 'buildkitArchive': value, **context}
+    checked_cache(value); cleanup(inbox, context, value, attempt, component)
+    component_reference(inbox, context, value, component)
+    return {'status': 'AVAILABLE', archive_field(component): value, **context}
 
 
 def remote_context(args):
@@ -276,14 +302,15 @@ def main(argv=None):
     parser.add_argument('--archive'); parser.add_argument('--local-root'); parser.add_argument('--root'); parser.add_argument('--tag')
     parser.add_argument('--commit'); parser.add_argument('--source-sha256'); parser.add_argument('--instance-id'); parser.add_argument('--machine-id')
     parser.add_argument('--archive-sha256'); parser.add_argument('--archive-bytes', type=int); parser.add_argument('--attempt')
+    parser.add_argument('--component', choices=COMPONENTS, default='buildkit')
     args = parser.parse_args(argv)
     if args.phase == 'local':
         need(os.name == 'nt' and Path(args.local_root or '') == LOCAL_BASE, 'LOCAL_BUILD_INPUT_ROOT_INVALID')
         result = local_snapshot(args.archive, LOCAL_BASE)
     else:
-        root, inbox, context = remote_context(args); value = binding(root, args.archive_sha256, args.archive_bytes)
+        root, inbox, context = remote_context(args); value = binding(root, args.archive_sha256, args.archive_bytes, args.component)
         result = {'probe': probe, 'publish': publish, 'cleanup': lambda _root, *rest: cleanup(*rest)}[args.phase](
-            root, inbox, context, value, args.attempt)
+            root, inbox, context, value, args.attempt, args.component)
     print(json.dumps(result, sort_keys=True))
 
 

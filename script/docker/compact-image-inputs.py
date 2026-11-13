@@ -232,7 +232,8 @@ def inspect_docker_archive(archive, expected_image_id=None, expected_diff_ids=No
                 and config.get('rootfs', {}).get('type') == 'layers', 'Image config identity/platform differs')
         diff_ids = config['rootfs']['diff_ids']; names = source['Layers']
         require(isinstance(names, list) and isinstance(diff_ids, list) and len(names) == len(diff_ids)
-                and len(set(names)) == len(names) and len(names) <= 256
+                and (len(set(names)) == len(names) or ('index.json' in catalog and 'oci-layout' in catalog
+                     and all(re.fullmatch(r'blobs/sha256/[a-f0-9]{64}', name) for name in names))) and len(names) <= 256
                 and all(type(x) is str and SHA.fullmatch(x) for x in diff_ids)
                 and (expected_diff_ids is None or diff_ids == expected_diff_ids), 'Image layer/DiffID catalog differs')
         layers = []; descriptors = []; expanded_total = 0
@@ -451,7 +452,9 @@ def export_stream_to_oci(origin, destination, expected_image_id, expected_diff_i
             and config.get('rootfs', {}).get('type') == 'layers'
             and config.get('rootfs', {}).get('diff_ids') == expected_diff_ids
             and type(row['Layers']) is list and len(row['Layers']) == len(expected_diff_ids)
-            and all(type(name) is str for name in row['Layers']) and len(set(row['Layers'])) == len(row['Layers']),
+            and all(type(name) is str for name in row['Layers'])
+            and (len(set(row['Layers'])) == len(row['Layers']) or ('index.json' in members and 'oci-layout' in members
+                 and all(re.fullmatch(r'blobs/sha256/[a-f0-9]{64}', name) for name in row['Layers']))),
             'Exported dependency image config differs')
     if row['Config'].startswith('blobs/sha256/'):
         require(row['Config'] == 'blobs/sha256/' + config_id[7:], 'Content-addressed image config differs')

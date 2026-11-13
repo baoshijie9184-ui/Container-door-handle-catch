@@ -27,6 +27,7 @@ MAX_ARCHIVE = 128 * MIB
 MAX_METADATA = 4 * MIB
 MEDIA = 'application/vnd.oci.image.manifest.v1+json'
 SHA = re.compile(r'sha256:[a-f0-9]{64}')
+COMPONENTS = ('buildkit', 'qdrant', 'prometheus', 'alertmanager')
 
 
 def need(value, code):
@@ -70,15 +71,26 @@ class ClosedInfo(tarfile.TarInfo):
         return super()._proc_member(package)
 
 
-def pins(source):
+def pins(source, component='buildkit'):
+    need(component in COMPONENTS, 'REVIEWED_COMPONENT_REQUIRED')
     values = {}
+    wanted = {'VERSION', 'REFERENCE', 'IMAGE_ID'} if component == 'buildkit' else (
+        {'QDRANT_REFERENCE', 'QDRANT_CONFIG', 'QDRANT_COMPRESSED_BYTES', 'QDRANT_VERSION'} if component == 'qdrant' else {'OBSERVABILITY_IMAGES'})
     for node in ast.parse(Path(source).read_bytes()).body:
         if isinstance(node, ast.Assign):
             for target in node.targets:
-                if isinstance(target, ast.Name) and target.id in ('VERSION', 'REFERENCE', 'IMAGE_ID'):
+                if isinstance(target, ast.Name) and target.id in wanted:
                     need(target.id not in values, 'DUPLICATE_BUILD_INPUT_PIN')
                     values[target.id] = ast.literal_eval(node.value)
-    need(set(values) == {'VERSION', 'REFERENCE', 'IMAGE_ID'} and
+    need(set(values) == wanted, 'LITERAL_BUILD_INPUT_PINS_REQUIRED')
+    if component == 'qdrant':
+        values = {'VERSION': 'v' + values['QDRANT_VERSION'], 'REFERENCE': values['QDRANT_REFERENCE'], 'IMAGE_ID': values['QDRANT_CONFIG'],
+                  'compressedLayerBytes': values['QDRANT_COMPRESSED_BYTES'], 'component': component}
+    elif component != 'buildkit':
+        value = values['OBSERVABILITY_IMAGES'][component]
+        values = {'VERSION': 'v' + value['version'], 'REFERENCE': value['reference'], 'IMAGE_ID': value['config'],
+                  'compressedLayerBytes': value['compressedBytes'], 'component': component}
+    need({'VERSION', 'REFERENCE', 'IMAGE_ID'} <= values.keys() and
          re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+', values['VERSION']) and SHA.fullmatch(values['IMAGE_ID']),
          'LITERAL_BUILD_INPUT_PINS_REQUIRED')
     match = re.fullmatch(r'docker.io/([a-z0-9_./-]+)@(sha256:[a-f0-9]{64})', values['REFERENCE'])
@@ -152,8 +164,11 @@ def manifest(raw, fixed):
              and row['mediaType'] == ('application/vnd.oci.image.config.v1+json' if number == 0
                                      else 'application/vnd.oci.image.layer.v1.tar+gzip') for number, row in enumerate(rows)),
          'PINNED_BUILD_DESCRIPTOR_INVALID')
-    need(len({row['digest'] for row in rows}) == len(rows)
-         and sum(row['size'] for row in rows) + len(raw) + MIB < MAX_ARCHIVE,
+    unique = {row['digest']: row for row in rows}
+    need(all(unique[row['digest']] == row for row in rows)
+         and (fixed.get('component') in COMPONENTS[1:] or len(unique) == len(rows))
+         and sum(row['size'] for row in rows) + len(raw) + MIB < MAX_ARCHIVE
+         and ('compressedLayerBytes' not in fixed or sum(row['size'] for row in value['layers']) == fixed['compressedLayerBytes']),
          'BUILD_INPUT_CATALOGUE_EXCEEDS_BOUND')
     return value
 
@@ -256,9 +271,13 @@ def verify_bundle(path, fixed):
 def fetch(output, fixed):
     need(Path(output).is_absolute(), 'BUILD_CACHE_REQUIRES_EXPLICIT_D_DRIVE_DIRECTORY')
     output = safe(output)
+    component = fixed.get('component', 'buildkit')
+    need(component in COMPONENTS, 'REVIEWED_COMPONENT_REQUIRED')
+    if component != 'buildkit':
+        output = safe(output / fixed['manifestDigest'][7:])
     need(output.is_absolute() and (os.name != 'nt' or output.drive.upper() == 'D:'), 'BUILD_CACHE_REQUIRES_EXPLICIT_D_DRIVE_DIRECTORY')
     output.mkdir(parents=True, exist_ok=True)
-    target = output / 'buildkit-oci.tar'
+    target = output / (component + '-oci.tar')
     if target.exists():
         return verify_bundle(target, fixed)
     registry = Registry(fixed); metadata = output / 'original-manifest.json'
@@ -271,7 +290,7 @@ def fetch(output, fixed):
     value = manifest(raw, fixed)
     blobs = safe(output / 'blobs' / 'sha256'); blobs.mkdir(parents=True, exist_ok=True)
     put_bytes(blobs / fixed['manifestDigest'][7:], raw)
-    for row in [value['config'], *value['layers']]:
+    for row in {item['digest']: item for item in [value['config'], *value['layers']]}.values():
         reused = fetch_blob(registry, blobs, row)
         print(json.dumps({'event': 'BUILD_BLOB_READY', 'digest': row['digest'], 'bytes': row['size'], 'reused': reused}), flush=True)
     control = {'oci-layout': encoded({'imageLayoutVersion': '1.0.0'}),
@@ -297,9 +316,10 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output-dir', required=True)
     parser.add_argument('--resources-source', default=str(Path(__file__).resolve().parents[1] / 'docker/compact-build-resources.py'))
+    parser.add_argument('--component', choices=COMPONENTS, default='buildkit')
     args = parser.parse_args(argv)
     try:
-        print(json.dumps(fetch(args.output_dir, pins(args.resources_source))), flush=True)
+        print(json.dumps(fetch(args.output_dir, pins(args.resources_source, args.component))), flush=True)
         return 0
     except BaseException as error:
         code = str(error) if isinstance(error, ValueError) and re.fullmatch(r'[A-Z][A-Z0-9_]{0,127}', str(error)) else 'PINNED_BUILD_INPUT_FETCH_FAILED'

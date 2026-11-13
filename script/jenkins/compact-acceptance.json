@@ -1514,7 +1514,7 @@
       },
       {
         "module": "tests_python.test_jenkins_tool_preparation",
-        "minimumTests": 41,
+        "minimumTests": 55,
         "source": "tests_python/test_jenkins_tool_preparation.py",
         "allowedSkippedTests": []
       },
@@ -1742,8 +1742,14 @@
       },
       {
         "module": "tests_python.test_middleware_evidence",
-        "minimumTests": 19,
+        "minimumTests": 24,
         "source": "tests_python/test_middleware_evidence.py",
+        "allowedSkippedTests": []
+      },
+      {
+        "module": "tests_python.test_jenkins_component_image_inputs",
+        "minimumTests": 20,
+        "source": "tests_python/test_jenkins_component_image_inputs.py",
         "allowedSkippedTests": []
       },
       {

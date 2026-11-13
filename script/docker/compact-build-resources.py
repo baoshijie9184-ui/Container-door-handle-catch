@@ -48,6 +48,7 @@ SERVICES = ('backend', 'nginx', 'mem0', 'detection-worker')
 QDRANT_REFERENCE = 'docker.io/qdrant/qdrant@sha256:2d1b0bfd0a961275481ea09400fc98008216ae54e1b52ed7d24520d63050c644'
 QDRANT_CONFIG = 'sha256:8a80c5500151ab2b08eb5874698b81b6b8addbc53ef4fb0c47f516680cf413d2'
 QDRANT_COMPRESSED_BYTES = 72584785
+QDRANT_VERSION = '1.20.0'
 OBSERVABILITY_IMAGES = {
     'prometheus': {
         'reference': 'docker.io/prom/prometheus@sha256:89c1a644817e9ad70fa2af76c84898e327c1de7063735f962e8313b1e28672c3',
@@ -663,6 +664,21 @@ def buildkit_archive_source(root, binding, check):
     expected = buildkit_input(argparse.Namespace(root=str(root), prepare_candidate_builder=True,
         buildkit_archive=binding['file'], buildkit_archive_sha256=binding['sha256'], buildkit_archive_bytes=binding['bytes']))
     require(expected == binding, 'BuildKit archive binding differs')
+    with component_archive_source(root, binding, 'buildkit', check) as source:
+        yield source
+
+
+@contextlib.contextmanager
+def component_archive_source(root, binding, component, check):
+    """Hold one immutable shared public input through validation and consumption."""
+    require(component in ('buildkit', 'qdrant', 'prometheus', 'alertmanager')
+            and type(binding) is dict and set(binding) == {'file', 'sha256', 'bytes'}
+            and type(binding['sha256']) is str and SHA.fullmatch(binding['sha256'])
+            and type(binding['bytes']) is int and 0 < binding['bytes'] <= BUILDKIT_ARCHIVE_MAX,
+            'Closed bounded component archive binding is required')
+    folder = 'buildkit-' + VERSION if component == 'buildkit' else component
+    require(binding['file'] == str(Path(root) / 'build-inputs' / folder / (binding['sha256'] + '.tar')),
+            'Component archive must use its immutable cache path')
     root = safe(root); path = safe(Path(binding['file']))
     directories = {}
     for parent in path.parents:
@@ -728,15 +744,18 @@ class ClosedBuildkitInfo(tarfile.TarInfo):
         return super()._proc_member(package)
 
 
-def archive_layout(actor, root, binding, destination, inputs):
+def archive_layout(actor, root, binding, destination, inputs, component=None):
     """Read the pinned upstream OCI graph from one held, content-addressed input."""
-    actor.begin('official-archive-validation', 4 * MIB, {'buildkitArchive': binding}, 128 * MIB)
-    with buildkit_archive_source(root, binding, actor.check) as source:
+    pin = component_pin(component) if component else {'reference': REFERENCE, 'config': IMAGE_ID, 'compressedBytes': BUILDKIT_LAYER_BYTES}
+    evidence_key = 'componentArchive' if component else 'buildkitArchive'
+    actor.begin('official-archive-validation', 4 * MIB, {evidence_key: binding}, 128 * MIB)
+    held = component_archive_source(root, binding, component, actor.check) if component else buildkit_archive_source(root, binding, actor.check)
+    with held as source:
         with tarfile.open(fileobj=source, mode='r:', tarinfo=ClosedBuildkitInfo) as package:
             members = {}
             for entry in package:
                 name = entry.name.rstrip('/') if entry.isdir() else entry.name
-                require(name not in members and len(members) < 128 and not entry.pax_headers and not entry.issparse(),
+                require(name not in members and len(members) < (132 if component else 128) and not entry.pax_headers and not entry.issparse(),
                         'Duplicate or extended BuildKit OCI archive member')
                 members[name] = entry; actor.check()
             source.seek(package.offset); tail = 0
@@ -753,7 +772,7 @@ def archive_layout(actor, root, binding, destination, inputs):
             require(type(index) is dict and set(index) == {'schemaVersion', 'manifests'}
                     and type(index['schemaVersion']) is int and index['schemaVersion'] == 2
                     and type(index['manifests']) is list and len(index['manifests']) == 1, 'Single pinned BuildKit OCI index is required')
-            descriptor = index['manifests'][0]; upstream = REFERENCE.split('@', 1)[1]
+            descriptor = index['manifests'][0]; upstream = pin['reference'].split('@', 1)[1]
             require(type(descriptor) is dict and set(descriptor) == {'mediaType', 'digest', 'size'}
                     and descriptor['mediaType'] == 'application/vnd.oci.image.manifest.v1+json'
                     and descriptor['digest'] == upstream and type(descriptor['size']) is int and 0 < descriptor['size'] <= 4 * MIB,
@@ -772,12 +791,36 @@ def archive_layout(actor, root, binding, destination, inputs):
                         and type(row['size']) is int and 0 < row['size'] <= BUILDKIT_ARCHIVE_MAX
                         and row['mediaType'] == ('application/vnd.oci.image.config.v1+json' if number == 0
                                                 else 'application/vnd.oci.image.layer.v1.tar+gzip'), 'BuildKit OCI descriptor is invalid')
-            require(manifest['config']['digest'] == IMAGE_ID and len({row['digest'] for row in descriptors}) == len(descriptors)
-                    and sum(row['size'] for row in manifest['layers']) == BUILDKIT_LAYER_BYTES, 'Pinned BuildKit config or original layer bytes differ')
+            unique = {row['digest']: row for row in descriptors}
+            require(manifest['config']['digest'] == pin['config']
+                    and all(unique[row['digest']] == row for row in descriptors)
+                    and (component is not None or len(unique) == len(descriptors))
+                    and sum(row['size'] for row in manifest['layers']) == pin['compressedBytes'], 'Pinned BuildKit config or original layer bytes differ')
             wanted = {'oci-layout', 'index.json', manifest_name, *['blobs/sha256/' + row['digest'][7:] for row in descriptors]}
             require({name for name, entry in members.items() if entry.isfile()} == wanted
                     and all(members['blobs/sha256/' + row['digest'][7:]].size == row['size'] for row in descriptors), 'BuildKit OCI member closure differs')
             total = sum(row['size'] for row in descriptors)
+            if component:
+                # The original shared OCI archive is already content-addressed and held.
+                # Measure every ordered layer/DiffID without creating another blob copy.
+                config_raw = small('blobs/sha256/' + pin['config'][7:])
+                require('sha256:' + hashlib.sha256(config_raw).hexdigest() == pin['config'], 'Pinned component config bytes differ')
+                config = archive_json(config_raw)
+                require(type(config) is dict and type(config.get('rootfs')) is dict, 'Component config layer catalogue is missing')
+                actor.begin('measure-shared-' + component, 4 * MIB, {evidence_key: binding,
+                    'measurement': 'COMPLETE_STREAM_NO_LAYER_WRITES', 'compressedInputBytes': total}, 128 * MIB)
+                write(actor.directory / (component + '-source-manifest.json'), manifest)
+                # Preserve exact official bytes rather than a re-encoded provenance claim.
+                original = actor.directory / (component + '-source-manifest.raw.json')
+                with os.fdopen(os.open(original, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600), 'wb') as output:
+                    output.write(raw); output.flush(); os.fsync(output.fileno())
+                source.seek(0)
+                result = inputs.inspect_docker_stream(source, pin['config'], config['rootfs'].get('diff_ids'), 8 * GIB,
+                    actor.check, expected_engine_descriptor=descriptor)
+                require(result['configDigest'] == pin['config'] and result['compressedBytes'] == pin['compressedBytes']
+                        and result['loadDescriptor'] == descriptor, 'Shared component archive measurement differs')
+                result['config'] = config
+                return result
             actor.begin('copy-official-oci', total + 8 * MIB, {'buildkitArchive': binding, 'compressedInputBytes': total}, 128 * MIB)
             require(not destination.exists() and not destination.is_symlink(), 'BuildKit OCI output must be fresh')
             destination.mkdir(mode=0o700); (destination / 'blobs').mkdir(mode=0o700); (destination / 'blobs/sha256').mkdir(mode=0o700)
@@ -872,19 +915,53 @@ def host_diff_ids(actor):
     return layers
 
 
-def prepare_qdrant_image(directory, context, module_directory):
-    return _prepare_component_image(directory, context, module_directory, 'qdrant', {
+def component_pin(component):
+    require(component in ('qdrant', 'prometheus', 'alertmanager'), 'Only reviewed component inputs are admitted')
+    return {
         'reference': QDRANT_REFERENCE, 'config': QDRANT_CONFIG,
-        'compressedBytes': QDRANT_COMPRESSED_BYTES, 'version': '1.20.0',
-        'source': 'https://github.com/qdrant/qdrant/tree/v1.20.0'})
+        'compressedBytes': QDRANT_COMPRESSED_BYTES, 'version': QDRANT_VERSION,
+        'source': 'https://github.com/qdrant/qdrant/tree/v1.20.0'} if component == 'qdrant' else OBSERVABILITY_IMAGES[component]
 
 
-def prepare_observability_image(directory, context, module_directory, component):
+def component_input(checkout, context, component):
+    """Require the current release's uploaded input; never fall back to ECS Internet."""
+    component_pin(component)
+    checkout = safe(checkout); root = checkout.parents[2]
+    require(checkout == root / 'verification' / context['release'] / 'checkout', 'Component input checkout differs')
+    pointer = safe(root / 'inbox' / context['release'] / (component + '-image-input.json'))
+    info = pointer.lstat()
+    require(stat.S_ISREG(info.st_mode) and info.st_uid == 1000 and info.st_nlink == 1
+            and stat.S_IMODE(info.st_mode) == 0o600 and 0 < info.st_size <= 16384, 'Private component input pointer is missing')
+    admitted = archive_metadata(info)
+    with os.fdopen(os.open(pointer, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), 'rb') as source:
+        require(archive_metadata(os.fstat(source.fileno())) == admitted, 'Component input pointer changed at open')
+        raw = source.read(16385)
+        require(len(raw) == info.st_size and archive_metadata(os.fstat(source.fileno())) == admitted
+                == archive_metadata(pointer.lstat()), 'Component input pointer changed during read')
+    value = archive_json(raw)
+    require(type(value) is dict and set(value) == {'schema', 'kind', 'component', 'componentArchive', *context}
+            and type(value['schema']) is int and value['schema'] == 1
+            and value['kind'] == 'doorhandle-component-image-input' and value['component'] == component
+            and all(value.get(key) == expected for key, expected in context.items()), 'Component input belongs to another fixed source or ECS')
+    binding = value['componentArchive']
+    require(type(binding) is dict and set(binding) == {'file', 'sha256', 'bytes'}
+            and type(binding.get('sha256')) is str and SHA.fullmatch(binding['sha256'])
+            and type(binding.get('bytes')) is int and 0 < binding['bytes'] <= BUILDKIT_ARCHIVE_MAX
+            and binding['file'] == str(root / 'build-inputs' / component / (binding['sha256'] + '.tar')),
+            'Component input points outside its immutable public cache')
+    return dict(binding)
+
+
+def prepare_qdrant_image(directory, context, module_directory, archive=None):
+    return _prepare_component_image(directory, context, module_directory, 'qdrant', component_pin('qdrant'), archive)
+
+
+def prepare_observability_image(directory, context, module_directory, component, archive=None):
     require(component in OBSERVABILITY_IMAGES, 'Only reviewed Prometheus/Alertmanager images are admitted')
-    return _prepare_component_image(directory, context, module_directory, component, OBSERVABILITY_IMAGES[component])
+    return _prepare_component_image(directory, context, module_directory, component, component_pin(component), archive)
 
 
-def _prepare_component_image(directory, context, module_directory, component, pin):
+def _prepare_component_image(directory, context, module_directory, component, pin, archive=None):
     """Use the existing measured OCI route, never a detached daemon pull.
 
     The returned engine ID may differ from its config ID on containerd. Both
@@ -897,7 +974,11 @@ def _prepare_component_image(directory, context, module_directory, component, pi
     inputs = load_module(component + '_image_inputs', Path(module_directory) / 'compact-image-inputs.py')
     try:
         actor.begin(component + '-metadata', 4 * MIB, {'imageReference': pin['reference']}, 128 * MIB)
-        proof = registry_layout(actor, pin['reference'], actor.directory / (component + '-oci'), inputs)
+        if archive is not None:
+            root = Path(archive['file']).parents[2]
+            proof = archive_layout(actor, root, archive, None, inputs, component=component)
+        else:
+            proof = registry_layout(actor, pin['reference'], actor.directory / (component + '-oci'), inputs)
         require(proof['configDigest'] == pin['config']
                 and proof['compressedBytes'] == pin['compressedBytes'],
                 'Pinned component platform bytes differ')
@@ -906,22 +987,29 @@ def _prepare_component_image(directory, context, module_directory, component, pi
         existing = subprocess.run(['docker', 'image', 'inspect', engine_id],
                                   capture_output=True, timeout=15)
         if existing.returncode:
-            actor.begin(component + '-image-archive', proof['compressedBytes'] + 8 * MIB,
-                        {'imageReference': pin['reference']}, 128 * MIB)
-            archive = actor.directory / (component + '-image.tar')
-            with tarfile.open(archive, 'x', format=tarfile.PAX_FORMAT) as package:
-                os.chmod(archive, 0o600)
-                for path in sorted((actor.directory / (component + '-oci')).rglob('*')):
-                    if path.is_file():
-                        monitored_tar_file(package, path,
-                            path.relative_to(actor.directory / (component + '-oci')).as_posix(), actor.check)
+            if archive is None:
+                actor.begin(component + '-image-archive', proof['compressedBytes'] + 8 * MIB,
+                            {'imageReference': pin['reference']}, 128 * MIB)
+                load_file = actor.directory / (component + '-image.tar')
+                with tarfile.open(load_file, 'x', format=tarfile.PAX_FORMAT) as package:
+                    os.chmod(load_file, 0o600)
+                    for path in sorted((actor.directory / (component + '-oci')).rglob('*')):
+                        if path.is_file():
+                            monitored_tar_file(package, path,
+                                path.relative_to(actor.directory / (component + '-oci')).as_posix(), actor.check)
+            else:
+                load_file = Path(archive['file'])
             present = host_diff_ids(actor)
             growth = sum(row['allocationUpperBoundBytes'] for row in proof['layers']
                          if row['diffId'] not in present) + 2 * proof['compressedBytes'] + 64 * MIB
             actor.begin(component + '-image-load', growth, {'measuredLoadGrowthUpperBoundBytes': growth,
                 'compressedIngestCopiesUpperBound': 2}, 256 * MIB)
             actor.daemon_import_unknown = True
-            actor.run(['docker', 'load', '--input', str(archive)], component + '-image-load', timeout=300)
+            if archive is None:
+                actor.run(['docker', 'load', '--input', str(load_file)], component + '-image-load', timeout=300)
+            else:
+                with component_archive_source(root, archive, component, actor.check):
+                    actor.run(['docker', 'load', '--input', str(load_file)], component + '-image-load', timeout=300)
             actor.daemon_import_unknown = False
         row = json.loads(actor.docker('image', 'inspect', engine_id))[0]
         binding = engine_identity(row, proof, proof['loadDescriptor'])
@@ -932,20 +1020,21 @@ def _prepare_component_image(directory, context, module_directory, component, pi
                  'engineIdentity': binding, 'reusedImage': existing.returncode == 0,
                  'resourceEvidence': resources, 'source': pin['source'],
                  'license': 'Apache-2.0'}
+        if archive is not None:
+            value.update(componentArchive=archive, imageInputMode='LOCAL_JENKINS_RELAY')
         write(actor.directory / 'image.json', value)
         # Keep the image, original metadata and resource receipts. These exact
         # per-attempt compressed layer copies are reproducible public inputs,
         # not source business data or recovery volumes.
-        disposable = [actor.directory / (component + '-image.tar')]
-        disposable += [actor.directory / (component + '-oci/blobs/sha256') / row['blobDigest'][7:]
-                       for row in proof['layers']]
+        disposable = [] if archive is not None else [actor.directory / (component + '-image.tar'),
+            *[actor.directory / (component + '-oci/blobs/sha256') / row['blobDigest'][7:] for row in proof['layers']]]
         for path in disposable:
             if path.exists():
                 safe(path)
                 require(path.is_file() and path.stat().st_uid == os.getuid()
                         and path.is_relative_to(actor.directory), 'Component disposable input ownership changed')
                 path.unlink()
-        write(actor.directory / 'public-input-cleanup.json', {'status': 'REMOVED_REPRODUCIBLE_LAYER_COPIES',
+        write(actor.directory / 'public-input-cleanup.json', {'status': 'SHARED_INPUT_PRESERVED' if archive is not None else 'REMOVED_REPRODUCIBLE_LAYER_COPIES',
             'imagePreserved': True, 'metadataPreserved': True, 'paths': [str(path.relative_to(actor.directory)) for path in disposable]})
         return value
     except BaseException:

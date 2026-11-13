@@ -61,6 +61,11 @@ def now():
     return datetime.now(timezone.utc).isoformat()
 
 
+def record_observability_acceptance(record, stopped):
+    if record['status'] == 'PASS' and stopped['metricsAcceptance'] != 'PASS':
+        record.update(status='FAILED', observabilityAcceptanceErrorType='VerificationError')
+
+
 def digest(path):
     result = hashlib.sha256()
     with path.open("rb") as stream:
@@ -694,11 +699,11 @@ def run_verification(args):
                     metricsAcceptance=stopped['metricsAcceptance'], evidenceSha256=digest(file))
                 require(stopped['cleanupConfirmed'] is True and stopped['status'] == 'STOPPED',
                         'Observability fixture cleanup is unresolved')
-                if record['status'] == 'PASS':
-                    require(stopped['metricsAcceptance'] == 'PASS', 'Independent metric/alert readback did not pass')
             except BaseException as error:
                 record.update(status='FAILED', observabilityCleanupErrorType=type(error).__name__)
                 exit_code = 1
+            else:
+                record_observability_acceptance(record, stopped)
         if semantic_mysql_fixture is not None:
             evidence.mkdir(mode=0o700, parents=True, exist_ok=True)
             try:

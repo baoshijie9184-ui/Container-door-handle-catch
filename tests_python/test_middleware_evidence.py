@@ -11,6 +11,9 @@ ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location('middleware_evidence_verifier', ROOT / 'script/jenkins/verify-ecs.py')
 verifier = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(verifier)
+REMOTE_SPEC = importlib.util.spec_from_file_location('middleware_remote_verifier', ROOT / 'script/jenkins/verify-remote.py')
+remote = importlib.util.module_from_spec(REMOTE_SPEC)
+REMOTE_SPEC.loader.exec_module(remote)
 JAVA = 'com.ruanzhu.doorhandle.framework.semantic.QdrantSemanticIntegrationTest'
 PYTHON = 'test_real_native_qdrant_keeps_public_id_vector_direction_and_account_filters'
 
@@ -120,3 +123,15 @@ def test_source_mysql_component_does_not_override_existing_explicit_scope(monkey
     with mock.patch.object(verifier, 'admit_fixture_suite') as admission, pytest.raises(ValueError, match='another explicit fixture scope'):
         verifier.semantic_mysql_source_suite(args, {'executionLocation': 'ECS'})
     admission.assert_not_called()
+
+
+@pytest.mark.parametrize('status,metrics,expected', [
+    ('PASS', 'PASS', 'PASS'), ('PASS', 'FAILED', 'FAILED'), ('PASS', 'NOT_RUN', 'FAILED'),
+    ('FAILED', 'PASS', 'FAILED'), ('FAILED', 'FAILED', 'FAILED'),
+])
+def test_metric_acceptance_failure_is_not_an_owned_cleanup_failure(status, metrics, expected):
+    record = {'status': status}
+    remote.record_observability_acceptance(record, {'metricsAcceptance': metrics})
+    assert record['status'] == expected
+    assert 'observabilityCleanupErrorType' not in record
+    assert ('observabilityAcceptanceErrorType' in record) is (status == 'PASS' and metrics != 'PASS')

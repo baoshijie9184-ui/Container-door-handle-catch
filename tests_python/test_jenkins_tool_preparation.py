@@ -841,5 +841,365 @@ class ToolPreparationTests(unittest.TestCase):
                 prepare.assert_not_called(); readback.assert_not_called()
 
 
+class CompletedRuntimeDependencyReuseTests(unittest.TestCase):
+    """Current 22-pin reuse is separate from the immutable historical 9-pin route."""
+    owned_preparation = ToolPreparationTests.owned_preparation
+    completed_readback = ToolPreparationTests.completed_readback
+    reseal_readback = ToolPreparationTests.reseal_readback
+
+    def completed_runtime_producer(self, root):
+        value, producer, image, calls = self.completed_readback(root, include_runtime=True)
+        owner = json.loads((value.folder / 'owner.json').read_text())
+        producer['State'].update(StartedAt='2026-11-14T00:00:00Z', Paused=False)
+        image['Config']['Labels'].update({tools.LABEL: owner['ownerToken'], 'io.doorhandle.release': value.args.tag})
+        return value, producer, image, calls, owner
+
+    def current_consumer(self, source, producer, image, calls):
+        value = object.__new__(tools.Preparation)
+        value.root, value.identity, value.docker = source.root, dict(source.identity), source.docker
+        value.args = SimpleNamespace(tag='ci-2-' + 'f' * 12, commit='f' * 40, source_sha256='e' * 64,
+                                     prepare_candidate_builder=False)
+        value.inbox = value.root / 'inbox' / value.args.tag
+        value.folder = value.inbox / 'python-tools'; value.reports = value.folder / 'reports'
+        sources = {name: hashlib.sha256(raw).hexdigest() for name, raw in source.found.items()}
+        sources[tools.RECIPE] = 'a' * 64  # Current reviewed recipe can differ; dependency pins cannot.
+        pinned = tools.requirements(source.folder / 'python-test-requirements.txt')
+        def call(*args, **kwargs):
+            calls.append(args)
+            if args[:2] == ('image', 'ls'): return (image['Id'] + '\n').encode()
+            if args[:2] == ('image', 'inspect'):
+                return json.dumps([image if args[2] == image['Id'] else {'Id': args[2], 'Os': 'linux',
+                    'Config': {'Volumes': None, 'Env': []}, 'RootFS': {'Layers': ['base']}}]).encode()
+            if args[0] == 'inspect' and args[-1] in (producer['Id'], producer['Name'].lstrip('/')):
+                return json.dumps([producer]).encode()
+            raise AssertionError('Reuse admission must inspect only, not change an old producer: ' + repr(args))
+        value.call = mock.Mock(side_effect=call)
+        return value, sources, pinned
+
+    def test_current_metadata_recipe_can_name_an_admitted_image_without_rebinding_legacy_defaults(self):
+        current = 'sha256:' + 'e' * 64
+        args = tools.metadata_arguments('owned-current-metadata', 'c' * 24, 'ci-2-' + COMMIT[:12],
+            SOURCE_SHA, uid=1000, gid=1000, image=current)
+        self.assertEqual([current, '--version'], args[-2:])
+        self.assertEqual('none', args[args.index('--network') + 1]); self.assertIn('--read-only', args)
+        self.assertNotIn('--mount', args); self.assertNotIn('--volume', args)
+        self.assertEqual(str(512 * MIB), args[args.index('--memory') + 1])
+        legacy = tools.metadata_arguments('owned-legacy-metadata', 'd' * 24, 'ci-2-' + COMMIT[:12],
+            SOURCE_SHA, uid=1000, gid=1000)
+        self.assertEqual([tools.CACHED_PYTHON, '--version'], legacy[-2:])
+
+    def test_current_22_pin_producer_is_reused_across_build_and_recipe_changes_readonly(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source, producer, image, calls, owner = self.completed_runtime_producer(Path(directory))
+            value, sources, pinned = self.current_consumer(source, producer, image, calls)
+            # An unrelated later pipeline failure is not Python install evidence.
+            failed = source.root / 'verification' / source.args.tag / 'verification-receipt.json'
+            failed.parent.mkdir(parents=True); tools.write_json(failed, {'status': 'FAILED', 'errorType': 'URLError'})
+            before = {str(p.relative_to(source.root)): p.read_bytes() for p in source.root.rglob('*') if p.is_file()}
+            original_container = deepcopy(producer)
+            result_image, original, result_producer, descriptor = value.inspect_completed_dependencies(sources, pinned)
+            self.assertEqual(22, len(pinned)); self.assertEqual(image, result_image)
+            self.assertEqual(original_container, result_producer)
+            complete = json.loads((source.folder / 'completion.json').read_text())
+            self.assertEqual(set(complete['proofs']), set(original))
+            self.assertEqual(2, descriptor['schemaVersion'])
+            self.assertEqual(image['Id'], descriptor['sourceImageId'])
+            self.assertEqual(owner['release'], descriptor['producerRelease'])
+            self.assertEqual(owner['commit'], descriptor['producerCommit'])
+            self.assertEqual(owner['sourceSha256'], descriptor['producerSourceSha256'])
+            self.assertEqual(complete['proofs'], descriptor['producerProofs'])
+            self.assertEqual(tools.digest(source.folder / 'completion.json'), descriptor['producerCompletionSha256'])
+            self.assertTrue(descriptor['producerContainerInspectedOnly'])
+            self.assertNotEqual(owner['sourceFiles'][tools.RECIPE], sources[tools.RECIPE])
+            self.assertEqual(before, {str(p.relative_to(source.root)): p.read_bytes() for p in source.root.rglob('*') if p.is_file()})
+            self.assertTrue(calls and all(call[0] in ('image', 'inspect') for call in calls))
+            self.assertIsNone(getattr(value, 'container', None))
+
+    def test_same_versions_allow_current_requirements_comments_without_a_new_pip_install(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source, producer, image, calls, _ = self.completed_runtime_producer(Path(directory))
+            value, sources, pinned = self.current_consumer(source, producer, image, calls)
+            sources[tools.REQUIREMENTS] = hashlib.sha256(b'# current reviewed comment\n' + source.found[tools.REQUIREMENTS]).hexdigest()
+            proof = value.inspect_completed_dependencies(sources, pinned)
+            self.assertEqual(image['Id'], proof[3]['sourceImageId'])
+            listing = next(call for call in calls if call[:2] == ('image', 'ls'))
+            self.assertIn('label=io.doorhandle.ci-tools-requirements-sha256', listing)
+            self.assertNotIn('label=io.doorhandle.ci-tools-requirements-sha256=' + sources[tools.REQUIREMENTS], listing)
+            self.assertTrue(all(call[0] in ('image', 'inspect') for call in calls))
+
+    def test_discovery_is_bounded_to_unique_immutable_ids_before_inspecting_any_candidate(self):
+        for ids in (['mysql:8.4'], ['sha256:' + format(index, '064x') for index in range(129)]):
+            with self.subTest(inventory=len(ids)):
+                value = object.__new__(tools.Preparation)
+                value.call = mock.Mock(return_value=('\n'.join(ids) + '\n').encode())
+                value._completed_producer = mock.Mock()
+                with self.assertRaises(ValueError): value.inspect_completed_dependencies({tools.MEM0_REQUIREMENTS: 'a' * 64}, {})
+                value._completed_producer.assert_not_called(); self.assertEqual(1, value.call.call_count)
+        value = object.__new__(tools.Preparation); image = 'sha256:' + 'e' * 64
+        value.call = mock.Mock(return_value=(image + '\n' + image + '\n').encode())
+        value._completed_producer = mock.Mock(return_value=None)
+        self.assertIsNone(value.inspect_completed_dependencies({tools.MEM0_REQUIREMENTS: 'a' * 64}, {}))
+        value._completed_producer.assert_called_once()
+
+    def test_explicit_dependency_id_still_requires_the_full_valid_producer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source, producer, image, calls, _ = self.completed_runtime_producer(Path(directory))
+            value, sources, pinned = self.current_consumer(source, producer, image, calls)
+            image['Config']['Labels'].pop('io.doorhandle.ci-tools-requirements-sha256')
+            with self.assertRaises(ValueError): value.inspect_completed_dependencies(sources, pinned, image_id=image['Id'])
+            self.assertFalse(any(call[:2] == ('image', 'ls') for call in calls))
+            self.assertTrue(all(call[0] in ('image', 'inspect') for call in calls))
+
+    def test_completed_reuse_refuses_foreign_identity_nonce_commands_layers_or_producer_state(self):
+        damages = ('ecs', 'image-nonce', 'image-command', 'image-sensitive-env', 'image-base',
+                   'producer-command', 'producer-live', 'producer-oom', 'producer-pid', 'producer-exit',
+                   'producer-never-started', 'producer-owner', 'producer-mount')
+        for damage in damages:
+            with self.subTest(damage=damage), tempfile.TemporaryDirectory() as directory:
+                source, producer, image, calls, _ = self.completed_runtime_producer(Path(directory))
+                value, sources, pinned = self.current_consumer(source, producer, image, calls)
+                if damage == 'ecs': value.identity = {**value.identity, 'machineId': 'd' * 32}
+                if damage == 'image-nonce': image['Config']['Labels'][tools.LABEL] = 'f' * 24
+                if damage == 'image-command': image['Config']['Cmd'] = tools.installer_command(pinned)
+                if damage == 'image-sensitive-env': image['Config']['Env'] = ['API_KEY=synthetic-must-not-inherit']
+                if damage == 'image-base': image['RootFS']['Layers'][0] = 'different-base'
+                if damage == 'producer-command': producer['Config']['Cmd'] = ['--version']
+                if damage == 'producer-live': producer['State'].update(Running=True, Status='running', Pid=123)
+                if damage == 'producer-oom': producer['State']['OOMKilled'] = True
+                if damage == 'producer-pid': producer['State']['Pid'] = 123
+                if damage == 'producer-exit': producer['State']['ExitCode'] = 1
+                if damage == 'producer-never-started': producer['State']['StartedAt'] = '0001-01-01T00:00:00Z'
+                if damage == 'producer-owner': producer['Config']['Labels'][tools.LABEL] = 'foreign'
+                if damage == 'producer-mount': producer['Mounts'][1]['Source'] = '/production/data'
+                with self.assertRaises(ValueError): value.inspect_completed_dependencies(sources, pinned, image_id=image['Id'])
+                self.assertTrue(all(call[0] in ('image', 'inspect') for call in calls))
+
+    def test_completed_reuse_rejects_changed_original_control_bytes_and_missing_completion(self):
+        names = ('owner.json', 'preparation.json', 'completion.json', 'reports/pip-install.json',
+                 'reports/installed-versions.json', 'pip.log', 'commit.stdout', 'requirements.txt')
+        for name in names:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                source, producer, image, calls, _ = self.completed_runtime_producer(Path(directory))
+                value, sources, pinned = self.current_consumer(source, producer, image, calls)
+                path = source.folder / name
+                if name == 'completion.json': path.unlink()
+                else: path.write_bytes(path.read_bytes() + b'changed original')
+                with self.assertRaises((ValueError, OSError)):
+                    value.inspect_completed_dependencies(sources, pinned, image_id=image['Id'])
+                self.assertTrue(all(call[0] in ('image', 'inspect') for call in calls))
+
+    def test_actual_installed_versions_and_pip_check_are_semantic_guards_even_if_reports_are_resealed(self):
+        for damage in ('versions', 'pip-check', 'resource-growth'):
+            with self.subTest(damage=damage), tempfile.TemporaryDirectory() as directory:
+                source, producer, image, calls, _ = self.completed_runtime_producer(Path(directory))
+                value, sources, pinned = self.current_consumer(source, producer, image, calls)
+                receipt_file = source.folder / 'preparation.json'; receipt = json.loads(receipt_file.read_text())
+                if damage == 'versions':
+                    file = source.reports / 'installed-versions.json'; installed = json.loads(file.read_text())
+                    installed['qdrant-client'] = '1.19.0'; file.write_text(json.dumps(installed))
+                    receipt['installedVersionsSha256'] = tools.digest(file)
+                elif damage == 'pip-check':
+                    (source.folder / 'pip.log').write_bytes(b'pip check did not finish successfully\n')
+                else:
+                    file = source.folder / 'resource-samples.jsonl'; rows = [json.loads(row) for row in file.read_text().splitlines()]
+                    rows[0]['hostDiskGrowthBytes'] += 1; file.write_text('\n'.join(json.dumps(row) for row in rows) + '\n')
+                    receipt['resourceSamplesSha256'] = tools.digest(file)
+                receipt_file.write_text(json.dumps(receipt)); self.reseal_readback(source)
+                with self.assertRaises(ValueError): value.inspect_completed_dependencies(sources, pinned, image_id=image['Id'])
+                self.assertTrue(all(call[0] in ('image', 'inspect') for call in calls))
+
+    def test_producer_restart_between_readback_and_final_inspection_is_not_accepted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source, producer, image, calls, _ = self.completed_runtime_producer(Path(directory))
+            value, sources, pinned = self.current_consumer(source, producer, image, calls)
+            original = value.call.side_effect; inspected = []
+            def racing(*args, **kwargs):
+                if args == ('inspect', producer['Id']):
+                    inspected.append(True)
+                    if len(inspected) == 2: producer['State'].update(Status='running', Running=True, Pid=123)
+                return original(*args, **kwargs)
+            value.call.side_effect = racing
+            with self.assertRaises(ValueError): value.inspect_completed_dependencies(sources, pinned, image_id=image['Id'])
+            self.assertEqual(2, len(inspected)); self.assertTrue(all(call[0] in ('image', 'inspect') for call in calls))
+
+    def test_metadata_custody_and_cleanup_bind_the_new_dependency_id_not_the_legacy_default(self):
+        value, row, calls = ToolPreparationTests.metadata_preparation(self)
+        value.dependency_image = row['Image'] = 'sha256:' + 'a' * 64
+        result = value.cleanup_metadata()
+        self.assertEqual(value.dependency_image, result['containers'][0]['sourceImageId'])
+        self.assertIn(('rm', value.metadata_container), calls)
+        self.assertTrue(all(call[0] not in ('start', 'stop', 'run', 'exec') for call in calls))
+        value, row, calls = ToolPreparationTests.metadata_preparation(self)
+        value.dependency_image = 'sha256:' + 'a' * 64
+        with self.assertRaises(ValueError): value.cleanup_metadata()
+        self.assertFalse(any(call[0] == 'rm' for call in calls))
+
+    def reuse_attempt(self, source, producer, image, calls):
+        """Use the real reuse writer and readback; replace only the Docker repair."""
+        value, _, pinned = self.current_consumer(source, producer, image, calls)
+        value.folder.mkdir(parents=True, mode=0o700); value.reports.mkdir(mode=0o700)
+        value.archive = value.inbox / 'source.tar.gz'
+        value.found = {**source.found, tools.RECIPE: source.found[tools.RECIPE] + b'\n# Reviewed metadata-only revision.\n',
+                       tools.REQUIREMENTS: b'# Same admitted pins, new reviewed source.\n' + source.found[tools.REQUIREMENTS]}
+        with tarfile.open(value.archive, 'w:gz', pax_headers={'comment': value.args.commit}) as archive:
+            for name, raw in value.found.items():
+                entry = tarfile.TarInfo(name); entry.size = len(raw); archive.addfile(entry, io.BytesIO(raw))
+        value.archive.chmod(0o600); value.args.source_sha256 = tools.digest(value.archive)
+        sources = {name: hashlib.sha256(raw).hexdigest() for name, raw in value.found.items()}
+        for name, raw in value.found.items():
+            path = value.folder / Path(name).name; path.write_bytes(raw)
+            path.chmod(0o444 if name == tools.REQUIREMENTS else 0o600)
+        value.token = 'b' * 24; value.name = 'doorhandle-ci-python-' + value.token
+        value.baseline = 8 * GIB; value.image = None; value.snapshot = value.folder / 'resource-samples.jsonl'
+        owner = {'release': value.args.tag, 'commit': value.args.commit, 'sourceSha256': value.args.source_sha256,
+                 'identity': value.identity, 'ownerToken': value.token, 'containerName': value.name, 'baseImageId': tools.BASE,
+                 'diskReserveBytes': tools.RESERVE, 'diskOvershootBytes': tools.OVERSHOOT,
+                 'maximumGrowthBytes': tools.MAX_GROWTH, 'baselineAvailableBytes': value.baseline, 'sourceFiles': sources}
+        tools.write_json(value.folder / 'owner.json', owner)
+        for name in ('installed-versions.json', 'pip-install.json'):
+            path = value.reports / name; path.touch(mode=0o600)
+        image['Size'] = 4 * MIB
+        repaired = deepcopy(image); repaired['Id'] = 'sha256:' + 'f' * 64
+        repaired['Config']['Labels'].update({tools.LABEL: value.token, 'io.doorhandle.release': value.args.tag,
+            'io.doorhandle.commit': value.args.commit, 'io.doorhandle.source': value.args.source_sha256,
+            'io.doorhandle.ci-tools-recipe-sha256': sources[tools.RECIPE],
+            'io.doorhandle.ci-tools-requirements-sha256': sources[tools.REQUIREMENTS]})
+        metadata_id = 'a' * 64
+        cleanup = {'status': 'STOPPED', 'containersCreated': [metadata_id], 'remaining': [],
+            'containers': [{'containerId': metadata_id, 'sourceImageId': image['Id'], 'started': False, 'pid': 0, 'removed': True}]}
+        old_call = value.call.side_effect
+        def inspect(*args, **kwargs):
+            if args == ('image', 'inspect', repaired['Id']):
+                calls.append(args); return json.dumps([repaired]).encode()
+            if args == ('ps', '-aq', '--no-trunc', '--filter', 'id=' + metadata_id):
+                calls.append(args); return b''
+            return old_call(*args, **kwargs)
+        value.call.side_effect = inspect
+        value.available = mock.Mock(return_value=value.baseline - 1024)
+        def repair(current_sources, cached):
+            self.assertEqual(sources, current_sources); self.assertEqual(image['Id'], cached['Id'])
+            self.assertEqual(image['RootFS'], repaired['RootFS'])
+            value.dependency_image = cached['Id']; value.image = repaired['Id']
+            sample = {'elapsedSeconds': 1.0, 'availableDiskBytes': value.baseline - 1024, 'hostDiskGrowthBytes': 1024,
+                      'ownedWritableBytes': 0, 'ownedMemoryPeakBytes': 3000, 'oomKilled': False}
+            value.snapshot.write_text(json.dumps(sample) + '\n'); value.snapshot.chmod(0o600)
+            value.observed = {'hostDiskGrowthPeakBytes': 1024, 'containerWritablePeakBytes': 0,
+                              'memoryPeakBytes': 3000, 'oomKilled': False, 'samples': 1}
+            for name, raw in [('config-commit.stdout', (repaired['Id'] + '\n').encode()), ('config-commit.stderr', b'')]:
+                path = value.folder / name; path.write_bytes(raw); path.chmod(0o600)
+            return deepcopy(cleanup)
+        value.repair_cached_image = mock.Mock(side_effect=repair)
+        return value, sources, pinned, owner, repaired, cleanup
+
+    def completed_reuse(self, root):
+        source, producer, image, calls, _ = self.completed_runtime_producer(root)
+        value, sources, pinned, owner, repaired, cleanup = self.reuse_attempt(source, producer, image, calls)
+        before = {str(path.relative_to(source.inbox)): path.read_bytes() for path in source.inbox.rglob('*') if path.is_file()}
+        result = value.reuse_completed_dependencies(sources, pinned, owner)
+        published = tools.complete_preparation(value, result)
+        readback = object.__new__(tools.PreparedReadback)
+        readback.__dict__.update(value.__dict__)
+        return source, producer, image, readback, repaired, cleanup, before, calls, published
+
+    def test_real_reuse_completion_and_readback_preserve_originals_and_bind_current_metadata_without_pip(self):
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(tools, 'create_arguments') as install:
+            source, producer, image, value, repaired, cleanup, before, calls, published = self.completed_reuse(Path(directory))
+            result = value.read_prepared()
+            self.assertTrue(result['readbackValidated']); self.assertEqual('PREPARED', result['status'])
+            self.assertEqual('REUSED_IMMUTABLE_IMAGE_CONFIG_REPAIRED', result['dependencyPreparation'])
+            self.assertFalse(result['pipExecutedThisAttempt']); self.assertFalse(result['testsExecuted'])
+            self.assertEqual(image['Id'], result['dependencyImageId']); self.assertEqual(repaired['Id'], result['pythonImageId'])
+            self.assertEqual(published['completionSha256'], result['completionSha256']); self.assertEqual(cleanup, result['cleanup'])
+            reuse = json.loads((value.folder / 'reuse.json').read_text())
+            self.assertEqual(2, reuse['schemaVersion']); self.assertEqual(source.args.tag, reuse['producerRelease'])
+            self.assertEqual(tools.digest(source.folder / 'completion.json'), reuse['producerCompletionSha256'])
+            self.assertNotEqual(reuse['producerCommit'], result['commit'])
+            self.assertNotEqual(reuse['producerSourceSha256'], result['sourceSha256'])
+            self.assertNotEqual(reuse['producerProofs']['python-test-requirements.txt'], reuse['currentSourceFiles'][tools.REQUIREMENTS])
+            self.assertEqual(22, len(json.loads((value.reports / 'installed-versions.json').read_text())))
+            for name in ('pip-install.json', 'installed-versions.json'):
+                self.assertEqual((source.reports / name).read_bytes(), (value.reports / name).read_bytes())
+            complete = json.loads((value.folder / 'completion.json').read_text())
+            self.assertEqual(set(tools.completion_files(result)), set(complete['proofs']))
+            self.assertIn('requirements.txt', complete['proofs']); self.assertIn('reuse.json', complete['proofs'])
+            self.assertIn('config-commit.stdout', complete['proofs']); self.assertNotIn('pip.log', complete['proofs'])
+            self.assertEqual(before, {str(path.relative_to(source.inbox)): path.read_bytes() for path in source.inbox.rglob('*') if path.is_file()})
+            self.assertEqual('exited', producer['State']['Status']); self.assertFalse(producer['State']['Running'])
+            value.repair_cached_image.assert_called_once(); install.assert_not_called()
+            self.assertTrue(calls and all(call[0] in ('image', 'inspect', 'ps') for call in calls))
+
+    def test_resealed_reuse_descriptors_cannot_rebind_the_original_producer_or_current_source(self):
+        for damage in ('producer-completion', 'producer-release', 'producer-owner', 'producer-proof', 'source-image',
+                       'current-source', 'unexpected-field', 'disk-bound'):
+            with self.subTest(damage=damage), tempfile.TemporaryDirectory() as directory:
+                _, _, _, value, _, _, _, _, _ = self.completed_reuse(Path(directory))
+                path = value.folder / 'reuse.json'; reuse = json.loads(path.read_text())
+                if damage == 'producer-completion': reuse['producerCompletionSha256'] = '0' * 64
+                if damage == 'producer-release': reuse['producerRelease'] = 'ci-999-' + COMMIT[:12]
+                if damage == 'producer-owner': reuse['producerOwnerSha256'] = '0' * 64
+                if damage == 'producer-proof': reuse['producerProofs']['reports/pip-install.json'] = '0' * 64
+                if damage == 'source-image': reuse['sourceImageId'] = tools.CACHED_PYTHON
+                if damage == 'current-source': reuse['currentSourceFiles'][tools.RECIPE] = '0' * 64
+                if damage == 'unexpected-field': reuse['notAdmitted'] = True
+                if damage == 'disk-bound': reuse['observedGrowthBytes'] += 1
+                path.write_text(json.dumps(reuse))
+                receipt_path = value.folder / 'preparation.json'; receipt = json.loads(receipt_path.read_text())
+                receipt['reuseEvidenceSha256'] = tools.digest(path); receipt_path.write_text(json.dumps(receipt))
+                self.reseal_readback(value)
+                with self.assertRaisesRegex(ValueError, 'Config-only producer evidence'): value.read_prepared()
+
+    def test_repaired_readback_rejects_started_or_remaining_metadata_and_changed_dependency_layers(self):
+        for damage in ('started', 'pid', 'source-image', 'not-removed', 'remaining', 'live-container', 'layers'):
+            with self.subTest(damage=damage), tempfile.TemporaryDirectory() as directory:
+                _, _, _, value, repaired, cleanup, _, _, _ = self.completed_reuse(Path(directory))
+                path = value.folder / 'preparation.json'; receipt = json.loads(path.read_text())
+                if damage == 'started': receipt['cleanup']['containers'][0]['started'] = True
+                if damage == 'pid': receipt['cleanup']['containers'][0]['pid'] = 123
+                if damage == 'source-image': receipt['cleanup']['containers'][0]['sourceImageId'] = tools.CACHED_PYTHON
+                if damage == 'not-removed': receipt['cleanup']['containers'][0]['removed'] = False
+                if damage == 'remaining': receipt['cleanup']['remaining'] = cleanup['containersCreated']
+                if damage == 'layers': repaired['RootFS']['Layers'].append('unexpected-write')
+                if damage == 'live-container':
+                    original = value.call.side_effect
+                    def still_exists(*args, **kwargs):
+                        if args[0] == 'ps': return (cleanup['containersCreated'][0] + '\n').encode()
+                        return original(*args, **kwargs)
+                    value.call.side_effect = still_exists
+                path.write_text(json.dumps(receipt)); self.reseal_readback(value)
+                with self.assertRaises(ValueError): value.read_prepared()
+
+    def test_current_report_slots_cannot_overwrite_existing_or_linked_files_during_reuse(self):
+        for damage in ('nonempty', 'symlink', 'hardlink'):
+            with self.subTest(damage=damage), tempfile.TemporaryDirectory() as directory:
+                source, producer, image, calls, _ = self.completed_runtime_producer(Path(directory))
+                value, sources, pinned, owner, _, _ = self.reuse_attempt(source, producer, image, calls)
+                path = value.reports / 'installed-versions.json'
+                if damage == 'nonempty': path.write_text('do not replace')
+                elif damage == 'symlink': path.unlink(); path.symlink_to(source.reports / 'installed-versions.json')
+                else:
+                    path.unlink(); victim = value.folder / 'another-owned-report-slot'
+                    victim.touch(mode=0o600); os.link(victim, path)
+                original = (source.reports / 'installed-versions.json').read_bytes()
+                with self.assertRaisesRegex(ValueError, 'report slot was replaced'):
+                    value.reuse_completed_dependencies(sources, pinned, owner)
+                self.assertEqual(original, (source.reports / 'installed-versions.json').read_bytes())
+                value.repair_cached_image.assert_not_called()
+                self.assertFalse((value.folder / 'preparation.json').exists())
+
+    def test_different_pins_and_repaired_images_are_not_recursive_dependency_producers(self):
+        for damage in ('pins', 'repaired'):
+            with self.subTest(damage=damage), tempfile.TemporaryDirectory() as directory:
+                source, producer, image, calls, _ = self.completed_runtime_producer(Path(directory))
+                value, sources, pinned = self.current_consumer(source, producer, image, calls)
+                if damage == 'pins': pinned = {**pinned, 'qdrant-client': '1.19.0'}
+                else:
+                    path = source.folder / 'preparation.json'; receipt = json.loads(path.read_text())
+                    receipt['dependencyPreparation'] = 'REUSED_IMMUTABLE_IMAGE_CONFIG_REPAIRED'; path.write_text(json.dumps(receipt))
+                with mock.patch.object(value, 'repair_cached_image') as repair:
+                    self.assertIsNone(value.reuse_completed_dependencies(sources, pinned, {})); repair.assert_not_called()
+                self.assertFalse(value.folder.exists())
+                self.assertTrue(all(call[0] in ('image', 'inspect') for call in calls))
+
+
 if __name__ == '__main__':
     unittest.main()

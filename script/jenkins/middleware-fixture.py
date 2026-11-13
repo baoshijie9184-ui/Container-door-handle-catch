@@ -126,7 +126,7 @@ class Fixture:
         resources = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(resources)
         value = resources.prepare_qdrant_image(self.folder / 'image-preparation',
-            self.context, helper.parent)
+            self.context, helper.parent, archive=resources.component_input(self.checkout, self.context, 'qdrant'))
         self.image = value['engineIdentity']['engineImageId']
         capacity = resources.probe(self.folder)
         # Existing tools can nest a 2 GiB Java process inside the 4 GiB

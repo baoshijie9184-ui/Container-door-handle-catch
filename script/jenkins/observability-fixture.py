@@ -101,7 +101,8 @@ class Fixture:
                 'Observability plus serial source tools lacks its runtime reserve')
         for component in ('alertmanager','prometheus'):
             self.image_attempts.add(component)
-            proof=resources.prepare_observability_image(self.folder/(component+'-image'),self.context,helper.parent,component)
+            proof=resources.prepare_observability_image(self.folder/(component+'-image'),self.context,helper.parent,component,
+                archive=resources.component_input(self.checkout,self.context,component))
             self.images[component]=proof['engineIdentity']['engineImageId']
         capacity=resources.probe(self.folder)
         require(capacity['memoryAvailableBytes']>=RUNTIME_RESERVE and capacity['diskAvailableBytes']>=3*GIB,

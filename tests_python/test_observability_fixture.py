@@ -33,7 +33,8 @@ class ObservabilityFixtureTests(unittest.TestCase):
     def configured(self,root):
         value=self.build(root);calls=[];rows={};present=set()
         images={'prometheus':'sha256:'+'e'*64,'alertmanager':'sha256:'+'f'*64}
-        resources=SimpleNamespace(prepare_observability_image=lambda directory,context,module,component:{'engineIdentity':{'engineImageId':images[component]}},
+        resources=SimpleNamespace(prepare_observability_image=lambda directory,context,module,component,archive=None:{'engineIdentity':{'engineImageId':images[component]}},
+            component_input=mock.Mock(return_value={'file':'/owned/public-input.tar','sha256':'a'*64,'bytes':10240}),
             probe=lambda _: {'memoryAvailableBytes':10*fixture.GIB,'diskAvailableBytes':4*fixture.GIB})
         spec=SimpleNamespace(loader=SimpleNamespace(exec_module=lambda module:None))
         def docker(*args):

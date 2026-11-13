@@ -2,7 +2,8 @@
 
 Only the source-controlled recipe and pinned requirements are extracted. A
 bounded, owned pip container installs dependencies; no project test or business
-process is started. Source, reports, stopped containers and images are retained.
+process is started. Completed same-pin dependency artifacts may be reused with
+an inert metadata-only commit; original sources, reports and producers remain.
 """
 from __future__ import annotations
 
@@ -266,7 +267,8 @@ def validate_tool_config(cfg, sources, *, uid, gid, commit, source_sha):
             'Committed tool configuration or source labels differ')
 
 
-def metadata_arguments(name, token, release, source_sha, *, uid, gid):
+def metadata_arguments(name, token, release, source_sha, *, uid, gid, image=CACHED_PYTHON):
+    require(IMAGE.fullmatch(image), 'Metadata repair requires an immutable admitted dependency image')
     return ['create', '--pull', 'never', '--name', name, '--user', str(uid) + ':' + str(gid),
             '--label', LABEL + '=' + token, '--label', 'io.doorhandle.release=' + release,
             '--label', 'io.doorhandle.source=' + source_sha,
@@ -274,7 +276,7 @@ def metadata_arguments(name, token, release, source_sha, *, uid, gid):
             '--restart', 'no', '--read-only', '--network', 'none', '--no-healthcheck', '--workdir', '/',
             '--memory', str(512 * MIB), '--memory-swap', str(512 * MIB), '--cpus', '1',
             '--pids-limit', '16', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true',
-            '--entrypoint', PYTHON, CACHED_PYTHON, '--version']
+            '--entrypoint', PYTHON, image, '--version']
 
 
 def create_arguments(name, token, release, source_sha, requirement_path, report_path, expected):
@@ -497,7 +499,7 @@ class Preparation:
         row = json.loads(self.call(*arguments))[0]
         cfg, host, state = row['Config'], row['HostConfig'], row['State']
         labels = cfg.get('Labels') or {}
-        require(row['Image'] == CACHED_PYTHON and row['Name'] == '/' + self.metadata_name
+        require(row['Image'] == getattr(self, 'dependency_image', CACHED_PYTHON) and row['Name'] == '/' + self.metadata_name
                 and SHA.fullmatch(row['Id']) and (self.metadata_container is None or row['Id'] == self.metadata_container)
                 and labels.get(LABEL) == self.token and labels.get('io.doorhandle.release') == self.args.tag
                 and labels.get('io.doorhandle.source') == self.args.source_sha256
@@ -528,7 +530,7 @@ class Preparation:
         remaining = self.call('ps', '-aq', '--no-trunc', '--filter', 'id=' + self.metadata_container).decode().split()
         require(not remaining, 'The owned metadata container was not removed')
         return {'status': 'STOPPED', 'containersCreated': [self.metadata_container],
-                'containers': [{'containerId': self.metadata_container, 'sourceImageId': CACHED_PYTHON,
+                'containers': [{'containerId': self.metadata_container, 'sourceImageId': getattr(self, 'dependency_image', CACHED_PYTHON),
                                 'started': False, 'pid': 0, 'removed': True}], 'remaining': []}
 
     def commit_tool_image(self, sources, *, container, stem):
@@ -563,13 +565,15 @@ class Preparation:
 
     def repair_cached_image(self, sources, cached):
         """Change only Docker metadata; this container is never started."""
+        self.dependency_image = cached['Id']
+        require(IMAGE.fullmatch(self.dependency_image), 'Dependency repair source must be immutable')
         self.preparation_role = 'metadata'
         resource_check(self.baseline, self.available(), 0, required_growth=CONFIG_GROWTH_BOUND)
         self.sample_stream = self.snapshot.open('x', encoding='utf8'); os.chmod(self.snapshot, 0o600)
         cleanup = None
         try:
             self.metadata_container = self.call(*metadata_arguments(self.metadata_name, self.token,
-                self.args.tag, self.args.source_sha256, uid=os.getuid(), gid=os.getgid())).decode().strip()
+                self.args.tag, self.args.source_sha256, uid=os.getuid(), gid=os.getgid(), image=self.dependency_image)).decode().strip()
             require(SHA.fullmatch(self.metadata_container), 'Metadata create did not return a complete owned ID')
             self.metadata_owned()
             require(not self.call('diff', self.metadata_container).strip(), 'Metadata container must have no filesystem changes')
@@ -592,7 +596,7 @@ class Preparation:
                     pass
             write_json(self.folder / 'metadata-failure.json', {
                 'status': 'FAILED_OR_UNKNOWN', 'errorType': type(error).__name__, 'ownerToken': self.token,
-                'sourceImageId': CACHED_PYTHON, 'currentImageId': self.image, 'cleanup': cleanup,
+                'sourceImageId': self.dependency_image, 'currentImageId': self.image, 'cleanup': cleanup,
                 'oldProducerUntouched': True, 'sourceAndEvidenceRetained': True})
             raise
         finally:
@@ -702,6 +706,144 @@ class Preparation:
         return {**receipt, 'preparation': str(self.folder / 'preparation.json'),
                 'preparationSha256': digest(self.folder / 'preparation.json')}
 
+    def _completed_producer(self, image_id, sources, pinned):
+        """Re-admit one original completed installer using current read-only validators.
+
+        A project's later test/release result is deliberately not an input.
+        Repaired images are not producers: retain the original installation and
+        its completion, rather than constructing recursive cache trust chains.
+        """
+        require(MEM0_REQUIREMENTS in sources and IMAGE.fullmatch(image_id),
+                'Completed dependency reuse requires the current explicit runtime closure')
+        image = self.image_row(image_id)
+        labels = image['Config'].get('Labels') or {}
+        release, commit, source_sha = (labels.get(key, '') for key in
+            ('io.doorhandle.release', 'io.doorhandle.commit', 'io.doorhandle.source'))
+        if not (labels.get('io.doorhandle.ci-tools') == 'python-v1'
+                and TAG.fullmatch(release) and re.fullmatch(r'[a-f0-9]{40}', commit)
+                and release.endswith('-' + commit[:12]) and SHA.fullmatch(source_sha)):
+            return None
+        origin = self.root / 'inbox' / release / 'python-tools'
+        if not origin.exists(): return None
+        canonical(origin)
+        require(origin.is_dir() and origin.stat().st_uid == os.getuid()
+                and stat.S_IMODE(origin.stat().st_mode) == 0o700,
+                'Original dependency producer directory changed ownership')
+        receipt_path = origin / 'preparation.json'
+        if not receipt_path.exists(): return None
+        receipt = json.loads(control_bytes(receipt_path))
+        if receipt.get('dependencyPreparation') != 'INSTALLED_CURRENT_SOURCE': return None
+        if MEM0_REQUIREMENTS not in receipt.get('sourceFiles', {}): return None
+        # Pins, not a mutable tag or the mere presence of a pip report, decide
+        # compatibility. Equivalent comment/recipe changes do not rerun pip.
+        control_bytes(origin / 'python-test-requirements.txt', maximum=MIB)
+        if requirements(origin / 'python-test-requirements.txt') != pinned: return None
+        complete_raw = control_bytes(origin / 'completion.json')
+        complete = json.loads(complete_raw)
+        require(type(complete.get('prepareCandidateBuilder')) is bool,
+                'Original dependency completion request is invalid')
+        checker = object.__new__(PreparedReadback)
+        checker.root = self.root; checker.inbox = canonical(origin.parent)
+        checker.folder = origin; checker.reports = origin / 'reports'
+        checker.archive = canonical(checker.inbox / 'source.tar.gz')
+        control_bytes(checker.archive, maximum=512 * MIB)
+        checker.identity = self.identity; checker.docker = self.docker
+        checker.args = argparse.Namespace(root=str(self.root), tag=release, commit=commit,
+            source_sha256=source_sha, prepare_candidate_builder=complete['prepareCandidateBuilder'],
+            buildkit_archive=None, buildkit_archive_sha256=None, buildkit_archive_bytes=None)
+        archive_request = complete.get('buildkitArchive')
+        if archive_request is not None:
+            require(isinstance(archive_request, dict) and set(archive_request) == {'file', 'sha256', 'bytes'},
+                    'Original completed dependency archive binding is invalid')
+            checker.args.buildkit_archive = archive_request['file']
+            checker.args.buildkit_archive_sha256 = archive_request['sha256']
+            checker.args.buildkit_archive_bytes = archive_request['bytes']
+        control_bytes(origin / 'prepare-ecs-tools.py', maximum=MIB)
+        checker.found = scan_archive_inputs(checker.archive, commit, source_sha,
+            origin / 'prepare-ecs-tools.py', checker.args.prepare_candidate_builder, include_mem0_runtime=True)
+        def inspect_only(*arguments, **options):
+            require(arguments[:2] in (('image', 'inspect'), ('image', 'ls'))
+                    or arguments[:1] in (('inspect',), ('ps',)),
+                    'Dependency producer admission permits inspection only')
+            return self.call(*arguments, **options)
+        checker.call = inspect_only
+        result = checker._read_prepared(dependency_only=True)
+        require(result['pythonImageId'] == image_id and result['dependencyPreparation'] == 'INSTALLED_CURRENT_SOURCE'
+                and result['pipExecutedThisAttempt'] is True and checker.owner['identity'] == self.identity
+                and labels.get(LABEL) == checker.owner['ownerToken']
+                and requirements(origin / 'python-test-requirements.txt') == pinned,
+                'Original dependency completion does not bind this immutable image and all pins')
+        original = {name: origin / name for name in complete['proofs']}
+        produced = checker.owned()
+        state = produced['State']
+        require(produced['Id'] == result['cleanup']['containerId'] and state.get('Status') == 'exited'
+                and state.get('Pid') == 0 and state.get('ExitCode') == 0
+                and not any(state.get(key) for key in ('Running', 'Restarting', 'Paused', 'OOMKilled'))
+                and not str(state.get('StartedAt', '')).startswith('0001-'),
+                'Original dependency producer stopped state changed during admission')
+        # Bind both the complete original custody and the actual filesystem
+        # layers/config admitted above. Repair will compare every DiffID again.
+        descriptor = {'schemaVersion': 2, 'kind': 'doorhandle-pinned-dependency-reuse',
+            'sourceImageId': image_id, 'producerRelease': release, 'producerCommit': commit,
+            'producerSourceSha256': source_sha, 'producerContainerId': produced['Id'],
+            'producerContainerInspectedOnly': True, 'producerProofs': complete['proofs'],
+            'producerOwnerSha256': complete['proofs']['owner.json'],
+            'producerCommitReceiptSha256': complete['proofs']['commit.stdout'],
+            'producerCompletionSha256': hashlib.sha256(complete_raw).hexdigest()}
+        require(control_bytes(origin / 'completion.json') == complete_raw,
+                'Original dependency completion changed during admission')
+        return image, original, produced, descriptor
+
+    def inspect_completed_dependencies(self, sources, pinned, image_id=None):
+        """Bounded image-label discovery, never a directory crawl or tag lookup."""
+        if image_id is not None:
+            proof = self._completed_producer(image_id, sources, pinned)
+            require(proof is not None, 'Completed dependency producer is no longer available')
+            return proof
+        images = self.call('image', 'ls', '-q', '--no-trunc', '--filter',
+            'label=io.doorhandle.ci-tools=python-v1', '--filter',
+            'label=io.doorhandle.ci-tools-requirements-sha256').decode().split()
+        images = sorted(set(images))
+        require(len(images) <= 128 and all(IMAGE.fullmatch(item) for item in images),
+                'Dependency image inventory exceeds its immutable bounded scope')
+        for candidate in images:
+            proof = self._completed_producer(candidate, sources, pinned)
+            if proof is not None: return proof
+        return None
+
+    def reuse_completed_dependencies(self, sources, pinned, owner):
+        proof = self.inspect_completed_dependencies(sources, pinned)
+        if proof is None: return None
+        image, original, _produced, descriptor = proof
+        for name in ('installed-versions.json', 'pip-install.json'):
+            raw = control_bytes(original['reports/' + name])
+            target = self.reports / name
+            # These are this attempt's pre-created empty public report files,
+            # never the historical producer's inputs or reports.
+            require(target.is_file() and not target.is_symlink() and target.stat().st_uid == os.getuid()
+                    and target.stat().st_nlink == 1 and target.stat().st_size == 0,
+                    'Current dependency report slot was replaced')
+            with target.open('wb') as stream: stream.write(raw); stream.flush(); os.fsync(stream.fileno())
+            os.chmod(target, 0o600)
+            require(digest(target) == descriptor['producerProofs']['reports/' + name],
+                    'Original dependency report changed during reuse')
+        cleanup = self.repair_cached_image(sources, image)
+        available = self.available(); growth = resource_check(self.baseline, available, 0)
+        write_json(self.folder / 'reuse.json', {**descriptor, 'repairedImageId': self.image,
+            'currentSourceFiles': sources, 'diskAvailableBytes': available, 'observedGrowthBytes': growth})
+        receipt = {**owner, 'status': 'PREPARED', 'kind': 'doorhandle-ecs-tool-preparation',
+            'dependencyPreparation': 'REUSED_IMMUTABLE_IMAGE_CONFIG_REPAIRED', 'pythonImageId': self.image,
+            'dependencyImageId': image['Id'], 'pipExecutedThisAttempt': False, 'testsExecuted': False,
+            'mavenImageId': MAVEN, 'nodeImageId': NODE,
+            'reportSha': digest(self.reports / 'pip-install.json'),
+            'pipReportSha256': digest(self.reports / 'pip-install.json'),
+            'installedVersionsSha256': digest(self.reports / 'installed-versions.json'),
+            'reuseEvidenceSha256': digest(self.folder / 'reuse.json'),
+            'resourceSamplesSha256': digest(self.snapshot), 'observed': dict(self.observed), 'cleanup': cleanup}
+        write_json(self.folder / 'preparation.json', receipt)
+        return {**receipt, 'preparation': str(self.folder / 'preparation.json'),
+                'preparationSha256': digest(self.folder / 'preparation.json')}
+
     def prepare(self):
         sources = archive_inputs(self.archive, self.folder, self.args.commit, self.args.source_sha256, Path(__file__).resolve(),
                                  include_builder=getattr(self.args, 'prepare_candidate_builder', False), include_mem0_runtime=True)
@@ -716,7 +858,8 @@ class Preparation:
                  'maximumGrowthBytes': MAX_GROWTH, 'sourceFiles': sources,
                  'baselineAvailableBytes': self.baseline}
         write_json(self.folder / 'owner.json', owner)
-        reused = self.reuse_pinned_dependencies(sources, pinned, owner)
+        reused = (self.reuse_completed_dependencies(sources, pinned, owner) if MEM0_REQUIREMENTS in sources
+                  else self.reuse_pinned_dependencies(sources, pinned, owner))
         if reused is not None:
             return reused
         available = self.available()
@@ -982,6 +1125,9 @@ class PreparedReadback(Preparation):
                 'Prepared builder owner, cgroup or actual stopped state differs')
 
     def read_prepared(self):
+        return self._read_prepared()
+
+    def _read_prepared(self, *, dependency_only=False):
         buildkit_archive = validate_builder_input_arguments(self.args)
         for name in ('failure.json', 'watchdog-failure.json', 'metadata-failure.json', 'completion-failure.json'):
             require(not (self.folder / name).exists() and not (self.folder / name).is_symlink(),
@@ -1027,6 +1173,9 @@ class PreparedReadback(Preparation):
                 and all(complete.get(key) == owner[key] for key in ('release', 'commit', 'sourceSha256', 'identity', 'ownerToken')),
                 'Completed preparation belongs to another source, ECS or owner')
         receipt = json.loads(control_bytes(self.folder / 'preparation.json'))
+        if dependency_only:
+            require(receipt.get('dependencyPreparation') == 'INSTALLED_CURRENT_SOURCE',
+                    'Only an original completed installer may supply dependency layers')
         receipt_keys = set(owner) | {'status', 'kind', 'dependencyPreparation', 'pipExecutedThisAttempt', 'testsExecuted',
             'pythonImageId', 'mavenImageId', 'nodeImageId', 'pipReportSha256', 'installedVersionsSha256',
             'resourceSamplesSha256', 'observed', 'cleanup', 'reportSha'}
@@ -1043,9 +1192,6 @@ class PreparedReadback(Preparation):
         pinned = requirements(self.folder / 'python-test-requirements.txt')
         if MEM0_REQUIREMENTS in found:
             validate_mem0_requirements(pinned, requirements(self.folder / 'requirements.txt'))
-            require(receipt['dependencyPreparation'] == 'INSTALLED_CURRENT_SOURCE'
-                    and receipt['pipExecutedThisAttempt'] is True,
-                    'Current Mem0 runtime closure cannot use the historical 9-pin dependency proof')
         require(json.loads(control_bytes(self.reports / 'installed-versions.json')) == pinned
                 and receipt['installedVersionsSha256'] == proofs['reports/installed-versions.json']
                 and receipt['pipReportSha256'] == receipt['reportSha'] == proofs['reports/pip-install.json']
@@ -1078,26 +1224,37 @@ class PreparedReadback(Preparation):
                     and receipt['cleanup'] == {'containerId': row['Id'], 'pid': 0, 'exitCode': 0, 'retained': True},
                     'Owned pip producer did not actually finish successfully')
         else:
-            proof = self.inspect_pinned_dependencies(pinned)
-            require(proof is not None and receipt['pipExecutedThisAttempt'] is False
-                    and receipt['dependencyImageId'] == CACHED_PYTHON, 'Historical dependency provenance differs')
+            if MEM0_REQUIREMENTS in found:
+                proof = self.inspect_completed_dependencies(sources, pinned, image_id=receipt['dependencyImageId'])
+                descriptor = proof[3]
+                dependency_id = proof[0]['Id']
+                producer_proofs = descriptor['producerProofs']
+            else:
+                proof = self.inspect_pinned_dependencies(pinned)
+                require(proof is not None, 'Historical dependency provenance differs')
+                dependency_id = CACHED_PYTHON
+                producer_proofs = CACHED_PROOFS
+                descriptor = {'kind': 'doorhandle-pinned-dependency-reuse', 'sourceImageId': dependency_id,
+                    'producerContainerId': proof[2]['Id'], 'producerContainerInspectedOnly': True,
+                    'producerOwnerSha256': CACHED_PROOFS['owner.json'],
+                    'producerCommitReceiptSha256': CACHED_PROOFS['commit.stdout'], 'producerProofs': CACHED_PROOFS}
+            require(receipt['pipExecutedThisAttempt'] is False and receipt['dependencyImageId'] == dependency_id,
+                    'Completed dependency provenance differs')
             validate_dependency_layers(proof[0], image)
             require(commit_image_id(control_bytes(self.folder / 'config-commit.stdout').decode()) == receipt['pythonImageId']
                     and digest(self.folder / 'reuse.json') == receipt['reuseEvidenceSha256'], 'Config-only commit evidence differs')
             reuse = json.loads(control_bytes(self.folder / 'reuse.json'))
-            require(all(reuse.get(key) == expected for key, expected in {
-                'kind': 'doorhandle-pinned-dependency-reuse', 'sourceImageId': CACHED_PYTHON,
-                'repairedImageId': receipt['pythonImageId'], 'producerContainerId': proof[2]['Id'],
-                'producerContainerInspectedOnly': True, 'producerOwnerSha256': CACHED_PROOFS['owner.json'],
-                'producerCommitReceiptSha256': CACHED_PROOFS['commit.stdout'], 'currentSourceFiles': sources,
-                'producerProofs': CACHED_PROOFS}.items()) and type(reuse['diskAvailableBytes']) is int
+            expected_reuse = {**descriptor, 'repairedImageId': receipt['pythonImageId'], 'currentSourceFiles': sources}
+            require(all(reuse.get(key) == expected for key, expected in expected_reuse.items())
+                and (MEM0_REQUIREMENTS not in found or set(reuse) == set(expected_reuse) | {'diskAvailableBytes', 'observedGrowthBytes'})
+                and type(reuse['diskAvailableBytes']) is int
                 and resource_check(self.baseline, reuse['diskAvailableBytes'], 0) == reuse['observedGrowthBytes']
-                and all(proofs['reports/' + name] == CACHED_PROOFS['reports/' + name]
+                and all(proofs['reports/' + name] == producer_proofs['reports/' + name]
                         for name in ('pip-install.json', 'installed-versions.json')), 'Config-only producer evidence differs')
             cleanup = receipt['cleanup']
             require(cleanup['status'] == 'STOPPED' and cleanup['remaining'] == [] and len(cleanup['containers']) == 1
                     and cleanup['containersCreated'] == [cleanup['containers'][0]['containerId']]
-                    and cleanup['containers'][0] == {'containerId': cleanup['containersCreated'][0], 'sourceImageId': CACHED_PYTHON,
+                    and cleanup['containers'][0] == {'containerId': cleanup['containersCreated'][0], 'sourceImageId': dependency_id,
                         'started': False, 'pid': 0, 'removed': True}, 'Config-only cleanup evidence differs')
             cid = cleanup['containersCreated'][0]; require(SHA.fullmatch(cid), 'Metadata container ID is invalid')
             require(not self.call('ps', '-aq', '--no-trunc', '--filter', 'id=' + cid).strip(), 'Metadata container still exists')
@@ -1107,7 +1264,8 @@ class PreparedReadback(Preparation):
         if buildkit_archive is not None:
             result['buildkitArchive'] = buildkit_archive
         if self.args.prepare_candidate_builder:
-            reference = complete['result'].get('candidateBuilderTools'); self.validate_builder(reference)
+            reference = complete['result'].get('candidateBuilderTools')
+            if not dependency_only: self.validate_builder(reference)
             result['candidateBuilderTools'] = reference
         require(complete['result'] == result, 'Final completion result differs from fully verified components')
         require(digest(self.archive) == self.args.source_sha256 and control_bytes(path) == complete_raw
@@ -1115,7 +1273,7 @@ class PreparedReadback(Preparation):
                         for name, checksum in proofs.items()),
                 'Preparation evidence changed during final readback')
         return {**result, 'completion': str(path), 'completionSha256': hashlib.sha256(complete_raw).hexdigest(),
-                'readbackValidated': True}
+                ('dependencyReadbackValidated' if dependency_only else 'readbackValidated'): True}
 
 
 def main(argv=None):

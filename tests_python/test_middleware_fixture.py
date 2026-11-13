@@ -2,7 +2,6 @@
 from copy import deepcopy
 import importlib.util
 import json
-import os
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -94,6 +93,7 @@ class MiddlewareFixtureTests(unittest.TestCase):
             value,row=self.build(Path(directory).resolve());row['State'].update(Running=True,Pid=1234)
             calls=[];value.docker=self.fake_docker(value,row,calls)
             resources=SimpleNamespace(prepare_qdrant_image=mock.Mock(return_value={'engineIdentity':{'engineImageId':value.image}}),
+                component_input=mock.Mock(return_value={'file':'/owned/public-input.tar','sha256':'a'*64,'bytes':10240}),
                 probe=mock.Mock(return_value={'memoryAvailableBytes':8*fixture.GIB,'diskAvailableBytes':4*fixture.GIB}))
             spec=SimpleNamespace(loader=SimpleNamespace(exec_module=lambda module:None))
             response=mock.MagicMock();response.__enter__.return_value.status=200
@@ -102,6 +102,8 @@ class MiddlewareFixtureTests(unittest.TestCase):
                     mock.patch.object(fixture.importlib.util,'module_from_spec',return_value=resources), \
                     mock.patch.object(fixture,'build_opener',return_value=opener),mock.patch.object(value,'check'):
                 environment=value.prepare()
+            resources.component_input.assert_called_once_with(value.checkout,value.context,'qdrant')
+            self.assertEqual(resources.component_input.return_value,resources.prepare_qdrant_image.call_args.kwargs['archive'])
             create=next(call for call in calls if call[0]=='create')
             self.assertEqual('never',create[create.index('--pull')+1])
             self.assertEqual('1000:1000',create[create.index('--user')+1]);self.assertIn('--read-only',create)
@@ -121,6 +123,7 @@ class MiddlewareFixtureTests(unittest.TestCase):
             with self.subTest(capacity=capacity),tempfile.TemporaryDirectory() as directory:
                 value,_=self.build(Path(directory).resolve());value.docker=mock.Mock()
                 resources=SimpleNamespace(prepare_qdrant_image=mock.Mock(return_value={'engineIdentity':{'engineImageId':value.image}}),
+                    component_input=mock.Mock(return_value={'file':'/owned/public-input.tar','sha256':'a'*64,'bytes':10240}),
                     probe=mock.Mock(return_value=capacity))
                 spec=SimpleNamespace(loader=SimpleNamespace(exec_module=lambda module:None))
                 with mock.patch.object(fixture.importlib.util,'spec_from_file_location',return_value=spec), \
