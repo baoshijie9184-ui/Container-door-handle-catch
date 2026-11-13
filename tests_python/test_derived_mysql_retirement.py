@@ -172,6 +172,14 @@ def test_pipeline_requires_the_explicit_closed_batch_and_keeps_old_defaults():
     wrapper = (root / 'script/jenkins/retire-derived-mysql-data.ps1').read_text(encoding='utf-8-sig')
     assert name in wrapper and 'reclaim-build-outputs' in wrapper
     assert 'Remove-Item' not in wrapper and 'plan-sha256' in wrapper
+    pipeline = (root / 'Jenkinsfile.ecs-monolith').read_text(encoding='utf-8-sig')
+    post = pipeline.split('\n    post {\n', 1)[1]
+    maintenance = re.search(r"^                if \(params.ACTION == 'reclaim-build-outputs'\) \{(.*?)"
+                            r"^                \} else \{", post, re.MULTILINE | re.DOTALL)
+    assert maintenance is not None, 'The dedicated maintenance post branch must exist.'
+    archive = re.search(r"archiveArtifacts artifacts: '([^']+)'", maintenance[1])
+    assert archive is not None, 'Maintenance must archive its own evidence.'
+    assert 'artifacts/derived-mysql-*.json' in archive[1].split(',')
 
 
 @pytest.fixture
