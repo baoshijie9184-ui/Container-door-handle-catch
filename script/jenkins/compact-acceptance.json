@@ -19,6 +19,30 @@
   },
   "javaSuites": [
     {
+      "id": "JdbcOwnerLockMySqlTest",
+      "className": "com.ruanzhu.doorhandle.module.ai.persistence.JdbcOwnerLockMySqlTest",
+      "fixtureProperties": [
+        "agent.journal.mysql-file"
+      ],
+      "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/persistence/JdbcOwnerLockMySqlTest.java",
+      "minimumTests": 2,
+      "coverage": [
+        "agent journal and owner-lock fencing"
+      ]
+    },
+    {
+      "id": "ConversationInboxMySqlTest",
+      "className": "com.ruanzhu.doorhandle.module.app.service.impl.ConversationInboxMySqlTest",
+      "fixtureProperties": [
+        "doorhandle.feature.mysql.config"
+      ],
+      "source": "doorhandle-module-app/src/test/java/com/ruanzhu/doorhandle/module/app/service/impl/ConversationInboxMySqlTest.java",
+      "minimumTests": 31,
+      "coverage": [
+        "workspace, chat, inbox, knowledge and memory persistence"
+      ]
+    },
+    {
       "id": "WorkbenchMigrationMySqlTest",
       "className": "com.ruanzhu.doorhandle.module.ai.workbench.WorkbenchMigrationMySqlTest",
       "fixtureProperties": [
@@ -302,18 +326,6 @@
       ]
     },
     {
-      "id": "ConversationInboxMySqlTest",
-      "className": "com.ruanzhu.doorhandle.module.app.service.impl.ConversationInboxMySqlTest",
-      "fixtureProperties": [
-        "doorhandle.feature.mysql.config"
-      ],
-      "source": "doorhandle-module-app/src/test/java/com/ruanzhu/doorhandle/module/app/service/impl/ConversationInboxMySqlTest.java",
-      "minimumTests": 31,
-      "coverage": [
-        "workspace, chat, inbox, knowledge and memory persistence"
-      ]
-    },
-    {
       "id": "Core12PersistenceMySqlTest",
       "className": "com.ruanzhu.doorhandle.module.detection.service.Core12PersistenceMySqlTest",
       "fixtureProperties": [
@@ -484,18 +496,6 @@
       "minimumTests": 9,
       "coverage": [
         "infrastructure audit copy and persistence"
-      ]
-    },
-    {
-      "id": "JdbcOwnerLockMySqlTest",
-      "className": "com.ruanzhu.doorhandle.module.ai.persistence.JdbcOwnerLockMySqlTest",
-      "fixtureProperties": [
-        "agent.journal.mysql-file"
-      ],
-      "source": "doorhandle-module-ai/src/test/java/com/ruanzhu/doorhandle/module/ai/persistence/JdbcOwnerLockMySqlTest.java",
-      "minimumTests": 2,
-      "coverage": [
-        "agent journal and owner-lock fencing"
       ]
     },
     {

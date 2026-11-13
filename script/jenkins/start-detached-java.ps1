@@ -92,8 +92,10 @@ if ($WorkerRequest) {
     try {
         $owner = [IO.File]::Open(($request.pidFile + '.lifetime.lock'), 'OpenOrCreate', 'ReadWrite', 'None')
         # Append so even an interrupted earlier JVM keeps its original output.
-        $stdout = [IO.File]::Open($request.stdout, 'Append', 'Write', 'Read')
-        $stderr = [IO.File]::Open($request.stderr, 'Append', 'Write', 'Read')
+        $stdout = [IO.FileStream]::new($request.stdout, [IO.FileMode]::Append, [IO.FileAccess]::Write,
+            [IO.FileShare]::Read, 1, [IO.FileOptions]::Asynchronous)
+        $stderr = [IO.FileStream]::new($request.stderr, [IO.FileMode]::Append, [IO.FileAccess]::Write,
+            [IO.FileShare]::Read, 1, [IO.FileOptions]::Asynchronous)
         $process = [Diagnostics.Process]::new()
         $process.StartInfo = [Diagnostics.ProcessStartInfo]::new($request.javaExe, $request.arguments)
         $process.StartInfo.WorkingDirectory = $request.workingDirectory

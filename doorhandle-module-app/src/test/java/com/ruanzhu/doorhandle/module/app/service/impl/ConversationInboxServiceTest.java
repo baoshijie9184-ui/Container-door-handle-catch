@@ -133,15 +133,29 @@ class ConversationInboxServiceTest {
     }
     @Test void deliveryAuditFailureRollsBackBothQueuedStateAndConversationAppend(){
         active();var queued=inbox.enqueue(alice,"s1",UUID.randomUUID().toString(),"NEXT_STEP","PRIVATE");jdbc.execute("CREATE TABLE fixture_chat(body VARCHAR(8000))");
-        when(sessions.appendUserMessage(any(TenantContext.class),anyString(),anyString())).thenAnswer(inv->{jdbc.update("INSERT INTO fixture_chat(body) VALUES(?)",inv.<String>getArgument(2));return null;});
-        jdbc.execute("ALTER TABLE audit_event ADD CONSTRAINT deny_delivery CHECK(action<>'APPLIED_AT_BOUNDARY')");
-        assertThatThrownBy(()->inbox.take(alice,"s1","run-1")).isInstanceOf(org.springframework.dao.DataAccessException.class);assertThat(status(queued.id())).isEqualTo("QUEUED");assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM fixture_chat",Integer.class)).isZero();
+        try {
+            when(sessions.appendUserMessage(any(TenantContext.class),anyString(),anyString())).thenAnswer(inv->{jdbc.update("INSERT INTO fixture_chat(body) VALUES(?)",inv.<String>getArgument(2));return null;});
+            jdbc.execute("ALTER TABLE audit_event ADD CONSTRAINT deny_delivery CHECK(action<>'APPLIED_AT_BOUNDARY')");
+            assertThatThrownBy(()->inbox.take(alice,"s1","run-1")).isInstanceOf(org.springframework.dao.DataAccessException.class);assertThat(status(queued.id())).isEqualTo("QUEUED");assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM fixture_chat",Integer.class)).isZero();
+        } finally {
+            // Only this successfully created helper belongs to this test, not to the 29-table fixture.
+            jdbc.execute("DROP TABLE fixture_chat");
+        }
     }
     @Test void expirationClearsPendingBodyAndPreventsExecution(){var queued=enqueue("EXPIRED_PRIVATE");jdbc.update("UPDATE workflow_instance SET expires_at=?",LocalDateTime.now().minusDays(1));inbox.dispatch();assertThat(status(queued.id())).isEqualTo("EXPIRED");assertThat(inbox.list(alice,"s1").get(0).content()).isEmpty();verifyNoInteractions(chat);}
     @Test void accountRevocationAndExecutionFailureNeverAutomaticallyRetry(){var queued=enqueue("first");when(users.current(1,"alice")).thenThrow(new SecurityException());inbox.dispatch();assertThat(status(queued.id())).isEqualTo("FAILED");verifyNoInteractions(chat);}
     @Test void failedExecutionIsTerminal(){var queued=enqueue("query");when(chat.handleUserMessage(anyString(),any())).thenThrow(new IllegalStateException("PRIVATE_ERROR"));inbox.dispatch();await().atMost(Duration.ofSeconds(3)).until(()->"FAILED".equals(status(queued.id())));inbox.dispatch();verify(chat,times(1)).handleUserMessage(anyString(),any());assertThat(jdbc.queryForList("SELECT * FROM audit_event").toString()).doesNotContain("PRIVATE_ERROR");}
     @Test void pausedSessionsKeepQueuedMessagesWaiting(){var queued=enqueue("wait");when(control.inspect(any(),anyString())).thenReturn(new AgentConversationControlApi.View("s1","run-1","PAUSED",2,true,""));inbox.dispatch();assertThat(status(queued.id())).isEqualTo("QUEUED");verifyNoInteractions(chat);}
-    @Test void missingMigrationFailsBeforeEnablingDispatch(){jdbc.execute("DROP TABLE audit_event");assertThatThrownBy(inbox::schema).hasMessageContaining("compact/005-workflow-runtime.sql");}
+    @Test void missingMigrationFailsBeforeEnablingDispatch(){
+        // Keep the real parent table and its foreign-key references intact while hiding its expected name.
+        jdbc.execute("ALTER TABLE audit_event RENAME TO fixture_missing_audit_event");
+        try {
+            assertThatThrownBy(inbox::schema).hasMessageContaining("compact/005-workflow-runtime.sql");
+        } finally {
+            jdbc.execute("ALTER TABLE fixture_missing_audit_event RENAME TO audit_event");
+        }
+        inbox.schema();
+    }
     @Test void actualSchedulerDispatchesPersistedInputAfterApplicationReadiness(){var queued=enqueue("ready");inbox.startDispatcher();completed(queued.id());verify(chat,times(1)).handleUserMessage(anyString(),any());}
     @Test void lastQuotaSlotIsSerializedAcrossConcurrentRequests()throws Exception{
         for(int i=0;i<15;i++)enqueue("pending-"+i);var workers=Executors.newFixedThreadPool(2);var start=new CountDownLatch(1);

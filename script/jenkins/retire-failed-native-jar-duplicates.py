@@ -180,6 +180,9 @@ FAILED_NATIVE_PUBLICATION_RECIPES = frozenset({
     # #281's retained 81244ba1 recipe moves SQL recovery before legacy expansion.
     ('6a00b13b405aef353290079c3d12fdfad5b5ea4094d8a32f7d38c7d40b4a9615',
      'fad5d9772fed128c066370c814ec3682bd975c79959323269ee7bb34d520a71c'),
+    # #287 adds the third closed derived-data policy; release/runtime gates are unchanged.
+    ('7322906c8903b8ede2cd1b32da54ec23a05ccda2b5a948bf3e82aa7c7c13bb81',
+     '7a7e00e47f06129fc819127393ac68fd2869f4bfd9f4c9b17be921c96a02db50'),
 })
 # These exact recipes request a candidate builder only for runtime/cutover,
 # never for an explicitly selected verify/mysql attempt.
@@ -190,6 +193,8 @@ DATABASE_VERIFY_PUBLICATION_RECIPES = frozenset({
      'abc6c9e4f0e4b7f72d5240b70278e71ace68dbfe4906724da70da72dea784b44'),
     ('6a00b13b405aef353290079c3d12fdfad5b5ea4094d8a32f7d38c7d40b4a9615',
      'fad5d9772fed128c066370c814ec3682bd975c79959323269ee7bb34d520a71c'),
+    ('7322906c8903b8ede2cd1b32da54ec23a05ccda2b5a948bf3e82aa7c7c13bb81',
+     '7a7e00e47f06129fc819127393ac68fd2869f4bfd9f4c9b17be921c96a02db50'),
 })
 DATABASE_VERIFY_TOOL_PREPARATION_SOURCE = 'cd025c3250feb3acb03bb583c7d5ca94894b100cdf89921223607968b2c85d4d'
 CLOSED_RUNTIME_JARS = {
