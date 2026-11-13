@@ -4,9 +4,11 @@
 
 当前为 `java-cloud` 单体，正式业务库仍 **131表**，目标 **29表**未切换，生产发布与旧库演练门关闭。功能验收固定2个检测人员、2个主管，各2个功能标签；正式并发/容量压测后置，`loadTestStatus=DEFERRED_BY_USER`、`performanceSloVerified=false`。
 
-### 当前：镜像中转已消费，#298在依赖制品候选筛选期阻断
+### 当前：镜像中转已消费，恢复依赖制品读取的原兼容契约
 
 本轮按用户确定的范围调整单体通用中间件：Qdrant/BGE-M3适配、模型调用故障隔离、OpenTelemetry、Prometheus与Alertmanager实际抓取验收。完整自建Langfuse只保留部署配置，待资源审定后再启用；不启动微服务专属组件。方案与验收边界见[单体中间件调整](middleware/monolith-alignment.md)。
+
+固定`e9b0977f97e64b7504922d0502901cdcbc465d87`的 **#299实际FAILURE**：13模块跳测试打包成功，三个固定OCI包全部从已发布共享缓存复用；新增严格解析误拒原#297已合法保全的Docker长提示，工具准备仍未进入容器创建或测试。已恢复原commit/create/cleanup读取契约，严格列表校验只用于新增候选发现；原completion、源码、依赖和层校验保留，直接回归源码67项。11份原归档中10份非应用JAR、17,967,234字节及失败前无容器证据已保全；**03:02:29（北京时间）**实际回读`Stopped / StopCharging`（`ci-299-external-stop-readback.json`），待下一固定提交统一验证。
 
 固定`a95e24d07aa69283c45a03e557323620281c0858`的 **#298实际FAILURE**：13模块跳测试打包成功，Qdrant、Prometheus、Alertmanager三个固定官方OCI包共232,960,000字节，已由本地Jenkins真实传到ECS并完成共享缓存发布，三份传输回执均AVAILABLE、暂存清理NO_STAGE。随后依赖制品发现把157个历史工具metadata镜像一并计入128个候选上限，准备阶段拒绝，尚未创建本轮工具/组件容器或执行测试。已改为先排除永不作为原producer的metadata-only镜像，再对原始依赖producer执行原128上限，并统一严格Docker ID解析；64项直接测试源码完成，静态检查通过，仍待ECS运行验证。后续复用已发布的三个包，不重复安装22项依赖。
 

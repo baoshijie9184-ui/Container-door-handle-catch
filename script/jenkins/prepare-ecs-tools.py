@@ -225,14 +225,11 @@ def docker_ids(output, kind):
 
 
 def commit_image_id(output):
-    matches = docker_ids(output, 'image')
+    # Preserve the original producer contract: Docker's informational stdout
+    # may vary. Its complete bytes are already bound by completion proofs;
+    # exactly one full immutable ID, not the wording of a CLI notice, is data.
+    matches = [line.strip() for line in output.splitlines() if IMAGE.fullmatch(line.strip())]
     require(len(matches) == 1, 'Tool image commit did not return one immutable image ID')
-    return matches[0]
-
-
-def single_container_id(output):
-    matches = docker_ids(output, 'container')
-    require(len(matches) == 1, 'Tool create did not return one complete owned container ID')
     return matches[0]
 
 
@@ -549,7 +546,7 @@ class Preparation:
         self.metadata_container = row['Id']
         require(not self.call('diff', self.metadata_container).strip(), 'Metadata repair unexpectedly changed filesystem content')
         self.call('rm', self.metadata_container)
-        remaining = docker_ids(self.call('ps', '-aq', '--no-trunc', '--filter', 'id=' + self.metadata_container), 'container')
+        remaining = self.call('ps', '-aq', '--no-trunc', '--filter', 'id=' + self.metadata_container).decode().split()
         require(not remaining, 'The owned metadata container was not removed')
         return {'status': 'STOPPED', 'containersCreated': [self.metadata_container],
                 'containers': [{'containerId': self.metadata_container, 'sourceImageId': getattr(self, 'dependency_image', CACHED_PYTHON),
@@ -594,8 +591,9 @@ class Preparation:
         self.sample_stream = self.snapshot.open('x', encoding='utf8'); os.chmod(self.snapshot, 0o600)
         cleanup = None
         try:
-            self.metadata_container = single_container_id(self.call(*metadata_arguments(self.metadata_name, self.token,
-                self.args.tag, self.args.source_sha256, uid=os.getuid(), gid=os.getgid(), image=self.dependency_image)))
+            self.metadata_container = self.call(*metadata_arguments(self.metadata_name, self.token,
+                self.args.tag, self.args.source_sha256, uid=os.getuid(), gid=os.getgid(), image=self.dependency_image)).decode().strip()
+            require(SHA.fullmatch(self.metadata_container), 'Metadata create did not return a complete owned ID')
             self.metadata_owned()
             require(not self.call('diff', self.metadata_container).strip(), 'Metadata container must have no filesystem changes')
             self.watcher = threading.Thread(target=self.watchdog, name='owned-python-tools-config-disk', daemon=True)
@@ -630,7 +628,7 @@ class Preparation:
         """Inspect the historical immutable producer without changing it."""
         if pinned != CACHED_PINS:
             return None
-        images = docker_ids(self.call('image', 'ls', '-q', '--no-trunc', '--filter', 'label=io.doorhandle.ci-tools=python-v1'), 'image')
+        images = self.call('image', 'ls', '-q', '--no-trunc', '--filter', 'label=io.doorhandle.ci-tools=python-v1').decode().split()
         if CACHED_PYTHON not in images:
             return None
         image = self.image_row(CACHED_PYTHON); cfg = image['Config']; labels = cfg.get('Labels') or {}
@@ -900,8 +898,9 @@ class Preparation:
             'reserveBytes': RESERVE, 'overshootBytes': OVERSHOOT})
         self.sample_stream = self.snapshot.open('x', encoding='utf8'); os.chmod(self.snapshot, 0o600)
         try:
-            self.container = single_container_id(self.call(*create_arguments(self.name, self.token, self.args.tag, self.args.source_sha256,
-                self.folder / 'python-test-requirements.txt', self.reports, pinned)))
+            self.container = self.call(*create_arguments(self.name, self.token, self.args.tag, self.args.source_sha256,
+                self.folder / 'python-test-requirements.txt', self.reports, pinned)).decode().strip()
+            require(SHA.fullmatch(self.container), 'Owned pip container did not return a complete ID')
             self.watcher = threading.Thread(target=self.watchdog, name='owned-python-tools-disk', daemon=True)
             self.watcher.start()
             self.owned(); self.call('start', self.container)
@@ -1283,7 +1282,7 @@ class PreparedReadback(Preparation):
                     and cleanup['containers'][0] == {'containerId': cleanup['containersCreated'][0], 'sourceImageId': dependency_id,
                         'started': False, 'pid': 0, 'removed': True}, 'Config-only cleanup evidence differs')
             cid = cleanup['containersCreated'][0]; require(SHA.fullmatch(cid), 'Metadata container ID is invalid')
-            require(not docker_ids(self.call('ps', '-aq', '--no-trunc', '--filter', 'id=' + cid), 'container'), 'Metadata container still exists')
+            require(not self.call('ps', '-aq', '--no-trunc', '--filter', 'id=' + cid).strip(), 'Metadata container still exists')
         for fixed in (MAVEN, NODE): self.image_row(fixed)
         result = {**receipt, 'preparation': str(self.folder / 'preparation.json'),
                   'preparationSha256': digest(self.folder / 'preparation.json')}

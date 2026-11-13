@@ -1015,13 +1015,46 @@ class CompletedRuntimeDependencyReuseTests(unittest.TestCase):
         for output, kind in ((b'\xff\xfe', 'image'), (None, 'image'), (['sha256:' + 'a' * 64], 'image'), ('', 'volume')):
             with self.subTest(output=output, kind=kind), self.assertRaises(ValueError): tools.docker_ids(output, kind)
 
-    def test_single_image_and_container_receipts_reject_duplicates_unknown_lines_and_empty_notice(self):
-        notice = 'Flag --pause has been deprecated, and enabled by default.'
-        for parser, actual in ((tools.commit_image_id, 'sha256:' + 'a' * 64), (tools.single_container_id, 'b' * 64)):
-            for output in (notice + '\n' + actual + '\n', (actual + '\n' + notice + '\n').encode()):
-                self.assertEqual(actual, parser(output))
-            for bad in ('', notice, actual + '\n' + actual, notice + '\nshort', actual + '\nunknown warning'):
-                with self.subTest(parser=parser.__name__, bad=bad), self.assertRaises(ValueError): parser(bad)
+    def test_historical_179_byte_commit_stdout_retains_its_original_unique_image_id_contract(self):
+        # Reproduce #297's preserved stdout; inventory parsing has a separate contract.
+        actual = 'sha256:0873bbdec32c00adb14c33a1a32de2ea8fe5acde0163088bd879318b2213f901'
+        original = ('Flag --pause has been deprecated, and enabled by default. '
+                    'Use --no-pause to disable pausing during commit.\n' + actual + '\n')
+        self.assertEqual(179, len(original.encode()))
+        self.assertEqual(actual, tools.commit_image_id(original))
+
+    def test_original_commit_extraction_does_not_add_an_inventory_notice_whitelist(self):
+        actual = 'sha256:' + 'a' * 64
+        for notice in ('Historical Docker CLI notice from a different revision.',
+                       'Flag --pause has been deprecated, and enabled by default. Use --no-pause to disable pausing during commit.',
+                       'WARNING: this retained historical message is bound by the producer completion.',
+                       'sha256:short\nAnother non-ID historical output line.'):
+            for output in (notice + '\n' + actual + '\n', actual + '\n' + notice + '\n'):
+                with self.subTest(notice=notice, position=output.startswith(actual)):
+                    self.assertEqual(actual, tools.commit_image_id(output))
+
+    def test_original_commit_extraction_still_requires_exactly_one_complete_image_id_line(self):
+        actual = 'sha256:' + 'a' * 64; another = 'sha256:' + 'b' * 64
+        for bad in ('', 'historical notice only', 'sha256:short', actual + ' trailing bytes',
+                    'prefix ' + actual, actual + ' ' + another, actual + '\n' + actual,
+                    'historical notice\n' + actual + '\n' + another):
+            with self.subTest(output=bad), self.assertRaises(ValueError): tools.commit_image_id(bad)
+
+    def test_completed_producer_with_bound_historical_long_commit_notice_remains_reusable_readonly(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source, producer, image, calls, _ = self.completed_runtime_producer(Path(directory))
+            original = ('Flag --pause has been deprecated, and enabled by default. '
+                        'Use --no-pause to disable pausing during commit.\n' + image['Id'] + '\n')
+            (source.folder / 'commit.stdout').write_text(original)
+            self.reseal_readback(source)
+            value, sources, pinned = self.current_consumer(source, producer, image, calls)
+            before = {str(path.relative_to(source.inbox)): path.read_bytes() for path in source.inbox.rglob('*') if path.is_file()}
+            proof = value.inspect_completed_dependencies(sources, pinned)
+            self.assertEqual(image['Id'], proof[0]['Id'])
+            self.assertEqual(tools.digest(source.folder / 'commit.stdout'), proof[3]['producerCommitReceiptSha256'])
+            self.assertEqual(tools.digest(source.folder / 'completion.json'), proof[3]['producerCompletionSha256'])
+            self.assertEqual(before, {str(path.relative_to(source.inbox)): path.read_bytes() for path in source.inbox.rglob('*') if path.is_file()})
+            self.assertTrue(calls and all(call[0] in ('image', 'inspect') for call in calls))
 
     def test_exact_docker_notice_is_not_counted_or_inspected_in_either_discovery_inventory(self):
         notice = b'Flag --pause has been deprecated, and enabled by default.\n'
