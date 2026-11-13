@@ -1,9 +1,11 @@
 """Closed, owned test-replica retirement. Executed by Jenkins on ECS only."""
 import importlib.util
+import ast
 from contextlib import nullcontext
 import io
 import json
 import os
+import re
 from pathlib import Path
 import stat
 import tarfile
@@ -235,6 +237,34 @@ def test_fixed_helper_admission_uses_the_actual_maintenance_transport(fixed_main
     helpers = retirement.fixed_helpers(state.args)
     assert helpers['cleanup-ecs-builds.py'].SENTINEL == 'cleanup'
     assert helpers['verify-remote.py'].SENTINEL == 'verifier'
+
+
+@pytest.mark.parametrize('policy', ['FailedNative', 'RetiredCopies194', 'RetiredCopies203', 'PublicCaches221224235', 'DerivedMysql221222235238247'])
+def test_real_maintenance_package_selection_supplies_the_closed_batch_consumer(fixed_maintenance_source, policy):
+    state = fixed_maintenance_source
+    text = (FILE.parent / 'pipeline.ps1').read_text(encoding='utf-8-sig')
+    block = text.split("if ($Action -ceq 'PackageSourceOnly') {", 1)[1].split("if ($Action -ceq 'PackageControls')", 1)[0]
+    declaration = re.search(r'\$maintenancePaths = @\(([^\r\n]+)\)', block)
+    paths = list(ast.literal_eval('(' + declaration[1] + ',)'))
+    assert paths == ['script/jenkins/cleanup-ecs-builds.py', 'script/jenkins/verify-remote.py',
+                     'script/jenkins/retire-failed-native-jar-duplicates.py', 'script/docker/compact-build-resources.py']
+    guarded = re.search(r"if \(\$nativeRetentionPolicy -ceq 'DerivedMysql221222235238247'\) \{\s*\$maintenancePaths \+= '([^']+)'\s*\}", block)
+    assert guarded and guarded[1] == 'script/jenkins/retire-derived-mysql-data.py'
+    assert ") + $maintenancePaths" in block and "Invoke-Checked 'git.exe' $archiveArguments" in block
+    if policy == 'DerivedMysql221222235238247': paths.append(guarded[1])
+    data = io.BytesIO()
+    with tarfile.open(fileobj=data, mode='w:gz', pax_headers={'comment': state.args.commit}) as archive:
+        for path in paths:
+            local = state.inbox / path.rsplit('/', 1)[-1]
+            body = local.read_bytes() if local.is_file() else b'# retained unrelated maintenance helper\n'
+            entry = tarfile.TarInfo(path); entry.size = len(body); archive.addfile(entry, io.BytesIO(body))
+    raw = data.getvalue(); (state.inbox / 'cleanup-source.tar.gz').write_bytes(raw)
+    state.args.source_sha256 = retirement.digest(raw)
+    if policy == 'DerivedMysql221222235238247':
+        assert retirement.fixed_helpers(state.args)['cleanup-ecs-builds.py'].SENTINEL == 'cleanup'
+    else:
+        with pytest.raises(ValueError, match='FIXED_HELPER_CLOSURE_MISSING'):
+            retirement.fixed_helpers(state.args)
 
 
 @pytest.mark.parametrize('damage', ['commit', 'helper', 'loaded-source'])

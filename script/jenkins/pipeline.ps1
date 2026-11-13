@@ -391,7 +391,12 @@ if ($Action -ceq 'PackageSourceOnly') {
         if (Test-Path -LiteralPath $file) { throw 'Maintenance packaging requires a fresh artifact directory without application build output.' }
     }
     Invoke-Checked 'git.exe' @('diff', '--quiet', 'HEAD', '--')
-    Invoke-Checked 'git.exe' @('-c', 'core.autocrlf=false', 'archive', '--format=tar.gz', '--output=artifacts/source.tar.gz', $commit, 'script/jenkins/cleanup-ecs-builds.py', 'script/jenkins/verify-remote.py', 'script/jenkins/retire-failed-native-jar-duplicates.py', 'script/docker/compact-build-resources.py')
+    $maintenancePaths = @('script/jenkins/cleanup-ecs-builds.py', 'script/jenkins/verify-remote.py', 'script/jenkins/retire-failed-native-jar-duplicates.py', 'script/docker/compact-build-resources.py')
+    if ($nativeRetentionPolicy -ceq 'DerivedMysql221222235238247') {
+        $maintenancePaths += 'script/jenkins/retire-derived-mysql-data.py'
+    }
+    $archiveArguments = @('-c', 'core.autocrlf=false', 'archive', '--format=tar.gz', '--output=artifacts/source.tar.gz', $commit) + $maintenancePaths
+    Invoke-Checked 'git.exe' $archiveArguments
     $sha = (Get-FileHash -LiteralPath artifacts/source.tar.gz -Algorithm SHA256).Hash.ToLowerInvariant()
     $record = [ordered]@{ schema = 1; kind = 'doorhandle-maintenance-source'; action = 'reclaim-build-outputs';
         release = $tag; commit = $commit; sourceSha256 = $sha; sourceBytes = (Get-Item -LiteralPath artifacts/source.tar.gz).Length;
